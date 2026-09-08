@@ -1,0 +1,152 @@
+
+.aui-markdown pre code {
+  counter-reset: none !important;
+}
+
+.aui-markdown pre code > span::before {
+  content: none !important;
+  display: none !important;
+}
+
+.aui-markdown pre code > span {
+  padding-left: 0 !important;
+}
+
+/* Diff */
+.an-edit-diff,
+.an-edit-diff pre,
+.an-edit-diff code {
+  font-size: 12px;
+}
+
+.dark .an-edit-tool-card {
+  background-color: #000;
+}
+
+[data-theme="dark"] .an-edit-tool-card {
+  background-color: #000;
+}
+
+.dark .an-edit-tool-card .an-edit-diff,
+.dark .an-edit-tool-card .an-edit-diff pre,
+.dark .an-edit-tool-card .an-edit-diff code {
+  background-color: #000 !important;
+}
+
+[data-theme="dark"] .an-edit-tool-card .an-edit-diff,
+[data-theme="dark"] .an-edit-tool-card .an-edit-diff pre,
+[data-theme="dark"] .an-edit-tool-card .an-edit-diff code {
+  background-color: #000 !important;
+}
+
+/* Markdown Code Block */
+.aui-markdown [data-streamdown="code-block"] {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  gap: 0;
+}
+
+.aui-markdown [data-streamdown="code-block-header"] {
+  padding: 0px 10px 0px 8px;
+  height: auto;
+  font-size: 14px;
+  height: 30px;
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  background-color: var(--color-muted);
+  position: relative;
+}
+
+.aui-markdown div:has(> [data-streamdown="code-block-actions"]) {
+  position: absolute;
+  height: auto;
+  margin: 0;
+  top: 0;
+  right: 0;
+  height: 28px;
+  padding-right: 8px;
+}
+
+.aui-markdown [data-streamdown="code-block-actions"] {
+  background: transparent;
+  border: none;
+  backdrop-filter: none;
+  padding: 0;
+}
+
+.aui-markdown [data-streamdown="code-block-actions"] button > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.aui-markdown [data-streamdown="code-block-body"] {
+  margin: 0;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  background: transparent;
+  border: transparent;
+  overflow-x: auto;
+}
+
+.aui-markdown [data-streamdown="code-block"] pre,
+.aui-markdown [data-streamdown="code-block"] code {
+  font-size: 12px;
+  background: transparent;
+}
+
+/* Mermaid Block */
+.aui-markdown [data-streamdown="mermaid-block"] {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  gap: 0;
+}
+
+.aui-markdown [data-streamdown="mermaid-block-header"] {
+  padding: 0px 10px 0px 8px;
+  height: auto;
+  font-size: 14px;
+  height: 30px;
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  background-color: var(--color-muted);
+  position: relative;
+}
+
+.aui-markdown div:has(> [data-streamdown="mermaid-block-actions"]) {
+  position: absolute;
+  height: auto;
+  margin: 0;
+  top: 0;
+  right: 0;
+  height: 30px;
+  padding-right: 8px;
+}
+
+.aui-markdown [data-streamdown="mermaid-block-actions"] {
+  background: transparent;
+  border: none;
+  backdrop-filter: none;
+  padding: 0;
+}
+
+.aui-markdown [data-streamdown="mermaid-block-actions"] button > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.aui-markdown [data-streamdown="mermaid-block-body"] {
+  margin: 0;
+  padding: 12px;
+  background: transparent;
+  overflow-x: auto;
+}
+
+.aui-markdown [data-streamdown="mermaid-block"] pre,
+.aui-markdown [data-streamdown="mermaid-block"] code {
+  font-size: 12px;
+  background: transparent;
+}
