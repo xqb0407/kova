@@ -65,7 +65,14 @@ export const Header: FC<{
   onOpenMobileSidebar: () => void;
 }> = ({ sidebarCollapsed, onToggleSidebar, onOpenMobileSidebar }) => {
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 px-4">
+    <header
+      data-tauri-drag-region="deep"
+      className={cn(
+        "flex h-12 shrink-0 items-center gap-2 pr-4 border-b",
+        // 侧边栏折叠后主区从窗口左缘开始，需要避开 macOS 红绿灯（x:16 起，约 68px 宽）
+        sidebarCollapsed ? "md:pl-24" : "pl-4",
+      )}
+    >
       <Button
         variant="ghost"
         size="icon"
@@ -75,16 +82,19 @@ export const Header: FC<{
         <MenuIcon className="size-4" />
         <span className="sr-only">Toggle menu</span>
       </Button>
-      <TooltipIconButton
-        variant="ghost"
-        size="icon"
-        tooltip={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-        side="bottom"
-        onClick={onToggleSidebar}
-        className="hidden size-8 md:flex"
-      >
-        <PanelLeftIcon className="size-4" />
-      </TooltipIconButton>
+      {/* 侧边栏展开时其顶栏已有折叠按钮，这里仅在折叠后显示 */}
+      {sidebarCollapsed && (
+        <TooltipIconButton
+          variant="ghost"
+          size="icon"
+          tooltip="Show sidebar"
+          side="bottom"
+          onClick={onToggleSidebar}
+          className="hidden size-8 md:flex"
+        >
+          <PanelLeftIcon className="size-4" />
+        </TooltipIconButton>
+      )}
       <ThreadTitle />
       <TooltipIconButton
         variant="ghost"

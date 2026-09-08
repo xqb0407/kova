@@ -7,7 +7,15 @@ import {
 } from "@/components/assistant-ui/elements/thread-list.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import {
+  Command,
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Collapsible,
@@ -27,23 +35,30 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { ThreadListPrimitive, useAuiState } from "@assistant-ui/react";
+import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
+import { SettingsModal } from "@/components/settings/settings-modal";
 import {
   MenuIcon,
+  MessageSquareIcon,
   PanelLeftIcon,
   SearchIcon,
   ZapIcon,
   PlugIcon,
   PlusIcon,
-  ChevronDownIcon,
   FolderIcon,
-  FileIcon,
   FolderOpen,
   PinIcon,
   ArchiveIcon,
   EllipsisIcon,
+  SettingsIcon,
 } from "lucide-react";
-import { useState, type FC, type MouseEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useState,
+  type FC,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 
 type CloneThreadShellProps = {
   children: ReactNode;
@@ -70,8 +85,34 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const [internalMobileOpen, setInternalMobileOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string>("new");
   const [activeTab, setActiveTab] = useState<string>("tasks");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const hasThreads = useAuiState((s) => s.threads.threadIds.length > 0);
+  const threadIds = useAuiState((s) => s.threads.threadIds);
+  const threadItems = useAuiState((s) => s.threads.threadItems);
+  const aui = useAui();
+
+  // ⌘K / Ctrl+K 全局唤起搜索命令面板
+  useEffect(() => {
+    const down = (event: KeyboardEvent) => {
+      if (event.key === "k" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        setSearchOpen((open) => !open);
+      }
+    };
+    document.addEventListener("keydown", down);
+    return () => document.removeEventListener("keydown", down);
+  }, []);
+
+  const handleMenuClick = (item: (typeof menuItems)[number]) => {
+    if (item.isNew) return;
+    // 搜索走命令面板，其余菜单项保持高亮切换
+    if (item.id === "search") {
+      setSearchOpen(true);
+      return;
+    }
+    setActiveMenu(item.id);
+  };
 
   // A controlled value means the caller renders the chrome that drives it, so
   // the shell omits its own toggle / trigger and forwards changes instead.
@@ -260,7 +301,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           sidebarCollapsed ? "w-0" : "w-65",
         )}
       >
-        <div className="flex h-12 shrink-0 items-center overflow-hidden px-2">
+        <div
+          data-tauri-drag-region="deep"
+          className="flex h-12 shrink-0 items-center overflow-hidden px-2 justify-end"
+        >
           {!collapsedControlled && (
             <TooltipIconButton
               variant="ghost"
@@ -281,7 +325,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         </div>
 
         {/* 固定的四个菜单项 */}
-        <div className="shrink-0 px-2 pt-2">
+        <div className="shrink-0 px-2 pt-0">
           <div className="flex flex-col gap-0.5">
             {menuItems.map((item) => {
               const Icon = item.icon;
@@ -294,7 +338,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     sidebarCollapsed && "w-8 justify-center px-2",
                     activeMenu === item.id && "bg-muted",
                   )}
-                  onClick={() => !item.isNew && setActiveMenu(item.id)}
+                  onClick={() => handleMenuClick(item)}
                   aria-label={item.label}
                 >
                   <Icon className="size-4 shrink-0" />
@@ -312,19 +356,19 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 button
               );
             })}
+            </div>
           </div>
-        </div>
 
         {/* Tabs 分段器 */}
         {!sidebarCollapsed && (
-          <div className="shrink-0 px-3 pt-2">
+          <div className="shrink-0 px-3 pt-2 flex justify-between items-center w-full">
             <Tabs
               value={activeTab}
+              className={"w-full"}
               onValueChange={setActiveTab}
-              className="w-full"
             >
-              <TabsList className="w-full">
-                <TabsTrigger value="tasks" className="flex-1 text-xs">
+              <TabsList className={"w-full"} >
+                <TabsTrigger value="tasks" className="flex-1 text-xs ">
                   任务
                 </TabsTrigger>
                 <TabsTrigger value="projects" className="flex-1 text-xs">
@@ -345,7 +389,6 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         >
           {activeTab === "tasks" && hasThreads && (
             <ThreadListItems
-              searchQuery={activeMenu === "search" ? searchQuery : ""}
               aria-hidden={sidebarCollapsed}
               inert={sidebarCollapsed}
               className={cn(
@@ -358,6 +401,20 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           )}
           {activeTab === "projects" && !sidebarCollapsed && <ProjectTree />}
         </ThreadListRoot>
+
+        {/* 底部固定的设置按钮 */}
+        <div className="shrink-0 p-2">
+          <Button
+            variant="ghost"
+            className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-muted"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <SettingsIcon className="size-4 shrink-0" />
+            {!sidebarCollapsed && (
+              <span className="whitespace-nowrap">设置</span>
+            )}
+          </Button>
+        </div>
       </aside>
 
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
@@ -395,7 +452,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                       "hover:bg-muted h-8 justify-start gap-2 rounded-md px-2.5 text-sm font-normal",
                       activeMenu === item.id && "bg-muted",
                     )}
-                    onClick={() => !item.isNew && setActiveMenu(item.id)}
+                    onClick={() => handleMenuClick(item)}
                   >
                     <Icon className="size-4 shrink-0" />
                     <span className="whitespace-nowrap">{item.label}</span>
@@ -410,19 +467,6 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   button
                 );
               })}
-
-              {/* 移动端搜索输入框 */}
-              {activeMenu === "search" && (
-                <div className="px-0.5 py-1">
-                  <Input
-                    type="search"
-                    placeholder="搜索对话..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="h-8 text-sm"
-                  />
-                </div>
-              )}
             </div>
           </div>
 
@@ -451,8 +495,60 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             {activeTab === "tasks" && <ThreadList />}
             {activeTab === "projects" && <ProjectTree />}
           </div>
+
+          {/* 移动端底部固定的设置按钮 */}
+          <div className="shrink-0 border-t p-4">
+            <Button
+              variant="ghost"
+              className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-muted"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <SettingsIcon className="size-4 shrink-0" />
+              <span className="whitespace-nowrap">设置</span>
+            </Button>
+          </div>
         </SheetContent>
       </Sheet>
+
+      <CommandDialog open={searchOpen} onOpenChange={setSearchOpen}>
+        <Command>
+          <CommandInput placeholder="搜索对话..." />
+          <CommandList>
+            <CommandEmpty>没有找到结果</CommandEmpty>
+            <CommandGroup heading="操作">
+              <ThreadListPrimitive.New asChild>
+                <CommandItem onSelect={() => setSearchOpen(false)}>
+                  <PlusIcon className="size-4" />
+                  <span>新对话</span>
+                </CommandItem>
+              </ThreadListPrimitive.New>
+            </CommandGroup>
+            {hasThreads && (
+              <CommandGroup heading="对话">
+                {threadIds.map((id) => {
+                  const item = threadItems.find((t) => t.id === id);
+                  return (
+                    <CommandItem
+                      key={id}
+                      onSelect={() => {
+                        aui.threads.switchToThread(id);
+                        setSearchOpen(false);
+                      }}
+                    >
+                      <MessageSquareIcon className="size-4 shrink-0" />
+                      <span className="truncate">
+                        {item?.title ?? "New Chat"}
+                      </span>
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+            )}
+          </CommandList>
+        </Command>
+      </CommandDialog>
+
+      <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
 
       <div className="min-w-0 flex-1 overflow-hidden">{children}</div>
     </div>

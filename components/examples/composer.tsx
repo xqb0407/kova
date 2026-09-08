@@ -19,16 +19,24 @@ import {
 import { LexicalComposerInput, type DirectiveChipProps } from "@assistant-ui/react-lexical";
 import {
   ArrowUpIcon,
+  FolderOpenIcon,
   GlobeIcon,
   HelpCircleIcon,
   LanguagesIcon,
+  Loader2Icon,
   MicIcon,
   SlashIcon,
   SquareIcon,
   WrenchIcon,
   FileTextIcon,
 } from "lucide-react";
-import type { FC } from "react";
+import { useState, type FC } from "react";
+import { isTauri } from "@/lib/tauri";
+import {
+  openWorkspacePicker,
+  pathBasename,
+  useWorkspace,
+} from "@/lib/workspace-store";
 
 const models = docsModelOptions();
 
@@ -136,11 +144,50 @@ export const Composer: FC = () => {
   );
 };
 
+/** Codex 风格 workspace 胶囊：显示当前工作目录，点击可更换（仅 Tauri 显示） */
+const WorkspacePill: FC = () => {
+  const workspace = useWorkspace();
+  const [busy, setBusy] = useState(false);
+
+  if (!isTauri()) return null;
+
+  const pick = async () => {
+    setBusy(true);
+    try {
+      await openWorkspacePicker();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      data-slot="aui-composer-workspace"
+      onClick={pick}
+      disabled={busy}
+      title={workspace ?? "选择工作目录"}
+      aria-label="Select workspace directory"
+      className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex h-7 max-w-44 items-center gap-1.5 rounded-full px-2.5 text-xs transition-colors disabled:opacity-50"
+    >
+      {busy ? (
+        <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
+      ) : (
+        <FolderOpenIcon className="size-3.5 shrink-0" />
+      )}
+      <span className="truncate">
+        {workspace ? pathBasename(workspace) : "选择目录"}
+      </span>
+    </button>
+  );
+};
+
 const ComposerAction: FC = () => {
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
       <div className="flex items-center gap-1">
         <ComposerAddAttachment />
+        <WorkspacePill />
       </div>
       <div className="flex items-center gap-1.5">
         <ModelPicker />

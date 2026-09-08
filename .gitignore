@@ -16,6 +16,8 @@
 # misc
 .DS_Store
 *.pem
+*.log
+.claude/settings.local.json
 
 # debug
 npm-debug.log*
@@ -37,3 +39,12 @@ next-env.d.ts
 # tauri
 /src-tauri/target/
 /src-tauri/gen/schemas
+/src-tauri/binaries/
+# build:sidecar 脚本生成的复制产物，可再生
+/src-tauri/resources/
+
+# pi agent sidecar
+/sidecar/pi-agent/node_modules/
+/sidecar/pi-agent/stderr.log
+# sidecar 使用 bun 管理依赖，npm lock 为杂讯
+/sidecar/pi-agent/package-lock.json

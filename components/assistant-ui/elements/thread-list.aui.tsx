@@ -15,6 +15,7 @@ import {
 } from "@assistant-ui/react";
 import {
   ArchiveIcon,
+  FolderOpenIcon,
   Loader2Icon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -22,6 +23,12 @@ import {
   SearchIcon,
   TrashIcon,
 } from "lucide-react";
+import { piSessionCwdMap } from "@/lib/pi-thread-adapter";
+import {
+  openWorkspacePicker,
+  pathBasename,
+  useWorkspace,
+} from "@/lib/workspace-store";
 import {
   forwardRef,
   Fragment,
@@ -39,12 +46,50 @@ export const ThreadList: FC = () => {
 
   return (
     <ThreadListRoot>
+      <WorkspacePicker />
       <ThreadListNew />
       {hasThreads && (
         <ThreadListSearch value={search} onValueChange={setSearch} />
       )}
       <ThreadListItems searchQuery={hasThreads ? search : ""} />
     </ThreadListRoot>
+  );
+};
+
+/** 当前 workspace 选择器：点击弹出系统目录选择框，选中后作为新会话的 cwd */
+const WorkspacePicker: FC = () => {
+  const workspace = useWorkspace();
+  const [busy, setBusy] = useState(false);
+
+  const pick = async () => {
+    setBusy(true);
+    try {
+      await openWorkspacePicker();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Button
+      variant="ghost"
+      data-slot="aui_thread-list-workspace"
+      onClick={pick}
+      disabled={busy}
+      title={workspace ?? undefined}
+      className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal"
+    >
+      <FolderOpenIcon
+        data-slot="aui_thread-list-workspace-icon"
+        className="size-4 shrink-0"
+      />
+      <span
+        data-slot="aui_thread-list-workspace-label"
+        className="min-w-0 flex-1 truncate text-start"
+      >
+        {workspace ? pathBasename(workspace) : "选择工作目录"}
+      </span>
+    </Button>
   );
 };
 
@@ -132,19 +177,20 @@ const dateGroupLabel = (
 export type ThreadListGroup = { label: string; indices: number[] };
 
 /**
- * Filters the thread list by title and buckets the matches by last activity
- * (Today, Yesterday, Earlier). `groups` is null when no thread carries a
- * date, in which case `filteredIndices` keeps the runtime order.
+ * Filters the thread list by title and buckets the matches.
+ * Tauri 模式：按 workspace（pi session 的 cwd 目录名）分组，组内按最近活动倒序，
+ * 组间按最近活动倒序；尚未落盘的新会话归入当前 workspace。
+ * 无任何 workspace 信息（web 模式）时退回按日期分组（Today / Yesterday / Earlier）。
  */
 export const useThreadListGroups = (searchQuery = "") => {
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const threadItems = useAuiState((s) => s.threads.threadItems);
+  const workspace = useWorkspace();
 
   const query = searchQuery.trim().toLowerCase();
 
   return useMemo(() => {
     const itemsById = new Map(threadItems.map((item) => [item.id, item]));
-    const dates = threadIds.map((id) => itemsById.get(id)?.lastMessageAt);
     const filteredIndices = threadIds
       .map((id, index) => ({ id, index }))
       .filter(
@@ -155,32 +201,60 @@ export const useThreadListGroups = (searchQuery = "") => {
             .includes(query),
       )
       .map(({ index }) => index);
-    if (!filteredIndices.some((index) => dates[index])) {
-      return { threadIds, filteredIndices, groups: null };
-    }
 
-    const now = new Date();
-    const startOfToday = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-    ).getTime();
+    const dates = threadIds.map((id) => itemsById.get(id)?.lastMessageAt);
     const time = (index: number) =>
       dates[index]?.getTime() ?? Number.MAX_SAFE_INTEGER;
+
+    // workspace 归属：优先 pi session 的 cwd，其次当前 workspace（新建未落盘的会话）
+    const cwdOf = (id: string) => {
+      const remoteId = itemsById.get(id)?.remoteId;
+      return (remoteId && piSessionCwdMap.get(remoteId)) || workspace;
+    };
+
     const sorted = [...filteredIndices].sort((a, b) => time(b) - time(a));
 
-    const result: ThreadListGroup[] = [];
-    for (const index of sorted) {
-      const label = dateGroupLabel(dates[index], startOfToday);
-      const lastGroup = result[result.length - 1];
-      if (lastGroup?.label === label) {
-        lastGroup.indices.push(index);
-      } else {
-        result.push({ label, indices: [index] });
+    // 无任何 workspace 信息（web 模式）→ 日期分组
+    if (!sorted.some((index) => cwdOf(threadIds[index]))) {
+      if (!sorted.some((index) => dates[index])) {
+        return { threadIds, filteredIndices, groups: null };
       }
+
+      const now = new Date();
+      const startOfToday = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+      ).getTime();
+
+      const result: ThreadListGroup[] = [];
+      for (const index of sorted) {
+        const label = dateGroupLabel(dates[index], startOfToday);
+        const lastGroup = result[result.length - 1];
+        if (lastGroup?.label === label) {
+          lastGroup.indices.push(index);
+        } else {
+          result.push({ label, indices: [index] });
+        }
+      }
+      return { threadIds, filteredIndices, groups: result };
     }
-    return { threadIds, filteredIndices, groups: result };
-  }, [threadIds, threadItems, query]);
+
+    // workspace 分组：Map 保持插入序 → 组间即按最近活动倒序
+    const byLabel = new Map<string, number[]>();
+    for (const index of sorted) {
+      const cwd = cwdOf(threadIds[index]);
+      const label = cwd ? pathBasename(cwd) : "会话";
+      const bucket = byLabel.get(label);
+      if (bucket) bucket.push(index);
+      else byLabel.set(label, [index]);
+    }
+    return {
+      threadIds,
+      filteredIndices,
+      groups: [...byLabel].map(([label, indices]) => ({ label, indices })),
+    };
+  }, [threadIds, threadItems, query, workspace]);
 };
 
 const ThreadListItemGroups: FC<{ searchQuery?: string }> = ({

@@ -1,0 +1,13 @@
+{
+  "name": "pi-agent-sidecar",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/index.ts --compile --outfile ../../src-tauri/binaries/pi-agent-$(rustc -vV | sed -n 's/^host: //p')",
+    "smoke": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.73.1",
+    "@opentelemetry/api": "^1.9.1"
+  }
+}

@@ -9,7 +9,8 @@
     "start": "next start",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "build:sidecar": "cd sidecar/pi-agent && bun install --production && bun run build && mkdir -p ../../src-tauri/resources/pi-agent && cp package.json ../../src-tauri/resources/pi-agent/package.json"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.52",
@@ -24,6 +25,8 @@
     "@streamdown/math": "^1.0.2",
     "@streamdown/mermaid": "^1.0.2",
     "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@tauri-apps/plugin-os": "^2.3.2",
     "ai": "^7.0.85",
     "class-variance-authority": "^0.7.1",
     "cmdk": "^1.1.1",

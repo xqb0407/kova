@@ -6,7 +6,10 @@
  * 检测当前是否在Tauri桌面环境中运行
  */
 export const isTauri = (): boolean => {
-  return typeof window !== 'undefined' && '__TAURI__' in window;
+  return (
+    typeof window !== "undefined" &&
+    ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
+  );
 };
 
 /**

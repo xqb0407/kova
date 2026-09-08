@@ -75,7 +75,7 @@ export const Thread: FC = () => {
 
   return (
     <ThreadPrimitive.Root
-      className="aui-root aui-thread-root bg-background @container flex h-full flex-col"
+      className="aui-root aui-thread-root bg-transparent @container flex h-full flex-col"
       style={{
         ["--thread-max-width" as string]: "50rem",
         ["--composer-bg" as string]: "var(--color-card)",
@@ -113,7 +113,7 @@ export const Thread: FC = () => {
 
         <ThreadPrimitive.ViewportFooter
           className={cn(
-            "aui-thread-viewport-footer bg-background mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible pb-4 md:pb-6",
+            "aui-thread-viewport-footer mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible pb-4 md:pb-6",
             !isEmpty && "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
           )}
         >

@@ -1,0 +1,217 @@
+//! pi-agent sidecar 桥接：
+//! 负责拉起 pi-agent 二进制（bun 编译产物，NDJSON stdio 协议），
+//! 把子进程 stdout 逐行以 `pi-chunk` 事件转发给 webview，
+//! 并提供 prompt/abort/reset 三个 command 写入 stdin。
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
+
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
+use tauri_plugin_shell::ShellExt;
+use tokio::sync::{oneshot, Mutex};
+
+/// sidecar 子进程句柄（None = 尚未启动）
+#[derive(Default)]
+pub struct PiState {
+    child: Arc<Mutex<Option<CommandChild>>>,
+    /// 请求-响应配对：reqId -> 回调（pi_request 管理类请求用）
+    pending: Arc<StdMutex<std::collections::HashMap<String, oneshot::Sender<String>>>>,
+}
+
+static NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
+
+pub fn new_request_id() -> String {
+    format!("pi-{}", NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed))
+}
+
+/// PI_PACKAGE_DIR 解析顺序：
+/// 1. 外部环境变量（可手动覆盖）
+/// 2. dev：仓库内 sidecar 的 node_modules（编译期常量，含完整 package.json）
+/// 3. 生产：tauri resources 目录下的 pi-agent 资产
+fn resolve_pi_package_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(dir) = std::env::var("PI_PACKAGE_DIR") {
+        if !dir.is_empty() {
+            return Ok(PathBuf::from(dir));
+        }
+    }
+    let dev_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../sidecar/pi-agent/node_modules/@mariozechner/pi-coding-agent");
+    if dev_dir.join("package.json").exists() {
+        return Ok(dev_dir);
+    }
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("failed to resolve resource dir: {e}"))?;
+    Ok(resource_dir.join("pi-agent"))
+}
+
+/// 确保子进程已启动；返回 stdout 事件监听是否已由本次调用挂上
+async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(), String> {
+    let mut guard = state.child.lock().await;
+    if guard.is_some() {
+        return Ok(());
+    }
+
+    let package_dir = resolve_pi_package_dir(app)?;
+    let cmd = app
+        .shell()
+        .sidecar("pi-agent")
+        .map_err(|e| format!("failed to resolve pi-agent sidecar: {e}"))?
+        .env("PI_PACKAGE_DIR", package_dir.to_string_lossy().to_string());
+
+    let (mut rx, child) = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn pi-agent: {e}"))?;
+
+    let state_for_rx = Arc::clone(&state.pending);
+    let emitter = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                // shell 插件按行分发 stdout；统一转 UTF-8 字符串处理
+                CommandEvent::Stdout(bytes) => {
+                    let line = String::from_utf8_lossy(&bytes).to_string();
+                    // 先尝试请求-响应配对（管理类请求），未命中则作为流式 chunk 转发
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+                        if let Some(req_id) = value.get("id").and_then(|v| v.as_str()) {
+                            let sender = state_for_rx
+                                .lock()
+                                .ok()
+                                .and_then(|mut map| map.remove(req_id));
+                            if let Some(tx) = sender {
+                                let _ = tx.send(line);
+                                continue;
+                            }
+                        }
+                    }
+                    let _ = emitter.emit("pi-chunk", line);
+                }
+                CommandEvent::Stderr(line) => {
+                    eprintln!("[pi-agent stderr] {}", String::from_utf8_lossy(&line));
+                }
+                CommandEvent::Error(err) => {
+                    eprintln!("[pi-agent error] {err}");
+                    let _ = emitter.emit(
+                        "pi-chunk",
+                        format!(
+                            "{{\"id\":null,\"chunk\":{{\"type\":\"error\",\"errorText\":{}}}}}",
+                            serde_json::to_string(&err).unwrap_or_default()
+                        ),
+                    );
+                }
+                CommandEvent::Terminated(status) => {
+                    eprintln!("[pi-agent terminated] {status:?}");
+                    // 清空所有挂起的请求
+                    if let Ok(mut map) = state_for_rx.lock() {
+                        for (_, tx) in map.drain() {
+                            let _ = tx.send("{\"type\":\"error\",\"errorText\":\"pi-agent terminated\"}".into());
+                        }
+                    }
+                    let _ = emitter.emit("pi-exit", status.code.unwrap_or(-1).to_string());
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    *guard = Some(child);
+    Ok(())
+}
+
+async fn write_line(state: &PiState, line: String) -> Result<(), String> {
+    let mut guard = state.child.lock().await;
+    match guard.as_mut() {
+        Some(child) => child
+            .write(line.as_bytes())
+            .and_then(|_| child.write(b"\n"))
+            .map_err(|e| format!("failed to write to pi-agent stdin: {e}")),
+        None => Err("pi-agent is not running".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn pi_prompt(
+    app: AppHandle,
+    state: State<'_, PiState>,
+    request_id: String,
+    text: String,
+    thread_id: Option<String>,
+    session_id: Option<String>,
+    cwd: Option<String>,
+) -> Result<(), String> {
+    ensure_spawned(&app, &state).await?;
+    let payload = serde_json::json!({
+        "type": "prompt",
+        "id": request_id,
+        "text": text,
+        "threadId": thread_id,
+        "sessionId": session_id,
+        "cwd": cwd,
+    });
+    write_line(&state, payload.to_string()).await
+}
+
+#[tauri::command]
+pub async fn pi_abort(state: State<'_, PiState>) -> Result<(), String> {
+    write_line(&state, serde_json::json!({ "type": "abort" }).to_string()).await
+}
+
+#[tauri::command]
+pub async fn pi_reset(app: AppHandle, state: State<'_, PiState>) -> Result<(), String> {
+    ensure_spawned(&app, &state).await?;
+    let payload = serde_json::json!({ "type": "new_session", "id": new_request_id() });
+    write_line(&state, payload.to_string()).await
+}
+
+/// 管理类请求-响应（list_sessions / new_session / get_history / delete_session / rename_session）。
+/// Rust 侧生成 req id 并挂起 oneshot，子进程 stdout 中匹配 id 的行直接作为响应返回。
+#[tauri::command]
+pub async fn pi_request(
+    app: AppHandle,
+    state: State<'_, PiState>,
+    payload: serde_json::Value,
+) -> Result<String, String> {
+    ensure_spawned(&app, &state).await?;
+
+    let req_id = format!("mgr-{}", new_request_id());
+    let (tx, rx) = oneshot::channel::<String>();
+    state
+        .pending
+        .lock()
+        .map_err(|e| format!("pending map poisoned: {e}"))?
+        .insert(req_id.clone(), tx);
+
+    let mut msg = payload;
+    if let Some(obj) = msg.as_object_mut() {
+        obj.insert("id".into(), serde_json::Value::String(req_id.clone()));
+    }
+
+    if let Err(err) = write_line(&state, msg.to_string()).await {
+        // 写失败要撤掉挂起的 sender，避免泄漏
+        if let Ok(mut map) = state.pending.lock() {
+            map.remove(&req_id);
+        }
+        return Err(err);
+    }
+
+    match rx.await {
+        Ok(line) => Ok(line),
+        Err(_) => {
+            // sender 已被 stdout 循环或 terminate 移除
+            Err("pi-agent request dropped".into())
+        }
+    }
+}
+
+/// 应用退出时杀掉子进程
+pub fn kill_on_exit(state: &PiState) {
+    if let Ok(mut guard) = state.child.try_lock() {
+        if let Some(child) = guard.take() {
+            let _ = child.kill();
+        }
+    }
+}
