@@ -42,7 +42,7 @@ function WebRuntimeProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function DemoRuntimeProvider({ children }: { children: React.ReactNode }) {
+export function AppRuntimeProvider({ children }: { children: React.ReactNode }) {
   if (isTauri()) return <TauriRuntimeProvider>{children}</TauriRuntimeProvider>;
   return <WebRuntimeProvider>{children}</WebRuntimeProvider>;
 }
