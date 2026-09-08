@@ -14,6 +14,7 @@ import {
   MessagePrimitive,
   unstable_useMentionAdapter,
   unstable_useSlashCommandAdapter,
+  useAuiState,
   type Unstable_SlashCommand,
 } from "@assistant-ui/react";
 import { LexicalComposerInput, type DirectiveChipProps } from "@assistant-ui/react-lexical";
@@ -25,18 +26,28 @@ import {
   LanguagesIcon,
   Loader2Icon,
   MicIcon,
+  PlusIcon,
   SlashIcon,
   SquareIcon,
   WrenchIcon,
   FileTextIcon,
+  XIcon,
 } from "lucide-react";
 import { useState, type FC } from "react";
 import { isTauri } from "@/lib/tauri";
 import {
+  clearWorkspace,
   openWorkspacePicker,
   pathBasename,
+  setWorkspace,
   useWorkspace,
+  useWorkspaceRecents,
 } from "@/lib/workspace-store";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 const models = docsModelOptions();
 
@@ -132,6 +143,9 @@ export const Composer: FC = () => {
           </div>
         </ComposerPrimitive.AttachmentDropzone>
 
+        {/* workspace 选择：仅开始对话前显示，位于输入框下方 */}
+        <WorkspacePill />
+
         <ComposerTriggerPopover char="@" {...mention} />
 
         <ComposerTriggerPopover
@@ -144,41 +158,115 @@ export const Composer: FC = () => {
   );
 };
 
-/** Codex 风格 workspace 胶囊：显示当前工作目录，点击可更换（仅 Tauri 显示） */
+/** Codex 风格 workspace 胶囊：显示当前工作目录。
+ *  点击弹出最近选择列表（最多 5 个）+ 添加按钮；悬浮显示 × 取消选中。
+ *  位于输入框下方外置；仅空会话（尚未产生消息）时显示。 */
 const WorkspacePill: FC = () => {
   const workspace = useWorkspace();
+  const recents = useWorkspaceRecents();
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
 
-  if (!isTauri()) return null;
+  if (!isTauri() || hasMessages) return null;
 
-  const pick = async () => {
+  const add = async () => {
     setBusy(true);
     try {
       await openWorkspacePicker();
+      setOpen(false);
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <button
-      type="button"
-      data-slot="aui-composer-workspace"
-      onClick={pick}
-      disabled={busy}
-      title={workspace ?? "选择工作目录"}
-      aria-label="Select workspace directory"
-      className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex h-7 max-w-44 items-center gap-1.5 rounded-full px-2.5 text-xs transition-colors disabled:opacity-50"
-    >
-      {busy ? (
-        <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
-      ) : (
-        <FolderOpenIcon className="size-3.5 shrink-0" />
-      )}
-      <span className="truncate">
-        {workspace ? pathBasename(workspace) : "选择目录"}
-      </span>
-    </button>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            data-slot="aui-composer-workspace"
+            title={workspace ?? "选择工作目录"}
+            aria-label="Select workspace directory"
+            className="group text-muted-foreground hover:bg-muted hover:text-foreground inline-flex h-7 max-w-44 items-center gap-1.5 rounded-full px-2.5 text-xs transition-colors"
+          >
+            {busy ? (
+              <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
+            ) : (
+              <FolderOpenIcon className="size-3.5 shrink-0" />
+            )}
+            <span className="truncate">
+              {workspace ? pathBasename(workspace) : "选择目录"}
+            </span>
+            {workspace && (
+              <span
+                role="button"
+                tabIndex={0}
+                aria-label="Clear workspace"
+                title="取消选择"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  clearWorkspace();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.stopPropagation();
+                    clearWorkspace();
+                  }
+                }}
+                className="hover:bg-background/80 -me-1 ml-0.5 hidden size-4 shrink-0 items-center justify-center rounded-full group-hover:flex"
+              >
+                <XIcon className="size-3" />
+              </span>
+            )}
+          </button>
+        }
+      />
+      <PopoverContent align="start" className="w-64 p-1">
+        <div className="text-muted-foreground px-2 py-1.5 text-xs font-medium">
+          最近使用
+        </div>
+        {recents.length > 0 ? (
+          <div className="flex flex-col">
+            {recents.map((dir) => (
+              <button
+                key={dir}
+                type="button"
+                title={dir}
+                onClick={() => {
+                  setWorkspace(dir);
+                  setOpen(false);
+                }}
+                data-selected={dir === workspace}
+                className="hover:bg-muted flex h-8 items-center gap-2 rounded-md px-2 text-start text-sm data-selected:bg-muted"
+              >
+                <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+                <span className="truncate">{pathBasename(dir)}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="text-muted-foreground px-2 py-3 text-center text-xs">
+            暂无记录
+          </div>
+        )}
+        <div className="bg-border my-1 h-px" />
+        <button
+          type="button"
+          onClick={add}
+          disabled={busy}
+          className="hover:bg-muted flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm disabled:opacity-50"
+        >
+          {busy ? (
+            <Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
+          ) : (
+            <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
+          )}
+          添加目录…
+        </button>
+      </PopoverContent>
+    </Popover>
   );
 };
 
@@ -187,7 +275,6 @@ const ComposerAction: FC = () => {
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
       <div className="flex items-center gap-1">
         <ComposerAddAttachment />
-        <WorkspacePill />
       </div>
       <div className="flex items-center gap-1.5">
         <ModelPicker />

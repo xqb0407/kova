@@ -11,8 +11,11 @@ import { isTauri } from "@/lib/tauri";
  * 非 Tauri 环境（web 预览）仅内存态，不持久化。
  */
 const KV_KEY = "workspace";
+const RECENTS_KEY = "workspace.recents";
+const RECENTS_LIMIT = 5;
 
 let current: string | null = null;
+let recents: string[] = [];
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -37,8 +40,28 @@ export function useWorkspace(): string | null {
   );
 }
 
+/** React 组件订阅最近选择的 workspace（最多 5 个，新的在前） */
+export function useWorkspaceRecents(): string[] {
+  return useSyncExternalStore(
+    subscribe,
+    () => recents,
+    () => EMPTY,
+  );
+}
+
+const EMPTY: string[] = [];
+
+/** 取消选中当前 workspace（历史记录保留） */
+export function clearWorkspace() {
+  setWorkspace(null);
+}
+
 export function setWorkspace(dir: string | null) {
   current = dir;
+  // 记入最近选择（去重，置顶）
+  if (dir != null) {
+    recents = [dir, ...recents.filter((d) => d !== dir)].slice(0, RECENTS_LIMIT);
+  }
   emit();
 
   if (!isTauri()) return;
@@ -47,17 +70,25 @@ export function setWorkspace(dir: string | null) {
       ? invoke("kv_delete", { key: KV_KEY })
       : invoke("kv_set", { key: KV_KEY, value: dir });
   void write.catch(() => {});
+  void invoke("kv_set", { key: RECENTS_KEY, value: JSON.stringify(recents) }).catch(() => {});
 }
 
-/** 从 SQLite 恢复 workspace，应用启动时调用 */
+/** 从 SQLite 恢复 workspace 与最近选择，应用启动时调用 */
 export async function initWorkspaceStore(): Promise<void> {
   if (!isTauri()) return;
   try {
     const value = await invoke<string | null>("kv_get", { key: KV_KEY });
     if (typeof value === "string" && value) {
       current = value;
-      emit();
     }
+    const recentValues = await invoke<string | null>("kv_get", { key: RECENTS_KEY });
+    if (typeof recentValues === "string" && recentValues) {
+      const parsed = JSON.parse(recentValues);
+      if (Array.isArray(parsed)) {
+        recents = parsed.filter((d): d is string => typeof d === "string").slice(0, RECENTS_LIMIT);
+      }
+    }
+    emit();
   } catch {
     // 数据库不可用时保持无 workspace
   }
