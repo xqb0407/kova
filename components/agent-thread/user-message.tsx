@@ -14,8 +14,8 @@ import {
 } from "@assistant-ui/react";
 import { BranchPicker } from "./branch-picker";
 import { LexicalComposerInput, type DirectiveChipProps } from "@assistant-ui/react-lexical";
-import { PencilIcon, WrenchIcon } from "lucide-react";
-import type { FC } from "react";
+import { ChevronDownIcon, PencilIcon, WrenchIcon } from "lucide-react";
+import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 
 function DirectiveChip(props: DirectiveChipProps) {
   const { directiveId, directiveType, label } = props;
@@ -47,10 +47,12 @@ export const UserMessage: FC = () => {
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
         <div className="aui-user-message-content peer bg-muted text-foreground rounded-md px-4 py-2 wrap-break-word empty:hidden">
-          <MessagePrimitive.Quote>
-            {(quote) => <QuoteBlock {...quote} />}
-          </MessagePrimitive.Quote>
-          <MessagePrimitive.Parts components={{ Text: DirectiveText }} />
+          <CollapsibleUserMessageContent>
+            <MessagePrimitive.Quote>
+              {(quote) => <QuoteBlock {...quote} />}
+            </MessagePrimitive.Quote>
+            <MessagePrimitive.Parts components={{ Text: DirectiveText }} />
+          </CollapsibleUserMessageContent>
         </div>
         <div className="aui-user-action-bar-wrapper absolute top-1/2 left-0 -translate-x-full -translate-y-1/2 pr-2 peer-empty:hidden">
           <UserActionBar />
@@ -62,6 +64,73 @@ export const UserMessage: FC = () => {
         className="col-span-full col-start-1 row-start-3 -mr-1 justify-end"
       />
     </MessagePrimitive.Root>
+  );
+};
+
+const USER_MESSAGE_COLLAPSED_HEIGHT = 144;
+
+const CollapsibleUserMessageContent: FC<{ children: ReactNode }> = ({
+  children,
+}) => {
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [contentHeight, setContentHeight] = useState(0);
+  const [isLong, setIsLong] = useState(false);
+
+  useEffect(() => {
+    const element = contentRef.current;
+    if (!element) return;
+
+    const measure = () => {
+      const height = element.scrollHeight;
+      setContentHeight(height);
+      setIsLong(height > USER_MESSAGE_COLLAPSED_HEIGHT);
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [children]);
+
+  const collapsed = isLong && !expanded;
+  const visibleHeight = collapsed
+    ? USER_MESSAGE_COLLAPSED_HEIGHT
+    : isLong
+      ? contentHeight
+      : "auto";
+
+  return (
+    <div className="relative">
+      <div
+        ref={contentRef}
+        className="overflow-hidden transition-[height] duration-200 ease-out motion-reduce:transition-none"
+        style={{ height: visibleHeight }}
+      >
+        {children}
+      </div>
+      {isLong && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-label={expanded ? "Collapse message" : "Expand message"}
+          onClick={() => setExpanded((value) => !value)}
+          className={cn(
+            "absolute bottom-0 left-1/2 z-10 flex size-8 -translate-x-1/2 translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground",
+          )}
+        >
+          <ChevronDownIcon
+            className={cn("size-4 transition-transform", expanded && "rotate-180")}
+          />
+        </button>
+      )}
+      {collapsed && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-muted via-muted/90 to-transparent"
+        />
+      )}
+    </div>
   );
 };
 
