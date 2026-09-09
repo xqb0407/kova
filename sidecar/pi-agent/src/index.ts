@@ -20,9 +20,14 @@
  *   { "type": "set_credential", "id", "provider", "apiKey" }  → { id, type: "credential", provider }
  *   { "type": "list_credentials", "id" }                      → { id, type: "credentials", credentials: [...] }
  *   { "type": "delete_credential", "id", "provider" }         → { id, type: "credential_deleted", provider }
- *   { "type": "add_custom_provider", "id", "name", "baseUrl", "apiKey", "models": [{ "id", ... }] }
+ *   { "type": "fetch_models", "id", "baseUrl", "apiKey", "api" } → { id, type: "fetched_models", models: [...] }
+ *       api = openai-chat | openai-responses | anthropic-messages，决定列表端点与鉴权方式
+ *   { "type": "add_custom_provider", "providerId"?, "name", "baseUrl", "apiKey", "api", "models": [{ "id", ... }] }
  *                                                             → { id, type: "custom_provider", provider }
+ *       providerId = 编辑目标的业务 id（协议 reqId 占用了 "id" 字段，故改名）；缺省为新建
  *   { "type": "list_custom_providers", "id" }                 → { id, type: "custom_providers", providers: [...] }
+ *   { "type": "toggle_custom_provider", "id", "provider", "enabled" } → { id, type: "custom_provider_toggled", provider, enabled }
+ *   { "type": "test_provider", "id", "baseUrl", "apiKey", "api", "model" } → { id, type: "tested", ok: true }
  *   { "type": "delete_custom_provider", "id", "provider" }    → { id, type: "custom_provider_deleted", provider }
  *
  * 输出（stdout，每行一个 JSON）：
@@ -122,6 +127,12 @@ db.exec(`
 // 旧库迁移：补 api 列（接口格式）
 try {
   db.exec("ALTER TABLE custom_providers ADD COLUMN api TEXT NOT NULL DEFAULT 'openai-chat'");
+} catch {
+  // 列已存在
+}
+// 旧库迁移：补 enabled 列（服务启停开关）
+try {
+  db.exec("ALTER TABLE custom_providers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1");
 } catch {
   // 列已存在
 }
@@ -268,14 +279,15 @@ function registerCustomProvider(row: {
   models.setProvider(provider);
 }
 
-/** 启动时把已保存的自定义提供商全部注册 */
+/** 启动时把已保存的自定义提供商全部注册（停用的跳过） */
 function loadCustomProviders() {
   const rows = db
-    .query<{ id: string; name: string; base_url: string; models: string }, []>(
-      "SELECT id, name, base_url, models FROM custom_providers",
+    .query<{ id: string; name: string; base_url: string; models: string; enabled: number }, []>(
+      "SELECT id, name, base_url, models, enabled FROM custom_providers",
     )
     .all();
   for (const row of rows) {
+    if (!row.enabled) continue;
     try {
       registerCustomProvider(row);
     } catch (err) {
@@ -1036,12 +1048,26 @@ async function dispatch(reqId: string, msg: Record<string, unknown>) {
         break;
       }
       case "fetch_models": {
-        // 拉取 OpenAI 兼容端点的 /models 列表（添加 AI 服务弹窗"获取列表"用）
+        // 拉取端点的模型列表（添加 AI 服务弹窗"获取列表"用），按接口格式区分：
+        //   openai-chat / openai-responses → GET {baseUrl}/models（baseUrl 含 /v1），Bearer
+        //   anthropic-messages → GET {baseUrl}/v1/models，x-api-key + anthropic-version
         const baseUrl = String(msg.baseUrl ?? "").trim().replace(/\/+$/, "");
         const apiKey = String(msg.apiKey ?? "").trim();
+        const apiKind = normalizeApi(msg.api);
         if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
-        const res = await fetch(`${baseUrl}/models`, {
-          headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+        const anthropic = apiKind === "anthropic-messages";
+        const url = anthropic
+          ? `${baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`}/models?limit=1000`
+          : `${baseUrl}/models`;
+        const res = await fetch(url, {
+          headers: anthropic
+            ? {
+                ...(apiKey ? { "x-api-key": apiKey } : {}),
+                "anthropic-version": "2023-06-01",
+              }
+            : apiKey
+              ? { Authorization: `Bearer ${apiKey}` }
+              : undefined,
           signal: AbortSignal.timeout(15_000),
         });
         if (!res.ok) throw new Error(`获取模型列表失败: HTTP ${res.status}`);
@@ -1066,10 +1092,11 @@ async function dispatch(reqId: string, msg: Record<string, unknown>) {
         if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
         if (!modelSpecs.length) throw new Error("at least one model id is required");
         const api = normalizeApi(msg.api);
+        // 注意：协议层 reqId 占用了 "id" 字段，编辑目标的业务 id 走 "providerId"
+        const existingId = typeof msg.providerId === "string" ? msg.providerId.trim() : "";
         const id =
-          typeof msg.id === "string" && msg.id.trim()
-            ? msg.id.trim()
-            : `custom-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || randomUUID().slice(0, 8)}`;
+          existingId ||
+          `custom-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || randomUUID().slice(0, 8)}`;
         db.query(
           "INSERT INTO custom_providers (id, name, base_url, models, api) VALUES (?, ?, ?, ?, ?) " +
             "ON CONFLICT(id) DO UPDATE SET name = excluded.name, base_url = excluded.base_url, models = excluded.models, api = excluded.api",
@@ -1078,7 +1105,16 @@ async function dispatch(reqId: string, msg: Record<string, unknown>) {
         if (apiKey) {
           await credentialStore.modify(id, async () => ({ type: "api_key", key: apiKey }));
         }
-        registerCustomProvider({ id, name, base_url: baseUrl, models: JSON.stringify(modelSpecs), api });
+        // 停用的服务保存后保持停用：不注册进目录，并从目录移除
+        const enabledRow = db
+          .query<{ enabled: number }, [string]>("SELECT enabled FROM custom_providers WHERE id = ?")
+          .get(id);
+        if (!enabledRow || enabledRow.enabled) {
+          registerCustomProvider({ id, name, base_url: baseUrl, models: JSON.stringify(modelSpecs), api });
+        } else {
+          models.deleteProvider(id);
+          if (currentModelKey?.provider === id) currentModelKey = null;
+        }
         // 已恢复会话若用旧的同名模型定义，同步刷新其 baseUrl 等字段
         if (currentModelKey?.provider === id) {
           const model = models.getModel(id, currentModelKey.modelId);
@@ -1089,8 +1125,8 @@ async function dispatch(reqId: string, msg: Record<string, unknown>) {
       }
       case "list_custom_providers": {
         const providers = db
-          .query<{ id: string; name: string; base_url: string; models: string; api: string }, []>(
-            "SELECT id, name, base_url, models, api FROM custom_providers",
+          .query<{ id: string; name: string; base_url: string; models: string; api: string; enabled: number }, []>(
+            "SELECT id, name, base_url, models, api, enabled FROM custom_providers",
           )
           .all()
           .map((r) => {
@@ -1100,19 +1136,19 @@ async function dispatch(reqId: string, msg: Record<string, unknown>) {
             } catch {
               specs = [];
             }
-            const hasKey =
-              db
-                .query<{ api_key: string }, [string]>(
-                  "SELECT api_key FROM credentials WHERE provider = ?",
-                )
-                .get(r.id) !== undefined;
+            // 明文返回 key 供编辑弹窗回填（仅存本地 SQLite）
+            const keyRow = db
+              .query<{ api_key: string }, [string]>("SELECT api_key FROM credentials WHERE provider = ?")
+              .get(r.id);
             return {
               providerId: r.id,
               name: r.name,
               baseUrl: r.base_url,
               models: specs,
               api: normalizeApi(r.api),
-              hasApiKey: hasKey,
+              hasApiKey: keyRow !== undefined,
+              apiKey: keyRow?.api_key,
+              enabled: r.enabled === 1,
             };
           });
         send({ id: reqId, type: "custom_providers", providers });
@@ -1125,6 +1161,72 @@ async function dispatch(reqId: string, msg: Record<string, unknown>) {
         models.deleteProvider(provider);
         if (currentModelKey?.provider === provider) currentModelKey = null;
         send({ id: reqId, type: "custom_provider_deleted", provider });
+        break;
+      }
+      case "toggle_custom_provider": {
+        // 启用/停用服务：停用时从模型目录移除，启用时重新注册
+        const provider = String(msg.provider ?? "");
+        const enabled = msg.enabled === true;
+        db.query("UPDATE custom_providers SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, provider);
+        if (enabled) {
+          const row = db
+            .query<{ id: string; name: string; base_url: string; models: string; api: string }, [string]>(
+              "SELECT id, name, base_url, models, api FROM custom_providers WHERE id = ?",
+            )
+            .get(provider);
+          if (row) registerCustomProvider(row);
+        } else {
+          models.deleteProvider(provider);
+          if (currentModelKey?.provider === provider) currentModelKey = null;
+        }
+        send({ id: reqId, type: "custom_provider_toggled", provider, enabled });
+        break;
+      }
+      case "test_provider": {
+        // 测试服务连通性：按接口格式发一条最小请求
+        const baseUrl = String(msg.baseUrl ?? "").trim().replace(/\/+$/, "");
+        const apiKey = String(msg.apiKey ?? "").trim();
+        const model = String(msg.model ?? "").trim();
+        const apiKind = normalizeApi(msg.api);
+        if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
+        if (!model) throw new Error("model is required");
+        let url: string;
+        let headers: Record<string, string>;
+        let body: unknown;
+        if (apiKind === "anthropic-messages") {
+          url = `${baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`}/messages`;
+          headers = {
+            "content-type": "application/json",
+            ...(apiKey ? { "x-api-key": apiKey } : {}),
+            "anthropic-version": "2023-06-01",
+          };
+          body = { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] };
+        } else if (apiKind === "openai-responses") {
+          url = `${baseUrl}/responses`;
+          headers = {
+            "content-type": "application/json",
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          };
+          body = { model, input: "ping", max_output_tokens: 16 };
+        } else {
+          url = `${baseUrl}/chat/completions`;
+          headers = {
+            "content-type": "application/json",
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          };
+          body = { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] };
+        }
+        const res = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(20_000),
+        });
+        if (!res.ok) {
+          const text = (await res.text()).slice(0, 300);
+          throw new Error(`连接失败: HTTP ${res.status}${text ? ` · ${text}` : ""}`);
+        }
+        send({ id: reqId, type: "tested", ok: true });
         break;
       }
       default:

@@ -38,6 +38,7 @@ import {
   CircleAlertIcon,
   KeyRoundIcon,
   PencilIcon,
+  PlugIcon,
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
@@ -74,6 +75,32 @@ const ModelBox: FC<{ checked: boolean }> = ({ checked }) => (
   >
     {checked && <CheckIcon className="size-3" />}
   </span>
+);
+
+/** 行内启用开关（iOS 风格） */
+const ToggleSwitch: FC<{
+  checked: boolean;
+  disabled?: boolean;
+  onToggle: () => void;
+}> = ({ checked, disabled, onToggle }) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    disabled={disabled}
+    onClick={onToggle}
+    className={cn(
+      "relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50",
+      checked ? "bg-primary" : "bg-muted-foreground/30",
+    )}
+  >
+    <span
+      className={cn(
+        "absolute top-0.5 size-4 rounded-full bg-white shadow transition-all",
+        checked ? "left-[1.15rem]" : "left-0.5",
+      )}
+    />
+  </button>
 );
 
 /** 模型配置页：默认模型 / AI 服务（自定义提供商）/ 厂商账户（凭据）/ 模型目录 */
@@ -113,6 +140,13 @@ export const ModelSettings: FC = () => {
   const [svcFetchError, setSvcFetchError] = useState<string | null>(null);
   const [svcModelSearch, setSvcModelSearch] = useState("");
   const [svcCustomInput, setSvcCustomInput] = useState("");
+  // 测试连接（custom 模式）：用表单当前值 + 首个已选模型发一条最小请求
+  const [svcTestState, setSvcTestState] = useState<
+    "idle" | "testing" | "ok" | "error"
+  >("idle");
+  const [svcTestError, setSvcTestError] = useState<string | null>(null);
+  // 列表行快速测试：成功后短暂显示 ✓ 的 providerId
+  const [testOkId, setTestOkId] = useState<string | null>(null);
   const svcFetchSeq = useRef(0);
   const selected = useSelectedModel();
 
@@ -201,7 +235,8 @@ export const ModelSettings: FC = () => {
       try {
         await piRequest({
           type: "add_custom_provider",
-          ...(input.providerId ? { id: input.providerId } : {}),
+          // 业务 id 走 providerId 字段（协议层 reqId 占用 "id"），有值 = 编辑更新
+          ...(input.providerId ? { providerId: input.providerId } : {}),
           name: input.name,
           baseUrl: input.baseUrl,
           apiKey: input.apiKey,
@@ -253,6 +288,8 @@ export const ModelSettings: FC = () => {
     setSvcFetchError(null);
     setSvcModelSearch("");
     setSvcCustomInput("");
+    setSvcTestState("idle");
+    setSvcTestError(null);
   }, []);
 
   /** 打开"添加 AI 服务"弹窗（新增） */
@@ -270,10 +307,12 @@ export const ModelSettings: FC = () => {
     setSvcFetchError(null);
     setSvcModelSearch("");
     setSvcCustomInput("");
+    setSvcTestState("idle");
+    setSvcTestError(null);
     setSvcOpen(true);
   }, []);
 
-  /** 打开"编辑 AI 服务"弹窗（仅自定义端点支持编辑） */
+  /** 打开"编辑 AI 服务"弹窗（仅自定义端点支持编辑），并回填已保存的 Key */
   const openEditService = useCallback((cp: PiCustomProviderSummary) => {
     const ids = cp.models.map((m) => m.id);
     setSvcProvider("custom");
@@ -281,7 +320,7 @@ export const ModelSettings: FC = () => {
     setSvcProvSearch("");
     setSvcName(cp.name);
     setSvcBaseUrl(cp.baseUrl);
-    setSvcApiKey("");
+    setSvcApiKey(cp.apiKey ?? "");
     setSvcApi(cp.api);
     setSvcAvail(ids);
     setSvcSelected(ids);
@@ -289,10 +328,12 @@ export const ModelSettings: FC = () => {
     setSvcFetchError(null);
     setSvcModelSearch("");
     setSvcCustomInput("");
+    setSvcTestState("idle");
+    setSvcTestError(null);
     setSvcOpen(true);
   }, []);
 
-  /** 拉取端点的 /models 列表（fill 左栏） */
+  /** 拉取端点的模型列表（fill 左栏）；按接口格式调对应协议 */
   const fetchServiceModels = useCallback(async () => {
     if (svcProvider !== "custom") return;
     const baseUrl = svcBaseUrl.trim().replace(/\/+$/, "");
@@ -305,6 +346,7 @@ export const ModelSettings: FC = () => {
         type: "fetch_models",
         baseUrl,
         apiKey: svcApiKey.trim(),
+        api: svcApi,
       });
       if (seq !== svcFetchSeq.current) return;
       setSvcAvail(res.models);
@@ -314,7 +356,7 @@ export const ModelSettings: FC = () => {
       setSvcFetchState("error");
       setSvcFetchError(err instanceof Error ? err.message : String(err));
     }
-  }, [svcProvider, svcBaseUrl, svcApiKey]);
+  }, [svcProvider, svcBaseUrl, svcApiKey, svcApi]);
 
   // 填好接口地址后自动拉取模型列表（防抖）
   useEffect(() => {
@@ -326,13 +368,80 @@ export const ModelSettings: FC = () => {
     }
     const timer = setTimeout(() => void fetchServiceModels(), 600);
     return () => clearTimeout(timer);
-  }, [svcOpen, svcProvider, svcBaseUrl, svcApiKey, fetchServiceModels]);
+  }, [svcOpen, svcProvider, svcBaseUrl, svcApiKey, svcApi, fetchServiceModels]);
 
   const toggleModel = useCallback((id: string) => {
     setSvcSelected((prev) =>
       prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id],
     );
   }, []);
+
+  /** 测试连接：按接口格式对端点发一条最小请求（用表单当前值 + 首个已选模型） */
+  const testService = useCallback(async () => {
+    if (svcProvider !== "custom") return;
+    const baseUrl = svcBaseUrl.trim().replace(/\/+$/, "");
+    const model = svcSelected[0];
+    if (!/^https?:\/\//.test(baseUrl) || !model) return;
+    setSvcTestState("testing");
+    setSvcTestError(null);
+    try {
+      await piRequest({ type: "test_provider", baseUrl, apiKey: svcApiKey.trim(), api: svcApi, model });
+      setSvcTestState("ok");
+    } catch (err) {
+      setSvcTestState("error");
+      setSvcTestError(err instanceof Error ? err.message : String(err));
+    }
+  }, [svcProvider, svcBaseUrl, svcApiKey, svcApi, svcSelected]);
+
+  /** 启用/停用自定义服务 */
+  const toggleCustomProvider = useCallback(
+    async (cp: PiCustomProviderSummary) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await piRequest({
+          type: "toggle_custom_provider",
+          provider: cp.providerId,
+          enabled: !cp.enabled,
+        });
+        load();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [load],
+  );
+
+  /** 列表行快速测试：用已保存配置 + 首个模型发一条最小请求 */
+  const quickTestProvider = useCallback(
+    async (cp: PiCustomProviderSummary) => {
+      const model = cp.models[0]?.id;
+      if (!model || busy) return;
+      setError(null);
+      setBusy(true);
+      try {
+        await piRequest({
+          type: "test_provider",
+          baseUrl: cp.baseUrl,
+          apiKey: cp.apiKey ?? "",
+          api: cp.api,
+          model,
+        });
+        setTestOkId(cp.providerId);
+        setTimeout(
+          () => setTestOkId((v) => (v === cp.providerId ? null : v)),
+          1500,
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy],
+  );
 
   const addCustomModel = useCallback(() => {
     const id = svcCustomInput.trim();
@@ -559,7 +668,7 @@ export const ModelSettings: FC = () => {
             <button
               type="button"
               disabled={svcEditing !== null}
-              className="border-input flex h-9 w-full items-center justify-between gap-2 rounded-md border bg-transparent px-3 text-sm disabled:opacity-60"
+              className="bg-muted/60 focus-visible:bg-background focus-visible:border-ring focus-visible:ring-ring/50 flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-transparent px-3 text-sm transition-colors outline-none hover:bg-muted focus-visible:ring-1 disabled:opacity-50"
             >
               {svcProvider ? (
                 svcProviderLabel
@@ -600,13 +709,13 @@ export const ModelSettings: FC = () => {
                   <span className="min-w-0 flex-1 truncate text-start">
                     {opt.name}
                   </span>
-                  {opt.id !== "custom" &&
+                  {/* {opt.id !== "custom" &&
                     configured.has(opt.id) && (
                       <span
                         className="size-1.5 shrink-0 rounded-full bg-primary"
                         title="已配置 Key"
                       />
-                    )}
+                    )} */}
                 </button>
               );
             })}
@@ -750,40 +859,71 @@ export const ModelSettings: FC = () => {
               {customProviders.map((cp) => (
                 <div
                   key={cp.providerId}
-                  className="hover:bg-muted/60 flex items-center gap-2 rounded-xl px-3 py-2"
+                  className="hover:bg-muted/60 flex items-center gap-3 rounded-xl px-3 py-2.5"
                 >
-                  <span
-                    className={cn(
-                      "size-1.5 shrink-0 rounded-full",
-                      cp.hasApiKey ? "bg-primary" : "bg-muted-foreground/40",
-                    )}
-                    title={cp.hasApiKey ? "已配置 Key" : "未配置 Key"}
-                  />
-                  <span className="shrink-0 text-sm font-medium">{cp.name}</span>
-                  <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-xs">
-                    {cp.baseUrl}
-                  </span>
-                  <span className="text-muted-foreground shrink-0 text-xs">
-                    {cp.models.length} 个模型
-                  </span>
-                  <button
-                    type="button"
-                    title="编辑"
-                    disabled={busy}
-                    onClick={() => openEditService(cp)}
-                    className="text-muted-foreground hover:text-foreground disabled:opacity-50"
-                  >
-                    <PencilIcon className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    title="删除"
-                    disabled={busy}
-                    onClick={() => void deleteCustomProvider(cp.providerId)}
-                    className="text-muted-foreground hover:text-destructive disabled:opacity-50"
-                  >
-                    <Trash2Icon className="size-3.5" />
-                  </button>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="shrink-0 text-sm font-medium">
+                        {cp.name}
+                      </span>
+                      {selected?.provider === cp.providerId && (
+                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-[11px] font-medium text-lime-600">
+                          默认
+                        </span>
+                      )}
+                      {!cp.enabled && (
+                        <span className="text-muted-foreground text-[11px]">
+                          已停用
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-muted-foreground mt-0.5 truncate text-xs">
+                      {cp.baseUrl} · {cp.models.length} 个模型
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      title="编辑"
+                      disabled={busy}
+                      onClick={() => openEditService(cp)}
+                      className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+                    >
+                      <PencilIcon className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      title="测试连接"
+                      disabled={busy || !cp.enabled}
+                      onClick={() => void quickTestProvider(cp)}
+                      className={cn(
+                        "disabled:opacity-50",
+                        testOkId === cp.providerId
+                          ? "text-lime-600"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {testOkId === cp.providerId ? (
+                        <CheckIcon className="size-3.5" />
+                      ) : (
+                        <PlugIcon className="size-3.5" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      title="删除"
+                      disabled={busy}
+                      onClick={() => void deleteCustomProvider(cp.providerId)}
+                      className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </button>
+                    <ToggleSwitch
+                      checked={cp.enabled}
+                      disabled={busy}
+                      onToggle={() => void toggleCustomProvider(cp)}
+                    />
+                  </div>
                 </div>
               ))}
             </div>
@@ -924,23 +1064,41 @@ export const ModelSettings: FC = () => {
       >
         <DialogContent
           showCloseButton={false}
-          className="flex max-h-[calc(100dvh-2rem)] min-h-[520px] flex-col sm:max-w-4xl"
+          className="flex h-[80dvh]  flex-col sm:max-w-4xl"
         >
           <div className="flex items-center justify-between gap-4">
             <DialogTitle className="text-base font-semibold">
               {svcEditing ? "编辑 AI 服务" : "添加 AI 服务"}
             </DialogTitle>
             <div className="flex items-center gap-2">
+              {svcProvider === "custom" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  disabled={
+                    svcTestState === "testing" ||
+                    svcSelected.length === 0 ||
+                    !/^https?:\/\//.test(svcBaseUrl.trim())
+                  }
+                  onClick={() => void testService()}
+                >
+                  {svcTestState === "testing" ? (
+                    <RefreshCwIcon className="size-3.5 animate-spin" />
+                  ) : (
+                    <PlugIcon className="size-3.5" />
+                  )}
+                  {svcTestState === "testing" ? "测试中..." : "测试连接"}
+                </Button>
+              )}
               <Button
                 variant="ghost"
-                size="sm"
                 className="text-muted-foreground h-8"
                 onClick={closeServiceDialog}
               >
                 取消
               </Button>
               <Button
-                size="sm"
                 disabled={svcSaveDisabled}
                 onClick={() => void submitService()}
               >
@@ -948,6 +1106,26 @@ export const ModelSettings: FC = () => {
               </Button>
             </div>
           </div>
+
+          {/* 测试连接结果 */}
+          {svcProvider === "custom" &&
+            (svcTestState === "testing" || svcTestState === "error") && (
+              <div
+                className={cn(
+                  "text-xs",
+                  svcTestState === "testing"
+                    ? "text-muted-foreground"
+                    : "text-destructive break-all",
+                )}
+              >
+                {svcTestState === "testing"
+                  ? "正在发送测试请求..."
+                  : svcTestError}
+              </div>
+            )}
+          {svcProvider === "custom" && svcTestState === "ok" && (
+            <div className="text-xs text-lime-600">连接成功</div>
+          )}
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
             {svcProvider === "custom" ? (
@@ -968,7 +1146,11 @@ export const ModelSettings: FC = () => {
                     <Input
                       value={svcBaseUrl}
                       onChange={(e) => setSvcBaseUrl(e.target.value)}
-                      placeholder="https://api.example.com/v1"
+                      placeholder={
+                        svcApi === "anthropic-messages"
+                          ? "https://api.anthropic.com"
+                          : "https://api.example.com/v1"
+                      }
                       autoCapitalize="off"
                       autoCorrect="off"
                       spellCheck={false}
@@ -1038,9 +1220,9 @@ export const ModelSettings: FC = () => {
             )}
 
             {/* 双栏模型面板：自定义端点为远端列表；内置厂商为目录中该服务的模型 */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 sm:grid-cols-2 sm:grid-rows-[minmax(0,1fr)]">
               {/* 左栏：该服务的模型 */}
-              <div className="bg-muted/50 flex h-72 flex-col rounded-2xl p-3">
+              <div className="bg-muted/50 flex h-full min-h-60 flex-col rounded-2xl p-3">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium">该服务的模型</span>
                   {svcProvider === "custom" && (
@@ -1158,7 +1340,7 @@ export const ModelSettings: FC = () => {
               </div>
 
               {/* 右栏：模型设置（已选） */}
-              <div className="bg-muted/50 flex h-72 flex-col rounded-2xl p-3">
+              <div className="bg-muted/50 flex h-full min-h-60 flex-col rounded-2xl p-3">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">模型设置</span>
                   <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[11px] tabular-nums">

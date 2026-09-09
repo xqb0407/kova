@@ -59,6 +59,10 @@ export type PiCustomProviderSummary = {
   models: PiCustomModelSpec[];
   api: PiCustomApiKind;
   hasApiKey: boolean;
+  /** 明文 key，仅供编辑弹窗回填（存本地 SQLite） */
+  apiKey?: string;
+  /** 启用状态；停用的服务不进模型目录 */
+  enabled: boolean;
 };
 
 export type PiResponse =
@@ -75,7 +79,9 @@ export type PiResponse =
   | { type: "custom_provider"; provider: string }
   | { type: "custom_providers"; providers: PiCustomProviderSummary[] }
   | { type: "custom_provider_deleted"; provider: string }
+  | { type: "custom_provider_toggled"; provider: string; enabled: boolean }
   | { type: "fetched_models"; models: string[] }
+  | { type: "tested"; ok: true }
   | { type: "provider_filter"; provider: string; models: string[] | null }
   | { type: "error"; errorText: string };
 
