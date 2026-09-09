@@ -134,7 +134,7 @@ function ReasoningFade({
         data-slot="reasoning-fade"
         className={cn(
           "aui-reasoning-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-8",
-          "bg-[linear-gradient(to_bottom,var(--color-background),transparent)]",
+          "bg-[linear-gradient(to_bottom,var(--background),transparent)]",
           "group-data-[variant=muted]/reasoning-root:bg-[linear-gradient(to_bottom,color-mix(in_oklab,var(--color-muted)_50%,var(--color-background)),transparent)]",
           "fade-in-0 animate-in",
           "animation-duration-(--animation-duration)",
@@ -150,7 +150,7 @@ function ReasoningFade({
       data-slot="reasoning-fade"
       className={cn(
         "aui-reasoning-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8",
-        "bg-[linear-gradient(to_top,var(--color-background),transparent)]",
+        "bg-[linear-gradient(to_top,var(--background),transparent)]",
         "group-data-[variant=muted]/reasoning-root:bg-[linear-gradient(to_top,color-mix(in_oklab,var(--color-muted)_50%,var(--color-background)),transparent)]",
         "fade-in-0 animate-in",
         "animation-duration-(--animation-duration)",
@@ -295,7 +295,7 @@ function ReasoningText({
       ref={scrollRef}
       data-slot="reasoning-text"
       className={cn(
-        "aui-reasoning-text relative z-0 max-h-64 overflow-y-auto ps-6 pt-2 pb-2 leading-relaxed text-pretty",
+        "aui-reasoning-text relative z-0 max-h-64 overflow-y-auto  pt-2 pb-2 leading-relaxed text-pretty",
         "transform-gpu transition-[transform,opacity] ease-[cubic-bezier(0.32,0.72,0,1)]",
         "motion-reduce:animate-none",
         "group-data-open/collapsible-content:animate-in",

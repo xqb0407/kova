@@ -73,8 +73,8 @@ const UserActionBar: FC = () => {
       className="aui-user-action-bar-root flex flex-col items-end"
     >
       <ActionBarPrimitive.Edit asChild>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <PencilIcon size="1em" />
+        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit text-muted-foreground size-5">
+          <PencilIcon className="size-3.5" />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
     </ActionBarPrimitive.Root>

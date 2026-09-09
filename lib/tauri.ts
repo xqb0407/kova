@@ -13,6 +13,17 @@ export const isTauri = (): boolean => {
 };
 
 /**
+ * 检测桌面平台是否为 macOS（依据 WebView UA）。
+ * 仅在 isTauri() 为 true 时有意义：macOS 保留系统红绿灯，Windows/Linux 需自绘窗口控制。
+ */
+export const isMacPlatform = (): boolean => {
+  return (
+    typeof navigator !== "undefined" &&
+    /Macintosh|Mac OS X/i.test(navigator.userAgent)
+  );
+};
+
+/**
  * 检测是否在Tauri开发模式中
  */
 export const isTauriDev = (): boolean => {

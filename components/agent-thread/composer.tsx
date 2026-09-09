@@ -44,10 +44,17 @@ import {
   useWorkspaceRecents,
 } from "@/lib/workspace-store";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "../ui/input";
+import { cn } from "cn";
 
 const models = docsModelOptions();
 
@@ -126,7 +133,7 @@ export const Composer: FC = () => {
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-      <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col ">
+      <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
         <ComposerPrimitive.AttachmentDropzone asChild>
           <div
             data-slot="aui_composer-shell"
@@ -143,8 +150,10 @@ export const Composer: FC = () => {
           </div>
         </ComposerPrimitive.AttachmentDropzone>
 
-        {/* workspace 选择：仅开始对话前显示，位于输入框下方 */}
+       <div className="w-full my-1 px-2">
+         {/* workspace 选择：仅开始对话前显示，位于输入框下方 */}
         <WorkspacePill />
+       </div>
 
         <ComposerTriggerPopover char="@" {...mention} />
 
@@ -181,28 +190,36 @@ const WorkspacePill: FC = () => {
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger
         render={
-          <button
+          <Button
+            variant="ghost"
             type="button"
             data-slot="aui-composer-workspace"
             title={workspace ?? "选择工作目录"}
             aria-label="Select workspace directory"
-            className="group text-muted-foreground hover:bg-muted hover:text-foreground inline-flex h-7 max-w-44 items-center gap-1.5 rounded-full px-2.5 text-xs transition-colors"
+            className={
+              cn("group  hover:text-foreground inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors",
+                workspace ? "bg-muted hover:bg-background/80" : " hover:bg-background/80",
+              )
+            }
           >
             {busy ? (
               <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
             ) : (
               <FolderOpenIcon className="size-3.5 shrink-0" />
             )}
-            <span className="truncate">
+            <span className={
+              cn("truncate",workspace ?? "font-medium")
+            }>
               {workspace ? pathBasename(workspace) : "选择目录"}
             </span>
             {workspace && (
-              <span
-                role="button"
+              <Button
                 tabIndex={0}
+                variant="ghost"
+                size={"icon-xs"}
                 aria-label="Clear workspace"
                 title="取消选择"
                 onClick={(e) => {
@@ -215,58 +232,62 @@ const WorkspacePill: FC = () => {
                     clearWorkspace();
                   }
                 }}
-                className="hover:bg-background/80 -me-1 ml-0.5 hidden size-4 shrink-0 items-center justify-center rounded-full group-hover:flex"
+                className=" -me-1 ml-0.5  shrink-0 items-center justify-center rounded-full"
               >
-                <XIcon className="size-3" />
-              </span>
+                <XIcon className="size-3.5" />
+              </Button>
             )}
-          </button>
+          </Button>
         }
       />
-      <PopoverContent align="start" className="w-64 p-1">
-        <div className="text-muted-foreground px-2 py-1.5 text-xs font-medium">
-          最近使用
-        </div>
-        {recents.length > 0 ? (
-          <div className="flex flex-col">
-            {recents.map((dir) => (
-              <button
+      <DropdownMenuContent align="start" sideOffset={0} className="w-64 p-0">
+        <DropdownMenuGroup className={"p-0"}>
+          {/* <DropdownMenuItem>最近使用</DropdownMenuItem> */}
+          <Input className="border-0 ring-0 bg-transparent focus-visible:outline-none focus-visible:ring-0 " placeholder="搜索" />
+          <DropdownMenuSeparator className={"mt-0"} />
+          {/* <DropdownMenuLabel>最近使用</DropdownMenuLabel> */}
+          <div className="px-1">
+            {recents.length > 0 ? (
+            recents.map((dir) => (
+              <DropdownMenuCheckboxItem
                 key={dir}
-                type="button"
-                title={dir}
-                onClick={() => {
-                  setWorkspace(dir);
-                  setOpen(false);
+                checked={dir === workspace}
+                onCheckedChange={(checked) => {
+                  if (checked) setWorkspace(dir);
                 }}
-                data-selected={dir === workspace}
-                className="hover:bg-muted flex h-8 items-center gap-2 rounded-md px-2 text-start text-sm data-selected:bg-muted"
+                onSelect={(e) => e.preventDefault()}
+                title={dir}
               >
                 <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
                 <span className="truncate">{pathBasename(dir)}</span>
-              </button>
-            ))}
+              </DropdownMenuCheckboxItem>
+            ))
+          ) : (
+            <div className="text-muted-foreground px-2 py-3 text-center text-xs">
+              暂无记录
+            </div>
+          )}
           </div>
-        ) : (
-          <div className="text-muted-foreground px-2 py-3 text-center text-xs">
-            暂无记录
-          </div>
+        </DropdownMenuGroup>
+         <DropdownMenuSeparator  />
+       <div className="p-1">
+         {workspace && (
+          <DropdownMenuItem onClick={clearWorkspace}>
+            <XIcon className="text-muted-foreground size-3.5 shrink-0" />
+            取消选择
+          </DropdownMenuItem>
         )}
-        <div className="bg-border my-1 h-px" />
-        <button
-          type="button"
-          onClick={add}
-          disabled={busy}
-          className="hover:bg-muted flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm disabled:opacity-50"
-        >
+        <DropdownMenuItem onClick={add} disabled={busy}>
           {busy ? (
             <Loader2Icon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
           ) : (
             <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
           )}
           添加目录…
-        </button>
-      </PopoverContent>
-    </Popover>
+        </DropdownMenuItem>
+       </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 };
 

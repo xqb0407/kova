@@ -17,7 +17,6 @@ import {
   ReasoningText,
   ReasoningTrigger,
 } from "@/components/assistant-ui/elements/reasoning.aui";
-import { cn } from "@/lib/utils";
 import {
   AuiIf,
   type AssistantState,
@@ -73,12 +72,6 @@ const AssistantWorkingIndicator: FC = () => {
 };
 
 export const AssistantMessage: FC = () => {
-  // reserves space for action bar and compensates with `-mb` for consistent msg spacing
-  // keeps hovered action bar from shifting layout (autohide doesn't support absolute positioning well)
-  // for pt-[n] use -mb-[n + 6] & min-h-[n + 6] to preserve compensation
-  const ACTION_BAR_PT = "pt-1.5";
-  const ACTION_BAR_HEIGHT = `-mb-7.5 min-h-7.5 ${ACTION_BAR_PT}`;
-
   return (
     <MessagePrimitive.Root
       data-slot="aui_edit-composer-wrapper"
@@ -112,7 +105,7 @@ export const AssistantMessage: FC = () => {
               case "group-reasoning": {
                 const running = part.status.type === "running";
                 return (
-                  <ReasoningRoot defaultOpen={running}>
+                  <ReasoningRoot variant="ghost" defaultOpen={running} >
                     <ReasoningTrigger active={running} />
                     <ReasoningContent aria-busy={running}>
                       <ReasoningText>{children}</ReasoningText>
@@ -140,10 +133,12 @@ export const AssistantMessage: FC = () => {
 
       <div
         data-slot="aui_assistant-message-footer"
-        className={cn("ml-2 flex items-center", ACTION_BAR_HEIGHT)}
+        className="relative ml-2 h-7.5 min-h-7.5 -mb-7.5 overflow-visible"
       >
-        <BranchPicker />
-        <AssistantActionBar />
+        <div className="absolute inset-x-0 top-0 flex h-7.5 items-center pt-1.5">
+          <BranchPicker />
+          <AssistantActionBar />
+        </div>
       </div>
     </MessagePrimitive.Root>
   );

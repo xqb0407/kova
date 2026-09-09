@@ -250,11 +250,17 @@
   html {
     @apply overscroll-none scroll-smooth font-sans;
     scroll-padding-top: calc(var(--docs-header-height, 48px) + 2rem);
-    overflow-y: scroll;
+    overflow-y: auto;
   }
   body {
     @apply bg-background text-foreground;
     font-optical-sizing: auto;
+  }
+  /* 窗口背景材质（穿透高斯模糊）启用时：根层透明露出系统模糊效果。
+     仅桌面端在 html 上打 data-window-effect 标记（lib/appearance.ts），
+     内部面板为半透明底色（bg-muted/55 等），可透出材质。 */
+  html[data-window-effect] body {
+    background: transparent;
   }
   body[data-scroll-locked] {
     margin-right: 0 !important;
@@ -311,3 +317,10 @@
     box-shadow: none;
   }
 }
+
+/* 穿透时右侧主内容区保持不透明，仅左侧侧边栏透出材质。
+   置于 layer 外以覆盖 utilities 层的 bg-muted/55 半透明底色。 */
+html[data-window-effect] [data-content-solid] {
+  background: var(--background);
+}
+
