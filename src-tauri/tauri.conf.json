@@ -44,7 +44,7 @@
     "active": true,
     "targets": "all",
     "externalBin": ["binaries/pi-agent"],
-    "resources": ["resources/pi-agent", "../out"],
+    "resources": ["../out"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

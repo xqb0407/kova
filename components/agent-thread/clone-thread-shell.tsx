@@ -39,7 +39,6 @@ import { isRemoteMode } from "@/lib/remote";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { Logo } from "./header";
 import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
-import { SettingsModal } from "@/components/settings/settings-modal";
 import {
   MenuIcon,
   MessageSquareIcon,
@@ -70,6 +69,7 @@ type CloneThreadShellProps = {
   onCollapsedChange?: ((value: boolean) => void) | undefined;
   mobileSidebarOpen?: boolean | undefined;
   onMobileSidebarOpenChange?: ((value: boolean) => void) | undefined;
+  onOpenSettings?: (() => void) | undefined;
   headerContent?: ReactNode | undefined;
   sheetTitle?: ReactNode | undefined;
 };
@@ -81,6 +81,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   onCollapsedChange,
   mobileSidebarOpen,
   onMobileSidebarOpenChange,
+  onOpenSettings,
   headerContent,
   sheetTitle,
 }) => {
@@ -89,7 +90,6 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const [activeMenu, setActiveMenu] = useState<string>("new");
   const [activeTab, setActiveTab] = useState<string>("tasks");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const hasThreads = useAuiState((s) => s.threads.threadIds.length > 0);
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const threadItems = useAuiState((s) => s.threads.threadItems);
@@ -427,7 +427,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             <Button
               variant="ghost"
               className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-muted"
-              onClick={() => setSettingsOpen(true)}
+              onClick={() => onOpenSettings?.()}
             >
               <SettingsIcon className="size-4 shrink-0" />
               {!sidebarCollapsed && (
@@ -523,7 +523,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               <Button
                 variant="ghost"
                 className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-muted"
-                onClick={() => setSettingsOpen(true)}
+                onClick={() => {
+                  setMobileOpen(false);
+                  onOpenSettings?.();
+                }}
               >
                 <SettingsIcon className="size-4 shrink-0" />
                 <span className="whitespace-nowrap">设置</span>
@@ -570,8 +573,6 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           </CommandList>
         </Command>
       </CommandDialog>
-
-      <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
 
       <div className="min-w-0 flex-1 overflow-hidden">{children}</div>
     </div>
