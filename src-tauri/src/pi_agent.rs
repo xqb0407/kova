@@ -27,26 +27,14 @@ pub fn new_request_id() -> String {
     format!("pi-{}", NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed))
 }
 
-/// PI_PACKAGE_DIR 解析顺序：
-/// 1. 外部环境变量（可手动覆盖）
-/// 2. dev：仓库内 sidecar 的 node_modules（编译期常量，含完整 package.json）
-/// 3. 生产：tauri resources 目录下的 pi-agent 资产
-fn resolve_pi_package_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(dir) = std::env::var("PI_PACKAGE_DIR") {
-        if !dir.is_empty() {
-            return Ok(PathBuf::from(dir));
-        }
-    }
-    let dev_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../sidecar/pi-agent/node_modules/@mariozechner/pi-coding-agent");
-    if dev_dir.join("package.json").exists() {
-        return Ok(dev_dir);
-    }
-    let resource_dir = app
+/// 解析应用数据目录（state.db 与会话 JSONL 所在位置）
+fn resolve_app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
         .path()
-        .resource_dir()
-        .map_err(|e| format!("failed to resolve resource dir: {e}"))?;
-    Ok(resource_dir.join("pi-agent"))
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create data dir: {e}"))?;
+    Ok(dir)
 }
 
 /// 确保子进程已启动；返回 stdout 事件监听是否已由本次调用挂上
@@ -56,12 +44,16 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
         return Ok(());
     }
 
-    let package_dir = resolve_pi_package_dir(app)?;
+    let data_dir = resolve_app_data_dir(app)?;
+    let sessions_dir = data_dir.join("sessions");
+    std::fs::create_dir_all(&sessions_dir)
+        .map_err(|e| format!("failed to create sessions dir: {e}"))?;
     let cmd = app
         .shell()
         .sidecar("pi-agent")
         .map_err(|e| format!("failed to resolve pi-agent sidecar: {e}"))?
-        .env("PI_PACKAGE_DIR", package_dir.to_string_lossy().to_string());
+        .env("PI_DB_PATH", data_dir.join("state.db").to_string_lossy().to_string())
+        .env("PI_SESSIONS_DIR", sessions_dir.to_string_lossy().to_string());
 
     let (mut rx, child) = cmd
         .spawn()

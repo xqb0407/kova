@@ -320,7 +320,7 @@
 
 /* 穿透时右侧主内容区保持不透明，仅左侧侧边栏透出材质。
    置于 layer 外以覆盖 utilities 层的 bg-muted/55 半透明底色。 */
-html[data-window-effect] [data-content-solid] {
+/* html[data-window-effect] [data-content-solid] {
   background: var(--background);
 }
-
+ */

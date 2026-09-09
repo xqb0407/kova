@@ -7,7 +7,10 @@
     "smoke": "bun run src/index.ts"
   },
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "^0.73.1",
-    "@opentelemetry/api": "^1.9.1"
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2"
   }
 }

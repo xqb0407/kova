@@ -34,12 +34,31 @@ export type PiProviderSummary = {
   authed: boolean;
 };
 
-/** pi 可用技能（loadSkills 发现的 SKILL.md） */
-export type PiSkillSummary = {
+/** 已配置凭据（不含密钥本体） */
+export type PiCredentialSummary = {
+  providerId: string;
+  type: "api_key";
+};
+
+/** 自定义 OpenAI 兼容提供商里的模型定义 */
+export type PiCustomModelSpec = {
+  id: string;
+  name?: string;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+};
+
+/** 自定义提供商（OpenAI 兼容 baseUrl + 模型列表） */
+export type PiCustomApiKind = "openai-chat" | "openai-responses" | "anthropic-messages";
+
+export type PiCustomProviderSummary = {
+  providerId: string;
   name: string;
-  description: string;
-  filePath: string;
-  scope: "user" | "project" | "temporary";
+  baseUrl: string;
+  models: PiCustomModelSpec[];
+  api: PiCustomApiKind;
+  hasApiKey: boolean;
 };
 
 export type PiResponse =
@@ -50,7 +69,14 @@ export type PiResponse =
   | { type: "renamed" }
   | { type: "models"; models: PiModelSummary[]; providers: PiProviderSummary[] }
   | { type: "model"; provider: string; modelId: string }
-  | { type: "skills"; skills: PiSkillSummary[] }
+  | { type: "credential"; provider: string }
+  | { type: "credentials"; credentials: PiCredentialSummary[] }
+  | { type: "credential_deleted"; provider: string }
+  | { type: "custom_provider"; provider: string }
+  | { type: "custom_providers"; providers: PiCustomProviderSummary[] }
+  | { type: "custom_provider_deleted"; provider: string }
+  | { type: "fetched_models"; models: string[] }
+  | { type: "provider_filter"; provider: string; models: string[] | null }
   | { type: "error"; errorText: string };
 
 export async function piRequest<T extends PiResponse>(

@@ -16,7 +16,7 @@
 //!   - abort 无 id，sidecar 侧为全局中断——远程与本地会互相打断（MVP 接受）
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
@@ -324,20 +324,41 @@ fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
 
 // ---------- 局域网地址 ----------
 
-/// 枚举本机非回环 IPv4（UDP trick 探测的默认路由出口 IP 排最前）
+/// 是否为可对外提供局域网访问的私有 IPv4：
+/// RFC1918（10/8、172.16/12、192.168/16）+ CGNAT 100.64/10（Tailscale）。
+/// 排除回环、链路本地（169.254）与基准段 198.18.0.0/15（VPN TUN/fake-ip 虚拟网卡常用）。
+fn is_lan_ip(ip: Ipv4Addr) -> bool {
+    if ip.is_loopback() || ip.is_link_local() {
+        return false;
+    }
+    match ip.octets() {
+        [10, ..] => true,
+        [172, b, ..] => (16..=31).contains(&b),
+        [192, 168, ..] => true,
+        [100, b, ..] => (64..=127).contains(&b),
+        _ => false,
+    }
+}
+
+/// 枚举可用的局域网 IPv4（默认路由出口 IP 排最前，仅保留私有段，过滤 VPN TUN 虚拟 IP）
 fn lan_ips() -> Vec<IpAddr> {
     let mut ips: Vec<IpAddr> = Vec::new();
+    // 默认路由出口 IP（UDP connect 不发包，仅选路）：VPN TUN 接管默认路由时可能是虚拟 IP，需再经 is_lan_ip 过滤
     if let Ok(sock) = std::net::UdpSocket::bind(("0.0.0.0", 0)) {
         if sock.connect(("8.8.8.8", 80)).is_ok() {
             if let Ok(addr) = sock.local_addr() {
-                ips.push(addr.ip());
+                if let IpAddr::V4(ip) = addr.ip() {
+                    if is_lan_ip(ip) {
+                        ips.push(IpAddr::V4(ip));
+                    }
+                }
             }
         }
     }
     if let Ok(ifaces) = if_addrs::get_if_addrs() {
         for iface in ifaces {
             if let IpAddr::V4(ip) = iface.ip() {
-                if !ip.is_loopback() && !ips.contains(&IpAddr::V4(ip)) {
+                if is_lan_ip(ip) && !ips.contains(&IpAddr::V4(ip)) {
                     ips.push(IpAddr::V4(ip));
                 }
             }

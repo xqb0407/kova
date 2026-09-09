@@ -77,28 +77,6 @@ export function decodePairPayload(raw: string): PairPayload | null {
   return null;
 }
 
-/** 网页端部署地址（桌面端设置，可选）：配置后二维码编码为扫码直达的网页链接 */
-const WEB_URL_KEY = "pi.remote.webUrl";
-
-export function getRemoteWebUrl(): string {
-  try {
-    if (typeof localStorage === "undefined") return "";
-    return localStorage.getItem(WEB_URL_KEY)?.trim() ?? "";
-  } catch {
-    return "";
-  }
-}
-
-export function setRemoteWebUrl(url: string) {
-  try {
-    const trimmed = url.trim();
-    if (trimmed) localStorage.setItem(WEB_URL_KEY, trimmed);
-    else localStorage.removeItem(WEB_URL_KEY);
-  } catch {
-    // ignore
-  }
-}
-
 /** 复制文本：优先 Clipboard API，失败退回 execCommand（Tauri WebView 兼容） */
 export async function copyText(text: string): Promise<boolean> {
   try {
