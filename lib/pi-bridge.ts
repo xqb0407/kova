@@ -1,10 +1,11 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
+import { getPiChannel } from "@/lib/pi-channel";
 
 /**
  * pi-agent 管理类请求-响应桥。
- * Rust 侧 pi_request 会给 payload 注入唯一 id，并直接把子进程的响应行返回。
+ * 具体传输由 PiChannel 决定（桌面 = Tauri invoke；远程网页 = WebSocket，见 pi-channel.ts），
+ * 桥只负责类型定义与错误归一。
  */
 
 export type PiSessionSummary = {
@@ -41,7 +42,7 @@ export type PiSkillSummary = {
   scope: "user" | "project" | "temporary";
 };
 
-type PiResponse =
+export type PiResponse =
   | { type: "sessions"; sessions: PiSessionSummary[] }
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "history"; messages: unknown[] }
@@ -56,16 +57,7 @@ export async function piRequest<T extends PiResponse>(
   payload: Record<string, unknown>,
   timeoutMs = 15000,
 ): Promise<T> {
-  const invokePromise = invoke<string>("pi_request", { payload }).then(
-    (line) => JSON.parse(line) as PiResponse,
-  );
-
-  const response = await Promise.race([
-    invokePromise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("pi-agent request timed out")), timeoutMs),
-    ),
-  ]);
+  const response = await getPiChannel().request(payload, timeoutMs);
 
   if (response.type === "error") {
     throw new Error(response.errorText);

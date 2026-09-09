@@ -1,0 +1,250 @@
+"use client";
+
+import type { UIMessageChunk } from "ai";
+import type {
+  PiChannel,
+  PiChannelStatus,
+  PromptStreamArgs,
+} from "@/lib/pi-channel";
+import type { PiResponse } from "@/lib/pi-bridge";
+
+/**
+ * 远程 WebSocket 通道：浏览器 ⇄ 桌面端 remote.rs WS 网关 ⇄ pi-agent sidecar。
+ *
+ * 第一层协议（见 src-tauri/src/remote.rs）：
+ *   连接后先发 {"type":"auth","token"} → {"type":"authed"}；
+ *   之后客户端消息为 sidecar 原样 NDJSON（id 由本通道注入），
+ *   服务端回发 sidecar 原样行（{id, chunk} 流或管理响应，id 已还原）。
+ *
+ * auth 完成前的消息先入队，authed 后统一发出（防 unauthorized 竞态）。
+ * 异常断开时自动重连一次，再失败则交由 UI 呈现状态。
+ */
+export class WsPiChannel implements PiChannel {
+  readonly kind = "ws" as const;
+
+  private ws: WebSocket | null = null;
+  private ready = false;
+  private closedByUser = false;
+  private retriedOnce = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private seq = 0;
+  /** auth 完成前的出站缓冲 */
+  private queue: string[] = [];
+  private pending = new Map<
+    string,
+    {
+      resolve: (r: PiResponse) => void;
+      reject: (e: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  private streams = new Map<
+    string,
+    { controller: ReadableStreamDefaultController<UIMessageChunk> }
+  >();
+  private statusCbs = new Set<(s: PiChannelStatus) => void>();
+
+  constructor(
+    private readonly url: string,
+    private readonly token: string,
+  ) {
+    this.connect();
+  }
+
+  private connect() {
+    this.ready = false;
+    const ws = new WebSocket(this.url);
+    this.ws = ws;
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "auth", token: this.token }));
+    };
+    ws.onmessage = (ev) => this.onMessage(String(ev.data));
+    ws.onclose = () => this.onClose();
+    ws.onerror = () => {
+      /* onclose 会随后触发，错误细节浏览器不提供 */
+    };
+  }
+
+  private emitStatus(s: PiChannelStatus) {
+    for (const cb of this.statusCbs) {
+      try {
+        cb(s);
+      } catch {
+        /* 回调异常不影响通道 */
+      }
+    }
+  }
+
+  private onClose() {
+    this.ws = null;
+    const wasReady = this.ready;
+    this.ready = false;
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error("connection closed"));
+    }
+    this.pending.clear();
+    for (const s of this.streams.values()) {
+      s.controller.enqueue({
+        type: "error",
+        errorText: "connection closed",
+      } as UIMessageChunk);
+      s.controller.close();
+    }
+    this.streams.clear();
+
+    if (this.closedByUser) return;
+    // 异常断开：自动重连一次，再失败交 UI
+    if (wasReady && !this.retriedOnce) {
+      this.retriedOnce = true;
+      this.reconnectTimer = setTimeout(() => this.connect(), 3000);
+      this.emitStatus({ connected: false, error: "reconnecting..." });
+    } else {
+      this.emitStatus({ connected: false, error: "disconnected" });
+    }
+  }
+
+  private onMessage(raw: string) {
+    let v: Record<string, unknown>;
+    try {
+      v = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const type = v.type as string | undefined;
+
+    if (type === "authed") {
+      this.ready = true;
+      const queue = this.queue;
+      this.queue = [];
+      for (const line of queue) this.ws?.send(line);
+      this.emitStatus({ connected: true });
+      return;
+    }
+
+    // 协议层错误（无 id）：auth 失败/认证超时等
+    if (type === "error" && v.id === undefined && !("chunk" in v)) {
+      const errorText = String(v.errorText ?? "protocol error");
+      this.emitStatus({ connected: this.ready, error: errorText });
+      if (!this.ready) {
+        // 认证不通过，重连无意义
+        this.closedByUser = true;
+        this.ws?.close();
+      }
+      return;
+    }
+
+    if (type === "closed") {
+      this.closedByUser = true;
+      this.ws?.close();
+      return;
+    }
+
+    const id = typeof v.id === "string" ? v.id : undefined;
+
+    // prompt chunk 流：{id, chunk}
+    if ("chunk" in v && id) {
+      const entry = this.streams.get(id);
+      const chunk = v.chunk as UIMessageChunk | undefined;
+      if (!entry || !chunk) return;
+      entry.controller.enqueue(chunk);
+      if (chunk.type === "finish" || chunk.type === "error") {
+        this.streams.delete(id);
+        entry.controller.close();
+      }
+      return;
+    }
+
+    // 管理类响应：带 id 的一次性请求-响应
+    if (id) {
+      const entry = this.pending.get(id);
+      if (!entry) return;
+      clearTimeout(entry.timer);
+      this.pending.delete(id);
+      entry.resolve(v as PiResponse);
+    }
+  }
+
+  /** 就绪直发；socket 建立/认证中则入队（authed 后 flush）；无连接返回 false */
+  private sendRaw(value: Record<string, unknown>): boolean {
+    const line = JSON.stringify(value);
+    if (this.ready && this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(line);
+      return true;
+    }
+    if (this.ws && !this.ready) {
+      this.queue.push(line);
+      return true;
+    }
+    return false;
+  }
+
+  request(
+    payload: Record<string, unknown>,
+    timeoutMs = 15000,
+  ): Promise<PiResponse> {
+    const id = `ws-${++this.seq}-${Date.now()}`;
+    return new Promise<PiResponse>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error("pi-agent request timed out"));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      this.sendRaw({ ...payload, id });
+    });
+  }
+
+  promptStream(args: PromptStreamArgs): ReadableStream<UIMessageChunk> {
+    const { requestId, text, threadId, sessionId, cwd, abortSignal } = args;
+    return new ReadableStream<UIMessageChunk>({
+      start: (controller) => {
+        // 先挂流再发 prompt，避免漏掉最早的 chunk
+        this.streams.set(requestId, { controller });
+        abortSignal?.addEventListener(
+          "abort",
+          () => {
+            void this.abort();
+          },
+          { once: true },
+        );
+        const ok = this.sendRaw({
+          type: "prompt",
+          id: requestId,
+          text,
+          threadId,
+          sessionId: sessionId ?? null,
+          cwd: cwd ?? null,
+        });
+        if (!ok) {
+          // 无连接且未入队：立即报错收流
+          this.streams.delete(requestId);
+          controller.enqueue({
+            type: "error",
+            errorText: "not connected",
+          } as UIMessageChunk);
+          controller.close();
+        }
+      },
+      cancel: () => {
+        this.streams.delete(requestId);
+      },
+    });
+  }
+
+  async abort() {
+    this.sendRaw({ type: "abort" });
+  }
+
+  close() {
+    this.closedByUser = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.ws?.close();
+    this.ws = null;
+    this.emitStatus({ connected: false });
+  }
+
+  onStatusChange(cb: (s: PiChannelStatus) => void): () => void {
+    this.statusCbs.add(cb);
+    return () => this.statusCbs.delete(cb);
+  }
+}

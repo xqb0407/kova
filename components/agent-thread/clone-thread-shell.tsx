@@ -35,6 +35,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { isRemoteMode } from "@/lib/remote";
+import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { Logo } from "./header";
 import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import { SettingsModal } from "@/components/settings/settings-modal";
 import {
@@ -293,7 +296,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   };
 
   return (
-    <div className="relative flex h-full w-full overflow-hidden">
+    // bg-background
+    <div className="relative flex h-full w-full overflow-hidden  ">
       <aside
         className={cn(
           "bg-muted/55 hidden h-full shrink-0 flex-col overflow-hidden border-r transition-[width] duration-200 md:flex",
@@ -302,8 +306,12 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         )}
       >
         <div
-          data-tauri-drag-region="deep"
-          className="flex h-12 shrink-0 items-center overflow-hidden px-2 justify-end"
+          data-tauri-drag-region={isTauri() ? "deep" : undefined}
+          className={cn(
+            "flex h-12 shrink-0 items-center overflow-hidden px-2 gap-2",
+            // macOS：内容靠右（左上为悬浮红绿灯位）；Windows/网页：Logo 靠左、操作靠右
+            isMacPlatform() ? "justify-end" : "justify-start",
+          )}
         >
           {!collapsedControlled && (
             <TooltipIconButton
@@ -317,11 +325,22 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               <PanelLeftIcon className="size-4" />
             </TooltipIconButton>
           )}
-          {headerContent !== undefined
-            ? headerContent
-            : !sidebarCollapsed && (
-                <span className="ml-2 truncate text-sm font-medium">Chats</span>
-              )}
+          {(() => {
+            const inner =
+              headerContent !== undefined
+                ? headerContent
+                : !sidebarCollapsed && (
+                    <span className="ml-2 truncate text-sm font-medium">Chats</span>
+                  );
+            if (isMacPlatform()) return inner;
+            // Windows/网页：Logo 靠左，折叠按钮靠右（窗口控制在主 Header 右上角）
+            return (
+              <>
+                {!sidebarCollapsed && <Logo />}
+                <div className="ml-auto flex items-center gap-1">{inner}</div>
+              </>
+            );
+          })()}
         </div>
 
         {/* 固定的四个菜单项 */}
@@ -402,19 +421,21 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           {activeTab === "projects" && !sidebarCollapsed && <ProjectTree />}
         </ThreadListRoot>
 
-        {/* 底部固定的设置按钮 */}
-        <div className="shrink-0 p-2">
-          <Button
-            variant="ghost"
-            className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-muted"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <SettingsIcon className="size-4 shrink-0" />
-            {!sidebarCollapsed && (
-              <span className="whitespace-nowrap">设置</span>
-            )}
-          </Button>
-        </div>
+        {/* 底部固定的设置按钮（远程模式下隐藏：模型/技能/远程配置均为桌面专属） */}
+        {!isRemoteMode() && (
+          <div className="shrink-0 p-2">
+            <Button
+              variant="ghost"
+              className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-muted"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <SettingsIcon className="size-4 shrink-0" />
+              {!sidebarCollapsed && (
+                <span className="whitespace-nowrap">设置</span>
+              )}
+            </Button>
+          </div>
+        )}
       </aside>
 
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
@@ -496,22 +517,24 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             {activeTab === "projects" && <ProjectTree />}
           </div>
 
-          {/* 移动端底部固定的设置按钮 */}
-          <div className="shrink-0 border-t p-4">
-            <Button
-              variant="ghost"
-              className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-muted"
-              onClick={() => setSettingsOpen(true)}
-            >
-              <SettingsIcon className="size-4 shrink-0" />
-              <span className="whitespace-nowrap">设置</span>
-            </Button>
-          </div>
+          {/* 移动端底部固定的设置按钮（远程模式下隐藏） */}
+          {!isRemoteMode() && (
+            <div className="shrink-0 border-t p-4">
+              <Button
+                variant="ghost"
+                className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-muted"
+                onClick={() => setSettingsOpen(true)}
+              >
+                <SettingsIcon className="size-4 shrink-0" />
+                <span className="whitespace-nowrap">设置</span>
+              </Button>
+            </div>
+          )}
         </SheetContent>
       </Sheet>
 
-      <CommandDialog open={searchOpen} onOpenChange={setSearchOpen}>
-        <Command>
+      <CommandDialog open={searchOpen} onOpenChange={setSearchOpen} className="w-[800px]">
+        <Command className="w-full">
           <CommandInput placeholder="搜索对话..." />
           <CommandList>
             <CommandEmpty>没有找到结果</CommandEmpty>

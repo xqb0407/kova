@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun build src/index.ts --compile --outfile ../../src-tauri/binaries/pi-agent-$(rustc -vV | sed -n 's/^host: //p')",
+    "build": "bun build src/index.ts --compile --outfile ../../src-tauri/binaries/pi-agent-$(bun -p \"require('child_process').execSync('rustc -vV',{encoding:'utf8'}).match(/^host: (.+)$/m)[1]\")",
     "smoke": "bun run src/index.ts"
   },
   "dependencies": {

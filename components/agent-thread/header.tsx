@@ -5,6 +5,8 @@ import { ModelSelector } from "@/components/assistant-ui/elements/model-selector
 import { docsModelOptions } from "@/components/docs/assistant/docs-model-options";
 import { DEFAULT_MODEL_ID } from "@/lib/model";
 import { cn } from "@/lib/utils";
+import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { WindowControls } from "@/components/window-controls";
 import { useAuiState } from "@assistant-ui/react";
 import { MenuIcon, PanelLeftIcon, ShareIcon } from "lucide-react";
 import Image from "next/image";
@@ -64,13 +66,19 @@ export const Header: FC<{
   onToggleSidebar: () => void;
   onOpenMobileSidebar: () => void;
 }> = ({ sidebarCollapsed, onToggleSidebar, onOpenMobileSidebar }) => {
+  // 桌面端自绘 titlebar：拖拽区所有桌面端生效；红绿灯让位仅 macOS（Windows 隐藏系统
+  // 标题栏后由 WindowControls 接管，网页端无窗口 chrome）
+  const desktop = isTauri();
+  const mac = desktop && isMacPlatform();
+  const winControls = desktop && !mac;
   return (
     <header
-      data-tauri-drag-region="deep"
+      data-tauri-drag-region={desktop ? "deep" : undefined}
       className={cn(
-        "flex h-12 shrink-0 items-center gap-2 pr-4 border-b",
-        // 侧边栏折叠后主区从窗口左缘开始，需要避开 macOS 红绿灯（x:16 起，约 68px 宽）
-        sidebarCollapsed ? "md:pl-24" : "pl-4",
+        "flex h-12 shrink-0 items-center gap-2 border-b",
+        // Windows 三键贴窗口右上角，去掉右 padding；其余环境保持 pr-4
+        winControls ? "pr-0" : "pr-4",
+        sidebarCollapsed && mac ? "md:pl-24" : "pl-4",
       )}
     >
       <Button
@@ -106,6 +114,8 @@ export const Header: FC<{
       >
         <ShareIcon className="size-4" />
       </TooltipIconButton>
+      {/* 窗口控制固定在窗口右上角（主 Header 右缘即窗口右缘）；仅 Windows/Linux 渲染 */}
+      <WindowControls />
     </header>
   );
 };

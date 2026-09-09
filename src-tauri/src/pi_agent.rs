@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
+use crate::remote;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -49,7 +50,7 @@ fn resolve_pi_package_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// 确保子进程已启动；返回 stdout 事件监听是否已由本次调用挂上
-async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(), String> {
+pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(), String> {
     let mut guard = state.child.lock().await;
     if guard.is_some() {
         return Ok(());
@@ -87,6 +88,10 @@ async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(), String> 
                             }
                         }
                     }
+                    // 远程网关路由（id 形如 rem-{conn}-{orig}），未命中再广播给本地 webview
+                    if remote::try_route(&line) {
+                        continue;
+                    }
                     let _ = emitter.emit("pi-chunk", line);
                 }
                 CommandEvent::Stderr(line) => {
@@ -110,6 +115,8 @@ async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(), String> 
                             let _ = tx.send("{\"type\":\"error\",\"errorText\":\"pi-agent terminated\"}".into());
                         }
                     }
+                    // 同步通知远程网关连接
+                    remote::notify_terminated();
                     let _ = emitter.emit("pi-exit", status.code.unwrap_or(-1).to_string());
                     break;
                 }
@@ -122,7 +129,8 @@ async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(), String> 
     Ok(())
 }
 
-async fn write_line(state: &PiState, line: String) -> Result<(), String> {
+/// 写入一行 NDJSON 到 sidecar stdin（child Mutex 保证行原子性，多来源并发写安全）
+pub(crate) async fn write_line(state: &PiState, line: String) -> Result<(), String> {
     let mut guard = state.child.lock().await;
     match guard.as_mut() {
         Some(child) => child

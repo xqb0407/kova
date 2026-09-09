@@ -65,3 +65,36 @@ pub fn kv_delete(state: State<'_, DbState>, key: String) -> Result<(), String> {
         .map_err(|e| format!("failed to delete kv: {e}"))?;
     Ok(())
 }
+
+/// 非 command 场景的全局 kv 读取（如 remote.rs 通过 AppHandle 访问）
+pub fn kv_get_global(app: &AppHandle, key: &str) -> Result<Option<String>, String> {
+    let state = app.state::<DbState>();
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.query_row("SELECT value FROM kv WHERE key = ?1", [key], |row| {
+        row.get::<_, String>(0)
+    })
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// 非 command 场景的全局 kv 写入
+pub fn kv_set_global(app: &AppHandle, key: &str, value: &str) -> Result<(), String> {
+    let state = app.state::<DbState>();
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [key, value],
+    )
+    .map_err(|e| format!("failed to write kv: {e}"))?;
+    Ok(())
+}
+
+/// 非 command 场景的全局 kv 删除
+pub fn kv_delete_global(app: &AppHandle, key: &str) -> Result<(), String> {
+    let state = app.state::<DbState>();
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM kv WHERE key = ?1", [key])
+        .map_err(|e| format!("failed to delete kv: {e}"))?;
+    Ok(())
+}
