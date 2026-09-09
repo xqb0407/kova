@@ -191,55 +191,42 @@ const WorkspacePill: FC = () => {
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            variant="ghost"
+      <div className="inline-flex items-center">
+        <DropdownMenuTrigger
+          render={
+            <button
+              type="button"
+              data-slot="aui-composer-workspace"
+              title={workspace ?? "选择工作目录"}
+              aria-label="Select workspace directory"
+              className={
+                cn("group hover:text-foreground inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors",
+                  workspace ? "bg-muted hover:bg-background/80" : "hover:bg-background/80",
+                )
+              }
+            >
+              {busy ? (
+                <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
+              ) : (
+                <FolderOpenIcon className="size-3.5 shrink-0" />
+              )}
+              <span className={cn("truncate", workspace ?? "font-medium")}>
+                {workspace ? pathBasename(workspace) : "选择目录"}
+              </span>
+            </button>
+          }
+        />
+        {workspace && (
+          <button
             type="button"
-            data-slot="aui-composer-workspace"
-            title={workspace ?? "选择工作目录"}
-            aria-label="Select workspace directory"
-            className={
-              cn("group  hover:text-foreground inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors",
-                workspace ? "bg-muted hover:bg-background/80" : " hover:bg-background/80",
-              )
-            }
+            aria-label="Clear workspace"
+            onClick={clearWorkspace}
+            className="hover:bg-muted hover:text-foreground dark:hover:bg-muted/50 -ml-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full"
           >
-            {busy ? (
-              <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
-            ) : (
-              <FolderOpenIcon className="size-3.5 shrink-0" />
-            )}
-            <span className={
-              cn("truncate",workspace ?? "font-medium")
-            }>
-              {workspace ? pathBasename(workspace) : "选择目录"}
-            </span>
-            {workspace && (
-              <Button
-                tabIndex={0}
-                variant="ghost"
-                size={"icon-xs"}
-                aria-label="Clear workspace"
-                title="取消选择"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  clearWorkspace();
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.stopPropagation();
-                    clearWorkspace();
-                  }
-                }}
-                className=" -me-1 ml-0.5  shrink-0 items-center justify-center rounded-full"
-              >
-                <XIcon className="size-3.5" />
-              </Button>
-            )}
-          </Button>
-        }
-      />
+            <XIcon className="size-3.5" />
+          </button>
+        )}
+      </div>
       <DropdownMenuContent align="start" sideOffset={0} className="w-64 p-0">
         <DropdownMenuGroup className={"p-0"}>
           {/* <DropdownMenuItem>最近使用</DropdownMenuItem> */}
