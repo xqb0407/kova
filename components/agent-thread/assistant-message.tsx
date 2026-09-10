@@ -146,6 +146,13 @@ export const AssistantMessage: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
+  // 纯分隔线消息（如历史重建的压缩分隔线）：不展示复制/重载等操作
+  const dividerOnly = useAuiState(
+    (s) =>
+      s.message.content.length > 0 &&
+      s.message.content.every((p) => p.type === "data"),
+  );
+  if (dividerOnly) return null;
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning

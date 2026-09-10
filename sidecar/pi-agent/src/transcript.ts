@@ -56,11 +56,11 @@ export function readTranscript(
     .map(([seq, row]) => ({ seq, ...row }));
 }
 
-/** 读最后一条压缩检查点行（无检查点返回 undefined；撕裂尾行容忍同 readTranscript） */
-export function readCompaction(sessionId: string): CompactionRow | undefined {
+/** 扫描全部压缩检查点行（文件序；撕裂尾行容忍同 readTranscript） */
+function scanCompactionRows(sessionId: string): CompactionRow[] {
   const file = sessionPath(sessionId);
-  if (!existsSync(file)) return undefined;
-  let last: CompactionRow | undefined;
+  if (!existsSync(file)) return [];
+  const rows: CompactionRow[] = [];
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -71,13 +71,23 @@ export function readCompaction(sessionId: string): CompactionRow | undefined {
         typeof row.summary === "string" &&
         typeof row.throughSeq === "number"
       ) {
-        last = row as CompactionRow;
+        rows.push(row as CompactionRow);
       }
     } catch {
       // 撕裂尾行：忽略
     }
   }
-  return last;
+  return rows;
+}
+
+/** 读最后一条压缩检查点行（无检查点返回 undefined） */
+export function readCompaction(sessionId: string): CompactionRow | undefined {
+  return scanCompactionRows(sessionId).at(-1);
+}
+
+/** 读全部压缩检查点行（get_history 用：把每次压缩的分隔线重建回消息流） */
+export function readAllCompactions(sessionId: string): CompactionRow[] {
+  return scanCompactionRows(sessionId);
 }
 
 /** 追加一条压缩检查点行（runCompaction 落盘入口；seq 由调用方从 jsonlSeq 取） */
@@ -126,13 +136,39 @@ function toolResultOutput(msg: ToolResultMessage): string {
     .join("\n");
 }
 
+/** 压缩检查点 -> data-compaction part（phase 固定 complete：历史里都是终态） */
+function compactionDividerPart(row: CompactionRow) {
+  const details = row.details as
+    | { generation?: unknown; strategy?: unknown }
+    | undefined;
+  return {
+    type: "data-compaction",
+    id: `cmp-${row.seq}`,
+    data: {
+      phase: "complete",
+      generation:
+        typeof details?.generation === "number" ? details.generation : 1,
+      tokensBefore: row.tokensBefore,
+      summarized: details?.strategy !== "fresh_window",
+    },
+  } as UIMessage["parts"][number];
+}
+
 /**
  * 从持久化的 agent 消息重建前端历史（含工具部件，get_history 用）。
  * assistant.toolCall → `tool-${name}` part（input-available）；后续 toolResult
  * 按 toolCallId 回填 output（output-available），与 live 流的 chunk 形状一致，
  * 刷新前后渲染相同。toolCallId 匹配不到的 toolResult 直接忽略。
+ *
+ * compactions 提供时在消息流里重建「上下文已压缩」分隔线（刷新后 live 横幅
+ * 不丢）：阈值/溢出压缩的宿主 = 边界后第一条 assistant 消息（与 live 流分隔线
+ * 位于该轮回答气泡顶部一致）；其后无宿主（手动压缩的典型情形）则独立成一条
+ * 仅含分隔线 part 的 assistant 消息，落在边界之后。
  */
-export function historyToUiMessages(rows: { agent: Message }[]): UIMessage[] {
+export function historyToUiMessages(
+  rows: { agent: Message; seq?: number }[],
+  compactions: CompactionRow[] = [],
+): UIMessage[] {
   type ToolPart = {
     type: string;
     toolCallId: string;
@@ -141,8 +177,12 @@ export function historyToUiMessages(rows: { agent: Message }[]): UIMessage[] {
     output?: unknown;
   };
   const messages: UIMessage[] = [];
+  // 与 messages 平行：每条 UI 消息源行的 jsonl seq（独立分隔线消息用 -Infinity，
+  // 永远视为「边界之前」，不会再当后续检查点的宿主）
+  const srcSeqs: number[] = [];
   const openTools = new Map<string, ToolPart>();
   for (let i = 0; i < rows.length; i++) {
+    const seq = rows[i].seq ?? i;
     const msg = rows[i].agent;
     if (msg.role === "user") {
       const text =
@@ -154,6 +194,7 @@ export function historyToUiMessages(rows: { agent: Message }[]): UIMessage[] {
               .join("\n");
       if (!text.trim()) continue;
       messages.push({ id: `msg-${i}`, role: "user", parts: [{ type: "text", text }] });
+      srcSeqs.push(seq);
       continue;
     }
     if (msg.role === "assistant") {
@@ -176,6 +217,7 @@ export function historyToUiMessages(rows: { agent: Message }[]): UIMessage[] {
       }
       if (!parts.length) continue;
       messages.push({ id: `msg-${i}`, role: "assistant", parts });
+      srcSeqs.push(seq);
       continue;
     }
     if (msg.role === "toolResult") {
@@ -185,6 +227,34 @@ export function historyToUiMessages(rows: { agent: Message }[]): UIMessage[] {
         part.output = toolResultOutput(msg);
       }
     }
+  }
+
+  for (const cp of [...compactions].sort((a, b) => a.seq - b.seq)) {
+    const part = compactionDividerPart(cp);
+    let host = -1;
+    for (let j = 0; j < messages.length; j++) {
+      if (srcSeqs[j] > cp.throughSeq && messages[j].role === "assistant") {
+        host = j;
+        break;
+      }
+    }
+    if (host >= 0) {
+      messages[host].parts.unshift(part);
+      continue;
+    }
+    let pos = messages.length;
+    for (let j = 0; j < messages.length; j++) {
+      if (srcSeqs[j] > cp.throughSeq) {
+        pos = j;
+        break;
+      }
+    }
+    messages.splice(pos, 0, {
+      id: `cmp-${cp.seq}`,
+      role: "assistant",
+      parts: [part],
+    });
+    srcSeqs.splice(pos, 0, -Infinity);
   }
   return messages;
 }

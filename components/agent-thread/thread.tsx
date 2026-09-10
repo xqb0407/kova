@@ -19,7 +19,7 @@ import { ThreadWelcome } from "./thread-welcome";
 import { ThreadSuggestions } from "./thread-suggestions";
 import { Composer, EditComposer } from "./composer";
 import { AssistantMessage } from "./assistant-message";
-import { CompactionDataUI } from "./compaction-banner";
+import { CompactionDataUI, ManualCompactionTail } from "./compaction-banner";
 import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
 
@@ -114,6 +114,8 @@ export const Thread: FC = () => {
               return <AssistantMessage />;
             }}
           </ThreadPrimitive.Messages>
+          {/* 手动压缩的即时分隔线（marker 只在列表尾部有效，下一条消息即隐藏） */}
+          <ManualCompactionTail />
         </div>
 
         <ThreadPrimitive.ViewportFooter

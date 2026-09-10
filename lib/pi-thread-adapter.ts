@@ -15,6 +15,7 @@ import type {
 } from "@assistant-ui/core";
 import type { UIMessage } from "ai";
 import { piRequest, type PiSessionSummary } from "@/lib/pi-bridge";
+import { clearManualCompactionMarkerForRemote } from "@/lib/pi-compaction-marker";
 import { getWorkspace } from "@/lib/workspace-store";
 
 /** local thread id -> pi sessionId（remoteId）。transport 发 prompt 时靠它找会话 */
@@ -37,15 +38,28 @@ function toRemoteThread(s: PiSessionSummary) {
 const toTitle = (sessions: PiSessionSummary[]) =>
   sessions.map(toRemoteThread);
 
-/** pi UIMessage -> assistant-ui ThreadMessage（仅文本；reasoning 暂不回放） */
+/** pi UIMessage -> assistant-ui ThreadMessage（text + data part 透传；reasoning/工具暂不回放） */
+type ConverterPart =
+  | { type: "text"; text: string }
+  | { type: "data"; name: string; data: unknown };
 const converter = createMessageConverter((msg: UIMessage) => {
-  const text = msg.parts
-    .filter((p): p is { type: "text"; text: string } => p.type === "text")
-    .map((p) => p.text)
-    .join("\n");
+  const content = msg.parts.flatMap((p): ConverterPart[] => {
+    if (p.type === "text") return [{ type: "text", text: p.text }];
+    // data-* part（压缩分隔线等）原样透传，交给 makeAssistantDataUI 注册的渲染器
+    if (p.type.startsWith("data-")) {
+      return [
+        {
+          type: "data",
+          name: p.type.slice(5),
+          data: (p as { data?: unknown }).data,
+        },
+      ];
+    }
+    return [];
+  });
   return {
     role: msg.role === "user" ? "user" : "assistant",
-    content: text ? [{ type: "text" as const, text }] : [],
+    content,
   };
 });
 
@@ -75,6 +89,8 @@ async function loadPiHistory(
     type: "get_history",
     sessionId: remoteId,
   });
+  // 压缩分隔线已由检查点行重建进历史消息流 → 手动压缩的尾部 marker 退役
+  clearManualCompactionMarkerForRemote(remoteId);
   return res.messages;
 }
 

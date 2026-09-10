@@ -1,19 +1,25 @@
 "use client";
 
-import { makeAssistantDataUI } from "@assistant-ui/react";
+import { makeAssistantDataUI, useAuiState } from "@assistant-ui/react";
+import type { FC } from "react";
 import {
   ArchiveRestoreIcon,
   Loader2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
 import { fmtTokens } from "@/lib/model-format";
+import { useManualCompactionMarker } from "@/lib/pi-compaction-marker";
 
 /**
- * 上下文压缩分隔线（会话流中部）：压缩发生时 sidecar 在同一条消息流里按同一
- * part id 发 data-compaction 生命周期 chunk（start → complete/failed，见
- * sidecar protocol.ts），AI SDK 按 id 原地更新 data part，所以这里一个位置
- * 就从「正在压缩上下文…」转成「上下文已压缩」分隔线。
- * 手动压缩（context 弹层）不走消息流，反馈在弹层按钮态 + toast。
+ * 上下文压缩分隔线（会话流中部）。三条呈现路径共用这里的渲染：
+ * - 自动压缩（阈值/溢出）：sidecar 在同一条消息流里按同一 part id 发
+ *   data-compaction 生命周期 chunk（start → complete/failed，见 sidecar
+ *   protocol.ts），AI SDK 按 id 原地更新 data part，一个位置从「正在压缩
+ *   上下文…」转成「上下文已压缩」。
+ * - 刷新/重进会话：get_history 从 compaction 检查点行把「已压缩」分隔线重建
+ *   进历史消息流（sidecar transcript.ts）。
+ * - 手动压缩（context 弹层）：不走消息流，用 ManualCompactionTail 即时渲染
+ *   在列表尾部，下次装载历史后由重建的分隔线接管。
  */
 
 type CompactionData = {
@@ -33,7 +39,7 @@ function Divider({ children }: { children: React.ReactNode }) {
   );
 }
 
-function CompactionBanner({ data }: { data: CompactionData }) {
+export function CompactionBanner({ data }: { data: CompactionData }) {
   // 兼容缺省：无 phase 视为完成态
   const phase = data.phase ?? "complete";
   if (phase === "start") {
@@ -79,3 +85,16 @@ export const CompactionDataUI = makeAssistantDataUI<CompactionData>({
   name: "compaction",
   render: CompactionBanner,
 });
+
+/**
+ * 手动压缩的即时分隔线：marker 打在消息列表尾部（压缩发生在空闲边界，
+ * 「其前全部已压缩」语义天然属于列表末尾）；用户发出下一条消息（列表变长）
+ * 即隐藏，重新装载历史后由 get_history 重建的分隔线在正确位置接管。
+ */
+export const ManualCompactionTail: FC = () => {
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const count = useAuiState((s) => s.thread.messages.length);
+  const marker = useManualCompactionMarker(threadId ?? undefined);
+  if (!marker || marker.atCount !== count || count === 0) return null;
+  return <CompactionBanner data={marker.data} />;
+};
