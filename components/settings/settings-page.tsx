@@ -14,6 +14,7 @@ import {
 import { ModelSettings } from "./components/model-settings";
 import { RemoteSettings } from "./components/remote-settings";
 import { AppearanceSettings } from "./components/appearance-settings";
+import { Logo } from "../agent-thread/header";
 
 type SettingsSection = "models" | "remote" | "appearance" | "general";
 
@@ -54,7 +55,9 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
         <div
           data-tauri-drag-region={desktop ? "deep" : undefined}
           className="h-12 shrink-0"
-        />
+       />
+         
+
 
         <div className="flex flex-col gap-1 overflow-y-auto p-3 pt-1">
           <button

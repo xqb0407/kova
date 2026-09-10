@@ -48,3 +48,5 @@ next-env.d.ts
 /sidecar/pi-agent/stderr.log
 # sidecar 使用 bun 管理依赖，npm lock 为杂讯
 /sidecar/pi-agent/package-lock.json
+
+.agents/skills/

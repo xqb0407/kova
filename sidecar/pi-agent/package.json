@@ -4,13 +4,15 @@
   "type": "module",
   "scripts": {
     "build": "bun build src/index.ts --compile --outfile ../../src-tauri/binaries/pi-agent-$(bun -p \"require('child_process').execSync('rustc -vV',{encoding:'utf8'}).match(/^host: (.+)$/m)[1]\")",
-    "smoke": "bun run src/index.ts"
+    "smoke": "bun run src/index.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.85.1",
     "@earendil-works/pi-ai": "0.85.1"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.2"
+    "@types/bun": "^1.4.2",
+    "ai": "7.0.92"
   }
 }

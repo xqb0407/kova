@@ -1,9 +1,7 @@
 "use client";
 
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
-import { ModelSelector } from "@/components/assistant-ui/elements/model-selector.aui";
-import { docsModelOptions } from "@/components/docs/assistant/docs-model-options";
-import { DEFAULT_MODEL_ID } from "@/lib/model";
+import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { WindowControls } from "@/components/window-controls";
@@ -34,18 +32,8 @@ export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
   );
 };
 
-const models = docsModelOptions();
-
 const ModelPicker: FC = () => {
-  return (
-    <ModelSelector
-      models={models}
-      defaultValue={DEFAULT_MODEL_ID}
-      variant="ghost"
-      size="sm"
-      className="h-7 rounded-full"
-    />
-  );
+  return <PiModelPicker />;
 };
 
 const ThreadTitle: FC = () => {
