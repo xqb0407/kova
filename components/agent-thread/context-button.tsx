@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { fmtTokens } from "@/lib/model-format";
-import { compactContext, fetchContextInfo } from "@/lib/pi-context";
+import { compactContext, fetchContextInfo, markManualCompaction } from "@/lib/pi-context";
 import type { PiContextInfo } from "@/lib/pi-bridge";
 
 /**
@@ -120,6 +120,8 @@ export const ContextButton: FC = () => {
         description: `压缩前 ${fmtTokens(res.tokensBefore)} tokens`,
         type: "success",
       });
+      // 消息列表尾部即时挂「上下文已压缩」分隔线（历史装载后由重建的分隔线接管）
+      markManualCompaction(threadId, messageCount, res);
       await load();
     } catch (err) {
       toast.add({

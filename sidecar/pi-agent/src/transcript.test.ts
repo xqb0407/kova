@@ -11,6 +11,7 @@ import {
   historyToUiMessages,
   appendCompactionRow,
   readCompaction,
+  readAllCompactions,
   titleSummarizeHook,
   maybeSummarizeSessionTitle,
 } from "./transcript";
@@ -138,6 +139,83 @@ describe("historyToUiMessages", () => {
     expect(messages).toEqual([
       { id: "msg-0", role: "user", parts: [{ type: "text", text: "hello" }] },
     ]);
+  });
+
+  test("阈值/溢出压缩：分隔线落在边界后首条 assistant 消息顶部（与 live 一致）", () => {
+    const rows = [
+      { seq: 1, agent: userMsg("q1") },
+      { seq: 2, agent: assistantMsg([{ type: "text", text: "a1" }]) },
+      { seq: 3, agent: userMsg("q2") },
+      { seq: 4, agent: assistantMsg([{ type: "text", text: "a2" }]) },
+    ];
+    const messages = historyToUiMessages(rows, [
+      {
+        seq: 5,
+        summary: "S",
+        tokensBefore: 1000,
+        throughSeq: 2,
+        createdAt: "t",
+        details: { generation: 1, strategy: "summary" },
+      },
+    ]);
+    // 边界 seq=2 之后首条 assistant 是 a2（seq=4，msg-3）
+    expect(messages[3].id).toBe("msg-3");
+    expect(messages[3].parts[0]).toEqual({
+      type: "data-compaction",
+      id: "cmp-5",
+      data: { phase: "complete", generation: 1, tokensBefore: 1000, summarized: true },
+    });
+    // 其余消息不带分隔线
+    expect(messages[2].parts[0].type).toBe("text");
+    expect(messages.filter((m) => m.parts[0].type === "data-compaction").length).toBe(1);
+  });
+
+  test("手动压缩：其后无 assistant 宿主，独立成分隔线消息落在边界之后", () => {
+    const rows = [
+      { seq: 1, agent: userMsg("q1") },
+      { seq: 2, agent: assistantMsg([{ type: "text", text: "a1" }]) },
+    ];
+    const messages = historyToUiMessages(rows, [
+      {
+        seq: 3,
+        summary: "S",
+        tokensBefore: 800,
+        throughSeq: 2,
+        createdAt: "t",
+        details: { generation: 1, strategy: "summary" },
+      },
+    ]);
+    expect(messages.length).toBe(3);
+    expect(messages[2]).toEqual({
+      id: "cmp-3",
+      role: "assistant",
+      parts: [
+        {
+          type: "data-compaction",
+          id: "cmp-3",
+          data: { phase: "complete", generation: 1, tokensBefore: 800, summarized: true },
+        },
+      ],
+    });
+  });
+
+  test("多次压缩按 seq 升序落位，fresh_window 记 summarized:false", () => {
+    const rows = [
+      { seq: 1, agent: userMsg("q1") },
+      { seq: 2, agent: assistantMsg([{ type: "text", text: "a1" }]) },
+      { seq: 3, agent: userMsg("q2") },
+      { seq: 4, agent: assistantMsg([{ type: "text", text: "a2" }]) },
+    ];
+    // 第二条 compaction 边界覆盖全部消息（seq throughSeq=4）→ 独立线；第一条落 a2 顶部
+    const messages = historyToUiMessages(rows, [
+      { seq: 10, summary: "S2", tokensBefore: 2000, throughSeq: 4, createdAt: "t", details: { generation: 2, strategy: "fresh_window" } },
+      { seq: 5, summary: "S1", tokensBefore: 1000, throughSeq: 2, createdAt: "t", details: { generation: 1, strategy: "summary" } },
+    ]);
+    // a2 顶部带第一代分隔线
+    expect(messages[3].parts[0].type).toBe("data-compaction");
+    // 末尾独立第二代分隔线（fresh_window → summarized:false）
+    expect(messages[4].id).toBe("cmp-10");
+    expect((messages[4].parts[0] as { data: { summarized: boolean } }).data.summarized).toBe(false);
   });
 });
 
@@ -313,6 +391,8 @@ describe("compaction rows", () => {
     expect(cp.summary).toBe("S2");
     expect(cp.throughSeq).toBe(6);
     expect(cp.details).toEqual({ generation: 2, strategy: "summary" });
+    // 全量读：两条检查点按文件序返回（撕裂尾行同样被跳过）
+    expect(readAllCompactions(id).map((r) => r.summary)).toEqual(["S1", "S2"]);
     // 检查点行不是消息行：全量历史读端与 UI 重建完全不受影响
     expect(readTranscript(id).length).toBe(0);
     expect(historyToUiMessages(readTranscript(id)).length).toBe(0);

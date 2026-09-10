@@ -12,7 +12,8 @@
  *   { "type": "list_sessions", "id" }                         → { id, type: "sessions", sessions: [...] }
  *   { "type": "new_session", "id", "threadId", "cwd" }        → { id, type: "session", sessionId, threadId }
  *   { "type": "get_history", "id", "sessionId" }              → { id, type: "history", messages: UIMessage[] }
- *       历史从 agent 消息重建，含工具部件（tool part 的 input/output 与 live 流一致）
+ *       历史从 agent 消息重建，含工具部件（tool part 的 input/output 与 live 流一致）；
+ *       compaction 检查点行重建为 data-compaction 分隔线 part（刷新后分隔线不丢）
  *   { "type": "delete_session", "id", "sessionId" }           → { id, type: "deleted" }
  *   { "type": "rename_session", "id", "sessionId", "name" }   → { id, type: "renamed" }
  *   { "type": "list_models", "id" }                           → { id, type: "models", models: [...], providers: [...] }
@@ -92,7 +93,12 @@ import {
   registerCustomProvider,
   setCurrentModelKey,
 } from "./model-catalog";
-import { readTranscript, persist, historyToUiMessages } from "./transcript";
+import {
+  readTranscript,
+  readAllCompactions,
+  persist,
+  historyToUiMessages,
+} from "./transcript";
 import { contextInfo, needsCompaction, runCompaction } from "./context";
 import { running, resolveSession } from "./sessions";
 import {
@@ -415,8 +421,12 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     }
     case "get_history": {
       const sessionId = String(msg.sessionId ?? "");
-      // 从 agent 消息重建：text/reasoning 之外还带 tool part（input/output 对齐 live 流）
-      const messages = historyToUiMessages(readTranscript(sessionId));
+      // 从 agent 消息重建：text/reasoning 之外还带 tool part（input/output 对齐 live 流）；
+      // 压缩检查点行重建为 data-compaction 分隔线 part，刷新后分隔线不丢
+      const messages = historyToUiMessages(
+        readTranscript(sessionId),
+        readAllCompactions(sessionId),
+      );
       send({ id: reqId, type: "history", messages });
       break;
     }
