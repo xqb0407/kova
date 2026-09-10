@@ -8,15 +8,17 @@ import {
   BoxesIcon,
   ChevronLeftIcon,
   GlobeIcon,
+  InfoIcon,
   PaintbrushIcon,
   SlidersHorizontalIcon,
 } from "lucide-react";
 import { ModelSettings } from "./components/model-settings";
 import { RemoteSettings } from "./components/remote-settings";
 import { AppearanceSettings } from "./components/appearance-settings";
+import { AboutSettings } from "./components/about-settings";
 import { Logo } from "../agent-thread/header";
 
-type SettingsSection = "models" | "remote" | "appearance" | "general";
+type SettingsSection = "models" | "remote" | "appearance" | "about" | "general";
 
 const GROUPS: {
   label: string;
@@ -29,10 +31,13 @@ const GROUPS: {
       { id: "appearance", label: "外观", icon: PaintbrushIcon },
     ],
   },
-  { label: "AI", items: [{ id: "models", label: "模型", icon: BoxesIcon }] },
+  { label: "智能体", items: [{ id: "models", label: "模型", icon: BoxesIcon }] },
   {
     label: "系统",
-    items: [{ id: "remote", label: "远程访问", icon: GlobeIcon }],
+    items: [
+      { id: "remote", label: "远程访问", icon: GlobeIcon },
+      { id: "about", label: "关于", icon: InfoIcon },
+    ],
   },
 ];
 
@@ -45,11 +50,11 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
   const winControls = desktop && !isMacPlatform();
 
   return (
-    <div className="bg-background flex h-full w-full">
+    <div className="bg-muted/55 flex h-full w-full">
       {/* 二级侧边栏 */}
       <nav
         data-slot="settings-nav"
-        className="bg-muted/55 flex w-65 shrink-0 flex-col border-r"
+        className="bg-transparent flex w-65 shrink-0 flex-col border-r"
       >
         {/* 顶栏仅作拖拽区：macOS 红绿灯悬浮于此行，"返回应用"单独成行在其下方 */}
         <div
@@ -94,7 +99,7 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
       </nav>
 
       {/* 内容区 */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col bg-background">
         <div
           data-tauri-drag-region={desktop ? "deep" : undefined}
           className={cn(
@@ -109,6 +114,7 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "models" && <ModelSettings />}
           {section === "remote" && <RemoteSettings />}
           {section === "appearance" && <AppearanceSettings />}
+          {section === "about" && <AboutSettings />}
           {section === "general" && (
             <div className="text-muted-foreground p-5 text-sm">暂无可配置项</div>
           )}

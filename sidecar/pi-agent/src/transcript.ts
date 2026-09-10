@@ -1,23 +1,41 @@
 /**
  * 会话正文持久化：JSONL 转录文件 + SQLite 索引表维护。
  *   JSONL 首行 {"type":"header",...}；消息行 {"type":"message","seq":n,"ui":UIMessage|null,"agent":Message}
+ *   压缩检查点行 {"type":"compaction","seq":n,...}（context.ts 的 checkpoint，摘要+边界+generation）；
  *   每条 agent 消息都写一行（含 toolResult），ui 字段是 text/reasoning 快照可为 null；
- *   前端历史（含工具部件）由 historyToUiMessages 从 agent 行重建。
+ *   前端历史（含工具部件）由 historyToUiMessages 从 agent 行重建（压缩不删历史行）；
+ *   seq 是文件内单调编号（消息行与检查点行共用，见 Running.jsonlSeq）。
  *   读端跳过撕裂尾行，append 中途崩溃不影响已有内容。
  */
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
 import { sessionPath } from "./storage";
-import { sessionTouch } from "./hostdb";
+import { sessionGet, sessionRename, sessionTouch } from "./hostdb";
+import { getModels } from "./model-catalog";
+import { summarizeSessionTitle } from "./session-title-summarize";
+import { logErr } from "./log";
 import type { Running, UIMessage } from "./types";
 
-/** 从 JSONL 读全部消息行（跳过撕裂尾行；ui 可为 null）。
+/** 压缩检查点行（与模型上下文的投射解耦：恢复端只需要最后一条） */
+export type CompactionRow = {
+  seq: number;
+  summary: string;
+  /** 压缩前的估计上下文 token 数 */
+  tokensBefore: number;
+  /** 检查点覆盖到的最后一条行的 seq：其后的消息行构成压缩后保留上下文 */
+  throughSeq: number;
+  createdAt: string;
+  /** 不透明扩展位：generation 计数器与 strategy 藏在这里（PI-Desktop 同设计） */
+  details?: unknown;
+};
+
+/** 从 JSONL 读全部消息行（跳过撕裂尾行；ui 可为 null；返回带 seq 供恢复端按边界过滤）。
  * 旧版持久化 bug 会把同一批消息重复 append，同一 seq 可能出现多行：
  * 按 seq 去重（保留最后一次出现）并按 seq 排序，避免历史重建/会话恢复
  * 携带重复消息。 */
 export function readTranscript(
   sessionId: string,
-): { ui: UIMessage | null; agent: Message }[] {
+): { seq: number; ui: UIMessage | null; agent: Message }[] {
   const file = sessionPath(sessionId);
   if (!existsSync(file)) return [];
   const bySeq = new Map<number, { ui: UIMessage | null; agent: Message }>();
@@ -33,7 +51,44 @@ export function readTranscript(
       // 撕裂尾行：忽略
     }
   }
-  return [...bySeq.entries()].sort((a, b) => a[0] - b[0]).map(([, row]) => row);
+  return [...bySeq.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([seq, row]) => ({ seq, ...row }));
+}
+
+/** 读最后一条压缩检查点行（无检查点返回 undefined；撕裂尾行容忍同 readTranscript） */
+export function readCompaction(sessionId: string): CompactionRow | undefined {
+  const file = sessionPath(sessionId);
+  if (!existsSync(file)) return undefined;
+  let last: CompactionRow | undefined;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line);
+      if (
+        row?.type === "compaction" &&
+        typeof row.seq === "number" &&
+        typeof row.summary === "string" &&
+        typeof row.throughSeq === "number"
+      ) {
+        last = row as CompactionRow;
+      }
+    } catch {
+      // 撕裂尾行：忽略
+    }
+  }
+  return last;
+}
+
+/** 追加一条压缩检查点行（runCompaction 落盘入口；seq 由调用方从 jsonlSeq 取） */
+export function appendCompactionRow(
+  sessionId: string,
+  row: CompactionRow,
+): void {
+  appendFileSync(
+    sessionPath(sessionId),
+    JSON.stringify({ type: "compaction", ...row }) + "\n",
+  );
 }
 
 /** pi-ai Message -> UIMessage（ui 字段快照；转换范围：text/reasoning） */
@@ -134,7 +189,74 @@ export function historyToUiMessages(rows: { agent: Message }[]): UIMessage[] {
   return messages;
 }
 
-/** agent_end 后把新增消息增量 append 到 JSONL，并维护索引表（经 hostdb 数据访问层） */
+/** 标题总结防抖：每会话只尝试一次（进程内）；手动改名后不再覆盖 */
+const titleSummarized = new Set<string>();
+/** 标题总结测试 seam（transcript.test 注入假实现） */
+export const titleSummarizeHook: {
+  fn?: typeof summarizeSessionTitle;
+} = {};
+
+/**
+ * 首轮回复完成后异步生成智能标题（PI-Desktop triggerAutoTitleSummarization 同设计）：
+ * 仅当索引标题仍是 prompt 兜底（= first_message 截断串）时触发——手动改名后
+ * 标题不再等于兜底串，自然跳过；one-shot 独立请求不进会话上下文；失败静默保留
+ * fallback。每会话进程内只尝试一次（防抖 Set）。
+ */
+export async function maybeSummarizeSessionTitle(run: Running): Promise<void> {
+  if (titleSummarized.has(run.sessionId)) return;
+  const messages = run.agent.state.messages;
+  const firstUser = messages.find((m) => m.role === "user") as Message | undefined;
+  if (!firstUser) return;
+  const firstText =
+    typeof firstUser.content === "string"
+      ? firstUser.content
+      : (firstUser.content.find((c) => c.type === "text")?.text ?? "");
+  if (!firstText.trim()) return;
+  const fallback = firstText.slice(0, 60);
+
+  // 标题守卫：仍是兜底串（或为空）才总结；手动改名（≠兜底串）永不覆盖
+  const row = await sessionGet(run.sessionId);
+  if (!row) return;
+  if (row.title && row.title !== fallback) return;
+
+  // 首条非错误/中止的助手回复文本（错误回复生成标题会误导）
+  const firstAssistant = messages.find(
+    (m) =>
+      m.role === "assistant" &&
+      (m as { stopReason?: string }).stopReason !== "error" &&
+      (m as { stopReason?: string }).stopReason !== "aborted",
+  ) as Extract<Message, { role: "assistant" }> | undefined;
+  const replyText = firstAssistant
+    ? firstAssistant.content
+        .filter(
+          (c): c is { type: "text"; text: string } =>
+            c.type === "text" && typeof c.text === "string",
+        )
+        .map((c) => c.text)
+        .join("\n")
+    : "";
+
+  titleSummarized.add(run.sessionId);
+  const model = run.agent.state.model;
+  if (!model) return;
+  const title = await (titleSummarizeHook.fn ?? summarizeSessionTitle)(
+    getModels().streamSimple.bind(getModels()),
+    model,
+    firstText,
+    replyText || undefined,
+  );
+  if (!title || title === fallback) return;
+  try {
+    await sessionRename(run.sessionId, title);
+  } catch (err) {
+    logErr("session title rename failed:", err);
+  }
+}
+
+/** agent_end 后把新增消息增量 append 到 JSONL，并维护索引表（经 hostdb 数据访问层）。
+ * seq 取 run.jsonlSeq（文件内单调，压缩后 state.messages 变短也不会撞号）；
+ * run.persistedSeq 之前的 state 消息视为已入账（压缩后合成摘要头由 runCompaction
+ * 一并跳过），这里只写增量。 */
 export async function persist(run: Running): Promise<void> {
   const messages = run.agent.state.messages;
   if (messages.length <= run.persistedSeq) return;
@@ -144,8 +266,9 @@ export async function persist(run: Running): Promise<void> {
     const agent = messages[i] as Message;
     // 每条 agent 消息都落盘（含纯工具调用与 toolResult）：恢复模型上下文需要完整
     // 的 toolCall/toolResult 对，前端历史重建也需要工具部件
-    const ui = toUiMessage(agent, i);
-    lines.push(JSON.stringify({ type: "message", seq: i, ui, agent }));
+    const seq = run.jsonlSeq++;
+    const ui = toUiMessage(agent, seq);
+    lines.push(JSON.stringify({ type: "message", seq, ui, agent }));
   }
   if (lines.length) appendFileSync(file, lines.join("\n") + "\n");
   run.persistedSeq = messages.length;
@@ -158,4 +281,11 @@ export async function persist(run: Running): Promise<void> {
         : (first.content.find((c) => c.type === "text")?.text ?? "")
       : "";
   await sessionTouch(run.sessionId, firstText.slice(0, 60), firstText);
+
+  // 首轮回复后的智能标题（异步、防抖、失败静默；不阻塞索引维护）
+  try {
+    await maybeSummarizeSessionTitle(run);
+  } catch (err) {
+    logErr("session title summarize trigger failed:", err);
+  }
 }

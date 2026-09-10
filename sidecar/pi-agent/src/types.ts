@@ -6,13 +6,17 @@ import type * as ai from "ai";
 export type UIMessage = ai.UIMessage;
 export type UIMessageChunk = ai.UIMessageChunk;
 
-/** 自定义端点的模型规格（custom_providers.models JSON 数组元素） */
+/** 自定义端点的模型规格（custom_providers 模型行 / add_custom_provider 的 models 元素） */
 export type CustomModelSpec = {
   id: string;
   name?: string;
   reasoning?: boolean;
   contextWindow?: number;
   maxTokens?: number;
+  /** 模态列表，如 ["text"] / ["text","image"] */
+  input?: unknown[];
+  /** 单价（每 token），如 { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } */
+  cost?: Record<string, unknown>;
 };
 
 /** 自定义提供商支持的接口格式 */
@@ -77,7 +81,15 @@ export type Running = {
   agent: Agent;
   sessionId: string;
   cwd: string;
-  persistedSeq: number; // 已写入 JSONL 的消息数
+  persistedSeq: number; // state.messages 中已入账（落盘或压缩合成）的前缀长度
+  /** JSONL 行 seq 分配器：消息行与 compaction 行共用，文件内单调（压缩后不撞号） */
+  jsonlSeq: number;
+  /** 已安装的压缩检查点代数（0 = 从未压缩；新 checkpoint 取 +1） */
+  compactionGeneration: number;
+  /** 压缩摘要请求的中止句柄（用户 Stop 时 abort） */
+  compactionAbort?: AbortController;
+  /** stream.ts 检测到上下文溢出错误后置位，dispatchPrompt 结算恢复 */
+  pendingOverflowRecovery: boolean;
   /** 本会话的 Task 委派注册表 */
   delegations: Map<string, DelegationRecord>;
   /** 用户 Stop 置位：中止后台子代理并退出收敛循环 */

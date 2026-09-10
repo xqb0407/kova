@@ -344,8 +344,10 @@ mod tests {
 
     #[test]
     fn bash_timeout_kills_and_reports() {
-        // ping -n 3 在 bash（Git Bash 含 Windows ping.exe）与 cmd 下都可用且耗时 >1s
-        let out = run_bash(".", "ping -n 3 127.0.0.1", 300).unwrap();
+        // 耗时 >1s 的命令：Windows 用 ping -n 3（Git Bash/cmd 都可用），
+        // Unix 用 sleep 2（ping -n 在 BSD/macOS 是不同语义，会立即报错）
+        let cmd = if cfg!(windows) { "ping -n 3 127.0.0.1" } else { "sleep 2" };
+        let out = run_bash(".", cmd, 300).unwrap();
         assert_eq!(out["exitCode"], Value::Null);
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[timeout]"), "output: {text}");

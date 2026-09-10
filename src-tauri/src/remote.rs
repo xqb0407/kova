@@ -238,12 +238,14 @@ pub async fn pi_remote_start(
     *state.inner.task.lock().map_err(|e| e.to_string())? = Some(task);
     *state.inner.port.lock().map_err(|e| e.to_string())? = Some(port);
     *state.inner.code.lock().map_err(|e| e.to_string())? = Some(code);
+    log::info!("[remote] gateway started on 0.0.0.0:{port}");
     Ok(state.status())
 }
 
 #[tauri::command]
 pub async fn pi_remote_stop(state: State<'_, RemoteState>) -> Result<(), String> {
     stop_sync(&state.inner);
+    log::info!("[remote] gateway stopped");
     Ok(())
 }
 
@@ -505,7 +507,7 @@ async fn handle_conn(ctx: GatewayCtx, socket: WebSocket) {
     rs.conns.fetch_sub(1, Ordering::Relaxed);
     let _ = writer.await;
     if let Err(e) = result {
-        eprintln!("[remote] connection ended: {e}");
+        log::warn!("[remote] connection ended: {e}");
     }
 }
 

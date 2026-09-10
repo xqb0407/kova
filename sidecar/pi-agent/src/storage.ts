@@ -1,6 +1,6 @@
 /**
  * 存储装配：会话 JSONL 目录 + pi-ai CredentialStore 实现。
- * 业务表（pi_sessions/credentials/custom_providers/provider_models）的读写
+ * 业务表（sessions/credentials/custom_providers/models）的读写
  * 统一走 hostdb.ts 的数据访问层：
  *   - 生产（Rust 宿主拉起）：initHostMode → host_query RPC，Rust 是唯一写入方
  *   - 测试/冒烟：initStorage → bun:sqlite 本地库

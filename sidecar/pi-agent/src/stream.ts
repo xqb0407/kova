@@ -4,6 +4,7 @@
  * currentReqId 由协议层在 prompt 前后设置，事件据此路由到当前请求。
  */
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
+import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
 import { logErr } from "./log";
 import { persist } from "./transcript";
 import type { Running, UIMessageChunk } from "./types";
@@ -22,6 +23,11 @@ let contentIds = new Map<number, { text: string; reasoning: string }>();
 /** 协议层在 prompt 开始/结束时设置，事件据此路由到当前请求 */
 export function setCurrentReqId(id: string | null) {
   currentReqId = id;
+}
+
+/** 是否有 prompt 长任务在跑（手动 compact 命令拒绝忙时会话用） */
+export function isPromptActive() {
+  return currentReqId !== null;
 }
 
 /** 活跃请求内发一条额外 chunk（如 planning_state）；无活跃请求时静默丢弃 */
@@ -56,10 +62,18 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       if (!reqId) break;
       const m = event.message as { stopReason?: string; errorMessage?: string };
       if (m?.stopReason === "error") {
-        sendChunk(reqId, {
-          type: "error",
-          errorText: m.errorMessage || "pi agent error",
-        });
+        // 上下文溢出：不发 error chunk（会终结本条消息流），置位交给
+        // dispatchPrompt 压缩后同文本重跑；非溢出错误照常上报
+        const model = run.agent.state.model;
+        if (isContextOverflow(event.message as AssistantMessage, model?.contextWindow)) {
+          run.pendingOverflowRecovery = true;
+          logErr("event: message_end context overflow, recovery deferred to protocol");
+        } else {
+          sendChunk(reqId, {
+            type: "error",
+            errorText: m.errorMessage || "pi agent error",
+          });
+        }
       }
       break;
     }

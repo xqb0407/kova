@@ -6,6 +6,7 @@ import { ComposerTriggerPopover } from "@/components/assistant-ui/elements/compo
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { ModePicker } from "@/components/agent-thread/mode-picker";
+import { ContextButton } from "@/components/agent-thread/context-button";
 import { PlanApprovalCard } from "@/components/agent-thread/plan-approval-card";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { Button } from "@/components/ui/button";
@@ -280,6 +281,7 @@ const ComposerAction: FC = () => {
       </div>
       <div className="flex items-center gap-1.5">
         <ModelPicker />
+        <ContextButton />
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
             <ComposerPrimitive.Dictate asChild>

@@ -1,6 +1,10 @@
 /**
- * 模型目录：pi-ai 内置 catalog（39 个 provider）+ 本地凭据，
- * 叠加自定义 OpenAI 兼容提供商（用户配置 baseUrl + apiKey + 模型 id）。
+ * 模型目录：pi-ai 内置 catalog（39 个 provider） + 本地凭据 + models 统一模型表。
+ * - models 表行（provider, model_id 主键）承载启用状态与属性覆盖；
+ *   NULL 属性 = 继承内置目录值。内置厂商的过滤（勾选集）与属性修改都写这张表。
+ * - 自定义端点的模型同样存 models 表（enabled=1），注册时 NULL 属性取自定义默认值。
+ * - 内置厂商的目录外新增模型（手动添加的 modelId）也存 models 表：行存在但目录没有
+ *   时按行构造 Model 挂到该 provider 上（auth/stream 沿用原实现）。
  * 目录在 initStorage 之后通过 getModels() 惰性创建。
  */
 import {
@@ -8,6 +12,8 @@ import {
   envApiKeyAuth,
   type Api,
   type Model,
+  type ModelCost,
+  type Provider,
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
@@ -15,8 +21,8 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { logErr } from "./log";
 import { credentialStore } from "./storage";
-import { customProvidersList } from "./hostdb";
-import type { CustomApiKind, CustomModelSpec } from "./types";
+import { customProvidersList, modelsAll, modelsList } from "./hostdb";
+import type { CustomApiKind } from "./types";
 
 /** 模型目录类型（含 provider 注册/删除、模型查询、凭据查询） */
 export type ModelCatalog = ReturnType<typeof builtinModels>;
@@ -81,37 +87,70 @@ const API_ID: Record<CustomApiKind, Api> = {
 export const normalizeApi = (v: unknown): CustomApiKind =>
   v === "openai-responses" || v === "anthropic-messages" ? v : "openai-chat";
 
-/** 把一行 custom_providers 记录构造成 provider 并注册进模型目录 */
-export function registerCustomProvider(row: {
+/** 校验 models 表行的 input 列（["text"|"image"...]）；非法/为空返回 null */
+export function parseModelInput(v: unknown): ("text" | "image")[] | null {
+  if (!Array.isArray(v)) return null;
+  const out = v.filter(
+    (s): s is "text" | "image" => s === "text" || s === "image",
+  );
+  return out.length ? out : null;
+}
+
+/** 校验 models 表行的 cost 列（input/output/cacheRead/cacheWrite 全为有限数字）；非法返回 null */
+export function parseModelCost(v: unknown): ModelCost | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const c = v as Record<string, unknown>;
+  const num = (x: unknown): number | undefined =>
+    typeof x === "number" && Number.isFinite(x) ? x : undefined;
+  const input = num(c.input);
+  const output = num(c.output);
+  const cacheRead = num(c.cacheRead);
+  const cacheWrite = num(c.cacheWrite);
+  if (
+    input === undefined ||
+    output === undefined ||
+    cacheRead === undefined ||
+    cacheWrite === undefined
+  ) {
+    return null;
+  }
+  return { input, output, cacheRead, cacheWrite };
+}
+
+/** 自定义端点模型的缺省属性（无内置目录可继承） */
+export const CUSTOM_MODEL_DEFAULTS = {
+  reasoning: false,
+  input: ["text"] as ("text" | "image")[],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as ModelCost,
+  contextWindow: 128_000,
+  maxTokens: 8_192,
+};
+
+/** 把一行 custom_providers 记录构造成 provider 并注册进模型目录（模型读 models 表） */
+export async function registerCustomProvider(row: {
   id: string;
   name: string;
   baseUrl: string;
-  models: string;
   api?: string;
 }) {
-  let specs: CustomModelSpec[] = [];
-  try {
-    specs = JSON.parse(row.models) as CustomModelSpec[];
-  } catch {
-    specs = [];
-  }
+  const rows = await modelsList(row.id);
   // baseUrl 语义与 OpenAI SDK 一致：完整前缀，API 实现在其后拼各自端点
   // （openai-chat → /chat/completions，openai-responses → /responses，anthropic-messages → /v1/messages）
   const baseUrl = row.baseUrl.trim().replace(/\/+$/, "");
   const apiKind = normalizeApi(row.api);
-  const modelList: Model<Api>[] = specs
-    .filter((m) => m && typeof m.id === "string" && m.id.trim())
+  const modelList: Model<Api>[] = rows
+    .filter((m) => m.enabled && m.modelId.trim())
     .map((m) => ({
-      id: m.id.trim(),
-      name: m.name?.trim() || m.id.trim(),
+      id: m.modelId.trim(),
+      name: m.name?.trim() || m.modelId.trim(),
       api: API_ID[apiKind],
       provider: row.id,
       baseUrl,
-      reasoning: m.reasoning ?? false,
-      input: ["text" as const],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: m.contextWindow ?? 128_000,
-      maxTokens: m.maxTokens ?? 8_192,
+      reasoning: m.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
+      input: parseModelInput(m.input) ?? CUSTOM_MODEL_DEFAULTS.input,
+      cost: parseModelCost(m.cost) ?? { ...CUSTOM_MODEL_DEFAULTS.cost },
+      contextWindow: m.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
+      maxTokens: m.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
     }));
   const provider = createProvider({
     id: row.id,
@@ -130,9 +169,114 @@ export async function loadCustomProviders(): Promise<void> {
   for (const row of rows) {
     if (!row.enabled) continue;
     try {
-      registerCustomProvider(row);
+      await registerCustomProvider(row);
     } catch (err) {
       logErr("registerCustomProvider failed for", row.id, err);
     }
   }
+}
+
+/** 启动/保存过滤后调用：把 models 表的属性覆盖合并进内置目录（原地改 Model 对象）。
+ *  自定义 provider 的模型在注册时已按行构建，这里 getModel 找不到即跳过。 */
+export async function applyModelOverrides(): Promise<void> {
+  for (const row of await modelsAll()) applyRowToCatalogModel(row);
+}
+
+/* ------------------------------ 目录外新增模型（内置 provider） ------------------------------ */
+
+/** 内置 provider 的目录外新增模型：models 表行存在但内置目录没有的 modelId。
+ *  providerId → 追加的 Model 列表；provider 重新包装后经 setProvider 换入。 */
+const extraModelsByProvider = new Map<string, Model<Api>[]>();
+
+/** 把目录外新增模型挂到内置 provider 上（已存在时返回 undefined）。
+ *  api/baseUrl 取同 provider 现有模型（内置厂商的模型共享接口实现与端点），
+ *  null 属性取自定义默认值；provider 未知或没有任何现有模型时不挂载。 */
+export function attachExtraCatalogModel(
+  providerId: string,
+  modelId: string,
+  attrs: {
+    name: string | null;
+    reasoning: boolean | null;
+    contextWindow: number | null;
+    maxTokens: number | null;
+    input: unknown[] | null;
+    cost: Record<string, unknown> | null;
+  },
+): Model<Api> | undefined {
+  const models = getModels();
+  if (models.getModel(providerId, modelId)) return undefined;
+  const orig = models.getProvider(providerId);
+  if (!orig) return undefined;
+  const sibling = orig.getModels()[0];
+  if (!sibling) return undefined;
+  const model: Model<Api> = {
+    id: modelId,
+    name: attrs.name?.trim() || modelId,
+    api: sibling.api,
+    provider: orig.id,
+    baseUrl: sibling.baseUrl,
+    reasoning: attrs.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
+    input: parseModelInput(attrs.input) ?? [...CUSTOM_MODEL_DEFAULTS.input],
+    cost: parseModelCost(attrs.cost) ?? { ...CUSTOM_MODEL_DEFAULTS.cost },
+    contextWindow: attrs.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
+    maxTokens: attrs.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+  };
+  const extras = extraModelsByProvider.get(providerId) ?? [];
+  extras.push(model);
+  extraModelsByProvider.set(providerId, extras);
+  // 重新包装 provider：auth/stream 等沿用原实现（闭包不依赖 this），仅扩展 getModels；
+  // refreshModels 发布的动态列表仍经 orig.getModels() 生效，包装层在其上追加 extras
+  const extended = Object.create(orig) as Provider<Api>;
+  extended.getModels = () => [...orig.getModels(), ...extras];
+  models.setProvider(extended);
+  return model;
+}
+
+/* ------------------------------ 覆盖应用（快照支持重置） ------------------------------ */
+
+/** 目录模型可覆盖属性的原始快照（首次修改前留底，null 覆盖/重置时恢复） */
+type ModelAttrSnapshot = Pick<
+  Model<Api>,
+  "name" | "reasoning" | "contextWindow" | "maxTokens" | "input" | "cost"
+>;
+const attrSnapshots = new Map<string, ModelAttrSnapshot>();
+
+function snapshotModelAttrs(key: string, model: Model<Api>): void {
+  if (attrSnapshots.has(key)) return;
+  attrSnapshots.set(key, {
+    name: model.name,
+    reasoning: model.reasoning,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+    input: [...model.input],
+    cost: { ...model.cost },
+  });
+}
+
+/** 把 models 表一行覆盖应用到目录模型对象；null 字段恢复原始值（继承内置/注册默认）。
+ *  内置 provider 上目录没有的 modelId 视为用户新增模型：先挂载再按行赋值。 */
+export function applyRowToCatalogModel(row: {
+  provider: string;
+  modelId: string;
+  name: string | null;
+  reasoning: boolean | null;
+  contextWindow: number | null;
+  maxTokens: number | null;
+  input: unknown[] | null;
+  cost: Record<string, unknown> | null;
+}): void {
+  const key = `${row.provider}/${row.modelId}`;
+  let model = getModels().getModel(row.provider, row.modelId);
+  if (!model) {
+    model = attachExtraCatalogModel(row.provider, row.modelId, row);
+    if (!model) return;
+  }
+  snapshotModelAttrs(key, model);
+  const snap = attrSnapshots.get(key)!;
+  model.name = row.name?.trim() || snap.name;
+  model.reasoning = row.reasoning ?? snap.reasoning;
+  model.contextWindow = row.contextWindow ?? snap.contextWindow;
+  model.maxTokens = row.maxTokens ?? snap.maxTokens;
+  model.input = parseModelInput(row.input) ?? snap.input;
+  model.cost = parseModelCost(row.cost) ?? snap.cost;
 }

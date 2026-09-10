@@ -75,7 +75,7 @@ pub fn restore(app: &tauri::AppHandle) {
     }
     if let Some(win) = app.get_webview_window("main") {
         if let Err(e) = apply(&win, effect.as_deref()) {
-            eprintln!("[appearance] {e}");
+            log::warn!("[appearance] {e}");
         }
     }
 }

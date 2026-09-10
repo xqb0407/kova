@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
+use crate::logging;
 use crate::remote;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -58,6 +59,7 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
     let (mut rx, child) = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn pi-agent: {e}"))?;
+    log::info!("[pi_agent] sidecar spawned");
 
     let state_for_rx = Arc::clone(&state.pending);
     let child_slot = Arc::clone(&state.child);
@@ -120,10 +122,12 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                     let _ = emitter.emit("pi-chunk", line);
                 }
                 CommandEvent::Stderr(line) => {
-                    eprintln!("[pi-agent stderr] {}", String::from_utf8_lossy(&line));
+                    // 落盘 pi-agent.log（sidecar 零改动，stderr 由宿主转发）
+                    logging::write_sidecar_line(&String::from_utf8_lossy(&line));
+                    log::debug!("[pi_agent] stderr: {}", String::from_utf8_lossy(&line));
                 }
                 CommandEvent::Error(err) => {
-                    eprintln!("[pi-agent error] {err}");
+                    log::error!("[pi_agent] {err}");
                     let _ = emitter.emit(
                         "pi-chunk",
                         format!(
@@ -133,7 +137,7 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                     );
                 }
                 CommandEvent::Terminated(status) => {
-                    eprintln!("[pi-agent terminated] {status:?}");
+                    log::warn!("[pi_agent] terminated {status:?}");
                     // 清空所有挂起的请求
                     if let Ok(mut map) = state_for_rx.lock() {
                         for (_, tx) in map.drain() {

@@ -56,8 +56,8 @@ const AssistantWorkingIndicator: FC = () => {
         data-slot="aui_assistant-message-indicator"
         className="text-muted-foreground inline-flex items-center gap-2 align-middle"
       >
-        <DotMatrix state="connecting" aria-hidden />
-        <span className="text-sm">连接中</span>
+        {/* <DotMatrix state="connecting" aria-hidden /> */}
+        <span className="text-sm shimmer text-foreground/60">连接中...</span>
       </span>
     );
   }

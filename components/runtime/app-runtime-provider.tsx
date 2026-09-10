@@ -2,8 +2,9 @@
 
 import { AssistantRuntimeProvider, useRemoteThreadListRuntime } from "@assistant-ui/react";
 import { useChatRuntime } from "@assistant-ui/ai-sdk";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@/lib/tauri";
+import { installFrontendLogging } from "@/lib/frontend-logging";
 import { PiTransport } from "@/lib/pi-transport";
 import { createPiThreadListAdapter } from "@/lib/pi-thread-adapter";
 import { ConnectScreen } from "@/components/remote/connect-screen";
@@ -12,6 +13,34 @@ import {
   getRemoteConfig,
   type RemoteConfig,
 } from "@/lib/remote";
+import { WanderingEyes } from "../loading-ui/wandering-eyes";
+/** splash 最小展示时长：保证启动动画至少播一会儿，不被快速水合直接闪没 */
+const SPLASH_MIN_MS = 3000;
+
+/**
+ * 启动占位屏：随静态导出的预渲染 HTML 直接输出，webview 导航后立即可见，
+ * 无需等 JS 水合。窗口 transparent:true 时启动阶段没有实体内容——
+ * Windows 全透明区域点击穿透、macOS 看似未启动——占位屏提供可见可点击
+ * 的加载反馈，直到运行时就绪。
+ *
+ * 挂载期间在 html 上打 data-boot-splash（globals.css 据此让 body 透明，
+ * 露出桌面/窗口材质，仅眼睛浮在上面）；卸载时摘除，恢复 body 正常底色。
+ * 静态 HTML 已带该标记（layout.tsx），水合后的 effect 重复打标是幂等操作。
+ */
+function BootSplash() {
+  useEffect(() => {
+    document.documentElement.dataset.bootSplash = "";
+    return () => {
+      delete document.documentElement.dataset.bootSplash;
+    };
+  }, []);
+
+  return (
+    <div className="flex h-full flex-1 flex-col items-center justify-center gap-3 bg-background/95 text-muted-foreground">
+      <WanderingEyes className="h-12 w-[108px]" />
+    </div>
+  );
+}
 
 /**
  * Tauri 桌面端：pi-agent sidecar 作为会话事实源（RemoteThreadList + 持久化 session 文件）。
@@ -52,7 +81,7 @@ function RemoteGate({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  if (phase === "loading") return null;
+  if (phase === "loading") return <BootSplash />;
   if (phase === "connect" || !config) {
     return (
       <ConnectScreen
@@ -71,12 +100,21 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
   // 若水合首帧直接按环境分支渲染，桌面端会因 SSR 树（null）与客户端树（完整 UI）不一致
   // 触发 hydration mismatch。首帧恒为 null，水合成功后再切真实分支。
   const [desktop, setDesktop] = useState<boolean | null>(null);
+  const [splashMinDone, setSplashMinDone] = useState(false);
+  const splashStartRef = useRef(Date.now());
 
   useEffect(() => {
     setDesktop(isTauri());
+    // 桌面端挂载 console.warn/error 与崩溃转发（写 web.log，内部自判环境）
+    installFrontendLogging();
+    const remain = Math.max(0, SPLASH_MIN_MS - (Date.now() - splashStartRef.current));
+    const timer = setTimeout(() => setSplashMinDone(true), remain);
+    return () => clearTimeout(timer);
   }, []);
 
-  if (desktop === null) return null;
+  // 首帧（含静态导出的预渲染 HTML）恒为 BootSplash，与水合后 effect 翻转前的
+  // 客户端首帧一致，避免 hydration mismatch；桌面端水合前窗口由此获得实体内容。
+  if (desktop === null || !splashMinDone) return <BootSplash />;
   if (desktop) return <TauriRuntimeProvider>{children}</TauriRuntimeProvider>;
   return <RemoteGate>{children}</RemoteGate>;
 }

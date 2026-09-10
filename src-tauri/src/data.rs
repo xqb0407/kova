@@ -1,17 +1,22 @@
-//! pi-agent 业务数据层：会话索引 / 凭据 / 自定义提供商 / 模型过滤。
-//! 这四张表此前由 sidecar（bun:sqlite）建在 state.db 里，与 store.rs 的 kv
-//! 共用同一个文件（双进程双驱动共写）。现统一收编到 Rust：schema 与迁移
-//! 从 sidecar storage.ts 平移过来，sidecar 通过 stdout 上的 host_query
-//! RPC 读写（见 pi_agent.rs 分发）。
+//! pi-agent 业务数据层：会话索引（sessions）/ 凭据（credentials）/ 自定义提供商
+//! （custom_providers）/ 模型目录（models）。这四张表此前由 sidecar（bun:sqlite）
+//! 建在 state.db 里，与 store.rs 的 kv 共用同一个文件（双进程双驱动共写）。
+//! 现统一收编到 Rust：schema 与迁移从 sidecar storage.ts 平移过来，sidecar 通过
+//! stdout 上的 host_query RPC 读写（见 pi_agent.rs 分发）。
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
-/// 建表与旧库迁移（schema 与 sidecar storage.ts 保持一致）。
+/// 建表与旧库迁移（schema 与 sidecar hostdb.ts 保持一致）。
 /// 由 store::init 在打开连接后调用。
 pub fn init_tables(conn: &Connection) -> Result<(), String> {
+    // 旧表重命名（去掉 pi_ 前缀）：旧表存在且新表不存在时生效，否则忽略。
+    // 必须在 CREATE TABLE 之前执行，避免新表先建出来挡住重命名。
+    let _ = conn.execute("ALTER TABLE pi_sessions RENAME TO sessions", []);
+    let _ = conn.execute("ALTER TABLE pi_models RENAME TO models", []);
+
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS pi_sessions (
+        "CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL DEFAULT '',
             first_message TEXT NOT NULL DEFAULT '',
@@ -31,9 +36,17 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
             models TEXT NOT NULL DEFAULT '[]',
             api TEXT NOT NULL DEFAULT 'openai-chat'
         );
-        CREATE TABLE IF NOT EXISTS provider_models (
-            provider TEXT PRIMARY KEY,
-            models TEXT NOT NULL DEFAULT '[]'
+        CREATE TABLE IF NOT EXISTS models (
+            provider TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            name TEXT,
+            reasoning INTEGER,
+            context_window INTEGER,
+            max_tokens INTEGER,
+            input_json TEXT,
+            cost_json TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (provider, model_id)
         );",
     )
     .map_err(|e| format!("failed to init agent tables: {e}"))?;
@@ -50,9 +63,89 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
     let home = home_dir();
     if let Some(home) = home {
         let _ = conn.execute(
-            "UPDATE pi_sessions SET cwd = '' WHERE cwd = ?1",
+            "UPDATE sessions SET cwd = '' WHERE cwd = ?1",
             params![home],
         );
+    }
+
+    // 旧数据迁移：custom_providers.models JSON 列 → models 行。
+    // 迁移完成后该列清空为 '[]'（幂等标记），新数据只写 models。
+    migrate_custom_provider_models(conn)?;
+
+    // 旧数据迁移：provider_models（pi_models 出现前的过滤白名单，JSON string[]）
+    // → models 行，搬完删表。
+    migrate_provider_model_filters(conn)?;
+
+    // 兜底：若旧 pi_* 表仍在（如新表先被别的版本建出、重命名没成功），把行并入新表后删壳。
+    drain_legacy_table(
+        conn,
+        "pi_sessions",
+        "sessions",
+        "id, title, first_message, cwd, created_at, updated_at",
+    )?;
+    drain_legacy_table(
+        conn,
+        "pi_models",
+        "models",
+        "provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled",
+    )?;
+    Ok(())
+}
+
+/// 把 custom_providers.models（CustomModelSpec[] JSON）搬进 models（enabled=1）。
+/// 只处理 models != '[]' 的行；搬完把该列置 '[]'，重复执行无副作用。
+fn migrate_custom_provider_models(conn: &Connection) -> Result<(), String> {
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT id, models FROM custom_providers WHERE models != '[]'")
+        .and_then(|mut s| {
+            s.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map(|it| it.filter_map(|r| r.ok()).collect())
+        })
+        .map_err(|e| format!("read custom_providers for model migration: {e}"))?;
+    for (id, models_json) in rows {
+        let specs: Vec<Value> = serde_json::from_str(&models_json).unwrap_or_default();
+        for spec in specs {
+            let Some(model_id) = spec.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if model_id.trim().is_empty() {
+                continue;
+            }
+            let name = spec.get("name").and_then(Value::as_str);
+            let reasoning = spec.get("reasoning").and_then(Value::as_bool);
+            let context_window = spec
+                .get("contextWindow")
+                .and_then(Value::as_i64)
+                .or_else(|| spec.get("contextWindow").and_then(Value::as_f64).map(|f| f as i64));
+            let max_tokens = spec
+                .get("maxTokens")
+                .and_then(Value::as_i64)
+                .or_else(|| spec.get("maxTokens").and_then(Value::as_f64).map(|f| f as i64));
+            let input_json = match spec.get("input") {
+                Some(v) if v.is_array() => Some(v.to_string()),
+                _ => None,
+            };
+            let cost_json = match spec.get("cost") {
+                Some(v) if v.is_object() => Some(v.to_string()),
+                _ => None,
+            };
+            if let Err(e) = conn.execute(
+                "INSERT OR REPLACE INTO models \
+                 (provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                params![id, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json],
+            ) {
+                return Err(format!("migrate custom provider model {id}/{model_id}: {e}"));
+            }
+        }
+        if let Err(e) = conn.execute(
+            "UPDATE custom_providers SET models = '[]' WHERE id = ?1",
+            params![id],
+        ) {
+            return Err(format!("clear migrated models column for {id}: {e}"));
+        }
     }
     Ok(())
 }
@@ -65,12 +158,129 @@ fn home_dir() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// 旧表 provider_models（早期版本的过滤白名单，models 列为 JSON string[]）→ models 行。
+/// 只迁移 models 表里没有该 provider 行的记录（新数据优先）；搬完删表。幂等。
+fn migrate_provider_model_filters(conn: &Connection) -> Result<(), String> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'provider_models'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .map_err(|e| format!("check provider_models exists: {e}"))?;
+    if !exists {
+        return Ok(());
+    }
+    let rows: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT provider, models FROM provider_models \
+             WHERE models != '[]' AND provider NOT IN (SELECT DISTINCT provider FROM models)",
+        )
+        .and_then(|mut s| {
+            s.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map(|it| it.filter_map(|r| r.ok()).collect())
+        })
+        .map_err(|e| format!("read provider_models for filter migration: {e}"))?;
+    for (provider, models_json) in rows {
+        let ids: Vec<String> = serde_json::from_str(&models_json).unwrap_or_default();
+        for model_id in ids {
+            if model_id.trim().is_empty() {
+                continue;
+            }
+            if let Err(e) = conn.execute(
+                "INSERT OR IGNORE INTO models (provider, model_id, enabled) VALUES (?, ?, 1)",
+                params![provider, model_id],
+            ) {
+                return Err(format!("migrate provider filter {provider}/{model_id}: {e}"));
+            }
+        }
+    }
+    conn.execute("DROP TABLE provider_models", [])
+        .map_err(|e| format!("drop provider_models: {e}"))?;
+    Ok(())
+}
+
+/// 旧 pi_* 表未被重命名成功（新表已存在）时，把行并入新表后删除旧表。幂等。
+/// columns 为两表共有的列清单（显式列出，不依赖列序）。
+fn drain_legacy_table(
+    conn: &Connection,
+    legacy: &str,
+    target: &str,
+    columns: &str,
+) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![legacy],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("check {legacy} exists: {e}"))?;
+    if exists == 0 {
+        return Ok(());
+    }
+    conn.execute(
+        &format!(
+            "INSERT OR IGNORE INTO {target} ({columns}) SELECT {columns} FROM {legacy}"
+        ),
+        [],
+    )
+    .map_err(|e| format!("drain {legacy} into {target}: {e}"))?;
+    conn.execute(&format!("DROP TABLE {legacy}"), [])
+        .map_err(|e| format!("drop {legacy}: {e}"))?;
+    Ok(())
+}
+
 fn str_param(params: &Value, key: &str) -> Result<String, String> {
     params
         .get(key)
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| format!("missing param: {key}"))
+}
+
+/// 查询 models 行（None = 全部 provider）。attrs 列可空（NULL = 继承内置值），
+/// input_json/cost_json 在此解析为结构化 JSON 返回。
+fn models_query(conn: &Connection, provider: Option<String>) -> Result<Value, String> {
+    let sql = "SELECT provider, model_id, name, reasoning, context_window, max_tokens, \
+               input_json, cost_json, enabled FROM models";
+    let map_row = |row: &rusqlite::Row| -> Result<Value, rusqlite::Error> {
+        let input_json: Option<String> = row.get(6)?;
+        let cost_json: Option<String> = row.get(7)?;
+        Ok(json!({
+            "provider": row.get::<_, String>(0)?,
+            "modelId": row.get::<_, String>(1)?,
+            "name": row.get::<_, Option<String>>(2)?,
+            "reasoning": row.get::<_, Option<bool>>(3)?,
+            "contextWindow": row.get::<_, Option<i64>>(4)?,
+            "maxTokens": row.get::<_, Option<i64>>(5)?,
+            "input": input_json
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .filter(|v| v.is_array()),
+            "cost": cost_json
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .filter(|v| v.is_object()),
+            "enabled": row.get::<_, i64>(8)? == 1,
+        }))
+    };
+    let rows = match provider {
+        Some(p) => conn
+            .prepare(&format!("{sql} WHERE provider = ?1 ORDER BY model_id"))
+            .and_then(|mut s| {
+                s.query_map(params![p], map_row)
+                    .map(|it| it.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            }),
+        None => conn
+            .prepare(&format!("{sql} ORDER BY provider, model_id"))
+            .and_then(|mut s| {
+                s.query_map([], map_row)
+                    .map(|it| it.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            }),
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(Value::Array(rows))
 }
 
 /// 处理一条 host_query（kind + params），返回 data 载荷。
@@ -85,7 +295,7 @@ pub fn handle_host_query(
             let id = str_param(p, "sessionId")?;
             let cwd = conn
                 .query_row(
-                    "SELECT cwd FROM pi_sessions WHERE id = ?1",
+                    "SELECT cwd FROM sessions WHERE id = ?1",
                     params![id],
                     |row| row.get::<_, String>(0),
                 )
@@ -101,7 +311,7 @@ pub fn handle_host_query(
             let cwd = p.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
             let now = str_param(p, "now")?;
             conn.execute(
-                "INSERT INTO pi_sessions (id, title, first_message, cwd, created_at, updated_at) VALUES (?, '', '', ?, ?, ?)",
+                "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at) VALUES (?, '', '', ?, ?, ?)",
                 params![id, cwd, now, now],
             )
             .map_err(|e| e.to_string())?;
@@ -109,7 +319,7 @@ pub fn handle_host_query(
         }
         "session_list" => {
             let rows = conn
-                .prepare("SELECT id, title, first_message, cwd, updated_at FROM pi_sessions ORDER BY updated_at DESC")
+                .prepare("SELECT id, title, first_message, cwd, updated_at FROM sessions ORDER BY updated_at DESC")
                 .map_err(|e| e.to_string())?
                 .query_map([], |row| {
                     Ok(json!({
@@ -127,7 +337,7 @@ pub fn handle_host_query(
         }
         "session_delete" => {
             let id = str_param(p, "sessionId")?;
-            conn.execute("DELETE FROM pi_sessions WHERE id = ?1", params![id])
+            conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])
                 .map_err(|e| e.to_string())?;
             Ok(json!({}))
         }
@@ -135,7 +345,7 @@ pub fn handle_host_query(
             let id = str_param(p, "sessionId")?;
             let name = str_param(p, "name")?;
             conn.execute(
-                "UPDATE pi_sessions SET title = ?1 WHERE id = ?2",
+                "UPDATE sessions SET title = ?1 WHERE id = ?2",
                 params![name, id],
             )
             .map_err(|e| e.to_string())?;
@@ -148,7 +358,7 @@ pub fn handle_host_query(
             let title = p.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let first_message = p.get("firstMessage").and_then(|v| v.as_str()).unwrap_or("");
             conn.execute(
-                "UPDATE pi_sessions SET updated_at = ?1, \
+                "UPDATE sessions SET updated_at = ?1, \
                  title = CASE WHEN title = '' THEN ?2 ELSE title END, \
                  first_message = CASE WHEN first_message = '' THEN ?3 ELSE first_message END \
                  WHERE id = ?4",
@@ -271,51 +481,50 @@ pub fn handle_host_query(
             .map_err(|e| e.to_string())?;
             Ok(json!({}))
         }
-        "provider_models_all" => {
-            let rows = conn
-                .prepare("SELECT provider, models FROM provider_models")
-                .map_err(|e| e.to_string())?
-                .query_map([], |row| {
-                    Ok(json!({
-                        "provider": row.get::<_, String>(0)?,
-                        "models": row.get::<_, String>(1)?,
-                    }))
-                })
-                .map_err(|e| e.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            Ok(Value::Array(rows))
-        }
-        "provider_models_get" => {
+        "models_all" => models_query(conn, None),
+        "models_list" => {
             let provider = str_param(p, "provider")?;
-            let models = conn
-                .query_row(
-                    "SELECT models FROM provider_models WHERE provider = ?1",
-                    params![provider],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            Ok(match models {
-                Some(models) => json!({ "models": models }),
-                None => Value::Null,
-            })
+            models_query(conn, Some(provider))
         }
-        "provider_models_set" => {
+        "models_replace" => {
+            // 整包替换该 provider 的模型行：items = [{modelId, enabled, name?, reasoning?,
+            // contextWindow?, maxTokens?, input?, cost?}]，attrs 缺省 = NULL（继承内置值）
             let provider = str_param(p, "provider")?;
-            let models = str_param(p, "models")?;
-            // 空数组 = 清除过滤，恢复全部
-            if models == "[]" {
-                conn.execute("DELETE FROM provider_models WHERE provider = ?1", params![provider])
-                    .map_err(|e| e.to_string())?;
-            } else {
-                conn.execute(
-                    "INSERT INTO provider_models (provider, models) VALUES (?, ?) \
-                     ON CONFLICT(provider) DO UPDATE SET models = excluded.models",
-                    params![provider, models],
+            let items = str_param(p, "models")?;
+            let items: Vec<Value> =
+                serde_json::from_str(&items).map_err(|e| format!("parse models: {e}"))?;
+            let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM models WHERE provider = ?1", params![provider])
+                .map_err(|e| e.to_string())?;
+            for item in items {
+                let Some(model_id) = item.get("modelId").and_then(Value::as_str) else {
+                    continue;
+                };
+                if model_id.trim().is_empty() {
+                    continue;
+                }
+                let enabled = item.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                let name = item.get("name").and_then(Value::as_str);
+                let reasoning = item.get("reasoning").and_then(Value::as_bool);
+                let context_window = item.get("contextWindow").and_then(Value::as_i64);
+                let max_tokens = item.get("maxTokens").and_then(Value::as_i64);
+                let input_json = item.get("input").filter(|v| v.is_array()).map(Value::to_string);
+                let cost_json = item.get("cost").filter(|v| v.is_object()).map(Value::to_string);
+                tx.execute(
+                    "INSERT OR REPLACE INTO models \
+                     (provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled],
                 )
                 .map_err(|e| e.to_string())?;
             }
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
+        "models_delete_provider" => {
+            let provider = str_param(p, "provider")?;
+            conn.execute("DELETE FROM models WHERE provider = ?1", params![provider])
+                .map_err(|e| e.to_string())?;
             Ok(json!({}))
         }
         _ => {
@@ -373,5 +582,190 @@ mod tests {
         if result["ok"] != json!(true) {
             assert!(!err.contains("missing param"), "unexpected error: {err}");
         }
+    }
+
+    /// custom_providers.models JSON 列迁移到 models：一次搬净、幂等、列清空。
+    #[test]
+    fn custom_provider_models_migrate_to_models() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO custom_providers (id, name, base_url, models, api) VALUES \
+             ('custom-proxy', 'Proxy', 'https://x/v1', \
+              '[{\"id\":\"m1\",\"name\":\"M1\",\"contextWindow\":32000,\"reasoning\":true},{\"id\":\"m2\"}]', \
+              'openai-chat')",
+            [],
+        )
+        .unwrap();
+        migrate_custom_provider_models(&conn).unwrap();
+        let all = models_query(&conn, None).unwrap();
+        let arr = all.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let m1 = arr.iter().find(|r| r["modelId"] == "m1").unwrap();
+        assert_eq!(m1["provider"], "custom-proxy");
+        assert_eq!(m1["name"], "M1");
+        assert_eq!(m1["contextWindow"], 32000);
+        assert_eq!(m1["reasoning"], true);
+        assert_eq!(m1["enabled"], true);
+        let m2 = arr.iter().find(|r| r["modelId"] == "m2").unwrap();
+        assert_eq!(m2["name"], Value::Null);
+        // 迁移后列清空；再跑一遍不产生重复
+        assert_eq!(
+            conn.query_row(
+                "SELECT models FROM custom_providers WHERE id = 'custom-proxy'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+            "[]"
+        );
+        migrate_custom_provider_models(&conn).unwrap();
+        assert_eq!(models_query(&conn, None).unwrap().as_array().unwrap().len(), 2);
+    }
+
+    /// models_replace 整包替换 + models_list 读取（attrs 可空、enabled 缺省 true）。
+    #[test]
+    fn models_replace_and_list() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let q = |kind: &str, p: Value| {
+            dispatch_host_query(
+                &db,
+                &json!({ "id": "t", "kind": kind, "params": p }),
+            )
+        };
+        let res = q(
+            "models_replace",
+            json!({
+                "provider": "openai",
+                "models": "[{\"modelId\":\"gpt-x\",\"enabled\":false,\"contextWindow\":999,\"input\":[\"text\",\"image\"],\"cost\":{\"input\":1.5,\"output\":3}},{\"modelId\":\"gpt-y\"}]"
+            }),
+        );
+        assert_eq!(res["ok"], true, "replace failed: {res}");
+        let list = q("models_list", json!({ "provider": "openai" }));
+        assert_eq!(list["ok"], true);
+        let rows = list["data"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        let gx = rows.iter().find(|r| r["modelId"] == "gpt-x").unwrap();
+        assert_eq!(gx["enabled"], false);
+        assert_eq!(gx["contextWindow"], 999);
+        assert_eq!(gx["input"], json!(["text", "image"]));
+        assert_eq!(gx["cost"]["input"], 1.5);
+        assert_eq!(gx["name"], Value::Null);
+        let gy = rows.iter().find(|r| r["modelId"] == "gpt-y").unwrap();
+        assert_eq!(gy["enabled"], true); // 缺省启用
+        assert_eq!(gy["cost"], Value::Null);
+        // 再次 replace 只保留新集合
+        q(
+            "models_replace",
+            json!({ "provider": "openai", "models": "[{\"modelId\":\"gpt-z\"}]" }),
+        );
+        let rows = q("models_list", json!({ "provider": "openai" }))["data"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["modelId"], "gpt-z");
+    }
+
+    /// 旧库迁移：pi_sessions/pi_models 重命名为 sessions/models（数据保留），
+    /// provider_models 过滤白名单搬进 models 后删表；fresh 库无旧表也正常。
+    #[test]
+    fn legacy_tables_renamed_and_filters_migrated() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 模拟旧库：pi_* 两张表带数据 + provider_models 白名单
+        conn.execute_batch(
+            "CREATE TABLE pi_sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', \
+             first_message TEXT NOT NULL DEFAULT '', cwd TEXT NOT NULL DEFAULT '', \
+             created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             INSERT INTO pi_sessions (id, created_at, updated_at) VALUES ('s1', 't', 't');
+             CREATE TABLE pi_models (provider TEXT NOT NULL, model_id TEXT NOT NULL, name TEXT, \
+             reasoning INTEGER, context_window INTEGER, max_tokens INTEGER, input_json TEXT, \
+             cost_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (provider, model_id));
+             INSERT INTO pi_models (provider, model_id, enabled) VALUES ('openai', 'gpt-old', 1);
+             CREATE TABLE provider_models (provider TEXT PRIMARY KEY, models TEXT NOT NULL DEFAULT '[]');
+             INSERT INTO provider_models (provider, models) VALUES ('anthropic', '[\"claude-a\",\"claude-b\"]');",
+        )
+        .unwrap();
+        init_tables(&conn).unwrap();
+        // 重命名后数据保留
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM models", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            3 // gpt-old + claude-a/b
+        );
+        let enabled: Vec<(String, i64)> = conn
+            .prepare("SELECT model_id, enabled FROM models WHERE provider = 'anthropic' ORDER BY model_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(enabled, vec![("claude-a".into(), 1), ("claude-b".into(), 1)]);
+        // 旧表已删
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('pi_sessions', 'pi_models', 'provider_models')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+        // 再跑一遍 init_tables 幂等
+        init_tables(&conn).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM models", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+    }
+
+    /// 旧壳残留场景：新表先存在（重命名失败）且旧表里还有数据 → 行并入新表、旧表删除。
+    #[test]
+    fn legacy_tables_drained_when_new_exists() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 先按新 schema 建新表并写入一行；再模拟带数据的旧表（重命名会失败）
+        init_tables(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (id, title, created_at, updated_at) VALUES ('s-new', 'new', 't', 't');
+             CREATE TABLE pi_sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', \
+             first_message TEXT NOT NULL DEFAULT '', cwd TEXT NOT NULL DEFAULT '', \
+             created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             INSERT INTO pi_sessions (id, title, created_at, updated_at) VALUES ('s-old', 'old', 't', 't');
+             CREATE TABLE pi_models (provider TEXT NOT NULL, model_id TEXT NOT NULL, name TEXT, \
+             reasoning INTEGER, context_window INTEGER, max_tokens INTEGER, input_json TEXT, \
+             cost_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (provider, model_id));
+             INSERT INTO pi_models (provider, model_id, enabled) VALUES ('openai', 'gpt-old', 1);",
+        )
+        .unwrap();
+        init_tables(&conn).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2); // s-new + s-old 并入
+        let has_old: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 's-old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_old, 1);
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('pi_sessions', 'pi_models')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
     }
 }

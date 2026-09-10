@@ -18,8 +18,11 @@ export const PiModelPicker: FC = () => {
   const allModels = usePiModels();
   const selected = useSelectedModel();
 
-  // 只查配置过的：无凭据的服务整体隐藏，而不是置灰展示
-  const models = useMemo(() => allModels.filter((m) => m.authed), [allModels]);
+  // 只查配置过的：无凭据的服务整体隐藏；被模型过滤隐藏的（enabled=false）也不出现
+  const models = useMemo(
+    () => allModels.filter((m) => m.authed && m.enabled !== false),
+    [allModels],
+  );
 
   const byCompositeId = useMemo(() => {
     const map = new Map<string, PiModelSummary>();

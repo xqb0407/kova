@@ -26,6 +26,7 @@ import {
   piRequest,
   type PiCredentialSummary,
   type PiCustomApiKind,
+  type PiCustomModelSpec,
   type PiCustomProviderSummary,
   type PiModelSummary,
   type PiProviderSummary,
@@ -83,6 +84,116 @@ const ModelBox: FC<{ checked: boolean }> = ({ checked }) => (
   </span>
 );
 
+/** 模型属性编辑表单（"模型设置"行内展开）：名称 / 窗口 / 最大输出 / 模态 / 单价 */
+const AttrEditor: FC<{
+  draft: AttrDraft;
+  busy: boolean;
+  onChange: (patch: Partial<AttrDraft>) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}> = ({ draft, busy, onChange, onConfirm, onCancel }) => (
+  <div className="bg-background/60 my-1 rounded-lg border p-2">
+    <div className="grid grid-cols-3 gap-2">
+      <Field label="名称">
+        <Input
+          value={draft.name}
+          onChange={(e) => onChange({ name: e.target.value })}
+          className="h-7 text-xs"
+        />
+      </Field>
+      <Field label="上下文窗口">
+        <Input
+          type="number"
+          min={0}
+          value={draft.ctx}
+          onChange={(e) => onChange({ ctx: e.target.value })}
+          className="h-7 text-xs tabular-nums"
+        />
+      </Field>
+      <Field label="最大输出">
+        <Input
+          type="number"
+          min={0}
+          value={draft.max}
+          onChange={(e) => onChange({ max: e.target.value })}
+          className="h-7 text-xs tabular-nums"
+        />
+      </Field>
+    </div>
+    <div className="mt-1.5 flex items-center gap-3 text-xs">
+      <span className="text-muted-foreground">输入模态</span>
+      <label className="flex items-center gap-1">
+        <input
+          type="checkbox"
+          checked={draft.text}
+          onChange={(e) => onChange({ text: e.target.checked })}
+          className="accent-primary size-3.5"
+        />
+        文本
+      </label>
+      <label className="flex items-center gap-1">
+        <input
+          type="checkbox"
+          checked={draft.image}
+          onChange={(e) => onChange({ image: e.target.checked })}
+          className="accent-primary size-3.5"
+        />
+        图像
+      </label>
+    </div>
+    <div className="mt-1.5 grid grid-cols-4 gap-2">
+      <Field label="输入单价">
+        <Input
+          type="number"
+          step="any"
+          min={0}
+          value={draft.cIn}
+          onChange={(e) => onChange({ cIn: e.target.value })}
+          className="h-7 text-xs tabular-nums"
+        />
+      </Field>
+      <Field label="输出单价">
+        <Input
+          type="number"
+          step="any"
+          min={0}
+          value={draft.cOut}
+          onChange={(e) => onChange({ cOut: e.target.value })}
+          className="h-7 text-xs tabular-nums"
+        />
+      </Field>
+      <Field label="缓存读">
+        <Input
+          type="number"
+          step="any"
+          min={0}
+          value={draft.cRead}
+          onChange={(e) => onChange({ cRead: e.target.value })}
+          className="h-7 text-xs tabular-nums"
+        />
+      </Field>
+      <Field label="缓存写">
+        <Input
+          type="number"
+          step="any"
+          min={0}
+          value={draft.cWrite}
+          onChange={(e) => onChange({ cWrite: e.target.value })}
+          className="h-7 text-xs tabular-nums"
+        />
+      </Field>
+    </div>
+    <div className="mt-2 flex justify-end gap-1.5">
+      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onCancel}>
+        取消
+      </Button>
+      <Button size="sm" className="h-7 text-xs" disabled={busy} onClick={onConfirm}>
+        确定
+      </Button>
+    </div>
+  </div>
+);
+
 /** 行内启用开关（iOS 风格） */
 const ToggleSwitch: FC<{
   checked: boolean;
@@ -108,6 +219,19 @@ const ToggleSwitch: FC<{
     />
   </button>
 );
+
+/** 模型属性编辑表单的草稿（字符串态，提交时解析） */
+type AttrDraft = {
+  name: string;
+  ctx: string;
+  max: string;
+  text: boolean;
+  image: boolean;
+  cIn: string;
+  cOut: string;
+  cRead: string;
+  cWrite: string;
+};
 
 /** 模型配置页：默认模型 / AI 服务（自定义提供商）/ 厂商账户（凭据）/ 模型目录 */
 export const ModelSettings: FC = () => {
@@ -154,6 +278,10 @@ export const ModelSettings: FC = () => {
   // 列表行快速测试：成功后短暂显示 ✓ 的 providerId
   const [testOkId, setTestOkId] = useState<string | null>(null);
   const svcFetchSeq = useRef(0);
+  // 模型属性编辑：custom 服务保存时随 add_custom_provider 提交；内置厂商确认即走 update_model
+  const [svcModelAttrs, setSvcModelAttrs] = useState<Record<string, PiCustomModelSpec>>({});
+  const [attrEditId, setAttrEditId] = useState<string | null>(null);
+  const [attrDraft, setAttrDraft] = useState<AttrDraft | null>(null);
   const selected = useSelectedModel();
 
   const load = useCallback(() => {
@@ -234,7 +362,7 @@ export const ModelSettings: FC = () => {
       baseUrl: string;
       apiKey: string;
       api: PiCustomApiKind;
-      models: string[];
+      models: PiCustomModelSpec[];
     }) => {
       setBusy(true);
       setError(null);
@@ -247,7 +375,7 @@ export const ModelSettings: FC = () => {
           baseUrl: input.baseUrl,
           apiKey: input.apiKey,
           api: input.api,
-          models: input.models.map((id) => ({ id })),
+          models: input.models,
         });
         load();
       } catch (err) {
@@ -296,6 +424,9 @@ export const ModelSettings: FC = () => {
     setSvcCustomInput("");
     setSvcTestState("idle");
     setSvcTestError(null);
+    setSvcModelAttrs({});
+    setAttrEditId(null);
+    setAttrDraft(null);
   }, []);
 
   /** 打开"添加 AI 服务"弹窗（新增） */
@@ -315,12 +446,26 @@ export const ModelSettings: FC = () => {
     setSvcCustomInput("");
     setSvcTestState("idle");
     setSvcTestError(null);
+    setSvcModelAttrs({});
+    setAttrEditId(null);
+    setAttrDraft(null);
     setSvcOpen(true);
   }, []);
 
-  /** 打开"编辑 AI 服务"弹窗（仅自定义端点支持编辑），并回填已保存的 Key */
+  /** 打开"编辑 AI 服务"弹窗（仅自定义端点支持编辑），并回填已保存的 Key 与模型属性 */
   const openEditService = useCallback((cp: PiCustomProviderSummary) => {
     const ids = cp.models.map((m) => m.id);
+    const attrs: Record<string, PiCustomModelSpec> = {};
+    for (const m of cp.models) {
+      attrs[m.id] = {
+        id: m.id,
+        name: m.name,
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
+        input: m.input,
+        cost: m.cost,
+      };
+    }
     setSvcProvider("custom");
     setSvcEditing(cp.providerId);
     setSvcProvSearch("");
@@ -336,6 +481,9 @@ export const ModelSettings: FC = () => {
     setSvcCustomInput("");
     setSvcTestState("idle");
     setSvcTestError(null);
+    setSvcModelAttrs(attrs);
+    setAttrEditId(null);
+    setAttrDraft(null);
     setSvcOpen(true);
   }, []);
 
@@ -457,6 +605,108 @@ export const ModelSettings: FC = () => {
     setSvcCustomInput("");
   }, [svcCustomInput]);
 
+  /** 属性编辑的当前值来源：custom 用表单草稿，内置厂商用目录（已含 pi_models 覆盖） */
+  const resolveAttrSource = useCallback(
+    (id: string): Partial<PiCustomModelSpec> => {
+      if (svcProvider === "custom") return svcModelAttrs[id] ?? {};
+      const m = (models ?? []).find(
+        (x) => x.provider === svcProvider && x.id === id,
+      );
+      return m
+        ? {
+            name: m.name,
+            contextWindow: m.contextWindow,
+            maxTokens: m.maxTokens,
+            input: m.input,
+            cost: m.cost,
+          }
+        : {};
+    },
+    [svcProvider, svcModelAttrs, models],
+  );
+
+  /** 打开模型属性编辑（右侧"模型设置"行的铅笔按钮） */
+  const openAttrEditor = useCallback(
+    (id: string) => {
+      const src = resolveAttrSource(id);
+      setAttrEditId(id);
+      setAttrDraft({
+        name: src.name ?? id,
+        ctx: src.contextWindow != null ? String(src.contextWindow) : "",
+        max: src.maxTokens != null ? String(src.maxTokens) : "",
+        text: (src.input ?? ["text"]).includes("text"),
+        image: (src.input ?? []).includes("image"),
+        cIn: String(src.cost?.input ?? 0),
+        cOut: String(src.cost?.output ?? 0),
+        cRead: String(src.cost?.cacheRead ?? 0),
+        cWrite: String(src.cost?.cacheWrite ?? 0),
+      });
+    },
+    [resolveAttrSource],
+  );
+
+  const cancelAttrEditor = useCallback(() => {
+    setAttrEditId(null);
+    setAttrDraft(null);
+  }, []);
+
+  /** 确认属性编辑：custom 存进表单草稿随保存提交；内置厂商 diff 后立即 update_model */
+  const confirmAttrEditor = useCallback(async () => {
+    if (!attrEditId || !attrDraft) return;
+    const num = (v: string): number | undefined => {
+      const n = Number(v);
+      return v.trim() !== "" && Number.isFinite(n) ? n : undefined;
+    };
+    const parsed: PiCustomModelSpec = {
+      id: attrEditId,
+      name: attrDraft.name.trim() || undefined,
+      contextWindow: num(attrDraft.ctx),
+      maxTokens: num(attrDraft.max),
+      input: [attrDraft.text && "text", attrDraft.image && "image"].filter(
+        (s): s is string => !!s,
+      ),
+      cost: {
+        input: num(attrDraft.cIn) ?? 0,
+        output: num(attrDraft.cOut) ?? 0,
+        cacheRead: num(attrDraft.cRead) ?? 0,
+        cacheWrite: num(attrDraft.cWrite) ?? 0,
+      },
+    };
+    if (svcProvider === "custom") {
+      setSvcModelAttrs((prev) => ({ ...prev, [attrEditId]: parsed }));
+    } else if (svcProvider) {
+      // 内置厂商：只提交与目录当前值不同的字段，避免把继承值固化成覆盖
+      const src = resolveAttrSource(attrEditId);
+      const patch: Record<string, unknown> = {
+        type: "update_model",
+        provider: svcProvider,
+        modelId: attrEditId,
+      };
+      if (parsed.name !== src.name) patch.name = parsed.name ?? null;
+      if (parsed.contextWindow !== src.contextWindow)
+        patch.contextWindow = parsed.contextWindow ?? null;
+      if (parsed.maxTokens !== src.maxTokens)
+        patch.maxTokens = parsed.maxTokens ?? null;
+      if (JSON.stringify(parsed.input) !== JSON.stringify(src.input ?? ["text"]))
+        patch.input = parsed.input;
+      if (JSON.stringify(parsed.cost) !== JSON.stringify(src.cost))
+        patch.cost = parsed.cost;
+      if (Object.keys(patch).length > 3) {
+        setBusy(true);
+        try {
+          await piRequest(patch);
+          load();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err));
+        } finally {
+          setBusy(false);
+        }
+      }
+    }
+    setAttrEditId(null);
+    setAttrDraft(null);
+  }, [attrEditId, attrDraft, svcProvider, resolveAttrSource, load]);
+
   /** 内置厂商：当前所选服务的目录模型（弹窗双栏面板用） */
   const svcBuiltinCatalog = useMemo(() => {
     if (!svcProvider || svcProvider === "custom") return [];
@@ -515,14 +765,14 @@ export const ModelSettings: FC = () => {
           baseUrl: svcBaseUrl.trim(),
           apiKey: svcApiKey.trim(),
           api: svcApi,
-          models: svcSelected,
+          models: svcSelected.map((id) => ({ ...(svcModelAttrs[id] ?? {}), id })),
         });
         closeServiceDialog();
       } catch {
         // saveCustomProvider 内已 setError
       }
     } else {
-      // 内置厂商：保存凭据（已有凭据时密钥可留空）+ 模型过滤（全选 = 清除过滤）
+      // 内置厂商：保存凭据（已有凭据时密钥可留空）+ 模型过滤（勾选集写 pi_models 行）
       const credExists = credentials.some((c) => c.providerId === svcProvider);
       if (!svcApiKey.trim() && !credExists) return;
       setBusy(true);
@@ -534,13 +784,10 @@ export const ModelSettings: FC = () => {
             apiKey: svcApiKey.trim(),
           });
         }
-        const allIds = svcBuiltinCatalog.map((m) => m.id);
-        const isAll =
-          allIds.length > 0 && allIds.every((id) => svcSelected.includes(id));
         await piRequest({
           type: "set_provider_filter",
           provider: svcProvider,
-          models: isAll ? [] : svcSelected,
+          models: svcSelected,
         });
         closeServiceDialog();
         load();
@@ -559,8 +806,8 @@ export const ModelSettings: FC = () => {
     svcApi,
     svcSelected,
     svcEditing,
+    svcModelAttrs,
     credentials,
-    svcBuiltinCatalog,
     saveCustomProvider,
     closeServiceDialog,
     load,
@@ -569,12 +816,15 @@ export const ModelSettings: FC = () => {
   const groups = useMemo(() => {
     if (!models) return [];
     const query = search.trim().toLowerCase();
+    // 只列已配置凭据（authed）的模型；被过滤隐藏的不出现在默认模型列表（在服务弹窗里管理）
     const filtered = models.filter(
       (m) =>
-        !query ||
-        m.name.toLowerCase().includes(query) ||
-        m.id.toLowerCase().includes(query) ||
-        m.providerName.toLowerCase().includes(query),
+        m.authed &&
+        m.enabled !== false &&
+        (!query ||
+          m.name.toLowerCase().includes(query) ||
+          m.id.toLowerCase().includes(query) ||
+          m.providerName.toLowerCase().includes(query)),
     );
     const byProvider = new Map<string, typeof filtered>();
     for (const m of filtered) {
@@ -584,6 +834,11 @@ export const ModelSettings: FC = () => {
     }
     return [...byProvider.entries()];
   }, [models, search]);
+
+  const visibleModelCount = useMemo(
+    () => (models ?? []).filter((m) => m.enabled !== false).length,
+    [models],
+  );
 
   const hasAuthedModel = models?.some((m) => m.authed) ?? false;
 
@@ -613,6 +868,75 @@ export const ModelSettings: FC = () => {
       ? svcAvail.filter((id) => id.toLowerCase().includes(q))
       : svcAvail;
   }, [svcAvail, svcModelSearch]);
+
+  /** 服务弹窗左栏当前可见的模型 ID（跟随搜索过滤），供全选/取消全选 */
+  const svcVisibleIds = useMemo(
+    () =>
+      svcProvider !== "custom"
+        ? svcBuiltinFiltered.map((m) => m.id)
+        : svcAvailFiltered,
+    [svcProvider, svcBuiltinFiltered, svcAvailFiltered],
+  );
+  const svcAllVisibleSelected =
+    svcVisibleIds.length > 0 && svcVisibleIds.every((id) => svcSelected.includes(id));
+
+  const toggleSelectAllVisible = useCallback(() => {
+    setSvcSelected((prev) => {
+      const allSelected = svcVisibleIds.every((id) => prev.includes(id));
+      return allSelected
+        ? prev.filter((id) => !svcVisibleIds.includes(id))
+        : [...prev, ...svcVisibleIds.filter((id) => !prev.includes(id))];
+    });
+  }, [svcVisibleIds]);
+
+  /** 已配置的内置厂商（有凭据且非自定义服务）：在 AI 服务列表中统一展示管理 */
+  const builtinServices = useMemo(() => {
+    const customIds = new Set(customProviders.map((cp) => cp.providerId));
+    return credentials
+      .filter((c) => !customIds.has(c.providerId))
+      .map((c) => {
+        const p = providers.find((x) => x.id === c.providerId);
+        return {
+          providerId: c.providerId,
+          name: p?.name ?? c.providerId,
+          modelCount: (models ?? []).filter(
+            (m) => m.provider === c.providerId && m.enabled !== false,
+          ).length,
+        };
+      });
+  }, [credentials, customProviders, providers, models]);
+
+  /** AI 服务列表点"编辑"（内置厂商）：重置表单 → 选中该厂商并预填模型过滤 → 打开弹窗 */
+  const openBuiltinService = useCallback(
+    (id: string) => {
+      openNewService();
+      setSvcEditing(id); // 编辑态：禁用服务切换，弹窗标题显示"编辑 AI 服务"
+      void pickProvider(id);
+    },
+    [openNewService, pickProvider],
+  );
+
+  /** 删除内置厂商服务：移除凭据并清空其 pi_models 行（过滤与属性覆盖一并清除） */
+  const deleteBuiltinService = useCallback(
+    async (providerId: string) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await piRequest({ type: "delete_credential", provider: providerId });
+        await piRequest({
+          type: "set_provider_filter",
+          provider: providerId,
+          models: [],
+        });
+        load();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [load],
+  );
 
   // web 预览没有 Tauri 后端（pi sidecar / invoke），直接给出降级提示
   if (!isTauri()) {
@@ -791,10 +1115,6 @@ export const ModelSettings: FC = () => {
                             <button
                               key={`${m.provider}/${m.id}`}
                               type="button"
-                              disabled={!m.authed}
-                              title={
-                                m.authed ? undefined : "未配置该厂商账户的凭据"
-                              }
                               onClick={() => {
                                 setSelectedModel({
                                   provider: m.provider,
@@ -806,8 +1126,6 @@ export const ModelSettings: FC = () => {
                               className={cn(
                                 "hover:bg-muted flex h-9 items-center gap-2 rounded-md px-2.5 text-sm",
                                 "data-selected:bg-muted",
-                                !m.authed &&
-                                  "text-muted-foreground/60 cursor-not-allowed",
                               )}
                             >
                               <span className="w-4 shrink-0">
@@ -851,7 +1169,7 @@ export const ModelSettings: FC = () => {
             </Button>
           </div>
 
-          {customProviders.length === 0 ? (
+          {customProviders.length === 0 && builtinServices.length === 0 ? (
             <div className="bg-muted/50 flex flex-col items-center rounded-2xl py-16">
               <div className="bg-background ring-foreground/10 flex size-11 items-center justify-center rounded-full ring-1">
                 <ServerIcon className="text-muted-foreground size-5" />
@@ -941,6 +1259,61 @@ export const ModelSettings: FC = () => {
                       disabled={busy}
                       onToggle={() => void toggleCustomProvider(cp)}
                     />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 已配置的内置厂商：与自定义服务同列表管理（编辑过滤/密钥、删除） */}
+          {builtinServices.length > 0 && (
+            <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+              {builtinServices.map((svc) => (
+                <div
+                  key={svc.providerId}
+                  className="hover:bg-muted/60 flex items-center gap-3 rounded-xl px-3 py-2.5"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span
+                        title="已配置凭据"
+                        className="size-2 shrink-0 rounded-full bg-lime-500"
+                      />
+                      <span className="shrink-0 text-sm font-medium">
+                        {svc.name}
+                      </span>
+                      {selected?.provider === svc.providerId && (
+                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-[11px] font-medium text-lime-600">
+                          默认
+                        </span>
+                      )}
+                      <span className="text-muted-foreground text-[11px]">
+                        内置服务
+                      </span>
+                    </div>
+                    <div className="text-muted-foreground mt-0.5 truncate text-xs">
+                      {svc.modelCount} 个模型
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      title="编辑"
+                      disabled={busy}
+                      onClick={() => openBuiltinService(svc.providerId)}
+                      className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+                    >
+                      <PencilIcon className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      title="删除"
+                      disabled={busy}
+                      onClick={() => void deleteBuiltinService(svc.providerId)}
+                      className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </button>
                   </div>
                 </div>
               ))}
@@ -1059,7 +1432,7 @@ export const ModelSettings: FC = () => {
         {/* 模型目录 */}
         <div className="bg-muted/50 flex items-center justify-between gap-4 rounded-2xl px-5 py-4">
           <span className="text-muted-foreground truncate text-sm">
-            目录: 内置快照 · {models.length} 个模型 · 更新于{" "}
+            目录: 内置快照 · {visibleModelCount} 个模型 · 更新于{" "}
             {lastRefresh ?? "从未获取"}
           </span>
           <Button
@@ -1080,11 +1453,9 @@ export const ModelSettings: FC = () => {
         open={svcOpen}
         onOpenChange={(open) => !open && closeServiceDialog()}
       >
-        <DialogContent
-          showCloseButton={false}
-          className="flex h-[80dvh]  flex-col sm:max-w-4xl"
-        >
-          <div className="flex items-center justify-between gap-4">
+        <DialogContent className="flex h-[80dvh]  flex-col sm:max-w-4xl">
+          {/* pe-8：避让右上角 Dialog 自带的关闭 X 按钮 */}
+          <div className="flex items-center justify-between gap-4 pe-8">
             <DialogTitle className="text-base font-semibold">
               {svcEditing ? "编辑 AI 服务" : "添加 AI 服务"}
             </DialogTitle>
@@ -1268,14 +1639,30 @@ export const ModelSettings: FC = () => {
                     </Button>
                   )}
                 </div>
-                <div className="relative mt-2">
-                  <SearchIcon className="text-muted-foreground absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2" />
-                  <Input
-                    value={svcModelSearch}
-                    onChange={(e) => setSvcModelSearch(e.target.value)}
-                    placeholder="搜索模型 ID..."
-                    className="h-8 bg-background/60 ps-7 text-xs"
-                  />
+                <div className="mt-2 flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <SearchIcon className="text-muted-foreground absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2" />
+                    <Input
+                      value={svcModelSearch}
+                      onChange={(e) => setSvcModelSearch(e.target.value)}
+                      placeholder="搜索模型 ID..."
+                      className="h-8 bg-background/60 ps-7 text-xs"
+                    />
+                  </div>
+                  {/* 全选/取消全选：作用于搜索过滤后的可见列表 */}
+                  <button
+                    type="button"
+                    disabled={svcVisibleIds.length === 0}
+                    onClick={toggleSelectAllVisible}
+                    className={cn(
+                      "flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs",
+                      "hover:bg-muted/60 text-muted-foreground hover:text-foreground",
+                      "disabled:pointer-events-none disabled:opacity-50",
+                    )}
+                  >
+                    <ModelBox checked={svcAllVisibleSelected} />
+                    {svcAllVisibleSelected ? "取消全选" : "全选"}
+                  </button>
                 </div>
                 <div className="mt-2 min-h-0 flex-1 overflow-y-auto">
                   {svcProvider !== "custom" ? (
@@ -1377,18 +1764,51 @@ export const ModelSettings: FC = () => {
                   ) : (
                     <div className="flex flex-col gap-0.5">
                       {svcSelected.map((id) => (
-                        <button
-                          key={id}
-                          type="button"
-                          title={id}
-                          onClick={() => toggleModel(id)}
-                          className="hover:bg-muted/60 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-start"
-                        >
-                          <ModelBox checked />
-                          <span className="min-w-0 flex-1 truncate font-mono text-xs">
-                            {id}
-                          </span>
-                        </button>
+                        <div key={id}>
+                          <div className="hover:bg-muted/60 flex w-full items-center gap-2 rounded-md px-2 py-1.5">
+                            <button
+                              type="button"
+                              title={id}
+                              onClick={() => toggleModel(id)}
+                              className="flex min-w-0 flex-1 items-center gap-2 text-start"
+                            >
+                              <ModelBox checked />
+                              <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                                {id}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              title={attrEditId === id ? "收起属性编辑" : "编辑属性"}
+                              onClick={() =>
+                                attrEditId === id
+                                  ? cancelAttrEditor()
+                                  : openAttrEditor(id)
+                              }
+                              className={cn(
+                                "shrink-0",
+                                attrEditId === id
+                                  ? "text-foreground"
+                                  : "text-muted-foreground hover:text-foreground",
+                              )}
+                            >
+                              <PencilIcon className="size-3" />
+                            </button>
+                          </div>
+                          {attrEditId === id && attrDraft && (
+                            <AttrEditor
+                              draft={attrDraft}
+                              busy={busy}
+                              onChange={(patch) =>
+                                setAttrDraft((prev) =>
+                                  prev ? { ...prev, ...patch } : prev,
+                                )
+                              }
+                              onConfirm={() => void confirmAttrEditor()}
+                              onCancel={cancelAttrEditor}
+                            />
+                          )}
+                        </div>
                       ))}
                     </div>
                   )}

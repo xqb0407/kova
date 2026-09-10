@@ -23,7 +23,7 @@
 import { createInterface } from "node:readline";
 import { logErr } from "./log";
 import { initHostMode, initStorage } from "./storage";
-import { loadCustomProviders } from "./model-catalog";
+import { loadCustomProviders, applyModelOverrides } from "./model-catalog";
 import { handleLine, markStdinClosed } from "./protocol";
 
 const DB_PATH = process.env.PI_DB_PATH || "pi-agent.db";
@@ -52,6 +52,7 @@ async function main() {
   });
 
   await loadCustomProviders();
+  await applyModelOverrides();
 }
 
 void main();

@@ -16,7 +16,17 @@
  *   { "type": "delete_session", "id", "sessionId" }           → { id, type: "deleted" }
  *   { "type": "rename_session", "id", "sessionId", "name" }   → { id, type: "renamed" }
  *   { "type": "list_models", "id" }                           → { id, type: "models", models: [...], providers: [...] }
+ *       models 项含 enabled 与 maxTokens/input/cost 属性（enabled=false = 已被过滤隐藏，前端自行过滤）
  *   { "type": "set_model", "id", "provider", "modelId" }      → { id, type: "model", provider, modelId }
+ *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
+ *       models = 勾选（可见）的模型 id；null = 无过滤记录（目录全可见）
+ *   { "type": "set_provider_filter", "id", "provider", "models": string[] } → { id, type: "provider_filter", provider, models }
+ *       写 models 表行（enabled 位切换，属性覆盖保留）；空数组 = 清除该 provider 的全部行；
+ *       目录外的 modelId（内置厂商手动新增）按行挂进目录
+ *   { "type": "update_model", "id", "provider", "modelId", name?, reasoning?, contextWindow?, maxTokens?, input?, cost? }
+ *                                                             → { id, type: "model_updated", provider, modelId }
+ *       消息里携带的字段写入 models 表（null = 重置为继承内置值；未携带 = 保留现值）并原地应用到目录；
+ *       目录外的 modelId 同样会挂载为新增模型
  *   { "type": "set_credential", "id", "provider", "apiKey" }  → { id, type: "credential", provider }
  *   { "type": "list_credentials", "id" }                      → { id, type: "credentials", credentials: [...] }
  *   { "type": "delete_credential", "id", "provider" }         → { id, type: "credential_deleted", provider }
@@ -35,6 +45,10 @@
  *       拒绝未决提案：留在契约模式继续修改
  *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved" } → { id, type: "tool_confirmed", approvalId }
  *       结算 bash/write/edit 执行前的逐工具审批（prompt 流内 data-toolApproval chunk 发起）
+ *   { "type": "context_info", "id", "threadId", "sessionId"? } → { id, type: "context_info", ... }
+ *       上下文面板读数：容量/阈值/消息/系统提示词/工具占用 + 平均缓存命中率（现算，零持久化）
+ *   { "type": "compact", "id", "threadId", "sessionId"? }     → { id, type: "compacted", generation, tokensBefore, summarized }
+ *       手动压缩上下文（仅空闲回合边界；prompt 运行中拒绝）
  *   { "type": "test_provider", "id", "baseUrl", "apiKey", "api", "model" } → { id, type: "tested", ok: true }
  *   { "type": "delete_custom_provider", "id", "provider" }    → { id, type: "custom_provider_deleted", provider }
  *   prompt 流内审批推送：{ id, chunk: { type: "data-planningState", data: { mode, planning, proposal } } }
@@ -58,27 +72,40 @@ import {
   customProviderSetEnabled,
   customProviderUpsert,
   customProvidersList,
-  providerModelsAll,
-  providerModelsGet,
-  providerModelsSet,
+  modelsAll,
+  modelsDeleteProvider,
+  modelsList,
+  modelsReplace,
+  type ModelReplaceItem,
   sessionDelete,
   sessionList,
   sessionRename,
 } from "./hostdb";
 import {
+  applyRowToCatalogModel,
+  CUSTOM_MODEL_DEFAULTS,
   getCurrentModelKey,
   getModels,
   normalizeApi,
+  parseModelCost,
+  parseModelInput,
   registerCustomProvider,
   setCurrentModelKey,
 } from "./model-catalog";
 import { readTranscript, persist, historyToUiMessages } from "./transcript";
+import { contextInfo, needsCompaction, runCompaction } from "./context";
 import { running, resolveSession } from "./sessions";
 import {
   delegationResumeText,
   runningDelegations,
 } from "./subagent";
-import { beginRun, send, sendChunk, setCurrentReqId } from "./stream";
+import {
+  beginRun,
+  isPromptActive,
+  send,
+  sendChunk,
+  setCurrentReqId,
+} from "./stream";
 import {
   applyMode,
   clearPendingToolApprovals,
@@ -154,6 +181,20 @@ export function handleLine(raw: string) {
   }
 }
 
+/** data-compaction 完成态载荷（同 id 的 start/complete/failed 生命周期见 dispatchPrompt） */
+function compactionChunkData(outcome: {
+  generation: number;
+  tokensBefore: number;
+  summarized: boolean;
+}) {
+  return {
+    phase: "complete",
+    generation: outcome.generation,
+    tokensBefore: outcome.tokensBefore,
+    summarized: outcome.summarized,
+  };
+}
+
 /** prompt：会话准备段入管理队列串行执行，agent.prompt 长任务在队列外运行 */
 export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>) {
   const task = mgmtQueue.then(() =>
@@ -185,6 +226,8 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
   }
   setCurrentReqId(reqId);
   run.stopRequested = false;
+  // 上一次运行的溢出恢复残留（正常应在 runStepWithRecovery 内消费）兜底清理
+  run.pendingOverflowRecovery = false;
   // 新用户输入隐式关闭未决审批（未点批准/拒绝就直接发消息）
   closeProposalOnNewPrompt(run);
   // 逐工具审批理论上不会跨 turn 遗留（abort 已结算），兜底清理防挂起
@@ -193,16 +236,68 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
 
   // 每段 prompt 是消息流里的一个 step；resume 段前重置内容 id，避免与上一段撞 id
   let stepStarted = false;
+  // data-compaction 生命周期：start/complete/failed 复用同一个 part id，
+  // AI SDK 按 id 就地更新 data part → 前端横幅从「正在压缩」原地变成「压缩完成」
+  let compactionSeq = 0;
+  const emitCompaction = (id: string, data: Record<string, unknown>) =>
+    sendChunk(reqId, { type: "data-compaction", id, data });
   const runStep = async (text: string) => {
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     sendChunk(reqId, { type: "start-step" });
     stepStarted = true;
+    // 请求前阈值守卫（PI-Desktop pre-request guard）：上下文（含这条待发文本）
+    // 已越过 hardLimit 就先压缩再发请求；压缩失败不阻塞本轮（溢出有恢复路径兜底）
+    if (needsCompaction(run, text)) {
+      const cid = `cmp-${++compactionSeq}`;
+      emitCompaction(cid, { phase: "start" });
+      const outcome = await runCompaction(run, "threshold");
+      if (outcome.ok) {
+        emitCompaction(cid, compactionChunkData(outcome));
+      } else {
+        // 终止态必发（含 Stop 中止），否则分隔线卡在「正在压缩…」的转圈上
+        if (!run.stopRequested) logErr("threshold compaction failed:", outcome.message);
+        emitCompaction(cid, { phase: "failed" });
+      }
+    }
     beginRun();
     await run.agent.prompt(text);
   };
 
+  // 溢出恢复：stream.ts 吞掉溢出错误后置位 → 强制压缩后用同一文本重跑一次，
+  // 重跑仍溢出不再恢复（直接报错），防循环
+  const runStepWithRecovery = async (text: string) => {
+    await runStep(text);
+    if (!run.pendingOverflowRecovery) return;
+    run.pendingOverflowRecovery = false;
+    if (run.stopRequested) return;
+    // 溢出恢复压缩也走同一条 data-compaction 生命周期（start → complete/failed）
+    const cid = `cmp-${++compactionSeq}`;
+    emitCompaction(cid, { phase: "start" });
+    const outcome = await runCompaction(run, "overflow");
+    if (!outcome.ok) {
+      // 终止态必发（含 Stop 中止），错误 chunk 仅非 Stop 时发
+      emitCompaction(cid, { phase: "failed" });
+      if (!run.stopRequested) {
+        sendChunk(reqId, {
+          type: "error",
+          errorText: `Context overflow, automatic compaction failed: ${outcome.message}`,
+        });
+      }
+      return;
+    }
+    emitCompaction(cid, compactionChunkData(outcome));
+    await runStep(text);
+    if (run.pendingOverflowRecovery) {
+      run.pendingOverflowRecovery = false;
+      sendChunk(reqId, {
+        type: "error",
+        errorText: "Context overflow persisted after compaction. Start a new session.",
+      });
+    }
+  };
+
   try {
-    await runStep(String(msg.text ?? ""));
+    await runStepWithRecovery(String(msg.text ?? ""));
     // 后台委派收敛循环（ADR 0089）：turn 结束时若还有运行中的子代理，等它们完成，
     // 把未投递的报告作为恢复 prompt 继续喂给父代理（同一条 reqId 消息流内续跑）。
     // 用户 Stop（stopRequested）直接退出。
@@ -214,7 +309,7 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
       }
       const resume = delegationResumeText(run);
       if (!resume) break;
-      await runStep(resume);
+      await runStepWithRecovery(resume);
     }
   } catch (err) {
     sendChunk(reqId, { type: "error", errorText: err instanceof Error ? err.message : String(err) });
@@ -251,8 +346,39 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
             d.abort();
           }
         }
+        // 正在跑的压缩摘要请求也要中止（runCompaction 会因此放弃装填 checkpoint）
+        run.compactionAbort?.abort();
         run.agent.abort();
       }
+      break;
+    }
+    case "compact": {
+      // 手动压缩上下文：只在空闲回合边界做（prompt 在跑时拒绝），落 checkpoint 行
+      const run = await resolveSession(
+        String(msg.threadId ?? "default"),
+        typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+      );
+      if (isPromptActive()) {
+        throw new Error("session is busy: wait for the current response to finish");
+      }
+      const outcome = await runCompaction(run, "manual");
+      if (!outcome.ok) throw new Error(outcome.message);
+      send({
+        id: reqId,
+        type: "compacted",
+        generation: outcome.generation,
+        tokensBefore: outcome.tokensBefore,
+        summarized: outcome.summarized,
+      });
+      break;
+    }
+    case "context_info": {
+      // 上下文面板读数：present 会话（含恢复）现算，运行中也可查询（只读不阻塞）
+      const run = await resolveSession(
+        String(msg.threadId ?? "default"),
+        typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+      );
+      send({ id: reqId, type: "context_info", ...contextInfo(run) });
       break;
     }
     case "list_sessions": {
@@ -321,9 +447,22 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         name: string;
         reasoning: boolean;
         contextWindow: number;
+        maxTokens: number;
+        input: string[];
+        cost: Record<string, unknown>;
+        enabled: boolean;
         authed: boolean;
       }[] = [];
       const providerMap = new Map<string, { id: string; name: string; authed: boolean }>();
+      // models 表行：enabled 位 + 属性覆盖（属性已在启动/保存时合并进目录模型对象）。
+      // 行语义是稀疏白名单：provider 有行时，行 enabled=1 可见、无行/enabled=0 隐藏；无任何行 = 全可见。
+      const rows = await modelsAll();
+      const enabledMap = new Map<string, boolean>();
+      const hasRows = new Set<string>();
+      for (const r of rows) {
+        enabledMap.set(`${r.provider}/${r.modelId}`, r.enabled);
+        hasRows.add(r.provider);
+      }
       for (const p of models.getProviders()) {
         let authed = false;
         try {
@@ -340,55 +479,100 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
             name: m.name,
             reasoning: m.reasoning,
             contextWindow: m.contextWindow,
+            maxTokens: m.maxTokens,
+            input: m.input,
+            cost: m.cost as unknown as Record<string, unknown>,
+            enabled: hasRows.has(p.id)
+              ? (enabledMap.get(`${p.id}/${m.id}`) ?? false)
+              : true,
             authed,
           });
         }
       }
-      // 应用内置厂商的模型过滤（勾选集之外的模型不出现在前端目录里）
-      const filterRows = await providerModelsAll();
-      const filters = new Map(
-        filterRows.map((r) => {
-          let ids: string[] = [];
-          try {
-            ids = JSON.parse(r.models) as string[];
-          } catch {
-            ids = [];
-          }
-          return [r.provider, new Set(ids)] as const;
-        }),
-      );
-      const filtered = out.filter(
-        (m) => !filters.has(m.provider) || filters.get(m.provider)!.has(m.id),
-      );
       send({
         id: reqId,
         type: "models",
-        models: filtered,
+        models: out,
         providers: [...providerMap.values()],
       });
       break;
     }
     case "get_provider_filter": {
       const provider = String(msg.provider ?? "");
-      const row = await providerModelsGet(provider);
-      let modelIds: string[] | null = null;
-      if (row) {
-        try {
-          modelIds = JSON.parse(row.models) as string[];
-        } catch {
-          modelIds = null;
-        }
-      }
+      const rows = await modelsList(provider);
+      // 无行 = 从未设置过滤（目录全可见）；有行 = 勾选集为 enabled=1 的行
+      const modelIds = rows.length
+        ? rows.filter((r) => r.enabled).map((r) => r.modelId)
+        : null;
       send({ id: reqId, type: "provider_filter", provider, models: modelIds });
       break;
     }
     case "set_provider_filter": {
       const provider = String(msg.provider ?? "");
-      const ids = Array.isArray(msg.models)
-        ? [...new Set((msg.models as unknown[]).filter((s): s is string => typeof s === "string" && !!s.trim()))]
-        : [];
-      await providerModelsSet(provider, JSON.stringify(ids));
-      send({ id: reqId, type: "provider_filter", provider, models: ids.length ? ids : null });
+      const checked = new Set(
+        Array.isArray(msg.models)
+          ? (msg.models as unknown[]).filter(
+              (s): s is string => typeof s === "string" && !!s.trim(),
+            )
+          : [],
+      );
+      if (checked.size === 0) {
+        // 空勾选 = 清除过滤记录（目录恢复全可见）
+        await modelsDeleteProvider(provider);
+        send({ id: reqId, type: "provider_filter", provider, models: null });
+        break;
+      }
+      // 勾选集写 enabled=1 行（属性覆盖保留）；未勾选的既有行保留属性、enabled=0
+      const existing = new Map(
+        (await modelsList(provider)).map((r) => [r.modelId, r]),
+      );
+      const items: ModelReplaceItem[] = [];
+      for (const id of checked) {
+        const base = existing.get(id);
+        items.push({
+          modelId: id,
+          enabled: true,
+          name: base?.name ?? null,
+          reasoning: base?.reasoning ?? null,
+          contextWindow: base?.contextWindow ?? null,
+          maxTokens: base?.maxTokens ?? null,
+          input: base?.input ?? null,
+          cost: base?.cost ?? null,
+        });
+      }
+      for (const row of existing.values()) {
+        if (checked.has(row.modelId)) continue;
+        items.push({
+          modelId: row.modelId,
+          enabled: false,
+          name: row.name,
+          reasoning: row.reasoning,
+          contextWindow: row.contextWindow,
+          maxTokens: row.maxTokens,
+          input: row.input,
+          cost: row.cost,
+        });
+      }
+      await modelsReplace(provider, items);
+      // 新勾选的目录外模型（内置厂商手动添加的 modelId）按行挂进目录；既有模型重放覆盖
+      for (const item of items) {
+        applyRowToCatalogModel({
+          provider,
+          modelId: item.modelId,
+          name: item.name ?? null,
+          reasoning: item.reasoning ?? null,
+          contextWindow: item.contextWindow ?? null,
+          maxTokens: item.maxTokens ?? null,
+          input: item.input ?? null,
+          cost: item.cost ?? null,
+        });
+      }
+      send({
+        id: reqId,
+        type: "provider_filter",
+        provider,
+        models: [...checked],
+      });
       break;
     }
     case "set_model": {
@@ -476,7 +660,21 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const id =
         existingId ||
         `custom-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || randomUUID().slice(0, 8)}`;
-      await customProviderUpsert({ id, name, baseUrl, models: JSON.stringify(modelSpecs), api });
+      // 模型行统一存 models 表（custom_providers.models 旧列保持 '[]'，仅留 schema 兼容）
+      await customProviderUpsert({ id, name, baseUrl, models: "[]", api });
+      await modelsReplace(
+        id,
+        modelSpecs.map((m) => ({
+          modelId: m.id.trim(),
+          enabled: true,
+          name: typeof m.name === "string" ? m.name : null,
+          reasoning: typeof m.reasoning === "boolean" ? m.reasoning : null,
+          contextWindow: typeof m.contextWindow === "number" ? m.contextWindow : null,
+          maxTokens: typeof m.maxTokens === "number" ? m.maxTokens : null,
+          input: Array.isArray(m.input) ? m.input : null,
+          cost: m.cost && typeof m.cost === "object" && !Array.isArray(m.cost) ? m.cost : null,
+        })),
+      );
       // apiKey 留空表示保留原有凭据
       if (apiKey) {
         await credentialSet(id, apiKey);
@@ -484,7 +682,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       // 停用的服务保存后保持停用：不注册进目录，并从目录移除
       const enabledRow = await customProviderGet(id);
       if (!enabledRow || enabledRow.enabled) {
-        registerCustomProvider(enabledRow ?? { id, name, baseUrl, models: JSON.stringify(modelSpecs), api });
+        await registerCustomProvider(enabledRow ?? { id, name, baseUrl, api });
       } else {
         getModels().deleteProvider(id);
         if (getCurrentModelKey()?.provider === id) setCurrentModelKey(null);
@@ -501,12 +699,18 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const providers = await customProvidersList();
       const out = await Promise.all(
         providers.map(async (r) => {
-          let specs: CustomModelSpec[] = [];
-          try {
-            specs = JSON.parse(r.models) as CustomModelSpec[];
-          } catch {
-            specs = [];
-          }
+          // 模型行读 models 表（enabled=1），属性缺省解析为注册默认值供编辑表单回填
+          const specs: CustomModelSpec[] = (await modelsList(r.id))
+            .filter((row) => row.enabled && row.modelId.trim())
+            .map((row) => ({
+              id: row.modelId,
+              name: row.name?.trim() || row.modelId,
+              reasoning: row.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
+              contextWindow: row.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
+              maxTokens: row.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+              input: parseModelInput(row.input) ?? [...CUSTOM_MODEL_DEFAULTS.input],
+              cost: { ...(parseModelCost(row.cost) ?? CUSTOM_MODEL_DEFAULTS.cost) },
+            }));
           // 明文返回 key 供编辑弹窗回填（仅存本地库）
           const keyRow = await credentialGet(r.id);
           return {
@@ -527,6 +731,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     case "delete_custom_provider": {
       const provider = String(msg.provider ?? "");
       await customProviderDelete(provider);
+      await modelsDeleteProvider(provider);
       await credentialDelete(provider);
       getModels().deleteProvider(provider);
       if (getCurrentModelKey()?.provider === provider) setCurrentModelKey(null);
@@ -534,18 +739,51 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "toggle_custom_provider": {
-      // 启用/停用服务：停用时从模型目录移除，启用时重新注册
+      // 启用/停用服务：停用时从模型目录移除，启用时重新注册（模型行读 models 表）
       const provider = String(msg.provider ?? "");
       const enabled = msg.enabled === true;
       await customProviderSetEnabled(provider, enabled);
       if (enabled) {
         const row = await customProviderGet(provider);
-        if (row) registerCustomProvider(row);
+        if (row) await registerCustomProvider(row);
       } else {
         getModels().deleteProvider(provider);
         if (getCurrentModelKey()?.provider === provider) setCurrentModelKey(null);
       }
       send({ id: reqId, type: "custom_provider_toggled", provider, enabled });
+      break;
+    }
+    case "update_model": {
+      // 模型属性编辑：消息里携带的字段写入 models 表（null = 重置继承内置值，
+      // 未携带 = 保留现值），并原地应用到目录模型对象
+      const provider = String(msg.provider ?? "");
+      const modelId = String(msg.modelId ?? "");
+      if (!provider || !modelId) throw new Error("provider and modelId are required");
+      const base = (await modelsList(provider)).find((r) => r.modelId === modelId);
+      const pick = (key: string, fallback: unknown): unknown =>
+        key in msg ? (msg[key] ?? null) : fallback;
+      const item: ModelReplaceItem = {
+        modelId,
+        enabled: base?.enabled ?? true,
+        name: pick("name", base?.name ?? null) as string | null,
+        reasoning: pick("reasoning", base?.reasoning ?? null) as boolean | null,
+        contextWindow: pick("contextWindow", base?.contextWindow ?? null) as number | null,
+        maxTokens: pick("maxTokens", base?.maxTokens ?? null) as number | null,
+        input: pick("input", base?.input ?? null) as unknown[] | null,
+        cost: pick("cost", base?.cost ?? null) as Record<string, unknown> | null,
+      };
+      await modelsReplace(provider, [item]);
+      applyRowToCatalogModel({
+        provider,
+        modelId,
+        name: item.name ?? null,
+        reasoning: item.reasoning ?? null,
+        contextWindow: item.contextWindow ?? null,
+        maxTokens: item.maxTokens ?? null,
+        input: item.input ?? null,
+        cost: item.cost ?? null,
+      });
+      send({ id: reqId, type: "model_updated", provider, modelId });
       break;
     }
     case "test_provider": {

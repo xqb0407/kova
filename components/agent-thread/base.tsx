@@ -9,6 +9,8 @@ import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
 import { Thread } from "./thread";
 import { SettingsPage } from "@/components/settings/settings-page";
+// 应用启动即接管外观偏好（预绘制脚本之后：系统主题监听、跟随实时更新）
+import "@/lib/ui-prefs";
 
 export function BaseThread() {
   return <Thread />;
@@ -52,7 +54,7 @@ export const Base: FC = () => {
             仅左侧侧边栏透出窗口材质 */}
         <div
           data-content-solid
-          className="bg-muted/55 flex h-full flex-col overflow-hidden md:pl-0 border-l-[0.5]"
+          className="bg-background flex h-full flex-col overflow-hidden md:pl-0 border-l-[0.5]"
         >
           <div className="bg-transparent flex flex-1 flex-col overflow-hidden ">
             <Header

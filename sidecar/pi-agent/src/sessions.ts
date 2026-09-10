@@ -19,7 +19,8 @@ import {
 } from "./modes";
 import { getSubagentDefinitions } from "./subagent-definitions";
 import { buildSubagentTools } from "./subagent";
-import { readTranscript } from "./transcript";
+import { readCompaction, readTranscript } from "./transcript";
+import { checkpointGeneration, projectRestoreContext } from "./context";
 import { onAgentEvent } from "./stream";
 import { logErr } from "./log";
 import { sessionPath } from "./storage";
@@ -43,14 +44,24 @@ export async function resolveSession(
   let persistedCwd = cwd ?? "";
   let restoredMessages: import("@earendil-works/pi-ai").Message[] = [];
   let persistedSeq = 0;
+  let jsonlSeq = 0;
+  let compactionGeneration = 0;
 
   if (sessionId) {
     const row = await sessionGet(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
     persistedCwd = row.cwd;
     const transcript = readTranscript(sessionId);
-    restoredMessages = transcript.map((t) => t.agent);
-    persistedSeq = transcript.length;
+    const checkpoint = readCompaction(sessionId);
+    let maxSeq = -1;
+    for (const t of transcript) maxSeq = Math.max(maxSeq, t.seq);
+    if (checkpoint) {
+      maxSeq = Math.max(maxSeq, checkpoint.seq);
+      compactionGeneration = checkpointGeneration(checkpoint.details);
+    }
+    restoredMessages = projectRestoreContext(transcript, checkpoint);
+    persistedSeq = restoredMessages.length;
+    jsonlSeq = maxSeq + 1;
   } else {
     // 新会话：建索引行 + JSONL header
     sessionId = randomUUID();
@@ -76,6 +87,9 @@ export async function resolveSession(
     sessionId: sessionId!,
     cwd: resolvedCwd,
     persistedSeq,
+    jsonlSeq,
+    compactionGeneration,
+    pendingOverflowRecovery: false,
     delegations: new Map(),
     stopRequested: false,
     mode: "agent",
