@@ -15,6 +15,7 @@ import {
 } from "@assistant-ui/react";
 import {
   ArchiveIcon,
+  FolderIcon,
   FolderOpenIcon,
   Loader2Icon,
   MoreHorizontalIcon,
@@ -23,6 +24,11 @@ import {
   SearchIcon,
   TrashIcon,
 } from "lucide-react";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { piSessionCwdMap } from "@/lib/pi-thread-adapter";
 import {
   openWorkspacePicker,
@@ -163,29 +169,32 @@ export const ThreadListItems: FC<
   );
 };
 
-const DAY_IN_MS = 86_400_000;
-
-const dateGroupLabel = (
-  date: Date | undefined,
-  startOfToday: number,
-): string => {
-  if (!date || date.getTime() >= startOfToday) return "Today";
-  if (date.getTime() >= startOfToday - DAY_IN_MS) return "Yesterday";
-  return "Earlier";
+export type ThreadListProjectGroup = {
+  /** 项目工作目录（完整路径，作折叠 key） */
+  cwd: string;
+  /** 目录 basename，作显示名 */
+  label: string;
+  indices: number[];
 };
 
-export type ThreadListGroup = { label: string; indices: number[] };
+export type ThreadListGroups = {
+  threadIds: readonly string[];
+  filteredIndices: number[];
+  /** 任务：未选择工作目录的公共会话，最近活动倒序 */
+  taskIndices: number[];
+  /** 项目：有工作目录的会话按目录分组，组间按最近活动倒序 */
+  projectGroups: ThreadListProjectGroup[];
+};
 
 /**
  * Filters the thread list by title and buckets the matches.
- * Tauri 模式：按 workspace（pi session 的 cwd 目录名）分组，组内按最近活动倒序，
- * 组间按最近活动倒序；尚未落盘的新会话归入当前 workspace。
- * 无任何 workspace 信息（web 模式）时退回按日期分组（Today / Yesterday / Earlier）。
+ * 会话分两类：任务（未选工作目录的公共对话）与项目（选定文件夹下的对话，
+ * 按文件夹分组、可展开）。归属只由会话自身记录的 cwd 决定；
+ * 组内按最近活动倒序。
  */
-export const useThreadListGroups = (searchQuery = "") => {
+export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const threadItems = useAuiState((s) => s.threads.threadItems);
-  const workspace = useWorkspace();
 
   const query = searchQuery.trim().toLowerCase();
 
@@ -206,61 +215,38 @@ export const useThreadListGroups = (searchQuery = "") => {
     const time = (index: number) =>
       dates[index]?.getTime() ?? Number.MAX_SAFE_INTEGER;
 
-    // workspace 归属：优先 pi session 的 cwd，其次当前 workspace（新建未落盘的会话）
+    // cwd 归属只看会话自己记录的 cwd：空（含新建未落盘）= 任务，非空 = 项目分组。
+    // 不用当前 workspace 兜底——那会让"默认选中的目录"污染会话归属
     const cwdOf = (id: string) => {
       const remoteId = itemsById.get(id)?.remoteId;
-      return (remoteId && piSessionCwdMap.get(remoteId)) || workspace;
+      return (remoteId && piSessionCwdMap.get(remoteId)) || "";
     };
 
-    const sorted = [...filteredIndices].sort((a, b) => time(b) - time(a));
-
-    // 无任何 workspace 信息（web 模式）→ 日期分组
-    if (!sorted.some((index) => cwdOf(threadIds[index]))) {
-      if (!sorted.some((index) => dates[index])) {
-        return { threadIds, filteredIndices, groups: null };
-      }
-
-      const now = new Date();
-      const startOfToday = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate(),
-      ).getTime();
-
-      const result: ThreadListGroup[] = [];
-      for (const index of sorted) {
-        const label = dateGroupLabel(dates[index], startOfToday);
-        const lastGroup = result[result.length - 1];
-        if (lastGroup?.label === label) {
-          lastGroup.indices.push(index);
-        } else {
-          result.push({ label, indices: [index] });
-        }
-      }
-      return { threadIds, filteredIndices, groups: result };
-    }
-
-    // workspace 分组：Map 保持插入序 → 组间即按最近活动倒序
-    const byLabel = new Map<string, number[]>();
-    for (const index of sorted) {
+    const taskIndices: number[] = [];
+    const byCwd = new Map<string, number[]>();
+    for (const index of [...filteredIndices].sort((a, b) => time(b) - time(a))) {
       const cwd = cwdOf(threadIds[index]);
-      const label = cwd ? pathBasename(cwd) : "会话";
-      const bucket = byLabel.get(label);
+      if (!cwd) {
+        taskIndices.push(index);
+        continue;
+      }
+      const bucket = byCwd.get(cwd);
       if (bucket) bucket.push(index);
-      else byLabel.set(label, [index]);
+      else byCwd.set(cwd, [index]);
     }
-    return {
-      threadIds,
-      filteredIndices,
-      groups: [...byLabel].map(([label, indices]) => ({ label, indices })),
-    };
-  }, [threadIds, threadItems, query, workspace]);
+
+    const projectGroups: ThreadListProjectGroup[] = [...byCwd].map(
+      ([cwd, indices]) => ({ cwd, label: pathBasename(cwd), indices }),
+    );
+
+    return { threadIds, filteredIndices, taskIndices, projectGroups };
+  }, [threadIds, threadItems, query]);
 };
 
 const ThreadListItemGroups: FC<{ searchQuery?: string }> = ({
   searchQuery = "",
 }) => {
-  const { threadIds, filteredIndices, groups } =
+  const { threadIds, filteredIndices, taskIndices } =
     useThreadListGroups(searchQuery);
   const query = searchQuery.trim();
 
@@ -275,33 +261,99 @@ const ThreadListItemGroups: FC<{ searchQuery?: string }> = ({
     );
   }
 
-  if (!groups) {
-    return filteredIndices.map((index) => (
-      <ThreadListPrimitive.ItemByIndex
-        key={threadIds[index]}
-        index={index}
-        components={{ ThreadListItem }}
-      />
-    ));
+  if (taskIndices.length === 0) {
+    return (
+      <div
+        data-slot="aui_thread-list-empty"
+        className="text-muted-foreground px-2.5 py-4 text-sm"
+      >
+        暂无任务对话，选择工作目录后的对话会出现在「项目」里
+      </div>
+    );
   }
 
-  return groups.map((group) => (
-    <Fragment key={group.label}>
-      <div
-        data-slot="aui_thread-list-group-label"
-        className="text-muted-foreground px-2.5 pt-3 pb-1 text-xs font-medium"
-      >
-        {group.label}
-      </div>
-      {group.indices.map((index) => (
-        <ThreadListPrimitive.ItemByIndex
-          key={threadIds[index]}
-          index={index}
-          components={{ ThreadListItem }}
-        />
-      ))}
-    </Fragment>
+  return taskIndices.map((index) => (
+    <ThreadListPrimitive.ItemByIndex
+      key={threadIds[index]}
+      index={index}
+      components={{ ThreadListItem }}
+    />
   ));
+};
+
+/**
+ * 项目 tab 内容：有工作目录的会话按文件夹分组，Collapsible 展开显示会话列表。
+ * 必须渲染在 ThreadListPrimitive.Root 内部（会话项复用 ThreadListItem 的
+ * 激活/重命名/删除能力）。
+ */
+export const ProjectListItems: FC = () => {
+  const { threadIds, projectGroups } = useThreadListGroups();
+  const [openDirs, setOpenDirs] = useState<Set<string>>(() => new Set());
+
+  const toggle = (cwd: string) =>
+    setOpenDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(cwd)) next.delete(cwd);
+      else next.add(cwd);
+      return next;
+    });
+
+  if (projectGroups.length === 0) {
+    return (
+      <div
+        data-slot="aui_thread-list-empty"
+        className="text-muted-foreground px-2.5 py-4 text-sm"
+      >
+        暂无项目对话，选择工作目录后新建的对话会出现在这里
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {projectGroups.map((group) => {
+        const isOpen = openDirs.has(group.cwd);
+        return (
+          <Collapsible
+            key={group.cwd}
+            open={isOpen}
+            onOpenChange={() => toggle(group.cwd)}
+          >
+            <CollapsibleTrigger
+              className="w-full"
+              render={
+                <Button
+                  variant="ghost"
+                  title={group.cwd}
+                  className="h-8 justify-start gap-2 px-2.5 text-sm font-normal hover:bg-muted"
+                >
+                  {isOpen ? (
+                    <FolderOpenIcon className="size-4 shrink-0" />
+                  ) : (
+                    <FolderIcon className="size-4 shrink-0" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-start">
+                    {group.label}
+                  </span>
+                </Button>
+              }
+            />
+            <CollapsibleContent className="overflow-hidden">
+              <div className="flex flex-col gap-0.5">
+                {group.indices.map((index) => (
+                  <ThreadListPrimitive.ItemByIndex
+                    key={threadIds[index]}
+                    index={index}
+                    components={{ ThreadListItem }}
+                  />
+                ))}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        );
+      })}
+    </div>
+  );
 };
 
 export const ThreadListNew = forwardRef<

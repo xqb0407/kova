@@ -32,6 +32,7 @@ import {
 } from "@/lib/pi-bridge";
 import { isTauri } from "@/lib/tauri";
 import { setSelectedModel, useSelectedModel } from "@/lib/model-settings";
+import { fmtContextWindow } from "@/lib/model-format";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -46,11 +47,16 @@ import {
   Trash2Icon,
 } from "lucide-react";
 
-const fmtContextWindow = (n: number): string => {
-  if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`;
-  if (n >= 1_000) return `${Math.round(n / 1000)}K`;
-  return String(n);
-};
+/** 接口格式选项：label 显示在触发器与下拉列表，endpoint 仅在下拉列表中作辅助说明 */
+const API_FORMATS: {
+  value: PiCustomApiKind;
+  label: string;
+  endpoint: string;
+}[] = [
+  { value: "openai-chat", label: "OpenAI Chat Completions", endpoint: "/chat/completions" },
+  { value: "openai-responses", label: "OpenAI Responses", endpoint: "/responses" },
+  { value: "anthropic-messages", label: "Anthropic Messages", endpoint: "/v1/messages" },
+];
 
 /** 弹窗表单字段：小标签 + 控件 */
 const Field: FC<{ label: string; children: ReactNode }> = ({
@@ -582,9 +588,14 @@ export const ModelSettings: FC = () => {
   const hasAuthedModel = models?.some((m) => m.authed) ?? false;
 
   const svcProvOptions = useMemo(() => {
+    // 已添加的自定义服务不在"添加"列表里出现（catalog 会把它们注册成 provider），
+    // 它们走服务列表里的编辑按钮；否则选中后会被当成内置厂商处理
+    const customIds = new Set(customProviders.map((cp) => cp.providerId));
     const all = [
       { id: "custom", name: "自定义端点" },
-      ...providers.map((p) => ({ id: p.id, name: p.name })),
+      ...providers
+        .filter((p) => !customIds.has(p.id))
+        .map((p) => ({ id: p.id, name: p.name })),
     ];
     const q = svcProvSearch.trim().toLowerCase();
     return q
@@ -594,7 +605,7 @@ export const ModelSettings: FC = () => {
             o.id.toLowerCase().includes(q),
         )
       : all;
-  }, [providers, svcProvSearch]);
+  }, [providers, customProviders, svcProvSearch]);
 
   const svcAvailFiltered = useMemo(() => {
     const q = svcModelSearch.trim().toLowerCase();
@@ -863,6 +874,13 @@ export const ModelSettings: FC = () => {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
+                      <span
+                        title={cp.enabled ? "已启用" : "已停用"}
+                        className={cn(
+                          "size-2 shrink-0 rounded-full",
+                          cp.enabled ? "bg-lime-500" : "bg-muted-foreground/40",
+                        )}
+                      />
                       <span className="shrink-0 text-sm font-medium">
                         {cp.name}
                       </span>
@@ -1175,18 +1193,22 @@ export const ModelSettings: FC = () => {
                       onValueChange={(v) => v && setSvcApi(v)}
                     >
                       <SelectTrigger className="w-full">
-                        <SelectValue />
+                        <SelectValue>
+                          {(v: PiCustomApiKind | null) =>
+                            API_FORMATS.find((f) => f.value === v)?.label ??
+                            "选择接口格式"
+                          }
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="openai-chat">
-                          OpenAI Chat Completions
-                        </SelectItem>
-                        <SelectItem value="openai-responses">
-                          OpenAI Responses
-                        </SelectItem>
-                        <SelectItem value="anthropic-messages">
-                          Anthropic Messages
-                        </SelectItem>
+                        {API_FORMATS.map((f) => (
+                          <SelectItem key={f.value} value={f.value}>
+                            {f.label}
+                            <span className="text-muted-foreground ms-1.5 text-xs">
+                              {f.endpoint}
+                            </span>
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </Field>

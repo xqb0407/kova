@@ -4,9 +4,7 @@ import { ComposerAddAttachment, ComposerAttachments } from "@/components/assista
 import { ComposerQuotePreview } from "@/components/assistant-ui/elements/quote.aui";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/elements/composer-trigger-popover.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
-import { ModelSelector } from "@/components/assistant-ui/elements/model-selector.aui";
-import { docsModelOptions } from "@/components/docs/assistant/docs-model-options";
-import { DEFAULT_MODEL_ID } from "@/lib/model";
+import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { Button } from "@/components/ui/button";
 import {
   AuiIf,
@@ -56,18 +54,8 @@ import {
 import { Input } from "../ui/input";
 import { cn } from "cn";
 
-const models = docsModelOptions();
-
 const ModelPicker: FC = () => {
-  return (
-    <ModelSelector
-      models={models}
-      defaultValue={DEFAULT_MODEL_ID}
-      variant="ghost"
-      size="sm"
-      className="h-7 rounded-full"
-    />
-  );
+  return <PiModelPicker />;
 };
 
 const slashCommands: readonly Unstable_SlashCommand[] = [

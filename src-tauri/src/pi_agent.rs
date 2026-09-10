@@ -60,6 +60,7 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
         .map_err(|e| format!("failed to spawn pi-agent: {e}"))?;
 
     let state_for_rx = Arc::clone(&state.pending);
+    let child_slot = Arc::clone(&state.child);
     let emitter = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
@@ -110,6 +111,8 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                     // 同步通知远程网关连接
                     remote::notify_terminated();
                     let _ = emitter.emit("pi-exit", status.code.unwrap_or(-1).to_string());
+                    // 清掉死掉的子进程句柄，下次 ensure_spawned 会自动重新拉起
+                    *child_slot.lock().await = None;
                     break;
                 }
                 _ => {}
@@ -124,13 +127,18 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
 /// 写入一行 NDJSON 到 sidecar stdin（child Mutex 保证行原子性，多来源并发写安全）
 pub(crate) async fn write_line(state: &PiState, line: String) -> Result<(), String> {
     let mut guard = state.child.lock().await;
-    match guard.as_mut() {
+    let write_result = match guard.as_mut() {
         Some(child) => child
             .write(line.as_bytes())
-            .and_then(|_| child.write(b"\n"))
-            .map_err(|e| format!("failed to write to pi-agent stdin: {e}")),
-        None => Err("pi-agent is not running".into()),
+            .and_then(|_| child.write(b"\n")),
+        None => return Err("pi-agent is not running".into()),
+    };
+    if let Err(e) = write_result {
+        // 管道破裂说明子进程已死：清掉句柄，下次 ensure_spawned 自动重启
+        *guard = None;
+        return Err(format!("failed to write to pi-agent stdin: {e}"));
     }
+    Ok(())
 }
 
 #[tauri::command]
