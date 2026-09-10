@@ -229,8 +229,15 @@ type SubagentRunOptions = {
   model: Model<Api>;
   cwd: string;
   tools: AgentTool[];
+  /** 委派 id：透传给 provider 做缓存路由（OpenAI prompt_cache_key / Anthropic session-affinity） */
+  sessionId: string;
   signal?: AbortSignal;
 };
+
+/** 长缓存开关（与 sessions.ts 主代理一致）：PI_CACHE_RETENTION=long 时启用，compat 守门自动降级 */
+function cacheRetentionOption() {
+  return process.env.PI_CACHE_RETENTION === "long" ? { cacheRetention: "long" as const } : {};
+}
 
 /** 一次 delegate 执行。实例单次使用。 */
 class SubagentRun {
@@ -245,7 +252,9 @@ class SubagentRun {
   constructor(opts: SubagentRunOptions) {
     this.opts = opts;
     this.agent = new Agent({
-      streamFn: (m, context, options) => getModels().streamSimple(m, context, options),
+      sessionId: this.opts.sessionId,
+      streamFn: (m, context, options) =>
+        getModels().streamSimple(m, context, { ...options, ...cacheRetentionOption() }),
       afterToolCall: async () => {
         // sidecar 工具直接执行、没有父级簿记，这里只负责定义的轮次上限
         const capped =
@@ -491,6 +500,7 @@ export function buildSubagentTools(
         model,
         cwd: run.cwd,
         tools,
+        sessionId: delegationId,
         signal: controller.signal,
       })
         .run()

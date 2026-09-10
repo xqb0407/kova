@@ -5,11 +5,13 @@ import {
   approvalBeforeToolCall,
   clearPendingToolApprovals,
   closeProposalOnNewPrompt,
+  composeModeSystemPrompt,
   modeBeforeToolCall,
   planningPayload,
   resolveToolApproval,
   toolsForMode,
 } from "./modes";
+import { SYSTEM_PROMPT_CORE, workspacePromptLine } from "./tools";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { PlanningState, Running, SessionMode } from "./types";
@@ -215,5 +217,48 @@ describe("approvalBeforeToolCall", () => {
     const [approvalId] = [...run.pendingToolApprovals.keys()];
     resolveToolApproval(run, approvalId, true);
     await expect(hook).resolves.toBeUndefined();
+  });
+});
+
+describe("系统提示词结构（缓存友好）", () => {
+  const CWD = "/tmp/ws";
+  const workspaceLine = workspacePromptLine(CWD);
+
+  test("静态核心不含 cwd / 时间戳，跨会话字节级稳定", () => {
+    expect(SYSTEM_PROMPT_CORE).not.toContain(CWD);
+    expect(SYSTEM_PROMPT_CORE).not.toContain("workspace directory");
+    expect(SYSTEM_PROMPT_CORE).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    // 静态核心以身份声明开头
+    expect(SYSTEM_PROMPT_CORE.startsWith("You are")).toBe(true);
+  });
+
+  test("composeModeSystemPrompt：静态核心在前、模式段夹中间、cwd 行在最尾", () => {
+    const modeMarker: Record<SessionMode, string> = {
+      agent: "Agent mode",
+      plan: "Plan mode",
+      goal: "Goal mode",
+    };
+    for (const mode of ["agent", "plan", "goal"] as const) {
+      const prompt = composeModeSystemPrompt(mode, CWD);
+      const coreEnd = prompt.indexOf(SYSTEM_PROMPT_CORE);
+      const modePos = prompt.indexOf(modeMarker[mode]);
+      const cwdPos = prompt.indexOf(workspaceLine);
+      expect(coreEnd).toBe(0); // 静态核心在最前
+      expect(modePos).toBeGreaterThan(0); // 模式段在核心之后
+      expect(cwdPos).toBeGreaterThan(modePos); // cwd 行在模式段之后
+      expect(prompt.endsWith(workspaceLine)).toBe(true); // cwd 行在最尾
+    }
+  });
+
+  test("cwd 只在末段出现一次", () => {
+    const prompt = composeModeSystemPrompt("agent", CWD);
+    expect(prompt.split(CWD).length - 1).toBe(1);
+  });
+
+  test("同一模式不同 cwd：静态前缀保持一致（仅末段不同）", () => {
+    const a = composeModeSystemPrompt("plan", "/tmp/a");
+    const b = composeModeSystemPrompt("plan", "/tmp/b");
+    expect(a.slice(0, a.lastIndexOf("\n\n"))).toBe(b.slice(0, b.lastIndexOf("\n\n")));
+    expect(a).not.toBe(b);
   });
 });
