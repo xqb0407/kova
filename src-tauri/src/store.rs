@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension};
 use tauri::{AppHandle, Manager, State};
 
-pub struct DbState(Mutex<Connection>);
+pub struct DbState(pub(crate) Mutex<Connection>);
 
 fn open_db(app: &AppHandle) -> Result<Connection, String> {
     let dir = app
@@ -30,6 +30,8 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
 /// 在 setup 阶段初始化数据库并注册到应用状态
 pub fn init(app: &AppHandle) -> Result<(), String> {
     let conn = open_db(app)?;
+    // pi-agent 业务表（会话索引/凭据/自定义提供商/模型过滤）也在本库，Rust 是唯一写入方
+    crate::data::init_tables(&conn)?;
     app.manage(DbState(Mutex::new(conn)));
     Ok(())
 }

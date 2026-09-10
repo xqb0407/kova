@@ -14,7 +14,8 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { logErr } from "./log";
-import { credentialStore, db } from "./storage";
+import { credentialStore } from "./storage";
+import { customProvidersList } from "./hostdb";
 import type { CustomApiKind, CustomModelSpec } from "./types";
 
 /** 模型目录类型（含 provider 注册/删除、模型查询、凭据查询） */
@@ -84,7 +85,7 @@ export const normalizeApi = (v: unknown): CustomApiKind =>
 export function registerCustomProvider(row: {
   id: string;
   name: string;
-  base_url: string;
+  baseUrl: string;
   models: string;
   api?: string;
 }) {
@@ -96,7 +97,7 @@ export function registerCustomProvider(row: {
   }
   // baseUrl 语义与 OpenAI SDK 一致：完整前缀，API 实现在其后拼各自端点
   // （openai-chat → /chat/completions，openai-responses → /responses，anthropic-messages → /v1/messages）
-  const baseUrl = row.base_url.trim().replace(/\/+$/, "");
+  const baseUrl = row.baseUrl.trim().replace(/\/+$/, "");
   const apiKind = normalizeApi(row.api);
   const modelList: Model<Api>[] = specs
     .filter((m) => m && typeof m.id === "string" && m.id.trim())
@@ -123,20 +124,9 @@ export function registerCustomProvider(row: {
   getModels().setProvider(provider);
 }
 
-/** 启动时把已保存的自定义提供商全部注册（停用的跳过）；入口在 initStorage 后调用 */
-export function loadCustomProviders() {
-  const rows = db
-    .query<
-      {
-        id: string;
-        name: string;
-        base_url: string;
-        models: string;
-        enabled: number;
-      },
-      []
-    >("SELECT id, name, base_url, models, enabled FROM custom_providers")
-    .all();
+/** 启动时把已保存的自定义提供商全部注册（停用的跳过）；入口在存储初始化后调用 */
+export async function loadCustomProviders(): Promise<void> {
+  const rows = await customProvidersList();
   for (const row of rows) {
     if (!row.enabled) continue;
     try {

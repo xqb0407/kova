@@ -11,12 +11,15 @@ import { setSelectedModel, useSelectedModel } from "@/lib/model-settings";
 import { fmtContextWindow } from "@/lib/model-format";
 
 /**
- * 对话页模型选择器：真实模型目录按服务（厂商/自定义端点）分组展示，
- * 未配置凭据的服务置灰；选中写入 SQLite 并同步 sidecar（set_model）。
+ * 对话页模型选择器：只展示已配置凭据的服务（authed）的模型，按服务分组；
+ * 未配置的服务不出现（去设置 → 模型里添加）。选中写入 SQLite 并同步 sidecar。
  */
 export const PiModelPicker: FC = () => {
-  const models = usePiModels();
+  const allModels = usePiModels();
   const selected = useSelectedModel();
+
+  // 只查配置过的：无凭据的服务整体隐藏，而不是置灰展示
+  const models = useMemo(() => allModels.filter((m) => m.authed), [allModels]);
 
   const byCompositeId = useMemo(() => {
     const map = new Map<string, PiModelSummary>();

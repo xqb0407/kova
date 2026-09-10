@@ -5,6 +5,9 @@ import { ComposerQuotePreview } from "@/components/assistant-ui/elements/quote.a
 import { ComposerTriggerPopover } from "@/components/assistant-ui/elements/composer-trigger-popover.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
+import { ModePicker } from "@/components/agent-thread/mode-picker";
+import { PlanApprovalCard } from "@/components/agent-thread/plan-approval-card";
+import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { Button } from "@/components/ui/button";
 import {
   AuiIf,
@@ -122,6 +125,8 @@ export const Composer: FC = () => {
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+        <PlanApprovalCard />
+        <ToolApprovalCard />
         <ComposerPrimitive.AttachmentDropzone asChild>
           <div
             data-slot="aui_composer-shell"
@@ -271,6 +276,7 @@ const ComposerAction: FC = () => {
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
       <div className="flex items-center gap-1">
         <ComposerAddAttachment />
+        <ModePicker />
       </div>
       <div className="flex items-center gap-1.5">
         <ModelPicker />

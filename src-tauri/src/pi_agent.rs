@@ -61,6 +61,7 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
 
     let state_for_rx = Arc::clone(&state.pending);
     let child_slot = Arc::clone(&state.child);
+    let app_for_rx = app.clone();
     let emitter = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
@@ -68,6 +69,37 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                 // shell 插件按行分发 stdout；统一转 UTF-8 字符串处理
                 CommandEvent::Stdout(bytes) => {
                     let line = String::from_utf8_lossy(&bytes).to_string();
+                    // sidecar -> 宿主的 RPC（host_query）：查库后经 stdin 回写 host_result。
+                    // 计算放阻塞线程池（阶段②工具执行可能耗时数秒），不阻塞 stdout 泵；
+                    // 回写拿 child tokio Mutex 与命令写入排队，保证行原子性。
+                    let is_host_query = serde_json::from_str::<serde_json::Value>(&line)
+                        .ok()
+                        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("host_query"))
+                        .is_some();
+                    if is_host_query {
+                        let app_handle = app_for_rx.clone();
+                        let child_slot_for_query = Arc::clone(&child_slot);
+                        tauri::async_runtime::spawn(async move {
+                            let reply = tauri::async_runtime::spawn_blocking(move || {
+                                serde_json::from_str::<serde_json::Value>(&line)
+                                    .ok()
+                                    .map(|value| {
+                                        let db = app_handle.state::<crate::store::DbState>();
+                                        crate::data::dispatch_host_query(&db.0, &value).to_string()
+                                    })
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+                            let Some(reply) = reply else { return };
+                            let mut guard = child_slot_for_query.lock().await;
+                            if let Some(child) = guard.as_mut() {
+                                let _ = child.write(reply.as_bytes());
+                                let _ = child.write(b"\n");
+                            }
+                        });
+                        continue;
+                    }
                     // 先尝试请求-响应配对（管理类请求），未命中则作为流式 chunk 转发
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
                         if let Some(req_id) = value.get("id").and_then(|v| v.as_str()) {

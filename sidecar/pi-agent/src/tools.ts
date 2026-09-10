@@ -1,20 +1,28 @@
 /**
- * 内置编码工具（bash / read / write / edit）与系统提示词。
- * bash 在子进程里执行并截断超长输出；read/write/edit 直接操作工作区文件。
+ * 内置编码工具（bash / read / write / edit / glob / grep）与系统提示词。
+ * bash/read/write/edit 的执行已下沉到 Rust 宿主（src-tauri/src/tool_exec.rs）：
+ * 本文件只保留工具 schema（LLM 需要）并通过 hostdb 转发执行——bash 由 Rust
+ * 杀整棵进程树，避免 Windows 上孙进程残留。
+ * glob/grep 仍在本侧实现：纯只读内存计算，且 JS 正则（lookahead 等）与
+ * Rust regex 语法不兼容。
  */
-import { spawn } from "node:child_process";
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
-  writeFileSync,
+  readdirSync,
+  statSync,
 } from "node:fs";
 import path from "node:path";
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { hostToolCall } from "./hostdb";
 
-const MAX_TOOL_OUTPUT = 16 * 1024;
-const MAX_READ_BYTES = 64 * 1024;
+/** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
+const MAX_WALKED_FILES = 5000;
+const MAX_MATCH_ENTRIES = 200;
+const MAX_GREP_FILE_BYTES = 512 * 1024;
+/** 遍历时跳过的目录名（含任意隐藏目录，. 开头） */
+const SKIP_DIRS = new Set(["node_modules", ".git"]);
 
 function resolveInWorkspace(cwd: string, p: string): string {
   return path.isAbsolute(p) ? p : path.join(cwd, p);
@@ -24,132 +32,240 @@ function textResult(text: string, details?: unknown) {
   return { content: [{ type: "text" as const, text }], details };
 }
 
+/** glob 模式（支持 **、*、?）→ 正则；路径分隔符一律按 / 处理 */
+export function globToRegExp(pattern: string): RegExp {
+  let re = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "*") {
+      if (pattern[i + 1] === "*") {
+        if (pattern[i + 2] === "/") {
+          re += "(?:.*/)?";
+          i += 2;
+        } else {
+          re += ".*";
+          i += 1;
+        }
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") {
+      re += "[^/]";
+    } else {
+      re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${re}$`, "i");
+}
+
+/** 递归遍历目录（跳过 node_modules/.git/隐藏目录），对每个文件回调；返回 false 提前终止 */
+function walkFiles(
+  root: string,
+  visit: (abs: string, rel: string) => boolean | void,
+): void {
+  let walked = 0;
+  const stack: { abs: string; rel: string }[] = [{ abs: root, rel: "" }];
+  while (stack.length) {
+    const dir = stack.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(dir.abs, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (++walked > MAX_WALKED_FILES) return;
+      const abs = path.join(dir.abs, entry.name);
+      const rel = dir.rel ? `${dir.rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
+        stack.push({ abs, rel });
+      } else if (entry.isFile()) {
+        if (visit(abs, rel) === false) return;
+      }
+    }
+  }
+}
+
+/** glob 工具：按模式匹配工作区内文件路径 */
+function buildGlobTool(cwd: string): AgentTool {
+  return {
+    name: "glob",
+    label: "Glob",
+    description:
+      "Find files by name pattern (e.g. \"src/**/*.ts\", \"*.json\"). " +
+      "Skips node_modules, .git and hidden directories. Returns up to 200 paths.",
+    parameters: Type.Object({
+      pattern: Type.String({ description: "Glob pattern with ** / * / ?" }),
+      path: Type.Optional(
+        Type.String({ description: "Sub-directory to search (default workspace root)" }),
+      ),
+    }),
+    execute: async (_id, params) => {
+      const { pattern, path: sub } = params as { pattern: string; path?: string };
+      if (!pattern.trim()) throw new Error("pattern is required");
+      const base = resolveInWorkspace(cwd, sub ?? "");
+      if (!existsSync(base)) throw new Error(`not found: ${sub ?? "."}`);
+      const re = globToRegExp(pattern.trim());
+      const matches: string[] = [];
+      let truncated = false;
+      walkFiles(base, (_abs, rel) => {
+        if (re.test(rel) || re.test(path.posix.basename(rel))) {
+          if (matches.length >= MAX_MATCH_ENTRIES) {
+            truncated = true;
+            return false;
+          }
+          matches.push(rel);
+        }
+      });
+      matches.sort();
+      const body = matches.join("\n");
+      const suffix = truncated ? "\n…[more files truncated]" : "";
+      return textResult(body ? body + suffix : "No files matched.", {
+        count: matches.length,
+        truncated,
+      });
+    },
+  };
+}
+
+/** grep 工具：在工作区文本文件里按正则逐行搜索 */
+function buildGrepTool(cwd: string): AgentTool {
+  return {
+    name: "grep",
+    label: "Grep",
+    description:
+      "Search file contents with a regular expression and return path:line matches. " +
+      "Skips node_modules, .git, hidden dirs and binary files. Use `include` to filter " +
+      "file names (glob). Returns up to 200 matches.",
+    parameters: Type.Object({
+      pattern: Type.String({ description: "Regular expression (JavaScript syntax)" }),
+      path: Type.Optional(
+        Type.String({ description: "File or directory to search (default workspace root)" }),
+      ),
+      include: Type.Optional(
+        Type.String({ description: "Only search files whose name matches this glob, e.g. \"*.ts\"" }),
+      ),
+    }),
+    execute: async (_id, params) => {
+      const { pattern, path: sub, include } = params as {
+        pattern: string;
+        path?: string;
+        include?: string;
+      };
+      if (!pattern.trim()) throw new Error("pattern is required");
+      let re: RegExp;
+      try {
+        re = new RegExp(pattern);
+      } catch (err) {
+        throw new Error(`invalid regex: ${err instanceof Error ? err.message : err}`);
+      }
+      const includeRe = include?.trim() ? globToRegExp(include.trim()) : undefined;
+      const target = resolveInWorkspace(cwd, sub ?? "");
+      if (!existsSync(target)) throw new Error(`not found: ${sub ?? "."}`);
+      if (statSync(target).isFile()) {
+        // 单文件直接搜，不做遍历与过滤
+        const text = readFileSync(target, "utf8");
+        const lines = text.split("\n");
+        const hits: string[] = [];
+        for (let i = 0; i < lines.length && hits.length < MAX_MATCH_ENTRIES; i++) {
+          if (re.test(lines[i])) hits.push(`${sub ?? path.basename(target)}:${i + 1}: ${lines[i].trim()}`);
+        }
+        return textResult(hits.join("\n") || "No matches.", { count: hits.length });
+      }
+      const matches: string[] = [];
+      let truncated = false;
+      walkFiles(target, (abs, rel) => {
+        if (matches.length >= MAX_MATCH_ENTRIES) {
+          truncated = true;
+          return false;
+        }
+        if (includeRe && !includeRe.test(path.posix.basename(rel))) return;
+        if (statSync(abs).size > MAX_GREP_FILE_BYTES) return;
+        let text: string;
+        try {
+          text = readFileSync(abs, "utf8");
+        } catch {
+          return;
+        }
+        if (text.includes("\0")) return; // 二进制文件
+        const lines = text.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          if (matches.length >= MAX_MATCH_ENTRIES) {
+            truncated = true;
+            return false;
+          }
+          if (re.test(lines[i])) {
+            matches.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, 400)}`);
+          }
+        }
+      });
+      const body = matches.join("\n");
+      const suffix = truncated ? "\n…[more matches truncated]" : "";
+      return textResult(body ? body + suffix : "No matches.", {
+        count: matches.length,
+        truncated,
+      });
+    },
+  };
+}
+
+/** bash/read/write/edit：schema 留本侧，执行转发给 Rust 宿主（tool_exec.rs） */
+function hostTool(
+  name: string,
+  cwd: string,
+  description: string,
+  parameters: AgentTool["parameters"],
+): AgentTool {
+  return {
+    name,
+    label: { bash: "Bash", read: "Read", write: "Write", edit: "Edit" }[name] ?? name,
+    description,
+    parameters,
+    execute: async (_id, params) => {
+      const data = await hostToolCall(name, cwd, params as Record<string, unknown>);
+      const details: Record<string, unknown> = {};
+      if (data.truncated !== undefined) details.truncated = data.truncated;
+      if (data.exitCode !== undefined) details.exitCode = data.exitCode;
+      if (data.totalLines !== undefined) details.totalLines = data.totalLines;
+      return textResult(data.output, Object.keys(details).length ? details : undefined);
+    },
+  };
+}
+
 export function buildTools(cwd: string): AgentTool[] {
   const tools: AgentTool[] = [
-    {
-      name: "bash",
-      label: "Bash",
-      description:
-        "Run a shell command in the workspace and return combined stdout/stderr. " +
-        "Output is capped; use narrower commands (grep/tail/head) instead of dumping large files.",
-      parameters: Type.Object({
+    hostTool("bash", cwd,
+      "Run a shell command in the workspace and return combined stdout/stderr. " +
+        "Output is capped; use narrower commands (grep/tail/head) instead of dumping large files. " +
+        "Windows runs Git Bash when available (cmd.exe fallback) — do not use PowerShell-only syntax like backtick escapes.",
+      Type.Object({
         command: Type.String({ description: "The shell command to run" }),
         timeout: Type.Optional(
           Type.Number({ description: "Timeout in milliseconds (default 120000)" }),
         ),
       }),
-      execute: async (_id, params) => {
-        const { command, timeout } = params as {
-          command: string;
-          timeout?: number;
-        };
-        const child = spawn("/bin/bash", ["-c", command], {
-          cwd,
-          env: process.env,
-        });
-        let out = "";
-        let truncated = false;
-        const collect = (chunk: Buffer) => {
-          if (out.length >= MAX_TOOL_OUTPUT) {
-            truncated = true;
-            child.kill();
-            return;
-          }
-          out += chunk.toString("utf8");
-          if (out.length > MAX_TOOL_OUTPUT) {
-            out = out.slice(0, MAX_TOOL_OUTPUT);
-            truncated = true;
-            child.kill();
-          }
-        };
-        child.stdout.on("data", collect);
-        child.stderr.on("data", collect);
-        const code = await new Promise<number | null>((resolve) => {
-          const timer = setTimeout(() => {
-            truncated = true;
-            child.kill();
-            resolve(null);
-          }, timeout ?? 120_000);
-          child.on("close", (c) => {
-            clearTimeout(timer);
-            resolve(c);
-          });
-          child.on("error", () => {
-            clearTimeout(timer);
-            resolve(-1);
-          });
-        });
-        const suffix = truncated ? "\n…[output truncated]" : "";
-        const status =
-          code === 0 ? "" : code === null ? "\n[timeout]" : `\n[exit code: ${code}]`;
-        return textResult(out + status + suffix, { truncated, exitCode: code });
-      },
-    },
-    {
-      name: "read",
-      label: "Read",
-      description:
-        "Read a text file. Returns up to 64KB with line numbers. " +
+    ),
+    hostTool("read", cwd,
+      "Read a text file. Returns up to 64KB with line numbers. " +
         "Use offset/limit to paginate large files.",
-      parameters: Type.Object({
+      Type.Object({
         file_path: Type.String({ description: "Path (relative to workspace or absolute)" }),
         offset: Type.Optional(Type.Number({ description: "1-based start line" })),
         limit: Type.Optional(Type.Number({ description: "Max lines to return" })),
       }),
-      execute: async (_id, params) => {
-        const { file_path, offset, limit } = params as {
-          file_path: string;
-          offset?: number;
-          limit?: number;
-        };
-        const full = resolveInWorkspace(cwd, file_path);
-        const raw = readFileSync(full, "utf8");
-        if (raw.includes("\0")) {
-          throw new Error(`${file_path} is a binary file and cannot be read as text`);
-        }
-        const allLines = raw.split("\n");
-        const start = Math.max((offset ?? 1) - 1, 0);
-        const end = Math.min(start + (limit ?? allLines.length), allLines.length);
-        let slice = allLines
-          .slice(start, end)
-          .map((line, i) => `${start + i + 1}\t${line}`)
-          .join("\n");
-        if (slice.length > MAX_READ_BYTES) {
-          slice = slice.slice(0, MAX_READ_BYTES) + "\n…[truncated]";
-        }
-        const more =
-          end < allLines.length
-            ? `\n…[${allLines.length - end} more lines, total ${allLines.length}]`
-            : "";
-        return textResult(slice + more, { totalLines: allLines.length });
-      },
-    },
-    {
-      name: "write",
-      label: "Write",
-      description: "Write (or create) a file with the given content. Parent directories are created automatically.",
-      parameters: Type.Object({
+    ),
+    hostTool("write", cwd,
+      "Write (or create) a file with the given content. Parent directories are created automatically.",
+      Type.Object({
         file_path: Type.String({ description: "Path (relative to workspace or absolute)" }),
         content: Type.String({ description: "Full file content" }),
       }),
-      execute: async (_id, params) => {
-        const { file_path, content } = params as {
-          file_path: string;
-          content: string;
-        };
-        const full = resolveInWorkspace(cwd, file_path);
-        mkdirSync(path.dirname(full), { recursive: true });
-        writeFileSync(full, content, "utf8");
-        return textResult(`Wrote ${Buffer.byteLength(content)} bytes to ${file_path}`);
-      },
-    },
-    {
-      name: "edit",
-      label: "Edit",
-      description:
-        "Replace an exact string in a file. old_string must match exactly and appear exactly once, " +
+    ),
+    hostTool("edit", cwd,
+      "Replace an exact string in a file. old_string must match exactly and appear exactly once, " +
         "unless replace_all is true.",
-      parameters: Type.Object({
+      Type.Object({
         file_path: Type.String({ description: "Path (relative to workspace or absolute)" }),
         old_string: Type.String({ description: "Exact text to replace" }),
         new_string: Type.String({ description: "Replacement text" }),
@@ -157,30 +273,9 @@ export function buildTools(cwd: string): AgentTool[] {
           Type.Boolean({ description: "Replace every occurrence (default false)" }),
         ),
       }),
-      execute: async (_id, params) => {
-        const { file_path, old_string, new_string, replace_all } = params as {
-          file_path: string;
-          old_string: string;
-          new_string: string;
-          replace_all?: boolean;
-        };
-        const full = resolveInWorkspace(cwd, file_path);
-        const raw = readFileSync(full, "utf8");
-        const occurrences = raw.split(old_string).length - 1;
-        if (occurrences === 0) {
-          throw new Error(`old_string not found in ${file_path}`);
-        }
-        if (occurrences > 1 && !replace_all) {
-          throw new Error(
-            `old_string appears ${occurrences} times in ${file_path}; provide more context or set replace_all=true`,
-          );
-        }
-        const updated =
-          occurrences > 1 ? raw.replaceAll(old_string, new_string) : raw.replace(old_string, new_string);
-        writeFileSync(full, updated, "utf8");
-        return textResult(`Replaced ${replace_all && occurrences > 1 ? occurrences : 1} occurrence(s) in ${file_path}`);
-      },
-    },
+    ),
+    buildGlobTool(cwd),
+    buildGrepTool(cwd),
   ];
   return tools;
 }
@@ -190,7 +285,7 @@ export const systemPrompt = (cwd: string) =>
     "You are a capable coding agent running inside the Xulux desktop app.",
     `The workspace directory is \`${cwd}\`. Relative paths resolve there.`,
     "Reply in the same language the user writes in.",
-    "Prefer the read tool over shell commands for inspecting files; use bash for anything dynamic.",
+    "Prefer read/glob/grep tools over shell commands for inspecting files; use bash for anything dynamic.",
     "Before a batch of tool calls, write one short sentence saying what you are about to do.",
     "Make the final message self-contained: the outcome, what changed, and anything still open.",
   ].join("\n");

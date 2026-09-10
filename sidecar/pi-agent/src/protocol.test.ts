@@ -2,7 +2,8 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { initStorage, db, sessionPath } from "./storage";
+import { initStorage, sessionPath } from "./storage";
+import { sessionInsert, sessionGet, getLocalDb } from "./hostdb";
 import { dispatch, dispatchPrompt } from "./protocol";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-protocol-"));
@@ -76,7 +77,7 @@ describe("dispatch: sessions", () => {
   test("rename_session updates the title", async () => {
     await dispatch("s3", { type: "rename_session", sessionId, name: "My Chat" });
     expect(last()).toEqual({ id: "s3", type: "renamed" });
-    const row = db
+    const row = getLocalDb()!
       .query<{ title: string }, [string]>(
         "SELECT title FROM pi_sessions WHERE id = ?",
       )
@@ -87,9 +88,7 @@ describe("dispatch: sessions", () => {
   test("list_sessions only includes sessions with messages", async () => {
     const withMsgs = "seeded-session";
     const now = new Date().toISOString();
-    db.query(
-      "INSERT INTO pi_sessions (id, title, first_message, cwd, created_at, updated_at) VALUES (?, '', '', ?, ?, ?)",
-    ).run(withMsgs, tmp, now, now);
+    await sessionInsert(withMsgs, tmp);
     writeFileSync(
       sessionPath(withMsgs),
       JSON.stringify({ type: "header", schema: 1, id: withMsgs, cwd: tmp, created_at: now }) +
@@ -115,9 +114,7 @@ describe("dispatch: sessions", () => {
     await dispatch("s5", { type: "delete_session", sessionId: "seeded-session" });
     expect(last()).toEqual({ id: "s5", type: "deleted" });
     expect(existsSync(sessionPath("seeded-session"))).toBe(false);
-    expect(
-      db.query("SELECT id FROM pi_sessions WHERE id = ?").get("seeded-session"),
-    ).toBeNull();
+    expect(await sessionGet("seeded-session")).toBeNull();
   });
 });
 

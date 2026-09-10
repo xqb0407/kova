@@ -77,7 +77,7 @@ function ToolGroupRoot({
       onOpenChange={handleOpenChange}
       className={cn(
         toolGroupVariants({ variant }),
-        "group/tool-group-root",
+        "group/tool-group-root my-1",
         className,
       )}
       style={
