@@ -102,8 +102,14 @@ export async function resolveSession(
   };
 
   const agent = new Agent({
+    // sessionId 透传：OpenAI prompt_cache_key / Anthropic session-affinity（缓存路由）
+    sessionId,
     streamFn: (m, context, options) =>
-      getModels().streamSimple(m, context, options),
+      getModels().streamSimple(m, context, {
+        ...options,
+        // 可选长缓存（Anthropic 1h TTL / OpenAI 24h retention），compat 守门自动降级
+        ...(process.env.PI_CACHE_RETENTION === "long" ? { cacheRetention: "long" } : {}),
+      }),
     initialState: {
       systemPrompt: composeModeSystemPrompt("agent", resolvedCwd),
       model,

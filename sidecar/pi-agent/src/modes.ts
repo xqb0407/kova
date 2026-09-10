@@ -20,7 +20,7 @@ import type {
   BeforeToolCallContext,
   BeforeToolCallResult,
 } from "@earendil-works/pi-agent-core";
-import { systemPrompt } from "./tools";
+import { SYSTEM_PROMPT_CORE, workspacePromptLine } from "./tools";
 import { sendEventChunk } from "./stream";
 import type {
   ApprovalLevel,
@@ -79,16 +79,19 @@ const CONTRACT_MODE_PROMPTS: Record<ProposalKind, string> = {
 const AGENT_MODE_PROMPT =
   "You are operating in Agent mode: carry out the requested work with the available tools and report the result clearly. When it helps, propose an implementation plan via EnterPlanMode, or negotiate a goal contract via EnterGoalMode.";
 
-/** 各模式完整系统提示 = 基础提示 + 模式附加段 */
+/**
+ * 各模式完整系统提示 = 静态核心 + 模式附加段 + cwd 行。
+ * 顺序保证缓存命中：静态核心在前（跨会话字节级一致），模式段夹中间（会话内
+ * 切换时整段重排不可避免，但同一模式内前缀稳定），cwd 行永远在最尾。
+ */
 export function composeModeSystemPrompt(mode: SessionMode, cwd: string): string {
-  const base = systemPrompt(cwd);
   const extra =
     mode === "plan"
       ? CONTRACT_MODE_PROMPTS.plan
       : mode === "goal"
         ? CONTRACT_MODE_PROMPTS.goal
         : AGENT_MODE_PROMPT;
-  return `${base}\n\n${extra}`;
+  return [SYSTEM_PROMPT_CORE, extra, workspacePromptLine(cwd)].join("\n\n");
 }
 
 /* --------------------------------- 工具集 --------------------------------- */
