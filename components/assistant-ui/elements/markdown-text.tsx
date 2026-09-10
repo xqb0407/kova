@@ -23,13 +23,13 @@ const MarkdownTextImpl = () => {
     >
       <StreamdownTextPrimitive
         plugins={{ code, math, mermaid, cjk }}
-        className="aui-md text-sm"
+        className="aui-md text-[14px]"
         shikiTheme={["github-light", "github-dark"]}
         components={{
           table: ({ children, ...props }) => (
             <div className="overflow-x-auto my-3 border rounded-md">
               <table
-                className=" w-full text-sm [&>thead]:bg-muted [&>thead>tr>th]:bg-muted"
+                className=" w-full text-md [&>thead]:bg-muted [&>thead>tr>th]:bg-muted"
                 {...props}
               >
                 {children}

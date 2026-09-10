@@ -11,10 +11,19 @@ import {
   getCurrentModelKey,
   getModels,
 } from "./model-catalog";
-import { buildTools, systemPrompt } from "./tools";
+import { buildTools } from "./tools";
+import {
+  approvalBeforeToolCall,
+  composeModeSystemPrompt,
+  toolsForMode,
+} from "./modes";
+import { getSubagentDefinitions } from "./subagent-definitions";
+import { buildSubagentTools } from "./subagent";
 import { readTranscript } from "./transcript";
 import { onAgentEvent } from "./stream";
-import { db, sessionPath } from "./storage";
+import { logErr } from "./log";
+import { sessionPath } from "./storage";
+import { sessionGet, sessionInsert } from "./hostdb";
 import type { Running } from "./types";
 
 /** threadId -> 活动会话（每个前端线程一个 Agent 实例） */
@@ -36,9 +45,7 @@ export async function resolveSession(
   let persistedSeq = 0;
 
   if (sessionId) {
-    const row = db
-      .query<{ cwd: string }, [string]>("SELECT cwd FROM pi_sessions WHERE id = ?")
-      .get(sessionId);
+    const row = await sessionGet(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
     persistedCwd = row.cwd;
     const transcript = readTranscript(sessionId);
@@ -48,9 +55,7 @@ export async function resolveSession(
     // 新会话：建索引行 + JSONL header
     sessionId = randomUUID();
     const now = new Date().toISOString();
-    db.query(
-      "INSERT INTO pi_sessions (id, title, first_message, cwd, created_at, updated_at) VALUES (?, '', '', ?, ?, ?)",
-    ).run(sessionId, persistedCwd, now, now);
+    await sessionInsert(sessionId, persistedCwd);
     writeFileSync(
       sessionPath(sessionId),
       JSON.stringify({ type: "header", schema: 1, id: sessionId, cwd: persistedCwd, created_at: now }) + "\n",
@@ -64,18 +69,44 @@ export async function resolveSession(
     ? getModels().getModel(mk.provider, mk.modelId)
     : await defaultModel();
 
+  const baseTools = buildTools(resolvedCwd);
+  // run 先占位再回填 agent：beforeToolCall 闭包按引用捕获 run，模式校验在运行期才解引用
+  const run: Running = {
+    agent: undefined as unknown as Agent,
+    sessionId: sessionId!,
+    cwd: resolvedCwd,
+    persistedSeq,
+    delegations: new Map(),
+    stopRequested: false,
+    mode: "agent",
+    approvalLevel: "ask",
+    planning: "inactive",
+    proposal: null,
+    baseTools,
+    subagentTools: [],
+    pendingToolApprovals: new Map(),
+  };
+
   const agent = new Agent({
     streamFn: (m, context, options) =>
       getModels().streamSimple(m, context, options),
     initialState: {
-      systemPrompt: systemPrompt(resolvedCwd),
+      systemPrompt: composeModeSystemPrompt("agent", resolvedCwd),
       model,
-      tools: buildTools(resolvedCwd),
+      tools: baseTools,
       messages: restoredMessages,
     },
+    beforeToolCall: async (context) => approvalBeforeToolCall(run, context),
   });
+  run.agent = agent;
 
-  const run: Running = { agent, sessionId, cwd: resolvedCwd, persistedSeq };
+  const { definitions, diagnostics } = await getSubagentDefinitions();
+  for (const d of diagnostics) logErr("subagent:", d);
+  run.subagentTools = buildSubagentTools(run, baseTools, definitions);
+  // 在基础工具目录上追加 Task 工具组 + 模式切换工具（delegate 的工具按定义从基础目录里取，
+  // 绝不包含 Task 组，delegate 不能继续委派）
+  agent.state.tools = toolsForMode(run);
+
   agent.subscribe((event) => onAgentEvent(event, run));
   running.set(threadId, run);
   return run;

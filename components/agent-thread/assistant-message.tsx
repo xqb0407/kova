@@ -36,6 +36,7 @@ import {
   RefreshCwIcon,
 } from "lucide-react";
 import type { FC } from "react";
+import { randomLoadingPhrase } from "@/lib/loading";
 
 const MessageError: FC = () => {
   return (
@@ -56,17 +57,17 @@ const AssistantWorkingIndicator: FC = () => {
         className="text-muted-foreground inline-flex items-center gap-2 align-middle"
       >
         <DotMatrix state="connecting" aria-hidden />
-        <span className="text-sm">Connecting</span>
+        <span className="text-sm">连接中</span>
       </span>
     );
   }
   return (
     <span
-      data-slot="aui_assistant-message-indicator"
-      className="animate-pulse font-sans"
+      data-slot="aui_assistant-message-indicator "
+      className=" font-sans text-sm shimmer shimmer-speed-200"
       aria-label="Assistant is working"
     >
-      {"●"}
+      {randomLoadingPhrase()}
     </span>
   );
 };
@@ -195,7 +196,7 @@ const AssistantActionBar: FC = () => {
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
-      <MessageTiming />
+      {/* <MessageTiming /> */}
     </ActionBarPrimitive.Root>
   );
 };

@@ -24,6 +24,12 @@ export function setCurrentReqId(id: string | null) {
   currentReqId = id;
 }
 
+/** 活跃请求内发一条额外 chunk（如 planning_state）；无活跃请求时静默丢弃 */
+export function sendEventChunk(chunk: UIMessageChunk) {
+  if (!currentReqId) return;
+  sendChunk(currentReqId, chunk);
+}
+
 /** 开始新一轮流式输出：递增 runSeq 并重置内容 id 映射 */
 export function beginRun() {
   runSeq += 1;
@@ -40,7 +46,7 @@ function contentIdFor(index: number) {
 }
 
 /** Agent 事件 -> UIMessageChunk 流（reqId 取当前活跃请求） */
-export function onAgentEvent(event: AgentEvent, run: Running) {
+export async function onAgentEvent(event: AgentEvent, run: Running): Promise<void> {
   const reqId = currentReqId;
   if (event.type !== "message_update") logErr("event:", event.type);
   else logErr("event: message_update/", (event as { assistantMessageEvent?: { type?: string } }).assistantMessageEvent?.type);
@@ -124,7 +130,8 @@ export function onAgentEvent(event: AgentEvent, run: Running) {
       break;
     }
     case "agent_end": {
-      persist(run);
+      // persist 变 async（索引表经 hostdb 走宿主 RPC）；subscribe 会 await 监听器
+      await persist(run);
       break;
     }
   }

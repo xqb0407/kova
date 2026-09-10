@@ -1,7 +1,9 @@
 mod appearance;
+mod data;
 mod pi_agent;
 mod remote;
 mod store;
+mod tool_exec;
 
 use pi_agent::PiState;
 use tauri::Manager;

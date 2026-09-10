@@ -4,6 +4,8 @@ import type { ChatTransport, UIMessage, UIMessageChunk } from "ai";
 import { getPiChannel } from "@/lib/pi-channel";
 import { piSessionRegistry } from "@/lib/pi-thread-adapter";
 import { getWorkspace } from "@/lib/workspace-store";
+import { applyPlanningChunk } from "@/lib/pi-session-mode";
+import { applyToolApprovalChunk, clearToolApprovals } from "@/lib/pi-tool-approval";
 
 /**
  * pi-agent 的 ChatTransport：把 assistant-ui 的 sendMessages 请求转为
@@ -37,14 +39,35 @@ export class PiTransport implements ChatTransport<UIMessage> {
     // （重启后点击历史会话时也由 adapter 的 unstable_useAdapters 补齐映射）
     const sessionId = piSessionRegistry.get(chatId);
 
-    return getPiChannel().promptStream({
-      requestId,
-      text,
-      threadId: chatId,
-      sessionId,
-      cwd: getWorkspace() ?? undefined,
-      abortSignal,
-    });
+    // 拦截 data-planningState：模式/审批状态走 pi-session-mode store，不进消息流
+    return getPiChannel()
+      .promptStream({
+        requestId,
+        text,
+        threadId: chatId,
+        sessionId,
+        cwd: getWorkspace() ?? undefined,
+        abortSignal,
+      })
+      .pipeThrough(
+        new TransformStream<UIMessageChunk, UIMessageChunk>({
+          transform(chunk, controller) {
+            if (chunk.type === "data-planningState") {
+              applyPlanningChunk(chatId, (chunk as { data?: unknown }).data);
+              return;
+            }
+            if (chunk.type === "data-toolApproval") {
+              applyToolApprovalChunk(chatId, (chunk as { data?: unknown }).data);
+              return;
+            }
+            if (chunk.type === "finish") {
+              // turn 结束：清空残留审批卡片（abort/异常路径的兜底出口）
+              clearToolApprovals(chatId);
+            }
+            controller.enqueue(chunk);
+          },
+        }),
+      );
   }
 
   async reconnectToStream(): Promise<ReadableStream<UIMessageChunk> | null> {

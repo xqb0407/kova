@@ -2,7 +2,13 @@ import { describe, test, expect, beforeAll } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { initStorage, db, credentialStore, sessionPath } from "./storage";
+import { initStorage, credentialStore, sessionPath } from "./storage";
+import {
+  customProviderUpsert,
+  customProviderGet,
+  providerModelsSet,
+  providerModelsGet,
+} from "./hostdb";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-storage-"));
 
@@ -37,34 +43,24 @@ describe("credentialStore", () => {
 });
 
 describe("schema", () => {
-  test("custom_providers table with api/enabled columns", () => {
-    db.query(
-      "INSERT INTO custom_providers (id, name, base_url, models, api) VALUES (?, ?, ?, ?, ?)",
-    ).run("cp1", "CP1", "https://x.io", "[]", "openai-responses");
-    const row = db
-      .query<{ api: string; enabled: number }, [string]>(
-        "SELECT api, enabled FROM custom_providers WHERE id = ?",
-      )
-      .get("cp1")!;
-    expect(row.api).toBe("openai-responses");
-    expect(row.enabled).toBe(1); // 默认启用
+  test("custom_providers table with api/enabled columns", async () => {
+    await customProviderUpsert({
+      id: "cp1",
+      name: "CP1",
+      baseUrl: "https://x.io",
+      models: "[]",
+      api: "openai-responses",
+    });
+    const row = await customProviderGet("cp1");
+    expect(row?.api).toBe("openai-responses");
+    expect(row?.enabled).toBe(true); // 默认启用
   });
 
-  test("provider_models upsert", () => {
-    db.query(
-      "INSERT INTO provider_models (provider, models) VALUES (?, ?) " +
-        "ON CONFLICT(provider) DO UPDATE SET models = excluded.models",
-    ).run("prov-b", JSON.stringify(["m1"]));
-    db.query(
-      "INSERT INTO provider_models (provider, models) VALUES (?, ?) " +
-        "ON CONFLICT(provider) DO UPDATE SET models = excluded.models",
-    ).run("prov-b", JSON.stringify(["m1", "m2"]));
-    const row = db
-      .query<{ models: string }, [string]>(
-        "SELECT models FROM provider_models WHERE provider = ?",
-      )
-      .get("prov-b")!;
-    expect(JSON.parse(row.models)).toEqual(["m1", "m2"]);
+  test("provider_models upsert", async () => {
+    await providerModelsSet("prov-b", JSON.stringify(["m1"]));
+    await providerModelsSet("prov-b", JSON.stringify(["m1", "m2"]));
+    const row = await providerModelsGet("prov-b");
+    expect(JSON.parse(row!.models)).toEqual(["m1", "m2"]);
   });
 });
 

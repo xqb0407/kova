@@ -5,11 +5,14 @@
  *   { "type": "prompt", "id": "<reqId>", "text": "...", "threadId": "...", "sessionId": "...", "cwd": "..." }
  *       sessionId = 会话 id（索引表/JSONL 文件名）；提供则恢复该会话（跨重启），缺省则按 threadId 懒建新会话
  *       cwd = workspace 目录；仅在需要新建会话时使用，缺省为用户主目录
- *   { "type": "abort" }
+ *       prompt 结束后若有后台子代理（Task 委派）仍在运行，等待其完成并在同一条
+ *       reqId 消息流内注入恢复 prompt 投递报告（多 step 收敛），再发 finish
+ *   { "type": "abort" }   中止父代理与全部后台子代理
  *   { "type": "ping", "id" }                                  → { id, type: "pong" }
  *   { "type": "list_sessions", "id" }                         → { id, type: "sessions", sessions: [...] }
  *   { "type": "new_session", "id", "threadId", "cwd" }        → { id, type: "session", sessionId, threadId }
  *   { "type": "get_history", "id", "sessionId" }              → { id, type: "history", messages: UIMessage[] }
+ *       历史从 agent 消息重建，含工具部件（tool part 的 input/output 与 live 流一致）
  *   { "type": "delete_session", "id", "sessionId" }           → { id, type: "deleted" }
  *   { "type": "rename_session", "id", "sessionId", "name" }   → { id, type: "renamed" }
  *   { "type": "list_models", "id" }                           → { id, type: "models", models: [...], providers: [...] }
@@ -24,8 +27,18 @@
  *       providerId = 编辑目标的业务 id（协议 reqId 占用了 "id" 字段，故改名）；缺省为新建
  *   { "type": "list_custom_providers", "id" }                 → { id, type: "custom_providers", providers: [...] }
  *   { "type": "toggle_custom_provider", "id", "provider", "enabled" } → { id, type: "custom_provider_toggled", provider, enabled }
+ *   { "type": "set_mode", "id", "threadId", "sessionId"?, "mode" }       → { id, type: "mode_changed", mode, planning, proposal }
+ *       mode = agent | plan | goal；切换会热替换工具集与系统提示词
+ *   { "type": "approve_plan", "id", "threadId", "sessionId"? }           → { id, type: "planning_state", mode, planning, proposal }
+ *       批准未决提案：回 agent 模式（前端随后发批准消息开始实施）
+ *   { "type": "reject_plan", "id", "threadId", "sessionId"? }            → { id, type: "planning_state", mode, planning, proposal }
+ *       拒绝未决提案：留在契约模式继续修改
+ *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved" } → { id, type: "tool_confirmed", approvalId }
+ *       结算 bash/write/edit 执行前的逐工具审批（prompt 流内 data-toolApproval chunk 发起）
  *   { "type": "test_provider", "id", "baseUrl", "apiKey", "api", "model" } → { id, type: "tested", ok: true }
  *   { "type": "delete_custom_provider", "id", "provider" }    → { id, type: "custom_provider_deleted", provider }
+ *   prompt 流内审批推送：{ id, chunk: { type: "data-planningState", data: { mode, planning, proposal } } }
+ *                 审批请求：{ id, chunk: { type: "data-toolApproval", data: { approvalId, toolCallId, toolName, input } } }
  *
  * prompt 流（stdout）：{ "id": "<reqId>", "chunk": { ...AI SDK UIMessageChunk } }
  */
@@ -33,11 +46,25 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
 import { logErr } from "./log";
+import { sessionPath } from "./storage";
+import { resolveHostResult } from "./hostdb";
 import {
-  db,
-  credentialStore,
-  sessionPath,
-} from "./storage";
+  credentialDelete,
+  credentialGet,
+  credentialList,
+  credentialSet,
+  customProviderDelete,
+  customProviderGet,
+  customProviderSetEnabled,
+  customProviderUpsert,
+  customProvidersList,
+  providerModelsAll,
+  providerModelsGet,
+  providerModelsSet,
+  sessionDelete,
+  sessionList,
+  sessionRename,
+} from "./hostdb";
 import {
   getCurrentModelKey,
   getModels,
@@ -45,14 +72,21 @@ import {
   registerCustomProvider,
   setCurrentModelKey,
 } from "./model-catalog";
-import { readTranscript, persist } from "./transcript";
+import { readTranscript, persist, historyToUiMessages } from "./transcript";
 import { running, resolveSession } from "./sessions";
+import {
+  delegationResumeText,
+  runningDelegations,
+} from "./subagent";
 import { beginRun, send, sendChunk, setCurrentReqId } from "./stream";
-import type {
-  CustomModelSpec,
-  SessionSummary,
-  UIMessage,
-} from "./types";
+import {
+  applyMode,
+  clearPendingToolApprovals,
+  closeProposalOnNewPrompt,
+  planningPayload,
+  resolveToolApproval,
+} from "./modes";
+import type { CustomModelSpec, SessionSummary } from "./types";
 
 /** stdin 关闭（父进程写完）不等于任务处理完毕，等挂起请求清零再退出 */
 let stdinClosed = false;
@@ -85,6 +119,9 @@ export function handleLine(raw: string) {
     logErr("unparseable line:", String(raw).slice(0, 200));
     return;
   }
+
+  // 宿主对 host_query 的响应：交给 hostdb 的挂起表结算，不走命令分发
+  if (resolveHostResult(msg)) return;
 
   const reqId = typeof msg.id === "string" ? msg.id : `req-${fallbackSeq++}`;
   const run = async () => {
@@ -147,17 +184,49 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
     return;
   }
   setCurrentReqId(reqId);
-  beginRun();
-
+  run.stopRequested = false;
+  // 新用户输入隐式关闭未决审批（未点批准/拒绝就直接发消息）
+  closeProposalOnNewPrompt(run);
+  // 逐工具审批理论上不会跨 turn 遗留（abort 已结算），兜底清理防挂起
+  clearPendingToolApprovals(run);
   sendChunk(reqId, { type: "start" });
-  sendChunk(reqId, { type: "start-step" });
+
+  // 每段 prompt 是消息流里的一个 step；resume 段前重置内容 id，避免与上一段撞 id
+  let stepStarted = false;
+  const runStep = async (text: string) => {
+    if (stepStarted) sendChunk(reqId, { type: "finish-step" });
+    sendChunk(reqId, { type: "start-step" });
+    stepStarted = true;
+    beginRun();
+    await run.agent.prompt(text);
+  };
 
   try {
-    await run.agent.prompt(String(msg.text ?? ""));
+    await runStep(String(msg.text ?? ""));
+    // 后台委派收敛循环（ADR 0089）：turn 结束时若还有运行中的子代理，等它们完成，
+    // 把未投递的报告作为恢复 prompt 继续喂给父代理（同一条 reqId 消息流内续跑）。
+    // 用户 Stop（stopRequested）直接退出。
+    while (!run.stopRequested) {
+      const pending = runningDelegations(run);
+      if (pending.length > 0) {
+        await Promise.all(pending.map((d) => d.completion));
+        if (run.stopRequested) break;
+      }
+      const resume = delegationResumeText(run);
+      if (!resume) break;
+      await runStep(resume);
+    }
   } catch (err) {
     sendChunk(reqId, { type: "error", errorText: err instanceof Error ? err.message : String(err) });
+    // 父代理 turn 失败：中止遗留的后台子代理，让会话能回到空闲（D352）
+    for (const d of run.delegations.values()) {
+      if (d.status === "running") {
+        d.stopRequested = true;
+        d.abort();
+      }
+    }
   } finally {
-    sendChunk(reqId, { type: "finish-step" });
+    if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     sendChunk(reqId, { type: "finish" });
     setCurrentReqId(null);
     persist(run);
@@ -171,17 +240,24 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "abort": {
-      for (const run of running.values()) run.agent.abort();
+      // 用户 Stop：中止父代理与全部后台子代理，并让收敛循环退出；
+      // 挂起的逐工具审批按拒绝结算，避免 beforeToolCall 永久挂起
+      for (const run of running.values()) {
+        run.stopRequested = true;
+        clearPendingToolApprovals(run);
+        for (const d of run.delegations.values()) {
+          if (d.status === "running") {
+            d.stopRequested = true;
+            d.abort();
+          }
+        }
+        run.agent.abort();
+      }
       break;
     }
     case "list_sessions": {
-      // 索引在 SQLite，消息计数扫 JSONL 行数（个人桌面应用量级可接受）
-      const sessions: SessionSummary[] = db
-        .query<
-          { id: string; title: string; first_message: string; cwd: string; updated_at: string },
-          []
-        >("SELECT id, title, first_message, cwd, updated_at FROM pi_sessions ORDER BY updated_at DESC")
-        .all()
+      // 索引经 hostdb（宿主 RPC），消息计数扫 JSONL 行数（个人桌面应用量级可接受）
+      const sessions: SessionSummary[] = (await sessionList())
         .map((r) => {
           const file = sessionPath(r.id);
           let messageCount = 0;
@@ -213,9 +289,8 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     }
     case "get_history": {
       const sessionId = String(msg.sessionId ?? "");
-      const messages = readTranscript(sessionId)
-        .map((t) => t.ui)
-        .filter((m): m is UIMessage => m !== null);
+      // 从 agent 消息重建：text/reasoning 之外还带 tool part（input/output 对齐 live 流）
+      const messages = historyToUiMessages(readTranscript(sessionId));
       send({ id: reqId, type: "history", messages });
       break;
     }
@@ -224,7 +299,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       for (const [tid, run] of running) {
         if (run.sessionId === sessionId) running.delete(tid);
       }
-      db.query("DELETE FROM pi_sessions WHERE id = ?").run(sessionId);
+      await sessionDelete(sessionId);
       const file = sessionPath(sessionId);
       if (existsSync(file)) unlinkSync(file);
       send({ id: reqId, type: "deleted" });
@@ -233,7 +308,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     case "rename_session": {
       const sessionId = String(msg.sessionId ?? "");
       const name = String(msg.name ?? "");
-      db.query("UPDATE pi_sessions SET title = ? WHERE id = ?").run(name, sessionId);
+      await sessionRename(sessionId, name);
       send({ id: reqId, type: "renamed" });
       break;
     }
@@ -270,12 +345,9 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         }
       }
       // 应用内置厂商的模型过滤（勾选集之外的模型不出现在前端目录里）
-      const filterRows = db
-        .query<{ provider: string; models: string }, []>(
-          "SELECT provider, models FROM provider_models",
-        )
-        .all()
-        .map((r) => {
+      const filterRows = await providerModelsAll();
+      const filters = new Map(
+        filterRows.map((r) => {
           let ids: string[] = [];
           try {
             ids = JSON.parse(r.models) as string[];
@@ -283,8 +355,8 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
             ids = [];
           }
           return [r.provider, new Set(ids)] as const;
-        });
-      const filters = new Map(filterRows);
+        }),
+      );
       const filtered = out.filter(
         (m) => !filters.has(m.provider) || filters.get(m.provider)!.has(m.id),
       );
@@ -298,11 +370,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     }
     case "get_provider_filter": {
       const provider = String(msg.provider ?? "");
-      const row = db
-        .query<{ models: string }, [string]>(
-          "SELECT models FROM provider_models WHERE provider = ?",
-        )
-        .get(provider);
+      const row = await providerModelsGet(provider);
       let modelIds: string[] | null = null;
       if (row) {
         try {
@@ -319,15 +387,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const ids = Array.isArray(msg.models)
         ? [...new Set((msg.models as unknown[]).filter((s): s is string => typeof s === "string" && !!s.trim()))]
         : [];
-      if (ids.length) {
-        db.query(
-          "INSERT INTO provider_models (provider, models) VALUES (?, ?) " +
-            "ON CONFLICT(provider) DO UPDATE SET models = excluded.models",
-        ).run(provider, JSON.stringify(ids));
-      } else {
-        // 空数组 = 清除过滤，恢复全部
-        db.query("DELETE FROM provider_models WHERE provider = ?").run(provider);
-      }
+      await providerModelsSet(provider, JSON.stringify(ids));
       send({ id: reqId, type: "provider_filter", provider, models: ids.length ? ids : null });
       break;
     }
@@ -347,18 +407,22 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const provider = String(msg.provider ?? "");
       const apiKey = String(msg.apiKey ?? "");
       if (!provider || !apiKey) throw new Error("provider and apiKey are required");
-      await credentialStore.modify(provider, async () => ({ type: "api_key", key: apiKey }));
+      await credentialSet(provider, apiKey);
       send({ id: reqId, type: "credential", provider });
       break;
     }
     case "list_credentials": {
-      const credentials = await credentialStore.list();
+      const providers = await credentialList();
+      const credentials = providers.map((providerId) => ({
+        providerId,
+        type: "api_key" as const,
+      }));
       send({ id: reqId, type: "credentials", credentials });
       break;
     }
     case "delete_credential": {
       const provider = String(msg.provider ?? "");
-      await credentialStore.delete(provider);
+      await credentialDelete(provider);
       send({ id: reqId, type: "credential_deleted", provider });
       break;
     }
@@ -412,20 +476,15 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const id =
         existingId ||
         `custom-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || randomUUID().slice(0, 8)}`;
-      db.query(
-        "INSERT INTO custom_providers (id, name, base_url, models, api) VALUES (?, ?, ?, ?, ?) " +
-          "ON CONFLICT(id) DO UPDATE SET name = excluded.name, base_url = excluded.base_url, models = excluded.models, api = excluded.api",
-      ).run(id, name, baseUrl, JSON.stringify(modelSpecs), api);
+      await customProviderUpsert({ id, name, baseUrl, models: JSON.stringify(modelSpecs), api });
       // apiKey 留空表示保留原有凭据
       if (apiKey) {
-        await credentialStore.modify(id, async () => ({ type: "api_key", key: apiKey }));
+        await credentialSet(id, apiKey);
       }
       // 停用的服务保存后保持停用：不注册进目录，并从目录移除
-      const enabledRow = db
-        .query<{ enabled: number }, [string]>("SELECT enabled FROM custom_providers WHERE id = ?")
-        .get(id);
+      const enabledRow = await customProviderGet(id);
       if (!enabledRow || enabledRow.enabled) {
-        registerCustomProvider({ id, name, base_url: baseUrl, models: JSON.stringify(modelSpecs), api });
+        registerCustomProvider(enabledRow ?? { id, name, baseUrl, models: JSON.stringify(modelSpecs), api });
       } else {
         getModels().deleteProvider(id);
         if (getCurrentModelKey()?.provider === id) setCurrentModelKey(null);
@@ -439,40 +498,36 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "list_custom_providers": {
-      const providers = db
-        .query<{ id: string; name: string; base_url: string; models: string; api: string; enabled: number }, []>(
-          "SELECT id, name, base_url, models, api, enabled FROM custom_providers",
-        )
-        .all()
-        .map((r) => {
+      const providers = await customProvidersList();
+      const out = await Promise.all(
+        providers.map(async (r) => {
           let specs: CustomModelSpec[] = [];
           try {
             specs = JSON.parse(r.models) as CustomModelSpec[];
           } catch {
             specs = [];
           }
-          // 明文返回 key 供编辑弹窗回填（仅存本地 SQLite）
-          const keyRow = db
-            .query<{ api_key: string }, [string]>("SELECT api_key FROM credentials WHERE provider = ?")
-            .get(r.id);
+          // 明文返回 key 供编辑弹窗回填（仅存本地库）
+          const keyRow = await credentialGet(r.id);
           return {
             providerId: r.id,
             name: r.name,
-            baseUrl: r.base_url,
+            baseUrl: r.baseUrl,
             models: specs,
             api: normalizeApi(r.api),
-            hasApiKey: keyRow !== undefined,
-            apiKey: keyRow?.api_key,
-            enabled: r.enabled === 1,
+            hasApiKey: keyRow !== null,
+            apiKey: keyRow?.apiKey,
+            enabled: r.enabled,
           };
-        });
-      send({ id: reqId, type: "custom_providers", providers });
+        }),
+      );
+      send({ id: reqId, type: "custom_providers", providers: out });
       break;
     }
     case "delete_custom_provider": {
       const provider = String(msg.provider ?? "");
-      db.query("DELETE FROM custom_providers WHERE id = ?").run(provider);
-      await credentialStore.delete(provider);
+      await customProviderDelete(provider);
+      await credentialDelete(provider);
       getModels().deleteProvider(provider);
       if (getCurrentModelKey()?.provider === provider) setCurrentModelKey(null);
       send({ id: reqId, type: "custom_provider_deleted", provider });
@@ -482,13 +537,9 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       // 启用/停用服务：停用时从模型目录移除，启用时重新注册
       const provider = String(msg.provider ?? "");
       const enabled = msg.enabled === true;
-      db.query("UPDATE custom_providers SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, provider);
+      await customProviderSetEnabled(provider, enabled);
       if (enabled) {
-        const row = db
-          .query<{ id: string; name: string; base_url: string; models: string; api: string }, [string]>(
-            "SELECT id, name, base_url, models, api FROM custom_providers WHERE id = ?",
-          )
-          .get(provider);
+        const row = await customProviderGet(provider);
         if (row) registerCustomProvider(row);
       } else {
         getModels().deleteProvider(provider);
@@ -542,6 +593,69 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         throw new Error(`连接失败: HTTP ${res.status}${text ? ` · ${text}` : ""}`);
       }
       send({ id: reqId, type: "tested", ok: true });
+      break;
+    }
+    case "tool_confirm": {
+      // 结算逐工具审批：approved = 放行执行，false = 拦截（模型收到 blocked 工具结果）
+      const run = await resolveSession(
+        String(msg.threadId ?? "default"),
+        typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+      );
+      const approvalId = String(msg.approvalId ?? "");
+      if (!resolveToolApproval(run, approvalId, Boolean(msg.approved))) {
+        throw new Error(`no pending tool approval: ${approvalId}`);
+      }
+      send({ id: reqId, type: "tool_confirmed", approvalId });
+      break;
+    }
+    case "set_mode": {
+      // 手动切换会话模式（agent/plan/goal），可选携带审批级别（agent 模式的
+      // ask/auto-edit/auto 对应前端"变更前确认/自动编辑/完全访问"）；重建工具集与系统提示词
+      const run = await resolveSession(
+        String(msg.threadId ?? "default"),
+        typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+        typeof msg.cwd === "string" ? msg.cwd : undefined,
+      );
+      const mode = String(msg.mode ?? "agent");
+      if (mode !== "agent" && mode !== "plan" && mode !== "goal") {
+        throw new Error(`invalid mode: ${mode}`);
+      }
+      if (typeof msg.approvalLevel === "string") {
+        if (msg.approvalLevel !== "ask" && msg.approvalLevel !== "auto-edit" && msg.approvalLevel !== "auto") {
+          throw new Error(`invalid approval level: ${msg.approvalLevel}`);
+        }
+        run.approvalLevel = msg.approvalLevel;
+      }
+      applyMode(run, mode);
+      send({ id: reqId, type: "mode_changed", ...planningPayload(run) });
+      break;
+    }
+    case "approve_plan": {
+      // 批准未决提案：回 agent 模式，由前端随后走正常 prompt 管道发批准消息
+      const run = await resolveSession(
+        String(msg.threadId ?? "default"),
+        typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+      );
+      if (run.planning !== "awaiting_approval" || !run.proposal) {
+        throw new Error("no proposal awaiting approval");
+      }
+      run.proposal = null;
+      applyMode(run, "agent");
+      send({ id: reqId, type: "planning_state", ...planningPayload(run) });
+      break;
+    }
+    case "reject_plan": {
+      // 拒绝未决提案：留在当前模式继续修改（planning），用户输入反馈后重新提交
+      const run = await resolveSession(
+        String(msg.threadId ?? "default"),
+        typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+      );
+      if (run.planning !== "awaiting_approval" || !run.proposal) {
+        throw new Error("no proposal awaiting approval");
+      }
+      run.proposal = null;
+      run.planning = "planning";
+      send({ id: reqId, type: "planning_state", ...planningPayload(run) });
       break;
     }
     default:

@@ -83,7 +83,20 @@ export type PiResponse =
   | { type: "fetched_models"; models: string[] }
   | { type: "tested"; ok: true }
   | { type: "provider_filter"; provider: string; models: string[] | null }
-  | { type: "error"; errorText: string };
+  | {
+      type: "mode_changed" | "planning_state";
+      mode: "agent" | "plan" | "goal";
+      approvalLevel?: "ask" | "auto-edit" | "auto";
+      planning: "inactive" | "planning" | "awaiting_approval";
+      proposal: {
+        kind: "plan" | "goal";
+        title: string;
+        markdown: string;
+        question: string;
+      } | null;
+    }
+  | { type: "error"; errorText: string }
+  | { type: "tool_confirmed"; approvalId: string };
 
 export async function piRequest<T extends PiResponse>(
   payload: Record<string, unknown>,

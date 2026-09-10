@@ -1,5 +1,5 @@
 /** 跨模块共享类型 */
-import type { Agent } from "@earendil-works/pi-agent-core";
+import type { Agent, AgentTool } from "@earendil-works/pi-agent-core";
 import type * as ai from "ai";
 
 /** AI SDK UI 消息类型（协议流与 JSONL 持久化都用它） */
@@ -31,10 +31,104 @@ export type SessionSummary = {
   cwd: string;
 };
 
+/** 子代理一次执行的最终状态 */
+export type SubagentRunStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "truncated"
+  | "aborted"
+  | "stopped";
+
+/** SubagentRun 的收敛结果（report 是唯一进入父代理上下文的内容） */
+export type SubagentRunResult = {
+  agentName: string;
+  modelId: string;
+  status: SubagentRunStatus;
+  report: string;
+  turns: number;
+  toolCalls: number;
+  error?: { code: string; message: string };
+};
+
+/** 一次 Task 委派的登记项（会话级注册表，后台运行、TaskWait 收敛） */
+export type DelegationRecord = {
+  delegationId: string;
+  agentName: string;
+  modelId: string;
+  status: SubagentRunStatus;
+  /** TaskStop / 用户 Stop 置位，结算时把 aborted 归类为 stopped */
+  stopRequested: boolean;
+  startedAt: number;
+  completedAt?: number;
+  turns: number;
+  toolCalls: number;
+  result?: SubagentRunResult;
+  /** 报告已通过 TaskWait 或恢复 prompt 交给父代理，避免重复投递 */
+  reportedToParent: boolean;
+  /** 结算信号：TaskWait 等它，SubagentRun 完成时 resolve */
+  completion: Promise<void>;
+  resolveCompletion: () => void;
+  abort: () => void;
+};
+
 /** threadId 对应的活动会话（每个前端线程一个 Agent 实例） */
 export type Running = {
   agent: Agent;
   sessionId: string;
   cwd: string;
   persistedSeq: number; // 已写入 JSONL 的消息数
+  /** 本会话的 Task 委派注册表 */
+  delegations: Map<string, DelegationRecord>;
+  /** 用户 Stop 置位：中止后台子代理并退出收敛循环 */
+  stopRequested: boolean;
+  /** 当前模式（agent = 正常执行；plan/goal = 只读契约协商） */
+  mode: SessionMode;
+  /** 逐工具审批级别（ask = 每次确认；auto-edit = 编辑免确认；auto = 全免） */
+  approvalLevel: ApprovalLevel;
+  /** 计划/目标审批状态机（见 modes.ts） */
+  planning: PlanningState;
+  /** awaiting_approval 时挂起的提案内容 */
+  proposal: PendingProposal | null;
+  /** 未过滤的基础工具目录（重建模式工具集时用） */
+  baseTools: AgentTool[];
+  /** Task 委派工具组（仅 agent 模式挂载） */
+  subagentTools: AgentTool[];
+  /** 逐工具审批：approvalId -> 挂起等待项（beforeToolCall 内 await，tool_confirm 结算） */
+  pendingToolApprovals: Map<string, PendingToolApproval>;
+};
+
+/** 逐工具审批等待项（bash/write/edit 执行前等待用户确认） */
+export type PendingToolApproval = {
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+  resolve: (approved: boolean) => void;
+};
+
+/* ------------------------------- 模式与审批 ------------------------------- */
+
+/** 会话模式：agent 正常执行；plan 实施计划协商；goal 目标契约协商 */
+export type SessionMode = "agent" | "plan" | "goal";
+
+/**
+ * 逐工具审批级别（对齐参考项目 targetPermissionMode）：
+ * - ask：bash/write/edit 每次执行前都要用户确认（变更前确认）
+ * - auto-edit：write/edit 自动放行，bash 仍需确认（自动编辑）
+ * - auto：全部自动放行（完全访问）
+ */
+export type ApprovalLevel = "ask" | "auto-edit" | "auto";
+
+/** 提案类型（plan/goal 共用同一套审批流） */
+export type ProposalKind = "plan" | "goal";
+
+/** 审批状态机：inactive（agent 模式）→ planning → awaiting_approval →（批准）inactive /（拒绝）planning */
+export type PlanningState = "inactive" | "planning" | "awaiting_approval";
+
+/** SubmitPlan/SubmitGoal 提交的契约内容 */
+export type PendingProposal = {
+  kind: ProposalKind;
+  title: string;
+  markdown: string;
+  question: string;
 };

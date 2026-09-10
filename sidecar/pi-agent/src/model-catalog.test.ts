@@ -2,7 +2,8 @@ import { describe, test, expect, beforeAll } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { initStorage, db } from "./storage";
+import { initStorage } from "./storage";
+import { customProviderUpsert, customProviderSetEnabled, getLocalDb } from "./hostdb";
 import {
   getModels,
   normalizeApi,
@@ -37,7 +38,7 @@ describe("registerCustomProvider", () => {
     registerCustomProvider({
       id: "mc-p1",
       name: "MC P1",
-      base_url: "https://api.example.com/v1/",
+      baseUrl: "https://api.example.com/v1/",
       models: JSON.stringify([
         { id: "m1", name: "Model One", contextWindow: 8_000 },
         { id: "   " }, // 空白 id 会被过滤
@@ -53,18 +54,30 @@ describe("registerCustomProvider", () => {
 });
 
 describe("loadCustomProviders", () => {
-  test("registers enabled rows only", () => {
-    const now = new Date().toISOString();
-    db.query(
-      "INSERT INTO custom_providers (id, name, base_url, models, api, enabled) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run("mc-on", "On", "https://on.io", JSON.stringify([{ id: "a" }]), "openai-chat", 1);
-    db.query(
-      "INSERT INTO custom_providers (id, name, base_url, models, api, enabled) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run("mc-off", "Off", "https://off.io", JSON.stringify([{ id: "b" }]), "openai-chat", 0);
+  test("registers enabled rows only", async () => {
+    await customProviderUpsert({
+      id: "mc-on",
+      name: "On",
+      baseUrl: "https://on.io",
+      models: JSON.stringify([{ id: "a" }]),
+      api: "openai-chat",
+    });
+    await customProviderUpsert({
+      id: "mc-off",
+      name: "Off",
+      baseUrl: "https://off.io",
+      models: JSON.stringify([{ id: "b" }]),
+      api: "openai-chat",
+    });
+    await customProviderSetEnabled("mc-off", false);
 
-    loadCustomProviders();
+    await loadCustomProviders();
     expect(getModels().getModel("mc-on", "a")).toBeDefined();
     expect(getModels().getModel("mc-off", "b")).toBeUndefined();
+  });
+
+  test("local storage is active in tests", () => {
+    expect(getLocalDb()).not.toBeNull();
   });
 });
 
