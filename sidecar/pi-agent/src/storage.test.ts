@@ -3,12 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initStorage, credentialStore, sessionPath } from "./storage";
-import {
-  customProviderUpsert,
-  customProviderGet,
-  providerModelsSet,
-  providerModelsGet,
-} from "./hostdb";
+import { customProviderUpsert, customProviderGet } from "./hostdb";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-storage-"));
 
@@ -54,13 +49,6 @@ describe("schema", () => {
     const row = await customProviderGet("cp1");
     expect(row?.api).toBe("openai-responses");
     expect(row?.enabled).toBe(true); // 默认启用
-  });
-
-  test("provider_models upsert", async () => {
-    await providerModelsSet("prov-b", JSON.stringify(["m1"]));
-    await providerModelsSet("prov-b", JSON.stringify(["m1", "m2"]));
-    const row = await providerModelsGet("prov-b");
-    expect(JSON.parse(row!.models)).toEqual(["m1", "m2"]);
   });
 });
 

@@ -19,6 +19,7 @@ import { ThreadWelcome } from "./thread-welcome";
 import { ThreadSuggestions } from "./thread-suggestions";
 import { Composer, EditComposer } from "./composer";
 import { AssistantMessage } from "./assistant-message";
+import { CompactionDataUI } from "./compaction-banner";
 import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
 
@@ -77,12 +78,16 @@ export const Thread: FC = () => {
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root bg-transparent @container flex h-full flex-col"
       style={{
-        ["--thread-max-width" as string]: "50rem",
+        // 外观设置「对话宽度」经 html[data-chat-width] 覆写 --chat-width（globals.css）
+        ["--thread-max-width" as string]: "var(--chat-width, 50rem)",
         ["--composer-bg" as string]: "var(--color-card)",
         ["--composer-radius" as string]: "1.5rem",
         ["--composer-padding" as string]: "8px",
       }}
     >
+      {/* 注册 data-compaction 渲染器（自身不可见），横幅随对应 assistant 消息出现 */}
+      <CompactionDataUI />
+
       <ThreadPrimitive.Viewport
         turnAnchor="top"
         data-slot="aui_thread-viewport"

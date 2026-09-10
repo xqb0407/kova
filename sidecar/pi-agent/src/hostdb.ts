@@ -1,6 +1,6 @@
 /**
  * 数据访问层（双模式，统一 async 接口）：
- * - host 模式（生产）：业务表（pi_sessions/credentials/custom_providers/provider_models）
+ * - host 模式（生产）：业务表（sessions/credentials/custom_providers/models）
  *   由 Rust 宿主持有（src-tauri/src/data.rs），本侧经 stdout 上的 host_query RPC 读写，
  *   宿主从 stdin 回写 host_result。
  * - local 模式（测试/冒烟）：直接用 bun:sqlite 打开本地库，SQL 与 data.rs 镜像。
@@ -30,8 +30,20 @@ export function initLocalStorage(dbPath: string): void {
   localDb = new Database(dbPath);
   localDb.exec("PRAGMA journal_mode = WAL;");
   localDb.exec("PRAGMA busy_timeout = 5000;");
+  // 旧表重命名（去掉 pi_ 前缀）：旧表存在且新表不存在时生效，否则忽略。
+  // 必须在 CREATE TABLE 之前执行，避免新表先建出来挡住重命名。
+  try {
+    localDb.exec("ALTER TABLE pi_sessions RENAME TO sessions");
+  } catch {
+    /* 旧表不存在或已重命名 */
+  }
+  try {
+    localDb.exec("ALTER TABLE pi_models RENAME TO models");
+  } catch {
+    /* 旧表不存在或已重命名 */
+  }
   localDb.exec(`
-    CREATE TABLE IF NOT EXISTS pi_sessions (
+    CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL DEFAULT '',
       first_message TEXT NOT NULL DEFAULT '',
@@ -64,17 +76,194 @@ export function initLocalStorage(dbPath: string): void {
     /* 列已存在 */
   }
   localDb.exec(`
-    CREATE TABLE IF NOT EXISTS provider_models (
-      provider TEXT PRIMARY KEY,
-      models TEXT NOT NULL DEFAULT '[]'
+    CREATE TABLE IF NOT EXISTS models (
+      provider TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      name TEXT,
+      reasoning INTEGER,
+      context_window INTEGER,
+      max_tokens INTEGER,
+      input_json TEXT,
+      cost_json TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (provider, model_id)
     );
   `);
   // 旧数据迁移：早期版本把未选工作目录的会话 cwd 存成主目录，统一清空
-  localDb.query("UPDATE pi_sessions SET cwd = '' WHERE cwd = ?").run(homedir());
+  localDb.query("UPDATE sessions SET cwd = '' WHERE cwd = ?").run(homedir());
+  migrateCustomProviderModelsLocal();
+  migrateProviderModelFiltersLocal();
+  // 兜底：若旧 pi_* 表仍在（如新表先被别的版本建出、重命名没成功），把行并入新表后删壳
+  drainLegacyTableLocal(
+    "pi_sessions",
+    "sessions",
+    "id, title, first_message, cwd, created_at, updated_at",
+  );
+  drainLegacyTableLocal(
+    "pi_models",
+    "models",
+    "provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled",
+  );
   transport = localDispatch;
 }
 
 export const isLocalStorage = () => localDb !== null;
+
+/**
+ * local 模式的旧数据迁移（与 Rust data.rs 的 migrate_custom_provider_models 镜像）：
+ * custom_providers.models JSON 列 → models 行（enabled=1），搬完清空该列（幂等标记）。
+ */
+function migrateCustomProviderModelsLocal(): void {
+  const db = localDb;
+  if (!db) return;
+  const rows = db
+    .query<{ id: string; models: string }, []>(
+      "SELECT id, models FROM custom_providers WHERE models != '[]'",
+    )
+    .all();
+  for (const { id, models } of rows) {
+    let specs: Record<string, unknown>[] = [];
+    try {
+      specs = JSON.parse(models);
+    } catch {
+      specs = [];
+    }
+    for (const spec of specs) {
+      const modelId = typeof spec.id === "string" ? spec.id : "";
+      if (!modelId.trim()) continue;
+      const input = Array.isArray(spec.input) ? JSON.stringify(spec.input) : null;
+      const cost = spec.cost && typeof spec.cost === "object" ? JSON.stringify(spec.cost) : null;
+      db.query(
+        "INSERT OR REPLACE INTO models \
+         (provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+      ).run(
+        id,
+        modelId,
+        typeof spec.name === "string" ? spec.name : null,
+        typeof spec.reasoning === "boolean" ? (spec.reasoning ? 1 : 0) : null,
+        typeof spec.contextWindow === "number" ? Math.trunc(spec.contextWindow) : null,
+        typeof spec.maxTokens === "number" ? Math.trunc(spec.maxTokens) : null,
+        input,
+        cost,
+      );
+    }
+    db.query("UPDATE custom_providers SET models = '[]' WHERE id = ?").run(id);
+  }
+}
+
+/**
+ * local 模式旧数据迁移（与 Rust data.rs 的 migrate_provider_model_filters 镜像）：
+ * 旧表 provider_models（过滤白名单，models 列为 JSON string[]）→ models 行，
+ * 只迁移 models 表里没有该 provider 行的记录（新数据优先）；搬完删表。幂等。
+ */
+function migrateProviderModelFiltersLocal(): void {
+  const db = localDb;
+  if (!db) return;
+  const exists = db
+    .query<{ n: number }, []>(
+      "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'provider_models'",
+    )
+    .get()!.n;
+  if (!exists) return;
+  const rows = db
+    .query<{ provider: string; models: string }, []>(
+      "SELECT provider, models FROM provider_models \
+       WHERE models != '[]' AND provider NOT IN (SELECT DISTINCT provider FROM models)",
+    )
+    .all();
+  for (const { provider, models } of rows) {
+    let ids: unknown[] = [];
+    try {
+      ids = JSON.parse(models);
+    } catch {
+      ids = [];
+    }
+    for (const id of ids) {
+      if (typeof id !== "string" || !id.trim()) continue;
+      db.query("INSERT OR IGNORE INTO models (provider, model_id, enabled) VALUES (?, ?, 1)").run(
+        provider,
+        id,
+      );
+    }
+  }
+  db.exec("DROP TABLE provider_models");
+}
+
+/**
+ * local 模式兜底（与 Rust data.rs 的 drain_legacy_table 镜像）：
+ * 旧 pi_* 表未被重命名成功（新表已存在）时，把行并入新表后删除旧表。幂等。
+ * columns 为两表共有的列清单（显式列出，不依赖列序）。
+ */
+function drainLegacyTableLocal(legacy: string, target: string, columns: string): void {
+  const db = localDb;
+  if (!db) return;
+  const exists = db
+    .query<{ n: number }, [string]>(
+      "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
+    )
+    .get(legacy)!.n;
+  if (!exists) return;
+  db.exec(`INSERT OR IGNORE INTO ${target} (${columns}) SELECT ${columns} FROM ${legacy}`);
+  db.exec(`DROP TABLE ${legacy}`);
+}
+
+/** 与 Rust data.rs 的 models_query 镜像：input_json/cost_json 解析回结构化 JSON */
+function modelsQueryLocal(provider?: string): unknown {
+  const db = localDb;
+  if (!db) throw new Error("local storage not initialized");
+  type Row = {
+    provider: string;
+    model_id: string;
+    name: string | null;
+    reasoning: number | null;
+    context_window: number | null;
+    max_tokens: number | null;
+    input_json: string | null;
+    cost_json: string | null;
+    enabled: number;
+  };
+  const parse = (s: string | null) => {
+    if (!s) return null;
+    try {
+      return JSON.parse(s) as unknown;
+    } catch {
+      return null;
+    }
+  };
+  const toRow = (r: Row) => ({
+    provider: r.provider,
+    modelId: r.model_id,
+    name: r.name,
+    reasoning: r.reasoning === null ? null : r.reasoning === 1,
+    contextWindow: r.context_window,
+    maxTokens: r.max_tokens,
+    input: (() => {
+      const v = parse(r.input_json);
+      return Array.isArray(v) ? v : null;
+    })(),
+    cost: (() => {
+      const v = parse(r.cost_json);
+      return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+    })(),
+    enabled: r.enabled === 1,
+  });
+  if (provider !== undefined)
+    return db
+      .query<Row, [string]>(
+        "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled \
+         FROM models WHERE provider = ? ORDER BY model_id",
+      )
+      .all(provider)
+      .map(toRow);
+  return db
+    .query<Row, []>(
+      "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled \
+       FROM models ORDER BY provider, model_id",
+    )
+    .all()
+    .map(toRow);
+}
 
 /** 测试专用：local 模式下的底层连接（host 模式为 null）。断言用，勿用于生产路径 */
 export const getLocalDb = () => localDb;
@@ -144,14 +333,16 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
     switch (kind) {
       case "session_get": {
         const row = db
-          .query<{ cwd: string }, [string]>("SELECT cwd FROM pi_sessions WHERE id = ?")
+          .query<{ cwd: string; title: string }, [string]>(
+            "SELECT cwd, title FROM sessions WHERE id = ?",
+          )
           .get(s("sessionId"));
-        return row ? { cwd: row.cwd } : null;
+        return row ? { cwd: row.cwd, title: row.title } : null;
       }
       case "session_insert": {
         const now = s("now");
         db.query(
-          "INSERT INTO pi_sessions (id, title, first_message, cwd, created_at, updated_at) VALUES (?, '', '', ?, ?, ?)",
+          "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at) VALUES (?, '', '', ?, ?, ?)",
         ).run(s("sessionId"), str(p.cwd), now, now);
         return {};
       }
@@ -160,17 +351,17 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
           .query<
             { id: string; title: string; first_message: string; cwd: string; updated_at: string },
             []
-          >("SELECT id, title, first_message, cwd, updated_at FROM pi_sessions ORDER BY updated_at DESC")
+          >("SELECT id, title, first_message, cwd, updated_at FROM sessions ORDER BY updated_at DESC")
           .all();
       case "session_delete":
-        db.query("DELETE FROM pi_sessions WHERE id = ?").run(s("sessionId"));
+        db.query("DELETE FROM sessions WHERE id = ?").run(s("sessionId"));
         return {};
       case "session_rename":
-        db.query("UPDATE pi_sessions SET title = ? WHERE id = ?").run(s("name"), s("sessionId"));
+        db.query("UPDATE sessions SET title = ? WHERE id = ?").run(s("name"), s("sessionId"));
         return {};
       case "session_touch":
         db.query(
-          "UPDATE pi_sessions SET updated_at = ?, " +
+          "UPDATE sessions SET updated_at = ?, " +
             "title = CASE WHEN title = '' THEN ? ELSE title END, " +
             "first_message = CASE WHEN first_message = '' THEN ? ELSE first_message END " +
             "WHERE id = ?",
@@ -245,25 +436,49 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
           s("id"),
         );
         return {};
-      case "provider_models_all":
-        return db.query<{ provider: string; models: string }, []>("SELECT provider, models FROM provider_models").all();
-      case "provider_models_get": {
-        const row = db
-          .query<{ models: string }, [string]>("SELECT models FROM provider_models WHERE provider = ?")
-          .get(s("provider"));
-        return row ? { models: row.models } : null;
-      }
-      case "provider_models_set": {
-        const models = s("models");
-        // 空数组 = 清除过滤，恢复全部
-        if (models === "[]") db.query("DELETE FROM provider_models WHERE provider = ?").run(s("provider"));
-        else
-          db.query(
-            "INSERT INTO provider_models (provider, models) VALUES (?, ?) " +
-              "ON CONFLICT(provider) DO UPDATE SET models = excluded.models",
-          ).run(s("provider"), models);
+      case "models_all":
+        return modelsQueryLocal(undefined);
+      case "models_list":
+        return modelsQueryLocal(s("provider"));
+      case "models_replace": {
+        const provider = s("provider");
+        let items: Record<string, unknown>[] = [];
+        try {
+          items = JSON.parse(s("models"));
+        } catch {
+          throw new Error("parse models: invalid JSON");
+        }
+        const tx = db.transaction(() => {
+          db.query("DELETE FROM models WHERE provider = ?").run(provider);
+          for (const item of items) {
+            const modelId = typeof item.modelId === "string" ? item.modelId : "";
+            if (!modelId.trim()) continue;
+            const input = Array.isArray(item.input) ? JSON.stringify(item.input) : null;
+            const cost =
+              item.cost && typeof item.cost === "object" ? JSON.stringify(item.cost) : null;
+            db.query(
+              "INSERT OR REPLACE INTO models \
+               (provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled) \
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ).run(
+              provider,
+              modelId,
+              typeof item.name === "string" ? item.name : null,
+              typeof item.reasoning === "boolean" ? (item.reasoning ? 1 : 0) : null,
+              typeof item.contextWindow === "number" ? Math.trunc(item.contextWindow) : null,
+              typeof item.maxTokens === "number" ? Math.trunc(item.maxTokens) : null,
+              input,
+              cost,
+              item.enabled === false ? 0 : 1,
+            );
+          }
+        });
+        tx();
         return {};
       }
+      case "models_delete_provider":
+        db.query("DELETE FROM models WHERE provider = ?").run(s("provider"));
+        return {};
       default:
         throw new Error(`unknown host_query kind: ${kind}`);
     }
@@ -303,7 +518,7 @@ export type CustomProviderRow = {
 };
 
 export const sessionGet = (sessionId: string) =>
-  query<{ cwd: string } | null>("session_get", { sessionId });
+  query<{ cwd: string; title: string } | null>("session_get", { sessionId });
 
 export const sessionInsert = (sessionId: string, cwd: string) =>
   query("session_insert", { sessionId, cwd, now: nowIso() });
@@ -346,14 +561,45 @@ export const customProviderDelete = (id: string) => query("custom_provider_delet
 export const customProviderSetEnabled = (id: string, enabled: boolean) =>
   query("custom_provider_set_enabled", { id, enabled });
 
-export const providerModelsAll = () =>
-  query<{ provider: string; models: string }[]>("provider_models_all");
+/* ------------------------------ models（统一模型目录） ------------------------------ */
 
-export const providerModelsGet = (provider: string) =>
-  query<{ models: string } | null>("provider_models_get", { provider });
+/** models 行（Rust models_query 返回结构；NULL attrs = 继承内置值） */
+export type ModelRow = {
+  provider: string;
+  modelId: string;
+  name: string | null;
+  reasoning: boolean | null;
+  contextWindow: number | null;
+  maxTokens: number | null;
+  /** 结构化 JSON（数组），NULL = 未覆盖 */
+  input: unknown[] | null;
+  /** 结构化 JSON（对象），NULL = 未覆盖 */
+  cost: Record<string, unknown> | null;
+  enabled: boolean;
+};
 
-export const providerModelsSet = (provider: string, models: string) =>
-  query("provider_models_set", { provider, models });
+export const modelsAll = () => query<ModelRow[]>("models_all");
+
+export const modelsList = (provider: string) =>
+  query<ModelRow[]>("models_list", { provider });
+
+/** 整包替换该 provider 的模型行（items 见 ModelReplaceItem；attrs 缺省 = NULL） */
+export type ModelReplaceItem = {
+  modelId: string;
+  enabled?: boolean;
+  name?: string | null;
+  reasoning?: boolean | null;
+  contextWindow?: number | null;
+  maxTokens?: number | null;
+  input?: unknown[] | null;
+  cost?: Record<string, unknown> | null;
+};
+
+export const modelsReplace = (provider: string, items: ModelReplaceItem[]) =>
+  query("models_replace", { provider, models: JSON.stringify(items) });
+
+export const modelsDeleteProvider = (provider: string) =>
+  query("models_delete_provider", { provider });
 
 /** 主机工具调用（仅 host 模式可用；bash/read/write/edit 由 Rust 执行） */
 export const hostToolCall = (name: string, cwd: string, params: Record<string, unknown>) =>

@@ -3,8 +3,18 @@ import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initStorage, sessionPath } from "./storage";
-import { sessionInsert, getLocalDb } from "./hostdb";
-import { readTranscript, toUiMessage, persist, historyToUiMessages } from "./transcript";
+import { sessionInsert, sessionRename, getLocalDb } from "./hostdb";
+import {
+  readTranscript,
+  toUiMessage,
+  persist,
+  historyToUiMessages,
+  appendCompactionRow,
+  readCompaction,
+  titleSummarizeHook,
+  maybeSummarizeSessionTitle,
+} from "./transcript";
+import { makeSummaryMessage, projectRestoreContext } from "./context";
 import type { Message } from "@earendil-works/pi-ai";
 import type { Running } from "./types";
 
@@ -206,6 +216,7 @@ describe("persist", () => {
       sessionId: id,
       cwd: tmp,
       persistedSeq: 0,
+      jsonlSeq: 0,
     } as unknown as Running;
 
     await persist(run);
@@ -223,7 +234,7 @@ describe("persist", () => {
 
     const row = getLocalDb()!
       .query<{ title: string; first_message: string; updated_at: string }, [string]>(
-        "SELECT title, first_message, updated_at FROM pi_sessions WHERE id = ?",
+        "SELECT title, first_message, updated_at FROM sessions WHERE id = ?",
       )
       .get(id)!;
     expect(row.first_message).toBe("hello world");
@@ -250,6 +261,7 @@ describe("persist", () => {
       sessionId: id,
       cwd: tmp,
       persistedSeq: 0,
+      jsonlSeq: 0,
     } as unknown as Running;
     await persist(run);
     expect(run.persistedSeq).toBe(3);
@@ -270,5 +282,182 @@ describe("persist", () => {
         output: "hi",
       },
     ]);
+  });
+});
+
+describe("compaction rows", () => {
+  test("appendCompactionRow / readCompaction 读最后一条，撕裂尾行容忍，消息读端不受影响", async () => {
+    const id = "cp-row-test";
+    await sessionInsert(id, tmp);
+    writeFileSync(sessionPath(id), "", "utf8");
+    appendCompactionRow(id, {
+      seq: 2,
+      summary: "S1",
+      tokensBefore: 100,
+      throughSeq: 1,
+      createdAt: "t",
+      details: { generation: 1, strategy: "summary" },
+    });
+    appendCompactionRow(id, {
+      seq: 7,
+      summary: "S2",
+      tokensBefore: 200,
+      throughSeq: 6,
+      createdAt: "t",
+      details: { generation: 2, strategy: "summary" },
+    });
+    const file = readFileSync(sessionPath(id), "utf8");
+    writeFileSync(sessionPath(id), file + '{"type":"compact', "utf8"); // 撕裂尾行
+
+    const cp = readCompaction(id)!;
+    expect(cp.summary).toBe("S2");
+    expect(cp.throughSeq).toBe(6);
+    expect(cp.details).toEqual({ generation: 2, strategy: "summary" });
+    // 检查点行不是消息行：全量历史读端与 UI 重建完全不受影响
+    expect(readTranscript(id).length).toBe(0);
+    expect(historyToUiMessages(readTranscript(id)).length).toBe(0);
+  });
+
+  test("压缩后 persist：seq 共用单调编号不撞号，摘要头不回写，恢复投射正确", async () => {
+    const id = "cp-persist-test";
+    await sessionInsert(id, tmp);
+    writeFileSync(sessionPath(id), "", "utf8");
+
+    const run = {
+      agent: {
+        state: {
+          messages: [
+            userMsg("q1"),
+            assistantMsg([{ type: "text", text: "a1" }]),
+          ],
+        },
+      },
+      sessionId: id,
+      cwd: tmp,
+      persistedSeq: 0,
+      jsonlSeq: 0,
+    } as unknown as Running;
+    await persist(run); // 消息行 0,1
+
+    // 模拟 runCompaction 完成后的 run 状态：state 只剩合成摘要头 + 新一轮
+    const checkpoint = {
+      seq: run.jsonlSeq,
+      summary: "COMPACTED",
+      tokensBefore: 999,
+      throughSeq: run.jsonlSeq - 1,
+      createdAt: "t",
+      details: { generation: 1, strategy: "summary" },
+    };
+    appendCompactionRow(id, checkpoint);
+    run.jsonlSeq += 1;
+    run.agent.state.messages = [
+      makeSummaryMessage("COMPACTED") as unknown as Message,
+      userMsg("q2"),
+    ];
+    run.persistedSeq = 1;
+
+    await persist(run); // 只写 q2，seq 跳过检查点行占用的号
+
+    const rows = readTranscript(id);
+    expect(rows.map((r) => r.seq)).toEqual([0, 1, 3]);
+    const cp = readCompaction(id)!;
+    expect(cp.seq).toBe(2);
+    const context = projectRestoreContext(rows, cp);
+    expect(context.length).toBe(2); // 摘要头 + q2
+    expect(
+      (context[1] as { content: string }).content,
+    ).toBe("q2");
+  });
+});
+
+describe("maybeSummarizeSessionTitle", () => {
+  const fakeModel = { id: "m", provider: "p" } as Running["agent"]["state"]["model"];
+
+  const makeRun = (id: string, prompt: string, reply?: string) =>
+    ({
+      agent: {
+        state: {
+          model: fakeModel,
+          messages: reply
+            ? [userMsg(prompt), assistantMsg([{ type: "text", text: reply }])]
+            : [userMsg(prompt)],
+        },
+      },
+      sessionId: id,
+      cwd: tmp,
+      persistedSeq: 0,
+      jsonlSeq: 0,
+    }) as unknown as Running;
+
+  test("兜底标题被 AI 总结替换", async () => {
+    const id = "title-auto";
+    await sessionInsert(id, tmp);
+    titleSummarizeHook.fn = async () => "重构认证模块";
+    try {
+      await maybeSummarizeSessionTitle(makeRun(id, "帮我重构用户认证模块", "已完成"));
+      const row = getLocalDb()!
+        .query<{ title: string }, [string]>("SELECT title FROM sessions WHERE id = ?")
+        .get(id)!;
+      expect(row.title).toBe("重构认证模块");
+    } finally {
+      titleSummarizeHook.fn = undefined;
+    }
+  });
+
+  test("手动改名后不覆盖（标题 ≠ 兜底串）", async () => {
+    const id = "title-manual";
+    await sessionInsert(id, tmp);
+    await sessionRename(id, "我的自定义标题");
+    let called = false;
+    titleSummarizeHook.fn = async () => {
+      called = true;
+      return "AI 标题";
+    };
+    try {
+      await maybeSummarizeSessionTitle(makeRun(id, "随便聊点什么", "好的"));
+      expect(called).toBe(false);
+      const row = getLocalDb()!
+        .query<{ title: string }, [string]>("SELECT title FROM sessions WHERE id = ?")
+        .get(id)!;
+      expect(row.title).toBe("我的自定义标题");
+    } finally {
+      titleSummarizeHook.fn = undefined;
+    }
+  });
+
+  test("每会话只总结一次（防抖）", async () => {
+    const id = "title-debounce";
+    await sessionInsert(id, tmp);
+    let calls = 0;
+    titleSummarizeHook.fn = async () => {
+      calls += 1;
+      return "首次标题";
+    };
+    try {
+      const run = makeRun(id, "防抖测试", "ok");
+      await maybeSummarizeSessionTitle(run);
+      await maybeSummarizeSessionTitle(run);
+      expect(calls).toBe(1);
+    } finally {
+      titleSummarizeHook.fn = undefined;
+    }
+  });
+
+  test("总结失败保留兜底标题", async () => {
+    const id = "title-fallback";
+    await sessionInsert(id, tmp);
+    // 生产顺序：persist 先 sessionTouch 写入兜底标题，再触发总结
+    const { sessionTouch } = await import("./hostdb");
+    await sessionTouch(id, "会失败的标题".slice(0, 60), "会失败的标题");
+    titleSummarizeHook.fn = async () => undefined;
+    try {
+      await maybeSummarizeSessionTitle(makeRun(id, "会失败的标题", "回复"));
+      const row = getLocalDb()!
+        .query<{ title: string }, [string]>("SELECT title FROM sessions WHERE id = ?")
+        .get(id)!;
+      expect(row.title).toBe("会失败的标题");
+    } finally {
+      titleSummarizeHook.fn = undefined;
+    }
   });
 });

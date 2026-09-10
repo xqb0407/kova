@@ -17,6 +17,9 @@
 
 @custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
 @custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));
+/* 深色模式由 html 上的 .dark 类驱动（lib/ui-prefs.ts + layout 预绘制脚本），
+   覆盖 Tailwind 默认的媒体查询策略，"跟随系统/浅色/深色"三档才能全端生效 */
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
   @keyframes collapsible-down {
@@ -243,6 +246,67 @@
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+/* 强调色：仅覆写 primary/ring（浅色用中档亮度+亮前景，深色用高档亮度+暗前景），
+   无 data-accent 时保持单色默认值。由 lib/ui-prefs.ts 打标。 */
+:root[data-accent="blue"] {
+  --primary: oklch(0.55 0.22 257);
+  --primary-foreground: oklch(0.98 0.01 257);
+  --ring: oklch(0.62 0.19 257);
+}
+.dark[data-accent="blue"] {
+  --primary: oklch(0.65 0.19 257);
+  --primary-foreground: oklch(0.16 0.03 257);
+  --ring: oklch(0.55 0.16 257);
+}
+:root[data-accent="violet"] {
+  --primary: oklch(0.55 0.21 292);
+  --primary-foreground: oklch(0.98 0.01 292);
+  --ring: oklch(0.62 0.18 292);
+}
+.dark[data-accent="violet"] {
+  --primary: oklch(0.66 0.18 292);
+  --primary-foreground: oklch(0.16 0.03 292);
+  --ring: oklch(0.55 0.16 292);
+}
+:root[data-accent="green"] {
+  --primary: oklch(0.55 0.16 155);
+  --primary-foreground: oklch(0.98 0.02 155);
+  --ring: oklch(0.6 0.14 155);
+}
+.dark[data-accent="green"] {
+  --primary: oklch(0.65 0.16 155);
+  --primary-foreground: oklch(0.16 0.03 155);
+  --ring: oklch(0.55 0.14 155);
+}
+:root[data-accent="orange"] {
+  --primary: oklch(0.62 0.18 55);
+  --primary-foreground: oklch(0.98 0.02 55);
+  --ring: oklch(0.68 0.15 55);
+}
+.dark[data-accent="orange"] {
+  --primary: oklch(0.7 0.16 55);
+  --primary-foreground: oklch(0.18 0.03 55);
+  --ring: oklch(0.6 0.14 55);
+}
+:root[data-accent="rose"] {
+  --primary: oklch(0.58 0.21 350);
+  --primary-foreground: oklch(0.98 0.01 350);
+  --ring: oklch(0.64 0.18 350);
+}
+.dark[data-accent="rose"] {
+  --primary: oklch(0.66 0.19 350);
+  --primary-foreground: oklch(0.16 0.03 350);
+  --ring: oklch(0.56 0.16 350);
+}
+
+/* 对话区最大宽度：thread.tsx 的 --thread-max-width 回退值消费；默认 50rem 不打标 */
+:root[data-chat-width="narrow"] {
+  --chat-width: 40rem;
+}
+:root[data-chat-width="wide"] {
+  --chat-width: 70rem;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -260,6 +324,11 @@
      仅桌面端在 html 上打 data-window-effect 标记（lib/appearance.ts），
      内部面板为半透明底色（bg-muted/55 等），可透出材质。 */
   html[data-window-effect] body {
+    background: transparent;
+  }
+  /* 启动占位屏（BootSplash）挂载期间：根层透明露出桌面/窗口材质，仅眼睛动画浮在上面。
+     标记由 layout.tsx 预渲染输出，BootSplash 卸载时摘除，恢复 body 正常底色。 */
+  html[data-boot-splash] body {
     background: transparent;
   }
   body[data-scroll-locked] {

@@ -17,7 +17,15 @@ export type PiSessionSummary = {
   cwd: string;
 };
 
-/** pi 可用模型（ModelRegistry.getAll + 凭据状态） */
+/** 每 token 单价（美元） */
+export type PiModelCost = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
+/** pi 可用模型（ModelRegistry.getAll + 凭据状态 + pi_models 过滤/属性） */
 export type PiModelSummary = {
   provider: string;
   providerName: string;
@@ -25,6 +33,14 @@ export type PiModelSummary = {
   name: string;
   reasoning: boolean;
   contextWindow: number;
+  /** 最大输出 tokens */
+  maxTokens?: number;
+  /** 支持的输入模态，如 ["text", "image"] */
+  input?: string[];
+  /** 每 token 单价 */
+  cost?: PiModelCost;
+  /** 目录可见性（false = 被模型过滤隐藏）；缺省视为可见 */
+  enabled?: boolean;
   authed: boolean;
 };
 
@@ -47,6 +63,10 @@ export type PiCustomModelSpec = {
   reasoning?: boolean;
   contextWindow?: number;
   maxTokens?: number;
+  /** 支持的输入模态，如 ["text", "image"] */
+  input?: string[];
+  /** 每 token 单价 */
+  cost?: Partial<PiModelCost>;
 };
 
 /** 自定义提供商（OpenAI 兼容 baseUrl + 模型列表） */
@@ -65,6 +85,48 @@ export type PiCustomProviderSummary = {
   enabled: boolean;
 };
 
+/** 会话累计用量（sidecar 从 JSONL assistant 消息行的 usage 聚合） */
+export type PiUsageTotals = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
+/** 上下文面板读数（context_info 响应；sidecar 现算，零新增持久化） */
+export type PiContextInfo = {
+  type: "context_info";
+  model: { provider: string; id: string; name: string } | null;
+  /** 上下文容量（tokens） */
+  contextWindow: number;
+  /** 压缩阈值 = 容量 − 请求余量（与自动压缩同一公式） */
+  hardLimit: number;
+  messageTokens: number;
+  systemPromptTokens: number;
+  toolTokens: number;
+  messageCount: number;
+  /** 已发生的压缩代数（0 = 从未压缩） */
+  generation: number;
+  lastCompaction: {
+    tokensBefore: number;
+    summarized: boolean;
+    createdAt: string;
+  } | null;
+  /** 当前占用是否已越过压缩阈值 */
+  needsCompaction: boolean;
+  usage: PiUsageTotals;
+  /** 平均缓存命中率 0..1；无用量数据为 null */
+  cacheHitRate: number | null;
+};
+
+/** 手动压缩结果（compact 响应） */
+export type PiCompacted = {
+  type: "compacted";
+  generation: number;
+  tokensBefore: number;
+  summarized: boolean;
+};
+
 export type PiResponse =
   | { type: "sessions"; sessions: PiSessionSummary[] }
   | { type: "session"; sessionId: string; threadId: string }
@@ -73,6 +135,7 @@ export type PiResponse =
   | { type: "renamed" }
   | { type: "models"; models: PiModelSummary[]; providers: PiProviderSummary[] }
   | { type: "model"; provider: string; modelId: string }
+  | { type: "model_updated"; provider: string; modelId: string }
   | { type: "credential"; provider: string }
   | { type: "credentials"; credentials: PiCredentialSummary[] }
   | { type: "credential_deleted"; provider: string }
@@ -95,6 +158,8 @@ export type PiResponse =
         question: string;
       } | null;
     }
+  | PiContextInfo
+  | PiCompacted
   | { type: "error"; errorText: string }
   | { type: "tool_confirmed"; approvalId: string };
 

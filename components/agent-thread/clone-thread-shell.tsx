@@ -390,7 +390,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         </SheetContent>
       </Sheet>
 
-      <CommandDialog open={searchOpen} onOpenChange={setSearchOpen} className="w-[800px]">
+      <CommandDialog open={searchOpen} onOpenChange={setSearchOpen} className="max-w-[30dvw]!">
         <Command className="w-full">
           <CommandInput placeholder="搜索对话..." />
           <CommandList>

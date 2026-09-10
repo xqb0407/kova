@@ -22,9 +22,8 @@ import {
   customProviderDelete,
   customProviderSetEnabled,
   customProvidersList,
-  providerModelsGet,
-  providerModelsSet,
-  providerModelsAll,
+  modelsAll,
+  modelsReplace,
   getLocalDb,
 } from "./hostdb";
 
@@ -61,7 +60,7 @@ describe("local mode: sessions", () => {
     await sessionInsert("hdb-2", "");
     await sessionRename("hdb-2", "renamed");
     const row = getLocalDb()!
-      .query<{ title: string }, [string]>("SELECT title FROM pi_sessions WHERE id = ?")
+      .query<{ title: string }, [string]>("SELECT title FROM sessions WHERE id = ?")
       .get("hdb-2")!;
     expect(row.title).toBe("renamed");
     await sessionDelete("hdb-2");
@@ -105,15 +104,13 @@ describe("local mode: custom providers", () => {
   });
 });
 
-describe("local mode: provider models", () => {
-  test("set non-empty filters, empty clears", async () => {
-    await providerModelsSet("prov-hf", JSON.stringify(["a", "b"]));
-    expect(JSON.parse((await providerModelsGet("prov-hf"))!.models)).toEqual(["a", "b"]);
-    expect((await providerModelsAll()).find((r) => r.provider === "prov-hf")).toBeDefined();
-
-    await providerModelsSet("prov-hf", "[]");
-    expect(await providerModelsGet("prov-hf")).toBeNull();
-    expect((await providerModelsAll()).find((r) => r.provider === "prov-hf")).toBeUndefined();
+describe("local mode: models table", () => {
+  test("replace writes rows, list reads them back", async () => {
+    await modelsReplace("prov-hm", [{ modelId: "a", enabled: true, contextWindow: 123 }]);
+    const rows = await modelsAll();
+    const found = rows.find((r) => r.provider === "prov-hm" && r.modelId === "a");
+    expect(found?.contextWindow).toBe(123);
+    expect(found?.enabled).toBe(true);
   });
 });
 
@@ -150,8 +147,8 @@ describe("host mode: host_query RPC", () => {
     expect(String(sent.id)).toMatch(/^hq-\d+$/);
 
     // 模拟宿主回写
-    expect(resolveHostResult({ type: "host_result", id: sent.id, ok: true, data: { cwd: "d:/x" } })).toBe(true);
-    await expect(promise).resolves.toEqual({ cwd: "d:/x" });
+    expect(resolveHostResult({ type: "host_result", id: sent.id, ok: true, data: { cwd: "d:/x", title: "" } })).toBe(true);
+    await expect(promise).resolves.toEqual({ cwd: "d:/x", title: "" });
   });
 
   test("error host_result rejects", async () => {

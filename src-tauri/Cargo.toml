@@ -14,7 +14,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "macos-private-api", "devtools"] }
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
@@ -28,6 +28,8 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 if-addrs = "0.13"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+log = "0.4"
+chrono = "0.4"
 
 [profile.release]
 panic = "abort"

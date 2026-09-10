@@ -325,7 +325,7 @@ export const ProjectListItems: FC = () => {
                 <Button
                   variant="ghost"
                   title={group.cwd}
-                  className="h-8 justify-start gap-2 px-2.5 text-sm font-normal hover:bg-muted"
+                  className="h-8 justify-start gap-2 px-2.5 text-sm font-normal hover:bg-muted aria-expanded:bg-transparent"
                 >
                   {isOpen ? (
                     <FolderOpenIcon className="size-4 shrink-0" />
@@ -339,7 +339,7 @@ export const ProjectListItems: FC = () => {
               }
             />
             <CollapsibleContent className="overflow-hidden">
-              <div className="flex flex-col gap-0.5">
+              <div className="flex flex-col gap-0.5 pl-0">
                 {group.indices.map((index) => (
                   <ThreadListPrimitive.ItemByIndex
                     key={threadIds[index]}
@@ -439,26 +439,34 @@ export const ThreadListItem: FC = () => {
           }}
         />
       ) : (
-        <ThreadListItemPrimitive.Trigger
-          ref={triggerRef}
-          data-slot="aui_thread-list-item-trigger"
-          className="focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md px-2.5 text-start text-sm outline-none group-hover:pe-9 group-has-focus-visible:pe-9 group-has-data-[state=open]:pe-9 group-data-active:pe-9 focus-visible:ring-1"
-        >
-          {isRunning && (
-            <Loader2Icon
-              aria-hidden
-              data-slot="aui_thread-list-item-running"
-              className="text-muted-foreground me-1.5 size-3.5 shrink-0 animate-spin"
-            />
-          )}
-          <span
-            data-slot="aui_thread-list-item-title"
-            className="min-w-0 flex-1 truncate"
-          >
-            <ThreadListItemPrimitive.Title fallback="New Chat" />
-          </span>
-          {isRunning && <span className="sr-only">Running</span>}
-        </ThreadListItemPrimitive.Trigger>
+       <ThreadListItemPrimitive.Trigger
+  ref={triggerRef}
+  data-slot="aui_thread-list-item-trigger"
+  className="group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md px-2.5 text-start text-sm outline-none group-hover:pe-9 group-has-focus-visible:pe-9 group-has-data-[state=open]:pe-9 group-data-active:pe-9 focus-visible:ring-1"
+>
+  {/* Loader DOM 常驻，永久占位 */}
+  <Loader2Icon
+    aria-hidden
+    data-slot="aui_thread-list-item-running"
+    data-running={isRunning}
+    className="
+      text-muted-foreground me-1.5 size-3.5 shrink-0 animate-spin
+      invisible
+      data-[running=true]:group-hover:visible
+      data-[running=true]:group-has-focus-visible:visible
+      data-[running=true]:group-has-data-[state=open]:visible
+      data-[running=true]:group-data-active:visible
+    "
+  />
+  <span
+    data-slot="aui_thread-list-item-title"
+    className="min-w-0 flex-1 truncate"
+  >
+    <ThreadListItemPrimitive.Title fallback="New Chat" />
+  </span>
+  {isRunning && <span className="sr-only">Running</span>}
+</ThreadListItemPrimitive.Trigger>
+
       )}
       <ThreadListItemMore onRename={() => setIsRenaming(true)} />
     </ThreadListItemPrimitive.Root>

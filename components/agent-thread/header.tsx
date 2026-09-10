@@ -8,7 +8,7 @@ import { WindowControls } from "@/components/window-controls";
 import { useAuiState } from "@assistant-ui/react";
 import { MenuIcon, PanelLeftIcon, ShareIcon } from "lucide-react";
 import Image from "next/image";
-import icon from "@/public/favicon/icon.svg";
+import logo from "@/public/favicon/logo.svg";
 import { Button } from "@/components/ui/button";
 import type { FC } from "react";
 
@@ -21,7 +21,7 @@ export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
       )}
     >
       <Image
-        src={icon}
+        src={logo}
         alt="logo"
         className="size-5 shrink-0 dark:hue-rotate-180 dark:invert"
       />

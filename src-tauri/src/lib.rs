@@ -1,5 +1,7 @@
+mod about;
 mod appearance;
 mod data;
+mod logging;
 mod pi_agent;
 mod remote;
 mod store;
@@ -19,12 +21,17 @@ pub fn run() {
         .manage(PiState::default())
         .manage(remote::RemoteState::default())
         .setup(|app| {
+            // 磁盘日志最先初始化（后续任何失败都能记到 app.log）
+            logging::init(app.handle());
             // SQLite KV 存储（workspace 等应用状态）
-            store::init(app.handle())
-                .map_err(|e| eprintln!("[store] init failed: {e}"))
-                .ok();
+            match store::init(app.handle()) {
+                Ok(()) => log::info!("[store] init ok"),
+                Err(e) => log::error!("[store] init failed: {e}"),
+            }
             // 恢复持久化的窗口背景效果（穿透高斯模糊等）
             appearance::restore(app.handle());
+            // 恢复开发者模式（WebView DevTools）
+            about::restore(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -37,6 +44,11 @@ pub fn run() {
             remote::pi_remote_status,
             remote::pi_remote_refresh_code,
             appearance::set_window_effect,
+            about::open_logs_dir,
+            about::open_external,
+            about::set_dev_mode,
+            logging::frontend_log,
+            logging::cleanup_logs,
             store::kv_get,
             store::kv_set,
             store::kv_delete

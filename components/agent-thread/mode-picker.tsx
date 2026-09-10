@@ -44,6 +44,8 @@ type PickerOption = {
   icon: LucideIcon;
   mode: SessionMode;
   approvalLevel?: ApprovalLevel;
+  /** 高危选项：选中后以警告色提示（如完全访问） */
+  warning?: boolean;
 };
 
 const OPTIONS: PickerOption[] = [
@@ -77,6 +79,7 @@ const OPTIONS: PickerOption[] = [
     icon: LockOpenIcon,
     mode: "agent",
     approvalLevel: "auto",
+    warning: true,
   },
   {
     key: "goal",
@@ -126,7 +129,12 @@ export const ModePicker: FC = () => {
             title={current.description}
             className={cn(
               "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors disabled:opacity-50",
-              inPlanning ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
+              // 高危模式选中时用警告色提醒（覆盖常规/计划态文字色）
+              current.warning
+                ? "text-amber-600 dark:text-amber-400"
+                : inPlanning
+                  ? "bg-muted text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
             )}
           >
             {busy ? (
@@ -148,7 +156,15 @@ export const ModePicker: FC = () => {
             >
               <o.icon className="text-muted-foreground size-4 shrink-0" />
               <div className="flex min-w-0 flex-col">
-                <span className="text-sm font-medium">{o.label}</span>
+                <span
+                  className={cn(
+                    "text-sm font-medium",
+                    // 高危选项在选中态下也用警告色
+                    o.warning && o.key === activeKey && "text-amber-600 dark:text-amber-400",
+                  )}
+                >
+                  {o.label}
+                </span>
                 <span className="text-muted-foreground truncate text-xs">
                   {o.description}
                 </span>

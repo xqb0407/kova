@@ -79,7 +79,7 @@ describe("dispatch: sessions", () => {
     expect(last()).toEqual({ id: "s3", type: "renamed" });
     const row = getLocalDb()!
       .query<{ title: string }, [string]>(
-        "SELECT title FROM pi_sessions WHERE id = ?",
+        "SELECT title FROM sessions WHERE id = ?",
       )
       .get(sessionId)!;
     expect(row.title).toBe("My Chat");
@@ -115,6 +115,43 @@ describe("dispatch: sessions", () => {
     expect(last()).toEqual({ id: "s5", type: "deleted" });
     expect(existsSync(sessionPath("seeded-session"))).toBe(false);
     expect(await sessionGet("seeded-session")).toBeNull();
+  });
+});
+
+describe("dispatch: context_info / compact", () => {
+  let sessionId = "";
+
+  test("context_info 返回完整读数（无凭据环境：占位模型，零消息零用量）", async () => {
+    await dispatch("x1", { type: "new_session", threadId: "th-ctx", cwd: tmp });
+    sessionId = last().sessionId as string;
+    await dispatch("x2", {
+      type: "context_info",
+      threadId: "th-ctx",
+      sessionId,
+    });
+    const res = last() as Record<string, unknown>;
+    expect(res.type).toBe("context_info");
+    // 无凭据时 state.model 是占位模型（unknown），容量走兜底常量
+    expect(res.model).not.toBeNull();
+    expect(res.contextWindow).toBeGreaterThan(0);
+    expect(res.hardLimit).toBeGreaterThan(0);
+    expect(res.messageTokens).toBe(0);
+    expect(res.systemPromptTokens).toBeGreaterThan(0); // 模式系统提示词总在
+    expect(res.generation).toBe(0);
+    expect(res.needsCompaction).toBe(false);
+    expect(res.cacheHitRate).toBeNull();
+    expect(res.usage).toEqual({
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    });
+  });
+
+  test("compact 空上下文被拒绝（错误经 dispatch 上抛）", async () => {
+    await expect(
+      dispatch("x3", { type: "compact", threadId: "th-ctx", sessionId }),
+    ).rejects.toThrow("No new context is available to compact");
   });
 });
 
