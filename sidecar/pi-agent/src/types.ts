@@ -82,6 +82,8 @@ export type Running = {
   agent: Agent;
   sessionId: string;
   cwd: string;
+  /** 持久化 cwd（会话绑定的工作目录；空串 = 建会话时未选目录，允许后续补绑） */
+  persistedCwd?: string;
   persistedSeq: number; // state.messages 中已入账（落盘或压缩合成）的前缀长度
   /** JSONL 行 seq 分配器：消息行与 compaction 行共用，文件内单调（压缩后不撞号） */
   jsonlSeq: number;
@@ -157,4 +159,6 @@ export type PendingProposal = {
   title: string;
   markdown: string;
   question: string;
+  /** SubmitPlan 落盘的文件绝对路径（仅 plan；落盘失败或缺省时为空） */
+  filePath?: string;
 };

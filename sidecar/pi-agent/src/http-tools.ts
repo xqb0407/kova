@@ -141,7 +141,7 @@ function buildWebFetchTool(cwd: string): AgentTool {
       "Non-2xx responses are returned, not thrown.\n" +
       "Use for: REST APIs, docs/pages, small assets. Not for streaming or large downloads.",
     parameters: FetchParams,
-    execute: async (_id, raw) => {
+    execute: async (_id, raw, signal) => {
       const p = raw as {
         url: string;
         method?: string;
@@ -151,14 +151,18 @@ function buildWebFetchTool(cwd: string): AgentTool {
         maxResponseBytes?: number;
       };
       if (!p.url?.trim()) throw new Error("url is required");
-      const data = await hostHttpCall(cwd, {
-        url: p.url.trim(),
-        method: p.method ?? "GET",
-        headers: p.headers,
-        body: p.body,
-        timeoutMs: p.timeoutMs,
-        maxResponseBytes: p.maxResponseBytes,
-      });
+      const data = await hostHttpCall(
+        cwd,
+        {
+          url: p.url.trim(),
+          method: p.method ?? "GET",
+          headers: p.headers,
+          body: p.body,
+          timeoutMs: p.timeoutMs,
+          maxResponseBytes: p.maxResponseBytes,
+        },
+        signal ?? undefined,
+      );
       const details = {
         status: data.status,
         contentType: data.contentType,
@@ -199,15 +203,19 @@ function buildWebSearchTool(cwd: string): AgentTool {
     parameters: Type.Object({
       query: Type.String({ description: "Search keywords" }),
     }),
-    execute: async (_id, raw) => {
+    execute: async (_id, raw, signal) => {
       const query = (raw as { query: string }).query?.trim();
       if (!query) throw new Error("query is required");
-      const data = await hostHttpCall(cwd, {
-        url: WEB_SEARCH_API_URL,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: { query },
-      });
+      const data = await hostHttpCall(
+        cwd,
+        {
+          url: WEB_SEARCH_API_URL,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: { query },
+        },
+        signal ?? undefined,
+      );
       if (!data.ok) {
         return textResult(
           `WebSearch API error ${data.status}${data.output ? `: ${data.output.slice(0, 200)}` : ""}`,

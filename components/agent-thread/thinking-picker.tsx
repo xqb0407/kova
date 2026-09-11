@@ -1,0 +1,112 @@
+"use client";
+
+import { useState, type FC } from "react";
+import { BrainIcon, CheckIcon } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { usePiModels } from "@/lib/pi-models";
+import { useSelectedModel } from "@/lib/model-settings";
+import {
+  setThinkingLevel,
+  useThinkingLevel,
+  type ThinkingLevel,
+} from "@/lib/thinking-settings";
+import { cn } from "@/lib/utils";
+
+/**
+ * 深度思考档位选择器（composer 区，模型选择器右侧）：点开下拉选档，
+ * 档位名对齐 pi-desktop 中文文案。当前模型的可用档位由目录的
+ * supportedThinkingLevels（pi-ai 按 reasoning + thinkingLevelMap 推导）
+ * 决定，不支持的档位直接不渲染（不是置灰）；完全不支持推理的模型菜单里
+ * 只剩「关闭」，触发器 title 提示去 设置→模型 配置。
+ * 选择写全局偏好（kv）并经 set_thinking 广播到活动会话。
+ */
+const LEVEL_OPTIONS: { value: ThinkingLevel; label: string }[] = [
+  { value: "off", label: "关闭" },
+  { value: "minimal", label: "最小" },
+  { value: "low", label: "轻度" },
+  { value: "medium", label: "中" },
+  { value: "high", label: "高" },
+  { value: "xhigh", label: "很高" },
+  { value: "max", label: "最高" },
+];
+
+export const ThinkingPicker: FC = () => {
+  const level = useThinkingLevel();
+  const models = usePiModels();
+  const selected = useSelectedModel();
+  const [open, setOpen] = useState(false);
+
+  const info = selected
+    ? models.find(
+        (m) => m.provider === selected.provider && m.id === selected.modelId,
+      )
+    : undefined;
+  // undefined = 目录未加载/模型未知 → 全档可点；数组 = 支持档位（不含 off，空 = 明确不支持）
+  const supported = info?.supportedThinkingLevels;
+  const selectable = (v: ThinkingLevel) =>
+    v === "off" || (supported ? supported.includes(v) : true);
+
+  const on = level !== "off";
+  const currentLabel = on
+    ? (LEVEL_OPTIONS.find((o) => o.value === level)?.label ?? level)
+    : null;
+  const title =
+    supported && supported.length === 0
+      ? "深度思考：当前模型未标记支持推理（可在 设置→模型 勾选）"
+      : `深度思考：${currentLabel ?? "关闭"}`;
+
+  const pick = (v: ThinkingLevel) => {
+    setOpen(false);
+    if (v === level) return;
+    void setThinkingLevel(v);
+  };
+
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger
+        render={
+          <button
+            type="button"
+            data-slot="aui-composer-thinking"
+            aria-label="Select thinking effort"
+            title={title}
+            className={cn(
+              "inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors hover:bg-muted",
+              on
+                ? "bg-primary/10 text-primary hover:bg-primary/15"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <BrainIcon className="size-3.5 shrink-0" />
+            {currentLabel && <span>{currentLabel}</span>}
+          </button>
+        }
+      />
+      <DropdownMenuContent align="end" className="w-40 p-1">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>思考强度</DropdownMenuLabel>
+          {/* 不支持的档位不置灰、直接不渲染；模型未知（目录未加载）时全档保留 */}
+          {LEVEL_OPTIONS.filter((o) => selectable(o.value)).map((o) => (
+            <DropdownMenuItem
+              key={o.value}
+              onClick={() => pick(o.value)}
+              className="gap-2 py-1.5"
+            >
+              <span className="min-w-0 flex-1">{o.label}</span>
+              {o.value === level && (
+                <CheckIcon className="size-4 shrink-0" />
+              )}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};

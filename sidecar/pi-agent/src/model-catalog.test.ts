@@ -10,16 +10,20 @@ import {
   modelsReplace,
   modelsDeleteProvider,
 } from "./hostdb";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
   getModels,
   normalizeApi,
+  normalizeThinkingMap,
   registerCustomProvider,
+  setThinkingMapOverrides,
   loadCustomProviders,
   applyModelOverrides,
   applyRowToCatalogModel,
   getCurrentModelKey,
   setCurrentModelKey,
   defaultModel,
+  makePromptCacheKeyPayloadHook,
 } from "./model-catalog";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-catalog-"));
@@ -198,5 +202,81 @@ describe("currentModelKey", () => {
 describe("defaultModel", () => {
   test("returns undefined when nothing is configured", async () => {
     expect(await defaultModel()).toBeUndefined();
+  });
+});
+
+describe("thinkingLevelMap frontend overrides", () => {
+  test("normalizeThinkingMap keeps known keys with string/null values", () => {
+    expect(
+      normalizeThinkingMap({
+        off: "none",
+        minimal: null,
+        bogus: "x",
+        low: 42,
+        high: "  ",
+      }),
+    ).toEqual({ off: "none", minimal: null });
+    expect(normalizeThinkingMap("nope")).toBeUndefined();
+    expect(normalizeThinkingMap({})).toBeUndefined();
+  });
+
+  test("overrides apply onto the catalog model and revert when replaced", () => {
+    const openai = getModels().getProvider("openai");
+    const m = openai?.getModels().find((x) => x.reasoning) ?? openai?.getModels()[0];
+    if (!m) return; // 目录里没有 openai 模型（理论上不会发生）
+    const key = `openai/${m.id}`;
+    const baseline = m.thinkingLevelMap;
+
+    expect(setThinkingMapOverrides({ [key]: { off: "none", minimal: null } })).toBe(1);
+    expect(m.thinkingLevelMap).toMatchObject({
+      ...(baseline ?? {}),
+      off: "none",
+      minimal: null,
+    });
+    expect(getSupportedThinkingLevels(m)).not.toContain("minimal");
+
+    // 整包替换：新 map 里没有的键回到基线，不在旧覆盖上叠加
+    setThinkingMapOverrides({ [key]: { off: "false" } });
+    expect(m.thinkingLevelMap?.minimal).toBe(baseline?.minimal);
+
+    // 清空恢复原值
+    expect(setThinkingMapOverrides({})).toBe(0);
+    expect(m.thinkingLevelMap).toBe(baseline);
+  });
+});
+
+describe("makePromptCacheKeyPayloadHook", () => {
+  const openaiModel = { api: "openai-completions" } as never;
+  const otherModel = { api: "anthropic-messages" } as never;
+
+  test("openai-completions 缺 key 时注入 sessionId", () => {
+    const hook = makePromptCacheKeyPayloadHook("sess-123");
+    expect(hook({ model: "m", messages: [] }, openaiModel)).toEqual({
+      model: "m",
+      messages: [],
+      prompt_cache_key: "sess-123",
+    });
+  });
+
+  test("payload 已带 prompt_cache_key（含显式 undefined 之外的值）不改", () => {
+    const hook = makePromptCacheKeyPayloadHook("sess-123");
+    const payload = { prompt_cache_key: "official-key" };
+    expect(hook(payload, openaiModel)).toBeUndefined();
+  });
+
+  test("非 openai-completions 接口不动", () => {
+    const hook = makePromptCacheKeyPayloadHook("sess-123");
+    expect(hook({ input: [] }, otherModel)).toBeUndefined();
+  });
+
+  test("无 sessionId 不动", () => {
+    const hook = makePromptCacheKeyPayloadHook(undefined);
+    expect(hook({ messages: [] }, openaiModel)).toBeUndefined();
+  });
+
+  test("超长 sessionId 截断到 64 字符（OpenAI 上限）", () => {
+    const hook = makePromptCacheKeyPayloadHook("x".repeat(100));
+    const result = hook({ messages: [] }, openaiModel) as { prompt_cache_key: string };
+    expect(result.prompt_cache_key).toHaveLength(64);
   });
 });

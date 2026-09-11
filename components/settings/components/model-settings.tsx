@@ -33,6 +33,8 @@ import {
 } from "@/lib/pi-bridge";
 import { isTauri } from "@/lib/tauri";
 import { setSelectedModel, useSelectedModel } from "@/lib/model-settings";
+import { refreshPiModels } from "@/lib/pi-models";
+import { setModelThinkingMap, type ModelThinkingMap } from "@/lib/thinking-maps";
 import { fmtContextWindow } from "@/lib/model-format";
 import {
   CheckIcon,
@@ -84,15 +86,17 @@ const ModelBox: FC<{ checked: boolean }> = ({ checked }) => (
   </span>
 );
 
-/** 模型属性编辑表单（"模型设置"行内展开）：名称 / 窗口 / 最大输出 / 模态 / 单价 */
+/** 模型属性编辑表单（"支持深度思考"等能力标记也在这里）：渲染于二级弹窗内 */
 const AttrEditor: FC<{
   draft: AttrDraft;
   busy: boolean;
+  /** 是否显示思考映射编辑（模型已有确定的 provider 归属时可编辑） */
+  showThinking: boolean;
   onChange: (patch: Partial<AttrDraft>) => void;
   onConfirm: () => void;
   onCancel: () => void;
-}> = ({ draft, busy, onChange, onConfirm, onCancel }) => (
-  <div className="bg-background/60 my-1 rounded-lg border p-2">
+}> = ({ draft, busy, showThinking, onChange, onConfirm, onCancel }) => (
+  <div className="flex flex-col pt-1">
     <div className="grid grid-cols-3 gap-2">
       <Field label="名称">
         <Input
@@ -140,6 +144,16 @@ const AttrEditor: FC<{
         />
         图像
       </label>
+      {/* 能力标记：非推理模型勾上后对话页的深度思考开关才会真正下发 reasoning 参数 */}
+      <label className="ml-auto flex items-center gap-1">
+        <input
+          type="checkbox"
+          checked={draft.reasoning}
+          onChange={(e) => onChange({ reasoning: e.target.checked })}
+          className="accent-primary size-3.5"
+        />
+        支持深度思考
+      </label>
     </div>
     <div className="mt-1.5 grid grid-cols-4 gap-2">
       <Field label="输入单价">
@@ -183,6 +197,40 @@ const AttrEditor: FC<{
         />
       </Field>
     </div>
+    {showThinking && (
+      <div className="mt-1.5 border-t pt-1.5">
+        <div className="flex items-center gap-2 text-xs">
+          <span
+            className="text-muted-foreground shrink-0 cursor-help"
+            title="关闭思考时显式下发的参数值。默认开思考的网关必须填它才关得掉（OpenAI 兼容常见值：none）；留空 = 不发关闭参数。"
+          >
+            关闭时下发
+          </span>
+          <Input
+            value={draft.tOff}
+            onChange={(e) => onChange({ tOff: e.target.value })}
+            placeholder="如 none，留空不发送"
+            className="h-7 w-40 text-xs"
+          />
+        </div>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          <span className="text-muted-foreground shrink-0">可用档位</span>
+          {THINK_LEVELS.map((t) => (
+            <label key={t.level} className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={draft[t.field]}
+                onChange={(e) =>
+                  onChange({ [t.field]: e.target.checked } as Partial<AttrDraft>)
+                }
+                className="accent-primary size-3.5"
+              />
+              {t.label}
+            </label>
+          ))}
+        </div>
+      </div>
+    )}
     <div className="mt-2 flex justify-end gap-1.5">
       <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onCancel}>
         取消
@@ -220,18 +268,54 @@ const ToggleSwitch: FC<{
   </button>
 );
 
-/** 模型属性编辑表单的草稿（字符串态，提交时解析） */
+/** 模型属性编辑表单的草稿（字符串态，提交时解析）；t* 字段是思考参数映射编辑 */
 type AttrDraft = {
   name: string;
   ctx: string;
   max: string;
   text: boolean;
   image: boolean;
+  reasoning: boolean;
+  tOff: string;
+  tMin: boolean;
+  tLow: boolean;
+  tMed: boolean;
+  tHigh: boolean;
+  tXhigh: boolean;
+  tMax: boolean;
   cIn: string;
   cOut: string;
   cRead: string;
   cWrite: string;
 };
+
+/** 档位复选框的渲染表：level = thinkingLevelMap 键（勾选时透传同名下发值） */
+const THINK_LEVELS: {
+  level: string;
+  field: "tMin" | "tLow" | "tMed" | "tHigh" | "tXhigh" | "tMax";
+  label: string;
+}[] = [
+  { level: "minimal", field: "tMin", label: "最小" },
+  { level: "low", field: "tLow", label: "轻度" },
+  { level: "medium", field: "tMed", label: "中" },
+  { level: "high", field: "tHigh", label: "高" },
+  { level: "xhigh", field: "tXhigh", label: "很高" },
+  { level: "max", field: "tMax", label: "最高" },
+];
+
+/**
+ * 思考映射编辑的种子：以目录生效值（supportedThinkingLevels + thinkingLevelMap.off）
+ * 为准；模型未知（新添加尚未注册）时给 openai 兼容网关的保守缺省：
+ * minimal/low/medium/high 可用、xhigh/max 关、off 不发。
+ */
+function thinkingSeed(info: PiModelSummary | undefined) {
+  const supported = info?.supportedThinkingLevels;
+  return {
+    enabled: (level: string) =>
+      supported ? supported.includes(level) : !["xhigh", "max"].includes(level),
+    off: typeof info?.thinkingLevelMap?.off === "string" ? info.thinkingLevelMap.off : "",
+  };
+}
 
 /** 模型配置页：默认模型 / AI 服务（自定义提供商）/ 厂商账户（凭据）/ 模型目录 */
 export const ModelSettings: FC = () => {
@@ -460,6 +544,7 @@ export const ModelSettings: FC = () => {
       attrs[m.id] = {
         id: m.id,
         name: m.name,
+        reasoning: m.reasoning,
         contextWindow: m.contextWindow,
         maxTokens: m.maxTokens,
         input: m.input,
@@ -615,6 +700,7 @@ export const ModelSettings: FC = () => {
       return m
         ? {
             name: m.name,
+            reasoning: m.reasoning,
             contextWindow: m.contextWindow,
             maxTokens: m.maxTokens,
             input: m.input,
@@ -625,10 +711,20 @@ export const ModelSettings: FC = () => {
     [svcProvider, svcModelAttrs, models],
   );
 
+  /** 思考映射归属的 provider id：custom 服务只有"编辑已有服务"时才确定 */
+  const thinkingProvider =
+    svcProvider === "custom" ? (svcEditing ?? "") : (svcProvider ?? "");
+
   /** 打开模型属性编辑（右侧"模型设置"行的铅笔按钮） */
   const openAttrEditor = useCallback(
     (id: string) => {
       const src = resolveAttrSource(id);
+      const tKey = svcProvider === "custom" ? (svcEditing ?? "") : (svcProvider ?? "");
+      const tSeed = thinkingSeed(
+        tKey
+          ? (models ?? []).find((x) => x.provider === tKey && x.id === id)
+          : undefined,
+      );
       setAttrEditId(id);
       setAttrDraft({
         name: src.name ?? id,
@@ -636,13 +732,21 @@ export const ModelSettings: FC = () => {
         max: src.maxTokens != null ? String(src.maxTokens) : "",
         text: (src.input ?? ["text"]).includes("text"),
         image: (src.input ?? []).includes("image"),
+        reasoning: src.reasoning ?? false,
+        tOff: tSeed.off,
+        tMin: tSeed.enabled("minimal"),
+        tLow: tSeed.enabled("low"),
+        tMed: tSeed.enabled("medium"),
+        tHigh: tSeed.enabled("high"),
+        tXhigh: tSeed.enabled("xhigh"),
+        tMax: tSeed.enabled("max"),
         cIn: String(src.cost?.input ?? 0),
         cOut: String(src.cost?.output ?? 0),
         cRead: String(src.cost?.cacheRead ?? 0),
         cWrite: String(src.cost?.cacheWrite ?? 0),
       });
     },
-    [resolveAttrSource],
+    [resolveAttrSource, svcProvider, svcEditing, models],
   );
 
   const cancelAttrEditor = useCallback(() => {
@@ -660,6 +764,7 @@ export const ModelSettings: FC = () => {
     const parsed: PiCustomModelSpec = {
       id: attrEditId,
       name: attrDraft.name.trim() || undefined,
+      reasoning: attrDraft.reasoning,
       contextWindow: num(attrDraft.ctx),
       maxTokens: num(attrDraft.max),
       input: [attrDraft.text && "text", attrDraft.image && "image"].filter(
@@ -683,6 +788,7 @@ export const ModelSettings: FC = () => {
         modelId: attrEditId,
       };
       if (parsed.name !== src.name) patch.name = parsed.name ?? null;
+      if (parsed.reasoning !== src.reasoning) patch.reasoning = parsed.reasoning;
       if (parsed.contextWindow !== src.contextWindow)
         patch.contextWindow = parsed.contextWindow ?? null;
       if (parsed.maxTokens !== src.maxTokens)
@@ -703,9 +809,37 @@ export const ModelSettings: FC = () => {
         }
       }
     }
+    // 思考映射：种子取目录生效值，只把改动的键推给 setModelThinkingMap
+    if (thinkingProvider) {
+      const tInfo = (models ?? []).find(
+        (x) => x.provider === thinkingProvider && x.id === attrEditId,
+      );
+      const tSeed = thinkingSeed(tInfo);
+      const patch: ModelThinkingMap = {};
+      for (const t of THINK_LEVELS) {
+        if (attrDraft[t.field] !== tSeed.enabled(t.level)) {
+          patch[t.level] = attrDraft[t.field] ? t.level : null;
+        }
+      }
+      const offNow = attrDraft.tOff.trim();
+      if (offNow !== tSeed.off) patch.off = offNow || null;
+      if (Object.keys(patch).length) {
+        void setModelThinkingMap(thinkingProvider, attrEditId, patch).then(() =>
+          refreshPiModels(),
+        );
+      }
+    }
     setAttrEditId(null);
     setAttrDraft(null);
-  }, [attrEditId, attrDraft, svcProvider, resolveAttrSource, load]);
+  }, [
+    attrEditId,
+    attrDraft,
+    svcProvider,
+    thinkingProvider,
+    models,
+    resolveAttrSource,
+    load,
+  ]);
 
   /** 内置厂商：当前所选服务的目录模型（弹窗双栏面板用） */
   const svcBuiltinCatalog = useMemo(() => {
@@ -1779,12 +1913,8 @@ export const ModelSettings: FC = () => {
                             </button>
                             <button
                               type="button"
-                              title={attrEditId === id ? "收起属性编辑" : "编辑属性"}
-                              onClick={() =>
-                                attrEditId === id
-                                  ? cancelAttrEditor()
-                                  : openAttrEditor(id)
-                              }
+                              title="编辑属性"
+                              onClick={() => openAttrEditor(id)}
                               className={cn(
                                 "shrink-0",
                                 attrEditId === id
@@ -1795,19 +1925,6 @@ export const ModelSettings: FC = () => {
                               <PencilIcon className="size-3" />
                             </button>
                           </div>
-                          {attrEditId === id && attrDraft && (
-                            <AttrEditor
-                              draft={attrDraft}
-                              busy={busy}
-                              onChange={(patch) =>
-                                setAttrDraft((prev) =>
-                                  prev ? { ...prev, ...patch } : prev,
-                                )
-                              }
-                              onConfirm={() => void confirmAttrEditor()}
-                              onCancel={cancelAttrEditor}
-                            />
-                          )}
                         </div>
                       ))}
                     </div>
@@ -1849,6 +1966,42 @@ export const ModelSettings: FC = () => {
               </div>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 模型属性编辑二级弹窗（替代旧的行内展开）：盖在 AI 服务弹窗之上 */}
+      <Dialog
+        open={attrEditId !== null && attrDraft !== null}
+        onOpenChange={(open) => {
+          if (!open) cancelAttrEditor();
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <div className="flex min-w-0 items-center justify-between gap-4 pe-8">
+            <DialogTitle className="shrink-0 text-base font-semibold">
+              模型属性
+            </DialogTitle>
+            {attrEditId && (
+              <span
+                className="text-muted-foreground min-w-0 truncate font-mono text-xs"
+                title={attrEditId}
+              >
+                {attrEditId}
+              </span>
+            )}
+          </div>
+          {attrEditId !== null && attrDraft && (
+            <AttrEditor
+              draft={attrDraft}
+              busy={busy}
+              showThinking={!!thinkingProvider}
+              onChange={(patch) =>
+                setAttrDraft((prev) => (prev ? { ...prev, ...patch } : prev))
+              }
+              onConfirm={() => void confirmAttrEditor()}
+              onCancel={cancelAttrEditor}
+            />
+          )}
         </DialogContent>
       </Dialog>
     </div>

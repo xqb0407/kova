@@ -19,6 +19,11 @@
  *   { "type": "list_models", "id" }                           → { id, type: "models", models: [...], providers: [...] }
  *       models 项含 enabled 与 maxTokens/input/cost 属性（enabled=false = 已被过滤隐藏，前端自行过滤）
  *   { "type": "set_model", "id", "provider", "modelId" }      → { id, type: "model", provider, modelId }
+ *   { "type": "get_model", "id" }                             → { id, type: "model", provider, modelId }
+ *       未选择时 provider/modelId 为空串（前端据此校准 UI 真值）
+ *   { "type": "set_thinking", "id", "level" }                 → { id, type: "thinking", level }（深度思考档位，广播到活动会话）
+ *   { "type": "set_thinking_maps", "id", "maps" }             → { id, type: "thinking_maps", applied }（模型级 thinkingLevelMap 覆盖整包下发）
+ *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
  *       models = 勾选（可见）的模型 id；null = 无过滤记录（目录全可见）
  *   { "type": "set_provider_filter", "id", "provider", "models": string[] } → { id, type: "provider_filter", provider, models }
@@ -61,7 +66,7 @@
  */
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import type { Message } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, type Message } from "@earendil-works/pi-ai";
 import { logErr } from "./log";
 import { sessionPath } from "./storage";
 import { resolveHostResult } from "./hostdb";
@@ -88,12 +93,17 @@ import {
   applyRowToCatalogModel,
   CUSTOM_MODEL_DEFAULTS,
   getCurrentModelKey,
+  getCurrentThinkingLevel,
   getModels,
   normalizeApi,
   parseModelCost,
   parseModelInput,
   registerCustomProvider,
   setCurrentModelKey,
+  setCurrentThinkingLevel,
+  setThinkingMapOverrides,
+  THINKING_LEVELS,
+  type ThinkingLevel,
 } from "./model-catalog";
 import {
   readTranscript,
@@ -103,6 +113,7 @@ import {
 } from "./transcript";
 import { contextInfo, needsCompaction, runCompaction } from "./context";
 import { running, resolveSession } from "./sessions";
+import { getTodoState, replayTodoFromMessages } from "./todo";
 import {
   delegationResumeText,
   runningDelegations,
@@ -149,6 +160,16 @@ export function markStdinClosed() {
 /** 管理命令串行队列：避免凭据写入与列表查询等异步命令交叠产生竞态 */
 let mgmtQueue: Promise<void> = Promise.resolve();
 
+/** 启动初始化闸门：模型目录就绪（自定义提供商注册/覆盖合并）之前到达的命令先缓冲，
+ *  避免启动恢复的 set_model 抢在目录就绪前被 "model not found" 拒绝而回落默认模型。
+ *  host_result 不经闸门（host_query 的挂起结算必须即时）。gate 由 index.ts 注入且
+ *  内部已 catch（不会 reject）。 */
+let initGate: Promise<void> = Promise.resolve();
+
+export function setInitGate(gate: Promise<void>): void {
+  initGate = gate;
+}
+
 let fallbackSeq = 0;
 
 export function handleLine(raw: string) {
@@ -166,6 +187,8 @@ export function handleLine(raw: string) {
   const reqId = typeof msg.id === "string" ? msg.id : `req-${fallbackSeq++}`;
   const run = async () => {
     try {
+      // 启动恢复命令等目录就绪再分发（set_model 否则会因目录未就绪被拒）
+      await initGate;
       await dispatch(reqId, msg);
     } catch (err) {
       logErr("handleLine failed:", err);
@@ -380,6 +403,9 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const run = await resolveSession(
         String(msg.threadId ?? "default"),
         typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+        // 带上 cwd：会话还没建时（比如先点了面板）也能绑上当前工作目录，
+        // 不至于落到 homedir（见 sessions.ts rebindRunCwd）
+        typeof msg.cwd === "string" ? msg.cwd : undefined,
       );
       if (isPromptActive()) {
         throw new Error("session is busy: wait for the current response to finish");
@@ -396,11 +422,33 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       });
       break;
     }
+    case "get_todo_state": {
+      const threadId = String(msg.threadId ?? "default");
+      if (!running.has(threadId)) {
+        const sessionId =
+          typeof msg.sessionId === "string" ? msg.sessionId : "";
+        if (!sessionId) throw new Error(`session not found: ${threadId}`);
+        // 内存没有该线程：只读回放转录重建槽位（后续 prompt 直接续用）
+        replayTodoFromMessages(
+          threadId,
+          readTranscript(sessionId).map((e) => e.agent),
+        );
+      }
+      const state = getTodoState(threadId);
+      send({
+        id: reqId,
+        type: "todo_state",
+        tasks: state.tasks,
+        nextId: state.nextId,
+      });
+      break;
+    }
     case "context_info": {
       // 上下文面板读数：present 会话（含恢复）现算，运行中也可查询（只读不阻塞）
       const run = await resolveSession(
         String(msg.threadId ?? "default"),
         typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+        typeof msg.cwd === "string" ? msg.cwd : undefined,
       );
       send({ id: reqId, type: "context_info", ...contextInfo(run) });
       break;
@@ -474,6 +522,10 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         id: string;
         name: string;
         reasoning: boolean;
+        /** 该模型实际支持的思考档位（pi-ai 按 reasoning + thinkingLevelMap 推导，不含 off） */
+        supportedThinkingLevels: string[];
+        /** 生效中的思考参数映射（目录原值 + 前端覆盖合并；编辑器种子） */
+        thinkingLevelMap: Record<string, string | null> | null;
         contextWindow: number;
         maxTokens: number;
         input: string[];
@@ -506,6 +558,11 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
             id: m.id,
             name: m.name,
             reasoning: m.reasoning,
+            supportedThinkingLevels: getSupportedThinkingLevels(m).filter(
+              (l) => l !== "off",
+            ),
+            thinkingLevelMap: (m.thinkingLevelMap ??
+              null) as Record<string, string | null> | null,
             contextWindow: m.contextWindow,
             maxTokens: m.maxTokens,
             input: m.input,
@@ -613,6 +670,36 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       setCurrentModelKey({ provider, modelId });
       for (const run of running.values()) run.agent.state.model = model;
       send({ id: reqId, type: "model", provider, modelId });
+      break;
+    }
+    case "get_model": {
+      const mk = getCurrentModelKey();
+      send({
+        id: reqId,
+        type: "model",
+        provider: mk?.provider ?? "",
+        modelId: mk?.modelId ?? "",
+      });
+      break;
+    }
+    case "set_thinking": {
+      const level = String(msg.level ?? "");
+      if (!(THINKING_LEVELS as readonly string[]).includes(level)) {
+        throw new Error(`unknown thinking level: ${level}`);
+      }
+      setCurrentThinkingLevel(level as ThinkingLevel);
+      // 与 set_model 同款广播：活动 Agent 的 state 赋值对下一轮生效
+      for (const run of running.values()) {
+        run.agent.state.thinkingLevel = level as ThinkingLevel;
+      }
+      send({ id: reqId, type: "thinking", level });
+      break;
+    }
+    case "set_thinking_maps": {
+      // 模型级思考参数映射整包替换（前端 kv 是事实源，这里是内存副本）：
+      // {"provider/modelId": {"off":"none","minimal":null,...}}，见 model-catalog
+      const applied = setThinkingMapOverrides(msg.maps);
+      send({ id: reqId, type: "thinking_maps", applied });
       break;
     }
     case "set_credential": {

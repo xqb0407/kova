@@ -39,7 +39,7 @@ export const PlanApprovalCard: FC = () => {
   if (!threadId || snap.planning !== "awaiting_approval" || !snap.proposal) {
     return null;
   }
-  const { kind, title, markdown, question } = snap.proposal;
+  const { kind, title, markdown, question, filePath } = snap.proposal;
   const Icon = kind === "goal" ? TargetIcon : ClipboardListIcon;
 
   const approve = () => {
@@ -83,6 +83,14 @@ export const PlanApprovalCard: FC = () => {
         {question && (
           <p className="text-muted-foreground mt-3 border-t pt-3 text-sm">
             {question}
+          </p>
+        )}
+        {filePath && (
+          <p
+            className="text-muted-foreground/80 mt-2 truncate font-mono text-xs"
+            title={filePath}
+          >
+            已保存到 {filePath}
           </p>
         )}
       </div>

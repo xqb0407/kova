@@ -21,6 +21,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostToolCall } from "./hostdb";
 import { buildWebTools } from "./http-tools";
 import { buildQuestionTool } from "./question-tools";
+import { buildTodoTool } from "./todo";
 
 /** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
 const MAX_WALKED_FILES = 5000;
@@ -227,8 +228,14 @@ function hostTool(
     label: { bash: "Bash", read: "Read", write: "Write", edit: "Edit" }[name] ?? name,
     description,
     parameters,
-    execute: async (_id, params) => {
-      const data = await hostToolCall(name, cwd, params as Record<string, unknown>);
+    execute: async (_id, params, signal) => {
+      // signal 透传给 hostToolCall：中断时向宿主发 host_cancel，bash 会被杀进程树
+      const data = await hostToolCall(
+        name,
+        cwd,
+        params as Record<string, unknown>,
+        signal ?? undefined,
+      );
       const details: Record<string, unknown> = {};
       if (data.truncated !== undefined) details.truncated = data.truncated;
       if (data.exitCode !== undefined) details.exitCode = data.exitCode;
@@ -284,6 +291,8 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
     ...buildWebTools(cwd),
     // Question 不触盘不触网（挂起等 UI 作答），但要 threadId 做挂起归属
     buildQuestionTool(threadId),
+    // todo：不触盘不触网，只维护会话内任务清单（per-thread 槽见 todo.ts）
+    buildTodoTool(threadId),
   ];
   return tools;
 }
@@ -306,6 +315,14 @@ export const SYSTEM_PROMPT_CORE = [
   "Before a batch of tool calls, write one short sentence saying what you are about to do.",
   "",
   "Correctness: after making changes, run the relevant verification (build / test / lint). When something fails, find the root cause before fixing - never blind-patch or hide errors.",
+  "",
+  "Task tracking:",
+  "- Use `todo` for complex work with 3+ steps, when the user gives you a list of tasks, or immediately after receiving new instructions to capture requirements. Skip it for single trivial tasks and purely conversational requests.",
+  "- Mark a task in_progress (pass activeForm) BEFORE beginning work; mark it completed IMMEDIATELY when done - never batch completions. Exactly one task in_progress at a time.",
+  "- Never mark a task completed while tests are failing, the work is partial, or errors are unresolved - keep it in_progress and create a new task for the blocker instead.",
+  "- Task status is a 4-state machine: pending -> in_progress -> completed, plus deleted as a tombstone. To change status call update with the task id and target status.",
+  "- Use blockedBy for dependencies (additive merge on update via addBlockedBy/removeBlockedBy); cycles are rejected.",
+  "- Subject must be short and imperative; description is for long-form detail; activeForm is the present-continuous label shown while in_progress.",
   "",
   "Communication:",
   "- Reply in the same language the user writes in.",

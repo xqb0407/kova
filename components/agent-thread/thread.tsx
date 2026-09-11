@@ -64,9 +64,9 @@ const ThreadScrollToBottom: FC = () => {
       <TooltipIconButton
         tooltip="Scroll to bottom"
         variant="outline"
-        className="aui-thread-scroll-to-bottom dark:border-border dark:bg-background dark:hover:bg-accent absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible"
+        className="aui-thread-scroll-to-bottom border dark:border-border dark:bg-background dark:hover:bg-accent absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible"
       >
-        <ArrowDownIcon />
+        <ArrowDownIcon className="size-4 shrink-0 text-foreground" />
       </TooltipIconButton>
     </ThreadPrimitive.ScrollToBottom>
   );
@@ -118,8 +118,8 @@ export const Thread: FC = () => {
                 ) : (
                   <AssistantMessage />
                 );
-              // 手动压缩的即时分隔线：挂在流中最后一条消息之后（Messages 内部，
-              // 与消息同布局），持续显示，重新装载历史后由重建的分隔线接管
+              // 手动压缩的即时分隔线：按锚点钉在压缩发生时那条消息之后（Messages 内部，
+              // 与消息同布局），后续新消息排在其下，重新装载历史后由重建的分隔线接管
               return (
                 <ManualCompactionTailAfter messageId={String(message.id)}>
                   {inner}

@@ -36,8 +36,40 @@ import {
   MoreHorizontalIcon,
   RefreshCwIcon,
 } from "lucide-react";
-import type { FC } from "react";
+import type { FC, ReactNode } from "react";
 import { randomLoadingPhrase } from "@/lib/loading";
+
+/**
+ * 交互面在别处、消息列表不再渲染的工具：
+ * Question 的提问卡片独占 composer 位（见 question-card.tsx），
+ * 列表里再挂一张 ToolFallback 只是重复展示原始 JSON。
+ */
+const HIDDEN_TOOL_NAMES = new Set(["Question"]);
+
+/** 工具分组：计数剔除隐藏的工具卡，全组都被隐藏时整组不渲染 */
+const ToolGroupSection: FC<{
+  indices: readonly number[];
+  active: boolean;
+  children: ReactNode;
+}> = ({ indices, active, children }) => {
+  const count = useAuiState((s) => {
+    let n = 0;
+    for (const i of indices) {
+      const p = s.message.content[i];
+      if (!p) continue;
+      if (p.type === "tool-call" && HIDDEN_TOOL_NAMES.has(p.toolName)) continue;
+      n += 1;
+    }
+    return n;
+  });
+  if (count === 0) return null;
+  return (
+    <ToolGroupRoot variant="ghost">
+      <ToolGroupTrigger count={count} active={active} />
+      <ToolGroupContent>{children}</ToolGroupContent>
+    </ToolGroupRoot>
+  );
+};
 
 const MessageError: FC = () => {
   return (
@@ -86,7 +118,6 @@ export const AssistantMessage: FC = () => {
         className="text-foreground px-2 leading-relaxed wrap-break-word"
       >
         {/* 重试状态行：只渲染一次，attempt 原地更新（data part 本身就地不渲染） */}
-        <RetryMarker />
         <MessagePrimitive.GroupedParts
           groupBy={groupPartByType({
             reasoning: ["group-chainOfThought", "group-reasoning"],
@@ -100,13 +131,12 @@ export const AssistantMessage: FC = () => {
                 return <div data-slot="aui_chain-of-thought">{children}</div>;
               case "group-tool":
                 return (
-                  <ToolGroupRoot variant="ghost">
-                    <ToolGroupTrigger
-                      count={part.indices.length}
-                      active={part.status.type === "running"}
-                    />
-                    <ToolGroupContent>{children}</ToolGroupContent>
-                  </ToolGroupRoot>
+                  <ToolGroupSection
+                    indices={part.indices}
+                    active={part.status.type === "running"}
+                  >
+                    {children}
+                  </ToolGroupSection>
                 );
               case "group-reasoning": {
                 const running = part.status.type === "running";
@@ -124,6 +154,8 @@ export const AssistantMessage: FC = () => {
               case "reasoning":
                 return <Reasoning {...part} />;
               case "tool-call":
+                // Question 只保留 composer 的交互卡片，列表不再渲染
+                if (HIDDEN_TOOL_NAMES.has(part.toolName)) return null;
                 return part.toolUI ?? <ToolFallback {...part} />;
               case "indicator":
                 return <AssistantWorkingIndicator />;
@@ -135,6 +167,7 @@ export const AssistantMessage: FC = () => {
           }}
         </MessagePrimitive.GroupedParts>
         <MessageError />
+        <RetryMarker />
       </div>
 
       <div

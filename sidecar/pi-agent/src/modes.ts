@@ -10,9 +10,12 @@
  * - 切换不重建 Agent：直接热替换 agent.state.systemPrompt / agent.state.tools
  * - 审批流：Submit → awaiting_approval →（批准）回 agent 模式继续实施 /（拒绝）留在原模式修改
  *
- * 提案内容不落盘（无 artifact 文件）：SubmitPlan/SubmitGoal 的 toolCall 参数随转录
- * 持久化，模型上下文天然保留；批准后由前端走正常 prompt 管道发"已批准"消息。
+ * 提案内容持久化：SubmitPlan 会把计划 Markdown 落盘到 `.xulux/plans/`
+ * （选中了工作区 → <工作区>/.xulux/plans/；未选 → run.cwd 兜底为用户主目录）。
+ * SubmitGoal 仍只随转录持久化；批准后由前端走正常 prompt 管道发"已批准"消息。
  */
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import type {
@@ -118,6 +121,47 @@ function textResult(text: string, details?: unknown) {
   return { content: [{ type: "text" as const, text }], details };
 }
 
+/** Windows 非法文件名字符与空白 → 连字符，并限制长度 */
+function sanitizeFileName(input: string): string {
+  return input
+    .replace(/[\\/:*?"<>|\s]+/g, "-")
+    .replace(/^[.\-]+|[.\-]+$/g, "")
+    .slice(0, 60);
+}
+
+/** 时间戳：YYYYMMDD-HHmmss */
+function fileTimestamp(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+    `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  );
+}
+
+/**
+ * 计划落盘：`<cwd>/.xulux/plans/plan-<标题>-<sessionId>-<时间>.md`。
+ * run.cwd 由 sessions 解析（未选工作目录时兜底 homedir），因此两种场景统一处理。
+ * 落盘失败不阻塞审批流（返回 undefined，提案照常进入审批）。
+ */
+async function savePlanFile(run: Running, proposal: PendingProposal): Promise<string | undefined> {
+  try {
+    const dir = join(run.cwd, ".xulux", "plans");
+    await mkdir(dir, { recursive: true });
+    const name = [
+      "plan",
+      sanitizeFileName(proposal.title) || "untitled",
+      run.sessionId,
+      fileTimestamp(new Date()),
+    ].join("-");
+    const filePath = join(dir, `${name}.md`);
+    const body = `# ${proposal.title || "Plan"}\n\n${proposal.markdown}\n`;
+    await writeFile(filePath, body, "utf8");
+    return filePath;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 四个模式切换工具（构建时捕获 run 引用；run.agent 在构造后回填） */
 function buildTransitionTools(run: Running): AgentTool[] {
   const enterTool = (kind: ProposalKind): AgentTool => ({
@@ -164,6 +208,7 @@ function buildTransitionTools(run: Running): AgentTool[] {
         question: String(p.question ?? ""),
       };
       if (!proposal.markdown.trim()) throw new Error("markdown is required");
+      if (kind === "plan") proposal.filePath = await savePlanFile(run, proposal);
       run.planning = "awaiting_approval";
       run.proposal = proposal;
       emitPlanningState(run);

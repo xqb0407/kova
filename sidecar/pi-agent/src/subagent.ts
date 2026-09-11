@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import { getModels } from "./model-catalog";
+import { getModels, makePromptCacheKeyPayloadHook } from "./model-catalog";
 import { logErr } from "./log";
 import {
   captureProviderResponse,
@@ -268,6 +268,8 @@ class SubagentRun {
     this.opts = opts;
     this.agent = new Agent({
       sessionId: this.opts.sessionId,
+      // 与主代理一致：自定义 OpenAI 兼容端点补发 prompt_cache_key
+      onPayload: makePromptCacheKeyPayloadHook(this.opts.sessionId),
       streamFn: (m, context, options) => {
         this.retryCapture.status = undefined;
         this.retryCapture.headers = undefined;

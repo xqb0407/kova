@@ -25,6 +25,7 @@ import {
   modelsAll,
   modelsReplace,
   getLocalDb,
+  hostToolCall,
 } from "./hostdb";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-hostdb-"));
@@ -162,5 +163,32 @@ describe("host mode: host_query RPC", () => {
   test("unmatched host_result is swallowed", () => {
     expect(resolveHostResult({ type: "host_result", id: "nope", ok: true, data: null })).toBe(true);
     expect(resolveHostResult({ type: "other" })).toBe(false);
+  });
+
+  test("abort signal writes host_cancel and rejects immediately", async () => {
+    captured.length = 0;
+    const ac = new AbortController();
+    const promise = hostToolCall("bash", ".", { command: "sleep 60" }, ac.signal);
+    await new Promise((r) => setTimeout(r, 5));
+    const sent = JSON.parse(captured[0]) as { type: string; id: string; kind: string };
+    expect(sent.type).toBe("host_query");
+    expect(sent.kind).toBe("tool");
+
+    ac.abort();
+    await expect(promise).rejects.toThrow();
+    const cancel = JSON.parse(captured[1]) as { type: string; id: string };
+    expect(cancel.type).toBe("host_cancel");
+    expect(cancel.id).toBe(sent.id);
+    // 请求已被移除：宿主迟到回执应被吞掉（Rust 侧收到 host_cancel 后杀进程树）
+    expect(resolveHostResult({ type: "host_result", id: sent.id, ok: true, data: {} })).toBe(true);
+    expect(captured.filter((l) => JSON.parse(l).type === "host_cancel").length).toBe(1);
+  });
+
+  test("already-aborted signal rejects without sending", async () => {
+    captured.length = 0;
+    const ac = new AbortController();
+    ac.abort();
+    await expect(hostToolCall("read", ".", { file_path: "x" }, ac.signal)).rejects.toThrow();
+    expect(captured.length).toBe(0);
   });
 });

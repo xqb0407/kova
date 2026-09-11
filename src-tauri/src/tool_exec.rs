@@ -7,9 +7,11 @@
 //! glob/grep 留在 sidecar：纯只读内存计算，且 JS 正则（lookahead 等）与
 //! Rust regex 语法不兼容，迁移有行为风险。
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -28,6 +30,114 @@ fn str_param(p: &Value, key: &str) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| format!("missing param: {key}"))
+}
+
+/* ------------------------------ 运行中工具的取消 ------------------------------ */
+
+/// Windows 上杀整棵进程树（Git Bash 会再拉起真正的命令进程，只杀直接子进程会残留孙进程）
+fn kill_tree(pid: u32) {
+    let mut killer = Command::new("taskkill");
+    killer
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    no_window(&mut killer);
+    let _ = killer.output();
+}
+
+/// 一条在飞的 tool 请求：取消标志 + bash 子进程 pid（spawn 后才登记）
+#[derive(Default)]
+struct CancelEntry {
+    pid: StdMutex<Option<u32>>,
+    cancelled: AtomicBool,
+}
+
+/// 在飞表：host_query id → 取消令牌。handle_tool 注册，响应产出（Drop）时注销
+fn in_flight_tools() -> &'static StdMutex<HashMap<String, Arc<CancelEntry>>> {
+    static TABLE: OnceLock<StdMutex<HashMap<String, Arc<CancelEntry>>>> = OnceLock::new();
+    TABLE.get_or_init(Default::default)
+}
+
+/// RAII 取消令牌：sidecar 发来 host_cancel（或超时放弃）时置标志并杀已登记的进程树
+pub struct CancelGuard {
+    id: String,
+    entry: Arc<CancelEntry>,
+}
+
+impl CancelGuard {
+    fn new(id: &str) -> Self {
+        let entry = Arc::new(CancelEntry::default());
+        if !id.is_empty() {
+            if let Ok(mut map) = in_flight_tools().lock() {
+                map.insert(id.to_string(), Arc::clone(&entry));
+            }
+        }
+        Self {
+            id: id.to_string(),
+            entry,
+        }
+    }
+
+    /// bash 子进程登记 pid；若取消已先到达（竞态窗口），立即补杀
+    fn attach_pid(&self, pid: u32) {
+        {
+            let mut slot = self.entry.pid.lock().unwrap_or_else(|e| e.into_inner());
+            *slot = Some(pid);
+        }
+        if self.entry.cancelled.load(Ordering::Relaxed) {
+            kill_tree(pid);
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.entry.cancelled.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        if let Ok(mut map) = in_flight_tools().lock() {
+            // 只删自己那次登记（id 理论上可能跨重启复用）
+            let owned = map
+                .get(&self.id)
+                .map(|e| Arc::ptr_eq(e, &self.entry))
+                .unwrap_or(false);
+            if owned {
+                map.remove(&self.id);
+            }
+        }
+    }
+}
+
+/// host_cancel 入口：置取消标志 + 杀进程树；id 未登记（已完成/非工具）时是 no-op
+pub fn cancel_tool(id: &str) {
+    let entry = in_flight_tools()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(id).cloned());
+    if let Some(entry) = entry {
+        entry.cancelled.store(true, Ordering::Relaxed);
+        let pid = *entry.pid.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(pid) = pid {
+            kill_tree(pid);
+        }
+    }
+}
+
+/// sidecar 进程退出兜底：所有在飞工具置标志并杀进程树，避免孤儿进程
+pub fn cancel_all_tools() {
+    let entries: Vec<Arc<CancelEntry>> = in_flight_tools()
+        .lock()
+        .map(|mut m| m.drain().map(|(_, e)| e).collect())
+        .unwrap_or_default();
+    for entry in entries {
+        entry.cancelled.store(true, Ordering::Relaxed);
+        let pid = *entry.pid.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(pid) = pid {
+            kill_tree(pid);
+        }
+    }
 }
 
 /// Windows 下隐藏控制台窗口（等价 Node spawn 的 windowsHide: true）
@@ -74,8 +184,9 @@ fn resolve_shell_command() -> (String, Vec<String>) {
     ("cmd.exe".into(), vec!["/d".into(), "/s".into(), "/c".into()])
 }
 
-/// 运行 shell 命令：合并 stdout/stderr，超时杀进程树（taskkill /T /F）
-fn run_bash(cwd: &str, command: &str, timeout_ms: u64) -> Result<Value, String> {
+/// 运行 shell 命令：合并 stdout/stderr，超时或收到取消（host_cancel）时
+/// taskkill /T /F 杀进程树提前退出
+fn run_bash(cwd: &str, command: &str, timeout_ms: u64, cancel: &CancelGuard) -> Result<Value, String> {
     let (file, prefix_args) = resolve_shell_command();
     let mut cmd = Command::new(&file);
     cmd.args(&prefix_args)
@@ -88,9 +199,11 @@ fn run_bash(cwd: &str, command: &str, timeout_ms: u64) -> Result<Value, String> 
 
     let mut child = cmd.spawn().map_err(|e| format!("failed to spawn {file}: {e}"))?;
     let pid = child.id();
+    // 登记 pid：取消若已在 spawn 前到达，这里立即补杀（关闭竞态窗口）
+    cancel.attach_pid(pid);
 
     let combined: Arc<StdMutex<String>> = Arc::new(StdMutex::new(String::new()));
-    let killed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let killed = Arc::new(AtomicBool::new(false));
     let mut reader_handles = Vec::new();
     let streams: Vec<Box<dyn Read + Send>> = vec![
         Box::new(child.stdout.take().ok_or("no stdout")?),
@@ -117,14 +230,8 @@ fn run_bash(cwd: &str, command: &str, timeout_ms: u64) -> Result<Value, String> 
                             Err(_) => true,
                         };
                         // 输出超限：与原 TS 行为一致，杀掉进程提前结束（防失控输出）
-                        if overflow && !killed_flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            let mut killer = Command::new("taskkill");
-                            killer.args(["/PID", &pid.to_string(), "/T", "/F"])
-                                .stdin(Stdio::null())
-                                .stdout(Stdio::null())
-                                .stderr(Stdio::null());
-                            no_window(&mut killer);
-                            let _ = killer.output();
+                        if overflow && !killed_flag.swap(true, Ordering::Relaxed) {
+                            kill_tree(pid);
                         }
                     }
                 }
@@ -132,21 +239,22 @@ fn run_bash(cwd: &str, command: &str, timeout_ms: u64) -> Result<Value, String> 
         }));
     }
 
-    // 等 wait 结束或超时；超时后 taskkill /T /F 杀整棵进程树
+    // 等 wait 结束、超时或取消；后两者用 taskkill /T /F 杀整棵进程树
     let timeout = Duration::from_millis(timeout_ms);
     let start = Instant::now();
+    // spawn/attach 期间可能已收到取消：进程被 attach_pid 补杀，这里标记为 cancelled
+    let mut cancelled = cancel.is_cancelled();
     let exit_code = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status.code(),
             Ok(None) => {
+                if cancel.is_cancelled() {
+                    cancelled = true;
+                    kill_tree(pid);
+                    break None;
+                }
                 if start.elapsed() >= timeout {
-                    let mut killer = Command::new("taskkill");
-                    killer.args(["/PID", &pid.to_string(), "/T", "/F"])
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null());
-                    no_window(&mut killer);
-                    let _ = killer.output();
+                    kill_tree(pid);
                     break None; // 超时
                 }
                 std::thread::sleep(Duration::from_millis(15));
@@ -172,16 +280,21 @@ fn run_bash(cwd: &str, command: &str, timeout_ms: u64) -> Result<Value, String> 
         out.truncate(cut);
         truncated = true;
     }
-    let status = match exit_code {
-        Some(0) => String::new(),
-        Some(code) => format!("\n[exit code: {code}]"),
-        None => "\n[timeout]".to_string(),
+    let status = if cancelled {
+        "\n[cancelled]".to_string()
+    } else {
+        match exit_code {
+            Some(0) => String::new(),
+            Some(code) => format!("\n[exit code: {code}]"),
+            None => "\n[timeout]".to_string(),
+        }
     };
     let suffix = if truncated { "\n…[output truncated]" } else { "" };
     Ok(json!({
         "output": format!("{out}{status}{suffix}"),
         "truncated": truncated,
         "exitCode": exit_code,
+        "cancelled": cancelled,
     }))
 }
 
@@ -434,8 +547,11 @@ fn handle_http(p: &Value) -> Result<Value, String> {
     }))
 }
 
-/// 工具分发入口（host_query kind="tool"）：params = { name, cwd, params: {...} }
-pub fn handle_tool(p: &Value) -> Result<Value, String> {
+/// 工具分发入口（host_query kind="tool"）：params = { name, cwd, params: {...} }。
+/// `id` 为该 RPC 请求 id：登记进在飞表后，sidecar 的 host_cancel{id} 可中断长命令
+/// （目前只有 bash 有子进程可杀；http 阻塞在 reqwest 里，取消由 JS 侧吞掉响应实现）
+pub fn handle_tool(id: &str, p: &Value) -> Result<Value, String> {
+    let guard = CancelGuard::new(id);
     let name = str_param(p, "name")?;
     let mut inner = p.get("params").cloned().unwrap_or(Value::Null);
     // read/write/edit 从各自参数里取 cwd 解析相对路径，但工具 schema 不含 cwd，
@@ -452,7 +568,7 @@ pub fn handle_tool(p: &Value) -> Result<Value, String> {
                 .get("timeout")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(DEFAULT_BASH_TIMEOUT_MS);
-            run_bash(&cwd, &command, timeout_ms)
+            run_bash(&cwd, &command, timeout_ms, &guard)
         }
         "read" => handle_read(&inner),
         "write" => handle_write(&inner),
@@ -504,7 +620,8 @@ mod tests {
     #[test]
     fn bash_runs_and_captures_output() {
         // Windows 下 Git Bash/cmd 都能跑 echo（bash.exe 缺失时回退 cmd.exe）
-        let out = run_bash(".", "echo pi-smoke-bash-ok", 10_000).unwrap();
+        let guard = CancelGuard::new("t-run-ok");
+        let out = run_bash(".", "echo pi-smoke-bash-ok", 10_000, &guard).unwrap();
         assert_eq!(out["exitCode"], 0);
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("pi-smoke-bash-ok"), "output: {text}");
@@ -516,10 +633,64 @@ mod tests {
         // 耗时 >1s 的命令：Windows 用 ping -n 3（Git Bash/cmd 都可用），
         // Unix 用 sleep 2（ping -n 在 BSD/macOS 是不同语义，会立即报错）
         let cmd = if cfg!(windows) { "ping -n 3 127.0.0.1" } else { "sleep 2" };
-        let out = run_bash(".", cmd, 300).unwrap();
+        let guard = CancelGuard::new("t-timeout");
+        let out = run_bash(".", cmd, 300, &guard).unwrap();
         assert_eq!(out["exitCode"], Value::Null);
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[timeout]"), "output: {text}");
+    }
+
+    /// 取消在跑的 bash：cancel_tool(id) 置标志 + taskkill 杀进程树，run_bash 快速带 [cancelled] 返回
+    #[test]
+    fn bash_cancel_stops_running_command() {
+        let id = "t-cancel-running";
+        let guard = CancelGuard::new(id);
+        let cmd = if cfg!(windows) { "ping -n 30 127.0.0.1" } else { "sleep 30" };
+        let id_owned = id.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            cancel_tool(&id_owned);
+        });
+        let start = Instant::now();
+        let out = run_bash(".", cmd, 60_000, &guard).unwrap();
+        let text = out["output"].as_str().unwrap();
+        assert!(text.contains("[cancelled]"), "output: {text}");
+        assert_eq!(out["cancelled"], json!(true));
+        // Windows 下 taskkill 生效：应在远小于 60s 超时前返回（Unix 无 taskkill，只保证结果正确）
+        if cfg!(windows) {
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "cancel took {:?}",
+                start.elapsed()
+            );
+        }
+        // guard 仍存活时不应残留登记？不：登记在 Drop 时注销，这里断言表里已无该 id 的前置
+        // ——取消处理对已结束请求必须保持 no-op
+    }
+
+    /// spawn 前就已取消：attach_pid 补杀进程树，结果同样报 [cancelled]（竞态窗口回归）
+    #[test]
+    fn bash_cancel_before_spawn() {
+        let id = "t-cancel-early";
+        let guard = CancelGuard::new(id);
+        cancel_tool(id); // 模拟 host_cancel 先于 bash 启动到达
+        let cmd = if cfg!(windows) { "ping -n 30 127.0.0.1" } else { "sleep 30" };
+        let out = run_bash(".", cmd, 60_000, &guard).unwrap();
+        let text = out["output"].as_str().unwrap();
+        assert!(text.contains("[cancelled]"), "output: {text}");
+    }
+
+    /// guard Drop 后登记表应清空：cancel_tool 对已完成请求是 no-op
+    #[test]
+    fn cancel_guard_drops_unregister_entry() {
+        let id = "t-cancel-drop";
+        {
+            let _guard = CancelGuard::new(id);
+            assert!(in_flight_tools().lock().unwrap().contains_key(id));
+        }
+        assert!(!in_flight_tools().lock().unwrap().contains_key(id));
+        cancel_tool(id); // 不得 panic
+        cancel_all_tools();
     }
 
     /// 起一个一次性 TCP 服务：收到请求后回写固定 HTTP 响应（无 TLS，http:// 即可）
@@ -608,7 +779,7 @@ mod tests {
             "cwd": dir.to_string_lossy(),
             "params": { "file_path": "rel.txt" },
         });
-        let out = handle_tool(&p).unwrap();
+        let out = handle_tool("t-dispatch", &p).unwrap();
         assert!(out["output"].as_str().unwrap().contains("two"), "output: {}", out["output"]);
         // write 的相对路径同样落在信封 cwd 下
         let w = json!({
@@ -616,7 +787,7 @@ mod tests {
             "cwd": dir.to_string_lossy(),
             "params": { "file_path": "sub/rel2.txt", "content": "x" },
         });
-        handle_tool(&w).unwrap();
+        handle_tool("t-dispatch-w", &w).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("sub/rel2.txt")).unwrap(), "x");
         let _ = std::fs::remove_dir_all(&dir);
     }

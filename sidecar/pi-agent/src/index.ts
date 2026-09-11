@@ -24,7 +24,7 @@ import { createInterface } from "node:readline";
 import { logErr } from "./log";
 import { initHostMode, initStorage } from "./storage";
 import { loadCustomProviders, applyModelOverrides } from "./model-catalog";
-import { handleLine, markStdinClosed } from "./protocol";
+import { handleLine, markStdinClosed, setInitGate } from "./protocol";
 
 const DB_PATH = process.env.PI_DB_PATH || "pi-agent.db";
 const SESSIONS_DIR = process.env.PI_SESSIONS_DIR;
@@ -51,8 +51,17 @@ async function main() {
     markStdinClosed();
   });
 
-  await loadCustomProviders();
-  await applyModelOverrides();
+  // 模型目录初始化作为命令分发闸门：目录就绪前到达的命令（含启动恢复的 set_model）
+  // 在 handleLine 里缓冲，避免自定义提供商模型被 "model not found" 拒绝后回落默认模型。
+  // 闸门 promise 内部 catch，保证不会卡死命令分发。
+  const catalogReady = (async () => {
+    await loadCustomProviders();
+    await applyModelOverrides();
+  })().catch((err) => {
+    logErr("model catalog init failed:", err);
+  });
+  setInitGate(catalogReady);
+  await catalogReady;
 }
 
 void main();

@@ -7,6 +7,7 @@ import {
   type PiModelSummary,
   type PiProviderSummary,
 } from "@/lib/pi-bridge";
+import { syncSelectedModelFromSidecar } from "@/lib/model-settings";
 
 /**
  * pi sidecar 的模型目录（内置 + 自定义服务），供对话页模型选择器等共享。
@@ -33,6 +34,8 @@ async function load() {
       providers: PiProviderSummary[];
     }>({ type: "list_models" });
     setState({ models: res.models, loaded: true, loading: false });
+    // 顺带校准选中模型真值：sidecar 重启会丢失 currentModelKey（UI 却仍显示旧选择）
+    void syncSelectedModelFromSidecar();
   } catch {
     // sidecar 不可用时保持空目录，下次刷新重试
     setState({ loading: false });

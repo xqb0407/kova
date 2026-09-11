@@ -71,24 +71,33 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                 // shell 插件按行分发 stdout；统一转 UTF-8 字符串处理
                 CommandEvent::Stdout(bytes) => {
                     let line = String::from_utf8_lossy(&bytes).to_string();
+                    let parsed = serde_json::from_str::<serde_json::Value>(&line).ok();
+                    let msg_type = parsed
+                        .as_ref()
+                        .and_then(|v| v.get("type").and_then(|t| t.as_str()));
+                    // sidecar -> 宿主的取消通知（host_cancel）：立即杀掉对应工具进程树。
+                    // 必须在此显式拦截，否则会走 id 配对 / try_route 被广播给 webview。
+                    if msg_type == Some("host_cancel") {
+                        if let Some(id) = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("id").and_then(|i| i.as_str()))
+                        {
+                            crate::tool_exec::cancel_tool(id);
+                        }
+                        continue;
+                    }
                     // sidecar -> 宿主的 RPC（host_query）：查库后经 stdin 回写 host_result。
                     // 计算放阻塞线程池（阶段②工具执行可能耗时数秒），不阻塞 stdout 泵；
                     // 回写拿 child tokio Mutex 与命令写入排队，保证行原子性。
-                    let is_host_query = serde_json::from_str::<serde_json::Value>(&line)
-                        .ok()
-                        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("host_query"))
-                        .is_some();
-                    if is_host_query {
+                    if msg_type == Some("host_query") {
                         let app_handle = app_for_rx.clone();
                         let child_slot_for_query = Arc::clone(&child_slot);
                         tauri::async_runtime::spawn(async move {
                             let reply = tauri::async_runtime::spawn_blocking(move || {
-                                serde_json::from_str::<serde_json::Value>(&line)
-                                    .ok()
-                                    .map(|value| {
-                                        let db = app_handle.state::<crate::store::DbState>();
-                                        crate::data::dispatch_host_query(&db.0, &value).to_string()
-                                    })
+                                parsed.map(|value| {
+                                    let db = app_handle.state::<crate::store::DbState>();
+                                    crate::data::dispatch_host_query(&db.0, &value).to_string()
+                                })
                             })
                             .await
                             .ok()
@@ -138,6 +147,9 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                 }
                 CommandEvent::Terminated(status) => {
                     log::warn!("[pi_agent] terminated {status:?}");
+                    // sidecar 已退出：清掉所有在飞工具（杀残留进程树、注销登记），
+                    // 避免孤儿 bash 进程继续跑
+                    crate::tool_exec::cancel_all_tools();
                     // 清空所有挂起的请求
                     if let Ok(mut map) = state_for_rx.lock() {
                         for (_, tx) in map.drain() {

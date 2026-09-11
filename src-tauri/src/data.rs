@@ -351,6 +351,14 @@ pub fn handle_host_query(
             .map_err(|e| e.to_string())?;
             Ok(json!({}))
         }
+        "session_update_cwd" => {
+            // 补绑工作目录：建会话时未选目录、后来选了（见 sessions.ts rebindRunCwd）
+            let id = str_param(p, "sessionId")?;
+            let cwd = str_param(p, "cwd")?;
+            conn.execute("UPDATE sessions SET cwd = ?1 WHERE id = ?2", params![cwd, id])
+                .map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
         "session_touch" => {
             // persist 里的增量维护：updated_at 总是更新；title/first_message 仅在为空时回填
             let id = str_param(p, "sessionId")?;
@@ -527,14 +535,7 @@ pub fn handle_host_query(
                 .map_err(|e| e.to_string())?;
             Ok(json!({}))
         }
-        _ => {
-            // 工具执行（阶段②）：bash/read/write/edit 由 Rust 直接执行
-            // p = { name, cwd, params: {...} }，handle_tool 自己解包内层 params
-            if kind == "tool" {
-                return crate::tool_exec::handle_tool(p);
-            }
-            Err(format!("unknown host_query kind: {kind}"))
-        }
+        _ => Err(format!("unknown host_query kind: {kind}")),
     }
 }
 
@@ -547,6 +548,13 @@ pub fn dispatch_host_query(db: &std::sync::Mutex<Connection>, msg: &Value) -> Va
             .and_then(|v| v.as_str())
             .ok_or("missing kind")?;
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        // 工具执行（阶段②）：bash/read/write/edit 由 Rust 直接执行。
+        // p = { name, cwd, params: {...} }，handle_tool 自己解包内层 params。
+        // 注意：不进 db 锁——长 bash 期间不阻塞其他 host_query，且 id 登记进
+        // 在飞表后 sidecar 的 host_cancel{id} 可随时杀掉对应进程树。
+        if kind == "tool" {
+            return crate::tool_exec::handle_tool(&id, &params);
+        }
         let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
         handle_host_query(&conn, kind, &params)
     })();

@@ -7,6 +7,7 @@ import { getWorkspace } from "@/lib/workspace-store";
 import { applyPlanningChunk } from "@/lib/pi-session-mode";
 import { applyToolApprovalChunk, clearToolApprovals } from "@/lib/pi-tool-approval";
 import { applyQuestionChunk, clearQuestions } from "@/lib/pi-question";
+import { applyTodoChunk } from "@/lib/pi-todo";
 
 /**
  * pi-agent 的 ChatTransport：把 assistant-ui 的 sendMessages 请求转为
@@ -63,6 +64,11 @@ export class PiTransport implements ChatTransport<UIMessage> {
             }
             if (chunk.type === "data-question") {
               applyQuestionChunk(chatId, (chunk as { data?: unknown }).data);
+              return;
+            }
+            if (chunk.type === "data-todo") {
+              // 任务清单快照：走 per-thread store 刷新 composer 上方面板
+              applyTodoChunk(chatId, (chunk as { data?: unknown }).data);
               return;
             }
             if (chunk.type === "finish") {
