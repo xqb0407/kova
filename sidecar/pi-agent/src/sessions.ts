@@ -17,6 +17,13 @@ import {
   composeModeSystemPrompt,
   toolsForMode,
 } from "./modes";
+import {
+  captureProviderResponse,
+  carriesRetryDelayHeaders,
+  createProviderRetryStream,
+  createRetryBudget,
+  makeUiRetryController,
+} from "./provider-retry";
 import { getSubagentDefinitions } from "./subagent-definitions";
 import { buildSubagentTools } from "./subagent";
 import { readCompaction, readTranscript } from "./transcript";
@@ -80,7 +87,7 @@ export async function resolveSession(
     ? getModels().getModel(mk.provider, mk.modelId)
     : await defaultModel();
 
-  const baseTools = buildTools(resolvedCwd);
+  const baseTools = buildTools(resolvedCwd, threadId);
   // run 先占位再回填 agent：beforeToolCall 闭包按引用捕获 run，模式校验在运行期才解引用
   const run: Running = {
     agent: undefined as unknown as Agent,
@@ -90,6 +97,11 @@ export async function resolveSession(
     jsonlSeq,
     compactionGeneration,
     pendingOverflowRecovery: false,
+    providerRetry: createRetryBudget(),
+    retryCapture: {},
+    providerRetryChunkId: "retry-0",
+    providerRetryActive: false,
+    providerRetryTurnSeq: 0,
     delegations: new Map(),
     stopRequested: false,
     mode: "agent",
@@ -104,12 +116,31 @@ export async function resolveSession(
   const agent = new Agent({
     // sessionId 透传：OpenAI prompt_cache_key / Anthropic session-affinity（缓存路由）
     sessionId,
-    streamFn: (m, context, options) =>
-      getModels().streamSimple(m, context, {
-        ...options,
-        // 可选长缓存（Anthropic 1h TTL / OpenAI 24h retention），compat 守门自动降级
-        ...(process.env.PI_CACHE_RETENTION === "long" ? { cacheRetention: "long" } : {}),
-      }),
+    // 显式重试环包住 provider 流：流建立前失败按预算退避重发，
+    // 过程以 data-retry chunk 推给前端（见 provider-retry.ts）
+    streamFn: (m, context, options) => {
+      run.retryCapture.status = undefined;
+      run.retryCapture.headers = undefined;
+      return createProviderRetryStream(
+        m,
+        context,
+        {
+          ...options,
+          // 可选长缓存（Anthropic 1h TTL / OpenAI 24h retention），compat 守门自动降级
+          ...(process.env.PI_CACHE_RETENTION === "long" ? { cacheRetention: "long" } : {}),
+          // 捕获失败响应的 status/头（pi-ai 的 onResponse 不暴露失败 429），
+          // 供分类与 Retry-After 退避使用
+          fetch: captureProviderResponse(options?.fetch, (response) => {
+            run.retryCapture.status = response?.status;
+            run.retryCapture.headers = carriesRetryDelayHeaders(response?.status)
+              ? response?.headers
+              : undefined;
+          }),
+        },
+        (retryOptions) => getModels().streamSimple(m, context, retryOptions),
+        makeUiRetryController(run),
+      );
+    },
     initialState: {
       systemPrompt: composeModeSystemPrompt("agent", resolvedCwd),
       model,

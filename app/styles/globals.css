@@ -106,7 +106,21 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6)
-}
+;
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-selected: var(--selected);
+  --color-destructive-light: var(--destructive-light);
+  --color-focus-ring: var(--focus-ring);
+  --overlay: var(--overlay);
+  @keyframes spinner-move {
+  to {
+    stroke-dashoffset: -100;}}
+  @keyframes spinner-dash {
+  0%, 100% {
+    stroke-dasharray: 15 85;}
+  50% {
+    stroke-dasharray: 40 60;}}}
 
 @theme inline {
   --font-sans: var(--app-font-sans);
@@ -217,6 +231,12 @@
   --sidebar-ring: oklch(0.708 0 0);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
+  --hover: rgb(0 0 0 / 0.04);
+  --active: rgb(0 0 0 / 0.07);
+  --selected: #D4D4D4;
+  --destructive-light: #FEF2F2;
+  --overlay: 0 0 0;
+  --focus-ring: #6B97FF;
 }
 
 .dark {
@@ -251,6 +271,11 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  --hover: rgb(255 255 255 / 0.06);
+  --active: rgb(255 255 255 / 0.1);
+  --selected: #525252;
+  --destructive-light: #450A0A;
+  --overlay: 255 255 255;
 }
 
 /* 强调色：仅覆写 primary/ring（浅色用中档亮度+亮前景，深色用高档亮度+暗前景），
@@ -322,6 +347,10 @@
   --app-font-sans: "Segoe UI", "PingFang SC", "Microsoft YaHei",
     "Noto Sans SC", sans-serif;
 }
+:root[data-font="yahei"] {
+  --app-font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+    "Noto Sans SC", sans-serif;
+}
 :root[data-font="inter"] {
   --app-font-sans: "Inter", "PingFang SC", "Microsoft YaHei",
     "Noto Sans SC", sans-serif;
@@ -336,6 +365,9 @@
 }
 :root[data-font="noto-sans-sc"] {
   --app-font-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 思源字体 hinting 弱，Windows 下小字号渲染发虚——正文提到 500 缓解
+     （元素级 font-medium/bold 仍按自身字重覆盖） */
+  font-weight: 500;
 }
 :root[data-font="serif"] {
   --app-font-sans: Georgia, "Times New Roman", "Songti SC", "Noto Serif SC",
@@ -343,6 +375,7 @@
 }
 :root[data-font="noto-serif-sc"] {
   --app-font-sans: "Noto Serif SC", "Songti SC", SimSun, serif;
+  font-weight: 500;
 }
 :root[data-font="kai"] {
   --app-font-sans: "Kaiti SC", "STKaiti", KaiTi, "DFKai-SB", "Noto Serif SC",
@@ -437,7 +470,12 @@
 
   :focus-visible {
     box-shadow: none;
+    outline: 1px solid var(--focus-ring, #6B97FF);
+    outline-offset: 2px;
+    border-radius: var(--shape-input-radius, 8px);
   }
+  a:focus-visible {
+    border-radius: 2px;}
 }
 
 /* 穿透时右侧主内容区保持不透明，仅左侧侧边栏透出材质。
@@ -446,3 +484,5 @@
   background: var(--background);
 }
  */
+  html.transitioning *, html.transitioning *::before, html.transitioning *::after {
+    transition: border-radius 180ms ease-in-out, background-color 180ms ease-in-out, color 180ms ease-in-out, border-color 180ms ease-in-out, fill 180ms ease-in-out, stroke 180ms ease-in-out !important;}

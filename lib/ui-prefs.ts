@@ -24,6 +24,7 @@ export type FontFamilyName =
   | "default"
   | "inter"
   | "segoe"
+  | "yahei"
   | "roboto"
   | "open-sans"
   | "noto-sans-sc"

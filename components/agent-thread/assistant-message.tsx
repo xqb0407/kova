@@ -28,6 +28,7 @@ import {
   ActionBarMorePrimitive,
 } from "@assistant-ui/react";
 import { BranchPicker } from "./branch-picker";
+import { RetryMarker, useRetryState } from "./retry-marker";
 import {
   CheckIcon,
   CopyIcon,
@@ -41,7 +42,7 @@ import { randomLoadingPhrase } from "@/lib/loading";
 const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 mt-2 rounded-md border p-3 text-sm dark:text-red-200">
+      <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 mt-2 rounded-md  p-2 text-sm dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
@@ -50,6 +51,8 @@ const MessageError: FC = () => {
 
 const AssistantWorkingIndicator: FC = () => {
   const isEmpty = useAuiState((s) => s.message.content.length === 0);
+  // 重试进行中时不显示（RetryMarker 顶替这条状态行，参照示例 base.tsx）
+  if (useRetryState()) return null;
   if (isEmpty) {
     return (
       <span
@@ -82,6 +85,8 @@ export const AssistantMessage: FC = () => {
         data-slot="aui_assistant-message-content"
         className="text-foreground px-2 leading-relaxed wrap-break-word"
       >
+        {/* 重试状态行：只渲染一次，attempt 原地更新（data part 本身就地不渲染） */}
+        <RetryMarker />
         <MessagePrimitive.GroupedParts
           groupBy={groupPartByType({
             reasoning: ["group-chainOfThought", "group-reasoning"],

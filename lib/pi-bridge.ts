@@ -163,7 +163,8 @@ export type PiResponse =
   | PiContextInfo
   | PiCompacted
   | { type: "error"; errorText: string }
-  | { type: "tool_confirmed"; approvalId: string };
+  | { type: "tool_confirmed"; approvalId: string }
+  | { type: "question_answered"; questionId: string };
 
 export async function piRequest<T extends PiResponse>(
   payload: Record<string, unknown>,

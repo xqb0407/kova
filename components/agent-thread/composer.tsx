@@ -9,6 +9,8 @@ import { ModePicker } from "@/components/agent-thread/mode-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
 import { PlanApprovalCard } from "@/components/agent-thread/plan-approval-card";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
+import { QuestionCard } from "@/components/agent-thread/question-card";
+import { usePendingQuestions } from "@/lib/pi-question";
 import { Button } from "@/components/ui/button";
 import {
   AuiIf,
@@ -122,6 +124,11 @@ export const Composer: FC = () => {
     iconMap: slashIconMap,
     fallbackIcon: SlashIcon,
   });
+  // 提问卡片与输入框互斥：Question 工具挂起期间整条 composer 让位给卡片
+  // （作答/跳过 → question_answer 结算 → finish chunk 清空，composer 复原）
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const questions = usePendingQuestions(threadId);
+  if (threadId && questions.length > 0) return <QuestionCard />;
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>

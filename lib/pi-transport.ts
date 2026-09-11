@@ -6,6 +6,7 @@ import { piSessionRegistry } from "@/lib/pi-thread-adapter";
 import { getWorkspace } from "@/lib/workspace-store";
 import { applyPlanningChunk } from "@/lib/pi-session-mode";
 import { applyToolApprovalChunk, clearToolApprovals } from "@/lib/pi-tool-approval";
+import { applyQuestionChunk, clearQuestions } from "@/lib/pi-question";
 
 /**
  * pi-agent 的 ChatTransport：把 assistant-ui 的 sendMessages 请求转为
@@ -60,9 +61,14 @@ export class PiTransport implements ChatTransport<UIMessage> {
               applyToolApprovalChunk(chatId, (chunk as { data?: unknown }).data);
               return;
             }
+            if (chunk.type === "data-question") {
+              applyQuestionChunk(chatId, (chunk as { data?: unknown }).data);
+              return;
+            }
             if (chunk.type === "finish") {
-              // turn 结束：清空残留审批卡片（abort/异常路径的兜底出口）
+              // turn 结束：清空残留审批/提问卡片（abort/异常路径的兜底出口）
               clearToolApprovals(chatId);
+              clearQuestions(chatId);
             }
             controller.enqueue(chunk);
           },
