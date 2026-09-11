@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   APPROVAL_REQUIRED_TOOLS,
   applyMode,
@@ -245,7 +245,9 @@ describe("SubmitPlan 落盘", () => {
       expect(run.planning).toBe("awaiting_approval");
       expect(run.proposal?.filePath).toBeTruthy();
       expect(run.proposal?.filePath!).toContain(join(dir, ".xulux", "plans"));
-      expect(run.proposal?.filePath!).toMatch(/^plan-Fix-login-bug-sess_test123-\d{8}-\d{6}\.md$/);
+      expect(basename(run.proposal?.filePath!)).toMatch(
+        /^plan-Fix-login-bug-sess_test123-\d{8}-\d{6}\.md$/,
+      );
       const content = await readFile(run.proposal!.filePath!, "utf8");
       expect(content).toContain("# Fix: login bug");
       expect(content).toContain("修改 a.ts");
