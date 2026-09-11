@@ -20,6 +20,7 @@ import {
 } from "@/lib/pi-context";
 import { clearManualCompactionMarker } from "@/lib/pi-compaction-marker";
 import type { PiContextInfo } from "@/lib/pi-bridge";
+import { Separator } from "../ui/separator";
 
 /**
  * 上下文占用查看器（composer 区，模型选择器旁）：点击弹出当前会话的
@@ -119,8 +120,11 @@ export const ContextButton: FC = () => {
   const compact = async () => {
     if (!threadId) return;
     setCompacting(true);
-    // 先打 start marker：消息流尾部即时显示「正在压缩上下文…」（请求-响应期间的过程反馈）
-    markManualCompactionStart(threadId);
+    // 压缩边界 = 点击时刻的消息前缀；start/complete 共用同一锚点，
+    // 保证后续新消息渲染在分隔线之下而不是把它顶到列表尾部
+    const anchorIndex = messageCount;
+    // 先打 start marker：即时显示「正在压缩上下文…」（请求-响应期间的过程反馈）
+    markManualCompactionStart(threadId, anchorIndex);
     try {
       const res = await compactContext(threadId);
       toast.add({
@@ -129,7 +133,7 @@ export const ContextButton: FC = () => {
         type: "success",
       });
       // 替换为完成态分隔线（持续显示，历史装载后由重建的分隔线接管）
-      markManualCompaction(threadId, res);
+      markManualCompaction(threadId, res, anchorIndex);
       await load();
     } catch (err) {
       // 失败撤掉「正在压缩」marker，只留 toast 提示
@@ -184,7 +188,7 @@ export const ContextButton: FC = () => {
           </button>
         }
       />
-      <PopoverContent align="end" side="top" className="w-80">
+      <PopoverContent align="end" side="top" className="w-84">
         <div className="flex flex-col gap-3 p-1">
           {/* 头部：模型 + 容量 */}
           <div className="flex items-baseline justify-between gap-2">
@@ -236,12 +240,12 @@ export const ContextButton: FC = () => {
                 )}
               </div>
 
-              <div className="flex flex-col gap-1.5 text-sm">
+              <div className="flex flex-col gap-2 text-sm">
                 {rows.map((r) => (
                   <div key={r.label} className="flex items-center gap-2">
                     <span className={cn("size-2 shrink-0 rounded-full", r.dotClass)} />
                     <span className="text-muted-foreground flex-1">{r.label}</span>
-                    <span className="tabular-nums">{fmtTokens(r.tokens)}</span>
+                    {/* <span className="tabular-nums">{fmtTokens(r.tokens)}</span> */}
                     <span className="text-muted-foreground w-14 text-right tabular-nums">
                       {pctOf(r.tokens, info.contextWindow)}
                     </span>
@@ -254,30 +258,25 @@ export const ContextButton: FC = () => {
                   <span className="text-muted-foreground flex-1">平均缓存命中率</span>
                   <span
                     className={cn(
-                      "tabular-nums",
+                      "w-14 text-right text-xs tabular-nums",
                       info.cacheHitRate !== null &&
                         info.usage.cacheRead + info.usage.cacheWrite === 0 &&
                         "text-muted-foreground",
                     )}
                   >
                     {info.cacheHitRate === null
-                      ? "—"
+                      ? "-"
                       : info.usage.cacheRead + info.usage.cacheWrite === 0
-                        ? "未上报"
+                        ? "-"
                         : `${(info.cacheHitRate * 100).toFixed(1)}%`}
-                  </span>
-                  <span className="text-muted-foreground w-14 text-right text-xs">
-                    {info.cacheHitRate === null
-                      ? "无用量"
-                      : info.usage.cacheRead + info.usage.cacheWrite === 0
-                        ? "无缓存字段"
-                        : `${fmtTokens(info.usage.cacheRead)} 命中`}
                   </span>
                 </div>
               </div>
 
+              <Separator />
+
               {/* 压缩状态 */}
-              <div className="text-muted-foreground border-t pt-2 text-xs">
+              <div className="text-muted-foreground  text-xs">
                 {info.needsCompaction ? (
                   <span className="text-amber-600 dark:text-amber-400">
                     已越过压缩阈值（{fmtTokens(info.hardLimit)}），下次发送前自动压缩
@@ -296,8 +295,7 @@ export const ContextButton: FC = () => {
               </div>
 
               <Button
-                size="sm"
-                variant="outline"
+                variant="secondary"
                 disabled={compacting || loading || isRunning}
                 title={isRunning ? "回复进行中，完成后可手动压缩" : undefined}
                 onClick={() => void compact()}

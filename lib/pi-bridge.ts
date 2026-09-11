@@ -32,6 +32,10 @@ export type PiModelSummary = {
   id: string;
   name: string;
   reasoning: boolean;
+  /** 该模型实际支持的思考档位（不含 off）；空数组 = 明确不支持推理 */
+  supportedThinkingLevels?: string[];
+  /** 生效中的思考参数映射（目录原值 + 前端覆盖合并；null = 无映射） */
+  thinkingLevelMap?: Record<string, string | null> | null;
   contextWindow: number;
   /** 最大输出 tokens */
   maxTokens?: number;
@@ -137,6 +141,9 @@ export type PiResponse =
   | { type: "renamed" }
   | { type: "models"; models: PiModelSummary[]; providers: PiProviderSummary[] }
   | { type: "model"; provider: string; modelId: string }
+  | { type: "thinking"; level: string }
+  | { type: "thinking_maps"; applied: number }
+  | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "model_updated"; provider: string; modelId: string }
   | { type: "credential"; provider: string }
   | { type: "credentials"; credentials: PiCredentialSummary[] }
@@ -158,6 +165,7 @@ export type PiResponse =
         title: string;
         markdown: string;
         question: string;
+        filePath?: string;
       } | null;
     }
   | PiContextInfo

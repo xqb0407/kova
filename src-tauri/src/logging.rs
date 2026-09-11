@@ -201,17 +201,19 @@ pub fn init(app: &AppHandle) {
             LEVEL.store(level_filter_to_u8(f), Ordering::Relaxed);
         }
     }
-    let logger = Logger {
+    let _ = LOGGER.set(Logger {
         root,
         app: Mutex::new(SourceFile::new(MAX_FILE_BYTES)),
         pi_agent: Mutex::new(SourceFile::new(MAX_FILE_BYTES)),
         web: Mutex::new(SourceFile::new(MAX_FILE_BYTES)),
-    };
-    let leaked: &'static Logger = Box::leak(Box::new(logger));
-    if log::set_logger(leaked).is_ok() {
+    });
+    // 必须填 OnceLock：write_sidecar_line / frontend_log / cleanup_logs 都走
+    // LOGGER.get()，之前只 leak 给 log::set_logger 导致 pi-agent.log/web.log 无声蒸发
+    let logger = LOGGER.get().expect("LOGGER just set (or already initialized)");
+    if log::set_logger(logger).is_ok() {
         log::set_max_level(LevelFilter::Trace); // 过滤在 Logger::enabled 内做
     }
-    if let Some(dir) = leaked.root.as_ref() {
+    if let Some(dir) = logger.root.as_ref() {
         let root = dir.clone();
         std::thread::spawn(move || cleanup_expired(&root, Local::now().date_naive()));
     }

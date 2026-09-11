@@ -23,6 +23,8 @@ export type PendingProposal = {
   title: string;
   markdown: string;
   question: string;
+  /** SubmitPlan 落盘的文件绝对路径（仅 plan；落盘失败或缺省时为空） */
+  filePath?: string;
 };
 
 export type PlanningSnapshot = {
@@ -69,6 +71,9 @@ export function applyPlanningChunk(threadId: string, data: unknown): void {
           title: String(d.proposal.title ?? ""),
           markdown: String(d.proposal.markdown ?? ""),
           question: String(d.proposal.question ?? ""),
+          ...(d.proposal.filePath
+            ? { filePath: String(d.proposal.filePath) }
+            : {}),
         }
       : null;
   setSnapshot(threadId, {

@@ -14,7 +14,14 @@ import { homedir } from "node:os";
 
 /* ---------------------------------- 模式管理 --------------------------------- */
 
-type QueryTransport = (kind: string, params: Record<string, unknown>) => Promise<unknown>;
+/** RPC 附加选项：signal 中断时向宿主发 host_cancel；timeoutMs 覆盖默认 15s */
+export type RpcOptions = { signal?: AbortSignal; timeoutMs?: number };
+
+type QueryTransport = (
+  kind: string,
+  params: Record<string, unknown>,
+  opts?: RpcOptions,
+) => Promise<unknown>;
 
 let transport: QueryTransport | null = null;
 let localDb: Database | null = null;
@@ -283,24 +290,67 @@ let hostSeq = 0;
 const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 
 const HOST_QUERY_TIMEOUT_MS = 15_000;
+/** 工具类 RPC 在「工具自身超时」之外再等的余量（宿主执行完还要序列化回写） */
+const TOOL_RPC_SLACK_MS = 15_000;
 
-function stdoutRpc(kind: string, params: Record<string, unknown>): Promise<unknown> {
+function abortAsError(signal: AbortSignal): Error {
+  const r: unknown = signal.reason;
+  if (r instanceof Error) return r;
+  return new Error("Operation aborted");
+}
+
+/** 告知宿主「放弃这条请求」：Rust 侧据此杀对应工具进程树；无登记则无害 no-op */
+function writeHostCancel(id: string): void {
+  try {
+    process.stdout.write(JSON.stringify({ type: "host_cancel", id }) + "\n");
+  } catch {
+    // 管道破裂说明宿主已退出，无需再取消
+  }
+}
+
+function stdoutRpc(
+  kind: string,
+  params: Record<string, unknown>,
+  opts: RpcOptions = {},
+): Promise<unknown> {
   const id = `hq-${++hostSeq}`;
+  const { signal, timeoutMs = HOST_QUERY_TIMEOUT_MS } = opts;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
+    if (signal?.aborted) {
+      reject(abortAsError(signal));
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout>;
+    const settle = (fn: () => void) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const onAbort = () => {
       pending.delete(id);
-      reject(new Error(`host_query timeout: ${kind}（宿主未响应，Rust 侧需含 data.rs）`));
-    }, HOST_QUERY_TIMEOUT_MS);
+      writeHostCancel(id); // bash 等仍在宿主里跑：立即通知杀进程树
+      // onAbort 只在 signal 存在时才被注册
+      settle(() => reject(abortAsError(signal!)));
+    };
+    const fail = (fn: () => void) => {
+      pending.delete(id);
+      writeHostCancel(id); // 超时同样取消，避免宿主在「JS 已报错」后才跑完
+      settle(fn);
+    };
+    timer = setTimeout(
+      () =>
+        fail(() =>
+          reject(
+            new Error(`host_query timeout: ${kind}（宿主未响应，Rust 侧需含 data.rs）`),
+          ),
+        ),
+      timeoutMs,
+    );
     pending.set(id, {
-      resolve: (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      reject: (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
+      resolve: (v) => settle(() => resolve(v)),
+      reject: (e) => settle(() => reject(e)),
     });
+    signal?.addEventListener("abort", onAbort, { once: true });
     process.stdout.write(JSON.stringify({ type: "host_query", id, kind, params }) + "\n");
   });
 }
@@ -355,6 +405,9 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
           .all();
       case "session_delete":
         db.query("DELETE FROM sessions WHERE id = ?").run(s("sessionId"));
+        return {};
+      case "session_update_cwd":
+        db.query("UPDATE sessions SET cwd = ? WHERE id = ?").run(str(p.cwd), s("sessionId"));
         return {};
       case "session_rename":
         db.query("UPDATE sessions SET title = ? WHERE id = ?").run(s("name"), s("sessionId"));
@@ -492,9 +545,13 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
 
 /* -------------------------------- 类型化出口 -------------------------------- */
 
-async function query<T>(kind: string, params: Record<string, unknown> = {}): Promise<T> {
+async function query<T>(
+  kind: string,
+  params: Record<string, unknown> = {},
+  opts?: RpcOptions,
+): Promise<T> {
   if (!transport) throw new Error("storage not initialized (initHostTransport/initLocalStorage)");
-  return (await transport(kind, params)) as T;
+  return (await transport(kind, params, opts)) as T;
 }
 
 const nowIso = () => new Date().toISOString();
@@ -522,6 +579,10 @@ export const sessionGet = (sessionId: string) =>
 
 export const sessionInsert = (sessionId: string, cwd: string) =>
   query("session_insert", { sessionId, cwd, now: nowIso() });
+
+/** 补写会话绑定目录（建会话时未选目录、后来选了：见 sessions.ts rebindRunCwd） */
+export const sessionUpdateCwd = (sessionId: string, cwd: string) =>
+  query("session_update_cwd", { sessionId, cwd });
 
 export const sessionList = () => query<SessionRow[]>("session_list");
 
@@ -601,13 +662,29 @@ export const modelsReplace = (provider: string, items: ModelReplaceItem[]) =>
 export const modelsDeleteProvider = (provider: string) =>
   query("models_delete_provider", { provider });
 
-/** 主机工具调用（仅 host 模式可用；bash/read/write/edit/http 由 Rust 执行） */
-export const hostToolCall = (name: string, cwd: string, params: Record<string, unknown>) =>
-  query<{ output: string; truncated?: boolean; exitCode?: number | null; totalLines?: number }>("tool", {
-    name,
-    cwd,
-    params,
-  });
+/** 工具类 RPC 的超时 = 工具自身超时 + 余量：bash 默认 120s、http 默认 30s（上限 120s），
+ *  不能让它们在宿主还在正常执行时先吃 15s 的通用超时 */
+function toolRpcTimeoutMs(name: string, params: Record<string, unknown>): number {
+  const num = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
+  if (name === "bash") return (num(params.timeout) ?? 120_000) + TOOL_RPC_SLACK_MS;
+  if (name === "http") return (num(params.timeoutMs) ?? 30_000) + TOOL_RPC_SLACK_MS;
+  return HOST_QUERY_TIMEOUT_MS; // read/write/edit 是本地文件操作
+}
+
+/** 主机工具调用（仅 host 模式可用；bash/read/write/edit/http 由 Rust 执行）；
+ *  signal 中断时向宿主发 host_cancel（bash 会立即杀进程树） */
+export const hostToolCall = (
+  name: string,
+  cwd: string,
+  params: Record<string, unknown>,
+  signal?: AbortSignal,
+) =>
+  query<{ output: string; truncated?: boolean; exitCode?: number | null; totalLines?: number }>(
+    "tool",
+    { name, cwd, params },
+    { signal, timeoutMs: toolRpcTimeoutMs(name, params) },
+  );
 
 /** Rust handle_http（tool_exec.rs）的返回结构 */
 export type HostHttpData = {
@@ -626,5 +703,12 @@ export type HostHttpData = {
 };
 
 /** WebFetch/WebSearch 的网络执行出口（仅 host 模式；超时/截断/编码在 Rust 侧完成） */
-export const hostHttpCall = (cwd: string, params: Record<string, unknown>) =>
-  query<HostHttpData>("tool", { name: "http", cwd, params });
+export const hostHttpCall = (
+  cwd: string,
+  params: Record<string, unknown>,
+  signal?: AbortSignal,
+) =>
+  query<HostHttpData>("tool", { name: "http", cwd, params }, {
+    signal,
+    timeoutMs: toolRpcTimeoutMs("http", params),
+  });

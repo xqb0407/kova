@@ -1,27 +1,102 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { useEffect, useRef, useState, type FC } from "react";
 import { PanelLeftIcon } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
+import { usePanelRef } from "react-resizable-panels";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
 import { Thread } from "./thread";
+import { AgentPanel } from "./agent-panel";
 import { SettingsPage } from "@/components/settings/settings-page";
 // 应用启动即接管外观偏好（预绘制脚本之后：系统主题监听、跟随实时更新）
 import "@/lib/ui-prefs";
 
+/** 面板开合与宽度的本地持久化键（宽度存 px 整数） */
+const PANEL_OPEN_KEY = "agent-panel-open";
+const PANEL_WIDTH_KEY = "agent-panel-width";
+const PANEL_MIN_WIDTH = 300;
+
 export function BaseThread() {
   return <Thread />;
+}
+
+/** 窄屏判定：<md 时面板从"右列"切为"浮层"（桌面窗口基本走右列布局） */
+function useIsCompact(): boolean {
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const sync = () => setCompact(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  return compact;
 }
 
 export const Base: FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [view, setView] = useState<"chat" | "settings">("chat");
+  // Agent 面板：默认展开，挂载后从 localStorage 恢复开合/宽度
+  // （SSR 首帧恒为展开，避免 hydration 不一致）
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelHydrated, setPanelHydrated] = useState(false);
+  const panelRef = usePanelRef();
+  // onResize 回写开合用：记住上次是否处于折叠，只在状态沿变化时写
+  const wasCollapsedRef = useRef(false);
+  const compact = useIsCompact();
   // 仅 macOS 有悬浮红绿灯，需在侧边栏顶栏让位
   const mac = isTauri() && isMacPlatform();
+
+  // 恢复上次偏好
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(PANEL_OPEN_KEY) === "0") setPanelOpen(false);
+    } catch {}
+    setPanelHydrated(true);
+  }, []);
+
+  // 开合 → 驱动 collapsible Panel；恢复宽度在展开后一次 resize
+  useEffect(() => {
+    if (!panelHydrated || compact) return;
+    const p = panelRef.current;
+    if (!p) return;
+    if (panelOpen) {
+      p.expand();
+      const saved = Number(localStorage.getItem(PANEL_WIDTH_KEY));
+      if (Number.isFinite(saved) && saved >= PANEL_MIN_WIDTH) p.resize(saved);
+    } else {
+      p.collapse();
+    }
+  }, [panelOpen, panelHydrated, compact, panelRef]);
+
+  // 记住开合
+  useEffect(() => {
+    if (!panelHydrated) return;
+    try {
+      localStorage.setItem(PANEL_OPEN_KEY, panelOpen ? "1" : "0");
+    } catch {}
+  }, [panelOpen, panelHydrated]);
+
+  // 记住宽度（拖拽结束后）
+  const savePanelWidth = () => {
+    const p = panelRef.current;
+    if (!p || p.isCollapsed()) return;
+    try {
+      localStorage.setItem(PANEL_WIDTH_KEY, String(Math.round(p.getSize().inPixels)));
+    } catch {}
+  };
+
+  const chat = <Thread />;
 
   return (
     <>
@@ -61,9 +136,82 @@ export const Base: FC = () => {
               sidebarCollapsed={sidebarCollapsed}
               onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
               onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
+              panelOpen={panelOpen}
+              onTogglePanel={() => setPanelOpen((o) => !o)}
             />
             <main className="flex-1 overflow-hidden">
-              <Thread />
+              {compact ? (
+                // 窄屏：面板右缘浮层（聊天区不缩列），遮罩点击收起
+                <div className="relative h-full">
+                  {chat}
+                  <AnimatePresence>
+                    {panelOpen ? (
+                      <>
+                        <motion.div
+                          key="panel-backdrop"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.18 }}
+                          className="bg-black/30 absolute inset-0 z-30"
+                          onClick={() => setPanelOpen(false)}
+                        />
+                        <motion.div
+                          key="panel"
+                          initial={{ x: "100%" }}
+                          animate={{ x: 0 }}
+                          exit={{ x: "100%" }}
+                          transition={{ type: "spring", stiffness: 380, damping: 36 }}
+                          className="border-border absolute inset-y-0 right-0 z-40 flex w-[min(92vw,420px)] border-l"
+                        >
+                          <AgentPanel />
+                        </motion.div>
+                      </>
+                    ) : null}
+                  </AnimatePresence>
+                </div>
+              ) : (
+                // 宽屏：Codex 式双列，右列可拖宽、可折叠
+                <ResizablePanelGroup
+                  id="agent-main-split"
+                  onLayoutChanged={savePanelWidth}
+                  className="gap-0"
+                >
+                  <ResizablePanel
+                    id="chat"
+                    minSize="380px"
+                    className="min-w-0"
+                  >
+                    {chat}
+                  </ResizablePanel>
+                  {/* 折叠时把手淡出但保留：贴左缘拖它即可重新展开 */}
+                  <ResizableHandle
+                    className={cn(
+                      "transition-opacity duration-200",
+                      !panelOpen && "opacity-0",
+                    )}
+                  />
+                  <ResizablePanel
+                    id="agent-panel"
+                    panelRef={panelRef}
+                    collapsible
+                    collapsedSize={0}
+                    minSize={`${PANEL_MIN_WIDTH}px`}
+                    maxSize="60%"
+                    defaultSize={400}
+                    groupResizeBehavior="preserve-pixel-size"
+                    // 拖到小于 minSize 即自动折叠 / 拖回即展开：状态沿变化时回写开合
+                    onResize={(size) => {
+                      const collapsed = size.inPixels <= 1;
+                      if (collapsed === wasCollapsedRef.current) return;
+                      wasCollapsedRef.current = collapsed;
+                      setPanelOpen(!collapsed);
+                    }}
+                  >
+                    <AgentPanel />
+                  </ResizablePanel>
+                </ResizablePanelGroup>
+              )}
             </main>
           </div>
         </div>

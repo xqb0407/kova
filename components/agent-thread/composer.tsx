@@ -5,6 +5,7 @@ import { ComposerQuotePreview } from "@/components/assistant-ui/elements/quote.a
 import { ComposerTriggerPopover } from "@/components/assistant-ui/elements/composer-trigger-popover.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
+import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
 import { ModePicker } from "@/components/agent-thread/mode-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
 import { PlanApprovalCard } from "@/components/agent-thread/plan-approval-card";
@@ -202,12 +203,29 @@ const WorkspacePill: FC = () => {
               aria-label="Select workspace directory"
               className={
                 cn("group hover:text-foreground inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors",
-                  workspace ? "bg-muted hover:bg-background/80" : "hover:bg-background/80",
+                  workspace ? "bg-muted/50 hover:bg-muted" : "hover:bg-muted",
                 )
               }
             >
               {busy ? (
                 <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
+              ) : workspace ? (
+                // 已选目录：悬浮时文件夹图标原位变为关闭按钮（整体胶囊即清除入口）
+                <span className="relative inline-flex size-3.5 shrink-0 items-center justify-center">
+                  <FolderOpenIcon className="size-3.5 group-hover:hidden" />
+                  <span
+                    role="button"
+                    aria-label="Clear workspace"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      clearWorkspace();
+                    }}
+                    className="hover:text-destructive hidden size-3.5 shrink-0 items-center justify-center rounded-full group-hover:inline-flex"
+                  >
+                    <XIcon className="size-3.5" />
+                  </span>
+                </span>
               ) : (
                 <FolderOpenIcon className="size-3.5 shrink-0" />
               )}
@@ -217,16 +235,6 @@ const WorkspacePill: FC = () => {
             </button>
           }
         />
-        {workspace && (
-          <button
-            type="button"
-            aria-label="Clear workspace"
-            onClick={clearWorkspace}
-            className="hover:bg-muted hover:text-foreground dark:hover:bg-muted/50 -ml-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full"
-          >
-            <XIcon className="size-3.5" />
-          </button>
-        )}
       </div>
       <DropdownMenuContent align="start" sideOffset={0} className="w-64 p-0">
         <DropdownMenuGroup className={"p-0"}>
@@ -258,7 +266,7 @@ const WorkspacePill: FC = () => {
           </div>
         </DropdownMenuGroup>
          <DropdownMenuSeparator  />
-       <div className="p-1">
+       <div className="px-1 pb-1">
          {workspace && (
           <DropdownMenuItem onClick={clearWorkspace}>
             <XIcon className="text-muted-foreground size-3.5 shrink-0" />
@@ -288,6 +296,8 @@ const ComposerAction: FC = () => {
       </div>
       <div className="flex items-center gap-1.5">
         <ModelPicker />
+        {/* 深度思考档位选择：模型右侧、发送按钮左侧，点开下拉选强度 */}
+        <ThinkingPicker />
         <ContextButton />
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>

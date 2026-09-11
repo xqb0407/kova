@@ -122,10 +122,11 @@ export const CompactionDataUI = makeAssistantDataUI<CompactionData>({
 });
 
 /**
- * 手动压缩的即时分隔线：marker 打在流中最后一条消息之后（压缩发生在空闲
- * 边界，「其前全部已压缩」语义天然属于当时的尾部），持续显示——用户发出
- * 下一条消息也不隐藏；重新装载历史后由 get_history 重建的分隔线在正确位置
- * 接管。挂点由 ThreadPrimitive.Messages 的渲染回调提供（见 thread.tsx），
+ * 手动压缩的即时分隔线：marker 按 anchorIndex 钉在压缩发生时那条消息之后
+ * （压缩发生在空闲边界，「其前全部已压缩」语义天然属于打点时刻的尾部），
+ * 持续显示且位置固定——后续新消息排在它下面；锚点消息若被回滚删掉则兜底
+ * 回到列表尾部。重新装载历史后由 get_history 重建的分隔线在正确位置接管。
+ * 挂点由 ThreadPrimitive.Messages 的渲染回调提供（见 thread.tsx），
  * 与消息同处消息流内部，间距与宽度跟消息一致。
  */
 export const ManualCompactionTailAfter: FC<{
@@ -134,10 +135,15 @@ export const ManualCompactionTailAfter: FC<{
 }> = ({ messageId, children }) => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const marker = useManualCompactionMarker(threadId ?? undefined);
-  const isLast = useAuiState(
-    (s) => s.thread.messages.at(-1)?.id === messageId,
-  );
-  if (!marker || !isLast) return <>{children}</>;
+  // 该消息是否就是分隔线的挂载点：优先锚点消息；锚点已被回滚删掉时兜底尾部
+  const showHere = useAuiState((s) => {
+    if (!marker) return false;
+    const anchor = s.thread.messages[marker.anchorIndex - 1];
+    return anchor
+      ? anchor.id === messageId
+      : s.thread.messages.at(-1)?.id === messageId;
+  });
+  if (!marker || !showHere) return <>{children}</>;
   return (
     <>
       {children}

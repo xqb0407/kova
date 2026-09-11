@@ -6,10 +6,18 @@ import { cn } from "@/lib/utils";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { WindowControls } from "@/components/window-controls";
 import { useAuiState } from "@assistant-ui/react";
-import { MenuIcon, PanelLeftIcon, ShareIcon } from "lucide-react";
+import {
+  MenuIcon,
+  PanelLeftIcon,
+  PanelRightCloseIcon,
+  PanelRightOpenIcon,
+  ShareIcon,
+} from "lucide-react";
 import Image from "next/image";
 import logo from "@/public/favicon/logo.svg";
 import { Button } from "@/components/ui/button";
+import { usePanelActivity } from "@/lib/panel-activity";
+import { useThreadTodos } from "@/lib/pi-todo";
 import type { FC } from "react";
 
 export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
@@ -49,11 +57,56 @@ const ThreadTitle: FC = () => {
   );
 };
 
+/** 面板收起时的角标提示:有在途工具或未完成任务才亮 */
+const PanelToggleButton: FC<{
+  panelOpen: boolean;
+  onToggle: () => void;
+}> = ({ panelOpen, onToggle }) => {
+  const { runningCount } = usePanelActivity();
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const snap = useThreadTodos(threadId ?? undefined);
+  const hasUnfinishedPlan = snap.tasks.some(
+    (t) => t.status !== "deleted" && t.status !== "completed",
+  );
+  const badge = !panelOpen && (runningCount > 0 || hasUnfinishedPlan);
+
+  return (
+    <TooltipIconButton
+      variant="ghost"
+      size="icon"
+      tooltip={panelOpen ? "收起 Agent 面板" : "展开 Agent 面板"}
+      side="bottom"
+      onClick={onToggle}
+      className="relative size-8 shrink-0"
+    >
+      {panelOpen ? (
+        <PanelRightCloseIcon className="size-4" />
+      ) : (
+        <PanelRightOpenIcon className="size-4" />
+      )}
+      {badge ? (
+        <span
+          aria-hidden="true"
+          className="bg-primary absolute top-1 right-1 size-1.5 animate-pulse rounded-full"
+        />
+      ) : null}
+    </TooltipIconButton>
+  );
+};
+
 export const Header: FC<{
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
   onOpenMobileSidebar: () => void;
-}> = ({ sidebarCollapsed, onToggleSidebar, onOpenMobileSidebar }) => {
+  panelOpen: boolean;
+  onTogglePanel: () => void;
+}> = ({
+  sidebarCollapsed,
+  onToggleSidebar,
+  onOpenMobileSidebar,
+  panelOpen,
+  onTogglePanel,
+}) => {
   // 桌面端自绘 titlebar：拖拽区所有桌面端生效；红绿灯让位仅 macOS（Windows 隐藏系统
   // 标题栏后由 WindowControls 接管，网页端无窗口 chrome）
   const desktop = isTauri();
@@ -92,16 +145,10 @@ export const Header: FC<{
         </TooltipIconButton>
       )}
       <ThreadTitle />
-      <TooltipIconButton
-        variant="ghost"
-        size="icon"
-        tooltip="Share"
-        side="bottom"
-        disabled
-        className="ml-auto size-8"
-      >
-        <ShareIcon className="size-4" />
-      </TooltipIconButton>
+      {/* Agent 面板开关：贴右缘（Share 左侧），收起时有活动则亮角标 */}
+      <div className="ml-auto flex shrink-0 items-center">
+        <PanelToggleButton panelOpen={panelOpen} onToggle={onTogglePanel} />
+      </div>
       {/* 窗口控制固定在窗口右上角（主 Header 右缘即窗口右缘）；仅 Windows/Linux 渲染 */}
       <WindowControls />
     </header>

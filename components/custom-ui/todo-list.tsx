@@ -1,7 +1,7 @@
 "use client";
 // beui.dev/components/agents/todo-list
 
-import { ChevronDown, ListTodo } from "lucide-react";
+import { ChevronDown, ListTodo, X } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   type ReactNode,
@@ -12,8 +12,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { ActionSwapRollText } from "./action-swap-roll.js";
-import { AgentDisclosure } from "./agent-disclosure.js";
+import { ActionSwapRollText } from "./action-swap-roll";
+import { AgentDisclosure } from "./agent-disclosure";
 import {
   EASE_OUT,
   SPRING_LAYOUT,
@@ -41,6 +41,8 @@ export interface TodoListProps {
   open?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /** 传入时头部渲染 × 按钮：手动收起面板（清单数据仍在，由外层收敛成药丸） */
+  onClose?: () => void;
   collapseOnComplete?: boolean;
   maxHeight?: number;
   className?: string;
@@ -204,6 +206,7 @@ export function TodoList({
   open,
   defaultOpen = true,
   onOpenChange,
+  onClose,
   collapseOnComplete = true,
   maxHeight = 248,
   className,
@@ -264,44 +267,57 @@ export function TodoList({
         className,
       )}
     >
-      <button
-        id={triggerId}
-        type="button"
-        aria-expanded={currentOpen}
-        aria-controls={contentId}
-        onClick={() => setOpen(!currentOpen)}
-        className="group flex h-11 w-full items-center gap-2.5 rounded-2xl px-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <TodoHeaderIcon complete={allComplete} />
-        <h3 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
-          {title}
-        </h3>
-        <span
-          className={cn(
-            "shrink-0 text-xs font-medium tabular-nums text-muted-foreground",
-            allComplete && "text-emerald-600 dark:text-emerald-400",
-          )}
+      <div className="flex items-center">
+        <button
+          id={triggerId}
+          type="button"
+          aria-expanded={currentOpen}
+          aria-controls={contentId}
+          onClick={() => setOpen(!currentOpen)}
+          className="group flex h-11 min-w-0 flex-1 items-center gap-2.5 rounded-2xl px-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <span className="sr-only">
-            {completed} of {items.length} tasks completed
+          <TodoHeaderIcon complete={allComplete} />
+          <h3 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
+            {title}
+          </h3>
+          <span
+            className={cn(
+              "shrink-0 text-xs font-medium tabular-nums text-muted-foreground",
+              allComplete && "text-emerald-600 dark:text-emerald-400",
+            )}
+          >
+            <span className="sr-only">
+              {completed} of {items.length} tasks completed
+            </span>
+            <span aria-hidden="true" className="inline-flex">
+              <ActionSwapRollText value={String(completed)}>
+                {completed}
+              </ActionSwapRollText>
+              <span>/</span>
+              <span>{items.length}</span>
+            </span>
           </span>
-          <span aria-hidden="true" className="inline-flex">
-            <ActionSwapRollText value={String(completed)}>
-              {completed}
-            </ActionSwapRollText>
-            <span>/</span>
-            <span>{items.length}</span>
-          </span>
-        </span>
-        <motion.span
-          aria-hidden="true"
-          animate={{ rotate: currentOpen ? 180 : 0 }}
-          transition={reduce ? { duration: 0 } : SPRING_SWAP}
-          className="text-muted-foreground/50 transition-colors group-hover:text-muted-foreground"
-        >
-          <ChevronDown className="size-3.5" />
-        </motion.span>
-      </button>
+          <motion.span
+            aria-hidden="true"
+            animate={{ rotate: currentOpen ? 180 : 0 }}
+            transition={reduce ? { duration: 0 } : SPRING_SWAP}
+            className="text-muted-foreground/50 transition-colors group-hover:text-muted-foreground"
+          >
+            <ChevronDown className="size-3.5" />
+          </motion.span>
+        </button>
+        {onClose && (
+          <button
+            type="button"
+            aria-label="Collapse task panel"
+            title="关闭任务面板（AI 更新清单时自动展开）"
+            onClick={onClose}
+            className="text-muted-foreground/60 hover:bg-muted hover:text-foreground mr-1.5 flex size-7 shrink-0 items-center justify-center rounded-lg transition-colors"
+          >
+            <X className="size-3.5" />
+          </button>
+        )}
+      </div>
 
       <AgentDisclosure
         id={contentId}

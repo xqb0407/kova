@@ -1,10 +1,12 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import path from "node:path";
 import { initStorage, sessionPath } from "./storage";
-import { sessionInsert, sessionGet, getLocalDb } from "./hostdb";
-import { dispatch, dispatchPrompt } from "./protocol";
+import { sessionInsert, sessionGet, getLocalDb, modelsReplace } from "./hostdb";
+import { dispatch, dispatchPrompt, handleLine, setInitGate } from "./protocol";
+import { running } from "./sessions";
+import { registerCustomProvider, setCurrentModelKey } from "./model-catalog";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-protocol-"));
 
@@ -116,6 +118,39 @@ describe("dispatch: sessions", () => {
     expect(existsSync(sessionPath("seeded-session"))).toBe(false);
     expect(await sessionGet("seeded-session")).toBeNull();
   });
+
+  test("未选目录建的会话，后续请求带 cwd 时补绑（修复代码写到主目录）", async () => {
+    const threadId = "th-rebind";
+    // 建会话时不带 cwd：运行 cwd 兜底主目录，持久化 cwd 为空
+    await dispatch("rb1", { type: "new_session", threadId });
+    const sessionId = last().sessionId as string;
+    const run = running.get(threadId)!;
+    expect(run.cwd).toBe(homedir());
+    expect(run.persistedCwd).toBe("");
+
+    // 用户选了工作目录后的任意请求（这里用 context_info 走同一条 resolveSession）
+    const workspace = path.join(tmp, "workspace");
+    await dispatch("rb2", { type: "context_info", threadId, sessionId, cwd: workspace });
+
+    // 内存 run：运行 cwd/持久化 cwd 都换过去，工具与系统提示词已按新 cwd 重建
+    expect(run.cwd).toBe(workspace);
+    expect(run.persistedCwd).toBe(workspace);
+    expect(run.agent.state.tools.length).toBeGreaterThan(0);
+    expect(run.agent.state.systemPrompt).toContain(workspace);
+    // DB 索引行与 JSONL header 同步回写
+    expect((await sessionGet(sessionId))!.cwd).toBe(workspace);
+    const header = JSON.parse(readFileSync(sessionPath(sessionId), "utf8"));
+    expect(header.cwd).toBe(workspace);
+
+    // 已绑定目录的会话不再被后续 cwd 改动（换目录开新会话是前端职责）
+    await dispatch("rb3", {
+      type: "context_info",
+      threadId,
+      sessionId,
+      cwd: path.join(tmp, "other"),
+    });
+    expect(run.persistedCwd).toBe(workspace);
+  });
 });
 
 describe("dispatch: context_info / compact", () => {
@@ -208,6 +243,68 @@ describe("dispatch: models", () => {
   });
 });
 
+describe("dispatch: thinking", () => {
+  test("set_thinking echoes the level", async () => {
+    await dispatch("t1", { type: "set_thinking", level: "medium" });
+    expect(last()).toEqual({ id: "t1", type: "thinking", level: "medium" });
+    await dispatch("t2", { type: "set_thinking", level: "off" });
+    expect(last()).toEqual({ id: "t2", type: "thinking", level: "off" });
+  });
+
+  test("set_thinking rejects unknown levels", async () => {
+    await expect(
+      dispatch("t3", { type: "set_thinking", level: "ultra" }),
+    ).rejects.toThrow("unknown thinking level: ultra");
+    await expect(
+      dispatch("t4", { type: "set_thinking" }),
+    ).rejects.toThrow("unknown thinking level: ");
+  });
+});
+
+describe("dispatch: thinking maps", () => {
+  test("set_thinking_maps counts clean entries and drops garbage", async () => {
+    await dispatch("tm1", {
+      type: "set_thinking_maps",
+      maps: { "p/m": { off: "none", minimal: null } },
+    });
+    expect(last()).toEqual({ id: "tm1", type: "thinking_maps", applied: 1 });
+
+    // 非字符串非 null 值与未知键被清洗掉 → 整条 map 为空不计入
+    await dispatch("tm2", {
+      type: "set_thinking_maps",
+      maps: { "p/m": { off: 42, bogus: "x" } },
+    });
+    expect(last()).toEqual({ id: "tm2", type: "thinking_maps", applied: 0 });
+
+    await dispatch("tm3", { type: "set_thinking_maps" });
+    expect(last()).toEqual({ id: "tm3", type: "thinking_maps", applied: 0 });
+  });
+});
+
+describe("dispatch: todo state", () => {
+  test("get_todo_state reports an empty list for a fresh session", async () => {
+    await dispatch("td1", { type: "new_session", threadId: "th-todo", cwd: tmp });
+    const sessionId = last().sessionId as string;
+    await dispatch("td2", {
+      type: "get_todo_state",
+      threadId: "th-todo",
+      sessionId,
+    });
+    expect(last()).toEqual({
+      id: "td2",
+      type: "todo_state",
+      tasks: [],
+      nextId: 1,
+    });
+  });
+
+  test("get_todo_state without thread or sessionId rejects", async () => {
+    await expect(
+      dispatch("td3", { type: "get_todo_state", threadId: "ghost-thread" }),
+    ).rejects.toThrow("session not found: ghost-thread");
+  });
+});
+
 describe("dispatchPrompt", () => {
   // 测试环境的网络失败会命中自动重试预算（最长 ~80s），关闭重试让
   // 「单次失败即回 error chunk」的旧语义保持可测
@@ -235,5 +332,47 @@ describe("dispatchPrompt", () => {
     const res = last();
     expect((res.chunk as { type: string }).type).toBe("error");
     expect((res.chunk as { errorText: string }).errorText).toContain("session not found");
+  });
+});
+
+describe("dispatch: get_model / init gate", () => {
+  test("get_model returns an empty selection before any set_model", async () => {
+    await dispatch("gm0", { type: "get_model" });
+    expect(last()).toEqual({ id: "gm0", type: "model", provider: "", modelId: "" });
+  });
+
+  test("set_model/get_model roundtrip via a custom provider", async () => {
+    await modelsReplace("proto-p", [{ modelId: "m1", enabled: true }]);
+    await registerCustomProvider({
+      id: "proto-p",
+      name: "Proto P",
+      baseUrl: "https://p.io",
+      api: "openai-chat",
+    });
+    await dispatch("gm1", { type: "set_credential", provider: "proto-p", apiKey: "sk-p" });
+    await dispatch("gm2", { type: "set_model", provider: "proto-p", modelId: "m1" });
+    expect(last()).toEqual({ id: "gm2", type: "model", provider: "proto-p", modelId: "m1" });
+    await dispatch("gm3", { type: "get_model" });
+    expect(last()).toEqual({ id: "gm3", type: "model", provider: "proto-p", modelId: "m1" });
+    setCurrentModelKey(null); // 清理：不留全局选择
+  });
+
+  test("commands arriving before the init gate are buffered", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    setInitGate(gate);
+    try {
+      handleLine(JSON.stringify({ type: "ping", id: "gate-1" }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // 闸门未放行：不应有任何 gate-1 响应
+      expect(lines.some((line) => line.includes('"gate-1"'))).toBe(false);
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(last()).toEqual({ id: "gate-1", type: "pong" });
+    } finally {
+      setInitGate(Promise.resolve()); // 还原闸门，避免影响其他测试
+    }
   });
 });

@@ -5,9 +5,9 @@ import { useSyncExternalStore } from "react";
 /**
  * 手动压缩的即时分隔线标记（per-thread，进程内不落盘）。
  * compact 命令走请求-响应、不产生消息流 chunk，前端把结果暂存为 marker，
- * 渲染在消息列表尾部并持续显示（下一条消息到来也不隐藏）；重新装载历史
- * （切换线程/重启）时由 pi-thread-adapter 清除——此时分隔线已由
- * get_history 从 compaction 检查点行重建进消息流，位置以历史为准。
+ * 按 anchorIndex 渲染在压缩发生时那条消息之后并持续显示（后续新消息排在其
+ * 下）；重新装载历史（切换线程/重启）时由 pi-thread-adapter 清除——此时
+ * 分隔线已由 get_history 从 compaction 检查点行重建进消息流，位置以历史为准。
  */
 
 export type ManualCompactionData = {
@@ -24,6 +24,12 @@ export type ManualCompactionMarker = {
   threadId: string;
   /** pi session remoteId：历史装载按它反查清除 */
   remoteId: string | undefined;
+  /**
+   * 打点时刻线程的消息数：分隔线锚定在第 anchorIndex-1 条消息之后
+   * （压缩发生在该前缀的空闲边界）。后续新消息渲染在它下面；若锚点消息
+   * 被回滚删掉则兜底回到尾部。
+   */
+  anchorIndex: number;
   data: ManualCompactionData;
 };
 
