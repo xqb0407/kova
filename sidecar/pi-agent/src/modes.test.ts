@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   APPROVAL_REQUIRED_TOOLS,
   applyMode,
@@ -223,6 +226,43 @@ describe("approvalBeforeToolCall", () => {
     const [approvalId] = [...run.pendingToolApprovals.keys()];
     resolveToolApproval(run, approvalId, true);
     await expect(hook).resolves.toBeUndefined();
+  });
+});
+
+describe("SubmitPlan 落盘", () => {
+  test("plan 模式提交时写入 .xulux/plans/，proposal 携带 filePath", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "xulux-plan-test-"));
+    try {
+      const run = makeRun("plan");
+      run.cwd = dir;
+      run.sessionId = "sess_test123";
+      const submit = toolsForMode(run).find((t) => t.name === "SubmitPlan")!;
+      await submit.execute!("tc1", {
+        title: "Fix: login bug",
+        markdown: "## 步骤\n1. 修改 a.ts",
+        question: "是否批准？",
+      } as never);
+      expect(run.planning).toBe("awaiting_approval");
+      expect(run.proposal?.filePath).toBeTruthy();
+      expect(run.proposal?.filePath!).toContain(join(dir, ".xulux", "plans"));
+      expect(run.proposal?.filePath!).toMatch(/^plan-Fix-login-bug-sess_test123-\d{8}-\d{6}\.md$/);
+      const content = await readFile(run.proposal!.filePath!, "utf8");
+      expect(content).toContain("# Fix: login bug");
+      expect(content).toContain("修改 a.ts");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("goal 模式提交不落盘", async () => {
+    const run = makeRun("goal");
+    const submit = toolsForMode(run).find((t) => t.name === "SubmitGoal")!;
+    await submit.execute!("tc2", {
+      title: "g",
+      markdown: "goal body",
+      question: "q",
+    } as never);
+    expect(run.proposal?.filePath).toBeUndefined();
   });
 });
 
