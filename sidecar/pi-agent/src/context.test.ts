@@ -134,6 +134,7 @@ describe("runCompaction", () => {
       generation: 1,
       tokensBefore: expect.any(Number),
       summarized: true,
+      summary: "THE SUMMARY",
     });
     const messages = run.agent.state.messages as unknown as Message[];
     expect(messages.length).toBe(1);

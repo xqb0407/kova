@@ -109,9 +109,9 @@
 }
 
 @theme inline {
-  --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-  --font-display: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-sans: var(--app-font-sans);
+  --font-display: var(--app-font-sans);
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
   --container-7xl: var(--page-width);
 
   --radius-sm: calc(var(--radius) - 4px);
@@ -176,6 +176,13 @@
 :root {
   --page-width: 80rem;
   --radius: 0.625rem;
+  /* 界面字体栈（font-sans/font-display 经 @theme inline 引用本变量）。
+     默认栈显式包含各平台中文字体，避免 Windows 上中文回退到宋体；
+     data-font 档位覆盖见下方 :root[data-font] 规则（外观设置-字体选择） */
+  --app-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   /* Content slabs (code blocks) carry a fill instead of a border, so the tint
      has to stay slight. Resolved per theme: it lifts on dark, recedes on light. */
   --code-surface: color-mix(in oklab, var(--foreground) 4%, var(--background));
@@ -305,6 +312,52 @@
 }
 :root[data-chat-width="wide"] {
   --chat-width: 70rem;
+}
+
+/* 字体档位（外观设置-字体选择，lib/ui-prefs.ts 落 html[data-font]）：
+   覆盖默认界面字体栈；各档均为「西文优先 + 中文回退」组合。
+   霞鹜文楷 / JetBrains Mono 由 layout.tsx 引入的 @font-face 提供；
+   Segoe UI 为 Windows 系统字体（许可不允许分发），非 Windows 自动回退 */
+:root[data-font="segoe"] {
+  --app-font-sans: "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    "Noto Sans SC", sans-serif;
+}
+:root[data-font="inter"] {
+  --app-font-sans: "Inter", "PingFang SC", "Microsoft YaHei",
+    "Noto Sans SC", sans-serif;
+}
+:root[data-font="roboto"] {
+  --app-font-sans: "Roboto", "PingFang SC", "Microsoft YaHei",
+    "Noto Sans SC", sans-serif;
+}
+:root[data-font="open-sans"] {
+  --app-font-sans: "Open Sans", "PingFang SC", "Microsoft YaHei",
+    "Noto Sans SC", sans-serif;
+}
+:root[data-font="noto-sans-sc"] {
+  --app-font-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+:root[data-font="serif"] {
+  --app-font-sans: Georgia, "Times New Roman", "Songti SC", "Noto Serif SC",
+    SimSun, serif;
+}
+:root[data-font="noto-serif-sc"] {
+  --app-font-sans: "Noto Serif SC", "Songti SC", SimSun, serif;
+}
+:root[data-font="kai"] {
+  --app-font-sans: "Kaiti SC", "STKaiti", KaiTi, "DFKai-SB", "Noto Serif SC",
+    serif;
+}
+:root[data-font="wenkai"] {
+  --app-font-sans: "LXGW WenKai", "Kaiti SC", KaiTi, "Noto Serif SC", serif;
+}
+:root[data-font="mono"] {
+  --app-font-sans: ui-monospace, "Cascadia Code", Consolas, "SF Mono", Menlo,
+    "PingFang SC", "Microsoft YaHei", monospace;
+}
+:root[data-font="jetbrains"] {
+  --app-font-sans: "JetBrains Mono", ui-monospace, Consolas, "SF Mono", Menlo,
+    "PingFang SC", "Microsoft YaHei", monospace;
 }
 
 @layer base {

@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "build:sidecar": "cd sidecar/pi-agent && bun install --production && bun run build && cp ../../src-tauri/binaries/pi-agent-* ../../src-tauri/target/debug/pi-agent 2>/dev/null || true"
+    "build:sidecar": "cd sidecar/pi-agent && bun install --production && bun run build"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.52",
@@ -20,6 +20,12 @@
     "@assistant-ui/react-markdown": "^0.14.14",
     "@assistant-ui/react-streamdown": "^0.3.13",
     "@base-ui/react": "^1.7.0",
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/noto-sans-sc": "^5.3.0",
+    "@fontsource/noto-serif-sc": "^5.3.0",
+    "@fontsource/open-sans": "^5.3.0",
+    "@fontsource/roboto": "^5.3.0",
     "@streamdown/cjk": "^1.0.3",
     "@streamdown/code": "^1.1.1",
     "@streamdown/math": "^1.0.2",
@@ -35,6 +41,7 @@
     "framer-motion": "^13.2.0",
     "input-otp": "^1.5.0",
     "lucide-react": "^1.38.0",
+    "lxgw-wenkai-webfont": "^1.7.0",
     "next": "^16.3.4",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.8",

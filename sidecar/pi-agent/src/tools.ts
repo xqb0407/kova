@@ -5,6 +5,8 @@
  * 杀整棵进程树，避免 Windows 上孙进程残留。
  * glob/grep 仍在本侧实现：纯只读内存计算，且 JS 正则（lookahead 等）与
  * Rust regex 语法不兼容。
+ * WebFetch/WebSearch 见 http-tools.ts：schema 在彼处定义，网络执行同样下沉
+ * Rust（handle_http）——sidecar 不在 Tauri 运行时内，出口统一到宿主。
  */
 import {
   existsSync,
@@ -16,6 +18,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostToolCall } from "./hostdb";
+import { buildWebTools } from "./http-tools";
 
 /** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
 const MAX_WALKED_FILES = 5000;
@@ -276,6 +279,7 @@ export function buildTools(cwd: string): AgentTool[] {
     ),
     buildGlobTool(cwd),
     buildGrepTool(cwd),
+    ...buildWebTools(cwd),
   ];
   return tools;
 }

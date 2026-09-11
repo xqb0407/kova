@@ -19,7 +19,7 @@ import { ThreadWelcome } from "./thread-welcome";
 import { ThreadSuggestions } from "./thread-suggestions";
 import { Composer, EditComposer } from "./composer";
 import { AssistantMessage } from "./assistant-message";
-import { CompactionDataUI, ManualCompactionTail } from "./compaction-banner";
+import { CompactionDataUI, ManualCompactionTailAfter } from "./compaction-banner";
 import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
 
@@ -109,13 +109,23 @@ export const Thread: FC = () => {
         >
           <ThreadPrimitive.Messages>
             {({ message }) => {
-              if (message.composer.isEditing) return <EditComposer />;
-              if (message.role === "user") return <UserMessage />;
-              return <AssistantMessage />;
+              const inner =
+                message.composer.isEditing ? (
+                  <EditComposer />
+                ) : message.role === "user" ? (
+                  <UserMessage />
+                ) : (
+                  <AssistantMessage />
+                );
+              // 手动压缩的即时分隔线：挂在流中最后一条消息之后（Messages 内部，
+              // 与消息同布局），持续显示，重新装载历史后由重建的分隔线接管
+              return (
+                <ManualCompactionTailAfter messageId={String(message.id)}>
+                  {inner}
+                </ManualCompactionTailAfter>
+              );
             }}
           </ThreadPrimitive.Messages>
-          {/* 手动压缩的即时分隔线（marker 只在列表尾部有效，下一条消息即隐藏） */}
-          <ManualCompactionTail />
         </div>
 
         <ThreadPrimitive.ViewportFooter

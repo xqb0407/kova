@@ -6,11 +6,18 @@ import { isTauri } from "@/lib/tauri";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   setWindowEffect,
   useWindowEffect,
   type WindowEffectName,
 } from "@/lib/appearance";
-import { setUiPref, useUiPrefs, type AccentName } from "@/lib/ui-prefs";
+import { setUiPref, useUiPrefs, type AccentName, type FontFamilyName } from "@/lib/ui-prefs";
 
 /** 强调色预设：color 与 globals.css 中 :root[data-accent] 的 --primary 一致 */
 const ACCENTS: { value: AccentName; label: string; color: string | null }[] = [
@@ -55,6 +62,27 @@ const EFFECT_OPTIONS: { value: WindowEffectName; label: string }[] = [
   { value: "none", label: "不透明" },
   { value: "acrylic", label: "高斯模糊" },
   { value: "mica", label: "Mica" },
+];
+
+/** 字体档位：value 对应 globals.css 的 :root[data-font] 覆盖规则；
+ *  stack 用于触发器与下拉项的字体预览 */
+const FONT_FAMILY_OPTIONS: {
+  value: FontFamilyName;
+  label: string;
+  stack: string;
+}[] = [
+  { value: "default", label: "默认（系统）", stack: "var(--app-font-sans)" },
+  { value: "inter", label: "Inter", stack: '"Inter", sans-serif' },
+  { value: "segoe", label: "Segoe UI", stack: '"Segoe UI", sans-serif' },
+  { value: "serif", label: "衬线", stack: 'Georgia, "Songti SC", serif' },
+  { value: "kai", label: "楷体", stack: '"Kaiti SC", KaiTi, serif' },
+  { value: "wenkai", label: "霞鹜文楷", stack: '"LXGW WenKai", serif' },
+  { value: "mono", label: "等宽", stack: 'Consolas, Menlo, monospace' },
+  {
+    value: "jetbrains",
+    label: "JetBrains Mono",
+    stack: '"JetBrains Mono", monospace',
+  },
 ];
 
 /** 外观配置页：通用外观（主题/强调色/字号/对话宽度，localStorage 按客户端保存）
@@ -104,6 +132,43 @@ export const AppearanceSettings: FC = () => {
                 ]}
                 onChange={(v) => setUiPref("fontSize", v)}
               />
+            </SettingRow>
+            <SettingRow label="字体" desc="界面文字的字体风格">
+              <Select
+                value={prefs.fontFamily}
+                onValueChange={(v) => v && setUiPref("fontFamily", v)}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="w-44"
+                  style={{
+                    fontFamily: FONT_FAMILY_OPTIONS.find(
+                      (f) => f.value === prefs.fontFamily,
+                    )?.stack,
+                  }}
+                >
+                  {/* 显式回显：Radix SelectValue 依赖 item 注册（打开过下拉才有），
+                      受控 value 在未打开过下拉时会回显为空，因此用 children 覆盖 */}
+                  <SelectValue>
+                    {
+                      FONT_FAMILY_OPTIONS.find(
+                        (f) => f.value === prefs.fontFamily,
+                      )?.label
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {FONT_FAMILY_OPTIONS.map((f) => (
+                    <SelectItem
+                      key={f.value}
+                      value={f.value}
+                      style={{ fontFamily: f.stack }}
+                    >
+                      {f.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </SettingRow>
             <SettingRow label="对话宽度" desc="消息内容区的最大宽度">
               <Segmented
