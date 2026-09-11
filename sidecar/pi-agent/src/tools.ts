@@ -7,6 +7,7 @@
  * Rust regex 语法不兼容。
  * WebFetch/WebSearch 见 http-tools.ts：schema 在彼处定义，网络执行同样下沉
  * Rust（handle_http）——sidecar 不在 Tauri 运行时内，出口统一到宿主。
+ * Question 见 question-tools.ts：挂起等 UI 作答的交互工具，回路仿逐工具审批。
  */
 import {
   existsSync,
@@ -19,6 +20,7 @@ import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostToolCall } from "./hostdb";
 import { buildWebTools } from "./http-tools";
+import { buildQuestionTool } from "./question-tools";
 
 /** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
 const MAX_WALKED_FILES = 5000;
@@ -236,7 +238,7 @@ function hostTool(
   };
 }
 
-export function buildTools(cwd: string): AgentTool[] {
+export function buildTools(cwd: string, threadId: string): AgentTool[] {
   const tools: AgentTool[] = [
     hostTool("bash", cwd,
       "Run a shell command in the workspace and return combined stdout/stderr. " +
@@ -280,6 +282,8 @@ export function buildTools(cwd: string): AgentTool[] {
     buildGlobTool(cwd),
     buildGrepTool(cwd),
     ...buildWebTools(cwd),
+    // Question 不触盘不触网（挂起等 UI 作答），但要 threadId 做挂起归属
+    buildQuestionTool(threadId),
   ];
   return tools;
 }

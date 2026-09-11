@@ -46,6 +46,8 @@
  *       拒绝未决提案：留在契约模式继续修改
  *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved" } → { id, type: "tool_confirmed", approvalId }
  *       结算 bash/write/edit 执行前的逐工具审批（prompt 流内 data-toolApproval chunk 发起）
+ *   { "type": "question_answer", "id", "threadId", "questionId", "answers": [{ questionId, selectedIds, otherText?, skipped? }] } → { id, type: "question_answered", questionId }
+ *       结算 Question 工具的挂起提问（prompt 流内 data-question chunk 发起，前端 AskUserQuestions 卡片作答）
  *   { "type": "context_info", "id", "threadId", "sessionId"? } → { id, type: "context_info", ... }
  *       上下文面板读数：容量/阈值/消息/系统提示词/工具占用 + 平均缓存命中率（现算，零持久化）
  *   { "type": "compact", "id", "threadId", "sessionId"? }     → { id, type: "compacted", generation, tokensBefore, summarized }
@@ -119,6 +121,11 @@ import {
   planningPayload,
   resolveToolApproval,
 } from "./modes";
+import {
+  cancelPendingQuestions,
+  resolveQuestionAnswer,
+  type QuestionAnswerItem,
+} from "./question-tools";
 import type { CustomModelSpec, SessionSummary } from "./types";
 
 /** stdin 关闭（父进程写完）不等于任务处理完毕，等挂起请求清零再退出 */
@@ -203,9 +210,10 @@ function compactionChunkData(outcome: {
 
 /** prompt：会话准备段入管理队列串行执行，agent.prompt 长任务在队列外运行 */
 export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>) {
+  const threadId = String(msg.threadId ?? "default");
   const task = mgmtQueue.then(() =>
     resolveSession(
-      String(msg.threadId ?? "default"),
+      threadId,
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
       typeof msg.cwd === "string" ? msg.cwd : undefined,
     ),
@@ -234,10 +242,18 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
   run.stopRequested = false;
   // 上一次运行的溢出恢复残留（正常应在 runStepWithRecovery 内消费）兜底清理
   run.pendingOverflowRecovery = false;
+  // 新一轮重置 provider 重试记账：预算清零、响应捕获清空，
+  // data-retry part 换用新 id（同轮内多次尝试同 id 原地更新，见 provider-retry.ts）
+  run.providerRetry.rateLimit = 0;
+  run.providerRetry.transient = 0;
+  run.retryCapture = {};
+  run.providerRetryActive = false;
+  run.providerRetryChunkId = `retry-${++run.providerRetryTurnSeq}`;
   // 新用户输入隐式关闭未决审批（未点批准/拒绝就直接发消息）
   closeProposalOnNewPrompt(run);
-  // 逐工具审批理论上不会跨 turn 遗留（abort 已结算），兜底清理防挂起
+  // 逐工具审批/挂起提问理论上不会跨 turn 遗留（abort 已结算），兜底清理防挂起
   clearPendingToolApprovals(run);
+  cancelPendingQuestions(threadId);
   sendChunk(reqId, { type: "start" });
 
   // 每段 prompt 是消息流里的一个 step；resume 段前重置内容 id，避免与上一段撞 id
@@ -342,10 +358,11 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     }
     case "abort": {
       // 用户 Stop：中止父代理与全部后台子代理，并让收敛循环退出；
-      // 挂起的逐工具审批按拒绝结算，避免 beforeToolCall 永久挂起
-      for (const run of running.values()) {
+      // 挂起的逐工具审批按拒绝结算、挂起提问按取消结算，避免永久悬挂
+      for (const [threadId, run] of running.entries()) {
         run.stopRequested = true;
         clearPendingToolApprovals(run);
+        cancelPendingQuestions(threadId);
         for (const d of run.delegations.values()) {
           if (d.status === "running") {
             d.stopRequested = true;
@@ -855,6 +872,18 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         throw new Error(`no pending tool approval: ${approvalId}`);
       }
       send({ id: reqId, type: "tool_confirmed", approvalId });
+      break;
+    }
+    case "question_answer": {
+      // 结算 Question 工具的挂起提问：execute 拿到答案后格式化回模型（toolCallId 全局唯一，无需按会话查 run）
+      const questionId = String(msg.questionId ?? "");
+      const answers = Array.isArray(msg.answers)
+        ? (msg.answers as QuestionAnswerItem[])
+        : [];
+      if (!resolveQuestionAnswer(questionId, answers)) {
+        throw new Error(`no pending question: ${questionId}`);
+      }
+      send({ id: reqId, type: "question_answered", questionId });
       break;
     }
     case "set_mode": {

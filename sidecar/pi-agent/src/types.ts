@@ -1,6 +1,7 @@
 /** 跨模块共享类型 */
 import type { Agent, AgentTool } from "@earendil-works/pi-agent-core";
 import type * as ai from "ai";
+import type { RetryBudget } from "./provider-retry";
 
 /** AI SDK UI 消息类型（协议流与 JSONL 持久化都用它） */
 export type UIMessage = ai.UIMessage;
@@ -90,6 +91,19 @@ export type Running = {
   compactionAbort?: AbortController;
   /** stream.ts 检测到上下文溢出错误后置位，dispatchPrompt 结算恢复 */
   pendingOverflowRecovery: boolean;
+  /** 本轮 provider 请求的重试预算（429/瞬时各自封顶，每个 prompt 轮重置） */
+  providerRetry: RetryBudget;
+  /** streamFn 接线处的 fetch 包装回传的失败响应捕获（status + 可延迟头） */
+  retryCapture: {
+    status?: number;
+    headers?: Readonly<Record<string, string>>;
+  };
+  /** 当前 data-retry part id（每 prompt 轮一个，多次尝试同 id 原地更新） */
+  providerRetryChunkId: string;
+  /** 重试卡片在屏标志：onRetry 置位，onSettled 发 resolved 后清除 */
+  providerRetryActive: boolean;
+  /** providerRetryChunkId 的轮次序号源 */
+  providerRetryTurnSeq: number;
   /** 本会话的 Task 委派注册表 */
   delegations: Map<string, DelegationRecord>;
   /** 用户 Stop 置位：中止后台子代理并退出收敛循环 */

@@ -10,6 +10,7 @@ import {
   settleDelegation,
   waitForDelegations,
 } from "./subagent";
+import { createRetryBudget } from "./provider-retry";
 import type { DelegationRecord, Running, SubagentRunResult } from "./types";
 
 /** 构造最小可用的委派登记项（不触碰 Agent / 模型目录） */
@@ -47,6 +48,11 @@ function makeRun(records: DelegationRecord[] = []): Running {
     jsonlSeq: 0,
     compactionGeneration: 0,
     pendingOverflowRecovery: false,
+    providerRetry: createRetryBudget(),
+    retryCapture: {},
+    providerRetryChunkId: "retry-1",
+    providerRetryActive: false,
+    providerRetryTurnSeq: 1,
     delegations: new Map(records.map((r) => [r.delegationId, r])),
     stopRequested: false,
     mode: "agent",

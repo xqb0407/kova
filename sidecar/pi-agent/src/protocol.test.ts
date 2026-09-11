@@ -209,6 +209,17 @@ describe("dispatch: models", () => {
 });
 
 describe("dispatchPrompt", () => {
+  // 测试环境的网络失败会命中自动重试预算（最长 ~80s），关闭重试让
+  // 「单次失败即回 error chunk」的旧语义保持可测
+  const prevRetryMax = process.env.PI_PROVIDER_RETRY_MAX;
+  beforeAll(() => {
+    process.env.PI_PROVIDER_RETRY_MAX = "0";
+  });
+  afterAll(() => {
+    if (prevRetryMax === undefined) delete process.env.PI_PROVIDER_RETRY_MAX;
+    else process.env.PI_PROVIDER_RETRY_MAX = prevRetryMax;
+  });
+
   // 无凭据时 Agent 可能注入默认模型然后流式失败，也可能命中无模型守卫——
   // 两种路径最终都会给请求回一个 error chunk
   test("emits an error chunk when no usable model is configured", async () => {

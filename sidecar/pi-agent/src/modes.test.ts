@@ -12,6 +12,7 @@ import {
   toolsForMode,
 } from "./modes";
 import { SYSTEM_PROMPT_CORE, workspacePromptLine } from "./tools";
+import { createRetryBudget } from "./provider-retry";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { PlanningState, Running, SessionMode } from "./types";
@@ -36,6 +37,11 @@ function makeRun(mode: SessionMode = "agent"): Running {
     jsonlSeq: 0,
     compactionGeneration: 0,
     pendingOverflowRecovery: false,
+    providerRetry: createRetryBudget(),
+    retryCapture: {},
+    providerRetryChunkId: "retry-1",
+    providerRetryActive: false,
+    providerRetryTurnSeq: 1,
     delegations: new Map(),
     stopRequested: false,
     mode,

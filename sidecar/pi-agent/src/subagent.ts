@@ -14,6 +14,15 @@ import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent
 import { Type } from "typebox";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { getModels } from "./model-catalog";
+import { logErr } from "./log";
+import {
+  captureProviderResponse,
+  carriesRetryDelayHeaders,
+  claimRetry,
+  createProviderRetryStream,
+  createRetryBudget,
+  providerRetryMaxRetries,
+} from "./provider-retry";
 import type { SubagentDefinition } from "./subagent-definitions";
 import type { DelegationRecord, Running, SubagentRunResult, SubagentRunStatus } from "./types";
 
@@ -248,13 +257,48 @@ class SubagentRun {
   private toolCalls = 0;
   private cappedTurns = false;
   private streamError?: { code: string; message: string };
+  /** delegate 的 provider 请求自动重试记账（预算按一次委派，静默只记日志） */
+  private readonly retryBudget = createRetryBudget();
+  private retryCapture: {
+    status?: number;
+    headers?: Readonly<Record<string, string>>;
+  } = {};
 
   constructor(opts: SubagentRunOptions) {
     this.opts = opts;
     this.agent = new Agent({
       sessionId: this.opts.sessionId,
-      streamFn: (m, context, options) =>
-        getModels().streamSimple(m, context, { ...options, ...cacheRetentionOption() }),
+      streamFn: (m, context, options) => {
+        this.retryCapture.status = undefined;
+        this.retryCapture.headers = undefined;
+        return createProviderRetryStream(
+          m,
+          context,
+          {
+            ...options,
+            ...cacheRetentionOption(),
+            fetch: captureProviderResponse(options?.fetch, (response) => {
+              this.retryCapture.status = response?.status;
+              this.retryCapture.headers = carriesRetryDelayHeaders(
+                response?.status,
+              )
+                ? response?.headers
+                : undefined;
+            }),
+          },
+          (retryOptions) => getModels().streamSimple(m, context, retryOptions),
+          {
+            claim: (error) => claimRetry(this.retryBudget, error),
+            headers: () => this.retryCapture.headers,
+            status: () => this.retryCapture.status,
+            // delegate 没有自己的 UI 流，重试过程只留日志
+            onRetry: ({ error, attempt, delayMs }) =>
+              logErr(
+                `subagent ${this.opts.definition.name}: provider retry ${attempt}/${providerRetryMaxRetries()} in ${delayMs}ms (${error.code})`,
+              ),
+          },
+        );
+      },
       afterToolCall: async () => {
         // sidecar 工具直接执行、没有父级簿记，这里只负责定义的轮次上限
         const capped =

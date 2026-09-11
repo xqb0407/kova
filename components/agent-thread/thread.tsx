@@ -22,6 +22,7 @@ import { AssistantMessage } from "./assistant-message";
 import { CompactionDataUI, ManualCompactionTailAfter } from "./compaction-banner";
 import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
+import { ThreadPreviewRail } from "./thread-preview-rail";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -76,7 +77,7 @@ export const Thread: FC = () => {
 
   return (
     <ThreadPrimitive.Root
-      className="aui-root aui-thread-root bg-transparent @container flex h-full flex-col"
+      className="aui-root aui-thread-root bg-transparent relative @container flex h-full flex-col"
       style={{
         // 外观设置「对话宽度」经 html[data-chat-width] 覆写 --chat-width（globals.css）
         ["--thread-max-width" as string]: "var(--chat-width, 50rem)",
@@ -127,12 +128,12 @@ export const Thread: FC = () => {
             }}
           </ThreadPrimitive.Messages>
         </div>
-
+{/*  bg-[color-mix(in_oklab,var(--muted)_55%,var(--background))] */}
         <ThreadPrimitive.ViewportFooter
           className={cn(
             "aui-thread-viewport-footer relative z-10 mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible pb-1 md:pb-1",
             !isEmpty &&
-              "sticky bottom-0 mt-auto rounded-t-(--composer-radius) bg-[color-mix(in_oklab,var(--muted)_55%,var(--background))]",
+              "sticky bottom-0 mt-auto rounded-t-(--composer-radius) bg-background",
           )}
         >
           <ThreadScrollToBottom />
@@ -146,6 +147,9 @@ export const Thread: FC = () => {
           </AuiIf>
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
+
+      {/* 会话锚点定位：右侧刻度条，悬停预览、点击跳转（内容溢出时出现） */}
+      <ThreadPreviewRail />
 
       <SelectionToolbar />
     </ThreadPrimitive.Root>

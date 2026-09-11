@@ -1,9 +1,22 @@
 import type { Metadata } from "next";
-// 内置字体（外观设置-字体选择可切换）：Inter / 霞鹜文楷 / JetBrains Mono。
-// 各包均为 woff2 按 unicode-range 分片，仅实际用到的字形分片会被下载
+// 内置字体（外观设置-字体选择可切换）：Inter / Roboto / Open Sans / 思源黑体 / 思源宋体
+// / 霞鹜文楷 / JetBrains Mono。各包均为 woff2 按 unicode-range 分片，
+// 仅实际用到的字形分片会被下载（CJK 字体只引入 400/700 两个字重控制体积）
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import "@fontsource/inter/700.css";
+import "@fontsource/roboto/400.css";
+import "@fontsource/roboto/500.css";
+import "@fontsource/roboto/700.css";
+import "@fontsource/open-sans/400.css";
+import "@fontsource/open-sans/500.css";
+import "@fontsource/open-sans/700.css";
+import "@fontsource/noto-sans-sc/400.css";
+import "@fontsource/noto-sans-sc/500.css";
+import "@fontsource/noto-sans-sc/700.css";
+import "@fontsource/noto-serif-sc/400.css";
+import "@fontsource/noto-serif-sc/500.css";
+import "@fontsource/noto-serif-sc/700.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/700.css";
 import "./styles/globals.css";
