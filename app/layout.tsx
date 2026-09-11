@@ -1,4 +1,11 @@
 import type { Metadata } from "next";
+// 内置字体（外观设置-字体选择可切换）：Inter / 霞鹜文楷 / JetBrains Mono。
+// 各包均为 woff2 按 unicode-range 分片，仅实际用到的字形分片会被下载
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/700.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/700.css";
 import "./styles/globals.css";
 import { Toaster } from "@/components/ui/toast";
 
@@ -9,11 +16,11 @@ export const metadata: Metadata = {
 
 /**
  * 外观偏好预绘制脚本：在首帧前把 localStorage 里的 ui.prefs 落到 html 根元素
- * （.dark 类 / data-accent / 根字号 / data-chat-width），避免闪烁。
+ * （.dark 类 / data-accent / 根字号 / data-chat-width / data-font），避免闪烁。
  * 字段与选择器须与 lib/ui-prefs.ts 的 applyPrefs 保持一致；
  * 后续响应式更新与系统主题监听由该模块接管。
  */
-const UI_PREFS_BOOTSTRAP = `(function(){try{var p=JSON.parse(localStorage.getItem("ui.prefs")||"{}"),d=document.documentElement,m=window.matchMedia("(prefers-color-scheme: dark)");d.classList.toggle("dark",p.theme==="dark"||(p.theme!=="light"&&m.matches));if(p.accent&&p.accent!=="default")d.setAttribute("data-accent",p.accent);if(p.fontSize==="sm")d.style.fontSize="15px";else if(p.fontSize==="lg")d.style.fontSize="17px";if(p.chatWidth==="narrow"||p.chatWidth==="wide")d.setAttribute("data-chat-width",p.chatWidth);}catch(e){}})();`;
+const UI_PREFS_BOOTSTRAP = `(function(){try{var p=JSON.parse(localStorage.getItem("ui.prefs")||"{}"),d=document.documentElement,m=window.matchMedia("(prefers-color-scheme: dark)");d.classList.toggle("dark",p.theme==="dark"||(p.theme!=="light"&&m.matches));if(p.accent&&p.accent!=="default")d.setAttribute("data-accent",p.accent);if(p.fontSize==="sm")d.style.fontSize="15px";else if(p.fontSize==="lg")d.style.fontSize="17px";if(p.chatWidth==="narrow"||p.chatWidth==="wide")d.setAttribute("data-chat-width",p.chatWidth);if(p.fontFamily&&p.fontFamily!=="default")d.setAttribute("data-font",p.fontFamily);}catch(e){}})();`;
 
 export default function RootLayout({
   children,
@@ -21,7 +28,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" data-boot-splash="" suppressHydrationWarning>
+    <html lang="zh-CN" data-boot-splash="" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: UI_PREFS_BOOTSTRAP }} />
       </head>

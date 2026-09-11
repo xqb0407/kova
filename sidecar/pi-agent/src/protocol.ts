@@ -375,6 +375,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         generation: outcome.generation,
         tokensBefore: outcome.tokensBefore,
         summarized: outcome.summarized,
+        summary: outcome.summary,
       });
       break;
     }

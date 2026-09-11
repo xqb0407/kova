@@ -125,6 +125,8 @@ export type PiCompacted = {
   generation: number;
   tokensBefore: number;
   summarized: boolean;
+  /** 本次压缩的摘要文本（分隔线下方「压缩摘要」可展开查看） */
+  summary: string;
 };
 
 export type PiResponse =

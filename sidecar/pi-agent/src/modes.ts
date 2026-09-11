@@ -46,8 +46,8 @@ const MODE_TRANSITION_TOOL_NAMES = new Set([
   ...Object.values(SUBMIT_TOOL_NAMES),
 ]);
 
-/** 契约模式（plan/goal）允许的工具：只读 + bash（承诺仅用于勘察，靠提示词约束） */
-const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash"]);
+/** 契约模式（plan/goal）允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束） */
+const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash", "WebFetch", "WebSearch"]);
 
 const enterToolKind = (name: string): ProposalKind | undefined =>
   name === ENTER_TOOL_NAMES.plan ? "plan" : name === ENTER_TOOL_NAMES.goal ? "goal" : undefined;

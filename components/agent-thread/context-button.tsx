@@ -12,7 +12,13 @@ import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { fmtTokens } from "@/lib/model-format";
-import { compactContext, fetchContextInfo, markManualCompaction } from "@/lib/pi-context";
+import {
+  compactContext,
+  fetchContextInfo,
+  markManualCompaction,
+  markManualCompactionStart,
+} from "@/lib/pi-context";
+import { clearManualCompactionMarker } from "@/lib/pi-compaction-marker";
 import type { PiContextInfo } from "@/lib/pi-bridge";
 
 /**
@@ -113,6 +119,8 @@ export const ContextButton: FC = () => {
   const compact = async () => {
     if (!threadId) return;
     setCompacting(true);
+    // 先打 start marker：消息流尾部即时显示「正在压缩上下文…」（请求-响应期间的过程反馈）
+    markManualCompactionStart(threadId);
     try {
       const res = await compactContext(threadId);
       toast.add({
@@ -120,10 +128,12 @@ export const ContextButton: FC = () => {
         description: `压缩前 ${fmtTokens(res.tokensBefore)} tokens`,
         type: "success",
       });
-      // 消息列表尾部即时挂「上下文已压缩」分隔线（历史装载后由重建的分隔线接管）
-      markManualCompaction(threadId, messageCount, res);
+      // 替换为完成态分隔线（持续显示，历史装载后由重建的分隔线接管）
+      markManualCompaction(threadId, res);
       await load();
     } catch (err) {
+      // 失败撤掉「正在压缩」marker，只留 toast 提示
+      clearManualCompactionMarker(threadId);
       toast.add({
         title: "压缩失败",
         description: err instanceof Error ? err.message : String(err),

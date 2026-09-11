@@ -20,12 +20,26 @@ export type AccentName =
   | "rose";
 export type FontSizeName = "sm" | "md" | "lg";
 export type ChatWidthName = "narrow" | "md" | "wide";
+export type FontFamilyName =
+  | "default"
+  | "inter"
+  | "segoe"
+  | "roboto"
+  | "open-sans"
+  | "noto-sans-sc"
+  | "serif"
+  | "noto-serif-sc"
+  | "kai"
+  | "wenkai"
+  | "mono"
+  | "jetbrains";
 
 export type UiPrefs = {
   theme: ThemeMode;
   accent: AccentName;
   fontSize: FontSizeName;
   chatWidth: ChatWidthName;
+  fontFamily: FontFamilyName;
 };
 
 export const UI_PREFS_KEY = "ui.prefs";
@@ -35,6 +49,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   accent: "default",
   fontSize: "md",
   chatWidth: "md",
+  fontFamily: "default",
 };
 
 /** 字号档位 → 根元素 font-size（rem 体系下等比缩放整体界面）；md 为浏览器默认 16px */
@@ -50,7 +65,7 @@ let initialized = false;
 const systemDark = () =>
   window.matchMedia("(prefers-color-scheme: dark)").matches;
 
-/** 将偏好落到 html 根元素：.dark 类 / data-accent / 根字号 / data-chat-width */
+/** 将偏好落到 html 根元素：.dark 类 / data-accent / 根字号 / data-chat-width / data-font */
 export function applyPrefs(p: UiPrefs) {
   const root = document.documentElement;
   root.classList.toggle(
@@ -63,6 +78,8 @@ export function applyPrefs(p: UiPrefs) {
   else root.style.fontSize = FONT_SIZE_PX[p.fontSize];
   if (p.chatWidth === "md") delete root.dataset.chatWidth;
   else root.dataset.chatWidth = p.chatWidth;
+  if (p.fontFamily === "default") delete root.dataset.font;
+  else root.dataset.font = p.fontFamily;
 }
 
 /** 从 localStorage 恢复并应用，注册系统主题监听；模块加载即执行 */

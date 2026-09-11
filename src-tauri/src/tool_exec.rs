@@ -1,4 +1,4 @@
-//! 主机工具执行：bash / read / write / edit。
+//! 主机工具执行：bash / read / write / edit / http。
 //! 此前在 sidecar（Node child_process / fs）实现，现下沉到 Rust：
 //! - bash 用 taskkill /T /F 杀整个进程树，解决 Windows 上孙进程残留
 //!   （Node 的 child.kill() 只杀直接子进程）
@@ -17,6 +17,11 @@ use serde_json::{json, Value};
 const MAX_TOOL_OUTPUT: usize = 16 * 1024;
 const MAX_READ_BYTES: usize = 64 * 1024;
 const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;
+
+const DEFAULT_HTTP_TIMEOUT_MS: u64 = 30_000;
+const MAX_HTTP_TIMEOUT_MS: u64 = 120_000;
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_RESPONSE_BYTES_CAP: usize = 10 * 1024 * 1024;
 
 fn str_param(p: &Value, key: &str) -> Result<String, String> {
     p.get(key)
@@ -272,10 +277,173 @@ fn handle_edit(p: &Value) -> Result<Value, String> {
     Ok(json!({ "output": format!("Replaced {count} occurrence(s) in {file_path}") }))
 }
 
+/* ------------------------------ http（WebFetch / WebSearch 底座） ------------------------------ */
+
+/// 文本类 content-type 判定（与原 TS 实现镜像：前缀 + "+json/+xml" 后缀）
+fn is_textual_content_type(content_type: &str) -> bool {
+    let ct = content_type.to_lowercase();
+    const PREFIXES: [&str; 5] = [
+        "text/",
+        "application/json",
+        "application/xml",
+        "application/javascript",
+        "application/x-www-form-urlencoded",
+    ];
+    const SUFFIXES: [&str; 2] = ["+json", "+xml"];
+    PREFIXES.iter().any(|p| ct.starts_with(p)) || SUFFIXES.iter().any(|s| ct.contains(s))
+}
+
+/// 通用 HTTP 请求执行：网络层唯一出口在 Rust（sidecar 是裸 Node 子进程，不能碰
+/// Tauri JS API），schema/裁剪在 sidecar http-tools.ts。行为对齐 harness-x：
+/// - 文本类响应 → utf-8 解码；二进制 → base64（encoding 字段区分）
+/// - 响应体按 maxResponseBytes 截断（默认 2MB，上限 10MB），超时默认 30s
+/// - 非 2xx 不报错，原样返回（让模型自己决定怎么处置）
+fn handle_http(p: &Value) -> Result<Value, String> {
+    use base64::Engine as _;
+
+    let url_s = str_param(p, "url")?;
+    let url = reqwest::Url::parse(&url_s).map_err(|e| format!("invalid url: {e}"))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(format!("unsupported url scheme: {}", url.scheme()));
+    }
+
+    let method_s = p
+        .get("method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("GET")
+        .to_uppercase();
+    if !matches!(
+        method_s.as_str(),
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    ) {
+        return Err(format!("unsupported method: {method_s}"));
+    }
+    let method = reqwest::Method::from_bytes(method_s.as_bytes())
+        .map_err(|e| format!("invalid method: {e}"))?;
+
+    // 请求头
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(map) = p.get("headers").and_then(|v| v.as_object()) {
+        for (k, v) in map {
+            let value = v
+                .as_str()
+                .ok_or_else(|| format!("header {k}: value must be a string"))?;
+            let name = reqwest::header::HeaderName::from_bytes(k.as_bytes())
+                .map_err(|e| format!("invalid header name {k}: {e}"))?;
+            let value = reqwest::header::HeaderValue::from_str(value)
+                .map_err(|e| format!("invalid header value for {k}: {e}"))?;
+            headers.insert(name, value);
+        }
+    }
+
+    // 请求体：字符串原样；对象 JSON 化并补默认 Content-Type
+    let body_bytes = match p.get("body") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone().into_bytes()),
+        Some(v @ (Value::Object(_) | Value::Array(_))) => {
+            if !headers.contains_key(reqwest::header::CONTENT_TYPE) {
+                headers.insert(
+                    reqwest::header::CONTENT_TYPE,
+                    reqwest::header::HeaderValue::from_static("application/json"),
+                );
+            }
+            Some(serde_json::to_vec(v).map_err(|e| format!("failed to encode body: {e}"))?)
+        }
+        Some(_) => return Err("body must be a string or object".into()),
+    };
+
+    let timeout_ms = p
+        .get("timeoutMs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_HTTP_TIMEOUT_MS)
+        .clamp(1, MAX_HTTP_TIMEOUT_MS);
+    let max_bytes = p
+        .get("maxResponseBytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES as u64)
+        .clamp(1, MAX_RESPONSE_BYTES_CAP as u64) as usize;
+
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+        .map_err(|e| format!("failed to build http client: {e}"))?;
+
+    let mut req = client.request(method, url).headers(headers);
+    if let Some(b) = body_bytes {
+        req = req.body(b);
+    }
+    let mut resp = req.send().map_err(|e| {
+        if e.is_timeout() {
+            format!("request timed out after {timeout_ms}ms: {url_s}")
+        } else {
+            format!("request failed: {e}")
+        }
+    })?;
+
+    let status = resp.status();
+    let final_url = resp.url().to_string();
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let declared_total = resp
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+    let response_headers: serde_json::Map<String, Value> = resp
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.as_str().to_string(), Value::String(v.to_str().unwrap_or("").to_string())))
+        .collect();
+
+    // 只读 max_bytes + 1 探测字节：超大响应不会整包进内存
+    let mut buf: Vec<u8> = Vec::new();
+    std::io::Read::by_ref(&mut resp)
+        .take((max_bytes as u64) + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("failed to read response body: {e}"))?;
+    let truncated = buf.len() > max_bytes;
+    if truncated {
+        buf.truncate(max_bytes);
+    }
+
+    let (output, encoding) = if is_textual_content_type(&content_type) {
+        (String::from_utf8_lossy(&buf).to_string(), "utf-8")
+    } else {
+        (
+            base64::engine::general_purpose::STANDARD.encode(&buf),
+            "base64",
+        )
+    };
+
+    Ok(json!({
+        "output": output,
+        "status": status.as_u16(),
+        "statusText": status.canonical_reason().unwrap_or(""),
+        "ok": status.is_success(),
+        "url": final_url,
+        "contentType": content_type,
+        "headers": response_headers,
+        "totalBytes": declared_total.unwrap_or(buf.len() as u64),
+        "truncated": truncated,
+        "encoding": encoding,
+    }))
+}
+
 /// 工具分发入口（host_query kind="tool"）：params = { name, cwd, params: {...} }
 pub fn handle_tool(p: &Value) -> Result<Value, String> {
     let name = str_param(p, "name")?;
-    let inner = p.get("params").cloned().unwrap_or(Value::Null);
+    let mut inner = p.get("params").cloned().unwrap_or(Value::Null);
+    // read/write/edit 从各自参数里取 cwd 解析相对路径，但工具 schema 不含 cwd，
+    // 必须把信封级 cwd 注入 inner，否则相对路径落到了 Rust 进程的工作目录
+    if let Some(map) = inner.as_object_mut() {
+        map.entry("cwd")
+            .or_insert_with(|| p.get("cwd").cloned().unwrap_or(Value::Null));
+    }
     match name.as_str() {
         "bash" => {
             let cwd = p.get("cwd").and_then(|v| v.as_str()).unwrap_or(".").to_string();
@@ -289,6 +457,7 @@ pub fn handle_tool(p: &Value) -> Result<Value, String> {
         "read" => handle_read(&inner),
         "write" => handle_write(&inner),
         "edit" => handle_edit(&inner),
+        "http" => handle_http(&inner),
         _ => Err(format!("unknown host tool: {name}")),
     }
 }
@@ -351,6 +520,105 @@ mod tests {
         assert_eq!(out["exitCode"], Value::Null);
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[timeout]"), "output: {text}");
+    }
+
+    /// 起一个一次性 TCP 服务：收到请求后回写固定 HTTP 响应（无 TLS，http:// 即可）
+    fn canned_server(response: &'static [u8]) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                use std::io::Write;
+                let mut buf = [0u8; 2048];
+                let _ = std::io::Read::read(&mut stream, &mut buf); // 消费请求头，避免竞态 RST
+                let _ = stream.write_all(response);
+                let _ = stream.flush();
+                std::thread::sleep(std::time::Duration::from_millis(250)); // 等客户端读完
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn http_get_text_response() {
+        let body = b"hello http";
+        let resp = b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 10\r\n\r\nhello http";
+        assert_eq!(&resp[resp.len() - body.len()..], &body[..]);
+        let port = canned_server(resp);
+        let out = handle_http(&json!({ "url": format!("http://127.0.0.1:{port}/x") })).unwrap();
+        assert_eq!(out["output"], "hello http");
+        assert_eq!(out["status"], 200);
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["contentType"], "text/plain");
+        assert_eq!(out["encoding"], "utf-8");
+        assert_eq!(out["truncated"], false);
+        assert_eq!(out["totalBytes"], 10);
+    }
+
+    #[test]
+    fn http_truncates_oversized_body() {
+        let big = vec![b'a'; 4096];
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\n\r\n",
+            big.len()
+        );
+        let mut resp = head.into_bytes();
+        resp.extend_from_slice(&big);
+        let resp: &'static [u8] = Box::leak(resp.into_boxed_slice());
+        let port = canned_server(resp);
+        let out = handle_http(&json!({
+            "url": format!("http://127.0.0.1:{port}/big"),
+            "maxResponseBytes": 100,
+        }))
+        .unwrap();
+        assert_eq!(out["truncated"], true);
+        assert_eq!(out["totalBytes"], 4096); // content-length 优先
+        assert_eq!(out["output"].as_str().unwrap().len(), 100);
+    }
+
+    #[test]
+    fn http_rejects_bad_url_and_method() {
+        assert!(handle_http(&json!({ "url": "ftp://x/y" })).is_err());
+        assert!(handle_http(&json!({ "url": "not a url" })).is_err());
+        assert!(handle_http(&json!({
+            "url": "http://127.0.0.1:1/x", "method": "BREW",
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn textual_content_type_matches_ts_parity() {
+        assert!(is_textual_content_type("text/html; charset=utf-8"));
+        assert!(is_textual_content_type("application/json"));
+        assert!(is_textual_content_type("application/feed+json"));
+        assert!(is_textual_content_type("APPLICATION/XML"));
+        assert!(!is_textual_content_type("image/png"));
+        assert!(!is_textual_content_type("application/octet-stream"));
+    }
+
+    #[test]
+    fn tool_dispatch_injects_envelope_cwd_for_relative_paths() {
+        // 回归：read/write/edit 的参数里没有 cwd，分发入口必须把信封 cwd 注入，
+        // 否则相对路径会按 Rust 进程的工作目录解析
+        let dir = std::env::temp_dir().join(format!("pi-tool-relcwd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rel.txt"), "one\ntwo\n").unwrap();
+        let p = json!({
+            "name": "read",
+            "cwd": dir.to_string_lossy(),
+            "params": { "file_path": "rel.txt" },
+        });
+        let out = handle_tool(&p).unwrap();
+        assert!(out["output"].as_str().unwrap().contains("two"), "output: {}", out["output"]);
+        // write 的相对路径同样落在信封 cwd 下
+        let w = json!({
+            "name": "write",
+            "cwd": dir.to_string_lossy(),
+            "params": { "file_path": "sub/rel2.txt", "content": "x" },
+        });
+        handle_tool(&w).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("sub/rel2.txt")).unwrap(), "x");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

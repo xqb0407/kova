@@ -59,7 +59,14 @@ const CONTEXT_ROLLOVER_SUMMARY = [
 export type CompactionReason = "threshold" | "overflow" | "manual";
 
 export type CompactionOutcome =
-  | { ok: true; generation: number; tokensBefore: number; summarized: boolean }
+  | {
+      ok: true;
+      generation: number;
+      tokensBefore: number;
+      summarized: boolean;
+      /** 摘要文本（fresh_window 兜底时为固定 rollover marker），compact 响应透传给前端渲染 */
+      summary: string;
+    }
   | { ok: false; message: string };
 
 /** 摘要生成 seam：测试注入假实现；默认走 core 的 generateSummary */
@@ -287,7 +294,13 @@ export async function runCompaction(
   // persistedSeq 指向 state 末尾，下一轮 persist 只写新增消息
   run.persistedSeq = run.agent.state.messages.length;
   run.compactionGeneration = generation;
-  return { ok: true, generation, tokensBefore, summarized };
+  return {
+    ok: true,
+    generation,
+    tokensBefore,
+    summarized,
+    summary,
+  };
 }
 
 /* ------------------------------- 上下文信息面板 ------------------------------- */

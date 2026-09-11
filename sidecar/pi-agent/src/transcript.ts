@@ -150,6 +150,7 @@ function compactionDividerPart(row: CompactionRow) {
         typeof details?.generation === "number" ? details.generation : 1,
       tokensBefore: row.tokensBefore,
       summarized: details?.strategy !== "fresh_window",
+      summary: row.summary,
     },
   } as UIMessage["parts"][number];
 }

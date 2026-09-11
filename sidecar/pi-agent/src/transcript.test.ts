@@ -163,7 +163,7 @@ describe("historyToUiMessages", () => {
     expect(messages[3].parts[0]).toEqual({
       type: "data-compaction",
       id: "cmp-5",
-      data: { phase: "complete", generation: 1, tokensBefore: 1000, summarized: true },
+      data: { phase: "complete", generation: 1, tokensBefore: 1000, summarized: true, summary: "S" },
     });
     // 其余消息不带分隔线
     expect(messages[2].parts[0].type).toBe("text");
@@ -193,7 +193,7 @@ describe("historyToUiMessages", () => {
         {
           type: "data-compaction",
           id: "cmp-3",
-          data: { phase: "complete", generation: 1, tokensBefore: 800, summarized: true },
+          data: { phase: "complete", generation: 1, tokensBefore: 800, summarized: true, summary: "S" },
         },
       ],
     });

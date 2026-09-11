@@ -32,23 +32,36 @@ export function compactContext(threadId: string): Promise<PiCompacted> {
 }
 
 /**
+ * 手动压缩发起时打 start marker：消息列表尾部即时渲染「正在压缩上下文…」
+ * （compact 走请求-响应、不产生消息流 chunk，见 lib/pi-compaction-marker）。
+ * 响应回来后由 markManualCompaction 替换为完成态；失败由调用方清除。
+ */
+export function markManualCompactionStart(threadId: string): void {
+  setManualCompactionMarker({
+    threadId,
+    remoteId: piSessionRegistry.get(threadId),
+    data: { phase: "start" },
+  });
+}
+
+/**
  * 手动压缩成功后打 marker：消息列表尾部即时渲染「上下文已压缩」分隔线
  * （compact 走请求-响应、不产生消息流 chunk，见 lib/pi-compaction-marker）。
+ * 分隔线持续显示（下一条消息到来也不隐藏），重新装载历史后由检查点行重建接管。
  */
 export function markManualCompaction(
   threadId: string,
-  atCount: number,
   res: PiCompacted,
 ): void {
   setManualCompactionMarker({
     threadId,
     remoteId: piSessionRegistry.get(threadId),
-    atCount,
     data: {
       phase: "complete",
       generation: res.generation,
       tokensBefore: res.tokensBefore,
       summarized: res.summarized,
+      summary: res.summary,
     },
   });
 }

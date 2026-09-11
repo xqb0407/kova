@@ -601,10 +601,30 @@ export const modelsReplace = (provider: string, items: ModelReplaceItem[]) =>
 export const modelsDeleteProvider = (provider: string) =>
   query("models_delete_provider", { provider });
 
-/** 主机工具调用（仅 host 模式可用；bash/read/write/edit 由 Rust 执行） */
+/** 主机工具调用（仅 host 模式可用；bash/read/write/edit/http 由 Rust 执行） */
 export const hostToolCall = (name: string, cwd: string, params: Record<string, unknown>) =>
   query<{ output: string; truncated?: boolean; exitCode?: number | null; totalLines?: number }>("tool", {
     name,
     cwd,
     params,
   });
+
+/** Rust handle_http（tool_exec.rs）的返回结构 */
+export type HostHttpData = {
+  /** 文本类响应 = utf-8 正文；二进制 = base64（见 encoding） */
+  output: string;
+  status: number;
+  statusText: string;
+  ok: boolean;
+  /** 跟随重定向后的最终 URL */
+  url: string;
+  contentType: string;
+  headers: Record<string, string>;
+  totalBytes: number;
+  truncated: boolean;
+  encoding: "utf-8" | "base64";
+};
+
+/** WebFetch/WebSearch 的网络执行出口（仅 host 模式；超时/截断/编码在 Rust 侧完成） */
+export const hostHttpCall = (cwd: string, params: Record<string, unknown>) =>
+  query<HostHttpData>("tool", { name: "http", cwd, params });
