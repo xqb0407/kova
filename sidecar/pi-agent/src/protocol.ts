@@ -127,7 +127,13 @@ import {
   historyToUiMessages,
 } from "./transcript";
 import { contextInfo, needsCompaction, runCompaction } from "./context";
-import { running, resolveSession } from "./sessions";
+import {
+  forgetThreadStates,
+  noteActiveTurn,
+  projectContextInfo,
+  running,
+  resolveSession,
+} from "./sessions";
 import {
   cancelAllEntries,
   cancelEntry,
@@ -327,9 +333,12 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
       });
     }
     activeTurnThreadId = turnThreadId;
+    // 通报 sessions：LRU 驱逐不得动正在跑 turn 的会话
+    noteActiveTurn(turnThreadId);
     await runPromptTurn(turnReqId, turnMsg, turnThreadId);
   } finally {
     activeTurnThreadId = null;
+    noteActiveTurn(null);
     markTurnEnd();
     release();
   }
@@ -601,13 +610,24 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "context_info": {
-      // 上下文面板读数：present 会话（含恢复）现算，运行中也可查询（只读不阻塞）
-      const run = await resolveSession(
-        String(msg.threadId ?? "default"),
-        typeof msg.sessionId === "string" ? msg.sessionId : undefined,
-        typeof msg.cwd === "string" ? msg.cwd : undefined,
-      );
-      send({ id: reqId, type: "context_info", ...contextInfo(run) });
+      // 上下文面板读数：运行中也可查询（只读不阻塞）。
+      // 迭代2（P2）：未驻留的会话走只读投影（不建 Agent、不写 running）；
+      // 已驻留的现算——顺带保留旧语义（含"请求带 cwd 时补绑"）。
+      // 无 sessionId（新线程首开面板）：维持原 resolveSession 落会话的行为。
+      const threadId = String(msg.threadId ?? "default");
+      const sessionId =
+        typeof msg.sessionId === "string" ? msg.sessionId : undefined;
+      const cwd = typeof msg.cwd === "string" ? msg.cwd : undefined;
+      if (sessionId && !running.has(threadId)) {
+        send({
+          id: reqId,
+          type: "context_info",
+          ...(await projectContextInfo(threadId, sessionId)),
+        });
+      } else {
+        const run = await resolveSession(threadId, sessionId, cwd);
+        send({ id: reqId, type: "context_info", ...contextInfo(run) });
+      }
       break;
     }
     case "list_sessions": {
@@ -657,7 +677,10 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     case "delete_session": {
       const sessionId = String(msg.sessionId ?? "");
       for (const [tid, run] of running) {
-        if (run.sessionId === sessionId) running.delete(tid);
+        if (run.sessionId === sessionId) {
+          running.delete(tid);
+          forgetThreadStates(tid); // 迭代2：删会话同样清 per-thread 旁路态（todo）
+        }
       }
       await sessionDelete(sessionId);
       const file = sessionPath(sessionId);
