@@ -42,14 +42,6 @@ bun scripts/perf-sample.mjs <场景名> [--interval 2] [--duration 秒] [--webvi
   日志落盘 BufWriter（256KB/1s）；检查点快照 for-each-ref 单次遍历 +
   同树复用 parent commit（空转轮零新对象）。附带修复既有测试互扰
   （cancel_all_tools 全局 drain 误杀并行 timeout 测试）。
-- 迭代4 已合入（59e3ac2）：sessions.message_count 增量列（persist 时
-  随 touch 累加）+ Rust 启动同步回填（无迁移窗口）；list_sessions
-  零文件扫描；get_history 合并为 scanTranscript 单遍。注意不变式：
-  直接手造 JSONL 的调用/测试需同步 sessionTouch，否则计数不升。
-- 迭代5a 已合入：长会话渲染窗口化（MessageWindow，外观设置
-  「长会话窗口化」默认开、可关）：滚出视口 ±2500px 的 assistant 消息
-  卸载正文换等高占位；最后一条/流式中/待动作不折叠。线程缓存
-  per-thread dispose 为框架限制（记录于计划文档）；5b 分页暂缓。
 
 ## 场景与待填数字（跑一个填一个）
 

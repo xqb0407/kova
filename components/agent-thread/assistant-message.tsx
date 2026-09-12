@@ -17,7 +17,6 @@ import {
   ReasoningText,
   ReasoningTrigger,
 } from "@/components/assistant-ui/elements/reasoning.aui";
-import { MessageWindow } from "./message-window";
 import {
   AuiIf,
   type AssistantState,
@@ -114,9 +113,10 @@ export const AssistantMessage: FC = () => {
       data-slot="aui_edit-composer-wrapper"
       className="mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2"
     >
-      {/* 迭代 5a 渲染窗口化：wrapper 即原 content div（data-slot 不变，
-          rail 锚点/几何保持），滚远时内部子树卸载换等高占位 */}
-      <MessageWindow>
+      <div
+        data-slot="aui_assistant-message-content"
+        className="text-foreground px-2 leading-relaxed wrap-break-word"
+      >
         {/* 重试状态行：只渲染一次，attempt 原地更新（data part 本身就地不渲染） */}
         <MessagePrimitive.GroupedParts
           groupBy={groupPartByType({
@@ -168,7 +168,7 @@ export const AssistantMessage: FC = () => {
         </MessagePrimitive.GroupedParts>
         <MessageError />
         <RetryMarker />
-      </MessageWindow>
+      </div>
 
       <div
         data-slot="aui_assistant-message-footer"
