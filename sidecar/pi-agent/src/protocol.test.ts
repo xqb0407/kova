@@ -112,6 +112,35 @@ describe("dispatch: sessions", () => {
     expect(sessions.find((s) => s.sessionId !== withMsgs)).toBeUndefined();
   });
 
+  test("archive_session toggles the flag and list_sessions reports it", async () => {
+    const id = "archived-session";
+    const now = new Date().toISOString();
+    await sessionInsert(id, tmp);
+    writeFileSync(
+      sessionPath(id),
+      JSON.stringify({ type: "header", schema: 1, id, cwd: tmp, created_at: now }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 0, ui: {}, agent: {} }) +
+        "\n",
+      "utf8",
+    );
+
+    await dispatch("sa0", { type: "list_sessions" });
+    let sessions = last().sessions as { sessionId: string; archived?: boolean }[];
+    expect(sessions.find((s) => s.sessionId === id)?.archived).toBe(false);
+
+    await dispatch("sa1", { type: "archive_session", sessionId: id, archived: true });
+    expect(last()).toEqual({ id: "sa1", type: "archived" });
+    await dispatch("sa2", { type: "list_sessions" });
+    sessions = last().sessions as { sessionId: string; archived?: boolean }[];
+    expect(sessions.find((s) => s.sessionId === id)?.archived).toBe(true);
+
+    await dispatch("sa3", { type: "archive_session", sessionId: id, archived: false });
+    await dispatch("sa4", { type: "list_sessions" });
+    sessions = last().sessions as { sessionId: string; archived?: boolean }[];
+    expect(sessions.find((s) => s.sessionId === id)?.archived).toBe(false);
+  });
+
   test("delete_session removes row and file", async () => {
     await dispatch("s5", { type: "delete_session", sessionId: "seeded-session" });
     expect(last()).toEqual({ id: "s5", type: "deleted" });
@@ -374,5 +403,52 @@ describe("dispatch: get_model / init gate", () => {
     } finally {
       setInitGate(Promise.resolve()); // 还原闸门，避免影响其他测试
     }
+  });
+});
+
+describe("dispatch: personalization", () => {
+  const DEFAULT_SETTINGS = {
+    style: "default",
+    userName: "",
+    assistantName: "",
+    persona: "",
+    customInstructions: "",
+  };
+
+  test("get_personalization returns the current settings", async () => {
+    await dispatch("pe0", { type: "set_personalization", settings: DEFAULT_SETTINGS });
+    await dispatch("pe1", { type: "get_personalization" });
+    expect(last()).toEqual({ id: "pe1", type: "personalization", settings: DEFAULT_SETTINGS });
+  });
+
+  test("set_personalization persists to kv and hot-swaps active session prompts", async () => {
+    await dispatch("pe2", { type: "new_session", threadId: "th-pers", cwd: tmp });
+    const run = running.get("th-pers")!;
+    expect(run.agent.state.systemPrompt).not.toContain("Reply style - professional");
+
+    const settings = {
+      style: "professional",
+      userName: "老王",
+      assistantName: "",
+      persona: "",
+      customInstructions: "先结论后细节",
+    };
+    await dispatch("pe3", { type: "set_personalization", settings });
+    expect(last()).toEqual({ id: "pe3", type: "personalization", settings });
+
+    // 活动会话热替换：无需重建 Agent，下一轮请求即生效
+    expect(run.agent.state.systemPrompt).toContain("Reply style - professional");
+    expect(run.agent.state.systemPrompt).toContain('The user goes by "老王".');
+    expect(run.agent.state.systemPrompt).toContain("always apply): 先结论后细节");
+
+    // 整包 JSON 落 kv 表（本地模式镜像）
+    const row = getLocalDb()!
+      .query<{ value: string }, [string]>("SELECT value FROM kv WHERE key = 'pi.personalization'")
+      .get()!;
+    expect(JSON.parse(row.value)).toMatchObject({ style: "professional", userName: "老王" });
+
+    // 恢复默认：提示词不再含个性化段
+    await dispatch("pe4", { type: "set_personalization", settings: DEFAULT_SETTINGS });
+    expect(run.agent.state.systemPrompt).not.toContain("Reply style - professional");
   });
 });

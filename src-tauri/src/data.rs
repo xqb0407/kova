@@ -21,6 +21,7 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
             title TEXT NOT NULL DEFAULT '',
             first_message TEXT NOT NULL DEFAULT '',
             cwd TEXT NOT NULL DEFAULT '',
+            archived INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -47,6 +48,24 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
             cost_json TEXT,
             enabled INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (provider, model_id)
+        );
+        CREATE TABLE IF NOT EXISTS usage_daily (
+            session_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            input INTEGER NOT NULL DEFAULT 0,
+            output INTEGER NOT NULL DEFAULT 0,
+            cache_read INTEGER NOT NULL DEFAULT 0,
+            cache_write INTEGER NOT NULL DEFAULT 0,
+            tokens INTEGER NOT NULL DEFAULT 0,
+            messages INTEGER NOT NULL DEFAULT 0,
+            by_model TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (session_id, date)
+        );
+        CREATE TABLE IF NOT EXISTS usage_scan (
+            session_id TEXT PRIMARY KEY,
+            mtime REAL NOT NULL,
+            first_ts INTEGER NOT NULL DEFAULT 0,
+            last_ts INTEGER NOT NULL DEFAULT 0
         );",
     )
     .map_err(|e| format!("failed to init agent tables: {e}"))?;
@@ -57,6 +76,11 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
     );
     let _ = conn.execute_batch(
         "ALTER TABLE custom_providers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;",
+    );
+
+    // 旧库迁移：sessions 补 archived 列（已存在则忽略）
+    let _ = conn.execute_batch(
+        "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;",
     );
 
     // 旧数据迁移：早期版本把未选工作目录的会话 cwd 存成用户主目录；统一清空。
@@ -319,7 +343,7 @@ pub fn handle_host_query(
         }
         "session_list" => {
             let rows = conn
-                .prepare("SELECT id, title, first_message, cwd, updated_at FROM sessions ORDER BY updated_at DESC")
+                .prepare("SELECT id, title, first_message, cwd, archived, updated_at FROM sessions ORDER BY updated_at DESC")
                 .map_err(|e| e.to_string())?
                 .query_map([], |row| {
                     Ok(json!({
@@ -327,7 +351,8 @@ pub fn handle_host_query(
                         "title": row.get::<_, String>(1)?,
                         "first_message": row.get::<_, String>(2)?,
                         "cwd": row.get::<_, String>(3)?,
-                        "updated_at": row.get::<_, String>(4)?,
+                        "archived": row.get::<_, i64>(4)?,
+                        "updated_at": row.get::<_, String>(5)?,
                     }))
                 })
                 .map_err(|e| e.to_string())?
@@ -347,6 +372,16 @@ pub fn handle_host_query(
             conn.execute(
                 "UPDATE sessions SET title = ?1 WHERE id = ?2",
                 params![name, id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
+        "session_set_archived" => {
+            let id = str_param(p, "sessionId")?;
+            let archived = p.get("archived").and_then(|v| v.as_bool()).unwrap_or(false);
+            conn.execute(
+                "UPDATE sessions SET archived = ?1 WHERE id = ?2",
+                params![if archived { 1 } else { 0 }, id],
             )
             .map_err(|e| e.to_string())?;
             Ok(json!({}))
@@ -534,6 +569,137 @@ pub fn handle_host_query(
             conn.execute("DELETE FROM models WHERE provider = ?1", params![provider])
                 .map_err(|e| e.to_string())?;
             Ok(json!({}))
+        }
+        // 应用级 kv（个性化设置等）：表由 store.rs 建在本库，sidecar 经此读写整包 JSON
+        "kv_get" => {
+            let key = str_param(p, "key")?;
+            let value = conn
+                .query_row(
+                    "SELECT value FROM kv WHERE key = ?1",
+                    params![key],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            Ok(match value {
+                Some(value) => json!({ "value": value }),
+                None => Value::Null,
+            })
+        }
+        "kv_set" => {
+            let key = str_param(p, "key")?;
+            let value = str_param(p, "value")?;
+            conn.execute(
+                "INSERT INTO kv(key, value) VALUES(?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(|e| format!("failed to write kv: {e}"))?;
+            Ok(json!({}))
+        }
+        // 使用统计物化表（转录为事实源，此处为增量维护的聚合缓存）
+        "usage_scan_list" => {
+            let rows = conn
+                .prepare("SELECT session_id, mtime, first_ts, last_ts FROM usage_scan")
+                .map_err(|e| e.to_string())?
+                .query_map([], |row| {
+                    Ok(json!({
+                        "sessionId": row.get::<_, String>(0)?,
+                        "mtime": row.get::<_, f64>(1)?,
+                        "firstTs": row.get::<_, i64>(2)?,
+                        "lastTs": row.get::<_, i64>(3)?,
+                    }))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Array(rows))
+        }
+        "usage_daily_replace" => {
+            // 整会话替换（幂等）：删该会话旧行 → 插新行 → upsert 扫描水位（mtime/跨度）
+            let session_id = str_param(p, "sessionId")?;
+            let mtime = p
+                .get("mtime")
+                .and_then(Value::as_f64)
+                .ok_or("missing mtime")?;
+            let first_ts = p.get("firstTs").and_then(Value::as_i64).unwrap_or(0);
+            let last_ts = p.get("lastTs").and_then(Value::as_i64).unwrap_or(0);
+            let items: Vec<Value> = serde_json::from_str(&str_param(p, "rows")?)
+                .map_err(|e| format!("parse rows: {e}"))?;
+            let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM usage_daily WHERE session_id = ?1",
+                params![session_id],
+            )
+            .map_err(|e| e.to_string())?;
+            for item in &items {
+                tx.execute(
+                    "INSERT INTO usage_daily \
+                     (session_id, date, input, output, cache_read, cache_write, tokens, messages, by_model) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        session_id,
+                        item.get("date").and_then(Value::as_str).unwrap_or(""),
+                        item.get("input").and_then(Value::as_i64).unwrap_or(0),
+                        item.get("output").and_then(Value::as_i64).unwrap_or(0),
+                        item.get("cacheRead").and_then(Value::as_i64).unwrap_or(0),
+                        item.get("cacheWrite").and_then(Value::as_i64).unwrap_or(0),
+                        item.get("tokens").and_then(Value::as_i64).unwrap_or(0),
+                        item.get("messages").and_then(Value::as_i64).unwrap_or(0),
+                        item.get("byModel").and_then(Value::as_str).unwrap_or("{}"),
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            tx.execute(
+                "INSERT INTO usage_scan (session_id, mtime, first_ts, last_ts) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(session_id) DO UPDATE SET mtime = excluded.mtime, \
+                 first_ts = excluded.first_ts, last_ts = excluded.last_ts",
+                params![session_id, mtime, first_ts, last_ts],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
+        "usage_daily_query" => {
+            let rows = conn
+                .prepare(
+                    "SELECT session_id, date, input, output, cache_read, cache_write, \
+                     tokens, messages, by_model FROM usage_daily ORDER BY date",
+                )
+                .map_err(|e| e.to_string())?
+                .query_map([], |row| {
+                    Ok(json!({
+                        "sessionId": row.get::<_, String>(0)?,
+                        "date": row.get::<_, String>(1)?,
+                        "input": row.get::<_, i64>(2)?,
+                        "output": row.get::<_, i64>(3)?,
+                        "cacheRead": row.get::<_, i64>(4)?,
+                        "cacheWrite": row.get::<_, i64>(5)?,
+                        "tokens": row.get::<_, i64>(6)?,
+                        "messages": row.get::<_, i64>(7)?,
+                        "byModel": row.get::<_, String>(8)?,
+                    }))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Array(rows))
+        }
+        "usage_daily_cleanup" => {
+            // 索引表中已删除的会话：其聚合行与扫描水位一并清除，返回清理数
+            let removed = conn
+                .execute(
+                    "DELETE FROM usage_daily WHERE session_id NOT IN (SELECT id FROM sessions)",
+                    [],
+                )
+                .map_err(|e| e.to_string())?;
+            conn.execute(
+                "DELETE FROM usage_scan WHERE session_id NOT IN (SELECT id FROM sessions)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(json!({ "removed": removed }))
         }
         _ => Err(format!("unknown host_query kind: {kind}")),
     }
@@ -775,5 +941,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    /// session_set_archived 打标 + session_list 回读；旧库缺 archived 列时迁移补列。
+    #[test]
+    fn session_archive_flag_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let q = |kind: &str, p: Value| {
+            dispatch_host_query(
+                &db,
+                &json!({ "id": "t", "kind": kind, "params": p }),
+            )
+        };
+        q("session_insert", json!({ "sessionId": "s1", "cwd": "", "now": "t" }));
+        q("session_insert", json!({ "sessionId": "s2", "cwd": "/w", "now": "t" }));
+
+        q("session_set_archived", json!({ "sessionId": "s1", "archived": true }));
+        let rows = q("session_list", json!({}))["data"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(rows.len(), 2);
+        let s1 = rows.iter().find(|r| r["id"] == "s1").unwrap();
+        let s2 = rows.iter().find(|r| r["id"] == "s2").unwrap();
+        assert_eq!(s1["archived"], 1);
+        assert_eq!(s2["archived"], 0);
+
+        q("session_set_archived", json!({ "sessionId": "s1", "archived": false }));
+        let rows = q("session_list", json!({}))["data"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let s1 = rows.iter().find(|r| r["id"] == "s1").unwrap();
+        assert_eq!(s1["archived"], 0);
+    }
+
+    /// 旧库（无 archived 列）打开时自动补列，session_list 正常返回。
+    #[test]
+    fn legacy_sessions_table_gains_archived_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', \
+             first_message TEXT NOT NULL DEFAULT '', cwd TEXT NOT NULL DEFAULT '', \
+             created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             INSERT INTO sessions (id, created_at, updated_at) VALUES ('old', 't', 't');",
+        )
+        .unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let rows = dispatch_host_query(
+            &db,
+            &json!({ "id": "t", "kind": "session_list", "params": {} }),
+        )["data"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["archived"], 0);
     }
 }

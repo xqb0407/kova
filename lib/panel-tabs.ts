@@ -13,7 +13,8 @@ export type PanelTabType =
   | "plan"
   | "review"
   | "terminal"
-  | "browser";
+  | "browser"
+  | "git";
 
 export type PanelTab = {
   id: string;
@@ -21,6 +22,9 @@ export type PanelTab = {
   /** 覆盖默认标题(浏览器标签用域名) */
   title?: string;
   url?: string;
+  /** 视图数据上下文：审查标签可定向到某次运行检查点（本回合改动） */
+  cwd?: string;
+  checkpoint?: string;
 };
 
 export type PanelTabsState = { tabs: PanelTab[]; activeId: string | null };
@@ -33,6 +37,7 @@ const VALID_TYPES = new Set<PanelTabType>([
   "review",
   "terminal",
   "browser",
+  "git",
 ]);
 
 function validTab(raw: unknown): raw is PanelTab {
@@ -100,12 +105,15 @@ export function usePanelTabs(): PanelTabsState {
   return useSyncExternalStore(subscribe, getSnapshot, () => state);
 }
 
-/** 打开一个新标签并激活(所有类型均可多开) */
-export function openPanelTab(type: PanelTabType): string {
+/** 打开一个新标签并激活(所有类型均可多开)；extra 携带视图数据上下文 */
+export function openPanelTab(
+  type: PanelTabType,
+  extra?: Pick<PanelTab, "title" | "url" | "cwd" | "checkpoint">,
+): string {
   ensureHydrated();
   const id = `tab-${crypto.randomUUID()}`;
   commit({
-    tabs: [...state.tabs, { id, type }],
+    tabs: [...state.tabs, { id, type, ...extra }],
     activeId: id,
   });
   return id;

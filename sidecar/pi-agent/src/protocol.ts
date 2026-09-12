@@ -7,7 +7,16 @@
  *       cwd = workspace 目录；仅在需要新建会话时使用，缺省为用户主目录
  *       prompt 结束后若有后台子代理（Task 委派）仍在运行，等待其完成并在同一条
  *       reqId 消息流内注入恢复 prompt 投递报告（多 step 收敛），再发 finish
- *   { "type": "abort" }   中止父代理与全部后台子代理
+ *   { "type": "abort" }   中止父代理与全部后台子代理，并取消全部排队 prompt
+ *   { "type": "queue_update", "id", "requestId", "text" }   → { id, type: "queue_updated", requestId }
+ *       修改排队中的 prompt 文本（仅 queued 状态可改；requestId 为原 prompt 的 reqId）
+ *   { "type": "queue_cancel", "id", "requestId" }           → { id, type: "queue_cancelled", requestId }
+ *       删除单个排队项，其 prompt 流立即 abort + finish 收尾（不执行）
+ *   { "type": "queue_promote", "id", "requestId" }          → { id, type: "queue_promoted", requestId }
+ *       立即发送：该项提到队首并中止当前活跃 turn（其余排队项保留，按新顺序依次执行）
+ *   prompt 排队（prompt-queue.ts）：上一轮未结束时到达的 prompt 进 FIFO 队列，
+ *       流上先发 { chunk: { type: "data-queue", id: "queue-<reqId>", data: { phase: "queued", position } } }，
+ *       轮到时同 id 原地更新 { phase: "active" }；执行顺序由全局串行链保证
  *   { "type": "ping", "id" }                                  → { id, type: "pong" }
  *   { "type": "list_sessions", "id" }                         → { id, type: "sessions", sessions: [...] }
  *   { "type": "new_session", "id", "threadId", "cwd" }        → { id, type: "session", sessionId, threadId }
@@ -16,6 +25,8 @@
  *       compaction 检查点行重建为 data-compaction 分隔线 part（刷新后分隔线不丢）
  *   { "type": "delete_session", "id", "sessionId" }           → { id, type: "deleted" }
  *   { "type": "rename_session", "id", "sessionId", "name" }   → { id, type: "renamed" }
+ *   { "type": "archive_session", "id", "sessionId", "archived" } → { id, type: "archived" }
+ *       归档 / 取消归档（archived: bool）：列表项打标，正文与索引行不动；list_sessions 会带回 archived 字段
  *   { "type": "list_models", "id" }                           → { id, type: "models", models: [...], providers: [...] }
  *       models 项含 enabled 与 maxTokens/input/cost 属性（enabled=false = 已被过滤隐藏，前端自行过滤）
  *   { "type": "set_model", "id", "provider", "modelId" }      → { id, type: "model", provider, modelId }
@@ -23,6 +34,9 @@
  *       未选择时 provider/modelId 为空串（前端据此校准 UI 真值）
  *   { "type": "set_thinking", "id", "level" }                 → { id, type: "thinking", level }（深度思考档位，广播到活动会话）
  *   { "type": "set_thinking_maps", "id", "maps" }             → { id, type: "thinking_maps", applied }（模型级 thinkingLevelMap 覆盖整包下发）
+ *   { "type": "get_personalization", "id" }                   → { id, type: "personalization", settings }（个性化设置：回复风格/称呼/人设/自定义指令）
+ *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings }（落 SQLite kv + 活动会话系统提示词热替换）
+ *   { "type": "usage_stats", "id" }                           → { id, type: "usage_stats", stats }（全局使用统计：增量物化到 SQLite 后从库聚合）
  *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
  *       models = 勾选（可见）的模型 id；null = 无过滤记录（目录全可见）
@@ -88,6 +102,7 @@ import {
   sessionDelete,
   sessionList,
   sessionRename,
+  sessionSetArchived,
 } from "./hostdb";
 import {
   applyRowToCatalogModel,
@@ -113,6 +128,20 @@ import {
 } from "./transcript";
 import { contextInfo, needsCompaction, runCompaction } from "./context";
 import { running, resolveSession } from "./sessions";
+import {
+  cancelAllEntries,
+  cancelEntry,
+  enqueueTurn,
+  isTurnBusy,
+  markTurnEnd,
+  markTurnStart,
+  PROMPT_QUEUE_LIMIT,
+  promoteEntry,
+  queueChunkId,
+  shouldQueue,
+  takeFrontEntry,
+  updateEntryText,
+} from "./prompt-queue";
 import { getTodoState, replayTodoFromMessages } from "./todo";
 import {
   delegationResumeText,
@@ -129,15 +158,21 @@ import {
   applyMode,
   clearPendingToolApprovals,
   closeProposalOnNewPrompt,
+  composeModeSystemPrompt,
   planningPayload,
   resolveToolApproval,
 } from "./modes";
+import {
+  applyPersonalization,
+  getPersonalization,
+} from "./personalization";
+import { aggregateUsageStats } from "./usage-stats";
 import {
   cancelPendingQuestions,
   resolveQuestionAnswer,
   type QuestionAnswerItem,
 } from "./question-tools";
-import type { CustomModelSpec, SessionSummary } from "./types";
+import type { CustomModelSpec, Running, SessionSummary } from "./types";
 
 /** stdin 关闭（父进程写完）不等于任务处理完毕，等挂起请求清零再退出 */
 let stdinClosed = false;
@@ -231,9 +266,82 @@ function compactionChunkData(outcome: {
   };
 }
 
-/** prompt：会话准备段入管理队列串行执行，agent.prompt 长任务在队列外运行 */
+/** prompt turn 全局 FIFO 串行链：每节 = 一个 turn 的完整生命周期（会话准备 →
+ *  runStepWithRecovery → 委派收敛循环 → finally finish），跑完才放行下一节 */
+let promptChain: Promise<void> = Promise.resolve();
+/** 正在跑的 turn 所属线程（queue_promote 中止活跃 turn 时定位 run 用） */
+let activeTurnThreadId: string | null = null;
+
+/** "Agent is already processing a prompt" 兜底识别（pi-agent-core 守卫文案） */
+function isAlreadyProcessingError(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err);
+  return text.includes("Agent is already processing");
+}
+
+/** prompt 入口：排队判定后沿全局串行链执行（prompt 长任务依旧不占 mgmtQueue） */
 export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>) {
   const threadId = String(msg.threadId ?? "default");
+
+  // 上一轮未结束（或队列非空）→ 进 FIFO 队列，前端经 data-queue chunk 渲染排队条。
+  // 例外：活跃 turn 已被 Stop 中止、正在收尾（stopRequested 置位到链节 finally 之间）
+  // 不算「真忙」——此刻到达的新 prompt 不进队列，直接沿链等收尾后执行。否则会出现
+  // 「刚点了停止、新消息却显示排队中」，且用户再点一次 Stop 会把它连带取消（不执行）。
+  // 串行性由 promptChain 保证，顺序与排队完全一致，只是不渲染排队条。
+  const activeRun =
+    activeTurnThreadId != null ? running.get(activeTurnThreadId) : undefined;
+  const activeStopping = isTurnBusy() && activeRun?.stopRequested === true;
+  const wasQueued = shouldQueue() && !activeStopping;
+  if (wasQueued) {
+    const enqueued = enqueueTurn(reqId, threadId, msg);
+    if (!enqueued.ok) {
+      sendChunk(reqId, {
+        type: "error",
+        errorText: `排队消息过多（上限 ${PROMPT_QUEUE_LIMIT} 条），请等当前对话完成后再发`,
+      });
+      return;
+    }
+  }
+
+  // 沿链排队：前面每个 turn 完整跑完（含 finish 收尾）才轮到本节。
+  // 链节是可互换的工人槽，开跑时取当前队首（queue_promote 重排后顺序依然正确）
+  const tail = promptChain;
+  let release!: () => void;
+  promptChain = new Promise<void>((r) => (release = r));
+  await tail;
+  markTurnStart();
+  try {
+    let turnReqId = reqId;
+    let turnThreadId = threadId;
+    let turnMsg = msg;
+    if (wasQueued) {
+      const next = takeFrontEntry();
+      // 本项已被取消（取消时流已收尾）或队列已空：静默让位
+      if (!next) return;
+      turnReqId = next.reqId;
+      turnThreadId = next.threadId;
+      turnMsg = next.msg;
+      sendChunk(turnReqId, {
+        type: "data-queue",
+        id: queueChunkId(turnReqId),
+        data: { phase: "active" },
+      });
+    }
+    activeTurnThreadId = turnThreadId;
+    await runPromptTurn(turnReqId, turnMsg, turnThreadId);
+  } finally {
+    activeTurnThreadId = null;
+    markTurnEnd();
+    release();
+  }
+}
+
+/** 单个 prompt turn 的完整执行（原 dispatchPrompt 主体）：会话准备段入管理队列
+ *  串行执行，agent.prompt 长任务在队列外运行 */
+async function runPromptTurn(
+  reqId: string,
+  msg: Record<string, unknown>,
+  threadId: string,
+) {
   const task = mgmtQueue.then(() =>
     resolveSession(
       threadId,
@@ -305,7 +413,17 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
       }
     }
     beginRun();
-    await run.agent.prompt(text);
+    try {
+      await run.agent.prompt(text);
+    } catch (err) {
+      // 排队链已在协议层消除并发 prompt；此处兜底 abort 收尾等极窄竞态窗口。
+      // 守卫抛错时尚未产生任何事件，waitForIdle 后原地重试一次是干净的。
+      if (!isAlreadyProcessingError(err)) throw err;
+      logErr("agent.prompt hit active-run guard, retrying after idle");
+      await run.agent.waitForIdle();
+      beginRun();
+      await run.agent.prompt(text);
+    }
   };
 
   // 溢出恢复：stream.ts 吞掉溢出错误后置位 → 强制压缩后用同一文本重跑一次，
@@ -373,6 +491,22 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
   }
 }
 
+/** 中止单个线程的 run：父代理、后台子代理、挂起审批/提问与压缩请求全部结算 */
+function abortRun(run: Running, threadId: string): void {
+  run.stopRequested = true;
+  clearPendingToolApprovals(run);
+  cancelPendingQuestions(threadId);
+  for (const d of run.delegations.values()) {
+    if (d.status === "running") {
+      d.stopRequested = true;
+      d.abort();
+    }
+  }
+  // 正在跑的压缩摘要请求也要中止（runCompaction 会因此放弃装填 checkpoint）
+  run.compactionAbort?.abort();
+  run.agent.abort();
+}
+
 export async function dispatch(reqId: string, msg: Record<string, unknown>) {
   switch (msg.type) {
     case "ping": {
@@ -381,21 +515,44 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     }
     case "abort": {
       // 用户 Stop：中止父代理与全部后台子代理，并让收敛循环退出；
-      // 挂起的逐工具审批按拒绝结算、挂起提问按取消结算，避免永久悬挂
+      // 挂起的逐工具审批按拒绝结算、挂起提问按取消结算，避免永久悬挂；
+      // 排队中的 prompt 一并取消（各自流立即 abort+finish 收尾，不再执行）
       for (const [threadId, run] of running.entries()) {
-        run.stopRequested = true;
-        clearPendingToolApprovals(run);
-        cancelPendingQuestions(threadId);
-        for (const d of run.delegations.values()) {
-          if (d.status === "running") {
-            d.stopRequested = true;
-            d.abort();
-          }
-        }
-        // 正在跑的压缩摘要请求也要中止（runCompaction 会因此放弃装填 checkpoint）
-        run.compactionAbort?.abort();
-        run.agent.abort();
+        abortRun(run, threadId);
       }
+      cancelAllEntries();
+      break;
+    }
+    case "queue_update": {
+      // 修改排队项文本（仅 queued 状态可改；已开跑返回错误）
+      const requestId = String(msg.requestId ?? "");
+      const text = String(msg.text ?? "");
+      if (!updateEntryText(requestId, text)) {
+        throw new Error(`no queued prompt: ${requestId}`);
+      }
+      send({ id: reqId, type: "queue_updated", requestId });
+      break;
+    }
+    case "queue_cancel": {
+      // 删除单个排队项：其流立即 abort+finish 收尾（前端同步移除线程内消息）
+      const requestId = String(msg.requestId ?? "");
+      if (!cancelEntry(requestId)) {
+        throw new Error(`no queued prompt: ${requestId}`);
+      }
+      send({ id: reqId, type: "queue_cancelled", requestId });
+      break;
+    }
+    case "queue_promote": {
+      // 立即发送：该项提到队首，中止当前活跃 turn（其余排队项保留）
+      const requestId = String(msg.requestId ?? "");
+      if (!promoteEntry(requestId)) {
+        throw new Error(`no queued prompt: ${requestId}`);
+      }
+      if (activeTurnThreadId) {
+        const active = running.get(activeTurnThreadId);
+        if (active) abortRun(active, activeTurnThreadId);
+      }
+      send({ id: reqId, type: "queue_promoted", requestId });
       break;
     }
     case "compact": {
@@ -472,6 +629,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
             messageCount,
             modified: r.updated_at,
             cwd: r.cwd,
+            archived: r.archived === 1,
           };
         })
         .filter((s) => s.messageCount > 0);
@@ -512,6 +670,13 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const name = String(msg.name ?? "");
       await sessionRename(sessionId, name);
       send({ id: reqId, type: "renamed" });
+      break;
+    }
+    case "archive_session": {
+      const sessionId = String(msg.sessionId ?? "");
+      const archived = msg.archived !== false;
+      await sessionSetArchived(sessionId, archived);
+      send({ id: reqId, type: "archived" });
       break;
     }
     case "list_models": {
@@ -700,6 +865,25 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       // {"provider/modelId": {"off":"none","minimal":null,...}}，见 model-catalog
       const applied = setThinkingMapOverrides(msg.maps);
       send({ id: reqId, type: "thinking_maps", applied });
+      break;
+    }
+    case "get_personalization": {
+      send({ id: reqId, type: "personalization", settings: getPersonalization() });
+      break;
+    }
+    case "usage_stats": {
+      const stats = await aggregateUsageStats();
+      send({ id: reqId, type: "usage_stats", stats });
+      break;
+    }
+    case "set_personalization": {
+      const settings = await applyPersonalization(msg.settings);
+      // 与 set_thinking 同款广播：个性化段变了就整段重排系统提示词，活动会话
+      // 下一轮请求即生效；composeModeSystemPrompt 内部读取当前设置
+      for (const run of running.values()) {
+        run.agent.state.systemPrompt = composeModeSystemPrompt(run.mode, run.cwd);
+      }
+      send({ id: reqId, type: "personalization", settings });
       break;
     }
     case "set_credential": {

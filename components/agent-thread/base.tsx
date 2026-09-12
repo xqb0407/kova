@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
 import { Thread } from "./thread";
@@ -65,6 +66,13 @@ export const Base: FC = () => {
     setPanelHydrated(true);
   }, []);
 
+  // 面板开合是本地态；composer 等外部入口（如分支菜单的"Git 图谱"）经此事件展开
+  useEffect(() => {
+    const open = () => setPanelOpen(true);
+    window.addEventListener("agent-panel:open", open);
+    return () => window.removeEventListener("agent-panel:open", open);
+  }, []);
+
   // 开合 → 驱动 collapsible Panel；恢复宽度在展开后一次 resize
   useEffect(() => {
     if (!panelHydrated || compact) return;
@@ -95,6 +103,22 @@ export const Base: FC = () => {
       localStorage.setItem(PANEL_WIDTH_KEY, String(Math.round(p.getSize().inPixels)));
     } catch {}
   };
+
+  // 全局快捷键：打开设置 / 开合 Agent 面板（绑定来自「设置 → 快捷键」，改动即时生效）
+  const { openSettings, toggleAgentPanel } = useShortcuts();
+  useEffect(() => {
+    const down = (event: KeyboardEvent) => {
+      if (matchesShortcut(event, openSettings)) {
+        event.preventDefault();
+        setView("settings");
+      } else if (matchesShortcut(event, toggleAgentPanel)) {
+        event.preventDefault();
+        setPanelOpen((open) => !open);
+      }
+    };
+    document.addEventListener("keydown", down);
+    return () => document.removeEventListener("keydown", down);
+  }, [openSettings, toggleAgentPanel]);
 
   const chat = <Thread />;
 

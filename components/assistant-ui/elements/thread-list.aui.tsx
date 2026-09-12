@@ -15,6 +15,7 @@ import {
 } from "@assistant-ui/react";
 import {
   ArchiveIcon,
+  ArchiveRestoreIcon,
   FolderIcon,
   FolderOpenIcon,
   Loader2Icon,
@@ -36,15 +37,21 @@ import {
   useWorkspace,
 } from "@/lib/workspace-store";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   forwardRef,
-  Fragment,
-  useEffect,
   useMemo,
   useRef,
   useState,
   type ComponentPropsWithoutRef,
   type FC,
+  type ReactNode,
 } from "react";
+import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
 
 export const ThreadList: FC = () => {
   const [search, setSearch] = useState("");
@@ -205,7 +212,7 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       .filter(
         ({ id }) =>
           !query ||
-          (itemsById.get(id)?.title || "New Chat")
+          (itemsById.get(id)?.title || "新对话")
             .toLowerCase()
             .includes(query),
       )
@@ -261,34 +268,55 @@ const ThreadListItemGroups: FC<{ searchQuery?: string }> = ({
     );
   }
 
+  // 已归档会话不在侧栏展示，统一到「设置 → 归档」查看与恢复
   if (taskIndices.length === 0) {
     return (
       <div
         data-slot="aui_thread-list-empty"
         className="text-muted-foreground px-2.5 py-4 text-sm"
       >
-        暂无任务对话，选择工作目录后的对话会出现在「项目」里
+        暂无任务对话
       </div>
     );
   }
 
-  return taskIndices.map((index) => (
-    <ThreadListPrimitive.ItemByIndex
-      key={threadIds[index]}
-      index={index}
-      components={{ ThreadListItem }}
-    />
-  ));
+  return (
+    <>
+      {taskIndices.map((index) => (
+        <ThreadListPrimitive.ItemByIndex
+          key={threadIds[index]}
+          index={index}
+          components={{ ThreadListItem }}
+        />
+      ))}
+    </>
+  );
 };
 
 /**
  * 项目 tab 内容：有工作目录的会话按文件夹分组，Collapsible 展开显示会话列表。
  * 必须渲染在 ThreadListPrimitive.Root 内部（会话项复用 ThreadListItem 的
  * 激活/重命名/删除能力）。
+ * 展开目录集合可由外部受控（openDirs/onOpenDirsChange，供「展开全部」按钮用），
+ * 不传则组件内部自管。
  */
-export const ProjectListItems: FC = () => {
+export const ProjectListItems: FC<{
+  openDirs?: Set<string>;
+  onOpenDirsChange?: (next: Set<string>) => void;
+}> = ({ openDirs: controlledOpen, onOpenDirsChange }) => {
+  const aui = useAui();
   const { threadIds, projectGroups } = useThreadListGroups();
-  const [openDirs, setOpenDirs] = useState<Set<string>>(() => new Set());
+  const threadItems = useAuiState((s) => s.threads.threadItems);
+  const [internalOpen, setInternalOpen] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const openDirs = controlledOpen ?? internalOpen;
+
+  const setOpenDirs = (updater: (prev: Set<string>) => Set<string>) => {
+    const next = updater(openDirs);
+    if (onOpenDirsChange) onOpenDirsChange(next);
+    else setInternalOpen(next);
+  };
 
   const toggle = (cwd: string) =>
     setOpenDirs((prev) => {
@@ -297,6 +325,19 @@ export const ProjectListItems: FC = () => {
       else next.add(cwd);
       return next;
     });
+
+  /** 归档项目：组内全部已落盘会话批量归档；当前打开的会话由运行时先切走再归档 */
+  const archiveProject = (group: ThreadListProjectGroup) => {
+    const statusById = new Map(
+      threadItems.map((item) => [item.id, item.status]),
+    );
+    for (const index of group.indices) {
+      const id = threadIds[index];
+      // 新建未落盘的会话（status "new"）不可归档，跳过
+      if (statusById.get(id) !== "regular") continue;
+      aui.threads.item({ id }).archive();
+    }
+  };
 
   if (projectGroups.length === 0) {
     return (
@@ -319,25 +360,56 @@ export const ProjectListItems: FC = () => {
             open={isOpen}
             onOpenChange={() => toggle(group.cwd)}
           >
-            <CollapsibleTrigger
-              className="w-full"
-              render={
-                <Button
-                  variant="ghost"
-                  title={group.cwd}
-                  className="h-8 justify-start gap-2 px-2.5 text-sm font-normal hover:bg-muted aria-expanded:bg-transparent"
+            <div className="group/proj relative">
+              <CollapsibleTrigger
+                className="w-full"
+                render={
+                  <Button
+                    variant="ghost"
+                    title={group.cwd}
+                    className="h-8 justify-start gap-2 px-2.5 text-sm font-normal hover:bg-muted group-hover/proj:pe-8 aria-expanded:bg-transparent"
+                  >
+                    {isOpen ? (
+                      <FolderOpenIcon className="size-4 shrink-0" />
+                    ) : (
+                      <FolderIcon className="size-4 shrink-0" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate text-start">
+                      {group.label}
+                    </span>
+                  </Button>
+                }
+              />
+              {/* 项目操作菜单：归档整个项目（组内全部会话） */}
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="absolute end-1 top-1/2 size-6 -translate-y-1/2 p-0 opacity-0 group-hover/proj:opacity-100 focus-visible:opacity-100 data-[popup-open]:opacity-100"
+                    >
+                      <MoreHorizontalIcon className="size-3.5" />
+                      <span className="sr-only">项目操作</span>
+                    </Button>
+                  }
+                />
+                <DropdownMenuContent
+                  side="right"
+                  align="start"
+                  sideOffset={6}
+                  className="w-44"
                 >
-                  {isOpen ? (
-                    <FolderOpenIcon className="size-4 shrink-0" />
-                  ) : (
-                    <FolderIcon className="size-4 shrink-0" />
-                  )}
-                  <span className="min-w-0 flex-1 truncate text-start">
-                    {group.label}
-                  </span>
-                </Button>
-              }
-            />
+                  <DropdownMenuItem
+                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
+                    onClick={() => archiveProject(group)}
+                  >
+                    <ArchiveIcon className="size-4" />
+                    归档项目
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
             <CollapsibleContent className="overflow-hidden">
               <div className="flex flex-col gap-0.5 pl-0">
                 {group.indices.map((index) => (
@@ -414,130 +486,95 @@ const ThreadListSkeleton: FC = () => {
   );
 };
 
-export const ThreadListItem: FC = () => {
-  const isRunning = useAuiState((s) => s.threadListItem.isRunning);
-  const [isRenaming, setIsRenaming] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const restoreFocusRef = useRef(false);
+/** 会话标题：文本被省略号截断时，悬浮缓慢左滚展示全文，移开后回位 */
+const MarqueeTitle: FC<
+  ComponentPropsWithoutRef<"span"> & { children: ReactNode }
+> = ({ className, children, ...props }) => {
+  const outerRef = useRef<HTMLSpanElement>(null);
+  const [dx, setDx] = useState(0);
 
-  useEffect(() => {
-    if (isRenaming || !restoreFocusRef.current) return;
-    restoreFocusRef.current = false;
-    triggerRef.current?.focus();
-  }, [isRenaming]);
+  const enter = () => {
+    const el = outerRef.current;
+    if (!el) return;
+    const overflow = el.scrollWidth - el.clientWidth;
+    // 末尾多留一点呼吸空间，避免最后一个字贴着裁切边
+    if (overflow > 1) setDx(-(overflow + 16));
+  };
+
+  return (
+    <span
+      ref={outerRef}
+      onMouseEnter={enter}
+      onMouseLeave={() => setDx(0)}
+      className={cn(
+        "min-w-0 flex-1 overflow-hidden whitespace-nowrap",
+        className,
+      )}
+      {...props}
+    >
+      <span
+        className="block"
+        style={{
+          transform: `translateX(${dx}px)`,
+          transition:
+            dx !== 0
+              ? `transform ${Math.min(6, Math.abs(dx) / 30)}s linear`
+              : "transform 0.2s ease",
+        }}
+      >
+        {children}
+      </span>
+    </span>
+  );
+};
+
+export const ThreadListItem: FC = () => {
+  const aui = useAui();
+  const isRunning = useAuiState((s) => s.threadListItem.isRunning);
+  const title = useAuiState((s) => s.threadListItem.title) ?? "";
+  const [renameOpen, setRenameOpen] = useState(false);
 
   return (
     <ThreadListItemPrimitive.Root
       data-slot="aui_thread-list-item"
       className="group hover:bg-muted focus-visible:bg-muted data-active:bg-muted has-focus-visible:bg-muted has-data-[state=open]:bg-muted relative flex h-8 items-center rounded-md transition-colors focus-visible:outline-none"
     >
-      {isRenaming ? (
-        <ThreadListItemRename
-          onDone={(restoreFocus) => {
-            restoreFocusRef.current = restoreFocus;
-            setIsRenaming(false);
-          }}
+      <ThreadListItemPrimitive.Trigger
+        data-slot="aui_thread-list-item-trigger"
+        className="group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md px-2.5 text-start text-sm outline-none group-hover:pe-9 group-has-focus-visible:pe-9 group-has-data-[state=open]:pe-9 group-data-active:pe-9 focus-visible:ring-1"
+      >
+        {/* Loader DOM 常驻，永久占位 */}
+        <Loader2Icon
+          aria-hidden
+          data-slot="aui_thread-list-item-running"
+          data-running={isRunning}
+          className="
+            text-muted-foreground me-1.5 size-3.5 shrink-0 animate-spin
+            invisible
+            data-[running=true]:visible
+          "
         />
-      ) : (
-       <ThreadListItemPrimitive.Trigger
-  ref={triggerRef}
-  data-slot="aui_thread-list-item-trigger"
-  className="group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md px-2.5 text-start text-sm outline-none group-hover:pe-9 group-has-focus-visible:pe-9 group-has-data-[state=open]:pe-9 group-data-active:pe-9 focus-visible:ring-1"
->
-  {/* Loader DOM 常驻，永久占位 */}
-  <Loader2Icon
-    aria-hidden
-    data-slot="aui_thread-list-item-running"
-    data-running={isRunning}
-    className="
-      text-muted-foreground me-1.5 size-3.5 shrink-0 animate-spin
-      invisible
-      data-[running=true]:group-hover:visible
-      data-[running=true]:group-has-focus-visible:visible
-      data-[running=true]:group-has-data-[state=open]:visible
-      data-[running=true]:group-data-active:visible
-    "
-  />
-  <span
-    data-slot="aui_thread-list-item-title"
-    className="min-w-0 flex-1 truncate"
-  >
-    <ThreadListItemPrimitive.Title fallback="New Chat" />
-  </span>
-  {isRunning && <span className="sr-only">Running</span>}
-</ThreadListItemPrimitive.Trigger>
-
-      )}
-      <ThreadListItemMore onRename={() => setIsRenaming(true)} />
+        <MarqueeTitle data-slot="aui_thread-list-item-title">
+          <ThreadListItemPrimitive.Title fallback="新对话" />
+        </MarqueeTitle>
+        {isRunning && <span className="sr-only">Running</span>}
+      </ThreadListItemPrimitive.Trigger>
+      <ThreadListItemMore onRename={() => setRenameOpen(true)} />
+      {/* 重命名与顶栏共用同一 dialog；store client 的 rename 声明 void、运行时返回 Promise */}
+      <RenameTaskDialog
+        open={renameOpen}
+        onOpenChange={setRenameOpen}
+        currentTitle={title}
+        onRename={(t) =>
+          aui.threadListItem.rename(t) as unknown as Promise<void>
+        }
+      />
     </ThreadListItemPrimitive.Root>
   );
 };
 
-const ThreadListItemRename: FC<{
-  onDone: (restoreFocus: boolean) => void;
-}> = ({ onDone }) => {
-  const aui = useAui();
-  const title = useAuiState((s) => s.threadListItem.title) ?? "";
-  const [value, setValue] = useState(title);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const settledRef = useRef(false);
-
-  useEffect(() => {
-    inputRef.current?.select();
-  }, []);
-
-  const commit = (restoreFocus: boolean) => {
-    if (settledRef.current) return;
-    settledRef.current = true;
-
-    const next = value.trim();
-    if (!next || next === title) {
-      onDone(restoreFocus);
-      return;
-    }
-
-    // Deferred so a synchronous throw lands on the rejection path too.
-    Promise.resolve()
-      .then(() => aui.threadListItem.rename(next))
-      .then(
-        () => onDone(restoreFocus),
-        () => {
-          settledRef.current = false;
-          if (restoreFocus) inputRef.current?.focus();
-        },
-      );
-  };
-
-  const cancel = () => {
-    if (settledRef.current) return;
-    settledRef.current = true;
-    onDone(true);
-  };
-
-  return (
-    <Input
-      ref={inputRef}
-      autoFocus
-      data-slot="aui_thread-list-item-rename"
-      aria-label="Rename thread"
-      value={value}
-      className="h-7 min-w-0 flex-1 ps-2.5 pe-9 text-sm"
-      onChange={(event) => setValue(event.target.value)}
-      onBlur={() => commit(false)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          commit(true);
-        } else if (event.key === "Escape") {
-          event.preventDefault();
-          cancel();
-        }
-      }}
-    />
-  );
-};
-
 const ThreadListItemMore: FC<{ onRename: () => void }> = ({ onRename }) => {
+  const archived = useAuiState((s) => s.threadListItem.status === "archived");
   return (
     <ThreadListItemMorePrimitive.Root sharedFocusGroup>
       <ThreadListItemMorePrimitive.Trigger asChild>
@@ -566,15 +603,27 @@ const ThreadListItemMore: FC<{ onRename: () => void }> = ({ onRename }) => {
           <PencilIcon className="size-4" />
           Rename
         </ThreadListItemMorePrimitive.Item>
-        <ThreadListItemPrimitive.Archive asChild>
-          <ThreadListItemMorePrimitive.Item
-            data-slot="aui_thread-list-item-more-item"
-            className="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
-          >
-            <ArchiveIcon className="size-4" />
-            Archive
-          </ThreadListItemMorePrimitive.Item>
-        </ThreadListItemPrimitive.Archive>
+        {archived ? (
+          <ThreadListItemPrimitive.Unarchive asChild>
+            <ThreadListItemMorePrimitive.Item
+              data-slot="aui_thread-list-item-more-item"
+              className="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
+            >
+              <ArchiveRestoreIcon className="size-4" />
+              Unarchive
+            </ThreadListItemMorePrimitive.Item>
+          </ThreadListItemPrimitive.Unarchive>
+        ) : (
+          <ThreadListItemPrimitive.Archive asChild>
+            <ThreadListItemMorePrimitive.Item
+              data-slot="aui_thread-list-item-more-item"
+              className="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
+            >
+              <ArchiveIcon className="size-4" />
+              Archive
+            </ThreadListItemMorePrimitive.Item>
+          </ThreadListItemPrimitive.Archive>
+        )}
         <ThreadListItemPrimitive.Delete asChild>
           <ThreadListItemMorePrimitive.Item
             data-slot="aui_thread-list-item-more-item"

@@ -142,13 +142,13 @@ pub fn cancel_all_tools() {
 
 /// Windows 下隐藏控制台窗口（等价 Node spawn 的 windowsHide: true）
 #[cfg(windows)]
-fn no_window(cmd: &mut Command) {
+pub(crate) fn no_window(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW);
 }
 #[cfg(not(windows))]
-fn no_window(_cmd: &mut Command) {}
+pub(crate) fn no_window(_cmd: &mut Command) {}
 
 /// bash 可执行文件解析：与原 sidecar resolveShellCommand 一致——
 /// Windows 用 Git Bash（PATH → git.exe 同目录 → 常见安装位置），退回 cmd.exe。

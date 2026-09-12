@@ -15,6 +15,7 @@ export type PiSessionSummary = {
   messageCount: number;
   modified: string;
   cwd: string;
+  archived?: boolean;
 };
 
 /** 每 token 单价（美元） */
@@ -133,16 +134,68 @@ export type PiCompacted = {
   summary: string;
 };
 
+/** 回复风格档位（设置 → 个性化；提示词文案在 sidecar personalization.ts） */
+export type PiPersonalizationStyle =
+  | "default"
+  | "professional"
+  | "friendly"
+  | "imaginative"
+  | "blunt"
+  | "guiding";
+
+/** 个性化设置整包（sidecar 持久化于 SQLite kv，活动会话热更新） */
+export type PiPersonalization = {
+  style: PiPersonalizationStyle;
+  /** AI 对用户的称呼（空 = 不注入） */
+  userName: string;
+  /** AI 的名称（空 = 不注入） */
+  assistantName: string;
+  /** 人设 / 人格描述（空 = 不注入） */
+  persona: string;
+  /** 自定义指令：每次对话都携带（空 = 不注入） */
+  customInstructions: string;
+};
+
+/** 单日使用统计（本地时区；sidecar 扫全部会话转录聚合，日期升序） */
+export type PiUsageStatsDay = {
+  date: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** input + output + cacheRead + cacheWrite */
+  tokens: number;
+  /** assistant 消息轮数 */
+  messages: number;
+  /** "provider/model" -> tokens */
+  byModel: Record<string, number>;
+};
+
+/** 全局使用统计（usage_stats 响应） */
+export type PiUsageStats = {
+  /** 只含有活动的日子 */
+  days: PiUsageStatsDay[];
+  /** 有转录内容的会话数 */
+  sessionCount: number;
+  /** 首次活动日（YYYY-MM-DD），无任何活动为 null */
+  firstActivity: string | null;
+  /** 最长单会话跨度（毫秒，近似聊天时长） */
+  longestChatMs: number;
+};
+
 export type PiResponse =
   | { type: "sessions"; sessions: PiSessionSummary[] }
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "history"; messages: unknown[] }
   | { type: "deleted" }
   | { type: "renamed" }
+  | { type: "archived" }
   | { type: "models"; models: PiModelSummary[]; providers: PiProviderSummary[] }
   | { type: "model"; provider: string; modelId: string }
   | { type: "thinking"; level: string }
   | { type: "thinking_maps"; applied: number }
+  | { type: "personalization"; settings: PiPersonalization }
+  | { type: "usage_stats"; stats: PiUsageStats }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "model_updated"; provider: string; modelId: string }
   | { type: "credential"; provider: string }

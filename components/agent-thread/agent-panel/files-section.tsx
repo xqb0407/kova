@@ -1,17 +1,13 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { startTransition, useState, type FC } from "react";
 import { FileCodeIcon, FilePenIcon, FilePlusIcon } from "lucide-react";
 import {
-  diffLines,
   type FileChangeEntry,
   type FileChangeGroup,
 } from "@/lib/panel-activity";
-import { cn } from "@/lib/utils";
+import { PanelFileDiff } from "@/components/code/panel-diff";
 import { DiffStats, PanelSection, StatusDot } from "./section-shell";
-
-/** 单条变更最多渲染的 diff 行数,超出折叠(面板窄、内容要克制) */
-const MAX_DIFF_LINES = 160;
 
 function splitPath(path: string): { dir: string; base: string } {
   const norm = path.replace(/\\/g, "/");
@@ -27,10 +23,8 @@ const OpIcon: FC<{ op: "edit" | "write" }> = ({ op }) =>
     <FilePenIcon className="size-3.5 shrink-0 text-muted-foreground" />
   );
 
-/** 一次 edit/write 的 diff 块(带 +/- 前缀与绿红底色;超量截断) */
-const EntryDiff: FC<{ entry: FileChangeEntry }> = ({ entry }) => {
-  const [expanded, setExpanded] = useState(false);
-
+/** 一次 edit/write 的 diff 块（@pierre/diffs 渲染，主题随「外观 → 代码设置」） */
+const EntryDiff: FC<{ entry: FileChangeEntry; path: string }> = ({ entry, path }) => {
   if (entry.failed && entry.output) {
     // 失败:diff 无从谈起(未落盘),直接展示错误输出
     return (
@@ -40,62 +34,23 @@ const EntryDiff: FC<{ entry: FileChangeEntry }> = ({ entry }) => {
     );
   }
 
-  const lines =
-    entry.oldText !== null
-      ? diffLines(entry.oldText, entry.newText)
-      : (entry.newText.length ? entry.newText.split("\n") : []).map((text) => ({
-          kind: "add" as const,
-          text,
-        }));
-  const shown = expanded ? lines : lines.slice(0, MAX_DIFF_LINES);
-  const hiddenCount = lines.length - shown.length;
-
+  const { base } = splitPath(path);
   return (
-    <div className="border-border/60 bg-muted/20 overflow-hidden rounded-lg border p-2 font-mono text-[11px] leading-[1.6]">
-      <div className="mb-1 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+    <div className="overflow-hidden rounded-lg border border-border/60">
+      <div className="bg-muted/20 border-border/60 flex items-center gap-1.5 border-b px-2 py-1 text-[10px] text-muted-foreground">
         <OpIcon op={entry.op} />
         <span>{entry.op === "edit" ? "编辑" : "写入"}</span>
         <span className="text-emerald-600 dark:text-emerald-400">
           +{entry.added}
         </span>
-        <span className="text-rose-600 dark:text-rose-400">
+        <span className="text-rose-500 dark:text-rose-400">
           -{entry.removed}
         </span>
         {entry.running ? (
           <span className="shimmer ml-auto">进行中…</span>
         ) : null}
       </div>
-      <div className="max-h-72 overflow-y-auto">
-        {shown.map((line, i) => (
-          <div
-            key={i}
-            className={cn(
-              "-mx-2 flex px-2",
-              line.kind === "add" &&
-                "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-              line.kind === "del" &&
-                "bg-rose-500/10 text-rose-700 dark:text-rose-300",
-              line.kind === "ctx" && "text-muted-foreground/80",
-            )}
-          >
-            <span className="w-3.5 shrink-0 select-none text-muted-foreground/60">
-              {line.kind === "add" ? "+" : line.kind === "del" ? "-" : " "}
-            </span>
-            <span className="min-w-0 whitespace-pre-wrap break-all">
-              {line.text || " "}
-            </span>
-          </div>
-        ))}
-      </div>
-      {hiddenCount > 0 && !expanded ? (
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          className="text-muted-foreground hover:text-foreground mt-1 text-[11px] underline-offset-2 hover:underline"
-        >
-          ⋯ 展开剩余 {hiddenCount} 行
-        </button>
-      ) : null}
+      <PanelFileDiff name={base} oldText={entry.oldText} newText={entry.newText} />
     </div>
   );
 };
@@ -103,15 +58,27 @@ const EntryDiff: FC<{ entry: FileChangeEntry }> = ({ entry }) => {
 /** 单文件卡:头部摘要(路径 + 累计 ±),展开看逐次变更 */
 const FileCard: FC<{ group: FileChangeGroup }> = ({ group }) => {
   const [open, setOpen] = useState(false);
+  // 与审查标签同款延迟挂载：点击先反馈，diff 重 DOM 下一帧再建
+  const [diffMounted, setDiffMounted] = useState(false);
   const { dir, base } = splitPath(group.path);
   const latest = group.entries[group.entries.length - 1];
+
+  const toggle = () => {
+    if (open) {
+      setOpen(false);
+      setDiffMounted(false);
+      return;
+    }
+    setOpen(true);
+    requestAnimationFrame(() => startTransition(() => setDiffMounted(true)));
+  };
 
   return (
     <div className="border-border/60 bg-muted/10 overflow-hidden rounded-xl border">
       <button
         type="button"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         className="hover:bg-muted/40 flex w-full items-center gap-2 px-2.5 py-2 text-left"
       >
         <StatusDot running={group.running} failed={group.failed} />
@@ -129,9 +96,11 @@ const FileCard: FC<{ group: FileChangeGroup }> = ({ group }) => {
       </button>
       {open ? (
         <div className="flex flex-col gap-1.5 border-t border-border/60 p-2">
-          {group.entries.map((entry) => (
-            <EntryDiff key={entry.toolCallId} entry={entry} />
-          ))}
+          {diffMounted
+            ? group.entries.map((entry) => (
+                <EntryDiff key={entry.toolCallId} entry={entry} path={group.path} />
+              ))
+            : null}
         </div>
       ) : null}
       {/* 未展开时给最近一次变更一个悬浮提示(整路径) */}

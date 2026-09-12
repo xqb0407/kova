@@ -24,6 +24,7 @@ import type {
   BeforeToolCallResult,
 } from "@earendil-works/pi-agent-core";
 import { SYSTEM_PROMPT_CORE, workspacePromptLine } from "./tools";
+import { personalizationPromptBlock } from "./personalization";
 import { sendEventChunk } from "./stream";
 import type {
   ApprovalLevel,
@@ -83,9 +84,10 @@ const AGENT_MODE_PROMPT =
   "You are operating in Agent mode: carry out the requested work with the available tools and report the result clearly. When it helps, propose an implementation plan via EnterPlanMode, or negotiate a goal contract via EnterGoalMode.";
 
 /**
- * 各模式完整系统提示 = 静态核心 + 模式附加段 + cwd 行。
+ * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + cwd 行。
  * 顺序保证缓存命中：静态核心在前（跨会话字节级一致），模式段夹中间（会话内
- * 切换时整段重排不可避免，但同一模式内前缀稳定），cwd 行永远在最尾。
+ * 切换时整段重排不可避免，但同一模式内前缀稳定），个性化段随设置变更热替换，
+ * cwd 行永远在最尾；个性化段全默认时为空串（默认提示词与旧版字节级一致）。
  */
 export function composeModeSystemPrompt(mode: SessionMode, cwd: string): string {
   const extra =
@@ -94,7 +96,14 @@ export function composeModeSystemPrompt(mode: SessionMode, cwd: string): string 
       : mode === "goal"
         ? CONTRACT_MODE_PROMPTS.goal
         : AGENT_MODE_PROMPT;
-  return [SYSTEM_PROMPT_CORE, extra, workspacePromptLine(cwd)].join("\n\n");
+  return [
+    SYSTEM_PROMPT_CORE,
+    extra,
+    personalizationPromptBlock(),
+    workspacePromptLine(cwd),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /* --------------------------------- 工具集 --------------------------------- */

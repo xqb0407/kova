@@ -12,6 +12,7 @@ import {
   sessionList,
   sessionDelete,
   sessionRename,
+  sessionSetArchived,
   sessionTouch,
   credentialGet,
   credentialList,
@@ -26,6 +27,8 @@ import {
   modelsReplace,
   getLocalDb,
   hostToolCall,
+  kvGet,
+  kvSet,
 } from "./hostdb";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-hostdb-"));
@@ -66,6 +69,16 @@ describe("local mode: sessions", () => {
     expect(row.title).toBe("renamed");
     await sessionDelete("hdb-2");
     expect(await sessionGet("hdb-2")).toBeNull();
+  });
+
+  test("archive flag set and unset", async () => {
+    await sessionInsert("hdb-arch", "");
+    await sessionSetArchived("hdb-arch", true);
+    let listed = await sessionList();
+    expect(listed.find((s) => s.id === "hdb-arch")?.archived).toBe(1);
+    await sessionSetArchived("hdb-arch", false);
+    listed = await sessionList();
+    expect(listed.find((s) => s.id === "hdb-arch")?.archived).toBe(0);
   });
 });
 
@@ -190,5 +203,20 @@ describe("host mode: host_query RPC", () => {
     ac.abort();
     await expect(hostToolCall("read", ".", { file_path: "x" }, ac.signal)).rejects.toThrow();
     expect(captured.length).toBe(0);
+  });
+});
+
+describe("local mode: kv", () => {
+  // 前面的 host mode 用例结束后 transport 已被 reset，这里重新挂回本地库
+  beforeAll(() => {
+    initLocalStorage(path.join(tmp, "state.db"));
+  });
+
+  test("set/get roundtrip, missing key returns null", async () => {
+    expect(await kvGet("no-such-key")).toBeNull();
+    await kvSet("test.kv", JSON.stringify({ a: 1 }));
+    expect(await kvGet("test.kv")).toEqual({ value: JSON.stringify({ a: 1 }) });
+    await kvSet("test.kv", "second");
+    expect(await kvGet("test.kv")).toEqual({ value: "second" });
   });
 });
