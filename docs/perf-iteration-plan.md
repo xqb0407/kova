@@ -203,6 +203,17 @@
 编辑重发、压缩分隔线位置在窗口化后仍正确。
 验收：2000 条消息会话 DOM 节点数恒定（±窗口大小），滚动帧率 ≥ 50fps。
 
+实现落地记录（5a 已做；开关 = 外观设置「长会话窗口化」，默认开）：
+- MessageWindow 接管 aui_assistant-message-content div：滚出视口 ±2500px
+  卸载子树、等高占位（RO 记录真实盒高，折叠期间不回写）；isLast /
+  running / requires-action 永不折叠。
+- preview rail 契约：折叠期间 data-windowed=1 锚点跳过 DOM 文本重提取。
+- 前端线程缓存上限：框架（ThreadListRuntime 公开 API）不暴露单线程
+  dispose/evict（仅 __internal_dispose 整核丢弃）→ 记录为框架限制；
+  驻留大头已由迭代 2 sidecar LRU + 5a 渲染窗口化兜底。
+- 5b 历史分页（get_history tail/limit）暂不做：迭代 4 已把历史加载降为
+  单遍解析；若 5a 后打开超大会话首帧渲染仍是瓶颈，再排期。
+
 ## 附录 A：每迭代必跑的回归清单
 
 自动：`cd sidecar/pi-agent && bun test`；`bun run build`（Next 构建过类型）；

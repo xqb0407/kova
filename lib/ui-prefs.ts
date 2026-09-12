@@ -49,6 +49,12 @@ export type UiPrefs = {
   codeWrap: boolean;
   /** 代码字号（px）：独立于界面字号档位 */
   codeFontSize: number;
+  /**
+   * 迭代 5a：长会话渲染窗口化——滚出视口附近的 assistant 消息把重型内容
+   * （markdown 正文、工具输出）替换为等高占位，回视口即还原。关掉则全部常驻。
+   * 不落 DOM：MessageWindow 直接订阅 store。
+   */
+  renderWindowing: boolean;
 };
 
 export const UI_PREFS_KEY = "ui.prefs";
@@ -64,6 +70,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   codeLineNumbers: true,
   codeWrap: false,
   codeFontSize: 12,
+  renderWindowing: true,
 };
 
 /** 字号档位 → 根元素 font-size（rem 体系下等比缩放整体界面）；md 为浏览器默认 16px */

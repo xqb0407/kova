@@ -232,6 +232,15 @@ export const AppearanceSettings: FC = () => {
                 onChange={(v) => setUiPref("chatWidth", v)}
               />
             </SettingRow>
+            <SettingRow
+              label="长会话窗口化"
+              desc="滚出画面较远的消息以等高占位代替正文，降低长会话的卡顿与内存；关闭则全部常驻"
+            >
+              <Switch
+                checked={prefs.renderWindowing}
+                onCheckedChange={(c) => setUiPref("renderWindowing", c)}
+              />
+            </SettingRow>
           </div>
         </section>
  {/* 桌面端：窗口材质依赖 Tauri 能力，远程网页端隐藏整组 */}
