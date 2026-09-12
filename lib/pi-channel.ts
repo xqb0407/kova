@@ -79,6 +79,7 @@ export class TauriPiChannel implements PiChannel {
     const { requestId, text, threadId, sessionId, cwd, abortSignal } = args;
 
     let unlisten: UnlistenFn | null = null;
+    let closed = false;
     const cleanup = () => {
       unlisten?.();
       unlisten = null;
@@ -86,20 +87,28 @@ export class TauriPiChannel implements PiChannel {
 
     const stream = new ReadableStream<UIMessageChunk>({
       start: async (controller) => {
-        // 先挂监听再发起 prompt，避免漏掉最早的 chunk
-        unlisten = await listen<string>("pi-chunk", (event) => {
+        const handleLine = (raw: string) => {
+          if (closed) return;
           let parsed: { id?: string | null; chunk?: UIMessageChunk };
           try {
-            parsed = JSON.parse(event.payload);
+            parsed = JSON.parse(raw);
           } catch {
             return;
           }
           if (parsed.id !== requestId || !parsed.chunk) return;
           controller.enqueue(parsed.chunk);
           if (parsed.chunk.type === "finish" || parsed.chunk.type === "error") {
+            closed = true;
             cleanup();
             controller.close();
           }
+        };
+
+        // 先挂监听再发起 prompt，避免漏掉最早的 chunk。
+        // 迭代 3：Rust 侧 ~20ms 合帧后以 pi-chunk-batch（NDJSON 行数组）转发，
+        // 逐行走原有过滤逻辑；收尾行之后的批次残余由 closed 挡板忽略。
+        unlisten = await listen<string[]>("pi-chunk-batch", (event) => {
+          for (const raw of event.payload) handleLine(raw);
         });
 
         try {
@@ -111,6 +120,8 @@ export class TauriPiChannel implements PiChannel {
             cwd,
           });
         } catch (err) {
+          if (closed) return;
+          closed = true;
           controller.enqueue({
             type: "error",
             errorText: err instanceof Error ? err.message : String(err),

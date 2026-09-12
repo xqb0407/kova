@@ -34,6 +34,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use uuid::Uuid;
 
 use crate::pi_agent::{ensure_spawned, write_line, PiState};
@@ -46,10 +47,23 @@ const TOKEN_KEY: &str = "remote.token";
 
 // ---------- stdout 行 → 远程连接 的路由表 ----------
 
+/// 迭代 3b：每连接出站队列上界。有界防止慢客户端把内存吃穿（此前是无界
+/// channel，远程端网络一卡 sidecar chunk 就在队列里无限堆积）；写满时
+/// try_route 直接踢掉该连接，客户端自动重连续会话。
+const OUTBOUND_QUEUE_LIMIT: usize = 2048;
+
 struct RouteEntry {
     conn_id: u64,
     client_id: String,
-    tx: mpsc::UnboundedSender<String>,
+    tx: mpsc::Sender<String>,
+}
+
+/// 连接注册项：数据队列 sender + 强制断开信号。
+/// cancel sender 被 drop（kick_conn / 网关停止 / map 清理）即断开该连接——
+/// 仅摘除 tx 不够，read_loop 还持有一份 clone，队列不会因此关闭。
+struct ConnHandle {
+    tx: mpsc::Sender<String>,
+    _cancel: tokio::sync::oneshot::Sender<()>,
 }
 
 fn routes() -> &'static Arc<StdMutex<HashMap<String, RouteEntry>>> {
@@ -58,42 +72,66 @@ fn routes() -> &'static Arc<StdMutex<HashMap<String, RouteEntry>>> {
 }
 
 /// 全部活跃连接（含未认证），出站队列统一从这里投递
-fn conns() -> &'static Arc<StdMutex<HashMap<u64, mpsc::UnboundedSender<String>>>> {
-    static CONNS: OnceLock<
-        Arc<StdMutex<HashMap<u64, mpsc::UnboundedSender<String>>>>,
-    > = OnceLock::new();
+fn conns() -> &'static Arc<StdMutex<HashMap<u64, ConnHandle>>> {
+    static CONNS: OnceLock<Arc<StdMutex<HashMap<u64, ConnHandle>>>> = OnceLock::new();
     CONNS.get_or_init(|| Arc::new(StdMutex::new(HashMap::new())))
 }
 
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
+/// 强制断开某连接：摘除注册（drop cancel sender → 写任务退出、socket 关闭）并清其路由。
+fn kick_conn(conn_id: u64) {
+    if let Ok(mut map) = routes().lock() {
+        map.retain(|_, e| e.conn_id != conn_id);
+    }
+    if let Ok(mut map) = conns().lock() {
+        map.remove(&conn_id);
+    }
+}
+
 /// pi_agent stdout 循环调用：命中远程路由则改写回客户端原始 id 并投递，返回 true 表示已消费。
-pub(crate) fn try_route(line: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<Value>(line) else {
-        return false;
-    };
-    let Some(sid) = v.get("id").and_then(|x| x.as_str()).map(str::to_owned) else {
-        return false;
-    };
+/// 迭代 3b：接收调用方已 parse 好的行（None = 非法 JSON），且网关未启用/无在飞请求时
+/// 由路由表空判断 O(1) 短路——此前每行 stdout 都要在这里再全量 parse 一遍。
+pub(crate) fn try_route(parsed: Option<&Value>) -> bool {
     let entry = {
         let map = match routes().lock() {
             Ok(m) => m,
             Err(_) => return false,
         };
-        match map.get(&sid) {
-            Some(e) => RouteEntry {
-                conn_id: e.conn_id,
-                client_id: e.client_id.clone(),
-                tx: e.tx.clone(),
-            },
+        if map.is_empty() {
+            return false;
+        }
+        let Some(v) = parsed else { return false };
+        let Some(sid) = v.get("id").and_then(|x| x.as_str()) else {
+            return false;
+        };
+        match map.get(sid) {
+            Some(e) => (
+                sid.to_owned(),
+                RouteEntry {
+                    conn_id: e.conn_id,
+                    client_id: e.client_id.clone(),
+                    tx: e.tx.clone(),
+                },
+            ),
             None => return false,
         }
     };
-    let mut out = v;
+    let (sid, entry) = entry;
+    let Some(v) = parsed else { return false };
+    let mut out = v.clone();
     if let Some(obj) = out.as_object_mut() {
         obj.insert("id".into(), Value::String(entry.client_id.clone()));
     }
-    let _ = entry.tx.send(out.to_string());
+    match entry.tx.try_send(out.to_string()) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            log::warn!("[remote] outbound queue full, dropping conn {}", entry.conn_id);
+            kick_conn(entry.conn_id);
+        }
+        // 连接已进入清理流程，路由会在读侧结束时统一摘除
+        Err(TrySendError::Closed(_)) => {}
+    }
     if is_terminal(&out) {
         if let Ok(mut map) = routes().lock() {
             map.remove(&sid);
@@ -120,8 +158,8 @@ pub(crate) fn notify_terminated() {
         map.clear();
     }
     if let Ok(map) = conns().lock() {
-        for tx in map.values() {
-            let _ = tx.send(error_line.clone());
+        for h in map.values() {
+            let _ = h.tx.try_send(error_line.clone());
         }
     }
 }
@@ -295,9 +333,10 @@ fn stop_sync(inner: &RemoteInner) {
     // 通知所有连接网关已关闭；随后清空注册表使各连接的出站队列关闭、写任务退出
     let closed = json!({"type": "closed", "reason": "gateway stopped"}).to_string();
     if let Ok(mut map) = conns().lock() {
-        for tx in map.values() {
-            let _ = tx.send(closed.clone());
+        for h in map.values() {
+            let _ = h.tx.try_send(closed.clone());
         }
+        // clear 同时 drop 各连接的 cancel sender，写任务退出、socket 关闭
         map.clear();
     }
     if let Ok(mut map) = routes().lock() {
@@ -476,19 +515,27 @@ async fn ws_upgrade(AxumState(ctx): AxumState<GatewayCtx>, ws: WebSocketUpgrade)
 async fn handle_conn(ctx: GatewayCtx, socket: WebSocket) {
     let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
     let (mut sink, mut stream) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = mpsc::channel::<String>(OUTBOUND_QUEUE_LIMIT);
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
     let rs = ctx.inner.clone();
     rs.conns.fetch_add(1, Ordering::Relaxed);
     if let Ok(mut map) = conns().lock() {
-        map.insert(conn_id, tx.clone());
+        map.insert(conn_id, ConnHandle { tx: tx.clone(), _cancel: cancel_tx });
     }
 
-    // 写任务：出站队列 → socket。队列关闭（清理/停网关）后自然退出
+    // 写任务：出站队列 → socket。队列关闭（清理/停网关）或 cancel sender
+    // 被 drop（kick_conn 背压踢线）后退出并关闭 socket
     let writer = tauri::async_runtime::spawn(async move {
-        while let Some(line) = rx.recv().await {
-            if sink.send(WsMessage::text(line)).await.is_err() {
-                break;
+        loop {
+            tokio::select! {
+                maybe = rx.recv() => {
+                    let Some(line) = maybe else { break };
+                    if sink.send(WsMessage::text(line)).await.is_err() {
+                        break;
+                    }
+                }
+                _ = &mut cancel_rx => break,
             }
         }
         let _ = sink.close().await;
@@ -515,14 +562,14 @@ async fn handle_conn(ctx: GatewayCtx, socket: WebSocket) {
 async fn read_loop(
     app: &AppHandle,
     conn_id: u64,
-    tx: mpsc::UnboundedSender<String>,
+    tx: mpsc::Sender<String>,
     stream: &mut futures_util::stream::SplitStream<
         axum::extract::ws::WebSocket,
     >,
     rs: &Arc<RemoteInner>,
 ) -> Result<(), String> {
     let send = |v: Value| {
-        let _ = tx.send(v.to_string());
+        let _ = tx.try_send(v.to_string());
     };
     let mut authed = false;
     let mut fail_count: u8 = 0;
@@ -611,7 +658,7 @@ async fn forward_to_agent(
     app: &AppHandle,
     conn_id: u64,
     mut v: Value,
-    tx: &mpsc::UnboundedSender<String>,
+    tx: &mpsc::Sender<String>,
 ) -> Result<(), String> {
     // abort 无 id，全局透传，不占路由
     if v.get("type").and_then(|x| x.as_str()) == Some("abort") {
@@ -621,7 +668,7 @@ async fn forward_to_agent(
     }
 
     let Some(id) = v.get("id").and_then(|x| x.as_str()).map(str::to_owned) else {
-        let _ = tx.send(json!({"type": "error", "errorText": "missing id"}).to_string());
+        let _ = tx.try_send(json!({"type": "error", "errorText": "missing id"}).to_string());
         return Ok(());
     };
     let sid = format!("rem-{conn_id}-{id}");

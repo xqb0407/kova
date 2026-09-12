@@ -5,7 +5,7 @@
  */
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
-import { logErr } from "./log";
+import { logAt, logErr } from "./log";
 import { persist } from "./transcript";
 import type { Running, UIMessageChunk } from "./types";
 
@@ -40,7 +40,11 @@ export function sendEventChunk(chunk: UIMessageChunk) {
 export function beginRun() {
   runSeq += 1;
   contentIds = new Map();
+  updateCount = 0;
 }
+
+/** 本轮 message_update 事件计数（迭代3：逐条不再落日志，轮末一行摘要） */
+let updateCount = 0;
 
 function contentIdFor(index: number) {
   let ids = contentIds.get(index);
@@ -54,8 +58,18 @@ function contentIdFor(index: number) {
 /** Agent 事件 -> UIMessageChunk 流（reqId 取当前活跃请求） */
 export async function onAgentEvent(event: AgentEvent, run: Running): Promise<void> {
   const reqId = currentReqId;
-  if (event.type !== "message_update") logErr("event:", event.type);
-  else logErr("event: message_update/", (event as { assistantMessageEvent?: { type?: string } }).assistantMessageEvent?.type);
+  // 迭代3（P3）：message_update 属 token 级噪音，计数不落日志（PI_LOG_LEVEL=delta
+  // 可恢复逐条）；其余事件轮级低频，event 级日志。轮末在 agent_end 打一行摘要。
+  if (event.type === "message_update") {
+    updateCount += 1;
+    logAt(
+      "delta",
+      "event: message_update/",
+      (event as { assistantMessageEvent?: { type?: string } }).assistantMessageEvent?.type,
+    );
+  } else {
+    logAt("event", "event:", event.type);
+  }
   switch (event.type) {
     case "message_end": {
       // 裸 Agent 的 stream 异常（网络/401 等）会合成 stopReason:"error" 的失败消息
@@ -144,6 +158,7 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       break;
     }
     case "agent_end": {
+      logAt("event", `run summary: ${updateCount} message_update events`);
       // persist 变 async（索引表经 hostdb 走宿主 RPC）；subscribe 会 await 监听器
       await persist(run);
       break;
