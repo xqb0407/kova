@@ -29,65 +29,61 @@ export type CompactionRow = {
   details?: unknown;
 };
 
-/** 从 JSONL 读全部消息行（跳过撕裂尾行；ui 可为 null；返回带 seq 供恢复端按边界过滤）。
- * 旧版持久化 bug 会把同一批消息重复 append，同一 seq 可能出现多行：
- * 按 seq 去重（保留最后一次出现）并按 seq 排序，避免历史重建/会话恢复
- * 携带重复消息。 */
-export function readTranscript(
-  sessionId: string,
-): { seq: number; ui: UIMessage | null; agent: Message }[] {
-  const file = sessionPath(sessionId);
-  if (!existsSync(file)) return [];
-  const bySeq = new Map<number, { ui: UIMessage | null; agent: Message }>();
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const row = JSON.parse(line);
-      if (row?.type === "message" && row.agent && typeof row.seq === "number") {
-        bySeq.set(row.seq, { ui: row.ui ?? null, agent: row.agent });
-      }
-      // 未知行类型/缺 seq 直接跳过，向前兼容
-    } catch {
-      // 撕裂尾行：忽略
-    }
-  }
-  return [...bySeq.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([seq, row]) => ({ seq, ...row }));
-}
+/** 转录文件一次遍历的结果（迭代 4：消息行与压缩检查点行同遍分流，
+ * get_history 不再读两遍文件） */
+export type TranscriptScan = {
+  messages: { seq: number; ui: UIMessage | null; agent: Message }[];
+  compactions: CompactionRow[];
+};
 
-/** 扫描全部压缩检查点行（文件序；撕裂尾行容忍同 readTranscript） */
-function scanCompactionRows(sessionId: string): CompactionRow[] {
+/** 单遍扫描 JSONL：撕裂尾行容忍；消息行按 seq 去重（保留最后一次出现）
+ * 并按 seq 排序——旧版持久化 bug 会把同一批消息重复 append，避免历史
+ * 重建/会话恢复携带重复消息；未知行类型/缺 seq 跳过，向前兼容。 */
+export function scanTranscript(sessionId: string): TranscriptScan {
   const file = sessionPath(sessionId);
-  if (!existsSync(file)) return [];
-  const rows: CompactionRow[] = [];
+  if (!existsSync(file)) return { messages: [], compactions: [] };
+  const bySeq = new Map<number, { ui: UIMessage | null; agent: Message }>();
+  const compactions: CompactionRow[] = [];
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line);
-      if (
-        row?.type === "compaction" &&
-        typeof row.seq === "number" &&
+      if (typeof row?.seq !== "number") continue;
+      if (row.type === "message" && row.agent) {
+        bySeq.set(row.seq, { ui: row.ui ?? null, agent: row.agent });
+      } else if (
+        row.type === "compaction" &&
         typeof row.summary === "string" &&
         typeof row.throughSeq === "number"
       ) {
-        rows.push(row as CompactionRow);
+        compactions.push(row as CompactionRow);
       }
     } catch {
       // 撕裂尾行：忽略
     }
   }
-  return rows;
+  const messages = [...bySeq.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([seq, row]) => ({ seq, ...row }));
+  return { messages, compactions };
+}
+
+/** 从 JSONL 读全部消息行（跳过撕裂尾行；ui 可为 null；返回带 seq 供恢复端按边界过滤）。
+ * 去重/排序语义见 scanTranscript。 */
+export function readTranscript(
+  sessionId: string,
+): { seq: number; ui: UIMessage | null; agent: Message }[] {
+  return scanTranscript(sessionId).messages;
 }
 
 /** 读最后一条压缩检查点行（无检查点返回 undefined） */
 export function readCompaction(sessionId: string): CompactionRow | undefined {
-  return scanCompactionRows(sessionId).at(-1);
+  return scanTranscript(sessionId).compactions.at(-1);
 }
 
-/** 读全部压缩检查点行（get_history 用：把每次压缩的分隔线重建回消息流） */
+/** 读全部压缩检查点行（文件序） */
 export function readAllCompactions(sessionId: string): CompactionRow[] {
-  return scanCompactionRows(sessionId);
+  return scanTranscript(sessionId).compactions;
 }
 
 /** 追加一条压缩检查点行（runCompaction 落盘入口；seq 由调用方从 jsonlSeq 取） */
@@ -351,7 +347,8 @@ export async function persist(run: Running): Promise<void> {
         ? first.content
         : (first.content.find((c) => c.type === "text")?.text ?? "")
       : "";
-  await sessionTouch(run.sessionId, firstText.slice(0, 60), firstText);
+  // 迭代 4：本轮新落盘的消息行数随 touch 增量进索引表，list_sessions 不再扫文件
+  await sessionTouch(run.sessionId, firstText.slice(0, 60), firstText, lines.length);
 
   // 首轮回复后的智能标题（异步、防抖、失败静默；不阻塞索引维护）
   try {

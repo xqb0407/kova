@@ -23,7 +23,8 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
             cwd TEXT NOT NULL DEFAULT '',
             archived INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            message_count INTEGER
         );
         CREATE TABLE IF NOT EXISTS credentials (
             provider TEXT PRIMARY KEY,
@@ -83,6 +84,10 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
         "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;",
     );
 
+    // 迭代 4：sessions 补 message_count 列（可空：NULL = 未回填，由
+    // backfill_message_counts 在启动时按 JSONL 消息行数补数）。
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN message_count INTEGER;");
+
     // 旧数据迁移：早期版本把未选工作目录的会话 cwd 存成用户主目录；统一清空。
     let home = home_dir();
     if let Some(home) = home {
@@ -113,6 +118,38 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
         "models",
         "provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled",
     )?;
+    Ok(())
+}
+
+/// 迭代 4（P4）：为 message_count 为 NULL 的旧行一次性回填 JSONL 消息行数。
+/// 口径与旧 list_sessions 的扫文件计数一致（含 `"type":"message"` 的行数）；
+/// 回填后该行永不再读文件（运行期由 session_touch 增量维护）。
+/// 仅在升级后的首个启动发生 I/O；store.rs init 在 setup 里同步调用。
+pub fn backfill_message_counts(
+    conn: &Connection,
+    sessions_dir: &std::path::Path,
+) -> Result<(), String> {
+    let ids: Vec<String> = conn
+        .prepare("SELECT id FROM sessions WHERE message_count IS NULL")
+        .map_err(|e| e.to_string())?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    for id in ids {
+        let count = match std::fs::read_to_string(sessions_dir.join(format!("{id}.jsonl"))) {
+            Ok(content) => content
+                .lines()
+                .filter(|line| line.contains("\"type\":\"message\""))
+                .count() as i64,
+            // 文件缺失：等价于旧扫描的 existsSync=false ⇒ 0（列表按 >0 过滤，自然隐藏）
+            Err(_) => 0,
+        };
+        let _ = conn.execute(
+            "UPDATE sessions SET message_count = ?1 WHERE id = ?2 AND message_count IS NULL",
+            params![count, id],
+        );
+    }
     Ok(())
 }
 
@@ -335,7 +372,7 @@ pub fn handle_host_query(
             let cwd = p.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
             let now = str_param(p, "now")?;
             conn.execute(
-                "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at) VALUES (?, '', '', ?, ?, ?)",
+                "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count) VALUES (?, '', '', ?, ?, ?, 0)",
                 params![id, cwd, now, now],
             )
             .map_err(|e| e.to_string())?;
@@ -343,7 +380,7 @@ pub fn handle_host_query(
         }
         "session_list" => {
             let rows = conn
-                .prepare("SELECT id, title, first_message, cwd, archived, updated_at FROM sessions ORDER BY updated_at DESC")
+                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count FROM sessions ORDER BY updated_at DESC")
                 .map_err(|e| e.to_string())?
                 .query_map([], |row| {
                     Ok(json!({
@@ -353,6 +390,8 @@ pub fn handle_host_query(
                         "cwd": row.get::<_, String>(3)?,
                         "archived": row.get::<_, i64>(4)?,
                         "updated_at": row.get::<_, String>(5)?,
+                        // NULL = 启动回填尚未覆盖（理论不可达），按 0 呈现
+                        "message_count": row.get::<_, Option<i64>>(6)?.unwrap_or(0),
                     }))
                 })
                 .map_err(|e| e.to_string())?
@@ -395,17 +434,20 @@ pub fn handle_host_query(
             Ok(json!({}))
         }
         "session_touch" => {
-            // persist 里的增量维护：updated_at 总是更新；title/first_message 仅在为空时回填
+            // persist 里的增量维护：updated_at 总是更新；title/first_message 仅在为空时回填；
+            // 迭代 4：顺带累加本轮新写入 JSONL 的消息行数（added），列表不再扫文件
             let id = str_param(p, "sessionId")?;
             let now = str_param(p, "now")?;
             let title = p.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let first_message = p.get("firstMessage").and_then(|v| v.as_str()).unwrap_or("");
+            let added = p.get("added").and_then(|v| v.as_i64()).unwrap_or(0);
             conn.execute(
                 "UPDATE sessions SET updated_at = ?1, \
                  title = CASE WHEN title = '' THEN ?2 ELSE title END, \
-                 first_message = CASE WHEN first_message = '' THEN ?3 ELSE first_message END \
+                 first_message = CASE WHEN first_message = '' THEN ?3 ELSE first_message END, \
+                 message_count = COALESCE(message_count, 0) + ?5 \
                  WHERE id = ?4",
-                params![now, title, first_message, id],
+                params![now, title, first_message, id, added],
             )
             .map_err(|e| e.to_string())?;
             Ok(json!({}))
@@ -1000,5 +1042,86 @@ mod tests {
             .clone();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["archived"], 0);
+    }
+
+    /// 迭代 4：session_touch 的 added 增量累加 message_count，session_list 回读
+    #[test]
+    fn session_touch_increments_message_count() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let q = |kind: &str, p: Value| {
+            dispatch_host_query(&db, &json!({ "id": "t", "kind": kind, "params": p }))
+        };
+        let list_count = || -> i64 {
+            q("session_list", json!({}))["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == "s1")
+                .unwrap()["message_count"]
+                .as_i64()
+                .unwrap()
+        };
+        q("session_insert", json!({ "sessionId": "s1", "cwd": "", "now": "t" }));
+        assert_eq!(list_count(), 0);
+        q(
+            "session_touch",
+            json!({ "sessionId": "s1", "now": "t2", "title": "", "firstMessage": "", "added": 3 }),
+        );
+        assert_eq!(list_count(), 3);
+        q("session_touch", json!({ "sessionId": "s1", "now": "t3", "added": 2 }));
+        assert_eq!(list_count(), 5);
+        // 缺省 added 不改计数（兼容旧调用点）
+        q("session_touch", json!({ "sessionId": "s1", "now": "t4" }));
+        assert_eq!(list_count(), 5);
+    }
+
+    /// 迭代 4：启动一次性回填按 JSONL 消息行数补 NULL 旧行（口径同旧 list_sessions
+    /// 的扫描）；缺文件按 0；已回填行重跑不覆盖运行期增量。
+    #[test]
+    fn backfill_message_counts_from_jsonl() {
+        let dir = std::env::temp_dir().join(format!(
+            "pi-data-backfill-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let sessions = dir.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("old-a.jsonl"),
+            "{\"type\":\"header\"}\n\
+             {\"type\":\"message\",\"seq\":0}\n\
+             {\"type\":\"message\",\"seq\":1}\n\
+             {\"type\":\"compaction\",\"seq\":2,\"summary\":\"s\",\"throughSeq\":1}\n\
+             {\"type\":\"mess",
+        )
+        .unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        // 模拟旧行：message_count 为 NULL
+        conn.execute_batch(
+            "INSERT INTO sessions (id, created_at, updated_at) \
+             VALUES ('old-a', 't', 't'), ('old-b', 't', 't');",
+        )
+        .unwrap();
+        backfill_message_counts(&conn, &sessions).unwrap();
+        let get = |id: &str| -> Option<i64> {
+            conn.query_row(
+                "SELECT message_count FROM sessions WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(get("old-a"), Some(2), "只数 message 行，header/compaction/撕裂行不计");
+        assert_eq!(get("old-b"), Some(0), "文件缺失按 0（列表按 >0 过滤自然隐藏）");
+        conn.execute(
+            "UPDATE sessions SET message_count = 9 WHERE id = 'old-a'",
+            [],
+        )
+        .unwrap();
+        backfill_message_counts(&conn, &sessions).unwrap();
+        assert_eq!(get("old-a"), Some(9), "非 NULL 行不被重跑覆盖");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

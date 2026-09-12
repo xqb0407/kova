@@ -57,7 +57,8 @@ export function initLocalStorage(dbPath: string): void {
       cwd TEXT NOT NULL DEFAULT '',
       archived INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      message_count INTEGER
     );
     CREATE TABLE IF NOT EXISTS credentials (
       provider TEXT PRIMARY KEY,
@@ -108,6 +109,13 @@ export function initLocalStorage(dbPath: string): void {
   // 旧库迁移：sessions 补 archived 列（已存在则忽略）
   try {
     localDb.exec("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+  } catch {
+    /* 列已存在 */
+  }
+  // 迭代 4：sessions 补 message_count 列（NULL = 未回填，local 模式不做
+  // 启动回填——该模式仅冒烟/测试用，计数由 session_touch 增量维护即可）
+  try {
+    localDb.exec("ALTER TABLE sessions ADD COLUMN message_count INTEGER");
   } catch {
     /* 列已存在 */
   }
@@ -408,6 +416,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
     return v;
   };
   const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? Math.round(v) : 0);
   const run = (): unknown => {
     switch (kind) {
       case "session_get": {
@@ -421,16 +430,15 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
       case "session_insert": {
         const now = s("now");
         db.query(
-          "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at) VALUES (?, '', '', ?, ?, ?)",
+          "INSERT INTO sessions (id, title, first_message, cwd, created_at, updated_at, message_count) VALUES (?, '', '', ?, ?, ?, 0)",
         ).run(s("sessionId"), str(p.cwd), now, now);
         return {};
       }
       case "session_list":
         return db
-          .query<
-            { id: string; title: string; first_message: string; cwd: string; archived: number; updated_at: string },
-            []
-          >("SELECT id, title, first_message, cwd, archived, updated_at FROM sessions ORDER BY updated_at DESC")
+          .query<SessionRow[], []>(
+            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count FROM sessions ORDER BY updated_at DESC",
+          )
           .all();
       case "session_delete":
         db.query("DELETE FROM sessions WHERE id = ?").run(s("sessionId"));
@@ -451,9 +459,10 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
         db.query(
           "UPDATE sessions SET updated_at = ?, " +
             "title = CASE WHEN title = '' THEN ? ELSE title END, " +
-            "first_message = CASE WHEN first_message = '' THEN ? ELSE first_message END " +
+            "first_message = CASE WHEN first_message = '' THEN ? ELSE first_message END, " +
+            "message_count = COALESCE(message_count, 0) + ? " +
             "WHERE id = ?",
-        ).run(s("now"), str(p.title), str(p.firstMessage), s("sessionId"));
+        ).run(s("now"), str(p.title), str(p.firstMessage), num(p.added), s("sessionId"));
         return {};
       case "credential_get": {
         const row = db
@@ -691,6 +700,8 @@ export type SessionRow = {
   cwd: string;
   archived: number;
   updated_at: string;
+  /** 迭代 4：JSONL 消息行数（列表展示用；session_touch 增量维护） */
+  message_count: number;
 };
 
 export type CustomProviderRow = {
@@ -724,8 +735,13 @@ export const sessionRename = (sessionId: string, name: string) =>
 export const sessionSetArchived = (sessionId: string, archived: boolean) =>
   query("session_set_archived", { sessionId, archived });
 
-export const sessionTouch = (sessionId: string, title: string, firstMessage: string) =>
-  query("session_touch", { sessionId, now: nowIso(), title, firstMessage });
+/** added：本轮新 append 进 JSONL 的消息行数（迭代 4：计数随 touch 增量维护） */
+export const sessionTouch = (
+  sessionId: string,
+  title: string,
+  firstMessage: string,
+  added = 0,
+) => query("session_touch", { sessionId, now: nowIso(), title, firstMessage, added });
 
 export const credentialGet = (provider: string) =>
   query<{ apiKey: string } | null>("credential_get", { provider });

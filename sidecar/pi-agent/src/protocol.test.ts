@@ -3,7 +3,13 @@ import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import path from "node:path";
 import { initStorage, sessionPath } from "./storage";
-import { sessionInsert, sessionGet, getLocalDb, modelsReplace } from "./hostdb";
+import {
+  sessionInsert,
+  sessionGet,
+  sessionTouch,
+  getLocalDb,
+  modelsReplace,
+} from "./hostdb";
 import { dispatch, dispatchPrompt, handleLine, setInitGate } from "./protocol";
 import { running } from "./sessions";
 import { registerCustomProvider, setCurrentModelKey } from "./model-catalog";
@@ -101,6 +107,9 @@ describe("dispatch: sessions", () => {
         "\n",
       "utf8",
     );
+    // 迭代 4 不变式：消息行只会经 persist 落盘并随 session_touch 计入索引；
+    // 测试直接造文件时补一次 touch 等价还原该不变式
+    await sessionTouch(withMsgs, "", "", 2);
 
     await dispatch("s4", { type: "list_sessions" });
     const res = last();
@@ -118,12 +127,13 @@ describe("dispatch: sessions", () => {
     await sessionInsert(id, tmp);
     writeFileSync(
       sessionPath(id),
-      JSON.stringify({ type: "header", schema: 1, id, cwd: tmp, created_at: now }) +
+        JSON.stringify({ type: "header", schema: 1, id, cwd: tmp, created_at: now }) +
         "\n" +
         JSON.stringify({ type: "message", seq: 0, ui: {}, agent: {} }) +
         "\n",
       "utf8",
     );
+    await sessionTouch(id, "", "", 1); // 同上：直接造文件需补 touch 维持计数不变式
 
     await dispatch("sa0", { type: "list_sessions" });
     let sessions = last().sessions as { sessionId: string; archived?: boolean }[];
