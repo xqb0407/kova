@@ -55,6 +55,7 @@ export function initLocalStorage(dbPath: string): void {
       title TEXT NOT NULL DEFAULT '',
       first_message TEXT NOT NULL DEFAULT '',
       cwd TEXT NOT NULL DEFAULT '',
+      archived INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -70,6 +71,28 @@ export function initLocalStorage(dbPath: string): void {
       models TEXT NOT NULL DEFAULT '[]',
       api TEXT NOT NULL DEFAULT 'openai-chat'
     );
+    CREATE TABLE IF NOT EXISTS kv (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS usage_daily (
+      session_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      input INTEGER NOT NULL DEFAULT 0,
+      output INTEGER NOT NULL DEFAULT 0,
+      cache_read INTEGER NOT NULL DEFAULT 0,
+      cache_write INTEGER NOT NULL DEFAULT 0,
+      tokens INTEGER NOT NULL DEFAULT 0,
+      messages INTEGER NOT NULL DEFAULT 0,
+      by_model TEXT NOT NULL DEFAULT '{}',
+      PRIMARY KEY (session_id, date)
+    );
+    CREATE TABLE IF NOT EXISTS usage_scan (
+      session_id TEXT PRIMARY KEY,
+      mtime REAL NOT NULL,
+      first_ts INTEGER NOT NULL DEFAULT 0,
+      last_ts INTEGER NOT NULL DEFAULT 0
+    );
   `);
   // 旧库迁移：补 api / enabled 列（已存在则忽略）
   try {
@@ -79,6 +102,12 @@ export function initLocalStorage(dbPath: string): void {
   }
   try {
     localDb.exec("ALTER TABLE custom_providers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1");
+  } catch {
+    /* 列已存在 */
+  }
+  // 旧库迁移：sessions 补 archived 列（已存在则忽略）
+  try {
+    localDb.exec("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
   } catch {
     /* 列已存在 */
   }
@@ -399,9 +428,9 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
       case "session_list":
         return db
           .query<
-            { id: string; title: string; first_message: string; cwd: string; updated_at: string },
+            { id: string; title: string; first_message: string; cwd: string; archived: number; updated_at: string },
             []
-          >("SELECT id, title, first_message, cwd, updated_at FROM sessions ORDER BY updated_at DESC")
+          >("SELECT id, title, first_message, cwd, archived, updated_at FROM sessions ORDER BY updated_at DESC")
           .all();
       case "session_delete":
         db.query("DELETE FROM sessions WHERE id = ?").run(s("sessionId"));
@@ -411,6 +440,12 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
         return {};
       case "session_rename":
         db.query("UPDATE sessions SET title = ? WHERE id = ?").run(s("name"), s("sessionId"));
+        return {};
+      case "session_set_archived":
+        db.query("UPDATE sessions SET archived = ? WHERE id = ?").run(
+          p.archived === true ? 1 : 0,
+          s("sessionId"),
+        );
         return {};
       case "session_touch":
         db.query(
@@ -532,6 +567,99 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
       case "models_delete_provider":
         db.query("DELETE FROM models WHERE provider = ?").run(s("provider"));
         return {};
+      case "kv_get": {
+        const row = db
+          .query<{ value: string }, [string]>("SELECT value FROM kv WHERE key = ?")
+          .get(s("key"));
+        return row ? { value: row.value } : null;
+      }
+      case "kv_set":
+        db.query(
+          "INSERT INTO kv (key, value) VALUES (?, ?) " +
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        ).run(s("key"), s("value"));
+        return {};
+      case "usage_scan_list":
+        return db
+          .query<
+            { sessionId: string; mtime: number; firstTs: number; lastTs: number },
+            []
+          >("SELECT session_id AS sessionId, mtime, first_ts AS firstTs, last_ts AS lastTs FROM usage_scan")
+          .all();
+      case "usage_daily_replace": {
+        const sessionId = s("sessionId");
+        let items: Record<string, unknown>[] = [];
+        try {
+          items = JSON.parse(s("rows"));
+        } catch {
+          throw new Error("parse rows: invalid JSON");
+        }
+        const mtime = typeof p.mtime === "number" ? p.mtime : 0;
+        const firstTs = typeof p.firstTs === "number" ? p.firstTs : 0;
+        const lastTs = typeof p.lastTs === "number" ? p.lastTs : 0;
+        const tx = db.transaction(() => {
+          db.query("DELETE FROM usage_daily WHERE session_id = ?").run(sessionId);
+          for (const item of items) {
+            const date = typeof item.date === "string" ? item.date : "";
+            if (!date) continue;
+            const num = (v: unknown) => (typeof v === "number" ? Math.round(v) : 0);
+            db.query(
+              "INSERT INTO usage_daily \
+               (session_id, date, input, output, cache_read, cache_write, tokens, messages, by_model) \
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ).run(
+              sessionId,
+              date,
+              num(item.input),
+              num(item.output),
+              num(item.cacheRead),
+              num(item.cacheWrite),
+              num(item.tokens),
+              num(item.messages),
+              typeof item.byModel === "string" ? item.byModel : "{}",
+            );
+          }
+          db.query(
+            "INSERT INTO usage_scan (session_id, mtime, first_ts, last_ts) VALUES (?, ?, ?, ?) \
+             ON CONFLICT(session_id) DO UPDATE SET mtime = excluded.mtime, \
+             first_ts = excluded.first_ts, last_ts = excluded.last_ts",
+          ).run(sessionId, mtime, firstTs, lastTs);
+        });
+        tx();
+        return {};
+      }
+      case "usage_daily_query":
+        return db
+          .query<
+            {
+              sessionId: string;
+              date: string;
+              input: number;
+              output: number;
+              cacheRead: number;
+              cacheWrite: number;
+              tokens: number;
+              messages: number;
+              byModel: string;
+            },
+            []
+          >(
+            "SELECT session_id AS sessionId, date, input, output, cache_read AS cacheRead, \
+             cache_write AS cacheWrite, tokens, messages, by_model AS byModel \
+             FROM usage_daily ORDER BY date",
+          )
+          .all();
+      case "usage_daily_cleanup": {
+        const removed = db
+          .query(
+            "DELETE FROM usage_daily WHERE session_id NOT IN (SELECT id FROM sessions)",
+          )
+          .run().changes;
+        db.query(
+          "DELETE FROM usage_scan WHERE session_id NOT IN (SELECT id FROM sessions)",
+        ).run();
+        return { removed };
+      }
       default:
         throw new Error(`unknown host_query kind: ${kind}`);
     }
@@ -561,6 +689,7 @@ export type SessionRow = {
   title: string;
   first_message: string;
   cwd: string;
+  archived: number;
   updated_at: string;
 };
 
@@ -590,6 +719,10 @@ export const sessionDelete = (sessionId: string) => query("session_delete", { se
 
 export const sessionRename = (sessionId: string, name: string) =>
   query("session_rename", { sessionId, name });
+
+/** 归档 / 取消归档：列表默认隐藏归档会话，正文不动 */
+export const sessionSetArchived = (sessionId: string, archived: boolean) =>
+  query("session_set_archived", { sessionId, archived });
 
 export const sessionTouch = (sessionId: string, title: string, firstMessage: string) =>
   query("session_touch", { sessionId, now: nowIso(), title, firstMessage });
@@ -661,6 +794,73 @@ export const modelsReplace = (provider: string, items: ModelReplaceItem[]) =>
 
 export const modelsDeleteProvider = (provider: string) =>
   query("models_delete_provider", { provider });
+
+/* ------------------------------ kv（应用级设置） ------------------------------ */
+
+/** 应用级 kv 读取（生产 = Rust 的 state.db kv 表；value 为 JSON 字符串），无值返回 null */
+export const kvGet = (key: string) => query<{ value: string } | null>("kv_get", { key });
+
+/** 应用级 kv 写入（Rust 是唯一写入方；本侧经 host_query RPC 落库） */
+export const kvSet = (key: string, value: string) => query("kv_set", { key, value });
+
+/* ---------------------- usage（使用统计物化表） ---------------------- */
+
+/** usage_scan 行（每会话扫描水位：JSONL mtime + 首末消息时间戳） */
+export type UsageScanRow = {
+  sessionId: string;
+  mtime: number;
+  firstTs: number;
+  lastTs: number;
+};
+
+/** usage_daily 行（会话 × 本地日聚合；byModel 为 JSON 字符串） */
+export type UsageDailyRow = {
+  sessionId: string;
+  date: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  tokens: number;
+  messages: number;
+  byModel: string;
+};
+
+export type UsageDailyRowInput = {
+  date: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  tokens: number;
+  messages: number;
+  /** JSON 字符串：{ "provider/model": tokens } */
+  byModel: string;
+};
+
+export const usageScanList = () => query<UsageScanRow[]>("usage_scan_list");
+
+/** 整会话替换聚合行（幂等：先删后插 + upsert 扫描水位） */
+export const usageDailyReplace = (
+  sessionId: string,
+  rows: UsageDailyRowInput[],
+  mtime: number,
+  firstTs: number,
+  lastTs: number,
+) =>
+  query("usage_daily_replace", {
+    sessionId,
+    rows: JSON.stringify(rows),
+    mtime,
+    firstTs,
+    lastTs,
+  });
+
+export const usageDailyQuery = () => query<UsageDailyRow[]>("usage_daily_query");
+
+/** 清除已删会话的聚合行与扫描水位，返回清理的聚合行数 */
+export const usageDailyCleanup = () =>
+  query<{ removed: number }>("usage_daily_cleanup");
 
 /** 工具类 RPC 的超时 = 工具自身超时 + 余量：bash 默认 120s、http 默认 30s（上限 120s），
  *  不能让它们在宿主还在正常执行时先吃 15s 的通用超时 */

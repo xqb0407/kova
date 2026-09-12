@@ -1,0 +1,9 @@
+/* @pierre/diffs 全高渲染的滚动优化：diff 随面板整体滚动（无内部视口），
+   大 diff 的数千行 DOM 靠 content-visibility 跳过屏外部分的布局与绘制，
+   滚动时只渲染进入视口的行。auto 关键字让滚动条按"上次实际高度"估算。 */
+
+.pierre-diff-host {
+  display: block;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 400px;
+}

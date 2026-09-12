@@ -20,6 +20,8 @@ export type AccentName =
   | "rose";
 export type FontSizeName = "sm" | "md" | "lg";
 export type ChatWidthName = "narrow" | "md" | "wide";
+/** 代码主题档位（面板 diff 用 @pierre/diffs、代码预览用 CodeMirror，共用映射；浅深分开配置） */
+export type CodeThemeName = "default" | "vscode" | "idea";
 export type FontFamilyName =
   | "default"
   | "inter"
@@ -41,6 +43,12 @@ export type UiPrefs = {
   fontSize: FontSizeName;
   chatWidth: ChatWidthName;
   fontFamily: FontFamilyName;
+  codeThemeLight: CodeThemeName;
+  codeThemeDark: CodeThemeName;
+  codeLineNumbers: boolean;
+  codeWrap: boolean;
+  /** 代码字号（px）：独立于界面字号档位 */
+  codeFontSize: number;
 };
 
 export const UI_PREFS_KEY = "ui.prefs";
@@ -51,6 +59,11 @@ export const DEFAULT_PREFS: UiPrefs = {
   fontSize: "md",
   chatWidth: "md",
   fontFamily: "default",
+  codeThemeLight: "default",
+  codeThemeDark: "default",
+  codeLineNumbers: true,
+  codeWrap: false,
+  codeFontSize: 12,
 };
 
 /** 字号档位 → 根元素 font-size（rem 体系下等比缩放整体界面）；md 为浏览器默认 16px */
@@ -81,6 +94,8 @@ export function applyPrefs(p: UiPrefs) {
   else root.dataset.chatWidth = p.chatWidth;
   if (p.fontFamily === "default") delete root.dataset.font;
   else root.dataset.font = p.fontFamily;
+  // 代码设置（主题/行号/换行/字号）不落 DOM：CodeMirror 组件直接订阅 store，
+  // 且预览需同时渲染浅深两套，data 属性模型不再适用。
 }
 
 /** 从 localStorage 恢复并应用，注册系统主题监听；模块加载即执行 */

@@ -64,7 +64,7 @@ const ThreadScrollToBottom: FC = () => {
       <TooltipIconButton
         tooltip="Scroll to bottom"
         variant="outline"
-        className="aui-thread-scroll-to-bottom border dark:border-border dark:bg-background dark:hover:bg-accent absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible"
+        className="aui-thread-scroll-to-bottom border dark:border-border bg-background dark:bg-background dark:hover:bg-accent absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible"
       >
         <ArrowDownIcon className="size-4 shrink-0 text-foreground" />
       </TooltipIconButton>
@@ -79,8 +79,9 @@ export const Thread: FC = () => {
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root bg-transparent relative @container flex h-full flex-col"
       style={{
-        // 外观设置「对话宽度」经 html[data-chat-width] 覆写 --chat-width（globals.css）
-        ["--thread-max-width" as string]: "var(--chat-width, 50rem)",
+        // 外观设置「对话宽度」经 html[data-chat-width] 覆写 --chat-width（globals.css）；
+        // 回退值 = 默认档（md），改这里即改默认宽度
+        ["--thread-max-width" as string]: "var(--chat-width, 60rem)",
         ["--composer-bg" as string]: "var(--color-card)",
         ["--composer-radius" as string]: "1.5rem",
         ["--composer-padding" as string]: "8px",

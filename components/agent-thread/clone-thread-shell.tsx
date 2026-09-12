@@ -5,6 +5,7 @@ import {
   ThreadListItems,
   ThreadListRoot,
   ProjectListItems,
+  useThreadListGroups,
 } from "@/components/assistant-ui/elements/thread-list.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
@@ -33,9 +34,14 @@ import {
 import { cn } from "@/lib/utils";
 import { isRemoteMode } from "@/lib/remote";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
 import { Logo } from "./header";
 import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import {
+  ChevronsDownUpIcon,
+  ChevronsUpDownIcon,
+  FolderIcon,
+  ListTodoIcon,
   MenuIcon,
   MessageSquareIcon,
   PanelLeftIcon,
@@ -44,6 +50,8 @@ import {
   PlugIcon,
   PlusIcon,
   SettingsIcon,
+  FolderCode,
+  FileCheckCornerIcon,
 } from "lucide-react";
 import {
   useEffect,
@@ -78,28 +86,61 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 }) => {
   const [internalCollapsed, setInternalCollapsed] = useState(true);
   const [internalMobileOpen, setInternalMobileOpen] = useState(false);
-  const [activeMenu, setActiveMenu] = useState<string>("new");
+  // 「新对话」是常驻入口而非可选中项，不参与高亮；初始无选中
+  const [activeMenu, setActiveMenu] = useState<string>("");
   const [activeTab, setActiveTab] = useState<string>("tasks");
+  // 项目分组的展开状态提升到 shell：「展开全部/收起全部」按钮与列表共用
+  const [projOpenDirs, setProjOpenDirs] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const { projectGroups } = useThreadListGroups();
+  const allProjectsExpanded =
+    projectGroups.length > 0 &&
+    projectGroups.every((g) => projOpenDirs.has(g.cwd));
+  const toggleAllProjects = () =>
+    setProjOpenDirs(
+      allProjectsExpanded
+        ? new Set()
+        : new Set(projectGroups.map((g) => g.cwd)),
+    );
   const [searchOpen, setSearchOpen] = useState(false);
   const hasThreads = useAuiState((s) => s.threads.threadIds.length > 0);
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const threadItems = useAuiState((s) => s.threads.threadItems);
   const aui = useAui();
 
-  // ⌘K / Ctrl+K 全局唤起搜索命令面板
+  // 全局快捷键：绑定来自「设置 → 快捷键」，改动即时生效
+  const { toggleSearch, newThread } = useShortcuts();
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
-      if (event.key === "k" && (event.metaKey || event.ctrlKey)) {
+      if (matchesShortcut(event, toggleSearch)) {
         event.preventDefault();
         setSearchOpen((open) => !open);
       }
     };
     document.addEventListener("keydown", down);
     return () => document.removeEventListener("keydown", down);
-  }, []);
+  }, [toggleSearch]);
+
+  // 新对话：与侧边栏「新对话」按钮同走 aui.threads 开新会话
+  useEffect(() => {
+    const down = (event: KeyboardEvent) => {
+      if (matchesShortcut(event, newThread)) {
+        event.preventDefault();
+        setActiveMenu("");
+        void aui.threads.switchToNewThread();
+      }
+    };
+    document.addEventListener("keydown", down);
+    return () => document.removeEventListener("keydown", down);
+  }, [aui, newThread]);
 
   const handleMenuClick = (item: (typeof menuItems)[number]) => {
-    if (item.isNew) return;
+    // 「新对话」是常驻入口：点击即取消其他菜单项的选中态
+    if (item.isNew) {
+      setActiveMenu("");
+      return;
+    }
     // 搜索走命令面板，其余菜单项保持高亮切换
     if (item.id === "search") {
       setSearchOpen(true);
@@ -205,7 +246,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   className={cn(
                     "hover:bg-muted h-8 justify-start gap-2 rounded-md px-2.5 text-sm font-normal",
                     sidebarCollapsed && "w-8 justify-center px-2",
-                    activeMenu === item.id && "bg-muted",
+                    !item.isNew && activeMenu === item.id && "bg-muted",
                   )}
                   onClick={() => handleMenuClick(item)}
                   aria-label={item.label}
@@ -228,29 +269,48 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </div>
           </div>
 
-        {/* Tabs 分段器 */}
+        {/* Tabs 胶囊分段器（左对齐）+ 项目 tab 的展开全部按钮 */}
         {!sidebarCollapsed && (
-          <div className="shrink-0 px-3 pt-2 flex justify-between items-center w-full">
-            <Tabs
-              value={activeTab}
-              className={"w-full"}
-              onValueChange={setActiveTab}
-            >
-              <TabsList className={"w-full"} >
-                <TabsTrigger value="tasks" className="flex-1 text-xs ">
+          <div className="flex w-full shrink-0 items-center justify-between gap-2 px-3 pt-2">
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
+              <TabsList className="group-data-horizontal/tabs:h-8 h-8 rounded-full p-[3px]">
+                <TabsTrigger
+                  value="tasks"
+                  className="flex-none gap-1.5 rounded-full px-3 py-0 text-xs"
+                >
+                  <FileCheckCornerIcon className="size-3.5 shrink-0" />
                   任务
                 </TabsTrigger>
-                <TabsTrigger value="projects" className="flex-1 text-xs">
+                <TabsTrigger
+                  value="projects"
+                  className="flex-none gap-1.5 rounded-full px-3 py-0 text-xs"
+                >
+                  <FolderCode className="size-3.5 shrink-0" />
                   项目
                 </TabsTrigger>
               </TabsList>
             </Tabs>
+            {activeTab === "projects" && projectGroups.length > 0 && (
+              <Button
+                variant="ghost"
+                className="text-muted-foreground hover:text-foreground h-7 gap-1 rounded-full px-2.5 text-xs"
+                onClick={toggleAllProjects}
+              >
+                {allProjectsExpanded ? (
+                  <ChevronsDownUpIcon className="size-3.5" />
+                ) : (
+                  <ChevronsUpDownIcon className="size-3.5" />
+                )}
+              </Button>
+            )}
           </div>
         )}
 
         <ThreadListRoot
           className={cn(
-            "relative flex-1 transition-[padding,width] duration-200",
+            // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
+            // 整个 aside 列、把上方 tabs 行顶上去——溢出滚动必须锁在本容器内
+            "relative min-h-0 flex-1 transition-[padding,width] duration-200",
             sidebarCollapsed
               ? "w-12 overflow-hidden px-2 pt-1"
               : "w-65 overflow-y-auto p-3",
@@ -268,7 +328,12 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               )}
             />
           )}
-          {activeTab === "projects" && !sidebarCollapsed && <ProjectListItems />}
+          {activeTab === "projects" && !sidebarCollapsed && (
+            <ProjectListItems
+              openDirs={projOpenDirs}
+              onOpenDirsChange={setProjOpenDirs}
+            />
+          )}
         </ThreadListRoot>
 
         {/* 底部固定的设置按钮（远程模式下隐藏：模型/技能/远程配置均为桌面专属） */}
@@ -321,7 +386,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     variant="ghost"
                     className={cn(
                       "hover:bg-muted h-8 justify-start gap-2 rounded-md px-2.5 text-sm font-normal",
-                      activeMenu === item.id && "bg-muted",
+                      !item.isNew && activeMenu === item.id && "bg-muted",
                     )}
                     onClick={() => handleMenuClick(item)}
                   >
@@ -341,22 +406,40 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </div>
           </div>
 
-          {/* 移动端 Tabs 分段器 */}
-          <div className="shrink-0 px-4 pt-2">
-            <Tabs
-              value={activeTab}
-              onValueChange={setActiveTab}
-              className="w-full"
-            >
-              <TabsList className="w-full">
-                <TabsTrigger value="tasks" className="flex-1 text-xs">
+          {/* 移动端 Tabs 胶囊分段器（左对齐）+ 项目 tab 的展开全部按钮 */}
+          <div className="flex w-full shrink-0 items-center justify-between gap-2 px-4 pt-2">
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
+              <TabsList className="group-data-horizontal/tabs:h-8 h-8 rounded-full p-[3px]">
+                <TabsTrigger
+                  value="tasks"
+                  className="flex-none gap-1.5 rounded-full px-3 py-0 text-xs"
+                >
+                  <ListTodoIcon className="size-3.5 shrink-0" />
                   任务
                 </TabsTrigger>
-                <TabsTrigger value="projects" className="flex-1 text-xs">
+                <TabsTrigger
+                  value="projects"
+                  className="flex-none gap-1.5 rounded-full px-3 py-0 text-xs"
+                >
+                  <FolderIcon className="size-3.5 shrink-0" />
                   项目
                 </TabsTrigger>
               </TabsList>
             </Tabs>
+            {activeTab === "projects" && projectGroups.length > 0 && (
+              <Button
+                variant="ghost"
+                className="text-muted-foreground hover:text-foreground h-7 gap-1 rounded-full px-2.5 text-xs"
+                onClick={toggleAllProjects}
+              >
+                {allProjectsExpanded ? (
+                  <ChevronsDownUpIcon className="size-3.5" />
+                ) : (
+                  <ChevronsUpDownIcon className="size-3.5" />
+                )}
+                {allProjectsExpanded ? "收起全部" : "展开全部"}
+              </Button>
+            )}
           </div>
 
           <div
@@ -366,7 +449,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             {activeTab === "tasks" && <ThreadList />}
             {activeTab === "projects" && (
               <ThreadListRoot className="relative flex-1 overflow-y-auto p-3">
-                <ProjectListItems />
+                <ProjectListItems
+                  openDirs={projOpenDirs}
+                  onOpenDirsChange={setProjOpenDirs}
+                />
               </ThreadListRoot>
             )}
           </div>
@@ -417,7 +503,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     >
                       <MessageSquareIcon className="size-4 shrink-0" />
                       <span className="truncate">
-                        {item?.title ?? "New Chat"}
+                        {item?.title ?? "新对话"}
                       </span>
                     </CommandItem>
                   );

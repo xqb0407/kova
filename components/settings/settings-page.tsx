@@ -5,20 +5,37 @@ import { cn } from "@/lib/utils";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { WindowControls } from "@/components/window-controls";
 import {
+  ArchiveIcon,
   BoxesIcon,
+  ChartColumnIcon,
   ChevronLeftIcon,
   GlobeIcon,
   InfoIcon,
+  KeyboardIcon,
   PaintbrushIcon,
   SlidersHorizontalIcon,
+  SparklesIcon,
 } from "lucide-react";
 import { ModelSettings } from "./components/model-settings";
 import { RemoteSettings } from "./components/remote-settings";
 import { AppearanceSettings } from "./components/appearance-settings";
 import { AboutSettings } from "./components/about-settings";
+import { ArchiveSettings } from "./components/archive-settings";
+import { PersonalizationSettings } from "./components/personalization-settings";
+import { ShortcutSettings } from "./components/shortcut-settings";
+import { UsageStatsSettings } from "./components/usage-stats-settings";
 import { Logo } from "../agent-thread/header";
 
-type SettingsSection = "models" | "remote" | "appearance" | "about" | "general";
+type SettingsSection =
+  | "models"
+  | "remote"
+  | "appearance"
+  | "about"
+  | "general"
+  | "archive"
+  | "personalization"
+  | "shortcuts"
+  | "usage";
 
 const GROUPS: {
   label: string;
@@ -29,6 +46,10 @@ const GROUPS: {
     items: [
       { id: "general", label: "通用", icon: SlidersHorizontalIcon },
       { id: "appearance", label: "外观", icon: PaintbrushIcon },
+      { id: "personalization", label: "个性化", icon: SparklesIcon },
+      { id: "shortcuts", label: "快捷键", icon: KeyboardIcon },
+      { id: "archive", label: "归档", icon: ArchiveIcon },
+      { id: "usage", label: "使用统计", icon: ChartColumnIcon },
     ],
   },
   { label: "智能体", items: [{ id: "models", label: "模型", icon: BoxesIcon }] },
@@ -114,6 +135,10 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "models" && <ModelSettings />}
           {section === "remote" && <RemoteSettings />}
           {section === "appearance" && <AppearanceSettings />}
+          {section === "personalization" && <PersonalizationSettings />}
+          {section === "shortcuts" && <ShortcutSettings />}
+          {section === "archive" && <ArchiveSettings />}
+          {section === "usage" && <UsageStatsSettings />}
           {section === "about" && <AboutSettings />}
           {section === "general" && (
             <div className="text-muted-foreground p-5 text-sm">暂无可配置项</div>

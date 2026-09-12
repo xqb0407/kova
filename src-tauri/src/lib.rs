@@ -1,6 +1,7 @@
 mod about;
 mod appearance;
 mod data;
+mod git;
 mod logging;
 mod pi_agent;
 mod remote;
@@ -51,7 +52,20 @@ pub fn run() {
             logging::cleanup_logs,
             store::kv_get,
             store::kv_set,
-            store::kv_delete
+            store::kv_delete,
+            git::git_probe,
+            git::git_status,
+            git::git_diff,
+            git::git_show,
+            git::git_worktree_read,
+            git::git_log,
+            git::git_log_graph,
+            git::git_checkpoint_create,
+            git::git_checkpoint_restore,
+            git::git_stage,
+            git::git_commit,
+            git::git_branches,
+            git::git_checkout
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

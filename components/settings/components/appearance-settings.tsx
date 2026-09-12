@@ -17,7 +17,21 @@ import {
   useWindowEffect,
   type WindowEffectName,
 } from "@/lib/appearance";
-import { setUiPref, useUiPrefs, type AccentName, type FontFamilyName } from "@/lib/ui-prefs";
+import {
+  setUiPref,
+  useUiPrefs,
+  type AccentName,
+  type CodeThemeName,
+  type FontFamilyName,
+} from "@/lib/ui-prefs";
+import { CODE_THEME_DARK_OPTIONS, CODE_THEME_LIGHT_OPTIONS } from "@/lib/code-theme";
+import { Switch } from "@/components/ui/switch";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
+import { CodeThemePreview } from "./code-theme-preview";
 
 /** 强调色预设：color 与 globals.css 中 :root[data-accent] 的 --primary 一致 */
 const ACCENTS: { value: AccentName; label: string; color: string | null }[] = [
@@ -56,6 +70,26 @@ const AccentPicker: FC<{ value: AccentName }> = ({ value }) => (
       );
     })}
   </div>
+);
+
+/** 代码主题下拉：浅/深两行共用（受控回显与字体下拉同款处理） */
+const CodeThemeSelect: FC<{
+  value: CodeThemeName;
+  options: { value: CodeThemeName; label: string }[];
+  onChange: (value: CodeThemeName) => void;
+}> = ({ value, options, onChange }) => (
+  <Select value={value} onValueChange={(v) => v && onChange(v as CodeThemeName)}>
+    <SelectTrigger size="sm" className="w-44 bg-background border">
+      <SelectValue>{options.find((c) => c.value === value)?.label}</SelectValue>
+    </SelectTrigger>
+    <SelectContent align="end">
+      {options.map((c) => (
+        <SelectItem key={c.value} value={c.value}>
+          {c.label}
+        </SelectItem>
+      ))}
+    </SelectContent>
+  </Select>
 );
 
 const EFFECT_OPTIONS: { value: WindowEffectName; label: string }[] = [
@@ -157,7 +191,7 @@ export const AppearanceSettings: FC = () => {
               >
                 <SelectTrigger
                   size="sm"
-                  className="w-44"
+                  className="w-44 bg-background border"
                   style={{
                     fontFamily: FONT_FAMILY_OPTIONS.find(
                       (f) => f.value === prefs.fontFamily,
@@ -200,8 +234,7 @@ export const AppearanceSettings: FC = () => {
             </SettingRow>
           </div>
         </section>
-
-        {/* 桌面端：窗口材质依赖 Tauri 能力，远程网页端隐藏整组 */}
+ {/* 桌面端：窗口材质依赖 Tauri 能力，远程网页端隐藏整组 */}
         {desktop && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">桌面端</h2>
@@ -220,6 +253,70 @@ export const AppearanceSettings: FC = () => {
             </div>
           </section>
         )}
+        {/* 代码设置：CodeMirror 渲染参数（浅/深主题、行号、换行、字号），
+            独立于界面字号档位，作用于右侧面板 diff 与代码预览 */}
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">代码设置</h2>
+          <p className="text-muted-foreground text-sm">
+            设置代码内容的主题、字号和显示方式，不受界面字号影响。
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow label="浅色代码主题" desc="浅色界面下代码内容使用的高亮主题。">
+              <CodeThemeSelect
+                value={prefs.codeThemeLight}
+                options={CODE_THEME_LIGHT_OPTIONS}
+                onChange={(v) => setUiPref("codeThemeLight", v)}
+              />
+            </SettingRow>
+            <SettingRow label="深色代码主题" desc="深色界面下代码内容使用的高亮主题。">
+              <CodeThemeSelect
+                value={prefs.codeThemeDark}
+                options={CODE_THEME_DARK_OPTIONS}
+                onChange={(v) => setUiPref("codeThemeDark", v)}
+              />
+            </SettingRow>
+            <SettingRow label="显示行号" desc="在代码内容和差异视图中显示行号。">
+              <Switch
+                checked={prefs.codeLineNumbers}
+                onCheckedChange={(c) => setUiPref("codeLineNumbers", c)}
+              />
+            </SettingRow>
+            <SettingRow label="长行自动换行" desc="代码内容过长时自动换行。">
+              <Switch
+                checked={prefs.codeWrap}
+                onCheckedChange={(c) => setUiPref("codeWrap", c)}
+              />
+            </SettingRow>
+            <SettingRow label="代码字号" desc="调整代码块、文件预览和差异视图的默认字号。">
+              <InputGroup className="w-28 bg-background" >
+                <InputGroupInput
+                  type="number"
+                  min={10}
+                  max={24}
+                  className="text-right tabular-nums [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
+                  value={prefs.codeFontSize}
+                  onChange={(e) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    if (!Number.isNaN(n))
+                      setUiPref("codeFontSize", Math.min(24, Math.max(10, n)));
+                  }}
+                />
+                <InputGroupAddon  align="inline-end">px</InputGroupAddon>
+              </InputGroup>
+            </SettingRow>
+          </div>
+        </section>
+
+        {/* 代码预览：浅深两套并排实时渲染，当前界面生效的一侧标记"当前生效" */}
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">代码预览</h2>
+          <p className="text-muted-foreground text-sm">
+            同时预览浅色与深色代码主题，当前界面使用的主题会标记为"当前生效"。
+          </p>
+          <CodeThemePreview />
+        </section>
+
+       
       </div>
     </div>
   );

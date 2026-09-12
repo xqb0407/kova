@@ -3,7 +3,7 @@
 import type { FC } from "react";
 import { openPanelTab, usePanelTabs } from "@/lib/panel-tabs";
 import { TabBar } from "./tab-bar";
-import { PANEL_TAB_TYPES, TAB_META, TabContentView } from "./tab-registry";
+import { TAB_META, TabContentView, useVisiblePanelTabTypes } from "./tab-registry";
 
 /**
  * Codex 桌面端风格的右侧 Agent 面板:一个可拖宽、可折叠的标签容器。
@@ -13,7 +13,9 @@ import { PANEL_TAB_TYPES, TAB_META, TabContentView } from "./tab-registry";
  */
 
 /** 空态:居中卡片网格,点击即开对应标签(对齐 Codex 的"打开标签页") */
-const EmptyTabsScreen: FC = () => (
+const EmptyTabsScreen: FC = () => {
+  const types = useVisiblePanelTabTypes();
+  return (
   <div className="flex h-full flex-col items-center justify-center gap-6 p-6">
     <div className="text-center">
       <h2 className="text-base font-semibold text-foreground">打开标签页</h2>
@@ -22,7 +24,7 @@ const EmptyTabsScreen: FC = () => (
       </p>
     </div>
     <div className="grid w-full max-w-80 grid-cols-2 gap-2 sm:grid-cols-3">
-      {PANEL_TAB_TYPES.map((type) => {
+      {types.map((type) => {
         const meta = TAB_META[type];
         const Icon = meta.icon;
         return (
@@ -40,7 +42,8 @@ const EmptyTabsScreen: FC = () => (
       })}
     </div>
   </div>
-);
+  );
+};
 
 export const AgentPanel: FC = () => {
   const { tabs, activeId } = usePanelTabs();

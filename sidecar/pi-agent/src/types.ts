@@ -34,6 +34,7 @@ export type SessionSummary = {
   messageCount: number;
   modified: string; // ISO
   cwd: string;
+  archived?: boolean; // 归档标记：列表默认隐藏，正文不动
 };
 
 /** 子代理一次执行的最终状态 */

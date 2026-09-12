@@ -29,7 +29,7 @@ function toRemoteThread(s: PiSessionSummary) {
   return {
     remoteId: s.sessionId,
     externalId: undefined,
-    status: "regular" as const,
+    status: (s.archived ? "archived" : "regular") as "archived" | "regular",
     title: s.name || s.firstMessage.slice(0, 50) || "新会话",
     lastMessageAt: new Date(s.modified),
   };
@@ -149,10 +149,13 @@ export function createPiThreadListAdapter(): RemoteThreadListAdapter {
       });
     },
 
-    async archive() {
-      // pi 没有归档概念，空实现
+    async archive(remoteId: string) {
+      // 归档 = 索引行打标（archived 列），正文与 JSONL 不动；运行时乐观更新列表
+      await piRequest({ type: "archive_session", sessionId: remoteId, archived: true });
     },
-    async unarchive() {},
+    async unarchive(remoteId: string) {
+      await piRequest({ type: "archive_session", sessionId: remoteId, archived: false });
+    },
 
     async delete(remoteId: string) {
       await piRequest({ type: "delete_session", sessionId: remoteId });

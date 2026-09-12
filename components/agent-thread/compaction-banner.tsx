@@ -7,13 +7,8 @@ import {
   Loader2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
-import { cjk } from "@streamdown/cjk";
-import { Streamdown } from "streamdown";
-import "@/app/styles/markdown.css";
 import { fmtTokens } from "@/lib/model-format";
+import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { useManualCompactionMarker } from "@/lib/pi-compaction-marker";
 import { Marker, MarkerContent, MarkerIcon } from "../ui/marker";
 
@@ -41,17 +36,10 @@ type CompactionData = {
 
 
 
-/** 压缩摘要：像 assistant 消息一样以 markdown 排版渲染在分隔线下方 */
+/** 压缩摘要：与 assistant 消息同一套 MarkdownText 渲染在分隔线下方 */
 const CompactionSummary: FC<{ summary: string }> = ({ summary }) => (
   <div className="text-foreground/80 rounded-lg px-3 py-2.5 wrap-break-word">
-    <div className="aui-md text-sm [&_h1]:text-base [&_h2]:text-[15px] [&_h3]:text-sm">
-      <Streamdown
-        plugins={{ code, math, mermaid, cjk }}
-        shikiTheme={["github-light", "github-dark"]}
-      >
-        {summary}
-      </Streamdown>
-    </div>
+    <MarkdownText text={summary} />
   </div>
 );
 

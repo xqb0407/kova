@@ -16,7 +16,7 @@ import {
   setActivePanelTab,
   type PanelTab,
 } from "@/lib/panel-tabs";
-import { PANEL_TAB_TYPES, TAB_META, tabTitle } from "./tab-registry";
+import { TAB_META, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
 import { cn } from "@/lib/utils";
 
 /** 单个标签胶囊:图标 + 标题 + 关闭(悬停显现,激活常显) */
@@ -68,6 +68,7 @@ export const TabBar: FC<{
   tabs: PanelTab[];
   activeId: string | null;
 }> = ({ tabs, activeId }) => {
+  const types = useVisiblePanelTabTypes();
   return (
     <div className="flex h-12 shrink-0 items-center gap-1 border-b px-2">
       <DropdownMenu>
@@ -131,7 +132,7 @@ export const TabBar: FC<{
         <DropdownMenuContent align="end" className="min-w-44">
           <DropdownMenuGroup>
             <DropdownMenuLabel>打开标签页</DropdownMenuLabel>
-            {PANEL_TAB_TYPES.map((type) => {
+            {types.map((type) => {
               const meta = TAB_META[type];
               const Icon = meta.icon;
               return (

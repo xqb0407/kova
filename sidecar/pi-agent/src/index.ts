@@ -24,6 +24,7 @@ import { createInterface } from "node:readline";
 import { logErr } from "./log";
 import { initHostMode, initStorage } from "./storage";
 import { loadCustomProviders, applyModelOverrides } from "./model-catalog";
+import { initPersonalization } from "./personalization";
 import { handleLine, markStdinClosed, setInitGate } from "./protocol";
 
 const DB_PATH = process.env.PI_DB_PATH || "pi-agent.db";
@@ -57,6 +58,9 @@ async function main() {
   const catalogReady = (async () => {
     await loadCustomProviders();
     await applyModelOverrides();
+    // 个性化设置在闸门内恢复：闸门放行前到达的命令都会缓冲，
+    // 保证首批会话组装系统提示词时读到的已是 kv 里恢复的设置
+    await initPersonalization();
   })().catch((err) => {
     logErr("model catalog init failed:", err);
   });

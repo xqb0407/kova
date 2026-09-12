@@ -1,12 +1,13 @@
 "use client";
 
-import { AssistantRuntimeProvider, useRemoteThreadListRuntime } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, useAuiState, useRemoteThreadListRuntime } from "@assistant-ui/react";
 import { useChatRuntime } from "@assistant-ui/ai-sdk";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@/lib/tauri";
 import { installFrontendLogging } from "@/lib/frontend-logging";
 import { PiTransport } from "@/lib/pi-transport";
-import { createPiThreadListAdapter } from "@/lib/pi-thread-adapter";
+import { createPiThreadListAdapter, piSessionCwdMap } from "@/lib/pi-thread-adapter";
+import { getWorkspace, setWorkspace } from "@/lib/workspace-store";
 import { ConnectScreen } from "@/components/remote/connect-screen";
 import { RemoteRuntimeProvider } from "@/components/remote/remote-runtime-provider";
 import {
@@ -43,6 +44,26 @@ function BootSplash() {
 }
 
 /**
+ * 全局 workspace 跟随当前会话：左侧列表切到某个已落盘会话时，把
+ * workspace-store 同步到该会话记录的 cwd（无 cwd 的任务会话则清空），
+ * 让 Git 面板/审查/检查点条读到的都是"这个对话的工作目录"。
+ * 未发送首条消息的新会话（无 remoteId）不同步——保留用户刚在胶囊里选的目录。
+ */
+function WorkspaceThreadSync() {
+  const mainThreadId = useAuiState((s) => s.threads.mainThreadId);
+  const threadItems = useAuiState((s) => s.threads.threadItems);
+
+  useEffect(() => {
+    const item = threadItems.find((t) => t.id === mainThreadId);
+    if (!item?.remoteId) return;
+    const cwd = piSessionCwdMap.get(item.remoteId) ?? null;
+    if (getWorkspace() !== cwd) setWorkspace(cwd);
+  }, [mainThreadId, threadItems]);
+
+  return null;
+}
+
+/**
  * Tauri 桌面端：pi-agent sidecar 作为会话事实源（RemoteThreadList + 持久化 session 文件）。
  * 远程网页端：经隧道直连桌面端 WS 网关（配对码认证），运行时与桌面同构。
  * 构建目标固定、环境互不切换，按 isTauri/远程拆分组件避免条件 hook。
@@ -58,6 +79,7 @@ function TauriRuntimeProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <WorkspaceThreadSync />
       {children}
     </AssistantRuntimeProvider>
   );

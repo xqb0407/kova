@@ -1,0 +1,291 @@
+"use client";
+
+import { useCallback, useEffect, useState, type FC } from "react";
+import { useAuiState } from "@assistant-ui/react";
+import {
+  ChevronDownIcon,
+  EyeIcon,
+  GitCompareArrowsIcon,
+  Loader2Icon,
+  SquareArrowOutUpRightIcon,
+  TriangleAlertIcon,
+  Undo2Icon,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  gitCheckpointRestore,
+  gitErrorCode,
+  gitCheckpointDiff,
+  type GitDiffFile,
+} from "@/lib/git";
+import { refreshGitStatus } from "@/lib/git-status";
+import { openPanelTab } from "@/lib/panel-tabs";
+import { open as openPath } from "@tauri-apps/plugin-shell";
+import { isTauri } from "@/lib/tauri";
+import { clearRunCheckpoint, useRunCheckpoint } from "@/lib/pi-checkpoints";
+import { DiffStats } from "@/components/agent-thread/agent-panel/section-shell";
+import { splitPath, StatusDot } from "@/components/agent-thread/agent-panel/git-files";
+import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
+import { cn } from "@/lib/utils";
+
+/**
+ * 检查点操作条（git 集成 M2）：agent 运行结束后钉在消息流尾部，
+ * 汇总"本回合改动了多少"，可展开逐文件列表（+N -N / 审查 / 打开），
+ * 提供 保留 / 撤销 两个出口。
+ * 撤销是破坏性操作：两步式（先转成确认态再执行），且 Rust 侧对
+ * "运行结束时刻"存档的 patch 做 --check 前置，用户事后手改过相关
+ * 文件时以 apply-conflict 中止，绝不部分覆盖。
+ * 挂载点见 thread.tsx（消息循环之后、composer 之前）。
+ */
+
+const joinPath = (cwd: string, rel: string) =>
+  `${cwd.replace(/[\\/]+$/, "")}/${rel.replace(/^[\\/]+/, "")}`;
+
+/** 展开区的逐文件行：状态徽标 + 路径 + 行数统计 + 审查/打开 */
+const CheckpointFileRow: FC<{
+  cwd: string;
+  checkpoint: string;
+  file: GitDiffFile;
+}> = ({ cwd, checkpoint, file }) => {
+  const { dir, base } = splitPath(file.path);
+  const review = () => {
+    // 定向打开审查标签：diff = 本回合改动 vs 运行前快照
+    openPanelTab("review", { cwd, checkpoint });
+    window.dispatchEvent(new Event("agent-panel:open"));
+  };
+  const openInSystem = () => {
+    if (!isTauri()) return;
+    void openPath(joinPath(cwd, file.path)).catch(() => {
+      // 系统没有关联程序时静默；文件管理器场景交给审查标签兜底
+    });
+  };
+  return (
+    <div className="group/row hover:bg-muted/60 flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors">
+      <StatusDot status={file.status} title={file.status} />
+      <FileTypeIcon path={file.path} />
+      <span className="min-w-0 shrink-0 font-medium text-foreground/90">
+        {base}
+      </span>
+      <span className="text-muted-foreground min-w-0 flex-1 truncate">
+        {dir}
+      </span>
+      {file.binary ? (
+        <span className="text-muted-foreground shrink-0 text-[11px]">
+          二进制
+        </span>
+      ) : (
+        <DiffStats added={file.added} removed={file.removed} />
+      )}
+      <span className="ml-1 flex shrink-0 items-center gap-1">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-xs"
+          onClick={review}
+        >
+          <EyeIcon className="size-3" />
+          审查
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-xs"
+          onClick={openInSystem}
+        >
+          <SquareArrowOutUpRightIcon className="size-3" />
+          打开
+        </Button>
+      </span>
+    </div>
+  );
+};
+
+export const CheckpointBar: FC = () => {
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const cp = useRunCheckpoint(threadId ?? undefined);
+  // [checkpoint-debug] 临时日志，定位检查点条不出现的问题后删除
+  useEffect(() => {
+    console.warn(
+      "[checkpoint] bar",
+      JSON.stringify({ threadId, has: !!cp, cpFiles: cp?.files }),
+    );
+  }, [threadId, cp]);
+  const [expanded, setExpanded] = useState(false);
+  const [files, setFiles] = useState<GitDiffFile[] | null>(null);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // 逐文件统计按需加载：折叠态只展示聚合数字，不额外 invoke
+  const loadFiles = useCallback(async () => {
+    if (!cp || files || filesLoading) return;
+    setFilesLoading(true);
+    try {
+      const diff = await gitCheckpointDiff(cp.cwd, cp.hash);
+      setFiles(diff?.files ?? []);
+    } catch {
+      setFiles([]);
+    } finally {
+      setFilesLoading(false);
+    }
+  }, [cp, files, filesLoading]);
+
+  useEffect(() => {
+    if (expanded) void loadFiles();
+  }, [expanded, loadFiles]);
+
+  if (!cp || !threadId) return null;
+
+  const revert = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await gitCheckpointRestore(cp.cwd, cp.hash);
+      clearRunCheckpoint(threadId);
+      // 撤销成功即消失；状态/审查视图经 git-changed 事件与这里的显式刷新收敛
+      refreshGitStatus(cp.cwd);
+    } catch (err) {
+      const code = gitErrorCode(err);
+      setError(
+        code === "apply-conflict"
+          ? "运行结束后相关文件又被手动改过，为避免误伤已中止撤销。请在审查标签中手动处理。"
+          : `撤销失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+      setConfirming(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      data-slot="checkpoint-bar"
+      className={cn(
+        "mx-auto w-full max-w-(--thread-max-width) px-2",
+        "animate-in fade-in-0 slide-in-from-bottom-1 duration-200",
+      )}
+    >
+      <div className="bg-card/60 border-border/70 rounded-xl border text-xs">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 px-3 py-2">
+          <button
+            type="button"
+            aria-expanded={expanded}
+            className="text-muted-foreground hover:text-foreground -ml-0.5 grid size-5 shrink-0 place-items-center rounded transition-colors"
+            onClick={() => setExpanded((v) => !v)}
+          >
+            <ChevronDownIcon
+              className={cn(
+                "size-3.5 transition-transform duration-200",
+                expanded && "rotate-180",
+              )}
+            />
+          </button>
+          <GitCompareArrowsIcon className="text-muted-foreground size-3.5 shrink-0" />
+          <button
+            type="button"
+            className="text-foreground/90 hover:text-foreground shrink-0 font-medium"
+            onClick={() => setExpanded((v) => !v)}
+          >
+            本回合改动 {cp.files} 个文件
+          </button>
+          <DiffStats added={cp.added} removed={cp.removed} />
+
+          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            {confirming ? (
+              <>
+                <span className="text-muted-foreground">丢弃全部改动？</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  className="h-6 px-2 text-xs"
+                  disabled={busy}
+                  onClick={revert}
+                >
+                  {busy ? (
+                    <Loader2Icon className="size-3 animate-spin" />
+                  ) : (
+                    <Undo2Icon className="size-3" />
+                  )}
+                  确认撤销
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-2 text-xs"
+                  disabled={busy}
+                  onClick={() => setConfirming(false)}
+                >
+                  取消
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="text-muted-foreground hover:text-foreground h-6 px-2 text-xs"
+                  onClick={() => clearRunCheckpoint(threadId)}
+                >
+                  保留
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 gap-1 px-2 text-xs"
+                  onClick={() => setConfirming(true)}
+                >
+                  <Undo2Icon className="size-3" />
+                  撤销
+                </Button>
+              </>
+            )}
+          </span>
+        </div>
+
+        {expanded ? (
+          <div className="border-border/60 border-t px-1.5 py-1.5">
+            {filesLoading ? (
+              <div className="text-muted-foreground flex items-center gap-1.5 px-2 py-1.5">
+                <Loader2Icon className="size-3 animate-spin" />
+                读取文件变更…
+              </div>
+            ) : (files ?? []).length === 0 ? (
+              <div className="text-muted-foreground px-2 py-1.5">
+                读取不到逐文件变更（快照可能已过期）
+              </div>
+            ) : (
+              <div className="flex flex-col gap-0.5">
+                {(files ?? []).map((f) => (
+                  <CheckpointFileRow
+                    key={f.path}
+                    cwd={cp.cwd}
+                    checkpoint={cp.hash}
+                    file={f}
+                  />
+                ))}
+              </div>
+            )}
+            {error ? (
+              <div className="text-destructive flex items-start gap-1.5 border-t border-border/60 px-2 pt-1.5 leading-relaxed">
+                <TriangleAlertIcon className="mt-0.5 size-3 shrink-0" />
+                {error}
+              </div>
+            ) : null}
+          </div>
+        ) : error ? (
+          <div className="text-destructive flex items-start gap-1.5 border-t border-border/60 px-3 py-1.5 leading-relaxed">
+            <TriangleAlertIcon className="mt-0.5 size-3 shrink-0" />
+            {error}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+};
