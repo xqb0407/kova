@@ -83,9 +83,10 @@ export function ThreadPreviewRail() {
     setActiveId((current) => (current === nearestId ? current : nearestId));
   }, []);
 
-  const syncItems = useCallback(() => {
+  /** 重建刻度列表；返回锚点集合是否发生变化（新增/移除/换位） */
+  const syncItems = useCallback((): boolean => {
     const viewport = viewportRef.current;
-    if (!viewport) return;
+    if (!viewport) return false;
     const dirty = dirtyAnchorsRef.current;
     dirtyAnchorsRef.current = new Set();
 
@@ -125,6 +126,18 @@ export function ThreadPreviewRail() {
       };
     });
 
+    // 锚点集合是否变化：流式文本变更（characterData）不动集合，
+    // 借此把 updateActiveItem 的全量 getBoundingClientRect 从每帧降到仅在变化时
+    const prev = targetsRef.current;
+    let changed = prev.size !== targets.size;
+    if (!changed) {
+      for (const [id, element] of targets) {
+        if (prev.get(id) !== element) {
+          changed = true;
+          break;
+        }
+      }
+    }
     targetsRef.current = targets;
     setItems((current) => {
       const unchanged =
@@ -141,15 +154,21 @@ export function ThreadPreviewRail() {
     setOverflowing(
       viewport.scrollHeight > viewport.clientHeight + 1 && anchors.length > 1,
     );
+    return changed;
   }, []);
 
   const scheduleSync = useCallback(() => {
     if (syncFrameRef.current) cancelAnimationFrame(syncFrameRef.current);
     syncFrameRef.current = requestAnimationFrame(() => {
-      syncItems();
-      updateActiveItem();
+      // 锚点集合没变（纯流式文本）⇒ 跳过全量几何测量
+      if (syncItems()) updateActiveItem();
     });
   }, [syncItems, updateActiveItem]);
+
+  const scheduleActive = useCallback(() => {
+    if (activeFrameRef.current) cancelAnimationFrame(activeFrameRef.current);
+    activeFrameRef.current = requestAnimationFrame(updateActiveItem);
+  }, [updateActiveItem]);
 
   // 视口监听：消息增删/流式文本变化 → 重建刻度；滚动/尺寸变化 → 更新激活项
   useEffect(() => {
@@ -184,16 +203,17 @@ export function ThreadPreviewRail() {
       subtree: true,
     });
 
+    // 尺寸变化不改锚点集合，但几何全变 ⇒ 需要显式重测激活项
     const resizeObserver =
       typeof ResizeObserver === "undefined"
         ? null
-        : new ResizeObserver(scheduleSync);
+        : new ResizeObserver(() => {
+            scheduleSync();
+            scheduleActive();
+          });
     resizeObserver?.observe(viewport);
 
-    const handleScroll = () => {
-      if (activeFrameRef.current) cancelAnimationFrame(activeFrameRef.current);
-      activeFrameRef.current = requestAnimationFrame(updateActiveItem);
-    };
+    const handleScroll = () => scheduleActive();
     viewport.addEventListener("scroll", handleScroll, { passive: true });
 
     return () => {
@@ -203,7 +223,7 @@ export function ThreadPreviewRail() {
       if (syncFrameRef.current) cancelAnimationFrame(syncFrameRef.current);
       if (activeFrameRef.current) cancelAnimationFrame(activeFrameRef.current);
     };
-  }, [findViewport, scheduleSync, updateActiveItem]);
+  }, [findViewport, scheduleSync, scheduleActive]);
 
   // 量测覆盖层高度，刻度过多时自动压缩间距（min 6px），避免被裁切
   useEffect(() => {

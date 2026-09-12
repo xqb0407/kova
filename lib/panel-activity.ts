@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
-import { useAuiState, type ThreadMessage } from "@assistant-ui/react";
+import { useCallback, useSyncExternalStore } from "react";
+import { useAui, type ThreadMessage } from "@assistant-ui/react";
 
 /**
  * Agent 活动派生层：把当前线程消息流里的 tool-call parts 归并为
@@ -12,6 +12,16 @@ import { useAuiState, type ThreadMessage } from "@assistant-ui/react";
  * 数据源就是 runtime 消息本身：实时流（stream.ts 的 tool-input/output chunk）
  * 与历史重建（transcript.ts 回填 args/result）形状一致，刷新/切线程零成本恢复，
  * sidecar 无需新增任何协议事件。read/glob/grep/web 属查询噪音，不收录。
+ *
+ * 性能（性能迭代计划·迭代1）：派生为**增量**——
+ * 1. 消息级缓存：assistant-ui 消息对象不可变，引用相等 ⇒ 贡献直接复用；
+ *    流式期间只有最后一条消息会被替换，历史消息零重算（旧实现每个 token
+ *    全量重扫 + 重跑所有 edit 的 LCS diff）。
+ * 2. part 级缓存：消息被替换时逐 part 比对（args/result 字符串值相等即复用
+ *    entry 与 diff 统计），文本 delta 不再牵动已完成工具调用的重算。
+ * 3. 派生结果引用稳定：内容未变时返回同一 PanelActivity 对象，配合
+ *    useSyncExternalStore 的 Object.is 比较，纯文本流式期间四个消费方
+ *    （header 角标 / files / terminal 标签 / activity 视图）零重渲染。
  */
 
 /** sidecar bash 失败标记：非零退出码 `\n[exit code: N]`、超时 `\n[timeout]`（同 ToolFallback 的判定） */
@@ -148,35 +158,153 @@ export function diffLines(oldText: string, newText: string): DiffLine[] {
   return out;
 }
 
-/* ------------------------------ 消息扫描 ------------------------------ */
+/* ------------------------------ 增量派生 store ------------------------------ */
 
-function collect(messages: readonly ThreadMessage[]): PanelActivity {
-  const terminal: TerminalEntry[] = [];
-  const fileGroups = new Map<string, FileChangeGroup>();
-  let runningCount = 0;
+/** 单条消息的派生贡献（消息引用不变 ⇒ 直接复用） */
+type MessageContribution = {
+  ref: ThreadMessage;
+  terminal: TerminalEntry[];
+  /** 按消息序出现：path + 共享缓存的 entry 引用 */
+  files: { path: string; entry: FileChangeEntry }[];
+  running: number;
+  /** 本消息登记的 toolCallId（缓存驱逐用） */
+  toolCallIds: string[];
+};
 
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
+export type PanelActivityStore = {
+  /** 从消息数组派生；内容未变时返回同一引用（快照稳定性所在） */
+  derive(messages: readonly ThreadMessage[]): PanelActivity;
+  stats(): { messages: number; parts: number };
+  reset(): void;
+};
+
+/**
+ * 建一个派生 store（模块级默认实例 + 测试可独立建）。
+ * 缓存全部按"当前消息集合"驱逐：线程切换 = 消息 id 全换 → 旧缓存清零，
+ * 不会跨线程累积。
+ */
+export function createPanelActivityStore(): PanelActivityStore {
+  const byMessage = new Map<string, MessageContribution>();
+  /** toolCallId → 内容指纹 + 派生结果（消息被替换时逐 part 命中） */
+  const byToolCall = new Map<
+    string,
+    {
+      /** bash：command + 终态指纹；edit/write：old/new/result/err 指纹 */
+      a: string | null;
+      b: string | null;
+      c: string | null;
+      err: boolean;
+      /** 指纹一致 ⇒ entry 与统计直接复用（含 LCS diff 结果） */
+      entry: TerminalEntry | FileChangeEntry;
+    }
+  >();
+  let lastMessages: readonly ThreadMessage[] | null = null;
+  let lastActivity: PanelActivity = EMPTY_ACTIVITY;
+
+  /** 指纹三槽 = (旧文/命令, 新文, result)；字符串 === 为值比较 */
+  function cachedTerminal(
+    toolCallId: string,
+    command: string,
+    result: string | null,
+    err: boolean,
+  ): TerminalEntry {
+    const hit = byToolCall.get(toolCallId);
+    if (hit && hit.a === command && hit.c === result && hit.err === err) {
+      return hit.entry as TerminalEntry;
+    }
+    const entry: TerminalEntry = {
+      toolCallId,
+      command,
+      output: result,
+      running: result === null,
+      failed: err || (result !== null && FAILED_RE.test(result)),
+    };
+    if (hit) {
+      hit.a = command;
+      hit.c = result;
+      hit.err = err;
+      hit.entry = entry;
+    } else {
+      byToolCall.set(toolCallId, { a: command, b: null, c: result, err, entry });
+    }
+    return entry;
+  }
+
+  function cachedFile(
+    toolCallId: string,
+    op: "edit" | "write",
+    oldText: string | null,
+    newText: string,
+    result: string | null,
+    err: boolean,
+  ): { entry: FileChangeEntry } {
+    const hit = byToolCall.get(toolCallId);
+    if (
+      hit &&
+      hit.a === oldText &&
+      hit.b === newText &&
+      hit.c === result &&
+      hit.err === err
+    ) {
+      return { entry: hit.entry as FileChangeEntry };
+    }
+    let added = 0;
+    let removed = 0;
+    if (oldText !== null) {
+      for (const line of diffLines(oldText, newText)) {
+        if (line.kind === "add") added += 1;
+        else if (line.kind === "del") removed += 1;
+      }
+    } else {
+      added = newText.length ? newText.split("\n").length : 0;
+    }
+    const entry: FileChangeEntry = {
+      toolCallId,
+      op,
+      oldText,
+      newText,
+      running: result === null,
+      failed: err || (result !== null && FAILED_RE.test(result)),
+      output: result,
+      added,
+      removed,
+    };
+    if (hit) {
+      hit.a = oldText;
+      hit.b = newText;
+      hit.c = result;
+      hit.err = err;
+      hit.entry = entry;
+    } else {
+      byToolCall.set(toolCallId, { a: oldText, b: newText, c: result, err, entry });
+    }
+    return { entry };
+  }
+
+  function computeMessage(message: ThreadMessage): MessageContribution {
+    const terminal: TerminalEntry[] = [];
+    const files: { path: string; entry: FileChangeEntry }[] = [];
+    const toolCallIds: string[] = [];
+    let running = 0;
+    if (message.role !== "assistant") {
+      return { ref: message, terminal, files, running, toolCallIds };
+    }
     for (const part of message.content) {
       if (part.type !== "tool-call") continue;
       const args = (part.args ?? {}) as Record<string, unknown>;
       const result = resultText(part.result);
       const done = result !== null;
-      const failed =
-        part.isError === true || (result !== null && FAILED_RE.test(result));
+      const err = part.isError === true;
+      const id = part.toolCallId;
 
       if (part.toolName === "bash") {
         // 流式参数未成形前（args.command 还没解析出来）不展示，避免半截命令闪烁
         const command = asString(args.command);
         if (!command) continue;
-        terminal.push({
-          toolCallId: part.toolCallId,
-          command,
-          output: result,
-          running: !done,
-          failed,
-        });
-        if (!done) runningCount += 1;
+        const entry = cachedTerminal(id, command, result, err);
+        terminal.push(entry);
+        toolCallIds.push(id);
+        if (!done) running += 1;
         continue;
       }
 
@@ -189,63 +317,134 @@ function collect(messages: readonly ThreadMessage[]): PanelActivity {
         if (!path || newText === null) continue;
         const oldText =
           part.toolName === "edit" ? asString(args.old_string) : null;
-        let added = 0;
-        let removed = 0;
-        if (oldText !== null) {
-          for (const line of diffLines(oldText, newText)) {
-            if (line.kind === "add") added += 1;
-            else if (line.kind === "del") removed += 1;
-          }
-        } else {
-          added = newText.length ? newText.split("\n").length : 0;
-        }
-        let group = fileGroups.get(path);
-        if (!group) {
-          group = {
-            path,
-            entries: [],
-            added: 0,
-            removed: 0,
-            running: false,
-            failed: false,
-          };
-          fileGroups.set(path, group);
-        }
-        group.entries.push({
-          toolCallId: part.toolCallId,
-          op: part.toolName === "edit" ? "edit" : "write",
-          oldText,
-          newText,
-          running: !done,
-          failed,
-          output: result,
-          added,
-          removed,
-        });
-        group.added += added;
-        group.removed += removed;
-        group.running ||= !done;
-        group.failed ||= failed;
-        if (!done) runningCount += 1;
+        const { entry } = cachedFile(id, part.toolName, oldText, newText, result, err);
+        files.push({ path, entry });
+        toolCallIds.push(id);
+        if (!done) running += 1;
       }
     }
+    return { ref: message, terminal, files, running, toolCallIds };
+  }
+
+  function groupsEqual(a: FileChangeGroup[], b: FileChangeGroup[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const x = a[i];
+      const y = b[i];
+      if (
+        x.path !== y.path ||
+        x.added !== y.added ||
+        x.removed !== y.removed ||
+        x.running !== y.running ||
+        x.failed !== y.failed ||
+        x.entries.length !== y.entries.length
+      )
+        return false;
+      for (let k = 0; k < x.entries.length; k++)
+        if (x.entries[k] !== y.entries[k]) return false;
+    }
+    return true;
+  }
+
+  function derive(messages: readonly ThreadMessage[]): PanelActivity {
+    // 引用未变（含非消息类 store 更新触发的 getSnapshot）⇒ 零工作直返
+    if (messages === lastMessages) return lastActivity;
+    lastMessages = messages;
+
+    const terminal: TerminalEntry[] = [];
+    const groupOrder: string[] = [];
+    const groupEntries = new Map<string, FileChangeEntry[]>();
+    let runningCount = 0;
+
+    for (const message of messages) {
+      let c = byMessage.get(message.id);
+      if (!c || c.ref !== message) {
+        c = computeMessage(message);
+        byMessage.set(message.id, c);
+      }
+      for (const t of c.terminal) terminal.push(t);
+      runningCount += c.running;
+      for (const f of c.files) {
+        let list = groupEntries.get(f.path);
+        if (!list) {
+          list = [];
+          groupOrder.push(f.path);
+          groupEntries.set(f.path, list);
+        }
+        list.push(f.entry);
+      }
+    }
+
+    const files: FileChangeGroup[] = groupOrder.map((path) => {
+      const entries = groupEntries.get(path)!;
+      let added = 0;
+      let removed = 0;
+      let running = false;
+      let failed = false;
+      for (const e of entries) {
+        added += e.added;
+        removed += e.removed;
+        if (e.running) running = true;
+        if (e.failed) failed = true;
+      }
+      return { path, entries, added, removed, running, failed };
+    });
+
+    // 线程切换/历史替换：被移除的消息与工具调用缓存即刻驱逐，不跨线程累积
+    const activeMsg = new Set(messages.map((m) => m.id));
+    for (const id of [...byMessage.keys()])
+      if (!activeMsg.has(id)) byMessage.delete(id);
+    const activeTools = new Set<string>();
+    for (const id of activeMsg) {
+      const c = byMessage.get(id);
+      for (const t of c?.toolCallIds ?? []) activeTools.add(t);
+    }
+    for (const id of [...byToolCall.keys()])
+      if (!activeTools.has(id)) byToolCall.delete(id);
+
+    // 内容未变（纯文本流式）⇒ 保持引用，消费方不重渲染
+    const same =
+      lastActivity.runningCount === runningCount &&
+      groupsEqual(lastActivity.files, files) &&
+      lastActivity.terminal.length === terminal.length &&
+      lastActivity.terminal.every((e, i) => e === terminal[i]);
+    if (same) return lastActivity;
+
+    lastActivity = { terminal, files, runningCount };
+    return lastActivity;
   }
 
   return {
-    terminal,
-    files: [...fileGroups.values()],
-    runningCount,
+    derive,
+    stats: () => ({ messages: byMessage.size, parts: byToolCall.size }),
+    reset: () => {
+      byMessage.clear();
+      byToolCall.clear();
+      lastMessages = null;
+      lastActivity = EMPTY_ACTIVITY;
+    },
   };
 }
 
+/* ------------------------------ React 绑定 ------------------------------ */
+
+const defaultStore = createPanelActivityStore();
+
 /**
- * 订阅当前线程的工具活动（terminal + files）。整体在 useMemo 里重算，
- * 依赖 messages 引用；单测线程消息量级小，逐 token 重扫可接受。
+ * 订阅当前线程的工具活动（terminal + files）。共享模块级增量 store：
+ * 四个消费方各自订阅但派生只算一次（谁先被 store 事件驱动谁摊到计算）；
+ * 派生结果引用稳定时 useSyncExternalStore 按 Object.is 短路，
+ * 纯文本流式期间消费方零重渲染。
  */
 export function usePanelActivity(): PanelActivity {
-  const messages = useAuiState((s) => s.thread.messages);
-  return useMemo(
-    () => (messages.length ? collect(messages) : EMPTY_ACTIVITY),
-    [messages],
+  const aui = useAui();
+  const getSnapshot = useCallback(
+    () => defaultStore.derive(aui.thread.getState().messages),
+    [aui],
+  );
+  return useSyncExternalStore(
+    aui.subscribe,
+    getSnapshot,
+    () => EMPTY_ACTIVITY,
   );
 }
