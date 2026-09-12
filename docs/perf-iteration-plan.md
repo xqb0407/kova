@@ -14,6 +14,7 @@
 | P4 | `list_sessions` 每次全量读所有 JSONL 数行数；`get_history` 同文件读两遍 | 启动/切线程尖峰 | `protocol.ts:613,646`, `transcript.ts:36,60` |
 | P5 | 消息 DOM 无虚拟化 + runtime 保留所有打开过的线程全量消息 | webview 内存常驻增长 | `thread.tsx:112`, assistant-ui remote-thread-state |
 | P6 | 首屏 bundle 静态拉入未用到的模块图（SettingsPage→CodeMirror/language-data/cmdk 等；AgentPanel 启动即挂载） | 启动解析慢 + 常驻代码/数据偏大 | `base.tsx:19-20` |
+| P7 | Rust 宿主：SQLite 无 WAL（每次索引写都 fsync）、日志逐行裸写、stdout 每行二次 parse、WS 出站无界队列、检查点每 turn ~6 个 git 子进程 | 磁盘 IO 尖峰 / 远程模式内存风险 / turn 延迟 | `store.rs:17`, `logging.rs:73`, `remote.rs:71,61`, `git.rs:909` |
 
 ## 迭代 0：度量基线（先于一切优化）
 
@@ -122,6 +123,47 @@
 回归重点：流式输出无乱序、无丢帧（批内顺序保证）；停止/abort 即时响应；
 远程 WS 模式不受影响；断线重连行为不变。
 验收：webview 每秒事件数从 token 级降到 ≤ 60/s；pi-agent.log 行数减少 ≥ 90%。
+
+## 迭代 3b：Tauri Rust 宿主（P7）——与迭代 3 同期做，同一批文件
+
+改动（按收益排序）：
+- **SQLite WAL（`store.rs:17`，收益最大的一条）**：`Connection::open` 后加
+  `PRAGMA journal_mode=WAL; synchronous=NORMAL; busy_timeout=5000;`。当前
+  src-tauri 全库零 PRAGMA，生产连接跑在默认回滚日志 + 每条写 fsync 上——
+  持久化路径每条消息都要 `sessionTouch` 写 updated_at，等于流式期间持续
+  fsync 尖峰。sidecar 的 local 测试模式（hostdb.ts）早就开了 WAL，唯独
+  生产 Rust 连接没开，属于遗漏而非设计。
+- **日志落盘缓冲（`logging.rs:73`）**：`SourceFile` 的 `File` 套 `BufWriter`
+  （256KB 窗口 + 定期/退出时 flush），消灭逐行 write syscall。迭代 3 的
+  sidecar 日志降级后行会变少，但 web.log 转发路径仍需要这里兜底。
+- **stdout 热路径去二次 parse（`remote.rs:71` + `pi_agent.rs:72`）**：
+  pi_agent 循环对每行 `serde_json::from_str` 看 type 后，`try_route` 命中判断
+  又对同一行完整 parse 第二遍。改为解析结果沿调用链传递；且远程网关未运行时
+  （常态）用原子 bool 短路，整段 parse 直接跳过。与迭代 3 的合帧改造同文件，
+  一次做完。
+- **WS 出站有界队列（`remote.rs:61`）**：`mpsc::UnboundedSender` 改为有界
+  （如 2048 条 / 4MB 字节上限），队列满时断开该客户端（远程端重连即可恢复）——
+  否则远端弱网 + 桌面端长流式输出 = 出站缓冲无限增长，是远程模式专属的内存炸弹。
+- **检查点快照减负（`git.rs:909 snapshot_impl`）**：每 turn `add -A` +
+  `write-tree` + `for-each-ref`(parent) + `commit-tree` + `update-ref` +
+  `for-each-ref`(prune) ≈ 6 次 git 子进程。优化：① 合并两次 for-each-ref 为
+  一次遍历；② `write-tree` 结果与 parent tree 相同（本轮无文件改动，日常
+  对话占大头）时跳过 commit 链直接复用上一 hash；③ 首次快照大仓的
+  `add -A` 全量 stat 属固有成本，用 SHADOW_EXCLUDES 覆盖常见垃圾目录即可，
+  不再深挖 fsmonitor。
+- 确认项（不一定改）：`kv_get`/`kv_set` 等同步 command 的执行线程是否会卡
+  事件循环（Tauri v2 同步命令不在 async worker 上）；若观测到设置页保存
+  掉帧再转 async。git 工具执行已是 spawn_blocking、bash 输出已有
+  MAX_TOOL_OUTPUT 上限（16KB），这两处不动。
+
+不改：对外 command 签名与 NDJSON 协议（3b 全部是宿主内部行为）。
+
+回归重点：断电/杀进程后 state.db 完好（WAL 模式换文件后缀检查）；
+检查点 keep/revert 在无改动 turn 上复用旧 hash 后 UI 展示正常；远程模式
+弱网模拟（限速 200ms RTT + 大输出 turn）下断连→重连→会话继续可用；
+日志文件轮转与跨天切换不受缓冲影响。
+验收：流式 turn 期间 fsync 次数（fs_usage 抽样）从每消息级降到批级；
+远程模式 RSS 在弱网长输出下有界；检查点无改动 turn 的 git 子进程数 ≤ 3。
 
 ## 迭代 4：数据层全量扫描消除（P4）
 
