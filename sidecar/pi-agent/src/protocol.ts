@@ -78,7 +78,7 @@
  *
  * prompt 流（stdout）：{ "id": "<reqId>", "chunk": { ...AI SDK UIMessageChunk } }
  */
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { getSupportedThinkingLevels, type Message } from "@earendil-works/pi-ai";
 import { logErr } from "./log";
@@ -122,7 +122,7 @@ import {
 } from "./model-catalog";
 import {
   readTranscript,
-  readAllCompactions,
+  scanTranscript,
   persist,
   historyToUiMessages,
 } from "./transcript";
@@ -631,27 +631,18 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "list_sessions": {
-      // 索引经 hostdb（宿主 RPC），消息计数扫 JSONL 行数（个人桌面应用量级可接受）
+      // 迭代 4（P4）：消息计数改读索引表 message_count 列（session_touch
+      // 增量维护 + Rust 启动一次性回填），不再逐会话读 JSONL。
       const sessions: SessionSummary[] = (await sessionList())
-        .map((r) => {
-          const file = sessionPath(r.id);
-          let messageCount = 0;
-          if (existsSync(file)) {
-            const content = readFileSync(file, "utf8");
-            for (const line of content.split("\n")) {
-              if (line.includes('"type":"message"')) messageCount++;
-            }
-          }
-          return {
-            sessionId: r.id,
-            name: r.title || undefined,
-            firstMessage: r.first_message,
-            messageCount,
-            modified: r.updated_at,
-            cwd: r.cwd,
-            archived: r.archived === 1,
-          };
-        })
+        .map((r) => ({
+          sessionId: r.id,
+          name: r.title || undefined,
+          firstMessage: r.first_message,
+          messageCount: r.message_count,
+          modified: r.updated_at,
+          cwd: r.cwd,
+          archived: r.archived === 1,
+        }))
         .filter((s) => s.messageCount > 0);
       send({ id: reqId, type: "sessions", sessions });
       break;
@@ -666,11 +657,10 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     case "get_history": {
       const sessionId = String(msg.sessionId ?? "");
       // 从 agent 消息重建：text/reasoning 之外还带 tool part（input/output 对齐 live 流）；
-      // 压缩检查点行重建为 data-compaction 分隔线 part，刷新后分隔线不丢
-      const messages = historyToUiMessages(
-        readTranscript(sessionId),
-        readAllCompactions(sessionId),
-      );
+      // 压缩检查点行重建为 data-compaction 分隔线 part，刷新后分隔线不丢。
+      // 迭代 4：单遍 scanTranscript 同时取消息行与检查点行（此前读两遍文件）
+      const scan = scanTranscript(sessionId);
+      const messages = historyToUiMessages(scan.messages, scan.compactions);
       send({ id: reqId, type: "history", messages });
       break;
     }

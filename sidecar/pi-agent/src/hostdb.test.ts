@@ -60,6 +60,26 @@ describe("local mode: sessions", () => {
     expect(again?.first_message).toBe("first");
   });
 
+  test("session_touch increments message_count (迭代4)", async () => {
+    await sessionInsert("hdb-cnt", "");
+    const listed0 = (await sessionList()).find((s) => s.id === "hdb-cnt");
+    expect(listed0?.message_count).toBe(0);
+
+    await sessionTouch("hdb-cnt", "t", "t", 3);
+    expect(
+      (await sessionList()).find((s) => s.id === "hdb-cnt")?.message_count,
+    ).toBe(3);
+    await sessionTouch("hdb-cnt", "", "", 2);
+    expect(
+      (await sessionList()).find((s) => s.id === "hdb-cnt")?.message_count,
+    ).toBe(5);
+    // 省略 added 参数时计数不变
+    await sessionTouch("hdb-cnt", "", "");
+    expect(
+      (await sessionList()).find((s) => s.id === "hdb-cnt")?.message_count,
+    ).toBe(5);
+  });
+
   test("rename and delete", async () => {
     await sessionInsert("hdb-2", "");
     await sessionRename("hdb-2", "renamed");
