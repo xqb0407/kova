@@ -904,8 +904,41 @@ fn sanitize_tag(tag: &str) -> String {
     s
 }
 
+/// 检查点 ref 清单：`for-each-ref "%(refname)\t%(objectname)"`，默认按 refname
+/// 升序——ref 名以零填充时间戳开头，字典序即时间序。失败返回空表（与旧实现
+/// 中 parent 查询失败静默降级一致）。
+fn list_checkpoint_refs(dir: &str, work: &str) -> Vec<(String, String)> {
+    let o = match git_run(
+        &shadow_git(
+            dir,
+            work,
+            &[
+                "for-each-ref",
+                "--format=%(refname)\t%(objectname)",
+                CHECKPOINT_REF_PREFIX,
+            ],
+        ),
+        None,
+        &[],
+    ) {
+        Ok(o) if o.ok => o,
+        _ => return Vec::new(),
+    };
+    // ref 名不含空白，按最后一个 TAB 切
+    String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (r, h) = line.rsplit_once('\t')?;
+            Some((r.to_string(), h.trim().to_string()))
+        })
+        .collect()
+}
+
 /// 打快照 = 影子仓库 add -A + write-tree + commit-tree（不写任何用户仓库状态）。
 /// 返回 commit hash；每次都是 ref 链上的独立快照相链（parent 为上一个检查点）。
+/// 迭代 3b：① parent 查询与 LRU 清理共用同一份 for-each-ref 结果（此前两次）；
+/// ② 工作区与 parent commit 同树（日常对话轮多数零文件改动）时直接复用 parent
+/// hash——省一次 commit-tree 子进程，且影子仓库不随空转轮次堆积对象。
 fn snapshot_impl(dir: &str, work: &str, tag: &str) -> Result<String, String> {
     let add = git_run(&shadow_git(dir, work, &["add", "-A"]), None, &[])?;
     if !add.ok {
@@ -916,35 +949,59 @@ fn snapshot_impl(dir: &str, work: &str, tag: &str) -> Result<String, String> {
         return Err(format!("snapshot-tree-failed: {}", tree.stderr));
     }
     let tree = String::from_utf8_lossy(&tree.stdout).trim().to_string();
-    // 挂到上一个检查点之下，保留快照相链（LRU 删 ref 后由 gc 回收不可达对象）。
-    // ref 名以零填充时间戳开头，字典序即时间序，取最大者的对象名。
-    let mut parent = String::new();
-    if let Ok(o) = git_run(
-        &shadow_git(
-            dir,
-            work,
-            &[
-                "for-each-ref",
-                "--count=1",
-                "--sort=-refname",
-                "--format=%(objectname)",
-                CHECKPOINT_REF_PREFIX,
-            ],
-        ),
-        None,
-        &[],
-    ) {
-        if o.ok {
-            let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if check_hash(&p).is_ok() {
-                parent = p;
+    let refs_before = list_checkpoint_refs(dir, work);
+    let parent = refs_before
+        .iter()
+        .rev()
+        .find_map(|(_, h)| check_hash(h).ok().map(|()| h.clone()));
+
+    // 同树复用：parent 存在且其 tree == 本轮 write-tree ⇒ 复用 parent commit
+    let hash = match parent.as_deref() {
+        Some(parent) => {
+            let spec = format!("{parent}^{{tree}}");
+            let pt = git_run(&shadow_git(dir, work, &["rev-parse", &spec]), None, &[])?;
+            let parent_tree = if pt.ok {
+                String::from_utf8_lossy(&pt.stdout).trim().to_string()
+            } else {
+                String::new()
+            };
+            if !tree.is_empty() && parent_tree == tree {
+                parent.to_string()
+            } else {
+                commit_checkpoint_tree(dir, work, &tree, tag, Some(parent))?
             }
         }
+        None => commit_checkpoint_tree(dir, work, &tree, tag, None)?,
+    };
+    // 复用路径的 hash 取自清单且已过 check_hash；新 commit 才需校验输出完整
+    if parent.as_deref() != Some(hash.as_str()) {
+        check_hash(&hash)?;
     }
+    let refname = format!("{CHECKPOINT_REF_PREFIX}/{:011}-{}", now_secs(), sanitize_tag(tag));
+    let ur = git_run(
+        &shadow_git(dir, work, &["update-ref", &refname, &hash]),
+        None,
+        &[],
+    )?;
+    if !ur.ok {
+        return Err(format!("snapshot-ref-failed: {}", ur.stderr));
+    }
+    prune_checkpoints(dir, &refname, refs_before);
+    Ok(hash)
+}
+
+/// commit-tree 一步的封装：parent 为空时生成根 checkpoint commit
+fn commit_checkpoint_tree(
+    dir: &str,
+    work: &str,
+    tree: &str,
+    tag: &str,
+    parent: Option<&str>,
+) -> Result<String, String> {
     let mut cargs: Vec<String> = vec!["commit-tree".into(), tree.into(), "-m".into(), tag.into()];
-    if !parent.is_empty() {
+    if let Some(p) = parent {
         cargs.push("-p".into());
-        cargs.push(parent.clone());
+        cargs.push(p.into());
     }
     let idents: &[(&str, &str)] = &[
         ("GIT_AUTHOR_NAME", "Xulux Checkpoints"),
@@ -956,51 +1013,17 @@ fn snapshot_impl(dir: &str, work: &str, tag: &str) -> Result<String, String> {
     if !commit.ok {
         return Err(format!("snapshot-commit-failed: {}", commit.stderr));
     }
-    let hash = String::from_utf8_lossy(&commit.stdout).trim().to_string();
-    check_hash(&hash)?;
-    let refname = format!("{CHECKPOINT_REF_PREFIX}/{:011}-{}", now_secs(), sanitize_tag(tag));
-    let ur = git_run(
-        &shadow_git(dir, work, &["update-ref", &refname, &hash]),
-        None,
-        &[],
-    )?;
-    if !ur.ok {
-        return Err(format!("snapshot-ref-failed: {}", ur.stderr));
-    }
-    prune_checkpoints(dir, &refname);
-    Ok(hash)
+    Ok(String::from_utf8_lossy(&commit.stdout).trim().to_string())
 }
 
-/// LRU 清理：检查点 ref 按时间戳命名（字典序=时间序），只保留最近 CHECKPOINT_KEEP 个
-fn prune_checkpoints(dir: &str, keep_ref: &str) {
-    let o = match git_run(
-        &shadow_git(
-            dir,
-            ".",
-            &[
-                "for-each-ref",
-                "--format=%(refname)\t%(objectname)",
-                CHECKPOINT_REF_PREFIX,
-            ],
-        ),
-        None,
-        &[],
-    ) {
-        Ok(o) if o.ok => o,
-        _ => return,
-    };
-    // "%(refname)<TAB>%(objectname)"：ref 名不含空白，按最后一个 TAB 切
-    let entries: Vec<(String, String)> = String::from_utf8_lossy(&o.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (r, h) = line.rsplit_once('\t')?;
-            Some((r.to_string(), h.trim().to_string()))
-        })
-        .collect();
-    if entries.len() <= CHECKPOINT_KEEP {
+/// LRU 清理：检查点 ref 按时间戳命名（字典序=时间序），只保留最近 CHECKPOINT_KEEP 个。
+/// 迭代 3b：清单由 snapshot_impl 在 commit 前一次枚举后传入（此前这里再跑一遍
+/// for-each-ref）；`keep_ref` 是本次新建、尚未出现在清单里的 ref，计数 +1。
+fn prune_checkpoints(dir: &str, keep_ref: &str, entries: Vec<(String, String)>) {
+    if entries.len() + 1 <= CHECKPOINT_KEEP {
         return;
     }
-    let mut doomed = entries.len() - CHECKPOINT_KEEP;
+    let mut doomed = entries.len() + 1 - CHECKPOINT_KEEP;
     for (r, h) in &entries {
         if doomed == 0 {
             break;
@@ -1774,6 +1797,45 @@ mod tests {
         assert!(!dir.join("b.txt").exists());
         assert!(dir.join("node_modules/pkg/x.js").exists()); // 真实安装目录未被还原波及
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 迭代 3b：同树复用——工作区无改动的轮次不再产生新 commit，
+    /// ref 时间线照常（每次快照一个 ref），restore 语义不受影响
+    #[test]
+    fn checkpoint_tree_reuse_skips_empty_commits() {
+        if !need_git() {
+            return;
+        }
+        let dir = tmp_repo("checkpoint-reuse");
+        let p = dir.to_string_lossy().to_string();
+        std::fs::write(dir.join("a.txt"), "1\n").unwrap();
+        let shadow = dir
+            .parent()
+            .unwrap()
+            .join(format!("shadow-{}-checkpoint-reuse", std::process::id()));
+        let _ = std::fs::remove_dir_all(&shadow);
+        ensure_shadow(&shadow).unwrap();
+        let s = shadow.to_string_lossy().to_string();
+
+        let h1 = snapshot_impl(&s, &p, "run-1").unwrap();
+        // 无文件改动：第二个 ref 复用同一 commit（影子仓库零新对象）
+        let h2 = snapshot_impl(&s, &p, "run-2").unwrap();
+        assert_eq!(h1, h2, "同树快照应复用上一 hash");
+        let refs = list_checkpoint_refs(&s, &p);
+        assert_eq!(refs.len(), 2, "复用不应吞掉 ref 时间线");
+
+        // 有改动：产生新 commit；连续第二次空轮继续复用新树
+        std::fs::write(dir.join("b.txt"), "2\n").unwrap();
+        let h3 = snapshot_impl(&s, &p, "run-3").unwrap();
+        assert_ne!(h2, h3);
+        let h4 = snapshot_impl(&s, &p, "run-4").unwrap();
+        assert_eq!(h3, h4, "改动后的空轮应复用改动快照的 hash");
+
+        // 回滚到复用链上的 h1（早于 b.txt 出现）：reverse-apply 应删掉 b.txt
+        restore_impl(&s, &p, &h1).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "1\n");
+        assert!(!dir.join("b.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
