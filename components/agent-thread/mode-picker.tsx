@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { useEffect, useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import {
   CheckIcon,
@@ -9,7 +9,6 @@ import {
   Loader2Icon,
   LockOpenIcon,
   SquarePenIcon,
-  TargetIcon,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -21,6 +20,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import {
+  fetchPlanningState,
   setSessionMode,
   useSessionMode,
   type ApprovalLevel,
@@ -28,13 +28,14 @@ import {
 } from "@/lib/pi-session-mode";
 
 /**
- * 会话模式切换器（composer 区，"+" 号图标旁）——权限导向的五选项（对齐主流编码工具）：
+ * 会话模式切换器（composer 区，"+" 号图标旁）——权限导向的四选项（对齐主流编码工具）：
  * - 变更前确认：改文件/跑命令前先问我（agent + ask）
  * - 自动编辑：自动编辑文件，命令仍需确认（agent + auto-edit）
- * - 计划模式：编辑前先出计划，批准后再实施（plan）
+ * - 计划模式：编辑前先出计划（plan_enter/plan_write/plan_exit），批准后再实施（plan）
  * - 完全访问：全部自动执行，减少确认次数（agent + auto）
- * - 目标模式：协商目标契约与验收标准，批准后自主执行（goal）
- * 切换即发 set_mode（可随时切换，含运行中——与模型自主 EnterPlanMode 同路径）。
+ * 切换即发 set_mode（可随时切换，含运行中——与模型自主 plan_enter/plan_exit 同路径，
+ * 后者经 data-planningState chunk 推送，这里镜像显示）；挂载/换线程时经
+ * get_planning_state 水合快照（页面刷新后 UI 不漂移）。
  */
 
 type PickerOption = {
@@ -81,13 +82,6 @@ const OPTIONS: PickerOption[] = [
     approvalLevel: "auto",
     warning: true,
   },
-  {
-    key: "goal",
-    label: "目标模式",
-    description: "先定目标与验收标准，批准后自主执行。",
-    icon: TargetIcon,
-    mode: "goal",
-  },
 ];
 
 export const ModePicker: FC = () => {
@@ -96,14 +90,15 @@ export const ModePicker: FC = () => {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  // 挂载/换线程时水合快照（刷新后本地 store 为空，sidecar 模式才是事实源）
+  useEffect(() => {
+    if (!threadId) return;
+    fetchPlanningState(threadId).catch(() => {});
+  }, [threadId]);
+
   if (!threadId) return null;
 
-  const activeKey =
-    snap.mode === "goal"
-      ? "goal"
-      : snap.mode === "plan"
-        ? "plan"
-        : snap.approvalLevel;
+  const activeKey = snap.mode === "plan" ? "plan" : snap.approvalLevel;
   const current = OPTIONS.find((o) => o.key === activeKey) ?? OPTIONS[0];
   const inPlanning = snap.planning !== "inactive";
   const CurrentIcon = current.icon;

@@ -35,6 +35,15 @@ export const metadata: Metadata = {
  */
 const UI_PREFS_BOOTSTRAP = `(function(){try{var p=JSON.parse(localStorage.getItem("ui.prefs")||"{}"),d=document.documentElement,m=window.matchMedia("(prefers-color-scheme: dark)");d.classList.toggle("dark",p.theme==="dark"||(p.theme!=="light"&&m.matches));if(p.accent&&p.accent!=="default")d.setAttribute("data-accent",p.accent);if(p.fontSize==="sm")d.style.fontSize="15px";else if(p.fontSize==="lg")d.style.fontSize="17px";if(p.chatWidth==="narrow"||p.chatWidth==="wide")d.setAttribute("data-chat-width",p.chatWidth);if(p.fontFamily&&p.fontFamily!=="default")d.setAttribute("data-font",p.fontFamily);}catch(e){}})();`;
 
+/**
+ * crypto.randomUUID 是 Secure Context 专属 API：远程模式经 http://LAN-IP 访问时
+ * （非 localhost/HTTPS）该方法整个不存在，面板标签、pi 请求 id 等一律抛
+ * "crypto.randomUUID is not a function"。这里用 getRandomValues（不受安全上下文
+ * 限制）按 RFC 4122 v4 补齐，随语言无关地覆盖自家代码与第三方库。
+ * head 内联脚本在所有客户端模块之前执行，早于任何调用点。
+ */
+const UUID_POLYFILL = `(function(){try{if(typeof crypto==="undefined"||typeof crypto.getRandomValues!=="function")return;if(typeof crypto.randomUUID==="function")return;crypto.randomUUID=function(){var b=new Uint8Array(16);crypto.getRandomValues(b);b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;var s="";for(var i=0;i<16;i++)s+=(b[i]+256).toString(16).slice(1);return s.slice(0,8)+"-"+s.slice(8,12)+"-"+s.slice(12,16)+"-"+s.slice(16,20)+"-"+s.slice(20);};}catch(e){}})();`;
+
 export default function RootLayout({
   children,
 }: {
@@ -43,6 +52,7 @@ export default function RootLayout({
   return (
     <html lang="zh-CN" data-boot-splash="" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: UUID_POLYFILL }} />
         <script dangerouslySetInnerHTML={{ __html: UI_PREFS_BOOTSTRAP }} />
       </head>
       <body>

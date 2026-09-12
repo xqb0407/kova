@@ -100,6 +100,12 @@ export interface AskUserQuestionsProps
   onComplete?: (answers: Record<string, AskUserAnswer>) => void;
   onSkip?: (questionId: string, currentIndex: number) => void;
   skipLabel?: string;
+  /** Abandon the flow outright. When set, the header renders an X button and
+   *  Esc fires the same callback — for hosts where dismissing means more than
+   *  skipping the questions (e.g. closing a pending question also stops the
+   *  agent). */
+  onDismiss?: () => void;
+  dismissLabel?: string;
   /** Pins the flow to one step of the size ladder (default 36px, compact
    *  28px — see /docs/sizes). Omitted, it follows the surrounding
    *  SizeProvider. */
@@ -141,6 +147,8 @@ const AskUserQuestions = forwardRef<HTMLDivElement, AskUserQuestionsProps>(
       onComplete,
       onSkip,
       skipLabel = "Skip",
+      onDismiss,
+      dismissLabel = "Dismiss",
       size,
       className,
       ...rest
@@ -196,6 +204,7 @@ const AskUserQuestions = forwardRef<HTMLDivElement, AskUserQuestionsProps>(
     const shape = useShape();
     const ArrowLeft = useIcon("arrow-left");
     const ArrowRight = useIcon("arrow-right");
+    const XIcon = useIcon("x");
 
     // The footer ← / → icons hint at the ArrowLeft/ArrowRight keys, which
     // mobile has no equivalent for, so render them desktop-only. (The inline
@@ -606,6 +615,33 @@ const AskUserQuestions = forwardRef<HTMLDivElement, AskUserQuestionsProps>(
       handleSingleSelect,
       handleMultiToggle,
     ]);
+
+    // ── Keyboard shortcut: Escape ────────────────────────────────
+    // Dismiss the whole flow when the host provides onDismiss. Global like
+    // the 1-9 handler — Esc must fire whether focus sits in the card's
+    // textarea or anywhere outside it — with the same single-instance
+    // arbitration so stacked instances don't all dismiss at once.
+    useEffect(() => {
+      if (!question || !onDismiss) return;
+      const handler = (e: KeyboardEvent) => {
+        if (e.key !== "Escape" || e.metaKey || e.ctrlKey || e.altKey) return;
+        const target = e.target as HTMLElement | null;
+        if (!target) return;
+        const root = rootRef.current;
+        if (!root) return;
+        if (!root.contains(target)) {
+          if (mountedInstances.some((el) => el !== root && el.contains(target)))
+            return;
+          const wrapped = mountedInstances.filter((el) => target.contains(el));
+          const pool = wrapped.length > 0 ? wrapped : mountedInstances;
+          if (pool[pool.length - 1] !== root) return;
+        }
+        e.preventDefault();
+        onDismiss();
+      };
+      document.addEventListener("keydown", handler);
+      return () => document.removeEventListener("keydown", handler);
+    }, [question, onDismiss]);
 
     // ── Keyboard navigation ──────────────────────────────────────
     // Up/Down move the highlight between rows using the SAME indicator as
@@ -1245,6 +1281,29 @@ const AskUserQuestions = forwardRef<HTMLDivElement, AskUserQuestionsProps>(
           <span>
             Question {safeIndex + 1} of {total}
           </span>
+          {/* Dismiss — abandons the whole flow (host decides what closing
+              means; the agent-thread card uses it to stop the run). Esc is
+              the keyboard equivalent (see the Escape effect above). */}
+          {onDismiss && (
+            <button
+              type="button"
+              aria-label={dismissLabel}
+              title={`${dismissLabel} (Esc)`}
+              onClick={() => onDismiss()}
+              className={cn(
+                "ml-auto -mr-1 inline-flex shrink-0 items-center justify-center",
+                compact ? "h-6 w-6" : "h-7 w-7",
+                "text-muted-foreground transition-colors hover:bg-hover hover:text-foreground",
+                shape.bg
+              )}
+            >
+              <XIcon
+                size={compact ? 12 : 14}
+                strokeWidth={2}
+                className={compact ? "h-3 w-3" : "h-3.5 w-3.5"}
+              />
+            </button>
+          )}
         </div>
 
         {/* Field context for freeText validation — one Base UI Field spans

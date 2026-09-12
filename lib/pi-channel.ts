@@ -50,6 +50,11 @@ export function setPiChannel(ch: PiChannel | null) {
   current = ch;
 }
 
+/** 只读探测当前注册通道（无兜底副作用）：供卸载延迟销毁判断"注册表还是不是我" */
+export function peekPiChannel(): PiChannel | null {
+  return current;
+}
+
 export function getPiChannel(): PiChannel {
   // 兜底：未注册时惰性创建 Tauri 通道（保持桌面端现网行为）
   return (current ??= new TauriPiChannel());

@@ -3,6 +3,52 @@
   counter-reset: none !important;
 }
 
+/* ---- 列表:Notion/Tiptap 风格（消息区与面板预览共用 .aui-md） ----
+   标记悬挂在外（换行时与首字对齐），每级统一缩进；任务项去列表标记 */
+.aui-md [data-streamdown="unordered-list"],
+.aui-md [data-streamdown="ordered-list"] {
+  list-style-position: outside;
+  padding-left: 1.5em;
+}
+.aui-md li:has(> input[type="checkbox"]) {
+  list-style: none;
+}
+.aui-md li:has(> input[type="checkbox"])::marker {
+  content: none;
+}
+
+/* 任务复选框:Notion 同款圆角方框,尺寸随字号、与首行文字对齐 */
+.aui-md li > input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-block;
+  box-sizing: border-box;
+  width: 1rem;
+  height: 1rem;
+  margin: 0 0.5rem 0 0;
+  border: 1.5px solid color-mix(in oklab, var(--color-muted-foreground, #71717a) 55%, transparent);
+  border-radius: 0.25rem;
+  vertical-align: -0.15em;
+  background: transparent;
+}
+.aui-md li > input[type="checkbox"]:checked {
+  border-color: transparent;
+  background-color: var(--color-primary, #2383e2);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M3 8.5 6.5 12 13 4.5'/%3E%3C/svg%3E");
+  background-size: 80%;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* 勾选完成态:文字置灰;叶子任务(无嵌套内容)再划线——text-decoration 会
+   传播进子列表,带子项的父任务只置灰不划线,避免贯穿子内容 */
+.aui-md li:has(> input[type="checkbox"]:checked) {
+  color: var(--color-muted-foreground, #71717a);
+}
+.aui-md li:has(> input[type="checkbox"]:checked):not(:has(ul, ol)) {
+  text-decoration: line-through;
+}
+
 .aui-markdown pre code > span::before {
   content: none !important;
   display: none !important;
@@ -88,6 +134,14 @@
   background: transparent;
   border: transparent;
   overflow-x: auto;
+}
+
+/* 列表项内嵌的代码/mermaid 块:上下补呼吸间距,与相邻任务项拉开
+   （顶层代码块有自己的 my-4,列表内会被 li 的 py-1 吃紧,这里单独补） */
+.aui-markdown li [data-streamdown="code-block"],
+.aui-markdown li [data-streamdown="mermaid-block"] {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
 }
 
 .aui-markdown [data-streamdown="code-block"] pre,

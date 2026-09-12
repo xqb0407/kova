@@ -885,6 +885,8 @@ function toolRpcTimeoutMs(name: string, params: Record<string, unknown>): number
     typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
   if (name === "bash") return (num(params.timeout) ?? 120_000) + TOOL_RPC_SLACK_MS;
   if (name === "http") return (num(params.timeoutMs) ?? 30_000) + TOOL_RPC_SLACK_MS;
+  // browser_*：动作含导航/点击后的页面稳定等待（Rust 上限 30s+10s）再加速照
+  if (name.startsWith("browser_")) return 60_000 + TOOL_RPC_SLACK_MS;
   return HOST_QUERY_TIMEOUT_MS; // read/write/edit 是本地文件操作
 }
 

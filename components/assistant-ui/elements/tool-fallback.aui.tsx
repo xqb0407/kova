@@ -1,10 +1,9 @@
 "use client";
 
-import { useState } from "react";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { ChevronDownIcon, LoaderCircleIcon } from "lucide-react";
+import { ToolRow } from "./tool-row.aui";
 
-/** 从 args 里挑第一个有值的字符串做摘要（bash 的 command、文件工具的 path、检索的 pattern…） */
+/** 从 args 里挑第一个有值的字符串做摘要（检索的 pattern、子代理名…） */
 function argSummary(args: Record<string, unknown> | undefined): string {
   if (!args) return "";
   for (const key of [
@@ -34,67 +33,33 @@ function isFailedOutput(text: string): boolean {
   return /\[exit code: |\[timeout\]/.test(text);
 }
 
+/**
+ * 未注册专属渲染的工具（子代理、todo 等）的通用行：
+ * 与 tool-row.aui 的专属行同形（扁平、行内展开输出），只是没有
+ * 「点击开面板」动作。bash/read/edit/write/WebSearch/WebFetch/glob/grep
+ * 的分发见 assistant-message.tsx + AGENT_TOOL_UI。
+ */
 export const ToolFallback: ToolCallMessagePartComponent = ({
   toolName,
   args,
   argsText,
   result,
   status,
+  isError,
 }) => {
-  const running = status?.type === "running";
   const output = resultText(result);
-  const failed = isFailedOutput(output);
   const summary =
     argSummary(args as Record<string, unknown>) ||
     (argsText ? argsText.slice(0, 120) : "");
-  const [open, setOpen] = useState(false);
 
   return (
-    <div
-      data-slot="aui_tool-fallback"
-      className="w-full overflow-hidden rounded-lg border border-border bg-muted/30 text-sm"
-    >
-      <button
-        type="button"
-        onClick={() => output && setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/50"
-      >
-        {running ? (
-          <LoaderCircleIcon
-            size={14}
-            className="size-3.5 shrink-0 animate-spin text-muted-foreground"
-          />
-        ) : (
-          <span
-            className={`size-2 shrink-0 rounded-full ${
-              failed ? "bg-destructive" : "bg-lime-500"
-            }`}
-          />
-        )}
-        <span className="shrink-0 font-medium">{toolName}</span>
-        {summary ? (
-          <code className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
-            {summary}
-          </code>
-        ) : null}
-        {output ? (
-          <ChevronDownIcon
-            size={14}
-            className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${
-              open ? "rotate-180" : ""
-            }`}
-          />
-        ) : null}
-      </button>
-      {open && output ? (
-        <pre
-          className={`max-h-64 overflow-auto border-t px-3 py-2 font-mono text-xs whitespace-pre-wrap ${
-            failed ? "text-destructive" : "text-muted-foreground"
-          }`}
-        >
-          {output}
-        </pre>
-      ) : null}
-    </div>
+    <ToolRow
+      label={toolName}
+      primary={summary}
+      mono
+      running={status?.type === "running"}
+      failed={isError === true || (!!output && isFailedOutput(output))}
+      output={output}
+    />
   );
 };

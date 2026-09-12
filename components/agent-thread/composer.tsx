@@ -8,7 +8,6 @@ import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
 import { ModePicker } from "@/components/agent-thread/mode-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
-import { PlanApprovalCard } from "@/components/agent-thread/plan-approval-card";
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
@@ -186,7 +185,6 @@ export const Composer: FC = () => {
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
         <PromptQueueBar />
-        <PlanApprovalCard />
         <ToolApprovalCard />
         <ComposerPrimitive.AttachmentDropzone asChild>
           <div

@@ -22,7 +22,7 @@ export const ANIMATION_DURATION = 200;
 
 const ReasoningPreviewContext = createContext(false);
 
-const reasoningVariants = cva("aui-reasoning-root mb-4 w-full", {
+const reasoningVariants = cva("aui-reasoning-root my-1 w-full", {
   variants: {
     variant: {
       outline: "rounded-lg border px-3 py-2",
@@ -192,7 +192,7 @@ function ReasoningTrigger({
           active && "shimmer motion-reduce:animate-none",
         )}
       >
-        Reasoning{durationText}
+      思考{durationText}
       </span>
       <ChevronDownIcon
         data-slot="reasoning-trigger-chevron"

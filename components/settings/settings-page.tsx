@@ -7,6 +7,7 @@ import { WindowControls } from "@/components/window-controls";
 import {
   ArchiveIcon,
   BoxesIcon,
+  BotIcon,
   ChartColumnIcon,
   ChevronLeftIcon,
   GlobeIcon,
@@ -22,6 +23,7 @@ import { AppearanceSettings } from "./components/appearance-settings";
 import { AboutSettings } from "./components/about-settings";
 import { ArchiveSettings } from "./components/archive-settings";
 import { PersonalizationSettings } from "./components/personalization-settings";
+import { SubagentsSettings } from "./components/subagents-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
 import { UsageStatsSettings } from "./components/usage-stats-settings";
 import { Logo } from "../agent-thread/header";
@@ -35,6 +37,7 @@ type SettingsSection =
   | "archive"
   | "personalization"
   | "shortcuts"
+  | "subagents"
   | "usage";
 
 const GROUPS: {
@@ -52,7 +55,13 @@ const GROUPS: {
       { id: "usage", label: "使用统计", icon: ChartColumnIcon },
     ],
   },
-  { label: "智能体", items: [{ id: "models", label: "模型", icon: BoxesIcon }] },
+  {
+    label: "智能体",
+    items: [
+      { id: "models", label: "模型", icon: BoxesIcon },
+      { id: "subagents", label: "子智能体", icon: BotIcon },
+    ],
+  },
   {
     label: "系统",
     items: [
@@ -137,6 +146,7 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "appearance" && <AppearanceSettings />}
           {section === "personalization" && <PersonalizationSettings />}
           {section === "shortcuts" && <ShortcutSettings />}
+          {section === "subagents" && <SubagentsSettings />}
           {section === "archive" && <ArchiveSettings />}
           {section === "usage" && <UsageStatsSettings />}
           {section === "about" && <AboutSettings />}

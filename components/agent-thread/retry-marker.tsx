@@ -10,6 +10,10 @@ import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
  * data-retry part 不在 parts 流里就地渲染，`RetryMarker` 挂在 assistant 消息
  * 内容顶部只渲染一次，attempt 原地更新；`useRetryState` 只看流末消息的末位
  * part——新内容到达或 sidecar 补发 phase resolved 时自动消失。
+ *
+ * `useRetryState` 同时也被用来限定"只有末条消息才亮"：线程里每条 assistant
+ * 消息都挂了一个 `RetryMarker`，不按消息过滤的话，历史消息会跟着当前轮的
+ * 重试一起渲染出多份状态行。
  */
 
 type RetryData = {
@@ -24,13 +28,14 @@ type RetryData = {
   error?: string;
 };
 
-/** 重试状态追踪（基于消息）：仅当会话末条消息的最后一个 part 是未结算的重试事件 */
+/** 重试状态追踪（基于消息）：仅当本条消息是会话末条、且末位 part 是未结算的重试事件 */
 export function useRetryState(): RetryData | null {
   return useAuiState((s) => {
-    const last = s.thread.messages[s.thread.messages.length - 1];
-    if (!last || last.role !== "assistant") return null;
-    const part = last.content[
-      last.content.length - 1
+    // `RetryMarker` 挂在每条 assistant 消息底部，这里按消息作用域过滤，
+    // 只让末条消息亮——历史消息在下一轮重试时不再重复渲染状态行。
+    if (!s.message.isLast || s.message.role !== "assistant") return null;
+    const part = s.message.content[
+      s.message.content.length - 1
     ] as unknown as {
       type?: string;
       name?: string;

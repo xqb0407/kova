@@ -16,6 +16,7 @@ import {
 import { gitCheckpointCreate, gitCheckpointDiff } from "@/lib/git";
 import { refreshGitStatus } from "@/lib/git-status";
 import { clearRunCheckpoint, setRunCheckpoint } from "@/lib/pi-checkpoints";
+import { focusPanelTab } from "@/lib/panel-tabs";
 
 /** already-processing 内部错误的友好文案（sidecar 队列已消除触发条件，
  *  这里兜底极窄竞态窗口漏网的，绝不把内部错误原文抛给用户） */
@@ -68,8 +69,6 @@ export class PiTransport implements ChatTransport<UIMessage> {
     let checkpointSettled = false;
     const createCheckpoint = () => {
       if (!cwd || checkpointPromise) return;
-      // [checkpoint-debug] 临时日志，定位检查点条不出现的问题后删除
-      console.warn("[checkpoint] create", JSON.stringify({ chatId, cwd }));
       checkpointPromise = gitCheckpointCreate(cwd, requestId).catch((err) => {
         console.warn("[checkpoint] create failed", String(err));
         return null;
@@ -83,8 +82,6 @@ export class PiTransport implements ChatTransport<UIMessage> {
       if (!cwd || !checkpointPromise) return;
       void checkpointPromise.then((hash) => {
         if (!hash) return;
-        // [checkpoint-debug] 临时日志，定位后删除
-        console.warn("[checkpoint] settle", JSON.stringify({ chatId, hash }));
         refreshGitStatus(cwd);
         return gitCheckpointDiff(cwd, hash)
           .then((d) => {
@@ -143,6 +140,17 @@ export class PiTransport implements ChatTransport<UIMessage> {
               applyQueueChunk(requestId, chatId, (chunk as { data?: unknown }).data);
               return;
             }
+            if (chunk.type === "data-panelOpen") {
+              // agent 浏览动作的面板唤起：浏览器 tab 推到前台并展开收起的面板
+              // （sidecar browser-tools.ts 发起；focusPanelTab 复用既有 tab）
+              const d = (chunk as { data?: { type?: unknown; url?: unknown } }).data;
+              if (d && d.type === "browser") {
+                const url = typeof d.url === "string" && d.url ? { url: d.url } : undefined;
+                focusPanelTab("browser", url);
+                window.dispatchEvent(new Event("agent-panel:open"));
+              }
+              return;
+            }
             if (chunk.type === "start") {
               // turn 真正开始（排队项此刻才轮到）：打检查点快照
               createCheckpoint();
@@ -155,9 +163,11 @@ export class PiTransport implements ChatTransport<UIMessage> {
               settleCheckpoint();
             }
             if (chunk.type === "error") {
-              // 异常收尾同样结算检查点：半途改动也需要 keep/revert 出口
+              // 异常收尾同样结算检查点：半途改动也需要 keep/revert 出口；
+              // 挂起提问与 finish 同款清空（abort 拆流时 finish 可能到不了）
               unregisterQueuedPrompt(requestId, chatId);
               settleCheckpoint();
+              clearQuestions(chatId);
             }
             if (chunk.type === "error" && typeof (chunk as { errorText?: unknown }).errorText === "string") {
               const errorText = (chunk as { errorText: string }).errorText;

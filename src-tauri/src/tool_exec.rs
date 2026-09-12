@@ -90,7 +90,8 @@ impl CancelGuard {
         }
     }
 
-    fn is_cancelled(&self) -> bool {
+    /// browser_* 动作的等待循环按此检查中断（host_cancel / 超时放弃）
+    pub fn is_cancelled(&self) -> bool {
         self.entry.cancelled.load(Ordering::Relaxed)
     }
 }
@@ -574,6 +575,11 @@ pub fn handle_tool(id: &str, p: &Value) -> Result<Value, String> {
         "write" => handle_write(&inner),
         "edit" => handle_edit(&inner),
         "http" => handle_http(&inner),
+        // 面板浏览器驱动（browser.rs）：导航/快照/尺寸/点击/输入/滚动/后退
+        "browser_navigate" | "browser_snapshot" | "browser_resize" | "browser_click"
+        | "browser_type" | "browser_scroll" | "browser_back" => {
+            crate::browser::run_tool(name.as_str(), &inner, &guard)
+        }
         _ => Err(format!("unknown host tool: {name}")),
     }
 }

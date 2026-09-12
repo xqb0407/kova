@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { useEffect, useRef, useState, type FC, type RefObject } from "react";
 import { ChevronDownIcon, SquareTerminalIcon } from "lucide-react";
 import type { TerminalEntry } from "@/lib/panel-activity";
 import { cn } from "@/lib/utils";
@@ -12,14 +12,31 @@ function commandPreview(command: string): { head: string; extraLines: number } {
   return { head: lines[0] ?? "", extraLines: lines.length - 1 };
 }
 
-const TerminalCard: FC<{ entry: TerminalEntry }> = ({ entry }) => {
+const TerminalCard: FC<{ entry: TerminalEntry; focused?: boolean }> = ({
+  entry,
+  focused,
+}) => {
   const hasOutput = entry.output !== null && entry.output !== "";
   const [open, setOpen] = useState(false);
   const { head, extraLines } = commandPreview(entry.command);
   const expanded = open && hasOutput;
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // 消息工具行点击定位进来：自动展开该命令并滚到视野中央
+  useEffect(() => {
+    if (!focused) return;
+    setOpen(true);
+    rootRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [focused]);
 
   return (
-    <div className="border-border/60 bg-muted/10 overflow-hidden rounded-xl border">
+    <div
+      ref={rootRef}
+      className={cn(
+        "border-border/60  overflow-hidden rounded-xl border",
+        focused && "border-ring/40",
+      )}
+    >
       <button
         type="button"
         aria-expanded={expanded}
@@ -61,20 +78,29 @@ const TerminalCard: FC<{ entry: TerminalEntry }> = ({ entry }) => {
   );
 };
 
-export const TerminalSection: FC<{ entries: TerminalEntry[] }> = ({
-  entries,
-}) => {
+export const TerminalSection: FC<{
+  entries: TerminalEntry[];
+  /** 消息工具行定位进来的 toolCallId：命中卡片自动展开并滚到视野内 */
+  focusToolCallId?: string;
+  /** 外层滚动容器 ref：PanelSection 吸顶判定（IntersectionObserver root） */
+  scrollRoot?: RefObject<HTMLElement | null>;
+}> = ({ entries, focusToolCallId, scrollRoot }) => {
   if (entries.length === 0) return null;
 
   return (
     <PanelSection
+      scrollRoot={scrollRoot}
       icon={<SquareTerminalIcon className="size-4" />}
       title="终端"
       trailing={<CountPill>{entries.length}</CountPill>}
     >
       <div className="flex flex-col gap-1.5">
         {entries.map((e) => (
-          <TerminalCard key={e.toolCallId} entry={e} />
+          <TerminalCard
+            key={e.toolCallId}
+            entry={e}
+            focused={focusToolCallId === e.toolCallId}
+          />
         ))}
       </div>
     </PanelSection>

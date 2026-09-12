@@ -271,6 +271,28 @@ export const ContextButton: FC = () => {
                         : `${(info.cacheHitRate * 100).toFixed(1)}%`}
                   </span>
                 </div>
+                {/* 逐请求 miss（参考 Claude Code 的 miss 判定思路）：累计 % 会被
+                    冷启动与重建轮稀释，逐请求计数更能定位"哪一轮真的没吃到缓存" */}
+                {(info.cacheMisses?.requests ?? 0) > 1 && (
+                  <div
+                    className="flex items-center gap-2"
+                    title={`单请求重处理 ≥2000 token 且 ≥5% 记一次 miss；已排除 ${info.cacheMisses?.rebuilds ?? 0} 次预期重建`}
+                  >
+                    <span className="size-2 shrink-0 rounded-full bg-transparent" />
+                    <span className="text-muted-foreground flex-1">
+                      逐请求缓存 miss
+                    </span>
+                    <span className="text-foreground w-14 text-right text-xs tabular-nums">
+                      {info.cacheMisses?.misses ?? 0}/
+                      {Math.max(
+                        0,
+                        (info.cacheMisses?.requests ?? 0) -
+                          1 -
+                          (info.cacheMisses?.rebuilds ?? 0),
+                      )}
+                    </span>
+                  </div>
+                )}
               </div>
 
               <Separator />

@@ -11,7 +11,18 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
+  closeAllPanelTabs,
+  closeOtherPanelTabs,
   closePanelTab,
+  closePanelTabsToLeft,
+  closePanelTabsToRight,
   openPanelTab,
   setActivePanelTab,
   type PanelTab,
@@ -19,43 +30,93 @@ import {
 import { TAB_META, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
 import { cn } from "@/lib/utils";
 
-/** 单个标签胶囊:图标 + 标题 + 关闭(悬停显现,激活常显) */
-const TabChip: FC<{ tab: PanelTab; active: boolean }> = ({ tab, active }) => {
+/**
+ * 单个标签胶囊:图标 + 标题 + 关闭(悬停显现,激活常显)。
+ * IDE 式操作(参考 IDEA/VS Code):右键弹标签菜单,中键直接关闭,
+ * 右键时先激活该标签(菜单标题即指向被操作的标签)。
+ */
+const TabChip: FC<{
+  tab: PanelTab;
+  active: boolean;
+  index: number;
+  count: number;
+}> = ({ tab, active, index, count }) => {
   const meta = TAB_META[tab.type];
   const Icon = meta.icon;
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      title={tabTitle(tab)}
-      onClick={() => setActivePanelTab(tab.id)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") setActivePanelTab(tab.id);
-      }}
-      className={cn(
-        "group flex h-7 max-w-[150px] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border px-2 text-xs outline-none transition-colors",
-        active
-          ? "border-border bg-muted text-foreground"
-          : "border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-      )}
-    >
-      <Icon className="size-3.5 shrink-0" />
-      <span className="min-w-0 flex-1 truncate">{tabTitle(tab)}</span>
-      <button
-        type="button"
-        aria-label="关闭标签"
-        onClick={(e) => {
-          e.stopPropagation();
-          closePanelTab(tab.id);
-        }}
-        className={cn(
-          "hover:bg-foreground/10 hover:text-foreground -mr-1 flex size-4 shrink-0 items-center justify-center rounded transition-opacity",
-          active ? "opacity-60" : "opacity-0 group-hover:opacity-60",
-        )}
-      >
-        <XIcon className="size-3" />
-      </button>
-    </div>
+    <ContextMenu>
+      <ContextMenuTrigger
+        render={
+          <div
+            role="button"
+            tabIndex={0}
+            title={tabTitle(tab)}
+            onClick={() => setActivePanelTab(tab.id)}
+            onContextMenu={() => setActivePanelTab(tab.id)}
+            onMouseDown={(e) => {
+              // 中键:关闭标签(浏览器会闪滚动指针,需 preventDefault)
+              if (e.button === 1) {
+                e.preventDefault();
+                closePanelTab(tab.id);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") setActivePanelTab(tab.id);
+            }}
+            className={cn(
+              "group flex h-7 max-w-[150px] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border px-2 text-xs outline-none transition-colors",
+              active
+                ? "border-border bg-muted text-foreground"
+                : "border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+            )}
+          >
+            <Icon className="size-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate">{tabTitle(tab)}</span>
+            <button
+              type="button"
+              aria-label="关闭标签"
+              onClick={(e) => {
+                e.stopPropagation();
+                closePanelTab(tab.id);
+              }}
+              className={cn(
+                "hover:bg-foreground/10 hover:text-foreground -mr-1 flex size-4 shrink-0 items-center justify-center rounded transition-opacity",
+                active ? "opacity-60" : "opacity-0 group-hover:opacity-60",
+              )}
+            >
+              <XIcon className="size-3" />
+            </button>
+          </div>
+        }
+      />
+      <ContextMenuContent className="min-w-44">
+        <ContextMenuItem onClick={() => closePanelTab(tab.id)}>
+          关闭当前
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={count <= 1}
+          onClick={() => closeOtherPanelTabs(tab.id)}
+        >
+          关闭其他
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={index === 0}
+          onClick={() => closePanelTabsToLeft(tab.id)}
+        >
+          关闭左侧
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={index === count - 1}
+          onClick={() => closePanelTabsToRight(tab.id)}
+        >
+          关闭右侧
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => closeAllPanelTabs()}>
+          关闭全部
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 };
 
@@ -111,8 +172,14 @@ export const TabBar: FC<{
 
       {/* 标签条:溢出横向滚动 */}
       <div className="scrollbar-hide flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-        {tabs.map((t) => (
-          <TabChip key={t.id} tab={t} active={t.id === activeId} />
+        {tabs.map((t, i) => (
+          <TabChip
+            key={t.id}
+            tab={t}
+            active={t.id === activeId}
+            index={i}
+            count={tabs.length}
+          />
         ))}
       </div>
 

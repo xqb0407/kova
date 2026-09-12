@@ -1,23 +1,37 @@
 "use client";
 
-import { useRef, useState, type FC, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FC,
+  type FormEvent,
+} from "react";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
   GlobeIcon,
+  Loader2Icon,
   RotateCwIcon,
 } from "lucide-react";
 import { updatePanelTab, type PanelTab } from "@/lib/panel-tabs";
+import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
-/** 无协议输入补 https://;非法输入返回 null */
+/** 无协议输入补 https://;非法输入返回 null。file:// 放行（产物浏览器预览本地文件） */
 function normalizeUrl(raw: string): string | null {
   const t = raw.trim();
   if (!t) return null;
   const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(t) ? t : `https://${t}`;
   try {
     const u = new URL(withScheme);
-    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    if (
+      u.protocol !== "http:" &&
+      u.protocol !== "https:" &&
+      u.protocol !== "file:"
+    )
+      return null;
     return u.toString();
   } catch {
     return null;
@@ -26,32 +40,217 @@ function normalizeUrl(raw: string): string | null {
 
 function hostOf(url: string): string {
   try {
-    return new URL(url).hostname;
+    const u = new URL(url);
+    // file:// 无 hostname，标题取文件名末段
+    if (u.protocol === "file:") {
+      const segs = u.pathname.split("/").filter(Boolean);
+      const last = segs[segs.length - 1];
+      return last ? decodeURIComponent(last) : url;
+    }
+    return u.hostname;
   } catch {
     return url;
   }
 }
 
+const tauriCore = () => import("@tauri-apps/api/core");
+
+type VpState = {
+  mode: "fill" | "fixed";
+  width: number | null;
+  height: number | null;
+};
+
+type VpPreset =
+  | { label: string; mode: "fill" }
+  | { label: string; mode: "fixed"; width: number; height: number };
+
+/** 视口预设档位：填满面板，或固定逻辑尺寸居中显示（响应式查看） */
+const VP_PRESETS: VpPreset[] = [
+  { label: "填满", mode: "fill" },
+  { label: "桌面", mode: "fixed", width: 1280, height: 800 },
+  { label: "平板", mode: "fixed", width: 768, height: 1024 },
+  { label: "手机", mode: "fixed", width: 375, height: 812 },
+];
+
 /**
- * 浏览器标签:地址栏 + iframe。跨域 iframe 无法读取内部历史,
- * 前进/后退用本组件自维护的访问栈;刷新靠换 key 重挂载。
- * 当前 URL 写回 tab store(updatePanelTab),重启恢复后继续显示。
- * 注意:带 X-Frame-Options/CSP frame-ancestors 的站点(如 GitHub)会拒绝被嵌入,
- * 表现为空白——这是浏览器限制,非本应用缺陷。
+ * 浏览器标签:地址栏 + Tauri 子 webview（unstable 多 webview，宿主侧 browser.rs 管理）。
+ * React 渲染一个常驻占位容器，ResizeObserver/resize/scroll 驱动 browser_sync_bounds
+ * 把物理像素 bounds 同步给宿主；页面导航经 "browser:navigated" 事件回推维护
+ * 地址栏、历史栈与 tab 记录。相比原 iframe：X-Frame-Options 站点（GitHub 等）
+ * 可正常嵌入，且 agent 的 browser_* 工具能驱动同一个 webview。
+ * 占位容器必须常驻（不能等有 url 才渲染）：bounds 同步 effect 只挂载一次，
+ * 若空态时 div 不存在，之后创建的 webview 会停在宿主兜底位置（窗口右半屏），
+ * 盖到面板外——即"溢出面板"。
+ * 跨标签只有一个子 webview：激活的浏览器 tab 胜出，切换 tab 重新 attach 导航。
+ * 前进/后退用本组件自维护的访问栈（引擎自身历史不作事实源）。
  */
 export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
   const initial = tab.url ? normalizeUrl(tab.url) : null;
   const [url, setUrl] = useState<string | null>(initial);
   const [input, setInput] = useState(tab.url ?? "");
-  const [frameKey, setFrameKey] = useState(0);
+  const [loading, setLoading] = useState(false);
+  /** 视口模式（Rust 为事实源，经 browser:viewport 事件同步；AI resize 同一状态） */
+  const [vp, setVp] = useState<VpState>({
+    mode: "fill",
+    width: null,
+    height: null,
+  });
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef(0);
   const stack = useRef<string[]>(initial ? [initial] : []);
   const cursor = useRef(initial ? 0 : -1);
+  /** 最近一次已同步给 webview 的 url（attach 去重，防事件回写形成导航回环） */
+  const attached = useRef<string | null>(null);
+  /** 挂载时的初始 url（mount 语义只看首帧，外部后续改 tab.url 走导航链路） */
+  const initialRef = useRef(initial);
+
+  /** 占位容器 → 宿主 bounds 同步：物理像素（视口坐标 × DPR，客户区两端一致）。
+   *  宿主把 bounds 存进 BrowserState：webview 尚未创建时先记着，创建即落位 */
+  const syncBounds = useCallback(() => {
+    const el = hostRef.current;
+    if (!isTauri() || !el) return;
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => {
+      const r = el.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      if (r.width < 1 || r.height < 1) return; // 不可见：不动宿主 bounds
+      tauriCore()
+        .then(({ invoke }) =>
+          invoke("browser_sync_bounds", {
+            x: Math.round(r.left * dpr),
+            y: Math.round(r.top * dpr),
+            width: Math.round(r.width * dpr),
+            height: Math.round(r.height * dpr),
+          }),
+        )
+        .catch(() => {});
+    });
+  }, []);
 
   const show = (u: string) => {
     setUrl(u);
     setInput(u);
     updatePanelTab(tab.id, { url: u, title: hostOf(u) });
   };
+
+  // 外部改写 tab.url（消息里 WebFetch 行 / agent 的 data-panelOpen 唤起）：
+  // 与当前栈顶不同才导航，避免 show 写回 store 后又触发自己形成回环
+  useEffect(() => {
+    if (!tab.url || tab.url === stack.current[cursor.current]) return;
+    const u = normalizeUrl(tab.url);
+    if (!u) return;
+    stack.current = [...stack.current.slice(0, cursor.current + 1), u];
+    cursor.current = stack.current.length - 1;
+    setUrl(u);
+    setInput(tab.url);
+  }, [tab.url]);
+
+  // 挂载：先同步 bounds；tab 有 url 则 attach（webview 已存在时仅显示），
+  // 空 tab 则隐藏——原生 webview 层在 React 之上，空态覆盖层挡不住残留页面
+  useEffect(() => {
+    if (!isTauri()) return;
+    let alive = true;
+    syncBounds();
+    tauriCore().then(({ invoke }) => {
+      if (!alive) return;
+      if (initialRef.current) {
+        invoke("browser_attach", { url: null }).catch(() => {});
+      } else {
+        invoke("browser_detach", { destroy: false }).catch(() => {});
+      }
+    });
+    return () => {
+      alive = false;
+      cancelAnimationFrame(rafRef.current);
+      tauriCore()
+        .then(({ invoke }) => invoke("browser_detach", { destroy: false }))
+        .catch(() => {});
+    };
+  }, [syncBounds]);
+
+  // url 变化 → 先落位再 attach 导航（同址去重交给宿主 current_page 比对）
+  useEffect(() => {
+    if (!isTauri() || !url || attached.current === url) return;
+    attached.current = url;
+    syncBounds();
+    tauriCore()
+      .then(({ invoke }) => invoke("browser_attach", { url }))
+      .catch(() => {});
+  }, [url, syncBounds]);
+
+  // 布局/滚动跟随：窗口缩放、面板宽度动画、容器滚动都会改变占位区域
+  useEffect(() => {
+    if (!isTauri()) return;
+    const el = hostRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(syncBounds);
+    ro.observe(el);
+    window.addEventListener("resize", syncBounds);
+    // 面板容器/主布局滚动时占位 div 位移（capture 捕获所有内层滚动）
+    document.addEventListener("scroll", syncBounds, true);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", syncBounds);
+      document.removeEventListener("scroll", syncBounds, true);
+    };
+  }, [syncBounds]);
+
+  // 视口模式：挂载取当前值（AI resize 的面板外落位也回读），并跟随宿主事件
+  useEffect(() => {
+    if (!isTauri()) return;
+    tauriCore()
+      .then(({ invoke }) => invoke<VpState>("browser_viewport_get"))
+      .then((v) => setVp(v))
+      .catch(() => {});
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<VpState>("browser:viewport", (e) => setVp(e.payload)),
+      )
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+    return () => unlisten?.();
+  }, []);
+
+  // 宿主导航事件：started/finished/title 三阶段，维护地址栏、栈与 tab 记录
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<{ url: string; phase: string; title?: string | null }>(
+          "browser:navigated",
+          (e) => {
+            const u = e.payload.url;
+            if (!/^(https?|file):\/\//.test(u)) return;
+            setLoading(e.payload.phase === "started");
+            if (u !== stack.current[cursor.current]) {
+              stack.current = [...stack.current.slice(0, cursor.current + 1), u];
+              cursor.current = stack.current.length - 1;
+            }
+            attached.current = u; // webview 已在此 url
+            setUrl(u);
+            setInput(u);
+            const title =
+              e.payload.phase === "title"
+                ? e.payload.title || hostOf(u)
+                : undefined;
+            updatePanelTab(tab.id, {
+              url: u,
+              ...(title !== undefined ? { title } : {}),
+            });
+          },
+        ),
+      )
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+    return () => unlisten?.();
+  }, [tab.id]);
 
   const navigate = (raw: string) => {
     const u = normalizeUrl(raw);
@@ -68,9 +267,33 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
     show(stack.current[next]);
   };
 
+  const reload = () => {
+    if (!url) return;
+    tauriCore()
+      .then(({ invoke }) => invoke("browser_attach", { url, force: true }))
+      .catch(() => {});
+  };
+
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
     navigate(input);
+  };
+
+  const applyViewport = (p: VpPreset) => {
+    setVp(
+      p.mode === "fill"
+        ? { mode: "fill", width: null, height: null }
+        : { mode: "fixed", width: p.width, height: p.height },
+    );
+    if (!isTauri()) return;
+    tauriCore()
+      .then(({ invoke }) =>
+        invoke("browser_viewport_set", {
+          mode: p.mode,
+          ...(p.mode === "fixed" ? { width: p.width, height: p.height } : {}),
+        }),
+      )
+      .catch(() => {});
   };
 
   const navBtn =
@@ -104,7 +327,7 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
           aria-label="Reload"
           title="刷新"
           disabled={!url}
-          onClick={() => setFrameKey((k) => k + 1)}
+          onClick={reload}
           className={cn(navBtn)}
         >
           <RotateCwIcon className="size-4" />
@@ -119,26 +342,76 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
             className="border-border/60 bg-muted/30 focus:bg-background focus:ring-ring/40 h-7 w-full rounded-full border px-3 font-mono text-xs outline-none transition-colors focus:ring-2"
           />
         </form>
+        {loading ? (
+          <Loader2Icon className="text-muted-foreground size-4 shrink-0 animate-spin" />
+        ) : null}
       </div>
-      <div className="bg-white min-h-0 flex-1 dark:bg-black">
-        {url ? (
-          <iframe
-            key={`${url}-${frameKey}`}
-            src={url}
-            title={hostOf(url)}
-            className="h-full w-full border-0"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
-            referrerPolicy="no-referrer"
-          />
-        ) : (
-          <div className="bg-background text-muted-foreground/60 flex h-full flex-col items-center justify-center gap-3 text-center text-sm">
+      {/* 常驻占位容器：子 webview 覆盖其上（宿主按 bounds 定位）；空态为覆盖层。
+          固定视口时容器居中钳制一帧（CSS 表达），webview 跟随该帧 */}
+      <div
+        className={cn(
+          "relative min-h-0 flex-1",
+          vp.mode === "fixed" &&
+            "bg-muted/40 flex items-center justify-center overflow-hidden",
+        )}
+      >
+        <div
+          ref={hostRef}
+          style={
+            vp.mode === "fixed"
+              ? { width: vp.width ?? undefined, height: vp.height ?? undefined }
+              : undefined
+          }
+          className={
+            vp.mode === "fixed"
+              ? "ring-border/60 relative max-h-full max-w-full bg-white ring-1 dark:bg-black"
+              : "absolute inset-0 bg-white dark:bg-black"
+          }
+        />
+        {!url ? (
+          <div className="bg-background text-muted-foreground/60 absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-center text-sm">
             <GlobeIcon className="size-10" />
             <p className="font-medium text-foreground/80">浏览器</p>
             <p className="text-muted-foreground/50 text-xs">
-              粘贴或输入 URL 以打开网页。
+              粘贴或输入 URL 以打开网页，AI 也可通过 browser 工具驱动。
             </p>
           </div>
-        )}
+        ) : null}
+      </div>
+      {/* 视口档位条：填满 / 桌面 / 平板 / 手机 */}
+      <div className="text-muted-foreground flex h-8 shrink-0 items-center gap-1 border-t px-2 text-xs">
+        <span className="text-muted-foreground/70 mr-1">视口</span>
+        {VP_PRESETS.map((p) => {
+          const active =
+            p.mode === "fill"
+              ? vp.mode === "fill"
+              : vp.mode === "fixed" &&
+                vp.width === p.width &&
+                vp.height === p.height;
+          return (
+            <button
+              key={p.label}
+              type="button"
+              title={
+                p.mode === "fixed" ? `${p.width} × ${p.height}` : "填满面板"
+              }
+              onClick={() => applyViewport(p)}
+              className={cn(
+                "rounded px-1.5 py-0.5 transition-colors",
+                active
+                  ? "bg-muted text-foreground font-medium"
+                  : "hover:bg-muted",
+              )}
+            >
+              {p.label}
+            </button>
+          );
+        })}
+        {vp.mode === "fixed" && vp.width && vp.height ? (
+          <span className="text-muted-foreground/60 ml-auto font-mono">
+            {vp.width} × {vp.height}
+          </span>
+        ) : null}
       </div>
     </div>
   );

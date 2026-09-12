@@ -59,7 +59,6 @@ function makeRun(records: DelegationRecord[] = []): Running {
     mode: "agent",
     approvalLevel: "ask",
     planning: "inactive",
-    proposal: null,
     baseTools: [],
     subagentTools: [],
     pendingToolApprovals: new Map(),

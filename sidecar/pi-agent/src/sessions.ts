@@ -12,6 +12,7 @@ import {
   getCurrentThinkingLevel,
   getModels,
   makePromptCacheKeyPayloadHook,
+  makeSessionAffinityHeaders,
 } from "./model-catalog";
 import { buildTools } from "./tools";
 import {
@@ -26,7 +27,7 @@ import {
   createRetryBudget,
   makeUiRetryController,
 } from "./provider-retry";
-import { getSubagentDefinitions } from "./subagent-definitions";
+import { loadSubagentDefinitions } from "./subagent-definitions";
 import { buildSubagentTools } from "./subagent";
 import { readCompaction, readTranscript } from "./transcript";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, type ContextInfoResult } from "./context";
@@ -60,13 +61,13 @@ export function noteActiveTurn(threadId: string, active: boolean): void {
 }
 
 /** 可驱逐判定：进行中的工作与跨轮的审批意图都要跳过。
- *  恢复路径不会带回 planning/proposal/pendingToolApprovals（resolveSession
+ *  恢复路径不会带回 planning/pendingToolApprovals（resolveSession
  *  恒以初始态重建），所以这些状态在驻留期间被驱逐等于静默丢失。 */
 function isEvictable(threadId: string, run: Running): boolean {
   if (activeTurnThreads.has(threadId)) return false;
   for (const d of run.delegations.values()) if (d.status === "running") return false;
   if (run.pendingToolApprovals.size > 0) return false;
-  if (run.planning !== "inactive" || run.proposal !== null) return false;
+  if (run.planning !== "inactive") return false;
   return true;
 }
 
@@ -111,10 +112,14 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
   run.cwd = cwd;
   // 重建工具须沿用原 threadId：todo/question 工具按 threadId 归属，误传 sessionId 会挂错 key
   run.baseTools = buildTools(cwd, threadId);
-  const { definitions } = await getSubagentDefinitions();
-  run.subagentTools = buildSubagentTools(run, run.baseTools, definitions);
+  const { definitions } = await loadSubagentDefinitions({ cwd });
+  run.subagentTools = buildSubagentTools(run, run.baseTools, definitions, reloadSubagents);
   run.agent.state.tools = toolsForMode(run);
-  run.agent.state.systemPrompt = composeModeSystemPrompt(run.mode, cwd);
+  run.agent.state.systemPrompt = composeModeSystemPrompt(
+    run.mode,
+    cwd,
+    run.agent.state.model,
+  );
   // 回写索引行与 JSONL header（header 仅展示用，读端取首个 header 行，重写安全）
   await sessionUpdateCwd(run.sessionId, cwd);
   try {
@@ -129,6 +134,21 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
     }
   } catch {
     // 转录文件异常不阻断补绑（DB 已是事实源）
+  }
+}
+
+/**
+ * 设置页改动（保存/删除/开关/信任）后的热重载：按各会话自己的 cwd 重取定义、
+ * 重建 Task 工具组并重排工具目录（与 rebindRunCwd 同款手法）。
+ * 运行中的 turn 不受影响（工具快照已发出），下一个 turn 即看到新集合；
+ * 进行中的委派按启动时的定义跑完，报告照常投递。
+ */
+export async function reloadSubagents(): Promise<void> {
+  for (const run of running.values()) {
+    const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
+    for (const d of diagnostics) logErr("subagent:", d);
+    run.subagentTools = buildSubagentTools(run, run.baseTools, definitions, reloadSubagents);
+    run.agent.state.tools = toolsForMode(run);
   }
 }
 
@@ -245,7 +265,6 @@ export async function resolveSession(
     mode: "agent",
     approvalLevel: "ask",
     planning: "inactive",
-    proposal: null,
     baseTools,
     subagentTools: [],
     pendingToolApprovals: new Map(),
@@ -255,6 +274,11 @@ export async function resolveSession(
   const agent = new Agent({
     // sessionId 透传：OpenAI prompt_cache_key / Anthropic session-affinity（缓存路由）
     sessionId,
+    // 批次执行开关（参考 pi 的 toolExecution 语义，上游默认 parallel）：
+    // 部分 OpenAI 兼容端点前缀缓存经不起并发（实测 sensenova 同回合并行
+    // 工具批次全部 miss），置 PI_TOOL_EXECUTION=sequential 整批串行
+    toolExecution:
+      process.env.PI_TOOL_EXECUTION === "sequential" ? "sequential" : "parallel",
     // 自定义 OpenAI 兼容端点补发 prompt_cache_key（pi-ai 只对 api.openai.com 下发）
     onPayload: makePromptCacheKeyPayloadHook(sessionId),
     // 显式重试环包住 provider 流：流建立前失败按预算退避重发，
@@ -278,6 +302,12 @@ export async function resolveSession(
         context,
         {
           ...options,
+          // 无条件补发会话亲和头（参考 opencode），让兼容端点把同会话请求
+          // 路由到同一缓存分片；端点若已按 compat 下发同名头则同值覆盖
+          headers: {
+            ...options?.headers,
+            ...makeSessionAffinityHeaders(sessionId),
+          },
           // 可选长缓存（Anthropic 1h TTL / OpenAI 24h retention），compat 守门自动降级
           ...(process.env.PI_CACHE_RETENTION === "long" ? { cacheRetention: "long" } : {}),
           // 捕获失败响应的 status/头（pi-ai 的 onResponse 不暴露失败 429），
@@ -294,7 +324,7 @@ export async function resolveSession(
       );
     },
     initialState: {
-      systemPrompt: composeModeSystemPrompt("agent", resolvedCwd),
+      systemPrompt: composeModeSystemPrompt("agent", resolvedCwd, model),
       model,
       // 深度思考档位（全局，set_thinking 维护；off = 不发送 reasoning 参数）
       thinkingLevel: getCurrentThinkingLevel(),
@@ -305,11 +335,11 @@ export async function resolveSession(
   });
   run.agent = agent;
 
-  const { definitions, diagnostics } = await getSubagentDefinitions();
+  const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
   for (const d of diagnostics) logErr("subagent:", d);
-  run.subagentTools = buildSubagentTools(run, baseTools, definitions);
-  // 在基础工具目录上追加 Task 工具组 + 模式切换工具（delegate 的工具按定义从基础目录里取，
-  // 绝不包含 Task 组，delegate 不能继续委派）
+  run.subagentTools = buildSubagentTools(run, baseTools, definitions, reloadSubagents);
+  // 在基础工具目录上追加 Task 工具组（含管理工具）+ 模式切换工具（delegate 的工具
+  // 按定义从基础目录里取，绝不包含本组，delegate 不能继续委派、也不能管理定义）
   agent.state.tools = toolsForMode(run);
 
   agent.subscribe((event) => onAgentEvent(event, run));
@@ -342,22 +372,21 @@ export async function projectContextInfo(
 
   const resolvedCwd = row.cwd || homedir();
   const baseTools = buildTools(resolvedCwd, threadId);
-  const { definitions } = await getSubagentDefinitions();
+  const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包
   // 运行期才解引用 run，投影下这些闭包永远不会被调用
   const stub = {
     mode: "agent",
     planning: "inactive",
-    proposal: null,
     baseTools,
     subagentTools: [],
   } as unknown as Running;
-  stub.subagentTools = buildSubagentTools(stub, baseTools, definitions);
+  stub.subagentTools = buildSubagentTools(stub, baseTools, definitions, reloadSubagents);
 
   return contextInfoFrom({
     model,
     messages: messages as unknown as Parameters<typeof contextInfoFrom>[0]["messages"],
-    systemPrompt: composeModeSystemPrompt("agent", resolvedCwd),
+    systemPrompt: composeModeSystemPrompt("agent", resolvedCwd, model),
     tools: toolsForMode(stub),
     sessionId,
     compactionGeneration: generation,

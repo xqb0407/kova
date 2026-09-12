@@ -4,6 +4,8 @@ import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { DotMatrix } from "@/components/ui/dot-matrix";
 import { MessageTiming } from "@/components/assistant-ui/elements/message-timing.aui";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
+import { QuestionToolRow } from "./question-tool-row";
+import { AGENT_TOOL_UI } from "@/components/assistant-ui/elements/tool-row.aui";
 import {
   ToolGroupContent,
   ToolGroupRoot,
@@ -20,7 +22,6 @@ import {
 import {
   AuiIf,
   type AssistantState,
-  groupPartByType,
   MessagePrimitive,
   ActionBarPrimitive,
   ErrorPrimitive,
@@ -29,6 +30,7 @@ import {
 } from "@assistant-ui/react";
 import { BranchPicker } from "./branch-picker";
 import { RetryMarker, useRetryState } from "./retry-marker";
+import { MessageArtifacts } from "./agent-panel/artifact-card";
 import {
   CheckIcon,
   CopyIcon,
@@ -41,31 +43,81 @@ import { randomLoadingPhrase } from "@/lib/loading";
 
 /**
  * 交互面在别处、消息列表不再渲染的工具：
- * Question 的提问卡片独占 composer 位（见 question-card.tsx），
- * 列表里再挂一张 ToolFallback 只是重复展示原始 JSON。
+ * todo 的进度在右侧面板「计划」标签呈现——挂 ToolFallback 只是倾倒原始 JSON 噪音。
+ * Question 不在此列：提问当下由 composer 卡片交互（question-card.tsx），
+ * 回答后在列表里以折叠条目留痕（question-tool-row.tsx）。
  */
-const HIDDEN_TOOL_NAMES = new Set(["Question"]);
+const HIDDEN_TOOL_NAMES = new Set(["todo"]);
+
+/**
+ * 工具 → 分组类别（对齐截图的分段标签）：
+ * terminal=命令流水、inspect=查阅（读文件/检索）、modify=编辑改动。
+ * 未列出的工具仍进通用 group-tool。
+ */
+const TOOL_CATEGORY: Record<string, "terminal" | "inspect" | "modify"> = {
+  bash: "terminal",
+  read: "inspect",
+  glob: "inspect",
+  grep: "inspect",
+  WebFetch: "inspect",
+  WebSearch: "inspect",
+  edit: "modify",
+  write: "modify",
+};
 
 /** 工具分组：计数剔除隐藏的工具卡，全组都被隐藏时整组不渲染 */
 const ToolGroupSection: FC<{
   indices: readonly number[];
   active: boolean;
+  category?: "terminal" | "inspect" | "modify";
   children: ReactNode;
-}> = ({ indices, active, children }) => {
-  const count = useAuiState((s) => {
+}> = ({ indices, active, category, children }) => {
+  // "可见数|文件数|检索数"打包成一个字符串选择器：
+  // 值不变时 Object.is 相等，流式期间不会因新对象身份反复重渲
+  const summary = useAuiState((s) => {
     let n = 0;
+    let files = 0;
+    let searches = 0;
     for (const i of indices) {
       const p = s.message.content[i];
       if (!p) continue;
       if (p.type === "tool-call" && HIDDEN_TOOL_NAMES.has(p.toolName)) continue;
       n += 1;
+      if (p.type === "tool-call") {
+        if (p.toolName === "read") files += 1;
+        else if (
+          p.toolName === "glob" ||
+          p.toolName === "grep" ||
+          p.toolName === "WebFetch" ||
+          p.toolName === "WebSearch"
+        )
+          searches += 1;
+      }
     }
-    return n;
+    return `${n}|${files}|${searches}`;
   });
+  const [count, fileCount, searchCount] = summary.split("|").map(Number);
   if (count === 0) return null;
+  // 只有一条时不套折叠组（对齐 Codex：≥2 连续调用才合并）——直接平铺该行，
+  // 少一次点击才能看到内容；组标签的计数语义也要求 ≥2 才成立。
+  if (count === 1) return <>{children}</>;
+  // 类别分组出中文标签；通用分组保持默认 "N tool calls"
+  const label =
+    category === "terminal"
+      ? "终端"
+      : category === "modify"
+        ? `编辑 · ${count} 文件`
+        : category === "inspect"
+          ? (() => {
+              const seg: string[] = [];
+              if (searchCount) seg.push(`${searchCount} 搜索`);
+              if (fileCount) seg.push(`${fileCount} 文件`);
+              return seg.length ? `查阅 · ${seg.join(", ")}` : "查阅";
+            })()
+          : undefined;
   return (
     <ToolGroupRoot variant="ghost">
-      <ToolGroupTrigger count={count} active={active} />
+      <ToolGroupTrigger count={count} active={active} label={label} />
       <ToolGroupContent>{children}</ToolGroupContent>
     </ToolGroupRoot>
   );
@@ -119,21 +171,40 @@ export const AssistantMessage: FC = () => {
       >
         {/* 重试状态行：只渲染一次，attempt 原地更新（data part 本身就地不渲染） */}
         <MessagePrimitive.GroupedParts
-          groupBy={groupPartByType({
-            reasoning: ["group-chainOfThought", "group-reasoning"],
-            "tool-call": ["group-chainOfThought", "group-tool"],
-            "standalone-tool-call": [],
-          })}
+          groupBy={(part) => {
+            if (part.type === "reasoning")
+              return ["group-chainOfThought", "group-reasoning"];
+            if (part.type === "tool-call") {
+              const cat = TOOL_CATEGORY[part.toolName];
+              return [
+                "group-chainOfThought",
+                cat ? `group-tool-${cat}` : "group-tool",
+              ];
+            }
+            return [];
+          }}
         >
           {({ part, children }) => {
             switch (part.type) {
               case "group-chainOfThought":
                 return <div data-slot="aui_chain-of-thought">{children}</div>;
               case "group-tool":
+              case "group-tool-terminal":
+              case "group-tool-inspect":
+              case "group-tool-modify":
                 return (
                   <ToolGroupSection
                     indices={part.indices}
                     active={part.status.type === "running"}
+                    category={
+                      part.type === "group-tool-terminal"
+                        ? "terminal"
+                        : part.type === "group-tool-inspect"
+                          ? "inspect"
+                          : part.type === "group-tool-modify"
+                            ? "modify"
+                            : undefined
+                    }
                   >
                     {children}
                   </ToolGroupSection>
@@ -153,10 +224,18 @@ export const AssistantMessage: FC = () => {
                 return <MarkdownText />;
               case "reasoning":
                 return <Reasoning {...part} />;
-              case "tool-call":
-                // Question 只保留 composer 的交互卡片，列表不再渲染
+              case "tool-call": {
+                // todo 不渲染；Question 已答以折叠条目留痕（提问中归 composer 卡片）
+                if (part.toolName === "Question") return <QuestionToolRow {...part} />;
                 if (HIDDEN_TOOL_NAMES.has(part.toolName)) return null;
-                return part.toolUI ?? <ToolFallback {...part} />;
+                // 内置四类工具走扁平行（点开面板）；其余保留注册 UI / 回退卡
+                const Row = AGENT_TOOL_UI[part.toolName];
+                return Row ? (
+                  <Row {...part} />
+                ) : (
+                  part.toolUI ?? <ToolFallback {...part} />
+                );
+              }
               case "indicator":
                 return <AssistantWorkingIndicator />;
               case "data":
@@ -166,6 +245,8 @@ export const AssistantMessage: FC = () => {
             }
           }}
         </MessagePrimitive.GroupedParts>
+        {/* 消息尾部产物卡：agent 用 write 产出的交付文件（HTML 报告/文档等） */}
+        <MessageArtifacts />
         <MessageError />
         <RetryMarker />
       </div>

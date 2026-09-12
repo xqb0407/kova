@@ -13,7 +13,11 @@ import { randomUUID } from "node:crypto";
 import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import { getModels, makePromptCacheKeyPayloadHook } from "./model-catalog";
+import {
+  getModels,
+  makePromptCacheKeyPayloadHook,
+  makeSessionAffinityHeaders,
+} from "./model-catalog";
 import { logErr } from "./log";
 import {
   captureProviderResponse,
@@ -23,7 +27,8 @@ import {
   createRetryBudget,
   providerRetryMaxRetries,
 } from "./provider-retry";
-import type { SubagentDefinition } from "./subagent-definitions";
+import { normalizeSubagentName, type SubagentDefinition } from "./subagent-definitions";
+import { buildSubagentMgmtTools } from "./subagent-mgmt-tools";
 import type { DelegationRecord, Running, SubagentRunResult, SubagentRunStatus } from "./types";
 
 export const SUBAGENT_TOOL_NAME = "Task";
@@ -43,9 +48,8 @@ const MAX_RETAINED_DELEGATIONS = 50;
 const TASKWAIT_DEFAULT_TIMEOUT_SECONDS = 300;
 const TASKWAIT_MAX_TIMEOUT_SECONDS = 3600;
 
-export function normalizeSubagentName(value: string): string {
-  return value.trim().toLowerCase();
-}
+/** 定义名归一（身份匹配用，事实源在 subagent-definitions） */
+export { normalizeSubagentName };
 
 /** 超长报告保留头尾、中间截断 */
 export function boundedReport(value: string): string {
@@ -278,6 +282,11 @@ class SubagentRun {
           context,
           {
             ...options,
+            // 与主代理同款：无条件补发会话亲和头（参考 opencode）
+            headers: {
+              ...options?.headers,
+              ...makeSessionAffinityHeaders(this.opts.sessionId),
+            },
             ...cacheRetentionOption(),
             fetch: captureProviderResponse(options?.fetch, (response) => {
               this.retryCapture.status = response?.status;
@@ -439,14 +448,18 @@ function findDelegation(run: Running, id: string): DelegationRecord | undefined 
 }
 
 /**
- * 会话级 Task 工具组：Task / TaskWait / TaskList / TaskStop。
- * baseTools 是父代理的基础工具目录（delegate 的工具按定义从里面取，绝不包含 Task 组，
- * delegate 不能继续委派）；definitions 是会话可用的子代理定义。
+ * 会话级子代理工具组：Task / TaskWait / TaskList / TaskStop，外加
+ * 管理工具 subagents_list / subagents_save / subagents_delete（主代理创建、
+ * 更新、删除子智能体定义，见 subagent-mgmt-tools.ts）。
+ * baseTools 是父代理的基础工具目录（delegate 的工具按定义从里面取，绝不包含本组，
+ * delegate 不能继续委派、也不能管理定义）；definitions 是会话可用的子代理定义；
+ * reload 在管理工具改动后重建各会话的工具目录（sessions.ts 注入，避免模块环）。
  */
 export function buildSubagentTools(
   run: Running,
   baseTools: AgentTool[],
   definitions: SubagentDefinition[],
+  reload: () => Promise<void>,
 ): AgentTool[] {
   const names = definitions.map((d) => d.name);
 
@@ -759,5 +772,5 @@ export function buildSubagentTools(
     },
   };
 
-  return [taskTool, waitTool, listTool, stopTool];
+  return [taskTool, waitTool, listTool, stopTool, ...buildSubagentMgmtTools(run, reload)];
 }
