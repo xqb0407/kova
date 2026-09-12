@@ -8,6 +8,9 @@ import {
   cancelAllEntries,
   cancelEntry,
   enqueueTurn,
+  isTurnBusy,
+  markTurnEnd,
+  markTurnStart,
   PROMPT_QUEUE_LIMIT,
   promoteEntry,
   queueSnapshot,
@@ -60,22 +63,46 @@ const responses = (id: string) =>
 describe("prompt-queue state machine", () => {
   test("enqueue/take roundtrip with 1-based positions", () => {
     resetQueueForTests();
-    expect(shouldQueue()).toBe(false);
+    expect(shouldQueue("t1")).toBe(false);
 
     const a = enqueueTurn("qa", "t1", { text: "a" });
     const b = enqueueTurn("qb", "t1", { text: "b" });
     expect(a.ok && b.ok).toBe(true);
-    expect(queueSnapshot()).toEqual([
+    expect(queueSnapshot("t1")).toEqual([
       { reqId: "qa", threadId: "t1", text: "a", position: 1 },
       { reqId: "qb", threadId: "t1", text: "b", position: 2 },
     ]);
 
     // 链节取队首：qa 先出队，qb 位置重排为 1
-    const front = takeFrontEntry();
+    const front = takeFrontEntry("t1");
     expect(front?.reqId).toBe("qa");
-    expect(queueSnapshot().map((q) => q.reqId)).toEqual(["qb"]);
-    expect(takeFrontEntry()?.reqId).toBe("qb");
-    expect(takeFrontEntry()).toBeNull();
+    expect(queueSnapshot("t1").map((q) => q.reqId)).toEqual(["qb"]);
+    expect(takeFrontEntry("t1")?.reqId).toBe("qb");
+    expect(takeFrontEntry("t1")).toBeNull();
+  });
+
+  test("per-thread isolation: one thread's busy/queue never gates another", () => {
+    resetQueueForTests();
+    // A 线程 turn 在跑：只有 A 排队，B 完全不受影响
+    markTurnStart("tA");
+    expect(isTurnBusy("tA")).toBe(true);
+    expect(shouldQueue("tA")).toBe(true);
+    expect(shouldQueue("tB")).toBe(false);
+    enqueueTurn("ea", "tA", { text: "a" });
+    expect(shouldQueue("tB")).toBe(false);
+    expect(takeFrontEntry("tB")).toBeNull();
+
+    // 线程级 cancelAll 只清该线程；promote 只在所属线程内重排
+    enqueueTurn("eb", "tB", { text: "b" });
+    enqueueTurn("ec", "tB", { text: "c" });
+    expect(cancelAllEntries("tA")).toBe(1);
+    expect(promoteEntry("ec")?.reqId).toBe("ec");
+    expect(queueSnapshot().map((q) => q.reqId)).toEqual(["ec", "eb"]);
+    expect(cancelAllEntries("tB")).toBe(2);
+    expect(queueSnapshot()).toEqual([]);
+    markTurnEnd("tA");
+    expect(shouldQueue("tA")).toBe(false);
+    resetQueueForTests();
   });
 
   test("queue limit is enforced per thread", () => {
@@ -117,8 +144,8 @@ describe("prompt-queue state machine", () => {
     enqueueTurn("p1", "t4", { text: "1" });
     enqueueTurn("p2", "t4", { text: "2" });
     enqueueTurn("p3", "t4", { text: "3" });
-    expect(promoteEntry("p3")).toBe(true);
-    expect(promoteEntry("ghost")).toBe(false);
+    expect(promoteEntry("p3")?.reqId).toBe("p3");
+    expect(promoteEntry("ghost")).toBeNull();
     expect(queueSnapshot().map((q) => q.reqId)).toEqual(["p3", "p1", "p2"]);
     resetQueueForTests();
   });
@@ -181,7 +208,7 @@ describe("dispatchPrompt: queuing integration", () => {
   test("queued prompt emits queued → active → runs after the busy turn ends", async () => {
     resetQueueForTests();
     const { markTurnStart, markTurnEnd } = await import("./prompt-queue");
-    markTurnStart();
+    markTurnStart("th-q1")
     const p = dispatchPrompt("pq2", { type: "prompt", text: "two", threadId: "th-q1" });
 
     // 入队即发 data-queue queued
@@ -191,7 +218,7 @@ describe("dispatchPrompt: queuing integration", () => {
     expect(queuedChunk).toBeDefined();
     expect((queuedChunk!.data as { position: number }).position).toBe(1);
 
-    markTurnEnd(); // 活跃 turn 结束：链节放行
+    markTurnEnd("th-q1") // 活跃 turn 结束：链节放行
     await p;
 
     // 轮到时原地更新 active，然后执行（无模型 → error 收尾）
@@ -209,11 +236,11 @@ describe("dispatchPrompt: queuing integration", () => {
   test("queue_cancel drops the entry: no active phase, no turn run", async () => {
     resetQueueForTests();
     const { markTurnStart, markTurnEnd } = await import("./prompt-queue");
-    markTurnStart();
+    markTurnStart("th-q2")
     const p = dispatchPrompt("pc2", { type: "prompt", text: "two", threadId: "th-q2" });
 
     await dispatch("pc-cmd", { type: "queue_cancel", requestId: "pc2" });
-    markTurnEnd();
+    markTurnEnd("th-q2")
     await p;
 
     // 取消即收尾：abort + finish，绝无 active/error 执行痕迹
@@ -224,12 +251,12 @@ describe("dispatchPrompt: queuing integration", () => {
   test("queue_promote reorders: promoted entry runs before earlier entries", async () => {
     resetQueueForTests();
     const { markTurnStart, markTurnEnd } = await import("./prompt-queue");
-    markTurnStart();
+    markTurnStart("th-q3")
     const p2 = dispatchPrompt("pp2", { type: "prompt", text: "two", threadId: "th-q3" });
     const p3 = dispatchPrompt("pp3", { type: "prompt", text: "three", threadId: "th-q3" });
 
     await dispatch("pp-cmd", { type: "queue_promote", requestId: "pp3" });
-    markTurnEnd(); // 链节按序放行：第一节取队首（= pp3），第二节取 pp2
+    markTurnEnd("th-q3") // 链节按序放行：第一节取队首（= pp3），第二节取 pp2
     await Promise.all([p2, p3]);
 
     // 每个排队项都先后开跑（active），且 pp3 先于 pp2
@@ -248,7 +275,7 @@ describe("dispatchPrompt: queuing integration", () => {
   test("queue limit rejects with an error chunk while busy", async () => {
     resetQueueForTests();
     const { markTurnStart, markTurnEnd } = await import("./prompt-queue");
-    markTurnStart();
+    markTurnStart("th-q4")
     const queued = [];
     for (let i = 1; i <= PROMPT_QUEUE_LIMIT; i++) {
       queued.push(
@@ -263,7 +290,7 @@ describe("dispatchPrompt: queuing integration", () => {
       ),
     ).toBe(true);
 
-    markTurnEnd();
+    markTurnEnd("th-q4")
     await Promise.all(queued);
     // 前 5 条正常排队执行（active），第 6 条无执行痕迹
     for (let i = 1; i <= PROMPT_QUEUE_LIMIT; i++) {
@@ -362,6 +389,38 @@ describe("dispatchPrompt: Stop 收尾窗口内的新消息", () => {
       .map((c) => (c.data as { phase: string }).phase);
     expect(phases).toEqual(["queued", "active"]);
     expect(chunksFor("sb2").map((c) => c.type)).toContain("finish");
+    resetQueueForTests();
+  });
+});
+
+/* --------------------------- 线程隔离（并行 turn） --------------------------- */
+
+describe("dispatchPrompt: 线程隔离并行执行", () => {
+  afterAll(() => resetQueueForTests());
+
+  test("其他线程忙不影响本线程：不排队立即执行；线程级 Stop 只中止对应线程", async () => {
+    resetQueueForTests();
+    const runA = await resolveSession("th-iso-a");
+    runA.agent = makeFakeAgent(10_000, 60); // A 挂起，只能靠 Stop 收尾
+    const runB = await resolveSession("th-iso-b");
+    runB.agent = makeFakeAgent(50, 60); // B 自然完成
+
+    const pa = dispatchPrompt("ia1", { type: "prompt", text: "A", threadId: "th-iso-a" });
+    await waitUntil("ia1", "start");
+
+    // A 仍在跑：B 必须不进排队条、立即执行完毕（旧全局队列下 B 会显示排队）
+    const pb = dispatchPrompt("ib1", { type: "prompt", text: "B", threadId: "th-iso-b" });
+    await pb;
+    const bTypes = chunksFor("ib1").map((c) => c.type);
+    expect(bTypes).not.toContain("data-queue");
+    expect(bTypes).toContain("start");
+    expect(bTypes).toContain("finish");
+
+    // 线程级 Stop：只中止 A（收尾 finish），B 已结束不受影响
+    await dispatch("ia-abort", { type: "abort", threadId: "th-iso-a" });
+    await pa;
+    const aTypes = chunksFor("ia1").map((c) => c.type);
+    expect(aTypes).toContain("finish");
     resetQueueForTests();
   });
 });

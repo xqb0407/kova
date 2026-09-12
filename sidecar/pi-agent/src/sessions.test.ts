@@ -96,7 +96,7 @@ describe("sessions：LRU 驻留上限", () => {
 
   test("活跃 turn 的会话豁免驱逐", async () => {
     const busy = await resolveSession("busy-1", undefined, tmp);
-    noteActiveTurn("busy-1");
+    noteActiveTurn("busy-1", true);
     try {
       for (let i = 0; i < MAX_RESIDENT_SESSIONS + 4; i++) {
         await resolveSession(`flood-${i}`, undefined, tmp);
@@ -104,7 +104,7 @@ describe("sessions：LRU 驻留上限", () => {
       expect(running.has("busy-1")).toBe(true);
       expect(running.get("busy-1")).toBe(busy);
     } finally {
-      noteActiveTurn(null);
+      noteActiveTurn("busy-1", false);
     }
   });
 

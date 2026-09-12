@@ -1,7 +1,8 @@
 /**
  * 流式事件：把 pi-agent-core 的 Agent 事件转换为 AI SDK UIMessageChunk，
  * 以 {"id":reqId,"chunk":...} 的 NDJSON 行写到 stdout。
- * currentReqId 由协议层在 prompt 前后设置，事件据此路由到当前请求。
+ * 事件按线程路由：activeReqByThread 记录每个线程当前活跃 prompt 请求，
+ * 多线程并行跑 turn 时事件互不串流（每线程一个 Agent 实例是天然边界）。
  */
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
@@ -15,53 +16,75 @@ export const send = (line: unknown) =>
 export const sendChunk = (id: string, chunk: UIMessageChunk) =>
   send({ id, chunk });
 
-let currentReqId: string | null = null;
-let runSeq = 0;
-/** 当前运行中 contentIndex -> 流式内容 id */
-let contentIds = new Map<number, { text: string; reasoning: string }>();
+/** threadId -> 该线程当前活跃 prompt 请求 id（协议层在 turn 起止时设置） */
+const activeReqByThread = new Map<string, string>();
 
-/** 协议层在 prompt 开始/结束时设置，事件据此路由到当前请求 */
-export function setCurrentReqId(id: string | null) {
-  currentReqId = id;
+/** 协议层在 prompt 开始/结束时设置，事件据此路由到该线程的当前请求 */
+export function setActiveReqId(threadId: string, id: string | null) {
+  if (id) {
+    activeReqByThread.set(threadId, id);
+  } else {
+    activeReqByThread.delete(threadId);
+    streamStates.delete(threadId);
+  }
 }
 
-/** 是否有 prompt 长任务在跑（手动 compact 命令拒绝忙时会话用） */
-export function isPromptActive() {
-  return currentReqId !== null;
+/** 该线程是否有 prompt 长任务在跑（compact 等按线程拒绝忙会话用） */
+export function isPromptActive(threadId: string) {
+  return activeReqByThread.has(threadId);
 }
 
-/** 活跃请求内发一条额外 chunk（如 planning_state）；无活跃请求时静默丢弃 */
-export function sendEventChunk(chunk: UIMessageChunk) {
-  if (!currentReqId) return;
-  sendChunk(currentReqId, chunk);
+/** 线程内发一条额外 chunk（如 planning_state）；该线程无活跃请求时静默丢弃 */
+export function sendEventChunk(threadId: string, chunk: UIMessageChunk) {
+  const reqId = activeReqByThread.get(threadId);
+  if (!reqId) return;
+  sendChunk(reqId, chunk);
 }
 
-/** 开始新一轮流式输出：递增 runSeq 并重置内容 id 映射 */
-export function beginRun() {
-  runSeq += 1;
-  contentIds = new Map();
-  updateCount = 0;
+/** 每线程流式状态：runSeq（轮次序号）、contentIndex -> 内容 id、updateCount 计数 */
+type ThreadStreamState = {
+  runSeq: number;
+  contentIds: Map<number, { text: string; reasoning: string }>;
+  updateCount: number;
+};
+
+const streamStates = new Map<string, ThreadStreamState>();
+
+function stateFor(threadId: string): ThreadStreamState {
+  let s = streamStates.get(threadId);
+  if (!s) {
+    s = { runSeq: 0, contentIds: new Map(), updateCount: 0 };
+    streamStates.set(threadId, s);
+  }
+  return s;
 }
 
-/** 本轮 message_update 事件计数（迭代3：逐条不再落日志，轮末一行摘要） */
-let updateCount = 0;
+/** 开始新一轮流式输出：递增 runSeq 并重置内容 id 映射（每线程独立） */
+export function beginRun(threadId: string) {
+  const s = stateFor(threadId);
+  s.runSeq += 1;
+  s.contentIds = new Map();
+  s.updateCount = 0;
+}
 
-function contentIdFor(index: number) {
-  let ids = contentIds.get(index);
+function contentIdFor(threadId: string, index: number) {
+  const s = stateFor(threadId);
+  let ids = s.contentIds.get(index);
   if (!ids) {
-    ids = { text: `text-${runSeq}-${index}`, reasoning: `reasoning-${runSeq}-${index}` };
-    contentIds.set(index, ids);
+    ids = { text: `text-${s.runSeq}-${index}`, reasoning: `reasoning-${s.runSeq}-${index}` };
+    s.contentIds.set(index, ids);
   }
   return ids;
 }
 
-/** Agent 事件 -> UIMessageChunk 流（reqId 取当前活跃请求） */
+/** Agent 事件 -> UIMessageChunk 流（reqId 取该线程当前活跃请求） */
 export async function onAgentEvent(event: AgentEvent, run: Running): Promise<void> {
-  const reqId = currentReqId;
+  const reqId = run.threadId ? activeReqByThread.get(run.threadId) : undefined;
+  const threadId = run.threadId;
   // 迭代3（P3）：message_update 属 token 级噪音，计数不落日志（PI_LOG_LEVEL=delta
   // 可恢复逐条）；其余事件轮级低频，event 级日志。轮末在 agent_end 打一行摘要。
   if (event.type === "message_update") {
-    updateCount += 1;
+    stateFor(threadId).updateCount += 1;
     logAt(
       "delta",
       "event: message_update/",
@@ -96,32 +119,32 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       const e = event.assistantMessageEvent;
       switch (e.type) {
         case "text_start": {
-          const { text } = contentIdFor(e.contentIndex);
+          const { text } = contentIdFor(threadId, e.contentIndex);
           sendChunk(reqId, { type: "text-start", id: text });
           break;
         }
         case "text_delta": {
-          const { text } = contentIdFor(e.contentIndex);
+          const { text } = contentIdFor(threadId, e.contentIndex);
           sendChunk(reqId, { type: "text-delta", id: text, delta: e.delta });
           break;
         }
         case "text_end": {
-          const { text } = contentIdFor(e.contentIndex);
+          const { text } = contentIdFor(threadId, e.contentIndex);
           sendChunk(reqId, { type: "text-end", id: text });
           break;
         }
         case "thinking_start": {
-          const { reasoning } = contentIdFor(e.contentIndex);
+          const { reasoning } = contentIdFor(threadId, e.contentIndex);
           sendChunk(reqId, { type: "reasoning-start", id: reasoning });
           break;
         }
         case "thinking_delta": {
-          const { reasoning } = contentIdFor(e.contentIndex);
+          const { reasoning } = contentIdFor(threadId, e.contentIndex);
           sendChunk(reqId, { type: "reasoning-delta", id: reasoning, delta: e.delta });
           break;
         }
         case "thinking_end": {
-          const { reasoning } = contentIdFor(e.contentIndex);
+          const { reasoning } = contentIdFor(threadId, e.contentIndex);
           sendChunk(reqId, { type: "reasoning-end", id: reasoning });
           break;
         }
@@ -158,7 +181,7 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       break;
     }
     case "agent_end": {
-      logAt("event", `run summary: ${updateCount} message_update events`);
+      logAt("event", `run summary: ${stateFor(threadId).updateCount} message_update events`);
       // persist 变 async（索引表经 hostdb 走宿主 RPC）；subscribe 会 await 监听器
       await persist(run);
       break;

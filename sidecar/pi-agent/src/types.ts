@@ -81,6 +81,8 @@ export type DelegationRecord = {
 /** threadId 对应的活动会话（每个前端线程一个 Agent 实例） */
 export type Running = {
   agent: Agent;
+  /** 所属前端线程 id（队列/事件路由/中断都按线程隔离） */
+  threadId: string;
   sessionId: string;
   cwd: string;
   /** 持久化 cwd（会话绑定的工作目录；空串 = 建会话时未选目录，允许后续补绑） */

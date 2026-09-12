@@ -174,10 +174,10 @@ abort 命令本就是全局中止所有 run，排队项保持同一语义。想�
 | 编辑排队消息 | chip 进入编辑态 → `queue_update` + 线程消息同步更新；已开跑则拒绝 |
 | 删除排队消息 | ✕ → `queue_cancel`，流收尾，线程消息移除 |
 | 立即发送（插队） | `queue_promote` → 当前 turn 中止结算，该项队首开跑，其余排队项保留 |
-| Stop（有排队项） | 活跃 turn 中止；全部排队项取消收尾（abort 命令为全局语义） |
+| Stop（有排队项） | 该线程活跃 turn 中止；该线程排队项取消收尾（abort 带 threadId = 线程级；缺省才全局兜底） |
 | Stop 后收尾窗口内发送 | 不排队：活跃 turn 已 stopRequested、正在收尾时到达的 prompt 直接沿串行链等收尾后执行（不渲染排队条，也不会被下一次 Stop 连带取消） |
 | 排队超上限 | 第 6 条起拒绝：`error` + `finish` |
-| 不同线程并发发送 | 同一全局队列串行（受约束 1 限制）；徽标提示排队中 |
+| 不同线程并发发送 | 各线程独立串行链并行执行，互不排队（2026-09 起，见 §11） |
 | 排队中会话被 new_session 重置 | turn 开始时走现有 `resolveSession` 逻辑，行为与现状一致 |
 | 报错兜底路径 | `prompt()` 仍抛 already-processing 时：sidecar waitForIdle 重试一次；前端友好文案 |
 
@@ -194,9 +194,29 @@ abort 命令本就是全局中止所有 run，排队项保持同一语义。想�
 
 ## 10. 开放问题
 
-- **多线程并发执行**：当前全局 `currentReqId` 路由决定了只能串行。若未来要支持多线程并行，
-  需把事件路由改为 per-request（`sendChunk` 携带 reqId 贯穿 Agent 事件），改动面大，本期不做。
 - **排队提示的持久性**：前端刷新后排队状态丢失（流还在）。可接受（队列生命周期短），
   如需严谨可在状态查询命令里附带队列快照。
 - **编辑态交互形态**：chip 就地编辑 vs 回填输入框（回填更贴近 ChatGPT 习惯，但要把
   "确认后从输入框移除"的交互做干净），实现时二选一。
+
+## 11. 按线程隔离（2026-09 实现）
+
+原设计的全局 FIFO 在多会话下语义错误：A 会话忙时 B 会话的新消息也显示「排队中」
+（用户在 B 里看不到任何在回答的东西），且 Stop 是全局广播，一键停掉所有会话。
+已按线程隔离：
+
+- **事件路由**（stream.ts）：全局 `currentReqId` 改为 `activeReqByThread` 注册表
+  （threadId → 活跃 reqId）；`Running` 增加 `threadId` 字段，Agent 事件、
+  `sendEventChunk`（审批/提问/待办/重试卡片）都按线程路由。
+  per-thread 的 runSeq/contentIds 也随之一并隔离（并行 turn 不再互相重置内容 id）。
+- **队列**（prompt-queue.ts）：`threadId -> FIFO`，`turnBusy` 变为 busy 线程集合；
+  位置重发、上限（每线程 5 条）、取消/插队都只作用于所属线程。
+- **串行链**（protocol.ts）：全局 `promptChain` 改为 `threadId -> Promise` 的
+  per-thread 链，不同线程的 turn 并行执行；链尾且队列空时摘除链条目防泄漏。
+- **Stop**：`abort` 协议消息带 `threadId` 时只中止该线程（活跃 turn + 排队项）；
+  缺省仍是全局兜底。前端 `PiChannel.abort(threadId)` / Rust `pi_abort(thread_id)`
+  由 Chat 的 abortSignal（含本线程 chatId）传入。`queue_promote` 只中止该排队项
+  所属线程的活跃 turn。
+- **compact**：忙碌检查从全局改为按线程（只拒绝正在回答的那个会话）。
+- **LRU 驱逐**（sessions.ts）：`noteActiveTurn` 改为线程集合，多线程并行期间
+  所有在跑会话都不可驱逐。

@@ -21,7 +21,7 @@ import {
   stripOutputLimitFields,
   withoutDerivedOutputLimit,
 } from "./provider-retry";
-import { setCurrentReqId } from "./stream";
+import { setActiveReqId } from "./stream";
 import type { Running } from "./types";
 
 const model = {
@@ -793,6 +793,7 @@ describe("makeUiRetryController", () => {
 
   function fakeRunning(overrides: Partial<Running> = {}): Running {
     return {
+      threadId: "th-retry",
       providerRetry: createRetryBudget(),
       retryCapture: {},
       providerRetryChunkId: "retry-1",
@@ -811,7 +812,7 @@ describe("makeUiRetryController", () => {
 
   it("emits a retrying chunk with attempt bookkeeping under the active request", () => {
     lines = [];
-    setCurrentReqId("rq1");
+    setActiveReqId("th-retry", "rq1");
     const run = fakeRunning();
     const controller = makeUiRetryController(run);
     controller.onRetry?.({
@@ -832,12 +833,12 @@ describe("makeUiRetryController", () => {
       error: "fetch failed",
     });
     expect(run.providerRetryActive).toBe(true);
-    setCurrentReqId(null);
+    setActiveReqId("th-retry", null);
   });
 
   it("settles exactly once, then goes quiet", () => {
     lines = [];
-    setCurrentReqId("rq2");
+    setActiveReqId("th-retry", "rq2");
     const run = fakeRunning();
     const controller = makeUiRetryController(run);
     controller.onRetry?.({
@@ -853,12 +854,12 @@ describe("makeUiRetryController", () => {
     expect(chunks[1].id).toBe("retry-1");
     expect(chunks[1].data).toEqual({ phase: "resolved" });
     expect(run.providerRetryActive).toBe(false);
-    setCurrentReqId(null);
+    setActiveReqId("th-retry", null);
   });
 
   it("stays silent after Stop and with no active request", () => {
     lines = [];
-    setCurrentReqId(null);
+    setActiveReqId("th-retry", null);
     const stopped = fakeRunning({ stopRequested: true });
     makeUiRetryController(stopped).onRetry?.({
       error: { code: "NETWORK_ERROR", message: "x", retriable: true },
@@ -878,7 +879,7 @@ describe("makeUiRetryController", () => {
 
   it("retries a pre-stream 429 end to end and closes the card on stream start", async () => {
     lines = [];
-    setCurrentReqId("rq3");
+    setActiveReqId("th-retry", "rq3");
     const run = fakeRunning();
     let attempts = 0;
     const controller = makeUiRetryController(run);
@@ -908,12 +909,12 @@ describe("makeUiRetryController", () => {
     });
     expect(chunks[1].data).toEqual({ phase: "resolved" });
     expect(run.providerRetryActive).toBe(false);
-    setCurrentReqId(null);
+    setActiveReqId("th-retry", null);
   });
 
   it("settles the card when the retries run out and the error surfaces", async () => {
     lines = [];
-    setCurrentReqId("rq4");
+    setActiveReqId("th-retry", "rq4");
     const run = fakeRunning();
     // 预算只够一次：第二次失败耗尽预算，终态 error 上浮
     (run.providerRetry as { transient: number }).transient = 9;
@@ -936,6 +937,6 @@ describe("makeUiRetryController", () => {
     // 卡片被终态错误结算，倒计时不会挂在屏幕上
     expect(chunks[1].data).toEqual({ phase: "resolved" });
     expect(run.providerRetryActive).toBe(false);
-    setCurrentReqId(null);
+    setActiveReqId("th-retry", null);
   });
 });

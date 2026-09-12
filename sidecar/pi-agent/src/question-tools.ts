@@ -153,7 +153,7 @@ export function buildQuestionTool(threadId: string): AgentTool {
     execute: async (toolCallId, raw) => {
       const { questions } = raw as { questions: unknown };
       validateQuestions(questions);
-      sendEventChunk({
+      sendEventChunk(threadId, {
         type: "data-question",
         data: { questionId: toolCallId, questions },
       });

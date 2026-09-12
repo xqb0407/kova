@@ -280,8 +280,16 @@ pub async fn pi_prompt(
 }
 
 #[tauri::command]
-pub async fn pi_abort(state: State<'_, PiState>) -> Result<(), String> {
-    write_line(&state, serde_json::json!({ "type": "abort" }).to_string()).await
+pub async fn pi_abort(
+    state: State<'_, PiState>,
+    thread_id: Option<String>,
+) -> Result<(), String> {
+    // thread_id 缺省 = 全局兜底中断；提供时只停该线程（队列按线程隔离）
+    write_line(
+        &state,
+        serde_json::json!({ "type": "abort", "threadId": thread_id }).to_string(),
+    )
+    .await
 }
 
 #[tauri::command]

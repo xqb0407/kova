@@ -1,14 +1,14 @@
 /**
  * prompt 排队队列（设计见 docs/prompt-queue-design.md）。
  *
- * sidecar 事件路由依赖全局 currentReqId（stream.ts），本质一次只能跑一个
- * prompt turn；上一轮未结束时到达的新 prompt 不再直接打到 agent.prompt()
- * 撞 "Agent is already processing" 守卫，而是进入本模块的 FIFO 队列，
- * 由 protocol.ts 的串行链依次执行。
+ * 队列按线程（session）隔离：每个 threadId 一条 FIFO，串行链也是每线程一条，
+ * 不同线程的 turn 并行执行、互不阻塞；同一线程内，上一轮未结束时到达的新
+ * prompt 不再直接打到 agent.prompt() 撞 "Agent is already processing" 守卫，
+ * 而是进入该线程的 FIFO 队列，由 protocol.ts 的该线程串行链依次执行。
  *
- * 串行链的每一节是可互换的「工人槽」：轮到某节时取当前队首项执行（而非绑定
- * 派发顺序），这样 queue_promote 重排队列后顺序依然正确；被取消的项已在
- * 取消时收尾流，轮到时队列为空或项已不在，链节静默让位。
+ * 线程串行链的每一节是可互换的「工人槽」：轮到某节时取该线程当前队首项执行
+ * （而非绑定派发顺序），这样 queue_promote 重排队列后顺序依然正确；被取消的项
+ * 已在取消时收尾流，轮到时队列为空或项已不在，链节静默让位。
  *
  * data-queue chunk 生命周期（同 id 原地更新，参照 data-compaction）：
  *   { phase: "queued", position } 入队/位置变化 → { phase: "active" } 开跑；
@@ -28,33 +28,46 @@ export type QueuedTurn = {
   aborted: boolean;
 };
 
-const queue: QueuedTurn[] = [];
+/** threadId -> 该线程的排队 turn（不含活跃项） */
+const queues = new Map<string, QueuedTurn[]>();
 
-/** 串行链当前是否有 turn 在跑（含会话准备到 finish 收尾的全过程）。
- *  由 protocol.ts 在链节首尾置位；入队判定用它而非 isPromptActive()
- *  （currentReqId 在无模型守卫等提前返回路径上不会置位）。 */
-let turnBusy = false;
+/** 正在跑 turn 的线程集合（含会话准备到 finish 收尾的全过程）。
+ *  由 protocol.ts 在链节首尾增删；入队判定用它而非 isPromptActive()
+ *  （activeReqByThread 在无模型守卫等提前返回路径上不会置位）。 */
+const busyThreads = new Set<string>();
 
 export function queueChunkId(reqId: string): string {
   return `queue-${reqId}`;
 }
 
+function queueFor(threadId: string): QueuedTurn[] {
+  let q = queues.get(threadId);
+  if (!q) {
+    q = [];
+    queues.set(threadId, q);
+  }
+  return q;
+}
+
 function chunkFor(entry: QueuedTurn): { type: "data-queue"; id: string; data: Record<string, unknown> } {
+  const q = queues.get(entry.threadId) ?? [];
   return {
     type: "data-queue",
     id: queueChunkId(entry.reqId),
-    data: { phase: "queued", position: queue.indexOf(entry) + 1 },
+    data: { phase: "queued", position: q.indexOf(entry) + 1 },
   };
 }
 
-/** 队列位置变化后重发所有项的 position（前端排队条序号跟着变） */
-function reemitPositions(): void {
-  for (const entry of queue) sendChunk(entry.reqId, chunkFor(entry));
+/** 队列位置变化后重发该线程所有项的 position（前端排队条序号跟着变） */
+function reemitPositions(threadId: string): void {
+  const q = queues.get(threadId);
+  if (!q) return;
+  for (const entry of q) sendChunk(entry.reqId, chunkFor(entry));
 }
 
-/** 是否应排队（有 turn 在跑或队列非空） */
-export function shouldQueue(): boolean {
-  return turnBusy || queue.length > 0;
+/** 是否应排队（该线程有 turn 在跑或该线程队列非空；其他线程不影响） */
+export function shouldQueue(threadId: string): boolean {
+  return busyThreads.has(threadId) || (queues.get(threadId)?.length ?? 0) > 0;
 }
 
 /** 入队；按线程限流，超限返回 false（调用方回 error chunk） */
@@ -63,92 +76,119 @@ export function enqueueTurn(
   threadId: string,
   msg: Record<string, unknown>,
 ): { ok: true; entry: QueuedTurn } | { ok: false } {
-  const queuedForThread = queue.filter((q) => q.threadId === threadId).length;
-  if (queuedForThread >= PROMPT_QUEUE_LIMIT) return { ok: false };
+  const q = queueFor(threadId);
+  if (q.length >= PROMPT_QUEUE_LIMIT) return { ok: false };
   const entry: QueuedTurn = { reqId, threadId, msg, aborted: false };
-  queue.push(entry);
+  q.push(entry);
   sendChunk(reqId, chunkFor(entry));
   return { ok: true, entry };
 }
 
-/** 标记 turn 开始（协议层在轮到该链节时调用） */
-export function markTurnStart(): void {
-  turnBusy = true;
+/** 标记线程 turn 开始（协议层在轮到该线程链节时调用） */
+export function markTurnStart(threadId: string): void {
+  busyThreads.add(threadId);
 }
 
-/** 标记 turn 结束 */
-export function markTurnEnd(): void {
-  turnBusy = false;
+/** 标记线程 turn 结束 */
+export function markTurnEnd(threadId: string): void {
+  busyThreads.delete(threadId);
 }
 
-/** 是否有 turn 在跑（测试断言 busy 窗口用） */
-export function isTurnBusy(): boolean {
-  return turnBusy;
+/** 该线程是否有 turn 在跑（测试断言 busy 窗口用） */
+export function isTurnBusy(threadId: string): boolean {
+  return busyThreads.has(threadId);
 }
 
 /** 清空队列与 busy 位（测试隔离用） */
 export function resetQueueForTests(): void {
-  queue.length = 0;
-  turnBusy = false;
+  queues.clear();
+  busyThreads.clear();
 }
 
-/** 链节开跑：取当前队首项（promote 重排后顺序依然正确）并重发位置；
+/** 链节开跑：取该线程当前队首项（promote 重排后顺序依然正确）并重发位置；
  *  队列为空（本项已被取消或被其他链节消费）返回 null，链节静默让位 */
-export function takeFrontEntry(): QueuedTurn | null {
-  const entry = queue.shift() ?? null;
-  if (entry) reemitPositions();
+export function takeFrontEntry(threadId: string): QueuedTurn | null {
+  const q = queues.get(threadId);
+  const entry = q?.shift() ?? null;
+  if (entry && q) {
+    if (q.length === 0) queues.delete(threadId);
+    reemitPositions(threadId);
+  }
   return entry;
 }
 
 /** 修改排队项文本（仅 queued 状态可改） */
 export function updateEntryText(reqId: string, text: string): boolean {
-  const entry = queue.find((q) => q.reqId === reqId);
-  if (!entry || entry.aborted) return false;
-  entry.msg = { ...entry.msg, text };
-  return true;
+  for (const q of queues.values()) {
+    const entry = q.find((t) => t.reqId === reqId);
+    if (entry) {
+      if (entry.aborted) return false;
+      entry.msg = { ...entry.msg, text };
+      return true;
+    }
+  }
+  return false;
 }
 
 /** 删除单个排队项：流立即 abort + finish 收尾，不执行 */
 export function cancelEntry(reqId: string): boolean {
-  const idx = queue.findIndex((q) => q.reqId === reqId);
-  if (idx === -1) return false;
-  const [entry] = queue.splice(idx, 1);
-  entry.aborted = true;
-  sendChunk(entry.reqId, { type: "abort" });
-  sendChunk(entry.reqId, { type: "finish" });
-  reemitPositions();
-  return true;
-}
-
-/** 把排队项提到队首（立即发送：调用方随后中止活跃 turn） */
-export function promoteEntry(reqId: string): boolean {
-  const idx = queue.findIndex((q) => q.reqId === reqId);
-  if (idx === -1) return false;
-  const [entry] = queue.splice(idx, 1);
-  entry.aborted = false;
-  queue.unshift(entry);
-  reemitPositions();
-  return true;
-}
-
-/** 取消全部排队项（用户 Stop：停下一切；返回取消条数） */
-export function cancelAllEntries(): number {
-  const entries = [...queue];
-  queue.length = 0;
-  for (const entry of entries) {
+  for (const [threadId, q] of queues) {
+    const idx = q.findIndex((t) => t.reqId === reqId);
+    if (idx === -1) continue;
+    const [entry] = q.splice(idx, 1);
+    if (q.length === 0) queues.delete(threadId);
     entry.aborted = true;
     sendChunk(entry.reqId, { type: "abort" });
     sendChunk(entry.reqId, { type: "finish" });
+    reemitPositions(threadId);
+    return true;
   }
-  return entries.length;
+  return false;
 }
 
-/** 排队快照（调试/测试用） */
-export function queueSnapshot(): { reqId: string; threadId: string; text: string; position: number }[] {
-  return queue.map((q, i) => ({
-    reqId: q.reqId,
-    threadId: q.threadId,
-    text: String(q.msg.text ?? ""),
-    position: i + 1,
-  }));
+/** 把排队项提到该线程队首（立即发送：调用方随后中止该线程活跃 turn）；
+ *  返回被提前的项（调用方需要它的 threadId），不存在返回 null */
+export function promoteEntry(reqId: string): QueuedTurn | null {
+  for (const [threadId, q] of queues) {
+    const idx = q.findIndex((t) => t.reqId === reqId);
+    if (idx === -1) continue;
+    const [entry] = q.splice(idx, 1);
+    entry.aborted = false;
+    q.unshift(entry);
+    reemitPositions(threadId);
+    return entry;
+  }
+  return null;
+}
+
+/** 取消排队项（threadId 提供时仅该线程）：各自流立即 abort+finish 收尾；
+ *  返回取消条数 */
+export function cancelAllEntries(threadId?: string): number {
+  const targets = threadId
+    ? [...queues].filter(([tid]) => tid === threadId)
+    : [...queues];
+  let cancelled = 0;
+  for (const [tid, q] of targets) {
+    const entries = [...q];
+    queues.delete(tid);
+    for (const entry of entries) {
+      entry.aborted = true;
+      sendChunk(entry.reqId, { type: "abort" });
+      sendChunk(entry.reqId, { type: "finish" });
+    }
+    cancelled += entries.length;
+  }
+  return cancelled;
+}
+
+/** 排队快照（调试/测试用；threadId 提供时仅该线程） */
+export function queueSnapshot(threadId?: string): { reqId: string; threadId: string; text: string; position: number }[] {
+  const out: { reqId: string; threadId: string; text: string; position: number }[] = [];
+  for (const [tid, q] of queues) {
+    if (threadId && tid !== threadId) continue;
+    q.forEach((t, i) =>
+      out.push({ reqId: t.reqId, threadId: tid, text: String(t.msg.text ?? ""), position: i + 1 }),
+    );
+  }
+  return out;
 }

@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
-import { onAgentEvent, setCurrentReqId, beginRun } from "./stream";
+import { onAgentEvent, setActiveReqId, beginRun } from "./stream";
 import type { Running } from "./types";
 
 /** 捕获协议流（stream.send 写 process.stdout） */
@@ -24,6 +24,7 @@ afterAll(() => {
 
 const run = {
   agent: { state: { messages: [] } },
+  threadId: "th-stream",
   sessionId: "s",
   cwd: ".",
   persistedSeq: 0,
@@ -37,12 +38,12 @@ describe("onAgentEvent", () => {
   let reasoningId = "";
 
   beforeAll(() => {
-    setCurrentReqId("r1");
-    beginRun();
+    setActiveReqId("th-stream", "r1");
+    beginRun("th-stream");
   });
 
   afterAll(() => {
-    setCurrentReqId(null);
+    setActiveReqId("th-stream", null);
   });
 
   test("text_start allocates a stable content id", () => {
@@ -117,13 +118,13 @@ describe("onAgentEvent", () => {
   });
 
   test("no output when no active request", () => {
-    setCurrentReqId(null);
+    setActiveReqId("th-stream", null);
     const before = lines.length;
     onAgentEvent(
       ev({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x" } }),
       run,
     );
     expect(lines.length).toBe(before);
-    setCurrentReqId("r1");
+    setActiveReqId("th-stream", "r1");
   });
 });

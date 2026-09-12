@@ -34,6 +34,7 @@ const fakeTool = (name: string): AgentTool =>
 function makeRun(mode: SessionMode = "agent"): Running {
   return {
     agent: { state: {} } as unknown as Running["agent"],
+    threadId: "t-modes",
     sessionId: "s",
     cwd: ".",
     persistedSeq: 0,
