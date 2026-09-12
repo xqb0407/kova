@@ -72,6 +72,12 @@
 - 核查项（不一定改）：`@streamdown/code`/`mermaid` 的 Shiki 文法与 mermaid
   本体是否只在首个代码块/图出现时才加载——用 `next build` 产物 + 开发面板
   Network 验证；若已懒加载则关闭此项。
+  **核查结论（迭代1b）**：❌ 非懒加载。`@streamdown/code` 静态
+  `import {bundledLanguages, createHighlighter} from 'shiki'`（全量语言文法），
+  `@streamdown/mermaid` 静态 `import mermaid from 'mermaid'`；两者经
+  `markdown-text.tsx → assistant-message → thread` 挂在 entry chunk。
+  拆法需要动态 import 插件构造 + 处理代码块高亮就绪前的闪烁，属组件内部
+  数据流改动，超出本迭代"不改组件内部逻辑"边界 → 立为**迭代 1c 专项**。
 - 顺手项：`SPLASH_MIN_MS = 3000`（`app-runtime-provider.tsx:19`）是硬性
   最短启动屏，分块收益会被它完全掩盖——迭代完成后降到 800ms 左右重新
   评估观感。

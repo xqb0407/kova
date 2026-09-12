@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, type FC } from "react";
-import { PanelLeftIcon } from "lucide-react";
+import dynamic from "next/dynamic";
+import { Loader2Icon, PanelLeftIcon } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { usePanelRef } from "react-resizable-panels";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
@@ -17,7 +18,20 @@ import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
 import { Thread } from "./thread";
 import { AgentPanel } from "./agent-panel";
-import { SettingsPage } from "@/components/settings/settings-page";
+// 迭代1b（P6）：设置页整棵模块图（CodeMirror + 语言文法包、cmdk、input-otp、
+// qrcode.react）挪出首屏 chunk；外层 fixed inset-0 bg-background 容器保证
+// 加载期间是应用底色而非白屏。
+const SettingsPage = dynamic(
+  () => import("@/components/settings/settings-page").then((m) => m.SettingsPage),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <Loader2Icon className="text-muted-foreground size-5 animate-spin" />
+      </div>
+    ),
+  },
+);
 // 应用启动即接管外观偏好（预绘制脚本之后：系统主题监听、跟随实时更新）
 import "@/lib/ui-prefs";
 
@@ -51,6 +65,10 @@ export const Base: FC = () => {
   // （SSR 首帧恒为展开，避免 hydration 不一致）
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelHydrated, setPanelHydrated] = useState(false);
+  // 迭代1b（P6）：宽屏右列折叠（collapsedSize=0）时不再常驻渲染整棵面板树，
+  // 首次展开才挂载、之后保持挂载（收起不再卸载，二次展开零重建）。
+  // 活动数据在 panel-activity 模块级 store（迭代1），面板卸载/未挂载不丢。
+  const [panelEverOpened, setPanelEverOpened] = useState(false);
   const panelRef = usePanelRef();
   // onResize 回写开合用：记住上次是否处于折叠，只在状态沿变化时写
   const wasCollapsedRef = useRef(false);
@@ -65,6 +83,11 @@ export const Base: FC = () => {
     } catch {}
     setPanelHydrated(true);
   }, []);
+
+  // 水合后（SSR 首帧恒为展开，不代表用户意图）一旦面板处于展开即置位
+  useEffect(() => {
+    if (panelHydrated && panelOpen) setPanelEverOpened(true);
+  }, [panelHydrated, panelOpen]);
 
   // 面板开合是本地态；composer 等外部入口（如分支菜单的"Git 图谱"）经此事件展开
   useEffect(() => {
@@ -232,7 +255,7 @@ export const Base: FC = () => {
                       setPanelOpen(!collapsed);
                     }}
                   >
-                    <AgentPanel />
+                    {panelEverOpened ? <AgentPanel /> : null}
                   </ResizablePanel>
                 </ResizablePanelGroup>
               )}

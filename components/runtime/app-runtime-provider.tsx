@@ -15,8 +15,10 @@ import {
   type RemoteConfig,
 } from "@/lib/remote";
 import { WanderingEyes } from "../loading-ui/wandering-eyes";
-/** splash 最小展示时长：保证启动动画至少播一会儿，不被快速水合直接闪没 */
-const SPLASH_MIN_MS = 3000;
+/** splash 最小展示时长：保证启动动画至少播一会儿，不被快速水合直接闪没。
+ *  迭代1b（P6）：3000 → 800——固定 3s 开屏把分块/按需加载的全部启动收益
+ *  掩盖在动画里；800ms 仍够眼睛动画起步，观感待重启后重新评估。 */
+const SPLASH_MIN_MS = 800;
 
 /**
  * 启动占位屏：随静态导出的预渲染 HTML 直接输出，webview 导航后立即可见，
