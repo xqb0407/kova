@@ -1,0 +1,48 @@
+# 性能基线（迭代 0 产物）
+
+> 每个迭代完成后重跑同一组场景，把对比三行数字写进该迭代的 commit message。
+
+## 工具
+
+```bash
+bun scripts/perf-sample.mjs <场景名> [--interval 2] [--duration 秒] [--webview-pid PID]
+# 输出 perf-samples/<日期>-<场景名>.csv（ts,pid,role,rss_kb），Ctrl-C 收尾落盘
+```
+
+- webview 归因启发式：取"启动不早于主 App"的 WebKit WebContent 中 RSS 最大者；
+  多开其他浏览器时若怀疑归因错，`--webview-pid` 手动钉死。
+- DOM 节点数（P5 直接指标）：dev 构建里右键检查 → 控制台执行
+  `document.getElementsByTagName('*').length`，手记进对应场景行。
+- 主线程忙碌占比：DevTools → Performance → 录制流式输出 30s →
+  火焰图底部 Σ空闲外时间 / 30s；同时记"最长任务"。
+
+## 快照（2026-09-12，长时间运行的 dev 实例，空闲态）
+
+| 角色 | pid | RSS |
+|------|-----|-----|
+| app（xulux-assistant debug） | 14216 | 183 MB |
+| sidecar（pi-agent） | 14325 | 123 MB |
+| webview（WebContent） | 14322 | **1327 MB** |
+
+空闲即 1.3GB，主要对应 P2（会话驻留）+ P5（DOM/线程缓存）的长期累积；
+本表是"优化前"起点，各迭代验收以下面三个场景为准绳。
+
+## 场景与待填数字（跑一个填一个）
+
+### S1 sidecar 会话驻留（P2）
+步骤：完全重启应用 → 依次打开 5 个大会话各发一条消息 → 全部切走 →
+`perf-sample s1` 采样 60s。
+- 基线：______（预期：每开一个会话阶梯 +N0MB 且不回落）
+- 迭代2后：______（验收：稳定在上限 8 会话 + 基线附近，切走可回落）
+
+### S2 流式输出主线程（P1/P3）
+步骤：长会话（≥100 工具调用）里发一个会触发流式长回复的 prompt →
+流式开始即 DevTools Performance 录 30s。
+- 基线：忙碌 ____% / 最长任务 ____ms / 事件数 ____/s
+- 迭代1后：忙碌显著下降，collect 不再逐 token 全量；
+- 迭代3后：pi-chunk 事件 ≤60/s。
+
+### S3 冷启动（P4/P6）
+步骤：完全重启 → 采样脚本记 sidecar/webview 首值 + 肉测会话列表可见耗时。
+- 基线：列表可见 ____s；entry chunk ____KB(gzip)（`next build` 产物读）
+- 迭代1b后：chunk 下降；迭代4后：list_sessions <100ms。
