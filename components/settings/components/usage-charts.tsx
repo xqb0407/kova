@@ -118,7 +118,7 @@ const UsageCharts: FC<{
         <h3 className="mb-3 text-sm font-semibold">
           {rangeDays === 7 ? "近 7 日" : "近 30 日"} Token 趋势图
         </h3>
-        <ResponsiveContainer width="100%" height={280}>
+        <ResponsiveContainer width="100%" height={264}>
           <LineChart data={trendData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
             <CartesianGrid
               strokeDasharray="3 3"
@@ -175,7 +175,7 @@ const UsageCharts: FC<{
         <h3 className="mb-3 text-sm font-semibold">模型用量</h3>
         <div className="flex flex-col items-center gap-4 sm:flex-row">
           {/* 固定宽度收缩容器：ResponsiveContainer 直接进 flex 行会把图例挤溢出 */}
-          <div className="h-56 w-full shrink-0 sm:w-64">
+          <div className="h-52 w-full shrink-0 sm:w-60">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie

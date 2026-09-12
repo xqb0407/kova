@@ -32,8 +32,8 @@ export type HeatGrid = {
   max: number;
 };
 
-/** 强度色带（蓝系，2D/3D 共用） */
-export const HEAT_RAMP = ["#bfdbfe", "#93c5fd", "#60a5fa", "#2563eb"];
+/** 强度色带（蓝系，2D/3D/图例共用；浅色档为主，最高档避免过深） */
+export const HEAT_RAMP = ["#dbeafe", "#bfdbfe", "#93c5fd", "#60a5fa"];
 
 export function heatColor(ratio: number): string {
   if (ratio <= 0) return "";

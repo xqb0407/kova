@@ -15,6 +15,7 @@ import {
 } from "@/lib/usage-stats";
 import {
   UsageHeatmap,
+  HEAT_RAMP,
   type HeatGranularity,
 } from "./usage-heatmap";
 
@@ -148,6 +149,19 @@ export const UsageStatsSettings: FC = () => {
               ) : (
                 <UsageHeatmap3D days={stats?.days ?? []} granularity={granularity} />
               )}
+              {/* 色阶图例（平面/3D 共用同一色带） */}
+              <div className="text-muted-foreground flex items-center justify-center gap-1.5 text-xs">
+                <span>少</span>
+                <span className="bg-muted size-3 rounded-[3px]" />
+                {HEAT_RAMP.map((color) => (
+                  <span
+                    key={color}
+                    className="size-3 rounded-[3px]"
+                    style={{ backgroundColor: color }}
+                  />
+                ))}
+                <span>多</span>
+              </div>
             </section>
 
             {/* 时间范围 + 趋势/占比 */}
