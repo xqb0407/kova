@@ -105,9 +105,7 @@ export function ThreadPreviewRail() {
 
       const isUser = anchor.dataset.slot === "aui_user-message-root";
       let preview = previewCacheRef.current.get(anchor);
-      // 迭代 5a：内容被窗口化卸载（data-windowed=1）时不重取文本——从空占位
-      // 提取会得到 "Message" 覆盖掉缓存；还原挂载时 childList 变更再重算
-      if (!preview || (dirty.has(anchor) && anchor.dataset.windowed !== "1")) {
+      if (!preview || dirty.has(anchor)) {
         const surface = isUser
           ? (anchor.querySelector<HTMLElement>(USER_SURFACE_SELECTOR) ?? anchor)
           : anchor;
