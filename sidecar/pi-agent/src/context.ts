@@ -353,6 +353,55 @@ export function sessionUsageTotals(sessionId: string): UsageTotals {
   return totals;
 }
 
+/** 逐请求缓存 miss 统计（判定口径参考 Claude Code /usage 的 cache miss 概念：
+ *  单次请求重处理 ≥2,000 token 且 ≥ 当前 prompt 的 5% 记一次 miss）。
+ *  冷启动首轮（会话第一个带 usage 的请求）是预期写入、compaction 检查点后的
+ *  首个请求是预期重建（摘要前缀必然重排），均不计 miss、重建另计。
+ *  近似限制：转录无法区分「进程重启后恢复会话的首轮」与「压缩后首轮」，
+ *  若恰在检查点之后会被记为一次重建——最多差一轮，换取零新增持久化。 */
+export type CacheMissStats = {
+  /** 带 usage 的 assistant 请求数（错误/中止轮不计） */
+  requests: number;
+  misses: number;
+  rebuilds: number;
+};
+
+export function sessionCacheMissStats(
+  sessionId: string,
+  compactionThroughSeq: number | null = null,
+): CacheMissStats {
+  const stats: CacheMissStats = { requests: 0, misses: 0, rebuilds: 0 };
+  let rebuildCounted = false;
+  for (const row of readTranscript(sessionId)) {
+    const msg = row.agent as unknown as {
+      role?: string;
+      stopReason?: string;
+      usage?: Partial<UsageTotals> | null;
+    };
+    if (msg.role !== "assistant") continue;
+    if (msg.stopReason === "error" || msg.stopReason === "aborted") continue;
+    const usage = msg.usage;
+    if (!usage) continue;
+    stats.requests += 1;
+    // 冷启动首轮：还没有「本应命中」的前缀
+    if (stats.requests === 1) continue;
+    if (
+      compactionThroughSeq !== null &&
+      !rebuildCounted &&
+      row.seq > compactionThroughSeq
+    ) {
+      rebuildCounted = true;
+      stats.rebuilds += 1;
+      continue;
+    }
+    const input = usage.input ?? 0;
+    const promptTotal =
+      input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+    if (input >= 2000 && input >= promptTotal * 0.05) stats.misses += 1;
+  }
+  return stats;
+}
+
 export type ContextInfoResult = {
   /** 当前模型（无模型时 null，各占用字段按 0 呈现） */
   model: { provider: string; id: string; name: string } | null;
@@ -376,6 +425,8 @@ export type ContextInfoResult = {
   needsCompaction: boolean;
   usage: UsageTotals;
   cacheHitRate: number | null;
+  /** 逐请求 miss 计数（Claude Code 口径，见 sessionCacheMissStats） */
+  cacheMisses: CacheMissStats;
 };
 
 /** context_info 计算体的输入（迭代2）：live run 与未加载会话的只读投影共用；
@@ -430,6 +481,10 @@ export function contextInfoFrom(input: ContextInfoInput): ContextInfoResult {
       : false,
     usage,
     cacheHitRate: cacheHitRateOf(usage),
+    cacheMisses: sessionCacheMissStats(
+      input.sessionId,
+      checkpoint ? checkpoint.throughSeq : null,
+    ),
   };
 }
 

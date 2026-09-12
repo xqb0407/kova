@@ -15,7 +15,7 @@
  *   model-catalog.ts  模型目录 + 自定义提供商注册
  *   tools.ts      内置编码工具与系统提示词
  *   subagent.ts           Task/TaskWait/TaskList/TaskStop 工具组与 SubagentRun
- *   subagent-definitions.ts 子代理定义（内置四份 + 用户 ~/.agents/subagents/*.md）
+ *   subagent-definitions.ts 子代理定义三层发现（内置常量 + 系统 <app_data>/subagents/*.yml + 工作区 <cwd>/.xulux/subagents/*.yml）
  *   hostdb.ts     数据访问层（host RPC / 本地 SQLite 双模式）
  *   storage.ts    存储装配（JSONL 目录 + CredentialStore）
  *   types.ts      共享类型
@@ -25,6 +25,7 @@ import { logErr } from "./log";
 import { initHostMode, initStorage } from "./storage";
 import { loadCustomProviders, applyModelOverrides } from "./model-catalog";
 import { initPersonalization } from "./personalization";
+import { initSubagentState } from "./subagent-definitions";
 import { handleLine, markStdinClosed, setInitGate } from "./protocol";
 
 const DB_PATH = process.env.PI_DB_PATH || "pi-agent.db";
@@ -61,6 +62,8 @@ async function main() {
     // 个性化设置在闸门内恢复：闸门放行前到达的命令都会缓冲，
     // 保证首批会话组装系统提示词时读到的已是 kv 里恢复的设置
     await initPersonalization();
+    // 子智能体开关/工作区信任同走 kv，理由同上（定义文件本身按需带签名加载）
+    await initSubagentState();
   })().catch((err) => {
     logErr("model catalog init failed:", err);
   });

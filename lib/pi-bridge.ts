@@ -122,6 +122,8 @@ export type PiContextInfo = {
   usage: PiUsageTotals;
   /** 平均缓存命中率 0..1；无用量数据为 null */
   cacheHitRate: number | null;
+  /** 逐请求缓存 miss 计数（旧 sidecar 无此字段时按缺省处理） */
+  cacheMisses?: { requests: number; misses: number; rebuilds: number };
 };
 
 /** 手动压缩结果（compact 响应） */
@@ -183,6 +185,46 @@ export type PiUsageStats = {
   longestChatMs: number;
 };
 
+/** 子智能体定义所在层（事实源在 sidecar：内置常量 / <app_data>/subagents / <cwd>/.xulux/subagents） */
+export type PiSubagentScope = "builtin" | "system" | "workspace";
+
+/** 子智能体定义条目（设置 → 子智能体；list/save/delete/开关/信任的应答共用清单形状） */
+export type PiSubagentEntry = {
+  name: string;
+  description: string;
+  tools: string[];
+  maxTurns?: number;
+  model?: string;
+  prompt: string;
+  scope: PiSubagentScope;
+  /** 定义文件路径（内置无） */
+  path?: string;
+  /** YAML 原文（编辑器"YAML 视图"与 raw 保存回读用） */
+  raw?: string;
+  /** 当前是否挂载到 Task 工具组（开关 + 工作区信任共同决定） */
+  enabled: boolean;
+  /** 内置只读：不可编辑/删除，只能开关与复制 */
+  editable: boolean;
+};
+
+/** 工作区发现但未信任、待批准的定义 */
+export type PiSubagentPending = {
+  name: string;
+  description: string;
+  tools: string[];
+  path?: string;
+};
+
+/** subagents 应答：清单 + 待信任 + 加载诊断 */
+export type PiSubagentsResponse = {
+  type: "subagents";
+  agents: PiSubagentEntry[];
+  pendingWorkspace: PiSubagentPending[];
+  trustedWorkspace: boolean;
+  workspaceCwd: string | null;
+  diagnostics: string[];
+};
+
 export type PiResponse =
   | { type: "sessions"; sessions: PiSessionSummary[] }
   | { type: "session"; sessionId: string; threadId: string }
@@ -195,6 +237,7 @@ export type PiResponse =
   | { type: "thinking"; level: string }
   | { type: "thinking_maps"; applied: number }
   | { type: "personalization"; settings: PiPersonalization }
+  | PiSubagentsResponse
   | { type: "usage_stats"; stats: PiUsageStats }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "model_updated"; provider: string; modelId: string }
@@ -210,16 +253,9 @@ export type PiResponse =
   | { type: "provider_filter"; provider: string; models: string[] | null }
   | {
       type: "mode_changed" | "planning_state";
-      mode: "agent" | "plan" | "goal";
+      mode: "agent" | "plan";
       approvalLevel?: "ask" | "auto-edit" | "auto";
-      planning: "inactive" | "planning" | "awaiting_approval";
-      proposal: {
-        kind: "plan" | "goal";
-        title: string;
-        markdown: string;
-        question: string;
-        filePath?: string;
-      } | null;
+      planning: "inactive" | "planning";
     }
   | PiContextInfo
   | PiCompacted

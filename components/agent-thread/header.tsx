@@ -216,7 +216,7 @@ export const Header: FC<{
       className={cn(
         // 左 padding 随折叠变化（macOS 红绿灯让位），与折叠按钮槽同节拍过渡，
         // 标题被连续挤开而不是瞬间跳位
-        "flex h-12 shrink-0 items-center gap-2 border-b transition-[padding] duration-200",
+        "flex h-12 shrink-0 items-center gap-2 border-b-[0.5] transition-[padding] duration-200",
         // Windows 三键贴窗口右上角，去掉右 padding；其余环境保持 pr-4
         winControls ? "pr-0" : "pr-4",
         sidebarCollapsed && mac ? "md:pl-24" : "pl-4",

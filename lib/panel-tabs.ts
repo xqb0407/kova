@@ -14,7 +14,9 @@ export type PanelTabType =
   | "review"
   | "terminal"
   | "browser"
-  | "git";
+  | "git"
+  /** 文件内容预览：只能由消息里的 read 工具行唤起（见 lib/tool-panel） */
+  | "file";
 
 export type PanelTab = {
   id: string;
@@ -25,6 +27,12 @@ export type PanelTab = {
   /** 视图数据上下文：审查标签可定向到某次运行检查点（本回合改动） */
   cwd?: string;
   checkpoint?: string;
+  /**
+   * 定位上下文（工具行点击唤起时携带）：
+   * terminal/file = 目标 toolCallId；review = 目标文件路径。
+   * 视图侧据此展开对应卡片并滚动到位。
+   */
+  focus?: string;
 };
 
 export type PanelTabsState = { tabs: PanelTab[]; activeId: string | null };
@@ -38,6 +46,7 @@ const VALID_TYPES = new Set<PanelTabType>([
   "terminal",
   "browser",
   "git",
+  "file",
 ]);
 
 function validTab(raw: unknown): raw is PanelTab {
@@ -105,10 +114,15 @@ export function usePanelTabs(): PanelTabsState {
   return useSyncExternalStore(subscribe, getSnapshot, () => state);
 }
 
+export type PanelTabExtra = Pick<
+  PanelTab,
+  "title" | "url" | "cwd" | "checkpoint" | "focus"
+>;
+
 /** 打开一个新标签并激活(所有类型均可多开)；extra 携带视图数据上下文 */
 export function openPanelTab(
   type: PanelTabType,
-  extra?: Pick<PanelTab, "title" | "url" | "cwd" | "checkpoint">,
+  extra?: PanelTabExtra,
 ): string {
   ensureHydrated();
   const id = `tab-${crypto.randomUUID()}`;
@@ -117,6 +131,25 @@ export function openPanelTab(
     activeId: id,
   });
   return id;
+}
+
+/**
+ * 定位式打开：已存在同类型标签则复用第一个（改写 extra 并激活），
+ * 否则新开。工具行点击走这里，避免每点一行就堆一个标签。
+ */
+export function focusPanelTab(type: PanelTabType, extra?: PanelTabExtra): string {
+  ensureHydrated();
+  const existing = state.tabs.find((t) => t.type === type);
+  if (existing) {
+    commit({
+      tabs: state.tabs.map((t) =>
+        t.id === existing.id ? { ...t, ...extra } : t,
+      ),
+      activeId: existing.id,
+    });
+    return existing.id;
+  }
+  return openPanelTab(type, extra);
 }
 
 /** 关闭标签:激活项被关时就近切到相邻标签 */
@@ -131,6 +164,48 @@ export function closePanelTab(id: string): void {
     activeId = neighbor?.id ?? null;
   }
   commit({ tabs, activeId });
+}
+
+/** 批量关闭的公共收尾:激活项幸存则不动,被关则切到 fallback */
+function pruneTabs(
+  keep: (tab: PanelTab, index: number) => boolean,
+  fallback: string | null,
+): void {
+  const tabs = state.tabs.filter(keep);
+  const activeId = tabs.some((t) => t.id === state.activeId)
+    ? state.activeId
+    : fallback;
+  commit({ tabs, activeId });
+}
+
+/** 关闭全部标签(IDEA「关闭所有选项」):面板回到空态 */
+export function closeAllPanelTabs(): void {
+  ensureHydrated();
+  commit({ tabs: [], activeId: null });
+}
+
+/** 关闭其他标签(只保留 id),目标顺带激活 */
+export function closeOtherPanelTabs(id: string): void {
+  ensureHydrated();
+  const tab = state.tabs.find((t) => t.id === id);
+  if (!tab) return;
+  commit({ tabs: [tab], activeId: id });
+}
+
+/** 关闭右侧标签:目标幸存时激活项不变,否则回落目标 */
+export function closePanelTabsToRight(id: string): void {
+  ensureHydrated();
+  const index = state.tabs.findIndex((t) => t.id === id);
+  if (index < 0) return;
+  pruneTabs((_, i) => i <= index, id);
+}
+
+/** 关闭左侧标签:同 closePanelTabsToRight 的镜像 */
+export function closePanelTabsToLeft(id: string): void {
+  ensureHydrated();
+  const index = state.tabs.findIndex((t) => t.id === id);
+  if (index < 0) return;
+  pruneTabs((_, i) => i >= index, id);
 }
 
 export function setActivePanelTab(id: string): void {

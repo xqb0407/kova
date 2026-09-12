@@ -44,8 +44,11 @@ function msg(id: string, role: "user" | "assistant", parts: Part[]): ThreadMessa
 
 /* ------------------------- 参照实现（全量朴素扫描） -------------------------
  * 独立复刻改造前 collect() 的语义，作为增量 store 的等价性 oracle。
- * 与 store 不共享任何代码（diffLines 除外——它是两侧共用的既有导出）。
+ * 与 store 不共享任何代码（diffLines / parseWebSearchResults 除外——
+ * 它们是两侧共用的既有导出纯函数，复刻解析规则无验证价值）。
  */
+
+import { parseWebSearchResults } from "@/lib/web-search";
 
 const FAILED_RE = /\[exit code: \d+\]|\[timeout\]/;
 
@@ -53,6 +56,8 @@ function naiveDerive(messages: readonly ThreadMessage[]): PanelActivity {
   const terminal: PanelActivity["terminal"] = [];
   const order: string[] = [];
   const groups = new Map<string, PanelActivity["files"][number]["entries"]>();
+  const citations: PanelActivity["citations"] = [];
+  const seenCitation = new Set<string>();
   let runningCount = 0;
 
   for (const m of messages) {
@@ -123,12 +128,34 @@ function naiveDerive(messages: readonly ThreadMessage[]): PanelActivity {
           removed,
         });
         if (running) runningCount += 1;
+        continue;
+      }
+
+      if (part.toolName === "WebSearch") {
+        if (result === null || err) continue;
+        const query = typeof args.query === "string" ? args.query : "";
+        const items = parseWebSearchResults(result);
+        if (!items) continue;
+        for (const it of items) {
+          const entry = {
+            toolCallId: part.toolCallId,
+            query,
+            title: it.title,
+            url: it.url ?? null,
+            snippet: it.snippet ?? null,
+          };
+          const key = it.url ? `u:${it.url}` : `n:${query}\u0000${it.title}`;
+          if (seenCitation.has(key)) continue;
+          seenCitation.add(key);
+          citations.push(entry);
+        }
       }
     }
   }
 
   return {
     terminal,
+    citations,
     files: order.map((path) => {
       const entries = groups.get(path)!;
       return {
@@ -145,6 +172,13 @@ function naiveDerive(messages: readonly ThreadMessage[]): PanelActivity {
 }
 
 /* ------------------------------ 用例 ------------------------------ */
+
+/** sidecar renderSearchResults 固定格式（两条引用） */
+const SEARCH_1 =
+  'Web search results for "bun test":\n\n- bun:test overview\n  https://bun.com/docs/test\n  Fast built-in test runner\n\n- Writing tests | Bun Docs\n  https://bun.com/guides/test\n  expect + describe + it';
+/** 与 SEARCH_1 共享第一个 url 的第二次搜索：应只新增第二条 */
+const SEARCH_2 =
+  'Web search results for "bun runtime":\n\n- bun:test overview\n  https://bun.com/docs/test\n  (duplicate of first search)\n\n- Bun (software) - Wikipedia\n  https://en.wikipedia.org/wiki/Bun_(software)\n  JavaScript runtime';
 
 describe("createPanelActivityStore：与朴素全量扫描等价", () => {
   const messages = [
@@ -167,15 +201,20 @@ describe("createPanelActivityStore：与朴素全量扫描等价", () => {
       tool("t9", "write", { file_path: "/x/c.ts" }), // 无 content：忽略
       tool("t10", "bash", {}), // 命令未成形：隐藏
       tool("t11", "edit", { file_path: "/x/d.ts", old_string: "a", new_string: "b" }, "no match", true),
+      tool("t14", "WebSearch", { query: "bun test" }, SEARCH_1), // 搜索引用
     ]),
     msg("u2", "user", [text("继续")]),
     msg("a2", "assistant", [
       tool("t12", "bash", { command: "pwd" }, "/x", false),
       tool("t13", "glob", { pattern: "*.ts" }, "/x/a.ts"), // 查询噪音：忽略
+      // 与 t14 部分重复的第二次搜索：已出现 url 去重，新 url 收录
+      tool("t15", "WebSearch", { query: "bun runtime" }, SEARCH_2),
+      tool("t16", "WebSearch", { query: "no result" }, "WebSearch API error: 429"), // 解析不出：忽略
+      tool("t17", "WebSearch", { query: "running" }), // 在途：忽略
     ]),
   ];
 
-  test("terminal / files / runningCount 逐条一致", () => {
+  test("terminal / files / citations / runningCount 逐条一致", () => {
     const store = createPanelActivityStore();
     expect(store.derive(messages)).toEqual(naiveDerive(messages));
   });
@@ -193,7 +232,27 @@ describe("createPanelActivityStore：与朴素全量扫描等价", () => {
 
   test("空线程 ⇒ 空活动", () => {
     const store = createPanelActivityStore();
-    expect(store.derive([])).toEqual({ terminal: [], files: [], runningCount: 0 });
+    expect(store.derive([])).toEqual({
+      terminal: [],
+      files: [],
+      citations: [],
+      runningCount: 0,
+    });
+  });
+
+  test("引用条目：url 去重保留首查、解析失败/在途/报错不收录", () => {
+    const store = createPanelActivityStore();
+    const a = store.derive(messages);
+    // SEARCH_1 两条 + SEARCH_2 仅新增 wiki 一条（docs/test 重复被去重）；
+    // 错误文本与在途搜索不产引用
+    expect(a.citations.map((c) => c.url)).toEqual([
+      "https://bun.com/docs/test",
+      "https://bun.com/guides/test",
+      "https://en.wikipedia.org/wiki/Bun_(software)",
+    ]);
+    expect(a.citations[0].query).toBe("bun test");
+    // 在途 t17 不计入 runningCount（查询类不进在途角标）；2 = t3(edit 无 result) + t6(bash)
+    expect(a.runningCount).toBe(2);
   });
 });
 
@@ -247,6 +306,20 @@ describe("createPanelActivityStore：快照引用稳定性", () => {
     expect(second.terminal[0]).toBe(first.terminal[0]); // 完成项复用
     expect(second.terminal[1].running).toBe(true);
     expect(second.runningCount).toBe(1);
+  });
+
+  test("WebSearch 引用条目：part 值不变 ⇒ 整活动对象与条目引用都复用", () => {
+    const store = createPanelActivityStore();
+    const before = store.derive([
+      msg("a1", "assistant", [tool("w1", "WebSearch", { query: "q" }, SEARCH_1), text("x")]),
+    ]);
+    expect(before.citations.length).toBe(2);
+    // 新消息对象、搜索 part 换实例但 query/result 值不变 ⇒ 零重算
+    const after = store.derive([
+      msg("a1", "assistant", [tool("w1", "WebSearch", { query: "q" }, SEARCH_1), text("xy")]),
+    ]);
+    expect(after).toBe(before);
+    expect(after.citations[0]).toBe(before.citations[0]);
   });
 });
 

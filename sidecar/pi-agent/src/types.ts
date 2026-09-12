@@ -1,5 +1,5 @@
 /** 跨模块共享类型 */
-import type { Agent, AgentTool } from "@earendil-works/pi-agent-core";
+import type { Agent, AgentContext, AgentTool } from "@earendil-works/pi-agent-core";
 import type * as ai from "ai";
 import type { RetryBudget } from "./provider-retry";
 
@@ -113,36 +113,46 @@ export type Running = {
   delegations: Map<string, DelegationRecord>;
   /** 用户 Stop 置位：中止后台子代理并退出收敛循环 */
   stopRequested: boolean;
-  /** 当前模式（agent = 正常执行；plan/goal = 只读契约协商） */
+  /** 当前模式（agent = 正常执行；plan = 只读勘察 + 计划编写） */
   mode: SessionMode;
   /** 逐工具审批级别（ask = 每次确认；auto-edit = 编辑免确认；auto = 全免） */
   approvalLevel: ApprovalLevel;
-  /** 计划/目标审批状态机（见 modes.ts） */
+  /** 计划状态机（见 modes.ts）：agent=inactive，plan=planning */
   planning: PlanningState;
-  /** awaiting_approval 时挂起的提案内容 */
-  proposal: PendingProposal | null;
+  /** 当前会话计划文件绝对路径（plan_write 首写定名，之后覆盖写） */
+  planFilePath?: string;
+  /** 计划标题（首写时确定，用于文件名与审批卡展示） */
+  planTitle?: string;
   /** 未过滤的基础工具目录（重建模式工具集时用） */
   baseTools: AgentTool[];
   /** Task 委派工具组（仅 agent 模式挂载） */
   subagentTools: AgentTool[];
   /** 逐工具审批：approvalId -> 挂起等待项（beforeToolCall 内 await，tool_confirm 结算） */
   pendingToolApprovals: Map<string, PendingToolApproval>;
+  /**
+   * 当前活跃循环的上下文快照引用（每次 beforeToolCall 捕获）。
+   * 循环每轮请求都从这里读 tools/systemPrompt：模式切换时 applyMode 直接改写它，
+   * 让 plan_enter / plan_exit 在**同一轮**里立即换表，而不是等下一次 prompt。
+   */
+  loopContext?: AgentContext;
   /** LRU 驱逐时间戳（迭代2）：resolveSession/查询命中时 touch，超上限驱逐最旧 */
   lastSeenAt: number;
 };
 
-/** 逐工具审批等待项（bash/write/edit 执行前等待用户确认） */
+/** 逐工具审批等待项（bash/write/edit 执行前等待用户确认；plan_exit 复用同一条通道） */
 export type PendingToolApproval = {
   toolCallId: string;
   toolName: string;
   input: unknown;
   resolve: (approved: boolean) => void;
+  /** 结算来源：confirm = 用户点了批准/拒绝；clear = Stop/新 prompt 兜底清理 */
+  settledBy?: "confirm" | "clear";
 };
 
 /* ------------------------------- 模式与审批 ------------------------------- */
 
-/** 会话模式：agent 正常执行；plan 实施计划协商；goal 目标契约协商 */
-export type SessionMode = "agent" | "plan" | "goal";
+/** 会话模式：agent 正常执行；plan 只读勘察 + 编写实施计划（plan_exit 批准后回 agent 实施） */
+export type SessionMode = "agent" | "plan";
 
 /**
  * 逐工具审批级别（对齐参考项目 targetPermissionMode）：
@@ -152,18 +162,5 @@ export type SessionMode = "agent" | "plan" | "goal";
  */
 export type ApprovalLevel = "ask" | "auto-edit" | "auto";
 
-/** 提案类型（plan/goal 共用同一套审批流） */
-export type ProposalKind = "plan" | "goal";
-
-/** 审批状态机：inactive（agent 模式）→ planning → awaiting_approval →（批准）inactive /（拒绝）planning */
-export type PlanningState = "inactive" | "planning" | "awaiting_approval";
-
-/** SubmitPlan/SubmitGoal 提交的契约内容 */
-export type PendingProposal = {
-  kind: ProposalKind;
-  title: string;
-  markdown: string;
-  question: string;
-  /** SubmitPlan 落盘的文件绝对路径（仅 plan；落盘失败或缺省时为空） */
-  filePath?: string;
-};
+/** 计划审批状态机：inactive（agent 模式）↔ planning（plan 模式；执行确认挂起由 pendingToolApprovals 承担） */
+export type PlanningState = "inactive" | "planning";

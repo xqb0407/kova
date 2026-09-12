@@ -68,6 +68,19 @@ export function clearQuestions(threadId: string): void {
   notify();
 }
 
+/** 本地移除单条挂起提问。关闭卡片时调用：cancelRun 会拆掉本地流，sidecar 回的
+ *  finish chunk 到不了 clearQuestions——不就地移除的话挂起条目常驻，composer
+ *  被互斥逻辑一直顶掉（对话框消失）。sidecar 侧由 abort 按取消结算，无碍。 */
+export function removePendingQuestion(threadId: string, questionId: string): void {
+  const list = pending.get(threadId);
+  if (!list) return;
+  const next = list.filter((q) => q.questionId !== questionId);
+  if (next.length === list.length) return;
+  if (next.length === 0) pending.delete(threadId);
+  else pending.set(threadId, next);
+  notify();
+}
+
 /** 订阅当前线程的挂起提问列表 */
 export function usePendingQuestions(threadId: string | undefined): PendingQuestionView[] {
   return useSyncExternalStore(

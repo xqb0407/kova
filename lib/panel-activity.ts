@@ -2,16 +2,18 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 import { useAui, type ThreadMessage } from "@assistant-ui/react";
+import { parseWebSearchResults } from "@/lib/web-search";
 
 /**
  * Agent 活动派生层：把当前线程消息流里的 tool-call parts 归并为
- * Codex 风格右侧面板（components/agent-thread/agent-panel）需要的两路数据：
+ * Codex 风格右侧面板（components/agent-thread/agent-panel）需要的三路数据：
  * - terminal：bash 命令流水（命令 / 输出 / 运行中 / 失败）
  * - files：edit/write 按文件聚合的变更（逐次 diff 条目 + 累计 ±行数）
+ * - citations：WebSearch 结果的引用资料流水（解析成条目，按 url 全线程去重）
  *
  * 数据源就是 runtime 消息本身：实时流（stream.ts 的 tool-input/output chunk）
  * 与历史重建（transcript.ts 回填 args/result）形状一致，刷新/切线程零成本恢复，
- * sidecar 无需新增任何协议事件。read/glob/grep/web 属查询噪音，不收录。
+ * sidecar 无需新增任何协议事件。read/glob/grep 属查询噪音，不收录。
  *
  * 性能（性能迭代计划·迭代1）：派生为**增量**——
  * 1. 消息级缓存：assistant-ui 消息对象不可变，引用相等 ⇒ 贡献直接复用；
@@ -59,9 +61,21 @@ export type FileChangeGroup = {
   failed: boolean;
 };
 
+/** 一条网络搜索引用：来自某次 WebSearch 结果解析出的资料条目 */
+export type CitationEntry = {
+  toolCallId: string;
+  /** 产出该条引用的搜索词（面板悬浮/分组用） */
+  query: string;
+  title: string;
+  /** 部分代理结果可能没有链接，保留纯文字条目 */
+  url: string | null;
+  snippet: string | null;
+};
+
 export type PanelActivity = {
   terminal: TerminalEntry[];
   files: FileChangeGroup[];
+  citations: CitationEntry[];
   /** 面板关闭时 Header 角标用：在途未完成的收录工具数 */
   runningCount: number;
 };
@@ -69,11 +83,55 @@ export type PanelActivity = {
 const EMPTY_ACTIVITY: PanelActivity = {
   terminal: [],
   files: [],
+  citations: [],
   runningCount: 0,
 };
 
 function asString(v: unknown): string | null {
   return typeof v === "string" ? v : null;
+}
+
+/**
+ * edit/write 的 ±行数统计（面板「变更」卡片与消息行尾部共用一份语义）：
+ * oldText=null ⇒ 全文新增（write）；否则 LCS diffLines 数 add/del（edit）。
+ */
+export function fileChangeStats(
+  oldText: string | null,
+  newText: string,
+): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  if (oldText !== null) {
+    for (const line of diffLines(oldText, newText)) {
+      if (line.kind === "add") added += 1;
+      else if (line.kind === "del") removed += 1;
+    }
+  } else {
+    added = newText.length ? newText.split("\n").length : 0;
+  }
+  return { added, removed };
+}
+
+/**
+ * edit/write 入参 → (path, oldText, newText) 变更对。语义唯一定义处：
+ * edit = old_string→new_string 局部块；write = 全文新增（oldText=null）。
+ * 参数未成形（流式早期 args 缺字段）返回 null。
+ * 面板 store 与消息行展开区（tool-row）共用，两边永远同一份 diff。
+ */
+export function fileChangePair(
+  toolName: "edit" | "write",
+  args: unknown,
+): { path: string; oldText: string | null; newText: string } | null {
+  const a = (args ?? {}) as Record<string, unknown>;
+  const path = asString(a.file_path);
+  const newText =
+    toolName === "edit" ? asString(a.new_string) : asString(a.content);
+  if (!path || newText === null) return null;
+  return {
+    path,
+    oldText: toolName === "edit" ? asString(a.old_string) : null,
+    newText,
+  };
 }
 
 /** tool-call part 的 result（output-available 回填的字符串） */
@@ -166,6 +224,7 @@ type MessageContribution = {
   terminal: TerminalEntry[];
   /** 按消息序出现：path + 共享缓存的 entry 引用 */
   files: { path: string; entry: FileChangeEntry }[];
+  citations: CitationEntry[];
   running: number;
   /** 本消息登记的 toolCallId（缓存驱逐用） */
   toolCallIds: string[];
@@ -197,6 +256,12 @@ export function createPanelActivityStore(): PanelActivityStore {
       /** 指纹一致 ⇒ entry 与统计直接复用（含 LCS diff 结果） */
       entry: TerminalEntry | FileChangeEntry;
     }
+  >();
+  /** WebSearch 专用：toolCallId →（query+result 指纹，解析出的引用条目数组）。
+   * 一次搜索产多条条目，与 byToolCall 的单 entry 形状不同，分表存。 */
+  const citeByToolCall = new Map<
+    string,
+    { q: string; c: string; entries: CitationEntry[] }
   >();
   let lastMessages: readonly ThreadMessage[] | null = null;
   let lastActivity: PanelActivity = EMPTY_ACTIVITY;
@@ -248,16 +313,7 @@ export function createPanelActivityStore(): PanelActivityStore {
     ) {
       return { entry: hit.entry as FileChangeEntry };
     }
-    let added = 0;
-    let removed = 0;
-    if (oldText !== null) {
-      for (const line of diffLines(oldText, newText)) {
-        if (line.kind === "add") added += 1;
-        else if (line.kind === "del") removed += 1;
-      }
-    } else {
-      added = newText.length ? newText.split("\n").length : 0;
-    }
+    const { added, removed } = fileChangeStats(oldText, newText);
     const entry: FileChangeEntry = {
       toolCallId,
       op,
@@ -281,13 +337,43 @@ export function createPanelActivityStore(): PanelActivityStore {
     return { entry };
   }
 
+  /**
+   * WebSearch result → 引用条目数组（文本格式解析只在指纹变化时重跑；
+   * 解析不出条目（API 错误兜底/纯文本）⇒ 空数组，行渲染仍走原始输出）。
+   */
+  function cachedCitations(
+    toolCallId: string,
+    query: string,
+    result: string,
+  ): CitationEntry[] {
+    const hit = citeByToolCall.get(toolCallId);
+    if (hit && hit.q === query && hit.c === result) return hit.entries;
+    const items = parseWebSearchResults(result);
+    const entries: CitationEntry[] = (items ?? []).map((it) => ({
+      toolCallId,
+      query,
+      title: it.title,
+      url: it.url ?? null,
+      snippet: it.snippet ?? null,
+    }));
+    if (hit) {
+      hit.q = query;
+      hit.c = result;
+      hit.entries = entries;
+    } else {
+      citeByToolCall.set(toolCallId, { q: query, c: result, entries });
+    }
+    return entries;
+  }
+
   function computeMessage(message: ThreadMessage): MessageContribution {
     const terminal: TerminalEntry[] = [];
     const files: { path: string; entry: FileChangeEntry }[] = [];
+    const citations: CitationEntry[] = [];
     const toolCallIds: string[] = [];
     let running = 0;
     if (message.role !== "assistant") {
-      return { ref: message, terminal, files, running, toolCallIds };
+      return { ref: message, terminal, files, citations, running, toolCallIds };
     }
     for (const part of message.content) {
       if (part.type !== "tool-call") continue;
@@ -309,21 +395,33 @@ export function createPanelActivityStore(): PanelActivityStore {
       }
 
       if (part.toolName === "edit" || part.toolName === "write") {
-        const path = asString(args.file_path);
-        const newText =
-          part.toolName === "edit"
-            ? asString(args.new_string)
-            : asString(args.content);
-        if (!path || newText === null) continue;
-        const oldText =
-          part.toolName === "edit" ? asString(args.old_string) : null;
-        const { entry } = cachedFile(id, part.toolName, oldText, newText, result, err);
-        files.push({ path, entry });
+        const pair = fileChangePair(part.toolName, args);
+        if (!pair) continue;
+        const { entry } = cachedFile(
+          id,
+          part.toolName,
+          pair.oldText,
+          pair.newText,
+          result,
+          err,
+        );
+        files.push({ path: pair.path, entry });
         toolCallIds.push(id);
         if (!done) running += 1;
+        continue;
+      }
+
+      if (part.toolName === "WebSearch") {
+        // 只收成功且能解析出条目的搜索；在途不产引用（结果一次性回填），
+        // 不计入 runningCount（查询类不进在途角标，维持原语义）。
+        if (!done || err) continue;
+        const query = asString(args.query) ?? "";
+        for (const c of cachedCitations(id, query, result!))
+          citations.push(c);
+        toolCallIds.push(id);
       }
     }
-    return { ref: message, terminal, files, running, toolCallIds };
+    return { ref: message, terminal, files, citations, running, toolCallIds };
   }
 
   function groupsEqual(a: FileChangeGroup[], b: FileChangeGroup[]): boolean {
@@ -354,6 +452,9 @@ export function createPanelActivityStore(): PanelActivityStore {
     const terminal: TerminalEntry[] = [];
     const groupOrder: string[] = [];
     const groupEntries = new Map<string, FileChangeEntry[]>();
+    const citations: CitationEntry[] = [];
+    /** 同一链接常被多次搜索命中：全线程按 url 去重，保留首次出现的条目 */
+    const seenCitation = new Set<string>();
     let runningCount = 0;
 
     for (const message of messages) {
@@ -364,6 +465,14 @@ export function createPanelActivityStore(): PanelActivityStore {
       }
       for (const t of c.terminal) terminal.push(t);
       runningCount += c.running;
+      for (const ci of c.citations) {
+        const key = ci.url
+          ? `u:${ci.url}`
+          : `n:${ci.query}\u0000${ci.title}`;
+        if (seenCitation.has(key)) continue;
+        seenCitation.add(key);
+        citations.push(ci);
+      }
       for (const f of c.files) {
         let list = groupEntries.get(f.path);
         if (!list) {
@@ -401,25 +510,33 @@ export function createPanelActivityStore(): PanelActivityStore {
     }
     for (const id of [...byToolCall.keys()])
       if (!activeTools.has(id)) byToolCall.delete(id);
+    for (const id of [...citeByToolCall.keys()])
+      if (!activeTools.has(id)) citeByToolCall.delete(id);
 
     // 内容未变（纯文本流式）⇒ 保持引用，消费方不重渲染
     const same =
       lastActivity.runningCount === runningCount &&
       groupsEqual(lastActivity.files, files) &&
       lastActivity.terminal.length === terminal.length &&
-      lastActivity.terminal.every((e, i) => e === terminal[i]);
+      lastActivity.terminal.every((e, i) => e === terminal[i]) &&
+      lastActivity.citations.length === citations.length &&
+      lastActivity.citations.every((e, i) => e === citations[i]);
     if (same) return lastActivity;
 
-    lastActivity = { terminal, files, runningCount };
+    lastActivity = { terminal, files, citations, runningCount };
     return lastActivity;
   }
 
   return {
     derive,
-    stats: () => ({ messages: byMessage.size, parts: byToolCall.size }),
+    stats: () => ({
+      messages: byMessage.size,
+      parts: byToolCall.size + citeByToolCall.size,
+    }),
     reset: () => {
       byMessage.clear();
       byToolCall.clear();
+      citeByToolCall.clear();
       lastMessages = null;
       lastActivity = EMPTY_ACTIVITY;
     },
@@ -431,7 +548,7 @@ export function createPanelActivityStore(): PanelActivityStore {
 const defaultStore = createPanelActivityStore();
 
 /**
- * 订阅当前线程的工具活动（terminal + files）。共享模块级增量 store：
+ * 订阅当前线程的工具活动（terminal + files + citations）。共享模块级增量 store：
  * 四个消费方各自订阅但派生只算一次（谁先被 store 事件驱动谁摊到计算）；
  * 派生结果引用稳定时 useSyncExternalStore 按 Object.is 短路，
  * 纯文本流式期间消费方零重渲染。

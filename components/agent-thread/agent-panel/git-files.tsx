@@ -1,6 +1,13 @@
 "use client";
 
-import { startTransition, useCallback, useEffect, useState, type FC } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FC,
+} from "react";
 import {
   ChevronDownIcon,
   ChevronUpIcon,
@@ -17,6 +24,7 @@ import {
   type GitDiffResult,
 } from "@/lib/git";
 import { onGitChanged } from "@/lib/git-status";
+import { pathMatches } from "@/lib/tool-panel";
 import { cn } from "@/lib/utils";
 import { PanelPatchDiff } from "@/components/code/panel-diff";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -68,12 +76,14 @@ export const StatusDot: FC<{
 const GitFileCard: FC<{
   f: GitDiffFile;
   loadFiles?: FileDiffContentsLoader;
-}> = ({ f, loadFiles }) => {
+  focused?: boolean;
+}> = ({ f, loadFiles, focused }) => {
   const [open, setOpen] = useState(false);
   // 展开态与 diff 挂载分两步：点击先即时反馈行头，重 DOM 放到下一帧的
   // transition 里建，避免"点了没反应 → 突然卡住"的观感
   const [diffMounted, setDiffMounted] = useState(false);
   const { dir, base } = splitPath(f.path);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   const toggle = () => {
     if (open) {
@@ -85,8 +95,17 @@ const GitFileCard: FC<{
     requestAnimationFrame(() => startTransition(() => setDiffMounted(true)));
   };
 
+  // 消息里「编辑/写入」行点击定位进来：自动展开 diff 并滚到视野中央。
+  // 吸顶行头会让出一行高度，block:"start" 比居中更贴目标位置。
+  useEffect(() => {
+    if (!focused) return;
+    setOpen(true);
+    rootRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    requestAnimationFrame(() => startTransition(() => setDiffMounted(true)));
+  }, [focused]);
+
   return (
-    <div>
+    <div ref={rootRef}>
       {/* 吸顶行头：滚动时钉在面板顶部，下一个文件的行头自然把它顶走 */}
       <button
         type="button"
@@ -148,11 +167,16 @@ const SCOPE_LABELS: Record<DiffScope, string> = {
   all: "全部改动",
 };
 
-export const GitReview: FC<{ cwd: string; checkpoint?: string }> = ({
-  cwd,
-  checkpoint,
-}) => {
-  const [scope, setScope] = useState<DiffScope>("unstaged");
+export const GitReview: FC<{
+  cwd: string;
+  checkpoint?: string;
+  /** 消息「编辑/写入」行定位进来的文件路径（绝对/仓库相对都认） */
+  focusPath?: string;
+}> = ({ cwd, checkpoint, focusPath }) => {
+  // 带定位进来时默认「全部改动」，避免目标文件恰好不在未暂存过滤里
+  const [scope, setScope] = useState<DiffScope>(
+    focusPath && !checkpoint ? "all" : "unstaged",
+  );
   const [diff, setDiff] = useState<GitDiffResult | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -280,7 +304,12 @@ export const GitReview: FC<{ cwd: string; checkpoint?: string }> = ({
         ) : (
           <div className="flex flex-col">
             {files.map((f) => (
-              <GitFileCard key={f.path} f={f} loadFiles={loadFiles} />
+              <GitFileCard
+                key={f.path}
+                f={f}
+                loadFiles={loadFiles}
+                focused={!!focusPath && pathMatches(focusPath, f.path)}
+              />
             ))}
           </div>
         )}

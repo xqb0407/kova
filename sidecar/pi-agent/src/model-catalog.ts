@@ -406,3 +406,19 @@ export function makePromptCacheKeyPayloadHook(
     return { ...params, prompt_cache_key: cacheKey };
   };
 }
+
+/**
+ * 会话亲和头，无条件补发（参考 opencode：每个请求固定带 x-session-affinity
+ * 与 X-Session-Id 两个头做缓存分片路由）。pi-ai 的兼容端点亲和头按
+ * compat.sendSessionAffinityHeaders 下发且默认关闭——自定义端点（网关/vLLM/
+ * sensenova 等）没有档案就永远不带，负载均衡把同会话请求打到不同节点，
+ * 服务端前缀缓存整段 miss。经 stream options.headers 合并进 provider client
+ * （openai-completions/anthropic 两路都 Object.assign 该字段）：支持亲和的端点
+ * 等效打开 compat 开关；不支持的只多两个无害头。
+ */
+export function makeSessionAffinityHeaders(
+  sessionId: string | undefined,
+): Record<string, string> {
+  if (!sessionId) return {};
+  return { "x-session-affinity": sessionId, "X-Session-Id": sessionId };
+}

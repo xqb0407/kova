@@ -86,7 +86,13 @@ export function normalizeResults(items: unknown[]): WebSearchResult[] {
     if (typeof r.title !== "string") continue;
     results.push({
       title: r.title,
-      url: typeof r.url === "string" ? r.url : undefined,
+      // deepcode 代理的 result JSON 数组用 link 字段（不是 url），两者都认
+      url:
+        typeof r.url === "string"
+          ? r.url
+          : typeof r.link === "string"
+            ? r.link
+            : undefined,
       snippet:
         typeof r.snippet === "string"
           ? r.snippet

@@ -19,6 +19,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostToolCall } from "./hostdb";
+import { buildBrowserTools } from "./browser-tools";
 import { buildWebTools } from "./http-tools";
 import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "./todo";
@@ -289,6 +290,9 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
     buildGlobTool(cwd),
     buildGrepTool(cwd),
     ...buildWebTools(cwd),
+    // 浏览器驱动：执行转发 Rust 宿主（browser.rs）驱动面板子 webview，
+    // threadId 用于 data-panelOpen 面板唤起（见 browser-tools.ts）
+    ...buildBrowserTools(threadId),
     // Question 不触盘不触网（挂起等 UI 作答），但要 threadId 做挂起归属
     buildQuestionTool(threadId),
     // todo：不触盘不触网，只维护会话内任务清单（per-thread 槽见 todo.ts）
@@ -324,6 +328,13 @@ export const SYSTEM_PROMPT_CORE = [
   "- Use blockedBy for dependencies (additive merge on update via addBlockedBy/removeBlockedBy); cycles are rejected.",
   "- Subject must be short and imperative; description is for long-form detail; activeForm is the present-continuous label shown while in_progress.",
   "",
+  "Subagents:",
+  "- Use `Task` to delegate separable work (parallel exploration, multi-file implementation, adversarial review, wide search) to subagents; converge with `TaskWait` / `TaskList` / `TaskStop`.",
+  "- Call `subagents_list` to see the current definitions, their storage directories, and trust state - never guess paths or read the YAML files yourself.",
+  "- To create or update a reusable subagent use `subagents_save`; to remove one use `subagents_delete`. Never hand-edit their YAML with write/edit: those tools skip validation, cross-layer dedup and hot-reload.",
+  "- scope=workspace puts a definition in this repo (.xulux/subagents/, shared with the team, needs user trust before it mounts); scope=system makes it machine-wide. If the workspace is untrusted the save lands as pending approval - tell the user, do not try to work around it.",
+  "- A subagent sees neither this conversation nor the user, can only use the tools its definition declares (from bash/read/write/edit/glob/grep), and its final report is its only output - design description, tools and prompt with that in mind.",
+  "",
   "Communication:",
   "- Reply in the same language the user writes in.",
   "- Make the final message self-contained: the outcome, what changed, and anything still open.",
@@ -332,3 +343,75 @@ export const SYSTEM_PROMPT_CORE = [
 /** 动态段：工作目录行。必须放在系统提示词的最末尾（见 SYSTEM_PROMPT_CORE 说明）。 */
 export const workspacePromptLine = (cwd: string) =>
   `The workspace directory is \`${cwd}\`. Relative paths resolve there.`;
+
+/* ------------------------------ 环境事实动态段 ------------------------------ */
+
+/** 环境事实块头（测试与结构断言的识别点）；块内各行单换行相连、无空行，
+ *  工作目录行仍是整个系统提示词的最后一行（cwd 行在最尾的不变式不破） */
+const ENV_BLOCK_HEADER = "Environment (host facts):";
+
+const WEEKDAY_NAMES = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+const OS_LABELS: Record<string, string> = {
+  darwin: "macOS",
+  win32: "Windows",
+  linux: "Linux",
+};
+
+/** 宿主时区名：只依赖进程环境，模块加载期解析一次 */
+const hostTimezone: string | undefined = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+})();
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** 宿主本地日历日 YYYY-MM-DD（不用 toISOString：UTC 会跨日错位） */
+export function localDateString(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** 用户默认 shell：Windows 走 COMSPEC，类 Unix 走 $SHELL */
+const hostShell = () =>
+  process.platform === "win32"
+    ? process.env.COMSPEC || "cmd.exe"
+    : process.env.SHELL || "/bin/sh";
+
+/**
+ * 环境事实块：日期 / 模型 / 操作系统 / shell 等宿主侧动态信息，
+ * 整块置于系统提示词末尾并以 workspacePromptLine 收尾。
+ * 缓存影响：块内除日历日（跨天才变）外均会话内稳定，且整段本就在
+ * 动态尾部，静态前缀的缓存命中不受影响。无模型时省略 Model 行。
+ */
+export const environmentPromptBlock = (
+  cwd: string,
+  model?: { provider: string; id: string; name?: string } | null,
+): string => {
+  const now = new Date();
+  const lines = [
+    ENV_BLOCK_HEADER,
+    `- Today's date is ${localDateString(now)} (${WEEKDAY_NAMES[now.getDay()]}), host timezone ${hostTimezone ?? "unknown"}. Trust this over assumptions from training data.`,
+  ];
+  if (model) {
+    const qualified = `${model.provider}/${model.id}`;
+    lines.push(
+      `- Model: ${model.name && model.name !== model.id ? `${model.name} (${qualified})` : qualified}.`,
+    );
+  }
+  lines.push(
+    `- Host: ${OS_LABELS[process.platform] ?? process.platform} (${process.platform} ${process.arch}); shell: ${hostShell()}.`,
+  );
+  lines.push(workspacePromptLine(cwd));
+  return lines.join("\n");
+};

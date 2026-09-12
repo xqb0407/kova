@@ -105,13 +105,6 @@ const CheckpointFileRow: FC<{
 export const CheckpointBar: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const cp = useRunCheckpoint(threadId ?? undefined);
-  // [checkpoint-debug] 临时日志，定位检查点条不出现的问题后删除
-  useEffect(() => {
-    console.warn(
-      "[checkpoint] bar",
-      JSON.stringify({ threadId, has: !!cp, cpFiles: cp?.files }),
-    );
-  }, [threadId, cp]);
   const [expanded, setExpanded] = useState(false);
   const [files, setFiles] = useState<GitDiffFile[] | null>(null);
   const [filesLoading, setFilesLoading] = useState(false);
@@ -189,7 +182,7 @@ export const CheckpointBar: FC = () => {
             className="text-foreground/90 hover:text-foreground shrink-0 font-medium"
             onClick={() => setExpanded((v) => !v)}
           >
-            本回合改动 {cp.files} 个文件
+            {cp.files} 个文件已更改
           </button>
           <DiffStats added={cp.added} removed={cp.removed} />
 

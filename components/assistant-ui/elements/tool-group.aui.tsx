@@ -94,14 +94,18 @@ function ToolGroupRoot({
 
 function ToolGroupTrigger({
   count,
+  label: labelOverride,
   active = false,
   className,
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
-  count: number;
+  count?: number;
+  /** 分组标题覆写（中文类别标签等）；缺省为 "N tool calls" */
+  label?: React.ReactNode;
   active?: boolean;
 }) {
-  const label = `${count} tool ${count === 1 ? "call" : "calls"}`;
+  const label =
+    labelOverride ?? `${count ?? 0} tool ${count === 1 ? "call" : "calls"}`;
 
   return (
     <CollapsibleTrigger
@@ -124,7 +128,7 @@ function ToolGroupTrigger({
       <span
         data-slot="tool-group-trigger-label"
         className={cn(
-          "aui-tool-group-trigger-label-wrapper inline-block text-start text-xs leading-none font-medium",
+          "aui-tool-group-trigger-label-wrapper inline-block text-start text-sm leading-none font-medium",
           "group-data-[variant=ghost]/tool-group-root:font-normal",
           "group-data-[variant=outline]/tool-group-root:grow",
           "group-data-[variant=muted]/tool-group-root:grow",
@@ -170,7 +174,8 @@ function ToolGroupContent({
       <div
         className={cn(
           "mt-2 flex flex-col gap-2",
-          "group-data-[variant=ghost]/tool-group-root:mt-1 group-data-[variant=ghost]/tool-group-root:gap-1",
+          // ghost（消息内分组）：缩进 + 左侧引导线，行内容与触发器文字错位分层
+          "group-data-[variant=ghost]/tool-group-root:mt-1 group-data-[variant=ghost]/tool-group-root:gap-1 group-data-[variant=ghost]/tool-group-root:border-border/60  group-data-[variant=ghost]/tool-group-root:py-0.5 ",
           "group-data-[variant=outline]/tool-group-root:mt-3 group-data-[variant=outline]/tool-group-root:border-t group-data-[variant=outline]/tool-group-root:px-4 group-data-[variant=outline]/tool-group-root:pt-3",
           "group-data-[variant=muted]/tool-group-root:mt-3 group-data-[variant=muted]/tool-group-root:border-t group-data-[variant=muted]/tool-group-root:px-4 group-data-[variant=muted]/tool-group-root:pt-3",
           "[&>*]:animate-in [&>*]:fade-in-0 [&>*]:blur-in-[2px] [&>*]:slide-in-from-top-1 [&>*]:animation-duration-(--animation-duration) [&>*]:ease-[cubic-bezier(0.32,0.72,0,1)]",

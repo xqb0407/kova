@@ -1,5 +1,7 @@
 mod about;
 mod appearance;
+mod browser;
+mod browser_scripts;
 mod data;
 mod git;
 mod logging;
@@ -21,9 +23,12 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .manage(PiState::default())
         .manage(remote::RemoteState::default())
+        .manage(browser::BrowserState::default())
         .setup(|app| {
             // 磁盘日志最先初始化（后续任何失败都能记到 app.log）
             logging::init(app.handle());
+            // 浏览器自动化（browser.rs）需要 AppHandle 全局入口
+            browser::init(app.handle().clone());
             // SQLite KV 存储（workspace 等应用状态）
             match store::init(app.handle()) {
                 Ok(()) => log::info!("[store] init ok"),
@@ -53,6 +58,12 @@ pub fn run() {
             store::kv_get,
             store::kv_set,
             store::kv_delete,
+            browser::browser_attach,
+            browser::browser_detach,
+            browser::browser_sync_bounds,
+            browser::browser_open_devtools,
+            browser::browser_viewport_set,
+            browser::browser_viewport_get,
             git::git_probe,
             git::git_status,
             git::git_diff,

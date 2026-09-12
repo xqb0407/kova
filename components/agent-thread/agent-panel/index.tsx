@@ -1,7 +1,8 @@
 "use client";
 
-import type { FC } from "react";
+import { useEffect, useRef, type FC } from "react";
 import { openPanelTab, usePanelTabs } from "@/lib/panel-tabs";
+import { isTauri } from "@/lib/tauri";
 import { TabBar } from "./tab-bar";
 import { TAB_META, TabContentView, useVisiblePanelTabTypes } from "./tab-registry";
 
@@ -48,6 +49,29 @@ const EmptyTabsScreen: FC = () => {
 export const AgentPanel: FC = () => {
   const { tabs, activeId } = usePanelTabs();
   const active = tabs.find((t) => t.id === activeId) ?? null;
+  return <PanelShell tabs={tabs} activeId={activeId} active={active} />;
+};
+
+/**
+ * 面板壳 + 浏览器 webview 生命周期:最后一个浏览器 tab 关闭即销毁子 webview
+ * （不销毁会常驻占内存,且重新打开空 tab 时残留上一页——原生层盖在 React 之上,
+ * 空态覆盖层挡不住它）。tab 切换仍只隐藏,保留页面状态。
+ */
+const PanelShell: FC<{
+  tabs: ReturnType<typeof usePanelTabs>["tabs"];
+  activeId: string | null;
+  active: ReturnType<typeof usePanelTabs>["tabs"][number] | null;
+}> = ({ tabs, activeId, active }) => {
+  const browserCount = tabs.filter((t) => t.type === "browser").length;
+  const prevCount = useRef(browserCount);
+  useEffect(() => {
+    if (prevCount.current > 0 && browserCount === 0 && isTauri()) {
+      import("@tauri-apps/api/core")
+        .then(({ invoke }) => invoke("browser_detach", { destroy: true }))
+        .catch(() => {});
+    }
+    prevCount.current = browserCount;
+  }, [browserCount]);
 
   return (
     <div className="bg-background/70 flex h-full min-w-0 flex-col">

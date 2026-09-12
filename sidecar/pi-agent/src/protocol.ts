@@ -38,6 +38,11 @@
  *   { "type": "set_thinking_maps", "id", "maps" }             → { id, type: "thinking_maps", applied }（模型级 thinkingLevelMap 覆盖整包下发）
  *   { "type": "get_personalization", "id" }                   → { id, type: "personalization", settings }（个性化设置：回复风格/称呼/人设/自定义指令）
  *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings }（落 SQLite kv + 活动会话系统提示词热替换）
+ *   { "type": "list_subagents", "id", "cwd"? }                → { id, type: "subagents", agents, pendingWorkspace, trustedWorkspace, workspaceCwd, diagnostics }
+ *   { "type": "save_subagent", "id", "scope", "cwd"?, ("definition"|"raw"), "name"? } → 校验后写 <app_data>/subagents 或 <cwd>/.xulux/subagents 的 YAML + 热重载 → 同款 subagents 应答（name=编辑前原名，改名时清旧文件；workspace 保存顺带信任该工作区）
+ *   { "type": "delete_subagent", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 subagents 应答（内置不可删）
+ *   { "type": "set_subagent_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 subagents 应答
+ *   { "type": "set_workspace_trust", "id", "cwd", "trusted" }  → 工作区信任落 kv + 热重载 → 同款 subagents 应答
  *   { "type": "usage_stats", "id" }                           → { id, type: "usage_stats", stats }（全局使用统计：增量物化到 SQLite 后从库聚合）
  *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
@@ -59,14 +64,13 @@
  *       providerId = 编辑目标的业务 id（协议 reqId 占用了 "id" 字段，故改名）；缺省为新建
  *   { "type": "list_custom_providers", "id" }                 → { id, type: "custom_providers", providers: [...] }
  *   { "type": "toggle_custom_provider", "id", "provider", "enabled" } → { id, type: "custom_provider_toggled", provider, enabled }
- *   { "type": "set_mode", "id", "threadId", "sessionId"?, "mode" }       → { id, type: "mode_changed", mode, planning, proposal }
- *       mode = agent | plan | goal；切换会热替换工具集与系统提示词
- *   { "type": "approve_plan", "id", "threadId", "sessionId"? }           → { id, type: "planning_state", mode, planning, proposal }
- *       批准未决提案：回 agent 模式（前端随后发批准消息开始实施）
- *   { "type": "reject_plan", "id", "threadId", "sessionId"? }            → { id, type: "planning_state", mode, planning, proposal }
- *       拒绝未决提案：留在契约模式继续修改
+ *   { "type": "set_mode", "id", "threadId", "sessionId"?, "mode" }       → { id, type: "mode_changed", mode, planning }
+ *       mode = agent | plan；切换会热替换工具集与系统提示词
+ *   { "type": "get_planning_state", "id", "threadId", "sessionId"? }     → { id, type: "planning_state", mode, planning }
+ *       拉取当前模式快照（前端刷新/切线程后恢复模式选择器用）
  *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved" } → { id, type: "tool_confirmed", approvalId }
- *       结算 bash/write/edit 执行前的逐工具审批（prompt 流内 data-toolApproval chunk 发起）
+ *       结算逐工具审批（bash/write/edit 执行前）与 plan_exit 的模式退出确认
+ *       （prompt 流内 data-toolApproval chunk 发起）
  *   { "type": "question_answer", "id", "threadId", "questionId", "answers": [{ questionId, selectedIds, otherText?, skipped? }] } → { id, type: "question_answered", questionId }
  *       结算 Question 工具的挂起提问（prompt 流内 data-question chunk 发起，前端 AskUserQuestions 卡片作答）
  *   { "type": "context_info", "id", "threadId", "sessionId"? } → { id, type: "context_info", ... }
@@ -75,8 +79,11 @@
  *       手动压缩上下文（仅空闲回合边界；prompt 运行中拒绝）
  *   { "type": "test_provider", "id", "baseUrl", "apiKey", "api", "model" } → { id, type: "tested", ok: true }
  *   { "type": "delete_custom_provider", "id", "provider" }    → { id, type: "custom_provider_deleted", provider }
- *   prompt 流内审批推送：{ id, chunk: { type: "data-planningState", data: { mode, planning, proposal } } }
+ *   prompt 流内模式推送：{ id, chunk: { type: "data-planningState", data: { mode, approvalLevel, planning } } }
  *                 审批请求：{ id, chunk: { type: "data-toolApproval", data: { approvalId, toolCallId, toolName, input } } }
+ *                 （toolName = plan_exit 时 input 带 { rationale, title, markdown, filePath }，前端渲染计划审批卡）
+ *                 面板唤起：{ id, chunk: { type: "data-panelOpen", data: { type: "browser", url? } } }
+ *                 （browser_* 工具动作时发起，前端把浏览器 tab 推到前台并展开面板）
  *
  * prompt 流（stdout）：{ "id": "<reqId>", "chunk": { ...AI SDK UIMessageChunk } }
  */
@@ -133,6 +140,7 @@ import {
   forgetThreadStates,
   noteActiveTurn,
   projectContextInfo,
+  reloadSubagents,
   running,
   resolveSession,
 } from "./sessions";
@@ -165,7 +173,6 @@ import {
 import {
   applyMode,
   clearPendingToolApprovals,
-  closeProposalOnNewPrompt,
   composeModeSystemPrompt,
   planningPayload,
   resolveToolApproval,
@@ -174,6 +181,16 @@ import {
   applyPersonalization,
   getPersonalization,
 } from "./personalization";
+import {
+  deleteSubagentDefinition,
+  loadSubagentDefinitions,
+  parseSubagentDraftYaml,
+  saveSubagentDefinition,
+  setSubagentEnabled,
+  setWorkspaceTrusted,
+  type SubagentDraft,
+  type SubagentScope,
+} from "./subagent-definitions";
 import { aggregateUsageStats } from "./usage-stats";
 import {
   cancelPendingQuestions,
@@ -181,6 +198,35 @@ import {
   type QuestionAnswerItem,
 } from "./question-tools";
 import type { CustomModelSpec, Running, SessionSummary } from "./types";
+
+/** 子智能体清单应答负载：设置页与所有变更命令共用同一形状（改后即见） */
+async function subagentsPayload(cwd?: string) {
+  const r = await loadSubagentDefinitions({ cwd });
+  return {
+    agents: r.entries.map((e) => ({
+      name: e.name,
+      description: e.description,
+      tools: e.tools,
+      ...(e.maxTurns !== undefined ? { maxTurns: e.maxTurns } : {}),
+      ...(e.model ? { model: e.model } : {}),
+      prompt: e.prompt,
+      scope: e.scope,
+      ...(e.path ? { path: e.path } : {}),
+      ...(e.raw ? { raw: e.raw } : {}),
+      enabled: e.enabled,
+      editable: e.editable,
+    })),
+    pendingWorkspace: r.pendingWorkspace.map((d) => ({
+      name: d.name,
+      description: d.description,
+      tools: d.tools,
+      ...(d.path ? { path: d.path } : {}),
+    })),
+    trustedWorkspace: r.trustedWorkspace,
+    workspaceCwd: cwd ?? null,
+    diagnostics: r.diagnostics,
+  };
+}
 
 /** stdin 关闭（父进程写完）不等于任务处理完毕，等挂起请求清零再退出 */
 let stdinClosed = false;
@@ -380,6 +426,14 @@ async function runPromptTurn(
     });
     return;
   }
+  // 每轮请求前重排环境事实段（日历日跨天兜底：提示词只在建会话/切模式/改设置
+  // 时重排，长会话跨过午夜日期会停旧）；纯字符串拼接零成本，块内容不变时
+  // 重排出字节级相同的提示词，缓存前缀不受影响
+  run.agent.state.systemPrompt = composeModeSystemPrompt(
+    run.mode,
+    run.cwd,
+    run.agent.state.model,
+  );
   setActiveReqId(threadId, reqId);
   run.stopRequested = false;
   // 上一次运行的溢出恢复残留（正常应在 runStepWithRecovery 内消费）兜底清理
@@ -391,9 +445,8 @@ async function runPromptTurn(
   run.retryCapture = {};
   run.providerRetryActive = false;
   run.providerRetryChunkId = `retry-${++run.providerRetryTurnSeq}`;
-  // 新用户输入隐式关闭未决审批（未点批准/拒绝就直接发消息）
-  closeProposalOnNewPrompt(run);
-  // 逐工具审批/挂起提问理论上不会跨 turn 遗留（abort 已结算），兜底清理防挂起
+  // 逐工具审批（含 plan_exit 确认）/挂起提问理论上不会跨 turn 遗留（abort 已结算），
+  // 兜底清理防挂起：新用户输入时未决的 plan_exit 按拒绝结算
   clearPendingToolApprovals(run);
   cancelPendingQuestions(threadId);
   sendChunk(reqId, { type: "start" });
@@ -858,7 +911,15 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const auth = await getModels().getAuth(provider).catch(() => undefined);
       if (!auth) throw new Error(`no credentials configured for ${provider}/${modelId}`);
       setCurrentModelKey({ provider, modelId });
-      for (const run of running.values()) run.agent.state.model = model;
+      // 模型行是系统提示词环境段的一部分：换模型后整段重排，活动会话即时生效
+      for (const run of running.values()) {
+        run.agent.state.model = model;
+        run.agent.state.systemPrompt = composeModeSystemPrompt(
+          run.mode,
+          run.cwd,
+          model,
+        );
+      }
       send({ id: reqId, type: "model", provider, modelId });
       break;
     }
@@ -906,9 +967,89 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       // 与 set_thinking 同款广播：个性化段变了就整段重排系统提示词，活动会话
       // 下一轮请求即生效；composeModeSystemPrompt 内部读取当前设置
       for (const run of running.values()) {
-        run.agent.state.systemPrompt = composeModeSystemPrompt(run.mode, run.cwd);
+        run.agent.state.systemPrompt = composeModeSystemPrompt(
+          run.mode,
+          run.cwd,
+          run.agent.state.model,
+        );
       }
       send({ id: reqId, type: "personalization", settings });
+      break;
+    }
+    case "list_subagents": {
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
+      break;
+    }
+    case "save_subagent": {
+      const scope: SubagentScope | null =
+        msg.scope === "workspace" ? "workspace" : msg.scope === "system" ? "system" : null;
+      if (!scope) throw new Error('save_subagent: scope must be "system" or "workspace"');
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      if (scope === "workspace" && !cwd) {
+        throw new Error("save_subagent: workspace scope requires cwd");
+      }
+      // 两种载荷：表单结构体（definition）或 YAML 原文（raw，走同一解析校验）
+      let draft: SubagentDraft;
+      if (typeof msg.raw === "string") {
+        const parsed = parseSubagentDraftYaml(msg.raw, scope);
+        if (!parsed.ok) throw new Error(parsed.errors.join("; "));
+        draft = parsed.draft;
+      } else {
+        const d = (msg.definition ?? {}) as Record<string, unknown>;
+        draft = {
+          name: String(d.name ?? ""),
+          description: String(d.description ?? ""),
+          tools: Array.isArray(d.tools) ? d.tools.map((t) => String(t).toLowerCase()) : [],
+          prompt: String(d.prompt ?? ""),
+          ...(typeof d.maxTurns === "number" ? { maxTurns: d.maxTurns } : {}),
+          ...(typeof d.model === "string" && d.model.trim() ? { model: d.model.trim() } : {}),
+        };
+      }
+      // name = 编辑前的原名（改名时据此清掉旧文件；新建省略）
+      const replaceName =
+        typeof msg.name === "string" && msg.name.trim() ? msg.name.trim() : undefined;
+      await saveSubagentDefinition(scope, draft, { cwd, replaceName });
+      await reloadSubagents();
+      send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
+      break;
+    }
+    case "delete_subagent": {
+      const scope: SubagentScope | null =
+        msg.scope === "workspace" ? "workspace" : msg.scope === "system" ? "system" : null;
+      if (!scope) throw new Error('delete_subagent: scope must be "system" or "workspace"');
+      const name = String(msg.name ?? "");
+      if (!name) throw new Error("delete_subagent: name is required");
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      if (scope === "workspace" && !cwd) {
+        throw new Error("delete_subagent: workspace scope requires cwd");
+      }
+      await deleteSubagentDefinition(scope, name, { cwd });
+      await reloadSubagents();
+      send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
+      break;
+    }
+    case "set_subagent_enabled": {
+      const scope: SubagentScope | null =
+        msg.scope === "builtin" || msg.scope === "system" || msg.scope === "workspace"
+          ? msg.scope
+          : null;
+      if (!scope) throw new Error("set_subagent_enabled: invalid scope");
+      const name = String(msg.name ?? "");
+      if (!name) throw new Error("set_subagent_enabled: name is required");
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      const enabled = msg.enabled === true;
+      await setSubagentEnabled(scope, name, enabled, cwd);
+      await reloadSubagents();
+      send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
+      break;
+    }
+    case "set_workspace_trust": {
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      if (!cwd) throw new Error("set_workspace_trust: cwd is required");
+      await setWorkspaceTrusted(cwd, msg.trusted === true);
+      await reloadSubagents();
+      send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
       break;
     }
     case "set_credential": {
@@ -1183,7 +1324,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "set_mode": {
-      // 手动切换会话模式（agent/plan/goal），可选携带审批级别（agent 模式的
+      // 手动切换会话模式（agent/plan），可选携带审批级别（agent 模式的
       // ask/auto-edit/auto 对应前端"变更前确认/自动编辑/完全访问"）；重建工具集与系统提示词
       const run = await resolveSession(
         String(msg.threadId ?? "default"),
@@ -1191,7 +1332,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         typeof msg.cwd === "string" ? msg.cwd : undefined,
       );
       const mode = String(msg.mode ?? "agent");
-      if (mode !== "agent" && mode !== "plan" && mode !== "goal") {
+      if (mode !== "agent" && mode !== "plan") {
         throw new Error(`invalid mode: ${mode}`);
       }
       if (typeof msg.approvalLevel === "string") {
@@ -1204,31 +1345,13 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       send({ id: reqId, type: "mode_changed", ...planningPayload(run) });
       break;
     }
-    case "approve_plan": {
-      // 批准未决提案：回 agent 模式，由前端随后走正常 prompt 管道发批准消息
+    case "get_planning_state": {
+      // 模式快照拉取：前端刷新/切线程后恢复模式选择器（plan_exit 的执行确认
+      // 挂起属于 toolApproval 通道，不在此快照内）
       const run = await resolveSession(
         String(msg.threadId ?? "default"),
         typeof msg.sessionId === "string" ? msg.sessionId : undefined,
       );
-      if (run.planning !== "awaiting_approval" || !run.proposal) {
-        throw new Error("no proposal awaiting approval");
-      }
-      run.proposal = null;
-      applyMode(run, "agent");
-      send({ id: reqId, type: "planning_state", ...planningPayload(run) });
-      break;
-    }
-    case "reject_plan": {
-      // 拒绝未决提案：留在当前模式继续修改（planning），用户输入反馈后重新提交
-      const run = await resolveSession(
-        String(msg.threadId ?? "default"),
-        typeof msg.sessionId === "string" ? msg.sessionId : undefined,
-      );
-      if (run.planning !== "awaiting_approval" || !run.proposal) {
-        throw new Error("no proposal awaiting approval");
-      }
-      run.proposal = null;
-      run.planning = "planning";
       send({ id: reqId, type: "planning_state", ...planningPayload(run) });
       break;
     }

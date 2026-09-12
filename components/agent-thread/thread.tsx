@@ -22,6 +22,7 @@ import { AssistantMessage } from "./assistant-message";
 import { CompactionDataUI, ManualCompactionTailAfter } from "./compaction-banner";
 import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
+import { CheckpointBar } from "./checkpoint-bar";
 import { ThreadPreviewRail } from "./thread-preview-rail";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
@@ -138,6 +139,7 @@ export const Thread: FC = () => {
           )}
         >
           <ThreadScrollToBottom />
+          <CheckpointBar />
           <Composer />
           <AuiIf condition={isNewChatView}>
             <div className="aui-thread-welcome-suggestions-shell min-h-19">

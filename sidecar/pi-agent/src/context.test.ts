@@ -14,6 +14,7 @@ import {
   needsCompaction,
   projectRestoreContext,
   runCompaction,
+  sessionCacheMissStats,
   type SummarizeFn,
 } from "./context";
 import { COMPACTION_SUMMARY_PREFIX } from "@earendil-works/pi-agent-core";
@@ -397,6 +398,59 @@ describe("contextInfo", () => {
     expect(info.hardLimit).toBe(2_000);
     expect(info.messageTokens).toBeGreaterThanOrEqual(2_000);
     expect(info.needsCompaction).toBe(true);
+  });
+});
+
+describe("sessionCacheMissStats", () => {
+  test("无转录文件：全零", () => {
+    expect(sessionCacheMissStats("no-such-session")).toEqual({
+      requests: 0,
+      misses: 0,
+      rebuilds: 0,
+    });
+  });
+
+  test("冷启动/预期重建不计 miss；≥2000 且 ≥5% 记 miss；错误轮不计", () => {
+    const id = `miss-${sessionCounter++}`;
+    const line = (seq: number, usage: Record<string, number>, stopReason = "stop") =>
+      JSON.stringify({
+        type: "message",
+        seq,
+        ui: null,
+        agent: {
+          role: "assistant",
+          content: [{ type: "text", text: "a" }],
+          stopReason,
+          usage,
+        },
+      });
+    writeFileSync(
+      sessionPath(id),
+      [
+        // 0：冷启动首轮（全是写入），不计 miss
+        line(0, { input: 9000, cacheRead: 0, cacheWrite: 9000, output: 10 }),
+        // 1：正常命中
+        line(1, { input: 10, cacheRead: 9000, cacheWrite: 100, output: 10 }),
+        // 2：重处理 3000/9000=33% 且 ≥2000 → miss
+        line(2, { input: 3000, cacheRead: 6000, cacheWrite: 0, output: 10 }),
+        // 3：重处理 600 token <2000 → 不计
+        line(3, { input: 600, cacheRead: 8400, cacheWrite: 0, output: 10 }),
+        // 4：错误轮整行不计
+        line(4, { input: 50000, cacheRead: 0, cacheWrite: 0, output: 0 }, "error"),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    expect(sessionCacheMissStats(id, null)).toEqual({
+      requests: 4,
+      misses: 1,
+      rebuilds: 0,
+    });
+    // 检查点 afterSeq=1：seq>1 的首个请求记为预期重建，miss 相应少一次
+    expect(sessionCacheMissStats(id, 1)).toEqual({
+      requests: 4,
+      misses: 0,
+      rebuilds: 1,
+    });
   });
 });
 

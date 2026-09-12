@@ -53,3 +53,6 @@ next-env.d.ts
 
 # 性能迭代采样输出（docs/perf-baseline.md 约定不进 git）
 /perf-samples/
+.agents/
+.trae/
+skills-lock.json
