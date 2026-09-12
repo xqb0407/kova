@@ -13,6 +13,7 @@
 | P3 | token 级三连跳：stdout 行 → Rust 逐行 parse+emit → JS 逐事件再 parse；每事件一行 stderr 落盘 | IPC/日志开销、打字延迟 | `pi_agent.rs:72-131`, `pi-channel.ts:90`, `stream.ts:55` |
 | P4 | `list_sessions` 每次全量读所有 JSONL 数行数；`get_history` 同文件读两遍 | 启动/切线程尖峰 | `protocol.ts:613,646`, `transcript.ts:36,60` |
 | P5 | 消息 DOM 无虚拟化 + runtime 保留所有打开过的线程全量消息 | webview 内存常驻增长 | `thread.tsx:112`, assistant-ui remote-thread-state |
+| P6 | 首屏 bundle 静态拉入未用到的模块图（SettingsPage→CodeMirror/language-data/cmdk 等；AgentPanel 启动即挂载） | 启动解析慢 + 常驻代码/数据偏大 | `base.tsx:19-20` |
 
 ## 迭代 0：度量基线（先于一切优化）
 
@@ -49,6 +50,38 @@
 回归重点：右侧面板 terminal/files 内容与改造前逐条一致（含进行中/失败态、
 ±行数、活动角标 runningCount）。验收：流式 30s 长任务数显著下降，
 `collect` 单次耗时 < 1ms；P1 消除即达标。
+
+## 迭代 1b：组件按需加载 / 分块（P6）——纯前端，可与迭代 1 并行
+
+定位先说清楚：应用是**单路由**（只有 `app/page.tsx`），Next 的路由级自动
+分割在这里没有收益，全靠组件级 `next/dynamic`。分块解决的是**启动耗时和
+常驻代码基**（首帧 parse/evaluate 的 JS、未打开就不该存在的编辑器实例），
+对流式卡顿（P1/P3）无直接作用——别指望它治"打字卡"。three / recharts /
+@pierre/diffs 已是动态导入，无需再动。
+
+改动（按收益排序）：
+- `base.tsx:20` 的 `SettingsPage` 改 `next/dynamic`（ssr:false）：挂载本就是
+  `view === "settings"` 条件渲染，只需把静态 import 换掉，即可把 CodeMirror
+  + `@codemirror/language-data`（语言文法包）、cmdk、input-otp、qrcode.react
+  整个模块图挪出首屏 chunk。行为零改动，风险最低的一条。
+- `base.tsx` 宽屏列里的 `AgentPanel` 改"首次展开才挂载、之后保持挂载"
+  （collapsedSize=0 时当前也在渲染整棵面板树，含 material-file-icons、
+  git 视图、terminal 列表）；注意与迭代 1 的 panel-activity 单例 store
+  配合——store 在面板外，卸载面板不丢数据。
+- 核查项（不一定改）：`@streamdown/code`/`mermaid` 的 Shiki 文法与 mermaid
+  本体是否只在首个代码块/图出现时才加载——用 `next build` 产物 + 开发面板
+  Network 验证；若已懒加载则关闭此项。
+- 顺手项：`SPLASH_MIN_MS = 3000`（`app-runtime-provider.tsx:19`）是硬性
+  最短启动屏，分块收益会被它完全掩盖——迭代完成后降到 800ms 左右重新
+  评估观感。
+
+不改：组件内部逻辑与数据流。
+
+回归重点：设置页/右面板**首次**打开的过渡态（dynamic 加载期间的占位，
+不应白屏或闪烁）；重开设置不丢滚动位置以外的既有行为不变；窄屏浮层
+模式的面板开合动画正常。
+验收：首屏 entry chunk 的 gzip 体积与 evaluate 耗时对比迭代 0 基线下降；
+未进设置页时 performance 面板里无 codemirror chunk 加载记录。
 
 ## 迭代 2：sidecar 会话驻留治理（P2）——sidecar 内部，恢复路径已存在
 
