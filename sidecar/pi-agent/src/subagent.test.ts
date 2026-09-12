@@ -62,6 +62,7 @@ function makeRun(records: DelegationRecord[] = []): Running {
     baseTools: [],
     subagentTools: [],
     pendingToolApprovals: new Map(),
+    lastSeenAt: Date.now(),
   };
 }
 

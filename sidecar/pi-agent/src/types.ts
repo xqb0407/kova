@@ -125,6 +125,8 @@ export type Running = {
   subagentTools: AgentTool[];
   /** 逐工具审批：approvalId -> 挂起等待项（beforeToolCall 内 await，tool_confirm 结算） */
   pendingToolApprovals: Map<string, PendingToolApproval>;
+  /** LRU 驱逐时间戳（迭代2）：resolveSession/查询命中时 touch，超上限驱逐最旧 */
+  lastSeenAt: number;
 };
 
 /** 逐工具审批等待项（bash/write/edit 执行前等待用户确认） */

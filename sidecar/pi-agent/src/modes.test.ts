@@ -54,6 +54,7 @@ function makeRun(mode: SessionMode = "agent"): Running {
     baseTools: BASE_NAMES.map(fakeTool),
     subagentTools: [fakeTool("task"), fakeTool("task_wait")],
     pendingToolApprovals: new Map(),
+    lastSeenAt: Date.now(),
   };
 }
 

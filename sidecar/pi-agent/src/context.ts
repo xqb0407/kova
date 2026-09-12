@@ -378,16 +378,25 @@ export type ContextInfoResult = {
   cacheHitRate: number | null;
 };
 
+/** context_info 计算体的输入（迭代2）：live run 与未加载会话的只读投影共用；
+ *  systemPrompt/tools 已是组装好的最终形态（投影侧按"新建 run 会得到的样子"构建） */
+export type ContextInfoInput = {
+  model: Model<Api> | null;
+  messages: AgentMessage[];
+  systemPrompt: string;
+  tools: readonly { name: string; description?: string; parameters?: unknown }[];
+  sessionId: string;
+  compactionGeneration: number;
+};
+
 /** context_info 命令的计算体：全部现算，零新增持久化 */
-export function contextInfo(run: Running): ContextInfoResult {
-  const state = run.agent.state;
-  const model = state.model ?? null;
-  const messages = state.messages as AgentMessage[];
+export function contextInfoFrom(input: ContextInfoInput): ContextInfoResult {
+  const model = input.model;
+  const messages = input.messages;
   const estimated = estimateContextTokens(messages).tokens;
   const budget = model ? contextBudget(messages, model) : null;
-  const usage = sessionUsageTotals(run.sessionId);
-  const checkpoint = readCompaction(run.sessionId);
-  const tools = (state.tools ?? []) as { name: string; description?: string; parameters?: unknown }[];
+  const usage = sessionUsageTotals(input.sessionId);
+  const checkpoint = readCompaction(input.sessionId);
   return {
     model: model
       ? { provider: model.provider, id: model.id, name: model.name }
@@ -397,9 +406,9 @@ export function contextInfo(run: Running): ContextInfoResult {
       : 0,
     hardLimit: budget?.hardLimit ?? 0,
     messageTokens: estimated,
-    systemPromptTokens: estimateTextTokens(state.systemPrompt ?? ""),
+    systemPromptTokens: estimateTextTokens(input.systemPrompt),
     toolTokens: estimateTextTokens(
-      tools
+      input.tools
         .map(
           (t) =>
             `${t.name}\n${t.description ?? ""}\n${t.parameters ? JSON.stringify(t.parameters) : ""}`,
@@ -407,7 +416,7 @@ export function contextInfo(run: Running): ContextInfoResult {
         .join("\n"),
     ),
     messageCount: messages.length,
-    generation: run.compactionGeneration,
+    generation: input.compactionGeneration,
     lastCompaction: checkpoint
       ? {
           tokensBefore: checkpoint.tokensBefore,
@@ -422,4 +431,17 @@ export function contextInfo(run: Running): ContextInfoResult {
     usage,
     cacheHitRate: cacheHitRateOf(usage),
   };
+}
+
+/** 从活动 run 现算（live 路径） */
+export function contextInfo(run: Running): ContextInfoResult {
+  const state = run.agent.state;
+  return contextInfoFrom({
+    model: state.model ?? null,
+    messages: state.messages as AgentMessage[],
+    systemPrompt: state.systemPrompt ?? "",
+    tools: (state.tools ?? []) as ContextInfoInput["tools"],
+    sessionId: run.sessionId,
+    compactionGeneration: run.compactionGeneration,
+  });
 }
