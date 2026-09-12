@@ -17,6 +17,17 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create data dir: {e}"))?;
     let conn = Connection::open(dir.join("state.db"))
         .map_err(|e| format!("failed to open state.db: {e}"))?;
+    // 迭代 3b：WAL + 宽松同步。默认回滚日志模式下每条写都 fsync——持久化
+    // 路径每个流式 turn 至少一次 sessionTouch（updated_at），等于持续 fsync
+    // 尖峰。WAL 把提交变成追加、checkpoint 处批量落盘；journal_mode 持久化
+    // 在库文件头，synchronous/busy_timeout 为连接级、每次打开都设。
+    // （sidecar local 模式早已 WAL，此处对齐，见 hostdb.ts）
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|e| format!("failed to set journal_mode: {e}"))?;
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .map_err(|e| format!("failed to set synchronous: {e}"))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("failed to set busy_timeout: {e}"))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS kv (
             key   TEXT PRIMARY KEY,

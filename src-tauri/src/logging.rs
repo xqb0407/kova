@@ -8,10 +8,11 @@
 //! - 所有落盘行同步镜像到 stderr，dev 终端可见性不回退
 
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{Duration as ChronoDuration, Local, NaiveDate};
 use log::{LevelFilter, Metadata, Record};
@@ -20,6 +21,11 @@ use tauri::{AppHandle, Manager};
 const KEEP_DAYS: i64 = 7;
 const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const FRONTEND_MSG_MAX: usize = 8000;
+/// 迭代 3b：落盘缓冲窗口与最长滞留时间。逐行 write syscall 在 sidecar
+/// 高频 stderr / web.log 转发下是纯开销；BufWriter 吸收小行，超过
+/// FLUSH_AFTER 未刷新则下一次追加时强制 flush（tail 可见性 ≤1s 量级）。
+const LOG_BUF_BYTES: usize = 256 * 1024;
+const LOG_FLUSH_AFTER: StdDuration = StdDuration::from_millis(1000);
 
 /// 级别过滤存储（LevelFilter 映射，默认 Info）
 static LEVEL: AtomicU8 = AtomicU8::new(3);
@@ -50,9 +56,10 @@ fn parse_level_filter(s: &str) -> Option<LevelFilter> {
 /// 单个来源日志文件的句柄状态（当前日期 + 已写字节数，跨天/超限时重建）
 struct SourceFile {
     date: NaiveDate,
-    file: Option<File>,
+    file: Option<BufWriter<File>>,
     bytes: u64,
     max_bytes: u64,
+    last_flush: Instant,
 }
 
 impl SourceFile {
@@ -62,6 +69,7 @@ impl SourceFile {
             file: None,
             bytes: 0,
             max_bytes,
+            last_flush: Instant::now(),
         }
     }
 
@@ -86,6 +94,12 @@ impl SourceFile {
             return;
         }
         self.bytes += payload.len() as u64;
+        if self.last_flush.elapsed() >= LOG_FLUSH_AFTER {
+            if let Err(e) = file.flush() {
+                eprintln!("[logging] flush {name} failed: {e}");
+            }
+            self.last_flush = Instant::now();
+        }
     }
 
     fn open(&mut self, root: &Path, name: &str) {
@@ -99,7 +113,8 @@ impl SourceFile {
         match OpenOptions::new().create(true).append(true).open(&path) {
             Ok(file) => {
                 self.bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
-                self.file = Some(file);
+                self.file = Some(BufWriter::with_capacity(LOG_BUF_BYTES, file));
+                self.last_flush = Instant::now();
             }
             Err(e) => {
                 eprintln!("[logging] open log file failed: {e}");
@@ -109,7 +124,8 @@ impl SourceFile {
     }
 
     fn rotate(&mut self, root: &Path, name: &str) {
-        self.file = None;
+        // 先 flush 再摘句柄：否则缓冲里未落盘的行会被 rename 甩在旧档外
+        self.close();
         let dir = root.join(self.date.format("%Y-%m-%d").to_string());
         let path = dir.join(name);
         let archived = dir.join(format!("{name}.1"));
@@ -118,6 +134,13 @@ impl SourceFile {
             self.bytes = 0;
         }
         self.open(root, name);
+    }
+
+    /// 冲刷并关闭当前句柄（滚动/清空日志目录前调用）
+    fn close(&mut self) {
+        if let Some(mut w) = self.file.take() {
+            let _ = w.flush();
+        }
     }
 }
 
@@ -150,11 +173,12 @@ impl Logger {
         }
     }
 
-    /// 关闭全部来源文件句柄（清空日志目录前调用，避免 Windows 上句柄锁目录）
+    /// 冲刷并关闭全部来源文件句柄（清空日志目录前调用，避免 Windows 上
+    /// 句柄锁目录；不 flush 会丢缓冲窗口内的尾部日志）
     fn close_handles(&self) {
         for slot in [&self.app, &self.pi_agent, &self.web] {
             if let Ok(mut sf) = slot.lock() {
-                sf.file = None;
+                sf.close();
             }
         }
     }

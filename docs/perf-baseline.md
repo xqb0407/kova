@@ -31,6 +31,17 @@ bun scripts/perf-sample.mjs <场景名> [--interval 2] [--duration 秒] [--webvi
 
 - 迭代1 已合入（1ad79d8）。S2 对比数字需**完全重启应用**加载新 bundle 后采集
   （当前在线 webview 1327MB 属旧包，热更新不回退已驻留内存）。
+- 迭代1b 已合入（8ac59ee）：设置页 dynamic import、AgentPanel 首开挂载、
+  splash 3s→0.8s。shiki/mermaid 核查结论见计划文档（延后为 1c 专项）。
+- 迭代2 已合入（b25901a）：sidecar 会话驻留 LRU 上限 8 + context_info
+  只读投影（浏览不再物化 Agent）→ S1 可采。
+- 迭代3 已合入（bfa833e）：sidecar 日志分级（PI_LOG_LEVEL 默认 event）、
+  Rust→webview 20ms 合帧（pi-chunk-batch）、stdout 每行单次 parse、
+  远程出站队列有界 2048（写满踢线）→ S2 的事件数指标可采。
+- 迭代3b 已合入：state.db WAL + synchronous=NORMAL + busy_timeout；
+  日志落盘 BufWriter（256KB/1s）；检查点快照 for-each-ref 单次遍历 +
+  同树复用 parent commit（空转轮零新对象）。附带修复既有测试互扰
+  （cancel_all_tools 全局 drain 误杀并行 timeout 测试）。
 
 ## 场景与待填数字（跑一个填一个）
 
