@@ -50,3 +50,6 @@ next-env.d.ts
 /sidecar/pi-agent/package-lock.json
 
 .agents/skills/
+
+# 性能迭代采样输出（docs/perf-baseline.md 约定不进 git）
+/perf-samples/
