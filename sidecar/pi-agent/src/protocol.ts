@@ -7,16 +7,18 @@
  *       cwd = workspace 目录；仅在需要新建会话时使用，缺省为用户主目录
  *       prompt 结束后若有后台子代理（Task 委派）仍在运行，等待其完成并在同一条
  *       reqId 消息流内注入恢复 prompt 投递报告（多 step 收敛），再发 finish
- *   { "type": "abort" }   中止父代理与全部后台子代理，并取消全部排队 prompt
+ *   { "type": "abort", "threadId"? }   中止线程（缺省全局）的父代理与后台子代理，
+ *       并取消该范围内全部排队 prompt；threadId 提供时只影响该线程
  *   { "type": "queue_update", "id", "requestId", "text" }   → { id, type: "queue_updated", requestId }
  *       修改排队中的 prompt 文本（仅 queued 状态可改；requestId 为原 prompt 的 reqId）
  *   { "type": "queue_cancel", "id", "requestId" }           → { id, type: "queue_cancelled", requestId }
  *       删除单个排队项，其 prompt 流立即 abort + finish 收尾（不执行）
  *   { "type": "queue_promote", "id", "requestId" }          → { id, type: "queue_promoted", requestId }
- *       立即发送：该项提到队首并中止当前活跃 turn（其余排队项保留，按新顺序依次执行）
- *   prompt 排队（prompt-queue.ts）：上一轮未结束时到达的 prompt 进 FIFO 队列，
+ *       立即发送：该项提到所属线程队首并中止该线程当前活跃 turn（其余排队项保留）
+ *   prompt 排队（prompt-queue.ts）：队列按线程隔离，线程内上一轮未结束时到达的
+ *       prompt 进该线程 FIFO 队列（多线程并行互不阻塞），
  *       流上先发 { chunk: { type: "data-queue", id: "queue-<reqId>", data: { phase: "queued", position } } }，
- *       轮到时同 id 原地更新 { phase: "active" }；执行顺序由全局串行链保证
+ *       轮到时同 id 原地更新 { phase: "active" }；线程内顺序由该线程串行链保证
  *   { "type": "ping", "id" }                                  → { id, type: "pong" }
  *   { "type": "list_sessions", "id" }                         → { id, type: "sessions", sessions: [...] }
  *   { "type": "new_session", "id", "threadId", "cwd" }        → { id, type: "session", sessionId, threadId }
@@ -158,7 +160,7 @@ import {
   isPromptActive,
   send,
   sendChunk,
-  setCurrentReqId,
+  setActiveReqId,
 } from "./stream";
 import {
   applyMode,
@@ -272,11 +274,10 @@ function compactionChunkData(outcome: {
   };
 }
 
-/** prompt turn 全局 FIFO 串行链：每节 = 一个 turn 的完整生命周期（会话准备 →
- *  runStepWithRecovery → 委派收敛循环 → finally finish），跑完才放行下一节 */
-let promptChain: Promise<void> = Promise.resolve();
-/** 正在跑的 turn 所属线程（queue_promote 中止活跃 turn 时定位 run 用） */
-let activeTurnThreadId: string | null = null;
+/** prompt turn 串行链：每线程一条（队列按线程隔离，不同线程并行跑 turn）。
+ *  每节 = 一个 turn 的完整生命周期（会话准备 → runStepWithRecovery →
+ *  委派收敛循环 → finally finish），跑完才放行该线程下一节 */
+const promptChains = new Map<string, Promise<void>>();
 
 /** "Agent is already processing a prompt" 兜底识别（pi-agent-core 守卫文案） */
 function isAlreadyProcessingError(err: unknown): boolean {
@@ -284,19 +285,19 @@ function isAlreadyProcessingError(err: unknown): boolean {
   return text.includes("Agent is already processing");
 }
 
-/** prompt 入口：排队判定后沿全局串行链执行（prompt 长任务依旧不占 mgmtQueue） */
+/** prompt 入口：排队判定后沿所属线程的串行链执行（prompt 长任务依旧不占 mgmtQueue） */
 export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>) {
   const threadId = String(msg.threadId ?? "default");
 
-  // 上一轮未结束（或队列非空）→ 进 FIFO 队列，前端经 data-queue chunk 渲染排队条。
-  // 例外：活跃 turn 已被 Stop 中止、正在收尾（stopRequested 置位到链节 finally 之间）
-  // 不算「真忙」——此刻到达的新 prompt 不进队列，直接沿链等收尾后执行。否则会出现
-  // 「刚点了停止、新消息却显示排队中」，且用户再点一次 Stop 会把它连带取消（不执行）。
-  // 串行性由 promptChain 保证，顺序与排队完全一致，只是不渲染排队条。
-  const activeRun =
-    activeTurnThreadId != null ? running.get(activeTurnThreadId) : undefined;
-  const activeStopping = isTurnBusy() && activeRun?.stopRequested === true;
-  const wasQueued = shouldQueue() && !activeStopping;
+  // 本线程上一轮未结束（或本线程队列非空）→ 进该线程 FIFO 队列，前端经
+  // data-queue chunk 渲染排队条。其他线程忙与本线程无关（并行跑各自的 turn）。
+  // 例外：本线程活跃 turn 已被 Stop 中止、正在收尾（stopRequested 置位到链节
+  // finally 之间）不算「真忙」——此刻到达的新 prompt 不进队列，直接沿链等收尾
+  // 后执行。否则会出现「刚点了停止、新消息却显示排队中」，且用户再点一次 Stop
+  // 会把它连带取消（不执行）。串行性由线程链保证，顺序与排队完全一致，只是不渲染排队条。
+  const activeRun = running.get(threadId);
+  const activeStopping = isTurnBusy(threadId) && activeRun?.stopRequested === true;
+  const wasQueued = shouldQueue(threadId) && !activeStopping;
   if (wasQueued) {
     const enqueued = enqueueTurn(reqId, threadId, msg);
     if (!enqueued.ok) {
@@ -308,23 +309,22 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
     }
   }
 
-  // 沿链排队：前面每个 turn 完整跑完（含 finish 收尾）才轮到本节。
-  // 链节是可互换的工人槽，开跑时取当前队首（queue_promote 重排后顺序依然正确）
-  const tail = promptChain;
+  // 沿线程链排队：前面每个 turn 完整跑完（含 finish 收尾）才轮到本节。
+  // 链节是可互换的工人槽，开跑时取该线程当前队首（queue_promote 重排后顺序依然正确）
+  const tail = promptChains.get(threadId) ?? Promise.resolve();
   let release!: () => void;
-  promptChain = new Promise<void>((r) => (release = r));
+  const node = new Promise<void>((r) => (release = r));
+  promptChains.set(threadId, node);
   await tail;
-  markTurnStart();
+  markTurnStart(threadId);
   try {
     let turnReqId = reqId;
-    let turnThreadId = threadId;
     let turnMsg = msg;
     if (wasQueued) {
-      const next = takeFrontEntry();
+      const next = takeFrontEntry(threadId);
       // 本项已被取消（取消时流已收尾）或队列已空：静默让位
       if (!next) return;
       turnReqId = next.reqId;
-      turnThreadId = next.threadId;
       turnMsg = next.msg;
       sendChunk(turnReqId, {
         type: "data-queue",
@@ -332,15 +332,17 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
         data: { phase: "active" },
       });
     }
-    activeTurnThreadId = turnThreadId;
     // 通报 sessions：LRU 驱逐不得动正在跑 turn 的会话
-    noteActiveTurn(turnThreadId);
-    await runPromptTurn(turnReqId, turnMsg, turnThreadId);
+    noteActiveTurn(threadId, true);
+    await runPromptTurn(turnReqId, turnMsg, threadId);
   } finally {
-    activeTurnThreadId = null;
-    noteActiveTurn(null);
-    markTurnEnd();
+    noteActiveTurn(threadId, false);
+    markTurnEnd(threadId);
     release();
+    // 本节是链尾且队列已空：摘掉链条目，防 map 随线程数无限增长
+    if (!shouldQueue(threadId) && promptChains.get(threadId) === node) {
+      promptChains.delete(threadId);
+    }
   }
 }
 
@@ -378,7 +380,7 @@ async function runPromptTurn(
     });
     return;
   }
-  setCurrentReqId(reqId);
+  setActiveReqId(threadId, reqId);
   run.stopRequested = false;
   // 上一次运行的溢出恢复残留（正常应在 runStepWithRecovery 内消费）兜底清理
   run.pendingOverflowRecovery = false;
@@ -421,16 +423,16 @@ async function runPromptTurn(
         emitCompaction(cid, { phase: "failed" });
       }
     }
-    beginRun();
+    beginRun(threadId);
     try {
       await run.agent.prompt(text);
     } catch (err) {
-      // 排队链已在协议层消除并发 prompt；此处兜底 abort 收尾等极窄竞态窗口。
+      // 线程串行链已消除本线程并发 prompt；此处兜底 abort 收尾等极窄竞态窗口。
       // 守卫抛错时尚未产生任何事件，waitForIdle 后原地重试一次是干净的。
       if (!isAlreadyProcessingError(err)) throw err;
       logErr("agent.prompt hit active-run guard, retrying after idle");
       await run.agent.waitForIdle();
-      beginRun();
+      beginRun(threadId);
       await run.agent.prompt(text);
     }
   };
@@ -495,7 +497,7 @@ async function runPromptTurn(
   } finally {
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     sendChunk(reqId, { type: "finish" });
-    setCurrentReqId(null);
+    setActiveReqId(threadId, null);
     persist(run);
   }
 }
@@ -523,13 +525,21 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "abort": {
-      // 用户 Stop：中止父代理与全部后台子代理，并让收敛循环退出；
-      // 挂起的逐工具审批按拒绝结算、挂起提问按取消结算，避免永久悬挂；
-      // 排队中的 prompt 一并取消（各自流立即 abort+finish 收尾，不再执行）
-      for (const [threadId, run] of running.entries()) {
-        abortRun(run, threadId);
+      // 用户 Stop：中止线程（threadId 提供时仅该线程，缺省全局兜底）的父代理
+      // 与全部后台子代理，并让收敛循环退出；挂起的逐工具审批按拒绝结算、
+      // 挂起提问按取消结算，避免永久悬挂；该范围的排队 prompt 一并取消
+      // （各自流立即 abort+finish 收尾，不再执行）
+      const threadId = typeof msg.threadId === "string" ? msg.threadId : "";
+      if (threadId) {
+        const run = running.get(threadId);
+        if (run) abortRun(run, threadId);
+        cancelAllEntries(threadId);
+      } else {
+        for (const [tid, run] of running.entries()) {
+          abortRun(run, tid);
+        }
+        cancelAllEntries();
       }
-      cancelAllEntries();
       break;
     }
     case "queue_update": {
@@ -552,14 +562,16 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "queue_promote": {
-      // 立即发送：该项提到队首，中止当前活跃 turn（其余排队项保留）
+      // 立即发送：该项提到所属线程队首，中止该线程当前活跃 turn（其余排队项保留；
+      // 其他线程的活跃 turn 不受影响，各自并行）
       const requestId = String(msg.requestId ?? "");
-      if (!promoteEntry(requestId)) {
+      const entry = promoteEntry(requestId);
+      if (!entry) {
         throw new Error(`no queued prompt: ${requestId}`);
       }
-      if (activeTurnThreadId) {
-        const active = running.get(activeTurnThreadId);
-        if (active) abortRun(active, activeTurnThreadId);
+      if (isTurnBusy(entry.threadId)) {
+        const active = running.get(entry.threadId);
+        if (active) abortRun(active, entry.threadId);
       }
       send({ id: reqId, type: "queue_promoted", requestId });
       break;
@@ -573,7 +585,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         // 不至于落到 homedir（见 sessions.ts rebindRunCwd）
         typeof msg.cwd === "string" ? msg.cwd : undefined,
       );
-      if (isPromptActive()) {
+      if (isPromptActive(String(msg.threadId ?? "default"))) {
         throw new Error("session is busy: wait for the current response to finish");
       }
       const outcome = await runCompaction(run, "manual");

@@ -286,7 +286,7 @@ export async function approvalBeforeToolCall(
   }
 
   const approvalId = randomUUID();
-  sendEventChunk({
+  sendEventChunk(run.threadId, {
     type: "data-toolApproval",
     data: {
       approvalId,
@@ -357,7 +357,7 @@ export function planningPayload(run: Running): {
 
 /** 经当前活跃请求流把审批状态推给前端（data-planningState chunk）；无活跃请求时丢弃 */
 export function emitPlanningState(run: Running): void {
-  sendEventChunk({ type: "data-planningState", data: planningPayload(run) });
+  sendEventChunk(run.threadId, { type: "data-planningState", data: planningPayload(run) });
 }
 
 /** 用户新输入隐式关闭未决审批（批准/拒绝之外的唯一出口） */

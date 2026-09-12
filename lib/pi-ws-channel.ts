@@ -203,7 +203,7 @@ export class WsPiChannel implements PiChannel {
         abortSignal?.addEventListener(
           "abort",
           () => {
-            void this.abort();
+            void this.abort(threadId);
           },
           { once: true },
         );
@@ -231,8 +231,8 @@ export class WsPiChannel implements PiChannel {
     });
   }
 
-  async abort() {
-    this.sendRaw({ type: "abort" });
+  async abort(threadId?: string) {
+    this.sendRaw({ type: "abort", threadId: threadId ?? null });
   }
 
   close() {

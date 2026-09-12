@@ -424,7 +424,7 @@ export function makeUiRetryController(run: Running): ProviderRetryController {
   const settle = () => {
     if (!run.providerRetryActive) return;
     run.providerRetryActive = false;
-    sendEventChunk({
+    sendEventChunk(run.threadId, {
       type: "data-retry",
       id: run.providerRetryChunkId,
       data: { phase: "resolved" },
@@ -437,7 +437,7 @@ export function makeUiRetryController(run: Running): ProviderRetryController {
     onRetry: ({ error, attempt, delayMs }) => {
       run.providerRetryActive = true;
       if (run.stopRequested) return;
-      sendEventChunk({
+      sendEventChunk(run.threadId, {
         type: "data-retry",
         id: run.providerRetryChunkId,
         data: {

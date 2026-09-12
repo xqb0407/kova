@@ -35,8 +35,8 @@ export interface PiChannel {
   request(payload: Record<string, unknown>, timeoutMs?: number): Promise<PiResponse>;
   /** 发起 prompt，返回按 requestId 分流的 chunk 流（finish/error 关流） */
   promptStream(args: PromptStreamArgs): ReadableStream<UIMessageChunk>;
-  /** 全局中断（sidecar 侧 abort 无 id，作用于当前正在跑的 prompt） */
-  abort(): Promise<void>;
+  /** 中断指定线程的活跃 turn 与其排队消息（缺省 = 全局兜底，停掉一切） */
+  abort(threadId?: string): Promise<void>;
   close?(): void;
   /** WS 通道连接状态回调；Tauri 通道恒连接，可不实现 */
   onStatusChange?(cb: (s: PiChannelStatus) => void): () => void;
@@ -138,7 +138,7 @@ export class TauriPiChannel implements PiChannel {
     abortSignal?.addEventListener(
       "abort",
       () => {
-        void invoke("pi_abort").catch(() => {});
+        void invoke("pi_abort", { threadId }).catch(() => {});
       },
       { once: true },
     );
@@ -146,7 +146,7 @@ export class TauriPiChannel implements PiChannel {
     return stream;
   }
 
-  async abort() {
-    await invoke("pi_abort").catch(() => {});
+  async abort(threadId?: string) {
+    await invoke("pi_abort", { threadId }).catch(() => {});
   }
 }

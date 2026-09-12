@@ -108,7 +108,7 @@ export function buildTodoTool(threadId: string): AgentTool {
       todoStates.set(threadId, result.state);
       // 面板实时刷新（无活跃 prompt 请求时 sendEventChunk 自行丢弃，
       // 下次水合走 get_todo_state）
-      sendEventChunk({
+      sendEventChunk(threadId, {
         type: "data-todo",
         data: { tasks: result.state.tasks, nextId: result.state.nextId },
       });

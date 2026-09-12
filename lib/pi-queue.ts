@@ -5,8 +5,8 @@ import { getPiChannel } from "@/lib/pi-channel";
 
 /**
  * prompt 排队 store（sidecar prompt-queue 的前端镜像，形态同 pi-todo）：
- * - 事实源在 sidecar（全局 FIFO 串行链）；prompt 流里的 data-queue chunk
- *   经 pi-transport 拦截进来（不进消息流）
+ * - 事实源在 sidecar（按线程隔离：每线程一条 FIFO，线程内串行、跨线程并行）；
+ *   prompt 流里的 data-queue chunk 经 pi-transport 拦截进来（不进消息流）
  * - 注册发生在 transport.sendMessages（拿到 requestId → 线程消息 id 的映射），
  *   收到 data-queue(queued) 才进可见队列，active/finish/error/abort 移除
  * - 排队条 UI（components/agent-thread/prompt-queue-bar.tsx）渲染在 composer 上方，

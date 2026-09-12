@@ -51,18 +51,19 @@ export const running = new Map<string, Running>();
  *  全被跳过时宁可暂超也不踢掉干活中的会话。 */
 export const MAX_RESIDENT_SESSIONS = 8;
 
-/** 当前活跃 prompt turn 所属线程：protocol.ts dispatchPrompt 起止处通报。
- *  跑着 prompt 的会话永不驱逐（单链 FIFO，全局至多一个）。 */
-let activeTurnThread: string | null = null;
-export function noteActiveTurn(threadId: string | null): void {
-  activeTurnThread = threadId;
+/** 正在跑 prompt turn 的线程集合：protocol.ts dispatchPrompt 起止处通报。
+ *  跑着 prompt 的会话永不驱逐（线程串行链，多线程可并行多个）。 */
+const activeTurnThreads = new Set<string>();
+export function noteActiveTurn(threadId: string, active: boolean): void {
+  if (active) activeTurnThreads.add(threadId);
+  else activeTurnThreads.delete(threadId);
 }
 
 /** 可驱逐判定：进行中的工作与跨轮的审批意图都要跳过。
  *  恢复路径不会带回 planning/proposal/pendingToolApprovals（resolveSession
  *  恒以初始态重建），所以这些状态在驻留期间被驱逐等于静默丢失。 */
 function isEvictable(threadId: string, run: Running): boolean {
-  if (activeTurnThread === threadId) return false;
+  if (activeTurnThreads.has(threadId)) return false;
   for (const d of run.delegations.values()) if (d.status === "running") return false;
   if (run.pendingToolApprovals.size > 0) return false;
   if (run.planning !== "inactive" || run.proposal !== null) return false;
@@ -226,6 +227,7 @@ export async function resolveSession(
   // run 先占位再回填 agent：beforeToolCall 闭包按引用捕获 run，模式校验在运行期才解引用
   const run: Running = {
     agent: undefined as unknown as Agent,
+    threadId,
     sessionId: sessionId!,
     cwd: resolvedCwd,
     persistedCwd,
