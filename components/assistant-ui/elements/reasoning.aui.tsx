@@ -2,11 +2,11 @@
 
 import { memo, useCallback, useRef } from "react";
 import {
-  useScrollLock,
   useAuiState,
   type ReasoningMessagePartComponent,
   type ReasoningGroupComponent,
 } from "@assistant-ui/react";
+import { useScrollLock } from "@/hooks/use-scroll-lock";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import {
   ANIMATION_DURATION,

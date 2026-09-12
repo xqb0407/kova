@@ -320,42 +320,43 @@ export function PreviewRail({
                 isHorizontal ? "justify-center" : undefined,
               )}
             >
-              {item.id === displayedId ? (
-                <div
-                  className={cn(
-                    isHorizontal
-                      ? "absolute bottom-12 left-1/2 w-72 -translate-x-1/2"
-                      : cn(
-                          "w-full max-w-sm",
-                          previewSide === "before" && "ml-auto",
-                        ),
-                    previewClassName,
-                  )}
-                >
-                  <motion.div
-                    layoutId={`preview-rail-card-${uid}`}
-                    transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+              {/* AnimatePresence must outlive the card: mounted inside the
+                  conditional, its exit never ran — the card vanished in one
+                  frame and its box-shadow band stayed painted as a ghost until
+                  an unrelated repaint covered it. */}
+              <AnimatePresence initial={false}>
+                {item.id === displayedId ? (
+                  <div
+                    key={item.id}
+                    className={cn(
+                      isHorizontal
+                        ? "absolute bottom-12 left-1/2 w-72 -translate-x-1/2"
+                        : cn(
+                            "w-full max-w-sm",
+                            previewSide === "before" && "ml-auto",
+                          ),
+                      previewClassName,
+                    )}
                   >
-                    <AnimatePresence mode="wait" initial={false}>
+                    <motion.div
+                      layoutId={`preview-rail-card-${uid}`}
+                      layoutCrossfade={false}
+                      transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+                    >
+                      {/* Opacity/y only: an animated filter keeps the card on
+                          its own compositor layer, and dropping that layer
+                          mid-stream is what leaves the shadow trails behind.
+                          initial={false} enters instantly — a fade-in over
+                          nothing reads as lag; only the exit matters. */}
                       <motion.div
-                        key={item.id}
-                        initial={
-                          reduce
-                            ? { opacity: 0 }
-                            : { opacity: 0, y: 4, filter: "blur(6px)" }
-                        }
-                        animate={
-                          reduce
-                            ? { opacity: 1 }
-                            : { opacity: 1, y: 0, filter: "blur(0px)" }
-                        }
+                        initial={false}
+                        animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
                         exit={
                           reduce
                             ? { opacity: 0 }
                             : {
                                 opacity: 0,
                                 y: -2,
-                                filter: "blur(4px)",
                                 transition: {
                                   duration: 0.12,
                                   ease: EASE_OUT,
@@ -373,10 +374,10 @@ export function PreviewRail({
                           <DefaultPreview item={item} />
                         )}
                       </motion.div>
-                    </AnimatePresence>
-                  </motion.div>
-                </div>
-              ) : null}
+                    </motion.div>
+                  </div>
+                ) : null}
+              </AnimatePresence>
             </div>
           ))}
         </div>
