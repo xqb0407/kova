@@ -1,11 +1,12 @@
 //! pi-agent sidecar 桥接：
 //! 负责拉起 pi-agent 二进制（bun 编译产物，NDJSON stdio 协议），
-//! 把子进程 stdout 逐行以 `pi-chunk` 事件转发给 webview，
-//! 并提供 prompt/abort/reset 三个 command 写入 stdin。
+//! 把子进程 stdout 合帧后以 `pi-chunk-batch` 事件转发给 webview（迭代 3，
+//! 见 CHUNK_BATCH_WINDOW 注释），并提供 prompt/abort/reset 三个 command 写入 stdin。
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 
 use crate::logging;
 use crate::remote;
@@ -26,6 +27,36 @@ static NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
 
 pub fn new_request_id() -> String {
     format!("pi-{}", NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed))
+}
+
+// ---------- Rust→webview 转发合帧（迭代 3 / P3） ----------
+
+/// 流式输出时 sidecar 按 token 逐行吐 chunk，逐行 emit 会让 webview 事件分发
+/// 频率与 token 速率同阶（每行一次 JS 回调 + JSON 解析）。缓冲后每 ~20ms
+/// 或攒满 CHUNK_BATCH_MAX 行，一次性以 `pi-chunk-batch`（Vec<String>）发出。
+/// finish/error 行入队后立即冲刷（收尾零延迟）；被 host RPC / 请求配对 /
+/// 远程路由消费的行不进入批次。
+const CHUNK_BATCH_WINDOW: Duration = Duration::from_millis(20);
+const CHUNK_BATCH_MAX: usize = 64;
+
+fn flush_chunks(emitter: &AppHandle, batch: &mut Vec<String>) {
+    if batch.is_empty() {
+        return;
+    }
+    let lines = std::mem::take(batch);
+    let _ = emitter.emit("pi-chunk-batch", &lines);
+}
+
+/// 不允许在合帧窗口里滞留的行：chunk 的 finish/error（流收尾）与非 chunk
+/// 行（管理/通知类，低频）。解析失败的裸行也算，保持原样尽快送达。
+fn is_flush_line(v: Option<&serde_json::Value>) -> bool {
+    match v.and_then(|v| v.get("chunk")) {
+        Some(c) => matches!(
+            c.get("type").and_then(|t| t.as_str()),
+            Some("finish") | Some("error")
+        ),
+        None => true,
+    }
 }
 
 /// 解析应用数据目录（state.db 与会话 JSONL 所在位置）
@@ -66,11 +97,34 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
     let app_for_rx = app.clone();
     let emitter = app.clone();
     tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
+        let mut batch: Vec<String> = Vec::new();
+        let mut window_opened_at: Option<Instant> = None;
+        loop {
+            // 缓冲区有货时，recv 与合帧窗口剩余时间赛跑；窗口到期立即冲刷。
+            // 空批次时不挂定时器——静默期不产生任何事件。
+            let event = match window_opened_at {
+                None => rx.recv().await,
+                Some(opened) => {
+                    let remaining = CHUNK_BATCH_WINDOW.saturating_sub(opened.elapsed());
+                    match tokio::time::timeout(remaining, rx.recv()).await {
+                        Ok(event) => event,
+                        Err(_) => {
+                            flush_chunks(&emitter, &mut batch);
+                            window_opened_at = None;
+                            continue;
+                        }
+                    }
+                }
+            };
+            let Some(event) = event else {
+                flush_chunks(&emitter, &mut batch);
+                break;
+            };
             match event {
                 // shell 插件按行分发 stdout；统一转 UTF-8 字符串处理
                 CommandEvent::Stdout(bytes) => {
                     let line = String::from_utf8_lossy(&bytes).to_string();
+                    // 每行只 parse 一次，结果沿链路传递（此前最多三次全量 parse）
                     let parsed = serde_json::from_str::<serde_json::Value>(&line).ok();
                     let msg_type = parsed
                         .as_ref()
@@ -112,8 +166,8 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                         continue;
                     }
                     // 先尝试请求-响应配对（管理类请求），未命中则作为流式 chunk 转发
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-                        if let Some(req_id) = value.get("id").and_then(|v| v.as_str()) {
+                    if let Some(v) = parsed.as_ref() {
+                        if let Some(req_id) = v.get("id").and_then(|v| v.as_str()) {
                             let sender = state_for_rx
                                 .lock()
                                 .ok()
@@ -124,11 +178,20 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                             }
                         }
                     }
-                    // 远程网关路由（id 形如 rem-{conn}-{orig}），未命中再广播给本地 webview
-                    if remote::try_route(&line) {
+                    // 远程网关路由（id 形如 rem-{conn}-{orig}），未命中则入帧合批广播给本地 webview
+                    if remote::try_route(parsed.as_ref()) {
                         continue;
                     }
-                    let _ = emitter.emit("pi-chunk", line);
+                    if batch.is_empty() {
+                        window_opened_at = Some(Instant::now());
+                    }
+                    let flush_now =
+                        is_flush_line(parsed.as_ref()) || batch.len() + 1 >= CHUNK_BATCH_MAX;
+                    batch.push(line);
+                    if flush_now {
+                        flush_chunks(&emitter, &mut batch);
+                        window_opened_at = None;
+                    }
                 }
                 CommandEvent::Stderr(line) => {
                     // 落盘 pi-agent.log（sidecar 零改动，stderr 由宿主转发）
@@ -137,16 +200,21 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                 }
                 CommandEvent::Error(err) => {
                     log::error!("[pi_agent] {err}");
+                    // 先冲刷已缓冲 chunk 再发错误行，维持 sidecar 输出顺序
+                    flush_chunks(&emitter, &mut batch);
+                    window_opened_at = None;
                     let _ = emitter.emit(
-                        "pi-chunk",
-                        format!(
+                        "pi-chunk-batch",
+                        vec![format!(
                             "{{\"id\":null,\"chunk\":{{\"type\":\"error\",\"errorText\":{}}}}}",
                             serde_json::to_string(&err).unwrap_or_default()
-                        ),
+                        )],
                     );
                 }
                 CommandEvent::Terminated(status) => {
                     log::warn!("[pi_agent] terminated {status:?}");
+                    // 收尾前先把最后一帧 chunk 送达，pi-exit 之后不应再有 chunk
+                    flush_chunks(&emitter, &mut batch);
                     // sidecar 已退出：清掉所有在飞工具（杀残留进程树、注销登记），
                     // 避免孤儿 bash 进程继续跑
                     crate::tool_exec::cancel_all_tools();

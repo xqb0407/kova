@@ -690,7 +690,9 @@ mod tests {
         }
         assert!(!in_flight_tools().lock().unwrap().contains_key(id));
         cancel_tool(id); // 不得 panic
-        cancel_all_tools();
+        // 注意：此处不可调用 cancel_all_tools()——它 drain 全局在飞表，会把
+        // 并行测试（如 bash_timeout_kills_and_reports）的 guard 一并标记取消，
+        // 对方结果带 [cancelled] 而非 [timeout]——既有偶发失败的根源。
     }
 
     /// 起一个一次性 TCP 服务：收到请求后回写固定 HTTP 响应（无 TLS，http:// 即可）

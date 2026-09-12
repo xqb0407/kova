@@ -26,7 +26,8 @@ const BUSY_ERROR_TEXT = "上一条消息还在处理中，请稍候再发送";
  * 当前 PiChannel（桌面 Tauri invoke / 远程 WebSocket）上的 prompt 流。
  *
  * 事件链路（桌面）：promptStream → invoke("pi_prompt") → 子进程 stdin → stdout 行
- *   → Rust 转发 "pi-chunk" 事件 → TauriPiChannel 按 requestId 过滤为 UIMessageChunk。
+ *   → Rust ~20ms 合帧转发 "pi-chunk-batch" 事件（行数组）
+ *   → TauriPiChannel 逐行按 requestId 过滤为 UIMessageChunk。
  * 事件链路（远程）：promptStream → WS {"type":"prompt"} → 网关 → sidecar →
  *   网关按 id 路由回本连接 → WsPiChannel 分流为 UIMessageChunk。
  */
