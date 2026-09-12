@@ -41,7 +41,7 @@ export function heatColor(ratio: number): string {
   return HEAT_RAMP[i];
 }
 
-const CELL = 11;
+const CELL = 14;
 const GAP = 3;
 const WEEKS_DEFAULT = 53;
 
