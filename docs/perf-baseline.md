@@ -42,6 +42,15 @@ bun scripts/perf-sample.mjs <场景名> [--interval 2] [--duration 秒] [--webvi
   日志落盘 BufWriter（256KB/1s）；检查点快照 for-each-ref 单次遍历 +
   同树复用 parent commit（空转轮零新对象）。附带修复既有测试互扰
   （cancel_all_tools 全局 drain 误杀并行 timeout 测试）。
+- 迭代4 已合入（59e3ac2）：sessions.message_count 增量列（persist 时
+  随 touch 累加）+ Rust 启动同步回填（无迁移窗口）；list_sessions
+  零文件扫描；get_history 合并为 scanTranscript 单遍。注意不变式：
+  直接手造 JSONL 的调用/测试需同步 sessionTouch，否则计数不升。
+- 迭代5a（窗口化）已实现后回滚（revert 4fd7c96/4e6d1df）：与
+  turnAnchor/平滑滚动/贴底跟随冲突（抖动、发送后空白、回底失效），
+  根因与替代方向见计划文档「5a 尝试记录」。
+- 实测快照（重启加载新包后，空闲 4min）：app 133MB / sidecar 120MB /
+  webview ~700MB（基线 183/123/1327）。
 
 ## 场景与待填数字（跑一个填一个）
 

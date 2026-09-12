@@ -203,6 +203,26 @@
 编辑重发、压缩分隔线位置在窗口化后仍正确。
 验收：2000 条消息会话 DOM 节点数恒定（±窗口大小），滚动帧率 ≥ 50fps。
 
+### 5a 尝试记录：已实现后回滚（0ce9ab0 + 02ff1bb → revert 4fd7c96/4e6d1df）
+
+MessageWindow（IO 带 ±2500px 进出换挂载、等高占位、还原滚动补偿）合入后
+实测与该应用的滚动机制冲突，回归三连：
+1. 流式滚动抖动：占位高 ≠ 回挂载高（思考块 defaultOpen={running} 重挂翻转
+   历史收起态；RO 异步缓存值在流式收尾/收起动画未沉淀时过期）。
+2. 发送后顶部大空白：turnAnchor 平滑滚动动画途中消息跨带卸载/回挂载，
+   布局与动画目标错位。
+3. 「回到底部」失效：补偿对 scrollTop 的同步赋值会打断容器的
+   scroll-smooth 动画，多消息补偿互相级联，视图停在非底部位置，
+   差值≈占位/实际高度差之和。
+结论：**JS 卸载式窗口化与该应用的 turnAnchor + scroll-smooth + 贴底跟随
+不兼容**，勿再走同路线。P5 剩余可行方向：
+- 5b 历史分页（数据层少加载，根本不产生占位/高度游戏）——首选；
+- 或 CSS `content-visibility: auto` + `contain-intrinsic-size`（浏览器原生
+  离屏跳过渲染、自动记忆尺寸，DOM 不卸载 ⇒ 无状态翻转/无补偿；省渲染
+  不省 DOM 内存）。
+线程缓存上限维持原结论：框架无公开 per-thread dispose（仅
+__internal_dispose 整核），记为框架限制。
+
 ## 附录 A：每迭代必跑的回归清单
 
 自动：`cd sidecar/pi-agent && bun test`；`bun run build`（Next 构建过类型）；
