@@ -19,6 +19,7 @@ import {
   KeyboardIcon,
   PaintbrushIcon,
   PlugIcon,
+  PuzzleIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
 } from "lucide-react";
@@ -31,6 +32,7 @@ import { MemorySettings } from "./components/memory-settings";
 import { PersonalizationSettings } from "./components/personalization-settings";
 import { SubagentsSettings } from "./components/subagents-settings";
 import { McpSettings } from "./components/mcp-settings";
+import { SkillsSettings } from "./components/skills-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
 import { UsageStatsSettings } from "./components/usage-stats-settings";
 import { Logo } from "../agent-thread/header";
@@ -47,6 +49,7 @@ type SettingsSection =
   | "shortcuts"
   | "subagents"
   | "mcp"
+  | "skills"
   | "usage";
 
 const GROUPS: {
@@ -70,6 +73,7 @@ const GROUPS: {
       { id: "models", label: "模型", icon: BoxesIcon },
       { id: "subagents", label: "子智能体", icon: BotIcon },
       { id: "mcp", label: "MCP", icon: PlugIcon },
+      { id: "skills", label: "技能", icon: PuzzleIcon },
       { id: "memory", label: "记忆", icon: BrainIcon },
     ],
   },
@@ -203,6 +207,7 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "shortcuts" && <ShortcutSettings />}
           {section === "subagents" && <SubagentsSettings />}
           {section === "mcp" && <McpSettings />}
+          {section === "skills" && <SkillsSettings />}
           {section === "archive" && <ArchiveSettings />}
           {section === "usage" && <UsageStatsSettings />}
           {section === "about" && <AboutSettings />}

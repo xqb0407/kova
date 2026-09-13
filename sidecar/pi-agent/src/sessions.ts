@@ -4,8 +4,14 @@
  */
 import { Agent } from "@earendil-works/pi-agent-core";
 import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import {
   defaultModel,
   getCurrentModelKey,
@@ -28,6 +34,7 @@ import {
   makeUiRetryController,
 } from "./provider-retry";
 import { loadSubagentDefinitions } from "./subagent-definitions";
+import { ensureSkillsLoaded } from "./skills";
 import { buildSubagentTools } from "./subagent";
 import { readCompaction, readTranscript } from "./transcript";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, type ContextInfoResult } from "./context";
@@ -115,6 +122,8 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
   const { definitions } = await loadSubagentDefinitions({ cwd });
   run.subagentTools = buildSubagentTools(run, run.baseTools, definitions, reloadSubagents);
   run.agent.state.tools = toolsForMode(run);
+  // 换了工作区：技能目录随 cwd 变，先预热新缓存再重组提示词
+  await ensureSkillsLoaded(cwd);
   run.agent.state.systemPrompt = composeModeSystemPrompt(
     run.mode,
     cwd,
@@ -149,6 +158,22 @@ export async function reloadSubagents(): Promise<void> {
     for (const d of diagnostics) logErr("subagent:", d);
     run.subagentTools = buildSubagentTools(run, run.baseTools, definitions, reloadSubagents);
     run.agent.state.tools = toolsForMode(run);
+  }
+}
+
+/**
+ * 设置页改动（保存/删除/开关）后的技能热重载：刷各会话 cwd 的技能缓存，
+ * 重组系统提示词并热替换（与 applyMode 同款手法，轮中经 loopContext 立即生效）。
+ * 目录签名没变时 ensureSkillsLoaded 零 IO；开关状态在 merge 时生效，无需失效目录。
+ */
+export async function reloadSkills(): Promise<void> {
+  const cwds = new Set<string>();
+  for (const run of running.values()) cwds.add(run.cwd);
+  await Promise.all([...cwds].map((c) => ensureSkillsLoaded(c || undefined)));
+  for (const run of running.values()) {
+    const prompt = composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model);
+    run.agent.state.systemPrompt = prompt;
+    if (run.loopContext) run.loopContext.systemPrompt = prompt;
   }
 }
 
@@ -189,6 +214,21 @@ async function resolveCurrentModel(): Promise<NonNullable<Awaited<ReturnType<typ
 }
 
 /** 拿到 threadId 对应的 Agent；sessionId 提供时优先恢复该会话（重启续聊） */
+/**
+ * 无目录任务会话的执行目录：应用数据目录下的 task-workspace（Rust 拉起时
+ * 经 PI_TASK_CWD 注入），测试/裸跑兜底 ~/.xulux/task-workspace。
+ * 绝不落家目录本体：agent 的文件读写不该散在 home，工作区作用域配置
+ * （<cwd>/.xulux/*）也不能与全局层重叠——全局记忆/子智能体/MCP 恰好都在
+ * ~/.xulux/*，用家目录兜底会让任务会话把它们同时当作"工作区层"再加载一遍。
+ */
+function defaultTaskCwd(): string {
+  const dir = process.env.PI_TASK_CWD
+    ? resolve(process.env.PI_TASK_CWD)
+    : join(homedir(), ".xulux", "task-workspace");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 export async function resolveSession(
   threadId: string,
   sessionId?: string,
@@ -239,9 +279,12 @@ export async function resolveSession(
     );
   }
 
-  const resolvedCwd = persistedCwd || homedir();
+  const resolvedCwd = persistedCwd || defaultTaskCwd();
 
   const model = await resolveCurrentModel();
+
+  // 技能目录预热（签名缓存，命中零 IO）：系统提示词的技能段从这里取数
+  await ensureSkillsLoaded(resolvedCwd);
 
   const baseTools = buildTools(resolvedCwd, threadId);
   // run 先占位再回填 agent：beforeToolCall 闭包按引用捕获 run，模式校验在运行期才解引用
@@ -370,7 +413,9 @@ export async function projectContextInfo(
   const generation = checkpoint ? checkpointGeneration(checkpoint.details) : 0;
   const model = await resolveCurrentModel();
 
-  const resolvedCwd = row.cwd || homedir();
+  const resolvedCwd = row.cwd || defaultTaskCwd();
+  // 技能段预热：投影读数与随后真正打开该会话时逐字段一致（同款 ensureSkillsLoaded）
+  await ensureSkillsLoaded(resolvedCwd);
   const baseTools = buildTools(resolvedCwd, threadId);
   const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包

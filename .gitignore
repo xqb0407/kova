@@ -2,6 +2,9 @@
 /node_modules
 /.pnp
 .pnp.*
+# 主仓用 bun 管理依赖，npm/pnpm lock 为杂讯（历史遗留已删）
+/package-lock.json
+/pnpm-lock.yaml
 
 # testing
 /coverage

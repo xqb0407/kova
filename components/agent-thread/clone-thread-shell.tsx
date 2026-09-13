@@ -265,7 +265,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   className={cn(
                     // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                     // 自带的 hover 底色，避免与高亮叠加
-                    "h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent",
+                    "h-8 w-full text-sm justify-start gap-2 rounded-md px-2.5  font-normal hover:bg-transparent dark:hover:bg-transparent",
                     sidebarCollapsed && "w-8 justify-center px-2",
                     !item.isNew && activeMenu === item.id && "bg-muted",
                   )}
@@ -548,7 +548,11 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             <CommandEmpty>没有找到结果</CommandEmpty>
             <CommandGroup heading="操作">
               <ThreadListPrimitive.New asChild>
-                <CommandItem onSelect={() => setSearchOpen(false)}>
+                <CommandItem
+                  value="action:new-thread"
+                  keywords={["新对话"]}
+                  onSelect={() => setSearchOpen(false)}
+                >
                   <PlusIcon className="size-4" />
                   <span>新对话</span>
                 </CommandItem>
@@ -558,18 +562,21 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               <CommandGroup heading="对话">
                 {threadIds.map((id) => {
                   const item = threadItems.find((t) => t.id === id);
+                  const title = item?.title ?? "新对话";
                   return (
                     <CommandItem
                       key={id}
+                      // cmdk 用 value 做选中/去重定位；不显式传会从文字（标题）推导，
+                      // 标题重复时两条高亮同一个。id 唯一，标题放 keywords 保搜索命中
+                      value={id}
+                      keywords={[title]}
                       onSelect={() => {
                         aui.threads.switchToThread(id);
                         setSearchOpen(false);
                       }}
                     >
                       <MessageSquareIcon className="size-4 shrink-0" />
-                      <span className="truncate">
-                        {item?.title ?? "新对话"}
-                      </span>
+                      <span className="truncate">{title}</span>
                     </CommandItem>
                   );
                 })}

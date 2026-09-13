@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   decodePairPayload,
   setRemoteConfig,
@@ -117,7 +118,7 @@ export function ConnectScreen({
           </p>
         )}
 
-        <label className="flex flex-col gap-1.5 text-sm">
+        <Label className="flex flex-col items-start gap-1.5 text-sm">
           <span className="text-muted-foreground">桌面端地址</span>
           <Input
             value={url}
@@ -129,9 +130,9 @@ export function ConnectScreen({
             autoCorrect="off"
             spellCheck={false}
           />
-        </label>
+        </Label>
 
-        <label className="flex flex-col gap-1.5 text-sm">
+        <Label className="flex flex-col items-start gap-1.5 text-sm">
           <span className="text-muted-foreground">配对码</span>
           <Input
             value={code}
@@ -142,7 +143,7 @@ export function ConnectScreen({
               if (e.key === "Enter") void submit();
             }}
           />
-        </label>
+        </Label>
 
         {error && <p className="text-sm text-destructive">{error}</p>}
 

@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -251,15 +252,15 @@ const SubagentEditorDialog: FC<{
           </TabsList>
           <TabsContent value="form" className="flex flex-col gap-3 pt-2">
             <div className="flex gap-3">
-              <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm">
+              <Label className="flex min-w-0 flex-1 flex-col items-start gap-1 text-sm">
                 <span className="text-muted-foreground text-xs">名称</span>
                 <Input
                   value={form.name}
                   onChange={(e) => setField("name", e.target.value)}
                   placeholder="如 api-auditor"
                 />
-              </label>
-              <label className="flex w-28 shrink-0 flex-col gap-1 text-sm">
+              </Label>
+              <Label className="flex w-28 shrink-0 flex-col items-start gap-1 text-sm">
                 <span className="text-muted-foreground text-xs">轮次上限</span>
                 <Input
                   value={form.maxTurns}
@@ -267,17 +268,17 @@ const SubagentEditorDialog: FC<{
                   placeholder="如 40"
                   inputMode="numeric"
                 />
-              </label>
-              <label className="flex w-48 shrink-0 flex-col gap-1 text-sm">
+              </Label>
+              <Label className="flex w-48 shrink-0 flex-col items-start gap-1 text-sm">
                 <span className="text-muted-foreground text-xs">模型（留空继承会话）</span>
                 <Input
                   value={form.model}
                   onChange={(e) => setField("model", e.target.value)}
                   placeholder="provider/modelId"
                 />
-              </label>
+              </Label>
             </div>
-            <label className="flex flex-col gap-1 text-sm">
+            <Label className="flex flex-col items-start gap-1 text-sm">
               <span className="text-muted-foreground text-xs">
                 描述（主代理据此决定何时委派）
               </span>
@@ -286,7 +287,7 @@ const SubagentEditorDialog: FC<{
                 onChange={(e) => setField("description", e.target.value)}
                 rows={2}
               />
-            </label>
+            </Label>
             <div className="flex flex-col gap-1 text-sm">
               <span className="text-muted-foreground text-xs">可用工具</span>
               <div className="flex flex-wrap gap-1.5">
@@ -310,7 +311,7 @@ const SubagentEditorDialog: FC<{
                 })}
               </div>
             </div>
-            <label className="flex flex-col gap-1 text-sm">
+            <Label className="flex flex-col items-start gap-1 text-sm">
               <span className="text-muted-foreground text-xs">
                 系统提示词（delegate 的行为说明）
               </span>
@@ -320,7 +321,7 @@ const SubagentEditorDialog: FC<{
                 rows={10}
                 className="font-mono text-xs"
               />
-            </label>
+            </Label>
           </TabsContent>
           <TabsContent value="yaml" className="pt-2">
             <Textarea
@@ -511,7 +512,7 @@ const SubagentRow: FC<{
 /** 工作区区块的目录切换器：候选 = 手动浏览的目录 + 当前工作区 + 最近使用。
  *  只切换本页查看的工作区级定义来源，不改动主界面的工作区选择。 */
 const WorkspaceCwdMenu: FC<{
-  value: string;
+  value: string | null;
   following: boolean;
   followLabel: string | null;
   candidates: string[];
@@ -534,11 +535,13 @@ const WorkspaceCwdMenu: FC<{
       render={
         <button
           type="button"
-          title={value}
+          title={value ?? undefined}
           className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-xs transition-colors"
         >
           <FolderOpenIcon className="size-3.5 shrink-0" />
-          <span className="max-w-44 truncate">{pathBasename(value)}</span>
+          <span className="max-w-44 truncate">
+            {value ? pathBasename(value) : "未选择工作区"}
+          </span>
           <ChevronDownIcon className="size-3 shrink-0" />
         </button>
       }
@@ -648,6 +651,7 @@ export const SubagentsSettings: FC = () => {
     desc: string,
     entries: SubagentEntry[],
     actions?: ReactNode,
+    empty?: ReactNode,
   ) => (
     <section className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-4 px-3 pt-2 pb-1">
@@ -658,7 +662,9 @@ export const SubagentsSettings: FC = () => {
         {actions}
       </div>
       {entries.length === 0 ? (
-        <div className="text-muted-foreground px-3 py-2 text-xs">暂无</div>
+        empty ?? (
+          <div className="text-muted-foreground px-3 py-2 text-xs">暂无</div>
+        )
       ) : (
         entries.map((entry) => (
           <SubagentRow
@@ -735,35 +741,27 @@ export const SubagentsSettings: FC = () => {
         "存于应用数据目录 subagents/，对本机所有工作区生效。",
         groups.system,
       )}
-      {viewingCwd ? (
-        renderSection(
-          `工作区 · ${pathBasename(viewingCwd)}`,
-          `存于 ${viewingCwd}/.xulux/subagents/，随仓库共享。`,
-          groups.workspace,
-          <WorkspaceCwdMenu
-            value={viewingCwd}
-            following={overrideCwd === null}
-            followLabel={workspace ? pathBasename(workspace) : null}
-            candidates={workspaceCandidates}
-            showBrowse={isTauri()}
-            onChange={switchWorkspaceView}
-            onFollowCurrent={() => setOverrideCwd(null)}
-            onBrowse={() => void pickBrowseDir()}
-          />,
-        )
-      ) : (
-        <section className="text-muted-foreground flex flex-col items-start gap-2 rounded-2xl border border-dashed p-4 text-xs">
-          <span>
-            未选择工作区：在主界面选好工作目录后即可管理该工作区的子智能体；
-            也可以直接浏览某个仓库目录的 .xulux/subagents/ 定义。
-          </span>
-          {isTauri() && (
-            <Button size="sm" variant="outline" onClick={() => void pickBrowseDir()}>
-              <FolderOpenIcon className="size-3.5" />
-              选择目录浏览…
-            </Button>
-          )}
-        </section>
+      {renderSection(
+        viewingCwd ? `工作区 · ${pathBasename(viewingCwd)}` : "工作区",
+        viewingCwd
+          ? `存于 ${viewingCwd}/.xulux/subagents/，随仓库共享。`
+          : "未选择工作区：可点右上目录切换器选择历史目录，或「浏览其他目录…」直接查看某个仓库。",
+        groups.workspace,
+        <WorkspaceCwdMenu
+          value={viewingCwd}
+          following={overrideCwd === null}
+          followLabel={workspace ? pathBasename(workspace) : null}
+          candidates={workspaceCandidates}
+          showBrowse={isTauri()}
+          onChange={switchWorkspaceView}
+          onFollowCurrent={() => setOverrideCwd(null)}
+          onBrowse={() => void pickBrowseDir()}
+        />,
+        viewingCwd ? undefined : (
+          <div className="text-muted-foreground px-3 py-2 text-xs">
+            选择目录后，这里会显示该仓库 .xulux/subagents/ 下的子智能体。
+          </div>
+        ),
       )}
 
       {snap.diagnostics.length > 0 && (

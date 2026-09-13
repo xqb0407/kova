@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FC, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -50,6 +52,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { toast } from "@/components/ui/toast";
+import { Badge } from "@/components/ui/badge";
 
 /** 接口格式选项：label 显示在触发器与下拉列表，endpoint 仅在下拉列表中作辅助说明 */
 const API_FORMATS: {
@@ -63,14 +66,15 @@ const API_FORMATS: {
 ];
 
 /** 弹窗表单字段：小标签 + 控件 */
-const Field: FC<{ label: string; children: ReactNode }> = ({
-  label,
-  children,
-}) => (
-  <label className="flex flex-col gap-1.5">
+const Field: FC<{
+  label: string;
+  className?: string;
+  children: ReactNode;
+}> = ({ label, className, children }) => (
+  <Label className={cn("flex flex-col items-start gap-1.5", className)}>
     <span className="text-muted-foreground text-xs">{label}</span>
     {children}
-  </label>
+  </Label>
 );
 
 /** 模型行勾选框 */
@@ -97,66 +101,61 @@ const AttrEditor: FC<{
   onConfirm: () => void;
   onCancel: () => void;
 }> = ({ draft, busy, showThinking, onChange, onConfirm, onCancel }) => (
-  <div className="flex flex-col pt-1">
-    <div className="grid grid-cols-3 gap-2">
-      <Field label="名称">
+  <div className="flex flex-col gap-3">
+    <div className="grid grid-cols-4 gap-2">
+      <Field label="名称" className="col-span-4">
         <Input
           value={draft.name}
           onChange={(e) => onChange({ name: e.target.value })}
-          className="h-7 text-xs"
+          className="h-8 text-[13px]"
         />
       </Field>
-      <Field label="上下文窗口">
+      <Field label="上下文窗口" className="col-span-2">
         <Input
           type="number"
           min={0}
           value={draft.ctx}
           onChange={(e) => onChange({ ctx: e.target.value })}
-          className="h-7 text-xs tabular-nums"
+          className="h-8 text-[13px] tabular-nums"
         />
       </Field>
-      <Field label="最大输出">
+      <Field label="最大输出" className="col-span-2">
         <Input
           type="number"
           min={0}
           value={draft.max}
           onChange={(e) => onChange({ max: e.target.value })}
-          className="h-7 text-xs tabular-nums"
+          className="h-8 text-[13px] tabular-nums"
         />
       </Field>
-    </div>
-    <div className="mt-1.5 flex items-center gap-3 text-xs">
-      <span className="text-muted-foreground">输入模态</span>
-      <label className="flex items-center gap-1">
-        <input
-          type="checkbox"
-          checked={draft.text}
-          onChange={(e) => onChange({ text: e.target.checked })}
-          className="accent-primary size-3.5"
-        />
-        文本
-      </label>
-      <label className="flex items-center gap-1">
-        <input
-          type="checkbox"
-          checked={draft.image}
-          onChange={(e) => onChange({ image: e.target.checked })}
-          className="accent-primary size-3.5"
-        />
-        图像
-      </label>
-      {/* 能力标记：非推理模型勾上后对话页的深度思考开关才会真正下发 reasoning 参数 */}
-      <label className="ml-auto flex items-center gap-1">
-        <input
-          type="checkbox"
-          checked={draft.reasoning}
-          onChange={(e) => onChange({ reasoning: e.target.checked })}
-          className="accent-primary size-3.5"
-        />
-        支持深度思考
-      </label>
-    </div>
-    <div className="mt-1.5 grid grid-cols-4 gap-2">
+      <div className="col-span-4 flex items-center gap-4 text-sm">
+        <span className="text-muted-foreground shrink-0">输入模态</span>
+        <Label className="flex items-center gap-1.5 text-sm">
+          <Checkbox
+            checked={draft.text}
+            onCheckedChange={(checked) => onChange({ text: checked })}
+            className="size-4"
+          />
+          文本
+        </Label>
+        <Label className="flex items-center gap-1.5 text-sm">
+          <Checkbox
+            checked={draft.image}
+            onCheckedChange={(checked) => onChange({ image: checked })}
+            className="size-4"
+          />
+          图像
+        </Label>
+        {/* 能力标记：非推理模型勾上后对话页的深度思考开关才会真正下发 reasoning 参数 */}
+        <Label className="ml-auto flex items-center gap-1.5 text-sm">
+          <Checkbox
+            checked={draft.reasoning}
+            onCheckedChange={(checked) => onChange({ reasoning: checked })}
+            className="size-4"
+          />
+          支持深度思考
+        </Label>
+      </div>
       <Field label="输入单价">
         <Input
           type="number"
@@ -164,7 +163,7 @@ const AttrEditor: FC<{
           min={0}
           value={draft.cIn}
           onChange={(e) => onChange({ cIn: e.target.value })}
-          className="h-7 text-xs tabular-nums"
+          className="h-8 text-[13px] tabular-nums"
         />
       </Field>
       <Field label="输出单价">
@@ -174,7 +173,7 @@ const AttrEditor: FC<{
           min={0}
           value={draft.cOut}
           onChange={(e) => onChange({ cOut: e.target.value })}
-          className="h-7 text-xs tabular-nums"
+          className="h-8 text-[13px] tabular-nums"
         />
       </Field>
       <Field label="缓存读">
@@ -184,7 +183,7 @@ const AttrEditor: FC<{
           min={0}
           value={draft.cRead}
           onChange={(e) => onChange({ cRead: e.target.value })}
-          className="h-7 text-xs tabular-nums"
+          className="h-8 text-[13px] tabular-nums"
         />
       </Field>
       <Field label="缓存写">
@@ -194,13 +193,13 @@ const AttrEditor: FC<{
           min={0}
           value={draft.cWrite}
           onChange={(e) => onChange({ cWrite: e.target.value })}
-          className="h-7 text-xs tabular-nums"
+          className="h-8 text-[13px] tabular-nums"
         />
       </Field>
     </div>
     {showThinking && (
-      <div className="mt-1.5 border-t pt-1.5">
-        <div className="flex items-center gap-2 text-xs">
+      <div className="flex flex-col gap-2 border-t pt-2.5">
+        <div className="flex items-center gap-2 text-sm">
           <span
             className="text-muted-foreground shrink-0 cursor-help"
             title="关闭思考时显式下发的参数值。默认开思考的网关必须填它才关得掉（OpenAI 兼容常见值：none）；留空 = 不发关闭参数。"
@@ -211,32 +210,31 @@ const AttrEditor: FC<{
             value={draft.tOff}
             onChange={(e) => onChange({ tOff: e.target.value })}
             placeholder="如 none，留空不发送"
-            className="h-7 w-40 text-xs"
+            className="h-8 w-full max-w-48 text-[13px]"
           />
         </div>
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm">
           <span className="text-muted-foreground shrink-0">可用档位</span>
           {THINK_LEVELS.map((t) => (
-            <label key={t.level} className="flex items-center gap-1">
-              <input
-                type="checkbox"
+            <Label key={t.level} className="flex items-center gap-1.5 text-sm">
+              <Checkbox
                 checked={draft[t.field]}
-                onChange={(e) =>
-                  onChange({ [t.field]: e.target.checked } as Partial<AttrDraft>)
+                onCheckedChange={(checked) =>
+                  onChange({ [t.field]: checked } as Partial<AttrDraft>)
                 }
-                className="accent-primary size-3.5"
+                className="size-4"
               />
               {t.label}
-            </label>
+            </Label>
           ))}
         </div>
       </div>
     )}
-    <div className="mt-2 flex justify-end gap-1.5">
-      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onCancel}>
+    <div className="flex justify-end gap-1.5">
+      <Button size="sm" variant="ghost" className="h-8 text-sm" onClick={onCancel}>
         取消
       </Button>
-      <Button size="sm" className="h-7 text-xs" disabled={busy} onClick={onConfirm}>
+      <Button size="sm" className="h-8 text-sm" disabled={busy} onClick={onConfirm}>
         确定
       </Button>
     </div>
@@ -1977,20 +1975,15 @@ export const ModelSettings: FC = () => {
           if (!open) cancelAttrEditor();
         }}
       >
-        <DialogContent className="sm:max-w-lg">
-          <div className="flex min-w-0 items-center justify-between gap-4 pe-8">
-            <DialogTitle className="shrink-0 text-base font-semibold">
-              模型属性
-            </DialogTitle>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogTitle className="flex min-w-0 items-center gap-2 pr-6 text-base font-semibold">
+            <span className="shrink-0">模型属性</span>
             {attrEditId && (
-              <span
-                className="text-muted-foreground min-w-0 truncate font-mono text-xs"
-                title={attrEditId}
-              >
-                {attrEditId}
-              </span>
+              <Badge variant="outline" title={attrEditId} className="max-w-[360px]">
+                <span className="min-w-0 truncate">{attrEditId}</span>
+              </Badge>
             )}
-          </div>
+          </DialogTitle>
           {attrEditId !== null && attrDraft && (
             <AttrEditor
               draft={attrDraft}

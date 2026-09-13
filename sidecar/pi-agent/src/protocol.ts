@@ -53,6 +53,14 @@
  *   { "type": "save_subagent", "id", "scope", "cwd"?, ("definition"|"raw"), "name"? } → 校验后写 <app_data>/subagents 或 <cwd>/.xulux/subagents 的 YAML + 热重载 → 同款 subagents 应答（name=编辑前原名，改名时清旧文件）
  *   { "type": "delete_subagent", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 subagents 应答（内置不可删）
  *   { "type": "set_subagent_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 subagents 应答
+ *   { "type": "list_skills", "id", "cwd"? }                   → { id, type: "skills", skills, workspaceCwd, diagnostics }
+ *       技能清单（<cwd>/.xulux/skills、<app_data>/skills 可编辑 + 生态 .agents/skills 只读合并，
+ *       同名遮蔽 工作区>生态·工作区>系统>生态·用户）；设置 → 技能页渲染用
+ *   { "type": "save_skill", "id", "scope", "cwd"?, ("definition"|"raw"), "fallbackName"?, "name"? }
+ *                                                            → 校验后写 <app_data>/skills 或 <cwd>/.xulux/skills 的
+ *       技能 .md 文档（frontmatter+正文）+ 热重载 → 同款 skills 应答（name=编辑前原名，改名时清旧文件）
+ *   { "type": "delete_skill", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 skills 应答（生态只读不可删）
+ *   { "type": "set_skill_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 skills 应答
  *   { "type": "list_mcp_servers", "id", "cwd"? }             → { id, type: "mcp_servers", servers, workspaceCwd, diagnostics }
  *       MCP 服务器清单（系统 ~/.xulux/mcp.json + 工作区 .mcp.json/.xulux/mcp.json 合并，
  *       含每台连接状态）；设置 → MCP 页渲染用
@@ -61,7 +69,14 @@
  *   { "type": "delete_mcp_server", "id", "layer", "name", "cwd"? } → 删条目 + 断连 → 同款应答
  *   { "type": "set_mcp_server_enabled", "id", "layer", "name", "cwd"?, "enabled" } → 开关落 kv + 断连重载 → 同款应答
  *   { "type": "test_mcp_server", "id", "layer", "name", "cwd"? } → { id, type: "mcp_server_test", status }
+ *   { "type": "get_mcp_server_tools", "id", "name", "cwd"? } → { id, type: "mcp_server_tools", name, tools }
+ *     （工具清单：优先元数据缓存，缺失才握手——展开懒服务器可能等几秒）
  *       强制重新握手（先断后连），设置页"测试连接"用
+ *   { "type": "authorize_mcp_server", "id", "name", "cwd"? } → { id, type: "mcp_servers", ... }
+ *       HTTP 服务器 OAuth 2.1 授权：开浏览器 + 本地回调等用户批准（可达数分钟，
+ *       前端需长超时），完成后同款 mcp_servers 应答刷新全部行状态
+ *   { "type": "revoke_mcp_server_auth", "id", "name", "cwd"? } → { id, type: "mcp_servers", ... }
+ *       取消 OAuth 授权：清掉该服务器 URL 的存量凭据并断开（下次握手回到 needsAuth）
  *   { "type": "usage_stats", "id" }                           → { id, type: "usage_stats", stats }（全局使用统计：增量物化到 SQLite 后从库聚合）
  *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
@@ -161,6 +176,7 @@ import {
   forgetThreadStates,
   noteActiveTurn,
   projectContextInfo,
+  reloadSkills,
   reloadSubagents,
   running,
   resolveSession,
@@ -221,12 +237,23 @@ import {
   type SubagentDraft,
   type SubagentScope,
 } from "./subagent-definitions";
+import {
+  deleteSkillDoc,
+  ensureSkillsLoaded,
+  parseSkillDoc,
+  saveSkillDoc,
+  setSkillEnabled,
+  skillsSnapshot,
+  type SkillScope,
+} from "./skills";
 import { aggregateUsageStats } from "./usage-stats";
 import {
   cancelPendingMcpApprovals,
   resolveMcpApproval,
 } from "./mcp-tools";
 import { mcpManager } from "./mcp-manager";
+import { getValidTools } from "./mcp-cache";
+import { clearOAuthForServer } from "./mcp-oauth";
 import {
   activeMcpServers,
   deleteMcpServer,
@@ -258,6 +285,29 @@ async function subagentsPayload(cwd?: string) {
       ...(e.raw ? { raw: e.raw } : {}),
       enabled: e.enabled,
       editable: e.editable,
+    })),
+    workspaceCwd: cwd ?? null,
+    diagnostics: r.diagnostics,
+  };
+}
+
+/** 技能清单应答负载：设置页与所有变更命令共用同一形状（改后即见） */
+async function skillsPayload(cwd?: string) {
+  await ensureSkillsLoaded(cwd);
+  const r = skillsSnapshot(cwd);
+  return {
+    skills: r.entries.map((e) => ({
+      name: e.name,
+      description: e.description,
+      scope: e.scope,
+      ...(e.disableModelInvocation ? { disableModelInvocation: true } : {}),
+      enabled: e.enabled,
+      shadowed: e.shadowed,
+      editable: e.editable,
+      path: e.path,
+      content: e.content,
+      sizeBytes: e.sizeBytes,
+      ...(e.updatedAt ? { updatedAt: e.updatedAt } : {}),
     })),
     workspaceCwd: cwd ?? null,
     diagnostics: r.diagnostics,
@@ -1274,6 +1324,80 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
       break;
     }
+    case "list_skills": {
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      send({ id: reqId, type: "skills", ...(await skillsPayload(cwd)) });
+      break;
+    }
+    case "save_skill": {
+      const scope: "system" | "workspace" | null =
+        msg.scope === "workspace" ? "workspace" : msg.scope === "system" ? "system" : null;
+      if (!scope) throw new Error('save_skill: scope must be "system" or "workspace"');
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      if (scope === "workspace" && !cwd) {
+        throw new Error("save_skill: workspace scope requires cwd");
+      }
+      // 两种载荷：表单结构体（definition）或文档原文（raw，走同一解析校验；
+      // raw 缺 frontmatter name 时以 fallbackName（导入文件名 stem）兜底）
+      let draft;
+      if (typeof msg.raw === "string") {
+        const fallbackName =
+          typeof msg.fallbackName === "string" ? msg.fallbackName : undefined;
+        const parsed = parseSkillDoc(msg.raw, {
+          ...(fallbackName ? { fallbackName } : {}),
+        });
+        if (!parsed.ok) throw new Error(parsed.errors.join("；"));
+        draft = parsed.draft;
+      } else {
+        const d = (msg.definition ?? {}) as Record<string, unknown>;
+        draft = {
+          name: String(d.name ?? ""),
+          description: String(d.description ?? ""),
+          content: String(d.content ?? ""),
+          ...(d.disableModelInvocation === true ? { disableModelInvocation: true } : {}),
+        };
+      }
+      // name = 编辑前的原名（改名时据此清掉旧文件；新建省略）
+      const replaceName =
+        typeof msg.name === "string" && msg.name.trim() ? msg.name.trim() : undefined;
+      await saveSkillDoc(scope, draft, { cwd, ...(replaceName ? { replaceName } : {}) });
+      await reloadSkills();
+      send({ id: reqId, type: "skills", ...(await skillsPayload(cwd)) });
+      break;
+    }
+    case "delete_skill": {
+      const scope: "system" | "workspace" | null =
+        msg.scope === "workspace" ? "workspace" : msg.scope === "system" ? "system" : null;
+      if (!scope) throw new Error('delete_skill: scope must be "system" or "workspace"');
+      const name = String(msg.name ?? "");
+      if (!name) throw new Error("delete_skill: name is required");
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      if (scope === "workspace" && !cwd) {
+        throw new Error("delete_skill: workspace scope requires cwd");
+      }
+      await deleteSkillDoc(scope, name, { cwd });
+      await reloadSkills();
+      send({ id: reqId, type: "skills", ...(await skillsPayload(cwd)) });
+      break;
+    }
+    case "set_skill_enabled": {
+      const scope: SkillScope | null =
+        msg.scope === "workspace" ||
+        msg.scope === "compat-workspace" ||
+        msg.scope === "system" ||
+        msg.scope === "compat"
+          ? (msg.scope as SkillScope)
+          : null;
+      if (!scope) throw new Error("set_skill_enabled: invalid scope");
+      const name = String(msg.name ?? "");
+      if (!name) throw new Error("set_skill_enabled: name is required");
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      const enabled = msg.enabled === true;
+      await setSkillEnabled(scope, name, enabled, cwd);
+      await reloadSkills();
+      send({ id: reqId, type: "skills", ...(await skillsPayload(cwd)) });
+      break;
+    }
     case "list_mcp_servers": {
       const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
       send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
@@ -1306,8 +1430,21 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       if (layer === "workspace" && !cwd) {
         throw new Error("delete_mcp_server: workspace layer requires cwd");
       }
+      // 先记下待删条目：清凭据要用它的 URL
+      const { defs: beforeDefs } = await loadMcpServers(cwd);
+      const gone = beforeDefs.find((d) => d.name === name && d.layer === layer);
       await deleteMcpServer(layer, name, { cwd });
       await reloadMcpConnections(cwd);
+      // 删掉最后一台共用该 URL 的 http 服务器时顺带清 OAuth 凭据：
+      // 凭据按 URL 键控，不清的话删除重加仍拿存量 token 静默连，用户无从重置授权
+      if (gone?.transport === "http" && gone.url) {
+        const url = String(gone.url);
+        const { defs: afterDefs } = await loadMcpServers(cwd);
+        const stillUsed = afterDefs.some(
+          (d) => d.transport === "http" && String(d.url ?? "") === url,
+        );
+        if (!stillUsed) clearOAuthForServer(url);
+      }
       send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
       break;
     }
@@ -1337,6 +1474,8 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       mcpManager.disconnect(name);
       try {
         const tools = await mcpManager.ensureConnected(def);
+        // 握手成功可能刷新了协议自报图标（2025-11-25 serverInfo.icons），随状态带回
+        const { icons } = mcpManager.statusFor(def);
         send({
           id: reqId,
           type: "mcp_server_test",
@@ -1345,9 +1484,12 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
             state: "ready",
             toolCount: tools.length,
             toolNames: tools.map((t) => t.name),
+            ...(icons ? { icons } : {}),
           },
         });
       } catch (err) {
+        // 握手失败的 needsAuth（401 需 OAuth）与协议图标一并透出，前端据 needsAuth 显示「授权」
+        const s = mcpManager.statusFor(def);
         send({
           id: reqId,
           type: "mcp_server_test",
@@ -1356,9 +1498,60 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
             state: "backoff",
             toolCount: 0,
             message: err instanceof Error ? err.message : String(err),
+            ...(s.needsAuth ? { needsAuth: true } : {}),
+            ...(s.icons ? { icons: s.icons } : {}),
           },
         });
       }
+      break;
+    }
+    case "authorize_mcp_server": {
+      const name = String(msg.name ?? "");
+      if (!name) throw new Error("authorize_mcp_server: name is required");
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      const { defs } = await loadMcpServers(cwd);
+      const def = defs.find((d) => d.name === name);
+      if (!def) throw new Error(`mcp server not found: ${name}`);
+      // 交互式 OAuth：sidecar 开浏览器 + 本地回调等用户批准，可能长达几分钟
+      await mcpManager.authorize(def);
+      send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
+      break;
+    }
+    case "revoke_mcp_server_auth": {
+      const name = String(msg.name ?? "");
+      if (!name) throw new Error("revoke_mcp_server_auth: name is required");
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      const { defs } = await loadMcpServers(cwd);
+      const def = defs.find((d) => d.name === name);
+      if (!def) throw new Error(`mcp server not found: ${name}`);
+      mcpManager.revokeAuth(def);
+      send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
+      break;
+    }
+    case "get_mcp_server_tools": {
+      const name = String(msg.name ?? "");
+      if (!name) throw new Error("get_mcp_server_tools: name is required");
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      const { defs } = await loadMcpServers(cwd);
+      const def = defs.find((d) => d.name === name);
+      if (!def) throw new Error(`mcp server not found: ${name}`);
+      // 元数据缓存优先（断开态也可读），缺失才握手——懒服务器首次展开会真连一次
+      const tools = getValidTools(def) ?? (await mcpManager.ensureConnected(def));
+      send({
+        id: reqId,
+        type: "mcp_server_tools",
+        name,
+        tools: tools.map((t) => ({
+          name: t.name,
+          ...(t.description ? { description: t.description } : {}),
+        })),
+      });
+      break;
+    }
+    case "get_mcp_server_log": {
+      const name = String(msg.name ?? "");
+      if (!name) throw new Error("get_mcp_server_log: name is required");
+      send({ id: reqId, type: "mcp_server_log", name, lines: mcpManager.logFor(name) });
       break;
     }
     case "set_credential": {

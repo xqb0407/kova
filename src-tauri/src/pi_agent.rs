@@ -85,7 +85,12 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
         .sidecar("pi-agent")
         .map_err(|e| format!("failed to resolve pi-agent sidecar: {e}"))?
         .env("PI_DB_PATH", data_dir.join("state.db").to_string_lossy().to_string())
-        .env("PI_SESSIONS_DIR", sessions_dir.to_string_lossy().to_string());
+        .env("PI_SESSIONS_DIR", sessions_dir.to_string_lossy().to_string())
+        // 无目录任务会话的执行目录兜底（sidecar defaultTaskCwd）：不落家目录
+        .env(
+            "PI_TASK_CWD",
+            data_dir.join("task-workspace").to_string_lossy().to_string(),
+        );
 
     let (mut rx, child) = cmd
         .spawn()

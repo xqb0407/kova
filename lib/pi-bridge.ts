@@ -218,6 +218,39 @@ export type PiSubagentsResponse = {
   diagnostics: string[];
 };
 
+/** 技能来源层（事实源在 sidecar：托管层 <cwd>/.xulux/skills 与 <app_data>/skills 可编辑，
+ *  生态兼容层 .agents/skills（agentskills.io 标准）只读发现） */
+export type PiSkillScope = "workspace" | "compat-workspace" | "system" | "compat";
+
+/** 技能条目（设置 → 技能；list/save/delete/开关的应答共用清单形状） */
+export type PiSkillEntry = {
+  name: string;
+  description: string;
+  scope: PiSkillScope;
+  /** true = 不出现在模型技能目录（agentskills 规范字段；仅手动/工具场景可用） */
+  disableModelInvocation?: boolean;
+  /** 开关（未记录 = 启用） */
+  enabled: boolean;
+  /** 被更高优先级同名技能遮蔽：enabled 但不生效 */
+  shadowed: boolean;
+  /** 生态层只读：不可编辑/删除，只能开关 */
+  editable: boolean;
+  /** 技能文件绝对路径（模型按需 read 的 location） */
+  path: string;
+  /** 正文（frontmatter 之后；编辑器回填用） */
+  content: string;
+  sizeBytes: number;
+  updatedAt?: string;
+};
+
+/** 技能清单应答：设置页与所有变更命令共用（list/save/delete/开关的应答同形状） */
+export type PiSkillsResponse = {
+  type: "skills";
+  skills: PiSkillEntry[];
+  workspaceCwd: string | null;
+  diagnostics: string[];
+};
+
 /** 记忆设置整包（设置 → 记忆；sidecar 持久化于 SQLite kv，活动会话热更新） */
 export type PiMemoryConfig = {
   /** 总开关：关闭时不注入、memory_* 工具一律婉拒 */
@@ -250,6 +283,13 @@ export type PiMemoryFilesResponse = {
   };
 };
 
+/** 协议自报图标（MCP 2025-11-25 serverInfo.icons；sidecar 已过滤为 http(s)/data src） */
+export type PiMcpServerIcon = {
+  src: string;
+  /** 深浅色适配声明；缺省 = 通用 */
+  theme?: "light" | "dark";
+};
+
 /** MCP 服务器连接状态（sidecar mcp-manager 实时状态；disabled 行恒为 idle） */
 export type PiMcpServerStatus = {
   name: string;
@@ -258,6 +298,12 @@ export type PiMcpServerStatus = {
   toolNames?: string[];
   /** 最近一次错误/截断说明（backoff/工具截断） */
   message?: string;
+  /** 握手因 401/缺凭据失败：需要用户在设置页点「授权」走 OAuth 浏览器流程 */
+  needsAuth?: boolean;
+  /** 该 http 服务器的 URL 已存有 OAuth token（设置页据此呈现「取消授权」） */
+  oauthAuthorized?: boolean;
+  /** 服务器握手时自报的图标（从未握手成功则无，前端用默认图标） */
+  icons?: PiMcpServerIcon[];
 };
 
 /** MCP 服务器条目（设置 → MCP；list/save/delete/开关的应答共用清单形状）。
@@ -298,6 +344,26 @@ export type PiMcpServerTestResponse = {
   status: PiMcpServerStatus;
 };
 
+/** MCP 连接错误日志一行（sidecar 环形缓冲，时间升序） */
+export type PiMcpLogLine = { at: number; message: string };
+
+/** get_mcp_server_log 应答 */
+export type PiMcpServerLogResponse = {
+  type: "mcp_server_log";
+  name: string;
+  lines: PiMcpLogLine[];
+};
+
+/** 单台 MCP 服务器的工具条目（参数 schema 不上行，设置页展开只展示名字+描述） */
+export type PiMcpToolInfo = { name: string; description?: string };
+
+/** get_mcp_server_tools 应答（sidecar 元数据缓存优先，缺失才握手） */
+export type PiMcpServerToolsResponse = {
+  type: "mcp_server_tools";
+  name: string;
+  tools: PiMcpToolInfo[];
+};
+
 export type PiResponse =
   | { type: "sessions"; sessions: PiSessionSummary[] }
   | { type: "session"; sessionId: string; threadId: string }
@@ -325,8 +391,11 @@ export type PiResponse =
       bytes: number;
     }
   | PiSubagentsResponse
+  | PiSkillsResponse
   | PiMcpServersResponse
   | PiMcpServerTestResponse
+  | PiMcpServerLogResponse
+  | PiMcpServerToolsResponse
   | { type: "usage_stats"; stats: PiUsageStats }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "model_updated"; provider: string; modelId: string }
