@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
+import { createServer } from "node:http";
 import { mkdtempSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +9,7 @@ import { dispatch, setInitGate } from "./protocol";
 import { mcpManager } from "./mcp-manager";
 import { resetMcpConfigForTest } from "./mcp-config";
 import { resetMcpCacheForTest } from "./mcp-cache";
+import { resetMcpOAuthForTest } from "./mcp-oauth";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-mcp-protocol-"));
 const systemConfig = path.join(tmp, "mcp.json");
@@ -150,6 +152,84 @@ describe("MCP 协议消息", () => {
     await expect(
       dispatch("m6", { type: "test_mcp_server", layer: "system", name: "ghost" }),
     ).rejects.toThrow("not found");
+  });
+
+  test("test_mcp_server 成功应答带全量状态：oauthAuthorized 测完不丢", async () => {
+    // 极简 streamable-HTTP fake：initialize + tools/list（形态照抄 manager 测试的服务器）
+    const srv = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        let m: { id?: unknown; method?: string };
+        try {
+          m = JSON.parse(body || "{}");
+        } catch {
+          m = {};
+        }
+        if (m.method === "initialize") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: m.id,
+              result: {
+                protocolVersion: "2025-06-18",
+                capabilities: { tools: {} },
+                serverInfo: { name: "authfake", version: "1" },
+              },
+            }),
+          );
+        } else if (m.method === "tools/list") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: m.id,
+              result: {
+                tools: [{ name: "t", inputSchema: { type: "object", properties: {} } }],
+              },
+            }),
+          );
+        } else if (m.id !== undefined) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "nope" } }),
+          );
+        } else {
+          res.writeHead(202);
+          res.end();
+        }
+      });
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const url = `http://127.0.0.1:${(srv.address() as { port: number }).port}/mcp`;
+    const prevOAuth = process.env.PI_MCP_OAUTH_PATH;
+    try {
+      // 存量凭据（按 URL 键控）：OAuth store 临时指向放了 token 的文件
+      const oauthFile = path.join(tmp, "oauth-regression.json");
+      writeFileSync(
+        oauthFile,
+        JSON.stringify({ [url]: { tokens: { access_token: "tok", token_type: "Bearer" } } }),
+        "utf8",
+      );
+      process.env.PI_MCP_OAUTH_PATH = oauthFile;
+      resetMcpOAuthForTest();
+      writeFileSync(systemConfig, JSON.stringify({ mcpServers: { authed: { type: "http", url } } }), "utf8");
+      await dispatch("mr", { type: "test_mcp_server", layer: "system", name: "authed" });
+      const res = last();
+      expect(res.type).toBe("mcp_server_test");
+      const status = res.status as Record<string, unknown>;
+      expect(status.state).toBe("ready");
+      expect(status.toolCount).toBe(1);
+      // 回归点：前端测试后整段覆盖行状态，应答漏 oauthAuthorized = 取消授权按钮测一次就消失
+      expect(status.oauthAuthorized).toBe(true);
+    } finally {
+      if (prevOAuth === undefined) delete process.env.PI_MCP_OAUTH_PATH;
+      else process.env.PI_MCP_OAUTH_PATH = prevOAuth;
+      resetMcpOAuthForTest();
+      srv.closeAllConnections?.();
+      srv.close();
+    }
   });
 
   test("delete_mcp_server 删条目并断连", async () => {
