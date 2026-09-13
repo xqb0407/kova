@@ -1476,23 +1476,14 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const { defs } = await loadMcpServers(cwd);
       const def = defs.find((d) => d.name === name && d.layer === layer);
       if (!def) throw new Error(`mcp server not found: ${name}`);
-      // 强制重新握手：先断开（清掉退避期与失败状态），再按当前定义连接
+      // 强制重新握手：先断开（清掉退避期与失败状态），再按当前定义连接。
+      // 应答直接取 statusFor 的完整状态，不要手拼字段——前端测试后把该行状态
+      // 整段覆盖写回快照，手拼漏掉的字段（如 oauthAuthorized：「取消授权」按钮
+      // 判据，凭据按 URL 键控与刚是否握手无关）会凭空消失。
       mcpManager.disconnect(name);
       try {
-        const tools = await mcpManager.ensureConnected(def);
-        // 握手成功可能刷新了协议自报图标（2025-11-25 serverInfo.icons），随状态带回
-        const { icons } = mcpManager.statusFor(def);
-        send({
-          id: reqId,
-          type: "mcp_server_test",
-          status: {
-            name: def.name,
-            state: "ready",
-            toolCount: tools.length,
-            toolNames: tools.map((t) => t.name),
-            ...(icons ? { icons } : {}),
-          },
-        });
+        await mcpManager.ensureConnected(def);
+        send({ id: reqId, type: "mcp_server_test", status: mcpManager.statusFor(def) });
       } catch (err) {
         // 握手失败的 needsAuth（401 需 OAuth）与协议图标一并透出，前端据 needsAuth 显示「授权」
         const s = mcpManager.statusFor(def);
@@ -1500,12 +1491,10 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
           id: reqId,
           type: "mcp_server_test",
           status: {
-            name: def.name,
+            ...s,
             state: "backoff",
             toolCount: 0,
             message: err instanceof Error ? err.message : String(err),
-            ...(s.needsAuth ? { needsAuth: true } : {}),
-            ...(s.icons ? { icons: s.icons } : {}),
           },
         });
       }
