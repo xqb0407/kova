@@ -11,7 +11,6 @@ import { initLocalStorage, resetStorageForTest } from "./hostdb";
 import {
   loadSubagentDefinitions,
   resetSubagentsForTest,
-  setWorkspaceTrusted,
   workspaceSubagentsDir,
 } from "./subagent-definitions";
 import { APPROVAL_REQUIRED_TOOLS } from "./modes";
@@ -141,7 +140,7 @@ describe("subagents_save", () => {
     expect(builtinScope.text).toContain("内置");
   });
 
-  test("未信任工作区：落盘但保持待批准，不自我授予信任", async () => {
+  test("工作区保存即挂载并热重载", async () => {
     const ws = join(tmp, "ws-untrusted");
     const run = makeRun(ws);
     let reloads = 0;
@@ -153,32 +152,11 @@ describe("subagents_save", () => {
       scope: "workspace",
       name: "repo-helper",
     });
-    expect(res.text).toContain("未信任");
-    expect(res.text).toContain("待批准");
+    expect(res.text).toContain("已保存（工作区级）");
     expect(existsSync(join(workspaceSubagentsDir(ws), "repo-helper.yml"))).toBe(true);
-    const pending = await loadSubagentDefinitions({ cwd: ws });
-    expect(pending.trustedWorkspace).toBe(false);
-    // 待批准：在 pendingWorkspace 里；definitions（实际挂载集）不含它
-    expect(pending.pendingWorkspace.some((q) => q.name === "repo-helper")).toBe(true);
-    expect(pending.definitions.some((e) => e.name === "repo-helper")).toBe(false);
-    expect(reloads).toBe(1);
-  });
-
-  test("已信任工作区：保存即挂载", async () => {
-    const ws = join(tmp, "ws-trusted");
-    await setWorkspaceTrusted(ws, true);
-    const run = makeRun(ws);
-    const tools = buildSubagentMgmtTools(run, async () => {});
-    const res = await call(tools, SUBAGENT_MGMT_TOOL_NAMES.save, {
-      ...validSave,
-      scope: "workspace",
-      name: "repo-helper2",
-    });
-    expect(res.text).toContain("已信任");
     const load = await loadSubagentDefinitions({ cwd: ws });
-    expect(
-      load.entries.some((e) => e.scope === "workspace" && e.name === "repo-helper2"),
-    ).toBe(true);
+    expect(load.definitions.some((e) => e.name === "repo-helper")).toBe(true);
+    expect(reloads).toBe(1);
   });
 });
 
@@ -217,13 +195,12 @@ describe("subagents_delete", () => {
 });
 
 describe("subagents_list", () => {
-  test("输出目录、信任状态与挂载条目", async () => {
+  test("输出目录与挂载条目", async () => {
     const run = makeRun(join(tmp, "ws-list"));
     const tools = buildSubagentMgmtTools(run, async () => {});
     const res = await call(tools, SUBAGENT_MGMT_TOOL_NAMES.list, {});
     expect(res.text).toContain(process.env.PI_SUBAGENTS_DIR!);
     expect(res.text).toContain(workspaceSubagentsDir(run.cwd));
-    expect(res.text).toContain("未信任");
     expect(res.text).toContain("[内置] explorer");
   });
 });

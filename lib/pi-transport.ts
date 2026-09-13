@@ -15,6 +15,7 @@ import {
 } from "@/lib/pi-queue";
 import { gitCheckpointCreate, gitCheckpointDiff } from "@/lib/git";
 import { refreshGitStatus } from "@/lib/git-status";
+import { refreshFileTree } from "@/lib/file-tree";
 import { clearRunCheckpoint, setRunCheckpoint } from "@/lib/pi-checkpoints";
 import { focusPanelTab } from "@/lib/panel-tabs";
 
@@ -160,12 +161,15 @@ export class PiTransport implements ChatTransport<UIMessage> {
               clearToolApprovals(chatId);
               clearQuestions(chatId);
               unregisterQueuedPrompt(requestId, chatId);
+              // 文件树失效与检查点解耦：非 git 工作区 agent 也在改盘上文件
+              refreshFileTree(cwd ?? null);
               settleCheckpoint();
             }
             if (chunk.type === "error") {
               // 异常收尾同样结算检查点：半途改动也需要 keep/revert 出口；
               // 挂起提问与 finish 同款清空（abort 拆流时 finish 可能到不了）
               unregisterQueuedPrompt(requestId, chatId);
+              refreshFileTree(cwd ?? null);
               settleCheckpoint();
               clearQuestions(chatId);
             }

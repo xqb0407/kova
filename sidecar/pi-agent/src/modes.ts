@@ -35,6 +35,8 @@ import type {
 import { SYSTEM_PROMPT_CORE, environmentPromptBlock } from "./tools";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "./subagent-mgmt-tools";
 import { personalizationPromptBlock } from "./personalization";
+import { memoryPromptBlock } from "./memory";
+import { mcpPromptBlock } from "./mcp-tools";
 import { sendEventChunk } from "./stream";
 import type {
   ApprovalLevel,
@@ -80,11 +82,12 @@ const AGENT_MODE_PROMPT =
 export type PromptModelInfo = { provider: string; id: string; name?: string };
 
 /**
- * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + 环境事实块（日期/
- * 模型/OS/shell，末行是 cwd 行）。
+ * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + 记忆段 + MCP 段 + 环境事实块
+ * （日期/模型/OS/shell，末行是 cwd 行）。
  * 顺序保证缓存命中：静态核心在前（跨会话字节级一致），模式段夹中间（会话内
- * 切换时整段重排不可避免，但同一模式内前缀稳定），个性化段随设置变更热替换，
- * 环境事实块永远在最尾；个性化段全默认时为空串（默认提示词与旧版字节级一致）。
+ * 切换时整段重排不可避免，但同一模式内前缀稳定），个性化/记忆段随设置变更热替换，
+ * MCP 段随服务器配置变更热替换（无启用服务器时为空串），环境事实块永远在最尾；
+ * 个性化段全默认、记忆关闭、无 MCP 服务器时块为空串（默认提示词与旧版字节级一致）。
  */
 export function composeModeSystemPrompt(
   mode: SessionMode,
@@ -96,6 +99,8 @@ export function composeModeSystemPrompt(
     SYSTEM_PROMPT_CORE,
     extra,
     personalizationPromptBlock(),
+    memoryPromptBlock(cwd),
+    mcpPromptBlock(cwd),
     environmentPromptBlock(cwd, model),
   ]
     .filter(Boolean)

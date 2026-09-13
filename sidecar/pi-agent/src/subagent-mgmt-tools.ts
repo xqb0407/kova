@@ -6,10 +6,6 @@
  * 都长在同一处；改动后热重载（reload 由 sessions 注入，避免模块环）。
  * 管理组挂在 Task 组旁边、不在 baseTools 里：delegate 按定义取工具时结构性
  * 拿不到它们（KNOWN_TOOLS 白名单是第一道，这是第二道）。
- *
- * 信任边界：AI 写入未信任工作区不会顺带授予信任（autoTrust:false）——文件落在
- * 仓库里但保持待批准，用户在设置页点"信任此工作区"后才挂载；
- * 对已信任目录（绝大多数日常会话）则写文件即生效，与设置页保存无差别。
  */
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -67,7 +63,7 @@ export function buildSubagentMgmtTools(
     name: SUBAGENT_MGMT_TOOL_NAMES.list,
     label: "列出子智能体",
     description: [
-      "列出当前可委派的全部子智能体定义（内置 / 系统级 / 工作区级），含工具白名单、轮次与模型设置、启用与挂载状态、来源文件，以及各层存储目录和当前工作区的信任状态。",
+      "列出当前可委派的全部子智能体定义（内置 / 系统级 / 工作区级），含工具白名单、轮次与模型设置、启用与挂载状态、来源文件，以及各层存储目录。",
       "想创建、更新或删除定义前先调用它：你会直接知道文件住在哪、哪些名字已被占用，无需 read 文件系统去猜。",
     ].join("\n\n"),
     parameters: Type.Object({
@@ -80,19 +76,13 @@ export function buildSubagentMgmtTools(
     execute: async (_toolCallId, params) => {
       const p = (params ?? {}) as { include_prompts?: boolean };
       try {
-        const { entries, pendingWorkspace, trustedWorkspace, diagnostics } =
-          await loadSubagentDefinitions({ cwd: run.cwd });
+        const { entries, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
         const lines: string[] = [
           `系统级目录（本机所有工作区生效）：${systemSubagentsDir()}`,
-          `工作区级目录（本会话）：${workspaceSubagentsDir(run.cwd)} —— ${
-            trustedWorkspace ? "已信任（新写入即挂载）" : "未信任（写入后待批准，用户在设置页信任后生效）"
-          }`,
+          `工作区级目录（本会话）：${workspaceSubagentsDir(run.cwd)}`,
           "",
         ];
         for (const e of entries) {
-          // 未信任工作区的定义在 entries 里镜像为 enabled:false——由下方
-          // "待批准"段呈现，别在这里以"开关已关"的误导性标注重复一次
-          if (!trustedWorkspace && e.scope === "workspace") continue;
           const parts = [`tools: [${e.tools.join(", ")}]`];
           if (e.maxTurns !== undefined) parts.push(`maxTurns: ${e.maxTurns}`);
           if (e.model) parts.push(`model: ${e.model}`);
@@ -104,12 +94,6 @@ export function buildSubagentMgmtTools(
           if (p.include_prompts && e.prompt) {
             lines.push(`    prompt: ${e.prompt.slice(0, 400)}`);
           }
-        }
-        for (const q of pendingWorkspace) {
-          lines.push(
-            `- [工作区·待批准] ${q.name} — ${q.description}（tools: [${q.tools.join(", ")}]，未信任不挂载）`,
-          );
-          if (q.path) lines.push(`    ${q.path}`);
         }
         if (diagnostics.length > 0) {
           lines.push("", "加载诊断：");
@@ -129,7 +113,7 @@ export function buildSubagentMgmtTools(
     description: [
       "创建或同名覆盖一份子智能体定义；存储层校验通过后热生效，下一轮 Task 即可委派它。",
       "用这个工具而不是 write/edit 手写 YAML 文件——只有它会做校验、跨层查重并重载工具目录。",
-      "scope=system 存到应用数据目录（本机所有工作区生效，适合通用能力）；scope=workspace 写进本会话工作目录的 .xulux/subagents/，随仓库共享——若该工作区尚未信任，落盘后进入待批准队列，由用户在设置页批准，本工具不会自我授予信任。",
+      "scope=system 存到应用数据目录（本机所有工作区生效，适合通用能力）；scope=workspace 写进本会话工作目录的 .xulux/subagents/，随仓库共享。",
       "delegate 的能力边界（写 prompt 时记住）：只能使用声明的工具白名单，共享会话工作目录，看不到用户与本对话，不能再次委派，唯一输出是最终报告。",
       'description 是主代理挑选委派对象的唯一依据，写清"什么时候用它"；prompt 写给执行者看：角色、方法、汇报格式。',
     ].join("\n\n"),
@@ -174,8 +158,7 @@ export function buildSubagentMgmtTools(
         ...(p.model ? { model: String(p.model) } : {}),
       };
       try {
-        // autoTrust:false：AI 路径永不自我批准工作区信任（见文件头注释）
-        await saveSubagentDefinition(scope, draft, { cwd: run.cwd, autoTrust: false });
+        await saveSubagentDefinition(scope, draft, { cwd: run.cwd });
       } catch (err) {
         return errorResult(errorMessage(err));
       }
@@ -184,27 +167,14 @@ export function buildSubagentMgmtTools(
       } catch (err) {
         logErr("subagent-mgmt: reload after save failed:", errorMessage(err));
       }
-      let mounted = true;
-      try {
-        const load = await loadSubagentDefinitions({ cwd: run.cwd });
-        mounted = load.entries.some(
-          (e) => e.scope === scope && e.name === draft.name && e.enabled,
-        );
-      } catch {
-        // 状态读不出时不打扰保存成功的结论
-      }
       if (scope === "system") {
         return textResult(
           `已保存（系统级）："${draft.name}" → ${systemSubagentsDir()}。已热重载，下一轮 Task 可委派。`,
         );
       }
-      return mounted
-        ? textResult(
-            `已保存（工作区级）："${draft.name}" → ${workspaceSubagentsDir(run.cwd)}。当前工作区已信任，已热重载，下一轮 Task 可委派。`,
-          )
-        : textResult(
-            `文件已写入（工作区级）："${draft.name}" → ${workspaceSubagentsDir(run.cwd)}。当前工作区未信任：定义处于待批准状态，需用户在设置页 → 子智能体点"信任此工作区"后才会挂载。`,
-          );
+      return textResult(
+        `已保存（工作区级）："${draft.name}" → ${workspaceSubagentsDir(run.cwd)}。已热重载，下一轮 Task 可委派。`,
+      );
     },
   };
 

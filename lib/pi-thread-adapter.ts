@@ -94,6 +94,22 @@ async function loadPiHistory(
   return res.messages;
 }
 
+/**
+ * 分支对话：sidecar 把源会话转录复制成一个全新 pi 会话（新 sessionId、
+ * 标题加「（分支）」后缀），返回新 remoteId；调用方随后
+ * threads.reload() + switchToThread(newRemoteId) 打开分支。
+ * cwd 映射本地先登记，让列表刷新前分组归属就已正确。
+ */
+export async function forkPiSession(remoteId: string): Promise<string> {
+  const res = await piRequest<{ type: "forked"; sessionId: string }>({
+    type: "fork_session",
+    sessionId: remoteId,
+  });
+  const cwd = piSessionCwdMap.get(remoteId);
+  if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
+  return res.sessionId;
+}
+
 /** 把 sidecar 的 UIMessage[] 链成 { parentId, message } 仓库结构 */
 function linkMessages<T>(messages: { id: string }[]): {
   headId: string | null;
@@ -162,6 +178,8 @@ export function createPiThreadListAdapter(): RemoteThreadListAdapter {
       for (const [localId, sessionId] of piSessionRegistry) {
         if (sessionId === remoteId) piSessionRegistry.delete(localId);
       }
+      // cwd 归属表同步清理：不留已删会话的陈旧条目
+      piSessionCwdMap.delete(remoteId);
     },
 
     async generateTitle(remoteId, messages) {

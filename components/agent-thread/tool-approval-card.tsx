@@ -40,7 +40,9 @@ function summarizeInput(toolName: string, input: unknown): string {
         ? i.file_path
         : toolName === "write" || toolName === "edit"
           ? `${i.file_path ?? ""}${i.old_string !== undefined ? "（修改）" : "（新建）"}`
-          : undefined;
+          : toolName === "mcp"
+            ? `${i.tool ?? ""}${typeof i.args === "object" && i.args !== null ? ` ${JSON.stringify(i.args)}` : ""}`
+            : undefined;
   const s = typeof raw === "string" ? raw : JSON.stringify(input);
   const oneLine = s.replace(/\s+/g, " ").trim();
   return oneLine.length > 120 ? `${oneLine.slice(0, 120)}…` : oneLine;

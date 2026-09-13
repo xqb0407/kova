@@ -13,6 +13,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { usePiModels } from "@/lib/pi-models";
 import {
   formatTokens,
   modelColor,
@@ -39,7 +40,29 @@ const tooltipStyle = {
 const UsageCharts: FC<{
   days: UsageStatsDay[];
   rangeDays: 7 | 30;
-}> = ({ days, rangeDays }) => {  const { trendData, seriesKeys, donutData, total } = useMemo(() => {
+}> = ({ days, rangeDays }) => {
+  // byModel 聚合键为 "providerId/modelId"（sidecar 按转录原值写入）；
+  // 经模型目录解析成「服务名 · 模型名」展示，目录查不到（服务已删除等）时回退原键
+  const models = usePiModels();
+  const modelLabel = useMemo(() => {
+    const providerNames = new Map<string, string>();
+    const modelNames = new Map<string, string>();
+    for (const m of models) {
+      providerNames.set(m.provider, m.providerName);
+      modelNames.set(`${m.provider}/${m.id}`, m.name || m.id);
+    }
+    return (key: string) => {
+      if (key === OTHER_KEY) return key;
+      const sep = key.indexOf("/");
+      if (sep <= 0) return key;
+      const providerId = key.slice(0, sep);
+      const modelId = key.slice(sep + 1);
+      if (providerId === "?" || modelId === "?") return key;
+      return `${providerNames.get(providerId) ?? providerId} · ${modelNames.get(key) ?? modelId}`;
+    };
+  }, [models]);
+
+  const { trendData, seriesKeys, donutData, total } = useMemo(() => {
     const byDate = new Map(days.map((d) => [d.date, d]));
 
     // 范围内逐日补零序列（今天收尾）
@@ -148,6 +171,7 @@ const UsageCharts: FC<{
                 key={key}
                 type="monotone"
                 dataKey={key}
+                name={modelLabel(key)}
                 stroke={modelColor(i)}
                 strokeWidth={2}
                 dot={false}
@@ -164,7 +188,7 @@ const UsageCharts: FC<{
                 className="inline-block size-2 rounded-full"
                 style={{ backgroundColor: modelColor(i) }}
               />
-              {key}
+              {modelLabel(key)}
             </span>
           ))}
         </div>
@@ -195,7 +219,7 @@ const UsageCharts: FC<{
                   contentStyle={tooltipStyle}
                   formatter={(v, name) => [
                     `${formatTokens(Number(v))} tokens`,
-                    String(name),
+                    modelLabel(String(name)),
                   ]}
                 />
               </PieChart>
@@ -215,7 +239,7 @@ const UsageCharts: FC<{
                     className="min-w-0 flex-1 truncate"
                     title={entry.name}
                   >
-                    {entry.name}
+                    {modelLabel(entry.name)}
                   </span>
                   <span className="text-muted-foreground shrink-0 tabular-nums">
                     {formatTokens(entry.value)} tokens · {percent}%

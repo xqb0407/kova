@@ -6,18 +6,23 @@ import { initStorage, sessionPath } from "./storage";
 import {
   sessionInsert,
   sessionGet,
+  sessionRename,
   sessionTouch,
   getLocalDb,
   modelsReplace,
 } from "./hostdb";
 import { dispatch, dispatchPrompt, handleLine, setInitGate } from "./protocol";
+import { rulesFilePath, soulFilePath } from "./personalization";
 import { running } from "./sessions";
 import { registerCustomProvider, setCurrentModelKey } from "./model-catalog";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-protocol-"));
+const prevIdentityDir = process.env.PI_IDENTITY_DIR;
 
 beforeAll(() => {
   initStorage(path.join(tmp, "state.db"), path.join(tmp, "sessions"));
+  // set_personalization 会写身份文件：钉到临时目录，避免触碰开发者真实 ~/.xulux/
+  process.env.PI_IDENTITY_DIR = path.join(tmp, "identity");
 });
 
 /** 捕获协议流（send 写 process.stdout） */
@@ -37,6 +42,8 @@ beforeAll(() => {
 afterAll(() => {
   (process.stdout as unknown as { write: (c: unknown) => boolean }).write =
     origWrite as unknown as (c: unknown) => boolean;
+  if (prevIdentityDir === undefined) delete process.env.PI_IDENTITY_DIR;
+  else process.env.PI_IDENTITY_DIR = prevIdentityDir;
 });
 
 const last = (): Record<string, unknown> =>
@@ -149,6 +156,58 @@ describe("dispatch: sessions", () => {
     await dispatch("sa4", { type: "list_sessions" });
     sessions = last().sessions as { sessionId: string; archived?: boolean }[];
     expect(sessions.find((s) => s.sessionId === id)?.archived).toBe(false);
+  });
+
+  test("fork_session 复制转录与索引行为新会话（分支对话）", async () => {
+    const srcId = "fork-source";
+    const now = new Date().toISOString();
+    await sessionInsert(srcId, tmp);
+    writeFileSync(
+      sessionPath(srcId),
+      JSON.stringify({ type: "header", schema: 1, id: srcId, cwd: tmp, created_at: now }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 0, ui: {}, agent: {} }) +
+        "\n" +
+        JSON.stringify({ type: "compaction", seq: 1, summary: "s", tokensBefore: 1, throughSeq: 0, createdAt: now }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 2, ui: {}, agent: {} }) +
+        "\n" +
+        "{ 撕裂的尾行",
+      "utf8",
+    );
+    await sessionTouch(srcId, "", "", 2);
+    await sessionRename(srcId, "原始标题");
+
+    await dispatch("fk1", { type: "fork_session", sessionId: srcId });
+    const res = last();
+    expect(res.type).toBe("forked");
+    const newId = res.sessionId as string;
+    expect(newId).toBeTruthy();
+    expect(newId).not.toBe(srcId);
+
+    // 新 JSONL：header 换新 id/cwd，数据行原样复制（compaction 行保留、seq 不变），
+    // 撕裂尾行不进分支
+    const forkLines = readFileSync(sessionPath(newId), "utf8").trim().split("\n");
+    expect(forkLines).toHaveLength(4);
+    expect(JSON.parse(forkLines[0])).toMatchObject({ type: "header", id: newId, cwd: tmp });
+    expect(JSON.parse(forkLines[1])).toMatchObject({ type: "message", seq: 0 });
+    expect(JSON.parse(forkLines[2])).toMatchObject({ type: "compaction", seq: 1 });
+    expect(JSON.parse(forkLines[3])).toMatchObject({ type: "message", seq: 2 });
+
+    // 索引行：标题加「（分支）」后缀；message_count 只按实拷消息行计
+    const row = getLocalDb()!
+      .query<{ title: string; message_count: number }, [string]>(
+        "SELECT title, message_count FROM sessions WHERE id = ?",
+      )
+      .get(newId)!;
+    expect(row.title).toBe("原始标题（分支）");
+    expect(row.message_count).toBe(2);
+  });
+
+  test("fork_session 源会话不存在时报错", async () => {
+    await expect(
+      dispatch("fk2", { type: "fork_session", sessionId: "fork-nope" }),
+    ).rejects.toThrow("session not found: fork-nope");
   });
 
   test("delete_session removes row and file", async () => {
@@ -428,7 +487,12 @@ describe("dispatch: personalization", () => {
   test("get_personalization returns the current settings", async () => {
     await dispatch("pe0", { type: "set_personalization", settings: DEFAULT_SETTINGS });
     await dispatch("pe1", { type: "get_personalization" });
-    expect(last()).toEqual({ id: "pe1", type: "personalization", settings: DEFAULT_SETTINGS });
+    expect(last()).toEqual({
+      id: "pe1",
+      type: "personalization",
+      settings: DEFAULT_SETTINGS,
+      paths: { soul: soulFilePath(), rules: rulesFilePath() },
+    });
   });
 
   test("set_personalization persists to kv and hot-swaps active session prompts", async () => {
@@ -444,7 +508,12 @@ describe("dispatch: personalization", () => {
       customInstructions: "先结论后细节",
     };
     await dispatch("pe3", { type: "set_personalization", settings });
-    expect(last()).toEqual({ id: "pe3", type: "personalization", settings });
+    expect(last()).toEqual({
+      id: "pe3",
+      type: "personalization",
+      settings,
+      paths: { soul: soulFilePath(), rules: rulesFilePath() },
+    });
 
     // 活动会话热替换：无需重建 Agent，下一轮请求即生效
     expect(run.agent.state.systemPrompt).toContain("Reply style - professional");
@@ -453,12 +522,108 @@ describe("dispatch: personalization", () => {
 
     // 整包 JSON 落 kv 表（本地模式镜像）
     const row = getLocalDb()!
-      .query<{ value: string }, [string]>("SELECT value FROM kv WHERE key = 'pi.personalization'")
+      .query<{ value: string }, []>("SELECT value FROM kv WHERE key = 'pi.personalization'")
       .get()!;
     expect(JSON.parse(row.value)).toMatchObject({ style: "professional", userName: "老王" });
 
     // 恢复默认：提示词不再含个性化段
     await dispatch("pe4", { type: "set_personalization", settings: DEFAULT_SETTINGS });
     expect(run.agent.state.systemPrompt).not.toContain("Reply style - professional");
+  });
+});
+
+describe("dispatch: memory", () => {
+  const DEFAULT_MEMORY = {
+    enabled: false,
+    global: true,
+    workspace: true,
+    fileSearch: true,
+    enabledFiles: { global: null, workspace: null },
+  };
+
+  test("get/set_memory 往返，set 落 kv 并热替换活动会话提示词", async () => {
+    await dispatch("me0", { type: "get_memory" });
+    expect(last()).toEqual({ id: "me0", type: "memory", settings: DEFAULT_MEMORY });
+
+    await dispatch("me1", {
+      type: "set_memory",
+      settings: { ...DEFAULT_MEMORY, enabled: true },
+    });
+    expect(last()).toEqual({
+      id: "me1",
+      type: "memory",
+      settings: { ...DEFAULT_MEMORY, enabled: true },
+    });
+    const row = getLocalDb()!
+      .query<{ value: string }, []>("SELECT value FROM kv WHERE key = 'pi.memory'")
+      .get()!;
+    expect(JSON.parse(row.value)).toMatchObject({ enabled: true });
+
+    // 新会话的系统提示词带上记忆引导段（总开关开启、目录无文件时的最小引导）
+    await dispatch("me2", { type: "new_session", threadId: "th-mem", cwd: tmp });
+    const run = running.get("th-mem")!;
+    expect(run.agent.state.systemPrompt).toContain("## Memory");
+
+    // 恢复关闭：提示词不再含记忆段
+    await dispatch("me3", { type: "set_memory", settings: DEFAULT_MEMORY });
+    expect(run.agent.state.systemPrompt).not.toContain("## Memory");
+  });
+
+  test("list_memory_files 返回两作用域目录；未带 cwd 时 workspace 为 null", async () => {
+    type Scopes = {
+      global: { dir: string };
+      workspace: { dir: string } | null;
+    };
+    await dispatch("me4", { type: "list_memory_files" });
+    const bare = last() as { type: string; scopes: Scopes };
+    expect(bare.type).toBe("memory_files");
+    expect(bare.scopes.workspace).toBeNull();
+
+    await dispatch("me5", { type: "list_memory_files", cwd: tmp });
+    const res = last() as { type: string; scopes: Scopes };
+    expect(res.scopes.global.dir).toContain("memory");
+    expect(res.scopes.workspace!.dir).toBe(path.join(tmp, ".xulux", "memory"));
+  });
+
+  test("read/write_memory_file：写后可读、清单带 mtime、写后热替换提示词", async () => {
+    await dispatch("me6", {
+      type: "write_memory_file",
+      scope: "workspace",
+      cwd: tmp,
+      file: "MEMORY.md",
+      content: "#preference [[ui]] Settings page stays file-centric.",
+    });
+    expect(last()).toMatchObject({
+      type: "memory_file_saved",
+      scope: "workspace",
+      file: "MEMORY.md",
+    });
+
+    await dispatch("me7", {
+      type: "read_memory_file",
+      scope: "workspace",
+      cwd: tmp,
+      file: "MEMORY.md",
+    });
+    const read = last() as { type: string; content: string };
+    expect(read.type).toBe("memory_file");
+    expect(read.content).toContain("file-centric");
+
+    // 清单条目带修改时间
+    await dispatch("me8", { type: "list_memory_files", cwd: tmp });
+    const files = (last() as { scopes: { workspace: { files: { name: string; mtime: number }[] } } })
+      .scopes.workspace.files;
+    const entry = files.find((f) => f.name === "MEMORY.md")!;
+    expect(entry.mtime).toBeGreaterThan(0);
+
+    // 路径穿越与非法名报错（dispatch 抛错由 handleLine 统一包成 error 响应）
+    await expect(
+      dispatch("me9", {
+        type: "read_memory_file",
+        scope: "workspace",
+        cwd: tmp,
+        file: "../../secrets.md",
+      }),
+    ).rejects.toThrow("memory file not found");
   });
 });

@@ -145,18 +145,21 @@ export type PiPersonalizationStyle =
   | "blunt"
   | "guiding";
 
-/** 个性化设置整包（sidecar 持久化于 SQLite kv，活动会话热更新） */
+/** 个性化设置整包（结构化字段落 SQLite kv；persona/customInstructions 事实源在全局身份文件） */
 export type PiPersonalization = {
   style: PiPersonalizationStyle;
   /** AI 对用户的称呼（空 = 不注入） */
   userName: string;
   /** AI 的名称（空 = 不注入） */
   assistantName: string;
-  /** 人设 / 人格描述（空 = 不注入） */
+  /** 人设 / 人格描述：事实源 ~/.xulux/soul.md，可外部编辑（空/缺失 = 不注入） */
   persona: string;
-  /** 自定义指令：每次对话都携带（空 = 不注入） */
+  /** 自定义指令：每次对话都携带，事实源 ~/.xulux/rules.md，可外部编辑（空/缺失 = 不注入） */
   customInstructions: string;
 };
+
+/** 身份文件绝对路径（sidecar 随 personalization 响应返回；设置页展示外部编辑入口用） */
+export type PiPersonalizationPaths = { soul: string; rules: string };
 
 /** 单日使用统计（本地时区；sidecar 扫全部会话转录聚合，日期升序） */
 export type PiUsageStatsDay = {
@@ -207,27 +210,98 @@ export type PiSubagentEntry = {
   editable: boolean;
 };
 
-/** 工作区发现但未信任、待批准的定义 */
-export type PiSubagentPending = {
-  name: string;
-  description: string;
-  tools: string[];
-  path?: string;
-};
-
-/** subagents 应答：清单 + 待信任 + 加载诊断 */
+/** 子智能体清单应答：设置页与所有变更命令共用（list/save/delete/开关的应答同形状） */
 export type PiSubagentsResponse = {
   type: "subagents";
   agents: PiSubagentEntry[];
-  pendingWorkspace: PiSubagentPending[];
-  trustedWorkspace: boolean;
   workspaceCwd: string | null;
   diagnostics: string[];
+};
+
+/** 记忆设置整包（设置 → 记忆；sidecar 持久化于 SQLite kv，活动会话热更新） */
+export type PiMemoryConfig = {
+  /** 总开关：关闭时不注入、memory_* 工具一律婉拒 */
+  enabled: boolean;
+  /** 全局记忆叠加开关（~/.xulux/memory，跨会话跨工作区） */
+  global: boolean;
+  /** 工作区记忆叠加开关（<cwd>/.xulux/memory，未信任工作区不生效） */
+  workspace: boolean;
+  /** 文件检索（memory_search 工具）开关 */
+  fileSearch: boolean;
+  /** 指定记忆开启：每作用域文件白名单；null = 全部启用（自动跟随新建文件） */
+  enabledFiles: { global: string[] | null; workspace: string[] | null };
+};
+
+/** 记忆目录文件条目（设置 → 记忆的文件清单；daily 汇总行 bytes/mtime 为 0） */
+export type PiMemoryFileEntry = { name: string; bytes: number; mtime: number };
+
+/** 单作用域记忆目录状态（list_memory_files 应答） */
+export type PiMemoryScopeState = {
+  dir: string;
+  files: PiMemoryFileEntry[];
+};
+
+/** 记忆两作用域清单（list_memory_files 应答；工作区未选时 workspace 为 null） */
+export type PiMemoryFilesResponse = {
+  type: "memory_files";
+  scopes: {
+    global: PiMemoryScopeState;
+    workspace: PiMemoryScopeState | null;
+  };
+};
+
+/** MCP 服务器连接状态（sidecar mcp-manager 实时状态；disabled 行恒为 idle） */
+export type PiMcpServerStatus = {
+  name: string;
+  state: "idle" | "connecting" | "ready" | "backoff";
+  toolCount: number;
+  toolNames?: string[];
+  /** 最近一次错误/截断说明（backoff/工具截断） */
+  message?: string;
+};
+
+/** MCP 服务器条目（设置 → MCP；list/save/delete/开关的应答共用清单形状）。
+ *  env/headers 明文返回仅供编辑弹窗回填（存本地配置文件，同 custom providers 的 key 策略） */
+export type PiMcpServerEntry = {
+  name: string;
+  layer: "system" | "workspace";
+  /** 定义所在文件绝对路径 */
+  source: string;
+  /** 来自工作区共享文件 .mcp.json（设置页不直接改写它，删除降级为提示） */
+  fromStandard?: boolean;
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  description?: string;
+  lifecycle?: "lazy" | "eager" | "keep-alive";
+  idleTimeout?: number;
+  /** 工具名 glob 免审批 */
+  approveTools?: string[];
+  enabled: boolean;
+  status: PiMcpServerStatus;
+};
+
+/** MCP 服务器清单应答：设置页与所有变更命令共用（list/save/delete/开关的应答同形状） */
+export type PiMcpServersResponse = {
+  type: "mcp_servers";
+  servers: PiMcpServerEntry[];
+  workspaceCwd: string | null;
+  diagnostics: string[];
+};
+
+/** test_mcp_server 应答（强制重新握手后的状态） */
+export type PiMcpServerTestResponse = {
+  type: "mcp_server_test";
+  status: PiMcpServerStatus;
 };
 
 export type PiResponse =
   | { type: "sessions"; sessions: PiSessionSummary[] }
   | { type: "session"; sessionId: string; threadId: string }
+  | { type: "forked"; sessionId: string }
   | { type: "history"; messages: unknown[] }
   | { type: "deleted" }
   | { type: "renamed" }
@@ -236,8 +310,23 @@ export type PiResponse =
   | { type: "model"; provider: string; modelId: string }
   | { type: "thinking"; level: string }
   | { type: "thinking_maps"; applied: number }
-  | { type: "personalization"; settings: PiPersonalization }
+  | {
+      type: "personalization";
+      settings: PiPersonalization;
+      paths?: PiPersonalizationPaths;
+    }
+  | { type: "memory"; settings: PiMemoryConfig }
+  | PiMemoryFilesResponse
+  | { type: "memory_file"; file: string; content: string }
+  | {
+      type: "memory_file_saved";
+      scope: "global" | "workspace";
+      file: string;
+      bytes: number;
+    }
   | PiSubagentsResponse
+  | PiMcpServersResponse
+  | PiMcpServerTestResponse
   | { type: "usage_stats"; stats: PiUsageStats }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "model_updated"; provider: string; modelId: string }

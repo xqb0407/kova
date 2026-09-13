@@ -10,6 +10,8 @@ import { focusPanelTab, type PanelTabExtra, type PanelTabType } from "./panel-ta
  * - WebFetch  → 浏览器标签，url=目标地址（复用既有标签并导航过去）
  * - plan_write（含历史 SubmitPlan/SubmitGoal）→ 文件标签，focus=提交 toolCallId
  *   （渲染 args 里的计划/提案 Markdown 快照，见 file-view）
+ * - memory_write/memory_read → 文件标签，focus=工具 toolCallId（回放写入内容/
+ *   读取结果快照；记忆文件可在 ~/.xulux/memory，不走磁盘实时读取）
  * 复用优先（focusPanelTab），并派发 base.tsx 监听的 `agent-panel:open`
  * 把收起的面板展开（compact 浮层同样生效）。
  */
@@ -50,7 +52,22 @@ export function toolPanelTarget(
         : toolName === "SubmitGoal"
           ? "目标"
           : "计划";
-    return { type: "file", extra: { focus: toolCallId, title } };
+    // path:undefined 清掉文件树磁盘模式的残留（同标签被复用时视图数据源要切换干净）
+    return { type: "file", extra: { focus: toolCallId, title, path: undefined } };
+  }
+  // memory_write/memory_read：文件标签回放消息快照（写入内容 / 读取结果），
+  // 不读磁盘实时文件——记忆文件可能在工作区之外（~/.xulux/memory）
+  if (toolName === "memory_write") {
+    const file =
+      typeof args?.file === "string" && args.file ? args.file : "MEMORY.md";
+    return { type: "file", extra: { focus: toolCallId, title: file, path: undefined } };
+  }
+  if (toolName === "memory_read") {
+    const title =
+      typeof args?.file === "string" && args.file
+        ? basename(args.file)
+        : "记忆文件列表";
+    return { type: "file", extra: { focus: toolCallId, title, path: undefined } };
   }
   const filePath =
     toolName === "read" || toolName === "edit" || toolName === "write"
@@ -60,7 +77,10 @@ export function toolPanelTarget(
       : null;
   if (!filePath) return null;
   if (toolName === "read") {
-    return { type: "file", extra: { focus: toolCallId, title: basename(filePath) } };
+    return {
+      type: "file",
+      extra: { focus: toolCallId, title: basename(filePath), path: undefined },
+    };
   }
   // 审查标签可能被检查点入口带着 cwd/checkpoint 复用：定位到工具 diff 时清掉
   return {
@@ -78,6 +98,8 @@ export function hasToolPanel(toolName: string): boolean {
     toolName === "write" ||
     toolName === "WebFetch" ||
     toolName === "plan_write" ||
+    toolName === "memory_write" ||
+    toolName === "memory_read" ||
     toolName === "SubmitPlan" ||
     toolName === "SubmitGoal"
   );

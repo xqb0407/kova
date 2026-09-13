@@ -41,6 +41,7 @@ const ACCENTS: { value: AccentName; label: string; color: string | null }[] = [
   { value: "green", label: "绿色", color: "oklch(0.55 0.16 155)" },
   { value: "orange", label: "橙色", color: "oklch(0.62 0.18 55)" },
   { value: "rose", label: "玫红", color: "oklch(0.58 0.21 350)" },
+  { value: "periwinkle", label: "长春花蓝（图标蓝）", color: "oklch(0.606 0.136 269)" },
 ];
 
 const AccentPicker: FC<{ value: AccentName }> = ({ value }) => (

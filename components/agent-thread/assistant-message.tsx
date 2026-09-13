@@ -52,7 +52,8 @@ const HIDDEN_TOOL_NAMES = new Set(["todo"]);
 /**
  * 工具 → 分组类别（对齐截图的分段标签）：
  * terminal=命令流水、inspect=查阅（读文件/检索）、modify=编辑改动。
- * 未列出的工具仍进通用 group-tool。
+ * 未列出的工具仍进通用 group-tool（memory_write 记忆写入是持久化动作，
+ * 不与工作区文件编辑混排，归通用组单独成行）。
  */
 const TOOL_CATEGORY: Record<string, "terminal" | "inspect" | "modify"> = {
   bash: "terminal",
@@ -61,6 +62,8 @@ const TOOL_CATEGORY: Record<string, "terminal" | "inspect" | "modify"> = {
   grep: "inspect",
   WebFetch: "inspect",
   WebSearch: "inspect",
+  memory_read: "inspect",
+  memory_search: "inspect",
   edit: "modify",
   write: "modify",
 };
@@ -89,7 +92,8 @@ const ToolGroupSection: FC<{
           p.toolName === "glob" ||
           p.toolName === "grep" ||
           p.toolName === "WebFetch" ||
-          p.toolName === "WebSearch"
+          p.toolName === "WebSearch" ||
+          p.toolName === "memory_search"
         )
           searches += 1;
       }

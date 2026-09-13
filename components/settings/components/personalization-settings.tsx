@@ -17,6 +17,7 @@ import {
   PERSONALIZATION_STYLE_OPTIONS,
   savePersonalization,
   usePersonalization,
+  usePersonalizationPaths,
   type Personalization,
 } from "@/lib/personalization";
 
@@ -34,17 +35,17 @@ const MarkdownView = dynamic(
   { ssr: false, loading: () => null },
 );
 
-/** Markdown 长文本字段的弹窗配置（maxLength 与 sidecar normalizePersonalization 的截断一致） */
+/** Markdown 长文本字段的弹窗配置（file = 全局目录身份文件名，事实源在 sidecar 端） */
 const MARKDOWN_FIELDS = {
   persona: {
     title: "编辑人设 / 人格描述",
-    maxLength: 4000,
+    file: "soul.md",
     placeholder:
       "用 Markdown 描述 WorkBuddy 的身份与性格，例如：\n\n- 一位资深的全栈工程师搭档\n- 沟通简洁直接，喜欢用类比解释复杂概念",
   },
   customInstructions: {
     title: "编辑自定义指令",
-    maxLength: 8000,
+    file: "rules.md",
     placeholder:
       "例如：\n- 默认使用 TypeScript，优先复用现有工具函数\n- 解释代码时先给要点列表\n- 不要重复我的问题原文",
   },
@@ -52,19 +53,26 @@ const MARKDOWN_FIELDS = {
 
 type MarkdownFieldKey = keyof typeof MARKDOWN_FIELDS;
 
-/** Markdown 长文本字段小节：标题 + 编辑按钮 + 预览卡片（点击卡片同样进入编辑） */
+/** Markdown 长文本字段小节：标题 + 编辑按钮 + 文件路径 + 预览卡片（点击卡片同样进入编辑） */
 const MarkdownFieldSection: FC<{
   title: string;
   desc: string;
   emptyHint: string;
+  /** 全局身份文件绝对路径（外部编辑入口；null 时回退默认位置展示） */
+  filePath: string;
   value: string;
   onEdit: () => void;
-}> = ({ title, desc, emptyHint, value, onEdit }) => (
+}> = ({ title, desc, emptyHint, filePath, value, onEdit }) => (
   <section className="flex flex-col gap-3">
     <div className="flex items-start justify-between gap-4">
       <div className="min-w-0">
         <h2 className="text-base font-semibold">{title}</h2>
         <p className="text-muted-foreground text-sm">{desc}</p>
+        <p className="text-muted-foreground mt-1 text-xs">
+          存储于全局文件{" "}
+          <span className="font-mono break-all">{filePath}</span>
+          ，可用任意编辑器修改（外部改动对新会话生效）
+        </p>
       </div>
       <Button
         variant="outline"
@@ -92,10 +100,12 @@ const MarkdownFieldSection: FC<{
 type SaveState = "saved" | "pending" | "error";
 
 /** 个性化配置页：回复风格 / 称呼与身份 / 人设 / 自定义指令。
- *  事实源在 sidecar（SQLite kv 持久化 + 活动会话系统提示词热替换），这里只镜像；
+ *  事实源在 sidecar——结构化字段存 SQLite kv；人设与自定义指令存全局身份文件
+ *  (~/.xulux/soul.md、rules.md)，可外部编辑，页面上展示文件绝对路径。这里只镜像；
  *  文本改动防抖 600ms 自动保存，卸载时冲刷未保存的草稿。版式对齐外观页。 */
 export const PersonalizationSettings: FC = () => {
   const prefs = usePersonalization();
+  const paths = usePersonalizationPaths();
   const [draft, setDraft] = useState<Personalization>(prefs);
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const latest = useRef(draft);
@@ -221,11 +231,13 @@ export const PersonalizationSettings: FC = () => {
           </div>
         </section>
 
-        {/* 人设 / 自定义指令：Markdown 卡片预览，编辑走懒加载的弹窗编辑器 */}
+        {/* 人设 / 自定义指令：Markdown 卡片预览，编辑走懒加载的弹窗编辑器；
+            内容存全局身份文件，可外部编辑 */}
         <MarkdownFieldSection
           title="人设 / 人格描述"
           desc="描述 AI 是谁、以什么身份与你协作，支持 Markdown 格式。"
           emptyHint="尚未设置。描述 AI 的背景、性格、沟通习惯，例如「一位资深的全栈工程师搭档，喜欢用类比解释复杂概念」。"
+          filePath={paths?.soul ?? "~/.xulux/soul.md"}
           value={personaPreview}
           onEdit={() => openMarkdownDialog("persona")}
         />
@@ -234,6 +246,7 @@ export const PersonalizationSettings: FC = () => {
           title="自定义指令"
           desc="每次对话都会携带的额外指示，例如技术栈偏好、输出格式要求、回复语言等，支持 Markdown 格式。"
           emptyHint="尚未设置。例如「默认使用 TypeScript；解释代码时先给要点列表；不要重复我的问题原文」。"
+          filePath={paths?.rules ?? "~/.xulux/rules.md"}
           value={instructionsPreview}
           onEdit={() => openMarkdownDialog("customInstructions")}
         />
@@ -248,7 +261,6 @@ export const PersonalizationSettings: FC = () => {
                 ? draft.persona
                 : draft.customInstructions
             }
-            maxLength={dialogMeta.maxLength}
             placeholder={dialogMeta.placeholder}
             onSave={(next) =>
               update(

@@ -4,14 +4,11 @@ import { useCallback, useEffect, useMemo, useState, type FC } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
 import { isTauri } from "@/lib/tauri";
-import {
-  copyText,
-  encodePairPayload,
-  type PairPayload,
-} from "@/lib/remote";
+import { copyText, encodePairPayload, type PairPayload } from "@/lib/remote";
 import { QRCodeSVG } from "qrcode.react";
 import { CheckIcon, CopyIcon, RefreshCwIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import InputCopy from "@/components/ui/input-copy";
 
 type RemoteStatus = {
   running: boolean;
@@ -179,18 +176,20 @@ export const RemoteSettings: FC = () => {
                   </div>
                   <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                     {qr.direct ? (
-                      <p className="text-muted-foreground text-xs">
-                        手机扫码将直接打开应用网页（本机提供，无需另外部署），地址与配对码已自动填入。
-                      </p>
+                      <InputCopy
+                        label="手机扫码将直接打开应用网页（本机提供，无需另外部署），地址与配对码已自动填入。"
+                        value={qr.value}
+                        className="text-muted-foreground rounded-lg bg-background/60 mr-1 border px-2.5 py-1.5 font-mono break-all "
+                      />
                     ) : (
                       <p className="text-muted-foreground text-xs">
                         未检测到局域网 IP，扫码可得连接配置
                         JSON；可在网页连接页地址框粘贴解析。
                       </p>
                     )}
-                    <p className="text-muted-foreground rounded-lg bg-background/60 mr-1 border px-2.5 py-1.5 font-mono break-all text-xs">
+                    {/* <p className="text-muted-foreground rounded-lg bg-background/60 mr-1 border px-2.5 py-1.5 font-mono break-all text-xs">
                       {qr.value}
-                    </p>
+                    </p> */}
                   </div>
                 </div>
               </section>
@@ -205,8 +204,6 @@ export const RemoteSettings: FC = () => {
                     <AddressRow
                       key={addr}
                       addr={addr}
-                      copied={copied}
-                      onCopy={copy}
                     />
                   ))
                 ) : (
@@ -230,8 +227,6 @@ export const RemoteSettings: FC = () => {
                     <AddressRow
                       key={addr}
                       addr={addr}
-                      copied={copied}
-                      onCopy={copy}
                     />
                   ))
                 ) : (
@@ -296,23 +291,8 @@ export const RemoteSettings: FC = () => {
 /** 地址行：等宽展示 + 一键复制 */
 const AddressRow: FC<{
   addr: string;
-  copied: string | null;
-  onCopy: (text: string) => void;
-}> = ({ addr, copied, onCopy }) => (
-  <div className="hover:bg-muted/60 flex items-center justify-between gap-2 rounded-xl px-3 py-2">
-    <span className="truncate font-mono text-xs">{addr}</span>
-    <Button
-      size="sm"
-      variant="ghost"
-      className="h-6 shrink-0 px-2"
-      onClick={() => onCopy(addr)}
-    >
-      {copied === addr ? (
-        <CheckIcon className="size-3.5" />
-      ) : (
-        <CopyIcon className="size-3.5" />
-      )}
-      <span className="text-xs">{copied === addr ? "已复制" : "复制"}</span>
-    </Button>
+}> = ({ addr }) => (
+  <div className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2">
+    <InputCopy value={addr} className="shrink-0" />
   </div>
 );
