@@ -35,6 +35,9 @@ import { cn } from "@/lib/utils";
 import { isRemoteMode } from "@/lib/remote";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
+import { useFluidHover } from "@/hooks/use-fluid-hover";
+import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
+import { FluidHoverRow } from "@/components/fluid-hover-row";
 import { Logo } from "./header";
 import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import {
@@ -55,6 +58,7 @@ import {
 } from "lucide-react";
 import {
   useEffect,
+  useRef,
   useState,
   type FC,
   type MouseEvent,
@@ -103,6 +107,17 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         ? new Set()
         : new Set(projectGroups.map((g) => g.cwd)),
     );
+  // 顶部固定菜单与「设置」按钮：与列表同款的 fluid hover。各自独立作用域
+  // （与列表容器 padding 不同，高亮不跨容器滑动，进出时淡入淡出）。
+  const menuListRef = useRef<HTMLDivElement>(null);
+  const menuHover = useFluidHover(menuListRef);
+  const settingsRef = useRef<HTMLDivElement>(null);
+  const settingsHover = useFluidHover(settingsRef);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
+  const mobileMenuHover = useFluidHover(mobileMenuRef);
+  const mobileSettingsRef = useRef<HTMLDivElement>(null);
+  const mobileSettingsHover = useFluidHover(mobileSettingsRef);
+
   const [searchOpen, setSearchOpen] = useState(false);
   const hasThreads = useAuiState((s) => s.threads.threadIds.length > 0);
   const threadIds = useAuiState((s) => s.threads.threadIds);
@@ -236,15 +251,21 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 
         {/* 固定的四个菜单项 */}
         <div className="shrink-0 px-2 pt-0">
-          <div className="flex flex-col gap-0.5">
-            {menuItems.map((item) => {
+          <div
+            ref={menuListRef}
+            className="relative flex flex-col gap-0.5"
+            {...menuHover.handlers}
+          >
+            <FluidHoverHighlight hover={menuHover} className="rounded-md" />
+            {menuItems.map((item, index) => {
               const Icon = item.icon;
               const button = (
                 <Button
-                  key={item.id}
                   variant="ghost"
                   className={cn(
-                    "hover:bg-muted h-8 justify-start gap-2 rounded-md px-2.5 text-sm font-normal",
+                    // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
+                    // 自带的 hover 底色，避免与高亮叠加
+                    "h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent",
                     sidebarCollapsed && "w-8 justify-center px-2",
                     !item.isNew && activeMenu === item.id && "bg-muted",
                   )}
@@ -258,16 +279,24 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 </Button>
               );
 
-              return item.isNew ? (
-                <ThreadListPrimitive.New key={item.id} asChild>
-                  {button}
-                </ThreadListPrimitive.New>
-              ) : (
-                button
+              return (
+                <FluidHoverRow
+                  key={item.id}
+                  registerItem={menuHover.registerItem}
+                  index={index}
+                >
+                  {item.isNew ? (
+                    <ThreadListPrimitive.New asChild>
+                      {button}
+                    </ThreadListPrimitive.New>
+                  ) : (
+                    button
+                  )}
+                </FluidHoverRow>
               );
             })}
-            </div>
           </div>
+        </div>
 
         {/* Tabs 胶囊分段器（左对齐）+ 项目 tab 的展开全部按钮 */}
         {!sidebarCollapsed && (
@@ -338,17 +367,24 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 
         {/* 底部固定的设置按钮（远程模式下隐藏：模型/技能/远程配置均为桌面专属） */}
         {!isRemoteMode() && (
-          <div className="shrink-0 p-2">
-            <Button
-              variant="ghost"
-              className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-muted"
-              onClick={() => onOpenSettings?.()}
-            >
-              <SettingsIcon className="size-4 shrink-0" />
-              {!sidebarCollapsed && (
-                <span className="whitespace-nowrap">设置</span>
-              )}
-            </Button>
+          <div
+            ref={settingsRef}
+            className="relative shrink-0 p-2"
+            {...settingsHover.handlers}
+          >
+            <FluidHoverHighlight hover={settingsHover} className="rounded-md" />
+            <FluidHoverRow registerItem={settingsHover.registerItem} index={0}>
+              <Button
+                variant="ghost"
+                className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent"
+                onClick={() => onOpenSettings?.()}
+              >
+                <SettingsIcon className="size-4 shrink-0" />
+                {!sidebarCollapsed && (
+                  <span className="whitespace-nowrap">设置</span>
+                )}
+              </Button>
+            </FluidHoverRow>
           </div>
         )}
       </aside>
@@ -377,30 +413,46 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 
           {/* 移动端的四个菜单 */}
           <div className="shrink-0 px-4 pt-2">
-            <div className="flex flex-col gap-0.5">
-              {menuItems.map((item) => {
+            <div
+              ref={mobileMenuRef}
+              className="relative flex flex-col gap-0.5"
+              {...mobileMenuHover.handlers}
+            >
+              <FluidHoverHighlight
+                hover={mobileMenuHover}
+                className="rounded-md"
+              />
+              {menuItems.map((item, index) => {
                 const Icon = item.icon;
                 const button = (
                   <Button
-                    key={item.id}
                     variant="ghost"
                     className={cn(
-                      "hover:bg-muted h-8 justify-start gap-2 rounded-md px-2.5 text-sm font-normal",
+                      "h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent",
                       !item.isNew && activeMenu === item.id && "bg-muted",
                     )}
                     onClick={() => handleMenuClick(item)}
+                    aria-label={item.label}
                   >
                     <Icon className="size-4 shrink-0" />
                     <span className="whitespace-nowrap">{item.label}</span>
                   </Button>
                 );
 
-                return item.isNew ? (
-                  <ThreadListPrimitive.New key={item.id} asChild>
-                    {button}
-                  </ThreadListPrimitive.New>
-                ) : (
-                  button
+                return (
+                  <FluidHoverRow
+                    key={item.id}
+                    registerItem={mobileMenuHover.registerItem}
+                    index={index}
+                  >
+                    {item.isNew ? (
+                      <ThreadListPrimitive.New asChild>
+                        {button}
+                      </ThreadListPrimitive.New>
+                    ) : (
+                      button
+                    )}
+                  </FluidHoverRow>
                 );
               })}
             </div>
@@ -459,18 +511,31 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 
           {/* 移动端底部固定的设置按钮（远程模式下隐藏） */}
           {!isRemoteMode() && (
-            <div className="shrink-0 border-t p-4">
-              <Button
-                variant="ghost"
-                className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-muted"
-                onClick={() => {
-                  setMobileOpen(false);
-                  onOpenSettings?.();
-                }}
+            <div
+              ref={mobileSettingsRef}
+              className="relative shrink-0 border-t p-4"
+              {...mobileSettingsHover.handlers}
+            >
+              <FluidHoverHighlight
+                hover={mobileSettingsHover}
+                className="rounded-md"
+              />
+              <FluidHoverRow
+                registerItem={mobileSettingsHover.registerItem}
+                index={0}
               >
-                <SettingsIcon className="size-4 shrink-0" />
-                <span className="whitespace-nowrap">设置</span>
-              </Button>
+                <Button
+                  variant="ghost"
+                  className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent"
+                  onClick={() => {
+                    setMobileOpen(false);
+                    onOpenSettings?.();
+                  }}
+                >
+                  <SettingsIcon className="size-4 shrink-0" />
+                  <span className="whitespace-nowrap">设置</span>
+                </Button>
+              </FluidHoverRow>
             </div>
           )}
         </SheetContent>

@@ -27,9 +27,13 @@ const MarkdownEditDialog: FC<{
   value: string;
   /** 保存新内容（调用方的防抖自动保存） */
   onSave: (next: string) => void;
-  maxLength: number;
+  /** 输入上限：超限静默截断；缺省不限制（身份文件类字段存全局 md 文件，
+   *  内容上限由 sidecar 注入预算控制，弹窗不截断外部写入的长内容） */
+  maxLength?: number;
   placeholder?: string;
-}> = ({ open, onOpenChange, title, value, onSave, maxLength, placeholder }) => {
+  /** 打开时落在哪个页签（记忆文件浏览默认预览，其余场景缺省编辑） */
+  initialTab?: "edit" | "preview";
+}> = ({ open, onOpenChange, title, value, onSave, maxLength, placeholder, initialTab }) => {
   const [text, setText] = useState(value);
   const [tab, setTab] = useState("edit");
   const valueRef = useRef(value);
@@ -38,11 +42,13 @@ const MarkdownEditDialog: FC<{
   useEffect(() => {
     if (!open) return;
     setText(valueRef.current);
-    setTab("edit");
-  }, [open]);
+    setTab(initialTab ?? "edit");
+  }, [open, initialTab]);
+
+  const cap = (s: string) => (maxLength === undefined ? s : s.slice(0, maxLength));
 
   const save = () => {
-    onSave(text.slice(0, maxLength));
+    onSave(cap(text));
     onOpenChange(false);
   };
 
@@ -78,7 +84,7 @@ const MarkdownEditDialog: FC<{
                 value={text}
                 height="100%"
                 placeholder={placeholder}
-                onChange={(next) => setText(next.slice(0, maxLength))}
+                onChange={(next) => setText(cap(next))}
               />
             </div>
           </TabsContent>
@@ -94,7 +100,7 @@ const MarkdownEditDialog: FC<{
         </Tabs>
         <DialogFooter className="items-center sm:justify-between">
           <span className="text-muted-foreground order-first text-xs tabular-nums">
-            {text.length} / {maxLength}
+            {maxLength === undefined ? `${text.length} 字` : `${text.length} / ${maxLength}`}
           </span>
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)}>

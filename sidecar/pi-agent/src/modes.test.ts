@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -21,6 +21,16 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Running, SessionMode } from "./types";
 
 const BASE_NAMES = ["read", "glob", "grep", "bash", "write", "edit", "ls"];
+
+// 个性化身份文件实时读盘：钉到空目录，提示词基线不受开发者真实 ~/.xulux/ 影响
+const prevIdentityDir = process.env.PI_IDENTITY_DIR;
+beforeAll(() => {
+  process.env.PI_IDENTITY_DIR = join(tmpdir(), "pi-agent-modes-identity");
+});
+afterAll(() => {
+  if (prevIdentityDir === undefined) delete process.env.PI_IDENTITY_DIR;
+  else process.env.PI_IDENTITY_DIR = prevIdentityDir;
+});
 
 const fakeTool = (name: string): AgentTool =>
   ({

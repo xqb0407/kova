@@ -406,6 +406,14 @@ export function useFluidHover<T extends HTMLElement>(
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      const container = containerRef.current;
+      // Portaled popups (a row's menu, its confirm dialog) are React children
+      // of the container, so their synthetic mousemove bubbles here while the
+      // pointer actually stands over the popup. Following it would drag the
+      // highlight along whatever sits beside the popup (a modal centers to
+      // the right of a sidebar list). The DOM target of a portaled event is
+      // never inside the container — that is the tell.
+      if (!container || !container.contains(e.target as Node)) return;
       const mouseX = e.clientX;
       const mouseY = e.clientY;
 
@@ -415,17 +423,17 @@ export function useFluidHover<T extends HTMLElement>(
 
       rafIdRef.current = requestAnimationFrame(() => {
         rafIdRef.current = null;
-        const container = containerRef.current;
-        if (!container) return;
+        const live = containerRef.current;
+        if (!live) return;
         setActiveIndex(
           pickNearest({
             axis,
             point: { x: mouseX, y: mouseY },
             rects: itemRectsRef.current,
-            containerRect: container.getBoundingClientRect(),
-            scroll: { x: container.scrollLeft, y: container.scrollTop },
-            border: { x: container.clientLeft, y: container.clientTop },
-            layoutSize: { width: container.offsetWidth, height: container.offsetHeight },
+            containerRect: live.getBoundingClientRect(),
+            scroll: { x: live.scrollLeft, y: live.scrollTop },
+            border: { x: live.clientLeft, y: live.clientTop },
+            layoutSize: { width: live.offsetWidth, height: live.offsetHeight },
             isDisabled: isItemDisabled
               ? (index) => {
                   const el = itemsRef.current.get(index);
@@ -453,6 +461,13 @@ export function useFluidHover<T extends HTMLElement>(
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
+      const container = containerRef.current;
+      // Same portal rule as the move handler: a click inside a portaled popup
+      // bubbles here through the React tree, but it is the popup's click, not
+      // a gap click. Routing it would double-activate — e.g. picking a menu
+      // item would also click the highlighted row behind it (switch thread /
+      // toggle a group) right as the popup's own action runs.
+      if (!container || !container.contains(e.target as Node)) return;
       const target = e.target as Node | null;
       if (!target) return;
       // Inside an item: the item owns the click.

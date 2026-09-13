@@ -49,6 +49,7 @@ import {
   ServerIcon,
   Trash2Icon,
 } from "lucide-react";
+import { toast } from "@/components/ui/toast";
 
 /** 接口格式选项：label 显示在触发器与下拉列表，endpoint 仅在下拉列表中作辅助说明 */
 const API_FORMATS: {

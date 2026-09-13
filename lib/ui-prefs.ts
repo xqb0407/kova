@@ -17,7 +17,8 @@ export type AccentName =
   | "violet"
   | "green"
   | "orange"
-  | "rose";
+  | "rose"
+  | "periwinkle";
 export type FontSizeName = "sm" | "md" | "lg";
 export type ChatWidthName = "narrow" | "md" | "wide";
 /** 代码主题档位（面板 diff 用 @pierre/diffs、代码预览用 CodeMirror，共用映射；浅深分开配置） */

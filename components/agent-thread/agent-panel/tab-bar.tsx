@@ -1,6 +1,7 @@
 "use client";
 
-import type { FC } from "react";
+import { useId, type FC } from "react";
+import { motion, useReducedMotion, type Transition } from "framer-motion";
 import { ChevronDownIcon, PlusIcon, XIcon } from "lucide-react";
 import {
   DropdownMenu,
@@ -30,19 +31,32 @@ import {
 import { TAB_META, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
 import { cn } from "@/lib/utils";
 
+// 与 ui/tabs 指示器同款的 no-overshoot spring（beui 参考曲线）。
+const pillTransition: Transition = {
+  type: "spring",
+  stiffness: 170,
+  damping: 30,
+  mass: 1.2,
+};
+
 /**
  * 单个标签胶囊:图标 + 标题 + 关闭(悬停显现,激活常显)。
  * IDE 式操作(参考 IDEA/VS Code):右键弹标签菜单,中键直接关闭,
  * 右键时先激活该标签(菜单标题即指向被操作的标签)。
+ * 激活底色/描边交给共享布局滑块（pillLayoutId）：切换标签时从旧胶囊
+ * 滑过来。滑块绝对定位在胶囊内（inset-0），横向滚动时随胶囊一起走；
+ * -z-10 + isolate 把层叠锁在胶囊内，图标/标题/关闭按钮照常浮在滑块上。
  */
 const TabChip: FC<{
   tab: PanelTab;
   active: boolean;
   index: number;
   count: number;
-}> = ({ tab, active, index, count }) => {
+  pillLayoutId: string;
+}> = ({ tab, active, index, count, pillLayoutId }) => {
   const meta = TAB_META[tab.type];
   const Icon = meta.icon;
+  const reduce = useReducedMotion();
   return (
     <ContextMenu>
       <ContextMenuTrigger
@@ -64,12 +78,23 @@ const TabChip: FC<{
               if (e.key === "Enter" || e.key === " ") setActivePanelTab(tab.id);
             }}
             className={cn(
-              "group flex h-7 max-w-[150px] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border px-2 text-xs outline-none transition-colors",
+              "group relative isolate flex h-7 max-w-[150px] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-transparent px-2 text-xs outline-none transition-colors",
               active
-                ? "border-border bg-muted text-foreground"
-                : "border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                ? "text-foreground"
+                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
             )}
           >
+            {active ? (
+              // -inset-px：滑块铺满胶囊的 border-box（绝对定位子元素默认
+              // 只到 padding-box，差的那圈正是描边宽度）。
+              <motion.span
+                layoutId={pillLayoutId}
+                layout="position"
+                initial={false}
+                transition={reduce ? { duration: 0 } : pillTransition}
+                className="border-border bg-muted absolute -inset-px -z-10 rounded-lg border"
+              />
+            ) : null}
             <Icon className="size-3.5 shrink-0" />
             <span className="min-w-0 flex-1 truncate">{tabTitle(tab)}</span>
             <button
@@ -130,8 +155,9 @@ export const TabBar: FC<{
   activeId: string | null;
 }> = ({ tabs, activeId }) => {
   const types = useVisiblePanelTabTypes();
+  const pillLayoutId = useId();
   return (
-    <div className="flex h-12 shrink-0 items-center gap-1 border-b px-2">
+    <div className="flex h-12 shrink-0 items-center gap-1 border-b-[0.5] px-2">
       <DropdownMenu>
         <DropdownMenuTrigger
           render={
@@ -179,6 +205,7 @@ export const TabBar: FC<{
             active={t.id === activeId}
             index={i}
             count={tabs.length}
+            pillLayoutId={pillLayoutId}
           />
         ))}
       </div>

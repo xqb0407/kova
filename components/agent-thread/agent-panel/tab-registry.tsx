@@ -6,6 +6,7 @@ import {
   ActivityIcon,
   FileCodeIcon,
   FileTextIcon,
+  FolderTreeIcon,
   GitBranchIcon,
   GlobeIcon,
   ListTodoIcon,
@@ -16,6 +17,7 @@ import { usePanelActivity } from "@/lib/panel-activity";
 import { useThreadTodos } from "@/lib/pi-todo";
 import { useWorkspace } from "@/lib/workspace-store";
 import { useGitStatus } from "@/lib/git-status";
+import { isTauri } from "@/lib/tauri";
 import type { PanelTab, PanelTabType } from "@/lib/panel-tabs";
 import { ActivityView } from "./activity-view";
 import { PlanSection } from "./plan-section";
@@ -25,6 +27,7 @@ import { GitView } from "./git-view";
 import { TerminalSection } from "./terminal-section";
 import { BrowserView } from "./browser-view";
 import { FileTab } from "./file-view";
+import { FileTreeTab } from "./file-tree-tab";
 import { TabEmpty } from "./tab-empty";
 
 /**
@@ -35,17 +38,24 @@ export const PANEL_TAB_TYPES: readonly PanelTabType[] = [
   "activity",
   "plan",
   "review",
+  "explorer",
   "terminal",
   "browser",
   "git",
 ];
 
-/** 可打开的标签类型:git 标签仅在工作目录是 git 仓库时出现(静默降级,不报错) */
+/**
+ * 可打开的标签类型:git 标签仅在工作目录是 git 仓库时出现(静默降级,不报错);
+ * 文件树标签仅桌面端(web 端无本地 FS,数据源整个不存在)。
+ */
 export function useVisiblePanelTabTypes(): PanelTabType[] {
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
-  if (status) return [...PANEL_TAB_TYPES];
-  return PANEL_TAB_TYPES.filter((t) => t !== "git");
+  return PANEL_TAB_TYPES.filter((t) => {
+    if (t === "explorer") return isTauri();
+    if (t === "git") return !!status;
+    return true;
+  });
 }
 
 export const TAB_META: Record<
@@ -71,6 +81,11 @@ export const TAB_META: Record<
     label: "文件",
     description: "读取结果回看",
     icon: FileTextIcon,
+  },
+  explorer: {
+    label: "文件树",
+    description: "浏览工作区文件，点击实时预览",
+    icon: FolderTreeIcon,
   },
   terminal: {
     label: "终端",
@@ -190,6 +205,8 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
       return <ReviewTab tab={tab} />;
     case "file":
       return <FileTab tab={tab} />;
+    case "explorer":
+      return <FileTreeTab />;
     case "terminal":
       return <TerminalTab tab={tab} />;
     case "git":

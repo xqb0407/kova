@@ -21,7 +21,10 @@
 /* 深色模式由 html 上的 .dark 类驱动（lib/ui-prefs.ts + layout 预绘制脚本），
    覆盖 Tailwind 默认的媒体查询策略，"跟随系统/浅色/深色"三档才能全端生效 */
 @custom-variant dark (&:where(.dark, .dark *));
-
+@utility border-b {
+  border-bottom-width: 0.5px;
+  border-bottom-style: solid;
+}
 @theme inline {
   @keyframes collapsible-down {
     from {
@@ -323,6 +326,16 @@
   --primary: oklch(0.66 0.19 350);
   --primary-foreground: oklch(0.16 0.03 350);
   --ring: oklch(0.56 0.16 350);
+}
+:root[data-accent="periwinkle"] {
+  --primary: oklch(0.606 0.136 269);
+  --primary-foreground: oklch(0.98 0.01 269);
+  --ring: oklch(0.67 0.12 269);
+}
+.dark[data-accent="periwinkle"] {
+  --primary: oklch(0.7 0.13 269);
+  --primary-foreground: oklch(0.16 0.03 269);
+  --ring: oklch(0.6 0.12 269);
 }
 
 /* 对话区最大宽度：thread.tsx 的 --thread-max-width 回退值消费；默认档（md）60rem 不打标 */

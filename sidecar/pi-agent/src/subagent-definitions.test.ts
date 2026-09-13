@@ -14,7 +14,6 @@ import {
   resetSubagentsForTest,
   saveSubagentDefinition,
   setSubagentEnabled,
-  setWorkspaceTrusted,
   subagentFileName,
   subagentStateKey,
   type SubagentDraft,
@@ -228,7 +227,7 @@ describe("subagentFileName / subagentStateKey", () => {
   });
 });
 
-describe("loadSubagentDefinitions（三层发现 / 开关 / 信任）", () => {
+describe("loadSubagentDefinitions（三层发现 / 开关）", () => {
   test("系统层遮蔽内置同名以外的定义合并挂载", async () => {
     const sys = join(tmp, "layers-system");
     mkdirSync(sys, { recursive: true });
@@ -264,7 +263,7 @@ describe("loadSubagentDefinitions（三层发现 / 开关 / 信任）", () => {
     await setSubagentEnabled("system", "toggle-me", true);
   });
 
-  test("工作区定义未信任时只进 pendingWorkspace，信任后挂载并可遮蔽系统层", async () => {
+  test("工作区定义直接挂载并可遮蔽系统层同名", async () => {
     const sys = join(tmp, "trust-system");
     const ws = join(tmp, "trust-ws");
     mkdirSync(sys, { recursive: true });
@@ -275,20 +274,11 @@ describe("loadSubagentDefinitions（三层发现 / 开关 / 信任）", () => {
       emitSubagentYaml(draft({ name: "shared", description: "workspace copy" })),
     );
 
-    const untrusted = await loadSubagentDefinitions({ systemDir: sys, cwd: ws });
-    expect(untrusted.trustedWorkspace).toBe(false);
-    expect(untrusted.pendingWorkspace.map((d) => d.name)).toEqual(["shared"]);
-    expect(untrusted.definitions.find((d) => d.name === "shared")?.description).toBe("system copy");
-
-    await setWorkspaceTrusted(ws, true);
-    const trusted = await loadSubagentDefinitions({ systemDir: sys, cwd: ws });
-    expect(trusted.trustedWorkspace).toBe(true);
-    expect(trusted.pendingWorkspace).toEqual([]);
-    expect(trusted.definitions.find((d) => d.name === "shared")?.description).toBe("workspace copy");
-
-    await setWorkspaceTrusted(ws, false);
-    const revoked = await loadSubagentDefinitions({ systemDir: sys, cwd: ws });
-    expect(revoked.definitions.find((d) => d.name === "shared")?.description).toBe("system copy");
+    const loaded = await loadSubagentDefinitions({ systemDir: sys, cwd: ws });
+    expect(loaded.definitions.find((d) => d.name === "shared")?.description).toBe("workspace copy");
+    // 清单里两层同名条目都在，工作区那条 enabled 跟随开关
+    const wsEntry = loaded.entries.find((e) => e.name === "shared" && e.scope === "workspace")!;
+    expect(wsEntry.enabled).toBe(true);
   });
 
   test("坏文件降级为诊断，不赔上同层其它定义", async () => {
@@ -356,7 +346,7 @@ describe("saveSubagentDefinition / deleteSubagentDefinition", () => {
     ).rejects.toThrow(/另一层/);
   });
 
-  test("编辑改名清旧文件；工作区保存顺带信任", async () => {
+  test("编辑改名清旧文件；工作区保存即挂载", async () => {
     const sys = join(tmp, "save-rename");
     const ws = join(tmp, "save-rename-ws");
     await saveSubagentDefinition("system", draft({ name: "old-name", description: "before" }), { systemDir: sys });
@@ -372,9 +362,8 @@ describe("saveSubagentDefinition / deleteSubagentDefinition", () => {
     expect(names).toEqual(["new-name"]);
 
     await saveSubagentDefinition("workspace", draft({ name: "ws-agent" }), { systemDir: sys, cwd: ws });
-    const trustedAfterSave = await loadSubagentDefinitions({ systemDir: sys, cwd: ws });
-    expect(trustedAfterSave.trustedWorkspace).toBe(true);
-    expect(trustedAfterSave.definitions.some((d) => d.name === "ws-agent")).toBe(true);
+    const afterSave = await loadSubagentDefinitions({ systemDir: sys, cwd: ws });
+    expect(afterSave.definitions.some((d) => d.name === "ws-agent")).toBe(true);
   });
 
   test("删除：系统/工作区可删，内置与不存在报错", async () => {

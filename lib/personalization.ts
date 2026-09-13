@@ -1,18 +1,23 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
-import { piRequest } from "@/lib/pi-bridge";
-import type { PiPersonalization, PiPersonalizationStyle } from "@/lib/pi-bridge";
-
 /**
  * 个性化（设置 → 个性化）：回复风格 / 称呼与身份 / 人设 / 自定义指令。
- * 事实源在 sidecar——SQLite kv 整包持久化 + 活动会话系统提示词热替换；
- * 这里只做镜像缓存：启动 get_personalization 水合，保存走 set_personalization。
+ * 事实源在 sidecar——结构化字段存 SQLite kv；人设与自定义指令存全局目录身份文件
+ * （~/.xulux/soul.md、rules.md，可外部编辑，get 回实时内容）+ 活动会话系统提示词
+ * 热替换。这里只做镜像缓存：启动 get_personalization 水合，保存走 set_personalization。
  * 桌面与远程网页共用同一链路（远程经 WS 转发到同一 sidecar），桌面端无需
  * 直接读写 Tauri kv，远程改动也能持久化。
  */
+import { useSyncExternalStore } from "react";
+import { piRequest } from "@/lib/pi-bridge";
+import type {
+  PiPersonalization,
+  PiPersonalizationPaths,
+  PiPersonalizationStyle,
+} from "@/lib/pi-bridge";
 export type Personalization = PiPersonalization;
 export type PersonalizationStyle = PiPersonalizationStyle;
+export type PersonalizationPaths = PiPersonalizationPaths;
 
 export const DEFAULT_PERSONALIZATION: Personalization = {
   style: "default",
@@ -37,8 +42,23 @@ export const PERSONALIZATION_STYLE_OPTIONS: {
 ];
 
 let current: Personalization = DEFAULT_PERSONALIZATION;
+/** 身份文件绝对路径（sidecar 启动响应返回，运行期不变；null = 旧版 sidecar 未提供） */
+let currentPaths: PersonalizationPaths | null = null;
 const listeners = new Set<() => void>();
 let initialized = false;
+
+/** 身份文件绝对路径（设置页展示外部编辑入口用） */
+export function getPersonalizationPaths(): PersonalizationPaths | null {
+  return currentPaths;
+}
+
+export function usePersonalizationPaths(): PersonalizationPaths | null {
+  return useSyncExternalStore(
+    subscribe,
+    () => currentPaths,
+    () => null,
+  );
+}
 
 function emit() {
   for (const listener of listeners) listener();
@@ -66,10 +86,13 @@ export async function initPersonalization(): Promise<void> {
   if (initialized) return;
   initialized = true;
   try {
-    const res = await piRequest<{ type: "personalization"; settings: Personalization }>({
-      type: "get_personalization",
-    });
+    const res = await piRequest<{
+      type: "personalization";
+      settings: Personalization;
+      paths?: PersonalizationPaths;
+    }>({ type: "get_personalization" });
     current = { ...DEFAULT_PERSONALIZATION, ...res.settings };
+    currentPaths = res.paths ?? null;
     emit();
   } catch {
     // sidecar 不可用（启动早期/连接断开）：保持默认，保存时仍会尝试

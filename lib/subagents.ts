@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { piRequest, type PiSubagentEntry, type PiSubagentPending, type PiSubagentScope, type PiSubagentsResponse } from "@/lib/pi-bridge";
+import { piRequest, type PiSubagentEntry, type PiSubagentScope, type PiSubagentsResponse } from "@/lib/pi-bridge";
 import { getWorkspace } from "@/lib/workspace-store";
 
 /**
@@ -11,7 +11,6 @@ import { getWorkspace } from "@/lib/workspace-store";
  * 活动会话的工具组热重载由 sidecar 完成，下一个 turn 生效。
  */
 export type SubagentEntry = PiSubagentEntry;
-export type SubagentPending = PiSubagentPending;
 export type SubagentScope = PiSubagentScope;
 
 /** 表单/原文两种保存载荷共用的草稿形状 */
@@ -28,9 +27,6 @@ export type SubagentsSnapshot = {
   loading: boolean;
   error: string | null;
   agents: SubagentEntry[];
-  /** 工作区发现但未信任的定义（待批准） */
-  pendingWorkspace: SubagentPending[];
-  trustedWorkspace: boolean;
   /** 本次清单对应的工作区 cwd */
   workspaceCwd: string | null;
   /** 加载诊断（坏文件等），不致命 */
@@ -41,8 +37,6 @@ const EMPTY: SubagentsSnapshot = {
   loading: false,
   error: null,
   agents: [],
-  pendingWorkspace: [],
-  trustedWorkspace: false,
   workspaceCwd: null,
   diagnostics: [],
 };
@@ -64,8 +58,6 @@ function fromResponse(res: PiSubagentsResponse): SubagentsSnapshot {
     loading: false,
     error: null,
     agents: res.agents,
-    pendingWorkspace: res.pendingWorkspace,
-    trustedWorkspace: res.trustedWorkspace,
     workspaceCwd: res.workspaceCwd,
     diagnostics: res.diagnostics,
   };
@@ -148,10 +140,6 @@ export function setSubagentEnabled(
     enabled,
     ...(cwd ? { cwd } : {}),
   });
-}
-
-export function setWorkspaceTrust(cwd: string, trusted: boolean): Promise<void> {
-  return mutate({ type: "set_workspace_trust", cwd, trusted });
 }
 
 /** 订阅清单快照；cwd 变化时自动重取（工作区层随所选工作区呈现） */

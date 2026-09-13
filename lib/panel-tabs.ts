@@ -15,8 +15,10 @@ export type PanelTabType =
   | "terminal"
   | "browser"
   | "git"
-  /** 文件内容预览：只能由消息里的 read 工具行唤起（见 lib/tool-panel） */
-  | "file";
+  /** 文件内容预览：消息 read 工具行唤起（快照），或文件树标签唤起（tab.path=磁盘实时） */
+  | "file"
+  /** 工作区文件树浏览（仅 Tauri 桌面端,见 tab-registry 的可见性过滤） */
+  | "explorer";
 
 export type PanelTab = {
   id: string;
@@ -33,6 +35,8 @@ export type PanelTab = {
    * 视图侧据此展开对应卡片并滚动到位。
    */
   focus?: string;
+  /** file 标签磁盘模式：workspace（tab.cwd）相对路径,实时读盘渲染（文件树点击） */
+  path?: string;
 };
 
 export type PanelTabsState = { tabs: PanelTab[]; activeId: string | null };
@@ -47,6 +51,7 @@ const VALID_TYPES = new Set<PanelTabType>([
   "browser",
   "git",
   "file",
+  "explorer",
 ]);
 
 function validTab(raw: unknown): raw is PanelTab {
@@ -116,7 +121,7 @@ export function usePanelTabs(): PanelTabsState {
 
 export type PanelTabExtra = Pick<
   PanelTab,
-  "title" | "url" | "cwd" | "checkpoint" | "focus"
+  "title" | "url" | "cwd" | "checkpoint" | "focus" | "path"
 >;
 
 /** 打开一个新标签并激活(所有类型均可多开)；extra 携带视图数据上下文 */

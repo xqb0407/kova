@@ -21,9 +21,12 @@ import {
 } from "./sessions";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-sessions-"));
+// new_session 会合成提示词并实时读身份文件：钉到空目录，避免触碰开发者真实 ~/.xulux/
+const prevIdentityDir = process.env.PI_IDENTITY_DIR;
 
 beforeAll(() => {
   initStorage(path.join(tmp, "state.db"), path.join(tmp, "sessions"));
+  process.env.PI_IDENTITY_DIR = path.join(tmp, "identity");
 });
 
 /** 捕获协议流（send 写 process.stdout） */
@@ -43,6 +46,8 @@ beforeAll(() => {
 afterAll(() => {
   (process.stdout as unknown as { write: (c: unknown) => boolean }).write =
     origWrite as unknown as (c: unknown) => boolean;
+  if (prevIdentityDir === undefined) delete process.env.PI_IDENTITY_DIR;
+  else process.env.PI_IDENTITY_DIR = prevIdentityDir;
 });
 
 const last = (): Record<string, unknown> =>

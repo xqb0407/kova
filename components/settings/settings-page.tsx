@@ -1,19 +1,24 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { useRef, useState, type FC } from "react";
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { useFluidHover } from "@/hooks/use-fluid-hover";
+import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
+import { FluidHoverRow } from "@/components/fluid-hover-row";
 import { WindowControls } from "@/components/window-controls";
 import {
   ArchiveIcon,
   BoxesIcon,
   BotIcon,
+  BrainIcon,
   ChartColumnIcon,
   ChevronLeftIcon,
   GlobeIcon,
   InfoIcon,
   KeyboardIcon,
   PaintbrushIcon,
+  PlugIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
 } from "lucide-react";
@@ -22,8 +27,10 @@ import { RemoteSettings } from "./components/remote-settings";
 import { AppearanceSettings } from "./components/appearance-settings";
 import { AboutSettings } from "./components/about-settings";
 import { ArchiveSettings } from "./components/archive-settings";
+import { MemorySettings } from "./components/memory-settings";
 import { PersonalizationSettings } from "./components/personalization-settings";
 import { SubagentsSettings } from "./components/subagents-settings";
+import { McpSettings } from "./components/mcp-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
 import { UsageStatsSettings } from "./components/usage-stats-settings";
 import { Logo } from "../agent-thread/header";
@@ -36,8 +43,10 @@ type SettingsSection =
   | "general"
   | "archive"
   | "personalization"
+  | "memory"
   | "shortcuts"
   | "subagents"
+  | "mcp"
   | "usage";
 
 const GROUPS: {
@@ -60,6 +69,8 @@ const GROUPS: {
     items: [
       { id: "models", label: "模型", icon: BoxesIcon },
       { id: "subagents", label: "子智能体", icon: BotIcon },
+      { id: "mcp", label: "MCP", icon: PlugIcon },
+      { id: "memory", label: "记忆", icon: BrainIcon },
     ],
   },
   {
@@ -71,9 +82,24 @@ const GROUPS: {
   },
 ];
 
+// fluid hover 槽位：模块级常量保证注册序稳定。「返回应用」= 0，
+// 导航项按 GROUPS 顺序接在其后；分组标题不注册（高亮跳过，就近点亮条目）。
+const NAV_ITEM_INDEX = (() => {
+  const map = new Map<SettingsSection, number>();
+  let next = 1;
+  for (const group of GROUPS) {
+    for (const item of group.items) map.set(item.id, next++);
+  }
+  return map;
+})();
+
 /** 设置页：全窗口视图，左侧二级侧边栏导航，"返回应用"回到聊天 */
 export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
   const [section, setSection] = useState<SettingsSection>("models");
+  // 左侧导航与侧边栏列表同款 fluid hover：导航容器即滚动容器，
+  // 高亮 rect 随 content 滚动（容器内 position:absolute 子元素随之滚动）
+  const navRef = useRef<HTMLDivElement>(null);
+  const navHover = useFluidHover(navRef);
   // 桌面端自绘 titlebar：拖拽区所有桌面端生效；macOS 红绿灯悬浮于侧边栏顶栏，
   // Windows 隐藏系统标题栏后由 WindowControls 接管，网页端无窗口 chrome
   const desktop = isTauri();
@@ -94,34 +120,62 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
          
 
 
-        <div className="flex flex-col gap-1 overflow-y-auto p-3 pt-1">
-          <button
-            type="button"
-            onClick={onBack}
-            className="text-muted-foreground hover:bg-muted hover:text-foreground flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm"
-          >
-            <ChevronLeftIcon className="size-4 shrink-0" />
-            返回应用
-          </button>
+        <div
+          ref={navRef}
+          className="relative flex flex-col gap-1 overflow-y-auto p-3 pt-1"
+          {...navHover.handlers}
+        >
+          {/* 选中项常驻高亮：复用同一套 itemRects 测量，切换 section 时
+              弹簧滑到目标行。session 恒为 0 → 不随鼠标进出重新淡入淡出，
+              只在首挂载淡入、此后只滑位置。渲染在 hover 高亮之前：同层
+              绝对定位，鼠标悬停高亮叠在选中高亮之上。 */}
+          <FluidHoverHighlight
+            rect={
+              navHover.isMeasured
+                ? (navHover.itemRects[NAV_ITEM_INDEX.get(section) ?? 0] ?? null)
+                : null
+            }
+            session={0}
+            className="bg-muted rounded-md"
+            // 跨行位移比悬停跟随远得多，用与 ui/tabs 指示器同款的
+            // no-overshoot spring（beui 参考曲线），而非 80ms 的 spring.fast。
+            transition={{ type: "spring", stiffness: 170, damping: 30, mass: 1.2 }}
+          />
+          <FluidHoverHighlight hover={navHover} className="rounded-md" />
+          <FluidHoverRow registerItem={navHover.registerItem} index={0}>
+            <button
+              type="button"
+              onClick={onBack}
+              className="text-muted-foreground hover:text-foreground flex h-8 w-full shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm"
+            >
+              <ChevronLeftIcon className="size-4 shrink-0" />
+              返回应用
+            </button>
+          </FluidHoverRow>
           {GROUPS.map((group) => (
             <div key={group.label} className="flex flex-col gap-1">
               <div className="text-muted-foreground px-2 pt-3 pb-1 text-xs font-medium">
                 {group.label}
               </div>
               {group.items.map(({ id, label, icon: Icon }) => (
-                <button
+                <FluidHoverRow
                   key={id}
-                  type="button"
-                  onClick={() => setSection(id)}
-                  data-active={section === id}
-                  className={cn(
-                    "hover:bg-muted flex h-8 items-center gap-2 rounded-md px-2.5 text-sm",
-                    "data-active:bg-muted data-active:text-foreground text-muted-foreground",
-                  )}
+                  registerItem={navHover.registerItem}
+                  index={NAV_ITEM_INDEX.get(id) ?? 0}
                 >
-                  <Icon className="size-4 shrink-0" />
-                  {label}
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setSection(id)}
+                    data-active={section === id}
+                    className={cn(
+                      "flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-sm",
+                      "data-active:text-foreground text-muted-foreground",
+                    )}
+                  >
+                    <Icon className="size-4 shrink-0" />
+                    {label}
+                  </button>
+                </FluidHoverRow>
               ))}
             </div>
           ))}
@@ -145,8 +199,10 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "remote" && <RemoteSettings />}
           {section === "appearance" && <AppearanceSettings />}
           {section === "personalization" && <PersonalizationSettings />}
+          {section === "memory" && <MemorySettings />}
           {section === "shortcuts" && <ShortcutSettings />}
           {section === "subagents" && <SubagentsSettings />}
+          {section === "mcp" && <McpSettings />}
           {section === "archive" && <ArchiveSettings />}
           {section === "usage" && <UsageStatsSettings />}
           {section === "about" && <AboutSettings />}

@@ -22,6 +22,9 @@
  *   { "type": "ping", "id" }                                  → { id, type: "pong" }
  *   { "type": "list_sessions", "id" }                         → { id, type: "sessions", sessions: [...] }
  *   { "type": "new_session", "id", "threadId", "cwd" }        → { id, type: "session", sessionId, threadId }
+ *   { "type": "fork_session", "id", "sessionId" }             → { id, type: "forked", sessionId: <新会话> }
+ *       分支对话：把源会话转录复制到全新 sessionId（seq 沿用、header 重写），
+ *       索引行标题加「（分支）」后缀；与源会话此后再无关联
  *   { "type": "get_history", "id", "sessionId" }              → { id, type: "history", messages: UIMessage[] }
  *       历史从 agent 消息重建，含工具部件（tool part 的 input/output 与 live 流一致）；
  *       compaction 检查点行重建为 data-compaction 分隔线 part（刷新后分隔线不丢）
@@ -36,13 +39,29 @@
  *       未选择时 provider/modelId 为空串（前端据此校准 UI 真值）
  *   { "type": "set_thinking", "id", "level" }                 → { id, type: "thinking", level }（深度思考档位，广播到活动会话）
  *   { "type": "set_thinking_maps", "id", "maps" }             → { id, type: "thinking_maps", applied }（模型级 thinkingLevelMap 覆盖整包下发）
- *   { "type": "get_personalization", "id" }                   → { id, type: "personalization", settings }（个性化设置：回复风格/称呼/人设/自定义指令）
- *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings }（落 SQLite kv + 活动会话系统提示词热替换）
- *   { "type": "list_subagents", "id", "cwd"? }                → { id, type: "subagents", agents, pendingWorkspace, trustedWorkspace, workspaceCwd, diagnostics }
- *   { "type": "save_subagent", "id", "scope", "cwd"?, ("definition"|"raw"), "name"? } → 校验后写 <app_data>/subagents 或 <cwd>/.xulux/subagents 的 YAML + 热重载 → 同款 subagents 应答（name=编辑前原名，改名时清旧文件；workspace 保存顺带信任该工作区）
+ *   { "type": "get_personalization", "id" }                   → { id, type: "personalization", settings, paths }（个性化设置：回复风格/称呼/人设/自定义指令；paths = 人设/指令身份文件绝对路径）
+ *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings, paths }（人设/指令落全局身份文件、结构化字段落 SQLite kv + 活动会话系统提示词热替换）
+ *   { "type": "get_memory", "id" }                            → { id, type: "memory", settings }（记忆设置：总开关/作用域叠加/文件检索/指定文件白名单）
+ *   { "type": "set_memory", "id", "settings" }                → { id, type: "memory", settings }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization）
+ *   { "type": "list_memory_files", "id", "cwd"? }             → { id, type: "memory_files", scopes: { global, workspace } }
+ *       两作用域记忆目录路径与文件清单（工作区未选时 workspace 为 null）；设置 → 记忆页渲染用
+ *   { "type": "read_memory_file", "id", "scope", "cwd"?, "file" } → { id, type: "memory_file", file, content }
+ *       读单个记忆文件（相对记忆目录，允许 daily/...；路径越界回 missing）；设置页点开文件预览/编辑用
+ *   { "type": "write_memory_file", "id", "scope", "cwd"?, "file", "content" } → { id, type: "memory_file_saved", scope, file, bytes }
+ *       保存设置页编辑的记忆文件（整体覆盖，根级 .md），成功后热替换活动会话提示词
+ *   { "type": "list_subagents", "id", "cwd"? }                → { id, type: "subagents", agents, workspaceCwd, diagnostics }
+ *   { "type": "save_subagent", "id", "scope", "cwd"?, ("definition"|"raw"), "name"? } → 校验后写 <app_data>/subagents 或 <cwd>/.xulux/subagents 的 YAML + 热重载 → 同款 subagents 应答（name=编辑前原名，改名时清旧文件）
  *   { "type": "delete_subagent", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 subagents 应答（内置不可删）
  *   { "type": "set_subagent_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 subagents 应答
- *   { "type": "set_workspace_trust", "id", "cwd", "trusted" }  → 工作区信任落 kv + 热重载 → 同款 subagents 应答
+ *   { "type": "list_mcp_servers", "id", "cwd"? }             → { id, type: "mcp_servers", servers, workspaceCwd, diagnostics }
+ *       MCP 服务器清单（系统 ~/.xulux/mcp.json + 工作区 .mcp.json/.xulux/mcp.json 合并，
+ *       含每台连接状态）；设置 → MCP 页渲染用
+ *   { "type": "save_mcp_server", "id", "layer", "cwd"?, ("definition"), "name"? } → 校验后写系统/工作区覆盖文件
+ *       + 断连重载 → 同款 mcp_servers 应答（name=编辑前原名，改名时清旧条目）
+ *   { "type": "delete_mcp_server", "id", "layer", "name", "cwd"? } → 删条目 + 断连 → 同款应答
+ *   { "type": "set_mcp_server_enabled", "id", "layer", "name", "cwd"?, "enabled" } → 开关落 kv + 断连重载 → 同款应答
+ *   { "type": "test_mcp_server", "id", "layer", "name", "cwd"? } → { id, type: "mcp_server_test", status }
+ *       强制重新握手（先断后连），设置页"测试连接"用
  *   { "type": "usage_stats", "id" }                           → { id, type: "usage_stats", stats }（全局使用统计：增量物化到 SQLite 后从库聚合）
  *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
@@ -87,7 +106,7 @@
  *
  * prompt 流（stdout）：{ "id": "<reqId>", "chunk": { ...AI SDK UIMessageChunk } }
  */
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { getSupportedThinkingLevels, type Message } from "@earendil-works/pi-ai";
 import { logErr } from "./log";
@@ -109,9 +128,11 @@ import {
   modelsReplace,
   type ModelReplaceItem,
   sessionDelete,
+  sessionInsert,
   sessionList,
   sessionRename,
   sessionSetArchived,
+  sessionTouch,
 } from "./hostdb";
 import {
   applyRowToCatalogModel,
@@ -180,18 +201,40 @@ import {
 import {
   applyPersonalization,
   getPersonalization,
+  rulesFilePath,
+  soulFilePath,
 } from "./personalization";
+import {
+  applyMemoryConfig,
+  getMemoryConfig,
+  memoryScopesPayload,
+  readMemoryFile,
+  writeMemoryFile,
+  type MemoryScope,
+} from "./memory";
 import {
   deleteSubagentDefinition,
   loadSubagentDefinitions,
   parseSubagentDraftYaml,
   saveSubagentDefinition,
   setSubagentEnabled,
-  setWorkspaceTrusted,
   type SubagentDraft,
   type SubagentScope,
 } from "./subagent-definitions";
 import { aggregateUsageStats } from "./usage-stats";
+import {
+  cancelPendingMcpApprovals,
+  resolveMcpApproval,
+} from "./mcp-tools";
+import { mcpManager } from "./mcp-manager";
+import {
+  activeMcpServers,
+  deleteMcpServer,
+  loadMcpServers,
+  saveMcpServer,
+  setMcpServerEnabled,
+  type McpDraft,
+} from "./mcp-config";
 import {
   cancelPendingQuestions,
   resolveQuestionAnswer,
@@ -216,15 +259,80 @@ async function subagentsPayload(cwd?: string) {
       enabled: e.enabled,
       editable: e.editable,
     })),
-    pendingWorkspace: r.pendingWorkspace.map((d) => ({
-      name: d.name,
-      description: d.description,
-      tools: d.tools,
-      ...(d.path ? { path: d.path } : {}),
-    })),
-    trustedWorkspace: r.trustedWorkspace,
     workspaceCwd: cwd ?? null,
     diagnostics: r.diagnostics,
+  };
+}
+
+/** MCP 服务器清单应答负载：设置页与所有变更命令共用同一形状（改后即见） */
+async function mcpServersPayload(cwd?: string) {
+  const r = await loadMcpServers(cwd);
+  const statuses = new Map(mcpManager.listStatuses(r.defs).map((s) => [s.name, s]));
+  return {
+    servers: r.defs.map((def) => ({
+      name: def.name,
+      layer: def.layer,
+      source: def.source,
+      ...(def.fromStandard ? { fromStandard: true } : {}),
+      transport: def.transport,
+      ...(def.command ? { command: def.command } : {}),
+      ...(def.args?.length ? { args: def.args } : {}),
+      ...(def.env && Object.keys(def.env).length > 0 ? { env: def.env } : {}),
+      ...(def.url ? { url: def.url } : {}),
+      ...(def.headers && Object.keys(def.headers).length > 0 ? { headers: def.headers } : {}),
+      ...(def.description ? { description: def.description } : {}),
+      ...(def.lifecycle ? { lifecycle: def.lifecycle } : {}),
+      ...(def.idleTimeout !== undefined ? { idleTimeout: def.idleTimeout } : {}),
+      ...(def.approveTools?.length ? { approveTools: def.approveTools } : {}),
+      enabled: r.enabledBy.get(def.name) === true,
+      status: statuses.get(def.name) ?? { name: def.name, state: "idle", toolCount: 0 },
+    })),
+    workspaceCwd: cwd ?? null,
+    diagnostics: r.diagnostics,
+  };
+}
+
+/** 变更后的连接池热重载：以当前启用集合 diff，断开被删/改/禁用的服务器 */
+async function reloadMcpConnections(cwd?: string): Promise<void> {
+  mcpManager.applyConfig(await activeMcpServers(cwd));
+}
+
+/** 从消息里解析 MCP 草稿（save 用）；字段宽松规整，校验交给 saveMcpServer */
+function mcpDraftFromMessage(raw: unknown): McpDraft {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const transport = d.transport === "http" ? "http" : "stdio";
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+  const map = (v: unknown) => {
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined;
+    const out: Record<string, string> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if (typeof val === "string") out[k] = val;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  };
+  const arr = (v: unknown) =>
+    Array.isArray(v) ? v.map(String).filter((s) => s.trim()) : undefined;
+  return {
+    name: String(d.name ?? "").trim(),
+    transport,
+    ...(transport === "stdio"
+      ? {
+          command: str(d.command),
+          ...(arr(d.args)?.length ? { args: arr(d.args) } : {}),
+          ...(map(d.env) ? { env: map(d.env) } : {}),
+        }
+      : {
+          url: str(d.url),
+          ...(map(d.headers) ? { headers: map(d.headers) } : {}),
+        }),
+    ...(str(d.description) ? { description: str(d.description) } : {}),
+    ...(typeof d.lifecycle === "string" && ["lazy", "eager", "keep-alive"].includes(d.lifecycle)
+      ? { lifecycle: d.lifecycle as McpDraft["lifecycle"] }
+      : {}),
+    ...(typeof d.idleTimeout === "number" && Number.isFinite(d.idleTimeout)
+      ? { idleTimeout: d.idleTimeout }
+      : {}),
+    ...(arr(d.approveTools)?.length ? { approveTools: arr(d.approveTools) } : {}),
   };
 }
 
@@ -236,6 +344,8 @@ let exiting = false;
 function maybeExit() {
   if (exiting || !stdinClosed || pendingOps > 0) return;
   exiting = true;
+  // 退出前断开全部 MCP 连接（stdio 子进程随 SDK close 收尾，避免孤儿进程）
+  mcpManager.disposeAll();
   // end() 会先冲刷 stdout 队列再退出，避免超长响应行被截断
   process.stdout.end(() => process.exit(0));
 }
@@ -445,10 +555,11 @@ async function runPromptTurn(
   run.retryCapture = {};
   run.providerRetryActive = false;
   run.providerRetryChunkId = `retry-${++run.providerRetryTurnSeq}`;
-  // 逐工具审批（含 plan_exit 确认）/挂起提问理论上不会跨 turn 遗留（abort 已结算），
-  // 兜底清理防挂起：新用户输入时未决的 plan_exit 按拒绝结算
+  // 逐工具审批（含 plan_exit 确认）/挂起提问/MCP 审批理论上不会跨 turn 遗留
+  // （abort 已结算），兜底清理防挂起：新用户输入时未决的 plan_exit 按拒绝结算
   clearPendingToolApprovals(run);
   cancelPendingQuestions(threadId);
+  cancelPendingMcpApprovals(threadId);
   sendChunk(reqId, { type: "start" });
 
   // 每段 prompt 是消息流里的一个 step；resume 段前重置内容 id，避免与上一段撞 id
@@ -560,6 +671,7 @@ function abortRun(run: Running, threadId: string): void {
   run.stopRequested = true;
   clearPendingToolApprovals(run);
   cancelPendingQuestions(threadId);
+  cancelPendingMcpApprovals(threadId);
   for (const d of run.delegations.values()) {
     if (d.status === "running") {
       d.stopRequested = true;
@@ -717,6 +829,60 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const cwd = typeof msg.cwd === "string" ? msg.cwd : undefined;
       const run = await resolveSession(threadId, undefined, cwd);
       send({ id: reqId, type: "session", sessionId: run.sessionId, threadId });
+      break;
+    }
+    case "fork_session": {
+      const sourceId = String(msg.sessionId ?? "");
+      // 源会话元数据走 session_list（host 模式 session_get 只回 cwd，没有 title）
+      const src = (await sessionList()).find((r) => r.id === sourceId);
+      if (!src) throw new Error(`session not found: ${sourceId}`);
+      const sourceFile = sessionPath(sourceId);
+      if (!existsSync(sourceFile))
+        throw new Error(`transcript not found: ${sourceId}`);
+      // 逐行复制转录（header 行不拷、撕裂尾行丢弃、未知行型不拷）；
+      // 数据行原样保留 seq——seq 是文件内编号空间，跨会话不冲突
+      const dataLines: string[] = [];
+      let messageCount = 0;
+      for (const line of readFileSync(sourceFile, "utf8").split("\n")) {
+        if (!line.trim()) continue;
+        let row: { type?: string; seq?: number; agent?: unknown };
+        try {
+          row = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!row || row.type === "header" || typeof row.seq !== "number")
+          continue;
+        if (row.type === "message") {
+          if (!row.agent) continue;
+          messageCount += 1;
+        } else if (row.type !== "compaction") {
+          continue;
+        }
+        dataLines.push(line);
+      }
+      const newId = randomUUID();
+      writeFileSync(
+        sessionPath(newId),
+        JSON.stringify({
+          type: "header",
+          schema: 1,
+          id: newId,
+          cwd: src.cwd,
+          created_at: new Date().toISOString(),
+        }) + "\n" + (dataLines.length ? dataLines.join("\n") + "\n" : ""),
+      );
+      await sessionInsert(newId, src.cwd);
+      // 索引行补写：标题加「（分支）」后缀（无名会话用首轮消息行兜底，与
+      // list_sessions 的标题回退一致）；first_message 拷贝源值；计数按实拷行数
+      const srcTitle = src.title || src.first_message.slice(0, 60);
+      await sessionTouch(
+        newId,
+        srcTitle ? `${srcTitle}（分支）` : "",
+        src.first_message,
+        messageCount,
+      );
+      send({ id: reqId, type: "forked", sessionId: newId });
       break;
     }
     case "get_history": {
@@ -954,7 +1120,12 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "get_personalization": {
-      send({ id: reqId, type: "personalization", settings: getPersonalization() });
+      send({
+        id: reqId,
+        type: "personalization",
+        settings: getPersonalization(),
+        paths: { soul: soulFilePath(), rules: rulesFilePath() },
+      });
       break;
     }
     case "usage_stats": {
@@ -973,7 +1144,66 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
           run.agent.state.model,
         );
       }
-      send({ id: reqId, type: "personalization", settings });
+      send({
+        id: reqId,
+        type: "personalization",
+        settings,
+        paths: { soul: soulFilePath(), rules: rulesFilePath() },
+      });
+      break;
+    }
+    case "get_memory": {
+      send({ id: reqId, type: "memory", settings: getMemoryConfig() });
+      break;
+    }
+    case "set_memory": {
+      const settings = await applyMemoryConfig(msg.settings);
+      // 与 set_personalization 同款广播：记忆段变了就整段重排系统提示词；
+      // 工具表常驻不重建（execute 内实时读配置门控）
+      for (const run of running.values()) {
+        run.agent.state.systemPrompt = composeModeSystemPrompt(
+          run.mode,
+          run.cwd,
+          run.agent.state.model,
+        );
+      }
+      send({ id: reqId, type: "memory", settings });
+      break;
+    }
+    case "list_memory_files": {
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      send({ id: reqId, type: "memory_files", scopes: memoryScopesPayload(cwd) });
+      break;
+    }
+    case "read_memory_file": {
+      // 预览/编辑入口：不设总开关门控——关闭记忆也应能查看已有内容再决定
+      const scope: MemoryScope = msg.scope === "workspace" ? "workspace" : "global";
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      if (scope === "workspace" && !cwd) throw new Error("read_memory_file: workspace scope requires cwd");
+      const file = String(msg.file ?? "");
+      if (!file.trim()) throw new Error("read_memory_file: file is required");
+      const res = await readMemoryFile(getMemoryConfig(), scope, cwd ?? "", file);
+      if (res.kind !== "text") throw new Error(`memory file not found: ${file}`);
+      send({ id: reqId, type: "memory_file", file, content: res.content });
+      break;
+    }
+    case "write_memory_file": {
+      const scope: MemoryScope = msg.scope === "workspace" ? "workspace" : "global";
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      if (scope === "workspace" && !cwd) throw new Error("write_memory_file: workspace scope requires cwd");
+      const file = String(msg.file ?? "");
+      const content = String(msg.content ?? "");
+      // 整体覆盖保存（设置页编辑语义）；文件名/路径校验在 writeMemoryFile 内
+      const saved = await writeMemoryFile(scope, cwd ?? "", file, content, "overwrite");
+      // 内容可能正被注入：与 set_memory 同款热替换活动会话提示词
+      for (const run of running.values()) {
+        run.agent.state.systemPrompt = composeModeSystemPrompt(
+          run.mode,
+          run.cwd,
+          run.agent.state.model,
+        );
+      }
+      send({ id: reqId, type: "memory_file_saved", scope, file: saved.rel, bytes: saved.bytes });
       break;
     }
     case "list_subagents": {
@@ -1044,12 +1274,91 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
       break;
     }
-    case "set_workspace_trust": {
+    case "list_mcp_servers": {
       const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
-      if (!cwd) throw new Error("set_workspace_trust: cwd is required");
-      await setWorkspaceTrusted(cwd, msg.trusted === true);
-      await reloadSubagents();
-      send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
+      send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
+      break;
+    }
+    case "save_mcp_server": {
+      const layer: "system" | "workspace" | null =
+        msg.layer === "workspace" ? "workspace" : msg.layer === "system" ? "system" : null;
+      if (!layer) throw new Error('save_mcp_server: layer must be "system" or "workspace"');
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      if (layer === "workspace" && !cwd) {
+        throw new Error("save_mcp_server: workspace layer requires cwd");
+      }
+      const draft = mcpDraftFromMessage(msg.definition);
+      // name = 编辑前的原名（改名时据此清掉旧条目；新建省略）
+      const replaceName =
+        typeof msg.name === "string" && msg.name.trim() ? msg.name.trim() : undefined;
+      await saveMcpServer(layer, draft, { cwd, replaceName });
+      await reloadMcpConnections(cwd);
+      send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
+      break;
+    }
+    case "delete_mcp_server": {
+      const layer: "system" | "workspace" | null =
+        msg.layer === "workspace" ? "workspace" : msg.layer === "system" ? "system" : null;
+      if (!layer) throw new Error('delete_mcp_server: layer must be "system" or "workspace"');
+      const name = String(msg.name ?? "");
+      if (!name) throw new Error("delete_mcp_server: name is required");
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      if (layer === "workspace" && !cwd) {
+        throw new Error("delete_mcp_server: workspace layer requires cwd");
+      }
+      await deleteMcpServer(layer, name, { cwd });
+      await reloadMcpConnections(cwd);
+      send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
+      break;
+    }
+    case "set_mcp_server_enabled": {
+      const layer: "system" | "workspace" | null =
+        msg.layer === "workspace" ? "workspace" : msg.layer === "system" ? "system" : null;
+      if (!layer) throw new Error("set_mcp_server_enabled: invalid layer");
+      const name = String(msg.name ?? "");
+      if (!name) throw new Error("set_mcp_server_enabled: name is required");
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      const enabled = msg.enabled === true;
+      await setMcpServerEnabled(layer, name, enabled, cwd);
+      await reloadMcpConnections(cwd);
+      send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
+      break;
+    }
+    case "test_mcp_server": {
+      const layer: "system" | "workspace" | null =
+        msg.layer === "workspace" ? "workspace" : msg.layer === "system" ? "system" : null;
+      if (!layer) throw new Error("test_mcp_server: invalid layer");
+      const name = String(msg.name ?? "");
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      const { defs } = await loadMcpServers(cwd);
+      const def = defs.find((d) => d.name === name && d.layer === layer);
+      if (!def) throw new Error(`mcp server not found: ${name}`);
+      // 强制重新握手：先断开（清掉退避期与失败状态），再按当前定义连接
+      mcpManager.disconnect(name);
+      try {
+        const tools = await mcpManager.ensureConnected(def);
+        send({
+          id: reqId,
+          type: "mcp_server_test",
+          status: {
+            name: def.name,
+            state: "ready",
+            toolCount: tools.length,
+            toolNames: tools.map((t) => t.name),
+          },
+        });
+      } catch (err) {
+        send({
+          id: reqId,
+          type: "mcp_server_test",
+          status: {
+            name: def.name,
+            state: "backoff",
+            toolCount: 0,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
       break;
     }
     case "set_credential": {
@@ -1300,11 +1609,17 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     }
     case "tool_confirm": {
       // 结算逐工具审批：approved = 放行执行，false = 拦截（模型收到 blocked 工具结果）
+      const approvalId = String(msg.approvalId ?? "");
+      // MCP 网关工具的审批挂起不在 run 内（模块级表，见 mcp-tools.ts）：先查它，
+      // 命中即结算返回，不去 resolveSession（审批期间会话可能尚未落库）
+      if (resolveMcpApproval(approvalId, Boolean(msg.approved))) {
+        send({ id: reqId, type: "tool_confirmed", approvalId });
+        break;
+      }
       const run = await resolveSession(
         String(msg.threadId ?? "default"),
         typeof msg.sessionId === "string" ? msg.sessionId : undefined,
       );
-      const approvalId = String(msg.approvalId ?? "");
       if (!resolveToolApproval(run, approvalId, Boolean(msg.approved))) {
         throw new Error(`no pending tool approval: ${approvalId}`);
       }

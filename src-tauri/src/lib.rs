@@ -3,6 +3,7 @@ mod appearance;
 mod browser;
 mod browser_scripts;
 mod data;
+mod fs;
 mod git;
 mod logging;
 mod pi_agent;
@@ -76,7 +77,9 @@ pub fn run() {
             git::git_stage,
             git::git_commit,
             git::git_branches,
-            git::git_checkout
+            git::git_checkout,
+            fs::fs_list_dir,
+            fs::fs_read_file
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

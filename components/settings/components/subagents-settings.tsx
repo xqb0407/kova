@@ -4,9 +4,9 @@
  * 子智能体设置页（设置 → 智能体 → 子智能体）。
  *
  * 事实源在 sidecar：三层定义（内置常量 / <app_data>/subagents / <cwd>/.xulux/subagents）
- * + kv 里的启用开关与工作区信任；本页只渲染 useSubagents 镜像并发起变更命令。
+ * + kv 里的启用开关；本页只渲染 useSubagents 镜像并发起变更命令。
  * 能力边界与 sidecar 对齐：内置只读（可查看/开关/复制为系统级）；系统/工作区
- * 可编辑可删除；工作区定义必须"信任此工作区"后才挂载，未信任时以待批准卡片呈现。
+ * 可编辑可删除，工作区层随所选目录呈现。
  */
 import { useEffect, useMemo, useState, type FC, type ReactNode } from "react";
 import {
@@ -18,7 +18,6 @@ import {
   FolderOpenIcon,
   PencilIcon,
   PlusIcon,
-  ShieldCheckIcon,
   Trash2Icon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -60,7 +59,6 @@ import {
   refreshSubagents,
   saveSubagent,
   setSubagentEnabled,
-  setWorkspaceTrust,
   useSubagents,
   type SubagentDraft,
   type SubagentEntry,
@@ -238,7 +236,7 @@ const SubagentEditorDialog: FC<{
           </DialogTitle>
           <DialogDescription>
             {scope === "workspace"
-              ? `保存到所选工作区 ${workspaceCwd ?? ""}/.xulux/subagents/（随仓库共享；保存即视为信任该工作区）`
+              ? `保存到所选工作区 ${workspaceCwd ?? ""}/.xulux/subagents/（随仓库共享）`
               : "保存到应用数据目录，对本机所有会话生效"}
           </DialogDescription>
         </DialogHeader>
@@ -603,11 +601,9 @@ export const SubagentsSettings: FC = () => {
     () => ({
       builtin: snap.agents.filter((e) => e.scope === "builtin"),
       system: snap.agents.filter((e) => e.scope === "system"),
-      workspace: snap.trustedWorkspace
-        ? snap.agents.filter((e) => e.scope === "workspace")
-        : [],
+      workspace: snap.agents.filter((e) => e.scope === "workspace"),
     }),
-    [snap.agents, snap.trustedWorkspace],
+    [snap.agents],
   );
 
   const toggle = (entry: SubagentEntry, enabled: boolean) => {
@@ -729,38 +725,6 @@ export const SubagentsSettings: FC = () => {
         </section>
       )}
 
-      {/* 待批准的工作区定义（信任前不挂载） */}
-      {snap.pendingWorkspace.length > 0 && (
-        <section className="border-amber-500/40 bg-amber-500/5 flex flex-col gap-2 rounded-2xl border p-4">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <ShieldCheckIcon className="text-amber-500 size-4" />
-            发现 {snap.pendingWorkspace.length} 个来自工作区的子智能体定义（未启用）
-          </div>
-          <p className="text-muted-foreground text-xs">
-            这些定义位于 {snap.workspaceCwd ?? viewingCwd}/.xulux/subagents/，随仓库分发。
-            子智能体自带系统提示词与工具授权，仓库内容不应静默生效——信任该工作区后才会挂载到 Task 工具。
-          </p>
-          <ul className="text-muted-foreground pl-4 text-xs">
-            {snap.pendingWorkspace.map((p) => (
-              <li key={p.name} className="list-disc">
-                <span className="text-foreground font-mono">{p.name}</span> — {p.description}
-              </li>
-            ))}
-          </ul>
-          <div>
-            <Button
-              size="sm"
-              onClick={() =>
-                viewingCwd && void setWorkspaceTrust(viewingCwd, true).catch(() => {})
-              }
-            >
-              <ShieldCheckIcon className="size-3.5" />
-              信任此工作区
-            </Button>
-          </div>
-        </section>
-      )}
-
       {renderSection(
         "内置",
         "随应用发布的四个 delegate：只读，可关闭，可复制为系统级后定制。",
@@ -774,7 +738,7 @@ export const SubagentsSettings: FC = () => {
       {viewingCwd ? (
         renderSection(
           `工作区 · ${pathBasename(viewingCwd)}`,
-          `存于 ${viewingCwd}/.xulux/subagents/，随仓库共享，仅信任后生效。`,
+          `存于 ${viewingCwd}/.xulux/subagents/，随仓库共享。`,
           groups.workspace,
           <WorkspaceCwdMenu
             value={viewingCwd}

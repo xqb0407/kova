@@ -5,16 +5,14 @@
  * - 内置：内联常量，设置页只读查看，只可启用/关闭，永不被写。
  * - 系统：应用数据目录 `<app_data>/subagents/*.yml`（生产由 Tauri 注入
  *   PI_SUBAGENTS_DIR；兜底 PI_DB_PATH 同级 subagents/，再兜底 ~/.xulux/subagents）。
- * - 工作区：`<cwd>/.xulux/subagents/*.yml`，与 .xulux/plans 同族。仓库不能静默
- *   给用户的会话塞 delegate：工作区定义先以 pendingWorkspace 呈报待批准，
- *   用户信任该工作区（kv 白名单按 cwd 记）后才挂载。
+ * - 工作区：`<cwd>/.xulux/subagents/*.yml`，与 .xulux/plans 同族。
  *
- * 定义文件是纯 YAML（yaml 包解析/序列化）。启用与信任是"本机的运行时决定"，
+ * 定义文件是纯 YAML（yaml 包解析/序列化）。启用开关是"本机的运行时决定"，
  * 不写进定义文件（工作区文件在 git 里）：整包存 SQLite kv（key = STATE_KV_KEY），
  * 与个性化设置同款链路。
  *
  * 动态化：每次加载对目录做签名（文件名+mtime+大小），签名没变用缓存——
- * 设置页保存/删除/信任后缓存自然失效，活动会话由 protocol 层的 reloadSubagents
+ * 设置页保存/删除后缓存自然失效，活动会话由 protocol 层的 reloadSubagents
  * 重排工具组，下一个 turn 即生效，无需重启。
  */
 import { homedir } from "node:os";
@@ -358,23 +356,21 @@ export function subagentFileName(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 运行时状态（启用开关 + 工作区信任），整包 SQLite kv
+// 运行时状态（启用开关），整包 SQLite kv
 // ---------------------------------------------------------------------------
 
 export type SubagentState = {
   /** stateKey -> 被显式关闭 */
   disabled: Record<string, true>;
-  /** 被信任的工作区 cwd（其 .xulux/subagents 定义才挂载） */
-  trustedWorkspaces: Record<string, true>;
 };
 
 export const SUBAGENT_STATE_KV_KEY = "pi.subagents";
 
-let state: SubagentState = { disabled: {}, trustedWorkspaces: {} };
+let state: SubagentState = { disabled: {} };
 let stateLoad: Promise<void> | undefined;
 
 function emptyState(): SubagentState {
-  return { disabled: {}, trustedWorkspaces: {} };
+  return { disabled: {} };
 }
 
 /** 启动装配调一次（index.ts 闸门内）；幂等 */
@@ -386,7 +382,6 @@ export function initSubagentState(): Promise<void> {
       const parsed = JSON.parse(row.value) as Partial<SubagentState>;
       state = {
         disabled: (parsed.disabled ?? {}) as Record<string, true>,
-        trustedWorkspaces: (parsed.trustedWorkspaces ?? {}) as Record<string, true>,
       };
     } catch (err) {
       logErr("subagents-state:", err instanceof Error ? err.message : String(err));
@@ -427,17 +422,6 @@ export async function setSubagentEnabled(
   if (enabled) delete state.disabled[key];
   else state.disabled[key] = true;
   await persistState();
-}
-
-export async function setWorkspaceTrusted(cwd: string, trusted: boolean): Promise<void> {
-  await ensureSubagentState();
-  if (trusted) state.trustedWorkspaces[cwd] = true;
-  else delete state.trustedWorkspaces[cwd];
-  await persistState();
-}
-
-export function isWorkspaceTrusted(cwd: string): boolean {
-  return state.trustedWorkspaces[cwd] === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -507,19 +491,16 @@ const globalCache: { dir: string; entry?: LayerEntry } = { dir: "" };
 const workspaceCache = new Map<string, { sig: string; entry: LayerEntry }>();
 
 export type SubagentLoadResult = {
-  /** 挂到 Task 工具组的定义集合：已启用 + 已信任，同名工作区>系统>内置 */
+  /** 挂到 Task 工具组的定义集合：已启用，同名工作区>系统>内置 */
   definitions: SubagentDefinition[];
   /** 设置页清单：三层全部条目（内置含在内），带 enabled/editable */
   entries: SubagentEntry[];
-  /** 发现但未信任的工作区定义（待批准清单） */
-  pendingWorkspace: SubagentDefinition[];
-  trustedWorkspace: boolean;
   /** 已启用的定义里是否有同名条目遮蔽了内置（诊断用） */
   diagnostics: string[];
 };
 
 /**
- * 会话可用的定义集合：内置 + 系统层 (+ 已信任的工作区层)。
+ * 会话可用的定义集合：内置 + 系统层 + 工作区层。
  * 一份坏文档降级为诊断，不赔上其它 delegate，更不能赔上整个 turn。
  */
 export async function loadSubagentDefinitions(options: {
@@ -555,17 +536,13 @@ export async function loadSubagentDefinitions(options: {
     }
   }
 
-  const trusted = !cwd ? false : isWorkspaceTrusted(cwd);
   const diagnostics = [...globalEntry.diagnostics, ...workspaceEntry.diagnostics];
 
   const isEnabled = (def: SubagentDefinition): boolean =>
     state.disabled[def.stateKey] !== true;
 
   const mounted = new Map<string, SubagentDefinition>();
-  const ordered = [
-    ...globalEntry.definitions,
-    ...(trusted ? workspaceEntry.definitions : []),
-  ];
+  const ordered = [...globalEntry.definitions, ...workspaceEntry.definitions];
   for (const def of ordered) {
     if (!isEnabled(def)) continue;
     mounted.set(normalizeSubagentName(def.name), def);
@@ -576,17 +553,10 @@ export async function loadSubagentDefinitions(options: {
     enabled: isEnabled(def),
     editable: def.scope !== "builtin",
   }));
-  if (!trusted) {
-    for (const def of workspaceEntry.definitions) {
-      entries.push({ ...def, enabled: false, editable: true });
-    }
-  }
 
   return {
     definitions: [...mounted.values()],
     entries,
-    pendingWorkspace: trusted ? [] : workspaceEntry.definitions,
-    trustedWorkspace: trusted,
     diagnostics,
   };
 }
@@ -644,9 +614,6 @@ export type SubagentWriteOptions = {
   systemDir?: string;
   /** 编辑时改名：旧名对应的本层文件一并删除 */
   replaceName?: string;
-  /** workspace 层保存是否顺带授予该工作区信任（缺省 true = 设置页语义：用户点保存即想生效）。
-   *  AI 管理工具路径必须传 false：写文件不等于自我批准，未信任目录保持待批准。 */
-  autoTrust?: boolean;
 };
 
 /**
@@ -711,10 +678,6 @@ export async function saveSubagentDefinition(
   }
   mkdirSync(dir, { recursive: true });
   writeFileSync(filePath, emitSubagentYaml(draft), "utf8");
-  if (scope === "workspace" && cwd && options.autoTrust !== false) {
-    // 设置页写入即视为用户想要它生效；外部摆放的文件仍走信任审批
-    await setWorkspaceTrusted(cwd, true);
-  }
 }
 
 /** 删除一份系统/工作区定义（内置不可删）。按名称找到文件后删除并清开关残留。 */

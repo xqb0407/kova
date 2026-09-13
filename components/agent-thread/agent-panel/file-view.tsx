@@ -1,32 +1,35 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { useEffect, useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { FileTextIcon } from "lucide-react";
+import { FileTextIcon, Loader2Icon } from "lucide-react";
 import type { PanelTab } from "@/lib/panel-tabs";
+import { fsReadFile, type FsFileContent } from "@/lib/fs";
 import { CodeMirrorCode } from "@/components/code/cm-code";
 import { stripReadLineNumbers } from "@/lib/read-result";
-import { cn } from "@/lib/utils";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { splitPath } from "./git-files";
 import { FileTypeIcon } from "./file-type-icon";
 import { TabEmpty } from "./tab-empty";
 
 /**
- * 「文件」标签：回看消息里的单文件内容，两种数据源（都是消息快照，
- * 历史会话/刷新后同样可打开）：
+ * 「文件」标签：单文件内容回看，三种数据源：
+ * - 磁盘实时（tab.path，文件树标签点击唤起）：fs_read_file 现读盘上内容，
+ *   与消息无关；重开/刷新后仍是最新内容；
  * - read 调用：tab.focus = read part 的 toolCallId（sidecar 带行号前缀，
  *   这里剥掉交给 CodeMirror 自己的行号栏），展示当次读取快照，非磁盘实时内容；
  * - plan_write（含历史 SubmitPlan/SubmitGoal）：tab.focus = 提交 part 的
  *   toolCallId，渲染 args 里的完整计划 Markdown（计划进右侧面板的入口）。
+ * 快照类历史会话/刷新后同样可打开。
  * Markdown 文件（含计划）头部给「预览 | 源码」切换，预览即消息区同款渲染
  * （复用 MarkdownText：自带 .aui-markdown 包装层，代码块头部按钮/边框等
  * 样式都作用域在该层下，裸 Streamdown 会回退到默认定位导致按钮跑飞）。
  */
 
 type FilePart = {
-  kind: "read" | "plan" | "write";
-  /** read/write = 真实路径；plan = 标题拼的虚拟 .md 路径（图标/语言用） */
+  kind: "read" | "plan" | "write" | "memory";
+  /** read/write = 真实路径；plan/memory = 标题拼的虚拟路径（图标/语言用） */
   path: string;
   text: string;
 };
@@ -63,6 +66,33 @@ function useFilePart(focus: string | undefined): FilePart | null {
             str("title") || (p.toolName === "SubmitGoal" ? "目标" : "计划");
           return ["plan", `${title}.md`, str("markdown")].join("\0");
         }
+        if (p.toolName === "memory_write") {
+          // 记忆写入快照：args.content 就是写入的 Markdown（scope/file 拼虚拟路径）
+          const scope = str("scope") || "global";
+          const file = str("file") || "MEMORY.md";
+          return ["memory", `${scope}/${file}`, str("content")].join("\0");
+        }
+        if (p.toolName === "memory_read") {
+          const scope = str("scope") || "global";
+          const file = str("file");
+          const raw =
+            typeof p.result === "string"
+              ? p.result
+              : p.result == null
+                ? ""
+                : JSON.stringify(p.result);
+          if (!file) {
+            // 无 file = 列出全部记忆文件：结果是逐行文件名，按纯文本看
+            return ["memory", "memory/文件列表.txt", raw].join("\0");
+          }
+          // 有 file 的结果首行是 `scope/rel`，空一行后接正文——剥掉位置行只留内容
+          const sep = raw.indexOf("\n\n");
+          const body =
+            sep > 0 && /^[^\n]+\/[^\n]+$/.test(raw.slice(0, sep))
+              ? raw.slice(sep + 2)
+              : raw;
+          return ["memory", `${scope}/${file}`, body].join("\0");
+        }
       }
     }
     return null;
@@ -70,7 +100,13 @@ function useFilePart(focus: string | undefined): FilePart | null {
   if (packed === null) return null;
   const [kind, path, ...rest] = packed.split("\0");
   const parsed: FilePart["kind"] =
-    kind === "plan" ? "plan" : kind === "write" ? "write" : "read";
+    kind === "plan"
+      ? "plan"
+      : kind === "write"
+        ? "write"
+        : kind === "memory"
+          ? "memory"
+          : "read";
   return { kind: parsed, path, text: rest.join("\0") };
 }
 
@@ -78,27 +114,28 @@ const ModeToggle: FC<{
   mode: "preview" | "source";
   onChange: (m: "preview" | "source") => void;
 }> = ({ mode, onChange }) => (
-  <div className="border-border/60 ml-auto flex shrink-0 items-center gap-0.5 rounded-md border p-0.5 text-xs">
-    {(["preview", "source"] as const).map((m) => (
-      <button
-        key={m}
-        type="button"
-        onClick={() => onChange(m)}
-        className={cn(
-          "rounded px-2 py-0.5 transition-colors",
-          mode === m
-            ? "bg-muted text-foreground"
-            : "text-muted-foreground hover:text-foreground",
-        )}
-      >
-        {m === "preview" ? "预览" : "源码"}
-      </button>
-    ))}
-  </div>
+  // 全局 Tabs 的 outline 变体（描边容器 + bg-muted 滑块），自带滑动动画
+  <Tabs
+    value={mode}
+    onValueChange={(v) => onChange(v as "preview" | "source")}
+    className="ml-auto shrink-0"
+  >
+    <TabsList
+      variant="outline"
+      className="group-data-horizontal/tabs:h-6 rounded-md p-0.5 text-xs"
+    >
+      <TabsTrigger value="preview" className="rounded px-2 py-0 text-xs">
+        预览
+      </TabsTrigger>
+      <TabsTrigger value="source" className="rounded px-2 py-0 text-xs">
+        源码
+      </TabsTrigger>
+    </TabsList>
+  </Tabs>
 );
 
 /** part 到位后才挂载：预览/源码初值要按扩展名定，key 保证换文件重置 */
-const FileBody: FC<{ part: FilePart }> = ({ part }) => {
+const FileBody: FC<{ part: FilePart; note?: string }> = ({ part, note }) => {
   const isMd = /\.mdx?$/i.test(part.path);
   const [mode, setMode] = useState<"preview" | "source">(
     isMd ? "preview" : "source",
@@ -124,6 +161,11 @@ const FileBody: FC<{ part: FilePart }> = ({ part }) => {
         ) : null}
         {isMd ? <ModeToggle mode={mode} onChange={setMode} /> : null}
       </div>
+      {note ? (
+        <p className="bg-muted/30 text-muted-foreground shrink-0 border-b border-border/60 px-3 py-1 text-xs">
+          {note}
+        </p>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-auto">
         {!text ? (
           <p className="text-muted-foreground/60 px-3 py-2 text-xs">
@@ -141,7 +183,53 @@ const FileBody: FC<{ part: FilePart }> = ({ part }) => {
   );
 };
 
-export const FileTab: FC<{ tab: PanelTab }> = ({ tab }) => {
+/**
+ * 磁盘实时模式（文件树点击唤起）：fs_read_file 现读。读是异步的，
+ * 组件按 (cwd, path) key 重挂载，换文件即重置加载态与预览/源码选择。
+ */
+const DiskFileView: FC<{ cwd: string; path: string }> = ({ cwd, path }) => {
+  const [state, setState] = useState<
+    { status: "loading" } | { status: "ready"; data: FsFileContent } | { status: "error" }
+  >({ status: "loading" });
+  useEffect(() => {
+    let alive = true;
+    void fsReadFile(cwd, path).then((data) => {
+      if (!alive) return;
+      setState(data ? { status: "ready", data } : { status: "error" });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [cwd, path]);
+
+  if (state.status === "loading")
+    return (
+      <div className="text-muted-foreground flex h-full items-center justify-center gap-1.5 text-xs">
+        <Loader2Icon className="size-3.5 animate-spin" />
+        读取文件…
+      </div>
+    );
+  if (state.status === "error")
+    return (
+      <TabEmpty
+        icon={FileTextIcon}
+        text="读取失败（文件可能已被删除，或无权限访问）"
+      />
+    );
+  const { data } = state;
+  if (data.binary)
+    return <TabEmpty icon={FileTextIcon} text="二进制文件，无法预览内容" />;
+  return (
+    <FileBody
+      // kind=write：正文是盘上原文，无行号前缀可剥；md/源码切换按扩展名走
+      part={{ kind: "write", path, text: data.content }}
+      note={data.truncated ? "文件超过 2MB，仅显示开头部分" : undefined}
+    />
+  );
+};
+
+/** 快照模式：数据来自消息里的工具 part（read/write/plan/memory 回放） */
+const SnapshotFileTab: FC<{ tab: PanelTab }> = ({ tab }) => {
   const part = useFilePart(tab.focus);
   if (!part)
     return (
@@ -151,4 +239,22 @@ export const FileTab: FC<{ tab: PanelTab }> = ({ tab }) => {
       />
     );
   return <FileBody key={tab.focus ?? part.path} part={part} />;
+};
+
+/**
+ * 数据源路由：tab.path 存在 = 文件树磁盘模式（两字段互斥，唤起方各自清对面
+ * 残留：tool-panel 带 path:undefined，文件树带 focus:undefined）。
+ * 分流成两个子组件而非同一组件内早退——useFilePart 是 hook，条件调用会破坏
+ * hooks 规则。
+ */
+export const FileTab: FC<{ tab: PanelTab }> = ({ tab }) => {
+  if (tab.path) {
+    const cwd = tab.cwd ?? "";
+    if (!cwd)
+      return <TabEmpty icon={FileTextIcon} text="缺少工作目录上下文" />;
+    return (
+      <DiskFileView key={`${cwd}\u0000${tab.path}`} cwd={cwd} path={tab.path} />
+    );
+  }
+  return <SnapshotFileTab tab={tab} />;
 };

@@ -36,8 +36,8 @@
       "csp": null
     },
     "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true
+      "iconPath": "icons/tray.png",
+      "iconAsTemplate": false
     }
   },
   "plugins": {},

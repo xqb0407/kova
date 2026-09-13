@@ -23,6 +23,8 @@ import { buildBrowserTools } from "./browser-tools";
 import { buildWebTools } from "./http-tools";
 import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "./todo";
+import { buildMemoryTools } from "./memory";
+import { buildMcpTool } from "./mcp-tools";
 
 /** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
 const MAX_WALKED_FILES = 5000;
@@ -297,6 +299,12 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
     buildQuestionTool(threadId),
     // todo：不触盘不触网，只维护会话内任务清单（per-thread 槽见 todo.ts）
     buildTodoTool(threadId),
+    // 记忆三件套（write/read/search）：常驻注册（工具表稳定缓存友好），开关在
+    // execute 内实时门控；cwd 供工作区作用域定位（rebindRunCwd 会重建）
+    ...buildMemoryTools(cwd),
+    // MCP 网关（search/describe/call/status）：常驻注册的代理工具，全部服务器
+    // 的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd 会重建）
+    buildMcpTool(cwd, threadId),
   ];
   return tools;
 }
@@ -330,9 +338,9 @@ export const SYSTEM_PROMPT_CORE = [
   "",
   "Subagents:",
   "- Use `Task` to delegate separable work (parallel exploration, multi-file implementation, adversarial review, wide search) to subagents; converge with `TaskWait` / `TaskList` / `TaskStop`.",
-  "- Call `subagents_list` to see the current definitions, their storage directories, and trust state - never guess paths or read the YAML files yourself.",
+  "- Call `subagents_list` to see the current definitions and their storage directories - never guess paths or read the YAML files yourself.",
   "- To create or update a reusable subagent use `subagents_save`; to remove one use `subagents_delete`. Never hand-edit their YAML with write/edit: those tools skip validation, cross-layer dedup and hot-reload.",
-  "- scope=workspace puts a definition in this repo (.xulux/subagents/, shared with the team, needs user trust before it mounts); scope=system makes it machine-wide. If the workspace is untrusted the save lands as pending approval - tell the user, do not try to work around it.",
+  "- scope=workspace puts a definition in this repo (.xulux/subagents/, shared with the team); scope=system makes it machine-wide.",
   "- A subagent sees neither this conversation nor the user, can only use the tools its definition declares (from bash/read/write/edit/glob/grep), and its final report is its only output - design description, tools and prompt with that in mind.",
   "",
   "Communication:",

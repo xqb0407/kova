@@ -11,15 +11,23 @@ import {
 } from "react";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import {
+  BookOpenIcon,
+  BrainIcon,
   ChevronDownIcon,
   ClipboardCheckIcon,
   ClipboardListIcon,
+  Database,
   FileIcon,
+  FileSearchCorner,
+  FileSearchCornerIcon,
   FileSearchIcon,
   GlobeIcon,
   LoaderCircleIcon,
   LogOutIcon,
+  NotebookPen,
   PencilIcon,
+  PencilLineIcon,
+  SearchCheckIcon,
   SearchIcon,
   SquareArrowOutUpRightIcon,
   SquareTerminalIcon,
@@ -143,6 +151,8 @@ export type ToolRowProps = {
   secondary?: ReactNode;
   /** primary 呈可点链接（悬浮出链接态；点击开面板、不触发展开收起） */
   primaryAsLink?: boolean;
+  /** primary 的悬浮 title（链接态提示完整目标，如记忆文件的 scope/路径） */
+  primaryTitle?: string;
   /** edit/write 行尾 ±统计（绿 +N / 红 −M） */
   stats?: { added: number; removed: number };
   mono?: boolean;
@@ -166,6 +176,7 @@ export const ToolRow: FC<ToolRowProps> = ({
   primary,
   secondary,
   primaryAsLink,
+  primaryTitle,
   stats,
   mono,
   running,
@@ -195,6 +206,7 @@ export const ToolRow: FC<ToolRowProps> = ({
           // 标题即面板入口：默认观感同普通文本，悬浮出超链接态；
           // 点击截在 span 内（stopPropagation），不触发整行的展开/收起
           <span
+            title={primaryTitle}
             onClick={(e) => {
               e.stopPropagation();
               e.preventDefault();
@@ -209,6 +221,7 @@ export const ToolRow: FC<ToolRowProps> = ({
           </span>
         ) : (
           <span
+            title={primaryTitle}
             className={cn("min-w-0 truncate", mono && "font-mono text-xs")}
           >
             {primary}
@@ -589,6 +602,151 @@ const modeSwitchToolUI =
     />
   );
 
+/** 记忆作用域中文标签（sidecar 侧 scope 取值只有 global/workspace） */
+const MEMORY_SCOPE_LABEL: Record<string, string> = {
+  global: "全局",
+  workspace: "工作区",
+};
+
+const scopeLabel = (args: unknown): string => {
+  const scope = strArg(args, "scope") ?? "global";
+  return MEMORY_SCOPE_LABEL[scope] ?? scope;
+};
+
+/** memory_write：展开区展示写入的记忆内容（Markdown），失败时展开看错误输出；
+ * 文件名可点 → 面板「文件」标签回放写入快照（悬浮 title 显 scope/文件） */
+const MemoryWriteToolUI: ToolCallMessagePartComponent = ({
+  toolCallId,
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const file = strArg(args, "file") || "MEMORY.md";
+  const mode = strArg(args, "mode") === "overwrite" ? "覆写" : "追加";
+  const content = strArg(args, "content") ?? "";
+  const output = resultText(result);
+  const failed =
+    isError === true || output.startsWith("memory_write failed");
+  const scope = scopeLabel(args);
+  return (
+    <ToolRow
+      label="记忆写入"
+      icon={<PencilLineIcon className="size-4 shrink-0" />}
+      primary={file}
+      secondary={[scope, mode].join(" · ")}
+      mono
+      primaryAsLink
+      primaryTitle={`记忆文件 · ${scope} / ${file}`}
+      running={status?.type === "running"}
+      failed={failed}
+      output={failed ? output : undefined}
+      expandedContent={
+        !failed && content ? (
+          <div className="bg-background border max-h-64 overflow-auto rounded-md px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground">
+            {content}
+          </div>
+        ) : undefined
+      }
+      onOpenPanel={() =>
+        openToolCallPanel("memory_write", toolCallId, {
+          file: strArg(args, "file") ?? "",
+        })
+      }
+    />
+  );
+};
+
+/** memory_read：无 file 时是列出全部记忆文件，展开区是文件列表/文件内容原文；
+ * 文件名可点 → 面板「文件」标签回放读取结果快照 */
+const MemoryReadToolUI: ToolCallMessagePartComponent = ({
+  toolCallId,
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const file = strArg(args, "file");
+  const output = resultText(result);
+  const scope = scopeLabel(args);
+  return (
+    <ToolRow
+      label="记忆读取"
+      icon={<Database className="size-4 shrink-0" />}
+      primary={file ?? "文件列表"}
+      secondary={scope}
+      mono
+      primaryAsLink
+      primaryTitle={
+        file ? `记忆文件 · ${scope} / ${file}` : `记忆文件列表 · ${scope}`
+      }
+      running={status?.type === "running"}
+      failed={isError === true}
+      output={output}
+      onOpenPanel={() =>
+        openToolCallPanel("memory_read", toolCallId, {
+          file: strArg(args, "file") ?? "",
+        })
+      }
+    />
+  );
+};
+
+/** memory_search 命中行解析：sidecar 返回 `scope/rel:line: text` 每行一条 */
+const parseMemoryHits = (
+  output: string,
+): { loc: string; text: string }[] =>
+  output
+    .split("\n")
+    .map((line) => {
+      const m = /^(.+?):(\d+): (.*)$/.exec(line);
+      return m ? { loc: `${m[1]}:${m[2]}`, text: m[3] } : null;
+    })
+    .filter((h): h is { loc: string; text: string } => h !== null);
+
+const MemoryHits: FC<{ hits: { loc: string; text: string }[] }> = ({
+  hits,
+}) => (
+  <div className="bg-background border max-h-96 overflow-auto rounded-md px-3 py-2.5">
+    {hits.map((h, i) => (
+      <div key={i} className="min-w-0">
+        <div className="text-muted-foreground line-clamp-1 font-mono text-[11px]">
+          {h.loc}
+        </div>
+        <div className="text-foreground line-clamp-2 text-sm leading-snug">
+          {h.text}
+        </div>
+      </div>
+    ))}
+  </div>
+);
+
+const MemorySearchToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const query = strArg(args, "query") ?? "";
+  const output = resultText(result);
+  // 只有逐行 `path:line: text` 格式才结构化渲染；「No matches…」等保持原始输出
+  const hits = !isError && output ? parseMemoryHits(output) : [];
+  const structured = hits.length > 0;
+  return (
+    <ToolRow
+      label="记忆检索"
+      icon={<SearchCheckIcon className="size-4 shrink-0" />}
+      primary={query}
+      secondary={structured ? `${hits.length} 条命中` : undefined}
+      mono
+      running={status?.type === "running"}
+      failed={isError === true}
+      output={structured ? undefined : output}
+      expandedContent={structured ? <MemoryHits hits={hits} /> : undefined}
+    />
+  );
+};
+
 /** 有专属扁平行渲染的工具名 → 组件；其余走 ToolFallback */
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
@@ -597,8 +755,11 @@ export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   write: fileToolUI("write", "写入"),
   WebSearch: WebSearchToolUI,
   WebFetch: WebFetchToolUI,
-  glob: searchToolUI("文件检索", <FileSearchIcon className="size-4 shrink-0" />),
-  grep: searchToolUI("内容检索", <TextSearchIcon className="size-4 shrink-0" />),
+  glob: searchToolUI("文件检索", <SearchIcon className="size-4 shrink-0" />),
+  grep: searchToolUI("内容检索", <SearchIcon className="size-4 shrink-0" />),
+  memory_write: MemoryWriteToolUI,
+  memory_read: MemoryReadToolUI,
+  memory_search: MemorySearchToolUI,
   plan_enter: modeSwitchToolUI("进入计划模式", <ClipboardListIcon className="size-4 shrink-0" />),
   plan_write: submitToolUI(
     "plan_write",
