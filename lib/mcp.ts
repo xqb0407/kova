@@ -3,7 +3,9 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import {
   piRequest,
+  type PiMcpLogLine,
   type PiMcpServerEntry,
+  type PiMcpServerIcon,
   type PiMcpServerStatus,
   type PiMcpServersResponse,
 } from "@/lib/pi-bridge";
@@ -18,6 +20,8 @@ import { getWorkspace } from "@/lib/workspace-store";
  */
 export type McpServerEntry = PiMcpServerEntry;
 export type McpServerStatus = PiMcpServerStatus;
+export type McpServerIcon = PiMcpServerIcon;
+export type McpLogLine = PiMcpLogLine;
 
 /** 编辑器表单载荷（字段与 sidecar mcp-config 的 McpDraft 对齐） */
 export type McpServerDraft = {
@@ -92,9 +96,9 @@ export async function refreshMcpServers(cwd?: string | null): Promise<void> {
 }
 
 /** 变更命令统一出口：应答即新清单 */
-async function mutate(payload: Record<string, unknown>): Promise<void> {
+async function mutate(payload: Record<string, unknown>, timeoutMs?: number): Promise<void> {
   try {
-    const res = await piRequest<PiMcpServersResponse>(payload);
+    const res = await piRequest<PiMcpServersResponse>(payload, timeoutMs ?? 15000);
     current = fromResponse(res);
     emit();
   } catch (err) {
@@ -174,6 +178,63 @@ export async function testMcpServer(
   };
   emit();
   return res.status;
+}
+
+/** OAuth 授权（http 服务器「授权」按钮）：sidecar 起本地回调服务并打开浏览器，
+ *  等用户在浏览器里批准——可能长达几分钟。超时上限刻意大于 sidecar 侧回调等待
+ *  超时（180s），保证拿到的是 sidecar 的明确失败而非本地悬空。
+ *  刻意不走 mutate：授权失败不是「清单加载失败」，不写共享快照的 error，
+ *  只把异常抛给调用方，由设置页以「授权失败」单独呈现。 */
+export async function authorizeMcpServer(name: string, cwd?: string | null): Promise<void> {
+  const res = await piRequest<PiMcpServersResponse>(
+    { type: "authorize_mcp_server", name, ...(cwd ? { cwd } : {}) },
+    200_000,
+  );
+  current = fromResponse(res);
+  emit();
+}
+
+/** 拉取某台服务器的连接错误日志（sidecar 环形缓冲；按名字聚合，不分层）。
+ *  日志在握手失败/传输错误时记录，跨断开保留——弹窗打开时取一次即可。 */
+export async function fetchMcpServerLog(name: string): Promise<McpLogLine[]> {
+  const res = await piRequest<{
+    type: "mcp_server_log";
+    name: string;
+    lines: McpLogLine[];
+  }>({
+    type: "get_mcp_server_log",
+    name,
+  });
+  return res.lines;
+}
+
+/** 取消 OAuth 授权：清掉该服务器 URL 的存量凭据并断开（只动授权，不删配置）。
+ *  与 authorizeMcpServer 同理不走 mutate：失败单独呈现，不污染清单错误。 */
+export async function revokeMcpServerAuth(name: string, cwd?: string | null): Promise<void> {
+  const res = await piRequest<PiMcpServersResponse>({
+    type: "revoke_mcp_server_auth",
+    name,
+    ...(cwd ? { cwd } : {}),
+  });
+  current = fromResponse(res);
+  emit();
+}
+
+/** 单台服务器的工具清单条目（展开行时呈现） */
+export type McpToolInfo = { name: string; description?: string };
+
+/** 拉取某台服务器的工具清单：sidecar 优先元数据缓存（断开态也可读），
+ *  缺失才握手——懒服务器首次展开可能要等几秒，超时给到 30s。 */
+export async function fetchMcpServerTools(
+  name: string,
+  cwd?: string | null,
+): Promise<McpToolInfo[]> {
+  const res = await piRequest<{
+    type: "mcp_server_tools";
+    name: string;
+    tools: McpToolInfo[];
+  }>({ type: "get_mcp_server_tools", name, ...(cwd ? { cwd } : {}) }, 30000);
+  return res.tools;
 }
 
 /** 订阅清单快照；cwd 变化时自动重取（工作区层随所选工作区呈现） */

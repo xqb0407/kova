@@ -37,6 +37,7 @@ import { SUBAGENT_MGMT_TOOL_NAMES } from "./subagent-mgmt-tools";
 import { personalizationPromptBlock } from "./personalization";
 import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "./mcp-tools";
+import { skillsPromptBlock } from "./skills";
 import { sendEventChunk } from "./stream";
 import type {
   ApprovalLevel,
@@ -82,12 +83,14 @@ const AGENT_MODE_PROMPT =
 export type PromptModelInfo = { provider: string; id: string; name?: string };
 
 /**
- * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + 记忆段 + MCP 段 + 环境事实块
+ * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + 记忆段 + MCP 段 + 技能目录段 + 环境事实块
  * （日期/模型/OS/shell，末行是 cwd 行）。
  * 顺序保证缓存命中：静态核心在前（跨会话字节级一致），模式段夹中间（会话内
  * 切换时整段重排不可避免，但同一模式内前缀稳定），个性化/记忆段随设置变更热替换，
- * MCP 段随服务器配置变更热替换（无启用服务器时为空串），环境事实块永远在最尾；
- * 个性化段全默认、记忆关闭、无 MCP 服务器时块为空串（默认提示词与旧版字节级一致）。
+ * MCP 段随服务器配置变更热替换（无启用服务器时为空串），技能目录段只列生效技能的
+ * name/description/location 三行元数据（正文模型按需 read，开关/遮蔽在缓存合并时
+ * 裁决，随 reloadSkills 热替换），环境事实块永远在最尾；
+ * 个性化段全默认、记忆关闭、无 MCP 服务器、无生效技能时各块为空串（默认提示词与旧版字节级一致）。
  */
 export function composeModeSystemPrompt(
   mode: SessionMode,
@@ -101,6 +104,7 @@ export function composeModeSystemPrompt(
     personalizationPromptBlock(),
     memoryPromptBlock(cwd),
     mcpPromptBlock(cwd),
+    skillsPromptBlock(cwd),
     environmentPromptBlock(cwd, model),
   ]
     .filter(Boolean)
@@ -159,7 +163,8 @@ function firstHeading(markdown: string): string {
 /**
  * 计划文件落盘：首写定名 `<cwd>/.xulux/plans/plan-<标题>-<sessionId>-<时间>.md`，
  * 之后每次调用整体覆盖同一路径。run.cwd 由 sessions 解析（未选工作目录时
- * 兜底 homedir），两种场景统一处理。失败直接抛出（工具调用失败对模型可见）。
+ * 兜底任务工作目录，见 sessions.ts defaultTaskCwd），两种场景统一处理。
+ * 失败直接抛出（工具调用失败对模型可见）。
  */
 async function writePlanFile(
   run: Running,

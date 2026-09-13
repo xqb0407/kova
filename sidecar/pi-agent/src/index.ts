@@ -29,6 +29,7 @@ import { loadCustomProviders, applyModelOverrides } from "./model-catalog";
 import { initPersonalization } from "./personalization";
 import { initMemory } from "./memory";
 import { initSubagentState } from "./subagent-definitions";
+import { initSkillsState } from "./skills";
 import { initMcpEnabledState } from "./mcp-config";
 import { mcpManager } from "./mcp-manager";
 import { handleLine, markStdinClosed, setInitGate } from "./protocol";
@@ -71,6 +72,8 @@ async function main() {
     await initMemory();
     // 子智能体开关/工作区信任同走 kv，理由同上（定义文件本身按需带签名加载）
     await initSubagentState();
+    // 技能启用开关同走 kv（技能目录本身按需带签名加载，resolveSession 预热）
+    await initSkillsState();
     // MCP 启用开关同走 kv（服务器定义文件按需带签名加载）；就绪后启动空闲连接回收
     await initMcpEnabledState();
     mcpManager.startReaper();

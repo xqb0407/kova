@@ -136,6 +136,26 @@ describe("退避与上限", () => {
     expect(Date.now() - t0).toBeLessThan(MCP_FAILURE_BACKOFF_MS / 2);
   });
 
+  test("连接错误日志：握手失败记录、跨断开保留、teardown 清空", async () => {
+    const mgr = freshManager();
+    const bad = stdioDef({ name: "logged", command: "definitely-not-a-command-xyz" });
+    await expect(mgr.ensureConnected(bad)).rejects.toThrow();
+    let lines = mgr.logFor("logged");
+    // spawn 失败会同时触发 onerror 与握手 catch，正文相同的短窗口条目已去重
+    expect(lines).toHaveLength(1);
+    expect(lines[0].message).toContain("definitely-not-a-command-xyz");
+    expect(lines[0].at).toBeGreaterThan(0);
+    // 退避期内的快速失败不重复记日志（没有新的握手发生）
+    await expect(mgr.ensureConnected(bad)).rejects.toThrow("退避中");
+    expect(mgr.logFor("logged")).toHaveLength(1);
+    // 断开后日志保留（排障场景正是断开后回看）
+    mgr.disconnect("logged");
+    expect(mgr.logFor("logged")).toHaveLength(1);
+    // 进程 teardown（disposeAll）清空
+    mgr.disposeAll();
+    expect(mgr.logFor("logged")).toHaveLength(0);
+  });
+
   test("空闲回收只作用于 lazy；keep-alive 豁免", async () => {
     const mgr = freshManager();
     const lazyDef = stdioDef({ name: "lazy", idleTimeout: 1000 });
@@ -186,7 +206,17 @@ describe("streamable HTTP 传输", () => {
           reply({
             protocolVersion: "2025-06-18",
             capabilities: { tools: {} },
-            serverInfo: { name: "fake-http", version: "1" },
+            serverInfo: {
+              name: "fake-http",
+              version: "1",
+              // 2025-11-25 serverInfo.icons：首项是相对路径（应被过滤），
+              // 其余为深色外链与 data URI
+              icons: [
+                { src: "/relative/icon.png" },
+                { src: "https://cdn.example.com/dark.png", theme: "dark", sizes: ["48x48"] },
+                { src: "data:image/svg+xml;base64,AAAA" },
+              ],
+            },
           });
         } else if (m.method === "tools/list") {
           reply({
@@ -231,6 +261,33 @@ describe("streamable HTTP 传输", () => {
     const text = (raw as { content: Array<{ text: string }> }).content[0].text;
     expect(text).toBe("pong:Bearer t0k");
     expect(mgr.statusFor(def).state).toBe("ready");
+  });
+
+  test("协议自报图标：握手规整、断开后按配置哈希保留、改配置不串用", async () => {
+    const mgr = freshManager();
+    const def: McpServerDef = {
+      name: "httpfake",
+      transport: "http",
+      url: baseUrl,
+      layer: "system",
+      source: "",
+    };
+    await mgr.ensureConnected(def);
+    // 相对路径 src 被过滤，仅保留 http(s)/data 两类；theme 透传
+    expect(mgr.statusFor(def).icons).toEqual([
+      { src: "https://cdn.example.com/dark.png", theme: "dark" },
+      { src: "data:image/svg+xml;base64,AAAA" },
+    ]);
+    // 空闲回收/手动断开后条目消失，但图标缓存（名字+哈希）仍在
+    mgr.disconnect(def.name);
+    expect(mgr.statusFor(def).state).toBe("idle");
+    expect(mgr.statusFor(def).icons?.[0]?.src).toBe("https://cdn.example.com/dark.png");
+    // 配置变更（哈希不同）不沿用旧图标；applyConfig 清掉过期缓存条目
+    const edited: McpServerDef = { ...def, url: `${baseUrl}?v=2` };
+    expect(mgr.statusFor(edited).icons).toBeUndefined();
+    mgr.applyConfig([edited]);
+    mgr.disconnect(edited.name);
+    expect(mgr.statusFor(edited).icons).toBeUndefined();
   });
 });
 

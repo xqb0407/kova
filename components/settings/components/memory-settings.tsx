@@ -51,7 +51,7 @@ type ScopeTab = "global" | "workspace";
 /** 工作区目录切换器（与子智能体页同款）：候选 = 手动浏览 + 当前工作区 + 最近使用。
  *  只切换本页查看哪个工作区的记忆目录，不改动主界面的工作区选择。 */
 const WorkspaceCwdMenu: FC<{
-  value: string;
+  value: string | null;
   following: boolean;
   followLabel: string | null;
   candidates: string[];
@@ -74,11 +74,13 @@ const WorkspaceCwdMenu: FC<{
       render={
         <button
           type="button"
-          title={value}
+          title={value ?? undefined}
           className="text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-xs transition-colors"
         >
           <FolderOpenIcon className="size-3.5 shrink-0" />
-          <span className="max-w-44 truncate">{pathBasename(value)}</span>
+          <span className="max-w-44 truncate">
+            {value ? pathBasename(value) : "未选择工作区"}
+          </span>
           <ChevronDownIcon className="size-3 shrink-0" />
         </button>
       }
@@ -193,7 +195,7 @@ const MemoryFileBrowser: FC<{
             </TabsTrigger>
           </TabsList>
         </Tabs>
-        {scopeTab === "workspace" && workspaceCwd && (
+        {scopeTab === "workspace" && (
           <WorkspaceCwdMenu
             value={workspaceCwd}
             following={following}

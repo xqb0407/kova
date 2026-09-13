@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { initStorage, sessionPath } from "./storage";
 import {
@@ -219,35 +219,41 @@ describe("dispatch: sessions", () => {
 
   test("未选目录建的会话，后续请求带 cwd 时补绑（修复代码写到主目录）", async () => {
     const threadId = "th-rebind";
-    // 建会话时不带 cwd：运行 cwd 兜底主目录，持久化 cwd 为空
-    await dispatch("rb1", { type: "new_session", threadId });
-    const sessionId = last().sessionId as string;
-    const run = running.get(threadId)!;
-    expect(run.cwd).toBe(homedir());
-    expect(run.persistedCwd).toBe("");
+    // 建会话时不带 cwd：运行 cwd 兜底任务工作目录（PI_TASK_CWD），持久化 cwd 为空
+    const taskCwd = path.join(tmp, "task-cwd");
+    process.env.PI_TASK_CWD = taskCwd;
+    try {
+      await dispatch("rb1", { type: "new_session", threadId });
+      const sessionId = last().sessionId as string;
+      const run = running.get(threadId)!;
+      expect(run.cwd).toBe(taskCwd);
+      expect(run.persistedCwd).toBe("");
 
-    // 用户选了工作目录后的任意请求（这里用 context_info 走同一条 resolveSession）
-    const workspace = path.join(tmp, "workspace");
-    await dispatch("rb2", { type: "context_info", threadId, sessionId, cwd: workspace });
+      // 用户选了工作目录后的任意请求（这里用 context_info 走同一条 resolveSession）
+      const workspace = path.join(tmp, "workspace");
+      await dispatch("rb2", { type: "context_info", threadId, sessionId, cwd: workspace });
 
-    // 内存 run：运行 cwd/持久化 cwd 都换过去，工具与系统提示词已按新 cwd 重建
-    expect(run.cwd).toBe(workspace);
-    expect(run.persistedCwd).toBe(workspace);
-    expect(run.agent.state.tools.length).toBeGreaterThan(0);
-    expect(run.agent.state.systemPrompt).toContain(workspace);
-    // DB 索引行与 JSONL header 同步回写
-    expect((await sessionGet(sessionId))!.cwd).toBe(workspace);
-    const header = JSON.parse(readFileSync(sessionPath(sessionId), "utf8"));
-    expect(header.cwd).toBe(workspace);
+      // 内存 run：运行 cwd/持久化 cwd 都换过去，工具与系统提示词已按新 cwd 重建
+      expect(run.cwd).toBe(workspace);
+      expect(run.persistedCwd).toBe(workspace);
+      expect(run.agent.state.tools.length).toBeGreaterThan(0);
+      expect(run.agent.state.systemPrompt).toContain(workspace);
+      // DB 索引行与 JSONL header 同步回写
+      expect((await sessionGet(sessionId))!.cwd).toBe(workspace);
+      const header = JSON.parse(readFileSync(sessionPath(sessionId), "utf8"));
+      expect(header.cwd).toBe(workspace);
 
-    // 已绑定目录的会话不再被后续 cwd 改动（换目录开新会话是前端职责）
-    await dispatch("rb3", {
-      type: "context_info",
-      threadId,
-      sessionId,
-      cwd: path.join(tmp, "other"),
-    });
-    expect(run.persistedCwd).toBe(workspace);
+      // 已绑定目录的会话不再被后续 cwd 改动（换目录开新会话是前端职责）
+      await dispatch("rb3", {
+        type: "context_info",
+        threadId,
+        sessionId,
+        cwd: path.join(tmp, "other"),
+      });
+      expect(run.persistedCwd).toBe(workspace);
+    } finally {
+      delete process.env.PI_TASK_CWD;
+    }
   });
 });
 
