@@ -108,6 +108,17 @@ rl.on("line", (line) => {
       }
       break;
     }
+    case "ping":
+      // MCP_FAKE_NO_PING=1 模拟不支持 ping 的老服务器（-32601，探测豁免路径）；
+      // MCP_FAKE_PING_ERROR=1 模拟 ping 明确报错（非 -32601，探测失败断开路径）
+      if (process.env.MCP_FAKE_NO_PING) {
+        send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "method not supported" } });
+      } else if (process.env.MCP_FAKE_PING_ERROR) {
+        send({ jsonrpc: "2.0", id: m.id, error: { code: -32603, message: "ping rejected" } });
+      } else {
+        send({ jsonrpc: "2.0", id: m.id, result: {} });
+      }
+      break;
     default:
       send({
         jsonrpc: "2.0",

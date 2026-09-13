@@ -24,12 +24,15 @@ const systemConfig = path.join(tmp, "mcp.json");
 const cacheFile = path.join(tmp, "cache.json");
 const prevConfig = process.env.PI_MCP_CONFIG;
 const prevCachePath = process.env.PI_MCP_CACHE_PATH;
+const prevAuditPath = process.env.PI_MCP_AUDIT_PATH;
 const FAKE_SERVER = join(import.meta.dir, "..", "test", "fake-mcp-server.mjs");
 
 beforeEach(() => {
   process.env.PI_MCP_CONFIG = systemConfig;
   // 钉住缓存路径：绝不读写开发者真实的 ~/.xulux/mcp-cache.json
   process.env.PI_MCP_CACHE_PATH = cacheFile;
+  // 审计同理：绝不写真实的 ~/.xulux/mcp-audit.jsonl
+  process.env.PI_MCP_AUDIT_PATH = path.join(tmp, "audit.jsonl");
   if (existsSync(systemConfig)) unlinkSync(systemConfig);
   if (existsSync(cacheFile)) unlinkSync(cacheFile);
   mcpManager.disposeAll();
@@ -43,6 +46,8 @@ afterAll(() => {
   else process.env.PI_MCP_CONFIG = prevConfig;
   if (prevCachePath === undefined) delete process.env.PI_MCP_CACHE_PATH;
   else process.env.PI_MCP_CACHE_PATH = prevCachePath;
+  if (prevAuditPath === undefined) delete process.env.PI_MCP_AUDIT_PATH;
+  else process.env.PI_MCP_AUDIT_PATH = prevAuditPath;
 });
 
 const writeConfig = (approveTools?: string[]) => {

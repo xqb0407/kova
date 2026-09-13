@@ -364,6 +364,32 @@ export type PiMcpServerToolsResponse = {
   tools: PiMcpToolInfo[];
 };
 
+/** MCP 观测审计事件种类（与 sidecar mcp-audit.ts 对齐） */
+export type PiMcpAuditKind =
+  | "connect"
+  | "connect_fail"
+  | "disconnect"
+  | "call"
+  | "truncate"
+  | "auth"
+  | "probe_fail";
+
+/** 单条审计事件：只有元数据（服务器名/耗时/摘要），不含参数与结果 */
+export type PiMcpAuditEvent = {
+  at: number;
+  server: string;
+  kind: PiMcpAuditKind;
+  ok?: boolean;
+  ms?: number;
+  detail?: string;
+};
+
+/** get_mcp_audit_log 应答（时间升序，跨重启持久） */
+export type PiMcpAuditLogResponse = {
+  type: "mcp_audit_log";
+  events: PiMcpAuditEvent[];
+};
+
 export type PiResponse =
   | { type: "sessions"; sessions: PiSessionSummary[] }
   | { type: "session"; sessionId: string; threadId: string }
@@ -396,6 +422,7 @@ export type PiResponse =
   | PiMcpServerTestResponse
   | PiMcpServerLogResponse
   | PiMcpServerToolsResponse
+  | PiMcpAuditLogResponse
   | { type: "usage_stats"; stats: PiUsageStats }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "model_updated"; provider: string; modelId: string }

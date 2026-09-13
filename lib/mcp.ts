@@ -3,6 +3,8 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import {
   piRequest,
+  type PiMcpAuditEvent,
+  type PiMcpAuditLogResponse,
   type PiMcpLogLine,
   type PiMcpServerEntry,
   type PiMcpServerIcon,
@@ -192,6 +194,23 @@ export async function authorizeMcpServer(name: string, cwd?: string | null): Pro
   );
   current = fromResponse(res);
   emit();
+}
+
+/** MCP 观测审计事件（sidecar 落盘 JSONL，跨重启持久；只含元数据） */
+export type McpAuditEvent = PiMcpAuditEvent;
+
+/** 拉取审计事件：name 省略 = 全部服务器（全局视图）；时间升序返回，前端倒序展示。
+ *  读的是本地文件，无需长超时。 */
+export async function fetchMcpAuditLog(
+  name?: string,
+  limit = 200,
+): Promise<McpAuditEvent[]> {
+  const res = await piRequest<PiMcpAuditLogResponse>({
+    type: "get_mcp_audit_log",
+    ...(name ? { name } : {}),
+    limit,
+  });
+  return res.events;
 }
 
 /** 拉取某台服务器的连接错误日志（sidecar 环形缓冲；按名字聚合，不分层）。

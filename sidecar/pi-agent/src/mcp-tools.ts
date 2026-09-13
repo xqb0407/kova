@@ -184,6 +184,11 @@ export async function findServerDef(
 }
 
 export function buildMcpTool(cwd: string, threadId: string): AgentTool {
+  // 会话装配预连：eager 服务器后台握手（fire-and-forget，不阻塞装配；
+  // 失败由连接池落退避/日志/审计，lazy 服务器维持首调才连）
+  void activeMcpServers(cwd)
+    .then((defs) => mcpManager.prewarm(defs))
+    .catch(() => {});
   return {
     name: "mcp",
     label: "MCP",

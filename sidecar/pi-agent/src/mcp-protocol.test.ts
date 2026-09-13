@@ -17,11 +17,14 @@ const FAKE_SERVER = join(import.meta.dir, "..", "test", "fake-mcp-server.mjs");
 
 const prevConfig = process.env.PI_MCP_CONFIG;
 const prevCachePath = process.env.PI_MCP_CACHE_PATH;
+const prevAuditPath = process.env.PI_MCP_AUDIT_PATH;
 
 beforeAll(() => {
   initStorage(path.join(tmp, "state.db"), path.join(tmp, "sessions"));
   process.env.PI_MCP_CONFIG = systemConfig;
   process.env.PI_MCP_CACHE_PATH = cacheFile;
+  // 审计事件也进临时文件：绝不写开发者真实的 ~/.xulux/mcp-audit.jsonl
+  process.env.PI_MCP_AUDIT_PATH = path.join(tmp, "audit.jsonl");
   setInitGate(Promise.resolve());
 });
 
@@ -31,6 +34,8 @@ afterAll(() => {
   else process.env.PI_MCP_CONFIG = prevConfig;
   if (prevCachePath === undefined) delete process.env.PI_MCP_CACHE_PATH;
   else process.env.PI_MCP_CACHE_PATH = prevCachePath;
+  if (prevAuditPath === undefined) delete process.env.PI_MCP_AUDIT_PATH;
+  else process.env.PI_MCP_AUDIT_PATH = prevAuditPath;
 });
 
 beforeEach(() => {

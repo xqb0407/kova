@@ -77,6 +77,8 @@
  *       前端需长超时），完成后同款 mcp_servers 应答刷新全部行状态
  *   { "type": "revoke_mcp_server_auth", "id", "name", "cwd"? } → { id, type: "mcp_servers", ... }
  *       取消 OAuth 授权：清掉该服务器 URL 的存量凭据并断开（下次握手回到 needsAuth）
+ *   { "type": "get_mcp_audit_log", "id", "name"?, "limit"? } → { id, type: "mcp_audit_log", events }
+ *       观测审计事件（连接/断开/调用/截断/授权/健康探测，跨重启持久，时间升序）
  *   { "type": "usage_stats", "id" }                           → { id, type: "usage_stats", stats }（全局使用统计：增量物化到 SQLite 后从库聚合）
  *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
@@ -254,6 +256,7 @@ import {
 import { mcpManager } from "./mcp-manager";
 import { getValidTools } from "./mcp-cache";
 import { clearOAuthForServer } from "./mcp-oauth";
+import { readMcpAudit } from "./mcp-audit";
 import {
   activeMcpServers,
   deleteMcpServer,
@@ -344,7 +347,10 @@ async function mcpServersPayload(cwd?: string) {
 
 /** 变更后的连接池热重载：以当前启用集合 diff，断开被删/改/禁用的服务器 */
 async function reloadMcpConnections(cwd?: string): Promise<void> {
-  mcpManager.applyConfig(await activeMcpServers(cwd));
+  const defs = await activeMcpServers(cwd);
+  mcpManager.applyConfig(defs);
+  // eager 服务器即时预连（fire-and-forget）：新加/改配置的 eager 不用等首次调用
+  mcpManager.prewarm(defs);
 }
 
 /** 从消息里解析 MCP 草稿（save 用）；字段宽松规整，校验交给 saveMcpServer */
@@ -1552,6 +1558,13 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const name = String(msg.name ?? "");
       if (!name) throw new Error("get_mcp_server_log: name is required");
       send({ id: reqId, type: "mcp_server_log", name, lines: mcpManager.logFor(name) });
+      break;
+    }
+    case "get_mcp_audit_log": {
+      const name = typeof msg.name === "string" && msg.name.trim() ? msg.name : undefined;
+      const limit =
+        typeof msg.limit === "number" && msg.limit > 0 ? Math.min(msg.limit, 1000) : 200;
+      send({ id: reqId, type: "mcp_audit_log", events: readMcpAudit({ server: name, limit }) });
       break;
     }
     case "set_credential": {
