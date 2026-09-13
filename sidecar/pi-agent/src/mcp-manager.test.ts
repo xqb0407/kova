@@ -4,13 +4,16 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { join } from "node:path";
-import { mcpManager, McpManager, mcpChildEnv, MCP_FAILURE_BACKOFF_MS } from "./mcp-manager";
+import { mcpManager, McpManager, mcpChildEnv, MCP_BACKOFF_BASE_MS, backoffForStreak, MCP_HEALTH_PROBE_INTERVAL_MS } from "./mcp-manager";
 import { resetMcpCacheForTest, getValidTools } from "./mcp-cache";
+import { readMcpAudit } from "./mcp-audit";
 import type { McpServerDef } from "./mcp-config";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-mcp-manager-"));
 const prevCachePath = process.env.PI_MCP_CACHE_PATH;
 const prevSecret = process.env.PI_MCP_TEST_SECRET;
+// 审计事件也进临时文件：避免测试写脏用户真实的 ~/.xulux/mcp-audit.jsonl
+const prevAuditPath = process.env.PI_MCP_AUDIT_PATH;
 
 const FAKE_SERVER = join(import.meta.dir, "..", "test", "fake-mcp-server.mjs");
 
@@ -27,6 +30,7 @@ const stdioDef = (overrides: Partial<McpServerDef> = {}): McpServerDef => ({
 beforeAll(() => {
   process.env.PI_MCP_CACHE_PATH = path.join(tmp, "cache.json");
   process.env.PI_MCP_TEST_SECRET = "should-not-leak";
+  process.env.PI_MCP_AUDIT_PATH = path.join(tmp, "audit.jsonl");
 });
 
 afterAll(() => {
@@ -35,6 +39,8 @@ afterAll(() => {
   else process.env.PI_MCP_CACHE_PATH = prevCachePath;
   if (prevSecret === undefined) delete process.env.PI_MCP_TEST_SECRET;
   else process.env.PI_MCP_TEST_SECRET = prevSecret;
+  if (prevAuditPath === undefined) delete process.env.PI_MCP_AUDIT_PATH;
+  else process.env.PI_MCP_AUDIT_PATH = prevAuditPath;
 });
 
 const freshManager = () => {
@@ -133,7 +139,7 @@ describe("退避与上限", () => {
     expect(mgr.statusFor(bad).state).toBe("backoff");
     const t0 = Date.now();
     await expect(mgr.ensureConnected(bad)).rejects.toThrow("退避中");
-    expect(Date.now() - t0).toBeLessThan(MCP_FAILURE_BACKOFF_MS / 2);
+    expect(Date.now() - t0).toBeLessThan(MCP_BACKOFF_BASE_MS / 2);
   });
 
   test("连接错误日志：握手失败记录、跨断开保留、teardown 清空", async () => {
@@ -180,6 +186,144 @@ describe("退避与上限", () => {
     expect(tools).toHaveLength(6);
     expect(mgr.activeCount).toBeLessThanOrEqual(16);
     expect(mgr.statusFor(stdioDef({ name: "s0" })).state).toBe("idle");
+  });
+});
+
+describe("指数退避曲线", () => {
+  test("30s 起步、倍增、5min 封顶", () => {
+    expect(backoffForStreak(1)).toBe(30_000);
+    expect(backoffForStreak(2)).toBe(60_000);
+    expect(backoffForStreak(3)).toBe(120_000);
+    expect(backoffForStreak(4)).toBe(240_000);
+    expect(backoffForStreak(5)).toBe(300_000);
+    expect(backoffForStreak(50)).toBe(300_000);
+  });
+  test("连续失败退避递增（30s→60s→120s）", async () => {
+    const mgr = freshManager();
+    const bad = stdioDef({ name: "escalate", command: "definitely-not-a-command-xyz" });
+    type EntryInternals = { backoffUntil?: number; failStreak: number; state: string };
+    const entry = () =>
+      (mgr as unknown as { entries: Map<string, EntryInternals> }).entries.get("escalate")!;
+
+    await expect(mgr.ensureConnected(bad)).rejects.toThrow();
+    expect(entry().state).toBe("backoff");
+    expect(entry().failStreak).toBe(1);
+    expect(entry().backoffUntil! - Date.now()).toBeLessThanOrEqual(30_000 + 200);
+
+    // 放行退避窗口触发第二轮、第三轮（不等真实 30s/60s）
+    entry().backoffUntil = 0;
+    await expect(mgr.ensureConnected(bad)).rejects.toThrow();
+    expect(entry().failStreak).toBe(2);
+    const rem2 = entry().backoffUntil! - Date.now();
+    expect(rem2).toBeGreaterThan(60_000 - 1000);
+    expect(rem2).toBeLessThanOrEqual(60_000 + 200);
+
+    entry().backoffUntil = 0;
+    await expect(mgr.ensureConnected(bad)).rejects.toThrow();
+    expect(entry().failStreak).toBe(3);
+    const rem3 = entry().backoffUntil! - Date.now();
+    expect(rem3).toBeGreaterThan(120_000 - 1000);
+    expect(rem3).toBeLessThanOrEqual(120_000 + 200);
+  });
+});
+
+describe("健康检查（probeHealth）", () => {
+  test("keep-alive 探测 ping 成功：保持 ready", async () => {
+    const mgr = freshManager();
+    const def = stdioDef({ name: "hp-ok", lifecycle: "keep-alive" });
+    await mgr.ensureConnected(def);
+    mgr.probeHealth(Date.now() + MCP_HEALTH_PROBE_INTERVAL_MS);
+    await Bun.sleep(300);
+    expect(mgr.statusFor(def).state).toBe("ready");
+    // 连接仍可用
+    const tools = await mgr.callTool(def, "echo", { text: "x" });
+    expect(JSON.stringify(tools)).toContain("echo:x");
+  });
+
+  test("服务器不支持 ping（-32601）：豁免，不误杀", async () => {
+    const mgr = freshManager();
+    const def = stdioDef({
+      name: "hp-unsupported",
+      lifecycle: "keep-alive",
+      env: { MCP_FAKE_NO_PING: "1" },
+    });
+    await mgr.ensureConnected(def);
+    mgr.probeHealth(Date.now() + MCP_HEALTH_PROBE_INTERVAL_MS);
+    await Bun.sleep(300);
+    expect(mgr.statusFor(def).state).toBe("ready");
+    // 豁免后二次探测直接跳过（若没豁免会再发一次报错的 ping，行为不变但说明标记生效）
+    mgr.probeHealth(Date.now() + 2 * MCP_HEALTH_PROBE_INTERVAL_MS);
+    await Bun.sleep(200);
+    expect(mgr.statusFor(def).state).toBe("ready");
+  });
+
+  test("ping 明确报错：断开 + probe_fail 审计", async () => {
+    const mgr = freshManager();
+    const def = stdioDef({
+      name: "hp-fail",
+      lifecycle: "keep-alive",
+      env: { MCP_FAKE_PING_ERROR: "1" },
+    });
+    await mgr.ensureConnected(def);
+    mgr.probeHealth(Date.now() + MCP_HEALTH_PROBE_INTERVAL_MS);
+    await Bun.sleep(400);
+    // 断连即出池：状态回落 idle，下次调用重连
+    expect(mgr.statusFor(def).state).toBe("idle");
+    const events = readMcpAudit({ server: "hp-fail", limit: 50 });
+    expect(events.some((e) => e.kind === "probe_fail" && e.ok === false)).toBe(true);
+    expect(events.some((e) => e.kind === "disconnect" && e.detail === "probe_fail")).toBe(true);
+  });
+
+  test("lazy 连接不参与探测", async () => {
+    const mgr = freshManager();
+    const def = stdioDef({ name: "hp-lazy", env: { MCP_FAKE_PING_ERROR: "1" } });
+    await mgr.ensureConnected(def);
+    mgr.probeHealth(Date.now() + 10 * MCP_HEALTH_PROBE_INTERVAL_MS);
+    await Bun.sleep(300);
+    expect(mgr.statusFor(def).state).toBe("ready");
+  });
+});
+
+describe("eager 预连（prewarm）", () => {
+  test("eager 后台握手，lazy 不碰", async () => {
+    const mgr = freshManager();
+    const eagerDef = stdioDef({ name: "pw-eager", lifecycle: "eager" });
+    const lazyDef = stdioDef({ name: "pw-lazy" });
+    mgr.prewarm([eagerDef, lazyDef]);
+    // fire-and-forget：给 spawn+握手留时间
+    await Bun.sleep(500);
+    expect(mgr.statusFor(eagerDef).state).toBe("ready");
+    expect(mgr.statusFor(lazyDef).state).toBe("idle");
+  });
+});
+
+describe("审计事件联动", () => {
+  test("connect/call/disconnect 事件按序落盘", async () => {
+    const mgr = freshManager();
+    const def = stdioDef({ name: "audit-flow" });
+    await mgr.ensureConnected(def);
+    await mgr.callTool(def, "echo", { text: "hi" });
+    mgr.disconnect("audit-flow", "manual");
+    const events = readMcpAudit({ server: "audit-flow", limit: 50 });
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).toEqual(["connect", "call", "disconnect"]);
+    const connect = events[0];
+    expect(connect.ok).toBe(true);
+    expect(connect.detail).toBe("6 个工具");
+    expect(connect.ms).toBeGreaterThan(0);
+    expect(events[1].detail).toBe("echo");
+    expect(events[2].detail).toBe("manual");
+  });
+
+  test("握手失败落 connect_fail（含退避提示）", async () => {
+    const mgr = freshManager();
+    const bad = stdioDef({ name: "audit-fail", command: "definitely-not-a-command-xyz" });
+    await expect(mgr.ensureConnected(bad)).rejects.toThrow();
+    const events = readMcpAudit({ server: "audit-fail", limit: 50 });
+    const fail = events.find((e) => e.kind === "connect_fail");
+    expect(fail).toBeDefined();
+    expect(fail!.ok).toBe(false);
+    expect(fail!.detail).toContain("下次重试约");
   });
 });
 

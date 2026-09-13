@@ -93,6 +93,12 @@ type Entry = {
   lastUsedAt: number;
   /** 退避截止时间戳（state=backoff 时有效） */
   backoffUntil?: number;
+  /** 连续握手失败次数（指数退避的指数；成功握手清零） */
+  failStreak: number;
+  /** 最近一次健康探测时间（keep-alive/eager 专用） */
+  lastProbeAt?: number;
+  /** ping 收到 -32601（协议里 ping 是可选能力）：视为不支持，不再探测不误杀 */
+  pingUnsupported?: boolean;
   message?: string;
   /** 最近一次握手因 OAuth 未授权失败（401） */
   needsAuth?: boolean;
@@ -225,18 +231,20 @@ export class McpManager {
       throw new Error(`MCP 服务器 "${def.name}" 不是 http 传输，无需 OAuth 授权`);
     }
     const session = await beginInteractiveOAuth(String(def.url ?? ""));
-    this.disconnect(def.name);
+    this.disconnect(def.name, "reauthorize");
     const entry: Entry = {
       def,
       configHash: computeConfigHash(def),
       state: "idle",
       tools: [],
       lastUsedAt: 0,
+      failStreak: 0,
     };
     this.entries.set(def.name, entry);
     entry.connecting = this.handshake(entry, session);
     try {
       await entry.connecting;
+      recordMcpAudit({ at: Date.now(), server: def.name, kind: "auth", ok: true, detail: "OAuth 授权完成" });
     } finally {
       entry.connecting = undefined;
       await session.finish();
@@ -253,7 +261,8 @@ export class McpManager {
       throw new Error(`MCP 服务器 "${def.name}" 不是 http 传输，没有 OAuth 授权可取消`);
     }
     clearOAuthForServer(String(def.url ?? ""));
-    this.disconnect(def.name);
+    recordMcpAudit({ at: Date.now(), server: def.name, kind: "auth", ok: true, detail: "取消授权：已清除存量凭据" });
+    this.disconnect(def.name, "revoke");
   }
 
   /** 连接中服务器的实时工具元数据（比缓存新鲜；未连接返回 null） */
@@ -282,7 +291,7 @@ export class McpManager {
     const hash = computeConfigHash(def);
     let entry = this.entries.get(def.name);
     if (entry && entry.configHash !== hash) {
-      this.disconnect(def.name);
+      this.disconnect(def.name, "config_change");
       entry = undefined;
     }
     if (!entry) {
@@ -292,6 +301,7 @@ export class McpManager {
         state: "idle",
         tools: [],
         lastUsedAt: 0,
+        failStreak: 0,
       };
       this.entries.set(def.name, entry);
     }
@@ -335,15 +345,34 @@ export class McpManager {
       );
     }
     entry.lastUsedAt = Date.now();
+    const t0 = Date.now();
     try {
-      return await entry.client!.callTool(
+      const result = await entry.client!.callTool(
         { name: toolName, arguments: args },
         undefined,
         { timeout: MCP_CALL_TIMEOUT_MS, signal },
       );
+      // 只记元数据（名字/耗时/成败），参数与结果内容不进审计
+      recordMcpAudit({
+        at: Date.now(),
+        server: def.name,
+        kind: "call",
+        ok: true,
+        ms: Date.now() - t0,
+        detail: toolName,
+      });
+      return result;
     } catch (err) {
       // 传输层死亡（服务器退出/会话失效）时 onclose 已置 idle，下次调用自动重连；
       // 业务错误（isError / 服务器返回错误）不清连接
+      recordMcpAudit({
+        at: Date.now(),
+        server: def.name,
+        kind: "call",
+        ok: false,
+        ms: Date.now() - t0,
+        detail: `${toolName}：${describeError(err)}`,
+      });
       throw err;
     }
   }
@@ -357,12 +386,12 @@ export class McpManager {
     for (const [name, entry] of [...this.entries]) {
       const nextHash = hashes.get(name);
       if (!nextHash) {
-        this.disconnect(name);
+        this.disconnect(name, "config_removed");
         continue;
       }
       if (entry.configHash !== nextHash) {
         // 立即以新配置覆盖旧条目（旧连接作废）
-        this.disconnect(name);
+        this.disconnect(name, "config_change");
       }
     }
     // 图标缓存同样按「名字+哈希」过期：删除/改配置的服务器不再沿用旧图标
@@ -375,18 +404,21 @@ export class McpManager {
   /** 全部断开（sidecar 退出 / 测试 teardown）：图标与日志缓存一并清空 */
   disposeAll(): void {
     this.stopReaper();
-    for (const name of [...this.entries.keys()]) this.disconnect(name);
+    for (const name of [...this.entries.keys()]) this.disconnect(name, "teardown");
     this.iconCache.clear();
     this.logs.clear();
   }
 
   /**
-   * 启动空闲回收定时器（30s 一轮；index.ts 初始化时调用）。
-   * 只回收 lifecycle=lazy 且超过 idleTimeout 无活动的连接。
+   * 启动后台维护定时器（30s 一轮；index.ts 初始化时调用）：
+   * 空闲回收（lazy 超时无活动断开）+ keep-alive/eager 健康探测。
    */
   startReaper(intervalMs = 30_000): void {
     this.stopReaper();
-    this.reaperTimer = setInterval(() => this.reapIdle(), intervalMs);
+    this.reaperTimer = setInterval(() => {
+      this.reapIdle();
+      this.probeHealth();
+    }, intervalMs);
     // 不阻止进程退出
     this.reaperTimer.unref?.();
   }
@@ -407,16 +439,69 @@ export class McpManager {
       // 从未使用过的连接（lastUsedAt=0）用 connectedAt 之外兜底：不给回收（握手即用，行为一致）
       if (entry.lastUsedAt <= 0) continue;
       if (now - entry.lastUsedAt >= idleTimeout) {
-        this.disconnect(name);
+        this.disconnect(name, "idle_reclaim");
       }
     }
   }
 
-  /** 断开并移除条目（连接池权威出口） */
-  disconnect(name: string): void {
+  /**
+   * keep-alive/eager 主动健康检查（reaper tick 搭车；测试可直接调）：
+   * ready 连接每 MCP_HEALTH_PROBE_INTERVAL_MS ping 一次。半开连接（TCP 活着、
+   * 服务器已死）onclose 兜不住，这里 ping 超时后断开，下次调用重连。
+   * 服务器回 -32601（协议里 ping 是可选能力）标记豁免，不误杀健康连接。
+   */
+  probeHealth(now = Date.now()): void {
+    for (const [name, entry] of [...this.entries]) {
+      if (!entry.client || entry.state !== "ready") continue;
+      if (!entry.def.lifecycle || entry.def.lifecycle === "lazy") continue;
+      if (entry.pingUnsupported) continue;
+      if (now - (entry.lastProbeAt ?? 0) < MCP_HEALTH_PROBE_INTERVAL_MS) continue;
+      entry.lastProbeAt = now;
+      const client = entry.client;
+      withTimeout(
+        client.ping({ timeout: MCP_CONNECT_TIMEOUT_MS }),
+        MCP_CONNECT_TIMEOUT_MS + 2000,
+        "健康检查 ping 超时",
+      ).catch((err) => {
+        if ((err as { code?: unknown } | null)?.code === -32601) {
+          entry.pingUnsupported = true;
+          return;
+        }
+        this.pushLog(name, `健康检查失败：${describeError(err)}`);
+        recordMcpAudit({
+          at: Date.now(),
+          server: name,
+          kind: "probe_fail",
+          ok: false,
+          detail: describeError(err),
+        });
+        // 探测期间连接可能已被回收/重连：只断当前这条仍挂着的
+        if (this.entries.get(name) === entry && entry.client === client) {
+          this.disconnect(name, "probe_fail");
+        }
+      });
+    }
+  }
+
+  /**
+   * eager 服务器预连（配置装载/变更、会话装配时调用）：fire-and-forget，
+   * 失败已由握手路径落退避/日志/审计，这里不抛出、不阻塞装配。
+   */
+  prewarm(defs: McpServerDef[]): void {
+    for (const def of defs) {
+      if (def.lifecycle !== "eager") continue;
+      void this.ensureConnected(def).catch(() => {});
+    }
+  }
+
+  /** 断开并移除条目（连接池权威出口）；reason 进审计日志 */
+  disconnect(name: string, reason = "manual"): void {
     const entry = this.entries.get(name);
     if (!entry) return;
     this.entries.delete(name);
+    if (entry.client) {
+      recordMcpAudit({ at: Date.now(), server: name, kind: "disconnect", detail: reason });
+    }
     try {
       entry.client?.close();
     } catch {
@@ -494,6 +579,7 @@ export class McpManager {
 
   private async handshake(entry: Entry, oauth?: InteractiveOAuthSession): Promise<McpToolMeta[]> {
     const { def } = entry;
+    const t0 = Date.now();
     entry.state = "connecting";
     entry.message = undefined;
     entry.needsAuth = false;
@@ -546,14 +632,31 @@ export class McpManager {
       const icons = normalizeServerIcons(conn.client.getServerVersion()?.icons);
       if (icons) this.iconCache.set(iconsKey, icons);
       else this.iconCache.delete(iconsKey);
+      entry.failStreak = 0;
       if (tools.length >= MAX_TOOLS_PER_SERVER) {
         entry.message = `工具数达到上限 ${MAX_TOOLS_PER_SERVER}，超出部分已截断`;
+        recordMcpAudit({
+          at: Date.now(),
+          server: def.name,
+          kind: "truncate",
+          ok: false,
+          detail: `工具数达上限，保留 ${MAX_TOOLS_PER_SERVER} 个`,
+        });
       }
       updateTools(def, tools);
+      recordMcpAudit({
+        at: Date.now(),
+        server: def.name,
+        kind: "connect",
+        ok: true,
+        ms: Date.now() - t0,
+        detail: `${tools.length} 个工具`,
+      });
       return tools;
     } catch (err) {
       entry.state = "backoff";
-      entry.backoffUntil = Date.now() + MCP_FAILURE_BACKOFF_MS;
+      entry.failStreak += 1;
+      entry.backoffUntil = Date.now() + backoffForStreak(entry.failStreak);
       if (isAuthFailure(err)) {
         entry.needsAuth = true;
         entry.message = "需要 OAuth 授权：在设置 → MCP 中点「授权」完成浏览器登录";
@@ -561,6 +664,14 @@ export class McpManager {
         entry.message = describeError(err);
       }
       this.pushLog(def.name, `握手失败：${entry.message}`);
+      recordMcpAudit({
+        at: Date.now(),
+        server: def.name,
+        kind: "connect_fail",
+        ok: false,
+        ms: Date.now() - t0,
+        detail: `${entry.needsAuth ? "[needsAuth] " : ""}${entry.message}（下次重试约 ${Math.round(backoffForStreak(entry.failStreak) / 1000)}s 后）`,
+      });
       entry.client = undefined;
       entry.tools = [];
       try {
@@ -603,7 +714,7 @@ export class McpManager {
         oldestName = name;
       }
     }
-    if (oldestName) this.disconnect(oldestName);
+    if (oldestName) this.disconnect(oldestName, "lru_evict");
   }
 }
 

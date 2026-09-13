@@ -17,6 +17,7 @@ import type { McpServerDef } from "./mcp-config";
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-mcp-oauth-"));
 const prevOAuthPath = process.env.PI_MCP_OAUTH_PATH;
 const prevCachePath = process.env.PI_MCP_CACHE_PATH;
+const prevAuditPath = process.env.PI_MCP_AUDIT_PATH;
 
 let srv: Server;
 let base = ""; // http://127.0.0.1:<port>
@@ -75,6 +76,8 @@ function json(res: { writeHead: Function; end: (b?: string) => void }, status: n
 beforeAll(async () => {
   process.env.PI_MCP_OAUTH_PATH = path.join(tmp, "mcp-oauth.json");
   process.env.PI_MCP_CACHE_PATH = path.join(tmp, "cache.json");
+  // authorize/revoke 会落审计事件：进临时文件，别脏真实的 ~/.xulux/mcp-audit.jsonl
+  process.env.PI_MCP_AUDIT_PATH = path.join(tmp, "audit.jsonl");
   srv = createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
@@ -224,6 +227,8 @@ afterAll(() => {
   else process.env.PI_MCP_OAUTH_PATH = prevOAuthPath;
   if (prevCachePath === undefined) delete process.env.PI_MCP_CACHE_PATH;
   else process.env.PI_MCP_CACHE_PATH = prevCachePath;
+  if (prevAuditPath === undefined) delete process.env.PI_MCP_AUDIT_PATH;
+  else process.env.PI_MCP_AUDIT_PATH = prevAuditPath;
 });
 
 beforeEach(() => {

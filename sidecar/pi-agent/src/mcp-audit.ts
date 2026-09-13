@@ -51,8 +51,9 @@ export function recordMcpAudit(ev: McpAuditEvent): void {
     // 按文件大小粗判是否可能超条数上限（单行 ~300B 足够保守），超了才重写截尾
     if (existsSync(path) && statSync(path).size > MCP_AUDIT_MAX_LINES * 300) {
       const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
-      if (lines.length > MCP_AUDIT_MAX_LINES) {
-        writeFileSync(path, lines.slice(-MCP_AUDIT_MAX_LINES).join("\n") + "\n");
+      if (lines.length >= MCP_AUDIT_MAX_LINES) {
+        // 给本次 append 留位：重写后正好 MAX 条
+        writeFileSync(path, lines.slice(-(MCP_AUDIT_MAX_LINES - 1)).join("\n") + "\n");
       }
     }
     appendFileSync(path, JSON.stringify(ev) + "\n");

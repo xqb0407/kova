@@ -67,6 +67,7 @@ import { pathBasename, useWorkspace, useWorkspaceRecents } from "@/lib/workspace
 import {
   authorizeMcpServer,
   deleteMcpServer,
+  fetchMcpAuditLog,
   fetchMcpServerLog,
   fetchMcpServerTools,
   refreshMcpServers,
@@ -75,6 +76,7 @@ import {
   setMcpServerEnabled,
   testMcpServer,
   useMcpServers,
+  type McpAuditEvent,
   type McpLogLine,
   type McpServerDraft,
   type McpToolInfo,
@@ -83,6 +85,7 @@ import {
 } from "@/lib/mcp";
 import { useHtmlDark } from "@/lib/use-html-dark";
 import { Label } from "@/components/ui/label";
+import { toast } from "@/components/ui/toast";
 
 type ScopeTab = "system" | "workspace";
 
@@ -951,7 +954,7 @@ const McpRow: FC<{
           size="sm"
           className="h-7 px-2 text-xs"
           onClick={onLog}
-          title="查看连接错误日志"
+          title="查看连接日志与事件"
         >
           日志
         </Button>
@@ -1024,11 +1027,26 @@ const McpRow: FC<{
  * MCP 连接日志弹窗：拉取 sidecar 的环形缓冲（握手失败 / 传输错误，按名字跨
  * 断开保留），行内不再展示长错误文本——点「日志」在这里看。
  */
+/** 审计事件种类的展示元数据：中文名 + 徽标底色 */
+const AUDIT_KIND_META: Record<
+  McpAuditEvent["kind"],
+  { label: string; className: string }
+> = {
+  connect: { label: "连接", className: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" },
+  connect_fail: { label: "连接失败", className: "bg-destructive/15 text-destructive" },
+  disconnect: { label: "断开", className: "bg-muted text-muted-foreground" },
+  call: { label: "调用", className: "bg-sky-500/15 text-sky-600 dark:text-sky-400" },
+  truncate: { label: "截断", className: "bg-amber-500/15 text-amber-600 dark:text-amber-400" },
+  auth: { label: "授权", className: "bg-violet-500/15 text-violet-600 dark:text-violet-400" },
+  probe_fail: { label: "探测失败", className: "bg-orange-500/15 text-orange-600 dark:text-orange-400" },
+};
+
 const McpLogDialog: FC<{
   name: string | null;
   onOpenChange: (open: boolean) => void;
 }> = ({ name, onOpenChange }) => {
   const [lines, setLines] = useState<McpLogLine[]>([]);
+  const [events, setEvents] = useState<McpAuditEvent[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1037,7 +1055,13 @@ const McpLogDialog: FC<{
     setBusy(true);
     setError(null);
     try {
-      setLines(await fetchMcpServerLog(name));
+      // 错误日志（进程内环形缓冲）与审计事件（本地 JSONL 持久）并行取
+      const [log, audit] = await Promise.all([
+        fetchMcpServerLog(name),
+        fetchMcpAuditLog(name, 200),
+      ]);
+      setLines(log);
+      setEvents(audit);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1050,32 +1074,87 @@ const McpLogDialog: FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name]);
 
+  // 时间倒序（最近在上）：sidecar 返回升序，这里翻转
+  const recentEvents = [...events].reverse();
+
   return (
     <Dialog open={name !== null} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100dvh-3rem)] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>连接日志</DialogTitle>
           <DialogDescription>
-            {name} · 记录握手失败与传输错误（最近 100 条），点「测试」可重新握手
+            {name} · 连接错误（最近 100 条）与持久化审计事件，点「测试」可重新握手
           </DialogDescription>
         </DialogHeader>
         {error ? (
           <p className="text-destructive min-w-0 break-words text-sm">{error}</p>
-        ) : busy && lines.length === 0 ? (
-          <p className="text-muted-foreground py-6 text-center text-sm">读取中…</p>
-        ) : lines.length === 0 ? (
-          <p className="text-muted-foreground py-6 text-center text-sm">暂无连接错误</p>
         ) : (
-          <ul className="bg-muted/60 flex max-h-80 min-w-0 flex-col gap-1.5 overflow-y-auto rounded-lg border p-3">
-            {lines.map((l, i) => (
-              <li key={i} className="flex min-w-0 gap-2 text-xs">
-                <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
-                  {new Date(l.at).toLocaleString()}
+          <div className="flex flex-col gap-4">
+            <section>
+              <h4 className="mb-1.5 text-xs font-medium">连接错误</h4>
+              {busy && lines.length === 0 ? (
+                <p className="text-muted-foreground py-4 text-center text-sm">读取中…</p>
+              ) : lines.length === 0 ? (
+                <p className="text-muted-foreground py-4 text-center text-sm">
+                  暂无连接错误
+                </p>
+              ) : (
+                <ul className="bg-muted/60 flex max-h-64 min-w-0 flex-col gap-1.5 overflow-y-auto rounded-lg border p-3">
+                  {lines.map((l, i) => (
+                    <li key={i} className="flex min-w-0 gap-2 text-xs">
+                      <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
+                        {new Date(l.at).toLocaleString()}
+                      </span>
+                      <span className="min-w-0 break-words">{l.message}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+            <section>
+              <h4 className="mb-1.5 text-xs font-medium">
+                连接事件
+                <span className="text-muted-foreground ml-1.5 font-normal">
+                  跨重启持久，只含事件与耗时，不含参数内容
                 </span>
-                <span className="min-w-0 break-words">{l.message}</span>
-              </li>
-            ))}
-          </ul>
+              </h4>
+              {busy && events.length === 0 ? (
+                <p className="text-muted-foreground py-4 text-center text-sm">读取中…</p>
+              ) : recentEvents.length === 0 ? (
+                <p className="text-muted-foreground py-4 text-center text-sm">暂无事件</p>
+              ) : (
+                <ul className="bg-muted/60 flex max-h-64 min-w-0 flex-col gap-1 overflow-y-auto rounded-lg border p-3">
+                  {recentEvents.map((e, i) => {
+                    const meta = AUDIT_KIND_META[e.kind] ?? AUDIT_KIND_META.disconnect;
+                    return (
+                      <li key={i} className="flex min-w-0 items-baseline gap-2 text-xs">
+                        <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
+                          {new Date(e.at).toLocaleString()}
+                        </span>
+                        <span
+                          className={cn(
+                            "shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-4 font-medium",
+                            meta.className,
+                          )}
+                        >
+                          {meta.label}
+                          {e.ok === false ? "✕" : ""}
+                        </span>
+                        {e.detail ? (
+                          <span className="min-w-0 break-words">{e.detail}</span>
+                        ) : null}
+                        {typeof e.ms === "number" ? (
+                          <span className="text-muted-foreground ml-auto shrink-0 font-mono tabular-nums">
+                            {e.ms}ms
+                          </span>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          </div>
         )}
         <DialogFooter className="items-center sm:justify-end">
           <Button variant="outline" onClick={() => void load()} disabled={busy}>
@@ -1228,11 +1307,17 @@ export const McpSettings: FC = () => {
     if (testingName) return;
     setTestingName(entry.name);
     try {
-      await testMcpServer(
+      const status = await testMcpServer(
         entry.layer,
         entry.name,
         entry.layer === "workspace" ? viewingCwd : undefined,
       );
+      if (status.state === "ready") {
+        toast.success({
+          title: `${entry.name} 测试成功`,
+          description: `连接正常，发现 ${status.toolCount} 个工具`,
+        });
+      }
     } catch {
       // 状态徽章已反映失败；这里无需额外动作
     } finally {
