@@ -12,7 +12,8 @@ export type PanelTabType =
   | "activity"
   | "plan"
   | "review"
-  | "terminal"
+  /** 真终端：PTY 交互会话（仅 Tauri 桌面端,见 tab-registry 可见性过滤） */
+  | "shell"
   | "browser"
   | "git"
   /** 文件内容预览：消息 read 工具行唤起（快照），或文件树标签唤起（tab.path=磁盘实时） */
@@ -31,7 +32,7 @@ export type PanelTab = {
   checkpoint?: string;
   /**
    * 定位上下文（工具行点击唤起时携带）：
-   * terminal/file = 目标 toolCallId；review = 目标文件路径。
+   * activity/file = 目标 toolCallId；review = 目标文件路径。
    * 视图侧据此展开对应卡片并滚动到位。
    */
   focus?: string;
@@ -47,7 +48,7 @@ const VALID_TYPES = new Set<PanelTabType>([
   "activity",
   "plan",
   "review",
-  "terminal",
+  "shell",
   "browser",
   "git",
   "file",

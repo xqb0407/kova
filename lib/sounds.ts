@@ -12,7 +12,7 @@ import { getUiPrefs, type SoundPackName } from "@/lib/ui-prefs";
  * 两套内置音色包（crisp=清脆 / calm=沉稳），整体切换 + 统一开关。
  * 门控链：总开关 → 仅后台开关（document.hasFocus）。
  * 浏览器自动播放策略要求用户手势后才能出声：首次 pointerdown/keydown
- * 解锁 AudioContext（设置页"试听"本身即手势，天然满足）。
+ * 解锁 AudioContext（正常使用必有任何点击，天然满足）。
  */
 
 type ToneNote = {
@@ -118,12 +118,6 @@ function playTone(tone: SoundTone, volume: number, pack: SoundPackName) {
     osc.start(now + note.at);
     osc.stop(now + note.at + note.dur + 0.05);
   }
-}
-
-/** 试听：忽略开关与后台门控（用户主动点击必须出声），音量与音色包生效 */
-export function previewSound(tone: SoundTone): void {
-  const prefs = getUiPrefs();
-  playTone(tone, prefs.soundVolume, prefs.soundPack);
 }
 
 let initialized = false;

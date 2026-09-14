@@ -32,6 +32,8 @@ if-addrs = "0.13"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 log = "0.4"
 chrono = "0.4"
+tauri-plugin-notification = "2"
+portable-pty = "0.9.0"
 
 [profile.release]
 panic = "abort"

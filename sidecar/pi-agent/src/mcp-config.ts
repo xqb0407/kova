@@ -45,6 +45,8 @@ export type McpServerDef = {
   /** lazy（默认，空闲断开）| eager / keep-alive（保持连接，不空闲回收） */
   lifecycle?: "lazy" | "eager" | "keep-alive";
   idleTimeout?: number;
+  /** 工具调用超时（毫秒），未配置用 MCP_CALL_TIMEOUT_MS 兜底 */
+  callTimeout?: number;
   /** 工具名 glob 免审批（对 gateway 的 call 动作） */
   approveTools?: string[];
   /** 所属层与来源文件，设置页展示与写路径用 */
@@ -259,6 +261,12 @@ function parseEntry(
   } else if (idleTimeout !== undefined) {
     warnings.push(`${label}: 忽略非法 idleTimeout（需 ≥5000 的毫秒数）`);
   }
+  const callTimeout = extra("callTimeout");
+  if (typeof callTimeout === "number" && Number.isFinite(callTimeout) && callTimeout >= 5_000) {
+    def.callTimeout = Math.floor(callTimeout);
+  } else if (callTimeout !== undefined) {
+    warnings.push(`${label}: 忽略非法 callTimeout（需 ≥5000 的毫秒数）`);
+  }
   const approve = extra("approveTools");
   if (Array.isArray(approve) && approve.every((g) => typeof g === "string" && g.trim())) {
     def.approveTools = (approve as string[]).map((g) => g.trim());
@@ -271,7 +279,7 @@ function parseEntry(
   for (const key of Object.keys(r)) {
     const known =
       STANDARD_FIELDS.has(key) ||
-      ["description", "lifecycle", "idleTimeout", "approveTools"].includes(key);
+      ["description", "lifecycle", "idleTimeout", "callTimeout", "approveTools"].includes(key);
     if (!known) warnings.push(`${label}: 忽略未知字段 "${key}"`);
   }
   return def;
@@ -539,6 +547,7 @@ export type McpDraft = {
   description?: string;
   lifecycle?: "lazy" | "eager" | "keep-alive";
   idleTimeout?: number;
+  callTimeout?: number;
   approveTools?: string[];
 };
 
@@ -582,6 +591,7 @@ function emitEntry(draft: McpDraft): RawEntry {
   if (draft.description?.trim()) entry.description = draft.description.trim();
   if (draft.lifecycle) entry.lifecycle = draft.lifecycle;
   if (draft.idleTimeout !== undefined) entry.idleTimeout = draft.idleTimeout;
+  if (draft.callTimeout !== undefined) entry.callTimeout = draft.callTimeout;
   if (draft.approveTools?.length) entry.approveTools = draft.approveTools;
   return entry;
 }

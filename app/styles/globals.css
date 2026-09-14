@@ -521,3 +521,12 @@ html.dark[data-window-effect] {
 }
   html.transitioning *, html.transitioning *::before, html.transitioning *::after {
     transition: border-radius 180ms ease-in-out, background-color 180ms ease-in-out, color 180ms ease-in-out, border-color 180ms ease-in-out, fill 180ms ease-in-out, stroke 180ms ease-in-out !important;}
+
+/* 长会话滚动性能：屏外的 assistant 消息正文跳过布局/渲染。
+   auto 关键字会记住上次进入视口时的真实尺寸作占位，首次未渲染的消息按 320px
+   估算——preview-rail 对本元素做 getBoundingClientRect，拿到的是占位尺寸，
+   滑过的消息即为真实值，刻度误差可接受。当前可见消息不受影响。 */
+[data-slot="aui_assistant-message-content"] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}

@@ -108,13 +108,42 @@ export function useWebhookDeliveries(): WebhookDelivery[] {
   );
 }
 
-/** 清理：只保留最新 DELIVERY_KEEP 条，返回删除数（网页模式内存已封顶，no-op） */
-export async function pruneWebhookDeliveries(): Promise<number> {
-  if (!isTauri()) return 0;
+/** 删除某端点的全部推送记录（端点被删时级联清理，按端点名匹配） */
+export async function removeWebhookDeliveries(endpointName: string): Promise<void> {
+  const next = deliveries.filter((d) => d.endpointName !== endpointName);
+  if (next.length !== deliveries.length) {
+    deliveries = next;
+    emitDeliveries();
+  }
+  if (isTauri()) {
+    try {
+      await invoke("webhook_delivery_delete", { endpoint: endpointName });
+    } catch {
+      // 库不可用时仅内存态生效
+    }
+  }
+}
+
+/** 清理：只保留最新 keep 条（默认 DELIVERY_KEEP，0 = 全部清空），返回删除数。
+ *  内存缓存同步截断，保证 UI 与库里一致；网页模式内存已封顶 */
+export async function pruneWebhookDeliveries(
+  keep: number = DELIVERY_KEEP,
+): Promise<number> {
+  const truncate = () => {
+    if (deliveries.length > keep) {
+      deliveries = deliveries.slice(0, keep);
+      emitDeliveries();
+    }
+  };
+  if (!isTauri()) {
+    const removed = Math.max(0, deliveries.length - keep);
+    truncate();
+    return removed;
+  }
   try {
-    return await invoke<number>("webhook_delivery_prune", {
-      keep: DELIVERY_KEEP,
-    });
+    const deleted = await invoke<number>("webhook_delivery_prune", { keep });
+    truncate();
+    return deleted;
   } catch {
     return 0;
   }

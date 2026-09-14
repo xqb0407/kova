@@ -1,7 +1,6 @@
 "use client";
 
 import type { FC } from "react";
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -12,18 +11,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SettingRow } from "@/components/custom-ui/setting-row";
-import { AGENT_EVENT_REGISTRY } from "@/lib/agent-events";
-import { previewSound, SOUND_PACKS } from "@/lib/sounds";
+import { setGpuAccelEnabled, useGpuAccelEnabled } from "@/lib/gpu-accel";
+import { SOUND_PACKS } from "@/lib/sounds";
+import { isTauri, isWindowsPlatform } from "@/lib/tauri";
 import { setUiPref, useUiPrefs, type SoundPackName } from "@/lib/ui-prefs";
-import { PlayIcon } from "lucide-react";
 
 /**
- * 通用设置页：提醒提示音。统一开关 + 两套内置音色整体切换，
- * 每事件试听、音量（Slider）、仅后台提醒。
+ * 通用设置页：提醒提示音与弹窗通知。统一开关 + 两套内置音色整体切换，
+ * 音量（Slider）、仅后台提醒；另有渲染区块（Chrome 硬件加速，仅 Win 桌面端）。
  * Webhook 推送与最近推送记录在独立页（webhooks-settings）。
  */
 export const GeneralSettings: FC = () => {
   const prefs = useUiPrefs();
+  const gpuAccel = useGpuAccelEnabled();
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
@@ -62,22 +62,6 @@ export const GeneralSettings: FC = () => {
                 </SelectContent>
               </Select>
             </SettingRow>
-            <SettingRow label="试听" desc="点击试听当前音色下各事件的提示音">
-              <div className="flex items-center gap-1">
-                {AGENT_EVENT_REGISTRY.map((entry) => (
-                  <Button
-                    key={entry.name}
-                    size="sm"
-                    variant="ghost"
-                    disabled={!prefs.soundEnabled}
-                    onClick={() => previewSound(entry.tone)}
-                  >
-                    <PlayIcon className="size-3" />
-                    {entry.label}
-                  </Button>
-                ))}
-              </div>
-            </SettingRow>
             <SettingRow label="音量" desc="提示音大小">
               <div className="flex w-44 items-center gap-3">
                 <Slider
@@ -105,8 +89,36 @@ export const GeneralSettings: FC = () => {
                 onCheckedChange={(v) => setUiPref("soundOnlyUnfocused", v)}
               />
             </SettingRow>
+            <SettingRow
+              label="弹窗通知"
+              desc="窗口不在前台时弹出系统桌面通知（Win/macOS，仅桌面端生效）"
+            >
+              <Switch
+                checked={prefs.popupEnabled}
+                onCheckedChange={(v) => setUiPref("popupEnabled", v)}
+              />
+            </SettingRow>
           </div>
         </section>
+
+        {/* WebView2 专属参数，远程网页端与 macOS 均无可调项，仅 Win 桌面端展示 */}
+        {isTauri() && isWindowsPlatform() && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-base font-semibold">渲染</h2>
+            <p className="text-muted-foreground text-sm">桌面端渲染兼容性选项。</p>
+            <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+              <SettingRow
+                label="Chrome 硬件加速"
+                desc="关闭后可规避部分显卡或驱动导致的白屏、闪退、渲染异常。修改后需重启应用生效。"
+              >
+                <Switch
+                  checked={gpuAccel}
+                  onCheckedChange={(v) => void setGpuAccelEnabled(v)}
+                />
+              </SettingRow>
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );

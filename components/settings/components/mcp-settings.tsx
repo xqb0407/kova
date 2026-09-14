@@ -28,6 +28,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { Badge } from "@/components/ui/badge";
+import { AnimatedBadge } from "@/components/custom-ui/animated-badge";
 import {
   Collapsible,
   CollapsibleContent,
@@ -136,6 +137,8 @@ type FormDraft = {
   headersText: string;
   description: string;
   lifecycle: "lazy" | "eager" | "keep-alive";
+  idleTimeoutText: string;
+  callTimeoutText: string;
   approveToolsText: string;
 };
 
@@ -149,6 +152,8 @@ const EMPTY_FORM: FormDraft = {
   headersText: "",
   description: "",
   lifecycle: "lazy",
+  idleTimeoutText: "",
+  callTimeoutText: "",
   approveToolsText: "",
 };
 
@@ -183,11 +188,26 @@ function entryToForm(entry: McpServerEntry): FormDraft {
     headersText: keyValuesToText(entry.headers),
     description: entry.description ?? "",
     lifecycle: entry.lifecycle ?? "lazy",
+    idleTimeoutText: entry.idleTimeout !== undefined ? String(entry.idleTimeout) : "",
+    callTimeoutText: entry.callTimeout !== undefined ? String(entry.callTimeout) : "",
     approveToolsText: (entry.approveTools ?? []).join(", "),
   };
 }
 
-function formToDraft(form: FormDraft): McpServerDraft {
+/** "120000" → 120000；空 → undefined（用默认值）；非法 → 错误文案 */
+function parseTimeoutText(text: string, label: string): number | string | undefined {
+  const t = text.trim();
+  if (!t) return undefined;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 5_000) return `${label}需为 ≥5000 的毫秒数`;
+  return Math.floor(n);
+}
+
+function formToDraft(form: FormDraft): McpServerDraft | string {
+  const idleTimeout = parseTimeoutText(form.idleTimeoutText, "空闲断开时间");
+  if (typeof idleTimeout === "string") return idleTimeout;
+  const callTimeout = parseTimeoutText(form.callTimeoutText, "工具调用超时");
+  if (typeof callTimeout === "string") return callTimeout;
   const args = form.argsText
     .split("\n")
     .map((s) => s.trim())
@@ -213,6 +233,8 @@ function formToDraft(form: FormDraft): McpServerDraft {
         }),
     description: form.description.trim() || undefined,
     lifecycle: form.lifecycle,
+    ...(idleTimeout !== undefined ? { idleTimeout } : {}),
+    ...(callTimeout !== undefined ? { callTimeout } : {}),
     ...(approve.length ? { approveTools: approve } : {}),
   };
 }
@@ -251,6 +273,11 @@ const McpEditorDialog: FC<{
 
   const save = async () => {
     if (busy) return;
+    const draft = formToDraft(form);
+    if (typeof draft === "string") {
+      setError(draft);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -258,7 +285,7 @@ const McpEditorDialog: FC<{
         layer,
         cwd: layer === "workspace" ? workspaceCwd ?? undefined : undefined,
         ...(isEdit && target.mode === "edit" ? { name: target.entry.name } : {}),
-        definition: formToDraft(form),
+        definition: draft,
       });
       onOpenChange(false);
     } catch (err) {
@@ -431,6 +458,36 @@ const McpEditorDialog: FC<{
                   />
                 </Label>
               </div>
+              <div className="flex gap-3">
+                <Label className="flex flex-1 flex-col items-start gap-1">
+                  <span className="text-muted-foreground text-xs">
+                    工具调用超时（毫秒；留空 = 默认 120000，即 2 分钟）
+                  </span>
+                  <Input
+                    type="number"
+                    min={5000}
+                    step={1000}
+                    value={form.callTimeoutText}
+                    onChange={(e) => setField("callTimeoutText", e.target.value)}
+                    placeholder="120000（默认 2 分钟）"
+                    className="bg-background font-mono text-xs tabular-nums"
+                  />
+                </Label>
+                <Label className="flex flex-1 flex-col items-start gap-1">
+                  <span className="text-muted-foreground text-xs">
+                    空闲断开时间（毫秒；留空 = 默认 600000，即 10 分钟）
+                  </span>
+                  <Input
+                    type="number"
+                    min={5000}
+                    step={1000}
+                    value={form.idleTimeoutText}
+                    onChange={(e) => setField("idleTimeoutText", e.target.value)}
+                    placeholder="600000（默认 10 分钟）"
+                    className="bg-background font-mono text-xs tabular-nums"
+                  />
+                </Label>
+              </div>
             </CollapsibleContent>
           </Collapsible>
         </div>
@@ -539,6 +596,13 @@ function jsonEntryToDraft(name: string, raw: unknown): McpServerDraft | string {
       draft.idleTimeout = Math.floor(r.idleTimeout);
     } else {
       return `${label}: idleTimeout 需为 ≥5000 的毫秒数`;
+    }
+  }
+  if (r.callTimeout !== undefined) {
+    if (typeof r.callTimeout === "number" && Number.isFinite(r.callTimeout) && r.callTimeout >= 5_000) {
+      draft.callTimeout = Math.floor(r.callTimeout);
+    } else {
+      return `${label}: callTimeout 需为 ≥5000 的毫秒数`;
     }
   }
   if (r.approveTools !== undefined) {
@@ -798,6 +862,8 @@ const McpRow: FC<{
   entry: McpServerEntry;
   workspaceCwd: string | null;
   testing: boolean;
+  /** 最近一次「测试」的结果（null = 未测过），测试按钮旁的状态徽标 */
+  testResult: "ok" | "fail" | null;
   authorizing: boolean;
   revoking: boolean;
   confirmingDelete: boolean;
@@ -813,6 +879,7 @@ const McpRow: FC<{
   entry,
   workspaceCwd,
   testing,
+  testResult,
   authorizing,
   revoking,
   confirmingDelete,
@@ -947,8 +1014,19 @@ const McpRow: FC<{
           disabled={testing}
           title="强制重新握手并统计工具"
         >
-          {testing ? "测试中…" : "测试"}
+          测试
         </Button>
+        {/* 测试状态徽标：进行中 loading，结束后成功/失败 */}
+        {(testing || testResult) && (
+          <AnimatedBadge
+            size="sm"
+            status={
+              testing ? "loading" : testResult === "ok" ? "success" : "danger"
+            }
+          >
+            {testing ? "测试中" : testResult === "ok" ? "成功" : "失败"}
+          </AnimatedBadge>
+        )}
         <Button
           variant="ghost"
           size="sm"
@@ -1260,6 +1338,10 @@ export const McpSettings: FC = () => {
   });
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [testingName, setTestingName] = useState<string | null>(null);
+  // 各服务器最近一次「测试」结果（按 name），驱动行内状态徽标
+  const [testResults, setTestResults] = useState<
+    Record<string, "ok" | "fail">
+  >({});
   // OAuth 授权进行中的服务器名（sidecar 已开浏览器，等用户批准回跳）
   const [authorizingName, setAuthorizingName] = useState<string | null>(null);
   // 最近一次授权/取消授权失败的完整文案。与 snap.error 严格分离：
@@ -1313,13 +1395,16 @@ export const McpSettings: FC = () => {
         entry.layer === "workspace" ? viewingCwd : undefined,
       );
       if (status.state === "ready") {
+        setTestResults((m) => ({ ...m, [entry.name]: "ok" }));
         toast.success({
           title: `${entry.name} 测试成功`,
           description: `连接正常，发现 ${status.toolCount} 个工具`,
         });
+      } else {
+        setTestResults((m) => ({ ...m, [entry.name]: "fail" }));
       }
     } catch {
-      // 状态徽章已反映失败；这里无需额外动作
+      setTestResults((m) => ({ ...m, [entry.name]: "fail" }));
     } finally {
       setTestingName(null);
     }
@@ -1528,6 +1613,7 @@ export const McpSettings: FC = () => {
                   entry={entry}
                   workspaceCwd={snap.workspaceCwd}
                   testing={testingName === entry.name}
+                  testResult={testResults[entry.name] ?? null}
                   authorizing={authorizingName === entry.name}
                   confirmingDelete={confirmDelete === `${entry.layer}:${entry.name}`}
                   onToggle={(enabled) => toggle(entry, enabled)}

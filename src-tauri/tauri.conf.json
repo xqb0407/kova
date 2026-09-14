@@ -13,6 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
+        "create": false,
         "title": "Xulux Assistant",
         "width": 1600,
         "height": 800,

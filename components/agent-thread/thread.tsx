@@ -12,7 +12,7 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { ArrowDownIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
-import type { FC } from "react";
+import { useEffect, type FC } from "react";
 
 // Import other components
 import { ThreadWelcome } from "./thread-welcome";
@@ -24,6 +24,7 @@ import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
 import { CheckpointBar } from "./checkpoint-bar";
 import { ThreadPreviewRail } from "./thread-preview-rail";
+import { prewarmShiki } from "@/lib/prewarm-shiki";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -75,6 +76,11 @@ const ThreadScrollToBottom: FC = () => {
 
 export const Thread: FC = () => {
   const isEmpty = useAuiState(isNewChatView);
+
+  // 空闲时预建热点语言的 Shiki 缓存，消掉流式中首个代码块的高亮停顿
+  useEffect(() => {
+    prewarmShiki();
+  }, []);
 
   return (
     <ThreadPrimitive.Root

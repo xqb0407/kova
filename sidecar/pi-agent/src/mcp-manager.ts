@@ -350,7 +350,7 @@ export class McpManager {
       const result = await entry.client!.callTool(
         { name: toolName, arguments: args },
         undefined,
-        { timeout: MCP_CALL_TIMEOUT_MS, signal },
+        { timeout: def.callTimeout ?? MCP_CALL_TIMEOUT_MS, signal },
       );
       // 只记元数据（名字/耗时/成败），参数与结果内容不进审计
       recordMcpAudit({

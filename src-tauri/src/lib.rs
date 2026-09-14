@@ -5,9 +5,11 @@ mod browser_scripts;
 mod data;
 mod fs;
 mod git;
+mod gpu;
 mod http;
 mod logging;
 mod pi_agent;
+mod pty;
 mod remote;
 mod store;
 mod tool_exec;
@@ -24,6 +26,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(PiState::default())
         .manage(remote::RemoteState::default())
         .manage(browser::BrowserState::default())
@@ -37,6 +40,12 @@ pub fn run() {
                 Ok(()) => log::info!("[store] init ok"),
                 Err(e) => log::error!("[store] init failed: {e}"),
             }
+            // 主窗口在配置中标记 create:false——需先读硬件加速开关
+            // （gpu.rs），再建窗以便把 --disable-gpu 传进 WebView2 参数
+            if let Err(e) = gpu::create_windows(app.handle()) {
+                log::error!("[gpu] create main window failed: {e}");
+                return Err(e.into());
+            }
             // 恢复持久化的窗口背景效果（穿透高斯模糊等）
             appearance::restore(app.handle());
             // 恢复开发者模式（WebView DevTools）
@@ -48,6 +57,10 @@ pub fn run() {
             pi_agent::pi_abort,
             pi_agent::pi_reset,
             pi_agent::pi_request,
+            pty::pty_open,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_close,
             remote::pi_remote_start,
             remote::pi_remote_stop,
             remote::pi_remote_status,
@@ -56,6 +69,8 @@ pub fn run() {
             about::open_logs_dir,
             about::open_external,
             about::set_dev_mode,
+            gpu::get_gpu_acceleration,
+            gpu::set_gpu_acceleration,
             logging::frontend_log,
             logging::cleanup_logs,
             store::kv_get,
@@ -85,6 +100,7 @@ pub fn run() {
             http::http_post,
             webhook::webhook_delivery_add,
             webhook::webhook_delivery_list,
+            webhook::webhook_delivery_delete,
             webhook::webhook_delivery_prune
         ])
         .build(tauri::generate_context!())

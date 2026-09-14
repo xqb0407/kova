@@ -324,6 +324,8 @@ export type PiMcpServerEntry = {
   description?: string;
   lifecycle?: "lazy" | "eager" | "keep-alive";
   idleTimeout?: number;
+  /** 工具调用超时（毫秒），未配置用 sidecar 默认 120000 */
+  callTimeout?: number;
   /** 工具名 glob 免审批 */
   approveTools?: string[];
   enabled: boolean;

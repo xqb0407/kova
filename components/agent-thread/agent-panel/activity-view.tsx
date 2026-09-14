@@ -15,8 +15,12 @@ import { ReferencesSection } from "./references-section";
  * 文件变更(edit/write 行级 diff)/ 终端(bash 流水)/ 引用资料(WebSearch 汇总)。
  * 数据全部派生自 runtime 消息(usePanelActivity)+ pi-todo store,
  * 实时流与历史重建同形,无 sidecar 改动。
+ * focusToolCallId:bash 工具行点击定位（展开并滚到那条命令）——
+ * 命令记录没有独立标签，汇总视图就是唯一出口。
  */
-export const ActivityView: FC = () => {
+export const ActivityView: FC<{ focusToolCallId?: string }> = ({
+  focusToolCallId,
+}) => {
   const activity = usePanelActivity();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const snap = useThreadTodos(threadId ?? undefined);
@@ -51,7 +55,11 @@ export const ActivityView: FC = () => {
       <div className="flex flex-col gap-3 p-3">
         <PlanSection />
         <FilesSection groups={activity.files} scrollRoot={feedRef} />
-        <TerminalSection entries={activity.terminal} scrollRoot={feedRef} />
+        <TerminalSection
+          entries={activity.terminal}
+          focusToolCallId={focusToolCallId}
+          scrollRoot={feedRef}
+        />
         <ReferencesSection items={activity.citations} scrollRoot={feedRef} />
         {isEmpty ? (
           <div className="text-muted-foreground/60 flex flex-col items-center gap-2 px-4 py-16 text-center text-xs">

@@ -13,7 +13,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Badge } from "@/components/ui/badge";
+import { AnimatedBadge } from "@/components/custom-ui/animated-badge";
 import {
   Dialog,
   DialogContent,
@@ -40,6 +40,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   AGENT_EVENT_REGISTRY,
   eventLabel,
   type AgentEventName,
@@ -54,13 +61,20 @@ import {
   type WebhookFormat,
 } from "@/lib/webhooks";
 import {
+  DELIVERY_KEEP,
   pruneWebhookDeliveries,
+  removeWebhookDeliveries,
   sendWebhookTest,
   useWebhookDeliveries,
 } from "@/lib/webhook-dispatcher";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { FlaskConicalIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  FlaskConicalIcon,
+  PlusIcon,
+  Trash2Icon,
+} from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // 端点表单（react-hook-form + zod：校验、错误文案都在 schema 里）
@@ -93,6 +107,8 @@ const webhookFormSchema = z
 
 type WebhookFormValues = z.infer<typeof webhookFormSchema>;
 
+const isHttpUrl = (value: string) => /^https?:\/\//i.test(value.trim());
+
 /** 端点编辑对话框（父组件条件挂载，表单 defaultValues 初始化一次即可） */
 const WebhookEditor: FC<{
   endpoint: WebhookEndpoint | null;
@@ -101,6 +117,7 @@ const WebhookEditor: FC<{
   const {
     control,
     handleSubmit,
+    getValues,
     formState: { errors },
   } = useForm<WebhookFormValues>({
     resolver: zodResolver(webhookFormSchema),
@@ -132,6 +149,32 @@ const WebhookEditor: FC<{
     if (endpoint) updateWebhook(endpoint.id, value);
     else addWebhook(value);
     onOpenChange(false);
+  };
+
+  // 对话框内联测试：拿当前表单值直发一条 system.test，无需先保存
+  const urlValue = useWatch({ control, name: "url" });
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    detail: string;
+  } | null>(null);
+
+  const handleTest = async () => {
+    const values = getValues();
+    const trimmed = values.url.trim();
+    if (!isHttpUrl(trimmed)) return;
+    setTesting(true);
+    const result = await sendWebhookTest({
+      id: "draft",
+      name: values.name.trim() || trimmed.slice(0, 30),
+      url: trimmed,
+      secret: values.secret.trim() || undefined,
+      format: values.format,
+      events: "*",
+      enabled: true,
+    });
+    setTestResult(result);
+    setTesting(false);
   };
 
   return (
@@ -278,15 +321,45 @@ const WebhookEditor: FC<{
             />
             <FieldError errors={[errors.events]} />
           </Field>
-          <DialogFooter className="col-span-2">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => onOpenChange(false)}
-            >
-              取消
-            </Button>
-            <Button type="submit">保存</Button>
+          <DialogFooter className="col-span-2 items-center sm:justify-between">
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void handleTest()}
+                disabled={testing || !isHttpUrl(urlValue)}
+                title="用当前表单内容直连测试一次，无需先保存"
+              >
+                <FlaskConicalIcon className="size-3.5" />
+                测试
+              </Button>
+              {(testing || testResult) && (
+                <AnimatedBadge
+                  size="sm"
+                  status={
+                    testing
+                      ? "loading"
+                      : testResult!.ok
+                        ? "success"
+                        : "danger"
+                  }
+                  layout={false}
+                  title={testing ? undefined : testResult?.detail}
+                >
+                  {testing ? "测试中" : testResult!.ok ? "成功" : "失败"}
+                </AnimatedBadge>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onOpenChange(false)}
+              >
+                取消
+              </Button>
+              <Button type="submit">保存</Button>
+            </div>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -304,7 +377,13 @@ export const WebhooksSettings: FC = () => {
   const [editing, setEditing] = useState<WebhookEndpoint | "new" | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [pruning, setPruning] = useState(false);
-  const [pruneConfirm, setPruneConfirm] = useState(false);
+  /** 清理动作（下拉菜单选择后进入确认框）：keep20=保留最近 20 条；all=全部清空 */
+  const [pruneAction, setPruneAction] = useState<"keep20" | "all" | null>(
+    null,
+  );
+  const [confirmDelete, setConfirmDelete] = useState<WebhookEndpoint | null>(
+    null,
+  );
   const [testResults, setTestResults] = useState<
     Record<string, { ok: boolean; detail: string }>
   >({});
@@ -317,12 +396,34 @@ export const WebhooksSettings: FC = () => {
   };
 
   const handlePrune = async () => {
+    if (!pruneAction) return;
     setPruning(true);
-    const deleted = await pruneWebhookDeliveries();
+    const deleted = await pruneWebhookDeliveries(
+      pruneAction === "all" ? 0 : DELIVERY_KEEP,
+    );
     setPruning(false);
-    setPruneConfirm(false);
-    if (deleted > 0) toast.success(`已清理 ${deleted} 条较早的推送记录`);
-    else toast.message("没有比最近 20 条更早的记录");
+    const action = pruneAction;
+    setPruneAction(null);
+    if (deleted > 0) {
+      toast.success(
+        action === "all"
+          ? `已清空 ${deleted} 条推送记录`
+          : `已清理 ${deleted} 条较早的推送记录`,
+      );
+    } else {
+      toast.message(
+        action === "all" ? "暂无推送记录" : "没有比最近 20 条更早的记录",
+      );
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!confirmDelete) return;
+    removeWebhook(confirmDelete.id);
+    // 级联清掉该端点的推送记录（内存缓存 + SQLite）
+    await removeWebhookDeliveries(confirmDelete.name);
+    toast.success(`已删除「${confirmDelete.name}」及其推送记录`);
+    setConfirmDelete(null);
   };
 
   return (
@@ -351,6 +452,7 @@ export const WebhooksSettings: FC = () => {
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
               {endpoints.map((endpoint) => {
                 const result = testResults[endpoint.id];
+                const isTesting = testingId === endpoint.id;
                 return (
                   <div
                     key={endpoint.id}
@@ -361,13 +463,18 @@ export const WebhooksSettings: FC = () => {
                         <span className="text-sm font-medium">
                           {endpoint.name}
                         </span>
-                        <Badge variant="secondary" className="text-xs">
+                        <AnimatedBadge
+                          status="neutral"
+                          size="sm"
+                          showIcon={false}
+                          layout={false}
+                        >
                           {
                             WEBHOOK_FORMATS.find(
                               (f) => f.value === endpoint.format,
                             )?.label
                           }
-                        </Badge>
+                        </AnimatedBadge>
                         <span className="text-muted-foreground text-xs">
                           {endpoint.events === "*"
                             ? "全部事件"
@@ -377,19 +484,6 @@ export const WebhooksSettings: FC = () => {
                       <div className="text-muted-foreground truncate text-xs">
                         {endpoint.url}
                       </div>
-                      {result && (
-                        <div
-                          className={cn(
-                            "text-xs",
-                            result.ok
-                              ? "text-green-600 dark:text-green-400"
-                              : "text-destructive",
-                          )}
-                        >
-                          {result.ok ? "✓ " : "✗ "}
-                          {result.detail}
-                        </div>
-                      )}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       <Button
@@ -399,8 +493,28 @@ export const WebhooksSettings: FC = () => {
                         onClick={() => handleTest(endpoint)}
                       >
                         <FlaskConicalIcon className="size-3.5" />
-                        {testingId === endpoint.id ? "测试中…" : "测试"}
+                        测试
                       </Button>
+                      {/* 测试状态徽标：进行中 loading，结束后成功/失败（悬停看详情） */}
+                      {(isTesting || result) && (
+                        <AnimatedBadge
+                          size="sm"
+                          status={
+                            isTesting
+                              ? "loading"
+                              : result!.ok
+                                ? "success"
+                                : "danger"
+                          }
+                          title={isTesting ? undefined : result?.detail}
+                        >
+                          {isTesting
+                            ? "测试中"
+                            : result!.ok
+                              ? "成功"
+                              : "失败"}
+                        </AnimatedBadge>
+                      )}
                       <Button
                         size="sm"
                         variant="ghost"
@@ -411,7 +525,7 @@ export const WebhooksSettings: FC = () => {
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => removeWebhook(endpoint.id)}
+                        onClick={() => setConfirmDelete(endpoint)}
                       >
                         <Trash2Icon className="size-3.5" />
                       </Button>
@@ -433,15 +547,28 @@ export const WebhooksSettings: FC = () => {
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold">最近推送</h2>
-            <Button
-              size="sm"
-              variant="ghost"
-              title="删除最近 20 条以外的历史记录"
-              disabled={pruning}
-              onClick={() => setPruneConfirm(true)}
-            >
-              {pruning ? "清理中…" : "清理"}
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button size="sm" variant="ghost" className="gap-1">
+                    清理
+                    <ChevronDownIcon className="size-3.5 opacity-60" />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setPruneAction("keep20")}>
+                  保留最近 {DELIVERY_KEEP} 条
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={() => setPruneAction("all")}
+                >
+                  清空全部记录
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
           {deliveries.length === 0 ? (
             <div className="text-muted-foreground rounded-2xl border border-dashed p-6 text-center text-sm">
@@ -461,16 +588,16 @@ export const WebhooksSettings: FC = () => {
                     {d.endpointName}
                   </span>
                   <span className="w-16 shrink-0">{eventLabel(d.event)}</span>
-                  <Badge
-                    variant="outline"
-                    className={
-                      d.ok
-                        ? "bg-green-600/10 shrink-0 dark:text-green-400"
-                        : "text-destructive shrink-0"
-                    }
+                  {/* layout={false}：新记录插到列表顶部时整行下移，
+                      关掉布局弹簧，否则徽标会自己"游"到新位置（往下飘） */}
+                  <AnimatedBadge
+                    size="sm"
+                    status={d.ok ? "success" : "danger"}
+                    layout={false}
+                    className="shrink-0"
                   >
                     {d.ok ? "成功" : "失败"}
-                  </Badge>
+                  </AnimatedBadge>
                   <span className="text-muted-foreground min-w-0 flex-1 truncate">
                     {d.detail}
                   </span>
@@ -494,13 +621,51 @@ export const WebhooksSettings: FC = () => {
         />
       )}
 
-      {/* 清理确认：删库操作，先弹 AlertDialog */}
-      <AlertDialog open={pruneConfirm} onOpenChange={setPruneConfirm}>
+      {/* 删除端点确认：连带删除其推送记录 */}
+      <AlertDialog
+        open={confirmDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDelete(null);
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>清理推送记录？</AlertDialogTitle>
+            <AlertDialogTitle>删除 Webhook？</AlertDialogTitle>
             <AlertDialogDescription>
-              将删除最近 20 条以外的全部历史推送记录，此操作无法撤销。
+              {`将删除「${confirmDelete?.name ?? ""}」配置及其全部推送记录，此操作无法撤销。`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              size="default"
+              onClick={() => {
+                void handleDelete();
+              }}
+            >
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 清理确认：删库操作，先弹 AlertDialog（文案随动作切换） */}
+      <AlertDialog
+        open={pruneAction !== null}
+        onOpenChange={(open) => {
+          if (!open) setPruneAction(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pruneAction === "all" ? "清空推送记录？" : "清理推送记录？"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pruneAction === "all"
+                ? "将删除全部推送记录，此操作无法撤销。"
+                : `将删除最近 ${DELIVERY_KEEP} 条以外的全部历史推送记录，此操作无法撤销。`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

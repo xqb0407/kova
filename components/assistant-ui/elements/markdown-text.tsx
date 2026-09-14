@@ -102,15 +102,15 @@ const MarkdownTextImpl = ({ text }: { text?: string }) => {
         <StreamdownTextPrimitive
           plugins={sharedPlugins}
           className="aui-md text-[0.9375rem] leading-[1.5]"
-          shikiTheme={["github-light", "github-dark"]}
           components={sharedComponents}
+          // 流式解析降到低优先级：token 到达不再阻塞输入/滚动，负载高时跳过中间帧
+          defer
         />
       ) : (
         // 现成的完整文本（非消息流，如压缩摘要）：不走 part 上下文，直接渲染
         <Streamdown
           plugins={sharedPlugins}
           className="aui-md text-[0.9375rem] leading-[1.5]"
-          shikiTheme={["github-light", "github-dark"]}
           components={sharedComponents}
           parseIncompleteMarkdown={false}
         >

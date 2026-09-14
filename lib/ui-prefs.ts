@@ -60,6 +60,8 @@ export type UiPrefs = {
   soundOnlyUnfocused: boolean;
   /** 音量 0–1 */
   soundVolume: number;
+  /** 弹窗通知：窗口失焦时发系统桌面通知（lib/popup.ts 消费，桌面端专属） */
+  popupEnabled: boolean;
 };
 
 export const UI_PREFS_KEY = "ui.prefs";
@@ -79,6 +81,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   soundPack: "crisp",
   soundOnlyUnfocused: false,
   soundVolume: 0.6,
+  popupEnabled: false,
 };
 
 /** 字号档位 → 根元素 font-size（rem 体系下等比缩放整体界面）；md 为浏览器默认 16px */
