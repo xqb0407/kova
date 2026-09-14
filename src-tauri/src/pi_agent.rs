@@ -259,6 +259,9 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                     // 进入重放缓冲并领取 run 内 seq（刷新恢复用，见 runs()）；
                     // 在路由分流之前做，本地/远程行统一缓冲
                     let seq = buffer_run_line(parsed.as_ref(), &line);
+                    // 无 id 自发通知行（turn_changed / subagent_activity）广播给远程连接，
+                    // 本地照常走下方帧合批；远程路由（rem-*）行带 id，此处为 no-op
+                    remote::broadcast_notification(parsed.as_ref());
                     // 远程网关路由（id 形如 rem-{conn}-{orig}），未命中则入帧合批广播给本地 webview
                     if remote::try_route(parsed.as_ref()) {
                         continue;

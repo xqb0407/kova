@@ -4,6 +4,7 @@ import type { UIMessageChunk } from "ai";
 import type {
   PiChannel,
   PiChannelStatus,
+  PiRunningTurn,
   PromptStreamArgs,
 } from "@/lib/pi-channel";
 import type { PiResponse } from "@/lib/pi-bridge";
@@ -14,7 +15,8 @@ import type { PiResponse } from "@/lib/pi-bridge";
  * 第一层协议（见 src-tauri/src/remote.rs）：
  *   连接后先发 {"type":"auth","token"} → {"type":"authed"}；
  *   之后客户端消息为 sidecar 原样 NDJSON（id 由本通道注入），
- *   服务端回发 sidecar 原样行（{id, chunk} 流或管理响应，id 已还原）。
+ *   服务端回发 sidecar 原样行（{id, chunk} 流或管理响应，id 已还原），
+ *   另有无 id 自发通知行（turn_changed / subagent_activity）的广播。
  *
  * auth 完成前的消息先入队，authed 后统一发出（防 unauthorized 竞态）。
  * 异常断开时自动重连一次，再失败则交由 UI 呈现状态。
@@ -22,9 +24,9 @@ import type { PiResponse } from "@/lib/pi-bridge";
  * 通道能力：未实现 attachStream（刷新重挂）——进行中 run 的路由在连接断开时
  * 被网关摘除，需网关侧保留路由 + resume 协议（二期）。缺省即降级：transport
  * 清掉 resumable 登记，刷新后回落历史加载（run 本身仍在 sidecar 跑完）。
- * 未实现 subscribeTurns/listRunning（侧边栏运行指示）——网关只回发带 id 的行
- * （rem-* 路由），turn_changed 这类无 id 自发通知不转发给 WS 客户端；种子
- * 订阅成对缺省，前端降级为仅挂载线程的框架 isRunning。二期随事件广播实现。
+ * subscribeTurns/listRunning/listRunningTurns 已接入：网关把无 id 通知行
+ * 广播给已认证连接（remote.rs broadcast_notification），侧边栏运行指示与
+ * 桌面端同源（断线/重连发 (null,false) 让订阅方清空并重新水合）。
  */
 export class WsPiChannel implements PiChannel {
   readonly kind = "ws" as const;
@@ -50,6 +52,7 @@ export class WsPiChannel implements PiChannel {
     { controller: ReadableStreamDefaultController<UIMessageChunk> }
   >();
   private statusCbs = new Set<(s: PiChannelStatus) => void>();
+  private turnCbs = new Set<(sessionId: string | null, active: boolean) => void>();
 
   constructor(
     private readonly url: string,
@@ -99,6 +102,8 @@ export class WsPiChannel implements PiChannel {
       s.controller.close();
     }
     this.streams.clear();
+    // 事件流随连接中断：订阅方（pi-running）据此作废快照，重连 authed 后重新水合
+    for (const cb of this.turnCbs) cb(null, false);
 
     if (this.closedByUser) return;
     // 异常断开：自动重连一次，再失败交 UI
@@ -126,6 +131,17 @@ export class WsPiChannel implements PiChannel {
       this.queue = [];
       for (const line of queue) this.ws?.send(line);
       this.emitStatus({ connected: true });
+      // 重连成功：告知订阅方事件源已换代，清空并按 listRunning 重新水合
+      for (const cb of this.turnCbs) cb(null, false);
+      return;
+    }
+
+    // sidecar 无 id 自发通知行（网关只把白名单类型广播给已认证连接）
+    if (type === "turn_changed") {
+      const sessionId = typeof v.sessionId === "string" ? v.sessionId : null;
+      if (sessionId) {
+        for (const cb of this.turnCbs) cb(sessionId, v.active === true);
+      }
       return;
     }
 
@@ -240,6 +256,33 @@ export class WsPiChannel implements PiChannel {
 
   async abort(threadId?: string) {
     this.sendRaw({ type: "abort", threadId: threadId ?? null });
+  }
+
+  /** 与 Tauri 通道同款语义：登记同步返回（ws onmessage 即事件源），退订即摘除 */
+  subscribeTurns(
+    cb: (sessionId: string | null, active: boolean) => void,
+  ): () => void {
+    this.turnCbs.add(cb);
+    return () => this.turnCbs.delete(cb);
+  }
+
+  async listRunning(): Promise<string[]> {
+    const res = await this.request({ type: "list_running" });
+    return res.type === "running" ? res.sessionIds : [];
+  }
+
+  async listRunningTurns(): Promise<PiRunningTurn[]> {
+    const res = await this.request({ type: "list_running" });
+    // 旧网关/旧 sidecar 应答无 turns 字段：空清单 = 登记重建能力自动缺位
+    const turns =
+      res.type === "running" ? (res as { turns?: unknown }).turns : undefined;
+    if (!Array.isArray(turns)) return [];
+    return turns.filter(
+      (t): t is PiRunningTurn =>
+        !!t &&
+        typeof (t as PiRunningTurn).sessionId === "string" &&
+        typeof (t as PiRunningTurn).requestId === "string",
+    );
   }
 
   close() {
