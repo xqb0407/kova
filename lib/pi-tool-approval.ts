@@ -3,6 +3,7 @@
 import { useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi-bridge";
 import { piSessionRegistry } from "@/lib/pi-thread-adapter";
+import { emitAgentEvent } from "@/lib/agent-events";
 
 /**
  * 逐工具审批（bash/write/edit 执行前等用户确认，sidecar modes.ts 的 approvalBeforeToolCall）。
@@ -35,6 +36,7 @@ export function applyToolApprovalChunk(threadId: string, data: unknown): void {
   if (typeof d.approvalId !== "string" || typeof d.toolName !== "string") return;
   const list = pending.get(threadId) ?? [];
   if (list.some((a) => a.approvalId === d.approvalId)) return;
+  const wasEmpty = list.length === 0;
   pending.set(threadId, [
     ...list,
     {
@@ -45,6 +47,13 @@ export function applyToolApprovalChunk(threadId: string, data: unknown): void {
     },
   ]);
   notify();
+  // 只在 0→非0 跃迁时发事件：一次任务连推多条审批只响一声/推一条
+  if (wasEmpty) {
+    emitAgentEvent("agent.approval.pending", {
+      threadId,
+      data: { toolName: d.toolName, approvalId: d.approvalId },
+    });
+  }
 }
 
 /** turn 结束清空该线程的挂起审批（abort/异常的兜底出口） */

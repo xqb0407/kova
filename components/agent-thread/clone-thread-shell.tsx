@@ -55,6 +55,8 @@ import {
   SettingsIcon,
   FolderCode,
   FileCheckCornerIcon,
+  Maximize2Icon,
+  Minimize2Icon,
 } from "lucide-react";
 import {
   useEffect,
@@ -64,6 +66,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
+import { Kbd, KbdGroup } from "../ui/kbd";
 
 type CloneThreadShellProps = {
   children: ReactNode;
@@ -196,9 +199,20 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 
   const menuItems = [
     { id: "new", label: "新对话", icon: PlusIcon, isNew: true },
-    { id: "search", label: "搜索", icon: SearchIcon },
+    {
+      id: "search",
+      label: "搜索",
+      icon: SearchIcon,
+      kbd: (
+        <KbdGroup>
+          <Kbd>Ctrl</Kbd>
+          <span>+</span>
+          <Kbd>P</Kbd>
+        </KbdGroup>
+      ),
+    },
     { id: "automation", label: "自动化", icon: ZapIcon },
-    { id: "connector", label: "连接器", icon: PlugIcon },
+    { id: "connector", label: "插件市场", icon: PlugIcon },
   ];
 
   return (
@@ -211,6 +225,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           sidebarCollapsed ? "w-0" : "w-65",
         )}
       >
+        {/* header */}
         <div
           data-tauri-drag-region={isTauri() ? "deep" : undefined}
           className={cn(
@@ -236,7 +251,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               headerContent !== undefined
                 ? headerContent
                 : !sidebarCollapsed && (
-                    <span className="ml-2 truncate text-sm font-medium">Chats</span>
+                    <span className="ml-2 truncate text-sm font-medium">
+                      Chats
+                    </span>
                   );
             if (isMacPlatform()) return inner;
             // Windows/网页：Logo 靠左，折叠按钮靠右（窗口控制在主 Header 右上角）
@@ -265,17 +282,20 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   className={cn(
                     // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                     // 自带的 hover 底色，避免与高亮叠加
-                    "h-8 w-full text-sm justify-start gap-2 rounded-md px-2.5  font-normal hover:bg-transparent dark:hover:bg-transparent",
+                    "h-8 w-full text-sm justify-between gap-2 rounded-md px-2.5  font-normal hover:bg-transparent dark:hover:bg-transparent",
                     sidebarCollapsed && "w-8 justify-center px-2",
-                    !item.isNew && activeMenu === item.id && "bg-muted",
+                    !item.isNew && activeMenu === item.id && "bg-selected",
                   )}
                   onClick={() => handleMenuClick(item)}
                   aria-label={item.label}
                 >
-                  <Icon className="size-4 shrink-0" />
-                  {!sidebarCollapsed && (
-                    <span className="whitespace-nowrap">{item.label}</span>
-                  )}
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Icon className="size-4 shrink-0" />
+                    {!sidebarCollapsed && (
+                      <span className="whitespace-nowrap">{item.label}</span>
+                    )}
+                  </div>
+                  {item.kbd}
                 </Button>
               );
 
@@ -320,17 +340,18 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               </TabsList>
             </Tabs>
             {activeTab === "projects" && projectGroups.length > 0 && (
-              <Button
+              <TooltipIconButton
                 variant="ghost"
+                tooltip={allProjectsExpanded ? "收起全部" : "展开全部"}
                 className="text-muted-foreground hover:text-foreground h-7 gap-1 rounded-full px-2.5 text-xs"
                 onClick={toggleAllProjects}
               >
                 {allProjectsExpanded ? (
-                  <ChevronsDownUpIcon className="size-3.5" />
+                  <Minimize2Icon className="size-3.5" />
                 ) : (
-                  <ChevronsUpDownIcon className="size-3.5" />
+                  <Maximize2Icon className="size-3.5" />
                 )}
-              </Button>
+              </TooltipIconButton>
             )}
           </div>
         )}
@@ -429,7 +450,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     variant="ghost"
                     className={cn(
                       "h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent",
-                      !item.isNew && activeMenu === item.id && "bg-muted",
+                      !item.isNew && activeMenu === item.id && "bg-selected",
                     )}
                     onClick={() => handleMenuClick(item)}
                     aria-label={item.label}
@@ -541,7 +562,11 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         </SheetContent>
       </Sheet>
 
-      <CommandDialog open={searchOpen} onOpenChange={setSearchOpen} className="max-w-[30dvw]!">
+      <CommandDialog
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        className="max-w-[30dvw]!"
+      >
         <Command className="w-full">
           <CommandInput placeholder="搜索对话..." />
           <CommandList>

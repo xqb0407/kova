@@ -22,7 +22,10 @@ import {
   PuzzleIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
+  WebhookIcon,
 } from "lucide-react";
+import { GeneralSettings } from "./components/general-settings";
+import { WebhooksSettings } from "./components/webhooks-settings";
 import { ModelSettings } from "./components/model-settings";
 import { RemoteSettings } from "./components/remote-settings";
 import { AppearanceSettings } from "./components/appearance-settings";
@@ -50,7 +53,8 @@ type SettingsSection =
   | "subagents"
   | "mcp"
   | "skills"
-  | "usage";
+  | "usage"
+  | "webhooks";
 
 const GROUPS: {
   label: string;
@@ -81,6 +85,7 @@ const GROUPS: {
     label: "系统",
     items: [
       { id: "remote", label: "远程访问", icon: GlobeIcon },
+      { id: "webhooks", label: "Webhooks", icon: WebhookIcon },
       { id: "about", label: "关于", icon: InfoIcon },
     ],
   },
@@ -210,10 +215,9 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "skills" && <SkillsSettings />}
           {section === "archive" && <ArchiveSettings />}
           {section === "usage" && <UsageStatsSettings />}
+          {section === "webhooks" && <WebhooksSettings />}
           {section === "about" && <AboutSettings />}
-          {section === "general" && (
-            <div className="text-muted-foreground p-5 text-sm">暂无可配置项</div>
-          )}
+          {section === "general" && <GeneralSettings />}
         </div>
       </div>
     </div>

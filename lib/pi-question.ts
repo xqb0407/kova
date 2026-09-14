@@ -3,6 +3,7 @@
 import { useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi-bridge";
 import { piSessionRegistry } from "@/lib/pi-thread-adapter";
+import { emitAgentEvent } from "@/lib/agent-events";
 
 /**
  * Question 工具的挂起提问（sidecar question-tools.ts 挂起 execute 等待作答）。
@@ -54,11 +55,22 @@ export function applyQuestionChunk(threadId: string, data: unknown): void {
   if (typeof d.questionId !== "string" || !Array.isArray(d.questions)) return;
   const list = pending.get(threadId) ?? [];
   if (list.some((q) => q.questionId === d.questionId)) return;
+  const wasEmpty = list.length === 0;
   pending.set(threadId, [
     ...list,
     { questionId: d.questionId, questions: d.questions as QuestionView[] },
   ]);
   notify();
+  // 与审批同款：0→非0 跃迁才发事件，避免连推多条时重复提醒
+  if (wasEmpty) {
+    emitAgentEvent("agent.question.pending", {
+      threadId,
+      data: {
+        questionId: d.questionId,
+        count: (d.questions as QuestionView[]).length,
+      },
+    });
+  }
 }
 
 /** turn 结束清空该线程的挂起提问（abort/异常的兜底出口） */

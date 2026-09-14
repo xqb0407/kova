@@ -230,7 +230,9 @@
   --foreground: oklch(0.145 0 0);
   --hover: rgb(0 0 0 / 0.04);
   --active: rgb(0 0 0 / 0.07);
-  --selected: #D4D4D4;
+  /* 选中底色：默认与 bg-muted 一致（不透明模式外观不变）；
+     窗口材质开启时改为半透明叠加，见文件尾部 html[data-window-effect] 覆写 */
+  --selected: var(--muted);
   --destructive-light: #FEF2F2;
   --overlay: 0 0 0;
   --focus-ring: #6B97FF;
@@ -270,7 +272,7 @@
   --sidebar-ring: oklch(0.556 0 0);
   --hover: rgb(255 255 255 / 0.06);
   --active: rgb(255 255 255 / 0.1);
-  --selected: #525252;
+  --selected: var(--muted);
   --destructive-light: #450A0A;
   --overlay: 255 255 255;
 }
@@ -485,11 +487,37 @@
     border-radius: 2px;}
 }
 
+/* 针对macOS的字体平滑处理 */
+@supports (-webkit-font-smoothing: antialiased) {
+  body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+ 
+/* Windows ClearType优化 */
+@media (max-width: 1200px) and (-webkit-device-pixel-ratio: 1) {
+  body {
+    text-rendering: optimizeLegibility;
+  }
+}
+
 /* 穿透时右侧主内容区保持不透明，仅左侧侧边栏透出材质。
    置于 layer 外以覆盖 utilities 层的 bg-muted/55 半透明底色。 */
 /* html[data-window-effect] [data-content-solid] {
   background: var(--background);
 }
  */
+
+/* 窗口材质开启时选中底色改为半透明叠加（浅色黑、深色白），与 --hover/--active
+   同款合成方式：不透明实色块压在透出桌面的 bg-muted/55 侧栏上，明暗对比会随桌面
+   内容漂移（浅色壁纸下几乎不可见、深色壁纸下刺眼）。覆写须与 :root/.dark 令牌块
+   同在 layer 外才能生效。强度：hover 4%/6% < active 7%/10% < selected 10%/12%。 */
+html[data-window-effect] {
+  --selected: rgb(0 0 0 / 0.1);
+}
+html.dark[data-window-effect] {
+  --selected: rgb(255 255 255 / 0.12);
+}
   html.transitioning *, html.transitioning *::before, html.transitioning *::after {
     transition: border-radius 180ms ease-in-out, background-color 180ms ease-in-out, color 180ms ease-in-out, border-color 180ms ease-in-out, fill 180ms ease-in-out, stroke 180ms ease-in-out !important;}

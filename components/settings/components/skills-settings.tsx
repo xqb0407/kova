@@ -408,16 +408,16 @@ const SkillRow: FC<{
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-sm font-medium">{entry.name}</span>
-          <Badge variant="outline" className="shrink-0 text-[10px]">
+          <Badge variant="outline" className="shrink-0 text-xs">
             {SCOPE_LABEL[entry.scope]}
           </Badge>
           {entry.shadowed && (
-            <Badge variant="outline" className="text-muted-foreground shrink-0 text-[10px]">
+            <Badge variant="outline" className="text-muted-foreground shrink-0 text-xs">
               被同名技能遮蔽
             </Badge>
           )}
           {entry.disableModelInvocation && (
-            <Badge variant="outline" className="text-muted-foreground shrink-0 text-[10px]">
+            <Badge variant="outline" className="text-muted-foreground shrink-0 text-xs">
               不进目录
             </Badge>
           )}
@@ -427,8 +427,8 @@ const SkillRow: FC<{
         </div>
         <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
           <span className="truncate">{entry.description}</span>
-          <span className="hidden shrink-0 font-mono text-[10px] lg:block">{formatBytes(entry.sizeBytes)}</span>
-          <span className="hidden truncate font-mono text-[10px] xl:block" title={entry.path}>
+          <span className="hidden shrink-0 font-mono text-xs lg:block">{formatBytes(entry.sizeBytes)}</span>
+          <span className="hidden truncate font-mono text-xs xl:block" title={entry.path}>
             {relPath}
           </span>
         </div>

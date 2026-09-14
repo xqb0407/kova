@@ -43,6 +43,8 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     let conn = open_db(app)?;
     // pi-agent 业务表（会话索引/凭据/自定义提供商/模型过滤）也在本库，Rust 是唯一写入方
     crate::data::init_tables(&conn)?;
+    // webhook 推送记录表（前端 dispatcher 落库，设置页查询/清理）
+    crate::webhook::init_tables(&conn)?;
     // 迭代 4：message_count 列的一次性回填（旧会话扫一遍各自 JSONL）。
     // 同步跑在 manage 之前：list_sessions 到达时列必然已备好，杜绝
     // "迁移窗口内 messageCount>0 过滤把老会话整条藏掉" 的回归。

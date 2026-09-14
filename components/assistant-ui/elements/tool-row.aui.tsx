@@ -25,7 +25,6 @@ import {
   LoaderCircleIcon,
   LogOutIcon,
   NotebookPen,
-  PencilIcon,
   PencilLineIcon,
   SearchCheckIcon,
   SearchIcon,
@@ -144,7 +143,10 @@ const ScrollingText: FC<{ className?: string; children: ReactNode }> = ({
 
 export type ToolRowProps = {
   label: ReactNode;
+  /** 行首类别图标（与折叠组头同形：写=铅笔、查看/检索=放大镜…） */
   icon?: ReactNode;
+  /** 文件类型图标：渲染在 label 文字右侧（写/读行「类别图标+文字+文件类型图标」的排布） */
+  fileIcon?: ReactNode;
   /** 主文本：文件名或命令 */
   primary?: ReactNode;
   /** 次文本：目录等（灰、truncate） */
@@ -173,6 +175,7 @@ export type ToolRowProps = {
 export const ToolRow: FC<ToolRowProps> = ({
   label,
   icon,
+  fileIcon,
   primary,
   secondary,
   primaryAsLink,
@@ -201,6 +204,9 @@ export const ToolRow: FC<ToolRowProps> = ({
         icon
       )}
       <span className="shrink-0">{label}</span>
+      {fileIcon ? (
+        <span className="inline-flex shrink-0 items-center">{fileIcon}</span>
+      ) : null}
       {!hideTexts && !preview && primary ? (
         primaryAsLink && onOpenPanel ? (
           // 标题即面板入口：默认观感同普通文本，悬浮出超链接态；
@@ -282,12 +288,12 @@ export const ToolRow: FC<ToolRowProps> = ({
     return (
       <Collapsible
         data-slot="aui_tool-row"
-        className="text-sm"
+        className="min-w-0 text-sm"
         open={open}
         onOpenChange={setOpen}
         style={{ "--animation-duration": "350ms" } as CSSProperties}
       >
-        <div className="group/row flex items-center">
+        <div className="group/row flex min-w-0 items-center">
           {/* 触发器样式对齐 reasoning 的 trigger：灰字 hover 变深、无背景色块、按压微缩放 */}
           <CollapsibleTrigger className="group/trigger text-muted-foreground hover:text-foreground flex min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] active:scale-[0.98]">
             {content}
@@ -324,7 +330,7 @@ export const ToolRow: FC<ToolRowProps> = ({
 
   // 无输出（多为运行中）：有面板目标则整行开面板，否则纯展示行；视觉同款 reasoning trigger
   return (
-    <div data-slot="aui_tool-row" className="text-sm">
+    <div data-slot="aui_tool-row" className="min-w-0 text-sm">
       {onOpenPanel ? (
         <button
           type="button"
@@ -415,17 +421,17 @@ const fileToolUI =
     return (
       <ToolRow
         label={label}
-        // 会话中断/取消时 args 可能是 {}（历史 jsonl 里写盘工具留下空参数），
-        // 没有路径也要有兜底图标：写类用铅笔，读取用文件
+        // 行首类别图标与折叠组头同形：写类=铅笔、查看=放大镜；文件类型图标
+        // 挪到「写入/查看」文字右侧。args 中断/取消可能为 {}（历史 jsonl
+        // 写盘工具留空参数），无路径时不渲染文件类型图标。
         icon={
-          path ? (
-            <FileTypeIcon path={path} />
-          ) : toolName === "read" ? (
-            <FileIcon className="size-4 shrink-0" />
+          toolName === "read" ? (
+            <SearchIcon className="size-4 shrink-0" />
           ) : (
-            <PencilIcon className="size-4 shrink-0" />
+            <PencilLineIcon className="size-4 shrink-0" />
           )
         }
+        fileIcon={path ? <FileTypeIcon path={path} /> : undefined}
         primary={base}
         secondary={dir}
         primaryAsLink
@@ -750,7 +756,7 @@ const MemorySearchToolUI: ToolCallMessagePartComponent = ({
 /** 有专属扁平行渲染的工具名 → 组件；其余走 ToolFallback */
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
-  read: fileToolUI("read", "读取"),
+  read: fileToolUI("read", "查看"),
   edit: fileToolUI("edit", "编辑"),
   write: fileToolUI("write", "写入"),
   WebSearch: WebSearchToolUI,

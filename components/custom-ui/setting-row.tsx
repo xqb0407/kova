@@ -11,7 +11,7 @@ export const SettingRow: FC<{
   <div className="flex min-h-11 items-center justify-between gap-4 rounded-xl px-3 py-2">
     <div className="min-w-0">
       <div className="text-sm font-medium">{label}</div>
-      {desc && <div className="text-muted-foreground text-xs">{desc}</div>}
+      {desc && <div className="text-muted-foreground text-xs ">{desc}</div>}
     </div>
     {children}
   </div>

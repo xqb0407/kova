@@ -95,7 +95,9 @@ export const Thread: FC = () => {
         turnAnchor="top"
         data-slot="aui_thread-viewport"
         className={cn(
-          "relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4",
+          // 消息流禁止横向滚动：超长内容（工具行、composer 工具条等）应在各自层
+          // 截断成省略号；overflow-x-clip 兜底，漏网溢出不产生底部滚动条
+          "relative flex flex-1 flex-col overflow-x-clip overflow-y-scroll scroll-smooth px-4 pt-4",
           isEmpty && "justify-center",
         )}
       >

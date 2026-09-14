@@ -18,6 +18,7 @@ import {
   FolderOpenIcon,
   PencilIcon,
   PlusIcon,
+  RefreshCwIcon,
   Trash2Icon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -438,25 +439,38 @@ const SubagentRow: FC<{
   onCopy,
   onDelete,
   onConfirmDelete,
-}) => (
-  <div className="hover:bg-muted/40 flex items-center gap-3 rounded-xl px-3 py-2 transition-colors">
+}) => {
+  const relPath = entry.path
+    ? entry.scope === "workspace" &&
+      workspaceCwd &&
+      entry.path.startsWith(workspaceCwd + "/")
+      ? entry.path.slice(workspaceCwd.length + 1)
+      : entry.path
+    : null;
+  return (
+  <div className="hover:bg-muted/70 flex items-center gap-3 rounded-xl px-3 py-2 transition-colors">
+    {/* 作用域图标盒（技能/MCP 行同款 size-9 边框盒） */}
+    <div className="bg-background text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-lg border">
+      <BotIcon className="size-4" />
+    </div>
     <div className="min-w-0 flex-1">
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate text-sm font-medium">{entry.name}</span>
-        <Badge variant="secondary" className="shrink-0 text-[10px]">
+        <Badge variant="outline" className="shrink-0">
           {SCOPE_LABEL[entry.scope]}
         </Badge>
-        {entry.path && (
-          <span className="text-muted-foreground hidden truncate font-mono text-[10px] lg:block">
-            {entry.scope === "workspace" &&
-            workspaceCwd &&
-            entry.path.startsWith(workspaceCwd + "/")
-              ? entry.path.slice(workspaceCwd.length + 1)
-              : entry.path}
+      </div>
+      <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
+        <span className="truncate">{entry.description}</span>
+        {relPath && (
+          <span
+            className="hidden max-w-64 shrink-0 truncate font-mono lg:block"
+            title={entry.path ?? undefined}
+          >
+            {relPath}
           </span>
         )}
       </div>
-      <div className="text-muted-foreground truncate text-xs">{entry.description}</div>
     </div>
     <Switch
       size="sm"
@@ -503,7 +517,8 @@ const SubagentRow: FC<{
         ))}
     </div>
   </div>
-);
+  );
+};
 
 // ---------------------------------------------------------------------------
 // 页面
@@ -653,146 +668,172 @@ export const SubagentsSettings: FC = () => {
     actions?: ReactNode,
     empty?: ReactNode,
   ) => (
-    <section className="flex flex-col gap-1">
-      <div className="flex items-center justify-between gap-4 px-3 pt-2 pb-1">
-        <div>
-          <h2 className="text-sm font-semibold">{title}</h2>
-          <p className="text-muted-foreground text-xs">{desc}</p>
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h2 className="shrink-0 text-sm font-semibold">{title}</h2>
+          <span className="text-muted-foreground truncate text-xs">{desc}</span>
         </div>
         {actions}
       </div>
-      {entries.length === 0 ? (
-        empty ?? (
-          <div className="text-muted-foreground px-3 py-2 text-xs">暂无</div>
-        )
-      ) : (
-        entries.map((entry) => (
-          <SubagentRow
-            key={`${entry.scope}:${entry.name}`}
-            entry={entry}
-            workspaceCwd={snap.workspaceCwd}
-            confirmingDelete={confirmDelete === `${entry.scope}:${entry.name}`}
-            onToggle={(enabled) => toggle(entry, enabled)}
-            onView={() => setViewing(entry)}
-            onEdit={() => openEditor({ mode: "edit", entry })}
-            onCopy={() => openEditor({ mode: "copy", entry })}
-            onDelete={() => setConfirmDelete(`${entry.scope}:${entry.name}`)}
-            onConfirmDelete={() => remove(entry)}
-          />
-        ))
-      )}
+      {/* 列表卡片（技能/MCP 列表同款容器） */}
+      <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+        {entries.length === 0 ? (
+          empty ?? (
+            <div className="text-muted-foreground px-3 py-3 text-sm">暂无</div>
+          )
+        ) : (
+          entries.map((entry) => (
+            <SubagentRow
+              key={`${entry.scope}:${entry.name}`}
+              entry={entry}
+              workspaceCwd={snap.workspaceCwd}
+              confirmingDelete={confirmDelete === `${entry.scope}:${entry.name}`}
+              onToggle={(enabled) => toggle(entry, enabled)}
+              onView={() => setViewing(entry)}
+              onEdit={() => openEditor({ mode: "edit", entry })}
+              onCopy={() => openEditor({ mode: "copy", entry })}
+              onDelete={() => setConfirmDelete(`${entry.scope}:${entry.name}`)}
+              onConfirmDelete={() => remove(entry)}
+            />
+          ))
+        )}
+      </div>
     </section>
   );
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-6 py-8">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="flex items-center gap-2 text-lg font-semibold">
-            <BotIcon className="size-5" />
-            子智能体
-          </h1>
-          <p className="text-muted-foreground text-sm">
+    <div className="flex h-full flex-col overflow-y-auto">
+      <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
+        {/* 标题行：状态文字在右（MCP/技能页同款） */}
+        <div className="flex items-baseline justify-between gap-4">
+          <h1 className="text-2xl font-bold tracking-tight">子智能体</h1>
+          <span
+            className={cn("text-xs", snap.error ? "text-destructive" : "text-muted-foreground")}
+          >
+            {snap.error
+              ? "清单加载失败，可刷新重试"
+              : `${snap.agents.length} 个子智能体（${snap.agents.filter((e) => e.enabled).length} 个启用）`}
+          </span>
+        </div>
+
+        {/* 工具行：说明文字 + 刷新/新建（技能/MCP 工具行同款位置） */}
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-muted-foreground min-w-0 flex-1 text-sm">
             管理主代理可委派的子智能体（Task 工具）。内置定义只读、可开关；
             自定义定义以 YAML 存储，改动即时生效，无需重启。
           </p>
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <Button size="sm" variant="outline" onClick={() => openEditor({ mode: "create", scope: "system" })}>
-            <PlusIcon className="size-3.5" />
-            新建系统级
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => openEditor({ mode: "create", scope: "workspace" })}
-            disabled={!viewingCwd}
-            title={
-              viewingCwd ??
-              "先在主界面选择工作区，或在下方「工作区」区块选择目录浏览"
-            }
-          >
-            <PlusIcon className="size-3.5" />
-            新建工作区级
-          </Button>
-        </div>
-      </header>
-
-      {/* 清单加载失败：镜像停留在旧值，明确提示并可重试 */}
-      {snap.error && (
-        <section className="border-amber-500/40 bg-amber-500/5 flex items-center justify-between gap-3 rounded-2xl border px-4 py-2.5">
-          <span className="text-sm">子智能体清单加载失败：{snap.error}</span>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void refreshSubagents(viewingCwd)}
-          >
-            重试
-          </Button>
-        </section>
-      )}
-
-      {renderSection(
-        "内置",
-        "随应用发布的四个 delegate：只读，可关闭，可复制为系统级后定制。",
-        groups.builtin,
-      )}
-      {renderSection(
-        "系统级",
-        "存于应用数据目录 subagents/，对本机所有工作区生效。",
-        groups.system,
-      )}
-      {renderSection(
-        viewingCwd ? `工作区 · ${pathBasename(viewingCwd)}` : "工作区",
-        viewingCwd
-          ? `存于 ${viewingCwd}/.xulux/subagents/，随仓库共享。`
-          : "未选择工作区：可点右上目录切换器选择历史目录，或「浏览其他目录…」直接查看某个仓库。",
-        groups.workspace,
-        <WorkspaceCwdMenu
-          value={viewingCwd}
-          following={overrideCwd === null}
-          followLabel={workspace ? pathBasename(workspace) : null}
-          candidates={workspaceCandidates}
-          showBrowse={isTauri()}
-          onChange={switchWorkspaceView}
-          onFollowCurrent={() => setOverrideCwd(null)}
-          onBrowse={() => void pickBrowseDir()}
-        />,
-        viewingCwd ? undefined : (
-          <div className="text-muted-foreground px-3 py-2 text-xs">
-            选择目录后，这里会显示该仓库 .xulux/subagents/ 下的子智能体。
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="shrink-0"
+              onClick={() => void refreshSubagents(viewingCwd)}
+              aria-label="刷新"
+            >
+              <RefreshCwIcon className="size-4" />
+            </Button>
+            <Button
+              variant="outline"
+              className="h-8 shrink-0 gap-1.5"
+              onClick={() => openEditor({ mode: "create", scope: "system" })}
+            >
+              <PlusIcon className="size-4" />
+              新建系统级
+            </Button>
+            <Button
+              className="h-8 shrink-0 gap-1.5"
+              onClick={() => openEditor({ mode: "create", scope: "workspace" })}
+              disabled={!viewingCwd}
+              title={
+                viewingCwd ??
+                "先在主界面选择工作区，或在下方「工作区」区块选择目录浏览"
+              }
+            >
+              <PlusIcon className="size-4" />
+              新建工作区级
+            </Button>
           </div>
-        ),
-      )}
+        </div>
 
-      {snap.diagnostics.length > 0 && (
-        <details className="text-xs">
-          <summary className="text-muted-foreground cursor-pointer px-3">
-            加载诊断（{snap.diagnostics.length}）
-          </summary>
-          <ul className="text-muted-foreground mt-1 list-disc pl-8">
-            {snap.diagnostics.map((d) => (
-              <li key={d} className="font-mono text-[11px]">
-                {d}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
+        {/* 清单加载失败：镜像停留在旧值，明确提示并可重试（MCP 错误块同款样式） */}
+        {snap.error && (
+          <div className="text-destructive bg-destructive/5 flex items-center justify-between gap-3 rounded-xl border border-destructive/30 px-3 py-2.5 text-sm">
+            <span>子智能体清单加载失败：{snap.error}</span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void refreshSubagents(viewingCwd)}
+            >
+              重试
+            </Button>
+          </div>
+        )}
 
-      <SubagentEditorDialog
-        open={editor.open}
-        onOpenChange={(open) => setEditor((e) => ({ ...e, open }))}
-        target={editor.target}
-        workspaceCwd={viewingCwd}
-      />
-      <BuiltinViewDialog
-        open={viewing !== null}
-        onOpenChange={(open) => {
-          if (!open) setViewing(null);
-        }}
-        entry={viewing}
-        onCopy={(entry) => openEditor({ mode: "copy", entry })}
-      />
+        {renderSection(
+          "内置",
+          "随应用发布的四个 delegate：只读，可关闭，可复制为系统级后定制。",
+          groups.builtin,
+        )}
+        {renderSection(
+          "系统级",
+          "存于应用数据目录 subagents/，对本机所有工作区生效。",
+          groups.system,
+        )}
+        {renderSection(
+          viewingCwd ? `工作区 · ${pathBasename(viewingCwd)}` : "工作区",
+          viewingCwd
+            ? `存于 ${viewingCwd}/.xulux/subagents/，随仓库共享。`
+            : "未选择工作区：可点右侧目录切换器选择历史目录，或「浏览其他目录…」直接查看某个仓库。",
+          groups.workspace,
+          <WorkspaceCwdMenu
+            value={viewingCwd}
+            following={overrideCwd === null}
+            followLabel={workspace ? pathBasename(workspace) : null}
+            candidates={workspaceCandidates}
+            showBrowse={isTauri()}
+            onChange={switchWorkspaceView}
+            onFollowCurrent={() => setOverrideCwd(null)}
+            onBrowse={() => void pickBrowseDir()}
+          />,
+          viewingCwd ? undefined : (
+            <div className="text-muted-foreground px-3 py-3 text-sm">
+              选择目录后，这里会显示该仓库 .xulux/subagents/ 下的子智能体。
+            </div>
+          ),
+        )}
+
+        {/* 加载诊断：折叠放置，不与清单争视觉（坏文件警告不致命） */}
+        {snap.diagnostics.length > 0 && (
+          <details className="text-xs">
+            <summary className="text-muted-foreground cursor-pointer px-3">
+              加载诊断（{snap.diagnostics.length}）
+            </summary>
+            <ul className="text-muted-foreground mt-1 list-disc pl-8">
+              {snap.diagnostics.map((d) => (
+                <li key={d} className="font-mono text-[11px]">
+                  {d}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+
+        <SubagentEditorDialog
+          open={editor.open}
+          onOpenChange={(open) => setEditor((e) => ({ ...e, open }))}
+          target={editor.target}
+          workspaceCwd={viewingCwd}
+        />
+        <BuiltinViewDialog
+          open={viewing !== null}
+          onOpenChange={(open) => {
+            if (!open) setViewing(null);
+          }}
+          entry={viewing}
+          onCopy={(entry) => openEditor({ mode: "copy", entry })}
+        />
+      </div>
     </div>
   );
 };
