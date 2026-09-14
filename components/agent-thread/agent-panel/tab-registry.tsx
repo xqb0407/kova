@@ -24,7 +24,7 @@ import { PlanSection } from "./plan-section";
 import { FilesSection } from "./files-section";
 import { GitReview } from "./git-files";
 import { GitView } from "./git-view";
-import { TerminalSection } from "./terminal-section";
+import { ShellTab } from "./shell-tab";
 import { BrowserView } from "./browser-view";
 import { FileTab } from "./file-view";
 import { FileTreeTab } from "./file-tree-tab";
@@ -39,20 +39,21 @@ export const PANEL_TAB_TYPES: readonly PanelTabType[] = [
   "plan",
   "review",
   "explorer",
-  "terminal",
+  "shell",
   "browser",
   "git",
 ];
 
 /**
  * 可打开的标签类型:git 标签仅在工作目录是 git 仓库时出现(静默降级,不报错);
- * 文件树标签仅桌面端(web 端无本地 FS,数据源整个不存在)。
+ * 文件树与真终端标签仅桌面端(web 端无本地 FS / 无 PTY,数据源整个不存在)。
  */
 export function useVisiblePanelTabTypes(): PanelTabType[] {
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
   return PANEL_TAB_TYPES.filter((t) => {
     if (t === "explorer") return isTauri();
+    if (t === "shell") return isTauri();
     if (t === "git") return !!status;
     return true;
   });
@@ -87,9 +88,9 @@ export const TAB_META: Record<
     description: "浏览工作区文件，点击实时预览",
     icon: FolderTreeIcon,
   },
-  terminal: {
+  shell: {
     label: "终端",
-    description: "bash 命令与输出流水",
+    description: "PowerShell / bash 交互式会话",
     icon: SquareTerminalIcon,
   },
   browser: {
@@ -175,30 +176,12 @@ const GitTab: FC = () => {
   return <GitView cwd={workspace} />;
 };
 
-const TerminalTab: FC<{ tab: PanelTab }> = ({ tab }) => {
-  const { terminal } = usePanelActivity();
-  const scrollerRef = useRef<HTMLDivElement>(null);
-  if (terminal.length === 0)
-    return <TabEmpty icon={SquareTerminalIcon} text="agent 执行命令后,输出会汇总到这里" />;
-  // 内边距放内层，理由同 ReviewTab（吸顶间隙）
-  return (
-    <div ref={scrollerRef} className="h-full overflow-y-auto">
-      <div className="p-3">
-        <TerminalSection
-          entries={terminal}
-          focusToolCallId={tab.focus}
-          scrollRoot={scrollerRef}
-        />
-      </div>
-    </div>
-  );
-};
-
 /** 按标签类型路由到视图;外层以 tab.id 作 key 重挂载,组件内状态即标签私有 */
 export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
   switch (tab.type) {
     case "activity":
-      return <ActivityView />;
+      // bash 工具行定位进活动页的终端小节（展开+滚动到位）
+      return <ActivityView focusToolCallId={tab.focus} />;
     case "plan":
       return <PlanTab />;
     case "review":
@@ -207,8 +190,9 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
       return <FileTab tab={tab} />;
     case "explorer":
       return <FileTreeTab />;
-    case "terminal":
-      return <TerminalTab tab={tab} />;
+    case "shell":
+      // 多会话管理在 ShellTab 内部（VSCode 面板形态），不携带 tab 上下文
+      return <ShellTab />;
     case "git":
       return <GitTab />;
     case "browser":

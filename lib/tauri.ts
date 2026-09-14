@@ -24,6 +24,14 @@ export const isMacPlatform = (): boolean => {
 };
 
 /**
+ * 检测桌面平台是否为 Windows（依据 WebView UA）。
+ * 仅桌面端有意义：WebView2（Chromium）启动参数类设置只在 Windows 生效。
+ */
+export const isWindowsPlatform = (): boolean => {
+  return typeof navigator !== "undefined" && /Windows NT/i.test(navigator.userAgent);
+};
+
+/**
  * 检测是否在Tauri开发模式中
  */
 export const isTauriDev = (): boolean => {

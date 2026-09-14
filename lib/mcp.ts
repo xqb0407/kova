@@ -37,6 +37,7 @@ export type McpServerDraft = {
   description?: string;
   lifecycle?: "lazy" | "eager" | "keep-alive";
   idleTimeout?: number;
+  callTimeout?: number;
   approveTools?: string[];
 };
 

@@ -63,11 +63,14 @@ export function applyQuestionChunk(threadId: string, data: unknown): void {
   notify();
   // 与审批同款：0→非0 跃迁才发事件，避免连推多条时重复提醒
   if (wasEmpty) {
+    const questions = d.questions as QuestionView[];
     emitAgentEvent("agent.question.pending", {
       threadId,
       data: {
         questionId: d.questionId,
-        count: (d.questions as QuestionView[]).length,
+        count: questions.length,
+        // 首个问题标题：弹窗通知正文用（webhook generic 信封透传，无害）
+        firstTitle: questions[0]?.title?.slice(0, 80),
       },
     });
   }

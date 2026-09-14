@@ -4,7 +4,7 @@ import { focusPanelTab, type PanelTabExtra, type PanelTabType } from "./panel-ta
 
 /**
  * 消息工具行 → 右侧 AgentPanel 的定向打开：
- * - bash      → 终端标签，focus=toolCallId（展开并滚到那条命令）
+ * - bash      → 活动标签，focus=toolCallId（展开并滚到那条命令）
  * - read      → 文件标签，focus=toolCallId（渲染该次读取结果）
  * - edit/write→ 审查标签，focus=文件路径（展开并滚到该文件的 diff）
  * - WebFetch  → 浏览器标签，url=目标地址（复用既有标签并导航过去）
@@ -29,7 +29,8 @@ export function toolPanelTarget(
 ): { type: PanelTabType; extra: PanelTabExtra } | null {
   if (toolName === "bash") {
     if (typeof args?.command !== "string" || !args.command) return null;
-    return { type: "terminal", extra: { focus: toolCallId } };
+    // 命令记录只在"活动"页汇总，不再有独立标签（原 terminal 标签已并入）
+    return { type: "activity", extra: { focus: toolCallId } };
   }
   if (toolName === "WebFetch") {
     if (typeof args?.url !== "string" || !args.url) return null;

@@ -24,6 +24,7 @@ import {
   closePanelTab,
   closePanelTabsToLeft,
   closePanelTabsToRight,
+  focusPanelTab,
   openPanelTab,
   setActivePanelTab,
   type PanelTab,
@@ -230,7 +231,13 @@ export const TabBar: FC<{
               const meta = TAB_META[type];
               const Icon = meta.icon;
               return (
-                <DropdownMenuItem key={type} onClick={() => openPanelTab(type)}>
+                <DropdownMenuItem
+                  key={type}
+                  // shell 是单例面板（内部多会话），重复点击复用已开标签
+                  onClick={() =>
+                    type === "shell" ? focusPanelTab(type) : openPanelTab(type)
+                  }
+                >
                   <Icon className="text-muted-foreground size-3.5 shrink-0" />
                   <span>{meta.label}</span>
                 </DropdownMenuItem>

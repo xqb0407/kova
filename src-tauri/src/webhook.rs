@@ -93,6 +93,22 @@ pub fn webhook_delivery_list(
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// 删除某端点的全部推送记录（端点被删时级联清理），返回删除数
+#[tauri::command]
+pub fn webhook_delivery_delete(
+    state: State<'_, DbState>,
+    endpoint: String,
+) -> Result<u64, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let deleted = conn
+        .execute(
+            "DELETE FROM webhook_delivery WHERE endpoint = ?1",
+            [&endpoint],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(deleted as u64)
+}
+
 /// 只保留最新 keep 条，返回删除数
 #[tauri::command]
 pub fn webhook_delivery_prune(

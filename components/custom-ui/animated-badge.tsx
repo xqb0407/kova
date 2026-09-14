@@ -177,14 +177,14 @@ export function AnimatedBadge({
               exit={reduce ? undefined : "exit"}
               className="inline-flex will-change-transform"
             >
-              {status === "loading" && !reduce && !icon ? (
-                <motion.span
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                  className="inline-flex"
-                >
+              {/* spinner 用 CSS animate-spin（同 toast）：framer 的 repeat 动画
+                  会被 AnimatePresence initial={false} 的首挂载阻断（直接落在
+                  rotate:360 不动），CSS 关键帧不受影响，且功能性指示
+                  在 reduced-motion 下也保持旋转 */}
+              {status === "loading" && !icon ? (
+                <span className="inline-flex animate-spin">
                   <Icon className={ICON_CLASS[size]} />
-                </motion.span>
+                </span>
               ) : (
                 (icon ?? <Icon className={ICON_CLASS[size]} />)
               )}

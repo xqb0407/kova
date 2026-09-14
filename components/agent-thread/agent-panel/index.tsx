@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useRef, type FC } from "react";
-import { openPanelTab, usePanelTabs } from "@/lib/panel-tabs";
+import { focusPanelTab, openPanelTab, usePanelTabs } from "@/lib/panel-tabs";
 import { isTauri } from "@/lib/tauri";
 import { TabBar } from "./tab-bar";
 import { TAB_META, TabContentView, useVisiblePanelTabTypes } from "./tab-registry";
 
 /**
  * Codex 桌面端风格的右侧 Agent 面板:一个可拖宽、可折叠的标签容器。
- * 标签类型(活动/计划/审查/终端/浏览器)见 tab-registry,支持多开;
+ * 标签类型(活动/计划/审查/文件树/终端/浏览器/Git)见 tab-registry,多数支持多开
+ * (终端为单例面板,内部多会话);
  * 无标签时展示"打开标签页"卡片网格空态(此时不渲染标签栏)。
  * 标签集合与激活项持久化;宽度/折叠由 base.tsx 管(收起走 Header 开关)。
  */
@@ -33,7 +34,10 @@ const EmptyTabsScreen: FC = () => {
             key={type}
             type="button"
             title={meta.description}
-            onClick={() => openPanelTab(type)}
+            // shell 是单例面板（内部多会话），重复点击复用已开标签
+            onClick={() =>
+              type === "shell" ? focusPanelTab(type) : openPanelTab(type)
+            }
             className="bg-muted/40 hover:bg-muted hover:border-border/80 flex h-20 flex-col items-center justify-center gap-2 rounded-xl border border-transparent text-sm text-foreground/90 transition-colors"
           >
             <Icon className="size-4 text-muted-foreground" />
@@ -72,6 +76,10 @@ const PanelShell: FC<{
     }
     prevCount.current = browserCount;
   }, [browserCount]);
+
+  // shell 标签关闭【不】杀会话：终端 store(lib/shell.ts) 持有生命周期，
+  // 同 VSCode 隐藏面板进程还在；杀会话走面板内 ×/垃圾桶，页面刷新由
+  // Rust 侧 channel 失效自动回收
 
   return (
     <div className="bg-background/70 flex h-full min-w-0 flex-col">

@@ -336,6 +336,7 @@ async function mcpServersPayload(cwd?: string) {
       ...(def.description ? { description: def.description } : {}),
       ...(def.lifecycle ? { lifecycle: def.lifecycle } : {}),
       ...(def.idleTimeout !== undefined ? { idleTimeout: def.idleTimeout } : {}),
+      ...(def.callTimeout !== undefined ? { callTimeout: def.callTimeout } : {}),
       ...(def.approveTools?.length ? { approveTools: def.approveTools } : {}),
       enabled: r.enabledBy.get(def.name) === true,
       status: statuses.get(def.name) ?? { name: def.name, state: "idle", toolCount: 0 },
@@ -387,6 +388,9 @@ function mcpDraftFromMessage(raw: unknown): McpDraft {
       : {}),
     ...(typeof d.idleTimeout === "number" && Number.isFinite(d.idleTimeout)
       ? { idleTimeout: d.idleTimeout }
+      : {}),
+    ...(typeof d.callTimeout === "number" && Number.isFinite(d.callTimeout)
+      ? { callTimeout: d.callTimeout }
       : {}),
     ...(arr(d.approveTools)?.length ? { approveTools: arr(d.approveTools) } : {}),
   };
