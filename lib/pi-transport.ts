@@ -13,6 +13,7 @@ import {
   registerQueuedPrompt,
   unregisterQueuedPrompt,
 } from "@/lib/pi-queue";
+import { emitAgentEvent } from "@/lib/agent-events";
 import { gitCheckpointCreate, gitCheckpointDiff } from "@/lib/git";
 import { refreshGitStatus } from "@/lib/git-status";
 import { refreshFileTree } from "@/lib/file-tree";
@@ -68,6 +69,8 @@ export class PiTransport implements ChatTransport<UIMessage> {
     clearRunCheckpoint(chatId);
     let checkpointPromise: Promise<string | null> | null = null;
     let checkpointSettled = false;
+    // 事件提醒：error 置位后 finish 不再补发"任务完成"（同轮只提醒一次）
+    let sawError = false;
     const createCheckpoint = () => {
       if (!cwd || checkpointPromise) return;
       checkpointPromise = gitCheckpointCreate(cwd, requestId).catch((err) => {
@@ -164,6 +167,13 @@ export class PiTransport implements ChatTransport<UIMessage> {
               // 文件树失效与检查点解耦：非 git 工作区 agent 也在改盘上文件
               refreshFileTree(cwd ?? null);
               settleCheckpoint();
+              // 用户主动 abort 的收尾不算"完成"，不提醒
+              if (!sawError && !abortSignal?.aborted) {
+                emitAgentEvent("agent.turn.completed", {
+                  threadId: chatId,
+                  data: { prompt: text.slice(0, 120) },
+                });
+              }
             }
             if (chunk.type === "error") {
               // 异常收尾同样结算检查点：半途改动也需要 keep/revert 出口；
@@ -172,6 +182,18 @@ export class PiTransport implements ChatTransport<UIMessage> {
               refreshFileTree(cwd ?? null);
               settleCheckpoint();
               clearQuestions(chatId);
+              sawError = true;
+              if (!abortSignal?.aborted) {
+                const raw = (chunk as { errorText?: unknown }).errorText;
+                let message = typeof raw === "string" ? raw.slice(0, 200) : undefined;
+                if (message?.includes("Agent is already processing")) {
+                  message = BUSY_ERROR_TEXT;
+                }
+                emitAgentEvent("agent.turn.error", {
+                  threadId: chatId,
+                  data: { message, prompt: text.slice(0, 120) },
+                });
+              }
             }
             if (chunk.type === "error" && typeof (chunk as { errorText?: unknown }).errorText === "string") {
               const errorText = (chunk as { errorText: string }).errorText;

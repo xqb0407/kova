@@ -14,6 +14,7 @@ import {
   type FileChangeGroup,
 } from "@/lib/panel-activity";
 import { pathMatches } from "@/lib/tool-panel";
+import { scrollIntoScroller } from "@/lib/scroll";
 import { cn } from "@/lib/utils";
 import { PanelFileDiff } from "@/components/code/panel-diff";
 import { DiffStats, PanelSection, StatusDot } from "./section-shell";
@@ -100,7 +101,8 @@ const FileCard: FC<{ group: FileChangeGroup; focused?: boolean }> = ({
     if (!focused) return;
     setOpen(true);
     requestAnimationFrame(() => startTransition(() => setDiffMounted(true)));
-    rootRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    // 只滚面板自身容器，见 lib/scroll 注释（scrollIntoView 会抬起整页）
+    scrollIntoScroller(rootRef.current, "center");
   }, [focused]);
 
   return (
@@ -123,7 +125,7 @@ const FileCard: FC<{ group: FileChangeGroup; focused?: boolean }> = ({
             {base}
           </span>
           {dir ? (
-            <span className="block truncate font-mono text-[10px] text-muted-foreground/70">
+            <span className="block truncate font-mono text-xs text-muted-foreground/70">
               {dir}
             </span>
           ) : null}

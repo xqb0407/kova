@@ -139,7 +139,7 @@ export const PromptQueueBar: FC = () => {
             </>
           ) : (
             <>
-              <span className="bg-muted-foreground/15 text-muted-foreground shrink-0 rounded-full px-1.5 text-[10px] leading-4 tabular-nums">
+              <span className="bg-muted-foreground/15 text-muted-foreground shrink-0 rounded-full px-1.5 text-xs leading-4 tabular-nums">
                 {entry.position}
               </span>
               <span

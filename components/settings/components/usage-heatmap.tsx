@@ -177,7 +177,7 @@ export const UsageHeatmap: FC<{
             ))}
           </div>
           {/* 月份标签：与列对齐（列宽 CELL + GAP） */}
-          <div className="text-muted-foreground relative mt-1.5 h-4 text-[10px]">
+          <div className="text-muted-foreground relative mt-1.5 h-4 text-xs">
             {grid.monthLabels.map(({ col, label }) => (
               <span
                 key={col}

@@ -5,11 +5,13 @@ mod browser_scripts;
 mod data;
 mod fs;
 mod git;
+mod http;
 mod logging;
 mod pi_agent;
 mod remote;
 mod store;
 mod tool_exec;
+mod webhook;
 
 use pi_agent::PiState;
 use tauri::Manager;
@@ -79,7 +81,11 @@ pub fn run() {
             git::git_branches,
             git::git_checkout,
             fs::fs_list_dir,
-            fs::fs_read_file
+            fs::fs_read_file,
+            http::http_post,
+            webhook::webhook_delivery_add,
+            webhook::webhook_delivery_list,
+            webhook::webhook_delivery_prune
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

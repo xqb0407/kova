@@ -5,6 +5,7 @@ import { useChatRuntime } from "@assistant-ui/ai-sdk";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@/lib/tauri";
 import { installFrontendLogging } from "@/lib/frontend-logging";
+import { initNotifyPipeline } from "@/lib/notify";
 import { PiTransport } from "@/lib/pi-transport";
 import { createPiThreadListAdapter, piSessionCwdMap } from "@/lib/pi-thread-adapter";
 import { getWorkspace, setWorkspace } from "@/lib/workspace-store";
@@ -131,6 +132,8 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
     setDesktop(isTauri());
     // 桌面端挂载 console.warn/error 与崩溃转发（写 web.log，内部自判环境）
     installFrontendLogging();
+    // 通知管线：事件总线 → 提示音 + webhook 派发（幂等，桌面/远程网页都装配）
+    initNotifyPipeline();
     const remain = Math.max(0, SPLASH_MIN_MS - (Date.now() - splashStartRef.current));
     const timer = setTimeout(() => setSplashMinDone(true), remain);
     return () => clearTimeout(timer);

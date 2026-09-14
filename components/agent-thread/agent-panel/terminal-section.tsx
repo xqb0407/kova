@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type FC, type RefObject } from "react";
 import { ChevronDownIcon, SquareTerminalIcon } from "lucide-react";
 import type { TerminalEntry } from "@/lib/panel-activity";
+import { scrollIntoScroller } from "@/lib/scroll";
 import { cn } from "@/lib/utils";
 import { CountPill, PanelSection, StatusDot } from "./section-shell";
 
@@ -26,7 +27,8 @@ const TerminalCard: FC<{ entry: TerminalEntry; focused?: boolean }> = ({
   useEffect(() => {
     if (!focused) return;
     setOpen(true);
-    rootRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    // 只滚面板自身容器，见 lib/scroll 注释（scrollIntoView 会抬起整页）
+    scrollIntoScroller(rootRef.current, "center");
   }, [focused]);
 
   return (

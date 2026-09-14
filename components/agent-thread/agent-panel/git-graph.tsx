@@ -98,7 +98,7 @@ const RefChip: FC<{ r: GitGraphRef }> = ({ r }) => {
     <span
       title={r.name}
       className={cn(
-        "inline-flex max-w-[10rem] shrink-0 items-center gap-0.5 rounded-full border px-1.5 text-[10px] leading-[16px]",
+        "inline-flex max-w-[10rem] shrink-0 items-center gap-0.5 rounded-full border px-1.5 text-xs leading-[16px]",
         s.chip,
       )}
     >
@@ -195,10 +195,10 @@ export const GitGraph: FC<{ cwd: string; tick?: number }> = ({ cwd, tick }) => {
                 ))}
               </span>
             ) : null}
-            <span className="text-muted-foreground w-16 shrink-0 truncate text-right text-[10px]">
+            <span className="text-muted-foreground w-16 shrink-0 truncate text-right text-xs">
               {row.entry.author}
             </span>
-            <span className="text-muted-foreground w-14 shrink-0 text-right text-[10px] tabular-nums">
+            <span className="text-muted-foreground w-14 shrink-0 text-right text-xs tabular-nums">
               {fmtWhen(row.entry.time)}
             </span>
           </button>

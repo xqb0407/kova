@@ -16,6 +16,7 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import type { FileDiffContentsLoader } from "@pierre/diffs/react";
+import { scrollIntoScroller } from "@/lib/scroll";
 import {
   gitDiff,
   gitShow,
@@ -100,7 +101,9 @@ const GitFileCard: FC<{
   useEffect(() => {
     if (!focused) return;
     setOpen(true);
-    rootRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    // 只滚面板自身的滚动容器：scrollIntoView 会连 overflow-hidden 的外层壳
+    // 一起滚，导致整个应用被抬起
+    scrollIntoScroller(rootRef.current, "start");
     requestAnimationFrame(() => startTransition(() => setDiffMounted(true)));
   }, [focused]);
 

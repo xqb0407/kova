@@ -421,7 +421,7 @@ const WorkspaceBranchPill: FC = () => {
             <GitBranchIcon className="text-muted-foreground size-3.5 shrink-0" />
             <span className="max-w-[10rem] truncate">{status.branch}</span>
             {status.dirty > 0 ? (
-              <span className="bg-muted-foreground/15 shrink-0 rounded-full px-1.5 text-[10px] leading-4 tabular-nums">
+              <span className="bg-muted-foreground/15 shrink-0 rounded-full px-1.5 text-xs leading-4 tabular-nums">
                 {status.dirty}
               </span>
             ) : null}
@@ -547,7 +547,9 @@ const QueueSendButton: FC = () => {
 };
 
 const ComposerAction: FC = () => {  return (
-    <div className="aui-composer-action-wrapper relative flex items-center justify-between">
+    // flex-wrap：窄对话列（小窗口 + 右面板展开）时两组按钮各自成行，
+    // 避免固有宽度撑破消息流（超长内容一律走截断，不靠横向滚动）
+    <div className="aui-composer-action-wrapper relative flex flex-wrap items-center justify-between gap-y-1.5">
       <div className="flex items-center gap-1">
         <ComposerAddAttachment />
         <ModePicker />

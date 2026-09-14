@@ -722,7 +722,7 @@ const McpJsonImportDialog: FC<{
                     <SquareTerminalIcon className="text-muted-foreground size-3.5 shrink-0" />
                   )}
                   <span className="shrink-0 font-mono font-medium">{d.name}</span>
-                  <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
+                  <Badge variant="outline" className="shrink-0 font-mono text-xs">
                     {d.transport}
                   </Badge>
                   <span className="text-muted-foreground min-w-0 truncate font-mono">
@@ -873,7 +873,7 @@ const McpRow: FC<{
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-sm font-medium">{entry.name}</span>
-          <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
+          <Badge variant="outline" className="shrink-0 font-mono text-xs">
             {entry.transport}
           </Badge>
           {status.state === "ready" ? (
@@ -904,7 +904,7 @@ const McpRow: FC<{
         <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
           <span className="truncate">{entry.description || target || "未配置目标"}</span>
           {entry.source && (
-            <span className="hidden truncate font-mono text-[10px] lg:block">
+            <span className="hidden truncate font-mono text-xs lg:block">
               {entry.layer === "workspace" &&
               workspaceCwd &&
               entry.source.startsWith(workspaceCwd + "/")
@@ -1133,7 +1133,7 @@ const McpLogDialog: FC<{
                         </span>
                         <span
                           className={cn(
-                            "shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-4 font-medium",
+                            "shrink-0 rounded px-1.5 py-0.5 text-xs leading-4 font-medium",
                             meta.className,
                           )}
                         >

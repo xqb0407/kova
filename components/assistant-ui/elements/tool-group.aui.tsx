@@ -95,6 +95,7 @@ function ToolGroupRoot({
 function ToolGroupTrigger({
   count,
   label: labelOverride,
+  icon,
   active = false,
   className,
   ...props
@@ -102,6 +103,8 @@ function ToolGroupTrigger({
   count?: number;
   /** 分组标题覆写（中文类别标签等）；缺省为 "N tool calls" */
   label?: React.ReactNode;
+  /** 类别图标（与组内单行工具图标同形）；运行中由 spinner 原位替换 */
+  icon?: React.ReactNode;
   active?: boolean;
 }) {
   const label =
@@ -119,11 +122,13 @@ function ToolGroupTrigger({
       )}
       {...props}
     >
-      {active && (
+      {active ? (
         <LoaderIcon
           data-slot="tool-group-trigger-loader"
-          className="aui-tool-group-trigger-loader size-3 shrink-0 animate-spin [animation-duration:0.6s]"
+          className="aui-tool-group-trigger-loader size-4 shrink-0 animate-spin [animation-duration:0.6s]"
         />
+      ) : (
+        icon
       )}
       <span
         data-slot="tool-group-trigger-label"
@@ -175,7 +180,8 @@ function ToolGroupContent({
         className={cn(
           "mt-2 flex flex-col gap-2",
           // ghost（消息内分组）：缩进 + 左侧引导线，行内容与触发器文字错位分层
-          "group-data-[variant=ghost]/tool-group-root:mt-1 group-data-[variant=ghost]/tool-group-root:gap-1 group-data-[variant=ghost]/tool-group-root:border-border/60  group-data-[variant=ghost]/tool-group-root:py-0.5 ",
+          // （border-border/60 只给颜色，宽度在 border-s；ps-3 让行内容退到线后）
+          "group-data-[variant=ghost]/tool-group-root:mt-1 group-data-[variant=ghost]/tool-group-root:gap-1 group-data-[variant=ghost]/tool-group-root:border-border/60 group-data-[variant=ghost]/tool-group-root:border-s group-data-[variant=ghost]/tool-group-root:ps-3 group-data-[variant=ghost]/tool-group-root:py-0.5",
           "group-data-[variant=outline]/tool-group-root:mt-3 group-data-[variant=outline]/tool-group-root:border-t group-data-[variant=outline]/tool-group-root:px-4 group-data-[variant=outline]/tool-group-root:pt-3",
           "group-data-[variant=muted]/tool-group-root:mt-3 group-data-[variant=muted]/tool-group-root:border-t group-data-[variant=muted]/tool-group-root:px-4 group-data-[variant=muted]/tool-group-root:pt-3",
           "[&>*]:animate-in [&>*]:fade-in-0 [&>*]:blur-in-[2px] [&>*]:slide-in-from-top-1 [&>*]:animation-duration-(--animation-duration) [&>*]:ease-[cubic-bezier(0.32,0.72,0,1)]",

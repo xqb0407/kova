@@ -302,7 +302,7 @@ export const ThreadListItems: FC<ThreadListItemsProps> = ({
       {...props}
       {...hover.handlers}
     >
-      {/* 行是 relative、晚于高亮渲染，压在其上：选中行（data-active:bg-muted）
+      {/* 行是 relative、晚于高亮渲染，压在其上：选中行（data-active:bg-selected）
           仍盖过高亮，与 ask-user 的选中优先级一致 */}
       <FluidHoverHighlight hover={hover} className="rounded-md" />
       <AuiIf condition={(s) => s.threads.isLoading}>
@@ -630,7 +630,7 @@ export const ThreadListNew = forwardRef<
         variant="ghost"
         data-slot="aui_thread-list-new"
         className={cn(
-          "hover:bg-muted data-active:bg-muted h-8 justify-start gap-2 rounded-md px-2.5 text-sm font-normal",
+          "hover:bg-selected data-active:bg-selected h-8 justify-start gap-2 rounded-md px-2.5 text-sm font-normal",
           className,
         )}
         {...props}
@@ -765,7 +765,7 @@ export const ThreadListItem: FC = () => {
       data-slot="aui_thread-list-item"
       // hover 反馈由列表容器的 FluidHoverHighlight 负责，行不再自画
       // hover:bg-muted；focus/open/active 底色保留（盖在高亮之上）
-      className="group focus-visible:bg-muted data-active:bg-muted has-focus-visible:bg-muted has-data-[state=open]:bg-muted relative flex h-8 items-center rounded-md transition-colors focus-visible:outline-none"
+      className="group focus-visible:bg-selected data-active:bg-selected has-focus-visible:bg-selected has-data-[state=open]:bg-selected relative flex h-8 items-center rounded-md transition-colors focus-visible:outline-none"
     >
       <ThreadListItemPrimitive.Trigger
         data-slot="aui_thread-list-item-trigger"

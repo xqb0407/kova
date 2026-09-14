@@ -20,6 +20,8 @@ export type AccentName =
   | "rose"
   | "periwinkle";
 export type FontSizeName = "sm" | "md" | "lg";
+/** 提示音音色包（lib/sounds.ts TONE_PACKS 的索引） */
+export type SoundPackName = "crisp" | "calm";
 export type ChatWidthName = "narrow" | "md" | "wide";
 /** 代码主题档位（面板 diff 用 @pierre/diffs、代码预览用 CodeMirror，共用映射；浅深分开配置） */
 export type CodeThemeName = "default" | "vscode" | "idea";
@@ -50,6 +52,14 @@ export type UiPrefs = {
   codeWrap: boolean;
   /** 代码字号（px）：独立于界面字号档位 */
   codeFontSize: number;
+  /** 提示音总开关（lib/sounds.ts 消费，统一控制所有事件） */
+  soundEnabled: boolean;
+  /** 音色包：crisp=清脆 / calm=沉稳，整体切换 */
+  soundPack: SoundPackName;
+  /** 仅后台提醒：窗口有焦点时不响（前台看得见，不必吵） */
+  soundOnlyUnfocused: boolean;
+  /** 音量 0–1 */
+  soundVolume: number;
 };
 
 export const UI_PREFS_KEY = "ui.prefs";
@@ -65,6 +75,10 @@ export const DEFAULT_PREFS: UiPrefs = {
   codeLineNumbers: true,
   codeWrap: false,
   codeFontSize: 12,
+  soundEnabled: true,
+  soundPack: "crisp",
+  soundOnlyUnfocused: false,
+  soundVolume: 0.6,
 };
 
 /** 字号档位 → 根元素 font-size（rem 体系下等比缩放整体界面）；md 为浏览器默认 16px */

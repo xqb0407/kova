@@ -36,7 +36,10 @@ import {
   CopyIcon,
   DownloadIcon,
   MoreHorizontalIcon,
+  PencilLineIcon,
   RefreshCwIcon,
+  SearchIcon,
+  SquareTerminalIcon,
 } from "lucide-react";
 import type { FC, ReactNode } from "react";
 import { randomLoadingPhrase } from "@/lib/loading";
@@ -66,6 +69,13 @@ const TOOL_CATEGORY: Record<string, "terminal" | "inspect" | "modify"> = {
   memory_search: "inspect",
   edit: "modify",
   write: "modify",
+};
+
+/** 折叠组头图标：与类别代表工具的单行图标同形（bash=终端、检索=放大镜、编辑=铅笔） */
+const CATEGORY_ICON: Record<"terminal" | "inspect" | "modify", ReactNode> = {
+  terminal: <SquareTerminalIcon className="size-4 shrink-0" />,
+  inspect: <SearchIcon className="size-4 shrink-0" />,
+  modify: <PencilLineIcon className="size-4 shrink-0" />,
 };
 
 /** 工具分组：计数剔除隐藏的工具卡，全组都被隐藏时整组不渲染 */
@@ -121,7 +131,12 @@ const ToolGroupSection: FC<{
           : undefined;
   return (
     <ToolGroupRoot variant="ghost">
-      <ToolGroupTrigger count={count} active={active} label={label} />
+      <ToolGroupTrigger
+        count={count}
+        active={active}
+        label={label}
+        icon={category ? CATEGORY_ICON[category] : undefined}
+      />
       <ToolGroupContent>{children}</ToolGroupContent>
     </ToolGroupRoot>
   );

@@ -16,7 +16,7 @@ import {
   ShareIcon,
 } from "lucide-react";
 import Image from "next/image";
-import logo from "@/public/favicon/logo.svg";
+import logo from "@/public/favicon/icon.png";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -45,9 +45,9 @@ export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
         alt="logo"
         className="size-5 shrink-0 dark:hue-rotate-180 dark:invert"
       />
-      {!collapsed && (
+      {/* {!collapsed && (
         <span className="text-foreground/90 truncate">搞个锤子</span>
-      )}
+      )} */}
     </div>
   );
 };
