@@ -19,7 +19,9 @@ export type PanelTabType =
   /** 文件内容预览：消息 read 工具行唤起（快照），或文件树标签唤起（tab.path=磁盘实时） */
   | "file"
   /** 工作区文件树浏览（仅 Tauri 桌面端,见 tab-registry 的可见性过滤） */
-  | "explorer";
+  | "explorer"
+  /** 子智能体运行过程：消息里 Task 委派行唤起（不进 + 菜单,只能从行进入） */
+  | "subagent";
 
 export type PanelTab = {
   id: string;
@@ -38,6 +40,13 @@ export type PanelTab = {
   focus?: string;
   /** file 标签磁盘模式：workspace（tab.cwd）相对路径,实时读盘渲染（文件树点击） */
   path?: string;
+  /**
+   * shell 标签绑定的终端会话 id（lib/shell.ts）。标签是会话生命周期的
+   * 单一事实源：关标签即回收会话，刷新后 id 悬空则视图提示重启。
+   */
+  sessionId?: string;
+  /** subagent 标签绑定的委派 id（lib/subagent-runs store 的键） */
+  delegationId?: string;
 };
 
 export type PanelTabsState = { tabs: PanelTab[]; activeId: string | null };
@@ -53,6 +62,7 @@ const VALID_TYPES = new Set<PanelTabType>([
   "git",
   "file",
   "explorer",
+  "subagent",
 ]);
 
 function validTab(raw: unknown): raw is PanelTab {
@@ -120,9 +130,26 @@ export function usePanelTabs(): PanelTabsState {
   return useSyncExternalStore(subscribe, getSnapshot, () => state);
 }
 
+/** 非 hook 读取当前标签集合（触发水合）；lib 层桥接逻辑用 */
+export function getPanelTabs(): PanelTabsState {
+  return getSnapshot();
+}
+
+/** 非 hook 订阅标签集合变更；同样只供 lib 层桥接（如 shell 会话回收）使用 */
+export function subscribePanelTabs(cb: () => void): () => void {
+  return subscribe(cb);
+}
+
 export type PanelTabExtra = Pick<
   PanelTab,
-  "title" | "url" | "cwd" | "checkpoint" | "focus" | "path"
+  | "title"
+  | "url"
+  | "cwd"
+  | "checkpoint"
+  | "focus"
+  | "path"
+  | "sessionId"
+  | "delegationId"
 >;
 
 /** 打开一个新标签并激活(所有类型均可多开)；extra 携带视图数据上下文 */

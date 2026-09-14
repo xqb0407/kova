@@ -194,6 +194,8 @@ export const AssistantMessage: FC = () => {
             if (part.type === "reasoning")
               return ["group-chainOfThought", "group-reasoning"];
             if (part.type === "tool-call") {
+              // Task 委派行独立成行，不并入工具折叠组（并行多个各一行）
+              if (part.toolName === "Task") return [];
               const cat = TOOL_CATEGORY[part.toolName];
               return [
                 "group-chainOfThought",

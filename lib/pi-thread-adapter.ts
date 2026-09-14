@@ -124,6 +124,38 @@ function linkMessages<T>(messages: { id: string }[]): {
   };
 }
 
+/** 进行中的 ensure 请求（threadId → promise）：并发重入合一，防双 new_session */
+const pendingThreadSession = new Map<string, Promise<string>>();
+
+/**
+ * 线程 local id → pi 会话绑定的显式确保（幂等 + 并发去重）。
+ * 框架对"首条发送前一定先跑过 adapter.initialize"没有保证（web.log 实证：
+ * 登记里 sessionId 从来没出现过），而 transport 的在飞流登记必须带上会话
+ * id——否则刷新后没有任何列表行能认领登记，在飞流成孤儿。发送前主动 ensure。
+ */
+export function piEnsureThreadSession(threadId: string, cwd?: string): Promise<string> {
+  const existing = piSessionRegistry.get(threadId);
+  if (existing) return Promise.resolve(existing);
+  let p = pendingThreadSession.get(threadId);
+  if (!p) {
+    p = piRequest<{ type: "session"; sessionId: string; threadId: string }>({
+      type: "new_session",
+      threadId,
+      cwd,
+    })
+      .then((res) => {
+        piSessionRegistry.set(threadId, res.sessionId);
+        if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
+        return res.sessionId;
+      })
+      .finally(() => {
+        pendingThreadSession.delete(threadId);
+      });
+    pendingThreadSession.set(threadId, p);
+  }
+  return p;
+}
+
 export function createPiThreadListAdapter(): RemoteThreadListAdapter {
   return {
     async list() {
@@ -137,15 +169,8 @@ export function createPiThreadListAdapter(): RemoteThreadListAdapter {
     },
 
     async initialize(threadId: string) {
-      const cwd = getWorkspace() ?? undefined;
-      const res = await piRequest<{
-        type: "session";
-        sessionId: string;
-        threadId: string;
-      }>({ type: "new_session", threadId, cwd });
-      piSessionRegistry.set(threadId, res.sessionId);
-      if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
-      return { remoteId: res.sessionId };
+      const remoteId = await piEnsureThreadSession(threadId, getWorkspace() ?? undefined);
+      return { remoteId };
     },
 
     async fetch(threadId: string) {

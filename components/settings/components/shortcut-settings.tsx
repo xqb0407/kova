@@ -90,67 +90,21 @@ export const ShortcutSettings: FC = () => {
             点击「修改」后按下新的组合键，Esc 取消。组合键需包含 ⌘/Ctrl 或 Alt，或使用 F1–F12。
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            {SHORTCUT_ACTIONS.map((action) => {
-              const isRecording = recording === action.id;
-              return (
-                <div key={action.id}>
-                  <SettingRow
-                    label={action.label}
-                    desc={action.desc}
-                  >
-                    {isRecording ? (
-                      <span className="flex items-center gap-2">
-                        <span className="text-muted-foreground animate-pulse text-sm">
-                          按下新的组合键…
-                        </span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            setRecording(null);
-                            setError(null);
-                          }}
-                        >
-                          取消
-                        </Button>
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1.5">
-                        <BindingChips config={bindings[action.id]} />
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            setError(null);
-                            setRecording(action.id);
-                          }}
-                        >
-                          修改
-                        </Button>
-                        {!isDefaultBinding(action.id) && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-muted-foreground"
-                            onClick={() => {
-                              resetShortcutBinding(action.id);
-                              setError(null);
-                            }}
-                          >
-                            重置
-                          </Button>
-                        )}
-                      </span>
-                    )}
-                  </SettingRow>
-                  {isRecording && error && (
-                    <div className="text-destructive px-3 pb-2 text-xs">
-                      {error}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {SHORTCUT_ACTIONS.filter((a) => a.scope === "global").map(
+              renderAction,
+            )}
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">输入框</h2>
+          <p className="text-muted-foreground text-sm">
+            仅在对话输入框内生效。「发送消息」可绑任意组合（Enter / ⌘Enter 走原生，其余由输入框拦截提交）；受编辑器限制，「换行」只支持 Enter 组合。
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            {SHORTCUT_ACTIONS.filter((a) => a.scope === "composer").map(
+              renderAction,
+            )}
           </div>
         </section>
 
@@ -161,9 +115,6 @@ export const ShortcutSettings: FC = () => {
             以下为组件标准交互，不提供自定义。
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
-            <SettingRow label="发送消息" desc="输入框内按 Enter 发送，Shift+Enter 换行">
-              <span />
-            </SettingRow>
             <SettingRow label="取消 / 关闭" desc="Esc 关闭弹层、退出编辑或停止当前操作">
               <span />
             </SettingRow>
@@ -175,4 +126,61 @@ export const ShortcutSettings: FC = () => {
       </div>
     </div>
   );
+
+  function renderAction(action: (typeof SHORTCUT_ACTIONS)[number]) {
+    const isRecording = recording === action.id;
+    return (
+      <div key={action.id}>
+        <SettingRow label={action.label} desc={action.desc}>
+          {isRecording ? (
+            <span className="flex items-center gap-2">
+              <span className="text-muted-foreground animate-pulse text-sm">
+                按下新的组合键…
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setRecording(null);
+                  setError(null);
+                }}
+              >
+                取消
+              </Button>
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5">
+              <BindingChips config={bindings[action.id]} />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setError(null);
+                  setRecording(action.id);
+                }}
+              >
+                修改
+              </Button>
+              {!isDefaultBinding(action.id) && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground"
+                  onClick={() => {
+                    resetShortcutBinding(action.id);
+                    setError(null);
+                  }}
+                >
+                  重置
+                </Button>
+              )}
+            </span>
+          )}
+        </SettingRow>
+        {isRecording && error && (
+          <div className="text-destructive px-3 pb-2 text-xs">{error}</div>
+        )}
+      </div>
+    );
+  }
 };

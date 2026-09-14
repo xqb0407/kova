@@ -33,20 +33,61 @@ import {
   createRetryBudget,
   makeUiRetryController,
 } from "./provider-retry";
-import { loadSubagentDefinitions } from "./subagent-definitions";
+import { loadSubagentDefinitions, type SubagentDefinition } from "./subagent-definitions";
 import { ensureSkillsLoaded } from "./skills";
 import { buildSubagentTools } from "./subagent";
+import { buildSkillMgmtTools } from "./skill-mgmt-tools";
 import { readCompaction, readTranscript } from "./transcript";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, type ContextInfoResult } from "./context";
-import { onAgentEvent } from "./stream";
+import { onAgentEvent, send } from "./stream";
 import { clearTodoState, replayTodoFromMessages } from "./todo";
 import { logErr } from "./log";
 import { sessionPath } from "./storage";
 import { sessionGet, sessionInsert, sessionUpdateCwd } from "./hostdb";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Running } from "./types";
 
 /** threadId -> 活动会话（每个前端线程一个 Agent 实例） */
 export const running = new Map<string, Running>();
+
+/**
+ * sessionId -> threadId 反查索引。
+ * run 的驻留键是"发起 prompt 时的前端 thread id"：新草稿首条消息发出后，
+ * 刷新使草稿 id 重随机、列表行以 sessionId 为 id——此时 tool_confirm /
+ * abort 等后续请求带的都是新 id，只按 threadId 查 running 必然 miss。
+ * 没有这个索引，resolveSession 会把同一会话从磁盘再物化出**第二个** Agent
+ * （审批结算落到空表抛 no pending tool approval，原 run 的审批 Promise
+ * 永久悬挂；双实例还会共写同一份转录）。
+ */
+const runningBySession = new Map<string, string>();
+
+/** 登记/覆盖会话的反查键（resolveSession 物化 run 后调用） */
+export function trackSessionRun(sessionId: string, threadId: string): void {
+  runningBySession.set(sessionId, threadId);
+}
+
+/** 按 sessionId 找驻留 run；索引指向已消失的键时自愈清除 */
+export function findRunBySession(
+  sessionId: string,
+): { threadId: string; run: Running } | undefined {
+  const tid = runningBySession.get(sessionId);
+  if (!tid) return undefined;
+  const run = running.get(tid);
+  if (!run) {
+    runningBySession.delete(sessionId);
+    return undefined;
+  }
+  return { threadId: tid, run };
+}
+
+/** 从驻留表移除线程，并同步清掉指向它的反查索引 */
+export function dropRun(threadId: string): void {
+  const run = running.get(threadId);
+  running.delete(threadId);
+  if (run && runningBySession.get(run.sessionId) === threadId) {
+    runningBySession.delete(run.sessionId);
+  }
+}
 
 /* ----------------------- 会话驻留治理（迭代2 / P2） -----------------------
  * running 不再是"只进不出"：超过上限驱逐最久未访问的会话，被驱逐会话在
@@ -59,19 +100,56 @@ export const running = new Map<string, Running>();
  *  全被跳过时宁可暂超也不踢掉干活中的会话。 */
 export const MAX_RESIDENT_SESSIONS = 8;
 
-/** 正在跑 prompt turn 的线程集合：protocol.ts dispatchPrompt 起止处通报。
- *  跑着 prompt 的会话永不驱逐（线程串行链，多线程可并行多个）。 */
-const activeTurnThreads = new Set<string>();
-export function noteActiveTurn(threadId: string, active: boolean): void {
-  if (active) activeTurnThreads.add(threadId);
-  else activeTurnThreads.delete(threadId);
+/** 正在跑 prompt turn 的线程 -> { 会话 id, 本轮 requestId }（sessionId 可为
+ *  undefined：发起方未带 sessionId 且会话尚未 resolve；此类轮次不广播、不出现在
+ *  list_running，本地前端不受影响——transport 每条 prompt 都携带 sessionId）。
+ *  protocol.ts dispatchPrompt 起止处通报；跑着 prompt 的会话永不驱逐
+ *  （线程串行链，多线程可并行多个）。
+ *  起止同时广播 turn_changed 通知行（无 id，宿主原样转发给所有前端）：
+ *  侧边栏"会话运行中"指示的实时信号；页面刷新后的水合走 list_running。
+ *  requestId 供 list_running 的 turns 字段回给前端：webview 存储被清时前端
+ *  按运行态真相重建在飞流登记（刷新续流不依赖 sessionStorage 存活）。 */
+interface ActiveTurn {
+  sessionId?: string;
+  requestId?: string;
+}
+const activeTurns = new Map<string, ActiveTurn>();
+export function noteActiveTurn(
+  threadId: string,
+  active: boolean,
+  sessionId?: string,
+  requestId?: string,
+): void {
+  if (active) {
+    const sid = sessionId ?? running.get(threadId)?.sessionId;
+    activeTurns.set(threadId, { sessionId: sid, requestId });
+    if (sid) send({ type: "turn_changed", sessionId: sid, active: true });
+  } else {
+    const sid = activeTurns.get(threadId)?.sessionId;
+    activeTurns.delete(threadId);
+    if (sid) send({ type: "turn_changed", sessionId: sid, active: false });
+  }
+}
+
+/** 当前正在跑 turn 的会话 id 清单（list_running 应答） */
+export function listActiveTurnSessions(): string[] {
+  return [...activeTurns.values()]
+    .map((t) => t.sessionId)
+    .filter((s): s is string => !!s);
+}
+
+/** 会话与请求 id 齐备的在跑轮次明细（list_running 应答 turns 字段） */
+export function listActiveTurnDetails(): { sessionId: string; requestId: string }[] {
+  return [...activeTurns.values()].flatMap((t) =>
+    t.sessionId && t.requestId ? [{ sessionId: t.sessionId, requestId: t.requestId }] : [],
+  );
 }
 
 /** 可驱逐判定：进行中的工作与跨轮的审批意图都要跳过。
  *  恢复路径不会带回 planning/pendingToolApprovals（resolveSession
  *  恒以初始态重建），所以这些状态在驻留期间被驱逐等于静默丢失。 */
 function isEvictable(threadId: string, run: Running): boolean {
-  if (activeTurnThreads.has(threadId)) return false;
+  if (activeTurns.has(threadId)) return false;
   for (const d of run.delegations.values()) if (d.status === "running") return false;
   if (run.pendingToolApprovals.size > 0) return false;
   if (run.planning !== "inactive") return false;
@@ -101,11 +179,27 @@ function enforceResidency(justLoaded: string): void {
     .sort((a, b) => a[1].lastSeenAt - b[1].lastSeenAt);
   for (const [tid, run] of doomed) {
     if (excess <= 0) break;
-    running.delete(tid);
+    dropRun(tid);
     forgetThreadStates(tid);
     logErr("session-evict:", `${tid} -> ${run.sessionId}`);
     excess -= 1;
   }
+}
+
+/**
+ * agent 模式挂载的扩展工具组 = Task 组（含子智能体管理三件套）+ 技能管理三件套。
+ * 两组都不进 baseTools：delegate 按定义从基础目录取工具时结构性拿不到它们。
+ * run.subagentTools 即本组（字段名沿用，语义为"Task 旁的扩展组"）。
+ */
+function buildAgentExtensions(
+  run: Running,
+  baseTools: AgentTool[],
+  definitions: SubagentDefinition[],
+): AgentTool[] {
+  return [
+    ...buildSubagentTools(run, baseTools, definitions, reloadSubagents),
+    ...buildSkillMgmtTools(run, reloadSkills),
+  ];
 }
 
 /**
@@ -120,7 +214,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
   // 重建工具须沿用原 threadId：todo/question 工具按 threadId 归属，误传 sessionId 会挂错 key
   run.baseTools = buildTools(cwd, threadId);
   const { definitions } = await loadSubagentDefinitions({ cwd });
-  run.subagentTools = buildSubagentTools(run, run.baseTools, definitions, reloadSubagents);
+  run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
   // 换了工作区：技能目录随 cwd 变，先预热新缓存再重组提示词
   await ensureSkillsLoaded(cwd);
@@ -156,7 +250,7 @@ export async function reloadSubagents(): Promise<void> {
   for (const run of running.values()) {
     const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
     for (const d of diagnostics) logErr("subagent:", d);
-    run.subagentTools = buildSubagentTools(run, run.baseTools, definitions, reloadSubagents);
+    run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
     run.agent.state.tools = toolsForMode(run);
   }
 }
@@ -243,6 +337,19 @@ export async function resolveSession(
     return existing;
   }
 
+  // 刷新后前端 thread id 变了（草稿重随机 / 行 id=sessionId）：按反查索引
+  // 找回仍驻留的原 run。绝不允许同一会话物化出第二个 Agent（见索引注释）。
+  if (sessionId) {
+    const owner = findRunBySession(sessionId);
+    if (owner) {
+      if (cwd && !owner.run.persistedCwd) {
+        await rebindRunCwd(owner.run, cwd, owner.threadId);
+      }
+      touchSession(owner.threadId);
+      return owner.run;
+    }
+  }
+
   // 持久化 cwd = 用户选择的工作目录（空串 = 未选目录的任务会话）；
   // 运行 cwd 兜底主目录，仅影响 Agent 执行环境，不回写持久化
   let persistedCwd = cwd ?? "";
@@ -305,6 +412,7 @@ export async function resolveSession(
     providerRetryTurnSeq: 0,
     delegations: new Map(),
     stopRequested: false,
+    lengthContinues: 0,
     mode: "agent",
     approvalLevel: "ask",
     planning: "inactive",
@@ -380,13 +488,15 @@ export async function resolveSession(
 
   const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
   for (const d of diagnostics) logErr("subagent:", d);
-  run.subagentTools = buildSubagentTools(run, baseTools, definitions, reloadSubagents);
-  // 在基础工具目录上追加 Task 工具组（含管理工具）+ 模式切换工具（delegate 的工具
-  // 按定义从基础目录里取，绝不包含本组，delegate 不能继续委派、也不能管理定义）
+  run.subagentTools = buildAgentExtensions(run, baseTools, definitions);
+  // 在基础工具目录上追加 Task 工具组（含子智能体/技能管理工具）+ 模式切换工具
+  // （delegate 的工具按定义从基础目录里取，绝不包含本组，
+  //   delegate 不能继续委派、也不能管理定义与技能）
   agent.state.tools = toolsForMode(run);
 
   agent.subscribe((event) => onAgentEvent(event, run));
   running.set(threadId, run);
+  trackSessionRun(sessionId, threadId);
   // 恢复的历史会话同样补绑：老会话建时未选目录（row.cwd 空）而这次请求带了 cwd
   if (cwd && !persistedCwd) await rebindRunCwd(run, cwd, threadId);
   // 迭代2：本次 resolve 代表用户当前意图，豁免驱逐；驱逐从最久未访问处开始
@@ -426,7 +536,7 @@ export async function projectContextInfo(
     baseTools,
     subagentTools: [],
   } as unknown as Running;
-  stub.subagentTools = buildSubagentTools(stub, baseTools, definitions, reloadSubagents);
+  stub.subagentTools = buildAgentExtensions(stub, baseTools, definitions);
 
   return contextInfoFrom({
     model,

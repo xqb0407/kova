@@ -57,12 +57,50 @@ export type SubagentRunResult = {
   error?: { code: string; message: string };
 };
 
+/**
+ * 子代理运行活动的归一化条目：SubagentRun 把 delegate 的 AgentEvent 折成本项，
+ * 一路进 DelegationRecord.activity（快照补水合用），一路以无 id 通知行
+ * {type:"subagent_activity", delegationId, item} 广播（宿主原样转发，同 turn_changed）。
+ * 前端面板 tab 据此流式渲染 delegate 内部过程；不进父转录。
+ */
+export type SubagentActivityItem =
+  /** delegate 新一轮开始（n = 轮次序号） */
+  | { kind: "turn"; n: number; at: number }
+  /** 思考块增量流（id 为 delegate 内内容索引的稳定 id） */
+  | { kind: "thinking"; op: "start" | "delta" | "end"; id: string; delta?: string; at: number }
+  /** 正文增量流（报告叙述文本） */
+  | { kind: "text"; op: "start" | "delta" | "end"; id: string; delta?: string; at: number }
+  /** delegate 的工具调用起止（参数/结果只带单行摘要，不带原文） */
+  | {
+      kind: "tool";
+      op: "start" | "end";
+      toolCallId: string;
+      toolName: string;
+      argsSummary?: string;
+      resultSummary?: string;
+      failed?: boolean;
+      at: number;
+    }
+  /** 结算终态（settleDelegation 时发出；report 截断后随带，供面板展示最终报告） */
+  | {
+      kind: "status";
+      status: SubagentRunStatus;
+      turns: number;
+      toolCalls: number;
+      report?: string;
+      at: number;
+    };
+
 /** 一次 Task 委派的登记项（会话级注册表，后台运行、TaskWait 收敛） */
 export type DelegationRecord = {
   delegationId: string;
   agentName: string;
   modelId: string;
   status: SubagentRunStatus;
+  /** Task 的 description 参数：给用户看的一行短描述（消息行与面板 tab 标题） */
+  description?: string;
+  /** 运行活动流的内存环形缓冲（见 pushActivity 的上限与丢弃策略） */
+  activity: SubagentActivityItem[];
   /** TaskStop / 用户 Stop 置位，结算时把 aborted 归类为 stopped */
   stopRequested: boolean;
   startedAt: number;
@@ -113,6 +151,8 @@ export type Running = {
   delegations: Map<string, DelegationRecord>;
   /** 用户 Stop 置位：中止后台子代理并退出收敛循环 */
   stopRequested: boolean;
+  /** 本用户 prompt 轮内"length 截断无 toolCall"已注入的自动续跑次数（每轮重置，见 context.ts；缺省视为 0） */
+  lengthContinues?: number;
   /** 当前模式（agent = 正常执行；plan = 只读勘察 + 计划编写） */
   mode: SessionMode;
   /** 逐工具审批级别（ask = 每次确认；auto-edit = 编辑免确认；auto = 全免） */

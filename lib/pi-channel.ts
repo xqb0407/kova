@@ -24,10 +24,57 @@ export type PromptStreamArgs = {
   abortSignal?: AbortSignal;
 };
 
+export type AttachStreamArgs = {
+  /** 发起时生成、由 resumable storage 记下的在飞 requestId */
+  requestId: string;
+  /** abort（用户在重挂后的流上点停止）时按线程中断 */
+  threadId: string;
+  abortSignal?: AbortSignal;
+};
+
 export type PiChannelStatus = {
   connected: boolean;
   error?: string;
 };
+
+/** 子代理运行状态（与 sidecar types.ts SubagentRunStatus 同构） */
+export type SubagentRunStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "truncated"
+  | "aborted"
+  | "stopped";
+
+/**
+ * 子代理运行活动条目（sidecar subagent_activity 通知行的 item 字段，
+ * 与 sidecar/pi-agent/src/types.ts SubagentActivityItem 同构）。
+ */
+export type SubagentActivityItem =
+  | { kind: "turn"; n: number; at: number }
+  | { kind: "thinking"; op: "start" | "delta" | "end"; id: string; delta?: string; at: number }
+  | { kind: "text"; op: "start" | "delta" | "end"; id: string; delta?: string; at: number }
+  | {
+      kind: "tool";
+      op: "start" | "end";
+      toolCallId: string;
+      toolName: string;
+      argsSummary?: string;
+      resultSummary?: string;
+      failed?: boolean;
+      at: number;
+    }
+  | {
+      kind: "status";
+      status: SubagentRunStatus;
+      turns: number;
+      toolCalls: number;
+      report?: string;
+      at: number;
+    };
+
+/** list_running turns 明细项：一个确定在跑的轮次（会话 + 其 prompt requestId） */
+export type PiRunningTurn = { sessionId: string; requestId: string };
 
 export interface PiChannel {
   readonly kind: "tauri" | "ws";
@@ -35,6 +82,51 @@ export interface PiChannel {
   request(payload: Record<string, unknown>, timeoutMs?: number): Promise<PiResponse>;
   /** 发起 prompt，返回按 requestId 分流的 chunk 流（finish/error 关流） */
   promptStream(args: PromptStreamArgs): ReadableStream<UIMessageChunk>;
+  /**
+   * 能力可选：重挂进行中的 prompt 流（页面刷新恢复）。实现方负责重放
+   * 本轮已产出的全部 chunk（含旁路 data-*）并继续直播到 finish/error。
+   * 返回 null = 无在飞 run 或通道不支持（无可回放的服务端流）。
+   *
+   * 通道契约：凡是"webview/浏览器可长时间断开的本地常驻后端"都应实现它
+   * （Tauri 经 Rust 重放缓冲；远程 WS 待网关 resume 路由后实现）。
+   * 天然无法回放流式输出的推送型通道（微信/系统 app 通知等）不实现，
+   * transport 自动降级为"轮不到重连 → 清记录回退历史加载"。
+   */
+  attachStream?(args: AttachStreamArgs): Promise<ReadableStream<UIMessageChunk> | null>;
+  /**
+   * 能力可选（与 listRunning 成对）：订阅"会话 turn 起止"事件流。
+   * cb(sessionId, active)；sessionId = null 表示事件源失效（后端重启等），
+   * 订阅方应清空集合并用 listRunning 重新水合。返回退订函数。
+   * 时序契约：监听登记本身可能是异步的（Tauri listen 返回 Promise）。注册
+   * 窗口里广播的 turn_changed 会永久丢失，而种子无法替它兜底（种子早于事件
+   * 时就看不到），所以订阅方必须先 await 返回的退订函数就绪、再发起 listRunning
+   * 种子——sidecar 对 turn_changed 与 list_running 响应按 stdout 全序写出，
+   * "先订阅、后种子、种子只并入不清除"即可无漏合并。
+   * 微信/系统 app 等推送型通道不实现，侧边栏运行指示降级为框架自带的
+   * 仅挂载线程 isRunning。
+   */
+  subscribeTurns?(
+    cb: (sessionId: string | null, active: boolean) => void,
+  ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（与 subscribeTurns 同款无 id 通道）：订阅子代理活动通知行
+   * （subagent_activity：delegate 的思考/正文增量、工具起止、轮次、结算终态）。
+   * cb(delegationId, item)。WS 通道暂缺（网关不转发无 id 自发行）→ 缺省即降级：
+   * 消息行绑定走 prompt 流 data-subagentDelegation、面板 tab 走快照补水合。
+   */
+  subscribeSubagentActivity?(
+    cb: (delegationId: string, item: SubagentActivityItem) => void,
+  ): (() => void) | Promise<() => void>;
+  /** 能力可选（与 subscribeTurns 成对）：当前正在跑 turn 的会话 id 种子清单 */
+  listRunning?(): Promise<string[]>;
+  /**
+   * 能力可选（随 listRunning）：在跑轮次的 {sessionId, requestId} 明细。
+   * 运行态事实源（sidecar activeTurns）经此透出请求 id——webview 存储被清/
+   * 配额连带导致在飞流登记丢失时，前端据此重建登记并按 requestId attach，
+   * 刷新续流不再依赖 sessionStorage 存活。旧后端应答缺 turns 时返回空清单
+   * （登记重建降级为仅 localStorage 镜像/最近会话兜底）。
+   */
+  listRunningTurns?(): Promise<PiRunningTurn[]>;
   /** 中断指定线程的活跃 turn 与其排队消息（缺省 = 全局兜底，停掉一切） */
   abort(threadId?: string): Promise<void>;
   close?(): void;
@@ -61,6 +153,12 @@ export function getPiChannel(): PiChannel {
 }
 
 // ---------- Tauri 通道 ----------
+
+/** pi-chunk-batch 载荷的一行（见 pi_agent.rs ChunkLine）：i = run 内序号（非 chunk 行为 null），l = 原始 NDJSON 行 */
+type ChunkWireLine = { i: number | null; l: string };
+
+/** pi_attach 应答：重放快照 + 该 run 的存活/截断状态 */
+type AttachReply = { active: boolean; truncated: boolean; lines: ChunkWireLine[] };
 
 export class TauriPiChannel implements PiChannel {
   readonly kind = "tauri" as const;
@@ -110,10 +208,10 @@ export class TauriPiChannel implements PiChannel {
         };
 
         // 先挂监听再发起 prompt，避免漏掉最早的 chunk。
-        // 迭代 3：Rust 侧 ~20ms 合帧后以 pi-chunk-batch（NDJSON 行数组）转发，
-        // 逐行走原有过滤逻辑；收尾行之后的批次残余由 closed 挡板忽略。
-        unlisten = await listen<string[]>("pi-chunk-batch", (event) => {
-          for (const raw of event.payload) handleLine(raw);
+        // 迭代 3：Rust 侧 ~20ms 合帧后以 pi-chunk-batch（带 i 序号的行对象数组）
+        // 转发，逐行走原有过滤逻辑；收尾行之后的批次残余由 closed 挡板忽略。
+        unlisten = await listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+          for (const wire of event.payload) handleLine(wire.l);
         });
 
         try {
@@ -151,7 +249,182 @@ export class TauriPiChannel implements PiChannel {
     return stream;
   }
 
+  /**
+   * 刷新重挂：Rust stdout 循环为每个在飞/刚收尾的 run 维护带 seq 的缓冲。
+   * 时序——先挂监听（此后的直播行只暂存不消费），再 pi_attach 取快照，
+   * 两路都按 seq 单调合并：监听与快照在时间上重叠的行天然幂等去重，
+   * 快照覆盖不到、监听又错过的行不可能存在（监听先于快照建立）。
+   * 快照含收尾行即刻关流（tombstone 场景：run 在页面关闭期间已结束，
+   * 重放完整一轮后正常 finish，消息落定，不留"假流式"）。
+   */
+  async attachStream({
+    requestId,
+    threadId,
+    abortSignal,
+  }: AttachStreamArgs): Promise<ReadableStream<UIMessageChunk> | null> {
+    let unlisten: UnlistenFn | null = null;
+    let closed = false;
+    let controller: ReadableStreamDefaultController<UIMessageChunk> | null = null;
+    const cleanup = () => {
+      unlisten?.();
+      unlisten = null;
+    };
+
+    let lastSeq = 0;
+    const future = new Map<number, UIMessageChunk>();
+    const feed = (seq: number, raw: string) => {
+      if (closed || seq <= lastSeq) return;
+      let parsed: { id?: string | null; chunk?: UIMessageChunk };
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return;
+      }
+      // 其他 run 的行不参与本流的 seq 空间（seq 按 requestId 独立递增）
+      if (parsed.id !== requestId || !parsed.chunk) return;
+      future.set(seq, parsed.chunk);
+      let next = future.get(lastSeq + 1);
+      while (next !== undefined && !closed) {
+        future.delete(lastSeq + 1);
+        lastSeq += 1;
+        controller?.enqueue(next);
+        if (next.type === "finish" || next.type === "error") {
+          closed = true;
+          cleanup();
+          controller?.close();
+          return;
+        }
+        next = future.get(lastSeq + 1);
+      }
+    };
+
+    // 流先于监听与快照构造：controller 就绪后两路来源都可直接消费
+    const stream = new ReadableStream<UIMessageChunk>({
+      start(c) {
+        controller = c;
+      },
+      cancel() {
+        closed = true;
+        cleanup();
+      },
+    });
+
+    unlisten = await listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+      for (const wire of event.payload) {
+        if (wire.i !== null && wire.i !== undefined) feed(wire.i, wire.l);
+      }
+    });
+
+    let reply: AttachReply;
+    try {
+      reply = await invoke<AttachReply>("pi_attach", { requestId });
+    } catch {
+      cleanup();
+      return null;
+    }
+    // 无缓冲（run 不存在/超上限截断）：交回 transport 走"清记录回退历史"
+    if (reply.truncated || (!reply.active && reply.lines.length === 0)) {
+      cleanup();
+      return null;
+    }
+    for (const wire of reply.lines) {
+      if (wire.i !== null && wire.i !== undefined) feed(wire.i, wire.l);
+    }
+    // tombstone 但未见收尾行（sidecar 异常终止等理论竞态）：关流让消息落定
+    // （闭包内引用避开外层 CFA 对 controller 的 null 收窄）
+    const forceClose = () => {
+      if (closed) return;
+      closed = true;
+      cleanup();
+      controller?.close();
+    };
+    if (!reply.active && !closed) forceClose();
+    abortSignal?.addEventListener(
+      "abort",
+      () => {
+        void invoke("pi_abort", { threadId }).catch(() => {});
+      },
+      { once: true },
+    );
+    return stream;
+  }
+
   async abort(threadId?: string) {
     await invoke("pi_abort", { threadId }).catch(() => {});
+  }
+
+  async listRunning(): Promise<string[]> {
+    const res = await this.request({ type: "list_running" });
+    return res.type === "running" ? res.sessionIds : [];
+  }
+
+  async listRunningTurns(): Promise<PiRunningTurn[]> {
+    const res = await this.request({ type: "list_running" });
+    // 旧 sidecar 应答无 turns 字段：空清单 = 登记重建能力自动缺位
+    const turns = res.type === "running" ? (res as { turns?: unknown }).turns : undefined;
+    if (!Array.isArray(turns)) return [];
+    return turns.filter(
+      (t): t is PiRunningTurn =>
+        !!t &&
+        typeof (t as PiRunningTurn).sessionId === "string" &&
+        typeof (t as PiRunningTurn).requestId === "string",
+    );
+  }
+
+  /**
+   * turn_changed 是 sidecar 自发通知行（无 id，不进请求配对/重放缓冲，
+   * Rust 原样广播）；pi-exit 转成 (null,false)"事件源失效"信号，
+   * 订阅方清空并重新水合（sidecar 重启后活跃轮次必然为空）。
+   * async：两个 listen() 登记都就绪后才 resolve 退订函数——订阅方据此
+   * "await 订阅 → 发种子"，杜绝登记窗口丢事件（见 PiChannel.subscribeTurns）。
+   */
+  async subscribeTurns(
+    cb: (sessionId: string | null, active: boolean) => void,
+  ): Promise<() => void> {
+    const [unlistenBatch, unlistenExit] = await Promise.all([
+      listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+        for (const wire of event.payload) {
+          // 前缀预筛：热路径全是 {id,chunk} 行，免去逐行 JSON.parse
+          if (!wire.l.startsWith('{"type":"turn_changed"')) continue;
+          let parsed: { sessionId?: string; active?: boolean };
+          try {
+            parsed = JSON.parse(wire.l);
+          } catch {
+            continue;
+          }
+          if (typeof parsed.sessionId === "string") {
+            cb(parsed.sessionId, parsed.active === true);
+          }
+        }
+      }),
+      listen("pi-exit", () => cb(null, false)),
+    ]);
+    return () => {
+      unlistenBatch();
+      unlistenExit();
+    };
+  }
+
+  /**
+   * subagent_activity 自发通知行（无 id，Rust 原样广播）：前缀预筛 + 逐行解析，
+   * 与 subscribeTurns 同款热路径优化（token 级增量频率高，非活动行不 JSON.parse）。
+   */
+  async subscribeSubagentActivity(
+    cb: (delegationId: string, item: SubagentActivityItem) => void,
+  ): Promise<() => void> {
+    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+      for (const wire of event.payload) {
+        if (!wire.l.startsWith('{"type":"subagent_activity"')) continue;
+        let parsed: { delegationId?: string; item?: SubagentActivityItem };
+        try {
+          parsed = JSON.parse(wire.l);
+        } catch {
+          continue;
+        }
+        if (typeof parsed.delegationId === "string" && parsed.item) {
+          cb(parsed.delegationId, parsed.item);
+        }
+      }
+    });
   }
 }

@@ -143,6 +143,13 @@ export const Base: FC = () => {
     return () => document.removeEventListener("keydown", down);
   }, [openSettings, toggleAgentPanel]);
 
+  // 进入设置页时清掉文档里的活动选区：选区还在时 SelectionToolbar 的 quote
+  // 气泡（挂 body 的 fixed 浮层）不会自动收起，经快捷键等不经鼠标的入口切
+  // 视图会带着它浮到设置页上方；removeAllRanges 触发 selectionchange 使其卸载
+  useEffect(() => {
+    if (view === "settings") window.getSelection()?.removeAllRanges();
+  }, [view]);
+
   const chat = <Thread />;
 
   return (

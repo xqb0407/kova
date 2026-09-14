@@ -13,7 +13,7 @@ import {
 } from "./hostdb";
 import { dispatch, dispatchPrompt, handleLine, setInitGate } from "./protocol";
 import { rulesFilePath, soulFilePath } from "./personalization";
-import { running } from "./sessions";
+import { noteActiveTurn, running } from "./sessions";
 import { registerCustomProvider, setCurrentModelKey } from "./model-catalog";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-protocol-"));
@@ -66,6 +66,50 @@ describe("dispatch: basic commands", () => {
 
   test("abort without id is accepted", async () => {
     await dispatch("p3", { type: "abort" }); // 无活动会话，不应抛错
+  });
+
+  test("turn 起止广播 turn_changed；list_running 反映在跑会话与请求 id", async () => {
+    await dispatch("lr0", { type: "list_running" });
+    expect(last()).toEqual({ id: "lr0", type: "running", sessionIds: [], turns: [] });
+
+    noteActiveTurn("th-turn", true, "sess-A", "run-1");
+    expect(last()).toEqual({ type: "turn_changed", sessionId: "sess-A", active: true });
+    await dispatch("lr1", { type: "list_running" });
+    expect(last()).toEqual({
+      id: "lr1",
+      type: "running",
+      sessionIds: ["sess-A"],
+      // turns：会话与请求 id 齐备的明细，供前端 webview 存储丢失时重建在飞流登记
+      turns: [{ sessionId: "sess-A", requestId: "run-1" }],
+    });
+
+    // 收尾不带 sessionId：从登记里取（广播成对）
+    noteActiveTurn("th-turn", false);
+    expect(last()).toEqual({ type: "turn_changed", sessionId: "sess-A", active: false });
+    await dispatch("lr2", { type: "list_running" });
+    expect(last()).toEqual({ id: "lr2", type: "running", sessionIds: [], turns: [] });
+  });
+
+  test("缺请求 id 的轮次不入 turns（sessionIds 仍反映）", async () => {
+    noteActiveTurn("th-norid", true, "sess-B"); // 不带 requestId
+    await dispatch("lr4", { type: "list_running" });
+    expect(last()).toEqual({
+      id: "lr4",
+      type: "running",
+      sessionIds: ["sess-B"],
+      turns: [],
+    });
+    noteActiveTurn("th-norid", false);
+  });
+
+  test("会话未定的轮次不广播、不出现在 list_running", async () => {
+    const before = lines.length;
+    noteActiveTurn("th-anon", true); // 无 sessionId 且非常驻会话
+    await dispatch("lr3", { type: "list_running" });
+    expect(last()).toEqual({ id: "lr3", type: "running", sessionIds: [], turns: [] });
+    noteActiveTurn("th-anon", false);
+    // 仅 list_running 响应行，无 turn_changed
+    expect(lines.length).toBe(before + 1);
   });
 });
 
@@ -433,9 +477,13 @@ describe("dispatchPrompt", () => {
 
   test("errors for a missing session id", async () => {
     await dispatchPrompt("pp2", { type: "prompt", text: "hi", sessionId: "ghost-session" });
-    const res = last();
-    expect((res.chunk as { type: string }).type).toBe("error");
-    expect((res.chunk as { errorText: string }).errorText).toContain("session not found");
+    // 不可用 last()：turn 收尾的 turn_changed 行在 error chunk 之后写出
+    const res = [...lines]
+      .reverse()
+      .map((l) => JSON.parse(l) as { id?: string; chunk?: { type: string; errorText?: string } })
+      .find((l) => l.id === "pp2" && l.chunk)!.chunk!;
+    expect(res.type).toBe("error");
+    expect(res.errorText).toContain("session not found");
   });
 });
 

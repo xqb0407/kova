@@ -24,11 +24,11 @@ import {
   closePanelTab,
   closePanelTabsToLeft,
   closePanelTabsToRight,
-  focusPanelTab,
   openPanelTab,
   setActivePanelTab,
   type PanelTab,
 } from "@/lib/panel-tabs";
+import { newTerminalTab } from "@/lib/shell";
 import { TAB_META, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
 import { cn } from "@/lib/utils";
 
@@ -42,6 +42,8 @@ const pillTransition: Transition = {
 
 /**
  * 单个标签胶囊:图标 + 标题 + 关闭(悬停显现,激活常显)。
+ * shell 标签与其余标签同形（终端图标 + 会话标题,OSC 上报实时跟随）;
+ * 不再挂存活点——进程退出即自动关标签,死标签没有停留形态。
  * IDE 式操作(参考 IDEA/VS Code):右键弹标签菜单,中键直接关闭,
  * 右键时先激活该标签(菜单标题即指向被操作的标签)。
  * 激活底色/描边交给共享布局滑块（pillLayoutId）：切换标签时从旧胶囊
@@ -233,9 +235,9 @@ export const TabBar: FC<{
               return (
                 <DropdownMenuItem
                   key={type}
-                  // shell 是单例面板（内部多会话），重复点击复用已开标签
+                  // shell 一个标签=一个会话：直接拉起新终端（非复用单例）
                   onClick={() =>
-                    type === "shell" ? focusPanelTab(type) : openPanelTab(type)
+                    type === "shell" ? newTerminalTab() : openPanelTab(type)
                   }
                 >
                   <Icon className="text-muted-foreground size-3.5 shrink-0" />

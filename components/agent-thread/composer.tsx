@@ -25,6 +25,12 @@ import {
 } from "@assistant-ui/react";
 import { LexicalComposerInput, type DirectiveChipProps } from "@assistant-ui/react-lexical";
 import {
+  matchesShortcut,
+  resolveComposerSubmitMode,
+  useShortcuts,
+  type ShortcutConfig,
+} from "@/lib/shortcuts";
+import {
   ArrowUpIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -127,19 +133,24 @@ function DirectiveChip(props: DirectiveChipProps) {
 }
 
 /**
- * 输入法回车守卫：WKWebView 下回车确认候选词的 keydown 常带
- * isComposing=false（或紧随 compositionend 之后送达），库内建的 composing
- * 检查拦不住，导致误发送。
- * 实现：display:contents 包装层上以捕获阶段监听——组合中（isComposing /
- * keyCode 229）或组合结束后 120ms 宽限窗口内的 Enter，直接 stopPropagation，
- * 让 Lexical 挂在 contenteditable 上的 keydown 根本收不到（不发送）；
- * 不调 preventDefault，候选词确认仍走浏览器默认行为。
- * 光标停在输入框、非输入法状态下按 Enter 才正常发送。
- * 用原生 DOM 而非 lexical 命令：app 与库解析到的 @lexical/react 是两份模块
- * 实例，useLexicalComposerContext 拿不到库内的 Composer 上下文。
+ * 输入框键盘守卫：
+ * 1) 输入法回车守卫——WKWebView 下回车确认候选词的 keydown 常带 isComposing=false
+ *    （或紧随 compositionend 之后送达），库内建的 composing 检查拦不住，导致误发送。
+ *    display:contents 包装层上以捕获阶段监听：组合中（isComposing / keyCode 229）
+ *    或组合结束后 120ms 宽限窗口内的 Enter，直接 stopPropagation，让 Lexical 挂在
+ *    contenteditable 上的 keydown 根本收不到；不 preventDefault，候选词确认仍走默认。
+ * 2) 自定义发送——「发送消息」被绑成非 Enter 组合时（submitMode="none"），库不会在
+ *    Enter 提交，这里捕获命中绑定即 aui.composer.send()；Enter 落回库默认→换行。
+ * 用原生 DOM 而非 lexical 命令：app 与库解析到的 @lexical/react 是两份模块实例，
+ * useLexicalComposerContext 拿不到库内的 Composer 上下文。
  */
-const ImeEnterGuard: FC<{ children: ReactNode }> = ({ children }) => {
+const ImeEnterGuard: FC<{
+  children: ReactNode;
+  send: ShortcutConfig;
+  interceptSend: boolean;
+}> = ({ children, send, interceptSend }) => {
   const ref = useRef<HTMLDivElement>(null);
+  const aui = useAui();
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -148,11 +159,18 @@ const ImeEnterGuard: FC<{ children: ReactNode }> = ({ children }) => {
       compositionEndedAt = performance.now();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Enter") return;
       const composing = event.isComposing || event.keyCode === 229;
       const inGrace = performance.now() - compositionEndedAt <= 120;
-      if (!composing && !inGrace) return;
-      event.stopPropagation();
+      if (event.key === "Enter" && (composing || inGrace)) {
+        event.stopPropagation();
+        return;
+      }
+      // 自定义发送组合（如 ⌘Enter 之外的绑定）：组合态不劫持，交由 IME 逻辑处理
+      if (interceptSend && !composing && matchesShortcut(event, send)) {
+        event.preventDefault();
+        event.stopPropagation();
+        aui.composer.send();
+      }
     };
     el.addEventListener("keydown", onKeyDown, true);
     el.addEventListener("compositionend", onCompositionEnd, true);
@@ -160,7 +178,7 @@ const ImeEnterGuard: FC<{ children: ReactNode }> = ({ children }) => {
       el.removeEventListener("keydown", onKeyDown, true);
       el.removeEventListener("compositionend", onCompositionEnd, true);
     };
-  }, []);
+  }, [aui, interceptSend, send]);
   return (
     <div ref={ref} style={{ display: "contents" }}>
       {children}
@@ -179,6 +197,10 @@ export const Composer: FC = () => {
   // （作答/跳过 → question_answer 结算 → finish chunk 清空，composer 复原）
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const questions = usePendingQuestions(threadId);
+  // 发送键：Enter / ⌘Enter 交库原生提交；其余组合 submitMode="none"，由守卫拦截
+  const { sendMessage } = useShortcuts();
+  const submitMode = resolveComposerSubmitMode(sendMessage);
+  const interceptSend = submitMode === "none";
   if (threadId && questions.length > 0) return <QuestionCard />;
 
   return (
@@ -193,8 +215,9 @@ export const Composer: FC = () => {
           >
             <ComposerQuotePreview />
             <ComposerAttachments />
-            <ImeEnterGuard>
+            <ImeEnterGuard send={sendMessage} interceptSend={interceptSend}>
             <LexicalComposerInput
+              submitMode={submitMode}
               directiveChip={DirectiveChip}
               placeholder="输入任务指令 @选择智能体，/打开指令菜单"
               className=" aui-composer-input text-sm [&_.aui-lexical-placeholder]:text-sm [&_.aui-lexical-placeholder]:text-muted-foreground/60 relative max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:right-0 [&_.aui-lexical-placeholder]:left-0 [&_.aui-lexical-placeholder]:truncate [&_.aui-lexical-placeholder]:px-2.5 [&_.aui-lexical-placeholder]:py-1"
