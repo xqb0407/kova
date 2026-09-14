@@ -1,12 +1,15 @@
 "use client";
 
-import { AssistantRuntimeProvider, useAuiState, useRemoteThreadListRuntime } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, useAui, useAuiState, useRemoteThreadListRuntime } from "@assistant-ui/react";
 import { useChatRuntime } from "@assistant-ui/ai-sdk";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@/lib/tauri";
 import { installFrontendLogging } from "@/lib/frontend-logging";
 import { initNotifyPipeline } from "@/lib/notify";
 import { PiTransport } from "@/lib/pi-transport";
+import { piResumableStorage } from "@/lib/pi-resume-storage";
+import { hydrateRunningRegistrations } from "@/lib/pi-running";
+import { readLastThread, recordLastThread } from "@/lib/pi-last-thread";
 import { createPiThreadListAdapter, piSessionCwdMap } from "@/lib/pi-thread-adapter";
 import { getWorkspace, setWorkspace } from "@/lib/workspace-store";
 import { ConnectScreen } from "@/components/remote/connect-screen";
@@ -59,9 +62,55 @@ function WorkspaceThreadSync() {
   useEffect(() => {
     const item = threadItems.find((t) => t.id === mainThreadId);
     if (!item?.remoteId) return;
+    // 顺带记"最近打开的会话"：刷新启动回切的兜底（见 pi-last-thread.ts）
+    recordLastThread(item.remoteId);
     const cwd = piSessionCwdMap.get(item.remoteId) ?? null;
     if (getWorkspace() !== cwd) setWorkspace(cwd);
   }, [mainThreadId, threadItems]);
+
+  return null;
+}
+
+/**
+ * 刷新回切三级：1) "在飞流登记"对应的会话（任务还在跑——框架续流只发生在
+ * 主线程，chat 以列表行 id===remoteId===sessionId 认领登记并自动 attach）；
+ * 2) 登记缺失（webview 存储被清等）→ 向 sidecar 运行态真相水合（同时重建
+ * 登记，续流可 attach）并回其在跑会话；3) 无在跑轮次 → 回"最近打开的会话"，
+ * 避免刷新后停在空白新草稿（2026-09-14"刷新后消息没渲染"观感修复）。
+ *
+ * 先 reload() 等列表就位再 switch：避免走 adapter.fetch 物化出无标题的临时行。
+ * 仅启动时执行一次；会话已被删（switch 抛错）静默跳过，不阻塞启动。
+ */
+function ResumeRunningThread() {
+  const aui = useAui();
+  const attemptedRef = useRef(false);
+
+  useEffect(() => {
+    if (attemptedRef.current) return;
+    attemptedRef.current = true;
+    void (async () => {
+      try {
+        // 向 sidecar 运行态真相反填缺登记的在跑轮次（多槽登记；不覆盖已有槽），
+        // 续流认领不依赖 sessionStorage 存活
+        const turns = await hydrateRunningRegistrations();
+        const running = new Set(turns.map((t) => t.sessionId));
+        const withSid = piResumableStorage
+          .peekEntries()
+          .filter((e): e is typeof e & { sessionId: string } => !!e.sessionId);
+        // 优先回"确实还在跑"的会话（刷新前最后发起且在飞），其次最近的登记，
+        // 最后回"最近打开的会话"
+        const target =
+          [...withSid].reverse().find((e) => running.has(e.sessionId))?.sessionId ??
+          withSid.at(-1)?.sessionId ??
+          readLastThread();
+        if (!target) return;
+        await aui.threads.reload();
+        await aui.threads.switchToThread(target);
+      } catch {
+        // 会话已被删等：静默跳过，不阻塞启动
+      }
+    })();
+  }, [aui]);
 
   return null;
 }
@@ -83,6 +132,7 @@ function TauriRuntimeProvider({ children }: { children: React.ReactNode }) {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <WorkspaceThreadSync />
+      <ResumeRunningThread />
       {children}
     </AssistantRuntimeProvider>
   );

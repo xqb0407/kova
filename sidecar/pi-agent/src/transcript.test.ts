@@ -324,6 +324,42 @@ describe("persist", () => {
     expect(readFileSync(sessionPath(id), "utf8")).toBe(before);
   });
 
+  test("earlyUser 轮初补录：只落用户行、更新索引、跳过标题总结", async () => {
+    const id = "persist-early";
+    await sessionInsert(id, tmp);
+    writeFileSync(sessionPath(id), "", "utf8");
+    let titleTries = 0;
+    titleSummarizeHook.fn = async () => {
+      titleTries += 1;
+      return "AI 标题";
+    };
+    try {
+      const messages = [userMsg("早落盘测试")];
+      const run = {
+        agent: { state: { messages, model: {} } },
+        sessionId: id,
+        cwd: tmp,
+        persistedSeq: 0,
+        jsonlSeq: 0,
+      } as unknown as Running;
+
+      // 轮初（stream.ts message_end 用户分支的调用形态）：用户行进 JSONL、
+      // 索引 title/first_message 就位，智能标题不得尝试（one-shot 防抖要留给轮末）
+      await persist(run, { earlyUser: true });
+      expect(run.persistedSeq).toBe(1);
+      expect(readTranscript(id).length).toBe(1);
+      expect(titleTries).toBe(0);
+
+      // 轮末收尾：助手增量照常落盘，这一次才触发标题
+      messages.push(assistantMsg([{ type: "text", text: "收到" }]));
+      await persist(run);
+      expect(readTranscript(id).length).toBe(2);
+      expect(titleTries).toBe(1);
+    } finally {
+      titleSummarizeHook.fn = undefined;
+    }
+  });
+
   test("toolCall 与 toolResult 消息也落盘（ui 为 null），历史可重建工具部件", async () => {
     const id = "persist-tools-test";
     await sessionInsert(id, tmp);

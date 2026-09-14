@@ -34,6 +34,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { SYSTEM_PROMPT_CORE, environmentPromptBlock } from "./tools";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "./subagent-mgmt-tools";
+import { SKILL_MGMT_TOOL_NAMES } from "./skill-mgmt-tools";
 import { personalizationPromptBlock } from "./personalization";
 import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "./mcp-tools";
@@ -314,15 +315,17 @@ function buildPlanTools(run: Running): AgentTool[] {
 /* ------------------------------ beforeToolCall ------------------------------ */
 
 /** 需要用户逐次确认的工具（有副作用的写操作）。
- *  子智能体管理工具与 write 同级：save/delete 会改变后续会话可委派的能力面，
- *  ask 模式逐次确认，auto-edit 模式与 write 一样豁免（AI 本就能用 write 改这些
- *  YAML，工具化是收紧而非扩权）。list 无副作用，不进审批。 */
+ *  子智能体/技能管理工具与 write 同级：save/delete 会改变后续会话可用的
+ *  能力面，ask 模式逐次确认，auto-edit 模式与 write 一样豁免（AI 本就能用
+ *  write 改这些文件，工具化是收紧而非扩权）。list 无副作用，不进审批。 */
 export const APPROVAL_REQUIRED_TOOLS = new Set([
   "bash",
   "write",
   "edit",
   SUBAGENT_MGMT_TOOL_NAMES.save,
   SUBAGENT_MGMT_TOOL_NAMES.delete,
+  SKILL_MGMT_TOOL_NAMES.save,
+  SKILL_MGMT_TOOL_NAMES.delete,
 ]);
 
 /** plan 模式下结构性拦截的副作用工具（计划文件由 plan_write 自己落盘，不走这里、无需审批） */

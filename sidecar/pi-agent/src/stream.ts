@@ -8,6 +8,11 @@ import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
 import { logAt, logErr } from "./log";
 import { persist } from "./transcript";
+import {
+  makeAutoContinueMessage,
+  MAX_LENGTH_CONTINUES,
+  needsLengthContinuation,
+} from "./context";
 import type { Running, UIMessageChunk } from "./types";
 
 export const send = (line: unknown) =>
@@ -95,6 +100,13 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
   }
   switch (event.type) {
     case "message_end": {
+      // 用户消息（含 steer/followUp）进入 state 的当场落盘（增量 persist 此刻
+      // 只会补上这一条）：轮中刷新后 get_history 才带得出这条气泡；earlyUser
+      // 模式只补录+touch、跳过智能标题，见 transcript.persist
+      if ((event.message as { role?: string }).role === "user") {
+        await persist(run, { earlyUser: true });
+        break;
+      }
       // 裸 Agent 的 stream 异常（网络/401 等）会合成 stopReason:"error" 的失败消息
       if (!reqId) break;
       const m = event.message as { stopReason?: string; errorMessage?: string };
@@ -112,6 +124,21 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
           });
         }
       }
+      break;
+    }
+    case "turn_end": {
+      // 长度截断且本轮零 toolCall：vendor 循环把这视为自然收尾（它只对"截断+带
+      // tool call"的轮失败重试），任务会"到一半停下"。补一条续跑消息进 followUp
+      // 队列——循环在 turn_end 监听 settle 之后、退出之前恰好轮询该队列，时序是
+      // vendor 契约。不依赖 reqId：无前端旁路跑（远程触发/刷新空窗）同样要续。
+      if (!needsLengthContinuation(event.message)) break;
+      if ((run.lengthContinues ?? 0) >= MAX_LENGTH_CONTINUES) {
+        logErr("length-truncated turn: auto-continue budget exhausted, ending run");
+        break;
+      }
+      run.lengthContinues = (run.lengthContinues ?? 0) + 1;
+      logAt("event", `length-truncated turn: injecting auto-continue #${run.lengthContinues}`);
+      run.agent.followUp(makeAutoContinueMessage());
       break;
     }
     case "message_update": {

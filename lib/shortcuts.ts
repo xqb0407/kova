@@ -18,7 +18,12 @@ export type ShortcutActionId =
   | "toggleSidebar"
   | "newThread"
   | "openSettings"
-  | "toggleAgentPanel";
+  | "toggleAgentPanel"
+  | "sendMessage"
+  | "newline";
+
+/** 动作生效范围：global = document 级监听；composer = 仅输入框内生效（不进全局监听） */
+export type ShortcutScope = "global" | "composer";
 
 /** 一条绑定：key 为主键的 KeyboardEvent.key 小写形式（修饰键不入此字段） */
 export type ShortcutConfig = {
@@ -35,37 +40,57 @@ export const SHORTCUT_ACTIONS: {
   id: ShortcutActionId;
   label: string;
   desc: string;
+  scope: ShortcutScope;
   default: ShortcutConfig;
 }[] = [
   {
     id: "toggleSearch",
     label: "搜索命令面板",
     desc: "唤起 / 收起全局搜索",
+    scope: "global",
     default: { key: "k", mod: true, shift: false, alt: false },
   },
   {
     id: "newThread",
     label: "新对话",
     desc: "开启一个新会话",
-    default: { key: "o", mod: true, shift: true, alt: false },
+    scope: "global",
+    default: { key: "n", mod: true, shift: false, alt: false },
   },
   {
     id: "toggleSidebar",
     label: "显示 / 隐藏侧边栏",
     desc: "开合左侧导航侧边栏",
+    scope: "global",
     default: { key: "b", mod: true, shift: false, alt: false },
   },
   {
     id: "toggleAgentPanel",
     label: "显示 / 隐藏 Agent 面板",
     desc: "开合右侧 Agent 面板",
+    scope: "global",
     default: { key: "j", mod: true, shift: false, alt: false },
   },
   {
     id: "openSettings",
     label: "打开设置",
     desc: "进入设置页",
+    scope: "global",
     default: { key: ",", mod: true, shift: false, alt: false },
+  },
+  {
+    id: "sendMessage",
+    label: "发送消息",
+    desc: "输入框内提交当前内容（裸 Enter 或 ⌘/Ctrl+Enter 走原生，其余组合由输入框拦截发送）",
+    scope: "composer",
+    default: { key: "enter", mod: false, shift: false, alt: false },
+  },
+  {
+    id: "newline",
+    label: "输入框换行",
+    desc: "输入框内插入换行（受编辑器限制，仅支持 Enter 组合）",
+    scope: "composer",
+    default: { key: "enter", mod: false, shift: true, alt: false },
   },
 ];
 
@@ -154,12 +179,12 @@ function persist() {
 
 export type SetBindingResult = { ok: true } | { ok: false; error: string };
 
-/** 更新一条绑定：先过合法性校验，再查与其他 action 的冲突；通过即生效并持久化 */
+/** 更新一条绑定：先过合法性校验（含动作作用域），再查与其他 action 的冲突；通过即生效并持久化 */
 export function setShortcutBinding(
   id: ShortcutActionId,
   config: ShortcutConfig,
 ): SetBindingResult {
-  const invalid = shortcutError(config);
+  const invalid = validateBinding(id, config);
   if (invalid) return { ok: false, error: invalid };
   for (const action of SHORTCUT_ACTIONS) {
     if (action.id !== id && configsEqual(bindings[action.id], config)) {
@@ -217,13 +242,48 @@ export function configsEqual(a: ShortcutConfig, b: ShortcutConfig): boolean {
 }
 
 /**
- * 全局快捷键的合法性：必须带 ⌘/Ctrl 或 Alt，或使用 F1–F12。
- * 监听挂在 document 级，纯字母/数字键会劫持一切文本输入。
+ * 快捷键合法性：
+ * - 全局动作：必须带 ⌘/Ctrl 或 Alt，或使用 F1–F12。监听挂在 document 级，
+ *   纯字母/数字键会劫持一切文本输入。
+ * - 输入框动作：作用域锁定在 composer 内，允许裸 Enter / Shift+Enter；其余仍
+ *   需修饰符或功能键（否则劫持打字）。
  */
-export function shortcutError(config: ShortcutConfig): string | null {
+export function shortcutError(
+  config: ShortcutConfig,
+  scope: ShortcutScope = "global",
+): string | null {
   if (/^f([1-9]|1[0-2])$/.test(config.key)) return null;
   if (config.mod || config.alt) return null;
-  return "需包含 ⌘/Ctrl 或 Alt 修饰符，或使用 F1–F12 功能键";
+  if (scope === "composer" && config.key === "enter") return null;
+  return scope === "composer"
+    ? "需包含 ⌘/Ctrl 或 Alt 修饰符，或使用 Enter / F1–F12 功能键"
+    : "需包含 ⌘/Ctrl 或 Alt 修饰符，或使用 F1–F12 功能键";
+}
+
+/** 按动作作用域校验，并对「换行」施加编辑器限制（仅 Enter 家族可实现换行）。 */
+export function validateBinding(
+  id: ShortcutActionId,
+  config: ShortcutConfig,
+): string | null {
+  const action = SHORTCUT_ACTIONS.find((a) => a.id === id);
+  const scope = action?.scope ?? "global";
+  if (id === "newline" && config.key !== "enter") {
+    return "换行受编辑器限制，仅支持 Enter / Shift+Enter / ⌘Enter 等 Enter 组合";
+  }
+  return shortcutError(config, scope);
+}
+
+/**
+ * 由「发送」绑定推导 LexicalComposerInput 的 submitMode。库的原生 Enter 处理只认
+ * 两种：裸 Enter 提交（enter）、⌘/Ctrl+Enter 提交（ctrlEnter）。其余组合返回
+ * "none"，交调用方用外部 keydown 监听拦截（此时 Enter 落回库默认 → 换行）。
+ */
+export function resolveComposerSubmitMode(
+  send: ShortcutConfig,
+): "enter" | "ctrlEnter" | "none" {
+  if (send.key !== "enter" || send.alt || send.shift) return "none";
+  if (!send.mod) return "enter";
+  return "ctrlEnter";
 }
 
 /** 是否仍是出厂绑定（设置页据此显隐「重置」） */

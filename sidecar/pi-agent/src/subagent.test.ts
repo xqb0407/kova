@@ -1,17 +1,41 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import {
+  MAX_ACTIVITY_ITEMS,
   MAX_SUBAGENT_REPORT_CHARS,
   boundedReport,
   delegationHeartbeat,
   delegationResumeText,
+  getDelegationSnapshot,
   normalizeSubagentName,
   parseModelKey,
+  pushActivity,
+  registerDelegation,
   runningDelegations,
   settleDelegation,
+  summarizeToolArgs,
   waitForDelegations,
 } from "./subagent";
 import { createRetryBudget } from "./provider-retry";
 import type { DelegationRecord, Running, SubagentRunResult } from "./types";
+
+/** 捕获 pushActivity/settleDelegation 的自发通知行（避免污染测试输出，并可断言） */
+const broadcastLines: Record<string, unknown>[] = [];
+const realWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = ((chunk: string | Uint8Array) => {
+  const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      broadcastLines.push(JSON.parse(line) as Record<string, unknown>);
+    } catch {
+      realWrite(chunk as string); // 非 JSON 行照常输出
+    }
+  }
+  return true;
+}) as typeof process.stdout.write;
+afterAll(() => {
+  process.stdout.write = realWrite;
+});
 
 /** 构造最小可用的委派登记项（不触碰 Agent / 模型目录） */
 function makeRecord(
@@ -27,6 +51,7 @@ function makeRecord(
     agentName: "explorer",
     modelId: "test/model",
     status: "running",
+    activity: [],
     stopRequested: false,
     startedAt: Date.now(),
     turns: 0,
@@ -220,6 +245,116 @@ describe("delegationResumeText", () => {
     const text = delegationResumeText(makeRun([done, running]));
     expect(text).toContain("Still running:");
     expect(text).toContain("fixer (44444444)");
+  });
+});
+
+describe("pushActivity", () => {
+  test("条目入缓冲并广播 subagent_activity 通知行", () => {
+    const record = makeRecord("act-1");
+    pushActivity(record, { kind: "turn", n: 1, at: 1000 });
+    expect(record.activity).toEqual([{ kind: "turn", n: 1, at: 1000 }]);
+    const line = broadcastLines.at(-1);
+    expect(line).toMatchObject({
+      type: "subagent_activity",
+      delegationId: "act-1",
+      item: { kind: "turn", n: 1 },
+    });
+    // 通知行没有 id 字段（自发广播，不进请求配对）
+    expect(line && "id" in line).toBe(false);
+  });
+
+  test("缓冲超限先丢最旧的增量项、结构事件保留", () => {
+    const record = makeRecord("act-2");
+    pushActivity(record, { kind: "turn", n: 1, at: 1 });
+    for (let i = 0; i < MAX_ACTIVITY_ITEMS; i++) {
+      pushActivity(record, { kind: "text", op: "delta", id: "c0", delta: "x", at: i });
+    }
+    expect(record.activity.length).toBe(MAX_ACTIVITY_ITEMS);
+    // 结构事件（turn）仍在，且是最旧增量被丢弃换来的
+    expect(record.activity[0]).toMatchObject({ kind: "turn" });
+    expect(record.activity.some((x) => x.kind === "turn")).toBe(true);
+  });
+
+  test("无增量可丢时丢弃最旧一项（缓冲不超上限）", () => {
+    const record = makeRecord("act-3");
+    for (let i = 0; i < MAX_ACTIVITY_ITEMS; i++) {
+      pushActivity(record, { kind: "turn", n: i, at: i });
+    }
+    pushActivity(record, { kind: "turn", n: 999, at: 999 });
+    expect(record.activity.length).toBe(MAX_ACTIVITY_ITEMS);
+    expect(record.activity[0]).toMatchObject({ n: 1 });
+  });
+});
+
+describe("settleDelegation 活动流", () => {
+  test("结算追加 status 条目（带报告）", () => {
+    const record = makeRecord("settle-act");
+    const run = makeRun([record]);
+    settleDelegation(run, record, settledResult("completed"));
+    const last = record.activity.at(-1);
+    expect(last).toMatchObject({
+      kind: "status",
+      status: "completed",
+      turns: 1,
+      toolCalls: 2,
+      report: "report-completed",
+    });
+  });
+});
+
+describe("summarizeToolArgs", () => {
+  test("取首个有值的常见目标字段", () => {
+    expect(summarizeToolArgs({ command: "ls -la" })).toBe("ls -la");
+    // 字段优先级 command > file_path > path > pattern > query > url > description
+    expect(summarizeToolArgs({ file_path: "/tmp/a.ts" })).toBe("/tmp/a.ts");
+    expect(summarizeToolArgs({ command: "git status", file_path: "ignored" })).toBe("git status");
+    expect(summarizeToolArgs({ pattern: "foo" })).toBe("foo");
+  });
+
+  test("多行取首行、超长截断、无值返回 undefined", () => {
+    expect(summarizeToolArgs({ command: "first\nsecond" })).toBe("first");
+    expect((summarizeToolArgs({ query: "q".repeat(150) }) ?? "").length).toBeLessThanOrEqual(101);
+    expect(summarizeToolArgs({})).toBeUndefined();
+    expect(summarizeToolArgs(null)).toBeUndefined();
+  });
+});
+
+describe("getDelegationSnapshot", () => {
+  test("完整 id 与 ≥4 位前缀均可查，返回 record 元信息与活动副本", () => {
+    const record = makeRecord("1a2b3c4d-full-id", {
+      description: "探索管线",
+      status: "completed",
+      completedAt: 2000,
+      turns: 3,
+      toolCalls: 5,
+    });
+    record.result = settledResult();
+    pushActivity(record, { kind: "turn", n: 1, at: 1 });
+    registerDelegation(record);
+    const snap = getDelegationSnapshot("1a2b3c4d-full-id");
+    expect(snap).toBeDefined();
+    expect(snap!.record).toMatchObject({
+      agentName: "explorer",
+      description: "探索管线",
+      status: "completed",
+      turns: 3,
+      toolCalls: 5,
+      report: "report-completed",
+    });
+    expect(snap!.items).toEqual([{ kind: "turn", n: 1, at: 1 }]);
+    // 前缀查询（Task 结果文本里的 8 位短 id 语义）
+    expect(getDelegationSnapshot("1a2b3c4d")).toBeDefined();
+    // 过短前缀（<4）不匹配
+    expect(getDelegationSnapshot("1a2")).toBeUndefined();
+    expect(getDelegationSnapshot("nope-nope")).toBeUndefined();
+  });
+
+  test("items 是副本，改不动缓冲", () => {
+    const record = makeRecord("snap-copy");
+    registerDelegation(record);
+    const snap = getDelegationSnapshot("snap-copy")!;
+    snap.items.push({ kind: "turn", n: 42, at: 1 });
+    expect(record.activity.length).toBe(0);
   });
 });
 

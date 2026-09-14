@@ -26,6 +26,7 @@ import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import { getModels } from "./model-catalog";
 import {
   appendCompactionRow,
+  AUTO_CONTINUE_PREFIX,
   readCompaction,
   readTranscript,
   type CompactionRow,
@@ -132,6 +133,48 @@ export function makeSummaryMessage(summary: string): AgentMessage {
       {
         type: "text",
         text: COMPACTION_SUMMARY_PREFIX + summary + COMPACTION_SUMMARY_SUFFIX,
+      },
+    ],
+    timestamp: Date.now(),
+  } as AgentMessage;
+}
+
+/* --------------------- 长度截断自动续跑（stopReason "length"） --------------------- */
+
+/** vendor 循环只对"length 截断 + 带 toolCall"的轮次自我续跑（把 tool call 标记
+ *  失败重试）；"length 截断 + 零 toolCall"（模型把预算全花在思考/正文上还没吐出
+ *  工具调用就被切断）会被当作自然收尾——任务"到一半停下"的根因。这里在 turn_end
+ *  监听里补上该场景的续跑：followUp 队列恰好在此后轮询（getFollowUpMessages），
+ *  时序由 vendor 契约保证（emit 会 await 全部监听器）。 */
+export const MAX_LENGTH_CONTINUES = 3;
+
+/** 该轮是否为"截断且无 toolCall"——需要注入续跑消息才成立 */
+export function needsLengthContinuation(message: AgentMessage): boolean {
+  const m = message as {
+    role?: string;
+    stopReason?: string;
+    content?: { type: string }[];
+  };
+  return (
+    m?.role === "assistant" &&
+    m.stopReason === "length" &&
+    Array.isArray(m.content) &&
+    !m.content.some((c) => c.type === "toolCall")
+  );
+}
+
+/** 构造续跑消息：user 角色 + 哨兵前缀（UI 双面不可见，见 AUTO_CONTINUE_PREFIX） */
+export function makeAutoContinueMessage(): AgentMessage {
+  return {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text:
+          AUTO_CONTINUE_PREFIX +
+          "上一条回复因达到输出 token 上限被截断，任务尚未完成。" +
+          "请从中断处直接继续，不要重复已输出的内容，也不要道歉或评论这次截断；" +
+          "如果接下来需要产出文件或其他成果，立即发起对应的工具调用。",
       },
     ],
     timestamp: Date.now(),

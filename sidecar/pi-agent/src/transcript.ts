@@ -97,6 +97,17 @@ export function appendCompactionRow(
   );
 }
 
+/**
+ * 长度截断自动续跑的注入消息哨兵前缀（见 context.makeAutoContinueMessage）。
+ * UI 双面不可见：直播流上 user 消息本就不发 chunk；历史投影在下边 toUiMessage
+ * 里按前缀返回 null（行仍落盘，ui 为 null，与 toolResult 行同机制）。
+ */
+export const AUTO_CONTINUE_PREFIX = "[[auto-continue]] ";
+
+export function isAutoContinueText(text: string): boolean {
+  return text.startsWith(AUTO_CONTINUE_PREFIX);
+}
+
 /** pi-ai Message -> UIMessage（ui 字段快照；转换范围：text/reasoning） */
 export function toUiMessage(msg: Message, seq: number): UIMessage | null {
   if (msg.role === "user") {
@@ -108,6 +119,7 @@ export function toUiMessage(msg: Message, seq: number): UIMessage | null {
             .map((c) => c.text)
             .join("\n");
     if (!text.trim()) return null;
+    if (isAutoContinueText(text)) return null;
     return { id: `msg-${seq}`, role: "user", parts: [{ type: "text", text }] };
   }
   if (msg.role === "assistant") {
@@ -320,11 +332,17 @@ export async function maybeSummarizeSessionTitle(run: Running): Promise<void> {
   }
 }
 
-/** agent_end 后把新增消息增量 append 到 JSONL，并维护索引表（经 hostdb 数据访问层）。
+/** 把新增消息增量 append 到 JSONL，并维护索引表（经 hostdb 数据访问层）。
+ * 调用时机：轮初用户消息进入 state 后先以 earlyUser 补录一条（刷新后
+ * get_history 才能看到在飞轮次的用户消息——重挂只重放 assistant chunk 流，
+ * 补不回这条气泡）；agent_end 收尾落其余消息。
  * seq 取 run.jsonlSeq（文件内单调，压缩后 state.messages 变短也不会撞号）；
  * run.persistedSeq 之前的 state 消息视为已入账（压缩后合成摘要头由 runCompaction
  * 一并跳过），这里只写增量。 */
-export async function persist(run: Running): Promise<void> {
+export async function persist(
+  run: Running,
+  opts: { earlyUser?: boolean } = {},
+): Promise<void> {
   const messages = run.agent.state.messages;
   if (messages.length <= run.persistedSeq) return;
   const file = sessionPath(run.sessionId);
@@ -349,6 +367,10 @@ export async function persist(run: Running): Promise<void> {
       : "";
   // 迭代 4：本轮新落盘的消息行数随 touch 增量进索引表，list_sessions 不再扫文件
   await sessionTouch(run.sessionId, firstText.slice(0, 60), firstText, lines.length);
+
+  // earlyUser：轮初补录还没有助手回复，此时总结标题会缺回答上下文，
+  // 且每会话 one-shot 防抖会被白白消费——留给 agent_end 那次触发
+  if (opts.earlyUser) return;
 
   // 首轮回复后的智能标题（异步、防抖、失败静默；不阻塞索引维护）
   try {

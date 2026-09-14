@@ -11,10 +11,21 @@ import { isTauri } from "@/lib/tauri";
 const MSG_MAX = 8000;
 let installed = false;
 
-/** 序列化 console 参数为单行文本（对象安全 stringify，超长截断） */
+/** 序列化 console 参数为单行文本（对象安全 stringify，超长截断）。
+ *  Error 特判：Error 的可枚举属性为空，直接 JSON.stringify 只剩 "{}"，
+ *  排查订阅者抛错这类问题等于没日志——这里展开 name/message/stack。 */
 function formatArgs(args: unknown[]): string {
   const parts = args.map((arg) => {
     if (typeof arg === "string") return arg;
+    if (arg instanceof Error) {
+      const stack = arg.stack ? ` @ ${arg.stack.split("\n").slice(1, 4).join(" <- ").trim()}` : "";
+      // AggregateError（store 广播多订阅者抛错的聚合形态）内层展开，否则又只剩空壳
+      const inner =
+        arg instanceof AggregateError && Array.isArray(arg.errors)
+          ? ` [${arg.errors.map((e) => (e instanceof Error ? `${e.name}: ${e.message}` : String(e))).join(" | ")}]`
+          : "";
+      return `${arg.name}: ${arg.message}${inner}${stack}`;
+    }
     try {
       return JSON.stringify(arg);
     } catch {

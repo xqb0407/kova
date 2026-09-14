@@ -12,6 +12,7 @@ import {
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import {
   BookOpenIcon,
+  BotIcon,
   BrainIcon,
   ChevronDownIcon,
   ClipboardCheckIcon,
@@ -34,6 +35,12 @@ import {
   TextSearchIcon,
 } from "lucide-react";
 import { openToolCallPanel } from "@/lib/tool-panel";
+import {
+  openSubagentTab,
+  parseDelegationIdFromResult,
+  subagentElapsedSeconds,
+  useSubagentRunByToolCall,
+} from "@/lib/subagent-runs";
 import { openExternal } from "@/lib/external-link";
 import { fileChangePair, fileChangeStats } from "@/lib/panel-activity";
 import { parseWebSearchResults, type WebSearchItem } from "@/lib/web-search";
@@ -87,7 +94,7 @@ function resultText(result: unknown): string {
  * 内容增长时自动滚到底；读者往上翻（滚动高度未变时的上移）即解除吸附，
  * 回到底部后重新吸附。
  */
-const ScrollingText: FC<{ className?: string; children: ReactNode }> = ({
+export const ScrollingText: FC<{ className?: string; children: ReactNode }> = ({
   className,
   children,
 }) => {
@@ -753,9 +760,80 @@ const MemorySearchToolUI: ToolCallMessagePartComponent = ({
   );
 };
 
+/** 委派终态中文短标签（行尾状态后缀；running 不显示文字，转圈即状态） */
+const DELEGATION_STATUS_LABEL: Record<string, string> = {
+  completed: "已完成",
+  failed: "失败",
+  truncated: "轮次超限",
+  aborted: "已中止",
+  stopped: "已停止",
+};
+
+/** 委派的展示态：live 走 store 条目，历史重建（无绑定 chunk）从结果文本兜底解析短 id */
+function useDelegationView(toolCallId: string, result: unknown) {
+  const run = useSubagentRunByToolCall(toolCallId);
+  const delegationId = run?.delegationId ?? parseDelegationIdFromResult(resultText(result));
+  return { run, delegationId };
+}
+
+/**
+ * Task 委派行：「子智能体 Explore · 描述」一行式条目，点击开面板「子智能体」tab
+ * 流式看运行过程。Task 工具本身秒回（后台启动），行的运行状态不取工具 part 的
+ * status，而是订阅子智能体运行 store（delegationId 绑定/前缀认领见 subagent-runs）。
+ */
+const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) => {
+  const agentName = strArg(args, "agent") ?? "";
+  const description = strArg(args, "description") ?? "";
+  const { run, delegationId } = useDelegationView(toolCallId, result);
+  const running = run?.status === "running";
+  // 运行中每秒一拍刷新用时（条目结算后自动停）
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+  const elapsed = subagentElapsedSeconds(run);
+  const statusSuffix = run
+    ? running
+      ? elapsed
+        ? `${elapsed}s`
+        : undefined
+      : [
+          DELEGATION_STATUS_LABEL[run.status] ?? run.status,
+          run.completedAt && run.startedAt
+            ? `${Math.max(0, Math.round((run.completedAt - run.startedAt) / 1000))}s`
+            : undefined,
+        ]
+          .filter(Boolean)
+          .join(" ")
+    : undefined;
+  const failed = !!run && run.status !== "running" && run.status !== "completed";
+  return (
+    <ToolRow
+      label="子智能体"
+      icon={<BotIcon className="size-4 shrink-0" />}
+      primary={agentName || "委派"}
+      mono
+      primaryAsLink
+      primaryTitle={delegationId ? `子智能体运行过程 · ${delegationId.slice(0, 8)}` : "子智能体"}
+      secondary={[description, statusSuffix].filter(Boolean).join(" · ") || undefined}
+      running={running}
+      failed={failed}
+      // 无展开输出：整行即面板入口（委派详情在专属 tab 流式呈现，行内不放原始文本）
+      onOpenPanel={
+        delegationId
+          ? () => openSubagentTab(delegationId, description || agentName)
+          : undefined
+      }
+    />
+  );
+};
+
 /** 有专属扁平行渲染的工具名 → 组件；其余走 ToolFallback */
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
+  Task: TaskToolUI,
   read: fileToolUI("read", "查看"),
   edit: fileToolUI("edit", "编辑"),
   write: fileToolUI("write", "写入"),

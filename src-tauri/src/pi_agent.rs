@@ -2,10 +2,15 @@
 //! 负责拉起 pi-agent 二进制（bun 编译产物，NDJSON stdio 协议），
 //! 把子进程 stdout 合帧后以 `pi-chunk-batch` 事件转发给 webview（迭代 3，
 //! 见 CHUNK_BATCH_WINDOW 注释），并提供 prompt/abort/reset 三个 command 写入 stdin。
+//!
+//! 刷新恢复：stdout 循环同时为每个进行中的 prompt requestId 维护一份带 seq 的
+//! chunk 行缓冲（见 runs()），webview 刷新后前端经 `pi_attach` 取快照重放，
+//! 配合监听先行的 seq 去重实现"断线续流"。sidecar 协议零改动。
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::logging;
@@ -39,12 +44,80 @@ pub fn new_request_id() -> String {
 const CHUNK_BATCH_WINDOW: Duration = Duration::from_millis(20);
 const CHUNK_BATCH_MAX: usize = 64;
 
-fn flush_chunks(emitter: &AppHandle, batch: &mut Vec<String>) {
+/// Rust→webview 转发的一行：`l` = sidecar 原始 NDJSON 行；`i` = 该行的 run 内
+/// 序号（仅带字符串 id 且含 chunk 对象的行有序号，其余为 null）。前端用 i 对
+/// pi_attach 快照与实时广播做幂等去重（两者在"挂监听→取快照"窗口内重叠）。
+#[derive(Clone, serde::Serialize)]
+pub struct ChunkLine {
+    pub i: Option<u64>,
+    pub l: String,
+}
+
+fn flush_chunks(emitter: &AppHandle, batch: &mut Vec<ChunkLine>) {
     if batch.is_empty() {
         return;
     }
     let lines = std::mem::take(batch);
     let _ = emitter.emit("pi-chunk-batch", &lines);
+}
+
+// ---------- 进行中 run 的重放缓冲（刷新恢复） ----------
+
+struct RunEntry {
+    /// 已分配的最后一个行序号（从 1 递增，稠密无洞）
+    seq: u64,
+    lines: Vec<(u64, String)>,
+    bytes: usize,
+    /// finish/error 后转 false；tombstone（active=false）保留供迟到的
+    /// pi_attach 完整重放（含收尾行），下一次 pi_prompt 时统一清扫
+    active: bool,
+    /// 超出缓冲上限：重放有洞，前端见此标志即放弃续流回退历史加载
+    truncated: bool,
+}
+
+fn runs() -> &'static StdMutex<HashMap<String, RunEntry>> {
+    static RUNS: OnceLock<StdMutex<HashMap<String, RunEntry>>> = OnceLock::new();
+    RUNS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+/// 单 run 缓冲上限：约一轮超长输出（token 级 chunk）的体量；到顶即 truncated
+/// 放弃重放（内存不随后台长跑无限增长）
+const RUN_BUFFER_MAX_LINES: usize = 30_000;
+const RUN_BUFFER_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// stdout 行进入重放缓冲并领取 seq。只有"字符串 id + chunk 对象"的行参与；
+/// 远程行（rem-*）同样缓冲，为远程网关 resume（二期）留位。
+fn buffer_run_line(parsed: Option<&serde_json::Value>, line: &str) -> Option<u64> {
+    let v = parsed?;
+    let rid = v.get("id").and_then(|x| x.as_str())?;
+    let chunk = v.get("chunk")?;
+    let is_terminal = matches!(
+        chunk.get("type").and_then(|t| t.as_str()),
+        Some("finish") | Some("error")
+    );
+    let mut map = runs().lock().ok()?;
+    let e = map.entry(rid.to_owned()).or_insert(RunEntry {
+        seq: 0,
+        lines: Vec::new(),
+        bytes: 0,
+        active: true,
+        truncated: false,
+    });
+    e.seq += 1;
+    if !e.truncated {
+        if e.lines.len() + 1 > RUN_BUFFER_MAX_LINES || e.bytes + line.len() > RUN_BUFFER_MAX_BYTES {
+            e.truncated = true;
+            e.lines.clear();
+            e.bytes = 0;
+        } else {
+            e.bytes += line.len();
+            e.lines.push((e.seq, line.to_owned()));
+        }
+    }
+    if is_terminal {
+        e.active = false;
+    }
+    Some(e.seq)
 }
 
 /// 不允许在合帧窗口里滞留的行：chunk 的 finish/error（流收尾）与非 chunk
@@ -102,7 +175,7 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
     let app_for_rx = app.clone();
     let emitter = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut batch: Vec<String> = Vec::new();
+        let mut batch: Vec<ChunkLine> = Vec::new();
         let mut window_opened_at: Option<Instant> = None;
         loop {
             // 缓冲区有货时，recv 与合帧窗口剩余时间赛跑；窗口到期立即冲刷。
@@ -183,6 +256,9 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                             }
                         }
                     }
+                    // 进入重放缓冲并领取 run 内 seq（刷新恢复用，见 runs()）；
+                    // 在路由分流之前做，本地/远程行统一缓冲
+                    let seq = buffer_run_line(parsed.as_ref(), &line);
                     // 远程网关路由（id 形如 rem-{conn}-{orig}），未命中则入帧合批广播给本地 webview
                     if remote::try_route(parsed.as_ref()) {
                         continue;
@@ -192,7 +268,7 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                     }
                     let flush_now =
                         is_flush_line(parsed.as_ref()) || batch.len() + 1 >= CHUNK_BATCH_MAX;
-                    batch.push(line);
+                    batch.push(ChunkLine { i: seq, l: line });
                     if flush_now {
                         flush_chunks(&emitter, &mut batch);
                         window_opened_at = None;
@@ -210,10 +286,13 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                     window_opened_at = None;
                     let _ = emitter.emit(
                         "pi-chunk-batch",
-                        vec![format!(
-                            "{{\"id\":null,\"chunk\":{{\"type\":\"error\",\"errorText\":{}}}}}",
-                            serde_json::to_string(&err).unwrap_or_default()
-                        )],
+                        vec![ChunkLine {
+                            i: None,
+                            l: format!(
+                                "{{\"id\":null,\"chunk\":{{\"type\":\"error\",\"errorText\":{}}}}}",
+                                serde_json::to_string(&err).unwrap_or_default()
+                            ),
+                        }],
                     );
                 }
                 CommandEvent::Terminated(status) => {
@@ -223,6 +302,10 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                     // sidecar 已退出：清掉所有在飞工具（杀残留进程树、注销登记），
                     // 避免孤儿 bash 进程继续跑
                     crate::tool_exec::cancel_all_tools();
+                    // 重放缓冲随进程作废（重启后 requestId 语义不复存在）
+                    if let Ok(mut map) = runs().lock() {
+                        map.clear();
+                    }
                     // 清空所有挂起的请求
                     if let Ok(mut map) = state_for_rx.lock() {
                         for (_, tx) in map.drain() {
@@ -273,6 +356,20 @@ pub async fn pi_prompt(
     cwd: Option<String>,
 ) -> Result<(), String> {
     ensure_spawned(&app, &state).await?;
+    // 新 run 登记重放缓冲；顺带清扫上一批已结束（tombstone）的条目
+    if let Ok(mut map) = runs().lock() {
+        map.retain(|_, e| e.active);
+        map.insert(
+            request_id.clone(),
+            RunEntry {
+                seq: 0,
+                lines: Vec::new(),
+                bytes: 0,
+                active: true,
+                truncated: false,
+            },
+        );
+    }
     let payload = serde_json::json!({
         "type": "prompt",
         "id": request_id,
@@ -282,6 +379,41 @@ pub async fn pi_prompt(
         "cwd": cwd,
     });
     write_line(&state, payload.to_string()).await
+}
+
+/// 刷新恢复：取某 requestId 的重放快照（不消费缓冲，直播照常续传）。
+/// 前端时序：先挂 pi-chunk-batch 监听（行带 i 序号暂存），再调本命令取快照，
+/// 两路按 seq 幂等合并；无条目（从未跑过/已被终止清空）= active:false 空快照，
+/// 调用方据此回退历史加载。
+#[derive(serde::Serialize)]
+pub(crate) struct AttachReply {
+    active: bool,
+    truncated: bool,
+    lines: Vec<ChunkLine>,
+}
+
+#[tauri::command]
+pub async fn pi_attach(request_id: String) -> Result<AttachReply, String> {
+    let map = runs().lock().map_err(|e| format!("runs lock poisoned: {e}"))?;
+    Ok(match map.get(&request_id) {
+        Some(e) => AttachReply {
+            active: e.active,
+            truncated: e.truncated,
+            lines: e
+                .lines
+                .iter()
+                .map(|(i, l)| ChunkLine {
+                    i: Some(*i),
+                    l: l.clone(),
+                })
+                .collect(),
+        },
+        None => AttachReply {
+            active: false,
+            truncated: false,
+            lines: Vec::new(),
+        },
+    })
 }
 
 #[tauri::command]

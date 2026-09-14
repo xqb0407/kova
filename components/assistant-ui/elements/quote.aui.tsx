@@ -84,6 +84,7 @@ QuoteBlock.Text = QuoteBlockText;
 
 function SelectionToolbarRoot({
   className,
+  style,
   ...props
 }: ComponentProps<typeof SelectionToolbarPrimitive.Root>) {
   return (
@@ -93,6 +94,9 @@ function SelectionToolbarRoot({
         "bg-popover flex items-center gap-1 rounded-lg border px-1 py-1",
         className,
       )}
+      // 默认 z-50 与设置页全屏覆盖层（fixed inset-0 z-50）同层，portal 后挂到
+      // body 末尾会盖在其上；压到 40 保证覆盖层（及其中的弹窗仍为 z-50）始终在上
+      style={{ zIndex: 40, ...style }}
       {...props}
     />
   );

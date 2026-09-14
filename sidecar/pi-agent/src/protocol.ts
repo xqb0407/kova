@@ -21,6 +21,13 @@
  *       轮到时同 id 原地更新 { phase: "active" }；线程内顺序由该线程串行链保证
  *   { "type": "ping", "id" }                                  → { id, type: "pong" }
  *   { "type": "list_sessions", "id" }                         → { id, type: "sessions", sessions: [...] }
+ *   { "type": "list_running", "id" }                          → { id, type: "running", sessionIds: [...], turns: [{sessionId,requestId}] }
+ *       当前正在跑 prompt turn 的会话清单（前端刷新/启动后水合侧边栏"运行中"指示）；
+ *       turns 为会话与请求 id 齐备的子集，供前端在 webview 存储丢失时重建在飞流登记
+ *   { "type": "get_subagent_activity", "id", "delegationId" } → { id, type: "subagent_activity_snapshot", record, items }
+ *       子代理一次委派的运行活动快照（Task 委派的全局内存索引，delegationId 接受 ≥4 位前缀）；
+ *       record = { agentName, description?, status, startedAt, completedAt?, turns, toolCalls, report? }，
+ *       items = SubagentActivityItem[]（见 types.ts）；记录不存在（重启/被清理）回 error
  *   { "type": "new_session", "id", "threadId", "cwd" }        → { id, type: "session", sessionId, threadId }
  *   { "type": "fork_session", "id", "sessionId" }             → { id, type: "forked", sessionId: <新会话> }
  *       分支对话：把源会话转录复制到全新 sessionId（seq 沿用、header 重写），
@@ -116,12 +123,21 @@
  *   { "type": "test_provider", "id", "baseUrl", "apiKey", "api", "model" } → { id, type: "tested", ok: true }
  *   { "type": "delete_custom_provider", "id", "provider" }    → { id, type: "custom_provider_deleted", provider }
  *   prompt 流内模式推送：{ id, chunk: { type: "data-planningState", data: { mode, approvalLevel, planning } } }
+ *                 委派绑定：{ id, chunk: { type: "data-subagentDelegation", data: { toolCallId, delegationId, agentName, description? } } }
+ *                 （Task 工具启动委派时发起：前端把消息里的 Task 行绑到 delegationId，点击开面板「子智能体」tab）
  *                 审批请求：{ id, chunk: { type: "data-toolApproval", data: { approvalId, toolCallId, toolName, input } } }
  *                 （toolName = plan_exit 时 input 带 { rationale, title, markdown, filePath }，前端渲染计划审批卡）
  *                 面板唤起：{ id, chunk: { type: "data-panelOpen", data: { type: "browser", url? } } }
  *                 （browser_* 工具动作时发起，前端把浏览器 tab 推到前台并展开面板）
  *
  * prompt 流（stdout）：{ "id": "<reqId>", "chunk": { ...AI SDK UIMessageChunk } }
+ *
+ * 自发通知（stdout，无 id，宿主原样广播给所有前端）：
+ *   { "type": "turn_changed", "sessionId": "...", "active": true|false }
+ *       某会话一轮 turn 开跑/收尾；发起方未带 sessionId 的轮次不广播
+ *   { "type": "subagent_activity", "delegationId": "...", "item": SubagentActivityItem }
+ *       子代理运行活动（思考/正文增量、工具起止、轮次、结算终态）；父 turn 已结束后
+ *       后台委派继续广播；前端 store 按 delegationId 归并，面板 tab 流式渲染
  */
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -175,7 +191,11 @@ import {
 } from "./transcript";
 import { contextInfo, needsCompaction, runCompaction } from "./context";
 import {
+  dropRun,
+  findRunBySession,
   forgetThreadStates,
+  listActiveTurnDetails,
+  listActiveTurnSessions,
   noteActiveTurn,
   projectContextInfo,
   reloadSkills,
@@ -200,6 +220,7 @@ import {
 import { getTodoState, replayTodoFromMessages } from "./todo";
 import {
   delegationResumeText,
+  getDelegationSnapshot,
   runningDelegations,
 } from "./subagent";
 import {
@@ -548,8 +569,14 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
         data: { phase: "active" },
       });
     }
-    // 通报 sessions：LRU 驱逐不得动正在跑 turn 的会话
-    noteActiveTurn(threadId, true);
+    // 通报 sessions：LRU 驱逐不得动正在跑 turn 的会话；
+    // sessionId/requestId 取自实际开跑的 turn（排队换位后是队首消息）
+    noteActiveTurn(
+      threadId,
+      true,
+      typeof turnMsg.sessionId === "string" ? turnMsg.sessionId : undefined,
+      turnReqId,
+    );
     await runPromptTurn(turnReqId, turnMsg, threadId);
   } finally {
     noteActiveTurn(threadId, false);
@@ -615,6 +642,8 @@ async function runPromptTurn(
   run.retryCapture = {};
   run.providerRetryActive = false;
   run.providerRetryChunkId = `retry-${++run.providerRetryTurnSeq}`;
+  // 长度截断自动续跑预算按轮重置（用户每发一条消息重新给满 MAX_LENGTH_CONTINUES 次）
+  run.lengthContinues = 0;
   // 逐工具审批（含 plan_exit 确认）/挂起提问/MCP 审批理论上不会跨 turn 遗留
   // （abort 已结算），兜底清理防挂起：新用户输入时未决的 plan_exit 按拒绝结算
   clearPendingToolApprovals(run);
@@ -756,9 +785,14 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       // （各自流立即 abort+finish 收尾，不再执行）
       const threadId = typeof msg.threadId === "string" ? msg.threadId : "";
       if (threadId) {
-        const run = running.get(threadId);
-        if (run) abortRun(run, threadId);
+        // 刷新后前端 thread id 即 sessionId，而 run 可能仍驻留在旧草稿键下：
+        // 反查索引兜底，否则续流会话上的 Stop 只杀前端流、sidecar 照跑
+        const owner = running.has(threadId)
+          ? { threadId, run: running.get(threadId)! }
+          : findRunBySession(threadId);
+        if (owner) abortRun(owner.run, owner.threadId);
         cancelAllEntries(threadId);
+        if (owner && owner.threadId !== threadId) cancelAllEntries(owner.threadId);
       } else {
         for (const [tid, run] of running.entries()) {
           abortRun(run, tid);
@@ -884,6 +918,26 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       send({ id: reqId, type: "sessions", sessions });
       break;
     }
+    case "list_running": {
+      // 纯内存快照且同步发出（不 await mgmtQueue）：响应行必然写在其后
+      // 发生的 turn_changed 之前，前端"先订阅后种子"的合并无空窗
+      send({
+        id: reqId,
+        type: "running",
+        sessionIds: listActiveTurnSessions(),
+        turns: listActiveTurnDetails(),
+      });
+      break;
+    }
+    case "get_subagent_activity": {
+      // 子代理运行活动快照（面板 tab 补水合：刷新后/点开已完成的委派）。
+      // delegationId 接受完整 uuid 或 ≥4 位前缀；查不到（sidecar 重启/记录被清）报错。
+      const delegationId = String(msg.delegationId ?? "");
+      const snapshot = getDelegationSnapshot(delegationId);
+      if (!snapshot) throw new Error(`delegation not found: ${delegationId}`);
+      send({ id: reqId, type: "subagent_activity_snapshot", ...snapshot });
+      break;
+    }
     case "new_session": {
       const threadId = String(msg.threadId ?? `thread-${Date.now()}`);
       const cwd = typeof msg.cwd === "string" ? msg.cwd : undefined;
@@ -959,7 +1013,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const sessionId = String(msg.sessionId ?? "");
       for (const [tid, run] of running) {
         if (run.sessionId === sessionId) {
-          running.delete(tid);
+          dropRun(tid);
           forgetThreadStates(tid); // 迭代2：删会话同样清 per-thread 旁路态（todo）
         }
       }

@@ -12,13 +12,17 @@ import { initStorage } from "./storage";
 import { dispatch } from "./protocol";
 import { contextInfo } from "./context";
 import {
+  dropRun,
+  findRunBySession,
   MAX_RESIDENT_SESSIONS,
   noteActiveTurn,
   projectContextInfo,
   resolveSession,
   running,
   touchSession,
+  trackSessionRun,
 } from "./sessions";
+import type { Running } from "./types";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-sessions-"));
 // new_session 会合成提示词并实时读身份文件：钉到空目录，避免触碰开发者真实 ~/.xulux/
@@ -128,5 +132,45 @@ describe("sessions：LRU 驻留上限", () => {
     expect(restored.sessionId).toBe(sessionId);
     expect(running.has("lru-restore")).toBe(true);
     expect(restored.agent.state.messages.length).toBe(0);
+  });
+});
+
+describe("sessions：刷新后 thread id 漂移（sessionId 反查索引）", () => {
+  test("resolveSession 按 sessionId 找回驻留 run，不物化第二个 Agent", async () => {
+    const run = await resolveSession("drift-draft", undefined, tmp);
+    const sid = run.sessionId;
+    // 模拟刷新后：列表行 id 即 sessionId，审批结算等请求带的是新键
+    const again = await resolveSession(sid, sid, tmp);
+    expect(again).toBe(run);
+    expect(running.has(sid)).toBe(false); // 绝不再开第二个驻留键
+    expect(running.get("drift-draft")).toBe(run); // 仍挂在原草稿键下
+    dropRun("drift-draft");
+  });
+
+  test("findRunBySession 命中与陈旧索引自愈", () => {
+    expect(findRunBySession("no-such-session")).toBeUndefined();
+    const fake = { sessionId: "sess-x" } as unknown as Running;
+    running.set("th-x", fake);
+    trackSessionRun("sess-x", "th-x");
+    expect(findRunBySession("sess-x")?.threadId).toBe("th-x");
+    running.delete("th-x"); // 绕过 dropRun 的外部删除
+    expect(findRunBySession("sess-x")).toBeUndefined();
+    expect(findRunBySession("sess-x")).toBeUndefined(); // 索引已被一并清除
+  });
+
+  test("dropRun 同步清除反查索引", async () => {
+    const run = await resolveSession("drop-1", undefined, tmp);
+    const sid = run.sessionId;
+    expect(findRunBySession(sid)?.threadId).toBe("drop-1");
+    dropRun("drop-1");
+    expect(findRunBySession(sid)).toBeUndefined();
+  });
+
+  test("abort 用行 id（=sessionId）也命中草稿键下驻留的 run", async () => {
+    const run = await resolveSession("abort-draft", undefined, tmp);
+    const sid = run.sessionId;
+    await dispatch("ab-1", { type: "abort", threadId: sid });
+    expect(run.stopRequested).toBe(true);
+    dropRun("abort-draft");
   });
 });

@@ -34,7 +34,11 @@ import {
 import { cn } from "@/lib/utils";
 import { isRemoteMode } from "@/lib/remote";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
-import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
+import {
+  formatShortcutParts,
+  matchesShortcut,
+  useShortcuts,
+} from "@/lib/shortcuts";
 import { useFluidHover } from "@/hooks/use-fluid-hover";
 import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
 import { FluidHoverRow } from "@/components/fluid-hover-row";
@@ -198,16 +202,33 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   };
 
   const menuItems = [
-    { id: "new", label: "新对话", icon: PlusIcon, isNew: true },
+    {
+      id: "new",
+      label: "新对话",
+      icon: PlusIcon,
+      isNew: true,
+      // 与「设置 → 快捷键」的新对话绑定同源，改绑后键帽即时同步
+      kbd: (
+        <KbdGroup>
+          {formatShortcutParts(newThread, isMacPlatform()).map((part, i) => (
+            <Kbd key={`${part}-${i}`}>{part}</Kbd>
+          ))}
+        </KbdGroup>
+      ),
+    },
     {
       id: "search",
       label: "搜索",
       icon: SearchIcon,
+      // 提示与「设置 → 快捷键」的搜索绑定同源：mac 显 ⌘K、其他平台显 Ctrl+K，
+      // 用户改绑后此处的键帽也随之更新（toggleSearch 来自 useShortcuts 订阅）
       kbd: (
         <KbdGroup>
-          <Kbd>Ctrl</Kbd>
-          <span>+</span>
-          <Kbd>P</Kbd>
+          {formatShortcutParts(toggleSearch, isMacPlatform()).map(
+            (part, i) => (
+              <Kbd key={`${part}-${i}`}>{part}</Kbd>
+            ),
+          )}
         </KbdGroup>
       ),
     },

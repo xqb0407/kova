@@ -29,7 +29,15 @@ import {
 } from "./provider-retry";
 import { normalizeSubagentName, type SubagentDefinition } from "./subagent-definitions";
 import { buildSubagentMgmtTools } from "./subagent-mgmt-tools";
-import type { DelegationRecord, Running, SubagentRunResult, SubagentRunStatus } from "./types";
+import { makeAutoContinueMessage, MAX_LENGTH_CONTINUES, needsLengthContinuation } from "./context";
+import { send, sendEventChunk } from "./stream";
+import type {
+  DelegationRecord,
+  Running,
+  SubagentActivityItem,
+  SubagentRunResult,
+  SubagentRunStatus,
+} from "./types";
 
 export const SUBAGENT_TOOL_NAME = "Task";
 /** 收敛运行中的委派并读取报告 */
@@ -45,6 +53,95 @@ export const MAX_SUBAGENT_REPORT_CHARS = 12_000;
 export const MAX_SUBAGENT_CONCURRENCY = 8;
 /** 已完成委派记录的保留上限（最旧的先丢弃，running 永不丢弃） */
 const MAX_RETAINED_DELEGATIONS = 50;
+/** 活动缓冲上限：满时优先丢最旧的 thinking/text 增量（结构事件永不主动丢） */
+export const MAX_ACTIVITY_ITEMS = 400;
+
+/* ----------------------- 运行活动流（面板可观测性） -----------------------
+ * delegate 的内部过程不进父转录，但归一化成 SubagentActivityItem 后：
+ * - 进 DelegationRecord.activity（内存环形缓冲，get_subagent_activity 快照读它）
+ * - 以无 id 通知行 {type:"subagent_activity", delegationId, item} 广播
+ *   （宿主原样转发，同 turn_changed；父 turn 已结束后台委派仍在跑也送达）
+ */
+
+/** delegationId -> 记录（全局索引：delegationId 是 uuid，快照查询不必先定位会话） */
+const delegationIndex = new Map<string, DelegationRecord>();
+
+/** 委派进全局索引（Task 启动时调用；快照查询与 prune 清理共用同一份） */
+export function registerDelegation(record: DelegationRecord): void {
+  delegationIndex.set(record.delegationId, record);
+}
+
+/** 活动条目入缓冲（超限先丢最旧的增量项）并广播通知行 */
+export function pushActivity(record: DelegationRecord, item: SubagentActivityItem): void {
+  const buf = record.activity;
+  if (buf.length >= MAX_ACTIVITY_ITEMS) {
+    const dropAt = buf.findIndex(
+      (x) => (x.kind === "thinking" || x.kind === "text") && x.op === "delta",
+    );
+    buf.splice(dropAt >= 0 ? dropAt : 0, 1);
+  }
+  buf.push(item);
+  send({ type: "subagent_activity", delegationId: record.delegationId, item });
+}
+
+/** 工具参数的一行摘要（面板工具行展示用）：取首个有值的常见目标字段 */
+export function summarizeToolArgs(args: unknown): string | undefined {
+  if (!args || typeof args !== "object") return undefined;
+  const a = args as Record<string, unknown>;
+  for (const key of ["command", "file_path", "path", "pattern", "query", "url", "description"]) {
+    const v = a[key];
+    if (typeof v === "string" && v.trim()) {
+      const line = v.trim().split("\n")[0]!;
+      return line.length > 100 ? `${line.slice(0, 100)}…` : line;
+    }
+  }
+  return undefined;
+}
+
+/** 快照应答载荷（protocol.ts get_subagent_activity 用） */
+export function getDelegationSnapshot(delegationId: string):
+  | {
+      record: {
+        /** 规范全量 id：前端按 ≥4 位前缀查询时据此把别名条目迁回正式键 */
+        delegationId: string;
+        agentName: string;
+        description?: string;
+        status: SubagentRunStatus;
+        startedAt: number;
+        completedAt?: number;
+        turns: number;
+        toolCalls: number;
+        report?: string;
+      };
+      items: SubagentActivityItem[];
+    }
+  | undefined {
+  let record = delegationIndex.get(delegationId);
+  if (!record && delegationId.length >= 4) {
+    // 短 id（Task 结果里给模型/用户看的 8 位前缀）同样可查，同 findDelegation 语义
+    for (const [id, r] of delegationIndex) {
+      if (id.startsWith(delegationId)) {
+        record = r;
+        break;
+      }
+    }
+  }
+  if (!record) return undefined;
+  return {
+    record: {
+      delegationId: record.delegationId,
+      agentName: record.agentName,
+      description: record.description,
+      status: record.status,
+      startedAt: record.startedAt,
+      completedAt: record.completedAt,
+      turns: record.turns,
+      toolCalls: record.toolCalls,
+      report: record.result?.report,
+    },
+    items: [...record.activity],
+  };
+}
 const TASKWAIT_DEFAULT_TIMEOUT_SECONDS = 300;
 const TASKWAIT_MAX_TIMEOUT_SECONDS = 3600;
 
@@ -111,6 +208,14 @@ export function settleDelegation(
   record.turns = result.turns;
   record.toolCalls = result.toolCalls;
   record.completedAt = Date.now();
+  pushActivity(record, {
+    kind: "status",
+    status: record.status,
+    turns: record.turns,
+    toolCalls: record.toolCalls,
+    report: result.report,
+    at: record.completedAt,
+  });
   record.resolveCompletion();
   pruneFinishedDelegations(run);
 }
@@ -123,6 +228,7 @@ function pruneFinishedDelegations(run: Running): void {
   const excess = finished.length - MAX_RETAINED_DELEGATIONS;
   for (const record of finished.slice(0, Math.max(0, excess))) {
     run.delegations.delete(record.delegationId);
+    delegationIndex.delete(record.delegationId);
   }
 }
 
@@ -245,6 +351,8 @@ type SubagentRunOptions = {
   /** 委派 id：透传给 provider 做缓存路由（OpenAI prompt_cache_key / Anthropic session-affinity） */
   sessionId: string;
   signal?: AbortSignal;
+  /** 归一化活动条目回调（进缓冲 + 广播；见 pushActivity） */
+  onActivity?: (item: SubagentActivityItem) => void;
 };
 
 /** 长缓存开关（与 sessions.ts 主代理一致）：PI_CACHE_RETENTION=long 时启用，compat 守门自动降级 */
@@ -261,6 +369,8 @@ class SubagentRun {
   private toolCalls = 0;
   private cappedTurns = false;
   private streamError?: { code: string; message: string };
+  /** 长度截断自动续跑计数（预算按一次委派；见 context.ts） */
+  private lengthContinues = 0;
   /** delegate 的 provider 请求自动重试记账（预算按一次委派，静默只记日志） */
   private readonly retryBudget = createRetryBudget();
   private retryCapture: {
@@ -402,13 +512,49 @@ class SubagentRun {
     };
   }
 
-  /** 只消费计数与报告所需的事件；turn_end / agent_end 留在内部，
-   * delegate 结束绝不能终结父代理的 turn。 */
+  /** 消费计数与报告所需的事件，并把过程归一化成活动条目转发（onActivity）；
+   * turn_end / agent_end 留在内部，delegate 结束绝不能终结父代理的 turn。 */
   private handleEvent(event: AgentEvent): void {
     switch (event.type) {
       case "turn_start":
         this.turns += 1;
+        this.opts.onActivity?.({ kind: "turn", n: this.turns, at: Date.now() });
         break;
+      case "message_update": {
+        const onActivity = this.opts.onActivity;
+        if (!onActivity) break;
+        const e = event.assistantMessageEvent;
+        const at = Date.now();
+        switch (e.type) {
+          case "text_start":
+            onActivity({ kind: "text", op: "start", id: `c${e.contentIndex}`, at });
+            break;
+          case "text_delta":
+            onActivity({ kind: "text", op: "delta", id: `c${e.contentIndex}`, delta: e.delta, at });
+            break;
+          case "text_end":
+            onActivity({ kind: "text", op: "end", id: `c${e.contentIndex}`, at });
+            break;
+          case "thinking_start":
+            onActivity({ kind: "thinking", op: "start", id: `c${e.contentIndex}`, at });
+            break;
+          case "thinking_delta":
+            onActivity({
+              kind: "thinking",
+              op: "delta",
+              id: `c${e.contentIndex}`,
+              delta: e.delta,
+              at,
+            });
+            break;
+          case "thinking_end":
+            onActivity({ kind: "thinking", op: "end", id: `c${e.contentIndex}`, at });
+            break;
+          default:
+            break;
+        }
+        break;
+      }
       case "message_end": {
         const m = event.message as AssistantMessage;
         if (m.role !== "assistant") break;
@@ -430,9 +576,51 @@ class SubagentRun {
         if (text) this.lastReportText = text;
         break;
       }
+      case "turn_end": {
+        // 主代理同款：length 截断且零 toolCall 会被 vendor 循环当自然收尾，
+        // 子代理任务同样会"到一半停下"。注入续跑消息（预算按一次委派计）。
+        if (!needsLengthContinuation(event.message)) break;
+        if (this.lengthContinues >= MAX_LENGTH_CONTINUES) {
+          logErr(`subagent length-truncated turn: auto-continue budget exhausted`);
+          break;
+        }
+        this.lengthContinues += 1;
+        this.agent.followUp(makeAutoContinueMessage());
+        break;
+      }
       case "tool_execution_start":
         this.toolCalls += 1;
+        this.opts.onActivity?.({
+          kind: "tool",
+          op: "start",
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          argsSummary: summarizeToolArgs(event.args),
+          at: Date.now(),
+        });
         break;
+      case "tool_execution_end": {
+        const result = event.result as {
+          content?: { type: string; text?: string }[];
+          details?: { error?: unknown };
+        };
+        const text = (result?.content ?? [])
+          .map((c) => (c.type === "text" ? (c.text ?? "") : ""))
+          .join("\n")
+          .trim();
+        const firstLine = text.split("\n")[0] ?? "";
+        this.opts.onActivity?.({
+          kind: "tool",
+          op: "end",
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          resultSummary: firstLine ? firstLine.slice(0, 100) : undefined,
+          failed:
+            result?.details?.error !== undefined || /\[exit code: |\[timeout\]/.test(text),
+          at: Date.now(),
+        });
+        break;
+      }
       default:
         break;
     }
@@ -499,7 +687,7 @@ export function buildSubagentTools(
     }),
     // 同一条消息里的多个 Task 并发执行
     executionMode: "parallel",
-    execute: async (_toolCallId, params) => {
+    execute: async (toolCallId, params) => {
       const p = params as { agent?: string; task?: string; description?: string; model?: string };
       const requested = String(p.agent ?? "");
       const definition = definitions.find(
@@ -533,6 +721,7 @@ export function buildSubagentTools(
         );
       }
       const delegationId = randomUUID();
+      const label = String(p.description ?? "").trim();
       const controller = new AbortController();
       let resolveCompletion: () => void = () => {};
       const completion = new Promise<void>((resolve) => {
@@ -543,6 +732,8 @@ export function buildSubagentTools(
         agentName: definition.name,
         modelId: model.id,
         status: "running",
+        description: label || undefined,
+        activity: [],
         stopRequested: false,
         startedAt: Date.now(),
         turns: 0,
@@ -553,6 +744,18 @@ export function buildSubagentTools(
         abort: () => controller.abort(),
       };
       run.delegations.set(delegationId, record);
+      registerDelegation(record);
+      // toolCallId ↔ delegationId 绑定：走本线程活跃请求流（刷新 attach 可回放，
+      // 前端 Task 消息行据此开面板 tab）；历史重建时前端另有结果文本解析兜底
+      sendEventChunk(run.threadId, {
+        type: "data-subagentDelegation",
+        data: {
+          toolCallId,
+          delegationId,
+          agentName: definition.name,
+          description: label || undefined,
+        },
+      });
       new SubagentRun({
         definition,
         task: brief,
@@ -561,6 +764,7 @@ export function buildSubagentTools(
         tools,
         sessionId: delegationId,
         signal: controller.signal,
+        onActivity: (item) => pushActivity(record, item),
       })
         .run()
         .then(
@@ -581,7 +785,6 @@ export function buildSubagentTools(
               },
             }),
         );
-      const label = String(p.description ?? "").trim();
       return {
         content: [
           {

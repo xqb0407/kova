@@ -432,7 +432,7 @@ const McpEditorDialog: FC<{
                     value={form.lifecycle}
                     onValueChange={(v) => setField("lifecycle", v as FormDraft["lifecycle"])}
                   >
-                    <SelectTrigger size="sm" className="bg-background border">
+                    <SelectTrigger size="sm" className="w-full border">
                       <SelectValue>{LIFECYCLE_LABEL[form.lifecycle]}</SelectValue>
                     </SelectTrigger>
                     <SelectContent>
@@ -454,7 +454,7 @@ const McpEditorDialog: FC<{
                     value={form.approveToolsText}
                     onChange={(e) => setField("approveToolsText", e.target.value)}
                     placeholder="留空 = 每次调用都需确认"
-                    className="font-mono text-xs"
+                    className="font-mono  text-xs"
                   />
                 </Label>
               </div>
@@ -470,7 +470,7 @@ const McpEditorDialog: FC<{
                     value={form.callTimeoutText}
                     onChange={(e) => setField("callTimeoutText", e.target.value)}
                     placeholder="120000（默认 2 分钟）"
-                    className="bg-background font-mono text-xs tabular-nums"
+                    className=" font-mono text-xs tabular-nums"
                   />
                 </Label>
                 <Label className="flex flex-1 flex-col items-start gap-1">
@@ -484,7 +484,7 @@ const McpEditorDialog: FC<{
                     value={form.idleTimeoutText}
                     onChange={(e) => setField("idleTimeoutText", e.target.value)}
                     placeholder="600000（默认 10 分钟）"
-                    className="bg-background font-mono text-xs tabular-nums"
+                    className=" font-mono text-xs tabular-nums"
                   />
                 </Label>
               </div>

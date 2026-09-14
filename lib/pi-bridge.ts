@@ -394,6 +394,7 @@ export type PiMcpAuditLogResponse = {
 
 export type PiResponse =
   | { type: "sessions"; sessions: PiSessionSummary[] }
+  | { type: "running"; sessionIds: string[] }
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "forked"; sessionId: string }
   | { type: "history"; messages: unknown[] }
@@ -448,7 +449,23 @@ export type PiResponse =
   | PiCompacted
   | { type: "error"; errorText: string }
   | { type: "tool_confirmed"; approvalId: string }
-  | { type: "question_answered"; questionId: string };
+  | { type: "question_answered"; questionId: string }
+  | {
+      type: "subagent_activity_snapshot";
+      record: {
+        /** 规范全量 id（按前缀查询时前端据此迁移别名条目） */
+        delegationId: string;
+        agentName: string;
+        description?: string;
+        status: string;
+        startedAt: number;
+        completedAt?: number;
+        turns: number;
+        toolCalls: number;
+        report?: string;
+      };
+      items: unknown[];
+    };
 
 export async function piRequest<T extends PiResponse>(
   payload: Record<string, unknown>,

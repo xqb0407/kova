@@ -4,6 +4,7 @@ import { useRef, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import {
   ActivityIcon,
+  BotIcon,
   FileCodeIcon,
   FileTextIcon,
   FolderTreeIcon,
@@ -28,6 +29,7 @@ import { ShellTab } from "./shell-tab";
 import { BrowserView } from "./browser-view";
 import { FileTab } from "./file-view";
 import { FileTreeTab } from "./file-tree-tab";
+import { SubagentTab } from "./subagent-tab";
 import { TabEmpty } from "./tab-empty";
 
 /**
@@ -90,7 +92,7 @@ export const TAB_META: Record<
   },
   shell: {
     label: "终端",
-    description: "PowerShell / bash 交互式会话",
+    description: "PowerShell / bash 交互式会话（可多开，一标签一会话）",
     icon: SquareTerminalIcon,
   },
   browser: {
@@ -102,6 +104,11 @@ export const TAB_META: Record<
     label: "Git",
     description: "暂存、提交与分支",
     icon: GitBranchIcon,
+  },
+  subagent: {
+    label: "子智能体",
+    description: "Task 委派的运行过程",
+    icon: BotIcon,
   },
 };
 
@@ -191,12 +198,15 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
     case "explorer":
       return <FileTreeTab />;
     case "shell":
-      // 多会话管理在 ShellTab 内部（VSCode 面板形态），不携带 tab 上下文
-      return <ShellTab />;
+      // 一个标签 = 一个会话（tab.sessionId 绑定 lib/shell store 里的会话）
+      return <ShellTab tab={tab} />;
     case "git":
       return <GitTab />;
     case "browser":
       return <BrowserView tab={tab} />;
+    case "subagent":
+      // 一个委派一个 tab（delegationId 绑定 lib/subagent-runs store 条目）
+      return <SubagentTab tab={tab} />;
     default:
       return null;
   }

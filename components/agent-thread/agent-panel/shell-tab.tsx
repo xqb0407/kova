@@ -4,195 +4,97 @@
 import "@xterm/xterm/css/xterm.css";
 
 import { useEffect, useRef, type FC } from "react";
+import { Loader2Icon, RotateCcwIcon, SquareTerminalIcon } from "lucide-react";
 import {
-  PlusIcon,
-  RotateCcwIcon,
-  SquareTerminalIcon,
-  Trash2Icon,
-  XIcon,
-} from "lucide-react";
-import {
-  closeAllShells,
-  closeShell,
-  createShell,
+  ensureShellTabBridge,
+  findShell,
   fitShell,
-  setActiveShell,
+  hasPendingShell,
+  restartShellTab,
   useShellStore,
 } from "@/lib/shell";
+import type { PanelTab } from "@/lib/panel-tabs";
 import { isTauri } from "@/lib/tauri";
-import { cn } from "@/lib/utils";
 import { TabEmpty } from "./tab-empty";
 
 /**
- * 真终端面板：VSCode 集成终端形态——一个面板标签内多会话，
- * 顶栏（新建/清屏全部/重启）+ 中部视口 + 底部会话列表。
- * 视图只是宿主：会话与 xterm 元素在 lib/shell.ts store 里保活，
- * 切面板标签重挂载时把元素 append 回来；非激活会话 display:none。
- * 关面板标签不杀会话（同 VSCode 隐藏面板），杀会话走列表 × / 垃圾桶。
+ * 真终端面板（VSCode 终端 tab 形态）：一个会话 = 一个面板标签，会话列表
+ * 并入顶部标签栏（图标 + 标题即身份），面板内不再有工具栏/会话条——
+ * 整个视图就是 xterm 视口。视图只是搬运工：会话对象活在 lib/shell.ts
+ * store 里，挂载时 appendChild 宿主 + 首次 open + fit + 聚焦，卸载时摘除
+ * 宿主——隐藏时零 DOM 残留，也不做 0×0 的 fit 空转；进程与缓冲不受影响。
+ * 关标签的回收（杀 PTY + dispose）由 shell store 的标签桥统一处理；
+ * 进程退出（exit）时桥反向自动关闭标签。仅剩两种非视口态：创建中
+ * （加载态）与刷新后会话悬空（"重新启动"卡，一键重建并回绑本标签）。
  */
 
-const ToolButton: FC<{
-  title: string;
-  onClick: () => void;
-  children: React.ReactNode;
-}> = ({ title, onClick, children }) => (
-  <button
-    type="button"
-    title={title}
-    onClick={onClick}
-    className="hover:bg-muted size-6 rounded-md p-1 text-muted-foreground transition-colors"
-  >
-    {children}
-  </button>
-);
-
-export const ShellTab: FC = () => {
-  const { list, activeId } = useShellStore();
+export const ShellTab: FC<{ tab: PanelTab }> = ({ tab }) => {
+  useShellStore(); // 订阅会话集合：spawn/dispose 触发本视图重取 findShell
+  const session = findShell(tab.sessionId);
   const boxRef = useRef<HTMLDivElement>(null);
-  const active = list.find((s) => s.id === activeId) ?? null;
-  const activeRef = useRef(active);
-  activeRef.current = active;
 
-  // 把全部会话宿主挂进视口；未 open 的首次 open（fit 由 ResizeObserver 兜底）
+  // 桥安装与视图共存亡无意义（模块级、幂等），触达即装
   useEffect(() => {
-    const box = boxRef.current;
-    if (!box) return;
-    for (const s of list) {
-      if (!box.contains(s.host)) box.appendChild(s.host);
-      if (!s.opened) {
-        s.terminal.open(s.host);
-        s.opened = true;
-      }
-    }
-  }, [list]);
-
-  // 激活项切换：显隐 + 自适应 + 聚焦
-  useEffect(() => {
-    for (const s of list) s.host.classList.toggle("hidden", s.id !== activeId);
-    if (active) {
-      fitShell(active);
-      active.terminal.focus();
-    }
-  }, [list, activeId, active]);
-
-  // 容器尺寸变化 → 当前会话重排（隐藏会话的 fit 在 0×0 下合法空转）
-  useEffect(() => {
-    const box = boxRef.current;
-    if (!box) return;
-    const ro = new ResizeObserver(() => {
-      if (activeRef.current) fitShell(activeRef.current);
-    });
-    ro.observe(box);
-    return () => ro.disconnect();
+    ensureShellTabBridge();
   }, []);
+
+  // 宿主就位 + 首次 open + 自适应 + 聚焦；卸载摘除宿主（元素本体 store 保活）。
+  // ResizeObserver 同周期挂卸：首帧容器随会话在场与否切换渲染，
+  // 空依赖挂载会赶在容器出现之前、永久错过观察
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box || !session) return;
+    if (!box.contains(session.host)) box.appendChild(session.host);
+    if (!session.opened) {
+      session.terminal.open(session.host);
+      session.opened = true;
+    }
+    fitShell(session);
+    session.terminal.focus();
+    const ro = new ResizeObserver(() => fitShell(session));
+    ro.observe(box);
+    return () => {
+      ro.disconnect();
+      session.host.remove();
+    };
+  }, [session]);
 
   if (!isTauri())
     return <TabEmpty icon={SquareTerminalIcon} text="交互式终端仅桌面端可用" />;
 
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="border-border/60 flex h-8 shrink-0 items-center gap-1.5 border-b px-2">
-        <span className="text-muted-foreground text-xs">终端</span>
-        {active ? (
-          <span
-            className={cn(
-              "size-1.5 rounded-full",
-              active.alive ? "bg-emerald-500" : "bg-destructive",
-            )}
-          />
-        ) : null}
-        {active?.title ? (
-          <span className="text-muted-foreground/70 truncate font-mono text-xs">
-            {active.title}
-          </span>
-        ) : null}
-        <div className="ml-auto flex items-center gap-0.5">
-          {active && !active.alive ? (
-            <ToolButton
-              title="重启当前终端"
-              onClick={() => {
-                const deadId = active.id;
-                // 先开新（activeId 自动切到新会话）再收掉死会话，不留僵尸标签
-                void createShell().finally(() => closeShell(deadId));
-              }}
-            >
-              <RotateCcwIcon className="size-3.5" />
-            </ToolButton>
-          ) : null}
-          <ToolButton title="新建终端" onClick={() => void createShell()}>
-            <PlusIcon className="size-3.5" />
-          </ToolButton>
-          {list.length > 0 ? (
-            <ToolButton title="全部关闭" onClick={closeAllShells}>
-              <Trash2Icon className="size-3.5" />
-            </ToolButton>
-          ) : null}
+  // 刷新恢复/启动失败：标签还在但会话不在了（pending = 创建中，出加载态）
+  if (!session) {
+    if (hasPendingShell(tab.sessionId)) {
+      return (
+        <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-1.5 text-xs">
+          <Loader2Icon className="size-3.5 animate-spin" />
+          正在启动终端…
         </div>
+      );
+    }
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+        <SquareTerminalIcon className="text-muted-foreground/50 size-6" />
+        <p className="text-muted-foreground text-xs">
+          终端会话已结束（页面刷新后旧会话随 webview 销毁）
+        </p>
+        <button
+          type="button"
+          onClick={() => restartShellTab(tab)}
+          className="hover:bg-primary/10 hover:text-primary hover:border-primary/40 flex items-center gap-1.5 rounded-lg border border-border/70 px-3 py-1.5 text-xs text-foreground transition-colors"
+        >
+          <RotateCcwIcon className="size-3.5" />
+          重新启动
+        </button>
       </div>
+    );
+  }
 
-      <div
-        ref={boxRef}
-        onClick={() => activeRef.current?.terminal.focus()}
-        className="relative min-h-0 flex-1 overflow-hidden"
-      />
-
-      {list.length > 1 || list.length === 0 ? (
-        // VSCode 底栏式全高 tab：激活项 = 加粗文字 + 主题色下划线，
-        // 不靠背景色差（深浅主题下背景色都太含蓄，观感"不明显"）
-        <div className="bg-muted/50 border-border/70 flex h-10 shrink-0 items-stretch gap-0.5 border-t px-1.5 overflow-x-auto select-none">
-          {list.length === 0 ? (
-            <button
-              type="button"
-              onClick={() => void createShell()}
-              className="border-border/80 text-muted-foreground hover:border-primary/60 hover:text-foreground my-2 flex items-center gap-1.5 rounded-lg border border-dashed px-3 text-xs transition-colors"
-            >
-              <PlusIcon className="size-3.5" />
-              新建终端
-            </button>
-          ) : null}
-          {list.map((s, i) => {
-            const isActive = s.id === activeId;
-            return (
-              <div
-                key={s.id}
-                className={cn(
-                  "group relative flex shrink-0 cursor-pointer items-center gap-2 rounded-t-md px-3 text-xs transition-colors",
-                  isActive
-                    ? "bg-background/80 text-foreground font-medium"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
-                )}
-                onClick={() => setActiveShell(s.id)}
-              >
-                {/* 激活下划线：贴条带上沿，主题色，深浅底都醒目 */}
-                {isActive ? (
-                  <span className="bg-primary absolute inset-x-2 bottom-0 h-[2px] rounded-full" />
-                ) : null}
-                <span
-                  className={cn(
-                    "size-2 shrink-0 rounded-full",
-                    s.alive ? "bg-emerald-500" : "bg-destructive",
-                  )}
-                />
-                <span className="text-muted-foreground/80 tabular-nums">
-                  {i + 1}
-                </span>
-                <span className="max-w-44 truncate font-mono">{s.title}</span>
-                <button
-                  type="button"
-                  title="关闭终端"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeShell(s.id);
-                  }}
-                  className="-mr-1 rounded-sm p-0.5 opacity-40 transition-all hover:bg-destructive/15 hover:text-destructive group-hover:opacity-100"
-                >
-                  <XIcon className="size-3" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
+  return (
+    <div
+      ref={boxRef}
+      onClick={() => session.terminal.focus()}
+      className="px-2 py-1.5 relative h-full min-h-0 overflow-hidden"
+    />
   );
 };
