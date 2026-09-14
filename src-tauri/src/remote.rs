@@ -151,6 +151,57 @@ fn is_terminal(v: &Value) -> bool {
     }
 }
 
+// ---------- 无 id 自发通知行广播（turn_changed / subagent_activity）----------
+
+/// 已认证连接的出站端注册表。与 read_loop 里的 authed 生命周期一致：
+/// 认证通过才入表（未认证连接不得收到会话活动通知），连接清理时移除。
+fn authed_txs() -> &'static StdMutex<HashMap<u64, mpsc::Sender<String>>> {
+    static TXS: OnceLock<Arc<StdMutex<HashMap<u64, mpsc::Sender<String>>>>> =
+        OnceLock::new();
+    TXS.get_or_init(|| Arc::new(StdMutex::new(HashMap::new())))
+}
+
+fn register_authed_conn(conn_id: u64, tx: mpsc::Sender<String>) {
+    if let Ok(mut map) = authed_txs().lock() {
+        map.insert(conn_id, tx);
+    }
+}
+
+fn unregister_authed_conn(conn_id: u64) {
+    if let Ok(mut map) = authed_txs().lock() {
+        map.remove(&conn_id);
+    }
+}
+
+/// sidecar 的无 id 自发通知行原样广播给全部已认证远程连接（本地 webview
+/// 走 pi-chunk-batch，远程此前完全没有这条信号——侧边栏"运行中"指示因此
+/// 缺席）。只放行白名单类型，其余无 id 行维持只进本地。队列满按背压踢线
+/// （与 try_route 同款），慢客户端不拖垮其它订阅者。
+pub(crate) fn broadcast_notification(parsed: Option<&Value>) {
+    let Some(v) = parsed else { return };
+    if v.get("id").is_some() {
+        return;
+    }
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("turn_changed") | Some("subagent_activity") => {}
+        _ => return,
+    }
+    let Ok(map) = authed_txs().lock() else { return };
+    if map.is_empty() {
+        return;
+    }
+    let line = v.to_string();
+    for (conn_id, tx) in map.iter() {
+        match tx.try_send(line.clone()) {
+            Ok(()) | Err(TrySendError::Closed(_)) => {}
+            Err(TrySendError::Full(_)) => {
+                log::warn!("[remote] broadcast queue full, dropping conn {conn_id}");
+                kick_conn(*conn_id);
+            }
+        }
+    }
+}
+
 /// sidecar 退出：清空远程路由并通知所有连接
 pub(crate) fn notify_terminated() {
     let error_line = json!({"type": "error", "errorText": "pi-agent terminated"}).to_string();
@@ -551,6 +602,7 @@ async fn handle_conn(ctx: GatewayCtx, socket: WebSocket) {
     if let Ok(mut map) = conns().lock() {
         map.remove(&conn_id);
     }
+    unregister_authed_conn(conn_id);
     rs.conns.fetch_sub(1, Ordering::Relaxed);
     let _ = writer.await;
     if let Err(e) = result {
@@ -610,6 +662,7 @@ async fn read_loop(
                             Ok(token) => {
                                 send(json!({"type": "paired", "token": token}));
                                 authed = true;
+                                register_authed_conn(conn_id, tx.clone());
                             }
                             Err(e) => send(json!({"type": "error", "errorText": e})),
                         }
@@ -628,6 +681,7 @@ async fn read_loop(
                     if !stored.is_empty() && supplied == stored {
                         send(json!({"type": "authed"}));
                         authed = true;
+                        register_authed_conn(conn_id, tx.clone());
                     } else {
                         fail_count += 1;
                         send(json!({

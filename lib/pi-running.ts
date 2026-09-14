@@ -3,6 +3,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { getPiChannel, type PiRunningTurn } from "@/lib/pi-channel";
 import { piResumableStorage } from "@/lib/pi-resume-storage";
+import { markThreadActivity } from "@/lib/pi-last-activity";
 
 /**
  * 全局"会话运行中"集合（pi-agent sidecar activeTurns 的投影）。
@@ -83,6 +84,9 @@ function onTurnEvent(sessionId: string | null, active: boolean) {
     return;
   }
   deltas.set(sessionId, active);
+  // turn 收尾即一次消息活动：本端发起的在 transport 发送时已盖过，这里补上
+  // 其它端（如桌面应用里跑的）聊完的会话，让它们的行也立刻显示「刚刚」
+  if (!active) markThreadActivity(sessionId);
   recompute();
 }
 

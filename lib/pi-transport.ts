@@ -26,6 +26,7 @@ import {
 } from "@/lib/pi-checkpoints";
 import { piResumableStorage } from "@/lib/pi-resume-storage";
 import { recordLastThread } from "@/lib/pi-last-thread";
+import { markThreadActivity } from "@/lib/pi-last-activity";
 import { findRunningTurn, resyncPiRunning } from "@/lib/pi-running";
 import { focusPanelTab } from "@/lib/panel-tabs";
 import { applyDelegationChunk } from "@/lib/subagent-runs";
@@ -93,6 +94,9 @@ export class PiTransport implements ChatTransport<UIMessage> {
     piResumableStorage.setStreamId(requestId, chatId, sessionId);
     // 刷新回切兜底：即使登记后续被清（收尾/降级），也记得回到这个会话
     recordLastThread(sessionId);
+    // 本地活动时间戳：列表快照的 lastMessageAt 要等 reload 才更新，
+    // 刚聊完的行凭它立刻显示「刚刚」（见 pi-last-activity）
+    markThreadActivity(sessionId);
     // 新 turn 开始：上一轮遗留的检查点状态（含刷新未结算的持久 hash）作废
     clearRunCheckpoint(chatId);
     saveRunHash(chatId, null);

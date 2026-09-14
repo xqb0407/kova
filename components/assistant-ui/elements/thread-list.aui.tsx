@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/collapsible";
 import { forkPiSession, piSessionCwdMap } from "@/lib/pi-thread-adapter";
 import { usePiSessionRunning } from "@/lib/pi-running";
+import { useThreadActivity } from "@/lib/pi-last-activity";
 import { toast } from "@/components/ui/toast";
 import {
   AlertDialog,
@@ -65,7 +66,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ComponentPropsWithoutRef,
   type FC,
   type ReactNode,
@@ -166,46 +166,16 @@ const FolderSwapIcon: FC<{ open: boolean }> = ({ open }) => {
 };
 
 // ---------------------------------------------------------------------------
-// 会话行右侧的「距最后一条消息」用时显示（1分 / 2分30秒 …）。列表全部行
-// 共用一个 1s 心跳（模块级 interval + useSyncExternalStore），快照值只在
-// 心跳回调里更新——若 getSnapshot 直接返回 Date.now()，React 会因两次读取
-// 不一致而无限重渲染。心跳随最后一行卸载而回收。
+// 会话行右侧「距最后一条消息多久」的粗粒度显示（刚刚 / 5分钟 / 3小时 / 2天），
+// Codex 风格，不带秒。渲染时算一次的固定值，不做心跳——秒表式跳动不是预期
+// 交互；数值随后续列表/状态更新自然刷新。
 // ---------------------------------------------------------------------------
 
-let nowTick = Date.now();
-const nowListeners = new Set<() => void>();
-let nowTimer: ReturnType<typeof setInterval> | null = null;
-
-const subscribeNowTick = (cb: () => void) => {
-  nowListeners.add(cb);
-  nowTimer ??= setInterval(() => {
-    nowTick = Date.now();
-    for (const fn of nowListeners) fn();
-  }, 1000);
-  return () => {
-    nowListeners.delete(cb);
-    if (nowListeners.size === 0 && nowTimer) {
-      clearInterval(nowTimer);
-      nowTimer = null;
-    }
-  };
-};
-
-const getNowTick = () => nowTick;
-
-/** 每 1s 触发一次重渲染的心跳（值为缓存的当前毫秒时间戳） */
-const useNowTick = () =>
-  useSyncExternalStore(subscribeNowTick, getNowTick, getNowTick);
-
-/** 把毫秒数渲染成「N秒 / N分M秒 / N小时 / N天」，只保留最高两级单位 */
 const formatElapsed = (ms: number): string => {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  if (total < 60) return `${total}秒`;
+  const total = Math.floor(ms / 1000);
+  if (total < 60) return "刚刚";
   const min = Math.floor(total / 60);
-  if (min < 60) {
-    const sec = total % 60;
-    return sec ? `${min}分${sec}秒` : `${min}分`;
-  }
+  if (min < 60) return `${min}分钟`;
   const hr = Math.floor(min / 60);
   if (hr < 24) return `${hr}小时`;
   return `${Math.floor(hr / 24)}天`;
@@ -786,14 +756,16 @@ export const ThreadListItem: FC = () => {
   const runningExternally = usePiSessionRunning(remoteId);
   const showRunning = isRunning || runningExternally;
   const title = useAuiState((s) => s.threadListItem.title) ?? "";
-  // 「距最后一条消息」的实时用时；心跳每秒驱动一次重算。
-  // 运行中的会话不计时，直接显示「刚刚」
-  const now = useNowTick();
+  // 「距最后一条消息」的固定用时；渲染时算一次，运行中直接显示「刚刚」。
+  // 列表快照的 lastMessageAt 要等 reload 才更新，叠加本地活动时间戳
+  // （发送/turn 收尾时盖的，见 pi-last-activity）才能刚聊完就显示「刚刚」
   const lastMessageAt = useAuiState((s) => s.threadListItem.lastMessageAt);
+  const localActivityAt = useThreadActivity(remoteId);
+  const lastMs = Math.max(lastMessageAt?.getTime() ?? 0, localActivityAt ?? 0);
   const elapsed = showRunning
     ? "刚刚"
-    : lastMessageAt
-      ? formatElapsed(now - lastMessageAt.getTime())
+    : lastMs
+      ? formatElapsed(Date.now() - lastMs)
       : null;
   const [renameOpen, setRenameOpen] = useState(false);
   // 删除二次确认：菜单里的「删除」只打开 AlertDialog，确认后才真正调 delete
@@ -834,7 +806,7 @@ export const ThreadListItem: FC = () => {
     >
       <ThreadListItemPrimitive.Trigger
         data-slot="aui_thread-list-item-trigger"
-        className="group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md px-2.5 text-start text-sm outline-none group-hover:pe-9 group-has-focus-visible:pe-9 group-has-data-[state=open]:pe-9 group-data-active:pe-9 focus-visible:ring-1"
+        className="group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md pe-9 ps-2.5 text-start text-sm outline-none focus-visible:ring-1"
       >
         {/* Loader DOM 常驻，永久占位 */}
         <Loader2Icon
@@ -850,22 +822,21 @@ export const ThreadListItem: FC = () => {
         <MarqueeTitle data-slot="aui_thread-list-item-title">
           <ThreadListItemPrimitive.Title fallback="新对话" />
         </MarqueeTitle>
-        {/* 用时占 more 按钮的位置：显隐条件与 more 严格互补（hover /
-            键盘焦点 / 菜单展开时 more 出现，此处隐藏）。切换必须瞬时完成，
-            不能带 transition——more 出现是无过渡的，时间若淡出就会和它
-            重叠一个过渡窗口期。用 opacity 而非 display，宽度常驻，
-            切换时标题截断不跳动。 */}
-        {elapsed && (
-          <span
-            data-slot="aui_thread-list-item-elapsed"
-            title={showRunning ? "正在运行" : "距最后一条消息的时间"}
-            className="text-muted-foreground pointer-events-none ms-1.5 shrink-0 text-xs leading-none tabular-nums opacity-100 group-hover:opacity-0 group-has-focus-visible:opacity-0 group-has-data-[state=open]:opacity-0"
-          >
-            {elapsed}
-          </span>
-        )}
         {showRunning && <span className="sr-only">Running</span>}
       </ThreadListItemPrimitive.Trigger>
+      {/* 用时与 more 按钮同位（end-1.5 的绝对槽位），选中行也显示；显隐条件
+          与 more 严格互补（hover / 键盘焦点 / 菜单展开时 more 出现，此处隐藏）。
+          双方都瞬时切换、不带透明度过渡，避免交叉淡出期间两个同时可见。
+          trigger 常驻 pe-9 为该槽位留宽，标题截断在任何状态下不跳动 */}
+      {elapsed && (
+        <span
+          data-slot="aui_thread-list-item-elapsed"
+          title={showRunning ? "正在运行" : "距最后一条消息的时间"}
+          className="text-muted-foreground pointer-events-none absolute end-1.5 top-1/2 -translate-y-1/2 text-xs leading-none tabular-nums opacity-100 group-hover:opacity-0 group-has-focus-visible:opacity-0 group-has-data-[state=open]:opacity-0"
+        >
+          {elapsed}
+        </span>
+      )}
       <ThreadListItemMore
         onRename={() => setRenameOpen(true)}
         onAskDelete={() => setDeleteOpen(true)}
