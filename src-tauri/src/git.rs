@@ -711,6 +711,9 @@ fn log_impl(cwd: &str, limit: u32) -> Result<Value, String> {
         .split('\u{1e}')
         .filter(|r| !r.trim().is_empty())
         .filter_map(|rec| {
+            // git 在 format: 的相邻记录间自动插入 \n,不剥掉会并进首字段 hash;
+            // 图谱前端拿 hash 匹配 parents 分车道,脏 hash = 全图断线只剩点
+            let rec = rec.trim_start_matches(['\r', '\n']);
             let mut it = rec.split('\u{1f}');
             let (Some(hash), Some(short), Some(ct), Some(author), Some(subject)) =
                 (it.next(), it.next(), it.next(), it.next(), it.next())
@@ -799,6 +802,9 @@ fn log_graph_impl(cwd: &str, limit: u32) -> Result<Value, String> {
         .split('\u{1e}')
         .filter(|r| !r.trim().is_empty())
         .filter_map(|rec| {
+            // git 在 format: 的相邻记录间自动插入 \n,不剥掉会并进首字段 hash;
+            // 图谱前端拿 hash 匹配 parents 分车道,脏 hash = 全图断线只剩点
+            let rec = rec.trim_start_matches(['\r', '\n']);
             let mut it = rec.split('\u{1f}');
             let (Some(hash), Some(parents), Some(decor), Some(author), Some(ct), Some(subject)) = (
                 it.next(),
@@ -939,10 +945,38 @@ fn list_checkpoint_refs(dir: &str, work: &str) -> Vec<(String, String)> {
 /// 迭代 3b：① parent 查询与 LRU 清理共用同一份 for-each-ref 结果（此前两次）；
 /// ② 工作区与 parent commit 同树（日常对话轮多数零文件改动）时直接复用 parent
 /// hash——省一次 commit-tree 子进程，且影子仓库不随空转轮次堆积对象。
-fn snapshot_impl(dir: &str, work: &str, tag: &str) -> Result<String, String> {
+/// 影子仓库 add -A 容错版：Windows 保留设备名文件（bash `> nul` 事故产物）
+/// git 读不了,一个坏文件会让整个 add 中止。失败时以 --ignore-errors 重试
+/// （跳过不可读项、其余照常入档,退出码仍非 0 属预期）；仅当"重试后索引仍
+/// 为空"（全部读不了/影子仓库坏了）才报错——否则会产出空树快照,把全部
+/// 文件误报成删除。Err 携带原始 stderr 供调用方拼前缀。
+fn shadow_add(dir: &str, work: &str) -> Result<(), String> {
     let add = git_run(&shadow_git(dir, work, &["add", "-A"]), None, &[])?;
-    if !add.ok {
-        return Err(format!("snapshot-add-failed: {}", add.stderr));
+    if add.ok {
+        return Ok(());
+    }
+    let retry = git_run(
+        &shadow_git(dir, work, &["add", "-A", "--ignore-errors"]),
+        None,
+        &[],
+    )?;
+    if retry.ok {
+        return Ok(());
+    }
+    let staged = git_run(
+        &shadow_git(dir, work, &["diff", "--cached", "--name-only"]),
+        None,
+        &[],
+    )?;
+    if staged.stdout.is_empty() {
+        return Err(add.stderr);
+    }
+    Ok(())
+}
+
+fn snapshot_impl(dir: &str, work: &str, tag: &str) -> Result<String, String> {
+    if let Err(stderr) = shadow_add(dir, work) {
+        return Err(format!("snapshot-add-failed: {stderr}"));
     }
     let tree = git_run(&shadow_git(dir, work, &["write-tree"]), None, &[])?;
     if !tree.ok {
@@ -1079,9 +1113,8 @@ fn patch_file_path(dir: &str, hash: &str) -> PathBuf {
 }
 
 fn checkpoint_files_impl(dir: &str, work: &str, hash: &str) -> Result<Value, String> {
-    let add = git_run(&shadow_git(dir, work, &["add", "-A"]), None, &[])?;
-    if !add.ok {
-        return Err(format!("snapshot-stage-failed: {}", add.stderr));
+    if let Err(stderr) = shadow_add(dir, work) {
+        return Err(format!("snapshot-stage-failed: {stderr}"));
     }
     // 顺带持久化"当前时刻"的全量 binary diff（restore 的回放依据）
     if let Ok(d) = git_run(
@@ -1169,9 +1202,8 @@ fn restore_impl(dir: &str, work: &str, hash: &str) -> Result<(), String> {
     let patch: Vec<u8> = match stored {
         Some(p) => p,
         None => {
-            let add = git_run(&shadow_git(dir, work, &["add", "-A"]), None, &[])?;
-            if !add.ok {
-                return Err(format!("snapshot-stage-failed: {}", add.stderr));
+            if let Err(stderr) = shadow_add(dir, work) {
+                return Err(format!("snapshot-stage-failed: {stderr}"));
             }
             let d = git_run(
                 &shadow_git(
@@ -1699,6 +1731,21 @@ mod tests {
         // 根提交无父
         assert_eq!(rows[3]["subject"], "init");
         assert_eq!(rows[3]["parents"].as_array().unwrap().len(), 0);
+        // 前端连线的硬不变量：hash 是干净的 40 位十六进制，且每个父哈希都等于图中某行的 hash
+        // （曾经 git 在记录间插入的 \n 并进 hash 字段，导致全部匹配失败、图只剩孤点）
+        let hashes: Vec<&str> = rows
+            .iter()
+            .map(|r| r["hash"].as_str().unwrap())
+            .collect();
+        assert!(
+            hashes.iter().all(|h| h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit())),
+            "dirty hashes: {hashes:?}"
+        );
+        for r in rows {
+            for p in r["parents"].as_array().unwrap() {
+                assert!(hashes.contains(&p.as_str().unwrap()), "parent {p:?} not in graph");
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

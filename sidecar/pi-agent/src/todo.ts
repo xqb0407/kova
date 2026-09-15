@@ -33,6 +33,15 @@ export function clearTodoState(threadId: string): void {
   todoStates.delete(threadId);
 }
 
+/** 线程键迁移（刷新后 run 改绑新 threadId，见 sessions.rebindRunThread）：
+ *  槽位原样挪到新键，任务清单不随改绑丢失 */
+export function migrateTodoState(oldThreadId: string, newThreadId: string): void {
+  const state = todoStates.get(oldThreadId);
+  if (!state) return;
+  todoStates.set(newThreadId, state);
+  todoStates.delete(oldThreadId);
+}
+
 /** 快照卫生：形状坏掉的任务条目过滤掉（历史 JSONL 行可能被撕裂） */
 function sanitizeTasks(raw: unknown): Task[] | undefined {
   if (!Array.isArray(raw)) return undefined;

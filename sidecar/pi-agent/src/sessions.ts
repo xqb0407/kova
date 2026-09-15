@@ -39,8 +39,13 @@ import { buildSubagentTools } from "./subagent";
 import { buildSkillMgmtTools } from "./skill-mgmt-tools";
 import { readCompaction, readTranscript } from "./transcript";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, type ContextInfoResult } from "./context";
-import { onAgentEvent, send } from "./stream";
-import { clearTodoState, replayTodoFromMessages } from "./todo";
+import { isPromptActive, onAgentEvent, send } from "./stream";
+import { isTurnBusy } from "./prompt-queue";
+import {
+  clearTodoState,
+  migrateTodoState,
+  replayTodoFromMessages,
+} from "./todo";
 import { logErr } from "./log";
 import { sessionPath } from "./storage";
 import { sessionGet, sessionInsert, sessionUpdateCwd } from "./hostdb";
@@ -114,6 +119,10 @@ interface ActiveTurn {
   requestId?: string;
 }
 const activeTurns = new Map<string, ActiveTurn>();
+
+/** whenThreadIdle 的等待者：threadId -> 唤醒回调（noteActiveTurn(false) 时结算） */
+const idleWaiters = new Map<string, Array<() => void>>();
+
 export function noteActiveTurn(
   threadId: string,
   active: boolean,
@@ -128,7 +137,28 @@ export function noteActiveTurn(
     const sid = activeTurns.get(threadId)?.sessionId;
     activeTurns.delete(threadId);
     if (sid) send({ type: "turn_changed", sessionId: sid, active: false });
+    const waiters = idleWaiters.get(threadId);
+    if (waiters) {
+      idleWaiters.delete(threadId);
+      for (const wake of waiters) wake();
+    }
   }
+}
+
+/** 该线程当前轮次彻底收尾（dispatchPrompt finally 走过 noteActiveTurn(false)）
+ *  时 resolve；已空闲立即 resolve。刷新改绑要等旧键轮次跑完才动 run.threadId，
+ *  见 protocol.runPromptTurn。busyThreads 一并判：markTurnStart 早于
+ *  noteActiveTurn(true) 的间隙里 activeTurns 还没有条目，只看它会放改绑插进
+ *  两节链之间把执行顺序倒过去；唤醒只挂在 noteActiveTurn(false) 上，而
+ *  dispatchPrompt 的 finally 保证 markTurnStart 之后必然走到它（早退的链节
+ *  也会 noteActiveTurn(false) 空转一次），等待者不会睡死。 */
+export function whenThreadIdle(threadId: string): Promise<void> {
+  if (!activeTurns.has(threadId) && !isTurnBusy(threadId)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const list = idleWaiters.get(threadId);
+    if (list) list.push(resolve);
+    else idleWaiters.set(threadId, [resolve]);
+  });
 }
 
 /** 当前正在跑 turn 的会话 id 清单（list_running 应答） */
@@ -240,6 +270,41 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
   }
 }
 
+/** 线程静默判定：无在跑轮次（activeTurns/busyThreads）且无活跃请求路由
+ *  （activeReqByThread）——三个 busy 窗口都覆盖才算静默，可安全改绑键。 */
+function threadQuiescent(threadId: string): boolean {
+  return !activeTurns.has(threadId) && !isTurnBusy(threadId) && !isPromptActive(threadId);
+}
+
+/**
+ * 把驻留 run 改绑到新的前端 threadId（刷新后键漂移的唯一正确落点）。
+ * 背景：刷新后同一会话的 threadId 从草稿本地 id 变成 sessionId，而
+ * activeReqByThread 登记在新键上、事件路由（onAgentEvent/sendEventChunk）
+ * 按 run.threadId 与工具闭包里烘死的 threadId 查——不改绑则全部内容/旁路
+ * chunk 静默丢弃，只剩显式 reqId 发的 start/finish（"没回复但弹完成通知"）。
+ * 仅在旧线程静默时调用（轮中改绑会把旧轮事件错路由进新请求流）。
+ */
+export async function rebindRunThread(
+  run: Running,
+  oldThreadId: string,
+  newThreadId: string,
+): Promise<void> {
+  if (oldThreadId === newThreadId) return;
+  running.delete(oldThreadId);
+  running.set(newThreadId, run);
+  run.threadId = newThreadId;
+  trackSessionRun(run.sessionId, newThreadId);
+  migrateTodoState(oldThreadId, newThreadId);
+  // 工具整组重建：browser/question/todo/mcp 的闭包烘着 threadId，
+  // 事件推送与挂起归属（cancelPending* 按 threadId 过滤）都靠它
+  run.baseTools = buildTools(run.cwd, newThreadId);
+  const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
+  run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
+  run.agent.state.tools = toolsForMode(run);
+  run.lastSeenAt = Date.now();
+  logErr("session-rebind:", `${oldThreadId} -> ${newThreadId} (${run.sessionId})`);
+}
+
 /**
  * 设置页改动（保存/删除/开关/信任）后的热重载：按各会话自己的 cwd 重取定义、
  * 重建 Task 工具组并重排工具目录（与 rebindRunCwd 同款手法）。
@@ -342,10 +407,19 @@ export async function resolveSession(
   if (sessionId) {
     const owner = findRunBySession(sessionId);
     if (owner) {
-      if (cwd && !owner.run.persistedCwd) {
-        await rebindRunCwd(owner.run, cwd, owner.threadId);
+      // 键漂移即在此收口：旧线程静默时直接把 run 改绑到新 threadId；
+      // 旧轮还在跑则保持原键（改绑会把旧轮事件错路由进新请求），
+      // 由调用方 runPromptTurn 等旧轮收尾后补 rebindRunThread
+      if (owner.threadId !== threadId && threadQuiescent(owner.threadId)) {
+        await rebindRunThread(owner.run, owner.threadId, threadId);
       }
-      touchSession(owner.threadId);
+      if (cwd && !owner.run.persistedCwd) {
+        // 用 run 的当前驻留键（改绑后即新键；未改绑仍是旧键）重建工具，
+        // 保证工具闭包与 run.threadId 永远同键
+        await rebindRunCwd(owner.run, cwd, owner.run.threadId);
+      }
+      // 按 run 的当前驻留键续龄（未改绑时新键不在 running 表里）
+      touchSession(owner.run.threadId);
       return owner.run;
     }
   }

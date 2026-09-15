@@ -142,6 +142,20 @@ export function setSkillEnabled(
   });
 }
 
+/** 批量开关：targets 整表置为目标状态（设置页「全部启用 / 全部关闭」快捷） */
+export function setSkillsEnabled(
+  targets: Array<{ scope: SkillScope; name: string }>,
+  enabled: boolean,
+  cwd?: string | null,
+): Promise<void> {
+  return mutate({
+    type: "set_skills_enabled",
+    targets,
+    enabled,
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
 /** 订阅清单快照；cwd 变化时自动重取（工作区层随所选工作区呈现） */
 export function useSkills(cwd: string | null): SkillsSnapshot {
   const snapshot = useSyncExternalStore(

@@ -22,7 +22,7 @@ import { AssistantMessage } from "./assistant-message";
 import { CompactionDataUI, ManualCompactionTailAfter } from "./compaction-banner";
 import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
-import { CheckpointBar } from "./checkpoint-bar";
+import { CheckpointTail } from "./checkpoint-card";
 import { ThreadPreviewRail } from "./thread-preview-rail";
 import { prewarmShiki } from "@/lib/prewarm-shiki";
 
@@ -137,6 +137,8 @@ export const Thread: FC = () => {
               );
             }}
           </ThreadPrimitive.Messages>
+          {/* 检查点卡兜底尾：仅渲染锚点未知的条目；正常轮次由消息体内的 MessageCheckpoint 挂载 */}
+          <CheckpointTail />
         </div>
 {/*  bg-[color-mix(in_oklab,var(--muted)_55%,var(--background))] */}
         <ThreadPrimitive.ViewportFooter
@@ -147,7 +149,6 @@ export const Thread: FC = () => {
           )}
         >
           <ThreadScrollToBottom />
-          <CheckpointBar />
           <Composer />
           <AuiIf condition={isNewChatView}>
             <div className="aui-thread-welcome-suggestions-shell min-h-19">

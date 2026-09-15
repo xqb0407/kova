@@ -19,27 +19,28 @@ import {
   type GitDiffFile,
 } from "@/lib/git";
 import { refreshGitStatus } from "@/lib/git-status";
-import { openPanelTab } from "@/lib/panel-tabs";
-import { open as openPath } from "@tauri-apps/plugin-shell";
-import { isTauri } from "@/lib/tauri";
-import { clearRunCheckpoint, useRunCheckpoint } from "@/lib/pi-checkpoints";
+import { focusPanelTab, openPanelTab } from "@/lib/panel-tabs";
+import {
+  clearRunCheckpoint,
+  useRunCheckpoints,
+  type CheckpointEntry,
+} from "@/lib/pi-checkpoints";
 import { DiffStats } from "@/components/agent-thread/agent-panel/section-shell";
 import { splitPath, StatusDot } from "@/components/agent-thread/agent-panel/git-files";
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
 import { cn } from "@/lib/utils";
 
 /**
- * 检查点操作条（git 集成 M2）：agent 运行结束后钉在消息流尾部，
- * 汇总"本回合改动了多少"，可展开逐文件列表（+N -N / 审查 / 打开），
- * 提供 保留 / 撤销 两个出口。
+ * 检查点卡（git 集成 M2）：和产物卡一样按轮渲染——每轮改了文件就在该轮
+ * assistant 消息体内钉一张（挂载点见 assistant-message.tsx，产物卡之后、
+ * 操作栏之上），历史轮次的卡各归各轮、互不覆盖。汇总"本回合改动了多少"，
+ * 可展开逐文件列表
+ * （+N -N / 审查 / 打开），只有 撤销 一个出口——改动默认就是保留的，
+ * 卡片是"反悔入口"而非决策门。
  * 撤销是破坏性操作：两步式（先转成确认态再执行），且 Rust 侧对
  * "运行结束时刻"存档的 patch 做 --check 前置，用户事后手改过相关
  * 文件时以 apply-conflict 中止，绝不部分覆盖。
- * 挂载点见 thread.tsx（消息循环之后、composer 之前）。
  */
-
-const joinPath = (cwd: string, rel: string) =>
-  `${cwd.replace(/[\\/]+$/, "")}/${rel.replace(/^[\\/]+/, "")}`;
 
 /** 展开区的逐文件行：状态徽标 + 路径 + 行数统计 + 审查/打开 */
 const CheckpointFileRow: FC<{
@@ -53,11 +54,11 @@ const CheckpointFileRow: FC<{
     openPanelTab("review", { cwd, checkpoint });
     window.dispatchEvent(new Event("agent-panel:open"));
   };
-  const openInSystem = () => {
-    if (!isTauri()) return;
-    void openPath(joinPath(cwd, file.path)).catch(() => {
-      // 系统没有关联程序时静默；文件管理器场景交给审查标签兜底
-    });
+  const openInPanel = () => {
+    // 右侧「文件」标签磁盘实时模式打开（与文件树点击同构）；
+    // focus:undefined 清掉复用标签可能残留的消息快照上下文
+    focusPanelTab("file", { cwd, path: file.path, title: base, focus: undefined });
+    window.dispatchEvent(new Event("agent-panel:open"));
   };
   return (
     <div className="group/row hover:bg-muted/60 flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors">
@@ -92,7 +93,7 @@ const CheckpointFileRow: FC<{
           size="sm"
           variant="ghost"
           className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-xs"
-          onClick={openInSystem}
+          onClick={openInPanel}
         >
           <SquareArrowOutUpRightIcon className="size-3" />
           打开
@@ -102,9 +103,11 @@ const CheckpointFileRow: FC<{
   );
 };
 
-export const CheckpointBar: FC = () => {
-  const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const cp = useRunCheckpoint(threadId ?? undefined);
+/** 单张检查点卡：一条结算条目对应一轮，产物卡同款外观 */
+const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
+  entry: cp,
+  threadId,
+}) => {
   const [expanded, setExpanded] = useState(false);
   const [files, setFiles] = useState<GitDiffFile[] | null>(null);
   const [filesLoading, setFilesLoading] = useState(false);
@@ -114,7 +117,7 @@ export const CheckpointBar: FC = () => {
 
   // 逐文件统计按需加载：折叠态只展示聚合数字，不额外 invoke
   const loadFiles = useCallback(async () => {
-    if (!cp || files || filesLoading) return;
+    if (files || filesLoading) return;
     setFilesLoading(true);
     try {
       const diff = await gitCheckpointDiff(cp.cwd, cp.hash);
@@ -130,14 +133,12 @@ export const CheckpointBar: FC = () => {
     if (expanded) void loadFiles();
   }, [expanded, loadFiles]);
 
-  if (!cp || !threadId) return null;
-
   const revert = async () => {
     setBusy(true);
     setError(null);
     try {
       await gitCheckpointRestore(cp.cwd, cp.hash);
-      clearRunCheckpoint(threadId);
+      clearRunCheckpoint(threadId, cp.hash);
       // 撤销成功即消失；状态/审查视图经 git-changed 事件与这里的显式刷新收敛
       refreshGitStatus(cp.cwd);
     } catch (err) {
@@ -155,14 +156,11 @@ export const CheckpointBar: FC = () => {
 
   return (
     <div
-      data-slot="checkpoint-bar"
-      className={cn(
-        "mx-auto w-full max-w-(--thread-max-width) px-2",
-        "animate-in fade-in-0 slide-in-from-bottom-1 duration-200",
-      )}
+      data-slot="aui_message-checkpoint"
+      className={cn("animate-in fade-in-0 duration-200")}
     >
-      <div className="bg-card/60 border-border/70 rounded-xl border text-xs">
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 px-3 py-2">
+      <div className="bg-muted/40 border-border/60 rounded-xl border text-xs">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 px-3 py-2.5">
           <button
             type="button"
             aria-expanded={expanded}
@@ -217,27 +215,16 @@ export const CheckpointBar: FC = () => {
                 </Button>
               </>
             ) : (
-              <>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="text-muted-foreground hover:text-foreground h-6 px-2 text-xs"
-                  onClick={() => clearRunCheckpoint(threadId)}
-                >
-                  保留
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-6 gap-1 px-2 text-xs"
-                  onClick={() => setConfirming(true)}
-                >
-                  <Undo2Icon className="size-3" />
-                  撤销
-                </Button>
-              </>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-6 gap-1 px-2 text-xs"
+                onClick={() => setConfirming(true)}
+              >
+                <Undo2Icon className="size-3" />
+                撤销
+              </Button>
             )}
           </span>
         </div>
@@ -279,6 +266,49 @@ export const CheckpointBar: FC = () => {
           </div>
         ) : null}
       </div>
+    </div>
+  );
+};
+
+/**
+ * 消息内挂载：渲染在 assistant-message.tsx 的产物卡之后、操作栏之上——
+ * 卡片属于本轮消息本体。命中条件（与库内 MessageRoot 同款判定）：当前
+ * 消息是 assistant，且前一条消息是 user（即本轮首条 assistant 回复）。
+ */
+export const MessageCheckpoint: FC = () => {
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const entries = useRunCheckpoints(threadId ?? undefined);
+  // 选择器只回 number|null（引用稳定）；命中判定放渲染后做
+  const prevUserIndex = useAuiState((s) => {
+    if (s.message.role !== "assistant") return null;
+    const i = s.message.index;
+    if (i <= 0) return null;
+    return s.thread.messages[i - 1]?.role === "user" ? i - 1 : null;
+  });
+  if (!threadId || prevUserIndex === null) return null;
+  const mine = entries.filter((e) => e.anchorIndex === prevUserIndex);
+  if (mine.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-col gap-2 my-3">
+      {mine.map((e) => (
+        <CheckpointCardEntry key={e.hash} entry={e} threadId={threadId} />
+      ))}
+    </div>
+  );
+};
+
+/** 兜底尾：锚点未知的条目（刷新重挂后补结算等）渲染在消息列表末尾 */
+export const CheckpointTail: FC = () => {
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const entries = useRunCheckpoints(threadId ?? undefined);
+  if (!threadId) return null;
+  const orphans = entries.filter((e) => e.anchorIndex === null);
+  if (orphans.length === 0) return null;
+  return (
+    <div className="mx-auto mt-2 flex w-full max-w-(--thread-max-width) flex-col gap-2 px-2">
+      {orphans.map((e) => (
+        <CheckpointCardEntry key={e.hash} entry={e} threadId={threadId} />
+      ))}
     </div>
   );
 };

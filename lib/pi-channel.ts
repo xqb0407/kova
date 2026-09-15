@@ -182,14 +182,25 @@ export class TauriPiChannel implements PiChannel {
     const { requestId, text, threadId, sessionId, cwd, abortSignal } = args;
 
     let unlisten: UnlistenFn | null = null;
+    let unlistenExit: UnlistenFn | null = null;
     let closed = false;
     const cleanup = () => {
       unlisten?.();
       unlisten = null;
+      unlistenExit?.();
+      unlistenExit = null;
     };
 
     const stream = new ReadableStream<UIMessageChunk>({
       start: async (controller) => {
+        // 统一错误收尾：宿主级错误行与 sidecar 退出都以此终结本流
+        const settleError = (errorText: string) => {
+          if (closed) return;
+          closed = true;
+          controller.enqueue({ type: "error", errorText } as UIMessageChunk);
+          cleanup();
+          controller.close();
+        };
         const handleLine = (raw: string) => {
           if (closed) return;
           let parsed: { id?: string | null; chunk?: UIMessageChunk };
@@ -198,7 +209,18 @@ export class TauriPiChannel implements PiChannel {
           } catch {
             return;
           }
-          if (parsed.id !== requestId || !parsed.chunk) return;
+          if (!parsed.chunk) return;
+          // 宿主级错误行（Rust CommandEvent::Error 发 id:null）：不属于任何
+          // requestId，但 sidecar 管道出错后本流等不到收尾行——广播进所有
+          // 打开的流，否则 UI 永久卡在运行态
+          if (parsed.id === null) {
+            if (parsed.chunk.type === "error") {
+              const t = (parsed.chunk as { errorText?: unknown }).errorText;
+              settleError(typeof t === "string" ? t : "pi-agent pipe error");
+            }
+            return;
+          }
+          if (parsed.id !== requestId) return;
           controller.enqueue(parsed.chunk);
           if (parsed.chunk.type === "finish" || parsed.chunk.type === "error") {
             closed = true;
@@ -213,6 +235,17 @@ export class TauriPiChannel implements PiChannel {
         unlisten = await listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
           for (const wire of event.payload) handleLine(wire.l);
         });
+        // sidecar 崩溃/退出：收尾行永远不会再来，pi-exit 是唯一真相——
+        // 以错误终结本流，UI 从运行态解锁（subscribeTurns 只管侧边栏指示）
+        unlistenExit = await listen("pi-exit", () =>
+          settleError("pi-agent exited"),
+        );
+        // cancel 先于监听登记完成（快速点停止/切线程）：撤销刚挂上的监听、
+        // 不再发起 prompt，防监听泄漏
+        if (closed) {
+          cleanup();
+          return;
+        }
 
         try {
           await invoke("pi_prompt", {
@@ -223,17 +256,11 @@ export class TauriPiChannel implements PiChannel {
             cwd,
           });
         } catch (err) {
-          if (closed) return;
-          closed = true;
-          controller.enqueue({
-            type: "error",
-            errorText: err instanceof Error ? err.message : String(err),
-          } as UIMessageChunk);
-          cleanup();
-          controller.close();
+          settleError(err instanceof Error ? err.message : String(err));
         }
       },
       cancel() {
+        closed = true;
         cleanup();
       },
     });
@@ -263,11 +290,22 @@ export class TauriPiChannel implements PiChannel {
     abortSignal,
   }: AttachStreamArgs): Promise<ReadableStream<UIMessageChunk> | null> {
     let unlisten: UnlistenFn | null = null;
+    let unlistenExit: UnlistenFn | null = null;
     let closed = false;
     let controller: ReadableStreamDefaultController<UIMessageChunk> | null = null;
     const cleanup = () => {
       unlisten?.();
       unlisten = null;
+      unlistenExit?.();
+      unlistenExit = null;
+    };
+    // 关流让消息落定（tombstone/sidecar 退出/异常兜底共用；闭包内引用避开
+    // 外层 CFA 对 controller 的 null 收窄）
+    const forceClose = () => {
+      if (closed) return;
+      closed = true;
+      cleanup();
+      controller?.close();
     };
 
     let lastSeq = 0;
@@ -314,6 +352,14 @@ export class TauriPiChannel implements PiChannel {
         if (wire.i !== null && wire.i !== undefined) feed(wire.i, wire.l);
       }
     });
+    // sidecar 退出：重放缓冲随进程作废、收尾行永不再来——关流让已重放
+    // 的部分落定，不留永久挂起的假流
+    unlistenExit = await listen("pi-exit", () => forceClose());
+    // cancel 先于监听登记完成：撤销刚挂上的监听并放弃 attach
+    if (closed) {
+      cleanup();
+      return null;
+    }
 
     let reply: AttachReply;
     try {
@@ -331,13 +377,6 @@ export class TauriPiChannel implements PiChannel {
       if (wire.i !== null && wire.i !== undefined) feed(wire.i, wire.l);
     }
     // tombstone 但未见收尾行（sidecar 异常终止等理论竞态）：关流让消息落定
-    // （闭包内引用避开外层 CFA 对 controller 的 null 收窄）
-    const forceClose = () => {
-      if (closed) return;
-      closed = true;
-      cleanup();
-      controller?.close();
-    };
     if (!reply.active && !closed) forceClose();
     abortSignal?.addEventListener(
       "abort",

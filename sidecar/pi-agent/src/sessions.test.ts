@@ -21,7 +21,11 @@ import {
   running,
   touchSession,
   trackSessionRun,
+  whenThreadIdle,
 } from "./sessions";
+import { getTodoState, replayTodoFromMessages } from "./todo";
+import { TODO_TOOL_NAME } from "./todo-state";
+import { isPromptActive, setActiveReqId } from "./stream";
 import type { Running } from "./types";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-sessions-"));
@@ -136,15 +140,18 @@ describe("sessions：LRU 驻留上限", () => {
 });
 
 describe("sessions：刷新后 thread id 漂移（sessionId 反查索引）", () => {
-  test("resolveSession 按 sessionId 找回驻留 run，不物化第二个 Agent", async () => {
+  test("resolveSession 按 sessionId 找回驻留 run 并改绑新键，不物化第二个 Agent", async () => {
     const run = await resolveSession("drift-draft", undefined, tmp);
     const sid = run.sessionId;
-    // 模拟刷新后：列表行 id 即 sessionId，审批结算等请求带的是新键
+    // 模拟刷新后：列表行 id 即 sessionId，审批结算等请求带的是新键。
+    // 静默 run 直接改绑到新键（旧键摘除，全程仍只有一个驻留键）
     const again = await resolveSession(sid, sid, tmp);
     expect(again).toBe(run);
-    expect(running.has(sid)).toBe(false); // 绝不再开第二个驻留键
-    expect(running.get("drift-draft")).toBe(run); // 仍挂在原草稿键下
-    dropRun("drift-draft");
+    expect(run.threadId).toBe(sid);
+    expect(running.get(sid)).toBe(run);
+    expect(running.has("drift-draft")).toBe(false);
+    expect(findRunBySession(sid)?.threadId).toBe(sid);
+    dropRun(sid);
   });
 
   test("findRunBySession 命中与陈旧索引自愈", () => {
@@ -172,5 +179,80 @@ describe("sessions：刷新后 thread id 漂移（sessionId 反查索引）", ()
     await dispatch("ab-1", { type: "abort", threadId: sid });
     expect(run.stopRequested).toBe(true);
     dropRun("abort-draft");
+  });
+});
+
+describe("sessions：刷新改绑（rebindRunThread）", () => {
+  test("旧线程有活跃 turn ⇒ 跳过改绑；轮次收尾后再 resolve 即完成改绑", async () => {
+    const run = await resolveSession("rb-busy", undefined, tmp);
+    const sid = run.sessionId;
+    noteActiveTurn("rb-busy", true, sid, "req-rb");
+    try {
+      const again = await resolveSession(sid, sid, tmp);
+      expect(again).toBe(run);
+      // 旧轮未收尾：键不动（改绑会把旧轮事件错路由进新请求）
+      expect(run.threadId).toBe("rb-busy");
+      expect(running.has("rb-busy")).toBe(true);
+      expect(running.has(sid)).toBe(false);
+    } finally {
+      noteActiveTurn("rb-busy", false);
+    }
+    await resolveSession(sid, sid, tmp);
+    expect(run.threadId).toBe(sid);
+    expect(running.has("rb-busy")).toBe(false);
+    dropRun(sid);
+  });
+
+  test("whenThreadIdle：活跃时挂起，noteActiveTurn(false) 唤醒；空闲立即 resolve", async () => {
+    noteActiveTurn("rb-idle", true, "sess-idle");
+    let resolved = false;
+    const pending = whenThreadIdle("rb-idle").then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    noteActiveTurn("rb-idle", false);
+    await pending;
+    expect(resolved).toBe(true);
+    await whenThreadIdle("rb-idle"); // 已空闲：不挂起
+  });
+
+  test("改绑迁移 todo 槽位：清单挂到新键、旧键清空", async () => {
+    const run = await resolveSession("rb-todo", undefined, tmp);
+    const sid = run.sessionId;
+    replayTodoFromMessages("rb-todo", [
+      {
+        role: "toolResult",
+        toolName: TODO_TOOL_NAME,
+        details: {
+          tasks: [{ id: 1, subject: "t", status: "pending" }],
+          nextId: 2,
+        },
+      },
+    ]);
+    expect(getTodoState("rb-todo").tasks.length).toBe(1);
+    await resolveSession(sid, sid, tmp);
+    expect(getTodoState(sid).tasks.length).toBe(1);
+    expect(getTodoState("rb-todo").tasks.length).toBe(0);
+    dropRun(sid);
+  });
+
+  test("改绑后工具闭包与 run.threadId 同键（sendEventChunk 路由不再落空）", async () => {
+    const run = await resolveSession("rb-tools", undefined, tmp);
+    const sid = run.sessionId;
+    await resolveSession(sid, sid, tmp);
+    expect(run.threadId).toBe(sid);
+    // question/todo 工具按 threadId 归属：重建后挂起/推送都走新键
+    const names = run.baseTools.map((t) => t.name);
+    expect(names.length).toBeGreaterThan(0);
+    // 新键登记活跃请求 + 旧键查无残留路由
+    setActiveReqId(sid, "req-rb-tools");
+    try {
+      expect(isPromptActive(sid)).toBe(true);
+      expect(isPromptActive("rb-tools")).toBe(false);
+    } finally {
+      setActiveReqId(sid, null);
+    }
+    dropRun(sid);
   });
 });
