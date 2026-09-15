@@ -26,7 +26,22 @@ import { getUiPrefs } from "@/lib/ui-prefs";
 // 申请失败（无权限/服务异常）缓存为 false，不在每个事件上重试。
 let permission: Promise<boolean> | null = null;
 
-async function notifyDesktop(title: string, body: string): Promise<void> {
+/**
+ * 发一条桌面通知。带 session（如定时任务完成帧的真实会话）时走 Rust
+ * notify_show：桌面插件没有点击回调，改由 Rust 记下"待发会话"，用户点击通知
+ * 卡片激活应用 → 窗口回焦时 lib/notify 取走并打开该会话；
+ * Rust 命令失败则降级回 JS 路径（只丢跳转，不丢通知）。
+ */
+async function notifyDesktop(title: string, body: string, session?: string): Promise<void> {
+  if (session) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("notify_show", { title, body, session });
+      return;
+    } catch {
+      // 落到下面的 JS 插件路径
+    }
+  }
   const n = await import("@tauri-apps/plugin-notification");
   permission ??= n
     .requestPermission()
@@ -72,7 +87,7 @@ export function initNotifyPopups(): void {
     if (!entry) return; // system.test 不弹窗
     if (!getUiPrefs().popupEnabled) return;
     if (document.hasFocus()) return; // 窗口在前台：看得见，不必打扰
-    void notifyDesktop(entry.label, notifyBody(event, entry.desc)).catch(() => {
+    void notifyDesktop(entry.label, notifyBody(event, entry.desc), event.threadId).catch(() => {
       // 通知服务不可用不影响主流程
     });
   });

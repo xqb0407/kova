@@ -8,6 +8,7 @@ mod git;
 mod gpu;
 mod http;
 mod logging;
+mod notify;
 mod pi_agent;
 mod pty;
 mod remote;
@@ -50,6 +51,18 @@ pub fn run() {
             appearance::restore(app.handle());
             // 恢复开发者模式（WebView DevTools）
             about::restore(app.handle());
+            // 预热拉起 pi-agent sidecar：自动化调度器住在 sidecar 内，必须早于用户
+            // 首条消息存活（否则 app 开着没聊过天时定时任务不会触发）。失败仅记日志，
+            // 聊天链路仍会经 ensure_spawned 懒拉起重试。
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<PiState>();
+                    if let Err(e) = pi_agent::ensure_spawned(&app_handle, &state).await {
+                        log::error!("[pi_agent] warm start failed: {e}");
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -99,6 +112,8 @@ pub fn run() {
             fs::fs_list_dir,
             fs::fs_read_file,
             http::http_post,
+            notify::notify_show,
+            notify::notify_consume_pending_session,
             webhook::webhook_delivery_add,
             webhook::webhook_delivery_list,
             webhook::webhook_delivery_delete,

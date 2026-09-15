@@ -18,6 +18,7 @@ export type ShortcutActionId =
   | "toggleSidebar"
   | "newThread"
   | "openSettings"
+  | "openAutomations"
   | "toggleAgentPanel"
   | "sendMessage"
   | "newline";
@@ -77,6 +78,13 @@ export const SHORTCUT_ACTIONS: {
     desc: "进入设置页",
     scope: "global",
     default: { key: ",", mod: true, shift: false, alt: false },
+  },
+  {
+    id: "openAutomations",
+    label: "打开自动化",
+    desc: "进入自动化任务管理页",
+    scope: "global",
+    default: { key: "a", mod: true, shift: true, alt: false },
   },
   {
     id: "sendMessage",

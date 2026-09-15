@@ -2,7 +2,11 @@
 
 import { useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi-bridge";
-import { piSessionRegistry } from "@/lib/pi-thread-adapter";
+import {
+  piSessionRegistry,
+  piSessionPrefsMap,
+  prefsSessionIdFor,
+} from "@/lib/pi-thread-adapter";
 
 /**
  * 会话模式与计划状态（pi-agent sidecar 的 modes.ts 状态机镜像）。
@@ -111,10 +115,30 @@ export function setSessionMode(
 /**
  * 拉取 sidecar 侧模式快照并水合本地 store：页面刷新/切线程后 mode-picker
  * 内存快照丢失，用请求-响应恢复（无运行中 turn 也有效）。
- * 没有已知 sessionId 的线程直接跳过：sidecar 不可能持有它的特殊模式，
+ * 先用会话列表带来的持久化偏好播种（sidecar 重启/Running 被驱逐也能恢复 UI，
+ * live 状态随后覆盖），再向 sidecar 拉活动真值。
+ * 没有任何已知 sessionId 的线程直接跳过请求：sidecar 不可能持有它的特殊模式，
  * 而请求会懒建会话（污染）。
  */
 export function fetchPlanningState(threadId: string): Promise<void> {
-  if (!piSessionRegistry.get(threadId)) return Promise.resolve();
+  const sessionId = prefsSessionIdFor(threadId);
+  const prefs = sessionId ? piSessionPrefsMap.get(sessionId) : undefined;
+  if (prefs && (prefs.mode === "agent" || prefs.mode === "plan")) {
+    setSnapshot(threadId, {
+      mode: prefs.mode,
+      approvalLevel:
+        prefs.approvalLevel === "auto-edit" || prefs.approvalLevel === "auto"
+          ? prefs.approvalLevel
+          : "ask",
+      planning: "inactive",
+    });
+  }
+  const registryId = piSessionRegistry.get(threadId);
+  if (!registryId) {
+    // registry 未登记但 threadId 本身是已知 sessionId（刷新后恢复的线程）：
+    // 同样可以安全请求（不会懒建新会话）
+    if (!sessionId) return Promise.resolve();
+    return requestMode(threadId, { type: "get_planning_state", sessionId });
+  }
   return requestMode(threadId, { type: "get_planning_state" });
 }

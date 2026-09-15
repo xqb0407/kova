@@ -76,6 +76,31 @@ export type SubagentActivityItem =
 /** list_running turns 明细项：一个确定在跑的轮次（会话 + 其 prompt requestId） */
 export type PiRunningTurn = { sessionId: string; requestId: string };
 
+/**
+ * 定时任务自发通知帧（sidecar automation 调度器钩子发出，无 id；
+ * 帧格式契约见 sidecar/pi-agent/src/protocol.ts 头注释"自发通知"节）。
+ */
+export type PiAutomationFrame =
+  | {
+      type: "automation_fired";
+      taskId: string;
+      taskName: string;
+      taskType: string;
+      runId: string;
+      firedAt: string;
+    }
+  | {
+      type: "automation_run_done";
+      taskId: string;
+      taskName: string;
+      runId: string;
+      ok: boolean;
+      /** 本次运行新建的真实 agent 会话 id（调度错误路径可能缺省） */
+      sessionId?: string;
+      error?: string;
+      finishedAt: string;
+    };
+
 export interface PiChannel {
   readonly kind: "tauri" | "ws";
   /** 管理类请求-响应；id 注入由实现负责（Tauri 侧 Rust 注入，WS 侧 JS 注入） */
@@ -116,6 +141,14 @@ export interface PiChannel {
    */
   subscribeSubagentActivity?(
     cb: (delegationId: string, item: SubagentActivityItem) => void,
+  ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（同款无 id 自发通知通道）：订阅定时任务通知帧
+   * （automation_fired / automation_run_done，见 PiAutomationFrame）。
+   * WS 通道经网关白名单转发（remote.rs broadcast_notification）。
+   */
+  subscribeAutomationEvents?(
+    cb: (frame: PiAutomationFrame) => void,
   ): (() => void) | Promise<() => void>;
   /** 能力可选（与 subscribeTurns 成对）：当前正在跑 turn 的会话 id 种子清单 */
   listRunning?(): Promise<string[]>;
@@ -462,6 +495,37 @@ export class TauriPiChannel implements PiChannel {
         }
         if (typeof parsed.delegationId === "string" && parsed.item) {
           cb(parsed.delegationId, parsed.item);
+        }
+      }
+    });
+  }
+
+  /**
+   * automation_fired / automation_run_done 自发通知帧（无 id，Rust 原样广播）：
+   * 与 subscribeSubagentActivity 同款前缀预筛（触发频率低，但热路径原则一致）。
+   */
+  async subscribeAutomationEvents(
+    cb: (frame: PiAutomationFrame) => void,
+  ): Promise<() => void> {
+    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+      for (const wire of event.payload) {
+        if (
+          !wire.l.startsWith('{"type":"automation_fired"') &&
+          !wire.l.startsWith('{"type":"automation_run_done"')
+        ) {
+          continue;
+        }
+        let parsed: PiAutomationFrame;
+        try {
+          parsed = JSON.parse(wire.l);
+        } catch {
+          continue;
+        }
+        if (
+          (parsed?.type === "automation_fired" || parsed?.type === "automation_run_done") &&
+          typeof parsed.taskId === "string"
+        ) {
+          cb(parsed);
         }
       }
     });

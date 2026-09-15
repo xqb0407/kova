@@ -4,7 +4,7 @@
  * Agent 生命周期事件总线：transport / 审批 / 提问 store 在关键节点 emit，
  * 提示音（sounds.ts）与 webhook（webhook-dispatcher.ts）作为订阅者消费。
  * 新增事件 = 扩展 AgentEventName + 注册表加一行，设置页与 webhook 订阅
- * 列表自动跟随。命名空间预留：agent.* / system.*（未来 mcp.* / skill.*）。
+ * 列表自动跟随。命名空间：agent.* / automation.* / system.*（未来 mcp.* / skill.*）。
  */
 
 export type AgentEventName =
@@ -12,6 +12,8 @@ export type AgentEventName =
   | "agent.turn.error"
   | "agent.approval.pending"
   | "agent.question.pending"
+  | "automation.task.completed"
+  | "automation.task.failed"
   | "system.test";
 
 export interface AgentEvent {
@@ -53,6 +55,18 @@ export const AGENT_EVENT_REGISTRY: {
     name: "agent.turn.error",
     label: "运行出错",
     desc: "本轮运行异常终止",
+    tone: "error",
+  },
+  {
+    name: "automation.task.completed",
+    label: "定时任务完成",
+    desc: "自动化定时任务一次运行成功结束",
+    tone: "complete",
+  },
+  {
+    name: "automation.task.failed",
+    label: "定时任务失败",
+    desc: "自动化定时任务运行出错或被中止",
     tone: "error",
   },
 ];

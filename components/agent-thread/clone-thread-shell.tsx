@@ -79,6 +79,9 @@ type CloneThreadShellProps = {
   onCollapsedChange?: ((value: boolean) => void) | undefined;
   mobileSidebarOpen?: boolean | undefined;
   onMobileSidebarOpenChange?: ((value: boolean) => void) | undefined;
+  /** 受控菜单选中项：由外壳宿主据此切换主区视图（如 "automation"） */
+  activeMenu?: string | undefined;
+  onActiveMenuChange?: ((value: string) => void) | undefined;
   onOpenSettings?: (() => void) | undefined;
   headerContent?: ReactNode | undefined;
   sheetTitle?: ReactNode | undefined;
@@ -91,14 +94,23 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   onCollapsedChange,
   mobileSidebarOpen,
   onMobileSidebarOpenChange,
+  activeMenu,
+  onActiveMenuChange,
   onOpenSettings,
   headerContent,
   sheetTitle,
 }) => {
   const [internalCollapsed, setInternalCollapsed] = useState(true);
   const [internalMobileOpen, setInternalMobileOpen] = useState(false);
-  // 「新对话」是常驻入口而非可选中项，不参与高亮；初始无选中
-  const [activeMenu, setActiveMenu] = useState<string>("");
+  // 「新对话」是常驻入口而非可选中项，不参与高亮；初始无选中。
+  // 受控时（宿主按选中项切换主区视图）内部不再持有，见 collapsed 同款模式。
+  const [internalActiveMenu, setInternalActiveMenu] = useState<string>("");
+  const menuControlled = activeMenu !== undefined;
+  const currentMenu = activeMenu ?? internalActiveMenu;
+  const setActiveMenu = (value: string) => {
+    if (!menuControlled) setInternalActiveMenu(value);
+    onActiveMenuChange?.(value);
+  };
   const [activeTab, setActiveTab] = useState<string>("tasks");
   // 项目分组的展开状态提升到 shell：「展开全部/收起全部」按钮与列表共用
   const [projOpenDirs, setProjOpenDirs] = useState<Set<string>>(
@@ -169,6 +181,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       return;
     }
     setActiveMenu(item.id);
+    // 菜单项切换的是主区页面：移动端抽屉里点完收起，让视图可见
+    setMobileOpen(false);
   };
 
   // A controlled value means the caller renders the chrome that drives it, so
@@ -188,17 +202,25 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     onMobileSidebarOpenChange?.(open);
   };
 
+  const isNavigationClick = (target: EventTarget | null) =>
+    target instanceof Element &&
+    !!target.closest(
+      '[data-slot="aui_thread-list-item-trigger"], [data-slot="aui_thread-list-new"]',
+    );
+
   const closeMobileSidebarAfterNavigation = (
     event: MouseEvent<HTMLDivElement>,
   ) => {
-    if (!(event.target instanceof Element)) return;
-    if (
-      event.target.closest(
-        '[data-slot="aui_thread-list-item-trigger"], [data-slot="aui_thread-list-new"]',
-      )
-    ) {
-      setMobileOpen(false);
-    }
+    if (!isNavigationClick(event.target)) return;
+    setMobileOpen(false);
+    // 会话行/新对话是对话区元素：点回对话时清掉页面选中（如自动化）
+    setActiveMenu("");
+  };
+
+  // 桌面侧：同样的委托挂在线列表面板（tasks 与 projects 两个 tab 共用），
+  // 管理页占住主区时点任意会话即切回对话
+  const clearMenuAfterNavigation = (event: MouseEvent<HTMLDivElement>) => {
+    if (isNavigationClick(event.target)) setActiveMenu("");
   };
 
   const menuItems = [
@@ -305,7 +327,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     // 自带的 hover 底色，避免与高亮叠加
                     "h-8 w-full text-sm justify-between gap-2 rounded-md px-2.5  font-normal hover:bg-transparent dark:hover:bg-transparent",
                     sidebarCollapsed && "w-8 justify-center px-2",
-                    !item.isNew && activeMenu === item.id && "bg-selected",
+                    !item.isNew && currentMenu === item.id && "bg-selected",
                   )}
                   onClick={() => handleMenuClick(item)}
                   aria-label={item.label}
@@ -378,6 +400,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         )}
 
         <ThreadListRoot
+          onClick={clearMenuAfterNavigation}
           className={cn(
             // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
             // 整个 aside 列、把上方 tabs 行顶上去——溢出滚动必须锁在本容器内
@@ -471,7 +494,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     variant="ghost"
                     className={cn(
                       "h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent",
-                      !item.isNew && activeMenu === item.id && "bg-selected",
+                      !item.isNew && currentMenu === item.id && "bg-selected",
                     )}
                     onClick={() => handleMenuClick(item)}
                     aria-label={item.label}
@@ -597,7 +620,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 <CommandItem
                   value="action:new-thread"
                   keywords={["新对话"]}
-                  onSelect={() => setSearchOpen(false)}
+                  onSelect={() => {
+                    setSearchOpen(false);
+                    setActiveMenu("");
+                  }}
                 >
                   <PlusIcon className="size-4" />
                   <span>新对话</span>
@@ -619,6 +645,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                       onSelect={() => {
                         aui.threads.switchToThread(id);
                         setSearchOpen(false);
+                        setActiveMenu("");
                       }}
                     >
                       <MessageSquareIcon className="size-4 shrink-0" />

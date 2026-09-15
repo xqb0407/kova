@@ -33,8 +33,10 @@ import type {
   BeforeToolCallResult,
 } from "@earendil-works/pi-agent-core";
 import { SYSTEM_PROMPT_CORE, environmentPromptBlock } from "./tools";
+import { kvSet, sessionPrefsSet } from "./hostdb";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "./subagent-mgmt-tools";
 import { SKILL_MGMT_TOOL_NAMES } from "./skill-mgmt-tools";
+import { getAutomationPolicy, automationDenyReason } from "./automation/policy";
 import { personalizationPromptBlock } from "./personalization";
 import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "./mcp-tools";
@@ -359,6 +361,15 @@ export function modeBeforeToolCall(
     };
   }
   if (!isPlanTool) return undefined;
+  // 无人值守自动化：plan_exit 的模式级 HITL 会永久挂起，禁止进入 plan 模式，
+  // 从结构上让 plan_exit 不可达（agent 直接以当前档位执行）
+  if (getAutomationPolicy(run.threadId)) {
+    return {
+      block: true,
+      reason:
+        "Unattended automation run: plan mode is unavailable (its HITL approval cannot be answered). Proceed directly under the current tool policy.",
+    };
+  }
   if (name === PLAN_TOOL_NAMES.enter && run.mode !== "agent") {
     return { block: true, reason: `${name} is available only in Agent mode.` };
   }
@@ -384,6 +395,17 @@ export async function approvalBeforeToolCall(
   if (context.context) run.loopContext = context.context;
   const gated = modeBeforeToolCall(run, context);
   if (gated) return gated;
+  // 无人值守自动化 turn：需审批的工具按档位即时裁决（read-only 全拒 /
+  // workspace-write 拒 bash / full 放行），永不挂起等待前端 tool_confirm
+  const autoPolicy = getAutomationPolicy(run.threadId);
+  if (autoPolicy && APPROVAL_REQUIRED_TOOLS.has(context.toolCall.name)) {
+    const allow =
+      autoPolicy === "full" ||
+      (autoPolicy === "workspace-write" && context.toolCall.name !== "bash");
+    return allow
+      ? undefined
+      : { block: true, reason: automationDenyReason(autoPolicy, context.toolCall.name) };
+  }
   if (run.approvalLevel === "auto") return undefined;
   if (!APPROVAL_REQUIRED_TOOLS.has(context.toolCall.name)) return undefined;
   if (run.approvalLevel === "auto-edit" && context.toolCall.name !== "bash") {
@@ -438,6 +460,17 @@ export function clearPendingToolApprovals(run: Running): void {
 
 /* ------------------------------ 模式切换与状态推送 ------------------------------ */
 
+/**
+ * 模式偏好落库（applyMode 末尾调用，覆盖 set_mode / plan_enter / plan_exit
+ * 批准全部切换路径）：写会话偏好行 + kv「最近一次使用」（新会话初始模式取这份）。
+ * 同步函数内 fire-and-forget：落库失败不影响模式切换本身。
+ */
+function persistModePrefs(run: Running): void {
+  const prefs = { mode: run.mode, approvalLevel: run.approvalLevel };
+  void sessionPrefsSet(run.sessionId, prefs).catch(() => {});
+  void kvSet("pi.mode", JSON.stringify(prefs)).catch(() => {});
+}
+
 /** 切换模式：热替换 systemPrompt/tools 并推进计划状态（plan_write 的计划文件路径跨切换保留） */
 export function applyMode(run: Running, mode: SessionMode): void {
   run.mode = mode;
@@ -453,6 +486,7 @@ export function applyMode(run: Running, mode: SessionMode): void {
     run.loopContext.systemPrompt = prompt;
     run.loopContext.tools = tools;
   }
+  persistModePrefs(run);
 }
 
 /** 当前模式状态的对外快照（响应/chunk 共用） */

@@ -28,6 +28,7 @@ import {
 import { getValidTools, type McpToolMeta } from "./mcp-cache";
 import { mcpManager } from "./mcp-manager";
 import { formatMcpContent, boundMcpResult, type McpCallResult } from "./mcp-output-guard";
+import { getAutomationPolicy } from "./automation/policy";
 import { logErr } from "./log";
 
 /** search 返回条数上限（与 grep 的 MAX_MATCH_ENTRIES 同哲学：有界） */
@@ -411,6 +412,8 @@ async function requestMcpApproval(
   fullName: string,
   args: Record<string, unknown>,
 ): Promise<boolean> {
+  // 无人值守自动化：MCP 属外部副作用，仅 full 档放行；否则即时拒绝、不挂起
+  if (getAutomationPolicy(threadId)) return getAutomationPolicy(threadId) === "full";
   const approvalId = `${toolCallId}:mcp`;
   const input = { action: "call", server, tool: fullName, args };
   sendEventChunk(threadId, {

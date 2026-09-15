@@ -188,13 +188,19 @@ export const Header: FC<{
   onOpenMobileSidebar: () => void;
   panelOpen: boolean;
   onTogglePanel: () => void;
+  /** session = 聊天会话顶栏（默认）；page = 整页管理视图（自动化/计划等）的
+   *  纯窗口边框条：隐藏会话专属元素（标题/徽章/重命名/面板开关）且无分隔线，
+   *  页面身份由视图自身的大标题承载 */
+  variant?: "session" | "page";
 }> = ({
   sidebarCollapsed,
   onToggleSidebar,
   onOpenMobileSidebar,
   panelOpen,
   onTogglePanel,
+  variant = "session",
 }) => {
+  const pageMode = variant === "page";
   // 桌面端自绘 titlebar：拖拽区所有桌面端生效；红绿灯让位仅 macOS（Windows 隐藏系统
   // 标题栏后由 WindowControls 接管，网页端无窗口 chrome）
   const desktop = isTauri();
@@ -216,7 +222,8 @@ export const Header: FC<{
       className={cn(
         // 左 padding 随折叠变化（macOS 红绿灯让位），与折叠按钮槽同节拍过渡，
         // 标题被连续挤开而不是瞬间跳位
-        "flex h-12 shrink-0 items-center gap-2 border-b-[0.5] transition-[padding] duration-200",
+        "flex h-12 shrink-0 items-center gap-2 transition-[padding] duration-200",
+        !pageMode && "border-b-[0.5]",
         // Windows 三键贴窗口右上角，去掉右 padding；其余环境保持 pr-4
         winControls ? "pr-0" : "pr-4",
         sidebarCollapsed && mac ? "md:pl-24" : "pl-4",
@@ -254,14 +261,12 @@ export const Header: FC<{
         </TooltipIconButton>
       </div>
       
-      <ThreadTitle />
+      {/* 整页视图不属于任何会话：标题/徽章/重命名/面板开关都让位给页面自身 */}
+      {pageMode ? null : <ThreadTitle />}
       {/* 所选工作区目录 + git 分支 tag（未选目录时不显示），位于「更多」按钮左侧 */}
-      {
-      
-        !isEmptyThread &&  <WorkspaceBadge />
-      }
+      {!pageMode && !isEmptyThread && <WorkspaceBadge />}
       {/* 标题右侧「更多」菜单 + 重命名任务 dialog（空会话不渲染） */}
-      {isEmptyThread ? null : (
+      {pageMode || isEmptyThread ? null : (
         <>
           <HeaderMoreMenu
             canRename={canRename}
@@ -280,7 +285,9 @@ export const Header: FC<{
       )}
       {/* Agent 面板开关：贴右缘（Share 左侧），收起时有活动则亮角标 */}
       <div className="ml-auto flex shrink-0 items-center">
-        <PanelToggleButton panelOpen={panelOpen} onToggle={onTogglePanel} />
+        {pageMode ? null : (
+          <PanelToggleButton panelOpen={panelOpen} onToggle={onTogglePanel} />
+        )}
       </div>
       {/* 窗口控制固定在窗口右上角（主 Header 右缘即窗口右缘）；仅 Windows/Linux 渲染 */}
       <WindowControls />

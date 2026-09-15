@@ -26,6 +26,7 @@ import {
   PlusIcon,
   SearchIcon,
   TrashIcon,
+  ZapIcon,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { EASE_OUT, SPRING_LAYOUT, SPRING_SWAP } from "@/lib/ease";
@@ -37,6 +38,10 @@ import {
 import { forkPiSession, piSessionCwdMap } from "@/lib/pi-thread-adapter";
 import { usePiSessionRunning } from "@/lib/pi-running";
 import { useThreadActivity } from "@/lib/pi-last-activity";
+import {
+  requestAutomationFocus,
+  useAutomationTaskIdForSession,
+} from "@/lib/automations";
 import { toast } from "@/components/ui/toast";
 import {
   AlertDialog,
@@ -755,6 +760,8 @@ export const ThreadListItem: FC = () => {
   // 短路，isRunning 为 true 的那次渲染整个跳过 hook ⇒ hook 顺序抖动
   const runningExternally = usePiSessionRunning(remoteId);
   const showRunning = isRunning || runningExternally;
+  // 定时任务出身标记（run_done 帧记账的 session→task 映射）：⚡ 徽标 + 定位
+  const automationTaskId = useAutomationTaskIdForSession(remoteId);
   const title = useAuiState((s) => s.threadListItem.title) ?? "";
   // 「距最后一条消息」的固定用时；渲染时算一次，运行中直接显示「刚刚」。
   // 列表快照的 lastMessageAt 要等 reload 才更新，叠加本地活动时间戳
@@ -819,6 +826,18 @@ export const ThreadListItem: FC = () => {
             data-[running=true]:visible
           "
         />
+        {automationTaskId && (
+          <ZapIcon
+            aria-label="定时任务发起的会话"
+            onClick={(e) => {
+              // 不切换会话：请求宿主切到自动化管理页并滚动定位任务卡片
+              e.preventDefault();
+              e.stopPropagation();
+              requestAutomationFocus(automationTaskId);
+            }}
+            className="text-muted-foreground hover:text-foreground me-1.5 size-3 shrink-0 cursor-pointer"
+          />
+        )}
         <MarqueeTitle data-slot="aui_thread-list-item-title">
           <ThreadListItemPrimitive.Title fallback="新对话" />
         </MarqueeTitle>

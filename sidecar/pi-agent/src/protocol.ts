@@ -60,6 +60,13 @@
  *   { "type": "save_subagent", "id", "scope", "cwd"?, ("definition"|"raw"), "name"? } → 校验后写 <app_data>/subagents 或 <cwd>/.xulux/subagents 的 YAML + 热重载 → 同款 subagents 应答（name=编辑前原名，改名时清旧文件）
  *   { "type": "delete_subagent", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 subagents 应答（内置不可删）
  *   { "type": "set_subagent_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 subagents 应答
+ *   { "type": "automation_list", "id" }                        → { id, type: "automation_list", tasks }
+ *   { "type": "automation_save", "id", "task" }                → 无 task.id 建 / 有则全量覆盖（排期经 resolveScheduledTaskDefinition 校验）→ automation_list 应答
+ *   { "type": "automation_delete", "id", "taskId" }            → 删任务 → automation_list 应答
+ *   { "type": "automation_set_enabled", "id", "taskId", "enabled" } → 开关排期 → automation_list 应答
+ *   { "type": "automation_run_now", "id", "taskId" }           → 立即触发一次（结果经 automation_run_done 自发帧）→ automation_list 应答
+ *   { "type": "automation_preview", "id", "scheduleType", "schedule", "count"? } → { id, type: "automation_preview", runs } 或 { id, type: "automation_preview", error }（排期校验红字提示，不占调度器）
+ *   { "type": "automation_templates", "id" }                   → { id, type: "automation_templates", templates }（预置模板清单，见 automation/templates.ts）
  *   { "type": "list_skills", "id", "cwd"? }                   → { id, type: "skills", skills, workspaceCwd, diagnostics }
  *       技能清单（<cwd>/.xulux/skills、<app_data>/skills 可编辑 + 生态 .agents/skills 只读合并，
  *       同名遮蔽 工作区>生态·工作区>系统>生态·用户）；设置 → 技能页渲染用
@@ -140,6 +147,12 @@
  *   { "type": "subagent_activity", "delegationId": "...", "item": SubagentActivityItem }
  *       子代理运行活动（思考/正文增量、工具起止、轮次、结算终态）；父 turn 已结束后
  *       后台委派继续广播；前端 store 按 delegationId 归并，面板 tab 流式渲染
+ *   { "type": "automation_fired", "taskId", "taskName", "taskType", "runId", "firedAt" }
+ *       定时任务触发开始运行（调度器 onTaskStarted 钩子，见 automation/runtime.ts）
+ *   { "type": "automation_run_done", "taskId", "taskName", "runId", "ok",
+ *     "sessionId"?, "error"?, "finishedAt" }
+ *       该次运行结算（成功/失败）；sessionId 为本次新建的真实 agent 会话
+ *       （onTaskFailed 的调度错误路径可能缺省）
  */
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -165,9 +178,11 @@ import {
   sessionDelete,
   sessionInsert,
   sessionList,
+  sessionPrefsSet,
   sessionRename,
   sessionSetArchived,
   sessionTouch,
+  kvSet,
 } from "./hostdb";
 import {
   applyRowToCatalogModel,
@@ -297,6 +312,15 @@ import {
   resolveQuestionAnswer,
   type QuestionAnswerItem,
 } from "./question-tools";
+import {
+  automationDeletePayload,
+  automationListPayload,
+  automationPreviewPayload,
+  automationRunNowPayload,
+  automationSavePayload,
+  automationSetEnabledPayload,
+  automationTemplatesPayload,
+} from "./automation/commands";
 import type { CustomModelSpec, Running, SessionSummary } from "./types";
 
 /** 子智能体清单应答负载：设置页与所有变更命令共用同一形状（改后即见） */
@@ -538,8 +562,16 @@ function isAlreadyProcessingError(err: unknown): boolean {
   return text.includes("Agent is already processing");
 }
 
+/** turn 结算结果（onOutcome 回传给调用方；错误以 chunk 下发、不抛出，
+ *  无人值守 runner 需要程序化判定成败时经此回调观察） */
+export type PromptTurnOutcome = { ok: boolean; errorText?: string };
+
 /** prompt 入口：排队判定后沿所属线程的串行链执行（prompt 长任务依旧不占 mgmtQueue） */
-export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>) {
+export async function dispatchPrompt(
+  reqId: string,
+  msg: Record<string, unknown>,
+  onOutcome?: (outcome: PromptTurnOutcome) => void,
+) {
   const threadId = String(msg.threadId ?? "default");
 
   // 本线程上一轮未结束（或本线程队列非空）→ 进该线程 FIFO 队列，前端经
@@ -593,7 +625,9 @@ export async function dispatchPrompt(reqId: string, msg: Record<string, unknown>
       typeof turnMsg.sessionId === "string" ? turnMsg.sessionId : undefined,
       turnReqId,
     );
-    await runPromptTurn(turnReqId, turnMsg, threadId);
+    // onOutcome 属于本次调用的链节；自动化线程每次运行新建（键唯一），
+    // 不会与他人共用队列，闭包语义安全
+    await runPromptTurn(turnReqId, turnMsg, threadId, onOutcome);
   } finally {
     noteActiveTurn(threadId, false);
     markTurnEnd(threadId);
@@ -611,7 +645,10 @@ async function runPromptTurn(
   reqId: string,
   msg: Record<string, unknown>,
   threadId: string,
+  onOutcome?: (outcome: PromptTurnOutcome) => void,
 ) {
+  // 本轮错误结算文本（与下发前端的 error chunk 同源）；finally 里经 onOutcome 回报
+  let turnError: string | undefined;
   const task = mgmtQueue.then(() =>
     resolveSession(
       threadId,
@@ -628,7 +665,10 @@ async function runPromptTurn(
   try {
     run = await task;
   } catch (err) {
-    sendChunk(reqId, { type: "error", errorText: err instanceof Error ? err.message : String(err) });
+    const errorText = err instanceof Error ? err.message : String(err);
+    turnError = errorText;
+    sendChunk(reqId, { type: "error", errorText });
+    onOutcome?.({ ok: false, errorText });
     return;
   }
   // 线程键漂移（刷新后草稿 id → sessionId）：resolveSession 在旧轮未收尾时
@@ -641,11 +681,11 @@ async function runPromptTurn(
     await rebindRunThread(run, run.threadId, threadId);
   }
   if (!run.agent.state.model) {
-    sendChunk(reqId, {
-      type: "error",
-      errorText:
-        "No model with credentials available. Open Settings → Model and add an API key.",
-    });
+    const errorText =
+      "No model with credentials available. Open Settings → Model and add an API key.";
+    turnError = errorText;
+    sendChunk(reqId, { type: "error", errorText });
+    onOutcome?.({ ok: false, errorText });
     return;
   }
   // 每轮请求前重排环境事实段（日历日跨天兜底：提示词只在建会话/切模式/改设置
@@ -730,10 +770,10 @@ async function runPromptTurn(
       // 终止态必发（含 Stop 中止），错误 chunk 仅非 Stop 时发
       emitCompaction(cid, { phase: "failed" });
       if (!run.stopRequested) {
-        sendChunk(reqId, {
-          type: "error",
-          errorText: `Context overflow, automatic compaction failed: ${outcome.message}`,
-        });
+        turnError = `Context overflow, automatic compaction failed: ${outcome.message}`;
+        sendChunk(reqId, { type: "error", errorText: turnError });
+      } else {
+        turnError = "run aborted by stop request";
       }
       return;
     }
@@ -741,10 +781,8 @@ async function runPromptTurn(
     await runStep(text);
     if (run.pendingOverflowRecovery) {
       run.pendingOverflowRecovery = false;
-      sendChunk(reqId, {
-        type: "error",
-        errorText: "Context overflow persisted after compaction. Start a new session.",
-      });
+      turnError = "Context overflow persisted after compaction. Start a new session.";
+      sendChunk(reqId, { type: "error", errorText: turnError });
     }
   };
 
@@ -764,7 +802,8 @@ async function runPromptTurn(
       await runStepWithRecovery(resume);
     }
   } catch (err) {
-    sendChunk(reqId, { type: "error", errorText: err instanceof Error ? err.message : String(err) });
+    turnError = err instanceof Error ? err.message : String(err);
+    sendChunk(reqId, { type: "error", errorText: turnError });
     // 父代理 turn 失败：中止遗留的后台子代理，让会话能回到空闲（D352）
     for (const d of run.delegations.values()) {
       if (d.status === "running") {
@@ -777,7 +816,31 @@ async function runPromptTurn(
     sendChunk(reqId, { type: "finish" });
     setActiveReqId(threadId, null);
     persist(run);
+    // Stop 中止可能不带 error chunk（abort() 让 prompt 静默收敛）：按失败结算
+    onOutcome?.(
+      turnError
+        ? { ok: false, errorText: turnError }
+        : run.stopRequested
+          ? { ok: false, errorText: "run aborted by stop request" }
+          : { ok: true },
+    );
   }
+}
+
+/** 供自动化 runner 经管理队列预建会话（与 runPromptTurn 的会话准备段同源
+ *  串行）：拿到 run 后可先施加 per-task 模型再 dispatchPrompt；后续
+ *  resolveSession 走 running 表 fast path 复用同一实例 */
+export function mgmtResolveSession(
+  threadId: string,
+  sessionId?: string,
+  cwd?: string,
+): Promise<Running> {
+  const task = mgmtQueue.then(() => resolveSession(threadId, sessionId, cwd));
+  mgmtQueue = task.then(
+    () => {},
+    () => {},
+  );
+  return task;
 }
 
 /** 中止单个线程的 run：父代理、后台子代理、挂起审批/提问与压缩请求全部结算 */
@@ -938,6 +1001,14 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
           modified: r.updated_at,
           cwd: r.cwd,
           archived: r.archived === 1,
+          // 会话级偏好（undefined = 从未变更过）：切回会话时前端据此恢复 mode/model
+          mode: r.mode === "agent" || r.mode === "plan" ? r.mode : undefined,
+          approvalLevel:
+            r.approvalLevel === "ask" || r.approvalLevel === "auto-edit" || r.approvalLevel === "auto"
+              ? r.approvalLevel
+              : undefined,
+          modelProvider: r.modelProvider ?? undefined,
+          modelId: r.modelId ?? undefined,
         }))
         .filter((s) => s.messageCount > 0);
       send({ id: reqId, type: "sessions", sessions });
@@ -1216,13 +1287,20 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const auth = await getModels().getAuth(provider).catch(() => undefined);
       if (!auth) throw new Error(`no credentials configured for ${provider}/${modelId}`);
       setCurrentModelKey({ provider, modelId });
-      // 模型行是系统提示词环境段的一部分：换模型后整段重排，活动会话即时生效
+      // 模型选择持久化到 kv（sidecar 侧写，应用重启后由 initCurrentModelKey 恢复；
+      // 前端只在桌面模式重复写同一份，远程网页模式由此获得持久化）
+      void kvSet("pi.model", JSON.stringify({ provider, modelId })).catch(() => {});
+      // 模型行是系统提示词环境段的一部分：换模型后整段重排，活动会话即时生效；
+      // 顺带把模型写进各活动会话的偏好行（与会话级记忆一致）
       for (const run of running.values()) {
         run.agent.state.model = model;
         run.agent.state.systemPrompt = composeModeSystemPrompt(
           run.mode,
           run.cwd,
           model,
+        );
+        void sessionPrefsSet(run.sessionId, { modelProvider: provider, modelId }).catch(
+          () => {},
         );
       }
       send({ id: reqId, type: "model", provider, modelId });
@@ -1411,6 +1489,40 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       await setSubagentEnabled(scope, name, enabled, cwd);
       await reloadSubagents();
       send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
+      break;
+    }
+    // —— 自动化定时任务（管理页表单与后续 M3 消费；载荷层见 automation/commands.ts）——
+    case "automation_list": {
+      const r = await automationListPayload();
+      send({ id: reqId, type: r.type, tasks: r.tasks });
+      break;
+    }
+    case "automation_save": {
+      const r = await automationSavePayload(msg);
+      send({ id: reqId, type: r.type, tasks: r.tasks });
+      break;
+    }
+    case "automation_delete": {
+      const r = await automationDeletePayload(msg);
+      send({ id: reqId, type: r.type, tasks: r.tasks });
+      break;
+    }
+    case "automation_set_enabled": {
+      const r = await automationSetEnabledPayload(msg);
+      send({ id: reqId, type: r.type, tasks: r.tasks });
+      break;
+    }
+    case "automation_run_now": {
+      const r = await automationRunNowPayload(msg);
+      send({ id: reqId, type: r.type, tasks: r.tasks });
+      break;
+    }
+    case "automation_preview": {
+      send({ id: reqId, ...automationPreviewPayload(msg) });
+      break;
+    }
+    case "automation_templates": {
+      send({ id: reqId, ...automationTemplatesPayload() });
       break;
     }
     case "list_skills": {
