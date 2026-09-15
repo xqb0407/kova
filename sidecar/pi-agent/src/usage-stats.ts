@@ -16,6 +16,7 @@ import {
   usageDailyQuery,
   usageDailyReplace,
   usageScanList,
+  type UsageDailyRow,
   type UsageDailyRowInput,
   type UsageScanRow,
 } from "./hostdb";
@@ -174,7 +175,8 @@ export async function aggregateUsageStats(): Promise<UsageStatsResult> {
   }
 
   // 从库聚合出逐日序列（按 by_model JSON 逐行合并）
-  let daily;
+  // 显式标注：evolving any 在 try/catch 分支下无法确定类型（TS7034）
+  let daily: UsageDailyRow[];
   try {
     daily = await usageDailyQuery();
   } catch (err) {

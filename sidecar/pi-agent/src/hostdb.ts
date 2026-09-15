@@ -119,6 +119,15 @@ export function initLocalStorage(dbPath: string): void {
   } catch {
     /* 列已存在 */
   }
+  // 会话级偏好（与 Rust data.rs 镜像）：mode / approval_level / 最近一次模型，
+  // NULL = 从未变更过；session_prefs_set 按 COALESCE 语义只更新携带的字段
+  for (const col of ["mode TEXT", "approval_level TEXT", "model_provider TEXT", "model_id TEXT"]) {
+    try {
+      localDb.exec(`ALTER TABLE sessions ADD COLUMN ${col}`);
+    } catch {
+      /* 列已存在 */
+    }
+  }
   localDb.exec(`
     CREATE TABLE IF NOT EXISTS models (
       provider TEXT NOT NULL,
@@ -421,11 +430,30 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
     switch (kind) {
       case "session_get": {
         const row = db
-          .query<{ cwd: string; title: string }, [string]>(
-            "SELECT cwd, title FROM sessions WHERE id = ?",
+          .query<
+            {
+              cwd: string;
+              title: string;
+              mode: string | null;
+              approval_level: string | null;
+              model_provider: string | null;
+              model_id: string | null;
+            },
+            [string]
+          >(
+            "SELECT cwd, title, mode, approval_level, model_provider, model_id FROM sessions WHERE id = ?",
           )
           .get(s("sessionId"));
-        return row ? { cwd: row.cwd, title: row.title } : null;
+        return row
+          ? {
+              cwd: row.cwd,
+              title: row.title,
+              mode: row.mode,
+              approvalLevel: row.approval_level,
+              modelProvider: row.model_provider,
+              modelId: row.model_id,
+            }
+          : null;
       }
       case "session_insert": {
         const now = s("now");
@@ -437,9 +465,32 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
       case "session_list":
         return db
           .query<SessionRow[], []>(
-            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count FROM sessions ORDER BY updated_at DESC",
+            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id FROM sessions ORDER BY updated_at DESC",
           )
-          .all();
+          .all()
+          .map((r) => ({
+            ...r,
+            mode: r.mode ?? null,
+            approvalLevel: r.approval_level ?? null,
+            modelProvider: r.model_provider ?? null,
+            modelId: r.model_id ?? null,
+          }));
+      case "session_prefs_set":
+        db.query(
+          "UPDATE sessions SET \
+           mode = COALESCE(?2, mode), \
+           approval_level = COALESCE(?3, approval_level), \
+           model_provider = COALESCE(?4, model_provider), \
+           model_id = COALESCE(?5, model_id) \
+           WHERE id = ?1",
+        ).run(
+          s("sessionId"),
+          typeof p.mode === "string" ? p.mode : null,
+          typeof p.approvalLevel === "string" ? p.approvalLevel : null,
+          typeof p.modelProvider === "string" ? p.modelProvider : null,
+          typeof p.modelId === "string" ? p.modelId : null,
+        );
+        return {};
       case "session_delete":
         db.query("DELETE FROM sessions WHERE id = ?").run(s("sessionId"));
         return {};
@@ -702,6 +753,11 @@ export type SessionRow = {
   updated_at: string;
   /** 迭代 4：JSONL 消息行数（列表展示用；session_touch 增量维护） */
   message_count: number;
+  /** 会话级偏好（NULL = 从未变更过；session_prefs_set 维护） */
+  mode: string | null;
+  approvalLevel: string | null;
+  modelProvider: string | null;
+  modelId: string | null;
 };
 
 export type CustomProviderRow = {
@@ -714,8 +770,29 @@ export type CustomProviderRow = {
   enabled: boolean;
 };
 
+/** 会话持久化行：cwd/title + 会话级偏好（mode/approvalLevel/model；NULL = 从未变更过） */
+export type SessionPrefsRow = {
+  cwd: string;
+  title: string;
+  mode: string | null;
+  approvalLevel: string | null;
+  modelProvider: string | null;
+  modelId: string | null;
+};
+
 export const sessionGet = (sessionId: string) =>
-  query<{ cwd: string; title: string } | null>("session_get", { sessionId });
+  query<SessionPrefsRow | null>("session_get", { sessionId });
+
+/** 会话级偏好写入：只更新携带的字段（host/local 均 COALESCE 语义），其余保持原值 */
+export const sessionPrefsSet = (
+  sessionId: string,
+  prefs: {
+    mode?: string;
+    approvalLevel?: string;
+    modelProvider?: string;
+    modelId?: string;
+  },
+) => query("session_prefs_set", { sessionId, ...prefs });
 
 export const sessionInsert = (sessionId: string, cwd: string) =>
   query("session_insert", { sessionId, cwd, now: nowIso() });

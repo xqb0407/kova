@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type FC } from "react";
 import dynamic from "next/dynamic";
 import { Loader2Icon, PanelLeftIcon } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useAui } from "@assistant-ui/react";
 import { usePanelRef } from "react-resizable-panels";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
@@ -14,6 +15,9 @@ import {
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
+import { subscribeAutomationFocus } from "@/lib/automations";
+import { setAutomationFrameSync } from "@/lib/automation-live";
+import { subscribeOpenSession } from "@/lib/open-session";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
 import { Thread } from "./thread";
@@ -23,6 +27,21 @@ import { AgentPanel } from "./agent-panel";
 // 加载期间是应用底色而非白屏。
 const SettingsPage = dynamic(
   () => import("@/components/settings/settings-page").then((m) => m.SettingsPage),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <Loader2Icon className="text-muted-foreground size-5 animate-spin" />
+      </div>
+    ),
+  },
+);
+// 自动化管理页：与设置页同款的 chunk 挪出策略，侧边栏「自动化」菜单激活才拉取
+const AutomationsView = dynamic(
+  () =>
+    import("@/components/automations/automations-view").then(
+      (m) => m.AutomationsView,
+    ),
   {
     ssr: false,
     loading: () => (
@@ -61,6 +80,46 @@ export const Base: FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [view, setView] = useState<"chat" | "settings">("chat");
+  // 侧边栏菜单选中项（受控给 CloneThreadShell）："automation" 时主区
+  // 整页切到自动化管理视图；点会话行/新对话由 shell 的导航委托清空回到聊天
+  const [activeMenu, setActiveMenu] = useState("");
+  // ⚡ 徽标点击定位请求（nonce 让"再点同一任务"也能重新触发视图滚动）
+  const [automationFocus, setAutomationFocus] = useState<{
+    taskId: string;
+    nonce: number;
+  } | null>(null);
+  useEffect(
+    () =>
+      subscribeAutomationFocus((taskId) => {
+        setActiveMenu("automation");
+        setAutomationFocus({ taskId, nonce: Date.now() });
+      }),
+    [],
+  );
+  // 系统通知点击 → 切回聊天并打开对应会话（Rust notify_show 点击回调经
+  // lib/notify 装配进 open-session 总线）；会话已被删则静默
+  const aui = useAui();
+  useEffect(
+    () =>
+      subscribeOpenSession((sessionId) => {
+        void (async () => {
+          try {
+            await aui.threads.reload();
+            await aui.threads.switchToThread(sessionId);
+            setActiveMenu("");
+          } catch {}
+        })();
+      }),
+    [aui],
+  );
+  // 定时任务触发/结算 → 侧边栏会话列表自动同步（新物化的定时会话免手动
+  // 刷新出现；去抖在 lib/automation-live，reload 不动当前线程运行时）
+  useEffect(() => {
+    setAutomationFrameSync(() => {
+      void aui.threads.reload().catch(() => {});
+    });
+    return () => setAutomationFrameSync(null);
+  }, [aui]);
   // Agent 面板：默认展开，挂载后从 localStorage 恢复开合/宽度
   // （SSR 首帧恒为展开，避免 hydration 不一致）
   const [panelOpen, setPanelOpen] = useState(true);
@@ -127,13 +186,18 @@ export const Base: FC = () => {
     } catch {}
   };
 
-  // 全局快捷键：打开设置 / 开合 Agent 面板（绑定来自「设置 → 快捷键」，改动即时生效）
-  const { openSettings, toggleAgentPanel } = useShortcuts();
+  // 全局快捷键：打开设置 / 直达自动化页 / 开合 Agent 面板（绑定来自「设置 → 快捷键」，改动即时生效）
+  const { openSettings, openAutomations, toggleAgentPanel } = useShortcuts();
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
       if (matchesShortcut(event, openSettings)) {
         event.preventDefault();
         setView("settings");
+      } else if (matchesShortcut(event, openAutomations)) {
+        event.preventDefault();
+        // 自动化页挂在 chat 视图内（activeMenu 驱动），设置页开着时也要能直达
+        setView("chat");
+        setActiveMenu("automation");
       } else if (matchesShortcut(event, toggleAgentPanel)) {
         event.preventDefault();
         setPanelOpen((open) => !open);
@@ -141,7 +205,7 @@ export const Base: FC = () => {
     };
     document.addEventListener("keydown", down);
     return () => document.removeEventListener("keydown", down);
-  }, [openSettings, toggleAgentPanel]);
+  }, [openSettings, openAutomations, toggleAgentPanel]);
 
   // 进入设置页时清掉文档里的活动选区：选区还在时 SelectionToolbar 的 quote
   // 气泡（挂 body 的 fixed 浮层）不会自动收起，经快捷键等不经鼠标的入口切
@@ -150,7 +214,16 @@ export const Base: FC = () => {
     if (view === "settings") window.getSelection()?.removeAllRanges();
   }, [view]);
 
-  const chat = <Thread />;
+  const chat =
+    activeMenu === "automation" ? (
+      <AutomationsView
+        onBackToChat={() => setActiveMenu("")}
+        focusTask={automationFocus}
+        onFocusConsumed={() => setAutomationFocus(null)}
+      />
+    ) : (
+      <Thread />
+    );
 
   return (
     <>
@@ -160,6 +233,8 @@ export const Base: FC = () => {
         onCollapsedChange={setSidebarCollapsed}
         mobileSidebarOpen={mobileSidebarOpen}
         onMobileSidebarOpenChange={setMobileSidebarOpen}
+        activeMenu={activeMenu}
+        onActiveMenuChange={setActiveMenu}
         onOpenSettings={() => setView("settings")}
         headerContent={
           // 展开时显示在侧边栏顶栏；桌面需避开悬浮的 macOS 红绿灯（ml-18），网页无需让位。
@@ -192,6 +267,7 @@ export const Base: FC = () => {
               onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
               panelOpen={panelOpen}
               onTogglePanel={() => setPanelOpen((o) => !o)}
+              variant={activeMenu === "automation" ? "page" : "session"}
             />
             <main className="flex-1 overflow-hidden">
               {compact ? (

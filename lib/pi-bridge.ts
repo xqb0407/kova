@@ -16,6 +16,11 @@ export type PiSessionSummary = {
   modified: string;
   cwd: string;
   archived?: boolean;
+  /** 会话级偏好（undefined = 从未变更过；切回会话时恢复 mode/model 选择用） */
+  mode?: "agent" | "plan";
+  approvalLevel?: "ask" | "auto-edit" | "auto";
+  modelProvider?: string;
+  modelId?: string;
 };
 
 /** 每 token 单价（美元） */
@@ -392,12 +397,84 @@ export type PiMcpAuditLogResponse = {
   events: PiMcpAuditEvent[];
 };
 
+/** 自动化定时任务条目（sidecar 事实源 <sessionsDir>/automation/tasks.json，
+ *  字段镜像 vendored ScheduledTask；list/save/delete/开关/run_now 应答共用清单形状） */
+export type PiAutomationTask = {
+  id: string;
+  /** 创建来源会话（对话里让 agent 建的任务用于跳回上下文；表单建的是 "automation-manual"） */
+  sessionId: string;
+  name?: string;
+  description?: string;
+  /** 触发时投给 agent 的提示词（无人值守运行） */
+  prompt: string;
+  type: "cron" | "once" | "interval";
+  /** cron 表达式 / once 的 ISO 时刻 / interval 的 "30s"|"5m" 原样文本 */
+  schedule: string;
+  intervalSeconds: number;
+  enabled: boolean;
+  /** provider/model 留空 = 运行时跟随默认模型 */
+  model: { provider: string; model: string };
+  /** 无人值守工具档位：read-only | workspace-write | full（事实源校验在 sidecar） */
+  toolPolicyProfile: string;
+  /** 任务工作目录（空 = 主目录兜底） */
+  workspaceDir?: string;
+  /** 单次运行超时 ms（空 = 默认 10 分钟） */
+  timeoutMs?: number;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  runCount: number;
+  lastStatus?: string;
+  lastError?: string;
+  runHistory?: {
+    id: string;
+    status: string;
+    createdAt: string;
+    sessionId?: string;
+    message?: string;
+  }[];
+};
+
+/** 任务清单应答（变更命令成功后同形状回全量，前端不做 diff） */
+export type PiAutomationListResponse = {
+  type: "automation_list";
+  tasks: PiAutomationTask[];
+};
+
+/** 排期预览应答：runs = 未来触发点 ISO（cron/interval 多个，once 一个）；非法排期回 error */
+export type PiAutomationPreviewResponse = {
+  type: "automation_preview";
+  runs?: string[];
+  error?: string;
+};
+
+/** 预置模板条目（sidecar automation/templates.ts 的只读镜像，用于「从模板新建」） */
+export type PiAutomationTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  type: "cron" | "once" | "interval";
+  schedule: string;
+  toolPolicyProfile: string;
+};
+
+/** automation_templates 应答 */
+export type PiAutomationTemplatesResponse = {
+  type: "automation_templates";
+  templates: PiAutomationTemplate[];
+};
+
 export type PiResponse =
   | { type: "sessions"; sessions: PiSessionSummary[] }
   | { type: "running"; sessionIds: string[] }
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "forked"; sessionId: string }
   | { type: "history"; messages: unknown[] }
+  | PiAutomationListResponse
+  | PiAutomationPreviewResponse
+  | PiAutomationTemplatesResponse
   | { type: "deleted" }
   | { type: "renamed" }
   | { type: "archived" }

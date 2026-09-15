@@ -88,6 +88,14 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
     // backfill_message_counts 在启动时按 JSONL 消息行数补数）。
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN message_count INTEGER;");
 
+    // 会话级偏好：mode / approval_level（agent|plan、ask|auto-edit|auto）与
+    // 最近一次随会话运行的模型。NULL = 从未变更过（打开时回落全局默认）。
+    // 由 sidecar 在 set_mode / set_model / 模式状态机变更时经 session_prefs_set 写入。
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN mode TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN approval_level TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN model_provider TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN model_id TEXT;");
+
     // 旧数据迁移：早期版本把未选工作目录的会话 cwd 存成用户主目录；统一清空。
     let home = home_dir();
     if let Some(home) = home {
@@ -354,18 +362,24 @@ pub fn handle_host_query(
     match kind {
         "session_get" => {
             let id = str_param(p, "sessionId")?;
-            let cwd = conn
+            let row = conn
                 .query_row(
-                    "SELECT cwd FROM sessions WHERE id = ?1",
+                    "SELECT cwd, title, mode, approval_level, model_provider, model_id FROM sessions WHERE id = ?1",
                     params![id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok(json!({
+                            "cwd": row.get::<_, String>(0)?,
+                            "title": row.get::<_, String>(1)?,
+                            "mode": row.get::<_, Option<String>>(2)?,
+                            "approvalLevel": row.get::<_, Option<String>>(3)?,
+                            "modelProvider": row.get::<_, Option<String>>(4)?,
+                            "modelId": row.get::<_, Option<String>>(5)?,
+                        }))
+                    },
                 )
                 .optional()
                 .map_err(|e| e.to_string())?;
-            Ok(match cwd {
-                Some(cwd) => json!({ "cwd": cwd }),
-                None => Value::Null,
-            })
+            Ok(row.unwrap_or(Value::Null))
         }
         "session_insert" => {
             let id = str_param(p, "sessionId")?;
@@ -380,7 +394,7 @@ pub fn handle_host_query(
         }
         "session_list" => {
             let rows = conn
-                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count FROM sessions ORDER BY updated_at DESC")
+                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id FROM sessions ORDER BY updated_at DESC")
                 .map_err(|e| e.to_string())?
                 .query_map([], |row| {
                     Ok(json!({
@@ -392,6 +406,10 @@ pub fn handle_host_query(
                         "updated_at": row.get::<_, String>(5)?,
                         // NULL = 启动回填尚未覆盖（理论不可达），按 0 呈现
                         "message_count": row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                        "mode": row.get::<_, Option<String>>(7)?,
+                        "approvalLevel": row.get::<_, Option<String>>(8)?,
+                        "modelProvider": row.get::<_, Option<String>>(9)?,
+                        "modelId": row.get::<_, Option<String>>(10)?,
                     }))
                 })
                 .map_err(|e| e.to_string())?
@@ -448,6 +466,26 @@ pub fn handle_host_query(
                  message_count = COALESCE(message_count, 0) + ?5 \
                  WHERE id = ?4",
                 params![now, title, first_message, id, added],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
+        "session_prefs_set" => {
+            // 会话级偏好写入（sidecar 在 set_mode / set_model / 模式状态机变更时调用）：
+            // 只更新携带的字段，未携带的保持原值（COALESCE 语义）。
+            let id = str_param(p, "sessionId")?;
+            let mode = p.get("mode").and_then(|v| v.as_str());
+            let approval_level = p.get("approvalLevel").and_then(|v| v.as_str());
+            let model_provider = p.get("modelProvider").and_then(|v| v.as_str());
+            let model_id = p.get("modelId").and_then(|v| v.as_str());
+            conn.execute(
+                "UPDATE sessions SET \
+                 mode = COALESCE(?2, mode), \
+                 approval_level = COALESCE(?3, approval_level), \
+                 model_provider = COALESCE(?4, model_provider), \
+                 model_id = COALESCE(?5, model_id) \
+                 WHERE id = ?1",
+                params![id, mode, approval_level, model_provider, model_id],
             )
             .map_err(|e| e.to_string())?;
             Ok(json!({}))

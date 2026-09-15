@@ -24,6 +24,36 @@ export const piSessionRegistry = new Map<string, string>();
 /** remoteId(pi session 文件路径) -> cwd。会话列表按 workspace 分组用 */
 export const piSessionCwdMap = new Map<string, string>();
 
+/** sessionId -> 最近一次列表快照（含会话级偏好 mode/approvalLevel/model）。
+ *  mode/model picker 切回会话时据此水合，不依赖 sidecar 内存里的 Running 实例存活 */
+export const piSessionPrefsMap = new Map<string, PiSessionSummary>();
+
+/** 把 list_sessions 的快照落进内存映射（cwd 分组 + 偏好水合共用） */
+export function applySessionSummaries(sessions: PiSessionSummary[]): void {
+  for (const s of sessions) {
+    if (s.cwd) piSessionCwdMap.set(s.sessionId, s.cwd);
+    piSessionPrefsMap.set(s.sessionId, s);
+  }
+}
+
+/** 重新拉一份会话列表快照（轻量单条 SQL）：set_model / set_mode 后校准偏好镜像 */
+export async function refreshSessionPrefs(): Promise<void> {
+  try {
+    const res = await piRequest<{ type: "sessions"; sessions: PiSessionSummary[] }>({
+      type: "list_sessions",
+    });
+    applySessionSummaries(res.sessions);
+  } catch {
+    // sidecar 不可用：保留现状
+  }
+}
+
+/** threadId 对应的偏好查找键：registry 命中用映射值；否则 threadId 本身
+ *  可能就是 sessionId（刷新后恢复的线程行 id=sessionId） */
+export function prefsSessionIdFor(threadId: string): string | undefined {
+  return piSessionRegistry.get(threadId) ?? (piSessionPrefsMap.has(threadId) ? threadId : undefined);
+}
+
 /** pi session -> 前端线程列表项 */
 function toRemoteThread(s: PiSessionSummary) {
   return {
@@ -162,9 +192,7 @@ export function createPiThreadListAdapter(): RemoteThreadListAdapter {
       const res = await piRequest<{ type: "sessions"; sessions: PiSessionSummary[] }>({
         type: "list_sessions",
       });
-      for (const s of res.sessions) {
-        if (s.cwd) piSessionCwdMap.set(s.sessionId, s.cwd);
-      }
+      applySessionSummaries(res.sessions);
       return { threads: toTitle(res.sessions) };
     },
 

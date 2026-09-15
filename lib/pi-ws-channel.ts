@@ -2,6 +2,7 @@
 
 import type { UIMessageChunk } from "ai";
 import type {
+  PiAutomationFrame,
   PiChannel,
   PiChannelStatus,
   PiRunningTurn,
@@ -53,6 +54,7 @@ export class WsPiChannel implements PiChannel {
   >();
   private statusCbs = new Set<(s: PiChannelStatus) => void>();
   private turnCbs = new Set<(sessionId: string | null, active: boolean) => void>();
+  private automationCbs = new Set<(frame: PiAutomationFrame) => void>();
 
   constructor(
     private readonly url: string,
@@ -141,6 +143,14 @@ export class WsPiChannel implements PiChannel {
       const sessionId = typeof v.sessionId === "string" ? v.sessionId : null;
       if (sessionId) {
         for (const cb of this.turnCbs) cb(sessionId, v.active === true);
+      }
+      return;
+    }
+    // 定时任务通知帧（remote.rs 白名单同款放行）
+    if (type === "automation_fired" || type === "automation_run_done") {
+      const frame = v as unknown as PiAutomationFrame;
+      if (typeof frame.taskId === "string") {
+        for (const cb of this.automationCbs) cb(frame);
       }
       return;
     }
@@ -264,6 +274,11 @@ export class WsPiChannel implements PiChannel {
   ): () => void {
     this.turnCbs.add(cb);
     return () => this.turnCbs.delete(cb);
+  }
+
+  subscribeAutomationEvents(cb: (frame: PiAutomationFrame) => void): () => void {
+    this.automationCbs.add(cb);
+    return () => this.automationCbs.delete(cb);
   }
 
   async listRunning(): Promise<string[]> {

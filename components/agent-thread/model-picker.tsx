@@ -1,22 +1,33 @@
 "use client";
 
-import { useMemo, type FC } from "react";
+import { useEffect, useMemo, type FC } from "react";
+import { useAuiState } from "@assistant-ui/react";
 import {
   ModelSelector,
   type ModelOption,
 } from "@/components/assistant-ui/elements/model-selector.aui";
 import { refreshPiModels, usePiModels } from "@/lib/pi-models";
 import type { PiModelSummary } from "@/lib/pi-bridge";
-import { setSelectedModel, useSelectedModel } from "@/lib/model-settings";
+import { hydrateThreadModel, setThreadModel, useThreadModel } from "@/lib/pi-session-model";
+import { setSelectedModel } from "@/lib/model-settings";
 import { fmtContextWindow } from "@/lib/model-format";
 
 /**
  * 对话页模型选择器：只展示已配置凭据的服务（authed）的模型，按服务分组；
- * 未配置的服务不出现（去设置 → 模型里添加）。选中写入 SQLite 并同步 sidecar。
+ * 未配置的服务不出现（去设置 → 模型里添加）。选择写入全局（sidecar 广播 + kv）
+ * 并记入当前会话的模型记忆（sessions 表偏好列），切回会话时恢复该会话
+ * 上次使用的模型。
  */
 export const PiModelPicker: FC = () => {
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
   const allModels = usePiModels();
-  const selected = useSelectedModel();
+  const selected = useThreadModel(threadId);
+
+  // 切线程时水合该会话记住的模型（无记忆则回落全局当前选择）
+  useEffect(() => {
+    if (!threadId) return;
+    hydrateThreadModel(threadId);
+  }, [threadId]);
 
   // 只查配置过的：无凭据的服务整体隐藏；被模型过滤隐藏的（enabled=false）也不出现
   const models = useMemo(
@@ -66,10 +77,16 @@ export const PiModelPicker: FC = () => {
       value={value}
       onValueChange={(v) => {
         const sep = v.indexOf("/");
-        void setSelectedModel({
+        const model = {
           provider: v.slice(0, sep),
           modelId: v.slice(sep + 1),
-        });
+        };
+        if (threadId) {
+          void setThreadModel(threadId, model);
+        } else {
+          // 无主线程上下文（理论不可达）：退化为纯全局选择
+          void setSelectedModel(model);
+        }
       }}
       onOpenChange={(open) => open && refreshPiModels()}
     >

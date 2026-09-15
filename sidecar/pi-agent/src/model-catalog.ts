@@ -24,7 +24,7 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
 import { logErr } from "./log";
 import { credentialStore } from "./storage";
-import { customProvidersList, modelsAll, modelsList } from "./hostdb";
+import { customProvidersList, kvGet, modelsAll, modelsList } from "./hostdb";
 import type { CustomApiKind } from "./types";
 
 /** 模型目录类型（含 provider 注册/删除、模型查询、凭据查询） */
@@ -38,7 +38,7 @@ export function getModels(): ModelCatalog {
   return catalog;
 }
 
-/** 当前选中的模型（重启后由前端通过 set_model 恢复） */
+/** 当前选中的模型（启动时 initCurrentModelKey 从 kv 恢复；运行中由 set_model 维护） */
 let currentModelKey: { provider: string; modelId: string } | null = null;
 
 export function getCurrentModelKey(): {
@@ -53,6 +53,26 @@ export function setCurrentModelKey(key: {
   modelId: string;
 } | null): void {
   currentModelKey = key;
+}
+
+/**
+ * 启动恢复：从 kv 读「最近一次使用的模型」写入内存键（在目录就绪闸门内调用）。
+ * 只写内存键不校验目录/凭据——校验延迟到真正取模型时（resolveCurrentModel 回落），
+ * 避免启动早期自定义提供商尚未加载时把有效选择误判为失效。
+ * 之前恢复由前端经 set_model 完成，但前端命令可能早于 sidecar 就绪发出而丢失，
+ * sidecar 侧自行恢复后该竞态消失（远程网页模式也由此获得恢复）。
+ */
+export async function initCurrentModelKey(): Promise<void> {
+  try {
+    const raw = await kvGet("pi.model");
+    if (!raw?.value) return;
+    const saved = JSON.parse(raw.value) as { provider?: string; modelId?: string };
+    if (saved?.provider && saved?.modelId) {
+      currentModelKey = { provider: saved.provider, modelId: saved.modelId };
+    }
+  } catch (err) {
+    logErr("model key restore failed:", err);
+  }
 }
 
 /**

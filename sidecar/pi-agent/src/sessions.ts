@@ -37,6 +37,7 @@ import { loadSubagentDefinitions, type SubagentDefinition } from "./subagent-def
 import { ensureSkillsLoaded } from "./skills";
 import { buildSubagentTools } from "./subagent";
 import { buildSkillMgmtTools } from "./skill-mgmt-tools";
+import { buildSchedulerTools } from "./automation/mgmt-tools";
 import { readCompaction, readTranscript } from "./transcript";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, type ContextInfoResult } from "./context";
 import { isPromptActive, onAgentEvent, send } from "./stream";
@@ -48,9 +49,13 @@ import {
 } from "./todo";
 import { logErr } from "./log";
 import { sessionPath } from "./storage";
-import { sessionGet, sessionInsert, sessionUpdateCwd } from "./hostdb";
+import { kvGet, sessionGet, sessionInsert, sessionUpdateCwd } from "./hostdb";
+import { getAutomationPolicy } from "./automation/policy";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { Running } from "./types";
+import type { ApprovalLevel, Running, SessionMode } from "./types";
+
+/** kv pi.mode 的载重（applyMode 写入的「最近一次使用的模式偏好」） */
+type PlanningModePrefs = { mode: SessionMode; approvalLevel: ApprovalLevel };
 
 /** threadId -> 活动会话（每个前端线程一个 Agent 实例） */
 export const running = new Map<string, Running>();
@@ -217,8 +222,9 @@ function enforceResidency(justLoaded: string): void {
 }
 
 /**
- * agent 模式挂载的扩展工具组 = Task 组（含子智能体管理三件套）+ 技能管理三件套。
- * 两组都不进 baseTools：delegate 按定义从基础目录取工具时结构性拿不到它们。
+ * agent 模式挂载的扩展工具组 = Task 组（含子智能体管理三件套）+ 技能管理三件套
+ * + 排期管理组（scheduler_*，无人值守 run 自动为空）。都不进 baseTools：
+ * delegate 按定义从基础目录取工具时结构性拿不到它们。
  * run.subagentTools 即本组（字段名沿用，语义为"Task 旁的扩展组"）。
  */
 function buildAgentExtensions(
@@ -229,6 +235,7 @@ function buildAgentExtensions(
   return [
     ...buildSubagentTools(run, baseTools, definitions, reloadSubagents),
     ...buildSkillMgmtTools(run, reloadSkills),
+    ...buildSchedulerTools(run),
   ];
 }
 
@@ -431,10 +438,13 @@ export async function resolveSession(
   let persistedSeq = 0;
   let jsonlSeq = 0;
   let compactionGeneration = 0;
+  /** 恢复的索引行（含会话级偏好）；新会话为 null */
+  let restoredRow: Awaited<ReturnType<typeof sessionGet>> = null;
 
   if (sessionId) {
     const row = await sessionGet(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
+    restoredRow = row;
     persistedCwd = row.cwd;
     const transcript = readTranscript(sessionId);
     const checkpoint = readCompaction(sessionId);
@@ -462,7 +472,58 @@ export async function resolveSession(
 
   const resolvedCwd = persistedCwd || defaultTaskCwd();
 
-  const model = await resolveCurrentModel();
+  // 会话级模式偏好：恢复的会话取偏好行（NULL = 从未变更过 → 默认），
+  // 新会话跟随「最近一次使用」（kv pi.mode，applyMode 维护）。
+  // 无人值守自动化 turn 强制 agent/ask：plan 模式的 HITL 会永久挂起。
+  let initialMode: SessionMode = "agent";
+  let initialApproval: ApprovalLevel = "ask";
+  if (!getAutomationPolicy(threadId)) {
+    if (restoredRow) {
+      if (restoredRow.mode === "agent" || restoredRow.mode === "plan") {
+        initialMode = restoredRow.mode;
+      }
+      if (
+        restoredRow.approvalLevel === "ask" ||
+        restoredRow.approvalLevel === "auto-edit" ||
+        restoredRow.approvalLevel === "auto"
+      ) {
+        initialApproval = restoredRow.approvalLevel;
+      }
+    } else {
+      try {
+        const raw = await kvGet("pi.mode");
+        const last = raw?.value ? (JSON.parse(raw.value) as Partial<PlanningModePrefs>) : null;
+        if (last?.mode === "agent" || last?.mode === "plan") initialMode = last.mode;
+        if (
+          last?.approvalLevel === "ask" ||
+          last?.approvalLevel === "auto-edit" ||
+          last?.approvalLevel === "auto"
+        ) {
+          initialApproval = last.approvalLevel;
+        }
+      } catch {
+        // kv 不可用/损坏：保持默认
+      }
+    }
+  }
+
+  // 会话级模型偏好：恢复的会话上次用哪个模型就继续用哪个（目录中已删除则回落全局）；
+  // 新会话/自动化 turn 用全局当前选择（自动化的 per-task 模型由 runner 在 resolve 后覆盖）
+  let model = await resolveCurrentModel();
+  if (restoredRow && !getAutomationPolicy(threadId)) {
+    const saved =
+      restoredRow.modelProvider && restoredRow.modelId
+        ? getModels().getModel(restoredRow.modelProvider, restoredRow.modelId)
+        : undefined;
+    if (saved) {
+      model = saved;
+    } else if (restoredRow.modelProvider && restoredRow.modelId) {
+      logErr(
+        "resolveSession: session model missing from catalog, falling back to current:",
+        `${restoredRow.modelProvider}/${restoredRow.modelId}`,
+      );
+    }
+  }
 
   // 技能目录预热（签名缓存，命中零 IO）：系统提示词的技能段从这里取数
   await ensureSkillsLoaded(resolvedCwd);
@@ -487,9 +548,9 @@ export async function resolveSession(
     delegations: new Map(),
     stopRequested: false,
     lengthContinues: 0,
-    mode: "agent",
-    approvalLevel: "ask",
-    planning: "inactive",
+    mode: initialMode,
+    approvalLevel: initialApproval,
+    planning: initialMode === "plan" ? "planning" : "inactive",
     baseTools,
     subagentTools: [],
     pendingToolApprovals: new Map(),
@@ -549,7 +610,7 @@ export async function resolveSession(
       );
     },
     initialState: {
-      systemPrompt: composeModeSystemPrompt("agent", resolvedCwd, model),
+      systemPrompt: composeModeSystemPrompt(initialMode, resolvedCwd, model),
       model,
       // 深度思考档位（全局，set_thinking 维护；off = 不发送 reasoning 参数）
       thinkingLevel: getCurrentThinkingLevel(),
@@ -603,10 +664,13 @@ export async function projectContextInfo(
   const baseTools = buildTools(resolvedCwd, threadId);
   const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包
-  // 运行期才解引用 run，投影下这些闭包永远不会被调用
+  // 运行期才解引用 run，投影下这些闭包永远不会被调用。
+  // 模式取会话偏好行（与 resolveSession 的恢复口径一致；自动化 turn 的守卫
+  // 不在此做——投影只读，且策略注册窗口与打开面板的时机本就不同步）
+  const projectedMode: SessionMode = row.mode === "plan" ? "plan" : "agent";
   const stub = {
-    mode: "agent",
-    planning: "inactive",
+    mode: projectedMode,
+    planning: projectedMode === "plan" ? "planning" : "inactive",
     baseTools,
     subagentTools: [],
   } as unknown as Running;
@@ -615,7 +679,7 @@ export async function projectContextInfo(
   return contextInfoFrom({
     model,
     messages: messages as unknown as Parameters<typeof contextInfoFrom>[0]["messages"],
-    systemPrompt: composeModeSystemPrompt("agent", resolvedCwd, model),
+    systemPrompt: composeModeSystemPrompt(projectedMode, resolvedCwd, model),
     tools: toolsForMode(stub),
     sessionId,
     compactionGeneration: generation,

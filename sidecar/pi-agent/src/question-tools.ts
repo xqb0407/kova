@@ -11,6 +11,7 @@
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "./stream";
+import { getAutomationPolicy } from "./automation/policy";
 
 export type QuestionOptionDef = { title: string; description?: string };
 
@@ -153,6 +154,21 @@ export function buildQuestionTool(threadId: string): AgentTool {
     execute: async (toolCallId, raw) => {
       const { questions } = raw as { questions: unknown };
       validateQuestions(questions);
+      // 无人值守自动化：没有在线答题人，立即返回取消说明并指引按假设继续，
+      // 绝不挂起（挂起会占满 timeoutMs 才被 abort 结算）
+      if (getAutomationPolicy(threadId)) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                "这是无人值守的定时任务运行，没有用户在线回答追问。" +
+                "不要再提问：按最合理的假设继续完成任务，并在最终输出中写明所做假设。",
+            },
+          ],
+          details: { cancelled: true },
+        };
+      }
       sendEventChunk(threadId, {
         type: "data-question",
         data: { questionId: toolCallId, questions },

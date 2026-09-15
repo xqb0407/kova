@@ -35,6 +35,11 @@ export type SessionSummary = {
   modified: string; // ISO
   cwd: string;
   archived?: boolean; // 归档标记：列表默认隐藏，正文不动
+  /** 会话级偏好（undefined = 从未变更过；切回会话时恢复模式/模型用） */
+  mode?: "agent" | "plan";
+  approvalLevel?: "ask" | "auto-edit" | "auto";
+  modelProvider?: string;
+  modelId?: string;
 };
 
 /** 子代理一次执行的最终状态 */
