@@ -12,6 +12,7 @@ import {
   resetSkillsForTest,
   saveSkillDoc,
   setSkillEnabled,
+  setSkillsEnabled,
   skillsPromptBlock,
   skillsSnapshot,
   skillStateKey,
@@ -184,6 +185,22 @@ describe("开关控制", () => {
     expect(skillStateKey("compat-workspace", "deploy", ws)).not.toBe(
       skillStateKey("compat-workspace", "deploy", "/other"),
     );
+  });
+
+  test("批量开关：全部关闭清空生效目录，全部启用还原", async () => {
+    await ensureSkillsLoaded(ws);
+    const targets = skillsSnapshot(ws).entries.map((e) => ({ scope: e.scope, name: e.name }));
+    expect(targets.length).toBeGreaterThan(0);
+
+    await setSkillsEnabled(targets, false, ws);
+    let snap = skillsSnapshot(ws);
+    expect(snap.entries.every((e) => !e.enabled)).toBe(true);
+    expect(snap.activeSkills.length).toBe(0);
+
+    await setSkillsEnabled(targets, true, ws);
+    snap = skillsSnapshot(ws);
+    expect(snap.entries.every((e) => e.enabled)).toBe(true);
+    expect(snap.activeSkills.length).toBeGreaterThan(0);
   });
 });
 

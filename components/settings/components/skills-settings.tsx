@@ -26,6 +26,8 @@ import {
   RefreshCwIcon,
   SquarePenIcon,
   Trash2Icon,
+  ToggleLeftIcon,
+  ToggleRightIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -63,6 +65,7 @@ import {
   refreshSkills,
   saveSkill,
   setSkillEnabled,
+  setSkillsEnabled,
   skillTemplate,
   useSkills,
   type SkillDraft,
@@ -570,6 +573,7 @@ export const SkillsSettings: FC = () => {
   });
   const [viewing, setViewing] = useState<SkillEntry | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [batchBusy, setBatchBusy] = useState(false);
 
   const scopeSkills = useMemo(
     () =>
@@ -590,6 +594,9 @@ export const SkillsSettings: FC = () => {
   }, [scopeSkills, query]);
 
   const enabledCount = snap.skills.filter((e) => e.enabled).length;
+  // 批量快捷的计数口径 = 当前页签 + 搜索筛选后的可见列表（所见即所得）
+  const enabledVisible = visible.filter((e) => e.enabled).length;
+  const disabledVisible = visible.length - enabledVisible;
   // 只有托管工作区层依赖所选目录；生态兼容页的用户层（~/.agents/skills）恒可见
   const tabNeedsCwd = scopeTab === "workspace" && !viewingCwd;
 
@@ -600,6 +607,16 @@ export const SkillsSettings: FC = () => {
       enabled,
       entry.scope === "workspace" || entry.scope === "compat-workspace" ? viewingCwd : null,
     ).catch(() => {});
+  };
+
+  /** 批量开关：一次请求把当前可见列表（页签 + 搜索筛选）全部置为目标状态 */
+  const batchToggle = (enabled: boolean) => {
+    const targets = visible.map((e) => ({ scope: e.scope, name: e.name }));
+    if (targets.length === 0 || batchBusy) return;
+    setBatchBusy(true);
+    void setSkillsEnabled(targets, enabled, viewingCwd)
+      .catch(() => {})
+      .finally(() => setBatchBusy(false));
   };
 
   const remove = (entry: SkillEntry) => {
@@ -699,6 +716,33 @@ export const SkillsSettings: FC = () => {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
+              {/* 批量开关：免去几十个技能一个个点（作用于当前页签可见列表，含搜索筛选） */}
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 shrink-0 gap-1 text-sm"
+                      disabled={tabNeedsCwd || visible.length === 0 || batchBusy}
+                      title="把当前列表的技能一键全部启用 / 关闭（含搜索筛选）"
+                    />
+                  }
+                >
+                  {batchBusy ? "处理中…" : "批量"}
+                  <ChevronDownIcon className="size-3.5 opacity-60" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-40">
+                  <DropdownMenuItem onClick={() => batchToggle(false)} disabled={enabledVisible === 0}>
+                    <ToggleLeftIcon className="size-4" />
+                    全部关闭（{enabledVisible}）
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => batchToggle(true)} disabled={disabledVisible === 0}>
+                    <ToggleRightIcon className="size-4" />
+                    全部启用（{disabledVisible}）
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button
                 variant="ghost"
                 size="icon"

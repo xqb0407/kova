@@ -48,7 +48,7 @@ export function splitPath(path: string): { dir: string; base: string } {
 
 /**
  * git 状态 → 左缘彩色圆点（VS Code 文件装饰风格）：绿=新增/未跟踪、
- * 黄=修改、红=删除、紫=改名；checkpoint-bar 与 git-view 共用。
+ * 黄=修改、红=删除、紫=改名；checkpoint-card 与 git-view 共用。
  */
 const STATUS_DOT: Record<string, string> = {
   A: "bg-emerald-500",

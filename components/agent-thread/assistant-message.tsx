@@ -31,6 +31,7 @@ import {
 import { BranchPicker } from "./branch-picker";
 import { RetryMarker, useRetryState } from "./retry-marker";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
+import { MessageCheckpoint } from "./checkpoint-card";
 import {
   CheckIcon,
   CopyIcon,
@@ -268,6 +269,8 @@ export const AssistantMessage: FC = () => {
         </MessagePrimitive.GroupedParts>
         {/* 消息尾部产物卡：agent 用 write 产出的交付文件（HTML 报告/文档等） */}
         <MessageArtifacts />
+        {/* 检查点卡：本轮 git 改动的汇总与撤销入口，隶属消息本体（操作栏之上） */}
+        <MessageCheckpoint />
         <MessageError />
         <RetryMarker />
       </div>

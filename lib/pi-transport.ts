@@ -19,8 +19,7 @@ import { gitCheckpointCreate, gitCheckpointDiff } from "@/lib/git";
 import { refreshGitStatus } from "@/lib/git-status";
 import { refreshFileTree } from "@/lib/file-tree";
 import {
-  clearRunCheckpoint,
-  setRunCheckpoint,
+  pushRunCheckpoint,
   saveRunHash,
   loadRunHash,
 } from "@/lib/pi-checkpoints";
@@ -97,14 +96,16 @@ export class PiTransport implements ChatTransport<UIMessage> {
     // 本地活动时间戳：列表快照的 lastMessageAt 要等 reload 才更新，
     // 刚聊完的行凭它立刻显示「刚刚」（见 pi-last-activity）
     markThreadActivity(sessionId);
-    // 新 turn 开始：上一轮遗留的检查点状态（含刷新未结算的持久 hash）作废
-    clearRunCheckpoint(chatId);
+    // 新 turn 开始：上一轮未结算的持久 hash 桥作废。已结算的检查点卡
+    // 按轮锚定在各消息尾部,不再被新 turn 清掉（见 pi-checkpoints 条目列表）
     saveRunHash(chatId, null);
 
     // 排队条登记（requestId → 线程消息 id 映射）：sidecar 上一轮未结束时会把本请求
     // 排队并回 data-queue chunk；是否可见由 pi-queue 的确认态决定
     const messageId = lastUser?.id ?? "";
     registerQueuedPrompt({ requestId, threadId: chatId, messageId, text });
+    // 检查点卡的轮次锚点：触发本轮的 user 消息下标（跨刷新稳定,见 pi-checkpoints）
+    const anchorIndex = lastUser ? messages.indexOf(lastUser) : null;
 
     return getPiChannel()
       .promptStream({
@@ -115,7 +116,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
         cwd,
         abortSignal,
       })
-      .pipeThrough(this.postTransform(chatId, requestId, text, abortSignal));
+      .pipeThrough(this.postTransform(chatId, requestId, text, abortSignal, anchorIndex));
   }
 
   /**
@@ -157,7 +158,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
     }
     // 重挂复用同一条后处理管线：旁路卡片、检查点结算、收尾通知全部补齐；
     // 原始 prompt 文本不跨刷新持久化，事件提醒的 prompt 预览留空
-    return stream.pipeThrough(this.postTransform(chatId, requestId, "", abortSignal));
+    return stream.pipeThrough(this.postTransform(chatId, requestId, "", abortSignal, null));
   }
 
   /**
@@ -178,7 +179,8 @@ export class PiTransport implements ChatTransport<UIMessage> {
     chatId: string,
     requestId: string,
     text: string,
-    abortSignal?: AbortSignal,
+    abortSignal: AbortSignal | undefined,
+    anchorIndex: number | null,
   ): TransformStream<UIMessageChunk, UIMessageChunk> {
     // git 检查点（M2）：在影子仓库打快照，快照时机是本 turn 真正开始（start chunk）。
     // 排队的 prompt 不能在 sendMessages 时打快照——快照会落在上一轮编辑之前，
@@ -186,6 +188,8 @@ export class PiTransport implements ChatTransport<UIMessage> {
     const cwd = getWorkspace();
     let checkpointPromise: Promise<string | null> | null = null;
     let checkpointSettled = false;
+    // 结算锚点：默认取本轮触发消息下标；刷新重挂时从持久化 hash 桥恢复
+    let anchor = anchorIndex;
     // 事件提醒：error 置位后 finish 不再补发"任务完成"（同轮只提醒一次）
     let sawError = false;
     const createCheckpoint = () => {
@@ -194,12 +198,13 @@ export class PiTransport implements ChatTransport<UIMessage> {
       // 复用而非重打——新快照会漏掉"原页面开始 → 刷新"之间的改动
       const persisted = loadRunHash(chatId);
       if (persisted && persisted.cwd === cwd) {
+        anchor = persisted.anchorIndex ?? anchor;
         checkpointPromise = Promise.resolve(persisted.hash);
         return;
       }
       checkpointPromise = gitCheckpointCreate(cwd, requestId)
         .then((hash) => {
-          if (hash) saveRunHash(chatId, { cwd, hash });
+          if (hash) saveRunHash(chatId, { cwd, hash, anchorIndex: anchor });
           return hash;
         })
         .catch((err) => {
@@ -226,7 +231,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
               added += f.added;
               removed += f.removed;
             }
-            setRunCheckpoint(chatId, {
+            pushRunCheckpoint(chatId, anchor, {
               cwd,
               hash,
               files: d.files.length,
@@ -234,7 +239,8 @@ export class PiTransport implements ChatTransport<UIMessage> {
               removed,
             });
           })
-          .catch(() => {});
+          // 结算失败不弹窗打断对话,但必须留痕:静默吞错会让"卡去哪了"无从排查
+          .catch((err) => console.warn("[checkpoint] settle diff failed", String(err)));
       });
     };
 

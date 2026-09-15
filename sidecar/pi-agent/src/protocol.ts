@@ -68,6 +68,8 @@
  *       技能 .md 文档（frontmatter+正文）+ 热重载 → 同款 skills 应答（name=编辑前原名，改名时清旧文件）
  *   { "type": "delete_skill", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 skills 应答（生态只读不可删）
  *   { "type": "set_skill_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 skills 应答
+ *   { "type": "set_skills_enabled", "id", "targets": [{ "scope", "name" }...], "cwd"?, "enabled" }
+ *       批量开关（设置页「全部启用 / 全部关闭」快捷）：targets 整表置为目标状态、一次性落盘 + 热重载 → 同款 skills 应答
  *   { "type": "list_mcp_servers", "id", "cwd"? }             → { id, type: "mcp_servers", servers, workspaceCwd, diagnostics }
  *       MCP 服务器清单（系统 ~/.xulux/mcp.json + 工作区 .mcp.json/.xulux/mcp.json 合并，
  *       含每台连接状态）；设置 → MCP 页渲染用
@@ -198,10 +200,12 @@ import {
   listActiveTurnSessions,
   noteActiveTurn,
   projectContextInfo,
+  rebindRunThread,
   reloadSkills,
   reloadSubagents,
-  running,
   resolveSession,
+  running,
+  whenThreadIdle,
 } from "./sessions";
 import {
   cancelAllEntries,
@@ -263,9 +267,11 @@ import {
 import {
   deleteSkillDoc,
   ensureSkillsLoaded,
+  MAX_SKILL_BATCH_TARGETS,
   parseSkillDoc,
   saveSkillDoc,
   setSkillEnabled,
+  setSkillsEnabled,
   skillsSnapshot,
   type SkillScope,
 } from "./skills";
@@ -313,6 +319,16 @@ async function subagentsPayload(cwd?: string) {
     workspaceCwd: cwd ?? null,
     diagnostics: r.diagnostics,
   };
+}
+
+/** 技能 scope 字段校验：四个来源层之外回 null */
+function skillScopeFrom(value: unknown): SkillScope | null {
+  return value === "workspace" ||
+    value === "compat-workspace" ||
+    value === "system" ||
+    value === "compat"
+    ? (value as SkillScope)
+    : null;
 }
 
 /** 技能清单应答负载：设置页与所有变更命令共用同一形状（改后即见） */
@@ -614,6 +630,15 @@ async function runPromptTurn(
   } catch (err) {
     sendChunk(reqId, { type: "error", errorText: err instanceof Error ? err.message : String(err) });
     return;
+  }
+  // 线程键漂移（刷新后草稿 id → sessionId）：resolveSession 在旧轮未收尾时
+  // 不敢改绑 run.threadId（会把旧轮事件错路由进新请求），这里等旧键轮次
+  // 完整结束（含委派收敛与 finish 收尾）后补改绑。不改绑的后果：事件路由按
+  // run.threadId 查 activeReqByThread 落空，全部内容 chunk 静默丢弃，只剩
+  // 显式 reqId 的 start/finish——前端"没回复却弹完成通知"（2026-09 修复）。
+  if (run.threadId !== threadId) {
+    await whenThreadIdle(run.threadId);
+    await rebindRunThread(run, run.threadId, threadId);
   }
   if (!run.agent.state.model) {
     sendChunk(reqId, {
@@ -1445,19 +1470,38 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "set_skill_enabled": {
-      const scope: SkillScope | null =
-        msg.scope === "workspace" ||
-        msg.scope === "compat-workspace" ||
-        msg.scope === "system" ||
-        msg.scope === "compat"
-          ? (msg.scope as SkillScope)
-          : null;
+      const scope = skillScopeFrom(msg.scope);
       if (!scope) throw new Error("set_skill_enabled: invalid scope");
       const name = String(msg.name ?? "");
       if (!name) throw new Error("set_skill_enabled: name is required");
       const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
       const enabled = msg.enabled === true;
       await setSkillEnabled(scope, name, enabled, cwd);
+      await reloadSkills();
+      send({ id: reqId, type: "skills", ...(await skillsPayload(cwd)) });
+      break;
+    }
+    case "set_skills_enabled": {
+      // 批量开关（设置页「全部启用 / 全部关闭」快捷）：整表置为目标态，一次落盘
+      const rawTargets = Array.isArray(msg.targets) ? msg.targets : [];
+      if (rawTargets.length === 0) throw new Error("set_skills_enabled: targets is required");
+      if (rawTargets.length > MAX_SKILL_BATCH_TARGETS) {
+        throw new Error(
+          `set_skills_enabled: too many targets (max ${MAX_SKILL_BATCH_TARGETS})`,
+        );
+      }
+      const targets: Array<{ scope: SkillScope; name: string }> = [];
+      for (const item of rawTargets) {
+        const t = (item ?? {}) as Record<string, unknown>;
+        const scope = skillScopeFrom(t.scope);
+        if (!scope) throw new Error("set_skills_enabled: invalid scope");
+        const name = String(t.name ?? "");
+        if (!name) throw new Error("set_skills_enabled: name is required");
+        targets.push({ scope, name });
+      }
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      const enabled = msg.enabled === true;
+      await setSkillsEnabled(targets, enabled, cwd);
       await reloadSkills();
       send({ id: reqId, type: "skills", ...(await skillsPayload(cwd)) });
       break;

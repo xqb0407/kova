@@ -387,6 +387,32 @@ export async function setSkillEnabled(
   await persistState();
 }
 
+/** 批量开关单次条目上限（设置页一个页签最多几百条） */
+export const MAX_SKILL_BATCH_TARGETS = 512;
+
+/**
+ * 批量开关：把一批 (scope, name) 条目直接置为目标状态（重复条目天然幂等），
+ * 只落一次盘。cwd 仅参与工作区两层（workspace / compat-workspace）的 stateKey，
+ * 与单条开关同一套键规则。
+ */
+export async function setSkillsEnabled(
+  targets: Array<{ scope: SkillScope; name: string }>,
+  enabled: boolean,
+  cwd?: string,
+): Promise<void> {
+  if (targets.length === 0) return;
+  if (targets.length > MAX_SKILL_BATCH_TARGETS) {
+    throw new Error(`setSkillsEnabled: too many targets (max ${MAX_SKILL_BATCH_TARGETS})`);
+  }
+  await initSkillsState();
+  for (const t of targets) {
+    const key = skillStateKey(t.scope, t.name, cwd);
+    if (enabled) delete state.disabled[key];
+    else state.disabled[key] = true;
+  }
+  await persistState();
+}
+
 // ---------------------------------------------------------------------------
 // 文档解析 / 渲染（frontmatter + 正文）
 // ---------------------------------------------------------------------------
