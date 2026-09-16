@@ -69,6 +69,7 @@ import {
   forwardRef,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -755,12 +756,31 @@ const ThreadListSkeleton: FC = () => {
   );
 };
 
-/** 会话标题：文本被省略号截断时，悬浮缓慢左滚展示全文，移开后回位 */
+/** 会话标题：溢出时右缘渐隐（shadcn scroll-fade-e）取代省略号；
+ *  悬浮缓慢左滚展示全文，移开后回位。渐隐按实测溢出施加：WKWebView 没有
+ *  animation-timeline，工具类的回退分支会无差别常开渐隐，短标题也会被蚀掉
+ *  尾字，所以只在确实截断时挂类；左滚期间撤下（此时看的就是文末）。 */
 const MarqueeTitle: FC<
   ComponentPropsWithoutRef<"span"> & { children: ReactNode }
 > = ({ className, children, ...props }) => {
   const outerRef = useRef<HTMLSpanElement>(null);
   const [dx, setDx] = useState(0);
+  const [overflows, setOverflows] = useState(false);
+
+  const measure = () => {
+    const el = outerRef.current;
+    if (el) setOverflows(el.scrollWidth - el.clientWidth > 1);
+  };
+
+  useLayoutEffect(() => {
+    measure();
+    const el = outerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+    // children 变化（改名/标题生成）后重测
+  }, [children]);
 
   const enter = () => {
     const el = outerRef.current;
@@ -770,6 +790,7 @@ const MarqueeTitle: FC<
     if (overflow > 1) setDx(-(overflow + 16));
   };
 
+  const fade = overflows && dx === 0;
   return (
     <span
       ref={outerRef}
@@ -777,12 +798,14 @@ const MarqueeTitle: FC<
       onMouseLeave={() => setDx(0)}
       className={cn(
         "block min-w-0 flex-1 overflow-hidden whitespace-nowrap",
+        // 渐隐带宽 4×spacing=16px
+        fade && "scroll-fade-e scroll-fade-4",
         className,
       )}
-      // 静止时溢出以省略号收尾；hover 滚动全文期间切回 clip，避免省略号
-      // 压着正在滚动的文字。text-overflow 只对行内的 inline-level 溢出生效，
-      // 所以内层用 inline-block 而非 block。
-      style={{ textOverflow: dx !== 0 ? "clip" : "ellipsis" }}
+      // 静止且截断：右缘渐隐取代省略号收尾；hover 滚动全文期间切回 clip，
+      // 避免省略号压着正在滚动的文字。text-overflow 只对行内的 inline-level
+      // 溢出生效，所以内层用 inline-block 而非 block。
+      style={{ textOverflow: fade || dx !== 0 ? "clip" : "ellipsis" }}
       {...props}
     >
       {/* w-max：inline-block 默认 shrink-to-fit 会被容器宽度封顶，文字溢出
