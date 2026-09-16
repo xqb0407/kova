@@ -756,10 +756,13 @@ const ThreadListSkeleton: FC = () => {
   );
 };
 
-/** 会话标题：溢出时右缘渐隐（shadcn scroll-fade-e）取代省略号；
- *  悬浮缓慢左滚展示全文，移开后回位。渐隐按实测溢出施加：WKWebView 没有
- *  animation-timeline，工具类的回退分支会无差别常开渐隐，短标题也会被蚀掉
- *  尾字，所以只在确实截断时挂类；左滚期间撤下（此时看的就是文末）。 */
+/** 会话标题：溢出时右缘渐隐（shadcn scroll-fade-e 的等效形态）取代省略号，
+ *  hover 左滚展示全文期间同样保留（文字从渐隐下滚过，即真实滚动容器的观感）。
+ *  不挂工具类而走内联 mask：scroll-fade-e 依赖 @property + animation-timeline
+ *  + 嵌套 @supports 的机制，在 Tauri 的 WKWebView 上不可靠（实测无效果）；
+ *  这里直接写等价 mask 渐变，并仍按实测溢出施加（短标题不蚀尾字）。 */
+const TITLE_FADE =
+  "linear-gradient(to right, #000 calc(100% - 16px), transparent)";
 const MarqueeTitle: FC<
   ComponentPropsWithoutRef<"span"> & { children: ReactNode }
 > = ({ className, children, ...props }) => {
@@ -790,7 +793,6 @@ const MarqueeTitle: FC<
     if (overflow > 1) setDx(-(overflow + 16));
   };
 
-  const fade = overflows && dx === 0;
   return (
     <span
       ref={outerRef}
@@ -798,14 +800,20 @@ const MarqueeTitle: FC<
       onMouseLeave={() => setDx(0)}
       className={cn(
         "block min-w-0 flex-1 overflow-hidden whitespace-nowrap",
-        // 渐隐带宽 4×spacing=16px
-        fade && "scroll-fade-e scroll-fade-4",
         className,
       )}
-      // 静止且截断：右缘渐隐取代省略号收尾；hover 滚动全文期间切回 clip，
-      // 避免省略号压着正在滚动的文字。text-overflow 只对行内的 inline-level
-      // 溢出生效，所以内层用 inline-block 而非 block。
-      style={{ textOverflow: fade || dx !== 0 ? "clip" : "ellipsis" }}
+      // 截断时：mask 渐隐收尾（蚀字而非叠色，任何底色自适应），省略号退役；
+      // 未截断保持原样。text-overflow 只对行内 inline-level 溢出生效，
+      // 所以内层用 inline-block 而非 block。
+      style={
+        overflows
+          ? {
+              textOverflow: "clip",
+              WebkitMaskImage: TITLE_FADE,
+              maskImage: TITLE_FADE,
+            }
+          : undefined
+      }
       {...props}
     >
       {/* w-max：inline-block 默认 shrink-to-fit 会被容器宽度封顶，文字溢出
