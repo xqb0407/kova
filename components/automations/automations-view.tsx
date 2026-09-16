@@ -14,6 +14,8 @@
 
 import { useEffect, useMemo, useState, type FC } from "react";
 import { useAui } from "@assistant-ui/react";
+import { AnimatePresence, motion } from "framer-motion";
+import { SPRING_LAYOUT } from "@/lib/ease";
 import {
   AlertCircleIcon,
   CheckIcon,
@@ -262,24 +264,38 @@ const TaskCard: FC<{
       id={`automation-card-${task.id}`}
       onClick={batchMode ? onToggleSelect : undefined}
       className={cn(
-        // mt-auto 的元信息行让网格拉伸时各卡的排期/统计对齐在同一基线
+        // mt-auto 的元信息行让网格拉伸时各卡的排期/统计对齐在同一基线；
+        // box-shadow 也进过渡：批量选中态的 ring 淡入而非闪现
         "bg-card border-border flex flex-col gap-2.5 rounded-xl border p-4",
-        "transition-colors hover:border-foreground/15",
+        "transition-[border-color,box-shadow] duration-150 hover:border-foreground/15",
         highlighted && "ring-2 ring-primary/60",
         batchMode && "cursor-pointer",
         batchMode && selected && "border-primary ring-1 ring-primary/50",
       )}
     >
       <div className="flex min-w-0 items-center gap-2">
-        {batchMode && (
-          <Checkbox
-            checked={selected}
-            aria-label={`选择 ${task.name || "任务"}`}
-            // 阻止冒泡：勾选本身已由 onCheckedChange 处理，卡片 onClick 会再翻一次
-            onClick={(e) => e.stopPropagation()}
-            onCheckedChange={() => onToggleSelect()}
-          />
-        )}
+        {/* 批量模式切换动效：勾选框以宽度弹簧推入/抽回（标题平滑让位），
+            右侧操作组同步淡出——否则两列控件硬替换很突兀 */}
+        <AnimatePresence initial={false}>
+          {batchMode && (
+            <motion.div
+              key="batch-check"
+              className="flex shrink-0 items-center"
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: "auto", opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={SPRING_LAYOUT}
+            >
+              <Checkbox
+                checked={selected}
+                aria-label={`选择 ${task.name || "任务"}`}
+                // 阻止冒泡：勾选本身已由 onCheckedChange 处理，卡片 onClick 会再翻一次
+                onClick={(e) => e.stopPropagation()}
+                onCheckedChange={() => onToggleSelect()}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
         <StatusDot task={task} running={running} />
         <span
           className={cn(
@@ -290,66 +306,75 @@ const TaskCard: FC<{
         >
           {task.name || "未命名任务"}
         </span>
-        {!batchMode && (
-          <div className="ml-auto flex shrink-0 items-center gap-0.5">
-            <Switch
-              checked={task.enabled}
-              disabled={busy}
-              onCheckedChange={(checked) =>
-                void act(() => setAutomationEnabled(task.id, checked))()
-              }
-              aria-label={`${task.name || "任务"} 启用`}
-            />
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              title="立即运行一次"
-              aria-label="立即运行一次"
-              disabled={busy || running}
-              onClick={runNow}
+        <AnimatePresence initial={false}>
+          {!batchMode && (
+            <motion.div
+              key="card-actions"
+              className="ml-auto flex shrink-0 items-center gap-0.5"
+              initial={{ opacity: 0, x: 6 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 6 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
             >
-              <PlayIcon className="size-4" />
-            </Button>
-            {/* 次级操作全部收进 ⋯ 菜单：标题行常驻控件只有 开关/▶/⋯ 三个 */}
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7"
-                    aria-label="更多操作"
-                    disabled={busy}
-                  >
-                    <MoreHorizontalIcon className="size-4" />
-                  </Button>
+              <Switch
+                checked={task.enabled}
+                disabled={busy}
+                onCheckedChange={(checked) =>
+                  void act(() => setAutomationEnabled(task.id, checked))()
                 }
+                aria-label={`${task.name || "任务"} 启用`}
               />
-              <DropdownMenuContent align="end" className="w-44">
-                {/* 本地 dropdown 封装基于 base-ui：条目回调只认 onClick。
-                    onSelect 是 Radix 惯例，落到底层是原生 text-selection 事件，
-                    点了静默不触发（删除曾因此完全没反应）。删除走确认弹窗 */}
-                <DropdownMenuItem onClick={() => onEdit(task)}>
-                  <PencilIcon className="size-4" />
-                  编辑任务
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={toggleHistory}>
-                  <HistoryIcon className="size-4" />
-                  {showHistory ? "收起运行历史" : "展开运行历史"}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() => setAskDeleteOpen(true)}
-                >
-                  <Trash2Icon className="size-4" />
-                  删除任务
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                title="立即运行一次"
+                aria-label="立即运行一次"
+                disabled={busy || running}
+                onClick={runNow}
+              >
+                <PlayIcon className="size-4" />
+              </Button>
+              {/* 次级操作全部收进 ⋯ 菜单：标题行常驻控件只有 开关/▶/⋯ 三个 */}
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-7"
+                      aria-label="更多操作"
+                      disabled={busy}
+                    >
+                      <MoreHorizontalIcon className="size-4" />
+                    </Button>
+                  }
+                />
+                <DropdownMenuContent align="end" className="w-44">
+                  {/* 本地 dropdown 封装基于 base-ui：条目回调只认 onClick。
+                      onSelect 是 Radix 惯例，落到底层是原生 text-selection 事件，
+                      点了静默不触发（删除曾因此完全没反应）。删除走确认弹窗 */}
+                  <DropdownMenuItem onClick={() => onEdit(task)}>
+                    <PencilIcon className="size-4" />
+                    编辑任务
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={toggleHistory}>
+                    <HistoryIcon className="size-4" />
+                    {showHistory ? "收起运行历史" : "展开运行历史"}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => setAskDeleteOpen(true)}
+                  >
+                    <Trash2Icon className="size-4" />
+                    删除任务
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <p className="text-muted-foreground line-clamp-2 min-w-0 text-xs leading-relaxed">
@@ -895,82 +920,91 @@ export const AutomationsView: FC<{
 
       {/* 批量操作坞：底部居中的悬浮图标条（Dock 风格）。外层 pointer-events-none
           只让坞本体可点，悬浮不遮两侧内容的滚轮操作；sticky 让它随滚动常驻 */}
-      {batchMode && tab === "tasks" && (
-        <div className="pointer-events-none sticky bottom-0 z-20 flex justify-center pb-6">
-          {/* Dock 容器 items-end 底对齐（为悬停放大图标设计），短文本必须
-              self-center 才不坠底；计数做成药丸胶囊和图标格呼应 */}
-          <Dock size={36} className="pointer-events-auto">
-            <span className="bg-muted text-muted-foreground self-center rounded-full px-2 py-0.5 text-xs tabular-nums">
-              已选 {selected.size}
-            </span>
-            {/* 方框勾=全选语义；全选态用主色图标提示（active pill 那块灰底
-                孤悬在图标行里很怪，且只有这一项有底色更显得像渲染故障） */}
-            <DockItem
-              title={allVisibleSelected ? "清空" : "全选"}
-              aria-label={allVisibleSelected ? "清空" : "全选"}
-              onClick={
-                batchBusy || visibleTasks.length === 0
-                  ? undefined
-                  : () =>
-                      setSelected(
-                        allVisibleSelected
-                          ? new Set()
-                          : new Set(visibleTasks.map((t) => t.id)),
-                      )
-              }
-              className={cn(
-                batchBusy || visibleTasks.length === 0
-                  ? "opacity-40"
-                  : "cursor-pointer",
-                allVisibleSelected && "text-primary",
-              )}
-            >
-              <SquareCheckBigIcon className="size-4" />
-            </DockItem>
-            <DockSeparator />
-            <DockItem
-              title="批量启用"
-              aria-label="批量启用"
-              onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(true)}
-              className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
-            >
-              <PowerIcon className="size-4" />
-            </DockItem>
-            <DockItem
-              title="批量暂停"
-              aria-label="批量暂停"
-              onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(false)}
-              className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
-            >
-              <PauseIcon className="size-4" />
-            </DockItem>
-            <DockItem
-              title={confirmBatchDelete ? `确认删除 ${selected.size} 项` : "批量删除"}
-              aria-label="批量删除"
-              onClick={batchActionDisabled ? undefined : () => void batchDelete()}
-              className={cn(
-                "relative",
-                batchActionDisabled ? "opacity-40" : "cursor-pointer",
-                confirmBatchDelete && "text-destructive",
-              )}
-            >
-              {/* 一次点击进 3 秒确认态：红底描边框提示再点一次真删 */}
-              {confirmBatchDelete && (
-                <span className="bg-destructive/10 ring-destructive/40 absolute inset-1 -z-10 rounded-xl ring-1" />
-              )}
-              <Trash2Icon className="size-4" />
-            </DockItem>
-            <DockItem
-              title="退出批量管理"
-              aria-label="退出批量管理"
-              onClick={batchBusy ? undefined : exitBatch}
-              className={cn(batchBusy ? "opacity-40" : "cursor-pointer")}
-            >
-              <XIcon className="size-4" />
-            </DockItem>
-          </Dock>
-        </div>
-      )}
+      <AnimatePresence initial={false}>
+        {batchMode && tab === "tasks" && (
+          <motion.div
+            key="batch-dock"
+            className="pointer-events-none sticky bottom-0 z-20 flex justify-center pb-6"
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 18 }}
+            transition={SPRING_LAYOUT}
+          >
+            {/* Dock 容器 items-end 底对齐（为悬停放大图标设计），短文本必须
+                self-center 才不坠底；计数做成药丸胶囊和图标格呼应 */}
+            <Dock size={36} className="pointer-events-auto">
+              <span className="bg-muted text-muted-foreground self-center rounded-full px-2 py-0.5 text-xs tabular-nums">
+                已选 {selected.size}
+              </span>
+              {/* 方框勾=全选语义；全选态用主色图标提示（active pill 那块灰底
+                  孤悬在图标行里很怪，且只有这一项有底色更显得像渲染故障） */}
+              <DockItem
+                title={allVisibleSelected ? "清空" : "全选"}
+                aria-label={allVisibleSelected ? "清空" : "全选"}
+                onClick={
+                  batchBusy || visibleTasks.length === 0
+                    ? undefined
+                    : () =>
+                        setSelected(
+                          allVisibleSelected
+                            ? new Set()
+                            : new Set(visibleTasks.map((t) => t.id)),
+                        )
+                }
+                className={cn(
+                  batchBusy || visibleTasks.length === 0
+                    ? "opacity-40"
+                    : "cursor-pointer",
+                  allVisibleSelected && "text-primary",
+                )}
+              >
+                <SquareCheckBigIcon className="size-4" />
+              </DockItem>
+              <DockSeparator />
+              <DockItem
+                title="批量启用"
+                aria-label="批量启用"
+                onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(true)}
+                className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
+              >
+                <PowerIcon className="size-4" />
+              </DockItem>
+              <DockItem
+                title="批量暂停"
+                aria-label="批量暂停"
+                onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(false)}
+                className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
+              >
+                <PauseIcon className="size-4" />
+              </DockItem>
+              <DockItem
+                title={confirmBatchDelete ? `确认删除 ${selected.size} 项` : "批量删除"}
+                aria-label="批量删除"
+                onClick={batchActionDisabled ? undefined : () => void batchDelete()}
+                className={cn(
+                  "relative",
+                  batchActionDisabled ? "opacity-40" : "cursor-pointer",
+                  confirmBatchDelete && "text-destructive",
+                )}
+              >
+                {/* 一次点击进 3 秒确认态：红底描边框提示再点一次真删 */}
+                {confirmBatchDelete && (
+                  <span className="bg-destructive/10 ring-destructive/40 absolute inset-1 -z-10 rounded-xl ring-1" />
+                )}
+                <Trash2Icon className="size-4" />
+              </DockItem>
+              <DockItem
+                title="退出批量管理"
+                aria-label="退出批量管理"
+                onClick={batchBusy ? undefined : exitBatch}
+                className={cn(batchBusy ? "opacity-40" : "cursor-pointer")}
+              >
+                <XIcon className="size-4" />
+              </DockItem>
+            </Dock>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AutomationEditorDialog
         open={editorOpen}
