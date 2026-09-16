@@ -86,7 +86,14 @@ function onTurnEvent(sessionId: string | null, active: boolean) {
   deltas.set(sessionId, active);
   // turn 收尾即一次消息活动：本端发起的在 transport 发送时已盖过，这里补上
   // 其它端（如桌面应用里跑的）聊完的会话，让它们的行也立刻显示「刚刚」
-  if (!active) markThreadActivity(sessionId);
+  if (!active) {
+    markThreadActivity(sessionId);
+    // 在飞流登记随轮次结束作废：实时流已尽，内容从转录走历史加载。定时任务的
+    // 轮次前端没有发起消费者，登记（启动水合/挂载探查重建）不会经 transport
+    // finish 通道清理——不清就会留着陈旧 requestId，下次点进该会话触发一次
+    // 空转 resume，甚至把已结束轮次的重放缓冲再倒进线程（消息重复/空窗）。
+    piResumableStorage.clear(sessionId);
+  }
   recompute();
 }
 

@@ -16,6 +16,7 @@ import type {
 import type { UIMessage } from "ai";
 import { piRequest, type PiSessionSummary } from "@/lib/pi-bridge";
 import { clearManualCompactionMarkerForRemote } from "@/lib/pi-compaction-marker";
+import { findRunningTurn } from "@/lib/pi-running";
 import { getWorkspace } from "@/lib/workspace-store";
 
 /** local thread id -> pi sessionId（remoteId）。transport 发 prompt 时靠它找会话 */
@@ -110,18 +111,49 @@ function messagesToRepository(uiMessages: unknown[]): {
   };
 }
 
-/** 从 pi session 拉取历史，返回 UIMessage 列表（含 id） */
+/** 从 pi session 拉取历史，返回 UIMessage 列表（含 id）。
+ * 防御：定时任务会话可能在转录还没落盘时被点开（轮初只补录用户消息、
+ * 其余在 agent_end 才写），或索引说会话有消息而首查为空/失败 —— 这种
+ * "点进去空空如也"最难自查，这里重试一次并留 [pi-history] 日志进 web.log。 */
 async function loadPiHistory(
   remoteId: string | undefined,
 ): Promise<UIMessage[]> {
   if (!remoteId) return [];
-  const res = await piRequest<{ type: "history"; messages: UIMessage[] }>({
-    type: "get_history",
-    sessionId: remoteId,
-  });
+  const fetchOnce = async (): Promise<UIMessage[]> => {
+    const res = await piRequest<{ type: "history"; messages: UIMessage[] }>({
+      type: "get_history",
+      sessionId: remoteId,
+    });
+    return res.messages;
+  };
+  let messages: UIMessage[] = [];
+  try {
+    messages = await fetchOnce();
+  } catch (err) {
+    console.warn("[pi-history] load failed", remoteId, String(err));
+    await new Promise((r) => setTimeout(r, 400));
+    try {
+      messages = await fetchOnce();
+    } catch (err2) {
+      console.warn("[pi-history] retry failed", remoteId, String(err2));
+    }
+  }
+  if (
+    messages.length === 0 &&
+    (piSessionPrefsMap.get(remoteId)?.messageCount ?? 0) > 0
+  ) {
+    // 索引有消息但首查为空：多半撞在落盘窗口，稍后重查一次
+    console.warn("[pi-history] empty despite indexed messages", remoteId);
+    await new Promise((r) => setTimeout(r, 400));
+    try {
+      messages = await fetchOnce();
+    } catch (err) {
+      console.warn("[pi-history] gap-fill retry failed", remoteId, String(err));
+    }
+  }
   // 压缩分隔线已由检查点行重建进历史消息流 → 手动压缩的尾部 marker 退役
   clearManualCompactionMarkerForRemote(remoteId);
-  return res.messages;
+  return messages;
 }
 
 /**
@@ -266,6 +298,12 @@ export function createPiThreadListAdapter(): RemoteThreadListAdapter {
       useEffect(() => {
         if (state?.id && remoteId) {
           piSessionRegistry.set(state.id, remoteId);
+          // 挂载即认领在飞轮次：定时任务的 turn 由 sidecar 发起，前端没有
+          // 发送动作、也就没有流登记 —— 运行中点进来只会看到空历史（转录
+          // 要到 agent_end 才整体落盘）。这里探一次 list_running：真在跑就
+          // 重建登记，框架的 resume 效果订阅登记库，登记落定即自动重挂
+          // 实时流（Rust 重放缓冲补齐已产出的 chunk），不再空窗到跑完。
+          void findRunningTurn(remoteId);
         }
       }, [state?.id, remoteId]);
 

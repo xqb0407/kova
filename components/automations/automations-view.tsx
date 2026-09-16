@@ -227,11 +227,13 @@ const TaskCard: FC<{
     await runAutomationNow(task.id);
   });
 
-  const toggleHistory = () =>
-    setShowHistory((v) => {
-      if (!v) void refreshAutomations();
-      return !v;
-    });
+  const toggleHistory = () => {
+    // 展开历史前刷一次清单（runHistory 在任务记录里）。刷新是 store 副作用，
+    // 必须留在 updater 外：updater 会在渲染期执行，emit 落到父组件即触发
+    // "Cannot update a component while rendering a different component"。
+    if (!showHistory) void refreshAutomations();
+    setShowHistory((v) => !v);
+  };
 
   const countdown =
     task.enabled && task.nextRunAt ? nextRunLabel(task.nextRunAt, now) : "";
