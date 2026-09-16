@@ -487,13 +487,22 @@ export const ProjectListItems: FC<{
     () => new Set(),
   );
   const openDirs = controlledOpen ?? internalOpen;
-  // 已点过「显示更多」的项目集合（会话列表刷新后保持展开态）
-  const [showAllDirs, setShowAllDirs] = useState<Set<string>>(() => new Set());
-  const toggleShowAll = (cwd: string) =>
-    setShowAllDirs((prev) => {
-      const next = new Set(prev);
-      if (next.has(cwd)) next.delete(cwd);
-      else next.add(cwd);
+  // 项目分组内当前可见行数（「显示更多」每点一次 +5 分页放出，不一次全开）；
+  // 会话列表刷新后保持已放出的量，点「收起」回到默认 5 条
+  const [visibleCounts, setVisibleCounts] = useState<Map<string, number>>(
+    () => new Map(),
+  );
+  const expandMore = (cwd: string) =>
+    setVisibleCounts((prev) => {
+      const next = new Map(prev);
+      next.set(cwd, (prev.get(cwd) ?? PROJECT_VISIBLE_LIMIT) + PROJECT_VISIBLE_LIMIT);
+      return next;
+    });
+  const collapseToLimit = (cwd: string) =>
+    setVisibleCounts((prev) => {
+      if (!prev.has(cwd)) return prev;
+      const next = new Map(prev);
+      next.delete(cwd);
       return next;
     });
 
@@ -553,12 +562,11 @@ export const ProjectListItems: FC<{
     >
       <FluidHoverHighlight hover={hover} className="rounded-md" />
       {projectGroups.map((group) => {
-        // 组内行数超过上限时默认截断，尾部「显示更多」展开/「收起」折回；
-        // 截断后的行与按钮占连续 hover 槽位，未渲染的行不占槽
-        const showAll = showAllDirs.has(group.cwd);
-        const visibleIndices = showAll
-          ? group.indices
-          : group.indices.slice(0, PROJECT_VISIBLE_LIMIT);
+        // 组内行数超过上限时默认截断 5 条，尾部「显示更多」每点放出 5 条，
+        // 全部放出后变「收起」折回默认；截断后的行与按钮占连续 hover 槽位
+        const visibleLimit =
+          visibleCounts.get(group.cwd) ?? PROJECT_VISIBLE_LIMIT;
+        const visibleIndices = group.indices.slice(0, visibleLimit);
         const hiddenCount = group.indices.length - visibleIndices.length;
         const hasMore = group.indices.length > PROJECT_VISIBLE_LIMIT;
         const headerSlot = nextSlot++;
@@ -662,11 +670,16 @@ export const ProjectListItems: FC<{
                     >
                       <Button
                         variant="ghost"
-                        className="h-7 w-full justify-start px-2.5 text-xs font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
-                        onClick={() => toggleShowAll(group.cwd)}
+                        // 左缘与会话标题对齐：行 ps-2.5(10px) + 占位图标 size-3.5(14px) + me-1.5(6px) = 30px
+                        className="h-7 w-full justify-start ps-[30px] text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+                        onClick={() =>
+                          hiddenCount > 0
+                            ? expandMore(group.cwd)
+                            : collapseToLimit(group.cwd)
+                        }
                       >
                         {hiddenCount > 0
-                          ? `显示更多（${hiddenCount}）`
+                          ? `显示更多（${Math.min(hiddenCount, PROJECT_VISIBLE_LIMIT)}）`
                           : "收起"}
                       </Button>
                     </FluidHoverRow>
