@@ -1067,17 +1067,15 @@ export const AutomationsView: FC<{
               )}
             </div>
           ) : (
-            /* 固定高度的带边框滚动视口：分组卡片在 border 线内滚。没有可见
-               边框时，滚动区上下没有"容器"界线，视觉上感知不到内部滚动；
-               页头/工具栏/底部批量坞保持常驻 */
-            <div className="border-border/60 bg-card/30 flex h-[480px] flex-col gap-4 overflow-y-auto rounded-2xl border p-3">
+            /* 固定高度的带边框滚动视口（唯一一圈 border）：一天一组只靠日期
+               标题分隔，组内不再各自套卡——双层框叠着很难看 */
+            <div className="border-border/60 bg-card flex h-[480px] flex-col gap-4 overflow-y-auto rounded-2xl border p-3">
               {historyGroups.map((g) => (
                 <div key={g.key}>
                   <p className="text-muted-foreground px-1 pb-1.5 text-xs font-semibold">
                     {g.label}
                   </p>
-                  {/* 一天一组、装进卡容器：散行列表在宽屏下很飘 */}
-                  <div className="bg-card border-border/60 rounded-xl border p-1">
+                  <div>
                     {g.items.map((item) => (
                       <GlobalHistoryRow
                         key={item.runId}
