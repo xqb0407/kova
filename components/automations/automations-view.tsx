@@ -54,6 +54,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
   DialogContent,
@@ -936,40 +937,32 @@ export const AutomationsView: FC<{
           按计划自动运行 Agent 任务，每次执行开一个独立会话
         </p>
 
-        {/* tab：定时任务 | 运行记录 */}
-        <div className="flex items-center gap-1">
-          <Button
-            size="sm"
-            variant={tab === "tasks" ? "secondary" : "ghost"}
-            className="gap-1.5"
-            onClick={() => {
-              setTab("tasks");
-              exitBatch();
-              exitHistoryBatch();
-            }}
-          >
-            <ClockIcon className="size-3.5" />
-            定时任务
-          </Button>
-          <Button
-            size="sm"
-            variant={tab === "history" ? "secondary" : "ghost"}
-            className="gap-1.5"
-            onClick={() => {
-              setTab("history");
-              exitBatch();
-              exitHistoryBatch();
-            }}
-          >
-            <HistoryIcon className="size-3.5" />
-            运行记录
-            {totalHistoryCount > 0 && (
-              <span className="text-muted-foreground text-xs tabular-nums">
-                {totalHistoryCount}
-              </span>
-            )}
-          </Button>
-        </div>
+        {/* tab：定时任务 | 运行记录。胶囊段选样式对齐设置页各分区（ui/tabs 同款） */}
+        <Tabs
+          value={tab}
+          onValueChange={(v) => {
+            if (v === tab) return;
+            setTab(v as "tasks" | "history");
+            exitBatch();
+            exitHistoryBatch();
+          }}
+        >
+          <TabsList className="h-auto rounded-full bg-muted/50 p-[3px]">
+            <TabsTrigger value="tasks" className="gap-1.5 rounded-full px-3 py-1 text-sm">
+              <ClockIcon className="size-3.5" />
+              定时任务
+            </TabsTrigger>
+            <TabsTrigger value="history" className="gap-1.5 rounded-full px-3 py-1 text-sm">
+              <HistoryIcon className="size-3.5" />
+              运行记录
+              {totalHistoryCount > 0 && (
+                <span className="text-muted-foreground text-xs tabular-nums">
+                  {totalHistoryCount}
+                </span>
+              )}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
 
         {/* 工具栏：搜索 + 筛选 + 刷新/批量/模板/新建 */}
         <div className="flex flex-wrap items-center gap-2">
@@ -1082,7 +1075,9 @@ export const AutomationsView: FC<{
               )}
             </div>
           ) : (
-            <div className="flex flex-col gap-4">
+            /* 固定高度、内部滚动：记录再多也不把整页撑长，页头/工具栏/底部
+               批量坞保持常驻可见 */
+            <div className="flex h-[480px] flex-col gap-4 overflow-y-auto pr-1">
               {historyGroups.map((g) => (
                 <div key={g.key}>
                   <p className="text-muted-foreground px-1 pb-1.5 text-xs font-semibold">

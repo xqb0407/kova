@@ -2,7 +2,11 @@
 
 import { ComposerAddAttachment, ComposerAttachments } from "@/components/assistant-ui/elements/attachment.aui";
 import { ComposerQuotePreview } from "@/components/assistant-ui/elements/quote.aui";
-import { ComposerTriggerPopover } from "@/components/assistant-ui/elements/composer-trigger-popover.aui";
+import { GroupedTriggerPopover } from "@/components/agent-thread/composer-grouped-popover";
+import {
+  useComposerSlashMenu,
+  useSubagentMention,
+} from "@/components/agent-thread/composer-commands";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
@@ -17,11 +21,8 @@ import {
   AuiIf,
   ComposerPrimitive,
   MessagePrimitive,
-  unstable_useMentionAdapter,
-  unstable_useSlashCommandAdapter,
   useAui,
   useAuiState,
-  type Unstable_SlashCommand,
 } from "@assistant-ui/react";
 import { LexicalComposerInput, type DirectiveChipProps } from "@assistant-ui/react-lexical";
 import {
@@ -37,16 +38,11 @@ import {
   FolderOpenIcon,
   GitBranchIcon,
   GitGraphIcon,
-  GlobeIcon,
-  HelpCircleIcon,
-  LanguagesIcon,
   Loader2Icon,
   MicIcon,
   PlusIcon,
-  SlashIcon,
   SquareIcon,
   WrenchIcon,
-  FileTextIcon,
   XIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
@@ -77,40 +73,6 @@ import { openPanelTab } from "@/lib/panel-tabs";
 
 const ModelPicker: FC = () => {
   return <PiModelPicker />;
-};
-
-const slashCommands: readonly Unstable_SlashCommand[] = [
-  {
-    id: "summarize",
-    description: "Summarize the conversation",
-    icon: "FileText",
-    execute: () => console.log("[base example] /summarize invoked"),
-  },
-  {
-    id: "translate",
-    description: "Translate text to another language",
-    icon: "Languages",
-    execute: () => console.log("[base example] /translate invoked"),
-  },
-  {
-    id: "search",
-    description: "Search the web for information",
-    icon: "Globe",
-    execute: () => console.log("[base example] /search invoked"),
-  },
-  {
-    id: "help",
-    description: "List available commands",
-    icon: "HelpCircle",
-    execute: () => console.log("[base example] /help invoked"),
-  },
-];
-
-const slashIconMap: Record<string, FC<{ className?: string }>> = {
-  FileText: FileTextIcon,
-  Languages: LanguagesIcon,
-  Globe: GlobeIcon,
-  HelpCircle: HelpCircleIcon,
 };
 
 function DirectiveChip(props: DirectiveChipProps) {
@@ -187,12 +149,9 @@ const ImeEnterGuard: FC<{
 };
 
 export const Composer: FC = () => {
-  const mention = unstable_useMentionAdapter({ fallbackIcon: WrenchIcon });
-  const slash = unstable_useSlashCommandAdapter({
-    commands: slashCommands,
-    iconMap: slashIconMap,
-    fallbackIcon: SlashIcon,
-  });
+  // / 指令菜单（命令/技能/MCP 工具三分类）与 @ 子智能体提及，数据聚合见 composer-commands.ts
+  const mention = useSubagentMention();
+  const slash = useComposerSlashMenu();
   // 提问卡片与输入框互斥：Question 工具挂起期间整条 composer 让位给卡片
   // （作答/跳过 → question_answer 结算 → finish chunk 清空，composer 复原）
   const threadId = useAuiState((s) => s.threads.mainThreadId);
@@ -234,12 +193,16 @@ export const Composer: FC = () => {
         <WorkspaceBranchPill />
        </div>
 
-        <ComposerTriggerPopover char="@" {...mention} />
+        <GroupedTriggerPopover
+          char="@"
+          {...mention}
+          emptyLabel="暂无子智能体"
+        />
 
-        <ComposerTriggerPopover
+        <GroupedTriggerPopover
           char="/"
           {...slash}
-          emptyItemsLabel="No matching commands"
+          emptyLabel="无匹配项"
         />
       </ComposerPrimitive.Root>
     </ComposerPrimitive.Unstable_TriggerPopoverRoot>
