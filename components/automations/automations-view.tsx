@@ -896,8 +896,10 @@ export const AutomationsView: FC<{
           只让坞本体可点，悬浮不遮两侧内容的滚轮操作；sticky 让它随滚动常驻 */}
       {batchMode && tab === "tasks" && (
         <div className="pointer-events-none sticky bottom-0 z-20 flex justify-center pb-6">
-          <Dock size={40} className="pointer-events-auto">
-            <span className="px-1.5 text-xs tabular-nums text-muted-foreground">
+          {/* Dock 容器 items-end 底对齐（为悬停放大图标设计），短文本必须
+              self-center 才不坠底；计数做成药丸胶囊和图标格呼应 */}
+          <Dock size={36} className="pointer-events-auto">
+            <span className="bg-muted text-muted-foreground self-center rounded-full px-2 py-0.5 text-xs tabular-nums">
               已选 {selected.size}
             </span>
             <DockItem
