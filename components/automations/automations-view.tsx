@@ -25,6 +25,7 @@ import {
   CalendarDaysIcon,
   CalendarRangeIcon,
   CheckIcon,
+  ChevronDownIcon,
   ClockIcon,
   EraserIcon,
   HistoryIcon,
@@ -778,6 +779,17 @@ export const AutomationsView: FC<{
     })();
   };
 
+  // 会话创建：退回聊天并把引导语预填进输入框。agent 模式的对话 run 挂了
+  // scheduler_create/list/get/update/delete/run_now 工具组（sidecar
+  // automation/mgmt-tools.ts，plan 模式与无人值守 run 不挂），直接说需求即可。
+  // setText 落在 runtime 层与视图挂卸无关，但晚一帧等视图切完再注入更稳
+  const startViaChat = () => {
+    onBackToChat?.();
+    requestAnimationFrame(() => {
+      aui.composer.setText("帮我创建一个定时任务（说明要做什么、什么时候跑）：");
+    });
+  };
+
   const openEditor = (t: AutomationTask | null) => {
     setEditingTask(t);
     setEditorTemplate(null);
@@ -1087,10 +1099,28 @@ export const AutomationsView: FC<{
             <LayersIcon className="size-4" />
             模板
           </Button>
-          <Button className="h-8 shrink-0 gap-1.5" onClick={() => openEditor(null)}>
-            <PlusIcon className="size-4" />
-            新建任务
-          </Button>
+          {/* 新建拆两径：手动表单 or 回聊天让 agent 建（scheduler_* 工具） */}
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button className="h-8 shrink-0 gap-1">
+                  <PlusIcon className="size-4" />
+                  新建任务
+                  <ChevronDownIcon className="size-3 opacity-60" />
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={() => openEditor(null)}>
+                <PencilIcon className="size-4" />
+                手动创建
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={startViaChat}>
+                <MessageSquareIcon className="size-4" />
+                会话创建
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
