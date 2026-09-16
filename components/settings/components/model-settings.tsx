@@ -36,7 +36,11 @@ import {
 import { isTauri } from "@/lib/tauri";
 import { setSelectedModel, useSelectedModel } from "@/lib/model-settings";
 import { refreshPiModels } from "@/lib/pi-models";
-import { setModelThinkingMap, type ModelThinkingMap } from "@/lib/thinking-maps";
+import {
+  getModelThinkingMap,
+  setModelThinkingMap,
+  type ModelThinkingMap,
+} from "@/lib/thinking-maps";
 import { fmtContextWindow } from "@/lib/model-format";
 import {
   CheckIcon,
@@ -97,10 +101,30 @@ const AttrEditor: FC<{
   busy: boolean;
   /** 是否显示思考映射编辑（模型已有确定的 provider 归属时可编辑） */
   showThinking: boolean;
+  /** 目录已覆盖该模型档位且无前端覆盖 → 折叠为"自动"只读态 */
+  thinkingAuto: boolean;
+  /** 本次打开内用户点了"手动覆盖"：自动态展开为编辑态 */
+  thinkingOverride: boolean;
+  /** 目录生效档位的一句话摘要（自动态展示） */
+  thinkingAutoSummary: string;
+  onRequestThinkingOverride: () => void;
+  onRestoreAutoThinking: () => void;
   onChange: (patch: Partial<AttrDraft>) => void;
   onConfirm: () => void;
   onCancel: () => void;
-}> = ({ draft, busy, showThinking, onChange, onConfirm, onCancel }) => (
+}> = ({
+  draft,
+  busy,
+  showThinking,
+  thinkingAuto,
+  thinkingOverride,
+  thinkingAutoSummary,
+  onRequestThinkingOverride,
+  onRestoreAutoThinking,
+  onChange,
+  onConfirm,
+  onCancel,
+}) => (
   <div className="flex flex-col gap-3">
     <div className="grid grid-cols-4 gap-2">
       <Field label="名称" className="col-span-4">
@@ -197,39 +221,76 @@ const AttrEditor: FC<{
         />
       </Field>
     </div>
-    {showThinking && (
-      <div className="flex flex-col gap-2 border-t pt-2.5">
-        <div className="flex items-center gap-2 text-sm">
+    {showThinking &&
+      (thinkingAuto && !thinkingOverride ? (
+        <div className="flex items-center gap-2 border-t pt-2.5 text-sm">
+          <span className="text-muted-foreground shrink-0">思考档位</span>
+          <Badge variant="outline" className="shrink-0">
+            自动（目录）
+          </Badge>
           <span
-            className="text-muted-foreground shrink-0 cursor-help"
-            title="关闭思考时显式下发的参数值。默认开思考的网关必须填它才关得掉（OpenAI 兼容常见值：none）；留空 = 不发关闭参数。"
+            className="min-w-0 truncate text-muted-foreground"
+            title={thinkingAutoSummary}
           >
-            关闭时下发
+            {thinkingAutoSummary}
           </span>
-          <Input
-            value={draft.tOff}
-            onChange={(e) => onChange({ tOff: e.target.value })}
-            placeholder="如 none，留空不发送"
-            className="h-8 w-full max-w-48 text-[13px]"
-          />
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto h-7 shrink-0 text-sm"
+            onClick={onRequestThinkingOverride}
+          >
+            手动覆盖
+          </Button>
         </div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm">
-          <span className="text-muted-foreground shrink-0">可用档位</span>
-          {THINK_LEVELS.map((t) => (
-            <Label key={t.level} className="flex items-center gap-1.5 text-sm">
-              <Checkbox
-                checked={draft[t.field]}
-                onCheckedChange={(checked) =>
-                  onChange({ [t.field]: checked } as Partial<AttrDraft>)
-                }
-                className="size-4"
-              />
-              {t.label}
-            </Label>
-          ))}
+      ) : (
+        <div className="flex flex-col gap-2 border-t pt-2.5">
+          {thinkingAuto && (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="min-w-0 truncate text-muted-foreground">
+                基于目录值编辑；改动将作为该模型的覆盖保存
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto h-7 shrink-0 text-sm"
+                onClick={onRestoreAutoThinking}
+              >
+                恢复自动
+              </Button>
+            </div>
+          )}
+          <div className="flex items-center gap-2 text-sm">
+            <span
+              className="text-muted-foreground shrink-0 cursor-help"
+              title="关闭思考时显式下发的参数值。默认开思考的网关必须填它才关得掉（OpenAI 兼容常见值：none）；留空 = 不发关闭参数。"
+            >
+              关闭时下发
+            </span>
+            <Input
+              value={draft.tOff}
+              onChange={(e) => onChange({ tOff: e.target.value })}
+              placeholder="如 none，留空不发送"
+              className="h-8 w-full max-w-48 text-[13px]"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm">
+            <span className="text-muted-foreground shrink-0">可用档位</span>
+            {THINK_LEVELS.map((t) => (
+              <Label key={t.level} className="flex items-center gap-1.5 text-sm">
+                <Checkbox
+                  checked={draft[t.field]}
+                  onCheckedChange={(checked) =>
+                    onChange({ [t.field]: checked } as Partial<AttrDraft>)
+                  }
+                  className="size-4"
+                />
+                {t.label}
+              </Label>
+            ))}
+          </div>
         </div>
-      </div>
-    )}
+      ))}
     <div className="flex justify-end gap-1.5">
       <Button size="sm" variant="ghost" className="h-8 text-sm" onClick={onCancel}>
         取消
@@ -316,6 +377,29 @@ function thinkingSeed(info: PiModelSummary | undefined) {
   };
 }
 
+/** 目录生效档位的一句话摘要（属性弹窗"自动（目录）"折叠态展示） */
+function thinkingLevelsSummary(
+  info: PiModelSummary | undefined,
+  draftReasoning: boolean,
+): string {
+  const supported = info?.supportedThinkingLevels ?? [];
+  const labels = THINK_LEVELS.filter((t) => supported.includes(t.level)).map(
+    (t) => t.label,
+  );
+  const off =
+    typeof info?.thinkingLevelMap?.off === "string"
+      ? info.thinkingLevelMap.off
+      : "";
+  if (labels.length) {
+    return off ? `${labels.join(" / ")}；关闭时下发 ${off}` : labels.join(" / ");
+  }
+  // 自定义端点模型的目录缺省 reasoning=false：档位空是"没勾支持"，不是"模型不支持"
+  if (draftReasoning && info && !info.reasoning)
+    return "保存后支持思考，档位将按目录重新推导";
+  if (info && !info.reasoning) return "未标记支持深度思考（先在上方勾选）";
+  return "无思考档位";
+}
+
 /** 模型配置页：默认模型 / AI 服务（自定义提供商）/ 厂商账户（凭据）/ 模型目录 */
 export const ModelSettings: FC = () => {
   const [models, setModels] = useState<PiModelSummary[] | null>(null);
@@ -365,6 +449,8 @@ export const ModelSettings: FC = () => {
   const [svcModelAttrs, setSvcModelAttrs] = useState<Record<string, PiCustomModelSpec>>({});
   const [attrEditId, setAttrEditId] = useState<string | null>(null);
   const [attrDraft, setAttrDraft] = useState<AttrDraft | null>(null);
+  // 本次打开属性弹窗内，用户是否点了"手动覆盖"把自动折叠态展开
+  const [thinkingOverrideEdit, setThinkingOverrideEdit] = useState(false);
   const selected = useSelectedModel();
 
   const load = useCallback(() => {
@@ -724,6 +810,7 @@ export const ModelSettings: FC = () => {
           ? (models ?? []).find((x) => x.provider === tKey && x.id === id)
           : undefined,
       );
+      setThinkingOverrideEdit(false);
       setAttrEditId(id);
       setAttrDraft({
         name: src.name ?? id,
@@ -826,6 +913,11 @@ export const ModelSettings: FC = () => {
         void setModelThinkingMap(thinkingProvider, attrEditId, patch).then(() =>
           refreshPiModels(),
         );
+      } else if (getModelThinkingMap(thinkingProvider, attrEditId)) {
+        // 与目录种子无差异但存有覆盖 → 清除覆盖（恢复自动）
+        void setModelThinkingMap(thinkingProvider, attrEditId, null).then(() =>
+          refreshPiModels(),
+        );
       }
     }
     setAttrEditId(null);
@@ -839,6 +931,39 @@ export const ModelSettings: FC = () => {
     resolveAttrSource,
     load,
   ]);
+
+  /** 属性弹窗思考区的目录信息（provider+id 定位）；未知模型 = undefined */
+  const thinkingEditInfo =
+    thinkingProvider && attrEditId
+      ? (models ?? []).find(
+          (x) => x.provider === thinkingProvider && x.id === attrEditId,
+        )
+      : undefined;
+  /** 目录覆盖了档位且没有前端覆盖值 → 默认折叠为"自动"，编辑只留给需要配的对象 */
+  const thinkingEditAuto = !!(
+    thinkingProvider &&
+    attrEditId &&
+    thinkingEditInfo?.supportedThinkingLevels &&
+    !getModelThinkingMap(thinkingProvider, attrEditId)
+  );
+  /** 恢复自动：档位草稿复位到目录种子；确认时 diff 为空会走清除覆盖分支 */
+  const restoreAutoThinking = useCallback(() => {
+    const seed = thinkingSeed(thinkingEditInfo);
+    setAttrDraft((prev) =>
+      prev
+        ? {
+            ...prev,
+            tOff: seed.off,
+            tMin: seed.enabled("minimal"),
+            tLow: seed.enabled("low"),
+            tMed: seed.enabled("medium"),
+            tHigh: seed.enabled("high"),
+            tXhigh: seed.enabled("xhigh"),
+            tMax: seed.enabled("max"),
+          }
+        : prev,
+    );
+  }, [thinkingEditInfo]);
 
   /** 内置厂商：当前所选服务的目录模型（弹窗双栏面板用） */
   const svcBuiltinCatalog = useMemo(() => {
@@ -1989,6 +2114,14 @@ export const ModelSettings: FC = () => {
               draft={attrDraft}
               busy={busy}
               showThinking={!!thinkingProvider}
+              thinkingAuto={thinkingEditAuto}
+              thinkingOverride={thinkingOverrideEdit}
+              thinkingAutoSummary={thinkingLevelsSummary(
+                thinkingEditInfo,
+                attrDraft.reasoning,
+              )}
+              onRequestThinkingOverride={() => setThinkingOverrideEdit(true)}
+              onRestoreAutoThinking={restoreAutoThinking}
               onChange={(patch) =>
                 setAttrDraft((prev) => (prev ? { ...prev, ...patch } : prev))
               }
