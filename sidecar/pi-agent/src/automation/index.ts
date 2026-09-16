@@ -355,6 +355,19 @@ export class PersistentTaskScheduler implements TaskScheduler {
           : createTaskHistoryEntry('paused', 'Task paused'),
       );
     }
+    // —— 本地扩展（M4.4，见 NOTICE.md）：启用时过期 once 改写到"马上" ——
+    // 否则 schedule() 会把过去时刻记成一条假"运行失败"（markScheduleError
+    // "Scheduled time … is in the past"）。语义与启动修复 repairMissedOnce
+    // 一致：重新启用已完成/过期的一次性任务 = 立即再跑一次。非法时刻（NaN）
+    // 不改写，维持 schedule() 的真实排期报错。
+    if (
+      nextTask.type === 'once' &&
+      nextTask.enabled &&
+      Number.isFinite(new Date(nextTask.schedule).getTime()) &&
+      new Date(nextTask.schedule).getTime() <= Date.now()
+    ) {
+      nextTask.schedule = new Date(Date.now() + 250).toISOString();
+    }
     const task = withNextRun(nextTask);
     if (input.enabled !== false && existing.lastStatus === 'error' && existing.lastError) {
       delete task.lastError;

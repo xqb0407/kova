@@ -323,9 +323,12 @@ const TaskCard: FC<{
                 }
               />
               <DropdownMenuContent align="end" className="w-44">
+                {/* 本地 dropdown 封装基于 base-ui：条目回调只认 onClick。
+                    onSelect 是 Radix 惯例，落到底层是原生 text-selection 事件，
+                    点了静默不触发（删除曾因此完全没反应） */}
                 <DropdownMenuItem
                   variant="destructive"
-                  onSelect={() => void act(() => deleteAutomation(task.id))()}
+                  onClick={() => void act(() => deleteAutomation(task.id))()}
                 >
                   <Trash2Icon className="size-4" />
                   删除任务
