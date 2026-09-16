@@ -264,9 +264,18 @@ export const Base: FC = () => {
             仅左侧侧边栏透出窗口材质 */}
         <div
           data-content-solid
-          className="bg-background flex h-full flex-col overflow-hidden md:pl-0 border-l-[0.5]"
+          className="bg-background relative flex h-full flex-col overflow-hidden md:pl-0 border-l-[0.5]"
         >
-          <div className="bg-transparent flex flex-1 flex-col overflow-hidden ">
+          {/* 自动化页环境光抬到主内容区根：光带从窗口最顶（透明的 header 条）
+              垂下，之前挂在视图内、header 那 48px 还是白底；固定不随内容滚 */}
+          {activeMenu === "automation" && (
+            <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 z-0 h-72 overflow-hidden">
+              <div className="from-primary/5 absolute inset-x-0 top-0 h-full bg-gradient-to-b to-transparent" />
+              <div className="bg-primary/10 absolute -top-20 left-[12%] hidden size-64 rounded-full blur-3xl dark:block" />
+              <div className="bg-primary/[0.08] absolute -top-24 right-[15%] hidden size-72 rounded-full blur-3xl dark:block" />
+            </div>
+          )}
+          <div className="bg-transparent relative flex flex-1 flex-col overflow-hidden">
             <Header
               sidebarCollapsed={sidebarCollapsed}
               onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}

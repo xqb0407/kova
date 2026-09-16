@@ -952,17 +952,11 @@ export const AutomationsView: FC<{
   };
 
   return (
-    <div className="relative flex h-full flex-col overflow-y-auto">
-      {/* 页眉环境光：主题色渐隐光带打底，dark 下再叠两枚 blur 光斑（深色
-          模式效果明显）。纯装饰层，内容块都加 relative 压在它上面 */}
-      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-72 overflow-hidden">
-        <div className="from-primary/5 absolute inset-x-0 top-0 h-full bg-gradient-to-b to-transparent" />
-        <div className="bg-primary/10 absolute -top-20 left-[12%] hidden size-64 rounded-full blur-3xl dark:block" />
-        <div className="bg-primary/[0.08] absolute -top-24 right-[15%] hidden size-72 rounded-full blur-3xl dark:block" />
-      </div>
+    <div className="flex h-full flex-col overflow-y-auto">
       {/* 版式对齐设置页各分区（子智能体/技能同款）：居中限宽、大标题+右侧状态、
-          说明文字+操作按钮行 */}
-      <div className="relative mx-auto flex w-full max-w-5xl shrink-0 flex-col gap-4 px-8 pt-8 pb-2">
+          说明文字+操作按钮行。环境光层抬到 base.tsx 主内容区根（透明 header 条
+          也能被照到），这里不再叠一份，避免双层光带 */}
+      <div className="mx-auto flex w-full max-w-5xl shrink-0 flex-col gap-4 px-8 pt-8 pb-2">
         <div className="flex items-baseline justify-between gap-4">
           <h1 className="text-2xl font-bold tracking-tight">自动化</h1>
           <span
@@ -1080,7 +1074,7 @@ export const AutomationsView: FC<{
         </div>
       </div>
 
-      <div className="relative mx-auto w-full max-w-5xl flex-1 px-8 pb-8">
+      <div className="mx-auto w-full max-w-5xl flex-1 px-8 pb-8">
         {snap.error && (
           <div className="text-red-500 bg-red-500/5 border-red-500/20 mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs">
             <AlertCircleIcon className="size-4 shrink-0" />
