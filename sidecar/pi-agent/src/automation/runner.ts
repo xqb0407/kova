@@ -16,6 +16,7 @@
  */
 import { logErr } from "../log";
 import { getModels } from "../model-catalog";
+import { sessionRename } from "../hostdb";
 import {
   dispatch,
   dispatchPrompt,
@@ -69,6 +70,22 @@ async function applyTaskModel(run: Running, task: ScheduledTask): Promise<void> 
   run.agent.state.model = model;
 }
 
+/** 每次运行的会话标题 = 任务名 + 触发时刻。不显式命名的话，标题兜底串是
+ *  首条消息截断——同一任务每次运行的 prompt 一模一样，侧边栏里全是重复标题；
+ *  智能总结标题也是对同一 prompt 摘要，同样重复。建会话后立即改名，后续
+ *  sessionTouch 只回填空标题、智能标题守卫（已改名 ≠ 兜底串）自动跳过。 */
+export function automationRunTitle(
+  task: Pick<ScheduledTask, "name" | "prompt">,
+  startedAt: string,
+): string {
+  const name =
+    task.name?.trim() || task.prompt.trim().replace(/\s+/g, " ").slice(0, 24) || "定时任务";
+  const d = new Date(startedAt);
+  if (Number.isNaN(d.getTime())) return name;
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${name} ${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
+
 /** historyEntryId -> 本次运行真实的 agent sessionId（建会话即记，成功失败都留）。
  *  调度器 runHistory 每任务 ≤25 条，键随历史有界；不做清理以便事后回溯。 */
 const lastRunSessions = new Map<string, string>();
@@ -97,6 +114,13 @@ export async function runAutomationTask(
     const sess = await mgmtResolveSession(threadId, undefined, cwdOf(task));
     realSessionId = sess.sessionId;
     lastRunSessions.set(run.historyEntryId, sess.sessionId);
+    // 抢在轮初落盘前定名：侧边栏行从出现起就是可区分的标题；改名失败只丢
+    // 个性化标题（回落 prompt 截断），绝不阻断运行
+    try {
+      await sessionRename(sess.sessionId, automationRunTitle(task, run.startedAt));
+    } catch (err) {
+      logErr(`automation: title rename failed for session ${sess.sessionId}:`, err);
+    }
     await applyTaskModel(sess, task);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
