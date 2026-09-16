@@ -924,7 +924,13 @@ export const ThreadListItem: FC = () => {
             className="text-muted-foreground hover:text-foreground me-1.5 size-3 shrink-0 cursor-pointer"
           />
         )} */}
-        <MarqueeTitle data-slot="aui_thread-list-item-title">
+        {/* me-3：用时标签是 end-1.5 绝对定位，"12小时"这类长文本会比
+            pe-9(36px) 槽位宽、伸进标题右缘；让标题盒提前 12px 收尾，
+            渐隐带（16px）与用时不再重叠 */}
+        <MarqueeTitle
+          data-slot="aui_thread-list-item-title"
+          className="me-3"
+        >
           <ThreadListItemPrimitive.Title fallback="新对话" />
         </MarqueeTitle>
         {showRunning && <span className="sr-only">Running</span>}
