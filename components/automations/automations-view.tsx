@@ -54,7 +54,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
   DialogContent,
@@ -112,6 +111,7 @@ import {
 } from "@/lib/automation-format";
 import { cn } from "@/lib/utils";
 import { Dock, DockItem, DockSeparator } from "@/components/custom-ui/dock";
+import { Segmented } from "@/components/custom-ui/segmented";
 import { AutomationEditorDialog } from "./automation-editor-dialog";
 
 /** 30s 心跳：倒计时/相对时间标签自然刷新（避免逐秒重渲染整页） */
@@ -937,32 +937,24 @@ export const AutomationsView: FC<{
           按计划自动运行 Agent 任务，每次执行开一个独立会话
         </p>
 
-        {/* tab：定时任务 | 运行记录。胶囊段选样式对齐设置页各分区（ui/tabs 同款） */}
-        <Tabs
+        {/* tab：定时任务 | 运行记录。分段器与设置页各分区同款；计数并入文案 */}
+        <Segmented<"tasks" | "history">
           value={tab}
-          onValueChange={(v) => {
-            if (v === tab) return;
-            setTab(v as "tasks" | "history");
+          className="w-fit self-start"
+          options={[
+            { value: "tasks", label: "定时任务" },
+            {
+              value: "history",
+              label:
+                totalHistoryCount > 0 ? `运行记录 ${totalHistoryCount}` : "运行记录",
+            },
+          ]}
+          onChange={(v) => {
+            setTab(v);
             exitBatch();
             exitHistoryBatch();
           }}
-        >
-          <TabsList className="h-auto rounded-full bg-muted/50 p-[3px]">
-            <TabsTrigger value="tasks" className="gap-1.5 rounded-full px-3 py-1 text-sm">
-              <ClockIcon className="size-3.5" />
-              定时任务
-            </TabsTrigger>
-            <TabsTrigger value="history" className="gap-1.5 rounded-full px-3 py-1 text-sm">
-              <HistoryIcon className="size-3.5" />
-              运行记录
-              {totalHistoryCount > 0 && (
-                <span className="text-muted-foreground text-xs tabular-nums">
-                  {totalHistoryCount}
-                </span>
-              )}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+        />
 
         {/* 工具栏：搜索 + 筛选 + 刷新/批量/模板/新建 */}
         <div className="flex flex-wrap items-center gap-2">
