@@ -71,26 +71,64 @@ function subscribe(listener: () => void) {
   return () => listeners.delete(listener);
 }
 
+/**
+ * 写世代：清单类应答可能是陈旧快照（发单早于最近一次本地写、应答晚于其落盘）。
+ * sidecar 按发单顺序逐条处理（同一通道 FIFO），所以给每个"应答带全量清单"的
+ * 请求发单时盖单调 seq：变更命令应答到达后抬升 barrier，早于 barrier 发出的
+ * 刷新应答按过期快照整份丢弃。防护场景：运行帧触发的 refreshAutomations 与
+ * 用户暂停操作竞速，旧快照晚到把 enabled 翻回去（暂停开关回弹的根因）。
+ */
+let issueSeq = 0;
+let writeBarrier = 0;
+let inflight = 0;
+
 function fromList(res: PiAutomationListResponse): AutomationSnapshot {
-  return { loaded: true, loading: false, error: null, tasks: res.tasks };
+  return {
+    ...current,
+    loaded: true,
+    loading: inflight > 0,
+    error: null,
+    tasks: res.tasks,
+  };
 }
 
-/** 拉取任务清单（sidecar 不可用保留旧镜像并记录错误） */
-export async function refreshAutomations(): Promise<void> {
+function errMsg(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** 清单类请求统一出口：发单盖世代，应答按世代规则决定是否落盘 */
+async function requestList(
+  payload: Record<string, unknown>,
+  opts: { timeoutMs?: number; isWrite?: boolean } = {},
+): Promise<void> {
+  const seq = ++issueSeq;
+  inflight++;
   current = { ...current, loading: true };
   emit();
   try {
-    const res = await piRequest<PiAutomationListResponse>({ type: "automation_list" });
+    const res = await piRequest<PiAutomationListResponse>(payload, opts.timeoutMs);
+    inflight--;
+    if (opts.isWrite) {
+      writeBarrier = seq;
+    } else if (seq <= writeBarrier) {
+      // 快照发单早于最近一次写：应答不带新状态，丢弃（错误/加载由并发请求收尾）
+      if (inflight === 0) current = { ...current, loading: false };
+      emit();
+      return;
+    }
     current = fromList(res);
     emit();
   } catch (err) {
-    current = {
-      ...current,
-      loading: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
+    inflight--;
+    current = { ...current, loading: inflight > 0, error: errMsg(err) };
     emit();
+    if (opts.isWrite) throw err;
   }
+}
+
+/** 拉取任务清单（sidecar 不可用保留旧镜像并记录错误） */
+export function refreshAutomations(): Promise<void> {
+  return requestList({ type: "automation_list" });
 }
 
 let refreshInflight: Promise<void> | null = null;
@@ -106,19 +144,7 @@ export function ensureAutomationsLoaded(): Promise<void> {
 
 /** 变更命令统一出口：应答即新清单；失败写 error 并抛出（表单保留输入） */
 async function mutate(payload: Record<string, unknown>): Promise<void> {
-  try {
-    const res = await piRequest<PiAutomationListResponse>(payload, 15000);
-    current = fromList(res);
-    emit();
-  } catch (err) {
-    current = {
-      ...current,
-      loading: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-    emit();
-    throw err;
-  }
+  await requestList(payload, { timeoutMs: 15000, isWrite: true });
 }
 
 export function saveAutomation(draft: AutomationDraft): Promise<void> {
@@ -187,6 +213,11 @@ export function useAutomations(): AutomationSnapshot {
     void ensureAutomationsLoaded();
   }, []);
   return useSyncExternalStore(subscribe, () => current, () => EMPTY);
+}
+
+/** 只读快照（非 hook 代码路径与测试用；hook 版是 useAutomations） */
+export function getAutomationsSnapshot(): AutomationSnapshot {
+  return current;
 }
 
 // —— sessionId → taskId 归属映射（⚡ 徽标数据源） ——
