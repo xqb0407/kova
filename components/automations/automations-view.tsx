@@ -24,9 +24,11 @@ import {
   Loader2Icon,
   MessageSquareIcon,
   MoreHorizontalIcon,
+  PauseIcon,
   PencilIcon,
   PlayIcon,
   PlusIcon,
+  PowerIcon,
   RefreshCwIcon,
   SearchIcon,
   Trash2Icon,
@@ -100,6 +102,7 @@ import {
   relativePast,
 } from "@/lib/automation-format";
 import { cn } from "@/lib/utils";
+import { Dock, DockItem, DockSeparator } from "@/components/custom-ui/dock";
 import { AutomationEditorDialog } from "./automation-editor-dialog";
 
 /** 30s 心跳：倒计时/相对时间标签自然刷新（避免逐秒重渲染整页） */
@@ -660,6 +663,9 @@ export const AutomationsView: FC<{
   };
 
   const totalHistoryCount = snap.tasks.reduce((n, t) => n + (t.runHistory?.length ?? 0), 0);
+  // 批量坞状态：全选判定只看筛选后可见的卡（与原"全选/清空"按钮同语义）
+  const allVisibleSelected = visibleTasks.length > 0 && selected.size === visibleTasks.length;
+  const batchActionDisabled = batchBusy || selected.size === 0;
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
@@ -886,65 +892,76 @@ export const AutomationsView: FC<{
         )}
       </div>
 
-      {/* 批量操作条：选中态常驻底部 */}
+      {/* 批量操作坞：底部居中的悬浮图标条（Dock 风格）。外层 pointer-events-none
+          只让坞本体可点，悬浮不遮两侧内容的滚轮操作；sticky 让它随滚动常驻 */}
       {batchMode && tab === "tasks" && (
-        <div className="bg-background border-border/60 sticky bottom-0 z-10 border-t">
-          <div className="mx-auto flex w-full max-w-5xl items-center gap-2 px-8 py-3">
-            <span className="text-sm tabular-nums">已选 {selected.size} 项</span>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 text-xs"
-              disabled={batchBusy}
-              onClick={() =>
-                setSelected(
-                  selected.size === visibleTasks.length
-                    ? new Set()
-                    : new Set(visibleTasks.map((t) => t.id)),
-                )
+        <div className="pointer-events-none sticky bottom-0 z-20 flex justify-center pb-6">
+          <Dock size={40} className="pointer-events-auto">
+            <span className="px-1.5 text-xs tabular-nums text-muted-foreground">
+              已选 {selected.size}
+            </span>
+            <DockItem
+              active={allVisibleSelected}
+              title={allVisibleSelected ? "清空" : "全选"}
+              aria-label={allVisibleSelected ? "清空" : "全选"}
+              onClick={
+                batchBusy || visibleTasks.length === 0
+                  ? undefined
+                  : () =>
+                      setSelected(
+                        allVisibleSelected
+                          ? new Set()
+                          : new Set(visibleTasks.map((t) => t.id)),
+                      )
               }
+              className={cn(
+                batchBusy || visibleTasks.length === 0 ? "opacity-40" : "cursor-pointer",
+              )}
             >
-              {selected.size === visibleTasks.length && visibleTasks.length > 0 ? "清空" : "全选"}
-            </Button>
-            <div className="ml-auto flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 gap-1.5 text-xs"
-                disabled={batchBusy || selected.size === 0}
-                onClick={() => void batchSetEnabled(true)}
-              >
-                启用
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 gap-1.5 text-xs"
-                disabled={batchBusy || selected.size === 0}
-                onClick={() => void batchSetEnabled(false)}
-              >
-                暂停
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                className="h-7 gap-1.5 text-xs"
-                disabled={batchBusy || selected.size === 0}
-                onClick={() => void batchDelete()}
-              >
-                {confirmBatchDelete ? `确认删除 ${selected.size} 项` : `删除 (${selected.size})`}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs"
-                disabled={batchBusy}
-                onClick={exitBatch}
-              >
-                取消
-              </Button>
-            </div>
-          </div>
+              <CheckIcon className="size-4" />
+            </DockItem>
+            <DockSeparator />
+            <DockItem
+              title="批量启用"
+              aria-label="批量启用"
+              onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(true)}
+              className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
+            >
+              <PowerIcon className="size-4" />
+            </DockItem>
+            <DockItem
+              title="批量暂停"
+              aria-label="批量暂停"
+              onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(false)}
+              className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
+            >
+              <PauseIcon className="size-4" />
+            </DockItem>
+            <DockItem
+              title={confirmBatchDelete ? `确认删除 ${selected.size} 项` : "批量删除"}
+              aria-label="批量删除"
+              onClick={batchActionDisabled ? undefined : () => void batchDelete()}
+              className={cn(
+                "relative",
+                batchActionDisabled ? "opacity-40" : "cursor-pointer",
+                confirmBatchDelete && "text-destructive",
+              )}
+            >
+              {/* 一次点击进 3 秒确认态：红底描边框提示再点一次真删 */}
+              {confirmBatchDelete && (
+                <span className="bg-destructive/10 ring-destructive/40 absolute inset-1 -z-10 rounded-xl ring-1" />
+              )}
+              <Trash2Icon className="size-4" />
+            </DockItem>
+            <DockItem
+              title="退出批量管理"
+              aria-label="退出批量管理"
+              onClick={batchBusy ? undefined : exitBatch}
+              className={cn(batchBusy ? "opacity-40" : "cursor-pointer")}
+            >
+              <XIcon className="size-4" />
+            </DockItem>
+          </Dock>
         </div>
       )}
 
