@@ -89,6 +89,25 @@ export async function automationDeletePayload(msg: Record<string, unknown>) {
   return listPayload(scheduler);
 }
 
+/** 删运行记录条目：entryIds 单/多条，或 all:true 清空。只动日志，
+ *  关联会话由前端确认后另行走 delete_session（见 lib/automations 注释） */
+export async function automationHistoryDeletePayload(msg: Record<string, unknown>) {
+  const id = str(msg.taskId);
+  if (!id) throw new Error("automation_history_delete: taskId is required");
+  const clearAll = msg.all === true;
+  const entryIds = Array.isArray(msg.entryIds)
+    ? (msg.entryIds.filter((v) => typeof v === "string") as string[])
+    : [];
+  if (!clearAll && entryIds.length === 0) {
+    throw new Error("automation_history_delete: entryIds or all=true is required");
+  }
+  const scheduler = await readyScheduler();
+  if (!(await scheduler.deleteHistory(id, clearAll ? "all" : entryIds))) {
+    throw new Error(`automation_history_delete: task not found: ${id}`);
+  }
+  return listPayload(scheduler);
+}
+
 export async function automationSetEnabledPayload(msg: Record<string, unknown>) {
   const id = str(msg.taskId);
   if (!id) throw new Error("automation_set_enabled: taskId is required");

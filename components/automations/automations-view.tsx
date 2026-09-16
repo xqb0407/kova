@@ -12,14 +12,15 @@
  *   条目经 run→session 映射跳回那一次执行的实际会话。
  */
 
-import { useEffect, useMemo, useState, type FC } from "react";
-import { useAui } from "@assistant-ui/react";
+import { useEffect, useMemo, useRef, useState, type FC } from "react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { AnimatePresence, motion } from "framer-motion";
 import { SPRING_LAYOUT } from "@/lib/ease";
 import {
   AlertCircleIcon,
   CheckIcon,
   ClockIcon,
+  EraserIcon,
   HistoryIcon,
   LayersIcon,
   ListChecksIcon,
@@ -75,8 +76,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  clearAutomationHistory,
   deleteAutomation,
+  deleteAutomationHistory,
   fetchAutomationTemplates,
+  getAutomationSessionForRun,
   refreshAutomations,
   runAutomationNow,
   setAutomationEnabled,
@@ -85,6 +89,7 @@ import {
   type AutomationTask,
   type AutomationTemplate,
 } from "@/lib/automations";
+import { piRequest } from "@/lib/pi-bridge";
 import { useAutomationRunning } from "@/lib/automation-live";
 import {
   filterHistoryItems,
@@ -152,14 +157,15 @@ const HistoryRow: FC<{
   entry: RunHistoryEntry;
   now: number;
   onOpenSession: (sessionId: string) => void;
-}> = ({ entry, now, onOpenSession }) => {
+  onDelete: () => void;
+}> = ({ entry, now, onOpenSession, onDelete }) => {
   // 条目里的 sessionId 是调度器标签；真实会话经帧记账映射回来
   const realSession = useAutomationSessionForRun(entry.id);
   return (
     <div
       className={cn(
-        "text-muted-foreground flex items-center gap-2 rounded-md px-2 py-1 text-xs",
-        realSession && "hover:bg-muted cursor-pointer",
+        "text-muted-foreground group hover:bg-muted flex items-center gap-2 rounded-md px-2 py-1 text-xs",
+        realSession && "cursor-pointer",
       )}
       title={entry.message}
       onClick={() => realSession && onOpenSession(realSession)}
@@ -174,6 +180,18 @@ const HistoryRow: FC<{
         {relativePast(entry.createdAt, now)}
       </span>
       {realSession && <MessageSquareIcon className="size-3 shrink-0 opacity-50" />}
+      <button
+        type="button"
+        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+        title="删除这条记录"
+        aria-label="删除这条记录"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+      >
+        <Trash2Icon className="size-3" />
+      </button>
     </div>
   );
 };
@@ -183,19 +201,59 @@ const GlobalHistoryRow: FC<{
   item: HistoryItem;
   now: number;
   onOpenSession: (sessionId: string) => void;
-}> = ({ item, now, onOpenSession }) => {
+  batchMode: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
+  onDelete: () => void;
+}> = ({ item, now, onOpenSession, batchMode, selected, onToggleSelect, onDelete }) => {
   const realSession = useAutomationSessionForRun(item.runId);
   return (
     <div
       className={cn(
-        "hover:bg-muted/60 flex items-center gap-3 rounded-lg px-3 py-2 text-sm",
-        realSession ? "cursor-pointer" : "cursor-default",
+        "group hover:bg-muted/60 flex items-center gap-3 rounded-lg px-3 py-2 text-sm",
+        (batchMode || realSession) && "cursor-pointer",
       )}
       title={item.message}
-      onClick={() => realSession && onOpenSession(realSession)}
+      onClick={
+        batchMode
+          ? onToggleSelect
+          : () => {
+              if (realSession) onOpenSession(realSession);
+            }
+      }
     >
+      {/* 批量勾选列：与任务卡同款"宽度推入 + 负边距补 gap 槽"动效；
+          行高由文字决定（勾选框 16px 不会撑动），无需等高补偿 */}
+      <AnimatePresence initial={false}>
+        {batchMode && (
+          <motion.div
+            key="hist-check"
+            className="flex shrink-0 items-center overflow-hidden"
+            initial={{ width: 0, opacity: 0, marginRight: -12 }}
+            animate={{ width: "auto", opacity: 1, marginRight: 0 }}
+            exit={{ width: 0, opacity: 0, marginRight: -12 }}
+            transition={SPRING_LAYOUT}
+          >
+            <Checkbox
+              className="shrink-0"
+              checked={selected}
+              aria-label={`选择 ${item.taskName} 的运行记录`}
+              // 冒泡会再触发整行的 onToggleSelect（同任务卡勾选的惯例）
+              onClick={(e) => e.stopPropagation()}
+              onCheckedChange={onToggleSelect}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
       <RunStatusIcon status={item.status} />
-      <span className="min-w-0 max-w-56 truncate font-medium">{item.taskName}</span>
+      <span
+        className={cn(
+          "min-w-0 max-w-56 truncate font-medium",
+          batchMode && selected && "text-primary",
+        )}
+      >
+        {item.taskName}
+      </span>
       <span className="text-muted-foreground shrink-0 text-xs">
         {historyStatusLabel(item.status)}
       </span>
@@ -209,6 +267,22 @@ const GlobalHistoryRow: FC<{
         {relativePast(item.createdAt, now)}
       </span>
       {realSession && <MessageSquareIcon className="size-3.5 shrink-0 opacity-50" />}
+      {/* 悬停浮现单条删除；批量模式不摆（删除统一走坞，避免行内误点） */}
+      {!batchMode && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+          title="删除这条记录"
+          aria-label="删除这条记录"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+        >
+          <Trash2Icon className="text-muted-foreground size-3.5" />
+        </Button>
+      )}
     </div>
   );
 };
@@ -221,7 +295,20 @@ const TaskCard: FC<{
   batchMode: boolean;
   selected: boolean;
   onToggleSelect: () => void;
-}> = ({ task, onEdit, onOpenSession, highlighted, batchMode, selected, onToggleSelect }) => {
+  /** 删该任务的历史条目（进统一确认框）；清空也经它传单条 id 列表即可 */
+  onRequestEntryDelete: (runId: string) => void;
+  onRequestClearHistory: () => void;
+}> = ({
+  task,
+  onEdit,
+  onOpenSession,
+  highlighted,
+  batchMode,
+  selected,
+  onToggleSelect,
+  onRequestEntryDelete,
+  onRequestClearHistory,
+}) => {
   const running = useAutomationRunning(task.id);
   const now = useNowTick();
   const [busy, setBusy] = useState(false);
@@ -370,6 +457,13 @@ const TaskCard: FC<{
                     <HistoryIcon className="size-4" />
                     {showHistory ? "收起运行历史" : "展开运行历史"}
                   </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={history.length === 0}
+                    onClick={onRequestClearHistory}
+                  >
+                    <EraserIcon className="size-4" />
+                    清空运行历史
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     variant="destructive"
@@ -442,6 +536,7 @@ const TaskCard: FC<{
                 entry={entry}
                 now={now}
                 onOpenSession={onOpenSession}
+                onDelete={() => onRequestEntryDelete(entry.id)}
               />
             ))
           )}
@@ -701,6 +796,122 @@ export const AutomationsView: FC<{
   const allVisibleSelected = visibleTasks.length > 0 && selected.size === visibleTasks.length;
   const batchActionDisabled = batchBusy || selected.size === 0;
 
+  // —— 运行记录删除（单条 / 记录页批量 / 卡片清空共用一个确认框）——
+  // 事实源删条目（all 走服务端整清）；"同时删除执行会话"是可选项：
+  // 真实会话 id 由 run→session 帧记账映射得来，删侧边栏条目走 runtime
+  // （自动切走当前会话），列表里没有的落回 delete_session 直删
+  const threadItems = useAuiState((s) => s.threads.threadItems);
+  const threadItemsRef = useRef(threadItems);
+  threadItemsRef.current = threadItems;
+
+  type HistoryDeleteOp = { taskId: string; runIds?: string[]; all?: boolean };
+  const [historyDeleteReq, setHistoryDeleteReq] = useState<{
+    ops: HistoryDeleteOp[];
+    count: number;
+    label: string;
+    sessionIds: string[];
+  } | null>(null);
+  const [historyAlsoSession, setHistoryAlsoSession] = useState(false);
+
+  const requestHistoryDelete = (ops: HistoryDeleteOp[]) => {
+    const runIds = ops.flatMap((o) => o.runIds ?? []);
+    const allTaskIds = ops.filter((o) => o.all).map((o) => o.taskId);
+    const allRunIds = snap.tasks
+      .filter((t) => allTaskIds.includes(t.id))
+      .flatMap((t) => (t.runHistory ?? []).map((e) => e.id));
+    const count = runIds.length + allRunIds.length;
+    const sessionIds = [...runIds, ...allRunIds]
+      .map((rid) => getAutomationSessionForRun(rid))
+      .filter((s): s is string => typeof s === "string");
+    const names = [
+      ...new Set(
+        ops.map((o) => snap.tasks.find((t) => t.id === o.taskId)?.name || "未命名任务"),
+      ),
+    ];
+    setHistoryAlsoSession(false);
+    setHistoryDeleteReq({
+      ops,
+      count,
+      label: names.length === 1 ? `「${names[0]}」` : `全部 ${names.length} 个任务`,
+      sessionIds,
+    });
+  };
+
+  const removeRunSessions = async (sessionIds: string[]) => {
+    for (const sid of sessionIds) {
+      try {
+        const item = threadItemsRef.current.find((i) => i.remoteId === sid);
+        if (item) {
+          await (aui.threads.item({ id: item.id }).delete() as unknown as Promise<void>);
+        } else {
+          await piRequest({ type: "delete_session", sessionId: sid });
+        }
+      } catch {
+        // 单个会话删失败不阻断其余（记录已删，会话残留无害）
+      }
+    }
+    if (sessionIds.length > 0) void aui.threads.reload().catch(() => {});
+  };
+
+  const confirmHistoryDelete = async () => {
+    const req = historyDeleteReq;
+    if (!req) return;
+    setHistoryDeleteReq(null);
+    setHistoryBusy(true);
+    for (const op of req.ops) {
+      try {
+        if (op.all) await clearAutomationHistory(op.taskId);
+        else if (op.runIds?.length) await deleteAutomationHistory(op.taskId, op.runIds);
+      } catch {
+        // 单任务失败继续其余（错误进镜像 store 横幅）
+      }
+    }
+    if (historyAlsoSession) await removeRunSessions(req.sessionIds);
+    setHistoryBusy(false);
+    exitHistoryBatch();
+  };
+
+  // —— 记录页批量管理模式（与任务卡批量互不相干）——
+  const [historyBatch, setHistoryBatch] = useState(false);
+  const [historySelected, setHistorySelected] = useState<ReadonlySet<string>>(new Set());
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const exitHistoryBatch = () => {
+    setHistoryBatch(false);
+    setHistorySelected(new Set());
+  };
+  const toggleHistorySelect = (runId: string) =>
+    setHistorySelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(runId)) next.delete(runId);
+      else next.add(runId);
+      return next;
+    });
+  // 清单/筛选变化后剔除已不可见或已不存在的选中项
+  const historyVisibleItems = useMemo(
+    () => historyGroups.flatMap((g) => g.items),
+    [historyGroups],
+  );
+  useEffect(() => {
+    if (historySelected.size === 0) return;
+    const alive = new Set(historyVisibleItems.map((i) => i.runId));
+    if ([...historySelected].some((id) => !alive.has(id))) {
+      setHistorySelected((cur) => new Set([...cur].filter((id) => alive.has(id))));
+    }
+  }, [historyVisibleItems, historySelected]);
+  const historyAllSelected =
+    historyVisibleItems.length > 0 && historySelected.size === historyVisibleItems.length;
+  // 选中项按任务分组成分条删除命令（一天里可以横跨多个任务的记录）
+  const selectedDeleteOps = (): HistoryDeleteOp[] => {
+    const byTask = new Map<string, string[]>();
+    for (const item of historyVisibleItems) {
+      if (!historySelected.has(item.runId)) continue;
+      const list = byTask.get(item.taskId) ?? [];
+      list.push(item.runId);
+      byTask.set(item.taskId, list);
+    }
+    return [...byTask].map(([taskId, runIds]) => ({ taskId, runIds }));
+  };
+
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       {/* 版式对齐设置页各分区（子智能体/技能同款）：居中限宽、大标题+右侧状态、
@@ -731,7 +942,11 @@ export const AutomationsView: FC<{
             size="sm"
             variant={tab === "tasks" ? "secondary" : "ghost"}
             className="gap-1.5"
-            onClick={() => setTab("tasks")}
+            onClick={() => {
+              setTab("tasks");
+              exitBatch();
+              exitHistoryBatch();
+            }}
           >
             <ClockIcon className="size-3.5" />
             定时任务
@@ -740,7 +955,11 @@ export const AutomationsView: FC<{
             size="sm"
             variant={tab === "history" ? "secondary" : "ghost"}
             className="gap-1.5"
-            onClick={() => setTab("history")}
+            onClick={() => {
+              setTab("history");
+              exitBatch();
+              exitHistoryBatch();
+            }}
           >
             <HistoryIcon className="size-3.5" />
             运行记录
@@ -791,17 +1010,29 @@ export const AutomationsView: FC<{
           >
             <RefreshCwIcon className="size-4" />
           </Button>
-          {tab === "tasks" && (
-            <Button
-              variant={batchMode ? "secondary" : "outline"}
-              className="h-8 shrink-0 gap-1.5"
-              disabled={snap.tasks.length === 0}
-              onClick={() => (batchMode ? exitBatch() : setBatchMode(true))}
-            >
-              <ListChecksIcon className="size-4" />
-              批量管理
-            </Button>
-          )}
+          {(() => {
+            // 批量管理按当前 tab 接管对应模式（任务卡 / 运行记录各一套状态）
+            const isTasks = tab === "tasks";
+            const active = isTasks ? batchMode : historyBatch;
+            const disabled = isTasks ? snap.tasks.length === 0 : totalHistoryCount === 0;
+            return (
+              <Button
+                variant={active ? "secondary" : "outline"}
+                className="h-8 shrink-0 gap-1.5"
+                disabled={disabled}
+                onClick={() => {
+                  if (isTasks) {
+                    batchMode ? exitBatch() : setBatchMode(true);
+                  } else {
+                    historyBatch ? exitHistoryBatch() : setHistoryBatch(true);
+                  }
+                }}
+              >
+                <ListChecksIcon className="size-4" />
+                批量管理
+              </Button>
+            );
+          })()}
           <Button
             variant="outline"
             className="h-8 shrink-0 gap-1.5"
@@ -865,6 +1096,12 @@ export const AutomationsView: FC<{
                         item={item}
                         now={now}
                         onOpenSession={openSession}
+                        batchMode={historyBatch}
+                        selected={historySelected.has(item.runId)}
+                        onToggleSelect={() => toggleHistorySelect(item.runId)}
+                        onDelete={() =>
+                          requestHistoryDelete([{ taskId: item.taskId, runIds: [item.runId] }])
+                        }
                       />
                     ))}
                   </div>
@@ -920,6 +1157,10 @@ export const AutomationsView: FC<{
                 batchMode={batchMode}
                 selected={selected.has(t.id)}
                 onToggleSelect={() => toggleSelect(t.id)}
+                onRequestEntryDelete={(runId) =>
+                  requestHistoryDelete([{ taskId: t.id, runIds: [runId] }])
+                }
+                onRequestClearHistory={() => requestHistoryDelete([{ taskId: t.id, all: true }])}
               />
             ))}
           </div>
@@ -928,97 +1169,196 @@ export const AutomationsView: FC<{
 
       {/* 批量操作坞：底部居中的悬浮图标条（Dock 风格）。外层 pointer-events-none
           只让坞本体可点，悬浮不遮两侧内容的滚轮操作；sticky 让它随滚动常驻。
-          外层槽位常挂在任务页、高度固定（坞 38px + 24px 边距）：坞本体进出
+          外层槽位常驻两个 tab、高度固定（坞 38px + 24px 边距）：坞本体进出
           不改变文档流高度，避免批量切换时列表尾部回流错位（另一种"抖"） */}
-      {tab === "tasks" && (
-        <div className="pointer-events-none sticky bottom-0 z-20 h-[62px]">
-          <AnimatePresence initial={false}>
-            {batchMode && (
-              <motion.div
-                key="batch-dock"
-                className="flex justify-center pb-6"
-                initial={{ opacity: 0, y: 18 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 18 }}
-                transition={SPRING_LAYOUT}
-              >
-                {/* Dock 容器 items-end 底对齐（为悬停放大图标设计），短文本必须
-                    self-center 才不坠底；计数做成药丸胶囊和图标格呼应 */}
-                <Dock size={36} className="pointer-events-auto">
-                  <span className="bg-muted text-muted-foreground self-center rounded-full px-2 py-0.5 text-xs tabular-nums">
-                    已选 {selected.size}
-                  </span>
-                  {/* 方框勾=全选语义；全选态用主色图标提示（active pill 那块灰底
-                      孤悬在图标行里很怪，且只有这一项有底色更显得像渲染故障） */}
-                  <DockItem
-                    title={allVisibleSelected ? "清空" : "全选"}
-                    aria-label={allVisibleSelected ? "清空" : "全选"}
-                    onClick={
-                      batchBusy || visibleTasks.length === 0
-                        ? undefined
-                        : () =>
-                            setSelected(
-                              allVisibleSelected
-                                ? new Set()
-                                : new Set(visibleTasks.map((t) => t.id)),
-                            )
-                    }
-                    className={cn(
-                      batchBusy || visibleTasks.length === 0
-                        ? "opacity-40"
-                        : "cursor-pointer",
-                      allVisibleSelected && "text-primary",
-                    )}
-                  >
-                    <SquareCheckBigIcon className="size-4" />
-                  </DockItem>
-                  <DockSeparator />
-                  <DockItem
-                    title="批量启用"
-                    aria-label="批量启用"
-                    onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(true)}
-                    className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
-                  >
-                    <PowerIcon className="size-4" />
-                  </DockItem>
-                  <DockItem
-                    title="批量暂停"
-                    aria-label="批量暂停"
-                    onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(false)}
-                    className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
-                  >
-                    <PauseIcon className="size-4" />
-                  </DockItem>
-                  <DockItem
-                    title={confirmBatchDelete ? `确认删除 ${selected.size} 项` : "批量删除"}
-                    aria-label="批量删除"
-                    onClick={batchActionDisabled ? undefined : () => void batchDelete()}
-                    className={cn(
-                      "relative",
-                      batchActionDisabled ? "opacity-40" : "cursor-pointer",
-                      confirmBatchDelete && "text-destructive",
-                    )}
-                  >
-                    {/* 一次点击进 3 秒确认态：红底描边框提示再点一次真删 */}
-                    {confirmBatchDelete && (
-                      <span className="bg-destructive/10 ring-destructive/40 absolute inset-1 -z-10 rounded-xl ring-1" />
-                    )}
-                    <Trash2Icon className="size-4" />
-                  </DockItem>
-                  <DockItem
-                    title="退出批量管理"
-                    aria-label="退出批量管理"
-                    onClick={batchBusy ? undefined : exitBatch}
-                    className={cn(batchBusy ? "opacity-40" : "cursor-pointer")}
-                  >
-                    <XIcon className="size-4" />
-                  </DockItem>
-                </Dock>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      )}
+      <div className="pointer-events-none sticky bottom-0 z-20 h-[62px]">
+        <AnimatePresence initial={false}>
+          {batchMode && tab === "tasks" && (
+            <motion.div
+              key="batch-dock"
+              className="flex justify-center pb-6"
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 18 }}
+              transition={SPRING_LAYOUT}
+            >
+              {/* Dock 容器 items-end 底对齐（为悬停放大图标设计），短文本必须
+                  self-center 才不坠底；计数做成药丸胶囊和图标格呼应 */}
+              <Dock size={36} className="pointer-events-auto">
+                <span className="bg-muted text-muted-foreground self-center rounded-full px-2 py-0.5 text-xs tabular-nums">
+                  已选 {selected.size}
+                </span>
+                {/* 方框勾=全选语义；全选态用主色图标提示（active pill 那块灰底
+                    孤悬在图标行里很怪，且只有这一项有底色更显得像渲染故障） */}
+                <DockItem
+                  title={allVisibleSelected ? "清空" : "全选"}
+                  aria-label={allVisibleSelected ? "清空" : "全选"}
+                  onClick={
+                    batchBusy || visibleTasks.length === 0
+                      ? undefined
+                      : () =>
+                          setSelected(
+                            allVisibleSelected
+                              ? new Set()
+                              : new Set(visibleTasks.map((t) => t.id)),
+                          )
+                  }
+                  className={cn(
+                    batchBusy || visibleTasks.length === 0
+                      ? "opacity-40"
+                      : "cursor-pointer",
+                    allVisibleSelected && "text-primary",
+                  )}
+                >
+                  <SquareCheckBigIcon className="size-4" />
+                </DockItem>
+                <DockSeparator />
+                <DockItem
+                  title="批量启用"
+                  aria-label="批量启用"
+                  onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(true)}
+                  className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
+                >
+                  <PowerIcon className="size-4" />
+                </DockItem>
+                <DockItem
+                  title="批量暂停"
+                  aria-label="批量暂停"
+                  onClick={batchActionDisabled ? undefined : () => void batchSetEnabled(false)}
+                  className={cn(batchActionDisabled ? "opacity-40" : "cursor-pointer")}
+                >
+                  <PauseIcon className="size-4" />
+                </DockItem>
+                <DockItem
+                  title={confirmBatchDelete ? `确认删除 ${selected.size} 项` : "批量删除"}
+                  aria-label="批量删除"
+                  onClick={batchActionDisabled ? undefined : () => void batchDelete()}
+                  className={cn(
+                    "relative",
+                    batchActionDisabled ? "opacity-40" : "cursor-pointer",
+                    confirmBatchDelete && "text-destructive",
+                  )}
+                >
+                  {/* 一次点击进 3 秒确认态：红底描边框提示再点一次真删 */}
+                  {confirmBatchDelete && (
+                    <span className="bg-destructive/10 ring-destructive/40 absolute inset-1 -z-10 rounded-xl ring-1" />
+                  )}
+                  <Trash2Icon className="size-4" />
+                </DockItem>
+                <DockItem
+                  title="退出批量管理"
+                  aria-label="退出批量管理"
+                  onClick={batchBusy ? undefined : exitBatch}
+                  className={cn(batchBusy ? "opacity-40" : "cursor-pointer")}
+                >
+                  <XIcon className="size-4" />
+                </DockItem>
+              </Dock>
+            </motion.div>
+          )}
+          {historyBatch && tab === "history" && (
+            <motion.div
+              key="history-dock"
+              className="flex justify-center pb-6"
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 18 }}
+              transition={SPRING_LAYOUT}
+            >
+              <Dock size={36} className="pointer-events-auto">
+                <span className="bg-muted text-muted-foreground self-center rounded-full px-2 py-0.5 text-xs tabular-nums">
+                  已选 {historySelected.size}
+                </span>
+                <DockItem
+                  title={historyAllSelected ? "清空" : "全选"}
+                  aria-label={historyAllSelected ? "清空" : "全选"}
+                  onClick={
+                    historyBusy || historyVisibleItems.length === 0
+                      ? undefined
+                      : () =>
+                          setHistorySelected(
+                            historyAllSelected
+                              ? new Set()
+                              : new Set(historyVisibleItems.map((i) => i.runId)),
+                          )
+                  }
+                  className={cn(
+                    historyBusy || historyVisibleItems.length === 0
+                      ? "opacity-40"
+                      : "cursor-pointer",
+                    historyAllSelected && "text-primary",
+                  )}
+                >
+                  <SquareCheckBigIcon className="size-4" />
+                </DockItem>
+                <DockSeparator />
+                <DockItem
+                  title="批量删除记录"
+                  aria-label="批量删除记录"
+                  onClick={
+                    historyBusy || historySelected.size === 0
+                      ? undefined
+                      : () => requestHistoryDelete(selectedDeleteOps())
+                  }
+                  className={cn(
+                    historyBusy || historySelected.size === 0
+                      ? "opacity-40"
+                      : "cursor-pointer",
+                  )}
+                >
+                  <Trash2Icon className="size-4" />
+                </DockItem>
+                <DockItem
+                  title="退出批量管理"
+                  aria-label="退出批量管理"
+                  onClick={historyBusy ? undefined : exitHistoryBatch}
+                  className={cn(historyBusy ? "opacity-40" : "cursor-pointer")}
+                >
+                  <XIcon className="size-4" />
+                </DockItem>
+              </Dock>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* 删除运行记录的统一确认框：单条剔除 / 清空 / 批量选中都汇到这里。
+          sidecar 只删日志条目；关联的执行会话默认可保留，是否连带删除交给
+          这个可选勾选（有可定位会话时才出现该行） */}
+      <AlertDialog
+        open={!!historyDeleteReq}
+        onOpenChange={(open) => {
+          if (!open) setHistoryDeleteReq(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除运行记录？</AlertDialogTitle>
+            <AlertDialogDescription>
+              {`将删除${historyDeleteReq?.label ?? ""}的 ${historyDeleteReq?.count ?? 0} 条运行记录，此操作无法撤销。`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {historyDeleteReq && historyDeleteReq.sessionIds.length > 0 && (
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={historyAlsoSession}
+                onCheckedChange={(checked) => setHistoryAlsoSession(checked === true)}
+              />
+              同时删除对应的 {historyDeleteReq.sessionIds.length} 个执行会话
+            </label>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              size="default"
+              onClick={() => void confirmHistoryDelete()}
+            >
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AutomationEditorDialog
         open={editorOpen}

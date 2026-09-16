@@ -65,6 +65,7 @@
  *   { "type": "automation_delete", "id", "taskId" }            → 删任务 → automation_list 应答
  *   { "type": "automation_set_enabled", "id", "taskId", "enabled" } → 开关排期 → automation_list 应答
  *   { "type": "automation_run_now", "id", "taskId" }           → 立即触发一次（结果经 automation_run_done 自发帧）→ automation_list 应答
+ *   { "type": "automation_history_delete", "id", "taskId", "entryIds"? | "all"? } → 删运行记录条目（entryIds 单/多条，all:true 清空；不级联会话）→ automation_list 应答
  *   { "type": "automation_preview", "id", "scheduleType", "schedule", "count"? } → { id, type: "automation_preview", runs } 或 { id, type: "automation_preview", error }（排期校验红字提示，不占调度器）
  *   { "type": "automation_templates", "id" }                   → { id, type: "automation_templates", templates }（预置模板清单，见 automation/templates.ts）
  *   { "type": "list_skills", "id", "cwd"? }                   → { id, type: "skills", skills, workspaceCwd, diagnostics }
@@ -314,6 +315,7 @@ import {
 } from "./question-tools";
 import {
   automationDeletePayload,
+  automationHistoryDeletePayload,
   automationListPayload,
   automationPreviewPayload,
   automationRunNowPayload,
@@ -1514,6 +1516,11 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     }
     case "automation_run_now": {
       const r = await automationRunNowPayload(msg);
+      send({ id: reqId, type: r.type, tasks: r.tasks });
+      break;
+    }
+    case "automation_history_delete": {
+      const r = await automationHistoryDeletePayload(msg);
       send({ id: reqId, type: r.type, tasks: r.tasks });
       break;
     }

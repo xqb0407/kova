@@ -134,6 +134,12 @@ export interface TaskScheduler {
     scope?: TaskSchedulerScope,
   ): Promise<ScheduledTask | undefined>;
   delete(taskId: string, scope?: TaskSchedulerScope): Promise<boolean>;
+  /** —— 本地扩展（M4.5，见 NOTICE.md）：删除 runHistory 条目（'all' = 清空） —— */
+  deleteHistory(
+    taskId: string,
+    entryIds: string[] | 'all',
+    scope?: TaskSchedulerScope,
+  ): Promise<ScheduledTask | undefined>;
   runNow(taskId: string, scope?: TaskSchedulerScope): Promise<ScheduledTask | undefined>;
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -385,6 +391,34 @@ export class PersistentTaskScheduler implements TaskScheduler {
       this.unschedule(taskId);
     }
     return deleted;
+  }
+
+  /**
+   * —— 本地扩展（M4.5，见 NOTICE.md）：删除运行历史条目（单条/多条/清空）——
+   * ScheduledTaskUpdate 刻意不含 runHistory（防表单整存误覆盖历史），故历史操作
+   * 走独立入口：读回既有任务 → 过滤条目 → 落盘。不回算 lastStatus/runCount
+   * （统计是"任务曾发生过什么"，删日志条目不改写它）；不触发重排期。条目 id 是
+   * run→会话映射的键，删条目不级联会话——会话是独立资产，删除由前端另行发起。
+   */
+  async deleteHistory(
+    taskId: string,
+    entryIds: string[] | 'all',
+    scope: TaskSchedulerScope = {},
+  ): Promise<ScheduledTask | undefined> {
+    const effectiveScope = this.applyScope(scope);
+    const existing = await this.options.store.get(taskId, effectiveScope);
+    if (!existing) {
+      return undefined;
+    }
+    const history = existing.runHistory ?? [];
+    const nextHistory =
+      entryIds === 'all' ? [] : history.filter((entry) => !entryIds.includes(entry.id));
+    const nextTask = withNextRun({
+      ...existing,
+      runHistory: nextHistory,
+      updatedAt: new Date().toISOString(),
+    });
+    return this.options.store.update(taskId, nextTask, effectiveScope);
   }
 
   async runNow(taskId: string, scope: TaskSchedulerScope = {}): Promise<ScheduledTask | undefined> {

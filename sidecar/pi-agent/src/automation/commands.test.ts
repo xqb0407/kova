@@ -149,6 +149,39 @@ describe("automation_* 命令", () => {
     expect(done?.sessionId ?? "").toBe(""); // stub runner 不建会话：无真实 sessionId
   });
 
+  it("history_delete：单条剔除其余保留、all 清空、未知 id/缺参报错", async () => {
+    const withHistory = (await tasks()).find((t) => (t.runHistory?.length ?? 0) > 0);
+    expect(withHistory).toBeDefined();
+    const id = withHistory!.id;
+    const before = withHistory!.runHistory!;
+
+    // 删最早一条：其余保留
+    const victim = before[0];
+    await dispatch("a-hd1", {
+      type: "automation_history_delete",
+      taskId: id,
+      entryIds: [victim.id],
+    });
+    let after = (await tasks()).find((t) => t.id === id)!.runHistory!;
+    expect(after.some((e) => e.id === victim.id)).toBe(false);
+    expect(after.length).toBe(before.length - 1);
+
+    // all:true 清空
+    await dispatch("a-hd2", { type: "automation_history_delete", taskId: id, all: true });
+    after = (await tasks()).find((t) => t.id === id)!.runHistory!;
+    expect(after).toHaveLength(0);
+
+    await expect(
+      dispatch("a-hd3", { type: "automation_history_delete", taskId: "ghost", all: true }),
+    ).rejects.toThrow(/not found/);
+    await expect(
+      dispatch("a-hd4", { type: "automation_history_delete", taskId: id }),
+    ).rejects.toThrow(/entryIds or all=true is required/);
+    await expect(dispatch("a-hd5", { type: "automation_history_delete" })).rejects.toThrow(
+      /taskId is required/,
+    );
+  });
+
   it("delete 后清单为空；未知 id 报错", async () => {
     const id = (await tasks())[0].id;
     await dispatch("a-del1", { type: "automation_delete", taskId: id });

@@ -30,6 +30,13 @@ Modifications (marked with "VENDOR" headers in each file):
   runs it again instead of having `schedule()` record a false "Scheduled time … is in the past"
   run failure in history (same semantics as the startup `repairMissedOnce`; invalid timestamps are
   left untouched so genuine schedule errors still surface). Covered by `once-rearm.test.ts`.
+- `index.ts` (M4.5, additive, not opt-in): new `deleteHistory(taskId, entryIds | 'all')` scheduler
+  method (on the `TaskScheduler` interface + `PersistentTaskScheduler`) so the management UI can
+  delete individual/clear `runHistory` entries — `ScheduledTaskUpdate` deliberately excludes
+  `runHistory`, so history can't be mutated through `update()` without a form overwrite clobbering
+  it. Purely log deletion: does not recompute `lastStatus`/`runCount` and does not cascade-delete the
+  run's session (sessions are independent assets removed via a separate `delete_session` request).
+  Wired as the `automation_history_delete` protocol command.
 
 Local extensions layered on top of the vendored code (no vendored file behavior changed;
 implemented against its public API from new, clearly-marked non-vendored files):
