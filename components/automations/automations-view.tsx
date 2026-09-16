@@ -59,6 +59,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -257,9 +258,8 @@ const TaskCard: FC<{
       id={`automation-card-${task.id}`}
       onClick={batchMode ? onToggleSelect : undefined}
       className={cn(
-        // group/card：次级操作按钮悬停显现的锚点；mt-auto 的元信息行让
-        // 网格拉伸时各卡的排期/统计对齐在同一基线
-        "group/card bg-card border-border flex flex-col gap-2.5 rounded-xl border p-4",
+        // mt-auto 的元信息行让网格拉伸时各卡的排期/统计对齐在同一基线
+        "bg-card border-border flex flex-col gap-2.5 rounded-xl border p-4",
         "transition-colors hover:border-foreground/15",
         highlighted && "ring-2 ring-primary/60",
         batchMode && "cursor-pointer",
@@ -307,67 +307,43 @@ const TaskCard: FC<{
             >
               <PlayIcon className="size-4" />
             </Button>
-            {/* 次级操作悬停/聚焦卡片才浮现（常驻把标题挤得太窄、视觉嘈杂）；
-                历史展开时 🕘 常驻，否则收起按钮会随鼠标移开而消失 */}
-            <div
-              className={cn(
-                "flex items-center gap-0.5 transition-opacity duration-150",
-                showHistory
-                  ? "opacity-100"
-                  : "opacity-0 group-hover/card:opacity-100 group-focus-within/card:opacity-100",
-              )}
-            >
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-7"
-                title="编辑"
-                aria-label="编辑任务"
-                disabled={busy}
-                onClick={() => onEdit(task)}
-              >
-                <PencilIcon className="size-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className={cn("size-7", showHistory && "bg-muted")}
-                title={showHistory ? "收起运行历史" : "展开运行历史"}
-                aria-label="运行历史"
-                aria-pressed={showHistory}
-                disabled={busy}
-                onClick={toggleHistory}
-              >
-                <HistoryIcon className="size-4" />
-              </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  render={
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-7"
-                      aria-label="更多操作"
-                      disabled={busy}
-                    >
-                      <MoreHorizontalIcon className="size-4" />
-                    </Button>
-                  }
-                />
-                <DropdownMenuContent align="end" className="w-44">
-                  {/* 本地 dropdown 封装基于 base-ui：条目回调只认 onClick。
-                      onSelect 是 Radix 惯例，落到底层是原生 text-selection 事件，
-                      点了静默不触发（删除曾因此完全没反应）。删除走确认弹窗 */}
-                  <DropdownMenuItem
-                    variant="destructive"
-                    onClick={() => setAskDeleteOpen(true)}
+            {/* 次级操作全部收进 ⋯ 菜单：标题行常驻控件只有 开关/▶/⋯ 三个 */}
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    aria-label="更多操作"
+                    disabled={busy}
                   >
-                    <Trash2Icon className="size-4" />
-                    删除任务
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+                    <MoreHorizontalIcon className="size-4" />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" className="w-44">
+                {/* 本地 dropdown 封装基于 base-ui：条目回调只认 onClick。
+                    onSelect 是 Radix 惯例，落到底层是原生 text-selection 事件，
+                    点了静默不触发（删除曾因此完全没反应）。删除走确认弹窗 */}
+                <DropdownMenuItem onClick={() => onEdit(task)}>
+                  <PencilIcon className="size-4" />
+                  编辑任务
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={toggleHistory}>
+                  <HistoryIcon className="size-4" />
+                  {showHistory ? "收起运行历史" : "展开运行历史"}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={() => setAskDeleteOpen(true)}
+                >
+                  <Trash2Icon className="size-4" />
+                  删除任务
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         )}
       </div>
