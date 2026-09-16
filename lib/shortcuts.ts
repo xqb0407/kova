@@ -282,9 +282,9 @@ export function validateBinding(
 }
 
 /**
- * 由「发送」绑定推导 LexicalComposerInput 的 submitMode。库的原生 Enter 处理只认
+ * 由「发送」绑定推导 composer 输入组件的 submitMode。组件原生 Enter 处理只认
  * 两种：裸 Enter 提交（enter）、⌘/Ctrl+Enter 提交（ctrlEnter）。其余组合返回
- * "none"，交调用方用外部 keydown 监听拦截（此时 Enter 落回库默认 → 换行）。
+ * "none"，交调用方用外部 keydown 监听拦截（此时 Enter 落回组件默认 → 换行）。
  */
 export function resolveComposerSubmitMode(
   send: ShortcutConfig,

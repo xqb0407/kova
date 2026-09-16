@@ -13,28 +13,9 @@ import {
   ActionBarPrimitive,
 } from "@assistant-ui/react";
 import { BranchPicker } from "./branch-picker";
-import { LexicalComposerInput, type DirectiveChipProps } from "@assistant-ui/react-lexical";
-import { ChevronDownIcon, PencilIcon, WrenchIcon } from "lucide-react";
+import { CmComposerInput } from "./cm-composer-input";
+import { ChevronDownIcon, PencilIcon } from "lucide-react";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
-
-function DirectiveChip(props: DirectiveChipProps) {
-  const { directiveId, directiveType, label } = props;
-  const showWrench = directiveType !== "command";
-  return (
-    <span
-      className="aui-directive-chip"
-      data-directive-type={directiveType}
-      data-directive-id={directiveId}
-    >
-      {showWrench && (
-        <span className="aui-directive-chip-icon">
-          <WrenchIcon className="size-3" />
-        </span>
-      )}
-      <span className="aui-directive-chip-label">{label}</span>
-    </span>
-  );
-}
 
 export const UserMessage: FC = () => {
   return (
@@ -158,10 +139,9 @@ export const EditComposer: FC = () => {
     >
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         <ComposerPrimitive.Root className="aui-edit-composer-root border-border/60 dark:border-muted-foreground/15 ml-auto flex w-full max-w-[85%] cursor-text flex-col rounded-(--composer-radius) border bg-(--composer-bg)">
-          <LexicalComposerInput
-            directiveChip={DirectiveChip}
+          <CmComposerInput
             autoFocus
-            className="aui-edit-composer-input text-foreground min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none"
+            className="aui-edit-composer-input min-h-14 w-full px-4 pt-3 pb-1 text-foreground text-base outline-none [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-scroller]:overscroll-contain [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center"
           />
           <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
             <ComposerPrimitive.Cancel asChild>

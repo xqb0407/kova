@@ -7,6 +7,12 @@
       "skillPath": "assistant-ui/skills/assistant-ui/SKILL.md",
       "computedHash": "4609b6a2c04097251a1fa79ebbbdf582f1b8b52576dad8123a37979068c0613d"
     },
+    "brandkit": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/brandkit/SKILL.md",
+      "computedHash": "b63012f3c3d21197e0185d3e9cc7ec40c589fb10e0b5a32a561739de31aa3f20"
+    },
     "cloud": {
       "source": "assistant-ui/skills",
       "sourceType": "github",
@@ -19,17 +25,71 @@
       "skillPath": "assistant-ui/skills/copilots/SKILL.md",
       "computedHash": "5b93c45f9a78cc804bd728da979fef80ee671e306aff157bc5c4a6f94c4f5638"
     },
+    "design-taste-frontend": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/taste-skill/SKILL.md",
+      "computedHash": "6d838b246d0e35d0b53f4f23f98ba7a1dd561937e64f7d0c7553b0928e376c3e"
+    },
+    "design-taste-frontend-v1": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/taste-skill-v1/SKILL.md",
+      "computedHash": "d704ab912c4d0ca954ffa858983da755ae4cd5cad9ba22554db5557382f5bd34"
+    },
     "elements": {
       "source": "assistant-ui/skills",
       "sourceType": "github",
       "skillPath": "assistant-ui/skills/elements/SKILL.md",
       "computedHash": "6c549de86b22a46ca68f6714ec7186244f1e20defc616c6f9290d8f0ba4b4a3c"
     },
+    "full-output-enforcement": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/output-skill/SKILL.md",
+      "computedHash": "26bd29ce4c5e02c7666b2d503609bf466bd32290822e91f0e984147048dbb924"
+    },
     "generative-ui": {
       "source": "assistant-ui/skills",
       "sourceType": "github",
       "skillPath": "assistant-ui/skills/generative-ui/SKILL.md",
       "computedHash": "c8bc769dc4d6c89696ffb4aa86b620fc2e77c93755968cb987ecbac41de1f460"
+    },
+    "gpt-taste": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/gpt-tasteskill/SKILL.md",
+      "computedHash": "cc8f0c601d8240a124e1d11634351a2be7b8a72fd807c75e5b6bf7afcd5ddee0"
+    },
+    "high-end-visual-design": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/soft-skill/SKILL.md",
+      "computedHash": "7db385e4c5370e5a7fca9704a1361b056e4504ea6a03924bb86f33a4f00b5c73"
+    },
+    "image-to-code": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/image-to-code-skill/SKILL.md",
+      "computedHash": "58517b03b2a01f4c9ba65861559d03df931400871bbc200978c975b24bb92c73"
+    },
+    "imagegen-frontend-mobile": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/imagegen-frontend-mobile/SKILL.md",
+      "computedHash": "9ab7f4f6ce66a3cff02bbf5894e5bd5af50bf5d6ef0adffdc88e8fab772fe44f"
+    },
+    "imagegen-frontend-web": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/imagegen-frontend-web/SKILL.md",
+      "computedHash": "65f5ae59fa317567809438310b1c54f78cd133426deb43e4d3d4ca4c8f541628"
+    },
+    "industrial-brutalist-ui": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/brutalist-skill/SKILL.md",
+      "computedHash": "8fc355c4aadb7d29c53ca28bc41be3cd6eea765d121e3737c4dc2d0f90a8effa"
     },
     "ink": {
       "source": "assistant-ui/skills",
@@ -42,6 +102,12 @@
       "sourceType": "github",
       "skillPath": "assistant-ui/skills/markdown/SKILL.md",
       "computedHash": "9d458ed1ae816985db02fb18e6a1a272b0b3b75ebcfcef7015ebff563665b0aa"
+    },
+    "minimalist-ui": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/minimalist-skill/SKILL.md",
+      "computedHash": "08873a3131d3be27bef9bf3304b310b16b44ca6e3561aebe532797be3443f6bd"
     },
     "observability": {
       "source": "assistant-ui/skills",
@@ -67,6 +133,12 @@
       "skillPath": "assistant-ui/skills/react-native/SKILL.md",
       "computedHash": "1589328f049fe39e5825d1fdcd42cbe1fa59233eb035bba3fc7cf629672c7842"
     },
+    "redesign-existing-projects": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/redesign-skill/SKILL.md",
+      "computedHash": "b405eee0e0e80fc243f731d9aa368bca307e356db7e6157d27101d369dac6726"
+    },
     "runtime": {
       "source": "assistant-ui/skills",
       "sourceType": "github",
@@ -78,6 +150,12 @@
       "sourceType": "github",
       "skillPath": "assistant-ui/skills/setup/SKILL.md",
       "computedHash": "ad27f5672e0b4c4dda2a1fe9031257193a6a0ab9af799e08654ac954d8a160d8"
+    },
+    "stitch-design-taste": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/stitch-skill/SKILL.md",
+      "computedHash": "13322f38406cd3abf16ba45e35bdc9b18002d0153a79b4612b97aefc65d5a335"
     },
     "streaming": {
       "source": "assistant-ui/skills",
