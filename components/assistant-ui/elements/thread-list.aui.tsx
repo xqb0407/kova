@@ -472,6 +472,9 @@ const ThreadListItemGroups: FC<{
  * 展开目录集合可由外部受控（openDirs/onOpenDirsChange，供「展开全部」按钮用），
  * 不传则组件内部自管。
  */
+/** 项目展开后默认可见的会话行数，超出折叠进「显示更多」 */
+const PROJECT_VISIBLE_LIMIT = 5;
+
 export const ProjectListItems: FC<{
   openDirs?: Set<string>;
   onOpenDirsChange?: (next: Set<string>) => void;
@@ -484,6 +487,15 @@ export const ProjectListItems: FC<{
     () => new Set(),
   );
   const openDirs = controlledOpen ?? internalOpen;
+  // 已点过「显示更多」的项目集合（会话列表刷新后保持展开态）
+  const [showAllDirs, setShowAllDirs] = useState<Set<string>>(() => new Set());
+  const toggleShowAll = (cwd: string) =>
+    setShowAllDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(cwd)) next.delete(cwd);
+      else next.add(cwd);
+      return next;
+    });
 
   // 任务列表同款 fluid hover 作用域：组头与组内行注册进同一容器，
   // 高亮在「文件夹行 ↔ 会话行」之间连续滑动（Base UI Panel 关闭时卸载，
@@ -541,8 +553,17 @@ export const ProjectListItems: FC<{
     >
       <FluidHoverHighlight hover={hover} className="rounded-md" />
       {projectGroups.map((group) => {
+        // 组内行数超过上限时默认截断，尾部「显示更多」展开/「收起」折回；
+        // 截断后的行与按钮占连续 hover 槽位，未渲染的行不占槽
+        const showAll = showAllDirs.has(group.cwd);
+        const visibleIndices = showAll
+          ? group.indices
+          : group.indices.slice(0, PROJECT_VISIBLE_LIMIT);
+        const hiddenCount = group.indices.length - visibleIndices.length;
+        const hasMore = group.indices.length > PROJECT_VISIBLE_LIMIT;
         const headerSlot = nextSlot++;
-        const childSlots = group.indices.map(() => nextSlot++);
+        const childSlots = visibleIndices.map(() => nextSlot++);
+        const moreSlot = hasMore ? nextSlot++ : -1;
         const isOpen = openDirs.has(group.cwd);
         return (
           <Collapsible
@@ -617,7 +638,7 @@ export const ProjectListItems: FC<{
             <CollapsibleContent className="overflow-hidden">
               {/* 展开时子树整体挂载：会话行级联淡入 */}
               <div className="flex flex-col gap-0.5 pl-0">
-                {group.indices.map((index, i) => (
+                {visibleIndices.map((index, i) => (
                   <RowHoverContext.Provider
                     key={threadIds[index]}
                     value={{
@@ -633,6 +654,24 @@ export const ProjectListItems: FC<{
                     </TreeRow>
                   </RowHoverContext.Provider>
                 ))}
+                {hasMore && (
+                  <TreeRow position={visibleIndices.length}>
+                    <FluidHoverRow
+                      registerItem={hover.registerItem}
+                      index={moreSlot}
+                    >
+                      <Button
+                        variant="ghost"
+                        className="h-7 w-full justify-start px-2.5 text-xs font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+                        onClick={() => toggleShowAll(group.cwd)}
+                      >
+                        {hiddenCount > 0
+                          ? `显示更多（${hiddenCount}）`
+                          : "收起"}
+                      </Button>
+                    </FluidHoverRow>
+                  </TreeRow>
+                )}
               </div>
             </CollapsibleContent>
           </Collapsible>
@@ -826,7 +865,7 @@ export const ThreadListItem: FC = () => {
             data-[running=true]:visible
           "
         />
-        {automationTaskId && (
+        {/* {automationTaskId && (
           <ZapIcon
             aria-label="定时任务发起的会话"
             onClick={(e) => {
@@ -837,7 +876,7 @@ export const ThreadListItem: FC = () => {
             }}
             className="text-muted-foreground hover:text-foreground me-1.5 size-3 shrink-0 cursor-pointer"
           />
-        )}
+        )} */}
         <MarqueeTitle data-slot="aui_thread-list-item-title">
           <ThreadListItemPrimitive.Title fallback="新对话" />
         </MarqueeTitle>
