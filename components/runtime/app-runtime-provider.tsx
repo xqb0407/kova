@@ -19,6 +19,7 @@ import {
   type RemoteConfig,
 } from "@/lib/remote";
 import { createSleepingMate, type MoodMate } from "@/lib/mood-mates";
+import { SleepingCloud } from "@/components/loading-ui/sleeping-cloud";
 /** splash 最小展示时长：保证启动动画至少播一会儿，不被快速水合直接闪没。
  *  迭代1b（P6）：3000 → 800——固定 3s 开屏把分块/按需加载的全部启动收益
  *  掩盖在动画里；800ms 仍够云朵呼吸动画起步，观感待重启后重新评估。 */
@@ -98,7 +99,11 @@ function BootSplash({
 
   return (
     <div className="flex h-full flex-1 flex-col items-center justify-center bg-background/95">
-      <div ref={boxRef} className="h-[150px] w-[150px]" />
+      <div className="relative h-37.5 w-37.5">
+        {/* CSS 睡眠云：预渲染 HTML 即可见，磨砂阶段就有云；引擎就绪后淡出接管 */}
+        <SleepingCloud hidden={!!mate} />
+        <div ref={boxRef} className="absolute inset-0" />
+      </div>
     </div>
   );
 }

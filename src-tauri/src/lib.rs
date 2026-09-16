@@ -28,6 +28,16 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
+        // 窗口配置 visible:false——等 webview 首帧就绪（静态 HTML 的磨砂+云
+        // 已可渲染）再显示，消除"窗口出现但内容未加载"的透明闪烁。
+        // Finished 对每次导航都触发（刷新等），show 幂等无害。
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished
+                && webview.label() == "main"
+            {
+                let _ = webview.window().show();
+            }
+        })
         .manage(PiState::default())
         .manage(remote::RemoteState::default())
         .manage(browser::BrowserState::default())
@@ -46,6 +56,17 @@ pub fn run() {
             if let Err(e) = gpu::create_windows(app.handle()) {
                 log::error!("[gpu] create main window failed: {e}");
                 return Err(e.into());
+            }
+            // 兜底：page load 事件异常时窗口会永远隐藏——5s 后无条件 show
+            // （对已显示窗口调用幂等，无副作用）
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    if let Some(win) = handle.get_webview_window("main") {
+                        let _ = win.show();
+                    }
+                });
             }
             // 恢复持久化的窗口背景效果（穿透高斯模糊等）
             appearance::restore(app.handle());
