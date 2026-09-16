@@ -18,8 +18,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import { SPRING_LAYOUT } from "@/lib/ease";
 import {
   AlertCircleIcon,
+  AlarmClockIcon,
   BriefcaseBusinessIcon,
+  CalendarCheckIcon,
+  CalendarClockIcon,
   CalendarDaysIcon,
+  CalendarRangeIcon,
   CheckIcon,
   ClockIcon,
   EraserIcon,
@@ -37,11 +41,15 @@ import {
   PowerIcon,
   RefreshCwIcon,
   RepeatIcon,
+  RotateCwIcon,
   SearchIcon,
   SquareCheckBigIcon,
+  SunIcon,
+  TimerIcon,
   Trash2Icon,
   XIcon,
   ZapIcon,
+  type LucideIcon,
 } from "lucide-react";
 import {
   AlertDialog,
@@ -113,6 +121,7 @@ import {
   nextRunLabel,
   relativePast,
   scheduleKind,
+  type ScheduleKind,
 } from "@/lib/automation-format";
 import { cn } from "@/lib/utils";
 import { Dock, DockItem, DockSeparator } from "@/components/custom-ui/dock";
@@ -129,20 +138,31 @@ function useNowTick(ms = 30_000): number {
   return now;
 }
 
+/** 各排期类型的身份图标池：按 task.id 散列稳定取一——同一任务永远同一图标，
+ *  不能真随机（刷新/重渲染会换脸）。类型内变体让列表不再流水线感；
+ *  tint 仍按类型统一，语义不随图标跑偏 */
+const IDENTITY_POOLS: Record<ScheduleKind, LucideIcon[]> = {
+  daily: [BriefcaseBusinessIcon, CalendarClockIcon, AlarmClockIcon, SunIcon],
+  weekly: [CalendarDaysIcon, CalendarRangeIcon, CalendarCheckIcon],
+  once: [HourglassIcon, TimerIcon, ClockIcon],
+  repeated: [RepeatIcon, RotateCwIcon, RefreshCwIcon],
+};
+
+/** djb2 字符串散列（无符号）：只用来选图标槽位 */
+function hashString(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return h >>> 0;
+}
+
 /** 身份图标底座（Linear/Zapier 风格）：size-9 圆角色块按排期类型 tint
  *  （每日=蓝 business / 每周=紫 calendar / 一次性=琥珀 hourglass /
  *  分钟·小时级高频=青 repeated），运行中整块转主色；停用降灰但保留形状
  *  ——语义色要成面积，不能全页灰白 */
 const TaskIdentity: FC<{ task: AutomationTask; running: boolean }> = ({ task, running }) => {
   const kind = scheduleKind(task);
-  const Icon =
-    kind === "once"
-      ? HourglassIcon
-      : kind === "weekly"
-        ? CalendarDaysIcon
-        : kind === "repeated"
-          ? RepeatIcon
-          : BriefcaseBusinessIcon;
+  const pool = IDENTITY_POOLS[kind];
+  const Icon = pool[hashString(task.id) % pool.length] as LucideIcon;
   const tone = running
     ? "bg-primary text-primary-foreground"
     : !task.enabled
