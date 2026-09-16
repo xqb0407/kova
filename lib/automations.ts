@@ -164,6 +164,21 @@ export function runAutomationNow(taskId: string): Promise<void> {
   return mutate({ type: "automation_run_now", taskId });
 }
 
+/**
+ * 删除某任务的部分运行记录条目（单条/批量共用，传条目 id 数组）。
+ * 只删日志：关联的那次执行会话是独立资产，是否连坐由 UI 确认后另行走
+ * `delete_session`（见 components/automations 的历史删除确认框）。
+ */
+export function deleteAutomationHistory(taskId: string, entryIds: string[]): Promise<void> {
+  if (entryIds.length === 0) return Promise.resolve();
+  return mutate({ type: "automation_history_delete", taskId, entryIds });
+}
+
+/** 清空某任务全部运行记录（all:true 走服务端整清，避开前端截断的 25 条上限） */
+export function clearAutomationHistory(taskId: string): Promise<void> {
+  return mutate({ type: "automation_history_delete", taskId, all: true });
+}
+
 /** 排期预览（表单实时提示下几次触发时间）：非法排期回 error 而非抛出 */
 export async function previewAutomationSchedule(args: {
   type: string;
