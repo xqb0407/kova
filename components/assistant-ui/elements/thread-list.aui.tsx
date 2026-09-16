@@ -280,15 +280,72 @@ export const ThreadListSearch = forwardRef<
 
 ThreadListSearch.displayName = "ThreadListSearch";
 
+/** 列表上下缘渐隐带宽（px） */
+const EDGE_FADE = 16;
+
+/**
+ * 会话列表根容器：滚动时上下缘渐隐（与标题右渐隐同款内联 mask 方案，
+ * 不走 shadcn scroll-fade 工具类——其 @property/animation-timeline 机制
+ * 在 WKWebView 不可靠）。按实测位置施加：顶部滚过才淡出顶缘、底部还有
+ * 内容才淡出底缘，不滚动/无溢出时完全无 mask。
+ */
 export const ThreadListRoot: FC<
   ComponentPropsWithoutRef<typeof ThreadListPrimitive.Root>
-> = ({ className, ...props }) => {
+> = ({ className, children, ...props }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [fade, setFade] = useState({ t: false, b: false });
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const top = el.scrollTop;
+      const bottom = el.scrollHeight - top - el.clientHeight;
+      const next = { t: top > 1, b: bottom > 1 };
+      setFade((prev) =>
+        prev.t === next.t && prev.b === next.b ? prev : next,
+      );
+    };
+    measure();
+    el.addEventListener("scroll", measure, { passive: true });
+    let ro: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      // 容器尺寸与内容高度变化都可能改变可滚性：容器和直接子项一起观察
+      ro = new ResizeObserver(measure);
+      ro.observe(el);
+      for (const c of Array.from(el.children)) ro.observe(c);
+    }
+    return () => {
+      el.removeEventListener("scroll", measure);
+      ro?.disconnect();
+    };
+  }, [children]);
+
+  const mask =
+    fade.t || fade.b
+      ? `linear-gradient(to bottom, ${
+          fade.t ? `transparent 0, #000 ${EDGE_FADE}px` : "#000 0"
+        }, ${
+          fade.b
+            ? `#000 calc(100% - ${EDGE_FADE}px), transparent 100%`
+            : "#000 100%"
+        })`
+      : undefined;
+
   return (
     <ThreadListPrimitive.Root
+      ref={ref}
       data-slot="aui_thread-list-root"
       className={cn("flex flex-col gap-0.5", className)}
+      style={
+        mask
+          ? { WebkitMaskImage: mask, maskImage: mask, maskRepeat: "no-repeat" }
+          : undefined
+      }
       {...props}
-    />
+    >
+      {children}
+    </ThreadListPrimitive.Root>
   );
 };
 
