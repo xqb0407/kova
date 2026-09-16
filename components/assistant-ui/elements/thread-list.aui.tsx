@@ -68,6 +68,7 @@ import {
   createContext,
   forwardRef,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -488,7 +489,7 @@ export const ProjectListItems: FC<{
   );
   const openDirs = controlledOpen ?? internalOpen;
   // 项目分组内当前可见行数（「显示更多」每点一次 +5 分页放出，不一次全开）；
-  // 会话列表刷新后保持已放出的量，点「收起」回到默认 5 条
+  // 不设「收起」按钮：项目折叠再展开即回默认 5 条（清理见 openDirs 效应）
   const [visibleCounts, setVisibleCounts] = useState<Map<string, number>>(
     () => new Map(),
   );
@@ -496,13 +497,6 @@ export const ProjectListItems: FC<{
     setVisibleCounts((prev) => {
       const next = new Map(prev);
       next.set(cwd, (prev.get(cwd) ?? PROJECT_VISIBLE_LIMIT) + PROJECT_VISIBLE_LIMIT);
-      return next;
-    });
-  const collapseToLimit = (cwd: string) =>
-    setVisibleCounts((prev) => {
-      if (!prev.has(cwd)) return prev;
-      const next = new Map(prev);
-      next.delete(cwd);
       return next;
     });
 
@@ -525,6 +519,22 @@ export const ProjectListItems: FC<{
       else next.add(cwd);
       return next;
     });
+
+  // 折叠即重置：收起的组清掉已放出条数，再展开回默认 5 条；
+  // 也覆盖「全部收起」等外部改 openDirs 的路径
+  useEffect(() => {
+    setVisibleCounts((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const cwd of prev.keys()) {
+        if (!openDirs.has(cwd)) {
+          next.delete(cwd);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [openDirs]);
 
   /** 归档项目：组内全部已落盘会话批量归档；当前打开的会话由运行时先切走再归档 */
   const archiveProject = (group: ThreadListProjectGroup) => {
@@ -563,15 +573,14 @@ export const ProjectListItems: FC<{
       <FluidHoverHighlight hover={hover} className="rounded-md" />
       {projectGroups.map((group) => {
         // 组内行数超过上限时默认截断 5 条，尾部「显示更多」每点放出 5 条，
-        // 全部放出后变「收起」折回默认；截断后的行与按钮占连续 hover 槽位
+        // 放完即无按钮（项目折叠再展开回默认）；截断后的行与按钮占连续 hover 槽位
         const visibleLimit =
           visibleCounts.get(group.cwd) ?? PROJECT_VISIBLE_LIMIT;
         const visibleIndices = group.indices.slice(0, visibleLimit);
         const hiddenCount = group.indices.length - visibleIndices.length;
-        const hasMore = group.indices.length > PROJECT_VISIBLE_LIMIT;
         const headerSlot = nextSlot++;
         const childSlots = visibleIndices.map(() => nextSlot++);
-        const moreSlot = hasMore ? nextSlot++ : -1;
+        const moreSlot = hiddenCount > 0 ? nextSlot++ : -1;
         const isOpen = openDirs.has(group.cwd);
         return (
           <Collapsible
@@ -662,7 +671,7 @@ export const ProjectListItems: FC<{
                     </TreeRow>
                   </RowHoverContext.Provider>
                 ))}
-                {hasMore && (
+                {hiddenCount > 0 && (
                   <TreeRow position={visibleIndices.length}>
                     <FluidHoverRow
                       registerItem={hover.registerItem}
@@ -672,15 +681,9 @@ export const ProjectListItems: FC<{
                         variant="ghost"
                         // 左缘与会话标题对齐：行 ps-2.5(10px) + 占位图标 size-3.5(14px) + me-1.5(6px) = 30px
                         className="h-7 w-full justify-start ps-[30px] text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
-                        onClick={() =>
-                          hiddenCount > 0
-                            ? expandMore(group.cwd)
-                            : collapseToLimit(group.cwd)
-                        }
+                        onClick={() => expandMore(group.cwd)}
                       >
-                        {hiddenCount > 0
-                          ? `显示更多（${Math.min(hiddenCount, PROJECT_VISIBLE_LIMIT)}）`
-                          : "收起"}
+                        {`显示更多（${Math.min(hiddenCount, PROJECT_VISIBLE_LIMIT)}）`}
                       </Button>
                     </FluidHoverRow>
                   </TreeRow>
