@@ -1067,33 +1067,41 @@ export const AutomationsView: FC<{
               )}
             </div>
           ) : (
-            /* 固定高度的带边框滚动视口（唯一一圈 border）：一天一组只靠日期
-               标题分隔，组内不再各自套卡——双层框叠着很难看 */
-            <div className="border-border/60 bg-card flex h-[480px] flex-col gap-4 overflow-y-auto rounded-2xl border p-3">
-              {historyGroups.map((g) => (
-                <div key={g.key}>
-                  <p className="text-muted-foreground px-1 pb-1.5 text-xs font-semibold">
-                    {g.label}
-                  </p>
-                  <div>
-                    {g.items.map((item) => (
-                      <GlobalHistoryRow
-                        key={item.runId}
-                        item={item}
-                        now={now}
-                        onOpenSession={openSession}
-                        batchMode={historyBatch}
-                        selected={historySelected.has(item.runId)}
-                        onToggleSelect={() => toggleHistorySelect(item.runId)}
-                        onDelete={() =>
-                          requestHistoryDelete([{ taskId: item.taskId, runIds: [item.runId] }])
-                        }
-                      />
-                    ))}
+            /* 日期标题贴到滚动视口边框外（首个组）；跨天时次级日期仍作为组头
+               留在面板内随内容滚。固定高度滚动面板是唯一一圈 border，组内不
+               再各自套卡——双层框叠着很难看 */
+            <>
+              <p className="text-muted-foreground px-1 pb-1.5 text-xs font-semibold">
+                {historyGroups[0]?.label}
+              </p>
+              <div className="border-border/60 bg-card flex h-[480px] flex-col gap-4 overflow-y-auto rounded-2xl border p-3">
+                {historyGroups.map((g, gi) => (
+                  <div key={g.key}>
+                    {gi > 0 && (
+                      <p className="text-muted-foreground px-1 pb-1.5 text-xs font-semibold">
+                        {g.label}
+                      </p>
+                    )}
+                    <div>
+                      {g.items.map((item) => (
+                        <GlobalHistoryRow
+                          key={item.runId}
+                          item={item}
+                          now={now}
+                          onOpenSession={openSession}
+                          batchMode={historyBatch}
+                          selected={historySelected.has(item.runId)}
+                          onToggleSelect={() => toggleHistorySelect(item.runId)}
+                          onDelete={() =>
+                            requestHistoryDelete([{ taskId: item.taskId, runIds: [item.runId] }])
+                          }
+                        />
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </>
           )
         ) : !snap.loaded && !snap.error ? (
           <div className="grid gap-3 sm:grid-cols-2">
