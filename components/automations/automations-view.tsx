@@ -31,6 +31,7 @@ import {
   PowerIcon,
   RefreshCwIcon,
   SearchIcon,
+  SquareCheckBigIcon,
   Trash2Icon,
   XIcon,
   ZapIcon,
@@ -902,8 +903,9 @@ export const AutomationsView: FC<{
             <span className="bg-muted text-muted-foreground self-center rounded-full px-2 py-0.5 text-xs tabular-nums">
               已选 {selected.size}
             </span>
+            {/* 方框勾=全选语义；全选态用主色图标提示（active pill 那块灰底
+                孤悬在图标行里很怪，且只有这一项有底色更显得像渲染故障） */}
             <DockItem
-              active={allVisibleSelected}
               title={allVisibleSelected ? "清空" : "全选"}
               aria-label={allVisibleSelected ? "清空" : "全选"}
               onClick={
@@ -917,10 +919,13 @@ export const AutomationsView: FC<{
                       )
               }
               className={cn(
-                batchBusy || visibleTasks.length === 0 ? "opacity-40" : "cursor-pointer",
+                batchBusy || visibleTasks.length === 0
+                  ? "opacity-40"
+                  : "cursor-pointer",
+                allVisibleSelected && "text-primary",
               )}
             >
-              <CheckIcon className="size-4" />
+              <SquareCheckBigIcon className="size-4" />
             </DockItem>
             <DockSeparator />
             <DockItem
