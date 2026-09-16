@@ -328,7 +328,9 @@ const WorkspacePill: FC = () => {
                 onCheckedChange={(checked) => {
                   if (checked) setWorkspace(dir);
                 }}
-                onSelect={(e) => e.preventDefault()}
+                // base-ui 条目只认 onClick（无 Radix 的 onSelect），选中后保持
+                // 菜单展开要靠 closeOnClick=false——目录是多选式速切，收起反打断
+                closeOnClick={false}
                 title={dir}
               >
                 <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
@@ -525,8 +527,10 @@ const WorkspaceBranchPill: FC = () => {
             </div>
           ) : (
             <DropdownMenuItem
-              onSelect={(e) => {
-                e.preventDefault();
+              // 点开后菜单要留在原地（就地切换到分支名输入行）：base-ui 用
+              // closeOnClick=false，onSelect+preventDefault 的 Radix 写法无效
+              closeOnClick={false}
+              onClick={() => {
                 setCreating(true);
                 setError(null);
               }}

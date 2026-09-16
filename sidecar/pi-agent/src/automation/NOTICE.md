@@ -25,6 +25,11 @@ Modifications (marked with "VENDOR" headers in each file):
   - `execute()` restructured to run the pre-start bookkeeping inside one try/finally that releases
     both `runningTaskIds` and the slot — this also fixes an upstream leak where a throwing
     `store.update` before the runner call would strand the task's running marker forever.
+- `index.ts` (M4.4, behavior fix, not opt-in): `update()` rewrites an expired `once` schedule to
+  "now + 250ms" whenever the merged result is enabled, so re-enabling a finished/past one-off task
+  runs it again instead of having `schedule()` record a false "Scheduled time … is in the past"
+  run failure in history (same semantics as the startup `repairMissedOnce`; invalid timestamps are
+  left untouched so genuine schedule errors still surface). Covered by `once-rearm.test.ts`.
 
 Local extensions layered on top of the vendored code (no vendored file behavior changed;
 implemented against its public API from new, clearly-marked non-vendored files):

@@ -269,7 +269,9 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
                   onCheckedChange={(checked) => {
                     if (checked) onChange(dir);
                   }}
-                  onSelect={(e) => e.preventDefault()}
+                  // base-ui 条目只认 onClick（无 Radix 的 onSelect），选中后保持
+                  // 菜单展开要靠 closeOnClick=false
+                  closeOnClick={false}
                   title={dir}
                 >
                   <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
@@ -323,8 +325,10 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
             </div>
           ) : (
             <DropdownMenuItem
-              onSelect={(e) => {
-                e.preventDefault();
+              // 就地切到手输路径行，菜单保持展开：base-ui 无 onSelect，
+              // 保开靠 closeOnClick=false
+              closeOnClick={false}
+              onClick={() => {
                 setManualValue(value);
                 setManual(true);
               }}
