@@ -7,6 +7,7 @@ import {
   useComposerSlashMenu,
   useSubagentMention,
 } from "@/components/agent-thread/composer-commands";
+import { CmComposerInput } from "@/components/agent-thread/cm-composer-input";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
@@ -24,7 +25,6 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { LexicalComposerInput, type DirectiveChipProps } from "@assistant-ui/react-lexical";
 import {
   matchesShortcut,
   resolveComposerSubmitMode,
@@ -42,7 +42,6 @@ import {
   MicIcon,
   PlusIcon,
   SquareIcon,
-  WrenchIcon,
   XIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
@@ -74,25 +73,6 @@ import { openPanelTab } from "@/lib/panel-tabs";
 const ModelPicker: FC = () => {
   return <PiModelPicker />;
 };
-
-function DirectiveChip(props: DirectiveChipProps) {
-  const { directiveId, directiveType, label } = props;
-  const showWrench = directiveType !== "command";
-  return (
-    <span
-      className="aui-directive-chip"
-      data-directive-type={directiveType}
-      data-directive-id={directiveId}
-    >
-      {showWrench && (
-        <span className="aui-directive-chip-icon">
-          <WrenchIcon className="size-3" />
-        </span>
-      )}
-      <span className="aui-directive-chip-label">{label}</span>
-    </span>
-  );
-}
 
 /**
  * 输入框键盘守卫：
@@ -175,11 +155,10 @@ export const Composer: FC = () => {
             <ComposerQuotePreview />
             <ComposerAttachments />
             <ImeEnterGuard send={sendMessage} interceptSend={interceptSend}>
-            <LexicalComposerInput
+            <CmComposerInput
               submitMode={submitMode}
-              directiveChip={DirectiveChip}
               placeholder="输入任务指令 @选择智能体，/打开指令菜单"
-              className=" aui-composer-input text-sm [&_.aui-lexical-placeholder]:text-sm [&_.aui-lexical-placeholder]:text-muted-foreground/60 relative max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none [&_.aui-lexical-placeholder]:pointer-events-none [&_.aui-lexical-placeholder]:absolute [&_.aui-lexical-placeholder]:top-0 [&_.aui-lexical-placeholder]:right-0 [&_.aui-lexical-placeholder]:left-0 [&_.aui-lexical-placeholder]:truncate [&_.aui-lexical-placeholder]:px-2.5 [&_.aui-lexical-placeholder]:py-1"
+              className="aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground/60 [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center"
             />
             </ImeEnterGuard>
             <ComposerAction />
@@ -626,10 +605,9 @@ export const EditComposer: FC = () => {
     >
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         <ComposerPrimitive.Root className="aui-edit-composer-root border-border/60 dark:border-muted-foreground/15 ml-auto flex w-full max-w-[85%] cursor-text flex-col rounded-(--composer-radius) border bg-(--composer-bg)">
-          <LexicalComposerInput
-            directiveChip={DirectiveChip}
+          <CmComposerInput
             autoFocus
-            className="aui-edit-composer-input text-foreground min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base outline-none [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center [&_.aui-lexical-input]:min-h-lh [&_.aui-lexical-input]:outline-none"
+            className="aui-edit-composer-input min-h-14 w-full px-4 pt-3 pb-1 text-foreground text-base outline-none [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-scroller]:overscroll-contain [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center"
           />
           <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
             <ComposerPrimitive.Cancel asChild>

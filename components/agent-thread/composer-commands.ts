@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import {
   unstable_useMentionAdapter,
-  useAui,
   type Unstable_Mention,
   type Unstable_TriggerItem,
 } from "@assistant-ui/react";
@@ -34,15 +33,16 @@ import {
  * - `/` 指令菜单：命令（纯前端动作）+ 技能 + MCP 工具，三分类钻取；
  * - `@` 提及：子智能体（占位文案「@选择智能体」）。
  *
- * 执行语义（sidecar 无 slash 解析，技能/工具都由模型执行，前端只负责把意图说清楚）：
- * - 命令：execute 直接做前端动作，触发文本随手剥离；
- * - 技能：向输入框前置一段引导文本（读技能文件路径 + 按指引处理），用户的草稿保留在后；
- * - MCP 工具：前置「请使用 MCP 工具 xxx（服务器 yyy）」，工具仍由 agent 循环经 MCP 网关调用。
+ * 执行语义（sidecar 无 slash 解析，技能/工具都由模型执行，前端只负责插入芯片）：
+ * - 命令：onExecute 直接做前端动作，触发文本由库剥离；
+ * - 技能：插入 :skill[名]{name=skill:id} 指令芯片（模型端系统提示词已含
+ *   <available_skills> 的 name/location，凭名即可定位读取），草稿同行接续；
+ * - MCP 工具：同款 :tool[名] 芯片，工具仍由 agent 循环经 MCP 网关调用。
  *
- * 顺序依赖一个实现细节：TriggerPopover.Action 在 removeOnExecute 时先剥离触发文本、
- * 后调 onExecute（见 triggerSelectionResource.selectItem），所以 onExecute 里读
- * aui.composer.getState().text 拿到的就是剥离后的剩余文本，前置拼接无竞态；
- * 且弹层自身就用 setText 改文本，LexicalComposerInput 对外部 setText 同步。
+ * 技能/工具的芯片插入由输入框的 selectItemOverride 接管（cm-composer-input.tsx）：
+ * 库默认路径的剥离 setText 经 tap store 异步生效，onExecute 里读 getState()
+ * 拿到的还是未剥离文本（触发字符会残留），override 则用 CM 文档 + 光标同步剥离。
+ * 弹层自身就用 setText 改文本，composer 输入组件对外部 setText 同步。
  */
 
 /** 弹层图标解析表：分类按 id、条目按 metadata.icon 查键 */
@@ -138,10 +138,7 @@ function toSkillItem(skill: SkillEntry): Unstable_TriggerItem {
     type: "skill",
     label: skill.name,
     description: skill.description,
-    metadata: {
-      icon: "BookOpen",
-      insert: `请先读取技能文件 ${skill.path}，严格按技能「${skill.name}」的指引处理以下任务：`,
-    },
+    metadata: { icon: "BookOpen" },
   };
 }
 
@@ -151,10 +148,7 @@ function toToolItem(server: string, tool: McpToolInfo): Unstable_TriggerItem {
     type: "tool",
     label: tool.name,
     description: tool.description ? `${server}：${tool.description}` : server,
-    metadata: {
-      icon: "Plug",
-      insert: `请使用 MCP 工具「${tool.name}」（服务器 ${server}）处理以下任务：`,
-    },
+    metadata: { icon: "Plug" },
   };
 }
 
@@ -210,7 +204,6 @@ export function useComposerSlashMenu(): {
   const workspace = useWorkspace();
   const skills = useSkills(workspace);
   const toolsByServer = useMcpToolsByServer(workspace);
-  const aui = useAui();
 
   const commandItems = useMemo<Unstable_TriggerItem[]>(
     () =>
@@ -259,17 +252,12 @@ export function useComposerSlashMenu(): {
     };
   }, [commandItems, skillItems, toolItems]);
 
+  // 仅 command 走到这里：skill/tool 的芯片插入由输入框的 selectItemOverride
+  // 接管（见 cm-composer-input.tsx——库默认路径的剥离 setText 异步生效，
+  // onExecute 里读 getState() 会拿到未剥离的触发文本）
   const onExecute = (item: Unstable_TriggerItem) => {
-    if (item.type === "command") {
-      SLASH_COMMANDS.find((c) => c.id === item.id)?.run();
-      return;
-    }
-    // 技能/工具：前置引导文本（此刻触发文本已被剥离，读到的即剩余草稿）
-    const insert =
-      typeof item.metadata?.insert === "string" ? item.metadata.insert : null;
-    if (!insert) return;
-    const rest = aui.composer.getState().text.replace(/^\s+/, "");
-    aui.composer.setText(insert + (rest ? `\n${rest}` : ""));
+    if (item.type !== "command") return;
+    SLASH_COMMANDS.find((c) => c.id === item.id)?.run();
   };
 
   return {

@@ -24,6 +24,7 @@ import {
   SquareTerminalIcon,
   Trash2Icon,
   TriangleAlertIcon,
+  XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Segmented } from "@/components/custom-ui/segmented";
@@ -1211,12 +1212,12 @@ const McpLogDialog: FC<{
                         </span>
                         <span
                           className={cn(
-                            "shrink-0 rounded px-1.5 py-0.5 text-xs leading-4 font-medium",
+                            "inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-xs leading-4 font-medium",
                             meta.className,
                           )}
                         >
                           {meta.label}
-                          {e.ok === false ? "✕" : ""}
+                          {e.ok === false && <XIcon className="size-3 shrink-0" />}
                         </span>
                         {e.detail ? (
                           <span className="min-w-0 break-words">{e.detail}</span>

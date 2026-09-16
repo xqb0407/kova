@@ -188,12 +188,14 @@
   --page-width: 80rem;
   --radius: 0.625rem;
   /* 界面字体栈（font-sans/font-display 经 @theme inline 引用本变量）。
-     默认栈显式包含各平台中文字体，避免 Windows 上中文回退到宋体；
+     西文默认 Geist Variable（自带 tnum 等宽数字，UI 数字列对齐更干净），
+     加载完成前回退系统字体；栈显式包含各平台中文字体，
+     避免 Windows 上中文回退到宋体；
      data-font 档位覆盖见下方 :root[data-font] 规则（外观设置-字体选择） */
-  --app-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",
-    "Microsoft YaHei", "Noto Sans SC", sans-serif, "Apple Color Emoji",
-    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --app-font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   /* Content slabs (code blocks) carry a fill instead of a border, so the tint
      has to stay slight. Resolved per theme: it lifts on dark, recedes on light. */
   --code-surface: color-mix(in oklab, var(--foreground) 4%, var(--background));

@@ -156,10 +156,11 @@ function hashString(s: string): number {
   return h >>> 0;
 }
 
-/** 身份图标底座（Linear/Zapier 风格）：size-9 圆角色块按排期类型 tint
- *  （每日=蓝 business / 每周=紫 calendar / 一次性=琥珀 hourglass /
- *  分钟·小时级高频=青 repeated），运行中整块转主色；停用降灰但保留形状
- *  ——语义色要成面积，不能全页灰白 */
+/** 身份图标底座（Linear/Zapier 风格）：size-9 圆角色块按排期类型着色
+ *  （每日=蓝 business / 每周=紫罗兰 calendar / 一次性=琥珀 hourglass /
+ *  分钟·小时级高频=青 repeated）。常态走低饱和 tint 底+彩字（15% 色底，
+ *  多卡并排不成彩虹格）；运行中才用实心主色做全页唯一饱和锚点；
+ *  停用降灰但保留形状——语义色认色相不认饱和度 */
 const TaskIdentity: FC<{ task: AutomationTask; running: boolean }> = ({ task, running }) => {
   const kind = scheduleKind(task);
   const pool = IDENTITY_POOLS[kind];
@@ -169,12 +170,12 @@ const TaskIdentity: FC<{ task: AutomationTask; running: boolean }> = ({ task, ru
     : !task.enabled
       ? "bg-muted text-muted-foreground"
       : kind === "once"
-        ? "bg-amber-500 text-white"
+        ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
         : kind === "weekly"
-          ? "bg-purple-500 text-white"
+          ? "bg-violet-500/15 text-violet-600 dark:text-violet-400"
           : kind === "repeated"
-            ? "bg-teal-500 text-white"
-            : "bg-blue-500 text-white";
+            ? "bg-teal-500/15 text-teal-600 dark:text-teal-400"
+            : "bg-blue-500/15 text-blue-600 dark:text-blue-400";
   return (
     <span
       className={cn(
@@ -261,7 +262,7 @@ const GlobalHistoryRow: FC<{
   return (
     <div
       className={cn(
-        "group hover:bg-muted/60 flex items-center gap-3 rounded-lg px-3 py-2 text-sm",
+        "group hover:bg-muted/60 relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm",
         (batchMode || realSession) && "cursor-pointer",
       )}
       title={item.message}
@@ -273,16 +274,16 @@ const GlobalHistoryRow: FC<{
             }
       }
     >
-      {/* 批量勾选列：与任务卡同款"宽度推入 + 负边距补 gap 槽"动效；
-          行高由文字决定（勾选框 16px 不会撑动），无需等高补偿 */}
-      <AnimatePresence initial={false}>
+      {/* 批量勾选列：进出只动 transform/opacity，退场 popLayout 即时出流；
+          与任务卡同款。行高由文字决定（勾选框 16px 不会撑动），无需等高补偿 */}
+      <AnimatePresence initial={false} mode="popLayout">
         {batchMode && (
           <motion.div
             key="hist-check"
-            className="flex shrink-0 items-center overflow-hidden"
-            initial={{ width: 0, opacity: 0, marginRight: -12 }}
-            animate={{ width: "auto", opacity: 1, marginRight: 0 }}
-            exit={{ width: 0, opacity: 0, marginRight: -12 }}
+            className="flex shrink-0 items-center"
+            initial={{ opacity: 0, x: -12 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -12 }}
             transition={SPRING_LAYOUT}
           >
             <Checkbox
@@ -296,21 +297,28 @@ const GlobalHistoryRow: FC<{
           </motion.div>
         )}
       </AnimatePresence>
-      <RunStatusIcon status={item.status} />
-      <span
-        className={cn(
-          "min-w-0 max-w-56 truncate font-medium",
-          batchMode && selected && "text-primary",
-        )}
+      {/* 左段整体挂 layout 投影：勾选槽进出引发的一次重排被画成滑动，
+          全程合成层动画。右段时间簇 ml-auto 锚定右缘，本就不受槽位增减影响 */}
+      <motion.div
+        layout="position"
+        className="flex min-w-0 flex-1 items-center gap-3"
       >
-        {item.taskName}
-      </span>
-      <span className="text-muted-foreground shrink-0 text-xs">
-        {historyStatusLabel(item.status)}
-      </span>
-      {item.status === "error" && item.message && (
-        <span className="text-red-500 min-w-0 flex-1 truncate text-xs">{item.message}</span>
-      )}
+        <RunStatusIcon status={item.status} />
+        <span
+          className={cn(
+            "min-w-0 max-w-56 truncate font-medium",
+            batchMode && selected && "text-primary",
+          )}
+        >
+          {item.taskName}
+        </span>
+        <span className="text-muted-foreground shrink-0 text-xs">
+          {historyStatusLabel(item.status)}
+        </span>
+        {item.status === "error" && item.message && (
+          <span className="text-red-500 min-w-0 flex-1 truncate text-xs">{item.message}</span>
+        )}
+      </motion.div>
       <span className="text-muted-foreground ml-auto shrink-0 text-xs tabular-nums">
         {formatDateTime(item.createdAt)}
       </span>
@@ -414,20 +422,20 @@ const TaskCard: FC<{
         batchMode && selected && "border-primary ring-1 ring-primary/50",
       )}
     >
-      <div className="flex min-w-0 items-center gap-2">
-        {/* 批量模式切换动效：勾选框以宽度弹簧推入/抽回（标题平滑让位），
-            右侧操作组同步收拢——否则两列控件硬替换很突兀。
+      <div className="relative flex min-w-0 items-center gap-2">
+        {/* 批量模式切换动效：勾选框槽进出只动 transform/opacity，退场
+            popLayout 即时出流；身份+标题挂 layout="position" 投影滑动让位。
+            一次重排 + 全程合成层动画，替换掉旧的逐帧 width/margin 方案
+            （负边距补 gap 的抖动补丁随之退役）。
             h-7 与操作组按钮行等高：切换瞬间标题行高度不变，网格不重排、卡片不跳 */}
-        <AnimatePresence initial={false}>
+        <AnimatePresence initial={false} mode="popLayout">
           {batchMode && (
             <motion.div
               key="batch-check"
-              className="flex h-7 shrink-0 items-center overflow-hidden"
-              // marginRight 补偿父级 gap-2 空槽：宽度收拢的同时把 8px 间隙
-              // 一并抽走，卸载那一帧标题行不再整体横跳（关闭批量时的抖动源）
-              initial={{ width: 0, opacity: 0, marginRight: -8 }}
-              animate={{ width: "auto", opacity: 1, marginRight: 0 }}
-              exit={{ width: 0, opacity: 0, marginRight: -8 }}
+              className="flex h-7 shrink-0 items-center"
+              initial={{ opacity: 0, x: -12 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -12 }}
               transition={SPRING_LAYOUT}
             >
               <Checkbox
@@ -441,27 +449,30 @@ const TaskCard: FC<{
             </motion.div>
           )}
         </AnimatePresence>
-        <TaskIdentity task={task} running={running} />
-        <span
-          className={cn(
-            "truncate text-sm font-medium",
-            // 停用态让标题变灰：一眼分清"在排期的"和"躺着的"
-            !task.enabled && !running && "text-muted-foreground",
-          )}
-        >
-          {task.name || "未命名任务"}
-        </span>
+        <motion.div layout="position" className="flex min-w-0 flex-1 items-center gap-2">
+          <TaskIdentity task={task} running={running} />
+          <span
+            className={cn(
+              "truncate text-sm font-medium",
+              // 停用态让标题变灰：一眼分清"在排期的"和"躺着的"
+              !task.enabled && !running && "text-muted-foreground",
+            )}
+          >
+            {task.name || "未命名任务"}
+          </span>
+        </motion.div>
         <AnimatePresence initial={false}>
           {!batchMode && (
             <motion.div
               key="card-actions"
-              // 进出不对称：退场（进批量）收拢宽度配合勾选框推入做"让位"交接；
-              // 进场（退批量）只淡入——ml-auto 右缘锚定，整宽直接就位零回流。
-              // 进场若也从 0 展开，98px 的横扫会把标题区抖一遍
-              className="ml-auto flex h-7 shrink-0 items-center gap-0.5 overflow-hidden"
+              // 操作组（ml-auto 锚定右缘，位置恒稳）进出只动 opacity：
+              // 进场直接就位零回流；退场（进批量）留在流内淡出、卸载后才
+              // 释放宽度——若也 popLayout 即时出流，淡出中的按钮会盖到
+              // 瞬间变宽的标题文字上
+              className="ml-auto flex h-7 shrink-0 items-center gap-0.5"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
+              exit={{ opacity: 0 }}
               transition={SPRING_LAYOUT}
             >
               <Switch

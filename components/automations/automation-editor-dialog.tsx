@@ -5,9 +5,10 @@
  * 未填字段即清空（sidecar 的 automation_save 对 name/description/workspaceDir
  * 用显式 undefined 删除，与表单"所见即全部"一致）。
  *
- * 频率表单不直接暴露 cron 语法：每天/每周/每月三档预设拼表达式，"自定义"
- * 兜底原始 cron；每次改动防抖拉 automation_preview（sidecar 真算，本地时区），
- * 用户看到的下几次触发时刻与调度器判定完全同源。
+ * 频率表单不直接暴露 cron 语法：每天/每周/每月三档预设拼表达式，"自定义"档开
+ * 结构化编辑器（custom-ui/cron-editor，逐字段点选，认不出的高级写法落原始输入）；
+ * 每次改动防抖拉 automation_preview（sidecar 真算，本地时区），用户看到的下几次
+ * 触发时刻与调度器判定完全同源。
  *
  * 执行指令下方是 composer 同款胶囊配置行（工作目录/权限档/模型）：只借用输入框
  * 的外观与选择器构件（ModelSelector 本身会话无关），全部受控于任务字段——
@@ -38,6 +39,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { CronEditor } from "@/components/custom-ui/cron-editor";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -688,7 +690,13 @@ const ScheduleForm: FC<{
                 size="sm"
                 variant={mode === f.mode ? "secondary" : "outline"}
                 className={cn("h-7 px-3 text-xs", mode === f.mode && "bg-selected")}
-                onClick={() => setMode(f.mode)}
+                onClick={() => {
+                  // 切进「自定义」时把当前预设拼出的表达式种进编辑器：两个档位
+                  // 各自持有状态，不种的话「每天 18:00 → 自定义」会看到陈旧的
+                  // cronExpr。interval/once 拼不出 cron，保持原值不动。
+                  if (f.mode === "cron" && built?.type === "cron") setCronExpr(built.schedule);
+                  setMode(f.mode);
+                }}
               >
                 {f.label}
               </Button>
@@ -798,13 +806,7 @@ const ScheduleForm: FC<{
               </>
             )}
             {mode === "cron" && (
-              <Input
-                value={cronExpr}
-                onChange={(e) => setCronExpr(e.target.value)}
-                placeholder="0 9 * * 1-5"
-                className="min-w-56 font-mono"
-                aria-label="Cron 表达式"
-              />
+              <CronEditor value={cronExpr} onChange={setCronExpr} className="w-full" />
             )}
           </div>
 
