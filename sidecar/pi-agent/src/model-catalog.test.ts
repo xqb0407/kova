@@ -12,6 +12,7 @@ import {
 } from "./hostdb";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
+  getModelDefaultedAttrs,
   getModels,
   normalizeApi,
   normalizeThinkingMap,
@@ -147,6 +148,89 @@ describe("applyRowToCatalogModel", () => {
 
     // 清理：不留过滤行
     await modelsDeleteProvider(anyProvider.id);
+  });
+});
+
+describe("getModelDefaultedAttrs（缺省猜测值归因）", () => {
+  test("自定义端点行未填上下文/输出标未确认，填过即确认", async () => {
+    await modelsReplace("mc-def", [
+      { modelId: "guess-all", enabled: true },
+      {
+        modelId: "confirmed",
+        enabled: true,
+        contextWindow: 32_768,
+        maxTokens: 4_096,
+      },
+    ]);
+    await registerCustomProvider({
+      id: "mc-def",
+      name: "MC Def",
+      baseUrl: "https://api.example.com/v1",
+      api: "openai-chat",
+    });
+    expect(getModelDefaultedAttrs("mc-def", "guess-all").sort()).toEqual([
+      "contextWindow",
+      "maxTokens",
+    ]);
+    expect(getModelDefaultedAttrs("mc-def", "confirmed")).toEqual([]);
+  });
+
+  test("自定义端点行重放：非 null 即确认，null 回到猜测", () => {
+    applyRowToCatalogModel({
+      provider: "mc-def",
+      modelId: "guess-all",
+      name: null,
+      reasoning: null,
+      contextWindow: 65_536,
+      maxTokens: null,
+      input: null,
+      cost: null,
+    });
+    expect(getModelDefaultedAttrs("mc-def", "guess-all")).toEqual(["maxTokens"]);
+    applyRowToCatalogModel({
+      provider: "mc-def",
+      modelId: "guess-all",
+      name: null,
+      reasoning: null,
+      contextWindow: null,
+      maxTokens: null,
+      input: null,
+      cost: null,
+    });
+    expect(getModelDefaultedAttrs("mc-def", "guess-all").sort()).toEqual([
+      "contextWindow",
+      "maxTokens",
+    ]);
+  });
+
+  test("目录内模型永不归因；目录外新增未填字段标未确认、填后清除", () => {
+    const p = getModels()
+      .getProviders()
+      .find((x) => x.id !== "mc-def" && x.getModels().length > 0)!;
+    expect(getModelDefaultedAttrs(p.id, p.getModels()[0].id)).toEqual([]);
+    const newId = "mc-def-extra";
+    applyRowToCatalogModel({
+      provider: p.id,
+      modelId: newId,
+      name: null,
+      reasoning: null,
+      contextWindow: null,
+      maxTokens: 4_096,
+      input: null,
+      cost: null,
+    });
+    expect(getModelDefaultedAttrs(p.id, newId)).toEqual(["contextWindow"]);
+    applyRowToCatalogModel({
+      provider: p.id,
+      modelId: newId,
+      name: null,
+      reasoning: null,
+      contextWindow: 128_000,
+      maxTokens: 4_096,
+      input: null,
+      cost: null,
+    });
+    expect(getModelDefaultedAttrs(p.id, newId)).toEqual([]);
   });
 });
 

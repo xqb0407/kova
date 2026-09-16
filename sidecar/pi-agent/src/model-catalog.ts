@@ -176,6 +176,43 @@ export const CUSTOM_MODEL_DEFAULTS = {
   maxTokens: 8_192,
 };
 
+/* ------------------- 缺省猜测值归因（属性弹窗"未确认"标记数据源） ------------------- */
+
+/**
+ * 生效值仍来自 CUSTOM_MODEL_DEFAULTS（既不是内置目录真值也不是用户填的）
+ * 的属性集合。目录不提供这类模型的上下文元数据，128k/8192 只是猜的——
+ * 前端属性弹窗据此标记"缺省未确认"，用户填过即消失。
+ * 内置 provider 目录内的模型永不进表（行 null = 恢复目录真值，不是猜测）。
+ */
+export const DEFAULT_TRACKED_ATTRS = ["contextWindow", "maxTokens"] as const;
+export type DefaultedAttr = (typeof DEFAULT_TRACKED_ATTRS)[number];
+const defaultedAttrs = new Map<string, Set<DefaultedAttr>>();
+/** 自定义端点 provider id：applyRow 重放时区分"null=恢复默认(仍是猜测)" */
+const customProviderIds = new Set<string>();
+
+function noteDefaulted(key: string, attr: DefaultedAttr, isDefault: boolean): void {
+  if (!isDefault) {
+    const set = defaultedAttrs.get(key);
+    if (!set) return;
+    set.delete(attr);
+    if (set.size === 0) defaultedAttrs.delete(key);
+    return;
+  }
+  let set = defaultedAttrs.get(key);
+  if (!set) {
+    set = new Set();
+    defaultedAttrs.set(key, set);
+  }
+  set.add(attr);
+}
+
+export function getModelDefaultedAttrs(
+  provider: string,
+  modelId: string,
+): DefaultedAttr[] {
+  return [...(defaultedAttrs.get(`${provider}/${modelId}`) ?? [])];
+}
+
 /** 把一行 custom_providers 记录构造成 provider 并注册进模型目录（模型读 models 表） */
 export async function registerCustomProvider(row: {
   id: string;
@@ -188,20 +225,19 @@ export async function registerCustomProvider(row: {
   // （openai-chat → /chat/completions，openai-responses → /responses，anthropic-messages → /v1/messages）
   const baseUrl = row.baseUrl.trim().replace(/\/+$/, "");
   const apiKind = normalizeApi(row.api);
-  const modelList: Model<Api>[] = rows
-    .filter((m) => m.enabled && m.modelId.trim())
-    .map((m) => ({
-      id: m.modelId.trim(),
-      name: m.name?.trim() || m.modelId.trim(),
-      api: API_ID[apiKind],
-      provider: row.id,
-      baseUrl,
-      reasoning: m.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
-      input: parseModelInput(m.input) ?? CUSTOM_MODEL_DEFAULTS.input,
-      cost: parseModelCost(m.cost) ?? { ...CUSTOM_MODEL_DEFAULTS.cost },
-      contextWindow: m.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
-      maxTokens: m.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
-    }));
+  const enabledRows = rows.filter((m) => m.enabled && m.modelId.trim());
+  const modelList: Model<Api>[] = enabledRows.map((m) => ({
+    id: m.modelId.trim(),
+    name: m.name?.trim() || m.modelId.trim(),
+    api: API_ID[apiKind],
+    provider: row.id,
+    baseUrl,
+    reasoning: m.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
+    input: parseModelInput(m.input) ?? CUSTOM_MODEL_DEFAULTS.input,
+    cost: parseModelCost(m.cost) ?? { ...CUSTOM_MODEL_DEFAULTS.cost },
+    contextWindow: m.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
+    maxTokens: m.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+  }));
   const provider = createProvider({
     id: row.id,
     name: row.name,
@@ -211,6 +247,16 @@ export async function registerCustomProvider(row: {
     api: API_FACTORIES[apiKind](),
   });
   getModels().setProvider(provider);
+  // 注册按行重建，缺省归因以行为准整表重算（行 null = 该属性仍是猜测值）
+  customProviderIds.add(row.id);
+  for (const key of [...defaultedAttrs.keys()]) {
+    if (key.startsWith(`${row.id}/`)) defaultedAttrs.delete(key);
+  }
+  for (const m of enabledRows) {
+    const key = `${row.id}/${m.modelId.trim()}`;
+    noteDefaulted(key, "contextWindow", m.contextWindow == null);
+    noteDefaulted(key, "maxTokens", m.maxTokens == null);
+  }
   // 重建出的新模型对象不带覆盖，补挂前端下发的 thinkingLevelMap
   applyThinkingMapOverrides();
 }
@@ -279,8 +325,16 @@ export function attachExtraCatalogModel(
   // 重新包装 provider：auth/stream 等沿用原实现（闭包不依赖 this），仅扩展 getModels；
   // refreshModels 发布的动态列表仍经 orig.getModels() 生效，包装层在其上追加 extras
   const extended = Object.create(orig) as Provider<Api>;
-  extended.getModels = () => [...orig.getModels(), ...extras];
+  // 同 provider 第二次目录外新增时 orig 已是上一轮包装层：其 getModels() 已含
+  // extras，按引用去重再追加，避免模型在清单里出现两次
+  extended.getModels = () => {
+    const inner = orig.getModels();
+    return [...inner, ...extras.filter((x) => !inner.includes(x))];
+  };
   models.setProvider(extended);
+  // 目录外新增模型没有目录真值可依：未填的跟踪属性按注册默认值 = 猜测，标未确认
+  noteDefaulted(`${providerId}/${modelId}`, "contextWindow", attrs.contextWindow == null);
+  noteDefaulted(`${providerId}/${modelId}`, "maxTokens", attrs.maxTokens == null);
   return model;
 }
 
@@ -331,6 +385,15 @@ export function applyRowToCatalogModel(row: {
   model.maxTokens = row.maxTokens ?? snap.maxTokens;
   model.input = parseModelInput(row.input) ?? snap.input;
   model.cost = parseModelCost(row.cost) ?? snap.cost;
+  // 缺省归因同步：自定义端点行 null = 属性又回到猜测值；内置（含目录外新增）
+  // 行 null = 恢复目录真值/保留挂载时归因，非 null = 用户确认过，清除标记
+  if (customProviderIds.has(row.provider)) {
+    noteDefaulted(key, "contextWindow", row.contextWindow == null);
+    noteDefaulted(key, "maxTokens", row.maxTokens == null);
+  } else {
+    if (row.contextWindow != null) noteDefaulted(key, "contextWindow", false);
+    if (row.maxTokens != null) noteDefaulted(key, "maxTokens", false);
+  }
   applyThinkingMapToModel(key, model);
 }
 
