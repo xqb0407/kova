@@ -257,7 +257,10 @@ const TaskCard: FC<{
       id={`automation-card-${task.id}`}
       onClick={batchMode ? onToggleSelect : undefined}
       className={cn(
-        "border-border bg-card flex flex-col gap-2 rounded-xl border p-3.5",
+        // group/card：次级操作按钮悬停显现的锚点；mt-auto 的元信息行让
+        // 网格拉伸时各卡的排期/统计对齐在同一基线
+        "group/card bg-card border-border flex flex-col gap-2.5 rounded-xl border p-4",
+        "transition-colors hover:border-foreground/15",
         highlighted && "ring-2 ring-primary/60",
         batchMode && "cursor-pointer",
         batchMode && selected && "border-primary ring-1 ring-primary/50",
@@ -274,7 +277,15 @@ const TaskCard: FC<{
           />
         )}
         <StatusDot task={task} running={running} />
-        <span className="truncate text-sm font-medium">{task.name || "未命名任务"}</span>
+        <span
+          className={cn(
+            "truncate text-sm font-medium",
+            // 停用态让标题变灰：一眼分清"在排期的"和"躺着的"
+            !task.enabled && !running && "text-muted-foreground",
+          )}
+        >
+          {task.name || "未命名任务"}
+        </span>
         {!batchMode && (
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
             <Switch
@@ -296,96 +307,119 @@ const TaskCard: FC<{
             >
               <PlayIcon className="size-4" />
             </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              title="编辑"
-              aria-label="编辑任务"
-              disabled={busy}
-              onClick={() => onEdit(task)}
+            {/* 次级操作悬停/聚焦卡片才浮现（常驻把标题挤得太窄、视觉嘈杂）；
+                历史展开时 🕘 常驻，否则收起按钮会随鼠标移开而消失 */}
+            <div
+              className={cn(
+                "flex items-center gap-0.5 transition-opacity duration-150",
+                showHistory
+                  ? "opacity-100"
+                  : "opacity-0 group-hover/card:opacity-100 group-focus-within/card:opacity-100",
+              )}
             >
-              <PencilIcon className="size-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn("size-7", showHistory && "bg-muted")}
-              title={showHistory ? "收起运行历史" : "展开运行历史"}
-              aria-label="运行历史"
-              aria-pressed={showHistory}
-              disabled={busy}
-              onClick={toggleHistory}
-            >
-              <HistoryIcon className="size-4" />
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7"
-                    aria-label="更多操作"
-                    disabled={busy}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                title="编辑"
+                aria-label="编辑任务"
+                disabled={busy}
+                onClick={() => onEdit(task)}
+              >
+                <PencilIcon className="size-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn("size-7", showHistory && "bg-muted")}
+                title={showHistory ? "收起运行历史" : "展开运行历史"}
+                aria-label="运行历史"
+                aria-pressed={showHistory}
+                disabled={busy}
+                onClick={toggleHistory}
+              >
+                <HistoryIcon className="size-4" />
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-7"
+                      aria-label="更多操作"
+                      disabled={busy}
+                    >
+                      <MoreHorizontalIcon className="size-4" />
+                    </Button>
+                  }
+                />
+                <DropdownMenuContent align="end" className="w-44">
+                  {/* 本地 dropdown 封装基于 base-ui：条目回调只认 onClick。
+                      onSelect 是 Radix 惯例，落到底层是原生 text-selection 事件，
+                      点了静默不触发（删除曾因此完全没反应）。删除走确认弹窗 */}
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => setAskDeleteOpen(true)}
                   >
-                    <MoreHorizontalIcon className="size-4" />
-                  </Button>
-                }
-              />
-              <DropdownMenuContent align="end" className="w-44">
-                {/* 本地 dropdown 封装基于 base-ui：条目回调只认 onClick。
-                    onSelect 是 Radix 惯例，落到底层是原生 text-selection 事件，
-                    点了静默不触发（删除曾因此完全没反应）。删除走确认弹窗 */}
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() => setAskDeleteOpen(true)}
-                >
-                  <Trash2Icon className="size-4" />
-                  删除任务
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                    <Trash2Icon className="size-4" />
+                    删除任务
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         )}
       </div>
 
-      <p className="text-muted-foreground line-clamp-2 text-xs leading-relaxed">
+      <p className="text-muted-foreground line-clamp-2 min-w-0 text-xs leading-relaxed">
         {task.description || promptExcerpt}
       </p>
 
-      <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        <span>{describeSchedule(task)}</span>
+      {/* 元信息行：排期胶囊 + 运行态 + 统计右靠齐；错误不再挤本行、
+          另起红字行（长报错截断后 title 可看全文） */}
+      <div className="text-muted-foreground mt-auto flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+        <span className="bg-muted rounded-full px-2 py-0.5 tabular-nums">
+          {describeSchedule(task)}
+        </span>
         {running ? (
-          <span className="text-primary flex items-center gap-1">
+          <span className="text-primary inline-flex items-center gap-1">
             <Loader2Icon className="size-3 animate-spin" />
             运行中
           </span>
         ) : countdown ? (
-          <span className="flex items-center gap-1">
+          <span className="inline-flex items-center gap-1 tabular-nums">
             <ClockIcon className="size-3" />
             {countdown === "即将触发" ? countdown : `下次 ${countdown}`}
           </span>
         ) : !task.enabled ? (
           // once 跑完自动停用（vendor 语义）：与手动暂停区分开
           task.type === "once" && task.lastStatus === "success" ? (
-            <span className="opacity-60">已完成</span>
+            <span className="bg-emerald-500/10 text-emerald-600 rounded-full px-2 py-0.5 dark:text-emerald-400">
+              已完成
+            </span>
           ) : (
-            <span>已暂停</span>
+            <span className="bg-muted rounded-full px-2 py-0.5">已暂停</span>
           )
         ) : null}
-        {task.lastRunAt && <span>上次 {relativePast(task.lastRunAt, now)}</span>}
-        {task.lastStatus === "error" && task.lastError && (
-          <span className="text-red-500 flex min-w-0 items-center gap-1" title={task.lastError}>
-            <AlertCircleIcon className="size-3 shrink-0" />
-            <span className="truncate">{task.lastError.slice(0, 40)}</span>
-          </span>
-        )}
-        {task.runCount > 0 && <span className="tabular-nums">共 {task.runCount} 次</span>}
+        <span className="text-muted-foreground/70 ml-auto shrink-0 tabular-nums">
+          {task.lastRunAt ? `上次 ${relativePast(task.lastRunAt, now)}` : "从未运行"}
+          {task.runCount > 0 && ` · 共 ${task.runCount} 次`}
+        </span>
       </div>
+      {task.lastStatus === "error" && task.lastError && (
+        <div
+          className="text-red-500 flex min-w-0 items-center gap-1 text-xs"
+          title={task.lastError}
+        >
+          <AlertCircleIcon className="size-3 shrink-0" />
+          <span className="min-w-0 truncate">{task.lastError.slice(0, 60)}</span>
+        </div>
+      )}
 
       {showHistory && !batchMode && (
-        <div className="border-border/60 mt-1 flex flex-col gap-0.5 border-t pt-2">
+        // 限高滚动：25 条记录全展开会把卡片撑成半屏，网格随之错位
+        <div className="border-border/60 mt-1 flex max-h-60 flex-col gap-0.5 overflow-y-auto border-t pt-2">
           {history.length === 0 ? (
             <p className="text-muted-foreground px-2 py-1 text-xs">还没有运行记录</p>
           ) : (
@@ -804,8 +838,11 @@ export const AutomationsView: FC<{
             <div className="flex flex-col gap-4">
               {historyGroups.map((g) => (
                 <div key={g.key}>
-                  <p className="text-muted-foreground px-3 pb-1 text-xs font-medium">{g.label}</p>
-                  <div className="flex flex-col">
+                  <p className="text-muted-foreground px-1 pb-1.5 text-xs font-semibold">
+                    {g.label}
+                  </p>
+                  {/* 一天一组、装进卡容器：散行列表在宽屏下很飘 */}
+                  <div className="bg-card border-border/60 rounded-xl border p-1">
                     {g.items.map((item) => (
                       <GlobalHistoryRow
                         key={item.runId}
