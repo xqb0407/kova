@@ -23,6 +23,7 @@
         "fullscreen": false,
         "decorations": true,
         "transparent": true,
+        "acceptFirstMouse": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "shadow": true,
