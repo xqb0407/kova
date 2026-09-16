@@ -18,10 +18,13 @@ import { AnimatePresence, motion } from "framer-motion";
 import { SPRING_LAYOUT } from "@/lib/ease";
 import {
   AlertCircleIcon,
+  BriefcaseBusinessIcon,
+  CalendarDaysIcon,
   CheckIcon,
   ClockIcon,
   EraserIcon,
   HistoryIcon,
+  HourglassIcon,
   LayersIcon,
   ListChecksIcon,
   Loader2Icon,
@@ -33,6 +36,7 @@ import {
   PlusIcon,
   PowerIcon,
   RefreshCwIcon,
+  RepeatIcon,
   SearchIcon,
   SquareCheckBigIcon,
   Trash2Icon,
@@ -108,6 +112,7 @@ import {
   formatDateTime,
   nextRunLabel,
   relativePast,
+  scheduleKind,
 } from "@/lib/automation-format";
 import { cn } from "@/lib/utils";
 import { Dock, DockItem, DockSeparator } from "@/components/custom-ui/dock";
@@ -124,18 +129,42 @@ function useNowTick(ms = 30_000): number {
   return now;
 }
 
-function StatusDot({ task, running }: { task: AutomationTask; running: boolean }) {
-  if (running) {
-    return <Loader2Icon className="text-primary size-3.5 shrink-0 animate-spin" />;
-  }
-  const color =
-    task.lastStatus === "success"
-      ? "bg-emerald-500"
-      : task.lastStatus === "error"
-        ? "bg-red-500"
-        : "bg-muted-foreground/40";
-  return <span className={cn("size-2 shrink-0 rounded-full", color)} />;
-}
+/** 身份图标底座（Linear/Zapier 风格）：size-9 圆角色块按排期类型 tint
+ *  （每日=蓝 business / 每周=紫 calendar / 一次性=琥珀 hourglass /
+ *  分钟·小时级高频=青 repeated），运行中整块转主色；停用降灰但保留形状
+ *  ——语义色要成面积，不能全页灰白 */
+const TaskIdentity: FC<{ task: AutomationTask; running: boolean }> = ({ task, running }) => {
+  const kind = scheduleKind(task);
+  const Icon =
+    kind === "once"
+      ? HourglassIcon
+      : kind === "weekly"
+        ? CalendarDaysIcon
+        : kind === "repeated"
+          ? RepeatIcon
+          : BriefcaseBusinessIcon;
+  const tone = running
+    ? "bg-primary text-primary-foreground"
+    : !task.enabled
+      ? "bg-muted text-muted-foreground"
+      : kind === "once"
+        ? "bg-amber-500 text-white"
+        : kind === "weekly"
+          ? "bg-purple-500 text-white"
+          : kind === "repeated"
+            ? "bg-teal-500 text-white"
+            : "bg-blue-500 text-white";
+  return (
+    <span
+      className={cn(
+        "flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors",
+        tone,
+      )}
+    >
+      <Icon className="size-[18px]" />
+    </span>
+  );
+};
 
 /** 运行状态图标（卡片内历史与全局记录页共用一套语义） */
 function RunStatusIcon({ status }: { status: string }) {
@@ -346,6 +375,7 @@ const TaskCard: FC<{
   const promptExcerpt =
     task.prompt.length > 90 ? `${task.prompt.slice(0, 90)}…` : task.prompt;
   const history = [...(task.runHistory ?? [])].reverse().slice(0, 25);
+  const errored = task.lastStatus === "error";
 
   return (
     <div
@@ -354,7 +384,9 @@ const TaskCard: FC<{
       className={cn(
         // mt-auto 的元信息行让网格拉伸时各卡的排期/统计对齐在同一基线；
         // box-shadow 也进过渡：批量选中态的 ring 淡入而非闪现
-        "bg-card border-border flex flex-col gap-2.5 rounded-xl border p-4",
+        "flex flex-col gap-2.5 rounded-xl border p-4",
+        // 上次运行失败的卡整卡淡红底+红边：状态语义色上面积，问题卡一眼扫到
+        errored ? "bg-red-500/[0.02] border-red-500/30" : "bg-card border-border",
         "transition-[border-color,box-shadow] duration-150 hover:border-foreground/15",
         highlighted && "ring-2 ring-primary/60",
         batchMode && "cursor-pointer",
@@ -388,7 +420,7 @@ const TaskCard: FC<{
             </motion.div>
           )}
         </AnimatePresence>
-        <StatusDot task={task} running={running} />
+        <TaskIdentity task={task} running={running} />
         <span
           className={cn(
             "truncate text-sm font-medium",
@@ -487,7 +519,13 @@ const TaskCard: FC<{
       {/* 元信息行：排期胶囊 + 运行态 + 统计右靠齐；错误不再挤本行、
           另起红字行（长报错截断后 title 可看全文） */}
       <div className="text-muted-foreground mt-auto flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-        <span className="bg-muted rounded-full px-2 py-0.5 tabular-nums">
+        <span
+          className={cn(
+            // 排期胶囊主题色 tint：全页灰白底是"素"感的根因之一；停用降灰
+            "rounded-full px-2 py-0.5 tabular-nums",
+            task.enabled ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
+          )}
+        >
           {describeSchedule(task)}
         </span>
         {running ? (
@@ -914,10 +952,17 @@ export const AutomationsView: FC<{
   };
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
+    <div className="relative flex h-full flex-col overflow-y-auto">
+      {/* 页眉环境光：主题色渐隐光带打底，dark 下再叠两枚 blur 光斑（深色
+          模式效果明显）。纯装饰层，内容块都加 relative 压在它上面 */}
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-72 overflow-hidden">
+        <div className="from-primary/5 absolute inset-x-0 top-0 h-full bg-gradient-to-b to-transparent" />
+        <div className="bg-primary/10 absolute -top-20 left-[12%] hidden size-64 rounded-full blur-3xl dark:block" />
+        <div className="bg-primary/[0.08] absolute -top-24 right-[15%] hidden size-72 rounded-full blur-3xl dark:block" />
+      </div>
       {/* 版式对齐设置页各分区（子智能体/技能同款）：居中限宽、大标题+右侧状态、
           说明文字+操作按钮行 */}
-      <div className="mx-auto flex w-full max-w-5xl shrink-0 flex-col gap-4 px-8 pt-8 pb-2">
+      <div className="relative mx-auto flex w-full max-w-5xl shrink-0 flex-col gap-4 px-8 pt-8 pb-2">
         <div className="flex items-baseline justify-between gap-4">
           <h1 className="text-2xl font-bold tracking-tight">自动化</h1>
           <span
@@ -1035,7 +1080,7 @@ export const AutomationsView: FC<{
         </div>
       </div>
 
-      <div className="mx-auto w-full max-w-5xl flex-1 px-8 pb-8">
+      <div className="relative mx-auto w-full max-w-5xl flex-1 px-8 pb-8">
         {snap.error && (
           <div className="text-red-500 bg-red-500/5 border-red-500/20 mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs">
             <AlertCircleIcon className="size-4 shrink-0" />

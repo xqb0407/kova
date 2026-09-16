@@ -67,6 +67,25 @@ export function describeSchedule(t: ScheduleShape): string {
   return describeCron(t.schedule);
 }
 
+export type ScheduleKind = "once" | "weekly" | "repeated" | "daily";
+
+/**
+ * 任务"身份"分类（卡片图标底座选色用）：
+ * once=一次性；interval 与分钟/小时级 cron 归 repeated（高频节律）；
+ * cron 指定星期几（工作日 1-5 除外）归 weekly；其余定点形态（每天、
+ * 工作日、每月/每年几号）都落 daily。
+ */
+export function scheduleKind(t: ScheduleShape): ScheduleKind {
+  if (t.type === "once") return "once";
+  if (t.type === "interval") return "repeated";
+  const fields = t.schedule.trim().split(/\s+/);
+  if (fields.length !== 5) return "daily";
+  const [min, hour, , , dow] = fields as [string, string, string, string, string];
+  if (dow !== "*" && dow !== "1-5") return "weekly";
+  if (hour === "*" || min === "*" || /^\d+\/\d+$|^\*\/\d+$/.test(min)) return "repeated";
+  return "daily";
+}
+
 /** "6h" 形态的 interval 文本 → 秒；不合法回 undefined（vendor 同款正则） */
 export function parseIntervalSeconds(schedule: string): number | undefined {
   const m = /^(\d+)(s|m|h|d)$/.exec(schedule.trim());

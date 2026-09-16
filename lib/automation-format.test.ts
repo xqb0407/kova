@@ -8,6 +8,7 @@ import {
   parseIntervalSeconds,
   presetToCron,
   relativePast,
+  scheduleKind,
 } from "./automation-format";
 
 describe("describeIntervalSeconds", () => {
@@ -31,6 +32,29 @@ describe("describeCron", () => {
   it("不认识的形态保留原始表达式", () => {
     expect(describeCron("0 0 1 1 *")).toContain("Cron:");
     expect(describeCron("garbage")).toBe("Cron: garbage");
+  });
+});
+
+describe("scheduleKind", () => {
+  const cron = (schedule: string) => ({ type: "cron" as const, schedule, intervalSeconds: 0 });
+  it("once/interval 直判", () => {
+    expect(scheduleKind({ type: "once", schedule: "2030-01-01T00:00:00Z", intervalSeconds: 0 })).toBe("once");
+    expect(scheduleKind({ type: "interval", schedule: "6h", intervalSeconds: 21600 })).toBe("repeated");
+  });
+  it("cron 按字段分桶：定点=每日、指定星期=每周、时/分开放=高频", () => {
+    expect(scheduleKind(cron("0 9 * * *"))).toBe("daily");
+    expect(scheduleKind(cron("30 8 * * 1-5"))).toBe("daily");
+    expect(scheduleKind(cron("15 12 1 * *"))).toBe("daily");
+    expect(scheduleKind(cron("0 0 1 1 *"))).toBe("daily");
+    expect(scheduleKind(cron("0 10 * * 1,3,5"))).toBe("weekly");
+    expect(scheduleKind(cron("0 10 * * 2"))).toBe("weekly");
+    expect(scheduleKind(cron("* * * * *"))).toBe("repeated");
+    expect(scheduleKind(cron("*/10 * * * *"))).toBe("repeated");
+    expect(scheduleKind(cron("0 * * * *"))).toBe("repeated");
+    expect(scheduleKind(cron("*/5 9 * * *"))).toBe("repeated");
+  });
+  it("字段数不对的坏表达式落 daily 兜底", () => {
+    expect(scheduleKind(cron("garbage"))).toBe("daily");
   });
 });
 
