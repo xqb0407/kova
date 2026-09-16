@@ -33,6 +33,16 @@ import {
   XIcon,
   ZapIcon,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -209,6 +219,7 @@ const TaskCard: FC<{
   const now = useNowTick();
   const [busy, setBusy] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [askDeleteOpen, setAskDeleteOpen] = useState(false);
 
   const act = (fn: () => Promise<void>) => async () => {
     setBusy(true);
@@ -325,10 +336,10 @@ const TaskCard: FC<{
               <DropdownMenuContent align="end" className="w-44">
                 {/* 本地 dropdown 封装基于 base-ui：条目回调只认 onClick。
                     onSelect 是 Radix 惯例，落到底层是原生 text-selection 事件，
-                    点了静默不触发（删除曾因此完全没反应） */}
+                    点了静默不触发（删除曾因此完全没反应）。删除走确认弹窗 */}
                 <DropdownMenuItem
                   variant="destructive"
-                  onClick={() => void act(() => deleteAutomation(task.id))()}
+                  onClick={() => setAskDeleteOpen(true)}
                 >
                   <Trash2Icon className="size-4" />
                   删除任务
@@ -389,6 +400,32 @@ const TaskCard: FC<{
           )}
         </div>
       )}
+
+      {/* 删除二次确认：确认后立即关窗再发请求（成功应答刷掉整卡，失败经
+          store 错误横幅呈现）；与侧边栏删会话的 AlertDialog 形态一致 */}
+      <AlertDialog open={askDeleteOpen} onOpenChange={setAskDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除定时任务？</AlertDialogTitle>
+            <AlertDialogDescription>
+              {`将永久删除「${task.name || "未命名任务"}」及其全部运行记录，此操作无法撤销。`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              size="default"
+              onClick={() => {
+                setAskDeleteOpen(false);
+                void act(() => deleteAutomation(task.id))();
+              }}
+            >
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
