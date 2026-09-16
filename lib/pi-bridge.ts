@@ -45,6 +45,8 @@ export type PiModelSummary = {
   contextWindow: number;
   /** 最大输出 tokens */
   maxTokens?: number;
+  /** 仍由 sidecar 缺省猜测值占位的属性（如 ["contextWindow","maxTokens"]；空 = 目录真值或用户已填） */
+  defaultedAttrs?: string[];
   /** 支持的输入模态，如 ["text", "image"] */
   input?: string[];
   /** 每 token 单价 */

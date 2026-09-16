@@ -190,6 +190,7 @@ import {
   CUSTOM_MODEL_DEFAULTS,
   getCurrentModelKey,
   getCurrentThinkingLevel,
+  getModelDefaultedAttrs,
   getModels,
   normalizeApi,
   parseModelCost,
@@ -199,6 +200,7 @@ import {
   setCurrentThinkingLevel,
   setThinkingMapOverrides,
   THINKING_LEVELS,
+  type DefaultedAttr,
   type ThinkingLevel,
 } from "./model-catalog";
 import {
@@ -1149,6 +1151,8 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         thinkingLevelMap: Record<string, string | null> | null;
         contextWindow: number;
         maxTokens: number;
+        /** 仍由 sidecar 缺省猜测值占位的属性（空 = 目录真值或用户已填） */
+        defaultedAttrs: DefaultedAttr[];
         input: string[];
         cost: Record<string, unknown>;
         enabled: boolean;
@@ -1186,6 +1190,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
               null) as Record<string, string | null> | null,
             contextWindow: m.contextWindow,
             maxTokens: m.maxTokens,
+            defaultedAttrs: getModelDefaultedAttrs(p.id, m.id),
             input: m.input,
             cost: m.cost as unknown as Record<string, unknown>,
             enabled: hasRows.has(p.id)

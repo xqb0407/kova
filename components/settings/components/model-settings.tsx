@@ -71,7 +71,7 @@ const API_FORMATS: {
 
 /** 弹窗表单字段：小标签 + 控件 */
 const Field: FC<{
-  label: string;
+  label: ReactNode;
   className?: string;
   children: ReactNode;
 }> = ({ label, className, children }) => (
@@ -95,6 +95,23 @@ const ModelBox: FC<{ checked: boolean }> = ({ checked }) => (
   </span>
 );
 
+/** 字段标签 + 缺省猜测值"未确认"徽标（网关 /models 无元数据、由 sidecar 缺省兜底的属性） */
+const DefaultedLabel: FC<{ text: string; show: boolean }> = ({ text, show }) =>
+  show ? (
+    <span className="flex items-center gap-1.5">
+      {text}
+      <Badge
+        variant="outline"
+        className="h-4 shrink-0 px-1.5 text-[10px] font-normal"
+        title="该值仍是 sidecar 缺省猜测（网关未提供此元数据），对照网关文档核实后填入即可确认"
+      >
+        未确认
+      </Badge>
+    </span>
+  ) : (
+    <>{text}</>
+  );
+
 /** 模型属性编辑表单（"支持深度思考"等能力标记也在这里）：渲染于二级弹窗内 */
 const AttrEditor: FC<{
   draft: AttrDraft;
@@ -107,6 +124,8 @@ const AttrEditor: FC<{
   thinkingOverride: boolean;
   /** 目录生效档位的一句话摘要（自动态展示） */
   thinkingAutoSummary: string;
+  /** 仍为 sidecar 缺省猜测值的属性字段（上下文窗口/最大输出旁标"未确认"） */
+  defaultedAttrs: string[];
   onRequestThinkingOverride: () => void;
   onRestoreAutoThinking: () => void;
   onChange: (patch: Partial<AttrDraft>) => void;
@@ -119,6 +138,7 @@ const AttrEditor: FC<{
   thinkingAuto,
   thinkingOverride,
   thinkingAutoSummary,
+  defaultedAttrs,
   onRequestThinkingOverride,
   onRestoreAutoThinking,
   onChange,
@@ -134,7 +154,15 @@ const AttrEditor: FC<{
           className="h-8 text-[13px]"
         />
       </Field>
-      <Field label="上下文窗口" className="col-span-2">
+      <Field
+        label={
+          <DefaultedLabel
+            text="上下文窗口"
+            show={defaultedAttrs.includes("contextWindow")}
+          />
+        }
+        className="col-span-2"
+      >
         <Input
           type="number"
           min={0}
@@ -143,7 +171,15 @@ const AttrEditor: FC<{
           className="h-8 text-[13px] tabular-nums"
         />
       </Field>
-      <Field label="最大输出" className="col-span-2">
+      <Field
+        label={
+          <DefaultedLabel
+            text="最大输出"
+            show={defaultedAttrs.includes("maxTokens")}
+          />
+        }
+        className="col-span-2"
+      >
         <Input
           type="number"
           min={0}
@@ -2120,6 +2156,7 @@ export const ModelSettings: FC = () => {
                 thinkingEditInfo,
                 attrDraft.reasoning,
               )}
+              defaultedAttrs={thinkingEditInfo?.defaultedAttrs ?? []}
               onRequestThinkingOverride={() => setThinkingOverrideEdit(true)}
               onRestoreAutoThinking={restoreAutoThinking}
               onChange={(patch) =>
