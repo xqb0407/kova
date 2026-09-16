@@ -958,7 +958,8 @@ export const AutomationsView: FC<{
 
         {/* 工具栏：搜索 + 筛选 + 刷新/批量/模板/新建 */}
         <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-0 flex-1 basis-52">
+          {/* 搜索框固定紧凑宽度（设置页同款 w-56），不再 flex-1 撑满整行 */}
+          <div className="relative w-56 max-w-full shrink-0">
             <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
             <Input
               value={query}
@@ -985,10 +986,11 @@ export const AutomationsView: FC<{
               </SelectContent>
             </Select>
           )}
+          {/* 动作组靠右（ml-auto），左侧只剩搜索+筛选两个紧凑控件 */}
           <Button
             variant="ghost"
             size="icon"
-            className="size-8 shrink-0"
+            className="ml-auto size-8 shrink-0"
             aria-label="刷新"
             title="刷新"
             onClick={() => void refreshAutomations()}
