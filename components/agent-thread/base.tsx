@@ -214,6 +214,12 @@ export const Base: FC = () => {
     if (view === "settings") window.getSelection()?.removeAllRanges();
   }, [view]);
 
+  // 进入自动化页自动收起右侧 panel：它是独立的全幅视图，原先开着的面板
+  // 留在右侧既挤占内容又和页内自己的运行记录滚动区打架
+  useEffect(() => {
+    if (activeMenu === "automation") setPanelOpen(false);
+  }, [activeMenu]);
+
   const chat =
     activeMenu === "automation" ? (
       <AutomationsView
