@@ -282,9 +282,11 @@ const TaskCard: FC<{
             <motion.div
               key="batch-check"
               className="flex h-7 shrink-0 items-center overflow-hidden"
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: "auto", opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
+              // marginRight 补偿父级 gap-2 空槽：宽度收拢的同时把 8px 间隙
+              // 一并抽走，卸载那一帧标题行不再整体横跳（关闭批量时的抖动源）
+              initial={{ width: 0, opacity: 0, marginRight: -8 }}
+              animate={{ width: "auto", opacity: 1, marginRight: 0 }}
+              exit={{ width: 0, opacity: 0, marginRight: -8 }}
               transition={SPRING_LAYOUT}
             >
               <Checkbox
@@ -312,11 +314,12 @@ const TaskCard: FC<{
           {!batchMode && (
             <motion.div
               key="card-actions"
-              // 退出同样收宽度（配合 overflow-hidden 裁切）：只淡出的话，
-              // 操作组占位到动画末尾才瞬移消失，标题右缘会跳一帧（=抖动来源）
+              // 进出不对称：退场（进批量）收拢宽度配合勾选框推入做"让位"交接；
+              // 进场（退批量）只淡入——ml-auto 右缘锚定，整宽直接就位零回流。
+              // 进场若也从 0 展开，98px 的横扫会把标题区抖一遍
               className="ml-auto flex h-7 shrink-0 items-center gap-0.5 overflow-hidden"
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: "auto", opacity: 1 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
               transition={SPRING_LAYOUT}
             >
