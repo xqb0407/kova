@@ -24,6 +24,7 @@
         "decorations": true,
         "transparent": true,
         "acceptFirstMouse": true,
+        "visible": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "shadow": true,
