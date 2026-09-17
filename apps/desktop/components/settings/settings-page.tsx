@@ -23,8 +23,10 @@ import {
   SlidersHorizontalIcon,
   SparklesIcon,
   WebhookIcon,
+  ZapIcon,
 } from "lucide-react";
 import { GeneralSettings } from "./components/general-settings";
+import { HooksSettings } from "./components/hooks-settings";
 import { WebhooksSettings } from "./components/webhooks-settings";
 import { ModelSettings } from "./components/model-settings";
 import { RemoteSettings } from "./components/remote-settings";
@@ -54,7 +56,8 @@ type SettingsSection =
   | "mcp"
   | "skills"
   | "usage"
-  | "webhooks";
+  | "webhooks"
+  | "hooks";
 
 const GROUPS: {
   label: string;
@@ -85,6 +88,7 @@ const GROUPS: {
     label: "系统",
     items: [
       { id: "remote", label: "远程访问", icon: GlobeIcon },
+      { id: "hooks", label: "钩子", icon: ZapIcon },
       { id: "webhooks", label: "Webhooks", icon: WebhookIcon },
       { id: "about", label: "关于", icon: InfoIcon },
     ],
@@ -216,6 +220,7 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "archive" && <ArchiveSettings />}
           {section === "usage" && <UsageStatsSettings />}
           {section === "webhooks" && <WebhooksSettings />}
+          {section === "hooks" && <HooksSettings />}
           {section === "about" && <AboutSettings />}
           {section === "general" && <GeneralSettings />}
         </div>

@@ -29,6 +29,7 @@ import { initHostMode, initStorage } from "./storage";
 import { loadCustomProviders, applyModelOverrides, initCurrentModelKey } from "./model-catalog";
 import { initPersonalization } from "./personalization";
 import { initMemory } from "./memory";
+import { initHooks } from "./hooks";
 import { initSubagentState } from "./subagent-definitions";
 import { initSkillsState } from "./skills";
 import { initMcpEnabledState } from "./mcp-config";
@@ -90,6 +91,9 @@ async function main() {
     // MCP 启用开关同走 kv（服务器定义文件按需带签名加载）；就绪后启动空闲连接回收
     await initMcpEnabledState();
     mcpManager.startReaper();
+    // 生命周期钩子配置同走 kv（PreToolUse/PermissionRequest 在工具路径同步读取，
+    // 必须在闸门放行前就位，保证首批会话即生效）
+    await initHooks();
   })().catch((err) => {
     logErr("model catalog init failed:", err);
   });

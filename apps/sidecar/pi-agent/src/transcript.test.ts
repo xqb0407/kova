@@ -134,6 +134,78 @@ describe("historyToUiMessages", () => {
     );
   });
 
+  test("toolResult 的 image 块重建为 data-image part（与 live 流同构，紧跟 tool part）", () => {
+    const rows = [
+      { agent: toolCallMsg("c1", "generate_image", { prompt: "猫" }) },
+      {
+        agent: {
+          role: "toolResult",
+          toolCallId: "c1",
+          toolName: "generate_image",
+          content: [
+            { type: "text", text: "已生成：cat.png" },
+            { type: "image", data: "aGk=", mimeType: "image/png" },
+          ],
+          isError: false,
+        } as unknown as Message,
+      },
+    ];
+    const messages = historyToUiMessages(rows);
+    expect(messages.length).toBe(1);
+    const parts = messages[0].parts as Array<Record<string, unknown>>;
+    expect(parts.length).toBe(2);
+    // tool part：output 文本走与 stream.ts 同一拼装（image 块贡献空段）
+    expect(parts[0].type).toBe("tool-generate_image");
+    expect(parts[0].output).toBe("已生成：cat.png\n");
+    // data-image part：id/data 形状与 live chunk 逐字段一致（共用 projectToolResult）
+    expect(parts[1]).toEqual({
+      type: "data-image",
+      id: "img-c1-0",
+      data: {
+        src: "data:image/png;base64,aGk=",
+        mimeType: "image/png",
+        bytes: 3,
+        toolCallId: "c1",
+        toolName: "generate_image",
+        alt: "已生成：cat.png",
+      },
+    });
+  });
+
+  test("同消息多工具：图插到各自 tool part 之后（结果乱序到达亦正确）", () => {
+    const msgWithImage = (toolCallId: string, b64: string): Message =>
+      ({
+        role: "toolResult",
+        toolCallId,
+        content: [
+          { type: "text", text: "t" },
+          { type: "image", data: b64, mimeType: "image/png" },
+        ],
+        isError: false,
+      }) as unknown as Message;
+    const rows = [
+      {
+        agent: {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "c1", name: "t1", arguments: {} },
+            { type: "toolCall", id: "c2", name: "t2", arguments: {} },
+          ],
+        } as unknown as Message,
+      },
+      // 完成顺序颠倒：c2 的结果先到
+      { agent: msgWithImage("c2", "aGk=") },
+      { agent: msgWithImage("c1", "aGk=") },
+    ];
+    const messages = historyToUiMessages(rows);
+    expect(messages.length).toBe(1);
+    expect(
+      (messages[0].parts as Array<{ type: string; id?: string }>).map(
+        (p) => p.id ?? p.type,
+      ),
+    ).toEqual(["tool-t1", "img-c1-0", "tool-t2", "img-c2-0"]);
+  });
+
   test("简单 user 消息重建为 text part", () => {
     const messages = historyToUiMessages([{ agent: userMsg("hello") }]);
     expect(messages).toEqual([
@@ -354,6 +426,8 @@ describe("persist", () => {
       messages.push(assistantMsg([{ type: "text", text: "收到" }]));
       await persist(run);
       expect(readTranscript(id).length).toBe(2);
+      // 标题总结为 fire-and-forget（不阻塞 agent_end）：让出事件循环等它完成
+      await new Promise((resolve) => setTimeout(resolve, 25));
       expect(titleTries).toBe(1);
     } finally {
       titleSummarizeHook.fn = undefined;

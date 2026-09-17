@@ -16,5 +16,8 @@
     "tauri:dev": "bun run --filter desktop tauri:dev",
     "tauri:build": "bun run --filter desktop tauri:build",
     "test": "bun run --filter pi-agent-sidecar test"
+  },
+  "patchedDependencies": {
+    "react-native-worklets@0.10.1": "patches/react-native-worklets@0.10.1.patch"
   }
 }

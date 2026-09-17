@@ -47,6 +47,47 @@ export async function fsReadFile(
   }
 }
 
+export type FsBinaryContent = { base64: string; size: number };
+
+/**
+ * 面板图片预览支持的扩展名 → data URL mime（CSP img-src 已放行 data:）。
+ * svg 不在列：它是文本，fs_read_file 正常出内容，走源码渲染。
+ */
+const IMAGE_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp",
+  avif: "image/avif",
+  ico: "image/x-icon",
+  tiff: "image/tiff",
+};
+
+/** 按扩展名取图片 mime；非图片返回 null（调用方据此决定走哪条读取路径） */
+export function imageMimeFor(path: string): string | null {
+  const dot = path.lastIndexOf(".");
+  if (dot < 0) return null;
+  return IMAGE_MIME[path.slice(dot + 1).toLowerCase()] ?? null;
+}
+
+/**
+ * 读文件原始字节（base64，图片预览专用，Rust 侧封顶 20MB）。
+ * 成功返回内容；超过 20MB 返回 "too-large"；读不到/网页端返回 null。
+ */
+export async function fsReadFileBase64(
+  cwd: string,
+  path: string,
+): Promise<FsBinaryContent | "too-large" | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invoke<FsBinaryContent>("fs_read_file_base64", { cwd, path });
+  } catch (err) {
+    return err === "too-large" ? "too-large" : null;
+  }
+}
+
 /* ---------------- 写命令（文件树右键菜单）：成功返回 null，失败返回错误码 ---------------- */
 
 async function fsWriteCommand(

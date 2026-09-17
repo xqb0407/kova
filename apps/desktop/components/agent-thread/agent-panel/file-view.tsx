@@ -1,10 +1,15 @@
 "use client";
 
-import { useEffect, useState, type FC } from "react";
+import { useEffect, useState, type FC, type ReactNode } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { FileTextIcon, Loader2Icon } from "lucide-react";
+import { FileTextIcon, ImageOffIcon, Loader2Icon } from "lucide-react";
 import type { PanelTab } from "@/lib/panel-tabs";
-import { fsReadFile, type FsFileContent } from "@/lib/fs";
+import {
+  fsReadFile,
+  fsReadFileBase64,
+  imageMimeFor,
+  type FsFileContent,
+} from "@/lib/fs";
 import { CodeMirrorCode } from "@/components/code/cm-code";
 import { stripReadLineNumbers } from "@/lib/read-result";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
@@ -25,6 +30,8 @@ import { TabEmpty } from "./tab-empty";
  * Markdown 文件（含计划）头部给「预览 | 源码」切换，预览即消息区同款渲染
  * （复用 MarkdownText：自带 .aui-markdown 包装层，代码块头部按钮/边框等
  * 样式都作用域在该层下，裸 Streamdown 会回退到默认定位导致按钮跑飞）。
+ * 磁盘模式下扩展名命中图片（lib/fs IMAGE_MIME）走 ImageView：原始字节
+ * base64 → data URL 直显，不再落"二进制无法预览"占位。
  */
 
 type FilePart = {
@@ -134,6 +141,44 @@ const ModeToggle: FC<{
   </Tabs>
 );
 
+/** 顶栏：文件图标 + 文件名 + 灰色目录（截断时 title 看全路径）；extra 挂右侧控件 */
+const FileHeader: FC<{ path: string; extra?: ReactNode }> = ({
+  path,
+  extra,
+}) => {
+  const { dir, base } = splitPath(path);
+  return (
+    <div
+      className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-2"
+      title={path}
+    >
+      <FileTypeIcon path={path} />
+      <span className="truncate text-[13px] font-medium text-foreground/90">
+        {base}
+      </span>
+      {dir ? (
+        <span className="min-w-0 truncate text-xs text-muted-foreground/70">
+          {dir}
+        </span>
+      ) : null}
+      {extra}
+    </div>
+  );
+};
+
+/** 顶栏下方的浅色提示条（截断说明 / 图片格式与体积） */
+const NoteBar: FC<{ text: string }> = ({ text }) => (
+  <p className="bg-muted/30 text-muted-foreground shrink-0 border-b border-border/60 px-3 py-1 text-xs">
+    {text}
+  </p>
+);
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
 /** part 到位后才挂载：预览/源码初值要按扩展名定，key 保证换文件重置 */
 const FileBody: FC<{ part: FilePart; note?: string }> = ({ part, note }) => {
   const isMd = /\.mdx?$/i.test(part.path);
@@ -142,30 +187,13 @@ const FileBody: FC<{ part: FilePart; note?: string }> = ({ part, note }) => {
   );
   // 行号前缀只在 read 快照里有；计划/写入的正文是原文，别碰
   const text = part.kind === "read" ? stripReadLineNumbers(part.text) : part.text;
-  const { dir, base } = splitPath(part.path);
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* 顶栏：文件图标 + 文件名 + 灰色目录（截断时 title 看全路径）+ md 预览/源码切换 */}
-      <div
-        className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-2"
-        title={part.path}
-      >
-        <FileTypeIcon path={part.path} />
-        <span className="truncate text-[13px] font-medium text-foreground/90">
-          {base}
-        </span>
-        {dir ? (
-          <span className="min-w-0 truncate text-xs text-muted-foreground/70">
-            {dir}
-          </span>
-        ) : null}
-        {isMd ? <ModeToggle mode={mode} onChange={setMode} /> : null}
-      </div>
-      {note ? (
-        <p className="bg-muted/30 text-muted-foreground shrink-0 border-b border-border/60 px-3 py-1 text-xs">
-          {note}
-        </p>
-      ) : null}
+      <FileHeader
+        path={part.path}
+        extra={isMd ? <ModeToggle mode={mode} onChange={setMode} /> : null}
+      />
+      {note ? <NoteBar text={note} /> : null}
       <div className="min-h-0 flex-1 overflow-auto">
         {!text ? (
           <p className="text-muted-foreground/60 px-3 py-2 text-xs">
@@ -228,6 +256,78 @@ const DiskFileView: FC<{ cwd: string; path: string }> = ({ cwd, path }) => {
   );
 };
 
+/**
+ * 图片预览（磁盘模式）：fs_read_file_base64 原始字节 → data URL（CSP 已放行）。
+ * 与 DiskFileView 并列而非在其内分支——图片扩展名在挂载时即定，两条读取路径
+ * 的 state 机也不同，拆成兄弟组件最干净（FileTab 分流，key 保证换文件重置）。
+ */
+const ImageView: FC<{ cwd: string; path: string; mime: string }> = ({
+  cwd,
+  path,
+  mime,
+}) => {
+  const [state, setState] = useState<
+    | { status: "loading" }
+    | { status: "ready"; src: string; size: number }
+    | { status: "too-large" }
+    | { status: "error" }
+  >({ status: "loading" });
+  useEffect(() => {
+    let alive = true;
+    void fsReadFileBase64(cwd, path).then((r) => {
+      if (!alive) return;
+      if (r === "too-large") setState({ status: "too-large" });
+      else if (r)
+        setState({
+          status: "ready",
+          src: `data:${mime};base64,${r.base64}`,
+          size: r.size,
+        });
+      else setState({ status: "error" });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [cwd, path, mime]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <FileHeader path={path} />
+      {state.status === "ready" ? (
+        <NoteBar
+          text={`${path.slice(path.lastIndexOf(".") + 1).toUpperCase()} · ${formatBytes(state.size)}`}
+        />
+      ) : null}
+      <div className="bg-muted/20 min-h-0 flex-1 overflow-auto p-4">
+        {state.status === "loading" ? (
+          <div className="text-muted-foreground flex h-full items-center justify-center gap-1.5 text-xs">
+            <Loader2Icon className="size-3.5 animate-spin" />
+            读取图片…
+          </div>
+        ) : state.status === "ready" ? (
+          <div className="grid h-full w-full place-items-center">
+            <img
+              src={state.src}
+              alt={path}
+              draggable={false}
+              className="max-h-full max-w-full rounded-md object-contain shadow-sm"
+            />
+          </div>
+        ) : (
+          <TabEmpty
+            icon={ImageOffIcon}
+            text={
+              state.status === "too-large"
+                ? "图片超过 20MB，暂不预览"
+                : "读取失败（文件可能已被删除，或无权限访问）"
+            }
+          />
+        )}
+      </div>
+    </div>
+  );
+};
+
 /** 快照模式：数据来自消息里的工具 part（read/write/plan/memory 回放） */
 const SnapshotFileTab: FC<{ tab: PanelTab }> = ({ tab }) => {
   const part = useFilePart(tab.focus);
@@ -252,9 +352,11 @@ export const FileTab: FC<{ tab: PanelTab }> = ({ tab }) => {
     const cwd = tab.cwd ?? "";
     if (!cwd)
       return <TabEmpty icon={FileTextIcon} text="缺少工作目录上下文" />;
-    return (
-      <DiskFileView key={`${cwd}\u0000${tab.path}`} cwd={cwd} path={tab.path} />
-    );
+    const key = `${cwd}\u0000${tab.path}`;
+    const mime = imageMimeFor(tab.path);
+    if (mime)
+      return <ImageView key={key} cwd={cwd} path={tab.path} mime={mime} />;
+    return <DiskFileView key={key} cwd={cwd} path={tab.path} />;
   }
   return <SnapshotFileTab tab={tab} />;
 };

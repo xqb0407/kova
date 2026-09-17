@@ -8,7 +8,8 @@
  *   读端跳过撕裂尾行，append 中途崩溃不影响已有内容。
  */
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
+import { projectToolResult, type ProjectableContentBlock } from "./image-parts";
 import { sessionPath } from "./storage";
 import { sessionGet, sessionRename, sessionTouch } from "./hostdb";
 import { getModels } from "./model-catalog";
@@ -137,13 +138,6 @@ export function toUiMessage(msg: Message, seq: number): UIMessage | null {
   return null; // toolResult 等不产生独立 UI 消息
 }
 
-/** 工具结果输出文本（与 stream.ts 的 live 输出保持一致：只取 text 内容） */
-function toolResultOutput(msg: ToolResultMessage): string {
-  return (msg.content ?? [])
-    .map((c) => (c.type === "text" ? (c.text ?? "") : ""))
-    .join("\n");
-}
-
 /** 压缩检查点 -> data-compaction part（phase 固定 complete：历史里都是终态） */
 function compactionDividerPart(row: CompactionRow) {
   const details = row.details as
@@ -168,6 +162,8 @@ function compactionDividerPart(row: CompactionRow) {
  * assistant.toolCall → `tool-${name}` part（input-available）；后续 toolResult
  * 按 toolCallId 回填 output（output-available），与 live 流的 chunk 形状一致，
  * 刷新前后渲染相同。toolCallId 匹配不到的 toolResult 直接忽略。
+ * toolResult 的 image 块经共用投影 projectToolResult（image-parts.ts）重建为
+ * data-image part，紧跟对应 tool part 之后——与 live 流的 chunk 顺序同构。
  *
  * compactions 提供时在消息流里重建「上下文已压缩」分隔线（刷新后 live 横幅
  * 不丢）：阈值/溢出压缩的宿主 = 边界后第一条 assistant 消息（与 live 流分隔线
@@ -189,7 +185,9 @@ export function historyToUiMessages(
   // 与 messages 平行：每条 UI 消息源行的 jsonl seq（独立分隔线消息用 -Infinity，
   // 永远视为「边界之前」，不会再当后续检查点的宿主）
   const srcSeqs: number[] = [];
-  const openTools = new Map<string, ToolPart>();
+  // host 存宿主消息的 parts 数组引用（同一数组对象已随消息入列，原位 splice 即生效）：
+  // toolResult 的 data-image part 要插到对应 tool part 紧邻之后，与 live chunk 顺序同构
+  const openTools = new Map<string, { part: ToolPart; host: UIMessage["parts"] }>();
   for (let i = 0; i < rows.length; i++) {
     const seq = rows[i].seq ?? i;
     const msg = rows[i].agent;
@@ -221,7 +219,7 @@ export function historyToUiMessages(
             input: c.arguments ?? {},
           };
           parts.push(part as UIMessage["parts"][number]);
-          openTools.set(c.id, part);
+          openTools.set(c.id, { part, host: parts });
         }
       }
       if (!parts.length) continue;
@@ -230,10 +228,34 @@ export function historyToUiMessages(
       continue;
     }
     if (msg.role === "toolResult") {
-      const part = openTools.get(msg.toolCallId);
-      if (part) {
-        part.state = "output-available";
-        part.output = toolResultOutput(msg);
+      const entry = openTools.get(msg.toolCallId);
+      if (entry) {
+        entry.part.state = "output-available";
+        // 与 live 流共用投影：output 文本（含超限占位行）+ data-image parts 逐字同构
+        const toolName = entry.part.type.startsWith("tool-")
+          ? entry.part.type.slice("tool-".length)
+          : undefined;
+        const { output, images } = projectToolResult(
+          msg.content as ProjectableContentBlock[],
+          { toolCallId: msg.toolCallId, toolName },
+        );
+        entry.part.output = output;
+        if (images.length) {
+          // part 入列时同法 cast 过，按引用找回位置（ToolPart 与 UIMessagePart 结构不互容）
+          const at = entry.host.indexOf(entry.part as UIMessage["parts"][number]);
+          entry.host.splice(
+            at + 1,
+            0,
+            ...images.map(
+              (img) =>
+                ({
+                  type: "data-image",
+                  id: img.id,
+                  data: img.data,
+                }) as UIMessage["parts"][number],
+            ),
+          );
+        }
       }
     }
   }
@@ -372,10 +394,11 @@ export async function persist(
   // 且每会话 one-shot 防抖会被白白消费——留给 agent_end 那次触发
   if (opts.earlyUser) return;
 
-  // 首轮回复后的智能标题（异步、防抖、失败静默；不阻塞索引维护）
-  try {
-    await maybeSummarizeSessionTitle(run);
-  } catch (err) {
+  // 首轮回复后的智能标题：fire-and-forget。pi-agent-core 的 run 要等 agent_end
+  // 监听器 settle 才结束，若在此 await 标题 LLM 调用，finish chunk 会被推迟数秒
+  // （前端表现为"正文完了还在转圈"）。one-shot 防抖在 maybeSummarizeSessionTitle
+  // 内部（先占坑再调用），重复触发安全；失败静默
+  void maybeSummarizeSessionTitle(run).catch((err) => {
     logErr("session title summarize trigger failed:", err);
-  }
+  });
 }

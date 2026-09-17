@@ -309,6 +309,36 @@ export type PiMemoryConfig = {
   enabledFiles: { global: string[] | null; workspace: string[] | null };
 };
 
+/** Claude Code 式生命周期钩子事件名（与 sidecar hooks.ts 1:1 对齐） */
+export type PiHookEventName =
+  | "SessionStart"
+  | "UserPromptSubmit"
+  | "PreToolUse"
+  | "PermissionRequest"
+  | "PostToolUse"
+  | "PostToolUseFailure"
+  | "Stop";
+
+/** 单条生命周期钩子配置（事实源在 sidecar kv，经 set_hooks/get_hooks 推拉） */
+export type PiHookConfig = {
+  id: string;
+  name: string;
+  command: string;
+  /** shell 命令类型的解释器，空 = 系统默认（$SHELL）；仅 type="shell" 生效 */
+  shell?: string;
+  args?: string[];
+  /** "shell"（整串交 shell 解释，默认）| "process"（argv 直接执行） */
+  type?: "process" | "shell";
+  event: PiHookEventName;
+  /** 工具名过滤：逗号分隔精确名（"Write, Edit, Bash"）或单个正则；空 = 全部 */
+  matcher?: string;
+  /** 单命令超时 ms，sidecar 钳制 [1s, 120s]，默认 10s */
+  timeoutMs?: number;
+  /** 后台运行：不等待命令结束（决策类事件视为无决策） */
+  background?: boolean;
+  enabled: boolean;
+};
+
 /** 记忆目录文件条目（设置 → 记忆的文件清单；daily 汇总行 bytes/mtime 为 0） */
 export type PiMemoryFileEntry = { name: string; bytes: number; mtime: number };
 
@@ -528,6 +558,8 @@ export type PiResponse =
       paths?: PiPersonalizationPaths;
     }
   | { type: "memory"; settings: PiMemoryConfig }
+  | { type: "hooks_saved" }
+  | { type: "hooks"; hooks: PiHookConfig[] }
   | PiMemoryFilesResponse
   | { type: "memory_file"; file: string; content: string }
   | {
@@ -583,6 +615,25 @@ export type PiResponse =
       };
       items: unknown[];
     };
+
+/**
+ * 工具图片投影 part 的 data 载荷（镜像 sidecar types.ts 同名类型）。
+ * prompt 流 chunk `{type:"data-image", id, data}` / get_history 同构 part；
+ * 投影闸门单点在 sidecar image-parts.ts，设计 docs/image-part-design.md。
+ */
+export type PiImagePartData = {
+  /** 内联 data URL：`data:<mimeType>;base64,...` */
+  src: string;
+  mimeType: string;
+  /** 解码后原始字节（base64 长度 ×3/4 近似；渲染角标用） */
+  bytes: number;
+  /** 产出该图的工具调用 id；非工具来源（P1 模型直出）为 null */
+  toolCallId: string | null;
+  /** 产出图的工具名 */
+  toolName?: string;
+  /** 可访问名：结果首个文本块首行（≤120 字符） */
+  alt?: string;
+};
 
 export async function piRequest<T extends PiResponse>(
   payload: Record<string, unknown>,

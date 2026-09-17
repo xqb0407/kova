@@ -7,6 +7,8 @@
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
 import { logAt, logErr } from "./log";
+import { buildHookPayload, fireHookEvent } from "./hooks";
+import { projectToolResult, type ProjectableContentBlock } from "./image-parts";
 import { persist } from "./transcript";
 import {
   makeAutoContinueMessage,
@@ -127,6 +129,16 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       break;
     }
     case "turn_end": {
+      // Claude Code 式 Stop 钩子：每回合收尾触发；不依赖 reqId（后台跑/刷新空窗
+      // 同样触发）。放在长度续跑判定之前——续跑注入的额外 turn 各自收尾也会触发
+      fireHookEvent(
+        "Stop",
+        buildHookPayload({
+          event: "Stop",
+          sessionId: run.sessionId,
+          threadId: run.threadId,
+        }),
+      );
       // 长度截断且本轮零 toolCall：vendor 循环把这视为自然收尾（它只对"截断+带
       // tool call"的轮失败重试），任务会"到一半停下"。补一条续跑消息进 followUp
       // 队列——循环在 turn_end 监听 settle 之后、退出之前恰好轮询该队列，时序是
@@ -195,16 +207,20 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
     }
     case "tool_execution_end": {
       if (!reqId) break;
-      const result = event.result as { content?: { type: string; text?: string }[] };
-      const output =
-        result?.content
-          ?.map((c) => (c.type === "text" ? (c.text ?? "") : ""))
-          .join("\n") ?? "";
+      // 图片投影与历史侧共用 projectToolResult（image-parts.ts），保证直播=刷新同构；
+      // 顺序契约：tool-output-available → data-image×n，part 落进对应 tool part 之后
+      const { output, images } = projectToolResult(
+        (event.result as { content?: ProjectableContentBlock[] } | undefined)?.content,
+        { toolCallId: event.toolCallId, toolName: event.toolName },
+      );
       sendChunk(reqId, {
         type: "tool-output-available",
         toolCallId: event.toolCallId,
         output,
       });
+      for (const img of images) {
+        sendChunk(reqId, { type: "data-image", id: img.id, data: img.data });
+      }
       break;
     }
     case "agent_end": {

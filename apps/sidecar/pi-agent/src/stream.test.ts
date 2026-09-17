@@ -117,6 +117,62 @@ describe("onAgentEvent", () => {
     });
   });
 
+  test("tool result image blocks emit data-image chunks after output", () => {
+    onAgentEvent(
+      ev({
+        type: "tool_execution_end",
+        toolCallId: "call-img",
+        toolName: "generate_image",
+        result: {
+          content: [
+            { type: "text", text: "画好了" },
+            { type: "image", data: "aGk=", mimeType: "image/png" },
+          ],
+        },
+      }),
+      run,
+    );
+    const out = JSON.parse(lines[lines.length - 2]);
+    const img = JSON.parse(lines[lines.length - 1]);
+    expect(out).toEqual({
+      id: "r1",
+      chunk: { type: "tool-output-available", toolCallId: "call-img", output: "画好了\n" },
+    });
+    expect(img.id).toBe("r1");
+    expect(img.chunk.type).toBe("data-image");
+    expect(img.chunk.id).toBe("img-call-img-0");
+    expect(img.chunk.data).toEqual({
+      src: "data:image/png;base64,aGk=",
+      mimeType: "image/png",
+      // base64 长度 4 ×3/4 ≈ 3（近似值，不精确解码，见 image-parts.ts）
+      bytes: 3,
+      toolCallId: "call-img",
+      toolName: "generate_image",
+      alt: "画好了",
+    });
+  });
+
+  test("oversized image blocks stay off the wire (placeholder appended to output)", () => {
+    const big = "A".repeat(4 * 1024 * 1024); // ≈3 MiB 原始
+    onAgentEvent(
+      ev({
+        type: "tool_execution_end",
+        toolCallId: "call-big",
+        toolName: "screenshot",
+        result: {
+          content: [
+            { type: "text", text: "shot" },
+            { type: "image", data: big, mimeType: "image/png" },
+          ],
+        },
+      }),
+      run,
+    );
+    const linesNow = lines.slice(-2);
+    expect(JSON.parse(linesNow[1]).chunk.type).toBe("tool-output-available"); // 只有一条，无 data-image
+    expect(JSON.parse(linesNow[1]).chunk.output).toContain("图片未展示");
+  });
+
   test("no output when no active request", () => {
     setActiveReqId("th-stream", null);
     const before = lines.length;

@@ -134,6 +134,7 @@ pub fn run() {
             git::git_checkout,
             fs::fs_list_dir,
             fs::fs_read_file,
+            fs::fs_read_file_base64,
             fs::fs_mkdir,
             fs::fs_touch,
             fs::fs_rename,
