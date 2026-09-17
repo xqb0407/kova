@@ -57,6 +57,67 @@ describe("normalizePersonalization", () => {
     expect(n.persona.length).toBe(PROTOCOL_TEXT_MAX_CHARS);
     expect(n.customInstructions.length).toBe(PROTOCOL_TEXT_MAX_CHARS);
   });
+
+  test("自定义风格净化：非法条目丢弃、id 去重、空名回落占位、超长截断、条数上限", () => {
+    const capped = normalizePersonalization({
+      styles: Array.from({ length: 25 }, (_, i) => ({
+        id: `s${i}`,
+        name: `风格${i}`,
+        prompt: `描述${i}`,
+      })),
+    });
+    expect(capped.styles.length).toBe(20);
+    expect(capped.style).toBe("default");
+
+    const n = normalizePersonalization({
+      style: "custom:b",
+      styles: [
+        { id: "a", name: "  文艺  ", prompt: "p1" },
+        { id: "a", name: "重复", prompt: "p2" },
+        { id: "  ", name: "空 id", prompt: "p3" },
+        { name: "缺 id", prompt: "p4" },
+        { id: "b", prompt: "缺名字" },
+        null,
+        { id: "c", name: "x".repeat(40), prompt: "y".repeat(5000) },
+      ],
+    });
+    expect(n.styles.map((s) => s.id)).toEqual(["a", "b", "c"]);
+    expect(n.styles[0]!.name).toBe("文艺");
+    expect(n.styles[1]!.name).toBe("未命名风格");
+    expect(n.styles[2]!.name.length).toBe(24);
+    expect(n.styles[2]!.prompt.length).toBe(4_000);
+    expect(n.style).toBe("custom:b");
+  });
+
+  test("style 引用悬空（条目不存在/列表缺失）回落 default；旧版 kv 无 styles 兼容", () => {
+    expect(
+      normalizePersonalization({
+        style: "custom:missing",
+        styles: [{ id: "a", name: "n", prompt: "p" }],
+      }).style,
+    ).toBe("default");
+    expect(normalizePersonalization({ style: "custom:a" }).style).toBe("default");
+    expect(normalizePersonalization({ style: "blunt", userName: "u" }).styles).toEqual([]);
+    expect(normalizePersonalization({ style: "blunt" }).styleOverrides).toEqual([]);
+  });
+
+  test("内置覆盖记录净化：非内置 id 丢弃、去重保留首条、空记录丢弃、字段收口", () => {
+    const n = normalizePersonalization({
+      styleOverrides: [
+        { id: "blunt", name: "  毒舌  ", prompt: " 说人话 ", hidden: false },
+        { id: "blunt", name: "重复", prompt: "x", hidden: true }, // 去重：首条生效
+        { id: "nope", name: "未知档", prompt: "y", hidden: true }, // 非内置档丢弃
+        { id: "custom:abc", hidden: true }, // 自定义 id 不算内置档
+        { id: "friendly", name: "", prompt: "", hidden: false }, // 三空记录丢弃
+        { id: "guiding", name: "n".repeat(40), prompt: "p".repeat(5000), hidden: "yes" },
+        null,
+      ],
+    });
+    expect(n.styleOverrides).toEqual([
+      { id: "blunt", name: "毒舌", prompt: "说人话", hidden: false },
+      { id: "guiding", name: "n".repeat(24), prompt: "p".repeat(4000), hidden: false }, // 非 true 一律 false
+    ]);
+  });
 });
 
 describe("personalizationPromptBlock", () => {
@@ -126,6 +187,50 @@ describe("personalizationPromptBlock", () => {
     await applyPersonalization(DEFAULT_PERSONALIZATION);
     expect(composeModeSystemPrompt("agent", "/tmp/ws")).toBe(baseline);
   });
+
+  test("内置档覆盖注入：prompt 原文注入不叠前缀；隐藏/空 prompt 仍走内置文案", async () => {
+    await applyPersonalization({
+      style: "blunt",
+      styleOverrides: [
+        { id: "blunt", name: "毒舌", prompt: "别绕弯子，先挑毛病再给方案。", hidden: false },
+        { id: "friendly", name: "", prompt: "", hidden: true }, // 仅隐藏：不改变注入
+      ],
+    });
+    const block = personalizationPromptBlock();
+    expect(block).toBe("别绕弯子，先挑毛病再给方案。"); // 无 "Reply style - …" 双重前缀
+
+    // 隐藏的档位仍可直接选中生效（可用性由前端网格控制，注入端只认覆盖内容）
+    await applyPersonalization({
+      style: "friendly",
+      styleOverrides: [{ id: "friendly", name: "", prompt: "", hidden: true }],
+    });
+    expect(personalizationPromptBlock()).toContain("Reply style - warm and approachable");
+
+    // 恢复默认（删记录）后回到基线
+    await applyPersonalization(DEFAULT_PERSONALIZATION);
+    expect(personalizationPromptBlock()).toBe("");
+  });
+
+  test("自定义风格注入：prompt 原样带名称上下文；空白 prompt 不注入", async () => {
+    await applyPersonalization({
+      style: "custom:s1",
+      styles: [
+        { id: "s1", name: "文艺", prompt: "文风偏文学，善用比喻" },
+        { id: "s2", name: "空描述", prompt: "   " },
+      ],
+    });
+    const block = personalizationPromptBlock();
+    expect(block).toContain("Reply style - 文艺: 文风偏文学，善用比喻");
+    expect(composeModeSystemPrompt("agent", "/tmp/ws")).toContain(block);
+
+    // 选中但描述为空的条目：风格段整体不注入（全默认其余字段 → 空串）
+    await applyPersonalization({
+      style: "custom:s2",
+      styles: [{ id: "s2", name: "空描述", prompt: "   " }],
+    });
+    expect(personalizationPromptBlock()).toBe("");
+    await applyPersonalization(DEFAULT_PERSONALIZATION);
+  });
 });
 
 describe("persistence (身份文件 + 结构化 kv)", () => {
@@ -144,6 +249,8 @@ describe("persistence (身份文件 + 结构化 kv)", () => {
       style: "guiding",
       userName: "阿珍",
       assistantName: "",
+      styles: [],
+      styleOverrides: [],
     });
 
     // 模拟重启：只清内存（apply 会落盘落 kv，不能当重启用），再由 init 恢复
@@ -155,6 +262,54 @@ describe("persistence (身份文件 + 结构化 kv)", () => {
     expect(getPersonalization().customInstructions).toBe("回答尽量精简");
     expect(personalizationPromptBlock()).toContain('The user goes by "阿珍".');
     expect(personalizationPromptBlock()).toContain("always apply): 回答尽量精简");
+  });
+
+  test("自定义风格随结构化字段落 kv；init 恢复后档位与列表都在", async () => {
+    rmSync(soulFilePath(), { force: true });
+    rmSync(rulesFilePath(), { force: true });
+    await applyPersonalization({
+      style: "custom:s9",
+      styles: [{ id: "s9", name: "赛博", prompt: "术语与冷幽默" }],
+    });
+    const row = await kvGet(PERSONALIZATION_KV_KEY);
+    expect(JSON.parse(row!.value)).toEqual({
+      style: "custom:s9",
+      userName: "",
+      assistantName: "",
+      styles: [{ id: "s9", name: "赛博", prompt: "术语与冷幽默" }],
+      styleOverrides: [],
+    });
+
+    // 模拟重启：清内存后由 init 从 kv 恢复
+    resetPersonalizationForTest();
+    expect(getPersonalization().style).toBe("default");
+    await initPersonalization();
+    expect(getPersonalization().style).toBe("custom:s9");
+    expect(getPersonalization().styles).toEqual([
+      { id: "s9", name: "赛博", prompt: "术语与冷幽默" },
+    ]);
+    expect(personalizationPromptBlock()).toContain("Reply style - 赛博: 术语与冷幽默");
+
+    // 复位：落回默认整包，避免影响后续 describe
+    await applyPersonalization(DEFAULT_PERSONALIZATION);
+  });
+
+  test("内置覆盖记录随 kv round-trip；旧版 kv（无 styleOverrides）启动兼容", async () => {
+    const overrides = [{ id: "professional", name: "严肃", prompt: "禁止玩笑与表情。", hidden: false }];
+    await applyPersonalization({ style: "professional", styleOverrides: overrides });
+    resetPersonalizationForTest();
+    await initPersonalization();
+    expect(getPersonalization().styleOverrides).toEqual(overrides);
+    expect(personalizationPromptBlock()).toBe("禁止玩笑与表情。");
+
+    // 旧版 kv：缺 styleOverrides 字段 → 空列表，内置文案原样
+    await kvSet(PERSONALIZATION_KV_KEY, JSON.stringify({ style: "professional", userName: "" }));
+    resetPersonalizationForTest();
+    await initPersonalization();
+    expect(getPersonalization().styleOverrides).toEqual([]);
+    expect(personalizationPromptBlock()).toContain("Reply style - professional");
+
+    await applyPersonalization(DEFAULT_PERSONALIZATION);
   });
 });
 
@@ -177,10 +332,13 @@ describe("legacy kv migration（旧版整包 → 身份文件）", () => {
     expect(readFileSync(soulFilePath(), "utf8")).toBe("旧版人设");
     expect(readFileSync(rulesFilePath(), "utf8")).toBe("旧版指令");
     const row = await kvGet(PERSONALIZATION_KV_KEY);
+    // 旧版 kv 无 styles/styleOverrides：迁移后收敛为结构化字段 + 空列表
     expect(JSON.parse(row!.value)).toEqual({
       style: "friendly",
       userName: "老王",
       assistantName: "Buddy",
+      styles: [],
+      styleOverrides: [],
     });
     expect(getPersonalization().persona).toBe("旧版人设");
     expect(getPersonalization().assistantName).toBe("Buddy");

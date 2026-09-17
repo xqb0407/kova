@@ -46,8 +46,8 @@
  *       未选择时 provider/modelId 为空串（前端据此校准 UI 真值）
  *   { "type": "set_thinking", "id", "level" }                 → { id, type: "thinking", level }（深度思考档位，广播到活动会话）
  *   { "type": "set_thinking_maps", "id", "maps" }             → { id, type: "thinking_maps", applied }（模型级 thinkingLevelMap 覆盖整包下发）
- *   { "type": "get_personalization", "id" }                   → { id, type: "personalization", settings, paths }（个性化设置：回复风格/称呼/人设/自定义指令；paths = 人设/指令身份文件绝对路径）
- *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings, paths }（人设/指令落全局身份文件、结构化字段落 SQLite kv + 活动会话系统提示词热替换）
+ *   { "type": "get_personalization", "id" }                   → { id, type: "personalization", settings, paths }（个性化设置：回复风格/自定义风格列表/内置档位覆盖/称呼/人设/自定义指令；paths = 人设/指令身份文件绝对路径）
+ *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings, paths }（人设/指令落全局身份文件、结构化字段含自定义风格列表与内置覆盖落 SQLite kv + 活动会话系统提示词热替换）
  *   { "type": "get_memory", "id" }                            → { id, type: "memory", settings }（记忆设置：总开关/作用域叠加/文件检索/指定文件白名单）
  *   { "type": "set_memory", "id", "settings" }                → { id, type: "memory", settings }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization）
  *   { "type": "list_memory_files", "id", "cwd"? }             → { id, type: "memory_files", scopes: { global, workspace } }
@@ -110,12 +110,14 @@
  *   { "type": "set_credential", "id", "provider", "apiKey" }  → { id, type: "credential", provider }
  *   { "type": "list_credentials", "id" }                      → { id, type: "credentials", credentials: [...] }
  *   { "type": "delete_credential", "id", "provider" }         → { id, type: "credential_deleted", provider }
- *   { "type": "fetch_models", "id", "baseUrl", "apiKey", "api" } → { id, type: "fetched_models", models: [...] }
+ *   { "type": "fetch_models", "id", "baseUrl", "apiKey", "api", "providerId"? } → { id, type: "fetched_models", models: [...] }
  *       api = openai-chat | openai-responses | anthropic-messages，决定列表端点与鉴权方式
+ *       apiKey 留空 + providerId = 用已存凭据（编辑弹窗不回填明文 key）
  *   { "type": "add_custom_provider", "providerId"?, "name", "baseUrl", "apiKey", "api", "models": [{ "id", ... }] }
  *                                                             → { id, type: "custom_provider", provider }
  *       providerId = 编辑目标的业务 id（协议 reqId 占用了 "id" 字段，故改名）；缺省为新建
  *   { "type": "list_custom_providers", "id" }                 → { id, type: "custom_providers", providers: [...] }
+ *       providers[].apiKeyMasked = 掩码（****+后4位）；明文 key 不回传渲染进程
  *   { "type": "toggle_custom_provider", "id", "provider", "enabled" } → { id, type: "custom_provider_toggled", provider, enabled }
  *   { "type": "set_mode", "id", "threadId", "sessionId"?, "mode" }       → { id, type: "mode_changed", mode, planning }
  *       mode = agent | plan；切换会热替换工具集与系统提示词
@@ -130,7 +132,8 @@
  *       上下文面板读数：容量/阈值/消息/系统提示词/工具占用 + 平均缓存命中率（现算，零持久化）
  *   { "type": "compact", "id", "threadId", "sessionId"? }     → { id, type: "compacted", generation, tokensBefore, summarized }
  *       手动压缩上下文（仅空闲回合边界；prompt 运行中拒绝）
- *   { "type": "test_provider", "id", "baseUrl", "apiKey", "api", "model" } → { id, type: "tested", ok: true }
+ *   { "type": "test_provider", "id", "baseUrl", "apiKey", "api", "model", "providerId"? } → { id, type: "tested", ok: true }
+ *       apiKey 留空 + providerId = 用已存凭据（编辑弹窗不回填明文 key）
  *   { "type": "delete_custom_provider", "id", "provider" }    → { id, type: "custom_provider_deleted", provider }
  *   prompt 流内模式推送：{ id, chunk: { type: "data-planningState", data: { mode, approvalLevel, planning } } }
  *                 委派绑定：{ id, chunk: { type: "data-subagentDelegation", data: { toolCallId, delegationId, agentName, description? } } }
@@ -326,6 +329,11 @@ import {
   automationTemplatesPayload,
 } from "./automation/commands";
 import type { CustomModelSpec, Running, SessionSummary } from "./types";
+
+/** apiKey 展示掩码：只回后 4 位（识别 + 编辑弹窗占位），明文 key 不出 sidecar */
+export function maskApiKey(key: string): string {
+  return key.length > 4 ? `****${key.slice(-4)}` : "****";
+}
 
 /** 子智能体清单应答负载：设置页与所有变更命令共用同一形状（改后即见） */
 async function subagentsPayload(cwd?: string) {
@@ -1810,7 +1818,12 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       //   openai-chat / openai-responses → GET {baseUrl}/models（baseUrl 含 /v1），Bearer
       //   anthropic-messages → GET {baseUrl}/v1/models，x-api-key + anthropic-version
       const baseUrl = String(msg.baseUrl ?? "").trim().replace(/\/+$/, "");
-      const apiKey = String(msg.apiKey ?? "").trim();
+      let apiKey = String(msg.apiKey ?? "").trim();
+      const providerId = String(msg.providerId ?? "").trim();
+      if (!apiKey && providerId) {
+        const stored = await credentialGet(providerId);
+        if (stored) apiKey = stored.apiKey;
+      }
       const apiKind = normalizeApi(msg.api);
       if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
       const anthropic = apiKind === "anthropic-messages";
@@ -1906,7 +1919,8 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
               input: parseModelInput(row.input) ?? [...CUSTOM_MODEL_DEFAULTS.input],
               cost: { ...(parseModelCost(row.cost) ?? CUSTOM_MODEL_DEFAULTS.cost) },
             }));
-          // 明文返回 key 供编辑弹窗回填（仅存本地库）
+          // 只回掩码：明文 key 不进渲染进程（编辑弹窗输入框留空 = 保持原 key，
+          // 见 add_custom_provider 的空串语义）
           const keyRow = await credentialGet(r.id);
           return {
             providerId: r.id,
@@ -1915,7 +1929,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
             models: specs,
             api: normalizeApi(r.api),
             hasApiKey: keyRow !== null,
-            apiKey: keyRow?.apiKey,
+            apiKeyMasked: keyRow ? maskApiKey(keyRow.apiKey) : undefined,
             enabled: r.enabled,
           };
         }),
@@ -1982,9 +1996,15 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "test_provider": {
-      // 测试服务连通性：按接口格式发一条最小请求
+      // 测试服务连通性：按接口格式发一条最小请求。apiKey 留空且给了
+      // providerId 时取已存凭据——编辑弹窗不再回传明文 key，测试要能用旧 key
       const baseUrl = String(msg.baseUrl ?? "").trim().replace(/\/+$/, "");
-      const apiKey = String(msg.apiKey ?? "").trim();
+      let apiKey = String(msg.apiKey ?? "").trim();
+      const providerId = String(msg.providerId ?? "").trim();
+      if (!apiKey && providerId) {
+        const stored = await credentialGet(providerId);
+        if (stored) apiKey = stored.apiKey;
+      }
       const model = String(msg.model ?? "").trim();
       const apiKind = normalizeApi(msg.api);
       if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");

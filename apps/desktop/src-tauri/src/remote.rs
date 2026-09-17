@@ -10,10 +10,15 @@
 //!           | {"type":"error","errorText":".."} | {"type":"closed","reason":".."}
 //!           authed 后全部为 sidecar 原样响应/chunk 行（id 已还原为客户端原始 id）
 //!
-//! 安全（MVP）：
+//! 安全：
 //!   - 配对码 6 位数字只存内存（重启即失效），每连接校验失败 5 次断开，未认证阶段 10s 超时
-//!   - token 64hex 持久化于 kv（key: remote.token），仅首次配对下发
-//!   - abort 无 id，sidecar 侧为全局中断——远程与本地会互相打断（MVP 接受）
+//!   - token 64hex 持久化于 kv（key: remote.token，secret.rs 加密落盘），仅首次配对下发；
+//!     pi_remote_revoke 删除 token 并踢掉全部在连设备（需重新扫码配对）
+//!   - authed 后仅转发会话/聊天类消息；凭据/MCP/技能/子代理/记忆/个性化/模型属性等
+//!     管理类消息命中 REMOTE_DENIED_TYPES 一律拒绝（远程是"对话延伸"，桌面端才能改配置）
+//!   - 绑定模式：默认绑 0.0.0.0（局域网跨设备）；"仅本机"（remote.bind.lan=false）
+//!     只绑 127.0.0.1。HTTP/WS 均无 TLS——token 与消息在局域网明文，注意网络环境
+//!   - abort 无 id，sidecar 侧为全局中断——远程与本地会互相打断
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -44,6 +49,57 @@ const DEFAULT_PORT: u16 = 8787;
 const MAX_PAIR_ATTEMPTS: u8 = 5;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const TOKEN_KEY: &str = "remote.token";
+/// 绑定模式：true = 0.0.0.0（局域网跨设备，默认），false = 仅本机回环
+const BIND_LAN_KEY: &str = "remote.bind.lan";
+
+/// authed 后禁止远程转发的消息类型：凭据/提供商管理、MCP 管理（可拉起本地进程）、
+/// 技能/子代理写（注入可执行提示词内容）、记忆写、个性化/模型属性/过滤写、
+/// 自动化写。命中即断开该消息并回错。会话/聊天类与只读查询不在其列。
+/// 第二层防线是 list_custom_providers 只回掩码——即使漏网也读不到明文 key。
+const REMOTE_DENIED_TYPES: &[&str] = &[
+    // 凭据与 AI 服务管理
+    "set_credential",
+    "delete_credential",
+    "list_credentials",
+    "add_custom_provider",
+    "delete_custom_provider",
+    "toggle_custom_provider",
+    "test_provider",
+    "fetch_models",
+    // MCP：管理面（save/delete/test 可拉起本地进程）+ 授权流程 + 日志读取
+    "save_mcp_server",
+    "delete_mcp_server",
+    "set_mcp_server_enabled",
+    "test_mcp_server",
+    "authorize_mcp_server",
+    "revoke_mcp_server_auth",
+    "list_mcp_servers",
+    "get_mcp_server_tools",
+    "get_mcp_server_log",
+    "get_mcp_audit_log",
+    // 技能 / 子代理定义写
+    "save_skill",
+    "delete_skill",
+    "set_skill_enabled",
+    "set_skills_enabled",
+    "save_subagent",
+    "delete_subagent",
+    "set_subagent_enabled",
+    // 记忆与个性化写
+    "write_memory_file",
+    "set_memory",
+    "set_personalization",
+    // 模型属性 / 目录覆盖写
+    "update_model",
+    "set_provider_filter",
+    "set_thinking_maps",
+    // 自动化写（定时任务在桌面机执行带工具回合，仅桌面端可管理）
+    "automation_save",
+    "automation_delete",
+    "automation_set_enabled",
+    "automation_run_now",
+    "automation_history_delete",
+];
 
 // ---------- stdout 行 → 远程连接 的路由表 ----------
 
@@ -225,9 +281,11 @@ pub struct RemoteStatus {
     pub port: Option<u16>,
     pub code: Option<String>,
     pub connections: u32,
-    /// 局域网 WS 连接地址（ws://ip:port/ws，主网卡优先）
+    /// 绑定模式：true = 局域网可达（0.0.0.0），false = 仅本机（127.0.0.1）
+    pub lan: bool,
+    /// 局域网 WS 连接地址（ws://ip:port/ws，主网卡优先；仅本机模式只回回环地址）
     pub lan_addresses: Vec<String>,
-    /// 浏览器预览地址（http://ip:port，主网卡优先）
+    /// 浏览器预览地址（http://ip:port，主网卡优先；仅本机模式只回回环地址）
     pub http_addresses: Vec<String>,
 }
 
@@ -236,6 +294,8 @@ struct RemoteInner {
     task: StdMutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     port: StdMutex<Option<u16>>,
     code: StdMutex<Option<String>>,
+    /// 当前网关生效的绑定模式（与 kv remote.bind.lan 同步）
+    lan: StdMutex<bool>,
     conns: AtomicUsize,
 }
 
@@ -246,6 +306,7 @@ impl Default for RemoteInner {
             task: StdMutex::new(None),
             port: StdMutex::new(None),
             code: StdMutex::new(None),
+            lan: StdMutex::new(true),
             conns: AtomicUsize::new(0),
         }
     }
@@ -259,9 +320,15 @@ pub struct RemoteState {
 impl RemoteState {
     fn status(&self) -> RemoteStatus {
         let port = self.inner.port.lock().ok().and_then(|p| *p);
+        let lan = self.inner.lan.lock().map(|l| *l).unwrap_or(true);
         let (lan_addresses, http_addresses) = match port {
             Some(p) => {
-                let ips = lan_ips();
+                // 仅本机模式不枚举网卡地址（也没有可分享的局域网入口）
+                let ips: Vec<IpAddr> = if lan {
+                    lan_ips()
+                } else {
+                    vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]
+                };
                 (
                     ips.iter().map(|ip| format!("ws://{ip}:{p}/ws")).collect(),
                     ips.iter().map(|ip| format!("http://{ip}:{p}")).collect(),
@@ -279,6 +346,7 @@ impl RemoteState {
             port,
             code: self.inner.code.lock().ok().and_then(|c| c.clone()),
             connections: self.inner.conns.load(Ordering::Relaxed) as u32,
+            lan,
             lan_addresses,
             http_addresses,
         }
@@ -297,14 +365,34 @@ pub async fn pi_remote_start(
     app: AppHandle,
     state: State<'_, RemoteState>,
     port: Option<u16>,
+    lan: Option<bool>,
 ) -> Result<RemoteStatus, String> {
-    if state.inner.shutdown.lock().map_err(|e| e.to_string())?.is_some() {
-        return Ok(state.status());
+    // 绑定模式：显式传入则持久化（remote.bind.lan），否则沿用上次的选择（默认局域网）。
+    // 网关在跑且模式有变 → 先停再起，让切换即时生效。
+    if let Some(v) = lan {
+        store::kv_set_global(&app, BIND_LAN_KEY, if v { "true" } else { "false" })?;
+    }
+    let lan = match lan {
+        Some(v) => v,
+        None => match store::kv_get_global(&app, BIND_LAN_KEY)? {
+            Some(s) => s != "false",
+            None => true,
+        },
+    };
+    let running = state.inner.shutdown.lock().map_err(|e| e.to_string())?.is_some();
+    if running {
+        let same_mode = state.inner.lan.lock().map(|l| *l == lan).unwrap_or(true);
+        if same_mode {
+            return Ok(state.status());
+        }
+        stop_sync(&state.inner);
     }
     let port = port.unwrap_or(DEFAULT_PORT);
-    let listener = TcpListener::bind(("0.0.0.0", port))
+    let bind_ip = if lan { "0.0.0.0" } else { "127.0.0.1" };
+    let listener = TcpListener::bind((bind_ip, port))
         .await
-        .map_err(|e| format!("failed to bind 0.0.0.0:{port}: {e}"))?;
+        .map_err(|e| format!("failed to bind {bind_ip}:{port}: {e}"))?;
+    *state.inner.lan.lock().map_err(|e| e.to_string())? = lan;
     let code = generate_code();
 
     let ctx = GatewayCtx {
@@ -328,7 +416,7 @@ pub async fn pi_remote_start(
     *state.inner.task.lock().map_err(|e| e.to_string())? = Some(task);
     *state.inner.port.lock().map_err(|e| e.to_string())? = Some(port);
     *state.inner.code.lock().map_err(|e| e.to_string())? = Some(code);
-    log::info!("[remote] gateway started on 0.0.0.0:{port}");
+    log::info!("[remote] gateway started on {bind_ip}:{port} (lan={lan})");
     Ok(state.status())
 }
 
@@ -340,8 +428,19 @@ pub async fn pi_remote_stop(state: State<'_, RemoteState>) -> Result<(), String>
 }
 
 #[tauri::command]
-pub async fn pi_remote_status(state: State<'_, RemoteState>) -> Result<RemoteStatus, String> {
-    Ok(state.status())
+pub async fn pi_remote_status(
+    app: AppHandle,
+    state: State<'_, RemoteState>,
+) -> Result<RemoteStatus, String> {
+    let mut st = state.status();
+    if !st.running {
+        // 未运行时展示持久化的绑定模式（下次 start 生效的就是它）
+        st.lan = match store::kv_get_global(&app, BIND_LAN_KEY)? {
+            Some(s) => s != "false",
+            None => true,
+        };
+    }
+    Ok(st)
 }
 
 #[tauri::command]
@@ -358,6 +457,23 @@ pub async fn pi_remote_refresh_code(state: State<'_, RemoteState>) -> Result<Str
     let code = generate_code();
     *state.inner.code.lock().map_err(|e| e.to_string())? = Some(code.clone());
     Ok(code)
+}
+
+/// 撤销全部已配对设备：删除持久化 token 并踢掉当前所有连接。
+/// 之后旧 token 全部失效（含内存中已认证的连接），新设备需重新扫码配对。
+#[tauri::command]
+pub async fn pi_remote_revoke(app: AppHandle, state: State<'_, RemoteState>) -> Result<RemoteStatus, String> {
+    store::kv_delete_global(&app, TOKEN_KEY)?;
+    let ids: Vec<u64> = conns()
+        .lock()
+        .map(|m| m.keys().copied().collect())
+        .map_err(|e| e.to_string())?;
+    let n = ids.len();
+    for id in ids {
+        kick_conn(id);
+    }
+    log::info!("[remote] token revoked; {n} connection(s) kicked");
+    Ok(state.status())
 }
 
 /// 应用退出时同步停网关（lib.rs 的 RunEvent::Exit 钩子调用）
@@ -403,15 +519,20 @@ fn generate_code() -> String {
     format!("{n:06}")
 }
 
-/// token 持久化于 kv；首次生成后复用（重启网关/应用后旧 token 仍有效）
+/// token 持久化于 kv（secret.rs 加密落盘）；首次生成后复用（重启网关/应用
+/// 后旧 token 仍有效）。存量旧明文在下次写入时自动升级为密文；密文解密失败
+/// （keychain 重置/库搬机）则换新 token——所有已配对设备需重新扫码配对。
 fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
     if let Some(t) = store::kv_get_global(app, TOKEN_KEY)? {
         if !t.is_empty() {
-            return Ok(t);
+            match crate::secret::decrypt(&t) {
+                Ok(plain) => return Ok(plain),
+                Err(e) => log::warn!("[remote] stored token undecryptable, rotating: {e}"),
+            }
         }
     }
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    store::kv_set_global(app, TOKEN_KEY, &token)?;
+    store::kv_set_global(app, TOKEN_KEY, &crate::secret::encrypt(&token))?;
     Ok(token)
 }
 
@@ -479,6 +600,13 @@ fn frontend_dir(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+/// 远程网页的 CSP：与 tauri.conf.json 同策略（脚本只准同源+Next 导出内联；
+/// 禁 object/base 劫持；connect 放开 ws/wss 供连接页指向任意网关）
+const PAGE_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
+    style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data:; \
+    connect-src 'self' ws: wss:; worker-src 'self' blob:; frame-src 'self' data: blob:; \
+    media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'";
+
 /// Next 静态导出布局：精确文件 → path.html → path/index.html → 无扩展名时回退 index.html
 async fn serve_static(AxumState(ctx): AxumState<GatewayCtx>, uri: axum::http::Uri) -> Response {
     let Some(dir) = frontend_dir(&ctx.app) else {
@@ -501,7 +629,11 @@ async fn serve_static(AxumState(ctx): AxumState<GatewayCtx>, uri: axum::http::Ur
             if let Ok(bytes) = tokio::fs::read(&p).await {
                 let mime = mime_of(&p.to_string_lossy());
                 return (
-                    [(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")],
+                    [
+                        (header::CONTENT_TYPE, mime),
+                        (header::CACHE_CONTROL, "no-cache"),
+                        (header::CONTENT_SECURITY_POLICY, PAGE_CSP),
+                    ],
                     bytes,
                 )
                     .into_response();
@@ -515,6 +647,7 @@ async fn serve_static(AxumState(ctx): AxumState<GatewayCtx>, uri: axum::http::Ur
                 [
                     (header::CONTENT_TYPE, "text/html; charset=utf-8"),
                     (header::CACHE_CONTROL, "no-cache"),
+                    (header::CONTENT_SECURITY_POLICY, PAGE_CSP),
                 ],
                 bytes,
             )
@@ -715,6 +848,12 @@ async fn forward_to_agent(
     mut v: Value,
     tx: &mpsc::Sender<String>,
 ) -> Result<(), String> {
+    // 管理类消息在网关即拒（REMOTE_DENIED_TYPES 黑名单，见常量注释）：
+    // 远程只是对话延伸，凭据/MCP/技能/自动化等配置变更仅限桌面端。
+    let mtype = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+    if REMOTE_DENIED_TYPES.contains(&mtype) {
+        return Err("该操作仅限桌面端".into());
+    }
     // abort 无 id，全局透传，不占路由
     if v.get("type").and_then(|x| x.as_str()) == Some("abort") {
         let pi = app.state::<PiState>();

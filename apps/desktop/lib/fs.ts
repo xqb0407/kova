@@ -46,3 +46,66 @@ export async function fsReadFile(
     return null;
   }
 }
+
+/* ---------------- 写命令（文件树右键菜单）：成功返回 null，失败返回错误码 ---------------- */
+
+async function fsWriteCommand(
+  cmd: "fs_mkdir" | "fs_touch" | "fs_rename" | "fs_delete" | "fs_reveal",
+  args: Record<string, string>,
+): Promise<string | null> {
+  if (!isTauri()) return "not-tauri";
+  try {
+    await invoke(cmd, args);
+    return null;
+  } catch (err) {
+    return typeof err === "string" ? err : "unknown";
+  }
+}
+
+/** 新建目录（父目录一并创建）；成功返回 null，失败返回错误码 */
+export function fsMkdir(cwd: string, path: string): Promise<string | null> {
+  return fsWriteCommand("fs_mkdir", { cwd, path });
+}
+
+/** 新建空文件（已存在则报 already-exists）；成功返回 null，失败返回错误码 */
+export function fsTouch(cwd: string, path: string): Promise<string | null> {
+  return fsWriteCommand("fs_touch", { cwd, path });
+}
+
+/** 同目录内改名（newName 必须是纯名字）；成功返回 null，失败返回错误码 */
+export function fsRename(
+  cwd: string,
+  path: string,
+  newName: string,
+): Promise<string | null> {
+  return fsWriteCommand("fs_rename", { cwd, path, newName });
+}
+
+/** 删除文件/目录（目录递归，永久删除）；成功返回 null，失败返回错误码 */
+export function fsDelete(cwd: string, path: string): Promise<string | null> {
+  return fsWriteCommand("fs_delete", { cwd, path });
+}
+
+/** 在系统文件管理器中显示；成功返回 null，失败返回错误码 */
+export function fsReveal(cwd: string, path: string): Promise<string | null> {
+  return fsWriteCommand("fs_reveal", { cwd, path });
+}
+
+/** 错误码 → 提示文案（fs.rs 写命令统一返回短码） */
+export function fsErrorText(code: string): string {
+  const map: Record<string, string> = {
+    "cwd-not-allowed": "当前目录不受信任，操作被拒绝",
+    "bad-path": "路径不合法",
+    "bad-name": "名称不合法（不能包含 \\ / : * ? \" < > |）",
+    "already-exists": "同名文件或文件夹已存在",
+    "not-found": "目标不存在（可能已被移动或删除）",
+    "not-a-directory": "目标不是文件夹",
+    "mkdir-failed": "新建文件夹失败",
+    "write-failed": "新建文件失败",
+    "rename-failed": "重命名失败",
+    "delete-failed": "删除失败",
+    "reveal-failed": "打开系统文件管理器失败",
+    "not-tauri": "仅桌面端可用",
+  };
+  return map[code] ?? "操作失败";
+}

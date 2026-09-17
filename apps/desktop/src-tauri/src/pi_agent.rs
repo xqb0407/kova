@@ -278,9 +278,11 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                     }
                 }
                 CommandEvent::Stderr(line) => {
-                    // 落盘 pi-agent.log（sidecar 零改动，stderr 由宿主转发）
-                    logging::write_sidecar_line(&String::from_utf8_lossy(&line));
-                    log::debug!("[pi_agent] stderr: {}", String::from_utf8_lossy(&line));
+                    // 落盘 pi-agent.log（sidecar 零改动，stderr 由宿主转发）；
+                    // 先脱敏：崩溃栈/依赖告警可能把带 key 的请求头写进日志
+                    let text = redact_secrets(&String::from_utf8_lossy(&line));
+                    logging::write_sidecar_line(&text);
+                    log::debug!("[pi_agent] stderr: {text}");
                 }
                 CommandEvent::Error(err) => {
                     log::error!("[pi_agent] {err}");
@@ -485,5 +487,60 @@ pub fn kill_on_exit(state: &PiState) {
         if let Some(child) = guard.take() {
             let _ = child.kill();
         }
+    }
+}
+
+/// sidecar stderr 脱敏：把常见密钥形态（`sk-…` 长 token、`Bearer …`）打码后
+/// 再落盘/写日志——sidecar 崩溃栈或依赖库告警可能把请求头带进 stderr。
+/// 与 sidecar 侧 agent-errors.ts 的脱敏互为双保险。
+fn redact_secrets(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let rest = &input[i..];
+        if rest.starts_with("sk-") {
+            let mut j = i + 3;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'-' || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j - i > 10 {
+                out.push_str("sk-***");
+                i = j;
+                continue;
+            }
+        }
+        if rest.starts_with("Bearer ") {
+            let mut j = i + 7;
+            while j < bytes.len() && !bytes[j].is_ascii_whitespace() && bytes[j] != b'"' && bytes[j] != b',' {
+                j += 1;
+            }
+            out.push_str("Bearer ***");
+            i = j;
+            continue;
+        }
+        let c = rest.chars().next().unwrap();
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_secrets;
+
+    #[test]
+    fn masks_key_shaped_tokens() {
+        assert_eq!(
+            redact_secrets("auth failed sk-abcdefghij1234 x"),
+            "auth failed sk-*** x"
+        );
+        assert_eq!(
+            redact_secrets("{\"Authorization\":\"Bearer tok-1234567890\"}"),
+            "{\"Authorization\":\"Bearer ***\"}"
+        );
+        // 短 sk- 前缀（占位符/普通词）不误伤；非敏感文本原样
+        assert_eq!(redact_secrets("sk-... placeholder; sk short"), "sk-... placeholder; sk short");
     }
 }

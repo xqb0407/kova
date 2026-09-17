@@ -415,6 +415,9 @@ export function resolveHostResult(msg: Record<string, unknown>): boolean {
 
 /* ------------------------------ local 模式实现 ------------------------------ */
 
+// 注意：local 模式 credentials.api_key 明文落盘——生产加密统一收口在 Rust
+// （secret.rs + data.rs），sidecar 侧无 keychain 可用，故 local 路径仅供测试/冒烟。
+
 /** 与 Rust data.rs 镜像的本地查询（bun:sqlite；仅测试/冒烟路径） */
 function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknown> {
   const db = localDb;
