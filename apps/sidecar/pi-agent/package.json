@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun build src/index.ts --compile --outfile ../../src-tauri/binaries/pi-agent-$(bun -p \"require('child_process').execSync('rustc -vV',{encoding:'utf8'}).match(/^host: (.+)$/m)[1]\")",
+    "build": "bun build src/index.ts --compile --outfile ../../../apps/desktop/src-tauri/binaries/pi-agent-$(bun -p \"require('child_process').execSync('rustc -vV',{encoding:'utf8'}).match(/^host: (.+)$/m)[1]\")",
     "smoke": "bun run src/index.ts",
     "test": "bun test"
   },
