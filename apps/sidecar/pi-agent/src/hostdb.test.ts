@@ -180,9 +180,10 @@ describe("host mode: host_query RPC", () => {
     expect(sent.params).toEqual({ sessionId: "hq-1" });
     expect(String(sent.id)).toMatch(/^hq-\d+$/);
 
-    // 模拟宿主回写
-    expect(resolveHostResult({ type: "host_result", id: sent.id, ok: true, data: { cwd: "d:/x", title: "" } })).toBe(true);
-    await expect(promise).resolves.toEqual({ cwd: "d:/x", title: "" });
+    // 模拟宿主回写（补齐 SessionPrefsRow 全字段，让断言按完整行类型对齐）
+    const row = { cwd: "d:/x", title: "", mode: null, approvalLevel: null, modelProvider: null, modelId: null };
+    expect(resolveHostResult({ type: "host_result", id: sent.id, ok: true, data: row })).toBe(true);
+    await expect(promise).resolves.toEqual(row);
   });
 
   test("error host_result rejects", async () => {
