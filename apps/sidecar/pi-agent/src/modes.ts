@@ -37,6 +37,7 @@ import { kvSet, sessionPrefsSet } from "./hostdb";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "./subagent-mgmt-tools";
 import { SKILL_MGMT_TOOL_NAMES } from "./skill-mgmt-tools";
 import { getAutomationPolicy, automationDenyReason } from "./automation/policy";
+import { buildHookPayload, runHooks } from "./hooks";
 import { personalizationPromptBlock } from "./personalization";
 import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "./mcp-tools";
@@ -411,6 +412,23 @@ export async function approvalBeforeToolCall(
   if (run.approvalLevel === "auto-edit" && context.toolCall.name !== "bash") {
     return undefined;
   }
+
+  // Claude Code 式 PermissionRequest 钩子：即将向用户弹审批，先给外部命令
+  // 一次自动裁决机会（block → 拒绝并把 reason 回给模型；approve → 放行不弹窗）
+  const hookDecision = await runHooks(
+    "PermissionRequest",
+    buildHookPayload({
+      event: "PermissionRequest",
+      sessionId: run.sessionId,
+      threadId: run.threadId,
+      toolName: context.toolCall.name,
+      toolArgs: context.args,
+    }),
+  );
+  if (hookDecision?.decision === "block") {
+    return { block: true, reason: hookDecision.reason ?? "Denied by hook" };
+  }
+  if (hookDecision?.decision === "approve") return undefined;
 
   const approvalId = randomUUID();
   sendEventChunk(run.threadId, {

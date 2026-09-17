@@ -20,6 +20,7 @@ import { ThreadSuggestions } from "./thread-suggestions";
 import { Composer, EditComposer } from "./composer";
 import { AssistantMessage } from "./assistant-message";
 import { CompactionDataUI, ManualCompactionTailAfter } from "./compaction-banner";
+import { ImageDataUI } from "@/components/assistant-ui/elements/image-data";
 import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
 import { CheckpointTail } from "./checkpoint-card";
@@ -96,6 +97,8 @@ export const Thread: FC = () => {
     >
       {/* 注册 data-compaction 渲染器（自身不可见），横幅随对应 assistant 消息出现 */}
       <CompactionDataUI />
+      {/* 注册 data-image 渲染器（同法）：工具产出的图片随消息流内联展示 */}
+      <ImageDataUI />
 
       <ThreadPrimitive.Viewport
         turnAnchor="top"

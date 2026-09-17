@@ -23,8 +23,8 @@ describe("cleanSummarizedTitle", () => {
     expect(cleanSummarizedTitle("查询数据？")).toBe("查询数据");
   });
 
-  test("截断到 80 字符", () => {
-    expect(cleanSummarizedTitle("x".repeat(120)).length).toBe(80);
+  test("截断到 25 字符", () => {
+    expect(cleanSummarizedTitle("x".repeat(120)).length).toBe(25);
   });
 });
 

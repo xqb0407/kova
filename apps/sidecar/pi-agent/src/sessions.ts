@@ -50,6 +50,7 @@ import {
 import { logErr } from "./log";
 import { sessionPath } from "./storage";
 import { kvGet, sessionGet, sessionInsert, sessionUpdateCwd } from "./hostdb";
+import { buildHookPayload, fireHookEvent, runHooks } from "./hooks";
 import { getAutomationPolicy } from "./automation/policy";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ApprovalLevel, Running, SessionMode } from "./types";
@@ -617,7 +618,46 @@ export async function resolveSession(
       tools: baseTools,
       messages: restoredMessages,
     },
-    beforeToolCall: async (context) => approvalBeforeToolCall(run, context),
+    // Claude Code 式 PreToolUse 钩子：block/approve 决策优先于审批链；
+    // 无决策时落回既有审批管线（modes.approvalBeforeToolCall）
+    beforeToolCall: async (context) => {
+      const decision = await runHooks(
+        "PreToolUse",
+        buildHookPayload({
+          event: "PreToolUse",
+          sessionId: sessionId!,
+          threadId,
+          toolName: context.toolCall.name,
+          toolArgs: context.args,
+        }),
+      );
+      if (decision?.decision === "block") {
+        return { block: true, reason: decision.reason ?? "Blocked by hook" };
+      }
+      // approve = 跳过审批直接放行（CC 语义），undefined 交回审批链
+      if (decision?.decision === "approve") return undefined;
+      return approvalBeforeToolCall(run, context);
+    },
+    // PostToolUse / PostToolUseFailure（isError 分流）：通知式，不改写工具结果
+    afterToolCall: async (context) => {
+      const summary = context.result.content
+        .filter((part): part is { type: "text"; text: string } => part.type === "text")
+        .map((part) => part.text)
+        .join("\n");
+      fireHookEvent(
+        context.isError ? "PostToolUseFailure" : "PostToolUse",
+        buildHookPayload({
+          event: context.isError ? "PostToolUseFailure" : "PostToolUse",
+          sessionId: sessionId!,
+          threadId,
+          toolName: context.toolCall.name,
+          toolArgs: context.args,
+          isError: context.isError,
+          resultSummary: summary,
+        }),
+      );
+      return undefined;
+    },
   });
   run.agent = agent;
 
@@ -632,6 +672,16 @@ export async function resolveSession(
   agent.subscribe((event) => onAgentEvent(event, run));
   running.set(threadId, run);
   trackSessionRun(sessionId, threadId);
+  // Claude Code 式 SessionStart 钩子：create = 新建会话，resume = 恢复历史
+  fireHookEvent(
+    "SessionStart",
+    buildHookPayload({
+      event: "SessionStart",
+      sessionId: sessionId!,
+      threadId,
+      source: restoredMessages.length > 0 ? "resume" : "create",
+    }),
+  );
   // 恢复的历史会话同样补绑：老会话建时未选目录（row.cwd 空）而这次请求带了 cwd
   if (cwd && !persistedCwd) await rebindRunCwd(run, cwd, threadId);
   // 迭代2：本次 resolve 代表用户当前意图，豁免驱逐；驱逐从最久未访问处开始

@@ -7,6 +7,24 @@ import type { RetryBudget } from "./provider-retry";
 export type UIMessage = ai.UIMessage;
 export type UIMessageChunk = ai.UIMessageChunk;
 
+/**
+ * 图片 UI 投影 part 的 data 载荷（chunk `{type:"data-image", id, data}` /
+ * UIMessage data part）。投影与大小闸门见 image-parts.ts，设计 docs/image-part-design.md。
+ */
+export type PiImagePartData = {
+  /** 内联 data URL：`data:<mimeType>;base64,...` */
+  src: string;
+  mimeType: string;
+  /** 解码后原始字节（base64 长度 ×3/4 近似；渲染角标用） */
+  bytes: number;
+  /** 产出该图的工具调用 id；非工具来源（P1 模型直出）为 null */
+  toolCallId: string | null;
+  /** 产出图的工具名 */
+  toolName?: string;
+  /** 可访问名：结果首个文本块首行（≤120 字符） */
+  alt?: string;
+};
+
 /** 自定义端点的模型规格（custom_providers 模型行 / add_custom_provider 的 models 元素） */
 export type CustomModelSpec = {
   id: string;

@@ -30,6 +30,8 @@ const MAX_LIST_ENTRIES: usize = 5000;
 const MAX_READ_BYTES: usize = 2 * 1024 * 1024;
 /// 二进制嗅探采样字节数
 const BINARY_SNIFF_BYTES: usize = 8192;
+/// 原始字节预览读取上限（字节）：base64 过 IPC 体积再 ×4/3，图片超限不如不去预览
+const MAX_PREVIEW_BYTES: usize = 20 * 1024 * 1024;
 /// 列目录跳过的第三方巨树目录（条目常达十万级，过 IPC 只有害处）
 const SKIP_DIRS: &[&str] = &[".git", "node_modules"];
 
@@ -141,6 +143,37 @@ pub async fn fs_read_file(app: AppHandle, cwd: String, path: String) -> Result<V
             }
         }
         Ok(json!({ "content": s, "truncated": truncated, "binary": false }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}
+
+/// 读文件原始字节并以 base64 返回（面板图片预览用；不判文本/二进制，字节直传）。
+/// 超 MAX_PREVIEW_BYTES 报 too-large，与 fs_read_file 的静默截断语义不同：
+/// 图片截半不如整张不显示。
+#[tauri::command]
+pub async fn fs_read_file_base64(
+    app: AppHandle,
+    cwd: String,
+    path: String,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine as _;
+        let root = resolve_root(&app, &cwd)?;
+        let target = join_rel(&root, &path)?;
+        let f = std::fs::File::open(&target).map_err(|_| "read-failed")?;
+        let len = f.metadata().map_err(|_| "read-failed")?.len() as usize;
+        if len > MAX_PREVIEW_BYTES {
+            return Err("too-large".into());
+        }
+        let mut bytes: Vec<u8> = Vec::with_capacity(len);
+        f.take((MAX_PREVIEW_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "read-failed")?;
+        Ok(json!({
+            "base64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+            "size": bytes.len(),
+        }))
     })
     .await
     .map_err(|e| format!("fs task join error: {e}"))?

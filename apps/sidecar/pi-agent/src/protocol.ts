@@ -33,7 +33,8 @@
  *       分支对话：把源会话转录复制到全新 sessionId（seq 沿用、header 重写），
  *       索引行标题加「（分支）」后缀；与源会话此后再无关联
  *   { "type": "get_history", "id", "sessionId" }              → { id, type: "history", messages: UIMessage[] }
- *       历史从 agent 消息重建，含工具部件（tool part 的 input/output 与 live 流一致）；
+ *       历史从 agent 消息重建，含工具部件（tool part 的 input/output 与 live 流一致）与
+ *       工具图片的 data-image part（与 live 同构）；
  *       compaction 检查点行重建为 data-compaction 分隔线 part（刷新后分隔线不丢）
  *   { "type": "delete_session", "id", "sessionId" }           → { id, type: "deleted" }
  *   { "type": "rename_session", "id", "sessionId", "name" }   → { id, type: "renamed" }
@@ -53,6 +54,8 @@
  *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings, paths }（人设/指令落全局身份文件、结构化字段含自定义风格列表与内置覆盖落 SQLite kv + 活动会话系统提示词热替换）
  *   { "type": "get_memory", "id" }                            → { id, type: "memory", settings }（记忆设置：总开关/作用域叠加/文件检索/指定文件白名单）
  *   { "type": "set_memory", "id", "settings" }                → { id, type: "memory", settings }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization）
+ *   { "type": "get_hooks", "id" }                             → { id, type: "hooks", hooks: [...] }（Claude Code 式生命周期钩子配置，见 hooks.ts）
+ *   { "type": "set_hooks", "id", "hooks": [...] }             → { id, type: "hooks_saved" }（全量覆盖，落 SQLite kv；PreToolUse/PermissionRequest 在工具调用/审批路径同步生效）
  *   { "type": "list_memory_files", "id", "cwd"? }             → { id, type: "memory_files", scopes: { global, workspace } }
  *       两作用域记忆目录路径与文件清单（工作区未选时 workspace 为 null）；设置 → 记忆页渲染用
  *   { "type": "read_memory_file", "id", "scope", "cwd"?, "file" } → { id, type: "memory_file", file, content }
@@ -145,6 +148,9 @@
  *                 （toolName = plan_exit 时 input 带 { rationale, title, markdown, filePath }，前端渲染计划审批卡）
  *                 面板唤起：{ id, chunk: { type: "data-panelOpen", data: { type: "browser", url? } } }
  *                 （browser_* 工具动作时发起，前端把浏览器 tab 推到前台并展开面板）
+ *                 工具图片投影：{ id, chunk: { type: "data-image", id: "img-<toolCallId>-<n>", data: PiImagePartData } }
+ *                 （tool_execution_end 里 ≤2MiB 栅格 image 块随流投影，data 见 types.ts；
+ *                   get_history 按同 id 重建同构 part，闸门与拼装单点在 image-parts.ts）
  *
  * prompt 流（stdout）：{ "id": "<reqId>", "chunk": { ...AI SDK UIMessageChunk } }
  *
@@ -165,6 +171,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { getSupportedThinkingLevels, type Message } from "@earendil-works/pi-ai";
 import { logErr } from "./log";
+import { buildHookPayload, fireHookEvent, getHookConfigs, setHookConfigs } from "./hooks";
 import { sessionPath } from "./storage";
 import { resolveHostResult } from "./hostdb";
 import {
@@ -802,6 +809,18 @@ async function runPromptTurn(
     }
   };
 
+  // Claude Code 式 UserPromptSubmit 钩子：turn 实际开跑时触发（排队消息在
+  // 队首就位后），通知式，v1 不阻塞 prompt
+  fireHookEvent(
+    "UserPromptSubmit",
+    buildHookPayload({
+      event: "UserPromptSubmit",
+      sessionId: run.sessionId,
+      threadId,
+      prompt: msg.text,
+    }),
+  );
+
   try {
     await runStepWithRecovery(String(msg.text ?? ""));
     // 后台委派收敛循环（ADR 0089）：turn 结束时若还有运行中的子代理，等它们完成，
@@ -1008,8 +1027,10 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     case "list_sessions": {
       // 迭代 4（P4）：消息计数改读索引表 message_count 列（session_touch
       // 增量维护 + Rust 启动一次性回填），不再逐会话读 JSONL。
+      // 回调必须显式标注返回类型：链式 .filter 会截断外部 SessionSummary[] 的
+      // 上下文推断，map 返回对象里的字面量类型（"agent"|"plan"）会被放宽成 string
       const sessions: SessionSummary[] = (await sessionList())
-        .map((r) => ({
+        .map((r): SessionSummary => ({
           sessionId: r.id,
           name: r.title || undefined,
           firstMessage: r.first_message,
@@ -1400,6 +1421,15 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     }
     case "get_memory": {
       send({ id: reqId, type: "memory", settings: getMemoryConfig() });
+      break;
+    }
+    case "set_hooks": {
+      await setHookConfigs(msg.hooks);
+      send({ id: reqId, type: "hooks_saved" });
+      break;
+    }
+    case "get_hooks": {
+      send({ id: reqId, type: "hooks", hooks: getHookConfigs() });
       break;
     }
     case "set_memory": {

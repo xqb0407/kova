@@ -81,9 +81,12 @@ fn runs() -> &'static StdMutex<HashMap<String, RunEntry>> {
 }
 
 /// 单 run 缓冲上限：约一轮超长输出（token 级 chunk）的体量；到顶即 truncated
-/// 放弃重放（内存不随后台长跑无限增长）
+/// 放弃重放（内存不随后台长跑无限增长）。
+/// 字节预算按图片投影定标（docs/image-part-design.md）：工具结果 data-image 行的
+/// base64 单图 ≤2.7MiB（sidecar 内联上限 2MiB 原始字节），4MiB 预算会被一张图吃掉
+/// 大半、轻易触发整 run 降级，故留到 16MiB ≈ 数张图 + 一轮长文本的余量。
 const RUN_BUFFER_MAX_LINES: usize = 30_000;
-const RUN_BUFFER_MAX_BYTES: usize = 4 * 1024 * 1024;
+const RUN_BUFFER_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// stdout 行进入重放缓冲并领取 seq。只有"字符串 id + chunk 对象"的行参与；
 /// 远程行（rem-*）同样缓冲，为远程网关 resume（二期）留位。

@@ -25,6 +25,7 @@ import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "./todo";
 import { buildMemoryTools } from "./memory";
 import { buildMcpTool } from "./mcp-tools";
+import { buildEchoImageTool } from "./echo-image-tool";
 
 /** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
 const MAX_WALKED_FILES = 5000;
@@ -305,6 +306,9 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
     // MCP 网关（search/describe/call/status）：常驻注册的代理工具，全部服务器
     // 的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd 会重建）
     buildMcpTool(cwd, threadId),
+    // 【临时】图片投影链路验收工具（docs/image-part-design.md §10 PR4）：
+    // 验收通过后连同 echo-image-tool.ts 一并删除并摘除此注册
+    buildEchoImageTool(),
   ];
   return tools;
 }
