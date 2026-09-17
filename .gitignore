@@ -1,17 +1,17 @@
 # dependencies
-/node_modules
+node_modules/
 /.pnp
 .pnp.*
 # 主仓用 bun 管理依赖，npm/pnpm lock 为杂讯（历史遗留已删）
-/package-lock.json
-/pnpm-lock.yaml
+package-lock.json
+pnpm-lock.yaml
 
 # testing
 /coverage
 
 # next.js
-/.next/
-/out/
+/apps/desktop/.next/
+/apps/desktop/out/
 
 # production
 /build
@@ -40,17 +40,16 @@ yarn-error.log*
 next-env.d.ts
 
 # tauri
-/src-tauri/target/
-/src-tauri/gen/schemas
-/src-tauri/binaries/
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/gen/schemas
+/apps/desktop/src-tauri/binaries/
 # build:sidecar 脚本生成的复制产物，可再生
-/src-tauri/resources/
+/apps/desktop/src-tauri/resources/
 
 # pi agent sidecar
-/sidecar/pi-agent/node_modules/
-/sidecar/pi-agent/stderr.log
+/apps/sidecar/pi-agent/stderr.log
 # sidecar 使用 bun 管理依赖，npm lock 为杂讯
-/sidecar/pi-agent/package-lock.json
+/apps/sidecar/pi-agent/package-lock.json
 
 .agents/skills/
 
