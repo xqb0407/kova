@@ -65,19 +65,73 @@ fn decrypt_with(key: &[u8; 32], stored: &str) -> Result<String, String> {
 }
 
 fn load_or_create_master_key() -> Result<[u8; 32], String> {
+    // dev 构建：主密钥放本地文件而非 OS keychain——每次重编译二进制签名都会变，
+    // macOS Keychain 会因 ACL 拒读，旧实现读失败后误轮换主钥导致全部密文报废
+    // （"重输就好、重启又 401"死循环）。release 构建签名稳定，仍走 keychain。
+    #[cfg(debug_assertions)]
+    if let Some(path) = dev_master_key_path() {
+        return load_or_create_dev_key(path);
+    }
     let entry = keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| e.to_string())?;
-    if let Ok(b64key) = entry.get_password() {
-        if let Ok(bytes) = b64().decode(&b64key) {
-            if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                return Ok(key);
+    match entry.get_password() {
+        Ok(b64key) => {
+            if let Ok(bytes) = b64().decode(&b64key) {
+                if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                    return Ok(key);
+                }
             }
+            // 内容损坏/格式不认识：旧钥已不可读，只能重新生成（密文按缺失处理）
+            log::warn!("[secret] master key content invalid, regenerating");
         }
-        // 内容损坏/格式不认识：重新生成并覆盖
+        Err(keyring::Error::NoEntry) => {} // 首次运行：生成新钥
+        // 读取失败≠不存在（ACL 拒绝/服务不可用）：绝不覆盖轮换——轮换会让
+        // 既有密文全部不可解，宁降级为明文透传（见 master_key()）
+        Err(e) => return Err(format!("cannot read master key: {e}")),
     }
     let key = random_bytes::<32>();
     entry
         .set_password(&b64().encode(key))
         .map_err(|e| format!("cannot store master key: {e}"))?;
+    Ok(key)
+}
+
+/// dev 主密钥文件路径：与 Tauri app_data_dir 同位（固定 identifier）。
+/// 已知取舍：dev 密钥在文件、release 在 keychain，二者密文互不可读——
+/// 从 dev 切到 release 首次需要重输凭据（反之亦然），属可接受的代价。
+#[cfg(debug_assertions)]
+fn dev_master_key_path() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    const IDENTIFIER: &str = "com.xulux.assistant";
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("HOME")
+        .map(PathBuf::from)?
+        .join("Library/Application Support");
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("APPDATA").map(PathBuf::from)?;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+    Some(base.join(IDENTIFIER).join("master.dev.key"))
+}
+
+/// dev 构建：从本地文件读/建主密钥（0600 语义由目录权限兜底，仅 dev 使用）
+#[cfg(debug_assertions)]
+fn load_or_create_dev_key(path: std::path::PathBuf) -> Result<[u8; 32], String> {
+    use std::fs;
+    if let Ok(content) = fs::read_to_string(&path) {
+        if let Ok(bytes) = b64().decode(content.trim()) {
+            if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                return Ok(key);
+            }
+        }
+        log::warn!("[secret] dev master key file invalid, regenerating");
+    }
+    let key = random_bytes::<32>();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&path, b64().encode(key)).map_err(|e| e.to_string())?;
     Ok(key)
 }
 

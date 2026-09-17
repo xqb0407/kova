@@ -907,11 +907,12 @@ export const ModelSettings: FC = () => {
       // 按 modelId 反查内置目录拿种子异步补进草稿——同名官方模型直接继承
       // reasoning 与关闭下发值（如 off:"none"），避免弹窗默认假值覆盖种子
       if (src.reasoning === undefined) {
-        void piRequest<PiThinkingSeed | null>({
+        void piRequest<{ type: "thinking_seed"; seed: PiThinkingSeed | null }>({
           type: "lookup_thinking_seed",
           modelId: id,
         })
-          .then((seed) => {
+          .then((res) => {
+            const seed = res.seed;
             if (!seed || attrEditIdRef.current !== id) return;
             setAttrDraft((prev) => {
               if (!prev) return prev;
