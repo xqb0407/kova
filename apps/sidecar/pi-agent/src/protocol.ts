@@ -46,6 +46,9 @@
  *       未选择时 provider/modelId 为空串（前端据此校准 UI 真值）
  *   { "type": "set_thinking", "id", "level" }                 → { id, type: "thinking", level }（深度思考档位，广播到活动会话）
  *   { "type": "set_thinking_maps", "id", "maps" }             → { id, type: "thinking_maps", applied }（模型级 thinkingLevelMap 覆盖整包下发）
+ *   { "type": "lookup_thinking_seed", "id", "modelId" }       → { id, type: "thinking_seed", seed }
+ *       按 modelId 反查内置目录的思考参数种子（reasoning/thinkingLevelMap/supportedThinkingLevels）；
+ *       自定义端点与目录外新增模型的属性弹窗预填用，未命中回 null
  *   { "type": "get_personalization", "id" }                   → { id, type: "personalization", settings, paths }（个性化设置：回复风格/自定义风格列表/内置档位覆盖/称呼/人设/自定义指令；paths = 人设/指令身份文件绝对路径）
  *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings, paths }（人设/指令落全局身份文件、结构化字段含自定义风格列表与内置覆盖落 SQLite kv + 活动会话系统提示词热替换）
  *   { "type": "get_memory", "id" }                            → { id, type: "memory", settings }（记忆设置：总开关/作用域叠加/文件检索/指定文件白名单）
@@ -195,6 +198,7 @@ import {
   getCurrentThinkingLevel,
   getModelDefaultedAttrs,
   getModels,
+  lookupCatalogThinkingSeed,
   normalizeApi,
   parseModelCost,
   parseModelInput,
@@ -1349,6 +1353,16 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       // {"provider/modelId": {"off":"none","minimal":null,...}}，见 model-catalog
       const applied = setThinkingMapOverrides(msg.maps);
       send({ id: reqId, type: "thinking_maps", applied });
+      break;
+    }
+    case "lookup_thinking_seed": {
+      // 属性弹窗预填：自定义/目录外模型按 modelId 反查内置目录的思考参数种子
+      const modelId = String(msg.modelId ?? "").trim();
+      send({
+        id: reqId,
+        type: "thinking_seed",
+        seed: modelId ? (lookupCatalogThinkingSeed(modelId) ?? null) : null,
+      });
       break;
     }
     case "get_personalization": {

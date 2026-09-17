@@ -62,6 +62,18 @@ export type PiProviderSummary = {
   authed: boolean;
 };
 
+/**
+ * 按 modelId 反查内置目录得到的思考参数种子（lookup_thinking_seed 应答）。
+ * 自定义端点/目录外新增模型的属性弹窗预填用；未命中目录时为 null。
+ */
+export type PiThinkingSeed = {
+  reasoning: boolean;
+  /** 目录整理的下发映射（含 off 显式关闭值，如 "none"） */
+  thinkingLevelMap?: Record<string, string | null>;
+  /** 可用的思考档位（不含 off） */
+  supportedThinkingLevels: string[];
+};
+
 /** 已配置凭据（不含密钥本体） */
 export type PiCredentialSummary = {
   providerId: string;
