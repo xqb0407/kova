@@ -11,6 +11,7 @@ import {
   personalizationPromptBlock,
   PERSONALIZATION_KV_KEY,
   PROTOCOL_TEXT_MAX_CHARS,
+  type PersonalizationStyleOverride,
   resetPersonalizationForTest,
   rulesFilePath,
   soulFilePath,
@@ -295,7 +296,11 @@ describe("persistence (身份文件 + 结构化 kv)", () => {
   });
 
   test("内置覆盖记录随 kv round-trip；旧版 kv（无 styleOverrides）启动兼容", async () => {
-    const overrides = [{ id: "professional", name: "严肃", prompt: "禁止玩笑与表情。", hidden: false }];
+    // 标注类型：不标注则 id 字面量被放宽成 string，与 toEqual/applyPersonalization 的
+    // PersonalizationBuiltinStyle 形参不兼容
+    const overrides: PersonalizationStyleOverride[] = [
+      { id: "professional", name: "严肃", prompt: "禁止玩笑与表情。", hidden: false },
+    ];
     await applyPersonalization({ style: "professional", styleOverrides: overrides });
     resetPersonalizationForTest();
     await initPersonalization();

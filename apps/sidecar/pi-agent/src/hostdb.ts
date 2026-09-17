@@ -466,8 +466,25 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
         return {};
       }
       case "session_list":
+        // 原始行是 snake 列名（同 session_get 约定），map 把偏好列转成
+        // SessionRow 的 camel 字段；泛型若直接用 SessionRow 则读不到 r.approval_level
         return db
-          .query<SessionRow[], []>(
+          .query<
+            {
+              id: string;
+              title: string;
+              first_message: string;
+              cwd: string;
+              archived: number;
+              updated_at: string;
+              message_count: number;
+              mode: string | null;
+              approval_level: string | null;
+              model_provider: string | null;
+              model_id: string | null;
+            },
+            []
+          >(
             "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id FROM sessions ORDER BY updated_at DESC",
           )
           .all()
