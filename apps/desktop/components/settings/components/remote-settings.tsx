@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type FC } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { isTauri } from "@/lib/tauri";
 import { copyText, encodePairPayload, type PairPayload } from "@/lib/remote";
 import { QRCodeSVG } from "qrcode.react";
@@ -15,9 +16,11 @@ type RemoteStatus = {
   port: number | null;
   code: string | null;
   connections: number;
-  /** 局域网 WS 地址列表（ws://ip:port/ws，主网卡优先） */
+  /** 绑定模式：true = 局域网可达（0.0.0.0），false = 仅本机（127.0.0.1） */
+  lan: boolean;
+  /** 局域网 WS 地址列表（ws://ip:port/ws，主网卡优先；仅本机时为回环地址） */
   lanAddresses: string[];
-  /** 浏览器预览地址列表（http://ip:port，主网卡优先） */
+  /** 浏览器预览地址列表（http://ip:port，主网卡优先；仅本机时为回环地址） */
   httpAddresses: string[];
 };
 
@@ -74,6 +77,32 @@ export const RemoteSettings: FC = () => {
     try {
       const code = await invoke<string>("pi_remote_refresh_code");
       setStatus((s) => (s ? { ...s, code } : s));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  /** 切换绑定模式：Rust 端持久化并在网关运行中就地重启（配对码同步重置） */
+  const applyLan = useCallback(async (lan: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await invoke<RemoteStatus>("pi_remote_start", { port: null, lan }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  /** 撤销全部已配对设备：删除长效 token 并踢掉所有在连（需重新扫码配对） */
+  const revokeAll = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await invoke<RemoteStatus>("pi_remote_revoke"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -143,7 +172,7 @@ export const RemoteSettings: FC = () => {
               <div className="text-sm font-medium">网关状态</div>
               <div className="text-muted-foreground truncate text-sm">
                 {running
-                  ? `运行中 · 端口 ${status?.port ?? "-"} · ${status?.connections ?? 0} 个连接`
+                  ? `运行中 · 端口 ${status?.port ?? "-"} · ${status?.connections ?? 0} 个连接 · ${status?.lan ? "局域网" : "仅本机"}`
                   : "未开启，开启后手机扫码或访问地址即可使用"}
               </div>
             </div>
@@ -274,6 +303,42 @@ export const RemoteSettings: FC = () => {
               <p className="text-muted-foreground text-xs">
                 每连接 5 次输错即锁定。
               </p>
+            </section>
+
+            {/* 安全与设备 */}
+            <section className="flex flex-col gap-3">
+              <h2 className="text-base font-semibold">安全与设备</h2>
+              <div className="bg-muted/50 flex flex-col divide-y rounded-2xl">
+                <div className="flex items-center justify-between gap-4 px-5 py-4">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">局域网访问</div>
+                    <div className="text-muted-foreground text-sm">
+                      关闭后仅本机（127.0.0.1）可连接；切换会重启网关并生成新配对码。
+                    </div>
+                  </div>
+                  <Switch
+                    checked={status?.lan ?? true}
+                    disabled={busy}
+                    onCheckedChange={(v) => void applyLan(v)}
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-4 px-5 py-4">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">已连接设备</div>
+                    <div className="text-muted-foreground text-sm">
+                      撤销后所有已配对设备立即断开、token 失效，需重新扫码配对。
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void revokeAll()}
+                  >
+                    撤销所有设备
+                  </Button>
+                </div>
+              </div>
             </section>
 
             <div className="text-muted-foreground rounded-2xl bg-muted/50 px-5 py-4 text-xs leading-relaxed">

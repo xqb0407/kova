@@ -81,7 +81,8 @@ const VP_PRESETS: VpPreset[] = [
  * 可正常嵌入，且 agent 的 browser_* 工具能驱动同一个 webview。
  * 占位容器必须常驻（不能等有 url 才渲染）：bounds 同步 effect 只挂载一次，
  * 若空态时 div 不存在，之后创建的 webview 会停在宿主兜底位置（窗口右半屏），
- * 盖到面板外——即"溢出面板"。
+ * 盖到面板外——即"溢出面板"。attach 一律排在首次有效 bounds 同步之后；
+ * 面板收起（占位 0 尺寸）时隐藏 webview 保留页面，展开后重新落位显示。
  * 跨标签只有一个子 webview：激活的浏览器 tab 胜出，切换 tab 重新 attach 导航。
  * 前进/后退用本组件自维护的访问栈（引擎自身历史不作事实源）。
  */
@@ -104,31 +105,68 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
   const attached = useRef<string | null>(null);
   /** 挂载时的初始 url（mount 语义只看首帧，外部后续改 tab.url 走导航链路） */
   const initialRef = useRef(initial);
+  /** 当前 url 的 ref：syncBounds 的"收起隐藏/展开恢复"转换在渲染时机之外读它 */
+  const urlRef = useRef<string | null>(initial);
+  /** webview 是否因占位 0 尺寸（面板收起）被隐藏；恢复可见后据此重新显示 */
+  const hiddenRef = useRef(false);
+  useEffect(() => {
+    urlRef.current = url;
+  }, [url]);
 
   /** 占位容器 → 宿主 bounds 同步：物理像素（视口坐标 × DPR，客户区两端一致）。
-   *  宿主把 bounds 存进 BrowserState：webview 尚未创建时先记着，创建即落位 */
-  const syncBounds = useCallback(() => {
+   *  宿主把 bounds 存进 BrowserState：webview 尚未创建时先记着，创建即落位。
+   *  返回是否完成一次有效同步（false = 不可见，调用方据此不创建 webview，
+   *  否则宿主按"窗口右半屏"兜底创建——原生层盖在 React 之上，即"溢出面板"）。
+   *  占位 0 尺寸（面板收起）时顺带隐藏 webview（保留页面状态），恢复可见时
+   *  先落位再重新 attach 显示。 */
+  const syncBounds = useCallback((): Promise<boolean> => {
     const el = hostRef.current;
-    if (!isTauri() || !el) return;
+    if (!isTauri() || !el) return Promise.resolve(false);
     cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => {
-      const r = el.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      if (r.width < 1 || r.height < 1) return; // 不可见：不动宿主 bounds
-      tauriCore()
-        .then(({ invoke }) =>
-          invoke("browser_sync_bounds", {
-            x: Math.round(r.left * dpr),
-            y: Math.round(r.top * dpr),
-            width: Math.round(r.width * dpr),
-            height: Math.round(r.height * dpr),
-          }),
-        )
-        .catch(() => {});
+    return new Promise<boolean>((resolve) => {
+      rafRef.current = requestAnimationFrame(() => {
+        const r = el.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        if (r.width < 1 || r.height < 1) {
+          // 不可见：隐藏（幂等），不动宿主 bounds
+          hiddenRef.current = true;
+          tauriCore()
+            .then(({ invoke }) => invoke("browser_detach", { destroy: false }))
+            .catch(() => {})
+            .finally(() => resolve(false));
+          return;
+        }
+        tauriCore()
+          .then(({ invoke }) =>
+            invoke("browser_sync_bounds", {
+              x: Math.round(r.left * dpr),
+              y: Math.round(r.top * dpr),
+              width: Math.round(r.width * dpr),
+              height: Math.round(r.height * dpr),
+            }),
+          )
+          .then(() => {
+            if (hiddenRef.current) {
+              hiddenRef.current = false;
+              // 收起期间被隐藏过：落位后恢复（attach 幂等：同址仅显示不重载；
+              // webview 不存在则按刚同步的 frame 创建）。空 tab 无 url 保持隐藏。
+              if (urlRef.current) {
+                tauriCore()
+                  .then(({ invoke }) =>
+                    invoke("browser_attach", { url: urlRef.current }),
+                  )
+                  .catch(() => {});
+              }
+            }
+            resolve(true);
+          })
+          .catch(() => resolve(false));
+      });
     });
   }, []);
 
   const show = (u: string) => {
+    urlRef.current = u;
     setUrl(u);
     setInput(u);
     updatePanelTab(tab.id, { url: u, title: hostOf(u) });
@@ -146,19 +184,22 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
     setInput(tab.url);
   }, [tab.url]);
 
-  // 挂载：先同步 bounds；tab 有 url 则 attach（webview 已存在时仅显示），
-  // 空 tab 则隐藏——原生 webview 层在 React 之上，空态覆盖层挡不住残留页面
+  // 挂载：先完成一次有效 bounds 同步，再 attach/detach——attach 先于同步发出时
+  // 宿主没有任何 frame 记录，会按"窗口右半屏"兜底创建 webview（即"溢出面板"）；
+  // 同步成功后创建则直接落到存好的面板矩形。空 tab 则隐藏残留页面。
   useEffect(() => {
     if (!isTauri()) return;
     let alive = true;
-    syncBounds();
-    tauriCore().then(({ invoke }) => {
+    void syncBounds().then(() => {
       if (!alive) return;
-      if (initialRef.current) {
-        invoke("browser_attach", { url: null }).catch(() => {});
-      } else {
-        invoke("browser_detach", { destroy: false }).catch(() => {});
-      }
+      tauriCore().then(({ invoke }) => {
+        if (!alive) return;
+        if (initialRef.current) {
+          invoke("browser_attach", { url: null }).catch(() => {});
+        } else {
+          invoke("browser_detach", { destroy: false }).catch(() => {});
+        }
+      });
     });
     return () => {
       alive = false;
@@ -169,14 +210,18 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
     };
   }, [syncBounds]);
 
-  // url 变化 → 先落位再 attach 导航（同址去重交给宿主 current_page 比对）
+  // url 变化 → 先落位再 attach 导航（同址去重交给宿主 current_page 比对）。
+  // 同步无效（面板收起等）就不创建：展开后的 ResizeObserver 同步会经
+  // hiddenRef 恢复路径按 urlRef 重新 attach。
   useEffect(() => {
     if (!isTauri() || !url || attached.current === url) return;
     attached.current = url;
-    syncBounds();
-    tauriCore()
-      .then(({ invoke }) => invoke("browser_attach", { url }))
-      .catch(() => {});
+    void syncBounds().then((ok) => {
+      if (!ok) return;
+      tauriCore()
+        .then(({ invoke }) => invoke("browser_attach", { url }))
+        .catch(() => {});
+    });
   }, [url, syncBounds]);
 
   // 布局/滚动跟随：窗口缩放、面板宽度动画、容器滚动都会改变占位区域

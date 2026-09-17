@@ -8,16 +8,17 @@ import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
 import { logErr } from "./log";
 
 export const SESSION_TITLE_SUMMARIZE_SYSTEM_PROMPT =
-  "You generate a short, concise, descriptive session title summarizing the conversation based on the user's initial prompt and context.\n" +
-  "Rules:\n" +
-  "1. Output ONLY the title text. Do NOT wrap in quotes, brackets, or backticks.\n" +
-  "2. Do not include markdown formatting, trailing punctuation, or emojis.\n" +
-  "3. Keep it under 25 characters (or 4-7 words).\n" +
-  "4. Use the primary language of the user's prompt (e.g. Chinese for Chinese requests, English for English requests).\n" +
-  "5. Focus on the key topic or action (e.g. \"Debug WebSocket reconnect\", \"重构用户认证模块\").";
+`你需要根据用户初始提问和助手首条回复，生成简短会话标题。严格遵守所有规则：
+1. 仅输出标题文本，禁止任何额外解释、前言后语。
+2. 严禁输出 Markdown、反引号、引号、括号、换行、emoji。
+3. 标题中文不超过25个汉字，英文不超过25个字符。
+4. 使用用户提问的语言。
+5. 只提炼核心任务/主题，不要冗余描述。
+禁止输出任何格式标记，不要分段，不要加任何装饰符号。`;
 
 const PROMPT_MAX = 1000;
 const REPLY_MAX = 500;
+const TITLE_RULE_MAX = 25;
 const TITLE_MAX = 80;
 
 /** 组装标题总结请求上下文（user 消息 = 截断的 prompt + 可选回复摘要） */
@@ -31,28 +32,37 @@ export function sessionTitleSummarizeContext(
     ? `User Prompt:\n${cleanPrompt}\n\nAssistant Response Summary:\n${cleanReply}`
     : `User Prompt:\n${cleanPrompt}`;
 
+  const msg: Message = {
+    role: "user",
+    content,
+    timestamp: Date.now(),
+  };
+
   return {
     systemPrompt: SESSION_TITLE_SUMMARIZE_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content,
-        timestamp: Date.now(),
-      } as unknown as Message,
-    ],
+    messages: [msg],
   };
 }
 
-/** 清洗模型输出：去引号/书名号/代码标记、去「Title:」前缀、折叠空白、去尾部标点、截断 */
+/** 清洗模型输出：去引号/书名号/代码标记、去「Title:」前缀、折叠空白、去标点、过滤markdown标记 */
 export function cleanSummarizedTitle(raw: string): string {
   let text = raw.trim();
-  text = text
-    .replace(/^[`"'\u201c\u201d\u300c\u300d]+|[`"'\u201c\u201d\u300c\u300d]+$/g, "")
-    .trim();
-  text = text.replace(/^(Title|Session Title|会话标题|标题)\s*[:：]\s*/i, "").trim();
+  // 移除反引号
+  text = text.replace(/`+/g, "");
+  // 移除粗体斜体标记
+  text = text.replace(/[*_]/g, "");
+  // 移除首尾各类引号书名号
+  text = text.replace(/^[`"'\u201c\u201d\u300c\u300d]+|[`"'\u201c\u201d\u300c\u300d]+$/g, "");
+  // 清除标题前缀
+  text = text.replace(/^(Title|Session Title|会话标题|标题)\s*[:：]\s*/i, "");
+  // 空白压缩
   text = text.replace(/\s+/g, " ");
-  text = text.replace(/[.。!！?？]+$/, "").trim();
-  return text.slice(0, TITLE_MAX);
+  // 去除尾部标点
+  text = text.replace(/[.。!！?？；;：:]+$/, "");
+  text = text.trim();
+  // 强制截断到规则上限
+  text = text.slice(0, TITLE_RULE_MAX);
+  return text;
 }
 
 /** streamSimple 的最小形状（catalog.streamSimple 签名的子集，测试可注入假流） */
@@ -80,13 +90,13 @@ export async function summarizeSessionTitle(
       signal: options?.signal,
     })) {
       if (options?.signal?.aborted) return undefined;
-      const type = (event as { type?: string }).type;
-      if (type === "text_delta") {
-        text += String((event as { delta?: string }).delta ?? "");
-      } else if (type === "error") {
+      const ev = event as { type?: string; delta?: string; error?: unknown };
+      if (ev.type === "text_delta") {
+        text += String(ev.delta ?? "");
+      } else if (ev.type === "error") {
         logErr(
           "session title summarize stream error:",
-          (event as { error?: unknown }).error,
+          ev.error,
         );
         return undefined;
       }

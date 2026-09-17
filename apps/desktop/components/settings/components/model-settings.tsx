@@ -657,7 +657,8 @@ export const ModelSettings: FC = () => {
     setSvcOpen(true);
   }, []);
 
-  /** 打开"编辑 AI 服务"弹窗（仅自定义端点支持编辑），并回填已保存的 Key 与模型属性 */
+  /** 打开"编辑 AI 服务"弹窗（仅自定义端点支持编辑），回填模型属性；
+   * Key 不回填（sidecar 只回掩码），输入框留空保存 = 保持原 Key */
   const openEditService = useCallback((cp: PiCustomProviderSummary) => {
     const ids = cp.models.map((m) => m.id);
     const attrs: Record<string, PiCustomModelSpec> = {};
@@ -677,7 +678,8 @@ export const ModelSettings: FC = () => {
     setSvcProvSearch("");
     setSvcName(cp.name);
     setSvcBaseUrl(cp.baseUrl);
-    setSvcApiKey(cp.apiKey ?? "");
+    // 不回填已存 Key（sidecar 只回掩码）：留空保存 = 保持原 Key
+    setSvcApiKey("");
     setSvcApi(cp.api);
     setSvcAvail(ids);
     setSvcSelected(ids);
@@ -706,6 +708,8 @@ export const ModelSettings: FC = () => {
         type: "fetch_models",
         baseUrl,
         apiKey: svcApiKey.trim(),
+        // 编辑态且留空：sidecar 按 providerId 取已存凭据兜底
+        ...(svcEditing ? { providerId: svcEditing } : {}),
         api: svcApi,
       });
       if (seq !== svcFetchSeq.current) return;
@@ -716,7 +720,7 @@ export const ModelSettings: FC = () => {
       setSvcFetchState("error");
       setSvcFetchError(err instanceof Error ? err.message : String(err));
     }
-  }, [svcProvider, svcBaseUrl, svcApiKey, svcApi]);
+  }, [svcProvider, svcBaseUrl, svcApiKey, svcEditing, svcApi]);
 
   // 填好接口地址后自动拉取模型列表（防抖）
   useEffect(() => {
@@ -745,13 +749,21 @@ export const ModelSettings: FC = () => {
     setSvcTestState("testing");
     setSvcTestError(null);
     try {
-      await piRequest({ type: "test_provider", baseUrl, apiKey: svcApiKey.trim(), api: svcApi, model });
+      await piRequest({
+        type: "test_provider",
+        baseUrl,
+        apiKey: svcApiKey.trim(),
+        // 编辑态且留空：sidecar 按 providerId 取已存凭据兜底（明文 key 不出渲染进程）
+        ...(svcEditing ? { providerId: svcEditing } : {}),
+        api: svcApi,
+        model,
+      });
       setSvcTestState("ok");
     } catch (err) {
       setSvcTestState("error");
       setSvcTestError(err instanceof Error ? err.message : String(err));
     }
-  }, [svcProvider, svcBaseUrl, svcApiKey, svcApi, svcSelected]);
+  }, [svcProvider, svcBaseUrl, svcApiKey, svcEditing, svcApi, svcSelected]);
 
   /** 启用/停用自定义服务 */
   const toggleCustomProvider = useCallback(
@@ -785,7 +797,9 @@ export const ModelSettings: FC = () => {
         await piRequest({
           type: "test_provider",
           baseUrl: cp.baseUrl,
-          apiKey: cp.apiKey ?? "",
+          // 不回传明文：providerId 让 sidecar 端取已存凭据
+          apiKey: "",
+          providerId: cp.providerId,
           api: cp.api,
           model,
         });
@@ -795,7 +809,8 @@ export const ModelSettings: FC = () => {
           1500,
         );
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        // setError(err instanceof Error ? err.message : String(err));
+        toast.error(err instanceof Error ? err.message : String(err));
       } finally {
         setBusy(false);
       }
@@ -1847,7 +1862,11 @@ export const ModelSettings: FC = () => {
                       type="password"
                       value={svcApiKey}
                       onChange={(e) => setSvcApiKey(e.target.value)}
-                      placeholder={svcEditing ? "留空保留原 Key" : "sk-..."}
+                      placeholder={
+                        svcEditing
+                          ? `已保存 ${customProviders.find((c) => c.providerId === svcEditing)?.apiKeyMasked ?? ""}，留空保持不变`
+                          : "sk-..."
+                      }
                       autoComplete="off"
                       className="h-9"
                     />

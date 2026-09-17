@@ -12,6 +12,7 @@ mod notify;
 mod pi_agent;
 mod pty;
 mod remote;
+mod secret;
 mod store;
 mod tool_exec;
 mod webhook;
@@ -100,6 +101,7 @@ pub fn run() {
             remote::pi_remote_stop,
             remote::pi_remote_status,
             remote::pi_remote_refresh_code,
+            remote::pi_remote_revoke,
             appearance::set_window_effect,
             about::open_logs_dir,
             about::open_external,
@@ -132,6 +134,11 @@ pub fn run() {
             git::git_checkout,
             fs::fs_list_dir,
             fs::fs_read_file,
+            fs::fs_mkdir,
+            fs::fs_touch,
+            fs::fs_rename,
+            fs::fs_delete,
+            fs::fs_reveal,
             http::http_post,
             notify::notify_show,
             notify::notify_consume_pending_session,

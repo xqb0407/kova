@@ -359,6 +359,85 @@ describe("dispatch: credentials", () => {
   });
 });
 
+describe("dispatch: provider key masking", () => {
+  const KEY = "sk-secret-abcdef999";
+  const addMsg = (apiKey: string) => ({
+    type: "add_custom_provider",
+    providerId: "custom-mask",
+    name: "掩码测试",
+    baseUrl: "http://127.0.0.1:9/v1",
+    apiKey,
+    api: "openai-chat",
+    models: [{ id: "m1" }],
+  });
+
+  test("list_custom_providers 只回掩码；空 key 保存保留原凭据", async () => {
+    await dispatch("k1", addMsg(KEY));
+    expect(last()).toEqual({ id: "k1", type: "custom_provider", provider: "custom-mask" });
+
+    await dispatch("k2", { type: "list_custom_providers" });
+    let row = ((last() as Record<string, unknown>).providers as Record<string, unknown>[]).find(
+      (p) => p.providerId === "custom-mask",
+    )!;
+    expect(row.hasApiKey).toBe(true);
+    expect(row.apiKeyMasked).toBe("****f999");
+    expect(row.apiKey).toBeUndefined(); // 明文不再回传渲染进程
+
+    // 编辑保存时 key 留空 = 保持原凭据
+    await dispatch("k3", addMsg(""));
+    await dispatch("k4", { type: "list_custom_providers" });
+    row = ((last() as Record<string, unknown>).providers as Record<string, unknown>[]).find(
+      (p) => p.providerId === "custom-mask",
+    )!;
+    expect(row.apiKeyMasked).toBe("****f999");
+
+    await dispatch("k5", { type: "delete_custom_provider", provider: "custom-mask" });
+    expect(last()).toEqual({ id: "k5", type: "custom_provider_deleted", provider: "custom-mask" });
+  });
+
+  test("test_provider/fetch_models 空 key + providerId 取已存凭据", async () => {
+    await dispatch("k6", addMsg(KEY));
+    let authHeader = "";
+    const srv = Bun.serve({
+      port: 0,
+      fetch(req) {
+        authHeader = req.headers.get("authorization") ?? "";
+        const url = new URL(req.url);
+        if (url.pathname === "/v1/models") {
+          return Response.json({ data: [{ id: "m1" }] });
+        }
+        return Response.json({ choices: [{ message: { role: "assistant", content: "pong" } }] });
+      },
+    });
+    try {
+      const base = `http://127.0.0.1:${srv.port}/v1`;
+      await dispatch("k7", {
+        type: "test_provider",
+        baseUrl: base,
+        apiKey: "",
+        providerId: "custom-mask",
+        api: "openai-chat",
+        model: "m1",
+      });
+      expect(last()).toEqual({ id: "k7", type: "tested", ok: true });
+      expect(authHeader).toBe(`Bearer ${KEY}`);
+
+      await dispatch("k8", {
+        type: "fetch_models",
+        baseUrl: base,
+        apiKey: "",
+        providerId: "custom-mask",
+        api: "openai-chat",
+      });
+      expect(last()).toEqual({ id: "k8", type: "fetched_models", models: ["m1"] });
+      expect(authHeader).toBe(`Bearer ${KEY}`);
+    } finally {
+      srv.stop(true);
+      await dispatch("k9", { type: "delete_custom_provider", provider: "custom-mask" });
+    }
+  });
+});
+
 describe("dispatch: models", () => {
   test("set_model rejects unknown models", async () => {
     await expect(
@@ -532,6 +611,13 @@ describe("dispatch: get_model / init gate", () => {
 describe("dispatch: personalization", () => {
   const DEFAULT_SETTINGS = {
     style: "default",
+    styles: [] as { id: string; name: string; prompt: string }[],
+    styleOverrides: [] as {
+      id: string;
+      name: string;
+      prompt: string;
+      hidden: boolean;
+    }[],
     userName: "",
     assistantName: "",
     persona: "",
@@ -556,6 +642,8 @@ describe("dispatch: personalization", () => {
 
     const settings = {
       style: "professional",
+      styles: [],
+      styleOverrides: [],
       userName: "老王",
       assistantName: "",
       persona: "",
@@ -583,6 +671,63 @@ describe("dispatch: personalization", () => {
     // 恢复默认：提示词不再含个性化段
     await dispatch("pe4", { type: "set_personalization", settings: DEFAULT_SETTINGS });
     expect(run.agent.state.systemPrompt).not.toContain("Reply style - professional");
+  });
+
+  test("自定义风格：set 携带 styles + style=custom:<id>，get 回读并热注入用户 prompt", async () => {
+    await dispatch("pe5", { type: "new_session", threadId: "th-pers2", cwd: tmp });
+    const run = running.get("th-pers2")!;
+    const custom = [{ id: "s1", name: "文艺", prompt: "文风偏文学，善用比喻" }];
+    await dispatch("pe6", {
+      type: "set_personalization",
+      settings: { ...DEFAULT_SETTINGS, style: "custom:s1", styles: custom },
+    });
+    expect(last()).toMatchObject({
+      type: "personalization",
+      settings: { style: "custom:s1", styles: custom },
+    });
+    // 活动会话提示词热注入自定义风格的原始 prompt 文本
+    expect(run.agent.state.systemPrompt).toContain("Reply style - 文艺: 文风偏文学，善用比喻");
+
+    // 删掉被选中的自定义风格后（style 悬空），apply 回落 default、提示词清空该段
+    await dispatch("pe7", {
+      type: "set_personalization",
+      settings: { ...DEFAULT_SETTINGS, style: "custom:s1", styles: [] },
+    });
+    expect((last() as { settings: { style: string } }).settings.style).toBe("default");
+    expect(run.agent.state.systemPrompt).not.toContain("Reply style - 文艺");
+
+    // 复位默认，避免污染后续用例
+    await dispatch("pe8", { type: "set_personalization", settings: DEFAULT_SETTINGS });
+  });
+
+  test("内置档覆盖：set 写 styleOverrides.prompt 覆盖并热注入，恢复默认后回落内置文案", async () => {
+    await dispatch("pe9", { type: "new_session", threadId: "th-pers3", cwd: tmp });
+    const run = running.get("th-pers3")!;
+    expect(run.agent.state.systemPrompt).not.toContain("Reply style - professional");
+
+    // 覆盖内置 professional 档：注入自定义文案而非内置默认
+    const overrides = [
+      { id: "professional", name: "", prompt: "只输出结论，禁止解释。", hidden: false },
+    ];
+    await dispatch("pe10", {
+      type: "set_personalization",
+      settings: { ...DEFAULT_SETTINGS, style: "professional", styleOverrides: overrides },
+    });
+    expect((last() as { settings: { styleOverrides: unknown[] } }).settings.styleOverrides).toEqual(
+      overrides,
+    );
+    expect(run.agent.state.systemPrompt).toContain("只输出结论，禁止解释。");
+    expect(run.agent.state.systemPrompt).not.toContain("be precise, structured");
+
+    // 恢复默认（清空 styleOverrides）→ 回落内置 professional 文案
+    await dispatch("pe11", {
+      type: "set_personalization",
+      settings: { ...DEFAULT_SETTINGS, style: "professional", styleOverrides: [] },
+    });
+    expect(run.agent.state.systemPrompt).toContain("be precise, structured");
+    expect(run.agent.state.systemPrompt).not.toContain("只输出结论，禁止解释。");
+
+    await dispatch("pe12", { type: "set_personalization", settings: DEFAULT_SETTINGS });
   });
 });
 

@@ -91,8 +91,8 @@ export type PiCustomProviderSummary = {
   models: PiCustomModelSpec[];
   api: PiCustomApiKind;
   hasApiKey: boolean;
-  /** 明文 key，仅供编辑弹窗回填（存本地 SQLite） */
-  apiKey?: string;
+  /** 展示掩码（****+后4位）；明文 key 不再回传渲染进程，编辑弹窗留空 = 保持原 key */
+  apiKeyMasked?: string;
   /** 启用状态；停用的服务不进模型目录 */
   enabled: boolean;
 };
@@ -143,8 +143,8 @@ export type PiCompacted = {
   summary: string;
 };
 
-/** 回复风格档位（设置 → 个性化；提示词文案在 sidecar personalization.ts） */
-export type PiPersonalizationStyle =
+/** 内置回复风格档位（设置 → 个性化；提示词文案在 sidecar personalization.ts） */
+export type PiPersonalizationBuiltinStyle =
   | "default"
   | "professional"
   | "friendly"
@@ -152,9 +152,34 @@ export type PiPersonalizationStyle =
   | "blunt"
   | "guiding";
 
-/** 个性化设置整包（结构化字段落 SQLite kv；persona/customInstructions 事实源在全局身份文件） */
+/** 回复风格 id：内置档位，或 `custom:<id>` 引用 styles 中的自定义风格 */
+export type PiPersonalizationStyle =
+  | PiPersonalizationBuiltinStyle
+  | `custom:${string}`;
+
+/** 用户自定义回复风格：name 用于设置页展示，prompt 原样注入系统提示词 */
+export type PiPersonalizationCustomStyle = {
+  id: string;
+  name: string;
+  prompt: string;
+};
+
+/** 内置档位的覆盖记录（改名/改写/隐藏皆写记录，删除记录即恢复默认）。
+ *  稀疏存储：name 空用默认标签、prompt 空用内置文案，hidden 单独控制网格是否展示 */
+export type PiPersonalizationStyleOverride = {
+  id: PiPersonalizationBuiltinStyle;
+  name: string;
+  prompt: string;
+  hidden: boolean;
+};
+
+/** 个性化设置整包（结构化字段含自定义风格列表落 SQLite kv；persona/customInstructions 事实源在全局身份文件） */
 export type PiPersonalization = {
   style: PiPersonalizationStyle;
+  /** 自定义风格列表（style 可指向其中 `custom:<id>`；旧版 sidecar 响应可能缺省） */
+  styles?: PiPersonalizationCustomStyle[];
+  /** 内置档位覆盖记录（无记录 = 原样内置；旧版 sidecar 响应可能缺省） */
+  styleOverrides?: PiPersonalizationStyleOverride[];
   /** AI 对用户的称呼（空 = 不注入） */
   userName: string;
   /** AI 的名称（空 = 不注入） */

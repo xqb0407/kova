@@ -2,11 +2,13 @@
 
 /**
  * 通用 Markdown 文本编辑 dialog：编辑（CodeMirror）/ 预览（Streamdown）两个页签。
- * 个性化设置的人设、自定义指令共用一个实例（next/dynamic 按需加载，重依赖
+ * 个性化设置的人设、自定义指令、自定义回复风格共用（next/dynamic 按需加载，重依赖
  * CodeMirror/Streamdown 不进设置页首屏包）。保存只回调 onSave，走调用方的
  * 防抖自动保存链路。打开时回填当前值；编辑途中不随外部值重置（重命名 dialog 同款守卫）。
+ * extraContent 可在标题下方附加控件（风格名称输入），与正文一并保存由调用方组装；
+ * onRestore 在左下加「恢复默认」动作（内置风格弹窗用，删除覆盖记录即恢复）。
  */
-import { useEffect, useRef, useState, type FC } from "react";
+import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -33,7 +35,12 @@ const MarkdownEditDialog: FC<{
   placeholder?: string;
   /** 打开时落在哪个页签（记忆文件浏览默认预览，其余场景缺省编辑） */
   initialTab?: "edit" | "preview";
-}> = ({ open, onOpenChange, title, value, onSave, maxLength, placeholder, initialTab }) => {
+  /** 标题与页签之间的附加区（自定义风格弹窗在此放「风格名称」输入；不受 maxLength 约束） */
+  extraContent?: ReactNode;
+  /** 左下「恢复」动作（内置风格弹窗在此恢复默认文案；点击即关闭弹窗） */
+  onRestore?: () => void;
+  restoreLabel?: string;
+}> = ({ open, onOpenChange, title, value, onSave, maxLength, placeholder, initialTab, extraContent, onRestore, restoreLabel }) => {
   const [text, setText] = useState(value);
   const [tab, setTab] = useState("edit");
   const valueRef = useRef(value);
@@ -58,6 +65,7 @@ const MarkdownEditDialog: FC<{
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
+        {extraContent}
         <Tabs
           value={tab}
           onValueChange={(v) => setTab(String(v))}
@@ -99,9 +107,23 @@ const MarkdownEditDialog: FC<{
           </TabsContent>
         </Tabs>
         <DialogFooter className="items-center sm:justify-between">
-          <span className="text-muted-foreground order-first text-xs tabular-nums">
-            {maxLength === undefined ? `${text.length} 字` : `${text.length} / ${maxLength}`}
-          </span>
+          <div className="order-first flex items-center gap-3">
+            {onRestore && (
+              <Button
+                variant="ghost"
+                className="text-muted-foreground hover:text-foreground px-2"
+                onClick={() => {
+                  onRestore();
+                  onOpenChange(false);
+                }}
+              >
+                {restoreLabel ?? "恢复默认"}
+              </Button>
+            )}
+            <span className="text-muted-foreground text-xs tabular-nums">
+              {maxLength === undefined ? `${text.length} 字` : `${text.length} / ${maxLength}`}
+            </span>
+          </div>
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               取消

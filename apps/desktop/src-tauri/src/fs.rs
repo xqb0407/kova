@@ -145,3 +145,139 @@ pub async fn fs_read_file(app: AppHandle, cwd: String, path: String) -> Result<V
     .await
     .map_err(|e| format!("fs task join error: {e}"))?
 }
+
+/* ------------------------------ 写命令（右键菜单） ------------------------------ */
+
+/// 新建目录（workspace 相对路径，父目录一并创建；已存在报 already-exists）。
+#[tauri::command]
+pub async fn fs_mkdir(app: AppHandle, cwd: String, path: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_root(&app, &cwd)?;
+        let target = join_rel(&root, &path)?;
+        if target.symlink_metadata().is_ok() {
+            return Err("already-exists".into());
+        }
+        std::fs::create_dir_all(&target).map_err(|_| "mkdir-failed")?;
+        Ok(json!({ "ok": true }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}
+
+/// 新建空文件（create_new 语义：已存在报 already-exists，不截断不覆盖）。
+#[tauri::command]
+pub async fn fs_touch(app: AppHandle, cwd: String, path: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_root(&app, &cwd)?;
+        let target = join_rel(&root, &path)?;
+        let r = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&target);
+        match r {
+            Ok(_) => Ok(json!({ "ok": true })),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err("already-exists".into()),
+            Err(_) => Err("write-failed".into()),
+        }
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}
+
+/// 重命名：只在原父目录内改名（new_name 必须是纯名字，目标已存在报 already-exists）。
+#[tauri::command]
+pub async fn fs_rename(
+    app: AppHandle,
+    cwd: String,
+    path: String,
+    new_name: String,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_root(&app, &cwd)?;
+        let target = join_rel(&root, &path)?;
+        if is_bad_name(&new_name) {
+            return Err("bad-name".into());
+        }
+        let parent = target.parent().ok_or("bad-path")?;
+        let dest = parent.join(&new_name);
+        if dest.symlink_metadata().is_ok() {
+            return Err("already-exists".into());
+        }
+        std::fs::rename(&target, &dest).map_err(|_| "rename-failed")?;
+        Ok(json!({ "ok": true }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}
+
+/// 删除文件/目录（目录递归；根不可删）。永久删除不进回收站，UI 侧负责确认。
+#[tauri::command]
+pub async fn fs_delete(app: AppHandle, cwd: String, path: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_root(&app, &cwd)?;
+        let target = join_rel(&root, &path)?;
+        if target == root {
+            return Err("bad-path".into());
+        }
+        let meta = std::fs::symlink_metadata(&target).map_err(|_| "not-found")?;
+        if meta.is_dir() {
+            std::fs::remove_dir_all(&target).map_err(|_| "delete-failed")?;
+        } else {
+            std::fs::remove_file(&target).map_err(|_| "delete-failed")?;
+        }
+        Ok(json!({ "ok": true }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}
+
+/// 在系统文件管理器中显示（Windows 资源管理器选中该项；macOS open -R；
+/// Linux 无统一"选中"语义，退化为打开父目录）。
+#[tauri::command]
+pub async fn fs_reveal(app: AppHandle, cwd: String, path: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_root(&app, &cwd)?;
+        let target = join_rel(&root, &path)?;
+        if !target.exists() {
+            return Err("not-found".into());
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt as _;
+            // raw_arg 拼出 explorer 需要的 "/select,<path>" 原样形式；CREATE_NO_WINDOW
+            // 防止并发突发控制台窗口
+            std::process::Command::new("explorer")
+                .raw_arg(format!("/select,\"{}\"", target.display()))
+                .creation_flags(0x0800_0000)
+                .spawn()
+                .map_err(|_| "reveal-failed")?;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg("-R")
+                .arg(&target)
+                .spawn()
+                .map_err(|_| "reveal-failed")?;
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let parent = target.parent().unwrap_or(target.as_path());
+            std::process::Command::new("xdg-open")
+                .arg(parent)
+                .spawn()
+                .map_err(|_| "reveal-failed")?;
+        }
+        Ok(json!({ "ok": true }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}
+
+/// 文件/目录名的单段合法性（不含路径分隔符与 Windows 保留字符）。
+fn is_bad_name(name: &str) -> bool {
+    name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+}

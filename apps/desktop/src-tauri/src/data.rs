@@ -126,6 +126,38 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
         "models",
         "provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled",
     )?;
+    // 旧明文凭据 → enc:v1: 密文（一次性，幂等；keychain 不可用时整体跳过）
+    migrate_credentials_encryption(conn)?;
+    Ok(())
+}
+
+/// 存量明文 credentials 升级为加密存储：只扫无 `enc:v1:` 前缀的行，
+/// 加密后原地 UPDATE（不动 updated_at）。降级模式下 secret::available()
+/// 为 false，直接跳过避免空转；后续某次启动 keychain 恢复时会再补迁。
+fn migrate_credentials_encryption(conn: &Connection) -> Result<(), String> {
+    if !crate::secret::available() {
+        return Ok(());
+    }
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT provider, api_key FROM credentials WHERE api_key NOT LIKE 'enc:v1:%'")
+        .and_then(|mut s| {
+            s.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map(|it| it.filter_map(|r| r.ok()).collect())
+        })
+        .map_err(|e| format!("read credentials for encryption migration: {e}"))?;
+    for (provider, plain) in rows {
+        let enc = crate::secret::encrypt(&plain);
+        if enc == plain {
+            continue; // 降级竞态下 encrypt 可能透传，跳过而非写回
+        }
+        conn.execute(
+            "UPDATE credentials SET api_key = ?1 WHERE provider = ?2",
+            params![enc, provider],
+        )
+        .map_err(|e| format!("encrypt credential for {provider}: {e}"))?;
+    }
     Ok(())
 }
 
@@ -501,7 +533,14 @@ pub fn handle_host_query(
                 .optional()
                 .map_err(|e| e.to_string())?;
             Ok(match key {
-                Some(api_key) => json!({ "apiKey": api_key }),
+                // 密文解密失败（换机/主密钥丢失）按"无凭据"处理，用户重输即可
+                Some(stored) => match crate::secret::decrypt(&stored) {
+                    Ok(api_key) => json!({ "apiKey": api_key }),
+                    Err(e) => {
+                        log::warn!("[data] credential decrypt failed for {provider}: {e}");
+                        Value::Null
+                    }
+                },
                 None => Value::Null,
             })
         }
@@ -517,7 +556,7 @@ pub fn handle_host_query(
         }
         "credential_set" => {
             let provider = str_param(p, "provider")?;
-            let api_key = str_param(p, "apiKey")?;
+            let api_key = crate::secret::encrypt(&str_param(p, "apiKey")?);
             let now = str_param(p, "now")?;
             conn.execute(
                 "INSERT INTO credentials (provider, api_key, updated_at) VALUES (?, ?, ?) \
