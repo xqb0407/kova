@@ -32,6 +32,7 @@ import {
   type PiCustomProviderSummary,
   type PiModelSummary,
   type PiProviderSummary,
+  type PiThinkingSeed,
 } from "@/lib/pi-bridge";
 import { isTauri } from "@/lib/tauri";
 import { setSelectedModel, useSelectedModel } from "@/lib/model-settings";
@@ -485,6 +486,8 @@ export const ModelSettings: FC = () => {
   const [svcModelAttrs, setSvcModelAttrs] = useState<Record<string, PiCustomModelSpec>>({});
   const [attrEditId, setAttrEditId] = useState<string | null>(null);
   const [attrDraft, setAttrDraft] = useState<AttrDraft | null>(null);
+  /** 与 attrEditId 同步的 ref：种子查找异步返回时核对弹窗还开着同一模型 */
+  const attrEditIdRef = useRef<string | null>(null);
   // 本次打开属性弹窗内，用户是否点了"手动覆盖"把自动折叠态展开
   const [thinkingOverrideEdit, setThinkingOverrideEdit] = useState(false);
   const selected = useSelectedModel();
@@ -826,10 +829,27 @@ export const ModelSettings: FC = () => {
     setSvcCustomInput("");
   }, [svcCustomInput]);
 
-  /** 属性编辑的当前值来源：custom 用表单草稿，内置厂商用目录（已含 pi_models 覆盖） */
+  /** 属性编辑的当前值来源：custom 优先表单草稿（本次编辑会话内），没有草稿回退
+   *  目录摘要（已含 sidecar 种子与用户历史值）；内置厂商直接用目录 */
   const resolveAttrSource = useCallback(
     (id: string): Partial<PiCustomModelSpec> => {
-      if (svcProvider === "custom") return svcModelAttrs[id] ?? {};
+      if (svcProvider === "custom") {
+        const draft = svcModelAttrs[id];
+        if (draft) return draft;
+        const m = (models ?? []).find(
+          (x) => x.provider === (svcEditing ?? "") && x.id === id,
+        );
+        return m
+          ? {
+              name: m.name,
+              reasoning: m.reasoning,
+              contextWindow: m.contextWindow,
+              maxTokens: m.maxTokens,
+              input: m.input,
+              cost: m.cost,
+            }
+          : {};
+      }
       const m = (models ?? []).find(
         (x) => x.provider === svcProvider && x.id === id,
       );
@@ -844,7 +864,7 @@ export const ModelSettings: FC = () => {
           }
         : {};
     },
-    [svcProvider, svcModelAttrs, models],
+    [svcProvider, svcEditing, svcModelAttrs, models],
   );
 
   /** 思考映射归属的 provider id：custom 服务只有"编辑已有服务"时才确定 */
@@ -863,6 +883,7 @@ export const ModelSettings: FC = () => {
       );
       setThinkingOverrideEdit(false);
       setAttrEditId(id);
+      attrEditIdRef.current = id;
       setAttrDraft({
         name: src.name ?? id,
         ctx: src.contextWindow != null ? String(src.contextWindow) : "",
@@ -882,12 +903,44 @@ export const ModelSettings: FC = () => {
         cRead: String(src.cost?.cacheRead ?? 0),
         cWrite: String(src.cost?.cacheWrite ?? 0),
       });
+      // 目录里查不到该模型的思考属性（自定义端点新模型/目录外新增）：
+      // 按 modelId 反查内置目录拿种子异步补进草稿——同名官方模型直接继承
+      // reasoning 与关闭下发值（如 off:"none"），避免弹窗默认假值覆盖种子
+      if (src.reasoning === undefined) {
+        void piRequest<PiThinkingSeed | null>({
+          type: "lookup_thinking_seed",
+          modelId: id,
+        })
+          .then((seed) => {
+            if (!seed || attrEditIdRef.current !== id) return;
+            setAttrDraft((prev) => {
+              if (!prev) return prev;
+              const off =
+                typeof seed.thinkingLevelMap?.off === "string"
+                  ? seed.thinkingLevelMap.off
+                  : "";
+              return {
+                ...prev,
+                reasoning: prev.reasoning || seed.reasoning,
+                tOff: prev.tOff || off,
+                tMin: seed.supportedThinkingLevels.includes("minimal"),
+                tLow: seed.supportedThinkingLevels.includes("low"),
+                tMed: seed.supportedThinkingLevels.includes("medium"),
+                tHigh: seed.supportedThinkingLevels.includes("high"),
+                tXhigh: seed.supportedThinkingLevels.includes("xhigh"),
+                tMax: seed.supportedThinkingLevels.includes("max"),
+              };
+            });
+          })
+          .catch(() => {});
+      }
     },
     [resolveAttrSource, svcProvider, svcEditing, models],
   );
 
   const cancelAttrEditor = useCallback(() => {
     setAttrEditId(null);
+    attrEditIdRef.current = null;
     setAttrDraft(null);
   }, []);
 
@@ -972,6 +1025,7 @@ export const ModelSettings: FC = () => {
       }
     }
     setAttrEditId(null);
+    attrEditIdRef.current = null;
     setAttrDraft(null);
   }, [
     attrEditId,

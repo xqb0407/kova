@@ -14,6 +14,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
   getModelDefaultedAttrs,
   getModels,
+  lookupCatalogThinkingSeed,
   normalizeApi,
   normalizeThinkingMap,
   registerCustomProvider,
@@ -270,6 +271,123 @@ describe("extra catalog models (builtin provider)", () => {
     ).toHaveLength(1);
 
     await modelsDeleteProvider(p.id);
+  });
+});
+
+describe("lookupCatalogThinkingSeed（按 modelId 反查思考参数种子）", () => {
+  /** 任取一个内置目录里带思考映射的推理模型（跳过测试自建的 mc-* 自定义 provider） */
+  function pickSeededBuiltin() {
+    for (const p of getModels().getProviders()) {
+      if (p.id.startsWith("mc-")) continue;
+      const m = p.getModels().find((x) => x.reasoning && x.thinkingLevelMap);
+      if (m) return { provider: p, model: m };
+    }
+    return undefined;
+  }
+
+  test("命中同名模型：继承 reasoning/thinkingLevelMap 并推导档位", () => {
+    const hit = pickSeededBuiltin();
+    if (!hit) return; // 目录缺数据时跳过（理论上不会发生）
+    const seed = lookupCatalogThinkingSeed(hit.model.id)!;
+    expect(seed).toBeDefined();
+    expect(seed.reasoning).toBe(true);
+    expect(seed.thinkingLevelMap).toEqual(hit.model.thinkingLevelMap);
+    // 与 pi-ai 目录口径一致：off 不在档位清单里
+    expect(seed.supportedThinkingLevels).not.toContain("off");
+    expect(seed.supportedThinkingLevels).toEqual(
+      getSupportedThinkingLevels(hit.model).filter((l) => l !== "off"),
+    );
+  });
+
+  test("大小写不敏感；未命中/空串回 undefined", () => {
+    const hit = pickSeededBuiltin();
+    if (hit) {
+      expect(lookupCatalogThinkingSeed(hit.model.id.toUpperCase())?.reasoning).toBe(
+        true,
+      );
+    }
+    expect(lookupCatalogThinkingSeed("no-such-model-id-xyz")).toBeUndefined();
+    expect(lookupCatalogThinkingSeed("   ")).toBeUndefined();
+  });
+
+  test("同名模型多 provider 命中时优先带映射的厂商自营条目", () => {
+    // 找一个同时存在于聚合商与非聚合商、且至少一边带映射的 modelId；
+    // 目录没有这种重叠就跳过（数据依赖，不做硬编码假设）
+    const providers = getModels().getProviders().filter((p) => !p.id.startsWith("mc-"));
+    const byId = new Map<string, { aggregator: boolean; hasMap: boolean }[]>();
+    for (const p of providers) {
+      const agg = [
+        "openrouter",
+        "vercel-ai-gateway",
+        "cloudflare-ai-gateway",
+        "cloudflare-workers-ai",
+        "opencode",
+        "opencode-go",
+        "github-copilot",
+        "together",
+        "fireworks",
+        "groq",
+        "huggingface",
+        "radius",
+      ].includes(p.id);
+      for (const m of p.getModels()) {
+        const list = byId.get(m.id) ?? [];
+        list.push({ aggregator: agg, hasMap: !!m.thinkingLevelMap });
+        byId.set(m.id, list);
+      }
+    }
+    const dual = [...byId.entries()].find(
+      ([, hits]) =>
+        hits.some((h) => h.hasMap) &&
+        hits.some((h) => h.aggregator) &&
+        hits.some((h) => !h.aggregator),
+    );
+    if (!dual) return;
+    const seed = lookupCatalogThinkingSeed(dual[0])!;
+    expect(seed).toBeDefined();
+  });
+});
+
+describe("registerCustomProvider 思考参数种子", () => {
+  function pickSeededBuiltinId() {
+    for (const p of getModels().getProviders()) {
+      if (p.id.startsWith("mc-")) continue;
+      const m = p.getModels().find((x) => x.reasoning && x.thinkingLevelMap);
+      if (m) return m;
+    }
+    return undefined;
+  }
+
+  test("行未标 reasoning 时继承目录种子（含 off 显式关闭值）", async () => {
+    const builtin = pickSeededBuiltinId();
+    if (!builtin) return;
+    await modelsReplace("mc-seed", [{ modelId: builtin.id, enabled: true }]);
+    await registerCustomProvider({
+      id: "mc-seed",
+      name: "MC Seed",
+      baseUrl: "https://api.example.com/v1",
+      api: "openai-chat",
+    });
+    const m = getModels().getModel("mc-seed", builtin.id)!;
+    expect(m.reasoning).toBe(true);
+    expect(m.thinkingLevelMap).toEqual(builtin.thinkingLevelMap);
+  });
+
+  test("行显式 reasoning=false 优先于种子；映射仍随种子带上", async () => {
+    const builtin = pickSeededBuiltinId();
+    if (!builtin) return;
+    await modelsReplace("mc-seed2", [
+      { modelId: builtin.id, reasoning: false, enabled: true },
+    ]);
+    await registerCustomProvider({
+      id: "mc-seed2",
+      name: "MC Seed 2",
+      baseUrl: "https://api.example.com/v1",
+      api: "openai-chat",
+    });
+    const m = getModels().getModel("mc-seed2", builtin.id)!;
+    expect(m.reasoning).toBe(false);
+    expect(m.thinkingLevelMap).toEqual(builtin.thinkingLevelMap);
   });
 });
 

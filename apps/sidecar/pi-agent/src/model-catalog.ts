@@ -10,6 +10,7 @@
 import {
   createProvider,
   envApiKeyAuth,
+  getSupportedThinkingLevels,
   type Api,
   type Model,
   type ModelCost,
@@ -176,6 +177,97 @@ export const CUSTOM_MODEL_DEFAULTS = {
   maxTokens: 8_192,
 };
 
+/* ------------------- 思考参数种子（按 modelId 反查内置目录） ------------------- */
+
+/** 目录反查命中的思考参数种子（自定义端点/目录外新增模型的属性预填） */
+export interface ThinkingSeed {
+  reasoning: boolean;
+  thinkingLevelMap?: ThinkingLevelMap;
+  /** 按 pi-ai 同款口径推导的可用档位（不含 off） */
+  supportedThinkingLevels: string[];
+}
+
+/**
+ * 聚合/中转型 provider：同名模型散布在多个 provider 时，思考参数以厂商自营为准。
+ * 只是排序偏好，不影响命中与否。
+ */
+const AGGREGATOR_PROVIDERS = new Set([
+  "openrouter",
+  "vercel-ai-gateway",
+  "cloudflare-ai-gateway",
+  "cloudflare-workers-ai",
+  "opencode",
+  "opencode-go",
+  "github-copilot",
+  "together",
+  "fireworks",
+  "groq",
+  "huggingface",
+  "radius",
+]);
+
+/**
+ * 按 modelId 反查内置目录，取同名模型的思考参数当种子（大小写不敏感）。
+ * 用户手输的模型 ID 很多就是官方模型名（gpt-5.1、deepseek-chat…），命中即可
+ * 继承目录整理好的 reasoning + thinkingLevelMap（含 off 显式关闭值），
+ * 不必按"不推理 + 空映射"盲猜——这正是"关闭挡位关不掉默认开思考网关"的成因。
+ * 多个命中时优先带 thinkingLevelMap 的、其次厂商自营（非聚合商），
+ * 再按 provider id 字典序，保证结果稳定。
+ */
+export function lookupCatalogThinkingSeed(
+  modelId: string,
+): ThinkingSeed | undefined {
+  const wanted = modelId.trim().toLowerCase();
+  if (!wanted) return undefined;
+  let best:
+    | {
+        rank: [number, number, string];
+        reasoning: boolean;
+        thinkingLevelMap?: ThinkingLevelMap;
+      }
+    | undefined;
+  for (const p of getModels().getProviders()) {
+    if (customProviderIds.has(p.id)) continue;
+    for (const m of p.getModels()) {
+      if (m.id.toLowerCase() !== wanted) continue;
+      const rank: [number, number, string] = [
+        m.thinkingLevelMap ? 0 : 1,
+        AGGREGATOR_PROVIDERS.has(p.id) ? 1 : 0,
+        p.id,
+      ];
+      if (best && !rankLess(rank, best.rank)) continue;
+      best = {
+        rank,
+        reasoning: m.reasoning,
+        ...(m.thinkingLevelMap
+          ? { thinkingLevelMap: { ...m.thinkingLevelMap } }
+          : {}),
+      };
+    }
+  }
+  if (!best) return undefined;
+  // getSupportedThinkingLevels 只读 reasoning 与 thinkingLevelMap 两个字段
+  const pseudo = {
+    reasoning: best.reasoning,
+    thinkingLevelMap: best.thinkingLevelMap,
+  } as unknown as Model<Api>;
+  return {
+    reasoning: best.reasoning,
+    ...(best.thinkingLevelMap
+      ? { thinkingLevelMap: best.thinkingLevelMap }
+      : {}),
+    supportedThinkingLevels: getSupportedThinkingLevels(pseudo).filter(
+      (l) => l !== "off",
+    ),
+  };
+}
+
+function rankLess(a: [number, number, string], b: [number, number, string]): boolean {
+  if (a[0] !== b[0]) return a[0] < b[0];
+  if (a[1] !== b[1]) return a[1] < b[1];
+  return a[2] < b[2];
+}
+
 /* ------------------- 缺省猜测值归因（属性弹窗"未确认"标记数据源） ------------------- */
 
 /**
@@ -226,18 +318,31 @@ export async function registerCustomProvider(row: {
   const baseUrl = row.baseUrl.trim().replace(/\/+$/, "");
   const apiKind = normalizeApi(row.api);
   const enabledRows = rows.filter((m) => m.enabled && m.modelId.trim());
-  const modelList: Model<Api>[] = enabledRows.map((m) => ({
-    id: m.modelId.trim(),
-    name: m.name?.trim() || m.modelId.trim(),
-    api: API_ID[apiKind],
-    provider: row.id,
-    baseUrl,
-    reasoning: m.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
-    input: parseModelInput(m.input) ?? CUSTOM_MODEL_DEFAULTS.input,
-    cost: parseModelCost(m.cost) ?? { ...CUSTOM_MODEL_DEFAULTS.cost },
-    contextWindow: m.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
-    maxTokens: m.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
-  }));
+  const modelList: Model<Api>[] = enabledRows.map((m) => {
+    // 用户手输的 ID 常与官方模型同名：命中内置目录即继承其思考参数（行内显式值优先）
+    const seed = lookupCatalogThinkingSeed(m.modelId);
+    return {
+      id: m.modelId.trim(),
+      name: m.name?.trim() || m.modelId.trim(),
+      api: API_ID[apiKind],
+      provider: row.id,
+      baseUrl,
+      reasoning:
+        m.reasoning ?? seed?.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
+      input: parseModelInput(m.input) ?? CUSTOM_MODEL_DEFAULTS.input,
+      cost: parseModelCost(m.cost) ?? { ...CUSTOM_MODEL_DEFAULTS.cost },
+      contextWindow: m.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
+      maxTokens: m.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+      ...(seed?.thinkingLevelMap
+        ? { thinkingLevelMap: seed.thinkingLevelMap }
+        : {}),
+    };
+  });
+  // 重建出的模型对象以种子 map 为基线（同名模型种子变化随重建生效），
+  // 前端覆盖由随后的 applyThinkingMapOverrides 叠加到基线上
+  for (const m of modelList) {
+    thinkingMapBaselines.set(`${row.id}/${m.id}`, m.thinkingLevelMap);
+  }
   const provider = createProvider({
     id: row.id,
     name: row.name,
@@ -307,17 +412,24 @@ export function attachExtraCatalogModel(
   if (!orig) return undefined;
   const sibling = orig.getModels()[0];
   if (!sibling) return undefined;
+  // 目录里没有该 ID，但别的内置 provider 可能有同名模型（如把 gpt-5.1 挂到别的厂商下）：
+  // 命中即继承其思考参数，未命中按自定义默认值
+  const seed = lookupCatalogThinkingSeed(modelId);
   const model: Model<Api> = {
     id: modelId,
     name: attrs.name?.trim() || modelId,
     api: sibling.api,
     provider: orig.id,
     baseUrl: sibling.baseUrl,
-    reasoning: attrs.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
+    reasoning:
+      attrs.reasoning ?? seed?.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
     input: parseModelInput(attrs.input) ?? [...CUSTOM_MODEL_DEFAULTS.input],
     cost: parseModelCost(attrs.cost) ?? { ...CUSTOM_MODEL_DEFAULTS.cost },
     contextWindow: attrs.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
     maxTokens: attrs.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+    ...(seed?.thinkingLevelMap
+      ? { thinkingLevelMap: seed.thinkingLevelMap }
+      : {}),
   };
   const extras = extraModelsByProvider.get(providerId) ?? [];
   extras.push(model);
