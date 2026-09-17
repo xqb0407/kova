@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://localhost:3000",
-    "beforeDevCommand": "npm run build:sidecar && npm run dev",
+    "beforeDevCommand": "npm run build:sidecar && npm run build && npm run dev",
     "beforeBuildCommand": "npm run build:sidecar && npm run build"
   },
   "app": {
@@ -48,7 +48,6 @@
     "active": true,
     "targets": "all",
     "externalBin": ["binaries/pi-agent"],
-    "resources": ["../out"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -520,6 +520,7 @@ export type PiResponse =
   | { type: "models"; models: PiModelSummary[]; providers: PiProviderSummary[] }
   | { type: "model"; provider: string; modelId: string }
   | { type: "thinking"; level: string }
+  | { type: "thinking_seed"; seed: PiThinkingSeed | null }
   | { type: "thinking_maps"; applied: number }
   | {
       type: "personalization";

@@ -10,8 +10,8 @@ pnpm-lock.yaml
 /coverage
 
 # next.js
-/apps/desktop/.next/
-/apps/desktop/out/
+.next/
+out/
 
 # production
 /build
@@ -40,6 +40,7 @@ yarn-error.log*
 next-env.d.ts
 
 # tauri
+
 /apps/desktop/src-tauri/target/
 /apps/desktop/src-tauri/gen/schemas
 /apps/desktop/src-tauri/binaries/
