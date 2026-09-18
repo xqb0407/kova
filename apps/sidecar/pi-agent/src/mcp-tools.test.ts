@@ -176,6 +176,26 @@ describe("网关工具（fake server 集成）", () => {
     expect(textOf(result)).toBe("echo:auto");
   });
 
+  test("call：返回图片的服务器 → image 块透进 content（供投影上屏）", async () => {
+    writeConfig(["echo*"]); // glob 豁免审批，直达执行
+    setActiveReqId("thread-test", "req-1");
+    const result = (await tool().execute("img-1", {
+      action: "call",
+      tool: "fake__echo",
+      args: '{"text": "IMG"}',
+    })) as {
+      content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+    };
+    setActiveReqId("thread-test", null);
+    // text 块在前、image 块在后；image 携带 base64 与 mimeType
+    expect(result.content[0]).toMatchObject({ type: "text", text: "echo:IMG" });
+    const img = result.content.find((b) => b.type === "image");
+    expect(img).toBeTruthy();
+    expect(img!.mimeType).toBe("image/png");
+    expect(typeof img!.data).toBe("string");
+    expect((img!.data ?? "").length).toBeGreaterThan(0);
+  });
+
   test("call：args 非法 JSON / 未知服务器 / 未知工具的降级文案", async () => {
     writeConfig(["*"]);
     const t = tool();

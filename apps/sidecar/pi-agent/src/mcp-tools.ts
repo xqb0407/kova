@@ -27,7 +27,7 @@ import {
 } from "./mcp-config";
 import { getValidTools, type McpToolMeta } from "./mcp-cache";
 import { mcpManager } from "./mcp-manager";
-import { formatMcpContent, boundMcpResult, type McpCallResult } from "./mcp-output-guard";
+import { splitMcpContent, boundMcpResult, type McpCallResult } from "./mcp-output-guard";
 import { getAutomationPolicy } from "./automation/policy";
 import { logErr } from "./log";
 
@@ -377,11 +377,22 @@ async function executeCall(
     const result = raw as McpCallResult;
     const isError = result?.isError === true;
     const { summary, result: bounded } = boundMcpResult(result);
-    const text = formatMcpContent(bounded?.content ?? result?.content ?? "");
+    // 图片透传：合法 image 块不进文本通道，原样拼进结果 content，
+    // 正规投影链路（image-parts.ts 2MiB 闸门/白名单 → data-image part）自动上屏
+    const { text, images } = splitMcpContent(bounded?.content ?? result?.content ?? "");
+    const finalText = isError ? `MCP tool reported an error:\n${text}` : text;
+    const content: Array<
+      { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+    > = [];
+    // 无图或报错时保底给文本块（错误信息必须可见）；纯图结果不塞空文本
+    if (images.length === 0 || isError || finalText.trim().length > 0) {
+      content.push({ type: "text", text: finalText });
+    }
+    for (const img of images) content.push({ type: "image", data: img.data, mimeType: img.mimeType });
     const durationMs = Date.now() - started;
-    return textResult(
-      isError ? `MCP tool reported an error:\n${text}` : text,
-      {
+    return {
+      content,
+      details: {
         server: def.name,
         tool: parsed.tool,
         durationMs,
@@ -391,7 +402,7 @@ async function executeCall(
           ? { structuredContent: bounded.structuredContent ?? null }
           : {}),
       },
-    );
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logErr(`mcp call ${fullName}:`, message);

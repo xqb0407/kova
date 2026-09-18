@@ -20,6 +20,7 @@ import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostToolCall } from "./hostdb";
 import { buildBrowserTools } from "./browser-tools";
+import { buildScreenshotTool } from "./screenshot-tool";
 import { buildWebTools } from "./http-tools";
 import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "./todo";
@@ -296,6 +297,9 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
     // 浏览器驱动：执行转发 Rust 宿主（browser.rs）驱动面板子 webview，
     // threadId 用于 data-panelOpen 面板唤起（见 browser-tools.ts）
     ...buildBrowserTools(threadId),
+    // 屏幕截图：执行转发 Rust 宿主（tool_exec.rs，macOS only），结果 image 块
+    // 走正规投影链路上屏（image-parts.ts 闸门 + 前端 data-image 渲染）
+    buildScreenshotTool(cwd),
     // Question 不触盘不触网（挂起等 UI 作答），但要 threadId 做挂起归属
     buildQuestionTool(threadId),
     // todo：不触盘不触网，只维护会话内任务清单（per-thread 槽见 todo.ts）
