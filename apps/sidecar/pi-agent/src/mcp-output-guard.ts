@@ -4,8 +4,10 @@
  * 模型拿到的是「有界 + 可续取」的结果。
  *
  * - 文本：8KB / 1000 行截断；超限溢写临时文件，截断通知附完整路径
- *   （模型可用 read 分页取回，用户可直接打开）——截断是降级不是丢弃。
- * - 非文本块：image/audio/resource 不进文本通道，给一行占位说明（P0 不做落盘渲染）。
+ *   （模型可用 read 工具分页取回，用户可直接打开）——截断是降级不是丢弃。
+ * - 图片块：合法 image 块经 splitMcpContent 摘出、原样透进工具结果 content
+ *   （大小闸门与降级交给 image-parts.ts 投影层，2MiB/白名单统一）；
+ *   audio/resource/坏 image 等非文本块仍给一行占位说明。
  * - 整体：CallToolResult 序列化超过 16KB 时 details 换成结构化摘要
  *   （块计数 + 逐块字节预览），保证 details 元数据本身不会反向膨胀。
  */
@@ -99,7 +101,15 @@ export function guardMcpText(text: string): GuardedOutput {
   return { text: body + notice, truncated: true, originalBytes, fullOutputPath: path };
 }
 
-/** 非文本块的占位说明（P0 不落盘渲染图像/资源） */
+/** 可摘出的 image 块判定：data 必须是 base64 字符串、mimeType 齐备（对齐 MCP ImageContent） */
+function extractableImage(block: McpContentBlock): { data: string; mimeType: string } | null {
+  if (block.type !== "image") return null;
+  if (typeof block.data !== "string" || block.data.length === 0) return null;
+  if (typeof block.mimeType !== "string" || !block.mimeType) return null;
+  return { data: block.data, mimeType: block.mimeType };
+}
+
+/** 非文本块的占位说明（合法 image 块走 extractableImage 摘出，不进这里） */
 function describeBlock(block: McpContentBlock): string | null {
   const type = String(block.type ?? "unknown");
   if (type === "text" && typeof block.text === "string") return block.text;
@@ -108,14 +118,37 @@ function describeBlock(block: McpContentBlock): string | null {
   return `[${label}${block.mimeType ? ` · ${block.mimeType}` : ""}${sizeHint ? ` · ~${sizeHint}B` : ""}：二进制内容未进文本通道]`;
 }
 
-/** content 块 → 防护后的文本（text 通道只收 text，其余占位） */
+export type SplitMcpContent = {
+  /** 文本通道（text 块 + 无法摘出的块占位），已走 guardMcpText 截断护栏 */
+  text: string;
+  /** 摘出的合法 image 块：调用方原样拼进工具结果 content，闸门/投影交给 image-parts.ts */
+  images: Array<{ data: string; mimeType: string }>;
+};
+
+/**
+ * content 块分流：合法 image 摘成 images（字节不经任何文本护栏），
+ * 其余归并成一段防护后的文本。空图/缺 mimeType 的 image 按非文本块占位。
+ */
+export function splitMcpContent(content: unknown): SplitMcpContent {
+  if (typeof content === "string") return { text: guardMcpText(content).text, images: [] };
+  if (!Array.isArray(content)) return { text: "", images: [] };
+  const images: SplitMcpContent["images"] = [];
+  const parts: string[] = [];
+  for (const block of content as McpContentBlock[]) {
+    const img = extractableImage(block);
+    if (img) {
+      images.push(img);
+      continue;
+    }
+    const s = describeBlock(block);
+    if (s !== null && s.length > 0) parts.push(s);
+  }
+  return { text: guardMcpText(parts.join("\n")).text, images };
+}
+
+/** content 块 → 防护后的文本（只取文本通道；image 摘出的字节此处不可见） */
 export function formatMcpContent(content: unknown): string {
-  if (typeof content === "string") return guardMcpText(content).text;
-  if (!Array.isArray(content)) return "";
-  const parts = (content as McpContentBlock[])
-    .map(describeBlock)
-    .filter((s): s is string => s !== null && s.length > 0);
-  return guardMcpText(parts.join("\n")).text;
+  return splitMcpContent(content).text;
 }
 
 export type McpResultSummary = {

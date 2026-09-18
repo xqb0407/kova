@@ -6,6 +6,7 @@ import {
   boundMcpResult,
   formatMcpContent,
   guardMcpText,
+  splitMcpContent,
   MCP_DETAILS_MAX_BYTES,
   MCP_OUTPUT_MAX_BYTES,
   MCP_OUTPUT_MAX_LINES,
@@ -68,22 +69,67 @@ describe("guardMcpText", () => {
 });
 
 describe("formatMcpContent", () => {
-  test("text 块拼接；二进制块占位", () => {
+  test("text 块拼接；合法图摘走、坏图与非图块占位", () => {
     const out = formatMcpContent([
       { type: "text", text: "part1" },
-      { type: "image", mimeType: "image/png", data: "a".repeat(64) },
+      { type: "image", mimeType: "image/png", data: "a".repeat(64) }, // 合法 → 摘出，不留字节
+      { type: "image", mimeType: "image/png" }, // 坏（无 data）→ 占位
       { type: "text", text: "part2" },
       { type: "resource", uri: "file:///x.bin", mimeType: "application/octet-stream" },
     ]);
     expect(out).toContain("part1");
     expect(out).toContain("part2");
-    expect(out).toContain("image 块 · image/png");
+    expect(out).toContain("image 块 · image/png"); // 只剩坏图这一条占位
+    expect(out.match(/image 块/g)).toHaveLength(1);
     expect(out).toContain("resource file:///x.bin");
     expect(out).not.toContain("aaaa");
   });
 
   test("字符串快捷路径", () => {
     expect(formatMcpContent("plain")).toBe("plain");
+  });
+});
+
+describe("splitMcpContent", () => {
+  test("合法 image 摘成 images，字节不进文本通道", () => {
+    const { text, images } = splitMcpContent([
+      { type: "text", text: "截图如下" },
+      { type: "image", mimeType: "image/png", data: "aGVsbG8=" },
+      { type: "image", mimeType: "image/jpeg", data: "x".repeat(40) },
+    ]);
+    expect(text).toContain("截图如下");
+    expect(text).not.toContain("aGVsbG8=");
+    expect(images).toEqual([
+      { data: "aGVsbG8=", mimeType: "image/png" },
+      { data: "x".repeat(40), mimeType: "image/jpeg" },
+    ]);
+  });
+
+  test("坏 image 块降级为文本占位：无 data / data 非字符串 / 缺 mimeType", () => {
+    const { text, images } = splitMcpContent([
+      { type: "image", mimeType: "image/png" },
+      { type: "image", data: 123, mimeType: "image/png" },
+      { type: "image", data: "aaaa" },
+    ]);
+    expect(images).toEqual([]);
+    expect(text.match(/image 块/g)).toHaveLength(3);
+    expect(text).not.toContain("aaaa");
+  });
+
+  test("audio/resource 走占位不摘图；字符串快捷路径无图", () => {
+    expect(splitMcpContent([{ type: "audio", mimeType: "audio/mp3", data: "ZZ".repeat(20) }]).images).toEqual([]);
+    const str = splitMcpContent("hello");
+    expect(str).toEqual({ text: "hello", images: [] });
+  });
+
+  test("文本部分照旧过截断护栏（图字节不计入）", () => {
+    const big = "汉".repeat(6000); // 18KB > 8KB 上限
+    const { text, images } = splitMcpContent([
+      { type: "text", text: big },
+      { type: "image", mimeType: "image/png", data: "a".repeat(64) },
+    ]);
+    expect(text).toContain("MCP 输出已截断");
+    expect(images).toHaveLength(1);
   });
 });
 

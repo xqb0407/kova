@@ -984,6 +984,8 @@ function toolRpcTimeoutMs(name: string, params: Record<string, unknown>): number
   if (name === "http") return (num(params.timeoutMs) ?? 30_000) + TOOL_RPC_SLACK_MS;
   // browser_*：动作含导航/点击后的页面稳定等待（Rust 上限 30s+10s）再加速照
   if (name.startsWith("browser_")) return 60_000 + TOOL_RPC_SLACK_MS;
+  // screenshot：screencapture + 阶梯 sips 压缩，慢机/超大 Retina 留 30s 余量
+  if (name === "screenshot") return 30_000;
   return HOST_QUERY_TIMEOUT_MS; // read/write/edit 是本地文件操作
 }
 
@@ -1026,4 +1028,28 @@ export const hostHttpCall = (
   query<HostHttpData>("tool", { name: "http", cwd, params }, {
     signal,
     timeoutMs: toolRpcTimeoutMs("http", params),
+  });
+
+/** Rust handle_screenshot（tool_exec.rs）的返回结构：JPEG 已按内联预算压好 */
+export type HostScreenshotData = {
+  /** 压缩后 JPEG 的 base64（无 data: 前缀） */
+  base64: string;
+  /** 固定 "image/jpeg"（Rust 侧统一转码） */
+  mimeType: string;
+  /** 解码后字节数（Rust 据此判定预算；投影层还会再校 2MiB 闸门） */
+  bytes: number;
+  /** 成像像素尺寸，供 alt 文案；读取失败为 0 */
+  width: number;
+  height: number;
+};
+
+/** 屏幕截图执行出口（仅 host 模式；screencapture + sips 在 Rust 侧完成，macOS only） */
+export const hostScreenshotCall = (
+  cwd: string,
+  params: Record<string, unknown>,
+  signal?: AbortSignal,
+) =>
+  query<HostScreenshotData>("tool", { name: "screenshot", cwd, params }, {
+    signal,
+    timeoutMs: toolRpcTimeoutMs("screenshot", params),
   });

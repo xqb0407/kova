@@ -548,6 +548,163 @@ fn handle_http(p: &Value) -> Result<Value, String> {
     }))
 }
 
+/* ------------------------------- 屏幕截图 ------------------------------- */
+
+const SCREENSHOT_DEFAULT_MAX_DIM: u32 = 1920;
+const SCREENSHOT_DEFAULT_QUALITY: u32 = 70;
+/// 内联预算：sidecar 闸门是解码后 2MiB=2097152 字节（image-parts.ts
+/// IMAGE_INLINE_MAX_BYTES），此处留 ~0.3MB 余量；压不进预算则交给闸门降级占位
+const SCREENSHOT_INLINE_BUDGET_BYTES: usize = 1_800_000;
+
+fn clamp_u32(v: Option<u64>, default: u32, min: u32, max: u32) -> u32 {
+    v.map(|x| x.clamp(min as u64, max as u64) as u32)
+        .unwrap_or(default)
+}
+
+/// 压缩重试阶梯：首档按用户请求值，随后同尺寸降质两档、再逐级缩尺寸。
+/// Retina 全屏 PNG 常 3-8MB，光降质不够，尺寸才是主因，故末档压到 1024。
+/// 抽成纯函数便于单测拼参逻辑（不触真截图）。
+fn build_screenshot_ladder(max_dim: u32, quality: u32) -> Vec<(u32, u32)> {
+    let mut ladder = vec![(max_dim, quality)];
+    for q in [quality.saturating_sub(15), quality.saturating_sub(30)] {
+        let q = q.max(35);
+        if ladder.last().map_or(true, |&(_, last_q)| q != last_q) {
+            ladder.push((max_dim, q));
+        }
+    }
+    let mid_q = quality.min(60).max(45);
+    for d in [1600u32, 1280, 1024] {
+        if d < max_dim {
+            ladder.push((d, mid_q));
+        }
+    }
+    ladder
+}
+
+/// sips 参数：-Z 把最长边缩到 max_dim；format jpeg；formatOptions 质量 0-100
+#[cfg(target_os = "macos")]
+fn sips_args(max_dim: u32, quality: u32, input: &str, output: &str) -> Vec<String> {
+    vec![
+        "-Z".into(),
+        max_dim.to_string(),
+        "-s".into(),
+        "format".into(),
+        "jpeg".into(),
+        "-s".into(),
+        "formatOptions".into(),
+        quality.to_string(),
+        input.into(),
+        "--out".into(),
+        output.into(),
+    ]
+}
+
+/// 尽力读取 jpg 尺寸（sips -g），失败回 0——仅供 alt 文案，不影响成图
+#[cfg(target_os = "macos")]
+fn query_dims_macos(path_s: &str) -> (u32, u32) {
+    let mut c = Command::new("sips");
+    c.args(["-g", "pixelWidth", "-g", "pixelHeight", path_s]);
+    no_window(&mut c);
+    let out = match c.output() {
+        Ok(o) if o.status.success() => o,
+        _ => return (0, 0),
+    };
+    let s = String::from_utf8_lossy(&out.stdout).to_string();
+    let grab = |key: &str| {
+        s.lines()
+            .find_map(|l| {
+                l.trim()
+                    .strip_prefix(key)
+                    .and_then(|rest| rest.trim_start_matches(':').trim().parse::<u32>().ok())
+            })
+            .unwrap_or(0)
+    };
+    (grab("pixelWidth"), grab("pixelHeight"))
+}
+
+#[cfg(target_os = "macos")]
+fn capture_macos(
+    max_dim: u32,
+    quality: u32,
+    png_s: &str,
+    jpg_s: &str,
+) -> Result<Value, String> {
+    use base64::Engine as _;
+
+    // 1) 静默全屏抓无损 PNG，压缩交给下一步 sips
+    let mut cap = Command::new("screencapture");
+    cap.args(["-x", png_s]);
+    no_window(&mut cap);
+    let cap_out = cap
+        .output()
+        .map_err(|e| format!("failed to launch screencapture: {e}"))?;
+    if !cap_out.status.success() {
+        return Err(format!(
+            "screencapture failed: {}",
+            String::from_utf8_lossy(&cap_out.stderr).trim()
+        ));
+    }
+    // 2) 阶梯压缩，命中预算即止；全超预算则取当前最小产出交给闸门降级
+    let mut best: Option<Vec<u8>> = None;
+    for (dim, q) in build_screenshot_ladder(max_dim, quality) {
+        let mut conv = Command::new("sips");
+        conv.args(sips_args(dim, q, png_s, jpg_s));
+        no_window(&mut conv);
+        let conv_out = match conv.output() {
+            Ok(o) if o.status.success() => o,
+            _ => continue,
+        };
+        let _ = conv_out;
+        let bytes = match std::fs::read(jpg_s) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let take = best.as_ref().map_or(true, |b| bytes.len() < b.len());
+        if take {
+            best = Some(bytes);
+        }
+        if best.as_ref().map_or(false, |b| b.len() <= SCREENSHOT_INLINE_BUDGET_BYTES) {
+            break;
+        }
+    }
+    let bytes = best.ok_or("screenshot produced no output (sips failed at every tier)")?;
+    let (width, height) = query_dims_macos(jpg_s);
+    Ok(json!({
+        "base64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+        "mimeType": "image/jpeg",
+        "bytes": bytes.len(),
+        "width": width,
+        "height": height,
+    }))
+}
+
+fn handle_screenshot(p: &Value) -> Result<Value, String> {
+    let max_dim = clamp_u32(p.get("maxDim").and_then(|v| v.as_u64()), SCREENSHOT_DEFAULT_MAX_DIM, 640, 3840);
+    let quality = clamp_u32(p.get("quality").and_then(|v| v.as_u64()), SCREENSHOT_DEFAULT_QUALITY, 30, 100);
+    #[cfg(target_os = "macos")]
+    {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let base = std::env::temp_dir().join(format!("pi-shot-{}-{}", std::process::id(), stamp));
+        let png = base.with_extension("png");
+        let jpg = base.with_extension("jpg");
+        let png_s = png.to_string_lossy().to_string();
+        let jpg_s = jpg.to_string_lossy().to_string();
+        let result = capture_macos(max_dim, quality, &png_s, &jpg_s);
+        // 任何退出路径都清临时文件
+        let _ = std::fs::remove_file(&png);
+        let _ = std::fs::remove_file(&jpg);
+        result
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (max_dim, quality);
+        Err("screenshot is only supported on macOS in this build".into())
+    }
+}
+
 /// 工具分发入口（host_query kind="tool"）：params = { name, cwd, params: {...} }。
 /// `id` 为该 RPC 请求 id：登记进在飞表后，sidecar 的 host_cancel{id} 可中断长命令
 /// （目前只有 bash 有子进程可杀；http 阻塞在 reqwest 里，取消由 JS 侧吞掉响应实现）
@@ -575,6 +732,8 @@ pub fn handle_tool(id: &str, p: &Value) -> Result<Value, String> {
         "write" => handle_write(&inner),
         "edit" => handle_edit(&inner),
         "http" => handle_http(&inner),
+        // 屏幕截图（macOS screencapture + sips JPEG 压缩）：见 handle_screenshot
+        "screenshot" => handle_screenshot(&inner),
         // 面板浏览器驱动（browser.rs）：导航/快照/尺寸/点击/输入/滚动/后退
         "browser_navigate" | "browser_snapshot" | "browser_resize" | "browser_click"
         | "browser_type" | "browser_scroll" | "browser_back" => {
@@ -816,5 +975,40 @@ mod tests {
         assert_eq!(out["output"], json!(format!("Replaced 2 occurrence(s) in {path_str}")));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "z\ny\nz\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn screenshot_ladder_starts_at_request_then_descends() {
+        let l = build_screenshot_ladder(1920, 70);
+        // 首档 = 用户请求值
+        assert_eq!(l[0], (1920, 70));
+        // 降质档不低于地板 35；且相邻档不重复
+        for &(dim, q) in &l {
+            assert!(q >= 35, "quality floor breached: {q}");
+            assert!(dim <= 1920);
+        }
+        assert!(l.windows(2).all(|w| w[0] != w[1]), "no duplicate adjacent tiers");
+        // 大尺寸源会引入更小的尺寸档
+        assert!(l.iter().any(|&(dim, _)| dim < 1920), "has downsize tier for retina");
+    }
+
+    #[test]
+    fn screenshot_ladder_small_input_has_no_downsize_tier() {
+        // max_dim 已小于阶梯最小值 → 只有降质档，不追加尺寸档
+        let l = build_screenshot_ladder(1000, 80);
+        assert!(l.iter().all(|&(dim, _)| dim == 1000));
+        assert!(l.len() >= 2);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn sips_args_encode_format_and_paths() {
+        let a = sips_args(1280, 60, "/tmp/in.png", "/tmp/out.jpg");
+        let joined = a.join(" ");
+        assert!(joined.contains("-Z 1280"));
+        assert!(joined.contains("-s format jpeg"));
+        assert!(joined.contains("-s formatOptions 60"));
+        assert!(joined.contains("/tmp/in.png"));
+        assert!(joined.ends_with("--out /tmp/out.jpg"));
     }
 }
