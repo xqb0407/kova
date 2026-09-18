@@ -9,6 +9,9 @@
  *       reqId 消息流内注入恢复 prompt 投递报告（多 step 收敛），再发 finish
  *   { "type": "abort", "threadId"? }   中止线程（缺省全局）的父代理与后台子代理，
  *       并取消该范围内全部排队 prompt；threadId 提供时只影响该线程
+ *   { "type": "shutdown" }   宿主应用退出（kill_on_exit）发起的优雅终止：全局 abort
+ *       让在飞 run 把 partial 结算落盘、取消排队、停自动化调度，等全部 run idle
+ *       （5s 封顶）后经 maybeExit 冲刷 stdout 退出进程；无应答帧
  *   { "type": "queue_update", "id", "requestId", "text" }   → { id, type: "queue_updated", requestId }
  *       修改排队中的 prompt 文本（仅 queued 状态可改；requestId 为原 prompt 的 reqId）
  *   { "type": "queue_cancel", "id", "requestId" }           → { id, type: "queue_cancelled", requestId }
@@ -922,6 +925,27 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         }
         cancelAllEntries();
       }
+      break;
+    }
+    case "shutdown": {
+      // 宿主应用退出发起的优雅终止（pi_agent.rs kill_on_exit 先写本行、等本进程退出、
+      // 超时才 SIGKILL）：全局 abort 让在飞 run 把 partial 结算为 aborted 消息并走
+      // agent_end 监听器落盘，清排队队列、停自动化调度（防结算窗口内定时任务再起
+      // run），再等全部 run idle——waitForIdle 在 agent_end 监听器 settle 之后才
+      // resolve，即持久化已完成；5s 封顶防单点悬挂。置 stdinClosed 后本命令的
+      // handleLine finally 会经 maybeExit 收尾（stdout 冲刷 + MCP 断连），无需 ack
+      for (const [tid, run] of running.entries()) {
+        abortRun(run, tid);
+      }
+      cancelAllEntries();
+      stdinClosed = true;
+      await import("./automation/runtime")
+        .then((m) => m.stopAutomation())
+        .catch((err) => logErr("stop automation on shutdown failed:", err));
+      await Promise.race([
+        Promise.all([...running.values()].map((r) => r.agent.waitForIdle())).then(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+      ]);
       break;
     }
     case "queue_update": {
