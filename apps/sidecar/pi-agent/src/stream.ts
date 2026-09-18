@@ -109,6 +109,12 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
         await persist(run, { earlyUser: true });
         break;
       }
+      // assistant/toolResult 落定即持久化：agent_end 不再是唯一提交点，进程异常退出
+      // （崩溃/dev 热重载进程组被杀）最多丢正在流式的那一条，不再丢整轮已完成消息。
+      // 放在 reqId 短路之前：不带协议 reqId 的旁路/automation run 同样要落盘。
+      // 时序前提：agent-core 在 await 监听器之前已把该消息 push 进 state.messages
+      // （agent.js processEvents 先行），增量 persist 恰好收进这一条
+      await persist(run);
       // 裸 Agent 的 stream 异常（网络/401 等）会合成 stopReason:"error" 的失败消息
       if (!reqId) break;
       const m = event.message as { stopReason?: string; errorMessage?: string };
