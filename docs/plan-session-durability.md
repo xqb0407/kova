@@ -14,6 +14,15 @@
 
 ## L0：消息级即时落盘 + 宿主优雅停机（必做，预计 2~3 小时）
 
+> ✅ **2026-09-18 已实施**（提交切分见文末）。与本文原方案的两处实现差异：
+> ① L0-1 的回归测试放在 `stream.test.ts` 而非 `transcript.test.ts`（验证的是
+>   `onAgentEvent` 的 message_end 处理路径，persist 本体测试不变）；
+> ② L0-2 不发 `shutdown_ok` 应答、不直接 `process.exit`——置 `stdinClosed` 后
+>   借既有 `maybeExit()` 收尾（先冲刷 stdout、再 `mcpManager.disposeAll()` 断
+>   MCP 子进程），abort 语义与 `case "abort"` 一致（无 ack）；宿主轮询子进程
+>   句柄判退出，不依赖 ack。另在结算前动态 `import("./automation/runtime")`
+>   调 `stopAutomation()`，防 5s 窗口内定时任务起新 run。
+
 **效果**：崩溃/强杀最多丢"当前正在流式的那一条消息"；正常退出零丢失。
 
 ### L0-1. `message_end` 粒度 persist

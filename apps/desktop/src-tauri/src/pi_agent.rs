@@ -484,8 +484,28 @@ pub async fn pi_request(
     }
 }
 
-/// 应用退出时杀掉子进程
+/// sidecar 退出宽限：发 shutdown 后最多等多久（sidecar 内部结算封顶 5s，
+/// 留 1s 给 stdout 冲刷与进程收尾）
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(6);
+
+/// 应用退出时优雅终止子进程：先向 stdin 写 `shutdown`（sidecar 会把在飞 run
+/// 的 partial 结算落盘、断 MCP、冲刷 stdout 后自行退出），轮询子进程句柄
+/// 最多宽限 6s——stdout 读循环收到 Terminated 时会把句柄清成 None；
+/// 超时或写入失败照旧 SIGKILL 兜底。
+/// 注意：tauri dev 热重启走进程组信号、不经过本函数，该场景的丢消息兜底
+/// 靠 sidecar 在 message_end 的逐条落盘（stream.ts L0-1）。
 pub fn kill_on_exit(state: &PiState) {
+    let sent = tauri::async_runtime::block_on(write_line(state, "{\"type\":\"shutdown\"}".into()));
+    if sent.is_ok() {
+        let deadline = Instant::now() + SHUTDOWN_GRACE;
+        loop {
+            let exited = matches!(state.child.try_lock(), Ok(guard) if guard.is_none());
+            if exited || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
     if let Ok(mut guard) = state.child.try_lock() {
         if let Some(child) = guard.take() {
             let _ = child.kill();
