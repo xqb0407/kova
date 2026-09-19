@@ -45,8 +45,10 @@ describe("buildBrowserTools", () => {
     expect(scrollProps.direction).toBeTruthy();
   });
 
-  test("buildTools 装配 browser_* 工具（agent 模式可用）", () => {
+  test("buildTools 只装配 browser_navigate（其余 browser_* 暂停暴露）", () => {
     const names = buildTools("/tmp", "t-wire").map((t) => t.name);
-    for (const n of NAMES) expect(names).toContain(n);
+    expect(names).toContain("browser_navigate");
+    for (const n of NAMES.filter((n) => n !== "browser_navigate"))
+      expect(names).not.toContain(n);
   });
 });

@@ -18,8 +18,6 @@ import {
   InfoIcon,
   KeyboardIcon,
   PaintbrushIcon,
-  PlugIcon,
-  PuzzleIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
   WebhookIcon,
@@ -37,8 +35,6 @@ import { MemorySettings } from "./components/memory-settings";
 import { BackupSettings } from "./components/backup-settings";
 import { PersonalizationSettings } from "./components/personalization-settings";
 import { SubagentsSettings } from "./components/subagents-settings";
-import { McpSettings } from "./components/mcp-settings";
-import { SkillsSettings } from "./components/skills-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
 
 type SettingsSection =
@@ -53,8 +49,6 @@ type SettingsSection =
   | "backup"
   | "shortcuts"
   | "subagents"
-  | "mcp"
-  | "skills"
   | "webhooks"
   | "hooks";
 
@@ -78,8 +72,6 @@ const GROUPS: {
     items: [
       { id: "models", label: "模型", icon: BoxesIcon },
       { id: "subagents", label: "子智能体", icon: BotIcon },
-      { id: "mcp", label: "MCP", icon: PlugIcon },
-      { id: "skills", label: "技能", icon: PuzzleIcon },
       { id: "memory", label: "记忆", icon: BrainIcon },
       { id: "hooks", label: "钩子", icon: ZapIcon },
     ],
@@ -215,8 +207,6 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "backup" && <BackupSettings />}
           {section === "shortcuts" && <ShortcutSettings />}
           {section === "subagents" && <SubagentsSettings />}
-          {section === "mcp" && <McpSettings />}
-          {section === "skills" && <SkillsSettings />}
           {section === "archive" && <ArchiveSettings />}
           {section === "webhooks" && <WebhooksSettings />}
           {section === "hooks" && <HooksSettings />}

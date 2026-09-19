@@ -290,11 +290,20 @@ const AssistantActionBar: FC = () => {
   // 只隐藏「本条消息还在流式输出」的操作栏；其他 turn 在跑不影响已完成
   // 消息的 ActionBar（排队/并行场景下每条已结束的对话都是独立可操作的）
   const selfRunning = useAuiState((s) => s.message.status?.type === "running");
-  if (dividerOnly || selfRunning) return null;
+  // 一轮回复会被拆成多条 assistant 消息（每次工具调用后继续生成都是新的
+  // 一条），autohide 只认「线程最后一条」——中间消息 hover 时仍各自冒出
+  // 操作栏。这里收紧为：仅「本轮收尾」的消息（下一条不再是 assistant）
+  // 才挂操作栏，一轮只有一个
+  const isTurnEnd = useAuiState((s) => {
+    const msgs = s.thread.messages;
+    const idx = msgs.findIndex((m) => m.id === s.message.id);
+    return idx === -1 || msgs[idx + 1]?.role !== "assistant";
+  });
+  if (dividerOnly || selfRunning || !isTurnEnd) return null;
   return (
     <ActionBarPrimitive.Root
       autohide="not-last"
-      className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ml-1 flex gap-1 duration-200"
+      className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ml-1 my-4 flex gap-1 duration-200"
     >
       <ActionBarPrimitive.Copy asChild>
         <TooltipIconButton tooltip="Copy">
