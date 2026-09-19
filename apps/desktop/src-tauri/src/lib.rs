@@ -63,6 +63,19 @@ pub fn run() {
                 Ok(()) => log::info!("[store] init ok"),
                 Err(e) => log::error!("[store] init failed: {e}"),
             }
+            // 附件中转目录清理（保留天数走通用设置，kv）：启动清一次 +
+            // 每小时定时清一次，不依赖"下次粘贴"才触发。必须在 store::init
+            // 之后（prune 读 kv 依赖 DbState），且放后台线程不挡启动
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    fs::prune_attachments_scheduled(&handle);
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(60 * 60));
+                        fs::prune_attachments_scheduled(&handle);
+                    }
+                });
+            }
             // 主窗口在配置中标记 create:false——需先读硬件加速开关
             // （gpu.rs），再建窗以便把 --disable-gpu 传进 WebView2 参数
             if let Err(e) = gpu::create_windows(app.handle()) {

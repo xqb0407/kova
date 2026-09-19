@@ -76,6 +76,28 @@ describe("extractPromptAttachments", () => {
     expect(await extractPromptAttachments(msg)).toBeNull();
   });
 
+  test("url 为本地绝对路径 / file:// URL：path 载荷原位引用，不 fetch", async () => {
+    const msg = userMsg([
+      filePart({ url: "/Users/u/Downloads/报告.docx", mediaType: docxMime, filename: "报告.docx" }),
+      filePart({ url: "file:///Users/u/pics/shot.png", mediaType: "image/png", filename: "shot.png" }),
+      filePart({ url: "file:///Users/u/my%20docs/a.pdf", filename: "a.pdf" }),
+    ]);
+    const atts = await extractPromptAttachments(msg);
+    expect(atts).toHaveLength(3);
+    expect(atts![0]).toEqual({
+      name: "报告.docx",
+      mimeType: docxMime,
+      path: "/Users/u/Downloads/报告.docx",
+    });
+    expect(atts![1]).toEqual({ name: "shot.png", mimeType: "image/png", path: "/Users/u/pics/shot.png" });
+    // file:// URL 解码 + 无 mediaType 时按扩展名推断 mime
+    expect(atts![2]).toEqual({
+      name: "a.pdf",
+      mimeType: "application/pdf",
+      path: "/Users/u/my docs/a.pdf",
+    });
+  });
+
   test("无 file parts 返回 null", async () => {
     expect(await extractPromptAttachments(undefined)).toBeNull();
     expect(await extractPromptAttachments(userMsg([{ type: "text", text: "hi" } as UIMessage["parts"][number]]))).toBeNull();

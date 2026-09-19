@@ -1,5 +1,6 @@
 "use client";
 
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ComposerAttachments } from "@/components/assistant-ui/elements/attachment.aui";
 import { ComposerQuotePreview } from "@/components/assistant-ui/elements/quote.aui";
 import { GroupedTriggerPopover } from "@/components/agent-thread/composer-grouped-popover";
@@ -48,8 +49,10 @@ import {
 import { useEffect, useRef, useState, type ChangeEvent, type FC, type ReactNode } from "react";
 import { toast } from "@/components/ui/toast";
 import {
-  PROMPT_IMAGE_MAX_COUNT,
+  docMimeFromName,
+  imageMimeFromName,
   promptFileKind,
+  PROMPT_IMAGE_MAX_COUNT,
   validatePromptFile,
 } from "@/lib/prompt-attachments";
 import { isTauri } from "@/lib/tauri";
@@ -567,16 +570,74 @@ const AdaptiveSendButton: FC = () => {
   );
 };
 
+/** dialog 文件类型过滤（与 prompt-attachments 白名单同源） */
+const ATTACHMENT_DIALOG_EXTENSIONS = [
+  "png", "jpg", "jpeg", "gif", "webp",
+  "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md", "rtf",
+];
+
 /**
- * 附件按钮（composer 动作区最左）：选文件经 validatePromptFile 前置校验
- * （图片/文档白名单与大小上限，不合格 toast 拒收）。图片沿用单条 4 张的
- * 添加时闸门；文档不拦添加（数量/总体积由 sidecar 落盘裁决，拒收折算说明行）。
- * 不按模型能力隐藏——纯文本模型发图由 sidecar 硬门折算占位说明，UI 恒可用；
- * 粘贴路径同款校验见 cm-composer-input。
+ * 附件按钮（composer 动作区最左）。桌面端走 Tauri dialog：拿到真实绝对路径后
+ * 构造带 file part（url=原路径）的附件，发送时载荷只带原路径——零落盘零复制；
+ * 网页端保留 <input type=file>，粘贴场景见 cm-composer-input（无路径，走中转）。
+ * 图片沿用单条 4 张的添加时闸门；文档不拦添加（数量由 sidecar 裁决折算说明行）。
+ * 不按模型能力隐藏——纯文本模型发图由 sidecar 硬门折算占位说明，UI 恒可用。
  */
 const AddAttachmentButton: FC = () => {
   const aui = useAui();
   const inputRef = useRef<HTMLInputElement>(null);
+
+  /** 图片张数闸门（与草稿内已有图片合并计数）；返回是否放行 */
+  const allowImage = (draftImageCount: number): boolean => {
+    if (draftImageCount < PROMPT_IMAGE_MAX_COUNT) return true;
+    toast.error(`单条消息最多 ${PROMPT_IMAGE_MAX_COUNT} 张图片`);
+    return false;
+  };
+
+  const addDialogPaths = async (paths: string[]) => {
+    const imageCount = (aui.composer.getState().attachments ?? []).filter(
+      (a) => a.type === "image",
+    ).length;
+    let imageTaken = 0;
+    for (const p of paths) {
+      const name = pathBasename(p);
+      const kind = promptFileKind(name, undefined);
+      if (!kind) {
+        toast.error(
+          `「${name}」不是支持的附件（图片 PNG/JPEG/GIF/WebP，或文档 PDF/Word/Excel/PPT/TXT/MD/CSV）`,
+        );
+        continue;
+      }
+      const isImage = kind === "image";
+      if (isImage && !allowImage(imageCount + imageTaken)) continue;
+      if (isImage) imageTaken += 1;
+      const mime = isImage ? imageMimeFromName(name) : docMimeFromName(name);
+      // 原路径编码成 file:// URL 进 content（裸绝对路径会被 runtime 的
+      // toMediaWireUrl 误包成 base64 data URL；file:// 可原样通过），发送时
+      // extractPromptAttachments 再解回本地路径进 path 载荷
+      const fileUrl = `file://${p
+        .replace(/\\/g, "/")
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/")}`;
+      await aui.composer
+        .addAttachment({
+          type: kind,
+          name,
+          contentType: mime ?? "application/octet-stream",
+          content: [
+            {
+              type: "file",
+              data: fileUrl,
+              mimeType: mime ?? "application/octet-stream",
+              filename: name,
+              sourceType: "url",
+            },
+          ],
+        })
+        .catch(() => {});
+    }
+  };
 
   const onChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -593,13 +654,8 @@ const AddAttachmentButton: FC = () => {
     let imageTaken = 0;
     for (const file of accepted) {
       const isImage = promptFileKind(file.name, file.type) === "image";
-      if (isImage) {
-        if (imageTaken >= Math.max(0, PROMPT_IMAGE_MAX_COUNT - imageCount)) {
-          toast.error(`单条消息最多 ${PROMPT_IMAGE_MAX_COUNT} 张图片`);
-          continue;
-        }
-        imageTaken += 1;
-      }
+      if (isImage && !allowImage(imageCount + imageTaken)) continue;
+      if (isImage) imageTaken += 1;
       await aui.composer.addAttachment(file).catch(() => {});
     }
   };
@@ -621,7 +677,21 @@ const AddAttachmentButton: FC = () => {
         size="icon"
         className="aui-composer-add-attachment text-muted-foreground hover:text-foreground hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30 size-7 rounded-full active:scale-[0.96] motion-reduce:transition-none"
         aria-label="Add Attachment"
-        onClick={() => inputRef.current?.click()}
+        onClick={() => {
+          if (isTauri()) {
+            void openDialog({
+              multiple: true,
+              filters: [
+                { name: "支持的附件", extensions: ATTACHMENT_DIALOG_EXTENSIONS },
+              ],
+            }).then((picked) => {
+              if (!picked) return;
+              void addDialogPaths(Array.isArray(picked) ? picked : [picked]);
+            });
+            return;
+          }
+          inputRef.current?.click();
+        }}
       >
         <PlusIcon className="aui-attachment-add-icon size-4" />
       </TooltipIconButton>

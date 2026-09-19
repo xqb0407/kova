@@ -135,9 +135,10 @@ export class PiTransport implements ChatTransport<UIMessage> {
     // 检查点卡的轮次锚点：触发本轮的 user 消息下标（跨刷新稳定,见 pi-checkpoints）
     const anchorIndex = lastUser ? messages.indexOf(lastUser) : null;
 
-    // 用户图片附件（多模态输入）：user 消息的 file parts → 协议 attachments
-    //（data URL 解析 / blob URL fetch 转 base64）；无附件 = undefined，帧上不带字段
-    const attachments = (await extractPromptAttachments(lastUser)) ?? undefined;
+    // 用户附件（多模态图片 + 文档中转）：user 消息的 file parts → 协议
+    // attachments（data URL 解析 / blob fetch / 文档落盘中转，带线程 id 分目录）；
+    // 无附件 = undefined，帧上不带字段
+    const attachments = (await extractPromptAttachments(lastUser, chatId)) ?? undefined;
 
     return getPiChannel()
       .promptStream({
