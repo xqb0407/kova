@@ -387,7 +387,7 @@ export const FilesView: FC = () => {
 
       {/* 预览 Dialog（本地文件：图片全显 / 文本滚动 / 不支持回退） */}
       <Dialog open={previewRow !== null} onOpenChange={(o) => !o && setPreviewRow(null)}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="w-[min(90vw,72rem)] max-w-[90vw] sm:max-w-[72rem]">
           <DialogHeader>
             <DialogTitle className="flex min-w-0 items-center gap-2">
               {previewRow && (() => {
@@ -407,7 +407,7 @@ export const FilesView: FC = () => {
             <img
               src={`data:${preview.mime};base64,${preview.data}`}
               alt={previewRow?.name ?? ""}
-              className="mx-auto max-h-[60vh] w-auto rounded-md border object-contain"
+              className="mx-auto max-h-[72vh] w-auto rounded-md border object-contain"
             />
           ) : preview?.kind === "html" ? (
             /* HTML：iframe 沙箱渲染成页面（不给 allow-same-origin，脚本可跑
@@ -416,10 +416,10 @@ export const FilesView: FC = () => {
               srcDoc={preview.text}
               sandbox="allow-scripts allow-forms allow-popups"
               title={previewRow?.name ?? ""}
-              className="h-[60vh] w-full rounded-md border bg-white"
+              className="h-[72vh] w-full rounded-md border bg-white"
             />
           ) : preview?.kind === "text" ? (
-            <pre className="bg-muted/50 max-h-[60vh] overflow-auto rounded-md p-3 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap">
+            <pre className="bg-muted/50 max-h-[72vh] overflow-auto rounded-md p-3 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap">
               {preview.text}
             </pre>
           ) : (

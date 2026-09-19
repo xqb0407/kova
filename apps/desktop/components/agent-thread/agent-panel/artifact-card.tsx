@@ -8,6 +8,7 @@ import {
   formatBytes,
   isBrowserPreviewable,
   messageArtifacts,
+  toFileUrl,
   type MessageArtifact,
 } from "@/lib/artifacts";
 import { focusPanelTab } from "@/lib/panel-tabs";
@@ -24,19 +25,6 @@ const FileTypeIcon = dynamic(
     loading: () => <FileIcon className="size-8 shrink-0" />,
   },
 );
-
-/**
- * 工作区相对/绝对路径 → file:// URL（内置浏览器只吃 URL，本地文件靠它加载）。
- * 逐段 encodeURIComponent 兼容空格/中文；Windows 盘符走三斜杠 file:///C:/…。
- */
-function toFileUrl(cwd: string, rel: string): string {
-  let abs = rel.replace(/\\/g, "/");
-  if (!/^[A-Za-z]:\//.test(abs) && !abs.startsWith("/")) {
-    abs = `${cwd.replace(/[\\/]+$/, "").replace(/\\/g, "/")}/${abs.replace(/^\/+/, "")}`;
-  }
-  const encoded = abs.split("/").map(encodeURIComponent).join("/");
-  return /^[A-Za-z]:\//.test(encoded) ? `file:///${encoded}` : `file://${encoded}`;
-}
 
 const iconBtn =
   "text-muted-foreground hover:bg-muted hover:text-foreground size-8 shrink-0 grid place-items-center rounded-lg transition-colors";

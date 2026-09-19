@@ -12,6 +12,7 @@ import {
   GlobeIcon,
   ListTodoIcon,
   Loader2Icon,
+  PackageIcon,
   SquareTerminalIcon,
   WaypointsIcon,
 } from "lucide-react";
@@ -32,6 +33,7 @@ import { FileTab } from "./file-view";
 import { FileTreeTab } from "./file-tree-tab";
 import { SubagentTab } from "./subagent-tab";
 import { TraceTab } from "./trace-tab";
+import { ArtifactsTab } from "./artifacts-tab";
 import { TabEmpty } from "./tab-empty";
 
 /**
@@ -42,6 +44,7 @@ export const PANEL_TAB_TYPES: readonly PanelTabType[] = [
   "activity",
   "plan",
   "review",
+  "artifacts",
   "explorer",
   "shell",
   "browser",
@@ -81,6 +84,11 @@ export const TAB_META: Record<
     label: "审查",
     description: "文件变更与行级 diff",
     icon: FileCodeIcon,
+  },
+  artifacts: {
+    label: "产物",
+    description: "会话生成的网页、文档等交付文件，随时重新打开预览",
+    icon: PackageIcon,
   },
   file: {
     label: "文件",
@@ -200,6 +208,8 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
       return <PlanTab />;
     case "review":
       return <ReviewTab tab={tab} />;
+    case "artifacts":
+      return <ArtifactsTab />;
     case "file":
       return <FileTab tab={tab} />;
     case "explorer":

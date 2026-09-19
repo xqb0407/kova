@@ -14,12 +14,15 @@ import type { PiResponse } from "@/lib/pi-bridge";
  * 与具体通道解耦：运行时 provider 挂载前 set，之后所有调用原样工作在任一通道上。
  */
 
-/** prompt 图片附件（用户多模态输入，随 prompt 下发 sidecar；data = 裸 base64）。
+/** prompt 附件（用户图片 + 文档，随 prompt 下发 sidecar）。
  *  闸门在 sidecar（prompt-attachments.ts），前端在 addAttachment 时做同款前置校验 */
 export type PiPromptAttachment = {
   name: string;
   mimeType: string;
-  data: string;
+  /** 图片与网页端文档：裸 base64 内联（注意请求体体积） */
+  data?: string;
+  /** 桌面端文档：经 Rust attachment_stage 落盘中转后的绝对路径（帧不带字节） */
+  path?: string;
 };
 
 export type PromptStreamArgs = {

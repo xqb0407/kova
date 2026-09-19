@@ -12,11 +12,12 @@
     "ai": "^7.0.105"
   },
   "scripts": {
-    "dev": "bun run --filter desktop dev",
     "build": "bun run --filter desktop build",
     "build:sidecar": "bun run --filter pi-agent-sidecar build",
-    "tauri:dev": "bun run --filter desktop tauri:dev",
+    "dev": "bun run --filter desktop dev",
+    "release": "node scripts/release.mjs",
     "tauri:build": "bun run --filter desktop tauri:build",
+    "tauri:dev": "bun run --filter desktop tauri:dev",
     "test": "bun run --filter pi-agent-sidecar test"
   }
 }

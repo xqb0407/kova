@@ -154,6 +154,7 @@ pub fn run() {
             fs::app_file_list,
             fs::app_file_preview,
             fs::app_file_delete,
+            fs::attachment_stage,
             http::http_post,
             notify::notify_show,
             notify::notify_consume_pending_session,
