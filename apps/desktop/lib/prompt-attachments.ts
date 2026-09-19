@@ -70,6 +70,37 @@ export function docMimeFromName(name: string | undefined): string | null {
   return DOC_EXT_MIME[ext] ?? null;
 }
 
+/** 扩展名推断图片 mime（dialog 直选图片用）；非图片返回 null */
+const IMAGE_EXT_MIME: Readonly<Record<string, string>> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+
+export function imageMimeFromName(name: string | undefined): string | null {
+  const norm = (name ?? "").toLowerCase();
+  const dot = norm.lastIndexOf(".");
+  const ext = dot > 0 ? norm.slice(dot + 1) : "";
+  return IMAGE_EXT_MIME[ext] ?? null;
+}
+
+/** 本地绝对路径（或 file:// URL）判定：dialog 直选的附件 url 就是本地路径，
+ *  载荷直接带路径零 fetch；blob:/http(s)/data: 均不匹配 */
+const LOCAL_PATH_RE = /^(?:file:\/\/|[A-Za-z]:[\\/]|\/)/;
+
+/** file:// URL → 本地路径（逐段解码；Windows 盘符去掉三斜杠多出的一个斜杠） */
+export function fileUrlToLocalPath(url: string): string {
+  if (!url.startsWith("file://")) return url;
+  let p = decodeURIComponent(url.slice("file://".length));
+  if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1);
+  return p;
+}
+
+const basenameOf = (p: string): string =>
+  p.replace(/\\/g, "/").slice(p.replace(/\\/g, "/").lastIndexOf("/") + 1) || p;
+
 /** 附件种类：image（内联多模态）/ document（落盘给 agent）；白名单外 null */
 export type PromptFileKind = "image" | "document";
 
@@ -117,6 +148,18 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/** 字节 → SHA-256 hex（中转文件名用，同内容去重；subtle 不可用回退 null） */
+async function sha256Hex(bytes: Uint8Array): Promise<string | null> {
+  try {
+    const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
+    return [...new Uint8Array(digest)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  } catch {
+    return null;
+  }
+}
+
 type FilePart = Extract<UIMessage["parts"][number], { type: "file" }>;
 
 /**
@@ -124,30 +167,51 @@ type FilePart = Extract<UIMessage["parts"][number], { type: "file" }>;
  * 文档在桌面端走落盘中转（Rust attachment_stage）：字节进 app_data/attachments/，
  * 附件载荷只带绝对路径——请求体不随文档膨胀；网页端回退内联 base64。
  */
-async function filePartToAttachment(part: FilePart): Promise<PiPromptAttachment | null> {
+async function filePartToAttachment(
+  part: FilePart,
+  threadId: string | undefined,
+): Promise<PiPromptAttachment | null> {
   const url = part.url ?? "";
   const kind = promptFileKind(part.filename, part.mediaType);
   if (!kind) return null;
   const docMime = kind === "document" ? docMimeFromName(part.filename) : null;
 
+  // dialog 直选：url 就是本地绝对路径（或 file:// URL）→ 载荷直接带原路径，
+  // 零落盘零 fetch（图片与文档都适用；sidecar 对图片读盘内联、文档原位引用）
+  if (url && LOCAL_PATH_RE.test(url)) {
+    const localPath = fileUrlToLocalPath(url);
+    const mimeType =
+      part.mediaType ||
+      (kind === "image" ? imageMimeFromName(part.filename) : null) ||
+      docMime ||
+      (kind === "image" ? "image/png" : "application/octet-stream");
+    return {
+      name: part.filename || basenameOf(localPath),
+      mimeType: mimeType === "image/jpg" ? "image/jpeg" : mimeType,
+      path: localPath,
+    };
+  }
+
   if (kind === "document" && isTauri()) {
-    let data: string | null;
+    let bytes: Uint8Array | null;
     if (url.startsWith("data:")) {
-      data = url.slice(url.indexOf(",") + 1);
+      const base64 = url.slice(url.indexOf(",") + 1);
+      bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
     } else {
       try {
         const res = await fetch(url);
-        const blob = await res.blob();
-        data = bytesToBase64(new Uint8Array(await blob.arrayBuffer()));
+        bytes = new Uint8Array(await (await res.blob()).arrayBuffer());
       } catch {
-        data = null;
+        bytes = null;
       }
     }
-    if (!data) return null;
+    if (!bytes) return null;
     try {
       const { path } = await invoke<{ path: string }>("attachment_stage", {
         name: part.filename || "attachment",
-        dataBase64: data,
+        dataBase64: bytesToBase64(bytes),
+        threadId: threadId ?? null,
+        hash: await sha256Hex(bytes),
       });
       if (!path) return null;
       return {
@@ -200,6 +264,8 @@ async function filePartToAttachment(part: FilePart): Promise<PiPromptAttachment 
  */
 export async function extractPromptAttachments(
   lastUser: UIMessage | undefined,
+  /** 当前线程 id：中转文件按线程分目录（清会话可整目录带走） */
+  threadId?: string,
 ): Promise<PiPromptAttachment[] | null> {
   const fileParts = lastUser?.parts.filter(
     (p): p is FilePart => p.type === "file",
@@ -207,7 +273,7 @@ export async function extractPromptAttachments(
   if (!fileParts || fileParts.length === 0) return null;
   const out: PiPromptAttachment[] = [];
   for (const part of fileParts) {
-    const att = await filePartToAttachment(part);
+    const att = await filePartToAttachment(part, threadId);
     if (att) out.push(att);
   }
   return out.length ? out : null;

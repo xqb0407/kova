@@ -9,10 +9,13 @@ import { PlanSection } from "./plan-section";
 import { FilesSection } from "./files-section";
 import { TerminalSection } from "./terminal-section";
 import { ReferencesSection } from "./references-section";
+import { AttachmentsSection } from "./attachments-section";
+import { useThreadAttachments } from "@/lib/thread-attachments";
 
 /**
  * "活动"标签:纵向汇总当前线程的 agent 工作——计划(todo 快照)/
- * 文件变更(edit/write 行级 diff)/ 终端(bash 流水)/ 引用资料(WebSearch 汇总)。
+ * 文件变更(edit/write 行级 diff)/ 终端(bash 流水)/ 引用资料(WebSearch 汇总)/
+ * 引用文件(用户上传的附件汇总)。
  * 数据全部派生自 runtime 消息(usePanelActivity)+ pi-todo store,
  * 实时流与历史重建同形,无 sidecar 改动。
  * focusToolCallId:bash 工具行点击定位（展开并滚到那条命令）——
@@ -24,6 +27,7 @@ export const ActivityView: FC<{ focusToolCallId?: string }> = ({
   const activity = usePanelActivity();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const snap = useThreadTodos(threadId ?? undefined);
+  const attachments = useThreadAttachments();
   const feedRef = useRef<HTMLDivElement>(null);
 
   const hasPlan = snap.tasks.some((t) => t.status !== "deleted");
@@ -31,6 +35,7 @@ export const ActivityView: FC<{ focusToolCallId?: string }> = ({
     activity.terminal.length === 0 &&
     activity.files.length === 0 &&
     activity.citations.length === 0 &&
+    attachments.length === 0 &&
     !hasPlan;
 
   // 贴底跟脚:活动增量时若用户没上翻,滚动条跟随最新条目(同聊天区习惯)
@@ -61,6 +66,7 @@ export const ActivityView: FC<{ focusToolCallId?: string }> = ({
           scrollRoot={feedRef}
         />
         <ReferencesSection items={activity.citations} scrollRoot={feedRef} />
+        <AttachmentsSection scrollRoot={feedRef} />
         {isEmpty ? (
           <div className="text-muted-foreground/60 flex flex-col items-center gap-2 px-4 py-16 text-center text-xs">
             <ActivityIcon className="size-6" />

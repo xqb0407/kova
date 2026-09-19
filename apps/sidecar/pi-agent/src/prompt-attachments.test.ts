@@ -237,7 +237,7 @@ describe("preparePromptAttachments 文档分支", () => {
 });
 
 describe("preparePromptAttachments 文档 path 模式（桌面端）", () => {
-  test("staged 文件：校验存在后复制进 cwd 附件目录，说明行带相对路径", () => {
+  test("path 模式原位引用：说明行带绝对路径，不往 cwd 复制", () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
     const staged = join(cwd, "staging-src.docx");
     writeFileSync(staged, "PK staged bytes");
@@ -253,11 +253,44 @@ describe("preparePromptAttachments 文档 path 模式（桌面端）", () => {
     expect(noticeLines).toHaveLength(1);
     expect(noticeLines[0]).toContain("报告.docx");
     expect(noticeLines[0]).toContain("Word 文档");
-    expect(noticeLines[0]).toContain(".xulux/attachments/");
-    expect(noticeLines[0]).not.toContain(staged);
-    const files = readdirSync(docSaveDir(cwd));
-    expect(files).toHaveLength(1);
-    expect(readFileSync(join(docSaveDir(cwd), files[0]!), "utf8")).toBe("PK staged bytes");
+    expect(noticeLines[0]).toContain(staged);
+    expect(noticeLines[0]).toContain("请用文件工具读取");
+    // 原位引用：不往 cwd 落任何副本
+    expect(existsSync(docSaveDir(cwd))).toBe(false);
+  });
+
+  test("dialog 直选图片（path 无 data）：读盘内联进 ImageContent", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
+    const imgPath = join(cwd, "shot.png");
+    writeFileSync(imgPath, Buffer.from(png1x1, "base64"));
+    const { images, noticeLines } = preparePromptAttachments(
+      {
+        attachments: [
+          { name: "shot.png", mimeType: "image/png", path: imgPath },
+        ],
+      },
+      { cwd },
+    );
+    expect(noticeLines).toEqual([]);
+    expect(images).toEqual([
+      { type: "image", data: png1x1, mimeType: "image/png" },
+    ]);
+  });
+
+  test("dialog 图片 path 不可读：专用说明行", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
+    const { images, noticeLines } = preparePromptAttachments(
+      {
+        attachments: [
+          { name: "gone.png", mimeType: "image/png", path: join(cwd, "nope.png") },
+        ],
+      },
+      { cwd },
+    );
+    expect(images).toEqual([]);
+    expect(noticeLines).toHaveLength(1);
+    expect(noticeLines[0]).toContain("gone.png");
+    expect(noticeLines[0]).toContain("不可读");
   });
 
   test("path 文件不存在：拒收说明，不落盘", () => {

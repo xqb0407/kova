@@ -479,8 +479,16 @@ pub async fn app_file_delete(app: tauri::AppHandle, name: String) -> Result<Valu
 
 /* ------------------------------ 文档附件中转 ------------------------------ */
 
-/// 附件中转单文件上限（比前端闸门 20MiB 留余量）
+/// 中转目录的积累控制。参考 ZCode（cli/image-cache/sess_<id>/，内容 hash 命名、
+/// 归入 toolOutputs 清理类别）：
+/// - 目录按线程分（attachments/<threadId>/），将来清会话可整目录带走
+/// - 文件名 = 内容 SHA-256（前端算）：同一份文档反复粘贴只存一份
+/// - 保留天数用户可配（通用设置，kv "attachments.retentionDays"，0 = 不清理），
+///   默认 7 天；目录总量另有 256MB 硬顶（仅在有清理策略时生效），超限删最旧
 const ATTACHMENT_STAGE_MAX_BYTES: usize = 24 * 1024 * 1024;
+const ATTACHMENT_STAGE_MAX_TOTAL: u64 = 256 * 1024 * 1024;
+const ATTACHMENT_RETENTION_KV_KEY: &str = "attachments.retentionDays";
+const ATTACHMENT_RETENTION_DEFAULT_DAYS: u64 = 7;
 
 /// 文件名消毒（与 sidecar 同语义）：取 basename、去控制字符；空/点名回退
 fn sanitize_attachment_name(name: &str) -> String {
@@ -493,37 +501,155 @@ fn sanitize_attachment_name(name: &str) -> String {
     trimmed.chars().take(120).collect()
 }
 
-/// 过期中转文件清理：删修改时间超过 24h 的条目（每次 stage 顺带执行，目录
-/// 条目少代价可忽略）。失败静默——清理不该挡住本次落盘
-fn prune_stale_attachments(root: &Path) {
-    let Ok(rd) = std::fs::read_dir(root) else {
-        return;
-    };
-    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 60 * 60);
+/// threadId 消毒：只留字母数字下划线连字符（目录名拼接，防路径穿越）；
+/// 空回退 "misc"，长度截 80
+fn sanitize_thread_id(thread_id: &str) -> String {
+    let cleaned: String = thread_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .take(80)
+        .collect();
+    if cleaned.is_empty() {
+        "misc".into()
+    } else {
+        cleaned
+    }
+}
+
+/// hash 消毒：只留十六进制字符；空回退 None（调用方退回时间戳命名）
+fn sanitize_hash(hash: &str) -> Option<String> {
+    let cleaned: String = hash
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .take(64)
+        .collect();
+    if cleaned.len() >= 8 {
+        Some(cleaned)
+    } else {
+        None
+    }
+}
+
+/// 小写扩展名（含点）；无扩展名回退 ".bin"
+fn attachment_ext(name: &str) -> String {
+    let norm = name.to_lowercase();
+    let dot = norm.rfind('.');
+    match dot {
+        Some(i) if i + 1 < norm.len() && !norm[i + 1..].contains('/') => norm[i..].to_string(),
+        _ => ".bin".into(),
+    }
+}
+
+/// 附件中转目录：app_data/attachments（粘贴的文档唯一副本落这里，prompt 帧
+/// 只带路径；sidecar 引用原位不复制）
+fn attachment_stage_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(tauri::Manager::path(app)
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {e}"))?
+        .join("attachments"))
+}
+
+/// 保留天数：kv "attachments.retentionDays"（前端通用设置写入）；0 = 不清理
+fn attachment_retention_days(app: &tauri::AppHandle) -> Option<u64> {
+    match crate::store::kv_get_global(app, ATTACHMENT_RETENTION_KV_KEY) {
+        Ok(Some(raw)) => raw.trim().parse::<u64>().ok(),
+        _ => Some(ATTACHMENT_RETENTION_DEFAULT_DAYS),
+    }
+}
+
+/// 中转目录现状收集：递归两层（root 直接文件 = 旧版平铺遗留；root/<tid>/ 文件
+/// = 现行布局），返回 (路径, 修改时间, 字节数, 是否目录)
+fn collect_stage_entries(root: &Path) -> Vec<(PathBuf, std::time::SystemTime, u64, bool)> {
+    let mut out: Vec<(PathBuf, std::time::SystemTime, u64, bool)> = Vec::new();
+    let Ok(rd) = std::fs::read_dir(root) else { return out };
     for e in rd.flatten() {
         let Ok(meta) = e.metadata() else { continue };
-        let stale = meta.modified().map(|m| m < cutoff).unwrap_or(false);
-        if !stale {
-            continue;
-        }
         let Ok(ft) = e.file_type() else { continue };
         if ft.is_dir() {
-            let _ = std::fs::remove_dir_all(e.path());
+            // 线程子目录：只收其下的直接文件
+            let Ok(sub) = std::fs::read_dir(e.path()) else { continue };
+            for se in sub.flatten() {
+                let Ok(smeta) = se.metadata() else { continue };
+                if smeta.is_dir() {
+                    continue;
+                }
+                out.push((
+                    se.path(),
+                    smeta.modified().unwrap_or(std::time::SystemTime::now()),
+                    smeta.len(),
+                    false,
+                ));
+            }
         } else {
-            let _ = std::fs::remove_file(e.path());
+            out.push((
+                e.path(),
+                meta.modified().unwrap_or(std::time::SystemTime::now()),
+                meta.len(),
+                false,
+            ));
+        }
+    }
+    out
+}
+
+/// 按策略清理中转目录：先删超期文件，再把总量压回上限内（最旧优先），
+/// 最后删空的线程目录。days = None/0 时不清理。
+fn prune_stage_dir(root: &Path, days: Option<u64>) {
+    let Some(days) = days.filter(|d| *d > 0) else { return };
+    let now = std::time::SystemTime::now();
+    let cutoff = now - std::time::Duration::from_secs(days * 24 * 60 * 60);
+
+    let mut keep: Vec<(PathBuf, std::time::SystemTime, u64)> = Vec::new();
+    for (path, modified, size, _is_dir) in collect_stage_entries(root) {
+        if modified < cutoff {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        keep.push((path, modified, size));
+    }
+    let total: u64 = keep.iter().map(|(_, _, size)| size).sum();
+    if total > ATTACHMENT_STAGE_MAX_TOTAL {
+        keep.sort_by_key(|(_, modified, _)| *modified);
+        let mut acc = total;
+        for (path, _, size) in keep {
+            if acc <= ATTACHMENT_STAGE_MAX_TOTAL {
+                break;
+            }
+            if std::fs::remove_file(&path).is_ok() {
+                acc = acc.saturating_sub(size);
+            }
+        }
+    }
+    // 清掉已空的线程目录（根目录本身的旧版平铺遗留不受影响）
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    for e in rd.flatten() {
+        if e.file_type().map(|f| f.is_dir()).unwrap_or(false)
+            && std::fs::read_dir(e.path()).map(|mut d| d.next().is_none()).unwrap_or(false)
+        {
+            let _ = std::fs::remove_dir(e.path());
         }
     }
 }
 
-/// 前端文档附件中转：把文档字节（裸 base64）写进 app_data/attachments/（uuid
-/// 前缀防撞名），返回绝对路径。prompt 帧只带路径不带字节——请求体与 Rust 重放
-/// 缓冲（16MiB）不被附件撑爆；sidecar 收到 path 后复制进 <cwd>/.xulux/attachments/
-/// 交给 agent。网页端无本地 FS 不走此命令（内联回退）。
+/// 中转清理入口：读配置天数 → 清理。启动 / 每小时定时 / 每次 stage 三处触发
+pub fn prune_attachments_scheduled(app: &tauri::AppHandle) {
+    let days = attachment_retention_days(app);
+    let Ok(root) = attachment_stage_root(app) else { return };
+    prune_stage_dir(&root, days);
+}
+
+/// 前端文档附件中转：把文档字节（裸 base64）按 <threadId>/<hash>.<ext> 写进
+/// app_data/attachments/（threadId 分目录 + 内容 hash 去重，同 ZCode 的
+/// image-cache 思路），返回绝对路径。prompt 帧只带路径不带字节——请求体与
+/// Rust 重放缓冲（16MiB）不被附件撑爆；sidecar 引用原位不复制，agent 直接
+/// 用文件工具读取。网页端无本地 FS 不走此命令（内联回退）。
 #[tauri::command]
 pub async fn attachment_stage(
     app: tauri::AppHandle,
     name: String,
     data_base64: String,
+    thread_id: Option<String>,
+    hash: Option<String>,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         use base64::Engine as _;
@@ -536,15 +662,28 @@ pub async fn attachment_stage(
         if bytes.len() > ATTACHMENT_STAGE_MAX_BYTES {
             return Err("too-large".to_string());
         }
-        let root = tauri::Manager::path(&app)
-            .app_data_dir()
-            .map_err(|e| format!("app_data_dir: {e}"))?
-            .join("attachments");
-        std::fs::create_dir_all(&root).map_err(|e| format!("create_dir: {e}"))?;
-        prune_stale_attachments(&root);
-        let fname = format!("{}-{}", uuid::Uuid::new_v4().simple(), sanitize_attachment_name(&name));
-        let path = root.join(&fname);
-        std::fs::write(&path, &bytes).map_err(|e| format!("write: {e}"))?;
+        let root = attachment_stage_root(&app)?;
+        let dir = root.join(sanitize_thread_id(thread_id.as_deref().unwrap_or("")));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create_dir: {e}"))?;
+        let ext = attachment_ext(&sanitize_attachment_name(&name));
+        // 内容 hash 命名：同字节文档反复粘贴只存一份；hash 缺失退回时间戳名
+        let fname = match sanitize_hash(hash.as_deref().unwrap_or("")) {
+            Some(hex) => format!("{hex}{ext}"),
+            None => {
+                let d = chrono::Local::now();
+                format!(
+                    "{}-{}{ext}",
+                    d.format("%Y%m%d%H%M%S%3f"),
+                    uuid::Uuid::new_v4().simple()
+                )
+            }
+        };
+        let path = dir.join(&fname);
+        // 已存在 = 同内容同位置：跳过写入（去重），直接复用
+        if !path.is_file() {
+            std::fs::write(&path, &bytes).map_err(|e| format!("write: {e}"))?;
+        }
+        prune_stage_dir(&root, attachment_retention_days(&app));
         Ok(json!({ "path": path.to_string_lossy() }))
     })
     .await

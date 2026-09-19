@@ -11,6 +11,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SettingRow } from "@/components/custom-ui/setting-row";
+import {
+  ATTACHMENT_RETENTION_OPTIONS,
+  setAttachmentRetentionDays,
+  useAttachmentRetentionDays,
+} from "@/lib/attachment-retention";
 import { setGpuAccelEnabled, useGpuAccelEnabled } from "@/lib/gpu-accel";
 import { SOUND_PACKS } from "@/lib/sounds";
 import { isTauri, isWindowsPlatform } from "@/lib/tauri";
@@ -25,6 +30,7 @@ import { setUiPref, useUiPrefs, type SoundPackName } from "@/lib/ui-prefs";
 export const GeneralSettings: FC = () => {
   const prefs = useUiPrefs();
   const gpuAccel = useGpuAccelEnabled();
+  const retentionDays = useAttachmentRetentionDays();
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
@@ -101,6 +107,42 @@ export const GeneralSettings: FC = () => {
             </SettingRow>
           </div>
         </section>
+
+        {/* 附件中转缓存仅桌面端存在（粘贴的文档中转落盘）；网页端无本地 FS */}
+        {isTauri() && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-base font-semibold">附件</h2>
+            <p className="text-muted-foreground text-sm">
+              粘贴的文档会暂存到本地缓存目录供智能体读取，超期自动清理。
+            </p>
+            <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+              <SettingRow
+                label="粘贴文件保留期限"
+                desc="超期后自动删除；选「不清理」则一直保留，需自行管理磁盘占用"
+              >
+                <Select
+                  value={String(retentionDays)}
+                  onValueChange={(v) => void setAttachmentRetentionDays(Number(v))}
+                  items={ATTACHMENT_RETENTION_OPTIONS.map((o) => ({
+                    value: String(o.value),
+                    label: o.label,
+                  }))}
+                >
+                  <SelectTrigger size="sm" className="w-44 border bg-background">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ATTACHMENT_RETENTION_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={String(o.value)}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingRow>
+            </div>
+          </section>
+        )}
 
         {/* WebView2 专属参数，远程网页端与 macOS 均无可调项，仅 Win 桌面端展示 */}
         {isTauri() && isWindowsPlatform() && (

@@ -24,7 +24,7 @@
  * text-only（实测误拦），input 元数据不可靠；图片过物理闸门后一律放行，
  * 端点真不支持时 API 报错且错误对模型/用户可见，好过静默吞图。
  */
-import { copyFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { IMAGE_INLINE_MAX_BYTES, normalizeMime } from "./image-parts";
@@ -157,10 +157,27 @@ export function preparePromptAttachments(
         ? item.name.trim().slice(0, 120)
         : "";
     const mimeRaw = item.mimeType ?? item.mediaType;
-    const data = typeof item.data === "string" ? stripDataUrl(item.data.trim()) : "";
-    const bytes = data ? Buffer.byteLength(data, "base64") : 0;
+    let data = typeof item.data === "string" ? stripDataUrl(item.data.trim()) : "";
+    const rawPath = typeof item.path === "string" && item.path.trim() ? item.path.trim() : "";
+    let bytes = data ? Buffer.byteLength(data, "base64") : 0;
     const imageMime = normalizeMime(mimeRaw);
     const docType = imageMime ? null : docTypeOf(rawName, mimeRaw);
+
+    // dialog 直选的图片（path 载荷、无 data）：读盘转 base64，与内联图片走
+    // 完全同一套闸门；读盘失败/超 2MiB 给专用说明行
+    if (!data && rawPath && imageMime) {
+      try {
+        const st = statSync(rawPath);
+        if (!st.isFile() || st.size > IMAGE_INLINE_MAX_BYTES) throw new Error("size");
+        data = readFileSync(rawPath).toString("base64");
+        bytes = Buffer.byteLength(data, "base64");
+      } catch {
+        noticeLines.push(
+          `[${rawName || `图片${i + 1}`} 已省略：附件图片不可读或超过 ${(IMAGE_INLINE_MAX_BYTES / (1024 * 1024)).toFixed(0)}MiB 上限]`,
+        );
+        continue;
+      }
+    }
 
     if (imageMime) {
       const name = rawName || `图片${i + 1}`;
@@ -195,11 +212,10 @@ export function preparePromptAttachments(
         noticeLines.push(`[${name} 已省略：附件落盘目录不可用]`);
         continue;
       }
-      const fname = timestampedName(name);
 
-      // path 模式（桌面端）：前端已经 Rust 落盘中转，校验存在后复制进 cwd 附件
-      // 目录——帧里只有路径没有字节，请求体不随文档膨胀
-      const rawPath = typeof item.path === "string" ? item.path.trim() : "";
+      // path 模式：前端给的是真实存在的本地文件（dialog 直选的原文件，或粘贴
+      // 经 Rust 中转的落盘文件）——原位引用不复制，不往 cwd 写任何东西
+      // （避免污染工作区 git 状态）。说明行直接给绝对路径，agent 用文件工具读。
       if (rawPath) {
         let size = 0;
         try {
@@ -216,16 +232,9 @@ export function preparePromptAttachments(
           );
           continue;
         }
-        try {
-          mkdirSync(docSaveDir(cwd), { recursive: true });
-          copyFileSync(rawPath, join(docSaveDir(cwd), fname));
-        } catch {
-          noticeLines.push(`[${name} 已省略：附件落盘失败]`);
-          continue;
-        }
         docsSaved += 1;
         noticeLines.push(
-          `[用户附件：${sanitizeDocName(name)}（${docType.label}，${fmtBytes(size)}）已保存到 .xulux/attachments/${fname}，请用文件工具读取处理]`,
+          `[用户附件：${sanitizeDocName(name)}（${docType.label}，${fmtBytes(size)}）位于 ${rawPath}，请用文件工具读取处理]`,
         );
         continue;
       }
@@ -241,6 +250,7 @@ export function preparePromptAttachments(
         noticeLines.push(`[${name} 已省略：单条消息附件总体积超限]`);
         continue;
       }
+      const fname = timestampedName(name);
       try {
         mkdirSync(docSaveDir(cwd), { recursive: true });
         writeFileSync(join(docSaveDir(cwd), fname), Buffer.from(data, "base64"));
