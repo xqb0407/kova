@@ -21,6 +21,7 @@
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
+use chrono::{DateTime, Local, SecondsFormat};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
@@ -313,4 +314,165 @@ fn is_bad_name(name: &str) -> bool {
         || name == "."
         || name == ".."
         || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+}
+
+/* ------------------------------ 我的文件：AI 产物 ------------------------------ */
+
+/// 「我的文件 → 本地」的数据源：无目录任务会话的执行目录（task-workspace，
+/// 与 Rust 注入 sidecar 的 PI_TASK_CWD 同源，agent 的文件读写产物都落这里）。
+/// 刻意只读且不接收路径参数（目录固定，不引入工作区 fs 那套路径校验面）；
+/// dotfiles 不出现在清单里，符号链接按文件呈现不展开。
+#[tauri::command]
+pub async fn app_file_list(app: tauri::AppHandle) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = tauri::Manager::path(&app)
+            .app_data_dir()
+            .map_err(|e| format!("app_data_dir: {e}"))?
+            .join("task-workspace");
+        let rd = match std::fs::read_dir(&root) {
+            Ok(rd) => rd,
+            // 目录还没建（从未跑过无目录任务）＝ 空清单而非错误
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(json!({ "entries": Vec::<Value>::new() }));
+            }
+            Err(e) => return Err(format!("read_dir {}: {e}", root.display())),
+        };
+        let mut out: Vec<Value> = Vec::new();
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let Ok(ft) = e.file_type() else { continue };
+            let is_dir = ft.is_dir();
+            let meta = e.metadata().ok();
+            let modified = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .map(|t| DateTime::<Local>::from(t).to_rfc3339_opts(SecondsFormat::Secs, false));
+            out.push(json!({
+                "name": name,
+                "dir": is_dir,
+                // 目录不递归算体积，恒 0（前端显示 "—"）
+                "size": if is_dir { 0 } else { meta.map(|m| m.len()).unwrap_or(0) },
+                "modified": modified,
+            }));
+        }
+        out.sort_by_key(|v| {
+            (
+                !v["dir"].as_bool().unwrap_or(false),
+                v["name"].as_str().unwrap_or("").to_lowercase(),
+            )
+        });
+        Ok(json!({ "entries": out }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}
+
+/// 「我的文件」宫格预览：name 限 task-workspace 顶层的直接文件项（拒路径段）。
+/// 图片（≤8MB）返回 base64 + mime（前端 data URL 喂 <img>，CSP img-src 已含
+/// data:）；文本类返回前 32KB 的 utf8 文本（前端做渐隐截断）；其余返回
+/// unsupported，前端回退类型图标瓦片。
+#[tauri::command]
+pub async fn app_file_preview(app: tauri::AppHandle, name: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if is_bad_name(&name) {
+            return Err("bad-name".into());
+        }
+        let root = tauri::Manager::path(&app)
+            .app_data_dir()
+            .map_err(|e| format!("app_data_dir: {e}"))?
+            .join("task-workspace");
+        let path = root.join(&name);
+        if !path.is_file() {
+            return Err("not-a-file".into());
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        const IMAGE_MIME: &[(&str, &str)] = &[
+            ("png", "image/png"),
+            ("jpg", "image/jpeg"),
+            ("jpeg", "image/jpeg"),
+            ("gif", "image/gif"),
+            ("webp", "image/webp"),
+            ("bmp", "image/bmp"),
+            ("svg", "image/svg+xml"),
+        ];
+        if let Some((_, mime)) = IMAGE_MIME.iter().find(|(e, _)| *e == ext) {
+            const MAX_IMAGE: u64 = 8 * 1024 * 1024;
+            let len = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+            if len > MAX_IMAGE {
+                return Ok(json!({ "kind": "unsupported" }));
+            }
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+            use base64::Engine as _;
+            return Ok(json!({
+                "kind": "image",
+                "mime": mime,
+                "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+            }));
+        }
+        const TEXT_EXTS: &[&str] = &[
+            "md", "txt", "json", "csv", "ts", "tsx", "js", "jsx", "py", "rs", "go", "html",
+            "css", "sh", "toml", "yaml", "yml", "log", "xml",
+        ];
+        // HTML 单独成类：前端用 iframe srcDoc 渲染成页面（而非文本查看）。
+        // 上限 1MB——srcDoc 无法解析相对资源，超大文件截断读前 1MB（残页可看）。
+        if matches!(ext.as_str(), "html" | "htm") {
+            const MAX_HTML: u64 = 1024 * 1024;
+            let len = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+            if len <= MAX_HTML {
+                let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+                return Ok(json!({ "kind": "html", "text": String::from_utf8_lossy(&bytes) }));
+            }
+            let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            let mut buf = vec![0u8; MAX_HTML as usize];
+            let n = std::io::Read::read(&mut f, &mut buf).map_err(|e| e.to_string())?;
+            buf.truncate(n);
+            return Ok(json!({ "kind": "html", "text": String::from_utf8_lossy(&buf) }));
+        }
+        if TEXT_EXTS.contains(&ext.as_str()) {
+            const PREVIEW_BYTES: usize = 32 * 1024;
+            let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            let mut buf = vec![0u8; PREVIEW_BYTES];
+            let n = std::io::Read::read(&mut f, &mut buf).map_err(|e| e.to_string())?;
+            buf.truncate(n);
+            return Ok(json!({ "kind": "text", "text": String::from_utf8_lossy(&buf) }));
+        }
+        Ok(json!({ "kind": "unsupported" }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}
+
+/// 「我的文件」删除：name 限 task-workspace 顶层的直接条目（拒路径段，
+/// 目录固定不引入路径校验面）。目录递归删；符号链接只删链接本身不跟随。
+#[tauri::command]
+pub async fn app_file_delete(app: tauri::AppHandle, name: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if is_bad_name(&name) {
+            return Err("bad-name".into());
+        }
+        let root = tauri::Manager::path(&app)
+            .app_data_dir()
+            .map_err(|e| format!("app_data_dir: {e}"))?
+            .join("task-workspace");
+        let path = root.join(&name);
+        // symlink_metadata 不跟随链接：目录符号链接按文件处理，绝不递归进目标
+        let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("stat: {e}"))?;
+        if meta.is_symlink() {
+            std::fs::remove_file(&path).map_err(|e| format!("remove: {e}"))?;
+        } else if meta.is_dir() {
+            std::fs::remove_dir_all(&path).map_err(|e| format!("remove_dir: {e}"))?;
+        } else {
+            std::fs::remove_file(&path).map_err(|e| format!("remove: {e}"))?;
+        }
+        Ok(json!({ "ok": true }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
 }

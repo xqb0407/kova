@@ -44,6 +44,21 @@ function clearResumableIfOwn(chatId: string, requestId: string) {
   }
 }
 
+// 引用（Quote）的模型侧注入：assistant-ui 发送时把引用存进 user 消息的
+// metadata.custom.quote，渲染侧 MessagePrimitive.Quote 也从同一位置读回；
+// 但官方把「引用文字喂给模型」放在服务端路由（injectQuoteContext），而本应用
+// 的服务端是 pi-agent sidecar（协议只收 text），因此在传输层完成同样转换，
+// 否则引用只在 UI 展示、模型上下文里根本没有这段文字。
+// 历史侧代价：blockquote 随 text 落盘，重载后消息以 markdown blockquote 渲染，
+// 与在飞消息的 QuoteBlock（metadata 驱动）样式略有差异——可接受。
+function extractQuoteText(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const custom = (metadata as { custom?: unknown }).custom;
+  if (!custom || typeof custom !== "object") return null;
+  const text = (custom as { quote?: { text?: unknown } }).quote?.text;
+  return typeof text === "string" && text.trim() ? text : null;
+}
+
 /**
  * pi-agent 的 ChatTransport：把 assistant-ui 的 sendMessages 请求转为
  * 当前 PiChannel（桌面 Tauri invoke / 远程 WebSocket）上的 prompt 流。
@@ -74,11 +89,22 @@ export class PiTransport implements ChatTransport<UIMessage> {
     const requestId = `pi-${crypto.randomUUID()}`;
     // 取最后一条用户消息（regenerate 场景同样复用最后一条用户输入）
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    const text =
+    const bodyText =
       lastUser?.parts
         .filter((p): p is Extract<UIMessage["parts"][number], { type: "text" }> => p.type === "text")
         .map((p) => p.text)
         .join("\n") ?? "";
+    // 有引用时（正文可为空，composer 允许仅引用发送）转 blockquote 前置，
+    // 与 injectQuoteContext 同格式（逐行 "> " 前缀 + 空行分隔）
+    const quoteText = extractQuoteText(lastUser?.metadata);
+    const text = quoteText
+      ? [
+          quoteText.split(/\r?\n/).map((line) => `> ${line}`).join("\n"),
+          bodyText,
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+      : bodyText;
 
     // chatId 是 runtime 内部 thread id；registry 里存着它对应的 pi session 文件路径
     // （重启后点击历史会话时也由 adapter 的 unstable_useAdapters 补齐映射）。

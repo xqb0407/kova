@@ -18,15 +18,11 @@ import {
   getRemoteConfig,
   type RemoteConfig,
 } from "@/lib/remote";
-import { createSleepingMate, type MoodMate } from "@/lib/mood-mates";
-import { SleepingCloud } from "@/components/loading-ui/sleeping-cloud";
+import { WanderingEyes } from "@/components/loading-ui/wandering-eyes";
 /** splash 最小展示时长：保证启动动画至少播一会儿，不被快速水合直接闪没。
  *  迭代1b（P6）：3000 → 800——固定 3s 开屏把分块/按需加载的全部启动收益
- *  掩盖在动画里；800ms 仍够云朵呼吸动画起步，观感待重启后重新评估。 */
+ *  掩盖在动画里；800ms 仍够眼睛动画起步，观感待重启后重新评估。 */
 const SPLASH_MIN_MS = 800;
-/** 唤醒动画展示时长：云宝 '01' 序列 0→2100ms（揉眼两下→1400ms 完全睁眼），
- *  1800ms 交棒停在"睡眼全开"的点上，不等它慢慢落回 '02' 待机。 */
-const SPLASH_WAKE_MS = 1800;
 
 /**
  * 启动占位屏：随静态导出的预渲染 HTML 直接输出，webview 导航后立即可见，
@@ -34,14 +30,12 @@ const SPLASH_WAKE_MS = 1800;
  * Windows 全透明区域点击穿透、macOS 看似未启动——占位屏提供可见可点击
  * 的加载反馈，直到运行时就绪。
  *
- * 角色为云宝 Nimbo（Mood Mates 引擎，第三方社区许可，见 public/mood-mates/
- * LICENSE）：水合后异步注入引擎脚本并创建睡眠态（'00'：闭眼、zzz 漂浮、
- * 缓慢呼吸）；ready 后切 '01' 唤醒序列，走完 SPLASH_WAKE_MS 回调 onFinished
- * 由宿主卸载。引擎未加载完成的瞬间占位屏只有纯色底（预渲染 HTML 不含云，
- * 这是换用引擎版角色的代价）；脚本加载失败则不阻塞启动，ready 即直接交棒。
+ * 角色为 WanderingEyes 眼睛动画（components/loading-ui/wandering-eyes）：
+ * 纯 CSS 合成器动画，预渲染 HTML 即可播放（无 canvas 引擎、无接管时序），
+ * ready 即回调 onFinished 由宿主卸载（最短展示时长由宿主 SPLASH_MIN_MS 兜底）。
  *
  * 挂载期间在 html 上打 data-boot-splash（globals.css 据此让 body 透明，
- * 露出桌面/窗口材质，仅云朵浮在上面）；卸载时摘除，恢复 body 正常底色。
+ * 露出桌面/窗口材质，仅开屏动画浮在上面）；卸载时摘除，恢复 body 正常底色。
  * 静态 HTML 已带该标记（layout.tsx），水合后的 effect 重复打标是幂等操作。
  */
 function BootSplash({
@@ -51,10 +45,7 @@ function BootSplash({
   ready: boolean;
   onFinished: () => void;
 }) {
-  const boxRef = useRef<HTMLDivElement>(null);
-  const [mate, setMate] = useState<MoodMate | null>(null);
-  const [mateFailed, setMateFailed] = useState(false);
-  // onFinished 经 ref 调用：宿主多是内联箭头函数，避免其身份变化重启唤醒计时器
+  // onFinished 经 ref 调用：宿主多是内联箭头函数，避免其身份变化重复交棒
   const finishedRef = useRef(onFinished);
   finishedRef.current = onFinished;
 
@@ -66,44 +57,12 @@ function BootSplash({
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    let instance: MoodMate | null = null;
-    void createSleepingMate(boxRef.current!)
-      .then((m) => {
-        if (cancelled) {
-          m.destroy();
-          return;
-        }
-        instance = m;
-        setMate(m);
-      })
-      .catch(() => {
-        if (!cancelled) setMateFailed(true);
-      });
-    return () => {
-      cancelled = true;
-      instance?.destroy();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!ready || (!mate && !mateFailed)) return;
-    if (!mate) {
-      finishedRef.current();
-      return;
-    }
-    mate.setEmotion("01");
-    const timer = setTimeout(() => finishedRef.current(), SPLASH_WAKE_MS);
-    return () => clearTimeout(timer);
-  }, [ready, mate, mateFailed]);
+    if (ready) finishedRef.current();
+  }, [ready]);
 
   return (
     <div className="flex h-full flex-1 flex-col items-center justify-center bg-background/95">
-      <div className="relative h-37.5 w-37.5">
-        {/* CSS 睡眠云：预渲染 HTML 即可见，磨砂阶段就有云；引擎就绪后淡出接管 */}
-        <SleepingCloud hidden={!!mate} />
-        <div ref={boxRef} className="absolute inset-0" />
-      </div>
+      <WanderingEyes className="w-56 text-zinc-400 dark:text-zinc-500" />
     </div>
   );
 }
@@ -217,10 +176,10 @@ function RemoteGate({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // 开屏叙事（睡眠→唤醒→交棒）由 AppRuntimeProvider 层的 BootSplash 统一播完，
+  // 开屏动画由 AppRuntimeProvider 层的 BootSplash 统一播完，
   // 到这里只剩读 localStorage 的一帧空档；此分支仅 web 端会走到（桌面端进
   // TauriRuntimeProvider），透明窗口问题不存在，直接空渲染即可——若在这里再挂
-  // 一个 BootSplash，云朵会"醒两次"，开屏时长翻倍。
+  // 一个 BootSplash，开屏会重复播放一遍，时长翻倍。
   if (phase === "loading") return null;
   if (phase === "connect" || !config) {
     return (
@@ -241,7 +200,7 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
   // 触发 hydration mismatch。首帧恒为 null，水合成功后再切真实分支。
   const [desktop, setDesktop] = useState<boolean | null>(null);
   const [splashMinDone, setSplashMinDone] = useState(false);
-  // 环境判定 + 最短时长都齐了还不够：云朵还要播完唤醒动画才交棒（进应用）
+  // 环境判定 + 最短时长都齐了才交棒（进应用）
   const [splashDone, setSplashDone] = useState(false);
   const splashStartRef = useRef(Date.now());
 
@@ -256,9 +215,9 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
     return () => clearTimeout(timer);
   }, []);
 
-  // 首帧（含静态导出的预渲染 HTML）恒为睡眠态 BootSplash，与水合后 effect 翻转前的
+  // 首帧（含静态导出的预渲染 HTML）恒为 BootSplash，与水合后 effect 翻转前的
   // 客户端首帧一致，避免 hydration mismatch；桌面端水合前窗口由此获得实体内容。
-  // 环境判定与最短时长都满足后 ready 置真 → 唤醒动画 → splashDone 才真正进应用。
+  // 环境判定与最短时长都满足后 splashDone 置真，真正进应用。
   if (desktop === null || !splashMinDone || !splashDone)
     return (
       <BootSplash

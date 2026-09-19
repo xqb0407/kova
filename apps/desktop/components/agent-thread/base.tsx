@@ -72,6 +72,34 @@ const AutomationsView = dynamic(
     ),
   },
 );
+// 插件市场页（市场 + 管理子页）：同款按需 chunk
+const MarketplaceView = dynamic(
+  () =>
+    import("@/components/marketplace/marketplace-view").then(
+      (m) => m.MarketplaceView,
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <Loader2Icon className="text-muted-foreground size-5 animate-spin" />
+      </div>
+    ),
+  },
+);
+// 我的文件页（本地 ~/.xulux + 云端备份）：同款按需 chunk
+const FilesView = dynamic(
+  () =>
+    import("@/components/files/files-view").then((m) => m.FilesView),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <Loader2Icon className="text-muted-foreground size-5 animate-spin" />
+      </div>
+    ),
+  },
+);
 // 应用启动即接管外观偏好（预绘制脚本之后：系统主题监听、跟随实时更新）
 import "@/lib/ui-prefs";
 
@@ -402,7 +430,13 @@ export const Base: FC = () => {
   // 进入自动化/使用统计页自动收起右侧 panel：它们是主区内的全幅管理页，
   // 原先开着的面板既挤占内容又和页内自己的滚动区打架
   useEffect(() => {
-    if (activeMenu === "automation" || activeMenu === "usage") setPanelOpen(false);
+    if (
+      activeMenu === "automation" ||
+      activeMenu === "usage" ||
+      activeMenu === "connector" ||
+      activeMenu === "files"
+    )
+      setPanelOpen(false);
   }, [activeMenu]);
 
   const chat =
@@ -414,6 +448,10 @@ export const Base: FC = () => {
       />
     ) : activeMenu === "usage" ? (
       <UsageStatsView />
+    ) : activeMenu === "connector" ? (
+      <MarketplaceView />
+    ) : activeMenu === "files" ? (
+      <FilesView />
     ) : (
       <Thread />
     );
@@ -448,7 +486,10 @@ export const Base: FC = () => {
           onTogglePanel={() => setPanelOpen((o) => !o)}
           docked={panelDocked}
           variant={
-            activeMenu === "automation" || activeMenu === "usage"
+            activeMenu === "automation" ||
+            activeMenu === "usage" ||
+            activeMenu === "connector" ||
+            activeMenu === "files"
               ? "page"
               : "session"
           }
@@ -562,8 +603,16 @@ export const Base: FC = () => {
                     这里连同拖拽一起禁用，避免误触把面板带进来 */}
                 <ResizableHandle
                   className={cn("w-2", panelGone && "[&>div]:hidden")}
-                  disabled={activeMenu === "automation"}
-                  disableDoubleClick={activeMenu === "automation"}
+                  disabled={
+                    activeMenu === "automation" ||
+                    activeMenu === "connector" ||
+                    activeMenu === "files"
+                  }
+                  disableDoubleClick={
+                    activeMenu === "automation" ||
+                    activeMenu === "connector" ||
+                    activeMenu === "files"
+                  }
                   // 只在把手上拦停动画（面板内按钮点击不受影响，见 settle 注释）
                   onPointerDownCapture={interruptPanelAnim}
                 />

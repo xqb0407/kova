@@ -49,6 +49,7 @@ import {
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
   FolderIcon,
+  FolderOpenIcon,
   ListTodoIcon,
   MenuIcon,
   MessageSquareIcon,
@@ -244,6 +245,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       icon: ZapIcon,
     },
     { id: "connector", label: "插件市场", icon: PlugIcon },
+    { id: "files", label: "我的文件", icon: FolderOpenIcon },
   ];
 
   return (
