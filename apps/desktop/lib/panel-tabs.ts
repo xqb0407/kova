@@ -18,6 +18,8 @@ export type PanelTabType =
   | "shell"
   | "browser"
   | "git"
+  /** 会话产物汇总：当前线程 write 出的交付文件清单，随时重新打开预览 */
+  | "artifacts"
   /** 文件内容预览：消息 read 工具行唤起（快照），或文件树标签唤起（tab.path=磁盘实时） */
   | "file"
   /** 工作区文件树浏览（仅 Tauri 桌面端,见 tab-registry 的可见性过滤） */
@@ -64,6 +66,7 @@ const VALID_TYPES = new Set<PanelTabType>([
   "shell",
   "browser",
   "git",
+  "artifacts",
   "file",
   "explorer",
   "subagent",

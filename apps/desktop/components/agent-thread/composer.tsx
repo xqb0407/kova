@@ -49,7 +49,8 @@ import { useEffect, useRef, useState, type ChangeEvent, type FC, type ReactNode 
 import { toast } from "@/components/ui/toast";
 import {
   PROMPT_IMAGE_MAX_COUNT,
-  validateImageFile,
+  promptFileKind,
+  validatePromptFile,
 } from "@/lib/prompt-attachments";
 import { isTauri } from "@/lib/tauri";
 import {
@@ -567,8 +568,9 @@ const AdaptiveSendButton: FC = () => {
 };
 
 /**
- * 附件按钮（composer 动作区最左）：选图经 validateImageFile 前置校验
- * （非图片/超 2MiB toast 拒收），单条草稿最多 PROMPT_IMAGE_MAX_COUNT 张。
+ * 附件按钮（composer 动作区最左）：选文件经 validatePromptFile 前置校验
+ * （图片/文档白名单与大小上限，不合格 toast 拒收）。图片沿用单条 4 张的
+ * 添加时闸门；文档不拦添加（数量/总体积由 sidecar 落盘裁决，拒收折算说明行）。
  * 不按模型能力隐藏——纯文本模型发图由 sidecar 硬门折算占位说明，UI 恒可用；
  * 粘贴路径同款校验见 cm-composer-input。
  */
@@ -581,19 +583,23 @@ const AddAttachmentButton: FC = () => {
     event.target.value = "";
     if (files.length === 0) return;
     for (const file of files) {
-      const err = validateImageFile(file);
+      const err = validatePromptFile(file);
       if (err) toast.error(err);
     }
-    const accepted = files.filter((file) => !validateImageFile(file));
-    const room = Math.max(
-      0,
-      PROMPT_IMAGE_MAX_COUNT -
-        (aui.composer.getState().attachments?.length ?? 0),
-    );
-    for (const file of accepted.slice(room)) {
-      toast.error(`单条消息最多 ${PROMPT_IMAGE_MAX_COUNT} 张图片`);
-    }
-    for (const file of accepted.slice(0, room)) {
+    const accepted = files.filter((file) => !validatePromptFile(file));
+    const imageCount = (aui.composer.getState().attachments ?? []).filter(
+      (a) => a.type === "image",
+    ).length;
+    let imageTaken = 0;
+    for (const file of accepted) {
+      const isImage = promptFileKind(file.name, file.type) === "image";
+      if (isImage) {
+        if (imageTaken >= Math.max(0, PROMPT_IMAGE_MAX_COUNT - imageCount)) {
+          toast.error(`单条消息最多 ${PROMPT_IMAGE_MAX_COUNT} 张图片`);
+          continue;
+        }
+        imageTaken += 1;
+      }
       await aui.composer.addAttachment(file).catch(() => {});
     }
   };
@@ -603,13 +609,13 @@ const AddAttachmentButton: FC = () => {
       <input
         ref={inputRef}
         type="file"
-        accept="image/png,image/jpeg,image/gif,image/webp"
+        accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.rtf"
         multiple
         hidden
         onChange={(e) => void onChange(e)}
       />
       <TooltipIconButton
-        tooltip="添加图片"
+        tooltip="添加附件"
         side="bottom"
         variant="ghost"
         size="icon"

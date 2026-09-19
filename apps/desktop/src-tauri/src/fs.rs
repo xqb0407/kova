@@ -476,3 +476,77 @@ pub async fn app_file_delete(app: tauri::AppHandle, name: String) -> Result<Valu
     .await
     .map_err(|e| format!("fs task join error: {e}"))?
 }
+
+/* ------------------------------ 文档附件中转 ------------------------------ */
+
+/// 附件中转单文件上限（比前端闸门 20MiB 留余量）
+const ATTACHMENT_STAGE_MAX_BYTES: usize = 24 * 1024 * 1024;
+
+/// 文件名消毒（与 sidecar 同语义）：取 basename、去控制字符；空/点名回退
+fn sanitize_attachment_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base.chars().filter(|c| !c.is_control()).collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        return "document".into();
+    }
+    trimmed.chars().take(120).collect()
+}
+
+/// 过期中转文件清理：删修改时间超过 24h 的条目（每次 stage 顺带执行，目录
+/// 条目少代价可忽略）。失败静默——清理不该挡住本次落盘
+fn prune_stale_attachments(root: &Path) {
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 60 * 60);
+    for e in rd.flatten() {
+        let Ok(meta) = e.metadata() else { continue };
+        let stale = meta.modified().map(|m| m < cutoff).unwrap_or(false);
+        if !stale {
+            continue;
+        }
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_dir() {
+            let _ = std::fs::remove_dir_all(e.path());
+        } else {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// 前端文档附件中转：把文档字节（裸 base64）写进 app_data/attachments/（uuid
+/// 前缀防撞名），返回绝对路径。prompt 帧只带路径不带字节——请求体与 Rust 重放
+/// 缓冲（16MiB）不被附件撑爆；sidecar 收到 path 后复制进 <cwd>/.xulux/attachments/
+/// 交给 agent。网页端无本地 FS 不走此命令（内联回退）。
+#[tauri::command]
+pub async fn attachment_stage(
+    app: tauri::AppHandle,
+    name: String,
+    data_base64: String,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine as _;
+        if data_base64.trim().is_empty() {
+            return Err("empty".into());
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data_base64.trim())
+            .map_err(|_| "bad-base64".to_string())?;
+        if bytes.len() > ATTACHMENT_STAGE_MAX_BYTES {
+            return Err("too-large".to_string());
+        }
+        let root = tauri::Manager::path(&app)
+            .app_data_dir()
+            .map_err(|e| format!("app_data_dir: {e}"))?
+            .join("attachments");
+        std::fs::create_dir_all(&root).map_err(|e| format!("create_dir: {e}"))?;
+        prune_stale_attachments(&root);
+        let fname = format!("{}-{}", uuid::Uuid::new_v4().simple(), sanitize_attachment_name(&name));
+        let path = root.join(&fname);
+        std::fs::write(&path, &bytes).map_err(|e| format!("write: {e}"))?;
+        Ok(json!({ "path": path.to_string_lossy() }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}

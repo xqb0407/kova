@@ -636,7 +636,7 @@ function steerIntoActiveRun(
   if (run.stopRequested) return false;
   try {
     // 与普通 prompt 同一条附件链路：拒收项折算说明行、合法项进 user 消息 content
-    const attachments = preparePromptAttachments(msg);
+    const attachments = preparePromptAttachments(msg, { cwd: run.cwd });
     const text = noticeAppendedText(String(msg.text ?? ""), attachments.noticeLines);
     const content: string | (ImageContent | { type: "text"; text: string })[] =
       attachments.images.length
@@ -910,7 +910,7 @@ async function runPromptTurn(
   // 溢出恢复/委派收敛的重跑段不携带图片（resume 为纯文本）。
   // 模型硬门已移除（input 元数据不可靠，实测误拦支持图像的模型）：附件过
   // 物理闸门（prompt-attachments.ts）后一律放行，端点不支持时 API 报错可见。
-  const promptAttachments = preparePromptAttachments(msg);
+  const promptAttachments = preparePromptAttachments(msg, { cwd: run.cwd });
   const promptText = noticeAppendedText(String(msg.text ?? ""), promptAttachments.noticeLines);
   if (promptAttachments.images.length) {
     logAt(

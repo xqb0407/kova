@@ -1,7 +1,7 @@
 "use client";
 
 import type { ThreadMessage } from "@assistant-ui/react";
-import { fileChangePair } from "@/lib/panel-activity";
+import { fileChangePair, type FileChangeEntry, type FileChangeGroup } from "@/lib/panel-activity";
 
 /**
  * 产物（artifact）派生层：把一条 assistant 消息里 agent 用 `write` 工具产出的
@@ -64,6 +64,25 @@ export function byteLength(text: string): number {
   return new TextEncoder().encode(text).length;
 }
 
+/**
+ * 工作区相对/绝对路径 → file:// URL（内置浏览器只吃 URL，本地文件靠它加载）。
+ * 逐段 encodeURIComponent 兼容空格/中文；Windows 盘符走三斜杠 file:///C:/…。
+ * 产物卡与「产物」标签页共用一份语义。
+ */
+export function toFileUrl(cwd: string, rel: string): string {
+  let abs = rel.replace(/\\/g, "/");
+  if (!/^[A-Za-z]:\//.test(abs) && !abs.startsWith("/")) {
+    abs = `${cwd.replace(/[\\/]+$/, "").replace(/\\/g, "/")}/${abs.replace(/^\/+/, "")}`;
+  }
+  // Windows 盘符段（C:）不参与编码，否则编码成 C%3A 后三斜杠判定失效
+  const segments = abs.split("/");
+  const drive = /^[A-Za-z]:$/.test(segments[0]);
+  const encoded = segments
+    .map((seg, i) => (drive && i === 0 ? seg : encodeURIComponent(seg)))
+    .join("/");
+  return drive ? `file:///${encoded}` : `file://${encoded}`;
+}
+
 /** 字节数 → 人类可读（B 整数；KB/MB/GB 一位小数，1024 进制） */
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return "";
@@ -114,4 +133,33 @@ export function messageArtifacts(
     });
   }
   return [...byPath.values()];
+}
+
+/**
+ * 会话级产物汇总（面板「产物」标签页的数据源）：
+ * 把 panel-activity 的文件变更组（edit/write 按路径聚合、条目按时间序）折叠成
+ * 交付文件清单——每路径取最后一次成功的 write 为当前版本（edit 只携带替换
+ * 片段，不代表全文，故不据其计大小、不换快照锚点）；write 白名单、大小口径
+ * 与消息尾部产物卡完全同源，两处展示永远一致。
+ * 组序 = 路径首次出现序，这里倒序输出（最新产出的文件在最上）。
+ * 在途 / 失败的 write 不收录；消费方以 files 引用做 useMemo，派生廉价。
+ */
+export function threadArtifacts(groups: FileChangeGroup[]): MessageArtifact[] {
+  const out: MessageArtifact[] = [];
+  for (const group of groups) {
+    if (!isDeliverable(group.path)) continue;
+    let last: FileChangeEntry | null = null;
+    for (const entry of group.entries) {
+      if (entry.op === "write" && !entry.running && !entry.failed) last = entry;
+    }
+    if (!last) continue;
+    const norm = group.path.replace(/\\/g, "/");
+    out.push({
+      toolCallId: last.toolCallId,
+      path: group.path,
+      base: norm.slice(norm.lastIndexOf("/") + 1),
+      size: byteLength(last.newText),
+    });
+  }
+  return out.reverse();
 }

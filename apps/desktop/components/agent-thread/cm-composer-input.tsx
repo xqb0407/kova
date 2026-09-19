@@ -7,7 +7,7 @@ import { Compartment, EditorState, Prec, RangeSetBuilder, Transaction, type Rang
 import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, placeholder as cmPlaceholder, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { useEffect, useRef, type FC } from "react";
 import { toast } from "@/components/ui/toast";
-import { validateImageFile } from "@/lib/prompt-attachments";
+import { validatePromptFile } from "@/lib/prompt-attachments";
 import { markSteerNextSend } from "@/lib/pi-steer-intent";
 
 /**
@@ -270,13 +270,14 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
               if (files.length === 0) return false;
               if (!s.aui.thread.getState().capabilities.attachments) return false;
               event.preventDefault();
-              // 图片附件前置校验（MIME/尺寸）：不合格 toast 说明，不让垃圾进草稿；
-              // 合格项交 composer 附件（发送时经 prompt-attachments.ts 组装下发）
+              // 附件前置校验（图片/文档种类与大小）：不合格 toast 说明，不让垃圾进草稿；
+              // 合格项交 composer 附件（发送时经 prompt-attachments.ts 组装下发，
+              // 图片内联多模态 / 文档由 sidecar 落盘给 agent）
               for (const file of files) {
-                const err = validateImageFile(file);
+                const err = validatePromptFile(file);
                 if (err) toast.error(err);
               }
-              const accepted = files.filter((file) => !validateImageFile(file));
+              const accepted = files.filter((file) => !validatePromptFile(file));
               if (accepted.length === 0) return true;
               void Promise.all(
                 accepted.map((file) =>

@@ -93,8 +93,17 @@ export function ThreadPreviewRail() {
     const anchors = Array.from(
       viewport.querySelectorAll<HTMLElement>(ANCHOR_SELECTOR),
     );
+    // 一轮对话会产生多条 assistant 消息（思考、每次工具调用各一条），全部锚定
+    // 会让刻度爆炸：连续的 assistant 锚点只保留该轮最后一条（通常是最终文本
+    // 回复），user 消息逐条保留 ⇒ 刻度数 ≈ 轮数 × 2
+    const kept = anchors.filter((anchor, index) => {
+      if (anchor.dataset.slot === "aui_user-message-root") return true;
+      const next = anchors[index + 1];
+      return !next || next.dataset.slot === "aui_user-message-root";
+    });
     const targets = new Map<string, HTMLElement>();
-    const nextItems = anchors.map((anchor, index) => {
+    const nextItems = kept.map((anchor, keptIndex) => {
+      const index = anchors.indexOf(anchor);
       let id = idMapRef.current.get(anchor);
       if (!id) {
         idCounterRef.current += 1;
@@ -122,7 +131,7 @@ export function ThreadPreviewRail() {
         id,
         label: preview.label,
         description: preview.description,
-        ariaLabel: `Go to ${isUser ? "user" : "assistant"} message ${index + 1} of ${anchors.length}`,
+        ariaLabel: `Go to ${isUser ? "user" : "assistant"} message ${keptIndex + 1} of ${kept.length}`,
       };
     });
 
