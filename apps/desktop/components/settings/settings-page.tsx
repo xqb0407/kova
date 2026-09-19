@@ -12,9 +12,9 @@ import {
   BoxesIcon,
   BotIcon,
   BrainIcon,
-  ChartColumnIcon,
   ChevronLeftIcon,
   GlobeIcon,
+  HardDriveDownloadIcon,
   InfoIcon,
   KeyboardIcon,
   PaintbrushIcon,
@@ -34,13 +34,12 @@ import { AppearanceSettings } from "./components/appearance-settings";
 import { AboutSettings } from "./components/about-settings";
 import { ArchiveSettings } from "./components/archive-settings";
 import { MemorySettings } from "./components/memory-settings";
+import { BackupSettings } from "./components/backup-settings";
 import { PersonalizationSettings } from "./components/personalization-settings";
 import { SubagentsSettings } from "./components/subagents-settings";
 import { McpSettings } from "./components/mcp-settings";
 import { SkillsSettings } from "./components/skills-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
-import { UsageStatsSettings } from "./components/usage-stats-settings";
-import { Logo } from "../agent-thread/header";
 
 type SettingsSection =
   | "models"
@@ -51,11 +50,11 @@ type SettingsSection =
   | "archive"
   | "personalization"
   | "memory"
+  | "backup"
   | "shortcuts"
   | "subagents"
   | "mcp"
   | "skills"
-  | "usage"
   | "webhooks"
   | "hooks";
 
@@ -71,7 +70,7 @@ const GROUPS: {
       { id: "personalization", label: "个性化", icon: SparklesIcon },
       { id: "shortcuts", label: "快捷键", icon: KeyboardIcon },
       { id: "archive", label: "归档", icon: ArchiveIcon },
-      { id: "usage", label: "使用统计", icon: ChartColumnIcon },
+      { id: "backup", label: "备份", icon: HardDriveDownloadIcon },
     ],
   },
   {
@@ -82,13 +81,13 @@ const GROUPS: {
       { id: "mcp", label: "MCP", icon: PlugIcon },
       { id: "skills", label: "技能", icon: PuzzleIcon },
       { id: "memory", label: "记忆", icon: BrainIcon },
+      { id: "hooks", label: "钩子", icon: ZapIcon },
     ],
   },
   {
     label: "系统",
     items: [
       { id: "remote", label: "远程访问", icon: GlobeIcon },
-      { id: "hooks", label: "钩子", icon: ZapIcon },
       { id: "webhooks", label: "Webhooks", icon: WebhookIcon },
       { id: "about", label: "关于", icon: InfoIcon },
     ],
@@ -213,12 +212,12 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "appearance" && <AppearanceSettings />}
           {section === "personalization" && <PersonalizationSettings />}
           {section === "memory" && <MemorySettings />}
+          {section === "backup" && <BackupSettings />}
           {section === "shortcuts" && <ShortcutSettings />}
           {section === "subagents" && <SubagentsSettings />}
           {section === "mcp" && <McpSettings />}
           {section === "skills" && <SkillsSettings />}
           {section === "archive" && <ArchiveSettings />}
-          {section === "usage" && <UsageStatsSettings />}
           {section === "webhooks" && <WebhooksSettings />}
           {section === "hooks" && <HooksSettings />}
           {section === "about" && <AboutSettings />}

@@ -3,8 +3,16 @@
  *
  * 输入（stdin，每行一个 JSON）：
  *   { "type": "prompt", "id": "<reqId>", "text": "...", "threadId": "...", "sessionId": "...", "cwd": "..." }
+ *       attachments?: [{ "name", "mimeType", "data"(裸 base64) }]——用户图片附件（多模态
+ *       输入）：闸门（MIME 白名单/单图 2MiB/单条 4 张/模型 input 含 image）裁决见
+ *       prompt-attachments.ts；合法项进 agent.prompt 的 images（user 消息 content，随
+ *       转录落盘），拒收项折算中文说明行追加到 text 尾部，不抛错不静默
  *       sessionId = 会话 id（索引表/JSONL 文件名）；提供则恢复该会话（跨重启），缺省则按 threadId 懒建新会话
  *       cwd = workspace 目录；仅在需要新建会话时使用，缺省为用户主目录
+ *       steer?: true——并入当前轮：该线程忙时消息注入活跃轮（agent.steer，下次模型
+ *       调用前被消费，随活跃轮转录落盘），本请求走退化流 data-queue(steered) →
+ *       start → finish 立即收尾（回复继续在活跃轮消息流里输出）；不占队列上限，
+ *       不中止当前回复。线程空闲 / 活跃轮正在收尾 / steer 抛错时落回普通排队
  *       prompt 结束后若有后台子代理（Task 委派）仍在运行，等待其完成并在同一条
  *       reqId 消息流内注入恢复 prompt 投递报告（多 step 收敛），再发 finish
  *   { "type": "abort", "threadId"? }   中止线程（缺省全局）的父代理与后台子代理，
@@ -18,6 +26,9 @@
  *       删除单个排队项，其 prompt 流立即 abort + finish 收尾（不执行）
  *   { "type": "queue_promote", "id", "requestId" }          → { id, type: "queue_promoted", requestId }
  *       立即发送：该项提到所属线程队首并中止该线程当前活跃 turn（其余排队项保留）
+ *   { "type": "queue_steer", "id", "requestId" }            → { id, type: "queue_steered", requestId }
+ *       并入当前轮：排队项注入所属线程活跃轮（不中止不排队），其流走 steered
+ *       退化收尾；无活跃轮/正在收尾则报错、项原位保留
  *   prompt 排队（prompt-queue.ts）：队列按线程隔离，线程内上一轮未结束时到达的
  *       prompt 进该线程 FIFO 队列（多线程并行互不阻塞），
  *       流上先发 { chunk: { type: "data-queue", id: "queue-<reqId>", data: { phase: "queued", position } } }，
@@ -57,6 +68,11 @@
  *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings, paths }（人设/指令落全局身份文件、结构化字段含自定义风格列表与内置覆盖落 SQLite kv + 活动会话系统提示词热替换）
  *   { "type": "get_memory", "id" }                            → { id, type: "memory", settings }（记忆设置：总开关/作用域叠加/文件检索/指定文件白名单）
  *   { "type": "set_memory", "id", "settings" }                → { id, type: "memory", settings }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization）
+ *   { "type": "get_browser", "id" }                           → { id, type: "browser", settings }（浏览器驱动开关：browser_* 工具是否可用）
+ *   { "type": "set_browser", "id", "settings" }               → { id, type: "browser", settings }（落 SQLite kv 即生效，工具 execute 实时门控）
+ *   { "type": "get_observability", "id" }                     → { id, type: "observability", settings }（可观测性导出配置：OTLP 端点/鉴权头/采样率/脱敏）
+ *   { "type": "set_observability", "id", "settings" }         → { id, type: "observability", settings }（落 SQLite kv 即生效，otlp-exporter 实时门控）
+ *   { "type": "test_observability", "id", "settings"? }       → { id, type: "observability_tested", result }（探针 span 试发：settings 缺省用当前配置，10s 超时）
  *   { "type": "get_hooks", "id" }                             → { id, type: "hooks", hooks: [...] }（Claude Code 式生命周期钩子配置，见 hooks.ts）
  *   { "type": "set_hooks", "id", "hooks": [...] }             → { id, type: "hooks_saved" }（全量覆盖，落 SQLite kv；PreToolUse/PermissionRequest 在工具调用/审批路径同步生效）
  *   { "type": "list_memory_files", "id", "cwd"? }             → { id, type: "memory_files", scopes: { global, workspace } }
@@ -106,6 +122,7 @@
  *   { "type": "get_mcp_audit_log", "id", "name"?, "limit"? } → { id, type: "mcp_audit_log", events }
  *       观测审计事件（连接/断开/调用/截断/授权/健康探测，跨重启持久，时间升序）
  *   { "type": "usage_stats", "id" }                           → { id, type: "usage_stats", stats }（全局使用统计：增量物化到 SQLite 后从库聚合）
+ *   { "type": "trace_query", "id", "sessionId", "limit"? }    → { id, type: "trace_query", runs }（Agent 调用轨迹：traces/<sessionId>.jsonl 的末尾 limit 个 run，文件序即时间序；limit 默认 50 上限 200）
  *   { "type": "get_todo_state", "id", "threadId", "sessionId"? } → { id, type: "todo_state", tasks, nextId }（任务清单水合，只读）
  *   { "type": "get_provider_filter", "id", "provider" }       → { id, type: "provider_filter", provider, models: string[] | null }
  *       models = 勾选（可见）的模型 id；null = 无过滤记录（目录全可见）
@@ -151,6 +168,9 @@
  *                 （toolName = plan_exit 时 input 带 { rationale, title, markdown, filePath }，前端渲染计划审批卡）
  *                 面板唤起：{ id, chunk: { type: "data-panelOpen", data: { type: "browser", url? } } }
  *                 （browser_* 工具动作时发起，前端把浏览器 tab 推到前台并展开面板）
+ *                 面板唤起（文件）：{ id, chunk: { type: "data-panelOpen", data: { type: "file", path, cwd } } }
+ *                 （open_file 工具发起；path = workspace 相对路径或绝对路径，前端把「文件」tab
+ *                   推到前台、按磁盘实时模式加载，与文件树点击同款）
  *                 工具图片投影：{ id, chunk: { type: "data-image", id: "img-<toolCallId>-<n>", data: PiImagePartData } }
  *                 （tool_execution_end 里 ≤2MiB 栅格 image 块随流投影，data 见 types.ts；
  *                   get_history 按同 id 重建同构 part，闸门与拼装单点在 image-parts.ts）
@@ -173,7 +193,7 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { getSupportedThinkingLevels, type Message } from "@earendil-works/pi-ai";
-import { logErr } from "./log";
+import { logAt, logErr } from "./log";
 import { buildHookPayload, fireHookEvent, getHookConfigs, setHookConfigs } from "./hooks";
 import { sessionPath } from "./storage";
 import { resolveHostResult } from "./hostdb";
@@ -252,7 +272,9 @@ import {
   PROMPT_QUEUE_LIMIT,
   promoteEntry,
   queueChunkId,
+  queueSnapshot,
   shouldQueue,
+  steerOutEntry,
   takeFrontEntry,
   updateEntryText,
 } from "./prompt-queue";
@@ -290,6 +312,12 @@ import {
   writeMemoryFile,
   type MemoryScope,
 } from "./memory";
+import { applyBrowserConfig, getBrowserConfig } from "./browser-config";
+import {
+  noticeAppendedText,
+  preparePromptAttachments,
+} from "./prompt-attachments";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import {
   deleteSubagentDefinition,
   loadSubagentDefinitions,
@@ -311,6 +339,9 @@ import {
   type SkillScope,
 } from "./skills";
 import { aggregateUsageStats } from "./usage-stats";
+import { readTraceRuns } from "./trace";
+import { applyObservabilityConfig, getObservabilityConfig, normalizeObservabilityConfig } from "./observability";
+import { probeOtlpEndpoint } from "./otlp-exporter";
 import {
   cancelPendingMcpApprovals,
   resolveMcpApproval,
@@ -592,6 +623,45 @@ function isAlreadyProcessingError(err: unknown): boolean {
  *  无人值守 runner 需要程序化判定成败时经此回调观察） */
 export type PromptTurnOutcome = { ok: boolean; errorText?: string };
 
+/** 并入当前轮（steer）：把消息注入活跃 run（agent.steer，库在下次模型调用前
+ *  消费、随活跃轮转录落盘），本请求走退化流 data-queue(steered) → start →
+ *  finish 立即收尾——AI SDK 对无内容 chunk 的流不会 push 空 assistant 消息，
+ *  回复继续在活跃轮的消息流里输出。返回 false（无活跃 run / 正在收尾 /
+ *  steer 抛错）由调用方落回普通排队。 */
+function steerIntoActiveRun(
+  run: Running,
+  reqId: string,
+  msg: Record<string, unknown>,
+): boolean {
+  if (run.stopRequested) return false;
+  try {
+    // 与普通 prompt 同一条附件链路：拒收项折算说明行、合法项进 user 消息 content
+    const attachments = preparePromptAttachments(msg);
+    const text = noticeAppendedText(String(msg.text ?? ""), attachments.noticeLines);
+    const content: string | (ImageContent | { type: "text"; text: string })[] =
+      attachments.images.length
+        ? [{ type: "text", text }, ...attachments.images]
+        : text;
+    run.agent.steer({ role: "user", content, timestamp: Date.now() });
+    if (attachments.images.length) {
+      logAt(
+        "event",
+        `prompt steer: ${attachments.images.length} image(s) -> ${run.sessionId}`,
+      );
+    }
+    sendChunk(reqId, {
+      type: "data-queue",
+      id: queueChunkId(reqId),
+      data: { phase: "steered" },
+    });
+    sendChunk(reqId, { type: "start" });
+    sendChunk(reqId, { type: "finish" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** prompt 入口：排队判定后沿所属线程的串行链执行（prompt 长任务依旧不占 mgmtQueue） */
 export async function dispatchPrompt(
   reqId: string,
@@ -609,7 +679,17 @@ export async function dispatchPrompt(
   const activeRun = running.get(threadId);
   const activeStopping = isTurnBusy(threadId) && activeRun?.stopRequested === true;
   const wasQueued = shouldQueue(threadId) && !activeStopping;
+  // 并入当前轮（steer）：线程忙且显式标记时注入活跃轮，本请求退化流收尾；
+  // 任何落空（空闲/收尾中/注入失败）落回下面的普通排队路径
+  if (wasQueued && msg.steer === true && activeRun) {
+    if (steerIntoActiveRun(activeRun, reqId, msg)) return;
+  }
   if (wasQueued) {
+    // 诊断：排队的真实原因（busy 位 / 队列残留），排查「看起来结束了却排队」
+    logAt(
+      "event",
+      `prompt queued: thread=${threadId} busy=${isTurnBusy(threadId)} queueLen=${queueSnapshot(threadId).length} stopping=${activeStopping} prevStopRequested=${activeRun?.stopRequested === true}`,
+    );
     const enqueued = enqueueTurn(reqId, threadId, msg);
     if (!enqueued.ok) {
       sendChunk(reqId, {
@@ -749,7 +829,7 @@ async function runPromptTurn(
   let compactionSeq = 0;
   const emitCompaction = (id: string, data: Record<string, unknown>) =>
     sendChunk(reqId, { type: "data-compaction", id, data });
-  const runStep = async (text: string) => {
+  const runStep = async (text: string, images: ImageContent[]) => {
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     sendChunk(reqId, { type: "start-step" });
     stepStarted = true;
@@ -769,7 +849,7 @@ async function runPromptTurn(
     }
     beginRun(threadId);
     try {
-      await run.agent.prompt(text);
+      await run.agent.prompt(text, images.length ? images : undefined);
     } catch (err) {
       // 线程串行链已消除本线程并发 prompt；此处兜底 abort 收尾等极窄竞态窗口。
       // 守卫抛错时尚未产生任何事件，waitForIdle 后原地重试一次是干净的。
@@ -777,14 +857,14 @@ async function runPromptTurn(
       logErr("agent.prompt hit active-run guard, retrying after idle");
       await run.agent.waitForIdle();
       beginRun(threadId);
-      await run.agent.prompt(text);
+      await run.agent.prompt(text, images.length ? images : undefined);
     }
   };
 
   // 溢出恢复：stream.ts 吞掉溢出错误后置位 → 强制压缩后用同一文本重跑一次，
   // 重跑仍溢出不再恢复（直接报错），防循环
-  const runStepWithRecovery = async (text: string) => {
-    await runStep(text);
+  const runStepWithRecovery = async (text: string, images: ImageContent[]) => {
+    await runStep(text, images);
     if (!run.pendingOverflowRecovery) return;
     run.pendingOverflowRecovery = false;
     if (run.stopRequested) return;
@@ -804,7 +884,7 @@ async function runPromptTurn(
       return;
     }
     emitCompaction(cid, compactionChunkData(outcome));
-    await runStep(text);
+    await runStep(text, images);
     if (run.pendingOverflowRecovery) {
       run.pendingOverflowRecovery = false;
       turnError = "Context overflow persisted after compaction. Start a new session.";
@@ -824,8 +904,23 @@ async function runPromptTurn(
     }),
   );
 
+  // 附件（用户图片）：闸门裁决见 prompt-attachments.ts；拒收项折算成说明行
+  // 追加到文本尾部（模型可读、刷新后可见），合法项组装 ImageContent 走
+  // agent.prompt(text, images) 进模型上下文并随 agent 消息本体自动落转录。
+  // 溢出恢复/委派收敛的重跑段不携带图片（resume 为纯文本）。
+  // 模型硬门已移除（input 元数据不可靠，实测误拦支持图像的模型）：附件过
+  // 物理闸门（prompt-attachments.ts）后一律放行，端点不支持时 API 报错可见。
+  const promptAttachments = preparePromptAttachments(msg);
+  const promptText = noticeAppendedText(String(msg.text ?? ""), promptAttachments.noticeLines);
+  if (promptAttachments.images.length) {
+    logAt(
+      "event",
+      `prompt attachments: ${promptAttachments.images.length} image(s) -> ${run.sessionId}`,
+    );
+  }
+
   try {
-    await runStepWithRecovery(String(msg.text ?? ""));
+    await runStepWithRecovery(promptText, promptAttachments.images);
     // 后台委派收敛循环（ADR 0089）：turn 结束时若还有运行中的子代理，等它们完成，
     // 把未投递的报告作为恢复 prompt 继续喂给父代理（同一条 reqId 消息流内续跑）。
     // 用户 Stop（stopRequested）直接退出。
@@ -837,7 +932,7 @@ async function runPromptTurn(
       }
       const resume = delegationResumeText(run);
       if (!resume) break;
-      await runStepWithRecovery(resume);
+      await runStepWithRecovery(resume, []);
     }
   } catch (err) {
     turnError = err instanceof Error ? err.message : String(err);
@@ -851,6 +946,9 @@ async function runPromptTurn(
     }
   } finally {
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
+    // Stop/promote 中止的 turn：finish 前发 abort 标记——前端据此把残缺回复
+    // 结算为「被结束」而非「正常完成」（不弹完成通知）；AI SDK 保留 partial 内容
+    if (run.stopRequested) sendChunk(reqId, { type: "abort" });
     sendChunk(reqId, { type: "finish" });
     setActiveReqId(threadId, null);
     persist(run);
@@ -980,6 +1078,22 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         if (active) abortRun(active, entry.threadId);
       }
       send({ id: reqId, type: "queue_promoted", requestId });
+      break;
+    }
+    case "queue_steer": {
+      // 并入当前轮：排队项注入所属线程的活跃轮（agent.steer，不中止不排队）；
+      // 该项自己的流走 steered 退化生命周期收尾（前端排队条随 finish 自动移除，
+      // 线程内用户消息保留——线性转录）。无活跃轮/正在收尾则报错、项原位保留
+      const requestId = String(msg.requestId ?? "");
+      const ok = steerOutEntry(requestId, (entry) => {
+        const run = running.get(entry.threadId);
+        if (!run || run.stopRequested) return false;
+        return steerIntoActiveRun(run, entry.reqId, entry.msg);
+      });
+      if (!ok) {
+        throw new Error(`no active turn to steer into: ${requestId}`);
+      }
+      send({ id: reqId, type: "queue_steered", requestId });
       break;
     }
     case "compact": {
@@ -1424,6 +1538,14 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       send({ id: reqId, type: "usage_stats", stats });
       break;
     }
+    case "trace_query": {
+      const traceSession = typeof msg.sessionId === "string" ? msg.sessionId.trim() : "";
+      if (!traceSession) throw new Error("trace_query: sessionId is required");
+      const limit =
+        typeof msg.limit === "number" && msg.limit > 0 ? Math.min(msg.limit, 200) : 50;
+      send({ id: reqId, type: "trace_query", runs: readTraceRuns(traceSession, limit) });
+      break;
+    }
     case "set_personalization": {
       const settings = await applyPersonalization(msg.settings);
       // 与 set_thinking 同款广播：个性化段变了就整段重排系统提示词，活动会话
@@ -1468,6 +1590,36 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         );
       }
       send({ id: reqId, type: "memory", settings });
+      break;
+    }
+    case "get_browser": {
+      send({ id: reqId, type: "browser", settings: getBrowserConfig() });
+      break;
+    }
+    case "set_browser": {
+      // 只落 kv：browser_* 工具无提示词注入块，execute 内实时门控，写完即生效
+      const settings = await applyBrowserConfig(msg.settings);
+      send({ id: reqId, type: "browser", settings });
+      break;
+    }
+    case "get_observability": {
+      send({ id: reqId, type: "observability", settings: getObservabilityConfig() });
+      break;
+    }
+    case "set_observability": {
+      // 只落 kv + 内存：otlp-exporter 每次 run 结算实时读配置，写完即生效
+      const settings = await applyObservabilityConfig(msg.settings);
+      send({ id: reqId, type: "observability", settings });
+      break;
+    }
+    case "test_observability": {
+      // 不落 kv：用消息携带的设置（缺省回落当前配置）从 sidecar 发一条探针 span
+      // （渲染进程 fetch 会被 CORS 拦，探针必须走 sidecar 网络通道）
+      const probeSettings = normalizeObservabilityConfig(
+        msg.settings ?? getObservabilityConfig(),
+      );
+      const result = await probeOtlpEndpoint(probeSettings.endpoint, probeSettings.headers);
+      send({ id: reqId, type: "observability_tested", result });
       break;
     }
     case "list_memory_files": {

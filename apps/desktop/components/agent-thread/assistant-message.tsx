@@ -157,24 +157,16 @@ const AssistantWorkingIndicator: FC = () => {
   const isEmpty = useAuiState((s) => s.message.content.length === 0);
   // 重试进行中时不显示（RetryMarker 顶替这条状态行，参照示例 base.tsx）
   if (useRetryState()) return null;
-  if (isEmpty) {
-    return (
-      <span
-        data-slot="aui_assistant-message-indicator"
-        className="text-muted-foreground inline-flex items-center gap-2 align-middle"
-      >
-        {/* <DotMatrix state="connecting" aria-hidden /> */}
-        <span className="text-sm shimmer text-foreground/60">连接中...</span>
-      </span>
-    );
-  }
   return (
     <span
-      data-slot="aui_assistant-message-indicator "
-      className=" font-sans text-sm shimmer shimmer-speed-200"
-      aria-label="Assistant is working"
+      data-slot="aui_assistant-message-indicator"
+      className="text-muted-foreground inline-flex items-center gap-2 align-middle"
     >
-      {randomLoadingPhrase()}
+      {/* 等待动画：内容为空=连接中；已有内容但模型/工具间隙=加载态点阵 */}
+      <DotMatrix state={isEmpty ? "connecting" : "loading"} aria-hidden />
+      <span className="shimmer shimmer-speed-200 text-foreground/60 text-sm">
+        {isEmpty ? "连接中..." : randomLoadingPhrase()}
+      </span>
     </span>
   );
 };
@@ -295,10 +287,12 @@ const AssistantActionBar: FC = () => {
       s.message.content.length > 0 &&
       s.message.content.every((p) => p.type === "data"),
   );
-  if (dividerOnly) return null;
+  // 只隐藏「本条消息还在流式输出」的操作栏；其他 turn 在跑不影响已完成
+  // 消息的 ActionBar（排队/并行场景下每条已结束的对话都是独立可操作的）
+  const selfRunning = useAuiState((s) => s.message.status?.type === "running");
+  if (dividerOnly || selfRunning) return null;
   return (
     <ActionBarPrimitive.Root
-      hideWhenRunning
       autohide="not-last"
       className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ml-1 flex gap-1 duration-200"
     >

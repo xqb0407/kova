@@ -58,7 +58,8 @@ export function registerQueuedPrompt(entry: {
   notify();
 }
 
-/** 消费 prompt 流里的 data-queue chunk（pi-transport 调用） */
+/** 消费 prompt 流里的 data-queue chunk（pi-transport 调用）。
+ *  phase: "steered"（并入当前轮的退化流标记）不进排队条，走到兜底 return */
 export function applyQueueChunk(
   requestId: string,
   threadId: string,
@@ -66,23 +67,28 @@ export function applyQueueChunk(
 ): void {
   const d = data as { phase?: string; position?: number } | null;
   if (!d || (d.phase !== "queued" && d.phase !== "active")) return;
-  const map = entries.get(threadId);
-  const entry = map?.get(requestId);
+  // threadMap 兜底建档：map 可能不存在——刷新后重连重放 data-queue（entries
+  // 是纯内存的）、取消最后一项后的重发竞态等场景，直接 map! 会崩
+  //（"undefined is not an object (evaluating 'map.set')"）
+  const map = threadMap(threadId);
+  const entry = map.get(requestId);
   if (d.phase === "active") {
-    // 开跑：从排队条移除（消息流里自然可见）
+    // 开跑：从排队条移除（消息流里自然可见），并通知激活回调修正消息顺序
     if (entry) {
-      map!.delete(requestId);
+      map.delete(requestId);
       notify();
+      activationListener?.({ ...entry });
     }
     return;
   }
   const position = typeof d.position === "number" ? d.position : 0;
   if (entry) {
     // 已注册（sendMessages 时）：确认进可见队列
-    map!.set(requestId, { ...entry, position });
+    map.set(requestId, { ...entry, position });
   } else {
-    // 理论上不发生（transport 一定先注册）：兜底建档
-    map!.set(requestId, {
+    // 未注册的 ghost（刷新重连重放等）：建档占位，messageId/text 不可知，
+    // 排队条对空文本条目不渲染，收尾时随流清理
+    map.set(requestId, {
       requestId,
       threadId,
       messageId: "",
@@ -111,7 +117,8 @@ export function useThreadQueue(threadId: string | undefined): QueuedPrompt[] {
       const cached = snapshotCache.get(threadId);
       if (cached && cached.version === version) return cached.value;
       const visible = [...(entries.get(threadId)?.values() ?? [])]
-        .filter((e) => e.position > 0)
+        // 空文本 = 刷新重连重放的 ghost 占位（messageId/text 不可恢复），不渲染
+        .filter((e) => e.position > 0 && e.text)
         .sort((a, b) => a.position - b.position);
       const value = visible.length ? visible : EMPTY;
       snapshotCache.set(threadId, { version, value });
@@ -122,6 +129,44 @@ export function useThreadQueue(threadId: string | undefined): QueuedPrompt[] {
 }
 
 const EMPTY: QueuedPrompt[] = [];
+
+/** 排队项激活回调：data-queue(active) 到达时通知（PromptQueueBar 注册）。
+ *  用途：先发消息、后出回复的场景下，乐观追加把用户消息排在回复前面——
+ *  激活时把气泡移到列表末尾，修正阅读顺序 */
+type QueueActivationListener = (entry: QueuedPrompt) => void;
+let activationListener: QueueActivationListener | null = null;
+
+/** 注册/注销激活回调（组件卸载时传 null） */
+export function setQueueActivationListener(cb: QueueActivationListener | null) {
+  activationListener = cb;
+}
+
+let queuedIdsCache: { version: number; value: Set<string> } | null = null;
+const EMPTY_IDS = new Set<string>();
+
+/** 订阅「确认排队中」的用户消息 id 集合（消息列表渲染抑制用，ChatGPT 式：
+ *  排队中的消息不进消息列表，只出现在排队条；开跑 active 后条目移出集合，
+ *  消息自动出现）。position=0（未确认，含不会排队的空闲发送）不抑制 */
+export function useQueuedMessageIds(): Set<string> {
+  return useSyncExternalStore(
+    (cb) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    () => {
+      if (queuedIdsCache?.version === version) return queuedIdsCache.value;
+      const ids = new Set<string>();
+      for (const map of entries.values()) {
+        for (const e of map.values()) {
+          if (e.position > 0 && e.messageId) ids.add(e.messageId);
+        }
+      }
+      queuedIdsCache = { version, value: ids };
+      return ids;
+    },
+    () => EMPTY_IDS,
+  );
+}
 
 /* ----------------------------- 队列管理操作 ----------------------------- */
 
@@ -153,4 +198,10 @@ export async function cancelQueuedPrompt(requestId: string): Promise<void> {
 /** 立即发送：中止当前活跃 turn，该项提到队首马上执行（其余排队项保留） */
 export async function promoteQueuedPrompt(requestId: string): Promise<void> {
   await getPiChannel().request({ type: "queue_promote", requestId });
+}
+
+/** 并入当前轮：排队项注入该线程活跃轮（不中止不排队）；排队条随该项流
+ *  finish 自动移除，线程内用户消息保留（线性转录） */
+export async function steerQueuedPrompt(requestId: string): Promise<void> {
+  await getPiChannel().request({ type: "queue_steer", requestId });
 }

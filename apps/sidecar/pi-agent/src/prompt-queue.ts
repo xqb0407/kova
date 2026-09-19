@@ -161,6 +161,26 @@ export function promoteEntry(reqId: string): QueuedTurn | null {
   return null;
 }
 
+/** 并入当前轮：注入回调成功才移除排队项（随后位置重发）；回调返回 false
+ *  （无可并入的活跃轮等）项原位保留，返回 false。移除后该项的流由注入方
+ *  以 steered 退化生命周期收尾，串行链轮到时队列为空自然让位。 */
+export function steerOutEntry(
+  reqId: string,
+  inject: (entry: QueuedTurn) => boolean,
+): boolean {
+  for (const [threadId, q] of queues) {
+    const idx = q.findIndex((t) => t.reqId === reqId);
+    if (idx === -1) continue;
+    const entry = q[idx];
+    if (!inject(entry)) return false;
+    q.splice(idx, 1);
+    if (q.length === 0) queues.delete(threadId);
+    reemitPositions(threadId);
+    return true;
+  }
+  return false;
+}
+
 /** 取消排队项（threadId 提供时仅该线程）：各自流立即 abort+finish 收尾；
  *  返回取消条数 */
 export function cancelAllEntries(threadId?: string): number {

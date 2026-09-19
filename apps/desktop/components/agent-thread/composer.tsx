@@ -1,6 +1,6 @@
 "use client";
 
-import { ComposerAddAttachment, ComposerAttachments } from "@/components/assistant-ui/elements/attachment.aui";
+import { ComposerAttachments } from "@/components/assistant-ui/elements/attachment.aui";
 import { ComposerQuotePreview } from "@/components/assistant-ui/elements/quote.aui";
 import { GroupedTriggerPopover } from "@/components/agent-thread/composer-grouped-popover";
 import {
@@ -14,6 +14,7 @@ import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
 import { ModePicker } from "@/components/agent-thread/mode-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
+import { markSteerNextSend } from "@/lib/pi-steer-intent";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
 import { usePendingQuestions } from "@/lib/pi-question";
@@ -44,7 +45,12 @@ import {
   SquareIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FC, type ReactNode } from "react";
+import { toast } from "@/components/ui/toast";
+import {
+  PROMPT_IMAGE_MAX_COUNT,
+  validateImageFile,
+} from "@/lib/prompt-attachments";
 import { isTauri } from "@/lib/tauri";
 import {
   clearWorkspace,
@@ -494,24 +500,126 @@ const WorkspaceBranchPill: FC = () => {
   );
 };
 
-/** 运行中的排队发送按钮：点击 = 把输入内容加入 sidecar 排队队列（不中止当前回复） */
-const QueueSendButton: FC = () => {
+/** 发送/停止共用按钮（单按钮三态，同一槽位，方块⇄箭头随输入切换）：
+ *  - 空闲：↑ 发送（库原生 Send，沿用其禁用谓词）；
+ *  - 运行中输入为空：■ 停止生成；
+ *  - 运行中输入有内容：↑ 点击=进发送队列（sidecar 当前轮结束后自动执行），
+ *    ⌥/Alt+点击=并入当前轮（steer：注入活跃轮，不排队不中止）；
+ *    键盘 Enter/⌘Enter 同提交语义，Shift+⌘/Ctrl+Enter=并入。
+ *  运行中走手动 aui.composer.send() 绕开 ComposerPrimitive.Send 的
+ *  isRunning 禁用谓词 */
+const AdaptiveSendButton: FC = () => {
   const aui = useAui();
+  const isRunning = useAuiState((s) => s.thread.isRunning);
   const canSend = useAuiState((s) => s.composer.canSend);
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  if (isRunning && !canSend) {
+    return (
+      <ComposerPrimitive.Cancel asChild>
+        <TooltipIconButton
+          tooltip="停止生成"
+          side="bottom"
+          type="button"
+          variant="default"
+          size="icon"
+          className="aui-composer-cancel size-7 bg-primary rounded-full hover:bg-primary/80"
+          aria-label="Stop generating"
+        >
+          <div className="size-3 fill-current bg-white " />
+        </TooltipIconButton>
+      </ComposerPrimitive.Cancel>
+    );
+  }
+  if (isRunning) {
+    return (
+      <TooltipIconButton
+        tooltip="发送（当前回复完成后自动排队）· ⌥/Alt 点击并入当前回复"
+        side="bottom"
+        type="button"
+        variant="default"
+        size="icon"
+        className="aui-composer-send size-7 rounded-full bg-primary!"
+        aria-label="Send message"
+        onClick={(e) => {
+          if (e.altKey && threadId) markSteerNextSend(threadId);
+          aui.composer.send();
+        }}
+      >
+        <ArrowUpIcon className="size-4 text-white!" />
+      </TooltipIconButton>
+    );
+  }
   return (
-    <TooltipIconButton
-      tooltip="加入排队（当前回复完成后自动发送）"
-      side="bottom"
-      type="button"
-      variant="default"
-      size="icon"
-      className="aui-composer-queue-send size-7 rounded-full"
-      aria-label="Queue message"
-      disabled={!canSend}
-      onClick={() => aui.composer.send()}
-    >
-      <ArrowUpIcon className="size-4" />
-    </TooltipIconButton>
+    <ComposerPrimitive.Send asChild>
+      <TooltipIconButton
+        tooltip="发送消息"
+        side="bottom"
+        type="button"
+        variant="default"
+        size="icon"
+        className="aui-composer-send size-7 rounded-full bg-primary!"
+        aria-label="Send message"
+      >
+        <ArrowUpIcon className="aui-composer-send-icon size-4 text-white!" />
+      </TooltipIconButton>
+    </ComposerPrimitive.Send>
+  );
+};
+
+/**
+ * 附件按钮（composer 动作区最左）：选图经 validateImageFile 前置校验
+ * （非图片/超 2MiB toast 拒收），单条草稿最多 PROMPT_IMAGE_MAX_COUNT 张。
+ * 不按模型能力隐藏——纯文本模型发图由 sidecar 硬门折算占位说明，UI 恒可用；
+ * 粘贴路径同款校验见 cm-composer-input。
+ */
+const AddAttachmentButton: FC = () => {
+  const aui = useAui();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const onChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (files.length === 0) return;
+    for (const file of files) {
+      const err = validateImageFile(file);
+      if (err) toast.error(err);
+    }
+    const accepted = files.filter((file) => !validateImageFile(file));
+    const room = Math.max(
+      0,
+      PROMPT_IMAGE_MAX_COUNT -
+        (aui.composer.getState().attachments?.length ?? 0),
+    );
+    for (const file of accepted.slice(room)) {
+      toast.error(`单条消息最多 ${PROMPT_IMAGE_MAX_COUNT} 张图片`);
+    }
+    for (const file of accepted.slice(0, room)) {
+      await aui.composer.addAttachment(file).catch(() => {});
+    }
+  };
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        multiple
+        hidden
+        onChange={(e) => void onChange(e)}
+      />
+      <TooltipIconButton
+        tooltip="添加图片"
+        side="bottom"
+        variant="ghost"
+        size="icon"
+        className="aui-composer-add-attachment text-muted-foreground hover:text-foreground hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30 size-7 rounded-full active:scale-[0.96] motion-reduce:transition-none"
+        aria-label="Add Attachment"
+        onClick={() => inputRef.current?.click()}
+      >
+        <PlusIcon className="aui-attachment-add-icon size-4" />
+      </TooltipIconButton>
+    </>
   );
 };
 
@@ -520,7 +628,7 @@ const ComposerAction: FC = () => {  return (
     // 避免固有宽度撑破消息流（超长内容一律走截断，不靠横向滚动）
     <div className="aui-composer-action-wrapper relative flex flex-wrap items-center justify-between gap-y-1.5">
       <div className="flex items-center gap-1">
-        <ComposerAddAttachment />
+        <AddAttachmentButton />
         <ModePicker />
       </div>
       <div className="flex items-center gap-1.5">
@@ -560,38 +668,7 @@ const ComposerAction: FC = () => {  return (
             </ComposerPrimitive.StopDictation>
           </AuiIf>
         </AuiIf>
-        <AuiIf condition={(s) => !s.thread.isRunning}>
-          <ComposerPrimitive.Send asChild>
-            <TooltipIconButton
-              tooltip="Send message"
-              side="bottom"
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-send size-7 rounded-full"
-              aria-label="Send message"
-            >
-              <ArrowUpIcon className="aui-composer-send-icon size-4" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Send>
-        </AuiIf>
-        <AuiIf condition={(s) => s.thread.isRunning}>
-          {/* 运行中发送 = 排队：sidecar 上一轮结束后自动执行，composer 上方
-              排队条（PromptQueueBar）可修改/删除/插队。走 aui.composer.send()
-              绕开 ComposerPrimitive.Send 的 isRunning 禁用谓词 */}
-          <QueueSendButton />
-          <ComposerPrimitive.Cancel asChild>
-            <Button
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-cancel size-7 rounded-full"
-              aria-label="Stop generating"
-            >
-              <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
-            </Button>
-          </ComposerPrimitive.Cancel>
-        </AuiIf>
+        <AdaptiveSendButton />
       </div>
     </div>
   );

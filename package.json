@@ -7,7 +7,9 @@
     "packages/*"
   ],
   "overrides": {
-    "unified": "^11.0.5"
+    "unified": "^11.0.5",
+    "@codemirror/view": "^6.43.12",
+    "ai": "^7.0.105"
   },
   "scripts": {
     "dev": "bun run --filter desktop dev",
@@ -16,8 +18,5 @@
     "tauri:dev": "bun run --filter desktop tauri:dev",
     "tauri:build": "bun run --filter desktop tauri:build",
     "test": "bun run --filter pi-agent-sidecar test"
-  },
-  "patchedDependencies": {
-    "react-native-worklets@0.10.1": "patches/react-native-worklets@0.10.1.patch"
   }
 }

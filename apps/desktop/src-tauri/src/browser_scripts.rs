@@ -192,3 +192,4 @@ pub const BACK_JS: &str = r#"(() => {
   try { history.back(); return JSON.stringify({ ok: true }); }
   catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
 })()"#;
+

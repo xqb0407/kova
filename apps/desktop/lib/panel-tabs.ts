@@ -7,6 +7,8 @@ import { useSyncExternalStore } from "react";
  * 面板是一个标签容器,标签类型见 PANEL_TAB_TYPES,支持多开、关闭、切换;
  * 全部标签与激活项持久化到 localStorage,重启恢复。
  * 浏览器标签的当前 URL/标题也挂在 tab 记录上(updateTab),保证恢复后继续显示。
+ * 例外:页面「刷新」(reload)不恢复浏览器标签——刷新应回到干净态,残留的
+ * 原生 webview 由 agent-panel 启动兜底销毁;冷启动(重启应用)仍恢复。
  */
 export type PanelTabType =
   | "activity"
@@ -21,7 +23,9 @@ export type PanelTabType =
   /** 工作区文件树浏览（仅 Tauri 桌面端,见 tab-registry 的可见性过滤） */
   | "explorer"
   /** 子智能体运行过程：消息里 Task 委派行唤起（不进 + 菜单,只能从行进入） */
-  | "subagent";
+  | "subagent"
+  /** Agent 调用轨迹（trace_query）：header「更多」唤起（不进 + 菜单），sessionId 绑定 sidecar 会话 */
+  | "trace";
 
 export type PanelTab = {
   id: string;
@@ -63,6 +67,7 @@ const VALID_TYPES = new Set<PanelTabType>([
   "file",
   "explorer",
   "subagent",
+  "trace",
 ]);
 
 function validTab(raw: unknown): raw is PanelTab {
@@ -72,6 +77,26 @@ function validTab(raw: unknown): raw is PanelTab {
     typeof t?.type === "string" &&
     VALID_TYPES.has(t.type as PanelTabType)
   );
+}
+
+/** 本次页面加载是否为「刷新」(reload)而非冷启动/首次进入。
+ *  sessionStorage 哨兵在模块求值时判定：同一 webview 会话内 reload 会保留
+ *  sessionStorage，冷启动/重启应用则是全新会话。不用 PerformanceNavigation
+ *  Timing——WKWebView 下 tauri 自定义协议导航的 timing type 不稳定为 "reload"。
+ *  sessionStorage 不可用（隐私模式等）时按非刷新处理（保守回退原设计） */
+const RELOAD_FLAG = "agent-panel-reloaded";
+const pageReloaded: boolean = (() => {
+  try {
+    const hit = sessionStorage.getItem(RELOAD_FLAG) === "1";
+    sessionStorage.setItem(RELOAD_FLAG, "1");
+    return hit;
+  } catch {
+    return false;
+  }
+})();
+
+export function isPageReload(): boolean {
+  return pageReloaded;
 }
 
 /** 首次使用(无存档)不预开标签:面板以"打开标签页"空态呈现(Codex 同形) */
@@ -86,7 +111,11 @@ function load(): PanelTabsState {
     if (raw === null) return defaultState();
     const parsed = JSON.parse(raw) as Partial<PanelTabsState>;
     if (!Array.isArray(parsed.tabs)) return defaultState();
-    const tabs = parsed.tabs.filter(validTab);
+    const restored = parsed.tabs.filter(validTab);
+    // 刷新不恢复浏览器标签(见文件头注释);其余类型照常恢复
+    const tabs = isPageReload()
+      ? restored.filter((t) => t.type !== "browser")
+      : restored;
     const activeId =
       typeof parsed.activeId === "string" &&
       tabs.some((t) => t.id === parsed.activeId)

@@ -29,6 +29,8 @@ import { initHostMode, initStorage } from "./storage";
 import { loadCustomProviders, applyModelOverrides, initCurrentModelKey } from "./model-catalog";
 import { initPersonalization } from "./personalization";
 import { initMemory } from "./memory";
+import { initBrowserConfig } from "./browser-config";
+import { initObservability } from "./observability";
 import { initHooks } from "./hooks";
 import { initSubagentState } from "./subagent-definitions";
 import { initSkillsState } from "./skills";
@@ -84,6 +86,10 @@ async function main() {
     await initPersonalization();
     // 记忆设置同理（提示词注入块 + 工具门控都读这份内存配置）
     await initMemory();
+    // 浏览器驱动开关同走 kv（browser_* 工具 execute 门控读这份内存配置）
+    await initBrowserConfig();
+    // 可观测性导出配置同走 kv（otlp-exporter 每次 run 结算实时读这份内存配置）
+    await initObservability();
     // 子智能体开关/工作区信任同走 kv，理由同上（定义文件本身按需带签名加载）
     await initSubagentState();
     // 技能启用开关同走 kv（技能目录本身按需带签名加载，resolveSession 预热）

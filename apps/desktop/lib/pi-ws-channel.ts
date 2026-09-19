@@ -247,6 +247,10 @@ export class WsPiChannel implements PiChannel {
           threadId,
           sessionId: sessionId ?? null,
           cwd: cwd ?? null,
+          // 远程路径网关原样转发 JSON，附件直接随帧（sidecar 闸门兜底）
+          attachments: args.attachments ?? null,
+          // 并入当前轮（steer）：sidecar 忙线程注入活跃轮，本请求退化流收尾
+          steer: args.steer === true,
         });
         if (!ok) {
           // 无连接且未入队：立即报错收流

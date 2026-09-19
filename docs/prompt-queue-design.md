@@ -220,3 +220,50 @@ abort 命令本就是全局中止所有 run，排队项保持同一语义。想�
 - **compact**：忙碌检查从全局改为按线程（只拒绝正在回答的那个会话）。
 - **LRU 驱逐**（sessions.ts）：`noteActiveTurn` 改为线程集合，多线程并行期间
   所有在跑会话都不可驱逐。
+
+## 12. 并入当前轮（steer，2026-09 实现）
+
+排队之外的第二种发送形态（ChatGPT 式）：运行中 ⌥/Alt+点击发送按钮 或
+Shift+⌘/Ctrl+Enter，消息不排队，**注入当前活跃轮**（`agent.steer()`，下次模型
+调用前被消费，随活跃轮转录落盘）。三种形态谱系：
+
+| 形态 | 触发 | 行为 |
+|---|---|---|
+| 排队 | 运行中点击发送 | FIFO 等当前轮结束后执行（§4） |
+| **并入当前轮** | ⌥+点击 / Shift+⌘+Enter；或排队条 chip 的 ⟺ 按钮（`queue_steer`） | 注入活跃轮，不排队不中止，不占队列上限 |
+| 立即发送 | 排队条 chip ⚡ | 中止当前轮，该项插队执行（§5.2 promote） |
+
+排队条 chip 的编辑为**取回输入框**：`queue_cancel`（线程内消息一并移除）+
+文本回填 composer，改完重新发送即重新排队——§10 的编辑形态问题按回填方案落定。
+
+要点：
+
+- **意图传递**：assistant-ui 的 `SendOptions.steer` 在 AI SDK 链路不透传，
+  composer 用模块级标记（`pi-steer-intent.ts`）→ transport `sendMessages`
+  消费 → prompt 协议帧 `steer: true`（Tauri invoke / 远程 WS 同字段）。
+- **退化流生命周期**：`dispatchPrompt` 判定线程忙且带 steer 标记 →
+  `steerIntoActiveRun` 注入成功后，本请求流发
+  `data-queue(steered) → start → finish` 立即收尾。AI SDK 只在有内容 chunk
+  触发 `write()` 时才 push assistant 消息，裸 start+finish 不留空占位。
+- **前端副作用抑制**（pi-transport postTransform）：`sawSteered` 置位后，
+  start 不打检查点快照（活跃轮已有自己的锚点）；finish 只清自己的
+  排队条/resumable 登记——**不碰审批/提问卡片**（活跃轮可能正挂着）、不发
+  完成提醒、不刷文件树。
+- **落空回退**：线程空闲 / 活跃轮正在收尾（stopRequested）/ `agent.steer`
+  抛错 → 落回普通排队或沿链执行，与无标记时一致。
+- UI 归属：steer 的回复继续流在活跃轮的 assistant 消息里，用户消息按发送
+  顺序追加在线程末尾（线性转录语义，同 Claude Code 终端体验）。
+- **排队消息不在消息列表渲染**（ChatGPT 式）：AI SDK `sendMessage` 会把用户
+  消息乐观追加进线程，无法在发送前拦截；改为渲染层抑制——消息列表对
+  `useQueuedMessageIds()`（pi-queue 中 position>0 的确认排队项）命中的用户
+  消息返回 null，只出现在排队条；开跑（active）后条目移出集合、消息带
+  入场动画自动出现。发送到 data-queue 确认之间的几毫秒仍会短暂可见（乐观
+  渲染窗口，无法避免）。
+- **每轮回复独立成条**（joinStrategy: "none"）：多任务排队时 user 消息先全部
+  入列、assistant 回复按序后补，chat 状态出现相邻的 assistant 消息
+  （[user B, user C, assistant B, assistant C]）；assistant-ui 转换层默认把
+  相邻 assistant 消息合并成一条（joinStrategy 缺省行为），导致多轮回复挤进
+  一条消息。两个 runtime provider 显式传 `joinStrategy: "none"` 禁用合并。
+  附带修正：ActionBar 去掉线程级 hideWhenRunning（改为本消息运行中隐藏，
+  已完成 turn 的操作栏在后续 turn 运行期间保持可用）；Stop/promote 中止的
+  turn 流上补发 abort chunk（finish 前），前端不再对被结束的轮次弹完成通知。

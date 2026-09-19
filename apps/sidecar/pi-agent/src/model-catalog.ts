@@ -276,7 +276,7 @@ function rankLess(a: [number, number, string], b: [number, number, string]): boo
  * 前端属性弹窗据此标记"缺省未确认"，用户填过即消失。
  * 内置 provider 目录内的模型永不进表（行 null = 恢复目录真值，不是猜测）。
  */
-export const DEFAULT_TRACKED_ATTRS = ["contextWindow", "maxTokens"] as const;
+export const DEFAULT_TRACKED_ATTRS = ["contextWindow", "maxTokens", "input"] as const;
 export type DefaultedAttr = (typeof DEFAULT_TRACKED_ATTRS)[number];
 const defaultedAttrs = new Map<string, Set<DefaultedAttr>>();
 /** 自定义端点 provider id：applyRow 重放时区分"null=恢复默认(仍是猜测)" */
@@ -336,6 +336,10 @@ export async function registerCustomProvider(row: {
       ...(seed?.thinkingLevelMap
         ? { thinkingLevelMap: seed.thinkingLevelMap }
         : {}),
+      // 未知自定义端点保守禁用 OpenAI 新版 "developer" 系统角色：很多国产兼容
+      // 网关不认（实测 sensenova 对 developer 角色一律 400 invalid request），
+      // 一律走传统 "system" 角色；reasoning_effort 等思考参数不受影响
+      compat: { supportsDeveloperRole: false },
     };
   });
   // 重建出的模型对象以种子 map 为基线（同名模型种子变化随重建生效），
@@ -361,6 +365,7 @@ export async function registerCustomProvider(row: {
     const key = `${row.id}/${m.modelId.trim()}`;
     noteDefaulted(key, "contextWindow", m.contextWindow == null);
     noteDefaulted(key, "maxTokens", m.maxTokens == null);
+    noteDefaulted(key, "input", m.input == null);
   }
   // 重建出的新模型对象不带覆盖，补挂前端下发的 thinkingLevelMap
   applyThinkingMapOverrides();
@@ -447,6 +452,7 @@ export function attachExtraCatalogModel(
   // 目录外新增模型没有目录真值可依：未填的跟踪属性按注册默认值 = 猜测，标未确认
   noteDefaulted(`${providerId}/${modelId}`, "contextWindow", attrs.contextWindow == null);
   noteDefaulted(`${providerId}/${modelId}`, "maxTokens", attrs.maxTokens == null);
+  noteDefaulted(`${providerId}/${modelId}`, "input", attrs.input == null);
   return model;
 }
 
@@ -502,9 +508,11 @@ export function applyRowToCatalogModel(row: {
   if (customProviderIds.has(row.provider)) {
     noteDefaulted(key, "contextWindow", row.contextWindow == null);
     noteDefaulted(key, "maxTokens", row.maxTokens == null);
+    noteDefaulted(key, "input", row.input == null);
   } else {
     if (row.contextWindow != null) noteDefaulted(key, "contextWindow", false);
     if (row.maxTokens != null) noteDefaulted(key, "maxTokens", false);
+    if (row.input != null) noteDefaulted(key, "input", false);
   }
   applyThinkingMapToModel(key, model);
 }

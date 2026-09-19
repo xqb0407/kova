@@ -10,6 +10,7 @@ import { logAt, logErr } from "./log";
 import { buildHookPayload, fireHookEvent } from "./hooks";
 import { projectToolResult, type ProjectableContentBlock } from "./image-parts";
 import { persist } from "./transcript";
+import { createTraceRunRecorder } from "./trace";
 import {
   makeAutoContinueMessage,
   MAX_LENGTH_CONTINUES,
@@ -88,6 +89,14 @@ function contentIdFor(threadId: string, index: number) {
 export async function onAgentEvent(event: AgentEvent, run: Running): Promise<void> {
   const reqId = run.threadId ? activeReqByThread.get(run.threadId) : undefined;
   const threadId = run.threadId;
+  // 轨迹（trace.ts）：agent_start 开新 run（上一轮异常残留先按 error 强制落盘），
+  // 其余事件喂给记录器；结算在 agent_end 的 persist 之后。旁路/automation run
+  // 无协议 reqId，source 据此区分
+  if (event.type === "agent_start") {
+    run.trace?.settle("error");
+    run.trace = createTraceRunRecorder(run.sessionId, reqId ? "ui" : "automation");
+  }
+  run.trace?.handle(event);
   // 迭代3（P3）：message_update 属 token 级噪音，计数不落日志（PI_LOG_LEVEL=delta
   // 可恢复逐条）；其余事件轮级低频，event 级日志。轮末在 agent_end 打一行摘要。
   if (event.type === "message_update") {
@@ -233,6 +242,9 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       logAt("event", `run summary: ${stateFor(threadId).updateCount} message_update events`);
       // persist 变 async（索引表经 hostdb 走宿主 RPC）；subscribe 会 await 监听器
       await persist(run);
+      // 轨迹结算：handle(agent_end) 已记账完，这里落盘并清引用
+      run.trace?.settle();
+      run.trace = undefined;
       break;
     }
   }

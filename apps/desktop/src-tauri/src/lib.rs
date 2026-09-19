@@ -1,5 +1,6 @@
 mod about;
 mod appearance;
+mod backup;
 mod browser;
 mod browser_scripts;
 mod data;
@@ -32,12 +33,16 @@ pub fn run() {
         // 窗口配置 visible:false——等 webview 首帧就绪（静态 HTML 的磨砂+云
         // 已可渲染）再显示，消除"窗口出现但内容未加载"的透明闪烁。
         // Finished 对每次导航都触发（刷新等），show 幂等无害。
-        .on_page_load(|webview, payload| {
-            if payload.event() == tauri::webview::PageLoadEvent::Finished
-                && webview.label() == "main"
-            {
+        .on_page_load(|webview, payload| match payload.event() {
+            tauri::webview::PageLoadEvent::Started if webview.label() == "main" => {
+                // 主页面（重）加载开始即移除浏览器子 webview：原生层不随主页面
+                // 重载销毁，否则刷新后旧页面悬浮在启动画面上（browser.rs）
+                browser::destroy_for_reload(webview.app_handle());
+            }
+            tauri::webview::PageLoadEvent::Finished if webview.label() == "main" => {
                 let _ = webview.window().show();
             }
+            _ => {}
         })
         .manage(PiState::default())
         .manage(remote::RemoteState::default())
@@ -45,6 +50,12 @@ pub fn run() {
         .setup(|app| {
             // 磁盘日志最先初始化（后续任何失败都能记到 app.log）
             logging::init(app.handle());
+            // 待恢复备份换入：必须在任何存储打开之前（state.db / sessions 换新）
+            match backup::apply_pending_restore(app.handle()) {
+                Ok(Some(summary)) => log::info!("[backup] restore applied: {summary}"),
+                Ok(None) => {}
+                Err(e) => log::error!("[backup] pending restore failed: {e}"),
+            }
             // 浏览器自动化（browser.rs）需要 AppHandle 全局入口
             browser::init(app.handle().clone());
             // SQLite KV 存储（workspace 等应用状态）
@@ -146,7 +157,17 @@ pub fn run() {
             webhook::webhook_delivery_add,
             webhook::webhook_delivery_list,
             webhook::webhook_delivery_delete,
-            webhook::webhook_delivery_prune
+            webhook::webhook_delivery_prune,
+            backup::backup_config_get,
+            backup::backup_config_set,
+            backup::backup_test,
+            backup::backup_run,
+            backup::backup_list_remote,
+            backup::backup_download,
+            backup::backup_delete_remote,
+            backup::backup_restore,
+            backup::backup_peek_header,
+            backup::backup_restart_app
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
