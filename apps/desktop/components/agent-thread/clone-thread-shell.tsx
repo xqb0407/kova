@@ -45,6 +45,7 @@ import { FluidHoverRow } from "@/components/fluid-hover-row";
 import { Logo } from "./header";
 import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import {
+  ChartColumnIcon,
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
   FolderIcon,
@@ -131,7 +132,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const menuListRef = useRef<HTMLDivElement>(null);
   const menuHover = useFluidHover(menuListRef);
   const settingsRef = useRef<HTMLDivElement>(null);
-  const settingsHover = useFluidHover(settingsRef);
+  // 底部操作栏恒为横向并排（设置 + 使用统计图标），拾取轴向用 "x"。
+  // 默认的 "y" 只按纵轴判包含，并排两个按钮的 rect 在纵轴上同时"包含"
+  // 指针，后注册的使用统计图标会抢走设置的高亮
+  const settingsHover = useFluidHover(settingsRef, { axis: "x" });
   const mobileMenuRef = useRef<HTMLDivElement>(null);
   const mobileMenuHover = useFluidHover(mobileMenuRef);
   const mobileSettingsRef = useRef<HTMLDivElement>(null);
@@ -175,11 +179,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       setActiveMenu("");
       return;
     }
-    // 搜索走命令面板，其余菜单项保持高亮切换
-    if (item.id === "search") {
-      setSearchOpen(true);
-      return;
-    }
+    // 搜索入口在顶栏折叠按钮左侧（走命令面板），菜单项只保留视图切换
     setActiveMenu(item.id);
     // 菜单项切换的是主区页面：移动端抽屉里点完收起，让视图可见
     setMobileOpen(false);
@@ -190,8 +190,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const collapsedControlled = collapsed !== undefined;
   const mobileControlled = mobileSidebarOpen !== undefined;
 
-  const sidebarCollapsed = collapsed ?? internalCollapsed;
   const mobileOpen = mobileSidebarOpen ?? internalMobileOpen;
+  const sidebarCollapsed = collapsed ?? internalCollapsed;
 
   const setSidebarCollapsed = (value: boolean) => {
     if (!collapsedControlled) setInternalCollapsed(value);
@@ -239,22 +239,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       ),
     },
     {
-      id: "search",
-      label: "搜索",
-      icon: SearchIcon,
-      // 提示与「设置 → 快捷键」的搜索绑定同源：mac 显 ⌘K、其他平台显 Ctrl+K，
-      // 用户改绑后此处的键帽也随之更新（toggleSearch 来自 useShortcuts 订阅）
-      kbd: (
-        <KbdGroup>
-          {formatShortcutParts(toggleSearch, isMacPlatform()).map(
-            (part, i) => (
-              <Kbd key={`${part}-${i}`}>{part}</Kbd>
-            ),
-          )}
-        </KbdGroup>
-      ),
+      id: "automation",
+      label: "自动化",
+      icon: ZapIcon,
     },
-    { id: "automation", label: "自动化", icon: ZapIcon },
     { id: "connector", label: "插件市场", icon: PlugIcon },
   ];
 
@@ -263,16 +251,27 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     <div className="relative flex h-full w-full overflow-hidden  ">
       <aside
         className={cn(
-          "bg-muted/55 hidden h-full shrink-0 flex-col overflow-hidden border-r transition-[width] duration-200 md:flex",
+          // 折叠动画 = aside 宽度（推挤主区）+ 内层整列 transform（内容平移
+          // 出屏）。内层固定 w-65 不参与重排：会话再多，行布局在动画期间完全
+          // 静止，只有 aside 的盒宽和合成器上的 transform 在动
+          "bg-muted/55 hidden h-full shrink-0 flex-col overflow-hidden border-r md:flex",
+          "transition-[width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           railClassName,
           sidebarCollapsed ? "w-0" : "w-65",
         )}
       >
+        <div
+          className={cn(
+            "flex h-full w-65 shrink-0 flex-col",
+            "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
+            sidebarCollapsed ? "-translate-x-full" : "translate-x-0",
+          )}
+        >
         {/* header */}
         <div
           data-tauri-drag-region={isTauri() ? "deep" : undefined}
           className={cn(
-            "flex h-12 shrink-0 items-center overflow-hidden px-2 gap-2",
+            "flex h-16 shrink-0 items-center overflow-hidden px-2 gap-2",
             // macOS：内容靠右（左上为悬浮红绿灯位）；Windows/网页：Logo 靠左、操作靠右
             isMacPlatform() ? "justify-end" : "justify-start",
           )}
@@ -290,6 +289,21 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </TooltipIconButton>
           )}
           {(() => {
+            // 搜索入口紧挨折叠按钮左侧（折叠按钮经 headerContent 传入）。
+            // 折叠时内容随整列平移出屏，无需卸载；mac 侧的红绿灯避让
+            // （ml-18）由组内第一个元素（搜索）承接
+            const searchButton = (
+              <TooltipIconButton
+                variant="ghost"
+                size="icon"
+                tooltip="搜索对话"
+                side="bottom"
+                onClick={() => setSearchOpen(true)}
+                className={cn("size-8", isMacPlatform() && "ml-18")}
+              >
+                <SearchIcon className="size-4" />
+              </TooltipIconButton>
+            );
             const inner =
               headerContent !== undefined
                 ? headerContent
@@ -298,12 +312,21 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                       Chats
                     </span>
                   );
-            if (isMacPlatform()) return inner;
-            // Windows/网页：Logo 靠左，折叠按钮靠右（窗口控制在主 Header 右上角）
+            if (isMacPlatform())
+              return (
+                <>
+                  {searchButton}
+                  {inner}
+                </>
+              );
+            // Windows/网页：Logo 靠左，搜索与折叠按钮靠右（窗口控制在主 Header 右上角）
             return (
               <>
                 {!sidebarCollapsed && <Logo />}
-                <div className="ml-auto flex items-center gap-1">{inner}</div>
+                <div className="ml-auto flex items-center gap-1">
+                  {searchButton}
+                  {inner}
+                </div>
               </>
             );
           })()}
@@ -326,7 +349,6 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                     // 自带的 hover 底色，避免与高亮叠加
                     "h-8 w-full text-sm justify-between gap-2 rounded-md px-2.5  font-normal hover:bg-transparent dark:hover:bg-transparent",
-                    sidebarCollapsed && "w-8 justify-center px-2",
                     !item.isNew && currentMenu === item.id && "bg-selected",
                   )}
                   onClick={() => handleMenuClick(item)}
@@ -334,9 +356,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 >
                   <div className="flex items-center gap-1 shrink-0">
                     <Icon className="size-4 shrink-0" />
-                    {!sidebarCollapsed && (
-                      <span className="whitespace-nowrap">{item.label}</span>
-                    )}
+                    <span className="whitespace-nowrap">{item.label}</span>
                   </div>
                   {item.kbd}
                 </Button>
@@ -362,8 +382,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         </div>
 
         {/* Tabs 胶囊分段器（左对齐）+ 项目 tab 的展开全部按钮 */}
-        {!sidebarCollapsed && (
-          <div className="flex w-full shrink-0 items-center justify-between gap-2 px-3 pt-2">
+        <div className="flex w-full shrink-0 items-center justify-between gap-2 px-3 pt-2">
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList className="group-data-horizontal/tabs:h-8 h-8 rounded-full p-[3px]">
                 <TabsTrigger
@@ -396,33 +415,21 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 )}
               </TooltipIconButton>
             )}
-          </div>
-        )}
+        </div>
 
         <ThreadListRoot
           onClick={clearMenuAfterNavigation}
           className={cn(
             // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
-            // 整个 aside 列、把上方 tabs 行顶上去——溢出滚动必须锁在本容器内
-            "relative min-h-0 flex-1 transition-[padding,width] duration-200",
-            sidebarCollapsed
-              ? "w-12 overflow-hidden px-2 pt-1"
-              : "w-65 overflow-y-auto p-3",
+            // 整个 aside 列、把上方 tabs 行顶上去——溢出滚动必须锁在本容器内。
+            // 恒为 w-65：折叠动画期间列表不参与重排（外层整列 transform 出屏）
+            "relative min-h-0 w-65 flex-1 overflow-y-auto p-3",
           )}
         >
           {activeTab === "tasks" && hasThreads && (
-            <ThreadListItems
-              aria-hidden={sidebarCollapsed}
-              inert={sidebarCollapsed}
-              className={cn(
-                "transition-[opacity,transform] duration-150",
-                sidebarCollapsed
-                  ? "pointer-events-none opacity-0"
-                  : "translate-x-0 opacity-100",
-              )}
-            />
+            <ThreadListItems aria-hidden={sidebarCollapsed} inert={sidebarCollapsed} />
           )}
-          {activeTab === "projects" && !sidebarCollapsed && (
+          {activeTab === "projects" && (
             <ProjectListItems
               openDirs={projOpenDirs}
               onOpenDirsChange={setProjOpenDirs}
@@ -430,28 +437,48 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           )}
         </ThreadListRoot>
 
-        {/* 底部固定的设置按钮（远程模式下隐藏：模型/技能/远程配置均为桌面专属） */}
+        {/* 底部固定的设置按钮（远程模式下隐藏：模型/技能/远程配置均为桌面专属）。
+            使用统计入口在设置按钮旁：activeMenu 驱动主区视图切换（与自动化页
+            同机制），再次点击返回聊天，fluid hover 注册为 index 1 */}
         {!isRemoteMode() && (
           <div
             ref={settingsRef}
-            className="relative shrink-0 p-2"
+            className="relative flex shrink-0 items-center gap-0.5 p-2"
             {...settingsHover.handlers}
           >
             <FluidHoverHighlight hover={settingsHover} className="rounded-md" />
-            <FluidHoverRow registerItem={settingsHover.registerItem} index={0}>
+            <FluidHoverRow
+              registerItem={settingsHover.registerItem}
+              index={0}
+              className="min-w-0 flex-1"
+            >
               <Button
                 variant="ghost"
                 className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent"
                 onClick={() => onOpenSettings?.()}
               >
                 <SettingsIcon className="size-4 shrink-0" />
-                {!sidebarCollapsed && (
-                  <span className="whitespace-nowrap">设置</span>
+                <span className="whitespace-nowrap">设置</span>
+              </Button>
+            </FluidHoverRow>
+            <FluidHoverRow registerItem={settingsHover.registerItem} index={1}>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="使用统计"
+                title="使用统计"
+                className={cn(
+                  "shrink-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
+                  currentMenu === "usage" && "bg-selected",
                 )}
+                onClick={() => setActiveMenu(currentMenu === "usage" ? "" : "usage")}
+              >
+                <ChartColumnIcon className="size-4 shrink-0" />
               </Button>
             </FluidHoverRow>
           </div>
         )}
+        </div>
       </aside>
 
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>

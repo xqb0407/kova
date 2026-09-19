@@ -2,6 +2,7 @@
 import type { Agent, AgentContext, AgentTool } from "@earendil-works/pi-agent-core";
 import type * as ai from "ai";
 import type { RetryBudget } from "./provider-retry";
+import type { TraceRunRecorder } from "./trace";
 
 /** AI SDK UI 消息类型（协议流与 JSONL 持久化都用它） */
 export type UIMessage = ai.UIMessage;
@@ -200,6 +201,8 @@ export type Running = {
   loopContext?: AgentContext;
   /** LRU 驱逐时间戳（迭代2）：resolveSession/查询命中时 touch，超上限驱逐最旧 */
   lastSeenAt: number;
+  /** 本 run 的轨迹记录器（trace.ts；agent_start 懒创建，agent_end 结算清引用） */
+  trace?: TraceRunRecorder;
 };
 
 /** 逐工具审批等待项（bash/write/edit 执行前等待用户确认；plan_exit 复用同一条通道） */

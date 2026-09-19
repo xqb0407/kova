@@ -42,6 +42,7 @@ import { personalizationPromptBlock } from "./personalization";
 import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "./mcp-tools";
 import { skillsPromptBlock } from "./skills";
+import { instructionsPromptBlock } from "./instructions";
 import { sendEventChunk } from "./stream";
 import type {
   ApprovalLevel,
@@ -87,14 +88,16 @@ const AGENT_MODE_PROMPT =
 export type PromptModelInfo = { provider: string; id: string; name?: string };
 
 /**
- * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + 记忆段 + MCP 段 + 技能目录段 + 环境事实块
+ * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + 记忆段 + MCP 段 + 技能目录段 + 指令段 + 环境事实块
  * （日期/模型/OS/shell，末行是 cwd 行）。
  * 顺序保证缓存命中：静态核心在前（跨会话字节级一致），模式段夹中间（会话内
  * 切换时整段重排不可避免，但同一模式内前缀稳定），个性化/记忆段随设置变更热替换，
  * MCP 段随服务器配置变更热替换（无启用服务器时为空串），技能目录段只列生效技能的
  * name/description/location 三行元数据（正文模型按需 read，开关/遮蔽在缓存合并时
- * 裁决，随 reloadSkills 热替换），环境事实块永远在最尾；
- * 个性化段全默认、记忆关闭、无 MCP 服务器、无生效技能时各块为空串（默认提示词与旧版字节级一致）。
+ * 裁决，随 reloadSkills 热替换），指令段读 AGENTS.md（全局 ~/.xulux/AGENTS.md +
+ * 工作区仓库根，每次组装同步读盘，改动随下一次重组生效），环境事实块永远在最尾；
+ * 个性化段全默认、记忆关闭、无 MCP 服务器、无生效技能、无指令文件时各块为空串
+ * （默认提示词与旧版字节级一致）。
  */
 export function composeModeSystemPrompt(
   mode: SessionMode,
@@ -109,6 +112,7 @@ export function composeModeSystemPrompt(
     memoryPromptBlock(cwd),
     mcpPromptBlock(cwd),
     skillsPromptBlock(cwd),
+    instructionsPromptBlock(cwd),
     environmentPromptBlock(cwd, model),
   ]
     .filter(Boolean)

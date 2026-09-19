@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, type FC } from "react";
+import { useId, type FC, type ReactNode } from "react";
 import { motion, useReducedMotion, type Transition } from "framer-motion";
 import { ChevronDownIcon, PlusIcon, XIcon } from "lucide-react";
 import {
@@ -29,6 +29,7 @@ import {
   type PanelTab,
 } from "@/lib/panel-tabs";
 import { newTerminalTab } from "@/lib/shell";
+import { isTauri } from "@/lib/tauri";
 import { TAB_META, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
 import { cn } from "@/lib/utils";
 
@@ -150,17 +151,29 @@ const TabChip: FC<{
 
 /**
  * 面板标签栏(Codex 同款):左为标签总览下拉(溢出时快速跳转),
- * 中间横向滚动标签条,右为 "+" 新标签菜单。
- * 面板收起走 Header 的开关按钮,这里不放折叠入口。
+ * 中间横向滚动标签条,右为 "+" 新标签菜单,再往右是 actions 插槽
+ * (收起按钮/停靠态的 Windows 三键,由 PanelShell 注入)。
+ * 整条是 Tauri 窗口拖拽区(TRAE 式全高分割下,面板顶栏贴着窗口顶缘)。
  */
 export const TabBar: FC<{
   tabs: PanelTab[];
   activeId: string | null;
-}> = ({ tabs, activeId }) => {
+  /** 右缘动作（收起入口 + 窗口控件） */
+  actions?: ReactNode;
+  /** 动作里有贴窗口右缘的三键：去掉右 padding 让按钮对齐窗口边角 */
+  flushActions?: boolean;
+}> = ({ tabs, activeId, actions, flushActions }) => {
   const types = useVisiblePanelTabTypes();
   const pillLayoutId = useId();
   return (
-    <div className="flex h-12 shrink-0 items-center gap-1 border-b-[0.5] px-2">
+    <div
+      data-tauri-drag-region={isTauri() ? "deep" : undefined}
+      className={cn(
+        "flex h-12 shrink-0 items-center gap-1 border-b-[0.5]",
+        flushActions ? "pr-0" : "pr-2",
+        "pl-2",
+      )}
+    >
       <DropdownMenu>
         <DropdownMenuTrigger
           render={
@@ -199,8 +212,13 @@ export const TabBar: FC<{
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {/* 标签条:溢出横向滚动 */}
-      <div className="scrollbar-hide flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+      {/* 标签条:溢出横向滚动。显式关掉拖拽区：根节点的 deep 会把 strip 上
+          的 mousedown 劫持成窗口拖动（preventDefault + start_dragging），
+          滚轮/触控板/拖拽平移全都失效 */}
+      <div
+        data-tauri-drag-region={isTauri() ? "false" : undefined}
+        className="scrollbar-hide flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+      >
         {tabs.map((t, i) => (
           <TabChip
             key={t.id}
@@ -248,6 +266,10 @@ export const TabBar: FC<{
           </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {actions ? (
+        <div className="flex shrink-0 items-center">{actions}</div>
+      ) : null}
     </div>
   );
 };

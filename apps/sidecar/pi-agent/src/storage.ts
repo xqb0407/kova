@@ -29,6 +29,12 @@ export function sessionPath(id: string): string {
   return path.join(sessionsDirPath, `${id}.jsonl`);
 }
 
+/** Agent 调用轨迹（trace.ts）：每会话一份 JSONL，一行一个 run */
+export function tracePath(id: string): string {
+  if (!sessionsDirPath) throw new Error("storage not initialized");
+  return path.join(sessionsDirPath, "traces", `${id}.jsonl`);
+}
+
 /** 生产模式：数据访问走 host_query RPC（index.ts 读到 PI_SESSIONS_DIR 时调用） */
 export function initHostMode(sessionsDir: string): void {
   sessionsDirPath = sessionsDir;

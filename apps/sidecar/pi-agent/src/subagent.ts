@@ -31,6 +31,7 @@ import { normalizeSubagentName, type SubagentDefinition } from "./subagent-defin
 import { buildSubagentMgmtTools } from "./subagent-mgmt-tools";
 import { makeAutoContinueMessage, MAX_LENGTH_CONTINUES, needsLengthContinuation } from "./context";
 import { send, sendEventChunk } from "./stream";
+import { createTraceRunRecorder, type TraceRunRecorder } from "./trace";
 import type {
   DelegationRecord,
   Running,
@@ -350,6 +351,8 @@ type SubagentRunOptions = {
   tools: AgentTool[];
   /** 委派 id：透传给 provider 做缓存路由（OpenAI prompt_cache_key / Anthropic session-affinity） */
   sessionId: string;
+  /** 父会话 id：轨迹归属（trace.ts 写进父会话的 traces 文件；sessionId 是 delegationId） */
+  traceSessionId: string;
   signal?: AbortSignal;
   /** 归一化活动条目回调（进缓冲 + 广播；见 pushActivity） */
   onActivity?: (item: SubagentActivityItem) => void;
@@ -373,6 +376,8 @@ class SubagentRun {
   private lengthContinues = 0;
   /** delegate 的 provider 请求自动重试记账（预算按一次委派，静默只记日志） */
   private readonly retryBudget = createRetryBudget();
+  /** 调用轨迹（trace.ts）：归属父会话文件，随 handleEvent 喂事件、agent_end 结算 */
+  private readonly trace: TraceRunRecorder;
   private retryCapture: {
     status?: number;
     headers?: Readonly<Record<string, string>>;
@@ -380,11 +385,14 @@ class SubagentRun {
 
   constructor(opts: SubagentRunOptions) {
     this.opts = opts;
+    this.trace = createTraceRunRecorder(opts.traceSessionId, "subagent");
     this.agent = new Agent({
       sessionId: this.opts.sessionId,
       // 与主代理一致：自定义 OpenAI 兼容端点补发 prompt_cache_key
       onPayload: makePromptCacheKeyPayloadHook(this.opts.sessionId),
       streamFn: (m, context, options) => {
+        // 轨迹内容捕获：同主代理（附加到随后打开的 llm_call span）
+        this.trace.noteRequest(context);
         this.retryCapture.status = undefined;
         this.retryCapture.headers = undefined;
         return createProviderRetryStream(
@@ -413,10 +421,19 @@ class SubagentRun {
             headers: () => this.retryCapture.headers,
             status: () => this.retryCapture.status,
             // delegate 没有自己的 UI 流，重试过程只留日志
-            onRetry: ({ error, attempt, delayMs }) =>
+            onRetry: ({ error, attempt, delayMs }) => {
+              this.trace.noteRetry({
+                attempt,
+                delayMs,
+                code: error.code,
+                message: error.message,
+              });
               logErr(
                 `subagent ${this.opts.definition.name}: provider retry ${attempt}/${providerRetryMaxRetries()} in ${delayMs}ms (${error.code})`,
-              ),
+              );
+            },
+            // 重试等待收口（新尝试出流 / 终态错误 / Stop 打断退避）
+            onSettled: () => this.trace.noteRetrySettled(),
           },
         );
       },
@@ -515,6 +532,9 @@ class SubagentRun {
   /** 消费计数与报告所需的事件，并把过程归一化成活动条目转发（onActivity）；
    * turn_end / agent_end 留在内部，delegate 结束绝不能终结父代理的 turn。 */
   private handleEvent(event: AgentEvent): void {
+    // 轨迹记账：全事件喂给记录器，agent_end 即结算（handle 先行保证 endMs 收在事件上）
+    this.trace.handle(event);
+    if (event.type === "agent_end") this.trace.settle();
     switch (event.type) {
       case "turn_start":
         this.turns += 1;
@@ -763,6 +783,7 @@ export function buildSubagentTools(
         cwd: run.cwd,
         tools,
         sessionId: delegationId,
+        traceSessionId: run.sessionId,
         signal: controller.signal,
         onActivity: (item) => pushActivity(record, item),
       })

@@ -19,6 +19,7 @@ import { setUiPref, useUiPrefs, type SoundPackName } from "@/lib/ui-prefs";
 /**
  * 通用设置页：提醒提示音与弹窗通知。统一开关 + 两套内置音色整体切换，
  * 音量（Slider）、仅后台提醒；另有渲染区块（Chrome 硬件加速，仅 Win 桌面端）。
+ * 智能体本机能力（浏览器驱动等）在独立页（computer-control-settings）。
  * Webhook 推送与最近推送记录在独立页（webhooks-settings）。
  */
 export const GeneralSettings: FC = () => {

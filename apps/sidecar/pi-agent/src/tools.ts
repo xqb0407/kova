@@ -21,6 +21,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostToolCall } from "./hostdb";
 import { buildBrowserTools } from "./browser-tools";
 import { buildScreenshotTool } from "./screenshot-tool";
+import { buildOpenFileTool } from "./open-file-tool";
 import { buildWebTools } from "./http-tools";
 import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "./todo";
@@ -300,6 +301,9 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
     // 屏幕截图：执行转发 Rust 宿主（tool_exec.rs，macOS only），结果 image 块
     // 走正规投影链路上屏（image-parts.ts 闸门 + 前端 data-image 渲染）
     buildScreenshotTool(cwd),
+    // 面板打开文件：只发 data-panelOpen chunk（文件标签磁盘实时模式），
+    // 无 IO 无副作用（见 open-file-tool.ts）
+    buildOpenFileTool(cwd, threadId),
     // Question 不触盘不触网（挂起等 UI 作答），但要 threadId 做挂起归属
     buildQuestionTool(threadId),
     // todo：不触盘不触网，只维护会话内任务清单（per-thread 槽见 todo.ts）

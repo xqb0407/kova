@@ -14,6 +14,14 @@ import type { PiResponse } from "@/lib/pi-bridge";
  * 与具体通道解耦：运行时 provider 挂载前 set，之后所有调用原样工作在任一通道上。
  */
 
+/** prompt 图片附件（用户多模态输入，随 prompt 下发 sidecar；data = 裸 base64）。
+ *  闸门在 sidecar（prompt-attachments.ts），前端在 addAttachment 时做同款前置校验 */
+export type PiPromptAttachment = {
+  name: string;
+  mimeType: string;
+  data: string;
+};
+
 export type PromptStreamArgs = {
   /** 调用方生成（pi-${uuid}），sidecar 按 id 回发 chunk */
   requestId: string;
@@ -21,6 +29,10 @@ export type PromptStreamArgs = {
   threadId: string;
   sessionId?: string | null;
   cwd?: string | null;
+  /** 用户消息里的图片附件（无附件省略；sidecar 闸门兜底） */
+  attachments?: PiPromptAttachment[];
+  /** 并入当前轮（steer）：sidecar 忙线程把消息注入活跃轮，本请求走退化流 */
+  steer?: boolean;
   abortSignal?: AbortSignal;
 };
 
@@ -287,6 +299,8 @@ export class TauriPiChannel implements PiChannel {
             threadId,
             sessionId,
             cwd,
+            attachments: args.attachments ?? null,
+            steer: args.steer === true,
           });
         } catch (err) {
           settleError(err instanceof Error ? err.message : String(err));

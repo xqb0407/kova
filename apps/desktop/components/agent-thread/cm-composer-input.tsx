@@ -1,11 +1,14 @@
 "use client";
 
-import { INTERNAL, unstable_useComposerInput, unstable_useTriggerPopoverAriaProps, unstable_useTriggerPopoverRootContextOptional, useAui } from "@assistant-ui/react";
+import { INTERNAL, unstable_useComposerInput, unstable_useTriggerPopoverAriaProps, unstable_useTriggerPopoverRootContextOptional, useAui, useAuiState } from "@assistant-ui/react";
 import { unstable_defaultDirectiveFormatter, type Unstable_TriggerItem } from "@assistant-ui/core";
 import { defaultKeymap, history } from "@codemirror/commands";
 import { Compartment, EditorState, Prec, RangeSetBuilder, Transaction, type RangeSet } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, placeholder as cmPlaceholder, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { useEffect, useRef, type FC } from "react";
+import { toast } from "@/components/ui/toast";
+import { validateImageFile } from "@/lib/prompt-attachments";
+import { markSteerNextSend } from "@/lib/pi-steer-intent";
 
 /**
  * CodeMirror 6 版 composer 输入（替代 LexicalComposerInput）：
@@ -132,6 +135,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const aui = useAui();
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
   const { value, setText, send, canSend, isDisabled } = unstable_useComposerInput();
   const aria = unstable_useTriggerPopoverAriaProps();
   const registry = INTERNAL.useComposerInputPluginRegistryOptional();
@@ -142,8 +146,8 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   const editableComp = useRef(new Compartment()).current;
 
   // 闭包镜像：view 创建后 handler 里读最新 props/runtime（避免重建 view）
-  const latestRef = useRef({ submitMode, cancelOnEscape, canSend, aui, registry, setText, send });
-  latestRef.current = { submitMode, cancelOnEscape, canSend, aui, registry, setText, send };
+  const latestRef = useRef({ submitMode, cancelOnEscape, canSend, aui, registry, setText, send, threadId });
+  latestRef.current = { submitMode, cancelOnEscape, canSend, aui, registry, setText, send, threadId };
   const valueRef = useRef(value);
   valueRef.current = value;
   const placeholderRef = useRef(placeholder);
@@ -200,14 +204,24 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       }
       if (event.key === "Enter") {
         const thread = s.aui.thread.getState();
-        const hasQueue = thread.capabilities.queue;
-        if (event.shiftKey && (event.ctrlKey || event.metaKey) && hasQueue && s.submitMode !== "none" && s.canSend) {
+        // 运行中 Shift+⌘/Ctrl+Enter = 并入当前轮（steer）：标记意图后照常发送，
+        // sidecar 忙线程把消息注入活跃轮（不排队、不占队列上限、不中止当前回复）
+        if (
+          event.shiftKey &&
+          (event.ctrlKey || event.metaKey) &&
+          thread.isRunning &&
+          s.submitMode !== "none" &&
+          s.canSend
+        ) {
           event.preventDefault();
-          s.send({ steer: true });
+          const chatId = s.threadId;
+          if (chatId) markSteerNextSend(chatId);
+          s.send();
           return true;
         }
         if (event.shiftKey) return false;
-        if (thread.isRunning && !hasQueue) return false;
+        // 运行中不再拦 Enter：按提交模式发送 → sidecar 忙线程自动排队
+        // （Shift+Enter 换行、Shift+⌘/Ctrl+Enter 并入当前轮，均在前面分支）
         let shouldSubmit = false;
         if (s.submitMode === "ctrlEnter") shouldSubmit = event.ctrlKey || event.metaKey;
         else if (s.submitMode === "enter") shouldSubmit = !event.ctrlKey && !event.metaKey;
@@ -256,8 +270,16 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
               if (files.length === 0) return false;
               if (!s.aui.thread.getState().capabilities.attachments) return false;
               event.preventDefault();
+              // 图片附件前置校验（MIME/尺寸）：不合格 toast 说明，不让垃圾进草稿；
+              // 合格项交 composer 附件（发送时经 prompt-attachments.ts 组装下发）
+              for (const file of files) {
+                const err = validateImageFile(file);
+                if (err) toast.error(err);
+              }
+              const accepted = files.filter((file) => !validateImageFile(file));
+              if (accepted.length === 0) return true;
               void Promise.all(
-                files.map((file) =>
+                accepted.map((file) =>
                   s.aui.composer.addAttachment(file).catch(() => {}),
                 ),
               );
@@ -312,13 +334,17 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
     });
   }, [placeholder, placeholderComp]);
 
-  // 运行开始回到输入框（仅主 composer；对齐 Lexical FocusPlugin 行为）
+  // 运行开始回到输入框（仅主 composer；对齐 Lexical FocusPlugin 行为）。
+  // 组合期间（拼音预编辑）绝不动光标/抢焦点——selection 事务会打断输入法
+  // 会话，预编辑拼音被固化成文本（WebKit/WKWebView 上尤其致命）；已在
+  // 焦点内（排队 turn 激活时正在打下一条）同样无需打扰
   useEffect(() => {
     if (!autoFocus) return;
     return aui.on("thread.runStart", () => {
       if (aui.composer.getState().type !== "thread") return;
       const view = viewRef.current;
       if (!view) return;
+      if (view.composing || view.hasFocus) return;
       view.dispatch({ selection: { anchor: view.state.doc.length } });
       view.focus();
     });

@@ -30,8 +30,8 @@
         "shadow": true,
         "center": true,
         "trafficLightPosition": {
-          "x": 16,
-          "y": 20
+          "x": 20,
+          "y": 30
         }
       }
     ],

@@ -23,6 +23,7 @@ import {
   Loader2Icon,
   MoreHorizontalIcon,
   PencilIcon,
+  PinIcon,
   PlusIcon,
   SearchIcon,
   TrashIcon,
@@ -37,6 +38,11 @@ import {
 } from "@/components/ui/collapsible";
 import { forkPiSession, piSessionCwdMap } from "@/lib/pi-thread-adapter";
 import { usePiSessionRunning } from "@/lib/pi-running";
+import {
+  togglePinSession,
+  useIsPinned,
+  usePinnedSessionIds,
+} from "@/lib/pi-pinned-sessions";
 import { useThreadActivity } from "@/lib/pi-last-activity";
 import {
   requestAutomationFocus,
@@ -116,26 +122,33 @@ const RowHoverContext = createContext<RowHoverSlot | null>(null);
 
 const ROW_ENTER = { duration: 0.18, ease: EASE_OUT } as const;
 
-/** 树行动画壳：包裹任意行元素，提供入场级联淡入与布局滑移 */
-const TreeRow: FC<{ position: number; children: ReactNode }> = ({
+/** 树行动画壳：外层只管 layout 滑移归位，内层只管入场级联淡入。二者必须分离
+ *  ——layout 的位移投影与 animate 的 y 共享同一运动值时，投影过渡会被入场
+ *  过渡（0.18s ease + delay）接管，换位仍会滑一段。instant：本次提交换位瞬时
+ *  完成（外层 transition 时长置 0），置顶切换不让按钮在指针下飘走 */
+const TreeRow: FC<{ position: number; instant?: boolean; children: ReactNode }> = ({
   position,
+  instant,
   children,
 }) => {
   const reduce = useReducedMotion() ?? false;
   return (
     <motion.div
       layout={reduce ? false : "position"}
-      initial={reduce ? false : { opacity: 0, y: -6 }}
-      animate={{
-        opacity: 1,
-        y: 0,
-        transition: reduce
-          ? { duration: 0 }
-          : { ...ROW_ENTER, delay: Math.min(position * 0.02, 0.06) },
-      }}
-      transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+      transition={reduce || instant ? { duration: 0 } : SPRING_LAYOUT}
     >
-      {children}
+      <motion.div
+        initial={reduce ? false : { opacity: 0, y: -6 }}
+        animate={{
+          opacity: 1,
+          y: 0,
+          transition: reduce
+            ? { duration: 0 }
+            : { ...ROW_ENTER, delay: Math.min(position * 0.02, 0.06) },
+        }}
+      >
+        {children}
+      </motion.div>
     </motion.div>
   );
 };
@@ -411,9 +424,15 @@ export type ThreadListProjectGroup = {
 export type ThreadListGroups = {
   threadIds: readonly string[];
   filteredIndices: number[];
-  /** 任务：未选择工作目录的公共会话，最近活动倒序 */
+  /** 置顶（任务 tab）：任务会话（无 cwd）命中置顶集合的，最近活动倒序 */
+  pinnedIndices: number[];
+  /** 置顶（项目 tab）：项目会话置顶后跳出所属文件夹，进项目 tab 顶部全局
+   *  置顶组，最近活动倒序 */
+  pinnedProjectIndices: number[];
+  /** 任务：未置顶的公共会话，最近活动倒序 */
   taskIndices: number[];
-  /** 项目：有工作目录的会话按目录分组，组间按最近活动倒序 */
+  /** 项目：有工作目录的会话按目录分组（不含置顶），组内最近活动倒序，
+   *  组间按最近活动倒序 */
   projectGroups: ThreadListProjectGroup[];
 };
 
@@ -426,6 +445,7 @@ export type ThreadListGroups = {
 export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const threadItems = useAuiState((s) => s.threads.threadItems);
+  const pinnedIds = usePinnedSessionIds();
 
   const query = searchQuery.trim().toLowerCase();
 
@@ -453,12 +473,25 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       return (remoteId && piSessionCwdMap.get(remoteId)) || "";
     };
 
+    // 置顶分两类：任务会话（无 cwd）进任务 tab 顶部的全局置顶组；项目会话
+    // 跳出所属文件夹，进项目 tab 顶部的全局置顶组——分组内不保留置顶行
+    const pinnedSet = new Set(pinnedIds);
+
+    const pinnedIndices: number[] = [];
+    const pinnedProjectIndices: number[] = [];
     const taskIndices: number[] = [];
     const byCwd = new Map<string, number[]>();
     for (const index of [...filteredIndices].sort((a, b) => time(b) - time(a))) {
+      const remoteId = itemsById.get(threadIds[index])?.remoteId;
+      const pinned = remoteId !== undefined && pinnedSet.has(remoteId);
       const cwd = cwdOf(threadIds[index]);
       if (!cwd) {
-        taskIndices.push(index);
+        if (pinned) pinnedIndices.push(index);
+        else taskIndices.push(index);
+        continue;
+      }
+      if (pinned) {
+        pinnedProjectIndices.push(index);
         continue;
       }
       const bucket = byCwd.get(cwd);
@@ -470,17 +503,34 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       ([cwd, indices]) => ({ cwd, label: pathBasename(cwd), indices }),
     );
 
-    return { threadIds, filteredIndices, taskIndices, projectGroups };
-  }, [threadIds, threadItems, query]);
+    return {
+      threadIds,
+      filteredIndices,
+      pinnedIndices,
+      pinnedProjectIndices,
+      taskIndices,
+      projectGroups,
+    };
+  }, [threadIds, threadItems, query, pinnedIds]);
 };
 
 const ThreadListItemGroups: FC<{
   searchQuery?: string;
   registerItem: RegisterItem;
 }> = ({ searchQuery = "", registerItem }) => {
-  const { threadIds, filteredIndices, taskIndices } =
+  const { threadIds, filteredIndices, taskIndices, pinnedIndices } =
     useThreadListGroups(searchQuery);
   const query = searchQuery.trim();
+
+  // 置顶切换检测：pinnedIds 快照身份仅在 pin/unpin 时变化。这一次提交传
+  // instant 给 TreeRow，行瞬时换位不走滑移（新消息挤动等其他重排不受影响）
+  const pinnedIds = usePinnedSessionIds();
+  const prevPinnedRef = useRef<readonly string[] | null>(null);
+  const pinReorder =
+    prevPinnedRef.current !== null && prevPinnedRef.current !== pinnedIds;
+  useEffect(() => {
+    prevPinnedRef.current = pinnedIds;
+  });
 
   if (query && filteredIndices.length === 0) {
     return (
@@ -494,7 +544,7 @@ const ThreadListItemGroups: FC<{
   }
 
   // 已归档会话不在侧栏展示，统一到「设置 → 归档」查看与恢复
-  if (taskIndices.length === 0) {
+  if (pinnedIndices.length === 0 && taskIndices.length === 0) {
     return (
       <div
         data-slot="aui_thread-list-empty"
@@ -507,12 +557,31 @@ const ThreadListItemGroups: FC<{
 
   return (
     <>
-      {taskIndices.map((index, slot) => (
+      {/* 置顶组：独立灰底卡片与普通对话分开；行仍注册进 fluid hover 槽位
+          （置顶在前、任务在后，序号连续） */}
+      {pinnedIndices.length > 0 && (
+        <PinnedCard>
+          {pinnedIndices.map((index, slot) => (
+            <RowHoverContext.Provider
+              key={threadIds[index]}
+              value={{ registerItem, index: slot }}
+            >
+              <TreeRow position={slot} instant={pinReorder}>
+                <ThreadListPrimitive.ItemByIndex
+                  index={index}
+                  components={{ ThreadListItem }}
+                />
+              </TreeRow>
+            </RowHoverContext.Provider>
+          ))}
+        </PinnedCard>
+      )}
+      {taskIndices.map((index, i) => (
         <RowHoverContext.Provider
           key={threadIds[index]}
-          value={{ registerItem, index: slot }}
+          value={{ registerItem, index: pinnedIndices.length + i }}
         >
-          <TreeRow position={slot}>
+          <TreeRow position={i} instant={pinReorder}>
             <ThreadListPrimitive.ItemByIndex
               index={index}
               components={{ ThreadListItem }}
@@ -531,6 +600,21 @@ const ThreadListItemGroups: FC<{
  * 展开目录集合可由外部受控（openDirs/onOpenDirsChange，供「展开全部」按钮用），
  * 不传则组件内部自管。
  */
+/** 置顶分组卡片（ChatGPT 侧栏同形）：圆角灰底 + 「已置顶」标签，与普通对话行
+ *  分开渲染；任务 tab 与项目组内复用。标签 px-2.5 + 卡片 p-1 使文字左缘与
+ *  行首图钉对齐；行的 fluid hover 槽位由调用方按渲染序分配 */
+const PinnedCard: FC<{ children: ReactNode }> = ({ children }) => (
+  <div className="my-1 rounded-xl bg-muted/50 p-1">
+    <div
+      aria-hidden
+      className="text-muted-foreground px-2.5 pb-1 pt-1.5 text-xs font-medium select-none"
+    >
+      已置顶
+    </div>
+    {children}
+  </div>
+);
+
 /** 项目展开后默认可见的会话行数，超出折叠进「显示更多」 */
 const PROJECT_VISIBLE_LIMIT = 5;
 
@@ -540,8 +624,17 @@ export const ProjectListItems: FC<{
 }> = ({ openDirs: controlledOpen, onOpenDirsChange }) => {
   const aui = useAui();
   const reduce = useReducedMotion() ?? false;
-  const { threadIds, projectGroups } = useThreadListGroups();
+  const { threadIds, pinnedProjectIndices, projectGroups } =
+    useThreadListGroups();
   const threadItems = useAuiState((s) => s.threads.threadItems);
+  // 置顶切换检测：同任务列表——组内置顶换位瞬时完成，不走滑移
+  const pinnedIds = usePinnedSessionIds();
+  const prevPinnedRef = useRef<readonly string[] | null>(null);
+  const pinReorder =
+    prevPinnedRef.current !== null && prevPinnedRef.current !== pinnedIds;
+  useEffect(() => {
+    prevPinnedRef.current = pinnedIds;
+  });
   const [internalOpen, setInternalOpen] = useState<Set<string>>(
     () => new Set(),
   );
@@ -607,7 +700,7 @@ export const ProjectListItems: FC<{
     }
   };
 
-  if (projectGroups.length === 0) {
+  if (projectGroups.length === 0 && pinnedProjectIndices.length === 0) {
     return (
       <div
         data-slot="aui_thread-list-empty"
@@ -618,8 +711,9 @@ export const ProjectListItems: FC<{
     );
   }
 
-  // 渲染序即注册序：组头与其子行占连续槽位，每次渲染重算、顺序稳定
+  // 渲染序即注册序：置顶卡片行占最前槽位，组头与其子行连续跟上
   let nextSlot = 0;
+  const pinnedSlots = pinnedProjectIndices.map(() => nextSlot++);
 
   return (
     <motion.div
@@ -629,6 +723,27 @@ export const ProjectListItems: FC<{
       {...hover.handlers}
     >
       <FluidHoverHighlight hover={hover} className="rounded-md" />
+      {/* 置顶的项目会话跳出所属文件夹，进项目 tab 顶部的全局「已置顶」卡片 */}
+      {pinnedProjectIndices.length > 0 && (
+        <PinnedCard>
+          {pinnedProjectIndices.map((index, i) => (
+            <RowHoverContext.Provider
+              key={threadIds[index]}
+              value={{
+                registerItem: hover.registerItem,
+                index: pinnedSlots[i],
+              }}
+            >
+              <TreeRow position={i} instant={pinReorder}>
+                <ThreadListPrimitive.ItemByIndex
+                  index={index}
+                  components={{ ThreadListItem }}
+                />
+              </TreeRow>
+            </RowHoverContext.Provider>
+          ))}
+        </PinnedCard>
+      )}
       {projectGroups.map((group) => {
         // 组内行数超过上限时默认截断 5 条，尾部「显示更多」每点放出 5 条，
         // 放完即无按钮（项目折叠再展开回默认）；截断后的行与按钮占连续 hover 槽位
@@ -721,7 +836,7 @@ export const ProjectListItems: FC<{
                       index: childSlots[i],
                     }}
                   >
-                    <TreeRow position={i}>
+                    <TreeRow position={i} instant={pinReorder}>
                       <ThreadListPrimitive.ItemByIndex
                         index={index}
                         components={{ ThreadListItem }}
@@ -903,6 +1018,8 @@ export const ThreadListItem: FC = () => {
   // 短路，isRunning 为 true 的那次渲染整个跳过 hook ⇒ hook 顺序抖动
   const runningExternally = usePiSessionRunning(remoteId);
   const showRunning = isRunning || runningExternally;
+  // 置顶状态（localStorage 集合，remoteId 为键；未落盘会话恒 false）
+  const pinned = useIsPinned(remoteId);
   // 定时任务出身标记（run_done 帧记账的 session→task 映射）：⚡ 徽标 + 定位
   const automationTaskId = useAutomationTaskIdForSession(remoteId);
   const title = useAuiState((s) => s.threadListItem.title) ?? "";
@@ -958,7 +1075,7 @@ export const ThreadListItem: FC = () => {
         data-slot="aui_thread-list-item-trigger"
         className="group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md pe-9 ps-2.5 text-start text-sm outline-none focus-visible:ring-1"
       >
-        {/* Loader DOM 常驻，永久占位 */}
+        {/* Loader DOM 常驻，永久占位；hover 时让位给置顶按钮（行首槽位同一位置） */}
         <Loader2Icon
           aria-hidden
           data-slot="aui_thread-list-item-running"
@@ -967,6 +1084,7 @@ export const ThreadListItem: FC = () => {
             text-muted-foreground me-1.5 size-3.5 shrink-0 animate-spin
             invisible
             data-[running=true]:visible
+            group-hover:data-[running=true]:invisible
           "
         />
         {/* {automationTaskId && (
@@ -992,6 +1110,38 @@ export const ThreadListItem: FC = () => {
         </MarqueeTitle>
         {showRunning && <span className="sr-only">Running</span>}
       </ThreadListItemPrimitive.Trigger>
+      {/* 置顶常驻图钉：已置顶且非运行中时占据 loader 槽位（trigger ps-2.5 后的
+          14px 位），hover 时淡出让位给下方按钮。运行中仍显示 spinner（临时态
+          优先），停跑后图钉回归 */}
+      {pinned && !showRunning && (
+        <span
+          aria-hidden
+          data-slot="aui_thread-list-item-pinned"
+          className="text-muted-foreground cursor-pointer pointer-events-none absolute start-2.5 top-1/2 grid size-3.5 -translate-y-1/2 place-items-center group-hover:opacity-0"
+        >
+          <PinIcon className="size-3.5 fill-current" />
+        </span>
+      )}
+      {/* 置顶按钮：绝对定位悬浮在 loader 槽位上（start-[5px] + size-6 grid 居中，
+          图标落点 [10,24] 与常驻图钉完全一致）。不用 Button 组件——默认变体的
+          bg-primary/h-8/px-3 与 size-6 冲突导致盒子尺寸漂移、图标错位，且其
+          active:translate-y-px 会让点击时图标下移。运行中 hover 同样出现并盖过
+          spinner；图标恒定不随状态切换（点击只切换置顶，状态由常驻图钉表达） */}
+      {remoteId && (
+        <button
+          data-slot="aui_thread-list-item-pin"
+          title={pinned ? "取消置顶" : "置顶"}
+          aria-label={pinned ? "取消置顶" : "置顶"}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            togglePinSession(remoteId);
+          }}
+          className="text-muted-foreground hover:bg-muted hover:text-foreground absolute start-[5px] top-1/2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-has-focus-visible:opacity-100"
+        >
+          <PinIcon className="size-3.5" />
+        </button>
+      )}
       {/* 用时与 more 按钮同位（end-1.5 的绝对槽位），选中行也显示；显隐条件
           与 more 严格互补（hover / 键盘焦点 / 菜单展开时 more 出现，此处隐藏）。
           双方都瞬时切换、不带透明度过渡，避免交叉淡出期间两个同时可见。

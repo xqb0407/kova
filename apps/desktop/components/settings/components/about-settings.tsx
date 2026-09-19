@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { isTauri } from "@/lib/tauri";
 import { FolderOpenIcon, SquareArrowOutUpRightIcon, Trash2Icon } from "lucide-react";
+import { ObservabilitySection } from "./observability-settings";
 
 /** 问题反馈：gitee 仓库 issue 页（origin remote） */
 const FEEDBACK_URL = "https://gitee.com/herther/pi-desktop/issues";
@@ -204,6 +205,9 @@ export const AboutSettings: FC = () => {
             </SettingRow>
           </div>
         </section>
+
+        {/* 追踪：OTLP 导出配置（原独立「追踪」页并入） */}
+        <ObservabilitySection />
 
         {/* 开发者：DevTools 依赖桌面端 WebView 能力，网页端隐藏 */}
         {desktop && (

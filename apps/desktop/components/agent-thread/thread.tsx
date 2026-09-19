@@ -1,6 +1,7 @@
 "use client";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { DotMatrix } from "@/components/ui/dot-matrix";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { SelectionToolbar } from "@/components/assistant-ui/elements/quote.aui";
 import { cn } from "@/lib/utils";
@@ -26,6 +27,7 @@ import { BranchPicker } from "./branch-picker";
 import { CheckpointTail } from "./checkpoint-card";
 import { ThreadPreviewRail } from "./thread-preview-rail";
 import { prewarmShiki } from "@/lib/prewarm-shiki";
+import { useQueuedMessageIds } from "@/lib/pi-queue";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -75,9 +77,35 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
+/** turn 间隙等待动画：thread 在跑、但列表末尾还不是 AI 回复时（promote 中止
+ *  上一轮后的会话准备段、新回复首 token 前的空窗），消息级 indicator 无处
+ *  挂载——AI 回复消息要等首个内容块才创建——这里在列表末尾补点阵动画。
+ *  有排队项隐藏时不显示（running 中的回复自带消息级指示器） */
+const ThreadWorkingIndicator: FC = () => {
+  const isRunning = useAuiState((s) => s.thread.isRunning);
+  const lastRole = useAuiState((s) => s.thread.messages.at(-1)?.role);
+  const queuedMessageIds = useQueuedMessageIds();
+  if (!isRunning || lastRole !== "user" || queuedMessageIds.size > 0) {
+    return null;
+  }
+  return (
+    <div
+      data-slot="aui-thread-working-indicator"
+      className="text-muted-foreground mx-auto flex w-full max-w-(--thread-max-width) items-center gap-2 px-6 py-2"
+    >
+      <DotMatrix state="loading" aria-hidden />
+      <span className="shimmer shimmer-speed-200 text-foreground/60 text-sm">
+        思考中...
+      </span>
+    </div>
+  );
+};
+
 export const Thread: FC = () => {
   const isEmpty = useAuiState(isNewChatView);
-
+  // 确认排队中的用户消息 id 集合：这些消息不在消息列表渲染（只出现在 composer
+  // 上方排队条），开跑（data-queue active）后条目移出集合、消息自动出现
+  const queuedMessageIds = useQueuedMessageIds();
   // 空闲时预建热点语言的 Shiki 缓存，消掉流式中首个代码块的高亮停顿
   useEffect(() => {
     prewarmShiki();
@@ -123,6 +151,10 @@ export const Thread: FC = () => {
         >
           <ThreadPrimitive.Messages>
             {({ message }) => {
+              // 排队中的用户消息：不渲染（排队条负责展示），开跑后自动出现
+              if (message.role === "user" && queuedMessageIds.has(String(message.id))) {
+                return null;
+              }
               const inner =
                 message.composer.isEditing ? (
                   <EditComposer />
@@ -142,6 +174,7 @@ export const Thread: FC = () => {
           </ThreadPrimitive.Messages>
           {/* 检查点卡兜底尾：仅渲染锚点未知的条目；正常轮次由消息体内的 MessageCheckpoint 挂载 */}
           <CheckpointTail />
+          <ThreadWorkingIndicator />
         </div>
 {/*  bg-[color-mix(in_oklab,var(--muted)_55%,var(--background))] */}
         <ThreadPrimitive.ViewportFooter

@@ -85,6 +85,9 @@ const VP_PRESETS: VpPreset[] = [
  * 面板收起（占位 0 尺寸）时隐藏 webview 保留页面，展开后重新落位显示。
  * 跨标签只有一个子 webview：激活的浏览器 tab 胜出，切换 tab 重新 attach 导航。
  * 前进/后退用本组件自维护的访问栈（引擎自身历史不作事实源）。
+ *
+ * 全屏视图（设置等）覆盖主窗口时隐藏子 webview：原生层 z 序高于任何 React
+ * 元素，不隐藏会悬浮盖在其上（base.tsx 广播 browser:occluded）。
  */
 export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
   const initial = tab.url ? normalizeUrl(tab.url) : null;
@@ -109,6 +112,8 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
   const urlRef = useRef<string | null>(initial);
   /** webview 是否因占位 0 尺寸（面板收起）被隐藏；恢复可见后据此重新显示 */
   const hiddenRef = useRef(false);
+  /** 全屏视图（设置等）正覆盖主窗口时为 true：冻结 bounds 同步并隐藏 webview */
+  const occludedRef = useRef(false);
   useEffect(() => {
     urlRef.current = url;
   }, [url]);
@@ -122,6 +127,8 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
   const syncBounds = useCallback((): Promise<boolean> => {
     const el = hostRef.current;
     if (!isTauri() || !el) return Promise.resolve(false);
+    // 全屏视图覆盖期间（设置等）主视图不可见：冻结同步，恢复时统一补一次
+    if (occludedRef.current) return Promise.resolve(false);
     cancelAnimationFrame(rafRef.current);
     return new Promise<boolean>((resolve) => {
       rafRef.current = requestAnimationFrame(() => {
@@ -165,6 +172,24 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
     });
   }, []);
 
+  /** 隐藏/恢复 webview（恢复时走 syncBounds 状态机重新落位显示）。
+   *  定义在 syncBounds 之后：deps 引用它。 */
+  const setOccluded = useCallback(
+    (occluded: boolean) => {
+      if (occludedRef.current === occluded || !isTauri()) return;
+      occludedRef.current = occluded;
+      if (occluded) {
+        hiddenRef.current = true; // 恢复时走"收起隐藏"分支重新落位显示
+        tauriCore()
+          .then(({ invoke }) => invoke("browser_detach", { destroy: false }))
+          .catch(() => {});
+      } else {
+        void syncBounds();
+      }
+    },
+    [syncBounds],
+  );
+
   const show = (u: string) => {
     urlRef.current = u;
     setUrl(u);
@@ -187,6 +212,9 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
   // 挂载：先完成一次有效 bounds 同步，再 attach/detach——attach 先于同步发出时
   // 宿主没有任何 frame 记录，会按"窗口右半屏"兜底创建 webview（即"溢出面板"）；
   // 同步成功后创建则直接落到存好的面板矩形。空 tab 则隐藏残留页面。
+  // attach 必须带初始 url 而非 null：StrictMode setup→cleanup→setup 重放保留 ref，
+  // 下面的 url→attach effect 会因 attached 去重被跳过，传 null 时宿主在 webview
+  // 不存在的情况下拒绝创建——表现为首次「浏览器预览」空白，点刷新才出现。
   useEffect(() => {
     if (!isTauri()) return;
     let alive = true;
@@ -195,7 +223,7 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
       tauriCore().then(({ invoke }) => {
         if (!alive) return;
         if (initialRef.current) {
-          invoke("browser_attach", { url: null }).catch(() => {});
+          invoke("browser_attach", { url: initialRef.current }).catch(() => {});
         } else {
           invoke("browser_detach", { destroy: false }).catch(() => {});
         }
@@ -297,6 +325,19 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
     return () => unlisten?.();
   }, [tab.id]);
 
+  // 全屏视图（设置等）覆盖主窗口时隐藏子 webview（base.tsx 广播）；
+  // 返回应用后由 syncBounds 状态机恢复显示（面板展开 → 落位+attach）。
+  useEffect(() => {
+    if (!isTauri()) return;
+    const onOccluded = (e: Event) => {
+      setOccluded(
+        (e as CustomEvent<{ occluded?: boolean }>).detail?.occluded ?? true,
+      );
+    };
+    window.addEventListener("browser:occluded", onOccluded);
+    return () => window.removeEventListener("browser:occluded", onOccluded);
+  }, [setOccluded]);
+
   const navigate = (raw: string) => {
     const u = normalizeUrl(raw);
     if (!u) return;
@@ -341,8 +382,9 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
       .catch(() => {});
   };
 
+  // inline-flex 居中：preflight 把 svg 变 display:block，普通按钮里图标会贴左上角
   const navBtn =
-    "text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent size-7 shrink-0 rounded-md";
+    "inline-flex items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent size-7 shrink-0 rounded-md";
 
   return (
     <div className="flex h-full min-w-0 flex-col">

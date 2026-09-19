@@ -230,6 +230,17 @@ pub fn browser_detach(app: AppHandle, destroy: Option<bool>) -> Result<(), Strin
     Ok(())
 }
 
+/// 主 webview 开始（重新）加载时移除子 webview：原生子 webview 不随主页面
+/// 重载销毁，若不在此处移除，刷新后旧页面会悬浮在旧 bounds 上盖住启动画面
+/// （前端 React 挂载后才清，中间隔数秒）。lib.rs 的全局 on_page_load 在
+/// Started 阶段调用本函数——移除时机最早、无闪烁。无子 webview 时幂等无害。
+pub fn destroy_for_reload(app: &AppHandle) {
+    if let Some(wv) = app.get_webview(BROWSER_LABEL) {
+        let _ = wv.close();
+        log::info!("[browser] main webview reload: destroyed child webview");
+    }
+}
+
 /// React 占位区的物理像素 bounds 同步（ResizeObserver / resize / scroll 驱动）。
 /// frame = webview 目标矩形；container = 占位容器矩形（视口钳制/居中基准）。
 #[tauri::command]

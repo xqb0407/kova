@@ -14,6 +14,7 @@ import {
   registerQueuedPrompt,
   unregisterQueuedPrompt,
 } from "@/lib/pi-queue";
+import { consumeSteerIntent } from "@/lib/pi-steer-intent";
 import { emitAgentEvent } from "@/lib/agent-events";
 import { gitCheckpointCreate, gitCheckpointDiff } from "@/lib/git";
 import { refreshGitStatus } from "@/lib/git-status";
@@ -27,6 +28,7 @@ import { piResumableStorage } from "@/lib/pi-resume-storage";
 import { recordLastThread } from "@/lib/pi-last-thread";
 import { markThreadActivity } from "@/lib/pi-last-activity";
 import { findRunningTurn, resyncPiRunning } from "@/lib/pi-running";
+import { extractPromptAttachments } from "@/lib/prompt-attachments";
 import { focusPanelTab } from "@/lib/panel-tabs";
 import { applyDelegationChunk } from "@/lib/subagent-runs";
 
@@ -107,6 +109,10 @@ export class PiTransport implements ChatTransport<UIMessage> {
     // 检查点卡的轮次锚点：触发本轮的 user 消息下标（跨刷新稳定,见 pi-checkpoints）
     const anchorIndex = lastUser ? messages.indexOf(lastUser) : null;
 
+    // 用户图片附件（多模态输入）：user 消息的 file parts → 协议 attachments
+    //（data URL 解析 / blob URL fetch 转 base64）；无附件 = undefined，帧上不带字段
+    const attachments = (await extractPromptAttachments(lastUser)) ?? undefined;
+
     return getPiChannel()
       .promptStream({
         requestId,
@@ -114,6 +120,10 @@ export class PiTransport implements ChatTransport<UIMessage> {
         threadId: chatId,
         sessionId,
         cwd,
+        attachments,
+        // 并入当前轮（⌥点击 / Shift+⌘+Enter 标记的意图，仅运行中会标记）：
+        // sidecar 忙线程注入活跃轮，本请求走退化流收尾
+        steer: consumeSteerIntent(chatId),
         abortSignal,
       })
       .pipeThrough(this.postTransform(chatId, requestId, text, abortSignal, anchorIndex));
@@ -192,6 +202,13 @@ export class PiTransport implements ChatTransport<UIMessage> {
     let anchor = anchorIndex;
     // 事件提醒：error 置位后 finish 不再补发"任务完成"（同轮只提醒一次）
     let sawError = false;
+    // Stop/promote 中止的 turn：sidecar 在 finish 前发 abort 标记——残缺回复
+    // 按「被结束」结算，不弹完成提醒
+    let sawAborted = false;
+    // 并入当前轮（steer 退化流 data-queue(steered) → start → finish）：
+    // 本请求没跑 turn，turn 级副作用全部跳过（活跃轮还 owns 它们——审批/
+    // 提问卡片、检查点快照、完成提醒）
+    let sawSteered = false;
     const createCheckpoint = () => {
       if (!cwd || checkpointPromise) return;
       // 刷新重挂路径：原页面已打过快照并把 hash 持久化（saveRunHash），
@@ -270,26 +287,55 @@ export class PiTransport implements ChatTransport<UIMessage> {
           return;
         }
         if (chunk.type === "data-queue") {
-          // 排队生命周期：queued（进排队条）→ active（开跑，移出排队条）
+          // 排队生命周期：queued（进排队条）→ active（开跑，移出排队条）；
+          // steered = 本请求已并入活跃轮（退化流标记，不进排队条）
+          const phase = (chunk as { data?: { phase?: string } }).data?.phase;
+          if (phase === "steered") sawSteered = true;
           applyQueueChunk(requestId, chatId, (chunk as { data?: unknown }).data);
           return;
         }
         if (chunk.type === "data-panelOpen") {
-          // agent 浏览动作的面板唤起：浏览器 tab 推到前台并展开收起的面板
-          // （sidecar browser-tools.ts 发起；focusPanelTab 复用既有 tab）
-          const d = (chunk as { data?: { type?: unknown; url?: unknown } }).data;
+          // agent 动作的面板唤起：目标 tab 推到前台并展开收起的面板
+          // （browser_* / open_file 发起；focusPanelTab 复用既有 tab）
+          const d = (chunk as {
+            data?: { type?: unknown; url?: unknown; path?: unknown; cwd?: unknown };
+          }).data;
           if (d && d.type === "browser") {
             const url = typeof d.url === "string" && d.url ? { url: d.url } : undefined;
             focusPanelTab("browser", url);
             window.dispatchEvent(new Event("agent-panel:open"));
+            return;
+          }
+          // 文件唤起（sidecar open-file-tool.ts）：文件 tab 磁盘实时模式；
+          // focus:undefined 清掉该 tab 可能残留的 read/plan 快照上下文（文件树同款）
+          if (d && d.type === "file" && typeof d.path === "string" && d.path) {
+            focusPanelTab("file", {
+              cwd: typeof d.cwd === "string" && d.cwd ? d.cwd : undefined,
+              path: d.path,
+              focus: undefined,
+            });
+            window.dispatchEvent(new Event("agent-panel:open"));
           }
           return;
         }
+        if (chunk.type === "abort") {
+          // 中止标记（Stop/promote 的残缺收尾）：透传给 Chat 结算为 aborted
+          sawAborted = true;
+        }
         if (chunk.type === "start") {
-          // turn 真正开始（排队项此刻才轮到）：打检查点快照
-          createCheckpoint();
+          // turn 真正开始（排队项此刻才轮到）：打检查点快照。
+          // steer 退化流的 start 不是 turn 开始：不打（活跃轮已有自己的快照）
+          if (!sawSteered) createCheckpoint();
         }
         if (chunk.type === "finish") {
+          if (sawSteered) {
+            // steer 退化收尾：活跃轮还在跑，只清自己的登记（排队条隐藏项、
+            // resumable 登记），不碰审批/提问卡片、不发完成提醒
+            unregisterQueuedPrompt(requestId, chatId);
+            clearResumableIfOwn(chatId, requestId);
+            controller.enqueue(chunk);
+            return;
+          }
           // turn 结束：清空残留审批/提问卡片（abort/异常路径的兜底出口）
           clearToolApprovals(chatId);
           clearQuestions(chatId);
@@ -300,8 +346,9 @@ export class PiTransport implements ChatTransport<UIMessage> {
           // 文件树失效与检查点解耦：非 git 工作区 agent 也在改盘上文件
           refreshFileTree(cwd ?? null);
           settleCheckpoint();
-          // 用户主动 abort 的收尾不算"完成"，不提醒
-          if (!sawError && !abortSignal?.aborted) {
+          // 用户主动 abort 的收尾不算"完成"，不提醒（含 promote 对上一轮的
+          // 强制结束——新 turn 的完成由它自己的流提醒）
+          if (!sawError && !sawAborted && !abortSignal?.aborted) {
             emitAgentEvent("agent.turn.completed", {
               threadId: chatId,
               data: { prompt: text.slice(0, 120) },

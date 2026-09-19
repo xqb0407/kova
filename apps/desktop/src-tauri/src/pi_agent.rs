@@ -362,6 +362,11 @@ pub async fn pi_prompt(
     thread_id: Option<String>,
     session_id: Option<String>,
     cwd: Option<String>,
+    // attachments = 用户图片附件（多模态输入）：原样透传给 sidecar（闸门在彼端，
+    // 见 pi-agent prompt-attachments.ts）；无附件为 null
+    attachments: Option<serde_json::Value>,
+    // steer = 并入当前轮：sidecar 忙线程把消息注入活跃轮（不排队），本请求退化流收尾
+    steer: Option<bool>,
 ) -> Result<(), String> {
     ensure_spawned(&app, &state).await?;
     // 新 run 登记重放缓冲；顺带清扫上一批已结束（tombstone）的条目
@@ -385,6 +390,8 @@ pub async fn pi_prompt(
         "threadId": thread_id,
         "sessionId": session_id,
         "cwd": cwd,
+        "attachments": attachments,
+        "steer": steer,
     });
     write_line(&state, payload.to_string()).await
 }

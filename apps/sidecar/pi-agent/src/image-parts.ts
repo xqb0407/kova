@@ -43,8 +43,8 @@ export type ProjectedToolResult = {
   images: ProjectedImage[];
 };
 
-/** MIME 归一 + 白名单判定；不合法/不在白名单返回 null */
-function normalizeMime(mime: unknown): string | null {
+/** MIME 归一 + 白名单判定；不合法/不在白名单返回 null（prompt-attachments 共用） */
+export function normalizeMime(mime: unknown): string | null {
   if (typeof mime !== "string") return null;
   const m = mime.trim().toLowerCase();
   // 部分服务器发 image/jpg（非规范拼写），归一到 jpeg

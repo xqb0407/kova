@@ -153,7 +153,7 @@ describe("applyRowToCatalogModel", () => {
 });
 
 describe("getModelDefaultedAttrs（缺省猜测值归因）", () => {
-  test("自定义端点行未填上下文/输出标未确认，填过即确认", async () => {
+  test("自定义端点行未填上下文/输出/输入模态标未确认，填过即确认", async () => {
     await modelsReplace("mc-def", [
       { modelId: "guess-all", enabled: true },
       {
@@ -161,6 +161,7 @@ describe("getModelDefaultedAttrs（缺省猜测值归因）", () => {
         enabled: true,
         contextWindow: 32_768,
         maxTokens: 4_096,
+        input: ["text", "image"],
       },
     ]);
     await registerCustomProvider({
@@ -171,6 +172,7 @@ describe("getModelDefaultedAttrs（缺省猜测值归因）", () => {
     });
     expect(getModelDefaultedAttrs("mc-def", "guess-all").sort()).toEqual([
       "contextWindow",
+      "input",
       "maxTokens",
     ]);
     expect(getModelDefaultedAttrs("mc-def", "confirmed")).toEqual([]);
@@ -187,7 +189,10 @@ describe("getModelDefaultedAttrs（缺省猜测值归因）", () => {
       input: null,
       cost: null,
     });
-    expect(getModelDefaultedAttrs("mc-def", "guess-all")).toEqual(["maxTokens"]);
+    expect(getModelDefaultedAttrs("mc-def", "guess-all")).toEqual([
+      "maxTokens",
+      "input",
+    ]);
     applyRowToCatalogModel({
       provider: "mc-def",
       modelId: "guess-all",
@@ -200,6 +205,7 @@ describe("getModelDefaultedAttrs（缺省猜测值归因）", () => {
     });
     expect(getModelDefaultedAttrs("mc-def", "guess-all").sort()).toEqual([
       "contextWindow",
+      "input",
       "maxTokens",
     ]);
   });
@@ -220,7 +226,10 @@ describe("getModelDefaultedAttrs（缺省猜测值归因）", () => {
       input: null,
       cost: null,
     });
-    expect(getModelDefaultedAttrs(p.id, newId)).toEqual(["contextWindow"]);
+    expect(getModelDefaultedAttrs(p.id, newId)).toEqual([
+      "contextWindow",
+      "input",
+    ]);
     applyRowToCatalogModel({
       provider: p.id,
       modelId: newId,
@@ -231,7 +240,7 @@ describe("getModelDefaultedAttrs（缺省猜测值归因）", () => {
       input: null,
       cost: null,
     });
-    expect(getModelDefaultedAttrs(p.id, newId)).toEqual([]);
+    expect(getModelDefaultedAttrs(p.id, newId)).toEqual(["input"]);
   });
 });
 

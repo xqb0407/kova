@@ -8,11 +8,14 @@
  * 动作开始时顺带发 data-panelOpen chunk：前端把浏览器 tab 推到前台并展开
  * 收起的面板，用户能实时看到 agent 的操作（pi-transport 消费）。
  * 快照 ref 与页面状态绑定，页面一变即失效（宿主报 stale ref，让模型重新快照）。
+ * 设置开关（browser-config.ts，get/set_browser 协议）：工具常驻注册不按开关
+ * 增删（缓存纪律），execute 内实时门控，关闭时婉拒。
  */
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostToolCall } from "./hostdb";
 import { sendEventChunk } from "./stream";
+import { getBrowserConfig } from "./browser-config";
 
 const LABELS: Record<string, string> = {
   browser_navigate: "Browser Navigate",
@@ -42,6 +45,14 @@ function browserTool(
     description,
     parameters,
     execute: async (_id, params, signal) => {
+      // 设置门控（常驻注册，execute 实时读）：关闭时婉拒并给替代路径，
+      // 下一次调用即读到新值（browser-config.ts）
+      if (!getBrowserConfig().enabled) {
+        return textResult(
+          "Browser tools are disabled in Settings (智能体工具 → 浏览器驱动). " +
+            "Do not retry; use WebFetch for read-only page content instead.",
+        );
+      }
       // 面板唤起：浏览器 tab 推到前台（无 tab 则新开）；navigate 带 url 直达
       const url =
         typeof (params as { url?: unknown })?.url === "string"

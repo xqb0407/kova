@@ -69,8 +69,10 @@ export function RemoteRuntimeProvider({
   const transport = useMemo(() => new PiTransport(), []);
   const adapter = useMemo(() => createPiThreadListAdapter(), []);
 
+  // joinStrategy "none"：多任务排队时 user 消息先入列、assistant 回复按序后补，
+  // 相邻 assistant 消息默认会被转换层合并成一条——禁用 join，每轮回复独立成条
   const runtime = useRemoteThreadListRuntime({
-    runtimeHook: () => useChatRuntime({ transport }),
+    runtimeHook: () => useChatRuntime({ transport, joinStrategy: "none" }),
     adapter,
   });
 

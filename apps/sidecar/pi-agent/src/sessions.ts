@@ -571,6 +571,8 @@ export async function resolveSession(
     // 显式重试环包住 provider 流：流建立前失败按预算退避重发，
     // 过程以 data-retry chunk 推给前端（见 provider-retry.ts）
     streamFn: (m, context, options) => {
+      // 轨迹内容捕获：本次请求的上下文快照（附加到随后打开的 llm_call span）
+      run.trace?.noteRequest(context);
       // 诊断日志：思考档位是否真的随开关到达 provider 请求
       //（关着仍出思考时先看这行：reasoning: undefined 且模型默认开思考 = 缺显式关闭参数，
       //  用 设置→模型→支持深度思考 旁的「关闭时下发」补上，如 none）

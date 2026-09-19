@@ -13,6 +13,7 @@ import {
   ListTodoIcon,
   Loader2Icon,
   SquareTerminalIcon,
+  WaypointsIcon,
 } from "lucide-react";
 import { usePanelActivity } from "@/lib/panel-activity";
 import { useThreadTodos } from "@/lib/pi-todo";
@@ -30,6 +31,7 @@ import { BrowserView } from "./browser-view";
 import { FileTab } from "./file-view";
 import { FileTreeTab } from "./file-tree-tab";
 import { SubagentTab } from "./subagent-tab";
+import { TraceTab } from "./trace-tab";
 import { TabEmpty } from "./tab-empty";
 
 /**
@@ -109,6 +111,11 @@ export const TAB_META: Record<
     label: "子智能体",
     description: "Task 委派的运行过程",
     icon: BotIcon,
+  },
+  trace: {
+    label: "链路追踪",
+    description: "agent 运行的 LLM / 工具 / 重试时间线",
+    icon: WaypointsIcon,
   },
 };
 
@@ -207,6 +214,9 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
     case "subagent":
       // 一个委派一个 tab（delegationId 绑定 lib/subagent-runs store 条目）
       return <SubagentTab tab={tab} />;
+    case "trace":
+      // 链路追踪：tab.sessionId 绑定 sidecar 会话（header「更多」唤起）
+      return <TraceTab tab={tab} />;
     default:
       return null;
   }

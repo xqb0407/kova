@@ -36,6 +36,13 @@ log = "0.4"
 chrono = "0.4"
 tauri-plugin-notification = "2"
 portable-pty = "0.9.0"
+# 备份/恢复：tar.gz 信封 + SigV4 签名 + 口令派生（均为纯 Rust 实现）
+tar = "0.4"
+flate2 = "1"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+pbkdf2 = "0.12"
 
 [profile.release]
 panic = "abort"

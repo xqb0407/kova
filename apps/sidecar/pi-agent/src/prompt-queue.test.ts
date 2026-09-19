@@ -320,10 +320,12 @@ async function waitUntil(reqId: string, type: string, timeoutMs = 3000) {
 }
 
 /** 可控假 Agent：首次 prompt 挂起，firstTurnMs 后自然完成（Stop 时以 unwindMs 提前收尾，
- *  模拟 provider 流拆除、persist 等收尾耗时）；后续 prompt 立即完成 */
+ *  模拟 provider 流拆除、persist 等收尾耗时）；后续 prompt 立即完成。
+ *  steer(m) 记录注入（steered getter 供断言），不产生输出 */
 function makeFakeAgent(firstTurnMs: number, unwindMs: number): Agent {
   let calls = 0;
   let resolveFirst: (() => void) | null = null;
+  const steered: unknown[] = [];
   return {
     state: {
       model: { id: "fake", provider: "fake", contextWindow: 100000 },
@@ -340,6 +342,12 @@ function makeFakeAgent(firstTurnMs: number, unwindMs: number): Agent {
         });
       }
       return Promise.resolve();
+    },
+    steer: (m: unknown) => {
+      steered.push(m);
+    },
+    get steered() {
+      return steered;
     },
     abort: () => {
       setTimeout(() => resolveFirst?.(), unwindMs);
@@ -421,6 +429,150 @@ describe("dispatchPrompt: 线程隔离并行执行", () => {
     await pa;
     const aTypes = chunksFor("ia1").map((c) => c.type);
     expect(aTypes).toContain("finish");
+    resetQueueForTests();
+  });
+});
+
+/* --------------------------- 并入当前轮（steer） --------------------------- */
+
+describe("dispatchPrompt: steer 并入当前轮", () => {
+  afterAll(() => resetQueueForTests());
+
+  const steeredOf = (agent: Agent) =>
+    (agent as unknown as { steered: unknown[] }).steered;
+
+  test("忙线程带 steer 标记：注入活跃轮，本请求退化流收尾，不进队列不中止", async () => {
+    resetQueueForTests();
+    lines.length = 0; // 上一组用例复用了 sa1/sb1 reqId，先清捕获流
+    const run = await resolveSession("th-st1");
+    run.agent = makeFakeAgent(10_000, 80); // A 挂起，只能靠 Stop 收尾
+
+    const pa = dispatchPrompt("sa1", { type: "prompt", text: "A", threadId: "th-st1" });
+    await waitUntil("sa1", "start");
+
+    const pb = dispatchPrompt("sb1", {
+      type: "prompt",
+      text: "B",
+      steer: true,
+      threadId: "th-st1",
+    });
+    await pb; // steer 立即完成（退化流），不等 A
+
+    // 退化流生命周期：steered 标记 → start → finish，无执行痕迹
+    expect(chunksFor("sb1").map((c) => c.type)).toEqual(["data-queue", "start", "finish"]);
+    expect(
+      chunksFor("sb1").some(
+        (c) => c.type === "data-queue" && (c.data as { phase?: string })?.phase === "steered",
+      ),
+    ).toBe(true);
+    // 注入到活跃 agent（user 消息、纯文本 content）
+    const steered = steeredOf(run.agent);
+    expect(steered).toHaveLength(1);
+    expect(steered[0]).toMatchObject({ role: "user", content: "B" });
+    // 不占队列；活跃 turn 未被打断（A 尚未收尾）
+    expect(queueSnapshot("th-st1")).toEqual([]);
+    expect(chunksFor("sa1").some((c) => c.type === "finish")).toBe(false);
+
+    await dispatch("sa1-abort", { type: "abort", threadId: "th-st1" });
+    await pa;
+    resetQueueForTests();
+  });
+
+  test("空闲线程带 steer 标记：按普通 prompt 执行（标记忽略）", async () => {
+    resetQueueForTests();
+    const run = await resolveSession("th-st2");
+    run.agent = makeFakeAgent(30, 60);
+
+    await dispatchPrompt("sc1", {
+      type: "prompt",
+      text: "C",
+      steer: true,
+      threadId: "th-st2",
+    });
+
+    const types = chunksFor("sc1").map((c) => c.type);
+    expect(types).not.toContain("data-queue");
+    expect(types).toContain("start");
+    expect(types).toContain("finish");
+    expect(steeredOf(run.agent)).toHaveLength(0);
+    resetQueueForTests();
+  });
+
+  test("活跃轮收尾窗口（stopRequested）：steer 落回链上直接执行，不注入", async () => {
+    resetQueueForTests();
+    const run = await resolveSession("th-st3");
+    run.agent = makeFakeAgent(10_000, 80);
+
+    const pa = dispatchPrompt("sa3", { type: "prompt", text: "A", threadId: "th-st3" });
+    await waitUntil("sa3", "start");
+    await dispatch("sa3-abort", { type: "abort", threadId: "th-st3" }); // 进入收尾窗口
+    const pb = dispatchPrompt("sb3", {
+      type: "prompt",
+      text: "B",
+      steer: true,
+      threadId: "th-st3",
+    });
+    await Promise.all([pa, pb]);
+
+    // 收尾窗口的新消息不排队也不 steer：沿链等收尾后作为新 turn 执行
+    expect(chunksFor("sb3").map((c) => c.type)).not.toContain("data-queue");
+    expect(chunksFor("sb3").map((c) => c.type)).toContain("start");
+    expect(chunksFor("sb3").map((c) => c.type)).toContain("finish");
+    expect(steeredOf(run.agent)).toHaveLength(0);
+    resetQueueForTests();
+  });
+
+  test("queue_steer：排队项注入活跃轮，项移除、退化流收尾、响应 queue_steered", async () => {
+    resetQueueForTests();
+    lines.length = 0;
+    const run = await resolveSession("th-st4");
+    run.agent = makeFakeAgent(10_000, 80);
+
+    const pa = dispatchPrompt("sa4", { type: "prompt", text: "A", threadId: "th-st4" });
+    await waitUntil("sa4", "start");
+    const pb = dispatchPrompt("sb4", { type: "prompt", text: "B", threadId: "th-st4" });
+    await waitUntil("sb4", "data-queue");
+    expect(queueSnapshot("th-st4").map((q) => q.reqId)).toEqual(["sb4"]);
+
+    await dispatch("cmd-st", { type: "queue_steer", requestId: "sb4" });
+    expect(responses("cmd-st").at(-1)?.type).toBe("queue_steered");
+
+    // 项已移除；其流 queued → steered → start → finish；注入发生在活跃 agent
+    expect(queueSnapshot("th-st4")).toEqual([]);
+    expect(chunksFor("sb4").map((c) => c.type)).toEqual([
+      "data-queue",
+      "data-queue",
+      "start",
+      "finish",
+    ]);
+    const phases = chunksFor("sb4")
+      .filter((c) => c.type === "data-queue")
+      .map((c) => (c.data as { phase: string }).phase);
+    expect(phases).toEqual(["queued", "steered"]);
+    expect(steeredOf(run.agent)).toHaveLength(1);
+    expect(steeredOf(run.agent)[0]).toMatchObject({ role: "user", content: "B" });
+
+    // A 收尾后 sb4 的链节轮到空队列，静默让位（不执行）
+    await dispatch("sa4-abort", { type: "abort", threadId: "th-st4" });
+    await Promise.all([pa, pb]);
+    expect(chunksFor("sb4").some((c) => c.type === "error")).toBe(false);
+    resetQueueForTests();
+  });
+
+  test("queue_steer 无活跃轮/未知项：报错且项原位保留", async () => {
+    resetQueueForTests();
+    lines.length = 0;
+    await expect(
+      dispatch("cmd-st2", { type: "queue_steer", requestId: "ghost" }),
+    ).rejects.toThrow("no active turn to steer into: ghost");
+
+    enqueueTurn("sq1", "th-st5", { text: "S" });
+    await expect(
+      dispatch("cmd-st3", { type: "queue_steer", requestId: "sq1" }),
+    ).rejects.toThrow("no active turn");
+    expect(queueSnapshot("th-st5").map((q) => q.reqId)).toEqual(["sq1"]);
+
+    expect(cancelAllEntries()).toBe(1);
     resetQueueForTests();
   });
 });

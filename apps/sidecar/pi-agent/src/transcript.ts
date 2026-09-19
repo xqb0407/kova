@@ -109,19 +109,49 @@ export function isAutoContinueText(text: string): boolean {
   return text.startsWith(AUTO_CONTINUE_PREFIX);
 }
 
-/** pi-ai Message -> UIMessage（ui 字段快照；转换范围：text/reasoning） */
+/**
+ * 用户消息 content → UIMessage parts：text 合并（原语义）+ image content 回显为
+ * file part（data URL）。直播侧 composer 附件就是以 file part 进 user UIMessage
+ * 的，历史重建同形——刷新前后渲染相同（「刷新后 = 直播」构造性保证）。
+ * 纯图片无文字也返回消息（parts 非空即有效）；完全无内容返回 null。
+ */
+function userUiParts(
+  msg: Extract<Message, { role: "user" }>,
+): { text: string; parts: UIMessage["parts"] } | null {
+  const content =
+    typeof msg.content === "string"
+      ? [{ type: "text" as const, text: msg.content }]
+      : msg.content;
+  const parts: UIMessage["parts"] = [];
+  const text = content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("\n");
+  if (text.trim()) parts.push({ type: "text", text });
+  let imgSeq = 0;
+  for (const c of content) {
+    if (c.type !== "image") continue;
+    imgSeq += 1;
+    // 转录是落盘 JSON，历史行可能来自旧格式/残缺数据：mimeType 缺失兜底 png
+    const mime = c.mimeType || "image/png";
+    const ext = mime.split("/")[1] ?? "png";
+    parts.push({
+      type: "file",
+      mediaType: mime,
+      filename: `image-${imgSeq}.${ext === "jpeg" ? "jpg" : ext}`,
+      url: `data:${mime};base64,${c.data}`,
+    });
+  }
+  return parts.length ? { text, parts } : null;
+}
+
+/** pi-ai Message -> UIMessage（ui 字段快照；转换范围：text/reasoning/用户图片） */
 export function toUiMessage(msg: Message, seq: number): UIMessage | null {
   if (msg.role === "user") {
-    const text =
-      typeof msg.content === "string"
-        ? msg.content
-        : msg.content
-            .filter((c): c is { type: "text"; text: string } => c.type === "text")
-            .map((c) => c.text)
-            .join("\n");
-    if (!text.trim()) return null;
-    if (isAutoContinueText(text)) return null;
-    return { id: `msg-${seq}`, role: "user", parts: [{ type: "text", text }] };
+    const up = userUiParts(msg);
+    if (!up) return null;
+    if (isAutoContinueText(up.text)) return null;
+    return { id: `msg-${seq}`, role: "user", parts: up.parts };
   }
   if (msg.role === "assistant") {
     const parts: UIMessage["parts"] = [];
@@ -192,15 +222,9 @@ export function historyToUiMessages(
     const seq = rows[i].seq ?? i;
     const msg = rows[i].agent;
     if (msg.role === "user") {
-      const text =
-        typeof msg.content === "string"
-          ? msg.content
-          : msg.content
-              .filter((c): c is { type: "text"; text: string } => c.type === "text")
-              .map((c) => c.text)
-              .join("\n");
-      if (!text.trim()) continue;
-      messages.push({ id: `msg-${i}`, role: "user", parts: [{ type: "text", text }] });
+      const up = userUiParts(msg);
+      if (!up) continue;
+      messages.push({ id: `msg-${i}`, role: "user", parts: up.parts });
       srcSeqs.push(seq);
       continue;
     }

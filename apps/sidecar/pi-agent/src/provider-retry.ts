@@ -422,6 +422,9 @@ export function claimRetry(
  */
 export function makeUiRetryController(run: Running): ProviderRetryController {
   const settle = () => {
+    // 轨迹的重试区间收口：无论有没有 UI 卡片（providerRetryActive），只要有
+    // 打开中的 retry span 都要闭合（noteRetrySettled 对无 span 情形是 no-op）
+    run.trace?.noteRetrySettled();
     if (!run.providerRetryActive) return;
     run.providerRetryActive = false;
     sendEventChunk(run.threadId, {
@@ -436,6 +439,13 @@ export function makeUiRetryController(run: Running): ProviderRetryController {
     status: () => run.retryCapture.status,
     onRetry: ({ error, attempt, delayMs }) => {
       run.providerRetryActive = true;
+      // 轨迹打点在 stopRequested 短路之前：Stop 抑制 UI 但重试事实照记
+      run.trace?.noteRetry({
+        attempt,
+        delayMs,
+        code: error.code,
+        message: error.message,
+      });
       if (run.stopRequested) return;
       sendEventChunk(run.threadId, {
         type: "data-retry",

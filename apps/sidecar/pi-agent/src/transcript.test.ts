@@ -57,17 +57,41 @@ describe("toUiMessage", () => {
     expect(ui.id).toBe("msg-0");
   });
 
-  test("user content array keeps only text parts", () => {
+  test("user content array: text 合并 + image 回显 file part（data URL）", () => {
     const m = {
       role: "user",
       content: [
         { type: "text", text: "a" },
-        { type: "image", data: "xx" },
+        { type: "image", data: "xx", mimeType: "image/png" },
         { type: "text", text: "b" },
       ],
     } as unknown as Message;
     const ui = toUiMessage(m, 1)!;
-    expect(ui.parts).toEqual([{ type: "text", text: "a\nb" }]);
+    expect(ui.parts).toEqual([
+      { type: "text", text: "a\nb" },
+      {
+        type: "file",
+        mediaType: "image/png",
+        filename: "image-1.png",
+        url: "data:image/png;base64,xx",
+      },
+    ]);
+  });
+
+  test("纯图片无文字：仍产出消息（file part 兜底 mime）", () => {
+    const m = {
+      role: "user",
+      content: [{ type: "image", data: "yy" }],
+    } as unknown as Message;
+    const ui = toUiMessage(m, 5)!;
+    expect(ui.parts).toEqual([
+      {
+        type: "file",
+        mediaType: "image/png",
+        filename: "image-1.png",
+        url: "data:image/png;base64,yy",
+      },
+    ]);
   });
 
   test("assistant text and thinking become text/reasoning parts", () => {
@@ -94,6 +118,30 @@ describe("toUiMessage", () => {
 });
 
 describe("historyToUiMessages", () => {
+  test("用户图片行重建为 file part（与直播 UIMessage 同构）", () => {
+    const imageUser = {
+      role: "user",
+      content: [
+        { type: "text", text: "看图" },
+        { type: "image", data: "zz", mimeType: "image/jpeg" },
+      ],
+    } as unknown as Message;
+    const messages = historyToUiMessages([
+      { agent: imageUser, seq: 0 },
+      { agent: assistantMsg([{ type: "text", text: "好的" }]), seq: 1 },
+    ]);
+    expect(messages[0]!.role).toBe("user");
+    expect(messages[0]!.parts).toEqual([
+      { type: "text", text: "看图" },
+      {
+        type: "file",
+        mediaType: "image/jpeg",
+        filename: "image-1.jpg",
+        url: "data:image/jpeg;base64,zz",
+      },
+    ]);
+  });
+
   test("重建含工具部件的历史（toolCall + toolResult 配对回填）", () => {
     const rows = [
       { agent: userMsg("list files") },

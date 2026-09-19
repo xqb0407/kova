@@ -232,6 +232,37 @@ export type PiUsageStats = {
   longestChatMs: number;
 };
 
+/* ------------------------ Agent 调用轨迹（trace_query） ------------------------ */
+
+export type PiTraceSpanKind = "turn" | "llm_call" | "tool_call" | "retry";
+export type PiTraceStatus = "ok" | "error" | "aborted";
+
+/** 轨迹 span（sidecar trace.ts 的 TraceSpan 镜像；树形，仅 turn 持有 children） */
+export type PiTraceSpan = {
+  kind: PiTraceSpanKind;
+  name?: string;
+  startMs: number;
+  endMs: number;
+  status: PiTraceStatus;
+  attrs?: Record<string, string | number | boolean>;
+  children?: PiTraceSpan[];
+  /** 内容详情（llm_call）：请求上下文与回复正文的截断渲染 */
+  detail?: { request?: string; response?: string };
+};
+
+/** 一次 prompt run 的完整轨迹（traces/<sessionId>.jsonl 的一行） */
+export type PiTraceRun = {
+  runId: string;
+  sessionId: string;
+  source: "ui" | "automation" | "subagent";
+  startMs: number;
+  endMs: number;
+  status: PiTraceStatus;
+  model?: string;
+  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  spans: PiTraceSpan[];
+};
+
 /** 子智能体定义所在层（事实源在 sidecar：内置常量 / <app_data>/subagents / <cwd>/.xulux/subagents） */
 export type PiSubagentScope = "builtin" | "system" | "workspace";
 
@@ -307,6 +338,33 @@ export type PiMemoryConfig = {
   fileSearch: boolean;
   /** 指定记忆开启：每作用域文件白名单；null = 全部启用（自动跟随新建文件） */
   enabledFiles: { global: string[] | null; workspace: string[] | null };
+};
+
+/** 浏览器驱动开关整包（设置 → 通用 → 智能体工具；sidecar 持久化于 SQLite kv） */
+export type PiBrowserConfig = {
+  /** 总开关：关闭时 browser_* 工具一律婉拒 */
+  enabled: boolean;
+};
+
+/** 可观测性导出配置整包（设置 → 系统 → 追踪；sidecar 持久化于 SQLite kv） */
+export type PiObservabilityConfig = {
+  /** 总开关：关闭时 run 记录只落本地 traces 文件，不外发 */
+  enabled: boolean;
+  /** OTLP/HTTP traces 端点（Langfuse: https://<host>/api/public/otel/v1/traces） */
+  endpoint: string;
+  /** 附加请求头（鉴权等；Langfuse: Authorization: Basic base64(公钥:私钥)） */
+  headers: Record<string, string>;
+  /** 采样率 0~1，按 run 粒度 */
+  sampleRate: number;
+  /** 内容脱敏：true = 只上传元数据，不上传 prompt 与工具正文 */
+  redactContent: boolean;
+};
+
+/** test_observability 探针应答：sidecar 向 endpoint 发一条探针 span 的结果 */
+export type PiObservabilityTestResult = {
+  ok: boolean;
+  status?: number;
+  errorText?: string;
 };
 
 /** Claude Code 式生命周期钩子事件名（与 sidecar hooks.ts 1:1 对齐） */
@@ -558,6 +616,9 @@ export type PiResponse =
       paths?: PiPersonalizationPaths;
     }
   | { type: "memory"; settings: PiMemoryConfig }
+  | { type: "browser"; settings: PiBrowserConfig }
+  | { type: "observability"; settings: PiObservabilityConfig }
+  | { type: "observability_tested"; result: PiObservabilityTestResult }
   | { type: "hooks_saved" }
   | { type: "hooks"; hooks: PiHookConfig[] }
   | PiMemoryFilesResponse
@@ -576,6 +637,7 @@ export type PiResponse =
   | PiMcpServerToolsResponse
   | PiMcpAuditLogResponse
   | { type: "usage_stats"; stats: PiUsageStats }
+  | { type: "trace_query"; runs: PiTraceRun[] }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "model_updated"; provider: string; modelId: string }
   | { type: "credential"; provider: string }
