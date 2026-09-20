@@ -13,7 +13,7 @@ import { projectToolResult, type ProjectableContentBlock } from "./image-parts";
 import { sessionPath } from "./storage";
 import { sessionGet, sessionRename, sessionTouch } from "./hostdb";
 import { getModels } from "./model-catalog";
-import { summarizeSessionTitle } from "./session-title-summarize";
+import { stripDirectiveTokens, summarizeSessionTitle } from "./session-title-summarize";
 import { logErr } from "./log";
 import type { Running, UIMessage } from "./types";
 
@@ -207,9 +207,10 @@ export function historyToUiMessages(
   type ToolPart = {
     type: string;
     toolCallId: string;
-    state: "input-available" | "output-available";
+    state: "input-available" | "output-available" | "output-error";
     input?: unknown;
     output?: unknown;
+    errorText?: unknown;
   };
   const messages: UIMessage[] = [];
   // 与 messages 平行：每条 UI 消息源行的 jsonl seq（独立分隔线消息用 -Infinity，
@@ -254,7 +255,6 @@ export function historyToUiMessages(
     if (msg.role === "toolResult") {
       const entry = openTools.get(msg.toolCallId);
       if (entry) {
-        entry.part.state = "output-available";
         // 与 live 流共用投影：output 文本（含超限占位行）+ data-image parts 逐字同构
         const toolName = entry.part.type.startsWith("tool-")
           ? entry.part.type.slice("tool-".length)
@@ -263,7 +263,16 @@ export function historyToUiMessages(
           msg.content as ProjectableContentBlock[],
           { toolCallId: msg.toolCallId, toolName },
         );
-        entry.part.output = output;
+        // 落盘的 isError 与 live 流的 tool-output-error chunk 同构（前端据此
+        // 置 isError）：被拒/失败的工具调用刷新后仍判失败、不渲染产物卡。
+        // 转录行一直带 isError（pi 库必填字段），旧会话回放同样生效
+        if (msg.isError) {
+          entry.part.state = "output-error";
+          entry.part.errorText = output;
+        } else {
+          entry.part.state = "output-available";
+          entry.part.output = output;
+        }
         if (images.length) {
           // part 入列时同法 cast 过，按引用找回位置（ToolPart 与 UIMessagePart 结构不互容）
           const at = entry.host.indexOf(entry.part as UIMessage["parts"][number]);
@@ -337,12 +346,15 @@ export async function maybeSummarizeSessionTitle(run: Running): Promise<void> {
       ? firstUser.content
       : (firstUser.content.find((c) => c.type === "text")?.text ?? "");
   if (!firstText.trim()) return;
-  const fallback = firstText.slice(0, 60);
+  // 芯片标记剥掉后再截断：兜底标题与 AI 总结输入都不带 :skill[...]{...} 噪音
+  const cleanText = stripDirectiveTokens(firstText);
+  const fallback = cleanText.slice(0, 60);
 
-  // 标题守卫：仍是兜底串（或为空）才总结；手动改名（≠兜底串）永不覆盖
+  // 标题守卫：仍是兜底串（或为空）才总结；手动改名（≠兜底串）永不覆盖。
+  // 一并认旧版落盘的未剥芯片兜底串，让改动上线前的会话还能补智能标题
   const row = await sessionGet(run.sessionId);
   if (!row) return;
-  if (row.title && row.title !== fallback) return;
+  if (row.title && row.title !== fallback && row.title !== firstText.slice(0, 60)) return;
 
   // 首条非错误/中止的助手回复文本（错误回复生成标题会误导）
   const firstAssistant = messages.find(
@@ -367,7 +379,7 @@ export async function maybeSummarizeSessionTitle(run: Running): Promise<void> {
   const title = await (titleSummarizeHook.fn ?? summarizeSessionTitle)(
     getModels().streamSimple.bind(getModels()),
     model,
-    firstText,
+    cleanText,
     replyText || undefined,
   );
   if (!title || title === fallback) return;
@@ -411,8 +423,14 @@ export async function persist(
         ? first.content
         : (first.content.find((c) => c.type === "text")?.text ?? "")
       : "";
-  // 迭代 4：本轮新落盘的消息行数随 touch 增量进索引表，list_sessions 不再扫文件
-  await sessionTouch(run.sessionId, firstText.slice(0, 60), firstText, lines.length);
+  // 迭代 4：本轮新落盘的消息行数随 touch 增量进索引表，list_sessions 不再扫文件。
+  // 兜底标题剥掉指令芯片标记（first_message 列保持原文，仅标题清洗）
+  await sessionTouch(
+    run.sessionId,
+    stripDirectiveTokens(firstText).slice(0, 60),
+    firstText,
+    lines.length,
+  );
 
   // earlyUser：轮初补录还没有助手回复，此时总结标题会缺回答上下文，
   // 且每会话 one-shot 防抖会被白白消费——留给 agent_end 那次触发

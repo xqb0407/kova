@@ -123,6 +123,27 @@ describe("onAgentEvent", () => {
     });
   });
 
+  test("error tool results emit tool-output-error (isError 透传)", () => {
+    onAgentEvent(
+      ev({
+        type: "tool_execution_end",
+        toolCallId: "call-err",
+        toolName: "write",
+        isError: true,
+        result: { content: [{ type: "text", text: "User rejected this tool call. Ask how to proceed." }] },
+      }),
+      run,
+    );
+    expect(last()).toEqual({
+      id: "r1",
+      chunk: {
+        type: "tool-output-error",
+        toolCallId: "call-err",
+        errorText: "User rejected this tool call. Ask how to proceed.",
+      },
+    });
+  });
+
   test("tool result image blocks emit data-image chunks after output", () => {
     onAgentEvent(
       ev({

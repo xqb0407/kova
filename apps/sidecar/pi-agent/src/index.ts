@@ -28,6 +28,7 @@ import { logErr } from "./log";
 import { initHostMode, initStorage } from "./storage";
 import { loadCustomProviders, applyModelOverrides, initCurrentModelKey } from "./model-catalog";
 import { initPersonalization } from "./personalization";
+import { initAppMode } from "./app-mode";
 import { initMemory } from "./memory";
 import { initBrowserConfig } from "./browser-config";
 import { initObservability } from "./observability";
@@ -85,6 +86,8 @@ async function main() {
     // 个性化设置在闸门内恢复：闸门放行前到达的命令都会缓冲，
     // 保证首批会话组装系统提示词时读到的已是 kv 里恢复的设置
     await initPersonalization();
+    // 全局工作模式（work/code）同走 kv，提示词注入块读这份内存状态
+    await initAppMode();
     // 记忆设置同理（提示词注入块 + 工具门控都读这份内存配置）
     await initMemory();
     // 浏览器驱动开关同走 kv（browser_* 工具 execute 门控读这份内存配置）

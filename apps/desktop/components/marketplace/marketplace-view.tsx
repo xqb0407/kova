@@ -3,10 +3,12 @@
 /**
  * 插件市场（侧边栏「插件市场」主区视图）。
  *
- * 市场页 = 目录网格：市场选择器（登记的市场间切换 + 刷新）+ 插件卡片
- * （安装 / 已装 / 有更新），右上角「+」添加市场（本地目录 / Git 仓库）。
- * 右上角「管理」进入管理页——已装插件（开关/更新/卸载/组件明细）+ 原设置页
- * 迁移来的 MCP 管理、技能管理（完整能力），应用授权暂为空态。
+ * 主区页签：市场目录 / 已装插件 平级切换（管理页不再收已装插件，也不下钻
+ * 组件——技能与 MCP 的常规管理留在「管理」原位置）。
+ * - 市场目录：市场选择器（登记的市场间切换 + 刷新）+ 插件卡片（安装/已装/
+ *   有更新），右上角「＋ 添加市场」（本地目录 / Git 仓库）；
+ * - 已装插件：独立视图（卡片/单行 + 批量启停/卸载），见 installed-plugins.tsx；
+ * - 管理：MCP 管理、技能管理（完整能力，原位置），应用授权暂为空态。
  *
  * 事实源在 sidecar plugins.ts；耗时操作（添加/刷新/安装）受理即返回，
  * 完成经 plugin_op_result 帧回流（lib/plugins.ts 整包并入镜像）。
@@ -14,7 +16,6 @@
 import { useEffect, useMemo, useState, type FC } from "react";
 import dynamic from "next/dynamic";
 import {
-  BlocksIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -22,7 +23,6 @@ import {
   GitBranchIcon,
   Loader2Icon,
   PackageOpenIcon,
-  PuzzleIcon,
   RefreshCwIcon,
   SlidersHorizontalIcon,
 } from "lucide-react";
@@ -49,6 +49,7 @@ import {
   usePlugins,
   type MarketplaceEntry,
 } from "@/lib/plugins";
+import { PluginIcon } from "@/components/marketplace/plugin-icon";
 
 function ViewSpinner() {
   return (
@@ -58,7 +59,7 @@ function ViewSpinner() {
   );
 }
 
-// 与设置页共用同一实现；CodeMirror（JSON 编辑器）等重依赖随 chunk 按需拉取
+// 重依赖随 chunk 按需拉取
 const McpSettings = dynamic(
   () =>
     import("@/components/settings/components/mcp-settings").then((m) => ({
@@ -88,8 +89,8 @@ const AddMarketplaceDialog = dynamic(
   { ssr: false },
 );
 
-/** 管理页分段器选项 */
-type ManageTab = "installed" | "plugins" | "skills" | "apps";
+/** 管理页分段器选项（已装插件已上提为主区页签，这里保持技能/MCP 原位置） */
+type ManageTab = "plugins" | "skills" | "apps";
 
 /** 市场类型图标 */
 function MarketplaceIcon({ market }: { market: MarketplaceEntry }) {
@@ -109,8 +110,10 @@ export const MarketplaceView: FC = () => {
   const marketplacesSnap = useMarketplaces();
   const pending = usePendingOps();
 
-  const [page, setPage] = useState<"market" | "manage">("market");
-  const [manageTab, setManageTab] = useState<ManageTab>("installed");
+  // 主区页签：市场目录 / 已装插件 平级；「管理」仍为下钻页（技能/MCP 原位置）
+  const [view, setView] = useState<"market" | "installed">("market");
+  const [manageOpen, setManageOpen] = useState(false);
+  const [manageTab, setManageTab] = useState<ManageTab>("plugins");
   const [addOpen, setAddOpen] = useState(false);
   const [activeMktId, setActiveMktId] = useState<string | null>(null);
 
@@ -149,25 +152,24 @@ export const MarketplaceView: FC = () => {
     return { installed: true, update, busy } as const;
   };
 
-  if (page === "manage") {
+  if (manageOpen) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        {/* 顶部条：与下方设置内容同宽同轴（max-w-5xl 居中列），返回 + 分段器（带计数） */}
+        {/* 顶部条：与下方设置内容同宽同轴，返回 + 分段器（带计数） */}
         <div className="mx-auto flex w-full max-w-6xl shrink-0 items-center justify-between px-8 pt-6">
           <Button
             variant="ghost"
             size="sm"
             className="text-muted-foreground -ml-2 gap-1"
-            onClick={() => setPage("market")}
+            onClick={() => setManageOpen(false)}
           >
             <ChevronLeftIcon className="size-4" />
-            返回市场
+            返回
           </Button>
           <Segmented
             value={manageTab}
             onChange={setManageTab}
             options={[
-              { value: "installed", label: `已装插件 ${pluginsSnap.plugins.length}` },
               { value: "plugins", label: `插件 ${mcpSnap.servers.length}` },
               { value: "skills", label: `技能 ${skillsSnap.skills.length}` },
               { value: "apps", label: "应用授权 0" },
@@ -176,7 +178,6 @@ export const MarketplaceView: FC = () => {
         </div>
         <div className="min-h-0 flex-1">
           <div className="mx-auto h-full max-w-6xl px-8">
-            {manageTab === "installed" && <InstalledPlugins />}
             {manageTab === "plugins" && <McpSettings />}
             {manageTab === "skills" && <SkillsSettings />}
             {manageTab === "apps" && (
@@ -197,7 +198,7 @@ export const MarketplaceView: FC = () => {
   return (
     <div className="h-full">
       <div className="mx-auto flex h-full w-full max-w-6xl flex-col px-8 py-8 lg:px-12">
-        {/* 页头 */}
+        {/* 页头：标题 + 管理；主区页签在标题下 */}
         <div className="flex items-start justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">插件市场</h1>
@@ -205,7 +206,28 @@ export const MarketplaceView: FC = () => {
               发现并安装插件、技能等扩展，拓展 Agent 的能力。
             </p>
           </div>
-          <div className="flex items-center gap-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => setManageOpen(true)}
+          >
+            <SlidersHorizontalIcon className="size-3.5" />
+            管理
+          </Button>
+        </div>
+
+        {/* 主区页签：市场目录 / 已装插件 */}
+        <div className="mt-5 flex items-center justify-between">
+          <Segmented
+            value={view}
+            onChange={setView}
+            options={[
+              { value: "market", label: "市场目录" },
+              { value: "installed", label: `已装插件 ${pluginsSnap.plugins.length}` },
+            ]}
+          />
+          {view === "market" && (
             <Button
               variant="outline"
               size="sm"
@@ -214,20 +236,14 @@ export const MarketplaceView: FC = () => {
             >
               + 添加市场
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5"
-              onClick={() => setPage("manage")}
-            >
-              <SlidersHorizontalIcon className="size-3.5" />
-              管理
-            </Button>
-          </div>
+          )}
         </div>
 
-        {/* 市场选择器 + 目录 */}
-        {marketplaces.length === 0 ? (
+        {view === "installed" ? (
+          <div className="mt-2 min-h-0 flex-1">
+            <InstalledPlugins />
+          </div>
+        ) : marketplaces.length === 0 ? (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 pb-16">
             <div className="bg-muted/50 text-muted-foreground grid size-12 place-items-center rounded-2xl border">
               <PackageOpenIcon className="size-6" />
@@ -239,7 +255,8 @@ export const MarketplaceView: FC = () => {
           </div>
         ) : (
           <>
-            <div className="mt-6 flex items-center gap-2">
+            {/* 市场选择器 */}
+            <div className="mt-4 flex items-center gap-2">
               <DropdownMenu>
                 <DropdownMenuTrigger
                   render={
@@ -302,11 +319,11 @@ export const MarketplaceView: FC = () => {
                     return (
                       <div
                         key={entry.name}
-                        className="bg-muted/50 flex flex-col rounded-2xl border p-4"
+                        className="bg-white dark:bg-background hover:bg-muted/50 flex flex-col rounded-2xl border p-4"
                       >
                         <div className="flex items-start gap-3">
-                          <div className="bg-background grid size-9 shrink-0 place-items-center rounded-xl border">
-                            <PuzzleIcon className="text-muted-foreground size-4.5" />
+                          <div className="bg-background grid size-9 shrink-0 place-items-center overflow-hidden rounded-xl border">
+                            <PluginIcon src={entry.icon} />
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
@@ -334,7 +351,6 @@ export const MarketplaceView: FC = () => {
                           <div className="flex gap-1">
                             {entry.keywords?.slice(0, 2).map((k) => (
                               <Badge key={k} variant="secondary" className="font-normal">
-                                <BlocksIcon className="size-3" />
                                 {k}
                               </Badge>
                             ))}

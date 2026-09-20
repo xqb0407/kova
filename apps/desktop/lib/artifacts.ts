@@ -1,7 +1,13 @@
 "use client";
 
 import type { ThreadMessage } from "@assistant-ui/react";
-import { fileChangePair, type FileChangeEntry, type FileChangeGroup } from "@/lib/panel-activity";
+import {
+  FAILED_RE,
+  fileChangePair,
+  resultText,
+  type FileChangeEntry,
+  type FileChangeGroup,
+} from "@/lib/panel-activity";
 
 /**
  * 产物（artifact）派生层：把一条 assistant 消息里 agent 用 `write` 工具产出的
@@ -21,6 +27,7 @@ const DELIVERABLE_EXT = new Set([
   "html",
   "htm",
   "xhtml",
+  "svg",
   "md",
   "markdown",
   "mdx",
@@ -120,8 +127,10 @@ export function messageArtifacts(
   const byPath = new Map<string, MessageArtifact>();
   for (const part of parts) {
     if (part.type !== "tool-call" || part.toolName !== "write") continue;
-    // 结果未回填 = 还在执行；失败 = 未落盘：都不算产物
+    // 结果未回填 = 还在执行；失败 = 未落盘：都不算产物。isError 之外再比一次
+    // 失败文本（拒绝 reason 等），防上游标记缺失时被拒写入混进产物卡
     if (part.result == null || part.isError === true) continue;
+    if (FAILED_RE.test(resultText(part.result) ?? "")) continue;
     const pair = fileChangePair("write", part.args);
     if (!pair || !isDeliverable(pair.path)) continue;
     const norm = pair.path.replace(/\\/g, "/");

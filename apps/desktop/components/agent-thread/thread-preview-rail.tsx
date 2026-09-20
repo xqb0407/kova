@@ -1,7 +1,7 @@
 "use client";
 
 // 会话锚点定位：复用 custom-ui/preview-rail，在 ThreadPrimitive.Root 内以
-// 覆盖层形式渲染右侧刻度条。悬停显示消息预览卡，点击滚动定位到对应消息。
+// 覆盖层形式渲染左侧刻度条。悬停显示消息预览卡，点击滚动定位到对应轮次。
 // 滚动容器仍是 assistant-ui 的 aui_thread-viewport，不接管其滚动行为。
 
 import { useReducedMotion } from "framer-motion";
@@ -11,6 +11,7 @@ import {
   type PreviewRailItem,
 } from "@/components/custom-ui/preview-rail";
 import { getMessagePreview } from "@/components/custom-ui/message-scroller";
+import { pickRoundAnchors } from "@/lib/message-round-anchors";
 
 const VIEWPORT_SELECTOR = '[data-slot="aui_thread-viewport"]';
 const ANCHOR_SELECTOR =
@@ -93,14 +94,8 @@ export function ThreadPreviewRail() {
     const anchors = Array.from(
       viewport.querySelectorAll<HTMLElement>(ANCHOR_SELECTOR),
     );
-    // 一轮对话会产生多条 assistant 消息（思考、每次工具调用各一条），全部锚定
-    // 会让刻度爆炸：连续的 assistant 锚点只保留该轮最后一条（通常是最终文本
-    // 回复），user 消息逐条保留 ⇒ 刻度数 ≈ 轮数 × 2
-    const kept = anchors.filter((anchor, index) => {
-      if (anchor.dataset.slot === "aui_user-message-root") return true;
-      const next = anchors[index + 1];
-      return !next || next.dataset.slot === "aui_user-message-root";
-    });
+    // 一轮对话一个刻度，选取规则见 pickRoundAnchors
+    const kept = pickRoundAnchors(anchors);
     const targets = new Map<string, HTMLElement>();
     const nextItems = kept.map((anchor, keptIndex) => {
       const index = anchors.indexOf(anchor);
@@ -131,7 +126,7 @@ export function ThreadPreviewRail() {
         id,
         label: preview.label,
         description: preview.description,
-        ariaLabel: `Go to ${isUser ? "user" : "assistant"} message ${keptIndex + 1} of ${kept.length}`,
+        ariaLabel: `Go to conversation round ${keptIndex + 1} of ${kept.length}`,
       };
     });
 
@@ -160,9 +155,7 @@ export function ThreadPreviewRail() {
         );
       return unchanged ? current : nextItems;
     });
-    setOverflowing(
-      viewport.scrollHeight > viewport.clientHeight + 1 && anchors.length > 1,
-    );
+    setOverflowing(viewport.scrollHeight > viewport.clientHeight + 1);
     return changed;
   }, []);
 
@@ -272,7 +265,8 @@ export function ThreadPreviewRail() {
     [items, reduce],
   );
 
-  const showRail = overflowing && items.length > 1;
+  // 单轮对话只有一个刻度也显示：内容溢出时仍可悬停预览/点击跳底
+  const showRail = overflowing && items.length > 0;
   const itemSize = showRail
     ? Math.max(
         MIN_ITEM_SIZE,

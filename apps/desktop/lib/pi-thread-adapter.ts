@@ -55,13 +55,26 @@ export function prefsSessionIdFor(threadId: string): string | undefined {
   return piSessionRegistry.get(threadId) ?? (piSessionPrefsMap.has(threadId) ? threadId : undefined);
 }
 
+/**
+ * 剥掉 composer 指令芯片的序列化文本（`:type[标签]{name=id}`，如
+ * `:skill[anxin-ppt]{name=skill:anxin-ppt}`），整段替换为其标签——标题路径
+ * 不该带这串格式噪音（芯片原文随 prompt 进转录，气泡端渲染回芯片，但
+ * generateTitle/列表兜底拿的是原文）。正则与 cm-composer-input 的
+ * DIRECTIVE_RE、侧车 stripDirectiveTokens 同源。
+ */
+const DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/gu;
+const stripDirectiveTokens = (text: string) =>
+  text
+    .replace(DIRECTIVE_RE, (_m, _type, label: string) => label)
+    .replace(/[ \t]{2,}/g, " ");
+
 /** pi session -> 前端线程列表项 */
 function toRemoteThread(s: PiSessionSummary) {
   return {
     remoteId: s.sessionId,
     externalId: undefined,
     status: (s.archived ? "archived" : "regular") as "archived" | "regular",
-    title: s.name || s.firstMessage.slice(0, 50) || "新会话",
+    title: s.name || stripDirectiveTokens(s.firstMessage).slice(0, 50) || "新会话",
     lastMessageAt: new Date(s.modified),
   };
 }
@@ -296,13 +309,13 @@ export function createPiThreadListAdapter(): RemoteThreadListAdapter {
       // MVP：用第一条用户消息做标题（pi 侧 firstMessage 已兜底，这里保持列表项同步）
       const { createAssistantStream } = await import("assistant-stream");
       void remoteId;
-      const firstUserText = messages
+      const rawFirstUser = messages
         .filter((m) => m.role === "user")
         .flatMap((m) => m.content)
         .filter((p): p is { type: "text"; text: string } => p.type === "text")
         .map((p) => p.text)
-        .join(" ")
-        .slice(0, 50);
+        .join(" ");
+      const firstUserText = stripDirectiveTokens(rawFirstUser).slice(0, 50);
       return createAssistantStream((controller) => {
         if (firstUserText) controller.appendText(firstUserText);
       });

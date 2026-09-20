@@ -181,6 +181,23 @@ export async function uninstallPlugin(
   emitPlugins();
 }
 
+/** 批量开关：逐个走既有协议消息（每次触发四链热重载；插件量小，正确性优先） */
+export async function setPluginsEnabledBatch(
+  ids: string[],
+  enabled: boolean,
+  cwd?: string | null,
+): Promise<void> {
+  for (const id of ids) await setPluginEnabled(id, enabled, cwd);
+}
+
+/** 批量卸载：同上，逐个走既有消息 */
+export async function uninstallPluginsBatch(
+  ids: string[],
+  cwd?: string | null,
+): Promise<void> {
+  for (const id of ids) await uninstallPlugin(id, cwd);
+}
+
 /** 组件级开关（scope/layer="plugin" 时 sidecar 要求 pluginId）；应答清单不含插件条目，仅刷新镜像 */
 export async function setPluginComponentEnabled(
   kind: "skill" | "mcp" | "subagent",

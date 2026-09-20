@@ -2,7 +2,10 @@
 
 import { UserMessageAttachments } from "@/components/assistant-ui/elements/attachment.aui";
 import { QuoteBlock } from "@/components/assistant-ui/elements/quote.aui";
-import { DirectiveText } from "@/components/assistant-ui/elements/directive-text.aui";
+import {
+  DirectiveText,
+  directiveChipVariants,
+} from "@/components/assistant-ui/elements/directive-text.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -12,7 +15,6 @@ import {
   ComposerPrimitive,
   ActionBarPrimitive,
 } from "@assistant-ui/react";
-import { BranchPicker } from "./branch-picker";
 import { CmComposerInput } from "./cm-composer-input";
 import { ChevronDownIcon, PencilIcon } from "lucide-react";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
@@ -27,7 +29,14 @@ export const UserMessage: FC = () => {
       <UserMessageAttachments />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0 text-md">
-        <div className="aui-user-message-content peer bg-muted text-foreground rounded-md px-4 py-2 wrap-break-word empty:hidden">
+        {/* directiveChipVariants：DirectiveText 渲染的芯片 Badge 默认色与
+            bg-muted 气泡几乎同色，需容器显式挂蓝色配色（与 composer 同款） */}
+        <div
+          className={cn(
+            "aui-user-message-content peer bg-muted text-foreground rounded-md px-4 py-2 wrap-break-word empty:hidden",
+            directiveChipVariants,
+          )}
+        >
           <CollapsibleUserMessageContent>
             <MessagePrimitive.Quote>
               {(quote) => <QuoteBlock {...quote} />}
@@ -39,11 +48,6 @@ export const UserMessage: FC = () => {
           <UserActionBar />
         </div>
       </div>
-
-      <BranchPicker
-        data-slot="aui_user-branch-picker"
-        className="col-span-full col-start-1 row-start-3 -mr-1 justify-end"
-      />
     </MessagePrimitive.Root>
   );
 };
@@ -141,7 +145,7 @@ export const EditComposer: FC = () => {
         <ComposerPrimitive.Root className="aui-edit-composer-root border-border/60 dark:border-muted-foreground/15 ml-auto flex w-full max-w-[85%] cursor-text flex-col rounded-(--composer-radius) border bg-(--composer-bg)">
           <CmComposerInput
             autoFocus
-            className="aui-edit-composer-input min-h-14 w-full px-4 pt-3 pb-1 text-foreground text-base outline-none [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-scroller]:overscroll-contain [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center"
+            className={`aui-edit-composer-input min-h-14 w-full px-4 pt-3 pb-1 text-foreground text-base outline-none [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-scroller]:overscroll-contain ${directiveChipVariants}`}
           />
           <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
             <ComposerPrimitive.Cancel asChild>

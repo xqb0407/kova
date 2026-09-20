@@ -26,6 +26,7 @@ import {
   PinIcon,
   PlusIcon,
   SearchIcon,
+  SquareIcon,
   TrashIcon,
   ZapIcon,
 } from "lucide-react";
@@ -37,7 +38,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { forkPiSession, piSessionCwdMap } from "@/lib/pi-thread-adapter";
-import { usePiSessionRunning } from "@/lib/pi-running";
+import { resyncPiRunning, usePiSessionRunning } from "@/lib/pi-running";
+import { getPiChannel } from "@/lib/pi-channel";
 import {
   togglePinSession,
   useIsPinned,
@@ -1127,7 +1129,30 @@ export const ThreadListItem: FC = () => {
           bg-primary/h-8/px-3 与 size-6 冲突导致盒子尺寸漂移、图标错位，且其
           active:translate-y-px 会让点击时图标下移。运行中 hover 同样出现并盖过
           spinner；图标恒定不随状态切换（点击只切换置顶，状态由常驻图钉表达） */}
-      {remoteId && (
+      {/* 运行中 hover 显示停止按钮（占置顶按钮同槽、盖过 spinner）：直发
+          abort(sessionId)——sidecar 按 sessionId 反查驻留 run（覆盖刷新改绑
+          与定时任务轮次），轮次收尾经 turn_changed 清掉列表指示。输入框的
+          Stop 监听是一次性的、且未打开的会话根本没有停止入口，这里是对
+          运行中任务（含卡死轮次）反复中止的唯一通道；abort 后补一次快照
+          对齐，纠正丢失 end 事件的幽灵「运行中」 */}
+      {remoteId && showRunning ? (
+        <button
+          data-slot="aui_thread-list-item-stop"
+          title="停止"
+          aria-label="停止"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            getPiChannel()
+              .abort(remoteId)
+              .catch(() => {})
+              .finally(() => setTimeout(resyncPiRunning, 800));
+          }}
+          className="text-destructive hover:bg-destructive/10 absolute start-[5px] top-1/2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-has-focus-visible:opacity-100"
+        >
+          <SquareIcon className="size-3 fill-current" />
+        </button>
+      ) : remoteId ? (
         <button
           data-slot="aui_thread-list-item-pin"
           title={pinned ? "取消置顶" : "置顶"}
@@ -1141,7 +1166,7 @@ export const ThreadListItem: FC = () => {
         >
           <PinIcon className="size-3.5" />
         </button>
-      )}
+      ) : null}
       {/* 用时与 more 按钮同位（end-1.5 的绝对槽位），选中行也显示；显隐条件
           与 more 严格互补（hover / 键盘焦点 / 菜单展开时 more 出现，此处隐藏）。
           双方都瞬时切换、不带透明度过渡，避免交叉淡出期间两个同时可见。

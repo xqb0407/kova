@@ -26,8 +26,10 @@ import { parseWebSearchResults } from "@/lib/web-search";
  *    （header 角标 / files / terminal 标签 / activity 视图）零重渲染。
  */
 
-/** sidecar bash 失败标记：非零退出码 `\n[exit code: N]`、超时 `\n[timeout]`（同 ToolFallback 的判定） */
-const FAILED_RE = /\[exit code: \d+\]|\[timeout\]/;
+/** sidecar bash 失败标记：非零退出码 `\n[exit code: N]`、超时 `\n[timeout]`（同 ToolFallback 的判定）。
+ *  拒绝文本兜底：审批拒绝/hook block 的 reason 会原样成为工具结果（isError 标记
+ *  在侧车未升级/旧转录等路径可能缺失），前缀匹配保证这类结果仍判失败 */
+export const FAILED_RE = /\[exit code: \d+\]|\[timeout\]|^User rejected this tool call\./;
 
 export type TerminalEntry = {
   toolCallId: string;
@@ -135,9 +137,17 @@ export function fileChangePair(
 }
 
 /** tool-call part 的 result（output-available 回填的字符串） */
-function resultText(result: unknown): string | null {
+/** 工具 part.result → 展示/判定的文本；非字符串（对象/错误信封）JSON 化 */
+export function resultText(result: unknown): string | null {
   if (result == null) return null;
-  return typeof result === "string" ? result : JSON.stringify(result, null, 2);
+  if (typeof result === "string") return result;
+  // convertMessage 对错误输出（state=output-error）包成 {error: errorText}：
+  // 剥出原文，失败判定（FAILED_RE）与展示才不丢前缀信息
+  if (typeof result === "object" && "error" in result) {
+    const err = (result as { error?: unknown }).error;
+    if (typeof err === "string") return err;
+  }
+  return JSON.stringify(result, null, 2);
 }
 
 /* ------------------------------ 行级 diff ------------------------------ */

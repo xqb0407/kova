@@ -20,6 +20,7 @@ import { usePanelActivity } from "@/lib/panel-activity";
 import { useThreadTodos } from "@/lib/pi-todo";
 import { useWorkspace } from "@/lib/workspace-store";
 import { useGitStatus } from "@/lib/git-status";
+import { useAppMode } from "@/lib/app-mode";
 import { isTauri } from "@/lib/tauri";
 import type { PanelTab, PanelTabType } from "@/lib/panel-tabs";
 import { ActivityView } from "./activity-view";
@@ -52,16 +53,18 @@ export const PANEL_TAB_TYPES: readonly PanelTabType[] = [
 ];
 
 /**
- * 可打开的标签类型:git 标签仅在工作目录是 git 仓库时出现(静默降级,不报错);
+ * 可打开的标签类型:git 标签仅在工作目录是 git 仓库且全局模式为编码时出现
+ * (静默降级,不报错;工作模式下 Git 管理整体隐藏,见 general-settings「工作模式」);
  * 文件树与真终端标签仅桌面端(web 端无本地 FS / 无 PTY,数据源整个不存在)。
  */
 export function useVisiblePanelTabTypes(): PanelTabType[] {
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
+  const appMode = useAppMode();
   return PANEL_TAB_TYPES.filter((t) => {
     if (t === "explorer") return isTauri();
     if (t === "shell") return isTauri();
-    if (t === "git") return !!status;
+    if (t === "git") return appMode === "code" && !!status;
     return true;
   });
 }

@@ -25,9 +25,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
+import { AppModeSwitch } from "./app-mode-switch";
 import { usePanelActivity } from "@/lib/panel-activity";
 import { useThreadTodos } from "@/lib/pi-todo";
 import { useGitStatus } from "@/lib/git-status";
+import { useAppMode } from "@/lib/app-mode";
 import { pathBasename, useWorkspace } from "@/lib/workspace-store";
 import { openPanelTab } from "@/lib/panel-tabs";
 import { prefsSessionIdFor } from "@/lib/pi-thread-adapter";
@@ -149,11 +151,13 @@ const PanelToggleButton: FC<{ onToggle: () => void }> = ({ onToggle }) => {
 
 /** 标题旁的工作区/分支 tag 胶囊（样式对齐 composer 的 WorkspacePill）：
  *  未选择文件夹（workspace 为 null）时整体不渲染；
- *  分支 tag 仅在该目录是 git 仓库且状态已加载时出现（复用 git-status 缓存，不重复拉取）。
+ *  分支 tag 仅在该目录是 git 仓库、状态已加载且全局模式为编码时出现
+ *  （复用 git-status 缓存，不重复拉取；工作模式下 Git 管理整体隐藏）。
  *  纯展示，不做交互 —— 切换 workspace/分支仍走 composer 的胶囊入口 */
 const WorkspaceBadge: FC = () => {
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
+  const appMode = useAppMode();
   if (!workspace) return null;
 
   return (
@@ -165,7 +169,7 @@ const WorkspaceBadge: FC = () => {
         <FolderOpenIcon className="size-3 shrink-0" />
         <span className="truncate">{pathBasename(workspace)}</span>
       </span>
-      {status ? (
+      {appMode === "code" && status ? (
         <span
           className="bg-muted text-muted-foreground inline-flex h-6 shrink-0 max-w-[12rem] items-center gap-1 rounded-full px-2 text-sm"
           title={`${status.branch}${status.dirty > 0 ? ` · ${status.dirty} 个未提交变更` : ""}`}
@@ -291,6 +295,8 @@ export const Header: FC<{
       {pageMode ? null : <ThreadTitle />}
       {/* 所选工作区目录 + git 分支 tag（未选目录时不显示），位于「更多」按钮左侧 */}
       {!pageMode && !isEmptyThread && <WorkspaceBadge />}
+      {/* 全局工作模式切换（编码/工作）：应用级开关，常驻可见——设置→通用里是同一事实源 */}
+      {!pageMode && <AppModeSwitch />}
       {/* 标题右侧「更多」菜单 + 重命名任务 dialog（空会话不渲染） */}
       {pageMode || isEmptyThread ? null : (
         <>

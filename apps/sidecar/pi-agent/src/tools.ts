@@ -26,6 +26,7 @@ import { buildWebTools } from "./http-tools";
 import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "./todo";
 import { buildMemoryTools } from "./memory";
+import { buildSkillUseTool } from "./skill-use-tool";
 import { buildMcpTool } from "./mcp-tools";
 import { buildEchoImageTool } from "./echo-image-tool";
 
@@ -314,6 +315,8 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
     // 记忆三件套（write/read/search）：常驻注册（工具表稳定缓存友好），开关在
     // execute 内实时门控；cwd 供工作区作用域定位（rebindRunCwd 会重建）
     ...buildMemoryTools(cwd),
+    // 技能调用：按名加载生效技能正文（只读动作，不进审批；见 skill-use-tool.ts）
+    buildSkillUseTool(cwd),
     // MCP 网关（search/describe/call/status）：常驻注册的代理工具，全部服务器
     // 的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd 会重建）
     buildMcpTool(cwd, threadId),

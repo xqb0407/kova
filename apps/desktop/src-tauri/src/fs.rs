@@ -265,6 +265,48 @@ pub async fn fs_delete(app: AppHandle, cwd: String, path: String) -> Result<Valu
     .map_err(|e| format!("fs task join error: {e}"))?
 }
 
+/// 在系统文件管理器中呈现目标：open_dir=true 直接打开目录本身（「打开
+/// 文件夹」语义），false 显示并选中该项（目录/文件均可）。Windows explorer
+/// 需 raw_arg 拼 "/select,<path>" 原样形式，CREATE_NO_WINDOW 防控制台闪现；
+/// Linux 无统一"选中"语义，文件退化为打开父目录。
+fn reveal_in_file_manager(target: &Path, open_dir: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        let arg = if open_dir {
+            format!("\"{}\"", target.display())
+        } else {
+            format!("/select,\"{}\"", target.display())
+        };
+        std::process::Command::new("explorer")
+            .raw_arg(arg)
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .map_err(|_| "reveal-failed")?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        if !open_dir {
+            cmd.arg("-R");
+        }
+        cmd.arg(target).spawn().map_err(|_| "reveal-failed")?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let dir = if open_dir {
+            target
+        } else {
+            target.parent().unwrap_or(target.as_path())
+        };
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|_| "reveal-failed")?;
+    }
+    Ok(())
+}
+
 /// 在系统文件管理器中显示（Windows 资源管理器选中该项；macOS open -R；
 /// Linux 无统一"选中"语义，退化为打开父目录）。
 #[tauri::command]
@@ -275,33 +317,7 @@ pub async fn fs_reveal(app: AppHandle, cwd: String, path: String) -> Result<Valu
         if !target.exists() {
             return Err("not-found".into());
         }
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt as _;
-            // raw_arg 拼出 explorer 需要的 "/select,<path>" 原样形式；CREATE_NO_WINDOW
-            // 防止并发突发控制台窗口
-            std::process::Command::new("explorer")
-                .raw_arg(format!("/select,\"{}\"", target.display()))
-                .creation_flags(0x0800_0000)
-                .spawn()
-                .map_err(|_| "reveal-failed")?;
-        }
-        #[cfg(target_os = "macos")]
-        {
-            std::process::Command::new("open")
-                .arg("-R")
-                .arg(&target)
-                .spawn()
-                .map_err(|_| "reveal-failed")?;
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let parent = target.parent().unwrap_or(target.as_path());
-            std::process::Command::new("xdg-open")
-                .arg(parent)
-                .spawn()
-                .map_err(|_| "reveal-failed")?;
-        }
+        reveal_in_file_manager(&target, false)?;
         Ok(json!({ "ok": true }))
     })
     .await
@@ -318,24 +334,32 @@ fn is_bad_name(name: &str) -> bool {
 
 /* ------------------------------ 我的文件：AI 产物 ------------------------------ */
 
+/// 「我的文件」根目录：app_data/task-workspace（无目录任务会话的执行目录，
+/// 与注入 sidecar 的 PI_TASK_CWD 同源）。
+fn app_task_workspace_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    tauri::Manager::path(app)
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {e}"))
+        .map(|p| p.join("task-workspace"))
+}
+
 /// 「我的文件 → 本地」的数据源：无目录任务会话的执行目录（task-workspace，
 /// 与 Rust 注入 sidecar 的 PI_TASK_CWD 同源，agent 的文件读写产物都落这里）。
-/// 刻意只读且不接收路径参数（目录固定，不引入工作区 fs 那套路径校验面）；
-/// dotfiles 不出现在清单里，符号链接按文件呈现不展开。
+/// rel 为根内相对路径（"" = 根），支持逐层下钻；校验复用 join_rel（拒 `..`
+/// 与绝对路径，canonicalize 防符号链接逃逸）。dotfiles 不出现在清单里，
+/// 符号链接按文件呈现不展开。
 #[tauri::command]
-pub async fn app_file_list(app: tauri::AppHandle) -> Result<Value, String> {
+pub async fn app_file_list(app: tauri::AppHandle, rel: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root = tauri::Manager::path(&app)
-            .app_data_dir()
-            .map_err(|e| format!("app_data_dir: {e}"))?
-            .join("task-workspace");
-        let rd = match std::fs::read_dir(&root) {
+        let root = app_task_workspace_root(&app)?;
+        let target = join_rel(&root, &rel)?;
+        let rd = match std::fs::read_dir(&target) {
             Ok(rd) => rd,
             // 目录还没建（从未跑过无目录任务）＝ 空清单而非错误
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(json!({ "entries": Vec::<Value>::new() }));
             }
-            Err(e) => return Err(format!("read_dir {}: {e}", root.display())),
+            Err(e) => return Err(format!("read_dir {}: {e}", target.display())),
         };
         let mut out: Vec<Value> = Vec::new();
         for e in rd.flatten() {
@@ -370,21 +394,16 @@ pub async fn app_file_list(app: tauri::AppHandle) -> Result<Value, String> {
     .map_err(|e| format!("fs task join error: {e}"))?
 }
 
-/// 「我的文件」宫格预览：name 限 task-workspace 顶层的直接文件项（拒路径段）。
+/// 「我的文件」宫格预览：rel 限 task-workspace 根内相对路径（子目录文件可
+/// 直接预览，路径守卫同 app_file_list）。
 /// 图片（≤8MB）返回 base64 + mime（前端 data URL 喂 <img>，CSP img-src 已含
 /// data:）；文本类返回前 32KB 的 utf8 文本（前端做渐隐截断）；其余返回
 /// unsupported，前端回退类型图标瓦片。
 #[tauri::command]
-pub async fn app_file_preview(app: tauri::AppHandle, name: String) -> Result<Value, String> {
+pub async fn app_file_preview(app: tauri::AppHandle, rel: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if is_bad_name(&name) {
-            return Err("bad-name".into());
-        }
-        let root = tauri::Manager::path(&app)
-            .app_data_dir()
-            .map_err(|e| format!("app_data_dir: {e}"))?
-            .join("task-workspace");
-        let path = root.join(&name);
+        let root = app_task_workspace_root(&app)?;
+        let path = join_rel(&root, &rel)?;
         if !path.is_file() {
             return Err("not-a-file".into());
         }
@@ -449,19 +468,16 @@ pub async fn app_file_preview(app: tauri::AppHandle, name: String) -> Result<Val
     .map_err(|e| format!("fs task join error: {e}"))?
 }
 
-/// 「我的文件」删除：name 限 task-workspace 顶层的直接条目（拒路径段，
-/// 目录固定不引入路径校验面）。目录递归删；符号链接只删链接本身不跟随。
+/// 「我的文件」删除：rel 限 task-workspace 根内相对路径（路径守卫同
+/// app_file_list；根本身不可删）。目录递归删；符号链接只删链接本身不跟随。
 #[tauri::command]
-pub async fn app_file_delete(app: tauri::AppHandle, name: String) -> Result<Value, String> {
+pub async fn app_file_delete(app: tauri::AppHandle, rel: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if is_bad_name(&name) {
-            return Err("bad-name".into());
+        let root = app_task_workspace_root(&app)?;
+        let path = join_rel(&root, &rel)?;
+        if path == root {
+            return Err("bad-path".into());
         }
-        let root = tauri::Manager::path(&app)
-            .app_data_dir()
-            .map_err(|e| format!("app_data_dir: {e}"))?
-            .join("task-workspace");
-        let path = root.join(&name);
         // symlink_metadata 不跟随链接：目录符号链接按文件处理，绝不递归进目标
         let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("stat: {e}"))?;
         if meta.is_symlink() {
@@ -471,6 +487,23 @@ pub async fn app_file_delete(app: tauri::AppHandle, name: String) -> Result<Valu
         } else {
             std::fs::remove_file(&path).map_err(|e| format!("remove: {e}"))?;
         }
+        Ok(json!({ "ok": true }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}
+
+/// 「我的文件」在系统文件管理器中打开/显示：目录直接打开该目录，文件在其
+/// 所在目录中选中显示。路径守卫同 app_file_list。
+#[tauri::command]
+pub async fn app_file_reveal(app: tauri::AppHandle, rel: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = app_task_workspace_root(&app)?;
+        let target = join_rel(&root, &rel)?;
+        if !target.exists() {
+            return Err("not-found".into());
+        }
+        reveal_in_file_manager(&target, target.is_dir())?;
         Ok(json!({ "ok": true }))
     })
     .await

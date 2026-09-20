@@ -182,6 +182,28 @@ describe("historyToUiMessages", () => {
     );
   });
 
+  test("isError 的 toolResult 回放为 output-error（与 live 流的 tool-output-error 同构）", () => {
+    const rows = [
+      { agent: toolCallMsg("c1", "write", { file_path: "a.html", content: "<h1/>" }) },
+      {
+        agent: {
+          ...toolResultMsg("c1", "write", "User rejected this tool call. Ask how to proceed."),
+          isError: true,
+        },
+      },
+    ];
+    const messages = historyToUiMessages(rows);
+    expect(messages[0].parts).toEqual([
+      {
+        type: "tool-write",
+        toolCallId: "c1",
+        state: "output-error",
+        input: { file_path: "a.html", content: "<h1/>" },
+        errorText: "User rejected this tool call. Ask how to proceed.",
+      },
+    ]);
+  });
+
   test("toolResult 的 image 块重建为 data-image part（与 live 流同构，紧跟 tool part）", () => {
     const rows = [
       { agent: toolCallMsg("c1", "generate_image", { prompt: "猫" }) },
@@ -444,6 +466,28 @@ describe("persist", () => {
     expect(readFileSync(sessionPath(id), "utf8")).toBe(before);
   });
 
+  test("兜底标题剥掉指令芯片标记（first_message 保持原文）", async () => {
+    const id = "persist-chips";
+    await sessionInsert(id, tmp);
+    writeFileSync(sessionPath(id), "", "utf8");
+    const raw = ":skill[anxin-ppt]{name=skill:anxin-ppt}生成一下吧";
+    const run = {
+      agent: { state: { messages: [userMsg(raw)], model: {} } },
+      sessionId: id,
+      cwd: tmp,
+      persistedSeq: 0,
+      jsonlSeq: 0,
+    } as unknown as Running;
+    await persist(run, { earlyUser: true });
+    const row = getLocalDb()!
+      .query<{ title: string; first_message: string }, [string]>(
+        "SELECT title, first_message FROM sessions WHERE id = ?",
+      )
+      .get(id)!;
+    expect(row.first_message).toBe(raw);
+    expect(row.title).toBe("anxin-ppt生成一下吧");
+  });
+
   test("earlyUser 轮初补录：只落用户行、更新索引、跳过标题总结", async () => {
     const id = "persist-early";
     await sessionInsert(id, tmp);
@@ -637,6 +681,46 @@ describe("maybeSummarizeSessionTitle", () => {
         .query<{ title: string }, [string]>("SELECT title FROM sessions WHERE id = ?")
         .get(id)!;
       expect(row.title).toBe("重构认证模块");
+    } finally {
+      titleSummarizeHook.fn = undefined;
+    }
+  });
+
+  test("总结输入剥掉指令芯片标记", async () => {
+    const id = "title-chips";
+    await sessionInsert(id, tmp);
+    let seenPrompt = "";
+    titleSummarizeHook.fn = async (_s, _m, userPrompt) => {
+      seenPrompt = userPrompt;
+      return "用 anxin-ppt 生成 PPT";
+    };
+    try {
+      await maybeSummarizeSessionTitle(
+        makeRun(id, ":skill[anxin-ppt]{name=skill:anxin-ppt}生成一下吧svg 也放", "好的"),
+      );
+      expect(seenPrompt).toBe("anxin-ppt生成一下吧svg 也放");
+      const row = getLocalDb()!
+        .query<{ title: string }, [string]>("SELECT title FROM sessions WHERE id = ?")
+        .get(id)!;
+      expect(row.title).toBe("用 anxin-ppt 生成 PPT");
+    } finally {
+      titleSummarizeHook.fn = undefined;
+    }
+  });
+
+  test("旧版未剥芯片的兜底标题仍可补总结（守卫兼容）", async () => {
+    const id = "title-legacy-chips";
+    await sessionInsert(id, tmp);
+    const raw = ":skill[anxin-ppt]{name=skill:anxin-ppt}生成一下吧svg 也放";
+    const { sessionTouch } = await import("./hostdb");
+    await sessionTouch(id, raw.slice(0, 60), raw);
+    titleSummarizeHook.fn = async () => "生成 PPT 与 SVG";
+    try {
+      await maybeSummarizeSessionTitle(makeRun(id, raw, "好的"));
+      const row = getLocalDb()!
+        .query<{ title: string }, [string]>("SELECT title FROM sessions WHERE id = ?")
+        .get(id)!;
+      expect(row.title).toBe("生成 PPT 与 SVG");
     } finally {
       titleSummarizeHook.fn = undefined;
     }

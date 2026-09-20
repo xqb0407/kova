@@ -36,9 +36,12 @@ import { SYSTEM_PROMPT_CORE, environmentPromptBlock } from "./tools";
 import { kvSet, sessionPrefsSet } from "./hostdb";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "./subagent-mgmt-tools";
 import { SKILL_MGMT_TOOL_NAMES } from "./skill-mgmt-tools";
+import { SKILL_USE_TOOL_NAME } from "./skill-use-tool";
+import { PLUGIN_MGMT_TOOL_NAMES } from "./plugin-mgmt-tools";
 import { getAutomationPolicy, automationDenyReason } from "./automation/policy";
 import { buildHookPayload, runHooks } from "./hooks";
 import { personalizationPromptBlock } from "./personalization";
+import { workModePromptBlock } from "./app-mode";
 import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "./mcp-tools";
 import { skillsPromptBlock } from "./skills";
@@ -70,8 +73,8 @@ const PLAN_ONLY_TOOL_NAMES = new Set<string>([
   PLAN_TOOL_NAMES.exit,
 ]);
 
-/** plan 模式允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束）+ Question（规划正需要澄清提问） */
-const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash", "WebFetch", "WebSearch", "Question"]);
+/** plan 模式允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束）+ Question（规划正需要澄清提问）+ use_skill（加载技能指令，只读动作） */
+const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash", "WebFetch", "WebSearch", "Question", SKILL_USE_TOOL_NAME]);
 
 /* ------------------------------- 系统提示词 ------------------------------- */
 
@@ -83,18 +86,20 @@ const PLAN_MODE_PROMPT = [
 
 const AGENT_MODE_PROMPT =
   "You are operating in Agent mode: carry out the requested work with the available tools and report the result clearly. When a task is large or ambiguous, enter Plan mode via plan_enter to research and draft an implementation plan; the plan needs user approval via plan_exit before you implement.";
+export { AGENT_MODE_PROMPT };
 
 /** 环境事实段只用到模型的这三个字段；pi-ai 的 Model<Api> 结构兼容，调用侧直接传 */
 export type PromptModelInfo = { provider: string; id: string; name?: string };
 
 /**
- * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + 记忆段 + MCP 段 + 技能目录段 + 指令段 + 环境事实块
+ * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + 工作模式段 + 记忆段 + MCP 段 + 技能目录段 + 指令段 + 环境事实块
  * （日期/模型/OS/shell，末行是 cwd 行）。
  * 顺序保证缓存命中：静态核心在前（跨会话字节级一致），模式段夹中间（会话内
  * 切换时整段重排不可避免，但同一模式内前缀稳定），个性化/记忆段随设置变更热替换，
+ * 工作模式段随全局 work/code 开关热替换（app-mode.ts，code 档为空串），
  * MCP 段随服务器配置变更热替换（无启用服务器时为空串），技能目录段只列生效技能的
- * name/description/location 三行元数据（正文模型按需 read，开关/遮蔽在缓存合并时
- * 裁决，随 reloadSkills 热替换），指令段读 AGENTS.md（全局 ~/.xulux/AGENTS.md +
+ * name/description/location 三行元数据（正文模型按需 use_skill 加载，开关/遮蔽在
+ * 缓存合并时裁决，随 reloadSkills 热替换），指令段读 AGENTS.md（全局 ~/.xulux/AGENTS.md +
  * 工作区仓库根，每次组装同步读盘，改动随下一次重组生效），环境事实块永远在最尾；
  * 个性化段全默认、记忆关闭、无 MCP 服务器、无生效技能、无指令文件时各块为空串
  * （默认提示词与旧版字节级一致）。
@@ -109,6 +114,7 @@ export function composeModeSystemPrompt(
     SYSTEM_PROMPT_CORE,
     extra,
     personalizationPromptBlock(),
+    workModePromptBlock(),
     memoryPromptBlock(cwd),
     mcpPromptBlock(cwd),
     skillsPromptBlock(cwd),
@@ -333,6 +339,8 @@ export const APPROVAL_REQUIRED_TOOLS = new Set([
   SUBAGENT_MGMT_TOOL_NAMES.delete,
   SKILL_MGMT_TOOL_NAMES.save,
   SKILL_MGMT_TOOL_NAMES.delete,
+  PLUGIN_MGMT_TOOL_NAMES.install,
+  PLUGIN_MGMT_TOOL_NAMES.scaffold,
 ]);
 
 /** plan 模式下结构性拦截的副作用工具（计划文件由 plan_write 自己落盘，不走这里、无需审批） */

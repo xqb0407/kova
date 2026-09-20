@@ -2,9 +2,32 @@ import { describe, test, expect } from "bun:test";
 import {
   cleanSummarizedTitle,
   sessionTitleSummarizeContext,
+  stripDirectiveTokens,
   summarizeSessionTitle,
   SESSION_TITLE_SUMMARIZE_SYSTEM_PROMPT,
 } from "./session-title-summarize";
+
+describe("stripDirectiveTokens", () => {
+  test("技能芯片替换为其标签", () => {
+    expect(
+      stripDirectiveTokens(":skill[anxin-ppt]{name=skill:anxin-ppt}生成一下吧svg 也放"),
+    ).toBe("anxin-ppt生成一下吧svg 也放");
+  });
+
+  test("无 {name=…} 段的芯片同样剥离", () => {
+    expect(stripDirectiveTokens(":tool[web_search] 查一下")).toBe("web_search 查一下");
+  });
+
+  test("多个芯片与残留空白折叠", () => {
+    expect(
+      stripDirectiveTokens(":skill[a]{name=skill:a} 和 :skill[b]{name=skill:b} 对比"),
+    ).toBe("a 和 b 对比");
+  });
+
+  test("无芯片文本原样返回", () => {
+    expect(stripDirectiveTokens("普通提问 http://x 不变")).toBe("普通提问 http://x 不变");
+  });
+});
 
 describe("cleanSummarizedTitle", () => {
   test("去掉包裹引号与代码标记", () => {

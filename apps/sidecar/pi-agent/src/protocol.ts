@@ -11,7 +11,8 @@
  *       cwd = workspace 目录；仅在需要新建会话时使用，缺省为用户主目录
  *       steer?: true——并入当前轮：该线程忙时消息注入活跃轮（agent.steer，下次模型
  *       调用前被消费，随活跃轮转录落盘），本请求走退化流 data-queue(steered) →
- *       start → finish 立即收尾（回复继续在活跃轮消息流里输出）；不占队列上限，
+ *       start 后挂起，finish 随宿主轮收尾补发（提前结束会把框架共享 status 置回
+ *       ready，宿主轮会被 UI 显示为已停止；见 steerIntoActiveRun）；不占队列上限，
  *       不中止当前回复。线程空闲 / 活跃轮正在收尾 / steer 抛错时落回普通排队
  *       prompt 结束后若有后台子代理（Task 委派）仍在运行，等待其完成并在同一条
  *       reqId 消息流内注入恢复 prompt 投递报告（多 step 收敛），再发 finish
@@ -28,7 +29,7 @@
  *       立即发送：该项提到所属线程队首并中止该线程当前活跃 turn（其余排队项保留）
  *   { "type": "queue_steer", "id", "requestId" }            → { id, type: "queue_steered", requestId }
  *       并入当前轮：排队项注入所属线程活跃轮（不中止不排队），其流走 steered
- *       退化收尾；无活跃轮/正在收尾则报错、项原位保留
+ *       退化收尾（finish 随宿主轮收尾补发）；无活跃轮/正在收尾则报错、项原位保留
  *   prompt 排队（prompt-queue.ts）：队列按线程隔离，线程内上一轮未结束时到达的
  *       prompt 进该线程 FIFO 队列（多线程并行互不阻塞），
  *       流上先发 { chunk: { type: "data-queue", id: "queue-<reqId>", data: { phase: "queued", position } } }，
@@ -62,10 +63,13 @@
  *   { "type": "set_thinking", "id", "level" }                 → { id, type: "thinking", level }（深度思考档位，广播到活动会话）
  *   { "type": "set_thinking_maps", "id", "maps" }             → { id, type: "thinking_maps", applied }（模型级 thinkingLevelMap 覆盖整包下发）
  *   { "type": "lookup_thinking_seed", "id", "modelId" }       → { id, type: "thinking_seed", seed }
- *       按 modelId 反查内置目录的思考参数种子（reasoning/thinkingLevelMap/supportedThinkingLevels）；
+ *       按 modelId 反查内置目录的属性种子（reasoning/thinkingLevelMap/supportedThinkingLevels
+ *       + contextWindow/maxTokens/input/cost 目录真值）；
  *       自定义端点与目录外新增模型的属性弹窗预填用，未命中回 null
  *   { "type": "get_personalization", "id" }                   → { id, type: "personalization", settings, paths }（个性化设置：回复风格/自定义风格列表/内置档位覆盖/称呼/人设/自定义指令；paths = 人设/指令身份文件绝对路径）
  *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings, paths }（人设/指令落全局身份文件、结构化字段含自定义风格列表与内置覆盖落 SQLite kv + 活动会话系统提示词热替换）
+ *   { "type": "get_app_mode", "id" }                          → { id, type: "app_mode", mode }（全局工作模式："work" | "code"，事实源 SQLite kv）
+ *   { "type": "set_app_mode", "id", "mode" }                  → { id, type: "app_mode", mode }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization；非法值回落 "code"）
  *   { "type": "get_memory", "id" }                            → { id, type: "memory", settings }（记忆设置：总开关/作用域叠加/文件检索/指定文件白名单）
  *   { "type": "set_memory", "id", "settings" }                → { id, type: "memory", settings }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization）
  *   { "type": "get_browser", "id" }                           → { id, type: "browser", settings }（浏览器驱动开关：browser_* 工具是否可用）
@@ -242,7 +246,7 @@ import {
   getCurrentThinkingLevel,
   getModelDefaultedAttrs,
   getModels,
-  lookupCatalogThinkingSeed,
+  lookupCatalogModelSeed,
   normalizeApi,
   parseModelCost,
   parseModelInput,
@@ -260,6 +264,7 @@ import {
   persist,
   historyToUiMessages,
 } from "./transcript";
+import { stripDirectiveTokens } from "./session-title-summarize";
 import { contextInfo, needsCompaction, runCompaction } from "./context";
 import {
   dropRun,
@@ -318,6 +323,7 @@ import {
   rulesFilePath,
   soulFilePath,
 } from "./personalization";
+import { applyAppMode, getAppMode } from "./app-mode";
 import {
   applyMemoryConfig,
   getMemoryConfig,
@@ -364,6 +370,7 @@ import {
   refreshMarketplace,
   removeMarketplace,
   resolvePluginComponent,
+  resolvePluginIconDataUrl,
   setPluginEnabled,
   uninstallPlugin,
 } from "./plugins";
@@ -553,7 +560,10 @@ async function pluginsPayload(cwd?: string) {
           ...(p.revision ? { revision: p.revision } : {}),
           installedAt: p.installedAt,
           ...(p.manifest.description ? { description: p.manifest.description } : {}),
-          ...(p.manifest.icon ? { icon: p.manifest.icon } : {}),
+          // 可显示 src：远程 URL 原样 / 本地文件已读成 data URL（无图标则缺省）
+          ...(resolvePluginIconDataUrl(p.manifest)
+            ? { icon: resolvePluginIconDataUrl(p.manifest) }
+            : {}),
           ...(p.manifest.category ? { category: p.manifest.category } : {}),
           manifestKind: p.manifest.manifestKind,
           sourceMissing: p.sourceMissing,
@@ -740,10 +750,13 @@ function isAlreadyProcessingError(err: unknown): boolean {
 export type PromptTurnOutcome = { ok: boolean; errorText?: string };
 
 /** 并入当前轮（steer）：把消息注入活跃 run（agent.steer，库在下次模型调用前
- *  消费、随活跃轮转录落盘），本请求走退化流 data-queue(steered) → start →
- *  finish 立即收尾——AI SDK 对无内容 chunk 的流不会 push 空 assistant 消息，
- *  回复继续在活跃轮的消息流里输出。返回 false（无活跃 run / 正在收尾 /
- *  steer 抛错）由调用方落回普通排队。 */
+ *  消费、随活跃轮转录落盘），本请求走退化流 data-queue(steered) → start 后
+ *  **挂起**——finish 不立即发：AI SDK 的 status 是单槽，流提前结束会把整个
+ *  会话置回 ready（正在跑的宿主轮在 UI 上显示为已停止、Stop 因 activeResponse
+ *  被清空而失灵）。finish 挂到宿主轮收尾时补发（flushSteeredFinishes），
+ *  届时线程真正空闲，无副作用。AI SDK 对无内容 chunk 的流不会 push 空
+ *  assistant 消息，回复继续在活跃轮的消息流里输出。返回 false（无活跃 run /
+ *  正在收尾 / steer 抛错）由调用方落回普通排队。 */
 function steerIntoActiveRun(
   run: Running,
   reqId: string,
@@ -771,12 +784,23 @@ function steerIntoActiveRun(
       data: { phase: "steered" },
     });
     sendChunk(reqId, { type: "start" });
-    sendChunk(reqId, { type: "finish" });
+    // finish 不发：登记后随宿主轮收尾补发（见 runPromptTurn finally）
+    let pending = pendingSteeredFinishes.get(run.threadId);
+    if (!pending) {
+      pending = new Set();
+      pendingSteeredFinishes.set(run.threadId, pending);
+    }
+    pending.add(reqId);
     return true;
   } catch {
     return false;
   }
 }
+
+/** 并入当前轮（steer）的退化流：threadId -> 已注入、待宿主轮收尾时补发 finish
+ *  的请求 id。steered 流提前 finish 会把框架共享的 status 置回 ready（见
+ *  steerIntoActiveRun 注释），故挂起到宿主轮真正结束 */
+const pendingSteeredFinishes = new Map<string, Set<string>>();
 
 /** prompt 入口：排队判定后沿所属线程的串行链执行（prompt 长任务依旧不占 mgmtQueue） */
 export async function dispatchPrompt(
@@ -1066,6 +1090,15 @@ async function runPromptTurn(
     // 结算为「被结束」而非「正常完成」（不弹完成通知）；AI SDK 保留 partial 内容
     if (run.stopRequested) sendChunk(reqId, { type: "abort" });
     sendChunk(reqId, { type: "finish" });
+    // 补发挂起的 steered 流 finish：宿主轮已真正收尾，此刻结束它们不会误触
+    // 框架的 status 回落（线程本来就空闲了）
+    const steered = pendingSteeredFinishes.get(threadId);
+    if (steered) {
+      pendingSteeredFinishes.delete(threadId);
+      for (const steeredReqId of steered) {
+        sendChunk(steeredReqId, { type: "finish" });
+      }
+    }
     setActiveReqId(threadId, null);
     persist(run);
     // Stop 中止可能不带 error chunk（abort() 让 prompt 静默收敛）：按失败结算
@@ -1376,7 +1409,7 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       await sessionInsert(newId, src.cwd);
       // 索引行补写：标题加「（分支）」后缀（无名会话用首轮消息行兜底，与
       // list_sessions 的标题回退一致）；first_message 拷贝源值；计数按实拷行数
-      const srcTitle = src.title || src.first_message.slice(0, 60);
+      const srcTitle = src.title || stripDirectiveTokens(src.first_message).slice(0, 60);
       await sessionTouch(
         newId,
         srcTitle ? `${srcTitle}（分支）` : "",
@@ -1631,12 +1664,13 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "lookup_thinking_seed": {
-      // 属性弹窗预填：自定义/目录外模型按 modelId 反查内置目录的思考参数种子
+      // 属性弹窗预填：自定义/目录外模型按 modelId 反查内置目录的属性种子
+      //（思考参数 + contextWindow/maxTokens/input/cost 目录真值）
       const modelId = String(msg.modelId ?? "").trim();
       send({
         id: reqId,
         type: "thinking_seed",
-        seed: modelId ? (lookupCatalogThinkingSeed(modelId) ?? null) : null,
+        seed: modelId ? (lookupCatalogModelSeed(modelId) ?? null) : null,
       });
       break;
     }
@@ -1679,6 +1713,24 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         settings,
         paths: { soul: soulFilePath(), rules: rulesFilePath() },
       });
+      break;
+    }
+    case "get_app_mode": {
+      send({ id: reqId, type: "app_mode", mode: getAppMode() });
+      break;
+    }
+    case "set_app_mode": {
+      const mode = await applyAppMode(msg.mode);
+      // 与 set_personalization 同款广播：工作模式段变了就整段重排系统提示词，
+      // 活动会话下一轮请求即生效
+      for (const run of running.values()) {
+        run.agent.state.systemPrompt = composeModeSystemPrompt(
+          run.mode,
+          run.cwd,
+          run.agent.state.model,
+        );
+      }
+      send({ id: reqId, type: "app_mode", mode });
       break;
     }
     case "get_memory": {
@@ -2368,18 +2420,34 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       const providers = await customProvidersList();
       const out = await Promise.all(
         providers.map(async (r) => {
-          // 模型行读 models 表（enabled=1），属性缺省解析为注册默认值供编辑表单回填
+          // 模型行读 models 表（enabled=1），属性与注册同口径三级兜底：
+          // 行值 → 内置目录同名模型种子 → 注册默认值，供编辑表单回填
           const specs: CustomModelSpec[] = (await modelsList(r.id))
             .filter((row) => row.enabled && row.modelId.trim())
-            .map((row) => ({
-              id: row.modelId,
-              name: row.name?.trim() || row.modelId,
-              reasoning: row.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
-              contextWindow: row.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
-              maxTokens: row.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
-              input: parseModelInput(row.input) ?? [...CUSTOM_MODEL_DEFAULTS.input],
-              cost: { ...(parseModelCost(row.cost) ?? CUSTOM_MODEL_DEFAULTS.cost) },
-            }));
+            .map((row) => {
+              const seed = lookupCatalogModelSeed(row.modelId);
+              return {
+                id: row.modelId,
+                name: row.name?.trim() || row.modelId,
+                reasoning:
+                  row.reasoning ?? seed?.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
+                contextWindow:
+                  row.contextWindow ??
+                  seed?.contextWindow ??
+                  CUSTOM_MODEL_DEFAULTS.contextWindow,
+                maxTokens:
+                  row.maxTokens ?? seed?.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+                input:
+                  parseModelInput(row.input) ??
+                  seed?.input ??
+                  [...CUSTOM_MODEL_DEFAULTS.input],
+                cost: {
+                  ...(parseModelCost(row.cost) ??
+                    seed?.cost ??
+                    CUSTOM_MODEL_DEFAULTS.cost),
+                },
+              };
+            });
           // 只回掩码：明文 key 不进渲染进程（编辑弹窗输入框留空 = 保持原 key，
           // 见 add_custom_provider 的空串语义）
           const keyRow = await credentialGet(r.id);
