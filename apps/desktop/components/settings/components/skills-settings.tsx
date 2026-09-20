@@ -83,6 +83,7 @@ const SCOPE_LABEL: Record<SkillEntry["scope"], string> = {
   workspace: "工作区",
   compat: "生态 · 用户",
   "compat-workspace": "生态 · 工作区",
+  plugin: "插件",
 };
 
 /** 表单草稿（正文承载用户编辑的 Markdown；字节数实时提示上限） */
@@ -369,6 +370,7 @@ const SCOPE_ICON: Record<SkillEntry["scope"], FC<{ className?: string }>> = {
   workspace: FolderGit2Icon,
   compat: GlobeIcon,
   "compat-workspace": GlobeIcon,
+  plugin: BlocksIcon,
 };
 
 const SkillRow: FC<{

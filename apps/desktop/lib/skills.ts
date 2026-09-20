@@ -26,6 +26,8 @@ export type SkillsSnapshot = {
   loading: boolean;
   error: string | null;
   skills: SkillEntry[];
+  /** scope "plugin" 的条目（技能设置页不渲染；`/` 菜单与插件详情消费） */
+  pluginSkills: SkillEntry[];
   /** 本次清单对应的工作区 cwd */
   workspaceCwd: string | null;
   /** 加载诊断（坏文件等），不致命 */
@@ -36,6 +38,7 @@ const EMPTY: SkillsSnapshot = {
   loading: false,
   error: null,
   skills: [],
+  pluginSkills: [],
   workspaceCwd: null,
   diagnostics: [],
 };
@@ -57,6 +60,7 @@ function fromResponse(res: PiSkillsResponse): SkillsSnapshot {
     loading: false,
     error: null,
     skills: res.skills,
+    pluginSkills: res.pluginSkills ?? [],
     workspaceCwd: res.workspaceCwd,
     diagnostics: res.diagnostics,
   };
@@ -132,12 +136,14 @@ export function setSkillEnabled(
   name: string,
   enabled: boolean,
   cwd?: string | null,
+  pluginId?: string,
 ): Promise<void> {
   return mutate({
     type: "set_skill_enabled",
     scope,
     name,
     enabled,
+    ...(pluginId ? { pluginId } : {}),
     ...(cwd ? { cwd } : {}),
   });
 }

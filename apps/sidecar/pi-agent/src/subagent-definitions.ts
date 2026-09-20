@@ -19,10 +19,11 @@ import { homedir } from "node:os";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { activePlugins, resolvePluginComponent } from "./plugins";
 import { kvGet, kvSet } from "./hostdb";
 import { logErr } from "./log";
 
-export type SubagentScope = "builtin" | "system" | "workspace";
+export type SubagentScope = "builtin" | "system" | "workspace" | "plugin";
 
 /** 一份子代理定义（解析产物与运行时共用同一形状） */
 export type SubagentDefinition = {
@@ -67,9 +68,15 @@ export function normalizeSubagentName(value: string): string {
   return value.trim().toLowerCase();
 }
 
-/** 开关状态键：内置/系统按 scope:name；工作区按 cwd 隔离（同名不同仓库互不影响） */
-export function subagentStateKey(scope: SubagentScope, name: string, cwd?: string): string {
+/** 开关状态键：内置/系统按 scope:name；工作区按 cwd 隔离（同名不同仓库互不影响）；插件层按 pluginId 命名空间 */
+export function subagentStateKey(
+  scope: SubagentScope,
+  name: string,
+  cwd?: string,
+  pluginId?: string,
+): string {
   const norm = normalizeSubagentName(name);
+  if (scope === "plugin") return `plugin:${pluginId ?? ""}::${norm}`;
   return scope === "workspace" ? `workspace:${cwd ?? ""}::${norm}` : `${scope}:${norm}`;
 }
 
@@ -228,9 +235,13 @@ export function builtinSubagents(): SubagentDefinition[] {
  */
 export function parseSubagentYaml(
   raw: string,
-  options: { scope: SubagentScope; filePath?: string; fallbackName?: string } = {
-    scope: "system",
-  },
+  options: {
+    scope: SubagentScope;
+    filePath?: string;
+    fallbackName?: string;
+    /** scope = "plugin" 必填：stateKey 命名空间 */
+    pluginId?: string;
+  } = { scope: "system" },
 ): ParsedDefinition {
   const warnings: string[] = [];
   let doc: unknown;
@@ -309,7 +320,12 @@ export function parseSubagentYaml(
       prompt,
       scope: options.scope,
       ...(options.filePath ? { path: options.filePath } : {}),
-      stateKey: subagentStateKey(options.scope, name, options.scope === "workspace" ? workspaceFromDefinitionPath(options.filePath) : undefined),
+      stateKey: subagentStateKey(
+        options.scope,
+        name,
+        options.scope === "workspace" ? workspaceFromDefinitionPath(options.filePath) : undefined,
+        options.pluginId,
+      ),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
       ...(model ? { model } : {}),
     },
@@ -409,6 +425,7 @@ export function resetSubagentsForTest(): void {
   globalCache.dir = "";
   globalCache.entry = undefined;
   workspaceCache.clear();
+  subagentPluginCache.clear();
 }
 
 export async function setSubagentEnabled(
@@ -416,12 +433,27 @@ export async function setSubagentEnabled(
   name: string,
   enabled: boolean,
   cwd?: string,
+  pluginId?: string,
 ): Promise<void> {
   await ensureSubagentState();
-  const key = subagentStateKey(scope, name, cwd);
+  const key = subagentStateKey(scope, name, cwd, pluginId);
   if (enabled) delete state.disabled[key];
   else state.disabled[key] = true;
   await persistState();
+}
+
+/** 插件子智能体组件清单（插件详情页用）：扫描指定目录并叠加当前开关状态 */
+export function listPluginSubagentEntries(
+  dir: string,
+  pluginId: string,
+): Array<{ name: string; description: string; enabled: boolean }> {
+  const { definitions, diagnostics } = loadLayer(dir, "plugin", pluginId);
+  for (const d of diagnostics) logErr(`plugin ${pluginId} subagents:`, d);
+  return definitions.map((def) => ({
+    name: def.name,
+    description: def.description,
+    enabled: state.disabled[def.stateKey] !== true,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +481,7 @@ function loadLayer(
   dir: string,
   scope: SubagentScope,
   /** 工作区层的 stateKey 需要能反推出 cwd，path 已含目录前缀足够 */
+  pluginId?: string,
 ): LayerEntry {
   const definitions: SubagentDefinition[] = [];
   const diagnostics: string[] = [];
@@ -477,6 +510,7 @@ function loadLayer(
       scope,
       filePath,
       fallbackName: basename(fileName).replace(/\.ya?ml$/i, ""),
+      ...(scope === "plugin" && pluginId ? { pluginId } : {}),
     });
     for (const warning of parsed.warnings) diagnostics.push(`${filePath}: ${warning}`);
     if (parsed.ok) definitions.push({ ...parsed.definition, raw });
@@ -489,6 +523,8 @@ function loadLayer(
 const globalCache: { dir: string; entry?: LayerEntry } = { dir: "" };
 /** 工作区层按 cwd 缓存 */
 const workspaceCache = new Map<string, { sig: string; entry: LayerEntry }>();
+/** 插件层按 pluginId 缓存（目录签名失效） */
+const subagentPluginCache = new Map<string, { sig: string; entry: LayerEntry }>();
 
 export type SubagentLoadResult = {
   /** 挂到 Task 工具组的定义集合：已启用，同名工作区>系统>内置 */
@@ -536,13 +572,35 @@ export async function loadSubagentDefinitions(options: {
     }
   }
 
-  const diagnostics = [...globalEntry.diagnostics, ...workspaceEntry.diagnostics];
+  // 插件层（垫底）：逐启用插件扫描其 subagents 目录，pluginId 排序保证同名遮蔽确定性
+  const pluginEntries: LayerEntry[] = [];
+  for (const plugin of activePlugins()) {
+    const dir = resolvePluginComponent(plugin.manifest, "subagents");
+    if (!dir || !existsSync(dir)) continue;
+    const sig = dirSignature(dir);
+    const cacheKey = `${plugin.pluginId}`;
+    const cached = subagentPluginCache.get(cacheKey);
+    const entry =
+      cached && cached.sig === sig ? cached.entry : loadLayer(dir, "plugin", plugin.pluginId);
+    subagentPluginCache.set(cacheKey, { sig, entry });
+    pluginEntries.push(entry);
+  }
+
+  const diagnostics = [
+    ...globalEntry.diagnostics,
+    ...workspaceEntry.diagnostics,
+    ...pluginEntries.flatMap((e) => e.diagnostics),
+  ];
 
   const isEnabled = (def: SubagentDefinition): boolean =>
     state.disabled[def.stateKey] !== true;
 
   const mounted = new Map<string, SubagentDefinition>();
-  const ordered = [...globalEntry.definitions, ...workspaceEntry.definitions];
+  const ordered = [
+    ...globalEntry.definitions,
+    ...workspaceEntry.definitions,
+    ...pluginEntries.flatMap((e) => e.definitions),
+  ];
   for (const def of ordered) {
     if (!isEnabled(def)) continue;
     mounted.set(normalizeSubagentName(def.name), def);
@@ -551,7 +609,7 @@ export async function loadSubagentDefinitions(options: {
   const entries: SubagentEntry[] = ordered.map((def) => ({
     ...def,
     enabled: isEnabled(def),
-    editable: def.scope !== "builtin",
+    editable: def.scope !== "builtin" && def.scope !== "plugin",
   }));
 
   return {

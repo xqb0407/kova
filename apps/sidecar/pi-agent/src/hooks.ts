@@ -10,6 +10,7 @@
  * （同 memory 链路）；sidecar 重启自动恢复。
  */
 import { spawn } from "node:child_process";
+import { activePluginHooks } from "./plugins";
 import { kvGet, kvSet } from "./hostdb";
 import { logErr } from "./log";
 
@@ -132,13 +133,19 @@ export function getHookConfigs(): HookConfig[] {
   return configs.map((h) => ({ ...h }));
 }
 
-/** 事件 + matcher 过滤后的启用钩子 */
+/** 事件 + matcher 过滤后的启用钩子（手配 kv 钩子 + 启用插件的 hooks 组件垫底） */
 export function matchingHooks(event: HookEventName, toolName?: string): HookConfig[] {
-  return configs.filter((h) => {
+  const manual = configs.filter((h) => {
     if (!h.enabled || h.event !== event) return false;
     if (toolName !== undefined) return matches(h.matcher, toolName);
     return true;
   });
+  const plugin = activePluginHooks().filter((h) => {
+    if (h.event !== event) return false;
+    if (toolName !== undefined) return matches(h.matcher, toolName);
+    return true;
+  });
+  return [...manual, ...plugin];
 }
 
 function matches(matcher: string | undefined, toolName: string): boolean {

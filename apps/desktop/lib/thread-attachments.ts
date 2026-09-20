@@ -23,25 +23,53 @@ export type ThreadAttachment = {
   kind: "image" | "document";
 };
 
+function pushAttachment(
+  byUrl: Map<string, ThreadAttachment>,
+  wire: unknown,
+  mimeType: unknown,
+  filename: unknown,
+): void {
+  // data 装线上字符串（data: / file://），同 pi-transport 的 UIMessage url 一个值
+  const url = typeof wire === "string" && wire ? wire : "";
+  if (!url || byUrl.has(url)) return;
+  const mediaType = typeof mimeType === "string" ? mimeType : "";
+  const name = typeof filename === "string" && filename ? filename : "";
+  const kind = promptFileKind(name || undefined, mediaType || undefined);
+  byUrl.set(url, {
+    url,
+    name: name || (kind === "image" ? "图片" : "附件"),
+    mediaType,
+    kind: kind ?? "document",
+  });
+}
+
 function deriveAttachments(messages: readonly ThreadMessage[]): ThreadAttachment[] {
   const byUrl = new Map<string, ThreadAttachment>();
   for (const message of messages) {
     if (message.role !== "user") continue;
+    // 主源：ThreadUserMessage.attachments（composer 附件挂这里，content parts
+    // 里的 file part 会被转换层过滤掉——消息区附件 chip 就从这渲染）
+    const attachments = (message as { attachments?: readonly unknown[] })
+      .attachments;
+    for (const att of attachments ?? []) {
+      const a = att as {
+        name?: unknown;
+        contentType?: unknown;
+        content?: readonly { type?: unknown; data?: unknown; mimeType?: unknown; filename?: unknown }[];
+      };
+      const filePart = (a.content ?? []).find((p) => p?.type === "file");
+      pushAttachment(
+        byUrl,
+        filePart?.data ?? null,
+        filePart?.mimeType ?? a.contentType ?? null,
+        filePart?.filename ?? a.name ?? null,
+      );
+    }
+    // 兜底：任何保留在 content parts 里的 file part（历史重建管道形状不保证）
     for (const part of message.content) {
-      // ThreadMessage 的 file part = FileMessagePart：data 装线上字符串
-      //（data: 或 file://，同 pi-transport 的 UIMessage url 一个值）
       if (part.type !== "file") continue;
-      const url = typeof part.data === "string" ? part.data : "";
-      if (!url || byUrl.has(url)) continue;
-      const mediaType = typeof part.mimeType === "string" ? part.mimeType : "";
-      const filename = typeof part.filename === "string" ? part.filename : "";
-      const kind = promptFileKind(filename || undefined, mediaType || undefined);
-      byUrl.set(url, {
-        url,
-        name: filename || (kind === "image" ? "图片" : "附件"),
-        mediaType,
-        kind: kind ?? "document",
-      });
+      const p = part as { data?: unknown; mimeType?: unknown; filename?: unknown };
+      pushAttachment(byUrl, p.data, p.mimeType, p.filename);
     }
   }
   return [...byUrl.values()];

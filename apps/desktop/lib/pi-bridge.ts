@@ -264,7 +264,7 @@ export type PiTraceRun = {
 };
 
 /** 子智能体定义所在层（事实源在 sidecar：内置常量 / <app_data>/subagents / <cwd>/.xulux/subagents） */
-export type PiSubagentScope = "builtin" | "system" | "workspace";
+export type PiSubagentScope = "builtin" | "system" | "workspace" | "plugin";
 
 /** 子智能体定义条目（设置 → 子智能体；list/save/delete/开关/信任的应答共用清单形状） */
 export type PiSubagentEntry = {
@@ -283,25 +283,31 @@ export type PiSubagentEntry = {
   enabled: boolean;
   /** 内置只读：不可编辑/删除，只能开关与复制 */
   editable: boolean;
+  /** scope = "plugin" 时来源插件身份 */
+  pluginId?: string;
 };
 
-/** 子智能体清单应答：设置页与所有变更命令共用（list/save/delete/开关的应答同形状） */
+/** 子智能体清单应答：设置页与所有变更命令共用（list/save/delete/开关的应答同形状）。
+ * pluginAgents = scope "plugin" 条目（子智能体设置页不渲染，`@` 提及与插件详情消费） */
 export type PiSubagentsResponse = {
   type: "subagents";
   agents: PiSubagentEntry[];
+  pluginAgents: PiSubagentEntry[];
   workspaceCwd: string | null;
   diagnostics: string[];
 };
 
 /** 技能来源层（事实源在 sidecar：托管层 <cwd>/.xulux/skills 与 <app_data>/skills 可编辑，
- *  生态兼容层 .agents/skills（agentskills.io 标准）只读发现） */
-export type PiSkillScope = "workspace" | "compat-workspace" | "system" | "compat";
+ *  生态兼容层 .agents/skills（agentskills.io 标准）只读发现，插件层经 pluginSkills 单列） */
+export type PiSkillScope = "workspace" | "compat-workspace" | "system" | "compat" | "plugin";
 
 /** 技能条目（设置 → 技能；list/save/delete/开关的应答共用清单形状） */
 export type PiSkillEntry = {
   name: string;
   description: string;
   scope: PiSkillScope;
+  /** scope = "plugin" 时来源插件身份（开关走 plugin 命名空间 stateKey） */
+  pluginId?: string;
   /** true = 不出现在模型技能目录（agentskills 规范字段；仅手动/工具场景可用） */
   disableModelInvocation?: boolean;
   /** 开关（未记录 = 启用） */
@@ -318,12 +324,113 @@ export type PiSkillEntry = {
   updatedAt?: string;
 };
 
-/** 技能清单应答：设置页与所有变更命令共用（list/save/delete/开关的应答同形状） */
+/** 技能清单应答：设置页与所有变更命令共用（list/save/delete/开关的应答同形状）。
+ * pluginSkills = scope "plugin" 的条目（技能设置页不渲染，`/` 菜单与插件详情消费） */
 export type PiSkillsResponse = {
   type: "skills";
   skills: PiSkillEntry[];
+  pluginSkills: PiSkillEntry[];
   workspaceCwd: string | null;
   diagnostics: string[];
+};
+
+// ---------------------------------------------------------------------------
+// 插件系统（插件市场；事实源在 sidecar plugins.ts，scope/layer="plugin" 的
+// 组件条目不进 skills/MCP/子智能体设置页清单，只在插件详情页展示与开关）
+// ---------------------------------------------------------------------------
+
+/** 插件组件摘要条目（list_plugins 应答内嵌） */
+export type PiPluginComponentEntry = {
+  name: string;
+  description: string;
+  enabled: boolean;
+  /** MCP 服务器专用 */
+  transport?: "stdio" | "http";
+  path?: string;
+};
+
+/** 一条已装插件（cache 物化 + 清单规范化产物） */
+export type PiPluginEntry = {
+  pluginId: string;
+  name: string;
+  marketplaceId: string;
+  marketplaceName: string;
+  version: string;
+  revision?: string;
+  installedAt: string;
+  description?: string;
+  icon?: string;
+  category?: string;
+  /** 清单探测来源：xulux 原生或生态规范化 */
+  manifestKind: "xulux" | "claude" | "codex";
+  /** 来源市场已移除（插件保留可用，仅无更新通道） */
+  sourceMissing: boolean;
+  enabled: boolean;
+  components: {
+    skills: PiPluginComponentEntry[];
+    mcpServers: PiPluginComponentEntry[];
+    subagents: PiPluginComponentEntry[];
+  };
+  diagnostics: string[];
+};
+
+/** list_plugins / set_plugin_enabled / uninstall_plugin 应答 */
+export type PiPluginsResponse = {
+  type: "plugins";
+  plugins: PiPluginEntry[];
+  workspaceCwd: string | null;
+};
+
+/** 市场目录条目（marketplace.json plugins[] 规范化） */
+export type PiMarketplaceCatalogEntry = {
+  name: string;
+  version?: string;
+  description?: string;
+  icon?: string;
+  category?: string;
+  keywords?: string[];
+  /** 相对市场根的插件目录 */
+  path: string;
+};
+
+/** 一条已添加市场（list_marketplaces 应答） */
+export type PiMarketplaceEntry = {
+  id: string;
+  name: string;
+  type: "directory" | "git";
+  path?: string;
+  repo?: string;
+  addedAt: string;
+  lastRefresh?: string;
+  revision?: string;
+  /** 从未成功刷新过：目录为空，需先 refresh */
+  needsRefresh: boolean;
+  plugins: PiMarketplaceCatalogEntry[];
+};
+
+/** list_marketplaces / remove_marketplace 应答 */
+export type PiMarketplacesResponse = {
+  type: "marketplaces";
+  marketplaces: PiMarketplaceEntry[];
+};
+
+/** 耗时操作受理应答（add/refresh/install）：结果经 plugin_op_result 自发帧送达 */
+export type PiPluginOpAccepted = {
+  type: "plugin_op_accepted";
+  opId: string;
+  op: "add_marketplace" | "refresh_marketplace" | "install_plugin";
+};
+
+/** 耗时操作结果帧（无 id 自发；成功时携带刷新后的 plugins+marketplaces 双清单） */
+export type PiPluginOpResultFrame = {
+  type: "plugin_op_result";
+  opId: string;
+  op: "add_marketplace" | "refresh_marketplace" | "install_plugin";
+  ok: boolean;
+  errorText?: string;
+  plugins?: PiPluginEntry[];
+  marketplaces?: PiMarketplaceEntry[];
+  workspaceCwd?: string | null;
 };
 
 /** 记忆设置整包（设置 → 记忆；sidecar 持久化于 SQLite kv，活动会话热更新） */
@@ -442,11 +549,14 @@ export type PiMcpServerStatus = {
  *  env/headers 明文返回仅供编辑弹窗回填（存本地配置文件，同 custom providers 的 key 策略） */
 export type PiMcpServerEntry = {
   name: string;
-  layer: "system" | "workspace";
+  /** plugin 层条目单列在 pluginServers（设置页不渲染，`/` 菜单与插件详情消费） */
+  layer: "system" | "workspace" | "plugin";
   /** 定义所在文件绝对路径 */
   source: string;
   /** 来自工作区共享文件 .mcp.json（设置页不直接改写它，删除降级为提示） */
   fromStandard?: boolean;
+  /** layer = "plugin" 时来源插件身份 */
+  pluginId?: string;
   transport: "stdio" | "http";
   command?: string;
   args?: string[];
@@ -468,6 +578,8 @@ export type PiMcpServerEntry = {
 export type PiMcpServersResponse = {
   type: "mcp_servers";
   servers: PiMcpServerEntry[];
+  /** layer "plugin" 条目（MCP 设置页不渲染，`/` 菜单与插件详情消费） */
+  pluginServers: PiMcpServerEntry[];
   workspaceCwd: string | null;
   diagnostics: string[];
 };
@@ -636,6 +748,9 @@ export type PiResponse =
   | PiMcpServerLogResponse
   | PiMcpServerToolsResponse
   | PiMcpAuditLogResponse
+  | PiPluginsResponse
+  | PiMarketplacesResponse
+  | PiPluginOpAccepted
   | { type: "usage_stats"; stats: PiUsageStats }
   | { type: "trace_query"; runs: PiTraceRun[] }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }

@@ -45,6 +45,8 @@ export type McpSnapshot = {
   loading: boolean;
   error: string | null;
   servers: McpServerEntry[];
+  /** layer "plugin" 条目（MCP 设置页不渲染；`/` 菜单与插件详情消费） */
+  pluginServers: McpServerEntry[];
   /** 本次清单对应的工作区 cwd */
   workspaceCwd: string | null;
   /** 加载诊断（坏文件/坏条目等），不致命 */
@@ -55,6 +57,7 @@ const EMPTY: McpSnapshot = {
   loading: false,
   error: null,
   servers: [],
+  pluginServers: [],
   workspaceCwd: null,
   diagnostics: [],
 };
@@ -76,6 +79,7 @@ function fromResponse(res: PiMcpServersResponse): McpSnapshot {
     loading: false,
     error: null,
     servers: res.servers,
+    pluginServers: res.pluginServers ?? [],
     workspaceCwd: res.workspaceCwd,
     diagnostics: res.diagnostics,
   };
@@ -145,16 +149,18 @@ export function deleteMcpServer(
 }
 
 export function setMcpServerEnabled(
-  layer: "system" | "workspace",
+  layer: "system" | "workspace" | "plugin",
   name: string,
   enabled: boolean,
   cwd?: string | null,
+  pluginId?: string,
 ): Promise<void> {
   return mutate({
     type: "set_mcp_server_enabled",
     layer,
     name,
     enabled,
+    ...(pluginId ? { pluginId } : {}),
     ...(cwd ? { cwd } : {}),
   });
 }

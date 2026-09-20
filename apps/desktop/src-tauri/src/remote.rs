@@ -240,7 +240,7 @@ pub(crate) fn broadcast_notification(parsed: Option<&Value>) {
     }
     match v.get("type").and_then(|t| t.as_str()) {
         Some("turn_changed") | Some("subagent_activity") | Some("automation_fired")
-        | Some("automation_run_done") => {}
+        | Some("automation_run_done") | Some("plugin_op_result") => {}
         _ => return,
     }
     let Ok(map) = authed_txs().lock() else { return };
