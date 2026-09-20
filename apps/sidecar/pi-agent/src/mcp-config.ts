@@ -27,6 +27,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { activePlugins, currentPluginsStateVersion, resolvePluginComponent } from "./plugins";
 import { kvGet, kvSet } from "./hostdb";
 import { logErr } from "./log";
 
@@ -49,11 +50,13 @@ export type McpServerDef = {
   callTimeout?: number;
   /** 工具名 glob 免审批（对 gateway 的 call 动作） */
   approveTools?: string[];
-  /** 所属层与来源文件，设置页展示与写路径用 */
-  layer: "system" | "workspace";
+  /** 所属层与来源文件，设置页展示与写路径用（plugin 层只读：插件市场贡献） */
+  layer: "system" | "workspace" | "plugin";
   source: string;
   /** 最终生效定义来自工作区标准层 .mcp.json（该文件设置页从不改写） */
   fromStandard?: boolean;
+  /** layer = "plugin" 时来源插件身份（stateKey 命名空间） */
+  pluginId?: string;
 };
 
 /** 每文件条目上限：坏目录不该撑爆搜索结果，与 subagents 的层上限同哲学 */
@@ -157,7 +160,7 @@ function stringMap(
 function parseEntry(
   name: string,
   raw: unknown,
-  opts: { layer: "system" | "workspace"; source: string; standard: boolean },
+  opts: { layer: "system" | "workspace" | "plugin"; source: string; standard: boolean; pluginId?: string },
   errors: string[],
   warnings: string[],
 ): McpServerDef | null {
@@ -179,6 +182,7 @@ function parseEntry(
     transport,
     layer: opts.layer,
     source: opts.source,
+    ...(opts.pluginId ? { pluginId: opts.pluginId } : {}),
   };
 
   if (transport === "stdio") {
@@ -301,8 +305,9 @@ function fileSignature(path: string): string {
 
 function parseLayer(
   path: string,
-  layer: "system" | "workspace",
+  layer: "system" | "workspace" | "plugin",
   standard: boolean,
+  pluginId?: string,
 ): LayerParse {
   const diagnostics: string[] = [];
   if (!existsSync(path)) return { defs: [], diagnostics };
@@ -341,7 +346,7 @@ function parseLayer(
     const def = parseEntry(
       name,
       (servers as Record<string, unknown>)[name],
-      { layer, source: path, standard },
+      { layer, source: path, standard, ...(pluginId ? { pluginId } : {}) },
       errors,
       warnings,
     );
@@ -393,7 +398,13 @@ export const MCP_ENABLED_KV_KEY = "pi.mcp";
 let enabledState: McpEnabledState = { disabled: {} };
 let enabledLoad: Promise<void> | undefined;
 
-export function mcpStateKey(layer: "system" | "workspace", name: string, cwd?: string): string {
+export function mcpStateKey(
+  layer: "system" | "workspace" | "plugin",
+  name: string,
+  cwd?: string,
+  pluginId?: string,
+): string {
+  if (layer === "plugin") return `plugin:${pluginId ?? ""}::${name}`;
   return layer === "workspace" ? `workspace:${cwd ?? ""}::${name}` : `system:${name}`;
 }
 
@@ -421,13 +432,14 @@ async function persistEnabledState(): Promise<void> {
 }
 
 export async function setMcpServerEnabled(
-  layer: "system" | "workspace",
+  layer: "system" | "workspace" | "plugin",
   name: string,
   enabled: boolean,
   cwd?: string,
+  pluginId?: string,
 ): Promise<void> {
   await initMcpEnabledState();
-  const key = mcpStateKey(layer, name, cwd);
+  const key = mcpStateKey(layer, name, cwd, pluginId);
   if (enabled) delete enabledState.disabled[key];
   else enabledState.disabled[key] = true;
   await persistEnabledState();
@@ -459,10 +471,17 @@ function loadSync(cwd: string | undefined): McpLoadResult {
   const systemPath = systemMcpConfigPath();
   const stdPath = cwd ? workspaceStandardMcpPath(cwd) : "";
   const ovrPath = cwd ? workspaceOverrideMcpPath(cwd) : "";
+  // 插件层签名：启用插件集合 + 各自文件签名（安装/卸载/开关立即失效缓存）
+  const pluginSources = activePlugins()
+    .map((p) => ({ pluginId: p.pluginId, file: resolvePluginComponent(p.manifest, "mcpServers") }))
+    .filter((p): p is { pluginId: string; file: string } => typeof p.file === "string")
+    .filter((p) => existsSync(p.file));
   const sig = [
     fileSignature(systemPath),
     cwd ? fileSignature(stdPath) : "",
     cwd ? fileSignature(ovrPath) : "",
+    pluginSources.map((p) => `${p.pluginId}=${fileSignature(p.file)}`).join("|"),
+    `v${currentPluginsStateVersion()}`,
   ].join("|");
   const cached = loadCache.get(cwd ?? "");
   if (cached && cached.sig === sig) return cached.result;
@@ -480,9 +499,27 @@ function loadSync(cwd: string | undefined): McpLoadResult {
     ...override.diagnostics,
   ];
 
+  // 插件层（垫底，只读）：standard=true——插件只认标准字段，xulux 专属字段
+  // （approveTools 等）不可由插件携带；同名先到先得（pluginId 排序保证确定性）
+  const pluginDefs: McpServerDef[] = [];
+  const seenPluginNames = new Set<string>();
+  for (const p of pluginSources) {
+    const parsed = parseLayer(p.file, "plugin", true, p.pluginId);
+    diagnostics.push(...parsed.diagnostics.map((d) => `[plugin ${p.pluginId}] ${d}`));
+    for (const def of parsed.defs) {
+      if (seenPluginNames.has(def.name)) {
+        diagnostics.push(`[plugin ${p.pluginId}] [${def.name}] 与其他插件服务器重名，忽略本条`);
+        continue;
+      }
+      seenPluginNames.add(def.name);
+      pluginDefs.push(def);
+    }
+  }
+
   const byName = new Map<McpServerName, McpServerDef>();
-  // 合并顺序：系统 → 工作区标准 → 工作区覆盖（后者字段级覆盖前者）
-  for (const def of [...system.defs, ...standard.defs, ...override.defs]) {
+  // 合并顺序：系统 → 工作区标准 → 工作区覆盖 → 插件（后者字段级覆盖前者；
+  // 用户/工作区层天然压过插件层，与 skills 的遮蔽语义一致）
+  for (const def of [...system.defs, ...standard.defs, ...override.defs, ...pluginDefs]) {
     const base = byName.get(def.name);
     if (!base) {
       byName.set(def.name, { ...def });
@@ -501,7 +538,12 @@ function loadSync(cwd: string | undefined): McpLoadResult {
     enabledBy.set(
       def.name,
       enabledState.disabled[
-        mcpStateKey(def.layer, def.name, def.layer === "workspace" ? cwd : undefined)
+        mcpStateKey(
+          def.layer,
+          def.name,
+          def.layer === "workspace" ? cwd : undefined,
+          def.pluginId,
+        )
       ] !== true,
     );
   }
@@ -659,4 +701,20 @@ export async function deleteMcpServer(
   delete servers[name];
   writeFileSync(path, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
   loadCache.clear();
+}
+
+/** 插件 MCP 组件清单（插件详情页用）：解析指定文件并叠加当前开关状态 */
+export async function listPluginMcpEntries(
+  file: string,
+  pluginId: string,
+): Promise<Array<{ name: string; transport: "stdio" | "http"; description?: string; enabled: boolean }>> {
+  await initMcpEnabledState();
+  const parsed = parseLayer(file, "plugin", true, pluginId);
+  return parsed.defs.map((def) => ({
+    name: def.name,
+    transport: def.transport,
+    ...(def.description ? { description: def.description } : {}),
+    enabled:
+      enabledState.disabled[mcpStateKey("plugin", def.name, undefined, pluginId)] !== true,
+  }));
 }
