@@ -72,6 +72,7 @@ const SCOPE_ZH = {
   "compat-workspace": "生态·项目",
   system: "系统",
   compat: "生态·用户",
+  plugin: "插件",
 } as const;
 
 export function buildSkillMgmtTools(

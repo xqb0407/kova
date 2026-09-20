@@ -245,6 +245,10 @@ type EditorTarget =
   | { mode: "edit"; entry: McpServerEntry }
   | { mode: "json"; layer: "system" | "workspace" };
 
+/** 可写层收窄：插件层条目不渲染任何编辑/删除/测试入口，此分支实际不可达（防御式兜底） */
+const writableLayer = (l: McpServerEntry["layer"]): "system" | "workspace" =>
+  l === "workspace" ? "workspace" : "system";
+
 const McpEditorDialog: FC<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -264,7 +268,7 @@ const McpEditorDialog: FC<{
   }, [open, target]);
 
   if (!target || target.mode === "json") return null;
-  const layer = target.mode === "create" ? target.layer : target.entry.layer;
+  const layer = writableLayer(target.mode === "create" ? target.layer : target.entry.layer);
   const layerNeedsCwd = layer === "workspace" && !workspaceCwd;
   const insecureHttp =
     form.transport === "http" && isNonLoopbackHttpUrl(form.url);
@@ -1379,7 +1383,7 @@ export const McpSettings: FC = () => {
 
   const remove = (entry: McpServerEntry) => {
     void deleteMcpServer(
-      entry.layer,
+      writableLayer(entry.layer),
       entry.name,
       entry.layer === "workspace" ? viewingCwd : undefined,
     ).catch(() => {});
@@ -1391,7 +1395,7 @@ export const McpSettings: FC = () => {
     setTestingName(entry.name);
     try {
       const status = await testMcpServer(
-        entry.layer,
+        writableLayer(entry.layer),
         entry.name,
         entry.layer === "workspace" ? viewingCwd : undefined,
       );

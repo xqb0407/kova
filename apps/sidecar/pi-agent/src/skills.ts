@@ -47,13 +47,14 @@ import {
   type Skill,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { activePlugins, resolvePluginComponent } from "./plugins";
 import { kvGet, kvSet } from "./hostdb";
 import { logErr } from "./log";
 
-export type SkillScope = "workspace" | "compat-workspace" | "system" | "compat";
+export type SkillScope = "workspace" | "compat-workspace" | "system" | "compat" | "plugin";
 
-/** 一条技能：库加载产物 + 来源层（cwd 供工作区层 stateKey 反推） */
-export type LoadedSkill = { skill: Skill; scope: SkillScope; cwd?: string };
+/** 一条技能：库加载产物 + 来源层（cwd 供工作区层 stateKey 反推；pluginId 供插件层 stateKey 构造） */
+export type LoadedSkill = { skill: Skill; scope: SkillScope; cwd?: string; pluginId?: string };
 
 /** 设置页展示条目：加载产物 + 生效状态 */
 export type SkillEntry = {
@@ -72,6 +73,8 @@ export type SkillEntry = {
   content: string;
   sizeBytes: number;
   updatedAt: string;
+  /** scope = "plugin" 时来源插件身份（stateKey 命名空间） */
+  pluginId?: string;
   /** true = 不出现在模型目录（agent skills 规范字段；仍列入设置页可开关） */
   disableModelInvocation?: boolean;
 };
@@ -87,9 +90,15 @@ export function normalizeSkillName(value: string): string {
   return value.trim().toLowerCase();
 }
 
-/** 开关状态键：生态·用户/系统按 scope:name；工作区两层按 cwd 隔离 */
-export function skillStateKey(scope: SkillScope, name: string, cwd?: string): string {
+/** 开关状态键：生态·用户/系统按 scope:name；工作区两层按 cwd 隔离；插件层按 pluginId 命名空间 */
+export function skillStateKey(
+  scope: SkillScope,
+  name: string,
+  cwd?: string,
+  pluginId?: string,
+): string {
   const norm = normalizeSkillName(name);
+  if (scope === "plugin") return `plugin:${pluginId ?? ""}::${norm}`;
   return scope === "workspace" || scope === "compat-workspace"
     ? `${scope}:${cwd ?? ""}::${norm}`
     : `${scope}:${norm}`;
@@ -174,6 +183,7 @@ async function loadSkillLayer(
   dir: string,
   scope: SkillScope,
   cwd: string | undefined,
+  pluginId?: string,
 ): Promise<{ layers: LoadedSkill[]; diagnostics: string[] }> {
   const r = await loadSkills(skillEnv, dir, BACKGROUND_CONTEXT);
   const diagnostics = r.diagnostics.map(
@@ -189,6 +199,7 @@ async function loadSkillLayer(
     skill,
     scope,
     ...(cwd ? { cwd } : {}),
+    ...(pluginId ? { pluginId } : {}),
   }));
   return { layers, diagnostics };
 }
@@ -202,6 +213,11 @@ const workspaceCache = new Map<
   string,
   { sig: string; entry: { layers: LoadedSkill[]; diagnostics: string[] } }
 >();
+/** 插件层按 pluginId 缓存（目录签名失效；顺序 = pluginId 排序，垫底遮蔽语义见 mergeLayers） */
+const pluginCache = new Map<
+  string,
+  { sig: string; entry: { layers: LoadedSkill[]; diagnostics: string[] } }
+>();
 
 export type SkillsSnapshot = {
   /** 生效技能（去重遮蔽 + 开关过滤；disableModelInvocation 由提示词格式化器再滤） */
@@ -211,21 +227,30 @@ export type SkillsSnapshot = {
   diagnostics: string[];
 };
 
-/** 从缓存合并（无 IO）：同名遮蔽 [工作区, 生态·工作区, 系统, 生态·用户] 先见者胜 */
+/** 从缓存合并（无 IO）：同名遮蔽 [工作区, 生态·工作区, 系统, 生态·用户, 插件] 先见者胜 */
 function mergeLayers(cwd?: string): SkillsSnapshot {
   const globalEntry = globalCache.entry ?? { layers: [], diagnostics: [] };
   const wsEntry = (cwd ? workspaceCache.get(cwd)?.entry : undefined) ?? {
     layers: [],
     diagnostics: [],
   };
-  const ordered = [...wsEntry.layers, ...globalEntry.layers];
-  const diagnostics = [...wsEntry.diagnostics, ...globalEntry.diagnostics];
+  const pluginEntries = [...pluginCache.values()].map((c) => c.entry);
+  const ordered = [
+    ...wsEntry.layers,
+    ...globalEntry.layers,
+    ...pluginEntries.flatMap((e) => e.layers),
+  ];
+  const diagnostics = [
+    ...wsEntry.diagnostics,
+    ...globalEntry.diagnostics,
+    ...pluginEntries.flatMap((e) => e.diagnostics),
+  ];
 
   const winners = new Map<string, LoadedSkill>();
   const shadowedKeys = new Set<string>();
   for (const loaded of ordered) {
     const norm = normalizeSkillName(loaded.skill.name);
-    const key = skillStateKey(loaded.scope, loaded.skill.name, loaded.cwd);
+    const key = skillStateKey(loaded.scope, loaded.skill.name, loaded.cwd, loaded.pluginId);
     if (winners.has(norm)) {
       shadowedKeys.add(key);
       continue;
@@ -234,24 +259,30 @@ function mergeLayers(cwd?: string): SkillsSnapshot {
   }
 
   const entries: SkillEntry[] = ordered.map((loaded) => {
-    const key = skillStateKey(loaded.scope, loaded.skill.name, loaded.cwd);
+    const key = skillStateKey(loaded.scope, loaded.skill.name, loaded.cwd, loaded.pluginId);
     return {
       name: loaded.skill.name,
       description: loaded.skill.description,
       scope: loaded.scope,
       enabled: state.disabled[key] !== true,
       shadowed: shadowedKeys.has(key),
-      editable: loaded.scope === "system" || loaded.scope === "workspace",
+      editable: (loaded.scope === "system" || loaded.scope === "workspace") && !loaded.pluginId,
       path: loaded.skill.filePath,
       content: loaded.skill.content,
       sizeBytes: fileSizeOf(loaded.skill.filePath),
       updatedAt: fileTimeOf(loaded.skill.filePath),
+      ...(loaded.pluginId ? { pluginId: loaded.pluginId } : {}),
       ...(loaded.skill.disableModelInvocation ? { disableModelInvocation: true } : {}),
     };
   });
 
   const activeSkills = [...winners.values()]
-    .filter((loaded) => state.disabled[skillStateKey(loaded.scope, loaded.skill.name, loaded.cwd)] !== true)
+    .filter(
+      (loaded) =>
+        state.disabled[
+          skillStateKey(loaded.scope, loaded.skill.name, loaded.cwd, loaded.pluginId)
+        ] !== true,
+    )
     .map((loaded) => loaded.skill);
 
   return { activeSkills, entries, diagnostics };
@@ -311,6 +342,23 @@ export async function ensureSkillsLoaded(cwd?: string): Promise<void> {
         },
       });
     }
+  }
+  // 插件层（全局，垫底）：逐启用插件加载其技能目录；签名含插件清单以感知安装/卸载/更新
+  const pluginLayers = activePlugins().filter((p) => {
+    const dir = resolvePluginComponent(p.manifest, "skills");
+    return dir ? existsSync(dir) : false;
+  });
+  const liveIds = new Set(pluginLayers.map((p) => p.pluginId));
+  for (const staleId of [...pluginCache.keys()].filter((id) => !liveIds.has(id))) {
+    pluginCache.delete(staleId);
+  }
+  for (const plugin of pluginLayers) {
+    const dir = resolvePluginComponent(plugin.manifest, "skills") as string;
+    const sig = `${dirSignature(dir)}|${plugin.version}|${plugin.installedAt}`;
+    const cached = pluginCache.get(plugin.pluginId);
+    if (cached && cached.sig === sig) continue;
+    const loaded = await loadSkillLayer(dir, "plugin", undefined, plugin.pluginId);
+    pluginCache.set(plugin.pluginId, { sig, entry: loaded });
   }
 }
 
@@ -372,6 +420,7 @@ export function resetSkillsForTest(): void {
   globalCache.sig = "";
   globalCache.entry = undefined;
   workspaceCache.clear();
+  pluginCache.clear();
 }
 
 export async function setSkillEnabled(
@@ -379,9 +428,10 @@ export async function setSkillEnabled(
   name: string,
   enabled: boolean,
   cwd?: string,
+  pluginId?: string,
 ): Promise<void> {
   await initSkillsState();
-  const key = skillStateKey(scope, name, cwd);
+  const key = skillStateKey(scope, name, cwd, pluginId);
   if (enabled) delete state.disabled[key];
   else state.disabled[key] = true;
   await persistState();
@@ -396,7 +446,7 @@ export const MAX_SKILL_BATCH_TARGETS = 512;
  * 与单条开关同一套键规则。
  */
 export async function setSkillsEnabled(
-  targets: Array<{ scope: SkillScope; name: string }>,
+  targets: Array<{ scope: SkillScope; name: string; pluginId?: string }>,
   enabled: boolean,
   cwd?: string,
 ): Promise<void> {
@@ -406,11 +456,29 @@ export async function setSkillsEnabled(
   }
   await initSkillsState();
   for (const t of targets) {
-    const key = skillStateKey(t.scope, t.name, cwd);
+    const key = skillStateKey(t.scope, t.name, cwd, t.pluginId);
     if (enabled) delete state.disabled[key];
     else state.disabled[key] = true;
   }
   await persistState();
+}
+
+/**
+ * 插件技能组件清单（插件详情页用）：加载指定目录并叠加当前开关状态。
+ * 与合并链共用 loadSkillLayer（同一校验/上限），scope 恒为 "plugin"。
+ */
+export async function listPluginSkillEntries(
+  dir: string,
+  pluginId: string,
+): Promise<Array<{ name: string; description: string; enabled: boolean; path: string }>> {
+  await initSkillsState();
+  const { layers } = await loadSkillLayer(dir, "plugin", undefined, pluginId);
+  return layers.map((l) => ({
+    name: l.skill.name,
+    description: l.skill.description,
+    enabled: state.disabled[skillStateKey("plugin", l.skill.name, undefined, pluginId)] !== true,
+    path: l.skill.filePath,
+  }));
 }
 
 // ---------------------------------------------------------------------------

@@ -156,7 +156,8 @@ function toToolItem(server: string, tool: McpToolInfo): Unstable_TriggerItem {
  *  只取 ready 态——避免在输入框里打字就把懒服务器唤醒握手。 */
 function useMcpToolsByServer(workspace: string | null) {
   const mcp = useMcpServers(workspace);
-  const readyKey = mcp.servers
+  // 插件服务器与常规服务器同场：只在 ready 态取工具（避免打字唤醒懒服务器）
+  const readyKey = [...mcp.servers, ...mcp.pluginServers]
     .filter((s) => s.enabled && s.status.state === "ready")
     .map((s) => s.name)
     .join(",");
@@ -219,10 +220,11 @@ export function useComposerSlashMenu(): {
 
   const skillItems = useMemo<Unstable_TriggerItem[]>(
     () =>
-      skills.skills
+      // 插件技能（pluginSkills）与常规技能同场：芯片凭名定位，模型侧已同链生效
+      [...skills.skills, ...skills.pluginSkills]
         .filter((s) => s.enabled && !s.shadowed)
         .map(toSkillItem),
-    [skills.skills],
+    [skills.skills, skills.pluginSkills],
   );
 
   const toolItems = useMemo<Unstable_TriggerItem[]>(
@@ -268,13 +270,13 @@ export function useComposerSlashMenu(): {
   };
 }
 
-/** `@` 提及：子智能体清单（启用项），插芯片随消息发给模型 */
+/** `@` 提及：子智能体清单（启用项，含插件子智能体），插芯片随消息发给模型 */
 export function useSubagentMention() {
   const workspace = useWorkspace();
   const subagents = useSubagents(workspace);
   const items = useMemo<readonly Unstable_Mention[]>(
     () =>
-      subagents.agents
+      [...subagents.agents, ...subagents.pluginAgents]
         .filter((a) => a.enabled)
         .map((a) => ({
           id: `agent:${a.name}`,
@@ -283,7 +285,7 @@ export function useSubagentMention() {
           description: a.description,
           icon: "Bot",
         })),
-    [subagents.agents],
+    [subagents.agents, subagents.pluginAgents],
   );
   return unstable_useMentionAdapter({
     items,

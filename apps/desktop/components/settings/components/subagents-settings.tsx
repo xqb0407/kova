@@ -73,6 +73,7 @@ const SCOPE_LABEL: Record<SubagentEntry["scope"], string> = {
   builtin: "内置",
   system: "系统",
   workspace: "工作区",
+  plugin: "插件",
 };
 
 /** 表单草稿（maxTurns 用字符串承载，空 = 不设置） */

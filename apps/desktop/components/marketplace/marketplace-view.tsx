@@ -1,25 +1,54 @@
 "use client";
 
-import { useState, type FC } from "react";
+/**
+ * 插件市场（侧边栏「插件市场」主区视图）。
+ *
+ * 市场页 = 目录网格：市场选择器（登记的市场间切换 + 刷新）+ 插件卡片
+ * （安装 / 已装 / 有更新），右上角「+」添加市场（本地目录 / Git 仓库）。
+ * 右上角「管理」进入管理页——已装插件（开关/更新/卸载/组件明细）+ 原设置页
+ * 迁移来的 MCP 管理、技能管理（完整能力），应用授权暂为空态。
+ *
+ * 事实源在 sidecar plugins.ts；耗时操作（添加/刷新/安装）受理即返回，
+ * 完成经 plugin_op_result 帧回流（lib/plugins.ts 整包并入镜像）。
+ */
+import { useEffect, useMemo, useState, type FC } from "react";
 import dynamic from "next/dynamic";
 import {
+  BlocksIcon,
+  CheckIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
+  FolderOpenIcon,
+  GitBranchIcon,
   Loader2Icon,
   PackageOpenIcon,
+  PuzzleIcon,
+  RefreshCwIcon,
   SlidersHorizontalIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Segmented } from "@/components/custom-ui/segmented";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useWorkspace } from "@/lib/workspace-store";
 import { useSkills } from "@/lib/skills";
 import { useMcpServers } from "@/lib/mcp";
-
-/**
- * 插件市场（侧边栏「插件市场」主区视图）。
- * 市场页 = 发现目录（远程源暂未开放，占位空态；本地已安装项不在这里展示）；
- * 右上角「管理」进入管理页——原设置 → 智能体的 MCP / 技能两页整体迁移至此：
- * 插件页签渲染 MCP 管理、技能页签渲染技能管理（完整能力），应用授权暂为空态。
- */
+import {
+  installPlugin,
+  isPluginOpPending,
+  refreshMarketplace,
+  setPluginOpHandler,
+  useMarketplaces,
+  usePendingOps,
+  usePlugins,
+  type MarketplaceEntry,
+} from "@/lib/plugins";
 
 function ViewSpinner() {
   return (
@@ -44,18 +73,81 @@ const SkillsSettings = dynamic(
     })),
   { ssr: false, loading: () => <ViewSpinner /> },
 );
+const InstalledPlugins = dynamic(
+  () =>
+    import("@/components/marketplace/installed-plugins").then((m) => ({
+      default: m.InstalledPlugins,
+    })),
+  { ssr: false, loading: () => <ViewSpinner /> },
+);
+const AddMarketplaceDialog = dynamic(
+  () =>
+    import("@/components/marketplace/add-marketplace-dialog").then((m) => ({
+      default: m.AddMarketplaceDialog,
+    })),
+  { ssr: false },
+);
 
 /** 管理页分段器选项 */
-type ManageTab = "plugins" | "skills" | "apps";
+type ManageTab = "installed" | "plugins" | "skills" | "apps";
+
+/** 市场类型图标 */
+function MarketplaceIcon({ market }: { market: MarketplaceEntry }) {
+  return market.type === "git" ? (
+    <GitBranchIcon className="text-muted-foreground size-3.5 shrink-0" />
+  ) : (
+    <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+  );
+}
 
 export const MarketplaceView: FC = () => {
   const workspace = useWorkspace();
   // 管理页分段器的计数；清单数据由迁移进来的管理组件自取
   const skillsSnap = useSkills(workspace);
   const mcpSnap = useMcpServers(workspace);
+  const pluginsSnap = usePlugins(workspace);
+  const marketplacesSnap = useMarketplaces();
+  const pending = usePendingOps();
 
   const [page, setPage] = useState<"market" | "manage">("market");
-  const [manageTab, setManageTab] = useState<ManageTab>("plugins");
+  const [manageTab, setManageTab] = useState<ManageTab>("installed");
+  const [addOpen, setAddOpen] = useState(false);
+  const [activeMktId, setActiveMktId] = useState<string | null>(null);
+
+  const marketplaces = marketplacesSnap.marketplaces;
+  const activeMarket = useMemo(
+    () => marketplaces.find((m) => m.id === activeMktId) ?? marketplaces[0],
+    [marketplaces, activeMktId],
+  );
+
+  // 首个市场就绪后选中它
+  useEffect(() => {
+    if (!activeMktId && marketplaces.length > 0) setActiveMktId(marketplaces[0]!.id);
+  }, [activeMktId, marketplaces]);
+
+  // 耗时操作出错时 toast 提示（成功路径由帧数据整包并入，无需处理）
+  useEffect(() => {
+    setPluginOpHandler((frame) => {
+      if (!frame.ok) {
+        void import("@/components/ui/toast").then(({ toast }) => {
+          toast.error({ title: `插件操作失败（${frame.op}）`, description: frame.errorText });
+        });
+      }
+    });
+    return () => setPluginOpHandler(null);
+  }, []);
+
+  /** 当前市场目录中，该插件是否已安装（版本不同 = 有更新） */
+  const installStateOf = (mkt: MarketplaceEntry, pluginName: string) => {
+    const installed = pluginsSnap.plugins.find(
+      (p) => p.name === pluginName && p.marketplaceId === mkt.id,
+    );
+    if (!installed) return { installed: false, update: false, busy: false } as const;
+    const catalogEntry = mkt.plugins.find((e) => e.name === pluginName);
+    const update = Boolean(catalogEntry?.version && catalogEntry.version !== installed.version);
+    const busy = isPluginOpPending("install_plugin", `${mkt.id}:${pluginName}`);
+    return { installed: true, update, busy } as const;
+  };
 
   if (page === "manage") {
     return (
@@ -75,6 +167,7 @@ export const MarketplaceView: FC = () => {
             value={manageTab}
             onChange={setManageTab}
             options={[
+              { value: "installed", label: `已装插件 ${pluginsSnap.plugins.length}` },
               { value: "plugins", label: `插件 ${mcpSnap.servers.length}` },
               { value: "skills", label: `技能 ${skillsSnap.skills.length}` },
               { value: "apps", label: "应用授权 0" },
@@ -82,17 +175,24 @@ export const MarketplaceView: FC = () => {
           />
         </div>
         <div className="min-h-0 flex-1">
-          {manageTab === "plugins" && <McpSettings />}
-          {manageTab === "skills" && <SkillsSettings />}
-          {manageTab === "apps" && (
-            <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-              暂无应用授权
-            </div>
-          )}
+          <div className="mx-auto h-full max-w-6xl px-8">
+            {manageTab === "installed" && <InstalledPlugins />}
+            {manageTab === "plugins" && <McpSettings />}
+            {manageTab === "skills" && <SkillsSettings />}
+            {manageTab === "apps" && (
+              <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
+                暂无应用授权
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
   }
+
+  const refreshBusy = activeMarket
+    ? isPluginOpPending("refresh_marketplace", activeMarket.id)
+    : false;
 
   return (
     <div className="h-full">
@@ -105,28 +205,185 @@ export const MarketplaceView: FC = () => {
               发现并安装插件、技能等扩展，拓展 Agent 的能力。
             </p>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5"
-            onClick={() => setPage("manage")}
-          >
-            <SlidersHorizontalIcon className="size-3.5" />
-            管理
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setAddOpen(true)}
+            >
+              + 添加市场
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setPage("manage")}
+            >
+              <SlidersHorizontalIcon className="size-3.5" />
+              管理
+            </Button>
+          </div>
         </div>
 
-        {/* 市场目录空态：远程源未开放；本地已安装项只在「管理」页展示 */}
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 pb-16">
-          <div className="bg-muted/50 text-muted-foreground grid size-12 place-items-center rounded-2xl border">
-            <PackageOpenIcon className="size-6" />
+        {/* 市场选择器 + 目录 */}
+        {marketplaces.length === 0 ? (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 pb-16">
+            <div className="bg-muted/50 text-muted-foreground grid size-12 place-items-center rounded-2xl border">
+              <PackageOpenIcon className="size-6" />
+            </div>
+            <p className="text-sm font-medium">还没有添加插件市场</p>
+            <p className="text-muted-foreground text-sm">
+              点右上角「添加市场」，选择本地目录或 Git 仓库。
+            </p>
           </div>
-          <p className="text-sm font-medium">市场目录即将上线</p>
-          <p className="text-muted-foreground text-sm">
-            本地已安装的插件与技能，点右上角「管理」查看。
-          </p>
-        </div>
+        ) : (
+          <>
+            <div className="mt-6 flex items-center gap-2">
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <button
+                      type="button"
+                      className="hover:bg-muted inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-sm"
+                    >
+                      <MarketplaceIcon market={activeMarket!} />
+                      <span className="max-w-64 truncate">{activeMarket?.name}</span>
+                      <ChevronDownIcon className="text-muted-foreground size-3.5" />
+                    </button>
+                  }
+                />
+                <DropdownMenuContent align="start" className="w-80">
+                  {marketplaces.map((m) => (
+                    <DropdownMenuItem
+                      key={m.id}
+                      onClick={() => setActiveMktId(m.id)}
+                      className="gap-2"
+                    >
+                      <MarketplaceIcon market={m} />
+                      <span className="min-w-0 flex-1 truncate">{m.name}</span>
+                      {m.id === activeMarket?.id && <CheckIcon className="size-3.5" />}
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setAddOpen(true)}>+ 添加市场…</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {activeMarket && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground h-8 gap-1 text-xs"
+                  disabled={refreshBusy}
+                  onClick={() => void refreshMarketplace(activeMarket.id)}
+                >
+                  <RefreshCwIcon className={refreshBusy ? "size-3.5 animate-spin" : "size-3.5"} />
+                  刷新
+                </Button>
+              )}
+            </div>
+
+            {/* 插件卡片网格 */}
+            <div className="mt-4 min-h-0 flex-1 overflow-y-auto pb-8">
+              {activeMarket!.needsRefresh ? (
+                <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
+                  <PackageOpenIcon className="size-8" />
+                  市场目录尚未加载，点「刷新」获取。
+                </div>
+              ) : activeMarket!.plugins.length === 0 ? (
+                <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
+                  <PackageOpenIcon className="size-8" />
+                  该市场暂无插件。
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {activeMarket!.plugins.map((entry) => {
+                    const state = installStateOf(activeMarket!, entry.name);
+                    return (
+                      <div
+                        key={entry.name}
+                        className="bg-muted/50 flex flex-col rounded-2xl border p-4"
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="bg-background grid size-9 shrink-0 place-items-center rounded-xl border">
+                            <PuzzleIcon className="text-muted-foreground size-4.5" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="truncate text-sm font-medium">{entry.name}</span>
+                              {entry.version && (
+                                <Badge
+                                  variant="outline"
+                                  className="px-1.5 font-mono text-[11px] font-normal"
+                                >
+                                  v{entry.version}
+                                </Badge>
+                              )}
+                            </div>
+                            {entry.category && (
+                              <p className="text-muted-foreground mt-0.5 text-xs">{entry.category}</p>
+                            )}
+                          </div>
+                        </div>
+                        {entry.description && (
+                          <p className="text-muted-foreground mt-2 line-clamp-3 flex-1 text-sm">
+                            {entry.description}
+                          </p>
+                        )}
+                        <div className="mt-3 flex items-center justify-between">
+                          <div className="flex gap-1">
+                            {entry.keywords?.slice(0, 2).map((k) => (
+                              <Badge key={k} variant="secondary" className="font-normal">
+                                <BlocksIcon className="size-3" />
+                                {k}
+                              </Badge>
+                            ))}
+                          </div>
+                          {state.installed ? (
+                            state.update ? (
+                              <Button
+                                size="sm"
+                                className="h-7 gap-1 text-xs"
+                                disabled={state.busy}
+                                onClick={() => void installPlugin(activeMarket!.id, entry.name)}
+                              >
+                                {state.busy ? (
+                                  <Loader2Icon className="size-3 animate-spin" />
+                                ) : null}
+                                更新
+                              </Button>
+                            ) : (
+                              <Badge variant="outline" className="gap-1 font-normal">
+                                <CheckIcon className="size-3" />
+                                已安装
+                              </Badge>
+                            )
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 gap-1 text-xs"
+                              disabled={state.busy || pending.length > 0}
+                              onClick={() => void installPlugin(activeMarket!.id, entry.name)}
+                            >
+                              {state.busy ? (
+                                <Loader2Icon className="size-3 animate-spin" />
+                              ) : null}
+                              安装
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </div>
+
+      <AddMarketplaceDialog open={addOpen} onOpenChange={setAddOpen} />
     </div>
   );
 };

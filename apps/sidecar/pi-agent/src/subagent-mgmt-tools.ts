@@ -31,6 +31,7 @@ const SCOPE_ZH: Record<SubagentScope, string> = {
   builtin: "内置",
   system: "系统级",
   workspace: "工作区级",
+  plugin: "插件",
 };
 
 function textResult(text: string) {

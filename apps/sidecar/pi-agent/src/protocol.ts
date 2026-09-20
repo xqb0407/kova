@@ -103,6 +103,20 @@
  *   { "type": "set_skill_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 skills 应答
  *   { "type": "set_skills_enabled", "id", "targets": [{ "scope", "name" }...], "cwd"?, "enabled" }
  *       批量开关（设置页「全部启用 / 全部关闭」快捷）：targets 整表置为目标状态、一次性落盘 + 热重载 → 同款 skills 应答
+ *   —— 插件系统（市场页「已装插件」；插件清单探测 .xulux-plugin/.claude-plugin/.codex-plugin，
+ *      四类组件 skills/mcpServers/hooks/subagents 垫底合并，见 plugins.ts）——
+ *   { "type": "list_plugins", "id", "cwd"? }                  → { id, type: "plugins", plugins, workspaceCwd }
+ *       已装插件清单（含组件摘要/开关/诊断；scope="plugin" 条目不进 skills/mcp/subagents 设置页清单）
+ *   { "type": "set_plugin_enabled", "id", "pluginId", "enabled", "cwd"? } → 插件级开关落 kv + 四链全量热重载 → 同款 plugins 应答
+ *   { "type": "uninstall_plugin", "id", "pluginId", "cwd"? }  → 删物化目录 + 清 kv + 热重载 → 同款 plugins 应答
+ *   { "type": "list_marketplaces", "id" }                     → { id, type: "marketplaces", marketplaces }
+ *   { "type": "add_marketplace", "id", "mtype": "directory"|"git", ("path"|"repo") } → 受理（见下）
+ *   { "type": "remove_marketplace", "id", "marketplaceId" }   → 删登记（不卸载已装插件）→ marketplaces 应答
+ *   { "type": "refresh_marketplace", "id", "marketplaceId" }  → 受理
+ *   { "type": "install_plugin", "id", "marketplaceId", "name", "cwd"? } → 受理
+ *       受理应答 { id, type: "plugin_op_accepted", opId, op }；git clone 等耗时操作在后台执行，
+ *       完成后自发 { "type": "plugin_op_result", opId, op, ok, ("plugins"/"marketplaces")?, "errorText"? } 帧
+ *       （组件开关走 set_skill_enabled/set_mcp_server_enabled/set_subagent_enabled，scope/layer="plugin" 时必带 pluginId）
  *   { "type": "list_mcp_servers", "id", "cwd"? }             → { id, type: "mcp_servers", servers, workspaceCwd, diagnostics }
  *       MCP 服务器清单（系统 ~/.xulux/mcp.json + 工作区 .mcp.json/.xulux/mcp.json 合并，
  *       含每台连接状态）；设置 → MCP 页渲染用
@@ -324,12 +338,14 @@ import {
   parseSubagentDraftYaml,
   saveSubagentDefinition,
   setSubagentEnabled,
+  listPluginSubagentEntries,
   type SubagentDraft,
   type SubagentScope,
 } from "./subagent-definitions";
 import {
   deleteSkillDoc,
   ensureSkillsLoaded,
+  listPluginSkillEntries,
   MAX_SKILL_BATCH_TARGETS,
   parseSkillDoc,
   saveSkillDoc,
@@ -338,6 +354,19 @@ import {
   skillsSnapshot,
   type SkillScope,
 } from "./skills";
+import {
+  activePlugins,
+  addMarketplace,
+  getMarketplaceCatalog,
+  installPlugin,
+  listInstalledPlugins,
+  listMarketplaces,
+  refreshMarketplace,
+  removeMarketplace,
+  resolvePluginComponent,
+  setPluginEnabled,
+  uninstallPlugin,
+} from "./plugins";
 import { aggregateUsageStats } from "./usage-stats";
 import { readTraceRuns } from "./trace";
 import { applyObservabilityConfig, getObservabilityConfig, normalizeObservabilityConfig } from "./observability";
@@ -353,6 +382,7 @@ import { readMcpAudit } from "./mcp-audit";
 import {
   activeMcpServers,
   deleteMcpServer,
+  listPluginMcpEntries,
   loadMcpServers,
   saveMcpServer,
   setMcpServerEnabled,
@@ -380,85 +410,100 @@ export function maskApiKey(key: string): string {
   return key.length > 4 ? `****${key.slice(-4)}` : "****";
 }
 
-/** 子智能体清单应答负载：设置页与所有变更命令共用同一形状（改后即见） */
+/** 子智能体清单应答负载：设置页与所有变更命令共用同一形状（改后即见）。
+ * scope = "plugin" 的条目单列在 pluginAgents——子智能体设置页只渲染常规三层，
+ * 插件子智能体由输入框 `@` 提及与插件详情消费 */
 async function subagentsPayload(cwd?: string) {
   const r = await loadSubagentDefinitions({ cwd });
+  const toEntry = (e: (typeof r.entries)[number]) => ({
+    name: e.name,
+    description: e.description,
+    tools: e.tools,
+    ...(e.maxTurns !== undefined ? { maxTurns: e.maxTurns } : {}),
+    ...(e.model ? { model: e.model } : {}),
+    prompt: e.prompt,
+    scope: e.scope,
+    ...(e.path ? { path: e.path } : {}),
+    ...(e.raw ? { raw: e.raw } : {}),
+    enabled: e.enabled,
+    editable: e.editable,
+  });
   return {
-    agents: r.entries.map((e) => ({
-      name: e.name,
-      description: e.description,
-      tools: e.tools,
-      ...(e.maxTurns !== undefined ? { maxTurns: e.maxTurns } : {}),
-      ...(e.model ? { model: e.model } : {}),
-      prompt: e.prompt,
-      scope: e.scope,
-      ...(e.path ? { path: e.path } : {}),
-      ...(e.raw ? { raw: e.raw } : {}),
-      enabled: e.enabled,
-      editable: e.editable,
-    })),
+    agents: r.entries.filter((e) => e.scope !== "plugin").map(toEntry),
+    pluginAgents: r.entries.filter((e) => e.scope === "plugin").map(toEntry),
     workspaceCwd: cwd ?? null,
     diagnostics: r.diagnostics,
   };
 }
 
-/** 技能 scope 字段校验：四个来源层之外回 null */
+/** 技能 scope 字段校验：五个来源层之外回 null */
 function skillScopeFrom(value: unknown): SkillScope | null {
   return value === "workspace" ||
     value === "compat-workspace" ||
     value === "system" ||
-    value === "compat"
+    value === "compat" ||
+    value === "plugin"
     ? (value as SkillScope)
     : null;
 }
 
-/** 技能清单应答负载：设置页与所有变更命令共用同一形状（改后即见） */
+/** 技能清单应答负载：设置页与所有变更命令共用同一形状（改后即见）。
+ * scope = "plugin" 的条目单列在 pluginSkills——技能设置页只渲染常规四层，
+ * 插件技能由输入框 `/` 菜单与插件详情消费（components 字段带 pluginId 供开关） */
 async function skillsPayload(cwd?: string) {
   await ensureSkillsLoaded(cwd);
   const r = skillsSnapshot(cwd);
+  const toEntry = (e: (typeof r.entries)[number]) => ({
+    name: e.name,
+    description: e.description,
+    scope: e.scope,
+    ...(e.pluginId ? { pluginId: e.pluginId } : {}),
+    ...(e.disableModelInvocation ? { disableModelInvocation: true } : {}),
+    enabled: e.enabled,
+    shadowed: e.shadowed,
+    editable: e.editable,
+    path: e.path,
+    content: e.content,
+    sizeBytes: e.sizeBytes,
+    ...(e.updatedAt ? { updatedAt: e.updatedAt } : {}),
+  });
   return {
-    skills: r.entries.map((e) => ({
-      name: e.name,
-      description: e.description,
-      scope: e.scope,
-      ...(e.disableModelInvocation ? { disableModelInvocation: true } : {}),
-      enabled: e.enabled,
-      shadowed: e.shadowed,
-      editable: e.editable,
-      path: e.path,
-      content: e.content,
-      sizeBytes: e.sizeBytes,
-      ...(e.updatedAt ? { updatedAt: e.updatedAt } : {}),
-    })),
+    skills: r.entries.filter((e) => e.scope !== "plugin").map(toEntry),
+    pluginSkills: r.entries.filter((e) => e.scope === "plugin").map(toEntry),
     workspaceCwd: cwd ?? null,
     diagnostics: r.diagnostics,
   };
 }
 
-/** MCP 服务器清单应答负载：设置页与所有变更命令共用同一形状（改后即见） */
+/** MCP 服务器清单应答负载：设置页与所有变更命令共用同一形状（改后即见）。
+ * layer = "plugin" 的条目单列在 pluginServers——MCP 设置页只渲染常规两层，
+ * 插件服务器由输入框 `/` 菜单（经网关调工具）与插件详情消费 */
 async function mcpServersPayload(cwd?: string) {
   const r = await loadMcpServers(cwd);
   const statuses = new Map(mcpManager.listStatuses(r.defs).map((s) => [s.name, s]));
+  const toEntry = (def: (typeof r.defs)[number]) => ({
+    name: def.name,
+    layer: def.layer,
+    source: def.source,
+    ...(def.fromStandard ? { fromStandard: true } : {}),
+    ...(def.pluginId ? { pluginId: def.pluginId } : {}),
+    transport: def.transport,
+    ...(def.command ? { command: def.command } : {}),
+    ...(def.args?.length ? { args: def.args } : {}),
+    ...(def.env && Object.keys(def.env).length > 0 ? { env: def.env } : {}),
+    ...(def.url ? { url: def.url } : {}),
+    ...(def.headers && Object.keys(def.headers).length > 0 ? { headers: def.headers } : {}),
+    ...(def.description ? { description: def.description } : {}),
+    ...(def.lifecycle ? { lifecycle: def.lifecycle } : {}),
+    ...(def.idleTimeout !== undefined ? { idleTimeout: def.idleTimeout } : {}),
+    ...(def.callTimeout !== undefined ? { callTimeout: def.callTimeout } : {}),
+    ...(def.approveTools?.length ? { approveTools: def.approveTools } : {}),
+    enabled: r.enabledBy.get(def.name) === true,
+    status: statuses.get(def.name) ?? { name: def.name, state: "idle", toolCount: 0 },
+  });
   return {
-    servers: r.defs.map((def) => ({
-      name: def.name,
-      layer: def.layer,
-      source: def.source,
-      ...(def.fromStandard ? { fromStandard: true } : {}),
-      transport: def.transport,
-      ...(def.command ? { command: def.command } : {}),
-      ...(def.args?.length ? { args: def.args } : {}),
-      ...(def.env && Object.keys(def.env).length > 0 ? { env: def.env } : {}),
-      ...(def.url ? { url: def.url } : {}),
-      ...(def.headers && Object.keys(def.headers).length > 0 ? { headers: def.headers } : {}),
-      ...(def.description ? { description: def.description } : {}),
-      ...(def.lifecycle ? { lifecycle: def.lifecycle } : {}),
-      ...(def.idleTimeout !== undefined ? { idleTimeout: def.idleTimeout } : {}),
-      ...(def.callTimeout !== undefined ? { callTimeout: def.callTimeout } : {}),
-      ...(def.approveTools?.length ? { approveTools: def.approveTools } : {}),
-      enabled: r.enabledBy.get(def.name) === true,
-      status: statuses.get(def.name) ?? { name: def.name, state: "idle", toolCount: 0 },
-    })),
+    servers: r.defs.filter((def) => def.layer !== "plugin").map(toEntry),
+    pluginServers: r.defs.filter((def) => def.layer === "plugin").map(toEntry),
     workspaceCwd: cwd ?? null,
     diagnostics: r.diagnostics,
   };
@@ -470,6 +515,77 @@ async function reloadMcpConnections(cwd?: string): Promise<void> {
   mcpManager.applyConfig(defs);
   // eager 服务器即时预连（fire-and-forget）：新加/改配置的 eager 不用等首次调用
   mcpManager.prewarm(defs);
+}
+
+/**
+ * 插件状态变更后的全链路热重载：skills 系统提示词重组 + MCP 连接池 diff +
+ * 子智能体工具组重排；hooks 本就每次调用实时读（activePluginHooks 签名缓存），
+ * 无需显式刷新。
+ */
+async function reloadAllPluginComponents(cwd?: string): Promise<void> {
+  await Promise.all([reloadSkills(), reloadSubagents()]);
+  await reloadMcpConnections(cwd);
+}
+
+/** 插件清单应答负载：市场页「已装插件」与变更命令共用同一形状 */
+async function pluginsPayload(cwd?: string) {
+  const plugins = listInstalledPlugins();
+  return {
+    type: "plugins" as const,
+    plugins: await Promise.all(
+      plugins.map(async (p) => {
+        const skillsDir = resolvePluginComponent(p.manifest, "skills");
+        const mcpFile = resolvePluginComponent(p.manifest, "mcpServers");
+        const subagentsDir = resolvePluginComponent(p.manifest, "subagents");
+        const [skills, mcpServers] = await Promise.all([
+          skillsDir ? listPluginSkillEntries(skillsDir, p.pluginId) : Promise.resolve([]),
+          mcpFile ? listPluginMcpEntries(mcpFile, p.pluginId) : Promise.resolve([]),
+        ]);
+        const subagents = subagentsDir
+          ? listPluginSubagentEntries(subagentsDir, p.pluginId)
+          : [];
+        return {
+          pluginId: p.pluginId,
+          name: p.name,
+          marketplaceId: p.mktId,
+          marketplaceName: p.mktName,
+          version: p.version,
+          ...(p.revision ? { revision: p.revision } : {}),
+          installedAt: p.installedAt,
+          ...(p.manifest.description ? { description: p.manifest.description } : {}),
+          ...(p.manifest.icon ? { icon: p.manifest.icon } : {}),
+          ...(p.manifest.category ? { category: p.manifest.category } : {}),
+          manifestKind: p.manifest.manifestKind,
+          sourceMissing: p.sourceMissing,
+          enabled: p.enabled,
+          components: { skills, mcpServers, subagents },
+          diagnostics: [...p.diagnostics, ...p.manifest.unsupported],
+        };
+      }),
+    ),
+    workspaceCwd: cwd ?? null,
+  };
+}
+
+/** 市场清单应答负载：登记表 + 各市场目录（含已装标记由前端比对） */
+function marketplacesPayload() {
+  return {
+    type: "marketplaces" as const,
+    marketplaces: listMarketplaces().map((r) => {
+      const { catalog, revision, needsRefresh } = getMarketplaceCatalog(r.id);
+      return {
+        id: r.id,
+        name: r.name,
+        type: r.type,
+        ...(r.type === "directory" ? { path: r.path } : { repo: r.repo }),
+        addedAt: r.addedAt,
+        ...(r.lastRefresh ? { lastRefresh: r.lastRefresh } : {}),
+        ...(revision ? { revision } : {}),
+        needsRefresh,
+        plugins: catalog.plugins,
+      };
+    }),
+  };
 }
 
 /** 从消息里解析 MCP 草稿（save 用）；字段宽松规整，校验交给 saveMcpServer */
@@ -1713,15 +1829,23 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     }
     case "set_subagent_enabled": {
       const scope: SubagentScope | null =
-        msg.scope === "builtin" || msg.scope === "system" || msg.scope === "workspace"
+        msg.scope === "builtin" ||
+        msg.scope === "system" ||
+        msg.scope === "workspace" ||
+        msg.scope === "plugin"
           ? msg.scope
           : null;
       if (!scope) throw new Error("set_subagent_enabled: invalid scope");
       const name = String(msg.name ?? "");
       if (!name) throw new Error("set_subagent_enabled: name is required");
+      const pluginId =
+        scope === "plugin" && typeof msg.pluginId === "string" ? msg.pluginId : undefined;
+      if (scope === "plugin" && !pluginId) {
+        throw new Error("set_subagent_enabled: plugin scope requires pluginId");
+      }
       const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
       const enabled = msg.enabled === true;
-      await setSubagentEnabled(scope, name, enabled, cwd);
+      await setSubagentEnabled(scope, name, enabled, cwd, pluginId);
       await reloadSubagents();
       send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
       break;
@@ -1763,6 +1887,107 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
     }
     case "automation_templates": {
       send({ id: reqId, ...automationTemplatesPayload() });
+      break;
+    }
+    // —— 插件系统（市场页 + 已装插件管理；市场/安装/刷新走市场源，耗时操作
+    //    受理即应答，完成后自发 plugin_op_result 帧，见 protocol.ts 头注释）——
+    case "list_plugins": {
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      send({ id: reqId, ...(await pluginsPayload(cwd)) });
+      break;
+    }
+    case "set_plugin_enabled": {
+      const pluginId = String(msg.pluginId ?? "");
+      if (!pluginId) throw new Error("set_plugin_enabled: pluginId is required");
+      await setPluginEnabled(pluginId, msg.enabled === true);
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      await reloadAllPluginComponents(cwd);
+      send({ id: reqId, ...(await pluginsPayload(cwd)) });
+      break;
+    }
+    case "uninstall_plugin": {
+      const pluginId = String(msg.pluginId ?? "");
+      if (!pluginId) throw new Error("uninstall_plugin: pluginId is required");
+      await uninstallPlugin(pluginId);
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      await reloadAllPluginComponents(cwd);
+      send({ id: reqId, ...(await pluginsPayload(cwd)) });
+      break;
+    }
+    case "list_marketplaces": {
+      send({ id: reqId, ...marketplacesPayload() });
+      break;
+    }
+    case "remove_marketplace": {
+      // 注意：不能用 "id" 字段——传输层会注入请求 id 覆盖它（mgr-pi-*），
+      // 市场身份用 marketplaceId（与 install_plugin 一致）
+      const marketplaceId = String(msg.marketplaceId ?? "");
+      if (!marketplaceId) throw new Error("remove_marketplace: marketplaceId is required");
+      removeMarketplace(marketplaceId);
+      send({ id: reqId, ...marketplacesPayload() });
+      break;
+    }
+    case "add_marketplace":
+    case "refresh_marketplace":
+    case "install_plugin": {
+      // 耗时操作（git clone / 大目录复制）：受理即应答，后台执行，完成自发帧
+      const opId = `plugin-op-${Date.now().toString(36)}-${fallbackSeq++}`;
+      const op =
+        msg.type === "add_marketplace"
+          ? "add_marketplace"
+          : msg.type === "refresh_marketplace"
+            ? "refresh_marketplace"
+            : "install_plugin";
+      send({ id: reqId, type: "plugin_op_accepted", opId, op });
+      const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+      void (async () => {
+        try {
+          if (op === "add_marketplace") {
+            const type = msg.mtype === "git" ? "git" : "directory";
+            if (type === "git" && typeof msg.repo !== "string") {
+              throw new Error("add_marketplace: repo is required");
+            }
+            if (type === "directory" && typeof msg.path !== "string") {
+              throw new Error("add_marketplace: path is required");
+            }
+            await addMarketplace({
+              type,
+              ...(type === "git" ? { repo: String(msg.repo) } : { path: String(msg.path) }),
+            });
+          } else if (op === "refresh_marketplace") {
+            const marketplaceId = String(msg.marketplaceId ?? "");
+            if (!marketplaceId) throw new Error("refresh_marketplace: marketplaceId is required");
+            await refreshMarketplace(marketplaceId);
+          } else {
+            const marketplaceId = String(msg.marketplaceId ?? "");
+            const name = String(msg.name ?? "");
+            if (!marketplaceId || !name) {
+              throw new Error("install_plugin: marketplaceId and name are required");
+            }
+            await installPlugin(marketplaceId, name);
+          }
+          // 载荷里的 type 字段弃用，结果帧以 plugin_op_result 为准
+          const { type: _pType, ...pluginsData } = await pluginsPayload(cwd);
+          const { type: _mType, ...marketplacesData } = marketplacesPayload();
+          send({
+            type: "plugin_op_result",
+            opId,
+            op,
+            ok: true,
+            ...pluginsData,
+            ...marketplacesData,
+          });
+        } catch (err) {
+          logErr(`plugin op ${op}:`, err);
+          send({
+            type: "plugin_op_result",
+            opId,
+            op,
+            ok: false,
+            errorText: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })();
       break;
     }
     case "list_skills": {
@@ -1826,9 +2051,14 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       if (!scope) throw new Error("set_skill_enabled: invalid scope");
       const name = String(msg.name ?? "");
       if (!name) throw new Error("set_skill_enabled: name is required");
+      const pluginId =
+        scope === "plugin" && typeof msg.pluginId === "string" ? msg.pluginId : undefined;
+      if (scope === "plugin" && !pluginId) {
+        throw new Error("set_skill_enabled: plugin scope requires pluginId");
+      }
       const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
       const enabled = msg.enabled === true;
-      await setSkillEnabled(scope, name, enabled, cwd);
+      await setSkillEnabled(scope, name, enabled, cwd, pluginId);
       await reloadSkills();
       send({ id: reqId, type: "skills", ...(await skillsPayload(cwd)) });
       break;
@@ -1909,14 +2139,25 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
       break;
     }
     case "set_mcp_server_enabled": {
-      const layer: "system" | "workspace" | null =
-        msg.layer === "workspace" ? "workspace" : msg.layer === "system" ? "system" : null;
+      const layer: "system" | "workspace" | "plugin" | null =
+        msg.layer === "workspace"
+          ? "workspace"
+          : msg.layer === "system"
+            ? "system"
+            : msg.layer === "plugin"
+              ? "plugin"
+              : null;
       if (!layer) throw new Error("set_mcp_server_enabled: invalid layer");
       const name = String(msg.name ?? "");
       if (!name) throw new Error("set_mcp_server_enabled: name is required");
+      const pluginId =
+        layer === "plugin" && typeof msg.pluginId === "string" ? msg.pluginId : undefined;
+      if (layer === "plugin" && !pluginId) {
+        throw new Error("set_mcp_server_enabled: plugin layer requires pluginId");
+      }
       const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
       const enabled = msg.enabled === true;
-      await setMcpServerEnabled(layer, name, enabled, cwd);
+      await setMcpServerEnabled(layer, name, enabled, cwd, pluginId);
       await reloadMcpConnections(cwd);
       send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
       break;

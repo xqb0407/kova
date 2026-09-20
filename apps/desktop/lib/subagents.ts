@@ -27,6 +27,8 @@ export type SubagentsSnapshot = {
   loading: boolean;
   error: string | null;
   agents: SubagentEntry[];
+  /** scope "plugin" 条目（子智能体设置页不渲染；`@` 提及与插件详情消费） */
+  pluginAgents: SubagentEntry[];
   /** 本次清单对应的工作区 cwd */
   workspaceCwd: string | null;
   /** 加载诊断（坏文件等），不致命 */
@@ -37,6 +39,7 @@ const EMPTY: SubagentsSnapshot = {
   loading: false,
   error: null,
   agents: [],
+  pluginAgents: [],
   workspaceCwd: null,
   diagnostics: [],
 };
@@ -58,6 +61,7 @@ function fromResponse(res: PiSubagentsResponse): SubagentsSnapshot {
     loading: false,
     error: null,
     agents: res.agents,
+    pluginAgents: res.pluginAgents ?? [],
     workspaceCwd: res.workspaceCwd,
     diagnostics: res.diagnostics,
   };
@@ -132,12 +136,14 @@ export function setSubagentEnabled(
   name: string,
   enabled: boolean,
   cwd?: string | null,
+  pluginId?: string,
 ): Promise<void> {
   return mutate({
     type: "set_subagent_enabled",
     scope,
     name,
     enabled,
+    ...(pluginId ? { pluginId } : {}),
     ...(cwd ? { cwd } : {}),
   });
 }

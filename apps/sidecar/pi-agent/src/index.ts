@@ -35,6 +35,7 @@ import { initHooks } from "./hooks";
 import { initSubagentState } from "./subagent-definitions";
 import { initSkillsState } from "./skills";
 import { initMcpEnabledState } from "./mcp-config";
+import { initPluginsState } from "./plugins";
 import { mcpManager } from "./mcp-manager";
 import { handleLine, markStdinClosed, setInitGate } from "./protocol";
 import { initAutomation, stopAutomation } from "./automation/runtime";
@@ -100,6 +101,8 @@ async function main() {
     // 生命周期钩子配置同走 kv（PreToolUse/PermissionRequest 在工具路径同步读取，
     // 必须在闸门放行前就位，保证首批会话即生效）
     await initHooks();
+    // 插件启用开关同走 kv（插件清单本身带签名扫描；四条合并链的插件层读取它）
+    await initPluginsState();
   })().catch((err) => {
     logErr("model catalog init failed:", err);
   });

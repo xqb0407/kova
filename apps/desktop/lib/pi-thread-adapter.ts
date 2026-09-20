@@ -88,9 +88,34 @@ const converter = createMessageConverter((msg: UIMessage) => {
     }
     return [];
   });
+  // 用户附件回放：file part → ThreadMessageLike.attachments（活动面板「引用文件」
+  // 与消息区附件 chip 的数据源；不带的话刷新后附件消失）
+  const fileParts =
+    msg.role === "user"
+      ? msg.parts.filter((p): p is Extract<UIMessage["parts"][number], { type: "file" }> => p.type === "file")
+      : [];
   return {
     role: msg.role === "user" ? "user" : "assistant",
     content,
+    ...(fileParts.length
+      ? {
+          attachments: fileParts.map((p, i) => ({
+            id: `${msg.id}-att-${i}`,
+            type: p.mediaType?.startsWith("image/") ? "image" : "document",
+            name: p.filename ?? "附件",
+            contentType: p.mediaType,
+            status: { type: "complete" } as const,
+            content: [
+              {
+                type: "file",
+                data: p.url,
+                mimeType: p.mediaType,
+                ...(p.filename != null && { filename: p.filename }),
+              },
+            ],
+          })),
+        }
+      : {}),
   };
 });
 

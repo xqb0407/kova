@@ -116,6 +116,22 @@ export type PiAutomationFrame =
       finishedAt: string;
     };
 
+/**
+ * 插件耗时操作结果自发通知帧（sidecar plugins 分发 case 发出，无 id；
+ * 受理 → plugin_op_accepted，完成 → plugin_op_result）。
+ * 成功时携带刷新后的 plugins + marketplaces 双清单，前端 store 整包并入。
+ */
+export type PiPluginOpFrame = {
+  type: "plugin_op_result";
+  opId: string;
+  op: "add_marketplace" | "refresh_marketplace" | "install_plugin";
+  ok: boolean;
+  errorText?: string;
+  plugins?: import("@/lib/pi-bridge").PiPluginEntry[];
+  marketplaces?: import("@/lib/pi-bridge").PiMarketplaceEntry[];
+  workspaceCwd?: string | null;
+};
+
 export interface PiChannel {
   readonly kind: "tauri" | "ws";
   /** 管理类请求-响应；id 注入由实现负责（Tauri 侧 Rust 注入，WS 侧 JS 注入） */
@@ -164,6 +180,14 @@ export interface PiChannel {
    */
   subscribeAutomationEvents?(
     cb: (frame: PiAutomationFrame) => void,
+  ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（同款无 id 自发通知通道）：订阅插件耗时操作结果帧
+   * （plugin_op_result，见 PiPluginOpFrame）。
+   * WS 通道经网关白名单转发（remote.rs broadcast_notification）。
+   */
+  subscribePluginOps?(
+    cb: (frame: PiPluginOpFrame) => void,
   ): (() => void) | Promise<() => void>;
   /** 能力可选（与 subscribeTurns 成对）：当前正在跑 turn 的会话 id 种子清单 */
   listRunning?(): Promise<string[]>;
@@ -542,6 +566,27 @@ export class TauriPiChannel implements PiChannel {
           (parsed?.type === "automation_fired" || parsed?.type === "automation_run_done") &&
           typeof parsed.taskId === "string"
         ) {
+          cb(parsed);
+        }
+      }
+    });
+  }
+
+  /**
+   * plugin_op_result 自发通知帧（无 id，Rust 原样广播）：同款前缀预筛。
+   * 插件市场的添加/刷新/安装均为耗时操作，受理后据此收敛。
+   */
+  async subscribePluginOps(cb: (frame: PiPluginOpFrame) => void): Promise<() => void> {
+    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+      for (const wire of event.payload) {
+        if (!wire.l.startsWith('{"type":"plugin_op_result"')) continue;
+        let parsed: PiPluginOpFrame;
+        try {
+          parsed = JSON.parse(wire.l);
+        } catch {
+          continue;
+        }
+        if (parsed?.type === "plugin_op_result" && typeof parsed.opId === "string") {
           cb(parsed);
         }
       }

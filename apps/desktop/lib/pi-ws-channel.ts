@@ -5,6 +5,7 @@ import type {
   PiAutomationFrame,
   PiChannel,
   PiChannelStatus,
+  PiPluginOpFrame,
   PiRunningTurn,
   PromptStreamArgs,
 } from "@/lib/pi-channel";
@@ -55,6 +56,7 @@ export class WsPiChannel implements PiChannel {
   private statusCbs = new Set<(s: PiChannelStatus) => void>();
   private turnCbs = new Set<(sessionId: string | null, active: boolean) => void>();
   private automationCbs = new Set<(frame: PiAutomationFrame) => void>();
+  private pluginOpCbs = new Set<(frame: PiPluginOpFrame) => void>();
 
   constructor(
     private readonly url: string,
@@ -151,6 +153,14 @@ export class WsPiChannel implements PiChannel {
       const frame = v as unknown as PiAutomationFrame;
       if (typeof frame.taskId === "string") {
         for (const cb of this.automationCbs) cb(frame);
+      }
+      return;
+    }
+    // 插件耗时操作结果帧（remote.rs 白名单同款放行）
+    if (type === "plugin_op_result") {
+      const frame = v as unknown as PiPluginOpFrame;
+      if (typeof frame.opId === "string") {
+        for (const cb of this.pluginOpCbs) cb(frame);
       }
       return;
     }
@@ -283,6 +293,11 @@ export class WsPiChannel implements PiChannel {
   subscribeAutomationEvents(cb: (frame: PiAutomationFrame) => void): () => void {
     this.automationCbs.add(cb);
     return () => this.automationCbs.delete(cb);
+  }
+
+  subscribePluginOps(cb: (frame: PiPluginOpFrame) => void): () => void {
+    this.pluginOpCbs.add(cb);
+    return () => this.pluginOpCbs.delete(cb);
   }
 
   async listRunning(): Promise<string[]> {
