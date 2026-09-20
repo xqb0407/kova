@@ -655,6 +655,60 @@ describe("暂停/恢复", () => {
   });
 });
 
+describe("data-queue-state 快照广播", () => {
+  test("入队/promote 的变更广播到该线程活跃请求流上", async () => {
+    resetQueueForTests();
+    lines.length = 0;
+    const run = await resolveSession("th-bc");
+    run.agent = makeFakeAgent(10_000, 80);
+    const pa = dispatchPrompt("pba", { type: "prompt", text: "A", threadId: "th-bc" });
+    await waitUntil("pba", "start");
+
+    const pb = dispatchPrompt("pbb", { type: "prompt", text: "B", threadId: "th-bc" });
+    // 入队广播：data-queue-state 路由到活跃流（pba），携带全量快照
+    const stateChunk = chunksFor("pba").find((c) => c.type === "data-queue-state");
+    expect(stateChunk).toBeDefined();
+    const data = stateChunk!.data as { threadId: string; items: { text: string }[]; paused: boolean };
+    expect(data.threadId).toBe("th-bc");
+    expect(data.items.map((i) => i.text)).toEqual(["B"]);
+    expect(data.paused).toBe(false);
+
+    // promote：仍在快照（运行项锁定语义由快照消失表达）——至少再广播一次
+    lines.length = 0;
+    await dispatch("cmd-p", { type: "queue_promote", requestId: "pbb" });
+    expect(
+      chunksFor("pba").filter((c) => c.type === "data-queue-state").length,
+    ).toBeGreaterThanOrEqual(1);
+
+    // 宿主轮收尾：B 的退化…（B 经队列派发）——收尾后快照清空广播
+    await dispatch("pba-abort", { type: "abort", threadId: "th-bc" });
+    await Promise.all([pa, pb]);
+    resetQueueForTests();
+  });
+});
+
+describe("空队列快照必须落盘（复活 bug 回归）", () => {
+  test("取消最后一个排队项：空快照落盘，回放不再复活已删项", () => {
+    resetQueueForTests();
+    enqueueTurn("pr1", "th-pr", { text: "dying", threadId: "th-pr", sessionId: "s-pr" });
+    expect(readFileSync(sessionPath("s-pr"), "utf8")).toContain("dying");
+
+    cancelEntry("pr1"); // 引擎清空前必须先落空快照
+    const raw = readFileSync(sessionPath("s-pr"), "utf8");
+    const queueLines = raw
+      .split("\n")
+      .filter((l) => l.includes('"queue_state"'))
+      .map((l) => JSON.parse(l) as { snapshot: { items: unknown[] } });
+    expect(queueLines.at(-1)!.snapshot.items).toEqual([]);
+
+    // 重启语义：内存清空 → 回放采纳 → 不复活已删项
+    resetQueueForTests();
+    const snap = getQueueStateForThread("th-pr", "s-pr");
+    expect(snap?.items).toEqual([]);
+    resetQueueForTests();
+  });
+});
+
 describe("失败熔断", () => {
   test("连续 turn 失败达阈值自动暂停；成功清零计数", () => {
     resetQueueForTests();

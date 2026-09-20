@@ -59,6 +59,8 @@ type ThreadQueue = {
   consecutiveFailures: number;
   /** 暂停期间在队首等待派发的链节唤醒回调（resume 时全部唤醒） */
   pauseWaiters: Array<() => void>;
+  /** 最近一次已知 sessionId（快照持久化定位 session 文件；空队列也能落盘） */
+  lastSessionId?: string;
 };
 
 /** threadId -> 该线程引擎 */
@@ -76,7 +78,13 @@ export function queueChunkId(reqId: string): string {
 function engineFor(threadId: string): ThreadQueue {
   let q = engines.get(threadId);
   if (!q) {
-    q = { items: [], paused: false, nextId: 1, consecutiveFailures: 0, pauseWaiters: [] };
+    q = {
+      items: [],
+      paused: false,
+      nextId: 1,
+      consecutiveFailures: 0,
+      pauseWaiters: [],
+    };
     engines.set(threadId, q);
   }
   return q;
@@ -95,12 +103,15 @@ function emitQueueState(threadId: string, sessionId?: string): void {
   const q = engines.get(threadId);
   if (!q) return;
   const snapshot = snapshotOf(threadId);
+  if (sessionId) q.lastSessionId = sessionId;
   const sid =
     sessionId ??
+    q.lastSessionId ??
     (typeof q.items[0]?.msg.sessionId === "string"
       ? (q.items[0]!.msg.sessionId as string)
       : undefined);
   if (sid) {
+    q.lastSessionId = sid;
     try {
       appendFileSync(
         sessionPath(sid),
@@ -221,6 +232,7 @@ export function enqueueTurn(
     msg,
   };
   q.items.push(item);
+  if (typeof msg.sessionId === "string") q.lastSessionId = msg.sessionId;
   emitQueueState(threadId);
   return { ok: true, item };
 }
@@ -290,8 +302,9 @@ export function popFrontForDispatch(threadId: string): QueueItem | null {
   if (!q || q.paused || q.items.length === 0) return null;
   if (busyThreads.has(threadId)) return null;
   const [item] = q.items.splice(0, 1);
-  dropEngineIfEmpty(threadId);
+  // 先广播（含空快照）再清引擎，见 takeFrontEntry
   emitQueueState(threadId);
+  dropEngineIfEmpty(threadId);
   return item ?? null;
 }
 
@@ -301,8 +314,10 @@ export function takeFrontEntry(threadId: string): QueueItem | null {
   const q = engines.get(threadId);
   const item = q?.items.shift() ?? null;
   if (item) {
-    dropEngineIfEmpty(threadId);
+    // 先广播（含空快照）再清引擎：空队列快照必须落盘/广播，否则上一份
+    // 含已派发项的旧快照会在回放时复活
     emitQueueState(threadId);
+    dropEngineIfEmpty(threadId);
   }
   return item;
 }
@@ -326,9 +341,10 @@ export function cancelEntry(reqId: string): boolean {
     const idx = q.items.findIndex((t) => t.reqId === reqId);
     if (idx === -1) continue;
     const [item] = q.items.splice(idx, 1);
-    dropEngineIfEmpty(threadId);
     if (item) sendChunkAbortFinish(item.reqId);
+    // 先广播（含空快照）再清引擎，见 takeFrontEntry
     emitQueueState(threadId);
+    dropEngineIfEmpty(threadId);
     return true;
   }
   return false;
@@ -367,8 +383,9 @@ export function steerOutEntry(
     const entry = q.items[idx];
     if (!inject(entry)) return false;
     q.items.splice(idx, 1);
-    dropEngineIfEmpty(threadId);
+    // 先广播（含空快照）再清引擎，见 takeFrontEntry
     emitQueueState(threadId);
+    dropEngineIfEmpty(threadId);
     return true;
   }
   return false;
@@ -383,14 +400,13 @@ export function cancelAllEntries(threadId?: string): number {
   let cancelled = 0;
   for (const [tid, q] of targets) {
     const entries = [...q.items];
+    // 先广播（含空快照）再清引擎，见 takeFrontEntry
+    emitQueueState(tid);
     engines.delete(tid);
     for (const entry of entries) {
       sendChunkAbortFinish(entry.reqId);
     }
-    if (entries.length > 0) {
-      cancelled += entries.length;
-      emitQueueState(tid);
-    }
+    cancelled += entries.length;
   }
   return cancelled;
 }
