@@ -3,135 +3,110 @@
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { useAISDKChat } from "@assistant-ui/ai-sdk";
 import {
-  cancelQueuedPrompt,
-  peekThreadQueue,
-  promoteQueuedPrompt,
+  cancelQueueItem,
+  pauseQueue,
+  promoteQueueItem,
+  refreshQueueSnapshot,
+  resumeQueue,
   setQueueSyncListener,
-  steerQueuedPrompt,
-  useThreadQueue,
-  type QueuedPrompt,
+  steerQueueItem,
+  useQueueSnapshot,
+  type RegisteredMessage,
 } from "@/lib/pi-queue";
-import { MergeIcon, PencilIcon, XIcon, ZapIcon } from "lucide-react";
+import { piSessionRegistry } from "@/lib/pi-thread-adapter";
+import {
+  MergeIcon,
+  PauseIcon,
+  PencilIcon,
+  PlayIcon,
+  XIcon,
+  ZapIcon,
+} from "lucide-react";
 import { useEffect, useRef, useState, type FC } from "react";
 import { cn } from "cn";
 
 /**
- * prompt 排队条（composer 上方，ChatGPT 式）：上一轮未结束时发出的消息在
- * sidecar 排队，这里以「幽灵输入框」卡片逐条展示——与 composer 同款圆角/
- * 背景/边框但更安静：行首小序号、文字一行截断降调，操作按钮悬停才出现。
- * 每项四个操作（悬停浮现）：
- *  - 并入当前轮：注入活跃轮，不中止不排队（queue_steer → steered 退化收尾）
- *  - 立即发送：中止当前轮、该项插队（queue_promote）
- *  - 编辑：取回输入框——取消排队项（线程内消息一并移除）并回填 composer，
- *    改完重新发送即重新排队
- *  - 删除：取消排队项（queue_cancel，线程内消息一并移除）
- * 数据来自 pi-queue store（sidecar data-queue chunk 的镜像）；
- * 消息数组的摘除/回填同步见 pi-queue.ts 头注。
+ * prompt 排队条（composer 上方，ChatGPT 式）：忙线程发出的消息在 sidecar
+ * 排队，这里以「幽灵输入框」卡片逐条展示（渲染完全由 data-queue-state 快照
+ * 驱动，sidecar 重启后经 get_queue_state 从 session 回放恢复）。每项操作：
+ *  - 并入当前回复：注入活跃轮（agent.steer），不中止不排队
+ *  - 立即发送：中止当前轮、该项插队马上执行
+ *  - 编辑：取消排队项并回填输入框，改完重新发送即重新排队
+ *  - 删除：取消排队项
+ * 顶部暂停/恢复开关只停派发不清队列；恢复时若线程空闲，队首由前端重发
+ * （sidecar 经 queue_resume 弹出交还）。
+ * 消息数组同步规则见 pi-queue.ts 头注（remove=排队确认摘除 / reveal=派发或
+ * 并入收尾回填；两个方向都「无变化不赋值」，防渲染↔同步死循环）。
  */
 export const PromptQueueBar: FC = () => {
   const aui = useAui();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const queue = useThreadQueue(threadId);
+  const snapshot = useQueueSnapshot(threadId);
   const chat = useAISDKChat();
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  /**
-   * 消息数组同步（经 syncRef 间接调用，见下方 effect）。两个方向都必须「无变化
-   * 时不赋值」：Chat 的 messages setter 即使内容相同也会拷贝新数组并通知全部
-   * 订阅者，无条件赋值会形成 渲染→同步→通知→渲染 的死循环（UI 卡死）。
-   * - remove：排队确认时把 user 消息从数组摘除
-   * - reveal：激活开跑 / 未开跑被取消收尾时，消息不在数组才追加到末尾。
-   *   不做「移到末尾」——回复内容可能已经追加在其后（流式写入/历史装载），
-   *   再移动会把 user 气泡排到自己的回复之后，并诱发 AI SDK 对回复消息的
-   *   pushMessage 重复项循环（ExternalStore duplicate id 警告刷屏）
-   */
-  const syncRef = useRef<(entry: QueuedPrompt, mode: "remove" | "reveal") => void>(
+  // 消息数组同步：经 syncRef 间接调用（effect 只随线程重跑，不被流式渲染
+  // 期间不稳定的 helpers 身份反复触发）。两个方向都幂等且「无变化不赋值」。
+  const syncRef = useRef<(reg: RegisteredMessage, kind: "remove" | "reveal") => void>(
     () => {},
   );
-  syncRef.current = (entry, mode) => {
-    if (!chat || !entry.messageId || entry.threadId !== threadId) return;
+  syncRef.current = (reg, kind) => {
+    if (!chat || reg.threadId !== threadId) return;
     const msgs = chat.messages;
-    const idx = msgs.findIndex((m) => m.id === entry.messageId);
+    const idx = msgs.findIndex((m) => m.id === reg.messageId);
     let next = msgs;
-    if (mode === "remove") {
-      if (idx !== -1) next = msgs.filter((m) => m.id !== entry.messageId);
-    } else if (idx === -1 && entry.message) {
-      // 回填注册时暂存的原始消息（含附件/引用 metadata）
-      next = [...msgs, entry.message];
+    if (kind === "remove") {
+      if (idx !== -1) next = msgs.filter((m) => m.id !== reg.messageId);
+    } else if (idx === -1 && reg.message) {
+      // reveal：登记的乐观消息在数组里（正常派发回填），重建消息（刷新后）
+      // 与丢失登记的回填走这里
+      next = [...msgs, reg.message];
     }
     if (next !== msgs) chat.setMessages(next);
   };
 
-  // 消息同步监听 + 对账：监听只作用于当前线程的 chat；线程切走期间发生的
-  // 摘除事件会错过，重挂载时对「排队未开跑」条目补齐摘除。
-  // 已开跑（active）条目对账时不再补追加：激活瞬间的 onReveal 已经回填过；
-  // 若期间发生过历史装载（消息换成 sidecar 侧 id），再按乐观 id 追加会与
-  // 历史副本构成兄弟节点 → 消息上出现 2/2 分支选择器。开跑消息的显示由
-  // 激活回填或历史转录兜底，对账不插手。
+  // 同步监听 + 快照拉取：线程挂载/刷新恢复时向 sidecar 拉一次快照（sidecar
+  // 内存为空会从 session 回放采纳），此后由 data-queue-state 广播增量对齐
   useEffect(() => {
-    setQueueSyncListener({
-      onQueued: (entry) => syncRef.current(entry, "remove"),
-      onReveal: (entry) => syncRef.current(entry, "reveal"),
-    });
+    setQueueSyncListener((reg, kind) => syncRef.current(reg, kind));
     if (threadId) {
-      for (const entry of peekThreadQueue(threadId)) {
-        if (!entry.active) syncRef.current(entry, "remove");
-      }
+      void refreshQueueSnapshot(threadId, piSessionRegistry.get(threadId));
     }
     return () => setQueueSyncListener(null);
   }, [threadId]);
 
-  if (!threadId || queue.length === 0) return null;
+  if (!threadId || snapshot.items.length === 0) return null;
 
-  /** 并入当前轮：注入活跃轮（不中止不排队）；chip 随该项流 finish 自动移除，
-   *  线程内用户消息保留（线性转录） */
-  const steerIntoActive = async (entry: QueuedPrompt) => {
-    setBusyId(entry.requestId);
+  const sessionId = piSessionRegistry.get(threadId);
+
+  const togglePaused = async () => {
+    setBusy(true);
     try {
-      await steerQueuedPrompt(entry.requestId);
+      if (snapshot.paused) {
+        const resend = await resumeQueue(threadId, sessionId);
+        // 线程空闲时 sidecar 弹出队首交回：按文本重发（正常发送路径）
+        if (resend && aui && !aui.thread.getState().isRunning) {
+          aui.composer.setText(resend.text);
+          aui.composer.send();
+        }
+      } else {
+        await pauseQueue(threadId, sessionId);
+      }
     } catch {
-      // 无活跃轮/已开跑等拒绝：忽略（chip 保留）
+      // 通道异常：快照下一次广播对齐
     } finally {
-      setBusyId(null);
+      setBusy(false);
     }
   };
 
-  const promote = async (entry: QueuedPrompt) => {
-    setBusyId(entry.requestId);
+  const act = async (fn: () => Promise<void>) => {
+    setBusy(true);
     try {
-      // sidecar：中止当前 turn 并把该项提到队首。本地不做摘除/回填——上一轮
-      // 收尾期间仍有流式写入，此刻动消息数组会被写入的重复项顶乱顺序；排队条
-      // 摘除与消息回填统一等 data-queue(active)（sidecar 保证它在上一轮流完整
-      // 收尾之后发出，见 pi-queue.ts applyQueueChunk）
-      await promoteQueuedPrompt(entry.requestId);
+      await fn();
     } catch {
-      // 已开跑等拒绝：忽略（active 分支已处理，或 chip 保留）
+      // 已开跑等拒绝：忽略（快照下一次广播对齐）
     } finally {
-      setBusyId(null);
-    }
-  };
-
-  /** 编辑（取回输入框）：取消排队项并回填 composer，改完重新发送即重新排队 */
-  const backfillToComposer = async (entry: QueuedPrompt) => {
-    setBusyId(entry.requestId);
-    try {
-      await cancelQueuedPrompt(entry.requestId);
-      aui.composer.setText(entry.text);
-    } catch {
-      // 已开跑等拒绝：消息继续执行，不回填
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const remove = async (entry: QueuedPrompt) => {
-    setBusyId(entry.requestId);
-    try {
-      await cancelQueuedPrompt(entry.requestId);
-    } catch {
-      // 已开跑等拒绝：消息继续执行，不移除
-    } finally {
-      setBusyId(null);
+      setBusy(false);
     }
   };
 
@@ -140,50 +115,72 @@ export const PromptQueueBar: FC = () => {
       className="mb-2 flex flex-col gap-1.5"
       data-slot="aui-prompt-queue-bar"
     >
-      {queue.map((entry) => (
+      <div className="text-muted-foreground/70 flex items-center justify-between pl-3.5 pr-1 text-[11px] leading-none">
+        <span className="tabular-nums">
+          {snapshot.paused ? "队列已暂停 · " : ""}
+          {snapshot.items.length} 条排队
+        </span>
+        <QueueIconButton
+          label={snapshot.paused ? "恢复派发" : "暂停派发"}
+          disabled={busy}
+          onClick={() => void togglePaused()}
+        >
+          {snapshot.paused ? (
+            <PlayIcon className="size-3" />
+          ) : (
+            <PauseIcon className="size-3" />
+          )}
+        </QueueIconButton>
+      </div>
+      {snapshot.items.map((item, index) => (
         <div
-          key={entry.requestId}
+          key={item.reqId}
           className="group border-border/50 dark:border-muted-foreground/10 flex items-center gap-2 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-1.5 pl-3.5 animate-in fade-in slide-in-from-bottom-1 duration-200"
         >
           <span
             className="w-3 shrink-0 text-center text-[11px] leading-none text-muted-foreground/50 tabular-nums"
-            aria-label={`排队第 ${entry.position} 位`}
+            aria-label={`排队第 ${index + 1} 位`}
           >
-            {entry.position}
+            {index + 1}
           </span>
           <span
             className="text-foreground/70 min-w-0 flex-1 truncate text-sm"
-            title={entry.text}
+            title={item.text}
           >
-            {entry.text}
+            {item.text}
           </span>
           <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100">
             <QueueIconButton
               label="并入当前回复（不中止不排队）"
-              disabled={busyId === entry.requestId}
-              onClick={() => void steerIntoActive(entry)}
+              disabled={busy}
+              onClick={() => void act(() => steerQueueItem(item.reqId))}
             >
               <MergeIcon className="size-3.5" />
             </QueueIconButton>
             <QueueIconButton
               label="立即发送（中止当前回复）"
-              disabled={busyId === entry.requestId}
-              onClick={() => void promote(entry)}
+              disabled={busy}
+              onClick={() => void act(() => promoteQueueItem(item.reqId))}
             >
               <ZapIcon className="size-3.5" />
             </QueueIconButton>
             <QueueIconButton
               label="编辑（取回输入框）"
-              disabled={busyId === entry.requestId}
-              onClick={() => void backfillToComposer(entry)}
+              disabled={busy}
+              onClick={() =>
+                void act(async () => {
+                  await cancelQueueItem(item.reqId);
+                  aui.composer.setText(item.text);
+                })
+              }
             >
               <PencilIcon className="size-3.5" />
             </QueueIconButton>
             <QueueIconButton
               label="删除"
-              disabled={busyId === entry.requestId}
+              disabled={busy}
               className="hover:text-destructive"
-              onClick={() => void remove(entry)}
+              onClick={() => void act(() => cancelQueueItem(item.reqId))}
             >
               <XIcon className="size-3.5" />
             </QueueIconButton>

@@ -10,9 +10,9 @@ import { applyToolApprovalChunk, clearToolApprovals } from "@/lib/pi-tool-approv
 import { applyQuestionChunk, clearQuestions } from "@/lib/pi-question";
 import { applyTodoChunk } from "@/lib/pi-todo";
 import {
-  applyQueueChunk,
-  registerQueuedPrompt,
-  unregisterQueuedPrompt,
+  applyQueueStateChunk,
+  registerQueuedMessage,
+  unregisterQueuedMessage,
 } from "@/lib/pi-queue";
 import { consumeSteerIntent } from "@/lib/pi-steer-intent";
 import { emitAgentEvent } from "@/lib/agent-events";
@@ -140,22 +140,13 @@ export class PiTransport implements ChatTransport<UIMessage> {
     // 按轮锚定在各消息尾部,不再被新 turn 清掉（见 pi-checkpoints 条目列表）
     saveRunHash(chatId, null);
 
-    // 排队条登记（requestId → 线程消息 id 映射）：sidecar 上一轮未结束时会把本请求
-    // 排队并回 data-queue chunk；是否可见由 pi-queue 的确认态决定。
-    // message 一并暂存：排队确认后消息从 Chat 数组摘除（顺序稳定性，见 pi-queue
-    // 头注），激活开跑/取消恢复时靠它原样回填（含附件/引用 metadata）。
-    // 重新生成（Reload）不登记：忙线程下 sidecar 照常排队（前端走 ghost 通道，
-    // pendingTurn 加载动画有效），但触发重跑的历史消息必须留在对话列表——若注册
-    // 进队列，确认排队后的「摘除→激活回填」会把它拽回排队条
-    const messageId = lastUser?.id ?? "";
-    if (trigger !== "regenerate-message") {
-      registerQueuedPrompt({
-        requestId,
-        threadId: chatId,
-        messageId,
-        text,
-        message: lastUser,
-      });
+    // 排队条登记（requestId → 乐观 user 消息）：sidecar 上一轮未结束时会把本请求
+    // 排队，快照中出现该条目后消息从 Chat 数组摘除（顺序稳定性，见 pi-queue
+    // 头注），派发出队/并入收尾时靠登记原样回填（含附件/引用 metadata）。
+    // 重新生成（Reload）不登记：忙线程下 sidecar 照常排队（快照里无登记条目，
+    // 不会触发摘除/回填），触发重跑的历史消息必须留在对话列表
+    if (lastUser && trigger !== "regenerate-message") {
+      registerQueuedMessage(requestId, chatId, lastUser);
     }
     this.openRequestIds.add(requestId);
     // 检查点卡的轮次锚点：触发本轮的 user 消息下标（跨刷新稳定,见 pi-checkpoints）
@@ -329,7 +320,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
       "abort",
       () => {
         this.openRequestIds.delete(requestId);
-        unregisterQueuedPrompt(requestId, chatId);
+        unregisterQueuedMessage(requestId, chatId);
       },
       { once: true },
     );
@@ -359,12 +350,16 @@ export class PiTransport implements ChatTransport<UIMessage> {
           applyDelegationChunk((chunk as { data?: unknown }).data);
           return;
         }
+        if (chunk.type === "data-queue-state") {
+          // 排队权威状态：全量快照，最后一条胜出（pi-queue 快照镜像）
+          applyQueueStateChunk(chatId, chunk.data);
+          return;
+        }
         if (chunk.type === "data-queue") {
-          // 排队生命周期：queued（进排队条）→ active（开跑，移出排队条）；
-          // steered = 本请求已并入活跃轮（退化流标记，不进排队条）
+          // 流级信号（权威状态见 data-queue-state）：steered = 本请求已并入
+          // 活跃轮（退化流标记，决定收尾分支）
           const phase = (chunk as { data?: { phase?: string } }).data?.phase;
           if (phase === "steered") sawSteered = true;
-          applyQueueChunk(requestId, chatId, (chunk as { data?: unknown }).data);
           return;
         }
         if (chunk.type === "data-panelOpen") {
@@ -406,7 +401,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
           if (sawSteered) {
             // steer 退化收尾：活跃轮还在跑，只清自己的登记（排队条隐藏项、
             // resumable 登记），不碰审批/提问卡片、不发完成提醒
-            unregisterQueuedPrompt(requestId, chatId);
+            unregisterQueuedMessage(requestId, chatId);
             clearResumableIfOwn(chatId, requestId);
             controller.enqueue(chunk);
             return;
@@ -414,7 +409,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
           // turn 结束：清空残留审批/提问卡片（abort/异常路径的兜底出口）
           clearToolApprovals(chatId);
           clearQuestions(chatId);
-          unregisterQueuedPrompt(requestId, chatId);
+          unregisterQueuedMessage(requestId, chatId);
           clearResumableIfOwn(chatId, requestId);
           // 本轮 turn 确定结束：趁势对齐一次侧边栏运行集合（纠偏缺了收尾的残留项）
           resyncPiRunning();
@@ -434,7 +429,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
           // 异常收尾同样结算检查点：半途改动也需要 keep/revert 出口；
           // 挂起提问与 finish 同款清空（abort 拆流时 finish 可能到不了）
           transport.openRequestIds.delete(requestId);
-          unregisterQueuedPrompt(requestId, chatId);
+          unregisterQueuedMessage(requestId, chatId);
           clearResumableIfOwn(chatId, requestId);
           resyncPiRunning();
           refreshFileTree(cwd ?? null);

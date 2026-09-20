@@ -1,233 +1,179 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test, afterEach } from "bun:test";
 
 import {
-  applyQueueChunk,
-  cancelQueuedPrompt,
+  applyQueueStateChunk,
+  cancelQueueItem,
+  getQueueSnapshot,
   getQueuedMessageIds,
   hasPendingTurn,
-  peekThreadQueue,
-  registerQueuedPrompt,
+  registerQueuedMessage,
+  resetQueueForTests,
   setQueueSyncListener,
-  unregisterQueuedPrompt,
-  type QueuedPrompt,
+  steerQueueItem,
+  unregisterQueuedMessage,
+  type QueueSnapshot,
+  type RegisteredMessage,
 } from "./pi-queue";
 
 const THREAD = "thread-1";
 
-/** 造 user 消息桩 */
+/** 造快照：单条 queued 条目 */
+function snapshotOf(
+  items: { reqId: string; text: string; id?: number }[],
+  paused = false,
+): QueueSnapshot {
+  return {
+    version: 2,
+    threadId: THREAD,
+    items: items.map((item, i) => ({
+      id: item.id ?? i + 1,
+      reqId: item.reqId,
+      text: item.text,
+      createdAt: "2026-01-01T00:00:00Z",
+      state: "queued" as const,
+    })),
+    paused,
+    nextId: items.length + 1,
+  };
+}
+
+/** 造乐观 user 消息桩 */
 const userMessage = (id: string, text: string) => ({
   id,
   role: "user" as const,
   parts: [{ type: "text" as const, text }],
 });
 
-function register(requestId: string, messageId: string, text = "hello") {
-  registerQueuedPrompt({
-    requestId,
-    threadId: THREAD,
-    messageId,
-    text,
-    message: userMessage(messageId, text),
-  });
-}
-
-function registerOn(threadId: string, requestId: string, messageId: string) {
-  registerQueuedPrompt({
-    requestId,
-    threadId,
-    messageId,
-    text: "hello",
-    message: userMessage(messageId, "hello"),
-  });
-}
-
-/** 收集同步监听事件（queued/reveal 次序与负载） */
 function collect() {
-  const events: { kind: "queued" | "reveal"; entry: QueuedPrompt }[] = [];
-  setQueueSyncListener({
-    onQueued: (entry) => events.push({ kind: "queued", entry }),
-    onReveal: (entry) => events.push({ kind: "reveal", entry }),
+  const events: { reg: RegisteredMessage; kind: string }[] = [];
+  setQueueSyncListener((reg, kind) => {
+    events.push({ reg, kind });
   });
   return events;
 }
 
 afterEach(() => {
-  // 清空 store：注销该线程全部条目（含 active/ghost）
-  unregisterQueuedPrompt("req-1", THREAD);
-  unregisterQueuedPrompt("req-2", THREAD);
-  unregisterQueuedPrompt("req-ghost", THREAD);
-  unregisterQueuedPrompt("req-1", "thread-other");
+  resetQueueForTests();
   setQueueSyncListener(null);
 });
 
-describe("排队确认与消息同步监听", () => {
-  test("首次确认（0→>0）触发 onQueued（消息摘除信号）", () => {
-    register("req-1", "msg-1");
+describe("快照镜像（data-queue-state）", () => {
+  test("新条目入快照：入抑制集 + 触发 remove（消息摘除信号）", () => {
+    registerQueuedMessage("req-1", THREAD, userMessage("msg-1", "hello"));
     const events = collect();
 
-    applyQueueChunk("req-1", THREAD, { phase: "queued", position: 2 });
-    expect(events.map((e) => `${e.kind}:${e.entry.messageId}`)).toEqual([
-      "queued:msg-1",
+    applyQueueStateChunk(
+      THREAD,
+      snapshotOf([{ reqId: "req-1", text: "hello" }]),
+    );
+
+    expect(events.map((e) => ({ kind: e.kind, messageId: e.reg.messageId }))).toEqual([
+      { kind: "remove", messageId: "msg-1" },
     ]);
-    expect(events[0]!.entry.message?.parts[0]).toEqual({
-      type: "text",
-      text: "hello",
-    });
-    expect(peekThreadQueue(THREAD).map((e) => e.position)).toEqual([2]);
+    expect(getQueuedMessageIds()).toEqual(new Set(["msg-1"]));
+    expect(getQueueSnapshot(THREAD).items).toHaveLength(1);
   });
 
-  test("位置重发（promote 重排等）不重复触发摘除信号，仅更新序号", () => {
-    register("req-1", "msg-1");
-    applyQueueChunk("req-1", THREAD, { phase: "queued", position: 2 });
+  test("快照全量替换：条目消失即派发出队，触发 reveal + 派发空窗", () => {
+    registerQueuedMessage("req-1", THREAD, userMessage("msg-1", "hello"));
+    applyQueueStateChunk(THREAD, snapshotOf([{ reqId: "req-1", text: "hello" }]));
 
     const events = collect();
-    applyQueueChunk("req-1", THREAD, { phase: "queued", position: 1 });
-    expect(events).toEqual([]);
-    expect(peekThreadQueue(THREAD).map((e) => e.position)).toEqual([1]);
-  });
-});
+    applyQueueStateChunk(THREAD, snapshotOf([]));
 
-describe("激活开跑（data-queue active）", () => {
-  test("置位 active 退出排队条、触发 onReveal、进入 pendingTurn", () => {
-    register("req-1", "msg-1");
-    applyQueueChunk("req-1", THREAD, { phase: "queued", position: 1 });
-
-    const events = collect();
-    applyQueueChunk("req-1", THREAD, { phase: "active" });
-
-    // active 条目保留登记（对账/收尾用）但置位 active——排队条渲染（useThreadQueue
-    // 按 !active 过滤）不再显示
-    expect(peekThreadQueue(THREAD).map((e) => e.active)).toEqual([true]);
-    expect(events.map((e) => e.kind)).toEqual(["reveal"]);
-    expect(events[0]!.entry.active).toBe(true);
-    expect(events[0]!.entry.message?.id).toBe("msg-1");
-    expect(hasPendingTurn(THREAD)).toBe(true);
-    // 开跑后移出消息抑制集（回填数组自然可见）
-    expect(getQueuedMessageIds().has("msg-1")).toBe(false);
-  });
-
-  test("流收尾：移除条目并清除 pendingTurn", () => {
-    register("req-1", "msg-1");
-    applyQueueChunk("req-1", THREAD, { phase: "queued", position: 1 });
-    applyQueueChunk("req-1", THREAD, { phase: "active" });
+    expect(events.map((e) => ({ kind: e.kind, messageId: e.reg.messageId }))).toEqual([
+      { kind: "reveal", messageId: "msg-1" },
+    ]);
+    expect(getQueuedMessageIds().size).toBe(0);
     expect(hasPendingTurn(THREAD)).toBe(true);
 
-    unregisterQueuedPrompt("req-1", THREAD);
+    // 该请求流收尾：清空窗标记
+    unregisterQueuedMessage("req-1", THREAD);
     expect(hasPendingTurn(THREAD)).toBe(false);
-    expect(peekThreadQueue(THREAD)).toEqual([]);
-  });
-});
-
-describe("未开跑就收尾（Stop/清队等路径）", () => {
-  test("触发 onReveal 恢复消息，不残留 pendingTurn", () => {
-    register("req-1", "msg-1");
-    applyQueueChunk("req-1", THREAD, { phase: "queued", position: 1 });
-
-    const events = collect();
-    unregisterQueuedPrompt("req-1", THREAD);
-
-    expect(events.map((e) => e.kind)).toEqual(["reveal"]);
-    expect(events[0]!.entry.active).toBe(false);
-    expect(hasPendingTurn(THREAD)).toBe(false);
-    expect(peekThreadQueue(THREAD)).toEqual([]);
   });
 
-  test("steered 条目（position 0 未确认排队，消息未摘除）收尾不触发恢复", () => {
-    register("req-1", "msg-1");
+  test("无变化快照重复应用：不触发事件（防渲染↔同步循环）", () => {
+    registerQueuedMessage("req-1", THREAD, userMessage("msg-1", "hello"));
+    const snap = snapshotOf([{ reqId: "req-1", text: "hello" }]);
+    applyQueueStateChunk(THREAD, snap);
+
     const events = collect();
-
-    unregisterQueuedPrompt("req-1", THREAD);
-    expect(events).toEqual([]);
-  });
-
-  test("用户删除（cancelled 标记）后收尾不恢复消息——收尾 chunk 先于 invoke 回复到达的竞态", async () => {
-    register("req-1", "msg-1");
-    applyQueueChunk("req-1", THREAD, { phase: "queued", position: 1 });
-
-    // cancelQueuedPrompt 在 invoke 前置位 cancelled 标记；测试环境无 Tauri 通道，
-    // request 会拒绝——标记已打上，模拟「收尾 chunk 先于回复被消费」
-    const events = collect();
-    await cancelQueuedPrompt("req-1").catch(() => {});
-
-    // 本地条目仍在（invoke 失败未走本地摘除分支），手动补 unregister 模拟收尾
-    unregisterQueuedPrompt("req-1", THREAD);
+    applyQueueStateChunk(THREAD, snap);
+    applyQueueStateChunk(THREAD, snap);
     expect(events).toEqual([]);
   });
 });
 
-describe("并入当前轮（steered）", () => {
-  test("steered 标记：退出排队条显示、保持消息抑制，收尾时经 restore 回填", () => {
-    register("req-1", "msg-1");
-    applyQueueChunk("req-1", THREAD, { phase: "queued", position: 1 });
-    // 排队确认后消息已被摘除（抑制集中）
+describe("出快照分类", () => {
+  test("用户删除（cancelled）：静默清理不回填", () => {
+    registerQueuedMessage("req-1", THREAD, userMessage("msg-1", "hello"));
+    applyQueueStateChunk(THREAD, snapshotOf([{ reqId: "req-1", text: "hello" }]));
+
+    const events = collect();
+    cancelQueueItem("req-1").catch(() => {});
+    applyQueueStateChunk(THREAD, snapshotOf([]));
+
+    expect(events).toEqual([]);
+    expect(getQueuedMessageIds().size).toBe(0);
+  });
+
+  test("steered：出快照后保持抑制，流收尾时才回填", () => {
+    registerQueuedMessage("req-1", THREAD, userMessage("msg-1", "hello"));
+    applyQueueStateChunk(THREAD, snapshotOf([{ reqId: "req-1", text: "hello" }]));
+    steerQueueItem("req-1").catch(() => {});
+    applyQueueStateChunk(THREAD, snapshotOf([]));
+
+    const events = collect();
+    // 快照进一步变化（如其他条目变动）：steered 项不触发回填
+    applyQueueStateChunk(THREAD, snapshotOf([]));
+    expect(events).toEqual([]);
+    // 仍在抑制集（消息保持摘除）
     expect(getQueuedMessageIds()).toEqual(new Set(["msg-1"]));
 
-    const events = collect();
-    applyQueueChunk("req-1", THREAD, { phase: "steered" });
-
-    // steered 条目退出排队条与抑制集，但仍登记到宿主轮收尾
-    expect(peekThreadQueue(THREAD).map((e) => e.steered)).toEqual([true]);
-    expect(getQueuedMessageIds().size).toBe(0);
-
-    // 宿主轮收尾：经 restore 回填消息
-    unregisterQueuedPrompt("req-1", THREAD);
+    // 宿主轮流收尾：此刻回填
+    unregisterQueuedMessage("req-1", THREAD);
     expect(events.map((e) => e.kind)).toEqual(["reveal"]);
-    expect(events[0]!.entry.steered).toBe(true);
-    expect(peekThreadQueue(THREAD)).toEqual([]);
+    expect(getQueuedMessageIds().size).toBe(0);
   });
+});
 
-  test("未登记请求的 steered chunk（刷新重放）：忽略", () => {
+describe("未登记条目（刷新恢复）", () => {
+  test("快照条目无注册：按快照文本重建（queued-<id>），派发出队照常回填", () => {
+    applyQueueStateChunk(
+      THREAD,
+      snapshotOf([{ reqId: "req-9", text: "rebuilt", id: 7 }]),
+    );
+    expect(getQueuedMessageIds()).toEqual(new Set(["queued-7"]));
+
     const events = collect();
-    applyQueueChunk("req-ghost", THREAD, { phase: "steered" });
-    expect(events).toEqual([]);
-    expect(peekThreadQueue(THREAD)).toEqual([]);
+    applyQueueStateChunk(THREAD, snapshotOf([]));
+    expect(events.map((e) => e.kind)).toEqual(["reveal"]);
+    expect(events[0]!.reg.message?.parts[0]).toEqual({
+      type: "text",
+      text: "rebuilt",
+    });
   });
 });
 
 describe("多线程隔离", () => {
-  test("其他线程的激活不影响本线程 pendingTurn 与抑制集", () => {
-    registerOn("thread-other", "req-1", "msg-other");
-    applyQueueChunk("req-1", "thread-other", { phase: "active" });
-
-    expect(hasPendingTurn("thread-other")).toBe(true);
-    expect(hasPendingTurn(THREAD)).toBe(false);
-    expect(getQueuedMessageIds().has("msg-other")).toBe(false);
-
-    unregisterQueuedPrompt("req-1", "thread-other");
+  test("其他线程的快照不影响本线程", () => {
+    applyQueueStateChunk(
+      "thread-other",
+      snapshotOf([{ reqId: "req-o", text: "other" }]),
+    );
+    expect(getQueueSnapshot(THREAD).items).toHaveLength(0);
     expect(hasPendingTurn("thread-other")).toBe(false);
-  });
-});
-
-describe("ghost 条目（刷新重连重放）", () => {
-  test("未注册请求的 queued chunk 建档占位：不进可见条、不触发同步、不进抑制集", () => {
-    const events = collect();
-    applyQueueChunk("req-ghost", THREAD, { phase: "queued", position: 1 });
-
-    expect(events).toEqual([]);
-    expect(peekThreadQueue(THREAD)).toEqual([]);
-    expect(getQueuedMessageIds().size).toBe(0);
-  });
-
-  test("ghost 激活：进入 pendingTurn（加载动画有效），收尾清除", () => {
-    applyQueueChunk("req-ghost", THREAD, { phase: "active" });
-    expect(hasPendingTurn(THREAD)).toBe(true);
-
-    unregisterQueuedPrompt("req-ghost", THREAD);
     expect(hasPendingTurn(THREAD)).toBe(false);
   });
 });
 
-describe("useQueuedMessageIds 语义", () => {
-  test("确认排队且未开跑的条目才进抑制集", () => {
-    register("req-1", "msg-1");
-    register("req-2", "msg-2");
-
-    // req-2 未确认（position 0）不进
-    applyQueueChunk("req-1", THREAD, { phase: "queued", position: 1 });
-    expect(getQueuedMessageIds()).toEqual(new Set(["msg-1"]));
-
-    unregisterQueuedPrompt("req-1", THREAD);
-    unregisterQueuedPrompt("req-2", THREAD);
-    expect(getQueuedMessageIds().size).toBe(0);
+describe("暂停", () => {
+  test("快照携带暂停态：镜像可见", () => {
+    applyQueueStateChunk(
+      THREAD,
+      snapshotOf([{ reqId: "req-1", text: "hello" }], true),
+    );
+    expect(getQueueSnapshot(THREAD).paused).toBe(true);
+    expect(getQueueSnapshot(THREAD).items).toHaveLength(1);
   });
 });
