@@ -154,6 +154,24 @@ describe("threadArtifacts", () => {
     ]);
     expect(threadArtifacts(files)).toHaveLength(1);
   });
+
+  test("svg 动画/图形是文本 write 可产出的交付物，且走浏览器预览", () => {
+    expect(isDeliverable("pelican-ride-bike.svg")).toBe(true);
+    expect(isDeliverable("icon.SVG")).toBe(true);
+    const files = deriveFiles([
+      msg("m1", "assistant", [
+        tool(
+          "w1",
+          "write",
+          { file_path: "pelican-ride-bike.svg", content: "<svg xmlns='http://www.w3.org/2000/svg'/>" },
+          "ok",
+        ),
+      ]),
+    ]);
+    const artifacts = threadArtifacts(files);
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]?.base).toBe("pelican-ride-bike.svg");
+  });
 });
 
 /* ------------------------------ toFileUrl ------------------------------ */

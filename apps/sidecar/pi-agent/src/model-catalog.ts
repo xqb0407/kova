@@ -2,7 +2,8 @@
  * 模型目录：pi-ai 内置 catalog（39 个 provider） + 本地凭据 + models 统一模型表。
  * - models 表行（provider, model_id 主键）承载启用状态与属性覆盖；
  *   NULL 属性 = 继承内置目录值。内置厂商的过滤（勾选集）与属性修改都写这张表。
- * - 自定义端点的模型同样存 models 表（enabled=1），注册时 NULL 属性取自定义默认值。
+ * - 自定义端点的模型同样存 models 表（enabled=1），注册时 NULL 属性先按 modelId 反查
+ *   内置目录继承同名模型的真值，未命中才取自定义默认值。
  * - 内置厂商的目录外新增模型（手动添加的 modelId）也存 models 表：行存在但目录没有
  *   时按行构造 Model 挂到该 provider 上（auth/stream 沿用原实现）。
  * 目录在 initStorage 之后通过 getModels() 惰性创建。
@@ -168,7 +169,7 @@ export function parseModelCost(v: unknown): ModelCost | null {
   return { input, output, cacheRead, cacheWrite };
 }
 
-/** 自定义端点模型的缺省属性（无内置目录可继承） */
+/** 自定义端点模型的兜底属性（行未填且内置目录反查也未命中时才用） */
 export const CUSTOM_MODEL_DEFAULTS = {
   reasoning: false,
   input: ["text"] as ("text" | "image")[],
@@ -177,14 +178,19 @@ export const CUSTOM_MODEL_DEFAULTS = {
   maxTokens: 8_192,
 };
 
-/* ------------------- 思考参数种子（按 modelId 反查内置目录） ------------------- */
+/* ------------------- 目录属性种子（按 modelId 反查内置目录） ------------------- */
 
-/** 目录反查命中的思考参数种子（自定义端点/目录外新增模型的属性预填） */
-export interface ThinkingSeed {
+/** 目录反查命中的属性种子（自定义端点/目录外新增模型的属性预填与生效值兜底） */
+export interface CatalogModelSeed {
   reasoning: boolean;
   thinkingLevelMap?: ThinkingLevelMap;
   /** 按 pi-ai 同款口径推导的可用档位（不含 off） */
   supportedThinkingLevels: string[];
+  /** 同名目录模型的上下文容量 / 最大输出 / 输入模态 / 单价真值 */
+  contextWindow: number;
+  maxTokens: number;
+  input: ("text" | "image")[];
+  cost: ModelCost;
 }
 
 /**
@@ -207,16 +213,18 @@ const AGGREGATOR_PROVIDERS = new Set([
 ]);
 
 /**
- * 按 modelId 反查内置目录，取同名模型的思考参数当种子（大小写不敏感）。
+ * 按 modelId 反查内置目录，取同名模型的属性当种子（大小写不敏感）。
  * 用户手输的模型 ID 很多就是官方模型名（gpt-5.1、deepseek-chat…），命中即可
- * 继承目录整理好的 reasoning + thinkingLevelMap（含 off 显式关闭值），
- * 不必按"不推理 + 空映射"盲猜——这正是"关闭挡位关不掉默认开思考网关"的成因。
+ * 继承目录整理好的 reasoning + thinkingLevelMap（含 off 显式关闭值）与
+ * contextWindow/maxTokens/input/cost 真值，不必盲猜——思考参数不继承正是
+ * "关闭挡位关不掉默认开思考网关"的成因，上下文参数不继承则让自定义端点的
+ * 同名模型只能用缺省猜测值回填编辑表单。
  * 多个命中时优先带 thinkingLevelMap 的、其次厂商自营（非聚合商），
  * 再按 provider id 字典序，保证结果稳定。
  */
-export function lookupCatalogThinkingSeed(
+export function lookupCatalogModelSeed(
   modelId: string,
-): ThinkingSeed | undefined {
+): CatalogModelSeed | undefined {
   const wanted = modelId.trim().toLowerCase();
   if (!wanted) return undefined;
   let best:
@@ -224,6 +232,10 @@ export function lookupCatalogThinkingSeed(
         rank: [number, number, string];
         reasoning: boolean;
         thinkingLevelMap?: ThinkingLevelMap;
+        contextWindow: number;
+        maxTokens: number;
+        input: ("text" | "image")[];
+        cost: ModelCost;
       }
     | undefined;
   for (const p of getModels().getProviders()) {
@@ -242,6 +254,10 @@ export function lookupCatalogThinkingSeed(
         ...(m.thinkingLevelMap
           ? { thinkingLevelMap: { ...m.thinkingLevelMap } }
           : {}),
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
+        input: [...m.input],
+        cost: { ...m.cost },
       };
     }
   }
@@ -259,6 +275,10 @@ export function lookupCatalogThinkingSeed(
     supportedThinkingLevels: getSupportedThinkingLevels(pseudo).filter(
       (l) => l !== "off",
     ),
+    contextWindow: best.contextWindow,
+    maxTokens: best.maxTokens,
+    input: best.input,
+    cost: best.cost,
   };
 }
 
@@ -318,9 +338,13 @@ export async function registerCustomProvider(row: {
   const baseUrl = row.baseUrl.trim().replace(/\/+$/, "");
   const apiKind = normalizeApi(row.api);
   const enabledRows = rows.filter((m) => m.enabled && m.modelId.trim());
-  const modelList: Model<Api>[] = enabledRows.map((m) => {
-    // 用户手输的 ID 常与官方模型同名：命中内置目录即继承其思考参数（行内显式值优先）
-    const seed = lookupCatalogThinkingSeed(m.modelId);
+  // 用户手输的 ID 常与官方模型同名：命中内置目录即继承其属性（行内显式值优先），
+  // 未命中才落到 CUSTOM_MODEL_DEFAULTS 猜测值
+  const seededRows = enabledRows.map((m) => ({
+    m,
+    seed: lookupCatalogModelSeed(m.modelId),
+  }));
+  const modelList: Model<Api>[] = seededRows.map(({ m, seed }) => {
     return {
       id: m.modelId.trim(),
       name: m.name?.trim() || m.modelId.trim(),
@@ -329,10 +353,18 @@ export async function registerCustomProvider(row: {
       baseUrl,
       reasoning:
         m.reasoning ?? seed?.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
-      input: parseModelInput(m.input) ?? CUSTOM_MODEL_DEFAULTS.input,
-      cost: parseModelCost(m.cost) ?? { ...CUSTOM_MODEL_DEFAULTS.cost },
-      contextWindow: m.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
-      maxTokens: m.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+      input:
+        parseModelInput(m.input) ??
+        seed?.input ??
+        CUSTOM_MODEL_DEFAULTS.input,
+      cost:
+        parseModelCost(m.cost) ??
+        seed?.cost ??
+        { ...CUSTOM_MODEL_DEFAULTS.cost },
+      contextWindow:
+        m.contextWindow ?? seed?.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
+      maxTokens:
+        m.maxTokens ?? seed?.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
       ...(seed?.thinkingLevelMap
         ? { thinkingLevelMap: seed.thinkingLevelMap }
         : {}),
@@ -361,11 +393,12 @@ export async function registerCustomProvider(row: {
   for (const key of [...defaultedAttrs.keys()]) {
     if (key.startsWith(`${row.id}/`)) defaultedAttrs.delete(key);
   }
-  for (const m of enabledRows) {
+  for (const { m, seed } of seededRows) {
     const key = `${row.id}/${m.modelId.trim()}`;
-    noteDefaulted(key, "contextWindow", m.contextWindow == null);
-    noteDefaulted(key, "maxTokens", m.maxTokens == null);
-    noteDefaulted(key, "input", m.input == null);
+    // 行空但目录种子命中 = 生效值是目录真值，不算"缺省未确认"
+    noteDefaulted(key, "contextWindow", m.contextWindow == null && seed?.contextWindow == null);
+    noteDefaulted(key, "maxTokens", m.maxTokens == null && seed?.maxTokens == null);
+    noteDefaulted(key, "input", m.input == null && seed?.input == null);
   }
   // 重建出的新模型对象不带覆盖，补挂前端下发的 thinkingLevelMap
   applyThinkingMapOverrides();
@@ -418,8 +451,8 @@ export function attachExtraCatalogModel(
   const sibling = orig.getModels()[0];
   if (!sibling) return undefined;
   // 目录里没有该 ID，但别的内置 provider 可能有同名模型（如把 gpt-5.1 挂到别的厂商下）：
-  // 命中即继承其思考参数，未命中按自定义默认值
-  const seed = lookupCatalogThinkingSeed(modelId);
+  // 命中即继承其属性，未命中按自定义默认值
+  const seed = lookupCatalogModelSeed(modelId);
   const model: Model<Api> = {
     id: modelId,
     name: attrs.name?.trim() || modelId,
@@ -428,10 +461,18 @@ export function attachExtraCatalogModel(
     baseUrl: sibling.baseUrl,
     reasoning:
       attrs.reasoning ?? seed?.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
-    input: parseModelInput(attrs.input) ?? [...CUSTOM_MODEL_DEFAULTS.input],
-    cost: parseModelCost(attrs.cost) ?? { ...CUSTOM_MODEL_DEFAULTS.cost },
-    contextWindow: attrs.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
-    maxTokens: attrs.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+    input:
+      parseModelInput(attrs.input) ??
+      seed?.input ??
+      [...CUSTOM_MODEL_DEFAULTS.input],
+    cost:
+      parseModelCost(attrs.cost) ??
+      seed?.cost ??
+      { ...CUSTOM_MODEL_DEFAULTS.cost },
+    contextWindow:
+      attrs.contextWindow ?? seed?.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
+    maxTokens:
+      attrs.maxTokens ?? seed?.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
     ...(seed?.thinkingLevelMap
       ? { thinkingLevelMap: seed.thinkingLevelMap }
       : {}),
@@ -449,10 +490,11 @@ export function attachExtraCatalogModel(
     return [...inner, ...extras.filter((x) => !inner.includes(x))];
   };
   models.setProvider(extended);
-  // 目录外新增模型没有目录真值可依：未填的跟踪属性按注册默认值 = 猜测，标未确认
-  noteDefaulted(`${providerId}/${modelId}`, "contextWindow", attrs.contextWindow == null);
-  noteDefaulted(`${providerId}/${modelId}`, "maxTokens", attrs.maxTokens == null);
-  noteDefaulted(`${providerId}/${modelId}`, "input", attrs.input == null);
+  // 目录外新增且种子未命中的跟踪属性按注册默认值 = 猜测，标未确认
+  const extraKey = `${providerId}/${modelId}`;
+  noteDefaulted(extraKey, "contextWindow", attrs.contextWindow == null && seed?.contextWindow == null);
+  noteDefaulted(extraKey, "maxTokens", attrs.maxTokens == null && seed?.maxTokens == null);
+  noteDefaulted(extraKey, "input", attrs.input == null && seed?.input == null);
   return model;
 }
 
@@ -506,9 +548,11 @@ export function applyRowToCatalogModel(row: {
   // 缺省归因同步：自定义端点行 null = 属性又回到猜测值；内置（含目录外新增）
   // 行 null = 恢复目录真值/保留挂载时归因，非 null = 用户确认过，清除标记
   if (customProviderIds.has(row.provider)) {
-    noteDefaulted(key, "contextWindow", row.contextWindow == null);
-    noteDefaulted(key, "maxTokens", row.maxTokens == null);
-    noteDefaulted(key, "input", row.input == null);
+    // 行空 = 回落注册值：种子命中过则是目录真值，不算猜测
+    const seed = lookupCatalogModelSeed(row.modelId);
+    noteDefaulted(key, "contextWindow", row.contextWindow == null && seed?.contextWindow == null);
+    noteDefaulted(key, "maxTokens", row.maxTokens == null && seed?.maxTokens == null);
+    noteDefaulted(key, "input", row.input == null && seed?.input == null);
   } else {
     if (row.contextWindow != null) noteDefaulted(key, "contextWindow", false);
     if (row.maxTokens != null) noteDefaulted(key, "maxTokens", false);

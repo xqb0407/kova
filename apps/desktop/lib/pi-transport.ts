@@ -77,14 +77,26 @@ function extractQuoteText(metadata: unknown): string | null {
  * （远程 WS 待网关 resume；微信/app 推送型通道天然无流）则清记录回退历史加载。
  */
 export class PiTransport implements ChatTransport<UIMessage> {
+  /**
+   * 本会话自行打开、尚未收尾的 prompt 流（requestId 集合）。排队消息激活前的
+   * status 空窗（上一轮流收尾 → ready、新一轮首个内容 chunk 未到）里，框架的
+   * 自动重挂 effect 会看到「storage 有在飞 id + chat 未在跑」而发起 resumeStream，
+   * 把自己仍在消费的 run 再重放一遍——同一 run 双重消费：消息/分支成对出现
+   * （2/2 分支选择器）、stop 只中止重挂流而原流继续。reconnectToStream 凭本
+   * 集合拒绝这类重挂；真页面刷新后是新实例、集合为空，恢复不受影响。
+   */
+  private openRequestIds = new Set<string>();
+
   async sendMessages({
     chatId,
     messages,
     abortSignal,
+    trigger,
   }: {
     chatId: string;
     messages: UIMessage[];
     abortSignal?: AbortSignal;
+    trigger?: "submit-message" | "regenerate-message";
   }): Promise<ReadableStream<UIMessageChunk>> {
     const requestId = `pi-${crypto.randomUUID()}`;
     // 取最后一条用户消息（regenerate 场景同样复用最后一条用户输入）
@@ -129,9 +141,23 @@ export class PiTransport implements ChatTransport<UIMessage> {
     saveRunHash(chatId, null);
 
     // 排队条登记（requestId → 线程消息 id 映射）：sidecar 上一轮未结束时会把本请求
-    // 排队并回 data-queue chunk；是否可见由 pi-queue 的确认态决定
+    // 排队并回 data-queue chunk；是否可见由 pi-queue 的确认态决定。
+    // message 一并暂存：排队确认后消息从 Chat 数组摘除（顺序稳定性，见 pi-queue
+    // 头注），激活开跑/取消恢复时靠它原样回填（含附件/引用 metadata）。
+    // 重新生成（Reload）不登记：忙线程下 sidecar 照常排队（前端走 ghost 通道，
+    // pendingTurn 加载动画有效），但触发重跑的历史消息必须留在对话列表——若注册
+    // 进队列，确认排队后的「摘除→激活回填」会把它拽回排队条
     const messageId = lastUser?.id ?? "";
-    registerQueuedPrompt({ requestId, threadId: chatId, messageId, text });
+    if (trigger !== "regenerate-message") {
+      registerQueuedPrompt({
+        requestId,
+        threadId: chatId,
+        messageId,
+        text,
+        message: lastUser,
+      });
+    }
+    this.openRequestIds.add(requestId);
     // 检查点卡的轮次锚点：触发本轮的 user 消息下标（跨刷新稳定,见 pi-checkpoints）
     const anchorIndex = lastUser ? messages.indexOf(lastUser) : null;
 
@@ -169,6 +195,12 @@ export class PiTransport implements ChatTransport<UIMessage> {
     abortSignal?: AbortSignal;
   }): Promise<ReadableStream<UIMessageChunk> | null> {
     let requestId = piResumableStorage.getStreamId(chatId);
+    // 本会话自己打开且仍在消费的流：自动重挂（排队激活空窗误触发，见
+    // openRequestIds 注释）会重复消费同一 run，直接拒绝。不清登记——
+    // 原流收尾前真页面刷新仍可凭它恢复
+    if (requestId && this.openRequestIds.has(requestId)) {
+      return null;
+    }
     // 登记落空（storage 被清/配额连带）不直接放弃：查 sidecar 运行态真相，
     // chatId 恰为在跑会话的 remoteId 时重建登记（attach 靠 requestId，与
     // storage 无关）。查不到维持原语义：null → 框架回落 ready 态读历史。
@@ -219,6 +251,8 @@ export class PiTransport implements ChatTransport<UIMessage> {
     abortSignal: AbortSignal | undefined,
     anchorIndex: number | null,
   ): TransformStream<UIMessageChunk, UIMessageChunk> {
+    // transform 回调里 this 指向 Transformer 而非 PiTransport，经闭包引用
+    const transport = this;
     // git 检查点（M2）：在影子仓库打快照，快照时机是本 turn 真正开始（start chunk）。
     // 排队的 prompt 不能在 sendMessages 时打快照——快照会落在上一轮编辑之前，
     // 回滚会误伤上一轮改动。非 git 目录/无 git/网页端静默跳过，失败绝不阻断对话。
@@ -288,6 +322,18 @@ export class PiTransport implements ChatTransport<UIMessage> {
       });
     };
 
+    // 客户端中止（Stop 会 abort 最后一次请求的流，排队流的收尾 chunk 因此到不了
+    // 消费端）：登记清理在此补齐。若该项确认排队且从未开跑，pi-queue 会经
+    // onReveal 把摘除的消息回填恢复（Stop 后消息气泡回到列表、排队条同步消失）
+    abortSignal?.addEventListener(
+      "abort",
+      () => {
+        this.openRequestIds.delete(requestId);
+        unregisterQueuedPrompt(requestId, chatId);
+      },
+      { once: true },
+    );
+
     return new TransformStream<UIMessageChunk, UIMessageChunk>({
       transform(chunk, controller) {
         if (chunk.type === "data-planningState") {
@@ -355,6 +401,8 @@ export class PiTransport implements ChatTransport<UIMessage> {
           if (!sawSteered) createCheckpoint();
         }
         if (chunk.type === "finish") {
+          // 流收尾：本会话打开流集合摘除（自动重挂去重依赖其准确性）
+          transport.openRequestIds.delete(requestId);
           if (sawSteered) {
             // steer 退化收尾：活跃轮还在跑，只清自己的登记（排队条隐藏项、
             // resumable 登记），不碰审批/提问卡片、不发完成提醒
@@ -385,6 +433,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
         if (chunk.type === "error") {
           // 异常收尾同样结算检查点：半途改动也需要 keep/revert 出口；
           // 挂起提问与 finish 同款清空（abort 拆流时 finish 可能到不了）
+          transport.openRequestIds.delete(requestId);
           unregisterQueuedPrompt(requestId, chatId);
           clearResumableIfOwn(chatId, requestId);
           resyncPiRunning();

@@ -16,6 +16,7 @@ import {
   setAttachmentRetentionDays,
   useAttachmentRetentionDays,
 } from "@/lib/attachment-retention";
+import { setAppMode, useAppMode, useAppModeDegraded, type AppMode } from "@/lib/app-mode";
 import { setGpuAccelEnabled, useGpuAccelEnabled } from "@/lib/gpu-accel";
 import { SOUND_PACKS } from "@/lib/sounds";
 import { isTauri, isWindowsPlatform } from "@/lib/tauri";
@@ -31,6 +32,8 @@ export const GeneralSettings: FC = () => {
   const prefs = useUiPrefs();
   const gpuAccel = useGpuAccelEnabled();
   const retentionDays = useAttachmentRetentionDays();
+  const appMode = useAppMode();
+  const appModeDegraded = useAppModeDegraded();
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
@@ -38,6 +41,42 @@ export const GeneralSettings: FC = () => {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">通用</h1>
         </div>
+
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">工作模式</h2>
+          <p className="text-muted-foreground text-sm">
+            全局开关，立即生效于所有会话；与输入框旁的权限模式（确认/自动/计划）互不影响。
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow
+              label="模式"
+              desc={
+                appModeDegraded
+                  ? "当前 sidecar 版本不支持，切换仅影响界面，提示词不跟随"
+                  : appMode === "work"
+                    ? "面向日常办公：交付导向的回复风格，隐藏 Git 管理界面，消息里的工具步骤收敛为摘要"
+                    : "面向开发：完整工具与细节（Git 管理、可展开的工具输出）"
+              }
+            >
+              <Select
+                value={appMode}
+                onValueChange={(v) => void setAppMode(v as AppMode)}
+                items={[
+                  { value: "code", label: "编码（默认）" },
+                  { value: "work", label: "工作" },
+                ]}
+              >
+                <SelectTrigger size="sm" className="w-44 border bg-background">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="code">编码（默认）</SelectItem>
+                  <SelectItem value="work">工作</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingRow>
+          </div>
+        </section>
 
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">提醒</h2>

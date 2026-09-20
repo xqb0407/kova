@@ -63,8 +63,10 @@ export type PiProviderSummary = {
 };
 
 /**
- * 按 modelId 反查内置目录得到的思考参数种子（lookup_thinking_seed 应答）。
+ * 按 modelId 反查内置目录得到的属性种子（lookup_thinking_seed 应答）。
  * 自定义端点/目录外新增模型的属性弹窗预填用；未命中目录时为 null。
+ * 思考参数之外还带 contextWindow/maxTokens/input/cost 目录真值，
+ * 与 sidecar 注册（registerCustomProvider）的兜底口径一致。
  */
 export type PiThinkingSeed = {
   reasoning: boolean;
@@ -72,6 +74,14 @@ export type PiThinkingSeed = {
   thinkingLevelMap?: Record<string, string | null>;
   /** 可用的思考档位（不含 off） */
   supportedThinkingLevels: string[];
+  /** 同名目录模型的上下文容量 */
+  contextWindow: number;
+  /** 同名目录模型的最大输出 tokens */
+  maxTokens: number;
+  /** 同名目录模型的输入模态 */
+  input: string[];
+  /** 同名目录模型的单价 */
+  cost: PiModelCost;
 };
 
 /** 已配置凭据（不含密钥本体） */
@@ -204,6 +214,10 @@ export type PiPersonalization = {
 
 /** 身份文件绝对路径（sidecar 随 personalization 响应返回；设置页展示外部编辑入口用） */
 export type PiPersonalizationPaths = { soul: string; rules: string };
+
+/** 全局工作模式（设置 → 通用）：work = 非工程协作（提示词附加段 + git UI 隐藏 +
+ * 工具行轻量摘要）；code = 默认，行为与旧版一致 */
+export type PiAppMode = "work" | "code";
 
 /** 单日使用统计（本地时区；sidecar 扫全部会话转录聚合，日期升序） */
 export type PiUsageStatsDay = {
@@ -727,6 +741,7 @@ export type PiResponse =
       settings: PiPersonalization;
       paths?: PiPersonalizationPaths;
     }
+  | { type: "app_mode"; mode: PiAppMode }
   | { type: "memory"; settings: PiMemoryConfig }
   | { type: "browser"; settings: PiBrowserConfig }
   | { type: "observability"; settings: PiObservabilityConfig }

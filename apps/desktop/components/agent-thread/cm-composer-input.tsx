@@ -183,10 +183,16 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
     const host = hostRef.current;
     if (!host) return;
     let destroyed = false;
+    // 最近一次组合结束时刻（回声 Enter 判定用，见 anyKeyHandler）
+    let compositionEndedAt = 0;
 
     const anyKeyHandler = (event: KeyboardEvent): boolean => {
       if (event.isComposing || event.keyCode === 229) return false;
       const s = latestRef.current;
+      // 输入法确认的回声 Enter（compositionend 后短窗口内补发的 isComposing=false
+      // 按键）：吞掉——它不是用户意图，放行会误发送，不拦默认行为会白换一行；
+      // 返回 true 让 CM preventDefault。与 composer.tsx 的 ImeEnterGuard 同窗口
+      if (event.key === "Enter" && performance.now() - compositionEndedAt <= 120) return true;
       // 弹层打开时导航/选中/关闭优先（与 textarea 路径同序）
       if (s.registry) {
         for (const plugin of s.registry.getPlugins()) {
@@ -287,6 +293,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
               return true;
             },
             compositionend: () => {
+              compositionEndedAt = performance.now();
               // 组合期被跳过的外部写入在此对账（微任务避免与更新循环交叠）
               queueMicrotask(() => reconcile(valueRef.current));
               return false;

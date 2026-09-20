@@ -1,23 +1,32 @@
 "use client";
 
-import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import {
+  Fragment,
+  useEffect,
+  useRef,
+  useState,
+  type FC,
+  type ReactNode,
+} from "react";
+import {
+  ChevronRightIcon,
   CloudIcon,
-  CodeIcon,
+  CopyIcon,
   DownloadIcon,
   EyeIcon,
-  FileIcon,
   FileQuestionIcon,
-  FileTextIcon,
   FolderIcon,
-  ImageIcon,
+  FolderOpenIcon,
   LayoutGridIcon,
   ListIcon,
   Loader2Icon,
   RefreshCwIcon,
-  SheetIcon,
+  SquareArrowOutUpRightIcon,
   Trash2Icon,
 } from "lucide-react";
+import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
+import { taskWorkspaceDir } from "@/lib/task-workspace";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/custom-ui/segmented";
@@ -28,6 +37,7 @@ import {
   deleteAppFile,
   listAppFiles,
   previewAppFile,
+  revealAppFile,
   type AppFileEntry,
   type AppFilePreview,
 } from "@/lib/app-files";
@@ -67,9 +77,9 @@ import {
 
 /**
  * 我的文件（侧边栏「我的文件」主区视图）。
- * 本地 = AI 产物目录（无目录任务会话的执行工作目录，Rust app_file_list 只读
- * 列举）；云端 = 复用备份功能已配置的 S3 / WebDAV（backup_list_remote 列远端
- * 备份包，支持下载 / 删除）。
+ * 本地 = AI 产物目录（无目录任务会话的执行工作目录，Rust app_file_list 列举，
+ * 目录可点击逐层下钻，面包屑回跳）；云端 = 复用备份功能已配置的 S3 / WebDAV
+ * （backup_list_remote 列远端备份包，支持下载 / 删除）。
  * 视图：宫格（类型图标预览瓦片）/ 列表（名称 / 上次更新 / 大小），偏好持久化。
  */
 
@@ -79,35 +89,41 @@ type FilesState<T> = { loading: boolean; files: T | null; error: string | null }
 type FilesTab = "local" | "cloud";
 type ViewMode = "grid" | "list";
 
-/** 宫格/列表共用的行形状（local AppFileEntry 与云端 RemoteBackup 归一） */
+/** 宫格/列表共用的行形状（local AppFileEntry 与云端 RemoteBackup 归一）；
+ *  rel 仅本地行有值：相对 task-workspace 根的下钻路径（预览/删除用） */
 type FileRow = {
   name: string;
   dir: boolean;
   size: number;
   modified: string | null;
   encrypted?: boolean;
+  rel?: string;
 };
 
-/** 按扩展名挑图标与颜色（无真实缩略图，宫格预览瓦片用它撑场） */
-function typeMeta(row: FileRow) {
-  if (row.dir) return { icon: FolderIcon, cls: "text-blue-500 dark:text-blue-400" };
-  const ext = row.name.split(".").pop()?.toLowerCase() ?? "";
-  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"].includes(ext))
-    return { icon: ImageIcon, cls: "text-emerald-500 dark:text-emerald-400" };
-  if (["md", "txt", "pdf", "doc", "docx"].includes(ext))
-    return { icon: FileTextIcon, cls: "text-sky-500 dark:text-sky-400" };
-  if (["csv", "xlsx", "xls"].includes(ext))
-    return { icon: SheetIcon, cls: "text-green-600 dark:text-green-500" };
-  if (["ts", "tsx", "js", "jsx", "py", "rs", "go", "json", "html", "css", "sh", "toml", "yaml", "yml"].includes(ext))
-    return { icon: CodeIcon, cls: "text-violet-500 dark:text-violet-400" };
-  return { icon: FileIcon, cls: "text-muted-foreground" };
-}
+/** 行/卡片/弹窗标题图标：目录用蓝色文件夹；文件走 material-file-icons
+ *  （VS Code 同款彩色图标，按文件名/扩展名查表，未知类型回退默认文档图标） */
+const RowIcon: FC<{
+  row: FileRow;
+  className?: string;
+  /** 仅目录的 lucide 图标生效（material 图标是填充 SVG，无描边概念） */
+  strokeWidth?: number;
+}> = ({ row, className, strokeWidth }) =>
+  row.dir ? (
+    <FolderIcon
+      strokeWidth={strokeWidth}
+      className={cn("shrink-0 text-blue-500 dark:text-blue-400", className)}
+    />
+  ) : (
+    <FileTypeIcon path={row.name} className={className} />
+  );
 
 const VIEW_MODE_KEY = "files-view-mode";
 
 export const FilesView: FC = () => {
   const [subTab, setSubTab] = useState<FilesTab>("local");
   const [query, setQuery] = useState("");
+  // 搜索防抖：输入框即时回显，过滤只吃延迟值（连续击键折叠为最后一次）
+  const debouncedQuery = useDebouncedValue(query, 200);
   // 视图偏好持久化（宫格 / 列表）
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     if (typeof window === "undefined") return "grid";
@@ -124,15 +140,17 @@ export const FilesView: FC = () => {
     } catch {}
   };
 
-  // ---- 本地：AI 产物目录（首次切到本地页签时拉取） ----
+  // ---- 本地：AI 产物目录（下钻浏览；进入本地页签/切换目录时拉取） ----
   const [local, setLocal] = useState<FilesState<AppFileEntry[]>>({
     loading: false,
     files: null,
     error: null,
   });
+  /** 当前所在目录，相对 task-workspace 根（"" = 根），POSIX 分隔 */
+  const [currentDir, setCurrentDir] = useState("");
   const loadLocal = () => {
     setLocal((s) => ({ ...s, loading: true }));
-    listAppFiles()
+    listAppFiles(currentDir)
       .then((files) => setLocal({ loading: false, files, error: null }))
       .catch((err) =>
         setLocal({
@@ -143,11 +161,15 @@ export const FilesView: FC = () => {
       );
   };
   useEffect(() => {
-    if (subTab === "local" && !local.loading && !local.error && local.files === null) {
-      loadLocal();
-    }
+    if (subTab === "local") loadLocal();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subTab, local]);
+  }, [subTab, currentDir]);
+
+  /** 进入子目录 / 经面包屑跳转（换目录即清旧清单，避免闪现上一层内容） */
+  const navigateDir = (dir: string) => {
+    setCurrentDir(dir);
+    setLocal({ loading: true, files: null, error: null });
+  };
 
   // ---- 云端：复用备份功能的存储配置（S3 / WebDAV） ----
   const backupCfg = useBackupConfig();
@@ -203,7 +225,7 @@ export const FilesView: FC = () => {
     setPreview(null);
     setPreviewLoading(true);
     setPreviewRow(row);
-    previewAppFile(row.name)
+    previewAppFile(row.rel ?? row.name)
       .then(setPreview)
       .catch((e) => {
         setPreviewRow(null);
@@ -218,7 +240,7 @@ export const FilesView: FC = () => {
     setBusyName(row.name);
     try {
       if (source === "local") {
-        await deleteAppFile(row.name);
+        await deleteAppFile(row.rel ?? row.name);
         loadLocal();
         toast.success(`已删除 ${row.name}`);
       } else {
@@ -231,6 +253,35 @@ export const FilesView: FC = () => {
     } finally {
       setBusyName(null);
       setDeleteTarget(null);
+    }
+  };
+
+  /** 在系统文件管理器中打开/显示（目录打开该目录，文件选中显示）；失败轻提示 */
+  const doReveal = async (row: FileRow) => {
+    try {
+      await revealAppFile(row.rel ?? row.name);
+    } catch (e) {
+      toast.error(`打开失败：${String(e)}`);
+    }
+  };
+
+  /** 复制条目的磁盘绝对路径（task-workspace 根 + rel，按平台分隔符拼接，
+   *  与工作区文件树 copyPath 同款写法） */
+  const copyPath = async (row: FileRow) => {
+    const root = await taskWorkspaceDir();
+    if (!root) {
+      toast.error("复制失败");
+      return;
+    }
+    const sep = root.includes("\\") ? "\\" : "/";
+    const text = row.rel
+      ? `${root}${sep}${row.rel.split("/").join(sep)}`
+      : root;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("已复制路径");
+    } catch {
+      toast.error("复制失败");
     }
   };
 
@@ -247,6 +298,18 @@ export const FilesView: FC = () => {
           <DownloadIcon className="size-4" />
           下载到本地
         </ContextMenuItem>
+      )}
+      {source === "local" && (
+        <>
+          <ContextMenuItem onClick={() => void doReveal(row)}>
+            {row.dir ? <FolderOpenIcon className="size-4" /> : <SquareArrowOutUpRightIcon className="size-4" />}
+            {row.dir ? "在系统中打开" : "在系统中显示"}
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => void copyPath(row)}>
+            <CopyIcon className="size-4" />
+            复制路径
+          </ContextMenuItem>
+        </>
       )}
       <ContextMenuSeparator />
       <ContextMenuItem
@@ -289,9 +352,11 @@ export const FilesView: FC = () => {
     </div>
   );
 
-  const q = query.trim().toLowerCase();
+  const q = debouncedQuery.trim().toLowerCase();
   const localRows: FileRow[] =
-    local.files?.filter((f) => !q || f.name.toLowerCase().includes(q)) ?? [];
+    local.files
+      ?.map((f) => ({ ...f, rel: currentDir ? `${currentDir}/${f.name}` : f.name }))
+      .filter((f) => !q || f.name.toLowerCase().includes(q)) ?? [];
   const cloudRows: FileRow[] =
     cloud.files
       ?.filter((f) => !q || f.name.toLowerCase().includes(q))
@@ -352,15 +417,52 @@ export const FilesView: FC = () => {
 
         {/* 本地 */}
         {subTab === "local" ? (
-          <FilesPane
-            state={local}
-            rows={localRows}
-            query={query}
-            onRetry={loadLocal}
-            emptyHint="还没有 AI 产生的文件。任务会话里生成或修改的文件会出现在这里。"
-            viewMode={viewMode}
-            renderMenu={(row) => renderMenu(row, "local")}
-          />
+          <>
+            {/* 面包屑（非根目录时显示）：根「我的文件」+ 逐级目录，均可点回跳 */}
+            {currentDir && (
+              <nav className="mt-4 flex min-w-0 items-center gap-1 text-sm">
+                <button
+                  onClick={() => navigateDir("")}
+                  className="text-muted-foreground hover:text-foreground shrink-0 transition-colors"
+                >
+                  我的文件
+                </button>
+                {currentDir.split("/").map((part, i, parts) => {
+                  const last = i === parts.length - 1;
+                  return (
+                    <span key={i} className="flex min-w-0 items-center gap-1">
+                      <ChevronRightIcon className="text-muted-foreground/50 size-3.5 shrink-0" />
+                      {last ? (
+                        <span className="text-foreground truncate font-medium">{part}</span>
+                      ) : (
+                        <button
+                          onClick={() => navigateDir(parts.slice(0, i + 1).join("/"))}
+                          className="text-muted-foreground hover:text-foreground truncate transition-colors"
+                        >
+                          {part}
+                        </button>
+                      )}
+                    </span>
+                  );
+                })}
+              </nav>
+            )}
+            <FilesPane
+              state={local}
+              rows={localRows}
+              query={query}
+              onRetry={loadLocal}
+              emptyHint={
+                currentDir
+                  ? "这个文件夹是空的。"
+                  : "还没有 AI 产生的文件。任务会话里生成或修改的文件会出现在这里。"
+              }
+              viewMode={viewMode}
+              onOpenDir={(name) => navigateDir(currentDir ? `${currentDir}/${name}` : name)}
+              onOpenFile={openPreview}
+              renderMenu={(row) => renderMenu(row, "local")}
+            />
+          </>
         ) : !cloudReady ? (
           /* 云端未配置：引导去备份设置 */
           <div className="mt-4 flex flex-col items-center gap-2 rounded-2xl py-16 text-center">
@@ -390,10 +492,7 @@ export const FilesView: FC = () => {
         <DialogContent className="w-[min(90vw,72rem)] max-w-[90vw] sm:max-w-[72rem]">
           <DialogHeader>
             <DialogTitle className="flex min-w-0 items-center gap-2">
-              {previewRow && (() => {
-                const Meta = typeMeta(previewRow).icon;
-                return <Meta className={cn("size-4 shrink-0", typeMeta(previewRow).cls)} />;
-              })()}
+              {previewRow && <RowIcon row={previewRow} className="size-4" />}
               <span className="truncate">{previewRow?.name}</span>
             </DialogTitle>
             <DialogDescription className="sr-only">文件预览</DialogDescription>
@@ -467,7 +566,8 @@ export const FilesView: FC = () => {
 };
 
 /** 宫格预览瓦片：目录恒图标；文件进入视口后懒加载——图片 data URL、
- *  文本渐隐片段、其余（含加载失败/超大图）回退类型图标 */
+ *  文本渐隐片段、其余（含加载失败/超大图）回退类型图标（仅本地行有 rel，
+ *  云端行直接回退图标） */
 const PreviewTile: FC<{ row: FileRow }> = ({ row }) => {
   const [preview, setPreview] = useState<
     { kind: "image"; url: string } | { kind: "text"; text: string } | null
@@ -476,14 +576,14 @@ const PreviewTile: FC<{ row: FileRow }> = ({ row }) => {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (row.dir || attempted) return;
+    if (row.dir || attempted || !row.rel) return;
     const el = ref.current;
     if (!el) return;
     const io = new IntersectionObserver(
       (entries) => {
         if (!entries.some((e) => e.isIntersecting)) return;
         io.disconnect();
-        previewAppFile(row.name)
+        previewAppFile(row.rel!)
           .then((p) => {
             if (p.kind === "image") {
               setPreview({ kind: "image", url: `data:${p.mime};base64,${p.data}` });
@@ -520,12 +620,12 @@ const PreviewTile: FC<{ row: FileRow }> = ({ row }) => {
       </pre>
     );
   }
-  const meta = typeMeta(row);
-  return <meta.icon className={cn("size-10", meta.cls)} strokeWidth={1.5} />;
+  return <RowIcon row={row} className="size-10" strokeWidth={1.5} />;
 };
 
 /** 清单面板：加载 / 错误 / 空 / 宫格 / 列表 五态；行与卡片右键弹 renderMenu，
- *  renderActions 提供时行尾与卡片悬浮出现操作 */
+ *  renderActions 提供时行尾与卡片悬浮出现操作；onOpenDir 提供时目录卡片 /
+ *  目录行可点击进入（下钻），onOpenFile 提供时文件可单击预览（右键菜单保留） */
 const FilesPane: FC<{
   /** files 只做「已加载与否」判断，元素形状由 rows 承担（local/cloud 归一前不同） */
   state: { loading: boolean; files: unknown; error: string | null };
@@ -534,9 +634,28 @@ const FilesPane: FC<{
   onRetry: () => void;
   emptyHint: string;
   viewMode: ViewMode;
+  onOpenDir?: (name: string) => void;
+  onOpenFile?: (row: FileRow) => void;
   renderActions?: (name: string) => ReactNode;
   renderMenu?: (row: FileRow) => ReactNode;
-}> = ({ state, rows, query, onRetry, emptyHint, viewMode, renderActions, renderMenu }) => {
+}> = ({
+  state,
+  rows,
+  query,
+  onRetry,
+  emptyHint,
+  viewMode,
+  onOpenDir,
+  onOpenFile,
+  renderActions,
+  renderMenu,
+}) => {
+  /** 单击行/卡片：目录进入，文件预览；能力未给（如云端文件）则不可点 */
+  const openRow = (f: FileRow) => {
+    if (f.dir) onOpenDir?.(f.name);
+    else onOpenFile?.(f);
+  };
+  const rowClickable = (f: FileRow) => Boolean(f.dir ? onOpenDir : onOpenFile);
   if (state.loading && state.files === null) {
     return (
       <div className="text-muted-foreground mt-4 px-1 text-sm">加载中…</div>
@@ -562,12 +681,17 @@ const FilesPane: FC<{
   return viewMode === "grid" ? (
     <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
       {rows.map((f) => {
-        const meta = typeMeta(f);
         return (
           <ContextMenu key={f.name}>
             <ContextMenuTrigger
               render={
-                <div className="group hover:border-border/80 relative cursor-default overflow-hidden rounded-xl border transition-colors" />
+                <div
+                  onClick={rowClickable(f) ? () => openRow(f) : undefined}
+                  className={cn(
+                    "group hover:border-border/80 relative overflow-hidden rounded-xl border transition-colors",
+                    rowClickable(f) ? "cursor-pointer" : "cursor-default",
+                  )}
+                />
               }
             >
               {/* 预览瓦片：懒加载真预览（图片缩略图 / 文本片段），回退类型图标 */}
@@ -577,7 +701,7 @@ const FilesPane: FC<{
               <div className="flex items-center gap-2 p-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
-                    <meta.icon className={cn("size-3.5 shrink-0", meta.cls)} />
+                    <RowIcon row={f} className="size-3.5" />
                     <span className="truncate text-sm font-medium">{f.name}</span>
                     {f.encrypted && (
                       <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-1.5 py-0.5 text-[11px] leading-none">
@@ -613,16 +737,21 @@ const FilesPane: FC<{
       </div>
       <div className="divide-y">
         {rows.map((f) => {
-          const meta = typeMeta(f);
           return (
             <ContextMenu key={f.name}>
               <ContextMenuTrigger
                 render={
-                  <div className="hover:bg-muted/70 grid cursor-default grid-cols-[minmax(0,1fr)_10rem_6rem_auto] items-center gap-3 px-4 py-2.5" />
+                  <div
+                    onClick={rowClickable(f) ? () => openRow(f) : undefined}
+                    className={cn(
+                      "hover:bg-muted/70 grid grid-cols-[minmax(0,1fr)_10rem_6rem_auto] items-center gap-3 px-4 py-2.5",
+                      rowClickable(f) ? "cursor-pointer" : "cursor-default",
+                    )}
+                  />
                 }
               >
                 <div className="flex min-w-0 items-center gap-2.5">
-                  <meta.icon className={cn("size-4 shrink-0", meta.cls)} />
+                  <RowIcon row={f} className="size-4" />
                   <span className="truncate text-sm font-medium">{f.name}</span>
                   {f.encrypted && (
                     <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-1.5 py-0.5 text-[11px] leading-none">

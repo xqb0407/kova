@@ -162,6 +162,14 @@ export function installedPluginDir(mktId: string, name: string): string {
   return join(pluginsRootDir(), "cache", mktId, name);
 }
 
+/**
+ * AI 脚手架的专属 dev 市场（plugins_scaffold 落盘目标）：固定在本机插件根下，
+ * 首次 scaffold 时自动登记为 directory 市场，之后用户在市场 UI 一键刷新安装。
+ */
+export function devMarketplaceDir(): string {
+  return join(pluginsRootDir(), "dev-marketplace");
+}
+
 function catalogsDir(): string {
   return join(pluginsRootDir(), "catalogs");
 }
@@ -336,17 +344,33 @@ export function parsePluginManifest(
     if (!ok) diagnostics.push(`${key}: 声明的路径 "${rel}" 不存在或类型不符（${abs}）`);
   }
 
-  const icon = asString(doc.icon);
+  const rawIcon =
+    asString(doc.icon) ??
+    (isRecord(doc.interface)
+      ? asString(doc.interface.composerIcon) ?? asString(doc.interface.logo)
+      : undefined);
   const keywords = Array.isArray(doc.keywords)
     ? (doc.keywords as unknown[]).filter((k): k is string => typeof k === "string").slice(0, 16)
     : undefined;
+
+  // 图标：远程 URL（http/https/data）原样保留；相对路径做包含性校验后规整。
+  // Codex 生态的图标在 interface.composerIcon / interface.logo 里（顶层 icon 缺省时回退）。
+  let icon: string | undefined;
+  if (rawIcon) {
+    if (/^(https?:|data:)/i.test(rawIcon)) {
+      icon = rawIcon;
+    } else {
+      const contained = containedRelPath(root, rawIcon, "icon", diagnostics);
+      if (contained) icon = contained;
+    }
+  }
 
   return {
     name,
     version,
     ...(asString(doc.description) ? { description: asString(doc.description) } : {}),
     ...(author && (author.name || author.url) ? { author } : {}),
-    ...(icon && !isAbsolute(icon) ? { icon } : {}),
+    ...(icon ? { icon } : {}),
     ...(asString(doc.category) ? { category: asString(doc.category) } : {}),
     ...(keywords?.length ? { keywords } : {}),
     ...(asString(doc.homepage) ? { homepage: asString(doc.homepage) } : {}),
@@ -880,6 +904,49 @@ export function resolvePluginComponent(
 }
 
 // ---------------------------------------------------------------------------
+// 图标解析（载荷直接给可显示的 src：远程 URL 原样，本地文件读成 data URL）
+// ---------------------------------------------------------------------------
+
+const ICON_MAX_BYTES = 256 * 1024;
+
+const ICON_MIME: Readonly<Record<string, string>> = {
+  svg: "image/svg+xml",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  ico: "image/x-icon",
+};
+
+function readIconDataUrl(abs: string): string | undefined {
+  try {
+    const st = statSync(abs);
+    if (!st.isFile() || st.size > ICON_MAX_BYTES || st.size === 0) return undefined;
+    const ext = abs.split(".").pop()?.toLowerCase() ?? "";
+    const mime = ICON_MIME[ext];
+    if (!mime) return undefined;
+    return `data:${mime};base64,${readFileSync(abs).toString("base64")}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 插件清单图标 → 可显示 src：http(s)/data URL 原样返回；相对路径按插件根做
+ * 包含性校验后读文件转 data URL（webview CSP img-src 已含 data:/https:）。
+ */
+export function resolvePluginIconDataUrl(manifest: PluginManifest): string | undefined {
+  const icon = manifest.icon;
+  if (!icon) return undefined;
+  if (/^(https?:|data:)/i.test(icon)) return icon;
+  const abs = resolve(manifest.root, icon);
+  const rootWithSep = manifest.root.endsWith(sep) ? manifest.root : manifest.root + sep;
+  if (!abs.startsWith(rootWithSep)) return undefined;
+  return readIconDataUrl(abs);
+}
+
+// ---------------------------------------------------------------------------
 // 运行时钩子读取（hooks.ts 的 matchingHooks 每次调用；文件签名缓存兜底）
 // ---------------------------------------------------------------------------
 
@@ -1027,11 +1094,38 @@ export async function refreshMarketplace(mktId: string): Promise<RefreshResult> 
   return { record, catalog: parsed.catalog, ...(revision ? { revision } : {}) };
 }
 
-/** 市场清单（含目录缓存；未刷新过的 git 市场返回空目录并标 needsRefresh） */
+/**
+ * 市场清单（含目录缓存；未刷新过的 git 市场返回空目录并标 needsRefresh）。
+ * 图标就地解析为可显示 src：远程 URL 原样；本地相对路径按"插件目录优先、
+ * 市场根兜底"读成 data URL（git 市场的根是本机 repos 工作副本）。
+ */
 export function getMarketplaceCatalog(mktId: string): { catalog: MarketplaceCatalog; revision?: string; needsRefresh: boolean } {
   const cache = readCatalogCache(mktId);
-  if (cache) return { catalog: cache.catalog, ...(cache.revision ? { revision: cache.revision } : {}), needsRefresh: false };
-  return { catalog: { name: mktId, plugins: [] }, needsRefresh: true };
+  if (!cache) return { catalog: { name: mktId, plugins: [] }, needsRefresh: true };
+  const record = readMarketplaceRecords().find((r) => r.id === mktId);
+  const marketRoot = record
+    ? record.type === "directory"
+      ? record.path
+      : marketplaceRepoDir(mktId)
+    : undefined;
+  const catalog: MarketplaceCatalog = {
+    ...cache.catalog,
+    plugins: cache.catalog.plugins.map((p) => {
+      if (!p.icon || !marketRoot || /^(https?:|data:)/i.test(p.icon)) return p;
+      const pluginDir = resolve(marketRoot, p.path);
+      const rootWithSep = pluginDir.endsWith(sep) ? pluginDir : pluginDir + sep;
+      // 图标基点二选一：相对插件目录（生态惯例）或相对市场根（简写惯例），
+      // 两者都做包含性校验，读不到文件自然回退占位
+      const under = (base: string, rel: string): string | undefined => {
+        const abs = resolve(base, rel);
+        const baseWithSep = base.endsWith(sep) ? base : base + sep;
+        return abs.startsWith(baseWithSep) ? readIconDataUrl(abs) : undefined;
+      };
+      const dataUrl = under(pluginDir, p.icon) ?? under(marketRoot, p.icon);
+      return dataUrl ? { ...p, icon: dataUrl } : { ...p, icon: undefined };
+    }),
+  };
+  return { catalog, ...(cache.revision ? { revision: cache.revision } : {}), needsRefresh: false };
 }
 
 export type InstallResult = { plugin: InstalledPlugin; updated: boolean };

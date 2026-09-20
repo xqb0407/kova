@@ -228,11 +228,22 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
         (event.result as { content?: ProjectableContentBlock[] } | undefined)?.content,
         { toolCallId: event.toolCallId, toolName: event.toolName },
       );
-      sendChunk(reqId, {
-        type: "tool-output-available",
-        toolCallId: event.toolCallId,
-        output,
-      });
+      // 失败/被拒的结果走 AI SDK 标准 tool-output-error：前端据此把 part 的
+      // isError 置真（工具行失败态、产物过滤、面板 failed 都依赖它——此前
+      // 标记在映射时丢失，被拒的 write 也被当成成功产物渲染）
+      if (event.isError) {
+        sendChunk(reqId, {
+          type: "tool-output-error",
+          toolCallId: event.toolCallId,
+          errorText: output,
+        });
+      } else {
+        sendChunk(reqId, {
+          type: "tool-output-available",
+          toolCallId: event.toolCallId,
+          output,
+        });
+      }
       for (const img of images) {
         sendChunk(reqId, { type: "data-image", id: img.id, data: img.data });
       }

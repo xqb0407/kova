@@ -456,10 +456,11 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
       steer: true,
       threadId: "th-st1",
     });
-    await pb; // steer 立即完成（退化流），不等 A
+    await pb; // steer 立即完成（注入即返回），不等 A
 
-    // 退化流生命周期：steered 标记 → start → finish，无执行痕迹
-    expect(chunksFor("sb1").map((c) => c.type)).toEqual(["data-queue", "start", "finish"]);
+    // 退化流生命周期：steered 标记 → start；finish 不立即发（提前结束会把
+    // 框架共享 status 置回 ready，宿主轮被 UI 显示为已停止），挂起到宿主轮收尾
+    expect(chunksFor("sb1").map((c) => c.type)).toEqual(["data-queue", "start"]);
     expect(
       chunksFor("sb1").some(
         (c) => c.type === "data-queue" && (c.data as { phase?: string })?.phase === "steered",
@@ -473,8 +474,14 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     expect(queueSnapshot("th-st1")).toEqual([]);
     expect(chunksFor("sa1").some((c) => c.type === "finish")).toBe(false);
 
+    // 宿主轮收尾（Stop）：A 的 finish 之后补发 sb1 的 finish
     await dispatch("sa1-abort", { type: "abort", threadId: "th-st1" });
     await pa;
+    expect(chunksFor("sb1").map((c) => c.type)).toEqual([
+      "data-queue",
+      "start",
+      "finish",
+    ]);
     resetQueueForTests();
   });
 
@@ -537,13 +544,13 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     await dispatch("cmd-st", { type: "queue_steer", requestId: "sb4" });
     expect(responses("cmd-st").at(-1)?.type).toBe("queue_steered");
 
-    // 项已移除；其流 queued → steered → start → finish；注入发生在活跃 agent
+    // 项已移除；其流 queued → steered → start（finish 挂到宿主轮收尾）；
+    // 注入发生在活跃 agent
     expect(queueSnapshot("th-st4")).toEqual([]);
     expect(chunksFor("sb4").map((c) => c.type)).toEqual([
       "data-queue",
       "data-queue",
       "start",
-      "finish",
     ]);
     const phases = chunksFor("sb4")
       .filter((c) => c.type === "data-queue")
@@ -552,9 +559,16 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     expect(steeredOf(run.agent)).toHaveLength(1);
     expect(steeredOf(run.agent)[0]).toMatchObject({ role: "user", content: "B" });
 
-    // A 收尾后 sb4 的链节轮到空队列，静默让位（不执行）
+    // A 收尾后 sb4 的链节轮到空队列，静默让位（不执行）；其退化流 finish
+    // 随 A 的收尾补发
     await dispatch("sa4-abort", { type: "abort", threadId: "th-st4" });
     await Promise.all([pa, pb]);
+    expect(chunksFor("sb4").map((c) => c.type)).toEqual([
+      "data-queue",
+      "data-queue",
+      "start",
+      "finish",
+    ]);
     expect(chunksFor("sb4").some((c) => c.type === "error")).toBe(false);
     resetQueueForTests();
   });

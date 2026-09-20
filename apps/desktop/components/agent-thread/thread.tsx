@@ -27,7 +27,7 @@ import { BranchPicker } from "./branch-picker";
 import { CheckpointTail } from "./checkpoint-card";
 import { ThreadPreviewRail } from "./thread-preview-rail";
 import { prewarmShiki } from "@/lib/prewarm-shiki";
-import { useQueuedMessageIds } from "@/lib/pi-queue";
+import { useQueuedMessageIds, useThreadPendingTurn } from "@/lib/pi-queue";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -77,15 +77,23 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
-/** turn 间隙等待动画：thread 在跑、但列表末尾还不是 AI 回复时（promote 中止
- *  上一轮后的会话准备段、新回复首 token 前的空窗），消息级 indicator 无处
+/** turn 间隙等待动画：列表末尾还不是 AI 回复、但新一轮已在路上时（排队项
+ *  激活开跑后的会话准备段、新回复首 token 前的空窗），消息级 indicator 无处
  *  挂载——AI 回复消息要等首个内容块才创建——这里在列表末尾补点阵动画。
- *  有排队项隐藏时不显示（running 中的回复自带消息级指示器） */
+ *  两类触发：
+ *  - pendingTurn：排队项已开跑（data-queue active）。被立即发送中止的上一轮
+ *    流收尾会把 chat status 短暂置回 ready（isRunning=false 的空窗），必须绕过
+ *    isRunning 判定，且此刻该轮不存在隐藏排队项（它自己已激活）；
+ *  - 常规兜底：thread 在跑、末条是 user 消息、且没有排队项隐藏。 */
 const ThreadWorkingIndicator: FC = () => {
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const lastRole = useAuiState((s) => s.thread.messages.at(-1)?.role);
   const queuedMessageIds = useQueuedMessageIds();
-  if (!isRunning || lastRole !== "user" || queuedMessageIds.size > 0) {
+  const pendingTurn = useThreadPendingTurn(threadId);
+  const waiting =
+    pendingTurn || (isRunning && queuedMessageIds.size === 0);
+  if (lastRole !== "user" || !waiting) {
     return null;
   }
   return (
@@ -196,7 +204,7 @@ export const Thread: FC = () => {
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
 
-      {/* 会话锚点定位：右侧刻度条，悬停预览、点击跳转（内容溢出时出现） */}
+      {/* 会话锚点定位：左侧刻度条，一轮对话一个刻度，悬停预览、点击跳转（内容溢出时出现） */}
       <ThreadPreviewRail />
 
       <SelectionToolbar />

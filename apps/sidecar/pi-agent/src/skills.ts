@@ -3,8 +3,9 @@
  *
  * 渐进式披露：系统提示词只注入"生效技能"的目录（pi-agent-core 的
  * formatSkillsForSystemPrompt：<available_skills> XML，每技能 name/description/
- * location 三行）；正文永不进提示词——模型判断任务匹配后用 read 工具按
- * location 读取。禁用或被遮蔽的技能连目录行都不出现。
+ * location 三行）；正文永不进提示词——模型判断任务匹配后经 use_skill 工具按
+ * 名加载（skill-use-tool.ts；目录段指引已改指该工具）。禁用或被遮蔽的技能连
+ * 目录行都不出现。
  *
  * 来源分层，同名时前层遮蔽后层（工作区 > 生态·工作区 > 系统 > 生态·用户）：
  * - 工作区（可编辑）：<cwd>/.xulux/skills/*.md
@@ -367,9 +368,18 @@ export function skillsSnapshot(cwd?: string): SkillsSnapshot {
   return mergeLayers(cwd && cwd.trim() ? cwd.trim() : undefined);
 }
 
+/** 库目录段的"读文件加载"指引 → 改指 use_skill 工具（专属回执带技能目录锚点，
+ *  前端也能渲染成「调用技能」行）。按整句精确替换：库文案变了就替换不中，
+ *  退化为旧的 read 语义（功能不受损，只是少了专属渲染），不报错。 */
+const SKILL_READ_LINE = "Read the full skill file when the task matches its description.";
+const SKILL_USE_LINE =
+  "When the task matches a skill's description, call the use_skill tool with that skill's <name> to load its full instructions; do not read the skill file with the read tool.";
+
 /** 系统提示词的技能目录段：无生效技能返回空串（默认提示词字节级不变） */
 export function skillsPromptBlock(cwd: string): string {
-  return formatSkillsForSystemPrompt(skillsSnapshot(cwd).activeSkills);
+  const block = formatSkillsForSystemPrompt(skillsSnapshot(cwd).activeSkills);
+  if (!block) return "";
+  return block.split(SKILL_READ_LINE).join(SKILL_USE_LINE);
 }
 
 // ---------------------------------------------------------------------------

@@ -28,7 +28,6 @@ import {
   useAuiState,
   ActionBarMorePrimitive,
 } from "@assistant-ui/react";
-import { BranchPicker } from "./branch-picker";
 import { RetryMarker, useRetryState } from "./retry-marker";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageCheckpoint } from "./checkpoint-card";
@@ -68,6 +67,7 @@ const TOOL_CATEGORY: Record<string, "terminal" | "inspect" | "modify"> = {
   WebSearch: "inspect",
   memory_read: "inspect",
   memory_search: "inspect",
+  use_skill: "inspect",
   edit: "modify",
   write: "modify",
 };
@@ -272,7 +272,6 @@ export const AssistantMessage: FC = () => {
         className="relative ml-2 h-7.5 min-h-7.5 -mb-7.5 overflow-visible"
       >
         <div className="absolute inset-x-0 top-0 flex h-7.5 items-center pt-1.5">
-          <BranchPicker />
           <AssistantActionBar />
         </div>
       </div>
@@ -349,7 +348,7 @@ const AssistantActionBar: FC = () => {
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
-      {/* <MessageTiming /> */}
+      <MessageTiming />
     </ActionBarPrimitive.Root>
   );
 };

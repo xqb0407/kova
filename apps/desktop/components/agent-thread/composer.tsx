@@ -9,6 +9,7 @@ import {
   useSubagentMention,
 } from "@/components/agent-thread/composer-commands";
 import { CmComposerInput } from "@/components/agent-thread/cm-composer-input";
+import { directiveChipVariants } from "@/components/assistant-ui/elements/directive-text.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
@@ -78,6 +79,7 @@ import { Input } from "../ui/input";
 import { cn } from "cn";
 import { useGitStatus } from "@/lib/git-status";
 import { gitBranches, gitCheckout, type GitBranches } from "@/lib/git";
+import { useAppMode } from "@/lib/app-mode";
 import { openPanelTab } from "@/lib/panel-tabs";
 
 const ModelPicker: FC = () => {
@@ -89,8 +91,9 @@ const ModelPicker: FC = () => {
  * 1) 输入法回车守卫——WKWebView 下回车确认候选词的 keydown 常带 isComposing=false
  *    （或紧随 compositionend 之后送达），库内建的 composing 检查拦不住，导致误发送。
  *    display:contents 包装层上以捕获阶段监听：组合中（isComposing / keyCode 229）
- *    或组合结束后 120ms 宽限窗口内的 Enter，直接 stopPropagation，让 Lexical 挂在
- *    contenteditable 上的 keydown 根本收不到；不 preventDefault，候选词确认仍走默认。
+ *    或组合结束后 120ms 宽限窗口内的 Enter，直接拦下；组合中的只 stopPropagation
+ *    （候选词确认走默认），回声 Enter 是普通按键、默认行为即插入换行，须一并
+ *    preventDefault 才不会「确认一个词白换一行」。
  * 2) 自定义发送——「发送消息」被绑成非 Enter 组合时（submitMode="none"），库不会在
  *    Enter 提交，这里捕获命中绑定即 aui.composer.send()；Enter 落回库默认→换行。
  * 用原生 DOM 而非 lexical 命令：app 与库解析到的 @lexical/react 是两份模块实例，
@@ -114,6 +117,11 @@ const ImeEnterGuard: FC<{
       const composing = event.isComposing || event.keyCode === 229;
       const inGrace = performance.now() - compositionEndedAt <= 120;
       if (event.key === "Enter" && (composing || inGrace)) {
+        // 组合中的 Enter 只拦传递（preventDefault 可能拦掉候选词提交，候选词
+        // 确认仍走默认）；组合刚结束的回声 Enter 已是普通按键，浏览器默认行为
+        // 就是往 contenteditable 插一个换行——必须连默认行为一起吞掉，
+        // 否则字确认了、行也白换
+        if (!composing) event.preventDefault();
         event.stopPropagation();
         return;
       }
@@ -168,7 +176,7 @@ export const Composer: FC = () => {
             <CmComposerInput
               submitMode={submitMode}
               placeholder="输入任务指令 @选择智能体，/打开指令菜单"
-              className="aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground/60 [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center"
+              className={`aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground/60 [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
             />
             </ImeEnterGuard>
             <ComposerAction />
@@ -322,11 +330,13 @@ const WorkspacePill: FC = () => {
  * 所选工作目录的 git 分支胶囊（目录选择后自动读取该目录的仓库/分支）：
  * 点开为分支菜单——搜索、分支列表（当前分支带勾选与"未提交的更改：N 个文件"）、
  * 切换/创建检出、Git 图谱（展开右侧面板的 Git 标签）。
- * 非 Tauri / 非 git 仓库 / 已开始对话时静默不渲染（与 WorkspacePill 同步让位）。
+ * 非 Tauri / 非 git 仓库 / 已开始对话 / 工作模式下静默不渲染（与 WorkspacePill 同步让位；
+ * 工作模式下 Git 管理整体隐藏，见 general-settings「工作模式」）。
  */
 const WorkspaceBranchPill: FC = () => {
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
+  const appMode = useAppMode();
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState<GitBranches | null>(null);
@@ -350,7 +360,7 @@ const WorkspaceBranchPill: FC = () => {
     };
   }, [open, workspace]);
 
-  if (!isTauri() || hasMessages || !workspace || !status) return null;
+  if (!isTauri() || appMode !== "code" || hasMessages || !workspace || !status) return null;
 
   const close = () => {
     setOpen(false);
@@ -760,7 +770,7 @@ export const EditComposer: FC = () => {
         <ComposerPrimitive.Root className="aui-edit-composer-root border-border/60 dark:border-muted-foreground/15 ml-auto flex w-full max-w-[85%] cursor-text flex-col rounded-(--composer-radius) border bg-(--composer-bg)">
           <CmComposerInput
             autoFocus
-            className="aui-edit-composer-input min-h-14 w-full px-4 pt-3 pb-1 text-foreground text-base outline-none [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-scroller]:overscroll-contain [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center"
+            className={`aui-edit-composer-input min-h-14 w-full px-4 pt-3 pb-1 text-foreground text-base outline-none [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-scroller]:overscroll-contain ${directiveChipVariants}`}
           />
           <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
             <ComposerPrimitive.Cancel asChild>

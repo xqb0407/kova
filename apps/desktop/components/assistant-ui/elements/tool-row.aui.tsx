@@ -35,6 +35,7 @@ import {
   TextSearchIcon,
 } from "lucide-react";
 import { openToolCallPanel } from "@/lib/tool-panel";
+import { useAppMode } from "@/lib/app-mode";
 import {
   openSubagentTab,
   parseDelegationIdFromResult,
@@ -86,6 +87,12 @@ const FAILED_RE = /\[exit code: |\[timeout\]/;
 function resultText(result: unknown): string {
   if (result == null) return "";
   if (typeof result === "string") return result;
+  // 错误输出（state=output-error）经 convertMessage 包成 {error: errorText}：
+  // 剥出原文展示，避免失败行渲染成 JSON 转储
+  if (typeof result === "object" && "error" in result) {
+    const err = (result as { error?: unknown }).error;
+    if (typeof err === "string") return err;
+  }
   return JSON.stringify(result, null, 2);
 }
 
@@ -198,8 +205,11 @@ export const ToolRow: FC<ToolRowProps> = ({
   onOpenPanel,
 }) => {
   const [open, setOpen] = useState(false);
-  const hasOutput = !!output;
-  const canExpand = hasOutput || expandedContent != null;
+  // 工作模式（设置 → 通用）：过程细节收敛——不渲染行内输出展开/流式预览，
+  // 行只剩摘要（保留 ±N 统计与开面板动作）；详情走右侧面板
+  const compact = useAppMode() === "work";
+  const hasOutput = !compact && !!output;
+  const canExpand = hasOutput || (!compact && expandedContent != null);
   // 展开内容顶部已有 `$ 命令` 时，行上的命令文本收起（终端行展开后只剩「终端」+箭头）
   const hideTexts = open && !!expandedHeader;
 
@@ -241,8 +251,12 @@ export const ToolRow: FC<ToolRowProps> = ({
           </span>
         )
       ) : null}
+      {/* secondary 限宽 45%：长摘要（如技能正文预览、文件行的长目录）不再
+          挤掉 primary——主文本优先保位，次文本自己截断 */}
       {!hideTexts && !preview && secondary ? (
-        <span className="min-w-0 truncate text-xs opacity-60">{secondary}</span>
+        <span className="min-w-0 max-w-[45%] truncate text-xs opacity-60">
+          {secondary}
+        </span>
       ) : null}
       {!hideTexts && !preview && stats ? (
         <span className="flex shrink-0 items-center gap-1 font-mono text-xs tabular-nums">
@@ -351,8 +365,9 @@ export const ToolRow: FC<ToolRowProps> = ({
           {content}
         </span>
       )}
-      {/* 运行中：命令以滚动文本预览呈现（底部吸附），结束后换回可展开的输出行 */}
-      {preview ? (
+      {/* 运行中：命令以滚动文本预览呈现（底部吸附），结束后换回可展开的输出行；
+          工作模式下预览一并收敛 */}
+      {!compact && preview ? (
         <ScrollingText className="bg-muted/30 text-muted-foreground max-h-40 rounded-md px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
           {preview}
         </ScrollingText>
@@ -417,7 +432,7 @@ const fileToolUI =
         : null;
     const expandedContent =
       !failed && result && pair ? (
-        <div className="bg-muted/30 max-h-96 overflow-auto rounded-md">
+        <div className="bg-white dark:bg-background max-h-96 overflow-auto rounded-md p-2 border">
           <PanelFileDiff
             name={base}
             oldText={pair.oldText}
@@ -830,10 +845,38 @@ const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) 
   );
 };
 
+/** use_skill：「调用技能 · 名称」行，形态对齐终端——收起态只有名称
+ *  （名称后不挂预览文本），整行可点展开看完整回执（Collapsible 输出框，
+ *  work 模式与终端一样收敛展开态）；长名悬浮看全；
+ *  失败（sidecar 以「错误：」文本返回）行尾红点、展开看错误 */
+const SkillToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const name = strArg(args, "name") ?? "";
+  const output = resultText(result);
+  const failed = isError === true || output.startsWith("错误：");
+  return (
+    <ToolRow
+      label="调用技能"
+      icon={<BookOpenIcon className="size-4 shrink-0" />}
+      primary={name}
+      primaryTitle={name}
+      mono
+      running={status?.type === "running"}
+      failed={failed}
+      output={output}
+    />
+  );
+};
+
 /** 有专属扁平行渲染的工具名 → 组件；其余走 ToolFallback */
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
   Task: TaskToolUI,
+  use_skill: SkillToolUI,
   read: fileToolUI("read", "查看"),
   edit: fileToolUI("edit", "编辑"),
   write: fileToolUI("write", "写入"),

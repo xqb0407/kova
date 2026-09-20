@@ -1,7 +1,17 @@
 "use client";
 
-import { type ComponentProps, memo } from "react";
+import {
+  type ComponentProps,
+  Fragment,
+  type FC,
+  memo,
+  useMemo,
+} from "react";
 import { cn } from "@/lib/utils";
+import {
+  splitFrontmatter,
+  type FrontmatterValue,
+} from "@/lib/markdown-frontmatter";
 import {
   StreamdownTextPrimitive,
   useStreamdownPreProps,
@@ -89,7 +99,47 @@ const sharedComponents = {
   ),
 } satisfies ComponentProps<typeof Streamdown>["components"];
 
+/**
+ * 文档开头的 YAML frontmatter 卡片：直接把整篇交给 markdown 渲染时，
+ * 元数据块会被 CommonMark 当成 setext 标题撑成巨型字号，这里拆出来
+ * 以键值对展示（数组渲染成小徽章），正文再走下方 Streamdown。
+ */
+const FrontmatterCard: FC<{ entries: [string, FrontmatterValue][] }> = ({
+  entries,
+}) => (
+  <div className="mb-4 overflow-hidden rounded-md border text-xs">
+    <div className="border-b bg-muted/60 px-3 py-1.5 font-medium text-muted-foreground">
+      元信息
+    </div>
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 px-3 py-2.5 leading-relaxed">
+      {entries.map(([key, value]) => (
+        <Fragment key={key}>
+          <dt className="break-all font-mono text-muted-foreground">{key}</dt>
+          <dd className="min-w-0 break-words whitespace-pre-wrap">
+            {Array.isArray(value) ? (
+              value.map((item, i) => (
+                <span
+                  key={i}
+                  className="bg-muted mr-1 inline-block rounded px-1.5 py-px"
+                >
+                  {item}
+                </span>
+              ))
+            ) : value ? (
+              value
+            ) : (
+              <span className="text-muted-foreground">—</span>
+            )}
+          </dd>
+        </Fragment>
+      ))}
+    </dl>
+  </div>
+);
+
 const MarkdownTextImpl = ({ text }: { text?: string }) => {
+  // frontmatter 只在整篇现成文本里拆（流式分支取的是消息 part 上下文，没有整篇 text）
+  const fm = useMemo(() => (text ? splitFrontmatter(text) : null), [text]);
   return (
     <div
       className={cn(
@@ -108,14 +158,17 @@ const MarkdownTextImpl = ({ text }: { text?: string }) => {
         />
       ) : (
         // 现成的完整文本（非消息流，如压缩摘要）：不走 part 上下文，直接渲染
-        <Streamdown
-          plugins={sharedPlugins}
-          className="aui-md text-[0.9375rem] leading-[1.5]"
-          components={sharedComponents}
-          parseIncompleteMarkdown={false}
-        >
-          {text}
-        </Streamdown>
+        <>
+          {fm ? <FrontmatterCard entries={fm.entries} /> : null}
+          <Streamdown
+            plugins={sharedPlugins}
+            className="aui-md text-[0.9375rem] leading-[1.5]"
+            components={sharedComponents}
+            parseIncompleteMarkdown={false}
+          >
+            {fm ? fm.body : text}
+          </Streamdown>
+        </>
       )}
     </div>
   );

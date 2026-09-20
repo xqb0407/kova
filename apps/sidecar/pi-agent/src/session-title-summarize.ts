@@ -21,6 +21,18 @@ const REPLY_MAX = 500;
 const TITLE_RULE_MAX = 25;
 const TITLE_MAX = 80;
 
+/**
+ * 剥掉 composer 指令芯片的序列化文本（`:type[标签]{name=id}`，如
+ * `:skill[anxin-ppt]{name=skill:anxin-ppt}`）——芯片原文会随 prompt 进模型
+ * 与转录（模型凭标签定位技能，前端气泡渲染回芯片），但标题路径不该带这串
+ * 格式噪音。整段芯片替换为其标签（技能名对标题有信息量），随后折叠多余空白。
+ * 正则与桌面端 cm-composer-input.tsx 的 DIRECTIVE_RE 保持一致。
+ */
+const DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/gu;
+export function stripDirectiveTokens(text: string): string {
+  return text.replace(DIRECTIVE_RE, (_m, _type, label: string) => label).replace(/[ \t]{2,}/g, " ");
+}
+
 /** 组装标题总结请求上下文（user 消息 = 截断的 prompt + 可选回复摘要） */
 export function sessionTitleSummarizeContext(
   userPrompt: string,

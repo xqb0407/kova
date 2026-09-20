@@ -903,9 +903,10 @@ export const ModelSettings: FC = () => {
         cRead: String(src.cost?.cacheRead ?? 0),
         cWrite: String(src.cost?.cacheWrite ?? 0),
       });
-      // 目录里查不到该模型的思考属性（自定义端点新模型/目录外新增）：
-      // 按 modelId 反查内置目录拿种子异步补进草稿——同名官方模型直接继承
-      // reasoning 与关闭下发值（如 off:"none"），避免弹窗默认假值覆盖种子
+      // 目录里查不到该模型（自定义端点新模型/目录外新增）：按 modelId 反查内置
+      // 目录拿种子异步补进草稿——同名官方模型直接继承 reasoning/关闭下发值
+      //（如 off:"none"）与 contextWindow/maxTokens/input/cost 目录真值，
+      // 避免弹窗默认假值覆盖种子；用户已改过的字段不覆盖
       if (src.reasoning === undefined) {
         void piRequest<{ type: "thinking_seed"; seed: PiThinkingSeed | null }>({
           type: "lookup_thinking_seed",
@@ -920,9 +921,16 @@ export const ModelSettings: FC = () => {
                 typeof seed.thinkingLevelMap?.off === "string"
                   ? seed.thinkingLevelMap.off
                   : "";
+              // 单价初值是 "0"，仅在仍是初值时补目录真值
+              const costNum = (cur: string, val: number): string =>
+                cur.trim() === "" || cur.trim() === "0" ? String(val) : cur;
               return {
                 ...prev,
                 reasoning: prev.reasoning || seed.reasoning,
+                ctx: prev.ctx || String(seed.contextWindow),
+                max: prev.max || String(seed.maxTokens),
+                text: prev.text || seed.input.includes("text"),
+                image: prev.image || seed.input.includes("image"),
                 tOff: prev.tOff || off,
                 tMin: seed.supportedThinkingLevels.includes("minimal"),
                 tLow: seed.supportedThinkingLevels.includes("low"),
@@ -930,6 +938,10 @@ export const ModelSettings: FC = () => {
                 tHigh: seed.supportedThinkingLevels.includes("high"),
                 tXhigh: seed.supportedThinkingLevels.includes("xhigh"),
                 tMax: seed.supportedThinkingLevels.includes("max"),
+                cIn: costNum(prev.cIn, seed.cost.input),
+                cOut: costNum(prev.cOut, seed.cost.output),
+                cRead: costNum(prev.cRead, seed.cost.cacheRead),
+                cWrite: costNum(prev.cWrite, seed.cost.cacheWrite),
               };
             });
           })

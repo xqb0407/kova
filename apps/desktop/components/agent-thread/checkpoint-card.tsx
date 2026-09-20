@@ -19,6 +19,7 @@ import {
   type GitDiffFile,
 } from "@/lib/git";
 import { refreshGitStatus } from "@/lib/git-status";
+import { useAppMode } from "@/lib/app-mode";
 import { focusPanelTab, openPanelTab } from "@/lib/panel-tabs";
 import {
   clearRunCheckpoint,
@@ -274,8 +275,11 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
  * 消息内挂载：渲染在 assistant-message.tsx 的产物卡之后、操作栏之上——
  * 卡片属于本轮消息本体。命中条件（与库内 MessageRoot 同款判定）：当前
  * 消息是 assistant，且前一条消息是 user（即本轮首条 assistant 回复）。
+ * 工作模式下不渲染（Git 管理整体隐藏，见 general-settings「工作模式」）；
+ * 影子仓库快照链路不动，切回编码模式时历史卡片可恢复。
  */
 export const MessageCheckpoint: FC = () => {
+  const appMode = useAppMode();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const entries = useRunCheckpoints(threadId ?? undefined);
   // 选择器只回 number|null（引用稳定）；命中判定放渲染后做
@@ -285,6 +289,7 @@ export const MessageCheckpoint: FC = () => {
     if (i <= 0) return null;
     return s.thread.messages[i - 1]?.role === "user" ? i - 1 : null;
   });
+  if (appMode !== "code") return null;
   if (!threadId || prevUserIndex === null) return null;
   const mine = entries.filter((e) => e.anchorIndex === prevUserIndex);
   if (mine.length === 0) return null;
@@ -297,10 +302,12 @@ export const MessageCheckpoint: FC = () => {
   );
 };
 
-/** 兜底尾：锚点未知的条目（刷新重挂后补结算等）渲染在消息列表末尾 */
+/** 兜底尾：锚点未知的条目（刷新重挂后补结算等）渲染在消息列表末尾；工作模式下不渲染 */
 export const CheckpointTail: FC = () => {
+  const appMode = useAppMode();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const entries = useRunCheckpoints(threadId ?? undefined);
+  if (appMode !== "code") return null;
   if (!threadId) return null;
   const orphans = entries.filter((e) => e.anchorIndex === null);
   if (orphans.length === 0) return null;

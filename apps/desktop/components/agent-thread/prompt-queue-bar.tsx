@@ -4,15 +4,15 @@ import { useAui, useAuiState } from "@assistant-ui/react";
 import { useAISDKChat } from "@assistant-ui/ai-sdk";
 import {
   cancelQueuedPrompt,
+  peekThreadQueue,
   promoteQueuedPrompt,
-  setQueueActivationListener,
+  setQueueSyncListener,
   steerQueuedPrompt,
-  unregisterQueuedPrompt,
   useThreadQueue,
   type QueuedPrompt,
 } from "@/lib/pi-queue";
 import { MergeIcon, PencilIcon, XIcon, ZapIcon } from "lucide-react";
-import { useEffect, useState, type FC } from "react";
+import { useEffect, useRef, useState, type FC } from "react";
 import { cn } from "cn";
 
 /**
@@ -25,7 +25,8 @@ import { cn } from "cn";
  *  - 编辑：取回输入框——取消排队项（线程内消息一并移除）并回填 composer，
  *    改完重新发送即重新排队
  *  - 删除：取消排队项（queue_cancel，线程内消息一并移除）
- * 数据来自 pi-queue store（sidecar data-queue chunk 的镜像）。
+ * 数据来自 pi-queue store（sidecar data-queue chunk 的镜像）；
+ * 消息数组的摘除/回填同步见 pi-queue.ts 头注。
  */
 export const PromptQueueBar: FC = () => {
   const aui = useAui();
@@ -34,30 +35,53 @@ export const PromptQueueBar: FC = () => {
   const chat = useAISDKChat();
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  // 排队项激活（开跑）时把对应用户气泡移到列表末尾：先发消息、后出回复的
-  // 场景下，乐观追加会让消息排在回复前面——激活即开启新一轮，应排在
-  // 被中止/已完成的上一轮回复之后
+  /**
+   * 消息数组同步（经 syncRef 间接调用，见下方 effect）。两个方向都必须「无变化
+   * 时不赋值」：Chat 的 messages setter 即使内容相同也会拷贝新数组并通知全部
+   * 订阅者，无条件赋值会形成 渲染→同步→通知→渲染 的死循环（UI 卡死）。
+   * - remove：排队确认时把 user 消息从数组摘除
+   * - reveal：激活开跑 / 未开跑被取消收尾时，消息不在数组才追加到末尾。
+   *   不做「移到末尾」——回复内容可能已经追加在其后（流式写入/历史装载），
+   *   再移动会把 user 气泡排到自己的回复之后，并诱发 AI SDK 对回复消息的
+   *   pushMessage 重复项循环（ExternalStore duplicate id 警告刷屏）
+   */
+  const syncRef = useRef<(entry: QueuedPrompt, mode: "remove" | "reveal") => void>(
+    () => {},
+  );
+  syncRef.current = (entry, mode) => {
+    if (!chat || !entry.messageId || entry.threadId !== threadId) return;
+    const msgs = chat.messages;
+    const idx = msgs.findIndex((m) => m.id === entry.messageId);
+    let next = msgs;
+    if (mode === "remove") {
+      if (idx !== -1) next = msgs.filter((m) => m.id !== entry.messageId);
+    } else if (idx === -1 && entry.message) {
+      // 回填注册时暂存的原始消息（含附件/引用 metadata）
+      next = [...msgs, entry.message];
+    }
+    if (next !== msgs) chat.setMessages(next);
+  };
+
+  // 消息同步监听 + 对账：监听只作用于当前线程的 chat；线程切走期间发生的
+  // 摘除事件会错过，重挂载时对「排队未开跑」条目补齐摘除。
+  // 已开跑（active）条目对账时不再补追加：激活瞬间的 onReveal 已经回填过；
+  // 若期间发生过历史装载（消息换成 sidecar 侧 id），再按乐观 id 追加会与
+  // 历史副本构成兄弟节点 → 消息上出现 2/2 分支选择器。开跑消息的显示由
+  // 激活回填或历史转录兜底，对账不插手。
   useEffect(() => {
-    setQueueActivationListener((entry) => {
-      if (!chat || !entry.messageId) return;
-      chat.setMessages((msgs) => {
-        const idx = msgs.findIndex((m) => m.id === entry.messageId);
-        if (idx === -1 || idx === msgs.length - 1) return msgs;
-        const copy = [...msgs];
-        const [moved] = copy.splice(idx, 1);
-        copy.push(moved);
-        return copy;
-      });
+    setQueueSyncListener({
+      onQueued: (entry) => syncRef.current(entry, "remove"),
+      onReveal: (entry) => syncRef.current(entry, "reveal"),
     });
-    return () => setQueueActivationListener(null);
-  }, [chat]);
+    if (threadId) {
+      for (const entry of peekThreadQueue(threadId)) {
+        if (!entry.active) syncRef.current(entry, "remove");
+      }
+    }
+    return () => setQueueSyncListener(null);
+  }, [threadId]);
 
   if (!threadId || queue.length === 0) return null;
-
-  const syncRemoveMessage = (entry: QueuedPrompt) => {
-    if (!entry.messageId || !chat) return;
-    chat.setMessages((msgs) => msgs.filter((m) => m.id !== entry.messageId));
-  };
 
   /** 并入当前轮：注入活跃轮（不中止不排队）；chip 随该项流 finish 自动移除，
    *  线程内用户消息保留（线性转录） */
@@ -75,25 +99,13 @@ export const PromptQueueBar: FC = () => {
   const promote = async (entry: QueuedPrompt) => {
     setBusyId(entry.requestId);
     try {
-      // sidecar：中止当前 turn 并把该项提到队首；开跑时 data-queue active
-      // 会把它从排队条移除，线程内消息保持不动。
-      // 本地镜像同步摘除（不等 active chunk）：promote 语义 = 上一轮被结束、
-      // 本条消息立即回到消息列表成为新一轮对话；并移到列表末尾——排在被
-      // 中止的上一轮残缺回复之后（回复先于本消息开始，阅读顺序在后）
+      // sidecar：中止当前 turn 并把该项提到队首。本地不做摘除/回填——上一轮
+      // 收尾期间仍有流式写入，此刻动消息数组会被写入的重复项顶乱顺序；排队条
+      // 摘除与消息回填统一等 data-queue(active)（sidecar 保证它在上一轮流完整
+      // 收尾之后发出，见 pi-queue.ts applyQueueChunk）
       await promoteQueuedPrompt(entry.requestId);
-      unregisterQueuedPrompt(entry.requestId, threadId);
-      if (chat && entry.messageId) {
-        chat.setMessages((msgs) => {
-          const idx = msgs.findIndex((m) => m.id === entry.messageId);
-          if (idx === -1 || idx === msgs.length - 1) return msgs;
-          const copy = [...msgs];
-          const [moved] = copy.splice(idx, 1);
-          copy.push(moved);
-          return copy;
-        });
-      }
     } catch {
-      // 已开跑等拒绝：忽略
+      // 已开跑等拒绝：忽略（active 分支已处理，或 chip 保留）
     } finally {
       setBusyId(null);
     }
@@ -104,7 +116,6 @@ export const PromptQueueBar: FC = () => {
     setBusyId(entry.requestId);
     try {
       await cancelQueuedPrompt(entry.requestId);
-      syncRemoveMessage(entry);
       aui.composer.setText(entry.text);
     } catch {
       // 已开跑等拒绝：消息继续执行，不回填
@@ -117,7 +128,6 @@ export const PromptQueueBar: FC = () => {
     setBusyId(entry.requestId);
     try {
       await cancelQueuedPrompt(entry.requestId);
-      syncRemoveMessage(entry);
     } catch {
       // 已开跑等拒绝：消息继续执行，不移除
     } finally {

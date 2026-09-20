@@ -37,6 +37,7 @@ import { loadSubagentDefinitions, type SubagentDefinition } from "./subagent-def
 import { ensureSkillsLoaded } from "./skills";
 import { buildSubagentTools } from "./subagent";
 import { buildSkillMgmtTools } from "./skill-mgmt-tools";
+import { buildPluginMgmtTools } from "./plugin-mgmt-tools";
 import { buildSchedulerTools } from "./automation/mgmt-tools";
 import { readCompaction, readTranscript } from "./transcript";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, type ContextInfoResult } from "./context";
@@ -236,6 +237,11 @@ function buildAgentExtensions(
   return [
     ...buildSubagentTools(run, baseTools, definitions, reloadSubagents),
     ...buildSkillMgmtTools(run, reloadSkills),
+    ...buildPluginMgmtTools(run, async () => {
+      // 插件安装影响技能与子智能体两条链；MCP 连接池 diff 由工具内部直接做
+      await reloadSkills();
+      await reloadSubagents();
+    }),
     ...buildSchedulerTools(run),
   ];
 }

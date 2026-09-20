@@ -167,6 +167,7 @@ pub fn run() {
             fs::app_file_list,
             fs::app_file_preview,
             fs::app_file_delete,
+            fs::app_file_reveal,
             fs::attachment_stage,
             http::http_post,
             notify::notify_show,
