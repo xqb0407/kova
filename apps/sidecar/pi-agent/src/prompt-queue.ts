@@ -221,13 +221,6 @@ export function enqueueTurn(
     msg,
   };
   q.items.push(item);
-  // 流级信号：per-item queued chunk（position 跟随入队顺序）；权威状态以
-  // data-queue-state 快照为准（双轨，见文件头注）
-  sendChunk(reqId, {
-    type: "data-queue",
-    id: queueChunkId(reqId),
-    data: { phase: "queued", position: q.items.length },
-  });
   emitQueueState(threadId);
   return { ok: true, item };
 }

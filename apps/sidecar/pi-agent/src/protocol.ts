@@ -31,9 +31,10 @@
  *       并入当前轮：排队项注入所属线程活跃轮（不中止不排队），其流走 steered
  *       退化收尾（finish 随宿主轮收尾补发）；无活跃轮/正在收尾则报错、项原位保留
  *   prompt 排队（prompt-queue.ts）：队列按线程隔离，线程内上一轮未结束时到达的
- *       prompt 进该线程 FIFO 队列（多线程并行互不阻塞），
- *       流上先发 { chunk: { type: "data-queue", id: "queue-<reqId>", data: { phase: "queued", position } } }，
- *       轮到时同 id 原地更新 { phase: "active" }；线程内顺序由该线程串行链保证
+ *       prompt 进该线程 FIFO 队列（多线程并行互不阻塞）；每次变更向该线程活跃
+ *       请求广播 { chunk: { type: "data-queue-state", data: 全量快照 } }（前端
+ *       最后快照胜出），并落 queue_state 行进 session（重启后 get_queue_state
+ *       回放恢复）；线程内顺序由该线程串行链保证
  *   { "type": "ping", "id" }                                  → { id, type: "pong" }
  *   { "type": "list_sessions", "id" }                         → { id, type: "sessions", sessions: [...] }
  *   { "type": "list_running", "id" }                          → { id, type: "running", sessionIds: [...], turns: [{sessionId,requestId}] }
@@ -861,15 +862,12 @@ export async function dispatchPrompt(
     let turnMsg = msg;
     if (wasQueued) {
       const next = takeFrontEntry(threadId);
-      // 本项已被取消（取消时流已收尾）或队列已空：静默让位
+      // 本项已被取消（取消时流已收尾）或队列已空：静默让位。
+      // 派发出队无 per-item chunk：前端由 data-queue-state 快照中条目消失
+      // 驱动消息回填（见 pi-queue.ts 三条同步规则）
       if (!next) return;
       turnReqId = next.reqId;
       turnMsg = next.msg;
-      sendChunk(turnReqId, {
-        type: "data-queue",
-        id: queueChunkId(turnReqId),
-        data: { phase: "active" },
-      });
     }
     // 通报 sessions：LRU 驱逐不得动正在跑 turn 的会话；
     // sessionId/requestId 取自实际开跑的 turn（排队换位后是队首消息）

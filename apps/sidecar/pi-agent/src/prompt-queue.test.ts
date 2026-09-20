@@ -211,31 +211,23 @@ describe("dispatchPrompt: queuing integration", () => {
   });
 
   // busy 窗口用 markTurnStart/End 手动控制，确定性覆盖排队 → 开跑的完整生命周期
-  test("queued prompt emits queued → active → runs after the busy turn ends", async () => {
+  test("queued prompt dispatches after the busy turn ends (snapshot-driven)", async () => {
     resetQueueForTests();
     const { markTurnStart, markTurnEnd } = await import("./prompt-queue");
     markTurnStart("th-q1")
     const p = dispatchPrompt("pq2", { type: "prompt", text: "two", threadId: "th-q1" });
 
-    // 入队即发 data-queue queued
-    const queuedChunk = chunksFor("pq2").find(
-      (c) => c.type === "data-queue" && (c.data as { phase?: string })?.phase === "queued",
-    );
-    expect(queuedChunk).toBeDefined();
-    expect((queuedChunk!.data as { position: number }).position).toBe(1);
+    // 入队：快照可见（v2 无 per-item chunk，状态由 data-queue-state 快照承载）
+    expect(queueSnapshot("th-q1").map((q) => q.text)).toEqual(["two"]);
 
     markTurnEnd("th-q1") // 活跃 turn 结束：链节放行
     await p;
 
-    // 轮到时原地更新 active，然后执行（无模型 → error 收尾）
-    const dqChunks = chunksFor("pq2").filter((c) => c.type === "data-queue");
-    expect(dqChunks.map((c) => (c.data as { phase: string }).phase)).toEqual([
-      "queued",
-      "active",
-    ]);
+    // 派发执行（无模型 → error 收尾）；出队后快照清空
     const types = chunksFor("pq2").map((c) => c.type);
+    expect(types).toContain("start");
     expect(types).toContain("error");
-    expect(types.indexOf("data-queue")).toBeLessThan(types.indexOf("error"));
+    expect(queueSnapshot("th-q1")).toEqual([]);
     resetQueueForTests();
   });
 
@@ -249,8 +241,8 @@ describe("dispatchPrompt: queuing integration", () => {
     markTurnEnd("th-q2")
     await p;
 
-    // 取消即收尾：abort + finish，绝无 active/error 执行痕迹
-    expect(chunksFor("pc2").map((c) => c.type)).toEqual(["data-queue", "abort", "finish"]);
+    // 取消即收尾：abort + finish，绝无执行痕迹（无 per-item data-queue）
+    expect(chunksFor("pc2").map((c) => c.type)).toEqual(["abort", "finish"]);
     resetQueueForTests();
   });
 
@@ -265,13 +257,13 @@ describe("dispatchPrompt: queuing integration", () => {
     markTurnEnd("th-q3") // 链节按序放行：第一节取队首（= pp3），第二节取 pp2
     await Promise.all([p2, p3]);
 
-    // 每个排队项都先后开跑（active），且 pp3 先于 pp2
-    const activeLine = (id: string) =>
+    // 每个排队项都先后开跑，且 pp3 先于 pp2（按 start chunk 在捕获流中的顺序）
+    const startLine = (id: string) =>
       lines.findIndex(
-        (l) => l.includes(`"id":"${id}"`) && l.includes('"phase":"active"'),
+        (l) => l.includes(`"id":"${id}"`) && l.includes('"type":"start"'),
       );
-    expect(activeLine("pp3")).toBeGreaterThanOrEqual(0);
-    expect(activeLine("pp2")).toBeGreaterThan(activeLine("pp3"));
+    expect(startLine("pp3")).toBeGreaterThanOrEqual(0);
+    expect(startLine("pp2")).toBeGreaterThan(startLine("pp3"));
     // 两条各自以 error 收尾（无模型），证明各自真正执行
     expect(chunksFor("pp2").some((c) => c.type === "error")).toBe(true);
     expect(chunksFor("pp3").some((c) => c.type === "error")).toBe(true);
@@ -298,15 +290,11 @@ describe("dispatchPrompt: queuing integration", () => {
 
     markTurnEnd("th-q4")
     await Promise.all(queued);
-    // 前 5 条正常排队执行（active），第 6 条无执行痕迹
+    // 前 5 条正常排队执行，第 6 条无执行痕迹
     for (let i = 1; i <= PROMPT_QUEUE_LIMIT; i++) {
-      expect(
-        chunksFor(`pl${i}`).some(
-          (c) => c.type === "data-queue" && (c.data as { phase?: string })?.phase === "active",
-        ),
-      ).toBe(true);
+      expect(chunksFor(`pl${i}`).map((c) => c.type)).toContain("start");
     }
-    expect(chunksFor("pl6").some((c) => c.type === "data-queue")).toBe(false);
+    expect(chunksFor("pl6").map((c) => c.type)).not.toContain("start");
     resetQueueForTests();
   });
 });
@@ -394,15 +382,13 @@ describe("dispatchPrompt: Stop 收尾窗口内的新消息", () => {
     const pa = dispatchPrompt("sa2", { type: "prompt", text: "A", threadId: "th-stop2" });
     await waitUntil("sa2", "start");
     const pb = dispatchPrompt("sb2", { type: "prompt", text: "B", threadId: "th-stop2" });
-    // A 仍在跑：B 进队列（排队条可见），queued → active 生命周期完整
-    await waitUntil("sb2", "data-queue");
+    // A 仍在跑：B 进队列（排队条可见，状态由快照承载）
+    expect(queueSnapshot("th-stop2").map((q) => q.reqId)).toEqual(["sb2"]);
     await Promise.all([pa, pb]);
 
-    const phases = chunksFor("sb2")
-      .filter((c) => c.type === "data-queue")
-      .map((c) => (c.data as { phase: string }).phase);
-    expect(phases).toEqual(["queued", "active"]);
+    expect(chunksFor("sb2").map((c) => c.type)).not.toContain("data-queue");
     expect(chunksFor("sb2").map((c) => c.type)).toContain("finish");
+    expect(queueSnapshot("th-stop2")).toEqual([]);
     resetQueueForTests();
   });
 });
@@ -544,24 +530,19 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     const pa = dispatchPrompt("sa4", { type: "prompt", text: "A", threadId: "th-st4" });
     await waitUntil("sa4", "start");
     const pb = dispatchPrompt("sb4", { type: "prompt", text: "B", threadId: "th-st4" });
-    await waitUntil("sb4", "data-queue");
     expect(queueSnapshot("th-st4").map((q) => q.reqId)).toEqual(["sb4"]);
 
     await dispatch("cmd-st", { type: "queue_steer", requestId: "sb4" });
     expect(responses("cmd-st").at(-1)?.type).toBe("queue_steered");
 
-    // 项已移除；其流 queued → steered → start（finish 挂到宿主轮收尾）；
+    // 项已移除；其流 steered 标记 → start（finish 挂到宿主轮收尾）；
     // 注入发生在活跃 agent
     expect(queueSnapshot("th-st4")).toEqual([]);
-    expect(chunksFor("sb4").map((c) => c.type)).toEqual([
-      "data-queue",
-      "data-queue",
-      "start",
-    ]);
+    expect(chunksFor("sb4").map((c) => c.type)).toEqual(["data-queue", "start"]);
     const phases = chunksFor("sb4")
       .filter((c) => c.type === "data-queue")
       .map((c) => (c.data as { phase: string }).phase);
-    expect(phases).toEqual(["queued", "steered"]);
+    expect(phases).toEqual(["steered"]);
     expect(steeredOf(run.agent)).toHaveLength(1);
     expect(steeredOf(run.agent)[0]).toMatchObject({ role: "user", content: "B" });
 
@@ -569,12 +550,7 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     // 随 A 的收尾补发
     await dispatch("sa4-abort", { type: "abort", threadId: "th-st4" });
     await Promise.all([pa, pb]);
-    expect(chunksFor("sb4").map((c) => c.type)).toEqual([
-      "data-queue",
-      "data-queue",
-      "start",
-      "finish",
-    ]);
+    expect(chunksFor("sb4").map((c) => c.type)).toEqual(["data-queue", "start", "finish"]);
     expect(chunksFor("sb4").some((c) => c.type === "error")).toBe(false);
     resetQueueForTests();
   });
