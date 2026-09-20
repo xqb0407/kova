@@ -285,17 +285,23 @@ import {
   cancelAllEntries,
   cancelEntry,
   enqueueTurn,
+  getQueueStateForThread,
   isTurnBusy,
   markTurnEnd,
+  markTurnOutcome,
   markTurnStart,
+  pauseThread,
+  popFrontForDispatch,
   PROMPT_QUEUE_LIMIT,
   promoteEntry,
   queueChunkId,
   queueSnapshot,
+  resumeThread,
   shouldQueue,
   steerOutEntry,
   takeFrontEntry,
   updateEntryText,
+  waitQueueUnpaused,
 } from "./prompt-queue";
 import { getTodoState, replayTodoFromMessages } from "./todo";
 import {
@@ -847,6 +853,8 @@ export async function dispatchPrompt(
   const node = new Promise<void>((r) => (release = r));
   promptChains.set(threadId, node);
   await tail;
+  // 队列暂停：链节在队首等待恢复（resume 唤醒全部等待节点，串行链保证依次取队首）
+  await waitQueueUnpaused(threadId);
   markTurnStart(threadId);
   try {
     let turnReqId = reqId;
@@ -1102,13 +1110,15 @@ async function runPromptTurn(
     setActiveReqId(threadId, null);
     persist(run);
     // Stop 中止可能不带 error chunk（abort() 让 prompt 静默收敛）：按失败结算
-    onOutcome?.(
-      turnError
-        ? { ok: false, errorText: turnError }
-        : run.stopRequested
-          ? { ok: false, errorText: "run aborted by stop request" }
-          : { ok: true },
-    );
+    const outcome: PromptTurnOutcome = turnError
+      ? { ok: false, errorText: turnError }
+      : run.stopRequested
+        ? { ok: false, errorText: "run aborted by stop request" }
+        : { ok: true };
+    // 失败熔断记账：连续 turn 级失败达阈值自动暂停队列（成功清零；用户主动
+    // Stop 不计入失败）
+    markTurnOutcome(threadId, outcome.ok);
+    onOutcome?.(outcome);
   }
 }
 
@@ -1243,6 +1253,50 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
         throw new Error(`no active turn to steer into: ${requestId}`);
       }
       send({ id: reqId, type: "queue_steered", requestId });
+      break;
+    }
+    case "queue_pause": {
+      // 暂停派发：链节在队首等待（不打断正在跑的 turn），不清队列
+      const threadId = String(msg.threadId ?? "default");
+      pauseThread(
+        threadId,
+        typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+      );
+      send({ id: reqId, type: "queue_paused", threadId });
+      break;
+    }
+    case "queue_resume": {
+      // 恢复派发：唤醒等待的链节；线程空闲且队列非空时弹出队首交由前端
+      // 重新发送（恢复项/无流项的派发只能由持有流的前端泵驱动）
+      const threadId = String(msg.threadId ?? "default");
+      const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : undefined;
+      resumeThread(threadId, sessionId);
+      let resumed:
+        | { id: number; text: string; sessionId?: string }
+        | null = null;
+      if (!isTurnBusy(threadId) && !promptChains.has(threadId)) {
+        const item = popFrontForDispatch(threadId);
+        if (item) {
+          resumed = {
+            id: item.id,
+            text: item.text,
+            sessionId:
+              typeof item.msg.sessionId === "string"
+                ? (item.msg.sessionId as string)
+                : sessionId,
+          };
+        }
+      }
+      send({ id: reqId, type: "queue_resumed", threadId, resumed });
+      break;
+    }
+    case "get_queue_state": {
+      // 队列快照：内存优先；内存为空则从 session 回放并采纳（自动暂停）——
+      // 前端线程挂载/刷新恢复时调用，补齐排队条
+      const threadId = String(msg.threadId ?? "default");
+      const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : undefined;
+      const snapshot = getQueueStateForThread(threadId, sessionId);
+      send({ id: reqId, type: "queue_state_snapshot", threadId, snapshot });
       break;
     }
     case "compact": {

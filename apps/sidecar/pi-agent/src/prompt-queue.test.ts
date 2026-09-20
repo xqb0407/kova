@@ -1,23 +1,29 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Agent } from "@earendil-works/pi-agent-core";
-import { initStorage } from "./storage";
+import { initStorage, sessionPath } from "./storage";
 import {
   cancelAllEntries,
   cancelEntry,
   enqueueTurn,
+  getQueueStateForThread,
   isTurnBusy,
   markTurnEnd,
+  markTurnOutcome,
   markTurnStart,
+  pauseThread,
+  popFrontForDispatch,
   PROMPT_QUEUE_LIMIT,
   promoteEntry,
   queueSnapshot,
   resetQueueForTests,
+  resumeThread,
   shouldQueue,
   takeFrontEntry,
   updateEntryText,
+  waitQueueUnpaused,
 } from "./prompt-queue";
 import { dispatch, dispatchPrompt } from "./protocol";
 import { resolveSession } from "./sessions";
@@ -120,7 +126,7 @@ describe("prompt-queue state machine", () => {
     resetQueueForTests();
     const r = enqueueTurn("qu", "t2", { text: "before" });
     expect(updateEntryText("qu", "after")).toBe(true);
-    expect(r.ok && r.entry.msg.text).toBe("after");
+    expect(r.ok && r.item.text).toBe("after");
     expect(updateEntryText("ghost", "nope")).toBe(false);
     // 取消后不可再改
     cancelEntry("qu");
@@ -587,6 +593,103 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     expect(queueSnapshot("th-st5").map((q) => q.reqId)).toEqual(["sq1"]);
 
     expect(cancelAllEntries()).toBe(1);
+    resetQueueForTests();
+  });
+});
+
+/* ------------------------------ v2：持久化与熔断 ------------------------------ */
+
+describe("queue_state 持久化与回放采纳", () => {
+  test("变更落盘 queue_state 行；内存清空后经回放采纳并自动暂停", () => {
+    resetQueueForTests();
+    enqueueTurn("pp1", "th-persist", {
+      text: "persist me",
+      threadId: "th-persist",
+      sessionId: "s-qp",
+    });
+    enqueueTurn("pp2", "th-persist", {
+      text: "second",
+      threadId: "th-persist",
+      sessionId: "s-qp",
+    });
+
+    // 快照行已落盘（items 全量）
+    const raw = readFileSync(sessionPath("s-qp"), "utf8");
+    expect(raw).toContain('"queue_state"');
+    expect(raw).toContain("persist me");
+
+    // 内存清空（模拟 sidecar 重启）→ get_queue_state 回放采纳，自动暂停
+    resetQueueForTests();
+    const snap = getQueueStateForThread("th-persist", "s-qp");
+    expect(snap?.items.map((i) => i.text)).toEqual(["persist me", "second"]);
+    expect(snap?.paused).toBe(true);
+
+    // 采纳后的项可正常取消（按 reqId 寻址）
+    expect(cancelEntry("pp1")).toBe(true);
+    expect(getQueueStateForThread("th-persist", "s-qp")?.items.map((i) => i.text)).toEqual([
+      "second",
+    ]);
+    resetQueueForTests();
+  });
+
+  test("线程内存队列非空时不覆盖活状态", () => {
+    resetQueueForTests();
+    enqueueTurn("pl1", "th-live", { text: "live", threadId: "th-live", sessionId: "s-ql" });
+    // 手写一份不同的快照行到同 session，验证不覆盖
+    const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+    appendFileSync(
+      sessionPath("s-ql"),
+      JSON.stringify({
+        type: "queue_state",
+        snapshot: {
+          version: 2,
+          threadId: "th-live",
+          items: [{ id: 99, reqId: "stale", text: "stale", createdAt: "t" }],
+          paused: false,
+          nextId: 100,
+        },
+      }) + "\n",
+    );
+    const snap = getQueueStateForThread("th-live", "s-ql");
+    expect(snap?.items.map((i) => i.text)).toEqual(["live"]);
+    resetQueueForTests();
+  });
+});
+
+describe("暂停/恢复", () => {
+  test("暂停阻塞链节等待并禁用队首弹出；恢复唤醒", async () => {
+    resetQueueForTests();
+    enqueueTurn("pz1", "th-pz", { text: "z", threadId: "th-pz", sessionId: "s-pz" });
+    pauseThread("th-pz");
+
+    let released = false;
+    const waiter = waitQueueUnpaused("th-pz").then(() => {
+      released = true;
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(released).toBe(false);
+    expect(popFrontForDispatch("th-pz")).toBeNull(); // 暂停中不弹
+
+    resumeThread("th-pz");
+    await waiter;
+    expect(released).toBe(true);
+    const item = popFrontForDispatch("th-pz");
+    expect(item?.text).toBe("z");
+    resetQueueForTests();
+  });
+});
+
+describe("失败熔断", () => {
+  test("连续 turn 失败达阈值自动暂停；成功清零计数", () => {
+    resetQueueForTests();
+    enqueueTurn("pf1", "th-pf", { text: "f1", threadId: "th-pf", sessionId: "s-qf" });
+    markTurnOutcome("th-pf", false);
+    expect(getQueueStateForThread("th-pf")?.paused).toBe(false);
+    markTurnOutcome("th-pf", false);
+    expect(getQueueStateForThread("th-pf")?.paused).toBe(true);
+    // 成功只清零计数，解除暂停由用户显式 resume
+    markTurnOutcome("th-pf", true);
+    expect(getQueueStateForThread("th-pf")?.paused).toBe(true);
     resetQueueForTests();
   });
 });
