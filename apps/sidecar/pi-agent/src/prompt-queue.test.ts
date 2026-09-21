@@ -655,6 +655,52 @@ describe("暂停/恢复", () => {
   });
 });
 
+describe("暂停/恢复", () => {
+  test("手动暂停 + 当前轮自然完成 + 页面刷新：排队项不派发、快照保持暂停（回归：刷新后复活调用）", async () => {
+    resetQueueForTests();
+    // T1 在跑；忙时发 B、C 进队列（用户操作：暂停 → 刷新页面）
+    const run = await resolveSession("th-pause-refresh");
+    run.agent = makeFakeAgent(120, 80);
+
+    const pa = dispatchPrompt("sp-a", { type: "prompt", text: "A", threadId: "th-pause-refresh", sessionId: "s-pause-refresh" });
+    await waitUntil("sp-a", "start");
+    const pb = dispatchPrompt("sp-b", { type: "prompt", text: "B", threadId: "th-pause-refresh", sessionId: "s-pause-refresh" });
+    const pc = dispatchPrompt("sp-c", { type: "prompt", text: "C", threadId: "th-pause-refresh", sessionId: "s-pause-refresh" });
+    expect(queueSnapshot("th-pause-refresh").map((q) => q.reqId)).toEqual(["sp-b", "sp-c"]);
+
+    // 用户手动暂停（B/C 的链节此刻沉入 waitQueueUnpaused 等待）
+    pauseThread("th-pause-refresh", "s-pause-refresh");
+    expect(getQueueStateForThread("th-pause-refresh")?.paused).toBe(true);
+
+    // 当前轮 A 自然完成（暂停不打断在跑轮，设计内）
+    await pa;
+    await delay(60); // 链节苏醒窗口：若暂停失效，B 会在此开跑
+
+    // 断言：B/C 都没被派发（paused 保持），快照原样
+    expect(chunksFor("sp-b").map((c) => c.type)).not.toContain("start");
+    expect(chunksFor("sp-c").map((c) => c.type)).not.toContain("start");
+    const snap = getQueueStateForThread("th-pause-refresh");
+    expect(snap?.paused).toBe(true);
+    expect(snap?.items.map((q) => q.text)).toEqual(["B", "C"]);
+
+    // 模拟页面刷新：前端重挂后拉快照（get_queue_state 同款调用），不得有副作用
+    const afterRefresh = getQueueStateForThread("th-pause-refresh", "s-pause-refresh");
+    expect(afterRefresh?.paused).toBe(true);
+    expect(afterRefresh?.items).toHaveLength(2);
+    await delay(30);
+    expect(chunksFor("sp-b").map((c) => c.type)).not.toContain("start");
+
+    void pb;
+    void pc;
+    // 收尾：恢复后中止 B 的流，避免悬挂 promise
+    resumeThread("th-pause-refresh");
+    cancelAllEntries("th-pause-refresh");
+    await pb.catch(() => {});
+    await pc.catch(() => {});
+    resetQueueForTests();
+  });
+});
+
 describe("data-queue-state 快照广播", () => {
   test("入队/promote 的变更广播到该线程活跃请求流上", async () => {
     resetQueueForTests();
