@@ -4,41 +4,47 @@
  *
  * 存储双模式：
  *   - 有 PI_SESSIONS_DIR（生产，Rust 拉起）：业务表由 Rust 宿主持有（data.rs），
- *     本进程经 stdout host_query RPC 读写（hostdb.ts）
+ *     本进程经 stdout host_query RPC 读写（storage/hostdb.ts）
  *   - 无（冒烟/本地直跑）：回退本地 SQLite（hostdb local 模式）
  *
- * 模块划分：
- *   protocol.ts   协议命令分发（handleLine / dispatch / dispatchPrompt）
- *   sessions.ts   threadId -> Agent 会话映射与会话解析
- *   stream.ts     Agent 事件 -> UIMessageChunk 流（stdout）
- *   transcript.ts JSONL 转录与索引表持久化
- *   model-catalog.ts  模型目录 + 自定义提供商注册
- *   tools.ts      内置编码工具与系统提示词
- *   subagent.ts           Task/TaskWait/TaskList/TaskStop 工具组与 SubagentRun
- *   subagent-definitions.ts 子代理定义三层发现（内置常量 + 系统 <app_data>/subagents/*.yml + 工作区 <cwd>/.xulux/subagents/*.yml）
- *   mcp-*.ts      MCP 接入（config 配置双层合并 / manager 连接池 / cache 元数据缓存 /
- *                 output-guard 输出防护 / tools 网关工具与审批挂起）
- *   hostdb.ts     数据访问层（host RPC / 本地 SQLite 双模式）
- *   storage.ts    存储装配（JSONL 目录 + CredentialStore）
+ * 模块划分（src/ 按域分目录，index.ts / types.ts / log.ts 留在根部）：
+ *   protocol/     协议命令分发（protocol: handleLine / dispatch / dispatchPrompt）、
+ *                 stream: Agent 事件 -> UIMessageChunk 流（stdout）、trace、prompt-attachments
+ *   sessions/     sessions: threadId -> Agent 会话映射与会话解析、transcript: JSONL 转录与
+ *                 索引表持久化、prompt-queue、session-title-summarize
+ *   mcp/          MCP 接入（config 配置双层合并 / manager 连接池 / cache 元数据缓存 /
+ *                 output-guard 输出防护 / tools 网关工具与审批挂起 / oauth / audit）
+ *   tools/        内置编码工具与系统提示词（tools）+ 浏览器/截图/打开文件/HTTP 等工具
+ *   skills/       skills 技能装载、skill-mgmt-tools 管理、skill-use-tool 使用
+ *   subagent/     Task/TaskWait/TaskList/TaskStop 工具组与 SubagentRun、子代理定义三层发现
+ *                 （内置常量 + 系统 <app_data>/subagents/*.yml + 工作区 <cwd>/.xulux/subagents/*.yml）
+ *   todo/         待办（todo / todo-state）
+ *   model/        model-catalog 模型目录 + 自定义提供商注册、provider-retry、usage-stats
+ *   storage/      hostdb 数据访问层（host RPC / 本地 SQLite 双模式）、storage 存储装配
+ *                 （JSONL 目录 + CredentialStore）
+ *   agent/        运行时横切：context、modes、memory、instructions、personalization、
+ *                 hooks、app-mode、agent-errors
+ *   plugins/      插件（plugins / plugin-mgmt-tools）
+ *   observability/ observability、otlp-exporter
  *   automation/   定时任务（vendored pi-task-scheduler + runtime/runner 装配，见目录内溯源头）
  *   types.ts      共享类型
  */
 import { createInterface } from "node:readline";
 import { logErr } from "./log";
-import { initHostMode, initStorage } from "./storage";
-import { loadCustomProviders, applyModelOverrides, initCurrentModelKey } from "./model-catalog";
-import { initPersonalization } from "./personalization";
-import { initAppMode } from "./app-mode";
-import { initMemory } from "./memory";
-import { initBrowserConfig } from "./browser-config";
-import { initObservability } from "./observability";
-import { initHooks } from "./hooks";
-import { initSubagentState } from "./subagent-definitions";
-import { initSkillsState } from "./skills";
-import { initMcpEnabledState } from "./mcp-config";
-import { initPluginsState } from "./plugins";
-import { mcpManager } from "./mcp-manager";
-import { handleLine, markStdinClosed, setInitGate } from "./protocol";
+import { initHostMode, initStorage } from "./storage/storage";
+import { loadCustomProviders, applyModelOverrides, initCurrentModelKey } from "./model/model-catalog";
+import { initPersonalization } from "./agent/personalization";
+import { initAppMode } from "./agent/app-mode";
+import { initMemory } from "./agent/memory";
+import { initBrowserConfig } from "./tools/browser-config";
+import { initObservability } from "./observability/observability";
+import { initHooks } from "./agent/hooks";
+import { initSubagentState } from "./subagent/subagent-definitions";
+import { initSkillsState } from "./skills/skills";
+import { initMcpEnabledState } from "./mcp/mcp-config";
+import { initPluginsState } from "./plugins/plugins";
+import { mcpManager } from "./mcp/mcp-manager";
+import { handleLine, markStdinClosed, setInitGate } from "./protocol/protocol";
 import { initAutomation, stopAutomation } from "./automation/runtime";
 import { automationRunner } from "./automation/runner";
 

@@ -15,14 +15,14 @@
  *  - 成功返回 / 失败 throw —— vendored 调度器以 runner 抛错为 error 记账。
  */
 import { logErr } from "../log";
-import { getModels } from "../model-catalog";
-import { sessionRename } from "../hostdb";
+import { getModels } from "../model/model-catalog";
+import { sessionRename } from "../storage/hostdb";
 import {
   dispatch,
   dispatchPrompt,
   mgmtResolveSession,
   type PromptTurnOutcome,
-} from "../protocol";
+} from "../protocol/protocol";
 import type { Running } from "../types";
 import {
   normalizeToolPolicyProfile,
