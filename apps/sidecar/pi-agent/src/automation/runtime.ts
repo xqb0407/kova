@@ -17,7 +17,7 @@
 import path from "node:path";
 import { Cron } from "croner";
 import { logErr } from "../log";
-import { send } from "../stream";
+import { send } from "../protocol/stream";
 import {
   FileSchedulerLock,
   JsonScheduledTaskStore,
