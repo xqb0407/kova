@@ -1,5 +1,8 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import type { UIMessageChunk } from "ai";
+import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
+
+afterAll(restoreAllMocks);
 
 /**
  * TauriPiChannel.attachStream 的"快照+直播按 seq 合并"核心语义测试：
@@ -17,7 +20,7 @@ type ListenFn = (event: EventLike) => void;
 let batchCb: ListenFn | null = null;
 let attachReply: unknown = null;
 
-mock.module("@tauri-apps/api/core", () => ({
+mockModule("@tauri-apps/api/core", () => ({
   invoke: (cmd: string) => {
     if (cmd === "pi_attach") {
       // setTimeout(0) 让出窗口：监听注册先于快照返回，贴近真实 IPC 顺序
@@ -28,7 +31,7 @@ mock.module("@tauri-apps/api/core", () => ({
   },
 }));
 
-mock.module("@tauri-apps/api/event", () => ({
+mockModule("@tauri-apps/api/event", () => ({
   listen: (event: string, cb: ListenFn) => {
     if (event !== "pi-chunk-batch") return Promise.resolve(() => {});
     return Promise.resolve().then(() => {

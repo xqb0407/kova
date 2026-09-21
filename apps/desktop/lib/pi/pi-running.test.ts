@@ -1,6 +1,9 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import type { PiChannel } from "@/lib/pi/pi-channel";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
+import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
+
+afterAll(restoreAllMocks);
 
 /**
  * 侧边栏"运行中"信号链路测试：
@@ -20,7 +23,7 @@ type ListenFn = (event: EventLike) => void;
 const listenersByEvent = new Map<string, ListenFn>();
 let listRunningSeed: string[] = [];
 
-mock.module("@tauri-apps/api/core", () => ({
+mockModule("@tauri-apps/api/core", () => ({
   invoke: (cmd: string) => {
     if (cmd === "pi_request") {
       return Promise.resolve(
@@ -31,7 +34,7 @@ mock.module("@tauri-apps/api/core", () => ({
   },
 }));
 
-mock.module("@tauri-apps/api/event", () => ({
+mockModule("@tauri-apps/api/event", () => ({
   listen: (event: string, cb: ListenFn) => {
     listenersByEvent.set(event, cb);
     return Promise.resolve(() => {
