@@ -298,6 +298,7 @@ import {
   queueChunkId,
   queueSnapshot,
   resumeThread,
+  broadcastQueueState,
   shouldQueue,
   steerOutEntry,
   takeFrontEntry,
@@ -864,10 +865,14 @@ export async function dispatchPrompt(
       const next = takeFrontEntry(threadId);
       // 本项已被取消（取消时流已收尾）或队列已空：静默让位。
       // 派发出队无 per-item chunk：前端由 data-queue-state 快照中条目消失
-      // 驱动消息回填（见 pi-queue.ts 三条同步规则）
+      // 驱动消息回填（见 pi-queue.ts 三条同步规则）。
+      // 先建立新请求的事件路由再广播快照——上一轮流收尾时路由已清空，
+      // 不先 setActiveReqId 的话出队快照会被静默丢弃
       if (!next) return;
       turnReqId = next.reqId;
       turnMsg = next.msg;
+      setActiveReqId(threadId, turnReqId);
+      broadcastQueueState(threadId);
     }
     // 通报 sessions：LRU 驱逐不得动正在跑 turn 的会话；
     // sessionId/requestId 取自实际开跑的 turn（排队换位后是队首消息）
