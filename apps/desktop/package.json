@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "build:sidecar": "bun run --filter pi-agent-sidecar build"
+    "build:sidecar": "bun run --filter pi-agent-sidecar build",
+    "check:mocks": "bun scripts/check-mock-hygiene.mjs"
   },
   "dependencies": {
     "@assistant-ui/ai-sdk": "^0.0.4",

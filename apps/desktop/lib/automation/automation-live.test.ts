@@ -1,6 +1,7 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import type { PiChannel } from "@/lib/pi/pi-channel";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
+import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
 
 /**
  * 定时任务实时投影 store 测试：
@@ -13,15 +14,21 @@ import type { PiResponse } from "@/lib/pi/pi-bridge";
 
 type FrameHandler = (frame: unknown) => void;
 
-mock.module("@tauri-apps/api/core", () => ({
+mockModule("@tauri-apps/api/core", () => ({
   invoke: () => Promise.reject(new Error("unexpected invoke")),
 }));
-mock.module("@tauri-apps/api/event", () => ({
+mockModule("@tauri-apps/api/event", () => ({
   listen: () => Promise.resolve(() => {}),
 }));
 
-// startAutomationLiveWatch 的 window 守卫（避免 SSR 触碰 Tauri API）在测试环境放行
+// startAutomationLiveWatch 的 window 守卫（避免 SSR 触碰 Tauri API）在测试环境放行；
+// 跑完连同 mock 注入一起回滚，别把桩留给同进程的后续测试文件
+const hadWindow = "window" in globalThis;
 (globalThis as { window?: unknown }).window ??= {};
+afterAll(() => {
+  restoreAllMocks();
+  if (!hadWindow) delete (globalThis as { window?: unknown }).window;
+});
 
 const { setPiChannel } = await import("@/lib/pi/pi-channel");
 const {

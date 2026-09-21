@@ -1,4 +1,7 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
+
+afterAll(restoreAllMocks);
 
 /**
  * 前端镜像 store 的写世代 guard 回归：
@@ -20,17 +23,17 @@ function deferred(): Deferred {
 type Sent = { payload: Record<string, unknown>; d: Deferred };
 const sent: Sent[] = [];
 
-mock.module("@/lib/pi/pi-bridge", () => ({
+mockModule("@/lib/pi/pi-bridge", () => ({
   piRequest: (payload: Record<string, unknown>) => {
     const d = deferred();
     sent.push({ payload, d });
     return d.promise;
   },
 }));
-mock.module("@/lib/pi/agent-events", () => ({
+mockModule("@/lib/pi/agent-events", () => ({
   subscribeAgentEvents: (_cb: unknown) => () => {},
 }));
-mock.module("@tauri-apps/api/core", () => ({
+mockModule("@tauri-apps/api/core", () => ({
   invoke: () => Promise.resolve(),
 }));
 

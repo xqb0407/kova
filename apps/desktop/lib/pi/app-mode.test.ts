@@ -1,4 +1,5 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
 
 /**
  * 全局工作模式（work/code）镜像 store 测试：
@@ -15,7 +16,7 @@ type Req = Record<string, unknown>;
 let responder: (req: Req) => unknown = () => ({ type: "app_mode", mode: "code" });
 let calls: Req[] = [];
 
-mock.module("@/lib/pi/pi-bridge", () => ({
+mockModule("@/lib/pi/pi-bridge", () => ({
   piRequest: (payload: Req) => {
     calls.push(payload);
     const res = responder(payload);
@@ -24,8 +25,10 @@ mock.module("@/lib/pi/pi-bridge", () => ({
   },
 }));
 
-// app-mode 在模块加载与 initAppMode 里都访问 window.localStorage，先装桩
+// app-mode 在模块加载与 initAppMode 里都访问 window.localStorage，先装桩；
+// 跑完连同 mock 注入与 window 覆写一起回滚，别把桩留给同进程的后续测试文件
 const seedStore = new Map<string, string>();
+const prevWindow = (globalThis as { window?: unknown }).window;
 (globalThis as { window?: unknown }).window = {
   localStorage: {
     getItem: (k: string) => seedStore.get(k) ?? null,
@@ -33,6 +36,10 @@ const seedStore = new Map<string, string>();
     removeItem: (k: string) => void seedStore.delete(k),
   },
 };
+afterAll(() => {
+  restoreAllMocks();
+  (globalThis as { window?: unknown }).window = prevWindow;
+});
 
 const { getAppMode, getAppModeDegraded, initAppMode, setAppMode } = await import(
   "@/lib/pi/app-mode"

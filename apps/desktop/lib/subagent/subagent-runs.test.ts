@@ -1,6 +1,15 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import type { PiChannel, SubagentActivityItem } from "@/lib/pi/pi-channel";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
+import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
+
+// openSubagentTab 用例直接覆写 globalThis.window（dispatchEvent 桩）→ 收尾还原，
+// 避免把空壳 window 漏给同进程后续文件
+const prevWindow = (globalThis as Record<string, unknown>).window;
+afterAll(() => {
+  restoreAllMocks();
+  (globalThis as Record<string, unknown>).window = prevWindow;
+});
 
 /**
  * 子智能体运行 store 测试（lib/subagent-runs.ts）：
@@ -19,17 +28,18 @@ let emitActivity: ActivityCb | null = null;
 const snapshotResponses = new Map<string, unknown>();
 const requestCounts = new Map<string, number>();
 
-mock.module("@tauri-apps/api/core", () => ({
+mockModule("@tauri-apps/api/core", () => ({
   invoke: () => Promise.reject(new Error("unused in store tests")),
 }));
-mock.module("@tauri-apps/api/event", () => ({
+mockModule("@tauri-apps/api/event", () => ({
   listen: () => Promise.resolve(() => {}),
 }));
 
-// 固定 pi-bridge 边界：全量跑时其他文件（app-mode/automations）对 pi-bridge 的
-// mock.module 会泄漏进本文件，导致 hydrate 走到别人的假 piRequest（sidecar offline）。
+// pi-bridge 边界自锚：全量跑时其他文件（app-mode/automations）对 pi-bridge 的
+// mock.module 会泄漏进本文件（bun 1.3.14 的 restore() 对别名解析模块跨文件不可靠，
+// 见 lib/testing/mock-module.ts），导致 hydrate 走到别人的假 piRequest（sidecar offline）。
 // 这里显式接管，语义与真实 pi-bridge 一致：piRequest 委托当前注册通道。
-mock.module("@/lib/pi/pi-bridge", () => {
+mockModule("@/lib/pi/pi-bridge", () => {
   const { getPiChannel } = require("@/lib/pi/pi-channel") as typeof import("@/lib/pi/pi-channel");
   return {
     piRequest: (payload: Record<string, unknown>, timeoutMs?: number) =>
@@ -41,7 +51,7 @@ mock.module("@/lib/pi/pi-bridge", () => {
 type FakeTab = { id: string; type: string; delegationId?: string; title?: string };
 const fakeTabs: FakeTab[] = [];
 let fakeActiveId: string | null = null;
-mock.module("@/lib/panels/panel-tabs", () => ({
+mockModule("@/lib/panels/panel-tabs", () => ({
   getPanelTabs: () => ({ tabs: fakeTabs, activeId: fakeActiveId }),
   openPanelTab: (type: string, extra?: { delegationId?: string; title?: string }) => {
     const id = `tab-${fakeTabs.length}`;
