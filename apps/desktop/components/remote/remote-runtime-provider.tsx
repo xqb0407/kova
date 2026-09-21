@@ -7,10 +7,10 @@ import {
 import { useChatRuntime } from "@assistant-ui/ai-sdk";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { WsPiChannel } from "@/lib/pi-ws-channel";
-import { peekPiChannel, setPiChannel, type PiChannelStatus } from "@/lib/pi-channel";
-import { PiTransport } from "@/lib/pi-transport";
-import { createPiThreadListAdapter } from "@/lib/pi-thread-adapter";
+import { WsPiChannel } from "@/lib/pi/pi-ws-channel";
+import { peekPiChannel, setPiChannel, type PiChannelStatus } from "@/lib/pi/pi-channel";
+import { PiTransport } from "@/lib/pi/pi-transport";
+import { createPiThreadListAdapter } from "@/lib/pi/pi-thread-adapter";
 import {
   clearRemoteConfig,
   type RemoteConfig,

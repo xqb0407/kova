@@ -36,9 +36,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useWorkspace } from "@/lib/workspace-store";
-import { useSkills } from "@/lib/skills";
-import { useMcpServers } from "@/lib/mcp";
+import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useSkills } from "@/lib/skills/skills";
+import { useMcpServers } from "@/lib/mcp/mcp";
 import {
   installPlugin,
   isPluginOpPending,
@@ -48,7 +48,7 @@ import {
   usePendingOps,
   usePlugins,
   type MarketplaceEntry,
-} from "@/lib/plugins";
+} from "@/lib/plugins/plugins";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
 
 function ViewSpinner() {

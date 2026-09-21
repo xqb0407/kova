@@ -10,7 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import type { PluginEntry } from "@/lib/plugins";
+import type { PluginEntry } from "@/lib/plugins/plugins";
 
 /** 卸载确认：支持单个与批量。点名插件身份，说明会同时移除其全部组件与开关。
  *  Dialog 关闭态（entries = null）children 仍会挂载，文案一律按空列表安全求值 */

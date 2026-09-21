@@ -3,15 +3,15 @@
 import { useEffect, useState, type FC, type ReactNode } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { FileTextIcon, ImageOffIcon, Loader2Icon } from "lucide-react";
-import type { PanelTab } from "@/lib/panel-tabs";
+import type { PanelTab } from "@/lib/panels/panel-tabs";
 import {
   fsReadFile,
   fsReadFileBase64,
   imageMimeFor,
   type FsFileContent,
-} from "@/lib/fs";
+} from "@/lib/workspace/fs";
 import { CodeMirrorCode } from "@/components/code/cm-code";
-import { stripReadLineNumbers } from "@/lib/read-result";
+import { stripReadLineNumbers } from "@/lib/pi/read-result";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { splitPath } from "./git-files";

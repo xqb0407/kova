@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState, type FC } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Html, Instance, Instances, OrbitControls } from "@react-three/drei";
-import { useHtmlDark } from "@/lib/use-html-dark";
-import { formatTokens, type UsageStatsDay } from "@/lib/usage-stats";
+import { useHtmlDark } from "@/lib/settings/use-html-dark";
+import { formatTokens, type UsageStatsDay } from "@/lib/model/usage-stats";
 import {
   buildHeatGrid,
   heatColor,

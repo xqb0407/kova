@@ -12,7 +12,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { SPRING_SWAP } from "@/lib/ease";
+import { SPRING_SWAP } from "@/lib/motion/ease";
 import { AgentDisclosure } from "@/components/custom-ui/agent-disclosure";
 import { cn } from "@/lib/utils";
 

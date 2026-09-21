@@ -11,7 +11,7 @@ import {
   type PreviewRailItem,
 } from "@/components/custom-ui/preview-rail";
 import { getMessagePreview } from "@/components/custom-ui/message-scroller";
-import { pickRoundAnchors } from "@/lib/message-round-anchors";
+import { pickRoundAnchors } from "@/lib/panels/message-round-anchors";
 
 const VIEWPORT_SELECTOR = '[data-slot="aui_thread-viewport"]';
 const ANCHOR_SELECTOR =

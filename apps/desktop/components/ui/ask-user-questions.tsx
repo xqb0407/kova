@@ -18,8 +18,8 @@ import { CheckboxGroup as CheckboxGroupPrimitive } from "@base-ui/react/checkbox
 import { Checkbox as CheckboxPrimitive } from "@base-ui/react/checkbox";
 import { Field } from "@base-ui/react/field";
 import { cn } from "@/lib/utils";
-import { spring } from "@/lib/springs";
-import { fontWeights } from "@/lib/font-weight";
+import { spring } from "@/lib/motion/springs";
+import { fontWeights } from "@/lib/motion/font-weight";
 import { useShape } from "@/lib/shape-context";
 import { SizeProvider, useSize, type SizeVariant } from "@/lib/size-context";
 import { useIcon } from "@/lib/icon-context";

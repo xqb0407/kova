@@ -34,7 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { useWorkspace } from "@/lib/workspace-store";
+import { useWorkspace } from "@/lib/workspace/workspace-store";
 import {
   installPlugin,
   isPluginOpPending,
@@ -43,7 +43,7 @@ import {
   usePendingOps,
   usePlugins,
   type PluginEntry,
-} from "@/lib/plugins";
+} from "@/lib/plugins/plugins";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
 
 /** 骨架卡片：与真实卡片同构（头部图标行 + 描述两行 + 页脚徽标/按钮） */

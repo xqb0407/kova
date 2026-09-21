@@ -16,7 +16,7 @@ import {
   type ReactNode,
 } from "react";
 import { SharedLayoutBg } from "./shared-layout-bg";
-import { EASE_OUT, SPRING_LAYOUT, SPRING_SWAP } from "@/lib/ease";
+import { EASE_OUT, SPRING_LAYOUT, SPRING_SWAP } from "@/lib/motion/ease";
 import { cn } from "@/lib/utils";
 
 type FileTreeItem = {

@@ -55,7 +55,7 @@ import {
   pathBasename,
   useWorkspace,
   useWorkspaceRecents,
-} from "@/lib/workspace-store";
+} from "@/lib/workspace/workspace-store";
 import {
   deleteSubagent,
   refreshSubagents,
@@ -64,7 +64,7 @@ import {
   useSubagents,
   type SubagentDraft,
   type SubagentEntry,
-} from "@/lib/subagents";
+} from "@/lib/subagent/subagents";
 
 /** 可声明的工具全集（与 sidecar KNOWN_TOOLS 对齐） */
 const TOOL_OPTIONS = ["read", "glob", "grep", "bash", "edit", "write"] as const;

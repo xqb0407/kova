@@ -34,17 +34,17 @@ import {
   TargetIcon,
   TextSearchIcon,
 } from "lucide-react";
-import { openToolCallPanel } from "@/lib/tool-panel";
-import { useAppMode } from "@/lib/app-mode";
+import { openToolCallPanel } from "@/lib/panels/tool-panel";
+import { useAppMode } from "@/lib/pi/app-mode";
 import {
   openSubagentTab,
   parseDelegationIdFromResult,
   subagentElapsedSeconds,
   useSubagentRunByToolCall,
-} from "@/lib/subagent-runs";
+} from "@/lib/subagent/subagent-runs";
 import { openExternal } from "@/lib/external-link";
-import { fileChangePair, fileChangeStats } from "@/lib/panel-activity";
-import { parseWebSearchResults, type WebSearchItem } from "@/lib/web-search";
+import { fileChangePair, fileChangeStats } from "@/lib/panels/panel-activity";
+import { parseWebSearchResults, type WebSearchItem } from "@/lib/pi/web-search";
 import { PanelFileDiff } from "@/components/code/panel-diff";
 import { SiteIcon } from "@/components/custom-ui/site-icon";
 import {
