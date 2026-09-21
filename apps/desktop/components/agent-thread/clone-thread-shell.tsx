@@ -208,51 +208,90 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   };
 
   // —— 侧边栏宽度拖拽调节 ——
-  // railW=null 时三处宽度类都走 var 的 fallback（rem 基准，未拖过 = 原样）；
-  // 拖拽中 aside 的宽度过渡动画必须关掉，否则 300ms 缓动拖不住跟手。
+  // railW=null 时三处宽度类都走 var 的 fallback（rem 基准，未拖过 = 原样）。
+  // 拖拽全程绕过 React：每帧 rAF 直写 aside 内联宽度（内联样式优先于类，
+  // 覆盖期间的类宽不生效），列表内容宽度冻结为拖拽起始值（与折叠动画同款
+  // 手法：行不参与重排，松手才统一重排一次）。若走 setState 每帧驱动，
+  // 会话列表越大每帧重渲染+重排越卡。宽度过渡与悬停高亮也临时用内联
+  // 样式接管，松手一并交还给类/状态。
   const asideRef = useRef<HTMLElement>(null);
+  const railInnerRef = useRef<HTMLDivElement>(null);
+  const railLineRef = useRef<HTMLDivElement>(null);
   const [railW, setRailW] = useState<number | null>(null);
-  const [railDragging, setRailDragging] = useState(false);
-  const railDragRef = useRef<{ startX: number; startW: number } | null>(null);
+  const railDragRef = useRef<{
+    startX: number;
+    lastX: number;
+    startW: number;
+    frame: number | null;
+  } | null>(null);
   useEffect(() => {
     const n = Number(window.localStorage.getItem(RAIL_WIDTH_KEY));
     if (Number.isFinite(n) && n >= RAIL_MIN_WIDTH && n <= RAIL_MAX_WIDTH)
       setRailW(n);
   }, []);
+  const railClamp = (n: number) =>
+    Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(n)));
+  const railApplyFrame = () => {
+    const drag = railDragRef.current;
+    const aside = asideRef.current;
+    if (!drag || !aside) return;
+    drag.frame = null;
+    aside.style.width = `${railClamp(drag.startW + drag.lastX - drag.startX)}px`;
+  };
   const onRailHandleDown = (event: PointerEvent<HTMLDivElement>) => {
+    const aside = asideRef.current;
+    const inner = railInnerRef.current;
+    if (!aside || !inner) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
+    const startW = aside.offsetWidth;
     railDragRef.current = {
       startX: event.clientX,
-      startW: asideRef.current?.offsetWidth ?? railW ?? 260,
+      lastX: event.clientX,
+      startW,
+      frame: null,
     };
-    setRailDragging(true);
+    aside.style.transitionDuration = "0s";
+    aside.style.width = `${startW}px`;
+    inner.style.width = `${inner.offsetWidth}px`;
+    railLineRef.current?.classList.add("w-0.5", "opacity-100");
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
   };
   const onRailHandleMove = (event: PointerEvent<HTMLDivElement>) => {
     const drag = railDragRef.current;
     if (!drag) return;
-    setRailW(
-      Math.min(
-        RAIL_MAX_WIDTH,
-        Math.max(
-          RAIL_MIN_WIDTH,
-          Math.round(drag.startW + event.clientX - drag.startX),
-        ),
-      ),
-    );
+    drag.lastX = event.clientX;
+    if (drag.frame === null) drag.frame = requestAnimationFrame(railApplyFrame);
   };
   const onRailHandleUp = (event: PointerEvent<HTMLDivElement>) => {
-    if (!railDragRef.current) return;
+    const drag = railDragRef.current;
     railDragRef.current = null;
-    setRailDragging(false);
-    event.currentTarget.releasePointerCapture(event.pointerId);
-    if (railW !== null) {
-      try {
-        window.localStorage.setItem(RAIL_WIDTH_KEY, String(railW));
-      } catch {}
+    if (!drag) return;
+    if (drag.frame !== null) cancelAnimationFrame(drag.frame);
+    const aside = asideRef.current;
+    const finalW = railClamp(drag.startW + drag.lastX - drag.startX);
+    // 同帧内先写变量再接管位、再撤内联宽：类宽立刻按最终 var 解析，无闪跳；
+    // 之后 setRailW 提交的 style 与内联值一致，React 接管无副作用
+    if (aside) {
+      aside.style.setProperty("--rail-w", `${finalW}px`);
+      aside.style.width = "";
+      aside.style.transitionDuration = "";
     }
+    if (railInnerRef.current) railInnerRef.current.style.width = "";
+    railLineRef.current?.classList.remove("w-0.5", "opacity-100");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {}
+    setRailW(finalW);
+    try {
+      window.localStorage.setItem(RAIL_WIDTH_KEY, String(finalW));
+    } catch {}
   };
   const onRailHandleDoubleClick = () => {
+    asideRef.current?.style.removeProperty("--rail-w");
     setRailW(null);
     try {
       window.localStorage.removeItem(RAIL_WIDTH_KEY);
@@ -310,12 +349,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 
   return (
     // bg-background
-    <div
-      className={cn(
-        "relative flex h-full w-full overflow-hidden",
-        railDragging && "cursor-col-resize select-none",
-      )}
-    >
+    <div className="relative flex h-full w-full overflow-hidden">
       <aside
         ref={asideRef}
         style={
@@ -325,15 +359,16 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           // 折叠动画 = aside 宽度（推挤主区）+ 内层整列 transform（内容平移
           // 出屏）。内层固定栏宽不参与重排：会话再多，行布局在动画期间完全
           // 静止，只有 aside 的盒宽和合成器上的 transform 在动。
-          // 拖拽手势进行中暂停宽度过渡（transition-none），松手后恢复
+          // 拖拽进行中：aside 内联宽接管本类宽、过渡临时置 0（内联样式，松手
+          // 交还），见 onRailHandleDown/Up
           "bg-muted/55 relative hidden h-full shrink-0 flex-col overflow-hidden border-r md:flex",
           "transition-[width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           railClassName,
           sidebarCollapsed ? "w-0" : "w-[var(--rail-w,16.25rem)]",
-          railDragging && "transition-none",
         )}
       >
         <div
+          ref={railInnerRef}
           className={cn(
             "flex h-full w-[var(--rail-w,16.25rem)] shrink-0 flex-col",
             "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
@@ -554,9 +589,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         </div>
         {/* 侧边栏宽度拖拽把手：贴 aside 右缘，随 aside 折叠被 overflow 裁掉
             （收起态自然消失）；双击复位默认宽。细线样式与右侧 panel 的
-            ResizableHandle 完全同款：常驻隐藏、悬停/拖动时浮现加粗高亮
-            （foreground 提色），两端各 2rem 渐隐。拖动中元素经 pointer-capture
-            保持 :active，active 态自然生效，railDragging 是兜底 */}
+            ResizableHandle 完全同款：常驻隐藏、悬停/拖动时 2px 浮现高亮
+            （foreground 提色），两端各 2rem 渐隐。拖动中细线加粗/可见由
+            pointerdown 时 classList 临时挂上、松手摘掉（零重渲染） */}
         <div
           role="separator"
           aria-orientation="vertical"
@@ -569,10 +604,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           className="group/handle [&:hover>div]:bg-foreground/25 [&:active>div]:bg-foreground/45 absolute inset-y-0 right-0 z-20 w-1.5 cursor-col-resize touch-none"
         >
           <div
-            className={cn(
-              "bg-border/50 pointer-events-none absolute inset-y-0 right-0 w-px opacity-0 transition-[background-color,width,opacity] [-webkit-mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] [mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] group-hover/handle:w-0.5 group-hover/handle:opacity-100 group-active/handle:w-0.5 group-active/handle:opacity-100",
-              railDragging && "w-0.5 opacity-100",
-            )}
+            ref={railLineRef}
+            className="bg-border/50 pointer-events-none absolute inset-y-0 right-0 w-px opacity-0 transition-[background-color,width,opacity] [-webkit-mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] [mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] group-hover/handle:w-0.5 group-hover/handle:opacity-100 group-active/handle:w-0.5 group-active/handle:opacity-100"
           />
         </div>
       </aside>
