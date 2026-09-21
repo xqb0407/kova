@@ -553,7 +553,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         )}
         </div>
         {/* 侧边栏宽度拖拽把手：贴 aside 右缘，随 aside 折叠被 overflow 裁掉
-            （收起态自然消失）。悬停/拖拽中浮现细线提示可拖；双击复位默认宽 */}
+            （收起态自然消失）；双击复位默认宽。细线样式与右侧 panel 的
+            ResizableHandle 完全同款：常驻隐藏、悬停/拖动时浮现加粗高亮
+            （foreground 提色），两端各 2rem 渐隐。拖动中元素经 pointer-capture
+            保持 :active，active 态自然生效，railDragging 是兜底 */}
         <div
           role="separator"
           aria-orientation="vertical"
@@ -563,12 +566,12 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           onPointerUp={onRailHandleUp}
           onPointerCancel={onRailHandleUp}
           onDoubleClick={onRailHandleDoubleClick}
-          className="group/rail absolute inset-y-0 right-0 z-20 w-1.5 cursor-col-resize touch-none"
+          className="group/handle [&:hover>div]:bg-foreground/25 [&:active>div]:bg-foreground/45 absolute inset-y-0 right-0 z-20 w-1.5 cursor-col-resize touch-none"
         >
           <div
             className={cn(
-              "bg-primary pointer-events-none absolute inset-y-0 right-0 w-px opacity-0 transition-opacity group-hover/rail:opacity-60",
-              railDragging && "opacity-100",
+              "bg-border/50 pointer-events-none absolute inset-y-0 right-0 w-px opacity-0 transition-[background-color,width,opacity] [-webkit-mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] [mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] group-hover/handle:opacity-100 group-active/handle:opacity-100",
+              railDragging && "w-0.5 opacity-100",
             )}
           />
         </div>
