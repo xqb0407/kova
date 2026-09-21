@@ -6,7 +6,7 @@ import {
   isPageReload,
   openPanelTab,
   usePanelTabs,
-} from "@/lib/panel-tabs";
+} from "@/lib/panels/panel-tabs";
 import { newTerminalTab } from "@/lib/shell";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";

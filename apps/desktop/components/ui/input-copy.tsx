@@ -4,10 +4,10 @@ import { forwardRef, useState, useCallback, useRef, useEffect, useId, type HTMLA
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { useIcon } from "@/lib/icon-context";
-import { fontWeights } from "@/lib/font-weight";
+import { fontWeights } from "@/lib/motion/font-weight";
 import { useShape } from "@/lib/shape-context";
 import { useSize, type SizeVariant } from "@/lib/size-context";
-import { spring } from "@/lib/springs";
+import { spring } from "@/lib/motion/springs";
 import { Tooltip } from "@/components/ui/tooltip-adapter";
 
 type InputCopyVariant = "icon" | "button";

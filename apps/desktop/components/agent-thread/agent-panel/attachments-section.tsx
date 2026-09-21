@@ -3,9 +3,9 @@
 import dynamic from "next/dynamic";
 import { type FC, type RefObject } from "react";
 import { FileIcon, PaperclipIcon } from "lucide-react";
-import { extOf } from "@/lib/artifacts";
-import { useThreadAttachments, type ThreadAttachment } from "@/lib/thread-attachments";
-import { focusPanelTab } from "@/lib/panel-tabs";
+import { extOf } from "@/lib/panels/artifacts";
+import { useThreadAttachments, type ThreadAttachment } from "@/lib/attachments/thread-attachments";
+import { focusPanelTab } from "@/lib/panels/panel-tabs";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { CountPill, PanelSection } from "./section-shell";
 

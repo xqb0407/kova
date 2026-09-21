@@ -26,8 +26,8 @@ import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
 import { CheckpointTail } from "./checkpoint-card";
 import { ThreadPreviewRail } from "./thread-preview-rail";
-import { prewarmShiki } from "@/lib/prewarm-shiki";
-import { useQueuedMessageIds, useThreadPendingTurn } from "@/lib/pi-queue";
+import { prewarmShiki } from "@/lib/markdown/prewarm-shiki";
+import { useQueuedMessageIds, useThreadPendingTurn } from "@/lib/pi/pi-queue";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.

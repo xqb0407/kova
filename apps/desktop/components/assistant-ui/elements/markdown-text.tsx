@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import {
   splitFrontmatter,
   type FrontmatterValue,
-} from "@/lib/markdown-frontmatter";
+} from "@/lib/markdown/markdown-frontmatter";
 import {
   StreamdownTextPrimitive,
   useStreamdownPreProps,

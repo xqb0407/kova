@@ -3,7 +3,7 @@
 
 import { motion, useReducedMotion } from "framer-motion";
 import { createContext, useContext, useId, useMemo, type ReactNode } from "react";
-import { SPRING_LAYOUT } from "@/lib/ease";
+import { SPRING_LAYOUT } from "@/lib/motion/ease";
 import { cn } from "@/lib/utils";
 
 type DockContextValue = {

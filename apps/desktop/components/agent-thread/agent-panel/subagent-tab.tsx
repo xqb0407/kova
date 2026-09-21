@@ -28,8 +28,8 @@ import {
   useSubagentRun,
   type SubagentBlock,
   type SubagentRunState,
-} from "@/lib/subagent-runs";
-import type { PanelTab } from "@/lib/panel-tabs";
+} from "@/lib/subagent/subagent-runs";
+import type { PanelTab } from "@/lib/panels/panel-tabs";
 import { TabEmpty } from "./tab-empty";
 
 /**

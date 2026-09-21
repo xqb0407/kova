@@ -5,7 +5,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { isTauri } from "@/lib/tauri";
-import { getWorkspace, pathBasename } from "@/lib/workspace-store";
+import { getWorkspace, pathBasename } from "@/lib/workspace/workspace-store";
 import {
   closePanelTab,
   getPanelTabs,
@@ -13,7 +13,7 @@ import {
   subscribePanelTabs,
   updatePanelTab,
   type PanelTab,
-} from "@/lib/panel-tabs";
+} from "@/lib/panels/panel-tabs";
 
 /**
  * 交互式真终端（PTY，Rust 侧 pty.rs）会话 store + 面板标签桥：

@@ -27,7 +27,7 @@ import {
   openPanelTab,
   setActivePanelTab,
   type PanelTab,
-} from "@/lib/panel-tabs";
+} from "@/lib/panels/panel-tabs";
 import { newTerminalTab } from "@/lib/shell";
 import { isTauri } from "@/lib/tauri";
 import { TAB_META, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";

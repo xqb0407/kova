@@ -19,7 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Segmented } from "@/components/custom-ui/segmented";
-import { addMarketplace, isPluginOpPending } from "@/lib/plugins";
+import { addMarketplace, isPluginOpPending } from "@/lib/plugins/plugins";
 
 export const AddMarketplaceDialog: FC<{
   open: boolean;

@@ -5,9 +5,9 @@ import { CodeMirrorCode } from "@/components/code/cm-code";
 import {
   CODE_THEME_DARK_OPTIONS,
   CODE_THEME_LIGHT_OPTIONS,
-} from "@/lib/code-theme";
-import { useHtmlDark } from "@/lib/use-html-dark";
-import { useUiPrefs, type CodeThemeName } from "@/lib/ui-prefs";
+} from "@/lib/markdown/code-theme";
+import { useHtmlDark } from "@/lib/settings/use-html-dark";
+import { useUiPrefs, type CodeThemeName } from "@/lib/settings/ui-prefs";
 import { cn } from "@/lib/utils";
 
 /** 预览示例：一小段带类型/字符串/数字的 TS，覆盖常见高亮元素 */

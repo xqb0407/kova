@@ -65,7 +65,7 @@ import {
 } from "@/components/ui/dialog";
 import { JsonCodeEditor } from "@/components/code/cm-json-editor";
 import { isTauri } from "@/lib/tauri";
-import { pathBasename, useWorkspace, useWorkspaceRecents } from "@/lib/workspace-store";
+import { pathBasename, useWorkspace, useWorkspaceRecents } from "@/lib/workspace/workspace-store";
 import {
   authorizeMcpServer,
   deleteMcpServer,
@@ -84,8 +84,8 @@ import {
   type McpToolInfo,
   type McpServerEntry,
   type McpServerIcon,
-} from "@/lib/mcp";
-import { useHtmlDark } from "@/lib/use-html-dark";
+} from "@/lib/mcp/mcp";
+import { useHtmlDark } from "@/lib/settings/use-html-dark";
 import { Label } from "@/components/ui/label";
 import { toast } from "@/components/ui/toast";
 

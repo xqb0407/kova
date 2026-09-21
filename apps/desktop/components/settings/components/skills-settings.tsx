@@ -59,7 +59,7 @@ import {
   pathBasename,
   useWorkspace,
   useWorkspaceRecents,
-} from "@/lib/workspace-store";
+} from "@/lib/workspace/workspace-store";
 import {
   deleteSkill,
   refreshSkills,
@@ -70,7 +70,7 @@ import {
   useSkills,
   type SkillDraft,
   type SkillEntry,
-} from "@/lib/skills";
+} from "@/lib/skills/skills";
 
 /** 与 sidecar MAX_SKILL_BYTES 对齐（128 KB） */
 const MAX_SKILL_BYTES = 128 * 1024;

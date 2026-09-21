@@ -33,8 +33,8 @@ import {
   gitCommit,
   gitStage,
   type GitBranches,
-} from "@/lib/git";
-import { onGitChanged, refreshGitStatus, useGitStatus } from "@/lib/git-status";
+} from "@/lib/git/git";
+import { onGitChanged, refreshGitStatus, useGitStatus } from "@/lib/git/git-status";
 import { cn } from "@/lib/utils";
 import { PanelSection } from "./section-shell";
 import { splitPath, StatusDot } from "./git-files";

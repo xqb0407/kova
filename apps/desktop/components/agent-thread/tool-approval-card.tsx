@@ -14,12 +14,12 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { openToolCallPanel } from "@/lib/tool-panel";
+import { openToolCallPanel } from "@/lib/panels/tool-panel";
 import {
   confirmToolApproval,
   usePendingToolApprovals,
   type PendingToolApprovalView,
-} from "@/lib/pi-tool-approval";
+} from "@/lib/pi/pi-tool-approval";
 
 /**
  * 逐工具审批卡片：显示在 composer 上方，两类挂起共用 tool_confirm 通道：

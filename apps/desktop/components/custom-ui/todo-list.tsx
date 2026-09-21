@@ -18,7 +18,7 @@ import {
   EASE_OUT,
   SPRING_LAYOUT,
   SPRING_SWAP,
-} from "@/lib/ease";
+} from "@/lib/motion/ease";
 import { cn } from "@/lib/utils";
 
 export type TodoItemStatus =

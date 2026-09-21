@@ -33,16 +33,16 @@ import {
   type PiModelSummary,
   type PiProviderSummary,
   type PiThinkingSeed,
-} from "@/lib/pi-bridge";
+} from "@/lib/pi/pi-bridge";
 import { isTauri } from "@/lib/tauri";
-import { setSelectedModel, useSelectedModel } from "@/lib/model-settings";
-import { refreshPiModels } from "@/lib/pi-models";
+import { setSelectedModel, useSelectedModel } from "@/lib/model/model-settings";
+import { refreshPiModels } from "@/lib/pi/pi-models";
 import {
   getModelThinkingMap,
   setModelThinkingMap,
   type ModelThinkingMap,
-} from "@/lib/thinking-maps";
-import { fmtContextWindow } from "@/lib/model-format";
+} from "@/lib/pi/thinking-maps";
+import { fmtContextWindow } from "@/lib/model/model-format";
 import {
   CheckIcon,
   ChevronDownIcon,

@@ -26,8 +26,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { formatBytes } from "@/lib/artifacts";
-import type { PiImagePartData } from "@/lib/pi-bridge";
+import { formatBytes } from "@/lib/panels/artifacts";
+import type { PiImagePartData } from "@/lib/pi/pi-bridge";
 
 /**
  * 与 sidecar image-parts.ts 白名单同步的展示侧护栏。双保险：投影侧已过滤，

@@ -3,7 +3,7 @@
 import { AnimatePresence, motion, useReducedMotion, type HTMLMotionProps, type Variants } from "framer-motion";
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { EASE_OUT, SPRING_PRESS, SPRING_SWAP } from "@/lib/ease";
+import { EASE_OUT, SPRING_PRESS, SPRING_SWAP } from "@/lib/motion/ease";
 import { cn } from "@/lib/utils";
 
 export type ActionSwapItem = {

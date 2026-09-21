@@ -10,9 +10,9 @@ import {
 } from "react";
 import type { FileDiffContentsLoader } from "@pierre/diffs/react";
 import { cn } from "@/lib/utils";
-import { DIFF_SHIKI_THEME, resolveCodeThemeName } from "@/lib/code-theme";
-import { useHtmlDark } from "@/lib/use-html-dark";
-import { useUiPrefs } from "@/lib/ui-prefs";
+import { DIFF_SHIKI_THEME, resolveCodeThemeName } from "@/lib/markdown/code-theme";
+import { useHtmlDark } from "@/lib/settings/use-html-dark";
+import { useUiPrefs } from "@/lib/settings/ui-prefs";
 import "@/app/styles/panel-diff.css";
 
 /**

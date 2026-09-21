@@ -17,15 +17,15 @@ import {
   gitErrorCode,
   gitCheckpointDiff,
   type GitDiffFile,
-} from "@/lib/git";
-import { refreshGitStatus } from "@/lib/git-status";
-import { useAppMode } from "@/lib/app-mode";
-import { focusPanelTab, openPanelTab } from "@/lib/panel-tabs";
+} from "@/lib/git/git";
+import { refreshGitStatus } from "@/lib/git/git-status";
+import { useAppMode } from "@/lib/pi/app-mode";
+import { focusPanelTab, openPanelTab } from "@/lib/panels/panel-tabs";
 import {
   clearRunCheckpoint,
   useRunCheckpoints,
   type CheckpointEntry,
-} from "@/lib/pi-checkpoints";
+} from "@/lib/pi/pi-checkpoints";
 import { DiffStats } from "@/components/agent-thread/agent-panel/section-shell";
 import { splitPath, StatusDot } from "@/components/agent-thread/agent-panel/git-files";
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";

@@ -12,9 +12,9 @@ import { FileCodeIcon, FilePenIcon, FilePlusIcon } from "lucide-react";
 import {
   type FileChangeEntry,
   type FileChangeGroup,
-} from "@/lib/panel-activity";
-import { pathMatches } from "@/lib/tool-panel";
-import { scrollIntoScroller } from "@/lib/scroll";
+} from "@/lib/panels/panel-activity";
+import { pathMatches } from "@/lib/panels/tool-panel";
+import { scrollIntoScroller } from "@/lib/motion/scroll";
 import { cn } from "@/lib/utils";
 import { PanelFileDiff } from "@/components/code/panel-diff";
 import { DiffStats, PanelSection, StatusDot } from "./section-shell";

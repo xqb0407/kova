@@ -18,15 +18,15 @@ import {
   WaypointsIcon,
   XIcon,
 } from "lucide-react";
-import { piRequest, type PiTraceRun } from "@/lib/pi-bridge";
+import { piRequest, type PiTraceRun } from "@/lib/pi/pi-bridge";
 import {
   exportTraceRunsJson,
   traceRunToSpanData,
   type TraceSpanInspect,
-} from "@/lib/trace-adapter";
-import { usePanelActivity } from "@/lib/panel-activity";
+} from "@/lib/pi/trace-adapter";
+import { usePanelActivity } from "@/lib/panels/panel-activity";
 import { cn } from "@/lib/utils";
-import type { PanelTab } from "@/lib/panel-tabs";
+import type { PanelTab } from "@/lib/panels/panel-tabs";
 import { TabEmpty } from "./tab-empty";
 
 /**

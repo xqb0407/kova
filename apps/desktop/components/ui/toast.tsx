@@ -30,7 +30,7 @@ import {
 } from "react"
 import { createPortal } from "react-dom"
 
-import { EASE_OUT } from "@/lib/ease"
+import { EASE_OUT } from "@/lib/motion/ease"
 import { cn } from "@/lib/utils"
 
 export type ToastStatus =

@@ -7,7 +7,7 @@ import {
   type Transition,
 } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { spring } from "@/lib/springs";
+import { spring } from "@/lib/motion/springs";
 import type { ItemRect, UseFluidHoverReturn } from "@/hooks/use-fluid-hover";
 
 // ---------------------------------------------------------------------------
