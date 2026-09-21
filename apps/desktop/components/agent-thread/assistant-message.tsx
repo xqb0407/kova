@@ -29,8 +29,10 @@ import {
   ActionBarMorePrimitive,
 } from "@assistant-ui/react";
 import { RetryMarker, useRetryState } from "./retry-marker";
+import { StoppedMarker, isStoppedMessageState } from "./stopped-marker";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageCheckpoint } from "./checkpoint-card";
+import { cn } from "cn";
 import {
   CheckIcon,
   CopyIcon,
@@ -172,6 +174,9 @@ const AssistantWorkingIndicator: FC = () => {
 };
 
 export const AssistantMessage: FC = () => {
+  // 「已停止」消息（data-stopped part 存在，直播/历史重建同构）：分隔线渲染
+  // 在操作栏之下（ActionBar 外面），part 本身不就地渲染
+  const stopped = useAuiState(isStoppedMessageState);
   return (
     <MessagePrimitive.Root
       data-slot="aui_edit-composer-wrapper"
@@ -269,12 +274,22 @@ export const AssistantMessage: FC = () => {
 
       <div
         data-slot="aui_assistant-message-footer"
-        className="relative ml-2 h-7.5 min-h-7.5 -mb-7.5 overflow-visible"
+        className={cn(
+          "relative ml-2 min-h-7.5 overflow-visible",
+          // 常态：操作栏悬浮在消息间隙（负 margin 折叠占位）；被停止的消息
+          // 要给它留出真实高度，分隔线才能排到操作栏下方
+          !stopped && "h-7.5 -mb-7.5",
+        )}
       >
         <div className="absolute inset-x-0 top-0 flex h-7.5 items-center pt-1.5">
           <AssistantActionBar />
         </div>
       </div>
+      {stopped && (
+        <div className="ml-2">
+          <StoppedMarker />
+        </div>
+      )}
     </MessagePrimitive.Root>
   );
 };
