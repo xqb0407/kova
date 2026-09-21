@@ -68,11 +68,19 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type FC,
   type MouseEvent,
+  type PointerEvent,
   type ReactNode,
 } from "react";
 import { Kbd, KbdGroup } from "../ui/kbd";
+
+/** 侧边栏宽度拖拽调节的持久化键（存 px 整数；无值 = 默认 16.25rem 栏宽，
+ *  rem 基准跟随全局字号缩放，拖过之后按用户选定的 px 固定）与上下限 */
+const RAIL_WIDTH_KEY = "ui.sidebar-width";
+const RAIL_MIN_WIDTH = 180;
+const RAIL_MAX_WIDTH = 420;
 
 type CloneThreadShellProps = {
   children: ReactNode;
@@ -198,6 +206,58 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     if (!collapsedControlled) setInternalCollapsed(value);
     onCollapsedChange?.(value);
   };
+
+  // —— 侧边栏宽度拖拽调节 ——
+  // railW=null 时三处宽度类都走 var 的 fallback（rem 基准，未拖过 = 原样）；
+  // 拖拽中 aside 的宽度过渡动画必须关掉，否则 300ms 缓动拖不住跟手。
+  const asideRef = useRef<HTMLElement>(null);
+  const [railW, setRailW] = useState<number | null>(null);
+  const [railDragging, setRailDragging] = useState(false);
+  const railDragRef = useRef<{ startX: number; startW: number } | null>(null);
+  useEffect(() => {
+    const n = Number(window.localStorage.getItem(RAIL_WIDTH_KEY));
+    if (Number.isFinite(n) && n >= RAIL_MIN_WIDTH && n <= RAIL_MAX_WIDTH)
+      setRailW(n);
+  }, []);
+  const onRailHandleDown = (event: PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    railDragRef.current = {
+      startX: event.clientX,
+      startW: asideRef.current?.offsetWidth ?? railW ?? 260,
+    };
+    setRailDragging(true);
+  };
+  const onRailHandleMove = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = railDragRef.current;
+    if (!drag) return;
+    setRailW(
+      Math.min(
+        RAIL_MAX_WIDTH,
+        Math.max(
+          RAIL_MIN_WIDTH,
+          Math.round(drag.startW + event.clientX - drag.startX),
+        ),
+      ),
+    );
+  };
+  const onRailHandleUp = (event: PointerEvent<HTMLDivElement>) => {
+    if (!railDragRef.current) return;
+    railDragRef.current = null;
+    setRailDragging(false);
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    if (railW !== null) {
+      try {
+        window.localStorage.setItem(RAIL_WIDTH_KEY, String(railW));
+      } catch {}
+    }
+  };
+  const onRailHandleDoubleClick = () => {
+    setRailW(null);
+    try {
+      window.localStorage.removeItem(RAIL_WIDTH_KEY);
+    } catch {}
+  };
   const setMobileOpen = (open: boolean) => {
     if (!mobileControlled) setInternalMobileOpen(open);
     onMobileSidebarOpenChange?.(open);
@@ -250,21 +310,32 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 
   return (
     // bg-background
-    <div className="relative flex h-full w-full overflow-hidden  ">
+    <div
+      className={cn(
+        "relative flex h-full w-full overflow-hidden",
+        railDragging && "cursor-col-resize select-none",
+      )}
+    >
       <aside
+        ref={asideRef}
+        style={
+          railW === null ? undefined : ({ "--rail-w": `${railW}px` } as CSSProperties)
+        }
         className={cn(
           // 折叠动画 = aside 宽度（推挤主区）+ 内层整列 transform（内容平移
-          // 出屏）。内层固定 w-65 不参与重排：会话再多，行布局在动画期间完全
-          // 静止，只有 aside 的盒宽和合成器上的 transform 在动
-          "bg-muted/55 hidden h-full shrink-0 flex-col overflow-hidden border-r md:flex",
+          // 出屏）。内层固定栏宽不参与重排：会话再多，行布局在动画期间完全
+          // 静止，只有 aside 的盒宽和合成器上的 transform 在动。
+          // 拖拽手势进行中暂停宽度过渡（transition-none），松手后恢复
+          "bg-muted/55 relative hidden h-full shrink-0 flex-col overflow-hidden border-r md:flex",
           "transition-[width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           railClassName,
-          sidebarCollapsed ? "w-0" : "w-65",
+          sidebarCollapsed ? "w-0" : "w-[var(--rail-w,16.25rem)]",
+          railDragging && "transition-none",
         )}
       >
         <div
           className={cn(
-            "flex h-full w-65 shrink-0 flex-col",
+            "flex h-full w-[var(--rail-w,16.25rem)] shrink-0 flex-col",
             "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
             sidebarCollapsed ? "-translate-x-full" : "translate-x-0",
           )}
@@ -424,8 +495,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           className={cn(
             // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
             // 整个 aside 列、把上方 tabs 行顶上去——溢出滚动必须锁在本容器内。
-            // 恒为 w-65：折叠动画期间列表不参与重排（外层整列 transform 出屏）
-            "relative min-h-0 w-65 flex-1 overflow-y-auto p-3",
+            // 恒为整栏宽：折叠动画期间列表不参与重排（外层整列 transform 出屏）
+            "relative min-h-0 w-[var(--rail-w,16.25rem)] flex-1 overflow-y-auto p-3",
           )}
         >
           {activeTab === "tasks" && hasThreads && (
@@ -480,6 +551,26 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </FluidHoverRow>
           </div>
         )}
+        </div>
+        {/* 侧边栏宽度拖拽把手：贴 aside 右缘，随 aside 折叠被 overflow 裁掉
+            （收起态自然消失）。悬停/拖拽中浮现细线提示可拖；双击复位默认宽 */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          title="拖动调整侧边栏宽度，双击复位"
+          onPointerDown={onRailHandleDown}
+          onPointerMove={onRailHandleMove}
+          onPointerUp={onRailHandleUp}
+          onPointerCancel={onRailHandleUp}
+          onDoubleClick={onRailHandleDoubleClick}
+          className="group/rail absolute inset-y-0 right-0 z-20 w-1.5 cursor-col-resize touch-none"
+        >
+          <div
+            className={cn(
+              "bg-primary pointer-events-none absolute inset-y-0 right-0 w-px opacity-0 transition-opacity group-hover/rail:opacity-60",
+              railDragging && "opacity-100",
+            )}
+          />
         </div>
       </aside>
 
