@@ -7,6 +7,7 @@ import { AuiConfig, AuiProvider, useAuiState } from "@assistant-ui/store";
 import { SpanPrimitive, SpanResource } from "@assistant-ui/react-o11y";
 import { Separator } from "react-resizable-panels";
 import {
+  ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
@@ -327,49 +328,55 @@ export const TraceTab: FC<{ tab: PanelTab }> = ({ tab }) => {
           </button>
         </div>
       </div>
-      <div className="flex min-h-0 flex-1">
-        {/* run 列表 */}
-        <div className="w-44 shrink-0 overflow-y-auto border-r sm:w-52">
-          {descRuns!.map((run) => (
-            <button
-              key={run.runId}
-              type="button"
-              onClick={() => setSelectedId(run.runId)}
-              data-active={selected?.runId === run.runId}
-              className="hover:bg-muted/60 data-active:bg-muted flex w-full flex-col gap-0.5 border-b px-2.5 py-2 text-left text-xs"
-            >
-              <span className="flex items-center gap-1.5">
-                <span className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT[run.status])} />
-                <span className="text-foreground min-w-0 truncate font-medium">
-                  {fmtTime(run.startMs)}
+      {/* 横向分组：左侧 run 列表可拖宽（分割线即把手，细线常驻） */}
+      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
+        <ResizablePanel id="trace-run-list" defaultSize={208} minSize={120} className="min-w-0">
+          {/* run 列表 */}
+          <div className="h-full overflow-y-auto">
+            {descRuns!.map((run) => (
+              <button
+                key={run.runId}
+                type="button"
+                onClick={() => setSelectedId(run.runId)}
+                data-active={selected?.runId === run.runId}
+                className="hover:bg-muted/60 data-active:bg-muted flex w-full flex-col gap-0.5 border-b px-2.5 py-2 text-left text-xs"
+              >
+                <span className="flex items-center gap-1.5">
+                  <span className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT[run.status])} />
+                  <span className="text-foreground min-w-0 truncate font-medium">
+                    {fmtTime(run.startMs)}
+                  </span>
+                  <span className="text-muted-foreground ml-auto shrink-0 tabular-nums">
+                    {fmtMs(Math.max(0, run.endMs - run.startMs))}
+                  </span>
                 </span>
-                <span className="text-muted-foreground ml-auto shrink-0 tabular-nums">
-                  {fmtMs(Math.max(0, run.endMs - run.startMs))}
+                <span className="text-muted-foreground flex items-center gap-1.5 pl-3">
+                  <span className="min-w-0 truncate">{run.model ?? "未知模型"}</span>
+                  <span className="ml-auto shrink-0">{SOURCE_LABEL[run.source]}</span>
                 </span>
-              </span>
-              <span className="text-muted-foreground flex items-center gap-1.5 pl-3">
-                <span className="min-w-0 truncate">{run.model ?? "未知模型"}</span>
-                <span className="ml-auto shrink-0">{SOURCE_LABEL[run.source]}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-        {/* 选中 run 的瀑布 + 检查器 */}
-        <div className="flex min-w-0 flex-1 flex-col">
-          {selected ? (
-            <>
-              <RunSummary run={selected} />
-              <div className="border-t" />
-              <RunWaterfall
-                run={selected}
-                inspectedId={inspectedId}
-                onSelect={setInspectedId}
-                onClose={() => setInspectedId(null)}
-              />
-            </>
-          ) : null}
-        </div>
-      </div>
+              </button>
+            ))}
+          </div>
+        </ResizablePanel>
+        <ResizableHandle className="[&>div]:opacity-100" />
+        <ResizablePanel id="trace-run-detail" minSize={260} className="min-w-0">
+          {/* 选中 run 的瀑布 + 检查器 */}
+          <div className="flex h-full min-w-0 flex-col">
+            {selected ? (
+              <>
+                <RunSummary run={selected} />
+                <div className="border-t" />
+                <RunWaterfall
+                  run={selected}
+                  inspectedId={inspectedId}
+                  onSelect={setInspectedId}
+                  onClose={() => setInspectedId(null)}
+                />
+              </>
+            ) : null}
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
     </div>
   );
 };
