@@ -162,6 +162,15 @@ export function toUiMessage(msg: Message, seq: number): UIMessage | null {
         parts.push({ type: "reasoning", text: c.thinking, state: "done" });
       }
     }
+    // 中止的残缺回复：补「已停止」分隔线 part（与直播流 data-stopped 同构，
+    // 刷新后标记不丢）
+    if (msg.stopReason === "aborted") {
+      parts.push({
+        type: "data-stopped",
+        id: "stopped",
+        data: {},
+      } as UIMessage["parts"][number]);
+    }
     if (!parts.length) return null;
     return { id: `msg-${seq}`, role: "assistant", parts };
   }

@@ -21,6 +21,7 @@ import { ThreadSuggestions } from "./thread-suggestions";
 import { Composer, EditComposer } from "./composer";
 import { AssistantMessage } from "./assistant-message";
 import { CompactionDataUI, ManualCompactionTailAfter } from "./compaction-banner";
+import { StoppedDataUI } from "./stopped-marker";
 import { ImageDataUI } from "@/components/assistant-ui/elements/image-data";
 import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
@@ -131,8 +132,10 @@ export const Thread: FC = () => {
         ["--composer-padding" as string]: "8px",
       }}
     >
-      {/* 注册 data-compaction 渲染器（自身不可见），横幅随对应 assistant 消息出现 */}
-      <CompactionDataUI />
+        {/* 注册 data-compaction 渲染器（自身不可见），横幅随对应 assistant 消息出现 */}
+        <CompactionDataUI />
+        {/* 注册 data-stopped 渲染器：被中止（Stop/立即发送）回复尾部的「已停止」分隔线 */}
+        <StoppedDataUI />
       {/* 注册 data-image 渲染器（同法）：工具产出的图片随消息流内联展示 */}
       <ImageDataUI />
 
