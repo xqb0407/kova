@@ -50,7 +50,7 @@ import {
   AGENT_EVENT_REGISTRY,
   eventLabel,
   type AgentEventName,
-} from "@/lib/agent-events";
+} from "@/lib/pi/agent-events";
 import {
   WEBHOOK_FORMATS,
   addWebhook,
@@ -59,14 +59,14 @@ import {
   useWebhookEndpoints,
   type WebhookEndpoint,
   type WebhookFormat,
-} from "@/lib/webhooks";
+} from "@/lib/notify/webhooks";
 import {
   DELIVERY_KEEP,
   pruneWebhookDeliveries,
   removeWebhookDeliveries,
   sendWebhookTest,
   useWebhookDeliveries,
-} from "@/lib/webhook-dispatcher";
+} from "@/lib/notify/webhook-dispatcher";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import {

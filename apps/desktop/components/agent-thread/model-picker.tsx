@@ -6,11 +6,11 @@ import {
   ModelSelector,
   type ModelOption,
 } from "@/components/assistant-ui/elements/model-selector.aui";
-import { refreshPiModels, usePiModels } from "@/lib/pi-models";
-import type { PiModelSummary } from "@/lib/pi-bridge";
-import { hydrateThreadModel, setThreadModel, useThreadModel } from "@/lib/pi-session-model";
-import { setSelectedModel } from "@/lib/model-settings";
-import { fmtContextWindow } from "@/lib/model-format";
+import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
+import type { PiModelSummary } from "@/lib/pi/pi-bridge";
+import { hydrateThreadModel, setThreadModel, useThreadModel } from "@/lib/pi/pi-session-model";
+import { setSelectedModel } from "@/lib/model/model-settings";
+import { fmtContextWindow } from "@/lib/model/model-format";
 
 /**
  * 对话页模型选择器：只展示已配置凭据的服务（authed）的模型，按服务分组；

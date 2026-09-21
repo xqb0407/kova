@@ -10,8 +10,8 @@ import { toast } from "@/components/ui/toast";
 import {
   saveObservabilityConfig,
   useObservabilityConfig,
-} from "@/lib/observability-config";
-import { piRequest, type PiObservabilityTestResult } from "@/lib/pi-bridge";
+} from "@/lib/settings/observability-config";
+import { piRequest, type PiObservabilityTestResult } from "@/lib/pi/pi-bridge";
 
 /**
  * 追踪配置区（设置 → 系统 → 关于）：Agent 调用轨迹的 OTLP 导出配置。

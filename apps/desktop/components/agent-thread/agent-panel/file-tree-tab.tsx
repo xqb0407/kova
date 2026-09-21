@@ -28,7 +28,7 @@ import {
   refreshFileTree,
   useFileTreeVersion,
   useFileTreeWiring,
-} from "@/lib/file-tree";
+} from "@/lib/workspace/file-tree";
 import {
   fsDelete,
   fsErrorText,
@@ -36,10 +36,10 @@ import {
   fsRename,
   fsReveal,
   fsTouch,
-} from "@/lib/fs";
-import { focusPanelTab, openPanelTab } from "@/lib/panel-tabs";
+} from "@/lib/workspace/fs";
+import { focusPanelTab, openPanelTab } from "@/lib/panels/panel-tabs";
 import { isTauri } from "@/lib/tauri";
-import { useWorkspace } from "@/lib/workspace-store";
+import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import {

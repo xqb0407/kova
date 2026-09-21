@@ -16,7 +16,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { setAppMode, useAppMode, type AppMode } from "@/lib/app-mode";
+import { setAppMode, useAppMode, type AppMode } from "@/lib/pi/app-mode";
 
 /**
  * 全局工作模式切换器（会话顶栏，「更多」按钮左侧；设置 → 通用里同一事实源）。

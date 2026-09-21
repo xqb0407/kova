@@ -25,7 +25,7 @@ import {
   useSessionMode,
   type ApprovalLevel,
   type SessionMode,
-} from "@/lib/pi-session-mode";
+} from "@/lib/pi/pi-session-mode";
 
 /**
  * 会话模式切换器（composer 区，"+" 号图标旁）——权限导向的四选项（对齐主流编码工具）：

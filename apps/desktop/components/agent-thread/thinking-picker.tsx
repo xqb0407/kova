@@ -10,13 +10,13 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { usePiModels } from "@/lib/pi-models";
-import { useSelectedModel } from "@/lib/model-settings";
+import { usePiModels } from "@/lib/pi/pi-models";
+import { useSelectedModel } from "@/lib/model/model-settings";
 import {
   setThinkingLevel,
   useThinkingLevel,
   type ThinkingLevel,
-} from "@/lib/thinking-settings";
+} from "@/lib/settings/thinking-settings";
 import { cn } from "@/lib/utils";
 
 /**

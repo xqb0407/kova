@@ -3,14 +3,14 @@
 import { useEffect, useRef, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { ActivityIcon } from "lucide-react";
-import { useThreadTodos } from "@/lib/pi-todo";
-import { usePanelActivity } from "@/lib/panel-activity";
+import { useThreadTodos } from "@/lib/pi/pi-todo";
+import { usePanelActivity } from "@/lib/panels/panel-activity";
 import { PlanSection } from "./plan-section";
 import { FilesSection } from "./files-section";
 import { TerminalSection } from "./terminal-section";
 import { ReferencesSection } from "./references-section";
 import { AttachmentsSection } from "./attachments-section";
-import { useThreadAttachments } from "@/lib/thread-attachments";
+import { useThreadAttachments } from "@/lib/attachments/thread-attachments";
 
 /**
  * "活动"标签:纵向汇总当前线程的 agent 工作——计划(todo 快照)/

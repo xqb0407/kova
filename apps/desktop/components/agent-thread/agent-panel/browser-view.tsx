@@ -15,7 +15,7 @@ import {
   Loader2Icon,
   RotateCwIcon,
 } from "lucide-react";
-import { updatePanelTab, type PanelTab } from "@/lib/panel-tabs";
+import { updatePanelTab, type PanelTab } from "@/lib/panels/panel-tabs";
 import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 

@@ -15,7 +15,7 @@
 import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { AnimatePresence, motion } from "framer-motion";
-import { SPRING_LAYOUT } from "@/lib/ease";
+import { SPRING_LAYOUT } from "@/lib/motion/ease";
 import {
   AlertCircleIcon,
   AlarmClockIcon,
@@ -101,9 +101,9 @@ import {
   useAutomations,
   type AutomationTask,
   type AutomationTemplate,
-} from "@/lib/automations";
-import { piRequest } from "@/lib/pi-bridge";
-import { useAutomationRunning } from "@/lib/automation-live";
+} from "@/lib/automation/automations";
+import { piRequest } from "@/lib/pi/pi-bridge";
+import { useAutomationRunning } from "@/lib/automation/automation-live";
 import {
   filterHistoryItems,
   filterTasks,
@@ -114,7 +114,7 @@ import {
   type HistoryItem,
   type RunHistoryEntry,
   type TaskFilter,
-} from "@/lib/automation-history";
+} from "@/lib/automation/automation-history";
 import {
   describeSchedule,
   describeTemplateSchedule,
@@ -123,7 +123,7 @@ import {
   relativePast,
   scheduleKind,
   type ScheduleKind,
-} from "@/lib/automation-format";
+} from "@/lib/automation/automation-format";
 import { cn } from "@/lib/utils";
 import { Dock, DockItem, DockSeparator } from "@/components/custom-ui/dock";
 import { Segmented } from "@/components/custom-ui/segmented";

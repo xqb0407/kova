@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { EASE_OUT, SPRING_LAYOUT } from "@/lib/ease";
+import { EASE_OUT, SPRING_LAYOUT } from "@/lib/motion/ease";
 import { useDismiss } from "@/hooks/use-dismiss";
 import { useHoverGesture } from "@/hooks/use-hover-gesture";
 import { useTapGesture } from "@/hooks/use-tap-gesture";

@@ -7,8 +7,8 @@ import { Compartment, EditorState, Prec, RangeSetBuilder, Transaction, type Rang
 import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, placeholder as cmPlaceholder, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { useEffect, useRef, type FC } from "react";
 import { toast } from "@/components/ui/toast";
-import { validatePromptFile } from "@/lib/prompt-attachments";
-import { markSteerNextSend } from "@/lib/pi-steer-intent";
+import { validatePromptFile } from "@/lib/attachments/prompt-attachments";
+import { markSteerNextSend } from "@/lib/pi/pi-steer-intent";
 
 /**
  * CodeMirror 6 版 composer 输入（替代 LexicalComposerInput）：

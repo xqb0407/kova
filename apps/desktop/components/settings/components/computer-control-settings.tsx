@@ -7,7 +7,7 @@ import { toast } from "@/components/ui/toast";
 import {
   saveBrowserConfig,
   useBrowserConfig,
-} from "@/lib/browser-config";
+} from "@/lib/settings/browser-config";
 import { isTauri } from "@/lib/tauri";
 
 /**

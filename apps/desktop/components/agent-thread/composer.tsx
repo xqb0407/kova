@@ -16,10 +16,10 @@ import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
 import { ModePicker } from "@/components/agent-thread/mode-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
-import { markSteerNextSend } from "@/lib/pi-steer-intent";
+import { markSteerNextSend } from "@/lib/pi/pi-steer-intent";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
-import { usePendingQuestions } from "@/lib/pi-question";
+import { usePendingQuestions } from "@/lib/pi/pi-question";
 import { Button } from "@/components/ui/button";
 import {
   AuiIf,
@@ -55,7 +55,7 @@ import {
   promptFileKind,
   PROMPT_IMAGE_MAX_COUNT,
   validatePromptFile,
-} from "@/lib/prompt-attachments";
+} from "@/lib/attachments/prompt-attachments";
 import { isTauri } from "@/lib/tauri";
 import {
   clearWorkspace,
@@ -64,7 +64,7 @@ import {
   setWorkspace,
   useWorkspace,
   useWorkspaceRecents,
-} from "@/lib/workspace-store";
+} from "@/lib/workspace/workspace-store";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -77,10 +77,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "../ui/input";
 import { cn } from "cn";
-import { useGitStatus } from "@/lib/git-status";
-import { gitBranches, gitCheckout, type GitBranches } from "@/lib/git";
-import { useAppMode } from "@/lib/app-mode";
-import { openPanelTab } from "@/lib/panel-tabs";
+import { useGitStatus } from "@/lib/git/git-status";
+import { gitBranches, gitCheckout, type GitBranches } from "@/lib/git/git";
+import { useAppMode } from "@/lib/pi/app-mode";
+import { openPanelTab } from "@/lib/panels/panel-tabs";
 
 const ModelPicker: FC = () => {
   return <PiModelPicker />;

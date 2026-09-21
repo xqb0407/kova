@@ -2,7 +2,7 @@
 
 import { motion, type HTMLMotionProps, useReducedMotion } from "framer-motion";
 import type { CSSProperties } from "react";
-import { EASE_OUT } from "@/lib/ease";
+import { EASE_OUT } from "@/lib/motion/ease";
 import { cn } from "@/lib/utils";
 
 export interface AgentDisclosureProps

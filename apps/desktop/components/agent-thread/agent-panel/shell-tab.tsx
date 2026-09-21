@@ -13,7 +13,7 @@ import {
   restartShellTab,
   useShellStore,
 } from "@/lib/shell";
-import type { PanelTab } from "@/lib/panel-tabs";
+import type { PanelTab } from "@/lib/panels/panel-tabs";
 import { isTauri } from "@/lib/tauri";
 import { TabEmpty } from "./tab-empty";
 

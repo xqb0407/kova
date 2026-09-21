@@ -13,13 +13,13 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { usePiModels } from "@/lib/pi-models";
+import { usePiModels } from "@/lib/pi/pi-models";
 import {
   formatTokens,
   modelColor,
   usageDayKey,
   type UsageStatsDay,
-} from "@/lib/usage-stats";
+} from "@/lib/model/usage-stats";
 
 /**
  * 使用统计图表（recharts）：每日 Token 趋势（近7/近30日，分模型）+ 模型用量环形图。

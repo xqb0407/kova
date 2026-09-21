@@ -10,8 +10,8 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { piSessionCwdMap } from "@/lib/pi-thread-adapter";
-import { pathBasename } from "@/lib/workspace-store";
+import { piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
+import { pathBasename } from "@/lib/workspace/workspace-store";
 
 type ArchivedItem = {
   id: string;

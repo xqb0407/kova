@@ -20,9 +20,9 @@ import {
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
-import { subscribeAutomationFocus } from "@/lib/automations";
-import { setAutomationFrameSync } from "@/lib/automation-live";
-import { subscribeOpenSession } from "@/lib/open-session";
+import { subscribeAutomationFocus } from "@/lib/automation/automations";
+import { setAutomationFrameSync } from "@/lib/automation/automation-live";
+import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
 import { Thread } from "./thread";
@@ -101,7 +101,7 @@ const FilesView = dynamic(
   },
 );
 // 应用启动即接管外观偏好（预绘制脚本之后：系统主题监听、跟随实时更新）
-import "@/lib/ui-prefs";
+import "@/lib/settings/ui-prefs";
 
 /** 面板开合与宽度的本地持久化键（宽度存 px 整数） */
 const PANEL_OPEN_KEY = "agent-panel-open";

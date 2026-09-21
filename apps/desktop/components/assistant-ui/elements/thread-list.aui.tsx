@@ -31,25 +31,25 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { EASE_OUT, SPRING_LAYOUT, SPRING_SWAP } from "@/lib/ease";
+import { EASE_OUT, SPRING_LAYOUT, SPRING_SWAP } from "@/lib/motion/ease";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { forkPiSession, piSessionCwdMap } from "@/lib/pi-thread-adapter";
-import { resyncPiRunning, usePiSessionRunning } from "@/lib/pi-running";
-import { getPiChannel } from "@/lib/pi-channel";
+import { forkPiSession, piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
+import { resyncPiRunning, usePiSessionRunning } from "@/lib/pi/pi-running";
+import { getPiChannel } from "@/lib/pi/pi-channel";
 import {
   togglePinSession,
   useIsPinned,
   usePinnedSessionIds,
-} from "@/lib/pi-pinned-sessions";
-import { useThreadActivity } from "@/lib/pi-last-activity";
+} from "@/lib/pi/pi-pinned-sessions";
+import { useThreadActivity } from "@/lib/pi/pi-last-activity";
 import {
   requestAutomationFocus,
   useAutomationTaskIdForSession,
-} from "@/lib/automations";
+} from "@/lib/automation/automations";
 import { toast } from "@/components/ui/toast";
 import {
   AlertDialog,
@@ -65,7 +65,7 @@ import {
   openWorkspacePicker,
   pathBasename,
   useWorkspace,
-} from "@/lib/workspace-store";
+} from "@/lib/workspace/workspace-store";
 import {
   DropdownMenu,
   DropdownMenuContent,

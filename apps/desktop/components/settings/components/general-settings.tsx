@@ -15,12 +15,12 @@ import {
   ATTACHMENT_RETENTION_OPTIONS,
   setAttachmentRetentionDays,
   useAttachmentRetentionDays,
-} from "@/lib/attachment-retention";
-import { setAppMode, useAppMode, useAppModeDegraded, type AppMode } from "@/lib/app-mode";
-import { setGpuAccelEnabled, useGpuAccelEnabled } from "@/lib/gpu-accel";
-import { SOUND_PACKS } from "@/lib/sounds";
+} from "@/lib/attachments/attachment-retention";
+import { setAppMode, useAppMode, useAppModeDegraded, type AppMode } from "@/lib/pi/app-mode";
+import { setGpuAccelEnabled, useGpuAccelEnabled } from "@/lib/settings/gpu-accel";
+import { SOUND_PACKS } from "@/lib/notify/sounds";
 import { isTauri, isWindowsPlatform } from "@/lib/tauri";
-import { setUiPref, useUiPrefs, type SoundPackName } from "@/lib/ui-prefs";
+import { setUiPref, useUiPrefs, type SoundPackName } from "@/lib/settings/ui-prefs";
 
 /**
  * 通用设置页：提醒提示音与弹窗通知。统一开关 + 两套内置音色整体切换，

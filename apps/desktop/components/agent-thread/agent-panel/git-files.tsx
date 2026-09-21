@@ -16,16 +16,16 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import type { FileDiffContentsLoader } from "@pierre/diffs/react";
-import { scrollIntoScroller } from "@/lib/scroll";
+import { scrollIntoScroller } from "@/lib/motion/scroll";
 import {
   gitDiff,
   gitShow,
   gitWorktreeRead,
   type GitDiffFile,
   type GitDiffResult,
-} from "@/lib/git";
-import { onGitChanged } from "@/lib/git-status";
-import { pathMatches } from "@/lib/tool-panel";
+} from "@/lib/git/git";
+import { onGitChanged } from "@/lib/git/git-status";
+import { pathMatches } from "@/lib/panels/tool-panel";
 import { cn } from "@/lib/utils";
 import { PanelPatchDiff } from "@/components/code/panel-diff";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";

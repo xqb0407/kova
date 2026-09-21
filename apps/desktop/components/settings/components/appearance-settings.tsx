@@ -16,15 +16,15 @@ import {
   setWindowEffect,
   useWindowEffect,
   type WindowEffectName,
-} from "@/lib/appearance";
+} from "@/lib/settings/appearance";
 import {
   setUiPref,
   useUiPrefs,
   type AccentName,
   type CodeThemeName,
   type FontFamilyName,
-} from "@/lib/ui-prefs";
-import { CODE_THEME_DARK_OPTIONS, CODE_THEME_LIGHT_OPTIONS } from "@/lib/code-theme";
+} from "@/lib/settings/ui-prefs";
+import { CODE_THEME_DARK_OPTIONS, CODE_THEME_LIGHT_OPTIONS } from "@/lib/markdown/code-theme";
 import { Switch } from "@/components/ui/switch";
 import {
   InputGroup,

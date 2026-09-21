@@ -12,8 +12,8 @@ import {
   steerQueueItem,
   useQueueSnapshot,
   type RegisteredMessage,
-} from "@/lib/pi-queue";
-import { piSessionRegistry } from "@/lib/pi-thread-adapter";
+} from "@/lib/pi/pi-queue";
+import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import {
   MergeIcon,
   PauseIcon,

@@ -40,7 +40,7 @@ import {
   type BackupRunResult,
   type RemoteBackup,
   type RestoreStagedResult,
-} from "@/lib/backup-config";
+} from "@/lib/settings/backup-config";
 
 /**
  * 备份与恢复设置页（设置 → 系统 → 备份）。
