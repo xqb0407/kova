@@ -209,13 +209,12 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
 
   // —— 侧边栏宽度拖拽调节 ——
   // railW=null 时三处宽度类都走 var 的 fallback（rem 基准，未拖过 = 原样）。
-  // 拖拽全程绕过 React：每帧 rAF 直写 aside 内联宽度（内联样式优先于类，
-  // 覆盖期间的类宽不生效），列表内容宽度冻结为拖拽起始值（与折叠动画同款
-  // 手法：行不参与重排，松手才统一重排一次）。若走 setState 每帧驱动，
-  // 会话列表越大每帧重渲染+重排越卡。宽度过渡与悬停高亮也临时用内联
-  // 样式接管，松手一并交还给类/状态。
+  // 拖拽全程绕过 React：每帧 rAF 只往 aside 内联写一个 --rail-w（aside 类宽
+  // 与内层/列表三处同源，浏览器联动跟宽；React 只在 state 变化时才写 style，
+  // 拖拽中 railW 不变不会覆盖内联值）。卡顿主因是旧实现每帧 setState 把整棵
+  // 会话树重渲染一遍；逐帧重排与拖右侧 panel/缩放窗口同量级。宽度过渡临时
+  // 置 0、悬停线加粗用 classList 直挂，松手一并交还类/状态。
   const asideRef = useRef<HTMLElement>(null);
-  const railInnerRef = useRef<HTMLDivElement>(null);
   const railLineRef = useRef<HTMLDivElement>(null);
   const [railW, setRailW] = useState<number | null>(null);
   const railDragRef = useRef<{
@@ -236,12 +235,14 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     const aside = asideRef.current;
     if (!drag || !aside) return;
     drag.frame = null;
-    aside.style.width = `${railClamp(drag.startW + drag.lastX - drag.startX)}px`;
+    aside.style.setProperty(
+      "--rail-w",
+      `${railClamp(drag.startW + drag.lastX - drag.startX)}px`,
+    );
   };
   const onRailHandleDown = (event: PointerEvent<HTMLDivElement>) => {
     const aside = asideRef.current;
-    const inner = railInnerRef.current;
-    if (!aside || !inner) return;
+    if (!aside) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     const startW = aside.offsetWidth;
@@ -252,8 +253,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       frame: null,
     };
     aside.style.transitionDuration = "0s";
-    aside.style.width = `${startW}px`;
-    inner.style.width = `${inner.offsetWidth}px`;
+    // 钉住当前渲染宽为内联变量起点（未拖过时类宽走 rem fallback，与测量
+    // 值一致），此后每帧只更新这一个变量，三处栏宽联动实时跟手
+    aside.style.setProperty("--rail-w", `${startW}px`);
     railLineRef.current?.classList.add("w-0.5", "opacity-100");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
@@ -271,14 +273,13 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     if (drag.frame !== null) cancelAnimationFrame(drag.frame);
     const aside = asideRef.current;
     const finalW = railClamp(drag.startW + drag.lastX - drag.startX);
-    // 同帧内先写变量再接管位、再撤内联宽：类宽立刻按最终 var 解析，无闪跳；
-    // 之后 setRailW 提交的 style 与内联值一致，React 接管无副作用
+    // 变量钉回最终值（与最后一帧一致，防 canceled 帧残留旧值），恢复过渡
+    // ——此刻类宽==内联变量==最终值，恢复过渡不会触发收起动画；随后
+    // setRailW 提交的 style 写同一值，React 接管无闪跳
     if (aside) {
       aside.style.setProperty("--rail-w", `${finalW}px`);
-      aside.style.width = "";
       aside.style.transitionDuration = "";
     }
-    if (railInnerRef.current) railInnerRef.current.style.width = "";
     railLineRef.current?.classList.remove("w-0.5", "opacity-100");
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
@@ -359,8 +360,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           // 折叠动画 = aside 宽度（推挤主区）+ 内层整列 transform（内容平移
           // 出屏）。内层固定栏宽不参与重排：会话再多，行布局在动画期间完全
           // 静止，只有 aside 的盒宽和合成器上的 transform 在动。
-          // 拖拽进行中：aside 内联宽接管本类宽、过渡临时置 0（内联样式，松手
-          // 交还），见 onRailHandleDown/Up
+          // 拖拽进行中：内联 --rail-w 逐帧驱动本类宽（三处同源联动），
+          // 过渡临时置 0，松手交还 React/类，见 onRailHandleDown/Up
           "bg-muted/55 relative hidden h-full shrink-0 flex-col overflow-hidden border-r md:flex",
           "transition-[width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           railClassName,
@@ -368,7 +369,6 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         )}
       >
         <div
-          ref={railInnerRef}
           className={cn(
             "flex h-full w-[var(--rail-w,16.25rem)] shrink-0 flex-col",
             "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
