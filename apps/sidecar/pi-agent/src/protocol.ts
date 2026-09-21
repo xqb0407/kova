@@ -1094,7 +1094,11 @@ async function runPromptTurn(
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     // Stop/promote 中止的 turn：finish 前发 abort 标记——前端据此把残缺回复
     // 结算为「被结束」而非「正常完成」（不弹完成通知）；AI SDK 保留 partial 内容
-    if (run.stopRequested) sendChunk(reqId, { type: "abort" });
+    if (run.stopRequested) {
+      // 「已停止」标记 part：直播随消息渲染分隔线（前端 StoppedDataUI）
+      sendChunk(reqId, { type: "data-stopped", id: "stopped", data: {} });
+      sendChunk(reqId, { type: "abort" });
+    }
     sendChunk(reqId, { type: "finish" });
     // 补发挂起的 steered 流 finish：宿主轮已真正收尾，此刻结束它们不会误触
     // 框架的 status 回落（线程本来就空闲了）
