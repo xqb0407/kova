@@ -14,6 +14,7 @@ import {
   getQueueSnapshot,
   notifyQueueStreamStart,
   optimisticallyRemoveQueuedMessage,
+  refreshQueueSnapshot,
   registerQueuedMessage,
   unregisterQueuedMessage,
 } from "@/lib/pi-queue";
@@ -252,6 +253,20 @@ export class PiTransport implements ChatTransport<UIMessage> {
     if (!channel.attachStream) {
       clearResumableIfOwn(chatId, requestId);
       return null;
+    }
+    let attachId = requestId;
+    // storage 命中的 requestId 是排队未跑项（忙时最后发送的排队消息）时，
+    // attach 它只会挂起一条永不来数据的流（无重放、无直播可续——run 条目
+    // 在 pi_prompt 建立即 active，但排队项派发前不会有任何 chunk 行）——
+    // 聊天卡在假运行态：发送键变停止、列表空转、无输出，暂停的队列里
+    // 尤其如此。先对齐一次队列快照再判别；命中则清登记，改续传运行态里
+    // 真正正在跑的轮（暂停/空闲时没有 → 回落历史加载）
+    await refreshQueueSnapshot(chatId, piSessionRegistry.get(chatId));
+    if (getQueueSnapshot(chatId).items.some((item) => item.reqId === requestId)) {
+      clearResumableIfOwn(chatId, requestId);
+      const turn = await findRunningTurn(chatId);
+      requestId = turn?.requestId ?? null;
+      if (!requestId) return null;
     }
     let stream: ReadableStream<UIMessageChunk> | null = null;
     try {
