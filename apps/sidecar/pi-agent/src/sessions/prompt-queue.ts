@@ -6,15 +6,15 @@
  * prompt 不再直接打到 agent.prompt() 撞 "Agent is already processing" 守卫，
  * 而是进入该线程的 FIFO 队列，由 protocol.ts 的该线程串行链依次执行。
  *
- * v2 相对 v1 的核心变化：
- * - 稳定自增 id（持久化，跨重启不重复），派发/取消/编辑都以 id 寻址；
- * - 暂停/恢复：暂停只停派发（链节在队首等待唤醒），不清队列；
+ * v3 相对 v2 的核心变化（简化：只有「默认排队 / 并入当前轮 / 立即发送 / 删除」
+ * 四个操作，暂停族与失败熔断整体移除）：
+ * - 稳定自增 id（持久化，跨重启不重复），派发/取消都以 id 寻址；
+ * - 无暂停/恢复：上一轮流收尾后链节自动取队首开跑（autoDrain 恒开）；
  * - 快照持久化：每次变更向 session JSONL 追加一行 queue_state 全量快照，
- *   sidecar 重启后经 get_queue_state 回放恢复（恢复的队列自动暂停，等用户确认）；
+ *   sidecar 重启后经 get_queue_state 回放恢复（不再自动暂停）；
  * - 快照广播：每次变更经 sendEventChunk 向该线程发 data-queue-state 全量快照，
  *   前端「最后快照胜出」（线程无活跃请求时静默丢弃——空闲态变更都由前端
- *   自身的 invoke 发起，前端从回复里自更新）；
- * - 失败熔断：同线程连续 turn 级失败达阈值自动暂停（防级联报错轰炸），一键恢复。
+ *   自身的 invoke 发起，前端从回复里自更新）。
  *
  * data-queue chunk 生命周期（同 id 原地更新，参照 data-compaction；v2 保留作
  * 流级信号，权威状态以 data-queue-state 快照为准）：
@@ -28,9 +28,6 @@ import { sessionPath } from "../storage/storage";
 
 /** 每线程排队上限：超过直接拒绝（error chunk），防无限堆积 */
 export const PROMPT_QUEUE_LIMIT = 5;
-
-/** 失败熔断阈值：同线程连续 turn 级失败达到该数自动暂停队列 */
-export const QUEUE_FAILURE_PAUSE_THRESHOLD = 2;
 
 export type QueueItem = {
   /** 引擎内稳定自增 id（持久化，跨重启不重复） */
@@ -48,17 +45,12 @@ export type QueueSnapshot = {
   version: 2;
   threadId: string;
   items: { id: number; reqId: string; text: string; createdAt: string }[];
-  paused: boolean;
   nextId: number;
 };
 
 type ThreadQueue = {
   items: QueueItem[];
-  paused: boolean;
   nextId: number;
-  consecutiveFailures: number;
-  /** 暂停期间在队首等待派发的链节唤醒回调（resume 时全部唤醒） */
-  pauseWaiters: Array<() => void>;
   /** 最近一次已知 sessionId（快照持久化定位 session 文件；空队列也能落盘） */
   lastSessionId?: string;
 };
@@ -78,13 +70,7 @@ export function queueChunkId(reqId: string): string {
 function engineFor(threadId: string): ThreadQueue {
   let q = engines.get(threadId);
   if (!q) {
-    q = {
-      items: [],
-      paused: false,
-      nextId: 1,
-      consecutiveFailures: 0,
-      pauseWaiters: [],
-    };
+    q = { items: [], nextId: 1 };
     engines.set(threadId, q);
   }
   return q;
@@ -92,7 +78,7 @@ function engineFor(threadId: string): ThreadQueue {
 
 function dropEngineIfEmpty(threadId: string): void {
   const q = engines.get(threadId);
-  if (q && q.items.length === 0 && !q.paused && q.pauseWaiters.length === 0) {
+  if (q && q.items.length === 0) {
     engines.delete(threadId);
   }
 }
@@ -139,7 +125,6 @@ export function snapshotOf(threadId: string): QueueSnapshot {
       text: item.text,
       createdAt: item.createdAt,
     })),
-    paused: q.paused,
     nextId: q.nextId,
   };
 }
@@ -177,8 +162,9 @@ function isQueueSnapshotRestorable(snapshot: QueueSnapshot): boolean {
   );
 }
 
-/** 采纳回放快照：仅当该线程内存队列为空（不覆盖活状态）；恢复的队列自动
- *  暂停——重启后无人值守地自动重跑历史排队消息有风险，由用户确认后续发 */
+/** 采纳回放快照：仅当该线程内存队列为空（不覆盖活状态）。不自动暂停——
+ *  autoDrain 恒开，恢复后由前端接力泵接续派发（空闲线程弹出队首重发 /
+ *  在跑轮重挂） */
 export function adoptRestoredQueue(threadId: string, sessionId: string): QueueSnapshot | undefined {
   const restored = replayQueueState(sessionId);
   if (!restored || !isQueueSnapshotRestorable(restored)) return undefined;
@@ -194,18 +180,17 @@ export function adoptRestoredQueue(threadId: string, sessionId: string): QueueSn
     msg: { type: "prompt", text: item.text, threadId, sessionId },
   }));
   q.nextId = Math.max(restored.nextId, ...restored.items.map((item) => item.id + 1), 1);
-  q.paused = true; // 恢复即暂停：用户确认后 resume 续发
   return snapshotOf(threadId);
 }
 
-/** 线程当前队列快照：内存优先；内存为空则尝试从 session 回放并采纳（自动暂停）。
+/** 线程当前队列快照：内存优先；内存为空则尝试从 session 回放并采纳。
  *  前端线程挂载/刷新恢复时调用。 */
 export function getQueueStateForThread(
   threadId: string,
   sessionId?: string,
 ): QueueSnapshot | undefined {
   const q = engines.get(threadId);
-  if (q && (q.items.length > 0 || q.paused)) return snapshotOf(threadId);
+  if (q && q.items.length > 0) return snapshotOf(threadId);
   if (!sessionId) return undefined;
   return adoptRestoredQueue(threadId, sessionId);
 }
@@ -252,54 +237,11 @@ export function isTurnBusy(threadId: string): boolean {
   return busyThreads.has(threadId);
 }
 
-/** turn 结算：连续失败达阈值自动暂停队列（有排队项时），成功清零计数 */
-export function markTurnOutcome(threadId: string, ok: boolean): void {
-  const q = engines.get(threadId);
-  if (!q) return;
-  q.consecutiveFailures = ok ? 0 : q.consecutiveFailures + 1;
-  if (
-    !ok &&
-    q.consecutiveFailures >= QUEUE_FAILURE_PAUSE_THRESHOLD &&
-    !q.paused &&
-    q.items.length > 0
-  ) {
-    pauseThread(threadId);
-  }
-}
-
-/** 暂停派发：链节在队首等待（不打断正在跑的 turn），不清队列 */
-export function pauseThread(threadId: string, sessionId?: string): void {
-  const q = engineFor(threadId);
-  if (q.paused) return;
-  q.paused = true;
-  emitQueueState(threadId, sessionId);
-}
-
-/** 恢复派发：唤醒全部在队首等待的链节（串行链保证依次取队首） */
-export function resumeThread(threadId: string, sessionId?: string): void {
-  const q = engineFor(threadId);
-  if (!q.paused) return;
-  q.paused = false;
-  emitQueueState(threadId, sessionId);
-  const waiters = q.pauseWaiters.splice(0);
-  for (const wake of waiters) wake();
-}
-
-/** 链节用：队列暂停时等待恢复（未暂停立即返回；resume 唤醒全部等待节点，
- *  节点间由串行链保证依次取队首） */
-export function waitQueueUnpaused(threadId: string): Promise<void> {
-  const q = engineFor(threadId);
-  if (!q?.paused) return Promise.resolve();
-  return new Promise((resolve) => {
-    q.pauseWaiters.push(resolve);
-  });
-}
-
 /** 队首出队交由前端重新发送（恢复项没有链节点与流，派发只能由持有流的
- *  前端泵驱动）：仅在线程空闲且未暂停时弹出，否则返回 null */
+ *  前端泵驱动）：仅在线程空闲时弹出，否则返回 null */
 export function popFrontForDispatch(threadId: string): QueueItem | null {
   const q = engines.get(threadId);
-  if (!q || q.paused || q.items.length === 0) return null;
+  if (!q || q.items.length === 0) return null;
   if (busyThreads.has(threadId)) return null;
   const [item] = q.items.splice(0, 1);
   // 先广播（含空快照）再清引擎，见 takeFrontEntry
@@ -322,19 +264,6 @@ export function takeFrontEntry(threadId: string): QueueItem | null {
 /** 快照广播（data-queue-state）：变更后调用；线程无活跃请求时静默丢弃 */
 export function broadcastQueueState(threadId: string): void {
   emitQueueState(threadId);
-}
-
-/** 修改排队项文本（仅 queued 状态可改） */
-export function updateEntryText(reqId: string, text: string): boolean {
-  for (const q of engines.values()) {
-    const item = q.items.find((t) => t.reqId === reqId);
-    if (item) {
-      item.text = text;
-      emitQueueState(item.threadId);
-      return true;
-    }
-  }
-  return false;
 }
 
 /** 删除单个排队项：流立即 abort + finish 收尾，不执行 */

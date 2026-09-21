@@ -231,6 +231,8 @@ export function diffLines(oldText: string, newText: string): DiffLine[] {
 /** 单条消息的派生贡献（消息引用不变 ⇒ 直接复用） */
 type MessageContribution = {
   ref: ThreadMessage;
+  /** 派生时的在途判定（是否末条消息且线程运行中）：翻转 ⇒ 重算本消息 */
+  live: boolean;
   terminal: TerminalEntry[];
   /** 按消息序出现：path + 共享缓存的 entry 引用 */
   files: { path: string; entry: FileChangeEntry }[];
@@ -241,8 +243,13 @@ type MessageContribution = {
 };
 
 export type PanelActivityStore = {
-  /** 从消息数组派生；内容未变时返回同一引用（快照稳定性所在） */
-  derive(messages: readonly ThreadMessage[]): PanelActivity;
+  /**
+   * 从消息数组派生；内容未变时返回同一引用（快照稳定性所在）。
+   * isRunning：线程是否在跑。result 缺失的工具调用只有在
+   * 「末条消息 + 线程运行中」才算在途（转圈），其余一律视为
+   * 「已中断」（中止/崩溃/重启导致结果永不到达的死态，显示失败点）。
+   */
+  derive(messages: readonly ThreadMessage[], isRunning?: boolean): PanelActivity;
   stats(): { messages: number; parts: number };
   reset(): void;
 };
@@ -263,6 +270,8 @@ export function createPanelActivityStore(): PanelActivityStore {
       b: string | null;
       c: string | null;
       err: boolean;
+      /** 在途/中断分类指纹：分类翻转 ⇒ entry 重建 */
+      itp: boolean;
       /** 指纹一致 ⇒ entry 与统计直接复用（含 LCS diff 结果） */
       entry: TerminalEntry | FileChangeEntry;
     }
@@ -274,33 +283,49 @@ export function createPanelActivityStore(): PanelActivityStore {
     { q: string; c: string; entries: CitationEntry[] }
   >();
   let lastMessages: readonly ThreadMessage[] | null = null;
+  let lastIsRunning: boolean | undefined;
   let lastActivity: PanelActivity = EMPTY_ACTIVITY;
 
-  /** 指纹三槽 = (旧文/命令, 新文, result)；字符串 === 为值比较 */
+  /** 指纹四槽 = (旧文/命令, 新文, result, 在途分类)；字符串 === 为值比较 */
   function cachedTerminal(
     toolCallId: string,
     command: string,
     result: string | null,
     err: boolean,
+    interrupted: boolean,
   ): TerminalEntry {
     const hit = byToolCall.get(toolCallId);
-    if (hit && hit.a === command && hit.c === result && hit.err === err) {
+    if (
+      hit &&
+      hit.a === command &&
+      hit.c === result &&
+      hit.err === err &&
+      hit.itp === interrupted
+    ) {
       return hit.entry as TerminalEntry;
     }
     const entry: TerminalEntry = {
       toolCallId,
       command,
       output: result,
-      running: result === null,
-      failed: err || (result !== null && FAILED_RE.test(result)),
+      running: !interrupted && result === null,
+      failed: err || interrupted || (result !== null && FAILED_RE.test(result)),
     };
     if (hit) {
       hit.a = command;
       hit.c = result;
       hit.err = err;
+      hit.itp = interrupted;
       hit.entry = entry;
     } else {
-      byToolCall.set(toolCallId, { a: command, b: null, c: result, err, entry });
+      byToolCall.set(toolCallId, {
+        a: command,
+        b: null,
+        c: result,
+        err,
+        itp: interrupted,
+        entry,
+      });
     }
     return entry;
   }
@@ -312,6 +337,7 @@ export function createPanelActivityStore(): PanelActivityStore {
     newText: string,
     result: string | null,
     err: boolean,
+    interrupted: boolean,
   ): { entry: FileChangeEntry } {
     const hit = byToolCall.get(toolCallId);
     if (
@@ -319,7 +345,8 @@ export function createPanelActivityStore(): PanelActivityStore {
       hit.a === oldText &&
       hit.b === newText &&
       hit.c === result &&
-      hit.err === err
+      hit.err === err &&
+      hit.itp === interrupted
     ) {
       return { entry: hit.entry as FileChangeEntry };
     }
@@ -329,8 +356,8 @@ export function createPanelActivityStore(): PanelActivityStore {
       op,
       oldText,
       newText,
-      running: result === null,
-      failed: err || (result !== null && FAILED_RE.test(result)),
+      running: !interrupted && result === null,
+      failed: err || interrupted || (result !== null && FAILED_RE.test(result)),
       output: result,
       added,
       removed,
@@ -340,9 +367,17 @@ export function createPanelActivityStore(): PanelActivityStore {
       hit.b = newText;
       hit.c = result;
       hit.err = err;
+      hit.itp = interrupted;
       hit.entry = entry;
     } else {
-      byToolCall.set(toolCallId, { a: oldText, b: newText, c: result, err, entry });
+      byToolCall.set(toolCallId, {
+        a: oldText,
+        b: newText,
+        c: result,
+        err,
+        itp: interrupted,
+        entry,
+      });
     }
     return { entry };
   }
@@ -376,20 +411,26 @@ export function createPanelActivityStore(): PanelActivityStore {
     return entries;
   }
 
-  function computeMessage(message: ThreadMessage): MessageContribution {
+  /**
+   * live = 末条消息且线程运行中：只有这种消息里的无结果工具调用才是在途
+   * （转圈）。历史重建的中止残留、以及任何非末条消息里的无结果调用，
+   * 结果永远不会再到达 ⇒ 一律按「已中断」展示（红点、不计在途角标）。
+   */
+  function computeMessage(message: ThreadMessage, live: boolean): MessageContribution {
     const terminal: TerminalEntry[] = [];
     const files: { path: string; entry: FileChangeEntry }[] = [];
     const citations: CitationEntry[] = [];
     const toolCallIds: string[] = [];
     let running = 0;
     if (message.role !== "assistant") {
-      return { ref: message, terminal, files, citations, running, toolCallIds };
+      return { ref: message, live, terminal, files, citations, running, toolCallIds };
     }
     for (const part of message.content) {
       if (part.type !== "tool-call") continue;
       const args = (part.args ?? {}) as Record<string, unknown>;
       const result = resultText(part.result);
       const done = result !== null;
+      const interrupted = !done && !live;
       const err = part.isError === true;
       const id = part.toolCallId;
 
@@ -397,10 +438,11 @@ export function createPanelActivityStore(): PanelActivityStore {
         // 流式参数未成形前（args.command 还没解析出来）不展示，避免半截命令闪烁
         const command = asString(args.command);
         if (!command) continue;
-        const entry = cachedTerminal(id, command, result, err);
+        const entry = cachedTerminal(id, command, result, err, interrupted);
         terminal.push(entry);
         toolCallIds.push(id);
-        if (!done) running += 1;
+        if (done || !live) continue;
+        running += 1;
         continue;
       }
 
@@ -414,10 +456,12 @@ export function createPanelActivityStore(): PanelActivityStore {
           pair.newText,
           result,
           err,
+          interrupted,
         );
         files.push({ path: pair.path, entry });
         toolCallIds.push(id);
-        if (!done) running += 1;
+        if (done || !live) continue;
+        running += 1;
         continue;
       }
 
@@ -431,7 +475,7 @@ export function createPanelActivityStore(): PanelActivityStore {
         toolCallIds.push(id);
       }
     }
-    return { ref: message, terminal, files, citations, running, toolCallIds };
+    return { ref: message, live, terminal, files, citations, running, toolCallIds };
   }
 
   function groupsEqual(a: FileChangeGroup[], b: FileChangeGroup[]): boolean {
@@ -454,10 +498,13 @@ export function createPanelActivityStore(): PanelActivityStore {
     return true;
   }
 
-  function derive(messages: readonly ThreadMessage[]): PanelActivity {
-    // 引用未变（含非消息类 store 更新触发的 getSnapshot）⇒ 零工作直返
-    if (messages === lastMessages) return lastActivity;
+  function derive(messages: readonly ThreadMessage[], isRunning = true): PanelActivity {
+    // 引用与在途态均未变（含非消息类 store 更新触发的 getSnapshot）⇒ 零工作直返
+    if (messages === lastMessages && isRunning === lastIsRunning) return lastActivity;
     lastMessages = messages;
+    lastIsRunning = isRunning;
+    /** 末条消息引用：无结果工具调用只有挂在它上面才可能是在途（见 computeMessage） */
+    const lastRef = messages.length ? messages[messages.length - 1] : null;
 
     const terminal: TerminalEntry[] = [];
     const groupOrder: string[] = [];
@@ -468,9 +515,10 @@ export function createPanelActivityStore(): PanelActivityStore {
     let runningCount = 0;
 
     for (const message of messages) {
+      const live = isRunning && message === lastRef;
       let c = byMessage.get(message.id);
-      if (!c || c.ref !== message) {
-        c = computeMessage(message);
+      if (!c || c.ref !== message || c.live !== live) {
+        c = computeMessage(message, live);
         byMessage.set(message.id, c);
       }
       for (const t of c.terminal) terminal.push(t);
@@ -548,6 +596,7 @@ export function createPanelActivityStore(): PanelActivityStore {
       byToolCall.clear();
       citeByToolCall.clear();
       lastMessages = null;
+      lastIsRunning = undefined;
       lastActivity = EMPTY_ACTIVITY;
     },
   };
@@ -565,10 +614,10 @@ const defaultStore = createPanelActivityStore();
  */
 export function usePanelActivity(): PanelActivity {
   const aui = useAui();
-  const getSnapshot = useCallback(
-    () => defaultStore.derive(aui.thread.getState().messages),
-    [aui],
-  );
+  const getSnapshot = useCallback(() => {
+    const state = aui.thread.getState();
+    return defaultStore.derive(state.messages, state.isRunning === true);
+  }, [aui]);
   return useSyncExternalStore(
     aui.subscribe,
     getSnapshot,

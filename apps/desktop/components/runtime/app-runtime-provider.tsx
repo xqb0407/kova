@@ -9,7 +9,12 @@ import { initNotifyPipeline } from "@/lib/notify/notify";
 import { PiTransport } from "@/lib/pi/pi-transport";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
 import { hydrateRunningRegistrations } from "@/lib/pi/pi-running";
-import { readLastThread, recordLastThread } from "@/lib/pi/pi-last-thread";
+import {
+  readLastThread,
+  readNewThreadActionCount,
+  recordLastThread,
+  syncClearLastThread,
+} from "@/lib/pi/pi-last-thread";
 import { createPiThreadListAdapter, piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
 import { getWorkspace, setWorkspace } from "@/lib/workspace/workspace-store";
 import { ConnectScreen } from "@/components/remote/connect-screen";
@@ -79,8 +84,16 @@ function WorkspaceThreadSync() {
 
   useEffect(() => {
     const item = threadItems.find((t) => t.id === mainThreadId);
-    if (!item?.remoteId) return;
-    // 顺带记"最近打开的会话"：刷新启动回切的兜底（见 pi-last-thread.ts）
+    if (!item) return;
+    // 指针"写通"：pi-last-thread 恒等于主线程当前所在（草稿=清空）。启动决策
+    // 不受影响——ResumeRunningThread 在首次渲染就捕获了上次加载留下的指针，
+    // 渲染早于本 effect，这里的清空只影响下一次刷新。用户刷新前停在新对话时，
+    // 这里清掉指针，下次刷新就不再被拉回旧会话（2026-09-22 修复）。
+    // 用 syncClear 而非动作清空：首帧停在草稿是内部机制，不算用户意图。
+    if (!item.remoteId) {
+      syncClearLastThread();
+      return;
+    }
     recordLastThread(item.remoteId);
     const cwd = piSessionCwdMap.get(item.remoteId) ?? null;
     if (getWorkspace() !== cwd) setWorkspace(cwd);
@@ -95,6 +108,11 @@ function WorkspaceThreadSync() {
  * 2) 登记缺失（webview 存储被清等）→ 向 sidecar 运行态真相水合（同时重建
  * 登记，续流可 attach）并回其在跑会话；3) 无在跑轮次 → 回"最近打开的会话"，
  * 避免刷新后停在空白新草稿（2026-09-14"刷新后消息没渲染"观感修复）。
+ * 第 3 级用首帧捕获的"最近打开的会话"指针（渲染早于写通清空，读到的即刷新前
+ * 状态）：刷新前已切到新对话时指针已被入口动作/写通清掉 → 捕获值为空、不回切，
+ * 停在新草稿即符合预期（2026-09-22 点新对话后刷新回到旧会话的修复）；回切前再查
+ * "新对话"动作计数增量复查用户意图。每次决策 console.warn 一条 "[resume] tier=..."
+ * 进 web.log。
  *
  * 先 reload() 等列表就位再 switch：避免走 adapter.fetch 物化出无标题的临时行。
  * 仅启动时执行一次；会话已被删（switch 抛错）静默跳过，不阻塞启动。
@@ -102,6 +120,16 @@ function WorkspaceThreadSync() {
 function ResumeRunningThread() {
   const aui = useAui();
   const attemptedRef = useRef(false);
+  // 决策快照在**首次渲染**捕获：WorkspaceThreadSync 挂载即写通（首帧主线程必是
+  // 草稿 → 清空指针），渲染早于一切 effect，捕获到的才是上一次加载留下的值。
+  // effect 里现读会拿到本次清空，回切整体失效。newThreadActions 同帧快照：
+  // tier-3 回切前查它的增量（而非指针值——写通清空会让指针必然偏离捕获值，
+  // 无法区分机制清空与用户动作），启动窗口里用户真点了"新对话"才放弃回切。
+  const [loadSnapshot] = useState(() => ({
+    lastThread: readLastThread(),
+    newThreadActions: readNewThreadActionCount(),
+  }));
+  const lastThreadAtLoad = loadSnapshot.lastThread;
 
   useEffect(() => {
     if (attemptedRef.current) return;
@@ -116,19 +144,38 @@ function ResumeRunningThread() {
           .peekEntries()
           .filter((e): e is typeof e & { sessionId: string } => !!e.sessionId);
         // 优先回"确实还在跑"的会话（刷新前最后发起且在飞），其次最近的登记，
-        // 最后回"最近打开的会话"
-        const target =
+        // 最后回"最近打开的会话"（渲染时捕获值）
+        const runningTarget =
           [...withSid].reverse().find((e) => running.has(e.sessionId))?.sessionId ??
-          withSid.at(-1)?.sessionId ??
-          readLastThread();
+          null;
+        const inFlightTarget = withSid.at(-1)?.sessionId ?? null;
+        const target = runningTarget ?? inFlightTarget ?? lastThreadAtLoad;
+        // 每次加载一条回切决策留痕（warn 级别才进 web.log，见 frontend-logging）
+        console.warn(
+          `[resume] tier=${
+            runningTarget ? "running" : inFlightTarget ? "in-flight" : lastThreadAtLoad ? "last-thread" : "none"
+          } target=${target ?? "null"} inFlight=${withSid.length} running=${running.size} lastAtLoad=${lastThreadAtLoad ?? "null"} actions=${loadSnapshot.newThreadActions}`,
+        );
         if (!target) return;
+        // 回切前复查用户意图：tier-3 用的是加载时捕获值，若启动这几拍里用户又
+        // 点了新对话（动作清空会计数，写通清空不计数），放弃回切，尊重最新动作。
+        if (
+          !runningTarget &&
+          !inFlightTarget &&
+          readNewThreadActionCount() !== loadSnapshot.newThreadActions
+        ) {
+          console.warn(
+            `[resume] skip last-thread switch: new-thread action after load (attempts=${loadSnapshot.newThreadActions})`,
+          );
+          return;
+        }
         await aui.threads.reload();
         await aui.threads.switchToThread(target);
       } catch {
         // 会话已被删等：静默跳过，不阻塞启动
       }
     })();
-  }, [aui]);
+  }, [aui, loadSnapshot]);
 
   return null;
 }

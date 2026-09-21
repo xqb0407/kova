@@ -5,60 +5,54 @@ import type { UIMessage } from "ai";
 import { getPiChannel } from "@/lib/pi/pi-channel";
 
 /**
- * prompt 排队 store v2（快照镜像，设计见 plans/queue-refactor-plan.md）：
- * - 事实源在 sidecar QueueEngine（按线程隔离 FIFO + 暂停 + 失败熔断），每次变更
- *   广播 `data-queue-state` 全量快照；本 store 是「最后快照胜出」的镜像，
- *   没有增量对账。线程挂载/刷新恢复时经 get_queue_state 拉取（sidecar 内存
- *   为空会从 session 回放采纳并返回暂停态队列）。
- * - reqId → 消息注册表：sendMessages 时登记乐观 user 消息；刷新后注册表清空，
- *   回填退化为按快照文本重建气泡（`queued-<id>`，附件不保留——已知限制）。
+ * prompt 排队 store v3（快照镜像 + 单路径消息同步）：
  *
- * 消息数组同步规则（三条，幂等，由快照状态驱动）：
- * - R1 入快照（queued）：消息只在排队条（Chat 数组摘除）。必须摘：AI SDK 对
- *   「非末条消息的流式写入」会 pushMessage 追加重复项（外部 store 对重复 id
- *   保留最后一次出现），上一轮回复会被顶到排队消息之后；摘除后上一轮保持
- *   末条、写入走原地替换，顺序稳定。
- * - R2 出快照（派发出队）：消息回填到数组末尾。派发时序由 sidecar 保证：宿主
- *   轮流完整收尾后链节才取队首，此刻回填不再有并发写入。
- * - R3 steered（并入当前轮）：并入瞬间消息保持摘除，回填挂在宿主轮流收尾
- *   （steered 流 finish 挂起语义，见 protocol.ts steerIntoActiveRun）——期间
- *   宿主轮仍在写入，提前回填会触发重复项增长与乱序。
- * 同步必须「无变化时不赋值」——Chat 的 messages setter 即使内容相同也会通知
- * 订阅者，无条件赋值会形成渲染↔同步死循环。
+ * 事实源在 sidecar QueueEngine（按线程隔离 FIFO，autoDrain 恒开），每次变更广播
+ * `data-queue-state` 全量快照；本 store 是「最后快照胜出」的镜像。线程挂载/刷新
+ * 恢复时经 get_queue_state 拉取（sidecar 内存为空则从 session 回放采纳）。
+ *
+ * 登记表：reqId → 单字段状态机（phase），替代 v2 的四布尔旗标：
+ *   pending  sendMessages 已登记、乐观摘除已做，等 sidecar 定论
+ *   queued   快照确认排队（消息保持在数组外）
+ *   steered  已并入当前轮（气泡等宿主轮流收尾再回填）
+ * 转移只有五条，全部幂等：
+ *   pending → queued            快照确认（或登记表无记录时按快照合成，刷新恢复）
+ *   pending → （销毁+回填）      start chunk：sidecar 空闲竞态直接开跑，没排队
+ *   pending → （销毁+回填）      流终结：sidecar 拒绝（如队列已满）
+ *   queued  → （销毁+回填）      出快照 = 派发出队，立即回填（此刻无并发写入）
+ *   steered → （销毁+回填）      宿主轮流收尾（steered 流 finish 补发时）
+ * 「回填」唯一出口是 syncListener(kind:"reveal")，追加乐观消息到数组末尾；
+ * 用户取消的条目在调用前已销登记，出快照不会误回填。
+ *
+ * 消息数组同步规则（两条，均幂等且「无变化不赋值」——Chat 的 messages setter
+ * 即使内容相同也会通知订阅者，无条件赋值会形成渲染↔同步死循环）：
+ * - remove  入快照（排队确认）：消息从数组摘除。必须摘：AI SDK 对「非末条消息
+ *   的流式写入」会 pushMessage 追加重复项（外部 store 对重复 id 保留最后一次
+ *   出现）；摘除后上一轮保持末条、写入走原地替换，顺序稳定。
+ * - reveal  出快照：消息回填数组末尾。回填时机都在安全窗口（无流式写入）：
+ *   派发出队=链节取队首前宿主轮已完整收尾；steered=宿主轮流收尾后。
  */
 
-export type QueueItemState = "queued";
-
-/** 快照条目（sidecar 广播形态，无前端消息 id） */
 export type QueueSnapshotItem = {
   id: number;
   reqId: string;
   text: string;
   createdAt: string;
-  state: QueueItemState;
 };
 
 export type QueueSnapshot = {
   version: 2;
   threadId: string;
   items: QueueSnapshotItem[];
-  paused: boolean;
   nextId: number;
 };
 
-/** 注册表条目：reqId → 乐观/重建消息（摘除与回填都用它寻址） */
+/** 登记表条目：phase 即上文状态机 */
 export type RegisteredMessage = {
   threadId: string;
   messageId: string;
-  message?: UIMessage;
-  /** 已进入快照（消息已从数组摘除） */
-  queued: boolean;
-  /** 用户主动删除：出快照时不回填 */
-  cancelled: boolean;
-  /** 已并入当前轮：出快照后保持摘除，宿主轮流收尾时回填 */
-  steered: boolean;
-  /** 曾被乐观摘除（快照确认前就摘出数组）：入队判定落空时由 start/收尾回填 */
-  preRemoved: boolean;
+  message: UIMessage;
+  phase: "pending" | "queued" | "steered";
 };
 
 const snapshots = new Map<string, QueueSnapshot>();
@@ -81,15 +75,7 @@ function synthesizedMessage(item: QueueSnapshotItem): UIMessage {
 
 /** transport 登记：sendMessages 时调用（regenerate 不登记，见 pi-transport） */
 export function registerQueuedMessage(reqId: string, threadId: string, message: UIMessage): void {
-  registry.set(reqId, {
-    threadId,
-    messageId: message.id,
-    message,
-    queued: false,
-    cancelled: false,
-    steered: false,
-    preRemoved: false,
-  });
+  registry.set(reqId, { threadId, messageId: message.id, message, phase: "pending" });
 }
 
 /** 消费 data-queue-state 快照 chunk（pi-transport 调用） */
@@ -99,8 +85,8 @@ export function applyQueueStateChunk(threadId: string, data: unknown): void {
   applySnapshot({ ...snapshot, threadId });
 }
 
-/** 线程挂载/刷新恢复：向 sidecar 请求快照并入镜像（sidecar 内存为空时会从
- *  session 回放采纳并返回暂停态队列） */
+/** 线程挂载/刷新恢复：向 sidecar 请求快照并入镜像（sidecar 内存为空会从
+ *  session 回放采纳，不再自动暂停） */
 export async function refreshQueueSnapshot(threadId: string, sessionId?: string): Promise<void> {
   try {
     const res = await getPiChannel().request({
@@ -121,54 +107,43 @@ function applySnapshot(snapshot: QueueSnapshot): void {
   const seen = new Set<string>();
   for (const item of snapshot.items) seen.add(item.reqId);
 
-  // R1 入快照：新出现的条目 → 消息摘除信号（未登记的按快照文本重建注册，
-  // 刷新后回填有据可依）
-  const onQueued: RegisteredMessage[] = [];
+  // 入快照：排队确认。已有登记 pending→queued；无登记（刷新恢复/重启回放）
+  // 按快照文本合成登记。两者都发一次 remove（幂等：消息已不在数组时是 no-op）
+  const onRemove: RegisteredMessage[] = [];
   for (const item of snapshot.items) {
     const existing = registry.get(item.reqId);
     if (existing) {
-      if (!existing.queued) {
-        existing.queued = true;
-        onQueued.push(existing);
+      if (existing.phase === "pending") {
+        existing.phase = "queued";
+        onRemove.push(existing);
       }
     } else {
       const reg: RegisteredMessage = {
         threadId: snapshot.threadId,
         messageId: `queued-${item.id}`,
         message: synthesizedMessage(item),
-        queued: true,
-        cancelled: false,
-        steered: false,
-        preRemoved: false,
+        phase: "queued",
       };
       registry.set(item.reqId, reg);
-      onQueued.push(reg);
+      onRemove.push(reg);
     }
   }
 
-  // R2/R3 出快照：消失的条目按标记分类——删除（cancelled）静默清理；
-  // 派发出队（queued）立即回填；steered 保持摘除，等宿主轮流收尾的
-  // unregisterQueuedMessage 回填
+  // 出快照：仅「queued」意味着派发出队 → 立即回填（安全窗口，宿主轮已收尾）。
+  // steered 保持在表（宿主轮流收尾回填）；pending 与本快照无关（sidecar 可能
+  // 直接开跑了，等 start chunk / 流终结定夺）；cancelled 在取消时已销登记
   const onReveal: RegisteredMessage[] = [];
   for (const [reqId, reg] of [...registry]) {
     if (reg.threadId !== snapshot.threadId || seen.has(reqId)) continue;
-    if (reg.cancelled) {
-      registry.delete(reqId);
-    } else if (reg.steered) {
-      // 保持登记：宿主轮流收尾时 unregisterQueuedMessage 触发回填
-    } else if (!reg.queued) {
-      // 乐观摘除尚未被快照确认（sidecar 还没把它入队，可能压根不排队）：
-      // 本次快照与它无关，不动——回填由 start chunk / error 收尾负责
-    } else {
-      registry.delete(reqId);
-      onReveal.push(reg);
-      markPendingTurn(snapshot.threadId, reqId);
-    }
+    if (reg.phase !== "queued") continue;
+    registry.delete(reqId);
+    onReveal.push(reg);
+    markPendingTurn(snapshot.threadId, reqId);
   }
 
   snapshots.set(snapshot.threadId, snapshot);
   notify();
-  for (const reg of onQueued) syncListener?.(reg, "remove");
+  for (const reg of onRemove) syncListener?.(reg, "remove");
   for (const reg of onReveal) syncListener?.(reg, "reveal");
 }
 
@@ -177,9 +152,7 @@ function applySnapshot(snapshot: QueueSnapshot): void {
 type SyncKind = "remove" | "reveal";
 let syncListener: ((reg: RegisteredMessage, kind: SyncKind) => void) | null = null;
 
-/** 注册/注销消息同步监听（PromptQueueBar 挂载时注册，随线程卸载注销）：
- *  - remove：条目入快照（queued）→ 消息从数组摘除
- *  - reveal：条目出快照（派发出队 / steered 宿主轮收尾）→ 消息回填末尾 */
+/** 注册/注销消息同步监听（PromptQueueBar 挂载时注册，随线程卸载注销） */
 export function setQueueSyncListener(
   fn: ((reg: RegisteredMessage, kind: SyncKind) => void) | null,
 ): void {
@@ -187,20 +160,18 @@ export function setQueueSyncListener(
 }
 
 /** 流终结（finish/error/abort/客户端停止）：该请求生命周期的收尾。
- *  steered 项在此刻回填（宿主轮流已收尾，不再有并发写入）；并清除该线程的
- *  派发空窗标记。 */
+ *  - steered：宿主轮流已收尾，此刻回填（排队确认时已摘除）
+ *  - pending：sidecar 从未入队（直接拒绝，如队列已满）且已被乐观摘除 → 回填
+ *  - 其余（派发项已回填销登记等）：no-op。并清除该线程的派发空窗标记。 */
 export function unregisterQueuedMessage(requestId: string, threadId: string): void {
-  const reg = registry.get(requestId);
   if (pendingTurnByThread.get(threadId) === requestId) {
     pendingTurnByThread.delete(threadId);
     notify();
   }
+  const reg = registry.get(requestId);
   if (!reg) return;
-  registry.delete(requestId);
-  // steered：并入的消息此刻回填（排队确认时已摘除）；被乐观摘除却始终没
-  // 入进快照的（sidecar 直接拒绝，如队列已满）同样回填——它已被摘出数组
-  // 且不会再有派发/start 信号。其余路径消息本就不在数组里，回填是 no-op。
-  if (reg.steered || (reg.preRemoved && !reg.queued && !reg.cancelled)) {
+  if (reg.phase === "steered" || reg.phase === "pending") {
+    registry.delete(requestId);
     notify();
     syncListener?.(reg, "reveal");
   }
@@ -209,23 +180,23 @@ export function unregisterQueuedMessage(requestId: string, threadId: string): vo
 /** 乐观摘除（pi-transport sendMessages 调用）：按「忙线程镜像」判定本请求
  *  必然入队时，不等 data-queue-state 快照往返（sidecar 回程 + ~20ms 合帧，
  *  期间乐观消息已被绘制 = 用户看到的"闪一下"）就同步摘除刚入列的消息。
- *  信号与 R1 同款（渲染侧幂等，快照到达再摘一次是 no-op）；摘早了（sidecar
- *  实际直接开跑）由 notifyQueueStreamStart 回填，被拒绝由收尾回填。 */
+ *  与 remove 信号同款幂等；摘早了（罕见竞态下 sidecar 直接开跑）由 start
+ *  chunk 的 notifyQueueStreamStart 回填，被拒绝由流终结回填。 */
 export function optimisticallyRemoveQueuedMessage(requestId: string): void {
   const reg = registry.get(requestId);
-  if (!reg || reg.queued || reg.cancelled) return;
-  reg.preRemoved = true;
+  if (!reg || reg.phase !== "pending") return;
   syncListener?.(reg, "remove");
 }
 
-/** 流 start chunk（pi-transport 调用）：该请求的 turn 真正开跑。登记若还
- *  停在「未入过快照」状态（乐观摘除判错——sidecar 空闲竞态下直接放行），
- *  此刻立即回填并销登记；真排队项派发出快照时已回填销登记，这里是 no-op。 */
+/** 流 start chunk（pi-transport 调用）：该请求的 turn 真正开跑。登记若还停在
+ *  pending（乐观摘除判错——sidecar 空闲竞态下直接放行，从未入过快照），此刻
+ *  立即回填并销登记；真排队项此刻早已回填销登记，这里是 no-op。 */
 export function notifyQueueStreamStart(requestId: string): void {
   const reg = registry.get(requestId);
-  if (!reg || reg.queued || reg.cancelled) return;
+  if (!reg || reg.phase !== "pending") return;
   registry.delete(requestId);
-  if (reg.preRemoved) syncListener?.(reg, "reveal");
+  notify();
+  syncListener?.(reg, "reveal");
 }
 
 /* ------------------------------ 派发空窗标记 ------------------------------ */
@@ -241,8 +212,8 @@ function markPendingTurn(threadId: string, requestId: string): void {
   pendingTurnByThread.set(threadId, requestId);
 }
 
-/** 线程是否处于「排队项已派发、回复未落列表」的空窗（纯函数，测试用） */
-export function hasPendingTurn(threadId: string): boolean {
+/** 该线程是否处于派发空窗（纯函数，供测试/非 React 场景读取） */
+export function getThreadPendingTurn(threadId: string): boolean {
   return pendingTurnByThread.has(threadId);
 }
 
@@ -254,7 +225,7 @@ export function useThreadPendingTurn(threadId: string | undefined): boolean {
       if (!threadId) return false;
       const cached = pendingTurnCache.get(threadId);
       if (cached && cached.version === version) return cached.value;
-      const value = hasPendingTurn(threadId);
+      const value = pendingTurnByThread.has(threadId);
       pendingTurnCache.set(threadId, { version, value });
       return value;
     },
@@ -275,17 +246,9 @@ const EMPTY_ITEMS: QueueSnapshotItem[] = [];
 
 const snapshotCache = new Map<string, { version: number; value: QueueSnapshot }>();
 
-/** 线程当前队列快照（纯函数，测试用；无快照返回空壳） */
+/** 线程当前队列快照（纯函数；无快照返回空壳） */
 export function getQueueSnapshot(threadId: string): QueueSnapshot {
   return snapshots.get(threadId) ?? emptySnapshot(threadId);
-}
-
-/** 清空镜像/注册表/空窗标记（测试隔离用） */
-export function resetQueueForTests(): void {
-  snapshots.clear();
-  registry.clear();
-  pendingTurnByThread.clear();
-  notify();
 }
 
 /** 订阅线程队列快照（无快照返回空壳，调用方免判空） */
@@ -296,8 +259,7 @@ export function useQueueSnapshot(threadId: string | undefined): QueueSnapshot {
       if (!threadId) return emptySnapshot("");
       const cached = snapshotCache.get(threadId);
       if (cached && cached.version === version) return cached.value;
-      const value =
-        snapshots.get(threadId) ?? emptySnapshot(threadId);
+      const value = snapshots.get(threadId) ?? emptySnapshot(threadId);
       snapshotCache.set(threadId, { version, value });
       return value;
     },
@@ -306,83 +268,77 @@ export function useQueueSnapshot(threadId: string | undefined): QueueSnapshot {
 }
 
 function emptySnapshot(threadId: string): QueueSnapshot {
-  return { version: 2, threadId, items: EMPTY_ITEMS, paused: false, nextId: 1 };
+  return { version: 2, threadId, items: EMPTY_ITEMS, nextId: 1 };
 }
 
-const EMPTY_IDS = new Set<string>();
-const queuedIdsCache = new Map<string, { version: number; value: Set<string> }>();
+const EMPTY_STEERED: SteeredQueueItem[] = [];
 
-/** 确认排队中（含并入挂起）的用户消息 id 集合（消息列表渲染抑制用）。派发
- *  出队后条目离开快照、消息回填，自动移出集合；steered 挂起项保持抑制。 */
-export function getQueuedMessageIds(): Set<string> {
-  const cached = queuedIdsCache.get("*");
-  if (cached && cached.version === version) return cached.value;
-  const ids = new Set<string>();
-  for (const snapshot of snapshots.values()) {
-    for (const item of snapshot.items) {
-      const reg = registry.get(item.reqId);
-      ids.add(reg?.messageId ?? `queued-${item.id}`);
+export type SteeredQueueItem = { reqId: string; text: string };
+
+const steeredCache = new Map<string, { version: number; value: SteeredQueueItem[] }>();
+
+/** 已并入当前轮、宿主轮流尚未收尾的条目（纯函数，供 hook 与测试共用） */
+export function getSteeredEntries(threadId: string): SteeredQueueItem[] {
+  const value: SteeredQueueItem[] = [];
+  for (const [reqId, reg] of registry) {
+    if (reg.threadId === threadId && reg.phase === "steered") {
+      value.push({
+        reqId,
+        text: reg.message.parts
+          .filter((p): p is Extract<UIMessage["parts"][number], { type: "text" }> => p.type === "text")
+          .map((p) => p.text)
+          .join("\n"),
+      });
     }
   }
-  for (const reg of registry.values()) {
-    if (reg.steered) ids.add(reg.messageId);
-  }
-  queuedIdsCache.set("*", { version, value: ids });
-  return ids;
+  return value;
 }
 
-/** 订阅「确认排队中」的用户消息 id 集合（消息列表渲染抑制用，ChatGPT 式：
- *  排队中的消息不进消息列表，只出现在排队条） */
-export function useQueuedMessageIds(): Set<string> {
-  return useSyncExternalStore(subscribe, getQueuedMessageIds, () => EMPTY_IDS);
+/** 订阅「已并入当前回复」条目（排队条徽标区数据源，收尾后自动消失） */
+export function useSteeredQueueItems(threadId: string | undefined): SteeredQueueItem[] {
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!threadId) return EMPTY_STEERED;
+      const cached = steeredCache.get(threadId);
+      if (cached && cached.version === version) return cached.value;
+      const value = getSteeredEntries(threadId);
+      steeredCache.set(threadId, { version, value });
+      return value;
+    },
+    () => EMPTY_STEERED,
+  );
 }
 
 /* ------------------------------- 队列操作 ------------------------------- */
 
-export async function pauseQueue(threadId: string, sessionId?: string): Promise<void> {
-  await getPiChannel().request({
-    type: "queue_pause",
-    threadId,
-    ...(sessionId ? { sessionId } : {}),
-  });
-}
-
-/** 恢复派发。线程空闲且队列非空时，sidecar 会弹出队首交由前端重发（恢复项
- *  没有流与链节点，派发只能由持有流的前端驱动）——调用方拿到非 null 返回值
- *  后按文本重发（走正常发送路径，附件不保留） */
-export async function resumeQueue(
+/** 弹出队首交由前端重发（接力泵「踢一脚」）。sidecar 仅在线程空闲且无链节时
+ *  弹出，否则返回 null（链节仍在，泵转而在跑轮探测重挂）。调用方重发前先
+ *  dropQueuedEntry 销登记，防派发快照回填旧气泡造成双份 */
+export async function popQueueHead(
   threadId: string,
   sessionId?: string,
-): Promise<{ id: number; text: string; sessionId?: string } | null> {
+): Promise<{ reqId: string; text: string } | null> {
   const res = await getPiChannel().request({
-    type: "queue_resume",
+    type: "queue_pop",
     threadId,
     ...(sessionId ? { sessionId } : {}),
   });
-  return (
-    (res as { resumed?: { id: number; text: string; sessionId?: string } | null })
-      .resumed ?? null
-  );
+  const popped = (res as { popped?: { reqId: string; text: string } | null }).popped ?? null;
+  if (popped) registry.delete(popped.reqId);
+  return popped;
 }
 
-/** 修改排队项文本（仅 queued 状态可改） */
-export async function updateQueueItemText(reqId: string, text: string): Promise<void> {
-  await getPiChannel().request({ type: "queue_update", requestId: reqId, text });
-}
-
-/** queue_resume 弹出队首交还前端重发后的本地销登记：后续快照里该项已不在，
- *  销登记使其走「注册表外」路径——不回填旧气泡、不标记派发空窗，重发路径
- *  自建全新气泡（不销登记会旧新双气泡，见刷新接力泵） */
+/** 本地销登记（接力泵弹出重发路径用）：重发走正常发送路径自建全新气泡 */
 export function dropQueuedEntry(reqId: string): void {
   registry.delete(reqId);
 }
 
-/** 删除排队项（sidecar 侧流立即 abort + finish 收尾；出快照后不回填） */
+/** 删除排队项（sidecar 侧流立即 abort + finish 收尾）。先销登记再发请求：
+ *  随后的快照里该项消失时不得触发回填 */
 export async function cancelQueueItem(reqId: string): Promise<void> {
-  const reg = registry.get(reqId);
-  if (reg) reg.cancelled = true;
-  await getPiChannel().request({ type: "queue_cancel", requestId: reqId });
   registry.delete(reqId);
+  await getPiChannel().request({ type: "queue_cancel", requestId: reqId });
 }
 
 /** 立即发送：中止当前活跃 turn，该项提到队首马上执行 */
@@ -390,9 +346,18 @@ export async function promoteQueueItem(reqId: string): Promise<void> {
   await getPiChannel().request({ type: "queue_promote", requestId: reqId });
 }
 
-/** 并入当前轮：注入活跃轮（不中止不排队）；消息随宿主轮流收尾回填 */
+/** 并入当前轮：注入活跃轮（不中止不排队）。先置 steered 再发请求——随后的
+ *  出快照不得派发回填，气泡等宿主轮流收尾 */
 export async function steerQueueItem(reqId: string): Promise<void> {
   const reg = registry.get(reqId);
-  if (reg) reg.steered = true;
+  if (reg) reg.phase = "steered";
   await getPiChannel().request({ type: "queue_steer", requestId: reqId });
+}
+
+/** 清空镜像/登记表/空窗标记（测试隔离用） */
+export function resetQueueForTests(): void {
+  snapshots.clear();
+  registry.clear();
+  pendingTurnByThread.clear();
+  notify();
 }

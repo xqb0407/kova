@@ -27,7 +27,7 @@ import { BranchPicker } from "./branch-picker";
 import { CheckpointTail } from "./checkpoint-card";
 import { ThreadPreviewRail } from "./thread-preview-rail";
 import { prewarmShiki } from "@/lib/markdown/prewarm-shiki";
-import { useQueuedMessageIds, useThreadPendingTurn } from "@/lib/pi/pi-queue";
+import { useThreadPendingTurn } from "@/lib/pi/pi-queue";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -89,11 +89,8 @@ const ThreadWorkingIndicator: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const lastRole = useAuiState((s) => s.thread.messages.at(-1)?.role);
-  const queuedMessageIds = useQueuedMessageIds();
   const pendingTurn = useThreadPendingTurn(threadId);
-  const waiting =
-    pendingTurn || (isRunning && queuedMessageIds.size === 0);
-  if (lastRole !== "user" || !waiting) {
+  if (lastRole !== "user" || !(pendingTurn || isRunning)) {
     return null;
   }
   return (
@@ -111,9 +108,6 @@ const ThreadWorkingIndicator: FC = () => {
 
 export const Thread: FC = () => {
   const isEmpty = useAuiState(isNewChatView);
-  // 确认排队中的用户消息 id 集合：这些消息不在消息列表渲染（只出现在 composer
-  // 上方排队条），开跑（data-queue active）后条目移出集合、消息自动出现
-  const queuedMessageIds = useQueuedMessageIds();
   // 空闲时预建热点语言的 Shiki 缓存，消掉流式中首个代码块的高亮停顿
   useEffect(() => {
     prewarmShiki();
@@ -161,10 +155,6 @@ export const Thread: FC = () => {
         >
           <ThreadPrimitive.Messages>
             {({ message }) => {
-              // 排队中的用户消息：不渲染（排队条负责展示），开跑后自动出现
-              if (message.role === "user" && queuedMessageIds.has(String(message.id))) {
-                return null;
-              }
               const inner =
                 message.composer.isEditing ? (
                   <EditComposer />
