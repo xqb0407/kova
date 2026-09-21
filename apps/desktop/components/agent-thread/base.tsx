@@ -571,7 +571,7 @@ export const Base: FC = () => {
           <main
             data-tauri-drag-region={isTauri() ? "true" : undefined}
             className={cn(
-              "bg-muted/40 relative flex-1 overflow-hidden p-2",
+              "bg-muted/40 relative flex-1 overflow-hidden p-2 pl-0",
               !compact && panelGone && "pr-0",
             )}
           >

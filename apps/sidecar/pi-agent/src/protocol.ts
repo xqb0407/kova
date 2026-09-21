@@ -855,8 +855,11 @@ export async function dispatchPrompt(
   const node = new Promise<void>((r) => (release = r));
   promptChains.set(threadId, node);
   await tail;
-  // 队列暂停：链节在队首等待恢复（resume 唤醒全部等待节点，串行链保证依次取队首）
-  await waitQueueUnpaused(threadId);
+  // 队列暂停：链节在队首等待恢复（resume 唤醒全部等待节点，串行链保证依次取队首）。
+  // 暂停闸只约束排队项（wasQueued）——空闲线程的全新发送不受残留 paused 态影响：
+  // 队列清空后 paused 残留曾把非排队新消息永久卡在此处（前端 0 条排队时无恢复
+  // 按钮可点，表现为一直「连接中」）
+  if (wasQueued) await waitQueueUnpaused(threadId);
   markTurnStart(threadId);
   try {
     let turnReqId = reqId;

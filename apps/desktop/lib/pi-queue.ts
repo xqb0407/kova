@@ -118,7 +118,6 @@ export async function refreshQueueSnapshot(threadId: string, sessionId?: string)
 }
 
 function applySnapshot(snapshot: QueueSnapshot): void {
-  const previous = snapshots.get(snapshot.threadId);
   const seen = new Set<string>();
   for (const item of snapshot.items) seen.add(item.reqId);
 
@@ -369,6 +368,13 @@ export async function resumeQueue(
 /** 修改排队项文本（仅 queued 状态可改） */
 export async function updateQueueItemText(reqId: string, text: string): Promise<void> {
   await getPiChannel().request({ type: "queue_update", requestId: reqId, text });
+}
+
+/** queue_resume 弹出队首交还前端重发后的本地销登记：后续快照里该项已不在，
+ *  销登记使其走「注册表外」路径——不回填旧气泡、不标记派发空窗，重发路径
+ *  自建全新气泡（不销登记会旧新双气泡，见刷新接力泵） */
+export function dropQueuedEntry(reqId: string): void {
+  registry.delete(reqId);
 }
 
 /** 删除排队项（sidecar 侧流立即 abort + finish 收尾；出快照后不回填） */

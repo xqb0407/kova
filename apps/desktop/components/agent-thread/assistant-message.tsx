@@ -363,7 +363,7 @@ const AssistantActionBar: FC = () => {
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
-      <MessageTiming />
+      {/* <MessageTiming /> */}
     </ActionBarPrimitive.Root>
   );
 };
