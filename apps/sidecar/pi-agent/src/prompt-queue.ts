@@ -308,18 +308,20 @@ export function popFrontForDispatch(threadId: string): QueueItem | null {
   return item ?? null;
 }
 
-/** 链节开跑：取该线程当前队首项（promote 重排后顺序依然正确）并广播快照；
- *  队列为空（本项已被取消或被其他链节消费）返回 null，链节静默让位 */
+/** 链节开跑：取该线程当前队首项（promote 重排后顺序依然正确）。不在此处广播：
+ *  派发出队的快照必须等调用方建立新请求的路由（setActiveReqId）后再发
+ *  （broadcastQueueState），否则落在上一轮流收尾与下一轮开跑的空窗里被
+ *  sendEventChunk 静默丢弃——排队消息的回填信号就丢在这里。队列为空
+ *  （本项已被取消或被其他链节消费）返回 null，链节静默让位 */
 export function takeFrontEntry(threadId: string): QueueItem | null {
   const q = engines.get(threadId);
   const item = q?.items.shift() ?? null;
-  if (item) {
-    // 先广播（含空快照）再清引擎：空队列快照必须落盘/广播，否则上一份
-    // 含已派发项的旧快照会在回放时复活
-    emitQueueState(threadId);
-    dropEngineIfEmpty(threadId);
-  }
   return item;
+}
+
+/** 快照广播（data-queue-state）：变更后调用；线程无活跃请求时静默丢弃 */
+export function broadcastQueueState(threadId: string): void {
+  emitQueueState(threadId);
 }
 
 /** 修改排队项文本（仅 queued 状态可改） */
