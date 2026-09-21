@@ -34,6 +34,7 @@ import {
 import { cn } from "@/lib/utils";
 import { isRemoteMode } from "@/lib/remote";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { clearLastThread } from "@/lib/pi/pi-last-thread";
 import {
   formatShortcutParts,
   matchesShortcut,
@@ -175,6 +176,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       if (matchesShortcut(event, newThread)) {
         event.preventDefault();
         setActiveMenu("");
+        // 动作驱动清"最近打开的会话"指针：刷新后不回旧会话（2026-09-22 修复）
+        clearLastThread();
         void aui.threads.switchToNewThread();
       }
     };
@@ -183,9 +186,12 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   }, [aui, newThread]);
 
   const handleMenuClick = (item: (typeof menuItems)[number]) => {
-    // 「新对话」是常驻入口：点击即取消其他菜单项的选中态
+    // 「新对话」是常驻入口：点击即取消其他菜单项的选中态。本 onClick 与外层
+    // ThreadListPrimitive.New 的框架切换是合成关系、两者都会跑；这里动作驱动
+    // 清"最近打开的会话"指针，刷新后不再回旧会话（2026-09-22 修复）
     if (item.isNew) {
       setActiveMenu("");
+      clearLastThread();
       return;
     }
     // 搜索入口在顶栏折叠按钮左侧（走命令面板），菜单项只保留视图切换
@@ -779,6 +785,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   onSelect={() => {
                     setSearchOpen(false);
                     setActiveMenu("");
+                    // 同左栏菜单入口：动作驱动清指针（外层 New 负责开新会话）
+                    clearLastThread();
                   }}
                 >
                   <PlusIcon className="size-4" />

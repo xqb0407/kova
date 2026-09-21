@@ -26,7 +26,6 @@ import {
   PinIcon,
   PlusIcon,
   SearchIcon,
-  SquareIcon,
   TrashIcon,
   ZapIcon,
 } from "lucide-react";
@@ -38,8 +37,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { forkPiSession, piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
-import { resyncPiRunning, usePiSessionRunning } from "@/lib/pi/pi-running";
-import { getPiChannel } from "@/lib/pi/pi-channel";
+import { clearLastThread } from "@/lib/pi/pi-last-thread";
+import { usePiSessionRunning } from "@/lib/pi/pi-running";
 import {
   togglePinSession,
   useIsPinned,
@@ -875,7 +874,7 @@ export const ProjectListItems: FC<{
 export const ThreadListNew = forwardRef<
   HTMLButtonElement,
   ComponentPropsWithoutRef<typeof Button> & { labelClassName?: string }
->(({ className, labelClassName, children, ...props }, ref) => {
+>(({ className, labelClassName, children, onClick, ...props }, ref) => {
   return (
     <ThreadListPrimitive.New asChild>
       <Button
@@ -886,6 +885,12 @@ export const ThreadListNew = forwardRef<
           "hover:bg-selected data-active:bg-selected h-8 justify-start gap-2 rounded-md px-2.5 text-sm font-normal",
           className,
         )}
+        onClick={(e) => {
+          // 动作驱动清"最近打开的会话"指针（与外层 New 的框架切换合成执行），
+          // 刷新后不再回旧会话（2026-09-22 修复）
+          clearLastThread();
+          onClick?.(e);
+        }}
         {...props}
       >
         {children ?? (
@@ -1128,31 +1133,9 @@ export const ThreadListItem: FC = () => {
           图标落点 [10,24] 与常驻图钉完全一致）。不用 Button 组件——默认变体的
           bg-primary/h-8/px-3 与 size-6 冲突导致盒子尺寸漂移、图标错位，且其
           active:translate-y-px 会让点击时图标下移。运行中 hover 同样出现并盖过
-          spinner；图标恒定不随状态切换（点击只切换置顶，状态由常驻图钉表达） */}
-      {/* 运行中 hover 显示停止按钮（占置顶按钮同槽、盖过 spinner）：直发
-          abort(sessionId)——sidecar 按 sessionId 反查驻留 run（覆盖刷新改绑
-          与定时任务轮次），轮次收尾经 turn_changed 清掉列表指示。输入框的
-          Stop 监听是一次性的、且未打开的会话根本没有停止入口，这里是对
-          运行中任务（含卡死轮次）反复中止的唯一通道；abort 后补一次快照
-          对齐，纠正丢失 end 事件的幽灵「运行中」 */}
-      {remoteId && showRunning ? (
-        <button
-          data-slot="aui_thread-list-item-stop"
-          title="停止"
-          aria-label="停止"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            getPiChannel()
-              .abort(remoteId)
-              .catch(() => {})
-              .finally(() => setTimeout(resyncPiRunning, 800));
-          }}
-          className="text-destructive hover:bg-destructive/10 absolute start-[5px] top-1/2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-has-focus-visible:opacity-100"
-        >
-          <SquareIcon className="size-3 fill-current" />
-        </button>
-      ) : remoteId ? (
+          spinner；图标恒定不随状态切换（点击只切换置顶，状态由常驻图钉表达）。
+          停止入口只在输入框（侧边栏 stop 按钮已按需求移除） */}
+      {remoteId ? (
         <button
           data-slot="aui_thread-list-item-pin"
           title={pinned ? "取消置顶" : "置顶"}

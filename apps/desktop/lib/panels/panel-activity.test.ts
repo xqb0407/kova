@@ -52,7 +52,10 @@ import { parseWebSearchResults } from "@/lib/pi/web-search";
 
 const FAILED_RE = /\[exit code: \d+\]|\[timeout\]/;
 
-function naiveDerive(messages: readonly ThreadMessage[]): PanelActivity {
+function naiveDerive(
+  messages: readonly ThreadMessage[],
+  isRunning = true,
+): PanelActivity {
   const terminal: PanelActivity["terminal"] = [];
   const order: string[] = [];
   const groups = new Map<string, PanelActivity["files"][number]["entries"]>();
@@ -60,8 +63,12 @@ function naiveDerive(messages: readonly ThreadMessage[]): PanelActivity {
   const seenCitation = new Set<string>();
   let runningCount = 0;
 
+  const last = messages.length ? messages[messages.length - 1] : null;
+
   for (const m of messages) {
     if (m.role !== "assistant") continue;
+    // live = 末条消息且线程运行中：无结果工具调用只在这里才算在途
+    const live = isRunning && m === last;
     for (const part of m.content as Part[]) {
       if (part.type !== "tool-call") continue;
       const args = (part.args ?? {}) as Record<string, unknown>;
@@ -73,8 +80,9 @@ function naiveDerive(messages: readonly ThreadMessage[]): PanelActivity {
             ? raw
             : JSON.stringify(raw, null, 2);
       const err = part.isError === true;
-      const running = result === null;
-      const failed = err || (result !== null && FAILED_RE.test(result));
+      const running = result === null && live;
+      const interrupted = result === null && !live;
+      const failed = err || interrupted || (result !== null && FAILED_RE.test(result));
 
       if (part.toolName === "bash") {
         const command = args.command;
@@ -251,8 +259,62 @@ describe("createPanelActivityStore：与朴素全量扫描等价", () => {
       "https://en.wikipedia.org/wiki/Bun_(software)",
     ]);
     expect(a.citations[0].query).toBe("bun test");
-    // 在途 t17 不计入 runningCount（查询类不进在途角标）；2 = t3(edit 无 result) + t6(bash)
-    expect(a.runningCount).toBe(2);
+    // 在途 t17 不计入 runningCount（查询类不进在途角标）；
+    // t3(edit 无 result)/t6(bash 无 result) 挂在非末条消息 a1 上 ⇒ 中断态，不计
+    expect(a.runningCount).toBe(0);
+  });
+});
+
+describe("createPanelActivityStore：在途/中断分类", () => {
+  /** 无结果 bash：挂在末条消息且线程运行中 ⇒ 在途；否则一律中断 */
+  const runningMsg = () => msg("a1", "assistant", [tool("t1", "bash", { command: "ls" })]);
+
+  test("末条消息 + isRunning=false ⇒ 中断（刷新后死态）", () => {
+    const store = createPanelActivityStore();
+    const a = store.derive([runningMsg()], false);
+    expect(a.terminal[0].running).toBe(false);
+    expect(a.terminal[0].failed).toBe(true);
+    expect(a.runningCount).toBe(0);
+  });
+
+  test("非末条消息 + isRunning=true ⇒ 中断（历史轮残留）", () => {
+    const store = createPanelActivityStore();
+    const a = store.derive([
+      runningMsg(),
+      msg("u2", "user", [text("继续")]),
+    ]);
+    expect(a.terminal[0].running).toBe(false);
+    expect(a.terminal[0].failed).toBe(true);
+    expect(a.runningCount).toBe(0);
+  });
+
+  test("末条消息 + isRunning=true ⇒ 在途转圈", () => {
+    const store = createPanelActivityStore();
+    const a = store.derive([runningMsg()]);
+    expect(a.terminal[0].running).toBe(true);
+    expect(a.terminal[0].failed).toBe(false);
+    expect(a.runningCount).toBe(1);
+  });
+
+  test("分类翻转 ⇒ entry 重建（缓存指纹含在途分类）", () => {
+    const store = createPanelActivityStore();
+    const running = store.derive([runningMsg()], true);
+    expect(running.terminal[0].running).toBe(true);
+    const idle = store.derive([runningMsg()], false);
+    expect(idle.terminal[0].running).toBe(false);
+    expect(idle.terminal[0].failed).toBe(true);
+    expect(idle).not.toBe(running);
+  });
+
+  test("中断的 edit/write：组级 failed 同步、diff 统计保留", () => {
+    const store = createPanelActivityStore();
+    const a = store.derive(
+      [msg("a1", "assistant", [tool("t1", "edit", { file_path: "/f", old_string: "a", new_string: "a\nb" })])],
+      false,
+    );
+    expect(a.files[0].failed).toBe(true);
+    expect(a.files[0].running).toBe(false);
+    expect(a.files[0].entries[0].added).toBe(1);
   });
 });
 

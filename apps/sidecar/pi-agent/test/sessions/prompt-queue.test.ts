@@ -11,19 +11,14 @@ import {
   getQueueStateForThread,
   isTurnBusy,
   markTurnEnd,
-  markTurnOutcome,
   markTurnStart,
-  pauseThread,
   popFrontForDispatch,
   PROMPT_QUEUE_LIMIT,
   promoteEntry,
   queueSnapshot,
   resetQueueForTests,
-  resumeThread,
   shouldQueue,
   takeFrontEntry,
-  updateEntryText,
-  waitQueueUnpaused,
 } from "../../src/sessions/prompt-queue";
 import { dispatch, dispatchPrompt } from "../../src/protocol/protocol";
 import { resolveSession } from "../../src/sessions/sessions";
@@ -122,15 +117,17 @@ describe("prompt-queue state machine", () => {
     resetQueueForTests();
   });
 
-  test("updateEntryText only mutates live queued entries", () => {
+  test("popFrontForDispatch 仅线程空闲时弹队首（busy 窗口不弹）", () => {
     resetQueueForTests();
-    const r = enqueueTurn("qu", "t2", { text: "before" });
-    expect(updateEntryText("qu", "after")).toBe(true);
-    expect(r.ok && r.item.text).toBe("after");
-    expect(updateEntryText("ghost", "nope")).toBe(false);
-    // 取消后不可再改
-    cancelEntry("qu");
-    expect(updateEntryText("qu", "late")).toBe(false);
+    enqueueTurn("pf-a", "t-pop", { text: "a" });
+    enqueueTurn("pf-b", "t-pop", { text: "b" });
+    markTurnStart("t-pop");
+    expect(popFrontForDispatch("t-pop")).toBeNull(); // turn 在跑：不弹
+    expect(queueSnapshot("t-pop").map((q) => q.reqId)).toEqual(["pf-a", "pf-b"]);
+    markTurnEnd("t-pop");
+    expect(popFrontForDispatch("t-pop")?.reqId).toBe("pf-a");
+    expect(popFrontForDispatch("t-pop")?.reqId).toBe("pf-b");
+    expect(popFrontForDispatch("t-pop")).toBeNull(); // 空队列：null
     resetQueueForTests();
   });
 
@@ -170,30 +167,46 @@ describe("prompt-queue state machine", () => {
 });
 
 describe("dispatch: queue commands", () => {
-  test("queue_update / queue_cancel / queue_promote reject unknown requestIds", async () => {
-    await expect(
-      dispatch("qx1", { type: "queue_update", requestId: "ghost", text: "x" }),
-    ).rejects.toThrow("no queued prompt: ghost");
+  test("queue_cancel / queue_promote / queue_steer reject unknown requestIds", async () => {
     await expect(
       dispatch("qx2", { type: "queue_cancel", requestId: "ghost" }),
     ).rejects.toThrow("no queued prompt: ghost");
     await expect(
       dispatch("qx3", { type: "queue_promote", requestId: "ghost" }),
     ).rejects.toThrow("no queued prompt: ghost");
+    await expect(
+      dispatch("qx4", { type: "queue_steer", requestId: "ghost" }),
+    ).rejects.toThrow("no active turn to steer into: ghost");
   });
 
-  test("queue_update / queue_cancel operate on live entries", async () => {
+  test("queue_cancel removes a live entry; queue_pop pops head only when idle", async () => {
     resetQueueForTests();
     enqueueTurn("live-1", "t7", { text: "old" });
-
-    await dispatch("qy1", { type: "queue_update", requestId: "live-1", text: "new" });
-    expect(responses("qy1").at(-1)?.type).toBe("queue_updated");
-    expect(queueSnapshot()[0]?.text).toBe("new");
 
     lines.length = 0;
     await dispatch("qy2", { type: "queue_cancel", requestId: "live-1" });
     expect(responses("qy2").at(-1)?.type).toBe("queue_cancelled");
     expect(chunksFor("live-1").map((c) => c.type)).toEqual(["abort", "finish"]);
+    expect(queueSnapshot("t7")).toEqual([]);
+
+    // queue_pop：该线程 turn 在跑 → popped:null，项原位保留
+    enqueueTurn("pop-1", "t-pop-cmd", { text: "p1", sessionId: "s-pop" });
+    markTurnStart("t-pop-cmd");
+    await dispatch("qy3", { type: "queue_pop", threadId: "t-pop-cmd" });
+    expect(responses("qy3").at(-1)).toMatchObject({
+      type: "queue_popped",
+      popped: null,
+    });
+    expect(queueSnapshot("t-pop-cmd").map((q) => q.reqId)).toEqual(["pop-1"]);
+
+    // 空闲后弹出：项离队，响应携带文本/sessionId 供前端接力泵重发
+    markTurnEnd("t-pop-cmd");
+    await dispatch("qy4", { type: "queue_pop", threadId: "t-pop-cmd" });
+    expect(responses("qy4").at(-1)).toMatchObject({
+      type: "queue_popped",
+      popped: { reqId: "pop-1", text: "p1", sessionId: "s-pop" },
+    });
+    expect(queueSnapshot("t-pop-cmd")).toEqual([]);
     resetQueueForTests();
   });
 });
@@ -573,10 +586,10 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
   });
 });
 
-/* ------------------------------ v2：持久化与熔断 ------------------------------ */
+/* ---------------------------- 队列持久化与回放采纳 ---------------------------- */
 
-describe("queue_state 持久化与回放采纳", () => {
-  test("变更落盘 queue_state 行；内存清空后经回放采纳并自动暂停", () => {
+describe("队列持久化与回放采纳", () => {
+  test("变更落盘 queue_state 行；内存清空后经回放采纳（不自动暂停）", () => {
     resetQueueForTests();
     enqueueTurn("pp1", "th-persist", {
       text: "persist me",
@@ -594,11 +607,11 @@ describe("queue_state 持久化与回放采纳", () => {
     expect(raw).toContain('"queue_state"');
     expect(raw).toContain("persist me");
 
-    // 内存清空（模拟 sidecar 重启）→ get_queue_state 回放采纳，自动暂停
+    // 内存清空（模拟 sidecar 重启）→ get_queue_state 回放采纳，不再自动暂停
     resetQueueForTests();
     const snap = getQueueStateForThread("th-persist", "s-qp");
     expect(snap?.items.map((i) => i.text)).toEqual(["persist me", "second"]);
-    expect(snap?.paused).toBe(true);
+    expect("paused" in (snap ?? {})).toBe(false);
 
     // 采纳后的项可正常取消（按 reqId 寻址）
     expect(cancelEntry("pp1")).toBe(true);
@@ -621,82 +634,12 @@ describe("queue_state 持久化与回放采纳", () => {
           version: 2,
           threadId: "th-live",
           items: [{ id: 99, reqId: "stale", text: "stale", createdAt: "t" }],
-          paused: false,
           nextId: 100,
         },
       }) + "\n",
     );
     const snap = getQueueStateForThread("th-live", "s-ql");
     expect(snap?.items.map((i) => i.text)).toEqual(["live"]);
-    resetQueueForTests();
-  });
-});
-
-describe("暂停/恢复", () => {
-  test("暂停阻塞链节等待并禁用队首弹出；恢复唤醒", async () => {
-    resetQueueForTests();
-    enqueueTurn("pz1", "th-pz", { text: "z", threadId: "th-pz", sessionId: "s-pz" });
-    pauseThread("th-pz");
-
-    let released = false;
-    const waiter = waitQueueUnpaused("th-pz").then(() => {
-      released = true;
-    });
-    await new Promise((r) => setTimeout(r, 5));
-    expect(released).toBe(false);
-    expect(popFrontForDispatch("th-pz")).toBeNull(); // 暂停中不弹
-
-    resumeThread("th-pz");
-    await waiter;
-    expect(released).toBe(true);
-    const item = popFrontForDispatch("th-pz");
-    expect(item?.text).toBe("z");
-    resetQueueForTests();
-  });
-});
-
-describe("暂停/恢复", () => {
-  test("手动暂停 + 当前轮自然完成 + 页面刷新：排队项不派发、快照保持暂停（回归：刷新后复活调用）", async () => {
-    resetQueueForTests();
-    // T1 在跑；忙时发 B、C 进队列（用户操作：暂停 → 刷新页面）
-    const run = await resolveSession("th-pause-refresh");
-    run.agent = makeFakeAgent(120, 80);
-
-    const pa = dispatchPrompt("sp-a", { type: "prompt", text: "A", threadId: "th-pause-refresh", sessionId: "s-pause-refresh" });
-    await waitUntil("sp-a", "start");
-    const pb = dispatchPrompt("sp-b", { type: "prompt", text: "B", threadId: "th-pause-refresh", sessionId: "s-pause-refresh" });
-    const pc = dispatchPrompt("sp-c", { type: "prompt", text: "C", threadId: "th-pause-refresh", sessionId: "s-pause-refresh" });
-    expect(queueSnapshot("th-pause-refresh").map((q) => q.reqId)).toEqual(["sp-b", "sp-c"]);
-
-    // 用户手动暂停（B/C 的链节此刻沉入 waitQueueUnpaused 等待）
-    pauseThread("th-pause-refresh", "s-pause-refresh");
-    expect(getQueueStateForThread("th-pause-refresh")?.paused).toBe(true);
-
-    // 当前轮 A 自然完成（暂停不打断在跑轮，设计内）
-    await pa;
-    await delay(60); // 链节苏醒窗口：若暂停失效，B 会在此开跑
-
-    // 断言：B/C 都没被派发（paused 保持），快照原样
-    expect(chunksFor("sp-b").map((c) => c.type)).not.toContain("start");
-    expect(chunksFor("sp-c").map((c) => c.type)).not.toContain("start");
-    const snap = getQueueStateForThread("th-pause-refresh");
-    expect(snap?.paused).toBe(true);
-    expect(snap?.items.map((q) => q.text)).toEqual(["B", "C"]);
-
-    // 模拟页面刷新：前端重挂后拉快照（get_queue_state 同款调用），不得有副作用
-    const afterRefresh = getQueueStateForThread("th-pause-refresh", "s-pause-refresh");
-    expect(afterRefresh?.paused).toBe(true);
-    expect(afterRefresh?.items).toHaveLength(2);
-    await delay(30);
-    expect(chunksFor("sp-b").map((c) => c.type)).not.toContain("start");
-
-    void pb;
-    void pc;
-    // 收尾：恢复后中止 B 的流，避免悬挂 promise
-    resumeThread("th-pause-refresh");
-    cancelAllEntries("th-pause-refresh");
-    await pb.catch(() => {});
-    await pc.catch(() => {});
     resetQueueForTests();
   });
 });
@@ -714,10 +657,9 @@ describe("data-queue-state 快照广播", () => {
     // 入队广播：data-queue-state 路由到活跃流（pba），携带全量快照
     const stateChunk = chunksFor("pba").find((c) => c.type === "data-queue-state");
     expect(stateChunk).toBeDefined();
-    const data = stateChunk!.data as { threadId: string; items: { text: string }[]; paused: boolean };
+    const data = stateChunk!.data as { threadId: string; items: { text: string }[] };
     expect(data.threadId).toBe("th-bc");
     expect(data.items.map((i) => i.text)).toEqual(["B"]);
-    expect(data.paused).toBe(false);
 
     // promote：仍在快照（运行项锁定语义由快照消失表达）——至少再广播一次
     lines.length = 0;
@@ -751,21 +693,6 @@ describe("空队列快照必须落盘（复活 bug 回归）", () => {
     resetQueueForTests();
     const snap = getQueueStateForThread("th-pr", "s-pr");
     expect(snap?.items).toEqual([]);
-    resetQueueForTests();
-  });
-});
-
-describe("失败熔断", () => {
-  test("连续 turn 失败达阈值自动暂停；成功清零计数", () => {
-    resetQueueForTests();
-    enqueueTurn("pf1", "th-pf", { text: "f1", threadId: "th-pf", sessionId: "s-qf" });
-    markTurnOutcome("th-pf", false);
-    expect(getQueueStateForThread("th-pf")?.paused).toBe(false);
-    markTurnOutcome("th-pf", false);
-    expect(getQueueStateForThread("th-pf")?.paused).toBe(true);
-    // 成功只清零计数，解除暂停由用户显式 resume
-    markTurnOutcome("th-pf", true);
-    expect(getQueueStateForThread("th-pf")?.paused).toBe(true);
     resetQueueForTests();
   });
 });

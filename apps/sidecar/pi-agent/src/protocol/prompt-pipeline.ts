@@ -4,7 +4,7 @@
  * - dispatchPrompt：prompt 入口。排队判定后沿所属线程的串行链执行（prompt
  *   长任务不占 mgmtQueue，只有会话准备段经 enqueueMgmt 串行）。
  * - runPromptTurn：单 turn 执行——会话准备、阈值/溢出压缩、UserPromptSubmit
- *   钩子、附件装配、委派收敛循环、finish/steered 补发与失败熔断记账。
+ *   钩子、附件装配、委派收敛循环、finish/steered 补发。
  * - steerIntoActiveRun：并入当前轮（agent.steer），steered 流挂起 finish。
  * - abortRun：中止单线程 run 的全部在飞内容（父代理/子代理/审批/提问/压缩）。
  * - mgmtResolveSession：自动化 runner 经管理队列预建会话。
@@ -12,26 +12,23 @@
 import { logAt, logErr } from "../log";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { needsCompaction, runCompaction } from "../agent/context";
-import { makeAutoContinueMessage, MAX_LENGTH_CONTINUES } from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
 import { clearPendingToolApprovals, composeModeSystemPrompt } from "../agent/modes";
 import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
 import { cancelPendingQuestions } from "../tools/question-tools";
 import { noticeAppendedText, preparePromptAttachments } from "./prompt-attachments";
-import { sendChunk, setActiveReqId, beginRun, isPromptActive } from "./stream";
+import { sendChunk, setActiveReqId, beginRun } from "./stream";
 import {
   broadcastQueueState,
   enqueueTurn,
   isTurnBusy,
   markTurnEnd,
-  markTurnOutcome,
   markTurnStart,
   PROMPT_QUEUE_LIMIT,
   queueChunkId,
   queueSnapshot,
   shouldQueue,
   takeFrontEntry,
-  waitQueueUnpaused,
 } from "../sessions/prompt-queue";
 import {
   noteActiveTurn,
@@ -64,7 +61,7 @@ function compactionChunkData(outcome: {
  *  委派收敛循环 → finally finish），跑完才放行该线程下一节 */
 const promptChains = new Map<string, Promise<void>>();
 
-/** 线程是否有未走完的串行链节（queue_resume 判断"空闲且无链节"用） */
+/** 线程是否有未走完的串行链节（queue_pop 判断"空闲且无链节"用） */
 export function hasPromptChain(threadId: string): boolean {
   return promptChains.has(threadId);
 }
@@ -177,11 +174,6 @@ export async function dispatchPrompt(
   const node = new Promise<void>((r) => (release = r));
   promptChains.set(threadId, node);
   await tail;
-  // 队列暂停：链节在队首等待恢复（resume 唤醒全部等待节点，串行链保证依次取队首）。
-  // 暂停闸只约束排队项（wasQueued）——空闲线程的全新发送不受残留 paused 态影响：
-  // 队列清空后 paused 残留曾把非排队新消息永久卡在此处（前端 0 条排队时无恢复
-  // 按钮可点，表现为一直「连接中」）
-  if (wasQueued) await waitQueueUnpaused(threadId);
   markTurnStart(threadId);
   try {
     let turnReqId = reqId;
@@ -443,9 +435,6 @@ async function runPromptTurn(
       : run.stopRequested
         ? { ok: false, errorText: "run aborted by stop request" }
         : { ok: true };
-    // 失败熔断记账：连续 turn 级失败达阈值自动暂停队列（成功清零；用户主动
-    // Stop 不计入失败）
-    markTurnOutcome(threadId, outcome.ok);
     onOutcome?.(outcome);
   }
 }

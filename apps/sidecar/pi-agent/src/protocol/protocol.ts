@@ -22,8 +22,6 @@
  *   { "type": "shutdown" }   宿主应用退出（kill_on_exit）发起的优雅终止：全局 abort
  *       让在飞 run 把 partial 结算落盘、取消排队、停自动化调度，等全部 run idle
  *       （5s 封顶）后经 maybeExit 冲刷 stdout 退出进程；无应答帧
- *   { "type": "queue_update", "id", "requestId", "text" }   → { id, type: "queue_updated", requestId }
- *       修改排队中的 prompt 文本（仅 queued 状态可改；requestId 为原 prompt 的 reqId）
  *   { "type": "queue_cancel", "id", "requestId" }           → { id, type: "queue_cancelled", requestId }
  *       删除单个排队项，其 prompt 流立即 abort + finish 收尾（不执行）
  *   { "type": "queue_promote", "id", "requestId" }          → { id, type: "queue_promoted", requestId }
@@ -31,6 +29,9 @@
  *   { "type": "queue_steer", "id", "requestId" }            → { id, type: "queue_steered", requestId }
  *       并入当前轮：排队项注入所属线程活跃轮（不中止不排队），其流走 steered
  *       退化收尾（finish 随宿主轮收尾补发）；无活跃轮/正在收尾则报错、项原位保留
+ *   { "type": "queue_pop", "id", "threadId"?, "sessionId"? } → { id, type: "queue_popped", threadId, popped }
+ *       弹出队首交由前端重发（前端接力泵用；仅线程空闲且无串行链节时弹出，
+ *       否则 popped 为 null——链节仍在，泵转而在跑轮探测重挂）
  *   prompt 排队（prompt-queue.ts）：队列按线程隔离，线程内上一轮未结束时到达的
  *       prompt 进该线程 FIFO 队列（多线程并行互不阻塞）；每次变更向该线程活跃
  *       请求广播 { chunk: { type: "data-queue-state", data: 全量快照 } }（前端
