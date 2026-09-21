@@ -1,8 +1,8 @@
 /** 跨模块共享类型 */
 import type { Agent, AgentContext, AgentTool } from "@earendil-works/pi-agent-core";
 import type * as ai from "ai";
-import type { RetryBudget } from "./provider-retry";
-import type { TraceRunRecorder } from "./trace";
+import type { RetryBudget } from "./model/provider-retry";
+import type { TraceRunRecorder } from "./protocol/trace";
 
 /** AI SDK UI 消息类型（协议流与 JSONL 持久化都用它） */
 export type UIMessage = ai.UIMessage;

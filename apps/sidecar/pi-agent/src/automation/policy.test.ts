@@ -9,8 +9,8 @@ import type {
   BeforeToolCallResult,
 } from "@earendil-works/pi-agent-core";
 import type { Running } from "../types";
-import { approvalBeforeToolCall } from "../modes";
-import { buildQuestionTool } from "../question-tools";
+import { approvalBeforeToolCall } from "../agent/modes";
+import { buildQuestionTool } from "../tools/question-tools";
 import {
   getAutomationPolicy,
   normalizeToolPolicyProfile,

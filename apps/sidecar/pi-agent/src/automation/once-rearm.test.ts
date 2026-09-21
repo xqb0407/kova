@@ -13,8 +13,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { initStorage } from "../storage";
-import { dispatch } from "../protocol";
+import { initStorage } from "../storage/storage";
+import { dispatch } from "../protocol/protocol";
 import { getAutomationScheduler, initAutomation, stopAutomation } from "./runtime";
 import type { ScheduledTask } from "./index";
 
