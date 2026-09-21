@@ -1,8 +1,7 @@
 "use client";
 
 import { makeAssistantDataUI } from "@assistant-ui/react";
-import { SquareIcon } from "lucide-react";
-import { Marker, MarkerContent, MarkerIcon } from "../ui/marker";
+import { Marker, MarkerContent } from "../ui/marker";
 
 /**
  * 「已停止」分隔线：Stop / 立即发送（promote）中止的残缺回复，在消息尾部
@@ -19,9 +18,6 @@ export const StoppedDataUI = makeAssistantDataUI<Record<string, never>>({
       variant="separator"
       className="text-muted-foreground/60 my-2 text-xs"
     >
-      <MarkerIcon>
-        <SquareIcon className="size-3 fill-current" />
-      </MarkerIcon>
       <MarkerContent>已停止</MarkerContent>
     </Marker>
   ),

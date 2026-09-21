@@ -57,6 +57,8 @@ export type RegisteredMessage = {
   cancelled: boolean;
   /** 已并入当前轮：出快照后保持摘除，宿主轮流收尾时回填 */
   steered: boolean;
+  /** 曾被乐观摘除（快照确认前就摘出数组）：入队判定落空时由 start/收尾回填 */
+  preRemoved: boolean;
 };
 
 const snapshots = new Map<string, QueueSnapshot>();
@@ -86,6 +88,7 @@ export function registerQueuedMessage(reqId: string, threadId: string, message: 
     queued: false,
     cancelled: false,
     steered: false,
+    preRemoved: false,
   });
 }
 
@@ -137,6 +140,7 @@ function applySnapshot(snapshot: QueueSnapshot): void {
         queued: true,
         cancelled: false,
         steered: false,
+        preRemoved: false,
       };
       registry.set(item.reqId, reg);
       onQueued.push(reg);
@@ -153,6 +157,9 @@ function applySnapshot(snapshot: QueueSnapshot): void {
       registry.delete(reqId);
     } else if (reg.steered) {
       // 保持登记：宿主轮流收尾时 unregisterQueuedMessage 触发回填
+    } else if (!reg.queued) {
+      // 乐观摘除尚未被快照确认（sidecar 还没把它入队，可能压根不排队）：
+      // 本次快照与它无关，不动——回填由 start chunk / error 收尾负责
     } else {
       registry.delete(reqId);
       onReveal.push(reg);
@@ -191,12 +198,35 @@ export function unregisterQueuedMessage(requestId: string, threadId: string): vo
   }
   if (!reg) return;
   registry.delete(requestId);
-  // steered：并入的消息此刻回填（排队确认时已摘除）；其余路径消息本就不在
-  // 数组里，回填是 no-op
-  if (reg.steered) {
+  // steered：并入的消息此刻回填（排队确认时已摘除）；被乐观摘除却始终没
+  // 入进快照的（sidecar 直接拒绝，如队列已满）同样回填——它已被摘出数组
+  // 且不会再有派发/start 信号。其余路径消息本就不在数组里，回填是 no-op。
+  if (reg.steered || (reg.preRemoved && !reg.queued && !reg.cancelled)) {
     notify();
     syncListener?.(reg, "reveal");
   }
+}
+
+/** 乐观摘除（pi-transport sendMessages 调用）：按「忙线程镜像」判定本请求
+ *  必然入队时，不等 data-queue-state 快照往返（sidecar 回程 + ~20ms 合帧，
+ *  期间乐观消息已被绘制 = 用户看到的"闪一下"）就同步摘除刚入列的消息。
+ *  信号与 R1 同款（渲染侧幂等，快照到达再摘一次是 no-op）；摘早了（sidecar
+ *  实际直接开跑）由 notifyQueueStreamStart 回填，被拒绝由收尾回填。 */
+export function optimisticallyRemoveQueuedMessage(requestId: string): void {
+  const reg = registry.get(requestId);
+  if (!reg || reg.queued || reg.cancelled) return;
+  reg.preRemoved = true;
+  syncListener?.(reg, "remove");
+}
+
+/** 流 start chunk（pi-transport 调用）：该请求的 turn 真正开跑。登记若还
+ *  停在「未入过快照」状态（乐观摘除判错——sidecar 空闲竞态下直接放行），
+ *  此刻立即回填并销登记；真排队项派发出快照时已回填销登记，这里是 no-op。 */
+export function notifyQueueStreamStart(requestId: string): void {
+  const reg = registry.get(requestId);
+  if (!reg || reg.queued || reg.cancelled) return;
+  registry.delete(requestId);
+  if (reg.preRemoved) syncListener?.(reg, "reveal");
 }
 
 /* ------------------------------ 派发空窗标记 ------------------------------ */

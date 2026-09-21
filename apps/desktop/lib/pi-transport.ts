@@ -11,6 +11,9 @@ import { applyQuestionChunk, clearQuestions } from "@/lib/pi-question";
 import { applyTodoChunk } from "@/lib/pi-todo";
 import {
   applyQueueStateChunk,
+  getQueueSnapshot,
+  notifyQueueStreamStart,
+  optimisticallyRemoveQueuedMessage,
   registerQueuedMessage,
   unregisterQueuedMessage,
 } from "@/lib/pi-queue";
@@ -87,6 +90,28 @@ export class PiTransport implements ChatTransport<UIMessage> {
    */
   private openRequestIds = new Set<string>();
 
+  /** 线程真正在跑的 turn 集合（start chunk 到 finish/error 收尾）：镜像
+   *  sidecar 的 isTurnBusy 忙位，供 sendMessages 判定「本条发送必然排队」
+   *  并乐观摘除消息（消除快照往返窗口的闪现，见 pi-queue）。steer 退化流
+   *  计入无妨（宿主轮本就忙），各自收尾时移除。 */
+  private runningTurns = new Map<string, Set<string>>();
+
+  private markTurnRunning(chatId: string, requestId: string, running: boolean): void {
+    if (running) {
+      let ids = this.runningTurns.get(chatId);
+      if (!ids) {
+        ids = new Set();
+        this.runningTurns.set(chatId, ids);
+      }
+      ids.add(requestId);
+    } else {
+      const ids = this.runningTurns.get(chatId);
+      if (!ids) return;
+      ids.delete(requestId);
+      if (ids.size === 0) this.runningTurns.delete(chatId);
+    }
+  }
+
   async sendMessages({
     chatId,
     messages,
@@ -118,6 +143,28 @@ export class PiTransport implements ChatTransport<UIMessage> {
           .join("\n\n")
       : bodyText;
 
+    // 排队条登记（requestId → 乐观 user 消息）+ 乐观摘除：放在 sendMessages
+    // 首个 await 之前，与框架 pushMessage 同处一个微任务链——权威摘除要等
+    // data-queue-state 快照往返（sidecar 回程 + ~20ms 合帧），期间乐观消息
+    // 已被绘制，就是「闪一下」。忙镜像（在跑 turn / 快照非空，对应 sidecar
+    // shouldQueue）判定必然排队时立刻同步摘除；摘早了（罕见竞态下 sidecar
+    // 直接开跑）由 start chunk 的 notifyQueueStreamStart 回填，被拒绝由收尾
+    // 回填，见 pi-queue 三条同步规则头注。
+    // 重新生成（Reload）不登记：忙线程下 sidecar 照常排队（快照里无登记条目，
+    // 不会触发摘除/回填），触发重跑的历史消息必须留在对话列表。
+    // 「并入当前轮」意图（⌥/⌘⇧⌘）不摘：注入活跃轮，消息照常即时上列表
+    const steerIntent = consumeSteerIntent(chatId);
+    if (lastUser && trigger !== "regenerate-message") {
+      registerQueuedMessage(requestId, chatId, lastUser);
+      if (
+        !steerIntent &&
+        ((this.runningTurns.get(chatId)?.size ?? 0) > 0 ||
+          getQueueSnapshot(chatId).items.length > 0)
+      ) {
+        optimisticallyRemoveQueuedMessage(requestId);
+      }
+    }
+
     // chatId 是 runtime 内部 thread id；registry 里存着它对应的 pi session 文件路径
     // （重启后点击历史会话时也由 adapter 的 unstable_useAdapters 补齐映射）。
     // 框架并不保证首条发送前先 await initialize（web.log 实证登记从来没带上
@@ -140,14 +187,6 @@ export class PiTransport implements ChatTransport<UIMessage> {
     // 按轮锚定在各消息尾部,不再被新 turn 清掉（见 pi-checkpoints 条目列表）
     saveRunHash(chatId, null);
 
-    // 排队条登记（requestId → 乐观 user 消息）：sidecar 上一轮未结束时会把本请求
-    // 排队，快照中出现该条目后消息从 Chat 数组摘除（顺序稳定性，见 pi-queue
-    // 头注），派发出队/并入收尾时靠登记原样回填（含附件/引用 metadata）。
-    // 重新生成（Reload）不登记：忙线程下 sidecar 照常排队（快照里无登记条目，
-    // 不会触发摘除/回填），触发重跑的历史消息必须留在对话列表
-    if (lastUser && trigger !== "regenerate-message") {
-      registerQueuedMessage(requestId, chatId, lastUser);
-    }
     this.openRequestIds.add(requestId);
     // 检查点卡的轮次锚点：触发本轮的 user 消息下标（跨刷新稳定,见 pi-checkpoints）
     const anchorIndex = lastUser ? messages.indexOf(lastUser) : null;
@@ -173,7 +212,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
         attachments,
         // 并入当前轮（⌥点击 / Shift+⌘+Enter 标记的意图，仅运行中会标记）：
         // sidecar 忙线程注入活跃轮，本请求走退化流收尾
-        steer: consumeSteerIntent(chatId),
+        steer: steerIntent,
         abortSignal,
         holdOnFinish: () => !streamState.started,
       })
@@ -330,6 +369,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
       "abort",
       () => {
         this.openRequestIds.delete(requestId);
+        this.markTurnRunning(chatId, requestId, false);
         unregisterQueuedMessage(requestId, chatId);
       },
       { once: true },
@@ -404,11 +444,16 @@ export class PiTransport implements ChatTransport<UIMessage> {
           // turn 真正开始（排队项此刻才轮到）：打检查点快照。
           // steer 退化流的 start 不是 turn 开始：不打（活跃轮已有自己的快照）
           streamState.started = true;
+          // 忙镜像置位 + 乐观摘除纠偏：若本请求曾被乐观摘除但从未入过快照
+          // （sidecar 竞态下直接放行），此刻回填；真排队项出快照已回填，no-op
+          transport.markTurnRunning(chatId, requestId, true);
+          notifyQueueStreamStart(requestId);
           if (!sawSteered) createCheckpoint();
         }
         if (chunk.type === "finish") {
           // 流收尾：本会话打开流集合摘除（自动重挂去重依赖其准确性）
           transport.openRequestIds.delete(requestId);
+          transport.markTurnRunning(chatId, requestId, false);
           if (sawSteered) {
             // steer 退化收尾：活跃轮还在跑，只清自己的登记（排队条隐藏项、
             // resumable 登记），不碰审批/提问卡片、不发完成提醒
@@ -446,6 +491,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
           refreshFileTree(cwd ?? null);
           settleCheckpoint();
           clearQuestions(chatId);
+          transport.markTurnRunning(chatId, requestId, false);
           sawError = true;
           if (!abortSignal?.aborted) {
             const raw = (chunk as { errorText?: unknown }).errorText;
