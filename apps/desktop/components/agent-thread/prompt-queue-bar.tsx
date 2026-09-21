@@ -84,6 +84,9 @@ export const PromptQueueBar: FC = () => {
     try {
       if (snapshot.paused) {
         const resend = await resumeQueue(threadId, sessionId);
+        // 对齐一次快照镜像：线程空闲时弹出/清空的广播没有流可附着，镜像会
+        // 滞后——滞后快照会让下一次发送被乐观摘除误判为「必然排队」
+        void refreshQueueSnapshot(threadId, sessionId);
         // 线程空闲时 sidecar 弹出队首交回：按文本重发（正常发送路径）
         if (resend && aui && !aui.thread.getState().isRunning) {
           aui.composer.setText(resend.text);

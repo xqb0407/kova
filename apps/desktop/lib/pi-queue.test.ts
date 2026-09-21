@@ -6,6 +6,8 @@ import {
   getQueueSnapshot,
   getQueuedMessageIds,
   hasPendingTurn,
+  notifyQueueStreamStart,
+  optimisticallyRemoveQueuedMessage,
   registerQueuedMessage,
   resetQueueForTests,
   setQueueSyncListener,
@@ -175,5 +177,70 @@ describe("暂停", () => {
     );
     expect(getQueueSnapshot(THREAD).paused).toBe(true);
     expect(getQueueSnapshot(THREAD).items).toHaveLength(1);
+  });
+});
+
+describe("乐观摘除（消除快照往返闪现）", () => {
+  test("登记后即刻摘除；确认快照幂等再摘（渲染侧 no-op），派发出快照回填", () => {
+    registerQueuedMessage("req-1", THREAD, userMessage("msg-1", "hello"));
+    const events = collect();
+
+    optimisticallyRemoveQueuedMessage("req-1");
+    expect(events.map((e) => e.kind)).toEqual(["remove"]);
+
+    // 权威快照随后到达：R1 再发一次 remove（同步是幂等的，消息已不在数组）
+    applyQueueStateChunk(THREAD, snapshotOf([{ reqId: "req-1", text: "hello" }]));
+    expect(events.map((e) => e.kind)).toEqual(["remove", "remove"]);
+
+    // 派发出快照：正常回填 + 派发空窗标记
+    applyQueueStateChunk(THREAD, snapshotOf([]));
+    expect(events.map((e) => e.kind)).toEqual(["remove", "remove", "reveal"]);
+    expect(hasPendingTurn(THREAD)).toBe(true);
+  });
+
+  test("乐观摘除判错（sidecar 直接开跑）：start chunk 回填并销登记", () => {
+    registerQueuedMessage("req-2", THREAD, userMessage("msg-2", "race"));
+    optimisticallyRemoveQueuedMessage("req-2");
+    const events = collect();
+
+    notifyQueueStreamStart("req-2");
+    expect(events.map((e) => e.kind)).toEqual(["reveal"]);
+    // 登记已销：后续收尾不重复回填
+    events.length = 0;
+    unregisterQueuedMessage("req-2", THREAD);
+    expect(events).toEqual([]);
+  });
+
+  test("未入过快照的乐观摘除项不被无关快照的出列循环回填", () => {
+    // req-1 确认排队；req-2 刚发出还在乐观摘除态（快照未到）
+    registerQueuedMessage("req-1", THREAD, userMessage("msg-1", "a"));
+    applyQueueStateChunk(THREAD, snapshotOf([{ reqId: "req-1", text: "a" }]));
+    registerQueuedMessage("req-2", THREAD, userMessage("msg-2", "b"));
+    optimisticallyRemoveQueuedMessage("req-2");
+    const events = collect();
+
+    // req-1 入队后又有广播（如 req-1 出列派发）：req-2 未进过快照，不该被牵连
+    applyQueueStateChunk(THREAD, snapshotOf([]));
+    const kinds = events.filter((e) => e.reg.messageId === "msg-2").map((e) => e.kind);
+    expect(kinds).toEqual([]);
+    expect(events.map((e) => e.reg.messageId)).toEqual(["msg-1"]);
+  });
+
+  test("乐观摘除后被拒（收尾未到 start）：finish/error 收尾回填", () => {
+    registerQueuedMessage("req-3", THREAD, userMessage("msg-3", "rejected"));
+    optimisticallyRemoveQueuedMessage("req-3");
+    const events = collect();
+
+    unregisterQueuedMessage("req-3", THREAD);
+    expect(events.map((e) => e.kind)).toEqual(["reveal"]);
+  });
+
+  test("普通直发（未乐观摘除）收尾不回填：不复活用户删掉的消息", () => {
+    registerQueuedMessage("req-4", THREAD, userMessage("msg-4", "direct"));
+    // 直接开跑（start 销登记但从未摘除，不回填）
+    notifyQueueStreamStart("req-4");
+    const events = collect();
+    unregisterQueuedMessage("req-4", THREAD);
+    expect(events).toEqual([]);
   });
 });
