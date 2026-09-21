@@ -570,7 +570,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         >
           <div
             className={cn(
-              "bg-border/50 pointer-events-none absolute inset-y-0 right-0 w-px opacity-0 transition-[background-color,width,opacity] [-webkit-mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] [mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] group-hover/handle:opacity-100 group-active/handle:opacity-100",
+              "bg-border/50 pointer-events-none absolute inset-y-0 right-0 w-px opacity-0 transition-[background-color,width,opacity] [-webkit-mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] [mask-image:linear-gradient(to_bottom,transparent,#000_2rem,#000_calc(100%-2rem),transparent)] group-hover/handle:w-0.5 group-hover/handle:opacity-100 group-active/handle:w-0.5 group-active/handle:opacity-100",
               railDragging && "w-0.5 opacity-100",
             )}
           />
