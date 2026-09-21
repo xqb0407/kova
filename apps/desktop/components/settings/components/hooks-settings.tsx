@@ -36,8 +36,8 @@ import {
   updateHookConfig,
   useHookConfigs,
   type HookConfig,
-} from "@/lib/hooks";
-import type { PiHookEventName } from "@/lib/pi-bridge";
+} from "@/lib/pi/hooks";
+import type { PiHookEventName } from "@/lib/pi/pi-bridge";
 import { toast } from "@/components/ui/toast";
 import { PlusIcon, Trash2Icon } from "lucide-react";
 

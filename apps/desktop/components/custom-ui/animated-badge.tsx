@@ -18,7 +18,7 @@ import {
   type Variants,
 } from "framer-motion";
 import type { ReactNode } from "react";
-import { EASE_OUT } from "@/lib/ease";
+import { EASE_OUT } from "@/lib/motion/ease";
 import { cn } from "@/lib/utils";
 
 export type AnimatedBadgeStatus =

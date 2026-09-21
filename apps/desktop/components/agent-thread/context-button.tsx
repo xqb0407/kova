@@ -11,15 +11,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { fmtTokens } from "@/lib/model-format";
+import { fmtTokens } from "@/lib/model/model-format";
 import {
   compactContext,
   fetchContextInfo,
   markManualCompaction,
   markManualCompactionStart,
-} from "@/lib/pi-context";
-import { clearManualCompactionMarker } from "@/lib/pi-compaction-marker";
-import type { PiContextInfo } from "@/lib/pi-bridge";
+} from "@/lib/pi/pi-context";
+import { clearManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
+import type { PiContextInfo } from "@/lib/pi/pi-bridge";
 import { Separator } from "../ui/separator";
 
 /**

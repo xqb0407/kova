@@ -3,15 +3,15 @@
 import { useCallback, useEffect, useMemo, useState, type FC } from "react";
 import { CloudIcon, GitBranchIcon, Loader2Icon, SearchIcon, TagIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { gitLogGraph, type GitGraphEntry, type GitGraphRef } from "@/lib/git";
-import { onGitChanged } from "@/lib/git-status";
+import { gitLogGraph, type GitGraphEntry, type GitGraphRef } from "@/lib/git/git";
+import { onGitChanged } from "@/lib/git/git-status";
 import {
   GRAPH_COLORS,
   GRAPH_LANE_W,
   GRAPH_ROW_H,
   layoutGraph,
   type GraphRow,
-} from "@/lib/git-graph";
+} from "@/lib/git/git-graph";
 import { cn } from "@/lib/utils";
 
 /** 相对时间（面板各处共用） */

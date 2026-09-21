@@ -26,13 +26,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
 import { AppModeSwitch } from "./app-mode-switch";
-import { usePanelActivity } from "@/lib/panel-activity";
-import { useThreadTodos } from "@/lib/pi-todo";
-import { useGitStatus } from "@/lib/git-status";
-import { useAppMode } from "@/lib/app-mode";
-import { pathBasename, useWorkspace } from "@/lib/workspace-store";
-import { openPanelTab } from "@/lib/panel-tabs";
-import { prefsSessionIdFor } from "@/lib/pi-thread-adapter";
+import { usePanelActivity } from "@/lib/panels/panel-activity";
+import { useThreadTodos } from "@/lib/pi/pi-todo";
+import { useGitStatus } from "@/lib/git/git-status";
+import { useAppMode } from "@/lib/pi/app-mode";
+import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
+import { openPanelTab } from "@/lib/panels/panel-tabs";
+import { prefsSessionIdFor } from "@/lib/pi/pi-thread-adapter";
 import { FolderOpenIcon, GitBranchIcon } from "lucide-react";
 import { useState, type FC } from "react";
 

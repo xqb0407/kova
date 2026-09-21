@@ -7,9 +7,9 @@ import {
   Loader2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { fmtTokens } from "@/lib/model-format";
+import { fmtTokens } from "@/lib/model/model-format";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
-import { useManualCompactionMarker } from "@/lib/pi-compaction-marker";
+import { useManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
 import { Marker, MarkerContent, MarkerIcon } from "../ui/marker";
 
 /**

@@ -10,9 +10,9 @@ import {
   messageArtifacts,
   toFileUrl,
   type MessageArtifact,
-} from "@/lib/artifacts";
-import { focusPanelTab } from "@/lib/panel-tabs";
-import { getWorkspace } from "@/lib/workspace-store";
+} from "@/lib/panels/artifacts";
+import { focusPanelTab } from "@/lib/panels/panel-tabs";
+import { getWorkspace } from "@/lib/workspace/workspace-store";
 import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 

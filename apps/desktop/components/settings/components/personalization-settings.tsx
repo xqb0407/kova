@@ -40,7 +40,7 @@ import {
   type Personalization,
   type PersonalizationBuiltinStyle,
   type PersonalizationCustomStyle,
-} from "@/lib/personalization";
+} from "@/lib/settings/personalization";
 
 /* 重依赖（CodeMirror / Streamdown）全部走异步分块：编辑弹窗首次点开才拉取，
  * 预览渲染仅在字段有内容时挂载，设置页首屏不背这些包 */

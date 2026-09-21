@@ -20,7 +20,7 @@ import {
   useId,
   useState,
 } from "react";
-import { SPRING_LAYOUT } from "@/lib/ease";
+import { SPRING_LAYOUT } from "@/lib/motion/ease";
 import { cn } from "@/lib/utils";
 
 export interface SharedLayoutBgProps

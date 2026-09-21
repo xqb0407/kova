@@ -7,12 +7,12 @@ import {
   type Unstable_TriggerItem,
 } from "@assistant-ui/react";
 import type { Unstable_TriggerAdapter } from "@assistant-ui/core";
-import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp";
-import { useSkills, type SkillEntry } from "@/lib/skills";
-import { useSubagents } from "@/lib/subagents";
-import { useWorkspace } from "@/lib/workspace-store";
+import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp/mcp";
+import { useSkills, type SkillEntry } from "@/lib/skills/skills";
+import { useSubagents } from "@/lib/subagent/subagents";
+import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { isTauri } from "@/lib/tauri";
-import { openPanelTab } from "@/lib/panel-tabs";
+import { openPanelTab } from "@/lib/panels/panel-tabs";
 import {
   ActivityIcon,
   BookOpenIcon,

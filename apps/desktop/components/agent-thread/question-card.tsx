@@ -13,7 +13,7 @@ import {
   usePendingQuestions,
   type PendingQuestionView,
   type QuestionView,
-} from "@/lib/pi-question";
+} from "@/lib/pi/pi-question";
 
 /**
  * Question 提问卡片：sidecar 的 Question 工具挂起等答时**独占 composer 位**

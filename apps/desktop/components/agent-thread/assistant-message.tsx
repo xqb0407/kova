@@ -44,7 +44,7 @@ import {
   SquareTerminalIcon,
 } from "lucide-react";
 import type { FC, ReactNode } from "react";
-import { randomLoadingPhrase } from "@/lib/loading";
+import { randomLoadingPhrase } from "@/lib/panels/loading";
 
 /**
  * 交互面在别处、消息列表不再渲染的工具：

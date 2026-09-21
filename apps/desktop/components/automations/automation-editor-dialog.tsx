@@ -64,27 +64,27 @@ import {
   ModelSelector,
   type ModelOption,
 } from "@/components/assistant-ui/elements/model-selector.aui";
-import { fmtContextWindow } from "@/lib/model-format";
+import { fmtContextWindow } from "@/lib/model/model-format";
 import {
   getWorkspace,
   openWorkspacePicker,
   pathBasename,
   useWorkspaceRecents,
-} from "@/lib/workspace-store";
+} from "@/lib/workspace/workspace-store";
 import {
   previewAutomationSchedule,
   saveAutomation,
   type AutomationDraft,
   type AutomationTask,
   type AutomationTemplate,
-} from "@/lib/automations";
+} from "@/lib/automation/automations";
 import {
   cronToPreset,
   formatDateTime,
   parseIntervalSeconds,
   presetToCron,
-} from "@/lib/automation-format";
-import { usePiModels, refreshPiModels } from "@/lib/pi-models";
+} from "@/lib/automation/automation-format";
+import { usePiModels, refreshPiModels } from "@/lib/pi/pi-models";
 import { cn } from "@/lib/utils";
 
 type FreqMode = "daily" | "weekly" | "monthly" | "interval" | "once" | "cron";

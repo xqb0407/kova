@@ -27,7 +27,7 @@ import {
   pathBasename,
   useWorkspace,
   useWorkspaceRecents,
-} from "@/lib/workspace-store";
+} from "@/lib/workspace/workspace-store";
 import {
   listMemoryFiles,
   readMemoryEntry,
@@ -35,8 +35,8 @@ import {
   useMemoryConfig,
   writeMemoryEntry,
   type MemoryConfig,
-} from "@/lib/memory";
-import type { PiMemoryFileEntry, PiMemoryScopeState } from "@/lib/pi-bridge";
+} from "@/lib/memory/memory";
+import type { PiMemoryFileEntry, PiMemoryScopeState } from "@/lib/pi/pi-bridge";
 
 /* 重依赖（CodeMirror / Streamdown）走异步分块：点开文件才拉取，不进设置页首屏包 */
 const MarkdownEditDialog = dynamic(() => import("./markdown-edit-dialog"), {

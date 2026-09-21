@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type FC } from "react";
 import { cn } from "@/lib/utils";
-import { formatTokens, type UsageStatsDay } from "@/lib/usage-stats";
+import { formatTokens, type UsageStatsDay } from "@/lib/model/usage-stats";
 
 /**
  * Token 活动热力图（2D）：GitHub contributions 同款周列布局（列 = 周，行 = 周一..周日）。

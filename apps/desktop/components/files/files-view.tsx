@@ -25,7 +25,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
-import { taskWorkspaceDir } from "@/lib/task-workspace";
+import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,7 +40,7 @@ import {
   revealAppFile,
   type AppFileEntry,
   type AppFilePreview,
-} from "@/lib/app-files";
+} from "@/lib/workspace/app-files";
 import {
   backupDeleteRemote,
   backupDownload,
@@ -49,7 +49,7 @@ import {
   formatBackupTime,
   useBackupConfig,
   type RemoteBackup,
-} from "@/lib/backup-config";
+} from "@/lib/settings/backup-config";
 import {
   ContextMenu,
   ContextMenuContent,

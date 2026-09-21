@@ -3,17 +3,17 @@
 import dynamic from "next/dynamic";
 import { useMemo, type FC } from "react";
 import { FileCodeIcon, FileIcon, GlobeIcon, PackageIcon } from "lucide-react";
-import { usePanelActivity } from "@/lib/panel-activity";
+import { usePanelActivity } from "@/lib/panels/panel-activity";
 import {
   formatBytes,
   isBrowserPreviewable,
   threadArtifacts,
   toFileUrl,
   type MessageArtifact,
-} from "@/lib/artifacts";
-import { focusPanelTab } from "@/lib/panel-tabs";
-import { getWorkspace } from "@/lib/workspace-store";
-import { taskWorkspaceDir } from "@/lib/task-workspace";
+} from "@/lib/panels/artifacts";
+import { focusPanelTab } from "@/lib/panels/panel-tabs";
+import { getWorkspace } from "@/lib/workspace/workspace-store";
+import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
 import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { TabEmpty } from "./tab-empty";

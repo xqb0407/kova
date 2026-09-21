@@ -36,7 +36,7 @@ import {
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useAttachmentSrc } from "@/hooks/use-attachment-src";
-import { formatBytes } from "@/lib/artifacts";
+import { formatBytes } from "@/lib/panels/artifacts";
 import { cn } from "@/lib/utils";
 
 /** 彩色文件图标（material-file-icons ~1.5MB）按需加载，别拉进主 chunk；

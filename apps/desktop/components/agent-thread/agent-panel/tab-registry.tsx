@@ -16,13 +16,13 @@ import {
   SquareTerminalIcon,
   WaypointsIcon,
 } from "lucide-react";
-import { usePanelActivity } from "@/lib/panel-activity";
-import { useThreadTodos } from "@/lib/pi-todo";
-import { useWorkspace } from "@/lib/workspace-store";
-import { useGitStatus } from "@/lib/git-status";
-import { useAppMode } from "@/lib/app-mode";
+import { usePanelActivity } from "@/lib/panels/panel-activity";
+import { useThreadTodos } from "@/lib/pi/pi-todo";
+import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useGitStatus } from "@/lib/git/git-status";
+import { useAppMode } from "@/lib/pi/app-mode";
 import { isTauri } from "@/lib/tauri";
-import type { PanelTab, PanelTabType } from "@/lib/panel-tabs";
+import type { PanelTab, PanelTabType } from "@/lib/panels/panel-tabs";
 import { ActivityView } from "./activity-view";
 import { PlanSection } from "./plan-section";
 import { FilesSection } from "./files-section";
