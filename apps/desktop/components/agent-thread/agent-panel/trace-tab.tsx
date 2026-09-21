@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FC,
+} from "react";
 // useAuiState 取 store 包的导出：span scope 的类型增强（ScopeRegistry）挂在
 // @assistant-ui/store 上，react 主包的 AssistantState 里没有 span
 import { AuiConfig, AuiProvider, useAuiState } from "@assistant-ui/store";
@@ -40,6 +48,15 @@ import { TabEmpty } from "./tab-empty";
  * 直播不做：在飞 run 不在 traces 文件里，线程活动边沿（runningCount → 0）
  * 或手动刷新时重查一次。
  */
+
+/** 面板局部字号档位：「Aa」按钮循环 标准→大→特大，系数落在根节点 --tfss，
+ *  面板内字号全部写成 arbitrary calc 乘 var(--tfss) 的形式随它缩放。
+ *  全局设置字号只缩放 rem 类（根元素 font-size），这里大量固定 px 读数不跟随，
+ *  故轨迹面板自带调节。localStorage 持久化（键 ui.trace-font-step）。
+ *  ⚠ 注释里不要出现完整的 text-[...] 类名字面量——Tailwind 扫描器会把它当类提走。 */
+const TRACE_FONT_STEPS = [1, 1.15, 1.32];
+const TRACE_FONT_STEP_LABELS = ["标准", "大", "特大"];
+const TRACE_FONT_STEP_KEY = "ui.trace-font-step";
 
 const SOURCE_LABEL: Record<PiTraceRun["source"], string> = {
   ui: "会话",
@@ -81,7 +98,7 @@ const SpanRow: FC<{
     <SpanPrimitive.Root
       onClick={() => spanId && onSelect(spanId)}
       className={cn(
-        "group hover:bg-muted/50 flex items-center gap-1.5 py-0.5 pr-2 text-xs",
+        "group hover:bg-muted/50 flex items-center gap-1.5 py-0.5 pr-2 text-[calc(12px_*_var(--tfss,1))] leading-[1.35]",
         spanId && spanId === selectedId && "bg-muted",
       )}
     >
@@ -99,11 +116,11 @@ const SpanRow: FC<{
         )}
       />
       <SpanPrimitive.Name className="max-w-45 min-w-0 truncate" />
-      <SpanPrimitive.TypeBadge className="bg-muted text-muted-foreground hidden shrink-0 rounded px-1 text-[10px] group-hover:inline sm:inline" />
+      <SpanPrimitive.TypeBadge className="bg-muted text-muted-foreground hidden shrink-0 rounded px-1 text-[calc(10px_*_var(--tfss,1))] group-hover:inline sm:inline" />
       <SpanPrimitive.Timeline className="bg-muted/60 relative h-1.5 min-w-10 flex-1 overflow-hidden rounded">
         <SpanPrimitive.TimelineBar className="bg-primary/55 absolute inset-y-0 rounded" />
       </SpanPrimitive.Timeline>
-      <span className="text-muted-foreground w-12 shrink-0 text-right text-[10px] tabular-nums">
+      <span className="text-muted-foreground w-12 shrink-0 text-right text-[calc(10px_*_var(--tfss,1))] tabular-nums">
         {latencyMs != null ? fmtMs(latencyMs) : ""}
       </span>
     </SpanPrimitive.Root>
@@ -131,9 +148,9 @@ const RunDetail: FC<{
   const attrs = Object.entries(inspect.attrs ?? {});
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b px-2 text-xs">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b px-2 text-[calc(12px_*_var(--tfss,1))] leading-[1.35]">
         <span className="text-foreground min-w-0 truncate font-medium">{name}</span>
-        <span className="text-muted-foreground/60 shrink-0 text-[10px]">属性与内容</span>
+        <span className="text-muted-foreground/60 shrink-0 text-[calc(10px_*_var(--tfss,1))]">属性与内容</span>
         <button
           type="button"
           onClick={onClose}
@@ -147,7 +164,7 @@ const RunDetail: FC<{
         {attrs.length > 0 ? (
           <div className="mb-2 flex flex-col gap-0.5">
             {attrs.map(([k, v]) => (
-              <div key={k} className="flex gap-2 text-[11px] leading-relaxed">
+              <div key={k} className="flex gap-2 text-[calc(11px_*_var(--tfss,1))] leading-relaxed">
                 <span className="text-muted-foreground w-36 shrink-0 truncate font-mono">{k}</span>
                 <span className="min-w-0 break-all font-mono">{String(v)}</span>
               </div>
@@ -156,18 +173,18 @@ const RunDetail: FC<{
         ) : null}
         {inspect.detail?.request ? (
           <div className="mb-2">
-            <div className="text-muted-foreground mb-0.5 text-[11px] font-medium">
+            <div className="text-muted-foreground mb-0.5 text-[calc(11px_*_var(--tfss,1))] font-medium">
               请求上下文（截断渲染）
             </div>
-            <pre className="bg-muted/40 max-h-52 overflow-auto rounded p-2 font-mono text-[11px] break-all whitespace-pre-wrap">
+            <pre className="bg-muted/40 max-h-52 overflow-auto rounded p-2 font-mono text-[calc(11px_*_var(--tfss,1))] break-all whitespace-pre-wrap">
               {inspect.detail.request}
             </pre>
           </div>
         ) : null}
         {inspect.detail?.response ? (
           <div>
-            <div className="text-muted-foreground mb-0.5 text-[11px] font-medium">回复</div>
-            <pre className="bg-muted/40 max-h-52 overflow-auto rounded p-2 font-mono text-[11px] break-all whitespace-pre-wrap">
+            <div className="text-muted-foreground mb-0.5 text-[calc(11px_*_var(--tfss,1))] font-medium">回复</div>
+            <pre className="bg-muted/40 max-h-52 overflow-auto rounded p-2 font-mono text-[calc(11px_*_var(--tfss,1))] break-all whitespace-pre-wrap">
               {inspect.detail.response}
             </pre>
           </div>
@@ -223,7 +240,7 @@ const RunWaterfall: FC<{
 
 /** run 概要条：状态/来源/模型/用量/总耗时 */
 const RunSummary: FC<{ run: PiTraceRun }> = ({ run }) => (
-  <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs">
+  <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-[calc(12px_*_var(--tfss,1))] leading-[1.35]">
     <span className={cn("size-1.5 rounded-full", STATUS_DOT[run.status])} />
     <span>{SOURCE_LABEL[run.source]}</span>
     <span className="text-foreground truncate font-medium">{run.model ?? "未知模型"}</span>
@@ -240,6 +257,24 @@ export const TraceTab: FC<{ tab: PanelTab }> = ({ tab }) => {
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const { runningCount } = usePanelActivity();
+
+  // 面板字号档位：静态导出 SSR 首绘=标准，挂载后从 localStorage 水合（避免水合不一致）
+  const [fontStep, setFontStep] = useState(0);
+  useEffect(() => {
+    const n = Number(window.localStorage.getItem(TRACE_FONT_STEP_KEY));
+    if (Number.isInteger(n) && n > 0 && n < TRACE_FONT_STEPS.length) setFontStep(n);
+  }, []);
+  const cycleFontStep = useCallback(() => {
+    setFontStep((s) => {
+      const next = (s + 1) % TRACE_FONT_STEPS.length;
+      try {
+        window.localStorage.setItem(TRACE_FONT_STEP_KEY, String(next));
+      } catch {
+        // 存储不可用时仅本次会话生效
+      }
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     if (!sessionId) return;
@@ -289,7 +324,7 @@ export const TraceTab: FC<{ tab: PanelTab }> = ({ tab }) => {
     return <TabEmpty icon={WaypointsIcon} text="当前会话尚未关联运行轨迹" />;
   if (runs === null)
     return (
-      <div className="text-muted-foreground flex h-full items-center justify-center gap-1.5 text-xs">
+      <div className="text-muted-foreground flex h-full items-center justify-center gap-1.5 text-[calc(12px_*_var(--tfss,1))] leading-[1.35]">
         <Loader2Icon className="size-3.5 animate-spin" />
         读取轨迹…
       </div>
@@ -303,13 +338,24 @@ export const TraceTab: FC<{ tab: PanelTab }> = ({ tab }) => {
     );
 
   return (
-    <div className="flex h-full min-w-0 flex-col">
+    <div
+      className="flex h-full min-w-0 flex-col"
+      style={{ "--tfss": TRACE_FONT_STEPS[fontStep] } as CSSProperties}
+    >
       {/* 工具条 */}
-      <div className="text-muted-foreground flex h-9 shrink-0 items-center gap-1 border-b px-2 text-xs">
+      <div className="text-muted-foreground flex h-9 shrink-0 items-center gap-1 border-b px-2 text-[calc(12px_*_var(--tfss,1))] leading-[1.35]">
         <span>
           {runs.length} 次运行
         </span>
         <div className="ml-auto flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={cycleFontStep}
+            className="hover:bg-muted hover:text-foreground flex h-7 min-w-7 items-center justify-center rounded px-1 font-semibold"
+            title={`面板字号：${TRACE_FONT_STEP_LABELS[fontStep]}（点击切换）`}
+          >
+            Aa
+          </button>
           <button
             type="button"
             onClick={() => void load()}
@@ -339,7 +385,7 @@ export const TraceTab: FC<{ tab: PanelTab }> = ({ tab }) => {
                 type="button"
                 onClick={() => setSelectedId(run.runId)}
                 data-active={selected?.runId === run.runId}
-                className="hover:bg-muted/60 data-active:bg-muted flex w-full flex-col gap-0.5 border-b px-2.5 py-2 text-left text-xs"
+                className="hover:bg-muted/60 data-active:bg-muted flex w-full flex-col gap-0.5 border-b px-2.5 py-2 text-left text-[calc(12px_*_var(--tfss,1))] leading-[1.35]"
               >
                 <span className="flex items-center gap-1.5">
                   <span className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT[run.status])} />
