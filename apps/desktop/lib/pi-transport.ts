@@ -157,6 +157,12 @@ export class PiTransport implements ChatTransport<UIMessage> {
     // 无附件 = undefined，帧上不带字段
     const attachments = (await extractPromptAttachments(lastUser, chatId)) ?? undefined;
 
+    // 流内状态：start chunk 是否已过（postTransform 置位）。holdOnFinish 凭它
+    // 识别「从未开跑就被取消的排队项」——其流结束会把框架共享 status 打回
+    // ready（宿主轮假停止、ActionBar 闪现、Stop 因 activeResponse 被清空而
+    // 失灵），故保持流打开不结束
+    const streamState = { started: false };
+
     return getPiChannel()
       .promptStream({
         requestId,
@@ -169,8 +175,11 @@ export class PiTransport implements ChatTransport<UIMessage> {
         // sidecar 忙线程注入活跃轮，本请求走退化流收尾
         steer: consumeSteerIntent(chatId),
         abortSignal,
+        holdOnFinish: () => !streamState.started,
       })
-      .pipeThrough(this.postTransform(chatId, requestId, text, abortSignal, anchorIndex));
+      .pipeThrough(
+        this.postTransform(chatId, requestId, text, abortSignal, anchorIndex, streamState),
+      );
   }
 
   /**
@@ -241,6 +250,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
     text: string,
     abortSignal: AbortSignal | undefined,
     anchorIndex: number | null,
+    streamState: { started: boolean } = { started: false },
   ): TransformStream<UIMessageChunk, UIMessageChunk> {
     // transform 回调里 this 指向 Transformer 而非 PiTransport，经闭包引用
     const transport = this;
@@ -393,6 +403,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
         if (chunk.type === "start") {
           // turn 真正开始（排队项此刻才轮到）：打检查点快照。
           // steer 退化流的 start 不是 turn 开始：不打（活跃轮已有自己的快照）
+          streamState.started = true;
           if (!sawSteered) createCheckpoint();
         }
         if (chunk.type === "finish") {

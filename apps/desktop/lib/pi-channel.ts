@@ -37,6 +37,14 @@ export type PromptStreamArgs = {
   /** 并入当前轮（steer）：sidecar 忙线程把消息注入活跃轮，本请求走退化流 */
   steer?: boolean;
   abortSignal?: AbortSignal;
+  /**
+   * finish chunk 到达时调用：返回 true 则本流保持打开（close 交由调用方择机
+   * 触发，框架 status 不被打回 ready），返回 false/缺省立即关流。
+   * 用于「被取消的排队项」：其流结束会把框架共享 status 打回 ready——正在跑
+   * 的宿主轮在 UI 上假停止（ActionBar 闪现、Stop 因 activeResponse 被清空
+   * 而失灵）。流保持挂起直到页面刷新；每取消一项泄漏一条挂起流（KB 级）。
+   */
+  holdOnFinish?: (close: () => void) => boolean;
 };
 
 export type AttachStreamArgs = {
@@ -295,6 +303,16 @@ export class TauriPiChannel implements PiChannel {
           if (parsed.id !== requestId) return;
           controller.enqueue(parsed.chunk);
           if (parsed.chunk.type === "finish" || parsed.chunk.type === "error") {
+            // holdOnFinish：finish 可被调用方决定保持流打开（close 交还调用方），
+            // 保证流结束不再把共享 status 打回 ready
+            if (parsed.chunk.type === "finish" && args.holdOnFinish) {
+              const close = () => {
+                closed = true;
+                cleanup();
+                controller.close();
+              };
+              if (args.holdOnFinish(close)) return;
+            }
             closed = true;
             cleanup();
             controller.close();
