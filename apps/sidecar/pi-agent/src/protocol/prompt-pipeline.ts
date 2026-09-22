@@ -11,13 +11,16 @@
  */
 import { logAt, logErr } from "../log";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { needsCompaction, runCompaction } from "../agent/context";
+import type { ErrorPayload } from "pi-protocol";
+import { classifyAgentError, toWireError } from "../agent/agent-errors";
+import { contextInfo, needsCompaction, runCompaction } from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
 import { clearPendingToolApprovals, composeModeSystemPrompt } from "../agent/modes";
 import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
 import { cancelPendingQuestions } from "../tools/question-tools";
 import { noticeAppendedText, preparePromptAttachments } from "./prompt-attachments";
-import { sendChunk, setActiveReqId, beginRun } from "./stream";
+import { send, sendChunk, sendErrorChunk, setActiveReqId, beginRun } from "./stream";
+import { withEventSeq } from "./event-seq";
 import {
   broadcastQueueState,
   enqueueTurn,
@@ -159,10 +162,11 @@ export async function dispatchPrompt(
     );
     const enqueued = enqueueTurn(reqId, threadId, msg);
     if (!enqueued.ok) {
-      sendChunk(reqId, {
-        type: "error",
-        errorText: `排队消息过多（上限 ${PROMPT_QUEUE_LIMIT} 条），请等当前对话完成后再发`,
-      });
+      sendErrorChunk(
+        reqId,
+        `排队消息过多（上限 ${PROMPT_QUEUE_LIMIT} 条），请等当前对话完成后再发`,
+        { code: "QUEUE_LIMIT", source: "runtime", retryable: true },
+      );
       return;
     }
   }
@@ -205,6 +209,23 @@ export async function dispatchPrompt(
   } finally {
     noteActiveTurn(threadId, false);
     markTurnEnd(threadId);
+    // §7 上下文读数推送：轮收尾即现算下发（桌面占用环镜像直更，免拉取）。
+    // 只认该线程仍驻留的 run——resolveSession 失败的轮没有 run，天然不推；
+    // 盖事件水印（session_state 同款），桌面漏帧回拉 context_info。
+    const endedRun = running.get(threadId);
+    if (endedRun?.sessionId) {
+      const info = contextInfo(endedRun);
+      send(
+        withEventSeq(endedRun.sessionId, {
+          type: "context_changed" as const,
+          sessionId: endedRun.sessionId,
+          usedTokens: info.messageTokens + info.systemPromptTokens + info.toolTokens,
+          threshold: info.hardLimit,
+          contextWindow: info.contextWindow,
+          cacheHitRatio: info.cacheHitRate,
+        }),
+      );
+    }
     release();
     // 本节是链尾且队列已空：摘掉链条目，防 map 随线程数无限增长
     if (!shouldQueue(threadId) && promptChains.get(threadId) === node) {
@@ -237,7 +258,8 @@ async function runPromptTurn(
   } catch (err) {
     const errorText = err instanceof Error ? err.message : String(err);
     turnError = errorText;
-    sendChunk(reqId, { type: "error", errorText });
+    // 会话准备段（建会话/读凭据）的抛错都是本地路径：含糊串按运行时归因（§8）
+    sendErrorChunk(reqId, errorText, toWireError(classifyAgentError(err, { opaqueFallback: "runtime" })));
     onOutcome?.({ ok: false, errorText });
     return;
   }
@@ -254,7 +276,11 @@ async function runPromptTurn(
     const errorText =
       "No model with credentials available. Open Settings → Model and add an API key.";
     turnError = errorText;
-    sendChunk(reqId, { type: "error", errorText });
+    sendErrorChunk(reqId, errorText, {
+      code: "MODEL_NOT_CONFIGURED",
+      source: "runtime",
+      retryable: false,
+    });
     onOutcome?.({ ok: false, errorText });
     return;
   }
@@ -341,7 +367,11 @@ async function runPromptTurn(
       emitCompaction(cid, { phase: "failed" });
       if (!run.stopRequested) {
         turnError = `Context overflow, automatic compaction failed: ${outcome.message}`;
-        sendChunk(reqId, { type: "error", errorText: turnError });
+        sendErrorChunk(reqId, turnError, {
+          code: "CONTEXT_COMPACTION_FAILED",
+          source: "runtime",
+          retryable: false,
+        });
       } else {
         turnError = "run aborted by stop request";
       }
@@ -352,7 +382,11 @@ async function runPromptTurn(
     if (run.pendingOverflowRecovery) {
       run.pendingOverflowRecovery = false;
       turnError = "Context overflow persisted after compaction. Start a new session.";
-      sendChunk(reqId, { type: "error", errorText: turnError });
+      sendErrorChunk(reqId, turnError, {
+        code: "CONTEXT_TOO_LARGE",
+        source: "provider",
+        retryable: false,
+      });
     }
   };
 
@@ -400,7 +434,7 @@ async function runPromptTurn(
     }
   } catch (err) {
     turnError = err instanceof Error ? err.message : String(err);
-    sendChunk(reqId, { type: "error", errorText: turnError });
+    sendErrorChunk(reqId, turnError, toWireError(classifyAgentError(err)));
     // 父代理 turn 失败：中止遗留的后台子代理，让会话能回到空闲（D352）
     for (const d of run.delegations.values()) {
       if (d.status === "running") {

@@ -85,33 +85,29 @@
   background-color: #000 !important;
 }
 
-/* Markdown Code Block */
+/* Markdown Code Block（ChatGPT 式卡片：圆角 + 极简标签行，无底色无分隔线） */
 .aui-markdown [data-streamdown="code-block"] {
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: 0.75rem;
   background: transparent;
   gap: 0;
 }
 
 .aui-markdown [data-streamdown="code-block-header"] {
-  padding: 0px 10px 0px 8px;
-  height: auto;
-  font-size: 14px;
-  height: 30px;
+  padding: 0px 10px 0px 12px;
+  height: 34px;
+  font-size: 12px;
   background: transparent;
-  border-bottom: 1px solid var(--border);
-  background-color: var(--color-muted);
   position: relative;
 }
 
 .aui-markdown div:has(> [data-streamdown="code-block-actions"]) {
   position: absolute;
-  height: auto;
+  height: 34px;
   margin: 0;
   top: 0;
   right: 0;
-  height: 28px;
   padding-right: 8px;
 }
 
@@ -139,7 +135,8 @@
 /* 列表项内嵌的代码/mermaid 块:上下补呼吸间距,与相邻任务项拉开
    （顶层代码块有自己的 my-4,列表内会被 li 的 py-1 吃紧,这里单独补） */
 .aui-markdown li [data-streamdown="code-block"],
-.aui-markdown li [data-streamdown="mermaid-block"] {
+.aui-markdown li [data-streamdown="mermaid-block"],
+.aui-markdown li [data-streamdown="artifact-block"] {
   margin-top: 0.75rem;
   margin-bottom: 0.75rem;
 }
@@ -150,33 +147,29 @@
   background: transparent;
 }
 
-/* Mermaid Block */
+/* Mermaid Block（同 code 块的 ChatGPT 式极简头部） */
 .aui-markdown [data-streamdown="mermaid-block"] {
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: 0.75rem;
   background: transparent;
   gap: 0;
 }
 
 .aui-markdown [data-streamdown="mermaid-block-header"] {
-  padding: 0px 10px 0px 8px;
-  height: auto;
-  font-size: 14px;
-  height: 30px;
+  padding: 0px 10px 0px 12px;
+  height: 34px;
+  font-size: 12px;
   background: transparent;
-  border-bottom: 1px solid var(--border);
-  background-color: var(--color-muted);
   position: relative;
 }
 
 .aui-markdown div:has(> [data-streamdown="mermaid-block-actions"]) {
   position: absolute;
-  height: auto;
+  height: 34px;
   margin: 0;
   top: 0;
   right: 0;
-  height: 30px;
   padding-right: 8px;
 }
 
@@ -202,5 +195,55 @@
 .aui-markdown [data-streamdown="mermaid-block"] pre,
 .aui-markdown [data-streamdown="mermaid-block"] code {
   font-size: 12px;
+  background: transparent;
+}
+
+/* Mermaid 缩放控件：streamdown 默认是左下角带边框的竖排盒，和卡片风格不搭。
+   改成右下角横排悬浮胶囊（无边框、阴影、悬停块体时淡入）。
+   选择器依赖 streamdown 默认英文 aria-label（app 未覆写 translations） */
+.aui-markdown [data-streamdown="mermaid-block"] div:has(> button[aria-label="Zoom in"]) {
+  left: auto;
+  right: 8px;
+  bottom: 8px;
+  flex-direction: row;
+  gap: 2px;
+  padding: 3px;
+  border: none;
+  border-radius: 9999px;
+  background: color-mix(in oklab, var(--color-card) 85%, transparent);
+  box-shadow: 0 1px 6px rgb(0 0 0 / 0.14);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.aui-markdown [data-streamdown="mermaid-block"]:hover div:has(> button[aria-label="Zoom in"]),
+.aui-markdown [data-streamdown="mermaid-block"] div:has(> button[aria-label="Zoom in"]):focus-within {
+  opacity: 1;
+}
+
+/* Artifact 卡片（svg-code-block.tsx / mermaid-code-block.tsx 共用
+   data-streamdown="artifact-block" 标记）：样式全部由组件自带的 Tailwind
+   类承担，这里不再做覆盖，只保留上方列表内嵌时的 margin 规则 */
+
+/* 源码态内嵌的 CodeBlock：剥掉它自己的卡片壳与 header，只留高亮体；
+   顶部留出悬浮控制条（预览/源码 + 复制，mermaid 还多两个缩放钮）的高度 */
+.aui-markdown [data-streamdown="artifact-block"] [data-streamdown="code-block"] {
+  margin: 0;
+  padding: 0;
+  gap: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.aui-markdown [data-streamdown="artifact-block"] [data-streamdown="code-block-header"] {
+  display: none;
+}
+
+.aui-markdown [data-streamdown="artifact-block"] [data-streamdown="code-block-body"] {
+  padding: 52px 14px 12px;
+  max-height: 70vh;
+  overflow: auto;
   background: transparent;
 }

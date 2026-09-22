@@ -5,11 +5,13 @@ import type {
   PiAutomationFrame,
   PiChannel,
   PiChannelStatus,
+  PiContextChangedFrame,
   PiPluginOpFrame,
   PiRunningTurn,
   PromptStreamArgs,
 } from "@/lib/pi/pi-channel";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
+import { observeWireLine, resetSeqGuard } from "@/lib/pi/pi-seq-guard";
 
 /**
  * 远程 WebSocket 通道：浏览器 ⇄ 桌面端 remote.rs WS 网关 ⇄ pi-agent sidecar。
@@ -57,6 +59,7 @@ export class WsPiChannel implements PiChannel {
   private turnCbs = new Set<(sessionId: string | null, active: boolean) => void>();
   private automationCbs = new Set<(frame: PiAutomationFrame) => void>();
   private pluginOpCbs = new Set<(frame: PiPluginOpFrame) => void>();
+  private contextCbs = new Set<(frame: PiContextChangedFrame) => void>();
 
   constructor(
     private readonly url: string,
@@ -129,13 +132,20 @@ export class WsPiChannel implements PiChannel {
     }
     const type = v.type as string | undefined;
 
+    // 事件水印观察（设计文档 §3）：本通道天然全 parse，直接喂守卫；
+    // 未盖章行在 readSeqStamp 一步返回
+    observeWireLine(v);
+
     if (type === "authed") {
       this.ready = true;
       const queue = this.queue;
       this.queue = [];
       for (const line of queue) this.ws?.send(line);
       this.emitStatus({ connected: true });
-      // 重连成功：告知订阅方事件源已换代，清空并按 listRunning 重新水合
+      // 重连成功：连接断开的空洞无法从帧流补齐——守卫换代清零（防把
+      // 断线空洞当缺口误报），运行投影经下方 (null,false) 的既有通道
+      // 清空并按 list_running 重新水合
+      resetSeqGuard();
       for (const cb of this.turnCbs) cb(null, false);
       return;
     }
@@ -161,6 +171,14 @@ export class WsPiChannel implements PiChannel {
       const frame = v as unknown as PiPluginOpFrame;
       if (typeof frame.opId === "string") {
         for (const cb of this.pluginOpCbs) cb(frame);
+      }
+      return;
+    }
+    // 上下文读数推送帧（§7，remote.rs 白名单同款放行）
+    if (type === "context_changed") {
+      const frame = v as unknown as PiContextChangedFrame;
+      if (typeof frame.sessionId === "string") {
+        for (const cb of this.contextCbs) cb(frame);
       }
       return;
     }
@@ -298,6 +316,11 @@ export class WsPiChannel implements PiChannel {
   subscribePluginOps(cb: (frame: PiPluginOpFrame) => void): () => void {
     this.pluginOpCbs.add(cb);
     return () => this.pluginOpCbs.delete(cb);
+  }
+
+  subscribeContextChanges(cb: (frame: PiContextChangedFrame) => void): () => void {
+    this.contextCbs.add(cb);
+    return () => this.contextCbs.delete(cb);
   }
 
   async listRunning(): Promise<string[]> {

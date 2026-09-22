@@ -736,6 +736,7 @@ describe("claimRetry budget", () => {
     code,
     message: code,
     retriable,
+    source: "provider" as const,
   });
 
   it("gives rate limits and transient faults separate ten-attempt budgets", () => {
@@ -816,7 +817,7 @@ describe("makeUiRetryController", () => {
     const run = fakeRunning();
     const controller = makeUiRetryController(run);
     controller.onRetry?.({
-      error: { code: "NETWORK_ERROR", message: "fetch failed", retriable: true },
+      error: { code: "NETWORK_ERROR", message: "fetch failed", retriable: true , source: "provider" as const },
       phase: "request",
       attempt: 3,
       delayMs: 4_000,
@@ -842,7 +843,7 @@ describe("makeUiRetryController", () => {
     const run = fakeRunning();
     const controller = makeUiRetryController(run);
     controller.onRetry?.({
-      error: { code: "TIMEOUT", message: "timeout", retriable: true },
+      error: { code: "TIMEOUT", message: "timeout", retriable: true , source: "provider" as const },
       phase: "request",
       attempt: 1,
       delayMs: 1_000,
@@ -862,14 +863,14 @@ describe("makeUiRetryController", () => {
     setActiveReqId("th-retry", null);
     const stopped = fakeRunning({ stopRequested: true });
     makeUiRetryController(stopped).onRetry?.({
-      error: { code: "NETWORK_ERROR", message: "x", retriable: true },
+      error: { code: "NETWORK_ERROR", message: "x", retriable: true, source: "provider" as const },
       phase: "request",
       attempt: 1,
       delayMs: 1_000,
     });
     const noReq = fakeRunning();
     makeUiRetryController(noReq).onRetry?.({
-      error: { code: "NETWORK_ERROR", message: "x", retriable: true },
+      error: { code: "NETWORK_ERROR", message: "x", retriable: true, source: "provider" as const },
       phase: "request",
       attempt: 1,
       delayMs: 1_000,

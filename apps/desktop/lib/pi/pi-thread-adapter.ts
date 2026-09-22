@@ -14,7 +14,9 @@ import type {
   MessageFormatItem,
 } from "@assistant-ui/core";
 import type { UIMessage } from "ai";
+import type { PendingInteraction } from "pi-protocol";
 import { piRequest, type PiSessionSummary } from "@/lib/pi/pi-bridge";
+import { applyHistoryPending } from "@/lib/pi/pi-interactions";
 import { clearManualCompactionMarkerForRemote } from "@/lib/pi/pi-compaction-marker";
 import { findRunningTurn } from "@/lib/pi/pi-running";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
@@ -149,19 +151,34 @@ function messagesToRepository(uiMessages: unknown[]): {
   };
 }
 
+/** 首屏历史窗的消息行上限（§6）：2000+ 行转录只取尾部这么多条，
+ *  更早历史暂不提供翻页入口（hasMore 已在应答里，接口就绪即可加）。 */
+const HISTORY_TAIL_ROWS = 800;
+
 /** 从 pi session 拉取历史，返回 UIMessage 列表（含 id）。
  * 防御：定时任务会话可能在转录还没落盘时被点开（轮初只补录用户消息、
  * 其余在 agent_end 才写），或索引说会话有消息而首查为空/失败 —— 这种
- * "点进去空空如也"最难自查，这里重试一次并留 [pi-history] 日志进 web.log。 */
+ * "点进去空空如也"最难自查，这里重试一次并留 [pi-history] 日志进 web.log。
+ * M2：应答带未结算挂起交互（pending），按会话反查线程并入交互 store——
+ * 刷新/重启后挂起卡随历史一起回来（§4 验收「刷新后审批卡恢复」）。 */
 async function loadPiHistory(
   remoteId: string | undefined,
 ): Promise<UIMessage[]> {
   if (!remoteId) return [];
   const fetchOnce = async (): Promise<UIMessage[]> => {
-    const res = await piRequest<{ type: "history"; messages: UIMessage[] }>({
+    const res = await piRequest<{
+      type: "history";
+      messages: UIMessage[];
+      pending?: PendingInteraction[];
+    }>({
       type: "get_history",
       sessionId: remoteId,
+      tail: HISTORY_TAIL_ROWS,
     });
+    if (res.pending?.length) {
+      const threadId = [...piSessionRegistry].find(([, s]) => s === remoteId)?.[0];
+      if (threadId) applyHistoryPending(threadId, res.pending);
+    }
     return res.messages;
   };
   let messages: UIMessage[] = [];

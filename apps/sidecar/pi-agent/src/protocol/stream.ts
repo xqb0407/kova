@@ -6,10 +6,13 @@
  */
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
+import type { ErrorPayload } from "pi-protocol";
 import { logAt, logErr } from "../log";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
+import { classifyAgentError, toWireError } from "../agent/agent-errors";
 import { projectToolResult, type ProjectableContentBlock } from "../tools/image-parts";
 import { persist } from "../sessions/transcript";
+import { nextEventSeq } from "./event-seq";
 import { createTraceRunRecorder } from "./trace";
 import {
   makeAutoContinueMessage,
@@ -23,6 +26,27 @@ export const send = (line: unknown) =>
 
 export const sendChunk = (id: string, chunk: UIMessageChunk) =>
   send({ id, chunk });
+
+/**
+ * error chunk + 结构化归因（设计文档 §8）：AI SDK 的 error chunk 类型只有
+ * errorText，`error` 字段是加性扩展（线形 = JSON，两端 passthrough）；
+ * 桌面 transport 读到后先入一个 data-errorAttribution part 再转发 error
+ * chunk，让归因随消息 part 持久进 assistant-ui 状态、错误卡片据此渲染重试。
+ * 不传 error 时退化为旧线形。
+ */
+export const sendErrorChunk = (
+  id: string,
+  errorText: string,
+  error?: ErrorPayload,
+) =>
+  sendChunk(
+    id,
+    {
+      type: "error",
+      errorText,
+      ...(error ? { error } : {}),
+    } as unknown as UIMessageChunk,
+  );
 
 /** threadId -> 该线程当前活跃 prompt 请求 id（协议层在 turn 起止时设置） */
 const activeReqByThread = new Map<string, string>();
@@ -42,10 +66,18 @@ export function isPromptActive(threadId: string) {
   return activeReqByThread.has(threadId);
 }
 
-/** 线程内发一条额外 chunk（如 planning_state）；该线程无活跃请求时静默丢弃 */
-export function sendEventChunk(threadId: string, chunk: UIMessageChunk) {
+/**
+ * 线程内发一条额外 chunk（如 planning_state）；该线程无活跃请求时静默丢弃。
+ * 传 sessionId 时该行盖事件水印（设计文档 §3）：{id, chunk, sessionId, eventSeq}
+ * 线形，供桌面 seq-guard 检缺口回拉；盖章发生在确认写出之后（丢弃不占号）。
+ */
+export function sendEventChunk(threadId: string, chunk: UIMessageChunk, sessionId?: string) {
   const reqId = activeReqByThread.get(threadId);
   if (!reqId) return;
+  if (sessionId) {
+    send({ id: reqId, chunk, sessionId, eventSeq: nextEventSeq(sessionId) });
+    return;
+  }
   sendChunk(reqId, chunk);
 }
 
@@ -135,10 +167,9 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
           run.pendingOverflowRecovery = true;
           logErr("event: message_end context overflow, recovery deferred to protocol");
         } else {
-          sendChunk(reqId, {
-            type: "error",
-            errorText: m.errorMessage || "pi agent error",
-          });
+          // provider 流出路：含糊串按最可能来源（供应商）归因
+          const errorText = m.errorMessage || "pi agent error";
+          sendErrorChunk(reqId, errorText, toWireError(classifyAgentError(errorText)));
         }
       }
       break;
@@ -203,8 +234,10 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
           break;
         }
         case "error": {
-          const detail = (e as { error?: { errorMessage?: string } }).error?.errorMessage ?? "pi agent error";
-          sendChunk(reqId, { type: "error", errorText: String(detail) });
+          const detail = String(
+            (e as { error?: { errorMessage?: string } }).error?.errorMessage ?? "pi agent error",
+          );
+          sendErrorChunk(reqId, detail, toWireError(classifyAgentError(detail)));
           break;
         }
       }

@@ -5,9 +5,20 @@
  *   每条 agent 消息都写一行（含 toolResult），ui 字段是 text/reasoning 快照可为 null；
  *   前端历史（含工具部件）由 historyToUiMessages 从 agent 行重建（压缩不删历史行）；
  *   seq 是文件内单调编号（消息行与检查点行共用，见 Running.jsonlSeq）。
+ *   挂起交互行 {"type":"pending_interaction",interaction}/
+ *   {"type":"interaction_resolved",interactionId,...}（§4，queue_state 同款不占 seq）：
+ *   scanTranscript 配对出未结算清单，get_history/list_pending 据此回放挂起卡。
+ *   上下文设定行（§6 M4 上游对齐，同样不占 seq，last-wins 回放）：
+ *   {"type":"model_change",provider,modelId,timestamp}/
+ *   {"type":"thinking_level_change",thinkingLevel,timestamp}/
+ *   {"type":"session_info",name,timestamp}——模型/思考档位/会话名的转录内
+ *   真值（SQLite 偏好行与 title 列退为投影，旧会话无行时仍按旧路径回落）；
+ *   字段名与上游 coding-agent session-format v3 逐字一致（线性子集，不取
+ *   树位 id/parentId，§11 决策 4）。header 行加性 `parentSession`（fork 溯源）。
  *   读端跳过撕裂尾行，append 中途崩溃不影响已有内容。
  */
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import type { HistoryWindowMeta, PendingInteraction } from "pi-protocol";
 import type { Message } from "@earendil-works/pi-ai";
 import { projectToolResult, type ProjectableContentBlock } from "../tools/image-parts";
 import { sessionPath } from "../storage/storage";
@@ -31,24 +42,66 @@ export type CompactionRow = {
 };
 
 /** 转录文件一次遍历的结果（迭代 4：消息行与压缩检查点行同遍分流，
- * get_history 不再读两遍文件） */
+ * get_history 不再读两遍文件；M2：挂起交互行配对出未结算清单，§4） */
 export type TranscriptScan = {
   messages: { seq: number; ui: UIMessage | null; agent: Message }[];
   compactions: CompactionRow[];
+  /** 未结算挂起交互（发起行 − 结算行，按发起顺序）；重启/驱逐后回放挂起卡的事实源 */
+  pending: PendingInteraction[];
+  /** §6 M4 回放结果（对齐上游 getSessionContextSettings）：转录设定行的
+   *  last-wins 值；null = 无行（旧会话回落 SQLite 偏好镜像/全局选择） */
+  model: { provider: string; modelId: string } | null;
+  thinkingLevel: string | null;
+  /** 最后一次 session_info 行的 name（"" = 显式清名）；null = 从未命名 */
+  name: string | null;
 };
 
 /** 单遍扫描 JSONL：撕裂尾行容忍；消息行按 seq 去重（保留最后一次出现）
  * 并按 seq 排序——旧版持久化 bug 会把同一批消息重复 append，避免历史
- * 重建/会话恢复携带重复消息；未知行类型/缺 seq 跳过，向前兼容。 */
+ * 重建/会话恢复携带重复消息；未知行类型/缺 seq 跳过，向前兼容。
+ * 交互行不占 seq 号段（queue_state 同款），在 seq 门槛前先分流配对。 */
 export function scanTranscript(sessionId: string): TranscriptScan {
   const file = sessionPath(sessionId);
-  if (!existsSync(file)) return { messages: [], compactions: [] };
+  if (!existsSync(file))
+    return { messages: [], compactions: [], pending: [], model: null, thinkingLevel: null, name: null };
   const bySeq = new Map<number, { ui: UIMessage | null; agent: Message }>();
   const compactions: CompactionRow[] = [];
+  const pendingById = new Map<string, PendingInteraction>();
+  let model: TranscriptScan["model"] = null;
+  let thinkingLevel: string | null = null;
+  let name: string | null = null;
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line);
+      if (row?.type === "pending_interaction") {
+        const it = row.interaction as PendingInteraction | undefined;
+        if (it && typeof it.interactionId === "string" && typeof it.kind === "string") {
+          pendingById.set(it.interactionId, it);
+        }
+        continue;
+      }
+      if (row?.type === "interaction_resolved") {
+        if (typeof row.interactionId === "string") {
+          pendingById.delete(row.interactionId);
+        }
+        continue;
+      }
+      // 上下文设定行（§6 M4）：last-wins 回放；形状不符的旧行/坏行忽略
+      if (row?.type === "model_change") {
+        if (typeof row.provider === "string" && typeof row.modelId === "string") {
+          model = { provider: row.provider, modelId: row.modelId };
+        }
+        continue;
+      }
+      if (row?.type === "thinking_level_change") {
+        if (typeof row.thinkingLevel === "string") thinkingLevel = row.thinkingLevel;
+        continue;
+      }
+      if (row?.type === "session_info") {
+        if (typeof row.name === "string") name = row.name;
+        continue;
+      }
       if (typeof row?.seq !== "number") continue;
       if (row.type === "message" && row.agent) {
         bySeq.set(row.seq, { ui: row.ui ?? null, agent: row.agent });
@@ -66,7 +119,42 @@ export function scanTranscript(sessionId: string): TranscriptScan {
   const messages = [...bySeq.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([seq, row]) => ({ seq, ...row }));
-  return { messages, compactions };
+  return { messages, compactions, pending: [...pendingById.values()], model, thinkingLevel, name };
+}
+
+/**
+ * 历史分页窗（§6，ZCode rowsWindow 的对应物；游标 = 消息行 seq）：
+ * beforeSeq 取「严格早于游标」的尾部 tail 条；两者皆缺 = 全量（旧端不破）。
+ * 单遍全扫后在输出上截尾——compaction/交互行本就要求全遍，行数远小于体量。
+ * hasMore = 窗口之前还有消息行；空窗 first/last 为 null。
+ */
+export function windowTranscriptMessages<T extends { seq: number }>(
+  messages: T[],
+  opts: { tail?: number; beforeSeq?: number },
+): { window: T[]; meta: HistoryWindowMeta } {
+  const tail = Number.isInteger(opts.tail) ? Math.max(0, opts.tail as number) : undefined;
+  const beforeSeq = Number.isInteger(opts.beforeSeq) ? (opts.beforeSeq as number) : undefined;
+  if (tail === undefined && beforeSeq === undefined) {
+    const first = messages[0];
+    const last = messages[messages.length - 1];
+    return {
+      window: messages,
+      meta: { firstSeq: first?.seq ?? null, lastSeq: last?.seq ?? null, hasMore: false },
+    };
+  }
+  const eligible =
+    beforeSeq === undefined ? messages : messages.filter((m) => m.seq < beforeSeq);
+  const window = tail === undefined ? eligible : eligible.slice(Math.max(0, eligible.length - tail));
+  const first = window[0];
+  const last = window[window.length - 1];
+  return {
+    window,
+    meta: {
+      firstSeq: first?.seq ?? null,
+      lastSeq: last?.seq ?? null,
+      hasMore: eligible.length > window.length,
+    },
+  };
 }
 
 /** 从 JSONL 读全部消息行（跳过撕裂尾行；ui 可为 null；返回带 seq 供恢复端按边界过滤）。
@@ -96,6 +184,57 @@ export function appendCompactionRow(
     sessionPath(sessionId),
     JSON.stringify({ type: "compaction", ...row }) + "\n",
   );
+}
+
+/* ---------------- 上下文设定行（§6 M4 上游对齐） ----------------
+ * 行事件溯源、不占 seq（queue_state/pending_interaction 同款机制）：变更点
+ * 追加一行，scanTranscript 单遍 last-wins 回放。timestamp 对齐上游条目字段
+ * （ISO 串，读端不用，纯溯源留档）。 */
+
+function appendSettingRow(sessionId: string, row: Record<string, unknown>): void {
+  appendFileSync(sessionPath(sessionId), JSON.stringify(row) + "\n");
+}
+
+/** 换模型：set_model 广播到各驻留会话时逐会话落行（与偏好投影同步） */
+export function appendModelChangeRow(
+  sessionId: string,
+  provider: string,
+  modelId: string,
+): void {
+  appendSettingRow(sessionId, {
+    type: "model_change",
+    provider,
+    modelId,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/** 思考档位变更：set_thinking 逐驻留会话落行（档位恢复 = 行回放，替代"只有全局"） */
+export function appendThinkingLevelChangeRow(
+  sessionId: string,
+  level: string,
+): void {
+  appendSettingRow(sessionId, {
+    type: "thinking_level_change",
+    thinkingLevel: level,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/** 会话命名行：rename 命令与智能标题共用的落盘面 */
+export function appendSessionInfoRow(sessionId: string, name: string): void {
+  appendSettingRow(sessionId, {
+    type: "session_info",
+    name,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/** 改名统一入口：先落 session_info 行（转录真值），再同步索引 title 列（投影）。
+ *  行在前 = 崩溃窗口内真值不落后于投影；投影缺位（hostdb 未就绪）则整体抛给调用方。 */
+export async function setSessionName(sessionId: string, name: string): Promise<void> {
+  appendSessionInfoRow(sessionId, name);
+  await sessionRename(sessionId, name);
 }
 
 /**
@@ -393,7 +532,8 @@ export async function maybeSummarizeSessionTitle(run: Running): Promise<void> {
   );
   if (!title || title === fallback) return;
   try {
-    await sessionRename(run.sessionId, title);
+    // 行 + 投影双写（§6 M4）：转录里的 session_info 是真值，索引 title 是投影
+    await setSessionName(run.sessionId, title);
   } catch (err) {
     logErr("session title rename failed:", err);
   }

@@ -4,9 +4,24 @@
  */
 import { logErr } from "../log";
 import { send, isPromptActive } from "../protocol/stream";
+import { seedEventSeq, withEventSeq } from "../protocol/event-seq";
+import type { SessionPhase } from "pi-protocol";
 import { isTurnBusy } from "./prompt-queue";
+import {
+  hasPendingInteractions,
+  rememberThreadSession,
+} from "./pending-interactions";
 import { clearTodoState } from "../todo/todo";
 import type { Running } from "../types";
+
+/**
+ * 派生相位广播（设计文档 §2）：session_state 自发帧带 eventSeq（§3 水印），
+ * 前端缺口回拉 list_running 重水合。turn_changed 旧帧并行保留一个版本周期。
+ * phase 是投影不是引擎：只由驻留表 + activeTurns 现算，不新增真相源。
+ */
+function sendSessionState(sessionId: string, phase: SessionPhase): void {
+  send(withEventSeq(sessionId, { type: "session_state", sessionId, phase }));
+}
 
 /** threadId -> 活动会话（每个前端线程一个 Agent 实例） */
 export const running = new Map<string, Running>();
@@ -22,9 +37,21 @@ export const running = new Map<string, Running>();
  */
 const runningBySession = new Map<string, string>();
 
-/** 登记/覆盖会话的反查键（resolveSession 物化 run 后调用） */
-export function trackSessionRun(sessionId: string, threadId: string): void {
+/**
+ * 登记/覆盖会话的反查键（resolveSession 物化 run 后调用）。
+ * seedFromTranscriptSeq：转录最大 seq，播种本会话事件水印（§3，幂等）；
+ * 同时广播派生相位：有在跑轮次 = running，否则 idle（新物化/重绑都过这里）。
+ */
+export function trackSessionRun(
+  sessionId: string,
+  threadId: string,
+  seedFromTranscriptSeq?: number,
+): void {
   runningBySession.set(sessionId, threadId);
+  if (seedFromTranscriptSeq !== undefined) seedEventSeq(sessionId, seedFromTranscriptSeq);
+  // 交互台账的线程→会话解析（§4）：物化与改绑都经此，发起点只握 threadId
+  rememberThreadSession(threadId, sessionId);
+  sendSessionState(sessionId, activeTurns.has(threadId) ? "running" : "idle");
 }
 
 /** 按 sessionId 找驻留 run；索引指向已消失的键时自愈清除 */
@@ -88,11 +115,17 @@ export function noteActiveTurn(
   if (active) {
     const sid = sessionId ?? running.get(threadId)?.sessionId;
     activeTurns.set(threadId, { sessionId: sid, requestId });
-    if (sid) send({ type: "turn_changed", sessionId: sid, active: true });
+    if (sid) {
+      send({ type: "turn_changed", sessionId: sid, active: true });
+      sendSessionState(sid, "running");
+    }
   } else {
     const sid = activeTurns.get(threadId)?.sessionId;
     activeTurns.delete(threadId);
-    if (sid) send({ type: "turn_changed", sessionId: sid, active: false });
+    if (sid) {
+      send({ type: "turn_changed", sessionId: sid, active: false });
+      sendSessionState(sid, "idle");
+    }
     const waiters = idleWaiters.get(threadId);
     if (waiters) {
       idleWaiters.delete(threadId);
@@ -132,12 +165,14 @@ export function listActiveTurnDetails(): { sessionId: string; requestId: string 
 }
 
 /** 可驱逐判定：进行中的工作与跨轮的审批意图都要跳过。
- *  恢复路径不会带回 planning/pendingToolApprovals（resolveSession
- *  恒以初始态重建），所以这些状态在驻留期间被驱逐等于静默丢失。 */
+ *  挂起交互改台账行支撑判定（§2/§4，取代 run.pendingToolApprovals 内存 size）：
+ *  覆盖逐工具/MCP/Question 三类来源，且重启物化重放（restoreUnsettled）后仍成立。
+ *  planning 仍是内存态、恢复路径不带回（resolveSession 恒以初始态重建），
+ *  驻留期间被驱逐等于静默丢失，照旧拦截。 */
 function isEvictable(threadId: string, run: Running): boolean {
   if (activeTurns.has(threadId)) return false;
   for (const d of run.delegations.values()) if (d.status === "running") return false;
-  if (run.pendingToolApprovals.size > 0) return false;
+  if (hasPendingInteractions(run.sessionId)) return false;
   if (run.planning !== "inactive") return false;
   return true;
 }
@@ -167,6 +202,7 @@ export function enforceResidency(justLoaded: string): void {
     if (excess <= 0) break;
     dropRun(tid);
     forgetThreadStates(tid);
+    sendSessionState(run.sessionId, "evicted");
     logErr("session-evict:", `${tid} -> ${run.sessionId}`);
     excess -= 1;
   }

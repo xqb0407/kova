@@ -145,11 +145,43 @@ const ToolGroupSection: FC<{
   );
 };
 
+/**
+ * §8 错误归因：transport 把 sidecar error chunk 的结构化归因（分类器换算
+ * 的 {code, source, retryable, statusCode?}）转成 data-errorAttribution part
+ * 落在本条消息上（error chunk 的未知字段可能被 AI SDK 处理时丢弃，part 桥
+ * 与 data-retry 同款）。可重试错误（网络/限流/5xx）在错误卡上给「重试」——
+ * Reload = 重发末条用户消息，与操作栏重载同源。
+ */
+function isRetryableErrorState(s: AssistantState): boolean {
+  const parts = s.message.content;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    if (p.type === "data" && p.name === "errorAttribution") {
+      return (p.data as { retryable?: boolean } | undefined)?.retryable === true;
+    }
+  }
+  return false;
+}
+
 const MessageError: FC = () => {
+  const retryable = useAuiState(isRetryableErrorState);
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 mt-2 rounded-md  p-2 text-sm dark:text-red-200">
-        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
+        <div className="flex items-center justify-between gap-2">
+          <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0" />
+          {retryable && (
+            <ActionBarPrimitive.Reload asChild>
+              <button
+                type="button"
+                className="hover:bg-destructive/15 inline-flex shrink-0 items-center gap-1 rounded-md border border-destructive/40 px-1.5 py-0.5 text-xs transition-colors"
+              >
+                <RefreshCwIcon size="1em" />
+                重试
+              </button>
+            </ActionBarPrimitive.Reload>
+          )}
+        </div>
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
   );

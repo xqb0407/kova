@@ -1,27 +1,23 @@
 "use client";
 
 import { getPiChannel } from "@/lib/pi/pi-channel";
+import type {
+  Compacted,
+  ContextInfo,
+  ErrorPayload,
+  SessionSummary,
+  UsageTotals,
+} from "pi-protocol";
 
 /**
  * pi-agent 管理类请求-响应桥。
  * 具体传输由 PiChannel 决定（桌面 = Tauri invoke；远程网页 = WebSocket，见 pi-channel.ts），
- * 桥只负责类型定义与错误归一。
+ * 桥只负责类型定义与错误归一。跨端载荷单源 pi-protocol（设计文档 §1），
+ * 本地保留 Pi* 惯用名。
  */
 
-export type PiSessionSummary = {
-  sessionId: string;
-  name?: string;
-  firstMessage: string;
-  messageCount: number;
-  modified: string;
-  cwd: string;
-  archived?: boolean;
-  /** 会话级偏好（undefined = 从未变更过；切回会话时恢复 mode/model 选择用） */
-  mode?: "agent" | "plan";
-  approvalLevel?: "ask" | "auto-edit" | "auto";
-  modelProvider?: string;
-  modelId?: string;
-};
+/** 会话列表摘要行（list_sessions 响应；SQLite 索引投影 + 会话级偏好镜像） */
+export type PiSessionSummary = SessionSummary;
 
 /** 每 token 单价（美元） */
 export type PiModelCost = {
@@ -120,50 +116,13 @@ export type PiCustomProviderSummary = {
 };
 
 /** 会话累计用量（sidecar 从 JSONL assistant 消息行的 usage 聚合） */
-export type PiUsageTotals = {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-};
+export type PiUsageTotals = UsageTotals;
 
 /** 上下文面板读数（context_info 响应；sidecar 现算，零新增持久化） */
-export type PiContextInfo = {
-  type: "context_info";
-  model: { provider: string; id: string; name: string } | null;
-  /** 上下文容量（tokens） */
-  contextWindow: number;
-  /** 压缩阈值 = 容量 − 请求余量（与自动压缩同一公式） */
-  hardLimit: number;
-  messageTokens: number;
-  systemPromptTokens: number;
-  toolTokens: number;
-  messageCount: number;
-  /** 已发生的压缩代数（0 = 从未压缩） */
-  generation: number;
-  lastCompaction: {
-    tokensBefore: number;
-    summarized: boolean;
-    createdAt: string;
-  } | null;
-  /** 当前占用是否已越过压缩阈值 */
-  needsCompaction: boolean;
-  usage: PiUsageTotals;
-  /** 平均缓存命中率 0..1；无用量数据为 null */
-  cacheHitRate: number | null;
-  /** 逐请求缓存 miss 计数（旧 sidecar 无此字段时按缺省处理） */
-  cacheMisses?: { requests: number; misses: number; rebuilds: number };
-};
+export type PiContextInfo = ContextInfo;
 
 /** 手动压缩结果（compact 响应） */
-export type PiCompacted = {
-  type: "compacted";
-  generation: number;
-  tokensBefore: number;
-  summarized: boolean;
-  /** 本次压缩的摘要文本（分隔线下方「压缩摘要」可展开查看） */
-  summary: string;
-};
+export type PiCompacted = Compacted;
 
 /** 内置回复风格档位（设置 → 个性化；提示词文案在 sidecar personalization.ts） */
 export type PiPersonalizationBuiltinStyle =
@@ -725,6 +684,8 @@ export type PiResponse =
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "forked"; sessionId: string }
   | { type: "history"; messages: unknown[] }
+  // 挂起交互权威拉取应答（§4）：items = PendingInteraction[]（类型收窄在调用方）
+  | { type: "pending"; items: unknown[] }
   | PiAutomationListResponse
   | PiAutomationPreviewResponse
   | PiAutomationTemplatesResponse
@@ -788,7 +749,8 @@ export type PiResponse =
     }
   | PiContextInfo
   | PiCompacted
-  | { type: "error"; errorText: string }
+  // §8 加性结构化归因：errorText 仍是兜底文案，error 缺省 = 旧端未升级
+  | { type: "error"; errorText: string; error?: ErrorPayload }
   | { type: "tool_confirmed"; approvalId: string }
   | { type: "question_answered"; questionId: string }
   | {

@@ -12,6 +12,11 @@ import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
 import { getAutomationPolicy } from "../automation/policy";
+import {
+  beginInteraction,
+  sessionForThread,
+  settleInteraction,
+} from "../sessions/pending-interactions";
 
 export type QuestionOptionDef = { title: string; description?: string };
 
@@ -54,6 +59,7 @@ export function resolveQuestionAnswer(
   const entry = pendingQuestions.get(questionId);
   if (!entry) return false;
   pendingQuestions.delete(questionId);
+  settleInteraction(questionId, "answered");
   entry.resolve({ answers });
   return true;
 }
@@ -63,6 +69,7 @@ export function cancelPendingQuestions(threadId: string): void {
   for (const [id, entry] of [...pendingQuestions]) {
     if (entry.threadId !== threadId) continue;
     pendingQuestions.delete(id);
+    settleInteraction(id, "cancelled");
     entry.resolve({ cancelled: true });
   }
 }
@@ -169,10 +176,24 @@ export function buildQuestionTool(threadId: string): AgentTool {
           details: { cancelled: true },
         };
       }
-      sendEventChunk(threadId, {
-        type: "data-question",
-        data: { questionId: toolCallId, questions },
+      // 挂起交互登记落行（§4）：interactionId = questionId（=toolCallId）；
+      // questions 进载荷，供 get_history 回放重建答题卡。带会话即进水印（§3）
+      beginInteraction(threadId, {
+        interactionId: toolCallId,
+        kind: "question",
+        anchorToolCallId: toolCallId,
+        payload: {
+          questionId: toolCallId,
+          anchorToolCallId: toolCallId,
+          questions: questions as QuestionDef[],
+        },
+        createdAt: new Date().toISOString(),
       });
+      sendEventChunk(
+        threadId,
+        { type: "data-question", data: { questionId: toolCallId, questions } },
+        sessionForThread(threadId),
+      );
       const result = await new Promise<QuestionAnswers>((resolve) => {
         pendingQuestions.set(toolCallId, { threadId, resolve });
       });

@@ -4,12 +4,20 @@
  * pi-ai 把 provider 失败折叠成 `errorMessage` 字符串（常见形态 "<status>: <body>"），
  * SDK 错误对象的 HTTP status 又藏在各自形状不同的字段里，所以分类先探结构化字段、
  * 再退回消息关键字。流失败路径（stopReason "error"）与 promise reject 路径共用这里。
+ *
+ * 设计文档 §8：分类上线到线协议——`source` 归因维度 + `toWireError` 换算线形，
+ * 两个错误出口（handleLine catch / prompt 流 error chunk）随帧带结构化字段，
+ * 前端据此渲染 retryable 重试按钮。
  */
+import type { ErrorPayload, ErrorSource } from "pi-protocol";
 
 export type ClassifiedAgentError = {
   code: string;
   message: string;
   retriable: boolean;
+  /** 错误来源归因（§8）：provider=上游响应、network=连接层、
+   *  tool=工具执行（分类器暂不产出，留给出口侧显式构造）、runtime=本地代码/配置 */
+  source: ErrorSource;
   /** 安全、低基数的诊断字段（日志与错误详情用） */
   details?: Record<string, unknown>;
 };
@@ -96,7 +104,18 @@ function extractErrorCode(err: unknown): string | number | undefined {
   return undefined;
 }
 
-export function classifyAgentError(err: unknown): ClassifiedAgentError {
+/**
+ * 兜底桶（无 status、无网络/关键字命中的裸字符串）的归因：provider 流路径
+ * 保持旧语义（含糊串多半是供应商怪话 → PROVIDER_ERROR 可重试）；管理命令/
+ * 会话准备路径传 "runtime"——那里的含糊串是本地代码抛的错，重试无用。
+ */
+export type OpaqueFallback = "provider" | "runtime";
+
+export function classifyAgentError(
+  err: unknown,
+  opts?: { opaqueFallback?: OpaqueFallback },
+): ClassifiedAgentError {
+  const opaqueFallback = opts?.opaqueFallback ?? "provider";
   const rawMessage =
     typeof err === "string"
       ? err
@@ -114,10 +133,15 @@ export function classifyAgentError(err: unknown): ClassifiedAgentError {
     ...(status !== undefined ? { providerStatus: status } : {}),
     ...(providerCode !== undefined ? { providerCode } : {}),
   };
-  const result = (code: string, retriable: boolean): ClassifiedAgentError => ({
+  const result = (
+    code: string,
+    retriable: boolean,
+    source: ErrorSource = "provider",
+  ): ClassifiedAgentError => ({
     code,
     message,
     retriable,
+    source,
     ...(Object.keys(details).length > 0 ? { details } : {}),
   });
 
@@ -127,15 +151,23 @@ export function classifyAgentError(err: unknown): ClassifiedAgentError {
     (err instanceof Error && err.name === "AbortError") ||
     /\babort/i.test(rawMessage)
   ) {
-    return result("TURN_ABORTED", false);
+    return result("TURN_ABORTED", false, "runtime");
   }
   if (/CONTEXT_COMPACTION_FAILED/i.test(rawMessage)) {
-    return result("CONTEXT_COMPACTION_FAILED", false);
+    return result("CONTEXT_COMPACTION_FAILED", false, "runtime");
+  }
+  // 引擎级内部错误（JS 原生异常类型 = 本地代码 bug，不是供应商话术）：
+  // 不带 HTTP status、不带网络签名，落进 provider 兜底会误报可重试。
+  if (
+    err instanceof Error &&
+    /^(TypeError|SyntaxError|ReferenceError|RangeError|EvalError)$/.test(err.name)
+  ) {
+    return result("RUNTIME_ERROR", false, "runtime");
   }
   // 网络失败不带 HTTP status：先于 status 逻辑探一遍，
   // 免得 "fetch failed" 之类落到通用桶里。
   if (hasNetworkCause(err, rawMessage)) {
-    return result("NETWORK_ERROR", true);
+    return result("NETWORK_ERROR", true, "network");
   }
 
   if (status !== undefined) {
@@ -171,5 +203,31 @@ export function classifyAgentError(err: unknown): ClassifiedAgentError {
   if (STREAM_TERMINATION_PATTERN.test(rawMessage) || /stream/i.test(rawMessage)) {
     return result("STREAM_FAILED", true);
   }
+  // 兜底桶：含糊串按出口路径归因（见 OpaqueFallback 注释）
+  if (opaqueFallback === "runtime") {
+    return result("RUNTIME_ERROR", false, "runtime");
+  }
   return result("PROVIDER_ERROR", true);
+}
+
+/**
+ * 分类结果 → 线协议 `error` 载荷（§8）。statusCode 只在分类器确实捕获到
+ * 合法 HTTP status（100–599 整数）时携带——details.providerStatus 可能来自
+ * 消息文本提取，形状不受控，宁缺毋滥。
+ */
+export function toWireError(c: ClassifiedAgentError): ErrorPayload {
+  const providerStatus = c.details?.providerStatus;
+  const statusCode =
+    typeof providerStatus === "number" &&
+    Number.isInteger(providerStatus) &&
+    providerStatus >= 100 &&
+    providerStatus <= 599
+      ? providerStatus
+      : undefined;
+  return {
+    code: c.code,
+    source: c.source,
+    retryable: c.retriable,
+    ...(statusCode !== undefined ? { statusCode } : {}),
+  };
 }

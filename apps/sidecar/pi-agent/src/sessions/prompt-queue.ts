@@ -25,6 +25,14 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { sendChunk, sendEventChunk } from "../protocol/stream";
 import { sessionPath } from "../storage/storage";
+import {
+  queueSnapshotSchema,
+  checkFrame,
+  isStrictEnv,
+  type QueueSnapshot,
+  type QueueSnapshotItem,
+} from "pi-protocol";
+import { logErr } from "../log";
 
 /** 每线程排队上限：超过直接拒绝（error chunk），防无限堆积 */
 export const PROMPT_QUEUE_LIMIT = 5;
@@ -40,13 +48,9 @@ export type QueueItem = {
   msg: Record<string, unknown>;
 };
 
-/** 广播/持久化用全量快照（不含 msg 帧——恢复项由前端按文本重建气泡） */
-export type QueueSnapshot = {
-  version: 2;
-  threadId: string;
-  items: { id: number; reqId: string; text: string; createdAt: string }[];
-  nextId: number;
-};
+/** 广播/持久化用全量快照：契约单源 pi-protocol（设计文档 §5），
+ *  本文件与前端镜像共用同一 schema，不再手抄。 */
+export type { QueueSnapshot, QueueSnapshotItem };
 
 type ThreadQueue = {
   items: QueueItem[];
@@ -88,7 +92,12 @@ function dropEngineIfEmpty(threadId: string): void {
 function emitQueueState(threadId: string, sessionId?: string): void {
   const q = engines.get(threadId);
   if (!q) return;
-  const snapshot = snapshotOf(threadId);
+  // 出帧校验（设计文档 §9）：dev/test 契约漂移即抛，prod 记错放行
+  const snapshot = checkFrame(queueSnapshotSchema, snapshotOf(threadId), {
+    strict: isStrictEnv,
+    where: "emitQueueState",
+    report: (where, issue) => logErr(`pi-protocol ${where}:`, issue),
+  });
   if (sessionId) q.lastSessionId = sessionId;
   const sid =
     sessionId ??
@@ -107,11 +116,16 @@ function emitQueueState(threadId: string, sessionId?: string): void {
       // 持久化失败不阻断队列（重启后该批排队项丢失，可接受）
     }
   }
-  sendEventChunk(threadId, {
-    type: "data-queue-state",
-    id: `queue-state-${snapshot.nextId}-${snapshot.items.length}`,
-    data: snapshot,
-  });
+  // sid 存在时该行带事件水印（设计文档 §3）：桌面按号检缺口回拉 get_queue_state
+  sendEventChunk(
+    threadId,
+    {
+      type: "data-queue-state",
+      id: `queue-state-${snapshot.nextId}-${snapshot.items.length}`,
+      data: snapshot,
+    },
+    sid,
+  );
 }
 
 export function snapshotOf(threadId: string): QueueSnapshot {

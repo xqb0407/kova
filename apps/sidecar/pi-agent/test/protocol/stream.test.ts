@@ -101,7 +101,15 @@ describe("onAgentEvent", () => {
       ev({ type: "message_end", message: { stopReason: "error", errorMessage: "boom" } }),
       run,
     );
-    expect(last()).toEqual({ id: "r1", chunk: { type: "error", errorText: "boom" } });
+    expect(last()).toEqual({
+      id: "r1",
+      chunk: {
+        type: "error",
+        errorText: "boom",
+        // §8：provider 流出路的含糊串按供应商兜底归因
+        error: { code: "PROVIDER_ERROR", source: "provider", retryable: true },
+      },
+    });
   });
 
   test("tool events carry call id and output", () => {

@@ -34,6 +34,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { SYSTEM_PROMPT_CORE, environmentPromptBlock } from "../tools/tools";
 import { kvSet, sessionPrefsSet } from "../storage/hostdb";
+import { beginInteraction, settleInteraction } from "../sessions/pending-interactions";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "../subagent/subagent-mgmt-tools";
 import { SKILL_MGMT_TOOL_NAMES } from "../skills/skill-mgmt-tools";
 import { SKILL_USE_TOOL_NAME } from "../skills/skill-use-tool";
@@ -281,10 +282,23 @@ function buildPlanTools(run: Running): AgentTool[] {
         markdown,
         filePath: run.planFilePath,
       };
-      sendEventChunk(run.threadId, {
-        type: "data-toolApproval",
-        data: { approvalId, toolCallId, toolName: PLAN_TOOL_NAMES.exit, input },
+      // 挂起交互登记落行（§4）：先于推卡，崩溃窗口偏向可恢复一侧；
+      // 带 sessionId 的发起帧进事件水印（§3，漏收 → 桌面回拉 list_pending）
+      beginInteraction(run.threadId, {
+        interactionId: approvalId,
+        kind: "permission",
+        anchorToolCallId: toolCallId,
+        payload: { approvalId, toolCallId, toolName: PLAN_TOOL_NAMES.exit, input },
+        createdAt: new Date().toISOString(),
       });
+      sendEventChunk(
+        run.threadId,
+        {
+          type: "data-toolApproval",
+          data: { approvalId, toolCallId, toolName: PLAN_TOOL_NAMES.exit, input },
+        },
+        run.sessionId,
+      );
       const approval = new Promise<boolean>((resolve) => {
         run.pendingToolApprovals.set(approvalId, {
           toolCallId,
@@ -443,15 +457,32 @@ export async function approvalBeforeToolCall(
   if (hookDecision?.decision === "approve") return undefined;
 
   const approvalId = randomUUID();
-  sendEventChunk(run.threadId, {
-    type: "data-toolApproval",
-    data: {
+  // 挂起交互登记落行 + 发起帧水印（同 plan_exit 审批，§3/§4）
+  beginInteraction(run.threadId, {
+    interactionId: approvalId,
+    kind: "permission",
+    anchorToolCallId: context.toolCall.id,
+    payload: {
       approvalId,
       toolCallId: context.toolCall.id,
       toolName: context.toolCall.name,
       input: context.args ?? null,
     },
+    createdAt: new Date().toISOString(),
   });
+  sendEventChunk(
+    run.threadId,
+    {
+      type: "data-toolApproval",
+      data: {
+        approvalId,
+        toolCallId: context.toolCall.id,
+        toolName: context.toolCall.name,
+        input: context.args ?? null,
+      },
+    },
+    run.sessionId,
+  );
   const approved = await new Promise<boolean>((resolve) => {
     run.pendingToolApprovals.set(approvalId, {
       toolCallId: context.toolCall.id,
@@ -474,6 +505,7 @@ export function resolveToolApproval(run: Running, approvalId: string, approved: 
   const pending = run.pendingToolApprovals.get(approvalId);
   if (!pending) return false;
   run.pendingToolApprovals.delete(approvalId);
+  settleInteraction(approvalId, approved ? "approved" : "denied");
   pending.settledBy = "confirm";
   pending.resolve(approved);
   return true;
@@ -481,7 +513,8 @@ export function resolveToolApproval(run: Running, approvalId: string, approved: 
 
 /** 清理全部挂起审批（按拒绝结算）：用户 Stop / 新 prompt 前的兜底（含 plan_exit） */
 export function clearPendingToolApprovals(run: Running): void {
-  for (const pending of run.pendingToolApprovals.values()) {
+  for (const [approvalId, pending] of run.pendingToolApprovals) {
+    settleInteraction(approvalId, "cancelled");
     pending.settledBy = "clear";
     pending.resolve(false);
   }
@@ -534,5 +567,10 @@ export function planningPayload(run: Running): {
 
 /** 经当前活跃请求流把模式状态推给前端（data-planningState chunk）；无活跃请求时丢弃 */
 export function emitPlanningState(run: Running): void {
-  sendEventChunk(run.threadId, { type: "data-planningState", data: planningPayload(run) });
+  // 带事件水印（设计文档 §3）：缺口回拉 get_planning_state
+  sendEventChunk(
+    run.threadId,
+    { type: "data-planningState", data: planningPayload(run) },
+    run.sessionId,
+  );
 }
