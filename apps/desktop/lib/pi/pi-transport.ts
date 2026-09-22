@@ -5,9 +5,11 @@ import type { AssistantChatResumableOptions } from "@assistant-ui/ai-sdk";
 import { getPiChannel } from "@/lib/pi/pi-channel";
 import { piEnsureThreadSession, piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
-import { applyPlanningChunk } from "@/lib/pi/pi-session-mode";
+import { applyPlanningChunk, fetchPlanningState } from "@/lib/pi/pi-session-mode";
+import { setSeqGuardDeps } from "@/lib/pi/pi-seq-guard";
 import { applyToolApprovalChunk, clearToolApprovals } from "@/lib/pi/pi-tool-approval";
 import { applyQuestionChunk, clearQuestions } from "@/lib/pi/pi-question";
+import { refreshPendingInteractions } from "@/lib/pi/pi-interactions";
 import { applyTodoChunk } from "@/lib/pi/pi-todo";
 import {
   applyQueueStateChunk,
@@ -28,6 +30,8 @@ import {
   saveRunHash,
   loadRunHash,
 } from "@/lib/pi/pi-checkpoints";
+import { refreshContextMirror } from "@/lib/pi/pi-context";
+import type { ErrorPayload } from "pi-protocol";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
 import { recordLastThread } from "@/lib/pi/pi-last-thread";
 import { markThreadActivity } from "@/lib/pi/pi-last-activity";
@@ -35,6 +39,23 @@ import { findRunningTurn, resyncPiRunning } from "@/lib/pi/pi-running";
 import { extractPromptAttachments } from "@/lib/attachments/prompt-attachments";
 import { focusPanelTab } from "@/lib/panels/panel-tabs";
 import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
+
+/**
+ * 水印守卫修复动作接线（设计文档 §3）：守卫核心零应用依赖（防通道 ⇄ store
+ * 循环 import），缺口回拉的四个权威接口在 transport 这个天然枢纽注入——
+ * 它本来就同时依赖队列/模式/运行投影/挂起交互四条 store 线。
+ */
+setSeqGuardDeps({
+  refreshQueue: (threadId) => void refreshQueueSnapshot(threadId),
+  fetchPlanning: (threadId) => void fetchPlanningState(threadId),
+  refreshPending: (threadId) => void refreshPendingInteractions(threadId),
+  refreshContext: (threadId) => refreshContextMirror(threadId),
+  resyncRunning: () => resyncPiRunning(),
+  threadForSession: (sessionId) => {
+    for (const [t, s] of piSessionRegistry) if (s === sessionId) return t;
+    return undefined;
+  },
+});
 
 /** already-processing 内部错误的友好文案（sidecar 队列已消除触发条件，
  *  这里兜底极窄竞态窗口漏网的，绝不把内部错误原文抛给用户） */
@@ -497,6 +518,16 @@ export class PiTransport implements ChatTransport<UIMessage> {
           }
         }
         if (chunk.type === "error") {
+          // §8 结构化归因先落进消息 part（AI SDK 处理 error chunk 时可能丢弃
+          // 其上的未知字段；错误卡片按 part 的 retryable 渲染重试按钮，
+          // data-retry 同款"旁路 part 不拦截转发"形态）
+          const attribution = (chunk as { error?: ErrorPayload }).error;
+          if (attribution) {
+            controller.enqueue({
+              type: "data-errorAttribution",
+              data: attribution,
+            } as UIMessageChunk);
+          }
           // 异常收尾同样结算检查点：半途改动也需要 keep/revert 出口；
           // 挂起提问与 finish 同款清空（abort 拆流时 finish 可能到不了）
           transport.openRequestIds.delete(requestId);

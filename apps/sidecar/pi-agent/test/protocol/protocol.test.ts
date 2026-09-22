@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, appendFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initStorage, sessionPath } from "../../src/storage/storage";
@@ -14,7 +14,13 @@ import {
 import { dispatch, dispatchPrompt, handleLine, setInitGate } from "../../src/protocol/protocol";
 import { rulesFilePath, soulFilePath } from "../../src/agent/personalization";
 import { noteActiveTurn, running } from "../../src/sessions/sessions";
-import { registerCustomProvider, setCurrentModelKey } from "../../src/model/model-catalog";
+import { scanTranscript } from "../../src/sessions/transcript";
+import {
+  registerCustomProvider,
+  setCurrentModelKey,
+  setCurrentThinkingLevel,
+} from "../../src/model/model-catalog";
+import type { Running } from "../../src/types";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-protocol-"));
 const prevIdentityDir = process.env.PI_IDENTITY_DIR;
@@ -61,6 +67,8 @@ describe("dispatch: basic commands", () => {
       id: "p2",
       type: "error",
       errorText: "unknown message type: nope",
+      // §8 加性归因字段：未知命令是本地路由错，不可重试
+      error: { code: "UNKNOWN_MESSAGE_TYPE", source: "runtime", retryable: false },
     });
   });
 
@@ -73,7 +81,19 @@ describe("dispatch: basic commands", () => {
     expect(last()).toEqual({ id: "lr0", type: "running", sessionIds: [], turns: [] });
 
     noteActiveTurn("th-turn", true, "sess-A", "run-1");
-    expect(last()).toEqual({ type: "turn_changed", sessionId: "sess-A", active: true });
+    // 双广播（设计文档 §2）：旧 turn_changed 保留一版本周期 + 新 session_state
+    expect(lines[lines.length - 2] && JSON.parse(lines[lines.length - 2])).toEqual({
+      type: "turn_changed",
+      sessionId: "sess-A",
+      active: true,
+    });
+    const started = last();
+    expect(started).toMatchObject({
+      type: "session_state",
+      sessionId: "sess-A",
+      phase: "running",
+    });
+    expect(typeof started.eventSeq).toBe("number");
     await dispatch("lr1", { type: "list_running" });
     expect(last()).toEqual({
       id: "lr1",
@@ -85,7 +105,15 @@ describe("dispatch: basic commands", () => {
 
     // 收尾不带 sessionId：从登记里取（广播成对）
     noteActiveTurn("th-turn", false);
-    expect(last()).toEqual({ type: "turn_changed", sessionId: "sess-A", active: false });
+    expect(lines[lines.length - 2] && JSON.parse(lines[lines.length - 2])).toEqual({
+      type: "turn_changed",
+      sessionId: "sess-A",
+      active: false,
+    });
+    const ended = last();
+    expect(ended).toMatchObject({ type: "session_state", sessionId: "sess-A", phase: "idle" });
+    // 水印单调（§3）：同会话两帧连号
+    expect(ended.eventSeq).toBe((started.eventSeq as number) + 1);
     await dispatch("lr2", { type: "list_running" });
     expect(last()).toEqual({ id: "lr2", type: "running", sessionIds: [], turns: [] });
   });
@@ -130,7 +158,61 @@ describe("dispatch: sessions", () => {
 
   test("get_history returns empty for a fresh session", async () => {
     await dispatch("s2", { type: "get_history", sessionId });
-    expect(last()).toEqual({ id: "s2", type: "history", messages: [] });
+    // M2 新增应答字段（§4 pending / §6 窗口元数据）：空会话全量窗
+    expect(last()).toEqual({
+      id: "s2",
+      type: "history",
+      messages: [],
+      pending: [],
+      firstSeq: null,
+      lastSeq: null,
+      hasMore: false,
+    });
+  });
+
+  test("M2：交互行回放 + list_pending + tail 分页", async () => {
+    const interaction = {
+      interactionId: "ap-x",
+      kind: "permission",
+      anchorToolCallId: "tc-x",
+      payload: { approvalId: "ap-x", toolCallId: "tc-x", toolName: "bash", input: null },
+      createdAt: "2026-09-22T00:00:00.000Z",
+    };
+    appendFileSync(
+      sessionPath(sessionId),
+      [
+        JSON.stringify({ type: "message", seq: 0, agent: { role: "user", content: "旧问题" } }),
+        JSON.stringify({ type: "message", seq: 1, agent: { role: "user", content: "新问题" } }),
+        JSON.stringify({ type: "pending_interaction", interaction }),
+        JSON.stringify({ type: "pending_interaction", interaction: { ...interaction, interactionId: "ap-gone" } }),
+        JSON.stringify({
+          type: "interaction_resolved",
+          interactionId: "ap-gone",
+          resolution: "approved",
+          resolvedAt: "x",
+        }),
+      ].join("\n") + "\n",
+    );
+
+    await dispatch("h1", { type: "get_history", sessionId });
+    let res = last();
+    expect((res.messages as unknown[]).length).toBe(2);
+    expect(res.pending).toEqual([interaction]); // 已结算的 ap-gone 配对剔除
+    expect(res.firstSeq).toBe(0);
+    expect(res.lastSeq).toBe(1);
+    expect(res.hasMore).toBe(false);
+
+    // 分页窗：tail=1 只回尾部一条，元数据如实
+    await dispatch("h2", { type: "get_history", sessionId, tail: 1 });
+    res = last();
+    expect((res.messages as unknown[]).length).toBe(1);
+    expect(res).toMatchObject({ firstSeq: 1, lastSeq: 1, hasMore: true });
+
+    // list_pending：按会话权威拉取，不依赖驻留；按线程未绑定 → 空表
+    await dispatch("lp1", { type: "list_pending", sessionId });
+    expect(last()).toEqual({ id: "lp1", type: "pending", items: [interaction] });
+    await dispatch("lp2", { type: "list_pending", threadId: "thread-never-bound" });
+    expect(last()).toEqual({ id: "lp2", type: "pending", items: [] });
   });
 
   test("rename_session updates the title", async () => {
@@ -142,6 +224,8 @@ describe("dispatch: sessions", () => {
       )
       .get(sessionId)!;
     expect(row.title).toBe("My Chat");
+    // §6 M4：改名先落转录 session_info 行（真值），索引 title 列退为投影
+    expect(scanTranscript(sessionId).name).toBe("My Chat");
   });
 
   test("list_sessions only includes sessions with messages", async () => {
@@ -214,6 +298,11 @@ describe("dispatch: sessions", () => {
         "\n" +
         JSON.stringify({ type: "compaction", seq: 1, summary: "s", tokensBefore: 1, throughSeq: 0, createdAt: now }) +
         "\n" +
+        // §6 M4 设定行：不占 seq，验证不进分支复制（新会话按全局/偏好默认打开）
+        JSON.stringify({ type: "model_change", provider: "openai", modelId: "gpt-4o", timestamp: now }) +
+        "\n" +
+        JSON.stringify({ type: "session_info", name: "设定命名", timestamp: now }) +
+        "\n" +
         JSON.stringify({ type: "message", seq: 2, ui: {}, agent: {} }) +
         "\n" +
         "{ 撕裂的尾行",
@@ -230,13 +319,21 @@ describe("dispatch: sessions", () => {
     expect(newId).not.toBe(srcId);
 
     // 新 JSONL：header 换新 id/cwd，数据行原样复制（compaction 行保留、seq 不变），
-    // 撕裂尾行不进分支
+    // 撕裂尾行与设定行不进分支（本期文件复制行为不变，§6）
     const forkLines = readFileSync(sessionPath(newId), "utf8").trim().split("\n");
     expect(forkLines).toHaveLength(4);
-    expect(JSON.parse(forkLines[0])).toMatchObject({ type: "header", id: newId, cwd: tmp });
+    expect(JSON.parse(forkLines[0])).toMatchObject({
+      type: "header",
+      id: newId,
+      cwd: tmp,
+      parentSession: srcId, // fork 溯源（§6 M4）：上游 header 同名可选字段，值取源会话 id
+    });
     expect(JSON.parse(forkLines[1])).toMatchObject({ type: "message", seq: 0 });
     expect(JSON.parse(forkLines[2])).toMatchObject({ type: "compaction", seq: 1 });
     expect(JSON.parse(forkLines[3])).toMatchObject({ type: "message", seq: 2 });
+    const forkScan = scanTranscript(newId);
+    expect(forkScan.model).toBeNull();
+    expect(forkScan.name).toBeNull();
 
     // 索引行：标题加「（分支）」后缀；message_count 只按实拷消息行计
     const row = getLocalDb()!
@@ -549,12 +646,36 @@ describe("dispatchPrompt", () => {
   test("emits an error chunk when no usable model is configured", async () => {
     await dispatchPrompt("pp1", { type: "prompt", text: "hi", threadId: "th-prompt" });
     const errorChunk = lines
-      .map((l) => JSON.parse(l) as { id: string; chunk: { type: string } })
+      .map((l) => JSON.parse(l) as { id: string; chunk: { type: string; error?: { code?: string; source?: string; retryable?: boolean } } })
       .find((l) => l.id === "pp1" && l.chunk?.type === "error");
     expect(errorChunk).toBeDefined();
+    // §8 归因随帧：具体 code 取决于本环境走到哪条失败路径（前序测试留下的默认
+    // 模型可能让轮次进流式失败而非无模型守卫），只锁归因形状
+    const attribution = errorChunk!.chunk.error!;
+    expect(typeof attribution.code).toBe("string");
+    expect(["provider", "network", "runtime", "tool"].includes(attribution.source ?? "")).toBe(true);
+    expect(typeof attribution.retryable).toBe("boolean");
+  });
+
+  test("pushes a stamped context_changed row after the turn settles", async () => {
+    // pp1 已让 th-prompt 物化会话并跑完（失败）轮；收尾 finally 推 §7 读数帧。
+    // 读数取值随本环境模型注入与否变（无模型时阈值 0、cacheHitRatio null），
+    // 只锁帧形与非负性
+    const frame = lines
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((l) => l.type === "context_changed");
+    expect(frame).toBeDefined();
+    expect(typeof frame!.sessionId).toBe("string");
+    expect((frame!.sessionId as string).length).toBeGreaterThan(0);
+    expect(typeof frame!.eventSeq).toBe("number");
+    expect(frame!.usedTokens).toBeGreaterThanOrEqual(0);
+    expect(frame!.threshold).toBeGreaterThanOrEqual(0);
+    expect(frame!.contextWindow).toBeGreaterThanOrEqual(0);
+    expect(frame!.cacheHitRatio === null || typeof frame!.cacheHitRatio === "number").toBe(true);
   });
 
   test("errors for a missing session id", async () => {
+    const ctxBefore = lines.filter((l) => l.includes('"context_changed"')).length;
     await dispatchPrompt("pp2", { type: "prompt", text: "hi", sessionId: "ghost-session" });
     // 不可用 last()：turn 收尾的 turn_changed 行在 error chunk 之后写出
     const res = [...lines]
@@ -563,6 +684,8 @@ describe("dispatchPrompt", () => {
       .find((l) => l.id === "pp2" && l.chunk)!.chunk!;
     expect(res.type).toBe("error");
     expect(res.errorText).toContain("session not found");
+    // §7：resolveSession 失败的轮没有 run，收尾不推上下文帧
+    expect(lines.filter((l) => l.includes('"context_changed"')).length).toBe(ctxBefore);
   });
 });
 
@@ -586,6 +709,36 @@ describe("dispatch: get_model / init gate", () => {
     await dispatch("gm3", { type: "get_model" });
     expect(last()).toEqual({ id: "gm3", type: "model", provider: "proto-p", modelId: "m1" });
     setCurrentModelKey(null); // 清理：不留全局选择
+  });
+
+  test("set_model/set_thinking 给驻留会话落设定行（§6 M4 转录=真值）", async () => {
+    const sid = "m4-resident";
+    await sessionInsert(sid, tmp);
+    // 最小驻留 run：handler 只用 sessionId/mode/cwd/agent.state 四个面
+    const fakeRun = {
+      sessionId: sid,
+      mode: "agent",
+      cwd: tmp,
+      agent: { state: {} },
+    } as unknown as Running;
+    running.set(sid, fakeRun);
+    try {
+      await dispatch("m4a", { type: "set_model", provider: "proto-p", modelId: "m1" });
+      expect(last()).toEqual({ id: "m4a", type: "model", provider: "proto-p", modelId: "m1" });
+      await dispatch("m4b", { type: "set_thinking", level: "high" });
+      const scan = scanTranscript(sid);
+      expect(scan.model).toEqual({ provider: "proto-p", modelId: "m1" });
+      expect(scan.thinkingLevel).toBe("high");
+      // 设定行不占 seq、不带消息
+      expect(scan.messages).toEqual([]);
+      // 既有语义不变：驻留 Agent 即时改写 + 应答帧照发
+      expect(fakeRun.agent.state.model?.provider).toBe("proto-p");
+      expect(fakeRun.agent.state.thinkingLevel).toBe("high");
+    } finally {
+      running.delete(sid);
+      setCurrentModelKey(null);
+      setCurrentThinkingLevel("off");
+    }
   });
 
   test("commands arriving before the init gate are buffered", async () => {

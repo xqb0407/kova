@@ -20,6 +20,11 @@ import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
 import {
+  beginInteraction,
+  sessionForThread,
+  settleInteraction,
+} from "../sessions/pending-interactions";
+import {
   activeMcpServers,
   loadMcpServers,
   loadMcpServersSync,
@@ -148,6 +153,7 @@ export function resolveMcpApproval(approvalId: string, approved: boolean): boole
   const pending = pendingMcpApprovals.get(approvalId);
   if (!pending) return false;
   pendingMcpApprovals.delete(approvalId);
+  settleInteraction(approvalId, approved ? "approved" : "denied");
   pending.resolve(approved);
   return true;
 }
@@ -157,6 +163,7 @@ export function cancelPendingMcpApprovals(threadId: string): void {
   for (const [id, entry] of [...pendingMcpApprovals]) {
     if (entry.threadId !== threadId) continue;
     pendingMcpApprovals.delete(id);
+    settleInteraction(id, "cancelled");
     entry.resolve(false);
   }
 }
@@ -427,10 +434,20 @@ async function requestMcpApproval(
   if (getAutomationPolicy(threadId)) return getAutomationPolicy(threadId) === "full";
   const approvalId = `${toolCallId}:mcp`;
   const input = { action: "call", server, tool: fullName, args };
-  sendEventChunk(threadId, {
-    type: "data-toolApproval",
-    data: { approvalId, toolCallId, toolName: "mcp", input },
+  // 挂起交互登记落行（§4）+ 发起帧水印（§3）：MCP 审批会话必已物化（工具在跑），
+  // 台账拿不到会话时自然降级为直播流卡片
+  beginInteraction(threadId, {
+    interactionId: approvalId,
+    kind: "permission",
+    anchorToolCallId: toolCallId,
+    payload: { approvalId, toolCallId, toolName: "mcp", input },
+    createdAt: new Date().toISOString(),
   });
+  sendEventChunk(
+    threadId,
+    { type: "data-toolApproval", data: { approvalId, toolCallId, toolName: "mcp", input } },
+    sessionForThread(threadId),
+  );
   return new Promise<boolean>((resolve) => {
     pendingMcpApprovals.set(approvalId, { threadId, resolve });
   });

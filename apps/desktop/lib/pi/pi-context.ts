@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect, useSyncExternalStore } from "react";
 import { piRequest, type PiCompacted, type PiContextInfo } from "@/lib/pi/pi-bridge";
+import { getPiChannel, type PiContextChangedFrame } from "@/lib/pi/pi-channel";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import { setManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
@@ -22,6 +24,139 @@ function threadPayload(threadId: string): { threadId: string; sessionId?: string
 /** 读取当前线程的上下文读数（popover 打开时调用） */
 export function fetchContextInfo(threadId: string): Promise<PiContextInfo> {
   return piRequest<PiContextInfo>({ type: "context_info", ...threadPayload(threadId) });
+}
+
+/* ---------------- 占用镜像（设计文档 §7，拉转推） ----------------
+ * sidecar 每轮收尾推 context_changed：占用环不再逐轮全量拉取，推送直更
+ * 镜像；popover 打开仍拉完整读数（分项/模型名/miss 统计不在推送里）；
+ * 水印缺口回拉 context_info（pi-transport 把 refreshContextMirror 接进
+ * seq-guard 的 kind="context"）。帧按 sessionId、镜像按 threadId（UI
+ * 消费键）；未绑定会话的帧丢弃。 */
+
+export type PiContextMirror = {
+  /** 消息+系统提示词+工具三项之和（与 sidecar 推送口径一致） */
+  usedTokens: number;
+  /** 自动压缩硬阈值（hardLimit；0 = 无模型/不可判） */
+  threshold: number;
+  contextWindow: number;
+  cacheHitRatio: number | null;
+  /** 该镜像来自哪条推送水印（null = 拉取写入）；回退号丢弃防重放倒挂 */
+  eventSeq: number | null;
+};
+
+const contextMirrors = new Map<string, PiContextMirror>();
+const contextListeners = new Set<() => void>();
+
+function notifyContextMirrors(): void {
+  for (const l of [...contextListeners]) l();
+}
+
+export function subscribeContextMirror(cb: () => void): () => void {
+  contextListeners.add(cb);
+  return () => {
+    contextListeners.delete(cb);
+  };
+}
+
+export function readContextMirror(threadId: string): PiContextMirror | null {
+  return contextMirrors.get(threadId) ?? null;
+}
+
+function threadForSession(sessionId: string): string | undefined {
+  for (const [t, s] of piSessionRegistry) if (s === sessionId) return t;
+  return undefined;
+}
+
+/** context_changed 推送帧直更镜像（通道回调；形状残缺/未绑定即弃） */
+export function applyContextChanged(frame: PiContextChangedFrame): void {
+  if (
+    typeof frame.usedTokens !== "number" ||
+    typeof frame.threshold !== "number" ||
+    typeof frame.contextWindow !== "number"
+  ) {
+    return;
+  }
+  const threadId = threadForSession(frame.sessionId);
+  if (!threadId) return;
+  const prev = contextMirrors.get(threadId);
+  if (
+    typeof frame.eventSeq === "number" &&
+    typeof prev?.eventSeq === "number" &&
+    frame.eventSeq <= prev.eventSeq
+  ) {
+    return; // 陈旧代际（attach 重放等）
+  }
+  contextMirrors.set(threadId, {
+    usedTokens: frame.usedTokens,
+    threshold: frame.threshold,
+    contextWindow: frame.contextWindow,
+    cacheHitRatio: typeof frame.cacheHitRatio === "number" || frame.cacheHitRatio === null
+      ? frame.cacheHitRatio
+      : null,
+    eventSeq: typeof frame.eventSeq === "number" ? frame.eventSeq : null,
+  });
+  notifyContextMirrors();
+}
+
+/** 完整读数回填镜像（拉取路径：popover 打开/首屏水合/缺口修复） */
+export function setContextMirrorFromPull(threadId: string, info: PiContextInfo): void {
+  contextMirrors.set(threadId, {
+    usedTokens: info.messageTokens + info.systemPromptTokens + info.toolTokens,
+    threshold: info.hardLimit,
+    contextWindow: info.contextWindow,
+    cacheHitRatio: info.cacheHitRate,
+    eventSeq: null,
+  });
+  notifyContextMirrors();
+}
+
+/** seq-guard kind="context" 的回拉动作：context_info → 镜像（失败静默，
+ *  下一轮推送/popover 打开自会补正，不在守卫路径上制造噪音） */
+export function refreshContextMirror(threadId: string): void {
+  void fetchContextInfo(threadId)
+    .then((info) => setContextMirrorFromPull(threadId, info))
+    .catch(() => {});
+}
+
+/** 惰性订阅（占用环消费方挂载时触发）：注册一次；通道不支持则镜像
+ *  退化为纯拉取（首屏水合 + popover 打开），推送缺位不影响正确性 */
+let contextSubStarted = false;
+let contextTeardown: (() => void) | null = null;
+export function ensureContextSubscription(): void {
+  if (contextSubStarted) return;
+  contextSubStarted = true;
+  void (async () => {
+    try {
+      const un = await getPiChannel().subscribeContextChanges?.(applyContextChanged);
+      contextTeardown = un ?? null;
+    } catch {
+      contextTeardown = null;
+    }
+  })();
+}
+
+/** 测试/换通道拆除：退订并允许重新订阅（setPiChannel 换 fake 通道间用） */
+export function teardownContextSubscription(): void {
+  contextTeardown?.();
+  contextTeardown = null;
+  contextSubStarted = false;
+}
+
+/** 响应式读取线程占用镜像（与既有拉取 info 互补：镜像驱动 ring 常显） */
+export function usePiContextMirror(
+  threadId: string | undefined | null,
+): PiContextMirror | null {
+  useEffect(() => {
+    ensureContextSubscription();
+    // 水合拉取：每线程镜像为空时补一次（挂载/切线程/重启后首屏），
+    // 常态更新走推送，不再逐轮拉
+    if (threadId && !readContextMirror(threadId)) refreshContextMirror(threadId);
+  }, [threadId]);
+  return useSyncExternalStore(
+    subscribeContextMirror,
+    () => (threadId ? readContextMirror(threadId) : null),
+    () => null,
+  );
 }
 
 /**

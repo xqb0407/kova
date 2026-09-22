@@ -8,15 +8,21 @@ import { resolveSession } from "../../sessions/sessions";
 import { applyMode, planningPayload, resolveToolApproval } from "../../agent/modes";
 import { resolveMcpApproval } from "../../mcp/mcp-tools";
 import { resolveQuestionAnswer, type QuestionAnswerItem } from "../../tools/question-tools";
+import {
+  sessionForThread,
+  settleInteraction,
+} from "../../sessions/pending-interactions";
+import { scanTranscript } from "../../sessions/transcript";
 import type { CommandHandler } from "../command";
 
 export const handlers: Record<string, CommandHandler> = {
   tool_confirm: async (reqId, msg) => {
     // 结算逐工具审批：approved = 放行执行，false = 拦截（模型收到 blocked 工具结果）
     const approvalId = String(msg.approvalId ?? "");
+    const approved = Boolean(msg.approved);
     // MCP 网关工具的审批挂起不在 run 内（模块级表，见 mcp-tools.ts）：先查它，
     // 命中即结算返回，不去 resolveSession（审批期间会话可能尚未落库）
-    if (resolveMcpApproval(approvalId, Boolean(msg.approved))) {
+    if (resolveMcpApproval(approvalId, approved)) {
       send({ id: reqId, type: "tool_confirmed", approvalId });
       return;
     }
@@ -24,8 +30,12 @@ export const handlers: Record<string, CommandHandler> = {
       String(msg.threadId ?? "default"),
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
     );
-    if (!resolveToolApproval(run, approvalId, Boolean(msg.approved))) {
-      throw new Error(`no pending tool approval: ${approvalId}`);
+    if (!resolveToolApproval(run, approvalId, approved)) {
+      // 重启后重放的陈旧条目（§4）：活 promise 已随旧进程消亡，结算只落行解禁
+      // （台账里也没有 = 真不存在，维持原报错）
+      if (!settleInteraction(approvalId, approved ? "approved" : "denied")) {
+        throw new Error(`no pending tool approval: ${approvalId}`);
+      }
     }
     send({ id: reqId, type: "tool_confirmed", approvalId });
   },
@@ -36,10 +46,25 @@ export const handlers: Record<string, CommandHandler> = {
     const answers = Array.isArray(msg.answers)
       ? (msg.answers as QuestionAnswerItem[])
       : [];
-    if (!resolveQuestionAnswer(questionId, answers)) {
+    if (
+      !resolveQuestionAnswer(questionId, answers) &&
+      // 陈旧条目兜底（同 tool_confirm）
+      !settleInteraction(questionId, "answered")
+    ) {
       throw new Error(`no pending question: ${questionId}`);
     }
     send({ id: reqId, type: "question_answered", questionId });
+  },
+
+  list_pending: async (reqId, msg) => {
+    // 权威拉取（§3 回拉表 / §4）：交互行即事实源（发起/结算都落行），
+    // 不依赖会话驻留——刷新、驱逐、重启后同一入口补齐挂起卡。
+    const sessionId =
+      typeof msg.sessionId === "string"
+        ? msg.sessionId
+        : sessionForThread(String(msg.threadId ?? "default"));
+    const items = sessionId ? scanTranscript(sessionId).pending : [];
+    send({ id: reqId, type: "pending", items });
   },
 
   set_mode: async (reqId, msg) => {

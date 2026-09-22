@@ -6,11 +6,12 @@
 @import "tw-shimmer";
 @plugin "tailwind-scrollbar";
 /* @source "../../../packages/ui/src"; */
-@source "../node_modules/streamdown/dist/*.js";
-@source "../node_modules/@streamdown/code/dist/*.js";
-@source "../node_modules/@streamdown/math/dist/*.js";
-@source "../node_modules/@streamdown/mermaid/dist/*.js";
-@source "../node_modules/@streamdown/cjk/dist/*.js";
+/* Tailwind v4 的 @source 相对本 CSS 文件所在目录解析：app/styles 下要上跳两级才到 apps/desktop */
+@source "../../node_modules/streamdown/dist/*.js";
+@source "../../node_modules/@streamdown/code/dist/*.js";
+@source "../../node_modules/@streamdown/math/dist/*.js";
+@source "../../node_modules/@streamdown/mermaid/dist/*.js";
+@source "../../node_modules/@streamdown/cjk/dist/*.js";
 
 @import "./animate.css";
 @import "./codehike.css";

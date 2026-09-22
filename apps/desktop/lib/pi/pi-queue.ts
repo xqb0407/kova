@@ -3,6 +3,13 @@
 import { useSyncExternalStore } from "react";
 import type { UIMessage } from "ai";
 import { getPiChannel } from "@/lib/pi/pi-channel";
+import {
+  queueSnapshotSchema,
+  checkFrame,
+  isStrictEnv,
+  type QueueSnapshot,
+  type QueueSnapshotItem,
+} from "pi-protocol";
 
 /**
  * prompt 排队 store v3（快照镜像 + 单路径消息同步）：
@@ -33,19 +40,9 @@ import { getPiChannel } from "@/lib/pi/pi-channel";
  *   派发出队=链节取队首前宿主轮已完整收尾；steered=宿主轮流收尾后。
  */
 
-export type QueueSnapshotItem = {
-  id: number;
-  reqId: string;
-  text: string;
-  createdAt: string;
-};
-
-export type QueueSnapshot = {
-  version: 2;
-  threadId: string;
-  items: QueueSnapshotItem[];
-  nextId: number;
-};
+// 快照契约单源 pi-protocol（设计文档 §5）：与 sidecar prompt-queue.ts
+// 共用同一 schema，本文件不再手抄镜像。
+export type { QueueSnapshot, QueueSnapshotItem };
 
 /** 登记表条目：phase 即上文状态机 */
 export type RegisteredMessage = {
@@ -78,10 +75,16 @@ export function registerQueuedMessage(reqId: string, threadId: string, message: 
   registry.set(reqId, { threadId, messageId: message.id, message, phase: "pending" });
 }
 
-/** 消费 data-queue-state 快照 chunk（pi-transport 调用） */
+/** 消费 data-queue-state 快照 chunk（pi-transport 调用）。入帧校验
+ * （设计文档 §9）：dev/test 契约漂移即抛；prod 记 warn 后维持旧宽松路径 */
 export function applyQueueStateChunk(threadId: string, data: unknown): void {
-  const snapshot = data as QueueSnapshot | null;
-  if (!snapshot || snapshot.version !== 2 || !Array.isArray(snapshot.items)) return;
+  const snapshot = checkFrame(queueSnapshotSchema, data, {
+    strict: isStrictEnv,
+    where: "applyQueueStateChunk",
+    report: (where, issue) => console.warn(`pi-protocol ${where}:`, issue),
+  });
+  // prod 放行路径保住旧最小安全网：缺 items 的畸形帧直接丢弃（等 §3 回拉补平）
+  if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.items)) return;
   applySnapshot({ ...snapshot, threadId });
 }
 

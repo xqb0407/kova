@@ -17,6 +17,8 @@ import {
   fetchContextInfo,
   markManualCompaction,
   markManualCompactionStart,
+  setContextMirrorFromPull,
+  usePiContextMirror,
 } from "@/lib/pi/pi-context";
 import { clearManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
 import type { PiContextInfo } from "@/lib/pi/pi-bridge";
@@ -25,7 +27,9 @@ import { Separator } from "../ui/separator";
 /**
  * 上下文占用查看器（composer 区，模型选择器旁）：点击弹出当前会话的
  * 上下文读数——容量、消息/系统提示词/工具占用、平均缓存命中率、压缩状态。
- * 数据全部由 sidecar 现算（context_info 命令），打开时才拉取。
+ * 数据全部由 sidecar 现算；占用环走 §7 推送镜像（轮收尾 context_changed
+ * 直更，首挂/切线程水合拉一次，常显占用与距自动压缩），popover 打开才
+ * 拉完整 context_info（分项/命中率/压缩代数不在推送里）。
  * 附「立即压缩」按钮：走 compact 命令手动触发 compaction（运行中会被拒绝）。
  */
 
@@ -74,6 +78,8 @@ export const ContextButton: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const messageCount = useAuiState((s) => s.thread.messages.length);
   const isRunning = useAuiState((s) => s.thread.isRunning);
+  // §7 推送镜像：占用环的常态数据源（轮收尾 context_changed 直更）
+  const mirror = usePiContextMirror(threadId);
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState<PiContextInfo | null>(null);
   const [loading, setLoading] = useState(false);
@@ -85,32 +91,16 @@ export const ContextButton: FC = () => {
     setLoading(true);
     setLoadError(null);
     try {
-      setInfo(await fetchContextInfo(threadId));
+      const res = await fetchContextInfo(threadId);
+      setInfo(res);
+      // 完整读数顺带校准镜像（拉取胜推送：口径同源、时间更新）
+      setContextMirrorFromPull(threadId, res);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
   }, [threadId]);
-
-  // 圆环常驻读数：会话产生消息后拉一次；每轮消息增减（回合结束）自动刷新
-  useEffect(() => {
-    if (!threadId || messageCount === 0) return;
-    let cancelled = false;
-    fetchContextInfo(threadId)
-      .then((i) => {
-        if (!cancelled) {
-          setInfo(i);
-          setLoadError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [threadId, messageCount]);
 
   const onOpenChange = (next: boolean) => {
     setOpen(next);
@@ -151,10 +141,21 @@ export const ContextButton: FC = () => {
   // 空对话没有上下文可看，不占 composer 位
   if (!threadId || messageCount === 0) return null;
 
-  const used = info
-    ? info.messageTokens + info.systemPromptTokens + info.toolTokens
-    : 0;
-  const usedPct = info && info.contextWindow > 0 ? used / info.contextWindow : null;
+  // 占用环数据源：§7 镜像优先（轮收尾推送直更，常态在线），完整读数兜底
+  const used = mirror
+    ? mirror.usedTokens
+    : info
+      ? info.messageTokens + info.systemPromptTokens + info.toolTokens
+      : 0;
+  const capacity = mirror ? mirror.contextWindow : info ? info.contextWindow : 0;
+  // 自动压缩阈值（hardLimit）：占用距它的百分比常显在 title/popover
+  const threshold = mirror ? mirror.threshold : info ? info.hardLimit : 0;
+  const usedPct = capacity > 0 ? used / capacity : null;
+  const needsCompact = info
+    ? info.needsCompaction
+    : threshold > 0 && used >= threshold;
+  const toCompactPct =
+    threshold > 0 ? Math.max(0, Math.round(((threshold - used) / threshold) * 100)) : null;
   const rows: MeterRow[] = info
     ? [
         { label: "消息占用", tokens: info.messageTokens, dotClass: "bg-sky-500" },
@@ -174,11 +175,15 @@ export const ContextButton: FC = () => {
             title={
               usedPct === null
                 ? "上下文占用"
-                : `上下文占用 ${(usedPct * 100).toFixed(1)}%`
+                : toCompactPct === null
+                  ? `上下文占用 ${(usedPct * 100).toFixed(1)}%`
+                  : `上下文占用 ${(usedPct * 100).toFixed(1)}% · ${
+                      toCompactPct > 0 ? `距自动压缩 ${toCompactPct}%` : "已越过自动压缩阈值"
+                    }`
             }
             className={cn(
               "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-full px-2 text-sm text-muted-foreground transition-colors hover:text-foreground",
-              info?.needsCompaction && "text-amber-600 dark:text-amber-400",
+              needsCompact && "text-amber-600 dark:text-amber-400",
             )}
           >
             <UsageRing pct={usedPct} />
@@ -202,19 +207,7 @@ export const ContextButton: FC = () => {
             )}
           </div>
 
-          {loading && !info ? (
-            <div className="text-muted-foreground flex items-center gap-2 py-4 text-sm">
-              <Loader2Icon className="size-4 animate-spin" />
-              读取中…
-            </div>
-          ) : loadError && !info ? (
-            <div className="text-destructive flex items-center justify-between gap-2 text-sm">
-              <span className="min-w-0 break-words">{loadError}</span>
-              <Button size="sm" variant="ghost" onClick={() => void load()}>
-                重试
-              </Button>
-            </div>
-          ) : info ? (
+          {info ? (
             <>
               {/* 占用条：三段堆叠，竖线为压缩阈值位置 */}
               <div className="bg-muted relative h-2 w-full overflow-hidden rounded-full">
@@ -332,6 +325,25 @@ export const ContextButton: FC = () => {
                 )}
               </Button>
             </>
+          ) : loading ? (
+            <div className="text-muted-foreground flex items-center gap-2 py-4 text-sm">
+              <Loader2Icon className="size-4 animate-spin" />
+              读取中…
+            </div>
+          ) : loadError ? (
+            <div className="text-destructive flex items-center justify-between gap-2 text-sm">
+              <span className="min-w-0 break-words">{loadError}</span>
+              <Button size="sm" variant="ghost" onClick={() => void load()}>
+                重试
+              </Button>
+            </div>
+          ) : mirror ? (
+            // 完整读数还没到位、但 §7 推送镜像已在：先呈现占用与压缩距离
+            <div className="text-muted-foreground py-2 text-sm">
+              占用 {usedPct === null ? "—" : `${(usedPct * 100).toFixed(1)}%`}
+              {toCompactPct !== null &&
+                ` · ${toCompactPct > 0 ? `距自动压缩 ${toCompactPct}%` : "已越过自动压缩阈值"}`}
+            </div>
           ) : null}
         </div>
       </PopoverContent>

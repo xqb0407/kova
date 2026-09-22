@@ -14,6 +14,11 @@ import {
   readAllCompactions,
   titleSummarizeHook,
   maybeSummarizeSessionTitle,
+  scanTranscript,
+  appendModelChangeRow,
+  appendThinkingLevelChangeRow,
+  appendSessionInfoRow,
+  setSessionName,
 } from "../../src/sessions/transcript";
 import { makeSummaryMessage, projectRestoreContext } from "../../src/agent/context";
 import type { Message } from "@earendil-works/pi-ai";
@@ -681,6 +686,8 @@ describe("maybeSummarizeSessionTitle", () => {
         .query<{ title: string }, [string]>("SELECT title FROM sessions WHERE id = ?")
         .get(id)!;
       expect(row.title).toBe("重构认证模块");
+      // §6 M4：AI 标题与手动改名共用 setSessionName 落盘面 → 转录 session_info 行同步落
+      expect(scanTranscript(id).name).toBe("重构认证模块");
     } finally {
       titleSummarizeHook.fn = undefined;
     }
@@ -781,5 +788,180 @@ describe("maybeSummarizeSessionTitle", () => {
     } finally {
       titleSummarizeHook.fn = undefined;
     }
+  });
+});
+
+/* ---------------- 上下文设定行（§6 M4 上游对齐） ---------------- */
+
+/**
+ * 互测样例（M4 门禁方向 b）：vendored 自上游
+ * pi-main packages/coding-agent/src/core/session-manager.ts 的
+ * `getSessionContextSettings`——上游把 parseSessionEntries（JSON.parse
+ * 不校验）解析出的条目序列回放成 thinking/model 设定。逻辑逐行保持原样，
+ * 仅把入参类型放宽成 JSONL 直读的行对象。
+ */
+function upstreamGetSessionContextSettings(entries: {
+  type: string;
+  [k: string]: unknown;
+}[]): { thinkingLevel: string; model: { provider: string; modelId: string } | null } {
+  let thinkingLevel = "off";
+  let model: { provider: string; modelId: string } | null = null;
+
+  for (const entry of entries) {
+    if (entry.type === "thinking_level_change") {
+      thinkingLevel = entry.thinkingLevel as string;
+    } else if (entry.type === "model_change") {
+      model = { provider: entry.provider as string, modelId: entry.modelId as string };
+    } else if (entry.type === "message") {
+      const m = entry.message as
+        | { role?: string; provider?: string; model?: string }
+        | undefined;
+      if (m?.role === "assistant") {
+        model = { provider: m.provider as string, modelId: m.model as string };
+      }
+    }
+  }
+
+  return { thinkingLevel, model };
+}
+
+describe("上下文设定行落盘与回放（§6 M4）", () => {
+  test("writer 三件套往返：逐行 JSONL、ISO timestamp、不占 seq；scan 回放 last-wins", async () => {
+    const id = "m4-writers";
+    await sessionInsert(id, tmp);
+    appendModelChangeRow(id, "anthropic", "claude-sonnet-4-5");
+    appendThinkingLevelChangeRow(id, "low");
+    appendSessionInfoRow(id, "首次命名");
+    appendModelChangeRow(id, "openai", "gpt-4o");
+    appendThinkingLevelChangeRow(id, "high");
+    appendSessionInfoRow(id, "改名后");
+    const scan = scanTranscript(id);
+    expect(scan.model).toEqual({ provider: "openai", modelId: "gpt-4o" });
+    expect(scan.thinkingLevel).toBe("high");
+    expect(scan.name).toBe("改名后");
+    expect(scan.messages).toEqual([]);
+    const rows = readFileSync(sessionPath(id), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(rows.map((r) => r.type)).toEqual([
+      "model_change",
+      "thinking_level_change",
+      "session_info",
+      "model_change",
+      "thinking_level_change",
+      "session_info",
+    ]);
+    // timestamp = 上游条目同名字段的 ISO 串（读端不用，纯溯源留档）
+    expect(String(rows[0].timestamp)).toMatch(
+      new RegExp(`^${new Date().getFullYear()}-\\d{2}-\\d{2}T`),
+    );
+    // 事件溯源行不占 seq 号段（queue_state/pending_interaction 同款）
+    expect(rows.every((r) => !("seq" in r))).toBe(true);
+  });
+
+  test("无设定行 = 三值全 null：旧会话恢复回落偏好行/全局的路径不受影响", async () => {
+    const id = "m4-legacy";
+    await sessionInsert(id, tmp);
+    writeFileSync(
+      sessionPath(id),
+      JSON.stringify({
+        type: "message",
+        seq: 0,
+        ui: null,
+        agent: { role: "user", content: "hi" },
+      }) + "\n",
+    );
+    const scan = scanTranscript(id);
+    expect(scan).toMatchObject({ model: null, thinkingLevel: null, name: null });
+    expect(scan.messages).toHaveLength(1);
+  });
+
+  test("形状不符的设定行与未知行忽略，不覆盖最后有效值", async () => {
+    const id = "m4-malformed";
+    await sessionInsert(id, tmp);
+    writeFileSync(
+      sessionPath(id),
+      [
+        JSON.stringify({
+          type: "model_change",
+          provider: "openai",
+          modelId: "gpt-4o",
+          timestamp: "2026-01-01T00:00:00.000Z",
+        }),
+        JSON.stringify({ type: "model_change", provider: "缺modelId" }),
+        JSON.stringify({ type: "thinking_level_change", thinkingLevel: 42 }),
+        JSON.stringify({ type: "session_info" }),
+        // 上游树形态的未知行（label）：跳过不炸
+        JSON.stringify({ type: "label", id: "x9y8z7w6", parentId: "d4e5f6g7", label: "标记" }),
+        JSON.stringify({ type: "session_info", name: "有效名" }),
+        "{ 撕裂的尾行",
+      ].join("\n") + "\n",
+    );
+    const scan = scanTranscript(id);
+    expect(scan.model).toEqual({ provider: "openai", modelId: "gpt-4o" }); // 坏行不覆盖好值
+    expect(scan.thinkingLevel).toBeNull(); // 类型错的不进
+    expect(scan.name).toBe("有效名"); // 最后一条有效行 wins
+  });
+
+  test("空串名 = 显式清名，与无行的 null 可区分", async () => {
+    const id = "m4-clearname";
+    await sessionInsert(id, tmp);
+    appendSessionInfoRow(id, "A");
+    expect(scanTranscript(id).name).toBe("A");
+    appendSessionInfoRow(id, "");
+    expect(scanTranscript(id).name).toBe("");
+  });
+
+  test("setSessionName：先落转录行（真值），再同步索引 title 列（投影）", async () => {
+    const id = "m4-rename";
+    await sessionInsert(id, tmp);
+    await setSessionName(id, "交接命名");
+    expect(scanTranscript(id).name).toBe("交接命名");
+    const row = getLocalDb()!
+      .query<{ title: string }, [string]>("SELECT title FROM sessions WHERE id = ?")
+      .get(id)!;
+    expect(row.title).toBe("交接命名");
+  });
+});
+
+describe("与上游 v3 解析器互测（§10 M4 门禁）", () => {
+  test("方向 a：上游文档原版 v3 条目行（树形态）我们的回放读得出", async () => {
+    const id = "m4-upstream-in";
+    await sessionInsert(id, tmp);
+    // 逐字取自 pi-main packages/coding-agent/docs/session-format.md 的示例条目
+    writeFileSync(
+      sessionPath(id),
+      [
+        '{"type":"session","version":3,"id":"uuid","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","parentSession":"/path/to/original/session.jsonl"}',
+        '{"type":"message","id":"a1b2c3d4","parentId":"prev1234","timestamp":"2024-12-03T14:00:01.000Z","message":{"role":"user","content":"Hello","timestamp":1733234401000}}',
+        '{"type":"model_change","id":"d4e5f6g7","parentId":"c3d4e5f6","timestamp":"2024-12-03T14:05:00.000Z","provider":"openai","modelId":"gpt-4o"}',
+        '{"type":"thinking_level_change","id":"e5f6g7h8","parentId":"d4e5f6g7","timestamp":"2024-12-03T14:06:00.000Z","thinkingLevel":"high"}',
+        '{"type":"session_info","id":"k1l2m3n4","parentId":"j0k1l2m3","timestamp":"2024-12-03T14:35:00.000Z","name":"Refactor auth module"}',
+      ].join("\n") + "\n",
+    );
+    const scan = scanTranscript(id);
+    expect(scan.model).toEqual({ provider: "openai", modelId: "gpt-4o" });
+    expect(scan.thinkingLevel).toBe("high");
+    expect(scan.name).toBe("Refactor auth module");
+    // 上游 message 行无 seq 字段 → 按未知行跳过：我们的消息重建不被外来格式污染
+    // （线性子集的边界，§11 决策 4：字段名抄上游保证设定行互读，树语义不采纳）
+    expect(scan.messages).toEqual([]);
+  });
+
+  test("方向 b：我们 writer 写的行，上游 getSessionContextSettings 回放读得出", async () => {
+    const id = "m4-upstream-out";
+    await sessionInsert(id, tmp);
+    appendModelChangeRow(id, "anthropic", "claude-sonnet-4-5");
+    appendThinkingLevelChangeRow(id, "medium");
+    appendModelChangeRow(id, "openai", "gpt-4o");
+    const entries = readFileSync(sessionPath(id), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { type: string; [k: string]: unknown });
+    expect(upstreamGetSessionContextSettings(entries)).toEqual({
+      thinkingLevel: "medium",
+      model: { provider: "openai", modelId: "gpt-4o" },
+    });
   });
 });

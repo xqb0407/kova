@@ -20,6 +20,8 @@ import {
   getModels,
   makePromptCacheKeyPayloadHook,
   makeSessionAffinityHeaders,
+  THINKING_LEVELS,
+  type ThinkingLevel,
 } from "../model/model-catalog";
 import { buildTools } from "../tools/tools";
 import {
@@ -40,7 +42,9 @@ import { buildSubagentTools } from "../subagent/subagent";
 import { buildSkillMgmtTools } from "../skills/skill-mgmt-tools";
 import { buildPluginMgmtTools } from "../plugins/plugin-mgmt-tools";
 import { buildSchedulerTools } from "../automation/mgmt-tools";
-import { readCompaction, readTranscript } from "./transcript";
+import { readCompaction, readTranscript, scanTranscript } from "./transcript";
+import type { PendingInteraction } from "pi-protocol";
+import { restoreUnsettled } from "./pending-interactions";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, type ContextInfoResult } from "../agent/context";
 import { isPromptActive, onAgentEvent, send } from "../protocol/stream";
 import {
@@ -273,19 +277,26 @@ export async function resolveSession(
   // 运行 cwd 兜底主目录，仅影响 Agent 执行环境，不回写持久化
   let persistedCwd = cwd ?? "";
   let restoredMessages: import("@earendil-works/pi-ai").Message[] = [];
+  /** 未结算挂起交互行（§4）：物化后重放进台账，挂起卡跨重启不丢 */
+  let restoredPending: PendingInteraction[] = [];
   let persistedSeq = 0;
   let jsonlSeq = 0;
   let compactionGeneration = 0;
   /** 恢复的索引行（含会话级偏好）；新会话为 null */
   let restoredRow: Awaited<ReturnType<typeof sessionGet>> = null;
+  /** 转录设定行回放值（§6 M4 真值迁移）：null = 无行，旧会话回落偏好/全局 */
+  let scanModel: { provider: string; modelId: string } | null = null;
+  let scanThinking: string | null = null;
 
   if (sessionId) {
     const row = await sessionGet(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
     restoredRow = row;
     persistedCwd = row.cwd;
-    const transcript = readTranscript(sessionId);
-    const checkpoint = readCompaction(sessionId);
+    // M2：单遍扫描同取消息行/检查点/未结算交互（替代 readTranscript+readCompaction 两读文件）
+    const scan = scanTranscript(sessionId);
+    const transcript = scan.messages;
+    const checkpoint = scan.compactions.at(-1);
     let maxSeq = -1;
     for (const t of transcript) maxSeq = Math.max(maxSeq, t.seq);
     if (checkpoint) {
@@ -293,6 +304,9 @@ export async function resolveSession(
       compactionGeneration = checkpointGeneration(checkpoint.details);
     }
     restoredMessages = projectRestoreContext(transcript, checkpoint);
+    restoredPending = scan.pending;
+    scanModel = scan.model;
+    scanThinking = scan.thinkingLevel;
   // 任务清单恢复：事件溯源回放转录里最后一个 todo 快照（见 todo.ts）
   replayTodoFromMessages(threadId, restoredMessages);
     persistedSeq = restoredMessages.length;
@@ -345,23 +359,35 @@ export async function resolveSession(
     }
   }
 
-  // 会话级模型偏好：恢复的会话上次用哪个模型就继续用哪个（目录中已删除则回落全局）；
-  // 新会话/自动化 turn 用全局当前选择（自动化的 per-task 模型由 runner 在 resolve 后覆盖）
+  // 会话级模型：恢复的会话上次用哪个模型就继续用哪个（目录中已删除则回落全局）；
+  // 新会话/自动化 turn 用全局当前选择（自动化的 per-task 模型由 runner 在 resolve 后覆盖）。
+  // 真值优先级（§6 M4）：转录 model_change 行 > SQLite 偏好行（旧会话无行，回落投影）> 全局
   let model = await resolveCurrentModel();
-  if (restoredRow && !getAutomationPolicy(threadId)) {
-    const saved =
-      restoredRow.modelProvider && restoredRow.modelId
-        ? getModels().getModel(restoredRow.modelProvider, restoredRow.modelId)
-        : undefined;
+  if ((scanModel || restoredRow) && !getAutomationPolicy(threadId)) {
+    const savedKey = scanModel
+      ? scanModel
+      : restoredRow?.modelProvider && restoredRow?.modelId
+        ? { provider: restoredRow.modelProvider, modelId: restoredRow.modelId }
+        : null;
+    const saved = savedKey
+      ? getModels().getModel(savedKey.provider, savedKey.modelId)
+      : undefined;
     if (saved) {
       model = saved;
-    } else if (restoredRow.modelProvider && restoredRow.modelId) {
+    } else if (savedKey) {
       logErr(
         "resolveSession: session model missing from catalog, falling back to current:",
-        `${restoredRow.modelProvider}/${restoredRow.modelId}`,
+        `${savedKey.provider}/${savedKey.modelId}`,
       );
     }
   }
+
+  // 思考档位回放（§6 M4）："重开会话上次档位还在"由行历史回答；
+  // 未知档位（被收窄/下线的枚举值）回落全局当前选择，与旧会话同路径
+  const initialThinking: ThinkingLevel =
+    scanThinking && (THINKING_LEVELS as readonly string[]).includes(scanThinking)
+      ? (scanThinking as ThinkingLevel)
+      : getCurrentThinkingLevel();
 
   // 技能目录预热（签名缓存，命中零 IO）：系统提示词的技能段从这里取数
   await ensureSkillsLoaded(resolvedCwd);
@@ -452,8 +478,8 @@ export async function resolveSession(
     initialState: {
       systemPrompt: composeModeSystemPrompt(initialMode, resolvedCwd, model),
       model,
-      // 深度思考档位（全局，set_thinking 维护；off = 不发送 reasoning 参数）
-      thinkingLevel: getCurrentThinkingLevel(),
+      // 深度思考档位：转录行回放，无行跟随全局（set_thinking 维护；off = 不发送 reasoning 参数）
+      thinkingLevel: initialThinking,
       tools: baseTools,
       messages: restoredMessages,
     },
@@ -510,7 +536,11 @@ export async function resolveSession(
 
   agent.subscribe((event) => onAgentEvent(event, run));
   running.set(threadId, run);
-  trackSessionRun(sessionId, threadId);
+  // 水印播种：号段接续转录行号（设计文档 §3；jsonlSeq 是"下一个待分配"）
+  trackSessionRun(sessionId, threadId, jsonlSeq - 1);
+  // 挂起交互重放（§4）：转录里的未结算项进台账（陈旧条目，无活 promise），
+  // 前端 get_history/list_pending 拉回挂起卡；用户结算落行解禁，会话解禁驱逐
+  if (restoredPending.length) restoreUnsettled(sessionId, threadId, restoredPending);
   // Claude Code 式 SessionStart 钩子：create = 新建会话，resume = 恢复历史
   fireHookEvent(
     "SessionStart",

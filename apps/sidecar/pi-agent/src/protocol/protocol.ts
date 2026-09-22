@@ -6,7 +6,10 @@
  * ===== 线协议 =====
  *
  * 通用约定：每条请求带 id；管理命令应答帧回填同 id；prompt 走流式（见下）。
- * 业务错误以 { id, type: "error", errorText } 应答（handler 抛错由 handleLine 收口）。
+ * 业务错误以 { id, type: "error", errorText, error? } 应答（handler 抛错由
+ * handleLine 收口）。error 是加性的结构化归因 { code, source, retryable,
+ * statusCode? }（设计文档 §8）：出口路径（未知命令/管理 catch/prompt 准备
+ * catch）经分类器换算，含糊串按本地运行时归因；errorText 永久保留兜底。
  *
  *   { "type": "prompt", "id", "threadId", "text", "sessionId"?, "cwd"?, "steer"? }
  *       cwd = workspace 目录；仅在需要新建会话时使用，缺省为用户主目录
@@ -50,10 +53,16 @@
  *   { "type": "fork_session", "id", "sessionId" }             → { id, type: "forked", sessionId: <新会话> }
  *       分支对话：把源会话转录复制到全新 sessionId（seq 沿用、header 重写），
  *       索引行标题加「（分支）」后缀；与源会话此后再无关联
- *   { "type": "get_history", "id", "sessionId" }              → { id, type: "history", messages: UIMessage[] }
+ *   { "type": "get_history", "id", "sessionId", "tail"?, "beforeSeq"? }
+ *                                       → { id, type: "history", messages, pending, firstSeq, lastSeq, hasMore }
  *       历史从 agent 消息重建，含工具部件（tool part 的 input/output 与 live 流一致）与
  *       工具图片的 data-image part（与 live 同构）；
- *       compaction 检查点行重建为 data-compaction 分隔线 part（刷新后分隔线不丢）
+ *       compaction 检查点行重建为 data-compaction 分隔线 part（刷新后分隔线不丢）；
+ *       pending = 转录里未结算的 PendingInteraction[]（§4，刷新/重启后重建挂起卡）；
+ *       tail/beforeSeq = 消息行分页窗（§6，游标 = 行 seq；缺省全量不破旧端），
+ *       firstSeq/lastSeq/hasMore 为窗口元数据（空窗 first/last = null）
+ *   { "type": "list_pending", "id", "sessionId" | "threadId" } → { id, type: "pending", items: PendingInteraction[] }
+ *       挂起交互权威拉取（§3 回拉表 / §4）：读转录交互行配对出未结算清单，不依赖会话驻留
  *   { "type": "delete_session", "id", "sessionId" }           → { id, type: "deleted" }
  *   { "type": "rename_session", "id", "sessionId", "name" }   → { id, type: "renamed" }
  *   { "type": "archive_session", "id", "sessionId", "archived" } → { id, type: "archived" }
@@ -197,8 +206,20 @@
  *                   get_history 按同 id 重建同构 part，闸门与拼装单点在 image-parts.ts）
  *
  * prompt 流（stdout）：{ "id": "<reqId>", "chunk": { ...AI SDK UIMessageChunk } }
+ *   状态同步 chunk（data-queue-state / data-planningState）行形加盖事件水印：
+ *   { "id", "chunk", "sessionId", "eventSeq" }——eventSeq 是 per-session 单调
+ *   号（protocol/event-seq.ts），只给确认写出的帧盖章；桌面端检缺口回拉权威
+ *   接口（get_queue_state / get_planning_state），见设计文档 §3。
  *
  * 自发通知（stdout，无 id，宿主原样广播给所有前端）：
+ *   { "type": "session_state", "sessionId", "phase": "running"|"idle"|"evicted",
+ *     "eventSeq" }
+ *       派生相位帧（设计文档 §2）：驻留表/activeTurns 的投影，随物化/轮起止/
+ *       驱逐广播；缺口回拉 list_running。取代 turn_changed（旧帧保留一版本周期）
+ *   { "type": "context_changed", "sessionId", "usedTokens", "threshold",
+ *     "contextWindow", "cacheHitRatio", "eventSeq" }
+ *       上下文读数变化推送（设计文档 §7）：轮次收尾点现算，桌面占用环镜像直更；
+ *       盖事件水印，缺口回拉 context_info
  *   { "type": "turn_changed", "sessionId": "...", "active": true|false }
  *       某会话一轮 turn 开跑/收尾；发起方未带 sessionId 的轮次不广播
  *   { "type": "subagent_activity", "delegationId": "...", "item": SubagentActivityItem }
@@ -223,7 +244,8 @@ import { resolveHostResult } from "../storage/hostdb";
 import { beginOp, endOp } from "./exit";
 import { enqueueMgmt } from "./mgmt-queue";
 import { nextFallbackSeq } from "./command";
-import { send, sendChunk } from "./stream";
+import { classifyAgentError, toWireError } from "../agent/agent-errors";
+import { send, sendErrorChunk } from "./stream";
 import { dispatchPrompt } from "./prompt-pipeline";
 import { markStdinClosed } from "./exit";
 
@@ -279,7 +301,12 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
   const handler = registry[String(msg.type ?? "")];
   if (!handler) {
     logErr("unknown message type:", String(msg.type));
-    send({ id: reqId, type: "error", errorText: `unknown message type: ${String(msg.type)}` });
+    send({
+      id: reqId,
+      type: "error",
+      errorText: `unknown message type: ${String(msg.type)}`,
+      error: { code: "UNKNOWN_MESSAGE_TYPE", source: "runtime", retryable: false },
+    });
     return;
   }
   await handler(reqId, msg);
@@ -305,7 +332,14 @@ export function handleLine(raw: string) {
       await dispatch(reqId, msg);
     } catch (err) {
       logErr("handleLine failed:", err);
-      send({ id: reqId, type: "error", errorText: err instanceof Error ? err.message : String(err) });
+      const errorText = err instanceof Error ? err.message : String(err);
+      // 管理命令出路的错与供应商话术无关：含糊串按运行时归因（§8）
+      send({
+        id: reqId,
+        type: "error",
+        errorText,
+        error: toWireError(classifyAgentError(err, { opaqueFallback: "runtime" })),
+      });
     } finally {
       endOp();
     }
@@ -318,7 +352,10 @@ export function handleLine(raw: string) {
       try {
         await dispatchPrompt(reqId, msg);
       } catch (err) {
-        sendChunk(reqId, { type: "error", errorText: err instanceof Error ? err.message : String(err) });
+        // dispatchPrompt 的意外 reject（provider 流内错误在 stream.ts 出口已归因，
+        // 走到这里的多是本地准备路径的抛错）
+        const errorText = err instanceof Error ? err.message : String(err);
+        sendErrorChunk(reqId, errorText, toWireError(classifyAgentError(err, { opaqueFallback: "runtime" })));
       } finally {
         endOp();
       }

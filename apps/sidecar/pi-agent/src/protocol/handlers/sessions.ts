@@ -13,13 +13,15 @@ import {
   readTranscript,
   scanTranscript,
   historyToUiMessages,
+  setSessionName,
+  windowTranscriptMessages,
 } from "../../sessions/transcript";
+import { dropSessionInteractions } from "../../sessions/pending-interactions";
 import { sessionPath } from "../../storage/storage";
 import {
   sessionDelete,
   sessionInsert,
   sessionList,
-  sessionRename,
   sessionSetArchived,
   sessionTouch,
 } from "../../storage/hostdb";
@@ -33,6 +35,7 @@ import {
 } from "../../sessions/sessions";
 import { getTodoState, replayTodoFromMessages } from "../../todo/todo";
 import { getDelegationSnapshot } from "../../subagent/subagent";
+import { dropEventSeq } from "../event-seq";
 import type { SessionSummary } from "../../types";
 import type { CommandHandler } from "../command";
 
@@ -188,6 +191,8 @@ export const handlers: Record<string, CommandHandler> = {
       dataLines.push(line);
     }
     const newId = randomUUID();
+    // parentSession = fork 溯源（§6 M4，上游 header 同名可选字段；
+    // 本项目取源会话 id 而非路径——我们的会话身份是 id）
     writeFileSync(
       sessionPath(newId),
       JSON.stringify({
@@ -196,6 +201,7 @@ export const handlers: Record<string, CommandHandler> = {
         id: newId,
         cwd: src.cwd,
         created_at: new Date().toISOString(),
+        parentSession: sourceId,
       }) + "\n" + (dataLines.length ? dataLines.join("\n") + "\n" : ""),
     );
     await sessionInsert(newId, src.cwd);
@@ -217,8 +223,23 @@ export const handlers: Record<string, CommandHandler> = {
     // 压缩检查点行重建为 data-compaction 分隔线 part，刷新后分隔线不丢。
     // 迭代 4：单遍 scanTranscript 同时取消息行与检查点行（此前读两遍文件）
     const scan = scanTranscript(sessionId);
-    const messages = historyToUiMessages(scan.messages, scan.compactions);
-    send({ id: reqId, type: "history", messages });
+    // §6 分页窗：tail/beforeSeq 缺省 = 全量（旧端不破）；游标 = 消息行 seq，
+    // compaction 行不分页（分隔线锚定靠 throughSeq，且量小）
+    const { window, meta } = windowTranscriptMessages(scan.messages, {
+      tail: typeof msg.tail === "number" ? msg.tail : undefined,
+      beforeSeq: typeof msg.beforeSeq === "number" ? msg.beforeSeq : undefined,
+    });
+    const messages = historyToUiMessages(window, scan.compactions);
+    // §4：未结算挂起交互随行回放（前端据此重建挂起卡）；firstSeq/lastSeq/hasMore 分页元数据
+    send({
+      id: reqId,
+      type: "history",
+      messages,
+      pending: scan.pending,
+      firstSeq: meta.firstSeq,
+      lastSeq: meta.lastSeq,
+      hasMore: meta.hasMore,
+    });
   },
 
   delete_session: async (reqId, msg) => {
@@ -230,6 +251,8 @@ export const handlers: Record<string, CommandHandler> = {
       }
     }
     await sessionDelete(sessionId);
+    dropEventSeq(sessionId); // 水印计数器随会话删除（防 per-session Map 泄漏）
+    dropSessionInteractions(sessionId); // 挂起交互台账同清（§4，行随文件消失）
     const file = sessionPath(sessionId);
     if (existsSync(file)) unlinkSync(file);
     send({ id: reqId, type: "deleted" });
@@ -238,7 +261,8 @@ export const handlers: Record<string, CommandHandler> = {
   rename_session: async (reqId, msg) => {
     const sessionId = String(msg.sessionId ?? "");
     const name = String(msg.name ?? "");
-    await sessionRename(sessionId, name);
+    // 转录 session_info 行 = 真值，索引 title 列 = 投影（§6 M4）
+    await setSessionName(sessionId, name);
     send({ id: reqId, type: "renamed" });
   },
 

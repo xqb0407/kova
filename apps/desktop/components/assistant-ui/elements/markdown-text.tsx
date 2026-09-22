@@ -2,6 +2,7 @@
 
 import {
   type ComponentProps,
+  useDeferredValue,
   Fragment,
   type FC,
   memo,
@@ -12,20 +13,42 @@ import {
   splitFrontmatter,
   type FrontmatterValue,
 } from "@/lib/markdown/markdown-frontmatter";
+import { useMessagePartText, useSmooth } from "@assistant-ui/react";
 import {
-  StreamdownTextPrimitive,
-  useStreamdownPreProps,
+  DEFAULT_SHIKI_THEME,
+  tailBoundedRemend,
 } from "@assistant-ui/react-streamdown";
-import { Streamdown } from "streamdown";
+import {
+  Streamdown,
+  type CustomRenderer,
+  type PluginConfig,
+} from "streamdown";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { cjk } from "@streamdown/cjk";
 import { openExternal } from "@/lib/external-link";
 import { SiteIcon } from "@/components/custom-ui/site-icon";
+import { SvgCodeBlock } from "@/components/assistant-ui/elements/svg-code-block";
+import { MermaidCodeBlock } from "@/components/assistant-ui/elements/mermaid-code-block";
 import "@/app/styles/markdown.css";
 
-const sharedPlugins = { code, math, mermaid, cjk };
+/**
+ * renderers 是 streamdown 原生的按围栏语言注册自定义渲染的机制。
+ * 注意：@assistant-ui/react-streamdown 的 StreamdownTextPrimitive 在归一化
+ * plugins 时只认 code/math/cjk/mermaid 四个键、会丢弃 renderers（0.3.13 为
+ * 最新版仍如此），所以消息流分支改用下方 StreamdownPart 直连原生 Streamdown。
+ */
+const sharedPlugins: PluginConfig = {
+  code,
+  math,
+  mermaid,
+  cjk,
+  renderers: [
+    { language: "svg", component: SvgCodeBlock },
+    { language: "mermaid", component: MermaidCodeBlock },
+  ] satisfies CustomRenderer[],
+};
 
 const sharedComponents = {
   // 正文外链：短站点图标 + 链接文字，悬浮 title 显示完整 href，
@@ -137,6 +160,39 @@ const FrontmatterCard: FC<{ entries: [string, FrontmatterValue][] }> = ({
   </div>
 );
 
+/**
+ * 消息流分支：等价于 StreamdownTextPrimitive 的默认路径
+ * （消息 part 上下文 → smooth → defer → 尾部 remend），
+ * 只是把 plugins 原样透传，让 renderers 生效（见上方注释）。
+ */
+const StreamdownPart = () => {
+  const messagePart = useMessagePartText();
+  const { text, status } = useSmooth(messagePart, false);
+  // 对齐 primitive 的 defer：解析降到低优先级，token 到达不阻塞输入/滚动
+  const deferredText = useDeferredValue(text);
+  // primitive 在流式分支用 tail remend 补全尾部语法，并关掉 Streamdown 自带的
+  // parseIncompleteMarkdown，这里保持一致
+  const repairedText = useMemo(
+    () => tailBoundedRemend(deferredText),
+    [deferredText],
+  );
+  return (
+    <div data-status={status.type}>
+      <Streamdown
+        mode="streaming"
+        isAnimating={status.type === "running"}
+        parseIncompleteMarkdown={false}
+        plugins={sharedPlugins}
+        shikiTheme={DEFAULT_SHIKI_THEME}
+        components={sharedComponents}
+        className="aui-md text-[0.9375rem] leading-[1.5]"
+      >
+        {repairedText}
+      </Streamdown>
+    </div>
+  );
+};
+
 const MarkdownTextImpl = ({ text }: { text?: string }) => {
   // frontmatter 只在整篇现成文本里拆（流式分支取的是消息 part 上下文，没有整篇 text）
   const fm = useMemo(() => (text ? splitFrontmatter(text) : null), [text]);
@@ -149,13 +205,7 @@ const MarkdownTextImpl = ({ text }: { text?: string }) => {
       )}
     >
       {text === undefined ? (
-        <StreamdownTextPrimitive
-          plugins={sharedPlugins}
-          className="aui-md text-[0.9375rem] leading-[1.5]"
-          components={sharedComponents}
-          // 流式解析降到低优先级：token 到达不再阻塞输入/滚动，负载高时跳过中间帧
-          defer
-        />
+        <StreamdownPart />
       ) : (
         // 现成的完整文本（非消息流，如压缩摘要）：不走 part 上下文，直接渲染
         <>

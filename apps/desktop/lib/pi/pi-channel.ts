@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { UIMessageChunk } from "ai";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
+import { observeWireLine, resetSeqGuard } from "@/lib/pi/pi-seq-guard";
 
 /**
  * pi-agent 通道抽象：把"管理类请求-响应 + prompt 流式输出 + 全局中断"收口成接口。
@@ -60,85 +61,40 @@ export type PiChannelStatus = {
   error?: string;
 };
 
-/** 子代理运行状态（与 sidecar types.ts SubagentRunStatus 同构） */
-export type SubagentRunStatus =
-  | "running"
-  | "completed"
-  | "failed"
-  | "truncated"
-  | "aborted"
-  | "stopped";
+/* 通知帧契约单源 pi-protocol（设计文档 §1）：与 sidecar 广播端共用 schema，
+ * 本文件不再手抄镜像。插件清单载荷域内自有契约，在本地类型上以交叉保留。 */
+import type {
+  AutomationFiredFrame,
+  AutomationRunDoneFrame,
+  ContextChangedFrame,
+  PluginOpResultFrame,
+  RunningTurn,
+  SubagentActivityItem,
+  SubagentRunStatus,
+} from "pi-protocol";
 
-/**
- * 子代理运行活动条目（sidecar subagent_activity 通知行的 item 字段，
- * 与 sidecar/pi-agent/src/types.ts SubagentActivityItem 同构）。
- */
-export type SubagentActivityItem =
-  | { kind: "turn"; n: number; at: number }
-  | { kind: "thinking"; op: "start" | "delta" | "end"; id: string; delta?: string; at: number }
-  | { kind: "text"; op: "start" | "delta" | "end"; id: string; delta?: string; at: number }
-  | {
-      kind: "tool";
-      op: "start" | "end";
-      toolCallId: string;
-      toolName: string;
-      argsSummary?: string;
-      resultSummary?: string;
-      failed?: boolean;
-      at: number;
-    }
-  | {
-      kind: "status";
-      status: SubagentRunStatus;
-      turns: number;
-      toolCalls: number;
-      report?: string;
-      at: number;
-    };
+export type { SubagentRunStatus, SubagentActivityItem };
 
 /** list_running turns 明细项：一个确定在跑的轮次（会话 + 其 prompt requestId） */
-export type PiRunningTurn = { sessionId: string; requestId: string };
+export type PiRunningTurn = RunningTurn;
 
-/**
- * 定时任务自发通知帧（sidecar automation 调度器钩子发出，无 id；
- * 帧格式契约见 sidecar/pi-agent/src/protocol.ts 头注释"自发通知"节）。
- */
-export type PiAutomationFrame =
-  | {
-      type: "automation_fired";
-      taskId: string;
-      taskName: string;
-      taskType: string;
-      runId: string;
-      firedAt: string;
-    }
-  | {
-      type: "automation_run_done";
-      taskId: string;
-      taskName: string;
-      runId: string;
-      ok: boolean;
-      /** 本次运行新建的真实 agent 会话 id（调度错误路径可能缺省） */
-      sessionId?: string;
-      error?: string;
-      finishedAt: string;
-    };
+/** 定时任务自发通知帧（sidecar automation 调度器钩子发出，无 id） */
+export type PiAutomationFrame = AutomationFiredFrame | AutomationRunDoneFrame;
 
 /**
  * 插件耗时操作结果自发通知帧（sidecar plugins 分发 case 发出，无 id；
  * 受理 → plugin_op_accepted，完成 → plugin_op_result）。
  * 成功时携带刷新后的 plugins + marketplaces 双清单，前端 store 整包并入。
  */
-export type PiPluginOpFrame = {
-  type: "plugin_op_result";
-  opId: string;
-  op: "add_marketplace" | "refresh_marketplace" | "install_plugin";
-  ok: boolean;
-  errorText?: string;
+export type PiPluginOpFrame = PluginOpResultFrame & {
   plugins?: import("@/lib/pi/pi-bridge").PiPluginEntry[];
   marketplaces?: import("@/lib/pi/pi-bridge").PiMarketplaceEntry[];
   workspaceCwd?: string | null;
 };
+
+/** 上下文读数变化自发通知帧（sidecar 轮次收尾点现算推送，无 id，盖事件
+ *  水印；设计文档 §7——桌面占用环经 pi-context 镜像直更，缺口回拉 context_info）。 */
+export type PiContextChangedFrame = ContextChangedFrame;
 
 export interface PiChannel {
   readonly kind: "tauri" | "ws";
@@ -197,6 +153,15 @@ export interface PiChannel {
   subscribePluginOps?(
     cb: (frame: PiPluginOpFrame) => void,
   ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（同款无 id 自发通知通道）：订阅上下文读数推送帧
+   * （context_changed，见 PiContextChangedFrame，设计文档 §7）。
+   * sidecar 轮次收尾点推送，桌面占用环镜像直更；WS 通道经网关
+   * 白名单转发（remote.rs broadcast_notification）。
+   */
+  subscribeContextChanges?(
+    cb: (frame: PiContextChangedFrame) => void,
+  ): (() => void) | Promise<() => void>;
   /** 能力可选（与 subscribeTurns 成对）：当前正在跑 turn 的会话 id 种子清单 */
   listRunning?(): Promise<string[]>;
   /**
@@ -242,6 +207,26 @@ type AttachReply = { active: boolean; truncated: boolean; lines: ChunkWireLine[]
 
 export class TauriPiChannel implements PiChannel {
   readonly kind = "tauri" as const;
+
+  /** 水印守卫全局监听只装一次（设计文档 §3）：pi-chunk-batch 粗筛
+   *  "eventSeq" 子串（盖章行才 JSON.parse），pi-exit 显式换代清零。
+   *  非 Tauri 环境 listen 会拒绝：吞掉即可（守卫退化为不观察）。 */
+  private static seqWatchInstalled = false;
+  constructor() {
+    if (TauriPiChannel.seqWatchInstalled) return;
+    TauriPiChannel.seqWatchInstalled = true;
+    void listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+      for (const wire of event.payload) {
+        if (!wire.l.includes('"eventSeq"')) continue;
+        try {
+          observeWireLine(JSON.parse(wire.l));
+        } catch {
+          // 畸形行不配进守卫
+        }
+      }
+    }).catch(() => {});
+    void listen("pi-exit", () => resetSeqGuard()).catch(() => {});
+  }
 
   async request(
     payload: Record<string, unknown>,
@@ -605,6 +590,29 @@ export class TauriPiChannel implements PiChannel {
           continue;
         }
         if (parsed?.type === "plugin_op_result" && typeof parsed.opId === "string") {
+          cb(parsed);
+        }
+      }
+    });
+  }
+
+  /**
+   * context_changed 自发通知帧（无 id，Rust 原样广播）：同款前缀预筛。
+   * 轮次收尾点每会话一条（低频），pi-context 镜像据此直更占用环。
+   */
+  async subscribeContextChanges(
+    cb: (frame: PiContextChangedFrame) => void,
+  ): Promise<() => void> {
+    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+      for (const wire of event.payload) {
+        if (!wire.l.startsWith('{"type":"context_changed"')) continue;
+        let parsed: PiContextChangedFrame;
+        try {
+          parsed = JSON.parse(wire.l);
+        } catch {
+          continue;
+        }
+        if (parsed?.type === "context_changed" && typeof parsed.sessionId === "string") {
           cb(parsed);
         }
       }

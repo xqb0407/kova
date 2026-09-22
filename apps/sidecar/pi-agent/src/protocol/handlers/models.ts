@@ -5,6 +5,10 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { send } from "../stream";
 import { running } from "../../sessions/sessions";
+import {
+  appendModelChangeRow,
+  appendThinkingLevelChangeRow,
+} from "../../sessions/transcript";
 import { composeModeSystemPrompt } from "../../agent/modes";
 import { kvSet, modelsAll, modelsDeleteProvider, modelsList, modelsReplace, sessionPrefsSet, type ModelReplaceItem } from "../../storage/hostdb";
 import {
@@ -184,7 +188,7 @@ export const handlers: Record<string, CommandHandler> = {
     // 前端只在桌面模式重复写同一份，远程网页模式由此获得持久化）
     void kvSet("pi.model", JSON.stringify({ provider, modelId })).catch(() => {});
     // 模型行是系统提示词环境段的一部分：换模型后整段重排，活动会话即时生效；
-    // 顺带把模型写进各活动会话的偏好行（与会话级记忆一致）
+    // 转录 model_change 行 = 会话模型真值（§6 M4），偏好行退为投影同步维护
     for (const run of running.values()) {
       run.agent.state.model = model;
       run.agent.state.systemPrompt = composeModeSystemPrompt(
@@ -192,6 +196,7 @@ export const handlers: Record<string, CommandHandler> = {
         run.cwd,
         model,
       );
+      appendModelChangeRow(run.sessionId, provider, modelId);
       void sessionPrefsSet(run.sessionId, { modelProvider: provider, modelId }).catch(
         () => {},
       );
@@ -215,9 +220,11 @@ export const handlers: Record<string, CommandHandler> = {
       throw new Error(`unknown thinking level: ${level}`);
     }
     setCurrentThinkingLevel(level as ThinkingLevel);
-    // 与 set_model 同款广播：活动 Agent 的 state 赋值对下一轮生效
+    // 与 set_model 同款广播：活动 Agent 的 state 赋值对下一轮生效；
+    // 逐驻留会话落 thinking_level_change 行（§6 M4：重开该会话按行回放档位）
     for (const run of running.values()) {
       run.agent.state.thinkingLevel = level as ThinkingLevel;
+      appendThinkingLevelChangeRow(run.sessionId, level);
     }
     send({ id: reqId, type: "thinking", level });
   },

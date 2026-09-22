@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { classifyAgentError } from "../../src/agent/agent-errors";
+import { classifyAgentError, toWireError } from "../../src/agent/agent-errors";
 
 describe("classifyAgentError", () => {
   it("classifies auth failures from status fields", () => {
@@ -131,5 +131,67 @@ describe("classifyAgentError", () => {
   it("truncates oversized provider bodies", () => {
     const { message } = classifyAgentError(`500: ${"x".repeat(5000)}`);
     expect(message.length).toBeLessThan(700);
+  });
+});
+
+describe("错误归因与线形换算（§8）", () => {
+  it("attributes branches to source buckets", () => {
+    expect(classifyAgentError("aborted by user")).toMatchObject({
+      code: "TURN_ABORTED",
+      source: "runtime",
+    });
+    expect(classifyAgentError("fetch failed")).toMatchObject({
+      code: "NETWORK_ERROR",
+      source: "network",
+    });
+    expect(classifyAgentError("429: slow down")).toMatchObject({
+      code: "PROVIDER_RATE_LIMITED",
+      source: "provider",
+    });
+  });
+
+  it("routes JS-internal exception names to RUNTIME_ERROR, not the provider bucket", () => {
+    const err = new TypeError("x is not a function");
+    expect(classifyAgentError(err)).toMatchObject({
+      code: "RUNTIME_ERROR",
+      retriable: false,
+      source: "runtime",
+    });
+  });
+
+  it("switches only the opaque bucket via opaqueFallback", () => {
+    expect(classifyAgentError("something weird")).toMatchObject({
+      code: "PROVIDER_ERROR",
+      retriable: true,
+      source: "provider",
+    });
+    expect(
+      classifyAgentError("something weird", { opaqueFallback: "runtime" }),
+    ).toMatchObject({ code: "RUNTIME_ERROR", retriable: false, source: "runtime" });
+    // 有明确签名的分支不受兜底参数影响
+    expect(
+      classifyAgentError("429: slow down", { opaqueFallback: "runtime" }),
+    ).toMatchObject({ code: "PROVIDER_RATE_LIMITED", source: "provider" });
+  });
+
+  it("toWireError maps fields and only carries a sane statusCode", () => {
+    const withStatus = classifyAgentError(
+      Object.assign(new Error("bad gateway"), { status: 502 }),
+    );
+    expect(toWireError(withStatus)).toEqual({
+      code: "PROVIDER_ERROR",
+      source: "provider",
+      retryable: true,
+      statusCode: 502,
+    });
+    const withoutStatus = classifyAgentError("rate limit exceeded");
+    expect(toWireError(withoutStatus)).toEqual({
+      code: "PROVIDER_RATE_LIMITED",
+      source: "provider",
+      retryable: true,
+    });
+    // 文本提取出的非法 status（<100 或 >599）不带上线
+    const bogus = classifyAgentError("1: weird");
+    expect(toWireError(bogus).statusCode).toBeUndefined();
   });
 });
