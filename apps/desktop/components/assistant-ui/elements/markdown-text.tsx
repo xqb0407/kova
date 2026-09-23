@@ -130,8 +130,8 @@ const sharedComponents = {
 const FrontmatterCard: FC<{ entries: [string, FrontmatterValue][] }> = ({
   entries,
 }) => (
-  <div className="mb-4 overflow-hidden rounded-md border text-xs">
-    <div className="border-b bg-muted/60 px-3 py-1.5 font-medium text-muted-foreground">
+  <div className="mb-4 overflow-hidden rounded-md border border-border/80 text-xs">
+    <div className="px-3 py-1.5 font-medium text-muted-foreground">
       元信息
     </div>
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 px-3 py-2.5 leading-relaxed">

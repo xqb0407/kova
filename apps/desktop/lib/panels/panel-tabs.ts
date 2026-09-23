@@ -27,7 +27,9 @@ export type PanelTabType =
   /** 子智能体运行过程：消息里 Task 委派行唤起（不进 + 菜单,只能从行进入） */
   | "subagent"
   /** Agent 调用轨迹（trace_query）：header「更多」唤起（不进 + 菜单），sessionId 绑定 sidecar 会话 */
-  | "trace";
+  | "trace"
+  /** UI 插件面板：已装启用插件的面板贡献（agent open_plugin_panel 工具 / + 菜单 / 产物卡唤起） */
+  | "plugin";
 
 export type PanelTab = {
   id: string;
@@ -53,6 +55,10 @@ export type PanelTab = {
   sessionId?: string;
   /** subagent 标签绑定的委派 id（lib/subagent-runs store 的键） */
   delegationId?: string;
+  /** plugin 标签：面板所属插件 id（`<name>@<mktId>`），与 panelId 组成复合定位键 */
+  pluginId?: string;
+  /** plugin 标签：面板声明 id（panels.json 里的 id）；path = 绑定的 workspace 相对文档 */
+  panelId?: string;
 };
 
 export type PanelTabsState = { tabs: PanelTab[]; activeId: string | null };
@@ -71,6 +77,7 @@ const VALID_TYPES = new Set<PanelTabType>([
   "explorer",
   "subagent",
   "trace",
+  "plugin",
 ]);
 
 function validTab(raw: unknown): raw is PanelTab {
@@ -182,6 +189,8 @@ export type PanelTabExtra = Pick<
   | "path"
   | "sessionId"
   | "delegationId"
+  | "pluginId"
+  | "panelId"
 >;
 
 /** 打开一个新标签并激活(所有类型均可多开)；extra 携带视图数据上下文 */
@@ -215,6 +224,33 @@ export function focusPanelTab(type: PanelTabType, extra?: PanelTabExtra): string
     return existing.id;
   }
   return openPanelTab(type, extra);
+}
+
+/**
+ * 面板标签的定位式打开：按 (pluginId, panelId) 复合键复用（同一插件的
+ * 不同面板各自多开，同面板复写 extra 并激活），否则新开。
+ * agent 的 open_plugin_panel、+ 菜单、产物卡"在画布中打开"统一走这里。
+ */
+export function focusPluginPanel(
+  pluginId: string,
+  panelId: string,
+  extra?: PanelTabExtra,
+): string {
+  ensureHydrated();
+  const existing = state.tabs.find(
+    (t) =>
+      t.type === "plugin" && t.pluginId === pluginId && t.panelId === panelId,
+  );
+  if (existing) {
+    commit({
+      tabs: state.tabs.map((t) =>
+        t.id === existing.id ? { ...t, pluginId, panelId, ...extra } : t,
+      ),
+      activeId: existing.id,
+    });
+    return existing.id;
+  }
+  return openPanelTab("plugin", { ...extra, pluginId, panelId });
 }
 
 /** 关闭标签:激活项被关时就近切到相邻标签 */

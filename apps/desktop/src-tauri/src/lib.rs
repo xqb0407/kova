@@ -159,6 +159,7 @@ pub fn run() {
             fs::fs_list_dir,
             fs::fs_read_file,
             fs::fs_read_file_base64,
+            fs::fs_write_file,
             fs::fs_mkdir,
             fs::fs_touch,
             fs::fs_rename,

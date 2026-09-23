@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState, type FC } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FC,
+} from "react";
 import dynamic from "next/dynamic";
 import { Loader2Icon, PanelLeftIcon } from "lucide-react";
 import {
@@ -109,6 +115,8 @@ const PANEL_WIDTH_KEY = "agent-panel-width";
 const PANEL_MIN_WIDTH = 300;
 /** 无历史宽度时的默认面板宽（与 ResizablePanel defaultSize 一致） */
 const PANEL_DEFAULT_WIDTH = 400;
+/** 聊天列最小宽（把聊天列做成可折叠以支撑面板全屏，折叠动画须释放 minSize） */
+const CHAT_MIN_WIDTH = 380;
 
 export function BaseThread() {
   return <Thread />;
@@ -218,6 +226,31 @@ export const Base: FC = () => {
   // 内容恒 100% 跟手）
   const [panelFrozenPx, setPanelFrozenPx] = useState<number | null>(null);
   const panelRef = usePanelRef();
+  // ── 面板全屏：收起聊天列，Agent 面板平铺主区 ─────────────────────────
+  // 聊天列做成可折叠（collapsedSize=0），进全屏把它的宽度动画到 0 后 collapse()
+  // 落位；面板 maxSize 同步从 60% 释放为 100% 才能占满。chatMinReleased 与
+  // 面板开合的 panelMinReleased 同理：动画区间必须解除 minSize 钳制
+  const [panelFullscreen, setPanelFullscreen] = useState(false);
+  // exitPanelFullscreen 的守卫镜像（viewRef 同款）：非全屏时收面板/切页等
+  // 路径也会路过它，绝不能动全屏过渡态——否则 chatMinReleased 被置位后
+  // 没人收尾（panelFullscreen 依赖没变、动画 effect 不重跑），聊天列最小
+  // 宽被永久钳在 0
+  const panelFullscreenRef = useRef(false);
+  panelFullscreenRef.current = panelFullscreen;
+  const [chatMinReleased, setChatMinReleased] = useState(false);
+  const chatRef = usePanelRef();
+  const chatAnimRef = useRef<AnimationPlaybackControls | null>(null);
+  // 进全屏瞬间的聊天列宽：退出全屏按它还原
+  const chatWidthRef = useRef(CHAT_MIN_WIDTH);
+  // 退出全屏：状态翻转 + 解除聊天列 min/max 约束（chatMinReleased 同时
+  // 联动面板 maxSize=100%，必须与状态翻转同帧生效，否则退出首帧面板被 60%
+  // 上限钳住跳变），动画细节交给下方 effect
+  const exitPanelFullscreen = useCallback(() => {
+    if (!panelFullscreenRef.current) return;
+    panelFullscreenRef.current = false;
+    setPanelFullscreen(false);
+    setChatMinReleased(true);
+  }, []);
   // onResize 回写开合用：记住上次是否处于折叠，只在状态沿变化时写
   const wasCollapsedRef = useRef(false);
   const compact = useIsCompact();
@@ -336,6 +369,144 @@ export const Base: FC = () => {
   ]);
   // 卸载时掐掉在途动画，避免回调打到已销毁的 Panel
   useEffect(() => () => panelAnimRef.current?.stop(), []);
+  useEffect(() => () => chatAnimRef.current?.stop(), []);
+  useEffect(
+    () => () => {
+      if (savePanelWidthTimer.current !== null)
+        clearTimeout(savePanelWidthTimer.current);
+    },
+    [],
+  );
+
+  // 全屏进出动画：入口（toggle/退出三连）已同步解除约束，这里只负责把聊天
+  // 列宽度在当前值 ↔ 0/原宽间逐帧过渡，结束时 collapse() 落位并收掉过渡态
+  // （minSize/maxSize 恢复钳制）。动画被再次触发（快速连点）时从当前宽度
+  // 续走，不跳变。聊天列内容保持跟手（文本逐帧重排不贵，memo 后 React 也
+  // 不再参与）；面板自身内容同步冻结（xterm/文件树是每帧 relayout 大户）、
+  // 浏览器 webview 借 occluded 通道隐藏——与面板开合动画同款零重排手法；
+  // 把手恰 8px（w-2），故面板全屏目标宽 = 面板宽 + 聊天列宽
+  useEffect(() => {
+    if (!panelHydrated || compact) return;
+    const p = chatRef.current;
+    if (!p) return;
+    chatAnimRef.current?.stop();
+    chatAnimRef.current = null;
+    const from = Math.round(p.getSize().inPixels);
+    const agentW = Math.round(panelRef.current?.getSize().inPixels ?? 0);
+    if (!panelFullscreen) {
+      const target = chatWidthRef.current;
+      if (from >= target) {
+        // 已在/超过原宽（快速连点兜底）：直接落位并恢复约束
+        if (p.isCollapsed()) {
+          p.expand();
+          p.resize(target);
+        }
+        setChatMinReleased(false);
+        setPanelFrozenPx(null);
+        setPanelWebviewOccluded(false);
+        return;
+      }
+      if (p.isCollapsed()) {
+        p.expand();
+        p.resize(from);
+      }
+      // 退出 = 面板从全宽缩回：内容冻结在当前全宽，随左缘平移、右侧被裁剪
+      // 滑出（与面板收起动画同款）；结束时恢复，宽度即落位宽
+      setPanelFrozenPx(agentW);
+      setPanelWebviewOccluded(true);
+      chatAnimRef.current = animate(from, target, {
+        duration: 0.3,
+        ease: [0.32, 0.72, 0, 1],
+        onComplete: () => {
+          chatAnimRef.current = null;
+          setChatMinReleased(false);
+          setPanelFrozenPx(null);
+          setPanelWebviewOccluded(false);
+        },
+        onUpdate: (v) => p.resize(v),
+      });
+      return;
+    }
+    if (from <= 1) {
+      p.collapse();
+      setChatMinReleased(false);
+      setPanelFrozenPx(null);
+      setPanelWebviewOccluded(false);
+      return;
+    }
+    // 进入 = 面板长到全宽：内容冻结在目标全宽（面板当前宽 + 聊天列宽），
+    // 左缘随聊天列让位左移、右侧裁剪渐显（与面板展开动画同款），
+    // 结束时冻结宽恰等于落位宽，无重排跳变
+    setPanelFrozenPx(agentW + from);
+    setPanelWebviewOccluded(true);
+    chatAnimRef.current = animate(from, 0, {
+      duration: 0.3,
+      ease: [0.32, 0.72, 0, 1],
+      onComplete: () => {
+        chatAnimRef.current = null;
+        p.collapse();
+        setChatMinReleased(false);
+        setPanelFrozenPx(null);
+        setPanelWebviewOccluded(false);
+      },
+      onUpdate: (v) => p.resize(v),
+    });
+  }, [panelFullscreen, panelHydrated, compact, chatRef, panelRef]);
+
+  // 窄屏没有"平铺"概念（面板是浮层），切到窄屏即退出全屏；宽屏下群组已卸载，
+  // 清掉可能残留的动画中间态
+  useEffect(() => {
+    if (compact) {
+      setPanelFullscreen(false);
+      setChatMinReleased(false);
+    }
+  }, [compact]);
+
+  // 全屏中按 Esc 退出（对话框等已 preventDefault 的 Escape 不劫持，设置页
+  // 覆盖时也不抢；面板开合动画途中不接，避免两套 resize 打架）
+  useEffect(() => {
+    if (!panelFullscreen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        event.key === "Escape" &&
+        !event.defaultPrevented &&
+        !panelAnimRef.current &&
+        viewRef.current === "chat"
+      ) {
+        event.preventDefault();
+        exitPanelFullscreen();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [panelFullscreen, exitPanelFullscreen]);
+
+  // 面板全屏切换入口（顶栏按钮）。面板开合动画途中不接全屏：面板 resize
+  // 和聊天列 resize 会互相覆盖。useCallback：作为 AgentPanel 的 memo prop
+  const togglePanelFullscreen = useCallback(() => {
+    if (panelAnimRef.current) return;
+    if (panelFullscreen) {
+      exitPanelFullscreen();
+      return;
+    }
+    const p = chatRef.current;
+    if (!p) return;
+    // 记录原宽供退出还原；约束解除与状态翻转同帧提交
+    chatWidthRef.current = Math.max(
+      CHAT_MIN_WIDTH,
+      Math.round(p.getSize().inPixels),
+    );
+    setPanelFullscreen(true);
+    setChatMinReleased(true);
+  }, [panelFullscreen, exitPanelFullscreen, chatRef]);
+
+  // 面板收起入口（AgentPanel memo 的稳定 prop）；全屏中收面板先退出全屏，
+  // 聊天列回弹与面板收起动画并行，主区不闪空
+  const collapsePanel = useCallback(() => setPanelOpen(false), []);
+  const exitAndCollapsePanel = useCallback(() => {
+    exitPanelFullscreen();
+    setPanelOpen(false);
+  }, [exitPanelFullscreen]);
 
   // 把手 pointerdown 拦停在途动画（动画 resize 会和拖拽互相覆盖）。
   // 注意只挂把手——原来挂在 Group 的 onPointerDownCapture 上，面板内任何
@@ -356,6 +527,15 @@ export const Base: FC = () => {
   // 把手交互结束（pointerup 任意位置都可能）后结算被拦停的动画，
   // 面板必须落到"全开/全收/交给开合效果续跑"三者之一，不许卡在半路
   const settlePanelHandle = () => {
+    // 聊天列现在可折叠：被拖过最小宽自动折叠时，聊天列没有独立的恢复入口，
+    // 松手必须弹回（非全屏、非全屏过渡中才处理）
+    if (!panelFullscreen && !chatMinReleased) {
+      const c = chatRef.current;
+      if (c && c.isCollapsed()) {
+        c.expand();
+        c.resize(CHAT_MIN_WIDTH);
+      }
+    }
     if (!panelAnimInterruptedRef.current) return;
     panelAnimInterruptedRef.current = false;
     const p = panelRef.current;
@@ -386,17 +566,26 @@ export const Base: FC = () => {
     } catch {}
   }, [panelOpen, panelHydrated]);
 
-  // 记住宽度（拖拽结束后）。动画/拖拽途中 onLayoutChanged 每帧都会进来，
-  // 低于 minSize 的中间态（收起动画末段、刚展开的前几帧）不落盘，
-  // 否则会把用户设置的目标宽度覆盖成 0/半途值
+  // 记住宽度（拖拽/布局变化结束后）。onLayoutChanged 每帧都会进来（侧边栏
+  // 过渡、开合动画、拖拽、窗口缩放）：低于 minSize 的中间态（收起动画末段、
+  // 刚展开的前几帧）不落盘；落盘本身去抖到布局稳定后一次写，逐帧同步
+  // localStorage 磁盘 I/O 会卡主线程
+  const savePanelWidthTimer = useRef<number | null>(null);
   const savePanelWidth = () => {
+    // 全屏态面板占满主区，宽度不落盘（否则历史宽度被记成全窗宽）
+    if (panelFullscreen) return;
     const p = panelRef.current;
     if (!p || p.isCollapsed()) return;
     const px = Math.round(p.getSize().inPixels);
     if (px < PANEL_MIN_WIDTH) return;
-    try {
-      localStorage.setItem(PANEL_WIDTH_KEY, String(px));
-    } catch {}
+    if (savePanelWidthTimer.current !== null)
+      clearTimeout(savePanelWidthTimer.current);
+    savePanelWidthTimer.current = window.setTimeout(() => {
+      savePanelWidthTimer.current = null;
+      try {
+        localStorage.setItem(PANEL_WIDTH_KEY, String(px));
+      } catch {}
+    }, 200);
   };
 
   // 全局快捷键：打开设置 / 直达自动化页 / 开合 Agent 面板（绑定来自「设置 → 快捷键」，改动即时生效）
@@ -428,16 +617,19 @@ export const Base: FC = () => {
   }, [view]);
 
   // 进入自动化/使用统计页自动收起右侧 panel：它们是主区内的全幅管理页，
-  // 原先开着的面板既挤占内容又和页内自己的滚动区打架
+  // 原先开着的面板既挤占内容又和页内自己的滚动区打架；全屏一并退出，
+  // 聊天列弹回接住版面
   useEffect(() => {
     if (
       activeMenu === "automation" ||
       activeMenu === "usage" ||
       activeMenu === "connector" ||
       activeMenu === "files"
-    )
+    ) {
+      exitPanelFullscreen();
       setPanelOpen(false);
-  }, [activeMenu]);
+    }
+  }, [activeMenu, exitPanelFullscreen]);
 
   const chat =
     activeMenu === "automation" ? (
@@ -518,7 +710,7 @@ export const Base: FC = () => {
                   transition={{ type: "spring", stiffness: 380, damping: 36 }}
                   className="border-border bg-background absolute inset-y-0 right-0 z-40 flex w-[min(92vw,420px)] rounded-l-xl border-l"
                 >
-                  <AgentPanel onCollapse={() => setPanelOpen(false)} />
+                  <AgentPanel onCollapse={collapsePanel} />
                 </motion.div>
               </>
             ) : null}
@@ -591,7 +783,14 @@ export const Base: FC = () => {
               >
                 <ResizablePanel
                   id="chat"
-                  minSize="380px"
+                  panelRef={chatRef}
+                  // 可折叠支撑面板全屏（聊天列收到 0）；平时拖过最小宽也会
+                  // 自动折叠，settlePanelHandle 在松手时弹回兜底
+                  collapsible
+                  collapsedSize={0}
+                  minSize={
+                    chatMinReleased ? "0px" : `${CHAT_MIN_WIDTH}px`
+                  }
                   className="min-w-0"
                 >
                   {chatColumn}
@@ -602,13 +801,23 @@ export const Base: FC = () => {
                     自动化页是全幅视图：库默认双击把手会展开相邻可折叠面板，
                     这里连同拖拽一起禁用，避免误触把面板带进来 */}
                 <ResizableHandle
-                  className={cn("w-2", panelGone && "[&>div]:hidden")}
+                  className={cn(
+                    "w-2",
+                    (panelGone || panelFullscreen) && "[&>div]:hidden",
+                    // 全屏中把手整体失效：聊天列已收没，拖拽没有意义还可能
+                    // 把它拖回来
+                    panelFullscreen && "pointer-events-none",
+                  )}
                   disabled={
+                    panelFullscreen ||
+                    chatMinReleased ||
                     activeMenu === "automation" ||
                     activeMenu === "connector" ||
                     activeMenu === "files"
                   }
                   disableDoubleClick={
+                    panelFullscreen ||
+                    chatMinReleased ||
                     activeMenu === "automation" ||
                     activeMenu === "connector" ||
                     activeMenu === "files"
@@ -626,7 +835,11 @@ export const Base: FC = () => {
                         ? "0px"
                         : `${PANEL_MIN_WIDTH}px`
                     }
-                    maxSize="60%"
+                    // 全屏（及进出动画中）释放 60% 上限，面板才能随聊天列
+                    // 收没而占满主区
+                    maxSize={
+                      panelFullscreen || chatMinReleased ? "100%" : "60%"
+                    }
                     defaultSize={PANEL_DEFAULT_WIDTH}
                     groupResizeBehavior="preserve-pixel-size"
                     // 拖到小于 minSize 即自动折叠 / 拖回即展开：状态沿变化时回写开合；
@@ -650,6 +863,9 @@ export const Base: FC = () => {
                         return;
                       }
                       wasCollapsedRef.current = collapsed;
+                      // 全屏中面板被收没（点面板顶栏收起/快捷键）：一并退出
+                      // 全屏，聊天列弹回，主区不至于空掉
+                      if (collapsed) exitPanelFullscreen();
                       setPanelOpen(!collapsed);
                     }}
                 >
@@ -667,8 +883,10 @@ export const Base: FC = () => {
                         }
                       >
                         <AgentPanel
-                          onCollapse={() => setPanelOpen(false)}
+                          onCollapse={exitAndCollapsePanel}
                           showWindowControls={panelDocked}
+                          fullscreen={panelFullscreen}
+                          onToggleFullscreen={togglePanelFullscreen}
                         />
                       </div>
                     </div>

@@ -3,7 +3,7 @@
  * 以及 MCP 草稿解析与变更后的热重载编排。命令 handler 见 handlers/。
  */
 import { logErr } from "../log";
-import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, getMarketplaceCatalog, listMarketplaces } from "../plugins/plugins";
+import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces } from "../plugins/plugins";
 import { listPluginMcpEntries, loadMcpServers, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
 import { mcpManager } from "../mcp/mcp-manager";
 import { ensureSkillsLoaded, skillsSnapshot, listPluginSkillEntries } from "../skills/skills";
@@ -137,6 +137,15 @@ export async function pluginsPayload(cwd?: string) {
         const subagents = subagentsDir
           ? listPluginSubagentEntries(subagentsDir, p.pluginId)
           : [];
+        // UI 面板贡献：entry 原文不消费方需要（前端走 get_plugin_panel_asset 现取），
+        // 图标按清单图标同语义解析成可显示 src
+        const panels = readPluginPanels(p).map((d) => ({
+          id: d.id,
+          title: d.title,
+          ...(d.icon ? { icon: resolvePanelIconDataUrl(p.manifest, d.icon) } : {}),
+          opens: d.opens,
+          permissions: d.permissions,
+        }));
         return {
           pluginId: p.pluginId,
           name: p.name,
@@ -154,7 +163,7 @@ export async function pluginsPayload(cwd?: string) {
           manifestKind: p.manifest.manifestKind,
           sourceMissing: p.sourceMissing,
           enabled: p.enabled,
-          components: { skills, mcpServers, subagents },
+          components: { skills, mcpServers, subagents, panels },
           diagnostics: [...p.diagnostics, ...p.manifest.unsupported],
         };
       }),

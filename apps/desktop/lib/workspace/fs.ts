@@ -88,6 +88,41 @@ export async function fsReadFileBase64(
   }
 }
 
+/**
+ * 写文件内容（workspace 相对路径，UTF-8）：UI 插件面板的文档保存通道
+ * （Rust fs_write_file：同受信任根守卫，父目录自动创建，32MB 封顶）。
+ * 成功返回 null，失败返回错误码。
+ */
+export async function fsWriteFileBase64(
+  cwd: string,
+  path: string,
+  base64: string,
+): Promise<string | null> {
+  if (!isTauri()) return "not-tauri";
+  try {
+    await invoke("fs_write_file", { cwd, path, base64 });
+    return null;
+  } catch (err) {
+    return typeof err === "string" ? err : "write-failed";
+  }
+}
+
+/** 写文本文件（内部转 base64 走同一命令）；语义同 fsWriteFileBase64 */
+export async function fsWriteFile(
+  cwd: string,
+  path: string,
+  text: string,
+): Promise<string | null> {
+  // TextEncoder → 二进制 → base64；分块 String.fromCharCode 防超长参数调用栈
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return fsWriteFileBase64(cwd, path, btoa(binary));
+}
+
 /* ---------------- 写命令（文件树右键菜单）：成功返回 null，失败返回错误码 ---------------- */
 
 async function fsWriteCommand(
@@ -147,6 +182,8 @@ export function fsErrorText(code: string): string {
     "delete-failed": "删除失败",
     "reveal-failed": "打开系统文件管理器失败",
     "not-tauri": "仅桌面端可用",
+    "bad-base64": "内容编码异常，写入被拒绝",
+    "too-large": "内容超过 32MB 上限",
   };
   return map[code] ?? "操作失败";
 }

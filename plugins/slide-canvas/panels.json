@@ -1,0 +1,10 @@
+[
+  {
+    "id": "canvas",
+    "title": "无限画布 · 幻灯片",
+    "icon": "icon.svg",
+    "entry": "canvas.html",
+    "opens": ["*.canvas.json"],
+    "permissions": ["document", "export", "agent", "notify"]
+  }
+]

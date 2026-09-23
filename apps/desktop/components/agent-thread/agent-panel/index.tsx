@@ -1,7 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
-import { PanelRightCloseIcon } from "lucide-react";
+import { memo, useEffect, useRef, useState, type FC, type ReactNode } from "react";
+import {
+  Maximize2Icon,
+  Minimize2Icon,
+  PanelRightCloseIcon,
+} from "lucide-react";
 import {
   isPageReload,
   openPanelTab,
@@ -67,11 +71,20 @@ const EmptyTabsScreen: FC = () => {
  * @param onCollapse 顶栏「收起面板」入口；省略则不渲染（面板不再需要自收起时）
  * @param showWindowControls 停靠为右列时窗口右缘即面板右缘，Windows/Linux
  *        自绘三键由面板顶栏接管（Header 同步让位，见 base.tsx panelDocked）
+ * @param fullscreen 面板全屏中（聊天列已收起，面板平铺主区；状态由 base.tsx 持有）
+ * @param onToggleFullscreen 切换全屏；省略则不渲染按钮（窄屏浮层无全屏概念）
  */
-export const AgentPanel: FC<{
+const AgentPanelImpl: FC<{
   onCollapse?: () => void;
   showWindowControls?: boolean;
-}> = ({ onCollapse, showWindowControls = false }) => {
+  fullscreen?: boolean;
+  onToggleFullscreen?: () => void;
+}> = ({
+  onCollapse,
+  showWindowControls = false,
+  fullscreen = false,
+  onToggleFullscreen,
+}) => {
   const { tabs, activeId } = usePanelTabs();
   const active = tabs.find((t) => t.id === activeId) ?? null;
   return (
@@ -81,9 +94,18 @@ export const AgentPanel: FC<{
       active={active}
       onCollapse={onCollapse}
       showWindowControls={showWindowControls}
+      fullscreen={fullscreen}
+      onToggleFullscreen={onToggleFullscreen}
     />
   );
 };
+
+/**
+ * memo：Base 的任何状态翻转（侧边栏开合、动画冻结位等）不再牵连面板子树
+ * （终端/浏览器/文件树）重渲染；标签与会话状态经内部 store 订阅照常更新，
+ * fullscreen/showWindowControls 等 prop 变化时照常重渲染。
+ */
+export const AgentPanel = memo(AgentPanelImpl);
 
 /**
  * 面板壳 + 浏览器 webview 生命周期:最后一个浏览器 tab 关闭即销毁子 webview
@@ -96,7 +118,17 @@ const PanelShell: FC<{
   active: ReturnType<typeof usePanelTabs>["tabs"][number] | null;
   onCollapse?: () => void;
   showWindowControls: boolean;
-}> = ({ tabs, activeId, active, onCollapse, showWindowControls }) => {
+  fullscreen?: boolean;
+  onToggleFullscreen?: () => void;
+}> = ({
+  tabs,
+  activeId,
+  active,
+  onCollapse,
+  showWindowControls,
+  fullscreen = false,
+  onToggleFullscreen,
+}) => {
   const browserCount = tabs.filter((t) => t.type === "browser").length;
   const prevCount = useRef(browserCount);
   useEffect(() => {
@@ -166,6 +198,28 @@ const PanelShell: FC<{
             className="size-8 shrink-0"
           >
             <PanelRightCloseIcon className="size-4" />
+          </TooltipIconButton>
+        ) : null}
+        {onToggleFullscreen ? (
+          <TooltipIconButton
+            variant="ghost"
+            size="icon"
+            tooltip={
+              fullscreen ? "退出全屏（恢复消息列表）" : "全屏面板（收起消息列表）"
+            }
+            side="bottom"
+            aria-pressed={fullscreen}
+            onClick={onToggleFullscreen}
+            className={cn(
+              "size-8 shrink-0",
+              fullscreen && "bg-muted text-foreground",
+            )}
+          >
+            {fullscreen ? (
+              <Minimize2Icon className="size-4" />
+            ) : (
+              <Maximize2Icon className="size-4" />
+            )}
           </TooltipIconButton>
         ) : null}
         {showWindowControls ? <WindowControls /> : null}

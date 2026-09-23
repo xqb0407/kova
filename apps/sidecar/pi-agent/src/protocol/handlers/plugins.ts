@@ -5,6 +5,7 @@
  */
 import { logErr } from "../../log";
 import { send } from "../stream";
+import { readPluginPanelAsset } from "../../plugins/store";
 import {
   addMarketplace,
   installPlugin,
@@ -57,6 +58,36 @@ export const handlers: Record<string, CommandHandler> = {
   add_marketplace: pluginOp,
   refresh_marketplace: pluginOp,
   install_plugin: pluginOp,
+
+  /**
+   * UI 插件面板入口 HTML（blob 挂载进 sandboxed iframe 的数据源）：
+   * 未装/禁用/面板不存在回 error；rev = mtime+size 供前端 rev 协商与重载判据。
+   */
+  get_plugin_panel_asset: async (reqId, msg) => {
+    const pluginId = String(msg.pluginId ?? "");
+    const panelId = String(msg.panelId ?? "");
+    if (!pluginId || !panelId) {
+      throw new Error("get_plugin_panel_asset: pluginId and panelId are required");
+    }
+    const asset = readPluginPanelAsset(pluginId, panelId);
+    if (!asset) {
+      send({
+        id: reqId,
+        type: "error",
+        errorText: `get_plugin_panel_asset: 面板不可用（未安装/未启用/不存在）：${panelId}@${pluginId}`,
+      });
+      return;
+    }
+    send({
+      id: reqId,
+      type: "plugin_panel_asset",
+      pluginId,
+      panelId,
+      contentType: "text/html",
+      base64: asset.base64,
+      rev: asset.rev,
+    });
+  },
 };
 
 /** 耗时操作（git clone / 大目录复制）：受理即应答，后台执行，完成自发帧 */

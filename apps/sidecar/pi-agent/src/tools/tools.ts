@@ -22,6 +22,7 @@ import { hostToolCall } from "../storage/hostdb";
 import { buildBrowserTools } from "./browser-tools";
 import { buildScreenshotTool } from "./screenshot-tool";
 import { buildOpenFileTool } from "./open-file-tool";
+import { buildOpenPanelTool } from "./open-panel-tool";
 import { buildWebTools } from "./http-tools";
 import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "../todo/todo";
@@ -308,6 +309,9 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
     // 面板打开文件：只发 data-panelOpen chunk（文件标签磁盘实时模式），
     // 无 IO 无副作用（见 open-file-tool.ts）
     buildOpenFileTool(cwd, threadId),
+    // 面板唤起插件 UI：只发 data-pluginOpen chunk（通用原语，插件无关，
+    // 面板存在性经插件 store 校验；见 open-panel-tool.ts）
+    buildOpenPanelTool(cwd, threadId),
     // Question 不触盘不触网（挂起等 UI 作答），但要 threadId 做挂起归属
     buildQuestionTool(threadId),
     // todo：不触盘不触网，只维护会话内任务清单（per-thread 槽见 todo.ts）

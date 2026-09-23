@@ -37,7 +37,7 @@ import { recordLastThread } from "@/lib/pi/pi-last-thread";
 import { markThreadActivity } from "@/lib/pi/pi-last-activity";
 import { findRunningTurn, resyncPiRunning } from "@/lib/pi/pi-running";
 import { extractPromptAttachments } from "@/lib/attachments/prompt-attachments";
-import { focusPanelTab } from "@/lib/panels/panel-tabs";
+import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
 import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
 
 /**
@@ -468,6 +468,35 @@ export class PiTransport implements ChatTransport<UIMessage> {
               path: d.path,
               focus: undefined,
             });
+            window.dispatchEvent(new Event("agent-panel:open"));
+          }
+          return;
+        }
+        if (chunk.type === "data-pluginOpen") {
+          // agent open_plugin_panel 唤起：按 (plugin, panel) 复合键定位复用面板
+          // tab 并推前台；同帧发窗件刷新事件——宿主重读盘推 doc.open{external}，
+          // 覆盖"agent 反复写同一文档"时 tab.path 不变、prop 效应不触发的情况
+          const d = (chunk as {
+            data?: { plugin?: unknown; panel?: unknown; path?: unknown; cwd?: unknown };
+          }).data;
+          const plugin =
+            typeof d?.plugin === "string" && d.plugin ? d.plugin : "";
+          const panel =
+            typeof d?.panel === "string" && d.panel ? d.panel : "";
+          if (d && plugin && panel) {
+            const path =
+              typeof d.path === "string" && d.path ? d.path : undefined;
+            const cwd = typeof d.cwd === "string" && d.cwd ? d.cwd : undefined;
+            // 不传 path/cwd 键 = 保留该 tab 现有文档绑定（纯唤起不清绑）
+            focusPluginPanel(plugin, panel, {
+              ...(cwd ? { cwd } : {}),
+              ...(path ? { path } : {}),
+            });
+            window.dispatchEvent(
+              new CustomEvent("plugin-panel:refresh", {
+                detail: { plugin, panel, path, cwd },
+              }),
+            );
             window.dispatchEvent(new Event("agent-panel:open"));
           }
           return;

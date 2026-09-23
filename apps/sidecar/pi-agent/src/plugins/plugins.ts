@@ -51,6 +51,12 @@ export {
   PLUGIN_NAME_RE,
   parsePluginManifest,
   readPluginHooksFile,
+  // UI 面板声明（纯解析层）
+  type PluginPanelDecl,
+  type PluginPanelPermission,
+  PANEL_PERMISSIONS,
+  readPluginPanelsFile,
+  globMatch,
 } from "./manifest";
 
 export { listMarketplaces, marketplaceIdFor } from "./registry";
@@ -70,6 +76,12 @@ export {
   activePluginHooks,
   currentPluginsStateVersion,
   resetPluginsForTest,
+  // UI 面板读模型（清单/图标/资产/定位）
+  readPluginPanels,
+  resolvePanelIconDataUrl,
+  type PluginPanelAsset,
+  readPluginPanelAsset,
+  findEnabledPluginPanel,
 } from "./store";
 
 export {

@@ -4,7 +4,8 @@
   "workspaces": [
     "apps/*",
     "apps/sidecar/*",
-    "packages/*"
+    "packages/*",
+    "plugins/*"
   ],
   "overrides": {
     "unified": "^11.0.5",

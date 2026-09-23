@@ -25,6 +25,8 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
+import { CodeMirrorCode } from "@/components/code/cm-code";
+import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { Button } from "@/components/ui/button";
@@ -118,6 +120,19 @@ const RowIcon: FC<{
   );
 
 const VIEW_MODE_KEY = "files-view-mode";
+
+/** 走 Markdown 渲染预览的扩展名（Rust 侧按 text 返回内容，前端按名路由） */
+const MARKDOWN_RE = /\.(md|markdown)$/i;
+
+/** 走 CodeMirror 语法高亮预览的代码扩展名（与 fs.rs TEXT_EXTS 对齐，
+ *  不含 md/txt/csv/log——分别归 Markdown 与纯文本） */
+const CODE_EXTS = new Set([
+  "json", "ts", "tsx", "js", "jsx", "py", "rs", "go", "css", "sh", "toml",
+  "yaml", "yml", "xml",
+]);
+
+const extOf = (name: string) =>
+  name.slice(name.lastIndexOf(".") + 1).toLowerCase();
 
 export const FilesView: FC = () => {
   const [subTab, setSubTab] = useState<FilesTab>("local");
@@ -364,7 +379,10 @@ export const FilesView: FC = () => {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex h-full w-full max-w-6xl flex-col px-8 py-8 lg:px-12">
+      {/* min-h-full 而非 h-full：h-full 固定高度会让 flex 在内容超高时压缩子项；
+          列表容器自带 overflow-hidden（最小收缩尺寸按 0 算）会被直接压扁裁掉，
+          外层永远无滚动条。min-h-full 短内容仍撑满、长内容自然溢出可滚 */}
+      <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-8 py-8 lg:px-12">
         {/* 页头 */}
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">我的文件</h1>
@@ -506,7 +524,7 @@ export const FilesView: FC = () => {
             <img
               src={`data:${preview.mime};base64,${preview.data}`}
               alt={previewRow?.name ?? ""}
-              className="mx-auto max-h-[72vh] w-auto rounded-md border object-contain"
+              className="mx-auto max-h-[72vh] w-auto rounded-md  object-contain"
             />
           ) : preview?.kind === "html" ? (
             /* HTML：iframe 沙箱渲染成页面（不给 allow-same-origin，脚本可跑
@@ -515,7 +533,22 @@ export const FilesView: FC = () => {
               srcDoc={preview.text}
               sandbox="allow-scripts allow-forms allow-popups"
               title={previewRow?.name ?? ""}
-              className="h-[72vh] w-full rounded-md border bg-white"
+              className="h-[72vh] w-full rounded-md  bg-white"
+            />
+          ) : preview?.kind === "text" && previewRow && MARKDOWN_RE.test(previewRow.name) ? (
+            /* Markdown：复用消息区渲染（frontmatter 卡片/表格/任务列表/mermaid），
+             * 外层限高滚动（渲染结果任意高不撑破弹窗） */
+            <div className="aui-markdown max-h-[72vh] overflow-y-auto rounded-md  p-5">
+              <MarkdownText text={preview.text} />
+            </div>
+          ) : preview?.kind === "text" && previewRow && CODE_EXTS.has(extOf(previewRow.name)) ? (
+            /* 代码：CodeMirror 只读视图（语法高亮/行号/主题跟「外观 → 代码设置」），
+             * height 让编辑器内部滚动（行号 sticky 跟随），pre 的整页滚动会带跑行号 */
+            <CodeMirrorCode
+              value={preview.text}
+              path={previewRow.name}
+              height="72vh"
+              className="rounded-md border"
             />
           ) : preview?.kind === "text" ? (
             <pre className="bg-muted/50 max-h-[72vh] overflow-auto rounded-md p-3 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap">

@@ -85,22 +85,26 @@ function Shell({
   extensions,
   settings,
   className,
+  height,
 }: {
   value: string;
   extensions: Extension[];
   settings: ReturnType<typeof useCodeSettings>;
   className?: string;
+  /** 容器定高（如 "72vh"）：编辑器内部滚动（行号 sticky 跟随）；不传自适应内容高 */
+  height?: string;
 }) {
   return (
     <div
       className={cn("aui-cm-code overflow-hidden", className)}
-      style={{ "--cm-font-size": `${settings.fontSize}px` } as CSSProperties}
+      style={{ "--cm-font-size": `${settings.fontSize + 2}px` } as CSSProperties}
     >
       <CodeMirror
         value={value}
         editable={false}
         readOnly
         theme="none"
+        height={height}
         basicSetup={BASIC_SETUP(settings.lineNumbers)}
         extensions={extensions}
       />
@@ -109,14 +113,16 @@ function Shell({
 }
 
 /**
- * 只读代码视图（带语法高亮，语言按文件名懒加载）：设置页代码预览用。
+ * 只读代码视图（带语法高亮，语言按文件名懒加载）：设置页代码预览、
+ * 「我的文件」文件预览用。
  */
 export const CodeMirrorCode: FC<{
   value: string;
   path: string;
   className?: string;
   forceDark?: boolean;
-}> = ({ value, path, className, forceDark }) => {
+  height?: string;
+}> = ({ value, path, className, forceDark, height }) => {
   const settings = useCodeSettings(forceDark);
   const lang = useLanguage(path);
   const extensions = useMemo(
@@ -128,6 +134,12 @@ export const CodeMirrorCode: FC<{
     [settings.wrap, settings.themeName, settings.dark, lang],
   );
   return (
-    <Shell value={value} extensions={extensions} settings={settings} className={className} />
+    <Shell
+      value={value}
+      extensions={extensions}
+      settings={settings}
+      className={className}
+      height={height}
+    />
   );
 };

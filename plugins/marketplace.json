@@ -1,0 +1,14 @@
+{
+  "name": "xulux-local",
+  "displayName": "本仓库插件市场",
+  "plugins": [
+    {
+      "name": "slide-canvas",
+      "source": "./slide-canvas",
+      "version": "0.1.0",
+      "description": "无限画布幻灯片工作台：固定比例画板、轻量编辑、放映与 .pptx 导出",
+      "category": "效率",
+      "keywords": ["canvas", "slides", "pptx", "presentation"]
+    }
+  ]
+}
