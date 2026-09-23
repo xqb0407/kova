@@ -13,7 +13,7 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { ArrowDownIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
-import { useEffect, type FC } from "react";
+import { memo, useEffect, type FC } from "react";
 
 // Import other components
 import { ThreadWelcome } from "./thread-welcome";
@@ -106,7 +106,13 @@ const ThreadWorkingIndicator: FC = () => {
   );
 };
 
-export const Thread: FC = () => {
+/**
+ * memo：Base 的任何状态翻转（侧边栏开合、面板开合/全屏动画的冻结位等）都
+ * 不再牵连整棵消息列表重渲染——此前每点一次侧边栏，所有消息组件（含
+ * CodeMirror 输入框）都同步 reconcile 一遍，是开合卡顿的主因。会话数据经
+ * useAuiState 订阅照常驱动更新，不受 memo 影响。
+ */
+export const Thread = memo(function Thread() {
   const isEmpty = useAuiState(isNewChatView);
   // 空闲时预建热点语言的 Shiki 缓存，消掉流式中首个代码块的高亮停顿
   useEffect(() => {
@@ -202,4 +208,4 @@ export const Thread: FC = () => {
       <SelectionToolbar />
     </ThreadPrimitive.Root>
   );
-};
+});

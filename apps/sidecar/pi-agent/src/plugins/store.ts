@@ -10,9 +10,11 @@ import { logErr } from "../log";
 import {
   parsePluginManifest,
   readPluginHooksFile,
+  readPluginPanelsFile,
   asString,
   pluginsRootDir,
   type PluginHookEntry,
+  type PluginPanelDecl,
   type PluginComponents,
   type PluginManifest,
   type InstalledPlugin,
@@ -278,12 +280,98 @@ export function activePluginHooks(): PluginHookEntry[] {
 }
 
 // ---------------------------------------------------------------------------
+// UI 面板声明（panels.json 读模型 + 入口资产解析；签名缓存同 hooks 链）
+// ---------------------------------------------------------------------------
+
+const panelCache = new Map<string, { sig: string; panels: PluginPanelDecl[] }>();
+
+/** 插件声明的 UI 面板清单（未声明返回空；单条坏形状在解析层已跳过并记诊断） */
+export function readPluginPanels(plugin: InstalledPlugin): PluginPanelDecl[] {
+  const file = resolvePluginComponent(plugin.manifest, "panels");
+  if (!file) return [];
+  const sig = fileSignature(file);
+  const cached = panelCache.get(plugin.pluginId);
+  if (cached && cached.sig === sig) return cached.panels;
+  const diagnostics: string[] = [];
+  const panels = readPluginPanelsFile(file, plugin.manifest.root, diagnostics);
+  panelCache.set(plugin.pluginId, { sig, panels });
+  for (const d of diagnostics) logErr(`plugin ${plugin.pluginId}:`, d);
+  return panels;
+}
+
+/** 面板图标 → 可显示 src（远程/data 原样；本地读文件 data URL），与清单图标同语义 */
+export function resolvePanelIconDataUrl(
+  manifest: PluginManifest,
+  icon: string,
+): string | undefined {
+  if (/^(https?:|data:)/i.test(icon)) return icon;
+  const abs = resolve(manifest.root, icon);
+  const rootWithSep = manifest.root.endsWith(sep) ? manifest.root : manifest.root + sep;
+  if (!abs.startsWith(rootWithSep)) return undefined;
+  return readIconDataUrl(abs);
+}
+
+/** 入口 HTML 上限：单文件构建（含依赖内联）的合理天花板，超限视为坏插件 */
+const PANEL_ASSET_MAX_BYTES = 8 * 1024 * 1024;
+
+export type PluginPanelAsset = {
+  base64: string;
+  /** 文件签名（mtime+size）：前端 rev 协商与 iframe 重载判据 */
+  rev: string;
+};
+
+/**
+ * 读某已装且启用面板的入口 HTML（get_plugin_panel_asset 与 open_plugin_panel
+ * 存在性校验共用一条定位链）。未装/禁用/面板不存在/入口缺失返回 undefined；
+ * 超限抛错（调用方转成协议错误）。
+ */
+export function readPluginPanelAsset(
+  pluginId: string,
+  panelId: string,
+): PluginPanelAsset | undefined {
+  const found = findEnabledPluginPanel(pluginId, panelId);
+  if (!found) return undefined;
+  const { plugin, panel } = found;
+  const abs = resolve(plugin.manifest.root, panel.entry);
+  const rootWithSep = plugin.manifest.root.endsWith(sep) ? plugin.manifest.root : plugin.manifest.root + sep;
+  if (!abs.startsWith(rootWithSep)) return undefined;
+  let st;
+  try {
+    st = statSync(abs);
+  } catch {
+    return undefined;
+  }
+  if (!st.isFile() || st.size === 0) return undefined;
+  if (st.size > PANEL_ASSET_MAX_BYTES) {
+    throw new Error(
+      `plugin panel asset too large (> ${PANEL_ASSET_MAX_BYTES} bytes): ${pluginId}/${panelId}`,
+    );
+  }
+  return {
+    base64: readFileSync(abs).toString("base64"),
+    rev: `${Math.round(st.mtimeMs)}:${st.size}`,
+  };
+}
+
+/** 定位已装且启用插件的面板声明（open_plugin_panel 工具的校验入口） */
+export function findEnabledPluginPanel(
+  pluginId: string,
+  panelId: string,
+): { plugin: InstalledPlugin; panel: PluginPanelDecl } | undefined {
+  const plugin = scanInstalledSync().find((p) => p.pluginId === pluginId && p.enabled);
+  if (!plugin) return undefined;
+  const panel = readPluginPanels(plugin).find((p) => p.id === panelId);
+  return panel ? { plugin, panel } : undefined;
+}
+
+// ---------------------------------------------------------------------------
 // 市场/安装操作（写路径）
 // ---------------------------------------------------------------------------
 
 export function invalidateCaches(): void {
   scanCache = undefined;
   hookCache.clear();
+  panelCache.clear();
   pluginsStateVersion += 1;
 }
 
@@ -303,4 +391,5 @@ export function resetPluginsForTest(): void {
   stateLoad = undefined;
   scanCache = undefined;
   hookCache.clear();
+  panelCache.clear();
 }

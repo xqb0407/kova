@@ -122,7 +122,11 @@
  *   —— 插件系统（市场页「已装插件」；插件清单探测 .xulux-plugin/.claude-plugin/.codex-plugin，
  *      四类组件 skills/mcpServers/hooks/subagents 垫底合并，见 plugins.ts）——
  *   { "type": "list_plugins", "id", "cwd"? }                  → { id, type: "plugins", plugins, workspaceCwd }
- *       已装插件清单（含组件摘要/开关/诊断；scope="plugin" 条目不进 skills/mcp/subagents 设置页清单）
+ *       已装插件清单（含组件摘要/开关/诊断；scope="plugin" 条目不进 skills/mcp/subagents 设置页清单；
+ *       components.panels = UI 面板贡献清单：{ id, title, icon?, opens, permissions }）
+ *   { "type": "get_plugin_panel_asset", "id", "pluginId", "panelId" } → { id, type: "plugin_panel_asset", contentType, base64, rev }
+ *       UI 插件面板入口 HTML（sandboxed iframe 的 blob 数据源）；未装/禁用/面板不存在回 error，
+ *       rev = 文件 mtime+size 签名（前端 iframe 重载与文档 rev 协商判据）
  *   { "type": "set_plugin_enabled", "id", "pluginId", "enabled", "cwd"? } → 插件级开关落 kv + 四链全量热重载 → 同款 plugins 应答
  *   { "type": "uninstall_plugin", "id", "pluginId", "cwd"? }  → 删物化目录 + 清 kv + 热重载 → 同款 plugins 应答
  *   { "type": "list_marketplaces", "id" }                     → { id, type: "marketplaces", marketplaces }

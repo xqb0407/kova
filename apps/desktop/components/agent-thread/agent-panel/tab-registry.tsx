@@ -12,6 +12,7 @@ import {
   GlobeIcon,
   ListTodoIcon,
   Loader2Icon,
+  LayoutPanelTopIcon,
   PackageIcon,
   SquareTerminalIcon,
   WaypointsIcon,
@@ -35,6 +36,7 @@ import { FileTreeTab } from "./file-tree-tab";
 import { SubagentTab } from "./subagent-tab";
 import { TraceTab } from "./trace-tab";
 import { ArtifactsTab } from "./artifacts-tab";
+import { PluginPanelHost } from "./plugin-panel-host";
 import { TabEmpty } from "./tab-empty";
 
 /**
@@ -127,6 +129,11 @@ export const TAB_META: Record<
     label: "链路追踪",
     description: "agent 运行的 LLM / 工具 / 重试时间线",
     icon: WaypointsIcon,
+  },
+  plugin: {
+    label: "插件面板",
+    description: "已安装插件贡献的界面（实际标题为面板声明名）",
+    icon: LayoutPanelTopIcon,
   },
 };
 
@@ -230,6 +237,9 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
     case "trace":
       // 链路追踪：tab.sessionId 绑定 sidecar 会话（header「更多」唤起）
       return <TraceTab tab={tab} />;
+    case "plugin":
+      // UI 插件面板：blob iframe + xulux-ui-plugin/1 桥（tab.pluginId/panelId 定位）
+      return <PluginPanelHost tab={tab} />;
     default:
       return null;
   }

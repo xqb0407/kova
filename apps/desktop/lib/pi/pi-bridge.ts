@@ -322,6 +322,18 @@ export type PiPluginComponentEntry = {
   path?: string;
 };
 
+/** 一条 UI 面板贡献（panels.json 规范化产物；插件详情页与右侧面板 + 菜单消费） */
+export type PiPluginPanelEntry = {
+  id: string;
+  title: string;
+  /** 已解析的可显示 src（远程 URL 原样 / 本地文件 data URL；无图标缺省） */
+  icon?: string;
+  /** 文档打开路由 glob（workspace 相对路径匹配，如 "*.canvas.json"） */
+  opens: string[];
+  /** 桥权限白名单子集：document/export/agent/notify */
+  permissions: string[];
+};
+
 /** 一条已装插件（cache 物化 + 清单规范化产物） */
 export type PiPluginEntry = {
   pluginId: string;
@@ -343,6 +355,7 @@ export type PiPluginEntry = {
     skills: PiPluginComponentEntry[];
     mcpServers: PiPluginComponentEntry[];
     subagents: PiPluginComponentEntry[];
+    panels: PiPluginPanelEntry[];
   };
   diagnostics: string[];
 };
@@ -352,6 +365,17 @@ export type PiPluginsResponse = {
   type: "plugins";
   plugins: PiPluginEntry[];
   workspaceCwd: string | null;
+};
+
+/** get_plugin_panel_asset 应答：面板 entry 单文件 HTML（base64）+ 版本指纹 */
+export type PiPluginPanelAssetResponse = {
+  type: "plugin_panel_asset";
+  pluginId: string;
+  panelId: string;
+  contentType: string;
+  base64: string;
+  /** entry 文件 mtime+size 指纹：变更即换 URL 重载 iframe */
+  rev: string;
 };
 
 /** 市场目录条目（marketplace.json plugins[] 规范化） */
@@ -725,6 +749,7 @@ export type PiResponse =
   | PiMcpServerToolsResponse
   | PiMcpAuditLogResponse
   | PiPluginsResponse
+  | PiPluginPanelAssetResponse
   | PiMarketplacesResponse
   | PiPluginOpAccepted
   | { type: "usage_stats"; stats: PiUsageStats }

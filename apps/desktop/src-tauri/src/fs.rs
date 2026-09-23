@@ -180,7 +180,41 @@ pub async fn fs_read_file_base64(
     .map_err(|e| format!("fs task join error: {e}"))?
 }
 
-/* ------------------------------ 写命令（右键菜单） ------------------------------ */
+/* ------------------------------ 写命令（右键菜单 + 面板文档） ------------------------------ */
+
+/// 写文件内容（workspace 相对路径，base64 字节）：UI 插件面板的文档保存通道。
+/// 父目录自动创建（面板可把图片资产写进 `<doc>-assets/` 子目录）；超限报
+/// too-large；路径守卫与读命令同款（cwd 信任 + 相对段 + canonicalize 防逃逸）。
+/// 覆盖写（truncate 语义）——写权交给调用方（前端桥已做权限门控与 rev 协商）。
+const MAX_WRITE_BYTES: usize = 32 * 1024 * 1024;
+
+#[tauri::command]
+pub async fn fs_write_file(
+    app: AppHandle,
+    cwd: String,
+    path: String,
+    base64: String,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine as _;
+        let root = resolve_root(&app, &cwd)?;
+        let target = join_rel(&root, &path)?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(base64.trim())
+            .map_err(|_| "bad-base64")?;
+        if bytes.len() > MAX_WRITE_BYTES {
+            return Err("too-large".into());
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|_| "write-failed")?;
+        }
+        // 目标若已存在且是目录，write 自然失败 → write-failed
+        std::fs::write(&target, &bytes).map_err(|_| "write-failed")?;
+        Ok(json!({ "ok": true, "size": bytes.len() }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}
 
 /// 新建目录（workspace 相对路径，父目录一并创建；已存在报 already-exists）。
 #[tauri::command]

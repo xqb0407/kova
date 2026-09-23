@@ -100,7 +100,7 @@ function useDiffOptions(loadFiles?: FileDiffContentsLoader) {
   const style = useMemo(
     () =>
       ({
-        "--diffs-font-size": `${prefs.codeFontSize}px`,
+        "--diffs-font-size": `${prefs.codeFontSize + 2}px`,
         "--diffs-font-family": "var(--font-mono)",
         // 容器内外边距：默认 gap 是 8px 四边，展开后与行头/下一条之间
         // 会多出明显的空带。纵向归零（紧贴吸顶行头），横向对齐行头的 12px。

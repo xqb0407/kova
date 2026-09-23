@@ -9,6 +9,7 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -24,12 +25,14 @@ import {
   closePanelTab,
   closePanelTabsToLeft,
   closePanelTabsToRight,
+  focusPluginPanel,
   openPanelTab,
   setActivePanelTab,
   type PanelTab,
 } from "@/lib/panels/panel-tabs";
 import { newTerminalTab } from "@/lib/shell";
 import { isTauri } from "@/lib/tauri";
+import { usePluginPanels } from "@/lib/plugins/plugin-panels";
 import { TAB_META, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
 import { cn } from "@/lib/utils";
 
@@ -164,6 +167,7 @@ export const TabBar: FC<{
   flushActions?: boolean;
 }> = ({ tabs, activeId, actions, flushActions }) => {
   const types = useVisiblePanelTabTypes();
+  const { panels } = usePluginPanels();
   const pillLayoutId = useId();
   return (
     <div
@@ -264,6 +268,37 @@ export const TabBar: FC<{
               );
             })}
           </DropdownMenuGroup>
+          {/* 已装插件的 UI 面板贡献：卸载插件条目即消失（opens 文档类面板从
+              产物卡打开更顺手，这里给无文档的常驻面板一个直达入口） */}
+          {panels.length > 0 && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>插件面板</DropdownMenuLabel>
+                {panels.map((c) => (
+                  <DropdownMenuItem
+                    key={`${c.pluginId}#${c.panel.id}`}
+                    onClick={() => focusPluginPanel(c.pluginId, c.panel.id)}
+                  >
+                    {c.panel.icon ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={c.panel.icon}
+                        alt=""
+                        className="size-3.5 shrink-0 rounded-sm object-contain"
+                      />
+                    ) : (
+                      <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
+                    )}
+                    <span className="truncate">{c.panel.title}</span>
+                    <span className="text-muted-foreground ml-auto truncate pl-2 text-[10px]">
+                      {c.pluginName}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
+            </>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 

@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useMemo, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { FileCodeIcon, FileIcon, GlobeIcon } from "lucide-react";
+import { FileCodeIcon, FileIcon, GlobeIcon, LayoutPanelTopIcon } from "lucide-react";
 import {
   formatBytes,
   isBrowserPreviewable,
@@ -11,7 +11,8 @@ import {
   toFileUrl,
   type MessageArtifact,
 } from "@/lib/panels/artifacts";
-import { focusPanelTab } from "@/lib/panels/panel-tabs";
+import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
+import { findPanelForFile, usePluginPanels } from "@/lib/plugins/plugin-panels";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -40,6 +41,12 @@ export const ArtifactCard: FC<{ artifact: MessageArtifact }> = ({
   const workspace = isTauri() ? getWorkspace() : null;
   // 地球按钮只对能在浏览器里渲染的类型出现（md 等交给「代码」的文件标签预览）
   const canPreview = !!workspace && isBrowserPreviewable(artifact.path);
+  // 产物命中已装面板的 opens glob（如 *.canvas.json）→ 追加「在画布中打开」
+  const relPath = workspace && artifact.path.startsWith(`${workspace}/`)
+    ? artifact.path.slice(workspace.length + 1)
+    : artifact.path;
+  const { panels } = usePluginPanels();
+  const panelForFile = workspace ? findPanelForFile(panels, relPath) : undefined;
 
   const openCode = () => {
     focusPanelTab("file", { focus: artifact.toolCallId, title: artifact.base });
@@ -50,6 +57,14 @@ export const ArtifactCard: FC<{ artifact: MessageArtifact }> = ({
     focusPanelTab("browser", {
       url: toFileUrl(workspace, artifact.path),
       title: artifact.base,
+    });
+    window.dispatchEvent(new Event("agent-panel:open"));
+  };
+  const openInPanel = () => {
+    if (!workspace || !panelForFile) return;
+    focusPluginPanel(panelForFile.pluginId, panelForFile.panel.id, {
+      cwd: workspace,
+      path: relPath,
     });
     window.dispatchEvent(new Event("agent-panel:open"));
   };
@@ -89,6 +104,17 @@ export const ArtifactCard: FC<{ artifact: MessageArtifact }> = ({
           className={cn(iconBtn)}
         >
           <GlobeIcon className="size-4" />
+        </button>
+      ) : null}
+      {panelForFile ? (
+        <button
+          type="button"
+          onClick={openInPanel}
+          aria-label={`在${panelForFile.panel.title}中打开`}
+          title={`在${panelForFile.panel.title}中打开`}
+          className={cn(iconBtn)}
+        >
+          <LayoutPanelTopIcon className="size-4" />
         </button>
       ) : null}
     </div>

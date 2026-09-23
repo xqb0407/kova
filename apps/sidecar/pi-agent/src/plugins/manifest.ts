@@ -26,6 +26,8 @@ export type PluginComponents = {
   mcpServers?: string;
   hooks?: string;
   subagents?: string;
+  /** UI 面板声明文件（JSON 数组，形状见 readPluginPanelsFile） */
+  panels?: string;
 };
 
 export type PluginManifest = {
@@ -254,10 +256,13 @@ export function parsePluginManifest(
     if (hooks) components.hooks = hooks;
     const subagents = declared("subagents");
     if (subagents) components.subagents = subagents;
+    const panels = declared("panels");
+    if (panels) components.panels = panels;
     for (const key of Object.keys(doc)) {
       if (
         !["name", "version", "description", "author", "icon", "category", "keywords",
-          "homepage", "license", "skills", "mcpServers", "hooks", "subagents"].includes(key)
+          "homepage", "license", "skills", "mcpServers", "hooks", "subagents",
+          "panels"].includes(key)
       ) {
         diagnostics.push(`${probe.dir}/${probe.file}: 忽略未知字段 "${key}"`);
       }
@@ -274,6 +279,9 @@ export function parsePluginManifest(
     }
     const hooks = declared("hooks") ?? (fileExists(root, join("hooks", "hooks.json")) ? "hooks/hooks.json" : undefined);
     if (hooks) components.hooks = hooks;
+    // UI 面板是本应用原生概念：生态清单无默认位置，但显式声明照收
+    const panels = declared("panels");
+    if (panels) components.panels = panels;
     if (dirExists(root, "agents")) {
       unsupported.push("agents: 生态子智能体格式暂不支持（可在本应用内另建同名子智能体）");
     }
@@ -448,4 +456,131 @@ export function readPluginHooksFile(
   if (isRecord(doc)) return readHooksClaude(doc, pluginId, pluginName, diagnostics);
   diagnostics.push("hooks: 顶层必须是数组或对象");
   return [];
+}
+
+// ---------------------------------------------------------------------------
+// UI 面板声明（panels.json：插件向右侧面板贡献的自包含 HTML 面板清单）
+// ---------------------------------------------------------------------------
+
+/** 桥能力白名单：document=文档读写 / export=产物落盘 / agent=composer 预填 / notify=提示条 */
+export const PANEL_PERMISSIONS = ["document", "export", "agent", "notify"] as const;
+export type PluginPanelPermission = (typeof PANEL_PERMISSIONS)[number];
+
+/** panels.json 单条目解析产物（字段已经过合法性与包含性校验） */
+export type PluginPanelDecl = {
+  id: string;
+  title: string;
+  /** 面板图标：相对路径（读取时转 data URL）或 http(s)/data URL 原样 */
+  icon?: string;
+  /** 自包含单文件 HTML（相对插件根；前端 blob 挂载进 sandboxed iframe） */
+  entry: string;
+  /** 匹配该 glob 的工作区文件可「在面板中打开」（如 "*.canvas.json"） */
+  opens: string[];
+  permissions: PluginPanelPermission[];
+};
+
+const PANEL_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/** 极简 glob 判定（仅 `*` 通配整段路径字符；opens 匹配与前端同款语义） */
+export function globMatch(pattern: string, path: string): boolean {
+  const re = new RegExp(
+    "^" +
+      pattern
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*/g, "[^/]*")
+        .replace(/\?/g, ".") +
+      "$",
+    "i",
+  );
+  return re.test(path.replace(/\\/g, "/"));
+}
+
+/**
+ * 读取插件面板声明文件（顶层数组）。硬错误（文件缺失/坏 JSON）返回空并记诊断；
+ * 单条目坏（id 非法/entry 缺失或不逃逸但非 HTML/重复 id）跳过该条继续其余，
+ * 权限与 opens 逐字段宽松过滤——面板可用性优先于严格性。
+ */
+export function readPluginPanelsFile(
+  absPath: string,
+  pluginRoot: string,
+  diagnostics: string[],
+): PluginPanelDecl[] {
+  if (!existsSync(absPath)) {
+    diagnostics.push("panels: 声明的文件不存在");
+    return [];
+  }
+  let doc: unknown;
+  try {
+    doc = JSON.parse(readFileSync(absPath, "utf8"));
+  } catch (err) {
+    diagnostics.push(`panels: 解析失败（${err instanceof Error ? err.message : String(err)}）`);
+    return [];
+  }
+  if (!Array.isArray(doc)) {
+    diagnostics.push("panels: 顶层必须是数组");
+    return [];
+  }
+  const out: PluginPanelDecl[] = [];
+  const seen = new Set<string>();
+  doc.forEach((item, i) => {
+    if (!isRecord(item)) {
+      diagnostics.push(`panels[${i}]: 条目必须是对象，已忽略`);
+      return;
+    }
+    const id = asString(item.id);
+    if (!id || !PANEL_ID_RE.test(id)) {
+      diagnostics.push(`panels[${i}]: id 缺失或非法（需匹配 ${PANEL_ID_RE.source}），已忽略`);
+      return;
+    }
+    if (seen.has(id)) {
+      diagnostics.push(`panels[${i}]: 重复 id "${id}"，已忽略`);
+      return;
+    }
+    const title = asString(item.title) ?? id;
+    const entryRaw = asString(item.entry);
+    if (!entryRaw) {
+      diagnostics.push(`panels[${i}]: 缺少 entry，已忽略`);
+      return;
+    }
+    const contained = containedRelPath(pluginRoot, entryRaw, `panels[${i}].entry`, diagnostics);
+    if (!contained) return;
+    if (!/\.html?$/i.test(contained)) {
+      diagnostics.push(`panels[${i}]: entry 必须是 .html 文件（"${entryRaw}"），已忽略`);
+      return;
+    }
+    const perms: PluginPanelPermission[] = [];
+    if (Array.isArray(item.permissions)) {
+      for (const p of item.permissions) {
+        if (
+          typeof p === "string" &&
+          (PANEL_PERMISSIONS as readonly string[]).includes(p) &&
+          !perms.includes(p as PluginPanelPermission)
+        ) {
+          perms.push(p as PluginPanelPermission);
+        }
+      }
+    }
+    const opens: string[] = [];
+    if (Array.isArray(item.opens)) {
+      for (const g of item.opens) {
+        if (typeof g === "string" && g.trim()) opens.push(g.trim());
+      }
+    }
+    const icon = asString(item.icon);
+    let iconRel: string | undefined;
+    if (icon) {
+      if (/^(https?:|data:)/i.test(icon)) iconRel = icon;
+      else iconRel = containedRelPath(pluginRoot, icon, `panels[${i}].icon`, diagnostics);
+    }
+    seen.add(id);
+    out.push({
+      id,
+      title,
+      ...(iconRel ? { icon: iconRel } : {}),
+      entry: contained,
+      opens,
+      permissions: perms,
+    });
+  });
+  return out;
 }
