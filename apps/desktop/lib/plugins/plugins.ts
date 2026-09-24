@@ -249,7 +249,11 @@ export async function removeMarketplace(marketplaceId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 type PendingOp = { opId: string; op: PendingOpKind; startedAt: number; key?: string };
-type PendingOpKind = "add_marketplace" | "refresh_marketplace" | "install_plugin";
+type PendingOpKind =
+  | "add_marketplace"
+  | "refresh_marketplace"
+  | "install_plugin"
+  | "install_plugin_local";
 
 const pendingOps = new Map<string, PendingOp>();
 let pendingList: PendingOp[] = [];
@@ -281,13 +285,23 @@ function registerPending(op: PendingOpKind, opId: string, key?: string): void {
   emitPending();
 }
 
+/**
+ * 已回流的结果帧（opId → 结果）：本地安装等秒级操作的结果帧可能先于受理
+ * 应答的 promise 续体到达，此时不得再把已结算的 opId 放回 pending——
+ * 否则挂起集合永不清除，按钮永久转圈。有界保留供 waitForPluginOp 补结算。
+ */
+type OpResult = { ok: boolean; errorText?: string };
+const settledOps = new Map<string, OpResult>();
+
 async function requestOp(
   op: PendingOpKind,
   payload: Record<string, unknown>,
   key?: string,
 ): Promise<string> {
   const res = await piRequest<PiPluginOpAccepted>(payload);
-  registerPending(op, res.opId, key);
+  if (!settledOps.has(res.opId)) {
+    registerPending(op, res.opId, key);
+  }
   return res.opId;
 }
 
@@ -305,6 +319,15 @@ export function addMarketplace(args: {
   );
 }
 
+/** 直接安装任意本地插件目录（不经市场）：path 为含三态清单的插件根目录绝对路径 */
+export function installPluginLocal(path: string): Promise<string> {
+  return requestOp(
+    "install_plugin_local",
+    { type: "install_plugin_local", path, ...(getWorkspace() ? { cwd: getWorkspace() } : {}) },
+    path,
+  );
+}
+
 /** 刷新市场（git 重新浅克隆；directory 重读目录） */
 export function refreshMarketplace(marketplaceId: string): Promise<string> {
   return requestOp(
@@ -314,11 +337,22 @@ export function refreshMarketplace(marketplaceId: string): Promise<string> {
   );
 }
 
-/** 安装/更新插件 */
-export function installPlugin(marketplaceId: string, name: string): Promise<string> {
+/** 安装/更新插件。link=true 走链接安装（dev 模式，仅目录市场：cache 条目
+ *  symlink 指源目录，重建产物即生效）；缺省保持已装项现有模式 */
+export function installPlugin(
+  marketplaceId: string,
+  name: string,
+  opts: { link?: boolean } = {},
+): Promise<string> {
   return requestOp(
     "install_plugin",
-    { type: "install_plugin", marketplaceId, name, ...(getWorkspace() ? { cwd: getWorkspace() } : {}) },
+    {
+      type: "install_plugin",
+      marketplaceId,
+      name,
+      ...(opts.link === true ? { link: true } : {}),
+      ...(getWorkspace() ? { cwd: getWorkspace() } : {}),
+    },
     `${marketplaceId}:${name}`,
   );
 }
@@ -337,14 +371,58 @@ export function setPluginOpHandler(
   frameHandler = cb;
 }
 
-function handleFrame(frame: { opId: string; op: string; ok: boolean; errorText?: string; plugins?: PluginEntry[]; marketplaces?: MarketplaceEntry[]; workspaceCwd?: string | null }) {
+/** 等待某次耗时操作的 plugin_op_result 回流（受理应答给出的 opId）。
+ *  结果帧先到时从 settledOps 立即结算；帧永不到达（通道断开）时超时 reject。 */
+export function waitForPluginOp(opId: string, timeoutMs = 120_000): Promise<OpResult> {
+  const done = settledOps.get(opId);
+  if (done) return Promise.resolve(done);
+  return new Promise<OpResult>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      opWaiters.delete(opId);
+      reject(new Error("操作超时：未收到 sidecar 结果（sidecar 是否在运行？）"));
+    }, timeoutMs);
+    const list = opWaiters.get(opId) ?? [];
+    list.push((result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+    opWaiters.set(opId, list);
+  });
+}
+
+const opWaiters = new Map<string, Array<(result: OpResult) => void>>();
+
+function handleFrame(frame: { opId: string; op: string; ok: boolean; errorText?: string; name?: string; plugins?: PluginEntry[]; marketplaces?: MarketplaceEntry[]; workspaceCwd?: string | null }) {
+  // 先取挂起条目的 key 再删：结果帧可能先于受理应答续体到达（pending 未登记）
+  const inFlightKey = pendingOps.get(frame.opId)?.key;
   pendingOps.delete(frame.opId);
+  const result: OpResult = { ok: frame.ok, ...(frame.errorText ? { errorText: frame.errorText } : {}) };
+  settledOps.set(frame.opId, result);
+  if (settledOps.size > 64) {
+    const oldest = settledOps.keys().next().value;
+    if (oldest !== undefined) settledOps.delete(oldest);
+  }
   emitPending();
   if (frame.ok) {
     applyPluginsData(frame);
     applyMarketplacesData(frame);
     emitPlugins();
     emitMarketplaces();
+    // 市场安装/更新完成提示（本地安装的成功提示由安装对话框给出，不重复）。
+    // 名字优先取结果帧附带值；旧 sidecar 未附带时回落 pending key（`mkt:name`）
+    if (frame.op === "install_plugin") {
+      const name = frame.name ?? (inFlightKey ? inFlightKey.slice(inFlightKey.indexOf(":") + 1) : "");
+      if (name) {
+        void import("@/components/ui/toast").then(({ toast }) => {
+          toast.success({ title: `插件「${name}」安装完成` });
+        });
+      }
+    }
+  }
+  const waiters = opWaiters.get(frame.opId);
+  if (waiters) {
+    opWaiters.delete(frame.opId);
+    for (const settle of waiters) settle(result);
   }
   frameHandler?.(frame);
 }

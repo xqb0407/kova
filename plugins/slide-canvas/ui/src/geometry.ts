@@ -166,6 +166,28 @@ export function offsetPasted(
   return els.map((e) => ({ ...structuredClone(e), id: newId(e.id), x: e.x + dx, y: e.y + dy }) as El);
 }
 
+/**
+ * 组选中联动：把选中集合扩成完整编辑组（同 groupId 的成员全部入选）。
+ * groupId 是一层扁平标注，无嵌套——按出现的组 id 集合并集即可。
+ */
+export function expandGroup(els: El[], ids: string[]): string[] {
+  const byId = new Set(ids);
+  const gids = new Set<string>();
+  for (const e of els) if (byId.has(e.id) && e.groupId) gids.add(e.groupId);
+  if (gids.size === 0) return ids;
+  const out = new Set(ids);
+  for (const e of els) if (e.groupId && gids.has(e.groupId)) out.add(e.id);
+  return [...out];
+}
+
+/** 复制粘贴时给组换新 id：同一次粘贴内的组关系保留，不同次粘贴不串组 */
+export function regroupCopies(els: El[]): El[] {
+  const gids = new Set(els.flatMap((e) => (e.groupId ? [e.groupId] : [])));
+  if (gids.size === 0) return els;
+  const map = new Map([...gids].map((g) => [g, `g${Math.random().toString(36).slice(2, 10)}`]));
+  return els.map((e) => (e.groupId ? ({ ...e, groupId: map.get(e.groupId) } as El) : e));
+}
+
 /** 8 向手柄的 resize 盒计算（从 CanvasStage 抽出供测试） */
 export function resizeBox(
   orig: Box,
@@ -199,8 +221,10 @@ export function resizeBox(
       nx = orig.x + orig.w / 2 - nw / 2;
       ny = orig.y + orig.h / 2 - nh / 2;
     } else {
-      if (!left) nx = x2 - nw;
-      if (!top) ny = y2 - nh;
+      // 锚定未拖动的对边：k 由另一轴主导时 nw/nh 会小于拖出的距离，
+      // 用已移动边反推位置会让整框漂移——固定点必须是不动的那条边
+      nx = left ? x2 - nw : x1;
+      ny = top ? y2 - nh : y1;
     }
   }
   if (alt) {

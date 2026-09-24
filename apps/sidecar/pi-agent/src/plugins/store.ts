@@ -3,7 +3,7 @@
  * 已装插件扫描（签名缓存）、组件/图标解析、生效插件 hooks 读取。
  * 写路径（安装/卸载/市场操作）见 marketplaces.ts，经 invalidateCaches 失效本层缓存。
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { kvGet, kvSet } from "../storage/hostdb";
 import { logErr } from "../log";
@@ -13,6 +13,8 @@ import {
   readPluginPanelsFile,
   asString,
   pluginsRootDir,
+  LOCAL_MKT_ID,
+  LOCAL_MKT_NAME,
   type PluginHookEntry,
   type PluginPanelDecl,
   type PluginComponents,
@@ -96,6 +98,21 @@ function cacheRootSignature(): string {
   }
 }
 
+/** 安装元数据读取：拷贝装 = 目录内 installed.json；链接装 = `${dir}.installed.json` 兄弟文件。
+ *  两个落点都探测（模式切换后旧元数据兜底），坏 JSON/缺失按空处理 */
+function readInstallMeta(dir: string, linked: boolean): Record<string, unknown> {
+  for (const p of linked
+    ? [`${dir}.installed.json`, join(dir, "installed.json")]
+    : [join(dir, "installed.json"), `${dir}.installed.json`]) {
+    try {
+      return JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>;
+    } catch {
+      /* 缺省：试下一个落点 */
+    }
+  }
+  return {};
+}
+
 export function scanInstalledSync(): InstalledPlugin[] {
   const sig = cacheRootSignature();
   if (scanCache && scanCache.sig === sig) return scanCache.plugins;
@@ -118,33 +135,39 @@ export function scanInstalledSync(): InstalledPlugin[] {
     }
     for (const name of names) {
       const dir = join(mktDir, name);
-      // 并发卸载的竞态：stat 失败按已消失处理，下次扫描自然收敛
+      // linked（符号链接安装）识别：lstat 不追随；stat 失败（并发卸载/链接悬空）按已消失处理
+      let linked = false;
+      let sourcePath: string | undefined;
       try {
-        if (!statSync(dir).isDirectory()) continue;
+        if (lstatSync(dir).isSymbolicLink()) {
+          linked = true;
+          sourcePath = readlinkSync(dir);
+        }
+        if (!statSync(dir).isDirectory()) continue; // 链接指向文件/已悬空：不算插件
       } catch {
         continue;
       }
       const pluginId = `${name}@${mktId}`;
+      // 「本地安装」伪市场不在登记表里：身份固定、无"市场已移除"一说
+      const isLocal = mktId === LOCAL_MKT_ID;
       try {
         const manifest = parsePluginManifest(dir);
-        let meta: Record<string, unknown> = {};
-        const metaPath = join(dir, "installed.json");
-        if (existsSync(metaPath)) {
-          try {
-            meta = JSON.parse(readFileSync(metaPath, "utf8")) as Record<string, unknown>;
-          } catch {
-            /* 坏元数据按缺省处理 */
-          }
-        }
+        // 安装元数据落点分模式：拷贝装在目录内 installed.json；
+        // 链接装在 cache 条目的兄弟文件（写进源目录会污染用户仓库）
+        const meta = readInstallMeta(dir, linked);
+        // 拷贝装的本地安装插件也带 sourcePath（installed.json 记录），"检查更新"据此重拷
+        const metaSourcePath = !linked ? asString(meta.sourcePath) : undefined;
         plugins.push({
           pluginId,
           mktId,
-          mktName: mktNames.get(mktId) ?? mktId,
+          mktName: isLocal ? LOCAL_MKT_NAME : (mktNames.get(mktId) ?? mktId),
           name: manifest.name,
           version: asString(meta.version) ?? manifest.version,
           ...(typeof meta.revision === "string" && meta.revision ? { revision: meta.revision } : {}),
           installedAt: typeof meta.installedAt === "string" ? meta.installedAt : "",
-          sourceMissing: !mktNames.has(mktId),
+          sourceMissing: !isLocal && !mktNames.has(mktId),
+          ...(linked ? { linked: true, sourcePath } : {}),
+          ...(!linked && metaSourcePath ? { sourcePath: metaSourcePath } : {}),
           enabled: isPluginEnabled(pluginId),
           manifest,
           diagnostics: manifest.diagnostics,
@@ -153,11 +176,11 @@ export function scanInstalledSync(): InstalledPlugin[] {
         plugins.push({
           pluginId,
           mktId,
-          mktName: mktNames.get(mktId) ?? mktId,
+          mktName: isLocal ? LOCAL_MKT_NAME : (mktNames.get(mktId) ?? mktId),
           name,
           version: "0.0.0",
           installedAt: "",
-          sourceMissing: !mktNames.has(mktId),
+          sourceMissing: !isLocal && !mktNames.has(mktId),
           enabled: isPluginEnabled(pluginId),
           manifest: {
             name,
@@ -351,6 +374,30 @@ export function readPluginPanelAsset(
     base64: readFileSync(abs).toString("base64"),
     rev: `${Math.round(st.mtimeMs)}:${st.size}`,
   };
+}
+
+/**
+ * 面板入口的轻量指纹（宿主轮询自动重载判据）：与 readPluginPanelAsset 同一定位链，
+ * 只 stat 不读文件。linked 一并带回——宿主只对链接安装（dev 模式）的面板做自动重载，
+ * 拷贝装的正常用户不该被无预警换页内容。
+ */
+export function readPluginPanelRev(
+  pluginId: string,
+  panelId: string,
+): { rev: string; linked: boolean } | undefined {
+  const found = findEnabledPluginPanel(pluginId, panelId);
+  if (!found) return undefined;
+  const { plugin, panel } = found;
+  const abs = resolve(plugin.manifest.root, panel.entry);
+  const rootWithSep = plugin.manifest.root.endsWith(sep) ? plugin.manifest.root : plugin.manifest.root + sep;
+  if (!abs.startsWith(rootWithSep)) return undefined;
+  try {
+    const st = statSync(abs);
+    if (!st.isFile()) return undefined;
+    return { rev: `${Math.round(st.mtimeMs)}:${st.size}`, linked: plugin.linked === true };
+  } catch {
+    return undefined;
+  }
 }
 
 /** 定位已装且启用插件的面板声明（open_plugin_panel 工具的校验入口） */

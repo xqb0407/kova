@@ -21,6 +21,7 @@ import {
   ChevronLeftIcon,
   FolderOpenIcon,
   GitBranchIcon,
+  Link2Icon,
   Loader2Icon,
   PackageOpenIcon,
   RefreshCwIcon,
@@ -88,6 +89,13 @@ const AddMarketplaceDialog = dynamic(
     })),
   { ssr: false },
 );
+const InstallLocalDialog = dynamic(
+  () =>
+    import("@/components/marketplace/install-local-dialog").then((m) => ({
+      default: m.InstallLocalDialog,
+    })),
+  { ssr: false },
+);
 
 /** 管理页分段器选项（已装插件已上提为主区页签，这里保持技能/MCP 原位置） */
 type ManageTab = "plugins" | "skills" | "apps";
@@ -115,6 +123,7 @@ export const MarketplaceView: FC = () => {
   const [manageOpen, setManageOpen] = useState(false);
   const [manageTab, setManageTab] = useState<ManageTab>("plugins");
   const [addOpen, setAddOpen] = useState(false);
+  const [localInstallOpen, setLocalInstallOpen] = useState(false);
   const [activeMktId, setActiveMktId] = useState<string | null>(null);
 
   const marketplaces = marketplacesSnap.marketplaces;
@@ -128,10 +137,11 @@ export const MarketplaceView: FC = () => {
     if (!activeMktId && marketplaces.length > 0) setActiveMktId(marketplaces[0]!.id);
   }, [activeMktId, marketplaces]);
 
-  // 耗时操作出错时 toast 提示（成功路径由帧数据整包并入，无需处理）
+  // 耗时操作出错时 toast 提示（成功路径由帧数据整包并入，无需处理）。
+  // 本地安装除外：其错误/成功由安装对话框内联呈现，避免重复。
   useEffect(() => {
     setPluginOpHandler((frame) => {
-      if (!frame.ok) {
+      if (!frame.ok && frame.op !== "install_plugin_local") {
         void import("@/components/ui/toast").then(({ toast }) => {
           toast.error({ title: `插件操作失败（${frame.op}）`, description: frame.errorText });
         });
@@ -140,16 +150,18 @@ export const MarketplaceView: FC = () => {
     return () => setPluginOpHandler(null);
   }, []);
 
-  /** 当前市场目录中，该插件是否已安装（版本不同 = 有更新） */
+  /** 当前市场目录中，该插件是否已安装（版本不同 = 有更新；链接装常驻源目录，无更新概念） */
   const installStateOf = (mkt: MarketplaceEntry, pluginName: string) => {
     const installed = pluginsSnap.plugins.find(
       (p) => p.name === pluginName && p.marketplaceId === mkt.id,
     );
-    if (!installed) return { installed: false, update: false, busy: false } as const;
+    if (!installed)
+      return { installed: false, linked: false, sourcePath: undefined, update: false, busy: false } as const;
     const catalogEntry = mkt.plugins.find((e) => e.name === pluginName);
-    const update = Boolean(catalogEntry?.version && catalogEntry.version !== installed.version);
+    const linked = installed.linked === true;
+    const update = !linked && Boolean(catalogEntry?.version && catalogEntry.version !== installed.version);
     const busy = isPluginOpPending("install_plugin", `${mkt.id}:${pluginName}`);
-    return { installed: true, update, busy } as const;
+    return { installed: true, linked, sourcePath: installed.sourcePath, update, busy } as const;
   };
 
   if (manageOpen) {
@@ -228,14 +240,25 @@ export const MarketplaceView: FC = () => {
             ]}
           />
           {view === "market" && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5"
-              onClick={() => setAddOpen(true)}
-            >
-              + 添加市场
-            </Button>
+            <div className="flex gap-1.5">
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                title="直接选择一个本地插件目录安装（不经市场）"
+                onClick={() => setLocalInstallOpen(true)}
+              >
+                本地安装
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => setAddOpen(true)}
+              >
+                + 添加市场
+              </Button>
+            </div>
           )}
         </div>
 
@@ -250,7 +273,8 @@ export const MarketplaceView: FC = () => {
             </div>
             <p className="text-sm font-medium">还没有添加插件市场</p>
             <p className="text-muted-foreground text-sm">
-              点右上角「添加市场」，选择本地目录或 Git 仓库。
+              点右上角「添加市场」，选择本地目录或 Git 仓库；
+              或点「本地安装」直接装一个下载好的插件目录。
             </p>
           </div>
         ) : (
@@ -286,7 +310,8 @@ export const MarketplaceView: FC = () => {
                   <DropdownMenuItem onClick={() => setAddOpen(true)}>+ 添加市场…</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              {activeMarket && (
+              {/* 「本地安装」伪市场目录随装随生成，无刷新概念 */}
+              {activeMarket && activeMarket.id !== "local" && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -355,38 +380,72 @@ export const MarketplaceView: FC = () => {
                               </Badge>
                             ))}
                           </div>
-                          {state.installed ? (
-                            state.update ? (
-                              <Button
-                                size="sm"
-                                className="h-7 gap-1 text-xs"
-                                disabled={state.busy}
-                                onClick={() => void installPlugin(activeMarket!.id, entry.name)}
-                              >
-                                {state.busy ? (
-                                  <Loader2Icon className="size-3 animate-spin" />
-                                ) : null}
-                                更新
-                              </Button>
-                            ) : (
-                              <Badge variant="outline" className="gap-1 font-normal">
-                                <CheckIcon className="size-3" />
-                                已安装
-                              </Badge>
-                            )
-                          ) : (
-                            <Button
-                              size="sm"
+                          {state.installed && state.linked ? (
+                            <Badge
                               variant="outline"
-                              className="h-7 gap-1 text-xs"
-                              disabled={state.busy || pending.length > 0}
-                              onClick={() => void installPlugin(activeMarket!.id, entry.name)}
+                              className="gap-1 font-normal"
+                              title={state.sourcePath ? `源目录：${state.sourcePath}` : undefined}
                             >
-                              {state.busy ? (
-                                <Loader2Icon className="size-3 animate-spin" />
-                              ) : null}
-                              安装
-                            </Button>
+                              <Link2Icon className="size-3" />
+                              链接安装 · 开发
+                            </Badge>
+                          ) : (
+                            <div className="flex items-center gap-1">
+                              {state.installed ? (
+                                state.update ? (
+                                  <Button
+                                    size="sm"
+                                    className="h-7 gap-1 text-xs"
+                                    disabled={state.busy}
+                                    onClick={() => void installPlugin(activeMarket!.id, entry.name)}
+                                  >
+                                    {state.busy ? (
+                                      <Loader2Icon className="size-3 animate-spin" />
+                                    ) : null}
+                                    更新
+                                  </Button>
+                                ) : (
+                                  <Badge variant="outline" className="gap-1 font-normal">
+                                    <CheckIcon className="size-3" />
+                                    已安装
+                                  </Badge>
+                                )
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 gap-1 text-xs"
+                                  disabled={state.busy || pending.length > 0}
+                                  onClick={() => void installPlugin(activeMarket!.id, entry.name)}
+                                >
+                                  {state.busy ? (
+                                    <Loader2Icon className="size-3 animate-spin" />
+                                  ) : null}
+                                  安装
+                                </Button>
+                              )}
+                              {activeMarket!.type === "directory" &&
+                                activeMarket!.id !== "local" &&
+                                !state.update && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-muted-foreground h-7 gap-1 px-2 text-xs"
+                                  disabled={state.busy || pending.length > 0}
+                                  title="cache 条目链接到源目录：改插件源码后重建即生效，无需重复安装，面板自动重载（仅开发用）"
+                                  onClick={() =>
+                                    void installPlugin(activeMarket!.id, entry.name, { link: true })
+                                  }
+                                >
+                                  {state.busy ? (
+                                    <Loader2Icon className="size-3 animate-spin" />
+                                  ) : (
+                                    <Link2Icon className="size-3" />
+                                  )}
+                                  {state.installed ? "转链接装" : "链接装"}
+                                </Button>
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>
@@ -400,6 +459,7 @@ export const MarketplaceView: FC = () => {
       </div>
 
       <AddMarketplaceDialog open={addOpen} onOpenChange={setAddOpen} />
+      <InstallLocalDialog open={localInstallOpen} onOpenChange={setLocalInstallOpen} />
     </div>
   );
 };

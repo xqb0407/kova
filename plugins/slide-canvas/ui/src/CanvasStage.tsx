@@ -1,17 +1,20 @@
 /**
- * 画布视口（CanvasDoc v2：真·无限画布）：DOM + CSS transform 的四层结构
+ * 画布视口（双 surface，同一套几何/交互引擎）：DOM + CSS transform 的四层结构
  *   stage(屏幕事件宿主) → viewport(translate/scale，画布坐标)
- *     → 页框层(frame.x/y 绝对摆放，content-visibility 虚拟化)
- *     → objects 层(画布级元素，绝对坐标，盖在页框之上)
- *   + overlay(选择框/手柄/吸附线/框选矩形/页框名称标签/文本编辑镜像，屏幕坐标)
+ *     → 页框层（deck：只渲染当前一页；board：完全不渲染）
+ *     → objects 层（board：画布级元素；deck：不渲染）
+ *   + overlay(选择框/手柄/吸附线/框选矩形/文本编辑镜像，屏幕坐标)
+ *
+ * surface="board"（白板画布）：只呈现与命中 objects；页框不可见、不可选、不参与适配。
+ * surface="deck"（幻灯片单页编辑）：只呈现与命中当前页（选择所在页，否则第一页）的
+ *   artboard；objects 隐藏；框选/命中/适配全部围绕这一页。页框位置 x/y 两种模式都不
+ *   提供拖拽 UI（deck 靠 focusFrame 适配居中，board 不画页框）。
  *
  * 几何约定：元素在「容器内局部坐标」——页框内元素相对框左上角，objects 即画布坐标。
- * 命中/选择/overlay 统一换算到画布空间比较（marquee 对页框元素先把 rect 平移进框局部，
- * 修掉旧版「画布 rect 对比局部 box」的细元素漏选 bug）。
+ * 命中/选择/overlay 统一换算到画布空间比较（marquee 对页框元素先把 rect 平移进框局部）。
  *
- * 命中序：objects（顶层）→ 页框内元素 → 页框空白（聚焦页）→ 画布空白（框选/平移）。
- * 拖动页框 = 拖左上角名称标签（liveFrame 实时预览，pointerup 提交 setFramePos）。
  * 拖拽/缩放/旋转全程实时预览：进行中几何放 live Map 传入渲染，pointerup 一次性 commit。
+ * 钢笔：board 落 objects；deck 只落当前页，出页丢弃并提示。
  */
 import {
   useCallback,
@@ -25,12 +28,32 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { ElView, SlideView } from "./render";
-import { containerEls, type DeckStore } from "./state";
-import { CANVAS_ROOT, DRAW_MAX_POINTS, drawFromPoints, type Box, type DrawPoint, type El, type Frame, type TextEl } from "./doc";
+import { ElView, SlideView, EmbedElView, SvgElView, getEmbedActive, setEmbedActive } from "./render";
+import { isAnimatedSvg } from "./mermaid";
+import { LeaferStage } from "./leafer/LeaferStage";
+import { containerEls, type DeckStore, type Surface } from "./state";
+import {
+  CANVAS_ROOT,
+  DRAW_MAX_POINTS,
+  drawFromPoints,
+  isDarkColor,
+  uid,
+  type Box,
+  type DrawPoint,
+  type El,
+  type EmbedEl,
+  type Frame,
+  type LineDir,
+  type ShapeEl,
+  type SvgEl,
+  type TextEl,
+} from "./doc";
+import { ChartEditor } from "./editor/ChartEditor";
+import { TableEditor } from "./editor/TableEditor";
 import {
   boxOf,
   boxesIntersect,
+  expandGroup,
   norm,
   normalizeDeg,
   resizeBox,
@@ -44,7 +67,22 @@ export const MAX_ZOOM = 4;
 const SNAP_PX = 8;
 const MARQUEE_THRESHOLD = 3;
 
-type View = { s: number; tx: number; ty: number };
+/** 画线工具文案（出页提示用） */
+const DRAW_LABEL: Record<"line" | "arrow" | "double-arrow", string> = { line: "直线", arrow: "箭头", "double-arrow": "双头箭头" };
+
+/** 渲染器双轨开关（Leafer 迁移期）：像素 parity 全绿后默认 leafer；
+ * 显式设 localStorage "slide-canvas.renderer" = "dom" 回退 DOM 渲染。
+ * 只换元素渲染：命中/交互/overlay（选中框/手柄/吸附线/框选/文本编辑）两轨共用同一套 DOM 代码。 */
+export const RENDERER_KEY = "slide-canvas.renderer";
+function readRenderer(): "dom" | "leafer" {
+  try {
+    return localStorage.getItem(RENDERER_KEY) === "dom" ? "dom" : "leafer";
+  } catch {
+    return "leafer";
+  }
+}
+
+export type View = { s: number; tx: number; ty: number };
 
 /** 页框画布位置（直接读 doc：位置已入档，不再按网格重算） */
 export type FramePos = { frame: Frame; x: number; y: number };
@@ -76,22 +114,20 @@ type DragState =
     }
   | { mode: "rotate"; containerId: string; elId: string; sx: number; sy: number; cx: number; cy: number; startDeg: number; origRot: number; rot: number | null }
   | {
-      mode: "frame";
-      frameId: string;
-      sx: number;
-      sy: number;
-      origX: number;
-      origY: number;
-      /** 画布坐标累计位移（每次从 orig 重算） */
-      dx: number;
-      dy: number;
-    }
-  | {
       /** 钢笔模式一笔：画布坐标点列（采样限距，采样期就地抽稀） */
       mode: "pen";
       pts: DrawPoint[];
       lastX: number;
       lastY: number;
+    }
+  | {
+      /** 画线工具一次拖拽：起点→尾点（画布坐标），方向随拖拽、尾点为箭头头 */
+      mode: "draw";
+      kind: "line" | "arrow" | "double-arrow";
+      x0: number;
+      y0: number;
+      x1: number;
+      y1: number;
     }
   | {
       mode: "marquee";
@@ -155,15 +191,25 @@ export const CanvasStage: FC<{
   onContextHit?: (hit: ContextHit) => void;
   /** 选中内容上方的浮动工具条（屏幕坐标由 stage 定位；拖拽/编辑时自动隐藏） */
   selToolbar?: ReactNode;
-  /** 钢笔模式：按下即起笔采样，抬起提交 draw（落点框内→该页 elements，否则→objects） */
+  /** 钢笔模式：按下即起笔采样，抬起提交 draw（board→objects；deck→当前页，出页丢弃提示） */
   penMode?: boolean;
+  /** 画线工具：按下从起点拖到尾点，抬起提交 line/arrow/double-arrow（默认色随页背景明暗；deck 出页丢弃提示） */
+  drawTool?: "line" | "arrow" | "double-arrow" | null;
+  /** 抓手工具（H）：与按住空格等效，拖拽即平移 */
+  handMode?: boolean;
+  /** 绑定文档标识（workspace 相对路径）：变化即"换档"，按表面重适配视口 */
+  refitKey?: string | null;
+  /** 外壳模式：board 只见 objects；deck 只见当前页框。默认 board */
+  surface?: Surface;
   ref?: Ref<HTMLDivElement>;
-}> = ({ store, editingId, setEditingId, zoomApi, onZoom, onContextHit, selToolbar, penMode, ref }) => {
-  const { doc, sel, setSel, updateEl, setContainerElements, setFramePos, insertImageFromFile } = store;
+}> = ({ store, editingId, setEditingId, zoomApi, onZoom, onContextHit, selToolbar, penMode, drawTool, handMode, refitKey, surface = "board", ref }) => {
+  const { doc, sel, setSel, updateEl, setContainerElements, insertImageFromFile } = store;
   const hostRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ s: 1, tx: 0, ty: 0 });
   const viewRef = useRef(view);
   viewRef.current = view;
+  /** 程序化适配意图（fitAll / 聚焦某页框）；用户手动平移/缩放后清除 */
+  const fitIntentRef = useRef<{ kind: "all" } | { kind: "frame"; id: string } | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const spaceRef = useRef(false);
   const [spaceCursor, setSpaceCursor] = useState(false);
@@ -205,18 +251,25 @@ export const CanvasStage: FC<{
     rafId.current = requestAnimationFrame(step);
   }, []);
 
-  /* ---------- 布局与适配（页框位置 + objects 并集的包围盒） ---------- */
+  /* ---------- 布局与适配（随 surface 过滤：deck 只当前页 / board 只 objects） ---------- */
+
+  /** deck 的当前页 id：选择所在页，否则第一页；无页 null */
+  const curFrameId =
+    surface === "deck" ? (doc.frames.find((f) => f.id === sel?.containerId)?.id ?? doc.frames[0]?.id ?? null) : null;
 
   const layout = useMemo(() => {
-    const positions: FramePos[] = doc.frames.map((f) => ({ frame: f, x: f.x, y: f.y }));
+    const positions: FramePos[] =
+      surface === "deck" && curFrameId
+        ? doc.frames.filter((f) => f.id === curFrameId).map((f) => ({ frame: f, x: f.x, y: f.y }))
+        : [];
     const items: Box[] = [
       ...positions.map((p) => ({ x: p.x, y: p.y, w: p.frame.w, h: p.frame.h })),
-      ...doc.objects.map((o) => boxOf(o)),
+      ...(surface === "board" ? doc.objects.map((o) => boxOf(o)) : []),
     ];
     const u = unionBox(items);
     const bbox: Box = u ? { x: u.x - 80, y: u.y - 80, w: u.w + 160, h: u.h + 160 } : { x: 0, y: 0, w: 1, h: 1 };
     return { positions, bbox };
-  }, [doc.frames, doc.objects]);
+  }, [surface, curFrameId, doc.frames, doc.objects]);
   const positions = layout.positions;
   const posById = useMemo(() => {
     const m = new Map<string, FramePos>();
@@ -231,40 +284,111 @@ export const CanvasStage: FC<{
     [posById],
   );
 
+  /**
+   * 实时盒尺寸：dock（幻灯片四栏）与浮层（白板）切换会让 stage 盒改变大小，
+   * ResizeObserver 的状态要等下一次渲染才更新；适配/缩放按调用时刻读 rect。
+   */
+  const hostWH = useCallback(
+    (): { w: number; h: number } => {
+      const r = hostRef.current?.getBoundingClientRect();
+      return r && r.width > 0 && r.height > 0 ? { w: r.width, h: r.height } : hostSize;
+    },
+    [hostSize],
+  );
+
   const fitAll = useCallback(() => {
-    const { w, h } = hostSize;
+    const { w, h } = hostWH();
     const { bbox } = layout;
     const s = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.min((w - 40) / bbox.w, (h - 40) / bbox.h, 1)));
+    fitIntentRef.current = { kind: "all" };
     setView({
       s,
       tx: (w - bbox.w * s) / 2 - bbox.x * s,
       ty: (h - bbox.h * s) / 2 - bbox.y * s,
     });
-  }, [hostSize, layout]);
+  }, [hostWH, layout]);
+
+  /** 居中并适配某页框（记录意图：容器尺寸变动后按最新尺寸重应用） */
+  const focusFrameImpl = useCallback(
+    (frameId: string) => {
+      const p = posById.get(frameId);
+      if (!p) return;
+      const { w, h } = hostWH();
+      const s = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.min((w - 120) / p.frame.w, (h - 120) / p.frame.h, 2)));
+      fitIntentRef.current = { kind: "frame", id: frameId };
+      setView({ s, tx: w / 2 - (p.x + p.frame.w / 2) * s, ty: h / 2 - (p.y + p.frame.h / 2) * s });
+    },
+    [posById, hostWH],
+  );
 
   /** 打开文档后一次性适配全部（等 ResizeObserver 量到真实容器再算） */
   const didFitRef = useRef(false);
   useEffect(() => {
     if (!measured || didFitRef.current || (doc.frames.length === 0 && doc.objects.length === 0)) return;
     didFitRef.current = true;
-    fitAll();
+    // App 层已给出程序化适配意图（进 deck 聚焦当前页 / 进白板 fitAll）时让位，
+    // 否则 RO 提交时序会决定谁最后落值，视口随渲染分支漂移。
+    if (!fitIntentRef.current) fitAll();
   }, [measured, doc.frames.length, doc.objects.length, fitAll]);
+
+  /**
+   * 换档重适配（新建 / 从首页打开另一份）：绑定文档变化后按表面重算视口，
+   * 否则新内容会落在上一份的视口外、看着像空白。写在 stage 里而不是 App：
+   * 只有这里知道容器是否量过（measured），时机才不会打空。
+   */
+  const lastRefitKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!refitKey) return;
+    if (lastRefitKeyRef.current === refitKey) return;
+    lastRefitKeyRef.current = refitKey;
+    const run = () => {
+      if (surface === "deck") {
+        const f = doc.frames[0];
+        if (f) focusFrameImpl(f.id);
+      } else {
+        fitAll();
+      }
+    };
+    // 立刻一次 + 下一帧再一次：容器测量与 doc.open 的提交次序不定，
+    // 只赌一次容易落在 measured=false / 空 layout 上（新建档看不到画板就是这么来的）
+    run();
+    const t = setTimeout(run, 120);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refitKey, surface]);
+
+  /**
+   * 挂载首帧常量到未落定的旧宽度（dock/侧栏布局后 ResizeObserver 还会再报尺寸），
+   * 那一刻算出的 s/tx 会一直错着——容器尺寸每变一次，按当前程序化适配意图重应用。
+   */
+  const lastFitSizeRef = useRef({ w: 0, h: 0 });
+  useEffect(() => {
+    if (!measured) return;
+    if (hostSize.w === lastFitSizeRef.current.w && hostSize.h === lastFitSizeRef.current.h) return;
+    lastFitSizeRef.current = hostSize;
+    const it = fitIntentRef.current;
+    if (!it) return;
+    if (it.kind === "all") fitAll();
+    else focusFrameImpl(it.id);
+  }, [measured, hostSize, fitAll, focusFrameImpl]);
 
   useEffect(() => {
     zoomApi.current = {
       fitAll,
       zoom100: () => {
-        const { w, h } = hostSize;
+        fitIntentRef.current = null;
+        const { w, h } = hostWH();
         const v = viewRef.current;
         const k = 1 / v.s;
         setView({ s: 1, tx: w / 2 - (w / 2 - v.tx) * k, ty: h / 2 - (h / 2 - v.ty) * k });
       },
       zoomBy: (k: number) => {
-        const { w, h } = hostSize;
+        const { w, h } = hostWH();
         zoomAt(w / 2, h / 2, k);
       },
       zoomTo: (target: number) => {
-        const { w, h } = hostSize;
+        fitIntentRef.current = null;
+        const { w, h } = hostWH();
         const s = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, target));
         setView((v) => {
           const r = s / v.s;
@@ -272,24 +396,19 @@ export const CanvasStage: FC<{
         });
       },
       viewportCenter: () => {
-        const { w, h } = hostSize;
+        const { w, h } = hostWH();
         const vv = viewRef.current;
         return { x: (w / 2 - vv.tx) / vv.s, y: (h / 2 - vv.ty) / vv.s };
       },
-      focusFrame: (frameId: string) => {
-        const p = posById.get(frameId);
-        const { w, h } = hostSize;
-        if (!p) return;
-        const s = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.min((w - 120) / p.frame.w, (h - 120) / p.frame.h, 2)));
-        setView({ s, tx: w / 2 - (p.x + p.frame.w / 2) * s, ty: h / 2 - (p.y + p.frame.h / 2) * s });
-      },
+      focusFrame: focusFrameImpl,
     };
-  }, [fitAll, hostSize, posById, zoomApi]);
+  }, [fitAll, hostWH, focusFrameImpl, zoomApi]);
 
   useEffect(() => onZoom(view.s), [view.s, onZoom]);
 
   /** 锚点缩放：s'=clamp(s·k); t' = p - (p - t)·(s'/s) */
   function zoomAt(px: number, py: number, k: number) {
+    fitIntentRef.current = null; // 用户缩放：程序化适配意图失效
     setView((v) => {
       const s = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v.s * k));
       const r = s / v.s;
@@ -329,7 +448,7 @@ export const CanvasStage: FC<{
     void dragTick;
     const m = new Map<string, Partial<El>>();
     const d = dragRef.current;
-    if (!d || d.mode === "pan" || d.mode === "frame" || d.mode === "pen" || d.mode === "marquee") return m;
+    if (!d || d.mode === "pan" || d.mode === "pen" || d.mode === "draw" || d.mode === "marquee") return m;
     if (d.mode === "move") {
       for (const [id, b] of d.base) m.set(id, { x: Math.round(b.x + d.off.x), y: Math.round(b.y + d.off.y) });
     } else if (d.mode === "resize") {
@@ -345,20 +464,44 @@ export const CanvasStage: FC<{
     const d = dragRef.current;
     return d && "containerId" in d && d.mode !== "marquee" ? d.containerId : null;
   })();
-  /** 页框拖拽的实时位置（pointerup 才提交 setFramePos） */
-  const frameLive = (() => {
-    void dragTick;
-    const d = dragRef.current;
-    return d && d.mode === "frame"
-      ? { id: d.frameId, x: d.origX + Math.round(d.dx), y: d.origY + Math.round(d.dy) }
-      : null;
-  })();
   /** 钢笔进行中的一笔实时预览（画布坐标点串，viewport 内 SVG 直接描） */
   const penPreview = (() => {
     void dragTick;
     const d = dragRef.current;
     return d && d.mode === "pen" ? d.pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ") : null;
   })();
+  /** 画线工具进行中的一条实时预览（画布坐标起终点） */
+  const drawPreview = (() => {
+    void dragTick;
+    const d = dragRef.current;
+    return d && d.mode === "draw" ? d : null;
+  })();
+  const drawPreviewSvg = drawPreview ? (
+    <svg style={{ position: "absolute", left: 0, top: 0, width: 1, height: 1, overflow: "visible", pointerEvents: "none" }}>
+      <line
+        x1={drawPreview.x0}
+        y1={drawPreview.y0}
+        x2={drawPreview.x1}
+        y2={drawPreview.y1}
+        stroke="var(--foreground)"
+        strokeWidth={3}
+        strokeLinecap="round"
+        strokeDasharray="6 4"
+      />
+      {drawPreview.kind !== "line" &&
+        (() => {
+          const a = Math.atan2(drawPreview.y1 - drawPreview.y0, drawPreview.x1 - drawPreview.x0);
+          const L = 14;
+          const head = (tipX: number, tipY: number, ang: number): string => {
+            const p = (ang2: number): string => `${(tipX - L * Math.cos(ang2)).toFixed(1)},${(tipY - L * Math.sin(ang2)).toFixed(1)}`;
+            return `M${tipX.toFixed(1)},${tipY.toFixed(1)} L${p(ang - 0.5)} L${p(ang + 0.5)} Z`;
+          };
+          const ds: string[] = [head(drawPreview.x1, drawPreview.y1, a)];
+          if (drawPreview.kind === "double-arrow") ds.push(head(drawPreview.x0, drawPreview.y0, a + Math.PI));
+          return <path d={ds.join(" ")} fill="var(--foreground)" />;
+        })()}
+    </svg>
+  ) : null;
 
   /** 元素当前显示几何（live 覆盖后，容器局部坐标） */
   const geo = useCallback(
@@ -373,20 +516,23 @@ export const CanvasStage: FC<{
 
   /* ---------- pointer 交互 ---------- */
 
-  /** 元素按下公共逻辑：Shift/⌘ 加选、点已选成员保持整组，其余单选；挂 move 拖拽 */
+  /** 元素按下公共逻辑：Shift/⌘ 加选、点已选成员保持整组，其余单选；挂 move 拖拽。
+   *  组联动：点到组成员即整组入选（移出成员除外，允许单独摘选）。 */
   const armElementDrag = (e: ReactPointerEvent, containerId: string, el: El) => {
     const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+    const els = containerEls(doc, containerId) ?? [];
     let ids: string[];
     if (additive && sel?.containerId === containerId) {
-      ids = sel.elIds.includes(el.id) ? sel.elIds.filter((i) => i !== el.id) : [...sel.elIds, el.id];
+      ids = sel.elIds.includes(el.id)
+        ? sel.elIds.filter((i) => i !== el.id)
+        : expandGroup(els, [...sel.elIds, el.id]);
     } else if (!additive && sel?.containerId === containerId && sel.elIds.includes(el.id)) {
       ids = sel.elIds; // 点到已选集合成员：保持整组，便于拖动
     } else {
-      ids = [el.id];
+      ids = expandGroup(els, [el.id]);
     }
     setSel({ containerId, elIds: ids });
     if (ids.length > 0) {
-      const els = containerEls(doc, containerId) ?? [];
       const base = new Map<string, Box>();
       for (const id of ids) {
         const t = els.find((q) => q.id === id);
@@ -414,7 +560,7 @@ export const CanvasStage: FC<{
       (document.activeElement as HTMLElement | null)?.blur();
       return;
     }
-    if (spaceRef.current || e.button === 1) {
+    if (spaceRef.current || handMode || e.button === 1) {
       dragRef.current = { mode: "pan", sx: e.clientX, sy: e.clientY, orig: viewRef.current };
       e.preventDefault();
       return;
@@ -427,8 +573,15 @@ export const CanvasStage: FC<{
       startBump();
       return;
     }
-    // 命中序：objects 绘制在页框之上，先于页框内元素命中
-    const rootEl = hitElIn(doc.objects, dx, dy);
+    // 画线工具：按下即起点，拖到尾点抬起提交（方向随拖拽向量）
+    if (drawTool && e.button === 0) {
+      e.preventDefault();
+      dragRef.current = { mode: "draw", kind: drawTool, x0: dx, y0: dy, x1: dx, y1: dy };
+      startBump();
+      return;
+    }
+    // 命中序：board 只有 objects；deck 只有当前页（hitFrame 已按 surface 过滤）
+    const rootEl = surface === "board" ? hitElIn(doc.objects, dx, dy) : undefined;
     if (rootEl) {
       armElementDrag(e, CANVAS_ROOT, rootEl);
       return;
@@ -457,23 +610,6 @@ export const CanvasStage: FC<{
       return;
     }
     armElementDrag(e, sp!.frame.id, el);
-  };
-
-  /** 页框名称标签按下：选中该框并挂整框拖拽（框内局部坐标不动，内容跟随） */
-  const onFrameTagPointerDown = (e: ReactPointerEvent, frameId: string) => {
-    e.stopPropagation();
-    if (e.button === 2 || editingId) return;
-    if (spaceRef.current || e.button === 1) {
-      dragRef.current = { mode: "pan", sx: e.clientX, sy: e.clientY, orig: viewRef.current };
-      e.preventDefault();
-      return;
-    }
-    const f = doc.frames.find((fr) => fr.id === frameId);
-    if (!f) return;
-    setSel({ containerId: frameId, elIds: [] });
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-    dragRef.current = { mode: "frame", frameId, sx: e.clientX, sy: e.clientY, origX: f.x, origY: f.y, dx: 0, dy: 0 };
-    startBump();
   };
 
   /** 手柄按下公共前置：返回 false 表示应放弃本次拖拽 */
@@ -539,6 +675,7 @@ export const CanvasStage: FC<{
       const d = dragRef.current;
       if (!d) return;
       if (d.mode === "pan") {
+        fitIntentRef.current = null; // 用户平移：程序化适配意图失效
         setView({ s: d.orig.s, tx: d.orig.tx + (e.clientX - d.sx), ty: d.orig.ty + (e.clientY - d.sy) });
         return;
       }
@@ -546,11 +683,6 @@ export const CanvasStage: FC<{
         const { x, y } = screenToDoc(e.clientX, e.clientY);
         d.x1 = x;
         d.y1 = y;
-        return;
-      }
-      if (d.mode === "frame") {
-        d.dx = (e.clientX - d.sx) / viewRef.current.s;
-        d.dy = (e.clientY - d.sy) / viewRef.current.s;
         return;
       }
       if (d.mode === "pen") {
@@ -566,6 +698,12 @@ export const CanvasStage: FC<{
             d.pts = kept;
           }
         }
+        return;
+      }
+      if (d.mode === "draw") {
+        const { x, y } = screenToDoc(e.clientX, e.clientY);
+        d.x1 = x;
+        d.y1 = y;
         return;
       }
       const v = viewRef.current;
@@ -652,14 +790,66 @@ export const CanvasStage: FC<{
         const PEN_STYLE = { stroke: "#1d1d1f", strokeWidth: 3 };
         const b = drawFromPoints(d.pts, PEN_STYLE);
         if (!b) return; // 单击（<2 采样点）不产生笔迹
-        // 笔迹包围盒中心落在某页框内 → 提交为该框元素（换算局部坐标），否则画布级
+        // deck：hitFrame 只认当前页——中心出页则丢弃提示；board：无框可命中，恒落 objects
         const sp = hitFrame(b.x + b.w / 2, b.y + b.h / 2);
         if (sp) {
           const local = b.points.map(([x, y]) => [x + b.x - sp.x, y + b.y - sp.y] as DrawPoint);
           const el = drawFromPoints(local, PEN_STYLE);
           if (el) store.addEl(sp.frame.id, el);
+        } else if (surface === "deck") {
+          store.notifyLater("手绘笔迹请画在页面内（此笔未保存）");
         } else {
           store.addEl(CANVAS_ROOT, b);
+        }
+        return;
+      }
+      if (d.mode === "draw") {
+        const dxv = d.x1 - d.x0;
+        const dyv = d.y1 - d.y0;
+        let x: number, y: number, w: number, h: number;
+        let dir: LineDir;
+        let cx: number, cy: number;
+        if (Math.hypot(dxv, dyv) * viewRef.current.s < 6) {
+          // 单击未拖拽：点击处作起点，默认 360×2 横向元素（与旧版插入同尺寸，向后兼容）
+          x = Math.round(d.x0);
+          y = Math.round(d.y0) - 1;
+          w = 360;
+          h = 2;
+          dir = 0;
+          cx = x + 180;
+          cy = d.y0;
+        } else {
+          x = Math.round(Math.min(d.x0, d.x1));
+          y = Math.round(Math.min(d.y0, d.y1));
+          w = Math.max(1, Math.round(Math.abs(dxv)));
+          h = Math.max(1, Math.round(Math.abs(dyv)));
+          dir = dxv >= 0 ? (dyv >= 0 ? 0 : 1) : dyv >= 0 ? 3 : 2;
+          cx = x + w / 2;
+          cy = y + h / 2;
+        }
+        // deck：hitFrame 只认当前页（中点出页则丢弃提示）；board：恒落 objects。默认色随页背景明暗自适应
+        const sp = hitFrame(cx, cy);
+        const stroke = isDarkColor(sp?.frame.background) ? "#f5f5f7" : "#1d1d1f";
+        const el: ShapeEl = {
+          kind: "shape",
+          id: uid("s"),
+          shape: d.kind,
+          x,
+          y,
+          w,
+          h,
+          ...(dir ? { dir } : {}),
+          stroke,
+          strokeWidth: 3,
+        };
+        if (sp) {
+          el.x -= sp.x;
+          el.y -= sp.y;
+          store.addEl(sp.frame.id, el);
+        } else if (surface === "deck") {
+          store.notifyLater(`请将${DRAW_LABEL[d.kind]}画在页面内（此次未保存）`);
+        } else {
+          store.addEl(CANVAS_ROOT, el);
         }
         return;
       }
@@ -689,27 +879,26 @@ export const CanvasStage: FC<{
         setContainerElements(d.containerId, elements);
       } else if (d.mode === "rotate") {
         if (d.rot !== null && d.rot !== (d.origRot ?? 0)) updateEl(d.containerId, d.elId, { rotation: d.rot } as Partial<El>);
-      } else if (d.mode === "frame") {
-        const x = Math.round(d.origX + d.dx);
-        const y = Math.round(d.origY + d.dy);
-        if (x !== d.origX || y !== d.origY) setFramePos(d.frameId, x, y);
       } else if (d.mode === "marquee") {
         const rect = norm({ x: d.x0, y: d.y0, w: d.x1 - d.x0, h: d.y1 - d.y0 });
         const dragged = Math.hypot(d.x1 - d.x0, d.y1 - d.y0) * viewRef.current.s > MARQUEE_THRESHOLD;
         if (!dragged) return; // 视作普通点击（按下时已做聚焦/清选）
         const cur = store.docRef.current;
         const merge = (containerId: string, hitIds: string[]) => {
+          const ids = expandGroup(containerEls(cur, containerId) ?? [], hitIds); // 框选组联动
           if (d.additive && d.baseSel && d.baseSel.containerId === containerId) {
-            setSel({ containerId, elIds: [...new Set([...d.baseSel.elIds, ...hitIds])] });
+            setSel({ containerId, elIds: [...new Set([...d.baseSel.elIds, ...ids])] });
           } else {
-            setSel({ containerId, elIds: hitIds });
+            setSel({ containerId, elIds: ids });
           }
         };
-        // 1) 画布级 objects（顶层）优先：rect 即画布坐标，直接比
-        const objIds = cur.objects.filter((e) => boxesIntersect(boxOf(e), rect)).map((e) => e.id);
-        if (objIds.length > 0) {
-          merge(CANVAS_ROOT, objIds);
-          return;
+        // 1) board：画布级 objects（顶层）优先，rect 即画布坐标直接比；deck 不选不可见的 objects
+        if (surface === "board") {
+          const objIds = cur.objects.filter((e) => boxesIntersect(boxOf(e), rect)).map((e) => e.id);
+          if (objIds.length > 0) {
+            merge(CANVAS_ROOT, objIds);
+            return;
+          }
         }
         // 2) 页框：起点框优先；画布外起拖取相交面积最大的框
         let p = d.containerId && d.containerId !== CANVAS_ROOT ? posById.get(d.containerId) : undefined;
@@ -743,19 +932,22 @@ export const CanvasStage: FC<{
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [posById, positions, hitFrame, offOf, setFramePos, setContainerElements, updateEl, screenToDoc, store, startBump]);
+  }, [posById, positions, hitFrame, offOf, setContainerElements, updateEl, screenToDoc, store, surface, startBump]);
 
-  /** 钢笔模式中途关闭（如 Esc）：丢掉未提交的这一笔 */
+  /** 钢笔/画线模式中途关闭（如 Esc）：丢掉未提交的这一笔/这一条 */
   useEffect(() => {
     if (!penMode && dragRef.current?.mode === "pen") dragRef.current = null;
   }, [penMode]);
+  useEffect(() => {
+    if (!drawTool && dragRef.current?.mode === "draw") dragRef.current = null;
+  }, [drawTool]);
 
   /* ---------- 悬停高亮（无拖拽时；objects 优先） ---------- */
 
   const onStageHoverMove = (e: ReactMouseEvent) => {
     if (dragRef.current || editingId || penMode) return;
     const { x: dx, y: dy } = screenToDoc(e.clientX, e.clientY);
-    const rootEl = hitElIn(doc.objects, dx, dy);
+    const rootEl = surface === "board" ? hitElIn(doc.objects, dx, dy) : undefined;
     if (rootEl) {
       setHoveredId(rootEl.id);
       return;
@@ -770,17 +962,17 @@ export const CanvasStage: FC<{
   const onStageContextMenu = (e: ReactMouseEvent) => {
     const { x: dx, y: dy } = screenToDoc(e.clientX, e.clientY);
     let hit: ContextHit;
-    const rootEl = hitElIn(doc.objects, dx, dy);
+    const rootEl = surface === "board" ? hitElIn(doc.objects, dx, dy) : undefined;
     if (rootEl) {
       if (!sel || sel.containerId !== CANVAS_ROOT || !sel.elIds.includes(rootEl.id))
-        setSel({ containerId: CANVAS_ROOT, elIds: [rootEl.id] });
+        setSel({ containerId: CANVAS_ROOT, elIds: expandGroup(doc.objects, [rootEl.id]) });
       hit = { kind: "element", containerId: CANVAS_ROOT, el: rootEl };
     } else {
       const sp = hitFrame(dx, dy);
       const el = sp ? hitElIn(sp.frame.elements, dx - sp.x, dy - sp.y) : undefined;
       if (el) {
         if (!sel || sel.containerId !== sp!.frame.id || !sel.elIds.includes(el.id))
-          setSel({ containerId: sp!.frame.id, elIds: [el.id] });
+          setSel({ containerId: sp!.frame.id, elIds: expandGroup(sp!.frame.elements, [el.id]) });
         hit = { kind: "element", containerId: sp!.frame.id, el };
       } else if (sp) {
         setSel({ containerId: sp.frame.id, elIds: [] });
@@ -789,7 +981,8 @@ export const CanvasStage: FC<{
         hit = { kind: "canvas" };
       }
     }
-    // 注意：不要 preventDefault——Radix ContextMenu.Trigger 会做，且子元素先 prevent 会阻止其打开
+    // 不要 preventDefault：让事件冒泡到外层 ContextMenuTrigger（span）由它
+    // 记录触发点并自行取消浏览器默认菜单；这里 prevent 只会丢点位
     onContextHit?.(hit);
   };
 
@@ -806,6 +999,7 @@ export const CanvasStage: FC<{
       if (e.ctrlKey || e.metaKey) {
         zoomAt(px, py, Math.exp(-e.deltaY * 0.0015));
       } else if (Math.abs(e.deltaX) > 0 || Math.abs(e.deltaY) > 0) {
+        fitIntentRef.current = null; // 用户平移：程序化适配意图失效
         setView((v) => ({ ...v, tx: v.tx - e.deltaX, ty: v.ty - e.deltaY }));
       }
     };
@@ -813,11 +1007,16 @@ export const CanvasStage: FC<{
     return () => host.removeEventListener("wheel", onWheel);
   }, []);
 
-  /* ---------- 空格平移模式 ---------- */
+  /* ---------- 空格平移模式（按住=手抓光标） ---------- */
 
   useEffect(() => {
+    /** 输入态不劫持空格：文本框/可编辑区里空格是打字或触发控件 */
+    const typing = (t: EventTarget | null) =>
+      t instanceof HTMLTextAreaElement ||
+      t instanceof HTMLInputElement ||
+      (t instanceof HTMLElement && t.isContentEditable);
     const kd = (e: KeyboardEvent) => {
-      if (e.code === "Space" && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLInputElement)) {
+      if (e.code === "Space" && !typing(e.target)) {
         spaceRef.current = true;
         setSpaceCursor(true);
         e.preventDefault();
@@ -829,15 +1028,69 @@ export const CanvasStage: FC<{
         setSpaceCursor(false);
       }
     };
+    // 切窗/失焦时不会再收到 keyup，若不复位手抓光标会卡住
+    const reset = () => {
+      spaceRef.current = false;
+      setSpaceCursor(false);
+    };
+    const onHidden = () => {
+      if (document.hidden) reset();
+    };
     window.addEventListener("keydown", kd);
     window.addEventListener("keyup", ku);
+    window.addEventListener("blur", reset);
+    document.addEventListener("visibilitychange", onHidden);
     return () => {
       window.removeEventListener("keydown", kd);
       window.removeEventListener("keyup", ku);
+      window.removeEventListener("blur", reset);
+      document.removeEventListener("visibilitychange", onHidden);
     };
   }, []);
 
-  /* ---------- 图片落盘（拖入/粘贴；核心逻辑在 store.insertImageFromFile） ---------- */
+  /* ---------- 图片落盘 / URL 嵌入（拖入/粘贴；图片核心逻辑在 store.insertImageFromFile） ---------- */
+
+  /** 落点选容器：board 优先命中的页框，否则 objects；deck 恒当前页（夹进页内） */
+  const dropContainerAt = (x: number, y: number): { containerId: string; x: number; y: number } => {
+    if (surface === "deck") {
+      const p = layout.positions[0];
+      if (!p) return { containerId: CANVAS_ROOT, x, y };
+      return { containerId: p.frame.id, x: Math.min(Math.max(x - p.x, 0), p.frame.w), y: Math.min(Math.max(y - p.y, 0), p.frame.h) };
+    }
+    const sp = hitFrame(x, y);
+    return sp ? { containerId: sp.frame.id, x: x - sp.x, y: y - sp.y } : { containerId: CANVAS_ROOT, x, y };
+  };
+
+  /** 在容器落点插一个 embed 元素并选中（贴 URL 即嵌入，Miro/tldraw 式） */
+  const insertEmbedAt = useCallback(
+    (url: string, at?: { containerId: string; x: number; y: number }) => {
+      const pos = at ?? (() => {
+        // 无落点（系统粘贴）：视口中心；deck 夹进当前页
+        const cx = (hostSize.w / 2 - view.tx) / view.s;
+        const cy = (hostSize.h / 2 - view.ty) / view.s;
+        return dropContainerAt(cx, cy);
+      })();
+      const el: EmbedEl = {
+        kind: "embed",
+        id: uid("em"),
+        url,
+        x: Math.round(pos.x - 320),
+        y: Math.round(pos.y - 200),
+        w: 640,
+        h: 400,
+      };
+      setContainerElements(pos.containerId, [...(containerEls(doc, pos.containerId) ?? []), el]);
+      setSel({ containerId: pos.containerId, elIds: [el.id] });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [setContainerElements, setSel, doc, hostSize, view.tx, view.ty, view.s, surface, layout.positions, hitFrame],
+  );
+
+  const firstUrl = (s: string | null | undefined): string | null => {
+    if (!s) return null;
+    const line = s.split(/\r?\n/).find((l) => /^https?:\/\//i.test(l.trim()));
+    return line ? line.trim() : null;
+  };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -846,9 +1099,29 @@ export const CanvasStage: FC<{
       e.preventDefault();
       setDropHint(false);
       const files = Array.from(e.dataTransfer?.files ?? []).filter((f) => f.type.startsWith("image/"));
-      if (files.length === 0) return;
       const { x, y } = screenToDoc(e.clientX, e.clientY);
-      const sp = hitFrame(x, y);
+      if (files.length === 0) {
+        // 拖入链接（浏览器标签/地址栏拖拽）：text/uri-list 优先
+        const url = firstUrl(e.dataTransfer?.getData("text/uri-list")) ?? firstUrl(e.dataTransfer?.getData("text/plain"));
+        if (url) insertEmbedAt(url, dropContainerAt(x, y));
+        return;
+      }
+      if (surface === "deck") {
+        // deck：落点夹进当前页（root objects 在页视图下不可见）；无页则引导先建页
+        const p = layout.positions[0];
+        if (!p) {
+          store.notifyLater("请先新建一页幻灯片，再拖入图片");
+          return;
+        }
+        for (const f of files)
+          void insertImageFromFile(f, {
+            containerId: p.frame.id,
+            x: Math.min(Math.max(x - p.x, 0), p.frame.w),
+            y: Math.min(Math.max(y - p.y, 0), p.frame.h),
+          });
+        return;
+      }
+      const sp = hitFrame(x, y); // board：positions 为空 → 恒落 objects（画布坐标即落点）
       for (const f of files)
         void insertImageFromFile(
           f,
@@ -856,7 +1129,8 @@ export const CanvasStage: FC<{
         );
     };
     const onOver = (e: DragEvent) => {
-      if (Array.from(e.dataTransfer?.types ?? []).includes("Files")) {
+      const types = Array.from(e.dataTransfer?.types ?? []);
+      if (types.includes("Files") || types.includes("text/uri-list")) {
         e.preventDefault();
         setDropHint(true);
       }
@@ -867,6 +1141,16 @@ export const CanvasStage: FC<{
       if (files.length > 0) {
         e.preventDefault();
         for (const f of files) void insertImageFromFile(f);
+        return;
+      }
+      // 剪贴板是 http(s) 链接（画布未聚焦输入框时）→ 贴链接即嵌入
+      const text = e.clipboardData?.getData("text/plain");
+      if (text && !editingId) {
+        const url = firstUrl(text);
+        if (url) {
+          e.preventDefault();
+          insertEmbedAt(url);
+        }
       }
     };
     host.addEventListener("drop", onDrop);
@@ -879,25 +1163,28 @@ export const CanvasStage: FC<{
       host.removeEventListener("dragleave", onLeave);
       document.removeEventListener("paste", onPaste);
     };
-  }, [insertImageFromFile, hitFrame, screenToDoc]);
+  }, [insertImageFromFile, hitFrame, screenToDoc, surface, layout.positions, store.notifyLater, insertEmbedAt, editingId]);
 
-  /* ---------- 双击进文本编辑（objects 与页框内一致） ---------- */
+  /* ---------- 双击进文本编辑 / embed 交互（objects 与页框内一致） ---------- */
 
   const onDoubleClick = (e: ReactMouseEvent) => {
     if (penMode) return;
     const { x: dx, y: dy } = screenToDoc(e.clientX, e.clientY);
-    const editable = (el: El) => el.kind === "text" || el.kind === "mermaid";
-    const rootEl = hitElIn(doc.objects, dx, dy);
-    if (rootEl && editable(rootEl)) {
+    const editable = (el: El) =>
+      el.kind === "text" || el.kind === "mermaid" || el.kind === "svg" || el.kind === "table" || el.kind === "chart";
+    const rootEl = surface === "board" ? hitElIn(doc.objects, dx, dy) : undefined;
+    if (rootEl && (editable(rootEl) || rootEl.kind === "embed")) {
       setSel({ containerId: CANVAS_ROOT, elIds: [rootEl.id] });
-      setEditingId(rootEl.id);
+      if (rootEl.kind === "embed") setEmbedActive(rootEl.id);
+      else setEditingId(rootEl.id);
       return;
     }
     const sp = hitFrame(dx, dy);
     const el = sp ? hitElIn(sp.frame.elements, dx - sp.x, dy - sp.y) : undefined;
-    if (el && editable(el)) {
+    if (el && (editable(el) || el.kind === "embed")) {
       setSel({ containerId: sp!.frame.id, elIds: [el.id] });
-      setEditingId(el.id);
+      if (el.kind === "embed") setEmbedActive(el.id);
+      else setEditingId(el.id);
     }
   };
 
@@ -961,6 +1248,9 @@ export const CanvasStage: FC<{
     return containerEls(doc, sel.containerId)?.find((e) => e.id === editingId) ?? null;
   }, [editingId, sel, doc]);
 
+  /** 渲染器双轨（挂载时定；切档后刷新页面生效） */
+  const renderer = useMemo(readRenderer, []);
+
   // 外部 ref（Radix ContextMenuTrigger asChild 需要）与内部 hostRef 合并
   const setHost = (node: HTMLDivElement | null) => {
     hostRef.current = node;
@@ -968,19 +1258,28 @@ export const CanvasStage: FC<{
     else if (ref) (ref as { current: HTMLDivElement | null }).current = node;
   };
 
-  /** 页框的有效绘制位置（拖标签实时预览覆盖 doc 值） */
-  const frameDrawPos = (p: FramePos): { x: number; y: number } =>
-    frameLive && frameLive.id === p.frame.id ? { x: frameLive.x, y: frameLive.y } : { x: p.x, y: p.y };
-
   return (
     <div
       ref={setHost}
-      className="sc-stage"
+      className={[
+        surface === "deck" ? "sc-stage sc-stage-deck" : "sc-stage",
+        // 空格平移：类名让 CSS 把画布子元素（Leafer canvas 等）的光标一起压住；
+        // 平移中（空格或中键起拖）都要"抓紧"手感，不依赖空格状态
+        dragRef.current?.mode === "pan" ? "sc-pan-active" : spaceCursor || handMode ? "sc-pan-ready" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       style={{
-        cursor: spaceCursor ? (dragRef.current?.mode === "pan" ? "grabbing" : "grab") : penMode ? "crosshair" : "default",
-        background:
-          dotSize > 0
-            ? `radial-gradient(circle, var(--sc-dot) 1px, transparent 1px) 0 0/${dotSize * v.s}px ${dotSize * v.s}px`
+        cursor: dragRef.current?.mode === "pan" ? "grabbing" : spaceCursor || handMode ? "grab" : penMode || drawTool ? "crosshair" : "default",
+        // 点阵是白板的"无限"暗示；只设 background-image，不重置 .sc-stage
+        // 类的 background-color（shorthand 会把底色清成透明，body 底透出）
+        backgroundImage:
+          dotSize > 0 && surface === "board"
+            ? `radial-gradient(circle, var(--sc-dot) 1px, transparent 1px)`
+            : undefined,
+        backgroundSize:
+          dotSize > 0 && surface === "board"
+            ? `${dotSize * v.s}px ${dotSize * v.s}px`
             : undefined,
         backgroundPosition: `${v.tx}px ${v.ty}px`,
       }}
@@ -990,25 +1289,119 @@ export const CanvasStage: FC<{
       onMouseMove={onStageHoverMove}
       onMouseLeave={() => setHoveredId(null)}
     >
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          transform: `translate(${v.tx}px, ${v.ty}px) scale(${v.s})`,
-          transformOrigin: "0 0",
-          willChange: "transform",
-        }}
-      >
-        {positions.map((p) => {
-          const pos = frameDrawPos(p);
-          return (
+      {/* 内容层双轨：dom = CSS transform 里的 DOM 元素；leafer = canvas 场景 +
+          钢笔实时笔画仍走 DOM svg（画布坐标，变换层里直描） */}
+      {renderer === "leafer" ? (
+        <>
+          <LeaferStage
+            doc={doc}
+            surface={surface}
+            positions={positions}
+            view={v}
+            live={liveMap}
+            liveContainerId={liveContainerId}
+            frameFocused={frameFocused}
+          />
+          {/* embed DOM 浮层：iframe 进不了 canvas，网页元素在两种轨道下都经此层渲染。
+              层自身 pointer-events 关闭；iframe/角标激活时显式 auto。
+              事件语义与 DOM 轨一致：双击命中 embed → stage 分发激活。 */}
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              transform: `translate(${v.tx}px, ${v.ty}px) scale(${v.s})`,
+              transformOrigin: "0 0",
+              pointerEvents: "none",
+            }}
+          >
+            {positions.map((p) => (
+              <div
+                key={p.frame.id}
+                style={{ position: "absolute", left: p.x, top: p.y, width: p.frame.w, height: p.frame.h, overflow: "hidden" }}
+              >
+                {p.frame.elements.map((el0) => {
+                  if (el0.kind === "embed") {
+                    const patch = liveContainerId === p.frame.id ? liveMap.get(el0.id) : undefined;
+                    return <EmbedElView key={el0.id} el={patch ? ({ ...el0, ...patch } as EmbedEl) : el0} isLive={!!patch} mode="canvas" />;
+                  }
+                  // 动画 SVG：canvas 光栅化会冻帧，DOM <img> 才能播——浮层直渲染
+                  if (el0.kind === "svg" && isAnimatedSvg(el0.code)) {
+                    const patch = liveContainerId === p.frame.id ? liveMap.get(el0.id) : undefined;
+                    return <SvgElView key={el0.id} el={patch ? ({ ...el0, ...patch } as SvgEl) : el0} />;
+                  }
+                  return null;
+                })}
+              </div>
+            ))}
+            {surface === "board" &&
+              doc.objects.map((el0) => {
+                if (el0.kind === "embed") {
+                  const patch = liveContainerId === CANVAS_ROOT ? liveMap.get(el0.id) : undefined;
+                  return <EmbedElView key={el0.id} el={patch ? ({ ...el0, ...patch } as EmbedEl) : el0} isLive={!!patch} mode="canvas" />;
+                }
+                if (el0.kind === "svg" && isAnimatedSvg(el0.code)) {
+                  const patch = liveContainerId === CANVAS_ROOT ? liveMap.get(el0.id) : undefined;
+                  return <SvgElView key={el0.id} el={patch ? ({ ...el0, ...patch } as SvgEl) : el0} />;
+                }
+                return null;
+              })}
+          </div>
+          {penPreview && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                transform: `translate(${v.tx}px, ${v.ty}px) scale(${v.s})`,
+                transformOrigin: "0 0",
+                pointerEvents: "none",
+              }}
+            >
+              <svg style={{ position: "absolute", left: 0, top: 0, width: 1, height: 1, overflow: "visible" }}>
+                <polyline
+                  points={penPreview}
+                  fill="none"
+                  stroke="#1d1d1f"
+                  strokeWidth={3}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+            </div>
+          )}
+          {drawPreview && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                transform: `translate(${v.tx}px, ${v.ty}px) scale(${v.s})`,
+                transformOrigin: "0 0",
+                pointerEvents: "none",
+              }}
+            >
+              {drawPreviewSvg}
+            </div>
+          )}
+        </>
+      ) : (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            transform: `translate(${v.tx}px, ${v.ty}px) scale(${v.s})`,
+            transformOrigin: "0 0",
+            willChange: "transform",
+          }}
+        >
+          {/* artboard 层：deck 只有当前一页（layout.positions 已过滤）；board 为空 */}
+          {positions.map((p) => (
             <div
               key={p.frame.id}
               className={frameFocused === p.frame.id ? "sc-artboard sc-artboard-active" : "sc-artboard"}
               style={{
                 position: "absolute",
-                left: pos.x,
-                top: pos.y,
+                left: p.x,
+                top: p.y,
                 width: p.frame.w,
                 height: p.frame.h,
                 contentVisibility: "auto",
@@ -1017,52 +1410,38 @@ export const CanvasStage: FC<{
             >
               <SlideView slide={p.frame} live={p.frame.id === liveContainerId ? liveMap : undefined} />
             </div>
-          );
-        })}
-        {/* objects 层：画布级元素盖在页框之上（绝对画布坐标） */}
-        <div style={{ position: "absolute", left: 0, top: 0 }}>
-          {doc.objects.map((el) => {
-            const patch = liveContainerId === CANVAS_ROOT ? liveMap.get(el.id) : undefined;
-            return <ElView key={el.id} el={patch ? ({ ...el, ...patch } as El) : el} />;
-          })}
-        </div>
-        {/* 钢笔实时笔画（画布坐标直描；non-scaling-stroke 与提交后渲染一致） */}
-        {penPreview && (
-          <svg
-            style={{ position: "absolute", left: 0, top: 0, width: 1, height: 1, overflow: "visible", pointerEvents: "none" }}
-          >
-            <polyline
-              points={penPreview}
-              fill="none"
-              stroke="#1d1d1f"
-              strokeWidth={3}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          </svg>
-        )}
-      </div>
-
-      {/* overlay：屏幕坐标，不受 viewport transform 影响 */}
-      <div className="sc-overlay">
-        {positions.map((p, i) => {
-          const pos = frameDrawPos(p);
-          const name = p.frame.name?.trim();
-          return (
-            <div
-              key={p.frame.id}
-              className="sc-frametag"
-              data-active={frameFocused === p.frame.id || undefined}
-              style={{ left: pos.x * v.s + v.tx, top: pos.y * v.s + v.ty - 26 }}
-              onPointerDown={(e) => onFrameTagPointerDown(e, p.frame.id)}
-              title={name ? `${name}（拖动移动页框）` : `第 ${i + 1} 页（拖动移动页框）`}
-            >
-              {i + 1}
-              {name ? <span className="sc-frametag-name">{name}</span> : null}
+          ))}
+          {/* objects 层：仅白板模式绘制（deck 不渲染 objects） */}
+          {surface === "board" && (
+            <div style={{ position: "absolute", left: 0, top: 0 }}>
+              {doc.objects.map((el) => {
+                const patch = liveContainerId === CANVAS_ROOT ? liveMap.get(el.id) : undefined;
+                return <ElView key={el.id} el={patch ? ({ ...el, ...patch } as El) : el} isLive={!!patch} />;
+              })}
             </div>
-          );
-        })}
+          )}
+          {/* 钢笔实时笔画（画布坐标直描；non-scaling-stroke 与提交后渲染一致） */}
+          {penPreview && (
+            <svg
+              style={{ position: "absolute", left: 0, top: 0, width: 1, height: 1, overflow: "visible", pointerEvents: "none" }}
+            >
+              <polyline
+                points={penPreview}
+                fill="none"
+                stroke="#1d1d1f"
+                strokeWidth={3}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            </svg>
+          )}
+          {drawPreviewSvg}
+        </div>
+      )}
+
+      {/* overlay：屏幕坐标，不受 viewport transform 影响（页框名称标签已随两模式拆分退役） */}
+      <div className="sc-overlay">
         {hovered && (
           <div
             className="sc-selbox"
@@ -1084,7 +1463,8 @@ export const CanvasStage: FC<{
           return (
             <div key={el.id}>
               <div className="sc-selbox" style={{ left: l, top: t, width: w, height: h }} />
-              {single && !marquee && (
+              {/* 画笔/画线工具激活时隐藏手柄：手柄在 overlay 上，pointerdown 不会落到 stage 的绘制分支 */}
+              {single && !marquee && !penMode && !drawTool && (
                 <>
                   {HANDLES.map((hd, i) => {
                     const { x: hx, y: hy } = handlePos(i, l, t, w, h);
@@ -1092,7 +1472,7 @@ export const CanvasStage: FC<{
                       <div
                         key={i}
                         className="sc-handle"
-                        style={{ left: hx - 4, top: hy - 4, cursor: hd.cursor }}
+                        style={{ left: hx - 3.5, top: hy - 3.5, cursor: hd.cursor }}
                         onPointerDown={(e) => onHandlePointerDown(e, sel!.containerId, el, i)}
                       />
                     );
@@ -1104,7 +1484,7 @@ export const CanvasStage: FC<{
                   />
                   <div
                     className="sc-rotate-handle"
-                    style={{ left: l + w / 2 - 6, top: t - 28, cursor: "grab" }}
+                    style={{ left: l + w / 2 - 4.5, top: t - 26, cursor: "grab" }}
                     onPointerDown={(e) =>
                       onRotatePointerDown(e, sel!.containerId, el, {
                         x: rect.x + rect.w / 2,
@@ -1118,7 +1498,7 @@ export const CanvasStage: FC<{
           );
         })}
         {/* 多选组包围盒（虚线 + 8 手柄整体等比缩放） */}
-        {selected.length > 1 && groupBox && !marquee && (
+        {selected.length > 1 && groupBox && !marquee && !penMode && !drawTool && (
           <>
             <div
               className="sc-groupbox"
@@ -1141,7 +1521,7 @@ export const CanvasStage: FC<{
                 <div
                   key={`g${i}`}
                   className="sc-handle"
-                  style={{ left: hx - 4, top: hy - 4, cursor: hd.cursor }}
+                  style={{ left: hx - 3.5, top: hy - 3.5, cursor: hd.cursor }}
                   onPointerDown={(e) => onGroupHandlePointerDown(e, sel!.containerId, groupItems, i)}
                 />
               );
@@ -1174,13 +1554,40 @@ export const CanvasStage: FC<{
         {selToolbar && selAnchor && !editingId && !dragRef.current && (
           <div
             className="pointer-events-auto absolute -translate-x-1/2"
+            // 浮动条按下不得漏给舞台：舞台 pointerdown 会对按钮下方的页框/元素做
+            // 清选/聚焦/起拖，工具条在 click 送达前就被卸载（按钮点击全部落空）。
+            onPointerDown={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.stopPropagation()}
             style={{
-              left: Math.min(Math.max(selAnchor.cx, 190), hostSize.w - 190),
+              // board 的 Inspector 是浮卡（宽 304 + 右边距 12），压在舞台右侧；
+              // 浮动条右限要停在浮卡左侧，否则右半截被面板盖住点不到（面板加宽时这里要跟着改）。
+              left: Math.min(Math.max(selAnchor.cx, 190), hostSize.w - 190 - (surface === "board" ? 316 : 0)),
               top: selAnchor.top > 46 ? selAnchor.top - 44 : selAnchor.bottom + 10,
             }}
           >
             {selToolbar}
           </div>
+        )}
+        {editingId && editingEl?.kind === "table" && sel && offOf(sel.containerId) && (
+          <TableEditor
+            key={editingId}
+            el={editingEl}
+            view={v}
+            off={offOf(sel.containerId)!}
+            onCommit={(p) => updateEl(sel.containerId, editingEl.id, p, true)}
+            onClose={() => setEditingId(null)}
+          />
+        )}
+        {editingId && editingEl?.kind === "chart" && sel && offOf(sel.containerId) && (
+          <ChartEditor
+            key={editingId}
+            el={editingEl}
+            view={v}
+            off={offOf(sel.containerId)!}
+            onCommit={(p) => updateEl(sel.containerId, editingEl.id, p, true)}
+            onClose={() => setEditingId(null)}
+          />
         )}
         {editingId && (
           <TextEditor
@@ -1208,6 +1615,8 @@ export const CanvasStage: FC<{
   );
 };
 
+/* ---------------- 文本/mermaid 就地编辑（表格/图表走 editor/ 下的结构化编辑层） ---------------- */
+
 const TextEditor: FC<{
   el: El | null;
   view: View;
@@ -1217,16 +1626,22 @@ const TextEditor: FC<{
   onCancel: () => void;
 }> = ({ el, view, off, onCommit, onCancel }) => {
   const ref = useRef<HTMLTextAreaElement>(null);
-  const isMermaid = el?.kind === "mermaid";
+  /** 等宽编辑：mermaid 源码（表格/图表已拆到 editor/TableEditor・ChartEditor） */
+  const isMono = el?.kind === "mermaid";
   const initial =
-    el?.kind === "text" ? el.runs.map((r) => r.text).join("") : el?.kind === "mermaid" ? el.code : "";
+    el?.kind === "text"
+      ? el.runs.map((r) => r.text).join("")
+      : el?.kind === "mermaid"
+        ? el.code
+        : "";
   useEffect(() => {
     const t = ref.current;
     if (!t) return;
     t.focus();
     t.select();
   }, []);
-  if ((!isMermaid && el?.kind !== "text") || !el || !off) return null;
+  if (!el || !off) return null;
+  if (!isMono && el.kind !== "text") return null;
   const firstRun = el.kind === "text" ? el.runs[0] : undefined;
   return (
     <textarea
@@ -1235,7 +1650,7 @@ const TextEditor: FC<{
       defaultValue={initial}
       spellCheck={false}
       style={
-        isMermaid
+        isMono
           ? {
               left: (off.x + el.x) * view.s + view.tx,
               top: (off.y + el.y) * view.s + view.ty,

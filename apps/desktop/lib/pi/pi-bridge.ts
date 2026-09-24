@@ -350,6 +350,10 @@ export type PiPluginEntry = {
   manifestKind: "xulux" | "claude" | "codex";
   /** 来源市场已移除（插件保留可用，仅无更新通道） */
   sourceMissing: boolean;
+  /** 链接安装（dev 模式）：cache 条目 symlink 直指源目录，读路径实时命中源码 */
+  linked?: boolean;
+  /** linked 项的源目录绝对路径 */
+  sourcePath?: string;
   enabled: boolean;
   components: {
     skills: PiPluginComponentEntry[];
@@ -376,6 +380,17 @@ export type PiPluginPanelAssetResponse = {
   base64: string;
   /** entry 文件 mtime+size 指纹：变更即换 URL 重载 iframe */
   rev: string;
+};
+
+/** get_plugin_panel_rev 应答：入口文件轻量指纹（只 stat），宿主 dev 自动重载轮询用 */
+export type PiPluginPanelRevResponse = {
+  type: "plugin_panel_rev";
+  pluginId: string;
+  panelId: string;
+  /** null = 面板当前不可用（未装/禁用/入口缺失），宿主停止本轮比对 */
+  rev: string | null;
+  /** 仅链接安装（dev 模式）面板允许宿主自动重载 iframe */
+  linked: boolean;
 };
 
 /** 市场目录条目（marketplace.json plugins[] 规范化） */
@@ -415,16 +430,18 @@ export type PiMarketplacesResponse = {
 export type PiPluginOpAccepted = {
   type: "plugin_op_accepted";
   opId: string;
-  op: "add_marketplace" | "refresh_marketplace" | "install_plugin";
+  op: "add_marketplace" | "refresh_marketplace" | "install_plugin" | "install_plugin_local";
 };
 
 /** 耗时操作结果帧（无 id 自发；成功时携带刷新后的 plugins+marketplaces 双清单） */
 export type PiPluginOpResultFrame = {
   type: "plugin_op_result";
   opId: string;
-  op: "add_marketplace" | "refresh_marketplace" | "install_plugin";
+  op: "add_marketplace" | "refresh_marketplace" | "install_plugin" | "install_plugin_local";
   ok: boolean;
   errorText?: string;
+  /** 安装类操作成功时附带目标插件名（成功提示用；旧端无此字段） */
+  name?: string;
   plugins?: PiPluginEntry[];
   marketplaces?: PiMarketplaceEntry[];
   workspaceCwd?: string | null;
@@ -750,6 +767,7 @@ export type PiResponse =
   | PiMcpAuditLogResponse
   | PiPluginsResponse
   | PiPluginPanelAssetResponse
+  | PiPluginPanelRevResponse
   | PiMarketplacesResponse
   | PiPluginOpAccepted
   | { type: "usage_stats"; stats: PiUsageStats }

@@ -505,12 +505,15 @@
   }
 }
 
-/* 穿透时右侧主内容区保持不透明，仅左侧侧边栏透出材质。
-   置于 layer 外以覆盖 utilities 层的 bg-muted/55 半透明底色。 */
-/* html[data-window-effect] [data-content-solid] {
-  background: var(--background);
+/* 窗口材质开启时消息区同样透出磨砂质感：内容容器整层透明（四周留边条
+   直接露出材质），聊天卡片覆 72% 底色薄纱——系统高斯模糊材质从纱底透出，
+   文字仍落在足够实的底上。置于 layer 外以覆盖 utilities 层的 bg-background。 */
+html[data-window-effect] [data-content-solid] {
+  background: transparent;
 }
- */
+html[data-window-effect] [data-chat-card] {
+  background: color-mix(in oklab, var(--background) 72%, transparent);
+}
 
 /* 窗口材质开启时选中底色改为半透明叠加（浅色黑、深色白），与 --hover/--active
    同款合成方式：不透明实色块压在透出桌面的 bg-muted/55 侧栏上，明暗对比会随桌面

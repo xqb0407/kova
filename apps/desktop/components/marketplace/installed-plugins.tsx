@@ -10,7 +10,8 @@
  * 刻意不做组件级下钻：插件是原子交付单位，开/关只到插件粒度；技能与 MCP
  * 的常规管理在各自原位置（管理页）。组件以数量徽标摘要呈现。
  *
- * 版式对齐市场目录卡片（白底描边、扁平、固定高）：搜索 + 视图切换 + 批量条，
+ * 版式对齐市场目录卡片（白底描边、扁平、最小固定高，徽标换行时卡片自然长高，
+ * 描述始终完整 clamp 两行）：搜索 + 视图切换 + 批量条（两态等高 h-9，切换不抖动），
  * 双视图（卡片一行多个 / 单行列表）；点卡片主体切换选中（内部按钮/开关不
  * 触发），选中即常驻 hover 同款 bg-muted/50，无 checkbox/角标；首次加载用
  * 同构骨架屏；选中驱动批量条：批量启用 / 停用 / 卸载（卸载走确认弹窗，
@@ -21,6 +22,7 @@ import dynamic from "next/dynamic";
 import {
   DownloadIcon,
   LayoutGridIcon,
+  Link2Icon,
   ListIcon,
   PuzzleIcon,
   RefreshCwIcon,
@@ -179,7 +181,7 @@ export const InstalledPlugins: FC = () => {
     <div className="flex h-full min-h-0 flex-col gap-2 py-6 pt-2">
       {/* 工具行：搜索 + 视图切换；选中后变为批量操作条 */}
       {selectionActive ? (
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex h-9 items-center gap-2">
           <Badge variant="secondary" className="gap-1 px-2">
             <SquareCheckIcon className="size-3.5" />
             已选 {selected.size}
@@ -215,7 +217,7 @@ export const InstalledPlugins: FC = () => {
           </Button>
         </div>
       ) : (
-        <div className="flex items-center gap-2">
+        <div className="flex h-9 items-center gap-2">
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -273,6 +275,16 @@ export const InstalledPlugins: FC = () => {
               {p.manifestKind !== "xulux" && (
                 <Badge variant="secondary" className="font-normal">
                   {MANIFEST_KIND_LABEL[p.manifestKind]}
+                </Badge>
+              )}
+              {p.linked && (
+                <Badge
+                  variant="outline"
+                  className="gap-1 font-normal"
+                  title={p.sourcePath ? `链接到源目录：${p.sourcePath}（改源码重建即生效）` : "链接到源目录（开发模式）"}
+                >
+                  <Link2Icon className="size-3" />
+                  开发模式
                 </Badge>
               )}
               {p.sourceMissing && (
@@ -372,7 +384,7 @@ export const InstalledPlugins: FC = () => {
               key={`${viewMode}-${p.pluginId}`}
               onClick={handleCardClick(p.pluginId)}
               className={cn(
-                "flex h-40 cursor-pointer flex-col overflow-hidden rounded-2xl border bg-white p-4 transition-colors dark:bg-background",
+                "flex min-h-40 cursor-pointer flex-col overflow-hidden rounded-2xl border bg-white p-4 transition-colors dark:bg-background",
                 checked && "bg-muted/50",
                 !checked && "hover:bg-muted/50",
               )}

@@ -5,10 +5,12 @@ import path from "node:path";
 import {
   addMarketplace,
   getMarketplaceCatalog,
+  installLocalPlugin,
   installPlugin,
   installedPluginDir,
   listInstalledPlugins,
   listMarketplaces,
+  localMarketplaceEntry,
   parsePluginManifest,
   readPluginHooksFile,
   refreshMarketplace,
@@ -16,11 +18,14 @@ import {
   resetPluginsForTest,
   setPluginEnabled,
   uninstallPlugin,
+  LOCAL_MKT_ID,
+  LOCAL_MKT_NAME,
 } from "../../src/plugins/plugins";
 import { ensureSkillsLoaded, skillsSnapshot, setSkillEnabled } from "../../src/skills/skills";
 import { loadSubagentDefinitions } from "../../src/subagent/subagent-definitions";
 import { loadMcpServers } from "../../src/mcp/mcp-config";
 import { initLocalStorage, resetStorageForTest } from "../../src/storage/hostdb";
+import { marketplacesPayload } from "../../src/protocol/payloads";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-plugins-"));
 const prevPluginsDir = process.env.PI_PLUGINS_DIR;
@@ -358,6 +363,87 @@ describe("市场与安装全链路", () => {
     expect(still!.sourceMissing).toBe(true);
     // 清理：卸载，不污染其他用例
     await uninstallPlugin(plugin.pluginId);
+  });
+});
+
+describe("本地安装（旁路市场）", () => {
+  /** 模拟用户下载的 codex 系插件目录：.codex-plugin/plugin.json + skills/<name>/SKILL.md */
+  function seedDownloadedPlugin(): string {
+    const dir = path.join(tmp, "downloaded", "temporal");
+    rmSync(path.join(tmp, "downloaded"), { recursive: true, force: true });
+    mkdirSync(path.join(dir, ".codex-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(dir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "temporal", version: "0.2.2", description: "Temporal lifecycle skill" }),
+    );
+    mkdirSync(path.join(dir, "skills", "temporal-developer"), { recursive: true });
+    writeFileSync(
+      path.join(dir, "skills", "temporal-developer", "SKILL.md"),
+      skillDoc("temporal-developer", "Develop with Temporal."),
+    );
+    return dir;
+  }
+
+  test("installLocalPlugin 直装生态目录：身份 name@local、扫描与本地市场视图可见", async () => {
+    const dir = seedDownloadedPlugin();
+    const { plugin, updated } = await installLocalPlugin(dir);
+    expect(updated).toBe(false);
+    expect(plugin.pluginId).toBe("temporal@local");
+    expect(plugin.mktId).toBe(LOCAL_MKT_ID);
+    expect(plugin.mktName).toBe(LOCAL_MKT_NAME);
+    expect(plugin.sourceMissing).toBe(false);
+    expect(plugin.sourcePath).toBe(dir);
+    expect(plugin.manifest.manifestKind).toBe("codex");
+    expect(exists(path.join(plugin.manifest.root, "skills", "temporal-developer", "SKILL.md"))).toBe(
+      true,
+    );
+
+    const entry = localMarketplaceEntry();
+    expect(entry).toBeDefined();
+    expect(entry!.plugins.find((e) => e.name === "temporal")?.version).toBe("0.2.2");
+
+    await uninstallPlugin("temporal@local");
+    expect(localMarketplaceEntry()).toBeUndefined();
+  });
+
+  test("本地安装项的更新：installPlugin(local, name) 从 sourcePath 重拷", async () => {
+    const dir = seedDownloadedPlugin();
+    await installLocalPlugin(dir);
+    writeFileSync(
+      path.join(dir, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "temporal", version: "0.3.0", description: "Temporal lifecycle skill" }),
+    );
+    const { plugin, updated } = await installPlugin(LOCAL_MKT_ID, "temporal");
+    expect(updated).toBe(true);
+    expect(plugin.version).toBe("0.3.0");
+    const entry = localMarketplaceEntry();
+    expect(entry!.plugins.find((e) => e.name === "temporal")?.version).toBe("0.3.0");
+    await uninstallPlugin("temporal@local");
+  });
+
+  test("入参校验：目录缺失 / 无清单 / local 市场拒绝刷新 / 未装的 local 更新", async () => {
+    await expect(installLocalPlugin(path.join(tmp, "nope"))).rejects.toThrow(/插件目录不存在/);
+    const broken = path.join(tmp, "downloaded", "broken");
+    mkdirSync(broken, { recursive: true });
+    await expect(installLocalPlugin(broken)).rejects.toThrow(/未找到插件清单/);
+    await expect(refreshMarketplace(LOCAL_MKT_ID)).rejects.toThrow(/无需刷新/);
+    await expect(installPlugin(LOCAL_MKT_ID, "ghost")).rejects.toThrow(/本地安装中没有/);
+  });
+
+  test("marketplacesPayload 帧形状：local 条目在数组内、序列化首键仍是 type", async () => {
+    // 前端订阅按 startsWith('{"type":"plugin_op_result"') 前缀预筛帧——
+    // 本地条目若展开进对象顶层会产生数字键顶掉首键，整帧被静默丢弃
+    const dir = seedDownloadedPlugin();
+    await installLocalPlugin(dir);
+    const payload = marketplacesPayload();
+    expect("0" in payload).toBe(false);
+    const local = payload.marketplaces.find((m) => m.id === LOCAL_MKT_ID);
+    expect(local).toBeDefined();
+    expect(local!.plugins.some((p) => p.name === "temporal")).toBe(true);
+    const { type: _t, ...data } = payload;
+    const frame = JSON.stringify({ type: "plugin_op_result", opId: "x", op: "install_plugin_local", ok: true, ...data });
+    expect(frame.startsWith('{"type":"plugin_op_result"')).toBe(true);
+    await uninstallPlugin("temporal@local");
   });
 });
 

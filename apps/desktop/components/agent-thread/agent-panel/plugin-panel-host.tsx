@@ -6,6 +6,7 @@ import { Loader2Icon, PanelTopIcon } from "lucide-react";
 import {
   piRequest,
   type PiPluginPanelAssetResponse,
+  type PiPluginPanelRevResponse,
 } from "@/lib/pi/pi-bridge";
 import {
   fsErrorText,
@@ -28,7 +29,9 @@ import {
   type UiMessage,
 } from "@/lib/plugins/ui-plugin-bridge";
 import { usePluginPanels } from "@/lib/plugins/plugin-panels";
+import { listCanvasDocs } from "@/lib/plugins/canvas-doc-list";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
 import { toast } from "@/components/ui/toast";
 import { TabEmpty } from "./tab-empty";
 
@@ -94,15 +97,38 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
 
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
+  /** dev 自动重载计数器：bump 触发资产重取 + iframe 重挂（见 rev 轮询效应） */
+  const [assetReloadNonce, setAssetReloadNonce] = useState(0);
+  /** 当前 iframe 加载的入口指纹；轮询比对判据 */
+  const loadedRevRef = useRef<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const docRevRef = useRef(0);
+  /** 最近一次推到面板 / 写回磁盘的内容：轮询比对用它判断"盘上被别人改了" */
+  const syncedJsonRef = useRef<string | null>(null);
   /** UI 最近一次 doc.change 的内容（未落盘）；null = 与盘上一致 */
   const pendingJsonRef = useRef<string | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameReadyRef = useRef(false);
   const openedPathRef = useRef<string | null>(null);
 
-  const cwd = tab.cwd ?? workspace ?? null;
+  /**
+   * 面板工作目录：标签绑定目录 → 当前工作区 → app 任务工作区（PI_TASK_CWD 同源）。
+   * 第三级兜底是"工作"模式（未选工作区）的关键：agent 的产物就落在任务工作区，
+   * 面板的列文档/建档/换绑必须跟它同源，否则面板永远找不到 agent 刚写的文件
+   * （Rust 侧 resolve_root 已把该目录放行为第二可信根）。
+   */
+  const [fallbackCwd, setFallbackCwd] = useState<string | null>(null);
+  useEffect(() => {
+    if (tab.cwd || workspace) return;
+    let cancelled = false;
+    void taskWorkspaceDir().then((d) => {
+      if (!cancelled && d) setFallbackCwd(d);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab.cwd, workspace]);
+  const cwd = tab.cwd ?? workspace ?? fallbackCwd;
   const docPath = tab.path ?? null;
   const permsRef = useRef<Set<PanelPermission>>(new Set());
   permsRef.current = new Set(
@@ -143,6 +169,7 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
       docRevRef.current += 1;
       openedPathRef.current = docPath;
       pendingJsonRef.current = null;
+      syncedJsonRef.current = res.content;
       post({ kind: "doc.open", rev: docRevRef.current, json: res.content, path: docPath, ...(external ? { external: true } : {}) });
     },
     [post],
@@ -163,6 +190,7 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
       return;
     }
     if (pendingJsonRef.current === json) pendingJsonRef.current = null;
+    syncedJsonRef.current = json;
     post({ kind: "doc.saved", rev: docRevRef.current });
   }, [post]);
 
@@ -209,7 +237,37 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
           docRevRef.current += 1;
           openedPathRef.current = msg.path;
           pendingJsonRef.current = null;
-          post({ kind: "doc.open", rev: docRevRef.current, json: msg.json });
+          post({ kind: "doc.open", rev: docRevRef.current, json: msg.json, path: msg.path });
+          return;
+        }
+        case "doc.list": {
+          // 首页"历史卡片墙"：浅扫 cwd 下的画布档并回摘要（不支持的旧宿主会静默丢弃该 kind）
+          const items = await listCanvasDocs(cwd);
+          post({ kind: "doc.list.reply", reqId: msg.reqId, items });
+          return;
+        }
+        case "doc.bind": {
+          if (!cwd) return;
+          if (msg.path === docPath) {
+            await pushDoc(false);
+            return;
+          }
+          // 切换绑定：先把未落盘内容写回旧档，再校验新档可读后重绑
+          await saveNow();
+          const res = await fsReadFile(cwd, msg.path);
+          if (!res) {
+            post({ kind: "doc.error", errorText: `打开失败（不存在或不可读）：${msg.path}` });
+            return;
+          }
+          if (res.binary || res.truncated) {
+            post({ kind: "doc.error", errorText: "文档过大或为二进制，面板拒绝加载（避免截断保存损坏）" });
+            return;
+          }
+          updatePanelTab(tab.id, { path: msg.path, cwd });
+          docRevRef.current += 1;
+          openedPathRef.current = msg.path;
+          pendingJsonRef.current = null;
+          post({ kind: "doc.open", rev: docRevRef.current, json: res.content, path: msg.path });
           return;
         }
         case "doc.attach": {
@@ -266,7 +324,7 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
           return;
       }
     },
-    [aui, post, pushDoc, scheduleSave, tab.id],
+    [aui, post, pushDoc, saveNow, scheduleSave, tab.id],
   );
 
   /* ---------------- 资产加载（blob iframe） ---------------- */
@@ -277,6 +335,7 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
     let url = "";
     frameReadyRef.current = false;
     openedPathRef.current = null;
+    loadedRevRef.current = null;
     setBlobUrl(null);
     setAssetError(null);
     void (async () => {
@@ -286,6 +345,7 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
           30000,
         );
         if (cancelled) return;
+        loadedRevRef.current = res.rev;
         const bytes = b64ToBytes(res.base64);
         url = URL.createObjectURL(new Blob([bytes], { type: "text/html" }));
         setBlobUrl(url);
@@ -298,7 +358,35 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [tab.pluginId, tab.panelId]);
+  }, [tab.pluginId, tab.panelId, assetReloadNonce]);
+
+  /**
+   * 链接安装（dev 模式）面板的热重载轮询：只查入口指纹（get_plugin_panel_rev
+   * 服务端仅 stat），rev 变了就 bump nonce → 上方效应重取资产重挂 iframe。
+   * 只对 linked 插件生效——拷贝装的正式安装不该被无预警换构建。
+   * ⚠️ 重载会丢掉 iframe 内未保存的手动编辑，这正是 dev 模式"改完即见"的对价。
+   */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!tab.pluginId || !tab.panelId) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden || !blobUrl || loadedRevRef.current === null) return;
+      void (async () => {
+        try {
+          const res = await piRequest<PiPluginPanelRevResponse>(
+            { type: "get_plugin_panel_rev", pluginId: tab.pluginId, panelId: tab.panelId },
+            10000,
+          );
+          if (res.rev && res.linked && res.rev !== loadedRevRef.current) {
+            setAssetReloadNonce((n) => n + 1);
+          }
+        } catch {
+          // 旧 sidecar 无此消息/瞬时故障：静默，下轮再试
+        }
+      })();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [tab.pluginId, tab.panelId, blobUrl]);
 
   /* ---------------- 消息监听（含来源与权限门控） ---------------- */
 
@@ -336,6 +424,34 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
     });
     return () => obs.disconnect();
   }, [post]);
+
+  /* ---------------- 盘上变更轮询（agent 写盘 → 面板实时重渲染） ---------------- */
+
+  /**
+   * 面板是被动渲染：没有这一步时，只有"agent 调 open_plugin_panel"那一帧才刷新，
+   * 中途的 write/edit 全看不到（用户看到的是"写完才出现"）。agent 的工具是整文件
+   * 原子写，没有逐帧输入源，所以这里按 ~600ms 轮询绑定文件内容：变了就重推
+   * doc.open{external}，面板立刻重渲染（顺带覆盖外部编辑器手改）。
+   * 单文件读一次 invoke 即可，600ms 的开销可忽略；agent 分段写盘（SKILL 推荐）时
+   * 用户看到的就是"每落一次盘 ~半秒内上屏"的渐进渲染。
+   * 面板有未保存改动时走既有冲突机制（插件侧弹冲突框，不静默覆盖）。
+   */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const timer = window.setInterval(() => {
+      const { cwd: curCwd, docPath: curDoc } = ctxRef.current;
+      if (!curCwd || !curDoc) return;
+      if (document.hidden) return;
+      void (async () => {
+        const res = await fsReadFile(curCwd, curDoc);
+        if (!res || res.binary || res.truncated) return;
+        if (syncedJsonRef.current === null) return; // 还没推过首帧，交给 pushDoc 流程
+        if (res.content === syncedJsonRef.current) return;
+        await pushDoc(true);
+      })();
+    }, 600);
+    return () => window.clearInterval(timer);
+  }, [pushDoc]);
 
   /* ---------------- agent 写盘后的外部刷新 ---------------- */
 

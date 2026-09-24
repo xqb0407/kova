@@ -7,9 +7,12 @@ import {
   blankDoc,
   blankFrame,
   CANVAS_ROOT,
+  DEFAULT_TABLE_ROWS,
   DOC_VERSION,
+  docKindOf,
   DRAW_MAX_POINTS,
   drawFromPoints,
+  isDarkColor,
   drawNaturalBox,
   nextFramePos,
   parseDoc,
@@ -20,7 +23,12 @@ import {
   TIDY_PAD,
   tidyLayout,
   titleFrame,
+  type ChartEl,
   type DrawEl,
+  type El,
+  type ShapeEl,
+  type TableEl,
+  uiStarterDoc,
 } from "../src/doc";
 import { boxOf } from "../src/geometry";
 
@@ -61,6 +69,28 @@ describe("v1 → v2 迁移", () => {
     });
     expect(doc!.frames).toHaveLength(1);
     expect(doc!.frames[0].elements).toHaveLength(0);
+  });
+});
+
+describe("页切换动画（transition）", () => {
+  const frameDoc = (tr: unknown) => ({
+    frames: [{ id: "s", w: 1280, h: 720, background: "#ffffff", elements: [], transition: tr }],
+  });
+  test("合法值保留：none/fade/zoom 原样解析", () => {
+    for (const tr of ["none", "fade", "zoom"]) {
+      expect(parseDoc(frameDoc(tr))!.frames[0]!.transition).toBe(tr);
+    }
+  });
+  test("slide 与非法值归一为缺省（不落键，序列化无 transition）", () => {
+    for (const tr of ["slide", "bogus", 42, null, undefined]) {
+      const f = parseDoc(frameDoc(tr))!.frames[0]!;
+      expect("transition" in f).toBe(false);
+    }
+  });
+  test("序列化往返保持：fade 文档过一遍 parseDoc(serializeDoc) 不变", () => {
+    const doc = parseDoc(frameDoc("fade"))!;
+    const again = parseDoc(JSON.parse(serializeDoc(doc)))!;
+    expect(again.frames[0]!.transition).toBe("fade");
   });
 });
 
@@ -105,9 +135,10 @@ describe("v2 解析", () => {
 
   test("slideFrames 只认 type:slide（当前唯一框型，防御未来扩展）", () => {
     const doc = blankDoc("16:9", "t");
-    expect(slideFrames(doc)).toEqual(doc.frames);
-    doc.frames.push({ ...doc.frames[0]!, id: "f-other", type: "frame" as never });
-    expect(slideFrames(doc).map((f) => f.id)).toEqual([doc.frames[0]!.id]);
+    expect(slideFrames(doc)).toEqual([]);
+    const f = blankFrame("16:9", { x: 0, y: 0 });
+    doc.frames = [f, { ...f, id: "f-other", type: "frame" as never }];
+    expect(slideFrames(doc).map((s) => s.id)).toEqual([f.id]);
   });
 });
 
@@ -148,11 +179,9 @@ describe("resizeFrames 换页尺寸", () => {
     // 不经 tidyLayout（它会归位 x/y），直接摆一个偏移页框
     const doc = blankDoc("16:9", "t");
     doc.objects.push({ kind: "shape", id: "o", shape: "rect", x: 3000, y: 3000, w: 100, h: 50 });
-    Object.assign(doc.frames[0]!, {
-      x: 777,
-      y: 888,
-      elements: [{ kind: "text", id: "t", x: 640, y: 360, w: 640, h: 200, runs: [{ text: "x" }] }],
-    });
+    const frame = blankFrame("16:9", { x: 777, y: 888 });
+    frame.elements = [{ kind: "text", id: "t", x: 640, y: 360, w: 640, h: 200, runs: [{ text: "x" }] }];
+    doc.frames = [frame];
     const next = resizeFrames(doc, "4:3");
     expect(next.meta.pagePreset).toBe("4:3");
     const f = next.frames[0]!;
@@ -166,15 +195,15 @@ describe("resizeFrames 换页尺寸", () => {
 });
 
 describe("构造与序列化", () => {
-  test("blankDoc 是合法 v2：一个 80,80 页框、空 objects；序列化往返一致", () => {
+  test("blankDoc 是合法 v2：空白板（objects/frames 皆空）；序列化往返一致", () => {
     const doc = blankDoc("16:9", "演示");
     expect(doc.version).toBe(2);
     expect(doc.objects).toEqual([]);
-    expect(doc.frames).toHaveLength(1);
-    expect([doc.frames[0]!.x, doc.frames[0]!.y]).toEqual([TIDY_PAD, TIDY_PAD]);
+    expect(doc.frames).toEqual([]);
     const round = parseDoc(JSON.parse(serializeDoc(doc)))!;
     expect(serializeDoc(round)).toBe(serializeDoc(doc));
     expect(round.objects).toEqual([]);
+    expect(round.frames).toEqual([]);
   });
 
   test("titleFrame 元素非空、frame 字段齐全", () => {
@@ -185,8 +214,7 @@ describe("构造与序列化", () => {
   });
 
   test("CANVAS_ROOT 哨兵不与生成 id 冲突（uid 前缀均为小写字母+数字）", () => {
-    const doc = blankDoc("16:9", "t");
-    expect(doc.frames[0]!.id.startsWith(CANVAS_ROOT)).toBe(false);
+    expect(blankFrame("16:9", { x: 0, y: 0 }).id.startsWith(CANVAS_ROOT)).toBe(false);
   });
 });
 
@@ -220,5 +248,151 @@ describe("drawFromPoints 笔迹提交", () => {
     expect([drawNaturalBox(resized).w, drawNaturalBox(resized).h]).toEqual([200, 50]);
     const round = parseDoc(JSON.parse(serializeDoc({ version: 2, meta: { name: "t", pagePreset: "16:9" }, objects: [resized], frames: [] })))!;
     expect(round.objects[0]!.kind).toBe("draw"); // 拉伸态可序列化往返
+  });
+});
+
+describe("table/chart/groupId/新形状解析", () => {
+  const obj = (o: Record<string, unknown>) =>
+    parseDoc({ version: 2, meta: { name: "x", pagePreset: "16:9" }, objects: [o], frames: [] })!;
+
+  test("table：行清洗（截断 500）、colWidths 过滤非正数、header=false 落键、size 夹取", () => {
+    const doc = obj({
+      kind: "table", id: "t1", x: 0, y: 0, w: 300, h: 120,
+      rows: [["列 A", "列 B"], ["x".repeat(600), 42], "junk"],
+      colWidths: [2, -1, 0, 3], size: 999, fill: "#f00f00", header: false,
+    });
+    const t = doc.objects[0] as TableEl;
+    expect(t.rows).toEqual([["列 A", "列 B"], ["x".repeat(500), ""]]); // str() 只收 string，数字格置空
+    expect(t.colWidths).toEqual([2, 3]);
+    expect(t.size).toBe(96);
+    expect(t.header).toBe(false);
+    expect(t.fill).toBe("#f00f00");
+  });
+
+  test("table：空 rows 回退默认；header 缺省不落键；非色值丢弃", () => {
+    const t = obj({ kind: "table", id: "t1", x: 0, y: 0, w: 300, h: 120, rows: [], fill: "red" }).objects[0] as TableEl;
+    expect(t.rows).toEqual(DEFAULT_TABLE_ROWS);
+    expect("header" in t).toBe(false);
+    expect("fill" in t).toBe(false);
+  });
+
+  test("chart：labels 去空、series 收 finite 数（空 data 丢弃）、kind 校验、colors 过滤、size 夹取", () => {
+    const c = obj({
+      kind: "chart", id: "c1", x: 0, y: 0, w: 400, h: 300,
+      labels: ["一月", "", "三月"],
+      series: [{ name: "A", data: [1, "x", 3] }, { name: "B", data: [] }, "junk"],
+      chart: "donut", colors: ["#0a84ff", "nope"], showLegend: true, size: 2,
+    }).objects[0] as ChartEl;
+    expect(c.labels).toEqual(["一月", "三月"]);
+    expect(c.series).toEqual([{ name: "A", data: [1, 3] }]);
+    expect("chart" in c).toBe(false);
+    expect(c.colors).toEqual(["#0a84ff"]);
+    expect(c.showLegend).toBe(true);
+    expect(c.size).toBe(6);
+  });
+
+  test("chart：labels 或 series 全空 → 元素丢弃", () => {
+    const emptyLabels = { kind: "chart", id: "c", x: 0, y: 0, w: 10, h: 10, labels: [], series: [{ name: "A", data: [1] }] };
+    const emptySeries = { kind: "chart", id: "c", x: 0, y: 0, w: 10, h: 10, labels: ["一"], series: [] };
+    expect(obj(emptyLabels).objects).toHaveLength(0);
+    expect(obj(emptySeries).objects).toHaveLength(0);
+  });
+
+  test("groupId：合法保留并截断 64；空白丢弃", () => {
+    const s1 = obj({ kind: "shape", id: "s1", shape: "rect", x: 0, y: 0, w: 10, h: 10, groupId: "g".repeat(80) }).objects[0] as El;
+    expect(s1.groupId).toBe("g".repeat(64));
+    const s2 = obj({ kind: "shape", id: "s2", shape: "rect", x: 0, y: 0, w: 10, h: 10, groupId: "   " }).objects[0] as El;
+    expect("groupId" in s2).toBe(false);
+  });
+
+  test("新形状与双头箭头 kind 全部通过解析", () => {
+    for (const shape of ["triangle", "trapezoid", "pentagon", "hexagon", "star", "double-arrow"]) {
+      const s = obj({ kind: "shape", id: "s", shape, x: 0, y: 0, w: 10, h: 10, fill: "#0a84ff" }).objects[0] as ShapeEl;
+      expect(s.shape).toBe(shape);
+    }
+  });
+});
+
+describe("文档类型（meta.kind）", () => {
+  test("blankDoc 入档类型；parseDoc 往返保留", () => {
+    const d = blankDoc("16:9", "白板示例", "board");
+    expect(d.meta.kind).toBe("board");
+    expect(parseDoc(JSON.parse(serializeDoc(d)))!.meta.kind).toBe("board");
+    expect(blankDoc("16:9", "演示", "deck").meta.kind).toBe("deck");
+  });
+  test("ui 档：入档/解析往返，kind 不被亲和推断覆盖", () => {
+    const d = uiStarterDoc("UI 设计");
+    expect(d.meta.kind).toBe("ui");
+    expect(parseDoc(JSON.parse(serializeDoc(d)))!.meta.kind).toBe("ui");
+    expect(docKindOf(d)).toBe("ui");
+  });
+  test("ui 种子档：三块 375×812 设备画板（objects 矩形）+ 标题 + 引导；seed=false 为空档", () => {
+    const d = uiStarterDoc("UI 设计");
+    // 白板只渲染 objects：画板必须是 objects，不能是页框
+    expect(d.frames).toHaveLength(0);
+    const boards = d.objects.filter((o) => o.kind === "shape");
+    expect(boards).toHaveLength(3);
+    expect(boards.every((b) => b.w === 375 && b.h === 812)).toBe(true);
+    expect(boards.map((b) => b.x)).toEqual([0, 375 + 120, 2 * (375 + 120)]);
+    expect(d.objects.filter((o) => o.kind === "text")).toHaveLength(4); // 三个板名 + 一句引导
+    expect(boards[0]!.y).toBe(140);
+    expect(uiStarterDoc("空", false).objects).toHaveLength(0);
+  });
+  test("docKindOf：kind 优先；老档按内容亲和回退（纯页框→deck）", () => {
+    const withKind = { ...blankDoc(), meta: { name: "x", pagePreset: "16:9" as const, kind: "deck" as const } };
+    expect(docKindOf(withKind)).toBe("deck");
+    // 老档没有 kind（blankDoc 现在默认写 board，这里显式去掉模拟迁移前文件）
+    const legacyMeta = { name: "x", pagePreset: "16:9" as const };
+    const legacyDeck = { ...blankDoc(), meta: legacyMeta, frames: [blankFrame("16:9")] };
+    expect(docKindOf(legacyDeck)).toBe("deck");
+    const legacyBoard = { ...blankDoc(), meta: legacyMeta, objects: [{ kind: "shape", id: "s1", shape: "rect", x: 0, y: 0, w: 10, h: 10 } as const] };
+    expect(docKindOf(legacyBoard)).toBe("board");
+    const mixed = { ...blankDoc(), meta: legacyMeta, objects: legacyBoard.objects, frames: [blankFrame("16:9")] };
+    expect(docKindOf(mixed)).toBe("board");
+  });
+  test("parseDoc 丢弃非法 kind", () => {
+    const doc = parseDoc({ version: 2, meta: { name: "x", pagePreset: "16:9", kind: "ppt" }, objects: [], frames: [] })!;
+    expect(doc.meta.kind).toBeUndefined();
+  });
+});
+
+describe("边框样式（strokeStyle）", () => {
+  test("parseDoc 保留白名单内的 strokeStyle，非法值丢弃", () => {
+    const base = { kind: "shape", id: "s1", shape: "rect", x: 0, y: 0, w: 10, h: 10 };
+    const doc = parseDoc({ version: 2, meta: { name: "x", pagePreset: "16:9" }, objects: [
+      { ...base, strokeStyle: "dashed" },
+      { ...base, id: "s2", strokeStyle: "wavy" },
+    ], frames: [] })!;
+    expect((doc.objects[0] as { strokeStyle?: string }).strokeStyle).toBe("dashed");
+    expect((doc.objects[1] as { strokeStyle?: string }).strokeStyle).toBeUndefined();
+  });
+});
+
+describe("线/箭头方向（dir）与背景明暗判定", () => {
+  const shapeDoc = (dir: unknown) => parseDoc({
+    version: 2,
+    objects: [{ kind: "shape", id: "a", shape: "arrow", x: 0, y: 0, w: 100, h: 50, dir }],
+    frames: [],
+  })!;
+  test("合法方向 1/2/3 原样保留；0 与非整数归一后不落键", () => {
+    for (const dir of [1, 2, 3]) expect((shapeDoc(dir).objects[0] as { dir?: number }).dir).toBe(dir);
+    for (const dir of [0, "1", 9, -1, null, undefined, NaN])
+      expect("dir" in (shapeDoc(dir).objects[0] as object)).toBe(false);
+  });
+  test("序列化往返保留 dir=2", () => {
+    const doc = shapeDoc(2);
+    const again = parseDoc(JSON.parse(serializeDoc(doc)))!;
+    expect((again.objects[0] as { dir?: number }).dir).toBe(2);
+  });
+  test("isDarkColor：深色页判暗（含 8 位带透明度串），浅色/非色串不判暗", () => {
+    expect(isDarkColor("#111318")).toBe(true);
+    expect(isDarkColor("#000")).toBe(true);
+    expect(isDarkColor("linear-gradient(135deg,#11131880,#f5f5f7)")).toBe(true); // 首色深色（8 位带 alpha）
+    expect(isDarkColor("#0a84ff55")).toBe(false); // #0a84ff 亮度 0.451，阈值之上按浅色
+    expect(isDarkColor("#ffffff")).toBe(false);
+    expect(isDarkColor("#f5f5f7")).toBe(false);
+    expect(isDarkColor("#fff0")).toBe(false); // 带透明度的浅色简写：按 RGB 判
+    expect(isDarkColor(undefined)).toBe(false);
+    expect(isDarkColor("none")).toBe(false);
   });
 });

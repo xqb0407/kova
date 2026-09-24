@@ -657,7 +657,10 @@ export const Base: FC = () => {
   // 列本身是带描边圆角的卡片，四周留出窗口底色边距（顶缘仍可拖窗）。
   // 窄屏（浮层模式）下浮层只盖聊天内容区，不遮 Header
   const chatColumn = (
-    <div className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden rounded-xl border">
+    <div
+      data-chat-card
+      className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden rounded-xl border"
+    >
       {/* 自动化页环境光：挂在卡片内顶缘（header 之下、内容之上），
           光带从卡片顶垂下；固定不随内容滚 */}
       {activeMenu === "automation" && (
@@ -748,8 +751,8 @@ export const Base: FC = () => {
         }
         sheetTitle={<Logo />}
       >
-        {/* 右侧主内容区：开启穿透效果时保持不透明（globals.css data-content-solid 规则），
-            仅左侧侧边栏透出窗口材质 */}
+        {/* 右侧主内容区：窗口材质开启时透出磨砂（globals.css data-content-solid /
+            data-chat-card 规则），关闭时保持不透明底色 */}
         <div
           data-content-solid
           className="bg-background relative flex h-full flex-col overflow-hidden md:pl-0"

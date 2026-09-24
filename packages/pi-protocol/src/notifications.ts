@@ -111,9 +111,12 @@ export const pluginOpResultFrameSchema = z.looseObject({
     "add_marketplace",
     "refresh_marketplace",
     "install_plugin",
+    "install_plugin_local",
   ]),
   ok: z.boolean(),
   errorText: z.string().optional(),
+  /** 安装类操作成功时附带目标插件名（旧端可缺省） */
+  name: z.string().optional(),
 });
 
 export type TurnChangedFrame = z.infer<typeof turnChangedFrameSchema>;

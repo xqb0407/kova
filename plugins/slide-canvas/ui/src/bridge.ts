@@ -3,9 +3,23 @@
  * 独立运行时（vite dev 直接开浏览器）宿主消息永不到达：桥层自动降级为
  * 本地 mock（handshake 模拟 + doc.change 落地 localStorage），开发体验不依赖桌面端。
  */
-import { DOC_VERSION } from "./doc";
+import { DOC_VERSION, type DocKind } from "./doc";
 
 const PROTOCOL = "xulux-ui-plugin/1";
+
+/** 首页历史卡片：宿主扫描工作区 `*.canvas.json` 后回传的摘要（与宿主端 DocListItem 对齐） */
+export type DocListItem = {
+  /** workspace 相对路径，打开时原样回传 doc.bind */
+  path: string;
+  name: string;
+  kind: DocKind;
+  /** 最后修改时间（ms epoch；0=宿主未提供） */
+  mtime: number;
+  frames: number;
+  objects: number;
+  /** 页框布局摘要（供卡片画示意缩略图，宿主已截断） */
+  preview: { x: number; y: number; w: number; h: number; bg: string }[];
+};
 
 type HostHandlers = {
   onHandshake: (theme: "light" | "dark", ctx: { workspaceName: string; fileRelPath: string | null }) => void;
@@ -22,6 +36,7 @@ class Bridge {
   private handlers: HostHandlers | null = null;
   private state: BridgeState = "standalone";
   private assetWaiters = new Map<string, (b64: string | null) => void>();
+  private listWaiters = new Map<string, (items: DocListItem[] | null) => void>();
   private themeListeners = new Set<(t: "light" | "dark") => void>();
   readonly standalone = typeof window !== "undefined" && window.parent === window;
 
@@ -77,6 +92,14 @@ class Bridge {
         if (w) {
           this.assetWaiters.delete(String(d.reqId));
           w(typeof d.base64 === "string" ? d.base64 : null);
+        }
+        break;
+      }
+      case "doc.list.reply": {
+        const w = this.listWaiters.get(String(d.reqId));
+        if (w) {
+          this.listWaiters.delete(String(d.reqId));
+          w(Array.isArray(d.items) ? (d.items as DocListItem[]) : []);
         }
         break;
       }
@@ -150,6 +173,27 @@ class Bridge {
       }, 15000);
       this.post({ kind: "asset.request", reqId, path });
     });
+  }
+
+  /**
+   * 列工作区里的画布档（首页历史卡片）。宿主不支持该消息时超时返回 null——
+   * 调用方按"无历史"降级，只显示新建入口（协议向前兼容：旧宿主静默丢弃新 kind）。
+   */
+  listDocs(): Promise<DocListItem[] | null> {
+    if (this.standalone) return Promise.resolve(null);
+    const reqId = `l${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((res) => {
+      this.listWaiters.set(reqId, res);
+      setTimeout(() => {
+        if (this.listWaiters.delete(reqId)) res(null);
+      }, 8000);
+      this.post({ kind: "doc.list", reqId });
+    });
+  }
+
+  /** 打开（并让宿主把本面板绑定到）已有画布档；成功后宿主推 doc.open */
+  bindDoc(path: string): void {
+    this.post({ kind: "doc.bind", path });
   }
 
   /* standalone 的本地文档存取（开发态） */

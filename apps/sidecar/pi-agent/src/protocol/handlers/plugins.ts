@@ -3,11 +3,13 @@
  * （git clone / 大目录复制），受理即应答 plugin_op_accepted，后台执行完成后
  * 自发 plugin_op_result 帧（载荷见 payloads.ts，写路径见 plugins/marketplaces.ts）。
  */
+import { basename } from "node:path";
 import { logErr } from "../../log";
 import { send } from "../stream";
-import { readPluginPanelAsset } from "../../plugins/store";
+import { readPluginPanelAsset, readPluginPanelRev } from "../../plugins/store";
 import {
   addMarketplace,
+  installLocalPlugin,
   installPlugin,
   refreshMarketplace,
   removeMarketplace,
@@ -58,6 +60,8 @@ export const handlers: Record<string, CommandHandler> = {
   add_marketplace: pluginOp,
   refresh_marketplace: pluginOp,
   install_plugin: pluginOp,
+  // 直接安装任意本地插件目录（不经市场）：path 指向含三态清单的插件根
+  install_plugin_local: pluginOp,
 
   /**
    * UI 插件面板入口 HTML（blob 挂载进 sandboxed iframe 的数据源）：
@@ -88,6 +92,27 @@ export const handlers: Record<string, CommandHandler> = {
       rev: asset.rev,
     });
   },
+
+  /**
+   * 面板入口指纹的轻量查询（宿主 dev 自动重载轮询专用）：只 stat 不读文件；
+   * 面板不可用回 rev:null（宿主静默停轮，下次挂载再走资产加载）。
+   */
+  get_plugin_panel_rev: async (reqId, msg) => {
+    const pluginId = String(msg.pluginId ?? "");
+    const panelId = String(msg.panelId ?? "");
+    if (!pluginId || !panelId) {
+      throw new Error("get_plugin_panel_rev: pluginId and panelId are required");
+    }
+    const r = readPluginPanelRev(pluginId, panelId);
+    send({
+      id: reqId,
+      type: "plugin_panel_rev",
+      pluginId,
+      panelId,
+      rev: r?.rev ?? null,
+      linked: r?.linked === true,
+    });
+  },
 };
 
 /** 耗时操作（git clone / 大目录复制）：受理即应答，后台执行，完成自发帧 */
@@ -98,7 +123,9 @@ async function pluginOp(reqId: string, msg: Record<string, unknown>): Promise<vo
       ? "add_marketplace"
       : msg.type === "refresh_marketplace"
         ? "refresh_marketplace"
-        : "install_plugin";
+        : msg.type === "install_plugin_local"
+          ? "install_plugin_local"
+          : "install_plugin";
   send({ id: reqId, type: "plugin_op_accepted", opId, op });
   const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
   void (async () => {
@@ -119,22 +146,38 @@ async function pluginOp(reqId: string, msg: Record<string, unknown>): Promise<vo
         const marketplaceId = String(msg.marketplaceId ?? "");
         if (!marketplaceId) throw new Error("refresh_marketplace: marketplaceId is required");
         await refreshMarketplace(marketplaceId);
+      } else if (op === "install_plugin_local") {
+        const path = String(msg.path ?? "");
+        if (!path.trim()) throw new Error("install_plugin_local: path is required");
+        await installLocalPlugin(path);
       } else {
         const marketplaceId = String(msg.marketplaceId ?? "");
         const name = String(msg.name ?? "");
         if (!marketplaceId || !name) {
           throw new Error("install_plugin: marketplaceId and name are required");
         }
-        await installPlugin(marketplaceId, name);
+        // link 三态：true=链接装 false=强制拷贝装 缺省=保持现有模式
+        const link =
+          msg.link === true ? true : msg.link === false ? false : undefined;
+        await installPlugin(marketplaceId, name, link === undefined ? {} : { link });
       }
       // 载荷里的 type 字段弃用，结果帧以 plugin_op_result 为准
       const { type: _pType, ...pluginsData } = await pluginsPayload(cwd);
       const { type: _mType, ...marketplacesData } = marketplacesPayload();
+      // 安装类操作附带目标插件名（结果帧到达时前端 pending 可能尚未登记，
+      // 成功提示不依赖 key）：本地安装的清单校验保证 name === 目录 basename
+      const targetName =
+        op === "install_plugin"
+          ? String(msg.name ?? "")
+          : op === "install_plugin_local"
+            ? basename(String(msg.path ?? ""))
+            : "";
       send({
         type: "plugin_op_result",
         opId,
         op,
         ok: true,
+        ...(targetName ? { name: targetName } : {}),
         ...pluginsData,
         ...marketplacesData,
       });

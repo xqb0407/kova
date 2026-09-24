@@ -61,6 +61,11 @@ export type InstalledPlugin = {
   installedAt: string;
   /** 来源市场已不在登记表中（插件保留可用，仅无更新通道） */
   sourceMissing: boolean;
+  /** 链接安装（dev 模式，目录市场专属）：cache 条目是指向源目录的符号链接，
+   *  读路径全部实时命中源码——改完插件重建产物即可生效，无需再走市场安装 */
+  linked?: boolean;
+  /** 源目录绝对路径：linked 项为链接目标；本地安装（拷贝）项为 installed.json 记录的来源 */
+  sourcePath?: string;
   enabled: boolean;
   manifest: PluginManifest;
   diagnostics: string[];
@@ -131,6 +136,15 @@ export function installedPluginDir(mktId: string, name: string): string {
 export function devMarketplaceDir(): string {
   return join(pluginsRootDir(), "dev-marketplace");
 }
+
+/**
+ * 「本地安装」内置伪市场：不经登记，直接把任意含清单的插件目录物化到
+ * cache/local/<name>/，身份仍是 `name@local`。登记表里没有它的记录（不参与
+ * add/remove/refresh），目录视图由已装 local 条目现场合成（见 buildLocalCatalog）；
+ * "更新" = 从 installed.json 记的 sourcePath 重新拷贝。
+ */
+export const LOCAL_MKT_ID = "local";
+export const LOCAL_MKT_NAME = "本地安装";
 // ---------------------------------------------------------------------------
 // 清单解析与生态兼容规范化
 // ---------------------------------------------------------------------------
