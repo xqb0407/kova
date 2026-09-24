@@ -71,14 +71,17 @@ export function newEl(
   if (kind === "pentagon") return { kind: "shape", id, shape: "pentagon", ...center(260, 250), fill: "#166534" };
   if (kind === "hexagon") return { kind: "shape", id, shape: "hexagon", ...center(300, 240), fill: "#f4f692" };
   if (kind === "star") return { kind: "shape", id, shape: "star", ...center(240, 240), fill: "#f4f692" };
-  // 线/箭头默认色随页背景自适应：深色页近白（写死深色在深色封面页上近乎不可见）。
-  // 点击插入给 240×140 的 ↘ 斜线（dir 缺省 0），比 360×2 横线更有"箭头"的观感；拖拽绘制（A/L）不走这里。
-  const line = { kind: "shape" as const, id, shape: kind, ...center(240, 140), stroke: dark ? "#f5f5f7" : "#1d1d1f", strokeWidth: 3 };
-  return line;
+  // 曲线箭头：水平弧（>0 上拱 0.35），弧度在 Inspector 可调；拖拽画弧走 C 键不走这里
+  if (kind === "curve-arrow") {
+    return { kind: "shape", id, shape: "curve-arrow", ...center(360, 120), stroke: dark ? "#f5f5f7" : "#1d1d1f", strokeWidth: 3, curve: 0.35 };
+  }
+  // 线/箭头插入默认水平 360×2（h=2 留 bbox 命中余量），方向由拖拽绘制（A/L）决定，不走这里。
+  return { kind: "shape" as const, id, shape: kind, ...center(360, 2), stroke: dark ? "#f5f5f7" : "#1d1d1f", strokeWidth: 3 };
 }
 
 export type SelKind =
   | "text"
+  | "curve-arrow"
   | "rect"
   | "diamond"
   | "ellipse"

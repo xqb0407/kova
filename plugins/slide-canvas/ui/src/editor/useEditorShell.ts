@@ -21,7 +21,7 @@ export function useEditorShell() {
   const [zoomPct, setZoomPct] = useState(100);
   const [pen, setPen] = useState(false);
   /** 画线工具（L 直线 / A 箭头 / 双箭头）：按下从起点拖到尾点成元素；null = 未启用 */
-  const [drawTool, setDrawTool] = useState<"line" | "arrow" | "double-arrow" | null>(null);
+  const [drawTool, setDrawTool] = useState<"line" | "arrow" | "double-arrow" | "curve-arrow" | null>(null);
   const [menuHit, setMenuHit] = useState<ContextHit | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const zoomApi = useRef<ZoomApi | null>(null);
@@ -97,7 +97,7 @@ export function useEditorShell() {
   );
 
   /** 直线/箭头画线工具：与钢笔/抓手互斥；再次按同键（或 Esc/V）退出。启用后按下即从起点拖到尾点成元素 */
-  const toggleDraw = useCallback((kind: "line" | "arrow" | "double-arrow") => {
+  const toggleDraw = useCallback((kind: "line" | "arrow" | "double-arrow" | "curve-arrow") => {
     setPen(false);
     setHand(false);
     setDrawTool((v) => (v === kind ? null : kind));
@@ -269,6 +269,8 @@ export function useEditorShell() {
         toggleDraw("arrow");
       } else if (!mod && !e.shiftKey && !e.altKey && key === "l") {
         toggleDraw("line");
+      } else if (!mod && !e.shiftKey && !e.altKey && key === "c") {
+        toggleDraw("curve-arrow");
       } else if (!mod && !e.shiftKey && !e.altKey && key === "t") {
         insert("text");
       } else if (!mod && !e.shiftKey && !e.altKey && key === "m") {

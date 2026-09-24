@@ -50,6 +50,7 @@ export type ShapeKind =
   | "line"
   | "arrow"
   | "double-arrow"
+  | "curve-arrow"
   | "triangle"
   | "trapezoid"
   | "pentagon"
@@ -77,6 +78,8 @@ export type ShapeEl = {
   strokeStyle?: StrokeStyle;
   /** line/arrow 画向（拖拽绘制时起点→尾点）；其余形状无意义。缺省 = 0（左上→右下） */
   dir?: LineDir;
+  /** curve-arrow 弧度：控制点偏移 / 弦长，[-1,1]，>0 水平线上拱。缺省 0.3 */
+  curve?: number;
   radius?: number;
   opacity?: number;
   rotation?: number;
@@ -573,6 +576,7 @@ const SHAPES = new Set([
   "line",
   "arrow",
   "double-arrow",
+  "curve-arrow",
   "triangle",
   "trapezoid",
   "pentagon",
@@ -620,6 +624,7 @@ function parseElBase(v: unknown): El | null {
         ...(sw !== undefined ? { strokeWidth: Math.min(40, Math.max(0, sw)) } : {}),
         ...(o.strokeStyle === "dashed" || o.strokeStyle === "dotted" || o.strokeStyle === "solid" ? { strokeStyle: o.strokeStyle as StrokeStyle } : {}),
         ...(typeof o.dir === "number" && o.dir >= 1 && o.dir <= 3 ? { dir: Math.trunc(o.dir) as LineDir } : {}),
+        ...(typeof o.curve === "number" && Number.isFinite(o.curve) ? { curve: Math.max(-1, Math.min(1, o.curve)) } : {}),
         ...(r !== undefined ? { radius: Math.max(0, r) } : {}),
         id: "",
         x: 0,

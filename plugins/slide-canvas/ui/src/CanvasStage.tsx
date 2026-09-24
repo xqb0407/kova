@@ -68,7 +68,7 @@ const SNAP_PX = 8;
 const MARQUEE_THRESHOLD = 3;
 
 /** 画线工具文案（出页提示用） */
-const DRAW_LABEL: Record<"line" | "arrow" | "double-arrow", string> = { line: "直线", arrow: "箭头", "double-arrow": "双头箭头" };
+const DRAW_LABEL: Record<"line" | "arrow" | "double-arrow" | "curve-arrow", string> = { line: "直线", arrow: "箭头", "double-arrow": "双头箭头", "curve-arrow": "弧线箭头" };
 
 /** 渲染器双轨开关（Leafer 迁移期）：像素 parity 全绿后默认 leafer；
  * 显式设 localStorage "slide-canvas.renderer" = "dom" 回退 DOM 渲染。
@@ -123,7 +123,7 @@ type DragState =
   | {
       /** 画线工具一次拖拽：起点→尾点（画布坐标），方向随拖拽、尾点为箭头头 */
       mode: "draw";
-      kind: "line" | "arrow" | "double-arrow";
+      kind: "line" | "arrow" | "double-arrow" | "curve-arrow";
       x0: number;
       y0: number;
       x1: number;
@@ -194,7 +194,9 @@ export const CanvasStage: FC<{
   /** 钢笔模式：按下即起笔采样，抬起提交 draw（board→objects；deck→当前页，出页丢弃提示） */
   penMode?: boolean;
   /** 画线工具：按下从起点拖到尾点，抬起提交 line/arrow/double-arrow（默认色随页背景明暗；deck 出页丢弃提示） */
-  drawTool?: "line" | "arrow" | "double-arrow" | null;
+  drawTool?: "line" | "arrow" | "double-arrow" | "curve-arrow" | null;
+  /** 画线提交完成（含单击落默认横线）后回调：外壳用它回选择工具，否则点空白又起一条线，看起来"取消不了选中" */
+  onDrawDone?: () => void;
   /** 抓手工具（H）：与按住空格等效，拖拽即平移 */
   handMode?: boolean;
   /** 绑定文档标识（workspace 相对路径）：变化即"换档"，按表面重适配视口 */
@@ -202,7 +204,7 @@ export const CanvasStage: FC<{
   /** 外壳模式：board 只见 objects；deck 只见当前页框。默认 board */
   surface?: Surface;
   ref?: Ref<HTMLDivElement>;
-}> = ({ store, editingId, setEditingId, zoomApi, onZoom, onContextHit, selToolbar, penMode, drawTool, handMode, refitKey, surface = "board", ref }) => {
+}> = ({ store, editingId, setEditingId, zoomApi, onZoom, onContextHit, selToolbar, penMode, drawTool, handMode, refitKey, surface = "board", onDrawDone, ref }) => {
   const { doc, sel, setSel, updateEl, setContainerElements, insertImageFromFile } = store;
   const hostRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ s: 1, tx: 0, ty: 0 });
@@ -478,16 +480,28 @@ export const CanvasStage: FC<{
   })();
   const drawPreviewSvg = drawPreview ? (
     <svg style={{ position: "absolute", left: 0, top: 0, width: 1, height: 1, overflow: "visible", pointerEvents: "none" }}>
-      <line
-        x1={drawPreview.x0}
-        y1={drawPreview.y0}
-        x2={drawPreview.x1}
-        y2={drawPreview.y1}
-        stroke="var(--foreground)"
-        strokeWidth={3}
-        strokeLinecap="round"
-        strokeDasharray="6 4"
-      />
+      {drawPreview.kind === "curve-arrow" ? (
+        // 弧线预览：与 curveArrow 同法线公式的轻量版（弦中点 + 法线 × 0.35 × 弦长，上拱）
+        (() => {
+          const dxv = drawPreview.x1 - drawPreview.x0;
+          const dyv = drawPreview.y1 - drawPreview.y0;
+          const len = Math.hypot(dxv, dyv) || 1;
+          const cx = drawPreview.x0 + dxv / 2 + (dyv / len) * 0.35 * len;
+          const cy = drawPreview.y0 + dyv / 2 - (dxv / len) * 0.35 * len;
+          return <path d={`M ${drawPreview.x0} ${drawPreview.y0} Q ${cx} ${cy} ${drawPreview.x1} ${drawPreview.y1}`} fill="none" stroke="var(--foreground)" strokeWidth={3} strokeLinecap="round" strokeDasharray="6 4" />;
+        })()
+      ) : (
+        <line
+          x1={drawPreview.x0}
+          y1={drawPreview.y0}
+          x2={drawPreview.x1}
+          y2={drawPreview.y1}
+          stroke="var(--foreground)"
+          strokeWidth={3}
+          strokeLinecap="round"
+          strokeDasharray="6 4"
+        />
+      )}
       {drawPreview.kind !== "line" &&
         (() => {
           const a = Math.atan2(drawPreview.y1 - drawPreview.y0, drawPreview.x1 - drawPreview.x0);
@@ -810,11 +824,11 @@ export const CanvasStage: FC<{
         let dir: LineDir;
         let cx: number, cy: number;
         if (Math.hypot(dxv, dyv) * viewRef.current.s < 6) {
-          // 单击未拖拽：点击处作起点，默认 360×2 横向元素（与旧版插入同尺寸，向后兼容）
+          // 单击未拖拽：点击处作起点。线类默认 360×2 横向（与插入同尺寸）；弧线默认 360×120 上拱（太扁看不见弧）
           x = Math.round(d.x0);
-          y = Math.round(d.y0) - 1;
+          y = Math.round(d.y0) - (d.kind === "curve-arrow" ? 60 : 1);
           w = 360;
-          h = 2;
+          h = d.kind === "curve-arrow" ? 120 : 2;
           dir = 0;
           cx = x + 180;
           cy = d.y0;
@@ -823,6 +837,8 @@ export const CanvasStage: FC<{
           y = Math.round(Math.min(d.y0, d.y1));
           w = Math.max(1, Math.round(Math.abs(dxv)));
           h = Math.max(1, Math.round(Math.abs(dyv)));
+          // 弧线拖拽几乎水平时弧感不足：保底拱高 ≈ 弦长 × 0.3
+          if (d.kind === "curve-arrow") h = Math.max(h, Math.round(Math.abs(dxv) * 0.3), 24);
           dir = dxv >= 0 ? (dyv >= 0 ? 0 : 1) : dyv >= 0 ? 3 : 2;
           cx = x + w / 2;
           cy = y + h / 2;
@@ -839,6 +855,7 @@ export const CanvasStage: FC<{
           w,
           h,
           ...(dir ? { dir } : {}),
+          ...(d.kind === "curve-arrow" ? { curve: 0.35 } : {}),
           stroke,
           strokeWidth: 3,
         };
@@ -851,6 +868,7 @@ export const CanvasStage: FC<{
         } else {
           store.addEl(CANVAS_ROOT, el);
         }
+        onDrawDone?.();
         return;
       }
       if (d.mode === "move") {
@@ -992,6 +1010,8 @@ export const CanvasStage: FC<{
     const host = hostRef.current;
     if (!host) return;
     const onWheel = (e: WheelEvent) => {
+      // 编辑表单/属性面板内部的滚动（表单行区、属性列表）让位给 UI，不平移画布
+      if ((e.target as HTMLElement | null)?.closest?.(".sc-ui-panel")) return;
       e.preventDefault();
       const rect = host.getBoundingClientRect();
       const px = e.clientX - rect.left;

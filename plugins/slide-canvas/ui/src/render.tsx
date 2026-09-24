@@ -17,6 +17,7 @@ import {
   elBox,
   imageFit,
   lineEnds,
+  curveArrow,
   polygonPoints,
   resolveRuns,
   shapeSpec,
@@ -211,6 +212,29 @@ export function ShapeElView({ el }: { el: ShapeEl }) {
           {...dash}
           {...(el.shape === "arrow" || el.shape === "double-arrow" ? { markerEnd: `url(#${markerId})` } : {})}
           {...(el.shape === "double-arrow" ? { markerStart: `url(#${markerId})` } : {})}
+        />
+      </svg>
+    );
+  }
+  // 曲线箭头：二次贝塞尔（弧度 el.curve），marker 沿终点切线自动旋转
+  if (el.shape === "curve-arrow") {
+    const markerId = `sc-arrow-${el.id}`;
+    const c = curveArrow(el);
+    return (
+      <svg className="sc-el" style={svgBase}>
+        <defs>
+          <marker id={markerId} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill={s.lineColor} />
+          </marker>
+        </defs>
+        <path
+          d={`M ${c.ax} ${c.ay} Q ${c.cx} ${c.cy} ${c.bx} ${c.by}`}
+          fill="none"
+          stroke={s.lineColor}
+          strokeWidth={s.strokeWidth}
+          strokeLinecap="round"
+          {...dash}
+          markerEnd={`url(#${markerId})`}
         />
       </svg>
     );

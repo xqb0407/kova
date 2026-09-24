@@ -65,7 +65,7 @@ export const TableEditor: FC<{
           .sc-overlay 整层 pointer-events:none，交互层必须显式 auto（同 .sc-textedit / selToolbar） */}
       <div className="pointer-events-auto fixed inset-0" onPointerDown={finish} />
       <div
-        className="pointer-events-auto absolute"
+        className="sc-ui-panel pointer-events-auto absolute"
         style={{ left: (off.x + el.x) * s + view.tx, top: (off.y + el.y) * s + view.ty, width: el.w * s }}
         onPointerDown={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}

@@ -20,6 +20,7 @@ import {
   Redo2Icon,
   ShapesIcon,
   SquareIcon,
+  SplineIcon,
   StarIcon,
   TableIcon,
   TriangleIcon,
@@ -82,13 +83,14 @@ export const ToolButtons: FC<{
                 ["line", MinusIcon, "直线"],
                 ["arrow", ArrowUpRightIcon, "箭头"],
                 ["double-arrow", MoveHorizontalIcon, "双箭头"],
+                ["curve-arrow", SplineIcon, "弧线箭头"],
               ] as const
             ).map(([kind, Icon, label]) => (
               <Button
                 key={kind}
                 variant="ghost"
                 size="icon"
-                title={kind === "line" || kind === "arrow" || kind === "double-arrow" ? `${label}（点击插入；或按 A/L 键拖拽绘制）` : label}
+                title={kind === "line" || kind === "arrow" || kind === "double-arrow" ? `${label}（点击插入；或按 A/L 键拖拽绘制）` : kind === "curve-arrow" ? "弧线箭头（点击插入；按 C 键拖拽画弧）" : label}
                 aria-label={label}
                 onClick={() => {
                   insert(kind);

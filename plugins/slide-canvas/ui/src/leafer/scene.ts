@@ -16,6 +16,7 @@ import {
   elBox,
   imageFit,
   lineEnds,
+  curveArrow,
   POLY_SHAPES,
   polygonPoints,
   resolveRuns,
@@ -238,6 +239,17 @@ function imagePlaceholder(key: string, w: number, h: number, label: string): Sce
 }
 
 /** ChartPrim → 场景节点。prim 文本语义：y=行垂直中心、x 按 anchor（DOM 用 dominant-baseline central，这里手动补偿） */
+/** 箭头头三角路径：与 DOM marker（viewBox 10×10、锚 (9,5)、markerWidth 7）等价。(ex,ey)=端点，(dx,dy)=单位朝向 */
+function arrowHeadPath(ex: number, ey: number, dx: number, dy: number, mk: number): string {
+  const k = 0.7 * mk;
+  const nx = -dy;
+  const ny = dx;
+  const w1 = `${(ex - 9 * k * dx + 5 * k * nx).toFixed(1)},${(ey - 9 * k * dy + 5 * k * ny).toFixed(1)}`;
+  const tp = `${(ex + k * dx).toFixed(1)},${(ey + k * dy).toFixed(1)}`;
+  const w2 = `${(ex - 9 * k * dx - 5 * k * nx).toFixed(1)},${(ey - 9 * k * dy - 5 * k * ny).toFixed(1)}`;
+  return `M${w1} L${tp} L${w2} Z`;
+}
+
 function chartPrimNode(p: ChartPrim, key: string, ctx: SceneCtx): SceneNode {
   switch (p.t) {
     case "rect":
@@ -246,13 +258,13 @@ function chartPrimNode(p: ChartPrim, key: string, ctx: SceneCtx): SceneNode {
       return {
         tag: "line",
         key,
-        props: { x: 0, y: 0, points: [[p.x1, p.y1], [p.x2, p.y2]], stroke: p.stroke, strokeWidth: p.strokeWidth },
+        props: { x: 0, y: 0, points: [p.x1, p.y1, p.x2, p.y2], stroke: p.stroke, strokeWidth: p.strokeWidth },
       };
     case "poly":
       return {
         tag: "line",
         key,
-        props: { x: 0, y: 0, points: p.points, stroke: p.stroke, strokeWidth: p.strokeWidth, strokeJoin: "round", strokeCap: "round" },
+        props: { x: 0, y: 0, points: p.points.flat(), stroke: p.stroke, strokeWidth: p.strokeWidth, strokeJoin: "round", strokeCap: "round" },
       };
     case "path":
       return { tag: "path", key, props: { x: 0, y: 0, path: p.d, fill: p.fill } };
@@ -313,10 +325,8 @@ export function buildElScene(el: El, ctx: SceneCtx): SceneNode {
           props: {
             x: 0,
             y: 0,
-            points: [
-              [ends.x1, ends.y1],
-              [ends.x2, ends.y2],
-            ],
+            // leafer Line.points 只吃扁平 number[] 或 IPointData[]，嵌套 [x,y][] 解析失败（线整条消失）
+            points: [ends.x1, ends.y1, ends.x2, ends.y2],
             stroke: s.lineColor,
             strokeWidth: s.strokeWidth,
             strokeCap: "round",
@@ -330,21 +340,38 @@ export function buildElScene(el: El, ctx: SceneCtx): SceneNode {
       const len = Math.hypot(ends.x2 - ends.x1, ends.y2 - ends.y1) || 1;
       const ux = (ends.x2 - ends.x1) / len;
       const uy = (ends.y2 - ends.y1) / len;
-      const head = (ex: number, ey: number, dx: number, dy: number) => {
-        const k = 0.7 * mk;
-        const nx = -dy;
-        const ny = dx;
-        const w1 = `${(ex - 9 * k * dx + 5 * k * nx).toFixed(1)},${(ey - 9 * k * dy + 5 * k * ny).toFixed(1)}`;
-        const tp = `${(ex + k * dx).toFixed(1)},${(ey + k * dy).toFixed(1)}`;
-        const w2 = `${(ex - 9 * k * dx - 5 * k * nx).toFixed(1)},${(ey - 9 * k * dy - 5 * k * ny).toFixed(1)}`;
-        return `M${w1} L${tp} L${w2} Z`;
-      };
+      const head = (ex: number, ey: number, dx: number, dy: number) => arrowHeadPath(ex, ey, dx, dy, mk);
       if (s.shape === "arrow" || s.shape === "double-arrow") {
         children.push({ tag: "path", key: `${el.id}#h`, props: { x: 0, y: 0, path: head(ends.x2, ends.y2, ux, uy), fill: s.lineColor } });
       }
       if (s.shape === "double-arrow") {
         children.push({ tag: "path", key: `${el.id}#h1`, props: { x: 0, y: 0, path: head(ends.x1, ends.y1, -ux, -uy), fill: s.lineColor } });
       }
+    } else if (s.shape === "curve-arrow") {
+      // 曲线箭头：Q 贝塞尔 + 终点切线方向的三角头（切线 = 终点 - 控制点）
+      const c = curveArrow(el as ShapeEl);
+      const mk = (el as ShapeEl).strokeWidth ?? 2;
+      const tdx = c.bx - c.cx;
+      const tdy = c.by - c.cy;
+      const tl = Math.hypot(tdx, tdy) || 1;
+      children = [
+        {
+          tag: "path",
+          key: `${el.id}#c`,
+          props: {
+            x: 0,
+            y: 0,
+            path: `M ${c.ax.toFixed(1)} ${c.ay.toFixed(1)} Q ${c.cx.toFixed(1)} ${c.cy.toFixed(1)} ${c.bx.toFixed(1)} ${c.by.toFixed(1)}`,
+            // leafer 对 "none" 会回退默认黑填充（实心弓形 bug），透明才 truly 不填
+            fill: "transparent",
+            stroke: s.lineColor,
+            strokeWidth: s.strokeWidth,
+            strokeCap: "round",
+            ...(strokeDash(el as ShapeEl).length ? { dashPattern: strokeDash(el as ShapeEl) } : {}),
+          },
+        },
+        { tag: "path", key: `${el.id}#h`, props: { x: 0, y: 0, path: arrowHeadPath(c.bx, c.by, tdx / tl, tdy / tl, mk), fill: s.lineColor } },
+      ];
     } else if (s.shape === "diamond") {
       // 菱形=bbox 四中点连线（DOM 用 <polygon>，此处用 path 保持同几何；子节点恒局部 0,0）
       children = [

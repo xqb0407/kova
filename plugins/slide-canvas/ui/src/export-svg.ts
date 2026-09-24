@@ -10,7 +10,7 @@ import { bridge } from "./bridge";
 import { assetDataUrl } from "./render";
 import { currentMermaidTheme, renderMermaid, svgCodeUrl } from "./mermaid";
 import { PROVIDER_LABELS, resolveEmbed } from "./providers";
-import { chartSpec, drawSpec, elBox, imageFit, lineEnds, polygonPoints, resolveRuns, strokeDash, tableSpec, TEXT_LINE_HEIGHT, type ChartPrim, type PolyShape, type RunSpec } from "./viewspec";
+import { chartSpec, curveArrow, drawSpec, elBox, imageFit, lineEnds, polygonPoints, resolveRuns, strokeDash, tableSpec, TEXT_LINE_HEIGHT, type ChartPrim, type PolyShape, type RunSpec } from "./viewspec";
 import { slideFrames, type CanvasDoc, type ChartEl, type DrawEl, type El, type EmbedEl, type Frame, type ImageEl, type MermaidEl, type ShapeEl, type SvgEl, type TableEl, type TextEl } from "./doc";
 
 const esc = (s: string) =>
@@ -185,7 +185,8 @@ function svgShape(el: ShapeEl): string {
   const stroke = el.stroke && el.stroke !== "none" ? el.stroke : null;
   const fill = el.fill && el.fill !== "none" ? el.fill : null;
   const isLineKind = el.shape === "line" || el.shape === "arrow" || el.shape === "double-arrow";
-  const sw = el.strokeWidth ?? (isLineKind ? 2 : 1);
+  const isCurve = el.shape === "curve-arrow";
+  const sw = el.strokeWidth ?? (isLineKind || isCurve ? 2 : 1);
   const common = ` stroke-width="${sw}"${dashAttr(el)} stroke="${esc(stroke ?? "none")}"`;
   if (el.shape === "rect") {
     return (
@@ -200,11 +201,11 @@ function svgShape(el: ShapeEl): string {
       ` fill="${esc(fill ?? "none")}"${common}${opaAttr(el)}${rotAttr(b)}/>`
     );
   }
-  // line / arrow / double-arrow / diamond / polygons：与 ShapeElView 同构（对角线 + 箭头 marker / polygon）
+  // line / arrow / double-arrow / curve-arrow / diamond / polygons：与 ShapeElView 同构（对角线 + 箭头 marker / polygon）
   const lineColor = esc((el.stroke && el.stroke !== "none" ? el.stroke : el.fill) ?? "#0e0f0c");
   const ends = lineEnds(b.w, b.h, el.dir);
   const marker =
-    isLineKind && el.shape !== "line"
+    (isLineKind && el.shape !== "line") || isCurve
       ? `<defs><marker id="ar-${el.id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${lineColor}"/></marker></defs>`
       : "";
   const markerAttrs =
@@ -212,11 +213,16 @@ function svgShape(el: ShapeEl): string {
       ? ` marker-end="url(#ar-${el.id})"`
       : el.shape === "double-arrow"
         ? ` marker-start="url(#ar-${el.id})" marker-end="url(#ar-${el.id})"`
-        : "";
+        : isCurve
+          ? ` marker-end="url(#ar-${el.id})"`
+          : "";
   const polyPts = (pts: [number, number][]) => pts.map(([x, y]) => `${x},${y}`).join(" ");
+  const c = isCurve ? curveArrow({ ...el, w: b.w, h: b.h }) : null;
   const body = isLineKind
     ? `<line x1="${ends.x1}" y1="${ends.y1}" x2="${ends.x2}" y2="${ends.y2}"${common} stroke-linecap="round"${markerAttrs}/>`
-    : el.shape === "diamond"
+    : isCurve && c
+      ? `<path d="M ${c.ax} ${c.ay} Q ${c.cx} ${c.cy} ${c.bx} ${c.by}" fill="none"${common} stroke-linecap="round"${markerAttrs}/>`
+      : el.shape === "diamond"
       ? `<polygon points="${b.w / 2},0 ${b.w},${b.h / 2} ${b.w / 2},${b.h} 0,${b.h / 2}" fill="${esc(fill ?? "none")}"${common} stroke-linejoin="round"/>`
       : `<polygon points="${polyPts(polygonPoints(el.shape as PolyShape, b.w, b.h))}" fill="${esc(fill ?? "none")}"${common} stroke-linejoin="round"/>`;
   return `<g${opaAttr(el)}${rotAttr(b)}><g transform="translate(${b.x} ${b.y})">${marker}${body}</g></g>`;

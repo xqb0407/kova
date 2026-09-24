@@ -120,23 +120,25 @@ description: 用「无限画布 · 幻灯片」面板创作/修改画布文档�
 - 便捷写法：`"text": "纯文本"` 等价于单 run。换行直接放 `\n`（渲染 pre-wrap）。
 - 一个文本框内多 run 是同一框内的行内混排；不同段落/样式请拆成多个 text 元素。
 
-### shape —— 矩形/椭圆/多边形/直线/单双箭头
+### shape —— 矩形/椭圆/多边形/直线/箭头/弧线箭头
 
 ```jsonc
 {
   "kind": "shape", "id": "r1", "shape": "rect",
   "x": 80, "y": 560, "w": 240, "h": 8,
-  "fill": "#0a84ff",          // #hex 或 "none"；线类（line/arrow/double-arrow）无 fill
+  "fill": "#0a84ff",          // #hex 或 "none"；线类（line/arrow/double-arrow/curve-arrow）无 fill
   "stroke": "#1d1d1f",        // #hex 或 "none"，缺省 none
   "strokeWidth": 2,           // 0–40
   "radius": 12                // 仅 rect：圆角像素
 }
 ```
 
-`shape` 取 `rect | ellipse | diamond | triangle | trapezoid | pentagon | hexagon | star | line | arrow | double-arrow`。
+`shape` 取 `rect | ellipse | diamond | triangle | trapezoid | pentagon | hexagon | star | line | arrow | double-arrow | curve-arrow`。
 线类从 `(x,y)` 画到 `(x+w, y+h)`（w/h 用正值摆方向，导出仅按端点直线）；`arrow` 尾点单箭头、
 `double-arrow` 两端箭头。多边形（diamond/triangle/trapezoid/pentagon/hexagon/star）按 bbox 内切
 绘制，几何与 PowerPoint 预设形状对齐（star 内半径 0.382）。
+`curve-arrow` 弧线箭头：`(x,y)→(x+w,y+h)` 为弦，二次贝塞尔弯曲，`curve`（[-1,1]，缺省 0.3）
+控制拱向——正值沿行进方向逆时针拱（水平弦向上拱），负值反向；箭头头沿终点切线。
 
 ### image —— 图片
 
