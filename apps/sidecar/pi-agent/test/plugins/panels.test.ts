@@ -4,7 +4,7 @@
  * readPluginPanelAsset），以及 open_plugin_panel 工具的唤起回执。
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -12,8 +12,13 @@ import {
   findEnabledPluginPanel,
   globMatch,
   installPlugin,
+  installedPluginDir,
+  listInstalledPlugins,
   parsePluginManifest,
+  pluginsRootDir,
   readPluginPanelAsset,
+  removeMarketplace,
+  readPluginPanelRev,
   readPluginPanels,
   readPluginPanelsFile as readPanels,
   resetPluginsForTest,
@@ -23,7 +28,7 @@ import {
 } from "../../src/plugins/plugins";
 import { initLocalStorage, resetStorageForTest } from "../../src/storage/hostdb";
 import { setActiveReqId } from "../../src/protocol/stream";
-import { buildOpenPanelTool } from "../../src/tools/open-panel-tool";
+import { buildOpenPanelTool, findPanelClaimingFile, maybeAutoOpenPanel } from "../../src/tools/open-panel-tool";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-panels-"));
 const prevPluginsDir = process.env.PI_PLUGINS_DIR;
@@ -234,6 +239,101 @@ describe("安装后的面板读模型与入口资产", () => {
   });
 });
 
+/* ---------------- 链接安装（dev 模式） ---------------- */
+
+describe("链接安装（dev 模式）", () => {
+  const devMarketRoot = path.join(tmp, "dev-market");
+  const devPackDir = path.join(devMarketRoot, "plugins", "dev-pack");
+  let mktId = "";
+  let pluginId = "";
+
+  function dest(): string {
+    return installedPluginDir(mktId, "dev-pack");
+  }
+
+  beforeAll(async () => {
+    mkdirSync(path.join(devPackDir, ".xulux-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(devPackDir, ".xulux-plugin", "plugin.json"),
+      JSON.stringify({ name: "dev-pack", version: "0.1.0", panels: "panels.json" }),
+    );
+    writeFileSync(
+      path.join(devPackDir, "panels.json"),
+      JSON.stringify([{ id: "panel", title: "P", entry: "panel.html", opens: [], permissions: [] }]),
+    );
+    writeFileSync(path.join(devPackDir, "panel.html"), "<html>dev-v1</html>");
+    writeFileSync(
+      path.join(devMarketRoot, "marketplace.json"),
+      JSON.stringify({ name: "dev-market", plugins: [{ name: "dev-pack", source: "./plugins/dev-pack" }] }),
+    );
+    const { record } = await addMarketplace({ type: "directory", path: devMarketRoot });
+    mktId = record.id;
+    const { plugin } = await installPlugin(mktId, "dev-pack", { link: true });
+    pluginId = plugin.pluginId;
+  });
+
+  afterAll(async () => {
+    if (pluginId) await uninstallPlugin(pluginId).catch(() => {});
+    removeMarketplace(mktId);
+  });
+
+  test("cache 条目是符号链接；扫描标 linked/sourcePath；源目录零污染", () => {
+    expect(lstatSync(dest()).isSymbolicLink()).toBe(true);
+    const entry = listInstalledPlugins().find((p) => p.pluginId === pluginId)!;
+    expect(entry.linked).toBe(true);
+    expect(entry.sourcePath).toBe(devPackDir);
+    // 元数据落兄弟文件，绝不写进用户源仓库
+    expect(existsSync(`${dest()}.installed.json`)).toBe(true);
+    expect(existsSync(path.join(devPackDir, "installed.json"))).toBe(false);
+  });
+
+  test("改源即见：源目录重建 entry 后资产与 rev 实时命中，rev 带 linked", () => {
+    const before = readPluginPanelAsset(pluginId, "panel");
+    expect(before).toBeDefined();
+    const revBefore = readPluginPanelRev(pluginId, "panel");
+    expect(revBefore).toEqual({ rev: before!.rev, linked: true });
+    // 模拟 pnpm build 重写产物（同一路径覆盖写）
+    writeFileSync(path.join(devPackDir, "panel.html"), "<html>dev-v2-longer</html>");
+    const after = readPluginPanelAsset(pluginId, "panel");
+    expect(Buffer.from(after!.base64, "base64").toString("utf8")).toContain("dev-v2-longer");
+    const revAfter = readPluginPanelRev(pluginId, "panel");
+    expect(revAfter!.rev).toBe(after!.rev);
+    expect(revAfter!.rev).not.toBe(revBefore!.rev);
+    expect(revAfter!.linked).toBe(true);
+  });
+
+  test("更新保持链接模式；显式 link:false 回退拷贝装；rev.linked 随模式", async () => {
+    await installPlugin(mktId, "dev-pack"); // 缺省 = 保持现有模式
+    expect(lstatSync(dest()).isSymbolicLink()).toBe(true);
+    await installPlugin(mktId, "dev-pack", { link: false }); // 强制拷贝
+    expect(lstatSync(dest()).isDirectory()).toBe(true);
+    expect(existsSync(path.join(dest(), "installed.json"))).toBe(true);
+    expect(existsSync(`${dest()}.installed.json`)).toBe(false);
+    const copied = listInstalledPlugins().find((p) => p.pluginId === pluginId)!;
+    expect(copied.linked).toBeUndefined();
+    expect(readPluginPanelRev(pluginId, "panel")!.linked).toBe(false);
+    // 拷回链接装，交给下一用例断言卸载语义
+    await installPlugin(mktId, "dev-pack", { link: true });
+  });
+
+  test("卸载链接：只删链接与兄弟元数据，源目录完好", async () => {
+    const marker = path.join(devPackDir, ".xulux-plugin", "plugin.json");
+    await uninstallPlugin(pluginId);
+    expect(existsSync(dest())).toBe(false);
+    expect(existsSync(`${dest()}.installed.json`)).toBe(false);
+    expect(existsSync(marker)).toBe(true);
+    expect(existsSync(path.join(devPackDir, "panel.html"))).toBe(true);
+  });
+
+  test("未知面板 / 禁用 → readPluginPanelRev undefined", async () => {
+    expect(readPluginPanelRev(pluginId, "nope")).toBeUndefined();
+    expect(readPluginPanelRev("nope@m", "panel")).toBeUndefined();
+    await setPluginEnabled(pluginId, false);
+    expect(readPluginPanelRev(pluginId, "panel")).toBeUndefined();
+    await setPluginEnabled(pluginId, true);
+  });
+});
+
 /* ---------------- open_plugin_panel 工具 ---------------- */
 
 describe("open_plugin_panel 工具", () => {
@@ -305,6 +405,29 @@ describe("open_plugin_panel 工具", () => {
     await uninstallPlugin(pluginId);
   });
 
+  test("只写插件名（不带市场后缀）也能唤起：唯名匹配 + 帧里带解析后的完整 id", async () => {
+    mkdirSync(path.join(packDir, ".xulux-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(packDir, ".xulux-plugin", "plugin.json"),
+      JSON.stringify({ name: "tool-pack", version: "0.1.0", panels: "panels.json" }),
+    );
+    writeFileSync(
+      path.join(packDir, "panels.json"),
+      JSON.stringify([{ id: "canvas", entry: "c.html", opens: ["*.canvas.json"], permissions: ["document"] }]),
+    );
+    writeFileSync(path.join(packDir, "c.html"), "<html/>");
+    const { record } = await addMarketplace({ type: "directory", path: marketRoot });
+    const { plugin } = await installPlugin(record.id, "tool-pack");
+    const tool = buildOpenPanelTool("/workspace/demo", THREAD);
+    const { value: res, lines } = await captureFrames(() =>
+      tool.execute("tc-name", { plugin: "tool-pack", panel: "canvas" }),
+    );
+    const text = (res.content as Array<{ text: string }>)[0]!.text;
+    expect(text).toContain("已在右侧面板打开");
+    expect(lines.some((l) => String(l).includes(plugin.pluginId))).toBe(true);
+    await uninstallPlugin(plugin.pluginId);
+  });
+
   test("未知面板 / 缺参 → 文本错误且不发帧", async () => {
     const tool = buildOpenPanelTool("/workspace/demo", THREAD);
     const miss = await tool.execute("tc2", { plugin: "x@m", panel: "" });
@@ -314,5 +437,100 @@ describe("open_plugin_panel 工具", () => {
     );
     expect((unknownPanel.content as Array<{ text: string }>)[0]!.text).toContain("面板不可用");
     expect(lines.filter((l) => String(l).includes(REQ))).toHaveLength(0);
+  });
+});
+
+/* ---------------- write/edit 落盘自动开板 ---------------- */
+
+describe("write/edit 落盘自动开板", () => {
+  const THREAD = "auto-open-thread";
+  const REQ = "req-auto-open";
+  const WS = path.join(tmp, "auto-ws");
+
+  function capturePluginOpens(fn: () => void, thread: string = THREAD): Array<Record<string, unknown>> {
+    setActiveReqId(thread, REQ);
+    const orig = process.stdout.write.bind(process.stdout);
+    const lines: string[] = [];
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      fn();
+    } finally {
+      process.stdout.write = orig;
+      setActiveReqId(thread, null);
+    }
+    return lines
+      .map((l) => {
+        try {
+          return JSON.parse(l.trim()) as { id?: string; chunk?: Record<string, unknown> };
+        } catch {
+          return null;
+        }
+      })
+      .filter((f) => f?.id === REQ && f.chunk?.type === "data-pluginOpen")
+      .map((f) => f!.chunk as unknown as Record<string, unknown>);
+  }
+
+  let pluginId = "";
+
+  beforeAll(async () => {
+    mkdirSync(WS, { recursive: true });
+    const marketRoot = path.join(tmp, "auto-market");
+    const packDir = path.join(marketRoot, "plugins", "auto-pack");
+    mkdirSync(path.join(packDir, ".xulux-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(packDir, ".xulux-plugin", "plugin.json"),
+      JSON.stringify({ name: "auto-pack", version: "0.1.0", panels: "panels.json" }),
+    );
+    writeFileSync(
+      path.join(packDir, "panels.json"),
+      JSON.stringify([{ id: "canvas", title: "画布", entry: "c.html", opens: ["*.canvas.json"], permissions: [] }]),
+    );
+    writeFileSync(path.join(packDir, "c.html"), "<html/>");
+    writeFileSync(
+      path.join(marketRoot, "marketplace.json"),
+      JSON.stringify({ name: "auto-market", plugins: [{ name: "auto-pack", source: "./plugins/auto-pack" }] }),
+    );
+    const { record } = await addMarketplace({ type: "directory", path: marketRoot });
+    const { plugin } = await installPlugin(record.id, "auto-pack");
+    pluginId = plugin.pluginId;
+  });
+
+  afterAll(async () => {
+    if (pluginId) await uninstallPlugin(pluginId).catch(() => {});
+  });
+
+  test("认领文件（含子目录 basename 匹配）首次写 → 恰好一帧，带 rel 路径与 cwd", () => {
+    const frames = capturePluginOpens(() => {
+      maybeAutoOpenPanel(WS, THREAD, "roadmap.canvas.json");
+      maybeAutoOpenPanel(WS, THREAD, "docs/screen.canvas.json"); // `*.canvas.json` 不跨 /，按文件名匹配
+    });
+    expect(frames).toHaveLength(2);
+    expect(frames[0]).toEqual({
+      type: "data-pluginOpen",
+      data: { plugin: pluginId, panel: "canvas", path: "roadmap.canvas.json", cwd: WS },
+    });
+    expect((frames[1]!.data as { path: string }).path).toBe("docs/screen.canvas.json");
+  });
+
+  test("同线程重复写同一文件去重；未认领文件与工作区外路径不发帧", () => {
+    const frames = capturePluginOpens(() => {
+      maybeAutoOpenPanel(WS, THREAD, "roadmap.canvas.json"); // 上一用例已开过板
+      maybeAutoOpenPanel(WS, THREAD, path.join(WS, "docs/screen.canvas.json")); // 绝对路径同归一
+      maybeAutoOpenPanel(WS, THREAD, "notes.md"); // opens 不认领
+      maybeAutoOpenPanel(WS, THREAD, path.join(tmp, "outside.canvas.json")); // 工作区外
+    });
+    expect(frames).toHaveLength(0);
+  });
+
+  test("不同线程互不去重；findPanelClaimingFile 命中与未命中", () => {
+    expect(findPanelClaimingFile("a.canvas.json")?.pluginId).toBe(pluginId);
+    expect(findPanelClaimingFile("a.txt")).toBeUndefined();
+    const frames = capturePluginOpens(() => {
+      maybeAutoOpenPanel(WS, "other-thread", "roadmap.canvas.json");
+    }, "other-thread");
+    expect(frames).toHaveLength(1);
   });
 });

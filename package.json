@@ -20,5 +20,9 @@
     "tauri:build": "bun run --filter desktop tauri:build",
     "tauri:dev": "bun run --filter desktop tauri:dev",
     "test": "bun run --filter pi-agent-sidecar test"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1",
+    "playwright-core": "1.56.1"
   }
 }

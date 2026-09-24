@@ -28,7 +28,6 @@ import {
   markTurnEnd,
   markTurnStart,
   PROMPT_QUEUE_LIMIT,
-  queueChunkId,
   queueSnapshot,
   shouldQueue,
   takeFrontEntry,
@@ -80,7 +79,7 @@ function isAlreadyProcessingError(err: unknown): boolean {
 export type PromptTurnOutcome = { ok: boolean; errorText?: string };
 
 /** 并入当前轮（steer）：把消息注入活跃 run（agent.steer，库在下次模型调用前
- *  消费、随活跃轮转录落盘），本请求走退化流 data-queue(steered) → start 后
+ *  消费、随活跃轮转录落盘），本请求走退化流 data-steered → start 后
  *  **挂起**——finish 不立即发：AI SDK 的 status 是单槽，流提前结束会把整个
  *  会话置回 ready（正在跑的宿主轮在 UI 上显示为已停止、Stop 因 activeResponse
  *  被清空而失灵）。finish 挂到宿主轮收尾时补发（flushSteeredFinishes），
@@ -108,11 +107,9 @@ export function steerIntoActiveRun(
         `prompt steer: ${attachments.images.length} image(s) -> ${run.sessionId}`,
       );
     }
-    sendChunk(reqId, {
-      type: "data-queue",
-      id: queueChunkId(reqId),
-      data: { phase: "steered" },
-    });
+    // 注入已被受理（客户端无法单方判定，steer 可能落回排队）：流级退化流标记，
+    // 桌面 postTransform 凭它走挂起收尾分支；不携带队列状态
+    sendChunk(reqId, { type: "data-steered", data: {} });
     sendChunk(reqId, { type: "start" });
     // finish 不发：登记后随宿主轮收尾补发（见 runPromptTurn finally）
     let pending = pendingSteeredFinishes.get(run.threadId);
@@ -141,7 +138,7 @@ export async function dispatchPrompt(
   const threadId = String(msg.threadId ?? "default");
 
   // 本线程上一轮未结束（或本线程队列非空）→ 进该线程 FIFO 队列，前端经
-  // data-queue chunk 渲染排队条。其他线程忙与本线程无关（并行跑各自的 turn）。
+  // data-queue-state 快照渲染排队条。其他线程忙与本线程无关（并行跑各自的 turn）。
   // 例外：本线程活跃 turn 已被 Stop 中止、正在收尾（stopRequested 置位到链节
   // finally 之间）不算「真忙」——此刻到达的新 prompt 不进队列，直接沿链等收尾
   // 后执行。否则会出现「刚点了停止、新消息却显示排队中」，且用户再点一次 Stop

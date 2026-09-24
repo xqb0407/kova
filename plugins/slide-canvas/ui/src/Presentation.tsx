@@ -72,13 +72,19 @@ export const Presentation: FC<{ store: DeckStore; onClose: () => void }> = ({ st
     return null;
   }
   const scale = Math.min(box.w / slide.w, box.h / slide.h);
+  // 按页转场：key 换页重挂触发入场动画（none 不挂类）
+  const tr = slide.transition ?? "slide";
   return (
     <div
       ref={rootRef}
       className="bg-black fixed inset-0 z-50 flex cursor-default items-center justify-center select-none"
       onClick={advance}
     >
-      <div style={{ width: slide.w * scale, height: slide.h * scale, position: "relative" }}>
+      <div
+        key={slide.id}
+        className={tr === "none" ? undefined : tr === "slide" ? "sc-present-slide" : tr === "fade" ? "sc-present-fade" : "sc-present-zoom"}
+        style={{ width: slide.w * scale, height: slide.h * scale, position: "relative" }}
+      >
         <SlideView slide={slide} scale={scale} />
       </div>
       <div

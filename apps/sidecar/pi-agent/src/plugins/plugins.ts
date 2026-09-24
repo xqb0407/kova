@@ -34,6 +34,8 @@
  */
 export {
   // 类型
+  LOCAL_MKT_ID,
+  LOCAL_MKT_NAME,
   type PluginManifestKind,
   type PluginComponents,
   type PluginManifest,
@@ -81,6 +83,7 @@ export {
   resolvePanelIconDataUrl,
   type PluginPanelAsset,
   readPluginPanelAsset,
+  readPluginPanelRev,
   findEnabledPluginPanel,
 } from "./store";
 
@@ -95,5 +98,8 @@ export {
   getMarketplaceCatalog,
   type InstallResult,
   installPlugin,
+  installLocalPlugin,
+  type LocalMarketplaceEntry,
+  localMarketplaceEntry,
   uninstallPlugin,
 } from "./marketplaces";

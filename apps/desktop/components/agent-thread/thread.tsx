@@ -81,7 +81,7 @@ const ThreadScrollToBottom: FC = () => {
  *  激活开跑后的会话准备段、新回复首 token 前的空窗），消息级 indicator 无处
  *  挂载——AI 回复消息要等首个内容块才创建——这里在列表末尾补点阵动画。
  *  两类触发：
- *  - pendingTurn：排队项已开跑（data-queue active）。被立即发送中止的上一轮
+ *  - pendingTurn：排队项已派发出队（data-queue-state 快照中消失时标记）。被立即发送中止的上一轮
  *    流收尾会把 chat status 短暂置回 ready（isRunning=false 的空窗），必须绕过
  *    isRunning 判定，且此刻该轮不存在隐藏排队项（它自己已激活）；
  *  - 常规兜底：thread 在跑、末条是 user 消息、且没有排队项隐藏。 */
@@ -126,7 +126,8 @@ export const Thread = memo(function Thread() {
         // 外观设置「对话宽度」经 html[data-chat-width] 覆写 --chat-width（globals.css）；
         // 回退值 = 默认档（md），改这里即改默认宽度
         ["--thread-max-width" as string]: "var(--chat-width, 60rem)",
-        ["--composer-bg" as string]: "var(--color-card)",
+        ["--composer-bg" as string]:
+          "color-mix(in oklab, var(--color-background) 85%, transparent)",
         ["--composer-radius" as string]: "1.5rem",
         ["--composer-padding" as string]: "8px",
       }}
@@ -187,7 +188,7 @@ export const Thread = memo(function Thread() {
           className={cn(
             "aui-thread-viewport-footer relative z-10 mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible pb-1 md:pb-1",
             !isEmpty &&
-              "sticky bottom-0 mt-auto rounded-t-(--composer-radius) bg-background",
+              "sticky bottom-0 mt-auto rounded-t-(--composer-radius)",
           )}
         >
           <ThreadScrollToBottom />

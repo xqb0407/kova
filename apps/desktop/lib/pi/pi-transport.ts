@@ -342,7 +342,7 @@ export class PiTransport implements ChatTransport<UIMessage> {
     // Stop/promote 中止的 turn：sidecar 在 finish 前发 abort 标记——残缺回复
     // 按「被结束」结算，不弹完成提醒
     let sawAborted = false;
-    // 并入当前轮（steer 退化流 data-queue(steered) → start → finish）：
+    // 并入当前轮（steer 退化流 data-steered → start → finish）：
     // 本请求没跑 turn，turn 级副作用全部跳过（活跃轮还 owns 它们——审批/
     // 提问卡片、检查点快照、完成提醒）
     let sawSteered = false;
@@ -441,11 +441,11 @@ export class PiTransport implements ChatTransport<UIMessage> {
           applyQueueStateChunk(chatId, chunk.data);
           return;
         }
-        if (chunk.type === "data-queue") {
-          // 流级信号（权威状态见 data-queue-state）：steered = 本请求已并入
-          // 活跃轮（退化流标记，决定收尾分支）
-          const phase = (chunk as { data?: { phase?: string } }).data?.phase;
-          if (phase === "steered") sawSteered = true;
+        if (chunk.type === "data-steered") {
+          // steer 退化流标记（sidecar 注入受理时即发本帧）：本请求已并入活跃
+          // 轮、没跑自己的 turn，finish 走挂起收尾分支。队列权威状态见
+          // data-queue-state 快照，本 chunk 不携带队列状态
+          sawSteered = true;
           return;
         }
         if (chunk.type === "data-panelOpen") {

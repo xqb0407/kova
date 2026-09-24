@@ -23,10 +23,12 @@ import {
   addMarketplace,
   devMarketplaceDir,
   getMarketplaceCatalog,
+  installLocalPlugin,
   installPlugin,
   listInstalledPlugins,
   listMarketplaces,
   PLUGIN_NAME_RE,
+  readPluginPanels,
   refreshMarketplace,
   type MarketplaceCatalog,
 } from "./plugins";
@@ -100,15 +102,21 @@ export function buildPluginMgmtTools(
         lines.push("", `已安装插件（${installed.length}）：`);
         for (const p of installed) {
           const c = p.manifest.components;
+          const panels = readPluginPanels(p);
           const parts = [
             c.skills ? `技能${countEntries(p, "skills")}` : null,
             c.mcpServers ? "MCP" : null,
             c.hooks ? "钩子" : null,
             c.subagents ? `子智能体${countEntries(p, "subagents")}` : null,
+            panels.length ? `面板${panels.length}` : null,
           ].filter(Boolean);
           lines.push(
             `- ${p.pluginId} v${p.version} [${p.manifest.manifestKind}] ${p.enabled ? "启用" : "停用"}${parts.length ? `（${parts.join(" / ")}）` : "（无组件）"}`,
           );
+          // 面板 id 是 open_plugin_panel 的必填参数：不列出来模型只能靠插件技能里写死的 id 猜
+          for (const d of panels) {
+            lines.push(`    面板 ${d.id}「${d.title}」${d.opens?.length ? ` opens: ${d.opens.join(",")}` : ""}`);
+          }
           for (const d of p.diagnostics.slice(0, 3)) lines.push(`    诊断: ${d}`);
         }
         return textResult(lines.join("\n"));
@@ -122,34 +130,50 @@ export function buildPluginMgmtTools(
     name: PLUGIN_MGMT_TOOL_NAMES.install,
     label: "安装插件",
     description: [
-      "从已登记的插件市场安装（或更新）一个插件：物化到本机后立即热生效——技能进系统提示词目录、MCP 服务器接入连接池、钩子与子智能体挂载。",
+      "安装（或更新）一个插件：物化到本机后立即热生效——技能进系统提示词目录、MCP 服务器接入连接池、钩子与子智能体挂载。",
+      "两种来源：① 市场安装——给 marketplace + name（从已登记市场装）；② 本地直装——给 path（任意本地插件目录的绝对路径，含 .xulux/.claude/.codex-plugin 清单即可，无需市场）。",
       "安装外部内容会触发用户审批（MCP 服务器会运行进程、钩子会执行命令），这是有意的信任闸门，不要试图绕过。",
       "先调 plugins_list 确认市场名与插件名；未添加市场时提示用户在 插件市场 → ＋ 添加市场 操作。",
     ].join("\n\n"),
     parameters: Type.Object({
-      marketplace: Type.String({
-        description: "市场名（如 leinator-codex）或市场 id；模糊匹配唯一命中即可",
-      }),
-      name: Type.String({ description: "要安装的插件名（市场目录里的 name）" }),
+      marketplace: Type.Optional(
+        Type.String({
+          description: "市场名（如 leinator-codex）或市场 id；模糊匹配唯一命中即可（市场安装必填）",
+        }),
+      ),
+      name: Type.Optional(Type.String({ description: "要安装的插件名（市场目录里的 name；市场安装必填）" })),
+      path: Type.Optional(
+        Type.String({
+          description:
+            "本地直装：插件目录的绝对路径（如 /Users/x/Downloads/codex-plugins-main/plugins/temporal）；与 marketplace/name 二选一",
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const p = (params ?? {}) as { marketplace?: string; name?: string };
+      const p = (params ?? {}) as { marketplace?: string; name?: string; path?: string };
       try {
         const marketplace = String(p.marketplace ?? "").trim();
         const name = String(p.name ?? "").trim();
-        if (!marketplace) throw new Error("marketplace 必填（先调 plugins_list 查看可用市场）");
-        if (!name) throw new Error("name 必填");
-        const records = listMarketplaces();
-        const record =
-          records.find((r) => r.id === marketplace) ??
-          records.find((r) => r.name === marketplace) ??
-          records.find((r) => r.name.toLowerCase().includes(marketplace.toLowerCase()));
-        if (!record) {
-          throw new Error(
-            `未找到市场 "${marketplace}"。已登记：${records.map((r) => r.name).join("、") || "（无）"}`,
-          );
+        const localPath = String(p.path ?? "").trim();
+        let plugin: Awaited<ReturnType<typeof installPlugin>>["plugin"];
+        let updated: boolean;
+        if (localPath) {
+          ({ plugin, updated } = await installLocalPlugin(localPath));
+        } else {
+          if (!marketplace) throw new Error("marketplace 或 path 必填（市场安装给 marketplace/name；本地直装给 path）");
+          if (!name) throw new Error("name 必填");
+          const records = listMarketplaces();
+          const record =
+            records.find((r) => r.id === marketplace) ??
+            records.find((r) => r.name === marketplace) ??
+            records.find((r) => r.name.toLowerCase().includes(marketplace.toLowerCase()));
+          if (!record) {
+            throw new Error(
+              `未找到市场 "${marketplace}"。已登记：${records.map((r) => r.name).join("、") || "（无）"}`,
+            );
+          }
+          ({ plugin, updated } = await installPlugin(record.id, name));
         }
-        const { plugin, updated } = await installPlugin(record.id, name);
         // 与协议层 set_plugin_enabled 同款全链路热重载：技能提示词重组 +
         // 子智能体重排（注入回调）+ MCP 连接池 diff（本模块直接做，避免模块环）
         await reload();

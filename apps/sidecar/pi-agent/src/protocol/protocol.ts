@@ -14,7 +14,7 @@
  *   { "type": "prompt", "id", "threadId", "text", "sessionId"?, "cwd"?, "steer"? }
  *       cwd = workspace 目录；仅在需要新建会话时使用，缺省为用户主目录
  *       steer?: true——并入当前轮：该线程忙时消息注入活跃轮（agent.steer，下次模型
- *       调用前被消费，随活跃轮转录落盘），本请求走退化流 data-queue(steered) →
+ *       调用前被消费，随活跃轮转录落盘），本请求走退化流 data-steered →
  *       start 后挂起，finish 随宿主轮收尾补发（提前结束会把框架共享 status 置回
  *       ready，宿主轮会被 UI 显示为已停止；见 steerIntoActiveRun）；不占队列上限，
  *       不中止当前回复。线程空闲 / 活跃轮正在收尾 / steer 抛错时落回普通排队
@@ -127,13 +127,17 @@
  *   { "type": "get_plugin_panel_asset", "id", "pluginId", "panelId" } → { id, type: "plugin_panel_asset", contentType, base64, rev }
  *       UI 插件面板入口 HTML（sandboxed iframe 的 blob 数据源）；未装/禁用/面板不存在回 error，
  *       rev = 文件 mtime+size 签名（前端 iframe 重载与文档 rev 协商判据）
+ *   { "type": "get_plugin_panel_rev", "id", "pluginId", "panelId" } → { id, type: "plugin_panel_rev", pluginId, panelId, rev|null, linked }
+ *       入口指纹的轻量查询（只 stat 不读文件）：宿主对 linked（链接装/dev）面板轮询此消息，
+ *       rev 变了即重取资产热重载 iframe；rev=null 表示面板当前不可用
  *   { "type": "set_plugin_enabled", "id", "pluginId", "enabled", "cwd"? } → 插件级开关落 kv + 四链全量热重载 → 同款 plugins 应答
  *   { "type": "uninstall_plugin", "id", "pluginId", "cwd"? }  → 删物化目录 + 清 kv + 热重载 → 同款 plugins 应答
  *   { "type": "list_marketplaces", "id" }                     → { id, type: "marketplaces", marketplaces }
  *   { "type": "add_marketplace", "id", "mtype": "directory"|"git", ("path"|"repo") } → 受理（见下）
  *   { "type": "remove_marketplace", "id", "marketplaceId" }   → 删登记（不卸载已装插件）→ marketplaces 应答
  *   { "type": "refresh_marketplace", "id", "marketplaceId" }  → 受理
- *   { "type": "install_plugin", "id", "marketplaceId", "name", "cwd"? } → 受理
+ *   { "type": "install_plugin", "id", "marketplaceId", "name", "cwd"?, "link"? } → 受理
+ *       link=true 链接安装（cache 条目 symlink 指源目录，仅目录市场）；缺省保持现有模式
  *       受理应答 { id, type: "plugin_op_accepted", opId, op }；git clone 等耗时操作在后台执行，
  *       完成后自发 { "type": "plugin_op_result", opId, op, ok, ("plugins"/"marketplaces")?, "errorText"? } 帧
  *       （组件开关走 set_skill_enabled/set_mcp_server_enabled/set_subagent_enabled，scope/layer="plugin" 时必带 pluginId）

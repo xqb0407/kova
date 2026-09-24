@@ -8,10 +8,12 @@ import {
   boxOf,
   boxesIntersect,
   distributeBoxes,
+  expandGroup,
   gridLayout,
   norm,
   normalizeDeg,
   offsetPasted,
+  regroupCopies,
   reorderForZ,
   resizeBox,
   scaleGroup,
@@ -114,6 +116,16 @@ describe("scaleGroup / resizeBox", () => {
     const r = resizeBox({ x: 0, y: 0, w: 100, h: 50 }, 4, 10, 40, true, false);
     expect(r.w / r.h).toBeCloseTo(2, 5);
   });
+  test("Shift 缩放锚定对边：se 手柄时左上角不动（回归：位置漂移）", () => {
+    // 高度主导 k=1.8，旧实现用被拖动的 x2/y2 反推 → x=-70 漂移
+    const r = resizeBox({ x: 0, y: 0, w: 100, h: 50 }, 4, 10, 40, true, false);
+    expect(r).toEqual({ x: 0, y: 0, w: 180, h: 90 });
+  });
+  test("Shift 缩放锚定对边：nw 手柄时右下边不动", () => {
+    const r = resizeBox({ x: 10, y: 10, w: 100, h: 50 }, 0, -30, -10, true, false);
+    expect(r.x + r.w).toBe(110);
+    expect(r.y + r.h).toBe(60);
+  });
 });
 
 describe("旋转吸附", () => {
@@ -179,5 +191,41 @@ describe("gridLayout（缩放不重排）", () => {
   });
   test("空文档安全", () => {
     expect(gridLayout([], 800, 600).positions).toEqual([]);
+  });
+});
+
+describe("expandGroup / regroupCopies（编辑组）", () => {
+  const el = (id: string, groupId?: string): El =>
+    ({ kind: "shape", id, shape: "rect", x: 0, y: 0, w: 10, h: 10, ...(groupId ? { groupId } : {}) }) as El;
+  const els = [el("a", "g1"), el("b", "g1"), el("c"), el("d", "g2")];
+
+  test("expandGroup：选中成员扩成整组；无组选中原样返回", () => {
+    expect(expandGroup(els, ["a"])).toEqual(["a", "b"]);
+    expect(expandGroup(els, ["c"])).toEqual(["c"]);
+    const both = expandGroup(els, ["a", "c"]);
+    expect([...both].sort()).toEqual(["a", "b", "c"]); // 跨两组不串组
+  });
+
+  test("expandGroup：id 不存在时原样返回", () => {
+    expect(expandGroup(els, ["zz"])).toEqual(["zz"]);
+    expect(expandGroup([], [])).toEqual([]);
+  });
+
+  test("regroupCopies：同批内组关系保留但换新 id；无组元素引用不变；原数组不被修改", () => {
+    const copies = regroupCopies(els);
+    const g1 = (copies[0] as { groupId?: string }).groupId;
+    expect(g1).toBeTruthy();
+    expect(g1).not.toBe("g1");
+    expect((copies[1] as { groupId?: string }).groupId).toBe(g1); // 同组同新 id
+    const g2 = (copies[3] as { groupId?: string }).groupId;
+    expect(g2).not.toBe("g2");
+    expect(g2).not.toBe(g1); // 不同组不同 id
+    expect(copies[2]).toBe(els[2]); // 无组元素原样（同一引用）
+    expect((els[0] as { groupId?: string }).groupId).toBe("g1"); // 入参未被改动
+  });
+
+  test("regroupCopies：全无组 → 原数组直接返回", () => {
+    const plain = [el("x"), el("y")];
+    expect(regroupCopies(plain)).toBe(plain);
   });
 });

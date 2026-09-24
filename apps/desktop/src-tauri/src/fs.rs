@@ -23,7 +23,7 @@ use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, Local, SecondsFormat};
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager as _};
 
 /// 单次列目录返回条目上限
 const MAX_LIST_ENTRIES: usize = 5000;
@@ -38,19 +38,32 @@ const SKIP_DIRS: &[&str] = &[".git", "node_modules"];
 
 /* ------------------------------ 路径守卫 ------------------------------ */
 
-/// cwd 必须等于前端 workspace-store 里那个目录（canonicalize 后比对），
-/// 返回 canonical 根（后续条目都从它出发拼接/校验）。
+/// cwd 必须命中两个可信根之一（canonicalize 后比对），返回 canonical 根：
+///   1. 前端 workspace-store 里选中的工作区；
+///   2. app 数据目录下的 task-workspace —— 无目录任务会话（PI_TASK_CWD）的落盘点，
+///      UI 插件面板在没有工作区时也以它为 cwd（否则"工作"模式下插件完全不可用）。
 fn resolve_root(app: &AppHandle, cwd: &str) -> Result<PathBuf, String> {
     let stored = crate::store::kv_get_global(app, "workspace")
         .map_err(|_| "cwd-not-allowed")?
         .filter(|s| !s.is_empty());
-    let want = stored.ok_or("cwd-not-allowed")?;
     let a = std::fs::canonicalize(cwd).map_err(|_| "cwd-not-allowed")?;
-    let b = std::fs::canonicalize(&want).map_err(|_| "cwd-not-allowed")?;
-    if a != b {
-        return Err("cwd-not-allowed".into());
+    if let Some(want) = stored {
+        if let Ok(b) = std::fs::canonicalize(&want) {
+            if a == b {
+                return Ok(a);
+            }
+        }
     }
-    Ok(a)
+    // 第二个可信根：任务工作区（与 pi_agent.rs 注入的 PI_TASK_CWD 同一路径）
+    if let Ok(dir) = app.path().app_data_dir() {
+        let task = dir.join("task-workspace");
+        if let Ok(t) = std::fs::canonicalize(&task) {
+            if a == t {
+                return Ok(a);
+            }
+        }
+    }
+    Err("cwd-not-allowed".into())
 }
 
 /// 校验相对段并入根。root 已是 canonical；目标存在时再 canonical 一次，

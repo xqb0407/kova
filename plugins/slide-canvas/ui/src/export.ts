@@ -3,13 +3,16 @@
  * 坐标换算：画板 px / 96 = 英寸；字号 px × 0.75 = pt。
  * 只导出 type:"slide" 的页框（数组序=页序）；画布级 objects 不进 pptx。
  * 有损项（面板导出按钮提示）：字体由 PowerPoint 就近替换、渐变背景降级为
- * 首个色、文本不透明度与 line 的反向方向近似、手绘/mermaid 转位图。
+ * 首个色、文本不透明度近似、手绘/mermaid 转位图。
  */
 import PptxGenJS from "pptxgenjs";
+import JSZip from "jszip";
 import { bridge } from "./bridge";
 import { assetDataUrl } from "./render";
 import { currentMermaidTheme, renderMermaid, svgToPng } from "./mermaid";
-import { drawNaturalBox, slideFrames, type CanvasDoc, type DrawEl, type ImageEl, type MermaidEl, type ShapeEl, type TextEl } from "./doc";
+import { PROVIDER_LABELS, resolveEmbed } from "./providers";
+import { CHART_PALETTE, drawNaturalBox, slideFrames, type CanvasDoc, type ChartEl, type DrawEl, type EmbedEl, type ImageEl, type MermaidEl, type ShapeEl, type SlideTransition, type SvgEl, type TableEl, type TextEl } from "./doc";
+import { tableSpec } from "./viewspec";
 
 const IN = 96;
 const px2in = (v: number) => v / IN;
@@ -60,17 +63,49 @@ export async function exportPptx(doc: CanvasDoc, fileRel: string | null): Promis
       else if (el.kind === "shape") exportShape(pptx, s, el);
       else if (el.kind === "mermaid") await exportMermaid(pptx, s, el);
       else if (el.kind === "draw") await exportDraw(pptx, s, el);
-      else await exportImage(pptx, s, el);
+      else if (el.kind === "image") await exportImage(pptx, s, el);
+      else if (el.kind === "svg") await exportSvgEl(pptx, s, el);
+      else if (el.kind === "embed") exportEmbed(pptx, s, el);
+      else if (el.kind === "table") exportTable(pptx, s, el);
+      else if (el.kind === "chart") exportChart(pptx, s, el);
     }
   }
 
   const b64 = (await pptx.write({ outputType: "base64" })) as unknown as string;
   const clean = b64.replace(/^data:[^,]*,/, "");
+  const out = await injectTransitions(clean, slides.map((s) => s.transition ?? "slide"));
   const base = (fileRel?.replace(/\.canvas\.json$/i, "").split("/").pop() || doc.meta.name || "presentation").replace(
     /[\\/:*?"<>|]/g,
     "",
   );
-  bridge.exportFile(`${base}.pptx`, clean);
+  bridge.exportFile(`${base}.pptx`, out);
+}
+
+/**
+ * 页切换动画注入：pptxgenjs 不支持 transition，直接在成品 zip 的
+ * ppt/slides/slideN.xml（与 addSlide 序 1:1）补 CT_SlideTransition 节点——
+ * slide=推入(push) / fade=淡入 / zoom≈淡入（基础转移集无缩放，PowerPoint 降级实现）/ none=不写。
+ */
+async function injectTransitions(b64: string, trans: SlideTransition[]): Promise<string> {
+  const zip = await JSZip.loadAsync(b64, { base64: true });
+  for (let i = 0; i < trans.length; i++) {
+    const tr = trans[i]!;
+    if (tr === "none") continue;
+    const path = `ppt/slides/slide${i + 1}.xml`;
+    const f = zip.file(path);
+    if (!f) continue;
+    const xml = await f.async("string");
+    if (xml.includes("<p:transition")) continue; // 防御：已有转场不重复注入
+    const tag = `<p:transition spd="med">${tr === "slide" ? '<p:push dir="r"/>' : "<p:fade/>"}</p:transition>`;
+    // CT_Slide 序列：cSld → clrMapOvr → transition → timing；插到 timing 前（无 timing 则跟 clrMapOvr 后）
+    const next = xml.includes("<p:timing")
+      ? xml.replace("<p:timing", tag + "<p:timing")
+      : xml.includes("</p:clrMapOvr>")
+        ? xml.replace("</p:clrMapOvr>", "</p:clrMapOvr>" + tag)
+        : xml.replace("</p:sld>", tag + "</p:sld>");
+    zip.file(path, next);
+  }
+  return zip.generateAsync({ type: "base64" });
 }
 
 function exportText(s: PptxGenJS.Slide, el: TextEl): void {
@@ -96,35 +131,63 @@ function exportShape(pptx: PptxGenJS, s: PptxGenJS.Slide, el: ShapeEl): void {
   const tr = transparencyOf(el.opacity);
   const lineColor = colorOf(el.stroke);
   const hasLine = lineColor !== null || el.fill === "none" || el.fill === undefined;
-  const line =
-    el.shape === "line" || el.shape === "arrow"
-      ? {
-          color: lineColor ?? "1D1D1F",
-          width: Math.max(0.75, px2pt(el.strokeWidth ?? 2)),
-          transparency: tr,
-          ...(el.shape === "arrow" ? { endArrowType: "arrow" as const } : {}),
-        }
-      : hasLine && lineColor
-        ? { color: lineColor, width: Math.max(0.5, px2pt(el.strokeWidth ?? 1)), transparency: tr }
-        : undefined;
-  const fill =
-    el.shape !== "line" && el.shape !== "arrow"
-      ? { color: colorOf(el.fill) ?? "FFFFFF", transparency: colorOf(el.fill) ? tr : 100 }
+  const isLineKind = el.shape === "line" || el.shape === "arrow" || el.shape === "double-arrow";
+  // line/arrow 方向：pptx 线几何恒为左上→右下，dir 1/3 用 flipV 镜像，dir≥2（↖/↙，头在起点）改用 beginArrowType
+  const headAtStart = el.shape === "arrow" && (el.dir ?? 0) >= 2;
+  const line = isLineKind
+    ? {
+        color: lineColor ?? "1D1D1F",
+        width: Math.max(0.75, px2pt(el.strokeWidth ?? 2)),
+        transparency: tr,
+        ...(el.shape === "arrow"
+          ? headAtStart
+            ? { beginArrowType: "arrow" as const }
+            : { endArrowType: "arrow" as const }
+          : el.shape === "double-arrow"
+            ? { beginArrowType: "arrow" as const, endArrowType: "arrow" as const }
+            : {}),
+        ...dashType(el.strokeStyle),
+      }
+    : hasLine && lineColor
+      ? { color: lineColor, width: Math.max(0.5, px2pt(el.strokeWidth ?? 1)), transparency: tr, ...dashType(el.strokeStyle) }
       : undefined;
+  const fill = !isLineKind
+    ? { color: colorOf(el.fill) ?? "FFFFFF", transparency: colorOf(el.fill) ? tr : 100 }
+    : undefined;
   const common = { ...geo(el), rotate: el.rotation ?? 0, fill, line };
   if (el.shape === "rect") {
     if (el.radius && el.radius > 0) s.addShape(pptx.ShapeType.roundRect, { ...common, rectRadius: px2in(el.radius) });
     else s.addShape(pptx.ShapeType.rect, common);
+  } else if (el.shape === "diamond") {
+    // PowerPoint 预设几何里的菱形（bbox 四中点），与 DOM/leafer 轨同几何
+    s.addShape(pptx.ShapeType.diamond, common);
+  } else if (el.shape === "triangle") {
+    s.addShape(pptx.ShapeType.triangle, common);
+  } else if (el.shape === "trapezoid") {
+    s.addShape(pptx.ShapeType.trapezoid, common);
+  } else if (el.shape === "pentagon") {
+    s.addShape(pptx.ShapeType.pentagon, common);
+  } else if (el.shape === "hexagon") {
+    s.addShape(pptx.ShapeType.hexagon, common);
+  } else if (el.shape === "star") {
+    s.addShape(pptx.ShapeType.star5, common);
   } else if (el.shape === "ellipse") {
     s.addShape(pptx.ShapeType.ellipse, common);
   } else {
-    // line/arrow：文档几何恒为左上→右下（渲染同方向），无需 flip
     s.addShape(pptx.ShapeType.line, {
       ...geo(el),
       rotate: 0,
+      ...(el.dir === 1 || el.dir === 3 ? { flipV: true } : {}),
       line: common.line,
     });
   }
+}
+
+/** 边框样式 → pptx dashType；solid 缺省不写字段（PowerPoint 默认实线） */
+function dashType(style: "solid" | "dashed" | "dotted" | undefined): { dashType?: "dash" | "sysDot" } {
+  if (style === "dashed") return { dashType: "dash" };
+  if (style === "dotted") return { dashType: "sysDot" };
+  return {};
 }
 
 async function exportImage(pptx: PptxGenJS, s: PptxGenJS.Slide, el: ImageEl): Promise<void> {
@@ -174,4 +237,114 @@ async function exportDraw(pptx: PptxGenJS, s: PptxGenJS.Slide, el: DrawEl): Prom
     return;
   }
   s.addImage({ data: png.replace(/^data:/, ""), ...geo(el) });
+}
+
+/** svg 源码元素导出：源码 → 2× 透明底 PNG 贴入（svgToPng 内部 retag 根标签适配元素盒）；
+ *  含 foreignObject 等光栅化失败的源码降级占位灰块（与画布轨兜底一致） */
+async function exportSvgEl(pptx: PptxGenJS, s: PptxGenJS.Slide, el: SvgEl): Promise<void> {
+  const png = await svgToPng(el.code, el.w, el.h, "transparent");
+  if (!png) {
+    s.addShape(pptx.ShapeType.rect, { ...geo(el), fill: { color: "E5E7EB" } });
+    return;
+  }
+  s.addImage({ data: png.replace(/^data:/, ""), ...geo(el) });
+}
+
+/** embed 元素导出：pptx 无活网页能力 → 圆角占位框 + provider 名 + 可点击原文链接 */
+function exportEmbed(pptx: PptxGenJS, s: PptxGenJS.Slide, el: EmbedEl): void {
+  const g = geo(el);
+  s.addShape(pptx.ShapeType.roundRect, {
+    ...g,
+    rectRadius: 0.08,
+    fill: { color: "F6F7F4" },
+    line: { color: "E5E7EB", width: 1 },
+  });
+  const label = el.title || PROVIDER_LABELS[resolveEmbed(el.url).provider];
+  s.addText(
+    [
+      { text: label, options: { bold: true, color: "6B7280", fontSize: 12, breakLine: true } },
+      { text: el.url, options: { hyperlink: { url: el.url, tooltip: label }, color: "0A84FF", fontSize: 10 } },
+    ],
+    {
+      ...g,
+      align: "center",
+      valign: "middle",
+      margin: 8,
+      fit: "none",
+      isTextBox: true,
+    },
+  );
+}
+
+/** 表格导出：pptx 原生表格（可继续编辑）；列宽权重 → 英寸，首行表头样式 */
+function exportTable(pptx: PptxGenJS, s: PptxGenJS.Slide, el: TableEl): void {
+  const t = tableSpec(el);
+  const rows = t.rows.map((row, r) => {
+    const isHead = r === 0 && t.header;
+    return Array.from({ length: t.cols }, (_, c) => ({
+      text: row[c] ?? "",
+      options: {
+        bold: isHead || undefined,
+        color: colorOf(t.color) ?? "1D1D1F",
+        fontSize: px2pt(t.size),
+        fill: { color: colorOf(isHead ? t.headerFill : t.fill) ?? "FFFFFF" },
+        align: "center" as const,
+        valign: "middle" as const,
+      },
+    }));
+  });
+  const colW = Array.from({ length: t.cols }, (_, c) => px2in((t.colX[c + 1] ?? el.w) - (t.colX[c] ?? 0)));
+  s.addTable(rows, {
+    ...geo(el),
+    colW,
+    rowH: px2in(t.rowH),
+    border: { type: "solid", color: colorOf(t.stroke) ?? "D4D4D8", pt: 0.75 },
+  });
+}
+
+/** 图表导出：pptx 原生图表（可继续编辑）。柱状纵向（barDir:"col"）；饼/环取 series[0] */
+function exportChart(pptx: PptxGenJS, s: PptxGenJS.Slide, el: ChartEl): void {
+  const kind = el.chart ?? "bar";
+  const palette = el.colors && el.colors.length > 0 ? el.colors : CHART_PALETTE;
+  const chartColors = palette.map((c) => colorOf(c) ?? "166534");
+  const axis = {
+    catAxisLabelColor: "71717A",
+    valAxisLabelColor: "71717A",
+    catAxisLabelFontSize: 10,
+    valAxisLabelFontSize: 10,
+    valGridLine: { style: "solid" as const, size: 1, color: "E4E4E7" },
+    catGridLine: { style: "none" as const },
+  };
+  if (kind === "pie" || kind === "doughnut") {
+    const data = el.series[0]?.data ?? [];
+    const n = Math.min(el.labels.length, data.length);
+    s.addChart(
+      kind === "pie" ? pptx.ChartType.pie : pptx.ChartType.doughnut,
+      [{ name: el.series[0]?.name ?? "数据", labels: el.labels.slice(0, n), values: data.slice(0, n) }],
+      {
+        ...geo(el),
+        chartColors,
+        showLegend: el.showLegend === true,
+        legendPos: "b",
+        legendFontSize: 10,
+        showPercent: true,
+        dataLabelFontSize: 10,
+        ...(kind === "doughnut" ? { holeSize: 55 } : {}),
+      },
+    );
+    return;
+  }
+  s.addChart(
+    kind === "bar" ? pptx.ChartType.bar : pptx.ChartType.line,
+    el.series.map((sr) => ({ name: sr.name, labels: el.labels, values: sr.data.slice(0, el.labels.length) })),
+    {
+      ...geo(el),
+      ...(kind === "bar" ? { barDir: "col" as const } : { lineSize: 2, lineSmooth: false }),
+      chartColors,
+      showLegend: el.showLegend === true,
+      legendPos: "b",
+      legendFontSize: 10,
+      ...axis,
+    },
+  );
 }

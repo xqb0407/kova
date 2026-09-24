@@ -16,11 +16,11 @@
  *   前端「最后快照胜出」（线程无活跃请求时静默丢弃——空闲态变更都由前端
  *   自身的 invoke 发起，前端从回复里自更新）。
  *
- * data-queue chunk 生命周期（同 id 原地更新，参照 data-compaction；v2 保留作
- * 流级信号，权威状态以 data-queue-state 快照为准）：
- *   { phase: "queued", position } 入队/位置变化 → { phase: "active" } 开跑；
- *   steer 走 { phase: "steered" }（退化流标记）；项被取消/中止时不发 active，
- *   流上直接 abort + finish 收尾。
+ * 无 per-item 生命周期 chunk：入队/位置/派发全部由 data-queue-state 全量快照
+ * 承载（"同 id 原地更新多 phase"的 v2 增量 chunk 形态已整体废弃）。唯一保留的
+ * 流级标记是 steer 请求被注入受理时发出的 data-steered（见 prompt-pipeline.ts
+ * steerIntoActiveRun），只决定前端退化流的收尾分支，不携带队列状态。项被
+ * 取消/中止不发任何标记，流上直接 abort + finish 收尾。
  */
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { sendChunk, sendEventChunk } from "../protocol/stream";
@@ -66,10 +66,6 @@ const engines = new Map<string, ThreadQueue>();
  *  由 protocol.ts 在链节首尾增删；入队判定用它而非 isPromptActive()
  *  （activeReqByThread 在无模型守卫等提前返回路径上不会置位）。 */
 const busyThreads = new Set<string>();
-
-export function queueChunkId(reqId: string): string {
-  return `queue-${reqId}`;
-}
 
 function engineFor(threadId: string): ThreadQueue {
   let q = engines.get(threadId);

@@ -6,11 +6,13 @@
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join, resolve, sep } from "node:path";
@@ -23,6 +25,8 @@ import {
   isRecord,
   parsePluginManifest,
   pluginsRootDir,
+  LOCAL_MKT_ID,
+  LOCAL_MKT_NAME,
   type CatalogPluginEntry,
   type InstalledPlugin,
   type MarketplaceCatalog,
@@ -39,6 +43,7 @@ import {
 import {
   invalidateCaches,
   readIconDataUrl,
+  resolvePluginIconDataUrl,
   scanInstalledSync,
   setPluginEnabled,
 } from "./store";
@@ -307,6 +312,7 @@ export type RefreshResult = { record: MarketplaceRecord; catalog: MarketplaceCat
 
 /** 刷新市场：directory 重读目录；git 重新浅克隆后重读（含更新检测所需的 revision） */
 export async function refreshMarketplace(mktId: string): Promise<RefreshResult> {
+  if (mktId === LOCAL_MKT_ID) throw new Error("「本地安装」目录随装随生成，无需刷新");
   const record = readMarketplaceRecords().find((r) => r.id === mktId);
   if (!record) throw new Error(`未找到市场 "${mktId}"`);
   let root: string;
@@ -365,11 +371,19 @@ export function getMarketplaceCatalog(mktId: string): { catalog: MarketplaceCata
 
 export type InstallResult = { plugin: InstalledPlugin; updated: boolean };
 
+export type InstallOptions = {
+  /** 链接安装（开发模式）：cache 条目做成指向源目录的符号链接，所有读路径实时命中源码，
+   *  改完插件重建产物即生效。仅目录市场可用；缺省=保持现有模式（更新不回退链接为拷贝） */
+  link?: boolean;
+};
+
 /**
  * 安装/更新：从市场源物化到 cache（目录直拷；git 市场从 repos 工作副本拷）。
- * 已装同 id 时整体替换（installed.json 重写，组件级开关不受影响）。
+ * 已装同 id 时整体替换（元数据重写，组件级开关不受影响）。
+ * link 模式见 InstallOptions：不拷贝、只 symlink，元数据落兄弟文件（不进源目录）。
  */
-export async function installPlugin(mktId: string, name: string): Promise<InstallResult> {
+export async function installPlugin(mktId: string, name: string, opts: InstallOptions = {}): Promise<InstallResult> {
+  if (mktId === LOCAL_MKT_ID) return reinstallLocalPlugin(name);
   const record = readMarketplaceRecords().find((r) => r.id === mktId);
   if (!record) throw new Error(`未找到市场 "${mktId}"`);
   let cache = readCatalogCache(mktId);
@@ -389,21 +403,43 @@ export async function installPlugin(mktId: string, name: string): Promise<Instal
   const manifest = parsePluginManifest(sourceRoot);
 
   const dest = installedPluginDir(mktId, manifest.name);
+  let destIsLink = false;
+  try {
+    destIsLink = lstatSync(dest).isSymbolicLink();
+  } catch {
+    /* 未装或悬空 */
+  }
   const updated = existsSync(dest);
-  rmSync(dest, { recursive: true, force: true });
-  mkdirSync(dest, { recursive: true });
-  cpSync(sourceRoot, dest, {
-    recursive: true,
-    filter: (src) => {
-      // 排除 .git 与市场元数据；installed.json 由本函数最后写入
-      if (src === join(dest, "installed.json")) return false;
-      return !src.split(sep).includes(".git") && !src.startsWith(rootWithSep + ".git");
-    },
-  });
+  // 模式判定：显式 link 参数最优先；缺省保持现有模式（链接项点"更新"仍是链接，
+  // 不会被静默回退成拷贝而丢掉开发体验）
+  const link = opts.link ?? destIsLink;
+  if (link && record.type !== "directory") {
+    throw new Error("链接安装仅支持目录市场（git 市场源目录是可被刷重置的工作副本）");
+  }
+  const sibMeta = `${dest}.installed.json`;
+  rmSync(dest, { recursive: true, force: true }); // symlink 只删链接自身，不追随删源目录
+  rmSync(sibMeta, { force: true }); // 清上一模式残留元数据
+  if (link) {
+    mkdirSync(join(pluginsRootDir(), "cache", mktId), { recursive: true });
+    symlinkSync(resolve(sourceRoot), dest, "dir");
+  } else {
+    mkdirSync(dest, { recursive: true });
+    cpSync(sourceRoot, dest, {
+      recursive: true,
+      filter: (src) => {
+        // 排除 .git 与市场元数据；installed.json 由本函数最后写入
+        if (src === join(dest, "installed.json")) return false;
+        return !src.split(sep).includes(".git") && !src.startsWith(rootWithSep + ".git");
+      },
+    });
+  }
 
-  // revision：git 市场取仓库短 hash；目录市场取内容签名（仅展示用）
-  const revision =
-    record.type === "git" ? await gitShortRevision(marketplaceRepoDir(mktId)) : `sig-${sha8(cacheRootSignatureOf(sourceRoot))}`;
+  // revision：git 市场取仓库短 hash；目录市场取内容签名（仅展示用）；链接装带 link 前缀
+  const revision = link
+    ? `link-${sha8(cacheRootSignatureOf(sourceRoot))}`
+    : record.type === "git"
+      ? await gitShortRevision(marketplaceRepoDir(mktId))
+      : `sig-${sha8(cacheRootSignatureOf(sourceRoot))}`;
 
   const installedAt = new Date().toISOString();
   const meta = {
@@ -413,6 +449,55 @@ export async function installPlugin(mktId: string, name: string): Promise<Instal
     marketplaceName: record.name,
     version: entry.version ?? manifest.version,
     ...(revision ? { revision } : {}),
+    ...(link ? { linked: true, sourcePath: resolve(sourceRoot) } : {}),
+    installedAt,
+  };
+  // 链接装元数据写兄弟文件：写进 dest 即写进用户源仓库，属污染
+  writeFileSync(link ? sibMeta : join(dest, "installed.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+  invalidateCaches();
+
+  const fresh = scanInstalledSync().find((p) => p.pluginId === meta.pluginId);
+  if (!fresh) throw new Error(`安装后扫描未找到 ${meta.pluginId}（清单校验失败？）`);
+  return { plugin: fresh, updated };
+}
+
+/**
+ * 直接安装任意本地插件目录（"手动上传安装"）：不登记市场、不要求
+ * marketplace.json，目录根下有三态清单（.xulux/.claude/.codex-plugin
+ * 的 plugin.json）即可。物化到 cache/local/<name>/（身份 `name@local`），
+ * installed.json 记住 sourcePath——之后的"更新"即从源目录重拷。
+ */
+export async function installLocalPlugin(sourceDir: string): Promise<InstallResult> {
+  const root = resolve(sourceDir.trim());
+  if (!existsSync(root) || !statSync(root).isDirectory()) {
+    throw new Error(`插件目录不存在：${root}`);
+  }
+  // 清单硬校验（名字合法、与目录名一致等）在物化前拦截
+  const manifest = parsePluginManifest(root);
+
+  const dest = installedPluginDir(LOCAL_MKT_ID, manifest.name);
+  const updated = existsSync(dest);
+  rmSync(dest, { recursive: true, force: true });
+  mkdirSync(dest, { recursive: true });
+  cpSync(root, dest, {
+    recursive: true,
+    filter: (src) => {
+      // 排除 .git 与上一次安装的元数据残留（installed.json 由本函数写入）
+      if (src === join(root, "installed.json")) return false;
+      return !src.split(sep).includes(".git") && !src.startsWith(root + sep + ".git");
+    },
+  });
+
+  const revision = `sig-${sha8(cacheRootSignatureOf(root))}`;
+  const installedAt = new Date().toISOString();
+  const meta = {
+    pluginId: `${manifest.name}@${LOCAL_MKT_ID}`,
+    name: manifest.name,
+    marketplaceId: LOCAL_MKT_ID,
+    marketplaceName: LOCAL_MKT_NAME,
+    version: manifest.version,
+    revision,
+    sourcePath: root,
     installedAt,
   };
   writeFileSync(join(dest, "installed.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
@@ -421,6 +506,74 @@ export async function installPlugin(mktId: string, name: string): Promise<Instal
   const fresh = scanInstalledSync().find((p) => p.pluginId === meta.pluginId);
   if (!fresh) throw new Error(`安装后扫描未找到 ${meta.pluginId}（清单校验失败？）`);
   return { plugin: fresh, updated };
+}
+
+/** 本地安装项的"更新"：从 installed.json 记录的源目录重新拷贝物化 */
+async function reinstallLocalPlugin(name: string): Promise<InstallResult> {
+  const existing = scanInstalledSync().find((p) => p.pluginId === `${name}@${LOCAL_MKT_ID}`);
+  if (!existing) throw new Error(`本地安装中没有插件 "${name}"`);
+  if (!existing.sourcePath) {
+    throw new Error(`插件 "${name}" 未记录源目录，无法自动更新（请重新选择目录安装）`);
+  }
+  if (!existsSync(existing.sourcePath)) {
+    throw new Error(`源目录已不存在：${existing.sourcePath}`);
+  }
+  return installLocalPlugin(existing.sourcePath);
+}
+
+export type LocalMarketplaceEntry = {
+  id: string;
+  name: string;
+  type: MarketplaceType;
+  addedAt: string;
+  needsRefresh: false;
+  plugins: CatalogPluginEntry[];
+};
+
+/**
+ * 「本地安装」伪市场的目录视图（现场合成，不落缓存、不进登记表）：条目来自
+ * 已装 local 插件；版本/描述/图标优先读源目录清单——源版本 ≠ 装机版本时，
+ * 市场页据此出"更新"按钮。没有任何本地安装项时返回 undefined（市场不呈现）。
+ */
+export function localMarketplaceEntry(): LocalMarketplaceEntry | undefined {
+  const locals = scanInstalledSync().filter((p) => p.mktId === LOCAL_MKT_ID);
+  if (locals.length === 0) return undefined;
+  const plugins: CatalogPluginEntry[] = locals.map((p) => {
+    let version = p.version;
+    let description = p.manifest.description;
+    let category = p.manifest.category;
+    let keywords = p.manifest.keywords;
+    let icon = resolvePluginIconDataUrl(p.manifest);
+    if (p.sourcePath && existsSync(p.sourcePath)) {
+      try {
+        const src = parsePluginManifest(p.sourcePath);
+        version = src.version;
+        description = src.description ?? description;
+        category = src.category ?? category;
+        keywords = src.keywords ?? keywords;
+        icon = resolvePluginIconDataUrl(src) ?? icon;
+      } catch {
+        /* 源目录清单坏了：保留已装项信息，不阻断呈现 */
+      }
+    }
+    return {
+      name: p.name,
+      version,
+      ...(description ? { description } : {}),
+      ...(icon ? { icon } : {}),
+      ...(category ? { category } : {}),
+      ...(keywords?.length ? { keywords } : {}),
+      path: p.sourcePath ?? p.manifest.root,
+    };
+  });
+  return {
+    id: LOCAL_MKT_ID,
+    name: LOCAL_MKT_NAME,
+    type: "directory",
+    addedAt: "",
+    needsRefresh: false,
+    plugins,
+  };
 }
 
 function cacheRootSignatureOf(dir: string): string {
@@ -449,7 +602,9 @@ export async function uninstallPlugin(pluginId: string): Promise<void> {
   const mktId = pluginId.slice(at + 1);
   const dir = installedPluginDir(mktId, name);
   if (!existsSync(dir)) throw new Error(`未找到已装插件 "${pluginId}"`);
+  // 链接装：rmSync 对 symlink 只删链接本体，源目录不受影响
   rmSync(dir, { recursive: true, force: true });
+  rmSync(`${dir}.installed.json`, { force: true }); // 链接装兄弟元数据（拷贝装无此文件）
   await setPluginEnabled(pluginId, true); // 删除 disabled 记录（= 恢复默认启用，键消失）
   invalidateCaches();
 }

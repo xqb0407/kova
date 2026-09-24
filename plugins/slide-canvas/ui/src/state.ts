@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "./bridge";
+import { buildStarterDeck, buildTemplateFrame } from "./templates";
 import {
   blankDoc,
   blankFrame,
@@ -20,13 +21,16 @@ import {
   serializeDoc,
   tidyLayout,
   titleFrame,
+  uiStarterDoc,
   uid,
   type Box,
   type CanvasDoc,
+  type DocKind,
   type El,
   type Frame,
   type ImageEl,
   type PagePreset,
+  type SlideTransition,
 } from "./doc";
 import { preloadDocAssets } from "./render";
 import {
@@ -34,6 +38,7 @@ import {
   boxOf,
   distributeBoxes,
   offsetPasted,
+  regroupCopies,
   reorderForZ,
   unionBox,
   type AlignMode,
@@ -46,6 +51,9 @@ const COALESCE_MS = 500;
 
 /** 选中集合：容器（"root"=画布级 objects，其余=页框 id）+ 框内元素 id */
 export type Sel = { containerId: string; elIds: string[] };
+
+/** 外壳模式：board=白板画布（只编辑 objects）；deck=幻灯片（只编辑当前页框 elements） */
+export type Surface = "board" | "deck";
 
 export type DeckStore = ReturnType<typeof useDeck>;
 
@@ -64,7 +72,7 @@ export function containerEls(doc: CanvasDoc, containerId: string): El[] | null {
   return doc.frames.find((f) => f.id === containerId)?.elements ?? null;
 }
 
-/** 单选对齐的参照框：页框=画板本身；画布级=选区并集（等效无容器，仅多选语义） */
+/** 单选对齐的参照框：页框=画板本身；画布级无容器返回 null（对齐键只在幻灯片出现，见 SelectionBar） */
 function containerBox(doc: CanvasDoc, containerId: string): Box | null {
   if (containerId === CANVAS_ROOT) return null;
   const f = doc.frames.find((x) => x.id === containerId);
@@ -80,11 +88,14 @@ export function useDeck() {
   const docRef = useRef(doc);
   const [fileRel, setFileRel] = useState<string | null>(null);
   const [hasDoc, setHasDoc] = useState(false);
+  /** 文档内容真正到达过（doc.open 解析成功或本地新建）——握手带 path 不算 */
+  const [docLoaded, setDocLoaded] = useState(false);
   const [connected, setConnected] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [sel, setSel] = useState<Sel | null>(null);
   const [conflict, setConflict] = useState<{ json: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [surface, setSurface] = useState<Surface>("board");
 
   const historyRef = useRef<{ past: string[]; future: string[]; lastAt: number; lastJson: string }>({
     past: [],
@@ -180,9 +191,12 @@ export function useDeck() {
           parsed = null;
         }
         if (!parsed) {
+          // eslint-disable-next-line no-console
+          console.error("[e2e-diag] parseDoc null; json head:", json.slice(0, 160), "| direct-parse typeof:", (() => { try { const o = JSON.parse(json); return typeof o + "/keys:" + Object.keys(o).slice(0, 4).join(","); } catch (e) { return "THROW:" + String(e).slice(0, 80); } })());
           notifyLater("文档不是有效的画布 JSON，已保持原内容");
           return;
         }
+        setDocLoaded(true);
         if (!external) {
           applyDoc(parsed, { freshReset: true, markDirty: false });
           return;
@@ -235,8 +249,13 @@ export function useDeck() {
   /** 聚焦页框（选择所在框；root 选择/无选择回落第一框）。objects 不走这里 */
   const activeFrame =
     doc.frames.find((f) => f.id === (sel?.containerId ?? currentFrameId)) ?? doc.frames[0];
-  /** 元素操作默认落位容器：有选择用选择容器，否则聚焦页框，都没有则画布 */
-  const defaultContainerId = sel?.containerId ?? activeFrame?.id ?? CANVAS_ROOT;
+  /**
+   * 元素操作默认落位容器（模式感知）：
+   *   board 只编辑 objects：有选择（root）用选择，否则画布，绝不落不可见的页框；
+   *   deck 只编辑当前页：有选择用选择容器，否则聚焦页框，无页框回落画布（外壳会引导先建页）。
+   */
+  const defaultContainerId =
+    sel?.containerId ?? (surface === "deck" ? activeFrame?.id : undefined) ?? CANVAS_ROOT;
 
   /** 容器元素列表（root → objects；页框 → elements）；不存在返回 null */
   const mapContainer = useCallback(
@@ -326,18 +345,41 @@ export function useDeck() {
     const ids = new Set(sel.elIds);
     let newIds: string[] = [];
     const next = mapContainer(sel.containerId, (els) => {
-      const copies = els
-        .filter((e) => ids.has(e.id))
-        .map((e) => {
-          const copy = { ...structuredClone(e), id: uid("c"), x: e.x + 20, y: e.y + 20 } as El;
-          newIds.push(copy.id);
-          return copy;
-        });
+      const copies = regroupCopies(
+        els.filter((e) => ids.has(e.id)),
+      ).map((e) => {
+        const copy = { ...structuredClone(e), id: uid("c"), x: e.x + 20, y: e.y + 20 } as El;
+        newIds.push(copy.id);
+        return copy;
+      });
       return [...els, ...copies];
     });
     if (!next) return;
     commit(next);
     setSel({ containerId: sel.containerId, elIds: newIds });
+  }, [sel, mapContainer, commit]);
+
+  /** 组合选中元素：统一挂新 groupId（一层扁平标注，不嵌套；导出无感知） */
+  const groupSelected = useCallback(() => {
+    if (!sel || sel.elIds.length < 2) return;
+    const ids = new Set(sel.elIds);
+    const gid = `g${Math.random().toString(36).slice(2, 10)}`;
+    const next = mapContainer(sel.containerId, (els) =>
+      els.map((el) => (ids.has(el.id) ? ({ ...el, groupId: gid } as El) : el)),
+    );
+    if (next) commit(next);
+  }, [sel, mapContainer, commit]);
+
+  /** 解组：清除选中元素所属的组标注（按组 id 整组清，避免残留半组） */
+  const ungroupSelected = useCallback(() => {
+    if (!sel || sel.elIds.length === 0) return;
+    const ids = new Set(sel.elIds);
+    const next = mapContainer(sel.containerId, (els) => {
+      const gids = new Set(els.flatMap((e) => (ids.has(e.id) && e.groupId ? [e.groupId] : [])));
+      if (gids.size === 0) return els;
+      return els.map((el) => (el.groupId && gids.has(el.groupId) ? ({ ...el, groupId: undefined } as El) : el));
+    });
+    if (next) commit(next);
   }, [sel, mapContainer, commit]);
 
   /** nudge：方向键微调（commit 合并，按住连发不堆历史） */
@@ -378,7 +420,10 @@ export function useDeck() {
     [sel, mapContainer, commit],
   );
 
-  /** 6 向对齐：单选相对容器（页框画板；画布级无容器则不动）、多选相对组框 */
+  /**
+   * 6 向对齐：多选相对组框；单选相对容器（页框画板）。
+   * 对齐键只在幻灯片（deck）浮动条出现——无限画布没有可对齐的参照边。
+   */
   const alignSelected = useCallback(
     (mode: AlignMode) => {
       if (!sel) return;
@@ -386,7 +431,8 @@ export function useDeck() {
         const ids = new Set(sel.elIds);
         const items = els.filter((e) => ids.has(e.id)).map((e) => ({ id: e.id, box: boxOf(e) }));
         const refBox: Box | null =
-          (items.length > 1 ? unionBox(items.map((i) => i.box)) : null) ?? containerBox(docRef.current, sel.containerId);
+          (items.length > 1 ? unionBox(items.map((i) => i.box)) : null) ??
+          containerBox(docRef.current, sel.containerId);
         if (!refBox) return null;
         const moves = alignBoxes(items, mode, refBox);
         return els.map((e) => {
@@ -445,7 +491,7 @@ export function useDeck() {
     if (!containerEls(docRef.current, containerId)) return false;
     pasteSeqRef.current += 1;
     const off = pasteSeqRef.current * 20;
-    const pasted = offsetPasted(clip, off, off, (old) => uid(old.split("-")[0] ?? "e"));
+    const pasted = regroupCopies(offsetPasted(clip, off, off, (old) => uid(old.split("-")[0] ?? "e")));
     const next = mapContainer(containerId, (els) => [...els, ...pasted]);
     if (next) commit(next);
     setSel({ containerId, elIds: pasted.map((e) => e.id) });
@@ -505,6 +551,30 @@ export function useDeck() {
     [docRef, sel, commit],
   );
 
+  /** 模板库：主题+版式 → 新页（追加在最后，落位在现有页右侧一排） */
+  const insertTemplateFrame = useCallback(
+    (themeId: string, layoutId: string) => {
+      const preset = docRef.current.meta.pagePreset;
+      const frame = buildTemplateFrame(themeId, layoutId, preset, nextFramePos(docRef.current.frames));
+      if (!frame) return;
+      commit({ ...docRef.current, frames: [...docRef.current.frames, frame] });
+      setSel({ containerId: frame.id, elIds: [] });
+    },
+    [commit],
+  );
+
+  /** 模板库：整套起步页（封面→目录→章节→要点→数据→结尾），空档也能一键拉起 */
+  const applyStarterDeck = useCallback(
+    (themeId: string) => {
+      const preset = docRef.current.meta.pagePreset;
+      const built = buildStarterDeck(themeId, preset, nextFramePos(docRef.current.frames));
+      if (built.length === 0) return;
+      commit({ ...docRef.current, frames: [...docRef.current.frames, ...built] });
+      setSel({ containerId: built[0]!.id, elIds: [] });
+    },
+    [commit],
+  );
+
   const duplicateFrame = useCallback(
     (frameId: string) => {
       const idx = docRef.current.frames.findIndex((f) => f.id === frameId);
@@ -522,12 +592,16 @@ export function useDeck() {
     [commit],
   );
 
+  /** 删页：允许删到 0 页（deck 空态引导新建；objects 可能仍在白板上） */
   const removeFrame = useCallback(
     (frameId: string) => {
-      if (docRef.current.frames.length <= 1) return;
-      const frames = docRef.current.frames.filter((f) => f.id !== frameId);
-      commit({ ...docRef.current, frames });
-      setSel(frames[0] ? { containerId: frames[0].id, elIds: [] } : null);
+      const frames = docRef.current.frames;
+      const idx = frames.findIndex((f) => f.id === frameId);
+      if (idx < 0) return;
+      const next = frames.filter((f) => f.id !== frameId);
+      commit({ ...docRef.current, frames: next });
+      const target = next[Math.min(idx, next.length - 1)];
+      setSel(target ? { containerId: target.id, elIds: [] } : null);
     },
     [commit],
   );
@@ -572,6 +646,21 @@ export function useDeck() {
     [commit],
   );
 
+  /** 页切换动画：undefined/"slide" 归一为缺省（不落 transition 键） */
+  const setFrameTransition = useCallback(
+    (frameId: string, transition: SlideTransition) => {
+      const idx = docRef.current.frames.findIndex((f) => f.id === frameId);
+      if (idx < 0) return;
+      const frames = docRef.current.frames.slice();
+      const next = { ...frames[idx] };
+      if (transition === "slide") delete next.transition;
+      else next.transition = transition;
+      frames[idx] = next;
+      commit({ ...docRef.current, frames });
+    },
+    [commit],
+  );
+
   const setPreset = useCallback(
     (preset: PagePreset) => {
       commit(resizeFrames(docRef.current, preset));
@@ -605,19 +694,27 @@ export function useDeck() {
 
   /* ---------------- 新建/另存 ---------------- */
 
-  const createDoc = useCallback((name: string, preset: PagePreset) => {
-    const clean = name.trim().replace(/[/\\:*?"<>|]/g, "");
+  const createDoc = useCallback((name: string, preset: PagePreset, kind: DocKind = "board") => {
+    // 半角 + 全角都挡：全角？：＊｜等在 Windows/同步盘上会炸，macOS 上留着也是隐患
+    const clean = name.trim().replace(/[/\\:*?"<>|？：＊｜＞＜＼／]/g, "");
     if (!clean) return;
+    /** 幻灯片自带一张空白页；UI 设计档自带三块移动端设备画板（进去就能继续画） */
+    const seed = () => {
+      if (kind === "ui") return uiStarterDoc(clean);
+      const d = blankDoc(preset, clean, kind);
+      if (kind === "deck") d.frames.push(blankFrame(preset));
+      return d;
+    };
     if (bridge.standalone) {
       // 开发态（浏览器直开）没有宿主落盘：本地新建，change 自动走 localStorage
-      const fresh = blankDoc(preset, clean);
-      applyDoc(fresh, { freshReset: true });
+      applyDoc(seed(), { freshReset: true });
       setFileRel(null);
       setHasDoc(true);
+      setDocLoaded(true);
       return;
     }
     const rel = /\.canvas\.json$/i.test(clean) ? clean : `${clean}.canvas.json`;
-    bridge.create(rel, serializeDoc(blankDoc(preset, clean)));
+    bridge.create(rel, serializeDoc(seed()));
   }, [applyDoc]);
 
   const flushSave = useCallback(() => {
@@ -634,12 +731,15 @@ export function useDeck() {
     fileRel,
     fileRelRef,
     hasDoc,
+    docLoaded,
     connected,
     dirty,
     sel,
     setSel,
     activeFrame,
     defaultContainerId,
+    surface,
+    setSurface,
     conflict,
     resolveConflict,
     notice,
@@ -651,6 +751,8 @@ export function useDeck() {
     insertImageFromFile,
     deleteSelected,
     duplicateSelected,
+    groupSelected,
+    ungroupSelected,
     nudge,
     setContainerElements,
     alignSelected,
@@ -665,12 +767,15 @@ export function useDeck() {
     hasClipboard: () => clipboardRef.current.length > 0,
     selectFrame,
     addFrame,
+    insertTemplateFrame,
+    applyStarterDeck,
     duplicateFrame,
     removeFrame,
     setFramePos,
     moveFrame,
     tidyFrames,
     setFrameBackground,
+    setFrameTransition,
     setPreset,
     undo,
     redo,

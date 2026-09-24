@@ -99,7 +99,7 @@ export const PromptQueueBar: FC = () => {
   };
 
   // 同步监听 + 挂载接力：线程挂载/刷新恢复时拉一次快照并泵一次（对齐镜像 +
-  // 接续派发），此后由 data-queue-state 广播增量对齐
+  // 接续派发），此后由 data-queue-state 快照广播对齐（最后快照胜出）
   useEffect(() => {
     setQueueSyncListener((reg, kind) => syncRef.current(reg, kind));
     if (!threadId) return () => setQueueSyncListener(null);
@@ -140,7 +140,7 @@ export const PromptQueueBar: FC = () => {
       {steered.map((item) => (
         <div
           key={item.reqId}
-          className="border-border/50 dark:border-muted-foreground/10 flex items-center gap-2 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-3.5 pl-3.5"
+          className="border-border/50 dark:border-muted-foreground/10 flex items-center gap-2 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-3.5 pl-3.5 backdrop-blur-md"
           data-slot="aui-queue-steered"
         >
           <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
@@ -160,7 +160,7 @@ export const PromptQueueBar: FC = () => {
       {snapshot.items.map((item, index) => (
         <div
           key={item.reqId}
-          className="group border-border/50 dark:border-muted-foreground/10 flex items-center gap-2 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-1.5 pl-3.5 animate-in fade-in slide-in-from-bottom-1 duration-200"
+          className="group border-border/50 dark:border-muted-foreground/10 flex items-center gap-2 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-1.5 pl-3.5 backdrop-blur-md animate-in fade-in slide-in-from-bottom-1 duration-200"
         >
           <span
             className="w-3 shrink-0 text-center text-[11px] leading-none text-muted-foreground/50 tabular-nums"

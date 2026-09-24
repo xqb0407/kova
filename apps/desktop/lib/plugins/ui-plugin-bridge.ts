@@ -22,8 +22,26 @@ export const MESSAGE_PERMISSION: Record<string, PanelPermission> = {
   "doc.attach": "document",
   "doc.export": "export",
   "asset.request": "document",
+  "doc.list": "document",
+  "doc.bind": "document",
   "agent.prefill": "agent",
   "ui.notify": "notify",
+};
+
+/* ---------------- 历史卡片摘要 ---------------- */
+
+/** 列表项（宿主扫描 cwd 下 *.canvas.json 得到；preview 已按 MAX 截断） */
+export type DocListItem = {
+  /** workspace 相对路径；doc.bind 原样回传 */
+  path: string;
+  name: string;
+  kind: "board" | "deck" | "ui";
+  /** 文件最后修改时间（ms epoch；取不到为 0） */
+  mtime: number;
+  frames: number;
+  objects: number;
+  /** 页框布局摘要，供卡片画示意缩略图 */
+  preview: { x: number; y: number; w: number; h: number; bg: string }[];
 };
 
 /* ---------------- 宿主 → UI ---------------- */
@@ -46,7 +64,9 @@ export type HostMessage =
   | { kind: "view.focus" }
   | { kind: "view.hidden" }
   /** asset.request 的回包：workspace 相对文件 → base64；读不到 null */
-  | { kind: "asset.reply"; reqId: string; base64: string | null };
+  | { kind: "asset.reply"; reqId: string; base64: string | null }
+  /** doc.list 的回包：工作区里的画布档摘要（按 mtime 倒序） */
+  | { kind: "doc.list.reply"; reqId: string; items: DocListItem[] };
 
 export function encodeHostMessage(m: HostMessage): Record<string, unknown> {
   return { v: UI_PLUGIN_PROTOCOL, dir: "host", ...m };
@@ -69,6 +89,10 @@ export type UiMessage =
   | { kind: "doc.export"; filename: string; base64: string }
   /** 读任意 workspace 文件字节（图片元素渲染源） */
   | { kind: "asset.request"; reqId: string; path: string }
+  /** 列工作区里的画布档（首页历史卡片）；宿主回 doc.list.reply */
+  | { kind: "doc.list"; reqId: string }
+  /** 打开已有画布档并让本面板绑定过去（宿主重绑 tab.path → 推 doc.open） */
+  | { kind: "doc.bind"; path: string }
   /** 预填会话输入框（选中元素「问 AI」） */
   | { kind: "agent.prefill"; text: string }
   /** 轻提示 */
@@ -138,6 +162,15 @@ export function decodeUiMessage(data: unknown): UiMessage | null {
       const path = str(m.path);
       if (reqId === null || path === null || !isRelName(path)) return null;
       return { kind: "asset.request", reqId, path };
+    }
+    case "doc.list": {
+      const reqId = str(m.reqId, 128);
+      return reqId === null ? null : { kind: "doc.list", reqId };
+    }
+    case "doc.bind": {
+      const path = str(m.path);
+      if (path === null || !isRelName(path)) return null;
+      return { kind: "doc.bind", path };
     }
     case "agent.prefill": {
       const text = str(m.text, 100_000);

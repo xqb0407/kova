@@ -1,6 +1,11 @@
 {
   "name": "slide-canvas",
   "private": true,
+  "browserslist": [
+    "safari >= 16.4",
+    "chrome >= 100",
+    "edge >= 100"
+  ],
   "type": "module",
   "scripts": {
     "build": "vite build --config ui/vite.config.ts",
@@ -24,6 +29,8 @@
     "@radix-ui/react-tooltip": "^1.2.16",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "jszip": "^3.10.2",
+    "leafer-ui": "^2.2.11",
     "lucide-react": "^1.47.0",
     "mermaid": "^12.0.0",
     "pptxgenjs": "^4.0.1",

@@ -3,7 +3,7 @@
  * 以及 MCP 草稿解析与变更后的热重载编排。命令 handler 见 handlers/。
  */
 import { logErr } from "../log";
-import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces } from "../plugins/plugins";
+import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry } from "../plugins/plugins";
 import { listPluginMcpEntries, loadMcpServers, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
 import { mcpManager } from "../mcp/mcp-manager";
 import { ensureSkillsLoaded, skillsSnapshot, listPluginSkillEntries } from "../skills/skills";
@@ -162,6 +162,10 @@ export async function pluginsPayload(cwd?: string) {
           ...(p.manifest.category ? { category: p.manifest.category } : {}),
           manifestKind: p.manifest.manifestKind,
           sourceMissing: p.sourceMissing,
+          // 链接安装（dev 模式）标记 + 源路径：市场 UI 展示徽标与可重载判据；
+          // 本地安装（拷贝）也带 sourcePath——"检查更新"与市场页提示按此展示
+          ...(p.linked ? { linked: true } : {}),
+          ...(p.sourcePath ? { sourcePath: p.sourcePath } : {}),
           enabled: p.enabled,
           components: { skills, mcpServers, subagents, panels },
           diagnostics: [...p.diagnostics, ...p.manifest.unsupported],
@@ -172,24 +176,29 @@ export async function pluginsPayload(cwd?: string) {
   };
 }
 
-/** 市场清单应答负载：登记表 + 各市场目录（含已装标记由前端比对） */
+/** 市场清单应答负载：登记表 + 各市场目录（含已装标记由前端比对）。
+ * 注意「本地安装」伪市场必须拼进 marketplaces 数组——展开进对象顶层会产生
+ * 数字键并把序列化后的帧首键从 type 顶掉，前端前缀预筛将整帧丢弃。 */
 export function marketplacesPayload() {
+  const entries = listMarketplaces().map((r) => {
+    const { catalog, revision, needsRefresh } = getMarketplaceCatalog(r.id);
+    return {
+      id: r.id,
+      name: r.name,
+      type: r.type,
+      ...(r.type === "directory" ? { path: r.path } : { repo: r.repo }),
+      addedAt: r.addedAt,
+      ...(r.lastRefresh ? { lastRefresh: r.lastRefresh } : {}),
+      ...(revision ? { revision } : {}),
+      needsRefresh,
+      plugins: catalog.plugins,
+    };
+  });
+  // 「本地安装」伪市场垫底呈现（有本地安装项才出现）：现场合成，不落登记表
+  const local = localMarketplaceEntry();
   return {
     type: "marketplaces" as const,
-    marketplaces: listMarketplaces().map((r) => {
-      const { catalog, revision, needsRefresh } = getMarketplaceCatalog(r.id);
-      return {
-        id: r.id,
-        name: r.name,
-        type: r.type,
-        ...(r.type === "directory" ? { path: r.path } : { repo: r.repo }),
-        addedAt: r.addedAt,
-        ...(r.lastRefresh ? { lastRefresh: r.lastRefresh } : {}),
-        ...(revision ? { revision } : {}),
-        needsRefresh,
-        plugins: catalog.plugins,
-      };
-    }),
+    marketplaces: local ? [...entries, local] : entries,
   };
 }
 

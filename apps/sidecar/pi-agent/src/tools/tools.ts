@@ -22,7 +22,7 @@ import { hostToolCall } from "../storage/hostdb";
 import { buildBrowserTools } from "./browser-tools";
 import { buildScreenshotTool } from "./screenshot-tool";
 import { buildOpenFileTool } from "./open-file-tool";
-import { buildOpenPanelTool } from "./open-panel-tool";
+import { buildOpenPanelTool, maybeAutoOpenPanel } from "./open-panel-tool";
 import { buildWebTools } from "./http-tools";
 import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "../todo/todo";
@@ -224,10 +224,12 @@ function buildGrepTool(cwd: string): AgentTool {
   };
 }
 
-/** bash/read/write/edit：schema 留本侧，执行转发给 Rust 宿主（tool_exec.rs） */
+/** bash/read/write/edit：schema 留本侧，执行转发给 Rust 宿主（tool_exec.rs）；
+ *  threadId 供 write/edit 落盘成功后的"面板认领文件自动开板"回路（open-panel-tool） */
 function hostTool(
   name: string,
   cwd: string,
+  threadId: string,
   description: string,
   parameters: AgentTool["parameters"],
 ): AgentTool {
@@ -244,6 +246,19 @@ function hostTool(
         params as Record<string, unknown>,
         signal ?? undefined,
       );
+      // 落盘成功（失败已在 hostToolCall 抛出，走不到这里）：若文件被某 UI 面板
+      // 的 opens 声明认领，自动发 data-pluginOpen——AI 写画布文档时用户端必上屏，
+      // 不再依赖模型记得显式开板。异常绝不允许影响工具结果。
+      if (name === "write" || name === "edit") {
+        try {
+          const filePath = (params as { file_path?: unknown }).file_path;
+          if (typeof filePath === "string" && filePath.trim()) {
+            maybeAutoOpenPanel(cwd, threadId, filePath.trim());
+          }
+        } catch {
+          /* 自动开板是尽力而为的旁路 */
+        }
+      }
       const details: Record<string, unknown> = {};
       if (data.truncated !== undefined) details.truncated = data.truncated;
       if (data.exitCode !== undefined) details.exitCode = data.exitCode;
@@ -255,7 +270,7 @@ function hostTool(
 
 export function buildTools(cwd: string, threadId: string): AgentTool[] {
   const tools: AgentTool[] = [
-    hostTool("bash", cwd,
+    hostTool("bash", cwd, threadId,
       "Run a shell command in the workspace and return combined stdout/stderr. " +
         "Output is capped; use narrower commands (grep/tail/head) instead of dumping large files. " +
         "Windows runs Git Bash when available (cmd.exe fallback) — do not use PowerShell-only syntax like backtick escapes.",
@@ -266,7 +281,7 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
         ),
       }),
     ),
-    hostTool("read", cwd,
+    hostTool("read", cwd, threadId,
       "Read a text file. Returns up to 64KB with line numbers. " +
         "Use offset/limit to paginate large files.",
       Type.Object({
@@ -275,14 +290,14 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
         limit: Type.Optional(Type.Number({ description: "Max lines to return" })),
       }),
     ),
-    hostTool("write", cwd,
+    hostTool("write", cwd, threadId,
       "Write (or create) a file with the given content. Parent directories are created automatically.",
       Type.Object({
         file_path: Type.String({ description: "Path (relative to workspace or absolute)" }),
         content: Type.String({ description: "Full file content" }),
       }),
     ),
-    hostTool("edit", cwd,
+    hostTool("edit", cwd, threadId,
       "Replace an exact string in a file. old_string must match exactly and appear exactly once, " +
         "unless replace_all is true.",
       Type.Object({
