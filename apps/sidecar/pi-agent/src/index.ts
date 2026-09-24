@@ -43,6 +43,7 @@ import { initSubagentState } from "./subagent/subagent-definitions";
 import { initSkillsState } from "./skills/skills";
 import { initMcpEnabledState } from "./mcp/mcp-config";
 import { initPluginsState } from "./plugins/plugins";
+import { initSecretsConfig } from "./secrets/secrets";
 import { mcpManager } from "./mcp/mcp-manager";
 import { handleLine, markStdinClosed, setInitGate } from "./protocol/protocol";
 import { initAutomation, stopAutomation } from "./automation/runtime";
@@ -112,6 +113,8 @@ async function main() {
     await initHooks();
     // 插件启用开关同走 kv（插件清单本身带签名扫描；四条合并链的插件层读取它）
     await initPluginsState();
+    // 密钥绑定策略同走 kv（值本身是 Rust 侧的密文；bash 注入时实时读这份内存配置）
+    await initSecretsConfig();
   })().catch((err) => {
     logErr("model catalog init failed:", err);
   });

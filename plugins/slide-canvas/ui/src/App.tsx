@@ -6,7 +6,7 @@
  *     左缩略图栏（border-r）、中央画布盒（当前页 fit 于此，不再被面板遮挡）、
  *     右 Inspector（border-l）、底部状态条（左翻页 · 右缩放）。
  *   模式缺省按内容推断（纯页框档→deck，否则 localStorage 记忆→board）。
- * 共用：左竖工具栏（插入/钢笔/历史，浮于画布盒内） · 选中浮动工具条 · 右键菜单 ·
+ * 共用：左竖工具栏（插入/钢笔/历史，浮于画布盒内） · 右键菜单（选中元素的操作走属性面板） ·
  *   撤销栈/防抖保存/桥。交互原语全来自 @/components/ui。
  * 外壳之外的功能块已拆至 ./editor/*（元素工厂 / 工具条 / 右键菜单 / 缩略图栏 / 属性面板 / 表单件）。
  */
@@ -26,6 +26,7 @@ import {
   PlusIcon,
   Redo2Icon,
   SparklesIcon,
+  TriangleAlertIcon,
   Undo2Icon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -49,7 +50,6 @@ import { Home } from "./Home";
 import { useEditorShell } from "./editor/useEditorShell";
 import { ToolButtons } from "./editor/ToolButtons";
 import { BoardToolbar } from "./editor/BoardToolbar";
-import { SelectionBar } from "./editor/SelectionBar";
 import { CanvasContextMenu } from "./editor/CanvasContextMenu";
 import { SlidesRail } from "./editor/SlidesRail";
 import { Inspector } from "./editor/inspector";
@@ -94,7 +94,7 @@ export const App: FC = () => {
     onContextHit,
     onZoom,
   } = useEditorShell();
-  const { doc, sel, activeFrame } = store;
+  const { doc, activeFrame } = store;
 
   /* ---------- 未绑定文档 ---------- */
   if (!store.connected) {
@@ -320,7 +320,6 @@ export const App: FC = () => {
                   onDrawDone={() => setDrawTool(null)}
                   refitKey={store.fileRel}
                   surface={effMode}
-                  selToolbar={sel && sel.elIds.length > 0 ? <SelectionBar store={store} multi={sel.elIds.length > 1} /> : undefined}
                 />
               </ContextMenuTrigger>
               <CanvasContextMenu store={store} hit={menuHit} insert={insert} askAI={askAI} zoomApi={zoomApi} deck={deck} />
@@ -391,6 +390,7 @@ export const App: FC = () => {
                     setPen((v) => !v);
                   }}
                   insert={insert}
+                  onDraw={toggleDraw}
                   pickImage={() => fileRef.current?.click()}
                 />
                 <Separator orientation="vertical" className="mx-0.5 !h-5" />
@@ -451,8 +451,26 @@ export const App: FC = () => {
       </Dialog>
 
       {store.notice && (
-        <div className="glass glass-sm pointer-events-none absolute right-3 bottom-14 z-30 max-w-[60%] animate-in fade-in slide-in-from-bottom-2 px-3 py-2 text-xs shadow-lg">
+        <div className="glass glass-sm pointer-events-none absolute right-3 bottom-14 z-30 max-w-[400px] animate-in fade-in slide-in-from-bottom-2 px-3 py-2 text-xs shadow-lg">
           {store.notice}
+        </div>
+      )}
+
+      {/* 绑定档 JSON 损坏的持久横幅：不留神就不会像"插件打开是空的"那么莫名 */}
+      {store.docCorrupt && (
+        <div className="glass absolute left-1/2 top-3 z-40 flex w-[min(560px,calc(100%-24px))] -translate-x-1/2 items-center gap-3 rounded-2xl border border-red-500/40 px-4 py-2.5 text-xs shadow-lg">
+          <TriangleAlertIcon className="size-4 shrink-0 text-red-500" />
+          <span className="min-w-0 flex-1 leading-relaxed">
+            文档 <b className="font-medium">{store.fileRel?.split("/").pop() ?? "当前档"}</b>{" "}
+            的内容无法解析（多半是写坏了 JSON）。编辑器保持空档，<b className="font-medium">不会自动覆盖原文件</b>；
+            可修复文件后回首页重开，或直接在画布上作画并保存来重建。
+          </span>
+          <Button size="sm" variant="secondary" className="h-7 shrink-0 text-[11px]" onClick={() => setHomeOpen(true)}>
+            回首页
+          </Button>
+          <Button size="sm" variant="ghost" className="h-7 shrink-0 text-[11px]" onClick={() => store.dismissDocCorrupt()}>
+            知道了
+          </Button>
         </div>
       )}
 

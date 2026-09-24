@@ -42,6 +42,8 @@ export type DocListItem = {
   objects: number;
   /** 页框布局摘要，供卡片画示意缩略图 */
   preview: { x: number; y: number; w: number; h: number; bg: string }[];
+  /** 盘上存在但 JSON 已损坏（agent 半途写坏等）：卡片墙照常列出并标注，不再静默消失 */
+  corrupt?: boolean;
 };
 
 /* ---------------- 宿主 → UI ---------------- */

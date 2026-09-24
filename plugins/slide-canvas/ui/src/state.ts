@@ -33,6 +33,7 @@ import {
   type SlideTransition,
 } from "./doc";
 import { preloadDocAssets } from "./render";
+import { syncBoundArrows } from "./bind";
 import {
   alignBoxes,
   boxOf,
@@ -72,7 +73,7 @@ export function containerEls(doc: CanvasDoc, containerId: string): El[] | null {
   return doc.frames.find((f) => f.id === containerId)?.elements ?? null;
 }
 
-/** 单选对齐的参照框：页框=画板本身；画布级无容器返回 null（对齐键只在幻灯片出现，见 SelectionBar） */
+/** 单选对齐的参照框：页框=画板本身；画布级无容器返回 null（对齐键只在幻灯片出现，见 Inspector 对齐区） */
 function containerBox(doc: CanvasDoc, containerId: string): Box | null {
   if (containerId === CANVAS_ROOT) return null;
   const f = doc.frames.find((x) => x.id === containerId);
@@ -95,6 +96,8 @@ export function useDeck() {
   const [sel, setSel] = useState<Sel | null>(null);
   const [conflict, setConflict] = useState<{ json: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** 绑定的文档在盘上但解析失败：编辑器顶部持久横幅（4 秒 toast 会被错过，只剩"空画布"像插件坏了） */
+  const [docCorrupt, setDocCorrupt] = useState(false);
   const [surface, setSurface] = useState<Surface>("board");
 
   const historyRef = useRef<{ past: string[]; future: string[]; lastAt: number; lastJson: string }>({
@@ -125,9 +128,11 @@ export function useDeck() {
     }, SAVE_DEBOUNCE_MS);
   }, []);
 
-  /** 应用新文档（不改历史栈；undo/redo/外部开档共用）。opts.freshReset 清历史 */
+  /** 应用新文档（不改历史栈；undo/redo/外部开档共用）。opts.freshReset 清历史。
+   *  统一入口先同步连线绑定（Excalidraw 式：被绑元素动了端点跟着动） */
   const applyDoc = useCallback(
-    (next: CanvasDoc, opts?: { freshReset?: boolean; markDirty?: boolean }) => {
+    (raw: CanvasDoc, opts?: { freshReset?: boolean; markDirty?: boolean }) => {
+      const next = syncBoundArrows(raw);
       if (opts?.freshReset) {
         historyRef.current = { past: [], future: [], lastAt: 0, lastJson: serializeDoc(next) };
         setSel(null);
@@ -135,6 +140,7 @@ export function useDeck() {
       docRef.current = next;
       setDocState(next);
       preloadDocAssets(next);
+      setDocCorrupt(false);
       if (opts?.markDirty !== false) setDirty(true);
     },
     [],
@@ -160,8 +166,10 @@ export function useDeck() {
       } else {
         h.lastAt = now;
       }
-      applyDoc(next);
-      sendSoon(next);
+      // 先同步绑定再发盘：回写的 JSON 与内存/渲染一致（二次 sync 幂等）
+      const synced = syncBoundArrows(next);
+      applyDoc(synced);
+      sendSoon(synced);
     },
     [applyDoc, sendSoon],
   );
@@ -191,8 +199,9 @@ export function useDeck() {
           parsed = null;
         }
         if (!parsed) {
-          // eslint-disable-next-line no-console
-          console.error("[e2e-diag] parseDoc null; json head:", json.slice(0, 160), "| direct-parse typeof:", (() => { try { const o = JSON.parse(json); return typeof o + "/keys:" + Object.keys(o).slice(0, 4).join(","); } catch (e) { return "THROW:" + String(e).slice(0, 80); } })());
+          // 盘上有档但读不回来：置持久横幅。注意此时**不发 doc.change**，
+          // 编辑器的空态不会被写回覆盖掉坏档（保留用户修复的机会）。
+          setDocCorrupt(true);
           notifyLater("文档不是有效的画布 JSON，已保持原内容");
           return;
         }
@@ -782,6 +791,8 @@ export function useDeck() {
     createDoc,
     flushSave,
     notifyLater,
+    docCorrupt,
+    dismissDocCorrupt: () => setDocCorrupt(false),
     canUndo: historyRef.current.past.length > 0,
     canRedo: historyRef.current.future.length > 0,
   };

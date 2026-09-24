@@ -17,6 +17,7 @@ import {
   sessionCacheMissStats,
   type SummarizeFn,
 } from "../../src/agent/context";
+import { makeMidTurnCompactionHook } from "../../src/protocol/prompt-pipeline";
 import { COMPACTION_SUMMARY_PREFIX } from "@earendil-works/pi-agent-core";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { Running } from "../../src/types";
@@ -398,6 +399,140 @@ describe("contextInfo", () => {
     expect(info.hardLimit).toBe(2_000);
     expect(info.messageTokens).toBeGreaterThanOrEqual(2_000);
     expect(info.needsCompaction).toBe(true);
+  });
+});
+
+describe("makeMidTurnCompactionHook", () => {
+  /** 钩子通知 spy：phase 序列 + complete 时的 outcome */
+  function spyNotify() {
+    const phases: string[] = [];
+    let lastOutcome: unknown;
+    return {
+      phases,
+      fn: (phase: "start" | "complete" | "failed", outcome?: unknown) => {
+        phases.push(phase);
+        if (outcome) lastOutcome = outcome;
+      },
+      get outcome() {
+        return lastOutcome;
+      },
+    };
+  }
+
+  test("越线：就地压缩并返回摘要上下文，checkpoint/state/通知齐全", async () => {
+    const run = makeRun(
+      [userMsg("x".repeat(9_000)), assistantMsg("ok")],
+      fakeModel(4_000, 1_000),
+    );
+    const spy = spyNotify();
+    const hook = makeMidTurnCompactionHook(run, spy.fn, {
+      summarize: async () => "MID-TURN SUMMARY",
+    });
+    const update = await hook({} as never, undefined);
+    // 返回替换上下文：下一轮请求只看摘要头
+    expect(update).toBeDefined();
+    expect(update!.context).toBeDefined();
+    const ctxMessages = update!.context!.messages as unknown as Message[];
+    expect(ctxMessages.length).toBe(1);
+    expect(isSummaryMessage(ctxMessages[0] as never)).toBe(true);
+    // state 同步重写 + checkpoint 落盘
+    expect((run.agent.state.messages as unknown[]).length).toBe(1);
+    expect(run.persistedSeq).toBe(1);
+    expect(readCompaction(run.sessionId)!.details).toMatchObject({
+      generation: 1,
+      strategy: "summary",
+    });
+    expect(spy.phases).toEqual(["start", "complete"]);
+    expect(spy.outcome).toMatchObject({ ok: true, summarized: true });
+  });
+
+  test("未越线：返回 undefined，零通知零副作用", async () => {
+    const run = makeRun([userMsg("hi"), assistantMsg("yo")], fakeModel(4_000, 1_000));
+    const spy = spyNotify();
+    const hook = makeMidTurnCompactionHook(run, spy.fn);
+    expect(await hook({} as never, undefined)).toBeUndefined();
+    expect(spy.phases).toEqual([]);
+    expect(readCompaction(run.sessionId)).toBeUndefined();
+    expect((run.agent.state.messages as unknown[]).length).toBe(2);
+  });
+
+  test("用户 Stop / signal 已中止：直接放行", async () => {
+    const stopped = makeRun(
+      [userMsg("x".repeat(9_000)), assistantMsg("ok")],
+      fakeModel(4_000, 1_000),
+    );
+    stopped.stopRequested = true;
+    const stoppedSpy = spyNotify();
+    expect(
+      await makeMidTurnCompactionHook(stopped, stoppedSpy.fn)({} as never, undefined),
+    ).toBeUndefined();
+    expect(stoppedSpy.phases).toEqual([]);
+
+    const aborted = makeRun(
+      [userMsg("x".repeat(9_000)), assistantMsg("ok")],
+      fakeModel(4_000, 1_000),
+    );
+    const abortedSpy = spyNotify();
+    expect(
+      await makeMidTurnCompactionHook(aborted, abortedSpy.fn)(
+        {} as never,
+        AbortSignal.abort(),
+      ),
+    ).toBeUndefined();
+    expect(abortedSpy.phases).toEqual([]);
+  });
+
+  test("摘要请求失败且未 Stop：fresh_window 兜底仍装填并返回替换上下文", async () => {
+    const run = makeRun(
+      [userMsg("x".repeat(9_000)), assistantMsg("ok")],
+      fakeModel(4_000, 1_000),
+    );
+    // 钩子走 runCompaction 默认 summarize（真实模型请求）→ 无凭据必失败
+    const spy = spyNotify();
+    const update = await makeMidTurnCompactionHook(run, spy.fn)({} as never, undefined);
+    expect(update).toBeDefined();
+    expect(spy.phases).toEqual(["start", "complete"]);
+    expect(spy.outcome).toMatchObject({ ok: true, summarized: false });
+    const text = (
+      run.agent.state.messages[0] as unknown as { content: { text: string }[] }
+    ).content[0].text;
+    expect(text).toContain("[context rollover");
+  });
+});
+
+describe("usedTokens 口径", () => {
+  test("usage 可用：usedTokens 即请求总占用，不再叠加系统提示词/工具", () => {
+    const run = makeRun([
+      userMsg("hi"),
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "a" }],
+        stopReason: "stop",
+        usage: { input: 5_000, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 5_100 },
+      } as unknown as Message,
+    ]);
+    const state = run.agent.state as unknown as Record<string, unknown>;
+    state.systemPrompt = "x".repeat(40);
+    state.tools = [
+      { name: "bash", description: "run", parameters: { type: "object" } },
+    ];
+    const info = contextInfo(run);
+    expect(info.messageTokens).toBe(5_100);
+    expect(info.usedTokens).toBe(5_100);
+  });
+
+  test("无 usage：usedTokens = 消息 + 系统提示词 + 工具 三项相加", () => {
+    const run = makeRun([userMsg("hi")]);
+    const state = run.agent.state as unknown as Record<string, unknown>;
+    state.systemPrompt = "x".repeat(40); // 10 token
+    state.tools = [
+      { name: "bash", description: "run", parameters: { type: "object" } },
+    ];
+    const info = contextInfo(run);
+    expect(info.usedTokens).toBe(
+      info.messageTokens + info.systemPromptTokens + info.toolTokens,
+    );
+    expect(info.systemPromptTokens).toBe(10);
   });
 });
 

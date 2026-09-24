@@ -69,7 +69,7 @@ describe("use_skill", () => {
       description: "写提交信息时使用",
       content: "遵循 Conventional Commits，参考 templates/example.txt。",
     });
-    const tool = buildSkillUseTool(ws);
+    const tool = buildSkillUseTool(ws, "thread-test");
     const res = await call(tool, { name: "commit-style" });
     expect(res.text).toContain('已加载技能 "commit-style"（系统）');
     expect(res.text).toContain(join(sysDir, "commit-style.md"));
@@ -84,7 +84,7 @@ describe("use_skill", () => {
       description: "写提交信息时使用",
       content: "更新后的指令正文。",
     });
-    const tool = buildSkillUseTool(ws);
+    const tool = buildSkillUseTool(ws, "thread-test");
     const res = await call(tool, { name: "commit-style" });
     expect(res.text).toContain("更新后的指令正文");
   });
@@ -95,14 +95,14 @@ describe("use_skill", () => {
       description: "本仓库提交规范",
       content: "项目层指令。",
     });
-    const tool = buildSkillUseTool(ws);
+    const tool = buildSkillUseTool(ws, "thread-test");
     const res = await call(tool, { name: "commit-style" });
     expect(res.text).toContain("项目层指令");
     expect(res.text).toContain("（项目）");
   });
 
   test("未知名报错并列出可用技能", async () => {
-    const tool = buildSkillUseTool(ws);
+    const tool = buildSkillUseTool(ws, "thread-test");
     const res = await call(tool, { name: "no-such-skill" });
     expect(res.text).toMatch(/^错误：/);
     expect(res.text).toContain("commit-style");
@@ -116,7 +116,7 @@ describe("use_skill", () => {
     });
     await ensureSkillsLoaded(ws);
     await setSkillsEnabled([{ scope: "system", name: "quiet-skill" }], false);
-    const tool = buildSkillUseTool(ws);
+    const tool = buildSkillUseTool(ws, "thread-test");
     const res = await call(tool, { name: "quiet-skill" });
     expect(res.text).toMatch(/^错误：/);
     expect(res.text).toContain("启用开关已关闭");
@@ -131,14 +131,14 @@ describe("use_skill", () => {
       disableModelInvocation: true,
     });
     await ensureSkillsLoaded(ws);
-    const tool = buildSkillUseTool(ws);
+    const tool = buildSkillUseTool(ws, "thread-test");
     const res = await call(tool, { name: "manual-only" });
     expect(res.text).toMatch(/^错误：/);
     expect(res.text).toContain("不可模型调用");
   });
 
   test("空名报错", async () => {
-    const tool = buildSkillUseTool(ws);
+    const tool = buildSkillUseTool(ws, "thread-test");
     const res = await call(tool, { name: "  " });
     expect(res.text).toMatch(/^错误：/);
   });

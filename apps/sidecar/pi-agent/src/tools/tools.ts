@@ -30,6 +30,7 @@ import { buildMemoryTools } from "../agent/memory";
 import { buildSkillUseTool } from "../skills/skill-use-tool";
 import { buildMcpTool } from "../mcp/mcp-tools";
 import { buildEchoImageTool } from "./echo-image-tool";
+import { resolveSecretEnv } from "../secrets/secrets";
 
 /** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
 const MAX_WALKED_FILES = 5000;
@@ -224,14 +225,31 @@ function buildGrepTool(cwd: string): AgentTool {
   };
 }
 
+/** 模型参数 → 宿主信封。**保留字段在这里被摘掉**：`secretEnv` 只能由本侧的
+ *  augment 决定；模型若在自己的参数里伪造同名键（工具 schema 里没有，但不妨碍
+ * 它多吐一个字段），放行就等于绕过用户的密钥授权策略去注入任意密钥。
+ * 纯函数，便于单测这条边界。 */
+export function buildHostToolPayload(
+  params: Record<string, unknown>,
+  extra?: Record<string, unknown>,
+): Record<string, unknown> {
+  const base = { ...params };
+  delete base.secretEnv;
+  delete base.secretEnvResolved;
+  return extra && Object.keys(extra).length ? { ...base, ...extra } : base;
+}
+
 /** bash/read/write/edit：schema 留本侧，执行转发给 Rust 宿主（tool_exec.rs）；
- *  threadId 供 write/edit 落盘成功后的"面板认领文件自动开板"回路（open-panel-tool） */
+ *  threadId 供 write/edit 落盘成功后的"面板认领文件自动开板"回路（open-panel-tool）；
+ *  augment 在 execute 内追加宿主信封字段（bash 用它挂密钥注入名单——**不进工具
+ *  schema**，模型无法自己要求密钥）。 */
 function hostTool(
   name: string,
   cwd: string,
   threadId: string,
   description: string,
   parameters: AgentTool["parameters"],
+  augment?: () => Record<string, unknown>,
 ): AgentTool {
   return {
     name,
@@ -239,13 +257,14 @@ function hostTool(
     description,
     parameters,
     execute: async (_id, params, signal) => {
-      // signal 透传给 hostToolCall：中断时向宿主发 host_cancel，bash 会被杀进程树
-      const data = await hostToolCall(
-        name,
-        cwd,
+      // 宿主信封 = 模型给的参数（剔除保留字段）+ 本侧追加字段
+      // （augment 只给名字，值在 Rust 侧查出，见 docs/secrets-env-design.md）
+      const payload = buildHostToolPayload(
         params as Record<string, unknown>,
-        signal ?? undefined,
+        augment?.(),
       );
+      // signal 透传给 hostToolCall：中断时向宿主发 host_cancel，bash 会被杀进程树
+      const data = await hostToolCall(name, cwd, payload, signal ?? undefined);
       // 落盘成功（失败已在 hostToolCall 抛出，走不到这里）：若文件被某 UI 面板
       // 的 opens 声明认领，自动发 data-pluginOpen——AI 写画布文档时用户端必上屏，
       // 不再依赖模型记得显式开板。异常绝不允许影响工具结果。
@@ -280,6 +299,13 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
           Type.Number({ description: "Timeout in milliseconds (default 120000)" }),
         ),
       }),
+      // 密钥注入：只把**名字**挂到信封上（值在 Rust 侧查库解密 + 输出脱敏，
+      // 见 docs/secrets-env-design.md）。名单由用户绑定 + 本线程已加载技能决定，
+      // 模型无从指定；本次没命中任何绑定时返回空对象，信封与从前完全一致。
+      () => {
+        const secretEnv = resolveSecretEnv(cwd, threadId);
+        return secretEnv.length ? { secretEnv } : {};
+      },
     ),
     hostTool("read", cwd, threadId,
       "Read a text file. Returns up to 64KB with line numbers. " +
@@ -334,8 +360,9 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
     // 记忆三件套（write/read/search）：常驻注册（工具表稳定缓存友好），开关在
     // execute 内实时门控；cwd 供工作区作用域定位（rebindRunCwd 会重建）
     ...buildMemoryTools(cwd),
-    // 技能调用：按名加载生效技能正文（只读动作，不进审批；见 skill-use-tool.ts）
-    buildSkillUseTool(cwd),
+    // 技能调用：按名加载生效技能正文（只读动作，不进审批；见 skill-use-tool.ts）；
+    // threadId 供"已加载技能"台账登记（密钥注入的判定条件之一）
+    buildSkillUseTool(cwd, threadId),
     // MCP 网关（search/describe/call/status）：常驻注册的代理工具，全部服务器
     // 的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd 会重建）
     buildMcpTool(cwd, threadId),

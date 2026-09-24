@@ -6,7 +6,7 @@
  * 宿主不支持 doc.list（旧版本）时退化为"空历史 + 只能新建"，不阻塞使用。
  */
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
-import { ChevronLeftIcon, LayoutTemplateIcon, PlusIcon, PresentationIcon, RefreshCwIcon, ShapesIcon, SparklesIcon } from "lucide-react";
+import { ChevronLeftIcon, LayoutTemplateIcon, PlusIcon, PresentationIcon, RefreshCwIcon, ShapesIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,6 +43,18 @@ const Preview: FC<{ item: DocListItem }> = ({ item }) => {
       for (let y = 6; y < H; y += 10) for (let x = 6; x < W; x += 10) ctx.fillRect(x, y, 1, 1);
     }
     const fs = item.preview;
+    if (item.corrupt) {
+      // 损坏档没内容可画：斜线占位，一眼区别于"空白画布"
+      ctx.strokeStyle = "rgba(220,38,38,0.28)";
+      ctx.lineWidth = 1;
+      for (let d = -H; d < W; d += 12) {
+        ctx.beginPath();
+        ctx.moveTo(d, H);
+        ctx.lineTo(d + H, 0);
+        ctx.stroke();
+      }
+      return;
+    }
     if (fs.length === 0) return;
     const minX = Math.min(...fs.map((f) => f.x));
     const minY = Math.min(...fs.map((f) => f.y));
@@ -276,12 +288,26 @@ export const Home: FC<{ store: DeckStore; currentPath: string | null; onEnter: (
                   <Preview item={it} />
                   <div className="flex min-w-0 items-center gap-2 px-0.5">
                     <span className="truncate text-[13px] font-medium">{it.name}</span>
-                    <span className="bg-secondary text-muted-foreground shrink-0 rounded-md px-1.5 py-0.5 text-[10px]">{KIND_META[it.kind].label}</span>
+                    {it.corrupt ? (
+                      <span className="shrink-0 rounded-md bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-500">损坏</span>
+                    ) : (
+                      <span className="bg-secondary text-muted-foreground shrink-0 rounded-md px-1.5 py-0.5 text-[10px]">{KIND_META[it.kind].label}</span>
+                    )}
                     {it.path === currentPath && <span className="text-primary shrink-0 text-[10px]">当前</span>}
                   </div>
-                  <div className="text-muted-foreground truncate px-0.5 text-[10px]">
-                    {it.kind === "deck" ? `${it.frames} 页` : `${it.frames} 页 · ${it.objects} 元素`} · {it.path}
-                  </div>
+                  {it.corrupt ? (
+                    /* truncate 必须挂在块级 span 上：flex 容器的 truncate 对匿名文本节点不生效（溢出裁不住） */
+                    <div className="text-red-500/80 flex min-w-0 items-center gap-1 px-0.5 text-[10px]">
+                      <TriangleAlertIcon className="size-3 shrink-0" />
+                      <span className="min-w-0 truncate">
+                        内容已损坏 · 打开不会覆盖原文件，可修复后再开 {it.path}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="text-muted-foreground truncate px-0.5 text-[10px]">
+                      {it.kind === "deck" ? `${it.frames} 页` : `${it.frames} 页 · ${it.objects} 元素`} · {it.path}
+                    </div>
+                  )}
                 </button>
               ))}
             </div>

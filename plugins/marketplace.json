@@ -9,6 +9,14 @@
       "description": "无限画布幻灯片工作台：固定比例画板、轻量编辑、放映与 .pptx 导出",
       "category": "效率",
       "keywords": ["canvas", "slides", "pptx", "presentation"]
+    },
+    {
+      "name": "office",
+      "source": "./office",
+      "version": "0.1.0",
+      "description": "办公套件工作台（首发幻灯片）：逐页编辑、放映与 .pptx 导出，文档为 *.deck.canvas.json；后续扩展文档/表格",
+      "category": "效率",
+      "keywords": ["office", "slides", "pptx", "presentation", "deck"]
     }
   ]
 }

@@ -21,13 +21,15 @@ import {
  * 登记表：reqId → 单字段状态机（phase），替代 v2 的四布尔旗标：
  *   pending  sendMessages 已登记、乐观摘除已做，等 sidecar 定论
  *   queued   快照确认排队（消息保持在数组外）
- *   steered  已并入当前轮（气泡等宿主轮流收尾再回填）
- * 转移只有五条，全部幂等：
+ *   steered  已并入当前轮（徽标等宿主轮流收尾时清除，不回填气泡——并入内容
+ *            已随本轮回复呈现）
+ * 转移只有六条，全部幂等：
  *   pending → queued            快照确认（或登记表无记录时按快照合成，刷新恢复）
  *   pending → （销毁+回填）      start chunk：sidecar 空闲竞态直接开跑，没排队
  *   pending → （销毁+回填）      流终结：sidecar 拒绝（如队列已满）
  *   queued  → （销毁+回填）      出快照 = 派发出队，立即回填（此刻无并发写入）
- *   steered → （销毁+回填）      宿主轮流收尾（steered 流 finish 补发时）
+ *   steered → （销毁，不回填）   宿主轮流收尾（steered 流 finish 补发时）
+ *   steered → queued            快照里它仍在 = 并入被拒（竞态），回退排队态
  * 「回填」唯一出口是 syncListener(kind:"reveal")，追加乐观消息到数组末尾；
  * 用户取消的条目在调用前已销登记，出快照不会误回填。
  *
@@ -110,8 +112,9 @@ function applySnapshot(snapshot: QueueSnapshot): void {
   const seen = new Set<string>();
   for (const item of snapshot.items) seen.add(item.reqId);
 
-  // 入快照：排队确认。已有登记 pending→queued；无登记（刷新恢复/重启回放）
-  // 按快照文本合成登记。两者都发一次 remove（幂等：消息已不在数组时是 no-op）
+  // 入快照：排队确认。已有登记 pending→queued；steered 仍在快照 = 并入被拒
+  // （活跃轮恰好收尾等），回退 queued；无登记（刷新恢复/重启回放）按快照文本
+  // 合成登记。pending/回退两者都发一次 remove（幂等：消息已不在数组时是 no-op）
   const onRemove: RegisteredMessage[] = [];
   for (const item of snapshot.items) {
     const existing = registry.get(item.reqId);
@@ -119,6 +122,10 @@ function applySnapshot(snapshot: QueueSnapshot): void {
       if (existing.phase === "pending") {
         existing.phase = "queued";
         onRemove.push(existing);
+      } else if (existing.phase === "steered") {
+        // 快照权威：sidecar 队列里还有它 = 未受理并入，徽标随之消失，
+        // 自愈一切「并入被拒但登记滞留 steered」的路径
+        existing.phase = "queued";
       }
     } else {
       const reg: RegisteredMessage = {
@@ -163,7 +170,8 @@ export function setQueueSyncListener(
 }
 
 /** 流终结（finish/error/abort/客户端停止）：该请求生命周期的收尾。
- *  - steered：宿主轮流已收尾，此刻回填（排队确认时已摘除）
+ *  - steered：宿主轮流已收尾，只清登记（徽标消失）；并入内容已随本轮回复
+ *    呈现，不回填气泡（回填只会落在回复下面，与 transcript 顺序不符）
  *  - pending：sidecar 从未入队（直接拒绝，如队列已满）且已被乐观摘除 → 回填
  *  - 其余（派发项已回填销登记等）：no-op。并清除该线程的派发空窗标记。 */
 export function unregisterQueuedMessage(requestId: string, threadId: string): void {
@@ -173,7 +181,12 @@ export function unregisterQueuedMessage(requestId: string, threadId: string): vo
   }
   const reg = registry.get(requestId);
   if (!reg) return;
-  if (reg.phase === "steered" || reg.phase === "pending") {
+  if (reg.phase === "steered") {
+    registry.delete(requestId);
+    notify();
+    return;
+  }
+  if (reg.phase === "pending") {
     registry.delete(requestId);
     notify();
     syncListener?.(reg, "reveal");
@@ -350,11 +363,20 @@ export async function promoteQueueItem(reqId: string): Promise<void> {
 }
 
 /** 并入当前轮：注入活跃轮（不中止不排队）。先置 steered 再发请求——随后的
- *  出快照不得派发回填，气泡等宿主轮流收尾 */
+ *  出快照不得派发回填，徽标等宿主轮流收尾；请求被拒（活跃轮恰好收尾等）
+ *  则回退排队态并 notify（条目仍在快照里，排队条原样接住），防徽标滞留 */
 export async function steerQueueItem(reqId: string): Promise<void> {
   const reg = registry.get(reqId);
   if (reg) reg.phase = "steered";
-  await getPiChannel().request({ type: "queue_steer", requestId: reqId });
+  try {
+    await getPiChannel().request({ type: "queue_steer", requestId: reqId });
+  } catch (err) {
+    if (reg && reg.phase === "steered") {
+      reg.phase = "queued";
+      notify();
+    }
+    throw err;
+  }
 }
 
 /** 清空镜像/登记表/空窗标记（测试隔离用） */

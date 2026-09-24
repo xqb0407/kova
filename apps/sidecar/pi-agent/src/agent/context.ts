@@ -455,6 +455,10 @@ export type ContextInfoResult = {
   messageTokens: number;
   systemPromptTokens: number;
   toolTokens: number;
+  /** 模型可见的请求总占用：usage 可用时 messageTokens 已含系统提示词与工具
+   *  定义（取末条 assistant 的 provider 用量），直接作总数；纯估算口径才
+   *  三项相加。占用环/推送一律用本字段，叠加两项会把环推到虚高越线 */
+  usedTokens: number;
   messageCount: number;
   /** 已发生的压缩代数（0 = 从未压缩） */
   generation: number;
@@ -487,10 +491,20 @@ export type ContextInfoInput = {
 export function contextInfoFrom(input: ContextInfoInput): ContextInfoResult {
   const model = input.model;
   const messages = input.messages;
-  const estimated = estimateContextTokens(messages).tokens;
+  const estimate = estimateContextTokens(messages);
+  const estimated = estimate.tokens;
   const budget = model ? contextBudget(messages, model) : null;
   const usage = sessionUsageTotals(input.sessionId);
   const checkpoint = readCompaction(input.sessionId);
+  const systemPromptTokens = estimateTextTokens(input.systemPrompt);
+  const toolTokens = estimateTextTokens(
+    input.tools
+      .map(
+        (t) =>
+          `${t.name}\n${t.description ?? ""}\n${t.parameters ? JSON.stringify(t.parameters) : ""}`,
+      )
+      .join("\n"),
+  );
   return {
     model: model
       ? { provider: model.provider, id: model.id, name: model.name }
@@ -500,15 +514,9 @@ export function contextInfoFrom(input: ContextInfoInput): ContextInfoResult {
       : 0,
     hardLimit: budget?.hardLimit ?? 0,
     messageTokens: estimated,
-    systemPromptTokens: estimateTextTokens(input.systemPrompt),
-    toolTokens: estimateTextTokens(
-      input.tools
-        .map(
-          (t) =>
-            `${t.name}\n${t.description ?? ""}\n${t.parameters ? JSON.stringify(t.parameters) : ""}`,
-        )
-        .join("\n"),
-    ),
+    systemPromptTokens,
+    toolTokens,
+    usedTokens: estimate.usageTokens > 0 ? estimated : estimated + systemPromptTokens + toolTokens,
     messageCount: messages.length,
     generation: input.compactionGeneration,
     lastCompaction: checkpoint

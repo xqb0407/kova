@@ -8,7 +8,7 @@ import { containerEls, useDeck } from "@/state";
 import { exportPptx } from "@/export";
 import { exportHtml, exportSvgAll } from "@/export-svg";
 import { bridge } from "@/bridge";
-import { CANVAS_ROOT, docKindOf, isDarkColor, PAGE_SIZES, slideFrames, type El } from "@/doc";
+import { CANVAS_ROOT, docKindOf, isDarkColor, PAGE_SIZES, slideFrames, type El, type ShapeKind } from "@/doc";
 import { setEmbedActive } from "@/render";
 import { newEl, type EditorMode, type SelKind } from "./newEl";
 
@@ -20,8 +20,9 @@ export function useEditorShell() {
   const [exporting, setExporting] = useState(false);
   const [zoomPct, setZoomPct] = useState(100);
   const [pen, setPen] = useState(false);
-  /** 画线工具（L 直线 / A 箭头 / 双箭头）：按下从起点拖到尾点成元素；null = 未启用 */
-  const [drawTool, setDrawTool] = useState<"line" | "arrow" | "double-arrow" | "curve-arrow" | null>(null);
+  /** 拖画工具（形状类全 kind：L/A/C、R/D/O 与「插入」面板按钮激活）：
+   *  右键按住拖动（左键需空白处）起框/起线，抬手成元素；null = 未启用 */
+  const [drawTool, setDrawTool] = useState<ShapeKind | null>(null);
   const [menuHit, setMenuHit] = useState<ContextHit | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const zoomApi = useRef<ZoomApi | null>(null);
@@ -96,8 +97,9 @@ export function useEditorShell() {
     [store, doc.frames, doc.meta.pagePreset, effMode],
   );
 
-  /** 直线/箭头画线工具：与钢笔/抓手互斥；再次按同键（或 Esc/V）退出。启用后按下即从起点拖到尾点成元素 */
-  const toggleDraw = useCallback((kind: "line" | "arrow" | "double-arrow" | "curve-arrow") => {
+  /** 拖画工具（线类＋形状）：与钢笔/抓手互斥；再次按同键（或 Esc/V）退出。
+   *  启用后右键按住从起点拖到尾点（形状＝拖出外接框）成元素 */
+  const toggleDraw = useCallback((kind: ShapeKind) => {
     setPen(false);
     setHand(false);
     setDrawTool((v) => (v === kind ? null : kind));
@@ -260,17 +262,15 @@ export function useEditorShell() {
         setDrawTool(null);
         setHand((v) => !v);
       } else if (!mod && !e.shiftKey && !e.altKey && key === "r") {
-        insert("rect");
+        toggleDraw("rect");
       } else if (!mod && !e.shiftKey && !e.altKey && key === "d") {
-        insert("diamond");
+        toggleDraw("diamond");
       } else if (!mod && !e.shiftKey && !e.altKey && key === "o") {
-        insert("ellipse");
+        toggleDraw("ellipse");
       } else if (!mod && !e.shiftKey && !e.altKey && key === "a") {
         toggleDraw("arrow");
       } else if (!mod && !e.shiftKey && !e.altKey && key === "l") {
         toggleDraw("line");
-      } else if (!mod && !e.shiftKey && !e.altKey && key === "c") {
-        toggleDraw("curve-arrow");
       } else if (!mod && !e.shiftKey && !e.altKey && key === "t") {
         insert("text");
       } else if (!mod && !e.shiftKey && !e.altKey && key === "m") {

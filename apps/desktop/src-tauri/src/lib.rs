@@ -14,6 +14,7 @@ mod pi_agent;
 mod pty;
 mod remote;
 mod secret;
+mod secret_env;
 mod store;
 mod tool_exec;
 mod webhook;

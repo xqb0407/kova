@@ -86,6 +86,12 @@
  *   { "type": "set_memory", "id", "settings" }                → { id, type: "memory", settings }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization）
  *   { "type": "get_browser", "id" }                           → { id, type: "browser", settings }（浏览器驱动开关：browser_* 工具是否可用）
  *   { "type": "set_browser", "id", "settings" }               → { id, type: "browser", settings }（落 SQLite kv 即生效，工具 execute 实时门控）
+ *   { "type": "list_secrets", "id" }                          → { id, type: "secrets", entries, enabled, bindings }（密钥清单**只回名字与掩码**，明文落 Rust 侧密文存储，无 RPC 出口）
+ *   { "type": "save_secret", "id", "name", "scope", "value"?, "skills"?, "cwd"? } → 刷新后的密钥清单
+ *       value 留空 = 只改绑定不改值（编辑弹窗不回填明文）；skills 给出即整条替换该名字的技能白名单；scope = "global"|"workspace"（workspace 需 cwd）
+ *   { "type": "delete_secret", "id", "name", "scope", "cwd"? } → 刷新后的密钥清单（连带摘掉该名字的绑定）
+ *   { "type": "save_secret_bindings", "id", "enabled"?, "bindings"? } → 刷新后的密钥清单（总开关 + 绑定整包覆盖，落 SQLite kv）
+ *       绑定语义见 secrets/secrets.ts：技能白名单 ["*"] = 任意 bash 调用，空数组 = 不注入（默认拒绝）
  *   { "type": "get_observability", "id" }                     → { id, type: "observability", settings }（可观测性导出配置：OTLP 端点/鉴权头/采样率/脱敏）
  *   { "type": "set_observability", "id", "settings" }         → { id, type: "observability", settings }（落 SQLite kv 即生效，otlp-exporter 实时门控）
  *   { "type": "test_observability", "id", "settings"? }       → { id, type: "observability_tested", result }（探针 span 试发：settings 缺省用当前配置，10s 超时）

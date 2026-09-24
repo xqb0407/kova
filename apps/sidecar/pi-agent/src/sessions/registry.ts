@@ -12,6 +12,7 @@ import {
   rememberThreadSession,
 } from "./pending-interactions";
 import { clearTodoState } from "../todo/todo";
+import { clearLoadedSkills } from "../secrets/secrets";
 import type { Running } from "../types";
 
 /**
@@ -188,6 +189,8 @@ export function touchSession(threadId: string): void {
  *  approval 挂在 run 上、question 挂在轮内——两者所在会话不可驱逐，无残留。 */
 export function forgetThreadStates(threadId: string): void {
   clearTodoState(threadId);
+  // 已加载技能台账同理：密钥注入的判定条件按线程累积，线程走了就清
+  clearLoadedSkills(threadId);
 }
 
 /** 超上限即从最久未访问处驱逐（justLoaded 线程豁免：它代表用户当前意图）。

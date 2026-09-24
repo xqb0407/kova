@@ -127,6 +127,31 @@ export const credentialSet = (provider: string, apiKey: string) =>
 
 export const credentialDelete = (provider: string) => query("credential_delete", { provider });
 
+/* ------------------------------ secrets（加密密钥库） ------------------------------ */
+
+/** 密钥清单行：**无明文**（值在 Rust 侧加密落盘，这里只有掩码与可读性标记）。
+ *  scope: "global" | "workspace:<cwd>" */
+export type SecretRow = {
+  name: string;
+  scope: string;
+  /** `****` + 后四位；解不开时为 `****` */
+  masked: string;
+  /** false = 密文解不开（换机 / 主密钥丢失），UI 据此提示需重填 */
+  readable: boolean;
+  updatedAt: string;
+};
+
+/** 密钥清单（只回名字与掩码）。明文没有 RPC 出口：Rust 侧不提供 secret_get，
+ *  注入路径也只在 Rust 进程内解密，见 docs/secrets-env-design.md §1.1 */
+export const secretList = () => query<SecretRow[]>("secret_list");
+
+export const secretSet = (name: string, scope: string, value: string) =>
+  query("secret_set", { name, scope, value, now: nowIso() });
+
+export const secretDelete = (name: string, scope: string) =>
+  query("secret_delete", { name, scope });
+
+
 export const customProvidersList = () => query<CustomProviderRow[]>("custom_providers_list");
 
 export const customProviderGet = (id: string) =>

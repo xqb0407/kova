@@ -112,7 +112,7 @@ describe("出快照分类", () => {
     expect(getQueueSnapshot(THREAD).items).toHaveLength(0);
   });
 
-  test("steered：出快照后保持登记（phase 不为 queued），宿主轮流收尾时才回填", () => {
+  test("steered：宿主轮流收尾时只清登记不回填（并入内容已随回复呈现）", () => {
     registerQueuedMessage("req-1", THREAD, userMessage("msg-1", "hello"));
     applyQueueStateChunk(THREAD, snapshotOf([{ reqId: "req-1", text: "hello" }]));
 
@@ -124,13 +124,26 @@ describe("出快照分类", () => {
     applyQueueStateChunk(THREAD, snapshotOf([]));
     expect(events).toEqual([]);
 
-    // 仍可见于 steered entries（消息在数组外，等宿主轮流收尾）
+    // 仍可见于 steered entries（徽标数据源，消息在数组外）
     expect(getSteeredEntries(THREAD)).toEqual([{ reqId: "req-1", text: "hello" }]);
 
-    // 宿主轮流收尾：此刻回填
+    // 宿主轮流收尾：徽标消失，气泡不回填
     unregisterQueuedMessage("req-1", THREAD);
-    expect(events.map((e) => e.kind)).toEqual(["reveal"]);
+    expect(events).toEqual([]);
     expect(getSteeredEntries(THREAD)).toEqual([]);
+  });
+
+  test("并入被拒：仍在快照的 steered 登记回退 queued（徽标自愈不滞留）", () => {
+    registerQueuedMessage("req-1", THREAD, userMessage("msg-1", "hello"));
+    applyQueueStateChunk(THREAD, snapshotOf([{ reqId: "req-1", text: "hello" }]));
+    void steerQueueItem("req-1").catch(() => {});
+    expect(getSteeredEntries(THREAD)).toHaveLength(1);
+
+    // sidecar 拒绝并入（活跃轮恰好收尾等）：条目原位保留 → 下一份快照里
+    // 它还在 → 登记回退 queued，徽标消失、排队条原样接住
+    applyQueueStateChunk(THREAD, snapshotOf([{ reqId: "req-1", text: "hello" }]));
+    expect(getSteeredEntries(THREAD)).toEqual([]);
+    expect(getQueueSnapshot(THREAD).items).toHaveLength(1);
   });
 });
 

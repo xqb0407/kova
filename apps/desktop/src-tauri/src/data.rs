@@ -31,6 +31,13 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
             api_key TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS secrets (
+            name TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'global',
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (name, scope)
+        );
         CREATE TABLE IF NOT EXISTS custom_providers (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -342,6 +349,37 @@ fn str_param(params: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing param: {key}"))
 }
 
+/* ------------------------------- 密钥库辅助 ------------------------------- */
+
+/// 单个密钥值上限：密钥是 token 级的短串，8KB 足够且防滥用
+pub const MAX_SECRET_VALUE_BYTES: usize = 8 * 1024;
+
+/// 密钥名规则：它将成为环境变量名，与 MCP 的 ENV_KEY_RE 同款
+/// （sidecar/mcp-config.ts），字母/下划线开头。
+pub fn is_valid_secret_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    name.len() <= 128 && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// 作用域：global（全局）或 workspace:<cwd>（按工作区隔离，覆盖同名全局项）
+pub fn is_valid_secret_scope(scope: &str) -> bool {
+    scope == "global" || (scope.starts_with("workspace:") && scope.len() > "workspace:".len())
+}
+
+/// 掩码规则与 provider key 一致（payloads.ts）：`****` + 后四位
+fn mask_secret(plain: &str) -> String {
+    if plain.chars().count() > 4 {
+        let tail: String = plain.chars().skip(plain.chars().count() - 4).collect();
+        format!("****{tail}")
+    } else {
+        "****".to_string()
+    }
+}
+
 /// 查询 models 行（None = 全部 provider）。attrs 列可空（NULL = 继承内置值），
 /// input_json/cost_json 在此解析为结构化 JSON 返回。
 fn models_query(conn: &Connection, provider: Option<String>) -> Result<Value, String> {
@@ -570,6 +608,75 @@ pub fn handle_host_query(
             let provider = str_param(p, "provider")?;
             conn.execute("DELETE FROM credentials WHERE provider = ?1", params![provider])
                 .map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
+        // ------------------------------- 密钥库（加密） -------------------------------
+        // 值在 Rust 侧加密落盘（secret::encrypt），本层**不提供 secret_get**：
+        // 明文没有任何 RPC 出口，只有 secret_list 回掩码。见 docs/secrets-env-design.md。
+        "secret_list" => {
+            let rows = conn
+                .prepare("SELECT name, scope, value, updated_at FROM secrets ORDER BY name, scope")
+                .map_err(|e| e.to_string())?
+                .query_map([], |row| {
+                    let value: String = row.get(2)?;
+                    // 解密只为算掩码，明文随即丢弃；解不开（换机/主密钥丢失）
+                    // 不报错也不外泄，标 readable=false 交给 UI 提示"需重填"
+                    let masked = match crate::secret::decrypt(&value) {
+                        Ok(plain) => (mask_secret(&plain), true),
+                        Err(_) => ("****".to_string(), false),
+                    };
+                    Ok(json!({
+                        "name": row.get::<_, String>(0)?,
+                        "scope": row.get::<_, String>(1)?,
+                        "masked": masked.0,
+                        "readable": masked.1,
+                        "updatedAt": row.get::<_, String>(3)?,
+                    }))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Array(rows))
+        }
+        "secret_set" => {
+            let name = str_param(p, "name")?;
+            if !is_valid_secret_name(&name) {
+                return Err(
+                    "secret name must match [A-Za-z_][A-Za-z0-9_]* (it becomes an env var name)"
+                        .into(),
+                );
+            }
+            let scope = p.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
+            if !is_valid_secret_scope(scope) {
+                return Err("secret scope must be \"global\" or \"workspace:<cwd>\"".into());
+            }
+            let value = str_param(p, "value")?;
+            if value.is_empty() {
+                return Err("secret value is required".into());
+            }
+            if value.len() > MAX_SECRET_VALUE_BYTES {
+                return Err(format!(
+                    "secret value too large ({} bytes > {MAX_SECRET_VALUE_BYTES})",
+                    value.len()
+                ));
+            }
+            let now = str_param(p, "now")?;
+            conn.execute(
+                "INSERT INTO secrets (name, scope, value, updated_at) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(name, scope) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                params![name, scope, crate::secret::encrypt(&value), now],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
+        "secret_delete" => {
+            let name = str_param(p, "name")?;
+            let scope = p.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
+            conn.execute(
+                "DELETE FROM secrets WHERE name = ?1 AND scope = ?2",
+                params![name, scope],
+            )
+            .map_err(|e| e.to_string())?;
             Ok(json!({}))
         }
         "custom_providers_list" => {
@@ -838,7 +945,12 @@ pub fn dispatch_host_query(db: &std::sync::Mutex<Connection>, msg: &Value) -> Va
         // 注意：不进 db 锁——长 bash 期间不阻塞其他 host_query，且 id 登记进
         // 在飞表后 sidecar 的 host_cancel{id} 可随时杀掉对应进程树。
         if kind == "tool" {
-            return crate::tool_exec::handle_tool(&id, &params);
+            let mut envelope = params;
+            // 密钥注入：sidecar 只送名字（p.secretEnv），这里短暂持锁解成明文写进
+            // p.secretEnvResolved，明文不跨 RPC 边界、不进长命令的锁窗口。
+            // 无 secretEnv 时零开销（不取锁），行为与从前一致。
+            crate::secret_env::resolve_into_envelope(db, &mut envelope);
+            return crate::tool_exec::handle_tool(&id, &envelope);
         }
         let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
         handle_host_query(&conn, kind, &params)

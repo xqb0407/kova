@@ -43,6 +43,13 @@ export function initLocalStorage(dbPath: string): void {
       api_key TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS secrets (
+      name TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'global',
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (name, scope)
+    );
     CREATE TABLE IF NOT EXISTS custom_providers (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -445,6 +452,34 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
         return {};
       case "credential_delete":
         db.query("DELETE FROM credentials WHERE provider = ?").run(s("provider"));
+        return {};
+      // 密钥库：local 模式无 Rust secret.rs，**明文存表**（仅测试/冒烟，
+      // 生产路径永远是 Rust 侧的 enc:v1: 密文 + OS keychain 主密钥）。
+      // 掩码规则与 Rust data.rs mask_secret 对齐：**** + 后四位。
+      case "secret_list":
+        return db
+          .query<{ name: string; scope: string; value: string; updated_at: string }, []>(
+            "SELECT name, scope, value, updated_at FROM secrets ORDER BY name, scope",
+          )
+          .all()
+          .map((r) => ({
+            name: r.name,
+            scope: r.scope,
+            masked: r.value.length > 4 ? `****${r.value.slice(-4)}` : "****",
+            readable: true,
+            updatedAt: r.updated_at,
+          }));
+      case "secret_set":
+        db.query(
+          "INSERT INTO secrets (name, scope, value, updated_at) VALUES (?, ?, ?, ?) " +
+            "ON CONFLICT(name, scope) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        ).run(s("name"), str(p.scope) || "global", s("value"), s("now"));
+        return {};
+      case "secret_delete":
+        db.query("DELETE FROM secrets WHERE name = ? AND scope = ?").run(
+          s("name"),
+          str(p.scope) || "global",
+        );
         return {};
       case "custom_providers_list":
         return db

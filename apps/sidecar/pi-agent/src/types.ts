@@ -175,6 +175,10 @@ export type Running = {
   delegations: Map<string, DelegationRecord>;
   /** 用户 Stop 置位：中止后台子代理并退出收敛循环 */
   stopRequested: boolean;
+  /** runPromptTurn 收尾段（finally）置位：此刻起不再受理 steer——挂起 finish
+   *  的补发已随收尾执行过，之后再受理的并入其 finish 永远没人补发（前端
+   *  「已并入」徽标滞留不消失） */
+  turnEnding?: boolean;
   /** 本用户 prompt 轮内"length 截断无 toolCall"已注入的自动续跑次数（每轮重置，见 context.ts；缺省视为 0） */
   lengthContinues?: number;
   /** 当前模式（agent = 正常执行；plan = 只读勘察 + 计划编写） */

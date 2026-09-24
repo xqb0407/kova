@@ -22,6 +22,7 @@ import {
   parseSkillDoc,
   skillsSnapshot,
 } from "./skills";
+import { noteSkillLoaded } from "../secrets/secrets";
 
 export const SKILL_USE_TOOL_NAME = "use_skill";
 
@@ -45,7 +46,7 @@ function errorResult(text: string) {
   };
 }
 
-export function buildSkillUseTool(cwd: string): AgentTool {
+export function buildSkillUseTool(cwd: string, threadId: string): AgentTool {
   return {
     name: SKILL_USE_TOOL_NAME,
     label: "调用技能",
@@ -102,6 +103,9 @@ export function buildSkillUseTool(cwd: string): AgentTool {
         "",
         parsed.draft.content,
       ].join("\n");
+      // 台账登记：本线程加载过哪些技能 = 密钥注入的另一半判定条件
+      // （用户把密钥绑定给技能，只有该技能真的进了上下文才注入）
+      noteSkillLoaded(threadId, parsed.draft.name);
       return textResult(text, { name: parsed.draft.name, path: hit.path, scope: hit.scope });
     },
   };
