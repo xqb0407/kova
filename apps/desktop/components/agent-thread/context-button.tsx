@@ -141,11 +141,13 @@ export const ContextButton: FC = () => {
   // 空对话没有上下文可看，不占 composer 位
   if (!threadId || messageCount === 0) return null;
 
-  // 占用环数据源：§7 镜像优先（轮收尾推送直更，常态在线），完整读数兜底
+  // 占用环数据源：§7 镜像优先（轮收尾推送直更，常态在线），完整读数兜底。
+  // usedTokens 是 sidecar 统一口径的请求总占用（usage 已含系统提示词/工具，
+  // 不得再叠加两项——重复计数会把环推到虚高越线）；旧 sidecar 缺字段时三项相加
   const used = mirror
     ? mirror.usedTokens
     : info
-      ? info.messageTokens + info.systemPromptTokens + info.toolTokens
+      ? (info.usedTokens ?? info.messageTokens + info.systemPromptTokens + info.toolTokens)
       : 0;
   const capacity = mirror ? mirror.contextWindow : info ? info.contextWindow : 0;
   // 自动压缩阈值（hardLimit）：占用距它的百分比常显在 title/popover

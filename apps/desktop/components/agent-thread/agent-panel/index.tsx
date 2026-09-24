@@ -16,7 +16,7 @@ import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { WindowControls } from "@/components/window-controls";
 import { cn } from "@/lib/utils";
-import { TabBar } from "./tab-bar";
+import { NewTabMenu, TabBar } from "./tab-bar";
 import { TAB_META, TabContentView, useVisiblePanelTabTypes } from "./tab-registry";
 
 /**
@@ -241,14 +241,23 @@ const PanelShell: FC<{
         />
       ) : (
         // 无标签时不渲染标签条:默认即"打开标签页"空态(Codex 同形),
-        // 但顶栏（拖拽区 + 右缘动作）常驻
+        // 但顶栏（拖拽区 + "+"新标签菜单 + 右缘动作）常驻——
+        // 零标签也能直接开标签/插件面板,不必先靠下方卡片网格
         <div
           data-tauri-drag-region={desktop ? "deep" : undefined}
           className={cn(
-            "border-border/80 flex h-12 shrink-0 items-center justify-end border-b-[0.5]",
+            "border-border/80 flex h-12 shrink-0 items-center justify-end gap-1 border-b-[0.5]",
             winControls && showWindowControls ? "pr-0" : "pr-2",
           )}
         >
+          <div
+            className={cn(
+              "flex items-center transition-opacity duration-150",
+              barHidden && "pointer-events-none opacity-0",
+            )}
+          >
+            <NewTabMenu />
+          </div>
           {barActions}
         </div>
       )}

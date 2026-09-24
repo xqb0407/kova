@@ -29,6 +29,9 @@ export const contextInfoSchema = z.looseObject({
   messageTokens: z.number(),
   systemPromptTokens: z.number(),
   toolTokens: z.number(),
+  /** 模型可见的请求总占用（usage 口径已含系统提示词/工具，等于 messageTokens；
+   *  纯估算口径为三项相加）。旧 sidecar 无此字段时按三项相加兜底 */
+  usedTokens: z.number().optional(),
   messageCount: z.number(),
   /** 已发生的压缩代数（0 = 从未压缩） */
   generation: z.number(),

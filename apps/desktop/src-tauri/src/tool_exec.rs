@@ -186,8 +186,16 @@ fn resolve_shell_command() -> (String, Vec<String>) {
 }
 
 /// 运行 shell 命令：合并 stdout/stderr，超时或收到取消（host_cancel）时
-/// taskkill /T /F 杀进程树提前退出
-fn run_bash(cwd: &str, command: &str, timeout_ms: u64, cancel: &CancelGuard) -> Result<Value, String> {
+/// taskkill /T /F 杀进程树提前退出。
+/// `secrets`：本次调用要注入的环境变量（名字 + 明文；由 secret_env 在进锁窗口外
+/// 解析好），只影响这一个派生进程——绝不写进父进程环境。
+fn run_bash(
+    cwd: &str,
+    command: &str,
+    timeout_ms: u64,
+    cancel: &CancelGuard,
+    secrets: &[(String, String)],
+) -> Result<Value, String> {
     let (file, prefix_args) = resolve_shell_command();
     let mut cmd = Command::new(&file);
     cmd.args(&prefix_args)
@@ -196,6 +204,7 @@ fn run_bash(cwd: &str, command: &str, timeout_ms: u64, cancel: &CancelGuard) -> 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    crate::secret_env::apply_env(&mut cmd, secrets);
     no_window(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| format!("failed to spawn {file}: {e}"))?;
@@ -291,6 +300,9 @@ fn run_bash(cwd: &str, command: &str, timeout_ms: u64, cancel: &CancelGuard) -> 
         }
     };
     let suffix = if truncated { "\n…[output truncated]" } else { "" };
+    // 脱敏必须在回程前做：输出一旦返回 sidecar 就顺着 tool_execution_end
+    // 进转录落盘，那时明文已经跟着写出去了。见 docs/secrets-env-design.md §1.6。
+    let out = crate::secret_env::redact(&out, secrets);
     Ok(json!({
         "output": format!("{out}{status}{suffix}"),
         "truncated": truncated,
@@ -349,9 +361,23 @@ fn handle_read(p: &Value) -> Result<Value, String> {
     Ok(json!({ "output": format!("{slice}{more}"), "totalLines": all_lines.len() }))
 }
 
+/// `.json` 落盘守门：内容解析不过就拒绝写入，错误回给 agent 让它当轮改正。
+/// 动机：edit 对 JSON 做纯文本替换可以轻易吃掉结构符号（agent 把画布档改坏、
+/// 面板"打开是空的"的事故源）；宁可工具报错也不留下坏档。非 .json 不受影响。
+fn guard_json(file_path: &str, content: &str) -> Result<(), String> {
+    if !file_path.rsplit('.').next().is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
+        return Ok(());
+    }
+    serde_json::from_str::<Value>(content).map_err(|e| {
+        format!("{file_path} would not be valid JSON after this change ({e}); write the whole file with corrected content instead of a partial edit")
+    })?;
+    Ok(())
+}
+
 fn handle_write(p: &Value) -> Result<Value, String> {
     let file_path = str_param(p, "file_path")?;
     let content = str_param(p, "content")?;
+    guard_json(&file_path, &content)?;
     let cwd = p.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
     let full = resolve_path(cwd, &file_path)?;
     if let Some(parent) = std::path::Path::new(&full).parent() {
@@ -386,6 +412,8 @@ fn handle_edit(p: &Value) -> Result<Value, String> {
     } else {
         text.replacen(&old_string, &new_string, 1)
     };
+    // 先验后写：解析不过就整个拒绝，盘上原文件分毫不动
+    guard_json(&file_path, &updated)?;
     std::fs::write(&full, updated.as_bytes()).map_err(|e| format!("failed to write {file_path}: {e}"))?;
     let count = if replace_all && occurrences > 1 { occurrences } else { 1 };
     Ok(json!({ "output": format!("Replaced {count} occurrence(s) in {file_path}") }))
@@ -726,7 +754,10 @@ pub fn handle_tool(id: &str, p: &Value) -> Result<Value, String> {
                 .get("timeout")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(DEFAULT_BASH_TIMEOUT_MS);
-            run_bash(&cwd, &command, timeout_ms, &guard)
+            // 注入用的明文由 dispatch_host_query 预处理写在信封上（名字走
+            // p.secretEnv，见 secret_env.rs）；读出来只喂给这一个派生进程
+            let secrets = crate::secret_env::take_resolved(p);
+            run_bash(&cwd, &command, timeout_ms, &guard, &secrets)
         }
         "read" => handle_read(&inner),
         "write" => handle_write(&inner),
@@ -772,6 +803,31 @@ mod tests {
     }
 
     #[test]
+    fn write_rejects_broken_json_and_keeps_old_file() {
+        let dir = std::env::temp_dir().join(format!("pi-tool-jsonguard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("d.canvas.json");
+        std::fs::write(&file, r#"{"objects": []}"#).unwrap();
+        // write 整档写坏：拒绝，原文件不动
+        let p = json!({ "file_path": file.to_string_lossy(), "content": "{\"objects\": [}" });
+        assert!(handle_write(&p).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), r#"{"objects": []}"#);
+        // edit 把结构符号吃掉：同样拒绝
+        let pe = json!({
+            "file_path": file.to_string_lossy(),
+            "old_string": "[",
+            "new_string": "",
+            "replace_all": false
+        });
+        assert!(handle_edit(&pe).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), r#"{"objects": []}"#);
+        // 合法 JSON 正常通过
+        let ok = json!({ "file_path": file.to_string_lossy(), "content": "{\"objects\": []}" });
+        assert!(handle_write(&ok).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn write_creates_parents_and_reports_bytes() {
         let dir = std::env::temp_dir().join(format!("pi-tool-write-{}", std::process::id()));
         let file = dir.join("a/b/c.txt");
@@ -786,7 +842,7 @@ mod tests {
     fn bash_runs_and_captures_output() {
         // Windows 下 Git Bash/cmd 都能跑 echo（bash.exe 缺失时回退 cmd.exe）
         let guard = CancelGuard::new("t-run-ok");
-        let out = run_bash(".", "echo pi-smoke-bash-ok", 10_000, &guard).unwrap();
+        let out = run_bash(".", "echo pi-smoke-bash-ok", 10_000, &guard, &[]).unwrap();
         assert_eq!(out["exitCode"], 0);
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("pi-smoke-bash-ok"), "output: {text}");
@@ -799,12 +855,39 @@ mod tests {
         // Unix 用 sleep 2（ping -n 在 BSD/macOS 是不同语义，会立即报错）
         let cmd = if cfg!(windows) { "ping -n 3 127.0.0.1" } else { "sleep 2" };
         let guard = CancelGuard::new("t-timeout");
-        let out = run_bash(".", cmd, 300, &guard).unwrap();
+        let out = run_bash(".", cmd, 300, &guard, &[]).unwrap();
         assert_eq!(out["exitCode"], Value::Null);
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[timeout]"), "output: {text}");
     }
 
+    /// 密钥注入 + 脱敏的端到端（Rust 侧）：注入的明文能被命令读到，
+    /// 但回给模型的输出里只有 [REDACTED:NAME]。
+    #[test]
+    fn bash_injects_secrets_and_redacts_output() {
+        let guard = CancelGuard::new("t-secret-inject");
+        let secrets = vec![("DEMO_TOKEN".to_string(), "s3cr3t-value-9x".to_string())];
+        let cmd = if cfg!(windows) {
+            "echo %DEMO_TOKEN%"
+        } else {
+            "printf %s \"$DEMO_TOKEN\""
+        };
+        let out = run_bash(".", cmd, 10_000, &guard, &secrets).unwrap();
+        assert_eq!(out["exitCode"], 0);
+        let text = out["output"].as_str().unwrap();
+        assert!(text.contains("[REDACTED:DEMO_TOKEN]"), "output: {text}");
+        assert!(!text.contains("s3cr3t-value-9x"), "plaintext leaked: {text}");
+    }
+
+    /// 未注入时不脱敏（值不在环境里，命令也读不到）——空 secrets 的全量回归
+    #[test]
+    fn bash_without_secrets_leaves_output_untouched() {
+        let guard = CancelGuard::new("t-no-secret");
+        let out = run_bash(".", "echo visible-token-abc", 10_000, &guard, &[]).unwrap();
+        let text = out["output"].as_str().unwrap();
+        assert!(text.contains("visible-token-abc"), "output: {text}");
+        assert!(!text.contains("[REDACTED"), "output: {text}");
+    }
     /// 取消在跑的 bash：cancel_tool(id) 置标志 + taskkill 杀进程树，run_bash 快速带 [cancelled] 返回
     #[test]
     fn bash_cancel_stops_running_command() {
@@ -817,7 +900,7 @@ mod tests {
             cancel_tool(&id_owned);
         });
         let start = Instant::now();
-        let out = run_bash(".", cmd, 60_000, &guard).unwrap();
+        let out = run_bash(".", cmd, 60_000, &guard, &[]).unwrap();
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[cancelled]"), "output: {text}");
         assert_eq!(out["cancelled"], json!(true));
@@ -840,7 +923,7 @@ mod tests {
         let guard = CancelGuard::new(id);
         cancel_tool(id); // 模拟 host_cancel 先于 bash 启动到达
         let cmd = if cfg!(windows) { "ping -n 30 127.0.0.1" } else { "sleep 30" };
-        let out = run_bash(".", cmd, 60_000, &guard).unwrap();
+        let out = run_bash(".", cmd, 60_000, &guard, &[]).unwrap();
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[cancelled]"), "output: {text}");
     }

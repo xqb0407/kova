@@ -24,7 +24,8 @@ import { cn } from "cn";
 /**
  * prompt 排队条（composer 上方）——队列 v3，全部操作只有三个：
  *  - 并入当前回复（steer）：注入活跃轮，不中止本轮；条目转入「已并入当前回复」
- *    徽标区，宿主轮流收尾时气泡回填、徽标消失
+ *    徽标区（多条折叠为一行，防越并越长），宿主轮流收尾时徽标消失——并入
+ *    内容已随本轮回复呈现，不再回填独立气泡
  *  - 立即发送（promote）：中止当前轮、该项插队马上执行
  *  - 删除（cancel）：取消排队项
  * 渲染完全由 data-queue-state 快照驱动（sidecar 是唯一事实源）；排队中的消息
@@ -136,22 +137,26 @@ export const PromptQueueBar: FC = () => {
       className="mb-2 flex flex-col gap-1.5"
       data-slot="aui-prompt-queue-bar"
     >
-      {/* 已并入当前回复：只读徽标，宿主轮流收尾后随气泡回填自动消失 */}
-      {steered.map((item) => (
+      {/* 已并入当前回复：折叠为一条（多条并入不越堆越长），宿主轮流收尾后消失 */}
+      {steered.length > 0 && steered[0] && (
         <div
-          key={item.reqId}
           className="border-border/50 dark:border-muted-foreground/10 flex items-center gap-2 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-3.5 pl-3.5 backdrop-blur-md"
           data-slot="aui-queue-steered"
         >
           <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
-          <span className="text-foreground/70 min-w-0 flex-1 truncate text-sm">
-            {item.text}
+          <span
+            className="text-foreground/70 min-w-0 flex-1 truncate text-sm"
+            title={steered.map((item) => item.text).join("\n")}
+          >
+            {steered.length === 1
+              ? steered[0].text
+              : `${steered[0].text} 等 ${steered.length} 条`}
           </span>
           <span className="text-muted-foreground/70 shrink-0 text-[11px] leading-none">
             已并入当前回复
           </span>
         </div>
-      ))}
+      )}
       {snapshot.items.length > 0 && (
         <div className="text-muted-foreground/70 pl-3.5 text-[11px] leading-none tabular-nums">
           {snapshot.items.length} 条排队

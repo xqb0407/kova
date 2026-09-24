@@ -120,25 +120,34 @@ description: 用「无限画布 · 幻灯片」面板创作/修改画布文档�
 - 便捷写法：`"text": "纯文本"` 等价于单 run。换行直接放 `\n`（渲染 pre-wrap）。
 - 一个文本框内多 run 是同一框内的行内混排；不同段落/样式请拆成多个 text 元素。
 
-### shape —— 矩形/椭圆/多边形/直线/箭头/弧线箭头
+### shape —— 矩形/椭圆/多边形/直线/箭头
 
 ```jsonc
 {
   "kind": "shape", "id": "r1", "shape": "rect",
   "x": 80, "y": 560, "w": 240, "h": 8,
-  "fill": "#0a84ff",          // #hex 或 "none"；线类（line/arrow/double-arrow/curve-arrow）无 fill
+  "fill": "#0a84ff",          // #hex 或 "none"；线类（line/arrow/double-arrow）无 fill
   "stroke": "#1d1d1f",        // #hex 或 "none"，缺省 none
   "strokeWidth": 2,           // 0–40
   "radius": 12                // 仅 rect：圆角像素
 }
 ```
 
-`shape` 取 `rect | ellipse | diamond | triangle | trapezoid | pentagon | hexagon | star | line | arrow | double-arrow | curve-arrow`。
+`shape` 取 `rect | ellipse | diamond | triangle | trapezoid | pentagon | hexagon | star | line | arrow | double-arrow`。
 线类从 `(x,y)` 画到 `(x+w, y+h)`（w/h 用正值摆方向，导出仅按端点直线）；`arrow` 尾点单箭头、
 `double-arrow` 两端箭头。多边形（diamond/triangle/trapezoid/pentagon/hexagon/star）按 bbox 内切
 绘制，几何与 PowerPoint 预设形状对齐（star 内半径 0.382）。
-`curve-arrow` 弧线箭头：`(x,y)→(x+w,y+h)` 为弦，二次贝塞尔弯曲，`curve`（[-1,1]，缺省 0.3）
-控制拱向——正值沿行进方向逆时针拱（水平弦向上拱），负值反向；箭头头沿终点切线。
+线类通用 `curve` 弧度（[-1,1]，缺省/0＝直线）：以弦二次贝塞尔弯曲，正值沿行进方向逆时针拱
+（水平弦向上拱），负值反向；箭头头沿切线。编辑器属性面板有滑杆可调。
+（历史兼容：旧文档的 `curve-arrow` 载入时自动迁移为 `arrow` + `curve`，新档不要再写。）
+线类可选 `pts` 折点数组（多点折线/折形箭头）：`"pts": [[x1,y1],[x2,y2],…]`，**相对包围盒
+左上角**的局部坐标（一位小数，3–200 点）。≥3 点时线身走折线、`curve` 与 `dir` 对角语义被
+忽略；包围盒应为全折点的并集（编辑器会按并集自动 rebase，写档时大致给对即可）。首/末点即
+端点，仍可与 `startBind`/`endBind` 共存——绑定重算只换首末点，中间折点原样保留。
+编辑器画布上选中折线后可拖顶点、拖段中点插入折点、Alt 点内部顶点删除。
+线类可选**连线绑定**：`"startBind": "元素id"` / `"endBind": "元素id"`，端点吸附到**同一容器内**
+（同一 objects 或同一 frame 的 elements）的该元素边缘。写档时端点几何可随意给，编辑器会自动重算
+并随被绑元素移动跟随——给两元素连 `arrow` 就两端各绑一个，比手算坐标稳。
 
 ### image —— 图片
 

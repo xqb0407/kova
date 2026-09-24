@@ -13,8 +13,7 @@ import {
 } from "@/lib/panels/artifacts";
 import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
 import { findPanelForFile, usePluginPanels } from "@/lib/plugins/plugin-panels";
-import { getWorkspace } from "@/lib/workspace/workspace-store";
-import { isTauri } from "@/lib/tauri";
+import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
 import { cn } from "@/lib/utils";
 
 /** 彩色文件图标（material-file-icons ~1.5MB）按需加载，别拉进消息列表主 chunk */
@@ -38,32 +37,34 @@ const iconBtn =
 export const ArtifactCard: FC<{ artifact: MessageArtifact }> = ({
   artifact,
 }) => {
-  const workspace = isTauri() ? getWorkspace() : null;
+  // 有效工作目录：当前工作区 → 任务工作区兜底（异步补齐后自动重渲染）。
+  // 没有它就没有任何相对路径可谈：预览/在画布中打开都以它为锚。
+  const cwd = usePanelCwd();
   // 地球按钮只对能在浏览器里渲染的类型出现（md 等交给「代码」的文件标签预览）
-  const canPreview = !!workspace && isBrowserPreviewable(artifact.path);
+  const canPreview = !!cwd && isBrowserPreviewable(artifact.path);
   // 产物命中已装面板的 opens glob（如 *.canvas.json）→ 追加「在画布中打开」
-  const relPath = workspace && artifact.path.startsWith(`${workspace}/`)
-    ? artifact.path.slice(workspace.length + 1)
+  const relPath = cwd && artifact.path.startsWith(`${cwd}/`)
+    ? artifact.path.slice(cwd.length + 1)
     : artifact.path;
   const { panels } = usePluginPanels();
-  const panelForFile = workspace ? findPanelForFile(panels, relPath) : undefined;
+  const panelForFile = cwd ? findPanelForFile(panels, relPath) : undefined;
 
   const openCode = () => {
     focusPanelTab("file", { focus: artifact.toolCallId, title: artifact.base });
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   const openPreview = () => {
-    if (!workspace) return;
+    if (!cwd) return;
     focusPanelTab("browser", {
-      url: toFileUrl(workspace, artifact.path),
+      url: toFileUrl(cwd, artifact.path),
       title: artifact.base,
     });
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   const openInPanel = () => {
-    if (!workspace || !panelForFile) return;
+    if (!cwd || !panelForFile) return;
     focusPluginPanel(panelForFile.pluginId, panelForFile.panel.id, {
-      cwd: workspace,
+      cwd,
       path: relPath,
     });
     window.dispatchEvent(new Event("agent-panel:open"));

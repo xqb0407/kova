@@ -1,0 +1,10 @@
+[
+  {
+    "id": "office",
+    "title": "幻灯片",
+    "icon": "icon.svg",
+    "entry": "office.html",
+    "opens": ["*.deck.canvas.json"],
+    "permissions": ["document", "export", "agent", "notify"]
+  }
+]

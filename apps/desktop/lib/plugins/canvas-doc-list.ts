@@ -8,7 +8,9 @@ import type { DocListItem } from "./ui-plugin-bridge";
  *
  * 走 Tauri fs 命令（workspace 信任根 + 相对路径守卫），刻意只做浅扫：
  * 根目录 + 两层子目录、最多 60 份——首页卡片不是文件浏览器，穷尽仓库没有意义；
- * 每份档读内容做摘要（名称/类型/页框布局），读不动或解析失败的直接跳过。
+ * 每份档读内容做摘要（名称/类型/页框布局）；JSON 解析失败的**照常列出并打
+ * corrupt 标记**——静默跳过会让用户以为文档丢了（task 模式"打开是空的"的
+ * 帮凶之一），坏档在卡片上可见才能被发现和处理。
  * mtime 目前恒为 0（Rust 侧列目录不做逐项 stat），排序退化为按名称。
  */
 
@@ -46,12 +48,28 @@ export async function listCanvasDocs(cwd: string | null): Promise<DocListItem[]>
     try {
       doc = JSON.parse(f.content) as Record<string, unknown>;
     } catch {
-      continue;
+      doc = null;
     }
-    items.push(summarize(path, doc));
+    // 解析失败不静默丢：坏档也要在卡片墙上现身（标注 + 可删），
+    // 否则用户只会看到"面板是空的"，不知道盘上其实有东西。
+    items.push(doc ? summarize(path, doc) : corruptItem(path));
   }
   items.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
   return items;
+}
+
+/** 内容不可解析的档：只报路径与名字，摘要字段全空 */
+function corruptItem(path: string): DocListItem {
+  return {
+    path,
+    name: (path.split("/").pop() ?? path).replace(/\.canvas\.json$/i, ""),
+    kind: "board",
+    mtime: 0,
+    frames: 0,
+    objects: 0,
+    preview: [],
+    corrupt: true,
+  };
 }
 
 function num(v: unknown, d = 0): number {

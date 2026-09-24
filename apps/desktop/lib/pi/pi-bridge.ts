@@ -467,6 +467,35 @@ export type PiBrowserConfig = {
   enabled: boolean;
 };
 
+/** 密钥清单行（设置 → 智能体 → 密钥）：**没有明文**。
+ *  值的加密与掩码都在 Rust 侧完成（enc:v1: 密文 + OS keychain 主密钥），
+ *  明文不存在于任何应答帧里。见 docs/secrets-env-design.md §1.1 */
+export type PiSecretEntry = {
+  name: string;
+  /** "global" | "workspace:<cwd>" */
+  scope: string;
+  /** `****` + 后四位 */
+  masked: string;
+  /** false = 密文解不开（换机 / 主密钥丢失），需重填 */
+  readable: boolean;
+  updatedAt: string;
+};
+
+/** 一条绑定：把密钥授给哪些技能（["*"] = 任意 bash 调用；空数组 = 不注入） */
+export type PiSecretBinding = {
+  name: string;
+  scope: "global" | "workspace";
+  skills: string[];
+};
+
+/** 密钥页整包（清单 + 绑定策略 + 总开关） */
+export type PiSecretsResponse = {
+  type: "secrets";
+  entries: PiSecretEntry[];
+  enabled: boolean;
+  bindings: PiSecretBinding[];
+};
+
 /** 可观测性导出配置整包（设置 → 系统 → 追踪；sidecar 持久化于 SQLite kv） */
 export type PiObservabilityConfig = {
   /** 总开关：关闭时 run 记录只落本地 traces 文件，不外发 */
@@ -746,6 +775,7 @@ export type PiResponse =
   | { type: "app_mode"; mode: PiAppMode }
   | { type: "memory"; settings: PiMemoryConfig }
   | { type: "browser"; settings: PiBrowserConfig }
+  | PiSecretsResponse
   | { type: "observability"; settings: PiObservabilityConfig }
   | { type: "observability_tested"; result: PiObservabilityTestResult }
   | { type: "hooks_saved" }

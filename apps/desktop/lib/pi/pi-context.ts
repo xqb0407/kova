@@ -101,7 +101,10 @@ export function applyContextChanged(frame: PiContextChangedFrame): void {
 /** 完整读数回填镜像（拉取路径：popover 打开/首屏水合/缺口修复） */
 export function setContextMirrorFromPull(threadId: string, info: PiContextInfo): void {
   contextMirrors.set(threadId, {
-    usedTokens: info.messageTokens + info.systemPromptTokens + info.toolTokens,
+    // 统一口径：sidecar 算好的请求总占用（usage 口径已含系统提示词/工具）。
+    // 旧 sidecar 无该字段时按三项相加兜底
+    usedTokens:
+      info.usedTokens ?? info.messageTokens + info.systemPromptTokens + info.toolTokens,
     threshold: info.hardLimit,
     contextWindow: info.contextWindow,
     cacheHitRatio: info.cacheHitRate,

@@ -1,5 +1,5 @@
 /**
- * 偏好与观测命令：个性化/工作模式/记忆/钩子/浏览器驱动/OTLP 观测/使用统计/轨迹。
+ * 偏好与观测命令：个性化/工作模式/记忆/钩子/浏览器驱动/密钥库/OTLP 观测/使用统计/轨迹。
  * 变更后的活动会话系统提示词热替换走同一套 composeModeSystemPrompt 整段重排。
  */
 import { send } from "../stream";
@@ -23,6 +23,13 @@ import {
 import { getHookConfigs, setHookConfigs } from "../../agent/hooks";
 import { applyBrowserConfig, getBrowserConfig } from "../../tools/browser-config";
 import {
+  applySecretsConfig,
+  getSecretsConfig,
+  isValidSecretName,
+  workspaceScope,
+} from "../../secrets/secrets";
+import { secretDelete, secretList, secretSet } from "../../storage/hostdb";
+import {
   applyObservabilityConfig,
   getObservabilityConfig,
   normalizeObservabilityConfig,
@@ -31,6 +38,23 @@ import { probeOtlpEndpoint } from "../../observability/otlp-exporter";
 import { aggregateUsageStats } from "../../model/usage-stats";
 import { readTraceRuns } from "../trace";
 import type { CommandHandler } from "../command";
+
+/** 密钥作用域展开：协议层收"层级"（global|workspace），落库用展开串（workspace:<cwd>） */
+function expandSecretScope(scope: unknown, cwd: unknown): string | null {
+  if (scope !== "workspace") return "global";
+  const dir = typeof cwd === "string" ? cwd.trim() : "";
+  return dir ? workspaceScope(dir) : null;
+}
+
+/** 密钥页整包应答：清单（无明文）+ 绑定策略，改完即回以刷新 UI */
+async function secretsPayload() {
+  const config = getSecretsConfig();
+  return {
+    entries: await secretList(),
+    enabled: config.enabled,
+    bindings: config.bindings,
+  };
+}
 
 export const handlers: Record<string, CommandHandler> = {
   get_personalization: async (reqId) => {
@@ -131,6 +155,76 @@ export const handlers: Record<string, CommandHandler> = {
 
   get_observability: async (reqId) => {
     send({ id: reqId, type: "observability", settings: getObservabilityConfig() });
+  },
+
+  /* -------------------------------- 密钥库 --------------------------------
+   * 清单只回名字与掩码（明文无 RPC 出口，见 docs/secrets-env-design.md §1.1）；
+   * 值写入直接转 Rust secret_set 加密落盘，sidecar 不持有明文。 */
+  list_secrets: async (reqId) => {
+    send({ id: reqId, type: "secrets", ...(await secretsPayload()) });
+  },
+
+  save_secret: async (reqId, msg) => {
+    const name = String(msg.name ?? "").trim();
+    if (!isValidSecretName(name)) {
+      throw new Error(
+        "save_secret: name must match [A-Za-z_][A-Za-z0-9_]* (it becomes an env var name)",
+      );
+    }
+    const scope = expandSecretScope(msg.scope, msg.cwd);
+    if (!scope) throw new Error("save_secret: workspace scope requires cwd");
+    const value = typeof msg.value === "string" ? msg.value : "";
+    if (value) {
+      await secretSet(name, scope, value);
+    } else {
+      // 值留空 = 不改值（编辑弹窗不回填明文，同 provider key 的处理）。
+      // 但新建时必须给值，否则会出现一条指向空密钥的绑定。
+      const entries = await secretList();
+      if (!entries.some((e) => e.name === name && e.scope === scope)) {
+        throw new Error("save_secret: value is required for a new secret");
+      }
+    }
+    // 技能白名单随同一次保存下发（表单一个弹窗搞定）：给了就整条替换该名字的绑定
+    if (Array.isArray(msg.skills)) {
+      const skills = (msg.skills as unknown[])
+        .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+        .map((s) => s.trim());
+      const config = getSecretsConfig();
+      await applySecretsConfig({
+        enabled: config.enabled,
+        bindings: [
+          ...config.bindings.filter((b) => b.name !== name),
+          ...(skills.length ? [{ name, scope: msg.scope === "workspace" ? "workspace" : "global", skills }] : []),
+        ],
+      });
+    }
+    send({ id: reqId, type: "secrets", ...(await secretsPayload()) });
+  },
+
+  delete_secret: async (reqId, msg) => {
+    const name = String(msg.name ?? "").trim();
+    if (!name) throw new Error("delete_secret: name is required");
+    const scope = expandSecretScope(msg.scope, msg.cwd);
+    if (!scope) throw new Error("delete_secret: workspace scope requires cwd");
+    await secretDelete(name, scope);
+    // 值没了就把绑定一并摘掉，避免留下指向空密钥的授权
+    const config = getSecretsConfig();
+    if (config.bindings.some((b) => b.name === name)) {
+      await applySecretsConfig({
+        enabled: config.enabled,
+        bindings: config.bindings.filter((b) => b.name !== name),
+      });
+    }
+    send({ id: reqId, type: "secrets", ...(await secretsPayload()) });
+  },
+
+  save_secret_bindings: async (reqId, msg) => {
+    const config = getSecretsConfig();
+    await applySecretsConfig({
+      enabled: typeof msg.enabled === "boolean" ? msg.enabled : config.enabled,
+      bindings: Array.isArray(msg.bindings) ? msg.bindings : config.bindings,
+    });
+    send({ id: reqId, type: "secrets", ...(await secretsPayload()) });
   },
 
   set_observability: async (reqId, msg) => {

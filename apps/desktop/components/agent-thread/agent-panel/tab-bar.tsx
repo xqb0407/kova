@@ -153,6 +153,83 @@ const TabChip: FC<{
 };
 
 /**
+ * "+" 新标签菜单:内置标签页类型 + 插件面板贡献(常驻无文档面板的直达入口)。
+ * TabBar 与空态顶栏共用——零标签时也有开标签/插件面板的入口。
+ */
+export const NewTabMenu: FC = () => {
+  const types = useVisiblePanelTabTypes();
+  const { panels } = usePluginPanels();
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <button
+            type="button"
+            aria-label="新标签"
+            title="新标签"
+            className="text-muted-foreground hover:bg-muted hover:text-foreground size-7 shrink-0 rounded-md"
+          >
+            <PlusIcon className="mx-auto size-4" />
+          </button>
+        }
+      />
+      <DropdownMenuContent align="end" className="min-w-44">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>打开标签页</DropdownMenuLabel>
+          {types.map((type) => {
+            const meta = TAB_META[type];
+            const Icon = meta.icon;
+            return (
+              <DropdownMenuItem
+                key={type}
+                // shell 一个标签=一个会话：直接拉起新终端（非复用单例）
+                onClick={() =>
+                  type === "shell" ? newTerminalTab() : openPanelTab(type)
+                }
+              >
+                <Icon className="text-muted-foreground size-3.5 shrink-0" />
+                <span>{meta.label}</span>
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuGroup>
+        {/* 已装插件的 UI 面板贡献：卸载插件条目即消失（opens 文档类面板从
+            产物卡打开更顺手，这里给无文档的常驻面板一个直达入口） */}
+        {panels.length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>插件面板</DropdownMenuLabel>
+              {panels.map((c) => (
+                <DropdownMenuItem
+                  key={`${c.pluginId}#${c.panel.id}`}
+                  onClick={() => focusPluginPanel(c.pluginId, c.panel.id)}
+                >
+                  {c.panel.icon ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={c.panel.icon}
+                      alt=""
+                      className="size-3.5 shrink-0 rounded-sm object-contain"
+                    />
+                  ) : (
+                    <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
+                  )}
+                  <span className="truncate">{c.panel.title}</span>
+                  <span className="text-muted-foreground ml-auto truncate pl-2 text-[10px]">
+                    {c.pluginName}
+                  </span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};
+
+/**
  * 面板标签栏(Codex 同款):左为标签总览下拉(溢出时快速跳转),
  * 中间横向滚动标签条,右为 "+" 新标签菜单,再往右是 actions 插槽
  * (收起按钮/停靠态的 Windows 三键,由 PanelShell 注入)。
@@ -166,8 +243,6 @@ export const TabBar: FC<{
   /** 动作里有贴窗口右缘的三键：去掉右 padding 让按钮对齐窗口边角 */
   flushActions?: boolean;
 }> = ({ tabs, activeId, actions, flushActions }) => {
-  const types = useVisiblePanelTabTypes();
-  const { panels } = usePluginPanels();
   const pillLayoutId = useId();
   return (
     <div
@@ -235,72 +310,7 @@ export const TabBar: FC<{
         ))}
       </div>
 
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <button
-              type="button"
-              aria-label="新标签"
-              title="新标签"
-              className="text-muted-foreground hover:bg-muted hover:text-foreground size-7 shrink-0 rounded-md"
-            >
-              <PlusIcon className="mx-auto size-4" />
-            </button>
-          }
-        />
-        <DropdownMenuContent align="end" className="min-w-44">
-          <DropdownMenuGroup>
-            <DropdownMenuLabel>打开标签页</DropdownMenuLabel>
-            {types.map((type) => {
-              const meta = TAB_META[type];
-              const Icon = meta.icon;
-              return (
-                <DropdownMenuItem
-                  key={type}
-                  // shell 一个标签=一个会话：直接拉起新终端（非复用单例）
-                  onClick={() =>
-                    type === "shell" ? newTerminalTab() : openPanelTab(type)
-                  }
-                >
-                  <Icon className="text-muted-foreground size-3.5 shrink-0" />
-                  <span>{meta.label}</span>
-                </DropdownMenuItem>
-              );
-            })}
-          </DropdownMenuGroup>
-          {/* 已装插件的 UI 面板贡献：卸载插件条目即消失（opens 文档类面板从
-              产物卡打开更顺手，这里给无文档的常驻面板一个直达入口） */}
-          {panels.length > 0 && (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                <DropdownMenuLabel>插件面板</DropdownMenuLabel>
-                {panels.map((c) => (
-                  <DropdownMenuItem
-                    key={`${c.pluginId}#${c.panel.id}`}
-                    onClick={() => focusPluginPanel(c.pluginId, c.panel.id)}
-                  >
-                    {c.panel.icon ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={c.panel.icon}
-                        alt=""
-                        className="size-3.5 shrink-0 rounded-sm object-contain"
-                      />
-                    ) : (
-                      <PlusIcon className="text-muted-foreground size-3.5 shrink-0" />
-                    )}
-                    <span className="truncate">{c.panel.title}</span>
-                    <span className="text-muted-foreground ml-auto truncate pl-2 text-[10px]">
-                      {c.pluginName}
-                    </span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuGroup>
-            </>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <NewTabMenu />
 
       {actions ? (
         <div className="flex shrink-0 items-center">{actions}</div>

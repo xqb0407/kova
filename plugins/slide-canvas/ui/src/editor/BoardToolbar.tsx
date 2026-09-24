@@ -1,6 +1,8 @@
 /**
  * 白板顶部工具条（自 App.tsx 拆出）：高频工具直出 + 「插入」面板收纳其余（点击展开）。
- * 点击一律"插入成品"；拖拽画线/箭头走 A/L 快捷键。
+ * 形状区（线类＋面类共 11 种）点击一律**激活拖画工具**——右键（或左键空白处）按住
+ * 拖动起线/起框，抬手成元素；不在画布中间塞默认成品。表格/图表/Mermaid 等复合
+ * 元素仍是"点击插入成品"。
  */
 import { useState, type FC } from "react";
 import {
@@ -21,7 +23,6 @@ import {
   PentagonIcon,
   ShapesIcon,
   SquareIcon,
-  SplineIcon,
   StarIcon,
   TableIcon,
   TriangleIcon,
@@ -33,6 +34,7 @@ import { Hint } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import type { DeckStore } from "@/state";
+import type { ShapeKind } from "@/doc";
 import type { SelKind } from "./newEl";
 
 /* ---------------- 白板顶部工具条（高频直出 + 插入面板，参考 Excalidraw 的收敛思路） ---------------- */
@@ -41,13 +43,15 @@ export const BoardToolbar: FC<{
   store: DeckStore;
   pen: boolean;
   hand: boolean;
-  drawTool: "line" | "arrow" | "double-arrow" | "curve-arrow" | null;
+  drawTool: ShapeKind | null;
   onSelect: () => void;
   onHand: () => void;
   onPen: () => void;
   insert: (kind: SelKind) => void;
+  /** 形状区：激活/退出拖画工具（与快捷键 A/L、R/D/O 同一开关） */
+  onDraw: (kind: ShapeKind) => void;
   pickImage: () => void;
-}> = ({ pen, hand, drawTool, onSelect, onHand, onPen, insert, pickImage }) => {
+}> = ({ pen, hand, drawTool, onSelect, onHand, onPen, insert, onDraw, pickImage }) => {
   const [insertOpen, setInsertOpen] = useState(false);
   type Tool = { key: string; Icon: FC<{ className?: string }>; label: string; hint: string; active: boolean; onClick: () => void; sepBefore?: boolean };
   const tools: Tool[] = [
@@ -80,7 +84,7 @@ export const BoardToolbar: FC<{
       ))}
       <Separator orientation="vertical" className="mx-1 !h-6" />
       <Popover open={insertOpen} onOpenChange={setInsertOpen}>
-        <Hint label="插入：形状 / 表格 / 图表 / Mermaid / 网页 / SVG" side="bottom">
+        <Hint label="形状＝激活拖画工具（右键按住拖动画出）；表格/图表/Mermaid/网页/SVG＝点击插入" side="bottom">
           <PopoverTrigger asChild>
             <Button variant="ghost" size="icon-sm" className="sc-tool" aria-label="插入">
               <ShapesIcon className="size-4" />
@@ -102,24 +106,30 @@ export const BoardToolbar: FC<{
                 ["line", MinusIcon, "直线"],
                 ["arrow", ArrowUpRightIcon, "箭头"],
                 ["double-arrow", MoveHorizontalIcon, "双箭头"],
-                ["curve-arrow", SplineIcon, "弧线箭头"],
               ] as const
-            ).map(([kind, Icon, label]) => (
-              <Button
-                key={kind}
-                variant="ghost"
-                className={shapeBtn}
-                title={kind === "line" || kind === "arrow" || kind === "double-arrow" ? `${label}（点击插入；或按 A/L 键拖拽绘制）` : kind === "curve-arrow" ? "弧线箭头（点击插入；按 C 键拖拽画弧）" : label}
-                aria-label={label}
-                onClick={() => {
-                  insert(kind);
-                  setInsertOpen(false);
-                }}
-              >
-                <Icon className="size-4" />
-                <span>{label}</span>
-              </Button>
-            ))}
+            ).map(([kind, Icon, label]) => {
+              // 形状区一律＝激活拖画工具（右键按住拖动起线/起框），不塞默认成品
+              const active = drawTool === kind;
+              const keyHint: Partial<Record<ShapeKind, string>> = { rect: "R", diamond: "D", ellipse: "O", arrow: "A", line: "L" };
+              const key = keyHint[kind];
+              return (
+                <Button
+                  key={kind}
+                  variant="ghost"
+                  className={`${shapeBtn}${active ? " bg-accent !text-foreground" : ""}`}
+                  title={`${label}：激活拖画工具，右键按住拖动${kind === "line" || kind === "arrow" || kind === "double-arrow" ? "起线" : "画出外形"}${key ? `（快捷键 ${key}）` : ""}；再点一次或 Esc 退出`}
+                  aria-label={label}
+                  aria-pressed={active}
+                  onClick={() => {
+                    onDraw(kind);
+                    setInsertOpen(false);
+                  }}
+                >
+                  <Icon className="size-4" />
+                  <span>{label}</span>
+                </Button>
+              );
+            })}
           </div>
           <div className="bg-border my-1.5 h-px" />
           <div className="grid grid-cols-5 gap-1">

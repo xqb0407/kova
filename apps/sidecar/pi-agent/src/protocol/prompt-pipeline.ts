@@ -11,9 +11,15 @@
  */
 import { logAt, logErr } from "../log";
 import type { ImageContent } from "@earendil-works/pi-ai";
+import type { Agent } from "@earendil-works/pi-agent-core";
 import type { ErrorPayload } from "pi-protocol";
 import { classifyAgentError, toWireError } from "../agent/agent-errors";
-import { contextInfo, needsCompaction, runCompaction } from "../agent/context";
+import {
+  contextInfo,
+  needsCompaction,
+  runCompaction,
+  type CompactionOutcome,
+} from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
 import { clearPendingToolApprovals, composeModeSystemPrompt } from "../agent/modes";
 import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
@@ -58,6 +64,62 @@ function compactionChunkData(outcome: {
   };
 }
 
+/** §7 context_changed 推送：轮收尾与轮间压缩后共用（桌面占用环镜像直更） */
+function pushContextChanged(run: Running): void {
+  if (!run.sessionId) return;
+  const info = contextInfo(run);
+  send(
+    withEventSeq(run.sessionId, {
+      type: "context_changed" as const,
+      sessionId: run.sessionId,
+      usedTokens: info.usedTokens,
+      threshold: info.hardLimit,
+      contextWindow: info.contextWindow,
+      cacheHitRatio: info.cacheHitRate,
+    }),
+  );
+}
+
+/** 轮间自动压缩钩子（Claude Code 式）：core 循环在每轮工具结果落位后、下一次
+ *  模型请求前调用 prepareNextTurn（vendor 注释明言该缝为 compaction 预留）。
+ *  占用越线就地压缩：复用边界压缩同一条 runCompaction（checkpoint 落盘、state
+ *  重写为摘要头），返回替换上下文让下一轮请求直接以摘要继续——长任务不再等整
+ *  轮结束或溢出兜底。压缩失败不阻塞本轮（溢出有恢复路径兜底）。notify 转发
+ *  start/complete/failed 生命周期（runPromptTurn 接 data-compaction part 与
+ *  context_changed 推送，钩子本体不碰传输层，保持可单测）。 */
+export type MidTurnCompactionHook = NonNullable<Agent["prepareNextTurnWithContext"]>;
+
+export function makeMidTurnCompactionHook(
+  run: Running,
+  notify: (
+    phase: "start" | "complete" | "failed",
+    outcome?: CompactionOutcome,
+  ) => void,
+  /** 测试注入假摘要实现；生产缺省走 core generateSummary */
+  opts?: { summarize?: import("../agent/context").SummarizeFn },
+): MidTurnCompactionHook {
+  return async (_lastTurn, signal) => {
+    if (run.stopRequested || signal?.aborted) return undefined;
+    if (!needsCompaction(run)) return undefined;
+    notify("start");
+    logAt("event", `mid-turn compaction: threshold crossed -> ${run.sessionId}`);
+    const outcome = await runCompaction(run, "threshold", opts);
+    if (!outcome.ok) {
+      if (!run.stopRequested) logErr("mid-turn compaction failed:", outcome.message);
+      notify("failed");
+      return undefined;
+    }
+    notify("complete", outcome);
+    return {
+      context: {
+        systemPrompt: run.agent.state.systemPrompt ?? "",
+        messages: run.agent.state.messages.slice(),
+        tools: (run.agent.state.tools ?? []).slice(),
+      },
+    };
+  };
+}
+
 /** prompt turn 串行链：每线程一条（队列按线程隔离，不同线程并行跑 turn）。
  *  每节 = 一个 turn 的完整生命周期（会话准备 → runStepWithRecovery →
  *  委派收敛循环 → finally finish），跑完才放行该线程下一节 */
@@ -91,7 +153,9 @@ export function steerIntoActiveRun(
   reqId: string,
   msg: Record<string, unknown>,
 ): boolean {
-  if (run.stopRequested) return false;
+  // turnEnding：收尾段（finally）已开跑，挂起 finish 的补发已执行过——此刻
+  // 受理的并入其 finish 永远没人补发（前端「已并入」徽标滞留不消失）
+  if (run.stopRequested || run.turnEnding) return false;
   try {
     // 与普通 prompt 同一条附件链路：拒收项折算说明行、合法项进 user 消息 content
     const attachments = preparePromptAttachments(msg, { cwd: run.cwd });
@@ -211,17 +275,7 @@ export async function dispatchPrompt(
     // 盖事件水印（session_state 同款），桌面漏帧回拉 context_info。
     const endedRun = running.get(threadId);
     if (endedRun?.sessionId) {
-      const info = contextInfo(endedRun);
-      send(
-        withEventSeq(endedRun.sessionId, {
-          type: "context_changed" as const,
-          sessionId: endedRun.sessionId,
-          usedTokens: info.messageTokens + info.systemPromptTokens + info.toolTokens,
-          threshold: info.hardLimit,
-          contextWindow: info.contextWindow,
-          cacheHitRatio: info.cacheHitRate,
-        }),
-      );
+      pushContextChanged(endedRun);
     }
     release();
     // 本节是链尾且队列已空：摘掉链条目，防 map 随线程数无限增长
@@ -291,6 +345,7 @@ async function runPromptTurn(
   );
   setActiveReqId(threadId, reqId);
   run.stopRequested = false;
+  run.turnEnding = false;
   // 上一次运行的溢出恢复残留（正常应在 runStepWithRecovery 内消费）兜底清理
   run.pendingOverflowRecovery = false;
   // 新一轮重置 provider 重试记账：预算清零、响应捕获清空，
@@ -316,6 +371,27 @@ async function runPromptTurn(
   let compactionSeq = 0;
   const emitCompaction = (id: string, data: Record<string, unknown>) =>
     sendChunk(reqId, { type: "data-compaction", id, data });
+  // 轮间压缩挂钩：闭包持有本 turn 的 reqId 流，收尾必须拆除（跨轮残留会把
+  // chunk 发错流）。同一次压缩的 start/complete/failed 复用一个 part id 原地更新
+  let midTurnCid: string | null = null;
+  run.agent.prepareNextTurnWithContext = makeMidTurnCompactionHook(
+    run,
+    (phase, outcome) => {
+      if (phase === "start") {
+        midTurnCid = `cmp-${++compactionSeq}`;
+        emitCompaction(midTurnCid, { phase: "start" });
+        return;
+      }
+      if (!midTurnCid) return;
+      if (phase === "complete" && outcome?.ok) {
+        emitCompaction(midTurnCid, compactionChunkData(outcome));
+        pushContextChanged(run);
+      } else {
+        emitCompaction(midTurnCid, { phase: "failed" });
+      }
+      midTurnCid = null;
+    },
+  );
   const runStep = async (text: string, images: ImageContent[]) => {
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     sendChunk(reqId, { type: "start-step" });
@@ -440,6 +516,10 @@ async function runPromptTurn(
       }
     }
   } finally {
+    // 收尾开始即关闭 steer 受理窗口（见 Running.turnEnding）
+    run.turnEnding = true;
+    // 拆除轮间压缩挂钩：钩子闭包的 emitCompaction 绑定本 turn 的 reqId
+    run.agent.prepareNextTurnWithContext = undefined;
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     // Stop/promote 中止的 turn：finish 前发 abort 标记——前端据此把残缺回复
     // 结算为「被结束」而非「正常完成」（不弹完成通知）；AI SDK 保留 partial 内容

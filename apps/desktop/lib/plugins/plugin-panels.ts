@@ -48,12 +48,32 @@ export function panelOpenMatches(pattern: string, path: string): boolean {
   return new RegExp(`^${escaped}$`).test(path);
 }
 
-/** 找能打开该 workspace 相对路径的第一个面板贡献（产物卡「在画布中打开」） */
+/** 通配字面量长度（去掉 `*` 后的字符数）：越大越具体，如 `*.deck.canvas.json` 压过 `*.canvas.json` */
+function globSpecificity(pattern: string): number {
+  return pattern.replace(/\*/g, "").length;
+}
+
+/**
+ * 找能打开该 workspace 相对路径的面板贡献（产物卡「在画布中打开」）。
+ * 多个面板认领同一文件时**最具体的 glob 优先**（`*.deck.canvas.json` 压过
+ * `*.canvas.json`），同分再按注册顺序——否则宽后缀插件会吞掉窄后缀插件的文件。
+ */
 export function findPanelForFile(
   contributions: PluginPanelContribution[],
   path: string,
 ): PluginPanelContribution | undefined {
-  return contributions.find((c) =>
-    c.panel.opens.some((g) => panelOpenMatches(g, path)),
-  );
+  let best: PluginPanelContribution | undefined;
+  let bestSpec = -1;
+  for (const c of contributions) {
+    for (const g of c.panel.opens) {
+      if (!panelOpenMatches(g, path)) continue;
+      const spec = globSpecificity(g);
+      if (spec > bestSpec) {
+        best = c;
+        bestSpec = spec;
+      }
+      break;
+    }
+  }
+  return best;
 }

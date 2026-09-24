@@ -100,7 +100,8 @@ describe("context 占用镜像（§7）", () => {
     ctx.applyContextChanged(frame({ sessionId: "sess-b", usedTokens: 3, eventSeq: 8 })); // 新号：更新
     expect(ctx.readContextMirror("thread-b")).toMatchObject({ usedTokens: 3, eventSeq: 8 });
 
-    // 拉取写入总是生效（口径同源、时间更新），并清掉水印门槛
+    // 拉取写入总是生效（口径同源、时间更新），并清掉水印门槛。
+    // 旧 sidecar 无 usedTokens 字段：按三项相加兜底
     ctx.setContextMirrorFromPull("thread-b", {
       messageTokens: 10,
       systemPromptTokens: 5,
@@ -110,12 +111,24 @@ describe("context 占用镜像（§7）", () => {
       cacheHitRate: 0.25,
     } as never);
     expect(ctx.readContextMirror("thread-b")).toEqual({
-      usedTokens: 18, // 三项之和（与推送口径一致）
+      usedTokens: 18, // 三项之和（旧端兜底口径）
       threshold: 7777,
       contextWindow: 9999,
       cacheHitRatio: 0.25,
       eventSeq: null,
     });
+    // 新 sidecar：usedTokens 是统一口径的请求总占用（usage 已含系统提示词/
+    // 工具），直接采用，不再三项相加
+    ctx.setContextMirrorFromPull("thread-b", {
+      messageTokens: 5_100,
+      systemPromptTokens: 5,
+      toolTokens: 3,
+      usedTokens: 5_100,
+      hardLimit: 7777,
+      contextWindow: 9999,
+      cacheHitRate: 0.25,
+    } as never);
+    expect(ctx.readContextMirror("thread-b")?.usedTokens).toBe(5_100);
     // 拉取后旧推送号（6 < 8 但 prev 已是 null）照常更新
     ctx.applyContextChanged(frame({ sessionId: "sess-b", usedTokens: 4, eventSeq: 6 }));
     expect(ctx.readContextMirror("thread-b")).toMatchObject({ usedTokens: 4, eventSeq: 6 });

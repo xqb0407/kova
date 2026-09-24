@@ -16,6 +16,7 @@ import {
   GlobeIcon,
   HardDriveDownloadIcon,
   InfoIcon,
+  KeyRoundIcon,
   KeyboardIcon,
   PaintbrushIcon,
   SlidersHorizontalIcon,
@@ -36,6 +37,7 @@ import { BackupSettings } from "./components/backup-settings";
 import { PersonalizationSettings } from "./components/personalization-settings";
 import { SubagentsSettings } from "./components/subagents-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
+import { SecretsSettings } from "./components/secrets-settings";
 
 type SettingsSection =
   | "models"
@@ -50,7 +52,8 @@ type SettingsSection =
   | "shortcuts"
   | "subagents"
   | "webhooks"
-  | "hooks";
+  | "hooks"
+  | "secrets";
 
 const GROUPS: {
   label: string;
@@ -74,6 +77,7 @@ const GROUPS: {
       { id: "subagents", label: "子智能体", icon: BotIcon },
       { id: "memory", label: "记忆", icon: BrainIcon },
       { id: "hooks", label: "钩子", icon: ZapIcon },
+      { id: "secrets", label: "密钥", icon: KeyRoundIcon },
     ],
   },
   {
@@ -210,6 +214,7 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "archive" && <ArchiveSettings />}
           {section === "webhooks" && <WebhooksSettings />}
           {section === "hooks" && <HooksSettings />}
+          {section === "secrets" && <SecretsSettings />}
           {section === "about" && <AboutSettings />}
           {section === "general" && <GeneralSettings />}
         </div>

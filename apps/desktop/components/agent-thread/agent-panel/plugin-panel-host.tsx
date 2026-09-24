@@ -30,8 +30,8 @@ import {
 } from "@/lib/plugins/ui-plugin-bridge";
 import { usePluginPanels } from "@/lib/plugins/plugin-panels";
 import { listCanvasDocs } from "@/lib/plugins/canvas-doc-list";
-import { useWorkspace } from "@/lib/workspace/workspace-store";
-import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
+import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
+import { isTauri } from "@/lib/tauri";
 import { toast } from "@/components/ui/toast";
 import { TabEmpty } from "./tab-empty";
 
@@ -88,7 +88,6 @@ function assetsDirFor(docPath: string): string {
 }
 
 export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
-  const workspace = useWorkspace();
   const aui = useAui();
   const contributions = usePluginPanels();
   const contrib = contributions.panels.find(
@@ -110,25 +109,11 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameReadyRef = useRef(false);
   const openedPathRef = useRef<string | null>(null);
+  /** ui.ready 已到但握手暂缓：等任务工作区异步兜底把 cwd 补齐（见 sendHandshake） */
+  const pendingHandshakeRef = useRef(false);
 
-  /**
-   * 面板工作目录：标签绑定目录 → 当前工作区 → app 任务工作区（PI_TASK_CWD 同源）。
-   * 第三级兜底是"工作"模式（未选工作区）的关键：agent 的产物就落在任务工作区，
-   * 面板的列文档/建档/换绑必须跟它同源，否则面板永远找不到 agent 刚写的文件
-   * （Rust 侧 resolve_root 已把该目录放行为第二可信根）。
-   */
-  const [fallbackCwd, setFallbackCwd] = useState<string | null>(null);
-  useEffect(() => {
-    if (tab.cwd || workspace) return;
-    let cancelled = false;
-    void taskWorkspaceDir().then((d) => {
-      if (!cancelled && d) setFallbackCwd(d);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [tab.cwd, workspace]);
-  const cwd = tab.cwd ?? workspace ?? fallbackCwd;
+  /** 面板工作目录：标签绑定目录 → 当前工作区 → app 任务工作区（PI_TASK_CWD 同源，见 usePanelCwd） */
+  const cwd = usePanelCwd(tab.cwd);
   const docPath = tab.path ?? null;
   const permsRef = useRef<Set<PanelPermission>>(new Set());
   permsRef.current = new Set(
@@ -199,20 +184,50 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
     saveTimerRef.current = setTimeout(() => void saveNow(), SAVE_DEBOUNCE_MS);
   }, [saveNow]);
 
+  /**
+   * 握手回发（用 ctxRef 现取现算，延迟发送时上下文仍是最新的）。
+   * 无工作区的桌面端任务工作区兜底是异步解析的（usePanelCwd）：ui.ready 到达时
+   * cwd 可能还是 null，此刻握手会让面板紧接着的 doc.request/doc.list 打在 null 上
+   * （报一次"未绑定"、卡片墙空，之后没人重试）——所以暂缓握手直到 cwd 补齐。
+   * 3s 超时兜底照发（taskWorkspaceDir 失败等场景），面板不会吊死。
+   */
+  const sendHandshake = useCallback(() => {
+    const { cwd, docPath } = ctxRef.current;
+    post({
+      kind: "handshake",
+      theme: currentTheme(),
+      context: { workspaceName: workspaceName(cwd), fileRelPath: docPath },
+    });
+  }, [post]);
+
+  // 任务工作区兜底解析完成：补发暂缓的握手
+  useEffect(() => {
+    if (!cwd || !pendingHandshakeRef.current) return;
+    pendingHandshakeRef.current = false;
+    sendHandshake();
+  }, [cwd, sendHandshake]);
+
   /* ---------------- UI→host 消息处理 ---------------- */
 
   const handleUiMessage = useCallback(
     async (msg: UiMessage) => {
       const { cwd, docPath } = ctxRef.current;
       switch (msg.kind) {
-        case "ui.ready":
+        case "ui.ready": {
           frameReadyRef.current = true;
-          post({
-            kind: "handshake",
-            theme: currentTheme(),
-            context: { workspaceName: workspaceName(cwd), fileRelPath: docPath },
-          });
+          if (cwd || !isTauri()) {
+            sendHandshake();
+            return;
+          }
+          // 桌面端无工作区：任务工作区兜底还在异步解析，暂缓（见 sendHandshake）
+          pendingHandshakeRef.current = true;
+          setTimeout(() => {
+            if (!pendingHandshakeRef.current) return;
+            pendingHandshakeRef.current = false;
+            sendHandshake();
+          }, 3000);
           return;
+        }
         case "doc.request":
           await pushDoc(false);
           return;
@@ -324,7 +339,7 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
           return;
       }
     },
-    [aui, post, pushDoc, saveNow, scheduleSave, tab.id],
+    [aui, post, pushDoc, saveNow, scheduleSave, sendHandshake, tab.id],
   );
 
   /* ---------------- 资产加载（blob iframe） ---------------- */
