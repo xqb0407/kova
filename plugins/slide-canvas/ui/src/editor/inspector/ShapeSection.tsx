@@ -46,7 +46,28 @@ export const ShapeSection: FC<{ el: ShapeEl; patch: (p: Partial<ShapeEl>, coales
         />
       </div>
       </GroupCard>
-      {el.shape !== "line" && el.shape !== "arrow" && el.shape !== "double-arrow" && (
+      {el.shape === "curve-arrow" && (
+        <>
+          <SectionTitle>弧度</SectionTitle>
+          <GroupCard className="flex flex-col gap-2">
+          <input
+            type="range"
+            min={-1}
+            max={1}
+            step={0.05}
+            value={el.curve ?? 0.3}
+            aria-label="弧度"
+            onChange={(e) => patch({ curve: Number(e.target.value) } as Partial<ShapeEl>, true)}
+            className="w-full accent-foreground"
+          />
+          <div className="flex justify-between text-[10px] text-foreground/50">
+            <span>反向弯</span>
+            <span>正向弯</span>
+          </div>
+          </GroupCard>
+        </>
+      )}
+      {el.shape !== "line" && el.shape !== "arrow" && el.shape !== "double-arrow" && el.shape !== "curve-arrow" && (
         <>
           <SectionTitle>填充</SectionTitle>
           <GroupCard>

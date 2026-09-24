@@ -171,6 +171,23 @@ function exportShape(pptx: PptxGenJS, s: PptxGenJS.Slide, el: ShapeEl): void {
     s.addShape(pptx.ShapeType.hexagon, common);
   } else if (el.shape === "star") {
     s.addShape(pptx.ShapeType.star5, common);
+  } else if (el.shape === "curve-arrow") {
+    // 曲线箭头 → PowerPoint arc preset（弧线；弧度/方向为近似映射：curve<0 垂直镜像，dir 沿用镜像规则）
+    s.addShape(pptx.ShapeType.arc, {
+      ...geo(el),
+      rotate: 0,
+      ...(el.dir === 1 || el.dir === 3 ? { flipV: true } : {}),
+      ...(el.dir === 2 || el.dir === 3 ? { flipH: true } : {}),
+      ...((el.curve ?? 0.3) < 0 ? { flipV: !(el.dir === 1 || el.dir === 3) } : {}),
+      fill: undefined,
+      line: {
+        color: lineColor ?? "1D1D1F",
+        width: Math.max(0.75, px2pt(el.strokeWidth ?? 2)),
+        transparency: tr,
+        endArrowType: "arrow" as const,
+        ...dashType(el.strokeStyle),
+      },
+    });
   } else if (el.shape === "ellipse") {
     s.addShape(pptx.ShapeType.ellipse, common);
   } else {

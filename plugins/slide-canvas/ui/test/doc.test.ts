@@ -306,10 +306,19 @@ describe("table/chart/groupId/新形状解析", () => {
   });
 
   test("新形状与双头箭头 kind 全部通过解析", () => {
-    for (const shape of ["triangle", "trapezoid", "pentagon", "hexagon", "star", "double-arrow"]) {
+    for (const shape of ["triangle", "trapezoid", "pentagon", "hexagon", "star", "double-arrow", "curve-arrow"]) {
       const s = obj({ kind: "shape", id: "s", shape, x: 0, y: 0, w: 10, h: 10, fill: "#0a84ff" }).objects[0] as ShapeEl;
       expect(s.shape).toBe(shape);
     }
+  });
+
+  test("curve-arrow：curve 夹取 [-1,1]、非法值丢弃；未知 shape 回退 rect", () => {
+    const s1 = obj({ kind: "shape", id: "s", shape: "curve-arrow", x: 0, y: 0, w: 10, h: 10, curve: 7 }).objects[0] as ShapeEl;
+    expect(s1.curve).toBe(1);
+    const s2 = obj({ kind: "shape", id: "s", shape: "curve-arrow", x: 0, y: 0, w: 10, h: 10, curve: "x" }).objects[0] as ShapeEl;
+    expect(s2.curve).toBeUndefined();
+    const s3 = obj({ kind: "shape", id: "s", shape: "spiral", x: 0, y: 0, w: 10, h: 10 }).objects[0] as ShapeEl;
+    expect(s3.shape).toBe("rect");
   });
 });
 

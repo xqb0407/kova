@@ -48,6 +48,7 @@ const SHAPE_LABEL: Record<string, string> = {
   line: "直线",
   arrow: "箭头",
   "double-arrow": "双头箭头",
+  "curve-arrow": "弧线箭头",
 };
 
 const kindLabel = (el: El) =>
@@ -120,7 +121,7 @@ export const Inspector: FC<{ store: DeckStore; selectedEl: El | null; askAI: () 
   return (
     <div
       className={cn(
-        "z-10 flex min-h-0 flex-col text-xs",
+        "sc-ui-panel z-10 flex min-h-0 flex-col text-xs",
         deck ? "glass-dock z-20 h-full w-[304px] shrink-0 border-border/60 border-l" : "glass rounded-[24px]! absolute top-16 bottom-14 right-3 w-[304px]",
       )}
     >

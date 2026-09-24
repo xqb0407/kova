@@ -317,6 +317,7 @@ export const App: FC = () => {
                   penMode={pen}
                   handMode={hand}
                   drawTool={drawTool}
+                  onDrawDone={() => setDrawTool(null)}
                   refitKey={store.fileRel}
                   surface={effMode}
                   selToolbar={sel && sel.elIds.length > 0 ? <SelectionBar store={store} multi={sel.elIds.length > 1} /> : undefined}

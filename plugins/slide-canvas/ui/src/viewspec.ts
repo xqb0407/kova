@@ -109,6 +109,24 @@ export function lineEnds(w: number, h: number, dir?: number): { x1: number; y1: 
   return { x1: 0, y1: 0, x2: w, y2: h };
 }
 
+/**
+ * curve-arrow 二次贝塞尔：端点复用 lineEnds（dir 语义一致），
+ * 控制点 = 弦中点 + 法线 × curve × 弦长（curve>0 逆时针弯，水平线默认向上拱；缺省 0.3，范围 [-1,1]）。
+ * DOM/leafer/SVG 导出三轨共用；箭头头方向 = 终点切线（终点-控制点）。
+ */
+export function curveArrow(el: ShapeEl): { ax: number; ay: number; cx: number; cy: number; bx: number; by: number } {
+  const e = lineEnds(el.w, el.h, el.dir);
+  const curve = typeof el.curve === "number" ? Math.max(-1, Math.min(1, el.curve)) : 0.3;
+  const mx = (e.x1 + e.x2) / 2;
+  const my = (e.y1 + e.y2) / 2;
+  const dx = e.x2 - e.x1;
+  const dy = e.y2 - e.y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = dy / len;
+  const ny = -dx / len;
+  return { ax: e.x1, ay: e.y1, cx: mx + nx * curve * len, cy: my + ny * curve * len, bx: e.x2, by: e.y2 };
+}
+
 /* ---------------- 图片 ---------------- */
 
 /** fit → 绘制语义（DOM objectFit / canvas 裁剪计算共用同一枚举） */

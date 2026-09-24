@@ -11,6 +11,7 @@ import {
   DEFAULT_TEXT_SIZE,
   TEXT_LINE_HEIGHT,
   chartSpec,
+  curveArrow,
   drawSpec,
   elBox,
   imageFit,
@@ -128,6 +129,30 @@ describe("polygonPoints（多边形顶点，OOXML preset 对齐）", () => {
     // 内点：i=1 → a=-54°，r=50×0.382=19.1
     expect(s[1]![0]).toBeCloseTo(50 + 19.1 * Math.cos((-54 * Math.PI) / 180), 1);
     expect(s[1]![1]).toBeCloseTo(50 + 19.1 * Math.sin((-54 * Math.PI) / 180), 1);
+  });
+});
+
+describe("curveArrow（二次贝塞尔：端点 + 法线控制点）", () => {
+  test("缺省 curve=0.3：水平弦上拱（控制点 y < 弦 y），端点同 lineEnds", () => {
+    const c = curveArrow(rect({ shape: "curve-arrow", w: 100, h: 0 }));
+    expect(c.ax).toBe(0);
+    expect(c.ay).toBe(0);
+    expect(c.bx).toBe(100);
+    expect(c.by).toBe(0);
+    // 控制点在中点法线方向：cx=50, cy=0-30（上拱）
+    expect(c.cx).toBeCloseTo(50, 5);
+    expect(c.cy).toBeCloseTo(-30, 5);
+  });
+  test("curve 范围夹取 [-1,1]，负值反向弯", () => {
+    const c1 = curveArrow(rect({ shape: "curve-arrow", w: 100, h: 0, curve: 5 }));
+    expect(c1.cy).toBeCloseTo(-100, 5);
+    const c2 = curveArrow(rect({ shape: "curve-arrow", w: 100, h: 0, curve: -0.5 }));
+    expect(c2.cy).toBeCloseTo(50, 5);
+  });
+  test("终点切线方向 = 终点 - 控制点（箭头头方向）", () => {
+    const c = curveArrow(rect({ shape: "curve-arrow", w: 100, h: 0 }));
+    expect(c.bx - c.cx).toBeCloseTo(50, 5);
+    expect(c.by - c.cy).toBeCloseTo(30, 5);
   });
 });
 

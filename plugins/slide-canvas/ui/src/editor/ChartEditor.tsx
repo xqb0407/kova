@@ -69,15 +69,15 @@ export const ChartEditor: FC<{
   const width = Math.max(320, el.w * view.s);
   // .sc-overlay 整层 pointer-events:none，交互层必须显式 auto（同 .sc-textedit / selToolbar）
   const top = (off.y + el.y + el.h) * view.s + view.ty + 8;
-  /** 面板估高 ~290px：图表下方放不下就翻到上方，避免弹到视口外（"点了没反应"的第二来源） */
+  /** 面板估高 ~290px：图表下方放不下就翻到上方；clamp 到顶栏（46px）之下，避免首行被顶栏盖住 */
   const flip = top + 290 > window.innerHeight - 8;
-  const topFinal = flip ? Math.max(8, (off.y + el.y) * view.s + view.ty - 296) : top;
+  const topFinal = flip ? Math.max(54, (off.y + el.y) * view.s + view.ty - 296) : top;
 
   return (
     <>
       <div className="pointer-events-auto fixed inset-0" onPointerDown={finish} />
       <div
-        className="pointer-events-auto absolute"
+        className="sc-ui-panel pointer-events-auto absolute"
         style={{ left: (off.x + el.x) * view.s + view.tx, top: topFinal, width }}
         onPointerDown={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}
