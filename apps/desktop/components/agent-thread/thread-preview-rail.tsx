@@ -21,22 +21,45 @@ const USER_SURFACE_SELECTOR = ".aui-user-message-content";
 const ACTIVE_EDGE_THRESHOLD = 56;
 const MAX_ITEM_SIZE = 14;
 const MIN_ITEM_SIZE = 6;
+/** 消息增删的合并窗口：流式期间 markdown 新块落 DOM 会成串触发 childList，
+ *  逐个重建刻度是纯浪费；预览文本已改为悬停现取，延迟重建不影响预览新鲜度 */
+const SYNC_DEBOUNCE_MS = 180;
 
-type CachedPreview = { label: string; description?: string };
+type Preview = { label: string; description?: string };
+
+/**
+ * 悬停时从实时 DOM 现取预览文本（不再随流式逐 token 预计算 + 缓存）：
+ * 用户气泡 + 该轮首条可见的回复（折叠轮里中间步骤不挂载，取到的是最终回答）。
+ */
+function extractPreview(
+  anchor: HTMLElement,
+  anchors: readonly HTMLElement[],
+): Preview {
+  const isUser = anchor.dataset.slot === "aui_user-message-root";
+  const surface = isUser
+    ? (anchor.querySelector<HTMLElement>(USER_SURFACE_SELECTOR) ?? anchor)
+    : anchor;
+  const response = isUser
+    ? anchors
+        .slice(anchors.indexOf(anchor) + 1)
+        .find((el) => el.dataset.slot === "aui_assistant-message-content")
+    : undefined;
+  return getMessagePreview(surface, response);
+}
 
 export function ThreadPreviewRail() {
   const reduce = useReducedMotion() ?? false;
   const rootRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLElement | null>(null);
   const syncFrameRef = useRef<number | undefined>(undefined);
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const activeFrameRef = useRef<number | undefined>(undefined);
   // 元素 → 稳定刻度 id（跨同步保持不变，避免流式输出时预览卡跳动）
   const idMapRef = useRef(new WeakMap<HTMLElement, string>());
   const idCounterRef = useRef(0);
   const targetsRef = useRef(new Map<string, HTMLElement>());
-  // 元素 → 预览文本缓存；流式输出时仅重算发生变动的消息，避免整列表重提取
-  const previewCacheRef = useRef(new WeakMap<HTMLElement, CachedPreview>());
-  const dirtyAnchorsRef = useRef(new Set<HTMLElement>());
+  // 最近一次同步的锚点数组（悬停提取「该轮回复」时按文档序找下一条）
+  const anchorsRef = useRef<HTMLElement[]>([]);
   const [items, setItems] = useState<PreviewRailItem[]>([]);
   const [activeId, setActiveId] = useState("");
   const [overflowing, setOverflowing] = useState(false);
@@ -88,17 +111,15 @@ export function ThreadPreviewRail() {
   const syncItems = useCallback((): boolean => {
     const viewport = viewportRef.current;
     if (!viewport) return false;
-    const dirty = dirtyAnchorsRef.current;
-    dirtyAnchorsRef.current = new Set();
 
     const anchors = Array.from(
       viewport.querySelectorAll<HTMLElement>(ANCHOR_SELECTOR),
     );
     // 一轮对话一个刻度，选取规则见 pickRoundAnchors
     const kept = pickRoundAnchors(anchors);
+    anchorsRef.current = anchors;
     const targets = new Map<string, HTMLElement>();
     const nextItems = kept.map((anchor, keptIndex) => {
-      const index = anchors.indexOf(anchor);
       let id = idMapRef.current.get(anchor);
       if (!id) {
         idCounterRef.current += 1;
@@ -107,31 +128,15 @@ export function ThreadPreviewRail() {
       }
       targets.set(id, anchor);
 
-      const isUser = anchor.dataset.slot === "aui_user-message-root";
-      let preview = previewCacheRef.current.get(anchor);
-      if (!preview || dirty.has(anchor)) {
-        const surface = isUser
-          ? (anchor.querySelector<HTMLElement>(USER_SURFACE_SELECTOR) ?? anchor)
-          : anchor;
-        const response = isUser
-          ? anchors
-              .slice(index + 1)
-              .find((el) => el.dataset.slot === "aui_assistant-message-content")
-          : undefined;
-        preview = getMessagePreview(surface, response);
-        previewCacheRef.current.set(anchor, preview);
-      }
-
       return {
         id,
-        label: preview.label,
-        description: preview.description,
+        label: `第 ${keptIndex + 1} 轮`,
         ariaLabel: `Go to conversation round ${keptIndex + 1} of ${kept.length}`,
       };
     });
 
-    // 锚点集合是否变化：流式文本变更（characterData）不动集合，
-    // 借此把 updateActiveItem 的全量 getBoundingClientRect 从每帧降到仅在变化时
+    // 锚点集合是否变化：流式文本变更不换元素，借此把 updateActiveItem 的
+    // 全量 getBoundingClientRect 从每帧降到仅在变化时
     const prev = targetsRef.current;
     let changed = prev.size !== targets.size;
     if (!changed) {
@@ -150,7 +155,6 @@ export function ThreadPreviewRail() {
           (item, index) =>
             item.id === nextItems[index]?.id &&
             item.label === nextItems[index]?.label &&
-            item.description === nextItems[index]?.description &&
             item.ariaLabel === nextItems[index]?.ariaLabel,
         );
       return unchanged ? current : nextItems;
@@ -167,41 +171,34 @@ export function ThreadPreviewRail() {
     });
   }, [syncItems, updateActiveItem]);
 
+  /** 消息增删抖动的合并入口：流式期间 markdown 落块成串触发，攒一拍再重建 */
+  const scheduleSyncDebounced = useCallback(() => {
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => {
+      scheduleSync();
+    }, SYNC_DEBOUNCE_MS);
+  }, [scheduleSync]);
+
   const scheduleActive = useCallback(() => {
     if (activeFrameRef.current) cancelAnimationFrame(activeFrameRef.current);
     activeFrameRef.current = requestAnimationFrame(updateActiveItem);
   }, [updateActiveItem]);
 
-  // 视口监听：消息增删/流式文本变化 → 重建刻度；滚动/尺寸变化 → 更新激活项
+  // 视口监听：消息增删 → 重建刻度；滚动/尺寸变化 → 更新激活项。
+  // 只监听 childList（消息元素增删），不监听 characterData：流式文本逐 token
+  // 变更曾让每次变更都跑一遍全 viewport 的 querySelectorAll + pickRoundAnchors，
+  // DOM 越大越卡；现在预览文本悬停现取，流式文本变化不再需要任何重算。
   useEffect(() => {
     const viewport = findViewport();
     if (!viewport) return;
 
     scheduleSync();
 
-    const markDirty = (node: Node) => {
-      const element =
-        node.nodeType === Node.ELEMENT_NODE
-          ? (node as Element)
-          : node.parentElement;
-      const anchor = element?.closest<HTMLElement>(ANCHOR_SELECTOR);
-      if (anchor) dirtyAnchorsRef.current.add(anchor);
-    };
-
-    const mutationObserver = new MutationObserver((records) => {
-      for (const record of records) {
-        if (record.type === "childList") {
-          for (const node of record.addedNodes) markDirty(node);
-          for (const node of record.removedNodes) markDirty(node);
-        } else {
-          markDirty(record.target);
-        }
-      }
-      scheduleSync();
+    const mutationObserver = new MutationObserver(() => {
+      scheduleSyncDebounced();
     });
     mutationObserver.observe(viewport, {
       childList: true,
-      characterData: true,
       subtree: true,
     });
 
@@ -223,9 +220,10 @@ export function ThreadPreviewRail() {
       resizeObserver?.disconnect();
       viewport.removeEventListener("scroll", handleScroll);
       if (syncFrameRef.current) cancelAnimationFrame(syncFrameRef.current);
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
       if (activeFrameRef.current) cancelAnimationFrame(activeFrameRef.current);
     };
-  }, [findViewport, scheduleSync, scheduleActive]);
+  }, [findViewport, scheduleSync, scheduleSyncDebounced, scheduleActive]);
 
   // 量测覆盖层高度，刻度过多时自动压缩间距（min 6px），避免被裁切
   useEffect(() => {
@@ -277,6 +275,36 @@ export function ThreadPreviewRail() {
       )
     : MAX_ITEM_SIZE;
 
+  // 预览卡与 DefaultPreview 同结构（data-slot 对齐 previewClassName 的样式钩子），
+  // 文本取自悬停当下的实时 DOM
+  const renderPreview = (item: PreviewRailItem) => {
+    const anchor = targetsRef.current.get(item.id);
+    const preview: Preview = anchor
+      ? extractPreview(anchor, anchorsRef.current)
+      : { label: item.label };
+    return (
+      <div
+        data-slot="preview-rail-card"
+        className="rounded-2xl border border-border bg-card p-4 shadow-sm"
+      >
+        <p
+          data-slot="preview-rail-title"
+          className="font-medium text-card-foreground"
+        >
+          {preview.label}
+        </p>
+        {preview.description ? (
+          <div
+            data-slot="preview-rail-description"
+            className="mt-1 text-sm leading-6 text-muted-foreground"
+          >
+            {preview.description}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div
       ref={rootRef}
@@ -289,6 +317,7 @@ export function ThreadPreviewRail() {
           label="Message navigation"
           activeId={activeId}
           onItemSelect={scrollToItem}
+          renderPreview={renderPreview}
           previewSide="after"
           highlightActive
           itemSize={itemSize}

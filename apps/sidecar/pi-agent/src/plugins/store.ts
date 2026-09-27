@@ -334,8 +334,11 @@ export function resolvePanelIconDataUrl(
   return readIconDataUrl(abs);
 }
 
-/** 入口 HTML 上限：单文件构建（含依赖内联）的合理天花板，超限视为坏插件 */
-const PANEL_ASSET_MAX_BYTES = 8 * 1024 * 1024;
+/**
+ * 入口 HTML 上限：单文件构建（依赖全部内联）的合理天花板，超限视为坏插件。
+ * Univer 级办公引擎单文件 10-20MB 是常态（office 插件三引擎合一），32MB 起评。
+ */
+const PANEL_ASSET_MAX_BYTES = 32 * 1024 * 1024;
 
 export type PluginPanelAsset = {
   base64: string;

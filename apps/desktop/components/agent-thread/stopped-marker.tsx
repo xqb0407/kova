@@ -23,7 +23,7 @@ export function isStoppedMessageState(s: AssistantState): boolean {
 export const StoppedMarker = () => (
   <Marker
     variant="separator"
-    className="text-muted-foreground/60 mt-1 mb-2 text-xs"
+    className="text-muted-foreground/60 mt-1 my-4 text-xs"
   >
     <MarkerContent>已停止</MarkerContent>
   </Marker>

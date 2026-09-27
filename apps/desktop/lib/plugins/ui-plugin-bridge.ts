@@ -30,12 +30,13 @@ export const MESSAGE_PERMISSION: Record<string, PanelPermission> = {
 
 /* ---------------- 历史卡片摘要 ---------------- */
 
-/** 列表项（宿主扫描 cwd 下 *.canvas.json 得到；preview 已按 MAX 截断） */
+/** 列表项（宿主按已装面板 opens glob 扫描 cwd 得到；preview 已按 MAX 截断） */
 export type DocListItem = {
   /** workspace 相对路径；doc.bind 原样回传 */
   path: string;
   name: string;
-  kind: "board" | "deck" | "ui";
+  /** board/deck/ui=画布档；sheet/doc=Univer 快照档（`*.sheet/.doc.univer.json`） */
+  kind: "board" | "deck" | "ui" | "sheet" | "doc";
   /** 文件最后修改时间（ms epoch；取不到为 0） */
   mtime: number;
   frames: number;

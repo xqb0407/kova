@@ -121,6 +121,23 @@ export function pushRunCheckpoint(
   notify();
 }
 
+/**
+ * 往上翻历史（prepend）后整体平移锚点：下标锚定的代价是"前面插入旧消息"会让
+ * 已有下标全部失效，装载方按「新并入的消息条数」调一次本函数即可。只动本线程、
+ * 只动非空锚点。
+ */
+export function shiftRunCheckpointAnchors(threadId: string, delta: number): void {
+  if (delta === 0) return;
+  const list = getList(threadId);
+  if (list.length === 0) return;
+  const next = list.map((e) =>
+    e.anchorIndex === null ? e : { ...e, anchorIndex: e.anchorIndex + delta },
+  );
+  slots.set(threadId, next);
+  writeStored(threadId, next);
+  notify();
+}
+
 /** 撤销成功/放弃某一条：按快照 hash 精确移除，不动同线程其他轮次 */
 export function clearRunCheckpoint(threadId: string, hash: string): void {
   const list = getList(threadId);

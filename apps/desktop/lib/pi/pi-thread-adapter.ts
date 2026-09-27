@@ -6,6 +6,7 @@ import {
   unstable_createMessageConverter as createMessageConverter,
 } from "@assistant-ui/react";
 import type {
+  ExportedMessageRepository,
   RemoteThreadListAdapter,
   RuntimeAdapters,
   ThreadHistoryAdapter,
@@ -16,6 +17,13 @@ import type {
 import type { UIMessage } from "ai";
 import type { PendingInteraction } from "pi-protocol";
 import { piRequest, type PiSessionSummary } from "@/lib/pi/pi-bridge";
+import {
+  fetchHistoryWindow,
+  getHistoryWindowMeta,
+  HISTORY_PAGE_ROWS,
+  HISTORY_TAIL_ROWS,
+  seedHistoryTurnTimings,
+} from "@/lib/pi/pi-history-window";
 import { applyHistoryPending } from "@/lib/pi/pi-interactions";
 import { clearManualCompactionMarkerForRemote } from "@/lib/pi/pi-compaction-marker";
 import { findRunningTurn } from "@/lib/pi/pi-running";
@@ -110,6 +118,10 @@ const converter = createMessageConverter((msg: UIMessage) => {
       ? msg.parts.filter((p): p is Extract<UIMessage["parts"][number], { type: "file" }> => p.type === "file")
       : [];
   return {
+    // id 必须显式带上：不带的话转换器会发 fallback id（__external_store_fallback_N），
+    // 而往上翻页是分窗并入的——两窗各自从 0 起编号会撞号，repository 按 id 去重时
+    // 会把整页消息丢掉。历史消息 id 是转录行 seq 基准（msg-<seq>），会话内唯一。
+    id: msg.id,
     role: msg.role === "user" ? "user" : "assistant",
     content,
     ...(fileParts.length
@@ -151,35 +163,32 @@ function messagesToRepository(uiMessages: unknown[]): {
   };
 }
 
-/** 首屏历史窗的消息行上限（§6）：2000+ 行转录只取尾部这么多条，
- *  更早历史暂不提供翻页入口（hasMore 已在应答里，接口就绪即可加）。 */
-const HISTORY_TAIL_ROWS = 800;
-
 /** 从 pi session 拉取历史，返回 UIMessage 列表（含 id）。
  * 防御：定时任务会话可能在转录还没落盘时被点开（轮初只补录用户消息、
  * 其余在 agent_end 才写），或索引说会话有消息而首查为空/失败 —— 这种
  * "点进去空空如也"最难自查，这里重试一次并留 [pi-history] 日志进 web.log。
  * M2：应答带未结算挂起交互（pending），按会话反查线程并入交互 store——
- * 刷新/重启后挂起卡随历史一起回来（§4 验收「刷新后审批卡恢复」）。 */
+ * 刷新/重启后挂起卡随历史一起回来（§4 验收「刷新后审批卡恢复」）。
+ * 分页（§6）：只取尾部窗口（HISTORY_TAIL_ROWS），firstSeq/hasMore 记进
+ * 窗口表；更早的历史由滚到顶触发 loadOlderPiHistory 再取一窗。
+ * localThreadId 用于给折叠摘要头的每轮耗时播种时间戳（缺失则本轮不显示耗时）。 */
 async function loadPiHistory(
   remoteId: string | undefined,
+  localThreadId?: string,
 ): Promise<UIMessage[]> {
   if (!remoteId) return [];
   const fetchOnce = async (): Promise<UIMessage[]> => {
-    const res = await piRequest<{
-      type: "history";
-      messages: UIMessage[];
-      pending?: PendingInteraction[];
-    }>({
-      type: "get_history",
-      sessionId: remoteId,
-      tail: HISTORY_TAIL_ROWS,
-    });
-    if (res.pending?.length) {
-      const threadId = [...piSessionRegistry].find(([, s]) => s === remoteId)?.[0];
-      if (threadId) applyHistoryPending(threadId, res.pending);
+    const window = await fetchHistoryWindow(remoteId, { tail: HISTORY_TAIL_ROWS });
+    const pending = window.pending as PendingInteraction[] | undefined;
+    if (pending?.length) {
+      const threadId =
+        (localThreadId && piSessionRegistry.get(localThreadId) === remoteId
+          ? localThreadId
+          : undefined) ??
+        [...piSessionRegistry].find(([, s]) => s === remoteId)?.[0];
+      if (threadId) applyHistoryPending(threadId, pending);
     }
-    return res.messages;
+    return window.messages as UIMessage[];
   };
   let messages: UIMessage[] = [];
   try {
@@ -206,9 +215,64 @@ async function loadPiHistory(
       console.warn("[pi-history] gap-fill retry failed", remoteId, String(err));
     }
   }
+  // 首窗含会话开头（hasMore=false）时，开场 assistant 段也是完整一轮，照常播种
+  seedHistoryTurnTimings(localThreadId, messages, {
+    startsAtBeginning: getHistoryWindowMeta(remoteId)?.hasMore !== true,
+  });
   // 压缩分隔线已由检查点行重建进历史消息流 → 手动压缩的尾部 marker 退役
   clearManualCompactionMarkerForRemote(remoteId);
   return messages;
+}
+
+/**
+ * 往上翻一窗更早的历史（滚到顶触发，§6 懒加载）：beforeSeq=当前窗口 firstSeq
+ * 再取一窗，prepend 进运行时消息流。
+ *
+ * 合并走框架的 export/import 往返（repository 里的 ThreadMessage 仍绑定着
+ * 各自的原始 UIMessage，import → onImport → chat.setMessages 即把旧消息并进
+ * 事实源），不用手工改 Chat 状态。旧消息由本模块自己的 converter 转换，
+ * 与首屏装载同一条路径。
+ *
+ * 返回真正并入的消息条数（0 = 没有更早历史/入参缺失，调用方据此决定要不要再
+ * 触发）。prepend 会改变总高度，调用方负责滚动位置补偿；这个条数也是下标锚定
+ * 旁路态（检查点卡/压缩线）该平移的量——不能用"前后消息总数相减"，那样会把
+ * 加载期间恰好新到的消息也算进去（平移过头）。
+ */
+export async function loadOlderPiHistory(
+  aui: { thread: { export: () => ExportedMessageRepository; import: (r: ExportedMessageRepository) => void } },
+  remoteId: string | undefined,
+  localThreadId: string | undefined,
+): Promise<number> {
+  if (!remoteId) return 0;
+  const meta = getHistoryWindowMeta(remoteId);
+  // 没有游标或没有更早的行：无处可翻
+  if (!meta || !meta.hasMore || meta.firstSeq === null) return 0;
+
+  const window = await fetchHistoryWindow(remoteId, {
+    beforeSeq: meta.firstSeq,
+    tail: HISTORY_PAGE_ROWS,
+  });
+  if (window.messages.length === 0) return 0;
+  // 本窗起点未必是会话开头：首条在轮中（assistant）时不播种残段
+  seedHistoryTurnTimings(localThreadId, window.messages, {
+    startsAtBeginning: window.meta.hasMore !== true,
+  });
+  const older = messagesToRepository(window.messages);
+  const current = aui.thread.export();
+  const merged: ExportedMessageRepository = {
+    headId: current.headId ?? older.headId,
+    messages: [
+      ...older.messages,
+      ...current.messages.map((item, index) =>
+        // 旧窗前插：当前首条挂在旧窗末条之下，链条不断
+        index === 0 && older.headId !== null
+          ? { ...item, parentId: older.headId }
+          : item,
+      ),
+    ],
+  };
+  aui.thread.import(merged);
+  return older.messages.length;
 }
 
 /**
@@ -364,7 +428,8 @@ export function createPiThreadListAdapter(): RemoteThreadListAdapter {
 
       const history = useMemo<ThreadHistoryAdapter>(
         () => ({
-          load: async () => messagesToRepository(await loadPiHistory(remoteId)),
+          load: async () =>
+            messagesToRepository(await loadPiHistory(remoteId, state?.id)),
           append: async () => {
             // 消息持久化由 pi session 文件负责，前端不重复存储
           },
@@ -378,14 +443,14 @@ export function createPiThreadListAdapter(): RemoteThreadListAdapter {
             void formatAdapter;
             return {
               load: async () =>
-                linkMessages<TMessage>(await loadPiHistory(remoteId)),
+                linkMessages<TMessage>(await loadPiHistory(remoteId, state?.id)),
               append: async () => {
                 // 持久化由 pi session 文件负责
               },
             };
           },
         }),
-        [remoteId],
+        [remoteId, state?.id],
       );
 
       return { history };

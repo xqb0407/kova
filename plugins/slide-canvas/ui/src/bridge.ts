@@ -7,12 +7,13 @@ import { DOC_VERSION, type DocKind } from "./doc";
 
 const PROTOCOL = "xulux-ui-plugin/1";
 
-/** 首页历史卡片：宿主扫描工作区 `*.canvas.json` 后回传的摘要（与宿主端 DocListItem 对齐） */
+/** 首页历史卡片：宿主按本面板 opens 扫描工作区后回传的摘要（与宿主端 DocListItem 对齐）。
+ *  kind 理论上只会是 DocKind；宿主端面板并集扫出的 sheet/doc 档按未知 kind 容错。 */
 export type DocListItem = {
   /** workspace 相对路径，打开时原样回传 doc.bind */
   path: string;
   name: string;
-  kind: DocKind;
+  kind: DocKind | "sheet" | "doc";
   /** 最后修改时间（ms epoch；0=宿主未提供） */
   mtime: number;
   frames: number;

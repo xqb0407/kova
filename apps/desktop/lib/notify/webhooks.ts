@@ -13,13 +13,14 @@ import type { AgentEventName } from "@/lib/pi/agent-events";
  * 发送通道与订阅过滤在 webhook-dispatcher.ts，本文件只管配置 CRUD 与持久化。
  */
 
-export type WebhookFormat = "generic" | "dingtalk" | "feishu" | "slack";
+export type WebhookFormat = "generic" | "dingtalk" | "feishu" | "slack" | "bark";
 
 export const WEBHOOK_FORMATS: { value: WebhookFormat; label: string }[] = [
   { value: "generic", label: "通用 JSON" },
   { value: "dingtalk", label: "钉钉机器人" },
   { value: "feishu", label: "飞书机器人" },
   { value: "slack", label: "Slack" },
+  { value: "bark", label: "Bark（iOS 推送）" },
 ];
 
 export interface WebhookEndpoint {

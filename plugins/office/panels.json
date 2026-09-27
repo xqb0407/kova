@@ -1,10 +1,10 @@
 [
   {
     "id": "office",
-    "title": "幻灯片",
+    "title": "办公",
     "icon": "icon.svg",
     "entry": "office.html",
-    "opens": ["*.deck.canvas.json"],
+    "opens": ["*.deck.canvas.json", "*.sheet.univer.json", "*.doc.univer.json"],
     "permissions": ["document", "export", "agent", "notify"]
   }
 ]

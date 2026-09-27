@@ -67,6 +67,14 @@ export function assetsDirForDoc(docPath: string | null): string {
   return `${dir ? `${dir}/` : ""}${base}-assets`;
 }
 
+/** 新建幻灯片档的种子 JSON（聚合外壳首页「新建幻灯片」用；deck 编辑器内的新建走 store.createDoc） */
+export function deckSeedJson(name: string, preset: PagePreset = "16:9"): string {
+  const clean = name.trim().replace(/[/\\:*?"<>|？：＊｜＞＜＼／]/g, "");
+  const d = blankDoc(preset, clean || "幻灯片", "deck");
+  d.frames.push(blankFrame(preset));
+  return serializeDoc(d);
+}
+
 /** 容器元素列表（root → objects；页框 → elements）；不存在返回 null */
 export function containerEls(doc: CanvasDoc, containerId: string): El[] | null {
   if (containerId === CANVAS_ROOT) return doc.objects;
@@ -174,20 +182,23 @@ export function useDeck() {
     [applyDoc, sendSoon],
   );
 
-  /* ---------------- 桥生命周期 ---------------- */
+  /* ---------------- 桥生命周期（多播消费者：只处理画布档的帧） ---------------- */
 
   useEffect(() => {
-    bridge.attach({
+    const isDeckFile = (path: string | null): boolean =>
+      path === null ? false : /\.canvas\.json$/i.test(path);
+    const detach = bridge.attach({
       onHandshake: (_theme, ctx) => {
         setConnected(true);
-        if (ctx.fileRelPath) {
+        if (ctx.fileRelPath && isDeckFile(ctx.fileRelPath)) {
           setFileRel(ctx.fileRelPath);
           setHasDoc(true);
         }
-        bridge.requestDoc();
       },
       onDocOpen: (rev, json, external, path) => {
         void rev;
+        // 聚合外壳下宿主帧是多播的：只消费画布档（.canvas.json）的 doc.open
+        if (!isDeckFile(path)) return;
         if (path) {
           setFileRel(path);
           setHasDoc(true);
@@ -230,6 +241,12 @@ export function useDeck() {
       onTheme: () => {},
       onAssetReply: () => {},
     });
+    // 聚合外壳下本视图挂载可能晚于宿主派发当前档：请求重推一次（幂等）
+    bridge.requestDoc();
+    // 双保险：桥已完成握手时直接视为已连接（attach 的补发握手正常会覆盖，
+    // 这里兜住任何错过补发的路径，避免卡"正在连接工作区…"）
+    if (!bridge.standalone && bridge.bridgeState !== "standalone") setConnected(true);
+    return detach;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

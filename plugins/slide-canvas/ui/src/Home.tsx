@@ -22,6 +22,11 @@ const KIND_META: Record<DocKind, { label: string; hint: string }> = {
   ui: { label: "UI 设计", hint: "移动端设备画板起始档，交给 agent 按提示词出界面" },
 };
 
+/** 卡片类型标签：画布三态用 KIND_META；异常混入的非画布 kind（sheet/doc 等）退化为通用名 */
+function kindLabel(k: DocListItem["kind"]): string {
+  return k === "board" || k === "deck" || k === "ui" ? KIND_META[k].label : "文档";
+}
+
 /** 卡片缩略图：页框布局按比例画进 16:10 的盒子；无页框的白板画点阵底 */
 const Preview: FC<{ item: DocListItem }> = ({ item }) => {
   const ref = useRef<HTMLCanvasElement | null>(null);
@@ -291,7 +296,9 @@ export const Home: FC<{ store: DeckStore; currentPath: string | null; onEnter: (
                     {it.corrupt ? (
                       <span className="shrink-0 rounded-md bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-500">损坏</span>
                     ) : (
-                      <span className="bg-secondary text-muted-foreground shrink-0 rounded-md px-1.5 py-0.5 text-[10px]">{KIND_META[it.kind].label}</span>
+                      <span className="bg-secondary text-muted-foreground shrink-0 rounded-md px-1.5 py-0.5 text-[10px]">
+                        {kindLabel(it.kind)}
+                      </span>
                     )}
                     {it.path === currentPath && <span className="text-primary shrink-0 text-[10px]">当前</span>}
                   </div>

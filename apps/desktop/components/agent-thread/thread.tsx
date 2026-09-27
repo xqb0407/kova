@@ -26,6 +26,8 @@ import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
 import { CheckpointTail } from "./checkpoint-card";
 import { ThreadPreviewRail } from "./thread-preview-rail";
+import { HistoryPager } from "./history-pager";
+import { TurnSlot, TurnTimingRecorder } from "./turn-summary";
 import { prewarmShiki } from "@/lib/markdown/prewarm-shiki";
 import { useThreadPendingTurn } from "@/lib/pi/pi-queue";
 
@@ -140,12 +142,15 @@ export const Thread = memo(function Thread() {
       <ImageDataUI />
 
       <ThreadPrimitive.Viewport
-        turnAnchor="top"
+        turnAnchor="bottom"
         data-slot="aui_thread-viewport"
         className={cn(
           // 消息流禁止横向滚动：超长内容（工具行、composer 工具条等）应在各自层
           // 截断成省略号；overflow-x-clip 兜底，漏网溢出不产生底部滚动条
-          "relative flex flex-1 flex-col overflow-x-clip overflow-y-scroll scroll-smooth px-4 pt-4",
+          // 不加 scroll-smooth：behavior:"auto" 的跟随滚动会变成平滑动画，流式
+          // 期间每次内容增高都重启动画、永远追不上增长（龟速爬行）——跟随必须
+          // 即时到位；需要平滑跳转的入口（锚点刻度条等）自行显式传 "smooth"
+          "relative flex flex-1 flex-col overflow-x-clip overflow-y-scroll px-4 pt-4",
           isEmpty && "justify-center",
         )}
       >
@@ -155,6 +160,8 @@ export const Thread = memo(function Thread() {
         <AuiIf condition={isHistoryLoadingView}>
           <ThreadHistorySkeleton />
         </AuiIf>
+        {/* 往上滚到顶时懒加载更早历史（§6）：容器不 loading 时隐藏，不占布局 */}
+        <HistoryPager />
 
         <div
           data-slot="aui_message-group"
@@ -173,15 +180,22 @@ export const Thread = memo(function Thread() {
               // 手动压缩的即时分隔线：按锚点钉在压缩发生时那条消息之后（Messages 内部，
               // 与消息同布局），后续新消息排在其下，重新装载历史后由重建的分隔线接管
               return (
-                <ManualCompactionTailAfter messageId={String(message.id)}>
-                  {inner}
-                </ManualCompactionTailAfter>
+                <TurnSlot
+                  messageId={String(message.id)}
+                  isEditing={!!message.composer.isEditing}
+                >
+                  <ManualCompactionTailAfter messageId={String(message.id)}>
+                    {inner}
+                  </ManualCompactionTailAfter>
+                </TurnSlot>
               );
             }}
           </ThreadPrimitive.Messages>
           {/* 检查点卡兜底尾：仅渲染锚点未知的条目；正常轮次由消息体内的 MessageCheckpoint 挂载 */}
           <CheckpointTail />
           <ThreadWorkingIndicator />
+          {/* 直播轮耗时打点（渲染 null），见 turn-summary.tsx */}
+          <TurnTimingRecorder />
         </div>
 {/*  bg-[color-mix(in_oklab,var(--muted)_55%,var(--background))] */}
         <ThreadPrimitive.ViewportFooter

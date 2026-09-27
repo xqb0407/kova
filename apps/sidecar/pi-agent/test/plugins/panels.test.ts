@@ -227,11 +227,11 @@ describe("安装后的面板读模型与入口资产", () => {
     expect(findEnabledPluginPanel(pluginId, "canvas")).toBeDefined();
   });
 
-  test("入口超 8MB 上限 → 抛错（调用方转协议错误）", () => {
+  test("入口超上限（32MB，Univer 级单文件面板）→ 抛错（调用方转协议错误）", () => {
     const abs = path.join(findEnabledPluginPanel(pluginId, "canvas")!.plugin.manifest.root, "canvas.html");
     const keep = readFileSync(abs);
     try {
-      writeFileSync(abs, Buffer.alloc(9 * 1024 * 1024, 0x20));
+      writeFileSync(abs, Buffer.alloc(33 * 1024 * 1024, 0x20));
       expect(() => readPluginPanelAsset(pluginId, "canvas")).toThrow(/too large/);
     } finally {
       writeFileSync(abs, keep);

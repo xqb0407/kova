@@ -20,6 +20,7 @@ import {
 } from "@/lib/git/git";
 import { refreshGitStatus } from "@/lib/git/git-status";
 import { useAppMode } from "@/lib/pi/app-mode";
+import { packTurnSlot, parseTurnSlot } from "@/lib/panels/message-turns";
 import { focusPanelTab, openPanelTab } from "@/lib/panels/panel-tabs";
 import {
   clearRunCheckpoint,
@@ -273,8 +274,10 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
 
 /**
  * 消息内挂载：渲染在 assistant-message.tsx 的产物卡之后、操作栏之上——
- * 卡片属于本轮消息本体。命中条件（与库内 MessageRoot 同款判定）：当前
- * 消息是 assistant，且前一条消息是 user（即本轮首条 assistant 回复）。
+ * 卡片属于本轮消息本体。命中判定：当前消息是本轮末条 assistant 消息，
+ * 且本轮由 user 消息触发（锚点=该 user 消息下标）。挂轮末而不是「首条
+ * assistant 回复」：折叠轮（Codex 风格）里轮中过程消息整体不挂载，挂首条
+ * 会随过程一起被收起，撤销入口就没了。
  * 工作模式下不渲染（Git 管理整体隐藏，见 general-settings「工作模式」）；
  * 影子仓库快照链路不动，切回编码模式时历史卡片可恢复。
  */
@@ -282,16 +285,15 @@ export const MessageCheckpoint: FC = () => {
   const appMode = useAppMode();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const entries = useRunCheckpoints(threadId ?? undefined);
-  // 选择器只回 number|null（引用稳定）；命中判定放渲染后做
-  const prevUserIndex = useAuiState((s) => {
-    if (s.message.role !== "assistant") return null;
-    const i = s.message.index;
-    if (i <= 0) return null;
-    return s.thread.messages[i - 1]?.role === "user" ? i - 1 : null;
+  // 选择器只回 number（引用稳定）：本轮触发的 user 消息下标，非轮末/开场段为 -1
+  const anchorUserIndex = useAuiState((s) => {
+    if (s.message.role !== "assistant") return -1;
+    const slot = parseTurnSlot(packTurnSlot(s.thread.messages, String(s.message.id)));
+    return slot && slot.isTurnEnd ? slot.anchorUserIndex : -1;
   });
   if (appMode !== "code") return null;
-  if (!threadId || prevUserIndex === null) return null;
-  const mine = entries.filter((e) => e.anchorIndex === prevUserIndex);
+  if (!threadId || anchorUserIndex < 0) return null;
+  const mine = entries.filter((e) => e.anchorIndex === anchorUserIndex);
   if (mine.length === 0) return null;
   return (
     <div className="mt-2 flex flex-col gap-2 my-3">

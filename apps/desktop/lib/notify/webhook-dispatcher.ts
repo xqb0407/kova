@@ -170,6 +170,17 @@ function summarize(event: AgentEvent): string {
   return `[Xulux] ${parts.join(" · ")}`;
 }
 
+/** 摘要里除事件名外的细节段（Bark 正文用：标题给事件名，正文给细节） */
+function detailText(event: AgentEvent): string {
+  const parts: string[] = [];
+  const d = event.data ?? {};
+  if (typeof d.toolName === "string") parts.push(`工具 ${d.toolName}`);
+  if (typeof d.message === "string" && d.message) parts.push(d.message.slice(0, 200));
+  if (typeof d.prompt === "string" && d.prompt) parts.push(`「${d.prompt.slice(0, 60)}」`);
+  if (event.threadId) parts.push(`会话 ${event.threadId.slice(0, 8)}`);
+  return parts.join(" · ") || eventLabel(event.name);
+}
+
 async function hmacSha256(keyStr: string, msgStr: string): Promise<ArrayBuffer> {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -196,8 +207,7 @@ function toBase64(buf: ArrayBuffer): string {
 async function buildRequest(
   endpoint: WebhookEndpoint,
   event: AgentEvent,
-): Promise<BuiltRequest> {
-  const headers: [string, string][] = [["content-type", "application/json"]];
+): Promise<BuiltRequest> {  const headers: [string, string][] = [["content-type", "application/json"]];
   const text = summarize(event);
 
   switch (endpoint.format) {
@@ -228,6 +238,21 @@ async function buildRequest(
     }
     case "slack":
       return { url: endpoint.url, body: JSON.stringify({ text }), headers };
+    case "bark": {
+      // Bark（iOS 推送）：直接 POST 端点 URL（Bark App 里复制的 服务器/设备Key），
+      // 表单字段 title/body/group…（官方 curl 示例同款，自建 bark-server 同协议）。
+      // Bark 无加签机制，endpoint.secret 忽略；URL 去尾斜杠原样使用。
+      const form = new URLSearchParams({
+        title: `Xulux · ${eventLabel(event.name)}`,
+        body: detailText(event),
+        group: "Xulux",
+      });
+      return {
+        url: endpoint.url.trim().replace(/\/+$/, ""),
+        body: form.toString(),
+        headers: [["content-type", "application/x-www-form-urlencoded"]],
+      };
+    }
     case "generic":
     default: {
       // 通用信封：结构化事件，接收方按需消费；secret 走 GitHub 风格头签名

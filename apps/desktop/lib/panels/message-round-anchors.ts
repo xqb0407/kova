@@ -5,6 +5,9 @@
  * 该轮末条 assistant 各一个刻度（≈ 轮数 × 2），与“一轮一个”的预期不符。
  * 开场是 assistant 预置内容（首条 user 消息之前）时保留该连续段末条兜底，
  * 否则开场内容没有任何刻度可跳。
+ *
+ * 折叠轮的用户气泡照常渲染（Codex 风格只收起中间步骤），锚点因此不受
+ * 折叠状态影响，两种形态下一轮恒为一个刻度。
  */
 export function pickRoundAnchors<T extends { dataset: { slot?: string } }>(
   anchors: T[],

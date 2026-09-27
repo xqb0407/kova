@@ -753,7 +753,16 @@ export type PiResponse =
   | { type: "running"; sessionIds: string[] }
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "forked"; sessionId: string }
-  | { type: "history"; messages: unknown[] }
+  | {
+      type: "history";
+      messages: unknown[];
+      pending?: unknown[];
+      /** §6 分页窗元数据：窗口首/末行的转录 seq；往上翻页用 beforeSeq=firstSeq */
+      firstSeq?: number | null;
+      lastSeq?: number | null;
+      /** 窗口之前还有更早的历史 */
+      hasMore?: boolean;
+    }
   // 挂起交互权威拉取应答（§4）：items = PendingInteraction[]（类型收窄在调用方）
   | { type: "pending"; items: unknown[] }
   | PiAutomationListResponse

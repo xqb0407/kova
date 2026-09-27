@@ -205,38 +205,69 @@ const AssistantWorkingIndicator: FC = () => {
   );
 };
 
-export const AssistantMessage: FC = () => {
+/**
+ * 消息的三种渲染面（折叠用）：
+ *  - full（默认）：整条消息——直播、最新轮、展开态都是这一面
+ *  - answer：只要「回答」——正文 text part（外加压缩分隔线、产物卡、检查点、
+ *    停止标记、操作栏）；轮中夹带的工具调用与思考不在这里渲染
+ *  - process：只要「过程」——除正文外的全部 part（工具组/思考/data），不带
+ *    操作栏，也不带 assistant-message-content 槽位（否则会污染刻度条的预览取值）
+ * 折叠轮把轮末消息拆成 process（收进过程面板）+ answer（可见），于是收起后只剩
+ * 回答正文，最后一条消息里夹带的工具调用不再漏在外面（对齐 Codex：可见的是
+ * "回答"，不是"最后一条消息的所有内容"）。
+ */
+export type AssistantMessageVariant = "full" | "answer" | "process";
+
+export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
+  variant = "full",
+}) => {
   // 「已停止」消息（data-stopped part 存在，直播/历史重建同构）：分隔线渲染
   // 在操作栏之下（ActionBar 外面），part 本身不就地渲染
   const stopped = useAuiState(isStoppedMessageState);
-  return (
-    <MessagePrimitive.Root
-      data-slot="aui_edit-composer-wrapper"
-      className="mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2"
+  const onlyAnswer = variant === "answer";
+  const onlyProcess = variant === "process";
+
+  const content = (
+    <div
+      data-slot={
+        // process 面刻意不占 assistant-message-content：刻度条的锚点与悬停预览
+        // 都按这个槽位取，过程面是不完整内容，占了会把预览取空
+        onlyProcess
+          ? "aui_assistant-process-content"
+          : "aui_assistant-message-content"
+      }
+      className="text-foreground px-2 leading-relaxed wrap-break-word"
     >
-      <div
-        data-slot="aui_assistant-message-content"
-        className="text-foreground px-2 leading-relaxed wrap-break-word"
+      {/* 重试状态行：只渲染一次，attempt 原地更新（data part 本身就地不渲染） */}
+      <MessagePrimitive.GroupedParts
+        groupBy={(part) => {
+          // answer 面不分组：非正文 part 直接不渲染，分组容器会留下空标题
+          if (onlyAnswer) return [];
+          if (part.type === "reasoning")
+            return ["group-chainOfThought", "group-reasoning"];
+          if (part.type === "tool-call") {
+            // Task 委派行独立成行，不并入工具折叠组（并行多个各一行）
+            if (part.toolName === "Task") return [];
+            const cat = TOOL_CATEGORY[part.toolName];
+            return [
+              "group-chainOfThought",
+              cat ? `group-tool-${cat}` : "group-tool",
+            ];
+          }
+          return [];
+        }}
       >
-        {/* 重试状态行：只渲染一次，attempt 原地更新（data part 本身就地不渲染） */}
-        <MessagePrimitive.GroupedParts
-          groupBy={(part) => {
-            if (part.type === "reasoning")
-              return ["group-chainOfThought", "group-reasoning"];
-            if (part.type === "tool-call") {
-              // Task 委派行独立成行，不并入工具折叠组（并行多个各一行）
-              if (part.toolName === "Task") return [];
-              const cat = TOOL_CATEGORY[part.toolName];
-              return [
-                "group-chainOfThought",
-                cat ? `group-tool-${cat}` : "group-tool",
-              ];
-            }
-            return [];
-          }}
-        >
-          {({ part, children }) => {
-            switch (part.type) {
+        {({ part, children }) => {
+          // 正文只由 answer 面渲染，过程面跳过（避免折叠态里出现两份正文）
+          if (onlyProcess && part.type === "text") return null;
+          // answer 面只保留正文与压缩分隔线；工具/思考/其他 data 归过程面
+          if (onlyAnswer && part.type !== "text") {
+            const isDivider =
+              part.type === "data" &&
+              (part as { name?: string }).name === "compaction";
+            if (!isDivider) return null;
+          }
+          switch (part.type) {
               case "group-chainOfThought":
                 return <div data-slot="aui_chain-of-thought">{children}</div>;
               case "group-tool":
@@ -296,13 +327,36 @@ export const AssistantMessage: FC = () => {
             }
           }}
         </MessagePrimitive.GroupedParts>
-        {/* 消息尾部产物卡：agent 用 write 产出的交付文件（HTML 报告/文档等） */}
-        <MessageArtifacts />
-        {/* 检查点卡：本轮 git 改动的汇总与撤销入口，隶属消息本体（操作栏之上） */}
-        <MessageCheckpoint />
-        <MessageError />
-        <RetryMarker />
+        {/* 产物卡/检查点/错误/重试只归 answer 面（过程面重复渲染会出两套卡片） */}
+        {!onlyProcess && (
+          <>
+            {/* 消息尾部产物卡：agent 用 write 产出的交付文件（HTML 报告/文档等） */}
+            <MessageArtifacts />
+            {/* 检查点卡：本轮 git 改动的汇总与撤销入口，隶属消息本体（操作栏之上） */}
+            <MessageCheckpoint />
+            <MessageError />
+            <RetryMarker />
+          </>
+        )}
       </div>
+  );
+
+  // 过程面：不带消息根（避免同一消息出现两个 data-message-id / 重复注册
+  // 顶锚点），也不带操作栏——它就是折叠轮里那块被收起的内容
+  if (onlyProcess) {
+    return (
+      <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 pl-0">
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <MessagePrimitive.Root
+      data-slot="aui_edit-composer-wrapper"
+      className="mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 pl-0"
+    >
+      {content}
 
       <div
         data-slot="aui_assistant-message-footer"
@@ -313,7 +367,7 @@ export const AssistantMessage: FC = () => {
           !stopped && "h-7.5 -mb-7.5",
         )}
       >
-        <div className="absolute inset-x-0 top-0 flex h-7.5 items-center pt-1.5">
+        <div className="absolute inset-x-0 top-0 flex h-7.5 items-center pt-1.5 mt-4">
           <AssistantActionBar />
         </div>
       </div>
