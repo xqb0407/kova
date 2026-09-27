@@ -122,6 +122,12 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
   // 最新上下文给消息回调（避免 stale closure）
   const ctxRef = useRef({ cwd, docPath });
   ctxRef.current = { cwd, docPath };
+  /** doc.list 扫描范围：本面板自己认领的 opens glob（每渲染同步，回调经 ref 取）。
+   *  不能发全量面板并集：slide-canvas 等插件首页按自己认领的后缀渲染卡片，
+   *  混进别人家的 kind（sheet/doc）会直接渲染崩溃。 */
+  const listGlobsRef = useRef<string[]>([]);
+  listGlobsRef.current =
+    contrib?.panel.opens ?? contributions.panels.flatMap((c) => c.panel.opens);
 
   const post = useCallback((m: HostMessage) => {
     frameRef.current?.contentWindow?.postMessage(encodeHostMessage(m), "*");
@@ -256,8 +262,8 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
           return;
         }
         case "doc.list": {
-          // 首页"历史卡片墙"：浅扫 cwd 下的画布档并回摘要（不支持的旧宿主会静默丢弃该 kind）
-          const items = await listCanvasDocs(cwd);
+          // 首页"历史卡片墙"：按已装面板 opens glob 浅扫 cwd 并回摘要（不支持的旧宿主会静默丢弃该 kind）
+          const items = await listCanvasDocs(cwd, listGlobsRef.current);
           post({ kind: "doc.list.reply", reqId: msg.reqId, items });
           return;
         }

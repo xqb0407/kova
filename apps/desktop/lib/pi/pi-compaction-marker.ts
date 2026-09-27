@@ -51,6 +51,16 @@ export function clearManualCompactionMarker(threadId: string): void {
   if (markers.delete(threadId)) notify();
 }
 
+/** 往上翻历史（prepend）后平移锚点：下标基准随前面插入的旧消息同步后移，
+ *  分隔线不会错位到别的消息下面 */
+export function shiftManualCompactionAnchor(threadId: string, delta: number): void {
+  if (delta === 0) return;
+  const marker = markers.get(threadId);
+  if (!marker) return;
+  markers.set(threadId, { ...marker, anchorIndex: marker.anchorIndex + delta });
+  notify();
+}
+
 /** 历史装载完成时调用：该会话的分隔线已在消息流里重建，撤掉尾部 marker */
 export function clearManualCompactionMarkerForRemote(remoteId: string): void {
   let changed = false;

@@ -11,6 +11,7 @@ import {
   toFileUrl,
   type MessageArtifact,
 } from "@/lib/panels/artifacts";
+import { getTurnParts, packTurnSlot, parseTurnSlot } from "@/lib/panels/message-turns";
 import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
 import { findPanelForFile, usePluginPanels } from "@/lib/plugins/plugin-panels";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
@@ -73,7 +74,7 @@ export const ArtifactCard: FC<{ artifact: MessageArtifact }> = ({
   return (
     <div
       data-slot="aui_artifact-card"
-      className="bg-muted/40 border-border/60 flex items-center gap-3 rounded-xl border px-3 py-2.5"
+      className="bg-muted/40 border-border/60 flex items-center gap-3 rounded-xl border px-3 py-2.5 my-4"
     >
       <FileTypeIcon path={artifact.path} className="size-8 shrink-0" />
       <div className="min-w-0 flex-1">
@@ -123,15 +124,26 @@ export const ArtifactCard: FC<{ artifact: MessageArtifact }> = ({
 };
 
 /**
- * 一条 assistant 消息尾部的产物卡列表。
+ * 一轮对话尾部的产物卡列表。
  * 只在回合结束后计算一次：流式期间逐 token 重扫 parts、重算大文件字节数代价高，
  * 且半截内容出卡也不合理——运行中直接返回空。
+ * 挂在本轮末条 assistant 消息上、扫本轮全部 assistant 消息的 parts：
+ * 折叠轮（Codex 风格）里轮中过程消息整体不挂载，产物是交付物，必须保留可见。
  */
 export const MessageArtifacts: FC = () => {
   const running = useAuiState((s) => s.message.status?.type === "running");
-  const parts = useAuiState((s) => s.message.content);
+  // 选择器回的是缓存过的 parts 数组（按 messages 数组身份 + 轮次键缓存，
+  // 同一批消息下引用稳定），不是新数组——不会因新身份反复重渲
+  const parts = useAuiState((s) => {
+    if (s.message.role !== "assistant") return null;
+    const slot = parseTurnSlot(
+      packTurnSlot(s.thread.messages, String(s.message.id)),
+    );
+    if (!slot?.isTurnEnd) return null;
+    return getTurnParts(s.thread.messages, slot.turnKey);
+  });
   const artifacts = useMemo(
-    () => (running ? [] : messageArtifacts(parts)),
+    () => (running || !parts ? [] : messageArtifacts(parts)),
     [running, parts],
   );
   if (artifacts.length === 0) return null;

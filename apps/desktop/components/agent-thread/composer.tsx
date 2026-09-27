@@ -16,6 +16,7 @@ import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
 import { ModePicker } from "@/components/agent-thread/mode-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
+import { cancelQueueItem, useQueueSnapshot } from "@/lib/pi/pi-queue";
 import { markSteerNextSend } from "@/lib/pi/pi-steer-intent";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
@@ -90,10 +91,10 @@ const ModelPicker: FC = () => {
  * 输入框键盘守卫：
  * 1) 输入法回车守卫——WKWebView 下回车确认候选词的 keydown 常带 isComposing=false
  *    （或紧随 compositionend 之后送达），库内建的 composing 检查拦不住，导致误发送。
- *    display:contents 包装层上以捕获阶段监听：组合中（isComposing / keyCode 229）
- *    或组合结束后 120ms 宽限窗口内的 Enter，直接拦下；组合中的只 stopPropagation
- *    （候选词确认走默认），回声 Enter 是普通按键、默认行为即插入换行，须一并
- *    preventDefault 才不会「确认一个词白换一行」。
+ *    display:contents 包装层上以捕获阶段监听：组合中的 Enter 记入「以 Enter 提交」
+ *    标记并只拦传递（候选词确认走默认）；组合结束后 120ms 内的 Enter 仅当该标记
+ *    在（= 确实是 Enter 提交的回声）才拦下。无差别时间窗会把「空格/数字选词后
+ *    快速按回车发送」的真实按键一并吞掉——按两下才发出去的根源。
  * 2) 自定义发送——「发送消息」被绑成非 Enter 组合时（submitMode="none"），库不会在
  *    Enter 提交，这里捕获命中绑定即 aui.composer.send()；Enter 落回库默认→换行。
  * 用原生 DOM 而非 lexical 命令：app 与库解析到的 @lexical/react 是两份模块实例，
@@ -110,18 +111,32 @@ const ImeEnterGuard: FC<{
     const el = ref.current;
     if (!el) return;
     let compositionEndedAt = 0;
+    let composingEnterSeen = false;
+    const onCompositionStart = () => {
+      composingEnterSeen = false;
+    };
     const onCompositionEnd = () => {
       compositionEndedAt = performance.now();
     };
     const onKeyDown = (event: KeyboardEvent) => {
       const composing = event.isComposing || event.keyCode === 229;
-      const inGrace = performance.now() - compositionEndedAt <= 120;
-      if (event.key === "Enter" && (composing || inGrace)) {
+      if (composing) {
+        if (event.key === "Enter") composingEnterSeen = true;
         // 组合中的 Enter 只拦传递（preventDefault 可能拦掉候选词提交，候选词
-        // 确认仍走默认）；组合刚结束的回声 Enter 已是普通按键，浏览器默认行为
+        // 确认仍走默认）
+        event.stopPropagation();
+        return;
+      }
+      if (
+        event.key === "Enter" &&
+        composingEnterSeen &&
+        performance.now() - compositionEndedAt <= 120
+      ) {
+        // 组合刚结束的回声 Enter 已是普通按键，浏览器默认行为
         // 就是往 contenteditable 插一个换行——必须连默认行为一起吞掉，
         // 否则字确认了、行也白换
-        if (!composing) event.preventDefault();
+        composingEnterSeen = false;
+        event.preventDefault();
         event.stopPropagation();
         return;
       }
@@ -133,9 +148,11 @@ const ImeEnterGuard: FC<{
       }
     };
     el.addEventListener("keydown", onKeyDown, true);
+    el.addEventListener("compositionstart", onCompositionStart, true);
     el.addEventListener("compositionend", onCompositionEnd, true);
     return () => {
       el.removeEventListener("keydown", onKeyDown, true);
+      el.removeEventListener("compositionstart", onCompositionStart, true);
       el.removeEventListener("compositionend", onCompositionEnd, true);
     };
   }, [aui, interceptSend, send]);
@@ -529,9 +546,11 @@ const WorkspaceBranchPill: FC = () => {
   );
 };
 
-/** 发送/停止共用按钮（单按钮三态，同一槽位，方块⇄箭头随输入切换）：
+/** 发送/停止/撤队共用按钮（单按钮四态，同一槽位，方块⇄箭头随输入切换）：
  *  - 空闲：↑ 发送（库原生 Send，沿用其禁用谓词）；
- *  - 运行中输入为空：■ 停止生成；
+ *  - 运行中输入为空且队列有排队的消息：■ 点击=删除最近入队的一条（撤销上次
+ *    发送；多条逐条删），⌥/Alt+点击=停止生成；
+ *  - 运行中输入为空且队列为空：■ 停止生成；
  *  - 运行中输入有内容：↑ 点击=进发送队列（sidecar 当前轮结束后自动执行），
  *    ⌥/Alt+点击=并入当前轮（steer：注入活跃轮，不排队不中止）；
  *    键盘 Enter/⌘Enter 同提交语义，Shift+⌘/Ctrl+Enter=并入。
@@ -542,7 +561,43 @@ const AdaptiveSendButton: FC = () => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const canSend = useAuiState((s) => s.composer.canSend);
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const queueItems = useQueueSnapshot(threadId).items;
+  // 删除请求在途标记：快照回程（~20ms 合帧）内连点不重复发 queue_cancel
+  const cancellingRef = useRef<string | null>(null);
+
   if (isRunning && !canSend) {
+    // 排队非空（且输入为空）：■ = 删除最近入队的排队项（撤销上次发送）
+    const last = queueItems[queueItems.length - 1];
+    if (last) {
+      return (
+        <TooltipIconButton
+          tooltip={
+            queueItems.length > 1
+              ? `删除最近排队的消息（共 ${queueItems.length} 条）· ⌥/Alt 点击停止生成`
+              : "删除排队的消息 · ⌥/Alt 点击停止生成"
+          }
+          side="bottom"
+          type="button"
+          variant="default"
+          size="icon"
+          className="aui-composer-cancel size-7 bg-primary rounded-full hover:bg-primary/80"
+          aria-label="Delete queued message"
+          onClick={(e) => {
+            if (e.altKey) {
+              aui.composer.cancel();
+              return;
+            }
+            if (cancellingRef.current) return;
+            cancellingRef.current = last.reqId;
+            void cancelQueueItem(last.reqId).finally(() => {
+              if (cancellingRef.current === last.reqId) cancellingRef.current = null;
+            });
+          }}
+        >
+          <div className="size-3 fill-current bg-white " />
+        </TooltipIconButton>
+      );
+    }
     return (
       <ComposerPrimitive.Cancel asChild>
         <TooltipIconButton

@@ -4,13 +4,15 @@ import { fsListDir, fsReadFile } from "@/lib/workspace/fs";
 import type { DocListItem } from "./ui-plugin-bridge";
 
 /**
- * 画布档（`*.canvas.json`）盘点：插件面板首页的"历史卡片墙"数据源。
+ * 工作区文档盘点：插件面板首页"历史卡片墙"数据源。
  *
  * 走 Tauri fs 命令（workspace 信任根 + 相对路径守卫），刻意只做浅扫：
- * 根目录 + 两层子目录、最多 60 份——首页卡片不是文件浏览器，穷尽仓库没有意义；
- * 每份档读内容做摘要（名称/类型/页框布局）；JSON 解析失败的**照常列出并打
- * corrupt 标记**——静默跳过会让用户以为文档丢了（task 模式"打开是空的"的
- * 帮凶之一），坏档在卡片上可见才能被发现和处理。
+ * 根目录 + 两层子目录、最多 60 份——首页卡片不是文件浏览器，穷尽仓库没有意义。
+ * 扫描范围 = 调用方给的面板认领 glob（已装插件各面板的 opens 摘要，缺省仍是
+ * `*.canvas.json` 兼容旧调用），同一份文件可能命中多个 glob 只列一次；每份档
+ * 读内容做摘要（画布档给页框布局缩略图、Univer 快照档给名称，按 kind 分支）；
+ * JSON 解析失败的**照常列出并打 corrupt 标记**——静默跳过会让用户以为文档丢了
+ * （task 模式"打开是空的"的帮凶之一），坏档在卡片上可见才能被发现和处理。
  * mtime 目前恒为 0（Rust 侧列目录不做逐项 stat），排序退化为按名称。
  */
 
@@ -21,9 +23,37 @@ const MAX_DOCS = 60;
 /** 缩略图页框条数上限（宿主截断，插件端只管画） */
 const MAX_PREVIEW_FRAMES = 24;
 
-export async function listCanvasDocs(cwd: string | null): Promise<DocListItem[]> {
+/** 缺省扫描 glob：兼容旧调用方（宿主未传面板 opens 时仍能列出画布档） */
+const DEFAULT_GLOBS = ["*.canvas.json"];
+
+/** glob → RegExp（与 sidecar manifest.globMatch 同语义：`*` 不跨路径分隔符，另 `?` 单字符） */
+function globToRegExp(glob: string): RegExp {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, ".");
+  return new RegExp(`^${escaped}$`, "i");
+}
+
+/** 路径后缀 → 列表 kind（.univer.json 快照档优先于宽 glob 的画布后缀） */
+function kindOfPath(path: string): DocListItem["kind"] {
+  if (/\.sheet\.univer\.json$/i.test(path)) return "sheet";
+  if (/\.doc\.univer\.json$/i.test(path)) return "doc";
+  return "board";
+}
+
+export async function listCanvasDocs(
+  cwd: string | null,
+  globs: string[] = DEFAULT_GLOBS,
+): Promise<DocListItem[]> {
   if (!cwd) return [];
+  const patterns = (globs.length > 0 ? globs : DEFAULT_GLOBS).map(globToRegExp);
+  // 与 sidecar open-panel-tool 同款：相对路径与文件名各自试一遍——
+  // `*.canvas.json` 这类按相对路径只能打中根级文件，basename 兜底才覆盖子目录
+  const match = (rel: string, name: string) =>
+    patterns.some((re) => re.test(rel) || re.test(name));
   const paths: string[] = [];
+  const seen = new Set<string>();
   const walk = async (dir: string, depth: number): Promise<void> => {
     if (depth > MAX_DEPTH || paths.length >= MAX_DOCS) return;
     const listing = await fsListDir(cwd, dir);
@@ -34,7 +64,10 @@ export async function listCanvasDocs(cwd: string | null): Promise<DocListItem[]>
         await walk(dir ? `${dir}/${e.name}` : e.name, depth + 1);
         continue;
       }
-      if (/\.canvas\.json$/i.test(e.name)) paths.push(dir ? `${dir}/${e.name}` : e.name);
+      const rel = dir ? `${dir}/${e.name}` : e.name;
+      if (!match(rel, e.name) || seen.has(rel)) continue;
+      seen.add(rel);
+      paths.push(rel);
     }
   };
   await walk("", 0);
@@ -62,8 +95,11 @@ export async function listCanvasDocs(cwd: string | null): Promise<DocListItem[]>
 function corruptItem(path: string): DocListItem {
   return {
     path,
-    name: (path.split("/").pop() ?? path).replace(/\.canvas\.json$/i, ""),
-    kind: "board",
+    name: (path.split("/").pop() ?? path)
+      .replace(/\.sheet\.univer\.json$/i, "")
+      .replace(/\.doc\.univer\.json$/i, "")
+      .replace(/\.canvas\.json$/i, ""),
+    kind: kindOfPath(path),
     mtime: 0,
     frames: 0,
     objects: 0,
@@ -76,7 +112,29 @@ function num(v: unknown, d = 0): number {
   return typeof v === "number" && Number.isFinite(v) ? v : d;
 }
 
+/** 快照档展示名：文档内声明的名称优先，缺省退文件名（不含认领后缀） */
+function snapshotName(path: string, doc: Record<string, unknown>): string {
+  const declared = typeof doc.name === "string" ? doc.name : typeof doc.title === "string" ? doc.title : "";
+  if (declared.trim()) return declared.trim();
+  return (path.split("/").pop() ?? path)
+    .replace(/\.sheet\.univer\.json$/i, "")
+    .replace(/\.doc\.univer\.json$/i, "");
+}
+
 function summarize(path: string, doc: Record<string, unknown>): DocListItem {
+  const kind = kindOfPath(path);
+  if (kind !== "board") {
+    // Univer 快照档：卡片只报名称，frames/objects/preview 是画布档专属语义，恒空
+    return {
+      path,
+      name: snapshotName(path, doc),
+      kind,
+      mtime: 0,
+      frames: 0,
+      objects: 0,
+      preview: [],
+    };
+  }
   const meta = (doc.meta ?? {}) as Record<string, unknown>;
   // v1 老档是 slides 数组（插件读盘时会迁移成 frames），摘要按两者取一
   const frames = (
@@ -87,7 +145,7 @@ function summarize(path: string, doc: Record<string, unknown>): DocListItem {
         : []
   ) as Record<string, unknown>[];
   const objects = Array.isArray(doc.objects) ? doc.objects : [];
-  const kind =
+  const canvasKind =
     meta.kind === "board" || meta.kind === "deck" || meta.kind === "ui"
       ? meta.kind
       : frames.length > 0 && objects.length === 0
@@ -99,7 +157,7 @@ function summarize(path: string, doc: Record<string, unknown>): DocListItem {
   return {
     path,
     name,
-    kind,
+    kind: canvasKind,
     mtime: 0,
     frames: frames.length,
     objects: objects.length,

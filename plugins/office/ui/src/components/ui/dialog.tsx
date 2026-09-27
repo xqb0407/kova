@@ -28,7 +28,9 @@ function DialogContent({ className, children, showClose = true, ...props }: Reac
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          "glass fixed top-1/2 left-1/2 z-50 grid w-[calc(100%-3rem)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 p-5 outline-none",
+          // ElevenLabs：对话框是专注表面——实心白卡，轮廓环阴影代替边框，禁用玻璃透底
+          "fixed top-1/2 left-1/2 z-50 grid w-[calc(100%-3rem)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 rounded-[24px] border-none bg-card p-5 outline-none",
+          "shadow-[rgba(0,0,0,0.06)_0px_0px_0px_1px,rgba(0,0,0,0.08)_0px_16px_40px_-8px]",
           "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
           className,
         )}

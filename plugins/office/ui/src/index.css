@@ -1,12 +1,16 @@
 /*
- * slide-canvas 视觉层：Tailwind v4 + shadcn 语义令牌 + Wise 主题双态。
+ * office 视觉层：Tailwind v4 + shadcn 语义令牌 + ElevenLabs 主题双态。
  * 主题由宿主桥驱动：documentElement.dataset.theme = light|dark（bridge.ts 维护）。
- * 亮色态 = Wise：暖白纸面 + 近黑 #0e0f0c 文字 + 亮绿 #9fe870 CTA（深绿 #163300 作字）；
- * 暗色态 = 同语言黑底反相（暖黑 + 亮绿原色直接上台）。
- * 双令牌约定：--primary = 亮绿，只上按钮/强调底色；--ink = 强调墨色
- * （亮态深绿/暗态亮绿），选中框、激活图标、描边高亮一律用它——
- * 亮绿当小元素颜色在白底上不可读，这是 Wise 官方的用法边界。
- * 深度靠发丝线；圆角语言：浮卡 20-24 / 玻璃 16 / 浮条菜单 12 / 按钮药丸。
+ * 设计语言 = ElevenLabs（docs/elevenlabs-DESIGN.md）：纯白画布 + 暖石点缀，
+ * 亚 0.1 透明度的多层阴影（内嵌半像素边 / 轮廓环 / 柔和抬升 / 暖影），
+ * 无彩色 Chromatic 界面（彩度只留给文档内容），药丸按钮（主 CTA 纯黑），
+ * 轻字重标题。字体：Inter/system + PingFang SC，标题 font-weight 300。
+ * 亮色态 = 规范原样：#ffffff 画布 / #f5f5f5 灰面 / #f5f2ef 暖石 / 黑主 CTA；
+ * 暗色态 = 同语言反相推导（规范无暗色）：近黑画布 + 白主药丸 + 暖炭次级，
+ * 阴影换成"边框即深度 + 黑投影"。
+ * 双令牌约定：--primary = 主 CTA 底色（亮黑/暗白）；--ink = 选中框/激活态/
+ * 描边高亮（亮黑/暗白），画布选择系与导航激活一律用它。
+ * 圆角语言：面板 24 / 卡片 16-20 / 控件 12 / 按钮药丸（9999px）。
  */
 @import "tailwindcss";
 @import "tw-animate-css";
@@ -39,68 +43,70 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-/* ---------- 亮色态：Wise（暖白纸面 + 亮绿 CTA + 深绿墨色） ---------- */
+/* ---------- 亮色态：ElevenLabs（纯白 + 暖石 + 黑主 CTA） ---------- */
 :root {
-  --radius: 0.75rem; /* 大圆角语言：lg=12 / xl=16，配 --radius-* 映射整体上移 */
-  --background: #f6f7f2; /* 暖白纸面（Wise off-white，带绿底韵） */
-  --foreground: #0e0f0c; /* Near Black：Wise 主文字 */
+  --radius: 0.75rem; /* lg=12 / xl=16；卡片级 16-24 在组件上按规范取值 */
+  --background: #ffffff; /* 纯白画布：暖意靠阴影与暖石面，不靠底色 */
+  --foreground: #000000; /* Black：主文字 */
   --card: #ffffff;
-  --card-foreground: #0e0f0c;
+  --card-foreground: #000000;
   --popover: #ffffff;
-  --popover-foreground: #0e0f0c;
-  --primary: #9fe870; /* Wise Green：只上按钮/强调底色 */
-  --primary-foreground: #163300; /* Dark Green：绿底上的字 */
-  --ink: #163300; /* 强调墨色：选中框/激活态/描边高亮（白底上可读的绿） */
-  --secondary: #ecefe7; /* 深绿 8%：次级实底（分段控件/次级按钮） */
-  --secondary-foreground: #0e0f0c;
-  --muted: #f0f1ea;
-  --muted-foreground: #454745; /* Warm Dark：次要文字 */
-  --accent: #e9f4df; /* 绿调悬停底（Wise 导航 hover 的实色近似） */
-  --accent-foreground: #0e0f0c;
+  --popover-foreground: #000000;
+  --primary: #000000; /* Primary Black Pill：主 CTA 底色 */
+  --primary-foreground: #ffffff;
+  --ink: #000000; /* 选中框/激活态/画布选择描边：黑 */
+  --secondary: #f5f2ef; /* Warm Stone：次级实底（签名暖面） */
+  --secondary-foreground: #000000;
+  --muted: #f5f5f5; /* Light Gray：灰面分区 */
+  --muted-foreground: #4e4e4e; /* Dark Gray：次要文字 */
+  --accent: #f5f2ef; /* 暖石悬停底 */
+  --accent-foreground: #000000;
   --destructive: #d03238;
-  --border: rgba(14, 15, 12, 0.12); /* Wise ring 色：深度全靠发丝线 */
-  --input: rgba(14, 15, 12, 0.14);
-  --ring: rgba(22, 51, 0, 0.4);
+  --border: #e5e5e5; /* Border Light */
+  --input: #e5e5e5;
+  --ring: rgba(147, 197, 253, 0.5); /* Ring Blue：键盘焦点环 */
   /* 磨砂玻璃配方与画布几何（非 shadcn 语义） */
-  --glass: rgba(255, 255, 255, 0.72);
-  --glass-border: rgba(14, 15, 12, 0.1);
-  --sc-dot: rgba(14, 15, 12, 0.14);
-  --sc-deck-bg: #eef0e8;
-  /* deck 外壳底：亮态比画布再亮半档，dock 磨砂靠发丝边框分界 */
-  --sc-app-bg: #f3f4ee;
-  --sc-artboard-border: rgba(14, 15, 12, 0.12);
-  --artboard-shadow: 0 4px 24px rgba(14, 15, 12, 0.12);
+  --glass: rgba(255, 255, 255, 0.82);
+  --glass-border: rgba(0, 0, 0, 0.05); /* Border Subtle */
+  --sc-dot: rgba(0, 0, 0, 0.12);
+  --sc-deck-bg: #f5f5f5; /* 幻灯片编辑面：Light Gray 中性底 */
+  /* deck 外壳底：白画布 + 发丝分界 */
+  --sc-app-bg: #ffffff;
+  --sc-artboard-border: rgba(0, 0, 0, 0.075); /* Inset Edge 灰 */
+  --artboard-shadow:
+    rgba(0, 0, 0, 0.06) 0px 0px 0px 1px,
+    rgba(0, 0, 0, 0.04) 0px 4px 4px; /* Outline Ring + Soft Elevation */
   color-scheme: light;
 }
-/* ---------- 暗色态：Wise on Black（暖黑 + 亮绿原色） ---------- */
+/* ---------- 暗色态：ElevenLabs 反相推导（规范无暗色） ---------- */
 [data-theme="dark"] {
-  --background: #0b0c0a; /* 暖黑（近黑带绿底韵） */
+  --background: #0a0a0a;
   --foreground: #ffffff;
-  --card: #171814; /* Near Black 浮起面 */
+  --card: #161616;
   --card-foreground: #ffffff;
-  --popover: #171814;
+  --popover: #161616;
   --popover-foreground: #ffffff;
-  --primary: #9fe870; /* Wise Green：黑底上的原色 */
-  --primary-foreground: #163300;
-  --ink: #9fe870; /* 强调墨色：暗态直接用亮绿 */
-  --secondary: #232520;
+  --primary: #ffffff; /* 白药丸主 CTA：黑底上的反相 */
+  --primary-foreground: #000000;
+  --ink: #ffffff; /* 选中框/激活描边：白 */
+  --secondary: #211f1d; /* 暖炭：暖石的暗态对位 */
   --secondary-foreground: #ffffff;
-  --muted: #1a1b17;
-  --muted-foreground: #a2a49c; /* 暖灰：次要文字 */
-  --accent: #2a2c25;
+  --muted: #181818;
+  --muted-foreground: #a6a6a6;
+  --accent: #262422;
   --accent-foreground: #ffffff;
   --destructive: #ef4444;
-  --border: rgba(90, 94, 84, 0.7); /* 暖 charcoal：签名容器边框 */
-  --input: #3a3c35;
-  --ring: rgba(159, 232, 112, 0.45);
-  --glass: rgba(23, 24, 20, 0.72);
-  --glass-border: rgba(90, 94, 84, 0.7);
+  --border: rgba(255, 255, 255, 0.09);
+  --input: rgba(255, 255, 255, 0.14);
+  --ring: rgba(147, 197, 253, 0.4);
+  --glass: rgba(22, 22, 22, 0.78);
+  --glass-border: rgba(255, 255, 255, 0.08);
   --sc-dot: rgba(255, 255, 255, 0.14);
-  --sc-deck-bg: #000000;
-  --sc-app-bg: #000000;
-  --sc-artboard-border: rgba(90, 94, 84, 0.7);
-  /* 黑底上漫射投影不可见——用"边框即深度"（Wise ring 哲学） */
-  --artboard-shadow: 0 4px 24px rgba(0, 0, 0, 0.6);
+  --sc-deck-bg: #0f0f0f;
+  --sc-app-bg: #0a0a0a;
+  --sc-artboard-border: rgba(255, 255, 255, 0.09);
+  /* 黑底上漫射投影不可见——"边框即深度" + 黑投影垫层 */
+  --artboard-shadow: rgba(0, 0, 0, 0.55) 0px 8px 28px;
   color-scheme: dark;
 }
 
@@ -112,13 +118,15 @@ body,
 body {
   margin: 0;
   font-family:
-    -apple-system, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC",
-    sans-serif;
+    "Inter", -apple-system, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Noto Sans SC", sans-serif;
   background: var(--background);
   color: var(--foreground);
   overscroll-behavior: none;
   -webkit-font-smoothing: antialiased;
   font-size: 13px;
+  /* ElevenLabs：Inter 正文正字距（0.14-0.18px），通排版气口 */
+  letter-spacing: 0.15px;
 }
 
 /* ---------- 高斯磨砂容器（工具条/侧栏/对话框共用配方） ---------- */
@@ -129,13 +137,13 @@ body {
   background: var(--glass);
   @apply backdrop-blur-[36px] backdrop-saturate-[180%];
   border: 1px solid var(--glass-border);
-  /* 白玻璃：顶缘内高光 + 贴地投影 */
+  /* 白玻璃：顶缘内高光 + 贴地投影（亚 0.1 透明度语言） */
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.6),
-    0 10px 34px rgba(0, 0, 0, 0.1);
+    0 10px 34px rgba(0, 0, 0, 0.08);
   border-radius: 16px;
 }
-/* 黑玻璃：边缘靠 charcoal 描边定义，顶缘弱高光暗示厚度，投影只垫氛围 */
+/* 黑玻璃：边缘靠描边定义，顶缘弱高光暗示厚度，投影只垫氛围 */
 [data-theme="dark"] .glass {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
@@ -145,13 +153,13 @@ body {
   border-radius: 12px;
 }
 /* 固定停靠的磨砂（deck 四栏 chrome）：与 .glass 同配方，直角 + 发丝分隔线由
-   Tailwind border 给；黑底质感 = 弱内顶高光 + 0.5px 内描边，接缝靠 charcoal 边框刻线 */
+   Tailwind border 给；亮态质感 = 弱内顶高光 + 0.5px 内描边（Inset Edge） */
 .glass-dock {
   background: var(--glass);
   @apply backdrop-blur-[36px] backdrop-saturate-[180%];
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.5),
-    inset 0 0 0 0.5px rgba(255, 255, 255, 0.28),
+    inset 0 0 0 0.5px rgba(0, 0, 0, 0.075),
     0 1px 2px rgba(0, 0, 0, 0.04);
 }
 [data-theme="dark"] .glass-dock {
@@ -170,7 +178,7 @@ body {
   color: var(--foreground);
 }
 
-/* ---------- 触达面与呼吸感：工具/图标按钮统一 32px、药丸圆角（Wise 全按钮 pill） ---------- */
+/* ---------- 触达面与呼吸感：工具/图标按钮统一 32px、药丸圆角（规范全按钮 pill） ---------- */
 .sc-tool {
   min-width: 2rem;
   min-height: 2rem;
@@ -193,19 +201,17 @@ body {
   background: var(--glass-border);
 }
 
-/* ---------- 首页：高级磨砂（柔光渐变垫底，玻璃才有层次可透） ---------- */
+/* ---------- 首页：白画布 + 暖石柔光（无彩色，暖灰替彩光） ---------- */
 .sc-home {
   background:
-    radial-gradient(1100px 480px at 50% -8%, color-mix(in oklab, var(--primary) 9%, transparent), transparent 62%),
-    radial-gradient(900px 420px at 88% 108%, color-mix(in oklab, #5ac8fa 8%, transparent), transparent 58%),
-    radial-gradient(700px 380px at 8% 92%, color-mix(in oklab, var(--primary) 5%, transparent), transparent 55%),
-    linear-gradient(180deg, color-mix(in oklab, var(--sc-app-bg), white 3%), var(--sc-app-bg));
+    radial-gradient(1100px 480px at 50% -8%, color-mix(in oklab, #777169 6%, transparent), transparent 62%),
+    radial-gradient(900px 420px at 88% 108%, rgba(78, 50, 23, 0.04), transparent 58%),
+    linear-gradient(180deg, color-mix(in oklab, var(--sc-app-bg), #777169 2%), var(--sc-app-bg));
 }
 [data-theme="dark"] .sc-home {
   background:
-    radial-gradient(1100px 480px at 50% -8%, color-mix(in oklab, var(--primary) 7%, transparent), transparent 62%),
-    radial-gradient(900px 420px at 88% 108%, color-mix(in oklab, #5ac8fa 6%, transparent), transparent 58%),
-    linear-gradient(180deg, #0b0b0c, #000000);
+    radial-gradient(1100px 480px at 50% -8%, color-mix(in oklab, #777169 8%, transparent), transparent 62%),
+    linear-gradient(180deg, #111111, #0a0a0a);
 }
 /* 骨架屏微光扫过（尊重减弱动态偏好） */
 .sc-shimmer {
@@ -250,7 +256,7 @@ body {
 .sc-artboard {
   background: #ffffff;
   box-shadow: var(--artboard-shadow);
-  /* 白页浮在画布底上：发丝边框即"containment"（ClickHouse 深度语言，暗=charcoal/亮=黑 12%） */
+  /* 白页浮在画布底上：发丝边框即"containment"（Outline Ring 深度语言） */
   outline: 1px solid var(--sc-artboard-border);
 }
 .sc-artboard-active {
@@ -278,12 +284,11 @@ body {
 .sc-el {
   position: absolute;
 }
-/* 选中系：neon 描边压在白色画板/深色黑底两种表面上——外圈垫 1px 黑发丝，
-   在黑底上隐形、在白页上把 neon 从白里"刻"出来（同理 handles 白芯加黑环） */
+/* 选中系：黑描边压在白色画板/深色黑底两种表面上——外圈垫 1px 反色发丝，
+   在黑底上隐形、在白页上把黑描边从白里"刻"出来（同理 handles 白芯加黑环） */
 .sc-selbox {
   position: absolute;
   border: 1px solid var(--ink);
-  /* 外圈只垫 0.5px 发丝：亮绿/深绿在白页上要"刻"出来，但不再叠内圈厚晕 */
   box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.4);
   border-radius: 2px;
   pointer-events: none;
@@ -322,7 +327,7 @@ body {
   cursor: grab;
 }
 .sc-node:hover {
-  background: var(--accent, #0a84ff);
+  background: var(--foreground);
 }
 .sc-segmid {
   position: absolute;

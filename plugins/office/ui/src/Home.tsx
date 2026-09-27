@@ -100,7 +100,12 @@ export const Home: FC<{ store: DeckStore; currentPath: string | null; onEnter: (
     void bridge.listDocs().then((r) => {
       setUnsupported(r === null);
       // office 首页只列幻灯片档：白板/UI 档归「无限画布」面板（deck 类型或 .deck 后缀任一命中）
-      setItems((r ?? []).filter((it) => it.kind === "deck" || /\.deck\.canvas\.json$/i.test(it.path)));
+      setItems(
+        (r ?? []).filter(
+          (it): it is DocListItem & { kind: DocKind } =>
+            (it.kind === "deck" || /\.deck\.canvas\.json$/i.test(it.path)) && it.kind !== "sheet" && it.kind !== "doc",
+        ),
+      );
     });
   }, []);
   useEffect(() => {
@@ -258,7 +263,9 @@ export const Home: FC<{ store: DeckStore; currentPath: string | null; onEnter: (
                     {it.corrupt ? (
                       <span className="shrink-0 rounded-md bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-500">损坏</span>
                     ) : (
-                      <span className="bg-secondary text-muted-foreground shrink-0 rounded-md px-1.5 py-0.5 text-[10px]">{KIND_META[it.kind].label}</span>
+                      <span className="bg-secondary text-muted-foreground shrink-0 rounded-md px-1.5 py-0.5 text-[10px]">
+                        {KIND_META[it.kind as DocKind]?.label ?? "文档"}
+                      </span>
                     )}
                     {it.path === currentPath && <span className="text-primary shrink-0 text-[10px]">当前</span>}
                   </div>

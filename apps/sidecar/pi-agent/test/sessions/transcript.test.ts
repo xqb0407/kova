@@ -288,6 +288,17 @@ describe("historyToUiMessages", () => {
     ]);
   });
 
+  test("带 timestamp 的消息：id 用转录音 seq，时间戳落 metadata.createdAt", () => {
+    const rows = [
+      { seq: 7, agent: { ...userMsg("q"), timestamp: 1_700_000_000_000 } as Message },
+      { seq: 8, agent: { ...assistantMsg([{ type: "text", text: "a" }]), timestamp: 1_700_000_012_000 } as Message },
+    ];
+    const messages = historyToUiMessages(rows);
+    expect(messages.map((m) => m.id)).toEqual(["msg-7", "msg-8"]);
+    expect(messages[0].metadata).toEqual({ createdAt: 1_700_000_000_000 });
+    expect(messages[1].metadata).toEqual({ createdAt: 1_700_000_012_000 });
+  });
+
   test("阈值/溢出压缩：分隔线落在边界后首条 assistant 消息顶部（与 live 一致）", () => {
     const rows = [
       { seq: 1, agent: userMsg("q1") },
@@ -305,8 +316,9 @@ describe("historyToUiMessages", () => {
         details: { generation: 1, strategy: "summary" },
       },
     ]);
-    // 边界 seq=2 之后首条 assistant 是 a2（seq=4，msg-3）
-    expect(messages[3].id).toBe("msg-3");
+    // 边界 seq=2 之后首条 assistant 是 a2（seq=4 → msg-4；id 基准是转录行 seq
+    // 而不是行下标——分页窗里两窗下标都从 0 起，下标 id 会撞号）
+    expect(messages[3].id).toBe("msg-4");
     expect(messages[3].parts[0]).toEqual({
       type: "data-compaction",
       id: "cmp-5",

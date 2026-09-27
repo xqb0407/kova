@@ -370,10 +370,14 @@ export function historyToUiMessages(
   for (let i = 0; i < rows.length; i++) {
     const seq = rows[i].seq ?? i;
     const msg = rows[i].agent;
+    // 消息 id 用 seq 而不是行下标：分页窗（beforeSeq 往后翻）里两窗的下标都从
+    // 0 起、下标 id 必撞号，seq 会话内唯一（§6）。时间戳（ms）随 metadata 下发，
+    // 前端折算每轮耗时（用户行≈轮初、assistant 行≈轮末）
+    const metadata = msg.timestamp !== undefined ? { createdAt: msg.timestamp } : undefined;
     if (msg.role === "user") {
       const up = userUiParts(msg);
       if (!up) continue;
-      messages.push({ id: `msg-${i}`, role: "user", parts: up.parts });
+      messages.push({ id: `msg-${seq}`, role: "user", parts: up.parts, metadata });
       srcSeqs.push(seq);
       continue;
     }
@@ -396,7 +400,7 @@ export function historyToUiMessages(
         }
       }
       if (!parts.length) continue;
-      messages.push({ id: `msg-${i}`, role: "assistant", parts });
+      messages.push({ id: `msg-${seq}`, role: "assistant", parts, metadata });
       srcSeqs.push(seq);
       continue;
     }

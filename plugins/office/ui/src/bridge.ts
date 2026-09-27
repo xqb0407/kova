@@ -1,18 +1,23 @@
 /**
  * 宿主桥客户端（协议 xulux-ui-plugin/1，权威定义在应用仓 lib/plugins/ui-plugin-bridge.ts）。
+ * 本模块是 office 聚合面板（幻灯片+表格+文档三引擎）唯一的桥实现：attach 为
+ * **多播**——外壳与各引擎视图各自注册 handlers，宿主帧按 kind 自行过滤消费
+ * （视图只处理自己认领后缀的 doc.open），解除单一 handlers 的相互覆盖。
  * 独立运行时（vite dev 直接开浏览器）宿主消息永不到达：桥层自动降级为
- * 本地 mock（handshake 模拟 + doc.change 落地 localStorage），开发体验不依赖桌面端。
+ * 本地 mock（handshake 模拟 + doc.change 落地 localStorage——沙箱不透明源下
+ * localStorage 会抛 SecurityError，全部 try/catch 静默）。
  */
 import { DOC_VERSION, type DocKind } from "./doc";
 
 const PROTOCOL = "xulux-ui-plugin/1";
 
-/** 首页历史卡片：宿主扫描工作区 `*.canvas.json` 后回传的摘要（与宿主端 DocListItem 对齐） */
+/** 首页历史卡片：宿主按已装面板 opens glob 扫描工作区后回传（与宿主端 DocListItem 对齐） */
 export type DocListItem = {
   /** workspace 相对路径，打开时原样回传 doc.bind */
   path: string;
   name: string;
-  kind: DocKind;
+  /** board/deck/ui=画布档；sheet/doc=Univer 快照档（`*.sheet/.doc.univer.json`） */
+  kind: DocKind | "sheet" | "doc";
   /** 最后修改时间（ms epoch；0=宿主未提供） */
   mtime: number;
   frames: number;
@@ -35,16 +40,28 @@ type HostHandlers = {
 export type BridgeState = "standalone" | "connected" | "open";
 
 class Bridge {
-  private handlers: HostHandlers | null = null;
+  /** 多播 handlers：attach 可被外壳与各视图多次调用，消息逐个投递、各自过滤 */
+  private handlers = new Set<HostHandlers>();
+  /** 最后一次握手（迟挂载的视图补发用：多播握手只发一次，视图是在绑文档后才挂载的） */
+  private lastHandshake: {
+    theme: "light" | "dark";
+    ctx: { workspaceName: string; fileRelPath: string | null };
+  } | null = null;
   private state: BridgeState = "standalone";
   private assetWaiters = new Map<string, (b64: string | null) => void>();
   private listWaiters = new Map<string, (items: DocListItem[] | null) => void>();
   private themeListeners = new Set<(t: "light" | "dark") => void>();
+  private messageBound = false;
+  /** ui.ready 是会话级信号（宿主回 handshake），多播 attach 下只发一次 */
+  private readySent = false;
   readonly standalone = typeof window !== "undefined" && window.parent === window;
 
-  attach(handlers: HostHandlers): void {
-    this.handlers = handlers;
-    window.addEventListener("message", this.onMessage);
+  attach(handlers: HostHandlers): () => void {
+    this.handlers.add(handlers);
+    if (!this.messageBound) {
+      this.messageBound = true;
+      window.addEventListener("message", this.onMessage);
+    }
     if (this.standalone) {
       // 浏览器直开：合成握手，主题跟随 prefers-color-scheme
       this.state = "connected";
@@ -57,9 +74,21 @@ class Bridge {
         handlers.onDocOpen(1, this.loadLocal(), true, null);
       }, 0);
       mq.addEventListener("change", (e) => this.emitTheme(e.matches ? "dark" : "light"));
-      return;
+    } else {
+      if (!this.readySent) {
+        this.readySent = true;
+        this.post({ kind: "ui.ready" });
+      } else if (this.lastHandshake) {
+        // 补发握手：否则后挂载的视图 connected 永远为 false（卡"正在连接"）
+        handlers.onHandshake(this.lastHandshake.theme, this.lastHandshake.ctx);
+      }
     }
-    this.post({ kind: "ui.ready" });
+    return () => this.detach(handlers);
+  }
+
+  /** 注销一组 handlers（视图卸载时调用；ui.ready 只在首个 attach 时发） */
+  detach(handlers: HostHandlers): void {
+    this.handlers.delete(handlers);
   }
 
   get bridgeState(): BridgeState {
@@ -69,22 +98,33 @@ class Bridge {
   private onMessage = (ev: MessageEvent) => {
     const d = ev.data;
     if (!d || typeof d !== "object" || d.v !== PROTOCOL || d.dir !== "host") return;
-    const h = this.handlers;
-    if (!h) return;
+    if (this.handlers.size === 0) return;
+    // 逐个投递给所有 attach 过的消费者（外壳 + 当前引擎视图），各自按 kind/后缀过滤
+    const deliver = (fn: (h: HostHandlers) => void) => {
+      for (const h of this.handlers) fn(h);
+    };
     switch (d.kind) {
-      case "handshake":
+      case "handshake": {
         this.state = "connected";
-        h.onHandshake(d.theme === "dark" ? "dark" : "light", d.context ?? { workspaceName: "", fileRelPath: null });
+        const hs = {
+          theme: d.theme === "dark" ? ("dark" as const) : ("light" as const),
+          ctx: d.context ?? { workspaceName: "", fileRelPath: null },
+        };
+        this.lastHandshake = hs;
+        deliver((h) => h.onHandshake(hs.theme, hs.ctx));
         break;
+      }
       case "doc.open":
         this.state = "open";
-        h.onDocOpen(Number(d.rev) || 0, String(d.json ?? ""), d.external === true, typeof d.path === "string" ? d.path : null);
+        deliver((h) =>
+          h.onDocOpen(Number(d.rev) || 0, String(d.json ?? ""), d.external === true, typeof d.path === "string" ? d.path : null),
+        );
         break;
       case "doc.saved":
-        h.onSaved(Number(d.rev) || 0);
+        deliver((h) => h.onSaved(Number(d.rev) || 0));
         break;
       case "doc.error":
-        h.onDocError(String(d.errorText ?? "未知错误"));
+        deliver((h) => h.onDocError(String(d.errorText ?? "未知错误")));
         break;
       case "theme.update":
         this.emitTheme(d.theme === "dark" ? "dark" : "light");
@@ -125,13 +165,23 @@ class Bridge {
     window.parent.postMessage({ v: PROTOCOL, dir: "ui", ...msg }, "*");
   }
 
+  /** standalone 的当前文档（内存托管：新建/编辑后编辑器路由与重读才有据可依） */
+  private localDoc: string | null = null;
+  private localPath: string | null = null;
+
   requestDoc(): void {
-    if (this.standalone) return;
+    if (this.standalone) {
+      if (this.localDoc !== null) {
+        for (const h of this.handlers) h.onDocOpen(1, this.localDoc, true, this.localPath);
+      }
+      return;
+    }
     this.post({ kind: "doc.request" });
   }
 
   change(json: string): void {
     if (this.standalone) {
+      this.localDoc = json;
       try {
         localStorage.setItem("slide-canvas-local-doc", json);
       } catch {}
@@ -141,6 +191,13 @@ class Bridge {
   }
 
   create(path: string, json: string): void {
+    if (this.standalone) {
+      // 浏览器直开没有宿主：内存托管 + 合成 doc.open（外壳路由到编辑器）
+      this.localDoc = json;
+      this.localPath = path;
+      for (const h of this.handlers) h.onDocOpen(1, json, true, path);
+      return;
+    }
     this.post({ kind: "doc.create", path, json });
   }
 
@@ -213,10 +270,15 @@ export const bridge = new Bridge();
 /** ArrayBuffer/base64 互转（attach/export 载荷） */
 export async function blobToBase64(blob: Blob): Promise<string> {
   const buf = new Uint8Array(await blob.arrayBuffer());
+  return bytesToBase64(buf);
+}
+
+/** Uint8Array → base64（分块防超长调用栈；sheet/doc 导出用） */
+export function bytesToBase64(bytes: Uint8Array): string {
   let bin = "";
   const CHUNK = 0x8000;
-  for (let i = 0; i < buf.length; i += CHUNK) {
-    bin += String.fromCharCode(...buf.subarray(i, i + CHUNK));
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
   }
   return btoa(bin);
 }

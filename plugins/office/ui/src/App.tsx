@@ -14,7 +14,6 @@ import {
   ChevronDownIcon,
   DownloadIcon,
   FrameIcon,
-  LayoutGridIcon,
   LayoutTemplateIcon,
   MaximizeIcon,
   MinusIcon,
@@ -49,7 +48,7 @@ import { Inspector } from "./editor/inspector";
 
 /* ---------------- 外壳 ---------------- */
 
-export const App: FC = () => {
+export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
   const {
     store,
     docKind,
@@ -87,6 +86,10 @@ export const App: FC = () => {
   } = useEditorShell();
   const { doc, activeFrame } = store;
 
+  /** 回首页入口：聚合外壳传入 onHome 时冒泡给统一首页（含表格/文档），否则回 deck 自己的首页。
+   *  必须先于下方分支定义（引导页/坏档横幅都用它）。 */
+  const goHome = onHome ?? (() => setHomeOpen(true));
+
   /* ---------- 未绑定文档 ---------- */
   if (!store.connected) {
     return (
@@ -105,7 +108,7 @@ export const App: FC = () => {
         <p className="text-muted-foreground max-w-[420px] text-[12px] leading-relaxed">
           objects 无限画布（白板与 UI 设计稿）由「无限画布 · 幻灯片」面板（slide-canvas）负责编辑，在这里改会打乱页框语义。
         </p>
-        <Button className="mt-3" size="sm" variant="secondary" onClick={() => setHomeOpen(true)}>
+        <Button className="mt-3" size="sm" variant="secondary" onClick={goHome}>
           返回幻灯片首页
         </Button>
       </div>
@@ -166,13 +169,12 @@ export const App: FC = () => {
     </>
   );
 
-  /** 回首页（历史卡片墙）入口：类型已随文档固定，这里只做导航 */
+  // 与表格/文档视图同款返回样式：← 箭头 + 灰字（一致性 > 局部花样）
   const homeBtn = (
-    <Hint label="全部画布（回到首页）" side="bottom">
-      <Button variant="ghost" size="sm" className="sc-tool gap-1 text-xs" onClick={() => setHomeOpen(true)} aria-label="全部画布">
-        <LayoutGridIcon className="size-3.5" /> 全部画布
-      </Button>
-    </Hint>
+    <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" onClick={goHome} aria-label="全部文档">
+      <ArrowLeftIcon className="size-4" />
+      全部文档
+    </Button>
   );
 
   const pageNav = (
@@ -259,6 +261,8 @@ export const App: FC = () => {
         {/* 顶栏（deck 固定·磨砂停靠）：左插入/历史工具，中模式切换+文档名，右问AI/放映/导出 */}
         {deck && (
           <div className="glass-dock z-20 flex h-14 shrink-0 items-center gap-2 border-border/60 border-b px-3">
+            <div className="shrink-0">{homeBtn}</div>
+            <span className="sc-divider" />
             <div className="sc-seg flex shrink-0 items-center gap-1">
               <ToolButtons
                 store={store}
@@ -273,8 +277,6 @@ export const App: FC = () => {
                 vertical={false}
               />
             </div>
-            <span className="sc-divider" />
-            <div className="shrink-0">{homeBtn}</div>
             <div className="flex min-w-0 flex-1 items-center justify-center px-4">
               <div className="glass glass-sm flex min-w-0 max-w-[46ch] items-center gap-2 px-3.5 py-1.5 text-xs">{docTitle}</div>
             </div>
@@ -397,7 +399,7 @@ export const App: FC = () => {
             的内容无法解析（多半是写坏了 JSON）。编辑器保持空档，<b className="font-medium">不会自动覆盖原文件</b>；
             可修复文件后回首页重开，或直接在画布上作画并保存来重建。
           </span>
-          <Button size="sm" variant="secondary" className="h-7 shrink-0 text-[11px]" onClick={() => setHomeOpen(true)}>
+          <Button size="sm" variant="secondary" className="h-7 shrink-0 text-[11px]" onClick={goHome}>
             回首页
           </Button>
           <Button size="sm" variant="ghost" className="h-7 shrink-0 text-[11px]" onClick={() => store.dismissDocCorrupt()}>

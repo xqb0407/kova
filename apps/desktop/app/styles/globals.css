@@ -536,3 +536,11 @@ html.dark[data-window-effect] {
   content-visibility: auto;
   contain-intrinsic-size: auto 320px;
 }
+
+/* 轮内过程区（折叠轮的展开面板）：面板内不做屏外跳过。
+   展开动画在挂载那一帧就要量出目标高度，上面那条规则会让屏外的消息正文先按
+   320px 占位参与测量——动画收尾时高度再跳回真实值（观感是顿一下）。收起时整块
+   面板卸载，跳过与否没有收益差异；展开时这里正是用户在读的内容。 */
+[data-slot="aui_turn-process"] [data-slot="aui_assistant-message-content"] {
+  content-visibility: visible;
+}

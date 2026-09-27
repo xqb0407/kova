@@ -487,7 +487,7 @@ export async function exportHtml(doc: CanvasDoc, fileRel: string | null): Promis
   .dots{display:flex;gap:8px}
   .dot{width:8px;height:8px;border:0;background:rgba(14,15,12,.25);padding:0;cursor:pointer;border-radius:4px;transition:all .3s}
   body.ui-dark .dot{background:rgba(255,255,255,.32)}
-  .dot.on{width:24px;background:#163300}
+  .dot.on{width:24px;background:#000000}
   body.ui-dark .dot.on{background:#fff}
   #ov{position:fixed;inset:0;z-index:100;background:rgba(15,16,14,.92);backdrop-filter:blur(12px);
     -webkit-backdrop-filter:blur(12px);display:none;overflow-y:auto;padding:4vh 4vw}
@@ -495,7 +495,7 @@ export async function exportHtml(doc: CanvasDoc, fileRel: string | null): Promis
   .th{display:block;width:100%;padding:0;cursor:pointer;overflow:hidden;text-align:left;background:#fff;
     border:2px solid rgba(255,255,255,.16);box-shadow:0 8px 32px rgba(0,0,0,.35);transition:border-color .2s}
   .th:hover{border-color:rgba(255,255,255,.55)}
-  .th[data-cur]{border-color:#9fe870}
+  .th[data-cur]{border-color:#000000}
   .th .tw{display:block;aspect-ratio:${W}/${H};overflow:hidden;pointer-events:none;background:#fff}
   .th .tw img{display:block;width:100%;height:100%}
   .th .tl{display:flex;justify-content:space-between;padding:7px 10px;font-size:12px;color:#a8aa9f;font-variant-numeric:tabular-nums}
