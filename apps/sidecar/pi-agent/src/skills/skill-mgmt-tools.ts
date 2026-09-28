@@ -47,7 +47,7 @@ function errorMessage(err: unknown): string {
 
 /**
  * scope 参数：枚举 system（缺省）/ project。
- * "project" 映射到存储层的 workspace 层（<cwd>/.xulux/skills/）；
+ * "project" 映射到存储层的 workspace 层（<cwd>/.kova/skills/）；
  * 落盘路径由存储层函数自行解析，工具参数里没有也不该有路径字段。
  */
 function resolveScope(
@@ -137,14 +137,14 @@ export function buildSkillMgmtTools(
     description: [
       "创建或同名覆盖一份技能（SKILL.md 指令文档）；存储层校验通过后热生效，<available_skills> 目录下一轮即含它，模型按 description 判断是否读取正文。",
       "用这个工具而不是 write/edit 手写 Markdown——只有它会做 frontmatter 校验、同名文件清理并重载技能目录。",
-      "存储位置由工具按 scope 自行决定（本工具没有路径参数）：缺省即系统级（system），存到应用数据目录、本机所有工作区生效；仅当技能与当前项目绑定（仓库规范、发布流程）时传 scope=project，写进项目目录 .xulux/skills/，随仓库共享。",
+      "存储位置由工具按 scope 自行决定（本工具没有路径参数）：缺省即系统级（system），存到应用数据目录、本机所有工作区生效；仅当技能与当前项目绑定（仓库规范、发布流程）时传 scope=project，写进项目目录 .kova/skills/，随仓库共享。",
       'description 是模型决定用不用这份技能的唯一依据，写清"什么时候用它"（含触发场景/关键词）；正文写给执行者看：步骤、约束、示例，只放模型不知道的内容。',
       "编辑改名：传 replace_name=旧名，旧文件一并清掉。生态目录（.agents/skills）只读，不接受在此保存。",
     ].join("\n\n"),
     parameters: Type.Object({
       scope: Type.Optional(
         Type.Union([Type.Literal("system"), Type.Literal("project")], {
-          description: '"system"（缺省，应用数据目录，全局生效）或 "project"（当前项目仓库 .xulux/skills/）；一般不用传',
+          description: '"system"（缺省，应用数据目录，全局生效）或 "project"（当前项目仓库 .kova/skills/）；一般不用传',
         }),
       ),
       name: Type.String({ description: "技能名称，≤64 字符（同名 = 覆盖更新）" }),

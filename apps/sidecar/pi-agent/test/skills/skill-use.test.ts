@@ -27,7 +27,7 @@ const ws = join(tmp, "repo");
 
 beforeAll(async () => {
   initLocalStorage(join(tmp, "state.db"));
-  // 目录钉到 tmp：绝不碰真实 ~/.xulux / ~/.agents
+  // 目录钉到 tmp：绝不碰真实 ~/.kova / ~/.agents
   process.env.PI_SKILLS_DIR = sysDir;
   process.env.PI_COMPAT_SKILLS_DIR = join(tmp, "compat-empty");
   mkdirSync(sysDir, { recursive: true });

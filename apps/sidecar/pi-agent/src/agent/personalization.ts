@@ -3,7 +3,7 @@
  * 结构化字段（style / 双向称呼 / 自定义风格列表 styles / 内置覆盖记录
  * styleOverrides）整包存 SQLite kv（key = KV_KEY），Rust 宿主是唯一
  * 写入方，本侧经 host_query 读写；人设与自定义指令是 Markdown 长文本，事实源在全局
- * 目录身份文件 ~/.xulux/soul.md 与 ~/.xulux/rules.md（PI_IDENTITY_DIR 可覆盖，测试用），
+ * 目录身份文件 ~/.kova/soul.md 与 ~/.kova/rules.md（PI_IDENTITY_DIR 可覆盖，测试用），
  * 可用任意编辑器外部修改——get 与提示词合成时实时读盘，外部改动在下一个合成点
  * （新会话 / 模式切换 / set_*）生效。旧版 kv 整包里的这两个字段在启动时一次性迁移到
  * 文件（文件已存在则文件优先），kv 随即收敛为仅结构化字段。
@@ -65,9 +65,9 @@ export type Personalization = {
   userName: string;
   /** AI 的名称（空 = 不注入） */
   assistantName: string;
-  /** 人设 / 人格描述：事实源 ~/.xulux/soul.md（空/文件缺失 = 不注入） */
+  /** 人设 / 人格描述：事实源 ~/.kova/soul.md（空/文件缺失 = 不注入） */
   persona: string;
-  /** 自定义指令：每次对话都携带，事实源 ~/.xulux/rules.md（空/文件缺失 = 不注入） */
+  /** 自定义指令：每次对话都携带，事实源 ~/.kova/rules.md（空/文件缺失 = 不注入） */
   customInstructions: string;
 };
 
@@ -81,10 +81,10 @@ export const RULES_FILE_NAME = "rules.md";
 /** 协议防御上限：远端可经 WS 下发任意长字符串，落盘前收口（非注入预算） */
 export const PROTOCOL_TEXT_MAX_CHARS = 200_000;
 
-/** 身份文件目录（~/.xulux；PI_IDENTITY_DIR 可覆盖，测试用） */
+/** 身份文件目录（~/.kova；PI_IDENTITY_DIR 可覆盖，测试用） */
 export function identityDir(): string {
   if (process.env.PI_IDENTITY_DIR) return resolve(process.env.PI_IDENTITY_DIR);
-  return join(homedir(), ".xulux");
+  return join(homedir(), ".kova");
 }
 
 export const soulFilePath = (): string => join(identityDir(), SOUL_FILE_NAME);

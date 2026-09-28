@@ -172,7 +172,7 @@ prompt: |
   });
 
   test("工作区层的 stateKey 带上所属 cwd", () => {
-    const dir = join(tmp, "ws-key", ".xulux", "subagents");
+    const dir = join(tmp, "ws-key", ".kova", "subagents");
     mkdirSync(dir, { recursive: true });
     const file = join(dir, "a.yml");
     writeFileSync(file, VALID);
@@ -267,10 +267,10 @@ describe("loadSubagentDefinitions（三层发现 / 开关）", () => {
     const sys = join(tmp, "trust-system");
     const ws = join(tmp, "trust-ws");
     mkdirSync(sys, { recursive: true });
-    mkdirSync(join(ws, ".xulux", "subagents"), { recursive: true });
+    mkdirSync(join(ws, ".kova", "subagents"), { recursive: true });
     writeFileSync(join(sys, "shared.yml"), emitSubagentYaml(draft({ name: "shared", description: "system copy" })));
     writeFileSync(
-      join(ws, ".xulux", "subagents", "shared.yml"),
+      join(ws, ".kova", "subagents", "shared.yml"),
       emitSubagentYaml(draft({ name: "shared", description: "workspace copy" })),
     );
 

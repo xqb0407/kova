@@ -286,7 +286,7 @@ function decodeRange(a1: string): { startRow: number; endRow: number; startColum
 /** 快照 → xlsx 字节。样式/合并/列宽行高/数字格式/公式（附缓存值）反向映射 */
 export async function exportSnapshotToXlsx(snapshot: ConvSnapshot): Promise<Uint8Array> {
   const wb = new ExcelJS.Workbook();
-  wb.creator = "Xulux Office";
+  wb.creator = "Kova Office";
   const styles = snapshot.styles ?? {};
   const usedNames = new Set<string>();
 

@@ -16,7 +16,11 @@ import {
   syncClearLastThread,
 } from "@/lib/pi/pi-last-thread";
 import { createPiThreadListAdapter, piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
-import { getWorkspace, setWorkspace } from "@/lib/workspace/workspace-store";
+import {
+  getWorkspace,
+  getWorkspaceSource,
+  setWorkspace,
+} from "@/lib/workspace/workspace-store";
 import { ConnectScreen } from "@/components/remote/connect-screen";
 import { RemoteRuntimeProvider } from "@/components/remote/remote-runtime-provider";
 import {
@@ -76,7 +80,10 @@ function BootSplash({
  * 全局 workspace 跟随当前会话：左侧列表切到某个已落盘会话时，把
  * workspace-store 同步到该会话记录的 cwd（无 cwd 的任务会话则清空），
  * 让 Git 面板/审查/检查点条读到的都是"这个对话的工作目录"。
- * 未发送首条消息的新会话（无 remoteId）不同步——保留用户刚在胶囊里选的目录。
+ * 同步值标记 source="session"（胶囊显示"跟随"角标），与用户手动选择区分。
+ * 草稿会话（无 remoteId）：不清"用户刚在胶囊里选的目录"（source=user），
+ * 但上一会话遗留的 session 同步值要清掉——否则从旧对话切到新对话时，
+ * 新草稿静默继承旧目录（正是"没选目录却进了旧目录"的入口之一）。
  */
 function WorkspaceThreadSync() {
   const mainThreadId = useAuiState((s) => s.threads.mainThreadId);
@@ -92,11 +99,13 @@ function WorkspaceThreadSync() {
     // 用 syncClear 而非动作清空：首帧停在草稿是内部机制，不算用户意图。
     if (!item.remoteId) {
       syncClearLastThread();
+      // 草稿上的目录若只是上一会话的"跟随"残值（非用户本会话手动选），清掉
+      if (getWorkspaceSource() === "session") setWorkspace(null);
       return;
     }
     recordLastThread(item.remoteId);
     const cwd = piSessionCwdMap.get(item.remoteId) ?? null;
-    if (getWorkspace() !== cwd) setWorkspace(cwd);
+    if (getWorkspace() !== cwd) setWorkspace(cwd, "session");
   }, [mainThreadId, threadItems]);
 
   return null;

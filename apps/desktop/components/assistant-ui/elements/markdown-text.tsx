@@ -87,7 +87,7 @@ const sharedComponents = {
     );
   },
   table: ({ children, ...props }) => (
-    <div className="overflow-x-auto my-3 border rounded-md">
+    <div className="overflow-x-auto my-3 border border-muted rounded-md">
       <table
         className="w-full text-[0.9375rem] [&>thead]:bg-muted [&>thead>tr>th]:bg-muted"
         {...props}
@@ -98,15 +98,23 @@ const sharedComponents = {
   ),
   th: ({ children, ...props }) => (
     <th
-      className="text-left font-medium px-3 py-2 bg-[#f0f0f0]"
+      className="text-left font-medium px-3 py-2 bg-muted"
       {...props}
     >
       {children}
     </th>
   ),
+  tr: ({ children, ...props }) => (
+    <tr
+      className="border-border/30"
+      {...props}
+    >
+      {children}
+    </tr>
+  ),
   td: ({ children, ...props }) => (
     <td
-      className="px-3 py-2 border-t text-an-foreground"
+      className="px-3 py-2  text-an-foreground"
       {...props}
     >
       {children}

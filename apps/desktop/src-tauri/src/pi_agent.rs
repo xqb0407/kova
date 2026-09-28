@@ -162,7 +162,8 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
         .map_err(|e| format!("failed to resolve pi-agent sidecar: {e}"))?
         .env("PI_DB_PATH", data_dir.join("state.db").to_string_lossy().to_string())
         .env("PI_SESSIONS_DIR", sessions_dir.to_string_lossy().to_string())
-        // 无目录任务会话的执行目录兜底（sidecar defaultTaskCwd）：不落家目录
+        // 无目录任务会话的执行目录根（sidecar taskWorkspaceBase）：不落家目录；
+        // 根下按会话分子目录（<task-workspace>/<sessionId>），全局任务产物互不混堆
         .env(
             "PI_TASK_CWD",
             data_dir.join("task-workspace").to_string_lossy().to_string(),

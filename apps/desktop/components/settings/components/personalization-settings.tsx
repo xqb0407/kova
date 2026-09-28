@@ -154,7 +154,7 @@ type SaveState = "saved" | "pending" | "error";
 
 /** 个性化配置页：回复风格 / 称呼与身份 / 人设 / 自定义指令。
  *  事实源在 sidecar——结构化字段存 SQLite kv；人设与自定义指令存全局身份文件
- *  (~/.xulux/soul.md、rules.md)，可外部编辑，页面上展示文件绝对路径。这里只镜像；
+ *  (~/.kova/soul.md、rules.md)，可外部编辑，页面上展示文件绝对路径。这里只镜像；
  *  文本改动防抖 600ms 自动保存，卸载时冲刷未保存的草稿。版式对齐外观页。 */
 export const PersonalizationSettings: FC = () => {
   const prefs = usePersonalization();
@@ -538,7 +538,7 @@ export const PersonalizationSettings: FC = () => {
           title="人设 / 人格描述"
           desc="描述 AI 是谁、以什么身份与你协作"
           emptyHint="尚未设置。描述 AI 的背景、性格、沟通习惯，例如「一位资深的全栈工程师搭档，喜欢用类比解释复杂概念」。"
-          filePath={paths?.soul ?? "~/.xulux/soul.md"}
+          filePath={paths?.soul ?? "~/.kova/soul.md"}
           value={personaPreview}
           onEdit={() => openMarkdownDialog("persona")}
         />
@@ -547,7 +547,7 @@ export const PersonalizationSettings: FC = () => {
           title="自定义指令"
           desc="每次对话都会携带的额外指示，例如技术栈偏好、输出格式要求、回复语言等，支持 Markdown 格式。"
           emptyHint="尚未设置。例如「默认使用 TypeScript；解释代码时先给要点列表；不要重复我的问题原文」。"
-          filePath={paths?.rules ?? "~/.xulux/rules.md"}
+          filePath={paths?.rules ?? "~/.kova/rules.md"}
           value={instructionsPreview}
           onEdit={() => openMarkdownDialog("customInstructions")}
         />

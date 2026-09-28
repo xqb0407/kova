@@ -42,7 +42,10 @@ export const piSessionPrefsMap = new Map<string, PiSessionSummary>();
 /** 把 list_sessions 的快照落进内存映射（cwd 分组 + 偏好水合共用） */
 export function applySessionSummaries(sessions: PiSessionSummary[]): void {
   for (const s of sessions) {
+    // 空 cwd（set_session_cwd 解绑）必须删旧镜像条目：只 set 不 delete 的话，
+    // WorkspaceThreadSync 会拿着镜像里的旧目录在切回会话时写回胶囊（幽灵写回）
     if (s.cwd) piSessionCwdMap.set(s.sessionId, s.cwd);
+    else piSessionCwdMap.delete(s.sessionId);
     piSessionPrefsMap.set(s.sessionId, s);
   }
 }
@@ -327,6 +330,9 @@ export function piEnsureThreadSession(threadId: string, cwd?: string): Promise<s
       .then((res) => {
         piSessionRegistry.set(threadId, res.sessionId);
         if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
+        // Map 不是响应式的：会话登记落地时广播一声，
+        // 让按 sessionId 解析产物目录的视图（usePanelCwd）重取兜底 cwd
+        window.dispatchEvent(new Event("pi:session-bound"));
         return res.sessionId;
       })
       .finally(() => {

@@ -4,6 +4,7 @@
  */
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { send } from "../stream";
+import { getImageGenConfig } from "../../tools/imagegen-config";
 import { running } from "../../sessions/sessions";
 import {
   appendModelChangeRow,
@@ -47,6 +48,8 @@ export const handlers: Record<string, CommandHandler> = {
       cost: Record<string, unknown>;
       enabled: boolean;
       authed: boolean;
+      /** 用户标记"可生成图片"（设置 → 模型属性勾选）：文生图默认模型下拉据此过滤 */
+      t2i: boolean;
     }[] = [];
     const providerMap = new Map<string, { id: string; name: string; authed: boolean }>();
     // models 表行：enabled 位 + 属性覆盖（属性已在启动/保存时合并进目录模型对象）。
@@ -58,6 +61,8 @@ export const handlers: Record<string, CommandHandler> = {
       enabledMap.set(`${r.provider}/${r.modelId}`, r.enabled);
       hasRows.add(r.provider);
     }
+    // 生图能力标记：imagegen 配置里的 imageModels 清单（"provider/modelId"）覆盖层
+    const t2iSet = new Set(getImageGenConfig().imageModels);
     for (const p of models.getProviders()) {
       let authed = false;
       try {
@@ -87,6 +92,7 @@ export const handlers: Record<string, CommandHandler> = {
             ? (enabledMap.get(`${p.id}/${m.id}`) ?? false)
             : true,
           authed,
+          t2i: t2iSet.has(`${p.id}/${m.id}`),
         });
       }
     }

@@ -50,6 +50,9 @@ export type PiModelSummary = {
   /** 目录可见性（false = 被模型过滤隐藏）；缺省视为可见 */
   enabled?: boolean;
   authed: boolean;
+  /** 用户标记"可生成图片"（设置 → 模型属性勾选，存 imagegen 配置覆盖层）；
+   *  文生图默认模型下拉按它过滤 */
+  t2i?: boolean;
 };
 
 export type PiProviderSummary = {
@@ -165,9 +168,9 @@ export type PiPersonalization = {
   userName: string;
   /** AI 的名称（空 = 不注入） */
   assistantName: string;
-  /** 人设 / 人格描述：事实源 ~/.xulux/soul.md，可外部编辑（空/缺失 = 不注入） */
+  /** 人设 / 人格描述：事实源 ~/.kova/soul.md，可外部编辑（空/缺失 = 不注入） */
   persona: string;
-  /** 自定义指令：每次对话都携带，事实源 ~/.xulux/rules.md，可外部编辑（空/缺失 = 不注入） */
+  /** 自定义指令：每次对话都携带，事实源 ~/.kova/rules.md，可外部编辑（空/缺失 = 不注入） */
   customInstructions: string;
 };
 
@@ -236,7 +239,7 @@ export type PiTraceRun = {
   spans: PiTraceSpan[];
 };
 
-/** 子智能体定义所在层（事实源在 sidecar：内置常量 / <app_data>/subagents / <cwd>/.xulux/subagents） */
+/** 子智能体定义所在层（事实源在 sidecar：内置常量 / <app_data>/subagents / <cwd>/.kova/subagents） */
 export type PiSubagentScope = "builtin" | "system" | "workspace" | "plugin";
 
 /** 子智能体定义条目（设置 → 子智能体；list/save/delete/开关/信任的应答共用清单形状） */
@@ -270,7 +273,7 @@ export type PiSubagentsResponse = {
   diagnostics: string[];
 };
 
-/** 技能来源层（事实源在 sidecar：托管层 <cwd>/.xulux/skills 与 <app_data>/skills 可编辑，
+/** 技能来源层（事实源在 sidecar：托管层 <cwd>/.kova/skills 与 <app_data>/skills 可编辑，
  *  生态兼容层 .agents/skills（agentskills.io 标准）只读发现，插件层经 pluginSkills 单列） */
 export type PiSkillScope = "workspace" | "compat-workspace" | "system" | "compat" | "plugin";
 
@@ -346,8 +349,8 @@ export type PiPluginEntry = {
   description?: string;
   icon?: string;
   category?: string;
-  /** 清单探测来源：xulux 原生或生态规范化 */
-  manifestKind: "xulux" | "claude" | "codex";
+  /** 清单探测来源：kova 原生或生态规范化 */
+  manifestKind: "kova" | "claude" | "codex";
   /** 来源市场已移除（插件保留可用，仅无更新通道） */
   sourceMissing: boolean;
   /** 链接安装（dev 模式）：cache 条目 symlink 直指源目录，读路径实时命中源码 */
@@ -451,9 +454,9 @@ export type PiPluginOpResultFrame = {
 export type PiMemoryConfig = {
   /** 总开关：关闭时不注入、memory_* 工具一律婉拒 */
   enabled: boolean;
-  /** 全局记忆叠加开关（~/.xulux/memory，跨会话跨工作区） */
+  /** 全局记忆叠加开关（~/.kova/memory，跨会话跨工作区） */
   global: boolean;
-  /** 工作区记忆叠加开关（<cwd>/.xulux/memory，未信任工作区不生效） */
+  /** 工作区记忆叠加开关（<cwd>/.kova/memory，未信任工作区不生效） */
   workspace: boolean;
   /** 文件检索（memory_search 工具）开关 */
   fileSearch: boolean;
@@ -465,6 +468,23 @@ export type PiMemoryConfig = {
 export type PiBrowserConfig = {
   /** 总开关：关闭时 browser_* 工具一律婉拒 */
   enabled: boolean;
+};
+
+/** 文生图配置整包（设置 → 模型 → 文生图；sidecar 持久化于 SQLite kv）。
+ *  provider/modelId 指向已配置的模型目录（OpenAI 兼容端点），密钥走「模型」页的
+ *  provider 凭据，这里不存；关闭/未配置时 generate_image 工具婉拒。 */
+export type PiImageGenConfig = {
+  /** 总开关：关闭时 generate_image 一律婉拒（默认关：生图按张计费） */
+  enabled: boolean;
+  /** 生图模型所属 provider id（"" = 未配置） */
+  provider: string;
+  /** 生图模型 id */
+  modelId: string;
+  /** 默认尺寸（透传 images 协议 size："1024x1024" 等，"auto" 由服务端定） */
+  size: string;
+  /** 标记"可生图"的模型清单（"provider/modelId"）：在模型属性弹窗勾选；
+   *  list_models 按它给每行透出 t2i，文生图默认模型下拉只列 t2i 模型 */
+  imageModels: string[];
 };
 
 /** 密钥清单行（设置 → 智能体 → 密钥）：**没有明文**。
@@ -771,6 +791,7 @@ export type PiResponse =
   | { type: "deleted" }
   | { type: "renamed" }
   | { type: "archived" }
+  | { type: "session_cwd_set"; sessionId: string; cwd: string }
   | { type: "models"; models: PiModelSummary[]; providers: PiProviderSummary[] }
   | { type: "model"; provider: string; modelId: string }
   | { type: "thinking"; level: string }
@@ -784,6 +805,7 @@ export type PiResponse =
   | { type: "app_mode"; mode: PiAppMode }
   | { type: "memory"; settings: PiMemoryConfig }
   | { type: "browser"; settings: PiBrowserConfig }
+  | { type: "imagegen"; settings: PiImageGenConfig }
   | PiSecretsResponse
   | { type: "observability"; settings: PiObservabilityConfig }
   | { type: "observability_tested"; result: PiObservabilityTestResult }

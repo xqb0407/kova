@@ -239,7 +239,7 @@ const MemoryFileBrowser: FC<{
       <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
         {workspaceUnavailable ? (
           <div className="text-muted-foreground px-3 py-3 text-sm">
-            未选择工作区。选择工作区后，这里会显示该仓库 .xulux/memory 下的记忆文件；也可以点上方目录切换器「浏览其他目录…」直接查看任意目录。
+            未选择工作区。选择工作区后，这里会显示该仓库 .kova/memory 下的记忆文件；也可以点上方目录切换器「浏览其他目录…」直接查看任意目录。
           </div>
         ) : !scopeState ? (
           <div className="text-muted-foreground px-3 py-3 text-sm">正在加载…</div>
@@ -441,7 +441,7 @@ export const MemorySettings: FC = () => {
             </SettingRow>
             <SettingRow
               label="全局记忆"
-              desc="所有会话共享的长期记忆（~/.xulux/memory）。"
+              desc="所有会话共享的长期记忆（~/.kova/memory）。"
             >
               <Switch
                 checked={config.global}
@@ -453,7 +453,7 @@ export const MemorySettings: FC = () => {
               label="工作区记忆"
               desc={
                 workspaceCwd
-                  ? "仅当前工作区的会话生效（<工作区>/.xulux/memory）。"
+                  ? "仅当前工作区的会话生效（<工作区>/.kova/memory）。"
                   : "当前未选择工作区，开启后也不会生效。"
               }
             >

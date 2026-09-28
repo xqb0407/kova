@@ -142,6 +142,43 @@ describe("历史回放与权威快照", () => {
   });
 });
 
+describe("结算广播收口（data-interactionResolved 的重放防复活）", () => {
+  test("begin→resolved 重放序列收敛为空：提问与审批各自关闭，未知 id/重复帧 no-op 不误伤", () => {
+    // 模拟刷新重放：发起帧先复活两卡
+    store.applyQuestionChunk(T, { questionId: "q1", questions: [{ title: "t" }] });
+    store.applyQuestionChunk(T, { questionId: "q2", questions: [{ title: "t2" }] });
+    store.applyToolApprovalChunk(T, { approvalId: "a1", toolCallId: "tc", toolName: "bash" });
+    // 未知 id（乱序/别的结算帧）不动任何卡
+    store.removeResolvedInteraction(T, "unknown-id");
+    expect(store.pendingQuestionsForTest(T).map((q) => q.questionId)).toEqual(["q1", "q2"]);
+    expect(store.pendingApprovalsForTest(T).map((a) => a.approvalId)).toEqual(["a1"]);
+    // 结算帧按 questionId / approvalId 命中两本台账
+    store.removeResolvedInteraction(T, "q1");
+    store.removeResolvedInteraction(T, "a1");
+    store.removeResolvedInteraction(T, "a1"); // 重复帧幂等
+    expect(store.pendingQuestionsForTest(T).map((q) => q.questionId)).toEqual(["q2"]);
+    expect(store.pendingApprovalsForTest(T).length).toBe(0);
+  });
+
+  test("广播关闭不发 pending 事件（只是关卡，不是新挂起）", () => {
+    store.applyQuestionChunk(T, { questionId: "q1", questions: [{ title: "t" }] });
+    agentEvents.length = 0;
+    store.removeResolvedInteraction(T, "q1");
+    expect(store.pendingQuestionsForTest(T).length).toBe(0);
+    expect(agentEvents.length).toBe(0);
+  });
+
+  test("resolved 后的权威快照不会复活该卡（scan 相减 + 本地已关，双保险）", async () => {
+    piSessionRegistry.set(T, "sess-r1");
+    store.applyQuestionChunk(T, { questionId: "q1", questions: [{ title: "t" }] });
+    store.removeResolvedInteraction(T, "q1");
+    const pull = store.refreshPendingInteractions(T);
+    listPendingResolve?.([]); // 服务端 scan 已相减
+    await pull;
+    expect(store.pendingQuestionsForTest(T).length).toBe(0);
+  });
+});
+
 describe("turn 结束清理", () => {
   test("clearToolApprovals / clearQuestions 按线程清空", () => {
     store.applyToolApprovalChunk(T, { approvalId: "a1", toolCallId: "tc", toolName: "bash" });

@@ -30,8 +30,10 @@ import {
   forgetThreadStates,
   listActiveTurnDetails,
   listActiveTurnSessions,
+  removeTaskSessionDir,
   resolveSession,
   running,
+  setSessionCwd,
 } from "../../sessions/sessions";
 import { getTodoState, replayTodoFromMessages } from "../../todo/todo";
 import { getDelegationSnapshot } from "../../subagent/subagent";
@@ -255,6 +257,9 @@ export const handlers: Record<string, CommandHandler> = {
     dropSessionInteractions(sessionId); // 挂起交互台账同清（§4，行随文件消失）
     const file = sessionPath(sessionId);
     if (existsSync(file)) unlinkSync(file);
+    // 无目录会话的产物随会话走（<任务工作区>/<sessionId> 递归删；
+    // 从未落过盘/项目会话是空操作），否则「我的文件」里只剩无名孤儿目录
+    removeTaskSessionDir(sessionId);
     send({ id: reqId, type: "deleted" });
   },
 
@@ -271,5 +276,15 @@ export const handlers: Record<string, CommandHandler> = {
     const archived = msg.archived !== false;
     await sessionSetArchived(sessionId, archived);
     send({ id: reqId, type: "archived" });
+  },
+
+  set_session_cwd: async (reqId, msg) => {
+    // 中途换/清会话工作目录（前端胶囊）：cwd=""=解绑。非 prompt 命令已由
+    // handleLine 整体入 mgmt 串行队列，与 prompt 的会话准备段互斥；
+    // "本轮在跑"的拒绝判断在 setSessionCwd 内按驻留 run 的线程键做
+    const sessionId = String(msg.sessionId ?? "");
+    const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
+    await setSessionCwd(sessionId, cwd);
+    send({ id: reqId, type: "session_cwd_set", sessionId, cwd });
   },
 };

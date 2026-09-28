@@ -39,7 +39,7 @@ import {
 } from "@/lib/workspace/fs";
 import { focusPanelTab, openPanelTab } from "@/lib/panels/panel-tabs";
 import { isTauri } from "@/lib/tauri";
-import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import {
@@ -76,7 +76,10 @@ import { FileTypeIcon } from "./file-type-icon";
 import { TabEmpty } from "./tab-empty";
 
 /**
- * 「文件」标签（explorer）：workspace 文件树浏览。
+ * 「文件」标签（explorer）：当前工作目录的文件树浏览。
+ * 根 = usePanelCwd 三级解析：选了工作区就是工作区；没选（全局会话）落到
+ * 该会话按隔离的任务目录 <task-workspace>/<sessionId>，与 agent 实际读写
+ * 同源（Rust resolve_root 已放行任务工作区子树，fs_* 读写命令直接可用）。
  * 数据 = Rust fs_list_dir 单层懒加载（lib/file-tree store），只为
  * **已展开**的目录建树节点，未展开子树零渲染成本；展开/选中状态受控。
  * 点击文件 → focusPanelTab("file", { path })：复用「文件」标签渲染
@@ -116,7 +119,7 @@ type RowContextMenuHandler = (
 ) => void;
 
 /**
- * workspace + 相对路径 → file:/// URL（浏览器标签预览本地 HTML/SVG）。
+ * rootCwd + 相对路径 → file:/// URL（浏览器标签预览本地 HTML/SVG）。
  * 逐段 encodeURIComponent，盘符冒号（"D:"）保留。
  */
 function toFileUrl(cwd: string, rel: string): string {
@@ -211,7 +214,7 @@ function renderEntries(
 }
 
 export const FileTreeTab: FC = () => {
-  const workspace = useWorkspace();
+  const rootCwd = usePanelCwd();
   useFileTreeWiring();
   const treeVersion = useFileTreeVersion();
   const [expanded, setExpanded] = useState<string[]>([]);
@@ -223,41 +226,41 @@ export const FileTreeTab: FC = () => {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const expandedSet = useMemo(() => new Set(expanded), [expanded]);
 
-  // 切 workspace 收起全部展开（旧路径在新根下无意义）
+  // 切 rootCwd 收起全部展开（旧路径在新根下无意义）
   useEffect(() => {
     setExpanded([]);
     setSelected(null);
     setMenu(null);
-  }, [workspace]);
+  }, [rootCwd]);
 
   // 补水：可见目录链缺缓存就拉（挂载、展开变化、失效 bump 后各收敛一次）
   useEffect(() => {
-    if (!workspace || !isTauri()) return;
-    for (const dir of collectVisibleDirs(workspace, expandedSet)) {
-      ensureDir(workspace, dir);
+    if (!rootCwd || !isTauri()) return;
+    for (const dir of collectVisibleDirs(rootCwd, expandedSet)) {
+      ensureDir(rootCwd, dir);
     }
-  }, [workspace, expandedSet, treeVersion]);
+  }, [rootCwd, expandedSet, treeVersion]);
 
   const handleSelect = useCallback(
     (value: string) => {
-      if (!workspace) return;
+      if (!rootCwd) return;
       const idx = value.lastIndexOf("/");
       const parent = idx < 0 ? "" : value.slice(0, idx);
       const name = idx < 0 ? value : value.slice(idx + 1);
-      const entry = getDir(workspace, parent)?.entries.find(
+      const entry = getDir(rootCwd, parent)?.entries.find(
         (e) => e.name === name,
       );
       if (!entry || entry.dir) return; // 文件夹只做展开/收起
       setSelected(value);
       // focus:undefined 清掉该标签可能残留的消息快照上下文（复用同标签）
       focusPanelTab("file", {
-        cwd: workspace,
+        cwd: rootCwd,
         path: value,
         title: name,
         focus: undefined,
       });
     },
-    [workspace],
+    [rootCwd],
   );
 
   const handleRowContextMenu = useCallback<RowContextMenuHandler>(
@@ -270,15 +273,15 @@ export const FileTreeTab: FC = () => {
     [],
   );
 
-  /** 写操作后的公共收尾：失效该 workspace 全部目录缓存，版本 bump 驱动重拉 */
+  /** 写操作后的公共收尾：失效该 rootCwd 全部目录缓存，版本 bump 驱动重拉 */
   const refreshTree = useCallback(() => {
-    if (workspace) refreshFileTree(workspace);
-  }, [workspace]);
+    if (rootCwd) refreshFileTree(rootCwd);
+  }, [rootCwd]);
 
   const openFile = (rel: string, name: string) => {
-    if (!workspace) return;
+    if (!rootCwd) return;
     focusPanelTab("file", {
-      cwd: workspace,
+      cwd: rootCwd,
       path: rel,
       title: name,
       focus: undefined,
@@ -287,28 +290,28 @@ export const FileTreeTab: FC = () => {
 
   /** 浏览器标签预览：file:// URL 走原生子 webview（browser.rs 放行 file 协议） */
   const previewInBrowser = (rel: string, name: string) => {
-    if (!workspace) return;
+    if (!rootCwd) return;
     openPanelTab("browser", {
-      cwd: workspace,
-      url: toFileUrl(workspace, rel),
+      cwd: rootCwd,
+      url: toFileUrl(rootCwd, rel),
       title: name,
     });
   };
 
   const reveal = async (rel: string) => {
-    if (!workspace) return;
-    const err = await fsReveal(workspace, rel);
+    if (!rootCwd) return;
+    const err = await fsReveal(rootCwd, rel);
     if (err) toast.error(fsErrorText(err));
   };
 
   /** 复制路径（abs=true 绝对路径，按平台分隔符拼接；false 相对路径） */
   const copyPath = async (rel: string, abs: boolean) => {
-    if (!workspace) return;
-    const sep = workspace.includes("\\") ? "\\" : "/";
+    if (!rootCwd) return;
+    const sep = rootCwd.includes("\\") ? "\\" : "/";
     const text = abs
       ? rel
-        ? `${workspace}${sep}${rel.split("/").join(sep)}`
-        : workspace
+        ? `${rootCwd}${sep}${rel.split("/").join(sep)}`
+        : rootCwd
       : rel;
     try {
       await navigator.clipboard.writeText(text);
@@ -328,7 +331,7 @@ export const FileTreeTab: FC = () => {
   };
 
   const submitNameDialog = async () => {
-    if (!nameDialog || !workspace) return;
+    if (!nameDialog || !rootCwd) return;
     const name = nameValue.trim();
     if (!name || BAD_NAME_RE.test(name)) {
       toast.error(fsErrorText("bad-name"));
@@ -340,7 +343,7 @@ export const FileTreeTab: FC = () => {
         setNameDialog(null);
         return;
       }
-      err = await fsRename(workspace, nameDialog.rel, name);
+      err = await fsRename(rootCwd, nameDialog.rel, name);
       if (!err) {
         const idx = nameDialog.rel.lastIndexOf("/");
         const parent = idx < 0 ? "" : nameDialog.rel.slice(0, idx);
@@ -350,8 +353,8 @@ export const FileTreeTab: FC = () => {
       const target = nameDialog.dir ? `${nameDialog.dir}/${name}` : name;
       err =
         nameDialog.mode === "new-file"
-          ? await fsTouch(workspace, target)
-          : await fsMkdir(workspace, target);
+          ? await fsTouch(rootCwd, target)
+          : await fsMkdir(rootCwd, target);
     }
     if (err) {
       toast.error(fsErrorText(err));
@@ -362,8 +365,8 @@ export const FileTreeTab: FC = () => {
   };
 
   const confirmDeleteEntry = async () => {
-    if (!deleteTarget || !workspace) return;
-    const err = await fsDelete(workspace, deleteTarget.rel);
+    if (!deleteTarget || !rootCwd) return;
+    const err = await fsDelete(rootCwd, deleteTarget.rel);
     if (err) {
       toast.error(fsErrorText(err));
       return;
@@ -377,14 +380,14 @@ export const FileTreeTab: FC = () => {
     refreshTree();
   };
 
-  // 整棵树在 (workspace, expanded, 版本) 三个依赖上 memo：
+  // 整棵树在 (rootCwd, expanded, 版本) 三个依赖上 memo：
   // 未变化的已加载子树复用同一批元素引用，React 只 diff 不重建
   const children = useMemo(
     () =>
-      workspace && isTauri()
-        ? renderEntries(workspace, "", expandedSet, handleRowContextMenu)
+      rootCwd && isTauri()
+        ? renderEntries(rootCwd, "", expandedSet, handleRowContextMenu)
         : null,
-    [workspace, expandedSet, treeVersion, handleRowContextMenu],
+    [rootCwd, expandedSet, treeVersion, handleRowContextMenu],
   );
 
   // 右键落点作虚拟锚点（显式 anchor 覆盖 ContextMenu 默认的 Trigger 锚定）
@@ -396,13 +399,10 @@ export const FileTreeTab: FC = () => {
     [menu],
   );
 
-  if (!workspace || !isTauri())
-    return (
-      <TabEmpty
-        icon={FolderOpenIcon}
-        text={workspace ? "文件树仅在桌面端可用" : "选择工作目录后可浏览文件树"}
-      />
-    );
+  if (!isTauri())
+    return <TabEmpty icon={FolderOpenIcon} text="文件树仅在桌面端可用" />;
+  // 面板根目录异步解析（appDataDir / 会话物化）中，只闪现一瞬
+  if (!rootCwd) return <TabEmpty icon={FolderOpenIcon} text="正在准备任务目录…" />;
 
   return (
     <>
@@ -562,7 +562,7 @@ export const FileTreeTab: FC = () => {
             <DialogDescription>
               {nameDialog?.mode === "rename"
                 ? `修改「${nameDialog.name}」的名称`
-                : `位置：${nameDialog?.dir || "工作区根目录"}`}
+                : `位置：${nameDialog?.dir || "根目录"}`}
             </DialogDescription>
           </DialogHeader>
           <Input

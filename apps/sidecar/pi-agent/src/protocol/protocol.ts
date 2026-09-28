@@ -67,6 +67,11 @@
  *   { "type": "rename_session", "id", "sessionId", "name" }   → { id, type: "renamed" }
  *   { "type": "archive_session", "id", "sessionId", "archived" } → { id, type: "archived" }
  *       归档 / 取消归档（archived: bool）：列表项打标，正文与索引行不动；list_sessions 会带回 archived 字段
+ *   { "type": "set_session_cwd", "id", "sessionId", "cwd": string }
+ *                                       → { id, type: "session_cwd_set", sessionId, cwd }
+ *       中途换/清会话工作目录（""=解绑，执行目录回落任务工作区会话子目录）：
+ *       驻留 run 走完整换绑（重建工具/技能/提示词 + 回写索引行与 header），
+ *       不驻留只写索引行与 header（下次物化自然生效）；本轮在跑时报 busy 拒绝
  *   { "type": "list_models", "id" }                           → { id, type: "models", models: [...], providers: [...] }
  *       models 项含 enabled 与 maxTokens/input/cost 属性（enabled=false = 已被过滤隐藏，前端自行过滤）
  *   { "type": "set_model", "id", "provider", "modelId" }      → { id, type: "model", provider, modelId }
@@ -86,6 +91,8 @@
  *   { "type": "set_memory", "id", "settings" }                → { id, type: "memory", settings }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization）
  *   { "type": "get_browser", "id" }                           → { id, type: "browser", settings }（浏览器驱动开关：browser_* 工具是否可用）
  *   { "type": "set_browser", "id", "settings" }               → { id, type: "browser", settings }（落 SQLite kv 即生效，工具 execute 实时门控）
+ *   { "type": "get_imagegen", "id" }                           → { id, type: "imagegen", settings }（文生图：总开关/默认生图模型 provider+modelId/默认尺寸）
+ *   { "type": "set_imagegen", "id", "settings" }               → { id, type: "imagegen", settings }（落 SQLite kv 即生效，generate_image execute 实时门控）
  *   { "type": "list_secrets", "id" }                          → { id, type: "secrets", entries, enabled, bindings }（密钥清单**只回名字与掩码**，明文落 Rust 侧密文存储，无 RPC 出口）
  *   { "type": "save_secret", "id", "name", "scope", "value"?, "skills"?, "cwd"? } → 刷新后的密钥清单
  *       value 留空 = 只改绑定不改值（编辑弹窗不回填明文）；skills 给出即整条替换该名字的技能白名单；scope = "global"|"workspace"（workspace 需 cwd）
@@ -104,7 +111,7 @@
  *   { "type": "write_memory_file", "id", "scope", "cwd"?, "file", "content" } → { id, type: "memory_file_saved", scope, file, bytes }
  *       保存设置页编辑的记忆文件（整体覆盖，根级 .md），成功后热替换活动会话提示词
  *   { "type": "list_subagents", "id", "cwd"? }                → { id, type: "subagents", agents, workspaceCwd, diagnostics }
- *   { "type": "save_subagent", "id", "scope", "cwd"?, ("definition"|"raw"), "name"? } → 校验后写 <app_data>/subagents 或 <cwd>/.xulux/subagents 的 YAML + 热重载 → 同款 subagents 应答（name=编辑前原名，改名时清旧文件）
+ *   { "type": "save_subagent", "id", "scope", "cwd"?, ("definition"|"raw"), "name"? } → 校验后写 <app_data>/subagents 或 <cwd>/.kova/subagents 的 YAML + 热重载 → 同款 subagents 应答（name=编辑前原名，改名时清旧文件）
  *   { "type": "delete_subagent", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 subagents 应答（内置不可删）
  *   { "type": "set_subagent_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 subagents 应答
  *   { "type": "automation_list", "id" }                        → { id, type: "automation_list", tasks }
@@ -116,16 +123,16 @@
  *   { "type": "automation_preview", "id", "scheduleType", "schedule", "count"? } → { id, type: "automation_preview", runs } 或 { id, type: "automation_preview", error }（排期校验红字提示，不占调度器）
  *   { "type": "automation_templates", "id" }                   → { id, type: "automation_templates", templates }（预置模板清单，见 automation/templates.ts）
  *   { "type": "list_skills", "id", "cwd"? }                   → { id, type: "skills", skills, workspaceCwd, diagnostics }
- *       技能清单（<cwd>/.xulux/skills、<app_data>/skills 可编辑 + 生态 .agents/skills 只读合并，
+ *       技能清单（<cwd>/.kova/skills、<app_data>/skills 可编辑 + 生态 .agents/skills 只读合并，
  *       同名遮蔽 工作区>生态·工作区>系统>生态·用户）；设置 → 技能页渲染用
  *   { "type": "save_skill", "id", "scope", "cwd"?, ("definition"|"raw"), "fallbackName"?, "name"? }
- *                                                            → 校验后写 <app_data>/skills 或 <cwd>/.xulux/skills 的
+ *                                                            → 校验后写 <app_data>/skills 或 <cwd>/.kova/skills 的
  *       技能 .md 文档（frontmatter+正文）+ 热重载 → 同款 skills 应答（name=编辑前原名，改名时清旧文件）
  *   { "type": "delete_skill", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 skills 应答（生态只读不可删）
  *   { "type": "set_skill_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 skills 应答
  *   { "type": "set_skills_enabled", "id", "targets": [{ "scope", "name" }...], "cwd"?, "enabled" }
  *       批量开关（设置页「全部启用 / 全部关闭」快捷）：targets 整表置为目标状态、一次性落盘 + 热重载 → 同款 skills 应答
- *   —— 插件系统（市场页「已装插件」；插件清单探测 .xulux-plugin/.claude-plugin/.codex-plugin，
+ *   —— 插件系统（市场页「已装插件」；插件清单探测 .kova-plugin/.claude-plugin/.codex-plugin，
  *      四类组件 skills/mcpServers/hooks/subagents 垫底合并，见 plugins.ts）——
  *   { "type": "list_plugins", "id", "cwd"? }                  → { id, type: "plugins", plugins, workspaceCwd }
  *       已装插件清单（含组件摘要/开关/诊断；scope="plugin" 条目不进 skills/mcp/subagents 设置页清单；
@@ -148,7 +155,7 @@
  *       完成后自发 { "type": "plugin_op_result", opId, op, ok, ("plugins"/"marketplaces")?, "errorText"? } 帧
  *       （组件开关走 set_skill_enabled/set_mcp_server_enabled/set_subagent_enabled，scope/layer="plugin" 时必带 pluginId）
  *   { "type": "list_mcp_servers", "id", "cwd"? }             → { id, type: "mcp_servers", servers, workspaceCwd, diagnostics }
- *       MCP 服务器清单（系统 ~/.xulux/mcp.json + 工作区 .mcp.json/.xulux/mcp.json 合并，
+ *       MCP 服务器清单（系统 ~/.kova/mcp.json + 工作区 .mcp.json/.kova/mcp.json 合并，
  *       含每台连接状态）；设置 → MCP 页渲染用
  *   { "type": "save_mcp_server", "id", "layer", "cwd"?, ("definition"), "name"? } → 校验后写系统/工作区覆盖文件
  *       + 断连重载 → 同款 mcp_servers 应答（name=编辑前原名，改名时清旧条目）
@@ -210,6 +217,11 @@
  *                 （Task 工具启动委派时发起：前端把消息里的 Task 行绑到 delegationId，点击开面板「子智能体」tab）
  *                 审批请求：{ id, chunk: { type: "data-toolApproval", data: { approvalId, toolCallId, toolName, input } } }
  *                 （toolName = plan_exit 时 input 带 { rationale, title, markdown, filePath }，前端渲染计划审批卡）
+ *                 交互结算广播：{ id, chunk: { type: "data-interactionResolved", data: { interactionId, resolution } } }
+ *                 （pending-interactions 台账结算点统一补发：发起卡片的 data-* chunk 行在 Rust
+ *                   重放缓冲里，刷新重放会复活已结算的卡；本帧入同一条缓冲让重放序列 begin→
+ *                   resolved 收敛为空，question/逐工具/MCP/plan_exit 四类挂起卡通治。
+ *                   无活跃请求时不发，转录行始终是事实源）
  *                 面板唤起：{ id, chunk: { type: "data-panelOpen", data: { type: "browser", url? } } }
  *                 （browser_* 工具动作时发起，前端把浏览器 tab 推到前台并展开面板）
  *                 面板唤起（文件）：{ id, chunk: { type: "data-panelOpen", data: { type: "file", path, cwd } } }

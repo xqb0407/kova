@@ -29,6 +29,7 @@ import {
   PencilLineIcon,
   SearchCheckIcon,
   SearchIcon,
+  SparklesIcon,
   SquareArrowOutUpRightIcon,
   SquareTerminalIcon,
   TargetIcon,
@@ -45,6 +46,7 @@ import {
 import { openExternal } from "@/lib/external-link";
 import { fileChangePair, fileChangeStats } from "@/lib/panels/panel-activity";
 import { parseWebSearchResults, type WebSearchItem } from "@/lib/pi/web-search";
+import { ImageGeneration } from "@/components/agents/image-generation";
 import { PanelFileDiff } from "@/components/code/panel-diff";
 import { SiteIcon } from "@/components/custom-ui/site-icon";
 import {
@@ -872,11 +874,73 @@ const SkillToolUI: ToolCallMessagePartComponent = ({
   );
 };
 
+/** "1024x1024"/"1024×1792" → 宽高；"auto"/缺省 → null */
+const parseImageSize = (size: string | null): { w: number; h: number } | null => {
+  const m = /^(\d+)\s*[x×]\s*(\d+)$/i.exec((size ?? "").trim());
+  return m ? { w: Number(m[1]), h: Number(m[2]) } : null;
+};
+
+/** 预估出图秒数（占位卡 "Estimated ~Xs" 文案）：1792 级及以上更慢；网关排队时
+ *  只是估计，取偏保守的档位即可，超时兜底在服务端（GENERATE_TIMEOUT_MS） */
+const imageGenEstimateSeconds = (size: string | null): number => {
+  const px = parseImageSize(size);
+  if (px && px.w * px.h >= 1_500_000) return 60;
+  return 45;
+};
+
+/**
+ * generate_image：生图网关普遍要几十秒，通用行的空转圈等待不好看——运行中
+ * 用 ImageGeneration 的 202 占位卡：左对齐定宽瓦片（fluid + 显式宽度，compact
+ * 变体是页面展示用的居中样式，消息流里不用），头部「图标 + 生成图片」一行，
+ * 瓦片右上角 "Estimated ~Xs" 徽章；状态行与标题重复，showStatus 关掉；
+ * animated=false 入场一步到位（消息流里要干脆利落，页面展示才用渐变）。
+ * 成图由 data-image part 紧跟卡片之后上屏（投影链路见 docs/image-part-design.md），
+ * 结果到达后本行收敛为紧凑结果行。婉拒/失败结果（无图纯文本）同走行，展开看原文。
+ */
+const GenerateImageToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const size = strArg(args, "size");
+  const running = status?.type === "running";
+  if (running) {
+    const px = parseImageSize(size);
+    const portrait = !!px && px.h > px.w;
+    return (
+      <ImageGeneration
+        status="generating"
+        title="生成图片"
+        titleIcon={<SparklesIcon className="size-4 shrink-0" />}
+        showStatus={false}
+        animated={false}
+        resolution={`Estimated ~${imageGenEstimateSeconds(size)}s`}
+        aspectRatio={px ? `${px.w} / ${px.h}` : "1 / 1"}
+        size="fluid"
+        tileClassName="border"
+        className={cn("my-1.5 w-64", portrait && "w-40")}
+      />
+    );
+  }
+  const output = resultText(result);
+  return (
+    <ToolRow
+      label="生成图片"
+      icon={<SparklesIcon className="size-4 shrink-0" />}
+      primary={output.split("\n")[0] || undefined}
+      failed={isError === true || (!!output && FAILED_RE.test(output))}
+      output={output}
+    />
+  );
+};
+
 /** 有专属扁平行渲染的工具名 → 组件；其余走 ToolFallback */
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
   Task: TaskToolUI,
   use_skill: SkillToolUI,
+  generate_image: GenerateImageToolUI,
   read: fileToolUI("read", "查看"),
   edit: fileToolUI("edit", "编辑"),
   write: fileToolUI("write", "写入"),

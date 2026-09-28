@@ -11,8 +11,8 @@ param([string]$CmdLine = $env:RENAME_ARGS)
 $ErrorActionPreference = 'Stop'
 
 # ---------- 常量 ----------
-$OldSlug  = 'xulux'
-$OldKebab = 'pi-desktop'
+$OldSlug  = 'kova'
+$OldKebab = 'pi-kova'
 
 # ---------- 参数解析(自行分词, 双引号成组) ----------
 function Split-CmdLine([string]$s) {
@@ -43,9 +43,9 @@ function Show-Usage {
   @'
 用法: rename.bat <new-slug> [选项]
   <new-slug>        新品牌标识(小写字母/数字/连字符, 如 myapp / my-app)
-                    xulux->myapp  Xulux->Myapp  XULUX->MYAPP  pi-desktop->pi-myapp
+                    kova->myapp  Kova->Myapp  KOVA->MYAPP  pi-kova->pi-myapp
   --app-name NAME   应用显示名(替换旧 productName, 可含空格)
-  --bundle-id ID    应用标识(替换 com.xulux.assistant)
+  --bundle-id ID    应用标识(替换 com.kova.assistant)
   --dir             同时重命名项目根目录(默认不改)
   --dry-run         只预览, 不写入
   --force           跳过 git 工作区干净检查
@@ -82,9 +82,10 @@ if ($NewSlug -notmatch '^[a-z][a-z0-9]*(-[a-z0-9]+)*$') {
 if ($NewSlug -eq $OldSlug) { Write-Host '新 slug 与当前品牌名相同, 无事可做。'; exit 0 }
 
 $NewPascal = ConvertTo-Pascal $NewSlug
-$NewUpper  = $NewSlug.ToUpper()
+# UPPER 用于环境变量前缀(KOVA_*), 连字符转下划线
+$NewUpper  = ($NewSlug.ToUpper() -replace '-', '_')
 $OldPascal = ConvertTo-Pascal $OldSlug
-$OldUpper  = $OldSlug.ToUpper()
+$OldUpper  = ($OldSlug.ToUpper() -replace '-', '_')
 $NewKebab  = "pi-$NewSlug"
 
 if ($AppName  -ne '') { $AppName  = $AppName.Trim() }
@@ -97,12 +98,15 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $RepoRoot
 
 # ---------- 扫描规则 ----------
-$ExclDirPattern = '(^|[\\/])(node_modules|\.git|target|\.next|out|dist|gen|sessions|\.zcode|\.rename-backup-[^\\/]+)([\\/]|$)'
+$ExclDirPattern = '(^|[\\/])(node_modules|\.git|target|\.next|out|dist|gen|\.rename-backup-[^\\/]+)([\\/]|$)'
+# 顶层运行数据目录: 只排除仓库根下的 sessions/ 与 .zcode/ (rel 不带 ./ 前缀)
+$TopExclPattern = '^(sessions|\.zcode)([\\/]|$)'
 $TextExts = @('.json','.md','.ts','.tsx','.js','.mjs','.cjs','.rs','.toml','.lock','.html','.css','.json5','.yaml','.yml','.conf','.plist','.nsi','.sh','.bat','.ps1','.txt')
 $ExclFiles = @('bun.lock','pnpm-lock.yaml','rename.sh','rename.bat','rename.ps1')
 
 function Test-Excluded([string]$relPath) {
   if ($relPath -match $ExclDirPattern) { return $true }
+  if ($relPath -match $TopExclPattern) { return $true }
   $leaf = Split-Path -Leaf $relPath
   if ($ExclFiles -contains $leaf) { return $true }
   if ($leaf -like '*.tsbuildinfo') { return $true }
@@ -114,13 +118,18 @@ function Get-Rel([string]$full) {
 }
 
 # ---------- 带剪枝的手动遍历(避免深入 node_modules/target 等) ----------
-function Get-NodesRecursive([string]$root, [string[]]$pruneNames, [switch]$FilesOnly) {
+# $pruneNames 在任意层级生效(构建产物目录); $topPruneNames 只在仓库根生效。
+# sessions/.zcode 是顶层运行数据目录, 按名字任意层级排除会误伤 src/sessions/ 等源码目录。
+function Get-NodesRecursive([string]$root, [string[]]$pruneNames, [string[]]$topPruneNames, [switch]$FilesOnly) {
+  $rootFull = (Get-Item -LiteralPath $root -Force).FullName.TrimEnd('\','/')
   $stack = New-Object Collections.Stack
-  $stack.Push($root)
+  $stack.Push($rootFull)
   while ($stack.Count -gt 0) {
     $dir = Get-Item -LiteralPath $stack.Pop() -Force
+    $isRoot = ($dir.FullName -eq $rootFull)
     foreach ($sub in @($dir.GetDirectories())) {
       if ($pruneNames -contains $sub.Name) { continue }
+      if ($isRoot -and $topPruneNames -contains $sub.Name) { continue }
       if ($sub.Name -like '.rename-backup-*') { continue }
       if (-not $FilesOnly) { $sub }
       $stack.Push($sub.FullName)
@@ -128,12 +137,14 @@ function Get-NodesRecursive([string]$root, [string[]]$pruneNames, [switch]$Files
     foreach ($file in $dir.GetFiles()) { $file }
   }
 }
-$ContentPrune = @('node_modules','.git','target','.next','out','dist','gen','sessions','.zcode')
-$PathPrune    = @('node_modules','.git','target','.next','out','dist','scripts')
+$ContentPrune    = @('node_modules','.git','target','.next','out','dist','gen')
+$ContentTopPrune = @('sessions','.zcode')
+$PathPrune       = @('node_modules','.git','target','.next','out','dist','scripts')
+$PathTopPrune    = @()
 
 # ---------- 收集候选文件并按内容命中 ----------
 $MatchFiles = @()
-$AllFiles = Get-NodesRecursive $RepoRoot $ContentPrune -FilesOnly | Where-Object {
+$AllFiles = Get-NodesRecursive $RepoRoot $ContentPrune $ContentTopPrune -FilesOnly | Where-Object {
   $rel = Get-Rel $_.FullName
   (-not (Test-Excluded $rel)) -and ($TextExts -contains $_.Extension.ToLower())
 }
@@ -152,7 +163,7 @@ foreach ($f in $AllFiles) {
 
 # ---------- 收集待重命名路径(目录+文件) ----------
 $MatchPaths = @()
-$AllNodes = Get-NodesRecursive $RepoRoot $PathPrune | Where-Object {
+$AllNodes = Get-NodesRecursive $RepoRoot $PathPrune $PathTopPrune | Where-Object {
   ($_.Name -like "*$OldSlug*" -or $_.Name -like "*$OldUpper*" -or $_.Name -like "*$OldPascal*" -or $_.Name -like "*$OldKebab*")
 }
 foreach ($n in $AllNodes) { $MatchPaths += (Get-Rel $n.FullName) }
@@ -314,5 +325,5 @@ if (Test-Path -LiteralPath $BackupDir) {
 Write-Host ''
 Write-Host '后续步骤:'
 Write-Host '  1) bun install                    # 重新生成锁文件'
-Write-Host "  2) 全局搜索旧名做最终核对: findstr /s /i /m xulux *.* (排除 node_modules 后应为空)"
+Write-Host "  2) 全局搜索旧名做最终核对: findstr /s /i /m kova *.* (排除 node_modules 后应为空)"
 Write-Host "  3) 旧数据目录(如 %USERPROFILE%\$OldSlug)不会自动迁移, 新名称首启会创建新目录"

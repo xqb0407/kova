@@ -8,11 +8,11 @@
  * 目录行都不出现。
  *
  * 来源分层，同名时前层遮蔽后层（工作区 > 生态·工作区 > 系统 > 生态·用户）：
- * - 工作区（可编辑）：<cwd>/.xulux/skills/*.md
+ * - 工作区（可编辑）：<cwd>/.kova/skills/*.md
  * - 生态·工作区（只读）：<cwd>/.agents/skills/（agentskills.io 标准目录，
  *   根级 .md 与 <dir>/SKILL.md 都识别，直接复用社区技能包）
  * - 系统（可编辑）：应用数据目录 skills/（生产由 Rust 注入 PI_DB_PATH 同级
- *   推导，兜底 ~/.xulux/skills；测试经 PI_SKILLS_DIR 钉住）
+ *   推导，兜底 ~/.kova/skills；测试经 PI_SKILLS_DIR 钉住）
  * - 生态·用户（只读）：~/.agents/skills
  *
  * 文件格式：YAML frontmatter（name/description，可选 disable-model-invocation）

@@ -11,7 +11,13 @@
  * 3. 驱逐保护谓词 hasPendingInteractions：行支撑跨重启成立，取代
  *    run.pendingToolApprovals.size 的内存判定（§2）；
  * 4. threadId→sessionId 解析：审批/提问发起点大多只握 threadId，会话归属由
- *    驻留登记（registry trackSessionRun）与物化路径回填。
+ *    驻留登记（registry trackSessionRun）与物化路径回填；
+ * 5. 结算广播：settle 时在活跃 prompt 流上补发 data-interactionResolved chunk——
+ *    发起的 data-question/data-toolApproval chunk 行会进 Rust 重放缓冲，"已结算"
+ *    若只是命令应答与转录行，刷新重放会把已答卡原样复活（pi_attach 整轮重放
+ *    chunk，get_history/list_pending 的配对相减拦不住直播路）。resolved 帧入
+ *    同一条缓冲，重放序列 begin→resolved 收敛为空；无活跃请求时静默丢（行是
+ *    事实源，卡片视图随 run 共存亡）。
  *
  * 降级：thread 尚无会话绑定（理论上仅出现在会话落库前发起的 MCP 审批）时不落行、
  * 卡片只走直播流——不阻塞发起本身。
@@ -19,9 +25,10 @@
 import { appendFileSync } from "node:fs";
 import { sessionPath } from "../storage/storage";
 import { logErr } from "../log";
+import { sendEventChunk } from "../protocol/stream";
 import type { InteractionResolution, PendingInteraction } from "pi-protocol";
 
-type LedgerEntry = { sessionId: string; interaction: PendingInteraction };
+type LedgerEntry = { sessionId: string; threadId: string; interaction: PendingInteraction };
 
 /** interactionId -> 未结算条目（发起/重放写入，结算/删除清理） */
 const byId = new Map<string, LedgerEntry>();
@@ -54,7 +61,7 @@ function appendRow(sessionId: string, row: Record<string, unknown>): void {
 export function beginInteraction(threadId: string, interaction: PendingInteraction): void {
   const sessionId = threadSessions.get(threadId);
   if (!sessionId) return;
-  byId.set(interaction.interactionId, { sessionId, interaction });
+  byId.set(interaction.interactionId, { sessionId, threadId, interaction });
   appendRow(sessionId, {
     type: "pending_interaction",
     ts: new Date().toISOString(),
@@ -82,6 +89,11 @@ export function settleInteraction(
     resolution,
     resolvedAt: new Date().toISOString(),
   });
+  // 结算广播（头注第⑤条）：行在前 chunk 在后；无活跃请求静默丢不影响行事实源
+  sendEventChunk(entry.threadId, {
+    type: "data-interactionResolved",
+    data: { interactionId, resolution },
+  }, entry.sessionId);
   return true;
 }
 
@@ -107,7 +119,7 @@ export function restoreUnsettled(
   rememberThreadSession(threadId, sessionId);
   for (const interaction of interactions) {
     if (byId.has(interaction.interactionId)) continue;
-    byId.set(interaction.interactionId, { sessionId, interaction });
+    byId.set(interaction.interactionId, { sessionId, threadId, interaction });
   }
 }
 

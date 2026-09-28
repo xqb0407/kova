@@ -29,9 +29,9 @@ const FAKE_SERVER = join(import.meta.dir, "..", "fake-mcp-server.mjs");
 
 beforeEach(() => {
   process.env.PI_MCP_CONFIG = systemConfig;
-  // 钉住缓存路径：绝不读写开发者真实的 ~/.xulux/mcp-cache.json
+  // 钉住缓存路径：绝不读写开发者真实的 ~/.kova/mcp-cache.json
   process.env.PI_MCP_CACHE_PATH = cacheFile;
-  // 审计同理：绝不写真实的 ~/.xulux/mcp-audit.jsonl
+  // 审计同理：绝不写真实的 ~/.kova/mcp-audit.jsonl
   process.env.PI_MCP_AUDIT_PATH = path.join(tmp, "audit.jsonl");
   if (existsSync(systemConfig)) unlinkSync(systemConfig);
   if (existsSync(cacheFile)) unlinkSync(cacheFile);

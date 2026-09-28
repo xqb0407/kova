@@ -12,8 +12,7 @@ import {
   type MessageArtifact,
 } from "@/lib/panels/artifacts";
 import { focusPanelTab } from "@/lib/panels/panel-tabs";
-import { getWorkspace } from "@/lib/workspace/workspace-store";
-import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
+import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
 import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { TabEmpty } from "./tab-empty";
@@ -38,6 +37,9 @@ const iconBtn =
  */
 export const ArtifactsTab: FC = () => {
   const { files } = usePanelActivity();
+  // 产物路径锚点（与产物卡同一解析链：标签目录 → 工作区 → 会话任务子目录）；
+  // 钩子必须挂在空列表早退之前
+  const cwd = usePanelCwd();
   const artifacts = useMemo(() => threadArtifacts(files), [files]);
   if (artifacts.length === 0) {
     return (
@@ -52,14 +54,17 @@ export const ArtifactsTab: FC = () => {
     <div className="h-full overflow-y-auto">
       <div className="flex flex-col gap-2 p-3">
         {artifacts.map((a) => (
-          <ArtifactRow key={a.toolCallId} artifact={a} />
+          <ArtifactRow key={a.toolCallId} artifact={a} cwd={cwd} />
         ))}
       </div>
     </div>
   );
 };
 
-const ArtifactRow: FC<{ artifact: MessageArtifact }> = ({ artifact }) => {
+const ArtifactRow: FC<{ artifact: MessageArtifact; cwd: string | null }> = ({
+  artifact,
+  cwd,
+}) => {
   // 预览仅 Tauri（file:// 喂原生 webview）；网页类才进浏览器，其余走「代码」
   const canPreview = isTauri() && isBrowserPreviewable(artifact.path);
   const openCode = () => {
@@ -68,17 +73,14 @@ const ArtifactRow: FC<{ artifact: MessageArtifact }> = ({ artifact }) => {
   };
   const openPreview = () => {
     // 项目会话基于 workspace 拼绝对路径；无目录任务（无 workspace）用
-    // task-workspace（与 sidecar PI_TASK_CWD 同源）——全局任务的产物同样可预览
-    const ws = getWorkspace();
-    const dir = ws ? Promise.resolve(ws) : taskWorkspaceDir();
-    void dir.then((base) => {
-      if (!base) return;
-      focusPanelTab("browser", {
-        url: toFileUrl(base, artifact.path),
-        title: artifact.base,
-      });
-      window.dispatchEvent(new Event("agent-panel:open"));
+    // 本会话的任务子目录 task-workspace/<sessionId>（与 sidecar taskSessionCwd
+    // 同源）——全局任务的产物同样可预览
+    if (!cwd) return;
+    focusPanelTab("browser", {
+      url: toFileUrl(cwd, artifact.path),
+      title: artifact.base,
     });
+    window.dispatchEvent(new Event("agent-panel:open"));
   };
   return (
     <div

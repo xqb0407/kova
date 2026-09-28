@@ -58,12 +58,12 @@ export function systemSkillsDir(): string {
   if (process.env.PI_SKILLS_DIR) return process.env.PI_SKILLS_DIR;
   const db = process.env.PI_DB_PATH;
   if (db) return join(dirname(resolve(db)), "skills");
-  return join(homedir(), ".xulux", "skills");
+  return join(homedir(), ".kova", "skills");
 }
 
 /** 工作区级技能目录（本应用托管层） */
 export function workspaceSkillsDir(cwd: string): string {
-  return join(cwd, ".xulux", "skills");
+  return join(cwd, ".kova", "skills");
 }
 
 /** 生态·用户技能目录（agentskills.io 标准，只读发现；测试经 PI_COMPAT_SKILLS_DIR 钉住） */

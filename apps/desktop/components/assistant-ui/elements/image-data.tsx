@@ -53,7 +53,16 @@ function fileNameFor(data: Partial<PiImagePartData>): string {
   return `${base}.${EXT_BY_MIME[data.mimeType ?? ""] ?? "img"}`;
 }
 
-const ImagePartCard: FC<{ data: PiImagePartData }> = ({ data }) => {
+/**
+ * 导出供图廊复用：assistant-message.tsx 的并发成图平铺直接渲染本卡片。
+ * compact=画廊瓦片模式：图撑满格宽、外边距归零、题注行不渲染
+ * （信息并入画廊自绘的 headline，别用后代选择器去压——Tailwind 会把
+ * 任意选择器里 data-slot 值的下划线转成空格，产出非法 CSS）。
+ */
+export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = ({
+  data,
+  compact,
+}) => {
   const [zoomed, setZoomed] = useState(false);
   // Quick Look 式预览状态:zoom=1 适配视口，>1 可拖拽平移；rotate 90°步进，
   // 旋转时自动重新适配让整图始终可见（Apple 行为）
@@ -145,19 +154,28 @@ const ImagePartCard: FC<{ data: PiImagePartData }> = ({ data }) => {
   }
   const fileName = fileNameFor(data);
   return (
-    <div data-slot="aui_image-part" className="my-1.5 flex max-w-full flex-col gap-1">
+    <div
+      data-slot="aui_image-part"
+      className={cn("flex max-w-full flex-col gap-1", !compact && "my-1.5")}
+    >
       <button
         type="button"
         onClick={() => setZoomed(true)}
         title="点击查看大图"
-        className="bg-muted/40 group relative block w-fit cursor-zoom-in overflow-hidden rounded-xl border focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-2"
+        className={cn(
+          "bg-muted/40 group relative block cursor-zoom-in overflow-hidden rounded-xl border focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-2",
+          compact ? "w-full" : "w-fit",
+        )}
       >
         {/* lazy：长会话多图的解码压力推入视口再说；大图放大态挂在 Dialog 里延迟加载 */}
         <img
           src={src}
           alt={label}
           loading="lazy"
-          className="block max-h-64 max-w-full object-contain"
+          className={cn(
+            "block max-h-64 max-w-full object-contain",
+            compact && "h-auto w-full",
+          )}
         />
         <span className="absolute right-1.5 bottom-1.5 inline-flex items-center gap-1 rounded-md bg-black/55 px-1.5 py-0.5 font-mono text-[10px] leading-4 text-white opacity-0 transition-opacity group-hover:opacity-100">
           <ZoomInIcon className="size-3" />
@@ -166,14 +184,16 @@ const ImagePartCard: FC<{ data: PiImagePartData }> = ({ data }) => {
             : "放大"}
         </span>
       </button>
-      <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
-        <span className="max-w-[28rem] truncate" title={label}>
-          {label}
-        </span>
-        {data.toolName ? (
-          <span className="shrink-0 font-mono opacity-70">{data.toolName}</span>
-        ) : null}
-      </div>
+      {!compact && (
+        <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
+          <span className="max-w-[28rem] truncate" title={label}>
+            {label}
+          </span>
+          {data.toolName ? (
+            <span className="shrink-0 font-mono opacity-70">{data.toolName}</span>
+          ) : null}
+        </div>
+      )}
       {/* Apple「快速查看」式预览：全屏遮罩（与 Dialog 同款 bg-black/10）+
           透明 Popup，无卡片壳。滚轮/按钮缩放、拖拽平移、90° 旋转（自动
           重新适配），双击在适配与 2× 间切换，点空白关闭。transform 实现

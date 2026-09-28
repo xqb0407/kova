@@ -1,6 +1,6 @@
 /**
  * 插件清单解析与生态兼容规范化（纯函数，无运行时状态）：
- * 清单三态探测（.xulux-plugin / .claude-plugin / .codex-plugin）、组件路径
+ * 清单三态探测（.kova-plugin / .claude-plugin / .codex-plugin）、组件路径
  * 包含性校验、hooks 文件形状判定与读取。市场/安装的写路径见 marketplaces.ts，
  * 运行时启停与扫描缓存见 store.ts，市场登记表见 registry.ts。
  */
@@ -17,8 +17,8 @@ import type { HookConfig, HookEventName } from "../agent/hooks";
 // 类型
 // ---------------------------------------------------------------------------
 
-/** 清单探测来源：xulux 原生，或两家生态清单规范化而来 */
-export type PluginManifestKind = "xulux" | "claude" | "codex";
+/** 清单探测来源：kova 原生，或两家生态清单规范化而来 */
+export type PluginManifestKind = "kova" | "claude" | "codex";
 
 /** 规范化后的组件相对路径（全部经过包含性校验；未声明/非法的不出现） */
 export type PluginComponents = {
@@ -93,7 +93,7 @@ export type CatalogPluginEntry = {
   icon?: string;
   category?: string;
   keywords?: string[];
-  /** 相对市场根的插件目录（含 .xulux-plugin 清单） */
+  /** 相对市场根的插件目录（含 .kova-plugin 清单） */
   path: string;
 };
 
@@ -118,7 +118,7 @@ export function pluginsRootDir(): string {
   if (process.env.PI_PLUGINS_DIR) return resolve(process.env.PI_PLUGINS_DIR);
   const db = process.env.PI_DB_PATH;
   if (db) return join(resolve(db), "..", "plugins");
-  return join(homedir(), ".xulux", "plugins");
+  return join(homedir(), ".kova", "plugins");
 }
 
 export function marketplacesFilePath(): string {
@@ -152,7 +152,7 @@ export const LOCAL_MKT_NAME = "本地安装";
 export const PLUGIN_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
 const MANIFEST_PROBES: Array<{ kind: PluginManifestKind; dir: string; file: string }> = [
-  { kind: "xulux", dir: ".xulux-plugin", file: "plugin.json" },
+  { kind: "kova", dir: ".kova-plugin", file: "plugin.json" },
   { kind: "claude", dir: ".claude-plugin", file: "plugin.json" },
   { kind: "codex", dir: ".codex-plugin", file: "plugin.json" },
 ];
@@ -221,7 +221,7 @@ export function parsePluginManifest(
   const unsupported: string[] = [];
   const probe = MANIFEST_PROBES.find((p) => existsSync(join(root, p.dir, p.file)));
   if (!probe) {
-    throw new Error(`${root}: 未找到插件清单（.xulux-plugin/plugin.json）`);
+    throw new Error(`${root}: 未找到插件清单（.kova-plugin/plugin.json）`);
   }
   let doc: unknown;
   try {
@@ -261,7 +261,7 @@ export function parsePluginManifest(
     return containedRelPath(root, v, key, diagnostics) ?? undefined;
   };
 
-  if (probe.kind === "xulux") {
+  if (probe.kind === "kova") {
     const skills = declared("skills");
     if (skills) components.skills = skills;
     const mcpServers = declared("mcpServers");

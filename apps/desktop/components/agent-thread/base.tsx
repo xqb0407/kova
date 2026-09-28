@@ -93,7 +93,7 @@ const MarketplaceView = dynamic(
     ),
   },
 );
-// 我的文件页（本地 ~/.xulux + 云端备份）：同款按需 chunk
+// 我的文件页（本地 ~/.kova + 云端备份）：同款按需 chunk
 const FilesView = dynamic(
   () =>
     import("@/components/files/files-view").then((m) => m.FilesView),

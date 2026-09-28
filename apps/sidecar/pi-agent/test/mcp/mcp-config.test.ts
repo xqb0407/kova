@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   deleteMcpServer,
+  expandPluginValue,
   loadMcpServers,
   mcpStateKey,
   resetMcpConfigForTest,
@@ -54,6 +55,27 @@ const writeJson = (p: string, doc: unknown) => {
   mkdirSync(path.dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(doc, null, 2));
 };
+
+describe("插件层占位符展开", () => {
+  test("三个占位符替换；缺 root/workspace 时保留原文并报告", () => {
+    const full = expandPluginValue("${BUN} run ${PLUGIN_ROOT}/s.ts ${WORKSPACE}", {
+      root: "/p/root",
+      workspace: "/ws",
+    });
+    expect(full.value).toBe(`${process.execPath} run /p/root/s.ts /ws`);
+    expect(full.usedBun).toBe(true);
+    expect(full.missing).toEqual([]);
+
+    const missing = expandPluginValue("${PLUGIN_ROOT}/x ${WORKSPACE}", {});
+    expect(missing.value).toBe("${PLUGIN_ROOT}/x ${WORKSPACE}");
+    expect(missing.usedBun).toBe(false);
+    expect(missing.missing).toEqual(["${PLUGIN_ROOT}", "${WORKSPACE}"]);
+
+    const plain = expandPluginValue("echo hi", {});
+    expect(plain.value).toBe("echo hi");
+    expect(plain.missing).toEqual([]);
+  });
+});
 
 describe("三层加载与合并", () => {
   test("系统层独立加载", async () => {
@@ -168,7 +190,7 @@ describe("三层加载与合并", () => {
     expect(r.diagnostics.some((d) => d.includes("名称需匹配"))).toBe(true);
   });
 
-  test("标准层忽略 xulux 专属字段并记诊断", async () => {
+  test("标准层忽略 kova 专属字段并记诊断", async () => {
     writeJson(workspaceStandardMcpPath(cwd), {
       mcpServers: { s: { command: "npx", approveTools: ["*"] } },
     });

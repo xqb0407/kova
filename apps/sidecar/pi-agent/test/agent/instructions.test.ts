@@ -18,7 +18,7 @@ const globalPath = path.join(tmp, "global-AGENTS.md");
 const wsPath = path.join(ws, "AGENTS.md");
 
 beforeAll(() => {
-  // 全局层钉到临时文件，保证基线不受真实 ~/.xulux/AGENTS.md 影响
+  // 全局层钉到临时文件，保证基线不受真实 ~/.kova/AGENTS.md 影响
   process.env.PI_GLOBAL_AGENTS_MD = globalPath;
   mkdirSync(ws, { recursive: true });
 });

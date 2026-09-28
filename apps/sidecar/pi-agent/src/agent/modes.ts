@@ -19,8 +19,8 @@
  * - plan_exit：批准 = 回 agent 同轮实施；用户显式拒绝 = 删除计划文件 + abort 终止
  *   本轮；Stop/新 prompt 清理（settledBy=clear）= 按拒绝结算，文件保留、不额外 abort
  *
- * 计划文件持久化：首写落盘 `<cwd>/.xulux/plans/plan-<标题>-<sessionId>-<时间>.md`
- * （选中了工作区 → <工作区>/.xulux/plans/；未选 → run.cwd 兜底为用户主目录）。
+ * 计划文件持久化：首写落盘 `<cwd>/.kova/plans/plan-<标题>-<sessionId>-<时间>.md`
+ * （选中了工作区 → <工作区>/.kova/plans/；未选 → run.cwd 兜底为用户主目录）。
  * 下一轮 plan_enter 重开时路径重置（新文件）；批准后路径保留，实施阶段可回读。
  */
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -100,7 +100,7 @@ export type PromptModelInfo = { provider: string; id: string; name?: string };
  * 工作模式段随全局 work/code 开关热替换（app-mode.ts，code 档为空串），
  * MCP 段随服务器配置变更热替换（无启用服务器时为空串），技能目录段只列生效技能的
  * name/description/location 三行元数据（正文模型按需 use_skill 加载，开关/遮蔽在
- * 缓存合并时裁决，随 reloadSkills 热替换），指令段读 AGENTS.md（全局 ~/.xulux/AGENTS.md +
+ * 缓存合并时裁决，随 reloadSkills 热替换），指令段读 AGENTS.md（全局 ~/.kova/AGENTS.md +
  * 工作区仓库根，每次组装同步读盘，改动随下一次重组生效），环境事实块永远在最尾；
  * 个性化段全默认、记忆关闭、无 MCP 服务器、无生效技能、无指令文件时各块为空串
  * （默认提示词与旧版字节级一致）。
@@ -176,9 +176,9 @@ function firstHeading(markdown: string): string {
 }
 
 /**
- * 计划文件落盘：首写定名 `<cwd>/.xulux/plans/plan-<标题>-<sessionId>-<时间>.md`，
+ * 计划文件落盘：首写定名 `<cwd>/.kova/plans/plan-<标题>-<sessionId>-<时间>.md`，
  * 之后每次调用整体覆盖同一路径。run.cwd 由 sessions 解析（未选工作目录时
- * 兜底任务工作目录，见 sessions.ts defaultTaskCwd），两种场景统一处理。
+ * 兜底按会话隔离的任务子目录，见 sessions.ts taskSessionCwd），两种场景统一处理。
  * 失败直接抛出（工具调用失败对模型可见）。
  */
 async function writePlanFile(
@@ -195,7 +195,7 @@ async function writePlanFile(
       run.sessionId,
       fileTimestamp(new Date()),
     ].join("-");
-    run.planFilePath = join(run.cwd, ".xulux", "plans", `${name}.md`);
+    run.planFilePath = join(run.cwd, ".kova", "plans", `${name}.md`);
   }
   await mkdir(dirname(run.planFilePath), { recursive: true });
   await writeFile(

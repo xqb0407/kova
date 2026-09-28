@@ -6,7 +6,7 @@
  * 宿主不支持 doc.list（旧版本）时退化为"空历史 + 只能新建"，不阻塞使用。
  */
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
-import { ChevronLeftIcon, LayoutTemplateIcon, PlusIcon, PresentationIcon, RefreshCwIcon, ShapesIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronLeftIcon, PlusIcon, PresentationIcon, RefreshCwIcon, ShapesIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 const KIND_META: Record<DocKind, { label: string; hint: string }> = {
   board: { label: "白板", hint: "无限画布：图形/图片/文本自由摆放，内容不进 PPT" },
   deck: { label: "幻灯片", hint: "逐页编辑页框，可放映、可导出 .pptx" },
-  ui: { label: "UI 设计", hint: "移动端设备画板起始档，交给 agent 按提示词出界面" },
+  ui: { label: "UI 设计（旧）", hint: "旧格式：编辑表面仍是无限画布；新设计请去「UI 设计」面板" },
 };
 
 /** 卡片缩略图：页框布局按比例画进 16:10 的盒子；无页框的白板画点阵底 */
@@ -91,7 +91,7 @@ export const Home: FC<{ store: DeckStore; currentPath: string | null; onEnter: (
   const [items, setItems] = useState<DocListItem[] | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [step, setStep] = useState<"list" | "type" | "form">("list");
-  const [kind, setKind] = useState<DocKind>("deck"); // office 只做幻灯片（文档/表格后续扩展）
+  const [kind, setKind] = useState<"board" | "deck">("deck"); // office 只做幻灯片（文档/表格后续扩展）
   const [name, setName] = useState("");
   const [preset, setPreset] = useState<PagePreset>("16:9");
 
@@ -139,7 +139,7 @@ export const Home: FC<{ store: DeckStore; currentPath: string | null; onEnter: (
 
   /* ---------------- 新建：命名（类型在 hero 上已选定） ---------------- */
   if (step === "form") {
-    const Icon = kind === "board" ? ShapesIcon : kind === "deck" ? PresentationIcon : LayoutTemplateIcon;
+    const Icon = kind === "board" ? ShapesIcon : PresentationIcon;
     return (
       <div className="flex h-full items-center justify-center p-6">
         <div className="glass w-[440px] rounded-[30px]! p-7">

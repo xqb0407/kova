@@ -14,6 +14,7 @@ import {
   settleInteraction,
 } from "../../src/sessions/pending-interactions";
 import { scanTranscript, windowTranscriptMessages } from "../../src/sessions/transcript";
+import { setActiveReqId } from "../../src/protocol/stream";
 import type { PendingInteraction } from "pi-protocol";
 
 /**
@@ -114,6 +115,73 @@ describe("pending-interactions 台账", () => {
     // 行仍留在转录里（删除语义由文件消失承担），但内存清单已空
     beginInteraction("thread-drop-1", perm("d2"));
     expect(listPendingForSession(sid).length).toBe(0); // 绑定没了 → 降级
+  });
+});
+
+describe("data-interactionResolved 结算广播（刷新重放防复活）", () => {
+  test("活跃请求下结算：广播帧进 prompt 流并盖事件水印", () => {
+    const sid = "sess-bcast-1";
+    appendFileSync(sessionPath(sid), '{"type":"header","schema":1,"id":"sess-bcast-1"}\n');
+    rememberThreadSession("thread-bcast-1", sid);
+    beginInteraction("thread-bcast-1", perm("b1"));
+
+    const written: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((s: string | Uint8Array) => {
+      written.push(String(s));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      setActiveReqId("thread-bcast-1", "req-bcast");
+      expect(settleInteraction("b1", "approved")).toBe(true);
+    } finally {
+      process.stdout.write = orig;
+      setActiveReqId("thread-bcast-1", null);
+    }
+    const frames: Record<string, any>[] = [];
+    for (const l of written) {
+      try {
+        const o = JSON.parse(l) as Record<string, any>;
+        if (o?.chunk?.type === "data-interactionResolved") frames.push(o);
+      } catch {
+        // 采集窗内 bun reporter 也可能写 stdout，非 JSON 行忽略
+      }
+    }
+    expect(frames.length).toBe(1);
+    expect(frames[0]).toMatchObject({
+      id: "req-bcast",
+      chunk: {
+        type: "data-interactionResolved",
+        data: { interactionId: "b1", resolution: "approved" },
+      },
+      sessionId: sid,
+    });
+    expect(typeof frames[0].eventSeq).toBe("number");
+    // 幂等：重复结算不再广播（台账已无条目）
+    let frames2: string[] = [];
+    process.stdout.write = ((s: string | Uint8Array) => {
+      frames2.push(String(s));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      setActiveReqId("thread-bcast-1", "req-bcast-2");
+      expect(settleInteraction("b1", "approved")).toBe(false);
+    } finally {
+      process.stdout.write = orig;
+      setActiveReqId("thread-bcast-1", null);
+    }
+    expect(frames2.join("")).not.toContain("data-interactionResolved");
+  });
+
+  test("无活跃请求结算：不广播不抛错，行照常落盘（行是事实源）", () => {
+    const sid = "sess-bcast-2";
+    appendFileSync(sessionPath(sid), '{"type":"header","schema":1,"id":"sess-bcast-2"}\n');
+    rememberThreadSession("thread-bcast-2", sid);
+    beginInteraction("thread-bcast-2", perm("b2"));
+    // 不 setActiveReqId：sendEventChunk 静默丢弃
+    expect(settleInteraction("b2", "cancelled")).toBe(true);
+    expect(rowsOf(sid).at(-1)).toBe("interaction_resolved");
+    expect(hasPendingInteractions(sid)).toBe(false);
   });
 });
 

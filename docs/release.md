@@ -10,17 +10,17 @@
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| macOS Apple Silicon | `Xulux Assistant_<ver>_aarch64.dmg` | 10.13+，2020 年后机型均可 |
-| Windows x64 | `Xulux Assistant_<ver>_x64-setup.exe` | NSIS，按用户级安装，自动装 WebView2 |
+| macOS Apple Silicon | `扣瓦_<ver>_aarch64.dmg` | 10.13+，2020 年后机型均可 |
+| Windows x64 | `扣瓦_<ver>_x64-setup.exe` | NSIS，按用户级安装，自动装 WebView2 |
 | 通用 | `SHA256SUMS.txt` | 校验和 |
 
 sidecar（pi-agent）由 `bun build --compile` 在对应平台 runner 上原生编译，经 Tauri `externalBin` 一并打入安装包，无需用户装任何运行时。安装包约 100–150MB 属正常（bun 自包含二进制较大）。
 
 ## 一次性准备（维护者）
 
-1. 创建 GitHub 镜像仓（如 `https://github.com/<user>/pi-desktop`，private 亦可）：
+1. 创建 GitHub 镜像仓（如 `https://github.com/<user>/pi-kova`，private 亦可）：
    ```bash
-   git remote add release https://github.com/<user>/pi-desktop.git
+   git remote add release https://github.com/<user>/pi-kova.git
    git push release --all
    ```
 2. 确认 GitHub 仓库 Actions 权限：Settings → Actions → General → Workflow permissions = Read and write（创建 Draft Release 需要）。
@@ -45,17 +45,17 @@ bun run release 0.1.1
 
 ### macOS（Apple Silicon）
 
-1. 下载 `Xulux Assistant_<ver>_aarch64.dmg`，打开后把 App 拖入「应用程序」。
+1. 下载 `扣瓦_<ver>_aarch64.dmg`，打开后把 App 拖入「应用程序」。
 2. 首次打开：**右键点击 App → 打开 → 打开**（只第一次需要）。
 3. 若提示「已损坏，无法打开」，在终端执行一次后正常打开：
    ```bash
-   xattr -cr "/Applications/Xulux Assistant.app"
+   xattr -cr "/Applications/扣瓦.app"
    ```
    （应用未做苹果付费签名公证，macOS Gatekeeper 会拦截未公证应用；上述命令仅移除隔离标记，不影响使用。）
 
 ### Windows 10/11（64 位）
 
-1. 下载 `Xulux Assistant_<ver>_x64-setup.exe` 双击安装（按当前用户安装，无需管理员）。
+1. 下载 `扣瓦_<ver>_x64-setup.exe` 双击安装（按当前用户安装，无需管理员）。
 2. 若 SmartScreen 弹「已保护你的电脑」：点 **更多信息 → 仍要运行**（仅首次）。
 3. 安装器会自动下载安装 WebView2 运行时（Win11 通常已内置）。
 

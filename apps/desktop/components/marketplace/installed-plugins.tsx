@@ -8,12 +8,14 @@
  * 热重载（skills 提示词重组 + MCP 连接池 diff + 子智能体重排，hooks 实时读）。
  *
  * 刻意不做组件级下钻：插件是原子交付单位，开/关只到插件粒度；技能与 MCP
- * 的常规管理在各自原位置（管理页）。组件以数量徽标摘要呈现。
+ * 的常规管理在各自原位置（管理页）。组件以数量徽标摘要呈现，完整清单只在
+ * 预览弹窗内展示（只读，不带独立开关）。
  *
  * 版式对齐市场目录卡片（白底描边、扁平、最小固定高，徽标换行时卡片自然长高，
  * 描述始终完整 clamp 两行）：搜索 + 视图切换 + 批量条（两态等高 h-9，切换不抖动），
  * 双视图（卡片一行多个 / 单行列表）；点卡片主体切换选中（内部按钮/开关不
- * 触发），选中即常驻 hover 同款 bg-muted/50，无 checkbox/角标；首次加载用
+ * 触发），点图标/名称/「详情」弹预览弹窗（页脚带启停/检查更新/卸载）；
+ * 选中即常驻 hover 同款 bg-muted/50，无 checkbox/角标；首次加载用
  * 同构骨架屏；选中驱动批量条：批量启用 / 停用 / 卸载（卸载走确认弹窗，
  * 逐个走既有协议消息，N 次四链热重载——插件量小，正确性优先）。
  */
@@ -21,6 +23,7 @@ import { useMemo, useState, type FC, type MouseEvent } from "react";
 import dynamic from "next/dynamic";
 import {
   DownloadIcon,
+  InfoIcon,
   LayoutGridIcon,
   Link2Icon,
   ListIcon,
@@ -47,6 +50,7 @@ import {
   type PluginEntry,
 } from "@/lib/plugins/plugins";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
+import { PluginPreviewDialog } from "@/components/marketplace/plugin-preview-dialog";
 
 /** 骨架卡片：与真实卡片同构（头部图标行 + 描述两行 + 页脚徽标/按钮） */
 const PluginCardSkeleton = () => (
@@ -96,7 +100,7 @@ const UninstallDialog = dynamic(
 );
 
 const MANIFEST_KIND_LABEL: Record<PluginEntry["manifestKind"], string> = {
-  xulux: "xulux",
+  kova: "kova",
   claude: "Claude 生态",
   codex: "Codex 生态",
 };
@@ -109,6 +113,11 @@ export const InstalledPlugins: FC = () => {
   const [viewMode, setViewMode] = useState<"cards" | "rows">("cards");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmUninstall, setConfirmUninstall] = useState<PluginEntry[] | null>(null);
+  /** 预览弹窗：存 pluginId，渲染期从最新快照推导（启停/更新后弹窗内容自动跟随） */
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const preview = previewId
+    ? (snap.plugins.find((p) => p.pluginId === previewId) ?? null)
+    : null;
 
   const plugins = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -272,7 +281,7 @@ export const InstalledPlugins: FC = () => {
               <Badge variant="outline" className="px-1.5 font-mono text-[11px] font-normal">
                 v{p.version}
               </Badge>
-              {p.manifestKind !== "xulux" && (
+              {p.manifestKind !== "kova" && (
                 <Badge variant="secondary" className="font-normal">
                   {MANIFEST_KIND_LABEL[p.manifestKind]}
                 </Badge>
@@ -339,10 +348,29 @@ export const InstalledPlugins: FC = () => {
               {installBusy ? "更新中…" : "检查更新"}
             </Button>
           );
+          const openPreview = (e: MouseEvent) => {
+            e.stopPropagation();
+            setPreviewId(p.pluginId);
+          };
           const iconBox = (
-            <div className="bg-background grid size-9 shrink-0 place-items-center overflow-hidden rounded-xl border">
+            <div
+              onClick={openPreview}
+              title="点击查看插件详情"
+              className="bg-background grid size-9 shrink-0 cursor-pointer place-items-center overflow-hidden rounded-xl border"
+            >
               <PluginIcon src={p.icon} />
             </div>
+          );
+          const detailBtn = (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground h-7 gap-1 text-xs"
+              onClick={openPreview}
+            >
+              <InfoIcon className="size-3.5" />
+              详情
+            </Button>
           );
 
           if (viewMode === "rows") {
@@ -358,7 +386,7 @@ export const InstalledPlugins: FC = () => {
               >
                 {iconBox}
                 <div className="flex min-w-0 flex-1 items-center gap-2">
-                  <span className="truncate text-sm font-medium">{p.name}</span>
+                  <span className="cursor-pointer truncate text-sm font-medium" onClick={openPreview} title="点击查看插件详情">{p.name}</span>
                   {meta}
                   {desc && (
                     <span className="text-muted-foreground hidden truncate text-sm lg:block">
@@ -371,6 +399,7 @@ export const InstalledPlugins: FC = () => {
                   <span className="text-muted-foreground/70 mr-1 hidden truncate text-xs sm:block">
                     {p.marketplaceName}
                   </span>
+                  {detailBtn}
                   {updateBtn}
                   {uninstallBtn}
                   {enableSwitch}
@@ -393,7 +422,7 @@ export const InstalledPlugins: FC = () => {
                 {iconBox}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="truncate text-sm font-medium">{p.name}</span>
+                    <span className="cursor-pointer truncate text-sm font-medium" onClick={openPreview} title="点击查看插件详情">{p.name}</span>
                     {meta}
                   </div>
                   <p className="text-muted-foreground/70 mt-0.5 truncate text-xs">
@@ -406,6 +435,7 @@ export const InstalledPlugins: FC = () => {
               <div className="mt-auto flex items-center justify-between gap-2 pt-3">
                 {badges && <div className="min-w-0">{badges}</div>}
                 <div className="flex shrink-0 items-center gap-1">
+                  {detailBtn}
                   {updateBtn}
                   {uninstallBtn}
                 </div>
@@ -425,6 +455,73 @@ export const InstalledPlugins: FC = () => {
           ).then(clearSelection);
           setConfirmUninstall(null);
         }}
+      />
+
+      {/* 预览弹窗：内容随快照刷新（启停/更新即变）；卸载走既有确认弹窗，先关本弹窗 */}
+      <PluginPreviewDialog
+        preview={
+          preview
+            ? {
+                name: preview.name,
+                version: preview.version,
+                description: preview.description,
+                icon: preview.icon,
+                category: preview.category,
+                keywords: undefined,
+                marketplaceName: preview.marketplaceName,
+                installed: preview,
+              }
+            : null
+        }
+        onClose={() => setPreviewId(null)}
+        footer={
+          preview ? (
+            <div className="flex w-full items-center gap-2">
+              <span className="text-sm">
+                {preview.enabled ? "已启用" : "已停用"}
+              </span>
+              <Switch
+                checked={preview.enabled}
+                onCheckedChange={(v) =>
+                  void setPluginsEnabledBatch([preview.pluginId], v, workspace)
+                }
+                aria-label={`启用插件 ${preview.name}`}
+              />
+              <div className="flex-1" />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() =>
+                  void installPlugin(preview.marketplaceId, preview.name)
+                }
+              >
+                <DownloadIcon
+                  className={cn(
+                    "size-3.5",
+                    isPluginOpPending(
+                      "install_plugin",
+                      `${preview.marketplaceId}:${preview.name}`,
+                    ) && "animate-pulse",
+                  )}
+                />
+                检查更新
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={busy}
+                onClick={() => {
+                  setConfirmUninstall([preview]);
+                  setPreviewId(null);
+                }}
+              >
+                <Trash2Icon className="size-3.5" />
+                卸载
+              </Button>
+            </div>
+          ) : undefined
+        }
       />
     </div>
   );

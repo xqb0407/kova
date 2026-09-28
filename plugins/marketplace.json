@@ -1,5 +1,5 @@
 {
-  "name": "xulux-local",
+  "name": "kova-local",
   "displayName": "本仓库插件市场",
   "plugins": [
     {
@@ -9,6 +9,14 @@
       "description": "无限画布幻灯片工作台：固定比例画板、轻量编辑、放映与 .pptx 导出",
       "category": "效率",
       "keywords": ["canvas", "slides", "pptx", "presentation"]
+    },
+    {
+      "name": "ui-design",
+      "source": "./ui-design",
+      "version": "0.1.0",
+      "description": "Figma 式 UI 设计工作台：页面/画板/图层树 + 完整属性检视（填充/渐变/描边/圆角/阴影/文字），独立 *.uidesign.json 文档；自带 ui-design MCP 工具，agent 可直接控制画布（增删改节点/对齐/堆叠排版/成组）",
+      "category": "效率",
+      "keywords": ["ui", "design", "figma", "prototype", "mobile"]
     },
     {
       "name": "office",

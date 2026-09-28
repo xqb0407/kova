@@ -39,6 +39,7 @@ import {
   ArrowUpIcon,
   CheckIcon,
   ChevronDownIcon,
+  CopyIcon,
   FolderOpenIcon,
   GitBranchIcon,
   GitGraphIcon,
@@ -65,6 +66,7 @@ import {
   setWorkspace,
   useWorkspace,
   useWorkspaceRecents,
+  useWorkspaceSource,
 } from "@/lib/workspace/workspace-store";
 import {
   DropdownMenu,
@@ -216,10 +218,13 @@ export const Composer: FC = () => {
         </ComposerPrimitive.AttachmentDropzone>
 
        <div className="my-1 flex w-full items-center gap-1 px-2">
-         {/* workspace 选择：仅开始对话前显示，位于输入框下方；
-             右侧为所选目录的 git 分支胶囊（非仓库静默隐藏） */}
+         {/* workspace 选择：仅开始对话前显示，位于输入框下方灰色条内；
+             右侧为所选目录的 git 分支胶囊（非仓库静默隐藏）；
+             有消息后前两者让位，改为只读工作目录胶囊
+             （WorkspaceSessionPill，点击滑盖展开完整路径） */}
         <WorkspacePill />
         <WorkspaceBranchPill />
+        <WorkspaceSessionPill />
        </div>
 
         <GroupedTriggerPopover
@@ -240,15 +245,27 @@ export const Composer: FC = () => {
 
 /** Codex 风格 workspace 胶囊：显示当前工作目录。
  *  点击弹出最近选择列表（最多 5 个）+ 添加按钮；悬浮显示 × 取消选中。
- *  位于输入框下方外置；仅空会话（尚未产生消息）时显示。 */
+ *  仅空会话（尚未产生消息）时显示——产品决策（2026-09-27）：对话历史里
+ *  模型引用的绝对路径按当时的目录烘焙，有消息后中途换/清目录极易把项目
+ *  对话换跑偏，故不提供入口（换目录请开新对话），只读展示交给
+ *  WorkspaceSessionPill。sidecar 的
+ *  set_session_cwd 命令与前端换绑通道保留，若日后要放开只需去掉此门控。
+ *  × 必须与菜单触发按钮**同级**：base-ui 的 Menu 在 mousedown 即打开，
+ *  嵌在触发按钮里的 × 靠 click 冒泡 stopPropagation 拦不住，点"清除"
+ *  会先弹出最近列表、极易误点原目录把它选回去。 */
 const WorkspacePill: FC = () => {
   const workspace = useWorkspace();
+  const workspaceSource = useWorkspaceSource();
   const recents = useWorkspaceRecents();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
 
   if (!isTauri() || hasMessages) return null;
+
+  const clear = () => {
+    clearWorkspace();
+  };
 
   const add = async () => {
     setBusy(true);
@@ -262,48 +279,59 @@ const WorkspacePill: FC = () => {
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
-      <div className="inline-flex items-center">
+      {/* 胶囊视觉在外层容器；主按钮（弹最近列表）与 ×（清除）为同级按钮 */}
+      <div
+        data-slot="aui-composer-workspace"
+        className={cn(
+          "group/pill inline-flex h-7 items-center rounded-full pr-1 text-sm transition-colors",
+          workspace ? "bg-muted/50" : "bg-transparent",
+          "hover:bg-muted",
+        )}
+      >
         <DropdownMenuTrigger
           render={
             <button
               type="button"
-              data-slot="aui-composer-workspace"
-              title={workspace ?? "选择工作目录"}
-              aria-label="Select workspace directory"
-              className={
-                cn("group hover:text-foreground inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors",
-                  workspace ? "bg-muted/50 hover:bg-muted" : "hover:bg-muted",
-                )
+              title={
+                workspace
+                  ? workspaceSource === "session"
+                    ? `${workspace}\n跟随当前会话的工作目录（切换会话时自动同步）`
+                    : workspace
+                  : "选择工作目录"
               }
+              aria-label="Select workspace directory"
+              className="inline-flex h-full items-center gap-1 rounded-l-full pl-2.5 hover:text-foreground"
             >
               {busy ? (
                 <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
-              ) : workspace ? (
-                // 已选目录：悬浮时文件夹图标原位变为关闭按钮（整体胶囊即清除入口）
-                <span className="relative inline-flex size-3.5 shrink-0 items-center justify-center">
-                  <FolderOpenIcon className="size-3.5 group-hover:hidden" />
-                  <span
-                    role="button"
-                    aria-label="Clear workspace"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      clearWorkspace();
-                    }}
-                    className="hover:text-destructive hidden size-3.5 shrink-0 items-center justify-center rounded-full group-hover:inline-flex"
-                  >
-                    <XIcon className="size-3.5" />
-                  </span>
-                </span>
               ) : (
                 <FolderOpenIcon className="size-3.5 shrink-0" />
               )}
-              <span className={cn("truncate", workspace ?? "font-medium")}>
+              <span className="truncate">
                 {workspace ? pathBasename(workspace) : "选择目录"}
               </span>
+              {workspace && workspaceSource === "session" && (
+                <span
+                  data-slot="aui-composer-workspace-following"
+                  className="rounded bg-muted px-1 text-[10px] leading-4 text-muted-foreground"
+                >
+                  跟随
+                </span>
+              )}
             </button>
           }
         />
+        {workspace && (
+          <button
+            type="button"
+            aria-label="Clear workspace"
+            title="取消选择当前目录"
+            onClick={clear}
+            className="hidden h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full hover:text-destructive group-hover/pill:inline-flex"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        )}
       </div>
       <DropdownMenuContent align="start" sideOffset={0} className="w-64 p-0">
         <DropdownMenuGroup className={"p-0"}>
@@ -339,7 +367,7 @@ const WorkspacePill: FC = () => {
          <DropdownMenuSeparator  />
        <div className="px-1 pb-1">
          {workspace && (
-          <DropdownMenuItem onClick={clearWorkspace}>
+          <DropdownMenuItem onClick={clear}>
             <XIcon className="text-muted-foreground size-3.5 shrink-0" />
             取消选择
           </DropdownMenuItem>
@@ -355,6 +383,69 @@ const WorkspacePill: FC = () => {
        </div>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+};
+
+/**
+ * 有消息对话的只读工作目录胶囊（产品决策 2026-09-27）：对话开始后不提供
+ * 换/清目录入口（见上方 WorkspacePill 注释），但仍需看到"这个对话在哪个
+ * 目录跑"。样式贴 composer 主题：白底圆角胶囊浮在输入框下方灰条上（与
+ * 截图里 ai-teamspace 胶囊同形态），点击像滑盖一样向下展开完整路径
+ * （monospace 代码块质感小盒），再点收起。纯展示，无其他操作；
+ * 未选目录（会话跑在任务工作区）时不显示。
+ */
+const WorkspaceSessionPill: FC = () => {
+  const workspace = useWorkspace();
+  const workspaceSource = useWorkspaceSource();
+  const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
+  const [expanded, setExpanded] = useState(false);
+
+  if (!isTauri() || !hasMessages || !workspace) return null;
+
+  return (
+    <div
+      data-slot="aui-composer-workspace-session"
+      title={workspace}
+      className="min-w-0 max-w-[16rem] self-start"
+    >
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+        className={cn(
+          "bg-composer-inner hover:text-foreground text-muted-foreground",
+          "inline-flex h-7 max-w-full cursor-pointer items-center gap-1",
+          "rounded-full border shadow-sm transition-colors pl-2.5 pr-2 text-sm",
+        )}
+      >
+        <FolderOpenIcon className="size-3.5 shrink-0" />
+        <span className="truncate">{pathBasename(workspace)}</span>
+        {workspaceSource === "session" && (
+          <span className="rounded bg-muted px-1 text-[10px] leading-4 text-muted-foreground">
+            跟随
+          </span>
+        )}
+        <ChevronDownIcon
+          className={cn(
+            "size-3 shrink-0 transition-transform duration-200",
+            !expanded && "-rotate-90",
+          )}
+        />
+      </button>
+      {/* 滑盖：向下展开完整路径（grid 行高 0fr↔1fr 过渡） */}
+      <div
+        className={cn(
+          "grid transition-[grid-template-rows] duration-200 ease-out",
+          expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+        )}
+      >
+        <div className="overflow-hidden">
+          <div className="bg-composer-inner text-muted-foreground mt-1 break-all rounded-md border px-2.5 py-1.5 font-mono text-xs">
+            {workspace}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 };
 

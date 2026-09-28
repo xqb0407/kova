@@ -34,7 +34,7 @@ const doc = (name: string, description: string, body = `Do ${name}.`) =>
 
 beforeAll(async () => {
   initLocalStorage(path.join(tmp, "state.db"));
-  // 目录钉到 tmp：技能发现实时读盘，绝不碰真实 ~/.xulux / ~/.agents
+  // 目录钉到 tmp：技能发现实时读盘，绝不碰真实 ~/.kova / ~/.agents
   process.env.PI_SKILLS_DIR = systemDir;
   process.env.PI_COMPAT_SKILLS_DIR = compatHomeDir;
   mkdirSync(systemDir, { recursive: true });

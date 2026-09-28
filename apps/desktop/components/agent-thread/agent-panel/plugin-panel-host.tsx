@@ -36,7 +36,7 @@ import { toast } from "@/components/ui/toast";
 import { TabEmpty } from "./tab-empty";
 
 /**
- * UI 插件面板宿主（桥协议 xulux-ui-plugin/1，纯解码层在 lib/plugins/ui-plugin-bridge）。
+ * UI 插件面板宿主（桥协议 kova-ui-plugin/1，纯解码层在 lib/plugins/ui-plugin-bridge）。
  *
  * 生命周期：挂载 → get_plugin_panel_asset 取 entry 单文件 HTML → blob: URL →
  * iframe(sandbox=allow-scripts，不透明源) → 内层脚本发 ui.ready → 回

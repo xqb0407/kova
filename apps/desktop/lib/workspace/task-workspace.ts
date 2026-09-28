@@ -19,3 +19,11 @@ export function taskWorkspaceDir(): Promise<string | null> {
     .catch(() => null);
   return cached;
 }
+
+/**
+ * 无目录会话的产物子目录：<task-workspace>/<sessionId>（与 sidecar
+ * taskSessionCwd 同源规则）。桌面端把会话的相对产物路径拼回绝对路径全靠它。
+ */
+export function taskWorkspaceSessionDir(sessionId: string): Promise<string | null> {
+  return taskWorkspaceDir().then((base) => (base ? `${base}/${sessionId}` : null));
+}

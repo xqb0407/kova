@@ -1,6 +1,7 @@
 "use client";
 
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
+import { ImagePartCard } from "@/components/assistant-ui/elements/image-data";
 import { DotMatrix } from "@/components/ui/dot-matrix";
 import { MessageTiming } from "@/components/assistant-ui/elements/message-timing.aui";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
@@ -27,12 +28,14 @@ import {
   ErrorPrimitive,
   useAuiState,
   ActionBarMorePrimitive,
+  type ToolCallMessagePartProps,
 } from "@assistant-ui/react";
 import { RetryMarker, useRetryState } from "./retry-marker";
 import { StoppedMarker, isStoppedMessageState } from "./stopped-marker";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageCheckpoint } from "./checkpoint-card";
 import { cn } from "cn";
+import type { PiImagePartData } from "@/lib/pi/pi-bridge";
 import {
   CheckIcon,
   CopyIcon,
@@ -218,6 +221,26 @@ const AssistantWorkingIndicator: FC = () => {
  */
 export type AssistantMessageVariant = "full" | "answer" | "process";
 
+/**
+ * 并发成图画廊的组成员宽松形状：画廊按 GroupedParts 的 indices 回查
+ * message.parts 成员。联合类型逐字段窄化代价高，这里只碰
+ * generate_image / data-image 两类成员实际用到的字段。
+ */
+type StripMember = {
+  type: string;
+  toolName?: string;
+  toolCallId?: string;
+  result?: unknown;
+  data?: PiImagePartData;
+  status?: { type?: string };
+};
+
+/** 画廊列数：一排最多 5 张，再多则均分两行（6→3+3、7→4+3、9→5+4） */
+const imageStripCols = (count: number): number => {
+  const rows = Math.ceil(count / 5);
+  return rows > 1 ? Math.ceil(count / rows) : count;
+};
+
 export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   variant = "full",
 }) => {
@@ -226,6 +249,9 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   const stopped = useAuiState(isStoppedMessageState);
   const onlyAnswer = variant === "answer";
   const onlyProcess = variant === "process";
+  // 成图画廊按组 indices 回查成员 part：与 GroupedParts 同源取 parts
+  // （content 的增强态，带 status/result/data）
+  const msgParts = useAuiState((s) => s.message.parts);
 
   const content = (
     <div
@@ -241,13 +267,30 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
       {/* 重试状态行：只渲染一次，attempt 原地更新（data part 本身就地不渲染） */}
       <MessagePrimitive.GroupedParts
         groupBy={(part) => {
+          // 并发成图画廊：generate_image 结果行与其投影的 data-image part
+          // （顺序契约恒相邻）并进同一组，成图 ≥2 张时平铺成排。
+          // 过程面不分组：行与图在那一面都渲染为 null，分组徒留空容器。
+          if (
+            !onlyProcess &&
+            part.type === "data" &&
+            (part as { name?: string }).name === "image"
+          )
+            return ["group-images"];
+          if (
+            !onlyProcess &&
+            part.type === "tool-call" &&
+            part.toolName === "generate_image"
+          )
+            return ["group-images"];
           // answer 面不分组：非正文 part 直接不渲染，分组容器会留下空标题
           if (onlyAnswer) return [];
           if (part.type === "reasoning")
             return ["group-chainOfThought", "group-reasoning"];
           if (part.type === "tool-call") {
-            // Task 委派行独立成行，不并入工具折叠组（并行多个各一行）
-            if (part.toolName === "Task") return [];
+            // Task 委派行独立成行，不并入工具折叠组（并行多个各一行）；
+            // generate_image 运行中是占位卡片，折叠组装不下大卡
+            if (part.toolName === "Task" || part.toolName === "generate_image")
+              return [];
             const cat = TOOL_CATEGORY[part.toolName];
             return [
               "group-chainOfThought",
@@ -258,13 +301,19 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
         }}
       >
         {({ part, children }) => {
-          // 正文只由 answer 面渲染，过程面跳过（避免折叠态里出现两份正文）
-          if (onlyProcess && part.type === "text") return null;
-          // answer 面只保留正文与压缩分隔线；工具/思考/其他 data 归过程面
-          if (onlyAnswer && part.type !== "text") {
-            const isDivider =
-              part.type === "data" &&
-              (part as { name?: string }).name === "compaction";
+          // 轮末拆分时的归属：正文与工具成图（data-image）归 answer 面
+          // （折叠后外层可见，成图是交付物不是过程噪音）；过程面跳过这两类，
+          // 避免展开态出现两份
+          const dataName =
+            part.type === "data" ? (part as { name?: string }).name : undefined;
+          const onAnswerSide =
+            part.type === "text" ||
+            dataName === "image" ||
+            (part as { type?: string }).type === "group-images";
+          if (onlyProcess && onAnswerSide) return null;
+          // answer 面只保留正文、压缩分隔线与成图；工具/思考/其他 data 归过程面
+          if (onlyAnswer && !onAnswerSide) {
+            const isDivider = dataName === "compaction";
             if (!isDivider) return null;
           }
           switch (part.type) {
@@ -300,6 +349,123 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
                       <ReasoningText>{children}</ReasoningText>
                     </ReasoningContent>
                   </ReasoningRoot>
+                );
+              }
+              case "group-images": {
+                const members = part.indices
+                  .map((i) => msgParts[i] as unknown as StripMember | undefined)
+                  .filter((m): m is StripMember => m != null);
+                const imgMembers = members.filter((m) => m.type === "data");
+                // 生成中的占位行（并发/批量调用的对等面）：结果未回即生成中。
+                // "生成前后都能并排"：图没出来时多个占位卡也平铺成排
+                const runningOf = (m: StripMember) =>
+                  m.type === "tool-call" &&
+                  m.result === undefined &&
+                  m.status?.type !== "incomplete";
+                const runningCount = members.filter(runningOf).length;
+                // 单张不成廊且没有两三个占位可对：原样平铺（结果行 + 图卡竖排，
+                // 保留展开保存路径的入口）
+                if (imgMembers.length < 2 && runningCount < 2)
+                  return <>{children}</>;
+                // 配对不能靠相邻：直播里 tool part 按发起顺序占位、图按完成顺序
+                // 追加，并发时交错（[行A,行B,图A,图B]）；结果行 ↔ 成图按
+                // PiImagePartData.toolCallId 认亲
+                const rowById = new Map<string, StripMember>();
+                const imgCallIds = new Set<string>();
+                const imgTotalById = new Map<string, number>();
+                for (const m of members) {
+                  if (m.type === "tool-call" && m.toolCallId)
+                    rowById.set(m.toolCallId, m);
+                  else if (m.type === "data" && m.data?.toolCallId) {
+                    const id = m.data.toolCallId;
+                    imgCallIds.add(id);
+                    imgTotalById.set(id, (imgTotalById.get(id) ?? 0) + 1);
+                  }
+                }
+                // 成功行收进瓦片（结果首行做题注，悬停看全文含保存路径）；
+                // 婉拒/失败行独立成行竖排；生成中占位横排成组
+                const extraRows: ReactNode[] = [];
+                const runningRows: ReactNode[] = [];
+                const cells: {
+                  key: number;
+                  data: PiImagePartData;
+                  headline: string;
+                  full?: string;
+                }[] = [];
+                const seqSeen = new Map<string, number>();
+                members.forEach((m, j) => {
+                  if (m.type === "data" && m.data) {
+                    const res = m.data.toolCallId
+                      ? rowById.get(m.data.toolCallId)?.result
+                      : undefined;
+                    const text =
+                      typeof res === "string"
+                        ? res
+                        : res && typeof res === "object"
+                          ? JSON.stringify(res)
+                          : undefined;
+                    let headline =
+                      text?.split("\n")[0] || m.data.alt || "图片";
+                    // 同一次调用（n 批量）出的多张共享同一题注：补 k/N 序号
+                    const id = m.data.toolCallId;
+                    const total = id ? imgTotalById.get(id) ?? 1 : 1;
+                    if (id && total > 1) {
+                      const k = (seqSeen.get(id) ?? 0) + 1;
+                      seqSeen.set(id, k);
+                      headline += ` · ${k}/${total}`;
+                    }
+                    cells.push({ key: j, data: m.data, headline, full: text });
+                  } else if (m.type === "tool-call" && !onlyAnswer) {
+                    const Row = AGENT_TOOL_UI[m.toolName ?? ""];
+                    if (!Row) return;
+                    const node = (
+                      <Row
+                        key={m.toolCallId ?? String(j)}
+                        {...(msgParts[part.indices[j]] as ToolCallMessagePartProps)}
+                      />
+                    );
+                    const paired =
+                      !!m.toolCallId && imgCallIds.has(m.toolCallId);
+                    if (runningOf(m)) runningRows.push(node);
+                    // 成功成对行的题注已进瓦片，不再独立成行；
+                    // 但单瓦片（批量刚回一半）时保留行，别丢展开入口
+                    else if (!paired || imgMembers.length < 2)
+                      extraRows.push(node);
+                  }
+                });
+                return (
+                  <>
+                    {extraRows}
+                    {runningRows.length > 0 && (
+                      <div
+                        data-slot="aui_image-strip-running"
+                        className="my-1.5 flex flex-wrap items-start gap-2"
+                      >
+                        {runningRows}
+                      </div>
+                    )}
+                    {cells.length > 0 && (
+                      <div
+                        data-slot="aui_image-strip"
+                        className="my-1.5 grid gap-2"
+                        style={{
+                          gridTemplateColumns: `repeat(${imageStripCols(cells.length)}, minmax(0, 1fr))`,
+                        }}
+                      >
+                        {cells.map((c) => (
+                          <div key={c.key} className="min-w-0">
+                            <ImagePartCard data={c.data} compact />
+                            <div
+                              className="text-muted-foreground truncate text-xs"
+                              title={c.full}
+                            >
+                              {c.headline}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 );
               }
               case "text":

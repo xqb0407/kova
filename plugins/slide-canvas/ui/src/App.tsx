@@ -43,6 +43,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { bridge } from "./bridge";
 import { CanvasStage } from "./CanvasStage";
 import { Presentation } from "./Presentation";
 import { TemplatePicker } from "./TemplatePicker";
@@ -127,7 +128,7 @@ export const App: FC = () => {
 
   const docTitle = (
     <>
-      <span className="bg-secondary text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[10px]">{docKind === "deck" ? "幻灯片" : docKind === "ui" ? "UI 设计" : "白板"}</span>
+      <span className="bg-secondary text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[10px]">{docKind === "deck" ? "幻灯片" : docKind === "ui" ? "UI 设计（旧）" : "白板"}</span>
       <span className="truncate font-medium">{store.fileRel?.split("/").pop()?.replace(/\.canvas\.json$/i, "") ?? "未命名画布"}</span>
       <span
         className={cn("size-1.5 shrink-0 rounded-full bg-ink transition-opacity", store.dirty ? "opacity-100" : "opacity-0")}
@@ -301,6 +302,27 @@ export const App: FC = () => {
 
           {/* 中：画布盒——stage 的稳定树位（切模式不重挂）；白板模式下即全窗口，浮层几何不变 */}
           <div className="relative min-w-0 flex-1">
+            {docKind === "ui" && (
+              <div className="bg-secondary/95 absolute inset-x-0 top-0 z-20 flex items-center justify-center gap-3 border-b px-4 py-2 text-[12px]">
+                <span className="min-w-0 truncate">
+                  这是旧「UI 设计」档，编辑表面仍是无限画布。UI 设计已拆分为独立面板（画板/图层树/吸附/PNG·SVG 导出）。
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() =>
+                    bridge.prefill(
+                      `请把画布文档 ${store.fileRel ?? "（当前画布）"}（旧「UI 设计」档）迁移为新的 UI 设计档：先 read 该文件拿最新内容，` +
+                        `再按 ui-design skill 的规范生成同名 *.uidesign.json——三块圆角矩形设备画板转成 frame 节点（首页/关键流程/详情），` +
+                        `落在画板内的矩形/文本等 objects 平铺为对应画板的子节点（坐标换算为画板局部系），画板外的说明文字放页面顶层。`,
+                    )
+                  }
+                >
+                  让 AI 迁移
+                </Button>
+              </div>
+            )}
             <ContextMenu open={menuOpen} onOpenChange={setMenuOpen}>
               {/* 不能用 asChild：CanvasStage 是普通组件，Slot 合并到元素上的
                   onContextMenu（Radix 记录触发点的处理器）会被其 props 解构丢弃，

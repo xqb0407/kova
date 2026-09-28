@@ -61,6 +61,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
+  clearWorkspace,
   openWorkspacePicker,
   pathBasename,
   useWorkspace,
@@ -887,8 +888,11 @@ export const ThreadListNew = forwardRef<
         )}
         onClick={(e) => {
           // 动作驱动清"最近打开的会话"指针（与外层 New 的框架切换合成执行），
-          // 刷新后不再回旧会话（2026-09-22 修复）
+          // 刷新后不再回旧会话（2026-09-22 修复）。
+          // 同时清 workspace：新对话一律从"未选择目录"开始，杜绝静默继承上一个
+          // 会话的目录（曾致"没选目录却总在某目录执行"）；旧目录靠 recents 一键可达。
           clearLastThread();
+          clearWorkspace();
           onClick?.(e);
         }}
         {...props}

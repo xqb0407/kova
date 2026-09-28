@@ -2,7 +2,7 @@
 #
 # rename.sh — 项目一键改名
 #
-# 把当前模板项目的品牌名(xulux / Xulux / XULUX)与内部标识(pi-desktop)
+# 把当前模板项目的品牌名(kova / Kova / KOVA)与内部标识(pi-kova)
 # 批量替换为新名称: 文件内容、文件/目录名、tauri 显示名与 bundle id 一次改完。
 # 兼容 macOS 自带 bash 3.2。
 #
@@ -11,8 +11,8 @@
 #                                  [--dir] [--dry-run] [--force] [-y]
 #
 #   <new-slug>        新品牌标识, 小写字母/数字/连字符, 如 myapp 或 my-app
-#                     大小写联动: xulux->myapp  Xulux->Myapp  XULUX->MYAPP
-#                     pi-desktop->pi-myapp; 包名 pi-agent-sidecar/pi-protocol 不动
+#                     大小写联动: kova->myapp  Kova->Myapp  KOVA->MYAPP
+#                     pi-kova->pi-myapp; 包名 pi-agent-sidecar/pi-protocol 不动
 #   --app-name NAME   应用显示名, 替换旧 productName(默认由 slug 推导)
 #   --bundle-id ID    应用标识, 替换旧 identifier(默认沿用旧 id 的域名结构换 slug)
 #   --dir             同时重命名项目根目录文件夹(默认不改)
@@ -26,8 +26,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$REPO_ROOT"
 
-OLD_SLUG="xulux"
-OLD_KEBAB="pi-desktop"
+OLD_SLUG="kova"
+OLD_KEBAB="pi-kova"
 
 usage() {
   sed -n '3,25p' "$0" | sed 's/^# \{0,1\}//'
@@ -73,7 +73,7 @@ fi
 pascal() {
   printf '%s' "$1" | awk -F- '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1' OFS=''
 }
-upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+upper() { printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_'; }  # 连字符转下划线: UPPER 用于环境变量前缀(XULUX_*), 不允许 '-'
 
 NEW_PASCAL="$(pascal "$NEW_SLUG")"
 NEW_UPPER="$(upper "$NEW_SLUG")"
@@ -91,15 +91,19 @@ fi
 
 # ---------- 扫描(内容) ----------
 GREP_COMMON=( -rlI
-  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=target
-  --exclude-dir=.next --exclude-dir=out --exclude-dir=dist --exclude-dir=gen
-  --exclude-dir=sessions --exclude-dir=.zcode
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=target \
+  --exclude-dir=.next --exclude-dir=out --exclude-dir=dist --exclude-dir=gen \
   --exclude=bun.lock --exclude=pnpm-lock.yaml --exclude='*.tsbuildinfo'
-  --exclude=rename.sh --exclude=rename.bat --exclude='.rename-backup-*' )
+  --exclude=rename.sh --exclude=rename.bat --exclude=rename.ps1 \
+  --exclude-dir='.rename-backup-*' )
+# sessions/.zcode 是"顶层"运行数据目录: --exclude-dir 会匹配任意层级,
+# 误伤 src/sessions/ 这类源码目录, 故改为扫描后按路径前缀过滤。
+TOP_ONLY_EXCLUDES='^\./(sessions|\.zcode)/'
 
 MATCH_FILES=()
 while IFS= read -r f; do [ -n "$f" ] && MATCH_FILES+=("$f"); done < <(
-  grep "${GREP_COMMON[@]}" -e "$OLD_SLUG" -e "$OLD_UPPER" -e "$OLD_PASCAL" -e "$OLD_KEBAB" . 2>/dev/null | sort -u || true
+  grep "${GREP_COMMON[@]}" -e "$OLD_SLUG" -e "$OLD_UPPER" -e "$OLD_PASCAL" -e "$OLD_KEBAB" . 2>/dev/null \
+    | grep -Ev "$TOP_ONLY_EXCLUDES" | sort -u || true
 )
 
 # ---------- 扫描(路径名) ----------
@@ -121,7 +125,7 @@ if [ -f apps/desktop/src-tauri/tauri.conf.json ] && command -v node >/dev/null 2
 fi
 
 if [ -z "$APP_NAME" ]; then
-  # 默认: 保留旧显示名的其余部分, 只替换品牌词 (Xulux Assistant -> Myapp Assistant)
+  # 默认: 保留旧显示名的其余部分, 只替换品牌词 (Kova Assistant -> Myapp Assistant)
   if [ -n "$OLD_PRODUCT" ]; then
     APP_NAME="${OLD_PRODUCT/$OLD_PASCAL/$NEW_PASCAL}"
     APP_NAME="${APP_NAME/$OLD_SLUG/$NEW_SLUG}"

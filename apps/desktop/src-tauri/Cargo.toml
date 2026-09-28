@@ -1,13 +1,13 @@
 [package]
-name = "xulux-assistant"
+name = "kova"
 version = "0.1.0"
-description = "Xulux AI Assistant Desktop Application"
-authors = ["Xulux"]
+description = "Kova AI Assistant Desktop Application"
+authors = ["Kova"]
 edition = "2021"
 rust-version = "1.77.2"
 
 [lib]
-name = "xulux_assistant_lib"
+name = "kova_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]

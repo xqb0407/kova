@@ -25,7 +25,7 @@ beforeAll(() => {
   initStorage(path.join(tmp, "state.db"), path.join(tmp, "sessions"));
   process.env.PI_MCP_CONFIG = systemConfig;
   process.env.PI_MCP_CACHE_PATH = cacheFile;
-  // 审计事件也进临时文件：绝不写开发者真实的 ~/.xulux/mcp-audit.jsonl
+  // 审计事件也进临时文件：绝不写开发者真实的 ~/.kova/mcp-audit.jsonl
   process.env.PI_MCP_AUDIT_PATH = path.join(tmp, "audit.jsonl");
   setInitGate(Promise.resolve());
 });

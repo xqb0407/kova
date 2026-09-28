@@ -293,6 +293,30 @@ export function removePendingQuestion(threadId: string, questionId: string): voi
   notify();
 }
 
+/** 消费结算广播 chunk（data-interactionResolved，sidecar 台账结算点统一补发）：
+ *  关闭内存卡片。直播路径点卡本有就地移除，本函数专治刷新重放——发起卡的
+ *  data-question/data-toolApproval 行在 Rust 重放缓冲里，重放会复活已结算卡；
+ *  resolved 帧同缓冲、顺序在后，重放序列 begin→resolved 收敛为空。
+ *  id 不在台账时 no-op（重复/乱序帧的幂等分支）。 */
+export function removeResolvedInteraction(threadId: string, interactionId: string): void {
+  let changed = false;
+  const aList = approvals.get(threadId);
+  if (aList?.some((a) => a.approvalId === interactionId)) {
+    const next = aList.filter((a) => a.approvalId !== interactionId);
+    if (next.length) approvals.set(threadId, next);
+    else approvals.delete(threadId);
+    changed = true;
+  }
+  const qList = questions.get(threadId);
+  if (qList?.some((q) => q.questionId === interactionId)) {
+    const next = qList.filter((q) => q.questionId !== interactionId);
+    if (next.length) questions.set(threadId, next);
+    else questions.delete(threadId);
+    changed = true;
+  }
+  if (changed) notify();
+}
+
 /* ---------------- 订阅 hooks ---------------- */
 
 /** 订阅当前线程的挂起审批列表 */

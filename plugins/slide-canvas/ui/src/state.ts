@@ -21,11 +21,9 @@ import {
   serializeDoc,
   tidyLayout,
   titleFrame,
-  uiStarterDoc,
   uid,
   type Box,
   type CanvasDoc,
-  type DocKind,
   type El,
   type Frame,
   type ImageEl,
@@ -703,13 +701,12 @@ export function useDeck() {
 
   /* ---------------- 新建/另存 ---------------- */
 
-  const createDoc = useCallback((name: string, preset: PagePreset, kind: DocKind = "board") => {
+  const createDoc = useCallback((name: string, preset: PagePreset, kind: "board" | "deck" = "board") => {
     // 半角 + 全角都挡：全角？：＊｜等在 Windows/同步盘上会炸，macOS 上留着也是隐患
     const clean = name.trim().replace(/[/\\:*?"<>|？：＊｜＞＜＼／]/g, "");
     if (!clean) return;
-    /** 幻灯片自带一张空白页；UI 设计档自带三块移动端设备画板（进去就能继续画） */
+    /** 幻灯片自带一张空白页（进去就能继续画） */
     const seed = () => {
-      if (kind === "ui") return uiStarterDoc(clean);
       const d = blankDoc(preset, clean, kind);
       if (kind === "deck") d.frames.push(blankFrame(preset));
       return d;

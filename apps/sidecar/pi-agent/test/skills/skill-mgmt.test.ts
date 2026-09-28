@@ -27,7 +27,7 @@ const prevCompatDir = process.env.PI_COMPAT_SKILLS_DIR;
 
 beforeAll(() => {
   initLocalStorage(join(tmp, "state.db"));
-  // 目录钉到 tmp：技能读写实时落盘，绝不碰真实 ~/.xulux / ~/.agents
+  // 目录钉到 tmp：技能读写实时落盘，绝不碰真实 ~/.kova / ~/.agents
   process.env.PI_SKILLS_DIR = join(tmp, "system-skills");
   process.env.PI_COMPAT_SKILLS_DIR = join(tmp, "compat-empty");
   mkdirSync(process.env.PI_SKILLS_DIR, { recursive: true });
@@ -145,7 +145,7 @@ describe("skills_save", () => {
     }
   });
 
-  test("项目保存落到 <cwd>/.xulux/skills/", async () => {
+  test("项目保存落到 <cwd>/.kova/skills/", async () => {
     const ws = join(tmp, "ws-b");
     const run = makeRun(ws);
     let reloads = 0;

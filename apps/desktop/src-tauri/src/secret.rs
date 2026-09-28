@@ -14,7 +14,7 @@ use aes_gcm::Aes256Gcm;
 use base64::Engine as _;
 use std::sync::OnceLock;
 
-const SERVICE: &str = "com.xulux.assistant";
+const SERVICE: &str = "com.kova.assistant";
 const ACCOUNT: &str = "master.key";
 /// 密文值前缀；无前缀 = 旧明文
 pub const PREFIX: &str = "enc:v1:";
@@ -95,13 +95,15 @@ fn load_or_create_master_key() -> Result<[u8; 32], String> {
     Ok(key)
 }
 
-/// dev 主密钥文件路径：与 Tauri app_data_dir 同位（固定 identifier）。
+/// dev 主密钥文件路径：与 Tauri app_data_dir 同位（与 tauri.dev.conf.json 的
+/// dev identifier 保持一致；dev 构建必须经 `bun run tauri:dev` 启动，
+/// 裸 `cargo run` 不带 --config 会落回正式 identifier）。
 /// 已知取舍：dev 密钥在文件、release 在 keychain，二者密文互不可读——
 /// 从 dev 切到 release 首次需要重输凭据（反之亦然），属可接受的代价。
 #[cfg(debug_assertions)]
 fn dev_master_key_path() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
-    const IDENTIFIER: &str = "com.xulux.assistant";
+    const IDENTIFIER: &str = "com.kova.assistant.dev";
     #[cfg(target_os = "macos")]
     let base = std::env::var_os("HOME")
         .map(PathBuf::from)?

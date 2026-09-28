@@ -18,7 +18,7 @@ afterAll(() => {
   // 清掉本轮测试在系统临时目录留下的溢写目录
   try {
     for (const name of readdirSync(tmpdir())) {
-      if (name.startsWith("xulux-mcp-output-")) {
+      if (name.startsWith("kova-mcp-output-")) {
         rmSync(path.join(tmpdir(), name), { recursive: true, force: true });
       }
     }

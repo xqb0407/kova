@@ -131,7 +131,7 @@ export function buildPluginMgmtTools(
     label: "安装插件",
     description: [
       "安装（或更新）一个插件：物化到本机后立即热生效——技能进系统提示词目录、MCP 服务器接入连接池、钩子与子智能体挂载。",
-      "两种来源：① 市场安装——给 marketplace + name（从已登记市场装）；② 本地直装——给 path（任意本地插件目录的绝对路径，含 .xulux/.claude/.codex-plugin 清单即可，无需市场）。",
+      "两种来源：① 市场安装——给 marketplace + name（从已登记市场装）；② 本地直装——给 path（任意本地插件目录的绝对路径，含 .kova/.claude/.codex-plugin 清单即可，无需市场）。",
       "安装外部内容会触发用户审批（MCP 服务器会运行进程、钩子会执行命令），这是有意的信任闸门，不要试图绕过。",
       "先调 plugins_list 确认市场名与插件名；未添加市场时提示用户在 插件市场 → ＋ 添加市场 操作。",
     ].join("\n\n"),
@@ -196,7 +196,7 @@ export function buildPluginMgmtTools(
     name: PLUGIN_MGMT_TOOL_NAMES.scaffold,
     label: "创建插件",
     description: [
-      "为用户创建一个新插件包：生成清单（.xulux-plugin/plugin.json）与技能文件，写进专属 dev 市场（本机 " +
+      "为用户创建一个新插件包：生成清单（.kova-plugin/plugin.json）与技能文件，写进专属 dev 市场（本机 " +
         devMarketplaceDir() +
         "）并自动登记/刷新该市场——之后用户在 插件市场 页选中该市场点安装即可。",
       "适合「帮我做一个 xx 技能插件」类请求：你提供 name/description 和技能数组，本工具负责 SKILL.md frontmatter 渲染、目录布局与市场登记。",
@@ -254,9 +254,9 @@ export function buildPluginMgmtTools(
           return d;
         });
 
-        mkdirSync(join(pluginDir, ".xulux-plugin"), { recursive: true });
+        mkdirSync(join(pluginDir, ".kova-plugin"), { recursive: true });
         writeFileSync(
-          join(pluginDir, ".xulux-plugin", "plugin.json"),
+          join(pluginDir, ".kova-plugin", "plugin.json"),
           `${JSON.stringify(
             {
               name,

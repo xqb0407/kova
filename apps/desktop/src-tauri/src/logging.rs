@@ -220,7 +220,7 @@ pub fn init(app: &AppHandle) {
             eprintln!("[logging] create log root failed: {e}");
         }
     }
-    if let Ok(raw) = std::env::var("XULUX_LOG_LEVEL") {
+    if let Ok(raw) = std::env::var("KOVA_LOG_LEVEL") {
         if let Some(f) = parse_level_filter(&raw) {
             LEVEL.store(level_filter_to_u8(f), Ordering::Relaxed);
         }
@@ -333,7 +333,7 @@ mod tests {
 
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "xulux-logging-{tag}-{}",
+            "kova-logging-{tag}-{}",
             uuid::Uuid::new_v4().simple()
         ));
         fs::create_dir_all(&dir).unwrap();

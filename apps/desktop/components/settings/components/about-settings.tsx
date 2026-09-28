@@ -17,7 +17,7 @@ import { FolderOpenIcon, SquareArrowOutUpRightIcon, Trash2Icon } from "lucide-re
 import { ObservabilitySection } from "./observability-settings";
 
 /** 问题反馈：gitee 仓库 issue 页（origin remote） */
-const FEEDBACK_URL = "https://gitee.com/herther/pi-desktop/issues";
+const FEEDBACK_URL = "https://gitee.com/herther/pi-kova/issues";
 
 type AppInfo = { name: string; version: string; tauri: string };
 
@@ -114,7 +114,7 @@ export const AboutSettings: FC = () => {
               <>
                 <SettingRow label="应用名称">
                   <span className="text-muted-foreground text-sm">
-                    {info?.name ?? "Xulux Assistant"}
+                    {info?.name ?? "扣瓦"}
                   </span>
                 </SettingRow>
                 <SettingRow label="应用版本">
@@ -124,7 +124,7 @@ export const AboutSettings: FC = () => {
                 </SettingRow>
               </>
             ) : (
-              <SettingRow label="Xulux Assistant（网页版）">
+              <SettingRow label="扣瓦（网页版）">
                 <span className="text-muted-foreground text-sm">远程访问</span>
               </SettingRow>
             )}

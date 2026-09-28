@@ -35,6 +35,7 @@ import { cn } from "@/lib/utils";
 import { isRemoteMode } from "@/lib/remote";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
+import { clearWorkspace } from "@/lib/workspace/workspace-store";
 import {
   formatShortcutParts,
   matchesShortcut,
@@ -178,6 +179,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         setActiveMenu("");
         // 动作驱动清"最近打开的会话"指针：刷新后不回旧会话（2026-09-22 修复）
         clearLastThread();
+        // 新对话一律从"未选择目录"开始（与侧栏/命令面板入口同语义）
+        clearWorkspace();
         void aui.threads.switchToNewThread();
       }
     };
@@ -192,6 +195,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     if (item.isNew) {
       setActiveMenu("");
       clearLastThread();
+      // 新对话一律从"未选择目录"开始（与侧栏/快捷键入口同语义）
+      clearWorkspace();
       return;
     }
     // 搜索入口在顶栏折叠按钮左侧（走命令面板），菜单项只保留视图切换
@@ -787,6 +792,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     setActiveMenu("");
                     // 同左栏菜单入口：动作驱动清指针（外层 New 负责开新会话）
                     clearLastThread();
+                    clearWorkspace();
                   }}
                 >
                   <PlusIcon className="size-4" />

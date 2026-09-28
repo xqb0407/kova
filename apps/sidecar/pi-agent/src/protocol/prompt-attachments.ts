@@ -9,7 +9,7 @@
  *   把图片拼进 user 消息 content，随 agent 消息本体自动落转录（persist 存整条
  *   agent JSON）。
  * - 文档（PDF/Word/Excel/PPT/文本类）：多模态 API 不吃文档内联，统一落盘到
- *   <cwd>/.xulux/attachments/（时间戳前缀防撞名），路径折算成说明行追加到
+ *   <cwd>/.kova/attachments/（时间戳前缀防撞名），路径折算成说明行追加到
  *   prompt 文本尾部——agent 用文件工具读取处理（docx/pdf 的解析交给 agent 的
  *   bash/技能，本层只负责把文件送到 agent 的工作目录）。两种载荷：
  *   path（桌面端：前端经 Rust attachment_stage 落盘中转，这里校验后复制，
@@ -108,9 +108,9 @@ function stripDataUrl(data: string): string {
   return data.startsWith("data:") ? data.slice(data.indexOf(",") + 1) : data;
 }
 
-/** 文档落盘目录：<cwd>/.xulux/attachments（与全局/工作区层 .xulux 同居一处） */
+/** 文档落盘目录：<cwd>/.kova/attachments（与全局/工作区层 .kova 同居一处） */
 export function docSaveDir(cwd: string): string {
-  return join(cwd, ".xulux", "attachments");
+  return join(cwd, ".kova", "attachments");
 }
 
 /** 文件名消毒：取 basename、去控制字符防路径穿越；空/点名回退 */
@@ -263,7 +263,7 @@ export function preparePromptAttachments(
       // 显示名与落盘名都取消毒后的 basename：穿越符不进模型上下文，避免
       // 模型误读出一个目录外的路径
       noticeLines.push(
-        `[用户附件：${sanitizeDocName(name)}（${docType.label}，${fmtBytes(bytes)}）已保存到 .xulux/attachments/${fname}，请用文件工具读取处理]`,
+        `[用户附件：${sanitizeDocName(name)}（${docType.label}，${fmtBytes(bytes)}）已保存到 .kova/attachments/${fname}，请用文件工具读取处理]`,
       );
       continue;
     }

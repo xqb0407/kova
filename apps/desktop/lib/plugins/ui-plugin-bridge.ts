@@ -1,15 +1,15 @@
 /**
- * UI 插件桥协议 `xulux-ui-plugin/1` 的纯定义层（宿主侧实现见
+ * UI 插件桥协议 `kova-ui-plugin/1` 的纯定义层（宿主侧实现见
  * agent-panel/plugin-panel-host.tsx，插件侧对照 SKILL.md 自行实现）。
  *
  * 线路形状：postMessage 一个可克隆纯对象
- *   { v: "xulux-ui-plugin/1", dir: "host" | "ui", kind, ...载荷 }
+ *   { v: "kova-ui-plugin/1", dir: "host" | "ui", kind, ...载荷 }
  * 宿主对 UI→host 消息做严格校验（decodeUiMessage）：协议版本/方向/kind
  * 白名单/逐字段类型/base64 长度上限，任一不合即整条丢弃——iframe 里跑的是
  * 第三方代码，解码层就是安全边界，不做"尽力解析"。
  */
 
-export const UI_PLUGIN_PROTOCOL = "xulux-ui-plugin/1";
+export const UI_PLUGIN_PROTOCOL = "kova-ui-plugin/1";
 
 /** 面板声明的权限位（与 sidecar PANEL_PERMISSIONS 对齐） */
 export type PanelPermission = "document" | "export" | "agent" | "notify";
@@ -35,8 +35,8 @@ export type DocListItem = {
   /** workspace 相对路径；doc.bind 原样回传 */
   path: string;
   name: string;
-  /** board/deck/ui=画布档；sheet/doc=Univer 快照档（`*.sheet/.doc.univer.json`） */
-  kind: "board" | "deck" | "ui" | "sheet" | "doc";
+  /** board/deck/ui=画布档；design=UI 设计档（`*.uidesign.json`）；sheet/doc=Univer 快照档（`*.sheet/.doc.univer.json`） */
+  kind: "board" | "deck" | "ui" | "design" | "sheet" | "doc";
   /** 文件最后修改时间（ms epoch；取不到为 0） */
   mtime: number;
   frames: number;

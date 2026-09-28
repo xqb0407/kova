@@ -1,7 +1,7 @@
 /**
  * MCP 工具元数据缓存：断连状态下 search/describe 可用（代理模式的体验关键）。
  *
- * 缓存文件 `~/.xulux/mcp-cache.json`（PI_MCP_CACHE_PATH 可覆盖，测试用），条目按
+ * 缓存文件 `~/.kova/mcp-cache.json`（PI_MCP_CACHE_PATH 可覆盖，测试用），条目按
  * 服务器名键控，携带配置哈希——配置（command/args/env/url/headers）变了即失效，
  * 避免给模型看陈旧的工具面。TTL 7 天；每次成功握手后全量更新该服务器条目。
  *
@@ -35,7 +35,7 @@ const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function cachePath(): string {
   if (process.env.PI_MCP_CACHE_PATH) return process.env.PI_MCP_CACHE_PATH;
-  return join(homedir(), ".xulux", "mcp-cache.json");
+  return join(homedir(), ".kova", "mcp-cache.json");
 }
 
 /**

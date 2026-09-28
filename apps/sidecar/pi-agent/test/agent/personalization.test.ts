@@ -25,7 +25,7 @@ const prevIdentityDir = process.env.PI_IDENTITY_DIR;
 
 beforeAll(() => {
   initLocalStorage(path.join(tmp, "state.db"));
-  // 身份文件实时读盘：钉到临时目录，避免触碰开发者真实 ~/.xulux/
+  // 身份文件实时读盘：钉到临时目录，避免触碰开发者真实 ~/.kova/
   process.env.PI_IDENTITY_DIR = path.join(tmp, "identity");
 });
 

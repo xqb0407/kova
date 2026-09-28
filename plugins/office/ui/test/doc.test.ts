@@ -28,7 +28,6 @@ import {
   type El,
   type ShapeEl,
   type TableEl,
-  uiStarterDoc,
 } from "../src/doc";
 import { boxOf } from "../src/geometry";
 
@@ -338,23 +337,12 @@ describe("文档类型（meta.kind）", () => {
     expect(parseDoc(JSON.parse(serializeDoc(d)))!.meta.kind).toBe("board");
     expect(blankDoc("16:9", "演示", "deck").meta.kind).toBe("deck");
   });
-  test("ui 档：入档/解析往返，kind 不被亲和推断覆盖", () => {
-    const d = uiStarterDoc("UI 设计");
+  test("旧 ui 档（kind:\"ui\"）仍可解析往返与识别——只读兼容，新档已拆到 ui-design 面板", () => {
+    const d = blankDoc("16:9", "UI 设计", "ui");
+    d.objects.push({ kind: "shape", id: "s1", shape: "rect", x: 0, y: 0, w: 375, h: 812, fill: "#ffffff" } as (typeof d.objects)[number]);
     expect(d.meta.kind).toBe("ui");
     expect(parseDoc(JSON.parse(serializeDoc(d)))!.meta.kind).toBe("ui");
     expect(docKindOf(d)).toBe("ui");
-  });
-  test("ui 种子档：三块 375×812 设备画板（objects 矩形）+ 标题 + 引导；seed=false 为空档", () => {
-    const d = uiStarterDoc("UI 设计");
-    // 白板只渲染 objects：画板必须是 objects，不能是页框
-    expect(d.frames).toHaveLength(0);
-    const boards = d.objects.filter((o) => o.kind === "shape");
-    expect(boards).toHaveLength(3);
-    expect(boards.every((b) => b.w === 375 && b.h === 812)).toBe(true);
-    expect(boards.map((b) => b.x)).toEqual([0, 375 + 120, 2 * (375 + 120)]);
-    expect(d.objects.filter((o) => o.kind === "text")).toHaveLength(4); // 三个板名 + 一句引导
-    expect(boards[0]!.y).toBe(140);
-    expect(uiStarterDoc("空", false).objects).toHaveLength(0);
   });
   test("docKindOf：kind 优先；老档按内容亲和回退（纯页框→deck）", () => {
     const withKind = { ...blankDoc(), meta: { name: "x", pagePreset: "16:9" as const, kind: "deck" as const } };

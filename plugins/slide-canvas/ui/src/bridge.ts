@@ -1,11 +1,11 @@
 /**
- * 宿主桥客户端（协议 xulux-ui-plugin/1，权威定义在应用仓 lib/plugins/ui-plugin-bridge.ts）。
+ * 宿主桥客户端（协议 kova-ui-plugin/1，权威定义在应用仓 lib/plugins/ui-plugin-bridge.ts）。
  * 独立运行时（vite dev 直接开浏览器）宿主消息永不到达：桥层自动降级为
  * 本地 mock（handshake 模拟 + doc.change 落地 localStorage），开发体验不依赖桌面端。
  */
 import { DOC_VERSION, type DocKind } from "./doc";
 
-const PROTOCOL = "xulux-ui-plugin/1";
+const PROTOCOL = "kova-ui-plugin/1";
 
 /** 首页历史卡片：宿主按本面板 opens 扫描工作区后回传的摘要（与宿主端 DocListItem 对齐）。
  *  kind 理论上只会是 DocKind；宿主端面板并集扫出的 sheet/doc 档按未知 kind 容错。 */

@@ -2,11 +2,11 @@
  * MCP 服务器配置（设置 → MCP）：来源、合并、校验与写路径。
  *
  * 三层来源，同名按 id 字段级合并，后层覆盖前层（工作区覆盖层 > 工作区标准层 > 系统）：
- * - 系统：`~/.xulux/mcp.json`（PI_MCP_CONFIG 可覆盖，测试用），完整 schema
+ * - 系统：`~/.kova/mcp.json`（PI_MCP_CONFIG 可覆盖，测试用），完整 schema
  * - 工作区标准层：`<cwd>/.mcp.json`，生态标准格式（mcpServers map），随仓库共享，
  *   只认 command/args/env/url/headers/type；adapter 专属字段在此层被忽略
- * - 工作区覆盖层：`<cwd>/.xulux/mcp.json`，xulux 专属字段（approveTools/lifecycle…），
- *   与 .xulux/subagents 同族；设置页对工作区层的写入只落这个文件，从不改写 .mcp.json
+ * - 工作区覆盖层：`<cwd>/.kova/mcp.json`，kova 专属字段（approveTools/lifecycle…），
+ *   与 .kova/subagents 同族；设置页对工作区层的写入只落这个文件，从不改写 .mcp.json
  *
  * 字段级合并是有意的：覆盖层可以只给标准层的条目补 approveTools 而不必重抄 command。
  * 安全约束：合并后 url 与低层不同时，不继承低层的 headers（认证材料跟着旧端点走
@@ -73,10 +73,10 @@ const byteLen = (s: string) => Buffer.byteLength(s, "utf8");
 // 路径解析
 // ---------------------------------------------------------------------------
 
-/** 系统级配置文件（应用数据目录，与 ~/.xulux/subagents 同族） */
+/** 系统级配置文件（应用数据目录，与 ~/.kova/subagents 同族） */
 export function systemMcpConfigPath(): string {
   if (process.env.PI_MCP_CONFIG) return process.env.PI_MCP_CONFIG;
-  return join(homedir(), ".xulux", "mcp.json");
+  return join(homedir(), ".kova", "mcp.json");
 }
 
 /** 工作区标准层（生态共享格式） */
@@ -84,9 +84,9 @@ export function workspaceStandardMcpPath(cwd: string): string {
   return join(cwd, ".mcp.json");
 }
 
-/** 工作区覆盖层（xulux 专属字段；设置页工作区写路径） */
+/** 工作区覆盖层（kova 专属字段；设置页工作区写路径） */
 export function workspaceOverrideMcpPath(cwd: string): string {
-  return join(cwd, ".xulux", "mcp.json");
+  return join(cwd, ".kova", "mcp.json");
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +154,7 @@ function stringMap(
 
 /**
  * 解析一个 mcpServers 条目。格式错误进 errors（该条目丢弃），可疑但可降级的进
- * warnings（standard 之外的字段在标准层是「忽略」，在 xulux 层是「未知字段」）。
+ * warnings（standard 之外的字段在标准层是「忽略」，在 kova 层是「未知字段」）。
  * 复用于设置页保存的草稿校验（source 传空串，错误文案不带文件前缀）。
  */
 function parseEntry(
@@ -244,11 +244,11 @@ function parseEntry(
     else def.description = r.description.trim();
   }
 
-  // ---- xulux 层专属字段（标准层一律忽略：警告后返回 undefined，调用方不赋值）----
+  // ---- kova 层专属字段（标准层一律忽略：警告后返回 undefined，调用方不赋值）----
   const extra = (key: string): unknown => {
     if (r[key] === undefined) return undefined;
     if (opts.standard) {
-      warnings.push(`${label}: 标准层忽略 xulux 专属字段 "${key}"`);
+      warnings.push(`${label}: 标准层忽略 kova 专属字段 "${key}"`);
       return undefined;
     }
     return r[key];
@@ -303,11 +303,77 @@ function fileSignature(path: string): string {
   }
 }
 
+/** 插件层上下文：占位符展开用（仅 plugin 层有；用户/系统层配置保持字面量） */
+export type PluginLayerCtx = {
+  pluginId: string;
+  /** 插件根目录（绝对）—— `${PLUGIN_ROOT}` 的展开值；缺省时不展开该占位符 */
+  root?: string;
+  /** 会话工作区（loadSync 收到的 cwd）—— `${WORKSPACE}` 的展开值 */
+  workspace?: string;
+};
+
+/**
+ * 插件层 stdio 条目占位符展开（command / args / env 的字符串值）：
+ * - `${PLUGIN_ROOT}` → 插件根绝对路径（插件自带的 server 脚本由此定位）
+ * - `${WORKSPACE}`   → 会话工作区（MCP server 据此解析工作区相对路径）
+ * - `${BUN}`         → 应用内置 JS/TS 运行时（process.execPath）；命中时自动补
+ *   `BUN_BE_BUN=1`——编译态 sidecar 二进制由此充当完整 bun CLI（真实 bun 上该
+ *   变量无副作用），插件因而无需用户机器预装 node/bun。
+ * 展开只在插件层发生：用户/系统层配置里的同名写法保持字面量，语义不意外。
+ */
+export function expandPluginValue(
+  value: string,
+  ctx: { root?: string; workspace?: string },
+): { value: string; usedBun: boolean; missing: string[] } {
+  let out = value;
+  const missing: string[] = [];
+  let usedBun = false;
+  if (out.includes("${PLUGIN_ROOT}")) {
+    if (ctx.root) out = out.split("${PLUGIN_ROOT}").join(ctx.root);
+    else missing.push("${PLUGIN_ROOT}");
+  }
+  if (out.includes("${WORKSPACE}")) {
+    if (ctx.workspace) out = out.split("${WORKSPACE}").join(ctx.workspace);
+    else missing.push("${WORKSPACE}");
+  }
+  if (out.includes("${BUN}")) {
+    out = out.split("${BUN}").join(process.execPath);
+    usedBun = true;
+  }
+  return { value: out, usedBun, missing };
+}
+
+/** 就地展开一个插件层 stdio 定义；缺展开值的占位符保留原样并记诊断 */
+function expandPluginDef(def: McpServerDef, ctx: PluginLayerCtx, diagnostics: string[]): void {
+  if (def.transport !== "stdio") return;
+  const missing = new Set<string>();
+  let usedBun = false;
+  const apply = (v: string): string => {
+    const r = expandPluginValue(v, ctx);
+    for (const m of r.missing) missing.add(m);
+    if (r.usedBun) usedBun = true;
+    return r.value;
+  };
+  if (def.command !== undefined) def.command = apply(def.command);
+  if (def.args) def.args = def.args.map(apply);
+  if (def.env) {
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries(def.env)) next[k] = apply(v);
+    def.env = next;
+  }
+  if (usedBun) def.env = { ...(def.env ?? {}), BUN_BE_BUN: "1" };
+  for (const m of missing) {
+    diagnostics.push(
+      `[${def.name}] 占位符 ${m} 无展开值（工作区未就绪或插件根缺失），保持原样`,
+    );
+  }
+}
+
 function parseLayer(
   path: string,
   layer: "system" | "workspace" | "plugin",
   standard: boolean,
-  pluginId?: string,
+  plugin?: PluginLayerCtx,
 ): LayerParse {
   const diagnostics: string[] = [];
   if (!existsSync(path)) return { defs: [], diagnostics };
@@ -346,11 +412,14 @@ function parseLayer(
     const def = parseEntry(
       name,
       (servers as Record<string, unknown>)[name],
-      { layer, source: path, standard, ...(pluginId ? { pluginId } : {}) },
+      { layer, source: path, standard, ...(plugin ? { pluginId: plugin.pluginId } : {}) },
       errors,
       warnings,
     );
-    if (def) defs.push(def);
+    if (def) {
+      if (layer === "plugin" && plugin) expandPluginDef(def, plugin, diagnostics);
+      defs.push(def);
+    }
   }
   for (const e of errors) diagnostics.push(`${path}: ${e}`);
   for (const w of warnings) diagnostics.push(`${path}: ${w}`);
@@ -473,8 +542,12 @@ function loadSync(cwd: string | undefined): McpLoadResult {
   const ovrPath = cwd ? workspaceOverrideMcpPath(cwd) : "";
   // 插件层签名：启用插件集合 + 各自文件签名（安装/卸载/开关立即失效缓存）
   const pluginSources = activePlugins()
-    .map((p) => ({ pluginId: p.pluginId, file: resolvePluginComponent(p.manifest, "mcpServers") }))
-    .filter((p): p is { pluginId: string; file: string } => typeof p.file === "string")
+    .map((p) => ({
+      pluginId: p.pluginId,
+      root: p.manifest.root,
+      file: resolvePluginComponent(p.manifest, "mcpServers"),
+    }))
+    .filter((p): p is { pluginId: string; root: string; file: string } => typeof p.file === "string")
     .filter((p) => existsSync(p.file));
   const sig = [
     fileSignature(systemPath),
@@ -499,12 +572,16 @@ function loadSync(cwd: string | undefined): McpLoadResult {
     ...override.diagnostics,
   ];
 
-  // 插件层（垫底，只读）：standard=true——插件只认标准字段，xulux 专属字段
+  // 插件层（垫底，只读）：standard=true——插件只认标准字段，kova 专属字段
   // （approveTools 等）不可由插件携带；同名先到先得（pluginId 排序保证确定性）
   const pluginDefs: McpServerDef[] = [];
   const seenPluginNames = new Set<string>();
   for (const p of pluginSources) {
-    const parsed = parseLayer(p.file, "plugin", true, p.pluginId);
+    const parsed = parseLayer(p.file, "plugin", true, {
+      pluginId: p.pluginId,
+      root: p.root,
+      workspace: cwd,
+    });
     diagnostics.push(...parsed.diagnostics.map((d) => `[plugin ${p.pluginId}] ${d}`));
     for (const def of parsed.defs) {
       if (seenPluginNames.has(def.name)) {
@@ -709,7 +786,7 @@ export async function listPluginMcpEntries(
   pluginId: string,
 ): Promise<Array<{ name: string; transport: "stdio" | "http"; description?: string; enabled: boolean }>> {
   await initMcpEnabledState();
-  const parsed = parseLayer(file, "plugin", true, pluginId);
+  const parsed = parseLayer(file, "plugin", true, { pluginId });
   return parsed.defs.map((def) => ({
     name: def.name,
     transport: def.transport,

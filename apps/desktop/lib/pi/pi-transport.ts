@@ -9,7 +9,10 @@ import { applyPlanningChunk, fetchPlanningState } from "@/lib/pi/pi-session-mode
 import { setSeqGuardDeps } from "@/lib/pi/pi-seq-guard";
 import { applyToolApprovalChunk, clearToolApprovals } from "@/lib/pi/pi-tool-approval";
 import { applyQuestionChunk, clearQuestions } from "@/lib/pi/pi-question";
-import { refreshPendingInteractions } from "@/lib/pi/pi-interactions";
+import {
+  refreshPendingInteractions,
+  removeResolvedInteraction,
+} from "@/lib/pi/pi-interactions";
 import { applyTodoChunk } from "@/lib/pi/pi-todo";
 import {
   applyQueueStateChunk,
@@ -423,6 +426,16 @@ export class PiTransport implements ChatTransport<UIMessage> {
         }
         if (chunk.type === "data-question") {
           applyQuestionChunk(chatId, (chunk as { data?: unknown }).data);
+          return;
+        }
+        if (chunk.type === "data-interactionResolved") {
+          // 交互结算广播（刷新重放防复活）：关闭内存挂起卡，不进消息 parts；
+          // 发起帧与结算帧同走 Rust 重放缓冲，重放序列按序收敛，见 sidecar
+          // sessions/pending-interactions.ts 头注第⑤条
+          const d = (chunk as { data?: unknown }).data as { interactionId?: unknown } | undefined;
+          if (d && typeof d.interactionId === "string") {
+            removeResolvedInteraction(chatId, d.interactionId);
+          }
           return;
         }
         if (chunk.type === "data-todo") {

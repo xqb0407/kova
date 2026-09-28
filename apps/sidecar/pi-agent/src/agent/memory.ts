@@ -1,7 +1,7 @@
 /**
  * 记忆（设置 → 记忆）：全局 + 工作区双作用域的纯 markdown 记忆库。
- * - 全局目录 ~/.xulux/memory（PI_MEMORY_DIR 可覆盖，测试用），跨会话跨工作区共享
- * - 工作区目录 <cwd>/.xulux/memory（与 .xulux/subagents / plans 同族）
+ * - 全局目录 ~/.kova/memory（PI_MEMORY_DIR 可覆盖，测试用），跨会话跨工作区共享
+ * - 工作区目录 <cwd>/.kova/memory（与 .kova/subagents / plans 同族）
  * - 目录下根级 *.md 视为「常驻记忆」，按文件粒度开关（enabledFiles 白名单，
  *   null = 全部启用）；daily/*.md 只参与检索
  * - 两层消费（对齐设计讨论）：精选层 = memoryPromptBlock 注入系统提示词
@@ -50,15 +50,15 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
 
 /* --------------------------------- 目录解析 --------------------------------- */
 
-/** 全局记忆目录（应用数据目录下，与 ~/.xulux/subagents 同族） */
+/** 全局记忆目录（应用数据目录下，与 ~/.kova/subagents 同族） */
 export function globalMemoryDir(): string {
   if (process.env.PI_MEMORY_DIR) return resolve(process.env.PI_MEMORY_DIR);
-  return join(homedir(), ".xulux", "memory");
+  return join(homedir(), ".kova", "memory");
 }
 
 /** 工作区记忆目录 */
 export function workspaceMemoryDir(cwd: string): string {
-  return join(cwd, ".xulux", "memory");
+  return join(cwd, ".kova", "memory");
 }
 
 const scopeDir = (scope: MemoryScope, cwd: string): string =>
@@ -431,7 +431,7 @@ function textResult(text: string, details?: unknown) {
   return { content: [{ type: "text" as const, text }], details };
 }
 
-const SCOPE_DESC = "'global' = ~/.xulux/memory (all sessions), 'workspace' = <workspace>/.xulux/memory (this workspace only)";
+const SCOPE_DESC = "'global' = ~/.kova/memory (all sessions), 'workspace' = <workspace>/.kova/memory (this workspace only)";
 
 /** 记忆三件套（write/read/search）：常驻注册，execute 时实时读配置门控 */
 export function buildMemoryTools(cwd: string): AgentTool[] {

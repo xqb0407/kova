@@ -5,8 +5,8 @@
  * 整页滚动 + 大标题（右侧状态文字）+ 作用域 Tabs（系统级/工作区级）+
  * 工具行（工作区切换/搜索/刷新/新建）+ bg-muted/50 卡片内行列表。
  *
- * 事实源在 sidecar：三层配置（系统 ~/.xulux/mcp.json / 工作区 .mcp.json / 工作区
- * 覆盖 .xulux/mcp.json）+ kv 里的启停开关；本页只渲染 useMcpServers 镜像并发起
+ * 事实源在 sidecar：三层配置（系统 ~/.kova/mcp.json / 工作区 .mcp.json / 工作区
+ * 覆盖 .kova/mcp.json）+ kv 里的启停开关；本页只渲染 useMcpServers 镜像并发起
  * 变更命令（清单应答自带连接状态）。工作区标准层 .mcp.json 是共享文件：
  * 条目可被覆盖层接管编辑，但不从设置页直接改写（sidecar 拒绝并解释）。
  */
@@ -313,8 +313,8 @@ const McpEditorDialog: FC<{
           </DialogTitle>
           <DialogDescription>
             {layer === "workspace"
-              ? `保存到 ${workspaceCwd ?? ""}/.xulux/mcp.json（随仓库共享；不改写 .mcp.json）`
-              : "保存到 ~/.xulux/mcp.json，对本机所有工作区生效"}
+              ? `保存到 ${workspaceCwd ?? ""}/.kova/mcp.json（随仓库共享；不改写 .mcp.json）`
+              : "保存到 ~/.kova/mcp.json，对本机所有工作区生效"}
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
@@ -762,8 +762,8 @@ const McpJsonImportDialog: FC<{
           <DialogTitle>JSON 导入 MCP 服务器</DialogTitle>
           <DialogDescription>
             {layer === "workspace"
-              ? `导入到 ${workspaceCwd ?? ""}/.xulux/mcp.json（随仓库共享；不改写 .mcp.json）`
-              : "导入到 ~/.xulux/mcp.json，对本机所有工作区生效"}
+              ? `导入到 ${workspaceCwd ?? ""}/.kova/mcp.json（随仓库共享；不改写 .mcp.json）`
+              : "导入到 ~/.kova/mcp.json，对本机所有工作区生效"}
           </DialogDescription>
         </DialogHeader>
         <div className="flex min-w-0 flex-col gap-3">
@@ -1599,7 +1599,7 @@ export const McpSettings: FC = () => {
             ) : workspaceUnavailable ? (
               <div className="text-muted-foreground px-3 py-3 text-sm">
                 未选择工作区。选择工作区后，这里会合并显示该仓库 .mcp.json（共享）与
-                .xulux/mcp.json（覆盖层）的服务器；也可以点上方目录切换器「浏览其他目录…」。
+                .kova/mcp.json（覆盖层）的服务器；也可以点上方目录切换器「浏览其他目录…」。
               </div>
             ) : visible.length === 0 ? (
               <div className="text-muted-foreground flex flex-col gap-1 px-3 py-3 text-sm">
@@ -1637,7 +1637,7 @@ export const McpSettings: FC = () => {
             {scopeTab === "workspace" && !workspaceUnavailable && visible.length > 0 && (
               <div className="text-muted-foreground px-3 py-1.5 text-xs">
                 .mcp.json 为生态共享格式（Claude Code / Cursor 等可直接复用）；设置页只写
-                .xulux/mcp.json 覆盖层，从不改写共享文件。
+                .kova/mcp.json 覆盖层，从不改写共享文件。
               </div>
             )}
           </div>

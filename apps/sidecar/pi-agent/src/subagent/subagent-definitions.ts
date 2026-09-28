@@ -4,8 +4,8 @@
  * 三层发现，同名时后层遮蔽前层（工作区 > 系统 > 内置）：
  * - 内置：内联常量，设置页只读查看，只可启用/关闭，永不被写。
  * - 系统：应用数据目录 `<app_data>/subagents/*.yml`（生产由 Tauri 注入
- *   PI_SUBAGENTS_DIR；兜底 PI_DB_PATH 同级 subagents/，再兜底 ~/.xulux/subagents）。
- * - 工作区：`<cwd>/.xulux/subagents/*.yml`，与 .xulux/plans 同族。
+ *   PI_SUBAGENTS_DIR；兜底 PI_DB_PATH 同级 subagents/，再兜底 ~/.kova/subagents）。
+ * - 工作区：`<cwd>/.kova/subagents/*.yml`，与 .kova/plans 同族。
  *
  * 定义文件是纯 YAML（yaml 包解析/序列化）。启用开关是"本机的运行时决定"，
  * 不写进定义文件（工作区文件在 git 里）：整包存 SQLite kv（key = STATE_KV_KEY），
@@ -89,12 +89,12 @@ export function systemSubagentsDir(): string {
   if (process.env.PI_SUBAGENTS_DIR) return process.env.PI_SUBAGENTS_DIR;
   const db = process.env.PI_DB_PATH;
   if (db) return join(dirname(resolve(db)), "subagents");
-  return join(homedir(), ".xulux", "subagents");
+  return join(homedir(), ".kova", "subagents");
 }
 
 /** 工作区级定义目录 */
 export function workspaceSubagentsDir(cwd: string): string {
-  return join(cwd, ".xulux", "subagents");
+  return join(cwd, ".kova", "subagents");
 }
 
 // ---------------------------------------------------------------------------
@@ -333,17 +333,17 @@ export function parseSubagentYaml(
   };
 }
 
-/** 从定义文件路径反推所属工作区 cwd（<cwd>/.xulux/subagents/x.yml → <cwd>，不带尾分隔符） */
+/** 从定义文件路径反推所属工作区 cwd（<cwd>/.kova/subagents/x.yml → <cwd>，不带尾分隔符） */
 function workspaceFromDefinitionPath(path: string | undefined): string | undefined {
   if (!path) return undefined;
-  const marker = join(".xulux", "subagents");
+  const marker = join(".kova", "subagents");
   const idx = path.lastIndexOf(marker);
   if (idx < 0) return undefined;
   const cwd = path.slice(0, idx).replace(/[\\/]+$/, "");
   return cwd || undefined;
 }
 
-const YAML_HEADER = "# Xulux subagent definition — managed via Settings → Subagents\n";
+const YAML_HEADER = "# Kova subagent definition — managed via Settings → Subagents\n";
 
 /** 序列化一份定义为 YAML 文本（键序稳定，diff 友好；长行不折行） */
 export function emitSubagentYaml(draft: SubagentDraft): string {

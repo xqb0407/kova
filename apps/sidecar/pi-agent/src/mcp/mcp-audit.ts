@@ -3,7 +3,7 @@
  *
  * 连接错误环形缓冲（manager.logs）只在进程内、只记失败；这里补"观测"的缺口：
  * 连接/断开/调用/截断/授权/健康探测事件**全部**记录且跨重启持久，
- * 排查问题不再只能翻 stderr。路径 ~/.xulux/mcp-audit.jsonl（PI_MCP_AUDIT_PATH
+ * 排查问题不再只能翻 stderr。路径 ~/.kova/mcp-audit.jsonl（PI_MCP_AUDIT_PATH
  * 可覆盖，测试用）；超上限重写保留最近 MCP_AUDIT_MAX_LINES 条——事件低频，
  * 重写成本可忽略。只记元数据（服务器名/工具名/耗时/错误摘要），不落参数与结果。
  */
@@ -38,7 +38,7 @@ export type McpAuditEvent = {
 };
 
 export function mcpAuditPath(): string {
-  return process.env.PI_MCP_AUDIT_PATH ?? join(homedir(), ".xulux", "mcp-audit.jsonl");
+  return process.env.PI_MCP_AUDIT_PATH ?? join(homedir(), ".kova", "mcp-audit.jsonl");
 }
 
 /** 保留的事件条数上限 */

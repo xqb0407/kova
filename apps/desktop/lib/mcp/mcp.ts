@@ -15,8 +15,8 @@ import { getWorkspace } from "@/lib/workspace/workspace-store";
 
 /**
  * MCP 服务器（设置 → MCP）：前端镜像 store。
- * 事实源在 sidecar——三层配置（系统 ~/.xulux/mcp.json / 工作区 .mcp.json / 工作区
- * 覆盖 .xulux/mcp.json）+ kv 里的启停开关；这里只做清单镜像与变更动作。
+ * 事实源在 sidecar——三层配置（系统 ~/.kova/mcp.json / 工作区 .mcp.json / 工作区
+ * 覆盖 .kova/mcp.json）+ kv 里的启停开关；这里只做清单镜像与变更动作。
  * 所有变更命令的应答都是刷新后的清单（含连接状态），改后即见；连接池热重载由
  * sidecar 完成（配置变更/禁用即断连），网关工具下一轮调用即用新配置。
  */

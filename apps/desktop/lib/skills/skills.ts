@@ -6,7 +6,7 @@ import { getWorkspace } from "@/lib/workspace/workspace-store";
 
 /**
  * 技能（设置 → 技能）：前端镜像 store。
- * 事实源在 sidecar——托管层 .md 文档（<cwd>/.xulux/skills 与应用数据 skills/）
+ * 事实源在 sidecar——托管层 .md 文档（<cwd>/.kova/skills 与应用数据 skills/）
  * + 生态兼容层（.agents/skills，只读发现）+ kv 里的启用开关；这里只做清单镜像
  * 与变更动作。所有变更命令的应答都是刷新后的清单，改后即见；活动会话的系统
  * 提示词热替换由 sidecar 完成，轮中经 loopContext 立即生效。

@@ -529,7 +529,7 @@ export class McpManager {
   ): { client: Client; transport: Transport } {
     const { def } = entry;
     const client = new Client(
-      { name: "xulux-agent", version: "1.0.0" },
+      { name: "kova-agent", version: "1.0.0" },
       { capabilities: {} },
     );
     client.onclose = () => {

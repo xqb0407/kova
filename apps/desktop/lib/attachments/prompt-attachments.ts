@@ -15,7 +15,7 @@ import { isTauri } from "@/lib/tauri";
  * - 图片：MIME 白名单 + 2MiB 单图上限，裸 base64 内联进 prompt（多模态上下文）；
  * - 文档（PDF/Word/Excel/PPT/TXT/MD/CSV）：桌面端经 Rust attachment_stage 落盘
  *   到 app_data/attachments/，attachments 里只带绝对路径（prompt 帧不带字节，
- *   请求体不随文档膨胀；sidecar 复制进 <cwd>/.xulux/attachments/ 交给 agent），
+ *   请求体不随文档膨胀；sidecar 复制进 <cwd>/.kova/attachments/ 交给 agent），
  *   单文档 ≤20MiB；网页端无本地 FS 回退内联，上限 8MiB。
  * 数量（图片 >4 / 文档 >2）与内联总体积由 sidecar 拒收说明，添加时不拦。
  */

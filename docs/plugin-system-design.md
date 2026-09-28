@@ -1,6 +1,6 @@
 # 插件系统设计（plugin）
 
-> 目标：让 Xulux 获得 Claude Code 式的插件能力——把既有 skills / subagents / commands /
+> 目标：让 Kova 获得 Claude Code 式的插件能力——把既有 skills / subagents / commands /
 > hooks / MCP 五类扩展机制**打包为可分发的声明式聚合包**，支持本地安装、启停、卸载，
 > P1 接市场（marketplace）。插件不引入任何代码运行时：贡献物的 90% 是 markdown/JSON，
 > 仅有的可执行物（hooks 外部命令、MCP 子进程）全部走既有进程边界机制。
@@ -12,9 +12,9 @@
 
 | 机制 | 状态 | 实现 | 来源分层 | 开关存储 |
 |---|---|---|---|---|
-| Skills | ✅ | `skills.ts`（渐进披露，`<available_skills>` 目录行） | 工作区 `.xulux/skills` > 生态·工作区 `.agents/skills` > 系统 > 生态·用户 `~/.agents/skills` | kv `pi.skills` |
-| Subagents | ✅ | `subagent-definitions.ts`（YAML + 工具白名单） | 工作区 `.xulux/subagents` > 系统（内置最优先） | kv |
-| MCP | ✅（P0 已交付，见 mcp-design.md） | `mcp-config.ts` / `mcp-manager.ts` / `mcp-tools.ts`（代理网关） | `~/.xulux/mcp.json` < 标准 `<cwd>/.mcp.json` < `<cwd>/.xulux/mcp.json` | kv |
+| Skills | ✅ | `skills.ts`（渐进披露，`<available_skills>` 目录行） | 工作区 `.kova/skills` > 生态·工作区 `.agents/skills` > 系统 > 生态·用户 `~/.agents/skills` | kv `pi.skills` |
+| Subagents | ✅ | `subagent-definitions.ts`（YAML + 工具白名单） | 工作区 `.kova/subagents` > 系统（内置最优先） | kv |
+| MCP | ✅（P0 已交付，见 mcp-design.md） | `mcp-config.ts` / `mcp-manager.ts` / `mcp-tools.ts`（代理网关） | `~/.kova/mcp.json` < 标准 `<cwd>/.mcp.json` < `<cwd>/.kova/mcp.json` | kv |
 | Hooks | ✅ | `hooks.ts`（事件名与 Claude Code 1:1，stdin JSON、exit 2=block） | 仅 kv `pi.hooks`（无文件来源） | kv |
 | Slash commands | ❌ | 前端硬编码：`composer-commands.ts` 的 `SLASH_COMMANDS` 仅 7 个面板打开器 | 无 | 无 |
 
@@ -40,7 +40,7 @@
 ## 2. 关键约束
 
 1. **插件是聚合层，不是新机制**。五类贡献物必须并进既有机制消费，插件只解决
-   "打包、分发、一键启停"。机制正交：不用插件也能把文件放进 `.xulux/skills/`。
+   "打包、分发、一键启停"。机制正交：不用插件也能把文件放进 `.kova/skills/`。
 2. **工具表字节级稳定**。插件贡献的 MCP 服务器**强制代理模式**（网关工具 `mcp`
    常驻注册不变）；`directTools` 仅允许用户在工作区覆盖层显式打开（P1），插件层永不。
 3. **提示词缓存**。插件不新增系统提示词块——commands 是用户触发、模型无需感知
@@ -50,7 +50,7 @@
    hooks 决策语义（exit 2 = block）原样复用；commands 展开即提交普通 prompt，
    不新增任何审批形态。
 5. **运行时是 Bun 编译单文件**。插件装载只用 fs/路径 + 既有 `yaml` 依赖，零新依赖。
-6. **配置体系既有双层惯例**：系统层 `~/.xulux/*`，工作区层 `<cwd>/.xulux/*`；
+6. **配置体系既有双层惯例**：系统层 `~/.kova/*`，工作区层 `<cwd>/.kova/*`；
    启停状态落 SQLite kv（`set_subagent_enabled` 模式）。插件安装目录沿用此惯例。
 7. **hooks 现状是 kv 全量数组**（`setHookConfigs` 全量覆盖）。插件贡献 hooks 需要
    把 hooks 改为"来源合并视图"——这是全计划唯一动既有语义的改造点，
@@ -72,7 +72,7 @@
 
 ```
 <plugin>/
-  .xulux-plugin/
+  .kova-plugin/
     plugin.json            ← 清单（必需）
     seed.json              ← 安装溯源（安装器写入；源码目录中不存在）
   skills/<name>/SKILL.md   ← → skills 机制（可选）
@@ -101,8 +101,8 @@
 
 | 层 | 路径 | P0 | 语义 |
 |---|---|---|---|
-| 系统层 | `~/.xulux/plugins/<name>/` | ✅ 安装目标（install = 目录拷贝） | 机器级 |
-| 工作区层 | `<cwd>/.xulux/plugins/<name>/` | P1 只读发现 | 随仓库共享的团队插件，git 直接管理，不装不卸只认 |
+| 系统层 | `~/.kova/plugins/<name>/` | ✅ 安装目标（install = 目录拷贝） | 机器级 |
+| 工作区层 | `<cwd>/.kova/plugins/<name>/` | P1 只读发现 | 随仓库共享的团队插件，git 直接管理，不装不卸只认 |
 
 - **seed.json**（照抄 ZCode 缓存实证）：`{ hash, source, installedAt }`，
   hash = 插件树内容 SHA256（排除 seed 自身），update/诊断/未来市场对账用。
@@ -111,7 +111,7 @@
   单文件 ≤ 128KB（同 `MAX_SKILL_BYTES`）。
 - **校验规则**：name 与目录名一致；目录指针 resolve 后不得越出插件根（禁 `..`）；
   hooks.json 逐条过 hooks.ts 现行校验（event 白名单 / timeout 钳制 / matcher）；
-  `.mcp.json` 仅认标准字段 `command/args/env/url/headers/type`（xulux 专属字段
+  `.mcp.json` 仅认标准字段 `command/args/env/url/headers/type`（kova 专属字段
   `lifecycle/approveTools` 等在插件层**不生效**——生命周期策略属于宿主用户）。
 
 ### 4.3 启停状态（kv，不入插件文件）
@@ -152,9 +152,9 @@ pi.plugins = { "disabled": { "<name>": true } }        // 插件整包开关
 sidecar 确定性展开，**不进系统提示词、不动工具表、模型无需感知**。
 与 skills 的分工：skills 是"模型自主决定何时用的知识"，commands 是"用户点名要跑的流程"。
 
-- **来源分层**（同名先者胜）：工作区 `<cwd>/.xulux/commands/*.md`（可编辑）>
+- **来源分层**（同名先者胜）：工作区 `<cwd>/.kova/commands/*.md`（可编辑）>
   插件 `commands/*.md`（只读）> 系统 `<app_data>/commands/*.md`（可编辑，
-  解析同 `systemSkillsDir()`：PI_DB_PATH 同级推导，兜底 `~/.xulux/commands`，
+  解析同 `systemSkillsDir()`：PI_DB_PATH 同级推导，兜底 `~/.kova/commands`，
   测试经 `PI_COMMANDS_DIR` 钉住）。
 - **文件格式**：YAML frontmatter + 正文。
   ```markdown
@@ -210,11 +210,18 @@ sidecar 确定性展开，**不进系统提示词、不动工具表、模型无�
 ### 5.5 MCP —— 插件层并入配置合并
 
 - `mcp-config.ts` 合并链（低 → 高）追加最低层：**插件层（各启用插件 `.mcp.json`
-  按服务器 id 合并）< 系统层 `~/.xulux/mcp.json` < 工作区标准层 < 工作区覆盖层**。
+  按服务器 id 合并）< 系统层 `~/.kova/mcp.json` < 工作区标准层 < 工作区覆盖层**。
   插件是"打包默认值"，宿主用户任何一层配置都可覆盖。
 - 插件服务器**不单独开关**（跟插件整包）；禁用插件 → manager 按现配置 diff
   连接池断连（现有热重载路径）。设置页 MCP 清单加插件来源徽章。
-- 缓存/审批/输出防护/代理网关全部零改动；插件层无 xulux 专属字段。
+- 缓存/审批/输出防护/代理网关全部零改动；插件层无 kova 专属字段。
+- **插件自带 stdio server 的路径与运行时**（已交付）：插件层 `command`/`args`/`env` 的字符串值
+  支持三个占位符**展开**（其余层不做任何展开，用户配置保持字面量）：
+  `${PLUGIN_ROOT}`（插件根绝对路径）、`${WORKSPACE}`（当前会话工作区，供 server 解析工作区相对路径）、
+  `${BUN}`（应用内置 JS/TS 运行时 = `process.execPath`，并自动补 `BUN_BE_BUN=1`——开发态是 bun、
+  打包态是 pi-agent 二进制本身，编译态二进制由此充当完整 bun CLI）。插件因此可自带 stdio MCP
+  server 脚本，**不要求用户机器预装 node/bun**；展开值参与配置哈希，应用升级/工作区切换后连接自动重建。
+  参考实现：`plugins/ui-design/.mcp.json` + `mcp/server.ts`（画布控制面）。
 
 ## 6. 协议消息（对齐 subagents/MCP 消息组风格）
 
@@ -230,7 +237,7 @@ sidecar 确定性展开，**不进系统提示词、不动工具表、模型无�
   → 同款 plugins 应答
 
 { "type": "install_plugin", "id", "path", "cwd"? }
-  → 校验清单（name/目录名一致、指针不越根、上限）→ 拷贝至 ~/.xulux/plugins/<name>/
+  → 校验清单（name/目录名一致、指针不越根、上限）→ 拷贝至 ~/.kova/plugins/<name>/
   → 写 seed.json（hash=树 SHA256）→ 热重载 → plugins 应答
   // 已存在同名 → error（覆盖须 uninstall 后重装，armed 确认在前端）
 
@@ -319,12 +326,12 @@ sidecar 确定性展开，**不进系统提示词、不动工具表、模型无�
 - **PR2**：插件读取层——`plugin-loader.ts` + skills/subagents/commands/MCP 四类
   并网（hooks 只发现不消费）+ kv `pi.plugins` + `list_plugins` /
   `set_plugin_enabled` + 设置页（列表/启停/详情）。安装 = 手动拷目录至
-  `~/.xulux/plugins/<name>/`（README 说明），此时插件已可完整体验。
+  `~/.kova/plugins/<name>/`（README 说明），此时插件已可完整体验。
 - **PR3**：`install_plugin` / `uninstall_plugin` 协议 + 「从文件夹安装」披露卡 +
   卸载 armed 确认 + seed/hash 写入。
 - **PR4**：hooks 合并视图（`matchingHooks` 改造）+ 插件 hooks.json 消费 +
   设置页来源徽章。
-- **P1**：工作区插件层只读发现（`<cwd>/.xulux/plugins`，git 共享团队插件）；
+- **P1**：工作区插件层只读发现（`<cwd>/.kova/plugins`，git 共享团队插件）；
   marketplace（`marketplace.json` 清单仓库 + git URL 安装 + `update_plugin`）；
   MCP prompts → commands 映射；命令 frontmatter 扩展（allowed-tools / model）；
   `save_command` / `delete_command` 协议与命令设置编辑器。
