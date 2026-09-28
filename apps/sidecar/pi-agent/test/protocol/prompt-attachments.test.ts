@@ -113,7 +113,7 @@ const docxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml
 const tinyDocx = Buffer.from("PK\u0003\u0004 fake docx").toString("base64");
 
 describe("preparePromptAttachments 文档分支", () => {
-  test("docx + cwd：落盘到 .xulux/attachments/，说明行带相对路径与类型", () => {
+  test("docx + cwd：落盘到 .kova/attachments/，说明行带相对路径与类型", () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
     const { images, noticeLines } = preparePromptAttachments(
       { attachments: [attach(tinyDocx, docxMime, "报告.docx")] },
@@ -123,7 +123,7 @@ describe("preparePromptAttachments 文档分支", () => {
     expect(noticeLines).toHaveLength(1);
     expect(noticeLines[0]).toContain("报告.docx");
     expect(noticeLines[0]).toContain("Word 文档");
-    expect(noticeLines[0]).toContain(".xulux/attachments/");
+    expect(noticeLines[0]).toContain(".kova/attachments/");
     expect(noticeLines[0]).toContain("请用文件工具读取");
     // 落盘文件真实存在、字节一致；说明行里的路径在目录内
     const dir = docSaveDir(cwd);

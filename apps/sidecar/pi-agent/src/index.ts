@@ -17,7 +17,7 @@
  *   tools/        内置编码工具与系统提示词（tools）+ 浏览器/截图/打开文件/HTTP 等工具
  *   skills/       skills 技能装载、skill-mgmt-tools 管理、skill-use-tool 使用
  *   subagent/     Task/TaskWait/TaskList/TaskStop 工具组与 SubagentRun、子代理定义三层发现
- *                 （内置常量 + 系统 <app_data>/subagents/*.yml + 工作区 <cwd>/.xulux/subagents/*.yml）
+ *                 （内置常量 + 系统 <app_data>/subagents/*.yml + 工作区 <cwd>/.kova/subagents/*.yml）
  *   todo/         待办（todo / todo-state）
  *   model/        model-catalog 模型目录 + 自定义提供商注册、provider-retry、usage-stats
  *   storage/      hostdb 数据访问层（host RPC / 本地 SQLite 双模式）、storage 存储装配
@@ -37,6 +37,7 @@ import { initPersonalization } from "./agent/personalization";
 import { initAppMode } from "./agent/app-mode";
 import { initMemory } from "./agent/memory";
 import { initBrowserConfig } from "./tools/browser-config";
+import { initImageGenConfig } from "./tools/imagegen-config";
 import { initObservability } from "./observability/observability";
 import { initHooks } from "./agent/hooks";
 import { initSubagentState } from "./subagent/subagent-definitions";
@@ -99,6 +100,8 @@ async function main() {
     await initMemory();
     // 浏览器驱动开关同走 kv（browser_* 工具 execute 门控读这份内存配置）
     await initBrowserConfig();
+    // 文生图配置同走 kv（generate_image 工具 execute 门控读这份内存配置）
+    await initImageGenConfig();
     // 可观测性导出配置同走 kv（otlp-exporter 每次 run 结算实时读这份内存配置）
     await initObservability();
     // 子智能体开关/工作区信任同走 kv，理由同上（定义文件本身按需带签名加载）

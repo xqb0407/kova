@@ -48,7 +48,7 @@ export type GuardedOutput = {
   fullOutputPath?: string;
 };
 
-const overflowDir = (): string => join(tmpdir(), `xulux-mcp-output-${randomUUID().slice(0, 8)}`);
+const overflowDir = (): string => join(tmpdir(), `kova-mcp-output-${randomUUID().slice(0, 8)}`);
 
 function foldLongLines(text: string): string {
   return text

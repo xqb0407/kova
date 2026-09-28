@@ -93,7 +93,7 @@ export const InstallLocalDialog: FC<{
         <DialogHeader>
           <DialogTitle>本地安装插件</DialogTitle>
           <DialogDescription>
-            选择一个插件目录根（含 .xulux-plugin / .claude-plugin / .codex-plugin 的
+            选择一个插件目录根（含 .kova-plugin / .claude-plugin / .codex-plugin 的
             plugin.json 清单即可，无需市场）。装进「本地安装」市场；更新时重新选择同一目录点安装即可。
           </DialogDescription>
         </DialogHeader>

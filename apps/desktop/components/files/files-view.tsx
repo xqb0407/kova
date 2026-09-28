@@ -28,6 +28,10 @@ import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-ic
 import { CodeMirrorCode } from "@/components/code/cm-code";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
+import {
+  piSessionPrefsMap,
+  refreshSessionPrefs,
+} from "@/lib/pi/pi-thread-adapter";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -81,7 +85,8 @@ import {
  * 我的文件（侧边栏「我的文件」主区视图）。
  * 本地 = AI 产物目录（无目录任务会话的执行工作目录，Rust app_file_list 列举，
  * 目录可点击逐层下钻，面包屑回跳）；云端 = 复用备份功能已配置的 S3 / WebDAV
- * （backup_list_remote 列远端备份包，支持下载 / 删除）。
+ * （backup_list_remote 列远端备份包，支持下载 / 删除）——页签暂时下线
+ * （见 SUB_TABS），数据流保留。
  * 视图：宫格（类型图标预览瓦片）/ 列表（名称 / 上次更新 / 大小），偏好持久化。
  */
 
@@ -89,6 +94,14 @@ import {
 type FilesState<T> = { loading: boolean; files: T | null; error: string | null };
 
 type FilesTab = "local" | "cloud";
+
+/**
+ * 子页签清单：云端页签暂时下线（备份文件仍可在 设置 → 偏好 → 备份 管理），
+ * 恢复时在数组里加回 { value: "cloud", label: "云端" } 即可，云端数据流未删。
+ */
+const SUB_TABS: { value: FilesTab; label: string }[] = [
+  { value: "local", label: "本地" },
+];
 type ViewMode = "grid" | "list";
 
 /** 宫格/列表共用的行形状（local AppFileEntry 与云端 RemoteBackup 归一）；
@@ -100,6 +113,8 @@ type FileRow = {
   modified: string | null;
   encrypted?: boolean;
   rel?: string;
+  /** 展示名覆盖（根层会话产物子目录显示会话标题，磁盘名仍是 UUID）；操作/导航一律仍走 name/rel */
+  displayName?: string;
 };
 
 /** 行/卡片/弹窗标题图标：目录用蓝色文件夹；文件走 material-file-icons
@@ -165,8 +180,10 @@ export const FilesView: FC = () => {
   const [currentDir, setCurrentDir] = useState("");
   const loadLocal = () => {
     setLocal((s) => ({ ...s, loading: true }));
-    listAppFiles(currentDir)
-      .then((files) => setLocal({ loading: false, files, error: null }))
+    // 根层 <sessionId> 文件夹的展示名要用会话标题：随清单一起刷一遍列表
+    // 镜像（refreshSessionPrefs 内部自吞失败，拿不到就退显示原始目录名）
+    Promise.all([listAppFiles(currentDir), refreshSessionPrefs()])
+      .then(([files]) => setLocal({ loading: false, files, error: null }))
       .catch((err) =>
         setLocal({
           loading: false,
@@ -257,7 +274,7 @@ export const FilesView: FC = () => {
       if (source === "local") {
         await deleteAppFile(row.rel ?? row.name);
         loadLocal();
-        toast.success(`已删除 ${row.name}`);
+        toast.success(`已删除 ${row.displayName ?? row.name}`);
       } else {
         const msg = await backupDeleteRemote(row.name);
         setCloud((s) => ({ ...s, files: s.files?.filter((b) => b.name !== row.name) ?? null }));
@@ -370,8 +387,16 @@ export const FilesView: FC = () => {
   const q = debouncedQuery.trim().toLowerCase();
   const localRows: FileRow[] =
     local.files
-      ?.map((f) => ({ ...f, rel: currentDir ? `${currentDir}/${f.name}` : f.name }))
-      .filter((f) => !q || f.name.toLowerCase().includes(q)) ?? [];
+      ?.map((f) => ({
+        ...f,
+        rel: currentDir ? `${currentDir}/${f.name}` : f.name,
+        // 根层目录 = 无目录会话的任务子目录（名即 sessionId）：显示会话标题
+        displayName:
+          currentDir === "" && f.dir
+            ? piSessionPrefsMap.get(f.name)?.name || undefined
+            : undefined,
+      }))
+      .filter((f) => !q || (f.displayName ?? f.name).toLowerCase().includes(q)) ?? [];
   const cloudRows: FileRow[] =
     cloud.files
       ?.filter((f) => !q || f.name.toLowerCase().includes(q))
@@ -387,20 +412,17 @@ export const FilesView: FC = () => {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">我的文件</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            本地为 AI 产生的文件（任务会话的工作目录）；云端为已配置存储里的备份文件。
+            这里存放 AI 产生的文件（无目录任务按会话分文件夹存放）。
           </p>
         </div>
 
-        {/* 子分段器（本地 / 云端）+ 搜索 + 视图切换 */}
+        {/* 子分段器（云端暂时下线，只剩单页签时不渲染）+ 搜索 + 视图切换 */}
         <div className="mt-6 flex items-center justify-between gap-3">
-          <Segmented
-            value={subTab}
-            onChange={setSubTab}
-            options={[
-              { value: "local", label: "本地" },
-              { value: "cloud", label: "云端" },
-            ]}
-          />
+          {SUB_TABS.length > 1 ? (
+            <Segmented value={subTab} onChange={setSubTab} options={SUB_TABS} />
+          ) : (
+            <span className="text-sm font-medium">本地</span>
+          )}
           <div className="flex items-center gap-2">
             <Input
               value={query}
@@ -447,17 +469,20 @@ export const FilesView: FC = () => {
                 </button>
                 {currentDir.split("/").map((part, i, parts) => {
                   const last = i === parts.length - 1;
+                  // 首段若是会话产物目录（名 = sessionId），面包屑同样显示会话标题
+                  const label =
+                    i === 0 ? piSessionPrefsMap.get(part)?.name || part : part;
                   return (
                     <span key={i} className="flex min-w-0 items-center gap-1">
                       <ChevronRightIcon className="text-muted-foreground/50 size-3.5 shrink-0" />
                       {last ? (
-                        <span className="text-foreground truncate font-medium">{part}</span>
+                        <span className="text-foreground truncate font-medium">{label}</span>
                       ) : (
                         <button
                           onClick={() => navigateDir(parts.slice(0, i + 1).join("/"))}
                           className="text-muted-foreground hover:text-foreground truncate transition-colors"
                         >
-                          {part}
+                          {label}
                         </button>
                       )}
                     </span>
@@ -570,7 +595,9 @@ export const FilesView: FC = () => {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除「{deleteTarget?.row.name}」？</AlertDialogTitle>
+            <AlertDialogTitle>
+              删除「{deleteTarget?.row.displayName ?? deleteTarget?.row.name}」？
+            </AlertDialogTitle>
             <AlertDialogDescription>
               {deleteTarget?.source === "local"
                 ? deleteTarget.row.dir
@@ -735,7 +762,9 @@ const FilesPane: FC<{
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <RowIcon row={f} className="size-3.5" />
-                    <span className="truncate text-sm font-medium">{f.name}</span>
+                    <span className="truncate text-sm font-medium" title={f.displayName ? f.name : undefined}>
+                    {f.displayName ?? f.name}
+                  </span>
                     {f.encrypted && (
                       <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-1.5 py-0.5 text-[11px] leading-none">
                         已加密
@@ -785,7 +814,9 @@ const FilesPane: FC<{
               >
                 <div className="flex min-w-0 items-center gap-2.5">
                   <RowIcon row={f} className="size-4" />
-                  <span className="truncate text-sm font-medium">{f.name}</span>
+                  <span className="truncate text-sm font-medium" title={f.displayName ? f.name : undefined}>
+                    {f.displayName ?? f.name}
+                  </span>
                   {f.encrypted && (
                     <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-1.5 py-0.5 text-[11px] leading-none">
                       已加密

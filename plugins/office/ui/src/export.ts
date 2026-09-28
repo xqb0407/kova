@@ -52,8 +52,8 @@ export async function exportPptx(doc: CanvasDoc, fileRel: string | null): Promis
   if (slides.length === 0) throw new Error("文档没有页面");
   const pptx = new PptxGenJS();
   const first = slides[0];
-  pptx.defineLayout({ name: "XULUX", width: px2in(first.w), height: px2in(first.h) });
-  pptx.layout = "XULUX";
+  pptx.defineLayout({ name: "KOVA", width: px2in(first.w), height: px2in(first.h) });
+  pptx.layout = "KOVA";
   pptx.title = doc.meta.name;
 
   for (const slide of slides) {

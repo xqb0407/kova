@@ -463,7 +463,7 @@ export async function installPlugin(mktId: string, name: string, opts: InstallOp
 
 /**
  * 直接安装任意本地插件目录（"手动上传安装"）：不登记市场、不要求
- * marketplace.json，目录根下有三态清单（.xulux/.claude/.codex-plugin
+ * marketplace.json，目录根下有三态清单（.kova/.claude/.codex-plugin
  * 的 plugin.json）即可。物化到 cache/local/<name>/（身份 `name@local`），
  * installed.json 记住 sourcePath——之后的"更新"即从源目录重拷。
  */

@@ -167,7 +167,7 @@ function summarize(event: AgentEvent): string {
   if (typeof d.message === "string" && d.message) parts.push(d.message.slice(0, 120));
   if (typeof d.prompt === "string" && d.prompt) parts.push(`「${d.prompt.slice(0, 60)}」`);
   if (event.threadId) parts.push(`会话 ${event.threadId.slice(0, 8)}`);
-  return `[Xulux] ${parts.join(" · ")}`;
+  return `[Kova] ${parts.join(" · ")}`;
 }
 
 /** 摘要里除事件名外的细节段（Bark 正文用：标题给事件名，正文给细节） */
@@ -243,9 +243,9 @@ async function buildRequest(
       // 表单字段 title/body/group…（官方 curl 示例同款，自建 bark-server 同协议）。
       // Bark 无加签机制，endpoint.secret 忽略；URL 去尾斜杠原样使用。
       const form = new URLSearchParams({
-        title: `Xulux · ${eventLabel(event.name)}`,
+        title: `Kova · ${eventLabel(event.name)}`,
         body: detailText(event),
-        group: "Xulux",
+        group: "Kova",
       });
       return {
         url: endpoint.url.trim().replace(/\/+$/, ""),
@@ -260,7 +260,7 @@ async function buildRequest(
         id: event.id,
         event: event.name,
         occurredAt: new Date(event.occurredAt).toISOString(),
-        app: { name: "Xulux", platform: "pi-desktop" },
+        app: { name: "Kova", platform: "pi-kova" },
         thread: event.threadId ? { id: event.threadId } : undefined,
         data: event.data ?? {},
       };

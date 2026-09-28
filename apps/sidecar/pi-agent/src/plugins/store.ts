@@ -185,7 +185,7 @@ export function scanInstalledSync(): InstalledPlugin[] {
           manifest: {
             name,
             version: "0.0.0",
-            manifestKind: "xulux",
+            manifestKind: "kova",
             root: dir,
             components: {},
             unsupported: [],

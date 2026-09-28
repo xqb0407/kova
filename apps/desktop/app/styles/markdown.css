@@ -88,9 +88,11 @@
 /* Markdown Code Block（ChatGPT 式卡片：圆角 + 极简标签行，无底色无分隔线） */
 .aui-markdown [data-streamdown="code-block"] {
   padding: 0;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: 0.75rem;
-  background: transparent;
+  /* background:; */
+  background-color: var(--color-muted);
+  /* @apply bg-emerald-50; */
   gap: 0;
 }
 
@@ -127,8 +129,9 @@
   margin: 0;
   padding-top: 8px;
   padding-bottom: 8px;
-  background: transparent;
+  background: var(--color-background);
   border: transparent;
+  border: none;
   overflow-x: auto;
 }
 

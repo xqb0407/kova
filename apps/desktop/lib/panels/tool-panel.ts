@@ -11,7 +11,7 @@ import { focusPanelTab, type PanelTabExtra, type PanelTabType } from "./panel-ta
  * - plan_write（含历史 SubmitPlan/SubmitGoal）→ 文件标签，focus=提交 toolCallId
  *   （渲染 args 里的计划/提案 Markdown 快照，见 file-view）
  * - memory_write/memory_read → 文件标签，focus=工具 toolCallId（回放写入内容/
- *   读取结果快照；记忆文件可在 ~/.xulux/memory，不走磁盘实时读取）
+ *   读取结果快照；记忆文件可在 ~/.kova/memory，不走磁盘实时读取）
  * 复用优先（focusPanelTab），并派发 base.tsx 监听的 `agent-panel:open`
  * 把收起的面板展开（compact 浮层同样生效）。
  */
@@ -57,7 +57,7 @@ export function toolPanelTarget(
     return { type: "file", extra: { focus: toolCallId, title, path: undefined } };
   }
   // memory_write/memory_read：文件标签回放消息快照（写入内容 / 读取结果），
-  // 不读磁盘实时文件——记忆文件可能在工作区之外（~/.xulux/memory）
+  // 不读磁盘实时文件——记忆文件可能在工作区之外（~/.kova/memory）
   if (toolName === "memory_write") {
     const file =
       typeof args?.file === "string" && args.file ? args.file : "MEMORY.md";

@@ -1,5 +1,5 @@
 /**
- * 宿主桥客户端（协议 xulux-ui-plugin/1，权威定义在应用仓 lib/plugins/ui-plugin-bridge.ts）。
+ * 宿主桥客户端（协议 kova-ui-plugin/1，权威定义在应用仓 lib/plugins/ui-plugin-bridge.ts）。
  * 本模块是 office 聚合面板（幻灯片+表格+文档三引擎）唯一的桥实现：attach 为
  * **多播**——外壳与各引擎视图各自注册 handlers，宿主帧按 kind 自行过滤消费
  * （视图只处理自己认领后缀的 doc.open），解除单一 handlers 的相互覆盖。
@@ -9,7 +9,7 @@
  */
 import { DOC_VERSION, type DocKind } from "./doc";
 
-const PROTOCOL = "xulux-ui-plugin/1";
+const PROTOCOL = "kova-ui-plugin/1";
 
 /** 首页历史卡片：宿主按已装面板 opens glob 扫描工作区后回传（与宿主端 DocListItem 对齐） */
 export type DocListItem = {

@@ -472,7 +472,7 @@ async function executeStatus(cwd: string) {
   if (lines.length === 0) {
     return textResult(
       "No MCP servers configured. Ask the user to add one in Settings → MCP " +
-        "(system ~/.xulux/mcp.json or workspace .mcp.json).",
+        "(system ~/.kova/mcp.json or workspace .mcp.json).",
     );
   }
   return textResult(lines.join("\n"), {

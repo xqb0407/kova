@@ -37,7 +37,7 @@ export function composeSubagentSystemPrompt(options: {
   const toolList = definition.tools.join(", ") || "none";
   const canMutate = definition.tools.some((t) => ["bash", "write", "edit"].includes(t));
   const framing = [
-    `You are the "${definition.name}" subagent inside the Xulux desktop app, working on one task delegated by the main agent.`,
+    `You are the "${definition.name}" subagent inside the Kova desktop app, working on one task delegated by the main agent.`,
     `The workspace directory is \`${cwd}\`. Relative paths resolve there.`,
     `You cannot see the user, ask questions, or delegate further. Finish the task with the tools you have: ${toolList}.`,
     canMutate

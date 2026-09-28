@@ -1,8 +1,8 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Xulux Assistant",
+  "productName": "扣瓦",
   "version": "0.1.0",
-  "identifier": "com.xulux.assistant",
+  "identifier": "com.kova.assistant",
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://localhost:3000",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "create": false,
-        "title": "Xulux Assistant",
+        "title": "扣瓦",
         "width": 1600,
         "height": 800,
         "minWidth": 800,
@@ -55,7 +55,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "publisher": "Xulux",
+    "publisher": "Kova",
     "category": "Productivity",
     "shortDescription": "AI Assistant Desktop Application",
     "longDescription": "A powerful AI assistant with chat, thread management, and file capabilities",

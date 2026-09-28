@@ -22,6 +22,7 @@ import {
 } from "../../agent/memory";
 import { getHookConfigs, setHookConfigs } from "../../agent/hooks";
 import { applyBrowserConfig, getBrowserConfig } from "../../tools/browser-config";
+import { applyImageGenConfig, getImageGenConfig } from "../../tools/imagegen-config";
 import {
   applySecretsConfig,
   getSecretsConfig,
@@ -151,6 +152,16 @@ export const handlers: Record<string, CommandHandler> = {
     // 只落 kv：browser_* 工具无提示词注入块，execute 内实时门控，写完即生效
     const settings = await applyBrowserConfig(msg.settings);
     send({ id: reqId, type: "browser", settings });
+  },
+
+  get_imagegen: async (reqId) => {
+    send({ id: reqId, type: "imagegen", settings: getImageGenConfig() });
+  },
+
+  set_imagegen: async (reqId, msg) => {
+    // 同款机制（imagegen-config.ts）：generate_image 无提示词注入块，写完即生效
+    const settings = await applyImageGenConfig(msg.settings);
+    send({ id: reqId, type: "imagegen", settings });
   },
 
   get_observability: async (reqId) => {

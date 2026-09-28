@@ -29,7 +29,7 @@ import { isPromptActive, setActiveReqId } from "../../src/protocol/stream";
 import type { Running } from "../../src/types";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-sessions-"));
-// new_session 会合成提示词并实时读身份文件：钉到空目录，避免触碰开发者真实 ~/.xulux/
+// new_session 会合成提示词并实时读身份文件：钉到空目录，避免触碰开发者真实 ~/.kova/
 const prevIdentityDir = process.env.PI_IDENTITY_DIR;
 
 beforeAll(() => {

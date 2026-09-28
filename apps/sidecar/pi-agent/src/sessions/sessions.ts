@@ -26,5 +26,7 @@ export {
   reloadSubagents,
   reloadSkills,
   resolveSession,
+  setSessionCwd,
   projectContextInfo,
+  removeTaskSessionDir,
 } from "./resolve";

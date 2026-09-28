@@ -486,63 +486,6 @@ export function blankDoc(preset: PagePreset = "16:9", name = "演示文稿", kin
   };
 }
 
-/** 移动端画板尺寸（UI 设计起始档用；与 iPhone 逻辑分辨率一致） */
-export const UI_DEVICE = { w: 375, h: 812 } as const;
-
-/**
- * 「UI 设计」起始档：三块移动端设备画板横排（首页 / 关键流程 / 详情）+ 一句引导。
- *
- * 画板用画布级 objects 的圆角矩形表达，而不是页框——白板表面只渲染 objects
- * （页框是"页"的语义，在 deck 里逐页编辑，白板上不画也不命中）。这样拉起档
- * 就能看见三块画板、可直接选中，agent 或人往里画界面即可。
- */
-export function uiStarterDoc(name = "UI 设计", seed = true): CanvasDoc {
-  const doc = blankDoc("16:9", name, "ui");
-  if (!seed) return doc;
-  const titles = ["首页", "关键流程", "详情"];
-  const gap = 120;
-  const top = 140;
-  doc.objects.push({
-    kind: "text",
-    id: uid("t"),
-    x: 0,
-    y: 0,
-    w: 900,
-    h: 64,
-    runs: [{ text: "让 agent 按提示词把界面画进这三块画板；也可以自己动手改", size: 26, color: "#1d1d1f" }],
-    align: "left",
-    vAlign: "middle",
-  });
-  titles.forEach((t, i) => {
-    const x = i * (UI_DEVICE.w + gap);
-    doc.objects.push({
-      kind: "shape",
-      id: uid("s"),
-      shape: "rect",
-      x,
-      y: top,
-      w: UI_DEVICE.w,
-      h: UI_DEVICE.h,
-      fill: "#ffffff",
-      stroke: "#d4d4d8",
-      strokeWidth: 1.5,
-      radius: 18,
-    });
-    doc.objects.push({
-      kind: "text",
-      id: uid("t"),
-      x,
-      y: top - 56,
-      w: UI_DEVICE.w,
-      h: 36,
-      runs: [{ text: t, size: 20, color: "#52525b" }],
-      align: "left",
-      vAlign: "middle",
-    });
-  });
-  return doc;
-}
-
 /* ---------------- 容错解析 ---------------- */
 
 const num = (v: unknown, d = 0): number =>

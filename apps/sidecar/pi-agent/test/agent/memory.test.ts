@@ -24,14 +24,14 @@ import { SYSTEM_PROMPT_CORE, workspacePromptLine } from "../../src/tools/tools";
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-memory-"));
 const globalDir = path.join(tmp, "global-memory");
 const ws = path.join(tmp, "ws");
-const wsMemoryDir = path.join(ws, ".xulux", "memory");
+const wsMemoryDir = path.join(ws, ".kova", "memory");
 const prevMemoryDir = process.env.PI_MEMORY_DIR;
 const prevIdentityDir = process.env.PI_IDENTITY_DIR;
 
 beforeAll(async () => {
   initLocalStorage(path.join(tmp, "state.db"));
   process.env.PI_MEMORY_DIR = globalDir;
-  // 个性化身份文件实时读盘：钉到空目录，保证默认提示词基线不受真实 ~/.xulux/ 影响
+  // 个性化身份文件实时读盘：钉到空目录，保证默认提示词基线不受真实 ~/.kova/ 影响
   process.env.PI_IDENTITY_DIR = path.join(tmp, "identity");
   mkdirSync(globalDir, { recursive: true });
   mkdirSync(wsMemoryDir, { recursive: true });

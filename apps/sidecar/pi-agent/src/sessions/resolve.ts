@@ -11,6 +11,7 @@ import {
   appendFileSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import {
@@ -90,41 +91,73 @@ function buildAgentExtensions(
 }
 
 /**
- * 给已存在的 run 补绑工作目录：工具闭包/系统提示词里的 cwd 是建会话时烘焙的，
- * 未选目录建立的会话（persistedCwd 空 → 运行 cwd 兜底主目录）一旦前端带上目录，
- * 必须整组重建工具并重排提示词，否则 write/bash 仍落在主目录（曾致代码写到 C:\Users）。
- * 只改 cwd 相关物，不动 mode/approval 状态。
+ * 回写 cwd 到索引行与 JSONL header（不依赖驻留 run）。
+ * header 仅展示用，读端取首个 header 行，重写安全；转录文件异常不阻断（DB 已是事实源）。
  */
-async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promise<void> {
-  run.persistedCwd = cwd;
-  run.cwd = cwd;
-  // 重建工具须沿用原 threadId：todo/question 工具按 threadId 归属，误传 sessionId 会挂错 key
-  run.baseTools = buildTools(cwd, threadId);
-  const { definitions } = await loadSubagentDefinitions({ cwd });
-  run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
-  run.agent.state.tools = toolsForMode(run);
-  // 换了工作区：技能目录随 cwd 变，先预热新缓存再重组提示词
-  await ensureSkillsLoaded(cwd);
-  run.agent.state.systemPrompt = composeModeSystemPrompt(
-    run.mode,
-    cwd,
-    run.agent.state.model,
-  );
-  // 回写索引行与 JSONL header（header 仅展示用，读端取首个 header 行，重写安全）
-  await sessionUpdateCwd(run.sessionId, cwd);
+async function persistSessionCwd(sessionId: string, cwd: string): Promise<void> {
+  await sessionUpdateCwd(sessionId, cwd);
   try {
-    const file = sessionPath(run.sessionId);
+    const file = sessionPath(sessionId);
     const lines = readFileSync(file, "utf8").split("\n");
     const head = lines[0] ? JSON.parse(lines[0]) : null;
     if (head?.type === "header") {
       lines[0] = JSON.stringify({ ...head, cwd });
       writeFileSync(file, lines.join("\n"));
     } else {
-      appendFileSync(file, JSON.stringify({ type: "header", schema: 1, id: run.sessionId, cwd }) + "\n");
+      appendFileSync(file, JSON.stringify({ type: "header", schema: 1, id: sessionId, cwd }) + "\n");
     }
   } catch {
-    // 转录文件异常不阻断补绑（DB 已是事实源）
+    // 见上
   }
+}
+
+/**
+ * 给已存在的 run 换绑工作目录：工具闭包/系统提示词里的 cwd 是建会话时烘焙的，
+ * 换目录必须整组重建工具并重排提示词，否则 write/bash 仍落在旧目录（曾致代码写到 C:\Users）。
+ * cwd 传空串 = 解绑：持久化 cwd 清空、运行 cwd 回落按会话隔离的任务子目录
+ * （与"建会话时就未选目录"的形态完全一致）。
+ * 只改 cwd 相关物，不动 mode/approval 状态。
+ */
+async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promise<void> {
+  run.persistedCwd = cwd;
+  run.cwd = cwd || taskSessionCwd(run.sessionId);
+  // 重建工具须沿用原 threadId：todo/question 工具按 threadId 归属，误传 sessionId 会挂错 key
+  run.baseTools = buildTools(run.cwd, threadId);
+  const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
+  run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
+  run.agent.state.tools = toolsForMode(run);
+  // 换了工作区：技能目录随 cwd 变，先预热新缓存再重组提示词
+  await ensureSkillsLoaded(run.cwd);
+  run.agent.state.systemPrompt = composeModeSystemPrompt(
+    run.mode,
+    run.cwd,
+    run.agent.state.model,
+  );
+  await persistSessionCwd(run.sessionId, cwd);
+}
+
+/**
+ * 中途换/清会话工作目录（set_session_cwd 命令的服务端内核；cwd=""=解绑）。
+ * 经 handleLine 的 mgmt 串行队列与 prompt 的会话准备段互斥，这里的检查与写入
+ * 之间不会有轮次插队。规则：
+ * - 驻留 run：完整换绑（重建工具/技能/提示词 + 回写索引/header），下一轮即生效；
+ * - 不驻留：只改索引行 + header，下次 resolveSession 物化时自然按新值装配；
+ * - 本轮在跑：拒绝——prompt 上下文里的工具与提示词已按旧目录烘焙，中途改会执行分裂。
+ * 注意：已写进转录的旧绝对路径不会改写，模型若在历史里引用旧路径属固有限制。
+ */
+export async function setSessionCwd(sessionId: string, cwd: string): Promise<void> {
+  const owner = findRunBySession(sessionId);
+  if (owner) {
+    if (isPromptActive(owner.run.threadId)) {
+      throw new Error("session is busy: wait for the current response to finish");
+    }
+    await rebindRunCwd(owner.run, cwd, owner.run.threadId);
+    return;
+  }
+  if (!(await sessionGet(sessionId))) {
+    throw new Error(`session not found: ${sessionId}`);
+  }
+  await persistSessionCwd(sessionId, cwd);
 }
 /**
  * 把驻留 run 改绑到新的前端 threadId（刷新后键漂移的唯一正确落点）。
@@ -223,18 +256,51 @@ async function resolveCurrentModel(): Promise<NonNullable<Awaited<ReturnType<typ
 
 /** 拿到 threadId 对应的 Agent；sessionId 提供时优先恢复该会话（重启续聊） */
 /**
- * 无目录任务会话的执行目录：应用数据目录下的 task-workspace（Rust 拉起时
- * 经 PI_TASK_CWD 注入），测试/裸跑兜底 ~/.xulux/task-workspace。
- * 绝不落家目录本体：agent 的文件读写不该散在 home，工作区作用域配置
- * （<cwd>/.xulux/*）也不能与全局层重叠——全局记忆/子智能体/MCP 恰好都在
- * ~/.xulux/*，用家目录兜底会让任务会话把它们同时当作"工作区层"再加载一遍。
+ * 任务工作区根：应用数据目录下的 task-workspace（Rust 拉起时经 PI_TASK_CWD
+ * 注入），测试/裸跑兜底 ~/.kova/task-workspace。本身不建目录——惰性建的是
+ * 各会话的子目录（见 taskSessionCwd）。
  */
-function defaultTaskCwd(): string {
-  const dir = process.env.PI_TASK_CWD
+function taskWorkspaceBase(): string {
+  return process.env.PI_TASK_CWD
     ? resolve(process.env.PI_TASK_CWD)
-    : join(homedir(), ".xulux", "task-workspace");
+    : join(homedir(), ".kova", "task-workspace");
+}
+
+/**
+ * sessionId → 任务工作区子目录名：sessionId 可能是 IPC 传入的字符串，
+ * 必须限为单个安全路径段才能拼进 join（真值恒为 randomUUID 的 UUID）。
+ * 返回 null = 不是合法会话名（含分隔符/`..`/点开头序列等）。
+ */
+function taskSessionSeg(sessionId: string): string | null {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(sessionId) || sessionId === "..") return null;
+  return sessionId;
+}
+
+/**
+ * 无目录任务会话的执行目录：<任务工作区根>/<sessionId>，惰性 mkdir。
+ * 每个全局会话独享一个目录：产物互不混堆、互不覆盖，删会话可连目录一起收走；
+ * 桌面端「我的文件」与产物预览以同源规则（根 + sessionId）定位。
+ * 绝不落家目录本体：agent 的文件读写不该散在 home，工作区作用域配置
+ * （<cwd>/.kova/*）也不能与全局层重叠——全局记忆/子智能体/MCP 恰好都在
+ * ~/.kova/*，用家目录兜底会让任务会话把它们同时当作"工作区层"再加载一遍。
+ */
+function taskSessionCwd(sessionId: string): string {
+  // 兜底转写只可能来自被篡改的 IPC（真值恒为 UUID）：加前缀保证单段、无穿越
+  const seg = taskSessionSeg(sessionId) ?? `_${sessionId.replace(/[^A-Za-z0-9._-]/g, "_")}`;
+  const dir = join(taskWorkspaceBase(), seg);
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/**
+ * 删除无目录会话的产物目录（删会话时调用）：递归删；force 容忍目录不存在
+ * （从未跑过的会话、或早已改绑工作目录、以及项目会话都是空操作）。
+ * 非法会话名直接拒绝——这里是删除路径，宁可空操作也不越界。
+ */
+export function removeTaskSessionDir(sessionId: string): void {
+  const seg = taskSessionSeg(sessionId);
+  if (!seg) return;
+  rmSync(join(taskWorkspaceBase(), seg), { recursive: true, force: true });
 }
 
 export async function resolveSession(
@@ -274,7 +340,7 @@ export async function resolveSession(
   }
 
   // 持久化 cwd = 用户选择的工作目录（空串 = 未选目录的任务会话）；
-  // 运行 cwd 兜底主目录，仅影响 Agent 执行环境，不回写持久化
+  // 运行 cwd 兜底按会话隔离的任务子目录，仅影响 Agent 执行环境，不回写持久化
   let persistedCwd = cwd ?? "";
   let restoredMessages: import("@earendil-works/pi-ai").Message[] = [];
   /** 未结算挂起交互行（§4）：物化后重放进台账，挂起卡跨重启不丢 */
@@ -322,7 +388,8 @@ export async function resolveSession(
     );
   }
 
-  const resolvedCwd = persistedCwd || defaultTaskCwd();
+  // 运行 cwd = 用户目录，或（未选目录时）按会话隔离的任务子目录；均不回写持久化
+  const resolvedCwd = persistedCwd || taskSessionCwd(sessionId!);
 
   // 会话级模式偏好：恢复的会话取偏好行（NULL = 从未变更过 → 默认），
   // 新会话跟随「最近一次使用」（kv pi.mode，applyMode 维护）。
@@ -577,7 +644,7 @@ export async function projectContextInfo(
   const generation = checkpoint ? checkpointGeneration(checkpoint.details) : 0;
   const model = await resolveCurrentModel();
 
-  const resolvedCwd = row.cwd || defaultTaskCwd();
+  const resolvedCwd = row.cwd || taskSessionCwd(sessionId);
   // 技能段预热：投影读数与随后真正打开该会话时逐字段一致（同款 ensureSkillsLoaded）
   await ensureSkillsLoaded(resolvedCwd);
   const baseTools = buildTools(resolvedCwd, threadId);

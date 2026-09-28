@@ -2239,6 +2239,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "kova"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "futures-util",
+ "hex",
+ "hmac",
+ "if-addrs",
+ "keyring",
+ "log",
+ "pbkdf2",
+ "portable-pty",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-notification",
+ "tauri-plugin-os",
+ "tauri-plugin-shell",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5907,41 +5942,6 @@ name = "xkeysym"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
-
-[[package]]
-name = "xulux-assistant"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "axum",
- "base64 0.22.1",
- "chrono",
- "flate2",
- "futures-util",
- "hex",
- "hmac",
- "if-addrs",
- "keyring",
- "log",
- "pbkdf2",
- "portable-pty",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-notification",
- "tauri-plugin-os",
- "tauri-plugin-shell",
- "tokio",
- "uuid",
-]
 
 [[package]]
 name = "yoke"

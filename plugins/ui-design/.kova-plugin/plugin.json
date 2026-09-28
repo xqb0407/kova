@@ -1,0 +1,12 @@
+{
+  "name": "ui-design",
+  "version": "0.1.0",
+  "description": "Figma 式 UI 设计工作台：页面/画板/图层树 + 完整属性检视（填充/渐变/描边/圆角/阴影/文字），独立 *.uidesign.json 文档；agent 可经 ui-design MCP 工具直接控制画布（增删改节点/对齐分布/堆叠排版/成组）",
+  "author": { "name": "Kova" },
+  "category": "效率",
+  "icon": "icon.svg",
+  "keywords": ["ui", "design", "figma", "prototype", "mobile"],
+  "skills": "skills",
+  "panels": "panels.json",
+  "mcpServers": ".mcp.json"
+}

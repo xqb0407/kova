@@ -2,8 +2,8 @@
 # 主开发仓在 Gitee，此仓库仅承担 CI 构建 + GitHub Releases 分发。
 #
 # 产物（Draft Release，手动确认后 Publish）：
-#   - macOS Apple Silicon：Xulux Assistant_<ver>_aarch64.dmg
-#   - Windows x64：        Xulux Assistant_<ver>_x64-setup.exe
+#   - macOS Apple Silicon：扣瓦_<ver>_aarch64.dmg
+#   - Windows x64：        扣瓦_<ver>_x64-setup.exe
 # 无签名方案：mac 首次打开需引导（见 docs/release.md），Win 有 SmartScreen 提示。
 name: Release
 

@@ -40,7 +40,8 @@ const SKIP_DIRS: &[&str] = &[".git", "node_modules"];
 
 /// cwd 必须命中两个可信根之一（canonicalize 后比对），返回 canonical 根：
 ///   1. 前端 workspace-store 里选中的工作区；
-///   2. app 数据目录下的 task-workspace —— 无目录任务会话（PI_TASK_CWD）的落盘点，
+///   2. app 数据目录下的 task-workspace 及其任意子目录 —— 无目录任务会话
+///      （PI_TASK_CWD）的落盘点按会话隔离为 <task-workspace>/<sessionId>，
 ///      UI 插件面板在没有工作区时也以它为 cwd（否则"工作"模式下插件完全不可用）。
 fn resolve_root(app: &AppHandle, cwd: &str) -> Result<PathBuf, String> {
     let stored = crate::store::kv_get_global(app, "workspace")
@@ -54,11 +55,12 @@ fn resolve_root(app: &AppHandle, cwd: &str) -> Result<PathBuf, String> {
             }
         }
     }
-    // 第二个可信根：任务工作区（与 pi_agent.rs 注入的 PI_TASK_CWD 同一路径）
+    // 第二个可信根：任务工作区（与 pi_agent.rs 注入的 PI_TASK_CWD 同一路径）；
+    // 按会话分子目录后整棵子树同为可信区，根与任意深度的子目录一并放行
     if let Ok(dir) = app.path().app_data_dir() {
         let task = dir.join("task-workspace");
         if let Ok(t) = std::fs::canonicalize(&task) {
-            if a == t {
+            if a == t || a.starts_with(&t) {
                 return Ok(a);
             }
         }
@@ -381,8 +383,9 @@ fn is_bad_name(name: &str) -> bool {
 
 /* ------------------------------ 我的文件：AI 产物 ------------------------------ */
 
-/// 「我的文件」根目录：app_data/task-workspace（无目录任务会话的执行目录，
-/// 与注入 sidecar 的 PI_TASK_CWD 同源）。
+/// 「我的文件」根目录：app_data/task-workspace（无目录任务会话的执行目录根，
+/// 与注入 sidecar 的 PI_TASK_CWD 同源；根下按会话分子目录
+/// <task-workspace>/<sessionId>，前端把目录名映射回会话标题显示）。
 fn app_task_workspace_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     tauri::Manager::path(app)
         .app_data_dir()
@@ -390,8 +393,9 @@ fn app_task_workspace_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map(|p| p.join("task-workspace"))
 }
 
-/// 「我的文件 → 本地」的数据源：无目录任务会话的执行目录（task-workspace，
-/// 与 Rust 注入 sidecar 的 PI_TASK_CWD 同源，agent 的文件读写产物都落这里）。
+/// 「我的文件 → 本地」的数据源：无目录任务会话的产物根（task-workspace，
+/// 与 Rust 注入 sidecar 的 PI_TASK_CWD 同源；agent 的文件读写产物落在
+/// 按会话隔离的 <task-workspace>/<sessionId> 子目录，根下也可能有历史散文件）。
 /// rel 为根内相对路径（"" = 根），支持逐层下钻；校验复用 join_rel（拒 `..`
 /// 与绝对路径，canonicalize 防符号链接逃逸）。dotfiles 不出现在清单里，
 /// 符号链接按文件呈现不展开。

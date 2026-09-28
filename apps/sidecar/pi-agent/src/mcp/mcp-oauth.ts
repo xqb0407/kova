@@ -4,8 +4,8 @@
  * 实现 SDK 的 OAuthClientProvider，把 401 → 受保护资源元数据发现 → 授权服务器
  * 元数据 → 动态客户端注册（DCR）→ PKCE 浏览器授权 → localhost 回调取 code →
  * 换 token 这整条链路的状态持久化下来：
- * - 存储：~/.xulux/mcp-oauth.json（PI_MCP_OAUTH_PATH 可覆盖），按服务器 URL 键控，
- *   文件 0600（内含 access/refresh token，策略与 ~/.xulux/mcp.json 明文 headers 一致）
+ * - 存储：~/.kova/mcp-oauth.json（PI_MCP_OAUTH_PATH 可覆盖），按服务器 URL 键控，
+ *   文件 0600（内含 access/refresh token，策略与 ~/.kova/mcp.json 明文 headers 一致）
  * - 回调：http://127.0.0.1:<port>/callback 一次性本地服务，只在授权进行时存在；
  *   端口随 DCR 结果记录，重连时优先复用（否则注册的 redirect_uri 对不上要重新 DCR）
  * - 浏览器：darwin open / xdg-open / cmd start（测试可注入替换）
@@ -48,7 +48,7 @@ const entries = new Map<string, OAuthEntry>();
 let loaded = false;
 
 export function oauthStorePath(): string {
-  return process.env.PI_MCP_OAUTH_PATH ?? join(homedir(), ".xulux", "mcp-oauth.json");
+  return process.env.PI_MCP_OAUTH_PATH ?? join(homedir(), ".kova", "mcp-oauth.json");
 }
 
 function load(): void {
@@ -133,7 +133,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
   get clientMetadata(): OAuthClientMetadata {
     return {
-      client_name: "xulux",
+      client_name: "kova",
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       redirect_uris: [this.redirectUrl],
@@ -285,7 +285,7 @@ function callbackPage(opts: {
 }): string {
   return `<!doctype html><html lang="zh-CN"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>xulux · ${escHtml(opts.title)}</title>
+<title>kova · ${escHtml(opts.title)}</title>
 <link rel="icon" href="data:image/svg+xml,${encodeURIComponent(LOGO_SVG)}">
 <style>
 :root{color-scheme:light dark}
@@ -318,7 +318,7 @@ h1{font-size:21px;font-weight:700;margin-bottom:10px}
 }
 </style></head>
 <body><main class="card">
-<div class="brand">${LOGO_SVG}<span>xulux</span></div>
+<div class="brand">${LOGO_SVG}<span>kova</span></div>
 <div class="badge ${opts.ok ? "ok" : "err"}">${opts.ok ? CHECK_SVG : CROSS_SVG}</div>
 <h1>${escHtml(opts.title)}</h1>
 <p class="msg">${escHtml(opts.message)}</p>
@@ -350,7 +350,7 @@ export async function beginInteractiveOAuth(serverUrl: string): Promise<Interact
         callbackPage({
           ok: false,
           title: "页面不存在",
-          message: "这里只是 xulux 接收 MCP 授权回调的临时服务，没有更多内容。请回到 xulux 继续操作。",
+          message: "这里只是 kova 接收 MCP 授权回调的临时服务，没有更多内容。请回到 kova 继续操作。",
           serverUrl,
         }),
       );
@@ -363,7 +363,7 @@ export async function beginInteractiveOAuth(serverUrl: string): Promise<Interact
     if (code && url.searchParams.get("state") === provider.state()) {
       result = { code };
     } else if (code) {
-      result = { err: new Error("授权回调 state 校验失败，请在 xulux 中重新发起授权") };
+      result = { err: new Error("授权回调 state 校验失败，请在 kova 中重新发起授权") };
     } else {
       result = { err: new Error(`授权未通过：${failure ?? "回调未携带 code"}`) };
     }
@@ -373,7 +373,7 @@ export async function beginInteractiveOAuth(serverUrl: string): Promise<Interact
         ? callbackPage({
             ok: true,
             title: "授权完成",
-            message: "xulux 正在用授权码换取凭据并建立连接。可以关闭此页面，回到应用。",
+            message: "kova 正在用授权码换取凭据并建立连接。可以关闭此页面，回到应用。",
             serverUrl,
           })
         : callbackPage({

@@ -76,7 +76,7 @@ function json(res: { writeHead: Function; end: (b?: string) => void }, status: n
 beforeAll(async () => {
   process.env.PI_MCP_OAUTH_PATH = path.join(tmp, "mcp-oauth.json");
   process.env.PI_MCP_CACHE_PATH = path.join(tmp, "cache.json");
-  // authorize/revoke 会落审计事件：进临时文件，别脏真实的 ~/.xulux/mcp-audit.jsonl
+  // authorize/revoke 会落审计事件：进临时文件，别脏真实的 ~/.kova/mcp-audit.jsonl
   process.env.PI_MCP_AUDIT_PATH = path.join(tmp, "audit.jsonl");
   srv = createServer((req, res) => {
     let raw = "";
@@ -109,7 +109,7 @@ beforeAll(async () => {
         fake.dcrCount += 1;
         const meta = JSON.parse(raw || "{}");
         json(res, 201, {
-          client_id: "xulux-test-client",
+          client_id: "kova-test-client",
           client_id_issued_at: Math.floor(Date.now() / 1000),
           ...(Array.isArray(meta.redirect_uris) ? { redirect_uris: meta.redirect_uris } : {}),
         });
@@ -276,9 +276,9 @@ describe("MCP OAuth 2.1 授权流", () => {
     expect(fake.browserOpens).toBe(1);
     expect(fake.dcrCount).toBe(1);
     expect(authHeader()).toBe("Bearer at-1");
-    // 落地页：带品牌（xulux + 内联 logo）的成功态卡片
+    // 落地页：带品牌（kova + 内联 logo）的成功态卡片
     expect(fake.lastCallbackPage).toContain("授权完成");
-    expect(fake.lastCallbackPage).toContain("xulux");
+    expect(fake.lastCallbackPage).toContain("kova");
     expect(fake.lastCallbackPage).toContain("<svg");
     expect(fake.lastCallbackPage).toContain(mcpUrl);
     // 深色覆写必须排在 .card 等基础规则之后，否则同优先级被盖、暗色下卡片仍是白的

@@ -121,9 +121,9 @@ describe("readPluginPanelsFile", () => {
   });
 
   test("parsePluginManifest 识别 panels 组件字段", () => {
-    mkdirSync(path.join(packRoot, ".xulux-plugin"), { recursive: true });
+    mkdirSync(path.join(packRoot, ".kova-plugin"), { recursive: true });
     writeFileSync(
-      path.join(packRoot, ".xulux-plugin", "plugin.json"),
+      path.join(packRoot, ".kova-plugin", "plugin.json"),
       JSON.stringify({ name: "panels-parse-pack", version: "1.0.0", panels: "panels.json" }),
     );
     const m = parsePluginManifest(packRoot);
@@ -153,9 +153,9 @@ describe("安装后的面板读模型与入口资产", () => {
   let pluginId = "";
 
   beforeAll(async () => {
-    mkdirSync(path.join(packDir, ".xulux-plugin"), { recursive: true });
+    mkdirSync(path.join(packDir, ".kova-plugin"), { recursive: true });
     writeFileSync(
-      path.join(packDir, ".xulux-plugin", "plugin.json"),
+      path.join(packDir, ".kova-plugin", "plugin.json"),
       JSON.stringify({ name: "canvas-pack", version: "0.1.0", description: "d", panels: "panels.json" }),
     );
     writeFileSync(
@@ -252,9 +252,9 @@ describe("链接安装（dev 模式）", () => {
   }
 
   beforeAll(async () => {
-    mkdirSync(path.join(devPackDir, ".xulux-plugin"), { recursive: true });
+    mkdirSync(path.join(devPackDir, ".kova-plugin"), { recursive: true });
     writeFileSync(
-      path.join(devPackDir, ".xulux-plugin", "plugin.json"),
+      path.join(devPackDir, ".kova-plugin", "plugin.json"),
       JSON.stringify({ name: "dev-pack", version: "0.1.0", panels: "panels.json" }),
     );
     writeFileSync(
@@ -317,7 +317,7 @@ describe("链接安装（dev 模式）", () => {
   });
 
   test("卸载链接：只删链接与兄弟元数据，源目录完好", async () => {
-    const marker = path.join(devPackDir, ".xulux-plugin", "plugin.json");
+    const marker = path.join(devPackDir, ".kova-plugin", "plugin.json");
     await uninstallPlugin(pluginId);
     expect(existsSync(dest())).toBe(false);
     expect(existsSync(`${dest()}.installed.json`)).toBe(false);
@@ -364,9 +364,9 @@ describe("open_plugin_panel 工具", () => {
   let pluginId = "";
 
   test("安装带面板插件后：成功唤起发 data-pluginOpen 帧并带绑定路径", async () => {
-    mkdirSync(path.join(packDir, ".xulux-plugin"), { recursive: true });
+    mkdirSync(path.join(packDir, ".kova-plugin"), { recursive: true });
     writeFileSync(
-      path.join(packDir, ".xulux-plugin", "plugin.json"),
+      path.join(packDir, ".kova-plugin", "plugin.json"),
       JSON.stringify({ name: "tool-pack", version: "0.1.0", panels: "panels.json" }),
     );
     writeFileSync(
@@ -406,9 +406,9 @@ describe("open_plugin_panel 工具", () => {
   });
 
   test("只写插件名（不带市场后缀）也能唤起：唯名匹配 + 帧里带解析后的完整 id", async () => {
-    mkdirSync(path.join(packDir, ".xulux-plugin"), { recursive: true });
+    mkdirSync(path.join(packDir, ".kova-plugin"), { recursive: true });
     writeFileSync(
-      path.join(packDir, ".xulux-plugin", "plugin.json"),
+      path.join(packDir, ".kova-plugin", "plugin.json"),
       JSON.stringify({ name: "tool-pack", version: "0.1.0", panels: "panels.json" }),
     );
     writeFileSync(
@@ -479,9 +479,9 @@ describe("write/edit 落盘自动开板", () => {
     mkdirSync(WS, { recursive: true });
     const marketRoot = path.join(tmp, "auto-market");
     const packDir = path.join(marketRoot, "plugins", "auto-pack");
-    mkdirSync(path.join(packDir, ".xulux-plugin"), { recursive: true });
+    mkdirSync(path.join(packDir, ".kova-plugin"), { recursive: true });
     writeFileSync(
-      path.join(packDir, ".xulux-plugin", "plugin.json"),
+      path.join(packDir, ".kova-plugin", "plugin.json"),
       JSON.stringify({ name: "auto-pack", version: "0.1.0", panels: "panels.json" }),
     );
     writeFileSync(

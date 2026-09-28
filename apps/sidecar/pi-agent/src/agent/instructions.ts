@@ -2,7 +2,7 @@
  * 指令文件（AGENTS.md）的发现与注入。
  *
  * 仓库根 AGENTS.md 是跨工具共享的指令事实标准（OpenAI Codex / Claude Code 兼读），
- * 组装系统提示词时读取并注入动态尾部段；全局层 ~/.xulux/AGENTS.md 提供机器级
+ * 组装系统提示词时读取并注入动态尾部段；全局层 ~/.kova/AGENTS.md 提供机器级
  * 指令（Codex 的 ~/.codex/AGENTS.md 同位）。
  *
  * 注入语义（对齐 memoryPromptBlock 家族纪律）：
@@ -24,10 +24,10 @@ const BLOCK_HEADER = "## Instructions (AGENTS.md)";
 const BLOCK_GUIDE =
   "The following are user-maintained instructions for this workspace; follow them together with the rules above.";
 
-/** 全局层路径（机器级；测试经 PI_GLOBAL_AGENTS_MD 钉住，兜底 ~/.xulux/AGENTS.md） */
+/** 全局层路径（机器级；测试经 PI_GLOBAL_AGENTS_MD 钉住，兜底 ~/.kova/AGENTS.md） */
 export function globalAgentsMdPath(): string {
   if (process.env.PI_GLOBAL_AGENTS_MD) return process.env.PI_GLOBAL_AGENTS_MD;
-  return join(homedir(), ".xulux", "AGENTS.md");
+  return join(homedir(), ".kova", "AGENTS.md");
 }
 
 /** 工作区层路径（仓库根，随 git 共享给所有兼容工具） */

@@ -102,7 +102,7 @@ export const TAB_META: Record<
   },
   explorer: {
     label: "文件树",
-    description: "浏览工作区文件，点击实时预览",
+    description: "浏览当前工作目录（无工作区时为会话任务目录），点击实时预览",
     icon: FolderTreeIcon,
   },
   shell: {
@@ -238,7 +238,7 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
       // 链路追踪：tab.sessionId 绑定 sidecar 会话（header「更多」唤起）
       return <TraceTab tab={tab} />;
     case "plugin":
-      // UI 插件面板：blob iframe + xulux-ui-plugin/1 桥（tab.pluginId/panelId 定位）
+      // UI 插件面板：blob iframe + kova-ui-plugin/1 桥（tab.pluginId/panelId 定位）
       return <PluginPanelHost tab={tab} />;
     default:
       return null;

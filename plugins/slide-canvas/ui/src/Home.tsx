@@ -6,7 +6,7 @@
  * 宿主不支持 doc.list（旧版本）时退化为"空历史 + 只能新建"，不阻塞使用。
  */
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
-import { ChevronLeftIcon, LayoutTemplateIcon, PlusIcon, PresentationIcon, RefreshCwIcon, ShapesIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronLeftIcon, PlusIcon, PresentationIcon, RefreshCwIcon, ShapesIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 const KIND_META: Record<DocKind, { label: string; hint: string }> = {
   board: { label: "白板", hint: "无限画布：图形/图片/文本自由摆放，内容不进 PPT" },
   deck: { label: "幻灯片", hint: "逐页编辑页框，可放映、可导出 .pptx" },
-  ui: { label: "UI 设计", hint: "移动端设备画板起始档，交给 agent 按提示词出界面" },
+  ui: { label: "UI 设计（旧）", hint: "旧格式：编辑表面仍是无限画布；新设计请去「UI 设计」面板" },
 };
 
 /** 卡片类型标签：画布三态用 KIND_META；异常混入的非画布 kind（sheet/doc 等）退化为通用名 */
@@ -96,7 +96,7 @@ export const Home: FC<{ store: DeckStore; currentPath: string | null; onEnter: (
   const [items, setItems] = useState<DocListItem[] | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [step, setStep] = useState<"list" | "type" | "form">("list");
-  const [kind, setKind] = useState<DocKind>("board");
+  const [kind, setKind] = useState<"board" | "deck">("board");
   const [name, setName] = useState("");
   const [preset, setPreset] = useState<PagePreset>("16:9");
 
@@ -133,22 +133,12 @@ export const Home: FC<{ store: DeckStore; currentPath: string | null; onEnter: (
   const create = useCallback(() => {
     if (!name.trim()) return;
     store.createDoc(name, preset, kind);
-    if (kind === "ui") {
-      // 建档即预填生成指令：agent 收到后往三块设备画板里落界面稿
-      bridge.prefill(
-        `请在这份画布的三块移动端画板里生成 UI 设计（375×812）：\n` +
-          `1) 「首页」：顶部标题、搜索/筛选、内容列表或卡片；\n` +
-          `2) 「关键流程」：主任务的分步界面；\n` +
-          `3) 「详情」：信息层级与主操作按钮。\n` +
-          `用矩形/圆角块表达卡片与按钮、文本表达标题与正文，颜色克制（黑白灰 + 一个主色），画板之间留出间距。`,
-      );
-    }
     onEnter();
   }, [store, name, preset, kind, onEnter]);
 
   /* ---------------- 新建：命名（类型在 hero 上已选定） ---------------- */
   if (step === "form") {
-    const Icon = kind === "board" ? ShapesIcon : kind === "deck" ? PresentationIcon : LayoutTemplateIcon;
+    const Icon = kind === "board" ? ShapesIcon : PresentationIcon;
     return (
       <div className="flex h-full items-center justify-center p-6">
         <div className="glass w-[440px] rounded-[30px]! p-7">
@@ -234,18 +224,6 @@ export const Home: FC<{ store: DeckStore; currentPath: string | null; onEnter: (
               }}
             >
               <PresentationIcon className="size-4" /> 新建幻灯片
-            </Button>
-            <Button
-              size="lg"
-              variant="ghost"
-              className="h-11 gap-2 px-5 text-[13px]"
-              onClick={() => {
-                setKind("ui");
-                setName("UI 设计");
-                setStep("form");
-              }}
-            >
-              <SparklesIcon className="size-4" /> 用 AI 生成 UI
             </Button>
           </div>
         </div>

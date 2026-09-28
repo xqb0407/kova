@@ -3,7 +3,7 @@
 /**
  * 子智能体设置页（设置 → 智能体 → 子智能体）。
  *
- * 事实源在 sidecar：三层定义（内置常量 / <app_data>/subagents / <cwd>/.xulux/subagents）
+ * 事实源在 sidecar：三层定义（内置常量 / <app_data>/subagents / <cwd>/.kova/subagents）
  * + kv 里的启用开关；本页只渲染 useSubagents 镜像并发起变更命令。
  * 能力边界与 sidecar 对齐：内置只读（可查看/开关/复制为系统级）；系统/工作区
  * 可编辑可删除，工作区层随所选目录呈现。
@@ -123,7 +123,7 @@ function formToDraft(form: FormDraft): SubagentDraft {
 /** 表单 → YAML 文本（仅用于新建时的初始展示；合法性与回读以 sidecar 解析为准） */
 function formToYaml(form: FormDraft): string {
   const lines = [
-    "# Xulux subagent definition — managed via Settings → Subagents",
+    "# Kova subagent definition — managed via Settings → Subagents",
     `name: ${JSON.stringify(form.name.trim())}`,
     `description: ${JSON.stringify(form.description.trim())}`,
     `tools: [${form.tools.join(", ")}]`,
@@ -239,7 +239,7 @@ const SubagentEditorDialog: FC<{
           </DialogTitle>
           <DialogDescription>
             {scope === "workspace"
-              ? `保存到所选工作区 ${workspaceCwd ?? ""}/.xulux/subagents/（随仓库共享）`
+              ? `保存到所选工作区 ${workspaceCwd ?? ""}/.kova/subagents/（随仓库共享）`
               : "保存到应用数据目录，对本机所有会话生效"}
           </DialogDescription>
         </DialogHeader>
@@ -784,7 +784,7 @@ export const SubagentsSettings: FC = () => {
         {renderSection(
           viewingCwd ? `工作区 · ${pathBasename(viewingCwd)}` : "工作区",
           viewingCwd
-            ? `存于 ${viewingCwd}/.xulux/subagents/，随仓库共享。`
+            ? `存于 ${viewingCwd}/.kova/subagents/，随仓库共享。`
             : "未选择工作区：可点右侧目录切换器选择历史目录，或「浏览其他目录…」直接查看某个仓库。",
           groups.workspace,
           <WorkspaceCwdMenu
@@ -799,7 +799,7 @@ export const SubagentsSettings: FC = () => {
           />,
           viewingCwd ? undefined : (
             <div className="text-muted-foreground px-3 py-3 text-sm">
-              选择目录后，这里会显示该仓库 .xulux/subagents/ 下的子智能体。
+              选择目录后，这里会显示该仓库 .kova/subagents/ 下的子智能体。
             </div>
           ),
         )}

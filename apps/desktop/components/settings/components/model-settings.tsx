@@ -23,6 +23,8 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { SettingRow } from "@/components/custom-ui/setting-row";
 import { cn } from "@/lib/utils";
 import {
   piRequest,
@@ -35,6 +37,11 @@ import {
   type PiThinkingSeed,
 } from "@/lib/pi/pi-bridge";
 import { isTauri } from "@/lib/tauri";
+import {
+  saveImageGenConfig,
+  setModelImageCapable,
+  useImageGenConfig,
+} from "@/lib/settings/imagegen-config";
 import { setSelectedModel, useSelectedModel } from "@/lib/model/model-settings";
 import { refreshPiModels } from "@/lib/pi/pi-models";
 import {
@@ -216,6 +223,18 @@ const AttrEditor: FC<{
           />
           支持深度思考
         </Label>
+        {/* 输出能力标记（存 imagegen 配置覆盖层）：勾上才会出现在文生图默认模型下拉 */}
+        <Label
+          className="flex items-center gap-1.5 text-sm"
+          title="标记为可生成图片的模型（如 gpt-image-1 / dall-e-3 / seedream）：勾选后才会出现在「文生图 → 默认文生图模型」下拉里；供 generate_image 工具按 OpenAI images 协议调用"
+        >
+          <Checkbox
+            checked={draft.t2i}
+            onCheckedChange={(checked) => onChange({ t2i: checked })}
+            className="size-4"
+          />
+          可生成图片
+        </Label>
       </div>
       <Field label="输入单价">
         <Input
@@ -373,6 +392,8 @@ type AttrDraft = {
   text: boolean;
   image: boolean;
   reasoning: boolean;
+  /** 可生成图片标记（存 imagegen 配置覆盖层，非 models 表列）：文生图下拉过滤依据 */
+  t2i: boolean;
   tOff: string;
   tMin: boolean;
   tLow: boolean;
@@ -491,6 +512,27 @@ export const ModelSettings: FC = () => {
   // 本次打开属性弹窗内，用户是否点了"手动覆盖"把自动折叠态展开
   const [thinkingOverrideEdit, setThinkingOverrideEdit] = useState(false);
   const selected = useSelectedModel();
+
+  // 文生图区块：整包配置在 sidecar kv（pi.imagegen），模型候选复用本页目录
+  const imagegen = useImageGenConfig();
+  // 只列已勾选「可生成图片」标记且已配好凭据、启用的模型（文生图能力存 imagegen
+  // 配置覆盖层，标记入口在本页模型属性弹窗）；当前选择若已不在清单（删除/取消标记），
+  // 合成一项保住回显
+  const imageModelOptions = (models ?? [])
+    .filter((m) => m.authed && m.enabled && m.t2i)
+    .map((m) => ({
+      value: `${m.provider}/${m.id}`,
+      label: `${m.providerName} · ${m.name || m.id}`,
+    }));
+  {
+    const cur =
+      imagegen.provider && imagegen.modelId
+        ? `${imagegen.provider}/${imagegen.modelId}`
+        : "";
+    if (cur && !imageModelOptions.some((o) => o.value === cur)) {
+      imageModelOptions.unshift({ value: cur, label: `${cur}（当前）` });
+    }
+  }
 
   const load = useCallback(() => {
     if (!isTauri()) return;
@@ -891,6 +933,11 @@ export const ModelSettings: FC = () => {
         text: (src.input ?? ["text"]).includes("text"),
         image: (src.input ?? []).includes("image"),
         reasoning: src.reasoning ?? false,
+        // 生图标记现值：provider 明确时从 list_models 行取（新服务的模型无归属，false）
+        t2i: tKey
+          ? ((models ?? []).find((x) => x.provider === tKey && x.id === id)?.t2i ??
+            false)
+          : false,
         tOff: tSeed.off,
         tMin: tSeed.enabled("minimal"),
         tLow: tSeed.enabled("low"),
@@ -1010,6 +1057,22 @@ export const ModelSettings: FC = () => {
         } finally {
           setBusy(false);
         }
+      }
+    }
+    // 生图标记：imagegen 配置覆盖层（与思考映射同路数），provider 明确才提交
+    if (thinkingProvider) {
+      const t2iCur =
+        (models ?? []).find((x) => x.provider === thinkingProvider && x.id === attrEditId)
+          ?.t2i ?? false;
+      if (attrDraft.t2i !== t2iCur) {
+        void setModelImageCapable(thinkingProvider, attrEditId, attrDraft.t2i)
+          .then(() => {
+            void load();
+            refreshPiModels();
+          })
+          .catch((err) =>
+            setError(err instanceof Error ? err.message : String(err)),
+          );
       }
     }
     // 思考映射：种子取目录生效值，只把改动的键推给 setModelThinkingMap
@@ -1532,6 +1595,101 @@ export const ModelSettings: FC = () => {
                 </div>
               </PopoverContent>
             </Popover>
+          </div>
+        </section>
+
+        {/* 文生图：generate_image 工具的开关/默认模型/尺寸（云端 API，配置存 sidecar kv） */}
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">文生图</h2>
+          <p className="text-muted-foreground text-sm">
+            智能体按对话需要调用 generate_image 生成图片（文生图/图生图），图片直接展示在对话中，
+            并存到工作区 .kova/imagegen 下——把保存的路径交给智能体即可继续改图。
+            按张计费，默认关闭；生图模型需先在下方「模型服务」添加（OpenAI 兼容端点），
+            并在其模型属性里勾选「可生成图片」。
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow
+              label="启用文生图"
+              desc="关闭时智能体遇到画图请求会婉拒并提示到这里开启。"
+            >
+              <Switch
+                checked={imagegen.enabled}
+                onCheckedChange={(v) =>
+                  void saveImageGenConfig({ ...imagegen, enabled: v }).catch(
+                    () => toast.error("保存失败，请重试"),
+                  )
+                }
+              />
+            </SettingRow>
+            <SettingRow
+              label="默认文生图模型"
+              desc={
+                imageModelOptions.length
+                  ? "只列在模型属性里勾选了「可生成图片」的模型；密钥沿用其 provider 凭据。"
+                  : "暂无可选生图模型：先在下方「AI 服务」为 OpenAI 兼容端点添加生图模型（如 gpt-image-1），再进该模型的属性编辑勾选「可生成图片」。"
+              }
+            >
+              <Select
+                value={
+                  imagegen.provider && imagegen.modelId
+                    ? `${imagegen.provider}/${imagegen.modelId}`
+                    : ""
+                }
+                onValueChange={(v) => {
+                  if (!v) return;
+                  const at = v.lastIndexOf("/");
+                  const provider = at > 0 ? v.slice(0, at) : v;
+                  const modelId = at > 0 ? v.slice(at + 1) : "";
+                  void saveImageGenConfig({
+                    ...imagegen,
+                    provider,
+                    modelId,
+                  }).catch(() => toast.error("保存失败，请重试"));
+                }}
+                items={imageModelOptions}
+              >
+                <SelectTrigger size="sm" className="w-64 border bg-background">
+                  <SelectValue placeholder="选择模型" />
+                </SelectTrigger>
+                <SelectContent>
+                  {imageModelOptions.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </SettingRow>
+            <SettingRow
+              label="默认尺寸"
+              desc="模型可按单次生成需要覆盖；大图建议模型侧选 jpeg。"
+            >
+              <Select
+                value={imagegen.size}
+                onValueChange={(v) => {
+                  if (!v) return;
+                  void saveImageGenConfig({ ...imagegen, size: v }).catch(
+                    () => toast.error("保存失败，请重试"),
+                  );
+                }}
+                items={[
+                  { value: "1024x1024", label: "1024×1024 方图" },
+                  { value: "1792x1024", label: "1792×1024 横图" },
+                  { value: "1024x1792", label: "1024×1792 竖图" },
+                  { value: "auto", label: "自动" },
+                ]}
+              >
+                <SelectTrigger size="sm" className="w-44 border bg-background">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1024x1024">1024×1024 方图</SelectItem>
+                  <SelectItem value="1792x1024">1792×1024 横图</SelectItem>
+                  <SelectItem value="1024x1792">1024×1792 竖图</SelectItem>
+                  <SelectItem value="auto">自动</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingRow>
           </div>
         </section>
 

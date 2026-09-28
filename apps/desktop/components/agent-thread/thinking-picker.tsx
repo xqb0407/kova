@@ -17,15 +17,18 @@ import {
   useThinkingLevel,
   type ThinkingLevel,
 } from "@/lib/settings/thinking-settings";
+import { useSendLock } from "@/lib/pi/pi-send-lock";
 import { cn } from "@/lib/utils";
 
 /**
  * 深度思考档位选择器（composer 区，模型选择器右侧）：点开下拉选档，
- * 档位名对齐 pi-desktop 中文文案。当前模型的可用档位由目录的
+ * 档位名对齐 pi-kova 中文文案。当前模型的可用档位由目录的
  * supportedThinkingLevels（pi-ai 按 reasoning + thinkingLevelMap 推导）
  * 决定，不支持的档位直接不渲染（不是置灰）；完全不支持推理的模型菜单里
  * 只剩「关闭」，触发器 title 提示去 设置→模型 配置。
  * 选择写全局偏好（kv）并经 set_thinking 广播到活动会话。
+ * 发送锁（useSendLock）：消息发送完成前（在跑/排队待派发）禁止改档位，
+ * 见 pi-send-lock 头注。
  */
 const LEVEL_OPTIONS: { value: ThinkingLevel; label: string }[] = [
   { value: "off", label: "关闭" },
@@ -39,6 +42,7 @@ const LEVEL_OPTIONS: { value: ThinkingLevel; label: string }[] = [
 
 export const ThinkingPicker: FC = () => {
   const level = useThinkingLevel();
+  const sendLocked = useSendLock();
   const models = usePiModels();
   const selected = useSelectedModel();
   const [open, setOpen] = useState(false);
@@ -57,14 +61,15 @@ export const ThinkingPicker: FC = () => {
   const currentLabel = on
     ? (LEVEL_OPTIONS.find((o) => o.value === level)?.label ?? level)
     : null;
-  const title =
-    supported && supported.length === 0
+  const title = sendLocked
+    ? "消息发送完成前禁止调整思考档位"
+    : supported && supported.length === 0
       ? "深度思考：当前模型未标记支持推理（可在 设置→模型 勾选）"
       : `深度思考：${currentLabel ?? "关闭"}`;
 
   const pick = (v: ThinkingLevel) => {
     setOpen(false);
-    if (v === level) return;
+    if (sendLocked || v === level) return;
     void setThinkingLevel(v);
   };
 
@@ -77,8 +82,9 @@ export const ThinkingPicker: FC = () => {
             data-slot="aui-composer-thinking"
             aria-label="Select thinking effort"
             title={title}
+            disabled={sendLocked}
             className={cn(
-              "inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors hover:bg-muted",
+              "inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50",
               on
                 ? "bg-primary/10 text-primary hover:bg-primary/15"
                 : "text-muted-foreground hover:text-foreground",

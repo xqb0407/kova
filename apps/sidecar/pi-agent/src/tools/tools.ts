@@ -21,6 +21,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostToolCall } from "../storage/hostdb";
 import { buildBrowserTools } from "./browser-tools";
 import { buildScreenshotTool } from "./screenshot-tool";
+import { buildImageGenTool } from "./imagegen-tool";
 import { buildOpenFileTool } from "./open-file-tool";
 import { buildOpenPanelTool, maybeAutoOpenPanel } from "./open-panel-tool";
 import { buildWebTools } from "./http-tools";
@@ -347,6 +348,9 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
     // 屏幕截图：执行转发 Rust 宿主（tool_exec.rs，macOS only），结果 image 块
     // 走正规投影链路上屏（image-parts.ts 闸门 + 前端 data-image 渲染）
     buildScreenshotTool(cwd),
+    // 文生图（OpenAI 兼容 images 协议，见 imagegen-tool.ts）：sidecar 直连出网，
+    // 结果 image 块走正规投影链路上屏；常驻注册，开关/模型在 execute 实时门控
+    buildImageGenTool({ cwd }),
     // 面板打开文件：只发 data-panelOpen chunk（文件标签磁盘实时模式），
     // 无 IO 无副作用（见 open-file-tool.ts）
     buildOpenFileTool(cwd, threadId),
@@ -379,7 +383,7 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
  * 才能保持缓存命中；cwd 等动态段一律放末尾。
  */
 export const SYSTEM_PROMPT_CORE = [
-  "You are a capable coding agent running inside the Xulux desktop app.",
+  "You are a capable coding agent running inside the Kova desktop app.",
   "",
   "Code change discipline:",
   "- Read the relevant code before making changes.",
@@ -404,7 +408,7 @@ export const SYSTEM_PROMPT_CORE = [
   "- Use `Task` to delegate separable work (parallel exploration, multi-file implementation, adversarial review, wide search) to subagents; converge with `TaskWait` / `TaskList` / `TaskStop`.",
   "- Call `subagents_list` to see the current definitions and their storage directories - never guess paths or read the YAML files yourself.",
   "- To create or update a reusable subagent use `subagents_save`; to remove one use `subagents_delete`. Never hand-edit their YAML with write/edit: those tools skip validation, cross-layer dedup and hot-reload.",
-  "- scope=workspace puts a definition in this repo (.xulux/subagents/, shared with the team); scope=system makes it machine-wide.",
+  "- scope=workspace puts a definition in this repo (.kova/subagents/, shared with the team); scope=system makes it machine-wide.",
   "- A subagent sees neither this conversation nor the user, can only use the tools its definition declares (from bash/read/write/edit/glob/grep), and its final report is its only output - design description, tools and prompt with that in mind.",
   "",
   "Communication:",

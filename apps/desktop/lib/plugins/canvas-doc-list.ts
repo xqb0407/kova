@@ -39,6 +39,7 @@ function globToRegExp(glob: string): RegExp {
 function kindOfPath(path: string): DocListItem["kind"] {
   if (/\.sheet\.univer\.json$/i.test(path)) return "sheet";
   if (/\.doc\.univer\.json$/i.test(path)) return "doc";
+  if (/\.uidesign\.json$/i.test(path)) return "design";
   return "board";
 }
 
@@ -98,6 +99,7 @@ function corruptItem(path: string): DocListItem {
     name: (path.split("/").pop() ?? path)
       .replace(/\.sheet\.univer\.json$/i, "")
       .replace(/\.doc\.univer\.json$/i, "")
+      .replace(/\.uidesign\.json$/i, "")
       .replace(/\.canvas\.json$/i, ""),
     kind: kindOfPath(path),
     mtime: 0,
@@ -121,8 +123,46 @@ function snapshotName(path: string, doc: Record<string, unknown>): string {
     .replace(/\.doc\.univer\.json$/i, "");
 }
 
+/**
+ * UI 设计档（`*.uidesign.json`）摘要：与插件端 docStats 同口径——
+ * frames=当前页顶层画板数、objects=全档节点总数、preview=当前页画板布局。
+ * 改这里记得同步 plugins/ui-design/ui/src/doc.ts 的 docStats。
+ */
+function summarizeDesign(path: string, doc: Record<string, unknown>): DocListItem {
+  const meta = (doc.meta ?? {}) as Record<string, unknown>;
+  const fallbackName = (path.split("/").pop() ?? path).replace(/\.uidesign\.json$/i, "");
+  const name = typeof meta.name === "string" && meta.name.trim() ? meta.name.trim() : fallbackName;
+  const pages = Array.isArray(doc.pages) ? (doc.pages as Record<string, unknown>[]) : [];
+  const active = typeof doc.activePage === "string" ? pages.find((p) => p.id === doc.activePage) : undefined;
+  const page = active ?? pages[0];
+  const nodes = (Array.isArray(page?.nodes) ? (page as Record<string, unknown>).nodes : []) as Record<string, unknown>[];
+  const countTree = (list: Record<string, unknown>[]): number =>
+    list.reduce((acc, n) => acc + 1 + countTree(Array.isArray(n.children) ? (n.children as Record<string, unknown>[]) : []), 0);
+  const frames = nodes.filter((n) => n.type === "frame");
+  return {
+    path,
+    name,
+    kind: "design",
+    mtime: 0,
+    frames: frames.length,
+    objects: countTree(nodes),
+    preview: frames.slice(0, MAX_PREVIEW_FRAMES).map((f) => {
+      const fills = Array.isArray(f.fills) ? (f.fills as Record<string, unknown>[]) : [];
+      const solid = fills.find((x) => x.type === "solid" && x.visible !== false);
+      return {
+        x: num(f.x),
+        y: num(f.y),
+        w: num(f.w, 390),
+        h: num(f.h, 844),
+        bg: typeof solid?.color === "string" ? solid.color : "#ffffff",
+      };
+    }),
+  };
+}
+
 function summarize(path: string, doc: Record<string, unknown>): DocListItem {
   const kind = kindOfPath(path);
+  if (kind === "design") return summarizeDesign(path, doc);
   if (kind !== "board") {
     // Univer 快照档：卡片只报名称，frames/objects/preview 是画布档专属语义，恒空
     return {

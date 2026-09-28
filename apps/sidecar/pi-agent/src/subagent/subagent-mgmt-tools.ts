@@ -114,7 +114,7 @@ export function buildSubagentMgmtTools(
     description: [
       "创建或同名覆盖一份子智能体定义；存储层校验通过后热生效，下一轮 Task 即可委派它。",
       "用这个工具而不是 write/edit 手写 YAML 文件——只有它会做校验、跨层查重并重载工具目录。",
-      "scope=system 存到应用数据目录（本机所有工作区生效，适合通用能力）；scope=workspace 写进本会话工作目录的 .xulux/subagents/，随仓库共享。",
+      "scope=system 存到应用数据目录（本机所有工作区生效，适合通用能力）；scope=workspace 写进本会话工作目录的 .kova/subagents/，随仓库共享。",
       "delegate 的能力边界（写 prompt 时记住）：只能使用声明的工具白名单，共享会话工作目录，看不到用户与本对话，不能再次委派，唯一输出是最终报告。",
       'description 是主代理挑选委派对象的唯一依据，写清"什么时候用它"；prompt 写给执行者看：角色、方法、汇报格式。',
     ].join("\n\n"),

@@ -32,7 +32,7 @@ MCP 生态有大量现成能力(GitHub、数据库、浏览器、各类 SaaS API
    (stdio 子进程、SSE 流、会话 id),协议层状态留在 TS 侧最自然;Rust 宿主不参与 MCP 协议。
 4. **运行时是 Bun 编译单文件**(`bun build --compile`)。依赖选择必须过 Bun 兼容性
    这一关(`@modelcontextprotocol/sdk` 的 fetch/child_process 路径需 P0 冒烟验证)。
-5. **配置体系已有双层惯例**:系统层 `~/.xulux/*`(subagents),工作区层 `<cwd>/.xulux/*`
+5. **配置体系已有双层惯例**:系统层 `~/.kova/*`(subagents),工作区层 `<cwd>/.kova/*`
    (subagents / plans / 随仓库共享);启停状态落 SQLite kv(`set_subagent_enabled` 模式)。
 6. **Windows 孤儿进程教训**:bash 因此下沉 Rust。MCP stdio 子进程若 sidecar 异常退出
    会残留,必须有进程树清理手段(见 §8.4)。
@@ -56,9 +56,9 @@ UserMcpRuntime),懒连接 + 空闲断开兜底资源占用;不按会话隔离(MC
 
 | 层 | 路径 | 形态 | 语义 |
 |---|---|---|---|
-| 系统层 | `~/.xulux/mcp.json` | 完整 schema | 机器级,含 adapter 专属字段 |
+| 系统层 | `~/.kova/mcp.json` | 完整 schema | 机器级,含 adapter 专属字段 |
 | 工作区标准层 | `<cwd>/.mcp.json` | **生态标准格式**(mcpServers map) | 随仓库共享,其他工具(Claude Code 等)可直接复用;只认 `command`/`args`/`env`/`url`/`headers`/`type` |
-| 工作区覆盖层 | `<cwd>/.xulux/mcp.json` | 完整 schema | xulux 专属字段(disabled/approveTools/lifecycle…),与 `.xulux/subagents` 同族 |
+| 工作区覆盖层 | `<cwd>/.kova/mcp.json` | 完整 schema | kova 专属字段(disabled/approveTools/lifecycle…),与 `.kova/subagents` 同族 |
 
 按服务器 id 合并,高层整条覆盖低层同名 id;同 id 不同 transport 视为不同定义。
 **URL 变更即丢认证字段**(headers/env 中疑似凭证项),照抄 pi-mcp-adapter 的
@@ -82,7 +82,7 @@ UserMcpRuntime),懒连接 + 空闲断开兜底资源占用;不按会话隔离(MC
       // "headers": { "Authorization": "Bearer ..." },
       "type": "stdio",                     // 可省略;command→stdio,url→http;兼容 "http"/"sse"
 
-      // ---- 以下为 xulux 层专属(标准 .mcp.json 中出现则忽略) ----
+      // ---- 以下为 kova 层专属(标准 .mcp.json 中出现则忽略) ----
       "disabled": false,                   // 仅作手工编辑入口,UI 开关走 kv
       "lifecycle": "lazy",                 // lazy(默认) | eager | keep-alive
       "idleTimeout": 600000,               // ms,默认 10 分钟
@@ -112,7 +112,7 @@ UserMcpRuntime),懒连接 + 空闲断开兜底资源占用;不按会话隔离(MC
 |---|---|
 | `mcp-config.ts` | 加载/合并/校验双层配置;标准 `.mcp.json` 适配(字段推断 transport) |
 | `mcp-manager.ts` | 连接池单例:懒连接、生命周期、退避、超时、工具发现、call 转发 |
-| `mcp-cache.ts` | 元数据缓存:`~/.xulux/mcp-cache.json`,配置 SHA256 + TTL,断连可 search/describe |
+| `mcp-cache.ts` | 元数据缓存:`~/.kova/mcp-cache.json`,配置 SHA256 + TTL,断连可 search/describe |
 | `mcp-output-guard.ts` | 结果截断/溢写/摘要(照抄 pi-mcp-adapter `mcp-output-guard.ts`) |
 | `mcp-tools.ts` | 网关工具 `mcp` 的 schema 与 execute,挂入 `buildTools()` |
 
@@ -166,7 +166,7 @@ UserMcpRuntime),懒连接 + 空闲断开兜底资源占用;不按会话隔离(MC
 
 ### 5.5 输出防护(`mcp-output-guard.ts`,抄 pi-mcp-adapter)
 
-- 文本:8KB / 1000 行截断;超限溢写 `%TEMP%/xulux-mcp-output-*/output.txt`,
+- 文本:8KB / 1000 行截断;超限溢写 `%TEMP%/kova-mcp-output-*/output.txt`,
   截断通知附完整文件路径(用户/模型可 read 分页取回)。
 - 结构化:超过 16KB 出摘要(内容块计数 + 前 20 块类型/字节预览 + 保留 ≤4KB 小字段)。
 - 与 read/grep 的 64KB/200 条截断同哲学:模型拿到的是"有界 + 可续取"的结果。
@@ -263,7 +263,7 @@ UserMcpRuntime),懒连接 + 空闲断开兜底资源占用;不按会话隔离(MC
 - **缓存与多工作区**:缓存按 configHash 键控,天然跨工作区安全;不按 cwd 分目录。
 - **eager 服务器的启动时机**:P0 挂在 sidecar 进程启动后(首个会话创建前)后台连,
   失败静默转 backoff;是否需要"每会话重连"由 P1 观察。
-- **`.mcp.json` 中 `type: "sse"`**:标准层识别并兼容,但 xulux 层校验仍只接受
+- **`.mcp.json` 中 `type: "sse"`**:标准层识别并兼容,但 kova 层校验仍只接受
   stdio/http 两态(与 §4.3 一致);SSE 作为 http 的回退逻辑在 manager 内部处理。
 
 ## 12. 实现记录(2026-09-13,P0 交付)

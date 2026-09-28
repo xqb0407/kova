@@ -12,7 +12,7 @@ import type { McpServerDef } from "../../src/mcp/mcp-config";
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-mcp-manager-"));
 const prevCachePath = process.env.PI_MCP_CACHE_PATH;
 const prevSecret = process.env.PI_MCP_TEST_SECRET;
-// 审计事件也进临时文件：避免测试写脏用户真实的 ~/.xulux/mcp-audit.jsonl
+// 审计事件也进临时文件：避免测试写脏用户真实的 ~/.kova/mcp-audit.jsonl
 const prevAuditPath = process.env.PI_MCP_AUDIT_PATH;
 
 const FAKE_SERVER = join(import.meta.dir, "..", "fake-mcp-server.mjs");

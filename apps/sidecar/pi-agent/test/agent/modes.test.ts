@@ -22,7 +22,7 @@ import type { Running, SessionMode } from "../../src/types";
 
 const BASE_NAMES = ["read", "glob", "grep", "bash", "write", "edit", "ls"];
 
-// 个性化身份文件实时读盘：钉到空目录，提示词基线不受开发者真实 ~/.xulux/ 影响
+// 个性化身份文件实时读盘：钉到空目录，提示词基线不受开发者真实 ~/.kova/ 影响
 const prevIdentityDir = process.env.PI_IDENTITY_DIR;
 beforeAll(() => {
   process.env.PI_IDENTITY_DIR = join(tmpdir(), "pi-agent-modes-identity");
@@ -257,7 +257,7 @@ describe("approvalBeforeToolCall", () => {
 
 describe("plan_write 落盘", () => {
   test("首写定名 plan-<标题>-<sessionId>-<时间>.md，重复写覆盖同一文件", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "xulux-plan-test-"));
+    const dir = await mkdtemp(join(tmpdir(), "kova-plan-test-"));
     try {
       const run = makeRun("plan");
       run.cwd = dir;
@@ -270,7 +270,7 @@ describe("plan_write 落盘", () => {
       } as never);
       const firstPath = run.planFilePath!;
       expect(firstPath).toBeTruthy();
-      expect(firstPath).toContain(join(dir, ".xulux", "plans"));
+      expect(firstPath).toContain(join(dir, ".kova", "plans"));
       expect(basename(firstPath)).toMatch(
         /^plan-Fix-login-bug-sess_test123-\d{8}-\d{6}\.md$/,
       );
@@ -294,7 +294,7 @@ describe("plan_write 落盘", () => {
   });
 
   test("缺 title 时用 Markdown 首个标题兜底", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "xulux-plan-test-"));
+    const dir = await mkdtemp(join(tmpdir(), "kova-plan-test-"));
     try {
       const run = makeRun("plan");
       run.cwd = dir;
@@ -323,7 +323,7 @@ describe("plan_exit HITL", () => {
   });
 
   test("批准后回 agent 模式并返回 approved 结果（同轮实施）", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "xulux-plan-test-"));
+    const dir = await mkdtemp(join(tmpdir(), "kova-plan-test-"));
     try {
       const run = makeRun("plan");
       run.cwd = dir;
@@ -351,7 +351,7 @@ describe("plan_exit HITL", () => {
   });
 
   test("Stop/新 prompt 清理（settledBy=clear）：按拒绝结算、留在 plan、不额外 abort", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "xulux-plan-test-"));
+    const dir = await mkdtemp(join(tmpdir(), "kova-plan-test-"));
     try {
       const run = makeRun("plan");
       run.cwd = dir;
@@ -382,7 +382,7 @@ describe("plan_exit HITL", () => {
   });
 
   test("用户点拒绝（tool_confirm approved=false）：删计划文件 + abort 终止本轮，留在 plan", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "xulux-plan-test-"));
+    const dir = await mkdtemp(join(tmpdir(), "kova-plan-test-"));
     try {
       const run = makeRun("plan");
       run.cwd = dir;

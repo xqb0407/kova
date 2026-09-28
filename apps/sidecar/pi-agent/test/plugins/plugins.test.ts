@@ -30,7 +30,7 @@ import { marketplacesPayload } from "../../src/protocol/payloads";
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-plugins-"));
 const prevPluginsDir = process.env.PI_PLUGINS_DIR;
 
-/** 市场根：含一个 xulux 原生四件套插件 + 一个 claude 生态兼容插件 */
+/** 市场根：含一个 kova 原生四件套插件 + 一个 claude 生态兼容插件 */
 const marketRoot = path.join(tmp, "market");
 const demoDir = path.join(marketRoot, "plugins", "demo-pack");
 const claudeDir = path.join(marketRoot, "plugins", "claude-pack");
@@ -44,10 +44,10 @@ const subagentYaml = (name: string) =>
 /** 布市场源（每次 install 前重建：物化是 copy，源目录保持干净无影响） */
 function seedMarket(): void {
   rmSync(marketRoot, { recursive: true, force: true });
-  // — demo-pack（xulux 原生：四类组件全带）—
-  mkdirSync(path.join(demoDir, ".xulux-plugin"), { recursive: true });
+  // — demo-pack（kova 原生：四类组件全带）—
+  mkdirSync(path.join(demoDir, ".kova-plugin"), { recursive: true });
   writeFileSync(
-    path.join(demoDir, ".xulux-plugin", "plugin.json"),
+    path.join(demoDir, ".kova-plugin", "plugin.json"),
     JSON.stringify({
       name: "demo-pack",
       version: "1.0.0",
@@ -62,7 +62,18 @@ function seedMarket(): void {
   writeFileSync(path.join(demoDir, "skills", "demo-skill.md"), skillDoc("demo-skill", "Skill from plugin."));
   writeFileSync(
     path.join(demoDir, "mcp.json"),
-    JSON.stringify({ mcpServers: { "demo-server": { command: "echo", args: ["hi"] } } }),
+    JSON.stringify({
+      mcpServers: {
+        "demo-server": { command: "echo", args: ["hi"] },
+        // 占位符展开探针：${PLUGIN_ROOT}/${BUN}/${WORKSPACE}（仅插件层展开）
+        "probe-server": {
+          type: "stdio",
+          command: "${BUN}",
+          args: ["run", "${PLUGIN_ROOT}/mcp/server.ts"],
+          env: { KOVA_WORKSPACE: "${WORKSPACE}", PLAIN: "keep" },
+        },
+      },
+    }),
   );
   writeFileSync(
     path.join(demoDir, "hooks.json"),
@@ -116,7 +127,7 @@ function seedMarket(): void {
 
 beforeAll(async () => {
   initLocalStorage(path.join(tmp, "state.db"));
-  // 插件根钉到 tmp：绝不碰真实 ~/.xulux/plugins
+  // 插件根钉到 tmp：绝不碰真实 ~/.kova/plugins
   process.env.PI_PLUGINS_DIR = path.join(tmp, "plugins-root");
   seedMarket();
 });
@@ -131,10 +142,10 @@ afterAll(async () => {
 });
 
 describe("parsePluginManifest", () => {
-  test("xulux 原生清单解析出全部组件", () => {
+  test("kova 原生清单解析出全部组件", () => {
     const m = parsePluginManifest(demoDir);
     expect(m.name).toBe("demo-pack");
-    expect(m.manifestKind).toBe("xulux");
+    expect(m.manifestKind).toBe("kova");
     expect(m.components.skills).toBe("skills");
     expect(m.components.mcpServers).toBe("mcp.json");
     expect(m.components.hooks).toBe("hooks.json");
@@ -152,9 +163,9 @@ describe("parsePluginManifest", () => {
 
   test("组件路径逃逸被拒绝", () => {
     const dir = path.join(tmp, "escape-pack");
-    mkdirSync(path.join(dir, ".xulux-plugin"), { recursive: true });
+    mkdirSync(path.join(dir, ".kova-plugin"), { recursive: true });
     writeFileSync(
-      path.join(dir, ".xulux-plugin", "plugin.json"),
+      path.join(dir, ".kova-plugin", "plugin.json"),
       JSON.stringify({ name: "escape-pack", skills: "../outside" }),
     );
     expect(() => parsePluginManifest(dir)).not.toThrow();
@@ -164,16 +175,16 @@ describe("parsePluginManifest", () => {
 
   test("name 与目录名不一致 / 非法 name 抛错", () => {
     const dir = path.join(tmp, "mismatch-pack");
-    mkdirSync(path.join(dir, ".xulux-plugin"), { recursive: true });
+    mkdirSync(path.join(dir, ".kova-plugin"), { recursive: true });
     writeFileSync(
-      path.join(dir, ".xulux-plugin", "plugin.json"),
+      path.join(dir, ".kova-plugin", "plugin.json"),
       JSON.stringify({ name: "other-name" }),
     );
     expect(() => parsePluginManifest(dir)).toThrow(/目录名/);
     const dir2 = path.join(tmp, "Bad_Name");
-    mkdirSync(path.join(dir2, ".xulux-plugin"), { recursive: true });
+    mkdirSync(path.join(dir2, ".kova-plugin"), { recursive: true });
     writeFileSync(
-      path.join(dir2, ".xulux-plugin", "plugin.json"),
+      path.join(dir2, ".kova-plugin", "plugin.json"),
       JSON.stringify({ name: "Bad_Name" }),
     );
     expect(() => parsePluginManifest(dir2)).toThrow(/name 需匹配/);
@@ -254,6 +265,32 @@ describe("市场与安装全链路", () => {
     expect(demoServer!.pluginId).toBe("demo-pack@" + record.id);
     const claudeServer = mcp.defs.find((d) => d.name === "claude-server");
     expect(claudeServer).toBeDefined();
+
+    // —— 插件层占位符展开：${BUN}/${PLUGIN_ROOT}/${WORKSPACE}（仅 plugin 层）——
+    const wsDir = path.join(tmp, "ws");
+    mkdirSync(wsDir, { recursive: true });
+    const expanded = await loadMcpServers(wsDir);
+    const probe = expanded.defs.find((d) => d.name === "probe-server");
+    expect(probe).toBeDefined();
+    expect(probe!.command).toBe(process.execPath);
+    expect(probe!.args).toEqual([
+      "run",
+      path.join(installedPluginDir(record.id, "demo-pack"), "mcp", "server.ts"),
+    ]);
+    expect(probe!.env?.BUN_BE_BUN).toBe("1");
+    expect(probe!.env?.KOVA_WORKSPACE).toBe(wsDir);
+    expect(probe!.env?.PLAIN).toBe("keep");
+    // 用户层（工作区标准层）不展开：字面量保持，语义不意外
+    writeFileSync(
+      path.join(wsDir, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: { "user-probe": { command: "echo", args: ["${PLUGIN_ROOT}/x"] } },
+      }),
+    );
+    const withUser = await loadMcpServers(wsDir);
+    const userProbe = withUser.defs.find((d) => d.name === "user-probe");
+    expect(userProbe).toBeDefined();
+    expect(userProbe!.args).toEqual(["${PLUGIN_ROOT}/x"]);
 
     // —— 子智能体插件层 ——
     const subs = await loadSubagentDefinitions();

@@ -21,9 +21,10 @@ import { useUiPrefs } from "@/lib/settings/ui-prefs";
 import "@/app/styles/codemirror.css";
 
 /**
- * CodeMirror 只读代码视图：面板 diff 已迁到 @pierre/diffs（panel-diff.tsx），
- * 这里保留给设置页代码预览与后续的文件内容预览，主题/行号/换行/字号
- * 同样取自「外观 → 代码设置」。
+ * CodeMirror 代码视图（默认只读，可选编辑）：面板 diff 已迁到
+ * @pierre/diffs（panel-diff.tsx），只读态给设置页代码预览与「我的文件」
+ * 预览用；编辑态给面板「文件」标签的磁盘模式就地改存（editable + onChange）。
+ * 主题/行号/换行/字号同样取自「外观 → 代码设置」。
  */
 
 /**
@@ -62,11 +63,12 @@ function useLanguage(path?: string): Extension[] {
   return lang;
 }
 
-const BASIC_SETUP = (lineNumbers: boolean) => ({
+const BASIC_SETUP = (lineNumbers: boolean, editable: boolean) => ({
   lineNumbers,
   foldGutter: false,
-  highlightActiveLine: false,
-  highlightActiveLineGutter: false,
+  // 编辑态给当前行高亮（光标定位感），只读态保持极简
+  highlightActiveLine: editable,
+  highlightActiveLineGutter: editable,
   autocompletion: false,
   bracketMatching: false,
   closeBrackets: false,
@@ -86,6 +88,8 @@ function Shell({
   settings,
   className,
   height,
+  editable,
+  onChange,
 }: {
   value: string;
   extensions: Extension[];
@@ -93,6 +97,8 @@ function Shell({
   className?: string;
   /** 容器定高（如 "72vh"）：编辑器内部滚动（行号 sticky 跟随）；不传自适应内容高 */
   height?: string;
+  editable: boolean;
+  onChange?: (value: string) => void;
 }) {
   return (
     <div
@@ -101,11 +107,12 @@ function Shell({
     >
       <CodeMirror
         value={value}
-        editable={false}
-        readOnly
+        editable={editable}
+        readOnly={!editable}
+        onChange={onChange}
         theme="none"
         height={height}
-        basicSetup={BASIC_SETUP(settings.lineNumbers)}
+        basicSetup={BASIC_SETUP(settings.lineNumbers, editable)}
         extensions={extensions}
       />
     </div>
@@ -113,8 +120,9 @@ function Shell({
 }
 
 /**
- * 只读代码视图（带语法高亮，语言按文件名懒加载）：设置页代码预览、
- * 「我的文件」文件预览用。
+ * 代码视图（带语法高亮，语言按文件名懒加载）：默认只读——设置页代码预览、
+ * 「我的文件」文件预览用；传 editable + onChange 即就地编辑（面板「文件」
+ * 标签磁盘模式），受控 value 由调用方持有草稿。
  */
 export const CodeMirrorCode: FC<{
   value: string;
@@ -122,7 +130,9 @@ export const CodeMirrorCode: FC<{
   className?: string;
   forceDark?: boolean;
   height?: string;
-}> = ({ value, path, className, forceDark, height }) => {
+  editable?: boolean;
+  onChange?: (value: string) => void;
+}> = ({ value, path, className, forceDark, height, editable, onChange }) => {
   const settings = useCodeSettings(forceDark);
   const lang = useLanguage(path);
   const extensions = useMemo(
@@ -140,6 +150,8 @@ export const CodeMirrorCode: FC<{
       settings={settings}
       className={className}
       height={height}
+      editable={editable ?? false}
+      onChange={onChange}
     />
   );
 };

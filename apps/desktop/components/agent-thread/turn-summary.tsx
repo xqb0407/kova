@@ -143,8 +143,12 @@ export const TurnSlot: FC<{
     packTurnSlotWithKeep(
       s.thread.messages,
       messageId,
+      // 压缩分隔线是保命锚点；工具成图（data-image）是本轮交付物——
+      // 轮中消息带这两类 part 时折叠后照常渲染，不然收起后外层看不到图
       s.message.content.some(
-        (part) => part.type === "data" && part.name === "compaction",
+        (part) =>
+          part.type === "data" &&
+          (part.name === "compaction" || part.name === "image"),
       ),
     ),
   );

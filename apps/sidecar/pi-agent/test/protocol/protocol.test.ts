@@ -13,7 +13,8 @@ import {
 } from "../../src/storage/hostdb";
 import { dispatch, dispatchPrompt, handleLine, setInitGate } from "../../src/protocol/protocol";
 import { rulesFilePath, soulFilePath } from "../../src/agent/personalization";
-import { noteActiveTurn, running } from "../../src/sessions/sessions";
+import { dropRun, noteActiveTurn, resolveSession, running } from "../../src/sessions/sessions";
+import { setActiveReqId } from "../../src/protocol/stream";
 import { scanTranscript } from "../../src/sessions/transcript";
 import {
   registerCustomProvider,
@@ -27,7 +28,7 @@ const prevIdentityDir = process.env.PI_IDENTITY_DIR;
 
 beforeAll(() => {
   initStorage(path.join(tmp, "state.db"), path.join(tmp, "sessions"));
-  // set_personalization 会写身份文件：钉到临时目录，避免触碰开发者真实 ~/.xulux/
+  // set_personalization 会写身份文件：钉到临时目录，避免触碰开发者真实 ~/.kova/
   process.env.PI_IDENTITY_DIR = path.join(tmp, "identity");
 });
 
@@ -360,14 +361,15 @@ describe("dispatch: sessions", () => {
 
   test("未选目录建的会话，后续请求带 cwd 时补绑（修复代码写到主目录）", async () => {
     const threadId = "th-rebind";
-    // 建会话时不带 cwd：运行 cwd 兜底任务工作目录（PI_TASK_CWD），持久化 cwd 为空
+    // 建会话时不带 cwd：运行 cwd 兜底任务工作区下的会话子目录
+    // （<PI_TASK_CWD>/<sessionId>，按会话隔离产物），持久化 cwd 为空
     const taskCwd = path.join(tmp, "task-cwd");
     process.env.PI_TASK_CWD = taskCwd;
     try {
       await dispatch("rb1", { type: "new_session", threadId });
       const sessionId = last().sessionId as string;
       const run = running.get(threadId)!;
-      expect(run.cwd).toBe(taskCwd);
+      expect(run.cwd).toBe(path.join(taskCwd, sessionId));
       expect(run.persistedCwd).toBe("");
 
       // 用户选了工作目录后的任意请求（这里用 context_info 走同一条 resolveSession）
@@ -392,6 +394,44 @@ describe("dispatch: sessions", () => {
         cwd: path.join(tmp, "other"),
       });
       expect(run.persistedCwd).toBe(workspace);
+    } finally {
+      delete process.env.PI_TASK_CWD;
+    }
+  });
+
+  test("无目录会话按会话子目录隔离，互不覆盖", async () => {
+    const taskCwd = path.join(tmp, "task-isolated");
+    process.env.PI_TASK_CWD = taskCwd;
+    try {
+      await dispatch("iso1", { type: "new_session", threadId: "th-iso-a" });
+      const idA = last().sessionId as string;
+      await dispatch("iso2", { type: "new_session", threadId: "th-iso-b" });
+      const idB = last().sessionId as string;
+      const runA = running.get("th-iso-a")!;
+      const runB = running.get("th-iso-b")!;
+      expect(runA.cwd).toBe(path.join(taskCwd, idA));
+      expect(runB.cwd).toBe(path.join(taskCwd, idB));
+      expect(runA.cwd).not.toBe(runB.cwd);
+      // 惰性建目录：resolve 时两个子目录都已落盘
+      expect(existsSync(runA.cwd)).toBe(true);
+      expect(existsSync(runB.cwd)).toBe(true);
+    } finally {
+      delete process.env.PI_TASK_CWD;
+    }
+  });
+
+  test("delete_session 连同产物子目录递归删除", async () => {
+    const taskCwd = path.join(tmp, "task-del");
+    process.env.PI_TASK_CWD = taskCwd;
+    try {
+      await dispatch("ds1", { type: "new_session", threadId: "th-del" });
+      const sessionId = last().sessionId as string;
+      const dir = path.join(taskCwd, sessionId);
+      writeFileSync(path.join(dir, "out.txt"), "artifact");
+      await dispatch("ds2", { type: "delete_session", sessionId });
+      expect(last()).toEqual({ id: "ds2", type: "deleted" });
+      expect(await sessionGet(sessionId)).toBeNull();
+      expect(existsSync(dir)).toBe(false);
     } finally {
       delete process.env.PI_TASK_CWD;
     }
@@ -934,7 +974,7 @@ describe("dispatch: memory", () => {
     await dispatch("me5", { type: "list_memory_files", cwd: tmp });
     const res = last() as { type: string; scopes: Scopes };
     expect(res.scopes.global.dir).toContain("memory");
-    expect(res.scopes.workspace!.dir).toBe(path.join(tmp, ".xulux", "memory"));
+    expect(res.scopes.workspace!.dir).toBe(path.join(tmp, ".kova", "memory"));
   });
 
   test("read/write_memory_file：写后可读、清单带 mtime、写后热替换提示词", async () => {
@@ -977,5 +1017,82 @@ describe("dispatch: memory", () => {
         file: "../../secrets.md",
       }),
     ).rejects.toThrow("memory file not found");
+  });
+});
+
+describe("set_session_cwd：对话中途换/清工作目录", () => {
+  test("驻留会话换绑→解绑回落任务工作区；索引行与 header 同步", async () => {
+    const taskCwd = path.join(tmp, "task-cwd-switch");
+    process.env.PI_TASK_CWD = taskCwd;
+    try {
+      await dispatch("sc1", { type: "new_session", threadId: "th-cwd-1" });
+      const sessionId = last().sessionId as string;
+      const run = running.get("th-cwd-1")!;
+
+      // 换绑到真实目录：内存 run、DB 索引行、JSONL header 三处一致
+      const workspace = path.join(tmp, "workspace-switch");
+      await dispatch("sc2", { type: "set_session_cwd", sessionId, cwd: workspace });
+      expect(last()).toMatchObject({ id: "sc2", type: "session_cwd_set", sessionId, cwd: workspace });
+      expect(run.cwd).toBe(workspace);
+      expect(run.persistedCwd).toBe(workspace);
+      expect(run.agent.state.systemPrompt).toContain(workspace);
+      expect((await sessionGet(sessionId))!.cwd).toBe(workspace);
+      expect(JSON.parse(readFileSync(sessionPath(sessionId), "utf8").split("\n")[0])).toMatchObject({
+        cwd: workspace,
+      });
+
+      // 解绑（cwd=""）：持久化清空、运行目录回落按会话隔离的任务子目录
+      await dispatch("sc3", { type: "set_session_cwd", sessionId, cwd: "" });
+      expect(run.persistedCwd).toBe("");
+      expect(run.cwd).toBe(path.join(taskCwd, sessionId));
+      expect(existsSync(run.cwd)).toBe(true);
+      expect((await sessionGet(sessionId))!.cwd).toBe("");
+      expect(JSON.parse(readFileSync(sessionPath(sessionId), "utf8").split("\n")[0])).toMatchObject({ cwd: "" });
+    } finally {
+      delete process.env.PI_TASK_CWD;
+    }
+  });
+
+  test("本轮在跑时拒绝，目录不动", async () => {
+    await dispatch("sc4", { type: "new_session", threadId: "th-cwd-2", cwd: tmp });
+    const sessionId = last().sessionId as string;
+    setActiveReqId("th-cwd-2", "req-cwd-busy");
+    try {
+      await expect(
+        dispatch("sc5", { type: "set_session_cwd", sessionId, cwd: path.join(tmp, "elsewhere") }),
+      ).rejects.toThrow("session is busy");
+      expect(running.get("th-cwd-2")!.persistedCwd).toBe(tmp);
+      expect((await sessionGet(sessionId))!.cwd).toBe(tmp);
+    } finally {
+      setActiveReqId("th-cwd-2", null);
+    }
+    dropRun("th-cwd-2");
+  });
+
+  test("不驻留会话只写索引行与 header，下次物化自然生效", async () => {
+    const taskCwd = path.join(tmp, "task-cwd-evicted");
+    process.env.PI_TASK_CWD = taskCwd;
+    try {
+      await dispatch("sc6", { type: "new_session", threadId: "th-cwd-3" });
+      const sessionId = last().sessionId as string;
+      dropRun("th-cwd-3");
+      const workspace = path.join(tmp, "workspace-late");
+      await dispatch("sc7", { type: "set_session_cwd", sessionId, cwd: workspace });
+      expect(running.has("th-cwd-3")).toBe(false);
+      expect((await sessionGet(sessionId))!.cwd).toBe(workspace);
+      // 重新物化：按新索引行装配，运行 cwd 即换绑后的目录
+      const revived = await resolveSession("th-cwd-3b", sessionId);
+      expect(revived.cwd).toBe(workspace);
+      expect(revived.persistedCwd).toBe(workspace);
+      dropRun("th-cwd-3b");
+    } finally {
+      delete process.env.PI_TASK_CWD;
+    }
+  });
+
+  test("会话不存在报错", async () => {
+    await expect(
+      dispatch("sc8", { type: "set_session_cwd", sessionId: "cwd-nope", cwd: tmp }),
+    ).rejects.toThrow("session not found: cwd-nope");
   });
 });

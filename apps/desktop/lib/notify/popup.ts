@@ -17,7 +17,7 @@ import { getUiPrefs } from "@/lib/settings/ui-prefs";
  * 已知平台限制（只影响展示归属，逻辑两端一致、无 OS 分支）：
  *  - Windows dev（target/debug）：插件故意不设 AUMID，notify-rust 兜底借用
  *    PowerShell 的 AUMID——卡片挂 "Windows PowerShell" 名下且无图标；
- *    安装版由 NSIS 注册 AUMID，正确显示为 "Xulux Assistant" + 应用图标。
+ *    安装版由 NSIS 注册 AUMID，正确显示为 "扣瓦" + 应用图标。
  *  - macOS：首次 requestPermission 弹系统授权框（用户可拒绝）；dev 以裸二进制
  *    （非 .app bundle）运行可能无法授权/弹出，错误均被 catch 吞掉，以打包版为准。
  */

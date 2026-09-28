@@ -9,6 +9,7 @@ import {
 import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
 import type { PiModelSummary } from "@/lib/pi/pi-bridge";
 import { hydrateThreadModel, setThreadModel, useThreadModel } from "@/lib/pi/pi-session-model";
+import { useSendLock } from "@/lib/pi/pi-send-lock";
 import { setSelectedModel } from "@/lib/model/model-settings";
 import { fmtContextWindow } from "@/lib/model/model-format";
 
@@ -17,9 +18,13 @@ import { fmtContextWindow } from "@/lib/model/model-format";
  * 未配置的服务不出现（去设置 → 模型里添加）。选择写入全局（sidecar 广播 + kv）
  * 并记入当前会话的模型记忆（sessions 表偏好列），切回会话时恢复该会话
  * 上次使用的模型。
+ *
+ * 发送锁（useSendLock）：消息发送完成前（在跑/排队待派发）禁止切换模型，
+ * 见 pi-send-lock 头注。
  */
 export const PiModelPicker: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const modelLocked = useSendLock();
   const allModels = usePiModels();
   const selected = useThreadModel(threadId);
 
@@ -94,7 +99,8 @@ export const PiModelPicker: FC = () => {
         variant="ghost"
         size="sm"
         className="h-7 max-w-48 rounded-full [&>span]:min-w-0"
-        title={selectedLabel}
+        disabled={modelLocked}
+        title={modelLocked ? "消息发送完成前禁止切换模型" : selectedLabel}
       >
         <span className="truncate">
           {selectedLabel ?? (

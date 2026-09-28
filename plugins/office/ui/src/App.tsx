@@ -104,9 +104,11 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
   if (docKind !== "deck") {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-        <p className="text-[14px] font-medium">这份文档是白板 / UI 设计档，Office 只编辑幻灯片</p>
+        <p className="text-[14px] font-medium">这份文档是{docKind === "ui" ? "旧「UI 设计」档" : "白板档"}，Office 只编辑幻灯片</p>
         <p className="text-muted-foreground max-w-[420px] text-[12px] leading-relaxed">
-          objects 无限画布（白板与 UI 设计稿）由「无限画布 · 幻灯片」面板（slide-canvas）负责编辑，在这里改会打乱页框语义。
+          {docKind === "ui"
+            ? "UI 设计已拆分为独立的「UI 设计」面板（*.uidesign.json）；这份旧档请去「无限画布 · 幻灯片」面板编辑，也可以在那里点「让 AI 迁移」转成新格式。"
+            : "objects 无限画布（白板）由「无限画布 · 幻灯片」面板（slide-canvas）负责编辑，在这里改会打乱页框语义。"}
         </p>
         <Button className="mt-3" size="sm" variant="secondary" onClick={goHome}>
           返回幻灯片首页
@@ -121,7 +123,7 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
 
   const docTitle = (
     <>
-      <span className="bg-secondary text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[10px]">{docKind === "deck" ? "幻灯片" : docKind === "ui" ? "UI 设计" : "白板"}</span>
+      <span className="bg-secondary text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[10px]">{docKind === "deck" ? "幻灯片" : docKind === "ui" ? "UI 设计（旧）" : "白板"}</span>
       <span className="truncate font-medium">{store.fileRel?.split("/").pop()?.replace(/\.canvas\.json$/i, "") ?? "未命名画布"}</span>
       <span
         className={cn("size-1.5 shrink-0 rounded-full bg-ink transition-opacity", store.dirty ? "opacity-100" : "opacity-0")}

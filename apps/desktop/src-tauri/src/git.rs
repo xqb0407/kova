@@ -30,13 +30,13 @@ const MAX_DIFF_FILES: usize = 200;
 /// git_show 内容上限
 const MAX_SHOW_BYTES: usize = 1024 * 1024;
 /// 检查点 ref 前缀（影子仓库内），LRU 保留个数
-const CHECKPOINT_REF_PREFIX: &str = "refs/xulux";
+const CHECKPOINT_REF_PREFIX: &str = "refs/kova";
 const CHECKPOINT_KEEP: usize = 20;
 /// 影子仓库的 info/exclude 兜底规则：即便用户删了 .gitignore，
 /// 也不把依赖目录快照/还原（否则 apply -R 会删真实安装的 node_modules）
 const SHADOW_EXCLUDES: &str = "node_modules/\n.next/\nnuxt/\ndist/\nbuild/\nout/\ntarget/\n__pycache__/\nvendor/\n";
 /// info/exclude 里我们那段规则的幂等标记（marker 行本身不是 pattern）
-const SHADOW_EXCLUDE_MARKER: &str = "# xulux-checkpoint-excludes";
+const SHADOW_EXCLUDE_MARKER: &str = "# kova-checkpoint-excludes";
 /// 运行结束时的全量反向 patch 落盘目录/体积上限（restore 优先用它做冲突中止）
 const MAX_PATCH_FILE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -1038,10 +1038,10 @@ fn commit_checkpoint_tree(
         cargs.push(p.into());
     }
     let idents: &[(&str, &str)] = &[
-        ("GIT_AUTHOR_NAME", "Xulux Checkpoints"),
-        ("GIT_AUTHOR_EMAIL", "checkpoints@xulux.local"),
-        ("GIT_COMMITTER_NAME", "Xulux Checkpoints"),
-        ("GIT_COMMITTER_EMAIL", "checkpoints@xulux.local"),
+        ("GIT_AUTHOR_NAME", "Kova Checkpoints"),
+        ("GIT_AUTHOR_EMAIL", "checkpoints@kova.local"),
+        ("GIT_COMMITTER_NAME", "Kova Checkpoints"),
+        ("GIT_COMMITTER_EMAIL", "checkpoints@kova.local"),
     ];
     let commit = git_run(&shadow_git(dir, work, &cargs), None, idents)?;
     if !commit.ok {
@@ -1108,7 +1108,7 @@ fn parse_name_status_z(raw: &[u8]) -> Vec<(String, Option<String>, String)> {
 /// 永远能干净地反向应用，起不到保护作用）。
 fn patch_file_path(dir: &str, hash: &str) -> PathBuf {
     Path::new(dir)
-        .join("xulux-patches")
+        .join("kova-patches")
         .join(format!("{hash}.patch"))
 }
 

@@ -1,7 +1,7 @@
 /**
  * 插件系统（插件市场）：skills / MCP / hooks / 子智能体四类组件的打包分发层。
  *
- * 插件 = 一个目录，清单在 .xulux-plugin/plugin.json（按序兼容探测 .claude-plugin/
+ * 插件 = 一个目录，清单在 .kova-plugin/plugin.json（按序兼容探测 .claude-plugin/
  * .codex-plugin/，安装时规范化为内部形状）；组件是清单声明的相对路径：
  * skills（技能目录）/ mcpServers（mcpServers map json）/ hooks（json）/
  * subagents（子代理 YAML 目录）。本模块是叶子：只被四个子系统和协议层引用，
@@ -23,7 +23,7 @@
  * plugin_op_result 帧；本模块只暴露 await 语义的函数。
  *
  * 安全约束：组件路径必须相对且解析后不逃逸插件根；插件 MCP 只认标准字段
- * （approveTools 等 xulux 专属字段不可由插件携带）；hooks 决策语义与手配
+ * （approveTools 等 kova 专属字段不可由插件携带）；hooks 决策语义与手配
  * 钩子完全一致（exit 2 / stdout JSON）。
  *
  * 物理布局（本文件为门面，签名与原单文件完全一致）：

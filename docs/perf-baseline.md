@@ -20,7 +20,7 @@ bun scripts/perf-sample.mjs <场景名> [--interval 2] [--duration 秒] [--webvi
 
 | 角色 | pid | RSS |
 |------|-----|-----|
-| app（xulux-assistant debug） | 14216 | 183 MB |
+| app（kova debug） | 14216 | 183 MB |
 | sidecar（pi-agent） | 14325 | 123 MB |
 | webview（WebContent） | 14322 | **1327 MB** |
 

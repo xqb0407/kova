@@ -39,7 +39,7 @@ export function useEditorShell() {
    * 类型只在新建时选定，进入编辑器后不再有白板/幻灯片切换。
    */
   const docKind = docKindOf(doc);
-  /** UI 设计档的编辑表面仍是无限画布（画板=页框），只是种子与徽标不同 */
+  /** 旧「UI 设计」档（kind=ui）：编辑表面仍是无限画布，仅徽标不同；新档已拆到独立 ui-design 面板 */
   const effMode: EditorMode = docKind === "deck" ? "deck" : "board";
   /* store 的默认落位容器要感知模式（board 绝不落进不可见的页框） */
   const { setSurface } = store;

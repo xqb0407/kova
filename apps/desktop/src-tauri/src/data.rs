@@ -1209,6 +1209,29 @@ mod tests {
         assert_eq!(s1["archived"], 0);
     }
 
+    /// session_update_cwd 换绑/解绑往返：解绑写空串必须落库为空
+    /// （sidecar set_session_cwd 的"清目录"路径依赖这里能写回 ""）。
+    #[test]
+    fn session_update_cwd_binds_and_unbinds() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let q = |kind: &str, p: Value| {
+            dispatch_host_query(
+                &db,
+                &json!({ "id": "t", "kind": kind, "params": p }),
+            )
+        };
+        q("session_insert", json!({ "sessionId": "s1", "cwd": "", "now": "t" }));
+
+        q("session_update_cwd", json!({ "sessionId": "s1", "cwd": "/work/a" }));
+        assert_eq!(q("session_get", json!({ "sessionId": "s1" }))["data"]["cwd"], "/work/a");
+
+        // 解绑：空串写回（SQL 无空值短路，UPDATE 生效）
+        q("session_update_cwd", json!({ "sessionId": "s1", "cwd": "" }));
+        assert_eq!(q("session_get", json!({ "sessionId": "s1" }))["data"]["cwd"], "");
+    }
+
     /// 旧库（无 archived 列）打开时自动补列，session_list 正常返回。
     #[test]
     fn legacy_sessions_table_gains_archived_column() {
