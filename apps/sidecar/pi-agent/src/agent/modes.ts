@@ -32,7 +32,7 @@ import type {
   BeforeToolCallContext,
   BeforeToolCallResult,
 } from "@earendil-works/pi-agent-core";
-import { SYSTEM_PROMPT_CORE, environmentPromptBlock } from "../tools/tools";
+import { SYSTEM_PROMPT_CORE, environmentPromptBlock, systemPromptCore } from "../tools/tools";
 import { kvSet, sessionPrefsSet } from "../storage/hostdb";
 import { beginInteraction, settleInteraction } from "../sessions/pending-interactions";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "../subagent/subagent-mgmt-tools";
@@ -63,10 +63,23 @@ export const PLAN_TOOL_NAMES = {
   exit: "plan_exit",
 } as const;
 
+/** 三档字面量的宽松规整：库里的偏好值、协议消息、投影行都经这里收口。
+ *  加枚举值时只改这一处——散落各处的 `x === "a" || x === "b"` 白名单是这类
+ *  改动最典型的静默漏改点（新值不报错，只是被悄悄丢成旧档） */
+export function normalizeSessionMode(raw: unknown): SessionMode {
+  return raw === "plan" || raw === "ask" ? raw : "agent";
+}
+
+/** 问答档唯一的出口工具：模型调用它只是**提议**切回编码档，不自己切。
+ *  切档会当场把系统提示词与工具表一起换重，那正是问答档要避免的事，所以这个
+ *  决定权留给人（与 plan_exit 的 HITL 同一路子），前端渲染成 composer 上的一个 chip */
+export const ASK_NEEDS_WORK_TOOL_NAME = "ask_needs_work";
+
 /** 必须独占批次的模式切换工具（plan_write 是纯落盘动作，可并批） */
 const MODE_EXCLUSIVE_TOOL_NAMES = new Set<string>([
   PLAN_TOOL_NAMES.enter,
   PLAN_TOOL_NAMES.exit,
+  ASK_NEEDS_WORK_TOOL_NAME,
 ]);
 
 /** 仅 plan 模式可用的工具 */
@@ -77,6 +90,21 @@ const PLAN_ONLY_TOOL_NAMES = new Set<string>([
 
 /** plan 模式允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束）+ Question（规划正需要澄清提问）+ use_skill（加载技能指令，只读动作） */
 const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash", "WebFetch", "WebSearch", "Question", SKILL_USE_TOOL_NAME]);
+
+/** 问答模式允许的工具：CONTRACT 去掉 bash。bash 能写工作区，留着就破了只读边界——
+ *  问答档的安全保证是"结构性的"（工具表里根本没有写类工具），不是靠提示词自觉。
+ *  保留 read/glob/grep 是因为"这个函数在哪调的""这个报错什么意思"这类问题
+ *  必须能读代码才能答（对齐 Cursor 的 Ask / Claude Code 的 Manual 档：只读，非无工具） */
+const ASK_TOOL_NAMES = new Set(
+  [...CONTRACT_TOOL_NAMES].filter((n) => n !== "bash"),
+);
+
+/** 仅问答模式可用的出口工具（见 buildAskTools） */
+const ASK_ONLY_TOOL_NAMES = new Set([ASK_NEEDS_WORK_TOOL_NAME]);
+
+/** 问答模式结构性拦截的写类工具：工具表里已不下发，这里是第二道闸——
+ *  轮中切换前模型可能仍带着旧 schema（与 plan 模式同一理由） */
+const ASK_MODE_MUTATING_TOOLS = new Set(["write", "edit", "bash"]);
 
 /* ------------------------------- 系统提示词 ------------------------------- */
 
@@ -89,6 +117,20 @@ const PLAN_MODE_PROMPT = [
 const AGENT_MODE_PROMPT =
   "You are operating in Agent mode: carry out the requested work with the available tools and report the result clearly. When a task is large or ambiguous, enter Plan mode via plan_enter to research and draft an implementation plan; the plan needs user approval via plan_exit before you implement.";
 export { AGENT_MODE_PROMPT };
+
+/** 问答模式的系统提示词：身份段换掉"coding agent"，纪律段只留"读—答—不动手"。
+ *  静态核心里剔掉 taskTracking / subagents 两段（见 systemPromptCore）——那六行
+ *  子代理说明和多轮委派纪律是"工程味"的主要来源，问答场景整段无意义 */
+const ASK_MODE_PROMPT = [
+  "You are operating in Ask mode. The user is asking a question and wants an answer, not work performed on their project.",
+  "Answer directly. Read files when the answer genuinely depends on them, then reply in prose. Do not run commands, do not modify anything, and do not narrate a plan you are about to carry out.",
+  "A question is not a task: never create a todo, never delegate to a subagent, never treat answering as the first step of a larger job.",
+  "Project files cannot be modified in Ask mode — the system blocks it. If the request really does require changing the project, say so in one sentence and call ask_needs_work to offer switching to Agent mode; do not attempt the work yourself.",
+].join("\n");
+
+/** 问答档的静态核心取段：身份/纪律/沟通三段保留（纪律段里的读码与正确性仍然有用），
+ *  任务追踪与子代理两段整段剔除 */
+const ASK_CORE_SEGMENTS = ["identity", "discipline", "communication"] as const;
 
 /** 环境事实段只用到模型的这三个字段；pi-ai 的 Model<Api> 结构兼容，调用侧直接传 */
 export type PromptModelInfo = { provider: string; id: string; name?: string };
@@ -113,9 +155,13 @@ export function composeModeSystemPrompt(
   model?: PromptModelInfo | null,
   designTheme?: ThemeRef | null,
 ): string {
-  const extra = mode === "plan" ? PLAN_MODE_PROMPT : AGENT_MODE_PROMPT;
+  // 问答档换掉静态核心的取段（剔任务追踪与子代理），其余模式沿用全量核心——
+  // 全量拼接与拆分前逐字节相同，缓存不变式不受影响
+  const core = mode === "ask" ? systemPromptCore(ASK_CORE_SEGMENTS) : SYSTEM_PROMPT_CORE;
+  const extra =
+    mode === "plan" ? PLAN_MODE_PROMPT : mode === "ask" ? ASK_MODE_PROMPT : AGENT_MODE_PROMPT;
   return [
-    SYSTEM_PROMPT_CORE,
+    core,
     extra,
     personalizationPromptBlock(),
     appModePromptBlock(designTheme),
@@ -131,8 +177,46 @@ export function composeModeSystemPrompt(
 
 /* --------------------------------- 工具集 --------------------------------- */
 
-/** 按模式重建工具目录：agent = 基础 + Task 组 + plan_enter；plan = 只读子集 + plan_write/plan_exit */
+/** 问答档的出口工具：只发 chunk 提示前端弹 chip，不切模式、不写任何东西 */
+function buildAskTools(run: Running): AgentTool[] {
+  return [
+    {
+      name: ASK_NEEDS_WORK_TOOL_NAME,
+      label: "Needs agent mode",
+      description:
+        "Tell the user this question actually requires changing the project, and offer to switch to Agent mode. Use this instead of attempting the work yourself when you are in Ask mode.",
+      parameters: Type.Object({
+        reason: Type.String({
+          description: "One sentence on what the work would require, shown on the switch prompt",
+        }),
+      }),
+      execute: async (args: unknown) => {
+        const reason =
+          typeof (args as { reason?: unknown })?.reason === "string"
+            ? (args as { reason: string }).reason
+            : "";
+        sendEventChunk(
+          run.threadId,
+          { type: "data-askNeedsWork", data: { reason } },
+          run.sessionId,
+        );
+        return textResult(
+          "Switch prompt shown to the user. Stay in Ask mode and keep answering; do not retry the work.",
+        );
+      },
+    } as unknown as AgentTool,
+  ];
+}
+
+/** 按模式重建工具目录：agent = 基础 + Task 组 + plan_enter；plan = 只读子集 + plan_write/plan_exit；
+ *  ask = 纯只读子集（无 bash）+ 出口工具，不带 plan 三件套与子代理组 */
 export function toolsForMode(run: Running): AgentTool[] {
+  if (run.mode === "ask") {
+    return [
+      ...run.baseTools.filter((t) => ASK_TOOL_NAMES.has(t.name)),
+      ...buildAskTools(run),
+    ];
+  }
   const planTools = buildPlanTools(run);
   if (run.mode === "agent") {
     return [
@@ -390,6 +474,20 @@ export function modeBeforeToolCall(
         "Plan mode cannot modify project files. Save the plan with plan_write (the path is chosen by the system), and implement after plan_exit is approved.",
     };
   }
+  // 问答档只读同样是结构性的：工具表里本就不含写类工具，这里是轮中切换前的兜底
+  if (run.mode === "ask" && ASK_MODE_MUTATING_TOOLS.has(name)) {
+    return {
+      block: true,
+      reason:
+        "Ask mode is read-only and cannot run commands or modify files. Answer the question with the read-only tools; if the request genuinely needs project changes, call ask_needs_work to offer switching to Agent mode.",
+    };
+  }
+  if (name === ASK_NEEDS_WORK_TOOL_NAME && run.mode !== "ask") {
+    return {
+      block: true,
+      reason: `${name} is available only in Ask mode.`,
+    };
+  }
   if (!isPlanTool) return undefined;
   // 无人值守自动化：plan_exit 的模式级 HITL 会永久挂起，禁止进入 plan 模式，
   // 从结构上让 plan_exit 不可达（agent 直接以当前档位执行）
@@ -537,10 +635,19 @@ function persistModePrefs(run: Running): void {
   void kvSet("pi.mode", JSON.stringify(prefs)).catch(() => {});
 }
 
+/** 计划状态只属于 plan 档：agent 与 ask 都是 inactive。写成显式映射而不是
+ *  `mode === "agent" ? ...`，否则新增的第三档会静默继承 planning 态、被前端
+ *  渲染成"正在计划"（枚举扩容最典型的塌陷点） */
+const PLANNING_BY_MODE: Record<SessionMode, PlanningState> = {
+  agent: "inactive",
+  plan: "planning",
+  ask: "inactive",
+};
+
 /** 切换模式：热替换 systemPrompt/tools 并推进计划状态（plan_write 的计划文件路径跨切换保留） */
 export function applyMode(run: Running, mode: SessionMode): void {
   run.mode = mode;
-  run.planning = mode === "agent" ? "inactive" : "planning";
+  run.planning = PLANNING_BY_MODE[mode];
   const prompt = composeModeSystemPrompt(mode, run.cwd, run.agent.state.model, run.designTheme);
   const tools = toolsForMode(run);
   run.agent.state.systemPrompt = prompt;

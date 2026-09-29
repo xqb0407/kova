@@ -4,23 +4,36 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
   APPROVAL_REQUIRED_TOOLS,
+  ASK_NEEDS_WORK_TOOL_NAME,
   PLAN_TOOL_NAMES,
   applyMode,
   approvalBeforeToolCall,
   clearPendingToolApprovals,
   composeModeSystemPrompt,
   modeBeforeToolCall,
+  normalizeSessionMode,
   planningPayload,
   resolveToolApproval,
   toolsForMode,
 } from "../../src/agent/modes";
-import { SYSTEM_PROMPT_CORE, workspacePromptLine } from "../../src/tools/tools";
+import { SYSTEM_PROMPT_CORE, systemPromptCore, workspacePromptLine } from "../../src/tools/tools";
 import { createRetryBudget } from "../../src/model/provider-retry";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Running, SessionMode } from "../../src/types";
 
-const BASE_NAMES = ["read", "glob", "grep", "bash", "write", "edit", "ls"];
+const BASE_NAMES = [
+  "read",
+  "glob",
+  "grep",
+  "bash",
+  "write",
+  "edit",
+  "ls",
+  "WebFetch",
+  "WebSearch",
+  "Question",
+];
 
 // 个性化身份文件实时读盘：钉到空目录，提示词基线不受开发者真实 ~/.kova/ 影响
 const prevIdentityDir = process.env.PI_IDENTITY_DIR;
@@ -60,7 +73,7 @@ function makeRun(mode: SessionMode = "agent"): Running {
     stopRequested: false,
     mode,
     approvalLevel: "ask",
-    planning: mode === "agent" ? "inactive" : "planning",
+    planning: mode === "plan" ? "planning" : "inactive",
     baseTools: BASE_NAMES.map(fakeTool),
     subagentTools: [fakeTool("task"), fakeTool("task_wait")],
     pendingToolApprovals: new Map(),
@@ -478,10 +491,17 @@ describe("系统提示词结构（缓存友好）", () => {
     const modeMarker: Record<SessionMode, string> = {
       agent: "Agent mode",
       plan: "Plan mode",
+      ask: "Ask mode",
     };
-    for (const mode of ["agent", "plan"] as const) {
+    // 问答档的静态核心是子集（剔掉任务追踪与子代理两段），其余档用全量核心；
+    // 三档共有的不变式是"静态核心在最前、模式段居中、cwd 行在最尾"
+    const coreFor = (mode: SessionMode): string =>
+      mode === "ask"
+        ? systemPromptCore(["identity", "discipline", "communication"])
+        : SYSTEM_PROMPT_CORE;
+    for (const mode of ["agent", "plan", "ask"] as const) {
       const prompt = composeModeSystemPrompt(mode, CWD);
-      const coreEnd = prompt.indexOf(SYSTEM_PROMPT_CORE);
+      const coreEnd = prompt.indexOf(coreFor(mode));
       const modePos = prompt.indexOf(modeMarker[mode]);
       const cwdPos = prompt.indexOf(workspaceLine);
       expect(coreEnd).toBe(0); // 静态核心在最前
@@ -540,5 +560,151 @@ describe("系统提示词结构（缓存友好）", () => {
     const a = composeModeSystemPrompt("agent", CWD);
     const b = composeModeSystemPrompt("agent", CWD);
     expect(a).toBe(b);
+  });
+});
+
+/* ------------------------------- 问答模式 ------------------------------- */
+
+describe("问答模式工具集", () => {
+  test("只下发只读子集：没有 bash / write / edit，也没有子代理与 plan 三件套", () => {
+    const names = toolsForMode(makeRun("ask")).map((t) => t.name);
+    expect(names).toContain("read");
+    expect(names).toContain("glob");
+    expect(names).toContain("grep");
+    expect(names).toContain("WebSearch");
+    // bash 能写工作区，留着就破了只读边界
+    expect(names).not.toContain("bash");
+    expect(names).not.toContain("write");
+    expect(names).not.toContain("edit");
+    // 子代理组与计划三件套整批不下发
+    expect(names).not.toContain("task");
+    expect(names).not.toContain("task_wait");
+    for (const n of Object.values(PLAN_TOOL_NAMES)) {
+      expect(names).not.toContain(n);
+    }
+  });
+
+  test("带出口工具 ask_needs_work", () => {
+    const names = toolsForMode(makeRun("ask")).map((t) => t.name);
+    expect(names).toContain(ASK_NEEDS_WORK_TOOL_NAME);
+  });
+
+  test("plan 档仍带 bash（勘察承诺），两档工具集不同", () => {
+    const plan = toolsForMode(makeRun("plan")).map((t) => t.name);
+    expect(plan).toContain("bash");
+    expect(plan).not.toContain(ASK_NEEDS_WORK_TOOL_NAME);
+  });
+});
+
+describe("问答模式结构性只读", () => {
+  test("write / edit / bash 一律拦截，即使轮中切换前模型还带着旧 schema", () => {
+    const run = makeRun("ask");
+    for (const name of ["write", "edit", "bash"]) {
+      const res = modeBeforeToolCall(run, ctx(name));
+      expect(res?.block).toBe(true);
+    }
+  });
+
+  test("只读工具放行", () => {
+    const run = makeRun("ask");
+    for (const name of ["read", "glob", "grep", "WebSearch", ASK_NEEDS_WORK_TOOL_NAME]) {
+      expect(modeBeforeToolCall(run, ctx(name))).toBeUndefined();
+    }
+  });
+
+  test("ask_needs_work 与其它工具同批时被拦（模式切换必须独占）", () => {
+    const run = makeRun("ask");
+    const res = modeBeforeToolCall(
+      run,
+      ctx(ASK_NEEDS_WORK_TOOL_NAME, ["read", ASK_NEEDS_WORK_TOOL_NAME]),
+    );
+    expect(res?.block).toBe(true);
+  });
+
+  test("非问答档调 ask_needs_work 被拦", () => {
+    for (const mode of ["agent", "plan"] as const) {
+      const res = modeBeforeToolCall(makeRun(mode), ctx(ASK_NEEDS_WORK_TOOL_NAME));
+      expect(res?.block).toBe(true);
+    }
+  });
+
+  test("agent / plan 档不受问答拦截影响", () => {
+    expect(modeBeforeToolCall(makeRun("agent"), ctx("write"))).toBeUndefined();
+  });
+});
+
+describe("applyMode：问答档的计划状态", () => {
+  test("ask → planning 为 inactive（不能继承 planning 态被渲染成「正在计划」）", () => {
+    const run = makeRun("agent");
+    applyMode(run, "ask");
+    expect(run.mode).toBe("ask");
+    expect(run.planning).toBe("inactive");
+  });
+
+  test("三档的计划状态映射互不串档", () => {
+    const run = makeRun("agent");
+    applyMode(run, "plan");
+    expect(run.planning).toBe("planning");
+    applyMode(run, "ask");
+    expect(run.planning).toBe("inactive");
+    applyMode(run, "agent");
+    expect(run.planning).toBe("inactive");
+  });
+
+  test("问答档的对外快照带 ask", () => {
+    const run = makeRun("agent");
+    applyMode(run, "ask");
+    const payload = planningPayload(run);
+    expect(payload.mode).toBe("ask");
+    expect(payload.planning).toBe("inactive");
+  });
+});
+
+describe("问答模式提示词", () => {
+  const CWD = "/tmp/ws";
+
+  test("剔掉任务追踪与子代理两段", () => {
+    const prompt = composeModeSystemPrompt("ask", CWD);
+    expect(prompt).not.toContain("Task tracking:");
+    expect(prompt).not.toContain("Subagents:");
+    expect(prompt).not.toContain("subagents_save");
+  });
+
+  test("保留读码纪律与沟通纪律，并指向出口工具", () => {
+    const prompt = composeModeSystemPrompt("ask", CWD);
+    expect(prompt).toContain("Code change discipline:");
+    expect(prompt).toContain("Reply in the same language the user writes in.");
+    expect(prompt).toContain(ASK_NEEDS_WORK_TOOL_NAME);
+  });
+
+  test("agent / plan 档仍带任务追踪与子代理两段（分段未误伤）", () => {
+    for (const mode of ["agent", "plan"] as const) {
+      const prompt = composeModeSystemPrompt(mode, CWD);
+      expect(prompt).toContain("Task tracking:");
+      expect(prompt).toContain("Subagents:");
+    }
+  });
+
+  test("问答档显著短于 agent 档", () => {
+    const ask = composeModeSystemPrompt("ask", CWD);
+    const agent = composeModeSystemPrompt("agent", CWD);
+    expect(ask.length).toBeLessThan(agent.length);
+  });
+
+  test("拆分静态核心未改 code/plan 档的字节（缓存前缀不变）", () => {
+    const agent = composeModeSystemPrompt("agent", CWD);
+    expect(agent.startsWith(SYSTEM_PROMPT_CORE)).toBe(true);
+    expect(agent).toBe(composeModeSystemPrompt("agent", CWD));
+  });
+});
+
+describe("normalizeSessionMode", () => {
+  test("三档透传，其余回落 agent", () => {
+    expect(normalizeSessionMode("ask")).toBe("ask");
+    expect(normalizeSessionMode("plan")).toBe("plan");
+    expect(normalizeSessionMode("agent")).toBe("agent");
+    expect(normalizeSessionMode("nope")).toBe("agent");
+    expect(normalizeSessionMode(undefined)).toBe("agent");
+    expect(normalizeSessionMode(3)).toBe("agent");
   });
 });

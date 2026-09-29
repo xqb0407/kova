@@ -416,7 +416,7 @@ export async function resolveSession(
   let initialApproval: ApprovalLevel = "ask";
   if (!getAutomationPolicy(threadId)) {
     if (restoredRow) {
-      if (restoredRow.mode === "agent" || restoredRow.mode === "plan") {
+      if (restoredRow.mode === "agent" || restoredRow.mode === "plan" || restoredRow.mode === "ask") {
         initialMode = restoredRow.mode;
       }
       if (
@@ -430,7 +430,9 @@ export async function resolveSession(
       try {
         const raw = await kvGet("pi.mode");
         const last = raw?.value ? (JSON.parse(raw.value) as Partial<PlanningModePrefs>) : null;
-        if (last?.mode === "agent" || last?.mode === "plan") initialMode = last.mode;
+        if (last?.mode === "agent" || last?.mode === "plan" || last?.mode === "ask") {
+          initialMode = last.mode;
+        }
         if (
           last?.approvalLevel === "ask" ||
           last?.approvalLevel === "auto-edit" ||
@@ -695,7 +697,8 @@ export async function projectContextInfo(
   // 运行期才解引用 run，投影下这些闭包永远不会被调用。
   // 模式取会话偏好行（与 resolveSession 的恢复口径一致；自动化 turn 的守卫
   // 不在此做——投影只读，且策略注册窗口与打开面板的时机本就不同步）
-  const projectedMode: SessionMode = row.mode === "plan" ? "plan" : "agent";
+  const projectedMode: SessionMode =
+    row.mode === "plan" || row.mode === "ask" ? row.mode : "agent";
   const stub = {
     mode: projectedMode,
     planning: projectedMode === "plan" ? "planning" : "inactive",

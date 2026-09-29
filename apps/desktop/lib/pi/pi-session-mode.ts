@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { useAuiState } from "@assistant-ui/react";
 import { piRequest } from "@/lib/pi/pi-bridge";
 import {
   piSessionRegistry,
@@ -16,7 +17,14 @@ import {
  * - plan_exit 的执行确认不在这里：它走逐工具审批通道（pi-tool-approval）
  */
 
-export type SessionMode = "agent" | "plan";
+export type SessionMode = "agent" | "plan" | "ask";
+
+/** 三档字面量的宽松规整。散落的 `x === "a" || x === "b"` 白名单是加枚举值时
+ *  最典型的静默漏改点——ask 的 chunk 会被整个丢弃，UI 卡在旧模式，表现为
+ *  「点了没反应」。所有外部来源（chunk、会话列表偏好）一律经这里收口 */
+export function normalizeSessionMode(raw: unknown): SessionMode | null {
+  return raw === "agent" || raw === "plan" || raw === "ask" ? raw : null;
+}
 
 /** 逐工具审批级别（agent 模式）：ask = 每次确认；auto-edit = 编辑免确认；auto = 全免 */
 export type ApprovalLevel = "ask" | "auto-edit" | "auto";
@@ -52,14 +60,12 @@ function setSnapshot(threadId: string, snap: PlanningSnapshot) {
 export function applyPlanningChunk(threadId: string, data: unknown): void {
   if (!data || typeof data !== "object") return;
   const d = data as Partial<PlanningSnapshot>;
-  if (
-    (d.mode !== "agent" && d.mode !== "plan") ||
-    (d.planning !== "inactive" && d.planning !== "planning")
-  ) {
+  const mode = normalizeSessionMode(d.mode);
+  if (!mode || (d.planning !== "inactive" && d.planning !== "planning")) {
     return;
   }
   setSnapshot(threadId, {
-    mode: d.mode,
+    mode,
     approvalLevel:
       d.approvalLevel === "auto-edit" || d.approvalLevel === "auto" ? d.approvalLevel : "ask",
     planning: d.planning,
@@ -76,6 +82,17 @@ export function useSessionMode(threadId: string | undefined): PlanningSnapshot {
     () => (threadId ? (snapshots.get(threadId) ?? DEFAULT_PLANNING_SNAPSHOT) : DEFAULT_PLANNING_SNAPSHOT),
     () => DEFAULT_PLANNING_SNAPSHOT,
   );
+}
+
+/** React 之外的读法（测试、非组件调用点）。形态对齐 app-mode 的 getAppMode() */
+export function sessionModeSnapshot(threadId: string | undefined): PlanningSnapshot {
+  return threadId ? (snapshots.get(threadId) ?? DEFAULT_PLANNING_SNAPSHOT) : DEFAULT_PLANNING_SNAPSHOT;
+}
+
+/** 工具行、面板标签、composer 底栏共用同一个判据：别处各自判 mode 会漂 */
+export function useIsAskMode(): boolean {
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  return useSessionMode(threadId).mode === "ask";
 }
 
 type ModeResponse = {
@@ -123,14 +140,15 @@ export function setSessionMode(
 export function fetchPlanningState(threadId: string): Promise<void> {
   const sessionId = prefsSessionIdFor(threadId);
   const prefs = sessionId ? piSessionPrefsMap.get(sessionId) : undefined;
-  if (prefs && (prefs.mode === "agent" || prefs.mode === "plan")) {
+  const prefsMode = normalizeSessionMode(prefs?.mode);
+  if (prefs && prefsMode) {
     setSnapshot(threadId, {
-      mode: prefs.mode,
+      mode: prefsMode,
       approvalLevel:
         prefs.approvalLevel === "auto-edit" || prefs.approvalLevel === "auto"
           ? prefs.approvalLevel
           : "ask",
-      planning: "inactive",
+      planning: prefsMode === "plan" ? "planning" : "inactive",
     });
   }
   const registryId = piSessionRegistry.get(threadId);

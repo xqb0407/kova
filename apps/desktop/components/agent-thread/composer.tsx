@@ -25,6 +25,11 @@ import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
 import { ModePicker } from "@/components/agent-thread/mode-picker";
 import { DesignThemePicker } from "@/components/agent-thread/design-theme-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
+import { setSessionMode, useSessionMode } from "@/lib/pi/pi-session-mode";
+import {
+  clearAskNeedsWork,
+  useAskNeedsWork,
+} from "@/lib/pi/pi-ask-needs-work";
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
 import { cancelQueueItem, useQueueSnapshot } from "@/lib/pi/pi-queue";
 import { markSteerNextSend } from "@/lib/pi/pi-steer-intent";
@@ -46,6 +51,7 @@ import {
   type ShortcutConfig,
 } from "@/lib/shortcuts";
 import {
+  ArrowRightLeftIcon,
   ArrowUpIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -229,6 +235,7 @@ export const Composer: FC = () => {
           >
             <ComposerQuotePreview />
             <ComposerAttachments />
+            <AskNeedsWorkChip />
             <ImeEnterGuard send={sendMessage} interceptSend={interceptSend} noModel={noModel} noModelHint={gate.hint}>
             <CmComposerInput
               submitMode={submitMode}
@@ -923,7 +930,56 @@ const AddAttachmentButton: FC = () => {
   );
 };
 
-const ComposerAction: FC = () => {  return (
+/**
+ * 问答档的切档提议：模型调 ask_needs_work 后就地冒一条，不弹窗、不自动切。
+ * 用户点「切到编码」才发 set_mode；点 × 只是收起提示，本轮照常继续。
+ */
+const AskNeedsWorkChip: FC = () => {
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const view = useAskNeedsWork(threadId);
+  if (!threadId || !view) return null;
+
+  const go = () => {
+    if (!threadId) return;
+    clearAskNeedsWork(threadId);
+    void setSessionMode(threadId, "agent", "ask").catch((err) =>
+      console.error("set_mode failed:", err),
+    );
+  };
+
+  return (
+    <div className="mx-2.5 mt-2 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs">
+      <ArrowRightLeftIcon className="mt-px size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+      <div className="min-w-0 flex-1">
+        <p className="font-medium">这题可能要动项目</p>
+        {view.reason && (
+          <p className="text-muted-foreground mt-0.5 leading-relaxed">{view.reason}</p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={go}
+        className="shrink-0 rounded-full bg-amber-600 px-2.5 py-1 font-medium text-white transition-colors hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-600"
+      >
+        切到编码
+      </button>
+      <button
+        type="button"
+        aria-label="忽略"
+        onClick={() => clearAskNeedsWork(threadId)}
+        className="text-muted-foreground hover:text-foreground mt-px shrink-0"
+      >
+        <XIcon className="size-3.5" />
+      </button>
+    </div>
+  );
+};
+
+const ComposerAction: FC = () => {
+  // 问答档的底栏收敛：思考档与上下文用量是编码档的调参旋钮，问答场景没有
+  // "这次思考强度调多少"的决策，只留模型选择器。切档即时生效，无需重启会话。
+  const inAskMode = useSessionMode(useAuiState((s) => s.threads.mainThreadId)).mode === "ask";
+  return (
     // flex-wrap：窄对话列（小窗口 + 右面板展开）时两组按钮各自成行，
     // 避免固有宽度撑破消息流（超长内容一律走截断，不靠横向滚动）
     <div className="aui-composer-action-wrapper relative flex flex-wrap items-center justify-between gap-y-1.5">
@@ -936,8 +992,8 @@ const ComposerAction: FC = () => {  return (
       <div className="flex items-center gap-1.5">
         <ModelPicker />
         {/* 深度思考档位选择：模型右侧、发送按钮左侧，点开下拉选强度 */}
-        <ThinkingPicker />
-        <ContextButton />
+        {!inAskMode && <ThinkingPicker />}
+        {!inAskMode && <ContextButton />}
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
             <ComposerPrimitive.Dictate asChild>

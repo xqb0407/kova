@@ -56,7 +56,7 @@ export type SessionSummary = {
   cwd: string;
   archived?: boolean; // 归档标记：列表默认隐藏，正文不动
   /** 会话级偏好（undefined = 从未变更过；切回会话时恢复模式/模型用） */
-  mode?: "agent" | "plan";
+  mode?: "agent" | "plan" | "ask";
   approvalLevel?: "ask" | "auto-edit" | "auto";
   modelProvider?: string;
   modelId?: string;
@@ -182,11 +182,11 @@ export type Running = {
   turnEnding?: boolean;
   /** 本用户 prompt 轮内"length 截断无 toolCall"已注入的自动续跑次数（每轮重置，见 context.ts；缺省视为 0） */
   lengthContinues?: number;
-  /** 当前模式（agent = 正常执行；plan = 只读勘察 + 计划编写） */
+  /** 当前模式（agent = 正常执行；plan = 只读勘察 + 计划编写；ask = 纯问答只读） */
   mode: SessionMode;
   /** 逐工具审批级别（ask = 每次确认；auto-edit = 编辑免确认；auto = 全免） */
   approvalLevel: ApprovalLevel;
-  /** 计划状态机（见 modes.ts）：agent=inactive，plan=planning */
+  /** 计划状态机（见 modes.ts）：agent=inactive，plan=planning，ask=inactive */
   planning: PlanningState;
   /** 当前会话计划文件绝对路径（plan_write 首写定名，之后覆盖写） */
   planFilePath?: string;
@@ -236,8 +236,8 @@ export type PendingToolApproval = {
 
 /* ------------------------------- 模式与审批 ------------------------------- */
 
-/** 会话模式：agent 正常执行；plan 只读勘察 + 编写实施计划（plan_exit 批准后回 agent 实施） */
-export type SessionMode = "agent" | "plan";
+/** 会话模式：agent 正常执行；plan 只读勘察 + 编写实施计划（plan_exit 批准后回 agent 实施）；ask 纯问答（只读工具子集，不改工作区） */
+export type SessionMode = "agent" | "plan" | "ask";
 
 /**
  * 逐工具审批级别（对齐参考项目 targetPermissionMode）：

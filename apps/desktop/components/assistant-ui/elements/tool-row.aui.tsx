@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { openToolCallPanel } from "@/lib/panels/tool-panel";
 import { useAppMode } from "@/lib/pi/app-mode";
+import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import {
   openSubagentTab,
   parseDelegationIdFromResult,
@@ -207,9 +208,9 @@ export const ToolRow: FC<ToolRowProps> = ({
   onOpenPanel,
 }) => {
   const [open, setOpen] = useState(false);
-  // 工作模式（设置 → 通用）：过程细节收敛——不渲染行内输出展开/流式预览，
+  // 工作模式（设置 → 通用）与问答档：过程细节收敛——不渲染行内输出展开/流式预览，
   // 行只剩摘要（保留 ±N 统计与开面板动作）；详情走右侧面板
-  const compact = useAppMode() === "work";
+  const compact = useAppMode() === "work" || useIsAskMode();
   const hasOutput = !compact && !!output;
   const canExpand = hasOutput || (!compact && expandedContent != null);
   // 展开内容顶部已有 `$ 命令` 时，行上的命令文本收起（终端行展开后只剩「终端」+箭头）
