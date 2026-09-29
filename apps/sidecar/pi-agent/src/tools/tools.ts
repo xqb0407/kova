@@ -348,10 +348,7 @@ export function buildTools(
     ...buildWebTools(cwd),
     // 浏览器驱动：执行转发 Rust 宿主（browser.rs）驱动面板子 webview，
     // threadId 用于 data-panelOpen 面板唤起（见 browser-tools.ts）
-    // 【暂停暴露】只保留 browser_navigate（agent 导航打开网页 + 返回渲染快照）；
-    // snapshot/click/type/scroll/back/resize 暂不下发 AI，工具代码原样留在
-    // browser-tools.ts，恢复时去掉 filter 即可
-    ...buildBrowserTools(threadId).filter((tool) => tool.name === "browser_navigate"),
+    ...buildBrowserTools(threadId),
     // 屏幕截图：执行转发 Rust 宿主（tool_exec.rs，macOS only），结果 image 块
     // 走正规投影链路上屏（image-parts.ts 闸门 + 前端 data-image 渲染）
     buildScreenshotTool(cwd),

@@ -292,6 +292,7 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
   useEffect(() => {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
+    let alive = true;
     import("@tauri-apps/api/event")
       .then(({ listen }) =>
         listen<{ url: string; phase: string; title?: string | null }>(
@@ -307,6 +308,18 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
             attached.current = u; // webview 已在此 url
             setUrl(u);
             setInput(u);
+            // agent 的 browser_navigate 直接在宿主侧导航子 webview，不经过上面
+            // 的 url→attach effect（本回调已把 attached 置位，那边会去重跳过）。
+            // 面板收起过/切过 tab/被浮层遮挡过时子 webview 处于隐藏态，不重新
+            // 落位显示就是一片白，点刷新才出现——同款症状在挂载路径已修过一次。
+            //
+            // 只 syncBounds、**不**再调 browser_attach：syncBounds 内部已经会在
+            // "收起期间隐藏过"时按 urlRef 重新 attach 显示，够了。多这一次调用
+            // 会在 current_page 读不到地址时触发宿主再导航一次，而那又发一次
+            // started —— 变成面板无限刷新的回环。
+            if (e.payload.phase === "started" && alive) {
+              void syncBounds();
+            }
             const title =
               e.payload.phase === "title"
                 ? e.payload.title || hostOf(u)
@@ -322,8 +335,11 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
         unlisten = fn;
       })
       .catch(() => {});
-    return () => unlisten?.();
-  }, [tab.id]);
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, [tab.id, syncBounds]);
 
   // 全屏视图（设置等）覆盖主窗口时隐藏子 webview（base.tsx 广播）；
   // 返回应用后由 syncBounds 状态机恢复显示（面板展开 → 落位+attach）。

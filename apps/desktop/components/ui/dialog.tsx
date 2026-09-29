@@ -6,6 +6,7 @@ import { XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { OcclusionSlot } from "@/components/custom-ui/occlusion-slot";
 
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
@@ -15,8 +16,19 @@ function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
   return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />;
 }
 
-function DialogPortal({ ...props }: DialogPrimitive.Portal.Props) {
-  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
+function DialogPortal({ children, ...props }: DialogPrimitive.Portal.Props) {
+  // 遮挡注册挂在 Portal 上、不是 DialogContent：直接用 Portal 自组浮层的调用方
+  // （截图预览 image-data.tsx 就是）也必须注册，否则面板 webview 盖上来。
+  //
+  // children 必须解构出来显式渲染：JSX 的显式子节点会覆盖 `{...props}` 里的
+  // children，直接写 `<Portal {...props}><OcclusionSlot/></Portal>` 会把调用方
+  // 传进来的整棵子树悄悄丢掉（弹窗变空壳、点什么都没反应）。
+  return (
+    <DialogPrimitive.Portal data-slot="dialog-portal" {...props}>
+      <OcclusionSlot />
+      {children}
+    </DialogPrimitive.Portal>
+  );
 }
 
 function DialogClose({ ...props }: DialogPrimitive.Close.Props) {

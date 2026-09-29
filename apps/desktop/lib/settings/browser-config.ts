@@ -5,7 +5,7 @@ import { piRequest } from "@/lib/pi/pi-bridge";
 import type { PiBrowserConfig } from "@/lib/pi/pi-bridge";
 
 /**
- * 浏览器驱动开关（设置 → 通用 → 智能体工具）的配置镜像。
+ * 浏览器相关开关（设置 → 电脑控制）的配置镜像。
  * 事实源在 sidecar——SQLite kv 整包持久化，browser_* 工具 execute 内实时门控；
  * 这里只做镜像缓存：模块加载 get_browser 水合，保存走 set_browser（与记忆同款链路）。
  */
@@ -14,6 +14,10 @@ export type BrowserConfig = PiBrowserConfig;
 
 export const DEFAULT_BROWSER_CONFIG: BrowserConfig = {
   enabled: true,
+  // 两项都默认关：像素截图要另起一个 Chrome 进程，屏幕截图会读到用户的
+  // 真实桌面——都不该在用户没明确同意时发生
+  pixelShot: false,
+  screenShot: false,
 };
 
 let current: BrowserConfig = DEFAULT_BROWSER_CONFIG;

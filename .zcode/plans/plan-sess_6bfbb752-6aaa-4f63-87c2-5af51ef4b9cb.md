@@ -1,127 +1,80 @@
 ## 目标
 
-给会话加第三档模式「问答」：只读工具子集（不给 bash）、提示词砍掉 todo/Subagents 段、界面收敛，配一个"模型提议切档"的出口。
+agent 的 browser use 拆成两路，职责不重叠，由设置开关控制：
 
-按调研结论校正的两点：
-- **叫「问答」不叫「快速」**。业界没有一家把轻量问答叫 fast mode；Claude Code 的 `/fast` 是同模型的低延迟档，叫这个名字会让用户预期成"回答更快"。Cursor / Devin 都叫 Ask mode。
-- **不清空工具表，收走的是"写"**。Cursor 的 Ask 是 read-only 不是 tool-free，Claude Code 的 Manual 档是 "Reads only"——读照常。kova 里这个子集已经存在（`CONTRACT_TOOL_NAMES`，`modes.ts:79`），plan 模式正在用。
-
-## 前提：默认值不动
-
-你选了默认仍是编码/变更前确认。这意味着"简单问答被 agent 一通操作"这个痛点，**只在你主动切到问答档时才消失**。所以计划里把两件事分开：
-
-- 主体是问答档本身（第 1–6 步），这是你选的范围内必须做的。
-- 另外单列一条**可独立回退**的提示词微调（第 7 步），直接打在 agent 档"接到新指令就建 todo"这个过度触发上——这条是即使不进问答档也能缓解痛点的部分。
-
-问答档的可达性靠 Shift+Tab 循环 + composer 第五项，不靠默认。
-
----
-
-## 1. 类型与协议
-
-`apps/sidecar/pi-agent/src/types.ts:240`
 ```
-export type SessionMode = "agent" | "plan" | "ask";
+webview（面板内，你实时看着）—— agent 的工作面
+  导航 / 点击 / 输入 / 读 DOM，URL 是唯一事实源
+        │  「这个 URL 长什么样？」
+        ↓
+无头 Chrome（不可见，一次性）—— 相机，不是第二个浏览器
+  load 同一个 URL → captureScreenshot → 退出
 ```
 
-`apps/sidecar/pi-agent/src/protocol/handlers/interactive.ts:79` — set_mode 白名单加 `"ask"`。
+**为什么这样划**：若两者各自持有页面，你在面板看到的和 agent 推理依据的就不是一个东西。URL 只有一个事实源，webview 持有；无头 Chrome 永远是被叫去拍一张，不会跑偏。
 
-`apps/sidecar/pi-agent/src/protocol/handlers/sessions.ts:126` — 会话列表投影 `r.mode === "agent" || r.mode === "plan" ? r.mode : undefined` 的白名单同步加 `ask`，否则列表里问答会话的模式字段是空。
+**优雅降级**：没装 Chrome 或关掉子开关时，系统完整可用，只是 canvas/WebGL 页面 agent 看不见画面——而这正是今天土楼那次的痛点。
 
-## 2. 工具表：只读子集
+## 借鉴 ZCode 的两处
 
-`apps/sidecar/pi-agent/src/agent/modes.ts`
+ZCode（Electron/Chromium）证明了目标形态是可实现的。两处可以直接搬：
 
-新增 `ASK_TOOL_NAMES`，从现有 `CONTRACT_TOOL_NAMES`（`modes.ts:79`）派生并**去掉 `bash`**——bash 不是只读，留着就破坏了问答档的安全边界。保留 read / glob / grep / WebFetch / WebSearch / Question / skill_use。
+1. **Playwright 的 `injectedScriptSource.js`**——他们把这脚本注入 guest webview 拿到 Playwright 同款 ARIA 快照（带元素 ref，点击可精确定位），代码在 `playwrightInjectedScriptSource.ts`。**不需要 CDP，就是一段 JS**，WKWebView 里同样能注入。Kova 现在的 `SNAPSHOT_JS` 是手写 400 行纯文本，这是同一件事的工业级替代。
+2. **固定版本 + 完整性校验的提取法**——那段脚本不是 Playwright 的 public export，他们 pin 死版本、从 `playwright-core` 里只读那个字符串字面量、校验必须包含 `incrementalAriaSnapshot` 才肯用。照抄这个纪律。
 
-`toolsForMode`（`modes.ts:135`）加第三个分支：
-```ts
-if (run.mode === "ask") {
-  return run.baseTools.filter((t) => ASK_TOOL_NAMES.has(t.name));
-}
-```
-不加 plan 三件套，不加 subagentTools。子代理工具整批不下发——它那六行提示词和多轮委派是"工程味"的主要来源之一。
+## 第 1 步：webview 路升级为 ARIA 快照
 
-## 3. 结构性只读拦截
+- `browser_scripts.rs` 的 `SNAPSHOT_JS` 换成注入 Playwright `injectedScriptSource`，调用 `incrementalAriaSnapshot`
+- 新增 `playwright_script.rs`：构建期从 pin 死的 `playwright-core` 提取该字符串字面量，`include_str!` 进二进制，附完整性校验（ZCode 同款）
+- 保留现有全部注入能力：导航/点击/输入/滚动/视口/前进后退
+- 恢复被 `tools.ts:354` 暂停的 6 个工具（去掉那个 filter）
 
-复用 plan 模式那套代码级保证，不依赖工具表新鲜度（`modes.ts:386` 已有先例，注释写明"轮中切换前模型可能还带着旧 schema"）：
+## 第 2 步：无头 Chrome 拍照
 
-```ts
-if (run.mode === "ask" && ASK_MODE_MUTATING_TOOLS.has(name)) {
-  return { block: true, reason: "..." };
-}
-```
+新增 `src-tauri/src/browser_shot/`：
 
-## 4. 提示词
+- **一次性**语义，不持长会话：load URL → 等 load → `captureScreenshot` → 杀进程组 → 返回 base64
+- 独立 `--user-data-dir`（临时目录，进程退出即删）——土楼那次 SingletonLock 事故的解药
+- Chrome 路径按平台探测；**探测不到就返回明确错误，不静默失败**，且不影响 webview 路的任何功能
+- 复用 `browser-use-rs`（`/Users/herther/Downloads/browser-use-rs-main`，MIT）的 CDP 客户端，不手写
+- `handle_tool` 加一个 match 分支，返回值 JSON 形状与现有一致
+- 截图走现成 `image-parts.ts` 投影链路上屏（`screenshot` 工具已是同款）
 
-`composeModeSystemPrompt`（`modes.ts:110`）现在是无条件拼 `SYSTEM_PROMPT_CORE`。问答档需要它变薄，而这要求把 `SYSTEM_PROMPT_CORE` 从一个扁平数组**拆成可选取的段**（`tools.ts:397`）——这是整个改动里唯一有侵入性的重构，因为该常量被注释明确要求"字节级稳定"以保住 OpenAI 前缀缓存。
+**依赖**：`browser-use = { version = "0.2.3", default-features = false }`（关掉用不上的 `mcp-handler`）。需抬 `rust-version` 到 1.85+（该库 edition 2024，现声明 1.77.2）。
 
-拆法保持那条不变式：所有静态段顺序不变、动态段（cwd / 环境事实）仍在最末尾，code/plan 档重组后的字节流与现在**完全一致**。用 `modes.test.ts:465` 那个 `describe("系统提示词结构（缓存友好）")` 做回归断言钉住。
+## 第 3 步：z 序（webview 保留，这问题必须真解决）
 
-新增 `ASK_MODE_PROMPT`，纪律三条：直接回答不要动手；问的是代码就读代码回答、别改；确实需要动文件时调 `ask_needs_work` 提议切档。
+现有 `browser:occluded` 是人工白名单，44 个用 Dialog/Popover 的文件里漏一个就盖住内容（新手引导那个洞本轮已修，但那是第 45 个漏项）。
 
-问答档不拼 `environmentPromptBlock` 之外的 memory/mcp/skills/instructions 是否保留——**先保留**，它们是工作区相关的（memory 段 1,508 字符最大，但里面是用户自己的记忆，砍掉可能损失有用信息）。这一条实现时按实际内容再定，先按保留写。
+改成结构化机制：任何全屏浮层通过统一的 overlay context 注册/注销，浮层挂载即广播遮挡、卸载即恢复。不再依赖"谁记得补一次广播"。已知的设置页/向导/面板动画三处迁到同一入口。
 
-## 5. 塌陷点修复（不加会静默丢数据）
+## 第 4 步：设置
 
-这些都是 `x === "a" || x === "b"` 或三元，加了 `ask` 不报错、直接丢：
+复用现有「电脑控制」页（`computer-control-settings.tsx` + `browser-config.ts` + `get/set_browser` 协议整套已在）：
 
-| 位置 | 现状 | 后果 |
-|---|---|---|
-| `sessions/resolve.ts:419` | 只认 agent\|plan | 恢复问答会话时模式被丢弃 |
-| `sessions/resolve.ts:433` | 同上，读 kv | 同上 |
-| `sessions/resolve.ts:698` | `row.mode === "plan" ? "plan" : "agent"` | 上下文用量统计把问答会话算成带全套工具 |
-| `agent/modes.ts:116` | `mode === "plan" ? PLAN : AGENT` | 问答会话拿到 agent 纪律段 |
-| `agent/modes.ts:543` | `mode === "agent" ? "inactive" : "planning"` | **问答会话继承 planning 态，UI 显示成计划模式** |
-| `lib/pi/pi-session-mode.ts:56` | chunk 守卫 | **整个 chunk 被丢弃，UI 卡在旧模式，表现是"点了没反应"** |
-| `lib/pi/pi-session-mode.ts:126` | 恢复守卫 | 刷新后模式回退 |
+- **浏览器驱动**（已有，语义微调）：agent 有没有浏览器
+- **像素截图**（新增，默认关）：用无头 Chrome 拍 canvas。关掉/无 Chrome 时系统降级但完整可用
+- **屏幕截图**（新增，默认关）：现有 `screencapture -x`（`tool_exec.rs:706`）在读你的真实屏幕。「不要动我的电脑」这条现在只被它违反，该页注释本就写着"后续系统级能力（截图、桌面自动化等）的开关也归这里"
 
-统一改成显式映射表，别再加三元。
+## 风险
 
-## 6. 前端
-
-- `components/agent-thread/mode-picker.tsx` — `OPTIONS` 加第五项「问答」，`activeKey`（`:101`）的 `snap.mode === "plan" ? "plan" : snap.approvalLevel` 改成能识别 ask。绑定 Shift+Tab 循环。
-- `lib/pi/pi-session-mode.ts` — 类型 + 上面两处守卫。
-
-## 7. 出口：模型提议切档（可独立回退）
-
-问答档给模型挂一个 `ask_needs_work` 工具，它调用时不切档，只在 composer 冒一个 chip："这题需要动文件 → 切到编码？"，用户点了才发 `set_mode`。
-
-不做成模型直接切档，是因为切档会当场把提示词和工具表一起换掉——那正是问答档要避免的"变重"。`plan_exit` 已经是 HITL，这条路子一致。
-
-## 8. 界面收敛
-
-- `components/assistant-ui/elements/tool-row.aui.tsx:212` — `const compact = useAppMode() === "work"` 扩成 `|| 会话是问答档`，复用已有的行折叠逻辑。
-- `components/agent-thread/agent-panel/tab-registry.tsx:65` — 问答档隐藏 git / shell 标签。
-- composer 底栏在问答档下收起思考档、上下文用量等控件，保留模型选择器。
-
-## 9. 顺带修 agent 档的 todo 过度触发（独立可回退）
-
-`tools.ts` 的 Task tracking 段现在写着 "or **immediately after receiving new instructions to capture requirements**"，后半句在鼓励模型对每条消息建 todo——这大概率就是你说的"一直给我做这个做那个"的一部分。软化成只在明确的多步任务时触发。
-
-这条不改任何状态机、只改一段文案，可以单独回退。如果实测没改善，撤掉零成本。
-
----
-
-## 测试
-
-`apps/sidecar/pi-agent/test/agent/modes.test.ts`（已有 34 个用例，`makeRun(mode)` 辅助函数现成可用）扩：
-- `toolsForMode` 问答分支返回只读子集，不含 bash / write / edit / subagent
-- `modeBeforeToolCall` 问答档拦截写类工具
-- `applyMode` 问答档 planning 为 `inactive`
-- `composeModeSystemPrompt` 问答段不含 todo/Subagents 字样，且 code/plan 档输出与改动前逐字节相同（缓存不变式回归）
-
-新增 `apps/desktop/lib/pi/pi-session-mode.test.ts`，照 `app-mode.test.ts` 的写法：问答 chunk 能被 `applyPlanningChunk` 接受、不再被丢弃。
+1. **需系统装 Chrome**（仅像素截图功能需要）。不打包 Chromium，缺失时给明确错误且不影响其他能力
+2. **Playwright 内部产物有版本脆弱性**——那是 non-public export。用 pin 死版本 + 完整性校验缓解；提取失败时降级回现有文本快照，不让 agent 失去 DOM 能力
+3. **MSRV 抬到 1.85+**，需确认 CI 工具链
+4. **一次性截图有延迟**（启动 Chrome ~0.5–1s）。agent 在循环里频繁截图会明显变慢——需要的话后续加常驻实例复用
+5. **真桌面软件自动化不在此方案内**。操作原生应用需独立虚拟显示，macOS 无 Xvfb 对等物
 
 ## 验证
 
-- `cd apps/sidecar/pi-agent && bun test`（根 `bun run test` 走的就是这个）
-- `cd apps/desktop && bun test lib/pi/pi-session-mode.test.ts`
-- 手动：问答档下 `write` 应被结构拦截；发一条纯问题，确认没有 todo 冒出来
+- `cargo test --lib`：Chrome 探测、user-data-dir 隔离与清理、连接失败错误文案、**进程组清理（复用已验证的 pid 存活断言，非只看耗时）**、Playwright 脚本提取的完整性校验（故意破坏输入必须失败）
+- `bun test`（sidecar）：恢复的 6 个工具注册与参数 schema
+- `tsc --noEmit`（desktop）
+- 手动核心验收：① agent 打开本地生成的 WebGL html → ARIA 快照正确表达「无交互元素」→ 转而截图 → **聊天里能看到 canvas**；② 面板展开/收起、切设置页、开任意弹窗**不再盖内容**；③ 关掉像素截图后系统仍完整可用，只是 canvas 看不见；④ agent 全程你的鼠标/焦点/窗口不动
 
-## 不做的事
+## 不做
 
-- 不改默认值
-- 不碰自动化/子代理/队列逻辑
-- 不做 Devin 那种"生成交接 prompt"的产物式交接，也不做 Cursor 的 side chat——都是第二阶段
-- 不引入 "fast" 字样到任何面向用户的文案
+- 不删 webview（webview 是工作面，无头 Chrome 只是相机）
+- 不做点击回传（你要的是看，不是操作）
+- 不做真桌面软件自动化
+- 不打包 Chromium
+- 不在无头 Chrome 里做常驻长会话（先一次性，验证后再优化）

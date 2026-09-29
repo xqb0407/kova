@@ -2,6 +2,10 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { initHostTransport, resetStorageForTest, resolveHostResult } from "../../src/storage/hostdb";
 import { buildScreenshotTool } from "../../src/tools/screenshot-tool";
 import { projectToolResult } from "../../src/tools/image-parts";
+import {
+  resetBrowserConfigForTest,
+  setBrowserConfigForTest,
+} from "../../src/tools/browser-config";
 
 /**
  * host 模式 fake transport：execute → hostScreenshotCall 写 host_query 行，
@@ -18,12 +22,16 @@ describe("screenshot tool (host RPC)", () => {
       return true;
     };
     initHostTransport();
+    // screenShot 默认关（读用户真实屏幕是唯一越界的能力），这组测的是 RPC
+    // 链路不是门控，所以显式开；门控本身在下面那条测试里钉
+    setBrowserConfigForTest({ enabled: true, pixelShot: false, screenShot: true });
   });
 
   afterAll(() => {
     (process.stdout as unknown as { write: (c: unknown) => boolean }).write =
       origWrite as unknown as (c: unknown) => boolean;
     resetStorageForTest();
+    resetBrowserConfigForTest();
   });
 
   const shotData = {
@@ -33,6 +41,20 @@ describe("screenshot tool (host RPC)", () => {
     width: 1920,
     height: 1200,
   };
+
+  // 默认关是硬要求："应用自己操作自己、不动用户的电脑"。这条一旦被改回
+  // 默认开，agent 就能在用户不知情时看到整块桌面
+  test("默认关闭时婉拒，且提示改用 browser_shot 而不是重试", async () => {
+    setBrowserConfigForTest({ screenShot: false });
+    captured.length = 0;
+    const res = await buildScreenshotTool("/tmp").execute("call-gate", {}, undefined);
+    const text = res.content[0].type === "text" ? res.content[0].text : "";
+    expect(text).toContain("disabled");
+    expect(text).toContain("Do not retry");
+    expect(text).toContain("browser_shot");
+    expect(captured.join("")).not.toContain("host_query");
+    setBrowserConfigForTest({ screenShot: true });
+  });
 
   test("execute sends host tool query named screenshot", async () => {
     captured.length = 0;

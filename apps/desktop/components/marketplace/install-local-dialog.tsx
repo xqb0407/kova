@@ -89,18 +89,18 @@ export const InstallLocalDialog: FC<{
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next && !busy) closeAndReset(); }}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="gap-5 p-6 sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>本地安装插件</DialogTitle>
+          <DialogTitle className="text-lg">本地安装插件</DialogTitle>
           <DialogDescription>
             选择一个插件目录根（含 .kova-plugin / .claude-plugin / .codex-plugin 的
             plugin.json 清单即可，无需市场）。装进「本地安装」市场；更新时重新选择同一目录点安装即可。
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <Label htmlFor="local-plugin-path">插件目录</Label>
-          <div className="flex gap-1.5">
+          <div className="flex gap-2">
             <Input
               id="local-plugin-path"
               value={path}
@@ -109,7 +109,7 @@ export const InstallLocalDialog: FC<{
                 if (e.key === "Enter" && !busy) submit();
               }}
               placeholder="/path/to/plugins/my-plugin"
-              className="font-mono text-xs"
+              className="font-mono"
               disabled={busy}
             />
             <Button
@@ -133,10 +133,10 @@ export const InstallLocalDialog: FC<{
         </div>
 
         <DialogFooter>
-          <Button variant="outline" size="sm" onClick={closeAndReset} disabled={busy}>
+          <Button variant="outline" onClick={closeAndReset} disabled={busy}>
             取消
           </Button>
-          <Button size="sm" disabled={busy} onClick={submit}>
+          <Button disabled={busy} onClick={submit}>
             {busy && <Loader2Icon className="size-3.5 animate-spin" />}
             安装
           </Button>

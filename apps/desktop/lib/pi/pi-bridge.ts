@@ -532,8 +532,12 @@ export type PiMemoryConfig = {
 
 /** 浏览器驱动开关整包（设置 → 通用 → 智能体工具；sidecar 持久化于 SQLite kv） */
 export type PiBrowserConfig = {
-  /** 总开关：关闭时 browser_* 工具一律婉拒 */
+  /** 浏览器驱动总开关：关闭时 browser_* 工具一律婉拒（面板浏览器仍可用） */
   enabled: boolean;
+  /** 像素截图：browser_shot 用一次性无头 Chrome 拍页面画面。默认关 */
+  pixelShot: boolean;
+  /** 屏幕截图：screenshot 读用户真实屏幕。默认关——唯一越界的能力 */
+  screenShot: boolean;
 };
 
 /** 文生图配置整包（设置 → 模型 → 文生图；sidecar 持久化于 SQLite kv）。

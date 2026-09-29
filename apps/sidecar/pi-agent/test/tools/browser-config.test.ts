@@ -34,8 +34,26 @@ describe("normalizeBrowserConfig", () => {
   });
 
   test("合法布尔透传", () => {
-    expect(normalizeBrowserConfig({ enabled: false })).toEqual({ enabled: false });
-    expect(normalizeBrowserConfig({ enabled: true })).toEqual({ enabled: true });
+    expect(normalizeBrowserConfig({ enabled: false })).toEqual({
+      enabled: false,
+      pixelShot: DEFAULT_BROWSER_CONFIG.pixelShot,
+      screenShot: DEFAULT_BROWSER_CONFIG.screenShot,
+    });
+  });
+
+  // 两个子开关默认关：像素截图要另起进程，屏幕截图会读到用户的真实桌面
+  test("两个子开关默认关（不因为漏配就默认开）", () => {
+    expect(DEFAULT_BROWSER_CONFIG.pixelShot).toBe(false);
+    expect(DEFAULT_BROWSER_CONFIG.screenShot).toBe(false);
+    expect(normalizeBrowserConfig({ enabled: true }).pixelShot).toBe(false);
+    expect(normalizeBrowserConfig({ enabled: true }).screenShot).toBe(false);
+  });
+
+  test("子开关可独立开启，不牵动总开关", () => {
+    const c = normalizeBrowserConfig({ enabled: true, pixelShot: true });
+    expect(c.pixelShot).toBe(true);
+    expect(c.enabled).toBe(true);
+    expect(c.screenShot).toBe(false);
   });
 });
 
@@ -44,7 +62,7 @@ describe("配置存取（kv 往返）", () => {
     await applyBrowserConfig({ enabled: false });
     expect(getBrowserConfig().enabled).toBe(false);
     const persisted = JSON.parse((await kvGet("pi.browser"))!.value);
-    expect(persisted).toEqual({ enabled: false });
+    expect(persisted).toEqual({ ...DEFAULT_BROWSER_CONFIG, enabled: false });
 
     // 模拟重启：内存态清零后从 kv 恢复
     resetBrowserConfigForTest();
@@ -54,13 +72,31 @@ describe("配置存取（kv 往返）", () => {
 });
 
 describe("browser_* 工具门控", () => {
-  test("关闭时七个工具 execute 一律婉拒（不触宿主）", async () => {
+  test("总开关关闭时驱动工具一律婉拒（不触宿主）", async () => {
     await applyBrowserConfig({ enabled: false });
-    for (const tool of buildBrowserTools("t-gate")) {
+    for (const tool of buildBrowserTools("t-gate").filter((t) => t.name !== "browser_shot")) {
       const res = await tool.execute("call-1", {}, undefined);
       const text = res.content[0].type === "text" ? res.content[0].text : "";
       expect(text).toContain("disabled");
     }
+  });
+
+  // 相机是独立授权：驱动关掉不影响"看一眼画面"，反之亦然
+  test("pixelShot 关时 browser_shot 婉拒，且不受总开关影响", async () => {
+    await applyBrowserConfig({ enabled: true, pixelShot: false });
+    const shot = buildBrowserTools("t-gate").find((t) => t.name === "browser_shot")!;
+    const off = await shot.execute("call-shot-off", {}, undefined);
+    expect(off.content[0].type === "text" ? off.content[0].text : "").toContain("disabled");
+
+    await applyBrowserConfig({ enabled: false, pixelShot: true });
+    let text = "";
+    try {
+      const on = await shot.execute("call-shot-on", {}, undefined);
+      text = on.content[0].type === "text" ? on.content[0].text : "";
+    } catch {
+      // 放行后进 hostToolCall，测试环境无宿主传输：抛错本身就是放行的证据
+    }
+    expect(text).not.toContain("disabled in Settings");
   });
 
   test("开启后不再走婉拒分支（无宿主环境 execute 会失败，仅验证门控放行）", async () => {
