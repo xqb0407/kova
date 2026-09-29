@@ -17,9 +17,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  NO_MODEL_HINT,
   notifyNoModelSelected,
-  useNoModelSelected,
+  useModelGate,
 } from "@/lib/pi/pi-model-gate";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
@@ -110,7 +109,7 @@ const ModelPicker: FC = () => {
  *    快速按回车发送」的真实按键一并吞掉——按两下才发出去的根源。
  * 2) 自定义发送——「发送消息」被绑成非 Enter 组合时（submitMode="none"），库不会在
  *    Enter 提交，这里捕获命中绑定即 aui.composer.send()；Enter 落回库默认→换行。
- * 3) 未选模型闸门——noModel 时有内容的发送组合不提交（toast 说明原因）；
+ * 3) 模型不可用闸门——noModel 时有内容的发送组合不提交（toast 说明原因）；
  *    空草稿照旧放行，让 Enter 保持换行语义。
  * 用原生 DOM 而非 lexical 命令：app 与库解析到的 @lexical/react 是两份模块实例，
  * useLexicalComposerContext 拿不到库内的 Composer 上下文。
@@ -120,7 +119,8 @@ const ImeEnterGuard: FC<{
   send: ShortcutConfig;
   interceptSend: boolean;
   noModel: boolean;
-}> = ({ children, send, interceptSend, noModel }) => {
+  noModelHint: string | null;
+}> = ({ children, send, interceptSend, noModel, noModelHint }) => {
   const ref = useRef<HTMLDivElement>(null);
   const aui = useAui();
   useEffect(() => {
@@ -160,9 +160,9 @@ const ImeEnterGuard: FC<{
       if (interceptSend && !composing && matchesShortcut(event, send)) {
         event.preventDefault();
         event.stopPropagation();
-        // 未选模型：有草稿才拦（空草稿本就没得发，组合键等价于无操作）
-        if (noModel && aui.composer.getState().canSend) {
-          notifyNoModelSelected();
+        // 模型不可用：有草稿才拦（空草稿本就没得发，组合键等价于无操作）
+        if (noModel && noModelHint && aui.composer.getState().canSend) {
+          notifyNoModelSelected(noModelHint);
           return;
         }
         aui.composer.send();
@@ -176,7 +176,7 @@ const ImeEnterGuard: FC<{
       el.removeEventListener("compositionstart", onCompositionStart, true);
       el.removeEventListener("compositionend", onCompositionEnd, true);
     };
-  }, [aui, interceptSend, noModel, send]);
+  }, [aui, interceptSend, noModel, noModelHint, send]);
   return (
     <div ref={ref} style={{ display: "contents" }}>
       {children}
@@ -196,8 +196,10 @@ export const Composer: FC = () => {
   const { sendMessage } = useShortcuts();
   const submitMode = resolveComposerSubmitMode(sendMessage);
   const interceptSend = submitMode === "none";
-  // 未选模型：发送入口整体关停（见 pi-model-gate），占位文案同步指向模型选择器
-  const noModel = useNoModelSelected();
+  // 模型不可用（没选 / 选的那个已被删）：发送入口整体关停，占位文案同步指向
+  // 模型选择器（见 pi-model-gate）
+  const gate = useModelGate();
+  const noModel = !gate.usable;
   if (threadId && questions.length > 0) return <QuestionCard />;
 
   return (
@@ -227,13 +229,11 @@ export const Composer: FC = () => {
           >
             <ComposerQuotePreview />
             <ComposerAttachments />
-            <ImeEnterGuard send={sendMessage} interceptSend={interceptSend} noModel={noModel}>
+            <ImeEnterGuard send={sendMessage} interceptSend={interceptSend} noModel={noModel} noModelHint={gate.hint}>
             <CmComposerInput
               submitMode={submitMode}
               placeholder={
-                noModel
-                  ? NO_MODEL_HINT
-                  : "输入任务指令 @选择智能体，/打开指令菜单"
+                gate.hint ?? "输入任务指令 @选择智能体，/打开指令菜单"
               }
               className={`aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground/60 [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
             />
@@ -663,7 +663,7 @@ const WorkspaceBranchPill: FC = () => {
 };
 
 /** 发送/停止/撤队共用按钮（单按钮四态，同一槽位，方块⇄箭头随输入切换）：
- *  - 空闲且未选模型：↑ 禁用（悬停说明「先选择模型」，见 pi-model-gate）；
+ *  - 空闲且模型不可用：↑ 禁用（悬停说明原因，见 pi-model-gate）；
  *  - 空闲：↑ 发送（库原生 Send，沿用其禁用谓词）；
  *  - 运行中输入为空且队列有排队的消息：■ 点击=删除最近入队的一条（撤销上次
  *    发送；多条逐条删），⌥/Alt+点击=停止生成；
@@ -678,7 +678,9 @@ const AdaptiveSendButton: FC = () => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const canSend = useAuiState((s) => s.composer.canSend);
   const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const noModel = useNoModelSelected();
+  const gate = useModelGate();
+  const noModel = !gate.usable;
+  const gateHint = gate.hint;
   const queueItems = useQueueSnapshot(threadId).items;
   // 删除请求在途标记：快照回程（~20ms 合帧）内连点不重复发 queue_cancel
   const cancellingRef = useRef<string | null>(null);
@@ -751,14 +753,14 @@ const AdaptiveSendButton: FC = () => {
       </TooltipIconButton>
     );
   }
-  // 空闲且未选模型：整键禁用。禁用按钮收不到指针事件，tooltip 挂到外层可聚焦
+  // 空闲且模型不可用：整键禁用。禁用按钮收不到指针事件，tooltip 挂到外层可聚焦
   // span 上（不用 TooltipIconButton——它自带一层 Tooltip，嵌进来会弹两层同文案）
   if (noModel) {
     return (
       <Tooltip>
         <TooltipTrigger
           render={
-            <span tabIndex={0} className="inline-flex" aria-label={NO_MODEL_HINT}>
+            <span tabIndex={0} className="inline-flex" aria-label={gateHint ?? undefined}>
               <button
                 type="button"
                 disabled
@@ -770,7 +772,7 @@ const AdaptiveSendButton: FC = () => {
           }
         />
         <TooltipContent side="bottom">
-          <p>{NO_MODEL_HINT}</p>
+          <p>{gateHint}</p>
         </TooltipContent>
       </Tooltip>
     );

@@ -647,6 +647,10 @@ export const ModelSettings: FC = () => {
           provider: providerId,
         });
         load();
+        // 对话页的模型目录也得跟上：sidecar 已把它移出目录并清掉全局选中键，
+        // 不刷新的话对话页仍认为该模型可用，发送闸门会放过一轮「界面显示 A、
+        // sidecar 拿默认模型 B 应答」的请求
+        refreshPiModels();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -822,6 +826,8 @@ export const ModelSettings: FC = () => {
           enabled: !cp.enabled,
         });
         load();
+        // 停用同删除：模型离开目录、选中键被清，对话页目录必须同步刷新
+        refreshPiModels();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {

@@ -1,9 +1,8 @@
 "use client";
 
 import { useMemo, type FC } from "react";
-import { useAuiState } from "@assistant-ui/react";
 import { usePiModels } from "@/lib/pi/pi-models";
-import { useThreadModel } from "@/lib/pi/pi-session-model";
+import { useModelGate } from "@/lib/pi/pi-model-gate";
 
 /**
  * 新会话欢迎页：一句把当前模型织进去的问候语。
@@ -75,18 +74,20 @@ const pickGreeting = (now: Date, model: string) => {
 };
 
 export const ThreadWelcome: FC = () => {
-  const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const selected = useThreadModel(threadId);
   const models = usePiModels();
+  // 走闸门那份选择：provider 被删/停用后会话记忆仍指着那个模型，直接展示会是一串
+  // 目录里已经不存在的裸 modelId
+  const gate = useModelGate();
 
   // 句子里用的模型名：目录显示名优先（目录异步加载，命中后会从 id 换成显示名）
   const modelName = useMemo(() => {
-    if (!selected) return "AI";
+    const live = gate.selected;
+    if (!live) return "AI";
     const hit = models.find(
-      (m) => m.provider === selected.provider && m.id === selected.modelId,
+      (m) => m.provider === live.provider && m.id === live.modelId,
     );
-    return hit ? (hit.name || hit.id) : selected.modelId;
-  }, [models, selected]);
+    return hit ? (hit.name || hit.id) : live.modelId;
+  }, [models, gate.selected]);
 
   const greeting = useMemo(() => pickGreeting(new Date(), modelName), [modelName]);
 

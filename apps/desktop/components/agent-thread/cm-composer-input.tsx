@@ -9,7 +9,7 @@ import { useEffect, useRef, type FC } from "react";
 import { toast } from "@/components/ui/toast";
 import { validatePromptFile } from "@/lib/attachments/prompt-attachments";
 import { markSteerNextSend } from "@/lib/pi/pi-steer-intent";
-import { notifyNoModelSelected, useNoModelSelected } from "@/lib/pi/pi-model-gate";
+import { notifyNoModelSelected, useModelGate } from "@/lib/pi/pi-model-gate";
 
 /**
  * CodeMirror 6 版 composer 输入（替代 LexicalComposerInput）：
@@ -141,16 +141,18 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   const aria = unstable_useTriggerPopoverAriaProps();
   const registry = INTERNAL.useComposerInputPluginRegistryOptional();
   const popoverRoot = unstable_useTriggerPopoverRootContextOptional();
-  // 未选模型闸门：Enter 提交在此拦下（发送键同一口径，见 pi-model-gate）
-  const noModel = useNoModelSelected();
+  // 模型不可用闸门：Enter 提交在此拦下（发送键同一口径，见 pi-model-gate）
+  const gate = useModelGate();
+  const noModel = !gate.usable;
+  const noModelHint = gate.hint;
 
   const ariaComp = useRef(new Compartment()).current;
   const placeholderComp = useRef(new Compartment()).current;
   const editableComp = useRef(new Compartment()).current;
 
   // 闭包镜像：view 创建后 handler 里读最新 props/runtime（避免重建 view）
-  const latestRef = useRef({ submitMode, cancelOnEscape, canSend, aui, registry, setText, send, threadId, noModel });
-  latestRef.current = { submitMode, cancelOnEscape, canSend, aui, registry, setText, send, threadId, noModel };
+  const latestRef = useRef({ submitMode, cancelOnEscape, canSend, aui, registry, setText, send, threadId, noModel, noModelHint });
+  latestRef.current = { submitMode, cancelOnEscape, canSend, aui, registry, setText, send, threadId, noModel, noModelHint };
   const valueRef = useRef(value);
   valueRef.current = value;
   const placeholderRef = useRef(placeholder);
@@ -226,12 +228,12 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       }
       if (event.key === "Enter") {
         const thread = s.aui.thread.getState();
-        // 未选模型：所有提交路径（按提交模式 / steer）在有草稿时一律拦下并
+        // 模型不可用：所有提交路径（按提交模式 / steer）在有草稿时一律拦下并
         // toast 说明原因；纯 Shift+Enter 是换行语义，照常放行。拦下的按键照吞
         // ——放行会插一个换行，看起来像「已经发出去了」
         const plainShiftEnter = event.shiftKey && !event.ctrlKey && !event.metaKey;
-        if (s.noModel && s.canSend && !plainShiftEnter) {
-          notifyNoModelSelected();
+        if (s.noModel && s.noModelHint && s.canSend && !plainShiftEnter) {
+          notifyNoModelSelected(s.noModelHint);
           return true;
         }
         // 运行中 Shift+⌘/Ctrl+Enter = 并入当前轮（steer）：标记意图后照常发送，
