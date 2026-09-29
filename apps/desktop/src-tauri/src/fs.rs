@@ -68,8 +68,15 @@ fn resolve_root(app: &AppHandle, cwd: &str) -> Result<PathBuf, String> {
     Err("cwd-not-allowed".into())
 }
 
-/// 校验相对段并入根。root 已是 canonical；目标存在时再 canonical 一次，
-/// 确认没有被符号链接带出根外。
+/// 校验相对段并入根。目标存在时把**两侧**都比成 canonical 形态，确认没有被
+/// 符号链接带出根外。
+///
+/// 根必须一起 canonical：两个调用方给的根形态并不一致——resolve_root 返回的
+/// 已是 canonical 根，app_task_workspace_root 给的是 app_data_dir() 直接 join
+/// 的原始路径。Windows 上 canonicalize 走 GetFinalPathNameByHandleW，返回的是
+/// verbatim 前缀形式（`\\?\C:\…`），与原始根的 Disk 前缀不是同一个组件，
+/// starts_with 恒假 ⇒ 「我的文件」页每一次 app_file_* 调用都报 bad-path。
+/// 根不存在时无从 canonical（目标也不可能存在），整段检查随之跳过。
 fn join_rel(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let p = Path::new(rel);
     if p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir)) {
@@ -77,7 +84,8 @@ fn join_rel(root: &Path, rel: &str) -> Result<PathBuf, String> {
     }
     let joined = root.join(p);
     if let Ok(can) = std::fs::canonicalize(&joined) {
-        if !can.starts_with(root) {
+        let base = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        if !can.starts_with(&base) {
             return Err("bad-path".into());
         }
     }
@@ -772,4 +780,38 @@ pub async fn attachment_stage(
     })
     .await
     .map_err(|e| format!("fs task join error: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// join_rel 的根必须两侧同形态：Windows 上 canonicalize 返回 verbatim 前缀，
+    /// 只 canonical 目标会让 starts_with 恒假（「我的文件」整页 bad-path）。
+    /// 用未 canonical 的临时目录当根 + 真实存在的子目录复现。
+    #[test]
+    fn join_rel_accepts_uncanonical_root() {
+        let root = std::env::temp_dir().join(format!("pi-fs-joinrel-{}", std::process::id()));
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert!(join_rel(&root, "sub").is_ok());
+        assert!(join_rel(&root, "").is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 逃逸守卫本身不能被上面那次 canonicalize 放松：符号链接指向根外仍要拒。
+    #[cfg(unix)]
+    #[test]
+    fn join_rel_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("pi-fs-esc-{}", std::process::id()));
+        let out = root.with_extension("out");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        symlink(&out, root.join("link")).unwrap();
+        assert_eq!(join_rel(&root, "link").unwrap_err(), "bad-path");
+        assert_eq!(join_rel(&root, "../x").unwrap_err(), "bad-path");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&out);
+    }
 }
