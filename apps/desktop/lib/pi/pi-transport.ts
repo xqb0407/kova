@@ -8,6 +8,7 @@ import { getWorkspace } from "@/lib/workspace/workspace-store";
 import { applyPlanningChunk, fetchPlanningState } from "@/lib/pi/pi-session-mode";
 import { setSeqGuardDeps } from "@/lib/pi/pi-seq-guard";
 import { applyToolApprovalChunk, clearToolApprovals } from "@/lib/pi/pi-tool-approval";
+import { applyAskNeedsWorkChunk } from "@/lib/pi/pi-ask-needs-work";
 import { applyQuestionChunk, clearQuestions } from "@/lib/pi/pi-question";
 import {
   refreshPendingInteractions,
@@ -422,6 +423,11 @@ export class PiTransport implements ChatTransport<UIMessage> {
         }
         if (chunk.type === "data-toolApproval") {
           applyToolApprovalChunk(chatId, (chunk as { data?: unknown }).data);
+          return;
+        }
+        if (chunk.type === "data-askNeedsWork") {
+          // 问答档的切档提议：一次性提示，不进消息 parts、不进重放缓冲
+          applyAskNeedsWorkChunk(chatId, (chunk as { data?: unknown }).data);
           return;
         }
         if (chunk.type === "data-question") {

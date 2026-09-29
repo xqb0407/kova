@@ -123,7 +123,7 @@ export const handlers: Record<string, CommandHandler> = {
         cwd: r.cwd,
         archived: r.archived === 1,
         // 会话级偏好（undefined = 从未变更过）：切回会话时前端据此恢复 mode/model
-        mode: r.mode === "agent" || r.mode === "plan" ? r.mode : undefined,
+        mode: r.mode === "agent" || r.mode === "plan" || r.mode === "ask" ? r.mode : undefined,
         approvalLevel:
           r.approvalLevel === "ask" || r.approvalLevel === "auto-edit" || r.approvalLevel === "auto"
             ? r.approvalLevel

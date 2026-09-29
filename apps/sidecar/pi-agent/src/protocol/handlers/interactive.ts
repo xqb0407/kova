@@ -68,7 +68,7 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   set_mode: async (reqId, msg) => {
-    // 手动切换会话模式（agent/plan），可选携带审批级别（agent 模式的
+    // 手动切换会话模式（agent/plan/ask），可选携带审批级别（agent 模式的
     // ask/auto-edit/auto 对应前端"变更前确认/自动编辑/完全访问"）；重建工具集与系统提示词
     const run = await resolveSession(
       String(msg.threadId ?? "default"),
@@ -76,7 +76,7 @@ export const handlers: Record<string, CommandHandler> = {
       typeof msg.cwd === "string" ? msg.cwd : undefined,
     );
     const mode = String(msg.mode ?? "agent");
-    if (mode !== "agent" && mode !== "plan") {
+    if (mode !== "agent" && mode !== "plan" && mode !== "ask") {
       throw new Error(`invalid mode: ${mode}`);
     }
     if (typeof msg.approvalLevel === "string") {

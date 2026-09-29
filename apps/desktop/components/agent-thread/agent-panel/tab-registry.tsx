@@ -22,6 +22,7 @@ import { useThreadTodos } from "@/lib/pi/pi-todo";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { useGitStatus } from "@/lib/git/git-status";
 import { useAppMode } from "@/lib/pi/app-mode";
+import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import { isTauri } from "@/lib/tauri";
 import type { PanelTab, PanelTabType } from "@/lib/panels/panel-tabs";
 import { ActivityView } from "./activity-view";
@@ -63,10 +64,13 @@ export function useVisiblePanelTabTypes(): PanelTabType[] {
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
   const appMode = useAppMode();
+  // 问答档是只读的：终端和 Git 面板在这里没有可回滚的对象，显隐与 code 档的
+  // Git 隐藏同源（同一个"这一档不碰工程"的判断）
+  const ask = useIsAskMode();
   return PANEL_TAB_TYPES.filter((t) => {
     if (t === "explorer") return isTauri();
-    if (t === "shell") return isTauri();
-    if (t === "git") return appMode === "code" && !!status;
+    if (t === "shell") return isTauri() && !ask;
+    if (t === "git") return appMode === "code" && !!status && !ask;
     return true;
   });
 }

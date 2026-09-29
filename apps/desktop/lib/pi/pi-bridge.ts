@@ -917,7 +917,7 @@ export type PiResponse =
   | { type: "provider_filter"; provider: string; models: string[] | null }
   | {
       type: "mode_changed" | "planning_state";
-      mode: "agent" | "plan";
+      mode: "agent" | "plan" | "ask";
       approvalLevel?: "ask" | "auto-edit" | "auto";
       planning: "inactive" | "planning";
     }
