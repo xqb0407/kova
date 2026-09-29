@@ -39,6 +39,7 @@ import {
   takeFrontEntry,
 } from "../sessions/prompt-queue";
 import {
+  isModelUnavailable,
   noteActiveTurn,
   rebindRunThread,
   resolveSession,
@@ -325,7 +326,10 @@ async function runPromptTurn(
     await whenThreadIdle(run.threadId);
     await rebindRunThread(run, run.threadId, threadId);
   }
-  if (!run.agent.state.model) {
+  // 一个凭据都没有的环境：resolveCurrentModel 补的是 unknown/unknown 占位对象
+  // （恒 truthy），旧的 `!model` 判据在这里从不命中，请求会带着假模型打 provider
+  // 报出无关错误。占位形状的判定见 isModelUnavailable。
+  if (isModelUnavailable(run.agent.state.model)) {
     const errorText =
       "No model with credentials available. Open Settings → Model and add an API key.";
     turnError = errorText;

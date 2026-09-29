@@ -257,6 +257,21 @@ async function resolveCurrentModel(): Promise<NonNullable<Awaited<ReturnType<typ
   return model ?? (CORE_DEFAULT_MODEL as NonNullable<Awaited<ReturnType<typeof defaultModel>>>);
 }
 
+/**
+ * 「模型不可用」的判定：模型对象缺失，或上面那个 CORE_DEFAULT_MODEL 占位
+ * （provider 为 "unknown"）。
+ *
+ * resolveCurrentModel 恒返回 truthy 对象（真模型 → 目录里第一个有凭据的模型 →
+ * 占位），所以调用方不能只判 `!model`——那对「一个凭据都没有」的环境恒假，
+ * 请求会带着 unknown/unknown 的假模型打 provider，报出与真实原因无关的错误。
+ * 上层要区分「发得出去但用的不是用户选的模型」与「根本发不了」，只能靠这里。
+ */
+export function isModelUnavailable(
+  model: { provider?: string } | undefined | null,
+): boolean {
+  return !model || model.provider === CORE_DEFAULT_MODEL.provider;
+}
+
 /** 拿到 threadId 对应的 Agent；sessionId 提供时优先恢复该会话（重启续聊） */
 /**
  * 任务工作区根：应用数据目录下的 task-workspace（Rust 拉起时经 PI_TASK_CWD

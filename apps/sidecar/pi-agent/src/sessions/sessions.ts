@@ -23,6 +23,7 @@ export {
 
 export {
   rebindRunThread,
+  isModelUnavailable,
   reloadSubagents,
   reloadSkills,
   resolveSession,
