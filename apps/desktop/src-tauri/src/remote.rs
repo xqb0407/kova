@@ -16,8 +16,9 @@
 //!     pi_remote_revoke 删除 token 并踢掉全部在连设备（需重新扫码配对）
 //!   - authed 后仅转发会话/聊天类消息；凭据/MCP/技能/子代理/记忆/个性化/模型属性等
 //!     管理类消息命中 REMOTE_DENIED_TYPES 一律拒绝（远程是"对话延伸"，桌面端才能改配置）
-//!   - 绑定模式：默认绑 0.0.0.0（局域网跨设备）；"仅本机"（remote.bind.lan=false）
-//!     只绑 127.0.0.1。HTTP/WS 均无 TLS——token 与消息在局域网明文，注意网络环境
+//!   - 绑定模式：默认只绑 127.0.0.1（仅本机）；"局域网访问"（remote.bind.lan=true）
+//!     才绑 0.0.0.0 跨设备。HTTP/WS 均无 TLS——token 与消息在局域网明文，
+//!     所以公网/大网络场景请走 Tailscale 之类的加密隧道，别直接开这个开关
 //!   - abort 无 id，sidecar 侧为全局中断——远程与本地会互相打断
 
 use std::collections::HashMap;
@@ -49,7 +50,7 @@ const DEFAULT_PORT: u16 = 8787;
 const MAX_PAIR_ATTEMPTS: u8 = 5;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const TOKEN_KEY: &str = "remote.token";
-/// 绑定模式：true = 0.0.0.0（局域网跨设备，默认），false = 仅本机回环
+/// 绑定模式：true = 0.0.0.0（局域网跨设备，须显式打开），false = 仅本机回环（默认）
 const BIND_LAN_KEY: &str = "remote.bind.lan";
 
 /// authed 后禁止远程转发的消息类型：凭据/提供商管理、MCP 管理（可拉起本地进程）、
@@ -307,7 +308,7 @@ impl Default for RemoteInner {
             task: StdMutex::new(None),
             port: StdMutex::new(None),
             code: StdMutex::new(None),
-            lan: StdMutex::new(true),
+            lan: StdMutex::new(false),
             conns: AtomicUsize::new(0),
         }
     }
@@ -321,7 +322,7 @@ pub struct RemoteState {
 impl RemoteState {
     fn status(&self) -> RemoteStatus {
         let port = self.inner.port.lock().ok().and_then(|p| *p);
-        let lan = self.inner.lan.lock().map(|l| *l).unwrap_or(true);
+        let lan = self.inner.lan.lock().map(|l| *l).unwrap_or(false);
         let (lan_addresses, http_addresses) = match port {
             Some(p) => {
                 // 仅本机模式不枚举网卡地址（也没有可分享的局域网入口）
@@ -368,7 +369,8 @@ pub async fn pi_remote_start(
     port: Option<u16>,
     lan: Option<bool>,
 ) -> Result<RemoteStatus, String> {
-    // 绑定模式：显式传入则持久化（remote.bind.lan），否则沿用上次的选择（默认局域网）。
+    // 绑定模式：显式传入则持久化（remote.bind.lan），否则沿用上次的选择。
+    // 默认回环——0.0.0.0 会把无 TLS 的网关直接暴露给整个局域网，必须显式打开。
     // 网关在跑且模式有变 → 先停再起，让切换即时生效。
     if let Some(v) = lan {
         store::kv_set_global(&app, BIND_LAN_KEY, if v { "true" } else { "false" })?;
@@ -376,8 +378,9 @@ pub async fn pi_remote_start(
     let lan = match lan {
         Some(v) => v,
         None => match store::kv_get_global(&app, BIND_LAN_KEY)? {
-            Some(s) => s != "false",
-            None => true,
+            // 只有字面量 "true" 才算开；缺失或任何异常值一律按仅本机处理
+            Some(s) => s == "true",
+            None => false,
         },
     };
     let running = state.inner.shutdown.lock().map_err(|e| e.to_string())?.is_some();

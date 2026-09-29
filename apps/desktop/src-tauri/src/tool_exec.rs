@@ -19,6 +19,8 @@ use serde_json::{json, Value};
 const MAX_TOOL_OUTPUT: usize = 16 * 1024;
 const MAX_READ_BYTES: usize = 64 * 1024;
 const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;
+/// 进程收尾后等读线程 EOF 的上限：正常毫秒级返回，只给「杀干净了但管道未关」留余量
+const READER_JOIN_GRACE_MS: u64 = 2_000;
 
 const DEFAULT_HTTP_TIMEOUT_MS: u64 = 30_000;
 const MAX_HTTP_TIMEOUT_MS: u64 = 120_000;
@@ -34,7 +36,13 @@ fn str_param(p: &Value, key: &str) -> Result<String, String> {
 
 /* ------------------------------ 运行中工具的取消 ------------------------------ */
 
-/// Windows 上杀整棵进程树（Git Bash 会再拉起真正的命令进程，只杀直接子进程会残留孙进程）
+/// 杀整棵进程树。
+///
+/// Windows：taskkill /T /F（Git Bash 会再拉起真正的命令进程，只杀直接子进程会残留孙进程）。
+/// Unix：bash 以 `process_group(0)` 自立进程组（见 run_bash），pgid 即 pid，
+/// `killpg` 一次收掉整组——Chrome 这类会再派生 GPU/Renderer 子孙的命令尤其需要。
+/// 只杀直接子进程会留下持有 stdout 管的孤儿孙进程，导致 run_bash 的读线程永不 EOF。
+#[cfg(windows)]
 fn kill_tree(pid: u32) {
     let mut killer = Command::new("taskkill");
     killer
@@ -44,6 +52,15 @@ fn kill_tree(pid: u32) {
         .stderr(Stdio::null());
     no_window(&mut killer);
     let _ = killer.output();
+}
+
+#[cfg(unix)]
+fn kill_tree(pid: u32) {
+    // 负 pid = 整个进程组；先组后单点，组已空时单点兜底（pgid 未立组的极端情况）
+    unsafe {
+        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
 }
 
 /// 一条在飞的 tool 请求：取消标志 + bash 子进程 pid（spawn 后才登记）
@@ -206,6 +223,13 @@ fn run_bash(
         .stderr(Stdio::piped());
     crate::secret_env::apply_env(&mut cmd, secrets);
     no_window(&mut cmd);
+    // Unix：自立进程组，killpg 才能一次收掉命令派生出的全部子孙
+    // （stdin 已是 null，不存在「脱离前台进程组读不到终端」的副作用）
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
 
     let mut child = cmd.spawn().map_err(|e| format!("failed to spawn {file}: {e}"))?;
     let pid = child.id();
@@ -215,6 +239,7 @@ fn run_bash(
     let combined: Arc<StdMutex<String>> = Arc::new(StdMutex::new(String::new()));
     let killed = Arc::new(AtomicBool::new(false));
     let mut reader_handles = Vec::new();
+    let (reader_done_tx, reader_done_rx) = std::sync::mpsc::channel::<()>();
     let streams: Vec<Box<dyn Read + Send>> = vec![
         Box::new(child.stdout.take().ok_or("no stdout")?),
         Box::new(child.stderr.take().ok_or("no stderr")?),
@@ -222,6 +247,7 @@ fn run_bash(
     for stream in streams {
         let sink = Arc::clone(&combined);
         let killed_flag = Arc::clone(&killed);
+        let done_tx = reader_done_tx.clone();
         reader_handles.push(std::thread::spawn(move || {
             let mut reader = stream;
             let mut buf = [0u8; 8192];
@@ -246,8 +272,10 @@ fn run_bash(
                     }
                 }
             }
+            let _ = done_tx.send(());
         }));
     }
+    drop(reader_done_tx);
 
     // 等 wait 结束、超时或取消；后两者用 taskkill /T /F 杀整棵进程树
     let timeout = Duration::from_millis(timeout_ms);
@@ -273,13 +301,28 @@ fn run_bash(
         }
     };
 
-    for handle in reader_handles {
-        let _ = handle.join();
+    // 取消方（host_cancel 线程）会直接 kill 掉进程树抢先一步：Unix 的 SIGKILL 是
+    // 瞬时的，下一轮 try_wait 就已经是「已退出」，循环根本没机会读到标志位，
+    // 于是同一事实会被报成 [timeout]。出口处再兜一次，让已取消优先于超时。
+    if cancel.is_cancelled() {
+        cancelled = true;
     }
 
-    let mut out = Arc::try_unwrap(combined)
-        .map(|m| m.into_inner().unwrap_or_default())
-        .unwrap_or_default();
+    // 收读线程必须有上限：读线程卡在 pipe read 上只有一种成因——进程树还活着。
+    // 正常路径下 kill_tree 已收干净，管道立即 EOF、毫秒返回；这里再兜一层，
+    // 保证「取消/超时的快速返回」不被任何残留进程无限拖住（曾因此让一次
+    // Chrome 无头截图把 bash RPC 拖到 135s 超时，并留下孤儿继续占 SingletonLock）。
+    // 超时未完成就直接丢弃句柄（线程 detach）：它只持有 Arc，无 UB 风险。
+    let drain_deadline = Instant::now() + Duration::from_millis(READER_JOIN_GRACE_MS);
+    while reader_done_rx.recv_timeout(Duration::from_millis(50)).is_ok() {
+        if Instant::now() >= drain_deadline {
+            break;
+        }
+    }
+    drop(reader_handles);
+
+    // 读线程可能仍detach着，不能用 try_unwrap（会因 Arc 计数非 1 而静默返回空串）
+    let mut out = combined.lock().map(|m| m.clone()).unwrap_or_default();
     let mut truncated = false;
     // UTF-8 字符边界截断（比 TS 的 UTF-16 截断更安全）
     if out.len() > MAX_TOOL_OUTPUT {
@@ -1035,7 +1078,7 @@ mod tests {
         assert!(text.contains("visible-token-abc"), "output: {text}");
         assert!(!text.contains("[REDACTED"), "output: {text}");
     }
-    /// 取消在跑的 bash：cancel_tool(id) 置标志 + taskkill 杀进程树，run_bash 快速带 [cancelled] 返回
+    /// 取消在跑的 bash：cancel_tool(id) 置标志 + 杀进程树，run_bash 快速带 [cancelled] 返回
     #[test]
     fn bash_cancel_stops_running_command() {
         let id = "t-cancel-running";
@@ -1051,16 +1094,88 @@ mod tests {
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[cancelled]"), "output: {text}");
         assert_eq!(out["cancelled"], json!(true));
-        // Windows 下 taskkill 生效：应在远小于 60s 超时前返回（Unix 无 taskkill，只保证结果正确）
-        if cfg!(windows) {
-            assert!(
-                start.elapsed() < Duration::from_secs(20),
-                "cancel took {:?}",
-                start.elapsed()
-            );
-        }
+        // kill_tree 在三平台都收得掉进程树，取消必须在超时前很久就返回
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "cancel took {:?}",
+            start.elapsed()
+        );
         // guard 仍存活时不应残留登记？不：登记在 Drop 时注销，这里断言表里已无该 id 的前置
         // ——取消处理对已结束请求必须保持 no-op
+    }
+
+    /// 回归：命令派生出**孙进程**并由其持有 stdout 时，取消仍须快速返回。
+    /// 旧实现只在 Windows 杀进程树，Unix 上孙进程变孤儿、管道永不 EOF，
+    /// 读线程 join 一直阻塞——曾把一次 Chrome 无头截图拖成 135s RPC 超时，
+    /// 且孤儿 Chrome 继续占着 SingletonLock 毒化后续所有重试。
+    #[test]
+    fn bash_cancel_kills_grandchildren_holding_stdout() {
+        let id = "t-cancel-grandchild";
+        let guard = CancelGuard::new(id);
+        // 后台 sleep 是 bash 的子进程、命令的孙进程，且继承 stdout 管道
+        let cmd = if cfg!(windows) {
+            "start /B ping -n 30 127.0.0.1 & ping -n 30 127.0.0.1"
+        } else {
+            "sleep 30 & echo started; wait"
+        };
+        let id_owned = id.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            cancel_tool(&id_owned);
+        });
+        let start = Instant::now();
+        let out = run_bash(".", cmd, 60_000, &guard, &[]).unwrap();
+        let text = out["output"].as_str().unwrap();
+        assert!(text.contains("[cancelled]"), "output: {text}");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "grandchild kept the pipe open for {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// 超时同理：不靠取消到达，光靠自身超时也必须连孙进程一起收、快速返回
+    #[test]
+    fn bash_timeout_kills_grandchildren() {
+        let guard = CancelGuard::new("t-timeout-grandchild");
+        let cmd = if cfg!(windows) {
+            "start /B ping -n 30 127.0.0.1 & ping -n 30 127.0.0.1"
+        } else {
+            "sleep 30 & echo started; wait"
+        };
+        let start = Instant::now();
+        let out = run_bash(".", cmd, 500, &guard, &[]).unwrap();
+        let text = out["output"].as_str().unwrap();
+        assert!(text.contains("[timeout]"), "output: {text}");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "timeout path blocked for {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// 钉住「真的杀掉了」而不只是「快速返回」：读线程有 2s 兜底上限，光断言
+    /// 耗时会漏过「进程还活着、只是不再 join」这种假修复。这里让命令把孙进程
+    /// pid 落盘，返回后直接查该 pid 是否还存活。
+    #[cfg(unix)]
+    #[test]
+    fn bash_kill_leaves_no_orphan_process() {
+        let pid_file = std::env::temp_dir().join(format!("kova-orphan-{}.pid", std::process::id()));
+        let _ = std::fs::remove_file(&pid_file);
+        let guard = CancelGuard::new("t-orphan-check");
+        let cmd = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+        let out = run_bash(".", &cmd, 500, &guard, &[]).unwrap();
+        assert!(out["output"].as_str().unwrap().contains("[timeout]"));
+
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("child pid file")
+            .trim()
+            .parse()
+            .expect("numeric pid");
+        // kill(pid, 0) 只做存在性探测：返回 -1 且 ESRCH 即已消失
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        assert!(!alive, "孙进程 {pid} 在超时后仍然存活（进程组没被收掉）");
+        let _ = std::fs::remove_file(&pid_file);
     }
 
     /// spawn 前就已取消：attach_pid 补杀进程树，结果同样报 [cancelled]（竞态窗口回归）

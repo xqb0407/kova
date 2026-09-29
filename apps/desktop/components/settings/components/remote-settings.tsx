@@ -195,34 +195,39 @@ export const RemoteSettings: FC = () => {
 
         {running && (
           <>
-            {/* 扫码连接 */}
-            {qr && (
+            {/* 扫码连接：仅本机模式下地址是 127.0.0.1，手机根本连不上，
+                这时给一张扫不开的二维码比不给更糟——直接提示去开局域网访问 */}
+            {qr ? (
               <section className="flex flex-col gap-3">
                 <h2 className="text-base font-semibold">扫码连接</h2>
-                <div className="bg-muted/50 flex items-start gap-5 rounded-2xl p-5">
-                  <div className="shrink-0 rounded-lg border bg-white p-2">
-                    <QRCodeSVG value={qr.value} size={124} />
+                {status?.lan ? (
+                  <div className="bg-muted/50 flex items-start gap-5 rounded-2xl p-5">
+                    <div className="shrink-0 rounded-lg border bg-white p-2">
+                      <QRCodeSVG value={qr.value} size={124} />
+                    </div>
+                    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                      {qr.direct ? (
+                        <InputCopy
+                          label="手机扫码将直接打开应用网页（本机提供，无需另外部署），地址与配对码已自动填入。"
+                          value={qr.value}
+                          className="text-muted-foreground rounded-lg bg-background/60 mr-1 border px-2.5 py-1.5 font-mono break-all "
+                        />
+                      ) : (
+                        <p className="text-muted-foreground text-xs">
+                          未检测到局域网 IP，扫码可得连接配置
+                          JSON；可在网页连接页地址框粘贴解析。
+                        </p>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                    {qr.direct ? (
-                      <InputCopy
-                        label="手机扫码将直接打开应用网页（本机提供，无需另外部署），地址与配对码已自动填入。"
-                        value={qr.value}
-                        className="text-muted-foreground rounded-lg bg-background/60 mr-1 border px-2.5 py-1.5 font-mono break-all "
-                      />
-                    ) : (
-                      <p className="text-muted-foreground text-xs">
-                        未检测到局域网 IP，扫码可得连接配置
-                        JSON；可在网页连接页地址框粘贴解析。
-                      </p>
-                    )}
-                    {/* <p className="text-muted-foreground rounded-lg bg-background/60 mr-1 border px-2.5 py-1.5 font-mono break-all text-xs">
-                      {qr.value}
-                    </p> */}
+                ) : (
+                  <div className="text-muted-foreground rounded-2xl bg-muted/50 px-5 py-4 text-sm">
+                    网关当前仅本机可达，手机扫码需要先在下方「安全与设备」里打开
+                    局域网访问。
                   </div>
-                </div>
+                )}
               </section>
-            )}
+            ) : null}
 
             {/* 浏览器访问 */}
             <section className="flex flex-col gap-3">
@@ -243,7 +248,9 @@ export const RemoteSettings: FC = () => {
                 )}
               </div>
               <p className="text-muted-foreground text-xs">
-                手机与本机同一网络，扫码或输入地址即可使用。
+                {status?.lan
+                  ? "手机与本机同一网络，扫码或输入地址即可使用。"
+                  : "当前仅本机可达，127.0.0.1 只能在这台电脑上打开；手机访问请先打开「局域网访问」，或用加密隧道转发。"}
               </p>
             </section>
 
@@ -313,11 +320,18 @@ export const RemoteSettings: FC = () => {
                   <div className="min-w-0">
                     <div className="text-sm font-medium">局域网访问</div>
                     <div className="text-muted-foreground text-sm">
-                      关闭后仅本机（127.0.0.1）可连接；切换会重启网关并生成新配对码。
+                      打开后同一网络下的设备可直连本机（0.0.0.0）；默认关闭，仅本机（127.0.0.1）可连接。切换会重启网关并生成新配对码。
                     </div>
+                    {status?.lan ? (
+                      <div className="text-destructive/90 mt-1.5 text-xs leading-relaxed">
+                        网关当前没有 TLS，配对码与 token 在局域网内是明文传输
+                        （同网段任意设备可抓包）。请只在家中可信网络下开启；跨网络访问请改用
+                        Tailscale 等加密隧道。
+                      </div>
+                    ) : null}
                   </div>
                   <Switch
-                    checked={status?.lan ?? true}
+                    checked={status?.lan ?? false}
                     disabled={busy}
                     onCheckedChange={(v) => void applyLan(v)}
                   />

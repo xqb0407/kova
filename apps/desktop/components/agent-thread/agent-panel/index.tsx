@@ -17,7 +17,8 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { WindowControls } from "@/components/window-controls";
 import { cn } from "@/lib/utils";
 import { NewTabMenu, TabBar } from "./tab-bar";
-import { TAB_META, TabContentView, useVisiblePanelTabTypes } from "./tab-registry";
+import { TAB_META, TabContentView, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 
 /**
  * Codex 桌面端风格的右侧 Agent 面板:一个可拖宽、可折叠的标签容器。
@@ -263,8 +264,11 @@ const PanelShell: FC<{
       )}
       <div className="min-h-0 flex-1">
         {active ? (
-          // key=tab.id:切换标签即重挂载,组件内状态(浏览器历史等)标签私有
-          <TabContentView key={active.id} tab={active} />
+          // key=tab.id:切换标签即重挂载,组件内状态(浏览器历史等)标签私有。
+          // 边界接管同一个 key——某个标签崩了只坏那一个,切走再切回即恢复
+          <ErrorBoundary key={active.id} label={`面板标签「${tabTitle(active)}」`}>
+            <TabContentView tab={active} />
+          </ErrorBoundary>
         ) : (
           <EmptyTabsScreen />
         )}

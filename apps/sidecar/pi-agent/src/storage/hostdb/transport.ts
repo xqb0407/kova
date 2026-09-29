@@ -92,7 +92,11 @@ function stdoutRpc(
       () =>
         fail(() =>
           reject(
-            new Error(`host_query timeout: ${kind}（宿主未响应，Rust 侧需含 data.rs）`),
+            new Error(
+              `host_query timeout: ${kind}（宿主在 ${Math.round(timeoutMs / 1000)}s 内没回结果；` +
+                `已发 host_cancel 取消。命令本身可能跑得太久——bash 可显式传更小的 timeout 参数，` +
+                `不要据此重试同一个长命令）`,
+            ),
           ),
         ),
       timeoutMs,

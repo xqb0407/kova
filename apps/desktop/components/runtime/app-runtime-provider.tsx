@@ -5,6 +5,9 @@ import { useChatRuntime } from "@assistant-ui/ai-sdk";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@/lib/tauri";
 import { installFrontendLogging } from "@/lib/frontend-logging";
+import { primeAppMeta } from "@/lib/app-meta";
+import { installPerfWatch, uninstallPerfWatch } from "@/lib/perf-watch";
+import { toast } from "@/components/ui/toast";
 import { initNotifyPipeline } from "@/lib/notify/notify";
 import { PiTransport } from "@/lib/pi/pi-transport";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
@@ -270,13 +273,27 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
 
   useEffect(() => {
     setDesktop(isTauri());
+    // 先取版本号：崩溃反馈要带 build 号，而这个值只能异步拿
+    primeAppMeta();
     // 桌面端挂载 console.warn/error 与崩溃转发（写 web.log，内部自判环境）
     installFrontendLogging();
+    // 主线程卡顿看门狗：卡顿记录进 web.log，冻结时弹一次 toast 让用户知道
+    installPerfWatch({
+      onFreeze: () => {
+        toast.error({
+          title: "界面卡住了",
+          description: "主线程被长任务占住了几秒，已记进日志。可以先切走别的界面再切回来。",
+        });
+      },
+    });
     // 通知管线：事件总线 → 提示音 + webhook 派发（幂等，桌面/远程网页都装配）
     initNotifyPipeline();
     const remain = Math.max(0, SPLASH_MIN_MS - (Date.now() - splashStartRef.current));
     const timer = setTimeout(() => setSplashMinDone(true), remain);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      uninstallPerfWatch();
+    };
   }, []);
 
   // 首帧（含静态导出的预渲染 HTML）恒为 BootSplash，与水合后 effect 翻转前的
