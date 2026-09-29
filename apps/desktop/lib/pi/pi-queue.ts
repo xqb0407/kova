@@ -329,18 +329,22 @@ export function useSteeredQueueItems(threadId: string | undefined): SteeredQueue
 /* ------------------------------- 队列操作 ------------------------------- */
 
 /** 弹出队首交由前端重发（接力泵「踢一脚」）。sidecar 仅在线程空闲且无链节时
- *  弹出，否则返回 null（链节仍在，泵转而在跑轮探测重挂）。调用方重发前先
+ *  弹出，否则返回 null（链节仍在，泵转而在跑轮探测重挂）。popped.sessionId
+ *  是该排队项归属会话的权威值（sidecar 从原帧带回）——泵重发前必须据此校正
+ *  线程绑定，绝不能丢弃后用当前（可能漂移的）绑定重发。调用方重发前先
  *  dropQueuedEntry 销登记，防派发快照回填旧气泡造成双份 */
 export async function popQueueHead(
   threadId: string,
   sessionId?: string,
-): Promise<{ reqId: string; text: string } | null> {
+): Promise<{ reqId: string; text: string; sessionId?: string } | null> {
   const res = await getPiChannel().request({
     type: "queue_pop",
     threadId,
     ...(sessionId ? { sessionId } : {}),
   });
-  const popped = (res as { popped?: { reqId: string; text: string } | null }).popped ?? null;
+  const popped =
+    (res as { popped?: { reqId: string; text: string; sessionId?: string } | null }).popped ??
+    null;
   if (popped) registry.delete(popped.reqId);
   return popped;
 }
@@ -377,6 +381,22 @@ export async function steerQueueItem(reqId: string): Promise<void> {
     }
     throw err;
   }
+}
+
+/**
+ * 消息数组按 id 去重（保留最后一次出现，语义对齐框架 ExternalStore 的去重）。
+ * 排队条 remove/reveal 与流式写入的竞态可能在数组里产生重复项（2026-09-28
+ * web.log `duplicate message id` 密集告警实证）——所有经 syncListener 的写入
+ * 在此统一收敛，消灭重复告警与双气泡。无重复时原数组原样返回（不触发
+ * setMessages 的无谓通知）。
+ */
+export function dedupeMessagesById<T extends { id: unknown }>(msgs: T[]): T[] {
+  const lastByKey = new Map<string, number>();
+  for (let i = 0; i < msgs.length; i++) lastByKey.set(String(msgs[i].id), i);
+  if (lastByKey.size === msgs.length) return msgs;
+  return [...lastByKey.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([, i]) => msgs[i] as T);
 }
 
 /** 清空镜像/登记表/空窗标记（测试隔离用） */

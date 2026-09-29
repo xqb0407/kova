@@ -20,8 +20,11 @@
  */
 import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import { App, DragEvent, Ellipse, Group, Image as LeaferImage, Line, MoveEvent, Path, Rect, Text } from "leafer-ui";
+import "@leafer-ui/mask";
 import { Editor, EditorEvent } from "@leafer-in/editor";
 import { findNode, type LineDir, type NodeType } from "../doc";
+import { hitAnchor, penPathD, penToNode, type Anchor } from "../pen";
+import { uid, type DesignNode } from "../doc";
 import {
   SNAP_PX,
   collectSnapBoxes,
@@ -35,7 +38,8 @@ import {
   type SpacingLabel,
 } from "../geometry";
 import { ledgerFor, ledgerSignature, type EditorNodeTransform } from "./ledger";
-import { buildPageScene, type MeasureFn, type SceneCtx, type SceneNode, type SceneTag } from "./scene";
+import { buildPageScene, type MeasureFn, type SceneCtx, type SceneTag } from "./scene";
+import { patchTree, type PatchEntry, type PatchNodeObj } from "./patch";
 import { ensureAsset, getAssetState, useAssetsVersion } from "./assets";
 import { makeMeasure } from "./measure";
 import { ContextMenu, canvasMenu, nodeMenu } from "../chrome/ContextMenu";
@@ -54,50 +58,11 @@ const TAGS: Record<SceneTag, new (props?: Record<string, unknown>) => unknown> =
 };
 
 
-/* ---------------- 场景 patch（按 key diff，命令式保引用稳定） ---------------- */
+/* ---------------- 场景 patch（按 key diff，命令式保引用稳定；实现在 leafer/patch.ts） ---------------- */
 
 /** leafer 节点的宽松视图（属性走响应式 setter） */
-type NodeObj = { add?: (n: unknown) => void; remove?: () => void; zIndex?: number } & Record<string, unknown>;
-type Entry = { node: NodeObj; tag: SceneTag; props: Record<string, unknown> };
-
-function setNodeProps(node: Record<string, unknown>, oldProps: Record<string, unknown>, next: Record<string, unknown>): void {
-  for (const [k, v] of Object.entries(next)) {
-    if (oldProps[k] !== v) node[k] = v;
-  }
-  for (const k of Object.keys(oldProps)) {
-    if (!(k in next)) node[k] = undefined;
-  }
-}
-
-function patchTree(parent: NodeObj, specs: SceneNode[], map: Map<string, Entry>, seen: Set<string>): void {
-  specs.forEach((spec, index) => {
-    seen.add(spec.key);
-    let ent = map.get(spec.key);
-    if (!ent || ent.tag !== spec.tag) {
-      ent?.node.remove?.();
-      const node = new (TAGS[spec.tag] as unknown as new () => NodeObj)();
-      node.__elKey = spec.key;
-      setNodeProps(node, {}, spec.props);
-      parent.add?.(node);
-      ent = { node, tag: spec.tag, props: { ...spec.props } };
-      map.set(spec.key, ent);
-    } else {
-      setNodeProps(ent.node, ent.props, spec.props);
-      ent.props = { ...spec.props };
-    }
-    // 编辑器缩放手势（editSize:'scale'）把 scale 直写在节点根组上，而 spec 恒为 1：
-    // diff 只比上次 spec、看不见这种外部改动，提交后必须强制归一，
-    // 否则 scale 残留叠加已吸收进 w/h 的缩放 → 双重放大
-    if (!spec.key.includes("#")) {
-      const sx = spec.props.scaleX;
-      const sy = spec.props.scaleY;
-      if (sx !== undefined) ent.node.scaleX = sx;
-      if (sy !== undefined) ent.node.scaleY = sy;
-    }
-    ent.node.zIndex = index;
-    if (spec.children) patchTree(ent.node, spec.children, map, seen);
-  });
-}
+type NodeObj = PatchNodeObj;
+type Entry = PatchEntry;
 
 /** 元素根组 key = 节点 id；含 # 的子视觉件不是选择目标（editable:false，编辑器爬不到它们） */
 function nodeIdOfKey(key: string): string | null {
@@ -493,10 +458,19 @@ export const DesignStage: FC<{ store: DesignStore }> = ({ store }) => {
         if (!st || st.status === "loading") return { status: "loading" };
         return st.url ? { status: "ready", url: st.url } : { status: "missing" };
       },
+      // 实例 live 解析要全档：依赖必须含 doc——改主档只动 doc.components、不动页引用，
+      // 只依赖 page 的话实例不会重绘
+      doc,
     };
     return buildPageScene(page, ctx);
-  }, [page, assetsVersion]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, assetsVersion, doc]);
 
+  // 视口变换独立 effect：平移/缩放只动 world，不重跑场景 patch。
+  // ⚠️ 编辑器选框在独立图层、不随 world 平移——视口变化后必须刷新选中框。
+  //    且多选的大框不是画在节点上，而是画在 editor.simulateTarget 上：
+  //    它是选中瞬间对目标并集包围盒的快照，ed.update() 只按快照重摆、框会漂；
+  //    必须 updateEditBox()（多选时先 simulate() 重新量快照再 update）。headless 实测过。
   useEffect(() => {
     const world = worldRef.current;
     if (!world) return;
@@ -504,9 +478,15 @@ export const DesignStage: FC<{ store: DesignStore }> = ({ store }) => {
     world.y = view.ty;
     world.scaleX = view.s;
     world.scaleY = view.s;
+    editorRef.current?.updateEditBox();
+  }, [view.tx, view.ty, view.s]);
+
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!world) return;
     const map = nodesRef.current;
     const seen = new Set<string>();
-    patchTree(world, scene, map, seen);
+    patchTree(world, scene, map, seen, TAGS as unknown as Record<SceneTag, new () => PatchNodeObj>);
     for (const [key, ent] of map) {
       if (!seen.has(key)) {
         ent.node.remove?.();
@@ -525,10 +505,10 @@ export const DesignStage: FC<{ store: DesignStore }> = ({ store }) => {
         // 同帧再调 ed.update() 会踩 editing:true 但 editTool:null 的空窗崩溃
         if (alive.length === 0) ed.cancel();
         else if (alive.length !== list.length) ed.select(alive as Parameters<typeof ed.select>[0]);
-        else ed.update();
+        else ed.updateEditBox(); // 多选大框按快照摆位，update() 不重量快照（见视口 effect 注释）
       }
     }
-  }, [scene, view.tx, view.ty, view.s]);
+  }, [scene]);
 
   /* ---------------- 选择集外部驱动同步（图层面板点选/undo 清选等） ---------------- */
 
@@ -667,15 +647,139 @@ export const DesignStage: FC<{ store: DesignStore }> = ({ store }) => {
     if (tool === "text") st.setEditingTextId(id);
   };
 
+  /* ---------------- 钢笔工具：点=直角锚 · 按拖=平滑柄 · 点首锚闭合 · Enter 收笔 ---------------- */
+
+  type PenDraft = { pts: Anchor[]; closed: boolean; cur: [number, number] | null; down: boolean };
+  const [pen, setPen] = useState<PenDraft | null>(null);
+  const penRef = useRef<PenDraft | null>(null);
+  penRef.current = pen;
+
+  const penWorld = (ev: React.PointerEvent): [number, number] => {
+    const st = S.current;
+    const r = hostRef.current!.getBoundingClientRect();
+    // 读渲染端真值（leafer world 实时变换）：滚轮缩放/平移后 store view 与画面存在
+    // 一帧级不同步窗口，落点必须跟随"看得见的"世界，而不是状态里的 view
+    const w = worldRef.current;
+    const s = w && typeof w.scaleX === "number" ? (w.scaleX as number) : st.view.s;
+    const ox = w && typeof w.x === "number" ? (w.x as number) : st.view.tx;
+    const oy = w && typeof w.y === "number" ? (w.y as number) : st.view.ty;
+    return [(ev.clientX - r.left - ox) / s, (ev.clientY - r.top - oy) / s];
+  };
+
+  /** 当前渲染缩放（worldRef 真值）：所有按屏幕像素计的命中/阈值判定都用它换算 */
+  const penS = () => {
+    const w = worldRef.current;
+    return w && typeof w.scaleX === "number" ? (w.scaleX as number) : S.current.view.s;
+  };
+
+  /** 收笔落 vector 节点（≥2 锚才落；单次 addNode = 一步可撤销） */
+  const penCommit = (draft: { pts: Anchor[]; closed: boolean }) => {
+    const st = S.current;
+    setPen(null);
+    if (draft.pts.length < 2) return;
+    const { x, y, w, h, path } = penToNode(draft.pts, draft.closed);
+    // 闭合成形 → 形状语义（Figma 同款默认灰填充，不带描边）；开放线稿 → 描边
+    st.addNode({
+      id: uid("v"), type: "vector", name: "钢笔",
+      x, y, w, h, path,
+      fills: draft.closed ? [{ type: "solid", color: "#d9d9d9" }] : [],
+      strokes: draft.closed ? [] : [{ color: "#111111", width: 2 }],
+    } as DesignNode);
+  };
+  const penFinish = () => {
+    const draft = penRef.current;
+    if (draft) penCommit(draft);
+  };
+
+  const penDown = (ev: React.PointerEvent) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const p = penWorld(ev);
+    setPen((prev) => {
+      if (!prev) return { pts: [{ p }], closed: false, cur: p, down: true };
+      // 点中首锚（8px 屏幕半径）→ 闭合成形收笔
+      if (prev.pts.length >= 3 && hitAnchor(prev.pts, p, 8 / penS()) === 0) {
+        // setPen 内不能依赖 penRef 新值 → 微任务延后收笔（closedDraft 立即定格）
+        const closedDraft = { pts: prev.pts, closed: true };
+        setTimeout(() => penCommit(closedDraft), 0);
+        return { ...prev, closed: true, cur: null, down: false };
+      }
+      return { pts: [...prev.pts, { p }], closed: false, cur: p, down: true };
+    });
+  };
+
+  const penMove = (ev: React.PointerEvent) => {
+    const p = penWorld(ev);
+    setPen((prev) => {
+      if (!prev) return prev;
+      const pts = prev.pts.slice();
+      // 按住拖 = 给刚落的锚拉平滑柄（出柄 = 拖点 − 锚，入柄镜像）
+      if (prev.down && pts.length > 0 && (ev.buttons & 1) === 1) {
+        const last = pts[pts.length - 1]!;
+        const hout: [number, number] = [p[0] - last.p[0], p[1] - last.p[1]];
+        if (Math.hypot(hout[0], hout[1]) * penS() > 2) {
+          pts[pts.length - 1] = { ...last, hout, hin: [-hout[0], -hout[1]] };
+        }
+      }
+      return { ...prev, pts, cur: p };
+    });
+  };
+
+  const penUp = () => {
+    setPen((prev) => (prev ? { ...prev, down: false } : null));
+  };
+
+  // Enter 收笔 / Esc 取消 / Backspace 撤上一锚（capture 抢在 App 热键前）
+  useEffect(() => {
+    if (!pen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        penFinish();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setPen(null);
+      } else if (e.key === "Backspace" || e.key === "Delete") {
+        e.preventDefault();
+        e.stopPropagation();
+        setPen((prev) => (prev ? { ...prev, pts: prev.pts.slice(0, -1) } : null));
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [pen !== null]);
+
+  /* ---------------- 文件拖放导入 ---------------- */
+
+  const onDragOverFiles = (ev: React.DragEvent) => {
+    if (ev.dataTransfer.types.includes("Files")) ev.preventDefault();
+  };
+  const onDropFiles = (ev: React.DragEvent) => {
+    const files = [...ev.dataTransfer.files];
+    if (files.length === 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const st = S.current;
+    const r = hostRef.current?.getBoundingClientRect();
+    const at = r
+      ? { x: (ev.clientX - r.left - st.view.tx) / st.view.s, y: (ev.clientY - r.top - st.view.ty) / st.view.s }
+      : undefined;
+    void st.importFiles(files, at);
+  };
+
   /* ---------------- 渲染 ---------------- */
 
   return (
-    <div style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
+    <div style={{ position: "absolute", inset: 0, overflow: "hidden" }} onDragOver={onDragOverFiles} onDrop={onDropFiles}>
       <div
         ref={hostRef}
         style={{ position: "absolute", inset: 0, cursor: panMode ? "grab" : createMode ? "crosshair" : "default" }}
       />
-      {createMode && (
+      {createMode && tool !== "pen" && (
         <div
           style={{ position: "absolute", inset: 0, cursor: "crosshair", touchAction: "none" }}
           onPointerDown={creationStart}
@@ -684,6 +788,66 @@ export const DesignStage: FC<{ store: DesignStore }> = ({ store }) => {
           onPointerCancel={() => setDrawRect(null)}
         />
       )}
+      {tool === "pen" && (() => {
+        // 预览整层是屏幕坐标：路径必须跟锚点方块/橡皮筋同款换算
+        // （直接输出世界坐标 = 视口非恒等时线段与落点整体偏移）
+        const w = worldRef.current;
+        const s = w && typeof w.scaleX === "number" ? (w.scaleX as number) : S.current.view.s;
+        const tx = w && typeof w.x === "number" ? (w.x as number) : S.current.view.tx;
+        const ty = w && typeof w.y === "number" ? (w.y as number) : S.current.view.ty;
+        const sx = (v: number) => v * s + tx;
+        const sy = (v: number) => v * s + ty;
+        const toScr = (a: Anchor): Anchor => ({
+          p: [sx(a.p[0]), sy(a.p[1])] as [number, number],
+          ...(a.hin ? { hin: [a.hin[0] * s, a.hin[1] * s] as [number, number] } : {}),
+          ...(a.hout ? { hout: [a.hout[0] * s, a.hout[1] * s] as [number, number] } : {}),
+        });
+        const cur = pen?.cur ?? null;
+        // PS 式回路悬浮：游标悬进首锚屏幕 8px 半径（且 ≥3 锚）→ 显示"点下即闭合成形"的原型
+        const closing = pen !== null && !pen.closed && cur !== null && pen.pts.length >= 3 && hitAnchor(pen.pts, cur, 8 / s) === 0;
+        const firstX = pen && pen.pts.length ? sx(pen.pts[0]!.p[0]) : 0;
+        const firstY = pen && pen.pts.length ? sy(pen.pts[0]!.p[1]) : 0;
+        return (
+          <div
+            data-pen-overlay=""
+            style={{ position: "absolute", inset: 0, cursor: closing ? "cell" : "crosshair", touchAction: "none" }}
+            onPointerDown={penDown}
+            onPointerMove={penMove}
+            onPointerUp={penUp}
+            onDoubleClick={() => penFinish()}
+            onPointerLeave={() => setPen((prev) => (prev ? { ...prev, cur: null, down: false } : null))}
+          >
+            {pen && pen.pts.length > 0 && (() => {
+              const d = penPathD({ pts: pen.pts.map(toScr), closed: pen.closed });
+              const last = pen.pts[pen.pts.length - 1]!;
+              const rubber = !pen.closed && cur ? `M ${sx(last.p[0])} ${sy(last.p[1])} L ${sx(cur[0])} ${sy(cur[1])}` : "";
+              // 成形悬浮预览：锚点 + 游标按闭合对待的面（随光标实时变形）
+              const closeD = closing && cur ? penPathD({ pts: [...pen.pts.map(toScr), { p: [sx(cur[0]), sy(cur[1])] }], closed: true }) : "";
+              return (
+                <svg width="100%" height="100%" style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+                  {closeD !== "" && <path data-pen-preview="close" d={closeD} fill="rgba(13, 153, 255, 0.12)" stroke="none" />}
+                  <path data-pen-preview="line" d={d} fill="none" stroke="#0d99ff" strokeWidth={1.5} />
+                  {rubber && <path d={rubber} fill="none" stroke="#0d99ff" strokeWidth={1} strokeDasharray="4 3" opacity={0.7} />}
+                  {pen.pts.map((a, i) => (
+                    <rect key={i} x={sx(a.p[0]) - 3.5} y={sy(a.p[1]) - 3.5} width={7} height={7}
+                      fill={i === 0 && pen.pts.length >= 3 ? "#ffffff" : "#0d99ff"}
+                      stroke="#0d99ff" strokeWidth={1} />
+                  ))}
+                  {cur && !pen.closed && !closing && (
+                    <rect x={firstX - 4.5} y={firstY - 4.5} width={9} height={9} fill="none" stroke="#0d99ff" strokeWidth={1.5} />
+                  )}
+                  {closing && (
+                    <g data-pen-preview="target">
+                      <circle cx={firstX} cy={firstY} r={8} fill="none" stroke="#0d99ff" strokeWidth={1.5} />
+                      <circle cx={firstX} cy={firstY} r={2.5} fill="#0d99ff" />
+                    </g>
+                  )}
+                </svg>
+              );
+            })()}
+          </div>
+        );
+      })()}
       {createMode && drawRect && (
         <div
           style={{

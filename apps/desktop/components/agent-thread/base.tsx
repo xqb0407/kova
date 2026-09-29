@@ -29,6 +29,7 @@ import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
 import { subscribeAutomationFocus } from "@/lib/automation/automations";
 import { setAutomationFrameSync } from "@/lib/automation/automation-live";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
+import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
 import { Thread } from "./thread";
@@ -154,6 +155,27 @@ export const Base: FC = () => {
   // （设置页打开时不能替它解除 webview 遮蔽，恢复交给设置页退出广播）
   const viewRef = useRef(view);
   viewRef.current = view;
+  // 从设置页「重新查看新手引导」时（通用设置 → 入门）把设置视图收掉：
+  // 向导是全屏接管，走完后应当直接落在对话界面，而不是退回设置页。
+  const onboardingActive = useOnboardingGate().active;
+  useEffect(() => {
+    if (onboardingActive) setView("chat");
+  }, [onboardingActive]);
+  // 「跳到设置页某分区」的 window 事件（composer 主题胶囊的「管理设计主题…」
+  // 深在壳树里，不向上透传回调）：seq 单调递增，让「已在设置页再跳同一分区」
+  // 也能触发 SettingsPage 的同步 effect；id 校验在 settings-page 模块内做
+  //（那边是 dynamic 懒加载 chunk，这里不静态引它的值导出）
+  const [settingsJump, setSettingsJump] = useState<{ id: string; seq: number } | null>(null);
+  useEffect(() => {
+    const onJump = (e: Event) => {
+      const detail = (e as CustomEvent<unknown>).detail;
+      if (typeof detail !== "string" || !detail) return;
+      setView("settings");
+      setSettingsJump((prev) => ({ id: detail, seq: (prev?.seq ?? 0) + 1 }));
+    };
+    window.addEventListener("kova:open-settings-section", onJump);
+    return () => window.removeEventListener("kova:open-settings-section", onJump);
+  }, []);
   // 面板开合动画期间的 webview 遮蔽开关：动画期间面板内容宽被冻结，浏览器
   // 占位容器不再随面板收窄（native 层不吃 CSS 裁剪，不隐藏会以冻结宽悬浮
   // 盖到聊天列上），故借 browser:occluded 通道隐藏，动画结束由 bounds 状态
@@ -904,7 +926,11 @@ export const Base: FC = () => {
       {/* 设置视图：全窗口覆盖，左侧为设置二级侧边栏（含"返回应用"） */}
       {view === "settings" && (
         <div className="bg-background fixed inset-0 z-50">
-          <SettingsPage onBack={() => setView("chat")} />
+          <SettingsPage
+            onBack={() => setView("chat")}
+            jumpSection={settingsJump?.id}
+            jumpSeq={settingsJump?.seq}
+          />
         </div>
       )}
     </>

@@ -10,7 +10,8 @@ import {
   initAppMode,
   normalizeAppMode,
   resetAppModeForTest,
-  workModePromptBlock,
+  setUiDesignActiveProbeForTest,
+  appModePromptBlock,
 } from "../../src/agent/app-mode";
 import { AGENT_MODE_PROMPT, composeModeSystemPrompt } from "../../src/agent/modes";
 import { initLocalStorage, kvGet, resetStorageForTest } from "../../src/storage/hostdb";
@@ -29,6 +30,7 @@ beforeAll(() => {
 afterAll(() => {
   // bun test 单进程共享模块注册表：清内存态/env，避免污染后续文件
   resetAppModeForTest();
+  setUiDesignActiveProbeForTest(null);
   resetStorageForTest();
   if (prevIdentityDir === undefined) delete process.env.PI_IDENTITY_DIR;
   else process.env.PI_IDENTITY_DIR = prevIdentityDir;
@@ -36,9 +38,10 @@ afterAll(() => {
 });
 
 describe("normalizeAppMode", () => {
-  test("仅接受两档字面量，其余回落 code", () => {
+  test("仅接受三档字面量，其余回落 code", () => {
     expect(normalizeAppMode("work")).toBe("work");
     expect(normalizeAppMode("code")).toBe("code");
+    expect(normalizeAppMode("design")).toBe("design");
     expect(normalizeAppMode("nope")).toBe("code");
     expect(normalizeAppMode(42)).toBe("code");
     expect(normalizeAppMode(null)).toBe("code");
@@ -62,6 +65,14 @@ describe("initAppMode / applyAppMode（kv 往返）", () => {
     expect(getAppMode()).toBe("work");
   });
 
+  test("design 档同样落 kv 并经 init 恢复", async () => {
+    const applied = await applyAppMode("design");
+    expect(applied).toBe("design");
+    resetAppModeForTest();
+    await initAppMode();
+    expect(getAppMode()).toBe("design");
+  });
+
   test("kv 损坏/非法值回落默认，不抛错", async () => {
     await kvSetRaw(APP_MODE_KV_KEY, "{broken json");
     resetAppModeForTest();
@@ -80,15 +91,17 @@ describe("initAppMode / applyAppMode（kv 往返）", () => {
   });
 });
 
-describe("workModePromptBlock / composeModeSystemPrompt", () => {
-  test("code 档为空串；work 档含 Work mode 段", () => {
-    expect(workModePromptBlock()).toBe("");
+describe("appModePromptBlock / composeModeSystemPrompt", () => {
+  test("code 档为空串；work 档含 Work mode 段", async () => {
+    await applyAppMode("code");
+    expect(appModePromptBlock()).toBe("");
     const P_code = composeModeSystemPrompt("agent", "/tmp/proj", null);
     expect(P_code).not.toContain("Work mode");
+    expect(P_code).not.toContain("Design mode");
     expect(P_code.startsWith(SYSTEM_PROMPT_CORE)).toBe(true);
 
-    applyAppMode("work");
-    const block = workModePromptBlock();
+    await applyAppMode("work");
+    const block = appModePromptBlock();
     expect(block).toContain("You are operating in Work mode");
     expect(block).toContain("take precedence");
 
@@ -103,11 +116,36 @@ describe("workModePromptBlock / composeModeSystemPrompt", () => {
     expect(P_work.split("You are operating in Work mode").length - 1).toBe(1);
   });
 
-  test("切回 code 后提示词回到不含 work 段的形态", async () => {
+  test("design 档含 Design mode 段且插入位置与 work 同槽", async () => {
+    setUiDesignActiveProbeForTest(() => true);
+    await applyAppMode("design");
+    const block = appModePromptBlock();
+    expect(block).toContain("You are operating in Design mode");
+    expect(block).toContain("*.uidesign.json");
+    expect(block).toContain("use_skill");
+    expect(block).not.toContain("NOT currently installed");
+
+    const P_design = composeModeSystemPrompt("agent", "/tmp/proj", null);
+    expect(P_design).toContain(block);
+    expect(P_design).not.toContain("Work mode");
+    expect(P_design.split("You are operating in Design mode").length - 1).toBe(1);
+  });
+
+  test("ui-design 插件未启用时 design 段追加引导安装句", async () => {
+    setUiDesignActiveProbeForTest(() => false);
+    await applyAppMode("design");
+    const block = appModePromptBlock();
+    expect(block).toContain("NOT currently installed");
+    expect(block).toContain("UI 设计");
+  });
+
+  test("切回 code 后提示词回到不含 work/design 段的形态", async () => {
+    setUiDesignActiveProbeForTest(null);
     await applyAppMode("code");
-    expect(composeModeSystemPrompt("agent", "/tmp/proj", null)).not.toContain(
-      "Work mode",
-    );
+    expect(appModePromptBlock()).toBe("");
+    const P = composeModeSystemPrompt("agent", "/tmp/proj", null);
+    expect(P).not.toContain("Work mode");
+    expect(P).not.toContain("Design mode");
   });
 });
 

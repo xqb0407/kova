@@ -103,7 +103,7 @@ const RULES: readonly { provider: EmbedProvider; build: (url: string) => string 
     provider: "figma",
     build: (url) => {
       if (!/figma\.com\/(?:file|design|proto|board)\//.test(url)) return null;
-      return `https://www.figma.com/embed?embed_host=slide-canvas&url=${encodeURIComponent(url)}`;
+      return `https://www.figma.com/embed?embed_host=office&url=${encodeURIComponent(url)}`;
     },
   },
   {

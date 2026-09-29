@@ -18,6 +18,8 @@ import {
   AlignVerticalDistributeCenter,
   Eye,
   EyeOff,
+  FlipHorizontal2,
+  FlipVertical2,
   Italic,
   Link2,
   Lock,
@@ -30,6 +32,7 @@ import {
 import {
   DEVICE_PRESETS,
   allFrames,
+  findComponent,
   findNode,
   TYPE_LABELS,
   type DesignNode,
@@ -38,12 +41,16 @@ import {
   type GradientStop,
   type Stroke,
   type TextNode,
+  type DesignDoc,
 } from "../doc";
 import type { AlignMode } from "../geometry";
 import type { DesignStore } from "../state";
-import { nodeToCss } from "../css";
+import { nodeToCode, nodeToCss, type CodeLang } from "../css";
+import { resolveIconName } from "../icons";
+import type { BlendMode, FrameLayout } from "../doc";
 import { copyText } from "../lib/clipboard";
-import { ColorInput, IconBtn, Menu, MenuItem, MiniSelect, NumField, Section } from "./ui";
+import { IconPicker } from "./IconPicker";
+import { ColorInput, IconBtn, Menu, MenuItem, MiniSelect, NumField, Section, VarColorCell } from "./ui";
 
 /* ---------------- 类型收窄小工具 ---------------- */
 
@@ -70,6 +77,7 @@ const FILL_TYPES = [
   { value: "solid", label: "纯色" },
   { value: "linear", label: "线性" },
   { value: "radial", label: "径向" },
+  { value: "image", label: "图片" },
 ];
 
 /** 行尾操作钮：悬停行才现身（禁用态常显），Figma 式降噪 */
@@ -95,10 +103,12 @@ const RowIcon: FC<{
 
 const FillRow: FC<{
   fill: Fill;
+  doc: DesignDoc;
+  onCreateVar: (value: string) => string;
   onChange: (f: Fill) => void;
   onRemove: () => void;
   onToggle: () => void;
-}> = ({ fill, onChange, onRemove, onToggle }) => {
+}> = ({ fill, doc, onCreateVar, onChange, onRemove, onToggle }) => {
   const [open, setOpen] = useState(true);
   const stops: GradientStop[] = fill.stops ?? [
     { at: 0, color: fill.color ?? "#4a90d9" },
@@ -128,6 +138,9 @@ const FillRow: FC<{
             if (t === "solid") {
               onChange({ type: "solid", color: stops[0]?.color ?? "#000000", opacity: fill.opacity, visible: fill.visible });
               setOpen(false);
+            } else if (t === "image") {
+              onChange({ type: "image", src: fill.src ?? "", scaleMode: "fill", opacity: fill.opacity, visible: fill.visible });
+              setOpen(true);
             } else {
               onChange({ type: t, stops, angle: fill.angle ?? 90, opacity: fill.opacity, visible: fill.visible });
               setOpen(true);
@@ -135,7 +148,11 @@ const FillRow: FC<{
           }}
         />
         {fill.type === "solid" ? (
-          <ColorInput value={fill.color ?? "#000000"} onChange={(c) => onChange({ ...fill, color: c })} />
+          <VarColorCell value={fill.color ?? "#000000"} onChange={(c) => onChange({ ...fill, color: c })} doc={doc} onCreateVariable={onCreateVar} />
+        ) : fill.type === "image" ? (
+          <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: fill.src ? "var(--muted-foreground)" : "var(--destructive)" }}>
+            {fill.src || "未设置图片路径"}
+          </span>
         ) : (
           <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: "var(--muted-foreground)" }}>
             {stops.length} 色标
@@ -151,7 +168,7 @@ const FillRow: FC<{
           <Trash2 size={12} />
         </RowIcon>
       </div>
-      {open && fill.type !== "solid" && (
+      {open && (fill.type === "linear" || fill.type === "radial") && (
         <div className="ml-4 mt-1 space-y-1.5 rounded-lg p-2" style={{ background: "var(--secondary)" }}>
           <div className="flex items-center gap-1.5">
             <NumField label="角度" min={0} max={360} value={fill.angle ?? 90} onCommit={(v) => onChange({ ...fill, angle: v })} />
@@ -183,6 +200,27 @@ const FillRow: FC<{
           )}
         </div>
       )}
+      {open && fill.type === "image" && (
+        <div className="ml-4 mt-1 space-y-1.5 rounded-lg p-2" style={{ background: "var(--secondary)" }}>
+          <MiniSelect
+            value={fill.scaleMode ?? "fill"}
+            options={[
+              { value: "fill", label: "裁剪铺满（fill）" },
+              { value: "fit", label: "完整显示（fit）" },
+              { value: "stretch", label: "拉伸（stretch）" },
+            ]}
+            onChange={(v) => onChange({ ...fill, scaleMode: v as Fill["scaleMode"] })}
+            title="图片缩放方式"
+          />
+          <input
+            value={fill.src ?? ""}
+            onChange={(e) => onChange({ ...fill, src: e.target.value })}
+            placeholder="workspace 相对路径（如 my-design-assets/pic.png）"
+            className="h-7 w-full rounded-md px-2 text-[11px] outline-none"
+            style={{ background: "var(--popover)", color: "var(--foreground)" }}
+          />
+        </div>
+      )}
     </div>
   );
 };
@@ -202,14 +240,16 @@ const STROKE_STYLES = [
 
 const StrokeRow: FC<{
   stroke: Stroke;
+  doc: DesignDoc;
+  onCreateVar: (value: string) => string;
   onChange: (s: Stroke) => void;
   onRemove: () => void;
   onToggle: () => void;
-}> = ({ stroke, onChange, onRemove, onToggle }) => {
+}> = ({ stroke, doc, onCreateVar, onChange, onRemove, onToggle }) => {
   const hidden = stroke.visible === false;
   return (
     <div className="group flex h-7 items-center gap-1.5" style={{ opacity: hidden ? 0.45 : 1 }}>
-      <ColorInput compact value={stroke.color} onChange={(c) => onChange({ ...stroke, color: c })} />
+      <VarColorCell compact value={stroke.color} onChange={(c) => onChange({ ...stroke, color: c })} doc={doc} onCreateVariable={onCreateVar} />
       <NumField label="宽" min={0.5} max={64} step={0.5} value={stroke.width} onCommit={(v) => onChange({ ...stroke, width: v })} title="描边宽度" />
       <MiniSelect value={stroke.align ?? "center"} options={STROKE_ALIGNS} onChange={(v) => onChange({ ...stroke, align: v as Stroke["align"] })} title="描边对齐" />
       <MiniSelect value={stroke.style ?? "solid"} options={STROKE_STYLES} onChange={(v) => onChange({ ...stroke, style: v as Stroke["style"] })} title="线型" />
@@ -263,11 +303,14 @@ const EffectRow: FC<{
 /* ---------------- 主面板 ---------------- */
 
 export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ store, onPreview }) => {
-  const { doc, page, selIds, updateNode, align } = store;
+  const { doc, page, selIds, updateNode, align, reflow, setLayout, setSel, detachInstance, resetInstanceOverrides } = store;
+  /** 填充/描边/文字/图标行的「存为变量并绑定」：名字由 upsertVariable 自动去重（颜色/颜色 2/…） */
+  const onCreateVar = (value: string): string => store.upsertVariable({ name: "颜色", value });
   const loc = selIds.length === 1 ? findNode(doc, selIds[0]!) : null;
   const node = loc?.node ?? null;
   const [cornersOpen, setCornersOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [codeLang, setCodeLang] = useState<CodeLang>("css");
 
   if (selIds.length === 0) {
     return (
@@ -363,6 +406,69 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
         </span>
       </div>
 
+      {/* 实例内部选中：回实例根 + 提示编辑会存为覆盖 */}
+      {selIds[0]!.includes("/") && (
+        <div className="flex items-center gap-1.5 px-3 pb-1 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+          <span className="min-w-0 flex-1 truncate">实例内部 · 编辑将保存为覆盖</span>
+          <button
+            type="button"
+            className="shrink-0 rounded px-1.5 py-0.5 hover:bg-[var(--secondary)]"
+            style={{ color: "var(--foreground)" }}
+            onClick={() => setSel([selIds[0]!.slice(0, selIds[0]!.indexOf("/"))])}
+          >
+            回到实例
+          </button>
+        </div>
+      )}
+
+      {/* 实例：主档信息与操作 */}
+      {n.type === "instance" && (
+        <Section title="实例">
+          {(() => {
+            const inst = n as DesignNode & { componentId: string; overrides?: Record<string, unknown> };
+            const comp = findComponent(doc, inst.componentId);
+            const ovCount = Object.keys(inst.overrides ?? {}).length;
+            return (
+              <div className="space-y-1.5">
+                <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+                  主档：
+                  {comp ? (
+                    <span style={{ color: "var(--foreground)" }}>{comp.name}</span>
+                  ) : (
+                    <span style={{ color: "var(--destructive)" }}>组件缺失（占位显示）</span>
+                  )}
+                </div>
+                <div className="text-[11px]" style={{ color: ovCount ? "var(--foreground)" : "var(--muted-foreground)" }}>
+                  {ovCount ? `已覆盖 ${ovCount} 处` : "与主档完全一致"}
+                </div>
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    className="rounded px-2 py-1 text-[11px] hover:opacity-80"
+                    style={{ background: "var(--secondary)", color: "var(--foreground)" }}
+                    title="把实例烘焙成可自由编辑的普通图层（断开与主档的联动）"
+                    onClick={() => detachInstance(n.id)}
+                  >
+                    分离实例
+                  </button>
+                  {ovCount > 0 && (
+                    <button
+                      type="button"
+                      className="rounded px-2 py-1 text-[11px] hover:opacity-80"
+                      style={{ background: "var(--secondary)", color: "var(--foreground)" }}
+                      title="清除全部覆盖，回到主档原样"
+                      onClick={() => resetInstanceOverrides(n.id)}
+                    >
+                      重置覆盖
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </Section>
+      )}
+
       {/* 对齐 */}
       <Section title="对齐">
         <div className="flex gap-0.5">
@@ -389,6 +495,46 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
             <NumField label="∠" min={-360} max={360} value={n.rotation ?? 0} onCommit={(v) => set({ rotation: v })} suffix="°" title="旋转角度" />
             <NumField label="O" min={0} max={100} value={Math.round((n.opacity ?? 1) * 100)} onCommit={(v) => set({ opacity: v / 100 })} suffix="%" title="不透明度" />
           </div>
+          <div className="flex items-center gap-1.5">
+            <IconBtn tip="水平翻转" size={28} active={!!n.flipX} onClick={() => set({ flipX: !n.flipX } as Partial<DesignNode>)}>
+              <FlipHorizontal2 size={14} />
+            </IconBtn>
+            <IconBtn tip="垂直翻转" size={28} active={!!n.flipY} onClick={() => set({ flipY: !n.flipY } as Partial<DesignNode>)}>
+              <FlipVertical2 size={14} />
+            </IconBtn>
+            <div className="min-w-0 flex-1">
+              <MiniSelect
+                value={n.blendMode ?? "normal"}
+                options={[
+                  { value: "normal", label: "混合·正常" },
+                  { value: "multiply", label: "正片叠底" },
+                  { value: "screen", label: "滤色" },
+                  { value: "overlay", label: "叠加" },
+                  { value: "darken", label: "变暗" },
+                  { value: "lighten", label: "变亮" },
+                  { value: "color-dodge", label: "颜色减淡" },
+                  { value: "color-burn", label: "颜色加深" },
+                  { value: "hard-light", label: "强光" },
+                  { value: "soft-light", label: "柔光" },
+                  { value: "difference", label: "差值" },
+                  { value: "exclusion", label: "排除" },
+                  { value: "hue", label: "色相" },
+                  { value: "saturation", label: "饱和度" },
+                  { value: "color", label: "颜色" },
+                  { value: "luminosity", label: "明度" },
+                ]}
+                onChange={(v) =>
+                  updateNode(n.id, (m) => {
+                    const c = { ...m } as DesignNode & { blendMode?: BlendMode };
+                    if (v === "normal") delete c.blendMode;
+                    else c.blendMode = v as BlendMode;
+                    return c;
+                  })
+                }
+                title="混合模式（与下层内容的混合方式，画布/导出一致）"
+              />
+            </div>
+          </div>
           {n.type === "frame" && (
             <div className="flex items-center gap-1.5">
               <MiniSelect
@@ -413,6 +559,124 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
           )}
         </div>
       </Section>
+
+      {/* 布局（画板）：Auto Layout 声明 + 立即重排 */}
+      {n.type === "frame" && (
+        <Section title="布局">
+          <MiniSelect
+            value={n.layout?.mode ?? "none"}
+            options={[
+              { value: "none", label: "无（自由摆放）" },
+              { value: "h", label: "横向排列" },
+              { value: "v", label: "纵向排列" },
+            ]}
+            onChange={(v) =>
+              setLayout(
+                n.id,
+                v === "none" ? null : { mode: v as "h" | "v", ...(n.layout?.mode === v ? n.layout : {}) } as FrameLayout,
+              )
+            }
+            title="自动布局：声明后子元素按间距/内边距/对齐自动排布"
+          />
+          {n.layout && (
+            <>
+              <div className="flex gap-1.5">
+                <NumField
+                  label="间距"
+                  min={0}
+                  max={2000}
+                  value={n.layout.gap ?? 0}
+                  onCommit={(v) => setLayout(n.id, { ...n.layout!, gap: v })}
+                />
+                <NumField
+                  label="内边距"
+                  min={0}
+                  max={1000}
+                  value={n.layout.padding?.[0] ?? 0}
+                  onCommit={(v) => setLayout(n.id, { ...n.layout!, padding: [v, v, v, v] })}
+                  title="四边统一内边距（逐边请用 MCP）"
+                />
+              </div>
+              <div className="flex gap-1.5">
+                <MiniSelect
+                  value={n.layout.wrap ? "wrap" : "nowrap"}
+                  options={[
+                    { value: "nowrap", label: "不换行" },
+                    { value: "wrap", label: "自动换行" },
+                  ]}
+                  onChange={(v) => setLayout(n.id, { ...n.layout!, wrap: v === "wrap" || undefined })}
+                  title="放不下时自动折行（行距同间距）"
+                />
+                <MiniSelect
+                  value={n.layout.hug ?? "fixed"}
+                  options={[
+                    { value: "fixed", label: "尺寸·固定" },
+                    { value: "main", label: "随内容·主轴" },
+                    { value: "cross", label: "随内容·交叉" },
+                    { value: "both", label: "随内容·双轴" },
+                  ]}
+                  onChange={(v) =>
+                    setLayout(n.id, { ...n.layout!, hug: (v === "fixed" ? undefined : (v as "main" | "cross" | "both")) || undefined })
+                  }
+                  title="HUG：画板尺寸随内容收缩（手动改尺寸会被重排覆盖）"
+                />
+              </div>
+              <div className="flex gap-1.5">
+                <MiniSelect
+                  value={n.layout.main ?? "start"}
+                  options={[
+                    { value: "start", label: "主轴·居首" },
+                    { value: "center", label: "主轴·居中" },
+                    { value: "end", label: "主轴·居末" },
+                    { value: "between", label: "主轴·两端" },
+                  ]}
+                  onChange={(v) => setLayout(n.id, { ...n.layout!, main: v as FrameLayout["main"] })}
+                  title="主轴对齐"
+                />
+                <MiniSelect
+                  value={n.layout.cross ?? "start"}
+                  options={[
+                    { value: "start", label: "交叉·居首" },
+                    { value: "center", label: "交叉·居中" },
+                    { value: "end", label: "交叉·居末" },
+                    { value: "stretch", label: "交叉·拉满" },
+                  ]}
+                  onChange={(v) => setLayout(n.id, { ...n.layout!, cross: v as FrameLayout["cross"] })}
+                  title="交叉轴对齐"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => reflow(n.id)}
+                className="h-7 w-full rounded-md text-[11px] font-medium transition-colors hover:brightness-95"
+                style={{ background: "var(--secondary)", color: "var(--foreground)" }}
+              >
+                重新排列（手动挪动过子项后）
+              </button>
+            </>
+          )}
+        </Section>
+      )}
+
+      {/* 布局子项：父画板开了自动布局时，当前节点可给弹性权重 */}
+      {loc?.parent?.type === "frame" && loc.parent.layout && (
+        <Section title="布局子项">
+          <NumField
+            label="弹性"
+            min={0}
+            max={100}
+            value={n.grow ?? 0}
+            onCommit={(v) => {
+              set({ grow: v > 0 ? v : undefined } as Partial<DesignNode>);
+              reflow(n.id);
+            }}
+            title="0 = 固定尺寸；>0 按权重瓜分主轴剩余空间"
+          />
+          <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+            父画板「{loc.parent.name}」开了自动布局；手动挪位不会自动重排，可让父画板重新排列
+          </div>
+        </Section>
+      )}
 
       {/* 圆角 */}
       {isBoxRadius(n) && (
@@ -461,6 +725,63 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
         </Section>
       )}
 
+      {/* 蒙版：用本节点几何裁剪同容器上方兄弟（frame 自带裁剪，不在此列） */}
+      {n && n.type !== "frame" && (
+        <Section title="蒙版">
+          <MiniSelect
+            value={n.mask ? "on" : "off"}
+            options={[
+              { value: "off", label: "不用作蒙版" },
+              { value: "on", label: "用作蒙版（裁剪上方图层）" },
+            ]}
+            onChange={(v) =>
+              updateNode(n.id, (m) => {
+                const c = { ...m } as DesignNode & { mask?: unknown };
+                if (v === "on") c.mask = true;
+                else delete c.mask;
+                return c;
+              })
+            }
+            title="蒙版：自身不再绘制，用几何裁剪同容器中位于其上方的图层（和 Figma 一致）"
+          />
+          {n.mask && (
+            <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              已作为蒙版：画布上只见其裁剪作用，导出同样生效
+            </div>
+          )}
+        </Section>
+      )}
+
+      {/* 代码（Dev Mode） */}
+      <Section title="代码">
+        <div className="flex items-center gap-1.5">
+          <MiniSelect
+            value={codeLang}
+            options={[
+              { value: "css", label: "CSS" },
+              { value: "swiftui", label: "SwiftUI" },
+              { value: "compose", label: "Compose" },
+            ]}
+            onChange={(v) => setCodeLang(v as CodeLang)}
+            title="目标平台代码"
+          />
+          <button
+            type="button"
+            onClick={() => void copyText(nodeToCode(n, codeLang, doc)).then(() => setCopied(true))}
+            className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md text-[11px] font-medium transition-colors hover:brightness-95"
+            style={{ background: "var(--secondary)", color: "var(--foreground)" }}
+          >
+            {copied ? "已复制 ✓" : "复制代码"}
+          </button>
+        </div>
+        <pre
+          className="mt-1.5 max-h-44 overflow-auto rounded-lg p-2 text-[10px] leading-4"
+          style={{ background: "var(--secondary)", color: "var(--foreground)" }}
+        >
+          {nodeToCode(n, codeLang, doc)}
+        </pre>
+      </Section>
+
       {/* 填充 */}
       {hasFills(n) && (
         <Section
@@ -476,6 +797,8 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
               <FillRow
                 key={i}
                 fill={f}
+                doc={doc}
+                onCreateVar={onCreateVar}
                 onChange={(nf) => updateNode(n.id, (m) => (hasFills(m) ? ({ ...m, fills: m.fills.map((x, j) => (j === i ? nf : x)) } as DesignNode) : m))}
                 onRemove={() => updateNode(n.id, (m) => (hasFills(m) ? ({ ...m, fills: m.fills.filter((_, j) => j !== i) } as DesignNode) : m))}
                 onToggle={() => updateNode(n.id, (m) => (hasFills(m) ? ({ ...m, fills: m.fills.map((x, j) => (j === i ? { ...x, visible: x.visible === false } : x)) } as DesignNode) : m))}
@@ -501,6 +824,8 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
               <StrokeRow
                 key={i}
                 stroke={s}
+                doc={doc}
+                onCreateVar={onCreateVar}
                 onChange={(ns) => updateNode(n.id, (m) => (hasStrokes(m) ? ({ ...m, strokes: m.strokes.map((x, j) => (j === i ? ns : x)) } as DesignNode) : m))}
                 onRemove={() => updateNode(n.id, (m) => (hasStrokes(m) ? ({ ...m, strokes: m.strokes.filter((_, j) => j !== i) } as DesignNode) : m))}
                 onToggle={() => updateNode(n.id, (m) => (hasStrokes(m) ? ({ ...m, strokes: m.strokes.map((x, j) => (j === i ? { ...x, visible: x.visible === false } : x)) } as DesignNode) : m))}
@@ -570,7 +895,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
               </div>
             </div>
             <div className="flex gap-1.5">
-              <ColorInput value={text.runs[0]?.color ?? "#111111"} onChange={(c) => updateNode(n.id, (m) => (m.type === "text" ? ({ ...m, runs: m.runs.map((r) => ({ ...r, color: c })) } as DesignNode) : m))} />
+              <VarColorCell value={text.runs[0]?.color ?? "#111111"} onChange={(c) => updateNode(n.id, (m) => (m.type === "text" ? ({ ...m, runs: m.runs.map((r) => ({ ...r, color: c })) } as DesignNode) : m))} doc={doc} onCreateVariable={onCreateVar} />
             </div>
             <div className="flex gap-1.5">
               <MiniSelect
@@ -621,6 +946,29 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
           <div className="mt-1.5 truncate text-[11px]" style={{ color: "var(--muted-foreground)" }} title={n.src}>
             {n.src}
           </div>
+        </Section>
+      )}
+
+      {/* 图标 */}
+      {n.type === "icon" && (
+        <Section title="图标">
+          <IconPicker value={n.icon} onPick={(name) => updateNode(n.id, { icon: name } as Partial<DesignNode>)} />
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <VarColorCell value={n.color ?? "#111111"} onChange={(c) => updateNode(n.id, { color: c } as Partial<DesignNode>)} doc={doc} onCreateVariable={onCreateVar} />
+            <NumField
+              label="粗细"
+              min={0.5}
+              max={12}
+              step={0.5}
+              value={n.strokeWidth ?? 2}
+              onCommit={(v) => updateNode(n.id, { strokeWidth: v } as Partial<DesignNode>)}
+            />
+          </div>
+          {!resolveIconName(n.icon) && (
+            <div className="mt-1 text-[11px]" style={{ color: "var(--destructive)" }}>
+              图标名无效，画布上是占位：点上方重新选择
+            </div>
+          )}
         </Section>
       )}
 
@@ -703,7 +1051,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
             type="button"
             title="复制该图层的 CSS"
             onClick={() => {
-              void copyText(nodeToCss(n)).then((ok) => {
+              void copyText(nodeToCss(n, doc)).then((ok) => {
                 setCopied(ok);
                 setTimeout(() => setCopied(false), 1500);
               });
@@ -719,7 +1067,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
           className="max-h-[240px] select-text overflow-auto rounded-lg p-2.5 font-mono leading-[1.6]"
           style={{ background: "var(--secondary)", color: "var(--foreground)", fontSize: 10.5 }}
         >
-          {nodeToCss(n)}
+          {nodeToCss(n, doc)}
         </pre>
       </Section>
     </div>

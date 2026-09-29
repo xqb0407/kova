@@ -31,8 +31,13 @@ export type Turn = {
 
 export type TurnIndex = {
   turns: Turn[];
-  /** 消息 id → 所属轮次与是否轮首（折叠时承载摘要头的消息） */
+  /** 消息 id → 所属轮次与是否轮首（折叠状态与耗时都用它） */
   slots: Map<string, { turnIndex: number; isHeader: boolean }>;
+  /** 消息 id → 数组下标（选择器里的 O(1) 定位；流式期间选择器每次通知都重跑，
+   *  全量 findIndex 会随消息数平方膨胀） */
+  byId: Map<string, number>;
+  /** 轮次键 → 轮次（packTurnSummary/getTurnParts 的 O(1) 查找） */
+  turnByKey: Map<string, Turn>;
 };
 
 const indexCache = new WeakMap<readonly ThreadMessage[], TurnIndex>();
@@ -48,7 +53,7 @@ export function getTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
   try {
     built = buildTurnIndex(messages);
   } catch {
-    built = { turns: [], slots: new Map() };
+    built = { turns: [], slots: new Map(), byId: new Map(), turnByKey: new Map() };
   }
   indexCache.set(messages, built);
   return built;
@@ -101,12 +106,28 @@ export function buildTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
   }
 
   const slots = new Map<string, { turnIndex: number; isHeader: boolean }>();
+  const byId = new Map<string, number>();
+  const turnByKey = new Map<string, Turn>();
   turns.forEach((turn, turnIndex) => {
+    turnByKey.set(turn.key, turn);
     for (let i = turn.start; i < turn.end; i++) {
       slots.set(String(messages[i].id), { turnIndex, isHeader: i === turn.start });
+      byId.set(String(messages[i].id), i);
     }
   });
-  return { turns, slots };
+  return { turns, slots, byId, turnByKey };
+}
+
+/**
+ * 消息 id → 数组下标（缓存索引查表，O(1)）；不存在返回 -1。
+ * 语义与 messages.findIndex((m) => m.id === id) 一致，供消息级选择器
+ * （AssistantActionBar 的 isTurnEnd 等）替代全量扫描。
+ */
+export function messageIndexById(
+  messages: readonly ThreadMessage[],
+  messageId: string,
+): number {
+  return getTurnIndex(messages).byId.get(messageId) ?? -1;
 }
 
 /**
@@ -207,7 +228,7 @@ export function getTurnParts(
   }
   const cached = byKey.get(turnKey);
   if (cached) return cached;
-  const turn = getTurnIndex(messages).turns.find((t) => t.key === turnKey);
+  const turn = getTurnIndex(messages).turnByKey.get(turnKey);
   const parts: ThreadAssistantMessagePart[] = [];
   if (turn) {
     for (let i = turn.start; i < turn.end; i++) {
@@ -257,7 +278,7 @@ function toolFilePath(input: unknown): string | undefined {
  * 往上翻历史 prepend 后下标会漂移）。
  */
 export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: string): string {
-  const turn = getTurnIndex(messages).turns.find((t) => t.key === turnKey);
+  const turn = getTurnIndex(messages).turnByKey.get(turnKey);
   if (!turn) return "";
   let toolCount = 0;
   let userText = "";

@@ -89,6 +89,7 @@ export const handlers: Record<string, CommandHandler> = {
         run.mode,
         run.cwd,
         run.agent.state.model,
+        run.designTheme,
       );
     }
     send({
@@ -112,6 +113,7 @@ export const handlers: Record<string, CommandHandler> = {
         run.mode,
         run.cwd,
         run.agent.state.model,
+        run.designTheme,
       );
     }
     send({ id: reqId, type: "app_mode", mode });
@@ -139,6 +141,7 @@ export const handlers: Record<string, CommandHandler> = {
         run.mode,
         run.cwd,
         run.agent.state.model,
+        run.designTheme,
       );
     }
     send({ id: reqId, type: "memory", settings });
@@ -285,6 +288,7 @@ export const handlers: Record<string, CommandHandler> = {
         run.mode,
         run.cwd,
         run.agent.state.model,
+        run.designTheme,
       );
     }
     send({ id: reqId, type: "memory_file_saved", scope, file: saved.rel, bytes: saved.bytes });

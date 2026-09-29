@@ -76,6 +76,16 @@ function subscribeMarketplaces(listener: () => void) {
   return () => marketplacesListeners.delete(listener);
 }
 
+/** 当前插件快照（非响应式；命令式流程用，如设计模式门禁。响应式绑定走 usePlugins） */
+export function getPluginsSnapshot(): PluginsSnapshot {
+  return pluginsCurrent;
+}
+
+/** 当前市场快照（非响应式；同上，响应式绑定走 useMarketplaces） */
+export function getMarketplacesSnapshot(): MarketplacesSnapshot {
+  return marketplacesCurrent;
+}
+
 /** 拉取已装插件清单 */
 export async function refreshPlugins(cwd?: string | null): Promise<void> {
   pluginsCurrent = { ...pluginsCurrent, loading: true };

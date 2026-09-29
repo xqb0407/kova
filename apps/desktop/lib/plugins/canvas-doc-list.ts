@@ -176,37 +176,28 @@ function summarize(path: string, doc: Record<string, unknown>): DocListItem {
     };
   }
   const meta = (doc.meta ?? {}) as Record<string, unknown>;
-  // v1 老档是 slides 数组（插件读盘时会迁移成 frames），摘要按两者取一
-  const frames = (
-    Array.isArray(doc.frames)
-      ? doc.frames
-      : Array.isArray(doc.slides)
-        ? doc.slides
-        : []
-  ) as Record<string, unknown>[];
-  const objects = Array.isArray(doc.objects) ? doc.objects : [];
-  const canvasKind =
-    meta.kind === "board" || meta.kind === "deck" || meta.kind === "ui"
-      ? meta.kind
-      : frames.length > 0 && objects.length === 0
-        ? "deck"
-        : "board";
+  // v3 纯画布：objects 单层（旧 v1 slides / v2 frames 由插件读盘时自动拍平，
+  // 这里对旧档只兜底数一下 objects，preview 用元素包围盒簇示意）
+  const objects = (Array.isArray(doc.objects) ? doc.objects : []) as Record<string, unknown>[];
+  const canvasKind = meta.kind === "ui" ? "ui" : "board"; // deck 已成历史，一律按画布处理
   const fallbackName = (path.split("/").pop() ?? path).replace(/\.canvas\.json$/i, "");
   const name =
     typeof meta.name === "string" && meta.name.trim() ? meta.name.trim() : fallbackName;
+  // 缩略图：取前 24 个元素的包围盒（聚类示意，非精确排版）
+  const preview = objects.slice(0, MAX_PREVIEW_FRAMES).map((f) => ({
+    x: num(f.x),
+    y: num(f.y),
+    w: num(f.w, 120),
+    h: num(f.h, 80),
+    bg: typeof f.fill === "string" ? f.fill : typeof f.background === "string" ? f.background : "#ffffff",
+  }));
   return {
     path,
     name,
     kind: canvasKind,
     mtime: 0,
-    frames: frames.length,
+    frames: 0,
     objects: objects.length,
-    preview: frames.slice(0, MAX_PREVIEW_FRAMES).map((f) => ({
-      x: num(f.x),
-      y: num(f.y),
-      w: num(f.w, 1280),
-      h: num(f.h, 720),
-      bg: typeof f.background === "string" ? f.background : "#ffffff",
-    })),
+    preview,
   };
 }

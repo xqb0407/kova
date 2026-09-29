@@ -79,7 +79,7 @@ describe("描边/圆角/效果", () => {
     expect(nodeCssDecls(rectAt({ radius: 0 })).some((l) => l.startsWith("border-radius"))).toBe(false);
   });
 
-  test("外/内投影合并进 box-shadow；层模糊走 filter；隐藏效果剔除", () => {
+  test("外/内投影合并进 box-shadow；层模糊走 backdrop-filter（毛玻璃，含 -webkit 前缀）；隐藏效果剔除", () => {
     const n = rectAt({
       effects: [
         { type: "drop-shadow", color: "#00000033", x: 0, y: 4, blur: 12 },
@@ -89,7 +89,10 @@ describe("描边/圆角/效果", () => {
     });
     const decls = nodeCssDecls(n);
     expect(decls).toContain("box-shadow: 0px 4px 12px #00000033;");
-    expect(decls).toContain("filter: blur(3px);");
+    expect(decls).toContain("backdrop-filter: blur(3px);");
+    expect(decls).toContain("-webkit-backdrop-filter: blur(3px);");
+    // 绝不糊自身：不得出现 filter:blur（会把半透卡连同文字糊掉）
+    expect(decls.some((l) => l.startsWith("filter:"))).toBe(false);
   });
 });
 

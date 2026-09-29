@@ -7,7 +7,7 @@ Kova（中文名「扣瓦」）是一个**桌面端 AI 助手**：Tauri v2 打�
 - **对话工作区**：多线程管理、附件与 @提及、斜杠命令、模型选择器、语音输入、提示词排队（prompt queue）、检查点回溯、AI 会话标题总结
 - **Agent 引擎**（sidecar）：内置编码/浏览器/HTTP/截图等工具、上下文压缩（compaction）、长期记忆、子代理（Task/TaskWait/TaskList/TaskStop，三层发现）
 - **MCP 接入**：多服务器连接池、配置双层合并、输出防护、OAuth、审批与审计
-- **技能与插件**：skills 装载与管理；插件面板系统（本仓库自带 `office`、`slide-canvas` 两个插件与本地插件市场）
+- **技能与插件**：skills 装载与管理；插件面板系统（本仓库自带 `office`、`canvas`、`ui-design` 插件与本地插件市场）
 - **系统集成**：Keychain/凭据管理、Webhook 通知、定时任务（automations）、远程访问、外观主题
 
 ## 仓库结构
@@ -23,7 +23,7 @@ packages/
   pi-protocol/        # 前后端共享的跨端契约定义
 plugins/
   office/             # 办公套件：幻灯片（逐页编辑/放映/导出 .pptx）+ 表格（Univer）
-  slide-canvas/       # 无限画布幻灯片工作台
+  canvas/             # 无限画布：Excalidraw 式白板（*.canvas.json，导出 SVG）
   marketplace.json    # 本仓库插件市场清单
 scripts/              # release.mjs 发布脚本、rename.sh/rename.bat 一键改名、build-release.sh/.bat 一键打包
 docs/                 # 设计与迭代文档（MCP、插件系统、密钥、性能基线、发布流程等）
@@ -104,7 +104,7 @@ Kova·扣瓦 从架构到细节大量借鉴与依赖社区成果，特别感谢�
 
 ### ✅ 已落地
 
-桌面主应用（多轮对话 / 附件 / 检查点 / 提示词排队）、pi-agent sidecar 运行时（MCP、skills、子代理、记忆、上下文压缩）、插件系统与办公套件（office、slide-canvas）、Keychain 凭据管理、定时任务与 Webhook 通知、**局域网远程访问**（桌面网关 + 配对码 + 浏览器网页端，见 [docs/remote-access.md](docs/remote-access.md)）。
+桌面主应用（多轮对话 / 附件 / 检查点 / 提示词排队）、pi-agent sidecar 运行时（MCP、skills、子代理、记忆、上下文压缩）、插件系统与办公套件（office、canvas）、Keychain 凭据管理、定时任务与 Webhook 通知、**局域网远程访问**（桌面网关 + 配对码 + 浏览器网页端，见 [docs/remote-access.md](docs/remote-access.md)）。
 
 ### 🚧 下一步：移动 App
 

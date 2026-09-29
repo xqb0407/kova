@@ -333,6 +333,9 @@ export async function runCompaction(
   });
   run.jsonlSeq += 1;
   run.agent.state.messages = [makeSummaryMessage(summary)];
+  // 主题全文随摘要替换离开上下文：加载台账清空，下一次 use_design_theme
+  // 自动重贴全文（design 段「动笔前先加载」指令常驻，驱动模型复 call 自愈）
+  run.designThemeLoads?.clear();
   // 合成摘要头不再作为消息行落盘（checkpoint 行已承载 summary），
   // persistedSeq 指向 state 末尾，下一轮 persist 只写新增消息
   run.persistedSeq = run.agent.state.messages.length;

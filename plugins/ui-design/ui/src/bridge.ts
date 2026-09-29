@@ -151,8 +151,9 @@ class Bridge {
     this.post({ kind: "doc.attach", name, base64 });
   }
 
-  exportFile(filename: string, base64: string): void {
-    this.post({ kind: "doc.export", filename, base64 });
+  /** silent：多文件成批写（导出工程包）时抑制宿主逐文件成功提示，由调用方统一收尾 */
+  exportFile(filename: string, base64: string, silent = false): void {
+    this.post({ kind: "doc.export", filename, base64, ...(silent ? { silent: true } : {}) });
   }
 
   prefill(text: string): void {

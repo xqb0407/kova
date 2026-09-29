@@ -14,6 +14,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
 import { ModePicker } from "@/components/agent-thread/mode-picker";
+import { DesignThemePicker } from "@/components/agent-thread/design-theme-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
 import { cancelQueueItem, useQueueSnapshot } from "@/lib/pi/pi-queue";
@@ -224,7 +225,7 @@ export const Composer: FC = () => {
              （WorkspaceSessionPill，点击滑盖展开完整路径） */}
         <WorkspacePill />
         <WorkspaceBranchPill />
-        <WorkspaceSessionPill />
+        {/* <WorkspaceSessionPill /> */}
        </div>
 
         <GroupedTriggerPopover
@@ -877,6 +878,8 @@ const ComposerAction: FC = () => {  return (
       <div className="flex items-center gap-1">
         <AddAttachmentButton />
         <ModePicker />
+        {/* design 档独有的会话级主题胶囊（内部自判模式，非 design 不渲染） */}
+        <DesignThemePicker />
       </div>
       <div className="flex items-center gap-1.5">
         <ModelPicker />

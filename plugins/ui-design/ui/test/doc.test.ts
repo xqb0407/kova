@@ -46,9 +46,9 @@ describe("parseDesignDoc 容错", () => {
     expect(frame.children.length).toBe(1);
   });
 
-  test("数值钳制：w/h≥1、opacity 0..1、坐标 ±100000、颜色非法走默认", () => {
+  test("数值钳制：w/h≥1、opacity 0..1、坐标 ±100000、颜色非法走默认（red 等色名现在合法，redd 才非法）", () => {
     const doc = wrap([
-      { id: "a", type: "rect", x: "1e9", y: -999999, w: 0, h: -5, opacity: 3, fills: [{ type: "solid", color: "red" }] },
+      { id: "a", type: "rect", x: "1e9", y: -999999, w: 0, h: -5, opacity: 3, fills: [{ type: "solid", color: "redd" }] },
     ]);
     const n = doc.pages[0]!.nodes[0]!;
     expect(n.x).toBe(100000);
@@ -57,6 +57,11 @@ describe("parseDesignDoc 容错", () => {
     expect(n.h).toBe(1);
     expect(n.opacity).toBeUndefined(); // 钳到 1 = 缺省，不落字段
     if (n.type === "rect") expect(n.fills[0]!.color).toBe("#d9d9d9");
+    // 色名与 rgb()/rgba() 现在合法
+    const named = wrap([{ id: "b", type: "rect", x: 0, y: 0, w: 10, h: 10, fills: [{ type: "solid", color: "red" }] }]).pages[0]!.nodes[0]!;
+    if (named.type === "rect") expect(named.fills[0]!.color).toBe("#ff0000");
+    const rgba = wrap([{ id: "c", type: "rect", x: 0, y: 0, w: 10, h: 10, fills: [{ type: "solid", color: "rgba(0, 0, 0, 0.5)" }] }]).pages[0]!.nodes[0]!;
+    if (rgba.type === "rect") expect(rgba.fills[0]!.color).toBe("#00000080");
   });
 
   test("字符串数字弱类型转换", () => {

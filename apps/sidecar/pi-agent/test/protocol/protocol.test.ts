@@ -13,7 +13,7 @@ import {
 } from "../../src/storage/hostdb";
 import { dispatch, dispatchPrompt, handleLine, setInitGate } from "../../src/protocol/protocol";
 import { rulesFilePath, soulFilePath } from "../../src/agent/personalization";
-import { dropRun, noteActiveTurn, resolveSession, running } from "../../src/sessions/sessions";
+import { dropRun, noteActiveTurn, resolveSession, running, trackSessionRun } from "../../src/sessions/sessions";
 import { setActiveReqId } from "../../src/protocol/stream";
 import { scanTranscript } from "../../src/sessions/transcript";
 import {
@@ -762,8 +762,10 @@ describe("dispatch: get_model / init gate", () => {
       agent: { state: {} },
     } as unknown as Running;
     running.set(sid, fakeRun);
+    trackSessionRun(sid, sid);
     try {
-      await dispatch("m4a", { type: "set_model", provider: "proto-p", modelId: "m1" });
+      // 会话定靶（对话页选择器形态）：设定行只落被点名的会话
+      await dispatch("m4a", { type: "set_model", provider: "proto-p", modelId: "m1", sessionId: sid });
       expect(last()).toEqual({ id: "m4a", type: "model", provider: "proto-p", modelId: "m1" });
       await dispatch("m4b", { type: "set_thinking", level: "high" });
       const scan = scanTranscript(sid);
@@ -775,10 +777,63 @@ describe("dispatch: get_model / init gate", () => {
       expect(fakeRun.agent.state.model?.provider).toBe("proto-p");
       expect(fakeRun.agent.state.thinkingLevel).toBe("high");
     } finally {
-      running.delete(sid);
+      dropRun(sid);
       setCurrentModelKey(null);
       setCurrentThinkingLevel("off");
     }
+  });
+
+  test("set_model 定靶只改被点名会话，其余驻留会话不动（A 切模型 B 不跟着变）", async () => {
+    const sidA = "sm-target-a";
+    const sidB = "sm-other-b";
+    await sessionInsert(sidA, tmp);
+    await sessionInsert(sidB, tmp);
+    // B 的 run 带自身哨兵模型：定靶 A 时必须原样不动（旧广播实现会盖成 A 的新模型）
+    const sentinel = { provider: "sentinel", id: "keep", name: "keep", api: "openai-chat", baseUrl: "", reasoning: false, input: [], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 0, maxTokens: 0 };
+    const runA = {
+      sessionId: sidA,
+      mode: "agent",
+      cwd: tmp,
+      agent: { state: {} },
+    } as unknown as Running;
+    const runB = {
+      sessionId: sidB,
+      mode: "agent",
+      cwd: tmp,
+      agent: { state: { model: sentinel } },
+    } as unknown as Running;
+    running.set(sidA, runA);
+    trackSessionRun(sidA, sidA);
+    running.set(sidB, runB);
+    trackSessionRun(sidB, sidB);
+    try {
+      await dispatch("sm1", { type: "set_model", provider: "proto-p", modelId: "m1", sessionId: sidA });
+      // A：live run 改写 + 转录真值行 + 偏好列落库
+      expect(runA.agent.state.model?.provider).toBe("proto-p");
+      expect(scanTranscript(sidA).model).toEqual({ provider: "proto-p", modelId: "m1" });
+      expect((await sessionGet(sidA))?.modelProvider).toBe("proto-p");
+      // B：run 不动、不落行、偏好列仍空
+      expect(runB.agent.state.model).toBe(sentinel);
+      expect(scanTranscript(sidB).model).toBeNull();
+      expect((await sessionGet(sidB))?.modelProvider).toBeNull();
+
+      // 无 sessionId = 全局默认变更：只即时刷从未显式选过模型的驻留 run（B 跟随），
+      // 已有自身选择的 A 保持不动；且全局变更不给任何会话落行
+      await dispatch("sm2", { type: "set_model", provider: "proto-p", modelId: "m1" });
+      expect(runB.agent.state.model?.provider).toBe("proto-p");
+      expect(runA.agent.state.model?.provider).toBe("proto-p");
+      expect(scanTranscript(sidB).model).toBeNull();
+    } finally {
+      dropRun(sidA);
+      dropRun(sidB);
+      setCurrentModelKey(null);
+    }
+  });
+
+  test("set_model rejects a sessionId that is not a known session", async () => {
+    await expect(
+      dispatch("smx", { type: "set_model", provider: "proto-p", modelId: "m1", sessionId: "ghost-session" }),
+    ).rejects.toThrow(/session not found/);
   });
 
   test("commands arriving before the init gate are buffered", async () => {

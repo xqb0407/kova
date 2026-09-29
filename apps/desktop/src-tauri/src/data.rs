@@ -98,10 +98,13 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
     // 会话级偏好：mode / approval_level（agent|plan、ask|auto-edit|auto）与
     // 最近一次随会话运行的模型。NULL = 从未变更过（打开时回落全局默认）。
     // 由 sidecar 在 set_mode / set_model / 模式状态机变更时经 session_prefs_set 写入。
+    // design_theme：设计主题 JSON 字符串 {scope,id}；NULL = 从未选中（回落最近使用），
+    // "" = 显式不使用主题（sidecar 的 set_design_theme 维护，见 pi-agent/src/design-md/）。
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN mode TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN approval_level TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN model_provider TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN model_id TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN design_theme TEXT;");
 
     // 旧数据迁移：早期版本把未选工作目录的会话 cwd 存成用户主目录；统一清空。
     let home = home_dir();
@@ -434,7 +437,7 @@ pub fn handle_host_query(
             let id = str_param(p, "sessionId")?;
             let row = conn
                 .query_row(
-                    "SELECT cwd, title, mode, approval_level, model_provider, model_id FROM sessions WHERE id = ?1",
+                    "SELECT cwd, title, mode, approval_level, model_provider, model_id, design_theme FROM sessions WHERE id = ?1",
                     params![id],
                     |row| {
                         Ok(json!({
@@ -444,6 +447,7 @@ pub fn handle_host_query(
                             "approvalLevel": row.get::<_, Option<String>>(3)?,
                             "modelProvider": row.get::<_, Option<String>>(4)?,
                             "modelId": row.get::<_, Option<String>>(5)?,
+                            "designTheme": row.get::<_, Option<String>>(6)?,
                         }))
                     },
                 )
@@ -464,7 +468,7 @@ pub fn handle_host_query(
         }
         "session_list" => {
             let rows = conn
-                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id FROM sessions ORDER BY updated_at DESC")
+                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, design_theme FROM sessions ORDER BY updated_at DESC")
                 .map_err(|e| e.to_string())?
                 .query_map([], |row| {
                     Ok(json!({
@@ -480,6 +484,7 @@ pub fn handle_host_query(
                         "approvalLevel": row.get::<_, Option<String>>(8)?,
                         "modelProvider": row.get::<_, Option<String>>(9)?,
                         "modelId": row.get::<_, Option<String>>(10)?,
+                        "designTheme": row.get::<_, Option<String>>(11)?,
                     }))
                 })
                 .map_err(|e| e.to_string())?
@@ -541,21 +546,24 @@ pub fn handle_host_query(
             Ok(json!({}))
         }
         "session_prefs_set" => {
-            // 会话级偏好写入（sidecar 在 set_mode / set_model / 模式状态机变更时调用）：
-            // 只更新携带的字段，未携带的保持原值（COALESCE 语义）。
+            // 会话级偏好写入（sidecar 在 set_mode / set_model / set_design_theme /
+            // 模式状态机变更时调用）：只更新携带的字段，未携带的保持原值（COALESCE 语义）。
+            // design_theme：JSON 字符串 = 选中主题；"" = 显式不使用主题（仍是携带的更新值）
             let id = str_param(p, "sessionId")?;
             let mode = p.get("mode").and_then(|v| v.as_str());
             let approval_level = p.get("approvalLevel").and_then(|v| v.as_str());
             let model_provider = p.get("modelProvider").and_then(|v| v.as_str());
             let model_id = p.get("modelId").and_then(|v| v.as_str());
+            let design_theme = p.get("designTheme").and_then(|v| v.as_str());
             conn.execute(
                 "UPDATE sessions SET \
                  mode = COALESCE(?2, mode), \
                  approval_level = COALESCE(?3, approval_level), \
                  model_provider = COALESCE(?4, model_provider), \
-                 model_id = COALESCE(?5, model_id) \
+                 model_id = COALESCE(?5, model_id), \
+                 design_theme = COALESCE(?6, design_theme) \
                  WHERE id = ?1",
-                params![id, mode, approval_level, model_provider, model_id],
+                params![id, mode, approval_level, model_provider, model_id, design_theme],
             )
             .map_err(|e| e.to_string())?;
             Ok(json!({}))
@@ -1230,6 +1238,39 @@ mod tests {
         // 解绑：空串写回（SQL 无空值短路，UPDATE 生效）
         q("session_update_cwd", json!({ "sessionId": "s1", "cwd": "" }));
         assert_eq!(q("session_get", json!({ "sessionId": "s1" }))["data"]["cwd"], "");
+    }
+
+    /// design_theme 偏好列往返（与 sidecar sessionPrefsSet 的 COALESCE 语义对齐）：
+    /// NULL = 从未选中（恢复链回落最近使用）；JSON 串 = 选中；"" = 显式不使用主题，
+    /// 且携带 "" 必须真的覆盖旧值（sidecar set_design_theme 的清除路径依赖这里）。
+    #[test]
+    fn session_prefs_design_theme_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let q = |kind: &str, p: Value| {
+            dispatch_host_query(
+                &db,
+                &json!({ "id": "t", "kind": kind, "params": p }),
+            )
+        };
+        q("session_insert", json!({ "sessionId": "s1", "cwd": "", "now": "t" }));
+
+        // 从未设置：列存在且为 NULL
+        assert!(q("session_get", json!({ "sessionId": "s1" }))["data"]["designTheme"].is_null());
+
+        // 选中：JSON 串落库；未携带的其他偏好保持原值（mode 仍 NULL）
+        q(
+            "session_prefs_set",
+            json!({ "sessionId": "s1", "designTheme": "{\"scope\":\"builtin\",\"id\":\"apple\"}" }),
+        );
+        let got = q("session_get", json!({ "sessionId": "s1" }))["data"].clone();
+        assert_eq!(got["designTheme"], "{\"scope\":\"builtin\",\"id\":\"apple\"}");
+        assert!(got["mode"].is_null());
+
+        // 显式不使用主题："" 是携带值，必须覆盖旧值
+        q("session_prefs_set", json!({ "sessionId": "s1", "designTheme": "" }));
+        assert_eq!(q("session_get", json!({ "sessionId": "s1" }))["data"]["designTheme"], "");
     }
 
     /// 旧库（无 archived 列）打开时自动补列，session_list 正常返回。

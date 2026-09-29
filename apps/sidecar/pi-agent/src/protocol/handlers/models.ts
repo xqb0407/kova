@@ -5,13 +5,13 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { send } from "../stream";
 import { getImageGenConfig } from "../../tools/imagegen-config";
-import { running } from "../../sessions/sessions";
+import { findRunBySession, running } from "../../sessions/sessions";
 import {
   appendModelChangeRow,
   appendThinkingLevelChangeRow,
 } from "../../sessions/transcript";
 import { composeModeSystemPrompt } from "../../agent/modes";
-import { kvSet, modelsAll, modelsDeleteProvider, modelsList, modelsReplace, sessionPrefsSet, type ModelReplaceItem } from "../../storage/hostdb";
+import { kvSet, modelsAll, modelsDeleteProvider, modelsList, modelsReplace, sessionGet, sessionPrefsSet, type ModelReplaceItem } from "../../storage/hostdb";
 import {
   applyRowToCatalogModel,
   getCurrentModelKey,
@@ -26,6 +26,7 @@ import {
   type ThinkingLevel,
 } from "../../model/model-catalog";
 import type { CommandHandler } from "../command";
+import type { Running } from "../../types";
 
 export const handlers: Record<string, CommandHandler> = {
   list_models: async (reqId) => {
@@ -185,27 +186,44 @@ export const handlers: Record<string, CommandHandler> = {
   set_model: async (reqId, msg) => {
     const provider = String(msg.provider ?? "");
     const modelId = String(msg.modelId ?? "");
+    const sessionId = typeof msg.sessionId === "string" ? msg.sessionId.trim() : "";
     const model = getModels().getModel(provider, modelId);
     if (!model) throw new Error(`model not found: ${provider}/${modelId}`);
     const auth = await getModels().getAuth(provider).catch(() => undefined);
     if (!auth) throw new Error(`no credentials configured for ${provider}/${modelId}`);
+    // 定靶形态先校验会话存在（校验全部前置：被拒命令不得留下任何状态变更）
+    if (sessionId && !(await sessionGet(sessionId)))
+      throw new Error(`session not found: ${sessionId}`);
+    // 全局「最近一次使用」：kv 持久化（重启由 initCurrentModelKey 恢复），
+    // 供新会话与从未显式选过模型的会话跟随
     setCurrentModelKey({ provider, modelId });
-    // 模型选择持久化到 kv（sidecar 侧写，应用重启后由 initCurrentModelKey 恢复；
-    // 前端只在桌面模式重复写同一份，远程网页模式由此获得持久化）
     void kvSet("pi.model", JSON.stringify({ provider, modelId })).catch(() => {});
-    // 模型行是系统提示词环境段的一部分：换模型后整段重排，活动会话即时生效；
-    // 转录 model_change 行 = 会话模型真值（§6 M4），偏好行退为投影同步维护
-    for (const run of running.values()) {
+    // 模型行是系统提示词环境段的一部分：换模型后整段重排，驻留 run 即时生效
+    const restamp = (run: Running): void => {
       run.agent.state.model = model;
       run.agent.state.systemPrompt = composeModeSystemPrompt(
         run.mode,
         run.cwd,
         model,
+        run.designTheme,
       );
-      appendModelChangeRow(run.sessionId, provider, modelId);
-      void sessionPrefsSet(run.sessionId, { modelProvider: provider, modelId }).catch(
-        () => {},
-      );
+    };
+    if (sessionId) {
+      // 会话定靶（对话页选择器）：转录 model_change 行 = 会话模型真值（§6 M4），
+      // 只落被点名的会话——盖写所有驻留会话正是「A 切模型、B 跟着变」的根因。
+      // 偏好行同步 await（前端紧接的快照回拉必须读到新值，fire-and-forget 会竞态）
+      const owner = findRunBySession(sessionId);
+      if (owner) restamp(owner.run);
+      appendModelChangeRow(sessionId, provider, modelId);
+      await sessionPrefsSet(sessionId, { modelProvider: provider, modelId }).catch(() => {});
+    } else {
+      // 全局默认变更（设置页/启动恢复）：只即时刷「从未显式选过模型」的驻留 run
+      // （无偏好行 = 真值跟随全局）；已有自身选择的会话保持原模型，不落行
+      for (const run of running.values()) {
+        const row = await sessionGet(run.sessionId);
+        if (row?.modelProvider && row?.modelId) continue;
+        restamp(run);
+      }
     }
     send({ id: reqId, type: "model", provider, modelId });
   },

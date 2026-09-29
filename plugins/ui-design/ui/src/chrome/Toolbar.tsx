@@ -12,8 +12,10 @@ import {
   Hexagon,
   Minus,
   MousePointer2,
+  PenTool,
   Pentagon,
   Redo2,
+  Shapes,
   Square,
   Star,
   Triangle,
@@ -43,6 +45,7 @@ const REST: { id: Tool; icon: FC<{ size?: number }>; name: string; key: string }
   { id: "line", icon: Minus, name: "直线", key: "L" },
   { id: "arrow", icon: ArrowUpRight, name: "箭头", key: "A" },
   { id: "text", icon: Type, name: "文本", key: "T" },
+  { id: "icon", icon: Shapes, name: "图标（拖出后右侧选图案）", key: "I" },
   { id: "hand", icon: Hand, name: "抓手（或按住空格）", key: "H" },
 ];
 
@@ -82,6 +85,13 @@ export const Toolbar: FC<{ store: DesignStore }> = ({ store }) => {
           <t.icon size={16} />
         </IconBtn>
       ))}
+      <IconBtn
+        tip="钢笔（点击落直角锚 · 按拖拉曲线 · 点首锚闭合 · Enter 收笔 · Esc 取消）"
+        active={tool === "pen"}
+        onClick={() => setTool("pen")}
+      >
+        <PenTool size={16} />
+      </IconBtn>
       <Sep />
       <IconBtn tip="撤销（⌘Z）" disabled={!canUndo} onClick={undo}>
         <Undo2 size={16} />

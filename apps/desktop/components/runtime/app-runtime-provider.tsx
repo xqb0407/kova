@@ -143,6 +143,9 @@ function ResumeRunningThread() {
   useEffect(() => {
     if (attemptedRef.current) return;
     attemptedRef.current = true;
+    // 回切结果留痕用（catch 作用域可见）：决策行（tier=...）只有目标，没有
+    // 成败——绑定劫持类事故（2026-09-28）排查时缺"switch 到底成没成"这一环
+    let resumeTarget: string | null = null;
     void (async () => {
       try {
         // 向 sidecar 运行态真相反填缺登记的在跑轮次（多槽登记；不覆盖已有槽），
@@ -159,6 +162,7 @@ function ResumeRunningThread() {
           null;
         const inFlightTarget = withSid.at(-1)?.sessionId ?? null;
         const target = runningTarget ?? inFlightTarget ?? lastThreadAtLoad;
+        resumeTarget = target;
         // 每次加载一条回切决策留痕（warn 级别才进 web.log，见 frontend-logging）
         console.warn(
           `[resume] tier=${
@@ -180,8 +184,12 @@ function ResumeRunningThread() {
         }
         await aui.threads.reload();
         await aui.threads.switchToThread(target);
-      } catch {
-        // 会话已被删等：静默跳过，不阻塞启动
+        console.warn(`[resume] switched target=${target}`);
+      } catch (err) {
+        console.warn(
+          `[resume] switch failed target=${resumeTarget ?? "null"}`,
+          String(err),
+        );
       }
     })();
   }, [aui, loadSnapshot]);

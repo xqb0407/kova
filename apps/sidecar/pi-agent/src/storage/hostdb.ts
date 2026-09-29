@@ -55,6 +55,8 @@ export type SessionRow = {
   approvalLevel: string | null;
   modelProvider: string | null;
   modelId: string | null;
+  /** 设计主题偏好：JSON 字符串 {scope,id}；NULL = 从未设置；"" = 显式不使用主题 */
+  designTheme: string | null;
 };
 
 export type CustomProviderRow = {
@@ -67,7 +69,7 @@ export type CustomProviderRow = {
   enabled: boolean;
 };
 
-/** 会话持久化行：cwd/title + 会话级偏好（mode/approvalLevel/model；NULL = 从未变更过） */
+/** 会话持久化行：cwd/title + 会话级偏好（mode/approvalLevel/model/designTheme；NULL = 从未变更过） */
 export type SessionPrefsRow = {
   cwd: string;
   title: string;
@@ -75,12 +77,15 @@ export type SessionPrefsRow = {
   approvalLevel: string | null;
   modelProvider: string | null;
   modelId: string | null;
+  /** 设计主题：JSON 字符串 {scope,id}；NULL = 从未设置（恢复链退到最近使用 kv）；"" = 显式不使用主题 */
+  designTheme: string | null;
 };
 
 export const sessionGet = (sessionId: string) =>
   query<SessionPrefsRow | null>("session_get", { sessionId });
 
-/** 会话级偏好写入：只更新携带的字段（host/local 均 COALESCE 语义），其余保持原值 */
+/** 会话级偏好写入：只更新携带的字段（host/local 均 COALESCE 语义），其余保持原值。
+ *  designTheme 传 JSON 字符串（主题）或 ""（显式清除为无主题）；不传 = 不动该列 */
 export const sessionPrefsSet = (
   sessionId: string,
   prefs: {
@@ -88,6 +93,7 @@ export const sessionPrefsSet = (
     approvalLevel?: string;
     modelProvider?: string;
     modelId?: string;
+    designTheme?: string;
   },
 ) => query("session_prefs_set", { sessionId, ...prefs });
 

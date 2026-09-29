@@ -178,16 +178,19 @@ export const Thread = memo(function Thread() {
                   <AssistantMessage />
                 );
               // 手动压缩的即时分隔线：按锚点钉在压缩发生时那条消息之后（Messages 内部，
-              // 与消息同布局），后续新消息排在其下，重新装载历史后由重建的分隔线接管
+              // 与消息同布局），后续新消息排在其下，重新装载历史后由重建的分隔线接管。
+              // 包在 TurnSlot 外层：TurnSlot 的轮末分支不渲染 children（过程/正文
+              // 整体重建），包在内层的话锚点消息（= 空闲时的轮末消息）的 banner
+              // 永远不会挂载——手动压缩恰发生在空闲边界
               return (
-                <TurnSlot
-                  messageId={String(message.id)}
-                  isEditing={!!message.composer.isEditing}
-                >
-                  <ManualCompactionTailAfter messageId={String(message.id)}>
+                <ManualCompactionTailAfter messageId={String(message.id)}>
+                  <TurnSlot
+                    messageId={String(message.id)}
+                    isEditing={!!message.composer.isEditing}
+                  >
                     {inner}
-                  </ManualCompactionTailAfter>
-                </TurnSlot>
+                  </TurnSlot>
+                </ManualCompactionTailAfter>
               );
             }}
           </ThreadPrimitive.Messages>

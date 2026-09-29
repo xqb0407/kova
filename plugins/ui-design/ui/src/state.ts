@@ -1,7 +1,8 @@
 /**
  * 设计台状态核（DesignDoc）：
- *   文档 + 页面内选择集 + 撤销历史(50 步/500ms 合并) + 桥生命周期(800ms 防抖写盘)
- *   + 外部冲突框 + 损坏档横幅 + 应用内剪贴板(子树深复制重发 id) + 视口。
+ *   文档 + 页面内选择集 + 撤销历史(100 步/500ms 合并) + 桥生命周期(800ms 防抖写盘)
+ *   + 外部写（可撤销一步）/冲突框 + 损坏档横幅 + 应用内剪贴板(子树深复制重发 id)
+ *   + 统一导入入口 importFiles（图片/SVG/设计档 JSON）+ 视口。
  *
  * 写路径唯一：mutation → commit(doc) → sendSoon → bridge.change → doc.saved 清 dirty。
  * 外部（agent）写盘到达 doc.open{external}：本地干净直接应用；有未保存改动挂冲突框。
@@ -19,8 +20,14 @@ import {
   starterDoc,
   uid,
   findNode,
+  findComponent,
+  componentBounds,
+  patchInstancePath,
+  bakeInstanceNodes,
+  type ComponentDef,
   type DesignDoc,
   type DesignNode,
+  type FrameLayout,
   type NodeType,
   type Page,
   type TextRun,
@@ -36,9 +43,13 @@ import {
   type AlignMode,
   type Box,
 } from "./geometry";
+import { reflowWithin } from "./layout";
+import { booleanPath, isBoolShape, type BooleanOp } from "./boolean";
 import { preloadDocAssets } from "./leafer/assets";
+import { mergeImportedDoc } from "./merge";
+import { importSvg } from "./svg-import";
 
-export const HISTORY_MAX = 50;
+export const HISTORY_MAX = 100;
 const SAVE_DEBOUNCE_MS = 800;
 const COALESCE_MS = 500;
 
@@ -53,6 +64,7 @@ export type Tool =
   | "hand"
   | "frame"
   | "text"
+  | "pen"
   | NodeType;
 
 /** 选择集：页面 + 节点 id（文档树全局定位，不依赖容器寻址） */
@@ -61,6 +73,35 @@ export type Sel = { pageId: string; ids: string[] };
 export type View = { s: number; tx: number; ty: number };
 
 /** 与宿主 assetsDirFor 同规则：dir/base.ext → dir/base-assets */
+/** 在节点树里按 id 找节点对象（mutate 作用域内直接改写用） */
+function findInNodes(list: DesignNode[], id: string): DesignNode | null {
+  for (const n of list) {
+    if (n.id === id) return n;
+    if (n.type === "frame" || n.type === "group") {
+      const hit = findInNodes(n.children, id);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/** 带层级定位的树内查找（布尔运算换树重找用） */
+function findLocIn(
+  list: DesignNode[],
+  id: string,
+  parent: DesignNode | null,
+): { node: DesignNode; siblings: DesignNode[]; index: number } | null {
+  for (let i = 0; i < list.length; i++) {
+    const n = list[i]!;
+    if (n.id === id) return { node: n, siblings: list, index: i };
+    if (n.type === "frame" || n.type === "group") {
+      const hit = findLocIn(n.children, id, n);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
 export function assetsDirForDoc(docPath: string | null): string {
   if (!docPath) return "assets";
   const cut = docPath.lastIndexOf("/");
@@ -140,6 +181,8 @@ export function useDesign() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
+  /** 外部写是否属于"首次载入"（首载重置历史；之后的外部写记为可撤销一步） */
+  const docLoadedRef = useRef(false);
   const fileRelRef = useRef<string | null>(null);
   fileRelRef.current = fileRel;
   const clipboardRef = useRef<DesignNode[]>([]);
@@ -202,6 +245,61 @@ export function useDesign() {
     [applyDoc, sendSoon],
   );
 
+  /** 撤销/重做/外部写之后选择集可能指向已删 id：按新档修剪（含 "/" 视图 id；页变了整个清空） */
+  const pruneSelection = useCallback((next: DesignDoc) => {
+    setSelState((s) => {
+      if (!s) return s;
+      if (s.pageId !== next.activePage) return null;
+      const kept = s.ids.filter((id) => !!findNode(next, id));
+      return kept.length === s.ids.length ? s : { ...s, ids: kept };
+    });
+  }, []);
+
+  /**
+   * 外部（宿主/MCP agent）写盘到达：
+   *   首次载入 → 直接打开并重置历史（否则 ⌘Z 会退到空白档）；
+   *   内容与当前一致 → 去重回显；本地脏 → 交冲突框（不吞用户改动）；
+   *   本地干净 → 记为一步**可撤销**的外部修改：改前态入历史、应用外部态、不标脏不回写
+   *   （盘上已是新内容）。此后 ⌘Z 一步回退 agent 改动（undo 自带落盘，最后写者赢）。
+   */
+  const applyExternalWrite = useCallback(
+    (json: string): void => {
+      const res = parseDesignDoc(json);
+      if (!res.doc || res.fatal) {
+        // 盘上档不可用：持久横幅提示，且不发 doc.change（避免空态覆盖坏档）
+        setDocCorrupt(true);
+        notifyLater("文档不是有效的设计档 JSON，已保持原内容");
+        return;
+      }
+      if (res.fixes?.length) {
+        // 坏写法已自动修复（注释/尾逗号/围栏…）：照常开板 + 提示；下次落盘即为修好的版本
+        notifyLater(`已自动修复 JSON：${res.fixes.join("、")}`);
+      }
+      const preJson = serializeDoc(docRef.current);
+      if (!docLoadedRef.current) {
+        docLoadedRef.current = true;
+        setDocLoaded(true);
+        applyDoc(res.doc, { freshReset: true, markDirty: false });
+        return;
+      }
+      if (serializeDoc(res.doc) === preJson) return;
+      const localDirty = dirtyRef.current || (saveTimer.current !== null && preJson !== historyRef.current.lastJson);
+      if (localDirty) {
+        setConflict({ json });
+        return;
+      }
+      const h = historyRef.current;
+      h.past.push(preJson);
+      if (h.past.length > HISTORY_MAX) h.past.shift();
+      h.future = [];
+      h.lastAt = 0; // 阻断后续 coalesce 续接
+      h.lastJson = preJson;
+      applyDoc(res.doc, { markDirty: false });
+      pruneSelection(res.doc);
+    },
+    [applyDoc, notifyLater, pruneSelection],
+  );
+
   /* ---------------- 桥生命周期 ---------------- */
 
   useEffect(() => {
@@ -213,28 +311,20 @@ export function useDesign() {
       },
       onDocOpen: (_rev, json, external, path) => {
         if (path) setFileRel(path);
+        if (external) {
+          applyExternalWrite(json);
+          return;
+        }
         const res = parseDesignDoc(json);
         if (!res.doc || res.fatal) {
-          // 盘上档不可用：持久横幅提示，且不发 doc.change（避免空态覆盖坏档）
           setDocCorrupt(true);
           notifyLater("文档不是有效的设计档 JSON，已保持原内容");
           return;
         }
+        if (res.fixes?.length) notifyLater(`已自动修复 JSON：${res.fixes.join("、")}`);
+        docLoadedRef.current = true;
         setDocLoaded(true);
-        if (!external) {
-          applyDoc(res.doc, { freshReset: true, markDirty: false });
-          return;
-        }
-        if (serializeDoc(res.doc) === serializeDoc(docRef.current)) return;
-        const localDirty =
-          dirtyRef.current ||
-          (saveTimer.current !== null && serializeDoc(docRef.current) !== historyRef.current.lastJson);
-        if (localDirty) {
-          setConflict({ json });
-        } else {
-          applyDoc(res.doc, { freshReset: true });
-          sendSoon(res.doc);
-        }
+        applyDoc(res.doc, { freshReset: true, markDirty: false });
       },
       onSaved: () => setDirty(false),
       onDocError: (text) => notifyLater(text),
@@ -276,14 +366,17 @@ export function useDesign() {
 
   /* ---------------- 文档级 mutation ---------------- */
 
-  /** 以回调改活动页节点列表并提交 */
+  /**
+   * 以回调改活动页节点列表并提交。fn 收到的是**深拷贝**：reflow/setLayout/布尔这类
+   * 就地变异型回调不会污染 docRef.current，commit 里的"改前"快照才真实（撤销有效）。
+   */
   const mutatePage = useCallback(
     (fn: (nodes: DesignNode[]) => DesignNode[], opts?: { coalesce?: boolean }) => {
       const cur = docRef.current;
       const p = (cur.pages.find((x) => x.id === cur.activePage) ?? cur.pages[0])!;
       const next: DesignDoc = {
         ...cur,
-        pages: cur.pages.map((x) => (x.id === p.id ? { ...x, nodes: fn(x.nodes) } : x)),
+        pages: cur.pages.map((x) => (x.id === p.id ? { ...x, nodes: fn(structuredClone(x.nodes)) } : x)),
       };
       commit(next, opts);
     },
@@ -293,10 +386,250 @@ export function useDesign() {
   /** 节点补丁（任意深度；null 函数 = 删除）。几何编辑高频路径。 */
   const updateNode = useCallback(
     (id: string, patch: Partial<DesignNode> | ((n: DesignNode) => DesignNode | null), opts?: { coalesce?: boolean }) => {
+      const s = id.indexOf("/");
+      if (s > 0) {
+        // 实例内部寻址 "实例id/内部id[/…]"：补丁按视图坐标走 patchInstancePath 存进覆盖表
+        const ownerId = id.slice(0, s);
+        const segs = id.slice(s + 1).split("/").filter(Boolean);
+        let obj: Record<string, unknown>;
+        if (typeof patch === "function") {
+          // 函数补丁：对已解析的视图节点求值，把变化的字段 diff 成对象补丁再写入
+          const inner = findNode(docRef.current, id);
+          if (!inner) return;
+          const next = patch(inner.node);
+          if (!next) return; // 实例内部不支持删除
+          obj = {};
+          const before = inner.node as unknown as Record<string, unknown>;
+          for (const [k, v] of Object.entries(next as unknown as Record<string, unknown>)) {
+            if (k === "id" || k === "type" || k === "children") continue;
+            if (v !== before[k]) obj[k] = v;
+          }
+        } else {
+          obj = patch as Record<string, unknown>;
+        }
+        if (!Object.keys(obj).length) return;
+        mutatePage(
+          (nodes) =>
+            replaceNode(nodes, ownerId, (n) =>
+              n.type === "instance" ? patchInstancePath(docRef.current, n, segs, obj) ?? n : n,
+            ),
+          opts,
+        );
+        return;
+      }
       mutatePage(
         (nodes) => replaceNode(nodes, id, (n) => (typeof patch === "function" ? patch(n) : ({ ...n, ...patch } as DesignNode))),
         opts,
       );
+    },
+    [mutatePage],
+  );
+
+  /* ---------------- 组件与实例 ---------------- */
+
+  /** 选中节点 → 主档资产表 + 原位实例（一次提交 = 一步撤销）。多选要求同容器。 */
+  const createComponentFromSelection = useCallback(() => {
+    const cur = docRef.current;
+    const p = (cur.pages.find((x) => x.id === cur.activePage) ?? cur.pages[0])!;
+    const locs = selIds.map((id) => findNode(cur, id)).filter((l): l is NonNullable<typeof l> => !!l);
+    if (!locs.length) {
+      notifyLater("请先选中要成为组件的节点");
+      return;
+    }
+    // 丢弃选中节点的祖先（整枝被选中时只保留顶层）
+    const idset = new Set(locs.map((l) => l.node.id));
+    const roots = locs.filter((l) => {
+      let a = l.parent;
+      while (a) {
+        if (idset.has(a.id)) return false;
+        a = findNode(cur, a.id)?.parent ?? null;
+      }
+      return true;
+    });
+    const first = roots[0]!;
+    if (!roots.every((r) => r.siblings === first.siblings)) {
+      notifyLater("组件只能由同一容器内的节点创建");
+      return;
+    }
+    const master = roots.map((r) => structuredClone(r.node)); // 主档保留原 id（覆盖表按 id 寻址）
+    const b = unionBox(master.map((m) => ({ x: m.x, y: m.y, w: m.w, h: m.h })));
+    if (!b) return;
+    const comp: ComponentDef = { id: uid("c"), name: first.node.name || "组件", nodes: master };
+    const inst: DesignNode = {
+      id: uid("i"),
+      type: "instance",
+      name: comp.name,
+      x: b.x,
+      y: b.y,
+      w: b.w,
+      h: b.h,
+      componentId: comp.id,
+    };
+    let nodes = p.nodes;
+    for (const r of roots) if (r !== first) nodes = replaceNode(nodes, r.node.id, () => null);
+    nodes = replaceNode(nodes, first.node.id, () => inst);
+    commit({
+      ...cur,
+      pages: cur.pages.map((x) => (x.id === p.id ? { ...x, nodes } : x)),
+      components: [...(cur.components ?? []), comp],
+    });
+    setSel([inst.id]);
+    notifyLater(`已创建组件「${comp.name}」，原位置替换为实例`);
+  }, [selIds, commit, setSel, notifyLater]);
+
+  /* ---------------- 共享颜色变量 ---------------- */
+
+  /** 新建/更新变量（一次 commit = 一步撤销；改 value 即全稿联动）。新建时重名自动加序号。
+   *  返回变量 id（创建或已有）。 */
+  const upsertVariable = useCallback(
+    (patch: { id?: string; name: string; value?: string; desc?: string }): string => {
+      const cur = docRef.current;
+      const vars = [...(cur.variables ?? [])];
+      const name = patch.name.trim().slice(0, 60);
+      const existing = patch.id ? vars.find((v) => v.id === patch.id) : undefined;
+      if (existing) {
+        const next: typeof existing = {
+          ...existing,
+          name: name || existing.name,
+          ...(patch.value !== undefined ? { value: patch.value } : {}),
+          ...(patch.desc !== undefined ? { desc: patch.desc.slice(0, 200) } : {}),
+        };
+        commit({ ...cur, variables: vars.map((v) => (v.id === existing.id ? next : v)) });
+        return existing.id;
+      }
+      // 重名自动序号（变量按名寻址的场景——MCP set by name——不能有歧义）
+      const taken = new Set(vars.map((v) => v.name));
+      let final = name || "颜色";
+      for (let i = 2; taken.has(final); i++) final = `${name || "颜色"} ${i}`;
+      const id = uid("v");
+      vars.push({ id, name: final, value: patch.value ?? "#0d99ff", ...(patch.desc ? { desc: patch.desc.slice(0, 200) } : {}) });
+      commit({ ...cur, variables: vars });
+      return id;
+    },
+    [commit],
+  );
+
+  /** 删除变量：引用它的颜色就地变警示粉（不隐式解绑，所见即所失）；一次 commit = 一步撤销 */
+  const deleteVariable = useCallback(
+    (id: string): void => {
+      const cur = docRef.current;
+      if (!cur.variables?.some((v) => v.id === id)) return;
+      commit({ ...cur, variables: cur.variables.filter((v) => v.id !== id) });
+    },
+    [commit],
+  );
+
+  /** 分离实例：深度烘焙为普通子树（嵌套实例一并展开），id 重发 */
+  const detachInstance = useCallback(
+    (id?: string) => {
+      const cur = docRef.current;
+      const targetId = id ?? selIds[0];
+      if (!targetId || targetId.includes("/")) return;
+      const loc = findNode(cur, targetId);
+      if (!loc || loc.node.type !== "instance") {
+        notifyLater("选中的不是组件实例");
+        return;
+      }
+      const baked = bakeInstanceNodes(cur, loc.node);
+      if (!baked || !baked.length) {
+        notifyLater("实例主档缺失，无法分离");
+        return;
+      }
+      const flat = baked.map(regenIds);
+      mutatePage((nodes) => mapSiblings(nodes, targetId, (list, idx) => { const copy = list.slice(); copy.splice(idx, 1, ...flat); return copy; }) ?? nodes);
+      setSel(flat.map((n) => n.id));
+    },
+    [selIds, mutatePage, setSel, notifyLater],
+  );
+
+  /** 清除实例上的全部覆盖，回到主档原样 */
+  const resetInstanceOverrides = useCallback(
+    (id?: string) => {
+      const targetId = id ?? selIds[0];
+      if (!targetId || targetId.includes("/")) return;
+      mutatePage((nodes) =>
+        replaceNode(nodes, targetId, (n) => (n.type === "instance" && n.overrides ? ({ ...n, overrides: undefined } as DesignNode) : n)),
+      );
+    },
+    [selIds, mutatePage],
+  );
+
+  /** 自动布局重排：id 自身（若是布局画板）及其布局祖先链，自顶向下 deep 重排。一次 mutate = 一个 undo 步 */
+  const reflow = useCallback(
+    (id: string) => {
+      mutatePage((nodes) => {
+        reflowWithin(nodes, id);
+        return nodes;
+      });
+    },
+    [mutatePage],
+  );
+
+  /** 布尔运算：选区（≥2 同层形状）合并为 vector 矢量节点，选中结果 */
+  const booleanSelected = useCallback(
+    (op: BooleanOp) => {
+      const doc = docRef.current;
+      const nodes = selIds.map((id) => findNode(doc, id)?.node).filter((n): n is DesignNode => !!n);
+      if (nodes.length < 2) {
+        notifyLater("布尔运算需要选中至少 2 个形状");
+        return;
+      }
+      if (!nodes.every(isBoolShape)) {
+        notifyLater("布尔运算仅支持形状与矢量（文本/图片/图标/画板不行）");
+        return;
+      }
+      const locs = selIds.map((id) => findNode(doc, id)!);
+      if (locs.some((l) => l.siblings !== locs[0]!.siblings)) {
+        notifyLater("只能对同一容器里的形状做布尔运算");
+        return;
+      }
+      try {
+        const { d, bbox } = booleanPath(op, nodes);
+        if (!d) {
+          notifyLater("布尔结果为空（没有重叠或被完全减没）");
+          return;
+        }
+        const first = nodes[0] as DesignNode & { fills?: unknown; strokes?: unknown };
+        const vector = {
+          id: uid("v"),
+          type: "vector" as const,
+          name: ({ union: "并集", subtract: "减去", intersect: "交集", exclude: "排除" } as Record<string, string>)[op]!,
+          x: bbox.x,
+          y: bbox.y,
+          w: bbox.w,
+          h: bbox.h,
+          path: d,
+          fills: JSON.parse(JSON.stringify(first.fills ?? [{ type: "solid", color: "#d9d9d9" }])),
+          strokes: JSON.parse(JSON.stringify(first.strokes ?? [])),
+        } as DesignNode;
+        mutatePage((nodesArr) => {
+          const locs2 = selIds.map((id) => findLocIn(nodesArr, id, null)).filter((l): l is NonNullable<typeof l> => !!l);
+          if (locs2.length !== selIds.length) return nodesArr;
+          const insertAt = Math.min(...locs2.map((l) => l.index));
+          for (const l of locs2) l.siblings.splice(l.siblings.indexOf(l.node), 1);
+          locs2[0]!.siblings.splice(insertAt, 0, vector);
+          return nodesArr;
+        });
+        setSel([vector.id]);
+      } catch (e) {
+        notifyLater(e instanceof Error ? e.message : "布尔运算失败");
+      }
+    },
+    [selIds, mutatePage, setSel, notifyLater],
+  );
+
+  /** 设置/清除画板自动布局并立即重排（一次 mutate = 一个 undo 步） */
+  const setLayout = useCallback(
+    (frameId: string, layout: FrameLayout | null) => {
+      mutatePage((nodes) => {
+        const f = findInNodes(nodes, frameId);
+        if (!f || f.type !== "frame") return nodes;
+        const frame = f as typeof f & { layout?: FrameLayout };
+        if (layout) frame.layout = layout;
+        else delete frame.layout;
+        reflowWithin(nodes, frameId);
+        return nodes;
+      });
     },
     [mutatePage],
   );
@@ -330,6 +663,34 @@ export function useDesign() {
       return node.id;
     },
     [mutatePage, setSel],
+  );
+
+  /** 从资产表插入实例到当前页：落位内容右侧留 40px 空隙 */
+  const insertComponent = useCallback(
+    (compId: string) => {
+      const cur = docRef.current;
+      const comp = findComponent(cur, compId);
+      if (!comp) {
+        notifyLater("组件不存在");
+        return;
+      }
+      const b = componentBounds(comp);
+      const p = (cur.pages.find((x) => x.id === cur.activePage) ?? cur.pages[0])!;
+      const used = unionBox(p.nodes.map((n) => worldBoxOf(cur, n.id)).filter((x): x is Box => !!x));
+      const x = used ? used.x + used.w + 40 : 0;
+      const inst: DesignNode = {
+        id: uid("i"),
+        type: "instance",
+        name: comp.name,
+        x,
+        y: used ? used.y : 0,
+        w: Math.max(1, b.w),
+        h: Math.max(1, b.h),
+        componentId: comp.id,
+      };
+      addNode(inst);
+    },
+    [addNode, notifyLater],
   );
 
   /** 画框拖出新 frame（工具栏 frame/形状按下拖拽用：给定世界盒；line/arrow 带走向） */
@@ -603,20 +964,101 @@ export function useDesign() {
         fr.readAsDataURL(file);
       });
       bridge.attachFile(name, dataUrl.slice(dataUrl.indexOf(",") + 1));
+      // 按真实像素定盒（长边 >1024 等比缩）；量不到回退 320×240
+      const dims = await new Promise<{ w: number; h: number }>((res) => {
+        const img = new Image();
+        img.onload = () => res({ w: img.naturalWidth || 320, h: img.naturalHeight || 240 });
+        img.onerror = () => res({ w: 320, h: 240 });
+        img.src = dataUrl;
+      });
+      const k = Math.min(1, 1024 / Math.max(1, dims.w, dims.h));
       const node: DesignNode = {
         type: "image",
         id: uid("i"),
         name: file.name.slice(0, 60) || "图片",
         x: round1(at?.x ?? 0),
         y: round1(at?.y ?? 0),
-        w: 320,
-        h: 240,
+        w: Math.max(1, round1(dims.w * k)),
+        h: Math.max(1, round1(dims.h * k)),
         src: `${assetsDirForDoc(fileRelRef.current)}/${name}`,
         fit: "cover",
       } as DesignNode;
       addNode(node);
     },
     [addNode],
+  );
+
+  /** 统一导入入口（FileMenu 与画布拖放共用）：按扩展分流，每文件一步 commit = 一步撤销 */
+  const importFiles = useCallback(
+    async (files: File[], at?: { x: number; y: number }): Promise<void> => {
+      const readText = (f: File): Promise<string> =>
+        new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(String(fr.result));
+          fr.onerror = () => rej(new Error("读取失败"));
+          fr.readAsText(f);
+        });
+      /** 无落点坐标时：当前页内容并集右侧留 40px（同 insertComponent 口径） */
+      const autoPlace = (): { x: number; y: number } => {
+        const cur = docRef.current;
+        const p = (cur.pages.find((x) => x.id === cur.activePage) ?? cur.pages[0])!;
+        const used = unionBox(p.nodes.map((n) => worldBoxOf(cur, n.id)).filter((x): x is Box => !!x));
+        return used ? { x: round1(used.x + used.w + 40), y: round1(used.y) } : { x: 0, y: 0 };
+      };
+      const warnings: string[] = [];
+      let ok = 0;
+      for (const [i, file] of files.entries()) {
+        const pos = i === 0 && at ? at : autoPlace();
+        const lower = file.name.toLowerCase();
+        try {
+          if (lower.endsWith(".svg")) {
+            const r = importSvg(await readText(file));
+            warnings.push(...r.warnings.map((w) => `${file.name}：${w}`));
+            if (r.nodes.length === 0) {
+              notifyLater(`SVG 没有解析出可导入的图形：${file.name}`);
+              continue;
+            }
+            const frame = newFrame({
+              x: round1(pos.x),
+              y: round1(pos.y),
+              w: Math.max(2, round1(r.w)),
+              h: Math.max(2, round1(r.h)),
+              name: file.name.replace(/\.svg$/i, "").slice(0, 60) || "SVG 导入",
+            });
+            frame.children = r.nodes;
+            frame.clip = false; // 描边出界不裁（SVG 视口外语义差异小，保内容优先）
+            frame.fills = [];
+            frame.strokes = [];
+            addNode(frame);
+            ok++;
+          } else if (lower.endsWith(".json")) {
+            const res = parseDesignDoc(await readText(file));
+            if (!res.doc || res.fatal) {
+              notifyLater(`不是有效的设计档 JSON：${file.name}`);
+              continue;
+            }
+            const merged = mergeImportedDoc(docRef.current, res.doc);
+            warnings.push(...merged.warnings);
+            commit(merged.doc);
+            notifyLater(`已导入 ${merged.pages.length} 页 / ${merged.components} 组件 / ${merged.nodes} 节点`);
+            ok++;
+          } else if (/\.(png|jpe?g|gif|webp|bmp|avif|ico)$/.test(lower)) {
+            await insertImageFile(file, pos);
+            ok++;
+          } else {
+            notifyLater(`不支持的文件类型：${file.name}`);
+            continue;
+          }
+        } catch (e) {
+          notifyLater(`导入失败：${file.name}（${e instanceof Error ? e.message : "未知错误"}）`);
+        }
+      }
+      if (warnings.length > 0) {
+        notifyLater(warnings.slice(0, 2).join("；") + (warnings.length > 2 ? ` 等 ${warnings.length} 条提示` : ""));
+      }
+      if (files.length > 1) notifyLater(`已导入 ${ok}/${files.length} 个文件`);
+    },
+    [addNode, commit, insertImageFile, notifyLater],
   );
 
   /* ---------------- 页面 ---------------- */
@@ -667,6 +1109,7 @@ export function useDesign() {
         applyDoc(seed, { freshReset: true });
         sendSoon(seed); // 直开不经 commit：手动落 localStorage，否则刷新丢档
         setFileRel(null);
+        docLoadedRef.current = true;
         setDocLoaded(true);
         return;
       }
@@ -689,8 +1132,9 @@ export function useDesign() {
     if (res.doc) {
       applyDoc(res.doc, { markDirty: true });
       sendSoon(res.doc);
+      pruneSelection(res.doc);
     }
-  }, [applyDoc, sendSoon]);
+  }, [applyDoc, sendSoon, pruneSelection]);
 
   const redo = useCallback(() => {
     const h = historyRef.current;
@@ -703,8 +1147,9 @@ export function useDesign() {
     if (res.doc) {
       applyDoc(res.doc, { markDirty: true });
       sendSoon(res.doc);
+      pruneSelection(res.doc);
     }
-  }, [applyDoc, sendSoon]);
+  }, [applyDoc, sendSoon, pruneSelection]);
 
   /* ---------------- 视口 ---------------- */
 
@@ -793,8 +1238,15 @@ export function useDesign() {
     commit,
     mutatePage,
     updateNode,
+    reflow,
+    setLayout,
+    booleanSelected,
     applyLedger,
     addNode,
+    createComponentFromSelection,
+    insertComponent,
+    detachInstance,
+    resetInstanceOverrides,
     createBoxed,
     deleteSelected,
     duplicateSelected,
@@ -810,6 +1262,11 @@ export function useDesign() {
     cutSelected,
     pasteClipboard,
     insertImageFile,
+    importFiles,
+    applyExternalWrite,
+    // variables
+    upsertVariable,
+    deleteVariable,
     // pages
     switchPage,
     addPage,

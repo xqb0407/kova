@@ -17,6 +17,7 @@ import type {
 import type { UIMessage } from "ai";
 import type { PendingInteraction } from "pi-protocol";
 import { piRequest, type PiSessionSummary } from "@/lib/pi/pi-bridge";
+import { claimKnownSession } from "@/lib/pi/pi-thread-identity";
 import {
   fetchHistoryWindow,
   getHistoryWindowMeta,
@@ -320,6 +321,17 @@ const pendingThreadSession = new Map<string, Promise<string>>();
 export function piEnsureThreadSession(threadId: string, cwd?: string): Promise<string> {
   const existing = piSessionRegistry.get(threadId);
   if (existing) return Promise.resolve(existing);
+  // 先认领再新建：registry 未命中 ≠ 新草稿。重载后恢复线程的 id 本身就是
+  // sessionId，盲 new_session 会把用户正所在的会话劫持成全新空会话——后续
+  // 消息落进空会话、AI 无上下文、工作区目录跟着换空（2026-09-28 会话丢失事故）
+  const claimed = claimKnownSession(threadId);
+  if (claimed) {
+    piSessionRegistry.set(threadId, claimed);
+    // Map 不是响应式的：认领落地同样广播（与 new_session 绑定路径同款），
+    // 让按 sessionId 解析产物目录的视图（usePanelCwd）重取兜底 cwd
+    window.dispatchEvent(new Event("pi:session-bound"));
+    return Promise.resolve(claimed);
+  }
   let p = pendingThreadSession.get(threadId);
   if (!p) {
     p = piRequest<{ type: "session"; sessionId: string; threadId: string }>({

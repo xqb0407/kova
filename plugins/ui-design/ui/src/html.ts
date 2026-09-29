@@ -5,7 +5,7 @@
  * 内置脚本做 显示切换 / 适配缩放 / 屏序导航。浏览器直接打开即可点。
  */
 import { allFrames, type DesignDoc } from "./doc";
-import { nodesToSvg } from "./export";
+import { buildSvg } from "./svg";
 import { collectHotspots, resolveTargetFrame } from "./prototype";
 import type { MeasureFn } from "./leafer/scene";
 
@@ -17,19 +17,28 @@ export type PrototypeHtmlOptions = {
   /** 只导某页；缺省 = 全部页面 */
   pageId?: string;
   title?: string;
+  /**
+   * src→href 资产表（必填项语义：缺省空表 = 位图画占位）。浏览器自包含导出用
+   * `resolveImages` 得到 dataURL 表；导出工程包（index.html 与 assets/ 同目录）
+   * 传 `assets/<rel>` 相对路径表 → 位图变**外链静态文件**。见 ui/src/bundle.ts。
+   */
+  images?: Map<string, string | null>;
 };
 
-/** 生成原型 HTML；无任何顶层画板返回 null */
-export async function docToPrototypeHtml(doc: DesignDoc, opts: PrototypeHtmlOptions): Promise<string | null> {
+const EMPTY_IMAGES = new Map<string, string | null>();
+
+/** 生成原型 HTML（同步纯函数，浏览器与 MCP 共用）；无任何顶层画板返回 null */
+export function renderPrototypeHtml(doc: DesignDoc, opts: PrototypeHtmlOptions): string | null {
   const frames = allFrames(doc).filter((f) => !opts.pageId || f.pageId === opts.pageId);
   if (frames.length === 0) return null;
+  const images = opts.images ?? EMPTY_IMAGES;
   const screens: string[] = [];
   for (const { frame } of frames) {
-    const r = await nodesToSvg(doc, [frame.id], opts.measure);
+    const r = buildSvg(doc, [frame.id], { measure: opts.measure, images });
     if (!r) continue;
     // SVG 去硬尺寸、随容器铺满（容器宽高 = 画板尺寸）
     const svg = r.svg.replace(/ width="\d+(\.\d+)?" height="\d+(\.\d+)?"/, ' width="100%" height="100%"');
-    const hot = collectHotspots(frame)
+    const hot = collectHotspots(frame, doc)
       .map((h) => {
         const target = resolveTargetFrame(doc, h.to);
         if (!target || (opts.pageId && allFrames(doc).find((f) => f.frame.id === target.id)?.pageId !== opts.pageId)) return "";
@@ -114,4 +123,9 @@ export async function docToPrototypeHtml(doc: DesignDoc, opts: PrototypeHtmlOpti
 </script>
 </body>
 </html>`;
+}
+
+/** 异步别名（保留给 await 调用方，如 html.test / 浏览器封装）；内部走同步核 renderPrototypeHtml */
+export async function docToPrototypeHtml(doc: DesignDoc, opts: PrototypeHtmlOptions): Promise<string | null> {
+  return renderPrototypeHtml(doc, opts);
 }

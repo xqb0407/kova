@@ -5,7 +5,7 @@ import { piRequest } from "@/lib/pi/pi-bridge";
 import type { PiAppMode } from "@/lib/pi/pi-bridge";
 
 /**
- * 全局工作模式（work / code，设置 → 通用）：事实源在 sidecar（SQLite kv +
+ * 全局工作模式（work / code / design，设置 → 通用）：事实源在 sidecar（SQLite kv +
  * set_app_mode 时活动会话系统提示词热替换），这里只做响应式镜像 store——
  * git UI 显隐与消息工具行形态在本进程内即时跟随。
  * 水合纪律同 pi-session-mode：localStorage 播种（sidecar 重启/断链也能恢复 UI），
@@ -16,6 +16,13 @@ import type { PiAppMode } from "@/lib/pi/pi-bridge";
 export type AppMode = PiAppMode;
 
 const STORAGE_KEY = "app.mode";
+
+const APP_MODES: readonly string[] = ["work", "code", "design"];
+
+/** 任意来源（localStorage 播种 / sidecar 应答 / 本地切换）的宽松规整：仅接受三档字面量 */
+function normalizeAppMode(raw: unknown): AppMode {
+  return typeof raw === "string" && APP_MODES.includes(raw) ? (raw as AppMode) : "code";
+}
 
 let current: AppMode = "code";
 /** true = 事实源仍由 sidecar 掌管；false = 水合/写入失败（旧版 sidecar 等），
@@ -35,8 +42,7 @@ function emit(mode: AppMode) {
 
 function readSeed(): AppMode {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    return raw === "work" ? "work" : "code";
+    return normalizeAppMode(window.localStorage.getItem(STORAGE_KEY));
   } catch {
     return "code";
   }
@@ -86,7 +92,7 @@ export function initAppMode(): void {
     .then((res) => {
       if (res.type !== "app_mode") return;
       degraded = false;
-      emit(res.mode === "work" ? "work" : "code");
+      emit(normalizeAppMode(res.mode));
     })
     .catch(() => {
       // 旧版 sidecar / 通信失败：保留播种值，UI 照常切换（提示词不跟随）
@@ -104,7 +110,7 @@ export function setAppMode(mode: AppMode): Promise<void> {
     .then((res) => {
       if (res.type !== "app_mode") return;
       degraded = false;
-      emit(res.mode === "work" ? "work" : "code");
+      emit(normalizeAppMode(res.mode));
       writeSeed(res.mode);
     })
     .catch((err) => {

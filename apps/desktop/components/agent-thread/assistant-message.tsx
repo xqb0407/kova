@@ -32,6 +32,7 @@ import {
 } from "@assistant-ui/react";
 import { RetryMarker, useRetryState } from "./retry-marker";
 import { StoppedMarker, isStoppedMessageState } from "./stopped-marker";
+import { messageIndexById } from "@/lib/panels/message-turns";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageCheckpoint } from "./checkpoint-card";
 import { cn } from "cn";
@@ -559,10 +560,12 @@ const AssistantActionBar: FC = () => {
   // 一轮回复会被拆成多条 assistant 消息（每次工具调用后继续生成都是新的
   // 一条），autohide 只认「线程最后一条」——中间消息 hover 时仍各自冒出
   // 操作栏。这里收紧为：仅「本轮收尾」的消息（下一条不再是 assistant）
-  // 才挂操作栏，一轮只有一个
+  // 才挂操作栏，一轮只有一个。
+  // 定位走缓存索引（O(1) 查表）：选择器在流式期间每次 store 通知都会对每条
+  // 消息重跑，全量 findIndex 在长会话里是 O(消息数²)/chunk 的隐形热点
   const isTurnEnd = useAuiState((s) => {
     const msgs = s.thread.messages;
-    const idx = msgs.findIndex((m) => m.id === s.message.id);
+    const idx = messageIndexById(msgs, s.message.id);
     return idx === -1 || msgs[idx + 1]?.role !== "assistant";
   });
   if (dividerOnly || selfRunning || !isTurnEnd) return null;

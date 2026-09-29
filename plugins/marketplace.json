@@ -3,12 +3,12 @@
   "displayName": "本仓库插件市场",
   "plugins": [
     {
-      "name": "slide-canvas",
-      "source": "./slide-canvas",
+      "name": "canvas",
+      "source": "./canvas",
       "version": "0.1.0",
-      "description": "无限画布幻灯片工作台：固定比例画板、轻量编辑、放映与 .pptx 导出",
+      "description": "无限画布工作台：Excalidraw 式无限空间，文本/形状/图片/Mermaid/表格/图表/网页嵌入自由摆放，整画布导出 SVG",
       "category": "效率",
-      "keywords": ["canvas", "slides", "pptx", "presentation"]
+      "keywords": ["canvas", "whiteboard", "diagram"]
     },
     {
       "name": "ui-design",

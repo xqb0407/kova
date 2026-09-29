@@ -92,9 +92,9 @@ const DRAW_LABEL: Record<ShapeKind, string> = {
 };
 
 /** 渲染器双轨开关（Leafer 迁移期）：像素 parity 全绿后默认 leafer；
- * 显式设 localStorage "slide-canvas.renderer" = "dom" 回退 DOM 渲染。
+ * 显式设 localStorage "office.renderer" = "dom" 回退 DOM 渲染。
  * 只换元素渲染：命中/交互/overlay（选中框/手柄/吸附线/框选/文本编辑）两轨共用同一套 DOM 代码。 */
-export const RENDERER_KEY = "slide-canvas.renderer";
+export const RENDERER_KEY = "office.renderer";
 function readRenderer(): "dom" | "leafer" {
   try {
     return localStorage.getItem(RENDERER_KEY) === "dom" ? "dom" : "leafer";
@@ -108,8 +108,8 @@ function readRenderer(): "dom" | "leafer" {
  *  leafer         canvas 渲染 + DOM overlay 交互（现状默认）
  *  leafer-editor  canvas 渲染 + @leafer-in/editor 全接管（点选/多选/框选/拖动/缩放/旋转；
  *                 doc 仍是唯一数据源，END 回写 commit；键盘/就地编辑/平移缩放留在 stage 层）
- * 显式设 localStorage "slide-canvas.interact" = "leafer-editor" 开启新轨；灰度期默认仍走 leafer。 */
-export const INTERACT_KEY = "slide-canvas.interact";
+ * 显式设 localStorage "office.interact" = "leafer-editor" 开启新轨；灰度期默认仍走 leafer。 */
+export const INTERACT_KEY = "office.interact";
 export type InteractMode = "dom" | "leafer" | "leafer-editor";
 function readTrack(): InteractMode {
   try {

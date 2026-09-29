@@ -5,6 +5,7 @@ import {
   buildTurnIndex,
   getTurnIndex,
   getTurnParts,
+  messageIndexById,
   packTurnSlot,
   packTurnSlotWithKeep,
   packTurnSummary,
@@ -210,6 +211,17 @@ describe("buildTurnIndex", () => {
     const messages = [msg("u1", "user")];
     expect(getTurnIndex(messages)).toBe(getTurnIndex(messages));
     expect(getTurnIndex([...messages])).not.toBe(getTurnIndex(messages));
+  });
+
+  test("messageIndexById：命中返回下标，未知 id 返回 -1（对齐 findIndex 语义）", () => {
+    const messages = [
+      msg("u1", "user"),
+      msg("a1", "assistant"),
+      msg("u2", "user"),
+    ];
+    expect(messageIndexById(messages, "a1")).toBe(1);
+    expect(messageIndexById(messages, "u2")).toBe(2);
+    expect(messageIndexById(messages, "ghost")).toBe(-1);
   });
 });
 

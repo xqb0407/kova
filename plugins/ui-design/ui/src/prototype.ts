@@ -4,7 +4,7 @@
  * 约定：hidden（visible=false）子树整支跳过；rotation 暂不参与热点盒换算（取未旋转盒，
  * 原型按钮绝大多数不转，v1 取舍）；嵌套 frame 也深入（弹窗画板套按钮的场景）。
  */
-import { findNode, type DesignDoc, type DesignNode, type FrameNode } from "./doc";
+import { bakeInstanceNodes, findNode, type DesignDoc, type DesignNode, type FrameNode, type InstanceNode } from "./doc";
 import type { Box } from "./geometry";
 
 export type Hotspot = {
@@ -16,7 +16,7 @@ export type Hotspot = {
   box: Box;
 };
 
-export function collectHotspots(frame: FrameNode): Hotspot[] {
+export function collectHotspots(frame: FrameNode, doc?: DesignDoc): Hotspot[] {
   const out: Hotspot[] = [];
   const walk = (list: DesignNode[], ox: number, oy: number) => {
     for (const n of list) {
@@ -24,6 +24,15 @@ export function collectHotspots(frame: FrameNode): Hotspot[] {
       const x = ox + n.x;
       const y = oy + n.y;
       if (n.onTap) out.push({ nodeId: n.id, name: n.name, to: n.onTap.to, box: { x, y, w: n.w, h: n.h } });
+      // 实例：有 doc 时展开解析视图（bake 产物以实例盒左上定位，与 children 同口径；
+      // id 带 "实例id/" 前缀仍可寻址）。onTap 常放在组件按钮上，必须能点。
+      if (n.type === "instance" && doc) {
+        const baked = bakeInstanceNodes(doc, n as InstanceNode);
+        if (baked) {
+          walk(baked, x, y);
+          continue;
+        }
+      }
       if ("children" in n) walk(n.children, x, y);
     }
   };

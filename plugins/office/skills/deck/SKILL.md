@@ -14,7 +14,7 @@ PowerPoint 式一次编辑一页（左侧缩略图栏 + 翻页），框内元素
 **放映/导出只认 `type:"slide"` 的页框，数组序 = 页序。**
 新建幻灯片档自带一张空白页。
 
-> 注：白板（board）类文档由「slide-canvas」插件的无限画布面板负责，后缀 `.canvas.json`（不带 `.deck`）；
+> 注：白板类文档由「canvas」插件的无限画布面板负责，后缀 `.canvas.json`（不带 `.deck`）；
 > UI 设计稿已拆分为独立的「UI 设计」面板（`*.uidesign.json`，规范见 ui-design skill）。
 > 文件同 schema 但**别在本面板里建/改**非 deck 文档。
 > `objects` 字段在本面板（deck 档）里不渲染、不进 .pptx——正式内容一律写进页框 `elements`。
@@ -56,7 +56,7 @@ PowerPoint 式一次编辑一页（左侧缩略图栏 + 翻页），框内元素
   "meta": {
     "name": "演示文稿",
     "pagePreset": "16:9",   // "16:9" | "4:3" | "A4L"（新页框默认尺寸）
-    "kind": "deck"          // 本面板恒写 "deck"（board/ui 属 slide-canvas 无限画布插件）
+    "kind": "deck"          // 本面板恒写 "deck"（board/ui 属 canvas 无限画布插件）
   },
   "objects": [ /* 画布级元素：x/y 是画布绝对坐标，可负 */ ],
   "frames": [

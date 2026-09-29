@@ -6,6 +6,7 @@
 import { useState, type FC, type MouseEvent } from "react";
 import {
   ArrowUpRight,
+  Boxes,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -22,7 +23,9 @@ import {
   Minus,
   MoreHorizontal,
   Pentagon,
+  PenTool,
   Plus,
+  Shapes,
   Square,
   Star,
   Trash2,
@@ -30,9 +33,10 @@ import {
   Type,
   Ungroup,
 } from "lucide-react";
-import { TYPE_LABELS, type DesignNode, type NodeType } from "../doc";
+import { instanceView, TYPE_LABELS, type DesignNode, type InstanceNode, type NodeType } from "../doc";
 import type { DesignStore } from "../state";
 import { ContextMenu, nodeMenu } from "./ContextMenu";
+import { VariablesManager } from "./VariablesPanel";
 import { InlineEdit, Menu, MenuItem } from "./ui";
 
 const TYPE_ICONS: Record<NodeType, FC<{ size?: number }>> = {
@@ -49,6 +53,9 @@ const TYPE_ICONS: Record<NodeType, FC<{ size?: number }>> = {
   arrow: ArrowUpRight,
   text: Type,
   image: ImageIcon,
+  icon: Shapes,
+  vector: PenTool,
+  instance: Boxes,
 };
 
 type RowProps = {
@@ -67,7 +74,10 @@ const TreeRow: FC<RowProps> = ({ store, node, depth, selected, collapsed, toggle
   const [editing, setEditing] = useState(false);
   const [hover, setHover] = useState(false);
   const Icon = TYPE_ICONS[node.type];
-  const hasKids = node.type === "frame" || node.type === "group";
+  // 实例行的子级 = 解析视图（id 已重编为 "实例id/内部id"，选中/编辑走覆盖写路径）；坏引用无可展开
+  const kids: DesignNode[] =
+    node.type === "instance" ? instanceView(store.doc, node as InstanceNode) ?? [] : "children" in node ? node.children : [];
+  const hasKids = kids.length > 0 && (node.type === "frame" || node.type === "group" || node.type === "instance");
   const expanded = !collapsed.has(node.id);
   const hidden = node.visible === false;
   const flagBtn = (tip: string, icon: FC<{ size?: number }>, on: () => void, lit: boolean) => {
@@ -126,6 +136,11 @@ const TreeRow: FC<RowProps> = ({ store, node, depth, selected, collapsed, toggle
         <span className="shrink-0" style={{ color: selected ? "var(--foreground)" : "var(--muted-foreground)" }}>
           <Icon size={13} />
         </span>
+        {node.mask && (
+          <span title="蒙版：裁剪上方图层" className="shrink-0 rounded px-0.5 text-[9px] font-bold leading-[14px]" style={{ background: "var(--secondary)", color: "var(--muted-foreground)" }}>
+            M
+          </span>
+        )}
         {editing ? (
           <span className="min-w-0 flex-1" onClick={(e) => e.stopPropagation()}>
             <InlineEdit
@@ -188,7 +203,7 @@ const TreeRow: FC<RowProps> = ({ store, node, depth, selected, collapsed, toggle
       </div>
       {hasKids &&
         expanded &&
-        [...node.children].reverse().map((c) => (
+        [...kids].reverse().map((c) => (
           <TreeRow
             key={c.id}
             store={store}
@@ -211,6 +226,7 @@ const selHasGroup = (store: DesignStore, node: DesignNode) =>
 export const LayersPanel: FC<{ store: DesignStore }> = ({ store }) => {
   const { doc, page, selIds, setSel } = store;
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [tab, setTab] = useState<"layers" | "variables">("layers");
   const toggle = (id: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -278,9 +294,27 @@ export const LayersPanel: FC<{ store: DesignStore }> = ({ store }) => {
           )}
         </Menu>
       </div>
-      <div className="px-4 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--muted-foreground)" }}>
-        图层
+      <div className="flex shrink-0 items-center justify-between px-4 pb-1 pt-1">
+        <div className="flex items-center gap-2.5">
+          {([["layers", "图层"], ["variables", "变量"]] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              className="text-[10px] font-semibold uppercase tracking-[0.06em] transition-colors"
+              style={{ color: tab === key ? "var(--foreground)" : "var(--muted-foreground)" }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
+      {tab === "variables" ? (
+        <VariablesManager store={store} />
+      ) : (
+      <div className="px-1.5 pb-1 pt-0 text-[10px]" style={{ color: "var(--muted-foreground)" }} />
+      )}
+      {tab === "layers" ? (
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
         {[...page.nodes].reverse().map((n) => (
           <TreeRow
@@ -301,6 +335,7 @@ export const LayersPanel: FC<{ store: DesignStore }> = ({ store }) => {
           </div>
         )}
       </div>
+      ) : null}
       {selIds.length > 1 && (
         <div className="flex h-11 shrink-0 items-center gap-2 px-3" style={{ boxShadow: "inset 0 1px 0 var(--border)" }}>
           <button

@@ -81,6 +81,9 @@ export const sessionSummarySchema = z.looseObject({
   approvalLevel: z.enum(["ask", "auto-edit", "auto"]).optional(),
   modelProvider: z.string().optional(),
   modelId: z.string().optional(),
+  /** 设计主题偏好（三态）：JSON {scope,id} 字符串 = 选中；"" = 显式不使用主题；
+   *  null/缺失 = 从未设置（sidecar 恢复链回落最近使用，见 sessions/resolve.ts） */
+  designTheme: z.string().nullable().optional(),
 });
 
 /** list_running turns 明细项：一个确定在跑的轮次（会话 + 其 prompt requestId） */

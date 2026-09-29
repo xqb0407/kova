@@ -3,7 +3,7 @@
  *   顶栏（插入工具 · 全部画布 · 文档名 · 问AI/放映/导出）、左缩略图栏（border-r）、
  *   中央画布盒（当前页 fit 于此）、右 Inspector（border-l）、底部状态条（左翻页 · 右缩放）。
  * 引擎（state/CanvasStage）仍保留白板能力以兼容历史文档解析，但 office 不再进
- * 无限画布模式：effMode 恒为 deck，绑到白板/UI 档时渲染引导页指向 slide-canvas 面板。
+ * 无限画布模式：effMode 恒为 deck，绑到白板/UI 档时渲染引导页指向 canvas 面板。
  * 右键菜单（选中元素的操作走属性面板） · 撤销栈/防抖保存/桥。交互原语全来自 @/components/ui。
  * 外壳之外的功能块已拆至 ./editor/*（元素工厂 / 工具条 / 右键菜单 / 缩略图栏 / 属性面板 / 表单件）。
  */
@@ -107,8 +107,8 @@ export const App: FC<{ onHome?: () => void }> = ({ onHome }) => {
         <p className="text-[14px] font-medium">这份文档是{docKind === "ui" ? "旧「UI 设计」档" : "白板档"}，Office 只编辑幻灯片</p>
         <p className="text-muted-foreground max-w-[420px] text-[12px] leading-relaxed">
           {docKind === "ui"
-            ? "UI 设计已拆分为独立的「UI 设计」面板（*.uidesign.json）；这份旧档请去「无限画布 · 幻灯片」面板编辑，也可以在那里点「让 AI 迁移」转成新格式。"
-            : "objects 无限画布（白板）由「无限画布 · 幻灯片」面板（slide-canvas）负责编辑，在这里改会打乱页框语义。"}
+            ? "UI 设计已拆分为独立的「UI 设计」面板（*.uidesign.json）；这份旧档请去「无限画布」面板编辑，也可以在那里点「让 AI 迁移」转成新格式。"
+            : "objects 无限画布（白板）由「无限画布」面板（canvas）负责编辑，在这里改会打乱文档语义。"}
         </p>
         <Button className="mt-3" size="sm" variant="secondary" onClick={goHome}>
           返回幻灯片首页

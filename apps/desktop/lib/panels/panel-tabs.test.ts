@@ -17,7 +17,7 @@ describe("focusPluginPanel", () => {
   });
 
   test("首次调用新开 plugin 标签并携带定位信息", () => {
-    const id = focusPluginPanel("slide-canvas@m1", "canvas", {
+    const id = focusPluginPanel("canvas@m1", "canvas", {
       path: "deck.canvas.json",
       cwd: "/ws",
     });
@@ -27,7 +27,7 @@ describe("focusPluginPanel", () => {
     expect(tabs[0]).toMatchObject({
       id,
       type: "plugin",
-      pluginId: "slide-canvas@m1",
+      pluginId: "canvas@m1",
       panelId: "canvas",
       path: "deck.canvas.json",
       cwd: "/ws",

@@ -14,12 +14,27 @@ import {
   MessagePrimitive,
   ComposerPrimitive,
   ActionBarPrimitive,
+  useAuiState,
+  type AssistantState,
 } from "@assistant-ui/react";
 import { CmComposerInput } from "./cm-composer-input";
-import { ChevronDownIcon, PencilIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, PencilIcon } from "lucide-react";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 
+/**
+ * 「已并入当前回复」消息（data-steeredNote part 存在，仅历史重建路径产生）：
+ * 并入（steer）的排队项注入即真实 user 消息落转录，直播侧不渲染气泡（排队条
+ * 徽标承载），刷新/翻页后的历史重建按哨兵前缀补本标记 part，由气泡上方渲染
+ * 徽标（stopped-marker 同款机制，part 本身不就地渲染）。
+ */
+function isSteeredNoteState(s: AssistantState): boolean {
+  return s.message.content.some(
+    (p) => p.type === "data" && p.name === "steeredNote",
+  );
+}
+
 export const UserMessage: FC = () => {
+  const steered = useAuiState(isSteeredNoteState);
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
@@ -29,6 +44,14 @@ export const UserMessage: FC = () => {
       <UserMessageAttachments />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0 text-md">
+        {steered && (
+          <div className="mb-1 flex items-center gap-1.5 pl-0.5">
+            <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
+            <span className="text-muted-foreground/70 text-[11px] leading-none">
+              已并入当前回复
+            </span>
+          </div>
+        )}
         {/* directiveChipVariants：DirectiveText 渲染的芯片 Badge 默认色与
             bg-muted 气泡几乎同色，需容器显式挂蓝色配色（与 composer 同款） */}
         <div

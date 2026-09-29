@@ -22,6 +22,7 @@ import {
 } from "../../src/sessions/prompt-queue";
 import { dispatch, dispatchPrompt } from "../../src/protocol/protocol";
 import { resolveSession } from "../../src/sessions/sessions";
+import { STEER_PREFIX } from "../../src/sessions/transcript";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-queue-"));
 
@@ -466,10 +467,10 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     // 退化流生命周期：steered 标记 → start；finish 不立即发（提前结束会把
     // 框架共享 status 置回 ready，宿主轮被 UI 显示为已停止），挂起到宿主轮收尾
     expect(chunksFor("sb1").map((c) => c.type)).toEqual(["data-steered", "start"]);
-    // 注入到活跃 agent（user 消息、纯文本 content）
+    // 注入到活跃 agent（user 消息、纯文本 content；带并入哨兵前缀，历史重建据此补「已并入」标记）
     const steered = steeredOf(run.agent);
     expect(steered).toHaveLength(1);
-    expect(steered[0]).toMatchObject({ role: "user", content: "B" });
+    expect(steered[0]).toMatchObject({ role: "user", content: `${STEER_PREFIX}B` });
     // 不占队列；活跃 turn 未被打断（A 尚未收尾）
     expect(queueSnapshot("th-st1")).toEqual([]);
     expect(chunksFor("sa1").some((c) => c.type === "finish")).toBe(false);
@@ -549,7 +550,10 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     expect(chunksFor("sb4").map((c) => c.type)).toEqual(["data-steered", "start"]);
     expect(chunksFor("sb4").filter((c) => c.type === "data-steered")).toHaveLength(1);
     expect(steeredOf(run.agent)).toHaveLength(1);
-    expect(steeredOf(run.agent)[0]).toMatchObject({ role: "user", content: "B" });
+    expect(steeredOf(run.agent)[0]).toMatchObject({
+      role: "user",
+      content: `${STEER_PREFIX}B`,
+    });
 
     // A 收尾后 sb4 的链节轮到空队列，静默让位（不执行）；其退化流 finish
     // 随 A 的收尾补发
