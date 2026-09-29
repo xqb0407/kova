@@ -109,12 +109,18 @@ export const handlers: Record<string, CommandHandler> = {
     // 与 set_personalization 同款广播：工作模式段变了就整段重排系统提示词，
     // 活动会话下一轮请求即生效
     for (const run of running.values()) {
-      run.agent.state.systemPrompt = composeModeSystemPrompt(
+      const prompt = composeModeSystemPrompt(
         run.mode,
         run.cwd,
         run.agent.state.model,
         run.designTheme,
       );
+      run.agent.state.systemPrompt = prompt;
+      // 轮中切换：活循环读的是 loopContext 上的提示词，只改 agent.state 等于
+      // 没改——本轮后续请求仍带旧模式段（design 段里含设计主题句，切到
+      // code/work 后模型仍在按旧模式行事）。其余重排点（applySessionTheme /
+      // recomposeAllRuns / applyMode）都写了这一行，此处原先漏了。
+      if (run.loopContext) run.loopContext.systemPrompt = prompt;
     }
     send({ id: reqId, type: "app_mode", mode });
   },

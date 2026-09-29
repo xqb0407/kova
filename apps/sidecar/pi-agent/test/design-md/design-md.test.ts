@@ -318,7 +318,7 @@ describe("use_design_theme 工具", () => {
     await installBundle(V1, DOCS_V1);
   });
 
-  test("缺省目标 = 闭包读值；未选中回落最近使用；全无则报错列可用名", async () => {
+  test("缺省目标只认闭包读值；会话未选中时报错，不吃全局最近使用", async () => {
     resetDesignThemeStateForTest();
     const none = buildUseDesignThemeTool(() => null);
     const err = (await none.execute("c1", {})) as {
@@ -326,19 +326,28 @@ describe("use_design_theme 工具", () => {
     };
     expect(err.content[0].text).toContain("没有选中设计主题");
 
+    // 全局最近使用存在也不能顶上来：会话没选就是没选，工具递一份主题会让模型
+    // 宣称"按你选的设计风格来做"，而用户界面上从未选过（显式「不使用主题」的
+    // 会话正是被这条兜底坑掉的）。继承最近使用是 resolveSession 建 run 时的职责。
     await setLastUsedDesignTheme({ scope: "builtin", id: "nova" });
-    const hit = (await none.execute("c2", {})) as {
+    const stillErr = (await none.execute("c2", {})) as {
       content: Array<{ type: "text"; text: string }>;
     };
-    expect(hit.content[0].text).toContain("已加载设计主题 \"Nova\"");
+    expect(stillErr.content[0].text).toContain("没有选中设计主题");
 
+    // 会话确实选中了（闭包有值）才加载，且不带 name 也认
     const viaClosure = buildUseDesignThemeTool(() => ({ scope: "builtin", id: "acme" }));
-    const byId = (await viaClosure.execute("c3", { name: "Acme" })) as {
+    const hit = (await viaClosure.execute("c3", {})) as {
+      content: Array<{ type: "text"; text: string }>;
+    };
+    expect(hit.content[0].text).toContain("Primary: #ff6b35");
+
+    const byId = (await viaClosure.execute("c4", { name: "Acme" })) as {
       content: Array<{ type: "text"; text: string }>;
     };
     expect(byId.content[0].text).toContain("Primary: #ff6b35");
 
-    const bad = (await viaClosure.execute("c4", { name: "Nope" })) as {
+    const bad = (await viaClosure.execute("c5", { name: "Nope" })) as {
       content: Array<{ type: "text"; text: string }>;
     };
     expect(bad.content[0].text).toContain("没有名为 \"Nope\" 的设计主题");

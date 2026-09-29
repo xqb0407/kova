@@ -706,6 +706,147 @@ fn capture_macos(
     }))
 }
 
+/// 阶梯序列化成脚本内联的 JSON：与 macOS 分支共用同一份 build_screenshot_ladder，
+/// 免得两边各写一套压缩策略日后走偏
+fn screenshot_ladder_json(max_dim: u32, quality: u32) -> String {
+    let tiers: Vec<Value> = build_screenshot_ladder(max_dim, quality)
+        .into_iter()
+        .map(|(d, q)| json!({ "d": d, "q": q }))
+        .collect();
+    serde_json::to_string(&tiers).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Windows 全屏截图：PowerShell 5.1 + System.Drawing。
+///
+/// 与 macOS 分支同样的做法——外壳调系统工具，而不是给宿主引入图像编解码依赖
+/// （Cargo.toml 里没有 image/wic crate，Rust 侧无法缩放重编码）。区别在于压缩
+/// 阶梯在脚本内一次做完：System.Drawing 自带 JPEG 编码器，脚本自己走阶梯、
+/// 命中预算就停，stdout 吐一行 JSON，本函数原样解析。
+///
+/// 两个 Windows 特有的坑：
+/// - DPI 感知：HiDPI 缩放下不先 SetProcessDPIAware，VirtualScreen 与
+///   CopyFromScreen 会按逻辑像素工作，抓出来是错尺寸的半分辨率图
+/// - 临时文件：整条链路在内存里（Bitmap → MemoryStream），不落盘，无需清理
+///
+/// 不加 #[cfg(windows)]：函数体只是按名字拉起一个可执行文件，在任何平台都能编译。
+/// 加了门控就意味着这段代码只在 Windows 上被编译过——本机（macOS）的
+/// cargo test / clippy 会完全跳过它，成了无人验证的盲区。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn capture_windows(max_dim: u32, quality: u32) -> Result<Value, String> {
+    use base64::Engine as _;
+
+    let script = windows_capture_script(&screenshot_ladder_json(max_dim, quality), SCREENSHOT_INLINE_BUDGET_BYTES);
+    // -EncodedCommand 收 Base64(UTF-16LE)：绕开引号转义，也绕开 ExecutionPolicy
+    // 的文件作用域限制（逐字面量拼一条 -Command 迟早会被路径/引号坑到）
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        &encoded,
+    ]);
+    no_window(&mut cmd);
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to launch powershell: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let err = err.trim();
+        return Err(if err.is_empty() {
+            format!("screenshot capture failed (exit {:?})", out.status.code())
+        } else {
+            format!("screenshot capture failed: {err}")
+        });
+    }
+    // 取最后一行 JSON：脚本里 ConvertTo-Json -Compress 只输出一行，前面若有
+    // 别的杂音（警告之类）也不会吃掉真正的结果
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let line = stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| l.starts_with('{'))
+        .ok_or("powershell produced no screenshot JSON")?;
+    serde_json::from_str(line).map_err(|e| format!("screenshot payload parse failed: {e}"))
+}
+
+/// 抓图脚本。`tiers_json` 是 build_screenshot_ladder 的序列化结果（只含整数，
+/// 不存在注入面）；`budget` 是命中即停的内联预算字节数。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn windows_capture_script(tiers_json: &str, budget: usize) -> String {
+    // 单引号字面量：tiers_json 自身不含单引号
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+try {{
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class KovaDpi {{ [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }}'
+[void][KovaDpi]::SetProcessDPIAware()
+
+$vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
+if ($vs.Width -le 0 -or $vs.Height -le 0) {{ throw 'virtual screen has no area' }}
+$full = New-Object System.Drawing.Bitmap -ArgumentList $vs.Width, $vs.Height
+$g = [System.Drawing.Graphics]::FromImage($full)
+try {{
+  $g.CopyFromScreen($vs.X, $vs.Y, 0, 0, $full.Size, [System.Drawing.CopyPixelOperation]::SourceCopy)
+}} finally {{ $g.Dispose() }}
+
+$tiers = ConvertFrom-Json '{tiers_json}'
+$codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object {{ $_.MimeType -eq 'image/jpeg' }}
+if ($null -eq $codec) {{ throw 'no JPEG encoder available' }}
+$best = $null
+foreach ($t in $tiers) {{
+  $dim = [int]$t.d
+  $scale = [Math]::Min(1.0, $dim / [double][Math]::Max($full.Width, $full.Height))
+  $w = [int][Math]::Max(1, [Math]::Round($full.Width * $scale))
+  $h = [int][Math]::Max(1, [Math]::Round($full.Height * $scale))
+  $bmp = $null
+  $ms = $null
+  try {{
+    $bmp = New-Object System.Drawing.Bitmap -ArgumentList $w, $h
+    $g2 = [System.Drawing.Graphics]::FromImage($bmp)
+    try {{
+      $g2.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+      $g2.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+      $g2.DrawImage($full, (New-Object System.Drawing.Rectangle -ArgumentList 0, 0, $w, $h))
+    }} finally {{ $g2.Dispose() }}
+    $enc = New-Object System.Drawing.Imaging.EncoderParameters -ArgumentList 1
+    $enc.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter -ArgumentList ([System.Drawing.Imaging.Encoder]::Quality), ([long]$t.q)
+    $ms = New-Object System.IO.MemoryStream
+    $bmp.Save($ms, $codec, $enc)
+    $bytes = $ms.ToArray()
+    if ($null -eq $best -or $bytes.Length -lt $best.bytes.Length) {{
+      $best = [pscustomobject]@{{ bytes = $bytes; width = $w; height = $h }}
+    }}
+  }} finally {{
+    if ($null -ne $ms) {{ $ms.Dispose() }}
+    if ($null -ne $bmp) {{ $bmp.Dispose() }}
+  }}
+  if ($null -ne $best -and $best.bytes.Length -le {budget}) {{ break }}
+}}
+if ($null -eq $best) {{ throw 'screenshot produced no output at every tier' }}
+$full.Dispose()
+@{{
+  base64 = [Convert]::ToBase64String($best.bytes)
+  mimeType = 'image/jpeg'
+  bytes = $best.bytes.Length
+  width = $best.width
+  height = $best.height
+}} | ConvertTo-Json -Compress
+}} catch {{
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1
+}}
+"#
+    )
+}
+
 fn handle_screenshot(p: &Value) -> Result<Value, String> {
     let max_dim = clamp_u32(p.get("maxDim").and_then(|v| v.as_u64()), SCREENSHOT_DEFAULT_MAX_DIM, 640, 3840);
     let quality = clamp_u32(p.get("quality").and_then(|v| v.as_u64()), SCREENSHOT_DEFAULT_QUALITY, 30, 100);
@@ -728,8 +869,13 @@ fn handle_screenshot(p: &Value) -> Result<Value, String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (max_dim, quality);
-        Err("screenshot is only supported on macOS in this build".into())
+        // 运行期分派而非 #[cfg(windows)]：让 capture_windows 在本机也参与编译
+        if cfg!(target_os = "windows") {
+            capture_windows(max_dim, quality)
+        } else {
+            let _ = (max_dim, quality);
+            Err("screenshot is only supported on macOS and Windows in this build".into())
+        }
     }
 }
 
@@ -763,7 +909,8 @@ pub fn handle_tool(id: &str, p: &Value) -> Result<Value, String> {
         "write" => handle_write(&inner),
         "edit" => handle_edit(&inner),
         "http" => handle_http(&inner),
-        // 屏幕截图（macOS screencapture + sips JPEG 压缩）：见 handle_screenshot
+        // 屏幕截图（macOS screencapture+sips / Windows PowerShell+System.Drawing
+        // 压缩成 JPEG）：见 handle_screenshot
         "screenshot" => handle_screenshot(&inner),
         // 面板浏览器驱动（browser.rs）：导航/快照/尺寸/点击/输入/滚动/后退
         "browser_navigate" | "browser_snapshot" | "browser_resize" | "browser_click"
@@ -1093,5 +1240,40 @@ mod tests {
         assert!(joined.contains("-s formatOptions 60"));
         assert!(joined.contains("/tmp/in.png"));
         assert!(joined.ends_with("--out /tmp/out.jpg"));
+    }
+
+    /// 抓图脚本不依赖 Windows 也能验证：断言内联的阶梯/预算真的落进了脚本文本，
+    /// 且 format! 的 {{ }} 转义没漏（漏一个会让脚本报语法错，而这段代码在 macOS
+    /// 上永远不会执行）
+    #[test]
+    fn windows_capture_script_embeds_ladder_and_budget() {
+        let script = windows_capture_script(&screenshot_ladder_json(1280, 60), 1234);
+        assert!(script.contains(r#"[{"d":1280,"q":60},{"d":1280,"q":45},{"d":1280,"q":35},{"d":1024,"q":60}]"#));
+        assert!(script.contains("-le 1234"));
+        // 转义检查：单花括号在 PowerShell 里是变量插值，成对出现才合法
+        assert!(!script.contains("{{"));
+        assert!(!script.contains("}}"));
+        assert_eq!(
+            script.chars().filter(|&c| c == '{').count(),
+            script.chars().filter(|&c| c == '}').count()
+        );
+        // 单引号必须成对，否则 tiers JSON 所在的那条语句会吞掉后面全部
+        assert_eq!(script.matches('\'').count() % 2, 0);
+    }
+
+    #[test]
+    fn windows_ladder_json_matches_shared_ladder() {
+        let json = screenshot_ladder_json(1920, 70);
+        let parsed: Vec<(u32, u32)> = serde_json::from_str::<Vec<Value>>(&json)
+            .unwrap()
+            .into_iter()
+            .map(|t| {
+                (
+                    t["d"].as_u64().unwrap() as u32,
+                    t["q"].as_u64().unwrap() as u32,
+                )
+            })
+            .collect();
+        assert_eq!(parsed, build_screenshot_ladder(1920, 70));
     }
 }
