@@ -16,6 +16,7 @@ import {
   GlobeIcon,
   HardDriveDownloadIcon,
   InfoIcon,
+  MonitorSmartphoneIcon,
   KeyRoundIcon,
   KeyboardIcon,
   PaletteIcon,
@@ -26,6 +27,7 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { GeneralSettings } from "./components/general-settings";
+import { ComputerControlSettings } from "./components/computer-control-settings";
 import { HooksSettings } from "./components/hooks-settings";
 import { WebhooksSettings } from "./components/webhooks-settings";
 import { ModelSettings } from "./components/model-settings";
@@ -56,7 +58,8 @@ export type SettingsSection =
   | "webhooks"
   | "hooks"
   | "secrets"
-  | "design-themes";
+  | "design-themes"
+  | "computer-control";
 
 const GROUPS: {
   label: string;
@@ -77,6 +80,9 @@ const GROUPS: {
     label: "智能体",
     items: [
       { id: "models", label: "模型", icon: BoxesIcon },
+      // 电脑控制：agent 能碰本机的哪些能力（浏览器驱动 / 页面像素 / 屏幕画面）。
+      // 归「智能体」组而不是「系统」——授权的对象是 agent，不是这台机器
+      { id: "computer-control", label: "电脑控制", icon: MonitorSmartphoneIcon },
       { id: "subagents", label: "子智能体", icon: BotIcon },
       { id: "memory", label: "记忆", icon: BrainIcon },
       { id: "hooks", label: "钩子", icon: ZapIcon },
@@ -240,6 +246,7 @@ export const SettingsPage: FC<{
           {section === "design-themes" && <DesignThemesSettings />}
           {section === "about" && <AboutSettings />}
           {section === "general" && <GeneralSettings />}
+          {section === "computer-control" && <ComputerControlSettings />}
         </div>
       </div>
     </div>

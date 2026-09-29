@@ -25,6 +25,7 @@ const LABELS: Record<string, string> = {
   browser_type: "Browser Type",
   browser_scroll: "Browser Scroll",
   browser_back: "Browser Back",
+  browser_shot: "Browser Screenshot",
 };
 
 /** 与 tools.ts textResult 同形（AgentToolResult.details 必填） */
@@ -38,6 +39,8 @@ function browserTool(
   threadId: string,
   description: string,
   parameters: AgentTool["parameters"],
+  /** 该工具受哪个子开关管；不传则跟 enabled 总开关 */
+  subSwitch?: "pixelShot",
 ): AgentTool {
   return {
     name,
@@ -47,9 +50,19 @@ function browserTool(
     execute: async (_id, params, signal) => {
       // 设置门控（常驻注册，execute 实时读）：关闭时婉拒并给替代路径，
       // 下一次调用即读到新值（browser-config.ts）
-      if (!getBrowserConfig().enabled) {
+      const cfg = getBrowserConfig();
+      if (subSwitch && !cfg[subSwitch]) {
         return textResult(
-          "Browser tools are disabled in Settings (智能体工具 → 浏览器驱动). " +
+          subSwitch === "pixelShot"
+            ? "Page screenshots are disabled in Settings (电脑控制 → 像素截图). " +
+                "Do not retry; the DOM tools still work, but you cannot see canvas/WebGL " +
+                "pixels. Report what the ARIA tree says instead of guessing at the picture."
+            : "This capability is disabled in Settings.",
+        );
+      }
+      if (!cfg.enabled && subSwitch !== "pixelShot") {
+        return textResult(
+          "Browser tools are disabled in Settings (电脑控制 → 浏览器驱动). " +
             "Do not retry; use WebFetch for read-only page content instead.",
         );
       }
@@ -79,18 +92,30 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       "browser_navigate",
       threadId,
       "Drive the built-in browser panel (the one the user can see) to a URL and return the " +
-        "rendered page as an interactive snapshot. Workflow: browser_navigate → read the snapshot → " +
-        "act on elements by ref (browser_click / browser_type); every action returns a fresh snapshot. " +
-        "This executes JavaScript and reflects the post-render DOM — use it when WebFetch is not enough.",
+        "rendered page as an ARIA accessibility tree. Workflow: browser_navigate → read the " +
+        "tree → act on elements by ref (browser_click / browser_type); every action returns a " +
+        "fresh tree. This executes JavaScript and reflects the post-render DOM — use it when " +
+        "WebFetch is not enough. IMPORTANT: to view a local HTML file you wrote, pass a " +
+        "file:// URL built from its ABSOLUTE path (e.g. file:///Users/me/site/index.html) — " +
+        "do NOT start a local HTTP server for it; that leaves a background process running on " +
+        "the user's machine for no benefit. If the tree comes back empty, the page draws with " +
+        "canvas/WebGL and has no accessible elements — that is a real answer, not a failure. " +
+        "Call browser_shot to see the picture instead of re-running the snapshot.",
       Type.Object({
-        url: Type.String({ description: "Absolute http(s) URL to navigate to" }),
+        url: Type.String({
+          description:
+            "Absolute URL to navigate to: http(s)://… or file:///absolute/path.html for a " +
+            "local file",
+        }),
       }),
     ),
     browserTool(
       "browser_snapshot",
       threadId,
-      "Capture the built-in browser's current page as an interactive tree. Interactive elements " +
-        "carry [ref=eN]; use refs with browser_click / browser_type. Covers the main frame only.",
+      "Capture the built-in browser's current page as an ARIA accessibility tree. Every " +
+        "element carries [ref=eN]; use refs with browser_click / browser_type. Covers the main " +
+        "frame only (iframe contents are not included). An empty tree means the page is drawn " +
+        "with canvas — use browser_shot to see it.",
       Type.Object({}),
     ),
     browserTool(
@@ -148,6 +173,35 @@ export function buildBrowserTools(threadId: string): AgentTool[] {
       threadId,
       "Go back one page in the built-in browser's history and return a fresh snapshot.",
       Type.Object({}),
+    ),
+    // 相机：不是第二个浏览器。webview 才是工作面，这里只按它当前的 URL 拍一张。
+    browserTool(
+      "browser_shot",
+      threadId,
+      "Screenshot a web page as an image you can see in the result. Captures in a throwaway " +
+        "headless Chrome — it does not navigate the panel, does not touch the page, and cannot " +
+        "click anything. Use it when the ARIA tree is empty or too thin to answer the question: " +
+        "canvas/WebGL scenes, charts, maps, video frames, or 'what does this actually look " +
+        "like'. Takes about a second, so don't call it in a loop. With no url it photographs " +
+        "whatever the panel is showing right now (the user may have navigated away from where " +
+        "you sent it). Pass url to photograph a specific page instead — required if the panel " +
+        "has not navigated yet.",
+      Type.Object({
+        url: Type.Optional(
+          Type.String({
+            description:
+              "Absolute URL to photograph. Omit to use the panel's current page. Accepts " +
+              "file:///absolute/path.html for a local file",
+          }),
+        ),
+        maxDim: Type.Optional(
+          Type.Number({ description: "Longest edge in pixels (640-3840, default 1280)" }),
+        ),
+        quality: Type.Optional(
+          Type.Number({ description: "JPEG quality 30-100 (default 70; lower = smaller)" }),
+        ),
+      }),
+      "pixelShot",
     ),
   ];
 }

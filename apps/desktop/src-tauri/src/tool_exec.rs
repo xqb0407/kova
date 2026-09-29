@@ -43,7 +43,7 @@ fn str_param(p: &Value, key: &str) -> Result<String, String> {
 /// `killpg` 一次收掉整组——Chrome 这类会再派生 GPU/Renderer 子孙的命令尤其需要。
 /// 只杀直接子进程会留下持有 stdout 管的孤儿孙进程，导致 run_bash 的读线程永不 EOF。
 #[cfg(windows)]
-fn kill_tree(pid: u32) {
+pub(crate) fn kill_tree(pid: u32) {
     let mut killer = Command::new("taskkill");
     killer
         .args(["/PID", &pid.to_string(), "/T", "/F"])
@@ -55,7 +55,7 @@ fn kill_tree(pid: u32) {
 }
 
 #[cfg(unix)]
-fn kill_tree(pid: u32) {
+pub(crate) fn kill_tree(pid: u32) {
     // 负 pid = 整个进程组；先组后单点，组已空时单点兜底（pgid 未立组的极端情况）
     unsafe {
         libc::killpg(pid as libc::pid_t, libc::SIGKILL);
@@ -96,8 +96,10 @@ impl CancelGuard {
         }
     }
 
-    /// bash 子进程登记 pid；若取消已先到达（竞态窗口），立即补杀
-    fn attach_pid(&self, pid: u32) {
+    /// 登记本请求派生出的进程 pid；若取消已先到达（竞态窗口），立即补杀。
+    /// 同一请求只会派生一棵进程树（bash 命令，或 browser_shot 的 Chrome），
+    /// 槽位单值够用。
+    pub(crate) fn attach_pid(&self, pid: u32) {
         {
             let mut slot = self.entry.pid.lock().unwrap_or_else(|e| e.into_inner());
             *slot = Some(pid);
@@ -110,6 +112,13 @@ impl CancelGuard {
     /// browser_* 动作的等待循环按此检查中断（host_cancel / 超时放弃）
     pub fn is_cancelled(&self) -> bool {
         self.entry.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// 不挂到在飞表的可取消令牌。给测试用——测试里没有 host_cancel，
+    /// 但等待循环仍要有个 is_cancelled 可问。
+    #[cfg(test)]
+    pub fn detached() -> Self {
+        Self { id: String::new(), entry: Arc::new(CancelEntry::default()) }
     }
 }
 
@@ -959,6 +968,19 @@ pub fn handle_tool(id: &str, p: &Value) -> Result<Value, String> {
         "browser_navigate" | "browser_snapshot" | "browser_resize" | "browser_click"
         | "browser_type" | "browser_scroll" | "browser_back" => {
             crate::browser::run_tool(name.as_str(), &inner, &guard)
+        }
+        // 页面像素照（browser_shot.rs）：一次性无头 Chrome，相机而非第二个浏览器。
+        // 与上面那组互不依赖——没有 Chrome 时这里报错，其余工具照常。
+        "browser_shot" => {
+            // 不让模型传 URL：它记得的是"自己上次导航到哪"，而用户可能
+            // 已经在面板里手动跳走。相机只该对着面板眼前的这一页。
+            let url = match inner.get("url").and_then(|v| v.as_str()) {
+                Some(u) if !u.trim().is_empty() => u.trim().to_string(),
+                _ => crate::browser::current_url(&guard)?,
+            };
+            let max_dim = inner.get("maxDim").and_then(|v| v.as_u64()).map(|v| v as u32);
+            let quality = inner.get("quality").and_then(|v| v.as_u64()).map(|v| v as u32);
+            crate::browser_shot::capture(&url, max_dim, quality, &guard)
         }
         _ => Err(format!("unknown host tool: {name}")),
     }

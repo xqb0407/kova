@@ -31,6 +31,7 @@ import { subscribeAutomationFocus } from "@/lib/automation/automations";
 import { setAutomationFrameSync } from "@/lib/automation/automation-live";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
+import { useOverlayPresent } from "@/lib/overlay-occlusion";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
 import { Thread } from "./thread";
@@ -148,14 +149,23 @@ export const Base: FC = () => {
     if (onboardingActive) setView("chat");
   }, [onboardingActive]);
   /**
-   * 主窗口当前是否被全屏浮层接管 —— 唯一的遮蔽事实源。
+   * 主窗口当前是否被浮层接管 —— 唯一的遮蔽事实源。
    *
    * 浏览器子 webview 是独立的原生 NSView，合成在主 webview 的 DOM 之上，
    * 任何 React z-index（向导是 z-[60]）都压不住它；浮层一出现就必须隐藏。
-   * 两处接管都算：设置页整页切换，以及新手引导的全屏向导。后者尤其容易漏
-   * —— 引导激活时 view 已被置回 "chat"，只看 view 会误判成"无遮蔽"。
+   *
+   * 三个来源，或起来：
+   * 1. 设置页整页切换；
+   * 2. 新手引导的全屏向导——尤其容易漏，引导激活时 view 已被置回 "chat"，
+   *    只看 view 会误判成"无遮蔽"；
+   * 3. 任意 ui/ primitive 浮层（Dialog / Popover / Sheet / 菜单 / Select）挂载。
+   *    这一项是登记制而不是人工白名单：以前每个会遮挡的地方手动广播一次，
+   *    几十个调用点漏一个就复现一次 bug。浮层自己在 Portal 里登记，
+   *    这里只读总数。
    */
-  const mainViewOccluded = view === "settings" || onboardingActive;
+  const floatingOverlay = useOverlayPresent();
+  const mainViewOccluded =
+    view === "settings" || onboardingActive || floatingOverlay;
   useEffect(() => {
     window.dispatchEvent(
       new CustomEvent("browser:occluded", {
@@ -164,7 +174,7 @@ export const Base: FC = () => {
     );
   }, [mainViewOccluded]);
   // 遮蔽态的 ref：面板开合动画的回调在闭包里读它，判断能否替对方解除遮蔽
-  // （设置页/向导打开时不能解除，恢复交给它们退出时的广播）
+  // （设置页/向导/浮层打开时不能解除，恢复交给它们退出时的广播）
   const occludedRef = useRef(mainViewOccluded);
   occludedRef.current = mainViewOccluded;
   // view 的 ref：面板开合动画/exitPanelFullscreen 的守卫在闭包里读它

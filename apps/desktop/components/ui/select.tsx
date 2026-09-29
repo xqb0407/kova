@@ -4,6 +4,7 @@ import { Select as SelectPrimitive } from "@base-ui/react/select";
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { OcclusionSlot } from "@/components/custom-ui/occlusion-slot";
 
 function Select<Value, Multiple extends boolean | undefined = false>({
   ...props
@@ -60,6 +61,7 @@ function SelectContent({
   >) {
   return (
     <SelectPrimitive.Portal>
+      <OcclusionSlot />
       <SelectPrimitive.Positioner
         side={side}
         sideOffset={sideOffset}

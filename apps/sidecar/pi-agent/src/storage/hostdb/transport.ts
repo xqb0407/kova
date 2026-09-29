@@ -128,7 +128,10 @@ export function toolRpcTimeoutMs(name: string, params: Record<string, unknown>):
     typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
   if (name === "bash") return (num(params.timeout) ?? 120_000) + TOOL_RPC_SLACK_MS;
   if (name === "http") return (num(params.timeoutMs) ?? 30_000) + TOOL_RPC_SLACK_MS;
-  // browser_*：动作含导航/点击后的页面稳定等待（Rust 上限 30s+10s）再加速照
+  // browser_shot：冷启动一个无头 Chrome 再导航，比面板动作重得多，
+  // 但 Rust 侧自己封在 25s（SHOT_TIMEOUT），这里必须比它大
+  if (name === "browser_shot") return 40_000;
+  // 其余 browser_*：动作含导航/点击后的页面稳定等待（Rust 上限 30s+10s）再加速照
   if (name.startsWith("browser_")) return 60_000 + TOOL_RPC_SLACK_MS;
   // screenshot：screencapture + 阶梯 sips 压缩，慢机/超大 Retina 留 30s 余量
   if (name === "screenshot") return 30_000;

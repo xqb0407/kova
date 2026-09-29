@@ -103,7 +103,7 @@ const TurnProcess: FC<{ collapsed: boolean; children: ReactNode }> = ({
             // 30px——Base UI 用面板 scrollHeight 当动画目标高度，不裁的话高度会
             // 量多一截，动画收尾时再跳回去。过程消息本来就没有操作栏（轮中不挂），
             // 裁剪不会切掉任何可见内容。
-            "overflow-hidden pt-6",
+            "overflow-hidden pt-2",
             "transform-gpu",
             PROCESS_EASE,
             "motion-reduce:animate-none",

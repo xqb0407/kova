@@ -295,7 +295,9 @@ export const Header: FC<{
       {pageMode ? null : <ThreadTitle />}
       {/* 所选工作区目录 + git 分支 tag（未选目录时不显示），位于「更多」按钮左侧 */}
       {!pageMode && !isEmptyThread && <WorkspaceBadge />}
-      {/* 全局工作模式切换（编码/工作）：应用级开关，常驻可见——设置→通用里是同一事实源 */}
+      {/* 全局工作模式切换（编码/工作）：应用级开关，常驻可见——设置→通用里是同一事实源。
+          仅对话页渲染：pageMode 的页面（文件/自动化/用量/连接器）是整页视图，
+          标题区让位给页面自身，这个开关也一并收起，避免顶栏被应用级控件占住 */}
       {!pageMode && <AppModeSwitch />}
       {/* 标题右侧「更多」菜单 + 重命名任务 dialog（空会话不渲染） */}
       {pageMode || isEmptyThread ? null : (

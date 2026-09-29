@@ -68,9 +68,9 @@ export const AddMarketplaceDialog: FC<{
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="gap-5 p-6 sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>添加插件市场</DialogTitle>
+          <DialogTitle className="text-lg">添加插件市场</DialogTitle>
           <DialogDescription>
             市场根目录需包含 marketplace.json 清单（插件目录里的插件以相对路径声明）。
           </DialogDescription>
@@ -78,6 +78,7 @@ export const AddMarketplaceDialog: FC<{
 
         <div className="space-y-4">
           <Segmented
+            className="w-fit"
             value={type}
             onChange={(v) => setType(v as "directory" | "git")}
             options={[
@@ -87,15 +88,15 @@ export const AddMarketplaceDialog: FC<{
           />
 
           {type === "directory" ? (
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Label htmlFor="marketplace-path">市场目录</Label>
-              <div className="flex gap-1.5">
+              <div className="flex gap-2">
                 <Input
                   id="marketplace-path"
                   value={path}
                   onChange={(e) => setPath(e.target.value)}
                   placeholder="/path/to/marketplace"
-                  className="font-mono text-xs"
+                  className="font-mono"
                 />
                 <Button variant="outline" size="icon" className="size-9 shrink-0" onClick={() => void browse()}>
                   <FolderOpenIcon className="size-4" />
@@ -103,14 +104,14 @@ export const AddMarketplaceDialog: FC<{
               </div>
             </div>
           ) : (
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <Label htmlFor="marketplace-repo">Git 仓库地址</Label>
               <Input
                 id="marketplace-repo"
                 value={repo}
                 onChange={(e) => setRepo(e.target.value)}
                 placeholder="https://github.com/owner/plugins-marketplace.git"
-                className="font-mono text-xs"
+                className="font-mono"
               />
               <p className="text-muted-foreground text-xs">
                 将浅克隆仓库并读取其中的 marketplace.json；未安装 git 时不可用。
@@ -122,10 +123,10 @@ export const AddMarketplaceDialog: FC<{
         </div>
 
         <DialogFooter>
-          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
             取消
           </Button>
-          <Button size="sm" disabled={busy} onClick={submit}>
+          <Button disabled={busy} onClick={submit}>
             {busy && <Loader2Icon className="size-3.5 animate-spin" />}
             添加
           </Button>

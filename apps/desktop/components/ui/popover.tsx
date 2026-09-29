@@ -4,6 +4,7 @@ import * as React from "react";
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 
 import { cn } from "@/lib/utils";
+import { OcclusionSlot } from "@/components/custom-ui/occlusion-slot";
 
 function Popover({ ...props }: PopoverPrimitive.Root.Props) {
   return <PopoverPrimitive.Root data-slot="popover" {...props} />;
@@ -33,6 +34,7 @@ const PopoverContent = React.forwardRef<
 ) {
   return (
     <PopoverPrimitive.Portal>
+      <OcclusionSlot />
       <PopoverPrimitive.Positioner
         align={align}
         alignOffset={alignOffset}

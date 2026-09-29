@@ -6,6 +6,7 @@ import { XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { OcclusionSlot } from "@/components/custom-ui/occlusion-slot";
 
 function Sheet({ ...props }: SheetPrimitive.Root.Props) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />;
@@ -19,8 +20,15 @@ function SheetClose({ ...props }: SheetPrimitive.Close.Props) {
   return <SheetPrimitive.Close data-slot="sheet-close" {...props} />;
 }
 
-function SheetPortal({ ...props }: SheetPrimitive.Portal.Props) {
-  return <SheetPrimitive.Portal data-slot="sheet-portal" {...props} />;
+function SheetPortal({ children, ...props }: SheetPrimitive.Portal.Props) {
+  // 同 dialog：children 必须解构出来合并——JSX 显式子节点会覆盖 {...props} 里的
+  // children，不显式渲染就会把调用方的子树悄悄丢掉
+  return (
+    <SheetPrimitive.Portal data-slot="sheet-portal" {...props}>
+      <OcclusionSlot />
+      {children}
+    </SheetPrimitive.Portal>
+  );
 }
 
 function SheetOverlay({ className, ...props }: SheetPrimitive.Backdrop.Props) {
