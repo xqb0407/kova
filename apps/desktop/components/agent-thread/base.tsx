@@ -24,6 +24,7 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
 import { subscribeAutomationFocus } from "@/lib/automation/automations";
@@ -140,27 +141,35 @@ export const Base: FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [view, setView] = useState<"chat" | "settings">("chat");
-  // 设置视图全窗口覆盖主窗口：广播 browser:occluded，让浏览器面板隐藏其子
-  // webview（原生层 z 序高于任何 React z-index，不隐藏会悬浮盖在设置页上）；
-  // 返回应用后由 browser-view 的 bounds 同步状态机恢复显示。
-  // 使用统计走 activeMenu（主区内切页，侧边栏保持对话列表），无需遮蔽
-  useEffect(() => {
-    window.dispatchEvent(
-      new CustomEvent("browser:occluded", {
-        detail: { occluded: view === "settings" },
-      }),
-    );
-  }, [view]);
-  // view 的 ref：面板开合动画的回调在闭包里读它，判断当前是否设置页覆盖
-  // （设置页打开时不能替它解除 webview 遮蔽，恢复交给设置页退出广播）
-  const viewRef = useRef(view);
-  viewRef.current = view;
   // 从设置页「重新查看新手引导」时（通用设置 → 入门）把设置视图收掉：
   // 向导是全屏接管，走完后应当直接落在对话界面，而不是退回设置页。
   const onboardingActive = useOnboardingGate().active;
   useEffect(() => {
     if (onboardingActive) setView("chat");
   }, [onboardingActive]);
+  /**
+   * 主窗口当前是否被全屏浮层接管 —— 唯一的遮蔽事实源。
+   *
+   * 浏览器子 webview 是独立的原生 NSView，合成在主 webview 的 DOM 之上，
+   * 任何 React z-index（向导是 z-[60]）都压不住它；浮层一出现就必须隐藏。
+   * 两处接管都算：设置页整页切换，以及新手引导的全屏向导。后者尤其容易漏
+   * —— 引导激活时 view 已被置回 "chat"，只看 view 会误判成"无遮蔽"。
+   */
+  const mainViewOccluded = view === "settings" || onboardingActive;
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("browser:occluded", {
+        detail: { occluded: mainViewOccluded },
+      }),
+    );
+  }, [mainViewOccluded]);
+  // 遮蔽态的 ref：面板开合动画的回调在闭包里读它，判断能否替对方解除遮蔽
+  // （设置页/向导打开时不能解除，恢复交给它们退出时的广播）
+  const occludedRef = useRef(mainViewOccluded);
+  occludedRef.current = mainViewOccluded;
+  // view 的 ref：面板开合动画/exitPanelFullscreen 的守卫在闭包里读它
+  const viewRef = useRef(view);
+  viewRef.current = view;
   // 「跳到设置页某分区」的 window 事件（composer 主题胶囊的「管理设计主题…」
   // 深在壳树里，不向上透传回调）：seq 单调递增，让「已在设置页再跳同一分区」
   // 也能触发 SettingsPage 的同步 effect；id 校验在 settings-page 模块内做
@@ -179,9 +188,9 @@ export const Base: FC = () => {
   // 面板开合动画期间的 webview 遮蔽开关：动画期间面板内容宽被冻结，浏览器
   // 占位容器不再随面板收窄（native 层不吃 CSS 裁剪，不隐藏会以冻结宽悬浮
   // 盖到聊天列上），故借 browser:occluded 通道隐藏，动画结束由 bounds 状态
-  // 机恢复。解除时若正处于设置页则跳过（设置页拥有遮蔽权）
+  // 机恢复。解除时若主窗口正被全屏浮层接管则跳过（设置页/向导拥有遮蔽权）
   const setPanelWebviewOccluded = (occluded: boolean) => {
-    if (occluded || viewRef.current === "chat") {
+    if (occluded || !occludedRef.current) {
       window.dispatchEvent(
         new CustomEvent("browser:occluded", { detail: { occluded } }),
       );
@@ -713,7 +722,11 @@ export const Base: FC = () => {
         />
       </div>
       <div className="relative z-10 flex-1 overflow-hidden">
-        {chat}
+        {/* key=activeMenu：切菜单即重挂载，某个页面崩了切走再切回就恢复。
+            边界本身不套壳，成功时原样渲染 children，版式不受影响 */}
+        <ErrorBoundary key={activeMenu} label="主区">
+          {chat}
+        </ErrorBoundary>
         {compact ? (
           <AnimatePresence>
             {panelOpen ? (
@@ -923,14 +936,17 @@ export const Base: FC = () => {
         </div>
       </CloneThreadShell>
 
-      {/* 设置视图：全窗口覆盖，左侧为设置二级侧边栏（含"返回应用"） */}
+      {/* 设置视图：全窗口覆盖，左侧为设置二级侧边栏（含"返回应用"）。
+          单独包一层：崩了不能留下一个坏死的全屏遮罩把整个应用盖住 */}
       {view === "settings" && (
         <div className="bg-background fixed inset-0 z-50">
-          <SettingsPage
-            onBack={() => setView("chat")}
-            jumpSection={settingsJump?.id}
-            jumpSeq={settingsJump?.seq}
-          />
+          <ErrorBoundary key={view} label="设置页">
+            <SettingsPage
+              onBack={() => setView("chat")}
+              jumpSection={settingsJump?.id}
+              jumpSeq={settingsJump?.seq}
+            />
+          </ErrorBoundary>
         </div>
       )}
     </>

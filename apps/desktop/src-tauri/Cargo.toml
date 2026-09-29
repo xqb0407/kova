@@ -43,6 +43,8 @@ sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 pbkdf2 = "0.12"
+# Unix 侧杀进程组（killpg）：bash 自立进程组后，超时/取消要连孙进程一起收
+libc = "0.2"
 
 [profile.release]
 panic = "abort"

@@ -13,11 +13,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { isTauri } from "@/lib/tauri";
+import { FEEDBACK_ISSUES_URL } from "@/lib/feedback";
 import { FolderOpenIcon, SquareArrowOutUpRightIcon, Trash2Icon } from "lucide-react";
 import { ObservabilitySection } from "./observability-settings";
-
-/** 问题反馈：gitee 仓库 issue 页（origin remote） */
-const FEEDBACK_URL = "https://gitee.com/herther/pi-kova/issues";
 
 type AppInfo = { name: string; version: string; tauri: string };
 
@@ -76,8 +74,8 @@ export const AboutSettings: FC = () => {
   const openFeedback = useCallback(async () => {
     setError(null);
     try {
-      if (desktop) await invoke("open_external", { url: FEEDBACK_URL });
-      else window.open(FEEDBACK_URL, "_blank", "noopener");
+      if (desktop) await invoke("open_external", { url: FEEDBACK_ISSUES_URL });
+      else window.open(FEEDBACK_ISSUES_URL, "_blank", "noopener");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -197,7 +195,7 @@ export const AboutSettings: FC = () => {
                 </div>
               </SettingRow>
             )}
-            <SettingRow label="问题反馈" desc={FEEDBACK_URL}>
+            <SettingRow label="问题反馈" desc={FEEDBACK_ISSUES_URL}>
               <Button size="sm" variant="outline" onClick={() => void openFeedback()}>
                 <SquareArrowOutUpRightIcon className="size-4" />
                 去反馈

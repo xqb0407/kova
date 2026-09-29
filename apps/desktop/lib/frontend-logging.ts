@@ -43,6 +43,30 @@ function send(level: "info" | "warn" | "error", message: string) {
   invoke("frontend_log", { level, message }).catch(() => {});
 }
 
+/**
+ * 显式上报一条错误。
+ *
+ * 有错误边界后，渲染期抛出的错误被 React 接在边界里就不再冒泡到 window，
+ * installFrontendLogging 装的 error 监听收不到它（unhandledrejection 和事件
+ * 回调里的错误不受影响）。边界在 componentDidCatch 里走这里补上落盘。
+ */
+export function reportFrontendError(message: string): void {
+  if (!isTauri()) {
+    console.error(message);
+    return;
+  }
+  send("error", message);
+}
+
+/** 显式上报一条非致命的告警（卡顿、资源加载失败等），同样不依赖 window 监听 */
+export function reportFrontendWarning(message: string): void {
+  if (!isTauri()) {
+    console.warn(message);
+    return;
+  }
+  send("warn", message);
+}
+
 export function installFrontendLogging(): void {
   if (installed || !isTauri()) return;
   installed = true;

@@ -2252,6 +2252,7 @@ dependencies = [
  "hmac",
  "if-addrs",
  "keyring",
+ "libc",
  "log",
  "pbkdf2",
  "portable-pty",
