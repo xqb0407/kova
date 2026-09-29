@@ -46,7 +46,10 @@ export const PrototypePreview: FC<{ store: DesignStore; startFrameId: string; on
     };
   }, [doc, frame]);
 
-  // 适配缩放：随舞台尺寸变化重算
+  // 适配缩放：随「画面区」尺寸变化重算。
+  // 必须量中间那块 flex-1 画面区（stageRef），不能量根浮层——根浮层含顶栏(h-11)+底栏(h-12)，
+  // 用它的 clientHeight 会把 92px 的条高也算进可用高度 → fit 偏大 → 画板溢出被 overflow 裁掉
+  // （状态栏/底部 tab 各糊一截），把窗口缩小才勉强显示全。
   useEffect(() => {
     const el = stageRef.current;
     if (!el) return;
@@ -85,11 +88,11 @@ export const PrototypePreview: FC<{ store: DesignStore; startFrameId: string; on
     setFrameId(prev);
   };
 
-  const hotspots = frame ? collectHotspots(frame) : [];
+  const hotspots = frame ? collectHotspots(frame, doc) : [];
   const pageName = frame ? doc.pages.find((p) => p.id === frames.find((f) => f.frame.id === frame.id)?.pageId)?.name : null;
 
   return (
-    <div ref={stageRef} className="fixed inset-0 z-50 flex flex-col" style={{ background: "#18181b" }}>
+    <div className="fixed inset-0 z-50 flex flex-col" style={{ background: "#18181b" }}>
       {/* 顶栏 */}
       <div className="flex h-11 shrink-0 items-center gap-2 px-3" style={{ color: "#e4e4e7" }}>
         <button
@@ -121,7 +124,7 @@ export const PrototypePreview: FC<{ store: DesignStore; startFrameId: string; on
       </div>
 
       {/* 画面：单一缩放容器（SVG 与热点层共用同一 transform，热点坐标=画板局部坐标） */}
-      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+      <div ref={stageRef} className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
         {frame ? (
           <div className="relative" style={{ width: frame.w * fit, height: frame.h * fit }}>
             <div

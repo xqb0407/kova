@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type FC } from "react";
+import { useEffect, useRef, useState, type FC } from "react";
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { useFluidHover } from "@/hooks/use-fluid-hover";
@@ -18,6 +18,7 @@ import {
   InfoIcon,
   KeyRoundIcon,
   KeyboardIcon,
+  PaletteIcon,
   PaintbrushIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
@@ -38,8 +39,9 @@ import { PersonalizationSettings } from "./components/personalization-settings";
 import { SubagentsSettings } from "./components/subagents-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
 import { SecretsSettings } from "./components/secrets-settings";
+import { DesignThemesSettings } from "./components/design-themes-settings";
 
-type SettingsSection =
+export type SettingsSection =
   | "models"
   | "remote"
   | "appearance"
@@ -53,7 +55,8 @@ type SettingsSection =
   | "subagents"
   | "webhooks"
   | "hooks"
-  | "secrets";
+  | "secrets"
+  | "design-themes";
 
 const GROUPS: {
   label: string;
@@ -78,6 +81,7 @@ const GROUPS: {
       { id: "memory", label: "记忆", icon: BrainIcon },
       { id: "hooks", label: "钩子", icon: ZapIcon },
       { id: "secrets", label: "密钥", icon: KeyRoundIcon },
+      { id: "design-themes", label: "设计主题", icon: PaletteIcon },
     ],
   },
   {
@@ -89,6 +93,13 @@ const GROUPS: {
     ],
   },
 ];
+
+/** 事件详情等不可信来源 → section id 的收敛校验（composer 跳本页用）；
+ *  集合从 GROUPS 推导，导航加页即校验放开，两处不会漂移 */
+const ALL_SECTIONS = new Set<SettingsSection>(GROUPS.flatMap((g) => g.items.map((i) => i.id)));
+export function isSettingsSection(raw: unknown): raw is SettingsSection {
+  return typeof raw === "string" && ALL_SECTIONS.has(raw as SettingsSection);
+}
 
 // fluid hover 槽位：模块级常量保证注册序稳定。「返回应用」= 0，
 // 导航项按 GROUPS 顺序接在其后；分组标题不注册（高亮跳过，就近点亮条目）。
@@ -102,8 +113,19 @@ const NAV_ITEM_INDEX = (() => {
 })();
 
 /** 设置页：全窗口视图，左侧二级侧边栏导航，"返回应用"回到聊天 */
-export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
-  const [section, setSection] = useState<SettingsSection>("models");
+export const SettingsPage: FC<{
+  onBack: () => void;
+  /** 跳转目标分区 id（base.tsx 自 window 事件转来，不可信字符串，本模块校验） */
+  jumpSection?: string;
+  /** 单调递增序号：已挂载状态下同分区重复跳转也要生效，靠它触发 effect */
+  jumpSeq?: number;
+}> = ({ onBack, jumpSection, jumpSeq }) => {
+  const [section, setSection] = useState<SettingsSection>(() =>
+    isSettingsSection(jumpSection) ? jumpSection : "models",
+  );
+  useEffect(() => {
+    if (jumpSeq && isSettingsSection(jumpSection)) setSection(jumpSection);
+  }, [jumpSeq, jumpSection]);
   // 左侧导航与侧边栏列表同款 fluid hover：导航容器即滚动容器，
   // 高亮 rect 随 content 滚动（容器内 position:absolute 子元素随之滚动）
   const navRef = useRef<HTMLDivElement>(null);
@@ -215,6 +237,7 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "webhooks" && <WebhooksSettings />}
           {section === "hooks" && <HooksSettings />}
           {section === "secrets" && <SecretsSettings />}
+          {section === "design-themes" && <DesignThemesSettings />}
           {section === "about" && <AboutSettings />}
           {section === "general" && <GeneralSettings />}
         </div>

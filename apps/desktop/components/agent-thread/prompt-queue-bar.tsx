@@ -4,6 +4,7 @@ import { useAui, useAuiState } from "@assistant-ui/react";
 import { useAISDKChat } from "@assistant-ui/ai-sdk";
 import {
   cancelQueueItem,
+  dedupeMessagesById,
   dropQueuedEntry,
   getQueueSnapshot,
   popQueueHead,
@@ -64,7 +65,9 @@ export const PromptQueueBar: FC = () => {
     } else if (idx === -1 && reg.message) {
       next = [...msgs, reg.message];
     }
-    if (next !== msgs) chat.setMessages(next);
+    // 写入面统一按 id 去重：remove/reveal 与流式写入的竞态可能产生重复项，
+    // 在此收敛（消灭 duplicate-id 告警与双气泡），无重复时原数组直通
+    if (next !== msgs) chat.setMessages(dedupeMessagesById(next));
   };
 
   // 接力泵（见头注）：pumpingRef 防重入（内含 await 链）。弹出重发路径先
@@ -89,11 +92,18 @@ export const PromptQueueBar: FC = () => {
       const popped = await popQueueHead(threadId, sessionId);
       if (!popped) return;
       dropQueuedEntry(popped.reqId);
-      await refreshQueueSnapshot(threadId, sessionId);
+      // 派发绑定校正：popped.sessionId（sidecar 从排队项原帧带回）是该消息
+      // 归属会话的权威值。绑定漂移/缺失时先校正再重发——否则重发会落进
+      // 错误（或被 ensure 新建的空）会话，上下文尽失（2026-09-28 事故路径）
+      if (popped.sessionId && piSessionRegistry.get(threadId) !== popped.sessionId) {
+        piSessionRegistry.set(threadId, popped.sessionId);
+      }
+      await refreshQueueSnapshot(threadId, popped.sessionId ?? sessionId);
       aui.composer.setText(popped.text);
       aui.composer.send();
-    } catch {
-      // 通道异常：下一次下降沿/挂载再试
+    } catch (err) {
+      // 通道异常：下一次下降沿/挂载再试；留痕防"泵凭空失效"无从排查
+      console.warn("[queue-pump] dispatch failed", String(err));
     } finally {
       pumpingRef.current = false;
     }

@@ -88,8 +88,8 @@ export type UiMessage =
   | { kind: "doc.create"; path: string; json: string }
   /** 落盘图片等附属资产：宿主写 <文档名>-assets/<name> */
   | { kind: "doc.attach"; name: string; base64: string }
-  /** 导出产物（如 .pptx）：宿主按 filename（workspace 相对）写盘 + 提示 */
-  | { kind: "doc.export"; filename: string; base64: string }
+  /** 导出产物（如 .pptx）：宿主按 filename（workspace 相对）写盘 + 提示；silent 抑制逐文件成功提示（工程包多文件成批写时用，由面板自己收尾提示） */
+  | { kind: "doc.export"; filename: string; base64: string; silent?: boolean }
   /** 读任意 workspace 文件字节（图片元素渲染源） */
   | { kind: "asset.request"; reqId: string; path: string }
   /** 列工作区里的画布档（首页历史卡片）；宿主回 doc.list.reply */
@@ -156,9 +156,11 @@ export function decodeUiMessage(data: unknown): UiMessage | null {
     case "doc.export": {
       const filename = str(m.filename);
       if (filename === null || !isRelName(filename)) return null;
-      return isB64(m.base64)
-        ? { kind: "doc.export", filename, base64: m.base64 }
-        : null;
+      if (!isB64(m.base64)) return null;
+      // silent 缺省不带键，保持既有解码结果的形状不变
+      return m.silent === true
+        ? { kind: "doc.export", filename, base64: m.base64, silent: true }
+        : { kind: "doc.export", filename, base64: m.base64 };
     }
     case "asset.request": {
       const reqId = str(m.reqId, 128);

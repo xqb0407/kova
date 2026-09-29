@@ -74,7 +74,10 @@
  *       不驻留只写索引行与 header（下次物化自然生效）；本轮在跑时报 busy 拒绝
  *   { "type": "list_models", "id" }                           → { id, type: "models", models: [...], providers: [...] }
  *       models 项含 enabled 与 maxTokens/input/cost 属性（enabled=false = 已被过滤隐藏，前端自行过滤）
- *   { "type": "set_model", "id", "provider", "modelId" }      → { id, type: "model", provider, modelId }
+ *   { "type": "set_model", "id", "provider", "modelId", "sessionId"? } → { id, type: "model", provider, modelId }
+ *       sessionId 提供 = 会话定靶选择：转录 model_change 行与偏好列只落该会话（其余驻留会话不动）；
+ *       缺省 = 全局默认变更（设置页/启动恢复）：更新「最近一次使用」，驻留会话中仅从未显式
+ *       选过模型的即时刷 live run（不落行）。两种形态都写 kv pi.model。
  *   { "type": "get_model", "id" }                             → { id, type: "model", provider, modelId }
  *       未选择时 provider/modelId 为空串（前端据此校准 UI 真值）
  *   { "type": "set_thinking", "id", "level" }                 → { id, type: "thinking", level }（深度思考档位，广播到活动会话）
@@ -85,7 +88,7 @@
  *       自定义端点与目录外新增模型的属性弹窗预填用，未命中回 null
  *   { "type": "get_personalization", "id" }                   → { id, type: "personalization", settings, paths }（个性化设置：回复风格/自定义风格列表/内置档位覆盖/称呼/人设/自定义指令；paths = 人设/指令身份文件绝对路径）
  *   { "type": "set_personalization", "id", "settings" }       → { id, type: "personalization", settings, paths }（人设/指令落全局身份文件、结构化字段含自定义风格列表与内置覆盖落 SQLite kv + 活动会话系统提示词热替换）
- *   { "type": "get_app_mode", "id" }                          → { id, type: "app_mode", mode }（全局工作模式："work" | "code"，事实源 SQLite kv）
+ *   { "type": "get_app_mode", "id" }                          → { id, type: "app_mode", mode }（全局工作模式："work" | "code" | "design"，事实源 SQLite kv）
  *   { "type": "set_app_mode", "id", "mode" }                  → { id, type: "app_mode", mode }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization；非法值回落 "code"）
  *   { "type": "get_memory", "id" }                            → { id, type: "memory", settings }（记忆设置：总开关/作用域叠加/文件检索/指定文件白名单）
  *   { "type": "set_memory", "id", "settings" }                → { id, type: "memory", settings }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization）
@@ -132,6 +135,24 @@
  *   { "type": "set_skill_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 skills 应答
  *   { "type": "set_skills_enabled", "id", "targets": [{ "scope", "name" }...], "cwd"?, "enabled" }
  *       批量开关（设置页「全部启用 / 全部关闭」快捷）：targets 整表置为目标状态、一次性落盘 + 热重载 → 同款 skills 应答
+ *   —— 设计主题（awesome-design-md 品牌风格 DESIGN.md；内置 zip 包随版本解压同步，
+ *      用户层 <app_data>/design-md/user 可编辑，同名用户主题遮蔽内置；见 design-md/）——
+ *   { "type": "list_design_themes", "id", "threadId"?, "sessionId"? } → { id, type: "design_themes", entries, version, builtinCount, userCount, error, active? }
+ *       主题清单（内置层来自 zip catalog + 遮蔽标记；用户层现扫目录；带 threadId 回该会话当前选中 active）；
+ *       设置页与 composer 胶囊渲染用
+ *   { "type": "get_design_theme", "id", "ref": { "scope", "id" } } → { id, type: "design_theme_doc", ref, entry, doc }
+ *       主题全文（user = 磁盘原文含 frontmatter；builtin = 包内 DESIGN.md 原文）：编辑回填/预览/fork 另存用
+ *   { "type": "save_design_theme", "id", ("definition"|"raw"), "fallbackName"?, "themeId"? }
+ *       → 校验后写用户层 <slug>.md + 刷快照 + 活动会话主题句热替换 → { id, type: "design_theme_saved", ref, entries, ... }
+ *       themeId = 改名编辑目标的业务 id（裸 id 被协议 reqId 占用，WS 通道会覆写，同 save_model_provider 的 providerId；改名后旧 id 引用自动重映射）
+ *   { "type": "delete_design_theme", "id", "scope": "user", "themeId" } → 删文件 + 一切引用（未驻留偏好列/驻留 run/最近使用）收口为不使用 + 热替换 → 同款 design_themes 应答（内置不可删）
+ *   { "type": "set_design_theme", "id", "threadId", "sessionId"?, "cwd"?, "theme": { "scope", "id" } | null }
+ *       会话级选中（composer 胶囊）：null = 显式不使用主题（偏好列落 ""，不再回落最近使用）；
+ *       只重排该会话提示词 + 落 sessions.design_theme 列与最近使用 kv → { id, type: "design_theme_set", sessionId, theme }
+ *   —— 多窗口/远程同步（无 id 自发通知帧，Rust pi-chunk-batch 原样广播 + remote.rs 白名单）：
+ *   { "type": "design_themes", entries, ... }      save/delete 后推新清单（发起方另有带 id 应答，推送幂等）
+ *   { "type": "design_theme_set", "threadId", "sessionId", "theme" }
+ *       set 选中后推该线程新值；save 改名/delete 收口波及的驻留线程也逐线程推此帧
  *   —— 插件系统（市场页「已装插件」；插件清单探测 .kova-plugin/.claude-plugin/.codex-plugin，
  *      四类组件 skills/mcpServers/hooks/subagents 垫底合并，见 plugins.ts）——
  *   { "type": "list_plugins", "id", "cwd"? }                  → { id, type: "plugins", plugins, workspaceCwd }
@@ -263,7 +284,7 @@
  *   payloads.ts         各域清单应答载荷构建器 + 变更后热重载编排
  *   mgmt-queue.ts       管理命令串行队列原语（enqueueMgmt）
  *   exit.ts             进程退出状态机（stdinClosed/pendingOps/maybeExit）
- *   handlers/           12 个命令域的 handler 注册表（97 个命令按域分组）
+ *   handlers/           13 个命令域的 handler 注册表（102 个命令按域分组）
  */
 import { logErr } from "../log";
 import { resolveHostResult } from "../storage/hostdb";
@@ -292,6 +313,7 @@ import { handlers as subagentHandlers } from "./handlers/subagents";
 import { handlers as automationHandlers } from "./handlers/automations";
 import { handlers as pluginHandlers } from "./handlers/plugins";
 import { handlers as skillHandlers } from "./handlers/skills";
+import { handlers as designMdHandlers } from "./handlers/design-md";
 import { handlers as mcpHandlers } from "./handlers/mcp";
 import { handlers as providerHandlers } from "./handlers/providers";
 import { handlers as interactiveHandlers } from "./handlers/interactive";
@@ -318,6 +340,7 @@ const registry: Record<string, CommandHandler> = {
   ...automationHandlers,
   ...pluginHandlers,
   ...skillHandlers,
+  ...designMdHandlers,
   ...mcpHandlers,
   ...providerHandlers,
   ...interactiveHandlers,

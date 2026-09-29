@@ -62,7 +62,7 @@ function useHotkeys(store: DesignStore, active: boolean, onPreview?: () => void)
           e.preventDefault(); // ⌘⇧C：复制选中图层 CSS（单选）
           const n = st.selIds[0] ? findNode(st.doc, st.selIds[0])?.node : null;
           if (n)
-            void copyText(nodeToCss(n)).then((ok) => bridge.notify(ok ? "已复制该图层的 CSS" : "复制失败", ok ? undefined : "error"));
+            void copyText(nodeToCss(n, st.doc)).then((ok) => bridge.notify(ok ? "已复制该图层的 CSS" : "复制失败", ok ? undefined : "error"));
         } else st.copySelected();
         return;
       }
@@ -138,6 +138,7 @@ function useHotkeys(store: DesignStore, active: boolean, onPreview?: () => void)
         l: "line",
         a: "arrow",
         t: "text",
+        i: "icon",
       };
       if (map[k]) {
         st.setTool(map[k]!);
@@ -394,6 +395,20 @@ function EditorShell({ store, onGoHome, onPreview }: { store: DesignStore; onGoH
 
 export function App() {
   const store = useDesign();
+  // 开发态探针：window 暴露状态核（同 __designLeafer 风格），自动化脚本直查/直操作 store
+  (window as unknown as Record<string, unknown>).__designStore = store;
+  // 拖放兜底：落点不在画布挂点时阻止浏览器直接打开文件（画布 onDrop 自行 stopPropagation）
+  useEffect(() => {
+    const prevent = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes("Files")) e.preventDefault();
+    };
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, []);
   const [homeOpen, setHomeOpen] = useState(false);
   const [previewFrameId, setPreviewFrameId] = useState<string | null>(null);
   // 预览原型：从选区所在画板（或当前页/全档第一个画板）起播；无画板时提示

@@ -77,7 +77,7 @@ describe("MCP stdio 协议", () => {
     const res = await request("tools/list");
     const tools = res.result.tools as Array<{ name: string; description: string; inputSchema: any }>;
     const names = tools.map((t) => t.name);
-    for (const want of ["list_docs", "read_doc", "create_doc", "add_nodes", "update_nodes", "delete_nodes", "group_nodes", "ungroup_nodes", "align_nodes", "stack_nodes", "reorder_nodes", "edit_pages"]) {
+    for (const want of ["list_docs", "read_doc", "create_doc", "add_nodes", "update_nodes", "delete_nodes", "group_nodes", "ungroup_nodes", "align_nodes", "stack_nodes", "reorder_nodes", "edit_pages", "screenshot_doc", "export_doc", "list_icons", "apply_layout"]) {
       expect(names).toContain(want);
     }
     for (const t of tools) {
@@ -110,6 +110,19 @@ describe("MCP stdio 协议", () => {
     expect("children" in frame ? frame.children.length : 0).toBe(1);
   });
 
+  test("tools/call screenshot_doc：mcpContent 原样透传成 result.content 的 text+image 块", async () => {
+    const shot = await request("tools/call", { name: "screenshot_doc", arguments: { path: "srv.uidesign.json" } });
+    expect(shot.result.isError).toBeUndefined();
+    const blocks = shot.result.content as Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+    expect(blocks[0].type).toBe("text");
+    expect(blocks[0].text).toContain("画布截图");
+    expect(blocks[1].type).toBe("image");
+    expect(blocks[1].mimeType).toBe("image/png");
+    const png = Buffer.from(blocks[1].data!, "base64");
+    expect([...png.subarray(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    expect(png.byteLength).toBeLessThan(2 * 1024 * 1024);
+  });
+
   test("未知工具 → JSON-RPC 错误；工具内部错误 → isError 文本", async () => {
     const bad = await request("tools/call", { name: "nope", arguments: {} });
     expect(bad.error?.code).toBe(-32602);
@@ -117,5 +130,21 @@ describe("MCP stdio 协议", () => {
     const fail = await request("tools/call", { name: "read_doc", arguments: { path: "ghost.uidesign.json" } });
     expect(fail.result.isError).toBe(true);
     expect(fail.result.content[0].text as string).toContain("不存在");
+  });
+
+  test("tools/call export_doc：真落盘多文件目录包并回报静态文件清单", async () => {
+    const res = await request("tools/call", { name: "export_doc", arguments: { path: "srv.uidesign.json" } });
+    expect(res.result.isError).toBeUndefined();
+    const payload = JSON.parse(res.result.content[0].text as string);
+    expect(payload.dir).toBe("srv-export");
+    expect(payload.files.some((f: { kind: string }) => f.kind === "manifest")).toBe(true);
+    expect(payload.files.some((f: { kind: string }) => f.kind === "png")).toBe(true);
+    expect(payload.hint).toContain("srv-export/");
+    const manifest = JSON.parse(readFileSync(path.join(ws, "srv-export", "manifest.json"), "utf8"));
+    expect(manifest.generator).toBe("ui-design/export");
+    expect(manifest.screens.length).toBe(1);
+    for (const f of manifest.files) {
+      expect(readFileSync(path.join(ws, f.path)).byteLength).toBe(f.bytes);
+    }
   });
 });

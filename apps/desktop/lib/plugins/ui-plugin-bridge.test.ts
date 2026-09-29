@@ -71,6 +71,13 @@ describe("decodeUiMessage 线路校验", () => {
       decodeUiMessage(ui("doc.export", { filename: "out/deck.pptx", base64: "AA" })),
     ).toEqual({ kind: "doc.export", filename: "out/deck.pptx", base64: "AA" });
     expect(decodeUiMessage(ui("doc.export", { filename: "../deck.pptx", base64: "AA" }))).toBeNull();
+    // silent：仅显式 true 透传（工程包成批写抑制逐文件提示）；缺省/falsy 不带键
+    expect(
+      decodeUiMessage(ui("doc.export", { filename: "p/index.html", base64: "AA", silent: true })),
+    ).toEqual({ kind: "doc.export", filename: "p/index.html", base64: "AA", silent: true });
+    expect(
+      decodeUiMessage(ui("doc.export", { filename: "p/index.html", base64: "AA", silent: false })),
+    ).toEqual({ kind: "doc.export", filename: "p/index.html", base64: "AA" });
   });
 
   test("asset.request：reqId 限长 + path 相对", () => {

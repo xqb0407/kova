@@ -229,3 +229,44 @@ describe("diffPatch", () => {
     expect(diffPatch({ a: 1.04 }, { a: 1.05 })).toEqual({ a: 1.05 }); // 1.0→1.05 仍差
   });
 });
+
+describe("flip 镜像契约", () => {
+  test("翻转节点的纯移动：不产生宽高/子树噪声", () => {
+    const rect: DesignNode = { id: "r", type: "rect", name: "R", x: 100, y: 100, w: 50, h: 40, flipX: true };
+    const patch = ledgerFor(rect, { x: 130, y: 120, scaleX: -1, scaleY: 1, rotation: 0 }); // y=中心 100+40/2
+    expect(patch).toEqual({ id: "r", patch: { x: 105 } });
+  });
+
+  test("手势翻转到镜像：提交 flipX=true", () => {
+    const rect: DesignNode = { id: "r", type: "rect", name: "R", x: 100, y: 100, w: 50, h: 40 };
+    // 绕中心 (125,120) 水平镜像：tr.x = 125 - 25 = 100（位置不变），scaleX = -1
+    const patch = ledgerFor(rect, { x: 100, y: 100, scaleX: -1, scaleY: 1, rotation: 0 });
+    expect(patch?.patch.flipX).toBe(true);
+    expect(patch?.patch.w).toBeUndefined(); // 尺寸不变
+  });
+
+  test("已翻转节点再翻转回正：flipX 清除（走 undefined 删除分支）", () => {
+    const rect: DesignNode = { id: "r", type: "rect", name: "R", x: 100, y: 100, w: 50, h: 40, flipX: true };
+    const patch = ledgerFor(rect, { x: 100, y: 100, scaleX: 1, scaleY: 1, rotation: 0 });
+    expect(patch?.patch.flipX).toBeUndefined();
+    expect("flipX" in (patch?.patch ?? {})).toBe(true);
+  });
+
+  test("翻转节点的 group：纯移动不重排子树（手势相对缩放 = 1）", () => {
+    const grp: DesignNode = {
+      id: "g", type: "group", name: "G", x: 100, y: 100, w: 100, h: 100, flipX: true,
+      children: [{ id: "c", type: "rect", name: "C", x: 10, y: 10, w: 30, h: 30 }],
+    };
+    const patch = ledgerFor(grp, { x: 160, y: 150, scaleX: -1, scaleY: 1, rotation: 0 }); // y=中心 100+100/2
+    expect(patch).toEqual({ id: "g", patch: { x: 110 } });
+  });
+
+  test("翻转节点的文本缩放手势：字号按相对缩放（不双算镜像）", () => {
+    const text: DesignNode = { id: "t", type: "text", name: "T", x: 100, y: 100, w: 100, h: 30, flipX: true, runs: [{ text: "字", size: 20, color: "#111111" }] };
+    // 手势再放大 2 倍：tr.scaleX = -2（含 flip 符号），相对 = 2
+    const patch = ledgerFor(text, { x: 200, y: 100, scaleX: -2, scaleY: 1, rotation: 0 });
+    const runs = (patch?.patch.runs as { size: number }[]) ?? [];
+    expect(runs[0]?.size).toBe(40);
+    expect(patch?.patch.w).toBe(200); // |100 * -2|
+  });
+});

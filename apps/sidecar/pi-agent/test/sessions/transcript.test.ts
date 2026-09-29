@@ -19,6 +19,7 @@ import {
   appendThinkingLevelChangeRow,
   appendSessionInfoRow,
   setSessionName,
+  STEER_PREFIX,
 } from "../../src/sessions/transcript";
 import { makeSummaryMessage, projectRestoreContext } from "../../src/agent/context";
 import type { Message } from "@earendil-works/pi-ai";
@@ -975,5 +976,43 @@ describe("与上游 v3 解析器互测（§10 M4 门禁）", () => {
       thinkingLevel: "medium",
       model: { provider: "openai", modelId: "gpt-4o" },
     });
+  });
+});
+
+describe("steer 哨兵前缀（并入当前轮的注入消息）", () => {
+  test("historyToUiMessages：带前缀的用户行 → 文本剥前缀 + data-steeredNote 标记 part", () => {
+    const messages = historyToUiMessages([
+      { agent: userMsg(`${STEER_PREFIX}底部导航图标修一下`), seq: 7 },
+    ]);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.parts).toEqual([
+      { type: "data-steeredNote", id: "steered-7", data: {} },
+      { type: "text", text: "底部导航图标修一下" },
+    ]);
+  });
+
+  test("toUiMessage 同口径：标记 part 带上 seq 基准 id", () => {
+    const ui = toUiMessage(userMsg(`${STEER_PREFIX}并入的追问`), 11)!;
+    expect(ui.parts[0]).toEqual({
+      type: "data-steeredNote",
+      id: "steered-11",
+      data: {},
+    });
+  });
+
+  test("普通用户行不受影响：无标记 part，文本原样", () => {
+    const messages = historyToUiMessages([{ agent: userMsg("普通提问"), seq: 3 }]);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.parts).toEqual([{ type: "text", text: "普通提问" }]);
+  });
+
+  test("auto-continue 注入行在历史重建中隐藏（与 toUiMessage 同口径）", () => {
+    const messages = historyToUiMessages([
+      {
+        agent: userMsg("[[auto-continue]] 上一条回复因达到输出 token 上限被截断"),
+        seq: 9,
+      },
+    ]);
+    expect(messages).toEqual([]);
   });
 });

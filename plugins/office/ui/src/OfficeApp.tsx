@@ -214,7 +214,7 @@ const OfficeHome: FC<{
     let alive = true;
     void bridge.listDocs().then((all) => {
       if (!alive) return;
-      // 本面板只管三类办公档；board/ui 白板档归 slide-canvas 面板
+      // 本面板只管三类办公档；board/ui 白板档归 canvas 面板
       setItems((all ?? []).filter((i) => i.kind === "deck" || i.kind === "sheet" || i.kind === "doc"));
     });
     return () => {

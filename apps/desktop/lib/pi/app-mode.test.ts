@@ -2,11 +2,12 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
 
 /**
- * 全局工作模式（work/code）镜像 store 测试：
+ * 全局工作模式（work/code/design）镜像 store 测试：
  * - 水合纪律：localStorage 播种 → get_app_mode 拉真值覆盖（pi-session-mode 同款）
  * - 失败容错：sidecar 无此命令/通信失败 → 保留播种值并置 degraded（旧版 sidecar
  *   下 UI 照常切换、提示词不跟随，设置页据此标注）
  * - setAppMode：应答即真值回写镜像与缓存；失败回弹降级但本地生效
+ * - 三值规整：仅接受 work/code/design 字面量，其余（旧版应答/脏缓存）回落 code
  * mock pi-bridge 的 piRequest（沿用 pi-running.test.ts 的桩风格）。
  */
 
@@ -48,7 +49,7 @@ const { getAppMode, getAppModeDegraded, initAppMode, setAppMode } = await import
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 /** 每用例重置：清缓存/桩行为/内存态，再按当前桩重新水合 */
-async function reset(seed?: "work" | "code") {
+async function reset(seed?: "work" | "code" | "design") {
   seedStore.clear();
   if (seed) seedStore.set("app.mode", seed);
   calls = [];
@@ -102,6 +103,34 @@ describe("app-mode 水合", () => {
     await flush();
     expect(getAppMode()).toBe("work");
   });
+
+  test("design：播种先行、sidecar 真值覆盖为 design", async () => {
+    responder = () => ({ type: "app_mode", mode: "design" });
+    seedStore.set("app.mode", "design");
+    calls = [];
+    initAppMode();
+    // 水合在途：播种的 design 先可见
+    expect(getAppMode()).toBe("design");
+    await flush();
+    expect(getAppMode()).toBe("design");
+    expect(getAppModeDegraded()).toBe(false);
+  });
+
+  test("三值规整：sidecar/播种给非法值回落 code", async () => {
+    // 脏 localStorage 值（旧版/手改）水合回落 code
+    responder = () => ({ type: "app_mode", mode: "code" });
+    seedStore.set("app.mode", "banana");
+    calls = [];
+    initAppMode();
+    await flush();
+    expect(getAppMode()).toBe("code");
+
+    // sidecar 应答非法值同样规整为 code
+    responder = () => ({ type: "app_mode", mode: "banana" });
+    initAppMode();
+    await flush();
+    expect(getAppMode()).toBe("code");
+  });
 });
 
 describe("setAppMode", () => {
@@ -117,6 +146,19 @@ describe("setAppMode", () => {
     await applied;
     expect(getAppMode()).toBe("work");
     expect(seedStore.get("app.mode")).toBe("work");
+    expect(getAppModeDegraded()).toBe(false);
+  });
+
+  test("design：成功切换，镜像与缓存落到 design", async () => {
+    await reset();
+    responder = (req) => ({
+      type: "app_mode",
+      mode: req.type === "set_app_mode" ? req.mode : "code",
+    });
+    await setAppMode("design");
+    expect(calls.at(-1)).toEqual({ type: "set_app_mode", mode: "design" });
+    expect(getAppMode()).toBe("design");
+    expect(seedStore.get("app.mode")).toBe("design");
     expect(getAppModeDegraded()).toBe(false);
   });
 

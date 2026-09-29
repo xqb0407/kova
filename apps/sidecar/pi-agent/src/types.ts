@@ -3,6 +3,7 @@ import type { Agent, AgentContext, AgentTool } from "@earendil-works/pi-agent-co
 import type * as ai from "ai";
 import type { RetryBudget } from "./model/provider-retry";
 import type { TraceRunRecorder } from "./protocol/trace";
+import type { ThemeRef } from "./design-md/store";
 
 /** AI SDK UI 消息类型（协议流与 JSONL 持久化都用它） */
 export type UIMessage = ai.UIMessage;
@@ -189,6 +190,20 @@ export type Running = {
   planning: PlanningState;
   /** 当前会话计划文件绝对路径（plan_write 首写定名，之后覆盖写） */
   planFilePath?: string;
+  /**
+   * 本会话选中的设计主题（design 模式提示词段与 use_design_theme 缺省目标；
+   * null/缺省 = 不使用主题）。事实源：sessions.design_theme 偏好列，恢复链
+   * row ?? 最近使用 kv ?? null（见 sessions/resolve.ts；变更见 handlers/design-md.ts）
+   */
+  designTheme?: ThemeRef | null;
+  /**
+   * 「主题全文已在上下文里」台账（key = scope/id，value = 正文哈希）：
+   * use_design_theme 重复加载短路的数据面——同 ref 同哈希返回简短确认不再
+   * 贴全文；哈希变化（管理页编辑）自动失效重贴。压缩（runCompaction）整体
+   * 替换消息后必须清空：全文已不在上下文，下次调用重取（design 段指令常驻
+   * 驱动模型复call，自愈）。恢复的重建 run 天然空表 = 宁可重贴不谎报已加载。
+   */
+  designThemeLoads?: Map<string, string>;
   /** 计划标题（首写时确定，用于文件名与审批卡展示） */
   planTitle?: string;
   /** 未过滤的基础工具目录（重建模式工具集时用） */

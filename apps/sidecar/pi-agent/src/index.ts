@@ -45,6 +45,10 @@ import { initSkillsState } from "./skills/skills";
 import { initMcpEnabledState } from "./mcp/mcp-config";
 import { initPluginsState } from "./plugins/plugins";
 import { initSecretsConfig } from "./secrets/secrets";
+import { syncBuiltinThemes } from "./design-md/builtin-sync";
+import { clearRemovedBuiltinThemes } from "./design-md/ref-integrity";
+import { initDesignThemeState } from "./design-md/state";
+import { refreshThemes } from "./design-md/store";
 import { mcpManager } from "./mcp/mcp-manager";
 import { handleLine, markStdinClosed, setInitGate } from "./protocol/protocol";
 import { initAutomation, stopAutomation } from "./automation/runtime";
@@ -94,7 +98,7 @@ async function main() {
     // 个性化设置在闸门内恢复：闸门放行前到达的命令都会缓冲，
     // 保证首批会话组装系统提示词时读到的已是 kv 里恢复的设置
     await initPersonalization();
-    // 全局工作模式（work/code）同走 kv，提示词注入块读这份内存状态
+    // 全局工作模式（work/code/design）同走 kv，提示词注入块读这份内存状态
     await initAppMode();
     // 记忆设置同理（提示词注入块 + 工具门控都读这份内存配置）
     await initMemory();
@@ -118,6 +122,17 @@ async function main() {
     await initPluginsState();
     // 密钥绑定策略同走 kv（值本身是 Rust 侧的密文；bash 注入时实时读这份内存配置）
     await initSecretsConfig();
+    // 设计主题三段初始化：内置主题包按 zip catalog 版本做「解压/升级/剪旧」同步
+    // （首启即解压，之后仅版本变更时重写，失败非致命——清单与正文走 zip 内存副本）；
+    // 「最近使用」kv 恢复；快照预热一次（compose 主题句与 use_design_theme 同步读快照）
+    const themeSync = await syncBuiltinThemes();
+    await initDesignThemeState();
+    // 升级剪掉的内置主题：把指向它的会话偏好列/驻留 run/最近使用收口为
+    // 「显式不使用」（否则悬空引用回落链会悄悄换成别的主题）
+    if (themeSync.status === "synced" && themeSync.removed.length > 0) {
+      await clearRemovedBuiltinThemes(themeSync.removed);
+    }
+    await refreshThemes();
   })().catch((err) => {
     logErr("model catalog init failed:", err);
   });

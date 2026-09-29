@@ -35,8 +35,8 @@ export function buildOpenPanelTool(cwd: string, threadId: string): AgentTool {
     parameters: Type.Object({
       plugin: Type.String({
         description:
-          "Plugin id as in list_plugins (e.g. \"slide-canvas@dev-marketplace\"); the bare plugin name also works " +
-          "when it is unambiguous (e.g. \"slide-canvas\")",
+          "Plugin id as in list_plugins (e.g. \"canvas@dev-marketplace\"); the bare plugin name also works " +
+          "when it is unambiguous (e.g. \"canvas\")",
       }),
       panel: Type.String({ description: "Panel id contributed by that plugin (e.g. \"canvas\")" }),
       path: Type.Optional(
@@ -51,8 +51,8 @@ export function buildOpenPanelTool(cwd: string, threadId: string): AgentTool {
       const pluginId = String(p.plugin ?? "").trim();
       const panelId = String(p.panel ?? "").trim();
       if (!pluginId || !panelId) return textResult("open_plugin_panel：plugin 与 panel 参数必填");
-      // 精确 id 未命中时按插件名解析：技能里写的是裸名（如 "slide-canvas"），
-      // 而真实 id 带市场后缀（"slide-canvas@dir-e9ffc51b"，机器相关）——不让模型去猜后缀
+      // 精确 id 未命中时按插件名解析：技能里写的是裸名（如 "canvas"），
+      // 而真实 id 带市场后缀（"canvas@dir-e9ffc51b"，机器相关）——不让模型去猜后缀
       let resolvedId = pluginId;
       if (!findEnabledPluginPanel(resolvedId, panelId)) {
         const byName = scanInstalledSync().filter((p) => p.enabled && p.name === pluginId);

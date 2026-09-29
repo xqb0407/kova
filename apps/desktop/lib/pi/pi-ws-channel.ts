@@ -6,6 +6,7 @@ import type {
   PiChannel,
   PiChannelStatus,
   PiContextChangedFrame,
+  PiDesignThemePush,
   PiPluginOpFrame,
   PiRunningTurn,
   PromptStreamArgs,
@@ -60,6 +61,7 @@ export class WsPiChannel implements PiChannel {
   private automationCbs = new Set<(frame: PiAutomationFrame) => void>();
   private pluginOpCbs = new Set<(frame: PiPluginOpFrame) => void>();
   private contextCbs = new Set<(frame: PiContextChangedFrame) => void>();
+  private designCbs = new Set<(frame: PiDesignThemePush) => void>();
 
   constructor(
     private readonly url: string,
@@ -180,6 +182,16 @@ export class WsPiChannel implements PiChannel {
       if (typeof frame.sessionId === "string") {
         for (const cb of this.contextCbs) cb(frame);
       }
+      return;
+    }
+    // 设计主题推送帧（remote.rs 白名单同款放行）。注意：这两个 type 同时也是
+    // 应答类型——只有无 id 的自发帧才进推送分发，带 id 的照旧走下方 pending 配对
+    if (
+      (type === "design_themes" || type === "design_theme_set") &&
+      v.id === undefined
+    ) {
+      const frame = v as unknown as PiDesignThemePush;
+      for (const cb of this.designCbs) cb(frame);
       return;
     }
 
@@ -321,6 +333,11 @@ export class WsPiChannel implements PiChannel {
   subscribeContextChanges(cb: (frame: PiContextChangedFrame) => void): () => void {
     this.contextCbs.add(cb);
     return () => this.contextCbs.delete(cb);
+  }
+
+  subscribeDesignThemes(cb: (frame: PiDesignThemePush) => void): () => void {
+    this.designCbs.add(cb);
+    return () => this.designCbs.delete(cb);
   }
 
   async listRunning(): Promise<string[]> {

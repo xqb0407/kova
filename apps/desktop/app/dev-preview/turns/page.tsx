@@ -397,14 +397,14 @@ export default function TurnsPreviewPage() {
                     <AssistantMessage />
                   );
                   return (
-                    <TurnSlot
-                      messageId={String(message.id)}
-                      isEditing={!!message.composer.isEditing}
-                    >
-                      <ManualCompactionTailAfter messageId={String(message.id)}>
+                    <ManualCompactionTailAfter messageId={String(message.id)}>
+                      <TurnSlot
+                        messageId={String(message.id)}
+                        isEditing={!!message.composer.isEditing}
+                      >
                         {inner}
-                      </ManualCompactionTailAfter>
-                    </TurnSlot>
+                      </TurnSlot>
+                    </ManualCompactionTailAfter>
                   );
                 }}
               </ThreadPrimitive.Messages>

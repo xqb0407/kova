@@ -1,7 +1,7 @@
 /**
  * 面板 opens-glob 路由测试：panelOpenMatches 的 `*` 语义（不跨路径分隔符、大小写不敏感），
  * findPanelForFile 的「最具体 glob 优先」——office 的 *.deck.canvas.json 必须压过
- * slide-canvas 的 *.canvas.json（`*.canvas.json` 同样匹配 foo.deck.canvas.json），
+ * canvas 插件的 *.canvas.json（`*.canvas.json` 同样匹配 foo.deck.canvas.json），
  * 否则宽后缀插件会按注册顺序吞掉窄后缀插件的文件。
  */
 import { describe, expect, test } from "bun:test";
@@ -24,12 +24,12 @@ describe("panelOpenMatches", () => {
 });
 
 describe("findPanelForFile", () => {
-  const wideFirst = [panel("slide-canvas", ["*.canvas.json"]), panel("office", ["*.deck.canvas.json"])];
+  const wideFirst = [panel("canvas", ["*.canvas.json"]), panel("office", ["*.deck.canvas.json"])];
   test("最具体 glob 优先：deck 档归 office（即便宽后缀注册在前）", () => {
     expect(findPanelForFile(wideFirst, "roadmap.deck.canvas.json")?.pluginId).toBe("office");
   });
   test("无重叠认领时行为不变：普通画布档仍归宽后缀插件", () => {
-    expect(findPanelForFile(wideFirst, "board.canvas.json")?.pluginId).toBe("slide-canvas");
+    expect(findPanelForFile(wideFirst, "board.canvas.json")?.pluginId).toBe("canvas");
   });
   test("同分按注册顺序取第一", () => {
     const dup = [panel("a", ["*.canvas.json"]), panel("b", ["*.canvas.json"])];

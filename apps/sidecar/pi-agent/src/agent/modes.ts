@@ -42,7 +42,8 @@ import { PLUGIN_MGMT_TOOL_NAMES } from "../plugins/plugin-mgmt-tools";
 import { getAutomationPolicy, automationDenyReason } from "../automation/policy";
 import { buildHookPayload, runHooks } from "./hooks";
 import { personalizationPromptBlock } from "./personalization";
-import { workModePromptBlock } from "./app-mode";
+import { appModePromptBlock } from "./app-mode";
+import type { ThemeRef } from "../design-md/store";
 import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "../mcp/mcp-tools";
 import { skillsPromptBlock } from "../skills/skills";
@@ -97,7 +98,8 @@ export type PromptModelInfo = { provider: string; id: string; name?: string };
  * （日期/模型/OS/shell，末行是 cwd 行）。
  * 顺序保证缓存命中：静态核心在前（跨会话字节级一致），模式段夹中间（会话内
  * 切换时整段重排不可避免，但同一模式内前缀稳定），个性化/记忆段随设置变更热替换，
- * 工作模式段随全局 work/code 开关热替换（app-mode.ts，code 档为空串），
+ * 工作模式段随全局 work/code/design 开关热替换（app-mode.ts，code 档为空串；
+ * design 段随会话选中的设计主题增减一行主题句，正文由 use_design_theme 按需加载），
  * MCP 段随服务器配置变更热替换（无启用服务器时为空串），技能目录段只列生效技能的
  * name/description/location 三行元数据（正文模型按需 use_skill 加载，开关/遮蔽在
  * 缓存合并时裁决，随 reloadSkills 热替换），指令段读 AGENTS.md（全局 ~/.kova/AGENTS.md +
@@ -109,13 +111,14 @@ export function composeModeSystemPrompt(
   mode: SessionMode,
   cwd: string,
   model?: PromptModelInfo | null,
+  designTheme?: ThemeRef | null,
 ): string {
   const extra = mode === "plan" ? PLAN_MODE_PROMPT : AGENT_MODE_PROMPT;
   return [
     SYSTEM_PROMPT_CORE,
     extra,
     personalizationPromptBlock(),
-    workModePromptBlock(),
+    appModePromptBlock(designTheme),
     memoryPromptBlock(cwd),
     mcpPromptBlock(cwd),
     skillsPromptBlock(cwd),
@@ -538,7 +541,7 @@ function persistModePrefs(run: Running): void {
 export function applyMode(run: Running, mode: SessionMode): void {
   run.mode = mode;
   run.planning = mode === "agent" ? "inactive" : "planning";
-  const prompt = composeModeSystemPrompt(mode, run.cwd, run.agent.state.model);
+  const prompt = composeModeSystemPrompt(mode, run.cwd, run.agent.state.model, run.designTheme);
   const tools = toolsForMode(run);
   run.agent.state.systemPrompt = prompt;
   run.agent.state.tools = tools;

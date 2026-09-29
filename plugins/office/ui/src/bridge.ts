@@ -183,7 +183,7 @@ class Bridge {
     if (this.standalone) {
       this.localDoc = json;
       try {
-        localStorage.setItem("slide-canvas-local-doc", json);
+        localStorage.setItem("office-local-doc", json);
       } catch {}
       return;
     }
@@ -216,7 +216,7 @@ class Bridge {
   notify(text: string, level: "info" | "error" = "info"): void {
     if (this.standalone) {
       // eslint-disable-next-line no-console
-      console.log(`[slide-canvas:${level}]`, text);
+      console.log(`[office:${level}]`, text);
       return;
     }
     this.post({ kind: "ui.notify", text, level });
@@ -258,7 +258,7 @@ class Bridge {
   /* standalone 的本地文档存取（开发态） */
   private loadLocal(): string {
     try {
-      return localStorage.getItem("slide-canvas-local-doc") ?? JSON.stringify({ version: DOC_VERSION, slides: [] }, null, 2);
+      return localStorage.getItem("office-local-doc") ?? JSON.stringify({ version: DOC_VERSION, slides: [] }, null, 2);
     } catch {
       return '{"version":1,"slides":[]}';
     }

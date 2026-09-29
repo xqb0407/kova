@@ -64,10 +64,16 @@ export async function syncSelectedModelFromSidecar(): Promise<void> {
   }
 }
 
-/** 选中模型：写 SQLite + 同步 sidecar（对活动会话立即 setModel，新会话生效）。
+/** 选中模型：写 SQLite + 同步 sidecar。
+ *  sessionId 提供 = 会话定靶选择：sidecar 只对该会话落模型真值行/偏好列（其余
+ *  驻留会话不动），全局 kv 仍更新为「最近一次使用」供新会话跟随；
+ *  缺省 = 全局默认变更（设置页/启动恢复），只刷从未显式选过模型的驻留会话。
  *  sidecar 拒绝（模型不在目录/无凭据）时 UI 回退到 sidecar 真值且不写 SQLite，
  *  避免"界面显示 A、请求用默认模型 B"的假象。 */
-export async function setSelectedModel(model: SelectedModel | null) {
+export async function setSelectedModel(
+  model: SelectedModel | null,
+  sessionId?: string,
+) {
   const previous = current;
   current = model;
   emit();
@@ -76,6 +82,7 @@ export async function setSelectedModel(model: SelectedModel | null) {
     try {
       await piRequest({
         type: "set_model",
+        ...(sessionId ? { sessionId } : {}),
         provider: model.provider,
         modelId: model.modelId,
       });

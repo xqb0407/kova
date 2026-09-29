@@ -123,7 +123,7 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
   const ctxRef = useRef({ cwd, docPath });
   ctxRef.current = { cwd, docPath };
   /** doc.list 扫描范围：本面板自己认领的 opens glob（每渲染同步，回调经 ref 取）。
-   *  不能发全量面板并集：slide-canvas 等插件首页按自己认领的后缀渲染卡片，
+   *  不能发全量面板并集：canvas 等插件首页按自己认领的后缀渲染卡片，
    *  混进别人家的 kind（sheet/doc）会直接渲染崩溃。 */
   const listGlobsRef = useRef<string[]>([]);
   listGlobsRef.current =
@@ -313,14 +313,16 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
             toast.error(`导出失败：${fsErrorText(err)}`);
             return;
           }
-          toast.add({
-            title: `已导出 ${msg.filename}`,
-            status: "success",
-            action: {
-              label: "显示",
-              onClick: () => void fsReveal(cwd, msg.filename),
-            },
-          });
+          if (!msg.silent) {
+            toast.add({
+              title: `已导出 ${msg.filename}`,
+              status: "success",
+              action: {
+                label: "显示",
+                onClick: () => void fsReveal(cwd, msg.filename),
+              },
+            });
+          }
           return;
         }
         case "asset.request": {

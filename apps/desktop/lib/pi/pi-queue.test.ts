@@ -3,6 +3,7 @@ import { describe, expect, test, afterEach } from "bun:test";
 import {
   applyQueueStateChunk,
   cancelQueueItem,
+  dedupeMessagesById,
   getQueueSnapshot,
   getSteeredEntries,
   getThreadPendingTurn,
@@ -236,5 +237,36 @@ describe("乐观摘除（消除快照往返闪现）", () => {
     const events = collect();
     unregisterQueuedMessage("req-4", THREAD);
     expect(events).toEqual([]);
+  });
+});
+
+describe("dedupeMessagesById（写入面收敛）", () => {
+  test("无重复：原数组引用直通（不触发 setMessages 无谓通知）", () => {
+    const arr = [userMessage("a", "1"), userMessage("b", "2")];
+    expect(dedupeMessagesById(arr)).toBe(arr);
+  });
+
+  test("重复项保留最后一次出现，相对顺序不变", () => {
+    const arr = [
+      userMessage("a", "1"),
+      userMessage("b", "2"),
+      userMessage("a", "1-plus"),
+    ];
+    const out = dedupeMessagesById(arr);
+    expect(out.map((m) => m.id)).toEqual(["b", "a"]);
+    expect(out.find((m) => m.id === "a")?.parts).toEqual([
+      { type: "text", text: "1-plus" },
+    ]);
+  });
+});
+
+describe("回填幂等（竞态收敛）", () => {
+  test("派发出队的 reveal 只发生一次：空快照重复到达不重复回填", () => {
+    registerQueuedMessage("req-1", THREAD, userMessage("msg-1", "hello"));
+    applyQueueStateChunk(THREAD, snapshotOf([{ reqId: "req-1", text: "hello" }]));
+    const events = collect();
+    applyQueueStateChunk(THREAD, snapshotOf([]));
+    applyQueueStateChunk(THREAD, snapshotOf([]));
+    expect(events.map((e) => e.kind)).toEqual(["reveal"]);
   });
 });

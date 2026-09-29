@@ -104,9 +104,16 @@ export function initLocalStorage(dbPath: string): void {
   } catch {
     /* 列已存在 */
   }
-  // 会话级偏好（与 Rust data.rs 镜像）：mode / approval_level / 最近一次模型，
-  // NULL = 从未变更过；session_prefs_set 按 COALESCE 语义只更新携带的字段
-  for (const col of ["mode TEXT", "approval_level TEXT", "model_provider TEXT", "model_id TEXT"]) {
+  // 会话级偏好（与 Rust data.rs 镜像）：mode / approval_level / 最近一次模型 /
+  // 设计主题，NULL = 从未变更过；session_prefs_set 按 COALESCE 语义只更新携带的字段。
+  // design_theme 存 JSON 字符串 {scope,id}；"" = 显式不使用主题（区别于 NULL 的"从未设置"）
+  for (const col of [
+    "mode TEXT",
+    "approval_level TEXT",
+    "model_provider TEXT",
+    "model_id TEXT",
+    "design_theme TEXT",
+  ]) {
     try {
       localDb.exec(`ALTER TABLE sessions ADD COLUMN ${col}`);
     } catch {
@@ -339,10 +346,11 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               approval_level: string | null;
               model_provider: string | null;
               model_id: string | null;
+              design_theme: string | null;
             },
             [string]
           >(
-            "SELECT cwd, title, mode, approval_level, model_provider, model_id FROM sessions WHERE id = ?",
+            "SELECT cwd, title, mode, approval_level, model_provider, model_id, design_theme FROM sessions WHERE id = ?",
           )
           .get(s("sessionId"));
         return row
@@ -353,6 +361,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               approvalLevel: row.approval_level,
               modelProvider: row.model_provider,
               modelId: row.model_id,
+              designTheme: row.design_theme,
             }
           : null;
       }
@@ -380,10 +389,11 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               approval_level: string | null;
               model_provider: string | null;
               model_id: string | null;
+              design_theme: string | null;
             },
             []
           >(
-            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id FROM sessions ORDER BY updated_at DESC",
+            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id, design_theme FROM sessions ORDER BY updated_at DESC",
           )
           .all()
           .map((r) => ({
@@ -392,6 +402,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
             approvalLevel: r.approval_level ?? null,
             modelProvider: r.model_provider ?? null,
             modelId: r.model_id ?? null,
+            designTheme: r.design_theme ?? null,
           }));
       case "session_prefs_set":
         db.query(
@@ -399,7 +410,8 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
            mode = COALESCE(?2, mode), \
            approval_level = COALESCE(?3, approval_level), \
            model_provider = COALESCE(?4, model_provider), \
-           model_id = COALESCE(?5, model_id) \
+           model_id = COALESCE(?5, model_id), \
+           design_theme = COALESCE(?6, design_theme) \
            WHERE id = ?1",
         ).run(
           s("sessionId"),
@@ -407,6 +419,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
           typeof p.approvalLevel === "string" ? p.approvalLevel : null,
           typeof p.modelProvider === "string" ? p.modelProvider : null,
           typeof p.modelId === "string" ? p.modelId : null,
+          typeof p.designTheme === "string" ? p.designTheme : null,
         );
         return {};
       case "session_delete":

@@ -96,6 +96,21 @@ export type PiPluginOpFrame = PluginOpResultFrame & {
  *  水印；设计文档 §7——桌面占用环经 pi-context 镜像直更，缺口回拉 context_info）。 */
 export type PiContextChangedFrame = ContextChangedFrame;
 
+/**
+ * 设计主题推送帧族（无 id 自发通知，见 handlers/design-md.ts push）：
+ * - design_themes：save/delete 后的新清单（发起方另有带 id 应答，双收幂等）
+ * - design_theme_set：set 选中后的线程新值；改名重映射/删除收口波及的驻留
+ *   线程也逐线程推此帧。他窗胶囊与远程连接据此直更。
+ */
+export type PiDesignThemesPushFrame = import("@/lib/pi/pi-bridge").PiDesignThemesResponse;
+export type PiDesignThemeSetPushFrame = {
+  type: "design_theme_set";
+  threadId: string;
+  sessionId: string;
+  theme: import("@/lib/pi/pi-bridge").PiThemeRef | null;
+};
+export type PiDesignThemePush = PiDesignThemesPushFrame | PiDesignThemeSetPushFrame;
+
 export interface PiChannel {
   readonly kind: "tauri" | "ws";
   /** 管理类请求-响应；id 注入由实现负责（Tauri 侧 Rust 注入，WS 侧 JS 注入） */
@@ -161,6 +176,15 @@ export interface PiChannel {
    */
   subscribeContextChanges?(
     cb: (frame: PiContextChangedFrame) => void,
+  ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（同款无 id 自发通知通道）：订阅设计主题推送帧
+   * （design_themes / design_theme_set，见 PiDesignThemePush）。管理页
+   * save/delete 与胶囊 set 后 sidecar 自发；他窗清单/胶囊与远程连接
+   * 据此直更（remote.rs 白名单转发）。
+   */
+  subscribeDesignThemes?(
+    cb: (frame: PiDesignThemePush) => void,
   ): (() => void) | Promise<() => void>;
   /** 能力可选（与 subscribeTurns 成对）：当前正在跑 turn 的会话 id 种子清单 */
   listRunning?(): Promise<string[]>;
@@ -613,6 +637,36 @@ export class TauriPiChannel implements PiChannel {
           continue;
         }
         if (parsed?.type === "context_changed" && typeof parsed.sessionId === "string") {
+          cb(parsed);
+        }
+      }
+    });
+  }
+
+  /**
+   * design_themes / design_theme_set 自发通知帧（无 id，Rust 原样广播）：
+   * 同款前缀预筛。带 id 的应答帧以 {"id": 开头，不会误入（前缀不同）。
+   */
+  async subscribeDesignThemes(cb: (frame: PiDesignThemePush) => void): Promise<() => void> {
+    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+      for (const wire of event.payload) {
+        if (
+          !wire.l.startsWith('{"type":"design_themes"') &&
+          !wire.l.startsWith('{"type":"design_theme_set"')
+        ) {
+          continue;
+        }
+        let parsed: PiDesignThemePush;
+        try {
+          parsed = JSON.parse(wire.l);
+        } catch {
+          continue;
+        }
+        if (
+          parsed?.type === "design_themes"
+            ? Array.isArray((parsed as { entries?: unknown }).entries)
+            : parsed?.type === "design_theme_set" && typeof parsed.threadId === "string"
+        ) {
           cb(parsed);
         }
       }

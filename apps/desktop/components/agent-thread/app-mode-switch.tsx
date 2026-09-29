@@ -6,6 +6,7 @@ import {
   CheckIcon,
   CodeIcon,
   Loader2Icon,
+  PaletteIcon,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -17,12 +18,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { setAppMode, useAppMode, type AppMode } from "@/lib/pi/app-mode";
+import { useEnsureUiDesignPlugin } from "@/components/design-mode-gate";
 
 /**
  * 全局工作模式切换器（会话顶栏，「更多」按钮左侧；设置 → 通用里同一事实源）。
  * 应用级开关：切换立即影响所有会话——提示词附加段、git UI 显隐、工具行形态；
  * 与 composer 旁的权限模式切换器（mode-picker，agent/plan）是正交的两个维度。
- * 形态对齐 mode-picker：胶囊按钮 + 两选项下拉（图标/说明/当前勾选）。
+ * 形态对齐 mode-picker：胶囊按钮 + 选项下拉（图标/说明/当前勾选）。
+ * 设计档有插件前置门禁：ui-design 插件未装/禁用时先弹窗引导，通过才切档。
  */
 
 type ModeOption = {
@@ -45,12 +48,19 @@ const OPTIONS: ModeOption[] = [
     description: "面向日常办公：交付导向，隐藏 Git，工具步骤收敛为摘要。",
     icon: BriefcaseIcon,
   },
+  {
+    value: "design",
+    label: "设计",
+    description: "面向 UI 设计：设计稿与高保真原型优先，隐藏 Git（需 UI 设计插件）。",
+    icon: PaletteIcon,
+  },
 ];
 
 export const AppModeSwitch: FC = () => {
   const appMode = useAppMode();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const { ensure, dialog } = useEnsureUiDesignPlugin();
 
   const current = OPTIONS.find((o) => o.value === appMode) ?? OPTIONS[0];
   const CurrentIcon = current.icon;
@@ -59,13 +69,23 @@ export const AppModeSwitch: FC = () => {
     setOpen(false);
     if (o.value === appMode) return;
     setBusy(true);
-    setAppMode(o.value)
-      .catch((err) => console.error("set_app_mode failed:", err))
-      .finally(() => setBusy(false));
+    void (async () => {
+      try {
+        // 设计档前置门禁：ui-design 插件未装/禁用时弹窗引导，通过才切档
+        if (o.value === "design" && !(await ensure())) return;
+        await setAppMode(o.value);
+      } catch (err) {
+        console.error("set_app_mode failed:", err);
+      } finally {
+        setBusy(false);
+      }
+    })();
   };
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <>
+      {dialog}
+      <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger
         render={
           <button
@@ -109,6 +129,7 @@ export const AppModeSwitch: FC = () => {
           ))}
         </DropdownMenuGroup>
       </DropdownMenuContent>
-    </DropdownMenu>
+      </DropdownMenu>
+    </>
   );
 };

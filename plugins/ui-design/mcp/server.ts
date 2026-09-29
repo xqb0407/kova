@@ -57,7 +57,10 @@ function handle(message: Record<string, unknown>): void {
         instructions:
           "UI 设计画布（*.uidesign.json）控制面：先 list_docs / read_doc 了解现状拿 id，" +
           "再用 add_nodes / update_nodes / stack_nodes / align_nodes / group_nodes 等结构化修改。" +
-          "改动直接落盘，打开的面板约半秒内自动刷新。",
+          "改动直接落盘，打开的面板约半秒内自动刷新。改完可用 screenshot_doc 把画布渲染成 PNG " +
+          "图像直接看效果做视觉自检（非屏幕截图，截的是文档内容；saveTo 可顺带落盘）。" +
+          "定稿交付用 export_doc 导出多文件工程包（源档副本 + 逐画板 PNG/SVG + 外链 assets/ + " +
+          "index.html 原型 + manifest.json），返回全部静态文件路径清单。",
       });
       return;
     }
@@ -83,6 +86,17 @@ function handle(message: Record<string, unknown>): void {
           : {};
       try {
         const payload = tool.run(args, ctx);
+        // 截图类工具返回 { mcpContent }：text/image 内容块原样透传
+        // （image 块经 sidecar 摘图与 2MiB/白名单闸门上屏，其余工具仍是 JSON 文本）
+        if (
+          payload &&
+          typeof payload === "object" &&
+          !Array.isArray(payload) &&
+          Array.isArray((payload as { mcpContent?: unknown }).mcpContent)
+        ) {
+          reply(id, { content: (payload as { mcpContent: unknown[] }).mcpContent });
+          return;
+        }
         reply(id, { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

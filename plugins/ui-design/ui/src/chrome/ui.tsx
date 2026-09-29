@@ -5,8 +5,9 @@
  */
 import { useEffect, useRef, useState, type FC, type PointerEvent as RPointerEvent, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Link2, Plus, Unlink } from "lucide-react";
 import { ColorPicker, firstHexOrNull } from "../components/ui/color-picker";
+import { isVarRef, resolveVarColor, varRefId, type DesignDoc } from "../doc";
 import { scrubSession } from "../state";
 
 /* ---------------- 带提示的图标按钮 ---------------- */
@@ -197,7 +198,7 @@ export const Section: FC<{
 /* ---------------- 颜色输入（老东家 ColorPicker + hex 文本） ---------------- */
 
 /**
- * 面板弹层复用自老东家（slide-canvas）的 ColorPicker：HSV 区 + 色相条 + iOS/品牌预设。
+ * 面板弹层复用自老东家（canvas）的 ColorPicker：HSV 区 + 色相条 + iOS/品牌预设。
  * 文档色值允许 8 位（#rrggbbaa，阴影色就带 alpha）：面板只调前 6 位、alpha 尾缀原样保留，
  * hex 文本框仍可直改完整 8 位。
  */
@@ -208,12 +209,13 @@ export const ColorInput: FC<{ value: string; onChange: (hex: string) => void; co
   const base6 = withAlpha ? `#${withAlpha[1]}` : firstHexOrNull(raw) ?? "#000000";
   const commit = (input: string) => {
     const v = input.trim();
-    if (/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v)) onChange(v);
+    // var: 引用也允许手输（hex 框直贴变量 id），渲染端 resolveVarColor 解析
+    if (/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v) || /^var:\S+$/.test(v)) onChange(v);
     setText(null);
   };
   const picker = (
     <ColorPicker
-      color={base6}
+      color={raw.startsWith("var:") ? "#000000" : base6}
       onChange={(hex6) => onChange(withAlpha ? hex6 + withAlpha[2] : hex6)}
       aria-label="选择颜色"
       size="sm"
@@ -231,6 +233,93 @@ export const ColorInput: FC<{ value: string; onChange: (hex: string) => void; co
         onBlur={(e) => commit(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
       />
+    </div>
+  );
+};
+
+/* ---------------- 变量绑定颜色格（填充/描边/文字/图标行共用） ---------------- */
+
+/**
+ * var: 引用感知的颜色格：绑定时显示「色板 + 变量名」胶囊（点击换绑/解绑），
+ * 未绑定时是普通 ColorInput + 一个「绑变量」小按钮（列表 + 存为新变量）。
+ * 坏引用显示警示粉 + 「变量缺失」。
+ */
+export const VarColorCell: FC<{
+  value: string;
+  onChange: (c: string) => void;
+  doc: DesignDoc;
+  onCreateVariable: (value: string) => string;
+  compact?: boolean;
+}> = ({ value, onChange, doc, onCreateVariable, compact }) => {
+  const vars = doc.variables ?? [];
+  const bound = isVarRef(value);
+  const def = bound ? vars.find((v) => v.id === varRefId(value)) : undefined;
+  const resolved = resolveVarColor(doc, value);
+  const swatchStyle = { background: resolved, borderColor: "var(--border)" };
+  const bindBtn = (
+    <button
+      type="button"
+      title="绑定共享变量（改一处全稿联动）"
+      className="flex h-6 w-5 shrink-0 items-center justify-center rounded hover:bg-[var(--secondary)]"
+      style={{ color: "var(--muted-foreground)" }}
+    >
+      <Link2 size={12} />
+    </button>
+  );
+  const varItems = (
+    <>
+      {vars.length === 0 && <MenuItem disabled>还没有变量，先新建</MenuItem>}
+      {vars.map((v) => (
+        <MenuItem key={v.id} selected={bound && v.id === varRefId(value)} onClick={() => onChange(`var:${v.id}`)}>
+          <span className="flex items-center gap-1.5">
+            <span className="h-3 w-3 shrink-0 rounded-sm border" style={{ background: resolveVarColor(doc, `var:${v.id}`), borderColor: "var(--border)" }} />
+            <span className="max-w-[140px] truncate">{v.name}</span>
+          </span>
+        </MenuItem>
+      ))}
+    </>
+  );
+  if (bound) {
+    const chip = (
+      <div
+        className="flex h-7 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-1.5"
+        style={{ background: "var(--secondary)" }}
+        title={def ? `已绑定变量「${def.name}」＝ ${def.value}（点击换绑/解绑）` : `变量缺失（${varRefId(value)}），画布显示警示粉`}
+      >
+        <span className="h-3.5 w-3.5 shrink-0 rounded-sm border" style={swatchStyle} />
+        <span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: def ? "var(--foreground)" : "var(--destructive)" }}>
+          {def ? def.name : "变量缺失"}
+        </span>
+        <span className="shrink-0 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+          变量
+        </span>
+      </div>
+    );
+    return (
+      <Menu
+        align="end"
+        trigger={chip}
+      >
+        {varItems}
+        <MenuItem icon={<Unlink size={12} />} onClick={() => onChange(resolved)}>
+          解绑为普通颜色（{resolved}）
+        </MenuItem>
+      </Menu>
+    );
+  }
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-0.5">
+      <ColorInput value={value} onChange={onChange} compact={compact} />
+      <Menu align="end" trigger={bindBtn}>
+        {varItems}
+        <MenuItem
+          icon={<Plus size={12} />}
+          title="以当前颜色值新建一个共享变量并绑定"
+          onClick={() => onChange(`var:${onCreateVariable(value)}`)}
+        >
+          存为变量并绑定
+        </MenuItem>
+      </Menu>
     </div>
   );
 };

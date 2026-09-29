@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 // 内置字体（外观设置-字体选择可切换）：Geist（默认西文，字体栈首位）
 // / Inter / Roboto / Open Sans / 思源黑体 / 思源宋体 / 霞鹜文楷 / JetBrains Mono。
 // 各包均为 woff2 按 unicode-range 分片，
-// 仅实际用到的字形分片会被下载（CJK 字体只引入 400/700 两个字重控制体积）
+// 仅实际用到的字形分片会被下载（西文引入 400/500/700；CJK 字体只引入
+// 400/700 两个字重控制体积——500 由浏览器以最近字重替代）
 import "@fontsource-variable/geist";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
@@ -14,10 +15,8 @@ import "@fontsource/open-sans/400.css";
 import "@fontsource/open-sans/500.css";
 import "@fontsource/open-sans/700.css";
 import "@fontsource/noto-sans-sc/400.css";
-import "@fontsource/noto-sans-sc/500.css";
 import "@fontsource/noto-sans-sc/700.css";
 import "@fontsource/noto-serif-sc/400.css";
-import "@fontsource/noto-serif-sc/500.css";
 import "@fontsource/noto-serif-sc/700.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/700.css";

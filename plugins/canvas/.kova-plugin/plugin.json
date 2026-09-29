@@ -1,0 +1,17 @@
+{
+  "name": "canvas",
+  "version": "0.1.0",
+  "description": "无限画布工作台：Excalidraw 式无限空间，文本/形状/图片/Mermaid/表格/图表/网页嵌入自由摆放，整画布导出 SVG；agent 以 <name>.canvas.json 文档协作",
+  "author": {
+    "name": "Kova"
+  },
+  "category": "效率",
+  "icon": "icon.svg",
+  "keywords": [
+    "canvas",
+    "whiteboard",
+    "white-board"
+  ],
+  "skills": "skills",
+  "panels": "panels.json"
+}

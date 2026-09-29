@@ -45,7 +45,7 @@ import {
   running,
   whenThreadIdle,
 } from "../sessions/sessions";
-import { persist } from "../sessions/transcript";
+import { persist, STEER_PREFIX } from "../sessions/transcript";
 import { delegationResumeText, runningDelegations } from "../subagent/subagent";
 import { enqueueMgmt } from "./mgmt-queue";
 import type { Running } from "../types";
@@ -157,9 +157,11 @@ export function steerIntoActiveRun(
   // 受理的并入其 finish 永远没人补发（前端「已并入」徽标滞留不消失）
   if (run.stopRequested || run.turnEnding) return false;
   try {
-    // 与普通 prompt 同一条附件链路：拒收项折算说明行、合法项进 user 消息 content
+    // 与普通 prompt 同一条附件链路：拒收项折算说明行、合法项进 user 消息 content。
+    // 哨兵前缀：注入即真实 user 消息落转录，历史重建按前缀补「已并入当前回复」
+    // 标记（刷新前后语义一致；模型侧前缀自解释，auto-continue 同款先例）
     const attachments = preparePromptAttachments(msg, { cwd: run.cwd });
-    const text = noticeAppendedText(String(msg.text ?? ""), attachments.noticeLines);
+    const text = STEER_PREFIX + noticeAppendedText(String(msg.text ?? ""), attachments.noticeLines);
     const content: string | (ImageContent | { type: "text"; text: string })[] =
       attachments.images.length
         ? [{ type: "text", text }, ...attachments.images]
@@ -342,6 +344,7 @@ async function runPromptTurn(
     run.mode,
     run.cwd,
     run.agent.state.model,
+    run.designTheme,
   );
   setActiveReqId(threadId, reqId);
   run.stopRequested = false;

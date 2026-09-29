@@ -3,7 +3,7 @@
  *
  * 场景约定（见 scene.ts）：每个节点的根 Group 恒 `around:"center"` + 显式 width/height。
  * leafer 的 around 只改变锚点落位（x/y = 盒中心在父内层空间的坐标；内层原点仍是
- * 父盒左上角——slide-canvas 元素 rect 子节点 x:0 能贴左上角渲染即为证），于是恒等式：
+ * 父盒左上角——canvas 元素 rect 子节点 x:0 能贴左上角渲染即为证），于是恒等式：
  *   tr.x = doc.x + w/2（doc 为提交前节点几何；frame/group 子节点的 doc.x 本就相对父盒左上角）
  * 编辑器缩放走 scaleX/scaleY（负值 = 镜像，rotation≠0 时 getLayout 可能把镜像折进
  * rotation±180°，折叠的 R(180)=−I 由 tr.rotation 承载，公式仍成立），docs 层吸收为
@@ -43,7 +43,7 @@ export function normDeg(a: number): number {
   return t > 359.999 ? 0 : Math.round(t * 1000) / 1000;
 }
 
-/** 旧盒局部点 → 新盒局部点（绕中心缩放，含镜像；世界点不变的闭式解，移植自 slide-canvas editorLedger） */
+/** 旧盒局部点 → 新盒局部点（绕中心缩放，含镜像；世界点不变的闭式解，移植自 canvas editorLedger） */
 export function editorLocalMap(
   w0: number,
   h0: number,
@@ -142,10 +142,17 @@ export function diffPatch(cur: Record<string, unknown>, full: Record<string, unk
  * 父内层空间坐标）。纯移动时不碰子树/字号。
  */
 export function ledgerFor(node: DesignNode, tr: EditorNodeTransform): LedgerPatch | null {
+  // flip 语义：spec 里 scaleX/scaleY 可为 -1（镜像态）。编辑器上发的 tr.scaleX 是「含 spec 符号」
+  // 的绝对值，手势相对缩放 = tr / spec 符号；提交时 flipX = tr.scaleX < 0（绝对符号落库）。
+  const baseSx = node.flipX ? -1 : 1;
+  const baseSy = node.flipY ? -1 : 1;
+  const sxg = tr.scaleX / baseSx; // 手势相对缩放（内容/字号/子树只用它）
+  const syg = tr.scaleY / baseSy;
   const wp = Math.abs(node.w * tr.scaleX);
   const hp = Math.abs(node.h * tr.scaleY);
+  const flipChanged = tr.scaleX < 0 !== baseSx < 0 || tr.scaleY < 0 !== baseSy < 0;
   const pureTransform =
-    Math.abs(tr.scaleX - 1) < 1e-9 && Math.abs(tr.scaleY - 1) < 1e-9 && Math.abs(normDeg(tr.rotation - (node.rotation || 0))) < 1e-9;
+    Math.abs(sxg - 1) < 1e-9 && Math.abs(syg - 1) < 1e-9 && !flipChanged && Math.abs(normDeg(tr.rotation - (node.rotation || 0))) < 1e-9;
 
   const rot = normDeg(tr.rotation);
   const full: Record<string, unknown> = {
@@ -155,6 +162,8 @@ export function ledgerFor(node: DesignNode, tr: EditorNodeTransform): LedgerPatc
     h: r1(Math.max(1, hp)),
     // 缺省值不写（rotation:0 省略是序列化幂等约定）：现值为 0/缺省时置 undefined 走删除分支
     rotation: rot === 0 ? undefined : rot,
+    flipX: tr.scaleX < 0 ? true : undefined,
+    flipY: tr.scaleY < 0 ? true : undefined,
   };
 
   if (pureTransform) {
@@ -162,13 +171,13 @@ export function ledgerFor(node: DesignNode, tr: EditorNodeTransform): LedgerPatc
   } else if (node.type === "line" || node.type === "arrow") {
     const dir = (node.dir ?? 0) as LineDir;
     const [sxs, sys] = DIR_START_SIDE[dir];
-    const a = editorLocalMap(node.w, node.h, tr, sxs ? node.w : 0, sys ? node.h : 0);
+    const a = editorLocalMap(Math.abs(node.w * sxg), Math.abs(node.h * syg), { ...tr, scaleX: sxg, scaleY: syg }, sxs ? node.w : 0, sys ? node.h : 0);
     const nd = SIDE_TO_DIR[`${a.x > wp / 2 ? 1 : 0}${a.y > hp / 2 ? 1 : 0}`];
     if (nd !== undefined && nd !== dir) full.dir = nd === 0 ? undefined : nd;
   } else if (node.type === "group") {
-    full.children = scaleChildren(node.children, tr.scaleX, tr.scaleY, node.w, node.h);
+    full.children = scaleChildren(node.children, sxg, syg, node.w, node.h);
   } else if (node.type === "text") {
-    const s = Math.abs(tr.scaleX);
+    const s = Math.abs(sxg);
     full.runs = node.runs.map((run) => ({ ...run, size: r1(Math.max(1, (run.size ?? 14) * s)) }));
   }
   // frame / 形状 / image：仅盒子补丁（上面已含）
@@ -179,7 +188,7 @@ export function ledgerFor(node: DesignNode, tr: EditorNodeTransform): LedgerPatc
 
 /**
  * 批量落账签名（DragEvent/MoveEvent END 去重：同一次松手可能多事件）。
- * 与 slide-canvas 同款：对补丁数组序列化比对。
+ * 与 canvas 同款：对补丁数组序列化比对。
  */
 export function ledgerSignature(results: (LedgerPatch | null)[]): string {
   return JSON.stringify(results.filter(Boolean));

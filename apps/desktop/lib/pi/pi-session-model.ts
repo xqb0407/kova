@@ -12,9 +12,10 @@ import { refreshSessionPrefs, prefsSessionIdFor, piSessionPrefsMap } from "@/lib
 /**
  * 会话级模型记忆的前端镜像：
  * - 事实源在 sidecar：sessions 表的 model_provider/model_id 列，由 set_model
- *   （广播时写活动会话行）与会话恢复（resolveSession 取行值）维护；
+ *   （带 sessionId 定靶时只写被点名会话的行）与会话恢复（resolveSession 取行值）
+ *   维护；其余会话不受别人会话的选择影响；
  * - 这里只存 threadId -> 最近已知模型的显示快照，切回线程时从列表快照水合；
- * - 无会话级记忆的线程回落全局当前选择（与旧行为一致）。
+ * - 无会话级记忆的线程回落全局当前选择（「最近一次使用」，新会话同款语义）。
  */
 
 /** threadId -> 该线程记住的模型（仅当会话偏好里确实有值时才有条目） */
@@ -63,9 +64,11 @@ export function hydrateThreadModel(threadId: string): void {
 }
 
 /**
- * 在线程里选择模型：写全局（setSelectedModel → sidecar 广播活动会话 + kv），
- * 更新本线程记忆，其余线程的条目先清掉（等 refreshSessionPrefs 拉回各会话
- * 真实落库值后重水合——活动会话已被广播写入新模型，休眠会话保持各自原模型）。
+ * 在线程里选择模型：setSelectedModel 带本线程的 sessionId 定靶（sidecar 只对该
+ * 会话落真值行/偏好列，并把全局 kv 更新为「最近一次使用」），其余会话不动；
+ * 更新本线程记忆，其余线程的条目先清掉，等 refreshSessionPrefs 拉回各会话
+ * 真实落库值后重水合（休眠会话保持各自原模型，从未选过的跟随新全局）。
+ * 线程还没有 sessionId（首轮未落库的新草稿）时退化为纯全局选择。
  */
 export async function setThreadModel(threadId: string, model: SelectedModel): Promise<void> {
   threadModels.set(threadId, model);
@@ -73,7 +76,7 @@ export async function setThreadModel(threadId: string, model: SelectedModel): Pr
     if (tid !== threadId) threadModels.delete(tid);
   }
   notify();
-  await setSelectedModel(model);
+  await setSelectedModel(model, prefsSessionIdFor(threadId));
   await refreshSessionPrefs();
   for (const tid of [...new Set([...threadModels.keys(), threadId])]) {
     hydrateThreadModel(tid);

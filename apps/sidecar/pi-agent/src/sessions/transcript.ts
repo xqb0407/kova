@@ -195,7 +195,7 @@ function appendSettingRow(sessionId: string, row: Record<string, unknown>): void
   appendFileSync(sessionPath(sessionId), JSON.stringify(row) + "\n");
 }
 
-/** 换模型：set_model 广播到各驻留会话时逐会话落行（与偏好投影同步） */
+/** 换模型：set_model 会话定靶时落该会话一行（与偏好投影同步；绝不广播落行——会把各会话自身选择盖成同一个） */
 export function appendModelChangeRow(
   sessionId: string,
   provider: string,
@@ -249,23 +249,40 @@ export function isAutoContinueText(text: string): boolean {
 }
 
 /**
+ * 并入当前轮（steer）注入消息的哨兵前缀（注入点见 prompt-pipeline.steerIntoActiveRun）。
+ * 注入即真实 user 消息落转录；历史重建按前缀识别，渲染带「已并入当前回复」标记
+ * （与直播排队条徽标语义一致），避免刷新后被当成普通提问。模型侧前缀自解释，
+ * 与 auto-continue 同款先例。
+ */
+export const STEER_PREFIX = "[[queued-steer]] ";
+
+export function isSteeredText(text: string): boolean {
+  return text.startsWith(STEER_PREFIX);
+}
+
+/**
  * 用户消息 content → UIMessage parts：text 合并（原语义）+ image content 回显为
  * file part（data URL）。直播侧 composer 附件就是以 file part 进 user UIMessage
  * 的，历史重建同形——刷新前后渲染相同（「刷新后 = 直播」构造性保证）。
+ * 并入当前轮（steer）的注入消息：哨兵前缀剥掉，正文照常渲染，另补
+ * data-steeredNote 标记 part（前端渲染「已并入当前回复」徽标）。
  * 纯图片无文字也返回消息（parts 非空即有效）；完全无内容返回 null。
  */
 function userUiParts(
   msg: Extract<Message, { role: "user" }>,
+  seq?: number,
 ): { text: string; parts: UIMessage["parts"] } | null {
   const content =
     typeof msg.content === "string"
       ? [{ type: "text" as const, text: msg.content }]
       : msg.content;
   const parts: UIMessage["parts"] = [];
-  const text = content
+  let text = content
     .filter((c): c is { type: "text"; text: string } => c.type === "text")
     .map((c) => c.text)
     .join("\n");
+  const steered = isSteeredText(text);
+  if (steered) text = text.slice(STEER_PREFIX.length);
   if (text.trim()) parts.push({ type: "text", text });
   let imgSeq = 0;
   for (const c of content) {
@@ -281,13 +298,22 @@ function userUiParts(
       url: `data:${mime};base64,${c.data}`,
     });
   }
+  if (steered && seq !== undefined) {
+    // 标记 part 不就地渲染（未注册 data UI），由 UserMessage 检测存在后
+    // 在气泡上方渲染徽标（stopped-marker 同款机制）
+    parts.unshift({
+      type: "data-steeredNote",
+      id: `steered-${seq}`,
+      data: {},
+    } as UIMessage["parts"][number]);
+  }
   return parts.length ? { text, parts } : null;
 }
 
 /** pi-ai Message -> UIMessage（ui 字段快照；转换范围：text/reasoning/用户图片） */
 export function toUiMessage(msg: Message, seq: number): UIMessage | null {
   if (msg.role === "user") {
-    const up = userUiParts(msg);
+    const up = userUiParts(msg, seq);
     if (!up) return null;
     if (isAutoContinueText(up.text)) return null;
     return { id: `msg-${seq}`, role: "user", parts: up.parts };
@@ -375,8 +401,11 @@ export function historyToUiMessages(
     // 前端折算每轮耗时（用户行≈轮初、assistant 行≈轮末）
     const metadata = msg.timestamp !== undefined ? { createdAt: msg.timestamp } : undefined;
     if (msg.role === "user") {
-      const up = userUiParts(msg);
+      const up = userUiParts(msg, seq);
       if (!up) continue;
+      // 长度截断自动续跑的注入消息（与 toUiMessage 同口径按前缀隐藏）：
+      // 历史重建不该把它渲染成用户提问
+      if (isAutoContinueText(up.text)) continue;
       messages.push({ id: `msg-${seq}`, role: "user", parts: up.parts, metadata });
       srcSeqs.push(seq);
       continue;

@@ -31,8 +31,12 @@ mock.module("@/lib/workspace/fs", () => ({
 const { listCanvasDocs } = await import("@/lib/plugins/canvas-doc-list");
 
 const put = (path: string, content: string) => tree.set(path, content);
-const canvasDoc = (name: string, kind = "deck", frames = 2) =>
-  JSON.stringify({ version: 2, meta: { name, kind }, objects: [], frames: Array.from({ length: frames }, (_, i) => ({ x: 0, y: 0, w: 1280, h: 720, background: "#ffffff", elements: [] })) });
+const canvasDoc = (name: string, kind: string | null = null, objects = 2) =>
+  JSON.stringify({
+    version: 3,
+    meta: kind ? { name, kind } : { name },
+    objects: Array.from({ length: objects }, (_, i) => ({ kind: "shape", id: `o${i}`, shape: "rect", x: i * 40, y: 0, w: 100, h: 60, fill: "#0a84ff" })),
+  });
 const sheetDoc = (name: string) => JSON.stringify({ id: "u1", name, sheetOrder: ["s1"], sheets: {} });
 const docDoc = (title: string) => JSON.stringify({ id: "u2", title, body: {} });
 
@@ -43,7 +47,7 @@ describe("listCanvasDocs 扫描范围", () => {
     put("b.sheet.univer.json", sheetDoc("报表"));
     const items = await listCanvasDocs("w");
     expect(items.map((i) => i.path)).toEqual(["a.canvas.json"]);
-    expect(items[0]?.kind).toBe("deck");
+    expect(items[0]?.kind).toBe("board"); // deck 已成历史，一律按画布
   });
 
   test("传入面板 opens glob：画布 + Univer 快照档一起列出", async () => {
@@ -103,13 +107,18 @@ describe("listCanvasDocs 摘要分支", () => {
     expect(items[0]?.kind).toBe("doc");
   });
 
-  test("画布档：meta.kind 透传 + 页框摘要照旧", async () => {
+  test("画布档：objects 计数 + 元素包围盒摘要；ui kind 保留", async () => {
     tree.clear();
-    put("w.canvas.json", canvasDoc("白板", "board", 3));
+    put("w.canvas.json", canvasDoc("白板", null, 3));
+    put("u.canvas.json", canvasDoc("旧UI", "ui", 1));
     const items = await listCanvasDocs("w", ["*.canvas.json"]);
-    expect(items[0]?.kind).toBe("board");
-    expect(items[0]?.frames).toBe(3);
-    expect(items[0]?.preview).toHaveLength(3);
+    const w = items.find((i) => i.path === "w.canvas.json");
+    expect(w?.kind).toBe("board");
+    expect(w?.objects).toBe(3);
+    expect(w?.preview).toHaveLength(3);
+    expect(w?.preview[0]?.w).toBe(100);
+    const u = items.find((i) => i.path === "u.canvas.json");
+    expect(u?.kind).toBe("ui"); // 旧「UI 设计」档标记只读保留
   });
 
   test("坏档照常列出并打 corrupt（按后缀判 kind，不再一律 board）", async () => {

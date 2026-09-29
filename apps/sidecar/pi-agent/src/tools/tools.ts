@@ -29,6 +29,8 @@ import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "../todo/todo";
 import { buildMemoryTools } from "../agent/memory";
 import { buildSkillUseTool } from "../skills/skill-use-tool";
+import { buildUseDesignThemeTool } from "../design-md/use-design-theme-tool";
+import type { ThemeRef } from "../design-md/store";
 import { buildMcpTool } from "../mcp/mcp-tools";
 import { buildEchoImageTool } from "./echo-image-tool";
 import { resolveSecretEnv } from "../secrets/secrets";
@@ -288,7 +290,12 @@ function hostTool(
   };
 }
 
-export function buildTools(cwd: string, threadId: string): AgentTool[] {
+export function buildTools(
+  cwd: string,
+  threadId: string,
+  getDesignTheme?: () => ThemeRef | null,
+  getThemeLoads?: () => Map<string, string> | undefined,
+): AgentTool[] {
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
       "Run a shell command in the workspace and return combined stdout/stderr. " +
@@ -367,6 +374,11 @@ export function buildTools(cwd: string, threadId: string): AgentTool[] {
     // 技能调用：按名加载生效技能正文（只读动作，不进审批；见 skill-use-tool.ts）；
     // threadId 供"已加载技能"台账登记（密钥注入的判定条件之一）
     buildSkillUseTool(cwd, threadId),
+    // 设计主题加载：按名（或会话缺省主题）取 DESIGN.md 全文（只读动作，不进审批；
+    // 见 design-md/use-design-theme-tool.ts）。缺省目标经 getDesignTheme 闭包按引用
+    // 读 run.designTheme，会话内切主题即时生效；未注入闭包时工具回落最近使用 kv；
+    // getThemeLoads 台账供重复加载短路（同 ref 同正文哈希 → 简短确认不重贴全文）
+    buildUseDesignThemeTool(getDesignTheme ?? (() => null), getThemeLoads),
     // MCP 网关（search/describe/call/status）：常驻注册的代理工具，全部服务器
     // 的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd 会重建）
     buildMcpTool(cwd, threadId),

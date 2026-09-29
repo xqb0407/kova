@@ -4,10 +4,11 @@
  * 视口边缘自动收位；外点/Esc/滚轮/窗口缩放关闭。
  * nodeMenu / canvasMenu 是两份条目清单的单一出处（快捷键标注与行为同源）。
  */
-import { useEffect, useRef, type FC, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FC, type ReactNode } from "react";
 import {
   ArrowDownToLine,
   ArrowUpToLine,
+  Boxes,
   ChevronsDown,
   ChevronsUp,
   Code,
@@ -16,16 +17,23 @@ import {
   Eye,
   EyeOff,
   Group,
+  Combine,
   ImagePlus,
   Lock,
   LockOpen,
   Maximize2,
+  RefreshCcw,
   Scissors,
+  Unlink,
   Square,
+  SquareDot,
+  SquareMinus,
+  SquareX,
   Trash2,
   Ungroup,
 } from "lucide-react";
 import { findNode, type DesignNode } from "../doc";
+import { isBoolShape } from "../boolean";
 import { nodeToCss } from "../css";
 import { copyText } from "../lib/clipboard";
 import { bridge } from "../bridge";
@@ -44,6 +52,16 @@ export type CtxItem =
 
 export const ContextMenu: FC<{ x: number; y: number; items: CtxItem[]; onClose: () => void }> = ({ x, y, items, onClose }) => {
   const ref = useRef<HTMLDivElement>(null);
+  // 挂载后实测尺寸再收位（条目行高受字体影响，估算会漏出底边被面板裁掉）
+  const [pos, setPos] = useState({ x, y });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setPos({
+      x: Math.max(8, Math.min(x, window.innerWidth - el.offsetWidth - 8)),
+      y: Math.max(8, Math.min(y, window.innerHeight - el.offsetHeight - 8)),
+    });
+  }, [x, y, items]);
   useEffect(() => {
     const away = (e: PointerEvent) => {
       if (!ref.current?.contains(e.target as Node)) onClose();
@@ -76,8 +94,8 @@ export const ContextMenu: FC<{ x: number; y: number; items: CtxItem[]; onClose: 
       data-ctx-menu=""
       className="fixed z-[70] rounded-xl border p-1 shadow-pop"
       style={{
-        left: Math.max(8, Math.min(x, window.innerWidth - W - 8)),
-        top: Math.max(8, Math.min(y, window.innerHeight - H - 8)),
+        left: pos.x,
+        top: pos.y,
         width: W,
         borderColor: "var(--border)",
         background: "var(--popover)",
@@ -138,6 +156,28 @@ export function nodeMenu(store: DesignStore, ids: string[]): CtxItem[] {
   const anyGroup = nodes.some((n) => n.type === "group");
   const anyHidden = nodes.some((n) => n.visible === false);
   const anyLocked = nodes.some((n) => n.locked === true);
+  // 实例内部节点（"实例id/内部id"）：树级操作（复制/排序/删除）无意义，只给覆盖可写的开关
+  if (ids.some((id) => id.includes("/"))) {
+    return [
+      {
+        label: anyHidden ? "显示" : "隐藏",
+        icon: anyHidden ? <Eye size={13} /> : <EyeOff size={13} />,
+        onClick: () => toggleFlagAll(store, ids, "visible"),
+      },
+      {
+        label: anyLocked ? "解锁" : "锁定",
+        icon: anyLocked ? <LockOpen size={13} /> : <Lock size={13} />,
+        onClick: () => toggleFlagAll(store, ids, "locked"),
+      },
+      { sep: true },
+      {
+        label: "回到实例",
+        onClick: () => store.setSel([...new Set(ids.filter((id) => id.includes("/")).map((id) => id.slice(0, id.indexOf("/"))))]),
+      },
+    ];
+  }
+  const anyInstance = nodes.some((n) => n.type === "instance");
+  const anyOverridden = nodes.some((n) => n.type === "instance" && Object.keys((n as DesignNode & { overrides?: unknown }).overrides ?? {}).length > 0);
   return [
     { label: "复制", icon: <Copy size={13} />, shortcut: "⌘C", onClick: () => store.copySelected() },
     { label: "剪切", icon: <Scissors size={13} />, shortcut: "⌘X", onClick: () => store.cutSelected() },
@@ -149,8 +189,30 @@ export function nodeMenu(store: DesignStore, ids: string[]): CtxItem[] {
     { label: "置于底层", icon: <ArrowDownToLine size={13} />, shortcut: "⌘⇧[", onClick: () => store.reorderSelected("back") },
     { sep: true },
     ...(ids.length >= 2 ? [{ label: "成组", icon: <Group size={13} />, shortcut: "⌘G", onClick: () => store.groupSelected() }] : []),
+    ...((() => {
+      if (ids.length < 2 || !first) return [];
+      const locs = ids.map((id) => findNode(doc, id)).filter((l): l is NonNullable<typeof l> => !!l);
+      const sameParent = locs.every((l) => l.siblings === locs[0]!.siblings);
+      if (!sameParent || !nodes.every(isBoolShape)) return [];
+      return [
+        { label: "布尔·并集", icon: <Combine size={13} />, onClick: () => store.booleanSelected("union") },
+        { label: "布尔·减去", icon: <SquareMinus size={13} />, onClick: () => store.booleanSelected("subtract") },
+        { label: "布尔·交集", icon: <SquareDot size={13} />, onClick: () => store.booleanSelected("intersect") },
+        { label: "布尔·排除", icon: <SquareX size={13} />, onClick: () => store.booleanSelected("exclude") },
+      ];
+    })()),
     ...(anyGroup
       ? [{ label: "取消成组", icon: <Ungroup size={13} />, shortcut: "⌘⇧G", onClick: () => store.ungroupSelected() }]
+      : []),
+    { sep: true },
+    { label: "创建组件", icon: <Boxes size={13} />, onClick: () => store.createComponentFromSelection() },
+    ...(anyInstance
+      ? [
+          { label: "分离实例", icon: <Unlink size={13} />, onClick: () => ids.forEach((id) => store.detachInstance(id)) },
+        ]
+      : []),
+    ...(anyOverridden
+      ? [{ label: "重置覆盖", icon: <RefreshCcw size={13} />, onClick: () => ids.forEach((id) => store.resetInstanceOverrides(id)) }]
       : []),
     {
       label: anyHidden ? "显示" : "隐藏",
@@ -171,7 +233,7 @@ export function nodeMenu(store: DesignStore, ids: string[]): CtxItem[] {
             icon: <Code size={13} />,
             shortcut: "⌘⇧C",
             onClick: () => {
-              void copyText(nodeToCss(first)).then((ok) => bridge.notify(ok ? "已复制该图层的 CSS" : "复制失败", ok ? undefined : "error"));
+              void copyText(nodeToCss(first, store.doc)).then((ok) => bridge.notify(ok ? "已复制该图层的 CSS" : "复制失败", ok ? undefined : "error"));
             },
           },
         ]
@@ -184,9 +246,20 @@ export function nodeMenu(store: DesignStore, ids: string[]): CtxItem[] {
 
 /** 画布空白处右键菜单；onPlaceImage 由舞台接隐藏文件选择 */
 export function canvasMenu(store: DesignStore, onPlaceImage?: () => void): CtxItem[] {
+  const comps = store.doc.components ?? [];
   return [
     { label: "全选", icon: <Square size={13} />, shortcut: "⌘A", onClick: () => store.setSel(store.page.nodes.map((n) => n.id)) },
     { label: "粘贴", icon: <Copy size={13} />, shortcut: "⌘V", onClick: () => store.pasteClipboard() },
+    ...(comps.length
+      ? [
+          { sep: true } as CtxItem,
+          ...comps.slice(0, 12).map((c) => ({
+            label: `插入实例：${c.name}`,
+            icon: <Boxes size={13} />,
+            onClick: () => store.insertComponent(c.id),
+          })),
+        ]
+      : []),
     ...(onPlaceImage
       ? [
           {

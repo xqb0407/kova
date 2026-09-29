@@ -178,8 +178,9 @@ export type PiPersonalization = {
 export type PiPersonalizationPaths = { soul: string; rules: string };
 
 /** 全局工作模式（设置 → 通用）：work = 非工程协作（提示词附加段 + git UI 隐藏 +
- * 工具行轻量摘要）；code = 默认，行为与旧版一致 */
-export type PiAppMode = "work" | "code";
+ *  工具行轻量摘要）；design = UI 设计（设计稿/高保真原型导向 + git UI 隐藏，工具行
+ *  保持展开，切档需 ui-design 插件已启用）；code = 默认，行为与旧版一致 */
+export type PiAppMode = "work" | "code" | "design";
 
 /** 单日使用统计（本地时区；sidecar 扫全部会话转录聚合，日期升序） */
 export type PiUsageStatsDay = {
@@ -308,6 +309,71 @@ export type PiSkillsResponse = {
   pluginSkills: PiSkillEntry[];
   workspaceCwd: string | null;
   diagnostics: string[];
+};
+
+// ---------------------------------------------------------------------------
+// 设计主题（设置 → 智能体 → 设计主题；composer 主题胶囊）。事实源在 sidecar
+// design-md/：内置层 = 主题包 zip（只读，首启解压/版本化升级），用户层 =
+// <root>/user/<slug>.md（可编辑，同名遮蔽内置）。会话级选中落 sessions.design_theme。
+// ---------------------------------------------------------------------------
+
+/** 主题层：builtin = 内置主题包（不可删，可 fork）；user = 我的主题 */
+export type PiThemeScope = "builtin" | "user";
+
+/** 主题引用（选中态；JSON 落会话列与 kv） */
+export type PiThemeRef = { scope: PiThemeScope; id: string };
+
+/** 主题清单条目（list/save/delete 应答共用；与 sidecar DesignThemeEntry 同形） */
+export type PiDesignThemeEntry = {
+  scope: PiThemeScope;
+  id: string;
+  name: string;
+  desc: string;
+  /** 代表色（胶囊/卡片色板点，最多 4） */
+  accents: string[];
+  /** 内置条目：存在同名用户主题遮蔽 */
+  shadowed?: boolean;
+  /** 用户条目：正文字节数 */
+  sizeBytes?: number;
+};
+
+/** 主题清单应答（list_design_themes / save / delete 共用形状；active 仅带 threadId 时回） */
+export type PiDesignThemesResponse = {
+  type: "design_themes";
+  entries: PiDesignThemeEntry[];
+  /** 主题包 catalog.version */
+  version: string;
+  builtinCount: number;
+  userCount: number;
+  /** 主题包装载错误（坏 zip），不致命 */
+  error: string | null;
+  active?: PiThemeRef | null;
+};
+
+/** 取全文应答（编辑回填 / 预览 / fork）：user 含 frontmatter 原文，builtin 为包内 DESIGN.md 原文 */
+export type PiDesignThemeDocResponse = {
+  type: "design_theme_doc";
+  ref: PiThemeRef;
+  entry: PiDesignThemeEntry;
+  doc: string;
+};
+
+/** 保存应答：ref = 保存后的主题引用（改名编辑时 id 会变），其余同清单形状 */
+export type PiDesignThemeSavedResponse = {
+  type: "design_theme_saved";
+  ref: PiThemeRef;
+  entries: PiDesignThemeEntry[];
+  version: string;
+  builtinCount: number;
+  userCount: number;
+  error: string | null;
+};
+
+/** 会话选中应答 */
+export type PiDesignThemeSetResponse = {
+  type: "design_theme_set";
+  sessionId: string;
+  theme: PiThemeRef | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -821,6 +887,10 @@ export type PiResponse =
     }
   | PiSubagentsResponse
   | PiSkillsResponse
+  | PiDesignThemesResponse
+  | PiDesignThemeDocResponse
+  | PiDesignThemeSavedResponse
+  | PiDesignThemeSetResponse
   | PiMcpServersResponse
   | PiMcpServerTestResponse
   | PiMcpServerLogResponse

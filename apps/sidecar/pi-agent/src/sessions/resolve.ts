@@ -62,6 +62,8 @@ import { sessionPath } from "../storage/storage";
 import { kvGet, sessionGet, sessionInsert, sessionUpdateCwd } from "../storage/hostdb";
 import { buildHookPayload, fireHookEvent, runHooks } from "../agent/hooks";
 import { getAutomationPolicy } from "../automation/policy";
+import { decodeThemeColumn, getLastUsedDesignTheme } from "../design-md/state";
+import type { ThemeRef } from "../design-md/store";
 import type { ApprovalLevel, Running, SessionMode } from "../types";
 
 /** kv pi.mode 的载重（applyMode 写入的「最近一次使用的模式偏好」） */
@@ -122,7 +124,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
   run.persistedCwd = cwd;
   run.cwd = cwd || taskSessionCwd(run.sessionId);
   // 重建工具须沿用原 threadId：todo/question 工具按 threadId 归属，误传 sessionId 会挂错 key
-  run.baseTools = buildTools(run.cwd, threadId);
+  run.baseTools = buildTools(run.cwd, threadId, () => run.designTheme ?? null, () => run.designThemeLoads);
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -132,6 +134,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
     run.mode,
     run.cwd,
     run.agent.state.model,
+    run.designTheme,
   );
   await persistSessionCwd(run.sessionId, cwd);
 }
@@ -180,7 +183,7 @@ export async function rebindRunThread(
   migrateTodoState(oldThreadId, newThreadId);
   // 工具整组重建：browser/question/todo/mcp 的闭包烘着 threadId，
   // 事件推送与挂起归属（cancelPending* 按 threadId 过滤）都靠它
-  run.baseTools = buildTools(run.cwd, newThreadId);
+  run.baseTools = buildTools(run.cwd, newThreadId, () => run.designTheme ?? null, () => run.designThemeLoads);
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -213,7 +216,7 @@ export async function reloadSkills(): Promise<void> {
   for (const run of running.values()) cwds.add(run.cwd);
   await Promise.all([...cwds].map((c) => ensureSkillsLoaded(c || undefined)));
   for (const run of running.values()) {
-    const prompt = composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model);
+    const prompt = composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme);
     run.agent.state.systemPrompt = prompt;
     if (run.loopContext) run.loopContext.systemPrompt = prompt;
   }
@@ -426,6 +429,16 @@ export async function resolveSession(
     }
   }
 
+  // 会话级设计主题：偏好列先行（NULL = 从未设置 → 回落最近使用 kv；""/损坏 = 显式不使用主题），
+  // 新会话取最近使用（与 pi.mode「新会话初始模式取最近一次」同型；变更见 handlers/design-md.ts）
+  let initialDesignTheme: ThemeRef | null;
+  if (restoredRow) {
+    const fromColumn = decodeThemeColumn(restoredRow.designTheme);
+    initialDesignTheme = fromColumn === undefined ? getLastUsedDesignTheme() : fromColumn;
+  } else {
+    initialDesignTheme = getLastUsedDesignTheme();
+  }
+
   // 会话级模型：恢复的会话上次用哪个模型就继续用哪个（目录中已删除则回落全局）；
   // 新会话/自动化 turn 用全局当前选择（自动化的 per-task 模型由 runner 在 resolve 后覆盖）。
   // 真值优先级（§6 M4）：转录 model_change 行 > SQLite 偏好行（旧会话无行，回落投影）> 全局
@@ -459,7 +472,14 @@ export async function resolveSession(
   // 技能目录预热（签名缓存，命中零 IO）：系统提示词的技能段从这里取数
   await ensureSkillsLoaded(resolvedCwd);
 
-  const baseTools = buildTools(resolvedCwd, threadId);
+  // use_design_theme 按引用读 run.designTheme（会话内切主题即时换缺省目标；
+  // run 此刻尚未回填字段，闭包运行期才解引用，与 beforeToolCall 同款手法）
+  const baseTools = buildTools(
+    resolvedCwd,
+    threadId,
+    () => run.designTheme ?? null,
+    () => run.designThemeLoads,
+  );
   // run 先占位再回填 agent：beforeToolCall 闭包按引用捕获 run，模式校验在运行期才解引用
   const run: Running = {
     agent: undefined as unknown as Agent,
@@ -481,6 +501,9 @@ export async function resolveSession(
     lengthContinues: 0,
     mode: initialMode,
     approvalLevel: initialApproval,
+    designTheme: initialDesignTheme,
+    // 全文加载台账：每次新建 run 都是空表（恢复/压缩后宁可重贴不谎报已加载）
+    designThemeLoads: new Map<string, string>(),
     planning: initialMode === "plan" ? "planning" : "inactive",
     baseTools,
     subagentTools: [],
@@ -543,7 +566,7 @@ export async function resolveSession(
       );
     },
     initialState: {
-      systemPrompt: composeModeSystemPrompt(initialMode, resolvedCwd, model),
+      systemPrompt: composeModeSystemPrompt(initialMode, resolvedCwd, model, initialDesignTheme),
       model,
       // 深度思考档位：转录行回放，无行跟随全局（set_thinking 维护；off = 不发送 reasoning 参数）
       thinkingLevel: initialThinking,
@@ -647,7 +670,11 @@ export async function projectContextInfo(
   const resolvedCwd = row.cwd || taskSessionCwd(sessionId);
   // 技能段预热：投影读数与随后真正打开该会话时逐字段一致（同款 ensureSkillsLoaded）
   await ensureSkillsLoaded(resolvedCwd);
-  const baseTools = buildTools(resolvedCwd, threadId);
+  // 主题读数同恢复链口径（偏好列先行，NULL 回落最近使用），投影读数逐字段一致
+  const projectedFromColumn = decodeThemeColumn(row.designTheme);
+  const projectedTheme =
+    projectedFromColumn === undefined ? getLastUsedDesignTheme() : projectedFromColumn;
+  const baseTools = buildTools(resolvedCwd, threadId, () => projectedTheme);
   const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包
   // 运行期才解引用 run，投影下这些闭包永远不会被调用。
@@ -665,7 +692,7 @@ export async function projectContextInfo(
   return contextInfoFrom({
     model,
     messages: messages as unknown as Parameters<typeof contextInfoFrom>[0]["messages"],
-    systemPrompt: composeModeSystemPrompt(projectedMode, resolvedCwd, model),
+    systemPrompt: composeModeSystemPrompt(projectedMode, resolvedCwd, model, projectedTheme),
     tools: toolsForMode(stub),
     sessionId,
     compactionGeneration: generation,
