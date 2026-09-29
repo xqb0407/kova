@@ -496,6 +496,56 @@ describe("dispatch: credentials", () => {
   });
 });
 
+describe("dispatch: 删除 provider 后的全局选中键", () => {
+  const add = (providerId: string, name: string) => ({
+    type: "add_custom_provider",
+    providerId,
+    name,
+    baseUrl: "http://127.0.0.1:9/v1",
+    apiKey: `sk-${providerId}`,
+    api: "openai-chat",
+    models: [{ id: `${providerId}-m1` }],
+  });
+
+  test("删掉挂着全局键的 provider：键改指别的可用模型，不清成 null", async () => {
+    const { getCurrentModelKey } = await import("../../src/model/model-catalog");
+    const { kvGet } = await import("../../src/storage/hostdb");
+
+    await dispatch("r1", add("custom-repoint-b", "留下"));
+    await dispatch("r2", add("custom-repoint-a", "删掉"));
+    setCurrentModelKey({ provider: "custom-repoint-a", modelId: "custom-repoint-a-m1" });
+
+    await dispatch("r3", { type: "delete_custom_provider", provider: "custom-repoint-a" });
+
+    // 清成 null 会让所有「没有会话级记忆」的会话同时变成未选择（它们显示的
+    // 就是这一个全局值），且与 sidecar 发送时实际回落的模型分叉
+    const key = getCurrentModelKey();
+    expect(key).not.toBeNull();
+    expect(key!.provider).not.toBe("custom-repoint-a");
+    // kv 同步落新键：否则重启后 initCurrentModelKey 把已删 provider 读回来
+    const row = await kvGet("pi.model");
+    expect(JSON.parse(row!.value as string)).toEqual(key);
+
+    // 收尾：把测试建的 provider 也删掉，别漏进后续用例的目录
+    await dispatch("r4", { type: "delete_custom_provider", provider: "custom-repoint-b" });
+  });
+
+  test("删的不是当前选中 provider：全局键原样不动", async () => {
+    const { getCurrentModelKey } = await import("../../src/model/model-catalog");
+    await dispatch("r5", add("custom-repoint-c", "另一个"));
+    await dispatch("r6", add("custom-repoint-d", "当前"));
+    setCurrentModelKey({ provider: "custom-repoint-d", modelId: "custom-repoint-d-m1" });
+
+    await dispatch("r7", { type: "delete_custom_provider", provider: "custom-repoint-c" });
+    expect(getCurrentModelKey()).toEqual({
+      provider: "custom-repoint-d",
+      modelId: "custom-repoint-d-m1",
+    });
+
+    await dispatch("r8", { type: "delete_custom_provider", provider: "custom-repoint-d" });
+  });
+});
+
 describe("dispatch: provider key masking", () => {
   const KEY = "sk-secret-abcdef999";
   const addMsg = (apiKey: string) => ({

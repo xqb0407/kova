@@ -20,7 +20,6 @@ import {
   themesSnapshot,
   type ThemeRef,
 } from "./store";
-import { getLastUsedDesignTheme } from "./state";
 
 export const USE_DESIGN_THEME_TOOL_NAME = "use_design_theme";
 
@@ -74,7 +73,13 @@ export function buildUseDesignThemeTool(
           return errorResult(`没有名为 "${nameArg}" 的设计主题。当前可用：${names}`);
         }
       } else {
-        ref = getDesignTheme() ?? getLastUsedDesignTheme();
+        // 缺省目标只认「本会话选中的主题」，不再兜底全局最近使用：
+        // 「新会话/从未设过主题的旧会话继承最近一次使用」已经由 resolveSession
+        // 在建 run 时做进 run.designTheme（偏好列 NULL ⇒ 取最近使用；列 = ""
+        // ⇒ 显式不使用），这里再兜一次会把这三态压平成一态——用户明明选了
+        // 「不使用主题」，工具却递上一份全局主题，模型据此宣称"按你选的设计
+        // 风格来做"，而用户在界面上根本没选过任何风格。
+        ref = getDesignTheme();
         if (!ref) {
           return errorResult(
             "当前会话没有选中设计主题，且未提供 name。请在会话输入框的主题胶囊中选择，或带 name 参数调用。",

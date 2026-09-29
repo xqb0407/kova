@@ -16,6 +16,7 @@ import {
   customProviderSetEnabled,
   customProviderUpsert,
   customProvidersList,
+  kvSet,
   modelsAll,
   modelsDeleteProvider,
   modelsList,
@@ -25,6 +26,7 @@ import {
 import {
   applyRowToCatalogModel,
   CUSTOM_MODEL_DEFAULTS,
+  defaultModel,
   getCurrentModelKey,
   getModels,
   lookupCatalogModelSeed,
@@ -37,6 +39,37 @@ import {
 import { maskApiKey } from "../payloads";
 import type { CustomModelSpec } from "../../types";
 import type { CommandHandler } from "../command";
+
+/**
+ * 被删/停用的 provider 若正挂在全局选中键上：把键改指到目录里另一个可用模型，
+ * 而不是清成 null。
+ *
+ * 清空会殃及无关会话：会话级模型记忆（sessions.model_provider/model_id）只在
+ * 「用户在该会话里亲手选过模型」时才有行，没有行的会话显示的是同一个全局
+ * 「最近一次使用」值。键一清，这些会话**同时**变成「未选择」——它们从没指向被删
+ * 的那个 provider，只是共用了这一份全局视图。改指后它们显示的就是真正会应答的
+ * 模型（与 resolveCurrentModel 的回落同一口径，界面不再与实际用模型分叉）。
+ * 目录里一个可用模型都没有时才清成 null：前端显示「选择模型」，发送闸门拦下。
+ *
+ * 必须在 getModels().deleteProvider(provider) 之后调用——否则回落会挑回刚被删
+ * 的那个模型。
+ */
+async function repointCurrentModelAwayFrom(provider: string): Promise<void> {
+  if (getCurrentModelKey()?.provider !== provider) return;
+  const next = await defaultModel();
+  if (!next) {
+    setCurrentModelKey(null);
+    // 没有 kvDelete：写显式 null 占位（initCurrentModelKey 与前端
+    // initModelSettings 都按「解析不出 provider/modelId ⇒ 无选择」处理），
+    // 否则重启会把已删 provider 的键读回来
+    void kvSet("pi.model", "null").catch(() => {});
+    return;
+  }
+  const key = { provider: next.provider, modelId: next.id };
+  setCurrentModelKey(key);
+  // 同步落 kv：否则重启后 initCurrentModelKey 又把已删的键读回来
+  void kvSet("pi.model", JSON.stringify(key)).catch(() => {});
+}
 
 export const handlers: Record<string, CommandHandler> = {
   set_credential: async (reqId, msg) => {
@@ -208,7 +241,7 @@ export const handlers: Record<string, CommandHandler> = {
     await modelsDeleteProvider(provider);
     await credentialDelete(provider);
     getModels().deleteProvider(provider);
-    if (getCurrentModelKey()?.provider === provider) setCurrentModelKey(null);
+    await repointCurrentModelAwayFrom(provider);
     send({ id: reqId, type: "custom_provider_deleted", provider });
   },
 
@@ -222,7 +255,7 @@ export const handlers: Record<string, CommandHandler> = {
       if (row) await registerCustomProvider(row);
     } else {
       getModels().deleteProvider(provider);
-      if (getCurrentModelKey()?.provider === provider) setCurrentModelKey(null);
+      await repointCurrentModelAwayFrom(provider);
     }
     send({ id: reqId, type: "custom_provider_toggled", provider, enabled });
   },
