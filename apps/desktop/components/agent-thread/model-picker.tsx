@@ -8,7 +8,8 @@ import {
 } from "@/components/assistant-ui/elements/model-selector.aui";
 import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
 import type { PiModelSummary } from "@/lib/pi/pi-bridge";
-import { hydrateThreadModel, setThreadModel, useThreadModel } from "@/lib/pi/pi-session-model";
+import { hydrateThreadModel, setThreadModel } from "@/lib/pi/pi-session-model";
+import { useModelGate } from "@/lib/pi/pi-model-gate";
 import { useSendLock } from "@/lib/pi/pi-send-lock";
 import { setSelectedModel } from "@/lib/model/model-settings";
 import { fmtContextWindow } from "@/lib/model/model-format";
@@ -26,7 +27,7 @@ export const PiModelPicker: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const modelLocked = useSendLock();
   const allModels = usePiModels();
-  const selected = useThreadModel(threadId);
+  const gate = useModelGate();
 
   // 切线程时水合该会话记住的模型（无记忆则回落全局当前选择）
   useEffect(() => {
@@ -69,8 +70,11 @@ export const PiModelPicker: FC = () => {
     return [...map.entries()];
   }, [options, byCompositeId]);
 
-  const value = selected
-    ? `${selected.provider}/${selected.modelId}`
+  // 只展示「还可用」的选择：provider 被删/停用后会话级记忆仍指着那个模型，
+  // 直接显示会是一个目录里不存在的裸 provider/modelId（看着像 bug）。
+  // 不可用时回落「选择模型」占位，由发送闸门把用户引到重新选择（见 pi-model-gate）
+  const value = gate.selected
+    ? `${gate.selected.provider}/${gate.selected.modelId}`
     : undefined;
   const selectedLabel = value
     ? (byCompositeId.get(value)?.name ?? value)
