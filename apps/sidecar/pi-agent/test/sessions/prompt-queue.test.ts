@@ -237,10 +237,12 @@ describe("dispatchPrompt: queuing integration", () => {
     markTurnEnd("th-q1") // 活跃 turn 结束：链节放行
     await p;
 
-    // 派发执行（无模型 → error 收尾）；出队后快照清空
+    // 派发执行（无凭据环境 → 开跑前即 MODEL_NOT_CONFIGURED 收尾，不打 start）；
+    // error chunk 本身就是「这一条真的出队跑了」的证据。出队后快照清空
     const types = chunksFor("pq2").map((c) => c.type);
-    expect(types).toContain("start");
+    expect(types).not.toContain("start");
     expect(types).toContain("error");
+    expect(chunksFor("pq2").some((c) => String(c.errorText).includes("No model"))).toBe(true);
     expect(queueSnapshot("th-q1")).toEqual([]);
     resetQueueForTests();
   });
@@ -271,13 +273,14 @@ describe("dispatchPrompt: queuing integration", () => {
     markTurnEnd("th-q3") // 链节按序放行：第一节取队首（= pp3），第二节取 pp2
     await Promise.all([p2, p3]);
 
-    // 每个排队项都先后开跑，且 pp3 先于 pp2（按 start chunk 在捕获流中的顺序）
-    const startLine = (id: string) =>
+    // 每个排队项都先后开跑，且 pp3 先于 pp2（按各自收尾 chunk 在捕获流中的顺序；
+    // 无凭据环境里这条收尾就是开跑前的 MODEL_NOT_CONFIGURED error）
+    const settleLine = (id: string) =>
       lines.findIndex(
-        (l) => l.includes(`"id":"${id}"`) && l.includes('"type":"start"'),
+        (l) => l.includes(`"id":"${id}"`) && l.includes('"type":"error"'),
       );
-    expect(startLine("pp3")).toBeGreaterThanOrEqual(0);
-    expect(startLine("pp2")).toBeGreaterThan(startLine("pp3"));
+    expect(settleLine("pp3")).toBeGreaterThanOrEqual(0);
+    expect(settleLine("pp2")).toBeGreaterThan(settleLine("pp3"));
     // 两条各自以 error 收尾（无模型），证明各自真正执行
     expect(chunksFor("pp2").some((c) => c.type === "error")).toBe(true);
     expect(chunksFor("pp3").some((c) => c.type === "error")).toBe(true);
@@ -304,11 +307,16 @@ describe("dispatchPrompt: queuing integration", () => {
 
     markTurnEnd("th-q4")
     await Promise.all(queued);
-    // 前 5 条正常排队执行，第 6 条无执行痕迹
+    // 前 5 条正常排队执行（各以 MODEL_NOT_CONFIGURED 收尾），第 6 条只有超限
+    // error、没有执行痕迹
     for (let i = 1; i <= PROMPT_QUEUE_LIMIT; i++) {
-      expect(chunksFor(`pl${i}`).map((c) => c.type)).toContain("start");
+      const chunks = chunksFor(`pl${i}`);
+      expect(chunks.map((c) => c.type)).toContain("error");
+      expect(chunks.some((c) => String(c.errorText).includes("No model"))).toBe(true);
     }
-    expect(chunksFor("pl6").map((c) => c.type)).not.toContain("start");
+    expect(
+      chunksFor("pl6").some((c) => String(c.errorText).includes("No model")),
+    ).toBe(false);
     resetQueueForTests();
   });
 });
