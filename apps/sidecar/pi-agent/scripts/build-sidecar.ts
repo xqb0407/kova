@@ -5,6 +5,8 @@
  * 用 rustc 的 host 三元组而不是硬编码平台，保证本地与 CI 矩阵
  * （macos-latest / windows-latest）各自原生构建时产物路径都正确。
  */
+import { resolve } from "node:path";
+
 const rustc = Bun.spawnSync(["rustc", "-vV"]);
 const host = /^host:\s*(.+)$/m.exec(rustc.stdout.toString())?.[1];
 if (!host) {
@@ -12,8 +14,11 @@ if (!host) {
   throw new Error("无法从 rustc -vV 解析 host 三元组，请确认 rustc 已安装并在 PATH 中");
 }
 
-// 包根目录（scripts/ 的上一级），bun build 与 outfile 的相对路径都以它为基准
-const pkgRoot = new URL("..", import.meta.url).pathname;
+// 包根目录（scripts/ 的上一级），bun build 与 outfile 的相对路径都以它为基准。
+// 必须用 import.meta.dir：new URL("..", import.meta.url).pathname 在 Windows 上
+// 会返回 "/D:/Users/..." 这种带前导斜杠的非法路径，当 cwd 用会让 bun build
+// 找不到入口文件。口径与同目录另两个脚本一致。
+const pkgRoot = resolve(import.meta.dir, "..");
 const outfile = `../../../apps/desktop/src-tauri/binaries/pi-agent-${host}`;
 const build = Bun.spawnSync(["bun", "build", "src/index.ts", "--compile", "--outfile", outfile], {
   cwd: pkgRoot,
