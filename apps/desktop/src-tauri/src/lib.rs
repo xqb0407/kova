@@ -151,6 +151,7 @@ pub fn run() {
             remote::pi_remote_refresh_code,
             remote::pi_remote_revoke,
             appearance::set_window_effect,
+            appearance::sync_webview_surface,
             about::open_logs_dir,
             about::open_external,
             about::set_dev_mode,
