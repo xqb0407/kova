@@ -269,6 +269,29 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
     };
   }, [syncBounds]);
 
+  // 跨屏拖动（两屏缩放比例不同）时 DPR 变化、物理 bounds 全变，但占位容器
+  // 的 CSS 尺寸基本不变（WM_DPICHANGED 建议矩形按视觉尺寸换算）——上面的
+  // ResizeObserver/resize 都不触发，子 webview 停在旧物理矩形上，悬浮在
+  // 错误区域（z 序在 DOM 之上）盖住 panel/composer 吞点击。监听 DPR 变化
+  // 立即重同步（matchMedia 一次性监听：注册当前分辨率，偏离即触发重挂）
+  useEffect(() => {
+    if (!isTauri()) return;
+    let mq: MediaQueryList | null = null;
+    const onChange = () => {
+      mq?.removeEventListener("change", onChange);
+      mq = null;
+      void syncBounds();
+      watch();
+    };
+    const watch = () => {
+      const dpr = window.devicePixelRatio || 1;
+      mq = window.matchMedia(`(resolution: ${dpr}dppx)`);
+      mq.addEventListener("change", onChange);
+    };
+    watch();
+    return () => mq?.removeEventListener("change", onChange);
+  }, [syncBounds]);
+
   // 视口模式：挂载取当前值（AI resize 的面板外落位也回读），并跟随宿主事件
   useEffect(() => {
     if (!isTauri()) return;

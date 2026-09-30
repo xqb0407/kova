@@ -47,6 +47,27 @@ pub fn run() {
             }
             _ => {}
         })
+        // 跨屏拖动（两屏缩放比例不同）触发 DPI 变化：WebView2 的输入映射与子
+        // webview 矩形可能停留在旧 scale——表现为右下区域（panel/composer）点击
+        // 失效、重启恢复。Tauri 收到 ScaleFactorChanged 只广播事件不重算 bounds，
+        // 这里延迟重发一次各 webview 当前 bounds（SetBounds 幂等），促使控制器
+        // 按新 DPI 重算；延迟是等 WM_DPICHANGED 的异步 SetWindowPos 落地后再执行
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::ScaleFactorChanged { .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
+                let window = window.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    for wv in window.webviews() {
+                        if let Ok(b) = wv.bounds() {
+                            let _ = wv.set_bounds(b);
+                        }
+                    }
+                });
+            }
+        })
         .manage(PiState::default())
         .manage(remote::RemoteState::default())
         .manage(browser::BrowserState::default())
