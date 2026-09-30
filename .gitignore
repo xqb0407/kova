@@ -51,6 +51,9 @@ next-env.d.ts
 /apps/sidecar/pi-agent/stderr.log
 # sidecar 使用 bun 管理依赖，npm lock 为杂讯
 /apps/sidecar/pi-agent/package-lock.json
+# 无 PI_SESSIONS_DIR 直跑（bun run smoke）时回退的本地 SQLite，会落在包目录里。
+# 里面有 credentials / secrets 表，绝不能进仓库。
+/apps/sidecar/pi-agent/pi-agent.db*
 
 .agents/skills/
 
