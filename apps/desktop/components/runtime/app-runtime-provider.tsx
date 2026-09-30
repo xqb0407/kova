@@ -2,6 +2,7 @@
 
 import { AssistantRuntimeProvider, useAui, useAuiState, useRemoteThreadListRuntime } from "@assistant-ui/react";
 import { useChatRuntime } from "@assistant-ui/ai-sdk";
+import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@/lib/tauri";
 import { installFrontendLogging } from "@/lib/frontend-logging";
@@ -295,6 +296,15 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
       uninstallPerfWatch();
     };
   }, []);
+
+  // 开屏结束 + 桌面端：让宿主按当前材质状态翻转 webview 表面透明度。
+  // 窗口 transparent:true 时 WebView2 表面带 alpha → ClearType 被禁用，
+  // 整窗文字灰度抗锯齿（比浏览器细/虚）；材质关闭时宿主借此恢复不透明
+  // 表面拿回 ClearType。开屏期间必须保持透明，所以挂在 splashDone 之后。
+  useEffect(() => {
+    if (!desktop || !splashDone) return;
+    void invoke("sync_webview_surface").catch(() => {});
+  }, [desktop, splashDone]);
 
   // 首帧（含静态导出的预渲染 HTML）恒为 BootSplash，与水合后 effect 翻转前的
   // 客户端首帧一致，避免 hydration mismatch；桌面端水合前窗口由此获得实体内容。
