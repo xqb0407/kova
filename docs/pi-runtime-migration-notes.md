@@ -212,6 +212,22 @@
 - 待用户实测：变更前确认审批卡放行/拦截 / plan 模式执行确认 / Question 提问卡
   作答、跳过、关闭并停止 / 审批或提问挂起时刷新，卡片恢复 / sidecar 重启后
   陈旧卡结算（按取消/拒绝落行解禁）
-- **4d 待办补记**：其余旁路 chunk 尚未改接——data-planningState（模式选择器）、
-  data-askNeedsWork（切档提议 chip）、data-todo（任务清单面板）、data-panelOpen
-  （面板唤起），同款拦截模式在 TauriPiClient 补齐
+- **4d 待办补记**：其余旁路 chunk 已于 4d-1 改接（见阶段 4d 章节）。
+
+## 阶段 4d（其余旁路 chunk + 工具卡形状核对）
+
+### 4d-1 已接通（其余旁路 chunk 改接事件拦截）
+- **预筛扩展**：`looksInteraction` 重命名为 `looksBypass`，新增 5 个精确枚举：
+  `data-planningState` / `data-askNeedsWork` / `data-todo` / `data-panelOpen` /
+  `data-pluginOpen`。沿用「正文转义引号不命中精确子串」的预筛安全性（每条
+  token 级行仍 JSON.parse 一次，但 `\"data-todo\"` 类正文不含 `"data-` 裸前缀）。
+- **store 类拦截**（有 sessionId，按会话隔离）：applyPlanningChunk（模式选择器
+  快照）/ applyAskNeedsWorkChunk（切档提议 chip）/ applyTodoChunk（任务清单），
+  与 pi-transport tap 同款形状校验。
+- **面板唤起类**（线程无关）：data-panelOpen → browser/file 分流
+  focusPanelTab（file 带 cwd/path，focus 不透传）+ `agent-panel:open`；
+  data-pluginOpen → focusPluginPanel + `plugin-panel:refresh` + `agent-panel:open`。
+- **agent_end 收尾**：追加 refreshFileTree（对齐旧链路 finish 副作用）。
+- **测试**：store 类 chunk 写用例（planningState 进 store 不进消息流）；
+  panelOpen/pluginOpen 因 handler 含 window.dispatchEvent 无 window 环境，不写
+  bun 测试（与 pi-transport 旧链路同待遇）。
