@@ -40,6 +40,7 @@ import type {
   PiAgentMessage,
   PiHostUiResponse,
   PiImageContent,
+  PiInputFilePart,
   PiQueueEntry,
   PiSendMessageInput,
   PiThinkingLevel,
@@ -183,18 +184,27 @@ export const buildPiSendInput = (
 
   const textChunks: string[] = [];
   const attachments: PiImageContent[] = [];
+  const files: PiInputFilePart[] = [];
   for (const part of parts) {
     if (part.type === "text") {
       textChunks.push(part.text);
     } else if (part.type === "image") {
       attachments.push(toImageContent(part.image));
+    } else if (part.type === "file") {
+      // Composer 附件（对话框直选的图片/文档等）：透传给客户端解析为
+      // 协议附件（path/data 载荷），不再静默丢弃
+      files.push({
+        data: part.data,
+        mimeType: part.mimeType,
+        ...(part.filename ? { filename: part.filename } : {}),
+      });
     }
-    // `file`/other parts are not part of Pi's user-content surface.
   }
 
   return {
     content: textChunks.join("\n\n"),
     ...(attachments.length > 0 ? { attachments } : {}),
+    ...(files.length > 0 ? { files } : {}),
     ...(streamingBehavior ? { streamingBehavior } : {}),
   };
 };

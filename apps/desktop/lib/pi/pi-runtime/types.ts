@@ -427,9 +427,21 @@ export type PiThreadMetadata = {
 /** Image attachment passthrough — mirror of Pi `ImageContent`. */
 export type PiInputAttachment = PiImageContent;
 
+/** Composer file-part passthrough（迁移缺口：buildPiSendInput 原本丢弃 file
+ *  parts，对话框直选的图片/文档全丢）。`data` 沿用 assistant-ui FileMessagePart
+ *  语义：URL（file:///data:/http(s)/blob:）或裸 base64，由客户端转协议附件。 */
+export type PiInputFilePart = {
+  data: string;
+  mimeType: string;
+  filename?: string;
+};
+
 export type PiSendMessageInput = {
   content: string;
   attachments?: PiInputAttachment[];
+  /** file parts（文档附件 + 对话框直选图片）：桌面客户端合成消息复用
+   *  extractPromptAttachments 解析为协议附件（path/data 载荷）后再下发。 */
+  files?: PiInputFilePart[];
   /** REQUIRED while the thread is running. Pi `prompt()` throws otherwise. */
   streamingBehavior?: "followUp" | "steer";
 };

@@ -33,6 +33,7 @@ import { applyTodoChunk } from "@/lib/pi/pi-todo";
 import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
 import { refreshFileTree } from "@/lib/workspace/file-tree";
 import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
+import { extractPromptAttachments } from "@/lib/attachments/prompt-attachments";
 import { resyncPiRunning } from "@/lib/pi/pi-running";
 import { emitAgentEvent } from "@/lib/pi/agent-events";
 import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
@@ -587,11 +588,39 @@ export class TauriPiClient implements PiClient {
     // streamingBehavior 优先；无显式行为且标记在 → 升级为 steer（含控制器
     // 忙时默认派生的 followUp——标记只会在「用户明确要点并入」时存在）
     const steer = input.streamingBehavior === "steer" || consumeSteerIntent(threadId);
+    // composer file parts（对话框直选的图片/文档）→ 协议附件：合成消息复用
+    // 旧链路 extractPromptAttachments 的全部裁决（file:// 零拷贝带路径、文档
+    // 经 attachment_stage 落盘中转、data:/blob: 解析内联）。FileMessagePart 的
+    // 裸 base64 约定（sourceType 非 url 且非已知 scheme）就地包成 data: URL
+    const fileAttachments = input.files?.length
+      ? await extractPromptAttachments(
+          {
+            parts: input.files.map((f) => ({
+              type: "file" as const,
+              url:
+                /^(?:data:|blob:|https?:|file:\/\/|[A-Za-z]:[\\/])/i.test(f.data) ||
+                f.data.startsWith("/")
+                  ? f.data
+                  : `data:${f.mimeType};base64,${f.data}`,
+              mediaType: f.mimeType,
+              ...(f.filename ? { filename: f.filename } : {}),
+            })),
+          } as Parameters<typeof extractPromptAttachments>[0],
+          threadId,
+        )
+      : null;
     // 运行中发送 = followUp（sidecar 自动排队）；steer 显式并入当前轮
     this.inflight.set(requestId, threadId);
     // 完成提醒台账（缺口3）：排队项每条都经这里发出，agent_end 时取最新
     this.lastPrompts.set(threadId, input.content);
     void this.ensureEventWatcher();
+    const inlineImages =
+      input.attachments?.map((a, i) => ({
+        name: `image-${i}.${a.mimeType.split("/")[1] ?? "png"}`,
+        mimeType: a.mimeType,
+        data: a.data,
+      })) ?? [];
+    const attachments = [...inlineImages, ...(fileAttachments ?? [])];
     try {
       await invoke("pi_prompt", {
         requestId,
@@ -600,12 +629,7 @@ export class TauriPiClient implements PiClient {
         threadId,
         sessionId: threadId,
         cwd: getWorkspace() ?? null,
-        attachments:
-          input.attachments?.map((a, i) => ({
-            name: `image-${i}.${a.mimeType.split("/")[1] ?? "png"}`,
-            mimeType: a.mimeType,
-            data: a.data,
-          })) ?? null,
+        attachments: attachments.length ? attachments : null,
         steer,
       });
     } catch (err) {

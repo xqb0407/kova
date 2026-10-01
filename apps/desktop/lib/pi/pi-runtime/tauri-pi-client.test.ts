@@ -477,3 +477,65 @@ describe("TauriPiClient 检查点卡观察（缺口2）", () => {
     expect(snapshotCalls).toBe(2);
   });
 });
+
+describe("TauriPiClient composer file parts 附件透传（迁移缺口修复）", () => {
+  type Att = { name: string; mimeType: string; data?: string; path?: string };
+  const sentAttachments = (): Att[] =>
+    (promptArgs as unknown as { attachments: Att[] }).attachments;
+
+  test("file:// 对话框直选：文档/图片走 path 载荷零拷贝，与内联图片合并", async () => {
+    promptArgs = null;
+    const client = new TauriPiClient();
+    await client.sendMessage("s1", {
+      content: "看下这份文档",
+      attachments: [{ type: "image", mimeType: "image/png", data: "AAAA" }],
+      files: [
+        {
+          data: "file:///Users/demo/report.pdf",
+          mimeType: "application/pdf",
+          filename: "report.pdf",
+        },
+        {
+          data: "file:///Users/demo/pic.png",
+          mimeType: "image/png",
+          filename: "pic.png",
+        },
+      ],
+    });
+    expect(promptArgs).not.toBeNull();
+    expect(sentAttachments()).toEqual([
+      // 内联图片（image part → data 载荷）在前
+      { name: "image-0.png", mimeType: "image/png", data: "AAAA" },
+      // file parts → path 载荷（旧链路 extractPromptAttachments 裁决）
+      {
+        name: "report.pdf",
+        mimeType: "application/pdf",
+        path: "/Users/demo/report.pdf",
+      },
+      { name: "pic.png", mimeType: "image/png", path: "/Users/demo/pic.png" },
+    ]);
+  });
+
+  test("裸 base64（assistant-ui 非 url 约定）包成 data: URL 走内联载荷", async () => {
+    promptArgs = null;
+    const client = new TauriPiClient();
+    // bun 环境无 window → isTauri()=false → 文档内联回退（data 载荷）
+    await client.sendMessage("s1", {
+      content: "数据在这",
+      files: [
+        { data: "aGVsbG8=", mimeType: "text/csv", filename: "rows.csv" },
+      ],
+    });
+    expect(sentAttachments()).toEqual([
+      { name: "rows.csv", mimeType: "text/csv", data: "aGVsbG8=" },
+    ]);
+  });
+
+  test("无附件时 attachments 为 null（prompt 帧不带字段语义不变）", async () => {
+    promptArgs = null;
+    const client = new TauriPiClient();
+    await client.sendMessage("s1", { content: "纯文本" });
+    expect(promptArgs).not.toBeNull();
+    expect((promptArgs as unknown as Record<string, unknown>).attachments).toBeNull();
+  });
+});
