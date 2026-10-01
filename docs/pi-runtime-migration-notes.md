@@ -231,3 +231,42 @@
 - **测试**：store 类 chunk 写用例（planningState 进 store 不进消息流）；
   panelOpen/pluginOpen 因 handler 含 window.dispatchEvent 无 window 环境，不写
   bun 测试（与 pi-transport 旧链路同待遇）。
+
+### 4d-2 已核对（工具卡 args/result 形状逐一核对）
+- **四张 AGENT_TOOL_UI 卡 + ToolFallback 数据契约全满足**：BashToolUI /
+  TaskToolUI / SkillToolUI / GenerateImageToolUI 与 ToolFallback 的数据需求
+  全部是 `toolCallId / args / result / status / isError`，vendored 投影层
+  （messageProjection.ts）已按此供给。
+- **resultText / strArg 是 function 声明**（tool-row.aui.tsx），非独立数据源。
+- **details 无人消费**：buildToolResultMap 收集 details 但 part 构造丢弃，
+  现网无任何工具卡读取 details → 丢弃无害，不补。
+- **status 走 AUI 自动推导**：AUI part 类型无显式 status 字段，
+  toMessagePartStatus 按 `result === undefined || isPreliminary ||
+  hasPendingToolAction` 推导（继承 message.status 或 COMPLETE），与旧链路
+  观感一致。
+- **TaskToolUI running 取自 subagent store**（非 status 字段），4c 已接。
+
+### 4d 已知缺口（记录不阻塞，后续迭代）
+1. **新链路缺图**：sidecar 的 data-image 只走旧 prompt 流（stream.ts
+   `sendChunk(reqId, ...)`），thread_event 通道不承载；且 vendored 投影把
+   toolResult image 块转 modelContent file parts，而 UI 图片廊
+   （assistant-message.tsx group-images）只消费 data part（name "image"，
+   PiImagePartData 带 toolCallId）。**修复方案 A**：vendored 投影层复制
+   sidecar 闸门语义（image-parts.ts：2MiB 内联上限、mime 白名单、
+   id=`img-${toolCallId}-${index}`、alt=文本块首行≤120 字符），把 image 块
+   投为 data part——快照与流式同构，顺带修好刷新恢复后的图片显示。
+2. **检查点卡未接**：createCheckpoint/settleCheckpoint 链路在 thread_event
+   通道无对应事件，检查点指示条不更新（数据仍走 checkpoint API，功能可用）。
+3. **agent.turn.completed 完成提醒未接**：旧链路的完成通知 side effect 在
+   新链路无人触发。
+4. **压缩分隔线 data part 名不匹配**：投影产 `"pi-compaction-summary"`，
+   UI 注册名是 `"compaction"`（compaction-banner.tsx CompactionDataUI）→
+   分隔线回退默认样式。改名即可对齐。
+
+### 附：迁移暴露的「刷新回切乱窜」修复（2026-10-01，7e153ac）
+react-pi 新链路发送不写 piResumableStorage 登记（旧 transport 专属机制），
+上一 webview 生命周期的存量条目（localStorage 影子镜像跨重启存活）无人清理，
+ResumeRunningThread 的 inFlightTarget 被劫持到无关会话——在 A 会话发消息，
+刷新后落到 B。修复：hydrateRunningRegistrations 开头清空全部存量登记，再按
+sidecar 运行态真相（listRunningTurns）重建；三级回切的 running/in-flight 层
+从此只认运行态事实，last-thread 层兜住其余场景。
