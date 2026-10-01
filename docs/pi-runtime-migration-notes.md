@@ -158,6 +158,26 @@
 - 4c 无 sidecar 改动：pushContextChanged 双发与 sendEventChunk 委派帧均为
   既有行为，本阶段只是前端接上。
 
+## 阶段 4b（审批/交互卡）
+
+### 已接通
+- **决策**：保留现有工具卡审批（计划倾向项）——审批/提问 UI 数据源与结算出口
+  仍是 pi-interactions（tool_confirm/question_answer 原线形），host-UI 契约
+  （快照 hostUiRequests/respondToHostUiRequest）按需桥接、暂不启用。
+- **TauriPiClient 拦截**：事件预筛放行 `data-toolApproval` / `data-question` /
+  `data-interactionResolved`，按线上 sessionId 喂 pi-interactions 台账
+  （applyToolApprovalChunk / applyQuestionChunk / removeResolvedInteraction），
+  与卡片组件的 mainThreadId（新链路 = sessionId）同一键空间。
+- **agent_end 兜底清空**：turn 收尾清该线程残留审批/提问卡（abort/异常出口；
+  正常结算由 resolved 帧先行移除，此处通常空操作）。
+- **刷新恢复**：subscribe 初帧后 `list_pending` 权威拉取（applyHistoryPending
+  幂等并入）。**必须带 sessionId 定址**——新链路 threadId 即 sessionId，而
+  sidecar threadSessions 的键是建会话时的随机 threadId，按 threadId 反查落空；
+  用并入而非整表替换，防拉空时清掉直播流刚送的卡。
+- **结算寻址核对**：tool_confirm 走 resolveSession(threadId=sessionId)（running
+  键本就是 sessionId + findRunBySession 反查兜底）；question_answer/MCP 审批按
+  id 全局定址，threadId 无关。
+
 ## 验证记录
 - `bunx tsc --noEmit`（apps/desktop 与 sidecar）干净
 - vendored 85 测试 + 全仓 929 测试绿
@@ -184,3 +204,14 @@
 - 待用户实测：多会话并发时侧边栏运行 spinner 起止及时（空闲期也不断流）/
   占用环轮收尾直更 + 切线程后仍有读数（liveUsage 兜底）/ subagent 委派卡片
   正常展开（Task 工具卡活动链路）
+
+### 阶段 4b 验证（2026-10-01）
+- `bunx tsc --noEmit` 两端干净；pi-runtime 92 项测试绿（tauri-pi-client.test.ts
+  新增 2 项：审批/提问 chunk 进卡且不进消息流 / resolved 关单卡 + agent_end 清空
+  残留）；全仓 931 项测试绿
+- 待用户实测：变更前确认审批卡放行/拦截 / plan 模式执行确认 / Question 提问卡
+  作答、跳过、关闭并停止 / 审批或提问挂起时刷新，卡片恢复 / sidecar 重启后
+  陈旧卡结算（按取消/拒绝落行解禁）
+- **4d 待办补记**：其余旁路 chunk 尚未改接——data-planningState（模式选择器）、
+  data-askNeedsWork（切档提议 chip）、data-todo（任务清单面板）、data-panelOpen
+  （面板唤起），同款拦截模式在 TauriPiClient 补齐
