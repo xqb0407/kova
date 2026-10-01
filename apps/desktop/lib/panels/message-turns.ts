@@ -249,8 +249,9 @@ export type TurnSummary = {
   /** 本轮是否有「可收起的过程」：轮中消息，或轮末消息里除正文/压缩线之外的 part
    *  （工具、思考、data）——没有过程时摘要行是空开关，不占位 */
   hasProcess: boolean;
-  /** 可收起条数（轮中消息数 + 轮末是否还有过程部分）：无耗时时摘要行显示它
-   *  ——对齐 dsh-message-fold 的「{count} 条较早消息」 */
+  /** 可收起过程块数（轮内 tool-call + reasoning part 数）：无耗时时摘要行显示它。
+   *  旧口径「轮中消息数 + 轮末是否有过程」在新投影链路失效——一轮的
+   *  assistant+toolResult 全合并进一条消息，轮内恒 2 条，计数恒等于 1。 */
   collapsedCount: number;
   /** 工具调用次数 */
   toolCount: number;
@@ -281,6 +282,7 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
   const turn = getTurnIndex(messages).turnByKey.get(turnKey);
   if (!turn) return "";
   let toolCount = 0;
+  let processParts = 0;
   let userText = "";
   let answerText = "";
   let hasAssistant = false;
@@ -299,7 +301,12 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
     if (message.role !== "assistant") continue;
     hasAssistant = true;
     for (const part of message.content) {
+      if (part.type === "reasoning") {
+        processParts += 1;
+        continue;
+      }
       if (part.type !== "tool-call") continue;
+      processParts += 1;
       toolCount += 1;
       if (part.toolName === "edit" || part.toolName === "write") {
         const path = toolFilePath(part.args);
@@ -330,8 +337,8 @@ export function packTurnSummary(messages: readonly ThreadMessage[], turnKey: str
         !(part.type === "data" && part.name === "compaction"),
     );
   const hasProcess = turn.end - turn.start > 2 || endHasProcess;
-  const collapsedCount =
-    Math.max(0, turn.end - turn.start - 2) + (endHasProcess ? 1 : 0);
+  // 过程块口径（tool-call + reasoning）：消息数口径在新投影链路恒 1，见类型注释
+  const collapsedCount = processParts;
 
   return [
     turn.end - turn.start,

@@ -245,14 +245,33 @@ describe("packTurnSummary", () => {
     ];
     const summary = parseTurnSummary(packTurnSummary(messages, "u1"));
     expect(summary.messageCount).toBe(2);
-    // 轮末带工具 part ⇒ 有过程可收（摘要行才有意义），条数=轮中消息数+轮末过程
+    // 轮末带工具 part ⇒ 有过程可收（摘要行才有意义）
     expect(summary.hasProcess).toBe(true);
-    expect(summary.collapsedCount).toBe(1);
+    // 过程块口径：collapsedCount = 轮内 reasoning + tool-call 数（本例 3 个工具调用）
+    expect(summary.collapsedCount).toBe(3);
     expect(summary.toolCount).toBe(3);
     expect(summary.fileCount).toBe(1);
     expect(summary.userText).toBe("帮我重构 xxx");
     expect(summary.answerText).toBe("改完了");
     expect(summary.hasAssistant).toBe(true);
+  });
+
+  test("collapsedCount 混合口径：reasoning 与 tool-call 一并计数，text 不计", () => {
+    const messages = [
+      message("u1", "user", [{ type: "text", text: "查一下" }]),
+      message("a1", "assistant", [
+        { type: "reasoning", text: "先想" },
+        { type: "tool-call", toolName: "bash", args: { command: "ls" } },
+        { type: "text", text: "中间说明" },
+        { type: "reasoning", text: "再想" },
+        { type: "tool-call", toolName: "read", args: { path: "/a" } },
+        { type: "text", text: "结果" },
+      ]),
+    ];
+    const summary = parseTurnSummary(packTurnSummary(messages, "u1"));
+    // 2 reasoning + 2 tool-call = 4，text part 不计
+    expect(summary.collapsedCount).toBe(4);
+    expect(summary.toolCount).toBe(2);
   });
 
   test("纯聊天轮（user + 纯文本回答）：hasProcess=false，行不占位", () => {

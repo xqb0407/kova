@@ -6,8 +6,9 @@
  *
  * 耗时台账：直播轮的开始时刻在轮次出现时记一次（Date.now），结束时刻取该轮
  * 末条 assistant 消息的 timing（框架在流结束时写入 metadata.timing）；历史轮
- * 两端都来自 sidecar 转录行的时间戳（loadPiHistory 装载时播种）。任一缺失
- * 就不显示耗时——宁可不显示，不显示错的。
+ * 两端都来自 sidecar 转录行的时间戳（新链路在 PiClientBase.dispatch 装载
+ * 快照时播种，seedHistoryTurnTimings）。任一缺失就不显示耗时——宁可不显示，
+ * 不显示错的。
  *
  * 键一律带会话维度（`threadId:messageId`）：消息 id 只在会话内唯一（历史重建
  * 用转录行 seq），跨会话可能撞号。

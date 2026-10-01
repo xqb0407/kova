@@ -87,6 +87,12 @@ const {
 } = await import("@/lib/pi/pi-interactions");
 const { subscribeAgentEvents } = await import("@/lib/pi/agent-events");
 const { sessionModeSnapshot } = await import("@/lib/pi/pi-session-mode");
+const {
+  __resetTurnStoresForTests,
+  getTurnTiming,
+  noteTurnStart,
+  scopedTurnKey,
+} = await import("@/lib/panels/turn-collapse");
 type PiClientEvent = import("@/lib/pi/pi-runtime/types").PiClientEvent;
 
 // ---------- 工具 ----------
@@ -537,5 +543,100 @@ describe("TauriPiClient composer file parts 附件透传（迁移缺口修复）
     await client.sendMessage("s1", { content: "纯文本" });
     expect(promptArgs).not.toBeNull();
     expect((promptArgs as unknown as Record<string, unknown>).attachments).toBeNull();
+  });
+});
+
+describe("TauriPiClient 快照装载耗时播种（症状1）", () => {
+  /** 两轮历史转录：行带 __seq + timestamp（sidecar thread_snapshot 透传形状） */
+  const historySnapshot = () => ({
+    metadata: { id: "s1", status: "idle" },
+    messages: [
+      { role: "user", content: "第一问", __seq: 3, timestamp: 1_000 },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "答一" }],
+        api: "x",
+        provider: "p",
+        model: "m",
+        usage: {},
+        stopReason: "stop",
+        __seq: 4,
+        timestamp: 6_000,
+      },
+      { role: "user", content: "第二问", __seq: 7, timestamp: 20_000 },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "答二" }],
+        api: "x",
+        provider: "p",
+        model: "m",
+        usage: {},
+        stopReason: "stop",
+        __seq: 8,
+        timestamp: 23_000,
+      },
+    ],
+    seq: 9,
+  });
+
+  beforeEach(() => __resetTurnStoresForTests());
+
+  test("订阅首帧快照把每轮 user→末条时间戳播种进台账", async () => {
+    snapshotReply = { type: "thread_snapshot", snapshot: historySnapshot() };
+    subscribeAndSettle();
+    await tick();
+    // 轮次键 = 投影稳定 id pi-msg:${user行seq}，与 turnKey 同值
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:3"))).toEqual({
+      start: 1_000,
+      end: 6_000,
+    });
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:7"))).toEqual({
+      start: 20_000,
+      end: 23_000,
+    });
+  });
+
+  test("live:true 轮（本窗口计时中）不被播种覆盖", async () => {
+    __resetTurnStoresForTests();
+    const key = scopedTurnKey("s1", "pi-msg:3");
+    noteTurnStart(key, 88_000); // 本窗口盯着跑：live:true + Date.now 起点
+    snapshotReply = { type: "thread_snapshot", snapshot: historySnapshot() };
+    subscribeAndSettle();
+    await tick();
+    expect(getTurnTiming(key)).toEqual({ start: 88_000, live: true });
+    // 同快照里的另一轮（无 live 标记）正常播种
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:7"))).toEqual({
+      start: 20_000,
+      end: 23_000,
+    });
+  });
+
+  test("无 __seq 的 user 行跳过播种，且不污染后续有 seq 轮", async () => {
+    const snap = historySnapshot();
+    // 模拟旧 sidecar 未透传 seq：首轮锚缺失
+    delete (snap.messages[0] as Record<string, unknown>).__seq;
+    snapshotReply = { type: "thread_snapshot", snapshot: snap };
+    subscribeAndSettle();
+    await tick();
+    // 缺失锚的轮不写台账（pi-msg:undefined 不是合法键，等价于无任何播种）
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:3"))).toBeUndefined();
+    // 后续带 seq 的轮不受影响，起点仍是它自己的 user 行
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:7"))).toEqual({
+      start: 20_000,
+      end: 23_000,
+    });
+  });
+
+  test("重复派发同一快照不产生新写入（等值跳过防 notify 风暴）", async () => {
+    snapshotReply = { type: "thread_snapshot", snapshot: historySnapshot() };
+    const { client } = subscribeAndSettle();
+    await tick();
+    const first = getTurnTiming(scopedTurnKey("s1", "pi-msg:3"));
+    expect(first).toEqual({ start: 1_000, end: 6_000 });
+    // 二次订阅强制重拉快照 → 同一数据再次播种：等值跳过不 set，
+    // 台账条目保持原对象引用（若被覆盖会换成新对象）
+    client.subscribe("s1", () => {});
+    await tick();
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:3"))).toBe(first);
   });
 });
