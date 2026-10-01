@@ -216,8 +216,12 @@ const readSteeringIntent = (
   return intent === "followUp" || intent === "steer" ? intent : undefined;
 };
 
+// 改动（稳定消息 id）：乐观消息自带自生成 __optimisticId——此前按下标拿 id，
+// 与快照尾部真实 user 行撞号会被外部 store"重复 id 保留最后"吞掉一条
+//（发送时"闪一下消失"）；自生成号段与转录 seq 永不碰撞。
 const optimisticUserMessageFromInput = (
   input: PiSendMessageInput,
+  optimisticId: string,
 ): PiAgentMessage => ({
   role: "user",
   content:
@@ -225,6 +229,7 @@ const optimisticUserMessageFromInput = (
       ? [{ type: "text", text: input.content }, ...input.attachments]
       : input.content,
   timestamp: Date.now(),
+  __optimisticId: optimisticId,
 });
 
 /** Text-only reconcile key: the echoed transcript message may carry extra
@@ -279,6 +284,8 @@ export class PiThreadController implements PiThreadControllerLike {
   private messageFlushScheduled = false;
   /** 乐观队列条目的临时 id 序号（真实 reqId 由客户端生成，见 sendQueued）。 */
   private optimisticQueueSeq = 0;
+  /** 改动（稳定消息 id）：乐观用户消息的自生成 id 序号（`pi-optimistic:${n}`）。 */
+  private optimisticUserSeq = 0;
   /** Fallback sequence for snapshots without a supervisor-provided sequence. */
   private readonly localSnapshotSeq = 0;
 
@@ -470,7 +477,10 @@ export class PiThreadController implements PiThreadControllerLike {
 
     if (isQueuedSend) return this.sendQueued(input, behavior ?? "followUp");
 
-    const optimistic = optimisticUserMessageFromInput(input);
+    const optimistic = optimisticUserMessageFromInput(
+      input,
+      `pi-optimistic:${++this.optimisticUserSeq}`,
+    );
     this.optimisticUserMessages.push({
       message: optimistic,
       baseMessageCount: this.state.messages.length,
