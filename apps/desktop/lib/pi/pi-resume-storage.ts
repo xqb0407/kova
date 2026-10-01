@@ -1,7 +1,5 @@
 "use client";
 
-import type { ResumableClientStorage } from "@assistant-ui/ai-sdk";
-
 /** 在飞流登记：requestId + 登记时的线程 local id + 该线程绑定的 pi sessionId */
 export type PiResumableEntry = {
   requestId: string;
@@ -21,7 +19,7 @@ type StorageLike = {
 };
 
 /**
- * pi 在飞 prompt 的可恢复流登记（刷新续流），实现框架 ResumableClientStorage。
+ * pi 在飞 prompt 的可恢复流登记（刷新续流），新链路的启动回切依赖它水合在飞槽位。
  *
  * 为什么不用框架自带 createResumableSessionStorage：它只把 requestId 值持久化到
  * sessionStorage，owner（谁登记的）仅存内存——刷新后 owner 丢失，任何线程第一次
@@ -46,13 +44,13 @@ type StorageLike = {
  *    至少保证当页发起/收尾/清理的语义正确，仅续流降级。
  * 所有落盘失败都会 console.warn 留痕——静默吞错正是该事故无从排查的原因。
  */
-/** 框架 ResumableClientStorage + pi 扩展：set 携带 sessionId、peekEntries 供启动
- *  回切；subscribe 收窄为必选（本实现总提供） */
-export type PiResumableStreamStorage = Omit<
-  ResumableClientStorage,
-  "setStreamId" | "subscribe"
-> & {
+/** 可恢复流登记的客户端存储接口。原为 @assistant-ui/ai-sdk 的
+ *  ResumableClientStorage，旧 AI SDK 链路随迁移阶段 5 退役后类型本地化：
+ *  set 携带 sessionId、peekEntries 供启动回切、subscribe 收窄为必选（本实现总提供） */
+export type PiResumableStreamStorage = {
+  getStreamId(threadId?: string): string | null;
   setStreamId(id: string, threadId?: string, sessionId?: string): void;
+  clear(threadId?: string): void;
   subscribe(listener: () => void): () => void;
   peekEntries(): PiResumableEntry[];
 };
