@@ -180,8 +180,8 @@ export function getPiChannel(): PiChannel {
 
 // ---------- Tauri 通道 ----------
 
-/** pi-chunk-batch 载荷的一行（见 pi_agent.rs ChunkLine）：i = run 内序号（非 chunk 行为 null），l = 原始 NDJSON 行 */
-type ChunkWireLine = { i: number | null; l: string };
+/** pi-chunk-batch 载荷的一行（见 pi_agent.rs ChunkLine）：l = sidecar 原始 NDJSON 行 */
+type ChunkWireLine = { l: string };
 
 export class TauriPiChannel implements PiChannel {
   readonly kind = "tauri" as const;

@@ -140,7 +140,6 @@ pub fn run() {
             pi_agent::pi_abort,
             pi_agent::pi_reset,
             pi_agent::pi_request,
-            pi_agent::pi_attach,
             pty::pty_open,
             pty::pty_write,
             pty::pty_resize,
