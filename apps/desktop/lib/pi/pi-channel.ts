@@ -224,8 +224,8 @@ export class TauriPiChannel implements PiChannel {
   }
 
   /**
-   * turn_changed 是 sidecar 自发通知行（无 id，不进请求配对/重放缓冲，
-   * Rust 原样广播）；pi-exit 转成 (null,false)"事件源失效"信号，
+   * turn_changed 是 sidecar 自发通知行（无 id，不进请求配对，Rust 原样
+   * 广播）；pi-exit 转成 (null,false)"事件源失效"信号，
    * 订阅方清空并重新水合（sidecar 重启后活跃轮次必然为空）。
    * async：两个 listen() 登记都就绪后才 resolve 退订函数——订阅方据此
    * "await 订阅 → 发种子"，杜绝登记窗口丢事件（见 PiChannel.subscribeTurns）。

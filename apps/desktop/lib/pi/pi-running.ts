@@ -96,14 +96,13 @@ function onTurnEvent(sessionId: string | null, active: boolean) {
     return;
   }
   deltas.set(sessionId, active);
-  // turn 收尾即一次消息活动：本端发起的在 transport 发送时已盖过，这里补上
-  // 其它端（如桌面应用里跑的）聊完的会话，让它们的行也立刻显示「刚刚」
+  // turn 收尾即一次消息活动：本端发起的与其它端（如桌面应用里跑的）聊完的
+  // 会话都在这里盖戳，让它们的行立刻显示「刚刚」
   if (!active) {
     markThreadActivity(sessionId);
     // 在飞流登记随轮次结束作废：实时流已尽，内容从转录走历史加载。定时任务的
-    // 轮次前端没有发起消费者，登记（启动水合/挂载探查重建）不会经 transport
-    // finish 通道清理——不清就会留着陈旧 requestId，下次点进该会话触发一次
-    // 空转 resume，甚至把已结束轮次的重放缓冲再倒进线程（消息重复/空窗）。
+    // 轮次前端没有发起消费者，登记（启动水合/挂载探查重建）不会随轮清理——
+    // 不清就会留着陈旧 requestId，下次点进该会话对已结束轮次空转一次 resume。
     piResumableStorage.clear(sessionId);
   }
   recompute();
@@ -166,11 +165,12 @@ export function resyncPiRunning(): void {
 /**
  * 启动时在飞流登记水合（刷新恢复的"运行态真相"兜底层）。
  *
- * 登记的正常通道是 transport 发送时写 storage（sessionStorage + localStorage
- * 镜像），但 webview 存储可能被整页清空/配额连带——登记丢了在飞流就无人认领
- * （表现为刷新后回到空白草稿、发送按钮不转 stop）。sidecar 的 activeTurns 带
- * {sessionId, requestId}（list_running turns 字段），是运行态事实源：对"会话
- * 还没有登记槽"的在跑轮次据此重建，attach 走 Rust 重放缓冲，全程不依赖 storage。
+ * 登记住在 sessionStorage + localStorage 镜像，但 webview 存储可能被整页
+ * 清空/配额连带——登记丢了在飞流就无人认领（表现为刷新后回到空白草稿、发送
+ * 按钮不转 stop）。sidecar 的 activeTurns 带 {sessionId, requestId}
+ * （list_running turns 字段），是运行态事实源：对"会话还没有登记槽"的在跑
+ * 轮次据此重建；resume 走 thread_event 流重建（快照自愈兜底，旧 Rust 重放
+ * 缓冲随迁移阶段 5 退役），全程不依赖 storage。
  * 已有该会话登记（requestId 更准、owner 是发起线程）则不顶。
  *
  * 返回在跑明细供调用方选回切目标；通道不支持/请求失败返回空清单
