@@ -6,9 +6,12 @@ import { isTauri } from "@/lib/tauri";
 import { piRequest } from "@/lib/pi/pi-bridge";
 
 /**
- * 当前选中的 pi 模型：持久化到 SQLite（kv 表），同步到 sidecar 运行态。
+ * 默认模型（kv 表 pi.model）：新对话与从未在对话页定靶选过模型的会话的初始
+ * 选择；仅由不带 sessionId 的 setSelectedModel（设置页/启动恢复）维护。
+ * 对话页的模型选择走会话定靶（pi-session-model），不写这里——全局键一旦
+ * 被"最近一次使用"漂移，所有无记录会话的显示与运行模型会被一起盖掉。
  * 模型列表本身实时读 pi 的 ModelRegistry（含内置 + models.json 自定义），
- * 这里只存"选了哪个"——不写 pi 的配置文件，不影响 CLI。
+ * 这里只存"默认选哪个"——不写 pi 的配置文件，不影响 CLI。
  */
 export type SelectedModel = { provider: string; modelId: string };
 
@@ -64,16 +67,28 @@ export async function syncSelectedModelFromSidecar(): Promise<void> {
   }
 }
 
-/** 选中模型：写 SQLite + 同步 sidecar。
- *  sessionId 提供 = 会话定靶选择：sidecar 只对该会话落模型真值行/偏好列（其余
- *  驻留会话不动），全局 kv 仍更新为「最近一次使用」供新会话跟随；
- *  缺省 = 全局默认变更（设置页/启动恢复），只刷从未显式选过模型的驻留会话。
- *  sidecar 拒绝（模型不在目录/无凭据）时 UI 回退到 sidecar 真值且不写 SQLite，
- *  避免"界面显示 A、请求用默认模型 B"的假象。 */
+/** 选中模型。
+ *  sessionId 提供 = 会话定靶选择（对话页选择器）：sidecar 只对该会话落模型真值
+ *  行/偏好列，其余会话不动；**不更新本地默认值、不写 kv**——定靶失败原样抛出
+ *  给调用方（pi-session-model 负责回退显示）。
+ *  缺省 = 默认模型变更（设置页/启动恢复）：写本地态 + SQLite kv + sidecar，
+ *  并只刷从未显式选过模型的驻留会话。sidecar 拒绝（模型不在目录/无凭据）时
+ *  UI 回退到 sidecar 真值且不写 SQLite，避免"界面显示 A、请求用默认模型 B"的假象。 */
 export async function setSelectedModel(
   model: SelectedModel | null,
   sessionId?: string,
 ) {
+  if (sessionId) {
+    if (!model) return;
+    await piRequest({
+      type: "set_model",
+      sessionId,
+      provider: model.provider,
+      modelId: model.modelId,
+    });
+    return;
+  }
+
   const previous = current;
   current = model;
   emit();
@@ -82,7 +97,6 @@ export async function setSelectedModel(
     try {
       await piRequest({
         type: "set_model",
-        ...(sessionId ? { sessionId } : {}),
         provider: model.provider,
         modelId: model.modelId,
       });

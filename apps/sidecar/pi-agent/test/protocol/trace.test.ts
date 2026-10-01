@@ -211,6 +211,73 @@ describe("createTraceRunRecorder", () => {
     // update 不产生 span，也没有隐式 turn（无 turn_start/message/tool 时无子树）
     expect(run.spans).toHaveLength(0);
   });
+
+  test("v2 身份：记录带 traceId，每 span 有唯一 spanId、parentSpanId 指向所属 turn", () => {
+    const rec = createTraceRunRecorder("sess-id", "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("turn_start"));
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    rec.handle(ev("tool_execution_start", { toolCallId: "t1", toolName: "bash", args: {} }));
+    rec.handle(ev("tool_execution_end", { toolCallId: "t1", toolName: "bash", result: {}, isError: false }));
+    rec.handle(ev("message_end", { message: assistantMsg({ stopReason: "toolUse" }) }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const run = readTraceRuns("sess-id")[0]!;
+    expect(run.traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(run.traceId).toBe(run.runId); // v1 兼容别名同值
+    const turn = run.spans[0]!;
+    expect(turn.spanId).toMatch(/^[0-9a-f]{16}$/);
+    expect(turn.parentSpanId).toBeUndefined(); // turn 挂在 run 根下
+    const ids = new Set<string>();
+    for (const child of turn.children ?? []) {
+      expect(child.spanId).toMatch(/^[0-9a-f]{16}$/);
+      expect(child.parentSpanId).toBe(turn.spanId);
+      ids.add(child.spanId!);
+    }
+    expect(ids.size).toBe((turn.children ?? []).length); // 同轮子 span id 互不相同
+  });
+
+  test("委派回填：traceId/spanIdForToolCall 取到父身份，子 run 带上因果边", () => {
+    const rec = createTraceRunRecorder("sess-parent", "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("turn_start"));
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    rec.handle(ev("tool_execution_start", { toolCallId: "task-1", toolName: "task", args: {} }));
+    const parentTraceId = rec.traceId;
+    const parentSpanId = rec.spanIdForToolCall("task-1");
+    expect(parentTraceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(parentSpanId).toMatch(/^[0-9a-f]{16}$/);
+    rec.handle(ev("tool_execution_end", { toolCallId: "task-1", toolName: "task", result: {}, isError: false }));
+    // 工具收口后仍可查（OpenRun.toolSpanIds 不随 openTools 清理）
+    expect(rec.spanIdForToolCall("task-1")).toBe(parentSpanId);
+    rec.handle(ev("message_end", { message: assistantMsg({ stopReason: "endTurn" }) }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    // 子 run 回填父身份（模拟 SubagentRun 构造）
+    const child = createTraceRunRecorder("sess-parent", "subagent", {
+      parentRunId: parentTraceId,
+      parentSpanId,
+    });
+    child.handle(ev("agent_start"));
+    child.handle(ev("turn_start"));
+    child.handle(ev("message_start", { message: assistantMsg() }));
+    child.handle(ev("message_end", { message: assistantMsg({ stopReason: "endTurn" }) }));
+    child.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    child.handle(ev("agent_end", { messages: [] }));
+    child.settle();
+
+    const runs = readTraceRuns("sess-parent", 10);
+    const parentRun = runs.find((r) => r.source === "ui")!;
+    const childRun = runs.find((r) => r.source === "subagent")!;
+    expect(childRun.parentRunId).toBe(parentRun.traceId);
+    expect(childRun.parentSpanId).toBe(parentSpanId);
+    const taskSpan = (parentRun.spans[0]!.children ?? []).find((s) => s.name === "task")!;
+    expect(taskSpan.spanId).toBe(parentSpanId);
+  });
 });
 
 describe("readTraceRuns", () => {

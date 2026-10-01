@@ -7,11 +7,8 @@ import { Compartment, EditorState, Prec, RangeSetBuilder, Transaction, type Rang
 import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, placeholder as cmPlaceholder, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { useEffect, useRef, type FC } from "react";
 import { toast } from "@/components/ui/toast";
-import { validatePromptFile } from "@/lib/attachments/prompt-attachments";
-import {
-  addSteeredBadge,
-  markSteerNextSend,
-} from "@/lib/pi/pi-steer-intent";
+import { extractDataUriImageFiles, validatePromptFile } from "@/lib/attachments/prompt-attachments";
+import { addSteeredBadge } from "@/lib/pi/pi-steer-intent";
 import { notifyNoModelSelected, useModelGate } from "@/lib/pi/pi-model-gate";
 
 /**
@@ -277,8 +274,11 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
           notifyNoModelSelected(s.noModelHint);
           return true;
         }
-        // 运行中 Shift+⌘/Ctrl+Enter = 并入当前轮（steer）：标记意图后照常发送，
-        // sidecar 忙线程把消息注入活跃轮（不排队、不占队列上限、不中止当前回复）
+        // 运行中 Shift+⌘/Ctrl+Enter = 并入当前轮（steer 车道）：
+        // sidecar 忙线程把消息注入活跃轮（不排队、不占队列上限、不中止当前回复）。
+        // 车道必须经 send options 显式声明：store 暴露 queue adapter 后，
+        // 不带 steer 选项的运行中发送会被 core append 默认路由成 steer
+        // （message.steer ?? isRunning），排队语义要显式 steer:false
         if (
           event.shiftKey &&
           (event.ctrlKey || event.metaKey) &&
@@ -289,24 +289,23 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
           event.preventDefault();
           const chatId = s.threadId;
           if (chatId) {
-            markSteerNextSend(chatId);
             // 已并入徽标（迁移 4a）：新链路 sidecar 不回传 data-steered 信号，
-            // 运行中 steer 发送即时本地记账，宿主轮流收尾时由队列栏清空
+            // steer 发送即时本地记账，宿主轮流收尾时由队列栏清空
             const text = s.aui.composer.getState().text;
             if (text.trim()) addSteeredBadge(chatId, text);
           }
-          s.send();
+          s.send({ steer: true });
           return true;
         }
         if (event.shiftKey) return false;
-        // 运行中不再拦 Enter：按提交模式发送 → sidecar 忙线程自动排队
-        // （Shift+Enter 换行、Shift+⌘/Ctrl+Enter 并入当前轮，均在前面分支）
+        // 运行中不再拦 Enter：按提交模式发送 → steer:false 进排队车道，
+        // sidecar 忙线程自动排队（Shift+Enter 换行、并入在上一分支）
         let shouldSubmit = false;
         if (s.submitMode === "ctrlEnter") shouldSubmit = event.ctrlKey || event.metaKey;
         else if (s.submitMode === "enter") shouldSubmit = !event.ctrlKey && !event.metaKey;
         if (shouldSubmit) {
           event.preventDefault();
-          s.send();
+          s.send({ steer: false });
           return true;
         }
         return false;
@@ -343,10 +342,35 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
             }
           }),
           EditorView.domEventHandlers({
-            paste: (event) => {
+            paste: (event, activeView) => {
               const s = latestRef.current;
               const files = Array.from(event.clipboardData?.files ?? []);
-              if (files.length === 0) return false;
+              if (files.length === 0) {
+                // 剪贴板没有文件条目、文本里却带 data URI 图片（从 devtools/看图应用
+                // 复制）：转成附件，别把 base64 当草稿文本插进来——旧链路原样进 CM，
+                // 发送后用户消息里就是一大段 base64（图片该走附件通道出缩略图）。
+                if (!s.aui.thread.getState().capabilities.attachments) return false;
+                const pasted = event.clipboardData?.getData("text/plain") ?? "";
+                if (!pasted.includes("data:image/")) return false;
+                const extracted = extractDataUriImageFiles(pasted);
+                if (extracted.files.length === 0) return false;
+                event.preventDefault();
+                let converted = 0;
+                for (const file of extracted.files) {
+                  const err = validatePromptFile(file);
+                  if (err) {
+                    toast.error(err);
+                    continue;
+                  }
+                  converted += 1;
+                  void s.aui.composer.addAttachment(file).catch(() => {});
+                }
+                // 全部被闸门拒收时保留原文（不吞用户内容，toast 已说明原因）；
+                // 否则把剥掉 URI 的剩余文字插回光标处（内联场景常伴随说明文字）
+                const rest = converted > 0 ? extracted.rest : pasted;
+                if (rest.trim()) activeView.dispatch(activeView.state.replaceSelection(rest));
+                return true;
+              }
               if (!s.aui.thread.getState().capabilities.attachments) return false;
               event.preventDefault();
               // 附件前置校验（图片/文档种类与大小）：不合格 toast 说明，不让垃圾进草稿；

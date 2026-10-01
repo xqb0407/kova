@@ -8,6 +8,7 @@ import { isTauri } from "@/lib/tauri";
 import { getWorkspace, pathBasename } from "@/lib/workspace/workspace-store";
 import {
   closePanelTab,
+  getAllThreadTabs,
   getPanelTabs,
   openPanelTab,
   subscribePanelTabs,
@@ -135,9 +136,13 @@ if (typeof document !== "undefined") {
 // ---- 标签 ↔ 会话桥：面板标签是会话生命周期的单一事实源 ----
 
 function syncSessionsToTabs(): void {
-  const { tabs } = getPanelTabs();
+  // 标签按会话分桶后回收口径必须是**全部桶的并集**：只看当前会话会在
+  // 切走会话时把别的会话正开着的终端杀光
   const bound = new Set<string>();
-  for (const t of tabs) if (t.type === "shell" && t.sessionId) bound.add(t.sessionId);
+  for (const bucket of getAllThreadTabs()) {
+    for (const t of bucket.tabs)
+      if (t.type === "shell" && t.sessionId) bound.add(t.sessionId);
+  }
   for (const s of [...list]) if (!bound.has(s.id)) closeShell(s.id);
 }
 

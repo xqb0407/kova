@@ -66,8 +66,8 @@ const splitModel = (model: string): { provider?: string; model: string } => {
 };
 
 type FlatSpan = {
-  path: string;
-  parentPath: string | null;
+  spanId: string;
+  parentSpanId: string | null;
   name: string;
   kind: TraceSpan["kind"];
   startMs: number;
@@ -77,12 +77,17 @@ type FlatSpan = {
   detail?: TraceSpan["detail"];
 };
 
-/** TraceSpan 树 → 扁平带路径（路径即 spanId/parentSpanId 的派生键，稳定可复现） */
+/** TraceSpan 树 → 扁平 span 列表。id 直接用持久化的 spanId（面板与 OTLP 同源），
+ *  树靠 parentSpanId 表达。run 根是合成 span，spanId 取 traceId 前 16hex
+ *  （面板侧同约定，两侧可用同一套 id 对齐）。v2 之前的旧记录缺 spanId，
+ *  回退到按遍历序派生的 16hex（仅本次导出内部一致，不落盘）。 */
 function flattenSpans(record: TraceRunRecord): FlatSpan[] {
+  const traceId = record.traceId ?? record.runId;
+  const rootSpanId = traceId.slice(0, 16);
   const out: FlatSpan[] = [];
   const root: FlatSpan = {
-    path: `${record.runId}:root`,
-    parentPath: null,
+    spanId: rootSpanId,
+    parentSpanId: null,
     name: record.model ?? "agent run",
     kind: "turn",
     startMs: record.startMs,
@@ -103,13 +108,12 @@ function flattenSpans(record: TraceRunRecord): FlatSpan[] {
     },
   };
   out.push(root);
-  const walk = (span: TraceSpan, parentPath: string): void => {
-    const path = `${parentPath}/${span.kind}:${span.name ?? ""}`;
-    const index = out.filter((s) => s.path.startsWith(`${path}`)).length;
-    const uniquePath = `${path}#${index}`;
+  let fallbackSeq = 0;
+  const walk = (span: TraceSpan, parentSpanId: string): void => {
+    const spanId = span.spanId ?? hex(`${record.runId}:${fallbackSeq++}`, 16);
     out.push({
-      path: uniquePath,
-      parentPath,
+      spanId,
+      parentSpanId,
       name: span.name ?? span.kind,
       kind: span.kind,
       startMs: span.startMs,
@@ -118,20 +122,20 @@ function flattenSpans(record: TraceRunRecord): FlatSpan[] {
       attrs: span.attrs ?? {},
       ...(span.detail ? { detail: span.detail } : {}),
     });
-    for (const child of span.children ?? []) walk(child, uniquePath);
+    for (const child of span.children ?? []) walk(child, spanId);
   };
-  for (const turn of record.spans) walk(turn, root.path);
+  for (const turn of record.spans) walk(turn, rootSpanId);
   return out;
 }
 
-function spanToOtlp(span: FlatSpan, redactContent: boolean): OtlpSpan {
+function spanToOtlp(span: FlatSpan, redactContent: boolean, traceId: string): OtlpSpan {
   const attrs: OtlpAttr[] = [];
   const pushText = (key: string, value: unknown): void => {
     if (typeof value === "string" && value) attrs.push(attr(key, value));
     else if (typeof value === "number" && Number.isFinite(value)) attrs.push(attr(key, value));
   };
 
-  if (span.parentPath === null) {
+  if (span.parentSpanId === null) {
     // run 根：记账属性整包透传（pi.session_id / pi.source / run 级 gen_ai.usage.*）
     for (const [key, value] of Object.entries(span.attrs)) {
       if (typeof value === "string" || typeof value === "number" || typeof value === "boolean")
@@ -190,9 +194,9 @@ function spanToOtlp(span: FlatSpan, redactContent: boolean): OtlpSpan {
       ? span.attrs.model
       : span.name;
   return {
-    traceId: hex(span.path.split(":")[0] ?? span.path, 32),
-    spanId: hex(span.path, 16),
-    ...(span.parentPath ? { parentSpanId: hex(span.parentPath, 16) } : {}),
+    traceId,
+    spanId: span.spanId,
+    ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
     name,
     kind: span.kind === "llm_call" ? KIND_CLIENT : KIND_INTERNAL,
     startTimeUnixNano: toNs(span.startMs),
@@ -206,7 +210,8 @@ function spanToOtlp(span: FlatSpan, redactContent: boolean): OtlpSpan {
 
 /** 单个 run 记录 → OTLP spans（导出给测试断言形状） */
 export function buildOtlpSpans(record: TraceRunRecord, redactContent: boolean): OtlpSpan[] {
-  return flattenSpans(record).map((span) => spanToOtlp(span, redactContent));
+  const traceId = record.traceId ?? record.runId;
+  return flattenSpans(record).map((span) => spanToOtlp(span, redactContent, traceId));
 }
 
 /* ------------------------------- 队列与发送 ------------------------------- */

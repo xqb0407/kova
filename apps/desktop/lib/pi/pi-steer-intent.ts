@@ -1,12 +1,9 @@
 /**
- * steer 意图标记（composer → transport 的单跳信号，「并入当前轮」用）：
- * assistant-ui 的 SendOptions.steer 在 AI SDK 链路不透传（useAISDKRuntime 无
- * queue/steer 消费），transport.sendMessages 也收不到 send options，所以走
- * 模块级标记：发送前 mark（⌥点击 / Shift+⌘+Enter，仅运行中），transport
- * sendMessages 时 consume 并随 prompt 协议帧带 steer 字段给 sidecar。
- *
- * 标记一次性（消费即清除，只影响下一次发送）；两处调用点都有 canSend/
- * isRunning 守卫，标记悬空（标了没发出去）的窗口被压到最小。
+ * steer 意图标记（旧链路的 composer → transport 单跳信号，「并入当前轮」用）：
+ * 旧 AI SDK 链路不透传 SendOptions.steer，才走模块级标记。react-pi 新链路
+ * 车道由 ComposerSendOptions.steer 显式声明（core append 按 message.steer ??
+ * isRunning 选 steer/enqueue 车道），已无人再 mark；consumeSteerIntent 保留
+ * 在 transport 侧作兼容位（恒 false），徽标（下方）仍是并入反馈的唯一展示。
  */
 import { useSyncExternalStore } from "react";
 
@@ -43,11 +40,25 @@ const steeredBadges = new Map<string, string[]>();
 const badgeListeners = new Map<string, Set<BadgeListener>>();
 const EMPTY_BADGES: string[] = [];
 
-/** 登记一条「已并入」徽标（steer 发起成功后调用） */
+/** 登记一条「已并入」徽标（steer 发起成功后调用）。写时复制：快照按引用比较，
+ *  原位 push 不产生新引用（useSyncExternalStore 判定未变、不重渲） */
 export function addSteeredBadge(chatId: string, text: string): void {
-  const list = steeredBadges.get(chatId) ?? [];
-  list.push(text);
-  steeredBadges.set(chatId, list);
+  steeredBadges.set(chatId, [...(steeredBadges.get(chatId) ?? []), text]);
+  for (const listener of badgeListeners.get(chatId) ?? []) listener();
+}
+
+/** 回收回队：排队快照里重新出现同文本条目（sidecar 轮末回收，并入失败自动
+ *  降级为排队）时摘掉对应「已并入」徽标——队列条恢复显示，徽标让位（并入其实
+ *  没成功）。与 isRunning 下降沿的全量清空互补：那条覆盖收尾时刻，这条覆盖
+ *  「宿主轮还在跑但条目已回队」的窗口 */
+export function removeSteeredBadge(chatId: string, text: string): void {
+  const list = steeredBadges.get(chatId);
+  if (!list) return;
+  const idx = list.indexOf(text);
+  if (idx === -1) return;
+  const next = [...list.slice(0, idx), ...list.slice(idx + 1)];
+  if (next.length === 0) steeredBadges.delete(chatId);
+  else steeredBadges.set(chatId, next);
   for (const listener of badgeListeners.get(chatId) ?? []) listener();
 }
 

@@ -151,13 +151,26 @@ const applySnapshot = (
       }
     : { active: false, attempt: 0 };
 
+  // 运行中快照的尾巴可能是 sidecar thread_snapshot 并入的在飞 partial
+  // （peekPartial）：该消息后续的直播 message_update/message_end 必须就地写
+  // 这条尾巴。指针若留空，无指针分支会把同一 assistant 再 append 一份，
+  // 投影把相邻 assistant 并成同一条 UI 消息后出现两份相同 toolCallId 的
+  // part——@assistant-ui 按 toolCallId 键控消息 part 查找表，直接 Duplicate
+  // key 崩溃。尾巴若是刚落定的完整 assistant（partial 台账已清、下一事件
+  // 必是 message_start），复原的指针会被 start 指向的新消息覆盖，同样无害。
+  const lastSnapshotMessage = snapshot.messages[snapshot.messages.length - 1];
+  const streamingMessageIndex =
+    runStatus === "running" && isAssistantMessage(lastSnapshotMessage)
+      ? snapshot.messages.length - 1
+      : undefined;
+
   return {
     ...state,
     metadata: withMetadataActivity(snapshot.metadata, compaction, retry),
     messages: snapshot.messages,
     // Snapshot is authoritative: drop transient streaming pointers/buffers so
-    // any divergence self-heals.
-    streamingMessageIndex: undefined,
+    // any divergence self-heals — except the in-flight tail pointer rebuilt above.
+    streamingMessageIndex,
     toolExecutions: {},
     runStatus,
     compaction,

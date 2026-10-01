@@ -185,8 +185,15 @@ export function needsLengthContinuation(message: AgentMessage): boolean {
   );
 }
 
-/** 构造续跑消息：user 角色 + 哨兵前缀（UI 双面不可见，见 AUTO_CONTINUE_PREFIX） */
-export function makeAutoContinueMessage(): AgentMessage {
+/** 构造续跑消息：user 角色 + 哨兵前缀（UI 双面不可见，见 AUTO_CONTINUE_PREFIX）。
+ *  continues 为本次是第几次续跑（1 起）：实测弱模型会把整轮输出预算烧在
+ *  reasoning 上被再切断（3 连 length、每轮 2 万+字符纯思考），第 2 次起
+ *  追加反长思考指引——仿 prompt-pipeline 截断 toolCall hint 的就地自愈文风。 */
+export function makeAutoContinueMessage(continues: number): AgentMessage {
+  const escalation =
+    continues >= 2
+      ? "\n\n输出预算有限：不要再进行长篇思考（reasoning），先输出正文或立即发起工具调用；大文件写入拆成多次较小的调用。"
+      : "";
   return {
     role: "user",
     content: [
@@ -196,7 +203,8 @@ export function makeAutoContinueMessage(): AgentMessage {
           AUTO_CONTINUE_PREFIX +
           "上一条回复因达到输出 token 上限被截断，任务尚未完成。" +
           "请从中断处直接继续，不要重复已输出的内容，也不要道歉或评论这次截断；" +
-          "如果接下来需要产出文件或其他成果，立即发起对应的工具调用。",
+          "如果接下来需要产出文件或其他成果，立即发起对应的工具调用。" +
+          escalation,
       },
     ],
     timestamp: Date.now(),

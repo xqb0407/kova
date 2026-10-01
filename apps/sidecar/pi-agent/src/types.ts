@@ -60,6 +60,8 @@ export type SessionSummary = {
   approvalLevel?: "ask" | "auto-edit" | "auto";
   modelProvider?: string;
   modelId?: string;
+  /** 会话级思考档位偏好（undefined = 从未定靶选过，跟随默认档位） */
+  thinkingLevel?: string;
 };
 
 /** 子代理一次执行的最终状态 */
@@ -141,6 +143,24 @@ export type DelegationRecord = {
   abort: () => void;
 };
 
+/**
+ * 一条「并入当前轮」（steer）注入的回合内记录（prompt-pipeline.steerIntoActiveRun
+ * 登记，轮末回收 findUnansweredSteers 消费）。并入的投递保证是「要么被本轮回应、
+ * 要么回队重发」，静默丢消息是历史事故（并入后一直不回复）：
+ * - reqId/msg：回收重入 kova 队列时原样携带（展示文本 = msg.text，无前缀）；
+ * - message：交给 agent.steer 的消息对象本体——pi-core 按引用把 drain 出的消息
+ *   推进 state.messages（agent.js processEvents），身份判定即可区分
+ *   「边界已消费」与「仍滞留内部队列」；
+ * - gen：注入时的压缩代数。转录里找不到本体、队列也没有时，代数变过说明是轮间
+ *   压缩把已消费的消息折进摘要（不回收），没变才是真没进转录（回收）。
+ */
+export type SteerEntry = {
+  reqId: string;
+  msg: Record<string, unknown>;
+  message: unknown;
+  gen: number;
+};
+
 /** threadId 对应的活动会话（每个前端线程一个 Agent 实例） */
 export type Running = {
   agent: Agent;
@@ -180,6 +200,9 @@ export type Running = {
    *  的补发已随收尾执行过，之后再受理的并入其 finish 永远没人补发（前端
    *  「已并入」徽标滞留不消失） */
   turnEnding?: boolean;
+  /** 本轮「并入当前轮」注入登记（steerIntoActiveRun 追加，轮末随
+   *  findUnansweredSteers 回收清空；见 SteerEntry 注释） */
+  steerEntries?: SteerEntry[];
   /** 本用户 prompt 轮内"length 截断无 toolCall"已注入的自动续跑次数（每轮重置，见 context.ts；缺省视为 0） */
   lengthContinues?: number;
   /** 当前模式（agent = 正常执行；plan = 只读勘察 + 计划编写；ask = 纯问答只读） */

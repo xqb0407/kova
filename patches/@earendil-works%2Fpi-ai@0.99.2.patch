@@ -1,3 +1,6 @@
+diff --git a/node_modules/@earendil-works/pi-ai/.bun-tag-8ee71936cb9c188d b/.bun-tag-8ee71936cb9c188d
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
 index 106f2b9617fa3b810261e067a3c965f209907af3..1c28655e433b3016e9d97650912c9aee6fe974da 100644
 --- a/dist/api/anthropic-messages.js
@@ -33,6 +36,32 @@ index eecd83c753e3b758b8e44628f560b862f8252839..afb795dfab09dcedf33bf21842d533a9
                  .map((block) => ({
                  type: "text",
                  text: sanitizeSurrogates(block.text),
+diff --git a/dist/api/transform-messages.js b/dist/api/transform-messages.js
+index 1e7873e4948eb28051c8157aa89737070b223ad7..fb08776b831bbb0b02bd9ba74dabda1202b692ab 100644
+--- a/dist/api/transform-messages.js
++++ b/dist/api/transform-messages.js
+@@ -1,4 +1,7 @@
+-const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
++// Kova patch: user-message images are never downgraded to a placeholder — the
++// model.input metadata is unreliable (custom endpoints default to ["text"]),
++// and silently swallowing images is worse than a visible provider error. The
++// toolResult downgrade is kept for provider compatibility.
+ const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
+ function replaceImagesWithPlaceholder(content, placeholder) {
+     const result = [];
+@@ -21,12 +24,6 @@ function downgradeUnsupportedImages(messages, model) {
+         return messages;
+     }
+     return messages.map((msg) => {
+-        if (msg.role === "user" && Array.isArray(msg.content)) {
+-            return {
+-                ...msg,
+-                content: replaceImagesWithPlaceholder(msg.content, NON_VISION_USER_IMAGE_PLACEHOLDER),
+-            };
+-        }
+         if (msg.role === "toolResult") {
+             return {
+                 ...msg,
 diff --git a/dist/utils/estimate.js b/dist/utils/estimate.js
 index d04ff22cbe8d7357404b938e228b8e3a2dbdcb1d..048a7508cc0985465500abfc5993e43dc619d1a2 100644
 --- a/dist/utils/estimate.js

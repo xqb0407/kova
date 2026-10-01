@@ -59,6 +59,10 @@ type SubagentRunOptions = {
   sessionId: string;
   /** 父会话 id：轨迹归属（trace.ts 写进父会话的 traces 文件；sessionId 是 delegationId） */
   traceSessionId: string;
+  /** 父 run 的 traceId：轨迹因果边（子 run 挂在父 run 下） */
+  parentRunId?: string;
+  /** 触发本次委派的父 span：父 run 里那次 Task tool_call 的 spanId */
+  parentSpanId?: string;
   signal?: AbortSignal;
   /** 归一化活动条目回调（进缓冲 + 广播；见 pushActivity） */
   onActivity?: (item: SubagentActivityItem) => void;
@@ -90,7 +94,10 @@ export class SubagentRun {
 
   constructor(opts: SubagentRunOptions) {
     this.opts = opts;
-    this.trace = createTraceRunRecorder(opts.traceSessionId, "subagent");
+    this.trace = createTraceRunRecorder(opts.traceSessionId, "subagent", {
+      parentRunId: opts.parentRunId,
+      parentSpanId: opts.parentSpanId,
+    });
     this.agent = new Agent({
       sessionId: this.opts.sessionId,
       // 与主代理一致：自定义 OpenAI 兼容端点补发 prompt_cache_key
@@ -310,7 +317,7 @@ export class SubagentRun {
           break;
         }
         this.lengthContinues += 1;
-        this.agent.followUp(makeAutoContinueMessage());
+        this.agent.followUp(makeAutoContinueMessage(this.lengthContinues));
         break;
       }
       case "tool_execution_start":

@@ -35,7 +35,9 @@ export function traceRunToSpanData(run: PiTraceRun): {
 } {
   const out: SpanData[] = [];
   const inspect = new Map<string, TraceSpanInspect>();
-  const rootId = `${run.runId}:root`;
+  // run 根 id 取 traceId 前 16hex（与 OTLP 同约定，两侧可用同一套 id 对齐）；
+  // 旧记录无 traceId 时回退 runId 前缀
+  const rootId = (run.traceId ?? run.runId).slice(0, 16);
   let seq = 0;
 
   out.push({
@@ -64,8 +66,8 @@ export function traceRunToSpanData(run: PiTraceRun): {
   });
 
   const walk = (span: PiTraceSpan, parentId: string): void => {
-    // id 按 DFS 序分配：同一份记录的 id 稳定，重渲染时 React 复用不闪烁
-    const id = `${run.runId}:${seq++}`;
+    // 首选记录里持久化的 spanId（面板与导出/OTLP 同源）；旧记录缺失时回退 DFS 序号
+    const id = span.spanId ?? `${run.runId}:${seq++}`;
     const name =
       span.name ??
       (span.kind === "llm_call" && typeof span.attrs?.model === "string"
@@ -75,7 +77,7 @@ export function traceRunToSpanData(run: PiTraceRun): {
           : KIND_LABEL[span.kind]);
     out.push({
       id,
-      parentSpanId: parentId,
+      parentSpanId: span.parentSpanId ?? parentId,
       name,
       type:
         span.kind === "llm_call"

@@ -18,6 +18,7 @@ import {
   syncClearLastThread,
 } from "@/lib/pi/pi-last-thread";
 import { piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
+import { piRuntimeAdapters } from "@/lib/attachments/pi-attachment-adapter";
 import { usePiRuntime } from "@/lib/pi/pi-runtime";
 import { TauriPiClient } from "@/lib/pi/pi-runtime/tauri-pi-client";
 import {
@@ -212,7 +213,20 @@ function TauriRuntimeProvider({ children }: { children: React.ReactNode }) {
   // 保留未删，仅服务回滚（revert 本 commit 即整体还原）。
   const client = useMemo(() => new TauriPiClient(), []);
 
-  const runtime = usePiRuntime({ client });
+  // 运行时操作失败（重新生成/编辑重发/队列/abort 等）必须可见：
+  // usePiRuntime 内部把 handler 异常统一收敛到 onError（core 对
+  // onReload/onEdit 即发即忘，不允许再抛），不接就等于静默吞错
+  const runtime = usePiRuntime({
+    client,
+    // composer 附件（粘贴/文件选择的 File 路径）与 capabilities.attachments
+    // 都由这条 adapter 打开；缺它则 ExternalStoreRuntime 判线程不支持附件，
+    // 粘贴文件被闸门静默丢弃（见 pi-attachment-adapter.ts）
+    adapters: piRuntimeAdapters,
+    onError: (error) => {
+      console.error("[pi-runtime]", error);
+      toast.error(error instanceof Error ? error.message : String(error));
+    },
+  });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>

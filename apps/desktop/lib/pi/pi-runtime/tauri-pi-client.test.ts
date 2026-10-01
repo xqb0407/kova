@@ -86,6 +86,10 @@ const {
   resetInteractionsForTest,
 } = await import("@/lib/pi/pi-interactions");
 const { subscribeAgentEvents } = await import("@/lib/pi/agent-events");
+const {
+  getThreadTitle,
+  subscribeThreadTitles,
+} = await import("@/lib/pi/pi-thread-titles");
 const { sessionModeSnapshot } = await import("@/lib/pi/pi-session-mode");
 const {
   __resetTurnStoresForTests,
@@ -169,6 +173,71 @@ describe("TauriPiClient 事件路由", () => {
       text: string;
     }[];
     expect(blocks[0]).toEqual({ type: "text", text: "Hello" });
+  });
+
+  test("同 tick 多次订阅只注册一份线监听（ensureEventWatcher 竞态回归）", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    // 热身：让 pi-channel 单例的线监听先注册完，避免混入本次计数
+    const warm = new TauriPiClient();
+    warm.subscribe("warm-thread", () => {});
+    await tick();
+    const before = chunkCbs.length;
+    const client = new TauriPiClient();
+    // 同一 tick 两次进入 ensureEventWatcher（多线程订阅/StrictMode 重挂同构）：
+    // 旧实现 unlistenLines 要等 watchLines 的异步注册完成才有值，两次都过
+    // 空值检查 → 双监听 → 每行喂两遍、流式 delta 应用两遍
+    client.subscribe("s1", () => {});
+    client.subscribe("s2", () => {});
+    await tick();
+    expect(chunkCbs.length).toBe(before + 1);
+  });
+
+  test("重复 delta 帧（同 seq 双投递）只应用一次", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const { events, feed } = subscribeAndSettle();
+    await tick();
+    events.length = 0;
+
+    feed([
+      threadEvent("s1", 7, {
+        type: "message_start",
+        message: { role: "assistant", content: [], timestamp: 3 },
+      }),
+      threadEvent("s1", 8, {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "ab" },
+      }),
+      threadEvent("s1", 8, {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "ab" },
+      }),
+    ]);
+    const updates = events.filter((e) => e.type === "message_update");
+    expect(updates).toHaveLength(1);
+    const last = updates[0] as Extract<PiClientEvent, { type: "message_update" }>;
+    const blocks = (last.message as { content: unknown[] }).content as {
+      type: string;
+      text: string;
+    }[];
+    expect(blocks[0]?.text).toBe("ab");
+  });
+
+  test("快照基底已涵盖的在飞 delta（seq ≤ 快照水位）不重复应用", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("Hel") };
+    const { events, feed } = subscribeAndSettle();
+    await tick(); // 快照先行：基底 "Hel"（seq 5），"lo" 帧若已在水位内则重复
+    events.length = 0;
+
+    feed([
+      threadEvent("s1", 5, {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "lo" },
+      }),
+    ]);
+    expect(events).toHaveLength(0);
   });
 
   test("message_start 起基 + text/thinking 累积 + message_end 清台账", async () => {
@@ -638,5 +707,47 @@ describe("TauriPiClient 快照装载耗时播种（症状1）", () => {
     client.subscribe("s1", () => {});
     await tick();
     expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:3"))).toBe(first);
+  });
+});
+
+describe("TauriPiClient 会话标题实时回流（session_info_changed）", () => {
+  test("智能标题/改名落到本地标题表，顶栏与侧边栏不必等整表 reload", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("hi") };
+    const { feed } = subscribeAndSettle();
+    await tick();
+
+    const seen: (string | undefined)[] = [];
+    const un = subscribeThreadTitles(() => {
+      seen.push(getThreadTitle("sid-title"));
+    });
+    feed([
+      threadEvent("sid-title", 90, {
+        type: "session_info_changed",
+        name: "日常问候",
+      }),
+    ]);
+    expect(getThreadTitle("sid-title")).toBe("日常问候");
+    expect(seen).toEqual(["日常问候"]);
+
+    // 无 name = 该会话回到无标题（清表项，渲染回落列表快照）
+    feed([threadEvent("sid-title", 91, { type: "session_info_changed" })]);
+    expect(getThreadTitle("sid-title")).toBeUndefined();
+    un();
+  });
+
+  test("本窗口无订阅者的会话同样生效（后台定时任务改名）", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("hi") };
+    const { feed } = subscribeAndSettle(); // 只订阅 s1
+    await tick();
+
+    feed([
+      threadEvent("sid-auto", 92, {
+        type: "session_info_changed",
+        name: "夜间巡检",
+      }),
+    ]);
+    expect(getThreadTitle("sid-auto")).toBe("夜间巡检");
   });
 });

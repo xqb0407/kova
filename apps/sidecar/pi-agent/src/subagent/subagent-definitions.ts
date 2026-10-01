@@ -117,7 +117,7 @@ export type SubagentDraft = {
  */
 export const BUILTIN_SUBAGENT_SPECS: readonly SubagentDraft[] = [
   {
-    name: "explorer",
+    name: "Explorer",
     description:
       'Fast codebase search and pattern matching — find files, locate implementations and answer "where is X?" / "how does Y work?". Use when answering needs a sweep over many files and you only want the conclusion.',
     tools: ["read", "glob", "grep", "bash"],
@@ -143,7 +143,7 @@ than a guess.
 </answer>`,
   },
   {
-    name: "code-reviewer",
+    name: "Code-reviewer",
     description:
       "Review specific code or a specific change for defects. Use for a second opinion on correctness, edge cases and missing tests before you commit.",
     tools: ["read", "glob", "grep"],
@@ -161,7 +161,7 @@ what input. Order by severity. If the code is sound, say so plainly and name
 the cases you checked — an empty review with no evidence is not a review.`,
   },
   {
-    name: "test-runner",
+    name: "Test-runner",
     description:
       "Run a specific test or build command and report what failed and why. Use when a command's output is long and only the failures matter.",
     tools: ["read", "glob", "grep", "bash"],
@@ -179,7 +179,7 @@ assertion or error, and the \`path:line\` you believe is responsible. Keep the
 raw output out of the report except for the lines that carry the failure.`,
   },
   {
-    name: "fixer",
+    name: "Fixer",
     description:
       "Implement a complete multi-file change from a spec. Use when a feature or fix spans several files and the work is separable — it can write files inside the workspace while you keep working.",
     tools: ["read", "glob", "grep", "edit", "write", "bash"],

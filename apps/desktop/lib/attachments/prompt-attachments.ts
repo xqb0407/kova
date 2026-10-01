@@ -86,6 +86,17 @@ export function imageMimeFromName(name: string | undefined): string | null {
   return IMAGE_EXT_MIME[ext] ?? null;
 }
 
+/** composer AttachmentAdapter 的 accept 串（与上面白名单同源）：扩展名 + 明确 MIME
+ *  双保险——fileMatchesAccept 按扩展名做后缀匹配、按 MIME 做全等匹配。File 入口
+ *  （粘贴、网页端文件选择）用它过闸；adapter 就位后 dialog 直选的 addAttachment
+ *  对象路径同样吃这条闸，两类添加入口必须共用一份白名单。 */
+export const PROMPT_ATTACHMENT_ACCEPT = [
+  ...Object.keys(IMAGE_EXT_MIME).map((ext) => `.${ext}`),
+  ...Object.keys(DOC_EXT_MIME).map((ext) => `.${ext}`),
+  ...IMAGE_MIME_ALLOWED,
+  ...DOC_MIME_SET,
+].join(",");
+
 /** 本地绝对路径（或 file:// URL）判定：dialog 直选的附件 url 就是本地路径，
  *  载荷直接带路径零 fetch；blob:/http(s)/data: 均不匹配 */
 const LOCAL_PATH_RE = /^(?:file:\/\/|[A-Za-z]:[\\/]|\/)/;
@@ -112,6 +123,20 @@ export function promptFileKind(
   const m = mime?.trim().toLowerCase() ?? "";
   if ((m && DOC_MIME_SET.has(m)) || docMimeFromName(name)) return "document";
   return null;
+}
+
+/**
+ * 只有文件名/路径、没有 MIME 时的判类（Tauri dialog 直选就是这种）：先按扩展名
+ * 推 MIME，再交给 promptFileKind。
+ *
+ * 别写成 promptFileKind(name, undefined)：它认图片只认 MIME 白名单，扩展名那条
+ * 路只兜文档，于是 png/jpg/gif/webp 会被判成「不是支持的附件」而静默丢弃，文档
+ * 却照常通过——「粘贴能加、选择器加不了」就是这么来的。
+ */
+export function promptFileKindFromName(
+  name: string | undefined,
+): PromptFileKind | null {
+  return promptFileKind(name, imageMimeFromName(name) ?? docMimeFromName(name));
 }
 
 /** 附件前置校验：通过返回 null，否则返回给用户的错误文案。
@@ -255,6 +280,60 @@ async function filePartToAttachment(
   } catch {
     return null;
   }
+}
+
+// —— 粘贴兜底：文本剪贴板里的 data URI 图片转附件 ——
+// 剪贴板没有文件条目、只有 text/plain（从 devtools、部分看图/聊天应用复制图片
+// 时常见）时，旧链路把整串 base64 原样插进草稿，发送后用户消息里就是一大段
+// base64 文本——图片应当走附件通道，在消息里以缩略图呈现。
+
+/** 整段粘贴就是一张图：允许 base64 内部换行/空白（复制时被折行的情形） */
+const PASTED_DATA_URI_WHOLE_RE =
+  /^\s*data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=\s]+?)\s*$/i;
+
+/** 文本中内联的 data URI：只认单行连续 token 且 ≥64 字符——
+ *  既避开文档/调试里的短占位符（"data:image/png;base64,AAAA"）误转，
+ *  也避开折行 base64 被截半误吞后文的普通单词 */
+const PASTED_DATA_URI_INLINE_RE =
+  /data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=][A-Za-z0-9+/=]{62,})/gi;
+
+/** MIME 子型 + 裸 base64 → 图片 File；解码失败返回 null（调用方保留原文） */
+function dataUriToImageFile(mimeSub: string, base64: string, index: number): File | null {
+  const sub = mimeSub.toLowerCase() === "jpg" ? "jpeg" : mimeSub.toLowerCase();
+  let binary: string;
+  try {
+    binary = atob(base64.replace(/\s+/g, ""));
+  } catch {
+    return null;
+  }
+  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  return new File([bytes], `pasted-image-${index + 1}.${sub === "jpeg" ? "jpg" : sub}`, {
+    type: `image/${sub}`,
+  });
+}
+
+/**
+ * 从粘贴文本中提取 data URI 图片转成 File 附件。返回 files 为空时 rest 为原文
+ * （不做破坏性改动）；有命中时 rest 为剥掉 URI 后的剩余文本（内联场景由调用方
+ * 插回光标处）。
+ */
+export function extractDataUriImageFiles(text: string): { files: File[]; rest: string } {
+  const whole = PASTED_DATA_URI_WHOLE_RE.exec(text);
+  if (whole && whole[2].replace(/\s+/g, "").length >= 64) {
+    const file = dataUriToImageFile(whole[1], whole[2], 0);
+    return file ? { files: [file], rest: "" } : { files: [], rest: text };
+  }
+  const files: File[] = [];
+  const rest = text.replace(
+    PASTED_DATA_URI_INLINE_RE,
+    (match, mimeSub: string, base64: string) => {
+      const file = dataUriToImageFile(mimeSub, base64, files.length);
+      if (!file) return match;
+      files.push(file);
+      return "";
+    },
+  );
+  return files.length ? { files, rest } : { files: [], rest: text };
 }
 
 /**

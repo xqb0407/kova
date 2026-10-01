@@ -67,7 +67,73 @@ describe("messageProjection", () => {
     expect(out[0]!.content).toEqual([{ type: "text", text: "hello" }]);
   });
 
-  it("projects user image content as a data URL", () => {
+  // 并入哨兵前缀（steer 注入）：直播 message_start 与快照直出走同一投影出口，
+  // 剥前缀 + 徽标标记 part（user-message.tsx 渲染「已并入当前回复」）——
+  // 刷新前后一致，前缀绝不裸显（「已并入 html 随便写番茄时钟」事故回归钉）
+  it("strips the steer sentinel and prepends the steeredNote badge part", () => {
+    const out = projectPiThreadMessages(
+      input([
+        {
+          role: "user",
+          content: "[[queued-steer]] 随便写番茄时钟。",
+          timestamp: 1,
+        },
+      ]),
+    );
+    expect(out[0]!.content).toEqual([
+      { type: "data", name: "steeredNote", data: {} },
+      { type: "text", text: "随便写番茄时钟。" },
+    ]);
+  });
+
+  it("strips the steer sentinel on array content, keeping following images", () => {
+    const out = projectPiThreadMessages(
+      input([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "[[queued-steer]] 看图" },
+            { type: "image", data: "abc", mimeType: "image/png" },
+          ],
+          timestamp: 1,
+        },
+      ]),
+    );
+    expect(out[0]!.content).toEqual([
+      { type: "data", name: "steeredNote", data: {} },
+      { type: "text", text: "看图" },
+    ]);
+    // 图片投成 attachments（气泡外附件卡），不再留在 content
+    expect(out[0]!.attachments).toEqual([
+      {
+        id: "pi-msg-idx:0-att-1",
+        type: "image",
+        name: "image-1.png",
+        contentType: "image/png",
+        status: { type: "complete" },
+        content: [
+          {
+            type: "image",
+            image: "data:image/png;base64,abc",
+            filename: "image-1.png",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("does not touch text that merely contains the steer sentinel later on", () => {
+    const out = projectPiThreadMessages(
+      input([
+        { role: "user", content: "说说 [[queued-steer]] 前缀是什么", timestamp: 1 },
+      ]),
+    );
+    expect(out[0]!.content).toEqual([
+      { type: "text", text: "说说 [[queued-steer]] 前缀是什么" },
+    ]);
+  });
+
+  it("projects user image content as an attachment with a data URL", () => {
     const out = projectPiThreadMessages(
       input([
         {
@@ -77,10 +143,24 @@ describe("messageProjection", () => {
         },
       ]),
     );
-    expect(contentParts(out[0]!)[0]).toEqual({
-      type: "image",
-      image: "data:image/png;base64,abc",
-    });
+    // UI 格式回归：图片进 attachments（气泡外附件卡），content 不再内联 image
+    expect(out[0]!.content).toEqual([]);
+    expect(out[0]!.attachments).toEqual([
+      {
+        id: "pi-msg-idx:0-att-1",
+        type: "image",
+        name: "image-1.png",
+        contentType: "image/png",
+        status: { type: "complete" },
+        content: [
+          {
+            type: "image",
+            image: "data:image/png;base64,abc",
+            filename: "image-1.png",
+          },
+        ],
+      },
+    ]);
   });
 
   it("does not re-wrap image data that is already an uppercase-scheme data URL", () => {
@@ -99,10 +179,32 @@ describe("messageProjection", () => {
         },
       ]),
     );
-    expect(contentParts(out[0]!)[0]).toEqual({
-      type: "image",
-      image: "DATA:image/png;base64,abc",
-    });
+    expect(out[0]!.attachments?.[0]?.content).toEqual([
+      {
+        type: "image",
+        image: "DATA:image/png;base64,abc",
+        filename: "image-1.png",
+      },
+    ]);
+  });
+
+  it("names user image attachments image-N with jpeg normalized to jpg", () => {
+    const out = projectPiThreadMessages(
+      input([
+        {
+          role: "user",
+          content: [
+            { type: "image", data: "aaa", mimeType: "image/jpeg" },
+            { type: "image", data: "bbb", mimeType: "image/webp" },
+          ],
+          timestamp: 1,
+        },
+      ]),
+    );
+    expect(out[0]!.attachments?.map((a) => a.name)).toEqual([
+      "image-1.jpg",
+      "image-2.webp",
+    ]);
   });
 
   it("drops user content parts of a type it does not project", () => {
@@ -182,6 +284,53 @@ describe("messageProjection", () => {
     });
     // 纯文本结果不产生图片 data part
     expect(contentParts(out[0]!)).toHaveLength(1);
+  });
+
+  it("dedupes a repeated toolCallId within one merged assistant group", () => {
+    // 上游快照/直播合并漏出同一在飞 assistant 的两份相邻拷贝（历史缺陷：
+    // @assistant-ui part 查找表按 toolCallId 键控，重复即 Duplicate key 崩溃）。
+    // 同组合并后同 toolCallId 只留一份 part，后到状态胜出；不同 id 不误并。
+    const out = projectPiThreadMessages(
+      input([
+        assistant([toolCall("call-1", "bash", { command: "ls" })]),
+        assistant([
+          toolCall("call-1", "bash", { command: "pwd" }),
+          toolCall("call-2", "read", { path: "a" }),
+        ]),
+      ]),
+    );
+    expect(out).toHaveLength(1);
+    const parts = contentParts(out[0]!);
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toMatchObject({
+      type: "tool-call",
+      toolCallId: "call-1",
+      args: { command: "pwd" },
+    });
+    expect(parts[1]).toMatchObject({ type: "tool-call", toolCallId: "call-2" });
+  });
+
+  it("keeps a single tool-result image when a repeated toolCallId merges in", () => {
+    const out = projectPiThreadMessages(
+      input([
+        assistant([toolCall("call-1", "screenshot", {})]),
+        assistant([toolCall("call-1", "screenshot", {})]),
+        {
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "screenshot",
+          content: [
+            { type: "image" as const, data: "AAAA", mimeType: "image/png" },
+          ],
+          isError: false,
+          timestamp: 2,
+        },
+      ]),
+    );
+    const parts = contentParts(out[0]!);
+    expect(parts.filter((p) => p.type === "tool-call")).toHaveLength(1);
+    // 旧拷贝挂的成图被替换清理，按新状态补回恰一张
+    expect(parts.filter((p) => p.type === "data")).toHaveLength(1);
   });
 
   it("projects image tool result content as an image data part（sidecar 闸门镜像）", () => {
@@ -565,7 +714,13 @@ describe("messageProjection", () => {
     });
     expect(contentParts(out[2]!)[0]).toMatchObject({
       name: "compaction",
-      data: { phase: "complete", generation: 2, tokensBefore: 1000, summarized: true },
+      data: {
+        phase: "complete",
+        generation: 2,
+        tokensBefore: 1000,
+        summarized: true,
+        summary: "compacted",
+      },
     });
   });
 
@@ -982,5 +1137,84 @@ describe("messageProjection", () => {
       expect(out[0]!.id).toBe("pi-msg:1");
       expect(out[1]!.id).toBe("pi-msg-idx:1");
     });
+  });
+});
+
+// 长度截断续跑哨兵（[[auto-continue]]，sidecar 自动续跑注入）：thread_snapshot
+// 直出原生行不过 sidecar 的 UI 投影，投影层必须与 toUiMessage 同口径隐藏——
+// 此前漏成用户提问气泡上屏（2026-10-02 气泡泄漏事故回归钉）。
+describe("auto-continue 哨兵过滤与最终中止标记", () => {
+  const truncatedAssistant = () =>
+    assistant([{ type: "thinking", thinking: "整轮输出预算烧在思考上" }], {
+      stopReason: "length",
+    });
+  const sentinel: PiAgentMessage = {
+    role: "user",
+    content: "[[auto-continue]] 上一条回复因达到输出 token 上限被截断",
+    timestamp: 2,
+  };
+
+  it("跳过哨兵 user 行且不打断 assistant 合并（刷新=直播同构）", () => {
+    const out = projectPiThreadMessages(
+      input([
+        { role: "user", content: "开始任务", timestamp: 1 },
+        truncatedAssistant(),
+        sentinel,
+        assistant([{ type: "text", text: "接着写" }]),
+      ]),
+    );
+    // user(开始任务) + 合并后的 assistant 组（截断轮→续跑轮）——哨兵不成泡
+    expect(out).toHaveLength(2);
+    expect(out[1]!.role).toBe("assistant");
+    // 中途截断（后面跟的是哨兵续跑）不标中止
+    expect(
+      contentParts(out[1]!).some(
+        (p) => p.type === "data" && p.name === "truncation-stopped",
+      ),
+    ).toBe(false);
+  });
+
+  it("正文仅包含（而非以哨兵开头）的普通用户行不受影响", () => {
+    const out = projectPiThreadMessages(
+      input([
+        {
+          role: "user",
+          content: "为什么会有 [[auto-continue]] 这种前缀",
+          timestamp: 1,
+        },
+      ]),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.content).toEqual([
+      { type: "text", text: "为什么会有 [[auto-continue]] 这种前缀" },
+    ]);
+  });
+
+  it("__truncationStopped 行转成 data-truncation-stopped part", () => {
+    const out = projectPiThreadMessages(
+      input([
+        { role: "user", content: "开始任务", timestamp: 1 },
+        {
+          ...truncatedAssistant(),
+          __truncationStopped: true,
+        } as PiAgentMessage,
+        { role: "user", content: "换个思路重试", timestamp: 3 },
+      ]),
+    );
+    expect(out[1]!.role).toBe("assistant");
+    expect(
+      contentParts(out[1]!).some(
+        (p) => p.type === "data" && p.name === "truncation-stopped",
+      ),
+    ).toBe(true);
+  });
+
+  it("无标注的普通截断轮不产生中止标记", () => {
+    const out = projectPiThreadMessages(input([truncatedAssistant()]));
+    expect(
+      contentParts(out[0]!).some(
+        (p) => p.type === "data" && p.name === "truncation-stopped",
+      ),
+    ).toBe(false);
   });
 });

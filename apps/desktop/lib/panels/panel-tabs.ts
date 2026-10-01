@@ -3,12 +3,21 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * Agent 面板标签页 store(Codex 侧边面板同款形态):
- * 面板是一个标签容器,标签类型见 PANEL_TAB_TYPES,支持多开、关闭、切换;
- * 全部标签与激活项持久化到 localStorage,重启恢复。
- * 浏览器标签的当前 URL/标题也挂在 tab 记录上(updateTab),保证恢复后继续显示。
+ * Agent 面板标签页 store(Codex 侧边面板同款形态),**按会话(线程)分桶**:
+ * 每个会话拥有自己独立的一套标签与激活项——切换会话时整组切换,互不可见;
+ * 「当前会话」由常驻的 Base 经 setCurrentPanelThread 登记,lib 层的
+ * openPanelTab/focusPanelTab 等一律落进当前会话的桶。
+ * 全部会话的桶与各自激活项持久化到 localStorage(键 agent-panel-tabs-v2,
+ * 按 LRU 限量),重启恢复。浏览器标签的当前 URL/标题也挂在 tab 记录上
+ * (updatePanelTab),保证恢复后继续显示。
  * 例外:页面「刷新」(reload)不恢复浏览器标签——刷新应回到干净态,残留的
  * 原生 webview 由 agent-panel 启动兜底销毁;冷启动(重启应用)仍恢复。
+ * 迁移:v1(键 agent-panel-tabs,全局一套标签)直接清除不做迁移——
+ * 所有会话从空面板开始。
+ *
+ * 跨会话生命周期口径(shell 桥回收 PTY、浏览器 webview「最后一个标签关闭
+ * 才销毁」)以**全部桶的并集**为准:某会话不在前台不代表它的终端/浏览器
+ * 可以被回收,只有标签真正关闭/会话被删除(purgeThreadPanelTabs)才算。
  */
 export type PanelTabType =
   | "activity"
@@ -63,7 +72,19 @@ export type PanelTab = {
 
 export type PanelTabsState = { tabs: PanelTab[]; activeId: string | null };
 
-const STORAGE_KEY = "agent-panel-tabs";
+/** 跨会话全量视图条目：shell 桥 / 浏览器 webview 生命周期等按全部桶统计 */
+export type ThreadTabs = { threadId: string; tabs: PanelTab[] };
+
+/** 持久化形状 v2：会话 id → 各自标签组；order 为 LRU（最近使用在前） */
+type PersistedPanels = {
+  byThread: Record<string, PanelTabsState>;
+  order: string[];
+};
+
+const STORAGE_KEY = "agent-panel-tabs-v2";
+const LEGACY_STORAGE_KEY = "agent-panel-tabs";
+/** 持久化的会话桶上限（LRU，最近使用在前，超出截断）：防 localStorage 无界膨胀 */
+const MAX_THREADS = 30;
 
 const VALID_TYPES = new Set<PanelTabType>([
   "activity",
@@ -109,50 +130,108 @@ export function isPageReload(): boolean {
   return pageReloaded;
 }
 
-/** 首次使用(无存档)不预开标签:面板以"打开标签页"空态呈现(Codex 同形) */
-function defaultState(): PanelTabsState {
-  return { tabs: [], activeId: null };
-}
+// ---------------------------------------------------------------------------
+// 模块级 store：分桶 + 当前会话指针
+// ---------------------------------------------------------------------------
 
-function load(): PanelTabsState {
-  if (typeof window === "undefined") return { tabs: [], activeId: null };
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw === null) return defaultState();
-    const parsed = JSON.parse(raw) as Partial<PanelTabsState>;
-    if (!Array.isArray(parsed.tabs)) return defaultState();
-    const restored = parsed.tabs.filter(validTab);
-    // 刷新不恢复浏览器标签(见文件头注释);其余类型照常恢复
-    const tabs = isPageReload()
-      ? restored.filter((t) => t.type !== "browser")
-      : restored;
-    const activeId =
-      typeof parsed.activeId === "string" &&
-      tabs.some((t) => t.id === parsed.activeId)
-        ? parsed.activeId
-        : (tabs[0]?.id ?? null);
-    return { tabs, activeId };
-  } catch {
-    return defaultState();
-  }
-}
+/** 稳定空态：缺失桶/未登记会话统一返回它，保证 useSyncExternalStore 快照稳定 */
+const EMPTY_STATE: PanelTabsState = { tabs: [], activeId: null };
 
-let state: PanelTabsState = { tabs: [], activeId: null };
+let byThread: Record<string, PanelTabsState> = {};
+/** LRU 顺序（最近使用在前）；包含空桶的会话 id（空桶只影响顺序不落盘） */
+let order: string[] = [];
+/** 当前会话指针：Base 随 mainThreadId 登记；null 期间所有 mutator no-op */
+let currentThreadId: string | null = null;
+/** 跨会话全量视图缓存（commit 时重建，引用稳定） */
+let allSnapshot: ThreadTabs[] = [];
 let hydrated = false;
 const listeners = new Set<() => void>();
 
 function ensureHydrated(): void {
   if (hydrated || typeof window === "undefined") return;
-  state = load();
   hydrated = true;
+  load();
+  rebuildAllSnapshot();
 }
 
-function commit(next: PanelTabsState): void {
-  state = next;
+function load(): void {
+  if (typeof window === "undefined") return;
+  // v1 全局标签存档按用户决策不迁移：清掉旧键，所有会话从空面板开始
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
   } catch {}
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (raw === null) return;
+    const parsed = JSON.parse(raw) as Partial<PersistedPanels>;
+    if (!parsed.byThread || typeof parsed.byThread !== "object") return;
+    const loaded: Record<string, PanelTabsState> = {};
+    for (const [id, bucket] of Object.entries(parsed.byThread)) {
+      if (!bucket || !Array.isArray(bucket.tabs)) continue;
+      const tabs = (bucket.tabs as unknown[]).filter(validTab);
+      // 刷新不恢复浏览器标签(见文件头注释);其余类型照常恢复
+      const restored = isPageReload()
+        ? tabs.filter((t) => t.type !== "browser")
+        : tabs;
+      if (restored.length === 0) continue;
+      const activeId =
+        typeof bucket.activeId === "string" &&
+        restored.some((t) => t.id === bucket.activeId)
+          ? bucket.activeId
+          : (restored[0]?.id ?? null);
+      loaded[id] = { tabs: restored, activeId };
+    }
+    byThread = loaded;
+    const rawOrder = Array.isArray(parsed.order)
+      ? parsed.order.filter(
+          (id): id is string => typeof id === "string" && id in loaded,
+        )
+      : [];
+    const rest = Object.keys(loaded).filter((id) => !rawOrder.includes(id));
+    order = [...rawOrder, ...rest];
+  } catch {
+    byThread = {};
+    order = [];
+  }
+}
+
+/** 只持久化非空桶，按 LRU 顺序截断到上限（超出者即被驱逐） */
+function persist(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const out: PersistedPanels = { byThread: {}, order: [] };
+    for (const id of order) {
+      const bucket = byThread[id];
+      if (!bucket || bucket.tabs.length === 0) continue;
+      out.byThread[id] = bucket;
+      out.order.push(id);
+      if (out.order.length >= MAX_THREADS) break;
+    }
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(out));
+  } catch {}
+}
+
+function rebuildAllSnapshot(): void {
+  const next: ThreadTabs[] = [];
+  for (const id of order) {
+    const bucket = byThread[id];
+    if (bucket && bucket.tabs.length > 0)
+      next.push({ threadId: id, tabs: bucket.tabs });
+  }
+  allSnapshot = next;
+}
+
+function commit(): void {
+  rebuildAllSnapshot();
+  persist();
   for (const l of listeners) l();
+}
+
+/** LRU touch：置顶（已在顶部则不动） */
+function touch(threadId: string): void {
+  const i = order.indexOf(threadId);
+  if (i > 0) order.splice(i, 1);
+  if (i !== 0) order.unshift(threadId);
 }
 
 function subscribe(cb: () => void): () => void {
@@ -162,14 +241,30 @@ function subscribe(cb: () => void): () => void {
 
 function getSnapshot(): PanelTabsState {
   ensureHydrated();
-  return state;
+  if (!currentThreadId) return EMPTY_STATE;
+  return byThread[currentThreadId] ?? EMPTY_STATE;
+}
+
+/**
+ * 当前会话桶的变更通道：指针未登记（Base effect 尚未跑）时 no-op 防御；
+ * 结果与原桶引用相等则不提交（保持「无变化不通知」的既有语义）。
+ */
+function mutateCurrent(next: (state: PanelTabsState) => PanelTabsState): void {
+  ensureHydrated();
+  if (!currentThreadId) return;
+  const prev = byThread[currentThreadId] ?? EMPTY_STATE;
+  const value = next(prev);
+  if (value === prev) return;
+  byThread[currentThreadId] = value;
+  touch(currentThreadId);
+  commit();
 }
 
 export function usePanelTabs(): PanelTabsState {
-  return useSyncExternalStore(subscribe, getSnapshot, () => state);
+  return useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_STATE);
 }
 
-/** 非 hook 读取当前标签集合（触发水合）；lib 层桥接逻辑用 */
+/** 非 hook 读取当前会话的标签组（触发水合）；lib 层桥接逻辑用 */
 export function getPanelTabs(): PanelTabsState {
   return getSnapshot();
 }
@@ -178,6 +273,76 @@ export function getPanelTabs(): PanelTabsState {
 export function subscribePanelTabs(cb: () => void): () => void {
   return subscribe(cb);
 }
+
+// ---------------------------------------------------------------------------
+// 当前会话指针
+// ---------------------------------------------------------------------------
+
+/**
+ * 登记当前会话（Base 随 assistant-ui mainThreadId 调用）。切换即整组换桶：
+ * usePanelTabs 的快照随之指向新会话，各 mutator 也落到新会话的桶。
+ */
+export function setCurrentPanelThread(threadId: string | null): void {
+  ensureHydrated();
+  if (currentThreadId === threadId) return;
+  currentThreadId = threadId;
+  if (threadId) touch(threadId);
+  commit();
+}
+
+/** 全部会话桶的快照（非 hook，触发水合）；shell 桥等 lib 层用 */
+export function getAllThreadTabs(): ThreadTabs[] {
+  ensureHydrated();
+  return allSnapshot;
+}
+
+/** 全部会话桶的快照（hook，引用稳定）；浏览器 webview 生命周期等 UI 判定用 */
+export function useAllThreadTabs(): ThreadTabs[] {
+  return useSyncExternalStore(subscribe, getAllSnapshot, () => allSnapshot);
+}
+
+function getAllSnapshot(): ThreadTabs[] {
+  ensureHydrated();
+  return allSnapshot;
+}
+
+/**
+ * 会话获得稳定 id 时的桶迁移：本会话内新建的线程在发送首条消息前是
+ * `__LOCALID_` 草稿 id，initialize 绑定 sessionId 后由 usePiRuntime 调用
+ * 这里把桶（含当前指针）搬到 sessionId 键下——刷新/重启后线程行 id 就是
+ * sessionId，桶才接得上。from 桶缺失即只清理指针；to 已有桶（理论不该
+ * 发生）以 to 为准。
+ */
+export function rekeyPanelThread(from: string, to: string): void {
+  ensureHydrated();
+  if (from === to) return;
+  if (byThread[from] && !byThread[to]) byThread[to] = byThread[from]!;
+  delete byThread[from];
+  const i = order.indexOf(from);
+  if (i >= 0) {
+    order.splice(i, 1);
+    if (!order.includes(to)) order.splice(i, 0, to);
+  }
+  if (currentThreadId === from) currentThreadId = to;
+  commit();
+}
+
+/**
+ * 会话被删除时清掉它的桶并广播：shell 桥随即回收该会话绑定的 PTY，
+ * 浏览器计数重估（归零则销毁 webview）。与删除它的 UI 入口无关——
+ * 统一挂在 usePiRuntime 的线程删除漏斗上。
+ */
+export function purgeThreadPanelTabs(threadId: string): void {
+  ensureHydrated();
+  if (!(threadId in byThread) && !order.includes(threadId)) return;
+  delete byThread[threadId];
+  order = order.filter((id) => id !== threadId);
+  commit();
+}
+
+// ---------------------------------------------------------------------------
+// 标签操作（一律作用于当前会话的桶）
+// ---------------------------------------------------------------------------
 
 export type PanelTabExtra = Pick<
   PanelTab,
@@ -198,44 +363,45 @@ export function openPanelTab(
   type: PanelTabType,
   extra?: PanelTabExtra,
 ): string {
-  ensureHydrated();
   const id = `tab-${crypto.randomUUID()}`;
-  commit({
-    tabs: [...state.tabs, { id, type, ...extra }],
+  mutateCurrent((s) => ({
+    tabs: [...s.tabs, { id, type, ...extra }],
     activeId: id,
-  });
+  }));
   return id;
 }
 
 /** 激活指定标签（不改动标签集合）；供「同文件已开则聚焦」类精确复用 */
 export function activatePanelTab(id: string): void {
-  ensureHydrated();
-  if (state.activeId === id) return;
-  commit({ tabs: state.tabs, activeId: id });
+  mutateCurrent((s) =>
+    s.activeId === id || !s.tabs.some((t) => t.id === id)
+      ? s
+      : { tabs: s.tabs, activeId: id },
+  );
 }
 
 /**
- * 定位式打开：已存在同类型标签则复用第一个（改写 extra 并激活），
+ * 定位式打开：当前会话已存在同类型标签则复用第一个（改写 extra 并激活），
  * 否则新开。工具行点击走这里，避免每点一行就堆一个标签。
  */
 export function focusPanelTab(type: PanelTabType, extra?: PanelTabExtra): string {
   ensureHydrated();
-  const existing = state.tabs.find((t) => t.type === type);
+  const existing = getSnapshot().tabs.find((t) => t.type === type);
   if (existing) {
-    commit({
-      tabs: state.tabs.map((t) =>
+    mutateCurrent((s) => ({
+      tabs: s.tabs.map((t) =>
         t.id === existing.id ? { ...t, ...extra } : t,
       ),
       activeId: existing.id,
-    });
+    }));
     return existing.id;
   }
   return openPanelTab(type, extra);
 }
 
 /**
- * 面板标签的定位式打开：按 (pluginId, panelId) 复合键复用（同一插件的
- * 不同面板各自多开，同面板复写 extra 并激活），否则新开。
+ * 面板标签的定位式打开：按 (pluginId, panelId) 复合键在当前会话内复用
+ * （同一插件的不同面板各自多开，同面板复写 extra 并激活），否则新开。
  * agent 的 open_plugin_panel、+ 菜单、产物卡"在画布中打开"统一走这里。
  */
 export function focusPluginPanel(
@@ -244,17 +410,17 @@ export function focusPluginPanel(
   extra?: PanelTabExtra,
 ): string {
   ensureHydrated();
-  const existing = state.tabs.find(
+  const existing = getSnapshot().tabs.find(
     (t) =>
       t.type === "plugin" && t.pluginId === pluginId && t.panelId === panelId,
   );
   if (existing) {
-    commit({
-      tabs: state.tabs.map((t) =>
+    mutateCurrent((s) => ({
+      tabs: s.tabs.map((t) =>
         t.id === existing.id ? { ...t, pluginId, panelId, ...extra } : t,
       ),
       activeId: existing.id,
-    });
+    }));
     return existing.id;
   }
   return openPanelTab("plugin", { ...extra, pluginId, panelId });
@@ -262,16 +428,17 @@ export function focusPluginPanel(
 
 /** 关闭标签:激活项被关时就近切到相邻标签 */
 export function closePanelTab(id: string): void {
-  ensureHydrated();
-  const index = state.tabs.findIndex((t) => t.id === id);
-  if (index < 0) return;
-  const tabs = state.tabs.filter((t) => t.id !== id);
-  let activeId = state.activeId;
-  if (activeId === id) {
-    const neighbor = tabs[Math.min(index, tabs.length - 1)];
-    activeId = neighbor?.id ?? null;
-  }
-  commit({ tabs, activeId });
+  mutateCurrent((s) => {
+    const index = s.tabs.findIndex((t) => t.id === id);
+    if (index < 0) return s;
+    const tabs = s.tabs.filter((t) => t.id !== id);
+    let activeId = s.activeId;
+    if (activeId === id) {
+      const neighbor = tabs[Math.min(index, tabs.length - 1)];
+      activeId = neighbor?.id ?? null;
+    }
+    return { tabs, activeId };
+  });
 }
 
 /** 批量关闭的公共收尾:激活项幸存则不动,被关则切到 fallback */
@@ -279,31 +446,33 @@ function pruneTabs(
   keep: (tab: PanelTab, index: number) => boolean,
   fallback: string | null,
 ): void {
-  const tabs = state.tabs.filter(keep);
-  const activeId = tabs.some((t) => t.id === state.activeId)
-    ? state.activeId
-    : fallback;
-  commit({ tabs, activeId });
+  mutateCurrent((s) => {
+    const tabs = s.tabs.filter(keep);
+    const activeId = tabs.some((t) => t.id === s.activeId)
+      ? s.activeId
+      : fallback;
+    return { tabs, activeId };
+  });
 }
 
-/** 关闭全部标签(IDEA「关闭所有选项」):面板回到空态 */
+/** 关闭全部标签(IDEA「关闭所有选项」):当前会话的面板回到空态 */
 export function closeAllPanelTabs(): void {
-  ensureHydrated();
-  commit({ tabs: [], activeId: null });
+  mutateCurrent(() => ({ tabs: [], activeId: null }));
 }
 
 /** 关闭其他标签(只保留 id),目标顺带激活 */
 export function closeOtherPanelTabs(id: string): void {
-  ensureHydrated();
-  const tab = state.tabs.find((t) => t.id === id);
-  if (!tab) return;
-  commit({ tabs: [tab], activeId: id });
+  mutateCurrent((s) => {
+    const tab = s.tabs.find((t) => t.id === id);
+    if (!tab) return s;
+    return { tabs: [tab], activeId: id };
+  });
 }
 
 /** 关闭右侧标签:目标幸存时激活项不变,否则回落目标 */
 export function closePanelTabsToRight(id: string): void {
   ensureHydrated();
-  const index = state.tabs.findIndex((t) => t.id === id);
+  const index = getSnapshot().tabs.findIndex((t) => t.id === id);
   if (index < 0) return;
   pruneTabs((_, i) => i <= index, id);
 }
@@ -311,20 +480,23 @@ export function closePanelTabsToRight(id: string): void {
 /** 关闭左侧标签:同 closePanelTabsToRight 的镜像 */
 export function closePanelTabsToLeft(id: string): void {
   ensureHydrated();
-  const index = state.tabs.findIndex((t) => t.id === id);
+  const index = getSnapshot().tabs.findIndex((t) => t.id === id);
   if (index < 0) return;
   pruneTabs((_, i) => i >= index, id);
 }
 
 export function setActivePanelTab(id: string): void {
-  ensureHydrated();
-  if (state.activeId === id || !state.tabs.some((t) => t.id === id)) return;
-  commit({ ...state, activeId: id });
+  mutateCurrent((s) =>
+    s.activeId === id || !s.tabs.some((t) => t.id === id)
+      ? s
+      : { ...s, activeId: id },
+  );
 }
 
 /** 局部更新标签(浏览器标签写回 url/标题) */
 export function updatePanelTab(id: string, patch: Partial<PanelTab>): void {
-  ensureHydrated();
-  const tabs = state.tabs.map((t) => (t.id === id ? { ...t, ...patch } : t));
-  commit({ tabs, activeId: state.activeId });
+  mutateCurrent((s) => ({
+    ...s,
+    tabs: s.tabs.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+  }));
 }

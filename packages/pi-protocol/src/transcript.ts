@@ -52,3 +52,38 @@ export type TranscriptHeader = z.infer<typeof transcriptHeaderSchema>;
 export type ModelChangeRow = z.infer<typeof modelChangeRowSchema>;
 export type ThinkingLevelChangeRow = z.infer<typeof thinkingLevelChangeRowSchema>;
 export type SessionInfoRow = z.infer<typeof sessionInfoRowSchema>;
+
+/* -------------------- 长度截断自动续跑哨兵 -------------------- */
+
+/**
+ * 长度截断自动续跑注入消息的哨兵前缀（sidecar context.makeAutoContinueMessage
+ * 构造，user 角色落转录；模型上下文里保留作续跑指令，UI 各路径按前缀隐藏）。
+ * 放契约层单源：sidecar 的 toUiMessage/historyToUiMessages 与 thread_snapshot
+ * 直出、桌面的投影层过滤必须同口径——快照契约「原生行直出（前端投影层消费）」
+ * 不经过 sidecar 的 UI 投影，两端各写一份前缀判定就会漏（steer 前缀曾因镜像
+ * 吃过亏，见桌面 messageProjection STEER_PREFIX 注释）。
+ */
+export const AUTO_CONTINUE_PREFIX = "[[auto-continue]] ";
+
+/** 消息文本是否为长度截断续跑注入（按前缀识别） */
+export function isAutoContinueText(text: string): boolean {
+  return text.startsWith(AUTO_CONTINUE_PREFIX);
+}
+
+/** user 消息（role/content 宽松结构，content 为 string 或块数组）是否为
+ *  长度截断续跑注入——sidecar 的 thread_snapshot 跳行、isTruncationStoppedRow
+ *  的下一行判定与桌面投影层过滤共用，避免三处各写一遍文本拼接。 */
+export function isAutoContinueMessage(msg: unknown): boolean {
+  const m = msg as { role?: string; content?: unknown } | undefined;
+  if (!m || m.role !== "user") return false;
+  const text =
+    typeof m.content === "string"
+      ? m.content
+      : Array.isArray(m.content)
+        ? (m.content as { type?: string; text?: string }[])
+            .filter((c) => c?.type === "text")
+            .map((c) => c.text ?? "")
+            .join("")
+        : "";
+  return isAutoContinueText(text);
+}

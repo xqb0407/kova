@@ -46,6 +46,10 @@ import { emitAgentEvent } from "@/lib/pi/agent-events";
 import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import {
+  applySessionSummaries,
+  piSessionCwdMap,
+} from "@/lib/pi/pi-thread-adapter";
+import {
   TurnCheckpointTracker,
   type TurnCheckpointObserver,
 } from "./turn-checkpoints";
@@ -201,6 +205,8 @@ export class PiClientBase implements PiClient {
    *  默认实现走 turn-checkpoints 的真实依赖；测试可注入记录型假件 */
   private readonly checkpoints: TurnCheckpointObserver;
   private unlistenLines: (() => void) | null = null;
+  /** ensureEventWatcher 的在飞注册锁（防同 tick 双监听，见该方法注释） */
+  private eventWatcher: Promise<void> | null = null;
 
   constructor(
     private readonly transport: PiClientTransport,
@@ -355,12 +361,31 @@ export class PiClientBase implements PiClient {
 
   // ---------- 事件路由（阶段 3b） ----------
 
-  private async ensureEventWatcher() {
-    if (this.unlistenLines) return;
-    this.unlistenLines = await this.transport.watchLines((raw) =>
+  /** 事件源注册（幂等）。⚠ 必须 promise 锁收口：unlistenLines 要等
+   *  transport.watchLines 的异步注册完成才有值，同一 tick 内两次进入
+   *  （多线程序订阅并发、StrictMode 挂载-卸载-重挂、订阅+发送同帧）若只查
+   *  空值会双双通过检查、各注册一份监听——Tauri listen 每次都是独立订阅，
+   *  于是每行 NDJSON 喂两遍、流式 delta 应用两遍（文本成倍重复，终态整条
+   *  替换后才恢复正常）。 */
+  private ensureEventWatcher(): Promise<void> {
+    if (this.unlistenLines) return Promise.resolve();
+    if (!this.eventWatcher) {
+      const registering = this.registerEventWatcher();
+      this.eventWatcher = registering;
+      // 注册失败不留锁：后续订阅/发送可重试（监听未成，无泄漏可言）
+      registering.catch(() => {
+        if (this.eventWatcher === registering) this.eventWatcher = null;
+      });
+    }
+    return this.eventWatcher;
+  }
+
+  private async registerEventWatcher(): Promise<void> {
+    const unlisten = await this.transport.watchLines((raw) =>
       this.handleWireLine(raw),
     );
     await this.transport.watchGeneration(() => this.handleGenerationChange());
+    this.unlistenLines = unlisten;
   }
 
   /** 事件源换代：清重建台账，逐订阅线程拉快照自愈（空闲态 + 已落盘内容） */
@@ -555,7 +580,10 @@ export class PiClientBase implements PiClient {
     if (type === "finish" || type === "error") {
       const sessionId = this.inflight.get(requestId)!;
       this.inflight.delete(requestId);
-      void this.refreshNow(sessionId);
+      // force：收尾帧是「本轮已结束」的权威信号，快照必须派发——指纹去重
+      // 在这里会吞掉自愈（并入退化流等场景 live 的 agent_end 可能缺失，
+      // 不强制刷新 runStatus 就永远停在 running，转圈/停止键永挂）
+      void this.refreshNow(sessionId, true);
     }
   }
 
@@ -594,7 +622,13 @@ export class PiClientBase implements PiClient {
   ) {
     const set = this.listeners.get(sessionId);
     if (!set) return;
-    this.lastSeq.set(sessionId, Math.max(this.lastSeq.get(sessionId) ?? 0, seq));
+    const prevSeq = this.lastSeq.get(sessionId) ?? 0;
+    // delta 帧幂等兑底：文本增量是台账上唯一非幂等的操作（+= 追加），
+    // seq 不大于已见水位 = 重复帧（传输层双投递）或快照水位已涵盖的在飞帧
+    // （其内容已在快照基底里），再应用即成倍重复——直接丢弃。其余帧
+    // （start/end/agent_*）本身幂等，照常派发推进水位。
+    if (body.type === "message_update" && seq <= prevSeq) return;
+    this.lastSeq.set(sessionId, Math.max(prevSeq, seq));
     let event: PiClientEvent;
     if (body.type === "message_update") {
       // delta 帧：在 accumulator 上重建完整 partial（无基底 = 监听中途挂上且
@@ -653,6 +687,10 @@ export class PiClientBase implements PiClient {
         type: "list_running",
       }),
     ]);
+    // 会话镜像落点（阶段 5b 随旧 adapter 删除而断供）：cwd 分组 / 偏好水合
+    // 全靠这份快照——不补写的话侧边栏项目分组整体消失、胶囊不跟随、
+    // mode/model picker 切回会话拿不到偏好。
+    applySessionSummaries(sessionsRes.sessions);
     const running = new Set(runningRes.sessionIds);
     return sessionsRes.sessions.map((s) => ({
       id: s.sessionId,
@@ -671,13 +709,19 @@ export class PiClientBase implements PiClient {
 
   async createThread(input?: { workspacePath?: string }): Promise<PiThreadSnapshot> {
     // threadId 形参只是 running 键：真正身份由 sidecar 生成的 sessionId 承担
+    const cwd = input?.workspacePath ?? getWorkspace() ?? undefined;
     const res = await this.transport.request<
       Extract<PiResponse, { type: "session" }>
     >({
       type: "new_session",
       threadId: `pi-${crypto.randomUUID()}`,
-      cwd: input?.workspacePath ?? getWorkspace() ?? undefined,
+      cwd,
     });
+    // 镜像先登记再返回（对齐阶段 5b 前 piEnsureThreadSession 的语义）：
+    // 列表回程（~一次刷新）前新会话的分组归属就已正确；广播一声让
+    // usePanelCwd 等按 sessionId 解析产物目录的视图重取兜底 cwd。
+    if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
+    window.dispatchEvent(new Event("pi:session-bound"));
     return this.fetchSnapshot(res.sessionId);
   }
 

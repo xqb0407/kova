@@ -13,7 +13,7 @@ import {
   splitFrontmatter,
   type FrontmatterValue,
 } from "@/lib/markdown/markdown-frontmatter";
-import { useMessagePartText, useSmooth } from "@assistant-ui/react";
+import { useAuiState } from "@assistant-ui/react";
 import {
   DEFAULT_SHIKI_THEME,
   tailBoundedRemend,
@@ -31,6 +31,8 @@ import { openExternal } from "@/lib/external-link";
 import { SiteIcon } from "@/components/custom-ui/site-icon";
 import { SvgCodeBlock } from "@/components/assistant-ui/elements/svg-code-block";
 import { MermaidCodeBlock } from "@/components/assistant-ui/elements/mermaid-code-block";
+// animated 词级入场动画的 keyframes（streamdown 包根自带的纯 CSS，不走 Tailwind）
+import "streamdown/styles.css";
 import "@/app/styles/markdown.css";
 
 /**
@@ -168,18 +170,42 @@ const FrontmatterCard: FC<{ entries: [string, FrontmatterValue][] }> = ({
   </div>
 );
 
+// useMessagePartText 已废弃（v0.12 迁移）：改用 useAuiState 选择并 narrow `s.part`。
+// selector 跑在 useSyncExternalStore 的 getSnapshot 里，绝不能 throw（线程切换时的
+// 瞬时 part 不匹配会掀掉整个 React 根）；类型不匹配时回退到这个冻结的空 text part
+// 哨兵，保证快照稳定 —— 与废弃 hook 内部实现一致。
+const EMPTY_TEXT_PART = Object.freeze({
+  type: "text",
+  text: "",
+  status: Object.freeze({ type: "complete" }),
+});
+
 /**
  * 消息流分支：等价于 StreamdownTextPrimitive 的默认路径
- * （消息 part 上下文 → smooth → defer → 尾部 remend），
+ * （消息 part 上下文 → defer → 尾部 remend + Streamdown 内置修复），
  * 只是把 plugins 原样透传，让 renderers 生效（见上方注释）。
+ *
+ * 流式分支刻意不开 `useSmooth`（逐字打字机）：它的渲染快照永远是
+ * `slice(0, n)` 的字符级前缀，揭示位置必然切进语法构造内部——`## ` 切在
+ * `#` 和 `# ` 之间、表格切在分隔行到达前、块边界切在两个 `\n` 中间（新块
+ * 和上一段黏成一个段落块，标记原样显出）。尾部修补救不了这种切断：
+ * `tailBoundedRemend` 与 Streamdown 内置 `parseIncompleteMarkdown` 底层同
+ * 为 remend，只闭合行内语法（粗体/行内码/链接/公式），不补块级结构；
+ * 且 smooth 的揭示滞后于源文本，半成品前缀会在屏上驻留，流式全程裸
+ * markdown。官方形态即默认 smooth=false + `animated` 词级入场动画 + caret；
+ * 要逐字打字机又不裸显，需自建结构边界回退揭示，勿改回原状。
  */
 const StreamdownPart = () => {
-  const messagePart = useMessagePartText();
-  const { text, status } = useSmooth(messagePart, false);
+  const part = useAuiState((s) =>
+    s.part.type === "text" || s.part.type === "reasoning"
+      ? s.part
+      : EMPTY_TEXT_PART,
+  );
+  const { text, status } = part;
   // 对齐 primitive 的 defer：解析降到低优先级，token 到达不阻塞输入/滚动
   const deferredText = useDeferredValue(text);
-  // primitive 在流式分支用 tail remend 补全尾部语法，并关掉 Streamdown 自带的
-  // parseIncompleteMarkdown，这里保持一致
+  // 与 primitive 默认管线一致：tail remend 补行内尾部语法，
+  // Streamdown 自带 parseIncompleteMarkdown（默认开）在流式期间同步修复
   const repairedText = useMemo(
     () => tailBoundedRemend(deferredText),
     [deferredText],
@@ -189,7 +215,8 @@ const StreamdownPart = () => {
       <Streamdown
         mode="streaming"
         isAnimating={status.type === "running"}
-        parseIncompleteMarkdown={false}
+        animated={{ animation: "fadeIn" }}
+        caret="block"
         plugins={sharedPlugins}
         shikiTheme={DEFAULT_SHIKI_THEME}
         components={sharedComponents}

@@ -63,17 +63,32 @@ describe("needsLengthContinuation", () => {
 
 describe("makeAutoContinueMessage", () => {
   test("user 角色 + 哨兵前缀", () => {
-    const m = makeAutoContinueMessage() as unknown as {
+    const m = makeAutoContinueMessage(1) as unknown as {
       role: string;
       content: { text: string }[];
     };
     expect(m.role).toBe("user");
     expect(m.content[0].text.startsWith(AUTO_CONTINUE_PREFIX)).toBe(true);
   });
+  test("第 1 次续跑不带反长思考指引", () => {
+    const m = makeAutoContinueMessage(1) as unknown as {
+      content: { text: string }[];
+    };
+    expect(m.content[0].text.includes("输出预算有限")).toBe(false);
+  });
+  test("第 2 次起追加反长思考指引（实测弱模型会整轮烧在 reasoning 上）", () => {
+    for (const continues of [2, 3]) {
+      const m = makeAutoContinueMessage(continues) as unknown as {
+        content: { text: string }[];
+      };
+      expect(m.content[0].text.includes("输出预算有限")).toBe(true);
+      expect(m.content[0].text.includes("不要再进行长篇思考")).toBe(true);
+    }
+  });
 });
 
 describe("toUiMessage 对续跑消息的隐藏", () => {
-  const msg = makeAutoContinueMessage() as unknown as Parameters<
+  const msg = makeAutoContinueMessage(1) as unknown as Parameters<
     typeof toUiMessage
   >[0];
   test("续跑 user 消息不投影 UI（历史不可见）", () => {

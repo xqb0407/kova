@@ -16,7 +16,8 @@ import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
  * 签的浏览器预览必须跟它同源，否则这些入口在没有工作区时全部失明（Rust 侧
  * resolve_root 已把任务工作区放行第二可信根，任意深度子路径读写都合法）。
  * 会话尚未物化的草稿线程拿不到 sessionId，先落任务工作区根（此时也不会有
- * 产物）；piEnsureThreadSession 登记完成会广播 pi:session-bound，届时重解析。
+ * 产物）；新链路 PiClientBase.createThread 登记完成会广播 pi:session-bound，
+ * 届时重解析。
  * 任务工作区路径要异步解析（appDataDir），解析完成后本钩子自动重渲染。
  */
 export function usePanelCwd(tabCwd?: string | null): string | null {

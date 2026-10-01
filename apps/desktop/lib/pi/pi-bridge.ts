@@ -216,6 +216,10 @@ export type PiTraceStatus = "ok" | "error" | "aborted";
 
 /** 轨迹 span（sidecar trace.ts 的 TraceSpan 镜像；树形，仅 turn 持有 children） */
 export type PiTraceSpan = {
+  /** v2 身份：面板/导出直接用；旧记录缺失时回退到顺序派生 */
+  spanId?: string;
+  /** 父 span 的 spanId（同轮子 span 指向所属 turn；turn 省略 = 挂在 run 根下） */
+  parentSpanId?: string;
   kind: PiTraceSpanKind;
   name?: string;
   startMs: number;
@@ -229,7 +233,13 @@ export type PiTraceSpan = {
 
 /** 一次 prompt run 的完整轨迹（traces/<sessionId>.jsonl 的一行） */
 export type PiTraceRun = {
+  /** v2 根身份（面板/OTLP 的 traceId）；旧记录缺失时回退 runId */
+  traceId?: string;
   runId: string;
+  /** 父 run 的 traceId（subagent 委派回填父 run，跨 run 因果边） */
+  parentRunId?: string;
+  /** 触发本 run 的父 span：父 run 里那次 Task tool_call 的 spanId */
+  parentSpanId?: string;
   sessionId: string;
   source: "ui" | "automation" | "subagent";
   startMs: number;

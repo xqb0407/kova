@@ -118,6 +118,23 @@ describe("prompt-queue state machine", () => {
     resetQueueForTests();
   });
 
+  test("force 入队旁路限流（steer 回收回队兜底：满队也必须收下）", () => {
+    resetQueueForTests();
+    for (let i = 0; i < PROMPT_QUEUE_LIMIT; i++) {
+      expect(enqueueTurn(`f${i}`, "t-force", { text: `m${i}` }).ok).toBe(true);
+    }
+    // 满队：普通入队仍拒绝，force（回收）收下 → 队列超限 1 条但不丢消息
+    expect(enqueueTurn("f-new", "t-force", { text: "新增" }).ok).toBe(false);
+    expect(
+      enqueueTurn("f-reclaim", "t-force", { text: "回收" }, { force: true })
+        .ok,
+    ).toBe(true);
+    const snap = queueSnapshot("t-force");
+    expect(snap).toHaveLength(PROMPT_QUEUE_LIMIT + 1);
+    expect(snap[snap.length - 1]?.reqId).toBe("f-reclaim");
+    resetQueueForTests();
+  });
+
   test("popFrontForDispatch 仅线程空闲时弹队首（busy 窗口不弹）", () => {
     resetQueueForTests();
     enqueueTurn("pf-a", "t-pop", { text: "a" });
@@ -337,11 +354,15 @@ async function waitUntil(reqId: string, type: string, timeoutMs = 3000) {
 
 /** 可控假 Agent：首次 prompt 挂起，firstTurnMs 后自然完成（Stop 时以 unwindMs 提前收尾，
  *  模拟 provider 流拆除、persist 等收尾耗时）；后续 prompt 立即完成。
- *  steer(m) 记录注入（steered getter 供断言），不产生输出 */
+ *  steer(m) 记录注入（steered getter 供断言），不产生输出。
+ *  steeringQueue 镜像 pi-core PendingMessageQueue 的运行时形状
+ *  （messages 数组 + clear()）：注入只入队、循环从不消费（假 agent 没有真实
+ *  模型边界），正是轮末回收 findUnansweredSteers 要处理的滞留场景 */
 function makeFakeAgent(firstTurnMs: number, unwindMs: number): Agent {
   let calls = 0;
   let resolveFirst: (() => void) | null = null;
   const steered: unknown[] = [];
+  const pending: unknown[] = [];
   return {
     state: {
       model: { id: "fake", provider: "fake", contextWindow: 100000 },
@@ -361,6 +382,13 @@ function makeFakeAgent(firstTurnMs: number, unwindMs: number): Agent {
     },
     steer: (m: unknown) => {
       steered.push(m);
+      pending.push(m);
+    },
+    steeringQueue: {
+      messages: pending,
+      clear: () => {
+        pending.length = 0;
+      },
     },
     get steered() {
       return steered;
@@ -472,9 +500,9 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     });
     await pb; // steer 立即完成（注入即返回），不等 A
 
-    // 退化流生命周期：steered 标记 → start；finish 不立即发（提前结束会把
+    // 退化流生命周期：只发 start；finish 不立即发（提前结束会把
     // 框架共享 status 置回 ready，宿主轮被 UI 显示为已停止），挂起到宿主轮收尾
-    expect(chunksFor("sb1").map((c) => c.type)).toEqual(["data-steered", "start"]);
+    expect(chunksFor("sb1").map((c) => c.type)).toEqual(["start"]);
     // 注入到活跃 agent（user 消息、纯文本 content；带并入哨兵前缀，历史重建据此补「已并入」标记）
     const steered = steeredOf(run.agent);
     expect(steered).toHaveLength(1);
@@ -483,14 +511,23 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     expect(queueSnapshot("th-st1")).toEqual([]);
     expect(chunksFor("sa1").some((c) => c.type === "finish")).toBe(false);
 
-    // 宿主轮收尾（Stop）：A 的 finish 之后补发 sb1 的 finish
+    // 宿主轮收尾（Stop）：A 的 finish 之后补发 sb1 的 finish；且假 agent
+    // 没有真实模型边界，注入始终未被消费——轮末回收必须把它降级回队列
     await dispatch("sa1-abort", { type: "abort", threadId: "th-st1" });
     await pa;
-    expect(chunksFor("sb1").map((c) => c.type)).toEqual([
-      "data-steered",
-      "start",
-      "finish",
-    ]);
+    expect(chunksFor("sb1").map((c) => c.type)).toEqual(["start", "finish"]);
+    // 「并入失败自动降级为排队」：条目按原始干净文本回队（剥哨兵前缀），
+    // 前端 queue_update/快照恢复 pill，由既有泵/链按普通轮次重发
+    expect(queueSnapshot("th-st1").map((q) => q.reqId)).toEqual(["sb1"]);
+    expect(queueSnapshot("th-st1").map((q) => q.text)).toEqual(["B"]);
+    // pi-core 内部滞留注入被清空——防泄漏到下一轮边界形成双份投递
+    expect(
+      (
+        run.agent as unknown as {
+          steeringQueue: { messages: unknown[] };
+        }
+      ).steeringQueue.messages,
+    ).toEqual([]);
     resetQueueForTests();
   });
 
@@ -552,23 +589,28 @@ describe("dispatchPrompt: steer 并入当前轮", () => {
     await dispatch("cmd-st", { type: "queue_steer", requestId: "sb4" });
     expect(responses("cmd-st").at(-1)?.type).toBe("queue_steered");
 
-    // 项已移除；其流 steered 标记 → start（finish 挂到宿主轮收尾）；
+    // 项已移除；其退化流只发 start（finish 挂到宿主轮收尾）；
     // 注入发生在活跃 agent
     expect(queueSnapshot("th-st4")).toEqual([]);
-    expect(chunksFor("sb4").map((c) => c.type)).toEqual(["data-steered", "start"]);
-    expect(chunksFor("sb4").filter((c) => c.type === "data-steered")).toHaveLength(1);
+    expect(chunksFor("sb4").map((c) => c.type)).toEqual(["start"]);
     expect(steeredOf(run.agent)).toHaveLength(1);
     expect(steeredOf(run.agent)[0]).toMatchObject({
       role: "user",
       content: `${STEER_PREFIX}B`,
     });
 
-    // A 收尾后 sb4 的链节轮到空队列，静默让位（不执行）；其退化流 finish
-    // 随 A 的收尾补发
+    // A 收尾补发退化流 finish；注入从未被消费 → 轮末回收把 sb4 回队，
+    // 其自身链节随即取到队首，按普通轮次完整重跑一轮（并入失败降级为排队、
+    // 由链自动派发）——start/finish 各两轮，绝不静默丢
     await dispatch("sa4-abort", { type: "abort", threadId: "th-st4" });
     await Promise.all([pa, pb]);
-    expect(chunksFor("sb4").map((c) => c.type)).toEqual(["data-steered", "start", "finish"]);
+    const st4Types = chunksFor("sb4").map((c) => c.type);
+    expect(st4Types).not.toContain("data-steered");
+    expect(st4Types.filter((t) => t === "start")).toHaveLength(2);
+    expect(st4Types.filter((t) => t === "finish")).toHaveLength(2);
     expect(chunksFor("sb4").some((c) => c.type === "error")).toBe(false);
+    // 链节已把回收条目消耗派发，队列终态为空
+    expect(queueSnapshot("th-st4")).toEqual([]);
     resetQueueForTests();
   });
 

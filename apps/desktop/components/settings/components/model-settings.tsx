@@ -43,6 +43,12 @@ import {
   useImageGenConfig,
 } from "@/lib/settings/imagegen-config";
 import { setSelectedModel, useSelectedModel } from "@/lib/model/model-settings";
+import {
+  THINKING_LEVEL_LABELS,
+  setThinkingLevel,
+  useThinkingLevel,
+  type ThinkingLevel,
+} from "@/lib/settings/thinking-settings";
 import { refreshPiModels } from "@/lib/pi/pi-models";
 import {
   getModelThinkingMap,
@@ -512,6 +518,7 @@ export const ModelSettings: FC = () => {
   // 本次打开属性弹窗内，用户是否点了"手动覆盖"把自动折叠态展开
   const [thinkingOverrideEdit, setThinkingOverrideEdit] = useState(false);
   const selected = useSelectedModel();
+  const defaultThinking = useThinkingLevel();
 
   // 文生图区块：整包配置在 sidecar kv（pi.imagegen），模型候选复用本页目录
   const imagegen = useImageGenConfig();
@@ -1601,6 +1608,33 @@ export const ModelSettings: FC = () => {
                 </div>
               </PopoverContent>
             </Popover>
+          </div>
+          <div className="bg-muted/50 flex items-center gap-4 rounded-2xl px-5 py-4">
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">默认档位</div>
+              <div className="text-muted-foreground truncate text-sm">
+                新对话与从未在对话页选过档位的会话的深度思考档位；
+                对话页改档位只影响该会话，不会改这里
+              </div>
+            </div>
+            <Select
+              value={defaultThinking}
+              items={Object.entries(THINKING_LEVEL_LABELS).map(
+                ([value, label]) => ({ value, label }),
+              )}
+              onValueChange={(v) => void setThinkingLevel(v as ThinkingLevel)}
+            >
+              <SelectTrigger size="sm" className="w-40 border bg-background">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(THINKING_LEVEL_LABELS).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </section>
 

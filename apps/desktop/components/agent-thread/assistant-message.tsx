@@ -32,6 +32,10 @@ import {
 } from "@assistant-ui/react";
 import { RetryMarker, useRetryState } from "./retry-marker";
 import { StoppedMarker, isStoppedMessageState } from "./stopped-marker";
+import {
+  TruncationStoppedMarker,
+  isTruncationStoppedMessageState,
+} from "./truncation-marker";
 import { messageIndexById } from "@/lib/panels/message-turns";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageCheckpoint } from "./checkpoint-card";
@@ -289,6 +293,9 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   // 「已停止」消息（data-stopped part 存在，直播/历史重建同构）：分隔线渲染
   // 在操作栏之下（ActionBar 外面），part 本身不就地渲染
   const stopped = useAuiState(isStoppedMessageState);
+  // 「连续输出截断，任务已中止」（data-truncation-stopped part，同款机制）：
+  // 自动续跑预算烧到头的截断回复，任务实际停在半路而非正常完成
+  const truncationStopped = useAuiState(isTruncationStoppedMessageState);
   const onlyAnswer = variant === "answer";
   const onlyProcess = variant === "process";
   // 成图画廊按组 indices 回查成员 part：与 GroupedParts 同源取 parts
@@ -354,17 +361,18 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
           // 过程面跳过这几类，避免展开态出现两份
           const dataName =
             part.type === "data" ? (part as { name?: string }).name : undefined;
+          // 压缩分隔线归 answer 面独有（收起后仍可见的"保命锚点"，与
+          // turn-summary 的 keepsVisible 同语义）：轮末两面同挂，若过程面
+          // 也放行会渲染出两条一模一样的线
           const onAnswerSide =
             part.type === "text" ||
             dataName === "image" ||
             dataName === "errorAttribution" ||
+            dataName === "compaction" ||
             (part as { type?: string }).type === "group-images";
           if (onlyProcess && onAnswerSide) return null;
           // answer 面只保留正文、压缩分隔线与成图；工具/思考/其他 data 归过程面
-          if (onlyAnswer && !onAnswerSide) {
-            const isDivider = dataName === "compaction";
-            if (!isDivider) return null;
-          }
+          if (onlyAnswer && !onAnswerSide) return null;
           switch (part.type) {
               case "group-chainOfThought":
                 return <div data-slot="aui_chain-of-thought">{children}</div>;
@@ -580,9 +588,10 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
         data-slot="aui_assistant-message-footer"
         className={cn(
           "relative ml-2 min-h-7.5 overflow-visible",
-          // 常态：操作栏悬浮在消息间隙（负 margin 折叠占位）；被停止的消息
-          // 要给它留出真实高度，分隔线才能排到操作栏下方
-          !stopped && "h-7.5 -mb-7.5",
+          // 常态：操作栏悬浮在消息间隙（负 margin 折叠占位）；带尾部分隔线的
+          // 消息（已停止 / 连续输出截断）要给它留出真实高度，分隔线才能排到
+          // 操作栏下方——漏算任一标记，分隔线就会和操作栏叠在一起
+          !stopped && !truncationStopped && "h-7.5 -mb-7.5",
         )}
       >
         <div className="absolute inset-x-0 top-0 flex h-7.5 items-center pt-1.5  my-4 mt-2">
@@ -592,6 +601,11 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
       {stopped && (
         <div className="ml-2">
           <StoppedMarker />
+        </div>
+      )}
+      {truncationStopped && (
+        <div className="ml-2">
+          <TruncationStoppedMarker />
         </div>
       )}
     </MessagePrimitive.Root>

@@ -34,6 +34,7 @@ import {
   responseForToolApproval,
   type PiInterruptAnswer,
 } from "./hostUi";
+import { maybeWarnUnsupportedImages } from "@/lib/pi/pi-vision-warning";
 import type {
   PiClient,
   PiClientEvent,
@@ -238,10 +239,11 @@ const optimisticUserMessageFromInput = (
   __optimisticId: optimisticId,
 });
 
-/** 重发用：把投影出的 user 消息还原为 AppendMessage。投影只保留 text 与
- * image（data URL）parts——文档附件在投影里本就不存在，无法随重发还原
- * （truncate/edit 的已知保真度限制，编辑路径不受影响：core 给 onEdit 的
- * 是 composer 的完整 AppendMessage）。 */
+/** 重发用：把投影出的 user 消息还原为 AppendMessage。图片现在投在
+ * message.attachments（气泡外附件卡），重发时从 attachments 的 content 里
+ * 还原回 image（data URL）parts——文档附件在投影里本就不存在，无法随重发
+ * 还原（truncate/edit 的已知保真度限制，编辑路径不受影响：core 给 onEdit
+ * 的是 composer 的完整 AppendMessage）。 */
 const appendMessageFromUserProjection = (
   message: ThreadMessageLike,
 ): AppendMessage => {
@@ -259,6 +261,18 @@ const appendMessageFromUserProjection = (
         parts.push({ type: "text", text: part.text });
       } else if (part.type === "image") {
         parts.push({ type: "image", image: part.image });
+      }
+    }
+  }
+  for (const attachment of message.attachments ?? []) {
+    for (const part of attachment.content) {
+      if (part.type === "image") {
+        parts.push({ type: "image", image: part.image });
+      } else if (
+        part.type === "file" &&
+        part.mimeType.startsWith("image/")
+      ) {
+        parts.push({ type: "image", image: part.data });
       }
     }
   }
@@ -517,6 +531,10 @@ export class PiThreadController implements PiThreadControllerLike {
       (isQueuedSend ? "followUp" : undefined);
 
     const input = buildPiSendInput(message, behavior);
+    // 改动（发图能力提示）：当前模型目录元数据标为纯文本输入而本次发送含图时
+    // toast 提醒——不拦截（sidecar 因元数据不可靠已移除硬门，见
+    // lib/pi/pi-vision-warning.ts 头注）。排队/steer/重生重发同经此汇聚点。
+    maybeWarnUnsupportedImages(this.threadId, (input.attachments?.length ?? 0) > 0);
     this.ensureEventSubscription({ includeSnapshot: false });
 
     if (isQueuedSend) return this.sendQueued(input, behavior ?? "followUp");
@@ -612,12 +630,27 @@ export class PiThreadController implements PiThreadControllerLike {
   /** Mid-run sends land in Pi's queue, not the transcript (Pi appends the user
    * message only when the queue flushes), so the optimistic mirror goes into
    * `state.queue` — the thread stays clean and the queue UI shows it instantly.
-   * The next real `queue_update` replaces the arrays wholesale and self-heals. */
+   * The next real `queue_update` replaces the arrays wholesale and self-heals.
+   *  steer 模式除外（见下）：并入无队列条目可镜像。 */
   private async sendQueued(
     input: PiSendMessageInput,
     behavior: "followUp" | "steer",
   ) {
     const mode = behavior === "steer" ? "steering" : "followUp";
+    // steer（并入当前轮）跳过乐观写入：注入成功的队列快照从未变过，sidecar
+    // 不会为它发 queue_update，写进 state.queue.steering 的条目没有事件来清
+    // （悬挂条目还连带把 queueBusy 订阅保活拖住）；并入语义本就无感、不显示
+    // 排队条。注入失败时 sidecar 落回真队列，条目以 followUp 形态随
+    // queue_update 出现，无需本地镜像。
+    if (mode === "steering") {
+      try {
+        await this.client.sendMessage(this.threadId, input);
+      } catch (error) {
+        this.setState({ ...this.state, lastError: errorText(error) });
+        throw error;
+      }
+      return;
+    }
     // 改动（4a）：乐观条目带临时 id——真实 reqId 由客户端在 sendMessage 内
     // 生成，控制器无从得知；下一条 queue_update 以服务端条目整体替换自愈。
     const optimisticEntry: PiQueueEntry = {

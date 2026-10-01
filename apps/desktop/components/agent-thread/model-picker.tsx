@@ -16,9 +16,10 @@ import { fmtContextWindow } from "@/lib/model/model-format";
 
 /**
  * 对话页模型选择器：只展示已配置凭据的服务（authed）的模型，按服务分组；
- * 未配置的服务不出现（去设置 → 模型里添加）。选择写入全局（sidecar 广播 + kv）
- * 并记入当前会话的模型记忆（sessions 表偏好列），切回会话时恢复该会话
- * 上次使用的模型。
+ * 未配置的服务不出现（去设置 → 模型里添加）。选择经定靶 set_model 只落当前
+ * 会话（转录行 + sessions 表偏好列），切回会话时恢复该会话上次使用的模型，
+ * 其余会话不受影响；无记忆的会话（含新对话）显示设置页的默认模型，默认模型
+ * 被删时收口成「请选择模型」占位并由发送闸门引导重选（见 pi-model-gate）。
  *
  * 发送锁（useSendLock）：消息发送完成前（在跑/排队待派发）禁止切换模型，
  * 见 pi-send-lock 头注。
@@ -29,7 +30,7 @@ export const PiModelPicker: FC = () => {
   const allModels = usePiModels();
   const gate = useModelGate();
 
-  // 切线程时水合该会话记住的模型（无记忆则回落全局当前选择）
+  // 切线程时水合该会话记住的模型（无记忆则回落设置页的默认模型）
   useEffect(() => {
     if (!threadId) return;
     hydrateThreadModel(threadId);
@@ -72,7 +73,7 @@ export const PiModelPicker: FC = () => {
 
   // 只展示「还可用」的选择：provider 被删/停用后会话级记忆仍指着那个模型，
   // 直接显示会是一个目录里不存在的裸 provider/modelId（看着像 bug）。
-  // 不可用时回落「选择模型」占位，由发送闸门把用户引到重新选择（见 pi-model-gate）
+  // 不可用时回落「请选择模型」占位，由发送闸门把用户引到重新选择（见 pi-model-gate）
   const value = gate.selected
     ? `${gate.selected.provider}/${gate.selected.modelId}`
     : undefined;
@@ -108,7 +109,7 @@ export const PiModelPicker: FC = () => {
       >
         <span className="truncate">
           {selectedLabel ?? (
-            <span className="text-muted-foreground">选择模型</span>
+            <span className="text-muted-foreground">请选择模型</span>
           )}
         </span>
       </ModelSelector.Trigger>

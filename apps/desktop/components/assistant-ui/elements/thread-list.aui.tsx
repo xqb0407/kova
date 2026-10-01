@@ -45,6 +45,7 @@ import {
   usePinnedSessionIds,
 } from "@/lib/pi/pi-pinned-sessions";
 import { useThreadActivity } from "@/lib/pi/pi-last-activity";
+import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
 import {
   requestAutomationFocus,
   useAutomationTaskIdForSession,
@@ -1033,7 +1034,11 @@ export const ThreadListItem: FC = () => {
   const pinned = useIsPinned(remoteId);
   // 定时任务出身标记（run_done 帧记账的 session→task 映射）：⚡ 徽标 + 定位
   const automationTaskId = useAutomationTaskIdForSession(remoteId);
-  const title = useAuiState((s) => s.threadListItem.title) ?? "";
+  // 列表快照的 title 只在整表 reload 时刷新；智能标题/改名经 wire 回流到
+  // 本地实时标题表（见 pi-thread-titles），优先取它，取不到再回落快照
+  const snapshotTitle = useAuiState((s) => s.threadListItem.title);
+  const liveTitle = useThreadTitle(remoteId);
+  const title = liveTitle ?? snapshotTitle ?? "";
   // 「距最后一条消息」的固定用时；渲染时算一次，运行中直接显示「刚刚」。
   // 列表快照的 lastMessageAt 要等 reload 才更新，叠加本地活动时间戳
   // （发送/turn 收尾时盖的，见 pi-last-activity）才能刚聊完就显示「刚刚」
@@ -1117,7 +1122,7 @@ export const ThreadListItem: FC = () => {
           data-slot="aui_thread-list-item-title"
           className="me-3"
         >
-          <ThreadListItemPrimitive.Title fallback="新对话" />
+          {liveTitle ?? <ThreadListItemPrimitive.Title fallback="新对话" />}
         </MarqueeTitle>
         {showRunning && <span className="sr-only">Running</span>}
       </ThreadListItemPrimitive.Trigger>

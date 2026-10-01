@@ -9,6 +9,7 @@ import {
 import {
   isPageReload,
   openPanelTab,
+  useAllThreadTabs,
   usePanelTabs,
 } from "@/lib/panels/panel-tabs";
 import { newTerminalTab } from "@/lib/shell";
@@ -112,6 +113,8 @@ export const AgentPanel = memo(AgentPanelImpl);
  * 面板壳 + 浏览器 webview 生命周期:最后一个浏览器 tab 关闭即销毁子 webview
  * （不销毁会常驻占内存,且重新打开空 tab 时残留上一页——原生层盖在 React 之上,
  * 空态覆盖层挡不住它）。tab 切换仍只隐藏,保留页面状态。
+ * 生命周期判定用**全部会话桶的并集**：标签按会话分桶后,只看当前会话会在
+ * 切走会话时把别的会话正开着的 webview 误销毁。
  */
 const PanelShell: FC<{
   tabs: ReturnType<typeof usePanelTabs>["tabs"];
@@ -130,7 +133,11 @@ const PanelShell: FC<{
   fullscreen = false,
   onToggleFullscreen,
 }) => {
-  const browserCount = tabs.filter((t) => t.type === "browser").length;
+  const allThreadTabs = useAllThreadTabs();
+  const browserCount = allThreadTabs.reduce(
+    (n, bucket) => n + bucket.tabs.filter((t) => t.type === "browser").length,
+    0,
+  );
   const prevCount = useRef(browserCount);
   useEffect(() => {
     if (prevCount.current > 0 && browserCount === 0 && isTauri()) {

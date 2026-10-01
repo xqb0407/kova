@@ -11,8 +11,9 @@ import type { SelectedModel } from "@/lib/model/model-settings";
  * 模型选择的可用性闸门：发送入口据此决定放不放行。
  *
  * 两种「不可用」，都要挡住：
- * 1. 压根没选。sidecar 的 resolveCurrentModel 在无选择时静默取目录里第一个有
- *    凭据的模型（defaultModel），界面却显示「选择模型」占位——用户看到的与
+ * 1. 压根没选（无会话记忆且默认模型缺失）。sidecar 的 resolveCurrentModel 在
+ *    无选择时静默取目录里第一个有凭据的模型（defaultModel），界面却显示
+ *    「请选择模型」占位——用户看到的与
  *    实际应答的模型不是一回事。
  * 2. 选了，但那个模型已经不在目录里了：用户删掉/停用 provider 后，sidecar 只清
  *    全局选中键（handlers/providers.ts），会话级记忆（sessions 偏好列 + 转录里的
@@ -33,7 +34,7 @@ export type ModelGate = {
   usable: boolean;
   /** 不可用时的说明（tooltip / 占位文案 / toast 共用一句） */
   hint: ModelGateHint | null;
-  /** 界面上还有没有可展示的选择（不可用时让选择器回落到「选择模型」占位，
+  /** 界面上还有没有可展示的选择（不可用时让选择器回落到「请选择模型」占位，
    *  而不是显示一个目录里已经不存在的裸 provider/modelId） */
   selected: SelectedModel | null;
 };

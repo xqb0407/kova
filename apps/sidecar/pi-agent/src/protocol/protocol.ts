@@ -83,11 +83,14 @@
  *       models 项含 enabled 与 maxTokens/input/cost 属性（enabled=false = 已被过滤隐藏，前端自行过滤）
  *   { "type": "set_model", "id", "provider", "modelId", "sessionId"? } → { id, type: "model", provider, modelId }
  *       sessionId 提供 = 会话定靶选择：转录 model_change 行与偏好列只落该会话（其余驻留会话不动）；
- *       缺省 = 全局默认变更（设置页/启动恢复）：更新「最近一次使用」，驻留会话中仅从未显式
- *       选过模型的即时刷 live run（不落行）。两种形态都写 kv pi.model。
+ *       缺省 = 全局默认模型变更（设置页/启动恢复）：写 kv pi.model，驻留会话中仅从未显式
+ *       选过模型的即时刷 live run（不落行）。定靶形态不碰 kv/默认键——对话页选择不得
+ *       漂移设置页的「默认模型」（漂移会把无记录会话的显示与运行模型一起盖掉）。
  *   { "type": "get_model", "id" }                             → { id, type: "model", provider, modelId }
  *       未选择时 provider/modelId 为空串（前端据此校准 UI 真值）
- *   { "type": "set_thinking", "id", "level" }                 → { id, type: "thinking", level }（深度思考档位，广播到活动会话）
+ *   { "type": "set_thinking", "id", "level", "sessionId"? }   → { id, type: "thinking", level }
+ *       深度思考档位，与 set_model 同款双形态：sessionId 提供 = 定靶，转录 thinking_level_change
+ *       行与偏好列只落该会话；缺省 = 默认档位变更：写 kv pi.thinking，仅刷从未定靶选档的驻留 run
  *   { "type": "set_thinking_maps", "id", "maps" }             → { id, type: "thinking_maps", applied }（模型级 thinkingLevelMap 覆盖整包下发）
  *   { "type": "lookup_thinking_seed", "id", "modelId" }       → { id, type: "thinking_seed", seed }
  *       按 modelId 反查内置目录的属性种子（reasoning/thinkingLevelMap/supportedThinkingLevels

@@ -195,10 +195,6 @@ export const handlers: Record<string, CommandHandler> = {
     // 定靶形态先校验会话存在（校验全部前置：被拒命令不得留下任何状态变更）
     if (sessionId && !(await sessionGet(sessionId)))
       throw new Error(`session not found: ${sessionId}`);
-    // 全局「最近一次使用」：kv 持久化（重启由 initCurrentModelKey 恢复），
-    // 供新会话与从未显式选过模型的会话跟随
-    setCurrentModelKey({ provider, modelId });
-    void kvSet("pi.model", JSON.stringify({ provider, modelId })).catch(() => {});
     // 模型行是系统提示词环境段的一部分：换模型后整段重排，驻留 run 即时生效
     const restamp = (run: Running): void => {
       run.agent.state.model = model;
@@ -210,14 +206,19 @@ export const handlers: Record<string, CommandHandler> = {
     if (sessionId) {
       // 会话定靶（对话页选择器）：转录 model_change 行 = 会话模型真值（§6 M4），
       // 只落被点名的会话——盖写所有驻留会话正是「A 切模型、B 跟着变」的根因。
+      // 全局默认（kv pi.model / currentModelKey）不随对话页选择漂移：那是设置页
+      // 「默认模型」的专属真值，漂移会把无记录会话的显示与运行模型一起盖掉。
       // 偏好行同步 await（前端紧接的快照回拉必须读到新值，fire-and-forget 会竞态）
       const owner = findRunBySession(sessionId);
       if (owner) restamp(owner.run);
       appendModelChangeRow(sessionId, provider, modelId);
       await sessionPrefsSet(sessionId, { modelProvider: provider, modelId }).catch(() => {});
     } else {
-      // 全局默认变更（设置页/启动恢复）：只即时刷「从未显式选过模型」的驻留 run
-      // （无偏好行 = 真值跟随全局）；已有自身选择的会话保持原模型，不落行
+      // 全局默认变更（设置页/启动恢复）：kv 持久化（重启由 initCurrentModelKey 恢复），
+      // 供新会话与从未显式选过模型的会话跟随；只即时刷「从未显式选过模型」的驻留 run
+      // （无偏好行 = 真值跟随全局默认）；已有自身选择的会话保持原模型，不落行
+      setCurrentModelKey({ provider, modelId });
+      void kvSet("pi.model", JSON.stringify({ provider, modelId })).catch(() => {});
       for (const run of running.values()) {
         const row = await sessionGet(run.sessionId);
         if (row?.modelProvider && row?.modelId) continue;
@@ -242,12 +243,27 @@ export const handlers: Record<string, CommandHandler> = {
     if (!(THINKING_LEVELS as readonly string[]).includes(level)) {
       throw new Error(`unknown thinking level: ${level}`);
     }
-    setCurrentThinkingLevel(level as ThinkingLevel);
-    // 与 set_model 同款广播：活动 Agent 的 state 赋值对下一轮生效；
-    // 逐驻留会话落 thinking_level_change 行（§6 M4：重开该会话按行回放档位）
-    for (const run of running.values()) {
-      run.agent.state.thinkingLevel = level as ThinkingLevel;
-      appendThinkingLevelChangeRow(run.sessionId, level);
+    const sessionId = typeof msg.sessionId === "string" ? msg.sessionId.trim() : "";
+    // 定靶形态先校验会话存在（与 set_model 同规：被拒命令不得留下任何状态变更）
+    if (sessionId && !(await sessionGet(sessionId)))
+      throw new Error(`session not found: ${sessionId}`);
+    if (sessionId) {
+      // 会话定靶（档位选择器）：转录 thinking_level_change 行 = 会话档位真值（§6 M4），
+      // 只落被点名的会话；默认档位（kv pi.thinking）不随对话页选择漂移
+      const owner = findRunBySession(sessionId);
+      if (owner) owner.run.agent.state.thinkingLevel = level as ThinkingLevel;
+      appendThinkingLevelChangeRow(sessionId, level);
+      await sessionPrefsSet(sessionId, { thinkingLevel: level }).catch(() => {});
+    } else {
+      // 默认档位变更（设置页/启动恢复）：kv 持久化供新会话与从未定靶选档的会话跟随；
+      // 只即时刷「从未显式选过档位」的驻留 run（无偏好行 = 真值跟随全局默认），不落行
+      setCurrentThinkingLevel(level as ThinkingLevel);
+      void kvSet("pi.thinking", level).catch(() => {});
+      for (const run of running.values()) {
+        const row = await sessionGet(run.sessionId);
+        if (row?.thinkingLevel) continue;
+        run.agent.state.thinkingLevel = level as ThinkingLevel;
+      }
     }
     send({ id: reqId, type: "thinking", level });
   },

@@ -14,9 +14,11 @@ import {
   readTranscript,
   scanTranscript,
   historyToUiMessages,
+  isTruncationStoppedRow,
   setSessionName,
   windowTranscriptMessages,
 } from "../../sessions/transcript";
+import { isAutoContinueMessage } from "pi-protocol";
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
 import { getQueueStateForThread } from "../../sessions/prompt-queue";
 import { sessionPath } from "../../storage/storage";
@@ -153,6 +155,7 @@ export const handlers: Record<string, CommandHandler> = {
             : undefined,
         modelProvider: r.modelProvider ?? undefined,
         modelId: r.modelId ?? undefined,
+        thinkingLevel: r.thinkingLevel ?? undefined,
       }))
       .filter((s) => s.messageCount > 0);
     send({ id: reqId, type: "sessions", sessions });
@@ -320,13 +323,23 @@ export const handlers: Record<string, CommandHandler> = {
     type SnapMessage = Record<string, unknown> & { role?: string };
     const messages: SnapMessage[] = [];
     let ci = 0;
-    for (const m of scan.messages) {
+    for (let mi = 0; mi < scan.messages.length; mi++) {
+      const m = scan.messages[mi];
       while (ci < scan.compactions.length && scan.compactions[ci].seq < m.seq) {
         messages.push(compactionSnapMessage(scan.compactions[ci++]));
       }
       // seq = per-session 转录行水位（落盘后单调不变）；透传给前端做稳定消息 id。
       // 在飞 partial（peekPartial）没有 seq——未落盘，行号还不确定，前端按下标回退。
-      messages.push({ ...(m.agent as unknown as SnapMessage), __seq: m.seq });
+      // 最终中止标注要在哨兵跳过前算：判定依赖「截断行的下一行是不是哨兵续跑」。
+      // 哨兵 user 行必须与 toUiMessage 同口径按前缀隐藏——快照直出原生行，
+      // 此前不滤曾把裸前缀当用户提问上屏（桌面气泡泄漏）。
+      const truncationStopped = isTruncationStoppedRow(m, scan.messages[mi + 1]);
+      if (isAutoContinueMessage(m.agent)) continue;
+      messages.push({
+        ...(m.agent as unknown as SnapMessage),
+        __seq: m.seq,
+        ...(truncationStopped ? { __truncationStopped: true } : {}),
+      });
     }
     while (ci < scan.compactions.length) {
       messages.push(compactionSnapMessage(scan.compactions[ci++]));
@@ -410,7 +423,17 @@ export const handlers: Record<string, CommandHandler> = {
       tail: typeof msg.tail === "number" ? msg.tail : undefined,
       beforeSeq: typeof msg.beforeSeq === "number" ? msg.beforeSeq : undefined,
     });
-    const messages = historyToUiMessages(window, scan.compactions);
+    // 窗口是否触及会话末行：截断中止标记的「下一行非续跑」判定在窗口末行处
+    // 只能由这个前提背书（防分页窗恰好切在截断行与哨兵续跑行之间造成误标）
+    const lastMsgSeq = scan.messages.length
+      ? scan.messages[scan.messages.length - 1].seq
+      : undefined;
+    const messages = historyToUiMessages(window, scan.compactions, {
+      reachesSessionEnd:
+        lastMsgSeq === undefined ||
+        meta.lastSeq == null ||
+        meta.lastSeq >= lastMsgSeq,
+    });
     // §4：未结算挂起交互随行回放（前端据此重建挂起卡）；firstSeq/lastSeq/hasMore 分页元数据
     send({
       id: reqId,

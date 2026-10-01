@@ -33,6 +33,9 @@ const MAX_READ_BYTES: usize = 2 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
 /// 原始字节预览读取上限（字节）：base64 过 IPC 体积再 ×4/3，图片超限不如不去预览
 const MAX_PREVIEW_BYTES: usize = 20 * 1024 * 1024;
+/// dialog 直选图片读盘内联的上限（字节）：与前端 PROMPT_IMAGE_MAX_BYTES、
+/// sidecar IMAGE_INLINE_MAX_BYTES 同源（2MiB），三处任一改动需同步
+const MAX_ATTACHMENT_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 /// 列目录跳过的第三方巨树目录（条目常达十万级，过 IPC 只有害处）
 const SKIP_DIRS: &[&str] = &[".git", "node_modules"];
 
@@ -782,6 +785,41 @@ pub async fn attachment_stage(
         }
         prune_stage_dir(&root, attachment_retention_days(&app));
         Ok(json!({ "path": path.to_string_lossy() }))
+    })
+    .await
+    .map_err(|e| format!("fs task join error: {e}"))?
+}
+
+/// dialog 直选图片的原地读取内联：字节 → base64 回前端，由前端合成 File 进
+/// composer（与粘贴图片同一条 adapter 管线：草稿缩略图、发送 data URL 内联、
+/// 转录 image 块三位一体）。路径来自系统文件选择器的用户亲选（与网页端
+/// File input 同等的用户授权语义），不走 workspace 守卫；仅限普通文件。
+/// 超 MAX_ATTACHMENT_IMAGE_BYTES 报 too-large——在「添加时」挡住并给 toast，
+/// 而不是发送后由 sidecar 静默省略成一行「[xxx 已省略]」。文档不走这里
+/// （20MiB 级字节过 IPC 无意义，保持 file:// 路径载荷零拷贝）。
+#[tauri::command]
+pub async fn attachment_read_base64(path: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine as _;
+        let p = Path::new(&path);
+        if !p.is_absolute() {
+            return Err("bad-path".into());
+        }
+        let meta = std::fs::metadata(p).map_err(|_| "read-failed".to_string())?;
+        if !meta.is_file() {
+            return Err("read-failed".into());
+        }
+        if meta.len() > MAX_ATTACHMENT_IMAGE_BYTES as u64 {
+            return Err("too-large".into());
+        }
+        let mut f = std::fs::File::open(p).map_err(|_| "read-failed".to_string())?;
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        f.read_to_end(&mut bytes)
+            .map_err(|_| "read-failed".to_string())?;
+        Ok(json!({
+            "base64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+            "size": bytes.len(),
+        }))
     })
     .await
     .map_err(|e| format!("fs task join error: {e}"))?

@@ -60,7 +60,13 @@ import {
 import { migrateTodoState, replayTodoFromMessages } from "../todo/todo";
 import { logErr } from "../log";
 import { sessionPath } from "../storage/storage";
-import { kvGet, sessionGet, sessionInsert, sessionUpdateCwd } from "../storage/hostdb";
+import {
+  kvGet,
+  sessionGet,
+  sessionInsert,
+  sessionPrefsSet,
+  sessionUpdateCwd,
+} from "../storage/hostdb";
 import { buildHookPayload, fireHookEvent, runHooks } from "../agent/hooks";
 import { getAutomationPolicy } from "../automation/policy";
 import { decodeThemeColumn, getLastUsedDesignTheme } from "../design-md/state";
@@ -505,11 +511,17 @@ export async function resolveSession(
   }
 
   // 思考档位回放（§6 M4）："重开会话上次档位还在"由行历史回答；
-  // 未知档位（被收窄/下线的枚举值）回落全局当前选择，与旧会话同路径
+  // 未知档位（被收窄/下线的枚举值）回落全局默认档位（kv pi.thinking）
   const initialThinking: ThinkingLevel =
     scanThinking && (THINKING_LEVELS as readonly string[]).includes(scanThinking)
       ? (scanThinking as ThinkingLevel)
       : getCurrentThinkingLevel();
+  // 偏好列回填（会话化档位上线的一次性收敛）：广播时代 set_thinking 给所有驻留
+  // 会话都落过行，但从不写 thinking_level 偏好列——行存在而列缺失时按行补列，
+  // 列表水合（前端读偏好列）与转录真值即刻对齐；此后默认档变更不再殃及该会话
+  if (restoredRow && !restoredRow.thinkingLevel && scanThinking && !getAutomationPolicy(threadId)) {
+    void sessionPrefsSet(sessionId!, { thinkingLevel: scanThinking }).catch(() => {});
+  }
 
   // 技能目录预热（签名缓存，命中零 IO）：系统提示词的技能段从这里取数
   await ensureSkillsLoaded(resolvedCwd);

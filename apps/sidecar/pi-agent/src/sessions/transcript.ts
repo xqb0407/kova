@@ -19,10 +19,16 @@
  */
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import type { HistoryWindowMeta, PendingInteraction } from "pi-protocol";
+import {
+  AUTO_CONTINUE_PREFIX,
+  isAutoContinueMessage,
+  isAutoContinueText,
+} from "pi-protocol";
 import type { Message } from "@earendil-works/pi-ai";
 import { projectToolResult, type ProjectableContentBlock } from "../tools/image-parts";
 import { sessionPath } from "../storage/storage";
 import { sessionGet, sessionRename, sessionTouch } from "../storage/hostdb";
+import { emitThreadEvent } from "../protocol/thread-events";
 import { getModels } from "../model/model-catalog";
 import { stripDirectiveTokens, summarizeSessionTitle } from "./session-title-summarize";
 import { logErr } from "../log";
@@ -315,13 +321,41 @@ export async function setSessionName(sessionId: string, name: string): Promise<v
 
 /**
  * 长度截断自动续跑的注入消息哨兵前缀（见 context.makeAutoContinueMessage）。
+ * 常量与判定放 pi-protocol 契约层单源（thread_snapshot 直出不经过本文件的
+ * UI 投影，桌面投影层按同一前缀过滤），这里 re-export 维持既有引用面。
  * UI 双面不可见：直播流上 user 消息本就不发 chunk；历史投影在下边 toUiMessage
  * 里按前缀返回 null（行仍落盘，ui 为 null，与 toolResult 行同机制）。
  */
-export const AUTO_CONTINUE_PREFIX = "[[auto-continue]] ";
+export { AUTO_CONTINUE_PREFIX, isAutoContinueText };
 
-export function isAutoContinueText(text: string): boolean {
-  return text.startsWith(AUTO_CONTINUE_PREFIX);
+/**
+ * 「连续截断把续跑预算烧到头」的最终中止行判定：assistant 以 length 截断收场
+ * 且该轮零 toolCall（agent/context.needsLengthContinuation 的同款盘面——此处
+ * 不直接引用它，因为 context.ts 反向依赖本文件的哨兵常量），且下一行不是自动
+ * 续跑注入。中途截断的下一行必是哨兵续跑行；预算耗尽/终局的下一行是普通
+ * user 行或 EOF，天然区分。thread_snapshot 直出与 historyToUiMessages 据此补
+ * 「任务已中止」标记，与直播 data-truncation-stopped chunk 同构（data-stopped
+ * 的三路径同款）。
+ */
+export function isTruncationStoppedRow(
+  row: { agent: Message },
+  next?: { agent: Message },
+): boolean {
+  const m = row.agent as
+    | { role?: string; stopReason?: string; content?: unknown }
+    | undefined;
+  if (!m || m.role !== "assistant" || m.stopReason !== "length") return false;
+  if (!Array.isArray(m.content)) return false;
+  if (
+    (m.content as { type?: string }[]).some((c) => c?.type === "toolCall")
+  ) {
+    return false;
+  }
+  if (next) {
+    const n = next.agent as { role?: string } | undefined;
+    if (n?.role === "user" && isAutoContinueMessage(n)) return false;
+  }
+  return true;
 }
 
 /**
@@ -495,6 +529,7 @@ function compactionDividerPart(row: CompactionRow) {
 export function historyToUiMessages(
   rows: { agent: Message; seq?: number }[],
   compactions: CompactionRow[] = [],
+  opts?: { reachesSessionEnd?: boolean },
 ): UIMessage[] {
   type ToolPart = {
     type: string;
@@ -545,6 +580,21 @@ export function historyToUiMessages(
           parts.push(part as UIMessage["parts"][number]);
           openTools.set(c.id, { part, host: parts });
         }
+      }
+      // 最终中止标记（与直播 data-truncation-stopped chunk 同构，data-stopped
+      // 三路径同款）：连续截断把续跑预算烧到头的那一轮。窗口末行的下一行在
+      // 窗外，仅当调用方确认窗口触及会话末尾时才允许判「无续跑」，防分页窗
+      // 恰好切在截断行与哨兵行之间造成误标。
+      const next = i + 1 < rows.length ? rows[i + 1] : undefined;
+      if (
+        (next !== undefined || opts?.reachesSessionEnd !== false) &&
+        isTruncationStoppedRow(rows[i], next)
+      ) {
+        parts.push({
+          type: "data-truncation-stopped",
+          id: "truncation-stopped",
+          data: {},
+        } as UIMessage["parts"][number]);
       }
       if (!finishAssistantParts(parts, msg)) continue;
       messages.push({ id: `msg-${seq}`, role: "assistant", parts, metadata });
@@ -692,6 +742,9 @@ export async function maybeSummarizeSessionTitle(run: Running): Promise<void> {
   try {
     // 行 + 投影双写（§6 M4）：转录里的 session_info 是真值，索引 title 是投影
     await setSessionName(run.sessionId, title);
+    // 与 rename_session 同事件：智能标题落盘后即刻广播，前端顶栏/侧边栏的
+    // 实时标题不必等整表 reload（列表快照里的 title 只在 list() 时刷新）
+    emitThreadEvent(run.sessionId, { type: "session_info_changed", name: title });
   } catch (err) {
     logErr("session title rename failed:", err);
   }

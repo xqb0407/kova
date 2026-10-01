@@ -81,6 +81,9 @@ export const sessionSummarySchema = z.looseObject({
   approvalLevel: z.enum(["ask", "auto-edit", "auto"]).optional(),
   modelProvider: z.string().optional(),
   modelId: z.string().optional(),
+  /** 会话级思考档位偏好（undefined = 从未定靶选过，跟随默认档位；
+   *  定靶 set_thinking 落转录行并投影到偏好列，见 pi-agent handlers/models.ts） */
+  thinkingLevel: z.string().optional(),
   /** 设计主题偏好（三态）：JSON {scope,id} 字符串 = 选中；"" = 显式不使用主题；
    *  null/缺失 = 从未设置（sidecar 恢复链回落最近使用，见 sessions/resolve.ts） */
   designTheme: z.string().nullable().optional(),

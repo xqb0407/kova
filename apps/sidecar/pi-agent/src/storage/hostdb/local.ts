@@ -112,6 +112,7 @@ export function initLocalStorage(dbPath: string): void {
     "approval_level TEXT",
     "model_provider TEXT",
     "model_id TEXT",
+    "thinking_level TEXT",
     "design_theme TEXT",
   ]) {
     try {
@@ -346,11 +347,12 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               approval_level: string | null;
               model_provider: string | null;
               model_id: string | null;
+              thinking_level: string | null;
               design_theme: string | null;
             },
             [string]
           >(
-            "SELECT cwd, title, mode, approval_level, model_provider, model_id, design_theme FROM sessions WHERE id = ?",
+            "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme FROM sessions WHERE id = ?",
           )
           .get(s("sessionId"));
         return row
@@ -361,6 +363,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               approvalLevel: row.approval_level,
               modelProvider: row.model_provider,
               modelId: row.model_id,
+              thinkingLevel: row.thinking_level,
               designTheme: row.design_theme,
             }
           : null;
@@ -389,11 +392,12 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               approval_level: string | null;
               model_provider: string | null;
               model_id: string | null;
+              thinking_level: string | null;
               design_theme: string | null;
             },
             []
           >(
-            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id, design_theme FROM sessions ORDER BY updated_at DESC",
+            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme FROM sessions ORDER BY updated_at DESC",
           )
           .all()
           .map((r) => ({
@@ -402,6 +406,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
             approvalLevel: r.approval_level ?? null,
             modelProvider: r.model_provider ?? null,
             modelId: r.model_id ?? null,
+            thinkingLevel: r.thinking_level ?? null,
             designTheme: r.design_theme ?? null,
           }));
       case "session_prefs_set":
@@ -411,7 +416,8 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
            approval_level = COALESCE(?3, approval_level), \
            model_provider = COALESCE(?4, model_provider), \
            model_id = COALESCE(?5, model_id), \
-           design_theme = COALESCE(?6, design_theme) \
+           thinking_level = COALESCE(?6, thinking_level), \
+           design_theme = COALESCE(?7, design_theme) \
            WHERE id = ?1",
         ).run(
           s("sessionId"),
@@ -419,6 +425,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
           typeof p.approvalLevel === "string" ? p.approvalLevel : null,
           typeof p.modelProvider === "string" ? p.modelProvider : null,
           typeof p.modelId === "string" ? p.modelId : null,
+          typeof p.thinkingLevel === "string" ? p.thinkingLevel : null,
           typeof p.designTheme === "string" ? p.designTheme : null,
         );
         return {};

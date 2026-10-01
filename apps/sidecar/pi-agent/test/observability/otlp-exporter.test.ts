@@ -27,18 +27,24 @@ afterAll(() => {
   setFetchImplForTest(null);
 });
 
-/** 构造一个两轮 run：turn1 = llm + tool + 两次重试（error 收尾），turn2 = llm */
+/** 构造一个两轮 run：turn1 = llm + tool + 两次重试（error 收尾），turn2 = llm。
+ *  v2 身份：记录带 traceId，每 span 带 spanId，子 span 的 parentSpanId 指向 turn。 */
+const TURN_SPAN_ID = "b".repeat(16);
+const TRACE_ID = "c".repeat(32);
+
 const testRecord = (): TraceRunRecord => {
   const turn = (children: TraceSpan[]): TraceSpan => ({
+    spanId: TURN_SPAN_ID,
     kind: "turn",
     startMs: 1000,
     endMs: 2000,
     status: "ok",
     attrs: { index: 1 },
-    children,
+    children: children.map((c) => ({ ...c, parentSpanId: TURN_SPAN_ID })),
   });
   return {
-    runId: "a".repeat(32),
+    traceId: TRACE_ID,
+    runId: TRACE_ID,
     sessionId: "sess-1",
     source: "ui",
     startMs: 900,
@@ -49,6 +55,7 @@ const testRecord = (): TraceRunRecord => {
     spans: [
       turn([
         {
+          spanId: "1".repeat(16),
           kind: "llm_call",
           startMs: 1100,
           endMs: 1200,
@@ -66,6 +73,7 @@ const testRecord = (): TraceRunRecord => {
           detail: { request: "[system] sys\n\n[user] hi", response: "hello" },
         },
         {
+          spanId: "2".repeat(16),
           kind: "tool_call",
           name: "bash",
           startMs: 1300,
@@ -74,6 +82,7 @@ const testRecord = (): TraceRunRecord => {
           attrs: { args: '{"cmd":"ls"}' },
         },
         {
+          spanId: "3".repeat(16),
           kind: "retry",
           name: "PROVIDER_RATE_LIMITED",
           startMs: 1500,
@@ -90,10 +99,11 @@ describe("buildOtlpSpans", () => {
   const spans = buildOtlpSpans(testRecord(), true);
   const byName = (needle: string) => spans.filter((s) => s.name.includes(needle));
 
-  test("根 span：traceId 稳定 32hex、service 属性带 sessionId/source、run 级 usage", () => {
+  test("根 span：traceId 取记录 traceId、spanId 取前 16hex、service 属性带 sessionId/source", () => {
     const root = spans[0]!;
-    expect(root.traceId).toMatch(/^[0-9a-f]{32}$/);
-    expect(spans.every((s) => s.traceId === root.traceId)).toBe(true);
+    expect(root.traceId).toBe(TRACE_ID);
+    expect(spans.every((s) => s.traceId === TRACE_ID)).toBe(true);
+    expect(root.spanId).toBe(TRACE_ID.slice(0, 16));
     const keys = new Set((root.attributes ?? []).map((a) => a.key));
     expect(keys.has("pi.session_id")).toBe(true);
     expect(keys.has("gen_ai.usage.input_tokens")).toBe(true);
@@ -152,7 +162,45 @@ describe("buildOtlpSpans", () => {
     const map = new Map((retry.attributes ?? []).map((a) => [a.key, a.value]));
     expect(map.get("pi.retry.attempt")?.doubleValue).toBe(1);
     expect(map.get("pi.retry.delayMs")?.doubleValue).toBe(2000);
-    expect(retry.parentSpanId).toMatch(/^[0-9a-f]{16}$/);
+    expect(retry.parentSpanId).toBe(TURN_SPAN_ID);
+  });
+
+  test("id 同源：spanId 直接用记录里的值（面板与 OTLP 可对齐）", () => {
+    const turn = spans.find((s) => s.spanId === TURN_SPAN_ID)!;
+    expect(turn).toBeDefined();
+    expect(turn.parentSpanId).toBe(TRACE_ID.slice(0, 16));
+    expect(byName("bash")[0]!.spanId).toBe("2".repeat(16));
+    // 面板会以 traceId 前 16hex 作 run 根的 id，与 OTLP 根 spanId 一致
+    expect(spans[0]!.spanId).toBe(TRACE_ID.slice(0, 16));
+  });
+
+  test("旧记录（无 traceId/spanId）：仍产出合法 32hex traceId 与 16hex spanId", () => {
+    const legacy: TraceRunRecord = {
+      runId: "a".repeat(32),
+      sessionId: "sess-legacy",
+      source: "ui",
+      startMs: 1,
+      endMs: 2,
+      status: "ok",
+      spans: [
+        {
+          kind: "turn",
+          startMs: 1,
+          endMs: 2,
+          status: "ok",
+          children: [{ kind: "tool_call", name: "bash", startMs: 1, endMs: 2, status: "ok" }],
+        },
+      ],
+    };
+    const out = buildOtlpSpans(legacy, true);
+    expect(out[0]!.traceId).toBe("a".repeat(32));
+    expect(out[0]!.spanId).toBe("a".repeat(16));
+    for (const s of out) {
+      expect(s.spanId).toMatch(/^[0-9a-f]{16}$/);
+      expect(s.traceId).toMatch(/^[0-9a-f]{32}$/);
+    }
+    const tool = out.find((s) => s.name === "bash")!;
+    expect(tool.parentSpanId).toMatch(/^[0-9a-f]{16}$/);
   });
 });
 

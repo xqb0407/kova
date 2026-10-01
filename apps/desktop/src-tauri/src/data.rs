@@ -104,6 +104,7 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN approval_level TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN model_provider TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN model_id TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN thinking_level TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN design_theme TEXT;");
 
     // 旧数据迁移：早期版本把未选工作目录的会话 cwd 存成用户主目录；统一清空。
@@ -405,7 +406,7 @@ pub fn handle_host_query(
             let id = str_param(p, "sessionId")?;
             let row = conn
                 .query_row(
-                    "SELECT cwd, title, mode, approval_level, model_provider, model_id, design_theme FROM sessions WHERE id = ?1",
+                    "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme FROM sessions WHERE id = ?1",
                     params![id],
                     |row| {
                         Ok(json!({
@@ -415,7 +416,8 @@ pub fn handle_host_query(
                             "approvalLevel": row.get::<_, Option<String>>(3)?,
                             "modelProvider": row.get::<_, Option<String>>(4)?,
                             "modelId": row.get::<_, Option<String>>(5)?,
-                            "designTheme": row.get::<_, Option<String>>(6)?,
+                            "thinkingLevel": row.get::<_, Option<String>>(6)?,
+                            "designTheme": row.get::<_, Option<String>>(7)?,
                         }))
                     },
                 )
@@ -436,7 +438,7 @@ pub fn handle_host_query(
         }
         "session_list" => {
             let rows = conn
-                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, design_theme FROM sessions ORDER BY updated_at DESC")
+                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme FROM sessions ORDER BY updated_at DESC")
                 .map_err(|e| e.to_string())?
                 .query_map([], |row| {
                     Ok(json!({
@@ -452,7 +454,8 @@ pub fn handle_host_query(
                         "approvalLevel": row.get::<_, Option<String>>(8)?,
                         "modelProvider": row.get::<_, Option<String>>(9)?,
                         "modelId": row.get::<_, Option<String>>(10)?,
-                        "designTheme": row.get::<_, Option<String>>(11)?,
+                        "thinkingLevel": row.get::<_, Option<String>>(11)?,
+                        "designTheme": row.get::<_, Option<String>>(12)?,
                     }))
                 })
                 .map_err(|e| e.to_string())?
@@ -522,6 +525,7 @@ pub fn handle_host_query(
             let approval_level = p.get("approvalLevel").and_then(|v| v.as_str());
             let model_provider = p.get("modelProvider").and_then(|v| v.as_str());
             let model_id = p.get("modelId").and_then(|v| v.as_str());
+            let thinking_level = p.get("thinkingLevel").and_then(|v| v.as_str());
             let design_theme = p.get("designTheme").and_then(|v| v.as_str());
             conn.execute(
                 "UPDATE sessions SET \
@@ -529,9 +533,10 @@ pub fn handle_host_query(
                  approval_level = COALESCE(?3, approval_level), \
                  model_provider = COALESCE(?4, model_provider), \
                  model_id = COALESCE(?5, model_id), \
-                 design_theme = COALESCE(?6, design_theme) \
+                 thinking_level = COALESCE(?6, thinking_level), \
+                 design_theme = COALESCE(?7, design_theme) \
                  WHERE id = ?1",
-                params![id, mode, approval_level, model_provider, model_id, design_theme],
+                params![id, mode, approval_level, model_provider, model_id, thinking_level, design_theme],
             )
             .map_err(|e| e.to_string())?;
             Ok(json!({}))

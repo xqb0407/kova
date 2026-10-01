@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { useEffect, useState, type FC } from "react";
 import { BrainIcon, CheckIcon } from "lucide-react";
 import {
   DropdownMenu,
@@ -10,13 +10,15 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useAuiState } from "@assistant-ui/react";
 import { usePiModels } from "@/lib/pi/pi-models";
-import { useSelectedModel } from "@/lib/model/model-settings";
+import { useThreadModel } from "@/lib/pi/pi-session-model";
 import {
-  setThinkingLevel,
-  useThinkingLevel,
-  type ThinkingLevel,
-} from "@/lib/settings/thinking-settings";
+  hydrateThreadThinking,
+  setThreadThinking,
+  useThreadThinking,
+} from "@/lib/pi/pi-session-thinking";
+import { setThinkingLevel, type ThinkingLevel } from "@/lib/settings/thinking-settings";
 import { useSendLock } from "@/lib/pi/pi-send-lock";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +28,9 @@ import { cn } from "@/lib/utils";
  * supportedThinkingLevels（pi-ai 按 reasoning + thinkingLevelMap 推导）
  * 决定，不支持的档位直接不渲染（不是置灰）；完全不支持推理的模型菜单里
  * 只剩「关闭」，触发器 title 提示去 设置→模型 配置。
- * 选择写全局偏好（kv）并经 set_thinking 广播到活动会话。
+ * 会话级记忆：选择经定靶 set_thinking 只落当前会话（转录行 + 偏好列），
+ * 切回会话时恢复该会话上次档位；无记忆的会话回落默认档位（设置页配置）。
+ * 未发送草稿只记内存，首条发送建会话后由 flush 落库（见 pi-session-thinking）。
  * 发送锁（useSendLock）：消息发送完成前（在跑/排队待派发）禁止改档位，
  * 见 pi-send-lock 头注。
  */
@@ -41,11 +45,18 @@ const LEVEL_OPTIONS: { value: ThinkingLevel; label: string }[] = [
 ];
 
 export const ThinkingPicker: FC = () => {
-  const level = useThinkingLevel();
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const level = useThreadThinking(threadId);
   const sendLocked = useSendLock();
   const models = usePiModels();
-  const selected = useSelectedModel();
+  const selected = useThreadModel(threadId);
   const [open, setOpen] = useState(false);
+
+  // 切线程时水合该会话记住的档位（无记忆则回落默认档位）
+  useEffect(() => {
+    if (!threadId) return;
+    hydrateThreadThinking(threadId);
+  }, [threadId]);
 
   const info = selected
     ? models.find(
@@ -70,7 +81,12 @@ export const ThinkingPicker: FC = () => {
   const pick = (v: ThinkingLevel) => {
     setOpen(false);
     if (sendLocked || v === level) return;
-    void setThinkingLevel(v);
+    if (threadId) {
+      void setThreadThinking(threadId, v);
+    } else {
+      // 无主线程上下文（理论不可达）：退化为纯默认档位变更
+      void setThinkingLevel(v);
+    }
   };
 
   return (

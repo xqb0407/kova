@@ -17,9 +17,11 @@
  *   自身的 invoke 发起，前端从回复里自更新）。
  *
  * 无 per-item 生命周期 chunk：入队/位置/派发全部由 data-queue-state 全量快照
- * 承载（"同 id 原地更新多 phase"的 v2 增量 chunk 形态已整体废弃）。唯一保留的
- * 流级标记是 steer 请求被注入受理时发出的 data-steered（见 prompt-pipeline.ts
- * steerIntoActiveRun），只决定前端退化流的收尾分支，不携带队列状态。项被
+ * 承载（"同 id 原地更新多 phase"的 v2 增量 chunk 形态已整体废弃）。并入当前轮
+ * （steer）的退化流只发 start（旧 data-steered 流级标记已删——新客户端链不
+ * 消费，注入受理信号由前端并入 RPC 的成功返回承担），finish 挂宿主轮收尾补发；
+ * 注入若到轮末仍未获回应，回收机制（prompt-pipeline.findUnansweredSteers）
+ * 把该条重新入队（queue_update 广播恢复 pill），并入失败自动降级为排队。项被
  * 取消/中止不发任何标记，流上直接 abort + finish 收尾。
  */
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
@@ -222,14 +224,18 @@ export function shouldQueue(threadId: string): boolean {
   return busyThreads.has(threadId) || (engines.get(threadId)?.items.length ?? 0) > 0;
 }
 
-/** 入队；按线程限流，超限返回 false（调用方回 error chunk） */
+/** 入队；按线程限流，超限返回 false（调用方回 error chunk）。
+ *  force：steer 回收回队专用旁路——条目是用户已发送且注入 RPC 已受理的消息，
+ *  限额只防新增入队（queue_add）无限堆积，不能反过来丢弃已受理的消息；
+ *  force 下本函数不再有失败分支（恒 ok）。 */
 export function enqueueTurn(
   reqId: string,
   threadId: string,
   msg: Record<string, unknown>,
+  opts: { force?: boolean } = {},
 ): { ok: true; item: QueueItem } | { ok: false } {
   const q = engineFor(threadId);
-  if (q.items.length >= PROMPT_QUEUE_LIMIT) return { ok: false };
+  if (!opts.force && q.items.length >= PROMPT_QUEUE_LIMIT) return { ok: false };
   const item: QueueItem = {
     id: q.nextId++,
     reqId,

@@ -3,8 +3,10 @@
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { toast } from "@/components/ui/toast";
 import { WsPiChannel } from "@/lib/pi/pi-ws-channel";
 import { WsPiClient } from "@/lib/pi/pi-runtime/ws-pi-client";
+import { piRuntimeAdapters } from "@/lib/attachments/pi-attachment-adapter";
 import { usePiRuntime } from "@/lib/pi/pi-runtime";
 import { peekPiChannel, setPiChannel, type PiChannelStatus } from "@/lib/pi/pi-channel";
 import {
@@ -66,7 +68,16 @@ export function RemoteRuntimeProvider({
   // 新链路（迁移阶段 5c）：channel 变化即换客户端（旧连接已 close，controller
   // 随 provider 重挂重建）
   const client = useMemo(() => new WsPiClient(channel), [channel]);
-  const runtime = usePiRuntime({ client });
+  // 与桌面端同款：运行时操作失败经 onError 呈现，不静默吞错
+  const runtime = usePiRuntime({
+    client,
+    // 与桌面端同款：composer 附件 File 入口 + capabilities.attachments 开关
+    adapters: piRuntimeAdapters,
+    onError: (error) => {
+      console.error("[pi-runtime]", error);
+      toast.error(error instanceof Error ? error.message : String(error));
+    },
+  });
 
   const disconnected =
     typeof status.error === "string" && status.error !== "reconnecting...";

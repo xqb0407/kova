@@ -55,6 +55,8 @@ export type SessionRow = {
   approvalLevel: string | null;
   modelProvider: string | null;
   modelId: string | null;
+  /** 思考档位偏好（NULL = 从未定靶选过，跟随默认档位；定靶 set_thinking 维护） */
+  thinkingLevel: string | null;
   /** 设计主题偏好：JSON 字符串 {scope,id}；NULL = 从未设置；"" = 显式不使用主题 */
   designTheme: string | null;
 };
@@ -69,7 +71,7 @@ export type CustomProviderRow = {
   enabled: boolean;
 };
 
-/** 会话持久化行：cwd/title + 会话级偏好（mode/approvalLevel/model/designTheme；NULL = 从未变更过） */
+/** 会话持久化行：cwd/title + 会话级偏好（mode/approvalLevel/model/thinkingLevel/designTheme；NULL = 从未变更过） */
 export type SessionPrefsRow = {
   cwd: string;
   title: string;
@@ -77,6 +79,8 @@ export type SessionPrefsRow = {
   approvalLevel: string | null;
   modelProvider: string | null;
   modelId: string | null;
+  /** 思考档位偏好：NULL = 从未定靶选过（跟随默认档位） */
+  thinkingLevel: string | null;
   /** 设计主题：JSON 字符串 {scope,id}；NULL = 从未设置（恢复链退到最近使用 kv）；"" = 显式不使用主题 */
   designTheme: string | null;
 };
@@ -93,6 +97,7 @@ export const sessionPrefsSet = (
     approvalLevel?: string;
     modelProvider?: string;
     modelId?: string;
+    thinkingLevel?: string;
     designTheme?: string;
   },
 ) => query("session_prefs_set", { sessionId, ...prefs });
