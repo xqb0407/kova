@@ -1,14 +1,18 @@
 "use client";
 
 import { makeAssistantDataUI, useAuiState } from "@assistant-ui/react";
-import { type FC, type ReactNode } from "react";
+import { type FC, type ReactNode, useEffect } from "react";
 import {
   ArchiveRestoreIcon,
   Loader2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
 import { fmtTokens } from "@/lib/model/model-format";
-import { useManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
+import {
+  clearManualCompactionMarker,
+  compactionTakenOver,
+  useManualCompactionMarker,
+} from "@/lib/pi/pi-compaction-marker";
 import { Marker, MarkerContent, MarkerIcon } from "../ui/marker";
 
 /**
@@ -20,7 +24,8 @@ import { Marker, MarkerContent, MarkerIcon } from "../ui/marker";
  * - 刷新/重进会话：get_history 从 compaction 检查点行把「已压缩」分隔线重建
  *   进历史消息流（sidecar transcript.ts）。
  * - 手动压缩（context 弹层）：不走消息流，用 ManualCompactionTail 即时渲染
- *   在列表尾部并持续显示，重新装载历史后由重建的分隔线接管。
+ *   在列表尾部并持续显示；检查点行被快照/历史重建进消息流后由分隔线接管、
+ *   marker 退役（见 ManualCompactionTailAfter 的接管检测）。
  * 消息流里只保留分隔线 marker；summary 不在这里渲染——由右侧面板「活动」
  * 标签的「压缩摘要」小节汇总展示（agent-panel/compaction-section.tsx）。
  */
@@ -98,7 +103,8 @@ export const CompactionDataUI = makeAssistantDataUI<CompactionData>({
  * 手动压缩的即时分隔线：marker 按 anchorIndex 钉在压缩发生时那条消息之后
  * （压缩发生在空闲边界，「其前全部已压缩」语义天然属于打点时刻的尾部），
  * 持续显示且位置固定——后续新消息排在它下面；锚点消息若被回滚删掉则兜底
- * 回到列表尾部。重新装载历史后由 get_history 重建的分隔线在正确位置接管。
+ * 回到列表尾部。检查点行被快照/历史重建进消息流后由分隔线接管（见
+ * compactionTakenOver），marker 就地退役。
  * 挂点由 ThreadPrimitive.Messages 的渲染回调提供（见 thread.tsx），
  * 与消息同处消息流内部，间距与宽度跟消息一致。
  */
@@ -116,7 +122,14 @@ export const ManualCompactionTailAfter: FC<{
       ? anchor.id === messageId
       : s.thread.messages.at(-1)?.id === messageId;
   });
-  if (!marker || !showHere) return <>{children}</>;
+  // 流内分隔线已接管 → 不再渲染 marker，并从 store 退役（幂等，多实例并发清无害）
+  const takenOver = useAuiState((s) =>
+    marker ? compactionTakenOver(s.thread.messages, marker) : false,
+  );
+  useEffect(() => {
+    if (takenOver && threadId) clearManualCompactionMarker(threadId);
+  }, [takenOver, threadId]);
+  if (!marker || !showHere || takenOver) return <>{children}</>;
   return (
     <>
       {children}

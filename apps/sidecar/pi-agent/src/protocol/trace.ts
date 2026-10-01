@@ -13,7 +13,7 @@
  */
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { tracePath } from "../storage/storage";
 import { logErr } from "../log";
@@ -26,6 +26,13 @@ export type TraceSpanKind = "turn" | "llm_call" | "tool_call" | "retry";
 export type TraceStatus = "ok" | "error" | "aborted";
 
 export type TraceSpan = {
+  /**
+   * 创建时生成的 16hex 唯一 id（v2 身份模型）：面板与 OTLP 都从它取 id，
+   * 不再各自派生。旧记录（v2 之前写入）缺失，消费方回退到顺序派生。
+   */
+  spanId?: string;
+  /** 父 span 的 spanId：同轮子 span 指向所属 turn；turn 省略（挂在 run 根下） */
+  parentSpanId?: string;
   kind: TraceSpanKind;
   /** tool 名 / retry 错误码；turn 无名 */
   name?: string;
@@ -45,8 +52,17 @@ export type TraceSpan = {
 
 /** traces JSONL 的一行（一个 run 的完整树） */
 export type TraceRunRecord = {
-  /** 32hex，sessionId + run 序号 + 起始时间派生（跨重启唯一） */
+  /**
+   * v2 根身份（16 字节随机 hex）：面板与 OTLP 的 traceId。旧记录缺失时消费方
+   * 回退到 runId。
+   */
+  traceId?: string;
+  /** v1 兼容别名：与 traceId 同值（旧读取端/导出文件不破） */
   runId: string;
+  /** 父 run 的 traceId：subagent 委派时回填父 run（跨 run 因果边） */
+  parentRunId?: string;
+  /** 触发本 run 的父 span：父 run 里那次 Task tool_call 的 spanId */
+  parentSpanId?: string;
   sessionId: string;
   source: TraceSource;
   startMs: number;
@@ -77,6 +93,13 @@ const clip = (value: unknown, max = ATTR_TEXT_MAX): string | undefined => {
 
 const num = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+/* ----------------------------- 身份（v2 身份模型） ----------------------------- */
+
+/** span 唯一 id：8 字节随机 → 16hex（符合 OTel spanId 规范，创建时生成、纯内存） */
+const newSpanId = (): string => randomBytes(8).toString("hex");
+/** trace 根 id：16 字节随机 → 32hex（符合 OTel traceId 规范） */
+const newTraceId = (): string => randomBytes(16).toString("hex");
 
 /* --------------------------- 内容渲染（捕获用） --------------------------- */
 
@@ -126,7 +149,8 @@ function renderResponse(content: unknown): string {
 type UsageAcc = { input: number; output: number; cacheRead: number; cacheWrite: number };
 
 type OpenRun = {
-  runId: string;
+  /** 本 run 的根身份（openRun 时生成，finalize 写入记录） */
+  traceId: string;
   startMs: number;
   turns: TraceSpan[];
   openTurn: TraceSpan | null;
@@ -134,6 +158,8 @@ type OpenRun = {
   openLlm: TraceSpan | null;
   /** toolCallId → 打开中的 tool_call */
   openTools: Map<string, TraceSpan>;
+  /** toolCallId → spanId：工具收口后仍可查（Task 委派回填父 span 身份用） */
+  toolSpanIds: Map<string, string>;
   /** 打开中的 retry（onRetry → noteRetrySettled） */
   openRetry: TraceSpan | null;
   /** 轮次序号（attrs 用） */
@@ -150,6 +176,8 @@ const statusOfStopReason = (stopReason: unknown): TraceStatus =>
 export type TraceRunRecorder = {
   readonly sessionId: string;
   readonly source: TraceSource;
+  /** 当前打开中 run 的 traceId（无在跑 run 时空串）——Task 委派回填父身份用 */
+  readonly traceId: string;
   /** 喂一条 agent 事件（同步、零 IO）；agent_start 打开/重开 run */
   handle(event: AgentEvent): void;
   /** LLM 请求上下文（streamFn 处调用，先于该请求的 message_start）；
@@ -159,6 +187,8 @@ export type TraceRunRecorder = {
   noteRetry(info: { attempt: number; delayMs: number; code: string; message?: string }): void;
   /** 重试周期结束：新尝试开始出流或终态错误（onSettled 回调） */
   noteRetrySettled(): void;
+  /** 该 toolCallId 对应 tool_call span 的 spanId（工具收口后仍可查）；无则 undefined */
+  spanIdForToolCall(toolCallId: string): string | undefined;
   /**
    * 结算当前 run 并写入 traces JSONL。无打开中的 run 时 no-op 返回 false。
    * forcedStatus 用于异常残留（没走到 agent_end 就被新 run 顶替）：按 error 收。
@@ -166,31 +196,28 @@ export type TraceRunRecorder = {
   settle(forcedStatus?: TraceStatus): boolean;
 };
 
-export function createTraceRunRecorder(sessionId: string, source: TraceSource): TraceRunRecorder {
-  let runCounter = 0;
+/** parent：子代理委派回填的父身份（父 run 的 traceId 与那次 Task tool_call 的 spanId） */
+export function createTraceRunRecorder(
+  sessionId: string,
+  source: TraceSource,
+  parent?: { parentRunId?: string; parentSpanId?: string },
+): TraceRunRecorder {
   let run: OpenRun | null = null;
-  /** handle 里被迫结算的残留 run（零 IO 原则：落盘推迟到下一次 settle） */
   let pending: TraceRunRecord[] = [];
-  /** streamFn 已捕获、等 llm_call span 打开时附加的请求上下文（noteRequest → message_start） */
   let pendingRequest: string | null = null;
 
-  const openRun = (): OpenRun => {
-    runCounter += 1;
-    return {
-      runId: createHash("sha256")
-        .update(`${sessionId}:${runCounter}:${Date.now()}`)
-        .digest("hex")
-        .slice(0, 32),
-      startMs: Date.now(),
-      turns: [],
-      openTurn: null,
-      openLlm: null,
-      openTools: new Map(),
-      openRetry: null,
-      turnSeq: 0,
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    };
-  };
+  const openRun = (): OpenRun => ({
+    traceId: newTraceId(),
+    startMs: Date.now(),
+    turns: [],
+    openTurn: null,
+    openLlm: null,
+    openTools: new Map(),
+    toolSpanIds: new Map(),
+    openRetry: null,
+    turnSeq: 0,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  });
 
   /** 兜底收口仍在打开中的子 span（正常路径已在各自 end 事件闭合；atMs 之后的 status 只落在异常残留上） */
   const closePendingChildren = (r: OpenRun, status: TraceStatus, atMs: number): void => {
@@ -230,7 +257,10 @@ export function createTraceRunRecorder(sessionId: string, source: TraceSource): 
     const hasUsage =
       r.usage.input > 0 || r.usage.output > 0 || r.usage.cacheRead > 0 || r.usage.cacheWrite > 0;
     return {
-      runId: r.runId,
+      traceId: r.traceId,
+      runId: r.traceId,
+      ...(parent?.parentRunId ? { parentRunId: parent.parentRunId } : {}),
+      ...(parent?.parentSpanId ? { parentSpanId: parent.parentSpanId } : {}),
       sessionId,
       source,
       startMs: r.startMs,
@@ -245,7 +275,14 @@ export function createTraceRunRecorder(sessionId: string, source: TraceSource): 
   const childrenOf = (r: OpenRun): TraceSpan[] => {
     // 正常时序 turn_start 先于一切子 span；缺失（异常事件序）时补一个隐式 turn
     if (!r.openTurn) {
-      r.openTurn = { kind: "turn", startMs: Date.now(), endMs: 0, status: "ok", children: [] };
+      r.openTurn = {
+        spanId: newSpanId(),
+        kind: "turn",
+        startMs: Date.now(),
+        endMs: 0,
+        status: "ok",
+        children: [],
+      };
       r.turns.push(r.openTurn);
     }
     return (r.openTurn.children ??= []);
@@ -265,6 +302,7 @@ export function createTraceRunRecorder(sessionId: string, source: TraceSource): 
       case "turn_start": {
         r.turnSeq += 1;
         r.openTurn = {
+          spanId: newSpanId(),
           kind: "turn",
           startMs: Date.now(),
           endMs: 0,
@@ -283,7 +321,10 @@ export function createTraceRunRecorder(sessionId: string, source: TraceSource): 
           provider?: string;
           timestamp?: number;
         };
+        const children = childrenOf(r);
         r.openLlm = {
+          spanId: newSpanId(),
+          parentSpanId: r.openTurn!.spanId,
           kind: "llm_call",
           startMs: num(msg.timestamp) ?? Date.now(),
           endMs: 0,
@@ -295,7 +336,7 @@ export function createTraceRunRecorder(sessionId: string, source: TraceSource): 
           ...(pendingRequest ? { detail: { request: pendingRequest } } : {}),
         };
         pendingRequest = null;
-        childrenOf(r).push(r.openLlm);
+        children.push(r.openLlm);
         break;
       }
       case "message_end": {
@@ -359,7 +400,11 @@ export function createTraceRunRecorder(sessionId: string, source: TraceSource): 
         break;
       }
       case "tool_execution_start": {
+        const children = childrenOf(r);
+        const spanId = newSpanId();
         const span: TraceSpan = {
+          spanId,
+          parentSpanId: r.openTurn!.spanId,
           kind: "tool_call",
           name: event.toolName,
           startMs: Date.now(),
@@ -368,7 +413,8 @@ export function createTraceRunRecorder(sessionId: string, source: TraceSource): 
           attrs: { args: clip(event.args) ?? "" },
         };
         r.openTools.set(event.toolCallId, span);
-        childrenOf(r).push(span);
+        r.toolSpanIds.set(event.toolCallId, spanId);
+        children.push(span);
         break;
       }
       case "tool_execution_end": {
@@ -409,7 +455,10 @@ export function createTraceRunRecorder(sessionId: string, source: TraceSource): 
       run.openRetry.endMs = atMs;
       run.openRetry = null;
     }
+    const children = childrenOf(run);
     run.openRetry = {
+      spanId: newSpanId(),
+      parentSpanId: run.openTurn!.spanId,
       kind: "retry",
       name: info.code,
       startMs: atMs,
@@ -421,7 +470,7 @@ export function createTraceRunRecorder(sessionId: string, source: TraceSource): 
         ...(info.message ? { message: clip(info.message) } : {}),
       },
     };
-    childrenOf(run).push(run.openRetry);
+    children.push(run.openRetry);
   };
 
   const noteRetrySettled = (): void => {
@@ -447,7 +496,19 @@ export function createTraceRunRecorder(sessionId: string, source: TraceSource): 
     return true;
   };
 
-  return { sessionId, source, handle, noteRequest, noteRetry, noteRetrySettled, settle };
+  return {
+    sessionId,
+    source,
+    get traceId() {
+      return run?.traceId ?? "";
+    },
+    handle,
+    noteRequest,
+    noteRetry,
+    noteRetrySettled,
+    spanIdForToolCall: (toolCallId) => run?.toolSpanIds.get(toolCallId),
+    settle,
+  };
 }
 
 /* ------------------------------- 存储与读取 ------------------------------- */

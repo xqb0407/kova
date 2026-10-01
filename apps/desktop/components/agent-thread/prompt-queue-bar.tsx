@@ -5,6 +5,7 @@ import { usePiQueue } from "@/lib/pi/pi-runtime";
 import {
   addSteeredBadge,
   clearSteeredBadges,
+  removeSteeredBadge,
   useSteeredBadges,
 } from "@/lib/pi/pi-steer-intent";
 import { CheckIcon, MergeIcon, XIcon, ZapIcon } from "lucide-react";
@@ -53,7 +54,9 @@ export const PromptQueueBar: FC = () => {
       // 无孤儿不入此分支（popped=null）。按文本走正常发送路径重发——
       // 线程空闲即刻派发，队列条目随 queue_update 事件自然消失
       aui.composer.setText(popped.content);
-      aui.composer.send();
+      // steer:false：弹出重发若撞上竞态轮（线程又忙了）应续排队，
+      // 而不是被 core 的运行中默认车道并入当前轮
+      aui.composer.send({ steer: false });
     } catch (err) {
       // 通道异常：下一次下降沿/队列变化再试；留痕防"泵凭空失效"无从排查
       console.warn("[queue-pump] dispatch failed", String(err));
@@ -69,6 +72,11 @@ export const PromptQueueBar: FC = () => {
   }`;
   useEffect(() => {
     if (queueKey === "0:0:") return;
+    // 回收回队（sidecar 轮末检测「并入未获回应」自动重入队）：快照里重现的
+    // 文本让位对应「已并入」徽标——并入没成功就回到排队态，不自相矛盾
+    if (threadId) {
+      for (const item of queue.followUp) removeSteeredBadge(threadId, item.content);
+    }
     void pumpRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queueKey]);

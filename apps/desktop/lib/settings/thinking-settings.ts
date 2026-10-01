@@ -6,10 +6,11 @@ import { isTauri } from "@/lib/tauri";
 import { piRequest } from "@/lib/pi/pi-bridge";
 
 /**
- * 深度思考档位：持久化到 SQLite（kv 表），同步 sidecar 运行态（set_thinking
- * 广播活动会话），与 model-settings 同款形态。composer 的下拉选档直接
- * setThinkingLevel；各 provider adapter 按 model.thinkingLevelMap 翻译成
- * effort/budget 等自家值，不支持的档位由 pi-ai 守门钳回 off。
+ * **默认**深度思考档位（kv 表 pi.thinking）：新对话与从未在对话页定靶选过档位的
+ * 会话的初始档位；仅由不带 sessionId 的 setThinkingLevel（设置页/启动恢复）维护。
+ * 对话页的档位选择走会话定靶（pi-session-thinking），不写这里——与默认模型
+ * （model-settings）同款形态。各 provider adapter 按 model.thinkingLevelMap
+ * 翻译成 effort/budget 等自家值，不支持的档位由 pi-ai 守门钳回 off。
  */
 export type ThinkingLevel =
   | "off"
@@ -31,6 +32,17 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   "xhigh",
   "max",
 ];
+
+/** 档位中文标签（对话页档位选择器与设置页「默认档位」共用一份文案） */
+export const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
+  off: "关闭",
+  minimal: "最小",
+  low: "轻度",
+  medium: "中",
+  high: "高",
+  xhigh: "很高",
+  max: "最高",
+};
 
 let current: ThinkingLevel = "off";
 const listeners = new Set<() => void>();

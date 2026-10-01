@@ -15,7 +15,7 @@ import {
   motion,
   type AnimationPlaybackControls,
 } from "framer-motion";
-import { useAui } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { usePanelRef } from "react-resizable-panels";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
@@ -34,6 +34,8 @@ import {
 } from "@/lib/connector-nav";
 import { setAutomationFrameSync } from "@/lib/automation/automation-live";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
+import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import { setCurrentPanelThread } from "@/lib/panels/panel-tabs";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
 import { useOverlayPresent } from "@/lib/overlay-occlusion";
 import { CloneThreadShell } from "./clone-thread-shell";
@@ -240,6 +242,17 @@ export const Base: FC = () => {
   // 系统通知点击 → 切回聊天并打开对应会话（Rust notify_show 点击回调经
   // lib/notify 装配进 open-session 总线）；会话已被删则静默
   const aui = useAui();
+  // 面板标签按会话分桶（lib/panels/panel-tabs）：由常驻的 Base 随
+  // mainThreadId 推移当前会话指针——面板未展开时 lib 层的 open/focus
+  // （agent 工具、subagent 委派行等）也能落进正确的会话桶。指针键用
+  // 稳定 id：本会话新建的线程在绑定 sessionId 前是 __LOCALID_ 草稿 id，
+  // 经 piSessionRegistry 换出（未绑定的草稿落到草稿 id 自身的桶）
+  const mainThreadId = useAuiState((s) => s.threads.mainThreadId);
+  useEffect(() => {
+    setCurrentPanelThread(
+      mainThreadId ? (piSessionRegistry.get(mainThreadId) ?? mainThreadId) : null,
+    );
+  }, [mainThreadId]);
   useEffect(
     () =>
       subscribeOpenSession((sessionId) => {

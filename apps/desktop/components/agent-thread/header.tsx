@@ -28,6 +28,7 @@ import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
 import { AppModeSwitch } from "./app-mode-switch";
 import { usePanelActivity } from "@/lib/panels/panel-activity";
 import { useThreadTodos } from "@/lib/pi/pi-todo";
+import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
 import { useGitStatus } from "@/lib/git/git-status";
 import { useAppMode } from "@/lib/pi/app-mode";
 import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
@@ -61,10 +62,13 @@ const ModelPicker: FC = () => {
 };
 
 const ThreadTitle: FC = () => {
-  const title = useAuiState(
-    (s) =>
-      s.threads.threadItems.find((t) => t.id === s.threads.mainThreadId)?.title,
+  const mainThread = useAuiState((s) =>
+    s.threads.threadItems.find((t) => t.id === s.threads.mainThreadId),
   );
+  // 智能标题/改名只在 wire 上回流到本地表（列表快照的 title 要整表 reload
+  // 才刷新），实时表优先，取不到再回落快照
+  const liveTitle = useThreadTitle(mainThread?.remoteId);
+  const title = liveTitle ?? mainThread?.title;
 
   return (
     <span
@@ -224,6 +228,9 @@ export const Header: FC<{
     return s.threads.threadItems.find((t) => t.id === id);
   });
   const canRename = mainThread != null && mainThread.status !== "new";
+  // 重命名 dialog 的预填标题同样取实时表（与 ThreadTitle 同一口径）
+  const liveMainTitle = useThreadTitle(mainThread?.remoteId);
+  const mainTitle = liveMainTitle ?? mainThread?.title;
   // 尚无消息（标题未生成）时 More 按钮整体不显示，而非禁用
   const isEmptyThread = useAuiState((s) => s.thread.messages.length === 0);
   // 链路追踪：当前线程的 sidecar 会话 id（无法解析出会话时无轨迹可看，入口禁用）
@@ -308,7 +315,7 @@ export const Header: FC<{
           <RenameTaskDialog
             open={renameOpen}
             onOpenChange={setRenameOpen}
-            currentTitle={mainThread?.title ?? ""}
+            currentTitle={mainTitle ?? ""}
             // store client 的 rename 声明是 void，运行时返回 Promise（可等待、可捕获失败）
             onRename={(t) =>
               aui.threads.item("main").rename(t) as unknown as Promise<void>

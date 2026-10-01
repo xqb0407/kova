@@ -6,8 +6,9 @@ import { useSyncExternalStore } from "react";
  * 手动压缩的即时分隔线标记（per-thread，进程内不落盘）。
  * compact 命令走请求-响应、不产生消息流 chunk，前端把结果暂存为 marker，
  * 按 anchorIndex 渲染在压缩发生时那条消息之后并持续显示（后续新消息排在其
- * 下）；重新装载历史（切换线程/重启）时由 pi-thread-adapter 清除——此时
- * 分隔线已由 get_history 从 compaction 检查点行重建进消息流，位置以历史为准。
+ * 下）；检查点行被重建进消息流后退役：历史装载（切换线程/重启）由
+ * pi-thread-adapter 清除，新链路（react-pi 快照派发，不经历史装载）由渲染端
+ * 接管检测清除（见 compaction-banner.tsx 的 compactionTakenOver）。
  */
 
 export type ManualCompactionData = {
@@ -71,6 +72,40 @@ export function clearManualCompactionMarkerForRemote(remoteId: string): void {
     }
   }
   if (changed) notify();
+}
+
+/** 消息流条目的结构探针：只要求 content 部件带 type/name/data（ThreadMessage 兼容） */
+export type CompactionStreamProbe = {
+  content: readonly { type?: string; name?: string; data?: unknown }[];
+};
+
+/**
+ * 接管检测：消息流里是否已出现本次压缩的完成态分隔线（分隔线重建进流后
+ * marker 就该退役，否则同一次压缩渲染出两条线）。
+ * 新链路（react-pi 快照权威）下，compaction 检查点行由 thread_snapshot 重建为
+ * compactionSummary 消息、投影成 data-compaction part 直接进直播消息流
+ * （订阅首帧 force / agent_start 补拉 / 收尾帧 / 事件源换代都会派发快照），
+ * 这些路径都不经过历史装载的清除钩子，只能由渲染端按此判定退役 marker。
+ * 判定优先 generation 匹配（compact 响应与检查点行同源、值一致）；
+ * generation 缺位时按位置兜底：锚点之后（index >= anchorIndex，即锚点消息的
+ * 下一条起）出现的完成态分隔线只可能是本次压缩的重建（更早代的分隔线必在锚点前，
+ * 而嵌在锚点消息内部的旧线不算接管）。
+ */
+export function compactionTakenOver(
+  messages: readonly CompactionStreamProbe[],
+  marker: ManualCompactionMarker,
+): boolean {
+  if (marker.data.phase !== "complete") return false;
+  const g = marker.data.generation;
+  return messages.some((m, index) =>
+    m.content.some((p) => {
+      if (!(p.type === "data" && p.name === "compaction")) return false;
+      const d = p.data as { phase?: string; generation?: number } | undefined;
+      if (!d || d.phase === "start") return false;
+      if (typeof g === "number" && d.generation === g) return true;
+      return index >= marker.anchorIndex;
+    }),
+  );
 }
 
 function subscribe(listener: () => void) {

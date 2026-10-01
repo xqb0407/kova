@@ -48,6 +48,12 @@ function subscribe(listener: () => void) {
   return () => listeners.delete(listener);
 }
 
+/** 命令式读当前目录快照（发送路径等非 React 上下文查模型能力用）；
+ *  未加载/远程模式为空数组——调用方须按「空目录不判定」处理 */
+export function getPiModelsSnapshot(): PiModelSummary[] {
+  return state.models;
+}
+
 /** 订阅模型目录；web 预览返回空数组 */
 export function usePiModels(): PiModelSummary[] {
   return useSyncExternalStore(

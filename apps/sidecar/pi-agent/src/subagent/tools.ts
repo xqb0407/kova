@@ -210,6 +210,9 @@ export function buildSubagentTools(
         tools,
         sessionId: delegationId,
         traceSessionId: run.sessionId,
+        // 轨迹因果边：把这次 Task tool_call 的父 run/父 span 身份写到子 run 上
+        parentRunId: run.trace?.traceId,
+        parentSpanId: run.trace?.spanIdForToolCall(toolCallId),
         signal: controller.signal,
         onActivity: (item) => pushActivity(record, item),
       })

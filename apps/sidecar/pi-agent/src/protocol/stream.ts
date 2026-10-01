@@ -191,12 +191,25 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       // vendor 契约。不依赖 reqId：无前端旁路跑（远程触发/刷新空窗）同样要续。
       if (!needsLengthContinuation(event.message)) break;
       if ((run.lengthContinues ?? 0) >= MAX_LENGTH_CONTINUES) {
-        logErr("length-truncated turn: auto-continue budget exhausted, ending run");
+        logErr(
+          "length-truncated turn: auto-continue budget exhausted, ending run " +
+            "(若该模型反复把输出预算烧在 reasoning 上，调大其 maxTokens——自定义端点默认 8192)",
+        );
+        // 静默中止补信号：桌面据此渲染「连续输出截断，任务已中止」分隔线
+        //（data-stopped 同款机制；快照/历史侧由 thread_snapshot 标注与
+        // historyToUiMessages 同构重建，见 transcript.isTruncationStoppedRow）
+        if (reqId) {
+          sendChunk(reqId, {
+            type: "data-truncation-stopped",
+            id: "truncation-stopped",
+            data: {},
+          });
+        }
         break;
       }
       run.lengthContinues = (run.lengthContinues ?? 0) + 1;
       logAt("event", `length-truncated turn: injecting auto-continue #${run.lengthContinues}`);
-      run.agent.followUp(makeAutoContinueMessage());
+      run.agent.followUp(makeAutoContinueMessage(run.lengthContinues));
       break;
     }
     case "message_update": {

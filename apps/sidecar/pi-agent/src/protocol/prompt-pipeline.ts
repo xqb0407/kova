@@ -52,7 +52,7 @@ import {
 import { persist, STEER_PREFIX } from "../sessions/transcript";
 import { delegationResumeText, runningDelegations } from "../subagent/subagent";
 import { enqueueMgmt } from "./mgmt-queue";
-import type { Running } from "../types";
+import type { Running, SteerEntry } from "../types";
 
 /** data-compaction 完成态载荷（同 id 的 start/complete/failed 生命周期见 dispatchPrompt） */
 function compactionChunkData(outcome: {
@@ -195,14 +195,20 @@ function isAlreadyProcessingError(err: unknown): boolean {
  *  无人值守 runner 需要程序化判定成败时经此回调观察） */
 export type PromptTurnOutcome = { ok: boolean; errorText?: string };
 
-/** 并入当前轮（steer）：把消息注入活跃 run（agent.steer，库在下次模型调用前
- *  消费、随活跃轮转录落盘），本请求走退化流 data-steered → start 后
- *  **挂起**——finish 不立即发：AI SDK 的 status 是单槽，流提前结束会把整个
- *  会话置回 ready（正在跑的宿主轮在 UI 上显示为已停止、Stop 因 activeResponse
- *  被清空而失灵）。finish 挂到宿主轮收尾时补发（flushSteeredFinishes），
- *  届时线程真正空闲，无副作用。AI SDK 对无内容 chunk 的流不会 push 空
- *  assistant 消息，回复继续在活跃轮的消息流里输出。返回 false（无活跃 run /
- *  正在收尾 / steer 抛错）由调用方落回普通排队。 */
+/** 并入当前轮（steer）：把消息注入活跃 run（agent.steer），本请求走退化流
+ *  start 后**挂起**——finish 不立即发：AI SDK 的 status 是单槽，流提前结束会把
+ *  整个会话置回 ready（正在跑的宿主轮在 UI 上显示为已停止、Stop 因
+ *  activeResponse 被清空而失灵）。finish 挂到宿主轮收尾时补发
+ *  （pendingSteeredFinishes），届时线程真正空闲，无副作用。
+ *
+ *  投递保证两半（pi-core 只在模型调用边界消费 steering 队列，
+ *  agent-loop.js runLoop；注入≠回应，历史事故「并入后一直不回复」）：
+ *  - 入队后就地结算挂起的工具审批/提问/MCP 审批（abortRun 同款三件套，无挂起
+ *    时幂等 no-op）：循环阻塞在这些交互上时边界永不到来，解阻塞让循环抵达边界
+ *    消费注入（取消语义「用户发起了新消息」与并入一致）；
+ *  - 登记进 run.steerEntries：轮末若本轮始终没对注入给出回应（边界前被中止等），
+ *    findUnansweredSteers + runTurnBody finally 把它回队重发，绝不静默丢消息。
+ *  返回 false（无活跃 run / 正在收尾 / steer 抛错）由调用方落回普通排队。 */
 export function steerIntoActiveRun(
   run: Running,
   reqId: string,
@@ -213,24 +219,36 @@ export function steerIntoActiveRun(
   if (run.stopRequested || run.turnEnding) return false;
   try {
     // 与普通 prompt 同一条附件链路：拒收项折算说明行、合法项进 user 消息 content。
-    // 哨兵前缀：注入即真实 user 消息落转录，历史重建按前缀补「已并入当前回复」
-    // 标记（刷新前后语义一致；模型侧前缀自解释，auto-continue 同款先例）
+    // 哨兵前缀：注入即真实 user 消息落转录，投影层（直播与快照直出同一出口）
+    // 剥前缀并补「已并入当前回复」标记 part（刷新前后语义一致；模型侧前缀
+    // 自解释，auto-continue 同款先例）
     const attachments = preparePromptAttachments(msg, { cwd: run.cwd });
     const text = STEER_PREFIX + noticeAppendedText(String(msg.text ?? ""), attachments.noticeLines);
     const content: string | (ImageContent | { type: "text"; text: string })[] =
       attachments.images.length
         ? [{ type: "text", text }, ...attachments.images]
         : text;
-    run.agent.steer({ role: "user", content, timestamp: Date.now() });
+    const userMsg = { role: "user" as const, content, timestamp: Date.now() };
+    run.agent.steer(userMsg);
     if (attachments.images.length) {
       logAt(
         "event",
         `prompt steer: ${attachments.images.length} image(s) -> ${run.sessionId}`,
       );
     }
-    // 注入已被受理（客户端无法单方判定，steer 可能落回排队）：流级退化流标记，
-    // 桌面 postTransform 凭它走挂起收尾分支；不携带队列状态
-    sendChunk(reqId, { type: "data-steered", data: {} });
+    // 解边界阻塞（注入之后、边界抵达之前完成结算）：提问/审批挂起时循环永远
+    // 走不到模型调用边界，注入会一直滞留在 agent 内部队列。先入队再解阻塞，
+    // 边界一到即消费。
+    clearPendingToolApprovals(run);
+    cancelPendingQuestions(run.threadId);
+    cancelPendingMcpApprovals(run.threadId);
+    // 回收记账（findUnansweredSteers）：本轮收尾时仍未获回应的注入自动回队
+    (run.steerEntries ??= []).push({
+      reqId,
+      msg,
+      message: userMsg,
+      gen: run.compactionGeneration,
+    });
     sendChunk(reqId, { type: "start" });
     // finish 不发：登记后随宿主轮收尾补发（见 runPromptTurn finally）
     let pending = pendingSteeredFinishes.get(run.threadId);
@@ -243,6 +261,48 @@ export function steerIntoActiveRun(
   } catch {
     return false;
   }
+}
+
+/** 并入回收检测：本轮注入的 steer 条目里「始终没被回应」的部分。
+ *  - 仍滞留 agent 内部 steering 队列（边界从未抵达）：drain 清出防泄漏到下一轮，
+ *    回收；
+ *  - 已进转录（按注入消息对象的身份判定）但其后没有任何有内容的 assistant
+ *    消息（注入点被中止、模型从未轮到回应）：回收；
+ *  - 队列没有、转录也找不到本体：轮间压缩重写过 state.messages（注入已被消费、
+ *    折进摘要）——代数变过则不回收；代数没变说明消息凭空缺席，按未回应回收。
+ *  纯检测无副作用（drain 除外），回收方把条目回队由既有队列派发链重发。 */
+export function findUnansweredSteers(run: Running): SteerEntry[] {
+  const entries = run.steerEntries;
+  if (!entries || entries.length === 0) return [];
+  // steeringQueue 在 Agent 类型上是私有字段（无公开全量读取：peek/drain 受
+  // one-at-a-time 模式限制只看队首，多条并入会漏检）。运行时是普通属性，
+  // 窄转型快照全体滞留项并清空——pi-core 轮末从不清残队（abort/prompt 都
+  // 不动它），不清会漏投到下一轮边界，与回收重发形成双份投递。
+  const steering = (run.agent as unknown as {
+    steeringQueue: { messages: unknown[]; clear(): void };
+  }).steeringQueue;
+  const stranded = new Set<unknown>(steering.messages);
+  steering.clear();
+  const messages = run.agent.state.messages;
+  const out: SteerEntry[] = [];
+  for (const e of entries) {
+    if (stranded.has(e.message)) {
+      out.push(e);
+      continue;
+    }
+    const idx = (messages as unknown[]).indexOf(e.message);
+    if (idx >= 0) {
+      const answered = (messages as { role?: string; content?: unknown[] }[])
+        .slice(idx + 1)
+        .some(
+          (m) => m.role === "assistant" && Array.isArray(m.content) && m.content.length > 0,
+        );
+      if (!answered) out.push(e);
+      continue;
+    }
+    if (run.compactionGeneration === e.gen) out.push(e);
+  }
+  return out;
 }
 
 /** 并入当前轮（steer）的退化流：threadId -> 已注入、待宿主轮收尾时补发 finish
@@ -646,6 +706,17 @@ async function runTurnBody(
     }
     setActiveReqId(threadId, null);
     persist(run);
+    // 并入回收（「并入不丢」保证）：注入后本轮始终没给出回应的条目回队该线程
+    // 队列尾（queue_update 广播，前端 pill 恢复显示、「已并入」徽标让位），由
+    // 既有链节/接力泵按普通轮次派发——失败并入自动降级为排队，绝不静默丢消息。
+    const stranded = findUnansweredSteers(run);
+    run.steerEntries = undefined;
+    for (const e of stranded) {
+      // force 旁路每线程限流：队列已被普通排队占满（5 条）也必须收下，
+      // 否则就是静默丢弃用户已受理的消息，违背上面的「并入不丢」承诺
+      enqueueTurn(e.reqId, threadId, e.msg, { force: true });
+      logAt("event", `steer reclaim: reqId=${e.reqId} thread=${threadId} 未获回应 → 回队`);
+    }
     // Stop 中止可能不带 error chunk（abort() 让 prompt 静默收敛）：按失败结算
     const outcome: PromptTurnOutcome = turnError
       ? { ok: false, errorText: turnError }

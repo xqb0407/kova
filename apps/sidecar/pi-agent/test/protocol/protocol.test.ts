@@ -868,7 +868,7 @@ describe("dispatch: get_model / init gate", () => {
     setCurrentModelKey(null); // 清理：不留全局选择
   });
 
-  test("set_model/set_thinking 给驻留会话落设定行（§6 M4 转录=真值）", async () => {
+  test("set_model/set_thinking 定靶只落被点名会话，不动全局默认（§6 M4 转录=真值）", async () => {
     const sid = "m4-resident";
     await sessionInsert(sid, tmp);
     // 最小驻留 run：handler 只用 sessionId/mode/cwd/agent.state 四个面
@@ -881,11 +881,20 @@ describe("dispatch: get_model / init gate", () => {
     } as unknown as Running;
     running.set(sid, fakeRun);
     trackSessionRun(sid, sid);
+    // 定靶不漂移全局默认：默认模型/默认档位 kv 与内存键在两次定靶前后必须一致
+    // （快照比对而非断言空值：本文件更早的用例已合法地维护过默认形态）
+    const { getCurrentModelKey, getCurrentThinkingLevel } = await import("../../src/model/model-catalog");
+    const { kvGet } = await import("../../src/storage/hostdb");
+    const prevModelKv = await kvGet("pi.model");
+    const prevThinkingKv = await kvGet("pi.thinking");
+    const prevModelKey = getCurrentModelKey();
+    const prevThinkingLevel = getCurrentThinkingLevel();
     try {
       // 会话定靶（对话页选择器形态）：设定行只落被点名的会话
       await dispatch("m4a", { type: "set_model", provider: "proto-p", modelId: "m1", sessionId: sid });
       expect(last()).toEqual({ id: "m4a", type: "model", provider: "proto-p", modelId: "m1" });
-      await dispatch("m4b", { type: "set_thinking", level: "high" });
+      await dispatch("m4b", { type: "set_thinking", level: "high", sessionId: sid });
+      expect(last()).toEqual({ id: "m4b", type: "thinking", level: "high" });
       const scan = scanTranscript(sid);
       expect(scan.model).toEqual({ provider: "proto-p", modelId: "m1" });
       expect(scan.thinkingLevel).toBe("high");
@@ -894,9 +903,63 @@ describe("dispatch: get_model / init gate", () => {
       // 既有语义不变：驻留 Agent 即时改写 + 应答帧照发
       expect(fakeRun.agent.state.model?.provider).toBe("proto-p");
       expect(fakeRun.agent.state.thinkingLevel).toBe("high");
+      // 偏好列同步落库（会话列表快照水合与 resolve 恢复链的真值）
+      const row = await sessionGet(sid);
+      expect(row?.modelProvider).toBe("proto-p");
+      expect(row?.thinkingLevel).toBe("high");
+      // 定靶不漂移全局默认（快照比对见 try 前）：
+      // 否则「A 对话切选择、新对话/B 无记录会话跟着变」的病灶回来了
+      expect(getCurrentModelKey()).toEqual(prevModelKey);
+      expect(getCurrentThinkingLevel()).toBe(prevThinkingLevel);
+      expect((await kvGet("pi.model"))?.value).toBe(prevModelKv?.value);
+      expect((await kvGet("pi.thinking"))?.value).toBe(prevThinkingKv?.value);
     } finally {
       dropRun(sid);
       setCurrentModelKey(null);
+      setCurrentThinkingLevel("off");
+    }
+  });
+
+  test("set_thinking 默认变更：不落行，只刷从未定靶选档的驻留 run", async () => {
+    const sidB = "st-default-b";
+    const sidA = "st-targeted-a";
+    await sessionInsert(sidB, tmp);
+    await sessionInsert(sidA, tmp);
+    // B：无档位偏好行 → 默认变更应即时刷它
+    const runB = {
+      sessionId: sidB,
+      mode: "agent",
+      cwd: tmp,
+      agent: { state: { thinkingLevel: "medium", messages: [] } },
+    } as unknown as Running;
+    // A：已定靶选过高档（转录行 + 偏好行）→ 默认变更不得盖掉
+    const runA = {
+      sessionId: sidA,
+      mode: "agent",
+      cwd: tmp,
+      agent: { state: { thinkingLevel: "high", messages: [] } },
+    } as unknown as Running;
+    running.set(sidB, runB);
+    trackSessionRun(sidB, sidB);
+    running.set(sidA, runA);
+    trackSessionRun(sidA, sidA);
+    try {
+      await dispatch("st0", { type: "set_thinking", level: "high", sessionId: sidA });
+      expect((await sessionGet(sidA))?.thinkingLevel).toBe("high");
+      await dispatch("st1", { type: "set_thinking", level: "low" });
+      expect(runB.agent.state.thinkingLevel).toBe("low");
+      expect(runA.agent.state.thinkingLevel).toBe("high");
+      // 默认变更逐会话不落行（旧广播实现的病灶：重开会话回放一堆被动盖写的档位列）
+      expect(scanTranscript(sidB).thinkingLevel).toBeNull();
+      expect(scanTranscript(sidA).thinkingLevel).toBe("high"); // 只有定靶那条
+      // 默认形态写 kv pi.thinking（设置页/启动恢复的真值）
+      const { getCurrentThinkingLevel } = await import("../../src/model/model-catalog");
+      expect(getCurrentThinkingLevel()).toBe("low");
+      const { kvGet } = await import("../../src/storage/hostdb");
+      expect((await kvGet("pi.thinking"))?.value).toBe("low");
+    } finally {
+      dropRun(sidA);
+      dropRun(sidB);
       setCurrentThinkingLevel("off");
     }
   });

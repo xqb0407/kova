@@ -107,6 +107,65 @@ describe("threadState", () => {
     ]);
   });
 
+  it("resumes the streaming pointer over a running snapshot that carries the in-flight partial", () => {
+    // sidecar thread_snapshot 会把流式中的 partial（peekPartial）并成快照
+    // 尾巴；若指针不复原，后续同一条消息的直播 update 会走无指针分支
+    // append 第二份，投影并组后同 toolCallId 出现两份 part → 崩溃。
+    const partial = assistant([
+      { type: "toolCall", id: "call-1", name: "bash", arguments: {} },
+    ]);
+    let s = apply(
+      createPiThreadState("t1"),
+      ev({ type: "agent_start" }),
+      ev({ type: "message_start", message: partial }),
+    );
+    expect(s.streamingMessageIndex).toBe(0);
+
+    const snapshot: PiThreadSnapshot = {
+      metadata: { id: "t1", status: "running" },
+      messages: [user("hi"), partial],
+    };
+    s = apply(s, ev({ type: "snapshot", snapshot }));
+    expect(s.streamingMessageIndex).toBe(1);
+
+    const grown = assistant([
+      {
+        type: "toolCall",
+        id: "call-1",
+        name: "bash",
+        arguments: { command: "ls" },
+      },
+    ]);
+    s = apply(
+      s,
+      ev({
+        type: "message_update",
+        message: grown,
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex: 0,
+          delta: "",
+          partial: grown,
+        },
+      }),
+    );
+    // 就地写回尾巴，不产生第二份同一 assistant
+    expect(s.messages).toHaveLength(2);
+    expect(s.messages[1]).toBe(grown);
+
+    s = apply(s, ev({ type: "message_end", message: grown }));
+    expect(s.messages).toHaveLength(2);
+    expect(s.streamingMessageIndex).toBeUndefined();
+
+    // 空闲快照没有流在飞：尾巴虽是 assistant 也不复原指针
+    const settled: PiThreadSnapshot = {
+      metadata: { id: "t1", status: "idle" },
+      messages: [user("hi"), grown],
+    };
+    s = apply(s, ev({ type: "snapshot", snapshot: settled }));
+    expect(s.streamingMessageIndex).toBeUndefined();
+  });
+
   it("appends non-assistant messages without taking the streaming slot", () => {
     const s = apply(
       createPiThreadState("t1"),
@@ -549,7 +608,7 @@ describe("threadState", () => {
     expect(after.metadata).toEqual(before.metadata);
   });
 
-  it("reconnect snapshot clears streaming pointer and tool buffers", () => {
+  it("reconnect snapshot clears tool buffers and rebases the streaming pointer", () => {
     let s = apply(
       createPiThreadState("t1"),
       ev({ type: "message_start", message: assistant([]) }),
@@ -568,8 +627,18 @@ describe("threadState", () => {
       messages: [assistant([{ type: "text", text: "done" }])],
     };
     s = apply(s, ev({ type: "snapshot", snapshot }));
-    expect(s.streamingMessageIndex).toBeUndefined();
+    // 运行中快照的尾巴 assistant 即在飞 partial（peekPartial 并入）：指针
+    // 复原到它（而非清空），后续直播 update 就地写回，不 append 第二份
+    expect(s.streamingMessageIndex).toBe(0);
     expect(Object.keys(s.toolExecutions)).toHaveLength(0);
     expect(s.runStatus).toBe("running");
+
+    // 尾巴是 user（无流在飞/流不是 assistant）→ 指针保持清空
+    const idleTail: PiThreadSnapshot = {
+      metadata: { id: "t1", status: "running" },
+      messages: [assistant([{ type: "text", text: "a" }]), user("next")],
+    };
+    s = apply(s, ev({ type: "snapshot", snapshot: idleTail }));
+    expect(s.streamingMessageIndex).toBeUndefined();
   });
 });

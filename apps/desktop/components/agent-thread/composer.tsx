@@ -1,6 +1,5 @@
 "use client";
 
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ComposerAttachments } from "@/components/assistant-ui/elements/attachment.aui";
 import { ComposerQuotePreview } from "@/components/assistant-ui/elements/quote.aui";
 import { GroupedTriggerPopover } from "@/components/agent-thread/composer-grouped-popover";
@@ -23,6 +22,7 @@ import {
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
 import { ModePicker } from "@/components/agent-thread/mode-picker";
+import { ComposerPlusMenu } from "@/components/agent-thread/composer-plus-menu";
 import { DesignThemePicker } from "@/components/agent-thread/design-theme-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
 import { setSessionMode, useSessionMode } from "@/lib/pi/pi-session-mode";
@@ -31,12 +31,8 @@ import {
   useAskNeedsWork,
 } from "@/lib/pi/pi-ask-needs-work";
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
-import {
-  cancelQueueItem,
-  useQueueSnapshot,
-  markInboundGate,
-} from "@/lib/pi/pi-queue";
-import { markSteerNextSend, peekSteerIntent } from "@/lib/pi/pi-steer-intent";
+import { usePiQueue } from "@/lib/pi/pi-runtime";
+import { addSteeredBadge } from "@/lib/pi/pi-steer-intent";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
 import { usePendingQuestions } from "@/lib/pi/pi-question";
@@ -69,15 +65,7 @@ import {
   SquareIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ChangeEvent, type FC, type ReactNode } from "react";
-import { toast } from "@/components/ui/toast";
-import {
-  docMimeFromName,
-  imageMimeFromName,
-  promptFileKind,
-  PROMPT_IMAGE_MAX_COUNT,
-  validatePromptFile,
-} from "@/lib/attachments/prompt-attachments";
+import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { isTauri } from "@/lib/tauri";
 import {
   clearWorkspace,
@@ -118,7 +106,8 @@ const ModelPicker: FC = () => {
  *    在（= 确实是 Enter 提交的回声）才拦下。无差别时间窗会把「空格/数字选词后
  *    快速按回车发送」的真实按键一并吞掉——按两下才发出去的根源。
  * 2) 自定义发送——「发送消息」被绑成非 Enter 组合时（submitMode="none"），库不会在
- *    Enter 提交，这里捕获命中绑定即 aui.composer.send()；Enter 落回库默认→换行。
+ *    Enter 提交，这里捕获命中绑定即 aui.composer.send({ steer: false })（运行中
+ *    = 排队）；Enter 落回库默认→换行。
  * 3) 模型不可用闸门——noModel 时有内容的发送组合不提交（toast 说明原因）；
  *    空草稿照旧放行，让 Enter 保持换行语义。
  * 用原生 DOM 而非 lexical 命令：app 与库解析到的 @lexical/react 是两份模块实例，
@@ -133,9 +122,6 @@ const ImeEnterGuard: FC<{
 }> = ({ children, send, interceptSend, noModel, noModelHint }) => {
   const ref = useRef<HTMLDivElement>(null);
   const aui = useAui();
-  const gateThreadId = useAuiState((s) => s.threads.mainThreadId);
-  const gateThreadRef = useRef<string | null>(null);
-  gateThreadRef.current = gateThreadId;
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -178,17 +164,10 @@ const ImeEnterGuard: FC<{
           notifyNoModelSelected(noModelHint);
           return;
         }
-        // 忙线程键盘发送预期入队：置渲染守门 gate（早于框架乐观 append），
-        // steer 意图（已标记）除外——并入消息要即时显示
-        const tid = gateThreadRef.current;
-        if (
-          tid &&
-          aui.thread.getState().isRunning &&
-          !peekSteerIntent(tid)
-        ) {
-          markInboundGate(tid);
-        }
-        aui.composer.send();
+        // 显式排队车道：store 暴露 queue adapter 后，运行中不带 steer 选项的
+        // 发送会被 core 默认路由成并入当前轮（append 里 message.steer ??
+        // isRunning），自定义绑定语义（普通发送）必须显式声明 followUp
+        aui.composer.send({ steer: false });
       }
     };
     el.addEventListener("keydown", onKeyDown, true);
@@ -695,8 +674,9 @@ const WorkspaceBranchPill: FC = () => {
  *  - 运行中输入有内容：↑ 点击=进发送队列（sidecar 当前轮结束后自动执行），
  *    ⌥/Alt+点击=并入当前轮（steer：注入活跃轮，不排队不中止）；
  *    键盘 Enter/⌘Enter 同提交语义，Shift+⌘/Ctrl+Enter=并入。
- *  运行中走手动 aui.composer.send() 绕开 ComposerPrimitive.Send 的
- *  isRunning 禁用谓词 */
+ *  运行中走手动 aui.composer.send({ steer }) 绕开 ComposerPrimitive.Send 的
+ *  isRunning 禁用谓词；车道必须显式传（core 默认运行中并入当前轮，本应用
+ *  语义相反：普通发送=排队，Alt/Shift+⌘Enter=并入） */
 const AdaptiveSendButton: FC = () => {
   const aui = useAui();
   const isRunning = useAuiState((s) => s.thread.isRunning);
@@ -705,8 +685,10 @@ const AdaptiveSendButton: FC = () => {
   const gate = useModelGate();
   const noModel = !gate.usable;
   const gateHint = gate.hint;
-  const queueItems = useQueueSnapshot(threadId).items;
-  // 删除请求在途标记：快照回程（~20ms 合帧）内连点不重复发 queue_cancel
+  // 改动（4a）：队列数据源换 react-pi state.queue（条目 id = 真实 reqId）
+  const { queue, cancel: queueCancel } = usePiQueue();
+  const queueItems = queue.followUp;
+  // 删除请求在途标记：queue_update 回程内连点不重复发 queue_cancel
   const cancellingRef = useRef<string | null>(null);
 
   if (isRunning && !canSend) {
@@ -732,9 +714,9 @@ const AdaptiveSendButton: FC = () => {
               return;
             }
             if (cancellingRef.current) return;
-            cancellingRef.current = last.reqId;
-            void cancelQueueItem(last.reqId).finally(() => {
-              if (cancellingRef.current === last.reqId) cancellingRef.current = null;
+            cancellingRef.current = last.id;
+            void queueCancel(last.id).finally(() => {
+              if (cancellingRef.current === last.id) cancellingRef.current = null;
             });
           }}
         >
@@ -769,9 +751,18 @@ const AdaptiveSendButton: FC = () => {
         className="aui-composer-send size-7 rounded-full bg-primary!"
         aria-label="Send message"
         onClick={(e) => {
-          if (e.altKey && threadId) markSteerNextSend(threadId);
-          else if (threadId) markInboundGate(threadId);
-          aui.composer.send();
+          // 显式车道（steer 选项）：store 暴露 queue adapter 后，不带选项的
+          // 运行中发送会被 core 默认并入当前轮（message.steer ?? isRunning），
+          // 排队语义必须显式声明 followUp 才能进队列、出排队条
+          if (e.altKey && threadId) {
+            // 已并入徽标（迁移 4a）：steer 发送即时本地记账，宿主轮流
+            // 收尾时由队列栏清空（新链路 sidecar 不回传 data-steered 信号）
+            const text = aui.composer.getState().text;
+            if (text.trim()) addSteeredBadge(threadId, text);
+            aui.composer.send({ steer: true });
+            return;
+          }
+          aui.composer.send({ steer: false });
         }}
       >
         <ArrowUpIcon className="size-4 text-white!" />
@@ -819,134 +810,6 @@ const AdaptiveSendButton: FC = () => {
   );
 };
 
-/** dialog 文件类型过滤（与 prompt-attachments 白名单同源） */
-const ATTACHMENT_DIALOG_EXTENSIONS = [
-  "png", "jpg", "jpeg", "gif", "webp",
-  "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md", "rtf",
-];
-
-/**
- * 附件按钮（composer 动作区最左）。桌面端走 Tauri dialog：拿到真实绝对路径后
- * 构造带 file part（url=原路径）的附件，发送时载荷只带原路径——零落盘零复制；
- * 网页端保留 <input type=file>，粘贴场景见 cm-composer-input（无路径，走中转）。
- * 图片沿用单条 4 张的添加时闸门；文档不拦添加（数量由 sidecar 裁决折算说明行）。
- * 不按模型能力隐藏——纯文本模型发图由 sidecar 硬门折算占位说明，UI 恒可用。
- */
-const AddAttachmentButton: FC = () => {
-  const aui = useAui();
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  /** 图片张数闸门（与草稿内已有图片合并计数）；返回是否放行 */
-  const allowImage = (draftImageCount: number): boolean => {
-    if (draftImageCount < PROMPT_IMAGE_MAX_COUNT) return true;
-    toast.error(`单条消息最多 ${PROMPT_IMAGE_MAX_COUNT} 张图片`);
-    return false;
-  };
-
-  const addDialogPaths = async (paths: string[]) => {
-    const imageCount = (aui.composer.getState().attachments ?? []).filter(
-      (a) => a.type === "image",
-    ).length;
-    let imageTaken = 0;
-    for (const p of paths) {
-      const name = pathBasename(p);
-      const kind = promptFileKind(name, undefined);
-      if (!kind) {
-        toast.error(
-          `「${name}」不是支持的附件（图片 PNG/JPEG/GIF/WebP，或文档 PDF/Word/Excel/PPT/TXT/MD/CSV）`,
-        );
-        continue;
-      }
-      const isImage = kind === "image";
-      if (isImage && !allowImage(imageCount + imageTaken)) continue;
-      if (isImage) imageTaken += 1;
-      const mime = isImage ? imageMimeFromName(name) : docMimeFromName(name);
-      // 原路径编码成 file:// URL 进 content（裸绝对路径会被 runtime 的
-      // toMediaWireUrl 误包成 base64 data URL；file:// 可原样通过），发送时
-      // extractPromptAttachments 再解回本地路径进 path 载荷
-      const fileUrl = `file://${p
-        .replace(/\\/g, "/")
-        .split("/")
-        .map(encodeURIComponent)
-        .join("/")}`;
-      await aui.composer
-        .addAttachment({
-          type: kind,
-          name,
-          contentType: mime ?? "application/octet-stream",
-          content: [
-            {
-              type: "file",
-              data: fileUrl,
-              mimeType: mime ?? "application/octet-stream",
-              filename: name,
-              sourceType: "url",
-            },
-          ],
-        })
-        .catch(() => {});
-    }
-  };
-
-  const onChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
-    if (files.length === 0) return;
-    for (const file of files) {
-      const err = validatePromptFile(file);
-      if (err) toast.error(err);
-    }
-    const accepted = files.filter((file) => !validatePromptFile(file));
-    const imageCount = (aui.composer.getState().attachments ?? []).filter(
-      (a) => a.type === "image",
-    ).length;
-    let imageTaken = 0;
-    for (const file of accepted) {
-      const isImage = promptFileKind(file.name, file.type) === "image";
-      if (isImage && !allowImage(imageCount + imageTaken)) continue;
-      if (isImage) imageTaken += 1;
-      await aui.composer.addAttachment(file).catch(() => {});
-    }
-  };
-
-  return (
-    <>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.rtf"
-        multiple
-        hidden
-        onChange={(e) => void onChange(e)}
-      />
-      <TooltipIconButton
-        tooltip="添加附件"
-        side="bottom"
-        variant="ghost"
-        size="icon"
-        className="aui-composer-add-attachment text-muted-foreground hover:text-foreground hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30 size-7 rounded-full active:scale-[0.96] motion-reduce:transition-none"
-        aria-label="Add Attachment"
-        onClick={() => {
-          if (isTauri()) {
-            void openDialog({
-              multiple: true,
-              filters: [
-                { name: "支持的附件", extensions: ATTACHMENT_DIALOG_EXTENSIONS },
-              ],
-            }).then((picked) => {
-              if (!picked) return;
-              void addDialogPaths(Array.isArray(picked) ? picked : [picked]);
-            });
-            return;
-          }
-          inputRef.current?.click();
-        }}
-      >
-        <PlusIcon className="aui-attachment-add-icon size-4" />
-      </TooltipIconButton>
-    </>
-  );
-};
 
 /**
  * 问答档的切档提议：模型调 ask_needs_work 后就地冒一条，不弹窗、不自动切。

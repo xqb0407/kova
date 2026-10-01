@@ -9,6 +9,7 @@ import {
   toUiMessage,
   persist,
   historyToUiMessages,
+  isTruncationStoppedRow,
   appendCompactionRow,
   readCompaction,
   readAllCompactions,
@@ -725,6 +726,30 @@ describe("maybeSummarizeSessionTitle", () => {
     }
   });
 
+  test("智能标题落盘后广播 session_info_changed（前端实时改标题）", async () => {
+    const id = "title-emit";
+    await sessionInsert(id, tmp);
+    const frames: Record<string, unknown>[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    (process.stdout as unknown as { write: (c: unknown) => boolean }).write = (c: unknown) => {
+      frames.push(JSON.parse(String(c).trim()) as Record<string, unknown>);
+      return true;
+    };
+    titleSummarizeHook.fn = async () => "重构认证模块";
+    try {
+      await maybeSummarizeSessionTitle(makeRun(id, "帮我重构用户认证模块", "已完成"));
+    } finally {
+      titleSummarizeHook.fn = undefined;
+      (process.stdout as unknown as { write: (c: unknown) => boolean }).write =
+        origWrite as unknown as (c: unknown) => boolean;
+    }
+    const frame = frames.find(
+      (f) => f.type === "thread_event" && (f.event as { type?: string })?.type === "session_info_changed",
+    );
+    expect(frame?.sessionId).toBe(id);
+    expect((frame?.event as { name?: string }).name).toBe("重构认证模块");
+  });
+
   test("总结输入剥掉指令芯片标记", async () => {
     const id = "title-chips";
     await sessionInsert(id, tmp);
@@ -1033,5 +1058,84 @@ describe("steer 哨兵前缀（并入当前轮的注入消息）", () => {
       },
     ]);
     expect(messages).toEqual([]);
+  });
+});
+
+describe("连续截断预算耗尽的最终中止标记", () => {
+  const truncatedAssistant = (): Message =>
+    ({
+      role: "assistant",
+      stopReason: "length",
+      content: [{ type: "thinking", thinking: "把整轮输出预算烧在思考上……" }],
+    }) as unknown as Message;
+  const sentinelUser = (): Message =>
+    userMsg("[[auto-continue]] 上一条回复因达到输出 token 上限被截断");
+
+  describe("isTruncationStoppedRow", () => {
+    test("截断无 toolCall 且下一行是哨兵续跑 → 中途截断，非中止", () => {
+      expect(
+        isTruncationStoppedRow(
+          { agent: truncatedAssistant() },
+          { agent: sentinelUser() },
+        ),
+      ).toBe(false);
+    });
+    test("截断无 toolCall 且下一行是普通 user / EOF → 最终中止", () => {
+      expect(
+        isTruncationStoppedRow({ agent: truncatedAssistant() }, { agent: userMsg("继续") }),
+      ).toBe(true);
+      expect(isTruncationStoppedRow({ agent: truncatedAssistant() })).toBe(true);
+    });
+    test("带 toolCall 的截断轮 / 非 length 收尾 → 不是中止行", () => {
+      expect(
+        isTruncationStoppedRow({
+          agent: {
+            role: "assistant",
+            stopReason: "length",
+            content: [{ type: "toolCall", id: "t1", name: "write", arguments: {} }],
+          } as unknown as Message,
+        }),
+      ).toBe(false);
+      expect(
+        isTruncationStoppedRow(
+          { agent: { role: "assistant", stopReason: "stop", content: [] } as unknown as Message },
+          { agent: userMsg("继续") },
+        ),
+      ).toBe(false);
+    });
+  });
+
+  test("historyToUiMessages：预算耗尽的截断轮补 data-truncation-stopped part", () => {
+    const rows = [
+      { agent: userMsg("开始任务"), seq: 0 },
+      { agent: truncatedAssistant(), seq: 1 },
+      { agent: sentinelUser(), seq: 2 },
+      { agent: truncatedAssistant(), seq: 3 },
+      { agent: userMsg("继续吧"), seq: 4 },
+    ];
+    const messages = historyToUiMessages(rows);
+    // 第 1 个截断轮后面跟哨兵（中途截断）不标；第 2 个后面是普通 user（预算耗尽）标
+    const marked = messages
+      .filter((m) =>
+        m.parts.some((p) => (p as { type?: string }).type === "data-truncation-stopped"),
+      )
+      .map((m) => m.id);
+    expect(marked).toEqual(["msg-3"]);
+  });
+
+  test("分页窗未触及会话末尾时，窗口末行不判中止（防误标）", () => {
+    const messages = historyToUiMessages(
+      [
+        { agent: userMsg("开始任务"), seq: 0 },
+        { agent: truncatedAssistant(), seq: 1 },
+      ],
+      [],
+      { reachesSessionEnd: false },
+    );
+    expect(
+      messages.some((m) =>
+        m.parts.some((p) => (p as { type?: string }).type === "data-truncation-stopped"),
+      ),
+    ).toBe(false);
   });
 });

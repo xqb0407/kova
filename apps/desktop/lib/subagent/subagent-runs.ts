@@ -244,6 +244,16 @@ export function getSubagentRunByToolCall(toolCallId: string): SubagentRunState |
   return getSubagentRun(bindings.get(toolCallId));
 }
 
+/** binding 反查：delegationId → toolCallId（面板据此在主会话消息流里定位那条 Task 工具行，
+ *  取它的 args.task 作为"派活说明"）。无绑定时返回 undefined，调用方回退按结果文本匹配 */
+export function toolCallIdForDelegation(idOrPrefix: string): string | undefined {
+  const id = resolveDelegationId(idOrPrefix) ?? idOrPrefix;
+  for (const [toolCallId, delegationId] of bindings) {
+    if (delegationId === id) return toolCallId;
+  }
+  return undefined;
+}
+
 /**
  * 快照水合（幂等，防并发重入）：打开 tab / 只见到活动没见到绑定时调用。
  * meta 以快照为准（权威）；blocks 本地已有则不覆盖（live 尾随在前）。

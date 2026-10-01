@@ -293,7 +293,7 @@ export const ToolRow: FC<ToolRowProps> = ({
   // 展开框：顶部可选命令行（$ 完整命令）+ 下方输出；样式对齐运行中的滚动
   // 预览（灰底无边框），输出限高折叠（内部滚动），命令行常驻
   const outputBox = (
-    <div className="bg-muted/30 rounded-md px-3 py-2 font-mono text-xs leading-relaxed">
+    <div className="bg-background border rounded-md px-3 py-2 font-mono text-xs leading-relaxed">
       {expandedHeader ? (
         <div className="text-foreground/90 break-all whitespace-pre-wrap">
           {expandedHeader}
@@ -315,7 +315,7 @@ export const ToolRow: FC<ToolRowProps> = ({
 
   // 运行中的展开区：流式输出滚动预览（底部吸附），reasoning 同款折叠交互
   const previewBox = preview ? (
-    <ScrollingText className="bg-muted/30 text-muted-foreground max-h-40 rounded-md px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+    <ScrollingText className="bg-background border text-muted-foreground max-h-40 rounded-md px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
       {preview}
     </ScrollingText>
   ) : null;
@@ -839,7 +839,12 @@ const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) 
     <ToolRow
       label="子智能体"
       icon={<BotIcon className="size-4 shrink-0" />}
-      primary={agentName || "委派"}
+      // agent 名加高亮底：一眼区分「派给了哪个子智能体」，与灰色描述语拉开层次
+      primary={
+        <span className="text-blue-400 text-md font-bold ">
+          {agentName || "委派"}
+        </span>
+      }
       mono
       primaryAsLink
       primaryTitle={delegationId ? `子智能体运行过程 · ${delegationId.slice(0, 8)}` : "子智能体"}

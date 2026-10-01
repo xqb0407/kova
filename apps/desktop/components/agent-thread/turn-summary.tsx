@@ -240,8 +240,10 @@ const TurnWorkSummary: FC<{
   if (summary.fileCount > 0) details.push(`${summary.fileCount} 文件`);
   const title = [collapsed ? "展开本轮过程" : "收起本轮过程", ...details].join(" · ");
 
-  // 运行中一律显示（发出消息就有这一行）；已结束的轮：有耗时或真有过程可收才占位
-  if (!running && durationMs === undefined && !summary.hasProcess) return null;
+  // 运行中一律显示（发出消息就有这一行）；已结束的轮只在「真有过程可展开」
+  // 时占位——纯聊天轮（无思考、无工具）过程面是空的，耗时再准也留不下内容，
+  // 那就整行撤掉，而不是留一个点开空白的开关等用户刷新页面
+  if (!running && !summary.hasProcess) return null;
 
   return (
     <div

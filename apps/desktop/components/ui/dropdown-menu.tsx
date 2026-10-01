@@ -130,7 +130,9 @@ function DropdownMenuSubTrigger({
       {...props}
     >
       {children}
-      <ChevronRightIcon className="ms-auto size-4 rtl:rotate-180" />
+      {/* 箭头与条目自身的 size-3.5 前导图标对齐：size-4 实色压在行尾比图标更
+          抢眼，整行会读成「左轻右重」 */}
+      <ChevronRightIcon className="text-muted-foreground ms-auto size-3.5 shrink-0 rtl:rotate-180" />
     </MenuPrimitive.SubmenuTrigger>
   );
 }

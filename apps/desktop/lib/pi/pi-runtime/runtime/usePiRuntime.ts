@@ -32,7 +32,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
-  appendMessageParts,
   PiThreadController,
   type PiThreadControllerLike,
 } from "./ThreadController";
@@ -53,6 +52,12 @@ import { disposeControllers } from "./disposeControllers";
 // set_mode/主题胶囊等）全靠这张表把线程 id 换成 sessionId，否则 threadId-only
 // 请求会让 sidecar 懒建空白会话（对话失忆）。
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import { flushDraftModelSelection } from "@/lib/pi/pi-session-model";
+import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
+import {
+  purgeThreadPanelTabs,
+  rekeyPanelThread,
+} from "@/lib/panels/panel-tabs";
 
 const EMPTY_THREAD_STATE = createPiThreadState("__pending__");
 const EMPTY_PROJECTED_MESSAGES: readonly ThreadMessageLike[] = [];
@@ -447,15 +452,54 @@ const usePiThreadStore = (
   return store;
 };
 
+/** 本地改动（UI 格式回归）：新会话乐观消息与 messageProjection 的
+ * projectUserContent 对齐——图片投成 attachments（气泡外附件卡），不再拍进
+ * 气泡 content。composer 附件（CompleteAttachment，图片带 image 内容 part →
+ * useAttachmentSrc 出缩略图）直接透传；content 里的 image/file part 同样转成
+ * 附件形态。 */
 const toOptimisticThreadMessage = (
   message: Parameters<ExternalStoreAdapter<ThreadMessageLike>["onNew"]>[0],
   index: number,
-): ThreadMessageLike => ({
-  id: `pi-new-user:${index}`,
-  role: "user",
-  createdAt: new Date(),
-  content: appendMessageParts(message),
-});
+): ThreadMessageLike => {
+  const id = `pi-new-user:${index}`;
+  const parts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
+  const attachments: NonNullable<ThreadMessageLike["attachments"]>[number][] = [
+    ...(message.attachments ?? []),
+  ];
+  let imgSeq = 0;
+  for (const part of message.content) {
+    if (part.type === "image") {
+      imgSeq += 1;
+      attachments.push({
+        id: `${id}-att-${imgSeq}`,
+        type: "image",
+        name: part.filename ?? `image-${imgSeq}`,
+        status: { type: "complete" },
+        content: [part],
+      });
+    } else if (part.type === "file") {
+      const isImage = part.mimeType.startsWith("image/");
+      imgSeq += 1;
+      attachments.push({
+        id: `${id}-att-${imgSeq}`,
+        type: isImage ? "image" : "document",
+        name: part.filename ?? (isImage ? `image-${imgSeq}` : "attachment"),
+        contentType: part.mimeType,
+        status: { type: "complete" },
+        content: [part],
+      });
+    } else {
+      parts.push(part);
+    }
+  }
+  return {
+    id,
+    role: "user",
+    createdAt: new Date(),
+    content: parts,
+    ...(attachments.length ? { attachments } : {}),
+  };
+};
 
 const useNewPiThreadStore = (
   registry: PiControllerRegistry,
@@ -643,6 +687,9 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
     },
     delete: async (remoteId: string) => {
       await client.deleteThread?.(remoteId);
+      // 面板标签按会话分桶：会话删除即清它的桶（shell 桥回收其终端、
+      // 浏览器计数重估）；桶键经 rekey 已是 sessionId，与此处 remoteId 同空间
+      purgeThreadPanelTabs(remoteId);
     },
     initialize: async (threadId?: string) => {
       const snapshot = await client.createThread({
@@ -653,6 +700,16 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // unstable_useAdapters 同职责）。core 在首条消息派发前必跑 initialize，
       // 故发送前绑定已就位；消费侧请求随后都能换出正确 sessionId。
       if (threadId) piSessionRegistry.set(threadId, remoteId);
+      // 面板标签桶随绑定从草稿 id 迁到 sessionId 键下：刷新/重启后线程行
+      // id 就是 sessionId，桶才接得上（含当前指针）
+      if (threadId) rekeyPanelThread(threadId, remoteId);
+      // 会话级选择的补写：草稿期（尚无 sessionId）选的模型/档位只记在前端内存，
+      // 此刻 sessionId 已绑定、会话行已建，定靶落库后首条消息即用该选择应答
+      //（两者均 fire-and-forget 语义：内部自吞失败并回退显示）
+      if (threadId) {
+        flushDraftModelSelection(threadId);
+        flushDraftThinkingSelection(threadId);
+      }
       return {
         remoteId,
         externalId: snapshot.metadata.id,

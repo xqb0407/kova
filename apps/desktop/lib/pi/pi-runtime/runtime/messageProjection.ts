@@ -19,6 +19,14 @@
 //   态与耗时台账全失效），或与尾部乐观消息撞号被外部 store 按"重复 id 保留最后"吞掉
 //   一条（发送时"闪一下消失"）。乐观消息自带 __optimisticId（pi-optimistic:${n}），
 //   与转录 id 永不碰撞。
+// - 长度截断续跑哨兵过滤 + 最终中止标记（2026-10-02 气泡泄漏修复）：带
+//   [[auto-continue]] 前缀的 user 行（sidecar 自动续跑注入，pi-protocol 单源
+//   判定 isAutoContinueMessage）不再渲染成用户提问气泡——thread_snapshot 直出
+//   原生行不过 sidecar 的 UI 投影，此前漏到气泡。跳过时不 flush：直播上连续
+//   assistant 轮本就并入同组，保持「刷新=直播」同构。快照行的 __truncationStopped
+//   标注（sidecar isTruncationStoppedRow：预算耗尽的截断轮）转成
+//   data-truncation-stopped part，AssistantMessage 渲染「任务已中止」分隔线
+//   （stopped-marker 同款机制）。
 
 /**
  * Pure projection of the canonical Pi transcript (`PiAgentMessage[]`) into
@@ -50,6 +58,7 @@ import { ExportedMessageRepository } from "@assistant-ui/react";
 import type {
   ThreadMessageLike,
 } from "@assistant-ui/react";
+import { isAutoContinueMessage } from "pi-protocol";
 import { approvalForRequest, splitHostUiRequests } from "./hostUi";
 import type { PiThreadState } from "./threadState";
 import type {
@@ -71,6 +80,7 @@ type ToolCallPart = Extract<ContentPart, { type: "tool-call" }>;
 type Step = NonNullable<
   NonNullable<ThreadMessageLike["metadata"]>["steps"]
 >[number];
+type ProjectedAttachment = NonNullable<ThreadMessageLike["attachments"]>[number];
 
 export interface PiProjectionInput {
   messages: readonly PiAgentMessage[];
@@ -221,19 +231,67 @@ const readToolResultContent = (
   );
 };
 
+/** 并入当前轮（steer）注入消息的哨兵前缀（镜像 sidecar transcript.ts
+ *  STEER_PREFIX，唯一事实源在 sidecar；改动需两处同步）。转录/事件流原样携带
+ *  落盘，投影层剥前缀并补 data-steeredNote 标记 part——user-message.tsx 检测到
+ *  该 part 在气泡上方渲染「已并入当前回复」徽标（stopped-marker 同款机制）。
+ *  直播 message_start 与 thread_snapshot 直出都走本投影，一处修复两条路径
+ *  （旧链路的剥前缀在历史重建侧，react-pi 新链曾以裸前缀上屏）。 */
+const STEER_PREFIX = "[[queued-steer]] ";
+
+/** 本地改动（UI 格式回归）：user 消息的 image 块投成 attachments——附件卡
+ * 在气泡外渲染（UserMessageAttachments / MessagePrimitive.Attachments），与旧
+ * AI SDK 链路（pi-thread-adapter 的 file part → attachments）同款形态。
+ * 缩略图数据源 useAttachmentSrc 只认 attachment.content 里的 image 内容 part，
+ * 故 content 用 [{type:"image", image: dataURL}]；命名对齐 sidecar
+ * transcript.ts 的 image-N.ext（jpeg 归一 jpg）。传 attachmentIdPrefix 才走
+ * 附件模式；不传保持 image 内容 part 内联（custom 消息是 assistant 角色，
+ * fromThreadMessageLike 只允许 user 消息带 attachments）。 */
 const projectUserContent = (
   content: PiUserMessage["content"],
-): ContentPart[] => {
-  if (typeof content === "string") {
-    return [{ type: "text", text: content }];
-  }
-  return content.flatMap((part: PiUserContent): ContentPart[] => {
+  attachmentIdPrefix?: string,
+): { parts: ContentPart[]; attachments: ProjectedAttachment[] } => {
+  const parts: ContentPart[] = [];
+  const attachments: ProjectedAttachment[] = [];
+  const blocks: readonly PiUserContent[] =
+    typeof content === "string" ? [{ type: "text", text: content }] : content;
+  let imgSeq = 0;
+  for (const part of blocks) {
     if (part.type === "image") {
-      return [{ type: "image", image: toDataUrl(part.data, part.mimeType) }];
+      const mime = part.mimeType || "image/png";
+      if (attachmentIdPrefix === undefined) {
+        parts.push({ type: "image", image: toDataUrl(part.data, mime) });
+      } else {
+        imgSeq += 1;
+        const ext = mime.split("/")[1] ?? "png";
+        const filename = `image-${imgSeq}.${ext === "jpeg" ? "jpg" : ext}`;
+        attachments.push({
+          id: `${attachmentIdPrefix}-att-${imgSeq}`,
+          type: "image",
+          name: filename,
+          contentType: mime,
+          status: { type: "complete" },
+          content: [
+            {
+              type: "image",
+              image: toDataUrl(part.data, mime),
+              filename,
+            },
+          ],
+        });
+      }
+    } else if (part.type === "text") {
+      parts.push({ type: "text", text: part.text });
     }
-    if (part.type === "text") return [{ type: "text", text: part.text }];
-    return [];
-  });
+  }
+  const first = parts[0];
+  if (first?.type === "text" && first.text.startsWith(STEER_PREFIX)) {
+    const stripped = first.text.slice(STEER_PREFIX.length);
+    if (stripped) parts[0] = { ...first, text: stripped };
+    else parts.shift();
+    parts.unshift({ type: "data", name: "steeredNote", data: {} });
+  }
+  return { parts, attachments };
 };
 
 const dataPart = (
@@ -347,7 +405,27 @@ const projectAssistantInto = (
       };
 
       if (approval) group.hasPendingHostUi = true;
-      group.parts.push(toolCall);
+      // 同组内同 toolCallId 去重（兜底）：上游快照/直播合并若再漏出同一
+      // assistant 的两份拷贝并入同组，part 查找表按 toolCallId 键控会直接
+      // Duplicate key 崩溃。保留后一份（更推进的状态，带齐结果），就地替换；
+      // 旧拷贝挂的成图一并移除，随后按新状态照常补图，避免图廊重复。
+      const dupIndex = group.parts.findIndex(
+        (p) => p.type === "tool-call" && p.toolCallId === part.id,
+      );
+      if (dupIndex >= 0) {
+        group.parts[dupIndex] = toolCall;
+        group.parts = group.parts.filter(
+          (p, i) =>
+            i === dupIndex ||
+            !(
+              p.type === "data" &&
+              p.name === IMAGE_PART_NAME &&
+              (p.data as Partial<PiImagePartData>).toolCallId === part.id
+            ),
+        );
+      } else {
+        group.parts.push(toolCall);
+      }
       // 工具图片 data part：紧跟 tool-call part（旧链路 chunk 顺序契约——结果行
       // 与成图相邻，图廊按 PiImagePartData.toolCallId 认亲）；toolName 由配对
       // 工具名补齐（sidecar transcript/stream 同款语义）
@@ -361,6 +439,15 @@ const projectAssistantInto = (
     }
     // unknown assistant content parts are dropped (open union forward-compat:
     // the transcript remains canonical; the snapshot self-heals).
+  }
+
+  // 最终中止标记：快照行上的 __truncationStopped（sidecar thread_snapshot 依
+  // isTruncationStoppedRow 标注——连续截断把续跑预算烧到头的那轮）。转成
+  // data part 后与直播 chunk（stream.ts 预算耗尽分支）落下的 part 同形，
+  // AssistantMessage 检测后渲染「任务已中止」分隔线。被标注的行必是组内最后
+  // 一条 assistant（其后是普通 user 行或 EOF），标记落在气泡底部语义正确。
+  if ((message as { __truncationStopped?: unknown }).__truncationStopped) {
+    group.parts.push(dataPart("truncation-stopped", {}));
   }
 };
 
@@ -477,15 +564,27 @@ export const projectPiThreadMessages = (
         // Keeps the assistant group open so following assistant turns merge in.
         break;
 
-      case "user":
+      case "user": {
+        // 长度截断自动续跑的注入消息（哨兵前缀，pi-protocol 单源判定）：与
+        // sidecar toUiMessage/historyToUiMessages 同口径隐藏，此前经
+        // thread_snapshot 直出漏成用户提问气泡。跳过但不 flush——直播上连续
+        // assistant 轮（截断轮→续跑轮）本就并入同组，保持「刷新=直播」同构。
+        if (isAutoContinueMessage(message)) break;
         flush(false);
+        const id = messageId(message as PiUserMessage, index);
+        const { parts, attachments } = projectUserContent(
+          (message as PiUserMessage).content,
+          id,
+        );
         out.push({
-          id: messageId(message as PiUserMessage, index),
+          id,
           role: "user",
           createdAt: createdAtOf(message as PiUserMessage),
-          content: projectUserContent((message as PiUserMessage).content),
+          content: parts,
+          ...(attachments.length ? { attachments } : {}),
         });
         break;
+      }
 
       case "bashExecution": {
         flush(false);
@@ -516,7 +615,7 @@ export const projectPiThreadMessages = (
               customType: m.customType,
               details: m.details,
             }),
-            ...projectUserContent(m.content),
+            ...projectUserContent(m.content).parts,
           ],
         });
         break;
@@ -546,6 +645,9 @@ export const projectPiThreadMessages = (
             generation: m.generation,
             tokensBefore: m.tokensBefore,
             summarized: m.summarized,
+            // 摘要正文：活动面板「压缩摘要」一节按 data.summary 取用（缺失即整节跳过），
+            // 分隔线横幅只认 phase，多带一个字段无副作用
+            summary: m.summary,
           }),
         );
         break;
@@ -629,6 +731,7 @@ const sameThreadMessageLike = (
   a.role === b.role &&
   deepEqual(a.createdAt, b.createdAt) &&
   deepEqual(a.content, b.content) &&
+  deepEqual(a.attachments, b.attachments) &&
   deepEqual(a.status, b.status) &&
   deepEqual(a.metadata, b.metadata);
 

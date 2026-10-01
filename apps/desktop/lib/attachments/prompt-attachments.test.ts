@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
 import {
   docMimeFromName,
+  extractDataUriImageFiles,
   extractPromptAttachments,
   promptFileKind,
+  promptFileKindFromName,
   validatePromptFile,
   PROMPT_DOC_INLINE_MAX_BYTES,
   PROMPT_DOC_MAX_BYTES,
@@ -28,6 +30,18 @@ describe("promptFileKind / validatePromptFile", () => {
     expect(promptFileKind(undefined, docxMime)).toBe("document");
     expect(promptFileKind("virus.exe", "application/octet-stream")).toBeNull();
     expect(promptFileKind(undefined, undefined)).toBeNull();
+  });
+
+  test("FromName：只有路径（dialog 直选）时图片也认扩展名", () => {
+    // 曾经的写法是 promptFileKind(name, undefined)：mime 白名单那条路走不到，
+    // 扩展名兜底又只管文档，于是 png 被当「不支持的附件」丢弃、文档却正常
+    expect(promptFileKindFromName("a.png")).toBe("image");
+    expect(promptFileKindFromName("照片 1.JPG")).toBe("image");
+    expect(promptFileKindFromName("x.webp")).toBe("image");
+    expect(promptFileKindFromName("报告.docx")).toBe("document");
+    expect(promptFileKindFromName("notes.md")).toBe("document");
+    expect(promptFileKindFromName("virus.exe")).toBeNull();
+    expect(promptFileKindFromName("noext")).toBeNull();
   });
 
   test("docMimeFromName 推断", () => {
@@ -110,5 +124,53 @@ describe("extractPromptAttachments", () => {
     const atts = await extractPromptAttachments(msg);
     expect(atts).toHaveLength(1);
     expect(atts![0]?.mimeType).toBe("application/pdf");
+  });
+});
+
+describe("extractDataUriImageFiles（粘贴 data URI 转附件，不进草稿文本）", () => {
+  test("整段就是一张图：转 File，rest 为空", () => {
+    const { files, rest } = extractDataUriImageFiles(`data:image/png;base64,${png1x1}`);
+    expect(files).toHaveLength(1);
+    expect(files[0].type).toBe("image/png");
+    expect(files[0].name).toBe("pasted-image-1.png");
+    expect(rest).toBe("");
+  });
+
+  test("整段 + base64 被折行：仍转附件", () => {
+    const wrapped = png1x1.replace(/(.{20})/g, "$1\n");
+    const { files, rest } = extractDataUriImageFiles(`data:image/png;base64,${wrapped}`);
+    expect(files).toHaveLength(1);
+    expect(files[0].size).toBeGreaterThan(0);
+    expect(rest).toBe("");
+  });
+
+  test("内联在文字里：剥 URI 出附件，剩余文本回填", () => {
+    const { files, rest } = extractDataUriImageFiles(
+      `看看这个 data:image/png;base64,${png1x1} 是什么`,
+    );
+    expect(files).toHaveLength(1);
+    expect(rest).toContain("看看这个");
+    expect(rest).toContain("是什么");
+    expect(rest).not.toContain("base64");
+  });
+
+  test("image/jpg 归一 jpeg，文件名用 .jpg", () => {
+    const { files } = extractDataUriImageFiles(`data:image/jpg;base64,${png1x1}`);
+    expect(files[0].type).toBe("image/jpeg");
+    expect(files[0].name).toBe("pasted-image-1.jpg");
+  });
+
+  test("不误伤：短占位符 / 白名单外 mime / 非法 base64 / 普通文本", () => {
+    const cases = [
+      "data:image/png;base64,AAAA", // 调试占位（<64 字符）
+      "data:image/svg+xml;base64," + png1x1, // 白名单外
+      "data:image/png;base64," + "A".repeat(65), // 长度非法，atob 抛错
+      "帮我看看这张图", // 普通文本
+    ];
+    for (const text of cases) {
+      const { files, rest } = extractDataUriImageFiles(text);
+      expect(files, text).toHaveLength(0);
+      expect(rest, text).toBe(text);
+    }
   });
 });

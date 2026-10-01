@@ -218,6 +218,32 @@ function renderEntries(
   return rows;
 }
 
+/**
+ * 树空态缺省页：根目录已加载但没有任何文件/文件夹（如新任务目录）。
+ * 快捷动作直接弹既有的新建对话框；空白区右键的根目录菜单仍然可用
+ * （外层容器的 onContextMenu 未动）。
+ */
+const TreeEmptyState: FC<{
+  onNewFile: () => void;
+  onNewFolder: () => void;
+}> = ({ onNewFile, onNewFolder }) => (
+  <div className="text-muted-foreground/60 flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-xs">
+    <FolderOpenIcon className="size-6" />
+    <p>此目录暂无文件</p>
+    <div className="flex items-center gap-2">
+      <Button variant="outline" size="sm" onClick={onNewFile}>
+        <FilePlus2Icon />
+        新建文件
+      </Button>
+      <Button variant="outline" size="sm" onClick={onNewFolder}>
+        <FolderPlusIcon />
+        新建文件夹
+      </Button>
+    </div>
+    <p className="text-muted-foreground/40">右键空白处可刷新或查看更多操作</p>
+  </div>
+);
+
 /** 树 tab 状态的模块级缓存：TabContentView 以 tab.id 作 key 重挂载（tab 切换
  *  即卸载），useState 会丢展开状态——点文件开新 tab 再切回树，之前展开的目录
  *  全部收起。缓存按 cwd 失效，切工作区仍走既有重置逻辑。 */
@@ -441,6 +467,20 @@ export const FileTreeTab: FC = () => {
     [rootCwd, expandedSet, treeVersion, handleRowContextMenu],
   );
 
+  // 根目录空态：listing 已缓存且零条目才显示缺省页。补水中（isDirLoading）
+  // 不算空，避免首次进面板闪一下缺省页再闪回
+  const isEmptyRoot = useMemo(() => {
+    if (!rootCwd || !isTauri()) return false;
+    if (isDirLoading(rootCwd, "")) return false;
+    const listing = getDir(rootCwd, "");
+    return (
+      listing !== null &&
+      !listing.truncated &&
+      listing.entries.length === 0
+    );
+    // treeVersion 不参与判定，仅驱动重算（缓存补水/失效后重新评估空态）
+  }, [rootCwd, treeVersion]);
+
   // 右键落点作虚拟锚点（显式 anchor 覆盖 ContextMenu 默认的 Trigger 锚定）
   const menuAnchor = useMemo(
     () =>
@@ -465,15 +505,22 @@ export const FileTreeTab: FC = () => {
           setMenu({ kind: "root", x: event.clientX, y: event.clientY });
         }}
       >
-        <FileTree
-          ariaLabel="工作区文件"
-          value={selected}
-          onValueChange={handleSelect}
-          expandedIds={expanded}
-          onExpandedChange={setExpanded}
-        >
-          {children}
-        </FileTree>
+        {isEmptyRoot ? (
+          <TreeEmptyState
+            onNewFile={() => startNew("new-file", "")}
+            onNewFolder={() => startNew("new-folder", "")}
+          />
+        ) : (
+          <FileTree
+            ariaLabel="工作区文件"
+            value={selected}
+            onValueChange={handleSelect}
+            expandedIds={expanded}
+            onExpandedChange={setExpanded}
+          >
+            {children}
+          </FileTree>
+        )}
       </div>
 
       <ContextMenu
