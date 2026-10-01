@@ -62,6 +62,10 @@ export class WsPiChannel implements PiChannel {
   private pluginOpCbs = new Set<(frame: PiPluginOpFrame) => void>();
   private contextCbs = new Set<(frame: PiContextChangedFrame) => void>();
   private designCbs = new Set<(frame: PiDesignThemePush) => void>();
+  /** 原始行观察（迁移阶段 5c）：WsPiClient 的 thread_event/chunk 分流入口 */
+  private rawCbs = new Set<(raw: string) => void>();
+  private closeCbs = new Set<() => void>();
+  private authedCbs = new Set<() => void>();
 
   constructor(
     private readonly url: string,
@@ -113,6 +117,9 @@ export class WsPiChannel implements PiChannel {
     this.streams.clear();
     // 事件流随连接中断：订阅方（pi-running）据此作废快照，重连 authed 后重新水合
     for (const cb of this.turnCbs) cb(null, false);
+    // 事件源换代（5c）：在飞 chunk 路由全灭，基座清流式台账；authed 后再触发
+    // 一次重新拉快照自愈
+    for (const cb of this.closeCbs) cb();
 
     if (this.closedByUser) return;
     // 异常断开：自动重连一次，再失败交 UI
@@ -126,6 +133,9 @@ export class WsPiChannel implements PiChannel {
   }
 
   private onMessage(raw: string) {
+    // 原始行先行喂观察者（5c）：分发器只认识自己关心的帧，WsPiClient 的
+    // thread_event/chunk 分流在基座，必须看到全部行
+    for (const cb of this.rawCbs) cb(raw);
     let v: Record<string, unknown>;
     try {
       v = JSON.parse(raw) as Record<string, unknown>;
@@ -149,6 +159,8 @@ export class WsPiChannel implements PiChannel {
       // 清空并按 list_running 重新水合
       resetSeqGuard();
       for (const cb of this.turnCbs) cb(null, false);
+      // 重连换代（5c）：断线空洞无法补齐，基座逐订阅线程拉快照自愈
+      for (const cb of this.authedCbs) cb();
       return;
     }
 
@@ -370,5 +382,52 @@ export class WsPiChannel implements PiChannel {
   onStatusChange(cb: (s: PiChannelStatus) => void): () => void {
     this.statusCbs.add(cb);
     return () => this.statusCbs.delete(cb);
+  }
+
+  // ---------- 新链路（迁移阶段 5c）：PiClientBase 传输依赖的 WS 侧实现 ----------
+
+  /** 原始行观察：onMessage 解析前喂全部行（thread_event 广播与 prompt chunk
+   *  流都在内），WsPiClient 据此分流。退订即摘除 */
+  onRawLine(cb: (raw: string) => void): () => void {
+    this.rawCbs.add(cb);
+    return () => this.rawCbs.delete(cb);
+  }
+
+  /** 连接断开观察（事件源换代之一）：在飞 chunk 路由全灭。
+   *  不叫 onClose——类内已有 WebSocket close 私有处理器 */
+  onDisconnected(cb: () => void): () => void {
+    this.closeCbs.add(cb);
+    return () => this.closeCbs.delete(cb);
+  }
+
+  /** 认证完成观察（事件源换代之二）：断线空洞后重拉快照自愈 */
+  onAuthed(cb: () => void): () => void {
+    this.authedCbs.add(cb);
+    return () => this.authedCbs.delete(cb);
+  }
+
+  /** 发起 prompt（fire-and-forget，chunk 行按 id 回流）。
+   *  返回 false = 无连接且未入队（调用方按发送失败处理） */
+  sendPromptFrame(args: {
+    requestId: string;
+    text: string;
+    threadId: string;
+    cwd: string | null;
+    attachments: import("@/lib/pi/pi-channel").PiPromptAttachment[] | null;
+    steer: boolean;
+  }): boolean {
+    return this.sendRaw({
+      type: "prompt",
+      id: args.requestId,
+      text: args.text,
+      threadId: args.threadId,
+      // 远程链路线程身份 = sessionId（与桌面新链路一致），running 键同键
+      sessionId: args.threadId,
+      cwd: args.cwd,
+      // 远程路径网关原样转发 JSON，附件直接随帧（sidecar 闸门兜底）
+      attachments: args.attachments,
+      // 并入当前轮（steer）：sidecar 忙线程注入活跃轮
+      steer: args.steer === true,
+    });
   }
 }
