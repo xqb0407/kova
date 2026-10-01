@@ -32,10 +32,16 @@ import { applyAskNeedsWorkChunk } from "@/lib/pi/pi-ask-needs-work";
 import { applyPlanningChunk } from "@/lib/pi/pi-session-mode";
 import { applyTodoChunk } from "@/lib/pi/pi-todo";
 import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
+import {
+  getTurnTiming,
+  scopedTurnKey,
+  seedTurnTiming,
+} from "@/lib/panels/turn-collapse";
 import { refreshFileTree } from "@/lib/workspace/file-tree";
 import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
 import { extractPromptAttachments } from "@/lib/attachments/prompt-attachments";
 import { resyncPiRunning } from "@/lib/pi/pi-running";
+import { setThreadTitle } from "@/lib/pi/pi-thread-titles";
 import { emitAgentEvent } from "@/lib/pi/agent-events";
 import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
@@ -234,6 +240,46 @@ export class PiClientBase implements PiClient {
     ].join("|");
   }
 
+  /**
+   * 历史轮耗时播种（取代旧链路 loadPiHistory→seedHistoryTurnTimings——该路径
+   * 随阶段 5b 退役，导致所有历史轮 durationMs 缺失、摘要行退回计数文案）。
+   * 用转录行自带时间戳：user 行做轮锚（轮次键 = 投影稳定 id `pi-msg:${seq}`，
+   * 与 message-turns 的 turnKey 同值），开始 = user 行 timestamp，结束 = 轮内
+   * 最后一条非 user 行的 timestamp。跳过：锚行无 seq（在飞未落盘，轮次键无从
+   * 预测）；台账已有 live:true 条目（本窗口盯着跑的轮由 Date.now 计时，更准
+   * 且归 noteTurnEnd/timing 管）；值相等（store.set 无条件 notify，快照反复
+   * 派发不能引发重渲风暴）。
+   */
+  private seedHistoryTurnTimings(snapshot: PiThreadSnapshot): void {
+    type SeedableLine = { role?: string; __seq?: number; timestamp?: number };
+    const threadId = snapshot.metadata.id;
+    let anchorSeq: number | undefined;
+    let anchorTs: number | undefined;
+    let endTs: number | undefined;
+    const flush = () => {
+      if (anchorSeq === undefined || anchorTs === undefined || endTs === undefined)
+        return;
+      const scoped = scopedTurnKey(threadId, `pi-msg:${anchorSeq}`);
+      const cur = getTurnTiming(scoped);
+      if (cur?.live === true) return;
+      if (cur?.start === anchorTs && cur?.end === endTs) return;
+      seedTurnTiming(scoped, { start: anchorTs, end: endTs });
+    };
+    for (const line of snapshot.messages as unknown as SeedableLine[]) {
+      if (line.role === "user") {
+        flush();
+        anchorSeq = line.__seq;
+        anchorTs = line.timestamp;
+        endTs = undefined;
+        continue;
+      }
+      if (anchorSeq !== undefined && typeof line.timestamp === "number") {
+        endTs = line.timestamp;
+      }
+    }
+    flush();
+  }
+
   private dispatch(snapshot: PiThreadSnapshot) {
     const id = snapshot.metadata.id;
     const prevSeq = this.lastSeq.get(id) ?? 0;
@@ -255,6 +301,8 @@ export class PiClientBase implements PiClient {
     }
     const set = this.listeners.get(id);
     if (!set) return;
+    // 耗时台账播种须在派发前：订阅组件同一渲染帧读台账就有值
+    this.seedHistoryTurnTimings(snapshot);
     const event: PiClientEvent = {
       type: "snapshot",
       snapshot,
@@ -321,7 +369,29 @@ export class PiClientBase implements PiClient {
     for (const sessionId of this.listeners.keys()) void this.refreshNow(sessionId);
   }
 
+  /** session_info_changed 行 → 本地实时标题表（渲染侧优先于列表快照） */
+  private applySessionInfoLine(raw: string) {
+    let parsed: WireMsg;
+    try {
+      parsed = JSON.parse(raw) as WireMsg;
+    } catch {
+      return;
+    }
+    if (parsed.type !== "thread_event") return;
+    const event = parsed.event;
+    if (event?.type !== "session_info_changed") return;
+    const name = event.name;
+    setThreadTitle(
+      String(parsed.sessionId ?? ""),
+      typeof name === "string" ? name : undefined,
+    );
+  }
+
   private handleWireLine(raw: string) {
+    // 会话标题单独一条捷径：列表快照的 title 只在整表 reload 时刷新，标题
+    // 事件（智能标题/改名）必须即时透传才能让顶栏与侧边栏跟着变。放在
+    // 「有无订阅者」早退之前，后台会话（定时任务等无订阅）的改名同样生效。
+    if (raw.includes('"session_info_changed"')) this.applySessionInfoLine(raw);
     if (this.listeners.size === 0 && this.inflight.size === 0) return;
     // 预筛：thread_event 行（原生事件）+ finish/error/start 帧（收尾观察）
     // + data-* 旁路行（4b 交互卡 / 4c 委派 / 4d 模式与清单与面板唤起）；
@@ -736,9 +806,9 @@ export class PiClientBase implements PiClient {
   }
 
   async setThinkingLevel(threadId: string, level: PiThinkingLevel): Promise<void> {
-    // 阶段 2 全局档位（sidecar set_thinking 无会话定靶形参）；会话级在阶段 4
-    void threadId;
-    await this.transport.request({ type: "set_thinking", level });
+    // sessionId 定靶（迁移阶段 4 已具备协议形态）：只落该会话的转录档位行 +
+    // 偏好列，不广播、不写全局默认档位 kv。新链路 threadId = remoteId = sessionId。
+    await this.transport.request({ type: "set_thinking", level, sessionId: threadId });
   }
 
   async renameThread(threadId: string, title: string): Promise<void> {
