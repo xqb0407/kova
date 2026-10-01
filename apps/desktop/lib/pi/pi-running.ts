@@ -178,6 +178,16 @@ export function resyncPiRunning(): void {
  */
 export async function hydrateRunningRegistrations(): Promise<PiRunningTurn[]> {
   const channel = getPiChannel();
+  // 存量登记先清空（react-pi 迁移修复「刷新回切乱窜到别的会话」）：旧链路在
+  // transport 发送时写登记、轮收尾由 agent_end 清理；渲染链切到 react-pi 后
+  // 发送不再写登记，上一 webview 生命周期的存量条目（localStorage 影子镜像
+  // 跨重启存活）无人清理，把 ResumeRunningThread 的 inFlightTarget 劫持到
+  // 无关会话——用户在 A 发消息，刷新后却落到 B。清空后按 sidecar 运行态
+  // 真相重建：在跑轮次的登记不依赖存量（本轮 hydrate 即重建），三级回切的
+  // running/in-flight 层从此只认运行态事实，last-thread 层兜住其余场景。
+  for (const e of piResumableStorage.peekEntries()) {
+    piResumableStorage.clear(e.sessionId ?? e.ownerChatId);
+  }
   if (!channel.listRunningTurns) return [];
   let turns: PiRunningTurn[];
   try {

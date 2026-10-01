@@ -6,12 +6,14 @@ import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
 afterAll(restoreAllMocks);
 
 /**
- * 侧边栏"运行中"信号链路测试：
- * - 启动时序：subscribeTurns 登记（异步）完成后才允许发起 listRunning 种子
+ * 侧边栏"运行中"信号链路测试（迁移 4c 后架构）：
+ * - 启动时序：chunk-batch/pi-exit 监听登记（await listen）完成后才发起
+ *   listRunning 种子——登记窗口里广播的起止事件种子补不回
+ * - 增量源：pi-chunk-batch 行里的 thread_event（agent_start/agent_end）
  * - 合并语义：种子快照 + 增量双向修正 / 幂等 / 事件源失效清空重水合
  * - resync 纠偏：end 事件丢失留下的陈旧 true 增量在种子回来时清除，
  *   种子发起之后才 start 的会话不受误伤
- * - TauriPiChannel.subscribeTurns：turn_changed 行解析与 pi-exit 失效信号
+ * - TauriPiChannel.subscribeTurns：turn_changed 行解析与 pi-exit 失效信号（旧 transport）
  * mock Tauri invoke/listen（沿用 pi-channel-attach.test.ts 的桩风格）。
  */
 
@@ -49,7 +51,9 @@ const {
   resyncPiRunning,
   subscribeRunningSessions,
   isSessionRunning,
+  hydrateRunningRegistrations,
 } = await import("@/lib/pi/pi-running");
+const { piResumableStorage } = await import("@/lib/pi/pi-resume-storage");
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -63,28 +67,23 @@ function snapshotLog(ids: string[] = ["a", "b"]) {
 }
 
 describe("pi-running store", () => {
-  test("通道无订阅能力 ⇒ 降级静默（种子也不会拉）", () => {
-    let seedCalls = 0;
+  test("通道无种子能力 ⇒ 降级静默（watch 不启动，种子也不会拉）", () => {
+    // 旧通道无 listRunning：guard 在 watchStarted 置位前短路——此前用例给了
+    // listRunning 导致置位后毒化下一个用例的 startPiRunningWatch（早退），
+    // resolveListen 恒空而挂。这也与生产降级形态一致（旧 sidecar 无种子能力）。
     const bare: PiChannel = {
       kind: "tauri",
       request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
       promptStream: () => new ReadableStream(),
       abort: async () => {},
-      listRunning: async () => {
-        seedCalls += 1;
-        return [];
-      },
     };
     setPiChannel(bare);
-    startPiRunningWatch(); // 不应抛错，也不会启动（缺 subscribeTurns）
-    expect(seedCalls).toBe(0);
+    startPiRunningWatch();
     expect(isSessionRunning("a")).toBe(false);
     expect(isSessionRunning(undefined)).toBe(false);
   });
 
-  test("先订阅就绪→种子→实时增量→失效重水合→resync 纠偏", async () => {
-    let emit: ((sessionId: string | null, active: boolean) => void) | null = null;
-    let resolveListen: (() => void) | null = null;
+  test("监听就绪→种子→实时增量→失效重水合→resync 纠偏", async () => {
     let seedCalls = 0;
     let seedMode: "auto" | "manual" = "auto";
     let manualSeedResolve: ((ids: string[]) => void) | null = null;
@@ -102,45 +101,49 @@ describe("pi-running store", () => {
         }
         return Promise.resolve(listRunningSeed);
       },
-      // 登记完成前不 resolve（贴近 Tauri listen 的真实异步性）
-      subscribeTurns: (cb) =>
-        new Promise<() => void>((r) => {
-          emit = cb;
-          resolveListen = () =>
-            r(() => {
-              emit = null;
-            });
-        }),
     };
     setPiChannel(fake);
     listRunningSeed = ["a"];
     startPiRunningWatch();
     await flush();
-    // 时序契约：订阅登记未完成前不得发起种子——登记窗口丢的 end 事件种子补不回
-    expect(seedCalls).toBe(0);
-    expect(isSessionRunning("a")).toBe(false);
-
-    resolveListen!();
-    await flush();
+    // 监听桩即刻 resolve ⇒ 登记完成后即发起种子（时序契约由 startPiRunningWatch
+    // 的 await listen 结构保证：先登记后种子，登记窗口丢的 end 事件种子补不回）
     expect(seedCalls).toBe(1);
     expect(isSessionRunning("a")).toBe(true);
     expect(isSessionRunning("b")).toBe(false);
 
-    // 实时增量：b 开跑 → a 收尾（增量双向修正快照滞后）
-    emit!("b", true);
+    // 实时增量（pi-chunk-batch 的 thread_event 行）：b 开跑 → a 收尾
+    const emitTurn = (
+      sessionId: string,
+      kind: "agent_start" | "agent_end",
+    ) => {
+      listenersByEvent.get("pi-chunk-batch")!({
+        payload: [
+          {
+            i: null,
+            l: JSON.stringify({
+              type: "thread_event",
+              sessionId,
+              event: { type: kind },
+            }),
+          },
+        ],
+      });
+    };
+    emitTurn("b", "agent_start");
     expect(isSessionRunning("b")).toBe(true);
-    emit!("a", false);
+    emitTurn("a", "agent_end");
     expect(isSessionRunning("a")).toBe(false);
     // 幂等：重复 end 投影不变 ⇒ 不触发通知
     const probe = snapshotLog();
     const beforeDup = probe.seen.length;
-    emit!("a", false);
+    emitTurn("a", "agent_end");
     expect(probe.seen.length).toBe(beforeDup);
     probe.stop();
 
-    // 事件源失效（重启）：清空即时生效 + 按新种子重新水合
+    // 事件源失效（sidecar 重启，pi-exit）：清空即时生效 + 按新种子重新水合
     listRunningSeed = ["b", "a"];
-    emit!(null, false);
+    listenersByEvent.get("pi-exit")!({ payload: "0" });
     expect(isSessionRunning("b")).toBe(false);
     await flush();
     expect(seedCalls).toBe(2);
@@ -149,10 +152,10 @@ describe("pi-running store", () => {
 
     // resync 纠偏：d 的 end 事件丢失 ⇒ 增量陈旧 true 而种子事实里没有它 → 清除；
     // 种子发起之后才 start 的 c 不在"发起时刻 true 名单"，不得误伤
-    emit!("d", true);
+    emitTurn("d", "agent_start");
     seedMode = "manual";
     resyncPiRunning(); // seedCalls=3，在飞
-    emit!("c", true); // 发起后才到达的新 start
+    emitTurn("c", "agent_start"); // 发起后才到达的新 start
     manualSeedResolve!([]); // 快照事实：b、a、d 都没在跑
     await flush();
     expect(seedCalls).toBe(3);
@@ -194,5 +197,40 @@ describe("TauriPiChannel.subscribeTurns", () => {
       payload: [{ i: null, l: '{"type":"turn_changed","sessionId":"b","active":true}' }],
     });
     expect(got.length).toBe(2); // 退订后不再投递
+  });
+});
+
+describe("hydrateRunningRegistrations（启动水合）", () => {
+  test("存量残留先清空：陈旧条目不劫持回切，在跑轮次按 sidecar 真相重建", async () => {
+    // 上一 webview 生命周期的残留（react-pi 新链路不写登记，轮次收尾清理
+    // 也只覆盖本生命周期）：刷新回切曾被它劫持到无关会话（2026-10-01）
+    piResumableStorage.setStreamId("req-stale", "pi-draft-old", "sid-stale");
+    expect(piResumableStorage.getStreamId("sid-stale")).toBe("req-stale");
+
+    const fake: PiChannel = {
+      kind: "tauri",
+      request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
+      promptStream: () => new ReadableStream(),
+      abort: async () => {},
+      listRunningTurns: async () => [{ requestId: "req-run", sessionId: "sid-run" }],
+    };
+    setPiChannel(fake);
+    const turns = await hydrateRunningRegistrations();
+    expect(turns).toEqual([{ requestId: "req-run", sessionId: "sid-run" }]);
+    expect(piResumableStorage.getStreamId("sid-stale")).toBeNull(); // 残留被清
+    expect(piResumableStorage.getStreamId("sid-run")).toBe("req-run"); // 在跑重建
+  });
+
+  test("通道缺 listRunningTurns 能力：仍清空残留（降级路径同样不劫持回切）", async () => {
+    piResumableStorage.setStreamId("req-stale2", "pi-draft-old2", "sid-stale2");
+    const bare: PiChannel = {
+      kind: "tauri",
+      request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
+      promptStream: () => new ReadableStream(),
+      abort: async () => {},
+    };
+    setPiChannel(bare);
+    expect(await hydrateRunningRegistrations()).toEqual([]);
+    expect(piResumableStorage.getStreamId("sid-stale2")).toBeNull();
   });
 });
