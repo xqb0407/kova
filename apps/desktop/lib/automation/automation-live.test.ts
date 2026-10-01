@@ -27,6 +27,7 @@ const hadWindow = "window" in globalThis;
 (globalThis as { window?: unknown }).window ??= {};
 afterAll(() => {
   restoreAllMocks();
+  setPiChannel(null); // 通道单例不跨文件泄漏（同 pi-running.test.ts 收尾）
   if (!hadWindow) delete (globalThis as { window?: unknown }).window;
 });
 
