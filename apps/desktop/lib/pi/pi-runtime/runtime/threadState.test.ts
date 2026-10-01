@@ -186,9 +186,16 @@ describe("threadState", () => {
     // otherwise a queue drained while disconnected would survive reconnect.
     let s = apply(
       createPiThreadState("t1"),
-      ev({ type: "queue_update", steering: ["s1"], followUp: ["f1"] }),
+      ev({
+        type: "queue_update",
+        steering: [{ id: "s1", content: "s1" }],
+        followUp: [{ id: "f1", content: "f1" }],
+      }),
     );
-    expect(s.queue).toEqual({ steering: ["s1"], followUp: ["f1"] });
+    expect(s.queue).toEqual({
+      steering: [{ id: "s1", content: "s1" }],
+      followUp: [{ id: "f1", content: "f1" }],
+    });
     s = apply(s, {
       type: "snapshot",
       snapshot: { metadata: { id: "t1", status: "idle" }, messages: [] },
@@ -201,9 +208,22 @@ describe("threadState", () => {
   it("updates queue from queue_update", () => {
     const s = apply(
       createPiThreadState("t1"),
-      ev({ type: "queue_update", steering: ["s1"], followUp: ["f1", "f2"] }),
+      ev({
+        type: "queue_update",
+        steering: [{ id: "s1", content: "s1" }],
+        followUp: [
+          { id: "f1", content: "f1" },
+          { id: "f2", content: "f2" },
+        ],
+      }),
     );
-    expect(s.queue).toEqual({ steering: ["s1"], followUp: ["f1", "f2"] });
+    expect(s.queue).toEqual({
+      steering: [{ id: "s1", content: "s1" }],
+      followUp: [
+        { id: "f1", content: "f1" },
+        { id: "f2", content: "f2" },
+      ],
+    });
   });
 
   it("tracks compaction and retry flags", () => {
@@ -454,7 +474,7 @@ describe("threadState", () => {
     const stale: PiClientEvent = {
       ...e1,
       type: "queue_update",
-      steering: ["old"],
+      steering: [{ id: "old", content: "old" }],
       followUp: [],
     } as PiClientEvent;
     // stale.seq === e1.seq <= lastSeq → ignored

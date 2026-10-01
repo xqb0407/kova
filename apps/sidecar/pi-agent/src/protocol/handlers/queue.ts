@@ -1,5 +1,5 @@
 /**
- * 排队命令：取消/立即发送/并入当前轮/弹出队首/快照。
+ * 排队命令：清空/取消/立即发送/并入当前轮/弹出队首/快照。
  * 队列引擎本体在 sessions/prompt-queue.ts，steered 退化流见 prompt-pipeline.ts。
  * v3 简化：无暂停/恢复/编辑（编辑=前端取消+回填输入框）。
  */
@@ -7,6 +7,7 @@ import { send } from "../stream";
 import { abortRun, steerIntoActiveRun, hasPromptChain } from "../prompt-pipeline";
 import { running } from "../../sessions/sessions";
 import {
+  cancelAllEntries,
   cancelEntry,
   getQueueStateForThread,
   isTurnBusy,
@@ -17,6 +18,16 @@ import {
 import type { CommandHandler } from "../command";
 
 export const handlers: Record<string, CommandHandler> = {
+  queue_clear: async (reqId, msg) => {
+    // 整队清空（PiClient.clearQueue 契约，4a 实装）：先取快照拿到被清文本
+    // （供 UI 回填 composer），再取消全部条目（各自流 abort+finish 收尾，
+    // 空快照广播随 queue_update 事件到达前端）
+    const threadId = String(msg.threadId ?? "default");
+    const cleared = getQueueStateForThread(threadId)?.items.map((i) => i.text) ?? [];
+    cancelAllEntries(threadId);
+    send({ id: reqId, type: "queue_cleared", threadId, cleared });
+  },
+
   queue_cancel: async (reqId, msg) => {
     // 删除单个排队项：其流立即 abort+finish 收尾（前端同步移除线程内消息）
     const requestId = String(msg.requestId ?? "");

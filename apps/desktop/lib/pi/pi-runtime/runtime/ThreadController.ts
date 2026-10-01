@@ -40,6 +40,7 @@ import type {
   PiAgentMessage,
   PiHostUiResponse,
   PiImageContent,
+  PiQueueEntry,
   PiSendMessageInput,
   PiThinkingLevel,
   PiThreadSnapshot,
@@ -79,6 +80,13 @@ export interface PiThreadControllerLike {
   /** Clear Pi's server-side queue; resolves with the cleared text so the UI
    * can restore it to the composer. */
   clearQueue(): Promise<{ steering: string[]; followUp: string[] }>;
+  // 改动（4a）：逐项队列操作（id = 真实 reqId）。客户端不支持时抛错——
+  // 官方契约只有整队清空，no-op 会静默吞掉用户的操作意图。
+  queueCancel(id: string): Promise<void>;
+  queuePromote(id: string): Promise<void>;
+  queueSteer(id: string): Promise<void>;
+  /** 改动（4a）：弹出队首交由前端重发（刷新接力泵用）；无孤儿队列时为 null。 */
+  queuePop(): Promise<PiQueueEntry | null>;
   setModel(input: { provider: string; modelId: string }): Promise<void>;
   setThinkingLevel(level: PiThinkingLevel): Promise<void>;
   /** Answer a request by its id with a decision alone: a `confirm` takes it as
@@ -259,6 +267,8 @@ export class PiThreadController implements PiThreadControllerLike {
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private loadPromise: Promise<void> | null = null;
   private messageFlushScheduled = false;
+  /** 乐观队列条目的临时 id 序号（真实 reqId 由客户端生成，见 sendQueued）。 */
+  private optimisticQueueSeq = 0;
   /** Fallback sequence for snapshots without a supervisor-provided sequence. */
   private readonly localSnapshotSeq = 0;
 
@@ -487,9 +497,15 @@ export class PiThreadController implements PiThreadControllerLike {
     behavior: "followUp" | "steer",
   ) {
     const mode = behavior === "steer" ? "steering" : "followUp";
+    // 改动（4a）：乐观条目带临时 id——真实 reqId 由客户端在 sendMessage 内
+    // 生成，控制器无从得知；下一条 queue_update 以服务端条目整体替换自愈。
+    const optimisticEntry: PiQueueEntry = {
+      id: `pending-${Date.now()}-${++this.optimisticQueueSeq}`,
+      content: input.content,
+    };
     const optimisticQueue = {
       ...this.state.queue,
-      [mode]: [...this.state.queue[mode], input.content],
+      [mode]: [...this.state.queue[mode], optimisticEntry],
     };
     this.setState({ ...this.state, queue: optimisticQueue });
 
@@ -504,7 +520,9 @@ export class PiThreadController implements PiThreadControllerLike {
       // A later `queue_update` self-heals the stale entry instead.
       const reconciled = this.state.queue !== optimisticQueue;
       const entries = this.state.queue[mode];
-      const index = reconciled ? -1 : entries.lastIndexOf(input.content);
+      const index = reconciled
+        ? -1
+        : entries.map((entry) => entry.content).lastIndexOf(input.content);
       this.setState({
         ...this.state,
         lastError: errorText(error),
@@ -544,6 +562,36 @@ export class PiThreadController implements PiThreadControllerLike {
       });
     }
     return cleared;
+  }
+
+  /** 改动（4a）：逐项队列操作，直通客户端（id = 真实 reqId）。状态更新由
+   *  sidecar 的 queue_update 事件驱动，控制器不做乐观改写——逐项操作的
+   *  失败（如并入时活跃轮恰好收尾）需要条目原位保留，乐观删除会闪动。 */
+  public async queueCancel(id: string) {
+    if (!this.client.queueCancel) {
+      throw new Error("Pi client does not support per-item queue ops");
+    }
+    await this.client.queueCancel(this.threadId, id);
+  }
+
+  public async queuePromote(id: string) {
+    if (!this.client.queuePromote) {
+      throw new Error("Pi client does not support per-item queue ops");
+    }
+    await this.client.queuePromote(this.threadId, id);
+  }
+
+  public async queueSteer(id: string) {
+    if (!this.client.queueSteer) {
+      throw new Error("Pi client does not support per-item queue ops");
+    }
+    await this.client.queueSteer(this.threadId, id);
+  }
+
+  /** 改动（4a）：弹出队首（接力泵）。客户端不支持时返回 null（视为无孤儿）。 */
+  public async queuePop(): Promise<PiQueueEntry | null> {
+    if (!this.client.queuePop) return null;
+    return this.client.queuePop(this.threadId);
   }
 
   public async cancel() {

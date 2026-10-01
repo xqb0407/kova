@@ -18,6 +18,7 @@ import {
   windowTranscriptMessages,
 } from "../../sessions/transcript";
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
+import { getQueueStateForThread } from "../../sessions/prompt-queue";
 import { sessionPath } from "../../storage/storage";
 import {
   sessionDelete,
@@ -273,6 +274,16 @@ export const handlers: Record<string, CommandHandler> = {
     // 挂起交互行 → hostUiRequests：阶段 2 只映射逐工具审批（permission），
     // 投影层按 toolCallId 挂到工具卡上渲染审批；question 类卡片 UI 在阶段 4 接线。
     const peek = peekEventSeq(sessionId);
+    // 队列 → metadata.queuedMessages（4a）：快照权威携带排队条目（id=reqId，
+    // mode 恒 followUp——引擎无 steering 常驻），刷新后 state.queue 由快照重建；
+    // 内存为空时顺带从 session 回放采纳（sidecar 重启恢复路径）。新链路线程
+    // 身份 = sessionId，引擎键同键。
+    const queueSnapshotState = getQueueStateForThread(sessionId, sessionId);
+    const queuedMessages = (queueSnapshotState?.items ?? []).map((item) => ({
+      id: item.reqId,
+      mode: "followUp" as const,
+      content: item.text,
+    }));
     const hostUiRequests = scan.pending.flatMap((it): unknown[] => {
       if (it.kind !== "permission") return [];
       const p = it.payload as { approvalId?: string; toolCallId?: string; toolName?: string };
@@ -303,6 +314,7 @@ export const handlers: Record<string, CommandHandler> = {
           messageCount: row?.message_count,
           updatedAt: row?.updated_at,
           sessionFile: sessionPath(sessionId),
+          ...(queuedMessages.length ? { queuedMessages } : {}),
         },
         messages,
         ...(hostUiRequests.length ? { hostUiRequests } : {}),

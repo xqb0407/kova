@@ -123,14 +123,15 @@ function emitQueueState(threadId: string, sessionId?: string): void {
     },
     sid,
   );
-  // 原生事件通道（react-pi 迁移阶段 3）：reducer 的 state.queue 由该事件驱动
-  //（三队列语义接线在阶段 4a；此处先让队列栏有数据源）。本引擎无 steering
-  // 常驻（并入当前轮即时注入），followUp 用引擎稳定 id 字符串
+  // 原生事件通道（react-pi 迁移阶段 3/4a）：reducer 的 state.queue 由该事件
+  // 驱动。条目形状（4a 扩展）：id = 真实 reqId（「队列条目 id = 真实 reqId」
+  // 约束，逐项取消/并入/立即发送都按它寻址），content = 展示文本。本引擎无
+  // steering 常驻（并入当前轮即时注入），steering 恒空。
   if (sid) {
     emitThreadEvent(sid, {
       type: "queue_update",
       steering: [],
-      followUp: q.items.map((item) => String(item.id)),
+      followUp: q.items.map((item) => ({ id: item.reqId, content: item.text })),
     });
   }
 }

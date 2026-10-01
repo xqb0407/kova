@@ -18,6 +18,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { piRequest, type PiResponse, type PiSessionSummary } from "@/lib/pi/pi-bridge";
+import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import type {
   PiAgentMessage,
@@ -26,6 +27,7 @@ import type {
   PiClientEvent,
   PiHostUiResponse,
   PiModelInfo,
+  PiQueueEntry,
   PiSendMessageInput,
   PiThinkingLevel,
   PiThreadMetadata,
@@ -152,7 +154,8 @@ export class TauriPiClient implements PiClient {
     return res.snapshot;
   }
 
-  /** 快照指纹：seq/状态/条数/末条时间戳/挂起审批数——任一变化才派发，防每秒抖动 */
+  /** 快照指纹：seq/状态/条数/末条时间戳/挂起审批数/排队数——任一变化才派发，
+   *  防每秒抖动（4a：排队条目入指纹，快照采纳恢复的队列能触发派发） */
   private static fingerprint(s: PiThreadSnapshot): string {
     const last = s.messages.at(-1) as { timestamp?: number } | undefined;
     return [
@@ -162,6 +165,8 @@ export class TauriPiClient implements PiClient {
       last?.timestamp ?? "-",
       s.hostUiRequests?.length ?? 0,
       s.hostUiRequests?.[0]?.id ?? "",
+      s.metadata.queuedMessages?.length ?? 0,
+      s.metadata.queuedMessages?.[0]?.id ?? "",
     ].join("|");
   }
 
@@ -358,7 +363,11 @@ export class TauriPiClient implements PiClient {
 
   async sendMessage(threadId: string, input: PiSendMessageInput): Promise<void> {
     const requestId = `pi-${crypto.randomUUID()}`;
-    const steer = input.streamingBehavior === "steer";
+    // steer 意图桥接（4a）：composer 的 Alt+点击 / Shift+⌘+Enter 在发送前置
+    // markSteerNextSend 标记（模块级单跳信号，runConfig 不透传）。显式
+    // streamingBehavior 优先；无显式行为且标记在 → 升级为 steer（含控制器
+    // 忙时默认派生的 followUp——标记只会在「用户明确要点并入」时存在）。
+    const steer = input.streamingBehavior === "steer" || consumeSteerIntent(threadId);
     // 运行中发送 = followUp（sidecar 自动排队）；steer 显式并入当前轮
     this.inflight.set(requestId, threadId);
     void this.ensureEventWatcher();
@@ -388,10 +397,39 @@ export class TauriPiClient implements PiClient {
     await invoke("pi_abort", { threadId });
   }
 
-  /** 阶段 2 占位：Pi 契约只有整队清空；我们的逐项操作（合并/立即发送/删除）
-   *  在阶段 4a 接 queue_cancel/queue_promote/queue_steer。 */
-  async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
-    return { steering: [], followUp: [] };
+  /** 整队清空（4a 实装）：queue_clear 命令，返回被清文本供 UI 回填 composer。 */
+  async clearQueue(threadId: string): Promise<{ steering: string[]; followUp: string[] }> {
+    const res = await piRequest<{
+      cleared?: string[];
+    } & PiResponse>({ type: "queue_clear", threadId });
+    return { steering: [], followUp: res.cleared ?? [] };
+  }
+
+  /** 逐项队列操作（4a）：id = 真实 reqId，直通 sidecar 队列引擎。
+   *  状态更新由引擎的 queue_update 事件回流，客户端不做本地乐观改写。 */
+  async queueCancel(threadId: string, id: string): Promise<void> {
+    await piRequest({ type: "queue_cancel", requestId: id });
+    void threadId;
+  }
+
+  async queuePromote(threadId: string, id: string): Promise<void> {
+    await piRequest({ type: "queue_promote", requestId: id });
+    void threadId;
+  }
+
+  async queueSteer(threadId: string, id: string): Promise<void> {
+    await piRequest({ type: "queue_steer", requestId: id });
+    void threadId;
+  }
+
+  /** 弹出队首（4a：刷新接力泵的孤儿队列场景）。线程忙或链节仍在时
+   *  popped 为 null（sidecar 双保险），泵据此判定无孤儿、转由事件流接力。 */
+  async queuePop(threadId: string): Promise<PiQueueEntry | null> {
+    const res = await piRequest<{
+      popped?: { reqId: string; text: string; sessionId?: string } | null;
+    } & PiResponse>({ type: "queue_pop", threadId });
+    const popped = res.popped;
+    return popped ? { id: popped.reqId, content: popped.text } : null;
   }
 
   async getAvailableModels(): Promise<PiModelInfo[]> {
