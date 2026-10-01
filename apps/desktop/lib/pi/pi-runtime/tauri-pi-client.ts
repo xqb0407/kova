@@ -33,6 +33,7 @@ import { applyTodoChunk } from "@/lib/pi/pi-todo";
 import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
 import { refreshFileTree } from "@/lib/workspace/file-tree";
 import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
+import { resyncPiRunning } from "@/lib/pi/pi-running";
 import { emitAgentEvent } from "@/lib/pi/agent-events";
 import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
@@ -322,8 +323,18 @@ export class TauriPiClient implements PiClient {
             // 线程）；subagent 等旁路会话两表皆无，不做影子快照
             if (body.type === "agent_start" || body.type === "agent_end") {
               if (this.listeners.has(sid) || this.lastPrompts.has(sid)) {
-                if (body.type === "agent_start") this.checkpoints.begin(sid);
-                else this.checkpoints.settle(sid);
+                if (body.type === "agent_start") {
+                  this.checkpoints.begin(sid);
+                  // 排队项派发即见：引擎派发在 agent.prompt 落转录之后，
+                  // agent_start 拉一次快照把排队 user 消息补进列表（否则要
+                  // 等本轮 finish 帧才可见）；顺带自愈运行起点前的转录漂移
+                  void this.refreshNow(sid);
+                } else {
+                  this.checkpoints.settle(sid);
+                  // 侧边栏运行集合种子纠偏（旧链路 finish 的 resyncPiRunning
+                  // 同语义）：补漏掉的 agent_end 增量，防 spinner 挂死
+                  resyncPiRunning();
+                }
               }
             }
             // 完成提醒（缺口3，迁移后接回）：agent_end 收尾定调全局生效——
