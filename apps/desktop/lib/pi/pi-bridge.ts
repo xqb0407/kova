@@ -848,6 +848,11 @@ export type PiResponse =
   | { type: "running"; sessionIds: string[] }
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "forked"; sessionId: string }
+  // PiClient 契约快照应答（react-pi 迁移阶段 2）：形状单源 pi-runtime/types
+  | {
+      type: "thread_snapshot";
+      snapshot: import("@/lib/pi/pi-runtime/types").PiThreadSnapshot;
+    }
   | {
       type: "history";
       messages: unknown[];

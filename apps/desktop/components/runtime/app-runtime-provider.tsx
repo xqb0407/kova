@@ -1,7 +1,6 @@
 "use client";
 
-import { AssistantRuntimeProvider, useAui, useAuiState, useRemoteThreadListRuntime } from "@assistant-ui/react";
-import { useChatRuntime } from "@assistant-ui/ai-sdk";
+import { AssistantRuntimeProvider, useAui, useAuiState } from "@assistant-ui/react";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@/lib/tauri";
@@ -10,7 +9,6 @@ import { primeAppMeta } from "@/lib/app-meta";
 import { installPerfWatch, uninstallPerfWatch } from "@/lib/perf-watch";
 import { toast } from "@/components/ui/toast";
 import { initNotifyPipeline } from "@/lib/notify/notify";
-import { PiTransport } from "@/lib/pi/pi-transport";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
 import { hydrateRunningRegistrations } from "@/lib/pi/pi-running";
 import {
@@ -19,7 +17,9 @@ import {
   recordLastThread,
   syncClearLastThread,
 } from "@/lib/pi/pi-last-thread";
-import { createPiThreadListAdapter, piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
+import { piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
+import { usePiRuntime } from "@/lib/pi/pi-runtime";
+import { TauriPiClient } from "@/lib/pi/pi-runtime/tauri-pi-client";
 import {
   getWorkspace,
   getWorkspaceSource,
@@ -207,15 +207,12 @@ function ResumeRunningThread() {
  * 构建目标固定、环境互不切换，按 isTauri/远程拆分组件避免条件 hook。
  */
 function TauriRuntimeProvider({ children }: { children: React.ReactNode }) {
-  const transport = useMemo(() => new PiTransport(), []);
-  const adapter = useMemo(() => createPiThreadListAdapter(), []);
+  // react-pi 迁移阶段 2c：渲染链路切到 usePiRuntime（快照权威 + 降级轮询订阅）。
+  // 线程身份 = pi sessionId；旧 AI SDK 链路（PiTransport + createPiThreadListAdapter）
+  // 保留未删，仅服务回滚（revert 本 commit 即整体还原）。
+  const client = useMemo(() => new TauriPiClient(), []);
 
-  // joinStrategy "none"：多任务排队时 user 消息先入列、assistant 回复按序后补，
-  // 相邻 assistant 消息默认会被转换层合并成一条——禁用 join，每轮回复独立成条
-  const runtime = useRemoteThreadListRuntime({
-    runtimeHook: () => useChatRuntime({ transport, joinStrategy: "none" }),
-    adapter,
-  });
+  const runtime = usePiRuntime({ client });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
