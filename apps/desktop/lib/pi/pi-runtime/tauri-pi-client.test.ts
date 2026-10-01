@@ -445,3 +445,31 @@ describe("TauriPiClient 完成提醒（缺口3）", () => {
     un();
   });
 });
+
+describe("TauriPiClient 检查点卡观察（缺口2）", () => {
+  test("agent_start→begin / agent_end→settle；旁路会话不跟踪", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const calls: string[] = [];
+    const observer = {
+      begin: (sid: string) => calls.push(`begin:${sid}`),
+      settle: (sid: string) => calls.push(`settle:${sid}`),
+    };
+    const events: PiClientEvent[] = [];
+    const cbIndex = chunkCbs.length;
+    const client = new TauriPiClient(observer);
+    client.subscribe("s1", (e) => events.push(e));
+    const feed = (lines: WireLine[]) => chunkCbs[cbIndex]?.({ payload: lines });
+    await tick(); // 快照先行
+
+    feed([
+      threadEvent("s1", 50, { type: "agent_start" }),
+      threadEvent("s1", 51, { type: "agent_end", stopReason: "stop" }),
+      // 旁路会话（subagent/automation）：无订阅者、本实例也未发起过 prompt
+      // → 不做影子仓库快照
+      threadEvent("sid-subagent", 52, { type: "agent_start" }),
+      threadEvent("sid-subagent", 53, { type: "agent_end", stopReason: "stop" }),
+    ]);
+    expect(calls).toEqual(["begin:s1", "settle:s1"]);
+  });
+});
