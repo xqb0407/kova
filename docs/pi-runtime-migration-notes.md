@@ -257,8 +257,17 @@
    "\n" join + 占位行追加，与旧链路工具行文案逐字一致）；modelContent file
    parts 路径移除（无消费者）。data 一律按裸 base64 拼 src（sidecar 同款，
    测试钉住同构防止单侧特判 data URL）。
-2. **检查点卡未接**：createCheckpoint/settleCheckpoint 链路在 thread_event
-   通道无对应事件，检查点指示条不更新（数据仍走 checkpoint API，功能可用）。
+2. ~~**检查点卡未接**~~ **已修复（2026-10-01）**：新增
+   `lib/pi/pi-runtime/turn-checkpoints.ts`（TurnCheckpointTracker，全依赖
+   注入可测），TauriPiClient 在 thread_event 帧上挂 agent_start→begin
+   （拉快照→锚点换算→影子仓库快照→落桥）/ agent_end→settle（diff→落卡，
+   aborted/error 也结算，与旧链路 finish/error 同语义）。锚点=触发 user
+   消息的**渲染列表下标**：用与 UI 同一个投影函数对转录前缀（截至该 user
+   消息）投影取末项下标——assistant+toolResult 合并/隐藏 custom 不占位的
+   口径两端一致。只跟踪本窗口相关的会话（listeners 或 lastPrompts 在表），
+   subagent 等旁路会话不做影子快照。刷新重挂：begin 落桥
+   （saveRunHash）→ 新实例错过 agent_start，settle 无台账条目时从桥上复用
+   hash+锚点补结算；begin 先作废桥上残留（新 run 不复用上轮基线）。
 3. ~~**agent.turn.completed 完成提醒未接**~~ **已修复（2026-10-01）**：sidecar
    事件桥 agent_end 随帧带末条 assistant 的 stopReason/errorMessage；前端
    TauriPiClient 收 agent_end 全局定调（不依赖订阅者，后台线程同样提醒），

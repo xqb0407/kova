@@ -36,6 +36,10 @@ import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
 import { emitAgentEvent } from "@/lib/pi/agent-events";
 import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
+import {
+  TurnCheckpointTracker,
+  type TurnCheckpointObserver,
+} from "./turn-checkpoints";
 import type { PendingInteraction } from "pi-protocol";
 import type {
   PiAgentMessage,
@@ -162,7 +166,19 @@ export class TauriPiClient implements PiClient {
   /** 每会话最近一次发送的 prompt（完成提醒正文用）；仅本实例发起的会话入表
    *  ——automation/他窗发起的 turn 不在表内，不重复提醒（旧链路同语义） */
   private readonly lastPrompts = new Map<string, string>();
+  /** 检查点卡观察者（缺口2）：agent_start 打影子仓库快照、agent_end 结算。
+   *  默认实现走 turn-checkpoints 的真实依赖；测试可注入记录型假件 */
+  private readonly checkpoints: TurnCheckpointObserver;
   private unlistenChunks: UnlistenFn | null = null;
+
+  constructor(checkpoints?: TurnCheckpointObserver) {
+    this.checkpoints =
+      checkpoints ??
+      new TurnCheckpointTracker({
+        fetchSnapshot: (sessionId) =>
+          this.fetchSnapshot(sessionId).catch(() => undefined),
+      });
+  }
 
   // ---------- 快照 ----------
 
@@ -300,6 +316,16 @@ export class TauriPiClient implements PiClient {
           if (looksEvent) {
             const sid = String(parsed.sessionId ?? "");
             const body = parsed.event ?? {};
+            // 检查点卡（缺口2，迁移后接回）：agent_start 打影子仓库快照、
+            // agent_end 结算 diff。只跟踪本窗口相关的会话——打开中的
+            // （listeners）或本实例发起过 prompt 的（lastPrompts，覆盖后台
+            // 线程）；subagent 等旁路会话两表皆无，不做影子快照
+            if (body.type === "agent_start" || body.type === "agent_end") {
+              if (this.listeners.has(sid) || this.lastPrompts.has(sid)) {
+                if (body.type === "agent_start") this.checkpoints.begin(sid);
+                else this.checkpoints.settle(sid);
+              }
+            }
             // 完成提醒（缺口3，迁移后接回）：agent_end 收尾定调全局生效——
             // 不依赖该线程是否有订阅者，后台线程同样提醒（旧 transport 对齐）
             if (body.type === "agent_end") this.notifyTurnSettled(sid, body);
