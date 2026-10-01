@@ -27,6 +27,11 @@ import {
   applyToolApprovalChunk,
   clearToolApprovals,
 } from "@/lib/pi/pi-tool-approval";
+import { applyAskNeedsWorkChunk } from "@/lib/pi/pi-ask-needs-work";
+import { applyPlanningChunk } from "@/lib/pi/pi-session-mode";
+import { applyTodoChunk } from "@/lib/pi/pi-todo";
+import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
+import { refreshFileTree } from "@/lib/workspace/file-tree";
 import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
 import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
@@ -258,18 +263,23 @@ export class TauriPiClient implements PiClient {
       if (this.listeners.size === 0 && this.inflight.size === 0) return;
       for (const wire of event.payload) {
         // 预筛：thread_event 行（原生事件）+ finish/error/start 帧（收尾观察）
-        // + 委派绑定行（4c）+ 交互卡行（4b）；其余 token 级 chunk 行（AI SDK
-        // 遗留流）不解析
+        // + data-* 旁路行（4b 交互卡 / 4c 委派 / 4d 模式与清单与面板唤起）；
+        // 其余 token 级 chunk 行（AI SDK 遗留流）不解析
         const looksEvent = wire.l.includes('"thread_event"');
         const looksDelegation = wire.l.includes('"data-subagentDelegation"');
-        const looksInteraction =
+        const looksBypass =
+          looksDelegation ||
           wire.l.includes('"data-toolApproval"') ||
           wire.l.includes('"data-question"') ||
-          wire.l.includes('"data-interactionResolved"');
+          wire.l.includes('"data-interactionResolved"') ||
+          wire.l.includes('"data-planningState"') ||
+          wire.l.includes('"data-askNeedsWork"') ||
+          wire.l.includes('"data-todo"') ||
+          wire.l.includes('"data-panelOpen"') ||
+          wire.l.includes('"data-pluginOpen"');
         if (
           !looksEvent &&
-          !looksDelegation &&
-          !looksInteraction &&
+          !looksBypass &&
           !wire.l.includes('"finish"') &&
           !wire.l.includes('"error"') &&
           !wire.l.includes('"start"')
@@ -323,6 +333,67 @@ export class TauriPiClient implements PiClient {
             }
             continue;
           }
+          // ---- 模式/切档提议/任务清单（4d）：同为 per-thread store 直更
+          if (chunkData?.type === "data-planningState") {
+            applyPlanningChunk(sid, chunkData.data);
+            continue;
+          }
+          if (chunkData?.type === "data-askNeedsWork") {
+            applyAskNeedsWorkChunk(sid, chunkData.data);
+            continue;
+          }
+          if (chunkData?.type === "data-todo") {
+            applyTodoChunk(sid, chunkData.data);
+            continue;
+          }
+        }
+        // ---- 面板唤起（4d）：browser_*/open_file/open_plugin_panel 发起的
+        // 线程无关 UI 副作用（形状校验与 pi-transport tap 同款）
+        if (chunkData?.type === "data-panelOpen") {
+          const d = chunkData.data as
+            | { type?: unknown; url?: unknown; path?: unknown; cwd?: unknown }
+            | undefined;
+          if (d && d.type === "browser") {
+            const url =
+              typeof d.url === "string" && d.url ? { url: d.url } : undefined;
+            focusPanelTab("browser", url);
+            window.dispatchEvent(new Event("agent-panel:open"));
+            continue;
+          }
+          // 文件唤起（sidecar open-file-tool.ts）：文件 tab 磁盘实时模式；
+          // focus:undefined 清掉该 tab 可能残留的 read/plan 快照上下文
+          if (d && d.type === "file" && typeof d.path === "string" && d.path) {
+            focusPanelTab("file", {
+              cwd: typeof d.cwd === "string" && d.cwd ? d.cwd : undefined,
+              path: d.path,
+              focus: undefined,
+            });
+            window.dispatchEvent(new Event("agent-panel:open"));
+          }
+          continue;
+        }
+        if (chunkData?.type === "data-pluginOpen") {
+          const d = chunkData.data as
+            | { plugin?: unknown; panel?: unknown; path?: unknown; cwd?: unknown }
+            | undefined;
+          const plugin = typeof d?.plugin === "string" && d.plugin ? d.plugin : "";
+          const panel = typeof d?.panel === "string" && d.panel ? d.panel : "";
+          if (d && plugin && panel) {
+            const path = typeof d.path === "string" && d.path ? d.path : undefined;
+            const cwd = typeof d.cwd === "string" && d.cwd ? d.cwd : undefined;
+            // 不传 path/cwd 键 = 保留该 tab 现有文档绑定（纯唤起不清绑）
+            focusPluginPanel(plugin, panel, {
+              ...(cwd ? { cwd } : {}),
+              ...(path ? { path } : {}),
+            });
+            window.dispatchEvent(
+              new CustomEvent("plugin-panel:refresh", {
+                detail: { plugin, panel, path, cwd },
+              }),
+            );
+            window.dispatchEvent(new Event("agent-panel:open"));
+          }
+          continue;
         }
         // ---- 收尾帧观察：finish/error 即时拉快照（起跑前失败兜底）----
         if (this.inflight.size === 0) continue;
@@ -384,6 +455,9 @@ export class TauriPiClient implements PiClient {
         // data-interactionResolved 先行移除，此处通常为空操作
         clearToolApprovals(sessionId);
         clearQuestions(sessionId);
+        // 文件树失效（旧链路 finish/error 同款）：非 git 工作区 agent 也在改
+        // 盘上文件；跨工作区后台线程收尾时刷的是当前工作区树，视觉无害
+        refreshFileTree(getWorkspace() ?? null);
       }
       event = { ...body, threadId: sessionId, seq } as unknown as PiClientEvent;
     }

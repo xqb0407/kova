@@ -64,6 +64,7 @@ const {
   pendingQuestionsForTest,
   resetInteractionsForTest,
 } = await import("@/lib/pi/pi-interactions");
+const { sessionModeSnapshot } = await import("@/lib/pi/pi-session-mode");
 type PiClientEvent = import("@/lib/pi/pi-runtime/types").PiClientEvent;
 
 // ---------- 工具 ----------
@@ -362,5 +363,23 @@ describe("TauriPiClient 交互卡旁路（4b）", () => {
     expect(pendingApprovalsForTest("s1")).toHaveLength(0);
     expect(pendingQuestionsForTest("s1")).toHaveLength(0);
     expect(events.at(-1)?.type).toBe("agent_end");
+  });
+
+  test("data-planningState 进模式 store 且不进消息流（4d）", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const { events, feed } = subscribeAndSettle();
+    await tick();
+    events.length = 0;
+
+    feed([
+      chunkLine("s1", "data-planningState", {
+        mode: "plan",
+        planning: "inactive",
+        approvalLevel: "ask",
+      }),
+    ]);
+    expect(sessionModeSnapshot("s1").mode).toBe("plan");
+    expect(events).toHaveLength(0);
   });
 });
