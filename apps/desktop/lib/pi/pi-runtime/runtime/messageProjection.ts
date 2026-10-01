@@ -495,10 +495,15 @@ export const projectPiThreadMessages = (
       case "compactionSummary": {
         flush(false);
         const m = message as PiCompactionSummaryMessage;
+        // 本地改动（快照分隔线保真）：data part 名与载荷对齐 UI 注册端
+        // （compaction-banner CompactionDataUI）与 get_history 的
+        // data-compaction part——旧名 "pi-compaction-summary" 分隔线渲染不出
         out.push(
-          standaloneData(index, m, "pi-compaction-summary", {
-            summary: m.summary,
+          standaloneData(index, m, "compaction", {
+            phase: "complete",
+            generation: m.generation,
             tokensBefore: m.tokensBefore,
+            summarized: m.summarized,
           }),
         );
         break;

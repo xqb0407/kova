@@ -43,6 +43,24 @@ import { dropEventSeq, peekEventSeq } from "../event-seq";
 import { peekPartial } from "../thread-events";
 import type { SessionSummary } from "../../types";
 import type { CommandHandler } from "../command";
+import type { CompactionRow } from "../../sessions/transcript";
+
+/** 检查点行 → 快照 compactionSummary 消息：generation/summarized 从 details
+ *  推出，口径与 get_history 的 data-compaction part 载荷一致（transcript.ts
+ *  compactionDividerPart），前端两条路径渲染的分隔线细节相同 */
+function compactionSnapMessage(c: CompactionRow) {
+  const details = c.details as
+    | { generation?: unknown; strategy?: unknown }
+    | undefined;
+  return {
+    role: "compactionSummary",
+    summary: c.summary,
+    tokensBefore: c.tokensBefore,
+    generation: typeof details?.generation === "number" ? details.generation : undefined,
+    summarized: details?.strategy !== "fresh_window",
+    timestamp: Date.parse(c.createdAt) || 0,
+  };
+}
 
 export const handlers: Record<string, CommandHandler> = {
   compact: async (reqId, msg) => {
@@ -238,24 +256,12 @@ export const handlers: Record<string, CommandHandler> = {
     let ci = 0;
     for (const m of scan.messages) {
       while (ci < scan.compactions.length && scan.compactions[ci].seq < m.seq) {
-        const c = scan.compactions[ci++];
-        messages.push({
-          role: "compactionSummary",
-          summary: c.summary,
-          tokensBefore: c.tokensBefore,
-          timestamp: Date.parse(c.createdAt) || 0,
-        });
+        messages.push(compactionSnapMessage(scan.compactions[ci++]));
       }
       messages.push(m.agent as unknown as SnapMessage);
     }
     while (ci < scan.compactions.length) {
-      const c = scan.compactions[ci++];
-      messages.push({
-        role: "compactionSummary",
-        summary: c.summary,
-        tokensBefore: c.tokensBefore,
-        timestamp: Date.parse(c.createdAt) || 0,
-      });
+      messages.push(compactionSnapMessage(scan.compactions[ci++]));
     }
     // 流式中的 partial 并入（react-pi 迁移阶段 3c）：转录只在 message_end 落盘，
     // 运行中刷新靠快照自愈——把事件桥台账里的在飞 assistant 消息接到尾部

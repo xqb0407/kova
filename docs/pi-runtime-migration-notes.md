@@ -261,9 +261,12 @@
    通道无对应事件，检查点指示条不更新（数据仍走 checkpoint API，功能可用）。
 3. **agent.turn.completed 完成提醒未接**：旧链路的完成通知 side effect 在
    新链路无人触发。
-4. **压缩分隔线 data part 名不匹配**：投影产 `"pi-compaction-summary"`，
-   UI 注册名是 `"compaction"`（compaction-banner.tsx CompactionDataUI）→
-   分隔线回退默认样式。改名即可对齐。
+4. ~~**压缩分隔线 data part 名不匹配**~~ **已修复（2026-10-01）**：投影层
+   compactionSummary → data part 名对齐 `"compaction"`，载荷对齐 get_history
+   的 compactionDividerPart 同口径（`{phase:"complete", generation,
+   tokensBefore, summarized}`，generation/summarized 由 sidecar thread_
+   snapshot 从检查点行 details 推出补齐）——快照与历史两条路径渲染的分隔线
+   细节一致，「第 N 代 / 摘要失败」提示不再缺。
 
 ### 附：迁移暴露的「刷新回切乱窜」修复（2026-10-01，7e153ac）
 react-pi 新链路发送不写 piResumableStorage 登记（旧 transport 专属机制），

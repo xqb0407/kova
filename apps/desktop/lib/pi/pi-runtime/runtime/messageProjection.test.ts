@@ -546,6 +546,8 @@ describe("messageProjection", () => {
           role: "compactionSummary",
           summary: "compacted",
           tokensBefore: 1000,
+          generation: 2,
+          summarized: true,
           timestamp: 3,
         },
       ]),
@@ -559,8 +561,8 @@ describe("messageProjection", () => {
       name: "pi-branch-summary",
     });
     expect(contentParts(out[2]!)[0]).toMatchObject({
-      name: "pi-compaction-summary",
-      data: { tokensBefore: 1000 },
+      name: "compaction",
+      data: { phase: "complete", generation: 2, tokensBefore: 1000, summarized: true },
     });
   });
 
