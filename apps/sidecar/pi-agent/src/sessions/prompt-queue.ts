@@ -24,6 +24,7 @@
  */
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { sendChunk, sendEventChunk } from "../protocol/stream";
+import { emitThreadEvent } from "../protocol/thread-events";
 import { sessionPath } from "../storage/storage";
 import {
   queueSnapshotSchema,
@@ -122,6 +123,16 @@ function emitQueueState(threadId: string, sessionId?: string): void {
     },
     sid,
   );
+  // 原生事件通道（react-pi 迁移阶段 3）：reducer 的 state.queue 由该事件驱动
+  //（三队列语义接线在阶段 4a；此处先让队列栏有数据源）。本引擎无 steering
+  // 常驻（并入当前轮即时注入），followUp 用引擎稳定 id 字符串
+  if (sid) {
+    emitThreadEvent(sid, {
+      type: "queue_update",
+      steering: [],
+      followUp: q.items.map((item) => String(item.id)),
+    });
+  }
 }
 
 export function snapshotOf(threadId: string): QueueSnapshot {

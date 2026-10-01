@@ -33,6 +33,7 @@ import {
   type CompactionRow,
 } from "../sessions/transcript";
 import { logErr } from "../log";
+import { emitThreadEvent } from "../protocol/thread-events";
 import type { Running } from "../types";
 
 /**
@@ -325,6 +326,9 @@ export async function runCompaction(
   const tokensBefore = budget.tokens;
   let summary: string;
   let summarized = true;
+  // 原生事件通道（react-pi 迁移阶段 3）：压缩生命周期进 reducer
+  //（metadata.compactionActive → 压缩横幅），与 data-compaction chunk 并行
+  emitThreadEvent(run.sessionId, { type: "compaction_start", reason });
   const controller = new AbortController();
   run.compactionAbort = controller;
   try {
@@ -338,9 +342,11 @@ export async function runCompaction(
   } catch (err) {
     // 用户 Stop 期间失败：不装填兜底 checkpoint，让外层循环退出
     if (run.stopRequested || controller.signal.aborted) {
+      emitThreadEvent(run.sessionId, { type: "compaction_end", aborted: true, willRetry: false });
       return { ok: false, message: "Compaction aborted" };
     }
     if (reason === "manual") {
+      emitThreadEvent(run.sessionId, { type: "compaction_end", aborted: false, willRetry: false });
       return {
         ok: false,
         message: err instanceof Error ? err.message : String(err),
@@ -360,9 +366,11 @@ export async function runCompaction(
   // 磁盘 transcript 还在，但模型侧上下文永久清空。
   if (!summary.trim()) {
     if (run.stopRequested || controller.signal.aborted) {
+      emitThreadEvent(run.sessionId, { type: "compaction_end", aborted: true, willRetry: false });
       return { ok: false, message: "Compaction aborted" };
     }
     if (reason === "manual") {
+      emitThreadEvent(run.sessionId, { type: "compaction_end", aborted: false, willRetry: false });
       return { ok: false, message: "Summary generation returned no content" };
     }
     summarized = false;
@@ -398,6 +406,7 @@ export async function runCompaction(
   // persistedSeq 指向 state 末尾，下一轮 persist 只写新增消息
   run.persistedSeq = run.agent.state.messages.length;
   run.compactionGeneration = generation;
+  emitThreadEvent(run.sessionId, { type: "compaction_end", aborted: false, willRetry: false });
   return {
     ok: true,
     generation,

@@ -27,6 +27,7 @@ import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
 import { cancelPendingQuestions } from "../tools/question-tools";
 import { noticeAppendedText, preparePromptAttachments } from "./prompt-attachments";
 import { send, sendChunk, sendErrorChunk, setActiveReqId, beginRun } from "./stream";
+import { emitThreadEvent } from "./thread-events";
 import { withEventSeq } from "./event-seq";
 import {
   broadcastQueueState,
@@ -67,7 +68,9 @@ function compactionChunkData(outcome: {
   };
 }
 
-/** §7 context_changed 推送：轮收尾与轮间压缩后共用（桌面占用环镜像直更） */
+/** §7 context_changed 推送：轮收尾与轮间压缩后共用（桌面占用环镜像直更）。
+ *  同时发契约 context_usage 事件（react-pi 迁移阶段 3）：reducer 的
+ *  state.contextUsage / metadata.contextUsage 由它驱动。 */
 function pushContextChanged(run: Running): void {
   if (!run.sessionId) return;
   const info = contextInfo(run);
@@ -81,6 +84,17 @@ function pushContextChanged(run: Running): void {
       cacheHitRatio: info.cacheHitRate,
     }),
   );
+  emitThreadEvent(run.sessionId, {
+    type: "context_usage",
+    contextUsage: {
+      tokens: info.usedTokens,
+      contextWindow: info.contextWindow,
+      percent:
+        info.contextWindow > 0
+          ? Math.round((info.usedTokens / info.contextWindow) * 100)
+          : null,
+    },
+  });
 }
 
 /** 轮间自动压缩钩子（Claude Code 式）：core 循环在每轮工具结果落位后、下一次
