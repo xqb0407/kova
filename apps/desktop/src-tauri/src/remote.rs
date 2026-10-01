@@ -242,7 +242,10 @@ pub(crate) fn broadcast_notification(parsed: Option<&Value>) {
     match v.get("type").and_then(|t| t.as_str()) {
         Some("turn_changed") | Some("session_state") | Some("subagent_activity")
         | Some("automation_fired") | Some("automation_run_done") | Some("plugin_op_result")
-        | Some("context_changed") | Some("design_themes") | Some("design_theme_set") => {}
+        | Some("context_changed") | Some("design_themes") | Some("design_theme_set")
+        // react-pi 迁移阶段 5c：新链路原生事件行（无 id 广播）随行转发，
+        // 远程网页端 WsPiClient 据此驱动快照/流式投影（桌面走 pi-chunk-batch 不受影响）
+        | Some("thread_event") => {}
         _ => return,
     }
     let Ok(map) = authed_txs().lock() else { return };
