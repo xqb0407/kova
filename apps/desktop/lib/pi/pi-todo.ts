@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi/pi-bridge";
-import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 
 /**
  * 任务清单 store（sidecar todo 工具的 per-thread 快照镜像，形态同 pi-session-mode）：
@@ -89,15 +89,18 @@ export function useThreadTodos(threadId: string | undefined): TodoSnapshot {
 }
 
 /** 线程切换/重进时向 sidecar 取水合快照（失败静默：面板只是没有清单）。
- *  水合不算 AI 活动：用户关过的面板回到该线程时保持关闭。 */
+ *  水合不算 AI 活动：用户关过的面板回到该线程时保持关闭。
+ *  未发送草稿（尚无会话）直接跳过：清单必有会话才有，草稿天然为空，
+ *  而 threadId-only 请求会懒建空白会话（污染）。 */
 export function fetchTodoState(threadId: string): void {
   if (inflight.has(threadId)) return;
+  const sessionId = piSessionIdForThread(threadId);
+  if (!sessionId) return;
   inflight.add(threadId);
-  const sessionId = piSessionRegistry.get(threadId);
   piRequest<{ type: "todo_state"; tasks: unknown[]; nextId: number }>({
     type: "get_todo_state",
     threadId,
-    ...(sessionId ? { sessionId } : {}),
+    sessionId,
   })
     .then((res) => {
       applyTodoSnapshot(threadId, { tasks: res.tasks, nextId: res.nextId }, false);

@@ -47,6 +47,12 @@ import { piExtras } from "./piExtras";
 import type { PiRuntimeExtrasInternal, PiRuntimeOptions } from "./runtimeTypes";
 import { PI_SDK } from "../sdkIdentity";
 import { disposeControllers } from "./disposeControllers";
+// 桌面扩展（迁移 4c/5）：本地线程 id -> pi sessionId 绑定登记。新链路的
+// threadListItem.id 在本会话内保持 __LOCALID_ 原值（core reconcileInitializedThread
+// 保留原 mapping id），只有刷新后才等于 sessionId——消费侧请求（context_info/
+// set_mode/主题胶囊等）全靠这张表把线程 id 换成 sessionId，否则 threadId-only
+// 请求会让 sidecar 懒建空白会话（对话失忆）。
+import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 
 const EMPTY_THREAD_STATE = createPiThreadState("__pending__");
 const EMPTY_PROJECTED_MESSAGES: readonly ThreadMessageLike[] = [];
@@ -616,12 +622,17 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
     delete: async (remoteId: string) => {
       await client.deleteThread?.(remoteId);
     },
-    initialize: async () => {
+    initialize: async (threadId?: string) => {
       const snapshot = await client.createThread({
         ...(workspacePath !== undefined ? { workspacePath } : {}),
       });
+      const remoteId = snapshot.metadata.id;
+      // 桌面扩展：登记本地线程 id -> sessionId 绑定（与旧链路 adapter 的
+      // unstable_useAdapters 同职责）。core 在首条消息派发前必跑 initialize，
+      // 故发送前绑定已就位；消费侧请求随后都能换出正确 sessionId。
+      if (threadId) piSessionRegistry.set(threadId, remoteId);
       return {
-        remoteId: snapshot.metadata.id,
+        remoteId,
         externalId: snapshot.metadata.id,
       };
     },

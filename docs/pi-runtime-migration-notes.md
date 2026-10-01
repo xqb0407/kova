@@ -23,7 +23,7 @@
 | 项 | 现状 | 去向 |
 |---|---|---|
 | 流式渲染 | 无（轮询快照按消息行增量落定） | 阶段 3 delta 化事件流 |
-| 文档附件 | `buildPiSendInput` 只透出 text+image，file part 被丢弃 | 阶段 4 扩展 vendored ThreadController |
+| 文档附件 | ~~buildPiSendInput 只透出 text+image~~ 已修：file parts 经 input.files 透传，客户端复用 extractPromptAttachments 转协议附件 | 已修（composer file parts 透传） |
 | 队列栏 | state.queue 仅乐观镜像；快照不带 queuedMessages；clearQueue 为 no-op 占位 | 阶段 4a（queue_cancel/promote/steer 接线） |
 | thinking_seed / subagent 旁路 | 未接（data-* 通道只在旧链路） | 阶段 4c |
 | thinkingLevel 会话定靶 | `set_thinking` 全局广播（sidecar 无会话形参） | 阶段 4 |
@@ -80,7 +80,7 @@
 ### 已知差异 / 暂缺（阶段 4/5 处理）
 | 项 | 现状 | 去向 |
 |---|---|---|
-| 文档附件 | `buildPiSendInput` 只透出 text+image，file part 被丢弃 | 阶段 4 扩展 vendored ThreadController |
+| 文档附件 | ~~buildPiSendInput 只透出 text+image~~ 已修：file parts 经 input.files 透传，客户端复用 extractPromptAttachments 转协议附件 | 已修（composer file parts 透传） |
 | 队列栏 | queue_update 事件已发但客户端未消费；clearQueue 仍为 no-op 占位 | 阶段 4a（queue_cancel/promote/steer 接线） |
 | thinking_seed / subagent 旁路 | thread_event 通道未承载（data-* 通道只在旧链路） | 阶段 4c |
 | thinkingLevel 会话定靶 | `set_thinking` 全局广播（sidecar 无会话形参） | 阶段 4 |
@@ -288,3 +288,31 @@ ResumeRunningThread 的 inFlightTarget 被劫持到无关会话——在 A 会�
 刷新后落到 B。修复：hydrateRunningRegistrations 开头清空全部存量登记，再按
 sidecar 运行态真相（listRunningTurns）重建；三级回切的 running/in-flight 层
 从此只认运行态事实，last-thread 层兜住其余场景。
+
+### 附：迁移暴露的「registry 恒 miss → sidecar 懒建会话」修复（2026-10-01，chk5）
+
+危险链：piSessionRegistry 只有旧链路 populate，新链路所有
+`piSessionRegistry.get(threadId)` 恒 miss → context_info/compact/set_mode/
+get_planning_state/tool_confirm 等命令 threadId-only 发出 → sidecar
+resolveSession 在 running miss 且无 sessionId 参数时走创建分支
+（`randomUUID()` + 空白会话绑在调用方 threadId 键下）→ 真实会话的后续
+pi_prompt 经 `running.get` 命中空白 run → 转录在盘但对话失忆。
+ContextButton 每次切线程的 usePiContextMirror hydrate 即触发，必然踩中。
+
+核实结论（决定修法）：新链路 threadListItem.id 在**本会话内保持 `__LOCALID_`
+原值**（core reconcileInitializedThread 保留原 mapping id，threadIdMap 以
+id/remoteId 双键同指），只有刷新后 classifyThreads 才以 remoteId（=sessionId）
+为 id——「mainThreadId=sessionId」只对恢复后的线程成立。
+
+修复（双管齐下）：
+1. 根修：usePiRuntime 的 adapter.initialize(threadId) 登记绑定进
+   piSessionRegistry（core 在首条消息派发前必跑 initialize，发送前即就位）；
+2. 消费侧统一走 `piSessionIdForThread`（pi-thread-adapter）：registry 命中
+   优先；`__LOCALID_` 未发送草稿返回 undefined（调用方跳过请求或仅落本地
+   快照——threadId-only 请求会懒建污染）；其余 id 本身就是 sessionId 直接
+   返回。替换点：pi-context（threadPayload/markers remoteId）、pi-session-mode
+   （requestMode/fetchPlanningState/setSessionMode 草稿分支）、pi-todo、
+   pi-interactions（list_pending 草稿跳过）、design-themes（set/hydrate/
+   setActive）、pi-session-model、use-panel-cwd、history-pager、header 链路
+   追踪。resolveSession 带 sessionId 时 `session not found` 抛错不建会话，
+   故真实线程显式携带 sessionId 即无懒建风险。

@@ -33,14 +33,18 @@ function listFrame(active?: Ref | null): Req {
   };
 }
 
-/** 会话簿记的替身：与 pi-thread-adapter 同语义（registry 优先，退化 prefs 键） */
+/** 会话簿记的替身：与 pi-thread-adapter 同语义（registry 优先；__LOCALID_ 草稿
+ *  无会话返回 undefined；其余 id 本身就是 sessionId——新链路/恢复线程行） */
 const registry = new Map<string, string>();
 const prefs = new Map<string, PrefsEntry>();
+const { isLocalDraftThreadId } = await import("@/lib/pi/pi-thread-identity");
 mockModule("@/lib/pi/pi-thread-adapter", () => ({
   piSessionRegistry: registry,
   piSessionPrefsMap: prefs,
   prefsSessionIdFor: (threadId: string) =>
     registry.get(threadId) ?? (prefs.has(threadId) ? threadId : undefined),
+  piSessionIdForThread: (threadId: string) =>
+    registry.get(threadId) ?? (isLocalDraftThreadId(threadId) ? undefined : threadId),
 }));
 
 mockModule("@/lib/pi/pi-bridge", () => ({
@@ -141,11 +145,20 @@ describe("清单镜像", () => {
 });
 
 describe("会话级选中（三态播种与写回）", () => {
-  test("无任何已知 sessionId 的线程不发请求（避免懒建会话）", async () => {
+  test("未发送草稿（__LOCALID_）不发请求（避免懒建会话）", async () => {
     await reset();
-    await hydrateSessionTheme("t-unknown");
+    await hydrateSessionTheme("__LOCALID_draft-1");
     expect(calls.length).toBe(0);
-    expect(getSessionDesignTheme("t-unknown")).toBeUndefined();
+    expect(getSessionDesignTheme("__LOCALID_draft-1")).toBeUndefined();
+  });
+
+  test("恢复线程（行 id 即 sessionId）即使偏好镜像没有也拉活动真值", async () => {
+    await reset();
+    responder = () => listFrame({ scope: "builtin", id: "nova" });
+    await hydrateSessionTheme("t-restored");
+    const req = calls.find((c) => c.type === "list_design_themes");
+    expect(req?.sessionId).toBe("t-restored");
+    expect(getSessionDesignTheme("t-restored")).toEqual({ scope: "builtin", id: "nova" });
   });
 
   test("偏好列 JSON 播种选中态；含 active 应答以活动真值覆盖", async () => {
@@ -211,6 +224,13 @@ describe("会话级选中（三态播种与写回）", () => {
     await setSessionDesignTheme("t-g", null);
     expect(getSessionDesignTheme("t-g")).toBeNull();
     expect(prefs.get("s-g")?.designTheme).toBe("");
+  });
+
+  test("未发送草稿只落本地选中态，不发 set_design_theme（避免懒建会话）", async () => {
+    await reset();
+    await setSessionDesignTheme("__LOCALID_draft-2", { scope: "builtin", id: "nova" });
+    expect(calls.some((c) => c.type === "set_design_theme")).toBe(false);
+    expect(getSessionDesignTheme("__LOCALID_draft-2")).toEqual({ scope: "builtin", id: "nova" });
   });
 });
 
