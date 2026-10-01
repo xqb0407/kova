@@ -58,3 +58,21 @@ export const usePiHostUiRequests = () => {
     [extras],
   );
 };
+
+/** 改动（4a）：队列条目 + 逐项操作。队列栏/composer 发送按钮共用；
+ *  条目 id = 真实 reqId，content 为展示文本。编辑（检索到输入框）由调用方
+ *  组合：composer 回填 + cancel(id)。 */
+export const usePiQueue = () => {
+  const extras = piExtras.use((e) => e, EMPTY_RUNTIME_EXTRAS);
+  return useMemo(
+    () => ({
+      queue: extras.queue,
+      cancel: extras.queueCancel,
+      promote: extras.queuePromote,
+      steer: extras.queueSteer,
+      pop: extras.queuePop,
+      clear: extras.clearQueue,
+    }),
+    [extras],
+  );
+};

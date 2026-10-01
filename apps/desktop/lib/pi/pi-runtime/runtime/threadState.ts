@@ -26,6 +26,7 @@ import type {
   PiClientEvent,
   PiContextUsage,
   PiHostUiRequest,
+  PiQueueEntry,
   PiRuntimeReadiness,
   PiThreadMetadata,
   PiThreadSnapshot,
@@ -57,7 +58,8 @@ export interface PiThreadState {
   /** Live streaming tool output, keyed by `toolCallId`. */
   toolExecutions: Readonly<Record<string, PiToolExecutionState>>;
   runStatus: PiRunStatus;
-  queue: { steering: readonly string[]; followUp: readonly string[] };
+  // 改动（4a）：条目化队列（id = 真实 reqId），支撑逐项操作；上游为内容字符串
+  queue: { steering: readonly PiQueueEntry[]; followUp: readonly PiQueueEntry[] };
   contextUsage: PiContextUsage | undefined;
   compaction: { active: boolean; reason?: "manual" | "threshold" | "overflow" };
   retry: { active: boolean; attempt: number };
@@ -164,13 +166,14 @@ const applySnapshot = (
     // field when there is nothing queued, and cold threads have no queue at
     // all) — keeping the prior queue here would let items drained while the
     // event stream was down survive a reconnect snapshot forever.
+    // 改动（4a）：快照条目直映（queuedMessages 的 id/content 即队列条目）。
     queue: {
       steering: (snapshot.metadata.queuedMessages ?? [])
         .filter((m) => m.mode === "steer")
-        .map((m) => m.content),
+        .map((m) => ({ id: m.id, content: m.content })),
       followUp: (snapshot.metadata.queuedMessages ?? [])
         .filter((m) => m.mode === "followUp")
-        .map((m) => m.content),
+        .map((m) => ({ id: m.id, content: m.content })),
     },
     contextUsage: snapshot.metadata.contextUsage ?? state.contextUsage,
     hostUiRequests: snapshot.hostUiRequests ?? [],

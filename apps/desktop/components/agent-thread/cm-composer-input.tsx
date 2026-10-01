@@ -8,7 +8,10 @@ import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, placeholder as 
 import { useEffect, useRef, type FC } from "react";
 import { toast } from "@/components/ui/toast";
 import { validatePromptFile } from "@/lib/attachments/prompt-attachments";
-import { markSteerNextSend } from "@/lib/pi/pi-steer-intent";
+import {
+  addSteeredBadge,
+  markSteerNextSend,
+} from "@/lib/pi/pi-steer-intent";
 import { notifyNoModelSelected, useModelGate } from "@/lib/pi/pi-model-gate";
 
 /**
@@ -285,7 +288,13 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
         ) {
           event.preventDefault();
           const chatId = s.threadId;
-          if (chatId) markSteerNextSend(chatId);
+          if (chatId) {
+            markSteerNextSend(chatId);
+            // 已并入徽标（迁移 4a）：新链路 sidecar 不回传 data-steered 信号，
+            // 运行中 steer 发送即时本地记账，宿主轮流收尾时由队列栏清空
+            const text = s.aui.composer.getState().text;
+            if (text.trim()) addSteeredBadge(chatId, text);
+          }
           s.send();
           return true;
         }

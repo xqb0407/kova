@@ -88,6 +88,43 @@
 | 图片/检查点 data-* part | 快照路径不重建（旧路径 get_history 重建 data-image/data-compaction） | 阶段 4 |
 | running 键混跑 | 旧链路发起的轮以本地 threadId 为键，新链路 abort/steer 找不到它（仅迁移期并存时出现） | 阶段 5 删旧链路后消失 |
 
+## 阶段 4a（队列三语义 + 逐项操作 + 刷新恢复）
+
+### 已接通
+- **队列条目化**：queue_update 载荷与快照 queuedMessages 升级为
+  `PiQueueEntry { id, content }`（id = 真实 reqId），sidecar 与 vendored 层同形状；
+  快照指纹加排队维度（条数 + 首条 id），刷新恢复采纳的队列能触发派发。
+- **sidecar**：`queue_clear` 命令（整队清空，返回被清文本供 composer 回填）；
+  thread_snapshot 带 queuedMessages（重启/刷新后 reducer 重建 state.queue）。
+- **vendored 契约**：PiClient 可选 `queueCancel/queuePromote/queueSteer/queuePop`；
+  controller（客户端不支持时抛错）→ extras → `usePiQueue()` 透出。队列适配器：
+  move 无锚点进 steer 车道 = 立即发送（映射 queue_promote）、edit = 删旧项重发、
+  remove = queue_cancel。
+- **UI 数据源**：队列栏与发送按钮换 `state.queue`（queue_update 事件驱动）；
+  「已并入当前回复」徽标改前端本地记账（pi-steer-intent：steer 成功登记文本、
+  isRunning 下降沿清空；队列栏并入与 composer Alt+点击 / Shift+⌘+Enter 运行中
+  steer 发送三条路径都记账；快照/重启丢失可接受）。
+- **steer 意图桥接**：composer 只有模块级标记（runConfig 不透传）→
+  TauriPiClient.sendMessage 消费 pi-steer-intent 标记升级为 steer（显式
+  streamingBehavior 优先）。
+- **订阅保活**：队列非空时保持 connect——空闲断开后串行链自派发的下一轮
+  agent_start 对前端不可见，保活让链节派发原生可见。
+- **接力泵收敛**：只兜 sidecar 重启后无链节的孤儿队列（挂载/队列变化/运行
+  下降沿探测，queue_pop 由 sidecar isTurnBusy + hasPromptChain 双保险守卫，
+  链节在时绝不误弹）；旧 remove/reveal 消息数组信号同步退役（排队消息不进
+  消息列表，react-pi 原生满足「调度前不显示气泡」）。
+- **停止语义**：abort = abortRun + cancelAllEntries（停止即整线程停止，连队列
+  一起清）；上游 onCancel 不再前置 clearQueue。
+- **乐观条目**：发送瞬间 id 未知（reqId 在 client 内生成）→ `pending-{ts}-{seq}`
+  占位，下一条 queue_update 自愈替换；逐项操作不做乐观改写（并入时活跃轮恰好
+  收尾等失败需要条目原位保留）。
+
+### 设计权衡记录
+- queue_update 只广播给活跃 sid（emitQueueState 带 sid）；空快照在最后一项
+  派发/取消时同样广播，前端队列条自然清空。
+- 泵重发走 composer 正常发送路径（setText + send），线程空闲即刻派发；
+  pop 与重发之间的窗口由 sidecar 守卫兜住（忙/有链节返回 null）。
+
 ## 验证记录
 - `bunx tsc --noEmit`（apps/desktop 与 sidecar）干净
 - vendored 85 测试 + 全仓 929 测试绿
@@ -101,3 +138,10 @@
 - 全仓 929 项测试绿
 - 待用户实测（perf 对比）：多会话并发流式流畅度（阶段 2 轮询 vs 阶段 3 事件流，
   后台线程不再全价消化 chunk）；流式中途刷新恢复；崩溃后重开线程自愈
+
+### 阶段 4a 验证（2026-10-01）
+- `bunx tsc --noEmit` 两端干净；pi-runtime 90 项测试绿（threadState.test.ts
+  queue_update 用例升级为条目形状）；全仓 929 项测试绿
+- 待用户实测：忙时发送自动排队 / 并入（队列栏 Merge 与 Alt+点击、Shift+⌘+Enter）/
+  立即发送（Zap）/ 删除 / 删除最近排队（发送按钮 ■）/ 刷新后队列恢复与孤儿队列
+  接力 / 停止生成连队列一起清

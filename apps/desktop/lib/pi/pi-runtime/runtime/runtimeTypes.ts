@@ -18,6 +18,7 @@ import type {
   PiContextUsage,
   PiHostUiRequest,
   PiHostUiResponse,
+  PiQueueEntry,
   PiRuntimeReadiness,
   PiThinkingLevel,
   PiThreadMetadata,
@@ -64,6 +65,13 @@ export interface PiRuntimeExtras {
   /** Clear Pi's queued (steering + follow-up) messages; resolves with the
    * cleared text so it can be restored into the composer. */
   clearQueue: () => Promise<{ steering: string[]; followUp: string[] }>;
+  // 改动（4a）：逐项队列操作（id = 真实 reqId）。编辑 = 回填 composer +
+  // queueCancel，由队列栏 UI 组合，不单设 edit 面。
+  queueCancel: (id: string) => Promise<void>;
+  queuePromote: (id: string) => Promise<void>;
+  queueSteer: (id: string) => Promise<void>;
+  // 改动（4a）：弹出队首交由前端重发（接力泵用）；无孤儿队列时为 null。
+  queuePop: () => Promise<PiQueueEntry | null>;
   setModel: (input: { provider: string; modelId: string }) => Promise<void>;
   setThinkingLevel: (level: PiThinkingLevel) => Promise<void>;
   respondToHostUiRequest: (response: PiHostUiResponse) => Promise<void>;

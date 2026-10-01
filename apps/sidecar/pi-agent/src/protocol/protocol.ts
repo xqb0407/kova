@@ -32,6 +32,9 @@
  *   { "type": "queue_steer", "id", "requestId" }            → { id, type: "queue_steered", requestId }
  *       并入当前轮：排队项注入所属线程活跃轮（不中止不排队），其流走 steered
  *       退化收尾（finish 随宿主轮收尾补发）；无活跃轮/正在收尾则报错、项原位保留
+ *   { "type": "queue_clear", "id", "threadId"? }            → { id, type: "queue_cleared", threadId, cleared }
+ *       整队清空（PiClient.clearQueue 契约）：取消该线程全部排队项（各自流
+ *       abort+finish 收尾），cleared 为被清文本列表（供 UI 回填 composer）
  *   { "type": "queue_pop", "id", "threadId"?, "sessionId"? } → { id, type: "queue_popped", threadId, popped }
  *       弹出队首交由前端重发（前端接力泵用；仅线程空闲且无串行链节时弹出，
  *       否则 popped 为 null——链节仍在，泵转而在跑轮探测重挂）

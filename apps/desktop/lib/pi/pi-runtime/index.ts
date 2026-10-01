@@ -50,5 +50,6 @@ export {
   usePiSession,
   usePiThreadState,
   usePiHostUiRequests,
+  usePiQueue,
 } from "./runtime/hooks";
 export type { PiRuntimeOptions, PiRuntimeExtras } from "./runtime/runtimeTypes";

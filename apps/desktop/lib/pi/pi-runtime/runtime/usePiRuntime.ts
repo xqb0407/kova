@@ -36,14 +36,13 @@ import {
   PiThreadController,
   type PiThreadControllerLike,
 } from "./ThreadController";
-import { piQueueItemId } from "../queueIds";
+import { createPiThreadState, type PiThreadState } from "./threadState";
+import type { PiClient, PiThreadMetadata } from "../types";
 import {
   responseForToolApproval,
   splitHostUiRequests,
   type PiInterruptAnswer,
 } from "./hostUi";
-import { createPiThreadState, type PiThreadState } from "./threadState";
-import type { PiClient, PiThreadMetadata } from "../types";
 import { piExtras } from "./piExtras";
 import type { PiRuntimeExtrasInternal, PiRuntimeOptions } from "./runtimeTypes";
 import { PI_SDK } from "../sdkIdentity";
@@ -109,6 +108,11 @@ export const NOOP_CONTROLLER: PiThreadControllerLike = {
   sendMessage: async () => {},
   cancel: async () => {},
   clearQueue: async () => ({ steering: [], followUp: [] }),
+  // 改动（4a）：NOOP 桩补齐逐项操作（无活动线程时静默 no-op）
+  queueCancel: async () => {},
+  queuePromote: async () => {},
+  queueSteer: async () => {},
+  queuePop: async () => null,
   setModel: async () => {},
   setThinkingLevel: async () => {},
   respondToToolApproval: async () => {},
@@ -145,6 +149,11 @@ const buildExtras = (
     cancel: () => controller.cancel(),
     refresh: () => controller.refresh(),
     clearQueue: () => controller.clearQueue(),
+    // 改动（4a）：逐项队列操作透出
+    queueCancel: (id) => controller.queueCancel(id),
+    queuePromote: (id) => controller.queuePromote(id),
+    queueSteer: (id) => controller.queueSteer(id),
+    queuePop: () => controller.queuePop(),
     setModel: (input) => controller.setModel(input),
     setThinkingLevel: (level) => controller.setThinkingLevel(level),
     respondToHostUiRequest: (response) =>
@@ -268,11 +277,16 @@ const usePiThreadStore = (
   // run server-side inside `createThread`. The supervisor already holds a live
   // record for a running thread, so subscribing attaches to it; idle threads
   // never connect and the cold-read path stays cheap.
+  // 改动（4a）：队列非空时同样保持订阅——空闲断开后，sidecar 串行链在上一轮
+  // 收尾时自派发的下一轮 agent_start 对前端不可见（事件路由按订阅分流），
+  // 接力泵无从感知；订阅保活让链节派发原生可见，泵只剩孤儿队列一种场景。
+  const queueBusy =
+    state.queue.steering.length > 0 || state.queue.followUp.length > 0;
   useReplaySafeEffect(() => {
     if (controller === NOOP_CONTROLLER) return;
-    if (!isRunning) return;
+    if (!isRunning && !queueBusy) return;
     return controller.connect();
-  }, [controller, isRunning]);
+  }, [controller, isRunning, queueBusy]);
 
   const extras = useMemo<PiRuntimeExtrasInternal>(
     () => buildExtras(controller, state),
@@ -285,17 +299,20 @@ const usePiThreadStore = (
   // what lets the composer keep accepting input while a run is streaming
   // (mid-run sends steer by default; `send({ steer: false })` queues a
   // follow-up).
+  // 改动（4a）：条目 id 用真实 reqId（state.queue 条目化）；框架面的
+  // move/edit/remove 接到逐项操作——move 无锚点进 steer 车道 = 立即发送
+  // （中止当前轮并执行该项，语义与 queue_promote 一致），edit = 删旧项重发。
   const queue = useMemo<ExternalThreadQueueAdapter>(
     () => ({
-      items: state.queue.followUp.map((content, index) => ({
-        id: piQueueItemId("followUp", index),
-        prompt: content,
-        parts: [{ type: "text" as const, text: content }],
+      items: state.queue.followUp.map((entry) => ({
+        id: entry.id,
+        prompt: entry.content,
+        parts: [{ type: "text" as const, text: entry.content }],
       })),
-      steerItems: state.queue.steering.map((content, index) => ({
-        id: piQueueItemId("steer", index),
-        prompt: content,
-        parts: [{ type: "text" as const, text: content }],
+      steerItems: state.queue.steering.map((entry) => ({
+        id: entry.id,
+        prompt: entry.content,
+        parts: [{ type: "text" as const, text: entry.content }],
       })),
       enqueue: (message) => {
         void controller
@@ -307,12 +324,23 @@ const usePiThreadStore = (
           .sendMessage(message, { streamingBehavior: "steer" })
           .catch((error: unknown) => invokePiErrorCallback(onError, error));
       },
-      // the server-side queue exposes no per-item operations; shared queue
-      // UI cannot feature-detect these, so they deliberately no-op rather
-      // than crash an unguarded click path
-      move: () => {},
-      edit: () => {},
-      remove: () => {},
+      move: (queueItemId, placement) => {
+        if (placement.lane !== "steer") return;
+        void controller
+          .queuePromote(queueItemId)
+          .catch((error: unknown) => invokePiErrorCallback(onError, error));
+      },
+      edit: (queueItemId, message) => {
+        void (async () => {
+          await controller.queueCancel(queueItemId);
+          await controller.sendMessage(message);
+        })().catch((error: unknown) => invokePiErrorCallback(onError, error));
+      },
+      remove: (queueItemId) => {
+        void controller
+          .queueCancel(queueItemId)
+          .catch((error: unknown) => invokePiErrorCallback(onError, error));
+      },
     }),
     [controller, state.queue, onError],
   );
@@ -339,13 +367,10 @@ const usePiThreadStore = (
       },
       onCancel: async () => {
         try {
-          // clear before cancelling so the server cannot promote a queued
-          // prompt into a new run in between
-          try {
-            await controller.clearQueue();
-          } finally {
-            await controller.cancel();
-          }
+          // 改动（4a）：去掉上游的 cancel 前 clearQueue——我们的停止语义 =
+          // 整线程停止（sidecar abort 命令在中止活跃轮的同时取消该线程全部
+          // 排队项），不存在「cancel 与队列续派之间被提升」的窗口
+          await controller.cancel();
         } catch (error) {
           invokePiErrorCallback(onError, error);
           throw error;

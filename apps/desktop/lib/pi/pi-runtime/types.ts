@@ -386,6 +386,14 @@ export type PiQueuedMessage = {
   content: string;
 };
 
+/** 改动（4a）：队列条目带稳定 id + 文本。上游 queue_update/队列状态只携带
+ *  内容字符串（逐项操作无从寻址），我们以真实 reqId 为 id 支撑逐项
+ *  取消/并入/立即发送与「队列条目 id = 真实 reqId」约束。 */
+export type PiQueueEntry = {
+  id: string;
+  content: string;
+};
+
 export type PiThreadMetadata = {
   id: string;
   title?: string;
@@ -521,9 +529,11 @@ export type PiClientEventBody =
       isError: boolean;
     }
   | {
+      // 改动（4a）：条目形状从内容字符串升级为 PiQueueEntry（id + 文本），
+      // 与 sidecar queue_update 载荷、快照 queuedMessages 重建对齐
       type: "queue_update";
-      steering: readonly string[];
-      followUp: readonly string[];
+      steering: readonly PiQueueEntry[];
+      followUp: readonly PiQueueEntry[];
     }
   | { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
   | { type: "compaction_end"; aborted: boolean; willRetry: boolean }
@@ -602,6 +612,19 @@ export interface PiClient {
   clearQueue(
     threadId: string,
   ): Promise<{ steering: string[]; followUp: string[] }>;
+
+  // 改动（4a）：逐项队列操作。上游 Pi 无此面（契约只有整队清空，官方运行时
+  // 对 per-item 操作 no-op）；我们经 sidecar queue_cancel/queue_promote/
+  // queue_steer 实现真操作。id = 真实 reqId（队列条目 id 约束）。
+  /** 删除单个排队项（不执行）。 */
+  queueCancel?(threadId: string, id: string): Promise<void>;
+  /** 立即发送：该项提到队首并中止该线程当前活跃轮，串行链随即执行它。 */
+  queuePromote?(threadId: string, id: string): Promise<void>;
+  /** 并入当前轮：排队项注入活跃轮（不中止不排队）。无活跃轮则报错、项原位保留。 */
+  queueSteer?(threadId: string, id: string): Promise<void>;
+  /** 改动（4a）：弹出队首交由前端重发（刷新接力泵用）。sidecar 守卫
+   *  isTurnBusy + hasPromptChain 双保险——链节仍在时返回 null 绝不误弹。 */
+  queuePop?(threadId: string): Promise<PiQueueEntry | null>;
 
   getAvailableModels(input?: {
     workspacePath?: string;

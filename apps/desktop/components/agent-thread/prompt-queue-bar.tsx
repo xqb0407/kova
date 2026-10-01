@@ -1,138 +1,95 @@
 "use client";
 
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { useAISDKChat } from "@assistant-ui/ai-sdk";
+import { usePiQueue } from "@/lib/pi/pi-runtime";
 import {
-  cancelQueueItem,
-  dedupeMessagesById,
-  dropQueuedEntry,
-  getQueueSnapshot,
-  popQueueHead,
-  promoteQueueItem,
-  refreshQueueSnapshot,
-  setQueueSyncListener,
-  steerQueueItem,
-  useQueueSnapshot,
-  useSteeredQueueItems,
-  type RegisteredMessage,
-} from "@/lib/pi/pi-queue";
-import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
-import { findRunningTurn } from "@/lib/pi/pi-running";
+  addSteeredBadge,
+  clearSteeredBadges,
+  useSteeredBadges,
+} from "@/lib/pi/pi-steer-intent";
 import { CheckIcon, MergeIcon, XIcon, ZapIcon } from "lucide-react";
 import { useEffect, useRef, useState, type FC } from "react";
 import { cn } from "cn";
 
 /**
- * prompt 排队条（composer 上方）——队列 v3，全部操作只有三个：
- *  - 并入当前回复（steer）：注入活跃轮，不中止本轮；条目转入「已并入当前回复」
- *    徽标区（多条折叠为一行，防越并越长），宿主轮流收尾时徽标消失——并入
- *    内容已随本轮回复呈现，不再回填独立气泡
+ * prompt 排队条（composer 上方）——迁移 4a：数据源 = react-pi state.queue
+ * （sidecar queue_update 事件驱动，条目 id = 真实 reqId）。全部操作只有三个：
+ *  - 并入当前回复（steer）：注入活跃轮，不中止本轮；成功后条目转入「已并入
+ *    当前回复」徽标区（本地记账，多条折叠为一行，防越并越长），宿主轮流收尾
+ *    时徽标消失——并入内容已随本轮回复呈现，不再回填独立气泡
  *  - 立即发送（promote）：中止当前轮、该项插队马上执行
  *  - 删除（cancel）：取消排队项
- * 渲染完全由 data-queue-state 快照驱动（sidecar 是唯一事实源）；排队中的消息
- * 保持在消息数组外（pi-queue 的 remove/reveal 信号同步，见其头注）。
+ * 排队中的消息不进消息列表（sidecar 调度后才落盘转录）——react-pi 原生满足
+ * 「调度前不显示气泡」，无需旧链路的 remove/reveal 信号同步。
  *
- * 刷新接力泵：页面刷新后前端流全部死亡，sidecar 的链节派发对前端不可见。
- * 挂载与每轮运行结束（isRunning 下降沿）时探测：
- *  - sidecar 有在跑轮（链节盲派发）：findRunningTurn 补 resumable 登记后
- *    resumeStream 重挂接续；
- *  - 线程空闲且队列非空（sidecar 重启后无链节）：queue_pop 弹出队首（sidecar
- *    守卫 isTurnBusy + hasPromptChain，有链节时返回 null 绝不误弹），销毁旧
- *    登记防双气泡，按文本走正常发送路径重发。
+ * 刷新接力泵（收敛版）：运行轮重挂由 connect + 快照自愈承担（迁移阶段 3）；
+ * 队列非空时订阅保活（见 usePiRuntime），sidecar 串行链派发的下一轮
+ * agent_start 原生可见——泵只剩一种场景：sidecar 重启后无链节的孤儿队列。
+ * 挂载/快照恢复（队列从空变非空）与 isRunning 下降沿时探测：线程空闲且队列
+ * 非空 → queue_pop（sidecar 守卫 isTurnBusy + hasPromptChain 双保险，链节
+ * 在时绝不误弹）→ 弹出队首按文本走正常发送路径重发。
  */
 export const PromptQueueBar: FC = () => {
   const aui = useAui();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const isRunning = useAuiState((s) => s.thread.isRunning);
-  const snapshot = useQueueSnapshot(threadId);
-  const steered = useSteeredQueueItems(threadId);
-  const chat = useAISDKChat();
+  const { queue, cancel, promote, steer, pop } = usePiQueue();
+  const steered = useSteeredBadges(threadId ?? "");
   const [busy, setBusy] = useState(false);
 
-  // 消息数组同步：经 syncRef 间接调用（effect 只随线程重跑，不被流式渲染
-  // 期间不稳定的 helpers 身份反复触发）。两个方向都幂等且「无变化不赋值」，
-  // 防渲染↔同步死循环。
-  const syncRef = useRef<(reg: RegisteredMessage, kind: "remove" | "reveal") => void>(
-    () => {},
-  );
-  syncRef.current = (reg, kind) => {
-    if (!chat || reg.threadId !== threadId) return;
-    const msgs = chat.messages;
-    const idx = msgs.findIndex((m) => m.id === reg.messageId);
-    let next = msgs;
-    if (kind === "remove") {
-      if (idx !== -1) next = msgs.filter((m) => m.id !== reg.messageId);
-    } else if (idx === -1 && reg.message) {
-      next = [...msgs, reg.message];
-    }
-    // 写入面统一按 id 去重：remove/reveal 与流式写入的竞态可能产生重复项，
-    // 在此收敛（消灭 duplicate-id 告警与双气泡），无重复时原数组直通
-    if (next !== msgs) chat.setMessages(dedupeMessagesById(next));
-  };
-
-  // 接力泵（见头注）：pumpingRef 防重入（内含 await 链）。弹出重发路径先
-  // dropQueuedEntry 销毁旧登记——不销毁的话派发快照会把旧气泡回填成双份。
+  // 接力泵（见头注）：pumpingRef 防重入（内含 await 链）。queue_pop 的
+  // sidecar 双保险让误弹不可能——链节仍在/轮在跑时 popped 恒为 null。
   const pumpRef = useRef<() => Promise<void>>(async () => {});
   const pumpingRef = useRef(false);
   pumpRef.current = async () => {
     if (!aui || !threadId || pumpingRef.current) return;
+    if (queue.steering.length === 0 && queue.followUp.length === 0) return;
     pumpingRef.current = true;
     try {
-      const sessionId = piSessionRegistry.get(threadId);
-      await refreshQueueSnapshot(threadId, sessionId);
-      if (getQueueSnapshot(threadId).items.length === 0) return;
+      // 在跑轮（含链节盲派发的下一轮）：订阅保活下事件原生可见，无需泵
       if (aui.thread.getState().isRunning) return;
-      // 链节盲派发的在跑轮：补登记后重挂接续
-      const turn = sessionId ? await findRunningTurn(sessionId) : null;
-      if (turn?.requestId) {
-        await chat?.resumeStream();
-        return;
-      }
-      // 无链节（sidecar 重启/队列孤儿）：弹出队首按文本重发
-      const popped = await popQueueHead(threadId, sessionId);
+      const popped = await pop();
       if (!popped) return;
-      dropQueuedEntry(popped.reqId);
-      // 派发绑定校正：popped.sessionId（sidecar 从排队项原帧带回）是该消息
-      // 归属会话的权威值。绑定漂移/缺失时先校正再重发——否则重发会落进
-      // 错误（或被 ensure 新建的空）会话，上下文尽失（2026-09-28 事故路径）
-      if (popped.sessionId && piSessionRegistry.get(threadId) !== popped.sessionId) {
-        piSessionRegistry.set(threadId, popped.sessionId);
-      }
-      await refreshQueueSnapshot(threadId, popped.sessionId ?? sessionId);
-      aui.composer.setText(popped.text);
+      // 无孤儿不入此分支（popped=null）。按文本走正常发送路径重发——
+      // 线程空闲即刻派发，队列条目随 queue_update 事件自然消失
+      aui.composer.setText(popped.content);
       aui.composer.send();
     } catch (err) {
-      // 通道异常：下一次下降沿/挂载再试；留痕防"泵凭空失效"无从排查
+      // 通道异常：下一次下降沿/队列变化再试；留痕防"泵凭空失效"无从排查
       console.warn("[queue-pump] dispatch failed", String(err));
     } finally {
       pumpingRef.current = false;
     }
   };
 
-  // 同步监听 + 挂载接力：线程挂载/刷新恢复时拉一次快照并泵一次（对齐镜像 +
-  // 接续派发），此后由 data-queue-state 快照广播对齐（最后快照胜出）
+  // 队列非空即探测（覆盖挂载/线程切换/快照恢复采纳孤儿队列/队列增长）；
+  // 全空时 key 归零不触发。泵内部有运行态与 sidecar 双重守卫，多触发无害
+  const queueKey = `${queue.steering.length}:${queue.followUp.length}:${
+    queue.followUp[0]?.id ?? ""
+  }`;
   useEffect(() => {
-    setQueueSyncListener((reg, kind) => syncRef.current(reg, kind));
-    if (!threadId) return () => setQueueSyncListener(null);
+    if (queueKey === "0:0:") return;
     void pumpRef.current();
-    return () => setQueueSyncListener(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId]);
+  }, [queueKey]);
 
-  // 每轮运行结束（isRunning 下降沿）接力：链节在上一轮流收尾后派发下一项，
-  // 其 chunk 对刷新后的前端不可见——趁 status 回落空闲的时机补挂/续发
+  // isRunning 下降沿：链节派发由订阅保活原生覆盖；泵兜孤儿队列，徽标随
+  // 宿主轮流收尾清空（并入内容已随本轮回复呈现）
   const wasRunningRef = useRef(false);
   useEffect(() => {
-    if (wasRunningRef.current && !isRunning) void pumpRef.current();
+    if (wasRunningRef.current && !isRunning) {
+      if (threadId) clearSteeredBadges(threadId);
+      void pumpRef.current();
+    }
     wasRunningRef.current = isRunning;
-  }, [isRunning]);
+  }, [isRunning, threadId]);
 
   const act = async (fn: () => Promise<void>) => {
     setBusy(true);
     try {
       await fn();
     } catch {
-      // 无活跃轮可并入等拒绝：忽略（快照下一次广播对齐）
+      // 无活跃轮可并入等拒绝：忽略（条目原位保留，快照下一次广播对齐）
     } finally {
       setBusy(false);
     }
@@ -141,7 +98,8 @@ export const PromptQueueBar: FC = () => {
   // 容器常驻 + grid rows 0fr↔1fr 高度过渡：队列条目挂载/卸载（尤其调度时
   // 气泡插入与条目卸载跨帧）不再让 sticky footer 高度瞬变、把消息流瞬推
   // 一下（滚动闪跳）。条目本身的淡入由卡片 animate-in 负责，消失走直接移除。
-  const hasContent = snapshot.items.length > 0 || steered.length > 0;
+  const items = queue.followUp;
+  const hasContent = items.length > 0 || steered.length > 0;
   if (!threadId) return null;
 
   return (
@@ -167,25 +125,25 @@ export const PromptQueueBar: FC = () => {
           <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
           <span
             className="text-foreground/70 min-w-0 flex-1 truncate text-sm"
-            title={steered.map((item) => item.text).join("\n")}
+            title={steered.join("\n")}
           >
             {steered.length === 1
-              ? steered[0].text
-              : `${steered[0].text} 等 ${steered.length} 条`}
+              ? steered[0]
+              : `${steered[0]} 等 ${steered.length} 条`}
           </span>
           <span className="text-muted-foreground/70 shrink-0 text-[11px] leading-none">
             已并入当前回复
           </span>
         </div>
       )}
-      {snapshot.items.length > 0 && (
+      {items.length > 0 && (
         <div className="text-muted-foreground/70 pl-3.5 text-[11px] leading-none tabular-nums">
-          {snapshot.items.length} 条排队
+          {items.length} 条排队
         </div>
       )}
-      {snapshot.items.map((item, index) => (
+      {items.map((item, index) => (
         <div
-          key={item.reqId}
+          key={item.id}
           className="group border-border/50 dark:border-muted-foreground/10 flex items-center gap-2 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-1.5 pl-3.5 backdrop-blur-md animate-in fade-in slide-in-from-bottom-1 duration-200"
         >
           <span
@@ -196,22 +154,29 @@ export const PromptQueueBar: FC = () => {
           </span>
           <span
             className="text-foreground/70 min-w-0 flex-1 truncate text-sm"
-            title={item.text}
+            title={item.content}
           >
-            {item.text}
+            {item.content}
           </span>
           <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100">
             <QueueIconButton
               label="并入当前回复（不中止本轮）"
               disabled={busy}
-              onClick={() => void act(() => steerQueueItem(item.reqId))}
+              onClick={() =>
+                void act(async () => {
+                  await steer(item.id);
+                  // 并入成功（sidecar 从队列移除该条并注入活跃轮）才记徽标；
+                  // 失败时条目原位保留，不记
+                  addSteeredBadge(threadId, item.content);
+                })
+              }
             >
               <MergeIcon className="size-3.5" />
             </QueueIconButton>
             <QueueIconButton
               label="立即发送（中止当前回复）"
               disabled={busy}
-              onClick={() => void act(() => promoteQueueItem(item.reqId))}
+              onClick={() => void act(() => promote(item.id))}
             >
               <ZapIcon className="size-3.5" />
             </QueueIconButton>
@@ -219,7 +184,7 @@ export const PromptQueueBar: FC = () => {
               label="删除"
               disabled={busy}
               className="hover:text-destructive"
-              onClick={() => void act(() => cancelQueueItem(item.reqId))}
+              onClick={() => void act(() => cancel(item.id))}
             >
               <XIcon className="size-3.5" />
             </QueueIconButton>
