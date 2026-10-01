@@ -259,8 +259,12 @@
    测试钉住同构防止单侧特判 data URL）。
 2. **检查点卡未接**：createCheckpoint/settleCheckpoint 链路在 thread_event
    通道无对应事件，检查点指示条不更新（数据仍走 checkpoint API，功能可用）。
-3. **agent.turn.completed 完成提醒未接**：旧链路的完成通知 side effect 在
-   新链路无人触发。
+3. ~~**agent.turn.completed 完成提醒未接**~~ **已修复（2026-10-01）**：sidecar
+   事件桥 agent_end 随帧带末条 assistant 的 stopReason/errorMessage；前端
+   TauriPiClient 收 agent_end 全局定调（不依赖订阅者，后台线程同样提醒），
+   completed/error 走 agent-events 总线（弹窗/提示音/webhook 消费），aborted
+   不提醒（旧链路 sawAborted/sawError 同语义）。lastPrompts 台账（仅本实例
+   sendMessage 过的会话入表）挡掉 automation/他窗 turn 的重复提醒。
 4. ~~**压缩分隔线 data part 名不匹配**~~ **已修复（2026-10-01）**：投影层
    compactionSummary → data part 名对齐 `"compaction"`，载荷对齐 get_history
    的 compactionDividerPart 同口径（`{phase:"complete", generation,

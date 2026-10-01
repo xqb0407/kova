@@ -33,6 +33,7 @@ import { applyTodoChunk } from "@/lib/pi/pi-todo";
 import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
 import { refreshFileTree } from "@/lib/workspace/file-tree";
 import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
+import { emitAgentEvent } from "@/lib/pi/agent-events";
 import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import type { PendingInteraction } from "pi-protocol";
@@ -158,6 +159,9 @@ export class TauriPiClient implements PiClient {
   /** 在飞 prompt requestId → sessionId（收尾帧触发即时快照刷新：
    *  prompt 起跑前失败等不走 agent 事件的路径的兜底，阶段 5 随 chunk 流退役） */
   private readonly inflight = new Map<string, string>();
+  /** 每会话最近一次发送的 prompt（完成提醒正文用）；仅本实例发起的会话入表
+   *  ——automation/他窗发起的 turn 不在表内，不重复提醒（旧链路同语义） */
+  private readonly lastPrompts = new Map<string, string>();
   private unlistenChunks: UnlistenFn | null = null;
 
   // ---------- 快照 ----------
@@ -294,11 +298,12 @@ export class TauriPiClient implements PiClient {
         }
         if (parsed.type === "thread_event") {
           if (looksEvent) {
-            this.routeThreadEvent(
-              String(parsed.sessionId ?? ""),
-              Number(parsed.eventSeq ?? 0),
-              parsed.event ?? {},
-            );
+            const sid = String(parsed.sessionId ?? "");
+            const body = parsed.event ?? {};
+            // 完成提醒（缺口3，迁移后接回）：agent_end 收尾定调全局生效——
+            // 不依赖该线程是否有订阅者，后台线程同样提醒（旧 transport 对齐）
+            if (body.type === "agent_end") this.notifyTurnSettled(sid, body);
+            this.routeThreadEvent(sid, Number(parsed.eventSeq ?? 0), body);
           }
           continue;
         }
@@ -414,6 +419,33 @@ export class TauriPiClient implements PiClient {
     });
   }
 
+  /** turn 收尾 → agent-events 总线（失焦弹窗/提示音/webhook 订阅者消费）。
+   *  只对本实例发起过 prompt 的会话生效（lastPrompts 台账）——automation 与
+   *  他窗的 turn 自有各自的提醒通道，不在这里重复。aborted（用户主动停止）
+   *  不算完成不提醒；stopReason=error 走 agent.turn.error，与旧链路 finish
+   *  分支的 sawAborted/sawError 语义一致。 */
+  private notifyTurnSettled(sessionId: string, body: Record<string, unknown>) {
+    if (!this.lastPrompts.has(sessionId)) return;
+    const stopReason = typeof body.stopReason === "string" ? body.stopReason : undefined;
+    if (stopReason === "aborted") return;
+    if (stopReason === "error") {
+      emitAgentEvent("agent.turn.error", {
+        threadId: sessionId,
+        data: {
+          message:
+            typeof body.errorMessage === "string" && body.errorMessage
+              ? body.errorMessage
+              : "pi agent error",
+        },
+      });
+      return;
+    }
+    emitAgentEvent("agent.turn.completed", {
+      threadId: sessionId,
+      data: { prompt: this.lastPrompts.get(sessionId)?.slice(0, 120) },
+    });
+  }
+
   /** thread_event 分流 + partial 重建后按契约信封 dispatch */
   private routeThreadEvent(
     sessionId: string,
@@ -516,10 +548,12 @@ export class TauriPiClient implements PiClient {
     // steer 意图桥接（4a）：composer 的 Alt+点击 / Shift+⌘+Enter 在发送前置
     // markSteerNextSend 标记（模块级单跳信号，runConfig 不透传）。显式
     // streamingBehavior 优先；无显式行为且标记在 → 升级为 steer（含控制器
-    // 忙时默认派生的 followUp——标记只会在「用户明确要点并入」时存在）。
+    // 忙时默认派生的 followUp——标记只会在「用户明确要点并入」时存在）
     const steer = input.streamingBehavior === "steer" || consumeSteerIntent(threadId);
     // 运行中发送 = followUp（sidecar 自动排队）；steer 显式并入当前轮
     this.inflight.set(requestId, threadId);
+    // 完成提醒台账（缺口3）：排队项每条都经这里发出，agent_end 时取最新
+    this.lastPrompts.set(threadId, input.content);
     void this.ensureEventWatcher();
     try {
       await invoke("pi_prompt", {
