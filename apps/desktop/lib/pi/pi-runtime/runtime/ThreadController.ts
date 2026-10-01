@@ -245,19 +245,35 @@ const optimisticUserMessageFromInput = (
 const appendMessageFromUserProjection = (
   message: ThreadMessageLike,
 ): AppendMessage => {
-  const content =
-    typeof message.content === "string"
-      ? [{ type: "text" as const, text: message.content }]
-      : message.content.flatMap((part) => {
-          if (part.type === "text") {
-            return [{ type: "text" as const, text: part.text }];
-          }
-          if (part.type === "image") {
-            return [{ type: "image" as const, image: part.image }];
-          }
-          return [];
-        });
-  return { role: "user", content };
+  // AppendMessage["content"] 是 readonly 联合，不能直接 push——先收集到
+  // 显式可写的 part 联合，再整体赋值（结构上可赋给 readonly 成员）。
+  type ResendPart =
+    | { type: "text"; text: string }
+    | { type: "image"; image: string };
+  const parts: ResendPart[] = [];
+  if (typeof message.content === "string") {
+    parts.push({ type: "text", text: message.content });
+  } else {
+    for (const part of message.content) {
+      if (part.type === "text") {
+        parts.push({ type: "text", text: part.text });
+      } else if (part.type === "image") {
+        parts.push({ type: "image", image: part.image });
+      }
+    }
+  }
+  // 本版本 AppendMessage 必填 createdAt/metadata（含 custom）与
+  // parentId/sourceId/runConfig；重发链路只消费 role/content
+  // （buildPiSendInput），其余补占位值即可。
+  return {
+    role: "user",
+    content: parts,
+    createdAt: new Date(),
+    metadata: { custom: {} },
+    parentId: null,
+    sourceId: null,
+    runConfig: undefined,
+  };
 };
 
 /** Text-only reconcile key: the echoed transcript message may carry extra
@@ -536,18 +552,25 @@ export class PiThreadController implements PiThreadControllerLike {
     }
   }
 
-  /** 重新生成：UI 传 assistant 消息的前一条 id（core 语义），定位其后第一条
-   *  落盘 user 消息，服务端截断重发。parentId = null 从头（第一条 user）。 */
+  /** 重新生成：core 传的 parentId 是「被重生成 assistant 的前一条消息 id」，
+   *  即那条 user 消息本身；null = 首条消息无前驱锚点，从头重发。锚点位不是
+   *  user（如连续 assistant、中间夹系统行）时向上回溯最近的 user 作截断重发点。 */
   public async reloadMessage(parentId: string | null) {
     const messages = this.projectedMessages;
-    let startIndex = 0;
+    let target: (typeof messages)[number] | undefined;
     if (parentId != null) {
-      const parentIndex = messages.findIndex((m) => m.id === parentId);
-      if (parentIndex === -1)
+      const anchorIndex = messages.findIndex((m) => m.id === parentId);
+      if (anchorIndex === -1)
         throw new Error(`message not found: ${parentId}`);
-      startIndex = parentIndex + 1;
+      for (let i = anchorIndex; i >= 0; i--) {
+        if (messages[i].role === "user") {
+          target = messages[i];
+          break;
+        }
+      }
+    } else {
+      target = messages.find((m) => m.role === "user");
     }
-    const target = messages.slice(startIndex).find((m) => m.role === "user");
     if (!target) throw new Error("no user message to reload");
     await this.resendAfterTruncate(
       target,

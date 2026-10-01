@@ -376,13 +376,14 @@ const usePiThreadStore = (
       },
       // 症状3：接上 onReload/onEdit 即激活重新生成/编辑按钮（capabilities
       // 由字段存在性推导）；截断+重发在 controller 内完成，运行中由
-      // sidecar busy 守卫拒绝并走 onError 呈现
+      // sidecar busy 守卫拒绝并走 onError 呈现。core 对这两个 handler 是
+      // 即发即忘（不 await 不 catch），失败必须收敛于此、禁止再抛——
+      // 否则成为未处理的 Promise 拒绝直接触发运行时错误遮罩
       onReload: async (parentId) => {
         try {
           await controller.reloadMessage(parentId);
         } catch (error) {
           invokePiErrorCallback(onError, error);
-          throw error;
         }
       },
       onEdit: async (message) => {
@@ -390,7 +391,6 @@ const usePiThreadStore = (
           await controller.editMessage(message);
         } catch (error) {
           invokePiErrorCallback(onError, error);
-          throw error;
         }
       },
       onCancel: async () => {
