@@ -471,5 +471,9 @@ describe("TauriPiClient 检查点卡观察（缺口2）", () => {
       threadEvent("sid-subagent", 53, { type: "agent_end", stopReason: "stop" }),
     ]);
     expect(calls).toEqual(["begin:s1", "settle:s1"]);
+    // agent_start 拉快照（排队项派发即见）：订阅首帧 1 次 + agent_start 1 次；
+    // 旁路会话的 agent_start 不拉
+    await tick();
+    expect(snapshotCalls).toBe(2);
   });
 });
