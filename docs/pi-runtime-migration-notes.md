@@ -30,7 +30,7 @@
 | 压缩分隔线 | 投影 compactionSummary → 独立 DataMessagePart（与旧 data-compaction 渲染器名不同），分隔线样式可能回退为默认 | 阶段 4d 逐一核对 |
 | 图片/检查点 data-* part | 快照路径不重建（旧路径 get_history 重建 data-image/data-compaction） | 阶段 3/4 |
 | seq 水位 | thread_snapshot 用 peekEventSeq 现读；从未盖章过的会话不带 seq（冷读） | 阶段 3 事件盖章后自然对齐 |
-| running 键混跑 | 旧链路发起的轮以本地 threadId 为键，新链路 abort/steer 找不到它（仅迁移期并存时出现） | 阶段 5 删旧链路后消失 |
+| running 键混跑 | ~~旧链路发起的轮以本地 threadId 为键，新链路 abort/steer 找不到它~~ **已消失（阶段 5：旧链路删除后只剩 sessionId 单键）** | 已完结 |
 
 ### 形状核对（pi-agent-core 0.99.2 vs react-pi verified 0.78–0.80）
 - 消息：转录 agent 行直出。pi-ai 0.99.2 Message 各 role 均带 `timestamp`（types.d.ts
@@ -47,8 +47,8 @@
 - **thread_event 帧（3a）**：sidecar `wireSessionEvents(run)` 订阅全部 AgentEvent
   翻译为 `{type:"thread_event", sessionId, eventSeq, event}` NDJSON 帧（不带 `id`，
   避免被 Rust stdout 泵误做请求-响应配对）；`is_flush_line` 对其返回 false，
-  走 pi-chunk-batch 合帧批处理。remote.rs broadcast 白名单不含 thread_event
-  （远程通道阶段 5c 再接）。
+  走 pi-chunk-batch 合帧批处理。remote.rs broadcast 白名单已在阶段 5c
+  放行 thread_event（远程网页端随之切到 WsPiClient 新链路）。
 - **delta 化（O(n²) wire 治理）**：message_update 剥离 `partial` 重负字段只发
   assistantMessageEvent；toolcall_start 附加抽取的 `{id,name}`；done/error 为
   每流一帧终态带完整 message；tool_execution_update 整段限频
@@ -86,7 +86,7 @@
 | thinkingLevel 会话定靶 | `set_thinking` 全局广播（sidecar 无会话形参） | 阶段 4 |
 | 压缩分隔线 | compaction_end 事件已发，投影层未消费 | 阶段 4d 逐一核对 |
 | 图片/检查点 data-* part | 快照路径不重建（旧路径 get_history 重建 data-image/data-compaction） | 阶段 4 |
-| running 键混跑 | 旧链路发起的轮以本地 threadId 为键，新链路 abort/steer 找不到它（仅迁移期并存时出现） | 阶段 5 删旧链路后消失 |
+| running 键混跑 | ~~旧链路发起的轮以本地 threadId 为键，新链路 abort/steer 找不到它~~ **已消失（阶段 5：旧链路删除后只剩 sessionId 单键）** | 已完结 |
 
 ## 阶段 4a（队列三语义 + 逐项操作 + 刷新恢复）
 
@@ -316,3 +316,37 @@ id/remoteId 双键同指），只有刷新后 classifyThreads 才以 remoteId（
    setActive）、pi-session-model、use-panel-cwd、history-pager、header 链路
    追踪。resolveSession 带 sessionId 时 `session not found` 抛错不建会话，
    故真实线程显式携带 sessionId 即无懒建风险。
+
+## 阶段 5（删 AI SDK 栈 + WS 通道 + 清理）
+
+### 已落地（2026-10-01，按提交顺序）
+- **5c 远程切新链路（c527616）**：从 TauriPiClient 抽出传输无关基座
+  `pi-client-base.ts`（PiClientBase：thread_event 消费、StreamAcc 重建、快照
+  自愈、审批/队列/旁路统一在基座内），新增 `WsPiClient`（WebSocket 帧桥，
+  remote-runtime-provider 直接换用）；remote.rs broadcast 白名单放行
+  thread_event，远程网页端与桌面共用同一套 vendored 投影逻辑。
+- **5b 前端旧链路删除（82e25f2）**：物理删除 pi-transport.ts、
+  pi-seq-guard、pi-queue、pi-channel-attach.test、pi-history-window、
+  history-pager 等 9 文件；pi-channel.ts / pi-ws-channel.ts /
+  pi-thread-adapter.ts / pi-send-lock.ts / thread.tsx 等 7 文件同步收敛到
+  新链路（seq 去重由 PiClientBase 的 eventSeq 水位承担）。
+- **5c Rust 侧重放缓冲退役（fffc415）**：删 `RUNS`/`buffer_run_line`/
+  `AttachReply`/`pi_attach` command 与 lib.rs 注册；ChunkLine 协议收窄为
+  `{ l: string }`（`i` 序号字段前后端均无消费者，连带退役；前端
+  ChunkWireLine 类型同步）。刷新恢复完全走新机制：PiClientBase 经
+  thread_event 行 + list_running 重建流状态。
+- **5a 依赖删除（2a0d34d）**：package.json 移除 `@assistant-ui/ai-sdk` 与
+  `assistant-stream`；`ai` 保留——prompt-attachments.ts(.test.ts) 仍以
+  `import type { UIMessage } from "ai"` 做类型引用。
+  `ResumableClientStorage` 类型在 pi-resume-storage.ts 本地化为
+  `PiResumableStreamStorage`（消费方只用具体接口面，无破点）。
+
+### 阶段 5 验证（2026-10-01）
+- `bunx tsc --noEmit` 两端干净；`bun test` 全仓 2159 项绿（162 文件）
+- `cargo check` exit 0 无警告；`bun run build`（Next.js 16.3.4 Turbopack）
+  编译 + 静态页生成全绿
+- 旧链路残余引用全仓 grep 清零：`pi_attach`/重放缓冲只剩历史设计文档
+  （image-part-design.md 等）与 sidecar 注释中的预算背景描述，非活代码
+- 待用户实测：桌面对话全流程（发送/流式/停止/审批/队列/刷新恢复/多会话
+  并发）+ 远程网页端 WS 新链路 + tauri 打包真机（Rust 删了 pi_attach，
+  Cargo command 面已同步）
