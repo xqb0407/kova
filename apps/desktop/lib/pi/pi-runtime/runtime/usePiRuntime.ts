@@ -112,6 +112,9 @@ export const NOOP_CONTROLLER: PiThreadControllerLike = {
   load: async () => {},
   refresh: async () => {},
   sendMessage: async () => {},
+  // 症状3：reload/edit 桩（无活动线程时静默 no-op，与 4a 队列桩同款语义）
+  reloadMessage: async () => {},
+  editMessage: async () => {},
   cancel: async () => {},
   clearQueue: async () => ({ steering: [], followUp: [] }),
   // 改动（4a）：NOOP 桩补齐逐项操作（无活动线程时静默 no-op）
@@ -366,6 +369,25 @@ const usePiThreadStore = (
       onNew: async (message) => {
         try {
           await controller.sendMessage(message);
+        } catch (error) {
+          invokePiErrorCallback(onError, error);
+          throw error;
+        }
+      },
+      // 症状3：接上 onReload/onEdit 即激活重新生成/编辑按钮（capabilities
+      // 由字段存在性推导）；截断+重发在 controller 内完成，运行中由
+      // sidecar busy 守卫拒绝并走 onError 呈现
+      onReload: async (parentId) => {
+        try {
+          await controller.reloadMessage(parentId);
+        } catch (error) {
+          invokePiErrorCallback(onError, error);
+          throw error;
+        }
+      },
+      onEdit: async (message) => {
+        try {
+          await controller.editMessage(message);
         } catch (error) {
           invokePiErrorCallback(onError, error);
           throw error;

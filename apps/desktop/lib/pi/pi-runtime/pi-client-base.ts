@@ -745,6 +745,18 @@ export class PiClientBase implements PiClient {
     await this.transport.abort(threadId);
   }
 
+  /** 编辑/重新生成的服务端截断（vendored 基座扩展，配套 sidecar
+   *  truncate_session）：丢 seq >= beforeSeq 的转录行。busy 时 sidecar 抛错，
+   *  原样透传给调用方；截断结果由随后的 prompt → 快照回流，无需单独刷新。 */
+  async truncateToSeq(threadId: string, beforeSeq: number): Promise<void> {
+    await this.transport.request<{ removed?: number } & PiResponse>({
+      type: "truncate_session",
+      threadId,
+      sessionId: threadId,
+      beforeSeq,
+    });
+  }
+
   /** 整队清空（4a 实装）：queue_clear 命令，返回被清文本供 UI 回填 composer。 */
   async clearQueue(threadId: string): Promise<{ steering: string[]; followUp: string[] }> {
     const res = await this.transport.request<{

@@ -242,6 +242,70 @@ export const handlers: Record<string, CommandHandler> = {
     send({ id: reqId, type: "forked", sessionId: newId });
   },
 
+  truncate_session: async (reqId, msg) => {
+    // 编辑/重新生成的服务端截断：丢掉 seq >= beforeSeq 的全部转录行，
+    // 前端随后重发替换消息（prompt 走恢复路径重建 Agent，行为与重启续聊一致）。
+    // 只在空闲回合边界做（compact 同款守卫）；非 prompt 命令由 handleLine
+    // 入 mgmt 串行队列，与在写 prompt 天然互斥。
+    const sessionId = String(msg.sessionId ?? "");
+    if (!sessionId) throw new Error("sessionId required");
+    const beforeSeq = Number(msg.beforeSeq);
+    if (!Number.isInteger(beforeSeq) || beforeSeq < 0)
+      throw new Error("beforeSeq must be a non-negative integer");
+    const file = sessionPath(sessionId);
+    if (!existsSync(file)) throw new Error(`transcript not found: ${sessionId}`);
+    if (isPromptActive(String(msg.threadId ?? sessionId)))
+      throw new Error("session is busy: wait for the current response to finish");
+    // 顺序截止：文件按 append 时序单调，命中第一条 seq >= beforeSeq 的行即
+    // 截断点，其后整体丢弃（含无 seq 的 model_change 等设定行——回退到该点
+    // 之后的上下文设定随之消失，属时间回退语义）。截断点前的行原样保留，
+    // 坏行/撕裂尾行不解析不改写。
+    const lines = readFileSync(file, "utf8").split("\n");
+    const kept: string[] = [];
+    let removedMessages = 0;
+    let cut = false;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      if (!cut) {
+        let seq: unknown;
+        try {
+          seq = (JSON.parse(line) as { seq?: unknown }).seq;
+        } catch {
+          kept.push(line); // 坏行随保留段原样带走
+          continue;
+        }
+        if (typeof seq === "number" && seq >= beforeSeq) cut = true;
+      }
+      if (cut) {
+        try {
+          const row = JSON.parse(line) as { type?: string; agent?: unknown };
+          if (row?.type === "message" && row.agent) removedMessages += 1;
+        } catch {
+          // 计不到就不计：removedMessages 只用于索引计数修正
+        }
+        continue;
+      }
+      kept.push(line);
+    }
+    if (!cut) {
+      send({ id: reqId, type: "truncated", sessionId, removed: 0 });
+      return;
+    }
+    writeFileSync(file, kept.length ? kept.join("\n") + "\n" : "");
+    // 索引计数按被删消息行做负增量（title/first_message 传 "" 不改原值）
+    if (removedMessages > 0) await sessionTouch(sessionId, "", "", -removedMessages);
+    // 挂起交互台账随行消失（截断窗口内的发起/结算行已不在转录里）
+    dropSessionInteractions(sessionId);
+    // 驻留 run 的内存上下文与磁盘脱节：驱逐，下一 prompt 走截断后转录重建
+    for (const [tid, run] of running) {
+      if (run.sessionId === sessionId) {
+        dropRun(tid);
+        forgetThreadStates(tid);
+      }
+    }
+    send({ id: reqId, type: "truncated", sessionId, removed: removedMessages });
+  },
+
   thread_snapshot: async (reqId, msg) => {
     // PiClient 契约的快照命令（react-pi 迁移阶段 2）：JSONL 转录 → PiThreadSnapshot。
     // 消息 = pi-ai 原生 agent 行直出（前端投影层消费），压缩检查点行按 seq 位置

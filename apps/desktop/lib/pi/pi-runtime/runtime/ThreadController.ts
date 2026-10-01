@@ -77,6 +77,12 @@ export interface PiThreadControllerLike {
   load(force?: boolean): Promise<void>;
   refresh(): Promise<void>;
   sendMessage(message: AppendMessage, options?: PiSendOptions): Promise<void>;
+  /** 重新生成（症状3）：服务端截断 parentId 之后（含下一条 user 消息）的
+   *  转录，重发那条 user 消息。运行中由 sidecar busy 守卫拒绝。 */
+  reloadMessage(parentId: string | null): Promise<void>;
+  /** 编辑重发（症状3）：截断被编辑消息（message.sourceId）及其后全部转录，
+   *  发送编辑后的新内容。投影不保留文档附件，file parts 无法随重发还原。 */
+  editMessage(message: AppendMessage): Promise<void>;
   cancel(): Promise<void>;
   /** Clear Pi's server-side queue; resolves with the cleared text so the UI
    * can restore it to the composer. */
@@ -231,6 +237,28 @@ const optimisticUserMessageFromInput = (
   timestamp: Date.now(),
   __optimisticId: optimisticId,
 });
+
+/** 重发用：把投影出的 user 消息还原为 AppendMessage。投影只保留 text 与
+ * image（data URL）parts——文档附件在投影里本就不存在，无法随重发还原
+ * （truncate/edit 的已知保真度限制，编辑路径不受影响：core 给 onEdit 的
+ * 是 composer 的完整 AppendMessage）。 */
+const appendMessageFromUserProjection = (
+  message: ThreadMessageLike,
+): AppendMessage => {
+  const content =
+    typeof message.content === "string"
+      ? [{ type: "text" as const, text: message.content }]
+      : message.content.flatMap((part) => {
+          if (part.type === "text") {
+            return [{ type: "text" as const, text: part.text }];
+          }
+          if (part.type === "image") {
+            return [{ type: "image" as const, image: part.image }];
+          }
+          return [];
+        });
+  return { role: "user", content };
+};
 
 /** Text-only reconcile key: the echoed transcript message may carry extra
  * fields (e.g. enriched image content), so structural equality is too strict —
@@ -506,6 +534,56 @@ export class PiThreadController implements PiThreadControllerLike {
       });
       throw error;
     }
+  }
+
+  /** 重新生成：UI 传 assistant 消息的前一条 id（core 语义），定位其后第一条
+   *  落盘 user 消息，服务端截断重发。parentId = null 从头（第一条 user）。 */
+  public async reloadMessage(parentId: string | null) {
+    const messages = this.projectedMessages;
+    let startIndex = 0;
+    if (parentId != null) {
+      const parentIndex = messages.findIndex((m) => m.id === parentId);
+      if (parentIndex === -1)
+        throw new Error(`message not found: ${parentId}`);
+      startIndex = parentIndex + 1;
+    }
+    const target = messages.slice(startIndex).find((m) => m.role === "user");
+    if (!target) throw new Error("no user message to reload");
+    await this.resendAfterTruncate(
+      target,
+      appendMessageFromUserProjection(target),
+    );
+  }
+
+  /** 编辑重发：core 在 onEdit 载荷里带被编辑消息的投影 id（sourceId），
+   *  以它为截断点发送编辑后的完整 AppendMessage。 */
+  public async editMessage(message: AppendMessage) {
+    if (message.role !== "user") {
+      throw new Error("Pi only supports editing user messages");
+    }
+    const sourceId = message.sourceId;
+    if (typeof sourceId !== "string") {
+      throw new Error("edited message has no source id");
+    }
+    const target = this.projectedMessages.find((m) => m.id === sourceId);
+    if (!target) throw new Error(`message not found: ${sourceId}`);
+    await this.resendAfterTruncate(target, message);
+  }
+
+  /** 截断 + 重发的共用漏斗：只认 `pi-msg:<seq>` 稳定 id（乐观镜像与
+   *  下标回退 id 未落盘，无从截断）。截断成功后先后台刷一次快照收敛
+   *  UI，再走 sendMessage 的正常发送语义（乐观镜像 + running 标记）。 */
+  private async resendAfterTruncate(
+    target: ThreadMessageLike,
+    message: AppendMessage,
+  ) {
+    const match = /^pi-msg:(\d+)$/.exec(target.id ?? "");
+    if (!match) {
+      throw new Error("message is not persisted yet; cannot resend");
+    }
+    await this.client.truncateToSeq(this.threadId, Number(match[1]));
+    this.refreshInBackground();
+    await this.sendMessage(message);
   }
 
   /** Mid-run sends land in Pi's queue, not the transcript (Pi appends the user
