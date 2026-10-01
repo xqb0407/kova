@@ -646,6 +646,10 @@ export interface PiClient {
   sendMessage(threadId: string, input: PiSendMessageInput): Promise<void>;
   cancelRun(threadId: string): Promise<void>;
 
+  /** 编辑/重新生成用：截断转录，丢弃 seq >= beforeSeq 的全部消息（服务端
+   *  只在空闲回合边界允许，运行中抛 busy）。随后由调用方重发替换消息。 */
+  truncateToSeq(threadId: string, beforeSeq: number): Promise<void>;
+
   /** Clear all queued (steering + follow-up) messages and return their text so
    * the UI can restore it to the composer. Pi exposes no per-item remove or
    * promote — clearing everything is the only queue mutation. */
