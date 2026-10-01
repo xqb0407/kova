@@ -1,0 +1,299 @@
+import { afterAll, describe, expect, test } from "bun:test";
+import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
+
+afterAll(restoreAllMocks);
+
+/**
+ * TauriPiClient 的事件路由核心语义测试（react-pi 迁移阶段 3b）：
+ * mock Tauri invoke/listen，验证 thread_event 分流、delta→partial 重建
+ * （文本累积 / toolcall 参数缓冲与权威替换 / done 终态替换）、快照基底
+ * 对齐（运行中线程中途打开）与收尾帧观察兜底。
+ */
+
+type WireLine = { i: number | null; l: string };
+type EventLike = { payload: WireLine[] };
+type ListenFn = (event: EventLike) => void;
+
+/** 每次测试重置的假 Tauri 状态。注意 listen 是多播：pi-channel 单例（首次
+ *  piRequest 时构造）也会注册 pi-chunk-batch/pi-exit 监听，且每个用例都
+ *  new 一个 client（各自注册一份监听）——不能像单回调那样互相覆盖，
+ *  由 subscribeAndSettle 按注册下标精确喂给被测 client 的处理器 */
+let chunkCbs: ListenFn[] = [];
+let snapshotReply: unknown = null;
+let snapshotCalls = 0;
+let promptArgs: Record<string, unknown> | null = null;
+
+mockModule("@tauri-apps/api/core", () => ({
+  invoke: (cmd: string, args?: Record<string, unknown>) => {
+    if (cmd === "pi_request") {
+      const payload = (args?.payload ?? {}) as { type?: string };
+      if (payload.type === "thread_snapshot") {
+        snapshotCalls += 1;
+        return new Promise((resolve) =>
+          setTimeout(() => resolve(JSON.stringify(snapshotReply)), 0),
+        );
+      }
+      return Promise.resolve(JSON.stringify({ type: "sessions", sessions: [] }));
+    }
+    if (cmd === "pi_prompt") {
+      promptArgs = args ?? null;
+      return Promise.resolve();
+    }
+    if (cmd === "pi_abort") return Promise.resolve();
+    return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+  },
+}));
+
+mockModule("@tauri-apps/api/event", () => ({
+  listen: (event: string, cb: ListenFn) => {
+    if (event === "pi-chunk-batch") {
+      return Promise.resolve().then(() => {
+        chunkCbs.push(cb);
+        return () => {
+          chunkCbs = chunkCbs.filter((f) => f !== cb);
+        };
+      });
+    }
+    return Promise.resolve(() => {});
+  },
+}));
+
+const { TauriPiClient } = await import("@/lib/pi/pi-runtime/tauri-pi-client");
+type PiClientEvent = import("@/lib/pi/pi-runtime/types").PiClientEvent;
+
+// ---------- 工具 ----------
+
+const tick = () => new Promise((r) => setTimeout(r, 5));
+
+/** 构造 thread_event 帧行 */
+const threadEvent = (
+  sessionId: string,
+  seq: number,
+  event: Record<string, unknown>,
+): WireLine => ({
+  i: null,
+  l: JSON.stringify({ type: "thread_event", sessionId, eventSeq: seq, event }),
+});
+
+/** 运行中快照（末条 assistant = 在飞 partial） */
+const runningSnapshot = (text: string) => ({
+  metadata: { id: "s1", status: "running" },
+  messages: [
+    { role: "user", content: "hi", timestamp: 1 },
+    {
+      role: "assistant",
+      content: [{ type: "text", text }],
+      api: "x",
+      provider: "p",
+      model: "m",
+      usage: {},
+      stopReason: "stop",
+      timestamp: 2,
+    },
+  ],
+  seq: 5,
+});
+
+function subscribeAndSettle(): {
+  events: PiClientEvent[];
+  client: import("@/lib/pi/pi-runtime/tauri-pi-client").TauriPiClient;
+  feed: (lines: WireLine[]) => void;
+} {
+  const events: PiClientEvent[] = [];
+  // 被测 client 的监听在 subscribe 里同步注册（先于首个用例里 pi-channel
+  // 单例的注册），push 顺序 FIFO，记录下标即可精确定位本用例的处理器
+  const cbIndex = chunkCbs.length;
+  const client = new TauriPiClient();
+  client.subscribe("s1", (e) => events.push(e));
+  const feed = (lines: WireLine[]) => chunkCbs[cbIndex]?.({ payload: lines });
+  return { events, client, feed };
+}
+
+// ---------- 用例 ----------
+
+describe("TauriPiClient 事件路由", () => {
+  test("快照基底 + delta 重建：中途打开线程后续 delta 续上", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("Hel") };
+    const { events, feed } = subscribeAndSettle();
+    await tick(); // 快照先行
+    expect(snapshotCalls).toBe(1);
+    expect(events[0]?.type).toBe("snapshot");
+
+    feed([
+      threadEvent("s1", 6, {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "lo" },
+      }),
+    ]);
+    expect(events).toHaveLength(2);
+    const update = events[1] as Extract<PiClientEvent, { type: "message_update" }>;
+    expect(update.threadId).toBe("s1");
+    expect(update.seq).toBe(6);
+    const blocks = (update.message as { content: unknown[] }).content as {
+      type: string;
+      text: string;
+    }[];
+    expect(blocks[0]).toEqual({ type: "text", text: "Hello" });
+  });
+
+  test("message_start 起基 + text/thinking 累积 + message_end 清台账", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const { events, feed } = subscribeAndSettle();
+    await tick();
+    events.length = 0;
+
+    feed([
+      threadEvent("s1", 7, {
+        type: "message_start",
+        message: { role: "assistant", content: [], timestamp: 3 },
+      }),
+      threadEvent("s1", 8, {
+        type: "message_update",
+        assistantMessageEvent: { type: "thinking_start", contentIndex: 0 },
+      }),
+      threadEvent("s1", 9, {
+        type: "message_update",
+        assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "hm" },
+      }),
+      threadEvent("s1", 10, {
+        type: "message_update",
+        assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "hmm" },
+      }),
+      threadEvent("s1", 11, {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_start", contentIndex: 1 },
+      }),
+      threadEvent("s1", 12, {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "a" },
+      }),
+      threadEvent("s1", 13, {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "b" },
+      }),
+      threadEvent("s1", 14, {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "hmm" },
+            { type: "text", text: "ab" },
+          ],
+          timestamp: 4,
+        },
+      }),
+    ]);
+    const types = events.map((e) => e.type);
+    expect(types).toEqual([
+      "message_start",
+      "message_update",
+      "message_update",
+      "message_update",
+      "message_update",
+      "message_update",
+      "message_update",
+      "message_end",
+    ]);
+    const before = events[6] as Extract<PiClientEvent, { type: "message_update" }>;
+    expect((before.message as { content: unknown[] }).content).toEqual([
+      { type: "thinking", thinking: "hmm" },
+      { type: "text", text: "ab" },
+    ]);
+  });
+
+  test("toolcall：参数缓冲累积，toolcall_end 权威整体替换", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const { events, feed } = subscribeAndSettle();
+    await tick();
+    events.length = 0;
+
+    feed([
+      threadEvent("s1", 15, {
+        type: "message_start",
+        message: { role: "assistant", content: [], timestamp: 5 },
+      }),
+      threadEvent("s1", 16, {
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "toolcall_start",
+          contentIndex: 0,
+          toolCall: { id: "t1", name: "bash" },
+        },
+      }),
+      threadEvent("s1", 17, {
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "toolcall_delta",
+          contentIndex: 0,
+          delta: '{"command":"ls',
+        },
+      }),
+      threadEvent("s1", 18, {
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "toolcall_delta",
+          contentIndex: 0,
+          delta: ' -la"}',
+        },
+      }),
+      threadEvent("s1", 19, {
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "toolcall_end",
+          contentIndex: 0,
+          toolCall: { id: "t1", name: "bash", arguments: { command: "ls -la" } },
+        },
+      }),
+    ]);
+    const last = events.at(-1) as Extract<PiClientEvent, { type: "message_update" }>;
+    expect((last.message as { content: unknown[] }).content).toEqual([
+      { id: "t1", name: "bash", arguments: { command: "ls -la" } },
+    ]);
+  });
+
+  test("done 终态整体替换 accumulator 消息", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("Hel") };
+    const { events, feed } = subscribeAndSettle();
+    await tick();
+    events.length = 0;
+
+    const finalMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "Hello world" }],
+      timestamp: 6,
+    };
+    feed([
+      threadEvent("s1", 20, {
+        type: "message_update",
+        assistantMessageEvent: { type: "done", reason: "stop", message: finalMessage },
+      }),
+    ]);
+    const update = events[0] as Extract<PiClientEvent, { type: "message_update" }>;
+    expect(update.message).toEqual(finalMessage);
+  });
+
+  test("无订阅者的 sessionId 事件静默丢弃；收尾帧触发快照兜底", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const { events, client, feed } = subscribeAndSettle();
+    await tick();
+    events.length = 0;
+
+    // 未知会话事件：不派发也不崩
+    feed([threadEvent("other", 1, { type: "agent_start" })]);
+    expect(events).toHaveLength(0);
+
+    // sendMessage 登记在飞 → finish 行触发即时快照刷新
+    await client.sendMessage("s1", { content: "hi" });
+    expect(promptArgs).not.toBeNull();
+    const requestId = String((promptArgs as { requestId: string }).requestId);
+    feed([{ i: null, l: JSON.stringify({ id: requestId, chunk: { type: "finish" } }) }]);
+    await tick();
+    // 首帧快照(1) + 收尾帧兜底快照(2)
+    expect(snapshotCalls).toBe(2);
+  });
+});

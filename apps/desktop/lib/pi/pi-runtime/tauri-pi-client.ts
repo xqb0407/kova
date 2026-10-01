@@ -1,13 +1,16 @@
 "use client";
 
 /**
- * TauriPiClient：PiClient 契约的桌面端实现（react-pi 迁移阶段 2）。
+ * TauriPiClient：PiClient 契约的桌面端实现（react-pi 迁移阶段 2+3）。
  *
  * - 管理类方法走 pi-channel 的 request 通道（invoke pi_request，管理队列串行）；
- * - getThread 走 sidecar 新命令 thread_snapshot（JSONL 转录 → PiThreadSnapshot）；
- * - sendMessage 复用现有 pi_prompt（带 sessionId 定靶），不消费 chunk 流——
- *   终态靠 chunk-batch 收尾帧观察 + 快照轮询落定（阶段 3 换 delta 化事件流）；
- * - subscribe 阶段 2 降级：登记 listener，不做实时事件；快照先发 + 运行期轮询。
+ * - getThread 走 sidecar 命令 thread_snapshot（JSONL 转录 + 在飞 partial →
+ *   PiThreadSnapshot，阶段 3c）；
+ * - sendMessage 复用现有 pi_prompt（带 sessionId 定靶），不消费 AI SDK chunk 流；
+ * - subscribe 完整实现（阶段 3b）：监听 pi-chunk-batch 里的 thread_event 行
+ *   （sidecar delta 化原生事件，计划 §3a），按 threadId 分流 + 在 accumulator
+ *   上重建 partial 再 dispatch；快照权威兜底（订阅首帧 / 收尾帧 / sidecar 退出）。
+ *   阶段 2 的轮询已退役——运行状态由 agent_start/agent_end 事件驱动。
  *
  * 线程身份 = pi sessionId（metadata.id）：usePiRuntime 的 controller 以它为键，
  * sidecar 侧 prompt/abort 的 running 键同样用 sessionId，两端一致。
@@ -17,6 +20,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { piRequest, type PiResponse, type PiSessionSummary } from "@/lib/pi/pi-bridge";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import type {
+  PiAgentMessage,
+  PiAssistantMessageDelta,
   PiClient,
   PiClientEvent,
   PiHostUiResponse,
@@ -32,29 +37,109 @@ type SnapshotReply = { type: "thread_snapshot"; snapshot: PiThreadSnapshot };
 
 /** pi-chunk-batch 载荷的一行（镜像 pi_agent.rs ChunkLine，pi-channel 未导出） */
 type WireLine = { i: number | null; l: string };
-/** pi-chunk-batch 里按 requestId 过滤后的 chunk 行（收尾帧观察用） */
-type ChunkLine = { id?: string | null; chunk?: { type?: string } };
 
-/** 每线程轮询动机：running = 快照看到在跑；pending = 刚发送、等 run 起来（会话
- *  准备段可能超过一个轮询间隔）；stamp = 上次派发快照的指纹（去重防抖动） */
-type PollEntry = {
-  running: boolean;
-  pending: boolean;
-  pendingSince: number;
-  stamp: string;
+/** pi-chunk-batch 行的解析形状：thread_event 帧或带 requestId 的 chunk 帧 */
+type WireMsg = {
+  id?: string | null;
+  chunk?: { type?: string };
+  type?: string;
+  sessionId?: string;
+  eventSeq?: number;
+  event?: Record<string, unknown>;
 };
 
-/** pending 状态安全上限：prompt 起跑前异常且收尾帧丢失时不至于永久轮询 */
-const PENDING_TIMEOUT_MS = 90_000;
-/** 运行期快照轮询间隔：阶段 2 的降级通道，阶段 3 换事件流后整个轮询退役 */
-const POLL_INTERVAL_MS = 1200;
+/** 每线程流式重建 accumulator：sidecar 只发 delta（O(n²) wire 治理），
+ *  客户端就地补丁出完整 partial 再 dispatch（reducer 的 message_update
+ *  消费完整 message，见 threadState.ts）。 */
+type StreamAcc = {
+  message: Record<string, unknown> & { content?: unknown[] };
+  /** toolcall_delta 的参数 JSON 串缓冲（按 contentIndex；toolcall_end 整体替换） */
+  args: Map<number, string>;
+};
+
+/** delta → partial 重建（计划 §3b）：按 contentIndex 在 accumulator 上就地
+ *  补丁——text/thinking 追加、toolcall 参数缓冲（end 帧整体替换）、done/error
+ *  用终态消息整体替换。start 变体无内容可补。 */
+function applyStreamDelta(
+  acc: StreamAcc,
+  e: Record<string, unknown> & {
+    type?: string;
+    contentIndex?: number;
+    delta?: string;
+    content?: string;
+    toolCall?: Record<string, unknown>;
+    message?: Record<string, unknown>;
+    error?: Record<string, unknown>;
+  },
+): void {
+  if (!Array.isArray(acc.message.content)) acc.message.content = [];
+  const blocks = acc.message.content as Record<string, unknown>[];
+  const i = e.contentIndex ?? -1;
+  const ensure = (init: Record<string, unknown>): Record<string, unknown> => {
+    let block = blocks[i];
+    if (!block || block.type !== init.type) {
+      block = { ...init };
+      blocks[i] = block;
+    }
+    return block;
+  };
+  switch (e.type) {
+    case "text_start":
+      ensure({ type: "text", text: "" });
+      break;
+    case "text_delta":
+      (ensure({ type: "text", text: "" }) as { text: string }).text += e.delta ?? "";
+      break;
+    case "text_end":
+      (ensure({ type: "text", text: "" }) as { text: string }).text = e.content ?? "";
+      break;
+    case "thinking_start":
+      ensure({ type: "thinking", thinking: "" });
+      break;
+    case "thinking_delta":
+      (ensure({ type: "thinking", thinking: "" }) as { thinking: string }).thinking +=
+        e.delta ?? "";
+      break;
+    case "thinking_end":
+      (ensure({ type: "thinking", thinking: "" }) as { thinking: string }).thinking =
+        e.content ?? "";
+      break;
+    case "toolcall_start":
+      ensure({
+        type: "toolCall",
+        id: (e.toolCall as { id?: string } | undefined)?.id ?? "",
+        name: (e.toolCall as { name?: string } | undefined)?.name ?? "",
+        arguments: {},
+      });
+      acc.args.set(i, "");
+      break;
+    case "toolcall_delta":
+      acc.args.set(i, (acc.args.get(i) ?? "") + (e.delta ?? ""));
+      break;
+    case "toolcall_end":
+      if (e.toolCall) blocks[i] = e.toolCall;
+      acc.args.delete(i);
+      break;
+    case "done":
+      if (e.message) acc.message = e.message as StreamAcc["message"];
+      break;
+    case "error":
+      if (e.error) acc.message = e.error as StreamAcc["message"];
+      break;
+  }
+}
 
 export class TauriPiClient implements PiClient {
   private readonly listeners = new Map<string, Set<(e: PiClientEvent) => void>>();
-  private readonly poll = new Map<string, PollEntry>();
-  /** 在飞 prompt requestId → sessionId（收尾帧触发即时快照刷新） */
+  /** 每线程上次派发 seq（快照/事件共用 per-session 号段） */
+  private readonly lastSeq = new Map<string, number>();
+  /** 快照指纹（去重防抖动；订阅首帧 force 绕过） */
+  private readonly stamps = new Map<string, string>();
+  /** 流式重建台账（message_start 建、message_end/agent_end 清） */
+  private readonly streams = new Map<string, StreamAcc>();
+  /** 在飞 prompt requestId → sessionId（收尾帧触发即时快照刷新：
+   *  prompt 起跑前失败等不走 agent 事件的路径的兜底，阶段 5 随 chunk 流退役） */
   private readonly inflight = new Map<string, string>();
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
   private unlistenChunks: UnlistenFn | null = null;
 
   // ---------- 快照 ----------
@@ -81,12 +166,30 @@ export class TauriPiClient implements PiClient {
   }
 
   private dispatch(snapshot: PiThreadSnapshot) {
-    const set = this.listeners.get(snapshot.metadata.id);
+    const id = snapshot.metadata.id;
+    const prevSeq = this.lastSeq.get(id) ?? 0;
+    const snapSeq = snapshot.seq ?? 0;
+    this.lastSeq.set(id, Math.max(prevSeq, snapSeq));
+    // 流式 accumulator 对齐（3b/3c 合缝）：running 且末条是 assistant → 以
+    // 快照里的在飞 partial 为重建基底（线程中途打开时没有 message_start 可
+    // 依赖）；陈旧快照（seq 落后于已流式状态）不回退基底
+    const last = snapshot.messages.at(-1) as { role?: string } | undefined;
+    if (snapshot.metadata.status === "running" && last?.role === "assistant") {
+      if (snapSeq >= prevSeq || !this.streams.has(id)) {
+        this.streams.set(id, {
+          message: last as StreamAcc["message"],
+          args: new Map(),
+        });
+      }
+    } else {
+      this.streams.delete(id);
+    }
+    const set = this.listeners.get(id);
     if (!set) return;
     const event: PiClientEvent = {
       type: "snapshot",
       snapshot,
-      threadId: snapshot.metadata.id,
+      threadId: id,
       seq: snapshot.seq ?? 0,
     };
     for (const listener of set) {
@@ -98,96 +201,118 @@ export class TauriPiClient implements PiClient {
     }
   }
 
-  /** 立即拉一次快照并按指纹去重派发（订阅首帧 / 收尾帧 / 轮询共用） */
-  private async refreshNow(sessionId: string) {
+  /** 拉一次快照并派发（订阅首帧 / 收尾帧 / sidecar 退出共用）；
+   *  force=true 绕过指纹去重（重订阅也要拿到初帧） */
+  private async refreshNow(sessionId: string, force = false) {
     try {
       const snapshot = await this.fetchSnapshot(sessionId);
-      const entry = this.poll.get(sessionId);
       const stamp = TauriPiClient.fingerprint(snapshot);
-      if (entry && entry.stamp === stamp) {
-        // 内容未变也要校准轮询动机（run 可能已在别处结束）
-        entry.running = snapshot.metadata.status === "running";
-        return;
-      }
-      if (entry) entry.stamp = stamp;
+      if (!force && this.stamps.get(sessionId) === stamp) return;
+      this.stamps.set(sessionId, stamp);
       this.dispatch(snapshot);
-      if (entry) {
-        entry.running = snapshot.metadata.status === "running";
-        if (entry.running) entry.pending = false;
-      }
     } catch {
-      // sidecar 不可用/会话已删：静默，下个轮询节拍重试
+      // sidecar 不可用/会话已删：静默（重订阅/收尾帧会再触发）
     }
   }
 
-  private ensurePollLoop() {
-    if (this.pollTimer) return;
-    this.pollTimer = setInterval(() => {
-      void this.pollTick();
-    }, POLL_INTERVAL_MS);
-  }
+  // ---------- 事件路由（阶段 3b） ----------
 
-  private async pollTick() {
-    const now = Date.now();
-    for (const [sessionId, entry] of this.poll) {
-      if (!this.listeners.has(sessionId)) continue;
-      if (!entry.running && !entry.pending) continue;
-      if (
-        entry.pending &&
-        !entry.running &&
-        now - entry.pendingSince > PENDING_TIMEOUT_MS
-      ) {
-        entry.pending = false;
-      }
-      await this.refreshNow(sessionId);
-    }
-  }
-
-  // ---------- 收尾帧观察 ----------
-
-  private async ensureChunkWatcher() {
+  private async ensureEventWatcher() {
     if (this.unlistenChunks) return;
-    // 前缀预筛：只解析可能带 finish/error 的行，热路径开销与 subscribeTurns 同款
     this.unlistenChunks = await listen<WireLine[]>("pi-chunk-batch", (event) => {
+      if (this.listeners.size === 0 && this.inflight.size === 0) return;
       for (const wire of event.payload) {
-        if (this.inflight.size === 0) return;
+        // 预筛：thread_event 行（原生事件）+ finish/error/start 帧（收尾观察）；
+        // 其余 token 级 chunk 行（AI SDK 遗留流）不解析
+        const looksEvent = wire.l.includes('"thread_event"');
         if (
+          !looksEvent &&
           !wire.l.includes('"finish"') &&
           !wire.l.includes('"error"') &&
           !wire.l.includes('"start"')
         ) {
           continue;
         }
-        let parsed: ChunkLine;
+        let parsed: WireMsg;
         try {
-          parsed = JSON.parse(wire.l);
+          parsed = JSON.parse(wire.l) as WireMsg;
         } catch {
           continue;
         }
-        const requestId = parsed.id;
-        if (!requestId || !this.inflight.has(requestId)) continue;
-        const type = parsed.chunk?.type;
-        if (type === "start") {
-          // run 确认起跑：解除 pending，轮询以 running 语义继续
-          const entry = this.poll.get(this.inflight.get(requestId)!);
-          if (entry) {
-            entry.pending = false;
-            entry.running = true;
+        if (parsed.type === "thread_event") {
+          if (looksEvent) {
+            this.routeThreadEvent(
+              String(parsed.sessionId ?? ""),
+              Number(parsed.eventSeq ?? 0),
+              parsed.event ?? {},
+            );
           }
           continue;
         }
+        // ---- 收尾帧观察：finish/error 即时拉快照（起跑前失败兜底）----
+        if (this.inflight.size === 0) continue;
+        const requestId = parsed.id;
+        if (!requestId || !this.inflight.has(requestId)) continue;
+        const type = parsed.chunk?.type;
         if (type === "finish" || type === "error") {
           const sessionId = this.inflight.get(requestId)!;
           this.inflight.delete(requestId);
-          const entry = this.poll.get(sessionId);
-          if (entry) {
-            entry.pending = false;
-            entry.running = false; // 由即时快照按事实校准（排队链可能续跑）
-          }
           void this.refreshNow(sessionId);
         }
       }
     });
+    // sidecar 退出：清重建台账，逐订阅线程拉快照自愈（空闲态 + 已落盘内容）
+    await listen<string>("pi-exit", () => {
+      this.streams.clear();
+      for (const sessionId of this.listeners.keys()) void this.refreshNow(sessionId);
+    });
+  }
+
+  /** thread_event 分流 + partial 重建后按契约信封 dispatch */
+  private routeThreadEvent(
+    sessionId: string,
+    seq: number,
+    body: Record<string, unknown>,
+  ) {
+    const set = this.listeners.get(sessionId);
+    if (!set) return;
+    this.lastSeq.set(sessionId, Math.max(this.lastSeq.get(sessionId) ?? 0, seq));
+    let event: PiClientEvent;
+    if (body.type === "message_update") {
+      // delta 帧：在 accumulator 上重建完整 partial（无基底 = 监听中途挂上且
+      // 快照未到，丢弃等 message_start/快照）
+      const acc = this.streams.get(sessionId);
+      const delta = body.assistantMessageEvent as
+        | (Record<string, unknown> & Parameters<typeof applyStreamDelta>[1])
+        | undefined;
+      if (!acc || !delta) return;
+      applyStreamDelta(acc, delta);
+      event = {
+        type: "message_update",
+        message: acc.message as PiAgentMessage,
+        assistantMessageEvent: delta as unknown as PiAssistantMessageDelta,
+        threadId: sessionId,
+        seq,
+      } as unknown as PiClientEvent;
+    } else {
+      if (body.type === "message_start") {
+        this.streams.set(sessionId, {
+          message: (body.message ?? { content: [] }) as StreamAcc["message"],
+          args: new Map(),
+        });
+      }
+      if (body.type === "message_end" || body.type === "agent_end") {
+        this.streams.delete(sessionId);
+      }
+      event = { ...body, threadId: sessionId, seq } as unknown as PiClientEvent;
+    }
+    for (const listener of set) {
+      try {
+        listener(event);
+      } catch (err) {
+        console.error("[TauriPiClient] listener threw", err);
+      }
+    }
   }
 
   // ---------- PiClient 契约 ----------
@@ -236,17 +361,7 @@ export class TauriPiClient implements PiClient {
     const steer = input.streamingBehavior === "steer";
     // 运行中发送 = followUp（sidecar 自动排队）；steer 显式并入当前轮
     this.inflight.set(requestId, threadId);
-    const entry = this.poll.get(threadId) ?? {
-      running: false,
-      pending: true,
-      pendingSince: Date.now(),
-      stamp: "",
-    };
-    entry.pending = true;
-    entry.pendingSince = Date.now();
-    this.poll.set(threadId, entry);
-    this.ensurePollLoop();
-    void this.ensureChunkWatcher();
+    void this.ensureEventWatcher();
     try {
       await invoke("pi_prompt", {
         requestId,
@@ -265,7 +380,6 @@ export class TauriPiClient implements PiClient {
       });
     } catch (err) {
       this.inflight.delete(requestId);
-      entry.pending = false;
       throw err;
     }
   }
@@ -281,9 +395,10 @@ export class TauriPiClient implements PiClient {
   }
 
   async getAvailableModels(): Promise<PiModelInfo[]> {
-    const res = await piRequest<Extract<PiResponse, { type: "models" }>>({
-      type: "list_models",
-    });
+    const res =
+      await piRequest<Extract<PiResponse, { type: "models" }>>({
+        type: "list_models",
+      });
     return res.models.map((m) => ({
       provider: m.provider,
       modelId: m.id,
@@ -359,24 +474,20 @@ export class TauriPiClient implements PiClient {
       this.listeners.set(threadId, set);
     }
     set.add(listener);
-    if (!this.poll.has(threadId)) {
-      this.poll.set(threadId, {
-        running: false,
-        pending: false,
-        pendingSince: 0,
-        stamp: "",
-      });
-    }
-    this.ensurePollLoop();
-    void this.ensureChunkWatcher();
-    // 契约默认快照先行：冷读直接落定，后续靠轮询/收尾帧增量
-    if (options?.includeSnapshot !== false) void this.refreshNow(threadId);
+    void this.ensureEventWatcher();
+    // 契约默认快照先行：冷读直接落定（force：重订阅同指纹也要拿到初帧），
+    // 之后实时事件增量，收尾帧/退出兜底拉快照
+    if (options?.includeSnapshot !== false) void this.refreshNow(threadId, true);
     return () => {
       const current = this.listeners.get(threadId);
       if (!current) return;
       current.delete(listener);
-      if (current.size === 0) this.listeners.delete(threadId);
-      // poll 表保留条目（running/pending 双 false 即零开销），不逐次清理
+      if (current.size === 0) {
+        this.listeners.delete(threadId);
+        this.streams.delete(threadId);
+        this.stamps.delete(threadId);
+        this.lastSeq.delete(threadId);
+      }
     };
   }
 }

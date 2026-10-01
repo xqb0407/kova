@@ -48,6 +48,7 @@ import type { PendingInteraction } from "pi-protocol";
 import { restoreUnsettled } from "./pending-interactions";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, setLeadingSystemMessage, type ContextInfoResult } from "../agent/context";
 import { isPromptActive, onAgentEvent, send } from "../protocol/stream";
+import { wireSessionEvents } from "../protocol/thread-events";
 import {
   enforceResidency,
   findRunBySession,
@@ -670,6 +671,9 @@ export async function resolveSession(
   agent.state.tools = toolsForMode(run);
 
   agent.subscribe((event) => onAgentEvent(event, run));
+  // 原生事件通道（react-pi 迁移阶段 3）：AgentEvent → thread_event 帧
+  //（delta 化），桌面端 TauriPiClient 订阅重建流式状态
+  wireSessionEvents(run);
   running.set(threadId, run);
   // 水印播种：号段接续转录行号（设计文档 §3；jsonlSeq 是"下一个待分配"）
   trackSessionRun(sessionId, threadId, jsonlSeq - 1);

@@ -125,8 +125,14 @@ fn buffer_run_line(parsed: Option<&serde_json::Value>, line: &str) -> Option<u64
 
 /// 不允许在合帧窗口里滞留的行：chunk 的 finish/error（流收尾）与非 chunk
 /// 行（管理/通知类，低频）。解析失败的裸行也算，保持原样尽快送达。
+/// 例外：`thread_event` 行（react-pi 迁移阶段 3 的原生事件流）虽无 chunk 字段，
+/// 但与 token chunk 同频（message_update 逐 delta 一行），必须走合帧。
 fn is_flush_line(v: Option<&serde_json::Value>) -> bool {
-    match v.and_then(|v| v.get("chunk")) {
+    let Some(v) = v else { return true };
+    if v.get("type").and_then(|t| t.as_str()) == Some("thread_event") {
+        return false;
+    }
+    match v.get("chunk") {
         Some(c) => matches!(
             c.get("type").and_then(|t| t.as_str()),
             Some("finish") | Some("error")

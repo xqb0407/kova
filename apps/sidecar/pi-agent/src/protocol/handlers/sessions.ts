@@ -6,6 +6,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { send } from "../stream";
 import { isPromptActive } from "../stream";
+import { emitThreadEvent } from "../thread-events";
 import { runCompaction, contextInfo } from "../../agent/context";
 import { projectContextInfo } from "../../sessions/sessions";
 import { stripDirectiveTokens } from "../../sessions/session-title-summarize";
@@ -38,6 +39,7 @@ import {
 import { getTodoState, replayTodoFromMessages } from "../../todo/todo";
 import { getDelegationSnapshot } from "../../subagent/subagent";
 import { dropEventSeq, peekEventSeq } from "../event-seq";
+import { peekPartial } from "../thread-events";
 import type { SessionSummary } from "../../types";
 import type { CommandHandler } from "../command";
 
@@ -254,6 +256,11 @@ export const handlers: Record<string, CommandHandler> = {
         timestamp: Date.parse(c.createdAt) || 0,
       });
     }
+    // 流式中的 partial 并入（react-pi 迁移阶段 3c）：转录只在 message_end 落盘，
+    // 运行中刷新靠快照自愈——把事件桥台账里的在飞 assistant 消息接到尾部
+    //（仅 running 会话有；空闲时台账已清）
+    const partial = peekPartial(sessionId);
+    if (partial) messages.push(partial as unknown as SnapMessage);
     // 最后一条带 errorMessage 的 assistant 消息 = 会话级 lastError（兜底展示用）
     let lastError: string | undefined;
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -354,6 +361,8 @@ export const handlers: Record<string, CommandHandler> = {
     const name = String(msg.name ?? "");
     // 转录 session_info 行 = 真值，索引 title 列 = 投影（§6 M4）
     await setSessionName(sessionId, name);
+    // 原生事件通道（react-pi 迁移阶段 3）：reducer 的 metadata.title 由它驱动
+    emitThreadEvent(sessionId, { type: "session_info_changed", name });
     send({ id: reqId, type: "renamed" });
   },
 
