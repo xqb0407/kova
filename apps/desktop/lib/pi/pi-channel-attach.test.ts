@@ -43,7 +43,7 @@ mockModule("@tauri-apps/api/event", () => ({
   },
 }));
 
-const { TauriPiChannel } = await import("@/lib/pi/pi-channel");
+const { TauriPiChannel, compactReplayChunks } = await import("@/lib/pi/pi-channel");
 
 // ---------- 工具 ----------
 
@@ -102,7 +102,8 @@ describe("attachStream", () => {
     };
     const stream = await attach();
     expect(stream).not.toBeNull();
-    // 直播重放快照内 2、3 两行 + 新行 4、5；穿插别的 run 的行（必须被忽略）
+    // 直播重放快照内 2、3 两行 + 新行 4、5；穿插别的 run 的行（必须被忽略）。
+    // 快照重放走快速前进：同 id 的 2、3 两个 delta 合并为一段 "ab"
     batchCb!({
       payload: [
         wire(2, delta("a")),
@@ -113,16 +114,13 @@ describe("attachStream", () => {
       ],
     });
     const chunks = await readAll(stream!);
-    expect(chunks.map((c) => c.type)).toEqual([
-      "start",
-      "text-delta",
-      "text-delta",
-      "text-delta",
-      "finish",
+    expect(chunks.map((c) => c.type)).toEqual(["start", "text-delta", "text-delta", "finish"]);
+    expect(chunks.map((c) => (c as { delta?: string }).delta)).toEqual([
+      undefined,
+      "ab",
+      "c",
+      undefined,
     ]);
-    expect(
-      chunks.map((c) => (c as { delta?: string }).delta),
-    ).toEqual([undefined, "a", "b", "c", undefined]);
   });
 
   test("直播行先于快照处理到达：乱序暂存，快照补齐后按序放出", async () => {
@@ -167,5 +165,59 @@ describe("attachStream", () => {
     expect(stream).not.toBeNull();
     const chunks = await readAll(stream!);
     expect(chunks.map((c) => c.type)).toEqual(["start", "text-delta"]);
+  });
+});
+
+describe("compactReplayChunks（快速前进重放合并）", () => {
+  test("同 id delta 串合并为一段；kind/id 变化断开；非 delta chunk 前先冲刷", () => {
+    const reasoning = { type: "reasoning-delta", delta: "r", id: "rr" } as UIMessageChunk;
+    const other = { type: "text-delta", delta: "c", id: "d2" } as UIMessageChunk;
+    const tool = {
+      type: "tool-input-available",
+      toolCallId: "t1",
+      toolName: "read",
+      input: {},
+    } as UIMessageChunk;
+    const { chunks } = compactReplayChunks(
+      [start, delta("a"), delta("b"), reasoning, other, tool].map((chunk, i) =>
+        wire(i + 1, chunk),
+      ),
+      REQ,
+    );
+    expect(chunks.map((c) => c.type)).toEqual([
+      "start",
+      "text-delta",
+      "reasoning-delta",
+      "text-delta",
+      "tool-input-available",
+    ]);
+    expect(chunks[1]).toMatchObject({ id: "d1", delta: "ab" });
+    expect(chunks[3]).toMatchObject({ id: "d2", delta: "c" });
+  });
+
+  test("超过 32KB 的 delta 串切多段，文本总量守恒", () => {
+    const piece = "x".repeat(1024);
+    const lines = Array.from({ length: 100 }, (_, i) => wire(i + 1, delta(piece)));
+    const { chunks } = compactReplayChunks(lines, REQ);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((c) => c.type === "text-delta")).toBe(true);
+    const total = chunks.reduce((n, c) => n + ((c as { delta: string }).delta?.length ?? 0), 0);
+    expect(total).toBe(100 * 1024);
+    for (const c of chunks) {
+      expect((c as { delta: string }).delta.length).toBeLessThanOrEqual(32 * 1024 + 1024);
+    }
+  });
+
+  test("畸形行 / 他 run 行跳过，maxSeq 仍按快照计入", () => {
+    const { chunks, maxSeq } = compactReplayChunks(
+      [foreign(1), { i: 2, l: "{not json" }, wire(3, delta("ok"))],
+      REQ,
+    );
+    expect(maxSeq).toBe(3);
+    expect(chunks).toEqual([{ type: "text-delta", delta: "ok", id: "d1" }]);
+  });
+
+  test("空快照", () => {
+    expect(compactReplayChunks([], REQ)).toEqual({ chunks: [], maxSeq: 0 });
   });
 });
