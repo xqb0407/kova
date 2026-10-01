@@ -8,6 +8,7 @@ import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
 const prevWindow = (globalThis as Record<string, unknown>).window;
 afterAll(() => {
   restoreAllMocks();
+  setPiChannel(null); // 通道单例不跨文件泄漏（同 pi-running.test.ts 收尾）
   (globalThis as Record<string, unknown>).window = prevWindow;
 });
 

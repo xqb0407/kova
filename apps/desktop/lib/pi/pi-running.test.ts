@@ -55,6 +55,11 @@ const {
 } = await import("@/lib/pi/pi-running");
 const { piResumableStorage } = await import("@/lib/pi/pi-resume-storage");
 
+// 通道单例收尾：setPiChannel 写的是共享模块的模块级 current，bun 同进程跑
+// 整个 lib/pi/ 时会把本文件的 fake 泄漏给后跑文件（tauri-pi-client.test.ts
+// 的 thread_snapshot 路径被毒化，3 个用例失败）——跑完清空注册表
+afterAll(() => setPiChannel(null));
+
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 /** 记录 store 快照变化的探针 */

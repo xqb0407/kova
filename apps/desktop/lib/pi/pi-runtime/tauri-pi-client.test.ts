@@ -58,6 +58,27 @@ mockModule("@tauri-apps/api/event", () => ({
   },
 }));
 
+// pi-bridge 边界自锚（lib/testing/mock-module.ts 的纪律）：别名模块的 mock
+// 跨文件恢复不可靠——全量跑 lib/pi/ 时 pi-history-window/app-mode 等文件的
+// piRequest 桩会泄漏进本文件，thread_snapshot 路径被毒化（3 个快照依赖用例
+// 失败）。这里显式接管，语义与真实 pi-bridge 一致：委托当前注册通道 +
+// error 应答抛错。
+mockModule("@/lib/pi/pi-bridge", () => {
+  const { getPiChannel } = require("@/lib/pi/pi-channel") as typeof import("@/lib/pi/pi-channel");
+  return {
+    piRequest: async <T>(
+      payload: Record<string, unknown>,
+      timeoutMs?: number,
+    ): Promise<T> => {
+      const response = await getPiChannel().request(payload, timeoutMs);
+      if ((response as { type?: string }).type === "error") {
+        throw new Error((response as { errorText?: string }).errorText);
+      }
+      return response as T;
+    },
+  };
+});
+
 const { TauriPiClient } = await import("@/lib/pi/pi-runtime/tauri-pi-client");
 const {
   pendingApprovalsForTest,
