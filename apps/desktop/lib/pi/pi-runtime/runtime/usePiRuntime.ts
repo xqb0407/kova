@@ -556,6 +556,9 @@ const mapThreadMetadata = (metadata: PiThreadMetadata) => ({
   remoteId: metadata.id,
   externalId: metadata.id,
   ...(metadata.title !== undefined ? { title: metadata.title } : {}),
+  // updatedAt（sidecar session.modified）→ AUI 列表项 lastMessageAt：侧边栏
+  // 「距最后一条消息」的时间源。上游映射漏了它，列表时间整体消失（2026-10-01）
+  ...(metadata.updatedAt ? { lastMessageAt: new Date(metadata.updatedAt) } : {}),
   custom: {
     status: metadata.status,
     ...(metadata.workspacePath !== undefined
