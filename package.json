@@ -10,7 +10,10 @@
   "overrides": {
     "unified": "^11.0.5",
     "@codemirror/view": "^6.43.12",
-    "ai": "^7.0.105"
+    "ai": "^7.0.105",
+    "@assistant-ui/store": "^0.3.15",
+    "@assistant-ui/core": "^0.3.21",
+    "@assistant-ui/tap": "^0.9.19"
   },
   "scripts": {
     "build": "bun run --filter desktop build",
@@ -28,5 +31,9 @@
   "patchedDependencies": {
     "@earendil-works/pi-ai@0.99.2": "patches/@earendil-works%2Fpi-ai@0.99.2.patch",
     "@earendil-works/pi-agent-core@0.99.2": "patches/@earendil-works%2Fpi-agent-core@0.99.2.patch"
+  },
+  "dependencies": {
+    "@assistant-ui/react-o11y": "^0.0.45",
+    "@assistant-ui/store": "^0.3.15"
   }
 }
