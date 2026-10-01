@@ -21,6 +21,7 @@ import {
   usePiContextMirror,
 } from "@/lib/pi/pi-context";
 import { clearManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
+import { usePiThreadState } from "@/lib/pi/pi-runtime";
 import type { PiContextInfo } from "@/lib/pi/pi-bridge";
 import { Separator } from "../ui/separator";
 
@@ -80,6 +81,9 @@ export const ContextButton: FC = () => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
   // §7 推送镜像：占用环的常态数据源（轮收尾 context_changed 直更）
   const mirror = usePiContextMirror(threadId);
+  // react-pi 状态里的 context_usage 读数（迁移 4c 双轨之二，thread_event
+  // 直驱）：镜像缺位（切线程后尚未收轮等）时兜底环显示
+  const liveUsage = usePiThreadState((s) => s.contextUsage);
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState<PiContextInfo | null>(null);
   const [loading, setLoading] = useState(false);
@@ -141,15 +145,20 @@ export const ContextButton: FC = () => {
   // 空对话没有上下文可看，不占 composer 位
   if (!threadId || messageCount === 0) return null;
 
-  // 占用环数据源：§7 镜像优先（轮收尾推送直更，常态在线），完整读数兜底。
+  // 占用环数据源：§7 镜像优先（轮收尾推送直更，常态在线），完整读数次之，
+  // react-pi 的 context_usage 读数（迁移 4c 双轨）最后兜底。
   // usedTokens 是 sidecar 统一口径的请求总占用（usage 已含系统提示词/工具，
   // 不得再叠加两项——重复计数会把环推到虚高越线）；旧 sidecar 缺字段时三项相加
   const used = mirror
     ? mirror.usedTokens
     : info
       ? (info.usedTokens ?? info.messageTokens + info.systemPromptTokens + info.toolTokens)
-      : 0;
-  const capacity = mirror ? mirror.contextWindow : info ? info.contextWindow : 0;
+      : (liveUsage?.tokens ?? 0);
+  const capacity = mirror
+    ? mirror.contextWindow
+    : info
+      ? info.contextWindow
+      : (liveUsage?.contextWindow ?? 0);
   // 自动压缩阈值（hardLimit）：占用距它的百分比常显在 title/popover
   const threshold = mirror ? mirror.threshold : info ? info.hardLimit : 0;
   const usedPct = capacity > 0 ? used / capacity : null;

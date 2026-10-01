@@ -31,7 +31,7 @@ export function fetchContextInfo(threadId: string): Promise<PiContextInfo> {
  * 镜像；popover 打开仍拉完整读数（分项/模型名/miss 统计不在推送里）；
  * 水印缺口回拉 context_info（pi-transport 把 refreshContextMirror 接进
  * seq-guard 的 kind="context"）。帧按 sessionId、镜像按 threadId（UI
- * 消费键）；未绑定会话的帧丢弃。 */
+ * 消费键；registry 未绑定时直用 sessionId 作键，新链路二者本就相同）。 */
 
 export type PiContextMirror = {
   /** 消息+系统提示词+工具三项之和（与 sidecar 推送口径一致） */
@@ -64,7 +64,9 @@ export function readContextMirror(threadId: string): PiContextMirror | null {
 
 function threadForSession(sessionId: string): string | undefined {
   for (const [t, s] of piSessionRegistry) if (s === sessionId) return t;
-  return undefined;
+  // react-pi 新链路（迁移 4c）：threadId = sessionId，无 registry 映射时
+  // 直用 sessionId 作镜像键（帧本就按会话推送，键一致即可命中 UI 消费）
+  return sessionId;
 }
 
 /** context_changed 推送帧直更镜像（通道回调；形状残缺/未绑定即弃） */
