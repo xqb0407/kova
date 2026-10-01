@@ -247,14 +247,16 @@
 - **TaskToolUI running 取自 subagent store**（非 status 字段），4c 已接。
 
 ### 4d 已知缺口（记录不阻塞，后续迭代）
-1. **新链路缺图**：sidecar 的 data-image 只走旧 prompt 流（stream.ts
-   `sendChunk(reqId, ...)`），thread_event 通道不承载；且 vendored 投影把
-   toolResult image 块转 modelContent file parts，而 UI 图片廊
-   （assistant-message.tsx group-images）只消费 data part（name "image"，
-   PiImagePartData 带 toolCallId）。**修复方案 A**：vendored 投影层复制
-   sidecar 闸门语义（image-parts.ts：2MiB 内联上限、mime 白名单、
-   id=`img-${toolCallId}-${index}`、alt=文本块首行≤120 字符），把 image 块
-   投为 data part——快照与流式同构，顺带修好刷新恢复后的图片显示。
+1. ~~**新链路缺图**~~ **已修复（方案 A，2026-10-01）**：vendored 投影层
+   （messageProjection.ts）复制 sidecar 闸门语义（image-parts.ts：2MiB 内联
+   上限、mime 白名单 + image/jpg 归一、id=`img-${toolCallId}-${index}`、
+   alt=文本块首行≤120 字符、超限/白名单外/空数据降级占位行），把 toolResult
+   image 块投为 data part（name "image"）紧跟 tool-call part——快照与流式
+   （partialResult）同构，UI 图廊 group-images 按 toolCallId 认亲渲染，刷新
+   恢复后图片不再丢。附带把结果文本拼装对齐 sidecar（非文本块贡献空段按
+   "\n" join + 占位行追加，与旧链路工具行文案逐字一致）；modelContent file
+   parts 路径移除（无消费者）。data 一律按裸 base64 拼 src（sidecar 同款，
+   测试钉住同构防止单侧特判 data URL）。
 2. **检查点卡未接**：createCheckpoint/settleCheckpoint 链路在 thread_event
    通道无对应事件，检查点指示条不更新（数据仍走 checkpoint API，功能可用）。
 3. **agent.turn.completed 完成提醒未接**：旧链路的完成通知 side effect 在
