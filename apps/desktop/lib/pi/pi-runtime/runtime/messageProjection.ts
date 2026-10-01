@@ -2,6 +2,11 @@
 // https://github.com/assistant-ui/assistant-ui/tree/main/packages/react-pi
 // 保留上游文件名与结构以便对照上游 cherry-pick；改动需在此注明：
 // vendored path: src/messageProjection.ts（runtime/ 子目录对应上游 src/runtime/）
+// 本地改动：
+// - 工具结果 image 块不再转 modelContent file parts，改为镜像 sidecar
+//   image-parts.ts 闸门（2MiB 上限 / mime 白名单 / 降级占位 notices）投影为
+//   data part（name "image"，PiImagePartData）——与旧链路直播 chunk 及刷新
+//   后的历史重建同构，UI 图廊（group-images）据此认亲渲染（2026-10-01 缺图修复）
 
 /**
  * Pure projection of the canonical Pi transcript (`PiAgentMessage[]`) into
@@ -30,11 +35,8 @@
  */
 
 import { ExportedMessageRepository } from "@assistant-ui/react";
-import { parseDataUrl } from "@assistant-ui/core/internal";
 import type {
   ThreadMessageLike,
-  ToolCallMessagePart,
-  ToolModelContentPart,
 } from "@assistant-ui/react";
 import { approvalForRequest, splitHostUiRequests } from "./hostUi";
 import type { PiThreadState } from "./threadState";
@@ -53,8 +55,7 @@ import type {
 } from "../types";
 
 type ContentPart = Exclude<ThreadMessageLike["content"], string>[number];
-type ToolCallPart = Extract<ContentPart, { type: "tool-call" }> &
-  Pick<ToolCallMessagePart, "modelContent">;
+type ToolCallPart = Extract<ContentPart, { type: "tool-call" }>;
 type Step = NonNullable<
   NonNullable<ThreadMessageLike["metadata"]>["steps"]
 >[number];
@@ -75,34 +76,104 @@ const toDataUrl = (data: string, mimeType: string) =>
 const createdAtOf = (message: { timestamp?: number }): Date =>
   new Date(typeof message.timestamp === "number" ? message.timestamp : 0);
 
+// —— 工具结果图片闸门（镜像 sidecar image-parts.ts，唯一事实源在 sidecar）——
+// 投影只加 UI 通道：image 块按 sidecar 同款语义转 data part（快照 = 刷新后同构），
+// 越界/白名单外/空数据的图不进线，改为结果文本尾部一行占位提示，绝不静默吞图。
+
+/** data part 名：UI 侧 makeAssistantDataUI("image") 按名认领渲染 */
+const IMAGE_PART_NAME = "image";
+
+/** 单图原始字节上限（≈2MiB），与 sidecar IMAGE_INLINE_MAX_BYTES 同值 */
+const IMAGE_INLINE_MAX_BYTES = 2 * 1024 * 1024;
+
+/** 允许内联的栅格格式；svg 整体挡掉（可含外链与可欺骗绘制） */
+const IMAGE_MIME_ALLOWED = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+
+/** MIME 归一 + 白名单判定；不合法/不在白名单返回 null */
+const normalizeMime = (mime: unknown): string | null => {
+  if (typeof mime !== "string") return null;
+  const m = mime.trim().toLowerCase();
+  // 部分服务器发 image/jpg（非规范拼写），归一到 jpeg
+  const canon = m === "image/jpg" ? "image/jpeg" : m;
+  return IMAGE_MIME_ALLOWED.has(canon) ? canon : null;
+};
+
+/** 工具图片 data part 的 data 形状（镜像 pi-bridge.ts PiImagePartData） */
+type PiImagePartData = {
+  src: string;
+  mimeType: string;
+  bytes: number;
+  toolCallId: string | null;
+  toolName?: string;
+  alt?: string;
+};
+
+export interface ProjectedImage {
+  /** 稳定 id：`img-<toolCallId>-<图块序号>`；快照与流式同值 */
+  id: string;
+  data: PiImagePartData;
+}
+
 const projectToolResult = (
   content: readonly PiToolResultContent[] | undefined,
-): Pick<ToolCallPart, "result" | "modelContent"> => {
-  if (!content) return {};
-  const result = content
-    .filter(
-      (part): part is Extract<PiToolResultContent, { type: "text" }> =>
-        part.type === "text",
-    )
-    .map((part) => part.text)
-    .join("");
-  if (content.every((part) => part.type === "text")) return { result };
-
-  const modelContent = content.flatMap<ToolModelContentPart>((part) => {
-    if (part.type === "text") {
-      return [{ type: "text" as const, text: part.text }];
+  ctx: { toolCallId: string | null },
+): { result?: string; images: ProjectedImage[] } => {
+  if (!content) return { images: [] };
+  // 保留 sidecar 拼装语义：非文本块贡献空段（join 出空行），结果文本与
+  // 旧链路（sidecar projectToolResult 的 output）逐字一致
+  let result = content
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join("\n");
+  const notices: string[] = [];
+  const images: ProjectedImage[] = [];
+  // alt 取第一个非空文本块首行（工具侧约定的 headline）
+  const alt = content
+    .map((part) => (part.type === "text" ? part.text.trim() : ""))
+    .find((t) => t.length > 0)
+    ?.split("\n")[0]
+    ?.slice(0, 120);
+  let imgIndex = 0;
+  for (const part of content) {
+    if (part.type !== "image") continue;
+    const index = imgIndex++;
+    const b64 = part.data.trim();
+    const mime = normalizeMime(part.mimeType);
+    if (!mime) {
+      const label = part.mimeType.trim() || "未知类型";
+      notices.push(`[图片未展示：不支持的类型 ${label}（仅 png/jpeg/gif/webp）]`);
+      continue;
     }
-    const parsed = parseDataUrl(part.data);
-    return [
-      {
-        type: "file" as const,
-        data: parsed?.data ?? part.data,
-        mediaType: parsed?.mimeType ?? part.mimeType,
+    if (!b64) {
+      notices.push(`[图片未展示：${mime} 数据为空]`);
+      continue;
+    }
+    const bytes = Math.floor((b64.length * 3) / 4); // base64 长度近似解码后字节，免解码
+    if (bytes > IMAGE_INLINE_MAX_BYTES) {
+      notices.push(
+        `[图片未展示：约 ${(bytes / (1024 * 1024)).toFixed(1)} MiB，超过 ${(IMAGE_INLINE_MAX_BYTES / (1024 * 1024)).toFixed(1)} MiB 内联上限]`,
+      );
+      continue;
+    }
+    images.push({
+      id: `img-${ctx.toolCallId ?? "direct"}-${index}`,
+      data: {
+        src: `data:${mime};base64,${b64}`,
+        mimeType: mime,
+        bytes,
+        toolCallId: ctx.toolCallId,
+        ...(alt ? { alt } : {}),
       },
-    ];
-  });
-
-  return { result, modelContent };
+    });
+  }
+  if (notices.length) {
+    result = result.trim() ? `${result}\n${notices.join("\n")}` : notices.join("\n");
+  }
+  return { result, images };
 };
 
 const readToolResultContent = (
@@ -152,16 +223,15 @@ const dataPart = (
 const buildToolResultMap = (messages: readonly PiAgentMessage[]) => {
   const map = new Map<
     string,
-    Pick<ToolCallPart, "result" | "modelContent"> & {
-      isError: boolean;
-      details: unknown;
-    }
+    { result?: string; images: ProjectedImage[]; isError: boolean; details: unknown }
   >();
   for (const message of messages) {
     if (message.role !== "toolResult") continue;
     const m = message as PiToolResultMessage;
     map.set(m.toolCallId, {
-      ...projectToolResult(readToolResultContent({ content: m.content })),
+      ...projectToolResult(readToolResultContent({ content: m.content }), {
+        toolCallId: m.toolCallId,
+      }),
       isError: m.isError,
       details: m.details,
     });
@@ -207,7 +277,10 @@ const projectAssistantInto = (
       const paired = toolResults.get(part.id);
       const live = input.toolExecutions[part.id];
       const output =
-        paired ?? projectToolResult(readToolResultContent(live?.partialResult));
+        paired ??
+        projectToolResult(readToolResultContent(live?.partialResult), {
+          toolCallId: part.id,
+        });
       const isError = paired?.isError ?? live?.status === "error";
 
       const hostUi = hostUiByToolCall.get(part.id);
@@ -223,9 +296,6 @@ const projectAssistantInto = (
         argsText: JSON.stringify(part.arguments ?? {}),
         parentId,
         ...(output.result !== undefined ? { result: output.result } : {}),
-        ...(output.modelContent !== undefined
-          ? { modelContent: output.modelContent }
-          : {}),
         ...(isError ? { isError: true } : {}),
         ...(paired === undefined &&
         output.result !== undefined &&
@@ -237,6 +307,16 @@ const projectAssistantInto = (
 
       if (approval) group.hasPendingHostUi = true;
       group.parts.push(toolCall);
+      // 工具图片 data part：紧跟 tool-call part（旧链路 chunk 顺序契约——结果行
+      // 与成图相邻，图廊按 PiImagePartData.toolCallId 认亲）；toolName 由配对
+      // 工具名补齐（sidecar transcript/stream 同款语义）
+      for (const img of output.images) {
+        group.parts.push({
+          type: "data",
+          name: IMAGE_PART_NAME,
+          data: { ...img.data, toolName: part.name },
+        });
+      }
     }
     // unknown assistant content parts are dropped (open union forward-compat:
     // the transcript remains canonical; the snapshot self-heals).

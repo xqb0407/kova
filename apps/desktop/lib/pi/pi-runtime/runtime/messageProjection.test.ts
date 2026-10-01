@@ -177,13 +177,11 @@ describe("messageProjection", () => {
       toolCallId: "tc1",
       result: "file1\nfile2",
     });
-    expect(part.modelContent).toBeUndefined();
+    // 纯文本结果不产生图片 data part
+    expect(contentParts(out[0]!)).toHaveLength(1);
   });
 
-  it("preserves image tool result content", () => {
-    const content = [
-      { type: "image" as const, data: "AAAA", mimeType: "image/png" },
-    ];
+  it("projects image tool result content as an image data part（sidecar 闸门镜像）", () => {
     const out = projectPiThreadMessages(
       input([
         assistant([toolCall("tc1", "screenshot", {})]),
@@ -191,22 +189,94 @@ describe("messageProjection", () => {
           role: "toolResult",
           toolCallId: "tc1",
           toolName: "screenshot",
-          content,
+          content: [{ type: "image" as const, data: "AAAA", mimeType: "image/png" }],
           isError: false,
           timestamp: 2,
         },
       ]),
     );
 
-    expect(contentParts(out[0]!)[0]).toMatchObject({
+    // 结果行 + 紧随其后的成图 data part（顺序契约：相邻，图廊按 toolCallId 认亲）
+    const parts = contentParts(out[0]!);
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toMatchObject({
       type: "tool-call",
       toolCallId: "tc1",
       result: "",
-      modelContent: [{ type: "file", data: "AAAA", mediaType: "image/png" }],
+    });
+    expect(parts[1]).toEqual({
+      type: "data",
+      name: "image",
+      data: {
+        src: "data:image/png;base64,AAAA",
+        mimeType: "image/png",
+        bytes: 3, // floor(4*3/4)
+        toolCallId: "tc1",
+        toolName: "screenshot",
+      },
     });
   });
 
-  it("normalizes data URL image tool result content", () => {
+  it("applies sidecar gate semantics: alt / mime 归一 / 超限与降级占位", () => {
+    const oversizeB64 = "A".repeat(4 * 1024 * 1024); // ≈3MiB 解码字节 > 2MiB 上限
+    const out = projectPiThreadMessages(
+      input([
+        assistant([toolCall("tc1", "screenshot", {})]),
+        {
+          role: "toolResult",
+          toolCallId: "tc1",
+          toolName: "screenshot",
+          content: [
+            { type: "text" as const, text: "headline line\nmore" },
+            // image/jpg 非规范拼写 → 归一 jpeg，正常上屏
+            { type: "image" as const, data: "AAAA", mimeType: "image/jpg" },
+            // 数据为空 → 占位提示
+            { type: "image" as const, data: "", mimeType: "image/png" },
+            // 白名单外（svg 可含外链）→ 占位提示
+            { type: "image" as const, data: "<svg/>", mimeType: "image/svg+xml" },
+          ],
+          isError: false,
+          timestamp: 2,
+        },
+        assistant([toolCall("tc2", "read", {})]),
+        {
+          role: "toolResult",
+          toolCallId: "tc2",
+          toolName: "read",
+          content: [{ type: "image" as const, data: oversizeB64, mimeType: "image/png" }],
+          isError: false,
+          timestamp: 3,
+        },
+      ]),
+    );
+
+    const parts = contentParts(out[0]!);
+    // tc1：1 张上屏（归一 jpeg）+ 2 行占位；tc2：0 张上屏 + 1 行占位
+    const dataParts = parts.filter((p) => p.type === "data");
+    expect(dataParts).toHaveLength(1);
+    expect(dataParts[0]).toMatchObject({
+      name: "image",
+      data: {
+        src: "data:image/jpeg;base64,AAAA",
+        mimeType: "image/jpeg",
+        toolCallId: "tc1",
+        alt: "headline line",
+      },
+    });
+    const tc1 = parts.find((p) => p.type === "tool-call" && p.toolCallId === "tc1")!;
+    // 非文本块贡献空段（join 出空行）+ 占位行追加在尾部——与 sidecar output 逐字一致
+    expect(tc1.result).toBe(
+      "headline line\nmore\n\n\n\n" +
+        "[图片未展示：image/png 数据为空]\n" +
+        "[图片未展示：不支持的类型 image/svg+xml（仅 png/jpeg/gif/webp）]",
+    );
+    const tc2 = parts.find((p) => p.type === "tool-call" && p.toolCallId === "tc2")!;
+    expect(tc2.result).toBe("[图片未展示：约 3.0 MiB，超过 2.0 MiB 内联上限]");
+  });
+
+  it("treats image data as raw base64（sidecar 同款，不特判 data URL）", () => {
+    // sidecar image-parts.ts 把 data 一律当裸 base64 拼 src；镜像同款语义，
+    // 此测试钉住两侧同构——单侧「修复」data URL 特判会破坏同构
     const out = projectPiThreadMessages(
       input([
         assistant([toolCall("tc1", "screenshot", {})]),
@@ -216,7 +286,7 @@ describe("messageProjection", () => {
           toolName: "screenshot",
           content: [
             {
-              type: "image",
+              type: "image" as const,
               data: "data:image/png;base64,AAAA",
               mimeType: "image/png",
             },
@@ -227,9 +297,10 @@ describe("messageProjection", () => {
       ]),
     );
 
-    expect(contentParts(out[0]!)[0]).toMatchObject({
-      result: "",
-      modelContent: [{ type: "file", data: "AAAA", mediaType: "image/png" }],
+    expect(contentParts(out[0]!)[1]).toMatchObject({
+      type: "data",
+      name: "image",
+      data: { src: "data:image/png;base64,data:image/png;base64,AAAA" },
     });
   });
 
@@ -336,7 +407,7 @@ describe("messageProjection", () => {
     expect(part.isPreliminary).toBeUndefined();
   });
 
-  it("preserves live image tool result content", () => {
+  it("projects live image tool result content as an image data part", () => {
     const out = projectPiThreadMessages(
       input([assistant([toolCall("tc1", "screenshot", {})])], {
         toolExecutions: {
@@ -352,10 +423,19 @@ describe("messageProjection", () => {
       }),
     );
 
-    expect(contentParts(out[0]!)[0]).toMatchObject({
-      toolCallId: "tc1",
-      result: "",
-      modelContent: [{ type: "file", data: "AAAA", mediaType: "image/png" }],
+    // 直播路径同构：partialResult 的 image 块同样投影为 data part
+    const parts = contentParts(out[0]!);
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toMatchObject({ toolCallId: "tc1", result: "" });
+    expect(parts[1]).toMatchObject({
+      type: "data",
+      name: "image",
+      data: {
+        src: "data:image/png;base64,AAAA",
+        mimeType: "image/png",
+        toolCallId: "tc1",
+        toolName: "screenshot",
+      },
     });
   });
 
@@ -404,8 +484,7 @@ describe("messageProjection", () => {
       }),
       expect.objectContaining({ toolCallId: "live", result: "live text" }),
     ]);
-    expect(contentParts(out[0]!)[0]!.modelContent).toBeUndefined();
-    expect(contentParts(out[0]!)[1]!.modelContent).toBeUndefined();
+    // resource 块被过滤，也不产生图片 data part（精确长度由 toEqual 保证）
   });
 
   it("merges multiple assistant turns into one message with a step each", () => {
