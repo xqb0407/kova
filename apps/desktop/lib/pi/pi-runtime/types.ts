@@ -155,6 +155,10 @@ export interface PiCompactionSummaryMessage {
   role: "compactionSummary";
   summary: string;
   tokensBefore: number;
+  /** 本地改动（快照分隔线保真）：sidecar 从检查点行 details 推出后带上，
+   *  与 get_history 的 data-compaction part 载荷同口径 */
+  generation?: number;
+  summarized?: boolean;
   timestamp: number;
 }
 
