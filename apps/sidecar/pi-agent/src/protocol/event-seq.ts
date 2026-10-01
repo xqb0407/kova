@@ -21,6 +21,12 @@ export function nextEventSeq(sessionId: string): number {
   return next;
 }
 
+/** 当前水位读数（不推进）：快照命令给 PiThreadSnapshot.seq 盖章用。
+ *  未盖章过返回 undefined（= 冷读，快照不带 seq，前端跳过去重判定） */
+export function peekEventSeq(sessionId: string): number | undefined {
+  return counters.get(sessionId);
+}
+
 /** 盖章包装：给自发通知帧加 eventSeq（仅对确认广播的行使用） */
 export function withEventSeq<T extends Record<string, unknown>>(
   sessionId: string,

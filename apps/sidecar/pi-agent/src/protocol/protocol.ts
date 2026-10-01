@@ -53,6 +53,10 @@
  *   { "type": "fork_session", "id", "sessionId" }             → { id, type: "forked", sessionId: <新会话> }
  *       分支对话：把源会话转录复制到全新 sessionId（seq 沿用、header 重写），
  *       索引行标题加「（分支）」后缀；与源会话此后再无关联
+ *   { "type": "thread_snapshot", "id", "sessionId" }         → { id, type: "thread_snapshot", snapshot }
+ *       PiClient 契约快照（react-pi 迁移）：JSONL 转录 → { metadata, messages, hostUiRequests?, seq?, lastError? }；
+ *       messages 为 pi-ai 原生 agent 行直出（压缩检查点行重建为 compactionSummary 消息），
+ *       metadata.status 以 activeTurns 为准；seq = 事件水位现读（未盖章不带）
  *   { "type": "get_history", "id", "sessionId", "tail"?, "beforeSeq"? }
  *                                       → { id, type: "history", messages, pending, firstSeq, lastSeq, hasMore }
  *       历史从 agent 消息重建，含工具部件（tool part 的 input/output 与 live 流一致）与

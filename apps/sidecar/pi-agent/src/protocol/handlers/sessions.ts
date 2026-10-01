@@ -37,7 +37,7 @@ import {
 } from "../../sessions/sessions";
 import { getTodoState, replayTodoFromMessages } from "../../todo/todo";
 import { getDelegationSnapshot } from "../../subagent/subagent";
-import { dropEventSeq } from "../event-seq";
+import { dropEventSeq, peekEventSeq } from "../event-seq";
 import type { SessionSummary } from "../../types";
 import type { CommandHandler } from "../command";
 
@@ -217,6 +217,92 @@ export const handlers: Record<string, CommandHandler> = {
       messageCount,
     );
     send({ id: reqId, type: "forked", sessionId: newId });
+  },
+
+  thread_snapshot: async (reqId, msg) => {
+    // PiClient 契约的快照命令（react-pi 迁移阶段 2）：JSONL 转录 → PiThreadSnapshot。
+    // 消息 = pi-ai 原生 agent 行直出（前端投影层消费），压缩检查点行按 seq 位置
+    // 重建成 compactionSummary 消息；metadata.status 以 activeTurns 为准；
+    // seq = per-session 事件水位现读（未盖章过不带 = 冷读）。
+    const sessionId = String(msg.sessionId ?? "");
+    if (!sessionId) throw new Error("sessionId required");
+    const scan = scanTranscript(sessionId);
+    const running = listActiveTurnSessions().includes(sessionId);
+    const row = (await sessionList()).find((r) => r.id === sessionId);
+    // 消息与压缩检查点按 seq 归并（两者共用号段，单遍双指针）
+    type SnapMessage = Record<string, unknown> & { role?: string };
+    const messages: SnapMessage[] = [];
+    let ci = 0;
+    for (const m of scan.messages) {
+      while (ci < scan.compactions.length && scan.compactions[ci].seq < m.seq) {
+        const c = scan.compactions[ci++];
+        messages.push({
+          role: "compactionSummary",
+          summary: c.summary,
+          tokensBefore: c.tokensBefore,
+          timestamp: Date.parse(c.createdAt) || 0,
+        });
+      }
+      messages.push(m.agent as unknown as SnapMessage);
+    }
+    while (ci < scan.compactions.length) {
+      const c = scan.compactions[ci++];
+      messages.push({
+        role: "compactionSummary",
+        summary: c.summary,
+        tokensBefore: c.tokensBefore,
+        timestamp: Date.parse(c.createdAt) || 0,
+      });
+    }
+    // 最后一条带 errorMessage 的 assistant 消息 = 会话级 lastError（兜底展示用）
+    let lastError: string | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "assistant" && typeof m.errorMessage === "string" && m.errorMessage) {
+        lastError = m.errorMessage;
+        break;
+      }
+    }
+    // 挂起交互行 → hostUiRequests：阶段 2 只映射逐工具审批（permission），
+    // 投影层按 toolCallId 挂到工具卡上渲染审批；question 类卡片 UI 在阶段 4 接线。
+    const peek = peekEventSeq(sessionId);
+    const hostUiRequests = scan.pending.flatMap((it): unknown[] => {
+      if (it.kind !== "permission") return [];
+      const p = it.payload as { approvalId?: string; toolCallId?: string; toolName?: string };
+      if (!p.approvalId) return [];
+      return [{
+        id: p.approvalId,
+        kind: "confirm" as const,
+        title: p.toolName ?? "工具审批",
+        message: p.toolName ? `允许执行 ${p.toolName}？` : "工具等待审批",
+        ...(p.toolCallId ? { toolCallId: p.toolCallId } : {}),
+      }];
+    });
+    send({
+      id: reqId,
+      type: "thread_snapshot",
+      snapshot: {
+        metadata: {
+          id: sessionId,
+          title: scan.name || row?.title || undefined,
+          workspacePath: row?.cwd || undefined,
+          archived: row?.archived === 1,
+          status: running ? ("running" as const) : ("idle" as const),
+          config: {
+            provider: scan.model?.provider ?? row?.modelProvider ?? undefined,
+            modelId: scan.model?.modelId ?? row?.modelId ?? undefined,
+            ...(scan.thinkingLevel ? { thinkingLevel: scan.thinkingLevel } : {}),
+          },
+          messageCount: row?.message_count,
+          updatedAt: row?.updated_at,
+          sessionFile: sessionPath(sessionId),
+        },
+        messages,
+        ...(hostUiRequests.length ? { hostUiRequests } : {}),
+        ...(peek !== undefined ? { seq: peek } : {}),
+        ...(lastError ? { lastError } : {}),
+      },
+    });
   },
 
   get_history: async (reqId, msg) => {
