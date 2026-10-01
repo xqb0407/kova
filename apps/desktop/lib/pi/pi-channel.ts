@@ -1,18 +1,18 @@
 "use client";
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { UIMessageChunk } from "ai";
+import { listen } from "@tauri-apps/api/event";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
-import { observeWireLine, resetSeqGuard } from "@/lib/pi/pi-seq-guard";
 
 /**
- * pi-agent 通道抽象：把"管理类请求-响应 + prompt 流式输出 + 全局中断"收口成接口。
- * - TauriPiChannel：桌面端，走 Tauri invoke/event（原 pi-bridge/pi-transport 逻辑平移）
+ * pi-agent 通道抽象：把"管理类请求-响应 + 自发通知订阅 + 全局中断"收口成接口。
+ * - TauriPiChannel：桌面端，走 Tauri invoke/event
  * - WsPiChannel：远程网页端，走 WebSocket（见 pi-ws-channel.ts）
  *
- * piRequest / createPiThreadListAdapter 通过模块级注册表（setPiChannel/getPiChannel）
- * 与具体通道解耦：运行时 provider 挂载前 set，之后所有调用原样工作在任一通道上。
+ * prompt 流式输出不走本接口：react-pi 新链路（pi-runtime/PiClientBase）经
+ * Tauri 事件行 / WS 原始行自行分流并重建 partial。piRequest 通过模块级注册表
+ * （setPiChannel/getPiChannel）与具体通道解耦：运行时 provider 挂载前 set，
+ * 之后所有调用原样工作在任一通道上。
  */
 
 /** prompt 附件（用户图片 + 文档，随 prompt 下发 sidecar）。
@@ -24,36 +24,6 @@ export type PiPromptAttachment = {
   data?: string;
   /** 桌面端文档：经 Rust attachment_stage 落盘中转后的绝对路径（帧不带字节） */
   path?: string;
-};
-
-export type PromptStreamArgs = {
-  /** 调用方生成（pi-${uuid}），sidecar 按 id 回发 chunk */
-  requestId: string;
-  text: string;
-  threadId: string;
-  sessionId?: string | null;
-  cwd?: string | null;
-  /** 用户消息里的图片附件（无附件省略；sidecar 闸门兜底） */
-  attachments?: PiPromptAttachment[];
-  /** 并入当前轮（steer）：sidecar 忙线程把消息注入活跃轮，本请求走退化流 */
-  steer?: boolean;
-  abortSignal?: AbortSignal;
-  /**
-   * finish chunk 到达时调用：返回 true 则本流保持打开（close 交由调用方择机
-   * 触发，框架 status 不被打回 ready），返回 false/缺省立即关流。
-   * 用于「被取消的排队项」：其流结束会把框架共享 status 打回 ready——正在跑
-   * 的宿主轮在 UI 上假停止（ActionBar 闪现、Stop 因 activeResponse 被清空
-   * 而失灵）。流保持挂起直到页面刷新；每取消一项泄漏一条挂起流（KB 级）。
-   */
-  holdOnFinish?: (close: () => void) => boolean;
-};
-
-export type AttachStreamArgs = {
-  /** 发起时生成、由 resumable storage 记下的在飞 requestId */
-  requestId: string;
-  /** abort（用户在重挂后的流上点停止）时按线程中断 */
-  threadId: string;
-  abortSignal?: AbortSignal;
 };
 
 export type PiChannelStatus = {
@@ -115,19 +85,6 @@ export interface PiChannel {
   readonly kind: "tauri" | "ws";
   /** 管理类请求-响应；id 注入由实现负责（Tauri 侧 Rust 注入，WS 侧 JS 注入） */
   request(payload: Record<string, unknown>, timeoutMs?: number): Promise<PiResponse>;
-  /** 发起 prompt，返回按 requestId 分流的 chunk 流（finish/error 关流） */
-  promptStream(args: PromptStreamArgs): ReadableStream<UIMessageChunk>;
-  /**
-   * 能力可选：重挂进行中的 prompt 流（页面刷新恢复）。实现方负责重放
-   * 本轮已产出的全部 chunk（含旁路 data-*）并继续直播到 finish/error。
-   * 返回 null = 无在飞 run 或通道不支持（无可回放的服务端流）。
-   *
-   * 通道契约：凡是"webview/浏览器可长时间断开的本地常驻后端"都应实现它
-   * （Tauri 经 Rust 重放缓冲；远程 WS 待网关 resume 路由后实现）。
-   * 天然无法回放流式输出的推送型通道（微信/系统 app 通知等）不实现，
-   * transport 自动降级为"轮不到重连 → 清记录回退历史加载"。
-   */
-  attachStream?(args: AttachStreamArgs): Promise<ReadableStream<UIMessageChunk> | null>;
   /**
    * 能力可选（与 listRunning 成对）：订阅"会话 turn 起止"事件流。
    * cb(sessionId, active)；sessionId = null 表示事件源失效（后端重启等），
@@ -226,94 +183,8 @@ export function getPiChannel(): PiChannel {
 /** pi-chunk-batch 载荷的一行（见 pi_agent.rs ChunkLine）：i = run 内序号（非 chunk 行为 null），l = 原始 NDJSON 行 */
 type ChunkWireLine = { i: number | null; l: string };
 
-/** pi_attach 应答：重放快照 + 该 run 的存活/截断状态 */
-type AttachReply = { active: boolean; truncated: boolean; lines: ChunkWireLine[] };
-
-/** 重放快照合并的分段上限：够大以摊薄每 chunk 状态更新开销，
- *  又不至于让单次渲染吃下一整条超大文本 */
-const REPLAY_SEGMENT_BYTES = 32 * 1024;
-
-/**
- * 快速前进重放（主线程冻结修复 2026-10-01）：整轮缓冲上限 3 万行/16MB，
- * 逐行原样灌进消费端的微任务链会把几万次 token 级状态更新挤进同一个
- * 宏任务——主线程冻结数秒（perf-watch 实测 5.7s）。重放的目标是恢复
- * 终态而非逐帧动画：连续同 id 的 text-delta / reasoning-delta 合并为
- * ≤32KB 的分段 delta（AI SDK 状态按 delta 追加，终点状态与逐 token
- * 完全一致），其余 chunk 原样保留顺序。纯函数；畸形/他 run 的行跳过，
- * seq 水位仍计入（快照覆盖范围只增不减）。
- */
-export function compactReplayChunks(
-  lines: ChunkWireLine[],
-  requestId: string,
-): { chunks: UIMessageChunk[]; maxSeq: number } {
-  const chunks: UIMessageChunk[] = [];
-  let maxSeq = 0;
-  let pending: {
-    kind: "text-delta" | "reasoning-delta";
-    id: string;
-    parts: string[];
-    bytes: number;
-  } | null = null;
-  const flushPending = () => {
-    if (!pending) return;
-    chunks.push({
-      type: pending.kind,
-      id: pending.id,
-      delta: pending.parts.join(""),
-    } as UIMessageChunk);
-    pending = null;
-  };
-  for (const line of lines) {
-    if (line.i !== null && line.i !== undefined && line.i > maxSeq) maxSeq = line.i;
-    let parsed: { id?: string | null; chunk?: UIMessageChunk };
-    try {
-      parsed = JSON.parse(line.l);
-    } catch {
-      continue;
-    }
-    if (parsed.id !== requestId || !parsed.chunk) continue;
-    const chunk = parsed.chunk as UIMessageChunk & { id?: unknown; delta?: unknown };
-    if (
-      (chunk.type === "text-delta" || chunk.type === "reasoning-delta") &&
-      typeof chunk.id === "string" &&
-      typeof chunk.delta === "string"
-    ) {
-      if (pending && (pending.kind !== chunk.type || pending.id !== chunk.id)) flushPending();
-      if (!pending) pending = { kind: chunk.type, id: chunk.id, parts: [], bytes: 0 };
-      pending.parts.push(chunk.delta);
-      pending.bytes += chunk.delta.length;
-      if (pending.bytes >= REPLAY_SEGMENT_BYTES) flushPending();
-      continue;
-    }
-    flushPending();
-    chunks.push(chunk);
-  }
-  flushPending();
-  return { chunks, maxSeq };
-}
-
 export class TauriPiChannel implements PiChannel {
   readonly kind = "tauri" as const;
-
-  /** 水印守卫全局监听只装一次（设计文档 §3）：pi-chunk-batch 粗筛
-   *  "eventSeq" 子串（盖章行才 JSON.parse），pi-exit 显式换代清零。
-   *  非 Tauri 环境 listen 会拒绝：吞掉即可（守卫退化为不观察）。 */
-  private static seqWatchInstalled = false;
-  constructor() {
-    if (TauriPiChannel.seqWatchInstalled) return;
-    TauriPiChannel.seqWatchInstalled = true;
-    void listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
-      for (const wire of event.payload) {
-        if (!wire.l.includes('"eventSeq"')) continue;
-        try {
-          observeWireLine(JSON.parse(wire.l));
-        } catch {
-          // 畸形行不配进守卫
-        }
-      }
-    }).catch(() => {});
-    void listen("pi-exit", () => resetSeqGuard()).catch(() => {});
-  }
 
   async request(
     payload: Record<string, unknown>,
@@ -328,267 +199,6 @@ export class TauriPiChannel implements PiChannel {
         setTimeout(() => reject(new Error("pi-agent request timed out")), timeoutMs),
       ),
     ]);
-  }
-
-  promptStream(args: PromptStreamArgs): ReadableStream<UIMessageChunk> {
-    const { requestId, text, threadId, sessionId, cwd, abortSignal } = args;
-
-    let unlisten: UnlistenFn | null = null;
-    let unlistenExit: UnlistenFn | null = null;
-    let closed = false;
-    const cleanup = () => {
-      unlisten?.();
-      unlisten = null;
-      unlistenExit?.();
-      unlistenExit = null;
-    };
-
-    const stream = new ReadableStream<UIMessageChunk>({
-      start: async (controller) => {
-        // 统一错误收尾：宿主级错误行与 sidecar 退出都以此终结本流
-        const settleError = (errorText: string) => {
-          if (closed) return;
-          closed = true;
-          controller.enqueue({ type: "error", errorText } as UIMessageChunk);
-          cleanup();
-          controller.close();
-        };
-        const handleLine = (raw: string) => {
-          if (closed) return;
-          let parsed: { id?: string | null; chunk?: UIMessageChunk };
-          try {
-            parsed = JSON.parse(raw);
-          } catch {
-            return;
-          }
-          if (!parsed.chunk) return;
-          // 宿主级错误行（Rust CommandEvent::Error 发 id:null）：不属于任何
-          // requestId，但 sidecar 管道出错后本流等不到收尾行——广播进所有
-          // 打开的流，否则 UI 永久卡在运行态
-          if (parsed.id === null) {
-            if (parsed.chunk.type === "error") {
-              const t = (parsed.chunk as { errorText?: unknown }).errorText;
-              settleError(typeof t === "string" ? t : "pi-agent pipe error");
-            }
-            return;
-          }
-          if (parsed.id !== requestId) return;
-          controller.enqueue(parsed.chunk);
-          if (parsed.chunk.type === "finish" || parsed.chunk.type === "error") {
-            // holdOnFinish：finish 可被调用方决定保持流打开（close 交还调用方），
-            // 保证流结束不再把共享 status 打回 ready
-            if (parsed.chunk.type === "finish" && args.holdOnFinish) {
-              const close = () => {
-                closed = true;
-                cleanup();
-                controller.close();
-              };
-              if (args.holdOnFinish(close)) return;
-            }
-            closed = true;
-            cleanup();
-            controller.close();
-          }
-        };
-
-        // 先挂监听再发起 prompt，避免漏掉最早的 chunk。
-        // 迭代 3：Rust 侧 ~20ms 合帧后以 pi-chunk-batch（带 i 序号的行对象数组）
-        // 转发，逐行走原有过滤逻辑；收尾行之后的批次残余由 closed 挡板忽略。
-        unlisten = await listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
-          for (const wire of event.payload) handleLine(wire.l);
-        });
-        // sidecar 崩溃/退出：收尾行永远不会再来，pi-exit 是唯一真相——
-        // 以错误终结本流，UI 从运行态解锁（subscribeTurns 只管侧边栏指示）
-        unlistenExit = await listen("pi-exit", () =>
-          settleError("pi-agent exited"),
-        );
-        // cancel 先于监听登记完成（快速点停止/切线程）：撤销刚挂上的监听、
-        // 不再发起 prompt，防监听泄漏
-        if (closed) {
-          cleanup();
-          return;
-        }
-
-        try {
-          await invoke("pi_prompt", {
-            requestId,
-            text,
-            threadId,
-            sessionId,
-            cwd,
-            attachments: args.attachments ?? null,
-            steer: args.steer === true,
-          });
-        } catch (err) {
-          settleError(err instanceof Error ? err.message : String(err));
-        }
-      },
-      cancel() {
-        closed = true;
-        cleanup();
-      },
-    });
-
-    abortSignal?.addEventListener(
-      "abort",
-      () => {
-        void invoke("pi_abort", { threadId }).catch(() => {});
-      },
-      { once: true },
-    );
-
-    return stream;
-  }
-
-  /**
-   * 刷新重挂：Rust stdout 循环为每个在飞/刚收尾的 run 维护带 seq 的缓冲。
-   * 时序——先挂监听（此后的直播行只暂存不消费），再 pi_attach 取快照，
-   * 两路都按 seq 单调合并：监听与快照在时间上重叠的行天然幂等去重，
-   * 快照覆盖不到、监听又错过的行不可能存在（监听先于快照建立）。
-   * 快照含收尾行即刻关流（tombstone 场景：run 在页面关闭期间已结束，
-   * 重放完整一轮后正常 finish，消息落定，不留"假流式"）。
-   */
-  async attachStream({
-    requestId,
-    threadId,
-    abortSignal,
-  }: AttachStreamArgs): Promise<ReadableStream<UIMessageChunk> | null> {
-    let unlisten: UnlistenFn | null = null;
-    let unlistenExit: UnlistenFn | null = null;
-    let closed = false;
-    let controller: ReadableStreamDefaultController<UIMessageChunk> | null = null;
-    const cleanup = () => {
-      unlisten?.();
-      unlisten = null;
-      unlistenExit?.();
-      unlistenExit = null;
-    };
-    // 关流让消息落定（tombstone/sidecar 退出/异常兜底共用；闭包内引用避开
-    // 外层 CFA 对 controller 的 null 收窄）
-    const forceClose = () => {
-      if (closed) return;
-      closed = true;
-      cleanup();
-      controller?.close();
-    };
-
-    let lastSeq = 0;
-    /** 快照覆盖到的最大 seq：直播行 ≤ 它必然是快照重复（监听先于 pi_attach
-     *  登记，重叠窗口的行两侧都有），一律按重复丢弃 */
-    let snapshotMaxSeq = 0;
-    /** 重放进行中直播行只入 future 不冲刷：更早的重放内容必须先落完，
-     *  统一 flush 在重放结束后补跑 */
-    let replaying = false;
-    const future = new Map<number, UIMessageChunk>();
-
-    const flushFuture = () => {
-      if (replaying) return;
-      let next = future.get(lastSeq + 1);
-      while (next !== undefined && !closed) {
-        future.delete(lastSeq + 1);
-        lastSeq += 1;
-        controller?.enqueue(next);
-        if (next.type === "finish" || next.type === "error") {
-          closed = true;
-          cleanup();
-          controller?.close();
-          return;
-        }
-        next = future.get(lastSeq + 1);
-      }
-    };
-
-    const feed = (seq: number, raw: string) => {
-      if (closed || seq <= lastSeq || seq <= snapshotMaxSeq) return;
-      let parsed: { id?: string | null; chunk?: UIMessageChunk };
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        return;
-      }
-      // 其他 run 的行不参与本流的 seq 空间（seq 按 requestId 独立递增）
-      if (parsed.id !== requestId || !parsed.chunk) return;
-      future.set(seq, parsed.chunk);
-      flushFuture();
-    };
-
-    // 流先于监听与快照构造：controller 就绪后两路来源都可直接消费
-    const stream = new ReadableStream<UIMessageChunk>({
-      start(c) {
-        controller = c;
-      },
-      cancel() {
-        closed = true;
-        cleanup();
-      },
-    });
-
-    unlisten = await listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
-      for (const wire of event.payload) {
-        if (wire.i !== null && wire.i !== undefined) feed(wire.i, wire.l);
-      }
-    });
-    // sidecar 退出：重放缓冲随进程作废、收尾行永不再来——关流让已重放
-    // 的部分落定，不留永久挂起的假流
-    unlistenExit = await listen("pi-exit", () => forceClose());
-    // cancel 先于监听登记完成：撤销刚挂上的监听并放弃 attach
-    if (closed) {
-      cleanup();
-      return null;
-    }
-
-    let reply: AttachReply;
-    try {
-      reply = await invoke<AttachReply>("pi_attach", { requestId });
-    } catch {
-      cleanup();
-      return null;
-    }
-    // 无缓冲（run 不存在/超上限截断）：交回 transport 走"清记录回退历史"
-    if (reply.truncated || (!reply.active && reply.lines.length === 0)) {
-      cleanup();
-      return null;
-    }
-    // 快速前进重放：先压缩（见 compactReplayChunks 注释），再分批入队，
-    // 每批让出主线程（setTimeout 0）——直播行在让出窗口只入 future，
-    // 重放完毕推齐 seq 水位后统一 flush 无缝续传。
-    // 入队走闭包辅助（controller 的赋值发生在 stream start 回调里，
-    // 函数体直用会被 TS 流收窄成 never）
-    const enqueueReplay = (chunk: UIMessageChunk): boolean => {
-      controller?.enqueue(chunk);
-      if (chunk.type === "finish" || chunk.type === "error") {
-        closed = true;
-        cleanup();
-        controller?.close();
-        return true;
-      }
-      return false;
-    };
-    const replay = compactReplayChunks(reply.lines, requestId);
-    snapshotMaxSeq = replay.maxSeq;
-    replaying = true;
-    let sinceYield = 0;
-    for (const chunk of replay.chunks) {
-      if (closed) break;
-      if (enqueueReplay(chunk)) break;
-      if (++sinceYield >= 32) {
-        sinceYield = 0;
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      }
-    }
-    replaying = false;
-    lastSeq = snapshotMaxSeq;
-    flushFuture();
-    // tombstone 但未见收尾行（sidecar 异常终止等理论竞态）：关流让消息落定
-    if (!reply.active && !closed) forceClose();
-    abortSignal?.addEventListener(
-      "abort",
-      () => {
-        void invoke("pi_abort", { threadId }).catch(() => {});
-      },
-      { once: true },
-    );
-    return stream;
   }
 
   async abort(threadId?: string) {

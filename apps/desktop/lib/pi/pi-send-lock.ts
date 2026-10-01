@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuiState } from "@assistant-ui/react";
-import { useQueueSnapshot } from "@/lib/pi/pi-queue";
+import { usePiQueue } from "@/lib/pi/pi-runtime";
 
 /**
  * 发送锁：消息尚未全部送达（本轮在跑流式生成、或队列里还有待派发的排队项）
@@ -11,8 +11,7 @@ import { useQueueSnapshot } from "@/lib/pi/pi-queue";
  * 模型选择器（model-picker）与思考档位选择器（thinking-picker）共用。
  */
 export function useSendLock(): boolean {
-  const threadId = useAuiState((s) => s.threads.mainThreadId);
   const isRunning = useAuiState((s) => s.thread.isRunning);
-  const queue = useQueueSnapshot(threadId);
-  return isRunning || queue.items.length > 0;
+  const { queue } = usePiQueue();
+  return isRunning || queue.steering.length > 0 || queue.followUp.length > 0;
 }

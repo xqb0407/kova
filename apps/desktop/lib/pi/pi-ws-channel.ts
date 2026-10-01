@@ -1,6 +1,5 @@
 "use client";
 
-import type { UIMessageChunk } from "ai";
 import type {
   PiAutomationFrame,
   PiChannel,
@@ -9,10 +8,8 @@ import type {
   PiDesignThemePush,
   PiPluginOpFrame,
   PiRunningTurn,
-  PromptStreamArgs,
 } from "@/lib/pi/pi-channel";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
-import { observeWireLine, resetSeqGuard } from "@/lib/pi/pi-seq-guard";
 
 /**
  * 远程 WebSocket 通道：浏览器 ⇄ 桌面端 remote.rs WS 网关 ⇄ pi-agent sidecar。
@@ -26,9 +23,9 @@ import { observeWireLine, resetSeqGuard } from "@/lib/pi/pi-seq-guard";
  * auth 完成前的消息先入队，authed 后统一发出（防 unauthorized 竞态）。
  * 异常断开时自动重连一次，再失败则交由 UI 呈现状态。
  *
- * 通道能力：未实现 attachStream（刷新重挂）——进行中 run 的路由在连接断开时
- * 被网关摘除，需网关侧保留路由 + resume 协议（二期）。缺省即降级：transport
- * 清掉 resumable 登记，刷新后回落历史加载（run 本身仍在 sidecar 跑完）。
+ * prompt chunk 流不走本类状态：PiClientBase（迁移 5c）经 onRawLine 看到
+ * 全部原始行（含 {id, chunk} 帧）自行分流重建 partial；本类只保留
+ * 管理类请求-响应与无 id 通知订阅。
  * subscribeTurns/listRunning/listRunningTurns 已接入：网关把无 id 通知行
  * 广播给已认证连接（remote.rs broadcast_notification），侧边栏运行指示与
  * 桌面端同源（断线/重连发 (null,false) 让订阅方清空并重新水合）。
@@ -51,10 +48,6 @@ export class WsPiChannel implements PiChannel {
       reject: (e: Error) => void;
       timer: ReturnType<typeof setTimeout>;
     }
-  >();
-  private streams = new Map<
-    string,
-    { controller: ReadableStreamDefaultController<UIMessageChunk> }
   >();
   private statusCbs = new Set<(s: PiChannelStatus) => void>();
   private turnCbs = new Set<(sessionId: string | null, active: boolean) => void>();
@@ -107,14 +100,6 @@ export class WsPiChannel implements PiChannel {
       p.reject(new Error("connection closed"));
     }
     this.pending.clear();
-    for (const s of this.streams.values()) {
-      s.controller.enqueue({
-        type: "error",
-        errorText: "connection closed",
-      } as UIMessageChunk);
-      s.controller.close();
-    }
-    this.streams.clear();
     // 事件流随连接中断：订阅方（pi-running）据此作废快照，重连 authed 后重新水合
     for (const cb of this.turnCbs) cb(null, false);
     // 事件源换代（5c）：在飞 chunk 路由全灭，基座清流式台账；authed 后再触发
@@ -144,20 +129,13 @@ export class WsPiChannel implements PiChannel {
     }
     const type = v.type as string | undefined;
 
-    // 事件水印观察（设计文档 §3）：本通道天然全 parse，直接喂守卫；
-    // 未盖章行在 readSeqStamp 一步返回
-    observeWireLine(v);
-
     if (type === "authed") {
       this.ready = true;
       const queue = this.queue;
       this.queue = [];
       for (const line of queue) this.ws?.send(line);
       this.emitStatus({ connected: true });
-      // 重连成功：连接断开的空洞无法从帧流补齐——守卫换代清零（防把
-      // 断线空洞当缺口误报），运行投影经下方 (null,false) 的既有通道
-      // 清空并按 list_running 重新水合
-      resetSeqGuard();
+      // 重连成功：运行投影经 (null,false) 清空并按 list_running 重新水合
       for (const cb of this.turnCbs) cb(null, false);
       // 重连换代（5c）：断线空洞无法补齐，基座逐订阅线程拉快照自愈
       for (const cb of this.authedCbs) cb();
@@ -227,20 +205,9 @@ export class WsPiChannel implements PiChannel {
 
     const id = typeof v.id === "string" ? v.id : undefined;
 
-    // prompt chunk 流：{id, chunk}
-    if ("chunk" in v && id) {
-      const entry = this.streams.get(id);
-      const chunk = v.chunk as UIMessageChunk | undefined;
-      if (!entry || !chunk) return;
-      entry.controller.enqueue(chunk);
-      if (chunk.type === "finish" || chunk.type === "error") {
-        this.streams.delete(id);
-        entry.controller.close();
-      }
-      return;
-    }
-
-    // 管理类响应：带 id 的一次性请求-响应
+    // 管理类响应：带 id 的一次性请求-响应。prompt chunk 帧（{id, chunk}）
+    // 无 pending 配对，在此自然落空返回——实时流由 PiClientBase 经
+    // onRawLine 分流（见文件头注释）
     if (id) {
       const entry = this.pending.get(id);
       if (!entry) return;
@@ -276,47 +243,6 @@ export class WsPiChannel implements PiChannel {
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.sendRaw({ ...payload, id });
-    });
-  }
-
-  promptStream(args: PromptStreamArgs): ReadableStream<UIMessageChunk> {
-    const { requestId, text, threadId, sessionId, cwd, abortSignal } = args;
-    return new ReadableStream<UIMessageChunk>({
-      start: (controller) => {
-        // 先挂流再发 prompt，避免漏掉最早的 chunk
-        this.streams.set(requestId, { controller });
-        abortSignal?.addEventListener(
-          "abort",
-          () => {
-            void this.abort(threadId);
-          },
-          { once: true },
-        );
-        const ok = this.sendRaw({
-          type: "prompt",
-          id: requestId,
-          text,
-          threadId,
-          sessionId: sessionId ?? null,
-          cwd: cwd ?? null,
-          // 远程路径网关原样转发 JSON，附件直接随帧（sidecar 闸门兜底）
-          attachments: args.attachments ?? null,
-          // 并入当前轮（steer）：sidecar 忙线程注入活跃轮，本请求退化流收尾
-          steer: args.steer === true,
-        });
-        if (!ok) {
-          // 无连接且未入队：立即报错收流
-          this.streams.delete(requestId);
-          controller.enqueue({
-            type: "error",
-            errorText: "not connected",
-          } as UIMessageChunk);
-          controller.close();
-        }
-      },
-      cancel: () => {
-        this.streams.delete(requestId);
-      },
     });
   }
 
