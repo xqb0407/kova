@@ -85,6 +85,7 @@ const {
   pendingQuestionsForTest,
   resetInteractionsForTest,
 } = await import("@/lib/pi/pi-interactions");
+const { subscribeAgentEvents } = await import("@/lib/pi/agent-events");
 const { sessionModeSnapshot } = await import("@/lib/pi/pi-session-mode");
 type PiClientEvent = import("@/lib/pi/pi-runtime/types").PiClientEvent;
 
@@ -402,5 +403,45 @@ describe("TauriPiClient 交互卡旁路（4b）", () => {
     ]);
     expect(sessionModeSnapshot("s1").mode).toBe("plan");
     expect(events).toHaveLength(0);
+  });
+});
+
+describe("TauriPiClient 完成提醒（缺口3）", () => {
+  test("agent_end 收尾定调：completed/error 提醒，aborted 与外来会话不提醒", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const { client, feed } = subscribeAndSettle();
+    await tick();
+
+    const got: string[] = [];
+    const un = subscribeAgentEvents((e) => {
+      const d = (e.data ?? {}) as { prompt?: string; message?: string };
+      got.push(`${e.name}:${d.prompt ?? d.message ?? ""}`);
+    });
+
+    // 本实例发起的会话：完成 → agent.turn.completed 带最近 prompt 正文
+    await client.sendMessage("s1", { content: "帮我跑个构建" });
+    feed([threadEvent("s1", 40, { type: "agent_end", stopReason: "stop" })]);
+    expect(got).toEqual(["agent.turn.completed:帮我跑个构建"]);
+
+    // 用户主动停止（stopReason aborted）：不提醒（旧链路 sawAborted 语义）
+    feed([threadEvent("s1", 41, { type: "agent_end", stopReason: "aborted" })]);
+    expect(got).toHaveLength(1);
+
+    // 出错收尾：agent.turn.error 带错误正文
+    feed([
+      threadEvent("s1", 42, {
+        type: "agent_end",
+        stopReason: "error",
+        errorMessage: "boom",
+      }),
+    ]);
+    expect(got).toEqual(["agent.turn.completed:帮我跑个构建", "agent.turn.error:boom"]);
+
+    // 外来会话（automation/他窗发起，本实例从未 sendMessage）：不提醒
+    feed([threadEvent("sid-auto", 43, { type: "agent_end" })]);
+    expect(got).toHaveLength(2);
+
+    un();
   });
 });

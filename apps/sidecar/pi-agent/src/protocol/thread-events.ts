@@ -111,10 +111,21 @@ export function wireSessionEvents(run: Running): void {
         partials.delete(sessionId);
         emitThreadEvent(sessionId, { type: "agent_start" });
         break;
-      case "agent_end":
+      case "agent_end": {
         partials.delete(sessionId);
-        emitThreadEvent(sessionId, { type: "agent_end" });
+        // 收尾定调（完成提醒缺口3）：末条 assistant 的 stopReason/errorMessage
+        // 随帧带给前端——aborted/error 的收尾不算完成，与旧链路 finish 分支的
+        // sawAborted/sawError 语义一致；undefined 序列化时按键丢弃，旧前端兼容
+        const last = event.messages?.at(-1) as
+          | { stopReason?: string; errorMessage?: string }
+          | undefined;
+        emitThreadEvent(sessionId, {
+          type: "agent_end",
+          stopReason: last?.stopReason,
+          errorMessage: last?.stopReason === "error" ? last.errorMessage : undefined,
+        });
         break;
+      }
       case "turn_start":
         turnIndex += 1;
         emitThreadEvent(sessionId, { type: "turn_start", turnIndex });

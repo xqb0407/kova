@@ -503,7 +503,13 @@ export type PiHostUiResponse =
 export type PiClientEventBody =
   | { type: "snapshot"; snapshot: PiThreadSnapshot }
   | { type: "agent_start" }
-  | { type: "agent_end"; willRetry?: boolean }
+  // 本地改动（完成提醒缺口3）：sidecar agent_end 随帧带收尾定调字段
+  | {
+      type: "agent_end";
+      willRetry?: boolean;
+      stopReason?: string;
+      errorMessage?: string;
+    }
   | { type: "agent_settled" }
   | { type: "turn_start"; turnIndex: number }
   | { type: "turn_end"; turnIndex: number }
