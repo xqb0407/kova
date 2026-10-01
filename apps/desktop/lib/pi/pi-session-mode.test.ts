@@ -28,14 +28,19 @@ mockModule("@/lib/pi/pi-bridge", () => ({
   },
 }));
 
-// pi-thread-adapter 牵出 tauri / 线程适配的整条链，这里只保留本模块真正用到的三块
+// pi-thread-adapter 牵出 tauri / 线程适配的整条链，这里只保留本模块真正用到的几块。
+// piSessionIdForThread 与真实现同语义：registry 优先；__LOCALID_ 草稿无会话返回
+// undefined；其余 id 本身就是 sessionId（新链路刷新后的行 id / 旧链路恢复线程）。
 const registry = new Map<string, string>();
 const prefs = new Map<string, { mode?: string; approvalLevel?: string }>();
+const { isLocalDraftThreadId } = await import("@/lib/pi/pi-thread-identity");
 mockModule("@/lib/pi/pi-thread-adapter", () => ({
   piSessionRegistry: registry,
   piSessionPrefsMap: prefs,
   prefsSessionIdFor: (threadId: string) =>
     registry.get(threadId) ?? (prefs.has(threadId) ? threadId : undefined),
+  piSessionIdForThread: (threadId: string) =>
+    registry.get(threadId) ?? (isLocalDraftThreadId(threadId) ? undefined : threadId),
 }));
 
 afterAll(() => {
@@ -139,10 +144,24 @@ describe("fetchPlanningState：刷新后水合回问答档", () => {
     expect(["planning", "inactive"]).toContain(sessionModeSnapshot(TID).planning);
   });
 
-  test("未登记任何 sessionId 的线程不请求（避免懒建会话污染）", async () => {
+  test("未发送草稿（__LOCALID_）不请求（避免懒建会话污染）", async () => {
     reset();
-    await fetchPlanningState(TID);
+    await fetchPlanningState("__LOCALID_draft-1");
     expect(calls.some((c) => c.type === "get_planning_state")).toBe(false);
+  });
+
+  test("新链路恢复线程（行 id 即 sessionId）：请求带 sessionId 定靶", async () => {
+    reset();
+    responder = () => ({
+      type: "planning_state",
+      mode: "ask",
+      approvalLevel: "ask",
+      planning: "inactive",
+    });
+    await fetchPlanningState("01890a5d-ac96-774b-bcce-b302099a8057");
+    const req = calls.find((c) => c.type === "get_planning_state");
+    expect(req?.sessionId).toBe("01890a5d-ac96-774b-bcce-b302099a8057");
+    expect(sessionModeSnapshot("01890a5d-ac96-774b-bcce-b302099a8057").mode).toBe("ask");
   });
 });
 
@@ -162,5 +181,12 @@ describe("setSessionMode", () => {
     await setSessionMode(TID, "agent", "ask");
     const req = calls.find((c) => c.type === "set_mode");
     expect(req).toMatchObject({ mode: "agent", approvalLevel: "ask" });
+  });
+
+  test("未发送草稿只落本地快照，不发 set_mode（避免懒建会话）", async () => {
+    reset();
+    await setSessionMode("__LOCALID_draft-2", "ask");
+    expect(calls.some((c) => c.type === "set_mode")).toBe(false);
+    expect(sessionModeSnapshot("__LOCALID_draft-2").mode).toBe("ask");
   });
 });

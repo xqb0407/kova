@@ -16,7 +16,7 @@
  */
 import { useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi/pi-bridge";
-import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { emitAgentEvent } from "@/lib/pi/agent-events";
 import type { PendingInteraction } from "pi-protocol";
 
@@ -245,17 +245,19 @@ function replaceFromSnapshot(threadId: string, items: PendingInteraction[]): voi
   notify();
 }
 
-/** list_pending 权威拉取（§3 回拉表"交互发起/结算"缺口 / 重连拉平）：失败不动现值 */
+/** list_pending 权威拉取（§3 回拉表"交互发起/结算"缺口 / 重连拉平）：失败不动现值。
+ *  未发送草稿（尚无会话）跳过：不可能有挂起交互，threadId-only 请求会懒建会话（污染） */
 export async function refreshPendingInteractions(
   threadId: string,
 ): Promise<void> {
-  const sessionId = piSessionRegistry.get(threadId);
+  const sessionId = piSessionIdForThread(threadId);
+  if (!sessionId) return;
   let items: PendingInteraction[];
   try {
     const res = await piRequest<{ type: "pending"; items: PendingInteraction[] }>({
       type: "list_pending",
       threadId,
-      ...(sessionId ? { sessionId } : {}),
+      sessionId,
     });
     items = Array.isArray(res.items) ? res.items : [];
   } catch {
@@ -365,7 +367,7 @@ export async function confirmToolApproval(
   approvalId: string,
   approved: boolean,
 ): Promise<void> {
-  const sessionId = piSessionRegistry.get(threadId);
+  const sessionId = piSessionIdForThread(threadId);
   settlingLocally.add(approvalId);
   try {
     await piRequest<ToolConfirmResponse>({
@@ -400,7 +402,7 @@ export async function answerQuestion(
   questionId: string,
   answers: QuestionAnswerItem[],
 ): Promise<void> {
-  const sessionId = piSessionRegistry.get(threadId);
+  const sessionId = piSessionIdForThread(threadId);
   settlingLocally.add(questionId);
   try {
     await piRequest<QuestionAnswerResponse>({

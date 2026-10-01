@@ -17,7 +17,7 @@ import type {
 import type { UIMessage } from "ai";
 import type { PendingInteraction } from "pi-protocol";
 import { piRequest, type PiSessionSummary } from "@/lib/pi/pi-bridge";
-import { claimKnownSession } from "@/lib/pi/pi-thread-identity";
+import { claimKnownSession, isLocalDraftThreadId } from "@/lib/pi/pi-thread-identity";
 import {
   fetchHistoryWindow,
   getHistoryWindowMeta,
@@ -67,6 +67,20 @@ export async function refreshSessionPrefs(): Promise<void> {
  *  可能就是 sessionId（刷新后恢复的线程行 id=sessionId） */
 export function prefsSessionIdFor(threadId: string): string | undefined {
   return piSessionRegistry.get(threadId) ?? (piSessionPrefsMap.has(threadId) ? threadId : undefined);
+}
+
+/**
+ * 请求应携带的 sidecar sessionId。registry 命中优先（两条链路本会话内创建的
+ * 线程都靠它）；未命中时分两种：
+ * - 框架本地草稿（__LOCALID_ 前缀）且未发送 → 尚无会话，返回 undefined。
+ *   调用方必须跳过请求：threadId-only 地发给 resolveSession 会懒建空白会话，
+ *   污染 running 键——真实会话的键一旦被空白 run 占住，后续 prompt 全落空会话
+ *   （转录在盘但对话失忆，2026-10-01 迁移核对确认的危险链）；
+ * - 其余 id 本身就是 sessionId（react-pi 新链路刷新后的行 id、旧链路恢复的
+ *   线程行 id，二者都 = pi sessionId），直接返回。
+ */
+export function piSessionIdForThread(threadId: string): string | undefined {
+  return piSessionRegistry.get(threadId) ?? (isLocalDraftThreadId(threadId) ? undefined : threadId);
 }
 
 /**

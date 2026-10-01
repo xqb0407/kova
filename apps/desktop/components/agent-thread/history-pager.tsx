@@ -23,7 +23,7 @@ import { shiftRunCheckpointAnchors } from "@/lib/pi/pi-checkpoints";
 import { getHistoryWindowMeta } from "@/lib/pi/pi-history-window";
 import {
   loadOlderPiHistory,
-  piSessionRegistry,
+  piSessionIdForThread,
 } from "@/lib/pi/pi-thread-adapter";
 
 const VIEWPORT_SELECTOR = '[data-slot="aui_thread-viewport"]';
@@ -55,7 +55,7 @@ export const HistoryPager: FC = () => {
     if (loadingRef.current || isRunning) return;
     const viewport = rootRef.current?.closest<HTMLElement>(VIEWPORT_SELECTOR);
     if (!viewport || !threadId) return;
-    const remoteId = piSessionRegistry.get(threadId);
+    const remoteId = piSessionIdForThread(threadId);
     const meta = remoteId ? getHistoryWindowMeta(remoteId) : undefined;
     // 没有游标或没有更早的行：无处可翻（不进入 loading 态，避免闪一下）
     if (!remoteId || !meta?.hasMore || meta.firstSeq === null) return;

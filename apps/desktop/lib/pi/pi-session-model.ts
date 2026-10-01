@@ -7,7 +7,7 @@ import {
   useSelectedModel,
   type SelectedModel,
 } from "@/lib/model/model-settings";
-import { refreshSessionPrefs, prefsSessionIdFor, piSessionPrefsMap } from "@/lib/pi/pi-thread-adapter";
+import { refreshSessionPrefs, piSessionIdForThread, piSessionPrefsMap } from "@/lib/pi/pi-thread-adapter";
 
 /**
  * 会话级模型记忆的前端镜像：
@@ -50,7 +50,7 @@ export function useThreadModel(threadId: string | undefined): SelectedModel | nu
 
 /** 切线程时水合：取该会话持久化的模型；没有记忆的线程清掉陈旧条目回落全局 */
 export function hydrateThreadModel(threadId: string): void {
-  const sessionId = prefsSessionIdFor(threadId);
+  const sessionId = piSessionIdForThread(threadId);
   const prefs = sessionId ? piSessionPrefsMap.get(sessionId) : undefined;
   const own =
     prefs?.modelProvider && prefs?.modelId
@@ -76,7 +76,7 @@ export async function setThreadModel(threadId: string, model: SelectedModel): Pr
     if (tid !== threadId) threadModels.delete(tid);
   }
   notify();
-  await setSelectedModel(model, prefsSessionIdFor(threadId));
+  await setSelectedModel(model, piSessionIdForThread(threadId));
   await refreshSessionPrefs();
   for (const tid of [...new Set([...threadModels.keys(), threadId])]) {
     hydrateThreadModel(tid);

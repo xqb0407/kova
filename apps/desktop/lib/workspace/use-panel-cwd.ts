@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { taskWorkspaceDir, taskWorkspaceSessionDir } from "./task-workspace";
 import { useWorkspace } from "./workspace-store";
-import { prefsSessionIdFor } from "@/lib/pi/pi-thread-adapter";
+import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 
 /**
  * 面板/产物相关视图的"有效工作目录"三级解析：
@@ -27,7 +27,7 @@ export function usePanelCwd(tabCwd?: string | null): string | null {
     if (tabCwd || workspace) return;
     let cancelled = false;
     const resolveFallback = () => {
-      const sessionId = threadId ? prefsSessionIdFor(threadId) : undefined;
+      const sessionId = threadId ? piSessionIdForThread(threadId) : undefined;
       void (sessionId
         ? taskWorkspaceSessionDir(sessionId)
         : taskWorkspaceDir()

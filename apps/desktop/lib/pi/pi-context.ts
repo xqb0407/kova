@@ -3,7 +3,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { piRequest, type PiCompacted, type PiContextInfo } from "@/lib/pi/pi-bridge";
 import { getPiChannel, type PiContextChangedFrame } from "@/lib/pi/pi-channel";
-import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import { piSessionIdForThread, piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import { setManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 
@@ -13,17 +13,24 @@ import { getWorkspace } from "@/lib/workspace/workspace-store";
  * threadId/sessionId 的携带方式与 pi-session-mode 一致。
  */
 
-function threadPayload(threadId: string): { threadId: string; sessionId?: string; cwd?: string } {
-  const sessionId = piSessionRegistry.get(threadId);
-  // 带上当前工作目录：sidecar 侧会话若还没建（先点了面板/压缩），
-  // 也能绑上用户选的目录而不是落到 homedir
+/** 请求载荷：无会话线程（未发送草稿）返回 null，调用方必须跳过——
+ *  threadId-only 请求会让 sidecar resolveSession 懒建空白会话（污染），
+ *  真实会话的 running 键一旦被占住，后续 prompt 全落空会话（对话失忆） */
+function threadPayload(
+  threadId: string,
+): { threadId: string; sessionId: string; cwd?: string } | null {
+  const sessionId = piSessionIdForThread(threadId);
+  if (!sessionId) return null;
+  // 带上当前工作目录：sidecar 侧恢复非驻留会话（反查命中但 cwd 未绑）时补绑
   const cwd = getWorkspace() ?? undefined;
-  return { threadId, ...(sessionId ? { sessionId } : {}), ...(cwd ? { cwd } : {}) };
+  return { threadId, sessionId, ...(cwd ? { cwd } : {}) };
 }
 
 /** 读取当前线程的上下文读数（popover 打开时调用） */
 export function fetchContextInfo(threadId: string): Promise<PiContextInfo> {
-  return piRequest<PiContextInfo>({ type: "context_info", ...threadPayload(threadId) });
+  const payload = threadPayload(threadId);
+  if (!payload) return Promise.reject(new Error("会话尚未创建"));
+  return piRequest<PiContextInfo>({ type: "context_info", ...payload });
 }
 
 /* ---------------- 占用镜像（设计文档 §7，拉转推） ----------------
@@ -169,10 +176,9 @@ export function usePiContextMirror(
  * （"session is busy"），由调用方 toast 呈现。压缩要跑一次摘要请求，超时放宽。
  */
 export function compactContext(threadId: string): Promise<PiCompacted> {
-  return piRequest<PiCompacted>(
-    { type: "compact", ...threadPayload(threadId) },
-    120_000,
-  );
+  const payload = threadPayload(threadId);
+  if (!payload) return Promise.reject(new Error("会话尚未创建"));
+  return piRequest<PiCompacted>({ type: "compact", ...payload }, 120_000);
 }
 
 /**
@@ -187,7 +193,7 @@ export function markManualCompactionStart(
 ): void {
   setManualCompactionMarker({
     threadId,
-    remoteId: piSessionRegistry.get(threadId),
+    remoteId: piSessionIdForThread(threadId),
     anchorIndex,
     data: { phase: "start" },
   });
@@ -205,7 +211,7 @@ export function markManualCompaction(
 ): void {
   setManualCompactionMarker({
     threadId,
-    remoteId: piSessionRegistry.get(threadId),
+    remoteId: piSessionIdForThread(threadId),
     anchorIndex,
     data: {
       phase: "complete",

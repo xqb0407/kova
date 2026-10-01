@@ -32,7 +32,7 @@ import { useGitStatus } from "@/lib/git/git-status";
 import { useAppMode } from "@/lib/pi/app-mode";
 import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
-import { prefsSessionIdFor } from "@/lib/pi/pi-thread-adapter";
+import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { FolderOpenIcon, GitBranchIcon } from "lucide-react";
 import { useState, type FC } from "react";
 
@@ -226,9 +226,9 @@ export const Header: FC<{
   const canRename = mainThread != null && mainThread.status !== "new";
   // 尚无消息（标题未生成）时 More 按钮整体不显示，而非禁用
   const isEmptyThread = useAuiState((s) => s.thread.messages.length === 0);
-  // 链路追踪：当前线程的 sidecar 会话 id（registry 未登记时无轨迹可看，入口禁用）
+  // 链路追踪：当前线程的 sidecar 会话 id（无法解析出会话时无轨迹可看，入口禁用）
   const traceSessionId = mainThread
-    ? prefsSessionIdFor(mainThread.id)
+    ? piSessionIdForThread(mainThread.id)
     : undefined;
   const openTrace = () => {
     if (!traceSessionId) return;

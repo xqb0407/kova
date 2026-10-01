@@ -4,9 +4,8 @@ import { useSyncExternalStore } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { piRequest } from "@/lib/pi/pi-bridge";
 import {
-  piSessionRegistry,
+  piSessionIdForThread,
   piSessionPrefsMap,
-  prefsSessionIdFor,
 } from "@/lib/pi/pi-thread-adapter";
 
 /**
@@ -111,17 +110,28 @@ function snapshotFrom(res: ModeResponse): PlanningSnapshot {
 }
 
 async function requestMode(threadId: string, payload: Record<string, unknown>): Promise<void> {
-  const sessionId = piSessionRegistry.get(threadId);
+  const sessionId = piSessionIdForThread(threadId);
   const res = await piRequest<ModeResponse>({ ...payload, threadId, ...(sessionId ? { sessionId } : {}) });
   setSnapshot(threadId, snapshotFrom(res));
 }
 
-/** 手动切换模式；agent 模式可携带审批级别（变更前确认/自动编辑/完全访问） */
+/** 手动切换模式；agent 模式可携带审批级别（变更前确认/自动编辑/完全访问）。
+ *  未发送草稿（尚无会话）只落本地快照：threadId-only 的 set_mode 会懒建空白
+ *  会话（污染），而草稿真正建会话（首次发送走 createThread）后偏好跟随
+ *  「最近一次使用」，届时再切一次即可同步 sidecar。 */
 export function setSessionMode(
   threadId: string,
   mode: SessionMode,
   approvalLevel?: ApprovalLevel,
 ): Promise<void> {
+  if (!piSessionIdForThread(threadId)) {
+    setSnapshot(threadId, {
+      mode,
+      approvalLevel: approvalLevel ?? "ask",
+      planning: mode === "plan" ? "planning" : "inactive",
+    });
+    return Promise.resolve();
+  }
   return requestMode(threadId, {
     type: "set_mode",
     mode,
@@ -134,12 +144,13 @@ export function setSessionMode(
  * 内存快照丢失，用请求-响应恢复（无运行中 turn 也有效）。
  * 先用会话列表带来的持久化偏好播种（sidecar 重启/Running 被驱逐也能恢复 UI，
  * live 状态随后覆盖），再向 sidecar 拉活动真值。
- * 没有任何已知 sessionId 的线程直接跳过请求：sidecar 不可能持有它的特殊模式，
- * 而请求会懒建会话（污染）。
+ * 没有任何已知 sessionId 的线程（未发送草稿）直接跳过请求：sidecar 不可能
+ * 持有它的特殊模式，而请求会懒建会话（污染）。
  */
 export function fetchPlanningState(threadId: string): Promise<void> {
-  const sessionId = prefsSessionIdFor(threadId);
-  const prefs = sessionId ? piSessionPrefsMap.get(sessionId) : undefined;
+  const sessionId = piSessionIdForThread(threadId);
+  if (!sessionId) return Promise.resolve();
+  const prefs = piSessionPrefsMap.get(sessionId);
   const prefsMode = normalizeSessionMode(prefs?.mode);
   if (prefs && prefsMode) {
     setSnapshot(threadId, {
@@ -150,13 +161,6 @@ export function fetchPlanningState(threadId: string): Promise<void> {
           : "ask",
       planning: prefsMode === "plan" ? "planning" : "inactive",
     });
-  }
-  const registryId = piSessionRegistry.get(threadId);
-  if (!registryId) {
-    // registry 未登记但 threadId 本身是已知 sessionId（刷新后恢复的线程）：
-    // 同样可以安全请求（不会懒建新会话）
-    if (!sessionId) return Promise.resolve();
-    return requestMode(threadId, { type: "get_planning_state", sessionId });
   }
   return requestMode(threadId, { type: "get_planning_state" });
 }

@@ -15,8 +15,7 @@ import {
 } from "@/lib/pi/pi-channel";
 import {
   piSessionPrefsMap,
-  piSessionRegistry,
-  prefsSessionIdFor,
+  piSessionIdForThread,
 } from "@/lib/pi/pi-thread-adapter";
 
 /**
@@ -185,7 +184,7 @@ export function setActiveDesignTheme(threadId: string, ref: ThemeRef | null): vo
   activeByThread.set(threadId, ref);
   emitActive();
   // 偏好已变：校准会话列表镜像（hydrate 播种源，见 decode）
-  const sessionId = piSessionRegistry.get(threadId);
+  const sessionId = piSessionIdForThread(threadId);
   if (sessionId) {
     const prefs = piSessionPrefsMap.get(sessionId);
     if (prefs) piSessionPrefsMap.set(sessionId, { ...prefs, designTheme: ref ? JSON.stringify(ref) : "" });
@@ -213,13 +212,19 @@ function decodeColumn(raw: string | null | undefined): ThemeRef | null | undefin
 /**
  * 会话级选中（composer 主题胶囊）：null = 显式"不使用主题"。sidecar 立即重排
  * 该会话提示词并把偏好落 sessions.design_theme 列 + 最近使用 kv。
+ * 未发送草稿（尚无会话）只落本地选中态：threadId-only 的 set_design_theme
+ * 会懒建空白会话（污染）；首次发送建会话后重新选择即可同步 sidecar。
  */
 export async function setSessionDesignTheme(threadId: string, theme: ThemeRef | null): Promise<void> {
-  const sessionId = prefsSessionIdFor(threadId);
+  const sessionId = piSessionIdForThread(threadId);
+  if (!sessionId) {
+    setActiveDesignTheme(threadId, theme);
+    return;
+  }
   const res = await piRequest<PiDesignThemeSetResponse>({
     type: "set_design_theme",
     threadId,
-    ...(sessionId ? { sessionId } : {}),
+    sessionId,
     theme,
   });
   setActiveDesignTheme(threadId, res.theme);
@@ -228,10 +233,10 @@ export async function setSessionDesignTheme(threadId: string, theme: ThemeRef | 
 /**
  * 水合某线程的选中态：先用会话列表偏好播种（sidecar 重启/会话未驻留也能恢复 UI，
  * "从未设置"线程显示无主题并等活动真值），再向 sidecar 拉含 active 的清单。
- * 与 fetchPlanningState 同规则：没有任何已知 sessionId 的线程不发请求（避免懒建会话）。
+ * 与 fetchPlanningState 同规则：未发送草稿（无已知 sessionId）不发请求（避免懒建会话）。
  */
 export async function hydrateSessionTheme(threadId: string): Promise<void> {
-  const sessionId = prefsSessionIdFor(threadId);
+  const sessionId = piSessionIdForThread(threadId);
   if (!sessionId) return;
   const seeded = decodeColumn(piSessionPrefsMap.get(sessionId)?.designTheme);
   if (seeded !== undefined && !activeByThread.has(threadId)) {
@@ -242,7 +247,7 @@ export async function hydrateSessionTheme(threadId: string): Promise<void> {
     const res = await piRequest<PiDesignThemesResponse>({
       type: "list_design_themes",
       threadId,
-      ...(piSessionRegistry.get(threadId) ? {} : { sessionId }),
+      sessionId,
     });
     applyFrame(res);
     if (res.active !== undefined) {
