@@ -20,3 +20,9 @@ export function consumeSteerIntent(chatId: string): boolean {
   const has = pending.delete(chatId);
   return has;
 }
+
+/** 只读窥探（不移除）：入队预期 gate 用——键盘 steer 发送已标记时跳过 gate，
+ *  避免本该即时显示的并入消息被守门隐藏 */
+export function peekSteerIntent(chatId: string): boolean {
+  return pending.has(chatId);
+}

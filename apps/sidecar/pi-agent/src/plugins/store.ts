@@ -15,6 +15,8 @@ import {
   pluginsRootDir,
   LOCAL_MKT_ID,
   LOCAL_MKT_NAME,
+  BUILTIN_MKT_ID,
+  BUILTIN_MKT_NAME,
   type PluginHookEntry,
   type PluginPanelDecl,
   type PluginComponents,
@@ -148,8 +150,10 @@ export function scanInstalledSync(): InstalledPlugin[] {
         continue;
       }
       const pluginId = `${name}@${mktId}`;
-      // 「本地安装」伪市场不在登记表里：身份固定、无"市场已移除"一说
+      // 伪市场（「本地安装」「内置插件」）不在登记表里：身份固定、无"市场已移除"一说
       const isLocal = mktId === LOCAL_MKT_ID;
+      const isBuiltin = mktId === BUILTIN_MKT_ID;
+      const isPseudo = isLocal || isBuiltin;
       try {
         const manifest = parsePluginManifest(dir);
         // 安装元数据落点分模式：拷贝装在目录内 installed.json；
@@ -160,12 +164,12 @@ export function scanInstalledSync(): InstalledPlugin[] {
         plugins.push({
           pluginId,
           mktId,
-          mktName: isLocal ? LOCAL_MKT_NAME : (mktNames.get(mktId) ?? mktId),
+          mktName: isBuiltin ? BUILTIN_MKT_NAME : isLocal ? LOCAL_MKT_NAME : (mktNames.get(mktId) ?? mktId),
           name: manifest.name,
           version: asString(meta.version) ?? manifest.version,
           ...(typeof meta.revision === "string" && meta.revision ? { revision: meta.revision } : {}),
           installedAt: typeof meta.installedAt === "string" ? meta.installedAt : "",
-          sourceMissing: !isLocal && !mktNames.has(mktId),
+          sourceMissing: !isPseudo && !mktNames.has(mktId),
           ...(linked ? { linked: true, sourcePath } : {}),
           ...(!linked && metaSourcePath ? { sourcePath: metaSourcePath } : {}),
           enabled: isPluginEnabled(pluginId),
@@ -176,11 +180,11 @@ export function scanInstalledSync(): InstalledPlugin[] {
         plugins.push({
           pluginId,
           mktId,
-          mktName: isLocal ? LOCAL_MKT_NAME : (mktNames.get(mktId) ?? mktId),
+          mktName: isBuiltin ? BUILTIN_MKT_NAME : isLocal ? LOCAL_MKT_NAME : (mktNames.get(mktId) ?? mktId),
           name,
           version: "0.0.0",
           installedAt: "",
-          sourceMissing: !isLocal && !mktNames.has(mktId),
+          sourceMissing: !isPseudo && !mktNames.has(mktId),
           enabled: isPluginEnabled(pluginId),
           manifest: {
             name,
@@ -205,9 +209,15 @@ export function listInstalledPlugins(): InstalledPlugin[] {
   return scanInstalledSync().map((p) => ({ ...p }));
 }
 
-/** 合并链用：启用的插件，pluginId 稳定排序（同名遮蔽顺序确定） */
+/**
+ * 合并链用：启用的插件，pluginId 稳定排序（同名遮蔽顺序确定）。
+ * 内置让位：同名存在非 builtin 的启用插件（链接装/本地装/日后官方市场装）时，
+ * 过滤掉该内置条目——用户主动安装的版本始终压过随 app 分发的内置版本。
+ */
 export function activePlugins(): InstalledPlugin[] {
-  return scanInstalledSync().filter((p) => p.enabled);
+  const enabled = scanInstalledSync().filter((p) => p.enabled);
+  const occupied = new Set(enabled.filter((p) => p.mktId !== BUILTIN_MKT_ID).map((p) => p.name));
+  return enabled.filter((p) => p.mktId !== BUILTIN_MKT_ID || !occupied.has(p.name));
 }
 
 /** 插件根内组件绝对路径（再次包含性校验；未声明返回 undefined） */

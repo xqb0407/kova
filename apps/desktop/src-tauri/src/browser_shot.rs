@@ -59,9 +59,23 @@ impl ShotError {
                 The browser panel and all DOM tools still work; only pixel capture is \
                 unavailable. Do not retry in a loop."
                 .into(),
-            ShotError::Failed(e) => format!("headless Chrome failed: {e}"),
+            // 后两类是**可重试**的（页面没加载完、Chrome 冷启动抖动、页面自己
+            // 挂住了脚本）。只回一句 "failed: {e}" 的话模型通常原样重试两三次，
+            // 白烧几轮；给出「最多再试一次、仍失败就改用 DOM 工具并如实说明
+            // 看不到像素」的出路，模型才不会陷在重试循环里。
+            ShotError::Failed(e) => format!(
+                "headless Chrome failed: {e}. \
+                This is usually transient (page still loading, or a cold Chrome start). \
+                Retry browser_shot at most once; if it fails again, stop retrying and fall back \
+                to the DOM tools (browser_snapshot / browser_scroll), then tell the user you \
+                could not see the pixels and what the accessibility tree says instead."
+            ),
             ShotError::Timeout => format!(
-                "headless Chrome did not finish within {}s",
+                "headless Chrome did not finish within {}s (the page is probably still loading \
+                or a script on it never settles). Retry browser_shot at most once; if it times \
+                out again, stop retrying and fall back to the DOM tools (browser_snapshot / \
+                browser_scroll), then tell the user you could not see the pixels and what the \
+                accessibility tree says instead.",
                 SHOT_TIMEOUT.as_secs()
             ),
         }

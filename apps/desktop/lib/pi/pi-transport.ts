@@ -23,6 +23,7 @@ import {
   refreshQueueSnapshot,
   registerQueuedMessage,
   unregisterQueuedMessage,
+  clearInboundGate,
 } from "@/lib/pi/pi-queue";
 import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
 import { emitAgentEvent } from "@/lib/pi/agent-events";
@@ -182,12 +183,20 @@ export class PiTransport implements ChatTransport<UIMessage> {
     const steerIntent = consumeSteerIntent(chatId);
     if (lastUser && trigger !== "regenerate-message") {
       registerQueuedMessage(requestId, chatId, lastUser);
+      // 渲染守门 gate 到此为止：登记已建立，后续由乐观摘除链/快照链接管
+      clearInboundGate();
       if (
         !steerIntent &&
         ((this.runningTurns.get(chatId)?.size ?? 0) > 0 ||
           getQueueSnapshot(chatId).items.length > 0)
       ) {
-        optimisticallyRemoveQueuedMessage(requestId);
+        // 框架的乐观 append 与 sendMessages 的相对时序不保证（实测存在
+        // append 晚于本同步段的路径——同步摘除扑空，气泡先上屏、等快照
+        // 确认才被摘掉 = 用户看到的「一闪消失」）。摘两次：微任务摘覆盖
+        // 同任务 append，宏任务兜底覆盖跨任务 append——最坏存活一帧。
+        const purge = () => optimisticallyRemoveQueuedMessage(requestId);
+        queueMicrotask(purge);
+        setTimeout(purge, 0);
       }
     }
 

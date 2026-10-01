@@ -222,10 +222,7 @@ export const SettingsPage: FC<{
       <div className="flex min-w-0 flex-1 flex-col bg-background">
         <div
           data-tauri-drag-region={desktop ? "deep" : undefined}
-          className={cn(
-            "flex h-12 shrink-0 items-center justify-end",
-            winControls ? "pr-0" : "pr-4",
-          )}
+          className="flex h-12 shrink-0 items-center justify-end pr-4"
         >
           {/* 窗口控制固定在窗口右上角；仅 Windows/Linux 渲染 */}
           {winControls && <WindowControls />}

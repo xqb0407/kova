@@ -11,6 +11,7 @@ import {
   appendThinkingLevelChangeRow,
 } from "../../sessions/transcript";
 import { composeModeSystemPrompt } from "../../agent/modes";
+import { setLeadingSystemMessage } from "../../agent/context";
 import { kvSet, modelsAll, modelsDeleteProvider, modelsList, modelsReplace, sessionGet, sessionPrefsSet, type ModelReplaceItem } from "../../storage/hostdb";
 import {
   applyRowToCatalogModel,
@@ -201,11 +202,9 @@ export const handlers: Record<string, CommandHandler> = {
     // 模型行是系统提示词环境段的一部分：换模型后整段重排，驻留 run 即时生效
     const restamp = (run: Running): void => {
       run.agent.state.model = model;
-      run.agent.state.systemPrompt = composeModeSystemPrompt(
-        run.mode,
-        run.cwd,
-        model,
-        run.designTheme,
+      setLeadingSystemMessage(
+        run.agent.state.messages,
+        composeModeSystemPrompt(run.mode, run.cwd, model, run.designTheme),
       );
     };
     if (sessionId) {

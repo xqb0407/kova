@@ -5,6 +5,7 @@
 import { send } from "../stream";
 import { running } from "../../sessions/sessions";
 import { composeModeSystemPrompt } from "../../agent/modes";
+import { setLeadingSystemMessage } from "../../agent/context";
 import {
   applyPersonalization,
   getPersonalization,
@@ -84,12 +85,11 @@ export const handlers: Record<string, CommandHandler> = {
     const settings = await applyPersonalization(msg.settings);
     // 与 set_thinking 同款广播：个性化段变了就整段重排系统提示词，活动会话
     // 下一轮请求即生效；composeModeSystemPrompt 内部读取当前设置
+    // （0.99 迁移：提示词由转录首条 system 消息承载，热换走 setLeadingSystemMessage）
     for (const run of running.values()) {
-      run.agent.state.systemPrompt = composeModeSystemPrompt(
-        run.mode,
-        run.cwd,
-        run.agent.state.model,
-        run.designTheme,
+      setLeadingSystemMessage(
+        run.agent.state.messages,
+        composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme),
       );
     }
     send({
@@ -115,12 +115,12 @@ export const handlers: Record<string, CommandHandler> = {
         run.agent.state.model,
         run.designTheme,
       );
-      run.agent.state.systemPrompt = prompt;
-      // 轮中切换：活循环读的是 loopContext 上的提示词，只改 agent.state 等于
+      setLeadingSystemMessage(run.agent.state.messages, prompt);
+      // 轮中切换：活循环读的是 loopContext 转录首条的提示词，只改 agent.state 等于
       // 没改——本轮后续请求仍带旧模式段（design 段里含设计主题句，切到
       // code/work 后模型仍在按旧模式行事）。其余重排点（applySessionTheme /
       // recomposeAllRuns / applyMode）都写了这一行，此处原先漏了。
-      if (run.loopContext) run.loopContext.systemPrompt = prompt;
+      if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
     }
     send({ id: reqId, type: "app_mode", mode });
   },
@@ -143,11 +143,9 @@ export const handlers: Record<string, CommandHandler> = {
     // 与 set_personalization 同款广播：记忆段变了就整段重排系统提示词；
     // 工具表常驻不重建（execute 内实时读配置门控）
     for (const run of running.values()) {
-      run.agent.state.systemPrompt = composeModeSystemPrompt(
-        run.mode,
-        run.cwd,
-        run.agent.state.model,
-        run.designTheme,
+      setLeadingSystemMessage(
+        run.agent.state.messages,
+        composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme),
       );
     }
     send({ id: reqId, type: "memory", settings });
@@ -290,11 +288,9 @@ export const handlers: Record<string, CommandHandler> = {
     const saved = await writeMemoryFile(scope, cwd ?? "", file, content, "overwrite");
     // 内容可能正被注入：与 set_memory 同款热替换活动会话提示词
     for (const run of running.values()) {
-      run.agent.state.systemPrompt = composeModeSystemPrompt(
-        run.mode,
-        run.cwd,
-        run.agent.state.model,
-        run.designTheme,
+      setLeadingSystemMessage(
+        run.agent.state.messages,
+        composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme),
       );
     }
     send({ id: reqId, type: "memory_file_saved", scope, file: saved.rel, bytes: saved.bytes });

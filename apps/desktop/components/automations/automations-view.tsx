@@ -5,9 +5,12 @@
  * 清单来自 lib/automations 镜像 store（sidecar 事实源）；实时运行态来自
  * lib/automation-live 帧投影。
  *
+ * 版式按"标题 → 页签 → 检索 → 清单 → 模板"五段递进（与插件市场页同骨架）：
+ * 主操作（新建任务）提到页头右，检索与批量动作留在贴近清单的工具条里。
+ *
  * 两个 tab（形态参考同类定时任务产品）：
  * - 定时任务：卡片直排操作（立即运行/编辑/历史展开/⋯删除）+ 搜索/状态筛选 +
- *   批量管理（多选后启用/暂停/删除）；
+ *   批量管理（多选后启用/暂停/删除），清单下方常驻模板区（点卡片预置表单）；
  * - 运行记录：跨任务聚合的全局时间线（lib/automation-history 纯函数），
  *   条目经 run→session 映射跳回那一次执行的实际会话。
  */
@@ -30,7 +33,6 @@ import {
   EraserIcon,
   HistoryIcon,
   HourglassIcon,
-  LayersIcon,
   ListChecksIcon,
   Loader2Icon,
   MessageSquareIcon,
@@ -68,13 +70,6 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -92,7 +87,6 @@ import {
   clearAutomationHistory,
   deleteAutomation,
   deleteAutomationHistory,
-  fetchAutomationTemplates,
   getAutomationSessionForRun,
   refreshAutomations,
   runAutomationNow,
@@ -117,7 +111,6 @@ import {
 } from "@/lib/automation/automation-history";
 import {
   describeSchedule,
-  describeTemplateSchedule,
   formatDateTime,
   nextRunLabel,
   relativePast,
@@ -128,6 +121,7 @@ import { cn } from "@/lib/utils";
 import { Dock, DockItem, DockSeparator } from "@/components/custom-ui/dock";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { AutomationEditorDialog } from "./automation-editor-dialog";
+import { TemplateGallery } from "./template-gallery";
 
 /** 30s 心跳：倒计时/相对时间标签自然刷新（避免逐秒重渲染整页） */
 function useNowTick(ms = 30_000): number {
@@ -643,82 +637,6 @@ const TaskCard: FC<{
   );
 };
 
-/**
- * 模板选择弹窗（M3.7）：清单来自 sidecar automation_templates 应答
- * （lib 里模块级缓存，这里每次打开仍走一次 fetch 命中缓存即可）；
- * 点选只是给编辑器预置初值，不直接落库。
- */
-const TemplatePickerDialog: FC<{
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onPick: (t: AutomationTemplate) => void;
-}> = ({ open, onOpenChange, onPick }) => {
-  const [templates, setTemplates] = useState<AutomationTemplate[] | null>(null);
-  const [error, setError] = useState("");
-
-  const load = () => {
-    setError("");
-    setTemplates(null);
-    fetchAutomationTemplates()
-      .then(setTemplates)
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-  };
-  useEffect(() => {
-    if (open) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>从模板新建</DialogTitle>
-          <DialogDescription>挑一个常见场景起步，表单里的内容都可以再改。</DialogDescription>
-        </DialogHeader>
-        {error ? (
-          <div className="text-red-500 bg-red-500/5 border-red-500/20 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs">
-            <AlertCircleIcon className="size-4 shrink-0" />
-            <span className="min-w-0 flex-1">{error}</span>
-            <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={load}>
-              重试
-            </Button>
-          </div>
-        ) : templates === null ? (
-          <div className="flex flex-col gap-2">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-14 rounded-lg" />
-            ))}
-          </div>
-        ) : (
-          <div className="flex max-h-[50dvh] flex-col gap-2 overflow-y-auto">
-            {templates.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className="hover:bg-muted/60 focus-visible:ring-ring/50 rounded-lg border px-3 py-2.5 text-start outline-none focus-visible:ring-1"
-                onClick={() => {
-                  onOpenChange(false);
-                  onPick(t);
-                }}
-              >
-                <span className="flex items-center gap-2">
-                  <span className="text-sm font-medium">{t.name}</span>
-                  <span className="text-muted-foreground ml-auto shrink-0 text-xs">
-                    {describeTemplateSchedule(t)}
-                  </span>
-                </span>
-                <span className="text-muted-foreground mt-0.5 block text-xs leading-relaxed">
-                  {t.description}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-};
-
 export const AutomationsView: FC<{
   /** 跳转会话后回到聊天（清菜单选中） */
   onBackToChat?: () => void;
@@ -734,7 +652,6 @@ export const AutomationsView: FC<{
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<AutomationTask | null>(null);
   const [editorTemplate, setEditorTemplate] = useState<AutomationTemplate | null>(null);
-  const [templatesOpen, setTemplatesOpen] = useState(false);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [batchMode, setBatchMode] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -996,49 +913,81 @@ export const AutomationsView: FC<{
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      {/* 版式对齐设置页各分区（子智能体/技能同款）：居中限宽、大标题+右侧状态、
-          说明文字+操作按钮行。环境光层抬到 base.tsx 主内容区根（透明 header 条
-          也能被照到），这里不再叠一份，避免双层光带 */}
-      <div className="mx-auto flex w-full max-w-5xl shrink-0 flex-col gap-4 px-8 pt-8 pb-2">
-        <div className="flex items-baseline justify-between gap-4">
-          <h1 className="text-2xl font-bold tracking-tight">自动化</h1>
+      {/* 版式对齐插件市场页：居中限宽、标题+右侧主操作、页签、检索条。
+          环境光层抬到 base.tsx 主内容区根（透明 header 条也能被照到），
+          这里不再叠一份，避免双层光带 */}
+      <div className="mx-auto flex w-full max-w-7xl shrink-0 flex-col gap-4 px-8 pt-8 pb-2 lg:px-12">
+        {/* 页头：标题/副标题在左，主操作在右 —— 主操作不再和搜索框挤同一行 */}
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight">自动化</h1>
+            <p className="text-muted-foreground mt-1 text-sm">
+              按计划自动运行 Agent 任务，每次执行开一个独立会话
+            </p>
+          </div>
+          {/* 新建拆两径：手动表单 or 回聊天让 agent 建（scheduler_* 工具） */}
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button className="shrink-0 gap-1">
+                  <PlusIcon className="size-4" />
+                  新建任务
+                  <ChevronDownIcon className="size-3 opacity-60" />
+                </Button>
+              }
+            />
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={() => openEditor(null)}>
+                <PencilIcon className="size-4" />
+                手动创建
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={startViaChat}>
+                <MessageSquareIcon className="size-4" />
+                会话创建
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+
+        {/* tab：定时任务 | 运行记录。分段器与设置页各分区同款；计数并入文案。
+            清单总数也在右侧：切到运行记录页时它是这页唯一的全局读数 */}
+        <div className="flex items-center justify-between gap-4">
+          <Segmented<"tasks" | "history">
+            value={tab}
+            className="w-fit"
+            options={[
+              {
+                value: "tasks",
+                label: snap.tasks.length > 0 ? `定时任务 ${snap.tasks.length}` : "定时任务",
+              },
+              {
+                value: "history",
+                label:
+                  totalHistoryCount > 0 ? `运行记录 ${totalHistoryCount}` : "运行记录",
+              },
+            ]}
+            onChange={(v) => {
+              setTab(v);
+              exitBatch();
+              exitHistoryBatch();
+            }}
+          />
           <span
             className={cn(
-              "text-xs",
+              "shrink-0 text-xs",
               snap.error ? "text-destructive" : "text-muted-foreground",
             )}
           >
             {snap.error
               ? "任务清单加载失败，可重试"
               : snap.loaded
-                ? `${snap.tasks.length} 个任务（${enabledCount} 个启用）`
+                ? `${snap.tasks.length} 个任务 · ${enabledCount} 个启用`
                 : ""}
           </span>
         </div>
-        <p className="text-muted-foreground text-sm">
-          按计划自动运行 Agent 任务，每次执行开一个独立会话
-        </p>
 
-        {/* tab：定时任务 | 运行记录。分段器与设置页各分区同款；计数并入文案 */}
-        <Segmented<"tasks" | "history">
-          value={tab}
-          className="w-fit self-start"
-          options={[
-            { value: "tasks", label: "定时任务" },
-            {
-              value: "history",
-              label:
-                totalHistoryCount > 0 ? `运行记录 ${totalHistoryCount}` : "运行记录",
-            },
-          ]}
-          onChange={(v) => {
-            setTab(v);
-            exitBatch();
-            exitHistoryBatch();
-          }}
-        />
-
-        {/* 工具栏：搜索 + 筛选 + 刷新/批量/模板/新建 */}
+        {/* 检索条：搜索 + 筛选在左，刷新/批量在右（都贴着清单，
+            模板入口已下沉到清单下方的模板区，这里不再重复给一个按钮） */}
         <div className="flex flex-wrap items-center gap-2">
           {/* 搜索框固定紧凑宽度（设置页同款 w-56），不再 flex-1 撑满整行 */}
           <div className="relative w-56 max-w-full shrink-0">
@@ -1056,7 +1005,7 @@ export const AutomationsView: FC<{
               value={statusFilter}
               onValueChange={(v) => v && setStatusFilter(v as TaskFilter)}
             >
-              <SelectTrigger size="sm" className="w-28 border bg-background">
+              <SelectTrigger size="sm" className="w-28 ">
                 <SelectValue>{TASK_FILTER_LABEL[statusFilter]}</SelectValue>
               </SelectTrigger>
               <SelectContent>
@@ -1102,40 +1051,10 @@ export const AutomationsView: FC<{
               </Button>
             );
           })()}
-          <Button
-            variant="outline"
-            className="h-8 shrink-0 gap-1.5"
-            onClick={() => setTemplatesOpen(true)}
-          >
-            <LayersIcon className="size-4" />
-            模板
-          </Button>
-          {/* 新建拆两径：手动表单 or 回聊天让 agent 建（scheduler_* 工具） */}
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button className="h-8 shrink-0 gap-1">
-                  <PlusIcon className="size-4" />
-                  新建任务
-                  <ChevronDownIcon className="size-3 opacity-60" />
-                </Button>
-              }
-            />
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem onClick={() => openEditor(null)}>
-                <PencilIcon className="size-4" />
-                手动创建
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={startViaChat}>
-                <MessageSquareIcon className="size-4" />
-                会话创建
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
         </div>
       </div>
 
-      <div className="mx-auto w-full max-w-5xl flex-1 px-8 pb-8">
+      <div className="mx-auto w-full max-w-7xl flex-1 px-8 pb-8 lg:px-12">
         {snap.error && (
           <div className="text-red-500 bg-red-500/5 border-red-500/20 mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs">
             <AlertCircleIcon className="size-4 shrink-0" />
@@ -1212,29 +1131,21 @@ export const AutomationsView: FC<{
             ))}
           </div>
         ) : snap.loaded && snap.tasks.length === 0 ? (
-          <div className="border-border/60 text-muted-foreground mt-4 flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-14 text-center">
-            <ZapIcon className="size-8 opacity-40" />
-            <div>
-              <p className="text-sm font-medium">还没有自动化任务</p>
-              <p className="mt-1 text-xs">
-                也可以在对话里直接说"每天早上 9 点给我发一份昨日总结"，让 Agent 帮你建
-              </p>
+          /* 空态收到最简：模板区就在正下方，再摆一排按钮是重复的引导。
+             只留"还没有任务"这一句 + 会话创建这条旁路（模板区给的是第三条路） */
+          <div className="text-muted-foreground mt-4 flex flex-col items-center gap-2 py-10 text-center">
+            <div className="bg-muted/50 text-muted-foreground grid size-12 place-items-center rounded-2xl border">
+              <ZapIcon className="size-6" />
             </div>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => openEditor(null)}>
-                <PlusIcon className="size-4" />
-                新建第一个任务
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="gap-1.5"
-                onClick={() => setTemplatesOpen(true)}
-              >
-                <LayersIcon className="size-4" />
-                从模板挑一个
-              </Button>
-            </div>
+            <p className="text-foreground text-sm font-medium">还没有自动化任务</p>
+            <p className="max-w-md text-xs leading-relaxed">
+              从下方挑一个模板起步最快；也可以在对话里直接说
+              "每天早上 9 点给我发一份昨日总结"，让 Agent 帮你建。
+            </p>
+            <Button size="sm" variant="outline" className="mt-1 gap-1.5" onClick={() => openEditor(null)}>
+              <PlusIcon className="size-4" />
+              新建第一个任务
+            </Button>
           </div>
         ) : visibleTasks.length === 0 ? (
           <p className="text-muted-foreground mt-6 text-center text-sm">
@@ -1242,7 +1153,7 @@ export const AutomationsView: FC<{
             {statusFilter !== "all" && `（${TASK_FILTER_LABEL[statusFilter]}）`}
           </p>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-3">
             {visibleTasks.map((t) => (
               <TaskCard
                 key={t.id}
@@ -1261,6 +1172,9 @@ export const AutomationsView: FC<{
             ))}
           </div>
         )}
+        {/* 模板区沉到清单下方（只挂任务 tab）：这是新用户的第一条路径，
+            不该和搜索框挤在同一条工具条里，也不再藏进二级弹窗 */}
+        {tab === "tasks" && !batchMode && <TemplateGallery onPick={openFromTemplate} />}
       </div>
 
       {/* 批量操作坞：底部居中的悬浮图标条（Dock 风格）。外层 pointer-events-none
@@ -1461,11 +1375,6 @@ export const AutomationsView: FC<{
         onOpenChange={setEditorOpen}
         task={editingTask}
         template={editorTemplate}
-      />
-      <TemplatePickerDialog
-        open={templatesOpen}
-        onOpenChange={setTemplatesOpen}
-        onPick={openFromTemplate}
       />
     </div>
   );

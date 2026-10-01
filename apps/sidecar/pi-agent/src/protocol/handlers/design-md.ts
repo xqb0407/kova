@@ -9,6 +9,7 @@ import { send } from "../stream";
 import { resolveSession } from "../../sessions/sessions";
 import { running } from "../../sessions/registry";
 import { composeModeSystemPrompt } from "../../agent/modes";
+import { setLeadingSystemMessage } from "../../agent/context";
 import { sessionPrefsSet } from "../../storage/hostdb";
 import {
   deleteUserTheme,
@@ -32,8 +33,8 @@ import type { CommandHandler } from "../command";
 function recomposeAllRuns(): void {
   for (const run of running.values()) {
     const prompt = composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme);
-    run.agent.state.systemPrompt = prompt;
-    if (run.loopContext) run.loopContext.systemPrompt = prompt;
+    setLeadingSystemMessage(run.agent.state.messages, prompt);
+    if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
   }
 }
 
@@ -42,8 +43,8 @@ function recomposeAllRuns(): void {
 function applySessionTheme(run: Running, ref: ThemeRef | null): void {
   run.designTheme = ref;
   const prompt = composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme);
-  run.agent.state.systemPrompt = prompt;
-  if (run.loopContext) run.loopContext.systemPrompt = prompt;
+  setLeadingSystemMessage(run.agent.state.messages, prompt);
+  if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
   void sessionPrefsSet(run.sessionId, { designTheme: encodeThemeColumn(ref) }).catch(() => {});
   void setLastUsedDesignTheme(ref).catch(() => {});
 }

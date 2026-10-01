@@ -153,8 +153,9 @@ function toToolItem(server: string, tool: McpToolInfo): Unstable_TriggerItem {
 }
 
 /** 拉取各就绪服务器的工具清单：sidecar 元数据缓存优先（ready 态必有缓存），缺失才握手。
- *  只取 ready 态——避免在输入框里打字就把懒服务器唤醒握手。 */
-function useMcpToolsByServer(workspace: string | null) {
+ *  只取 ready 态——避免在输入框里打字就把懒服务器唤醒握手。
+ *  导出给 composer 的 + 菜单「连接器」面板复用（同一份就绪集合，避免两处口径漂移）。 */
+export function useMcpToolsByServer(workspace: string | null) {
   const mcp = useMcpServers(workspace);
   // 插件服务器与常规服务器同场：只在 ready 态取工具（避免打字唤醒懒服务器）
   const readyKey = [...mcp.servers, ...mcp.pluginServers]

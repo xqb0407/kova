@@ -3,7 +3,7 @@
  * 以及 MCP 草稿解析与变更后的热重载编排。命令 handler 见 handlers/。
  */
 import { logErr } from "../log";
-import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry } from "../plugins/plugins";
+import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, builtinMarketplaceEntry } from "../plugins/plugins";
 import { listPluginMcpEntries, loadMcpServers, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
 import { mcpManager } from "../mcp/mcp-manager";
 import { ensureSkillsLoaded, skillsSnapshot, listPluginSkillEntries } from "../skills/skills";
@@ -194,11 +194,12 @@ export function marketplacesPayload() {
       plugins: catalog.plugins,
     };
   });
-  // 「本地安装」伪市场垫底呈现（有本地安装项才出现）：现场合成，不落登记表
+  // 「内置插件」「本地安装」两个伪市场垫底呈现（有条目才出现）：现场合成，不落登记表
+  const builtin = builtinMarketplaceEntry();
   const local = localMarketplaceEntry();
   return {
     type: "marketplaces" as const,
-    marketplaces: local ? [...entries, local] : entries,
+    marketplaces: [...entries, ...(builtin ? [builtin] : []), ...(local ? [local] : [])],
   };
 }
 

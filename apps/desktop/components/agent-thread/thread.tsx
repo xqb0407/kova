@@ -29,7 +29,7 @@ import { ThreadPreviewRail } from "./thread-preview-rail";
 import { HistoryPager } from "./history-pager";
 import { TurnSlot, TurnTimingRecorder } from "./turn-summary";
 import { prewarmShiki } from "@/lib/markdown/prewarm-shiki";
-import { useThreadPendingTurn } from "@/lib/pi/pi-queue";
+import { useThreadPendingTurn, isInboundGateActive } from "@/lib/pi/pi-queue";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -116,6 +116,10 @@ const ThreadWorkingIndicator: FC = () => {
  */
 export const Thread = memo(function Thread() {
   const isEmpty = useAuiState(isNewChatView);
+  // 入队预期守门的锚点：gate 活跃时最后一条 user 消息（= 刚乐观 append 的
+  // 排队消息）不渲染，见 pi-queue.ts 入队预期门
+  const gateThreadId = useAuiState((s) => s.threads.mainThreadId);
+  const gateLastId = useAuiState((s) => s.thread.messages.at(-1)?.id);
   // 空闲时预建热点语言的 Shiki 缓存，消掉流式中首个代码块的高亮停顿
   useEffect(() => {
     prewarmShiki();
@@ -169,6 +173,18 @@ export const Thread = memo(function Thread() {
         >
           <ThreadPrimitive.Messages>
             {({ message }) => {
+              // 入队预期守门：忙线程发送时框架乐观 append 会把排队消息同步
+              // 渲染一帧（外部 store 语义，摘除必晚一帧）。gate 置位早于
+              // append，这里直接不渲染——同帧生效，与摘除时序无关。
+              if (
+                gateThreadId != null &&
+                gateLastId != null &&
+                message.id === gateLastId &&
+                message.role === "user" &&
+                isInboundGateActive(gateThreadId)
+              ) {
+                return null;
+              }
               const inner =
                 message.composer.isEditing ? (
                   <EditComposer />

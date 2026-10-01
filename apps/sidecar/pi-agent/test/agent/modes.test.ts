@@ -56,7 +56,9 @@ const fakeTool = (name: string): AgentTool =>
 
 function makeRun(mode: SessionMode = "agent"): Running {
   return {
-    agent: { state: {} } as unknown as Running["agent"],
+    // 0.99 起 fake state 需带 messages：applyMode 经 setLeadingSystemMessage
+    // 改写转录首条 system 消息（state.systemPrompt 是只读回放，fake 上不可写）
+    agent: { state: { messages: [] } } as unknown as Running["agent"],
     threadId: "t-modes",
     sessionId: "s",
     cwd: ".",
@@ -161,9 +163,11 @@ describe("applyMode", () => {
     applyMode(run, "plan");
     expect(run.mode).toBe("plan");
     expect(run.planning).toBe("planning");
-    const state = run.agent.state as { systemPrompt?: string; tools?: AgentTool[] };
-    expect(state.systemPrompt).toContain("Plan mode");
-    expect(state.tools?.map((t) => t.name)).toContain(PLAN_TOOL_NAMES.write);
+    // 0.99：提示词落在转录首条 system 消息上
+    const head = run.agent.state.messages[0] as { role: string; content: string };
+    expect(head.role).toBe("system");
+    expect(head.content).toContain("Plan mode");
+    expect((run.agent.state as { tools?: AgentTool[] }).tools?.map((t) => t.name)).toContain(PLAN_TOOL_NAMES.write);
 
     applyMode(run, "agent");
     expect(run.planning).toBe("inactive");
@@ -443,7 +447,12 @@ describe("plan 模式结构性只读与轮中热换", () => {
 
   test("approvalBeforeToolCall 捕获活循环上下文", async () => {
     const run = makeRun("agent");
-    const live = { systemPrompt: "s", messages: [], tools: [] };
+    const live = {
+      messages: [
+        { role: "system", content: "s", timestamp: 0 },
+      ] as unknown as import("@earendil-works/pi-agent-core").AgentMessage[],
+      tools: [],
+    };
     const c = ctx("read");
     (c as unknown as { context: unknown }).context = live;
     await approvalBeforeToolCall(run, c);
@@ -453,8 +462,9 @@ describe("plan 模式结构性只读与轮中热换", () => {
   test("applyMode 同步改写活循环上下文：轮中切换本轮立即生效", () => {
     const run = makeRun("agent");
     run.loopContext = {
-      systemPrompt: "old",
-      messages: [],
+      messages: [
+        { role: "system", content: "old", timestamp: 0 },
+      ] as unknown as import("@earendil-works/pi-agent-core").AgentMessage[],
       tools: [...run.baseTools, ...run.subagentTools],
     };
     applyMode(run, "plan");
@@ -464,7 +474,10 @@ describe("plan 模式结构性只读与轮中热换", () => {
     expect(names).not.toContain(PLAN_TOOL_NAMES.enter);
     expect(names).not.toContain("write");
     expect(names).not.toContain("edit");
-    expect(run.loopContext!.systemPrompt).toContain("Plan mode");
+    // 0.99 起提示词由转录首条 system 消息承载
+    const head = run.loopContext!.messages[0] as { role: string; content: string };
+    expect(head.role).toBe("system");
+    expect(head.content).toContain("Plan mode");
 
     // plan_exit 批准回 agent：同一活上下文重新拿到 write/edit
     applyMode(run, "agent");

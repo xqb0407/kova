@@ -66,7 +66,11 @@ function notify() {
 
 function synthesizedMessage(item: QueueSnapshotItem): UIMessage {
   return {
-    id: `queued-${item.id}`,
+    // id 用真实 reqId（链节派发轮的 requestId 就是入队 reqId，见
+    // prompt-pipeline turnReqId = next.reqId）：reveal 回填的占位气泡与
+    // resumeStream 重放的正式 user 消息同 id —— 正式消息落位时按 id 收敛
+    // 替换，不再出现「占位气泡闪现一下再被重放替换/双气泡」的竞态观感
+    id: item.reqId,
     role: "user",
     parts: [{ type: "text", text: item.text }],
   };
@@ -130,7 +134,7 @@ function applySnapshot(snapshot: QueueSnapshot): void {
     } else {
       const reg: RegisteredMessage = {
         threadId: snapshot.threadId,
-        messageId: `queued-${item.id}`,
+        messageId: item.reqId,
         message: synthesizedMessage(item),
         phase: "queued",
       };
@@ -153,8 +157,58 @@ function applySnapshot(snapshot: QueueSnapshot): void {
 
   snapshots.set(snapshot.threadId, snapshot);
   notify();
-  for (const reg of onRemove) syncListener?.(reg, "remove");
-  for (const reg of onReveal) syncListener?.(reg, "reveal");
+  for (const reg of onRemove) emitSync(reg, "remove");
+  for (const reg of onReveal) emitSync(reg, "reveal");
+}
+
+/* --------------------- 入队预期门（渲染投影守门） ---------------------
+ * 忙线程发送时框架的乐观 append 先于 transport 登记执行，且 AI SDK state
+ * 是 React 外部 store——更新同步渲染、不吃批处理，任何摘除都晚一帧（气泡
+ * 闪现 1-2 帧后才被摘掉）。gate 在 composer 发送前置位（早于 pushMessage），
+ * thread 渲染回调对「gate 线程的最后一条 user 消息」直接不渲染——同帧生效，
+ * 与摘除时序无关；transport 登记完成后清除（乐观摘除/快照链接管）。
+ * 2s 过期是保命阀：transport 在 pushMessage 之前抛错（此时消息已乐观 append
+ * 却没人摘）时，若只靠调用方 clear，UI 会把这条消息永久藏起来。过期**必须自带
+ * 一次重绘**——只写 expiresAt 是不够的：那只是一次惰性比较，没有任何人会在
+ * 第 2 秒去问它，于是"保命阀"变成"永久吞消息"。 */
+let inboundGate: { threadId: string; expiresAt: number } | null = null;
+let inboundGateTimer: ReturnType<typeof setTimeout> | null = null;
+
+const INBOUND_GATE_TTL_MS = 2000;
+
+/** 发送前置位：该线程本次发送预期入队（忙判定由调用方完成） */
+export function markInboundGate(threadId: string): void {
+  inboundGate = { threadId, expiresAt: Date.now() + INBOUND_GATE_TTL_MS };
+  if (inboundGateTimer) clearTimeout(inboundGateTimer);
+  inboundGateTimer = setTimeout(() => {
+    inboundGateTimer = null;
+    // 已被 clearInboundGate 取消：此处 gate 已空，不重绘
+    if (!inboundGate) return;
+    inboundGate = null;
+    notify();
+  }, INBOUND_GATE_TTL_MS);
+  notify();
+}
+
+/** transport 登记完成/快照到达后清除（守门交给乐观摘除链或快照链） */
+export function clearInboundGate(): void {
+  if (inboundGateTimer) {
+    clearTimeout(inboundGateTimer);
+    inboundGateTimer = null;
+  }
+  if (inboundGate) {
+    inboundGate = null;
+    notify();
+  }
+}
+
+/** 渲染守门查询：gate 活跃（未过期）且匹配线程 */
+export function isInboundGateActive(threadId: string): boolean {
+  return (
+    !!inboundGate &&
+    inboundGate.threadId === threadId &&
+    inboundGate.expiresAt > Date.now()
+  );
 }
 
 /* ------------------------- 消息数组同步（渲染侧） ------------------------- */
@@ -162,11 +216,42 @@ function applySnapshot(snapshot: QueueSnapshot): void {
 type SyncKind = "remove" | "reveal";
 let syncListener: ((reg: RegisteredMessage, kind: SyncKind) => void) | null = null;
 
-/** 注册/注销消息同步监听（PromptQueueBar 挂载时注册，随线程卸载注销） */
+/** 监听器缺席时的信号缓冲：remove/reveal **不能静默丢**——reveal 丢 =
+ *  消息永久消失（登记已在 applySnapshot/unregister 里销掉，无人再回填，
+ *  转录有但 UI 没有，重启重建才恢复）。队列栏组件卸载/重挂的窗口期
+ *  （线程切换、条件渲染）监听器为 null，此时信号入缓冲，注册时按序重放。 */
+const pendingSyncSignals: Array<{ reg: RegisteredMessage; kind: SyncKind }> = [];
+
+function emitSync(reg: RegisteredMessage, kind: SyncKind): void {
+  if (syncListener) {
+    syncListener(reg, kind);
+    return;
+  }
+  pendingSyncSignals.push({ reg, kind });
+  // 防泄漏上限：信号只在「摘除/回填后监听器长期不挂」的异常路径堆积。
+  // 超限丢**最旧的 remove**（remove 重放是幂等的，丢了最坏留一个幽灵气泡，
+  // 下次快照自愈）；reveal 绝不丢——它丢了就是消息永久从 UI 消失（登记早已
+  // 销掉，无人回填，只能重启重建）。原实现 shift() 无差别丢最旧项，恰好
+  // 会先吃掉 reveal：64 次连续 remove 之后的第一条 reveal 必丢。
+  if (pendingSyncSignals.length > 64) {
+    const victim = pendingSyncSignals.findIndex((s) => s.kind === "remove");
+    if (victim >= 0) pendingSyncSignals.splice(victim, 1);
+    // 全是 reveal（一次挂载窗口内 64+ 条在途消息，实践中不可能）：宁可不淘汰
+    // 也不能吞消息。注册监听器时会全量重放，泄漏窗口有界。
+  }
+}
+
+/** 注册/注销消息同步监听（PromptQueueBar 挂载时注册，随线程卸载注销）；
+ *  注册时按序重放缺席期间缓冲的信号（remove 幂等：已不在数组 no-op；
+ *  reveal 重复回填由 AI SDK 按 id 收敛 + dedupeMessagesById 兜底） */
 export function setQueueSyncListener(
   fn: ((reg: RegisteredMessage, kind: SyncKind) => void) | null,
 ): void {
   syncListener = fn;
+  if (fn) {
+    const replay = pendingSyncSignals.splice(0);
+    for (const s of replay) fn(s.reg, s.kind);
+  }
 }
 
 /** 流终结（finish/error/abort/客户端停止）：该请求生命周期的收尾。
@@ -189,7 +274,7 @@ export function unregisterQueuedMessage(requestId: string, threadId: string): vo
   if (reg.phase === "pending") {
     registry.delete(requestId);
     notify();
-    syncListener?.(reg, "reveal");
+    emitSync(reg, "reveal");
   }
 }
 
@@ -201,7 +286,7 @@ export function unregisterQueuedMessage(requestId: string, threadId: string): vo
 export function optimisticallyRemoveQueuedMessage(requestId: string): void {
   const reg = registry.get(requestId);
   if (!reg || reg.phase !== "pending") return;
-  syncListener?.(reg, "remove");
+  emitSync(reg, "remove");
 }
 
 /** 流 start chunk（pi-transport 调用）：该请求的 turn 真正开跑。登记若还停在
@@ -212,7 +297,7 @@ export function notifyQueueStreamStart(requestId: string): void {
   if (!reg || reg.phase !== "pending") return;
   registry.delete(requestId);
   notify();
-  syncListener?.(reg, "reveal");
+  emitSync(reg, "reveal");
 }
 
 /* ------------------------------ 派发空窗标记 ------------------------------ */
@@ -404,5 +489,7 @@ export function resetQueueForTests(): void {
   snapshots.clear();
   registry.clear();
   pendingTurnByThread.clear();
+  // 同步信号缓冲一并清：跨测试残留会在下次注册时重放，污染事件断言
+  pendingSyncSignals.length = 0;
   notify();
 }

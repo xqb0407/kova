@@ -64,3 +64,10 @@ next-env.d.ts
 skills-lock.json
 
 .zcode/tmp/
+# 临时导出的凭据明文（用完即删，勿提交）
+.opencode-key.txt
+.dev-credentials.txt
+
+# sidecar 构建冒烟的临时沙箱（build-sidecar.ts，正常路径自清理）
+apps/sidecar/pi-agent/.build-smoke/
+apps/sidecar/pi-agent/.build-smoke-sessions/

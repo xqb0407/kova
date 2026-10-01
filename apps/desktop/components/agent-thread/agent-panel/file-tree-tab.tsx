@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FC,
   type MouseEvent as ReactMouseEvent,
@@ -37,7 +38,11 @@ import {
   fsReveal,
   fsTouch,
 } from "@/lib/workspace/fs";
-import { focusPanelTab, openPanelTab } from "@/lib/panels/panel-tabs";
+import {
+  activatePanelTab,
+  getPanelTabs,
+  openPanelTab,
+} from "@/lib/panels/panel-tabs";
 import { isTauri } from "@/lib/tauri";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
 import { toast } from "@/components/ui/toast";
@@ -213,6 +218,15 @@ function renderEntries(
   return rows;
 }
 
+/** 树 tab 状态的模块级缓存：TabContentView 以 tab.id 作 key 重挂载（tab 切换
+ *  即卸载），useState 会丢展开状态——点文件开新 tab 再切回树，之前展开的目录
+ *  全部收起。缓存按 cwd 失效，切工作区仍走既有重置逻辑。 */
+let explorerTreeCache: {
+  cwd: string | null;
+  expanded: string[];
+  selected: string | null;
+} | null = null;
+
 export const FileTreeTab: FC = () => {
   const rootCwd = usePanelCwd();
   useFileTreeWiring();
@@ -226,12 +240,39 @@ export const FileTreeTab: FC = () => {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const expandedSet = useMemo(() => new Set(expanded), [expanded]);
 
-  // 切 rootCwd 收起全部展开（旧路径在新根下无意义）
+  // 切 rootCwd 收起全部展开（旧路径在新根下无意义）。声明序在恢复 effect
+  // 之前：rootCwd 首次到位的同一次 commit 里重置先跑、恢复后跑（恢复胜）；
+  // 真切工作区时 restoredRef 已 true，重置是唯一生效路径
   useEffect(() => {
     setExpanded([]);
     setSelected(null);
     setMenu(null);
   }, [rootCwd]);
+
+  // 树 tab 状态恢复（重挂不丢展开）：TabContentView 以 tab.id 作 key 重挂载，
+  // 点文件开新 tab 再切回树时 useState 归零。恢复必须在 rootCwd **到位后**做
+  // 而非 useState 惰性初始化——无工作区模式下 cwd 走异步兜底（首帧 null），
+  // 惰性初始化比对失败就永远恢复不上了。restoredRef 保证只恢复一次：
+  // 之后真正的切工作区仍走上方重置逻辑。
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (!rootCwd || restoredRef.current) return;
+    restoredRef.current = true;
+    if (
+      explorerTreeCache?.cwd === rootCwd &&
+      Array.isArray(explorerTreeCache.expanded)
+    ) {
+      setExpanded(explorerTreeCache.expanded);
+      setSelected(explorerTreeCache.selected);
+    }
+  }, [rootCwd]);
+
+  // 展开状态写回缓存：tab 切换重挂时恢复（点文件开新 tab 不再收起树）；
+  // rootCwd 未到位（null）不写，防空值覆盖好缓存
+  useEffect(() => {
+    if (!rootCwd) return;
+    explorerTreeCache = { cwd: rootCwd, expanded, selected };
+  }, [rootCwd, expanded, selected]);
 
   // 补水：可见目录链缺缓存就拉（挂载、展开变化、失效 bump 后各收敛一次）
   useEffect(() => {
@@ -240,6 +281,28 @@ export const FileTreeTab: FC = () => {
       ensureDir(rootCwd, dir);
     }
   }, [rootCwd, expandedSet, treeVersion]);
+
+  /** 打开文件标签：同 (cwd, path) 已有标签则聚焦，否则新开——不同文件并存
+   *  多标签（此前走 focusPanelTab 按类型复用第一个，每次打开都覆盖同一个） */
+  const openFileTabUnique = useCallback(
+    (rel: string, name: string) => {
+      if (!rootCwd) return;
+      const existing = getPanelTabs().tabs.find(
+        (t) => t.type === "file" && t.cwd === rootCwd && t.path === rel,
+      );
+      if (existing) {
+        activatePanelTab(existing.id);
+        return;
+      }
+      openPanelTab("file", {
+        cwd: rootCwd,
+        path: rel,
+        title: name,
+        focus: undefined,
+      });
+    },
+    [rootCwd],
+  );
 
   const handleSelect = useCallback(
     (value: string) => {
@@ -252,15 +315,9 @@ export const FileTreeTab: FC = () => {
       );
       if (!entry || entry.dir) return; // 文件夹只做展开/收起
       setSelected(value);
-      // focus:undefined 清掉该标签可能残留的消息快照上下文（复用同标签）
-      focusPanelTab("file", {
-        cwd: rootCwd,
-        path: value,
-        title: name,
-        focus: undefined,
-      });
+      openFileTabUnique(value, name);
     },
-    [rootCwd],
+    [rootCwd, openFileTabUnique],
   );
 
   const handleRowContextMenu = useCallback<RowContextMenuHandler>(
@@ -279,13 +336,7 @@ export const FileTreeTab: FC = () => {
   }, [rootCwd]);
 
   const openFile = (rel: string, name: string) => {
-    if (!rootCwd) return;
-    focusPanelTab("file", {
-      cwd: rootCwd,
-      path: rel,
-      title: name,
-      focus: undefined,
-    });
+    openFileTabUnique(rel, name);
   };
 
   /** 浏览器标签预览：file:// URL 走原生子 webview（browser.rs 放行 file 协议） */

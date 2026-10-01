@@ -359,6 +359,25 @@ describe("historyToUiMessages", () => {
     });
   });
 
+  test("压缩 checkpoint 落盘后用户发言：线插在它之前，不越过（live 同构）", () => {
+    // q1,a1 已落盘（seq 1-2）→ 压缩 checkpoint 落盘（seq=3）→ 用户发 q2（seq=4）
+    const rows = [
+      { seq: 1, agent: userMsg("q1") },
+      { seq: 2, agent: assistantMsg([{ type: "text", text: "a1" }]) },
+      { seq: 4, agent: userMsg("q2") },
+    ];
+    const messages = historyToUiMessages(rows, [
+      { seq: 3, summary: "S", tokensBefore: 900, throughSeq: 2, createdAt: "t", details: { generation: 1, strategy: "summary" } },
+    ]);
+    // 线独立成条，插在压缩后发言的 q2 之前（而非越过 q2 找宿主）
+    expect(messages.map((m) => m.id)).toEqual(["msg-1", "msg-2", "cmp-3", "msg-4"]);
+    expect(messages[2].parts[0]).toEqual({
+      type: "data-compaction",
+      id: "cmp-3",
+      data: { phase: "complete", generation: 1, tokensBefore: 900, summarized: true, summary: "S" },
+    });
+  });
+
   test("多次压缩按 seq 升序落位，fresh_window 记 summarized:false", () => {
     const rows = [
       { seq: 1, agent: userMsg("q1") },

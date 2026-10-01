@@ -240,18 +240,12 @@ export const TabBar: FC<{
   activeId: string | null;
   /** 右缘动作（收起入口 + 窗口控件） */
   actions?: ReactNode;
-  /** 动作里有贴窗口右缘的三键：去掉右 padding 让按钮对齐窗口边角 */
-  flushActions?: boolean;
-}> = ({ tabs, activeId, actions, flushActions }) => {
+}> = ({ tabs, activeId, actions }) => {
   const pillLayoutId = useId();
   return (
     <div
       data-tauri-drag-region={isTauri() ? "deep" : undefined}
-      className={cn(
-        "flex h-12 shrink-0 items-center gap-1 border-b-[0.5]",
-        flushActions ? "pr-0" : "pr-2",
-        "pl-2",
-      )}
+      className="flex h-12 shrink-0 items-center gap-1 border-b-[0.5] pr-2 pl-2"
     >
       <DropdownMenu>
         <DropdownMenuTrigger

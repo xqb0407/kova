@@ -43,7 +43,7 @@ import {
  * Shift+Tab 在选项间循环（与 Cursor / Claude Code 一致），下拉未展开时生效。
  */
 
-type PickerOption = {
+export type PickerOption = {
   key: string;
   label: string;
   description: string;
@@ -54,7 +54,8 @@ type PickerOption = {
   warning?: boolean;
 };
 
-const OPTIONS: PickerOption[] = [
+/** 五档选项（导出给 composer 的 + 菜单复用，两处形态不同、语义同一份） */
+export const OPTIONS: PickerOption[] = [
   {
     key: "ask",
     label: "问答",
@@ -99,7 +100,7 @@ const OPTIONS: PickerOption[] = [
 /** 当前档位对应的选项：ask/plan 各自独占一档，agent 档再按审批级别细分。
  *  写成按 mode 查表而不是 `mode === "plan" ? "plan" : approvalLevel` 的三元——
  *  后者会让新增的第三档塌陷成某个审批级别，UI 显示的档位和真实模式对不上 */
-function currentOption(snap: PlanningSnapshot): PickerOption {
+export function currentOption(snap: PlanningSnapshot): PickerOption {
   return (
     OPTIONS.find((o) => o.mode === snap.mode && o.mode !== "agent") ??
     OPTIONS.find((o) => o.mode === "agent" && o.approvalLevel === snap.approvalLevel) ??

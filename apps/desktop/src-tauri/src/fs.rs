@@ -261,6 +261,11 @@ pub async fn fs_touch(app: AppHandle, cwd: String, path: String) -> Result<Value
     tauri::async_runtime::spawn_blocking(move || {
         let root = resolve_root(&app, &cwd)?;
         let target = join_rel(&root, &path)?;
+        // 与 fs_write_file 同策：任务会话的产物目录推迟到轮初才落盘，文件树
+        // 在此之前就能右键「新建文件」，父目录得顺带建出来。
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|_| "write-failed")?;
+        }
         let r = std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)

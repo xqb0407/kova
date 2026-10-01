@@ -37,6 +37,44 @@ type CmComposerInputProps = {
 const DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/gu;
 const WHITESPACE_RE = /\s/u;
 
+/**
+ * 外部 → 输入框的文本插入桥。
+ * 触发弹层（`/` 与 `@`）走库内置的 selectItemOverride，但 composer 动作区的
+ * + 菜单（技能 / 专家 / 连接器）在弹层之外，库没有对应的公开入口；这些菜单项
+ * 要落在「光标处」而非追加到文末——用户可能已经把光标移到草稿中间改字。
+ * 这里登记已挂载的 EditorView，插入时优先取持有焦点的那一个（主 composer 与
+ * 逐条编辑 composer 同时在场时的判据），插入后归还焦点，光标停在插入内容之后。
+ */
+type ComposerViewHandle = {
+  view: EditorView;
+  hasFocus: () => boolean;
+};
+const composerViews = new Set<ComposerViewHandle>();
+
+/** 返回是否找到可插入的输入框（false = 输入框未挂载，调用方应放弃本次插入） */
+export function insertIntoComposer(text: string): boolean {
+  const handles = [...composerViews];
+  const target = handles.find((h) => h.hasFocus()) ?? handles[0];
+  const view = target?.view;
+  if (!view) return false;
+  const { from, to } = view.state.selection.main;
+  const doc = view.state.doc;
+  // 与两侧已有字符之间补一个空格：芯片紧贴汉字会被 DIRECTIVE_RE 的
+  // 「标签内不得含 ]」之外的边界吃掉，紧贴换行又会多出一段空白
+  const prefix = from > 0 && !WHITESPACE_RE.test(doc.sliceString(from - 1, from)) ? " " : "";
+  const suffix = to < doc.length && !WHITESPACE_RE.test(doc.sliceString(to, to + 1)) ? " " : "";
+  const insert = `${prefix}${text}${suffix}`;
+  view.dispatch({
+    changes: { from, to, insert },
+    selection: { anchor: from + insert.length },
+    scrollIntoView: true,
+    annotations: Transaction.userEvent.of("input.complete"),
+  });
+  view.focus();
+  return true;
+}
+
+
 /** lucide wrench 图标（芯片左侧小扳手，非 command 类型显示） */
 const WRENCH_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>';
@@ -333,6 +371,12 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       }),
     });
     viewRef.current = view;
+    // 登记到插入桥（+ 菜单等弹层之外的入口要用，见 insertIntoComposer）
+    const handle: ComposerViewHandle = {
+      view,
+      hasFocus: () => view.hasFocus,
+    };
+    composerViews.add(handle);
 
     if (autoFocus) {
       view.dispatch({ selection: { anchor: view.state.doc.length } });
@@ -341,6 +385,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
 
     return () => {
       destroyed = true;
+      composerViews.delete(handle);
       view.destroy();
       viewRef.current = null;
     };

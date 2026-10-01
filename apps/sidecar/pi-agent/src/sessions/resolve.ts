@@ -46,7 +46,7 @@ import { buildSchedulerTools } from "../automation/mgmt-tools";
 import { readCompaction, readTranscript, scanTranscript } from "./transcript";
 import type { PendingInteraction } from "pi-protocol";
 import { restoreUnsettled } from "./pending-interactions";
-import { checkpointGeneration, contextInfoFrom, projectRestoreContext, type ContextInfoResult } from "../agent/context";
+import { checkpointGeneration, contextInfoFrom, projectRestoreContext, setLeadingSystemMessage, type ContextInfoResult } from "../agent/context";
 import { isPromptActive, onAgentEvent, send } from "../protocol/stream";
 import {
   enforceResidency,
@@ -123,6 +123,10 @@ async function persistSessionCwd(sessionId: string, cwd: string): Promise<void> 
 async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promise<void> {
   run.persistedCwd = cwd;
   run.cwd = cwd || taskSessionCwd(run.sessionId);
+  // 解绑（清空工作目录）会回落到任务工作区，而回落目标此刻可能尚未落盘
+  // （建目录已推迟到轮初）。会话还在跑、工具随后的每一次文件操作都要它存在，
+  // 故这里补建——自选了工作目录的会话内部判断自动跳过。
+  ensureTaskSessionDir(run);
   // 重建工具须沿用原 threadId：todo/question 工具按 threadId 归属，误传 sessionId 会挂错 key
   run.baseTools = buildTools(run.cwd, threadId, () => run.designTheme ?? null, () => run.designThemeLoads);
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
@@ -130,11 +134,14 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
   run.agent.state.tools = toolsForMode(run);
   // 换了工作区：技能目录随 cwd 变，先预热新缓存再重组提示词
   await ensureSkillsLoaded(run.cwd);
-  run.agent.state.systemPrompt = composeModeSystemPrompt(
-    run.mode,
-    run.cwd,
-    run.agent.state.model,
-    run.designTheme,
+  setLeadingSystemMessage(
+    run.agent.state.messages,
+    composeModeSystemPrompt(
+      run.mode,
+      run.cwd,
+      run.agent.state.model,
+      run.designTheme,
+    ),
   );
   await persistSessionCwd(run.sessionId, cwd);
 }
@@ -217,8 +224,8 @@ export async function reloadSkills(): Promise<void> {
   await Promise.all([...cwds].map((c) => ensureSkillsLoaded(c || undefined)));
   for (const run of running.values()) {
     const prompt = composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme);
-    run.agent.state.systemPrompt = prompt;
-    if (run.loopContext) run.loopContext.systemPrompt = prompt;
+    setLeadingSystemMessage(run.agent.state.messages, prompt);
+    if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
   }
 }
 /** 复刻 pi-agent-core createMutableAgentState 的 DEFAULT_MODEL 占位（core 未导出）：
@@ -295,19 +302,36 @@ function taskSessionSeg(sessionId: string): string | null {
 }
 
 /**
- * 无目录任务会话的执行目录：<任务工作区根>/<sessionId>，惰性 mkdir。
+ * 无目录任务会话的执行目录：<任务工作区根>/<sessionId>，**只算路径、不建目录**。
  * 每个全局会话独享一个目录：产物互不混堆、互不覆盖，删会话可连目录一起收走；
  * 桌面端「我的文件」与产物预览以同源规则（根 + sessionId）定位。
  * 绝不落家目录本体：agent 的文件读写不该散在 home，工作区作用域配置
  * （<cwd>/.kova/*）也不能与全局层重叠——全局记忆/子智能体/MCP 恰好都在
  * ~/.kova/*，用家目录兜底会让任务会话把它们同时当作"工作区层"再加载一遍。
+ *
+ * 刻意不在这里 mkdir：会话是被**解析**出来的，不是被**使用**出来的。启动时
+ * 草稿线程也会走一遍新建分支（此刻还没有任何东西要落盘），无条件建目录会让
+ * 每次启动都留一个空壳目录——「我的文件」面板里那堆 UUID 夹就是这么来的
+ * （实测 dev 侧已积 219 个目录、其中 157 个全空）。真正的落盘推迟到
+ * ensureTaskSessionDir。
  */
 function taskSessionCwd(sessionId: string): string {
   // 兜底转写只可能来自被篡改的 IPC（真值恒为 UUID）：加前缀保证单段、无穿越
   const seg = taskSessionSeg(sessionId) ?? `_${sessionId.replace(/[^A-Za-z0-9._-]/g, "_")}`;
-  const dir = join(taskWorkspaceBase(), seg);
-  mkdirSync(dir, { recursive: true });
-  return dir;
+  return join(taskWorkspaceBase(), seg);
+}
+
+/**
+ * 任务工作区目录的真正落盘点：这一轮确实要开始跑、agent 可能往里写产物时调用。
+ * 幂等（recursive），重复调用无副作用。
+ *
+ * 调用点必须自我设防：只有当 run 的 cwd **就是**任务目录时才建。用户自选了
+ * 工作目录的会话（persistedCwd 非空）不该在这里凭空多出一个目录，而它们的
+ * cwd 恰好不等于 taskSessionCwd，故天然被这一判断挡掉。
+ */
+export function ensureTaskSessionDir(run: { cwd: string; sessionId: string }): void {
+  if (run.cwd !== taskSessionCwd(run.sessionId)) return;
+  mkdirSync(run.cwd, { recursive: true });
 }
 
 /**
@@ -632,6 +656,10 @@ export async function resolveSession(
     },
   });
   run.agent = agent;
+  // persistedSeq 按 state.messages 索引对齐：0.99 起 Agent 构造时在转录头
+  // unshift leading system 消息（提示词进转录），恢复/新建两侧都以构造后的
+  // 实际长度为准，避免首条错位造成尾部重复或漏盘（system 行落盘时跳过）
+  run.persistedSeq = agent.state.messages.length;
 
   const { definitions, diagnostics } = await loadSubagentDefinitions({ cwd: run.cwd });
   for (const d of diagnostics) logErr("subagent:", d);

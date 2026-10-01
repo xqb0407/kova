@@ -135,7 +135,10 @@ describe("sessions：LRU 驻留上限", () => {
     const restored = await resolveSession("lru-restore", sessionId, tmp);
     expect(restored.sessionId).toBe(sessionId);
     expect(running.has("lru-restore")).toBe(true);
-    expect(restored.agent.state.messages.length).toBe(0);
+    // 0.99 起转录头 unshift leading system 消息：空会话 = 1 条 system + 0 条历史
+    const restoredMessages = restored.agent.state.messages;
+    expect(restoredMessages.length).toBe(1);
+    expect((restoredMessages[0] as { role?: string }).role).toBe("system");
   });
 });
 

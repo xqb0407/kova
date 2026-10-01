@@ -8,7 +8,6 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import { fmtTokens } from "@/lib/model/model-format";
-import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { useManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
 import { Marker, MarkerContent, MarkerIcon } from "../ui/marker";
 
@@ -22,7 +21,8 @@ import { Marker, MarkerContent, MarkerIcon } from "../ui/marker";
  *   进历史消息流（sidecar transcript.ts）。
  * - 手动压缩（context 弹层）：不走消息流，用 ManualCompactionTail 即时渲染
  *   在列表尾部并持续显示，重新装载历史后由重建的分隔线接管。
- * 完成态带 summary 时在分隔线下方提供「压缩摘要」折叠块。
+ * 消息流里只保留分隔线 marker；summary 不在这里渲染——由右侧面板「活动」
+ * 标签的「压缩摘要」小节汇总展示（agent-panel/compaction-section.tsx）。
  */
 
 type CompactionData = {
@@ -35,13 +35,6 @@ type CompactionData = {
 };
 
 
-
-/** 压缩摘要：与 assistant 消息同一套 MarkdownText 渲染在分隔线下方 */
-const CompactionSummary: FC<{ summary: string }> = ({ summary }) => (
-  <div className="text-foreground/80 rounded-lg px-3 py-2.5 wrap-break-word">
-    <MarkdownText text={summary} />
-  </div>
-);
 
 export function CompactionBanner({ data }: { data: CompactionData }) {
   // 兼容缺省：无 phase 视为完成态
@@ -85,22 +78,14 @@ export function CompactionBanner({ data }: { data: CompactionData }) {
     .filter(Boolean)
     .join(" · ");
   return (
-    <div
-      data-slot="compaction-complete"
-      // pt-3：上方相邻 assistant 消息的操作栏是 -mb-7.5 悬浮区（图标底缘 ~23px），
-      // 消息组 gap-y-6 (24px) 不够，加缓冲避免分隔线视觉上压住操作栏
-      className="flex flex-col gap-1.5 pt-3"
-    >
-      <Marker variant="separator">
-        <MarkerIcon>
-          <ArchiveRestoreIcon className="size-3.5 shrink-0" />
-        </MarkerIcon>
-        <MarkerContent>
-          上下文已压缩{details && `（${details}）`}
-        </MarkerContent>
-      </Marker>
-      {data.summary && <CompactionSummary summary={data.summary} />}
-    </div>
+    <Marker variant="separator">
+      <MarkerIcon>
+        <ArchiveRestoreIcon className="size-3.5 shrink-0" />
+      </MarkerIcon>
+      <MarkerContent>
+        上下文已压缩{details && `（${details}）`}
+      </MarkerContent>
+    </Marker>
   );
 }
 
@@ -135,7 +120,7 @@ export const ManualCompactionTailAfter: FC<{
   return (
     <>
       {children}
-      <div className="mx-auto w-full max-w-(--thread-max-width) px-2">
+      <div className="mx-auto w-full max-w-(--thread-max-width) px-2 my-2">
         <CompactionBanner data={marker.data} />
       </div>
     </>

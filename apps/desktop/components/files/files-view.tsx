@@ -407,7 +407,7 @@ export const FilesView: FC = () => {
       {/* min-h-full 而非 h-full：h-full 固定高度会让 flex 在内容超高时压缩子项；
           列表容器自带 overflow-hidden（最小收缩尺寸按 0 算）会被直接压扁裁掉，
           外层永远无滚动条。min-h-full 短内容仍撑满、长内容自然溢出可滚 */}
-      <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-8 py-8 lg:px-12">
+      <div className="mx-auto flex min-h-full w-full max-w-7xl flex-col px-8 py-8 lg:px-12">
         {/* 页头 */}
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">我的文件</h1>

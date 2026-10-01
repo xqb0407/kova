@@ -30,7 +30,6 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 if-addrs = "0.13"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-keyring = "3"
 aes-gcm = "0.10"
 log = "0.4"
 chrono = "0.4"
@@ -45,7 +44,10 @@ hex = "0.4"
 pbkdf2 = "0.12"
 # Unix 侧杀进程组（killpg）：bash 自立进程组后，超时/取消要连孙进程一起收
 libc = "0.2"
-headless_chrome = { version = "1.0.10", default-features = false }
+# offline 是 headless_chrome 唯一的默认 feature，且必须显式保留：其 build.rs
+# 走 auto_generate_cdp::init()，关掉 offline 后会改为构建期从 raw.githubusercontent.com
+# 拉 CDP 协议 json（compile.rs:1293），墙内必超时并 panic 掉整个 tauri build
+headless_chrome = { version = "1.0.10", features = ["offline"] }
 
 [profile.release]
 panic = "abort"

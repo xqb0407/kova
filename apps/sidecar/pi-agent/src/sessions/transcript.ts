@@ -41,6 +41,82 @@ export type CompactionRow = {
   details?: unknown;
 };
 
+/* --------------------- 内容块形状归一（畸形块的唯一闸口） ---------------------
+ * 一条 {type:"text"}（text 缺失，JSON 里就是没有这个键）的块会毒死整条会话：
+ * 它一旦进了 state.messages，每次请求前的上下文估算（pi-ai estimate.js 的
+ * block.text.length）就抛 TypeError，模型请求根本发不出去；历史重建路径上的
+ * block.text.trim() 同理，一条脏行让 get_history 整个失败。JSON.stringify 会把
+ * undefined 字段直接抹掉，所以脏块一旦落盘，文件里看起来只是"少了个字段"，
+ * 事后极难定位。
+ *
+ * 归一化放在三个点各过一遍（都是幂等的）：
+ *   1. 落盘前（persist）——脏块从此不写进文件；
+ *   2. 读回重建前（scanTranscript）——存量脏数据照样能打开；
+ *   3. 恢复模型上下文前（projectRestoreContext）——旧会话续聊不被毒。
+ */
+
+/** 占位文本：说明发生了什么、当前能否继续，不编造内容 */
+const MALFORMED_BLOCK_NOTE =
+  "[malformed content block: this block was missing its required field and has been " +
+  "repaired during session load. Treat it as no output; the underlying tool result was lost.]";
+
+type AnyBlock = { type?: unknown } & Record<string, unknown>;
+
+/** 单个块的形状校验：合法的原样返回，非法的换成可读的 text 块或丢弃 */
+function normalizeBlock(block: AnyBlock): AnyBlock | null {
+  if (!block || typeof block !== "object") return null;
+  switch (block.type) {
+    case "text":
+      return typeof block.text === "string"
+        ? block
+        : { type: "text", text: MALFORMED_BLOCK_NOTE };
+    case "thinking":
+      return typeof block.thinking === "string"
+        ? block
+        : { type: "text", text: MALFORMED_BLOCK_NOTE };
+    case "image":
+      // data 缺失不会崩，但会序列化成 data:image/png;base64,undefined 发给
+      // provider（必然 400），所以整块丢掉而不是补一个假图
+      return typeof block.data === "string" && block.data.length > 0
+        ? block
+        : null;
+    case "toolCall":
+      return typeof block.name === "string" ? block : null;
+    default:
+      return block;
+  }
+}
+
+/** 消息 content 归一：字符串原样；块数组逐块校验，非法块降级/丢弃。
+ *  一块都没动时返回**原数组**（引用不变）——调用方据此判定「无需重建对象」，
+ *  正常会话（无畸形块）因此零分配、零对象 churn。 */
+export function normalizeMessageContent(content: unknown): unknown {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return [];
+  let changed = false;
+  const out: AnyBlock[] = [];
+  for (const raw of content) {
+    const block = normalizeBlock(raw as AnyBlock);
+    if (block === null || block !== raw) changed = true;
+    if (block !== null) out.push(block);
+  }
+  return changed ? out : content;
+}
+
+/** 消息级归一：返回新对象（不改原对象，避免污染运行中的 state.messages） */
+export function normalizeMessage<T>(message: T): T {
+  const msg = message as { role?: unknown; content?: unknown };
+  if (!msg || typeof msg !== "object" || !("content" in msg)) return message;
+  const content = normalizeMessageContent(msg.content);
+  if (content === msg.content) return message;
+  return { ...msg, content } as T;
+}
+
+/** 批量归一（重建/恢复入口用；幂等，形状已对的原样返回） */
+export function normalizeMessages<T>(messages: readonly T[]): T[] {
+  return messages.map((m) => normalizeMessage(m));
+}
+
 /** 转录文件一次遍历的结果（迭代 4：消息行与压缩检查点行同遍分流，
  * get_history 不再读两遍文件；M2：挂起交互行配对出未结算清单，§4） */
 export type TranscriptScan = {
@@ -104,7 +180,7 @@ export function scanTranscript(sessionId: string): TranscriptScan {
       }
       if (typeof row?.seq !== "number") continue;
       if (row.type === "message" && row.agent) {
-        bySeq.set(row.seq, { ui: row.ui ?? null, agent: row.agent });
+        bySeq.set(row.seq, { ui: row.ui ?? null, agent: normalizeMessage(row.agent) });
       } else if (
         row.type === "compaction" &&
         typeof row.summary === "string" &&
@@ -310,6 +386,55 @@ function userUiParts(
   return parts.length ? { text, parts } : null;
 }
 
+/** 崩溃轮次的错误占位 part。
+ *
+ * 空 content 的 assistant 消息（stopReason "error"，由 setupErrorMessage 合成）
+ * 以前会被 `if (!parts.length) return null` 整个丢掉：页面上什么都不渲染，
+ * 刷新后连转录重建也跳过，崩溃轮次凭空消失；折叠面板里也是空的，展开什么都没有。
+ * 补一个与直播流同名同形的 data-errorAttribution part（pi-transport 错误分支
+ * enqueue 的就是它），两条路径共用同一个渲染出口。
+ */
+function assistantErrorPart(
+  msg: Extract<Message, { role: "assistant" }>,
+): UIMessage["parts"][number] {
+  const message =
+    typeof (msg as { errorMessage?: unknown }).errorMessage === "string"
+      ? ((msg as { errorMessage: string }).errorMessage || "").slice(0, 600)
+      : "本回合因错误中断";
+  return {
+    type: "data",
+    name: "errorAttribution",
+    id: "errorAttribution",
+    data: {
+      code: "turn_error",
+      source: "runtime",
+      retryable: false,
+      message,
+    },
+  } as unknown as UIMessage["parts"][number];
+}
+
+/** assistant 消息的收尾标记：错误轮补占位、其余照旧；返回 parts 是否该成消息 */
+function finishAssistantParts(
+  parts: UIMessage["parts"],
+  msg: Extract<Message, { role: "assistant" }>,
+): boolean {
+  // 中止的残缺回复：补「已停止」分隔线 part（与直播流 data-stopped 同构，
+  // 刷新后标记不丢）
+  if (msg.stopReason === "aborted") {
+    parts.push({
+      type: "data-stopped",
+      id: "stopped",
+      data: {},
+    } as UIMessage["parts"][number]);
+  }
+  // 崩溃轮次：错误占位 part 也保证「零内容轮」仍是一条可见消息，而不是消失
+  if (msg.stopReason === "error") {
+    parts.push(assistantErrorPart(msg));
+  }
+  return parts.length > 0;
+}
+
 /** pi-ai Message -> UIMessage（ui 字段快照；转换范围：text/reasoning/用户图片） */
 export function toUiMessage(msg: Message, seq: number): UIMessage | null {
   if (msg.role === "user") {
@@ -327,16 +452,7 @@ export function toUiMessage(msg: Message, seq: number): UIMessage | null {
         parts.push({ type: "reasoning", text: c.thinking, state: "done" });
       }
     }
-    // 中止的残缺回复：补「已停止」分隔线 part（与直播流 data-stopped 同构，
-    // 刷新后标记不丢）
-    if (msg.stopReason === "aborted") {
-      parts.push({
-        type: "data-stopped",
-        id: "stopped",
-        data: {},
-      } as UIMessage["parts"][number]);
-    }
-    if (!parts.length) return null;
+    if (!finishAssistantParts(parts, msg)) return null;
     return { id: `msg-${seq}`, role: "assistant", parts };
   }
   return null; // toolResult 等不产生独立 UI 消息
@@ -370,9 +486,11 @@ function compactionDividerPart(row: CompactionRow) {
  * data-image part，紧跟对应 tool part 之后——与 live 流的 chunk 顺序同构。
  *
  * compactions 提供时在消息流里重建「上下文已压缩」分隔线（刷新后 live 横幅
- * 不丢）：阈值/溢出压缩的宿主 = 边界后第一条 assistant 消息（与 live 流分隔线
- * 位于该轮回答气泡顶部一致）；其后无宿主（手动压缩的典型情形）则独立成一条
- * 仅含分隔线 part 的 assistant 消息，落在边界之后。
+ * 不丢）：以 checkpoint 落盘序 cp.seq（与消息 seq 共用单调编号）分流边界后
+ * 消息——seq < cp.seq 的（轮中途压缩时已在转录）越过去挂线到首条 assistant
+ * 顶部（与 live 分隔线位于该轮回答气泡顶部一致）；seq >= cp.seq 的（压缩
+ * checkpoint 落盘后用户新发言）绝不越过，独立分隔线消息插在它之前——与 live
+ * 流（线在压缩完成瞬间出现，其后消息都在线下方）保持同构。
  */
 export function historyToUiMessages(
   rows: { agent: Message; seq?: number }[],
@@ -428,7 +546,7 @@ export function historyToUiMessages(
           openTools.set(c.id, { part, host: parts });
         }
       }
-      if (!parts.length) continue;
+      if (!finishAssistantParts(parts, msg)) continue;
       messages.push({ id: `msg-${seq}`, role: "assistant", parts, metadata });
       srcSeqs.push(seq);
       continue;
@@ -478,7 +596,14 @@ export function historyToUiMessages(
     const part = compactionDividerPart(cp);
     let host = -1;
     for (let j = 0; j < messages.length; j++) {
-      if (srcSeqs[j] > cp.throughSeq && messages[j].role === "assistant") {
+      if (srcSeqs[j] <= cp.throughSeq) continue;
+      // 边界后消息按与 checkpoint 落盘序（cp.seq 与消息 seq 共用单调编号）分流：
+      // - seq < cp.seq：checkpoint 落盘前已在转录（轮中途压缩的常见情形，
+      //   live 线在该轮回答顶部）→ 越过 user 消息找首条 assistant 挂线
+      // - seq >= cp.seq：checkpoint 落盘后新增（压缩后用户先发言）→ 线绝不
+      //   越过——live 线在压缩完成瞬间出现，其后消息不可能排在线上方
+      if (srcSeqs[j] >= cp.seq) break;
+      if (messages[j].role === "assistant") {
         host = j;
         break;
       }
@@ -489,7 +614,7 @@ export function historyToUiMessages(
     }
     let pos = messages.length;
     for (let j = 0; j < messages.length; j++) {
-      if (srcSeqs[j] > cp.throughSeq) {
+      if (srcSeqs[j] >= cp.seq) {
         pos = j;
         break;
       }
@@ -589,16 +714,27 @@ export async function persist(
   const lines: string[] = [];
   for (let i = run.persistedSeq; i < messages.length; i++) {
     const agent = messages[i] as Message;
+    // leading system 消息不落盘（0.99 起提示词进转录）：恢复时由
+    // initialState.systemPrompt 重建并 unshift，落盘反而会让恢复链拿到
+    // 过期提示词（热换只改内存首条，已落盘的旧行不会重写）
+    if ((agent as { role?: string }).role === "system") continue;
     // 每条 agent 消息都落盘（含纯工具调用与 toolResult）：恢复模型上下文需要完整
     // 的 toolCall/toolResult 对，前端历史重建也需要工具部件
     const seq = run.jsonlSeq++;
-    const ui = toUiMessage(agent, seq);
-    lines.push(JSON.stringify({ type: "message", seq, ui, agent }));
+    // 归一后再落盘：脏块（text/data 缺失）在文件里只是"少个字段"，事后无法
+    // 定位，且每次请求前的上下文估算都会撞上它——绝不能写进去
+    const safe = normalizeMessage(agent);
+    const ui = toUiMessage(safe, seq);
+    lines.push(JSON.stringify({ type: "message", seq, ui, agent: safe }));
   }
   if (lines.length) appendFileSync(file, lines.join("\n") + "\n");
   run.persistedSeq = messages.length;
 
-  const first = messages[0] as Message | undefined;
+  // 0.99 起首条是 leading system 消息：标题取第一条 user 消息（行为同旧版，
+  // 旧版转录首条即 user）
+  const first = messages.find((m) => (m as { role?: string }).role === "user") as
+    | Message
+    | undefined;
   const firstText =
     first && first.role === "user"
       ? typeof first.content === "string"

@@ -138,15 +138,26 @@ export const PromptQueueBar: FC = () => {
     }
   };
 
-  if (!threadId || (snapshot.items.length === 0 && steered.length === 0)) {
-    return null;
-  }
+  // 容器常驻 + grid rows 0fr↔1fr 高度过渡：队列条目挂载/卸载（尤其调度时
+  // 气泡插入与条目卸载跨帧）不再让 sticky footer 高度瞬变、把消息流瞬推
+  // 一下（滚动闪跳）。条目本身的淡入由卡片 animate-in 负责，消失走直接移除。
+  const hasContent = snapshot.items.length > 0 || steered.length > 0;
+  if (!threadId) return null;
 
   return (
     <div
-      className="mb-2 flex flex-col gap-1.5"
+      className="grid transition-[grid-template-rows] duration-200 ease-out"
+      style={{ gridTemplateRows: hasContent ? "1fr" : "0fr" }}
       data-slot="aui-prompt-queue-bar"
+      aria-hidden={!hasContent}
     >
+      <div className="min-h-0 overflow-hidden">
+        <div
+          className={cn(
+            "flex flex-col gap-1.5",
+            hasContent && "mb-2",
+          )}
+        >
       {/* 已并入当前回复：折叠为一条（多条并入不越堆越长），宿主轮流收尾后消失 */}
       {steered.length > 0 && steered[0] && (
         <div
@@ -215,6 +226,8 @@ export const PromptQueueBar: FC = () => {
           </div>
         </div>
       ))}
+        </div>
+      </div>
     </div>
   );
 };

@@ -31,8 +31,12 @@ import {
   useAskNeedsWork,
 } from "@/lib/pi/pi-ask-needs-work";
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
-import { cancelQueueItem, useQueueSnapshot } from "@/lib/pi/pi-queue";
-import { markSteerNextSend } from "@/lib/pi/pi-steer-intent";
+import {
+  cancelQueueItem,
+  useQueueSnapshot,
+  markInboundGate,
+} from "@/lib/pi/pi-queue";
+import { markSteerNextSend, peekSteerIntent } from "@/lib/pi/pi-steer-intent";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
 import { usePendingQuestions } from "@/lib/pi/pi-question";
@@ -129,6 +133,9 @@ const ImeEnterGuard: FC<{
 }> = ({ children, send, interceptSend, noModel, noModelHint }) => {
   const ref = useRef<HTMLDivElement>(null);
   const aui = useAui();
+  const gateThreadId = useAuiState((s) => s.threads.mainThreadId);
+  const gateThreadRef = useRef<string | null>(null);
+  gateThreadRef.current = gateThreadId;
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -170,6 +177,16 @@ const ImeEnterGuard: FC<{
         if (noModel && noModelHint && aui.composer.getState().canSend) {
           notifyNoModelSelected(noModelHint);
           return;
+        }
+        // 忙线程键盘发送预期入队：置渲染守门 gate（早于框架乐观 append），
+        // steer 意图（已标记）除外——并入消息要即时显示
+        const tid = gateThreadRef.current;
+        if (
+          tid &&
+          aui.thread.getState().isRunning &&
+          !peekSteerIntent(tid)
+        ) {
+          markInboundGate(tid);
         }
         aui.composer.send();
       }
@@ -753,6 +770,7 @@ const AdaptiveSendButton: FC = () => {
         aria-label="Send message"
         onClick={(e) => {
           if (e.altKey && threadId) markSteerNextSend(threadId);
+          else if (threadId) markInboundGate(threadId);
           aui.composer.send();
         }}
       >
@@ -984,7 +1002,8 @@ const ComposerAction: FC = () => {
     // 避免固有宽度撑破消息流（超长内容一律走截断，不靠横向滚动）
     <div className="aui-composer-action-wrapper relative flex flex-wrap items-center justify-between gap-y-1.5">
       <div className="flex items-center gap-1">
-        <AddAttachmentButton />
+        {/* 「+」菜单：添加文件 / 模式 / 专家 / 技能 / 连接器（左栏分类 + 右栏条目） */}
+        <ComposerPlusMenu />
         <ModePicker />
         {/* design 档独有的会话级主题胶囊（内部自判模式，非 design 不渲染） */}
         <DesignThemePicker />

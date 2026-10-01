@@ -145,6 +145,15 @@ export function devMarketplaceDir(): string {
  */
 export const LOCAL_MKT_ID = "local";
 export const LOCAL_MKT_NAME = "本地安装";
+
+/**
+ * 「内置插件」伪市场：随 app 分发的首方插件包（内嵌 zip，装载与版本化重同步
+ * 见 ./builtin.ts）物化到 cache/builtin/<name>/，身份 `name@builtin`。
+ * 不在登记表（不参与 add/remove/refresh）、不可卸载（可禁用）、更新随 app；
+ * 同名让位：其他市场装了同名插件时，内置条目不进合并链（见 store.activePlugins）。
+ */
+export const BUILTIN_MKT_ID = "builtin";
+export const BUILTIN_MKT_NAME = "内置插件";
 // ---------------------------------------------------------------------------
 // 清单解析与生态兼容规范化
 // ---------------------------------------------------------------------------

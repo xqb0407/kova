@@ -80,8 +80,51 @@ function browserTool(
         "",
         params as Record<string, unknown>,
         signal ?? undefined,
+        threadId,
       );
-      return textResult(data.output);
+      // browser_shot 的成功信封是 {base64, mimeType, bytes, width, height, url}
+      // ——**没有 output 字段**（Rust browser_shot.rs 只回图片载荷）。早先这里
+      // 无条件 textResult(data.output)，于是 data.output 为 undefined，写进转录
+      // 的是 {type:"text", text:undefined}，JSON 序列化后变成没有 text 字段的
+      // 裸块：下一轮请求前 pi-ai 的上下文估算（estimate.js 的 block.text.length）
+      // 直接抛 TypeError，整条会话从此每轮都起不来。像素照必须走 image 块，
+      // 与 screenshot-tool.ts 同形。
+      if (typeof data.base64 === "string" && typeof data.mimeType === "string") {
+        const sizeNote =
+          typeof data.width === "number" &&
+          typeof data.height === "number" &&
+          data.width > 0 &&
+          data.height > 0
+            ? `${data.width}×${data.height}, `
+            : "";
+        const kb =
+          typeof data.bytes === "number"
+            ? `${Math.max(1, Math.round(data.bytes / 1024))} KB`
+            : "未知大小";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `页面像素照（${sizeNote}JPEG ${kb}）`,
+            },
+            {
+              type: "image" as const,
+              data: data.base64,
+              mimeType: data.mimeType,
+            },
+          ],
+          details: { bytes: data.bytes },
+        };
+      }
+      // 非图片工具的正常文本回程；宿主信封异常（缺 output）时兜底为可读文本，
+      // 绝不让 undefined 进 text 块——畸形块会毒死后续每一轮请求。
+      if (typeof data.output === "string") return textResult(data.output);
+      return textResult(
+        `host tool "${name}" returned no readable output ` +
+          `(fields: ${Object.keys(data).join(", ") || "none"}). ` +
+          `The call may have succeeded but its result was not delivered. ` +
+          `Do not retry blindly — verify the current state first.`,
+      );
     },
   };
 }

@@ -216,7 +216,6 @@ export const Header: FC<{
   // 标题栏后由 WindowControls 接管，网页端无窗口 chrome）
   const desktop = isTauri();
   const mac = desktop && isMacPlatform();
-  const winControls = desktop && !mac;
   // 重命名任务：菜单入口 + dialog 开合；全新未落库会话 rename 会抛错，禁用入口
   const aui = useAui();
   const [renameOpen, setRenameOpen] = useState(false);
@@ -247,9 +246,7 @@ export const Header: FC<{
         // 中间出现"按钮凭空消失"的空窗
         "flex h-12 shrink-0 items-center gap-2 transition-[padding] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
         !pageMode && "border-b-[0.5]",
-        // Windows 三键贴窗口右上角，去掉右 padding；停靠态三键在面板顶栏、
-        // 其余环境保持 pr-4
-        winControls && !docked ? "pr-0" : "pr-4",
+        "pr-4",
         sidebarCollapsed && mac ? "md:pl-24" : "pl-4",
       )}
     >
@@ -320,20 +317,17 @@ export const Header: FC<{
         </>
       )}
       {/* Agent 面板开关：面板完全收没才出现（展开时收起入口在面板顶栏），
-          有在途活动则亮角标。按钮槽常驻挂载，宽度+透明度 200ms 过渡
-          （对齐左侧栏折叠按钮槽）：收起动画播完按钮"长出来"、展开时
-          平滑收进槽里，不再生硬地瞬间弹出/消失；隐藏时 inert 防聚焦误点 */}
+          有在途活动则亮角标。点击展开的瞬间 docked 同帧翻转（base.tsx
+          panelDocked = !compact && !panelGone）：窗口控件卸载、面板开始滑入、
+          聊天列开始收窄 —— 右上区域已有多重变化叠加，按钮再拖 150ms 淡出/
+          300ms 槽位收缩只会让位移感更重。直接消失（无过渡）才是最干净的
+          交接：一帧内完成全部状态切换，无中间态可闪；隐藏时 inert 防聚焦 */}
       <div className="ml-auto flex shrink-0 items-center">
-        <div
-          inert={pageMode || !showPanelToggle}
-          aria-hidden={pageMode || !showPanelToggle}
-          className={cn(
-            "overflow-hidden transition-[width,opacity] duration-200",
-            pageMode || !showPanelToggle ? "w-0 opacity-0" : "w-8",
-          )}
-        >
-          <PanelToggleButton onToggle={onTogglePanel} />
-        </div>
+        {pageMode || !showPanelToggle ? null : (
+          <div className="w-8 shrink-0">
+            <PanelToggleButton onToggle={onTogglePanel} />
+          </div>
+        )}
       </div>
       {/* 窗口控制固定在窗口右上角；停靠态右缘是面板，由面板顶栏接管渲染 */}
       {docked ? null : <WindowControls />}

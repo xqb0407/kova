@@ -181,7 +181,8 @@ export type ToolRowProps = {
   output?: string;
   /** 展开区内容覆写（edit/write 用 @pierre/diffs 视图替掉原始输出文本） */
   expandedContent?: ReactNode;
-  /** 运行中（还没有输出）时，行下方显示这个滚动文本预览，行上主/次文本隐去 */
+  /** 运行中（还没有输出）的流式输出预览：reasoning 同款折叠，点开展开后
+   *  以滚动文本呈现（底部吸附实时跟随） */
   preview?: ReactNode;
   /** 展开内容顶部的命令行（终端用：`$ 完整命令`），与输出共用一个框 */
   expandedHeader?: ReactNode;
@@ -212,7 +213,11 @@ export const ToolRow: FC<ToolRowProps> = ({
   // 行只剩摘要（保留 ±N 统计与开面板动作）；详情走右侧面板
   const compact = useAppMode() === "work" || useIsAskMode();
   const hasOutput = !compact && !!output;
-  const canExpand = hasOutput || (!compact && expandedContent != null);
+  // 可展开 = 结束后有输出/自定义展开区；或运行中有流式预览（reasoning 同款
+  // 折叠：默认收起，点开实时滚动看输出）——运行中同样可展开查看
+  const canExpand =
+    hasOutput ||
+    (!compact && (expandedContent != null || (!!preview && !!running)));
   // 展开内容顶部已有 `$ 命令` 时，行上的命令文本收起（终端行展开后只剩「终端」+箭头）
   const hideTexts = open && !!expandedHeader;
 
@@ -227,7 +232,7 @@ export const ToolRow: FC<ToolRowProps> = ({
       {fileIcon ? (
         <span className="inline-flex shrink-0 items-center">{fileIcon}</span>
       ) : null}
-      {!hideTexts && !preview && primary ? (
+      {!hideTexts && primary ? (
         primaryAsLink && onOpenPanel ? (
           // 标题即面板入口：默认观感同普通文本，悬浮出超链接态；
           // 点击截在 span 内（stopPropagation），不触发整行的展开/收起
@@ -256,12 +261,12 @@ export const ToolRow: FC<ToolRowProps> = ({
       ) : null}
       {/* secondary 限宽 45%：长摘要（如技能正文预览、文件行的长目录）不再
           挤掉 primary——主文本优先保位，次文本自己截断 */}
-      {!hideTexts && !preview && secondary ? (
+      {!hideTexts && secondary ? (
         <span className="min-w-0 max-w-[45%] truncate text-xs opacity-60">
           {secondary}
         </span>
       ) : null}
-      {!hideTexts && !preview && stats ? (
+      {!hideTexts && stats ? (
         <span className="flex shrink-0 items-center gap-1 font-mono text-xs tabular-nums">
           {stats.added > 0 ? (
             <span className="text-emerald-600 dark:text-emerald-400">
@@ -285,9 +290,10 @@ export const ToolRow: FC<ToolRowProps> = ({
     </>
   );
 
-  // 展开框：顶部可选命令行（$ 完整命令）+ 下方输出；输出独立滚动，命令行常驻
+  // 展开框：顶部可选命令行（$ 完整命令）+ 下方输出；样式对齐运行中的滚动
+  // 预览（灰底无边框），输出限高折叠（内部滚动），命令行常驻
   const outputBox = (
-    <div className="bg-background border rounded-md  px-3 py-2 font-mono text-xs leading-relaxed">
+    <div className="bg-muted/30 rounded-md px-3 py-2 font-mono text-xs leading-relaxed">
       {expandedHeader ? (
         <div className="text-foreground/90 break-all whitespace-pre-wrap">
           {expandedHeader}
@@ -296,7 +302,7 @@ export const ToolRow: FC<ToolRowProps> = ({
       {output ? (
         <pre
           className={cn(
-            "max-h-64 overflow-auto whitespace-pre-wrap",
+            "max-h-40 overflow-auto whitespace-pre-wrap",
             expandedHeader && "mt-2  pt-2",
             failed ? "text-destructive" : "text-muted-foreground",
           )}
@@ -307,7 +313,15 @@ export const ToolRow: FC<ToolRowProps> = ({
     </div>
   );
 
-  // 有输出/自定义展开内容：整行是展开触发器（Collapsible），开面板动作挪到行尾悬浮小按钮
+  // 运行中的展开区：流式输出滚动预览（底部吸附），reasoning 同款折叠交互
+  const previewBox = preview ? (
+    <ScrollingText className="bg-muted/30 text-muted-foreground max-h-40 rounded-md px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+      {preview}
+    </ScrollingText>
+  ) : null;
+
+  // 有输出/自定义展开内容/运行中流式预览：整行是展开触发器（Collapsible，
+  // 默认收起），开面板动作挪到行尾悬浮小按钮
   if (canExpand)
     return (
       <Collapsible
@@ -347,12 +361,13 @@ export const ToolRow: FC<ToolRowProps> = ({
             "[--tw-duration:var(--animation-duration)]",
           )}
         >
-          {expandedContent ?? outputBox}
+          {expandedContent ?? (hasOutput ? outputBox : previewBox)}
         </CollapsibleContent>
       </Collapsible>
     );
 
-  // 无输出（多为运行中）：有面板目标则整行开面板，否则纯展示行；视觉同款 reasoning trigger
+  // 无输出无预览（多为运行中）：有面板目标则整行开面板，否则纯展示行；
+  // 视觉同款 reasoning trigger
   return (
     <div data-slot="aui_tool-row" className="min-w-0 text-sm">
       {onOpenPanel ? (
@@ -368,13 +383,6 @@ export const ToolRow: FC<ToolRowProps> = ({
           {content}
         </span>
       )}
-      {/* 运行中：命令以滚动文本预览呈现（底部吸附），结束后换回可展开的输出行；
-          工作模式下预览一并收敛 */}
-      {!compact && preview ? (
-        <ScrollingText className="bg-muted/30 text-muted-foreground max-h-40 rounded-md px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
-          {preview}
-        </ScrollingText>
-      ) : null}
     </div>
   );
 };

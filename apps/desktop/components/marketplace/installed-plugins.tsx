@@ -105,6 +105,13 @@ const MANIFEST_KIND_LABEL: Record<PluginEntry["manifestKind"], string> = {
   codex: "Codex 生态",
 };
 
+/**
+ * 「内置插件」（marketplaceId "builtin"）：随 app 分发与更新——不可卸载、
+ * 无"检查更新"概念（换安装包即升级），可禁用；批量卸载按此过滤（后端会拒绝，
+ * 前端先不给入口）。
+ */
+const isBuiltinPlugin = (p: { marketplaceId: string }) => p.marketplaceId === "builtin";
+
 export const InstalledPlugins: FC = () => {
   const workspace = useWorkspace();
   const snap = usePlugins(workspace);
@@ -154,7 +161,8 @@ export const InstalledPlugins: FC = () => {
     toggleSelect(pluginId);
   };
   const clearSelection = () => setSelected(new Set());
-  const selectAllFiltered = () => setSelected(new Set(plugins.map((p) => p.pluginId)));
+  const selectAllFiltered = () =>
+    setSelected(new Set(plugins.filter((p) => !isBuiltinPlugin(p)).map((p) => p.pluginId)));
 
   const busy = pending.length > 0;
 
@@ -162,7 +170,11 @@ export const InstalledPlugins: FC = () => {
     const ids = targets.map((p) => p.pluginId);
     void setPluginsEnabledBatch(ids, batchEnable, workspace).then(clearSelection);
   };
-  const runBatchUninstall = () => setConfirmUninstall(targets);
+  // 内置插件不进卸载确认（可禁不可卸）；选中项全是内置时不开空弹窗
+  const runBatchUninstall = () => {
+    const uninstallable = targets.filter((p) => !isBuiltinPlugin(p));
+    if (uninstallable.length > 0) setConfirmUninstall(uninstallable);
+  };
 
   if (snap.loading && snap.plugins.length === 0) return <PluginListSkeleton />;
 
@@ -270,6 +282,7 @@ export const InstalledPlugins: FC = () => {
         {plugins.map((p) => {
           const installBusy = isPluginOpPending("install_plugin", `${p.marketplaceId}:${p.name}`);
           const checked = selected.has(p.pluginId);
+          const builtin = isBuiltinPlugin(p);
           const componentBadges = [
             p.components.skills.length > 0 ? `技能${p.components.skills.length}` : null,
             p.components.mcpServers.length > 0 ? `MCP${p.components.mcpServers.length}` : null,
@@ -294,6 +307,11 @@ export const InstalledPlugins: FC = () => {
                 >
                   <Link2Icon className="size-3" />
                   开发模式
+                </Badge>
+              )}
+              {builtin && (
+                <Badge variant="secondary" className="font-normal" title="随 app 分发的首方插件：不可卸载、随应用版本更新，可禁用">
+                  内置
                 </Badge>
               )}
               {p.sourceMissing && (
@@ -324,7 +342,7 @@ export const InstalledPlugins: FC = () => {
               aria-label={`启用插件 ${p.name}`}
             />
           );
-          const uninstallBtn = (
+          const uninstallBtn = builtin ? null : (
             <Button
               variant="ghost"
               size="sm"
@@ -336,7 +354,7 @@ export const InstalledPlugins: FC = () => {
               卸载
             </Button>
           );
-          const updateBtn = (
+          const updateBtn = builtin ? null : (
             <Button
               variant="ghost"
               size="sm"
@@ -488,37 +506,46 @@ export const InstalledPlugins: FC = () => {
                 aria-label={`启用插件 ${preview.name}`}
               />
               <div className="flex-1" />
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy}
-                onClick={() =>
-                  void installPlugin(preview.marketplaceId, preview.name)
-                }
-              >
-                <DownloadIcon
-                  className={cn(
-                    "size-3.5",
-                    isPluginOpPending(
-                      "install_plugin",
-                      `${preview.marketplaceId}:${preview.name}`,
-                    ) && "animate-pulse",
-                  )}
-                />
-                检查更新
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                disabled={busy}
-                onClick={() => {
-                  setConfirmUninstall([preview]);
-                  setPreviewId(null);
-                }}
-              >
-                <Trash2Icon className="size-3.5" />
-                卸载
-              </Button>
+              {!isBuiltinPlugin(preview) && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() =>
+                      void installPlugin(preview.marketplaceId, preview.name)
+                    }
+                  >
+                    <DownloadIcon
+                      className={cn(
+                        "size-3.5",
+                        isPluginOpPending(
+                          "install_plugin",
+                          `${preview.marketplaceId}:${preview.name}`,
+                        ) && "animate-pulse",
+                      )}
+                    />
+                    检查更新
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setConfirmUninstall([preview]);
+                      setPreviewId(null);
+                    }}
+                  >
+                    <Trash2Icon className="size-3.5" />
+                    卸载
+                  </Button>
+                </>
+              )}
+              {isBuiltinPlugin(preview) && (
+                <span className="text-muted-foreground text-xs" title="随 app 分发的首方插件：不可卸载、随应用版本更新，可禁用">
+                  内置 · 随应用更新
+                </span>
+              )}
             </div>
           ) : undefined
         }
