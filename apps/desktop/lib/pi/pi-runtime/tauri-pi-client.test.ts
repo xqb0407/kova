@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
 
 afterAll(restoreAllMocks);
@@ -59,6 +59,11 @@ mockModule("@tauri-apps/api/event", () => ({
 }));
 
 const { TauriPiClient } = await import("@/lib/pi/pi-runtime/tauri-pi-client");
+const {
+  pendingApprovalsForTest,
+  pendingQuestionsForTest,
+  resetInteractionsForTest,
+} = await import("@/lib/pi/pi-interactions");
 type PiClientEvent = import("@/lib/pi/pi-runtime/types").PiClientEvent;
 
 // ---------- 工具 ----------
@@ -295,5 +300,67 @@ describe("TauriPiClient 事件路由", () => {
     await tick();
     // 首帧快照(1) + 收尾帧兜底快照(2)
     expect(snapshotCalls).toBe(2);
+  });
+});
+
+describe("TauriPiClient 交互卡旁路（4b）", () => {
+  beforeEach(() => resetInteractionsForTest());
+
+  /** 构造旁路 chunk 行（带 sessionId：拦截按会话喂 pi-interactions 台账） */
+  const chunkLine = (sessionId: string, type: string, data: unknown): WireLine => ({
+    i: null,
+    l: JSON.stringify({ id: "req-x", chunk: { type, data }, sessionId }),
+  });
+
+  test("data-toolApproval / data-question 进卡且不进消息流", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const { events, feed } = subscribeAndSettle();
+    await tick();
+    events.length = 0;
+
+    feed([
+      chunkLine("s1", "data-toolApproval", {
+        approvalId: "ap1",
+        toolCallId: "t1",
+        toolName: "bash",
+        input: { command: "ls" },
+      }),
+      chunkLine("s1", "data-question", {
+        questionId: "q1",
+        questions: [{ title: "用哪个方案?" }],
+      }),
+    ]);
+    expect(pendingApprovalsForTest("s1")).toHaveLength(1);
+    expect(pendingApprovalsForTest("s1")[0]?.toolName).toBe("bash");
+    expect(pendingQuestionsForTest("s1")).toHaveLength(1);
+    expect(pendingQuestionsForTest("s1")[0]?.questions[0]?.title).toBe("用哪个方案?");
+    // 旁路 chunk 不产生 PiClientEvent（不进消息流）
+    expect(events).toHaveLength(0);
+  });
+
+  test("data-interactionResolved 关单卡；agent_end 清空残留", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const { events, feed } = subscribeAndSettle();
+    await tick();
+    events.length = 0;
+
+    feed([
+      chunkLine("s1", "data-toolApproval", { approvalId: "ap1", toolName: "bash" }),
+      chunkLine("s1", "data-toolApproval", { approvalId: "ap2", toolName: "edit" }),
+    ]);
+    expect(pendingApprovalsForTest("s1")).toHaveLength(2);
+
+    feed([chunkLine("s1", "data-interactionResolved", { interactionId: "ap1" })]);
+    const rest = pendingApprovalsForTest("s1");
+    expect(rest).toHaveLength(1);
+    expect(rest[0]?.approvalId).toBe("ap2");
+
+    // agent_end 兜底出口：残留（abort/异常未结算的）整线程清空
+    feed([threadEvent("s1", 30, { type: "agent_end" })]);
+    expect(pendingApprovalsForTest("s1")).toHaveLength(0);
+    expect(pendingQuestionsForTest("s1")).toHaveLength(0);
+    expect(events.at(-1)?.type).toBe("agent_end");
   });
 });

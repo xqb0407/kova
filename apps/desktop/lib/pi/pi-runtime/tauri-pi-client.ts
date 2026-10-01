@@ -18,9 +18,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { piRequest, type PiResponse, type PiSessionSummary } from "@/lib/pi/pi-bridge";
+import {
+  applyHistoryPending,
+  removeResolvedInteraction,
+} from "@/lib/pi/pi-interactions";
+import { applyQuestionChunk, clearQuestions } from "@/lib/pi/pi-question";
+import {
+  applyToolApprovalChunk,
+  clearToolApprovals,
+} from "@/lib/pi/pi-tool-approval";
 import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
 import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
+import type { PendingInteraction } from "pi-protocol";
 import type {
   PiAgentMessage,
   PiAssistantMessageDelta,
@@ -221,6 +231,25 @@ export class TauriPiClient implements PiClient {
     }
   }
 
+  /** list_pending 权威拉取（4b 刷新恢复）：新链路 threadId 即 sessionId，必须
+   *  带 sessionId 定址——sidecar threadSessions 的键是建会话时的随机 threadId，
+   *  按 threadId 反查会落空。applyHistoryPending 幂等并入（与直播流按 id 去重），
+   *  不用整表替换语义，防拉空时清掉直播流刚送的卡。 */
+  private async pullPendingInteractions(threadId: string): Promise<void> {
+    try {
+      const res = await piRequest<Extract<PiResponse, { type: "pending" }>>({
+        type: "list_pending",
+        sessionId: threadId,
+      });
+      const items = Array.isArray(res.items)
+        ? (res.items as PendingInteraction[])
+        : [];
+      applyHistoryPending(threadId, items);
+    } catch {
+      // sidecar 不可用/会话已删：静默（直播流与结算路径照常工作）
+    }
+  }
+
   // ---------- 事件路由（阶段 3b） ----------
 
   private async ensureEventWatcher() {
@@ -229,12 +258,18 @@ export class TauriPiClient implements PiClient {
       if (this.listeners.size === 0 && this.inflight.size === 0) return;
       for (const wire of event.payload) {
         // 预筛：thread_event 行（原生事件）+ finish/error/start 帧（收尾观察）
-        // + 委派绑定行（4c）；其余 token 级 chunk 行（AI SDK 遗留流）不解析
+        // + 委派绑定行（4c）+ 交互卡行（4b）；其余 token 级 chunk 行（AI SDK
+        // 遗留流）不解析
         const looksEvent = wire.l.includes('"thread_event"');
         const looksDelegation = wire.l.includes('"data-subagentDelegation"');
+        const looksInteraction =
+          wire.l.includes('"data-toolApproval"') ||
+          wire.l.includes('"data-question"') ||
+          wire.l.includes('"data-interactionResolved"');
         if (
           !looksEvent &&
           !looksDelegation &&
+          !looksInteraction &&
           !wire.l.includes('"finish"') &&
           !wire.l.includes('"error"') &&
           !wire.l.includes('"start"')
@@ -266,6 +301,28 @@ export class TauriPiClient implements PiClient {
         if (chunkData?.type === "data-subagentDelegation") {
           applyDelegationChunk(chunkData.data);
           continue;
+        }
+        // ---- 交互卡（4b）：审批/提问/结算广播。旧链路靠 transport tap 拦同一
+        // chunk；新链路在此喂 pi-interactions（台账键 = 线上 sessionId，与卡片
+        // 组件的 mainThreadId 同一命名空间），chunk 不进消息流。正常结算由
+        // resolved 帧移除卡片；abort/异常残留由 agent_end 兜底清空
+        const sid = parsed.sessionId;
+        if (sid) {
+          if (chunkData?.type === "data-toolApproval") {
+            applyToolApprovalChunk(sid, chunkData.data);
+            continue;
+          }
+          if (chunkData?.type === "data-question") {
+            applyQuestionChunk(sid, chunkData.data);
+            continue;
+          }
+          if (chunkData?.type === "data-interactionResolved") {
+            const d = chunkData.data as { interactionId?: unknown } | undefined;
+            if (d && typeof d.interactionId === "string") {
+              removeResolvedInteraction(sid, d.interactionId);
+            }
+            continue;
+          }
         }
         // ---- 收尾帧观察：finish/error 即时拉快照（起跑前失败兜底）----
         if (this.inflight.size === 0) continue;
@@ -321,6 +378,12 @@ export class TauriPiClient implements PiClient {
       }
       if (body.type === "message_end" || body.type === "agent_end") {
         this.streams.delete(sessionId);
+      }
+      if (body.type === "agent_end") {
+        // turn 收尾清残留（4b，abort/异常的兜底出口）：正常结算路径由
+        // data-interactionResolved 先行移除，此处通常为空操作
+        clearToolApprovals(sessionId);
+        clearQuestions(sessionId);
       }
       event = { ...body, threadId: sessionId, seq } as unknown as PiClientEvent;
     }
@@ -491,7 +554,10 @@ export class TauriPiClient implements PiClient {
     await piRequest({ type: "delete_session", sessionId: threadId });
   }
 
-  /** 阶段 2 只映射 confirm（逐工具审批）；question/editor 类在阶段 4b 接线 */
+  /** host-UI 契约应答（阶段 4b 决策：审批/提问走 pi-interactions 工具卡原路径
+   *  ——data-toolApproval/data-question chunk 直拦喂 store，快照 hostUiRequests
+   *  恒空，本方法实际不会被走到；confirm 映射保留兜底，select/input/editor
+   *  维持拒绝结算防悬挂） */
   async respondToHostUiRequest(
     threadId: string,
     response: PiHostUiResponse,
@@ -528,7 +594,11 @@ export class TauriPiClient implements PiClient {
     void this.ensureEventWatcher();
     // 契约默认快照先行：冷读直接落定（force：重订阅同指纹也要拿到初帧），
     // 之后实时事件增量，收尾帧/退出兜底拉快照
-    if (options?.includeSnapshot !== false) void this.refreshNow(threadId, true);
+    if (options?.includeSnapshot !== false) {
+      void this.refreshNow(threadId, true);
+      // 刷新/挂载恢复（4b）：权威拉取补挂起审批/提问卡（幂等并入）
+      void this.pullPendingInteractions(threadId);
+    }
     return () => {
       const current = this.listeners.get(threadId);
       if (!current) return;
