@@ -135,13 +135,16 @@ describe("messageProjection", () => {
     expect(parts[0]).toMatchObject({ type: "reasoning", text: "let me think" });
     expect(parts[1]).toMatchObject({ type: "text", text: "the answer" });
     expect(parts[2]).toMatchObject({ type: "tool-call", toolName: "bash" });
-    // all parts grouped under the same turn step
-    expect(parts[0]!.parentId).toBe("pi-step:0");
-    expect(parts[1]!.parentId).toBe("pi-step:0");
-    expect(parts[2]!.parentId).toBe("pi-step:0");
+    // all parts grouped under the same turn step（fixture 无 __seq → 独立前缀下标回退）
+    expect(parts[0]!.parentId).toBe("pi-step-idx:0");
+    expect(parts[1]!.parentId).toBe("pi-step-idx:0");
+    expect(parts[2]!.parentId).toBe("pi-step-idx:0");
     // step recorded with usage
     expect(out[0]!.metadata?.steps).toEqual([
-      { messageId: "pi-step:0", usage: { inputTokens: 10, outputTokens: 20 } },
+      {
+        messageId: "pi-step-idx:0",
+        usage: { inputTokens: 10, outputTokens: 20 },
+      },
     ]);
   });
 
@@ -505,11 +508,11 @@ describe("messageProjection", () => {
     expect(out).toHaveLength(1);
     expect(out[0]!.metadata?.steps).toHaveLength(2);
     const parts = contentParts(out[0]!);
-    expect(parts[0]!.parentId).toBe("pi-step:0"); // tool-call from turn 1
+    expect(parts[0]!.parentId).toBe("pi-step-idx:0"); // tool-call from turn 1
     expect(parts[1]).toMatchObject({
       type: "text",
       text: "done",
-      parentId: "pi-step:2",
+      parentId: "pi-step-idx:2",
     });
   });
 
@@ -881,5 +884,103 @@ describe("messageProjection", () => {
     );
     expect(contentParts(out[0]!)[0]!.approval).toBeUndefined();
     expect(out[0]!.status).toEqual({ type: "complete", reason: "stop" });
+  });
+
+  it("merges adjacent text blocks into a single text part", () => {
+    const out = projectPiThreadMessages(
+      input([
+        assistant([
+          { type: "text", text: "你" },
+          { type: "text", text: "好" },
+          { type: "text", text: "，世界" },
+        ]),
+      ]),
+    );
+
+    const parts = contentParts(out[0]!);
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toMatchObject({
+      type: "text",
+      text: "你好，世界",
+      parentId: "pi-step-idx:0",
+    });
+  });
+
+  it("does not merge text parts separated by a tool-call", () => {
+    const out = projectPiThreadMessages(
+      input([
+        assistant([
+          { type: "text", text: "先说一句" },
+          toolCall("tc1", "bash", {}),
+          { type: "text", text: "再说一句" },
+        ]),
+      ]),
+    );
+
+    const parts = contentParts(out[0]!);
+    expect(parts).toHaveLength(3);
+    expect(parts[0]).toMatchObject({ type: "text", text: "先说一句" });
+    expect(parts[1]).toMatchObject({ type: "tool-call", toolCallId: "tc1" });
+    expect(parts[2]).toMatchObject({ type: "text", text: "再说一句" });
+  });
+
+  // 稳定消息 id（闪没修复）：seq 空间优先、乐观 id 最优先、无 seq 走独立前缀回退
+  describe("stable message ids", () => {
+    it("projects user id from transcript seq", () => {
+      const out = projectPiThreadMessages(
+        input([{ role: "user", content: "hello", timestamp: 1, __seq: 5 }]),
+      );
+      expect(out[0]!.id).toBe("pi-msg:5");
+    });
+
+    it("anchors merged assistant id and step parentId on the first assistant seq", () => {
+      const out = projectPiThreadMessages(
+        input([
+          assistant([{ type: "text", text: "answer" }], { __seq: 7 }),
+          {
+            role: "toolResult",
+            toolCallId: "tc1",
+            toolName: "bash",
+            content: [{ type: "text", text: "ok" }],
+            isError: false,
+            timestamp: 2,
+            __seq: 8,
+          } as unknown as PiAgentMessage,
+        ]),
+      );
+      expect(out).toHaveLength(1);
+      expect(out[0]!.id).toBe("pi-msg:7");
+      expect(contentParts(out[0]!)[0]!.parentId).toBe("pi-step:7");
+      expect(out[0]!.metadata?.steps?.[0]?.messageId).toBe("pi-step:7");
+    });
+
+    it("keeps optimistic id and prefers it over seq", () => {
+      const out = projectPiThreadMessages(
+        input([
+          {
+            role: "user",
+            content: "hi",
+            timestamp: 1,
+            __optimisticId: "pi-optimistic:1",
+            __seq: 3,
+          },
+        ]),
+      );
+      expect(out[0]!.id).toBe("pi-optimistic:1");
+    });
+
+    it("never collides fallback ids with seq ids in the same number range", () => {
+      // 落盘 user 行 seq=1 与在飞 assistant（无 seq，下标 1）同号段：
+      // 独立前缀保证 pi-msg:1 与 pi-msg-idx:1 不撞。
+      const out = projectPiThreadMessages(
+        input([
+          { role: "user", content: "q", timestamp: 1, __seq: 1 },
+          assistant([{ type: "text", text: "streaming" }]),
+        ]),
+      );
+      expect(out).toHaveLength(2);
+      expect(out[0]!.id).toBe("pi-msg:1");
+      expect(out[1]!.id).toBe("pi-msg-idx:1");
+    });
   });
 });

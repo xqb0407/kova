@@ -59,6 +59,8 @@ function compactionSnapMessage(c: CompactionRow) {
     generation: typeof details?.generation === "number" ? details.generation : undefined,
     summarized: details?.strategy !== "fresh_window",
     timestamp: Date.parse(c.createdAt) || 0,
+    // 转录行 seq 随消息透传：前端投影用它生成稳定消息 id（下标会因新行落盘漂移）
+    __seq: c.seq,
   };
 }
 
@@ -258,7 +260,9 @@ export const handlers: Record<string, CommandHandler> = {
       while (ci < scan.compactions.length && scan.compactions[ci].seq < m.seq) {
         messages.push(compactionSnapMessage(scan.compactions[ci++]));
       }
-      messages.push(m.agent as unknown as SnapMessage);
+      // seq = per-session 转录行水位（落盘后单调不变）；透传给前端做稳定消息 id。
+      // 在飞 partial（peekPartial）没有 seq——未落盘，行号还不确定，前端按下标回退。
+      messages.push({ ...(m.agent as unknown as SnapMessage), __seq: m.seq });
     }
     while (ci < scan.compactions.length) {
       messages.push(compactionSnapMessage(scan.compactions[ci++]));

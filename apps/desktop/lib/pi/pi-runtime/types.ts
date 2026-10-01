@@ -91,6 +91,12 @@ export interface PiUserMessage {
   role: "user";
   content: string | PiUserContent[];
   timestamp: number;
+  /** 本地改动（稳定消息 id）：sidecar 快照透传的转录行 seq（per-session 单调
+   *  水位）；在飞 partial 未落盘没有 seq。投影据此生成不漂移的消息 id。 */
+  __seq?: number;
+  /** 本地改动（稳定消息 id）：前端乐观用户消息的自生成 id（`pi-optimistic:${n}`），
+   *  与转录投影的 `pi-msg:${seq}` 永不碰撞；真实行落盘后乐观消息即被确认清除。 */
+  __optimisticId?: string;
 }
 
 export interface PiAssistantMessage {
@@ -105,6 +111,8 @@ export interface PiAssistantMessage {
   stopReason: PiStopReason;
   errorMessage?: string;
   timestamp: number;
+  /** 本地改动（稳定消息 id）：见 PiUserMessage.__seq */
+  __seq?: number;
 }
 
 export interface PiToolResultMessage {
@@ -117,6 +125,8 @@ export interface PiToolResultMessage {
   details?: unknown;
   isError: boolean;
   timestamp: number;
+  /** 本地改动（稳定消息 id）：见 PiUserMessage.__seq */
+  __seq?: number;
 }
 
 /** Bash run via the `!` command — a Pi message role, not a tool call. */
@@ -131,6 +141,8 @@ export interface PiBashExecutionMessage {
   timestamp: number;
   /** `!!` prefix — excluded from LLM context. */
   excludeFromContext?: boolean;
+  /** 本地改动（稳定消息 id）：见 PiUserMessage.__seq */
+  __seq?: number;
 }
 
 /** Extension-injected message via `sendMessage()`. */
@@ -142,6 +154,8 @@ export interface PiCustomMessage {
   display: boolean;
   details?: unknown;
   timestamp: number;
+  /** 本地改动（稳定消息 id）：见 PiUserMessage.__seq */
+  __seq?: number;
 }
 
 export interface PiBranchSummaryMessage {
@@ -149,6 +163,8 @@ export interface PiBranchSummaryMessage {
   summary: string;
   fromId: string;
   timestamp: number;
+  /** 本地改动（稳定消息 id）：见 PiUserMessage.__seq */
+  __seq?: number;
 }
 
 export interface PiCompactionSummaryMessage {
@@ -160,6 +176,8 @@ export interface PiCompactionSummaryMessage {
   generation?: number;
   summarized?: boolean;
   timestamp: number;
+  /** 本地改动（稳定消息 id）：见 PiUserMessage.__seq */
+  __seq?: number;
 }
 
 export type PiKnownAgentMessage =

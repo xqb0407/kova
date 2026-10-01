@@ -7,6 +7,18 @@
 //   image-parts.ts 闸门（2MiB 上限 / mime 白名单 / 降级占位 notices）投影为
 //   data part（name "image"，PiImagePartData）——与旧链路直播 chunk 及刷新
 //   后的历史重建同构，UI 图廊（group-images）据此认亲渲染（2026-10-01 缺图修复）
+// - projectAssistantInto 合并相邻 text block 为一个 text part（2026-10-01 分行修复）：
+//   上游 provider 在流式期间会按 chunk 递增 contentIndex（reasoning/tool_calls
+//   交替时另起 text block，见 openai-completions 的 getContentIndex），同一段回答
+//   会以多个相邻 text block 到达。一个 block 一个 part 时，UI 侧 groupBy 对 text
+//   返回 []（不分组），每个 part 渲染成独立的 <MarkdownText />，在 flex-col gap-2
+//   容器里表现为"几个字一行、流结束才合并成一段"
+// - 稳定消息 id（2026-10-01 闪没修复）：转录行 seq（sidecar thread_snapshot 透传的
+//   __seq）优先做 id 锚点，在飞/未落盘消息按独立前缀的 index 回退；此前纯下标 id 会
+//   随任意转录行先落盘整体漂移——React key 重挂、turnKey（=轮首消息 id）孤儿化（折叠
+//   态与耗时台账全失效），或与尾部乐观消息撞号被外部 store 按"重复 id 保留最后"吞掉
+//   一条（发送时"闪一下消失"）。乐观消息自带 __optimisticId（pi-optimistic:${n}），
+//   与转录 id 永不碰撞。
 
 /**
  * Pure projection of the canonical Pi transcript (`PiAgentMessage[]`) into
@@ -67,8 +79,23 @@ export interface PiProjectionInput {
   hostUiRequests: readonly PiHostUiRequest[];
 }
 
-const messageId = (index: number) => `pi-msg:${index}`;
-const stepId = (index: number) => `pi-step:${index}`;
+/** 稳定 id 锚点：sidecar 快照透传的转录行 __seq / 前端乐观消息的 __optimisticId */
+type StableIdAnchor = { __seq?: number; __optimisticId?: string };
+
+const seqOf = (anchor: StableIdAnchor | undefined): number | undefined =>
+  typeof anchor?.__seq === "number" ? anchor.__seq : undefined;
+
+// seq 空间（落盘后单调不变）优先；在飞消息没有 seq，退回**独立前缀**的下标——
+// 独立前缀保证回退 id 绝不与别处已落盘行的 seq id 撞号（seq 与下标号段重叠）。
+const messageId = (anchor: StableIdAnchor | undefined, index: number) =>
+  anchor?.__optimisticId ??
+  (seqOf(anchor) !== undefined
+    ? `pi-msg:${seqOf(anchor)}`
+    : `pi-msg-idx:${index}`);
+const stepId = (anchor: StableIdAnchor | undefined, index: number) =>
+  seqOf(anchor) !== undefined
+    ? `pi-step:${seqOf(anchor)}`
+    : `pi-step-idx:${index}`;
 
 const toDataUrl = (data: string, mimeType: string) =>
   /^data:/i.test(data) ? data : `data:${mimeType};base64,${data}`;
@@ -241,6 +268,8 @@ const buildToolResultMap = (messages: readonly PiAgentMessage[]) => {
 
 type GroupAccumulator = {
   firstIndex: number;
+  /** 组锚点消息（首条 assistant）：合并消息的 id 由它的 seq 决定 */
+  anchorMessage: PiAssistantMessage;
   parts: ContentPart[];
   steps: Step[];
   /** The most recent assistant message in the group (drives final status). */
@@ -256,7 +285,7 @@ const projectAssistantInto = (
   toolResults: ReturnType<typeof buildToolResultMap>,
   hostUiByToolCall: ReadonlyMap<string, PiHostUiRequest>,
 ) => {
-  const parentId = stepId(index);
+  const parentId = stepId(message, index);
   group.lastAssistant = message;
   group.steps.push({
     messageId: parentId,
@@ -268,7 +297,19 @@ const projectAssistantInto = (
 
   for (const part of message.content) {
     if (part.type === "text") {
-      group.parts.push({ type: "text", text: part.text, parentId });
+      // 相邻 text block 合成一个 part：流式期间上游可能把同一段回答切成多个
+      // 相邻 text block，不合并则 UI 侧每个 part 各占一行（见文件头 2026-10-01
+      // 分行修复）。只并相邻项——text → toolCall → text 中间隔着 tool-call
+      // part，是合法分段，不会被误并。
+      const prev = group.parts[group.parts.length - 1];
+      if (prev?.type === "text") {
+        group.parts[group.parts.length - 1] = {
+          ...prev,
+          text: prev.text + part.text,
+        };
+      } else {
+        group.parts.push({ type: "text", text: part.text, parentId });
+      }
     } else if (part.type === "thinking") {
       const text =
         part.thinking || (part.redacted ? "[reasoning redacted]" : "");
@@ -332,7 +373,7 @@ const buildAssistantMessage = (
   const status = assistantStatus(group, input, isLastMessageInTranscript);
 
   return {
-    id: messageId(group.firstIndex),
+    id: messageId(group.anchorMessage, group.firstIndex),
     role: "assistant",
     createdAt: createdAtOf(last),
     content: group.parts,
@@ -410,6 +451,7 @@ export const projectPiThreadMessages = (
         if (!group) {
           group = {
             firstIndex: index,
+            anchorMessage: message as PiAssistantMessage,
             parts: [],
             steps: [],
             lastAssistant: message as PiAssistantMessage,
@@ -438,7 +480,7 @@ export const projectPiThreadMessages = (
       case "user":
         flush(false);
         out.push({
-          id: messageId(index),
+          id: messageId(message as PiUserMessage, index),
           role: "user",
           createdAt: createdAtOf(message as PiUserMessage),
           content: projectUserContent((message as PiUserMessage).content),
@@ -466,7 +508,7 @@ export const projectPiThreadMessages = (
         const m = message as PiCustomMessage;
         if (!m.display) break; // hidden from UI, still in LLM context
         out.push({
-          id: messageId(index),
+          id: messageId(m, index),
           role: "assistant",
           createdAt: createdAtOf(m),
           content: [
@@ -529,11 +571,11 @@ export const projectPiThreadMessages = (
 
 const standaloneData = (
   index: number,
-  message: { timestamp?: number },
+  message: StableIdAnchor & { timestamp?: number },
   name: string,
   data: Record<string, unknown>,
 ): ThreadMessageLike => ({
-  id: messageId(index),
+  id: messageId(message, index),
   role: "assistant",
   createdAt: createdAtOf(message),
   content: [dataPart(name, data)],
