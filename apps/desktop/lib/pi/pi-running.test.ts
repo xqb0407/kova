@@ -79,7 +79,6 @@ describe("pi-running store", () => {
     const bare: PiChannel = {
       kind: "tauri",
       request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
-      promptStream: () => new ReadableStream(),
       abort: async () => {},
     };
     setPiChannel(bare);
@@ -95,7 +94,6 @@ describe("pi-running store", () => {
     const fake: PiChannel = {
       kind: "tauri",
       request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
-      promptStream: () => new ReadableStream(),
       abort: async () => {},
       listRunning: () => {
         seedCalls += 1;
@@ -215,7 +213,6 @@ describe("hydrateRunningRegistrations（启动水合）", () => {
     const fake: PiChannel = {
       kind: "tauri",
       request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
-      promptStream: () => new ReadableStream(),
       abort: async () => {},
       listRunningTurns: async () => [{ requestId: "req-run", sessionId: "sid-run" }],
     };
@@ -231,7 +228,6 @@ describe("hydrateRunningRegistrations（启动水合）", () => {
     const bare: PiChannel = {
       kind: "tauri",
       request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
-      promptStream: () => new ReadableStream(),
       abort: async () => {},
     };
     setPiChannel(bare);

@@ -100,7 +100,6 @@ const channel: PiChannel = {
     }
     return { type: "sessions", sessions: [] } as unknown as PiResponse;
   },
-  promptStream: () => new ReadableStream(),
   abort: async () => {},
   subscribeSubagentActivity: (cb) => {
     emitActivity = cb;
