@@ -80,12 +80,47 @@ describe("reloadMessage（重新生成 = 截断 + 重发）", () => {
     ]);
   });
 
-  it("parentId 之后定位下一条落盘 user 消息（assistant id 也可作父锚点）", async () => {
+  it("parentId = 前一条消息 id：截断并重发它本身（不是下一条 user）", async () => {
+    const recorded: Recorded[] = [];
+    const controller = await loadedController(transcripts, recorded);
+    await controller.reloadMessage("pi-msg:2");
+    expect(recorded).toEqual([
+      { kind: "truncate", beforeSeq: 2 },
+      { kind: "send", input: { content: "second" } },
+    ]);
+  });
+
+  it("重生成第一轮时锚定第一条 user：不得跳过它去找后一轮", async () => {
+    const recorded: Recorded[] = [];
+    const controller = await loadedController(transcripts, recorded);
+    await controller.reloadMessage("pi-msg:0");
+    expect(recorded).toEqual([
+      { kind: "truncate", beforeSeq: 0 },
+      { kind: "send", input: { content: "first" } },
+    ]);
+  });
+
+  it("锚点位不是 user（前驱为 assistant）时向上回溯最近的 user", async () => {
     const recorded: Recorded[] = [];
     const controller = await loadedController(transcripts, recorded);
     await controller.reloadMessage("pi-msg:1");
-    expect(recorded[0]).toEqual({ kind: "truncate", beforeSeq: 2 });
-    expect(recorded[1]).toEqual({ kind: "send", input: { content: "second" } });
+    expect(recorded).toEqual([
+      { kind: "truncate", beforeSeq: 0 },
+      { kind: "send", input: { content: "first" } },
+    ]);
+  });
+
+  it("回归：单轮会话重生成唯一 assistant 不再报 no user message to reload", async () => {
+    const recorded: Recorded[] = [];
+    const controller = await loadedController(
+      [user(0, "only"), assistant(1, "reply")],
+      recorded,
+    );
+    await controller.reloadMessage("pi-msg:0");
+    expect(recorded).toEqual([
+      { kind: "truncate", beforeSeq: 0 },
+      { kind: "send", input: { content: "only" } },
+    ]);
   });
 
   it("重发保留图片附件（投影 data URL 还原为协议 attachments）", async () => {
