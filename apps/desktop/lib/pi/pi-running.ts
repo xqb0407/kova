@@ -1,5 +1,6 @@
 "use client";
 
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useSyncExternalStore } from "react";
 import { getPiChannel, type PiRunningTurn } from "@/lib/pi/pi-channel";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
@@ -7,16 +8,27 @@ import { markThreadActivity } from "@/lib/pi/pi-last-activity";
 
 /**
  * 全局"会话运行中"集合（pi-agent sidecar activeTurns 的投影）。
- * - 事实源在 sidecar：turn 起止广播 turn_changed 通知行（见 sessions.ts）
- * - 通道能力 subscribeTurns + listRunning（成对可选）：Tauri 通道实现，
- *   推送型通道缺省 → 无外部信号，侧边栏降级为框架自带的仅挂载线程 isRunning
- * - 合并规则：快照 = 最近一次种子 fold 每会话已知最新增量（start/end 事件）。
- *   时序契约（见 pi-channel.ts subscribeTurns 注释）：种子必须在订阅登记
- *   完成后才发起——sidecar 对 turn_changed 与 list_running 响应按 stdout
- *   全序写出，先订阅后种子则任何事件要么在种子里、要么在订阅后到达，无空窗；
- *   增量可双向修正快照的滞后（种子算早了被 end 事件抹掉，种子漏了的被 start 补上）
- * - sidecar 重启（cb(null)）：增量与快照作废，清空后重新种子水合
+ * - 事实源在 sidecar：agent 轮起止以 thread_event（agent_start/agent_end）
+ *   广播（迁移 4c 起为本 store 的增量源，替代 pi-channel 的 turn_changed
+ *   订阅）。自持 pi-chunk-batch 监听（与 pi-channel 的旁路监听同款模式）：
+ *   不能挂在 TauriPiClient 的事件 watcher 上——它按「有订阅/在飞请求」早退，
+ *   空闲期侧边栏的起止增量会断流；双前缀预筛（thread_event + agent_start/
+ *   agent_end）后正文里的同名词因 JSON 转义不会误匹配
+ * - listRunning（管理通道）做种子水合；合并规则：快照 = 最近一次种子 fold
+ *   每会话已知最新增量（start/end 事件）。种子在订阅登记完成后发起（sidecar
+ *   按 stdout 全序写出，先订阅后种子则任何事件要么在种子里、要么在订阅后
+ *   到达，无空窗）；增量可双向修正快照的滞后
+ * - sidecar 重启（pi-exit）：增量与快照作废，清空后重新种子水合
  */
+
+/** pi-chunk-batch 行最小形状（镜像 Rust ChunkLine，只关心行文本） */
+type RunWireLine = { l: string };
+/** thread_event 行的最小解析形状（只需事件种类与会话归属） */
+type RunWireMsg = {
+  type?: string;
+  sessionId?: unknown;
+  event?: { type?: string };
+};
 
 const runningSessions = new Set<string>();
 const listeners = new Set<() => void>();
@@ -99,17 +111,42 @@ function onTurnEvent(sessionId: string | null, active: boolean) {
 
 /**
  * 幂等启动订阅 + 种子水合（首个 usePiSessionRunning 挂载时触发）。
- * 种子在 subscribeTurns 的登记 promise resolve 之后才发起——顺序颠倒会
- * 把登记窗口里广播的 turn_changed 漏掉，投影从此缺一次收尾。
+ * 种子在监听登记完成之后才发起——顺序颠倒会把登记窗口里广播的起止事件
+ * 漏掉，投影从此缺一次收尾（listen promise resolve 后再 reseed）。
  */
 export function startPiRunningWatch(): void {
   if (watchStarted) return;
   const channel = getPiChannel();
-  if (!channel.subscribeTurns || !channel.listRunning) return;
+  if (!channel.listRunning) return;
   watchStarted = true;
   void (async () => {
-    const teardown = await channel.subscribeTurns!(onTurnEvent);
-    void teardown; // 订阅与页面同生命周期，不退订
+    // 增量源 = thread_event 的 agent_start/agent_end（迁移 4c）。监听与页面
+    // 同生命周期，不退订；pi-exit 作废全部已知状态并重新种子水合
+    await listen<RunWireLine[]>("pi-chunk-batch", (event) => {
+      for (const wire of event.payload) {
+        const line = wire.l;
+        if (!line.includes('"thread_event"')) continue;
+        if (
+          !line.includes('"agent_start"') &&
+          !line.includes('"agent_end"')
+        ) {
+          continue;
+        }
+        let parsed: RunWireMsg;
+        try {
+          parsed = JSON.parse(line) as RunWireMsg;
+        } catch {
+          continue;
+        }
+        if (parsed.type !== "thread_event") continue;
+        const kind = parsed.event?.type;
+        const sid = typeof parsed.sessionId === "string" ? parsed.sessionId : null;
+        if (!sid || !kind) continue;
+        if (kind === "agent_start") onTurnEvent(sid, true);
+        else if (kind === "agent_end") onTurnEvent(sid, false);
+      }
+    });
+    await listen<string>("pi-exit", () => onTurnEvent(null, false));
     reseed();
   })();
 }

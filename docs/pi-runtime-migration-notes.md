@@ -125,6 +125,39 @@
 - 泵重发走 composer 正常发送路径（setText + send），线程空闲即刻派发；
   pop 与重发之间的窗口由 sidecar 守卫兜住（忙/有链节返回 null）。
 
+## 阶段 4c（旁路改接：运行指示 / 占用环 / 委派绑定）
+
+### 已接通
+- **运行指示**：pi-running 起止增量源换 thread_event（agent_start/agent_end），
+  替代 pi-channel 的 turn_changed 订阅（subscribeRunningDeltas 退役）。自持
+  pi-chunk-batch 监听 + 双前缀预筛，listRunning（管理通道）种子水合保留，
+  pi-exit 清空重播种；`resyncPiRunning`/`hydrateRunningRegistrations` 等既有
+  兜底路径不动。
+- **委派绑定**：TauriPiClient 事件预筛放行 `data-subagentDelegation`，解析后
+  直接喂 `applyDelegationChunk`（subagent-runs 绑定 toolCallId→delegationId），
+  不经 thread_event reducer（Task 工具结果文本兜底 parseDelegationIdFromResult
+  保留）。
+- **占用环双轨**（同点双源，sidecar pushContextChanged 无改动）：
+  - context_changed 帧（含 threshold/cacheHitRatio）继续驱动 §7 推送镜像；
+    pi-context `threadForSession` 加直通兜底——react-pi 新链路
+    threadId = sessionId，registry 未绑定时直用 sessionId 作镜像键（此前
+    未绑定的帧整帧丢弃，新链路会丢所有推送）。
+  - context_usage thread_event → vendored reducer `state.contextUsage`；
+    context-button 环数据源加第三层兜底（§7 镜像 → 拉取读数 → liveUsage）。
+- **thinking_seed 确认无需迁移**：本仓库只有 lookup_thinking_seed（模型设置
+  RPC，管理通道），与 vendored 的 thinking_seed 事件旁路无关。
+
+### 设计权衡记录
+- 运行态监听不能挂 TauriPiClient.ensureEventWatcher：它按「有订阅/在飞请求」
+  早退，空闲期侧边栏的起止增量会断流 → pi-running 自持 listen（与 pi-channel
+  的旁路监听同款模式，Rust 端无条件 emit 不受 JS 侧生命周期影响）。
+- 双前缀预筛（thread_event + agent_start/agent_end）不会被正文误匹配：JSON
+  字符串里的同名词带转义引号（`\"agent_start\"`），精确子串不命中。
+- agent_start/end 是 agent 真跑口径（turn_changed 是 prompt 接受口径）；链节
+  派发间隙毫秒级，spinner 闪断可接受。
+- 4c 无 sidecar 改动：pushContextChanged 双发与 sendEventChunk 委派帧均为
+  既有行为，本阶段只是前端接上。
+
 ## 验证记录
 - `bunx tsc --noEmit`（apps/desktop 与 sidecar）干净
 - vendored 85 测试 + 全仓 929 测试绿
@@ -145,3 +178,9 @@
 - 待用户实测：忙时发送自动排队 / 并入（队列栏 Merge 与 Alt+点击、Shift+⌘+Enter）/
   立即发送（Zap）/ 删除 / 删除最近排队（发送按钮 ■）/ 刷新后队列恢复与孤儿队列
   接力 / 停止生成连队列一起清
+
+### 阶段 4c 验证（2026-10-01）
+- `bunx tsc --noEmit` 两端干净；pi-runtime 90 项测试绿；全仓 929 项测试绿
+- 待用户实测：多会话并发时侧边栏运行 spinner 起止及时（空闲期也不断流）/
+  占用环轮收尾直更 + 切线程后仍有读数（liveUsage 兜底）/ subagent 委派卡片
+  正常展开（Task 工具卡活动链路）

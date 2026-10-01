@@ -19,6 +19,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { piRequest, type PiResponse, type PiSessionSummary } from "@/lib/pi/pi-bridge";
 import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
+import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import type {
   PiAgentMessage,
@@ -227,11 +228,13 @@ export class TauriPiClient implements PiClient {
     this.unlistenChunks = await listen<WireLine[]>("pi-chunk-batch", (event) => {
       if (this.listeners.size === 0 && this.inflight.size === 0) return;
       for (const wire of event.payload) {
-        // 预筛：thread_event 行（原生事件）+ finish/error/start 帧（收尾观察）；
-        // 其余 token 级 chunk 行（AI SDK 遗留流）不解析
+        // 预筛：thread_event 行（原生事件）+ finish/error/start 帧（收尾观察）
+        // + 委派绑定行（4c）；其余 token 级 chunk 行（AI SDK 遗留流）不解析
         const looksEvent = wire.l.includes('"thread_event"');
+        const looksDelegation = wire.l.includes('"data-subagentDelegation"');
         if (
           !looksEvent &&
+          !looksDelegation &&
           !wire.l.includes('"finish"') &&
           !wire.l.includes('"error"') &&
           !wire.l.includes('"start"')
@@ -252,6 +255,16 @@ export class TauriPiClient implements PiClient {
               parsed.event ?? {},
             );
           }
+          continue;
+        }
+        // ---- 委派绑定（4c）：Task 工具启动瞬间随活跃请求流发出。旧链路靠
+        // transport postTransform 拦同一 chunk；新链路在此拦截喂给
+        // subagent-runs（旁路 chunk 不进消息流，绑定语义不变）
+        const chunkData = parsed.chunk as
+          | { type?: string; data?: unknown }
+          | undefined;
+        if (chunkData?.type === "data-subagentDelegation") {
+          applyDelegationChunk(chunkData.data);
           continue;
         }
         // ---- 收尾帧观察：finish/error 即时拉快照（起跑前失败兜底）----
