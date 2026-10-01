@@ -30,9 +30,10 @@ mockModule("@/lib/pi/pi-bridge", () => ({
     return d.promise;
   },
 }));
-mockModule("@/lib/pi/agent-events", () => ({
-  subscribeAgentEvents: (_cb: unknown) => () => {},
-}));
+// agent-events 不 mock：真实实现是纯内存 pub-sub，被动订阅无副作用；
+// 曾在此 mock 成仅含 subscribe 的残缺模块——bun 的模块 mock 恢复不可靠，
+// 泄漏进后续测试文件（tauri-pi-client.test.ts）后 emitAgentEvent 缺失，
+// 完成提醒用例全量跑必挂（2026-10-01）
 mockModule("@tauri-apps/api/core", () => ({
   invoke: () => Promise.resolve(),
 }));
