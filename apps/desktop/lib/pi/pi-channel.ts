@@ -229,6 +229,69 @@ type ChunkWireLine = { i: number | null; l: string };
 /** pi_attach 应答：重放快照 + 该 run 的存活/截断状态 */
 type AttachReply = { active: boolean; truncated: boolean; lines: ChunkWireLine[] };
 
+/** 重放快照合并的分段上限：够大以摊薄每 chunk 状态更新开销，
+ *  又不至于让单次渲染吃下一整条超大文本 */
+const REPLAY_SEGMENT_BYTES = 32 * 1024;
+
+/**
+ * 快速前进重放（主线程冻结修复 2026-10-01）：整轮缓冲上限 3 万行/16MB，
+ * 逐行原样灌进消费端的微任务链会把几万次 token 级状态更新挤进同一个
+ * 宏任务——主线程冻结数秒（perf-watch 实测 5.7s）。重放的目标是恢复
+ * 终态而非逐帧动画：连续同 id 的 text-delta / reasoning-delta 合并为
+ * ≤32KB 的分段 delta（AI SDK 状态按 delta 追加，终点状态与逐 token
+ * 完全一致），其余 chunk 原样保留顺序。纯函数；畸形/他 run 的行跳过，
+ * seq 水位仍计入（快照覆盖范围只增不减）。
+ */
+export function compactReplayChunks(
+  lines: ChunkWireLine[],
+  requestId: string,
+): { chunks: UIMessageChunk[]; maxSeq: number } {
+  const chunks: UIMessageChunk[] = [];
+  let maxSeq = 0;
+  let pending: {
+    kind: "text-delta" | "reasoning-delta";
+    id: string;
+    parts: string[];
+    bytes: number;
+  } | null = null;
+  const flushPending = () => {
+    if (!pending) return;
+    chunks.push({
+      type: pending.kind,
+      id: pending.id,
+      delta: pending.parts.join(""),
+    } as UIMessageChunk);
+    pending = null;
+  };
+  for (const line of lines) {
+    if (line.i !== null && line.i !== undefined && line.i > maxSeq) maxSeq = line.i;
+    let parsed: { id?: string | null; chunk?: UIMessageChunk };
+    try {
+      parsed = JSON.parse(line.l);
+    } catch {
+      continue;
+    }
+    if (parsed.id !== requestId || !parsed.chunk) continue;
+    const chunk = parsed.chunk as UIMessageChunk & { id?: unknown; delta?: unknown };
+    if (
+      (chunk.type === "text-delta" || chunk.type === "reasoning-delta") &&
+      typeof chunk.id === "string" &&
+      typeof chunk.delta === "string"
+    ) {
+      if (pending && (pending.kind !== chunk.type || pending.id !== chunk.id)) flushPending();
+      if (!pending) pending = { kind: chunk.type, id: chunk.id, parts: [], bytes: 0 };
+      pending.parts.push(chunk.delta);
+      pending.bytes += chunk.delta.length;
+      if (pending.bytes >= REPLAY_SEGMENT_BYTES) flushPending();
+      continue;
+    }
+    flushPending();
+    chunks.push(chunk);
+  }
+  flushPending();
+  return { chunks, maxSeq };
+}
+
 export class TauriPiChannel implements PiChannel {
   readonly kind = "tauri" as const;
 
@@ -410,18 +473,16 @@ export class TauriPiChannel implements PiChannel {
     };
 
     let lastSeq = 0;
+    /** 快照覆盖到的最大 seq：直播行 ≤ 它必然是快照重复（监听先于 pi_attach
+     *  登记，重叠窗口的行两侧都有），一律按重复丢弃 */
+    let snapshotMaxSeq = 0;
+    /** 重放进行中直播行只入 future 不冲刷：更早的重放内容必须先落完，
+     *  统一 flush 在重放结束后补跑 */
+    let replaying = false;
     const future = new Map<number, UIMessageChunk>();
-    const feed = (seq: number, raw: string) => {
-      if (closed || seq <= lastSeq) return;
-      let parsed: { id?: string | null; chunk?: UIMessageChunk };
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        return;
-      }
-      // 其他 run 的行不参与本流的 seq 空间（seq 按 requestId 独立递增）
-      if (parsed.id !== requestId || !parsed.chunk) return;
-      future.set(seq, parsed.chunk);
+
+    const flushFuture = () => {
+      if (replaying) return;
       let next = future.get(lastSeq + 1);
       while (next !== undefined && !closed) {
         future.delete(lastSeq + 1);
@@ -435,6 +496,20 @@ export class TauriPiChannel implements PiChannel {
         }
         next = future.get(lastSeq + 1);
       }
+    };
+
+    const feed = (seq: number, raw: string) => {
+      if (closed || seq <= lastSeq || seq <= snapshotMaxSeq) return;
+      let parsed: { id?: string | null; chunk?: UIMessageChunk };
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return;
+      }
+      // 其他 run 的行不参与本流的 seq 空间（seq 按 requestId 独立递增）
+      if (parsed.id !== requestId || !parsed.chunk) return;
+      future.set(seq, parsed.chunk);
+      flushFuture();
     };
 
     // 流先于监听与快照构造：controller 就绪后两路来源都可直接消费
@@ -474,9 +549,36 @@ export class TauriPiChannel implements PiChannel {
       cleanup();
       return null;
     }
-    for (const wire of reply.lines) {
-      if (wire.i !== null && wire.i !== undefined) feed(wire.i, wire.l);
+    // 快速前进重放：先压缩（见 compactReplayChunks 注释），再分批入队，
+    // 每批让出主线程（setTimeout 0）——直播行在让出窗口只入 future，
+    // 重放完毕推齐 seq 水位后统一 flush 无缝续传。
+    // 入队走闭包辅助（controller 的赋值发生在 stream start 回调里，
+    // 函数体直用会被 TS 流收窄成 never）
+    const enqueueReplay = (chunk: UIMessageChunk): boolean => {
+      controller?.enqueue(chunk);
+      if (chunk.type === "finish" || chunk.type === "error") {
+        closed = true;
+        cleanup();
+        controller?.close();
+        return true;
+      }
+      return false;
+    };
+    const replay = compactReplayChunks(reply.lines, requestId);
+    snapshotMaxSeq = replay.maxSeq;
+    replaying = true;
+    let sinceYield = 0;
+    for (const chunk of replay.chunks) {
+      if (closed) break;
+      if (enqueueReplay(chunk)) break;
+      if (++sinceYield >= 32) {
+        sinceYield = 0;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
     }
+    replaying = false;
+    lastSeq = snapshotMaxSeq;
+    flushFuture();
     // tombstone 但未见收尾行（sidecar 异常终止等理论竞态）：关流让消息落定
     if (!reply.active && !closed) forceClose();
     abortSignal?.addEventListener(
