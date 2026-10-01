@@ -284,16 +284,25 @@ export const usageDailyCleanup = () =>
   query<{ removed: number }>("usage_daily_cleanup");
 
 /** 主机工具调用（仅 host 模式可用；bash/read/write/edit/http 由 Rust 执行）；
- *  signal 中断时向宿主发 host_cancel（bash 会立即杀进程树） */
+ *  signal 中断时向宿主发 host_cancel（bash 会立即杀进程树）。
+ *  owner = 发起线程 id：宿主用它给跨回合存活的后台任务（bash runInBackground）
+ *  打归属标记，task_output / task_stop 只认本线程的任务——否则宿主那张全局
+ *  任务表就是所有线程共用的，任意线程凭猜测的 id 就能读别人命令的输出或杀掉
+ *  别人的进程。 */
 export const hostToolCall = (
   name: string,
   cwd: string,
   params: Record<string, unknown>,
   signal?: AbortSignal,
+  owner?: string,
 ) =>
-  query<{ output: string; truncated?: boolean; exitCode?: number | null; totalLines?: number }>(
+  query<{ output: string; truncated?: boolean; exitCode?: number | null; totalLines?: number;
+    /** read 命中图片时 Rust 附加（≤2MiB）：sidecar 转成 image 内容块 */
+    base64?: string; mimeType?: string; bytes?: number;
+    /** browser_shot 成功信封附加（browser_shot.rs）：像素照尺寸 */
+    width?: number; height?: number }>(
     "tool",
-    { name, cwd, params },
+    { name, cwd, owner, params },
     { signal, timeoutMs: toolRpcTimeoutMs(name, params) },
   );
 

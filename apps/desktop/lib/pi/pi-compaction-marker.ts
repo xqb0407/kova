@@ -16,7 +16,7 @@ export type ManualCompactionData = {
   generation?: number;
   tokensBefore?: number;
   summarized?: boolean;
-  /** 本次压缩的摘要文本（分隔线下方「压缩摘要」可展开查看） */
+  /** 本次压缩的摘要文本（消息流只留分隔线 marker，摘要在右侧「活动」面板汇总） */
   summary?: string;
 };
 

@@ -46,6 +46,9 @@ const userMessage = (id: string, text: string) => ({
 });
 
 function collect() {
+  // 先用 noop 监听器排空缓冲（前置操作/跨测试残留的信号真实派发给 noop、
+  // 按新语义被消费掉），再挂收集器——断言只覆盖 collect 之后的信号
+  setQueueSyncListener(() => {});
   const events: { reg: RegisteredMessage; kind: string }[] = [];
   setQueueSyncListener((reg, kind) => {
     events.push({ reg, kind });
@@ -149,13 +152,15 @@ describe("出快照分类", () => {
 });
 
 describe("未登记条目（刷新恢复）", () => {
-  test("快照条目无注册：按快照文本重建（queued-<id>），派发出队照常回填", () => {
+  test("快照条目无注册：按快照文本重建（id=reqId），派发出队照常回填", () => {
     applyQueueStateChunk(THREAD, snapshotOf([{ reqId: "req-9", text: "rebuilt", id: 7 }]));
 
     const events = collect();
     applyQueueStateChunk(THREAD, snapshotOf([]));
+    // id 用真实 reqId（链节派发轮 requestId = 入队 reqId）：占位气泡与 resume
+    // 重放的正式 user 消息同 id，落位时按 id 收敛替换，不再闪现/双气泡
     expect(events.map((e) => ({ kind: e.kind, messageId: e.reg.messageId }))).toEqual([
-      { kind: "reveal", messageId: "queued-7" },
+      { kind: "reveal", messageId: "req-9" },
     ]);
     expect(events[0]!.reg.message?.parts[0]).toEqual({
       type: "text",

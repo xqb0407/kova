@@ -40,6 +40,7 @@ import { SKILL_MGMT_TOOL_NAMES } from "../skills/skill-mgmt-tools";
 import { SKILL_USE_TOOL_NAME } from "../skills/skill-use-tool";
 import { PLUGIN_MGMT_TOOL_NAMES } from "../plugins/plugin-mgmt-tools";
 import { getAutomationPolicy, automationDenyReason } from "../automation/policy";
+import { setLeadingSystemMessage } from "./context";
 import { buildHookPayload, runHooks } from "./hooks";
 import { personalizationPromptBlock } from "./personalization";
 import { appModePromptBlock } from "./app-mode";
@@ -650,13 +651,15 @@ export function applyMode(run: Running, mode: SessionMode): void {
   run.planning = PLANNING_BY_MODE[mode];
   const prompt = composeModeSystemPrompt(mode, run.cwd, run.agent.state.model, run.designTheme);
   const tools = toolsForMode(run);
-  run.agent.state.systemPrompt = prompt;
+  // 0.99 迁移：state.systemPrompt 只读（转录首条 system 消息的回放），热换走
+  // setLeadingSystemMessage；loopContext 亦无 systemPrompt 字段，改其 messages 首条
+  setLeadingSystemMessage(run.agent.state.messages, prompt);
   run.agent.state.tools = tools;
   // 轮中切换（plan_enter / plan_exit 批准）：循环每次请求都从上下文快照读
   // tools/systemPrompt，把 beforeToolCall 捕获的活上下文一并改写，
   // 本轮下一次请求即用新模式工具表，不必等下一次 prompt。
   if (run.loopContext) {
-    run.loopContext.systemPrompt = prompt;
+    setLeadingSystemMessage(run.loopContext.messages, prompt);
     run.loopContext.tools = tools;
   }
   persistModePrefs(run);

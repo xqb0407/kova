@@ -47,14 +47,16 @@ export const WindowControls: FC = () => {
   if (!enabled) return null;
 
   const win = getCurrentWindow();
+  // 尺寸/圆角/hover 与顶栏其他图标按钮（全屏、收起面板等）同规格：
+  // size-8 + rounded-md + hover:bg-muted，避免三键在 h-12 顶栏里显得又宽又方
   const btn =
-    "flex h-full w-11 shrink-0 items-center justify-center text-foreground/80 transition-colors";
+    "inline-flex size-8 shrink-0 items-center justify-center rounded-md text-foreground/80 transition-colors";
   return (
-    <div className="flex h-12 shrink-0 items-center">
+    <div className="flex h-12 shrink-0 items-center gap-0.5">
       <button
         type="button"
         aria-label="最小化"
-        className={`${btn} hover:bg-foreground/10`}
+        className={`${btn} hover:bg-muted`}
         onClick={() => void win.minimize()}
       >
         <MinusIcon className="size-4" />
@@ -62,7 +64,7 @@ export const WindowControls: FC = () => {
       <button
         type="button"
         aria-label={maximized ? "还原" : "最大化"}
-        className={`${btn} hover:bg-foreground/10`}
+        className={`${btn} hover:bg-muted`}
         onClick={() => void win.toggleMaximize()}
       >
         {maximized ? (

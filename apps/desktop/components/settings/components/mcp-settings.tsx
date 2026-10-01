@@ -1486,7 +1486,7 @@ export const McpSettings: FC = () => {
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      <div className="flex w-full max-w-6xl flex-col gap-8 self-center px-8 py-8">
+      <div className="flex w-full max-w-7xl flex-col gap-8 self-center px-8 py-8">
         {/* 标题行：状态文字在右（记忆页同款） */}
         <div className="flex items-baseline justify-between gap-4">
           <h1 className="text-2xl font-bold tracking-tight">MCP 服务器</h1>

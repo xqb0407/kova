@@ -18,6 +18,7 @@ import {
   contextInfo,
   needsCompaction,
   runCompaction,
+  setLeadingSystemMessage,
   type CompactionOutcome,
 } from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
@@ -39,6 +40,7 @@ import {
   takeFrontEntry,
 } from "../sessions/prompt-queue";
 import {
+  ensureTaskSessionDir,
   isModelUnavailable,
   noteActiveTurn,
   rebindRunThread,
@@ -90,6 +92,40 @@ function pushContextChanged(run: Running): void {
  *  context_changed 推送，钩子本体不碰传输层，保持可单测）。 */
 export type MidTurnCompactionHook = NonNullable<Agent["prepareNextTurnWithContext"]>;
 
+/* ---------------------- 截断错误自愈增强 ---------------------- */
+
+/** pi-agent-core 对「输出撞 maxTokens 截断」的工具调用统一标记的文案关键短语
+ *  （agent-loop.js failTruncatedToolCalls；跨包耦合只认短语，升级时同步） */
+const TRUNCATED_TOOL_CALL_MARKER = "hit the output token limit";
+
+const TRUNCATED_TOOL_CALL_HINT =
+  "\n\nHint: do NOT simply re-issue the same oversized call — it will hit the limit again. " +
+  "For write, split the file into parts: write the first part, then append the rest with " +
+  "edit calls (match the file's current tail as old_string). Keep each response small.";
+
+/** 截断错误自愈增强：输出撞限被 core 标记失败的 toolCall，原错误文案只让模型
+ *  「重发完整参数」——同样的大 write 重发还会再撞限，弱模型会原地打转。在
+ *  下一轮请求前就地给这类错误 toolResult 附加拆分写入指引。
+ *  只改内存上下文（转录已按原文案落盘，历史保真；自愈指引只需紧接的下一轮
+ *  生效，刷新重建后消失无妨）。幂等：按 hint 特征短语防重复追加。 */
+export function augmentTruncatedToolCallErrors(messages: unknown[]): void {
+  for (const m of messages) {
+    const msg = m as { role?: string; isError?: boolean; content?: unknown };
+    if (!msg || msg.role !== "toolResult" || !msg.isError || !Array.isArray(msg.content)) continue;
+    for (const c of msg.content) {
+      const block = c as { type?: string; text?: string };
+      if (
+        block.type === "text" &&
+        typeof block.text === "string" &&
+        block.text.includes(TRUNCATED_TOOL_CALL_MARKER) &&
+        !block.text.includes("do NOT simply re-issue")
+      ) {
+        block.text += TRUNCATED_TOOL_CALL_HINT;
+      }
+    }
+  }
+}
+
 export function makeMidTurnCompactionHook(
   run: Running,
   notify: (
@@ -100,6 +136,9 @@ export function makeMidTurnCompactionHook(
   opts?: { summarize?: import("../agent/context").SummarizeFn },
 ): MidTurnCompactionHook {
   return async (_lastTurn, signal) => {
+    // 截断错误增强先行（即使不触发压缩也要做）：就地改 state.messages，
+    // 压缩若触发则其 slice() 快照自然带上增强后的文本
+    augmentTruncatedToolCallErrors(run.agent.state.messages);
     if (run.stopRequested || signal?.aborted) return undefined;
     if (!needsCompaction(run)) return undefined;
     notify("start");
@@ -111,9 +150,10 @@ export function makeMidTurnCompactionHook(
       return undefined;
     }
     notify("complete", outcome);
+    // 0.99 迁移：AgentContext 无 systemPrompt 字段（提示词由 messages 首条
+    // system 消息承载，runCompaction 已保留头部），直接回传 state 快照
     return {
       context: {
-        systemPrompt: run.agent.state.systemPrompt ?? "",
         messages: run.agent.state.messages.slice(),
         tools: (run.agent.state.tools ?? []).slice(),
       },
@@ -289,8 +329,46 @@ export async function dispatchPrompt(
 }
 
 /** 单个 prompt turn 的完整执行（原 dispatchPrompt 主体）：会话准备段入管理队列
- *  串行执行，agent.prompt 长任务在队列外运行 */
+ *  串行执行，agent.prompt 长任务在队列外运行。
+ *
+ *  外层是**崩溃隔离层**。内层的 try 只罩住 agent 段，会话准备段（ensureTaskSessionDir /
+ *  rebindRunThread / 系统提示词重排 / 挂起清理）都在它之前：那几处任何一次同步抛错都会
+ *  跳过内层 finally，于是——不发 finish（AI SDK 的 status 永远停在 streaming，Stop 失灵、
+ *  线程看着一直忙）、不清 activeReqByThread（下一轮的内容 chunk 全被路由进这条死流）、
+ *  不回调 onOutcome（无人值守的 automation runner 永远等下去）。protocol.ts 的兜底
+ *  catch 只补了 error chunk，补不了这三条。
+ *  这里把逃逸的抛错就地结算：错误 chunk + finish + 清路由 + 回报 onOutcome。 */
 async function runPromptTurn(
+  reqId: string,
+  msg: Record<string, unknown>,
+  threadId: string,
+  onOutcome?: (outcome: PromptTurnOutcome) => void,
+) {
+  try {
+    await runTurnBody(reqId, msg, threadId, onOutcome);
+  } catch (err) {
+    const errorText = err instanceof Error ? err.message : String(err);
+    logErr("prompt turn crashed before teardown:", errorText);
+    // 崩在 agent 开跑之后：run 可能还挂着活动轮/子代理，一并停掉，否则线程回不到空闲
+    const run = running.get(threadId);
+    if (run) {
+      run.stopRequested = true;
+      try {
+        run.agent.abort();
+      } catch {
+        /* 中止本身失败无补救可做：错误已上报，不让它盖掉主因 */
+      }
+    }
+    // 先清路由再发 chunk：activeReqByThread 还指着这条死流的话，finish 会落空
+    setActiveReqId(threadId, null);
+    sendErrorChunk(reqId, errorText, toWireError(classifyAgentError(err, { opaqueFallback: "runtime" })));
+    sendChunk(reqId, { type: "finish" });
+    onOutcome?.({ ok: false, errorText });
+  }
+}
+
+/** turn 主体（收尾由内层 finally 保证，见 runPromptTurn 的隔离层说明） */
+async function runTurnBody(
   reqId: string,
   msg: Record<string, unknown>,
   threadId: string,
@@ -317,6 +395,9 @@ async function runPromptTurn(
     onOutcome?.({ ok: false, errorText });
     return;
   }
+  // 任务工作区目录到这一刻才落盘：会话解析阶段不建（启动时草稿线程也会解析，
+  // 那时无物可写，建了就是空壳目录）。自选了工作目录的会话内部自带判断跳过。
+  ensureTaskSessionDir(run);
   // 线程键漂移（刷新后草稿 id → sessionId）：resolveSession 在旧轮未收尾时
   // 不敢改绑 run.threadId（会把旧轮事件错路由进新请求），这里等旧键轮次
   // 完整结束（含委派收敛与 finish 收尾）后补改绑。不改绑的后果：事件路由按
@@ -343,12 +424,16 @@ async function runPromptTurn(
   }
   // 每轮请求前重排环境事实段（日历日跨天兜底：提示词只在建会话/切模式/改设置
   // 时重排，长会话跨过午夜日期会停旧）；纯字符串拼接零成本，块内容不变时
-  // 重排出字节级相同的提示词，缓存前缀不受影响
-  run.agent.state.systemPrompt = composeModeSystemPrompt(
-    run.mode,
-    run.cwd,
-    run.agent.state.model,
-    run.designTheme,
+  // 重排出字节级相同的提示词，缓存前缀不受影响。
+  // 0.99 迁移：提示词由转录首条 system 消息承载（state.systemPrompt 只读）
+  setLeadingSystemMessage(
+    run.agent.state.messages,
+    composeModeSystemPrompt(
+      run.mode,
+      run.cwd,
+      run.agent.state.model,
+      run.designTheme,
+    ),
   );
   setActiveReqId(threadId, reqId);
   run.stopRequested = false;

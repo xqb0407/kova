@@ -27,6 +27,7 @@ import {
   pluginsRootDir,
   LOCAL_MKT_ID,
   LOCAL_MKT_NAME,
+  BUILTIN_MKT_ID,
   type CatalogPluginEntry,
   type InstalledPlugin,
   type MarketplaceCatalog,
@@ -313,6 +314,7 @@ export type RefreshResult = { record: MarketplaceRecord; catalog: MarketplaceCat
 /** 刷新市场：directory 重读目录；git 重新浅克隆后重读（含更新检测所需的 revision） */
 export async function refreshMarketplace(mktId: string): Promise<RefreshResult> {
   if (mktId === LOCAL_MKT_ID) throw new Error("「本地安装」目录随装随生成，无需刷新");
+  if (mktId === BUILTIN_MKT_ID) throw new Error("内置插件随应用更新，无需刷新");
   const record = readMarketplaceRecords().find((r) => r.id === mktId);
   if (!record) throw new Error(`未找到市场 "${mktId}"`);
   let root: string;
@@ -384,6 +386,8 @@ export type InstallOptions = {
  */
 export async function installPlugin(mktId: string, name: string, opts: InstallOptions = {}): Promise<InstallResult> {
   if (mktId === LOCAL_MKT_ID) return reinstallLocalPlugin(name);
+  // 内置市场不参与安装写路径（条目由启动 sync 物化）
+  if (mktId === BUILTIN_MKT_ID) throw new Error("内置插件随应用分发，无需安装");
   const record = readMarketplaceRecords().find((r) => r.id === mktId);
   if (!record) throw new Error(`未找到市场 "${mktId}"`);
   let cache = readCatalogCache(mktId);
@@ -600,6 +604,7 @@ export async function uninstallPlugin(pluginId: string): Promise<void> {
   if (at <= 0) throw new Error(`非法插件身份 "${pluginId}"`);
   const name = pluginId.slice(0, at);
   const mktId = pluginId.slice(at + 1);
+  if (mktId === BUILTIN_MKT_ID) throw new Error("内置插件不可卸载，可在插件设置中禁用");
   const dir = installedPluginDir(mktId, name);
   if (!existsSync(dir)) throw new Error(`未找到已装插件 "${pluginId}"`);
   // 链接装：rmSync 对 symlink 只删链接本体，源目录不受影响

@@ -6,13 +6,15 @@
     "build": "bun run scripts/build-sidecar.ts",
     "design:pack": "bun run scripts/build-design-themes-zip.ts",
     "design:verify": "bun run scripts/verify-design-themes-zip.ts",
+    "plugins:pack": "bun run scripts/build-builtin-plugins-zip.ts",
+    "plugins:verify": "bun run scripts/verify-builtin-plugins-zip.ts",
     "smoke": "bun run src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.85.1",
-    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-agent-core": "0.99.2",
+    "@earendil-works/pi-ai": "0.99.2",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "croner": "^10.0.1",
     "fflate": "^0.8.3",

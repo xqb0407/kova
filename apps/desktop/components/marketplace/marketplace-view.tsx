@@ -68,6 +68,13 @@ import {
   type PluginPreviewData,
 } from "@/components/marketplace/plugin-preview-dialog";
 
+/**
+ * 伪市场（「本地安装」「内置插件」）：不在登记表、随装随生成/随 app 分发——
+ * 无移除/刷新/链接装；「内置插件」还不可安装与卸载（条目即已装项，
+ * 启停在「已装插件」页做）。
+ */
+const isPseudoMarket = (id: string) => id === "local" || id === "builtin";
+
 function ViewSpinner() {
   return (
     <div className="flex h-full items-center justify-center">
@@ -132,7 +139,10 @@ function MarketplaceIcon({ market }: { market: MarketplaceEntry }) {
   );
 }
 
-export const MarketplaceView: FC = () => {
+export const MarketplaceView: FC<{
+  /** composer「+」菜单请求直落的分段；非空即打开管理页并落到该分段 */
+  manageTab?: ManageTab | null;
+}> = ({ manageTab: requestedTab }) => {
   const workspace = useWorkspace();
   // 管理页分段器的计数；清单数据由迁移进来的管理组件自取
   const skillsSnap = useSkills(workspace);
@@ -168,6 +178,13 @@ export const MarketplaceView: FC = () => {
   useEffect(() => {
     if (!activeMktId && marketplaces.length > 0) setActiveMktId(marketplaces[0]!.id);
   }, [activeMktId, marketplaces]);
+
+  // composer「+」菜单的「管理技能 / 管理连接器」直落：请求来即打开管理页
+  useEffect(() => {
+    if (!requestedTab) return;
+    setManageOpen(true);
+    setManageTab(requestedTab);
+  }, [requestedTab]);
 
   // 耗时操作出错时 toast 提示（成功路径由帧数据整包并入，无需处理）。
   // 本地安装除外：其错误/成功由安装对话框内联呈现，避免重复。
@@ -224,7 +241,8 @@ export const MarketplaceView: FC = () => {
     previewMarket && previewSel ? installStateOf(previewMarket, previewSel.name) : null;
   /** 预览弹窗条目（未装为 null）；弹窗页脚卸载按钮用 */
   const previewInstalledEntry = previewState?.installed ? previewState.plugin : null;
-  const dialogUninstallBtn = previewInstalledEntry ? (
+  // 内置插件不可卸载（可禁用）：预览弹窗页脚不给卸载按钮
+  const dialogUninstallBtn = previewInstalledEntry && previewInstalledEntry.marketplaceId !== "builtin" ? (
     <Button
       size="sm"
       variant="ghost"
@@ -241,7 +259,7 @@ export const MarketplaceView: FC = () => {
     return (
       <div className="flex h-full min-h-0 flex-col">
         {/* 顶部条：与下方设置内容同宽同轴，返回 + 分段器（带计数） */}
-        <div className="mx-auto flex w-full max-w-6xl shrink-0 items-center justify-between px-8 pt-6">
+        <div className="mx-auto flex w-full max-w-7xl shrink-0 items-center justify-between px-8 pt-6">
           <Button
             variant="ghost"
             size="sm"
@@ -262,7 +280,7 @@ export const MarketplaceView: FC = () => {
           />
         </div>
         <div className="min-h-0 flex-1">
-          <div className="mx-auto h-full max-w-6xl px-8">
+          <div className="mx-auto h-full max-w-7xl px-8">
             {manageTab === "plugins" && <McpSettings />}
             {manageTab === "skills" && <SkillsSettings />}
             {manageTab === "apps" && (
@@ -282,7 +300,7 @@ export const MarketplaceView: FC = () => {
 
   return (
     <div className="h-full">
-      <div className="mx-auto flex h-full w-full max-w-6xl flex-col px-8 py-8 lg:px-12">
+      <div className="mx-auto flex h-full w-full max-w-7xl flex-col px-8 py-8 lg:px-12">
         {/* 页头：标题 + 管理；主区页签在标题下 */}
         <div className="flex items-start justify-between">
           <div>
@@ -377,9 +395,9 @@ export const MarketplaceView: FC = () => {
                       <MarketplaceIcon market={m} />
                       <span className="min-w-0 flex-1 truncate">{m.name}</span>
                       {m.id === activeMarket?.id && <CheckIcon className="size-3.5" />}
-                      {/* 移除入口（伪市场「本地安装」随装随生成，不可移除）。
+                      {/* 移除入口（伪市场「本地安装」「内置插件」不可移除）。
                           用 span 而非 button：菜单项本身是 button，不允许嵌套 */}
-                      {m.id !== "local" && (
+                      {!isPseudoMarket(m.id) && (
                         <span
                           role="button"
                           aria-label={`移除市场 ${m.name}`}
@@ -401,8 +419,8 @@ export const MarketplaceView: FC = () => {
                   <DropdownMenuItem onClick={() => setAddOpen(true)}>+ 添加市场…</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              {/* 「本地安装」伪市场目录随装随生成，无刷新概念 */}
-              {activeMarket && activeMarket.id !== "local" && (
+              {/* 伪市场无刷新概念（本地安装随装随生成；内置插件随应用更新） */}
+              {activeMarket && !isPseudoMarket(activeMarket.id) && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -432,9 +450,10 @@ export const MarketplaceView: FC = () => {
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {activeMarket!.plugins.map((entry) => {
                     const state = installStateOf(activeMarket!, entry.name);
-                    // 已装插件在市场页即可卸载：图标钮保持卡片版式不挤，确认弹窗与已装页共用
+                    // 已装插件在市场页即可卸载：图标钮保持卡片版式不挤，确认弹窗与已装页共用；
+                    // 内置插件不可卸载（随应用更新，启停在已装页）
                     const uninstallBtn =
-                      state.installed && state.plugin ? (
+                      state.installed && state.plugin && activeMarket!.id !== "builtin" ? (
                         <Button
                           size="sm"
                           variant="ghost"
@@ -519,9 +538,17 @@ export const MarketplaceView: FC = () => {
                                     更新
                                   </Button>
                                 ) : (
-                                  <Badge variant="outline" className="gap-1 font-normal">
+                                  <Badge
+                                    variant="outline"
+                                    className="gap-1 font-normal"
+                                    title={
+                                      activeMarket!.id === "builtin"
+                                        ? "首方插件随应用分发与更新，不可卸载，可禁用"
+                                        : undefined
+                                    }
+                                  >
                                     <CheckIcon className="size-3" />
-                                    已安装
+                                    {activeMarket!.id === "builtin" ? "内置" : "已安装"}
                                   </Badge>
                                 )
                               ) : (
@@ -540,7 +567,7 @@ export const MarketplaceView: FC = () => {
                               )}
                               {uninstallBtn}
                               {activeMarket!.type === "directory" &&
-                                activeMarket!.id !== "local" &&
+                                !isPseudoMarket(activeMarket!.id) &&
                                 !state.update && (
                                 <Button
                                   size="sm"
@@ -592,9 +619,17 @@ export const MarketplaceView: FC = () => {
               </div>
             ) : previewState.installed && !previewState.update ? (
               <div className="flex items-center gap-2">
-                <Badge variant="outline" className="gap-1 font-normal">
+                <Badge
+                  variant="outline"
+                  className="gap-1 font-normal"
+                  title={
+                    previewMarket.id === "builtin"
+                      ? "首方插件随应用分发与更新，不可卸载，可禁用"
+                      : undefined
+                  }
+                >
                   <CheckIcon className="size-3" />
-                  已安装
+                  {previewMarket.id === "builtin" ? "内置 · 随应用更新" : "已安装"}
                 </Badge>
                 {dialogUninstallBtn}
               </div>
@@ -609,7 +644,7 @@ export const MarketplaceView: FC = () => {
                   {previewState.installed ? "更新" : "安装"}
                 </Button>
                 {previewMarket.type === "directory" &&
-                  previewMarket.id !== "local" &&
+                  !isPseudoMarket(previewMarket.id) &&
                   !previewState.update && (
                     <Button
                       size="sm"

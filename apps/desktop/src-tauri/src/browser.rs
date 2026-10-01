@@ -121,7 +121,7 @@ fn create_webview(
                 emit_navigated(payload.url().to_string(), "finished", None);
                 // 标题不在 payload 里，load 完成后异步取一次再推
                 let _ = wv.eval_with_callback(STATE_JS, move |res| {
-                    if let Ok(v) = serde_json::from_str::<Value>(&res) {
+                    if let Ok(v) = parse_eval_result(&res) {
                         emit_navigated(
                             v["url"].as_str().unwrap_or("").to_string(),
                             "title",
@@ -436,8 +436,36 @@ pub fn current_url(guard: &CancelGuard) -> Result<String, String> {
 
 /* ------------------------------ eval 基元 ------------------------------ */
 
+/// 解析 wry eval 回调给回的字符串为 JSON。
+///
+/// wry 0.55 的 WKWebView 回调把 JS 结果整体过了一遍 NSJSONSerialization
+/// （FragmentsAllowed）：脚本返回的是字符串（JSON.stringify 产物）时，回调给回
+/// 的是二次编码的 `"..."`——这里解一层才是真正的 payload；脚本直接返回对象时
+/// 回调给的就是对象，原样透传。JS 结果为 nil（页面尚未加载/脚本没跑）时回调
+/// 给空串，报成明确的「页面未就绪」而不是费解的 JSON 解析错误。
+fn parse_eval_result(s: &str) -> Result<Value, String> {
+    if s.trim().is_empty() {
+        return Err(
+            "browser eval returned no result — the panel webview has no live page yet \
+             (load failed or still initializing)"
+                .into(),
+        );
+    }
+    let v: Value =
+        serde_json::from_str(s).map_err(|e| format!("browser eval result is not json: {e}"))?;
+    if let Value::String(inner) = &v {
+        if let Ok(parsed) = serde_json::from_str::<Value>(inner) {
+            if parsed.is_object() {
+                return Ok(parsed);
+            }
+        }
+    }
+    Ok(v)
+}
+
 /// eval JS 并等回调结果，解析为 JSON。阻塞等待（宿主工具线程），轮询取消标志。
-/// 回调只给 JSON 字符串（wry 不回传异常）——脚本自带 try/catch 兜底，ok/error 在内容里。
+/// 回调给回的是经 NSJSONSerialization 的结果字符串（wry 不回传异常）——
+/// 脚本自带 try/catch 兜底，ok/error 在内容里。
 fn eval_json(
     wv: &tauri::webview::Webview<Wry>,
     js: &str,
@@ -458,8 +486,7 @@ fn eval_json(
         }
         match rx.recv_timeout(Duration::from_millis(150)) {
             Ok(s) => {
-                return serde_json::from_str::<Value>(&s)
-                    .map_err(|e| format!("browser eval result is not json: {e}"));
+                return parse_eval_result(&s);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if Instant::now() >= deadline {
@@ -503,7 +530,7 @@ async fn current_page(wv: &tauri::webview::Webview<Wry>) -> Result<Value, String
         .await
         .map_err(|_| "browser eval timeout".to_string())?
         .ok_or("browser eval channel closed")?;
-    serde_json::from_str::<Value>(&s).map_err(|e| format!("browser eval result is not json: {e}"))
+    parse_eval_result(&s)
 }
 
 /// 等页面稳定：readyState=complete 且 url 连续两次轮询不变（覆盖导航与 SPA 变化），
@@ -860,6 +887,26 @@ mod tests {
         assert_eq!(js_escape("a\\b"), "a\\\\b");
         assert_eq!(js_escape("a\nb"), "a\\nb");
         assert_eq!(js_escape("a\rb"), "a\\rb");
+    }
+
+    #[test]
+    fn parse_eval_result_unwraps_double_encoded_string() {
+        // wry 0.55 WKWebView 回调：脚本返回 JSON.stringify 字符串时整体被
+        // NSJSONSerialization 再编码一次，外层是 JSON string
+        let s = r#""{\"ok\":true,\"url\":\"https://example.com/\",\"readyState\":\"complete\",\"title\":\"T\"}""#;
+        let v = parse_eval_result(s).expect("should parse");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["url"], "https://example.com/");
+        assert_eq!(v["readyState"], "complete");
+
+        // 脚本直接返回对象时回调给的就是对象，透传
+        let direct = r#"{"ok":true,"url":"about:blank"}"#;
+        let v = parse_eval_result(direct).expect("should parse");
+        assert_eq!(v["url"], "about:blank");
+
+        // 页面未加载（JS 结果 nil）时回调给空串，应为明确错误而非 JSON 报错
+        assert!(parse_eval_result("").unwrap_err().contains("no live page"));
+        assert!(parse_eval_result("  ").unwrap_err().contains("no live page"));
     }
 
     #[test]

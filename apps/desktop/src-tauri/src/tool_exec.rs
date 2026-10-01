@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,8 @@ use serde_json::{json, Value};
 const MAX_TOOL_OUTPUT: usize = 16 * 1024;
 const MAX_READ_BYTES: usize = 64 * 1024;
 const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;
+/// 模型可申请的超时上限（600s）：防单命令挂死回合，长任务应走 runInBackground
+const MAX_BASH_TIMEOUT_MS: u64 = 600_000;
 /// 进程收尾后等读线程 EOF 的上限：正常毫秒级返回，只给「杀干净了但管道未关」留余量
 const READER_JOIN_GRACE_MS: u64 = 2_000;
 
@@ -348,7 +350,12 @@ fn run_bash(
         match exit_code {
             Some(0) => String::new(),
             Some(code) => format!("\n[exit code: {code}]"),
-            None => "\n[timeout]".to_string(),
+            None => format!(
+                "\n[timeout after {}s — output above is what was collected before the kill. \
+                 For long-running commands pass runInBackground:true and poll with task_output, \
+                 or split the work into shorter steps.]",
+                timeout_ms / 1000
+            ),
         }
     };
     let suffix = if truncated { "\n…[output truncated]" } else { "" };
@@ -369,6 +376,216 @@ fn read_text_file(cwd: &str, file_path: &str) -> Result<(Vec<u8>, String), Strin
     Ok((raw, full))
 }
 
+/* ----------------------------- 后台 bash 任务 ------------------------------
+ * 主流做法（Claude Code run_in_background 等）：长命令丢后台立即返回句柄，
+ * 回合继续不阻塞；配套 task_output（读输出+状态）/ task_stop（杀）按需操作。
+ * 与前台 bash 的关键差异：后台任务**不受 host_cancel 影响**（跨回合存活——
+ * 取消对话回合只杀前台命令树），进程自然退出或被 task_stop 显式杀掉。 */
+
+/// 单任务输出缓冲上限：超限丢头部保留尾部（tail 对诊断更有用）
+const MAX_BG_OUTPUT: usize = 256 * 1024;
+/// 已完成任务句柄保留上限：超过淘汰最老的已完成项（运行中不淘汰）
+const MAX_BG_TASKS: usize = 32;
+static BG_NEXT_ID: AtomicU32 = AtomicU32::new(1);
+
+struct BgTask {
+    command: String,
+    pid: u32,
+    combined: Arc<StdMutex<String>>,
+    killed: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
+    exit_code: Arc<StdMutex<Option<i32>>>,
+    /// 启动时注入的密钥存档：task_output 回程前按它脱敏（明文只存在本进程内存，
+    /// 不随输出外泄；同 run_bash 出口脱敏的约束，见 docs/secrets-env-design.md §1.6）
+    secrets: Vec<(String, String)>,
+    /// 发起线程 id（sidecar 随工具信封带上）。这张表是全进程一张，任务却属于
+    /// 某一个会话：没有归属校验的话，任意线程猜到一个 taskId 就能读到别人命令
+    /// 的输出（可能含未脱敏上下文），或 task_stop 杀掉别人的长跑进程。
+    owner: String,
+}
+
+static BG_TASKS: OnceLock<StdMutex<HashMap<u32, BgTask>>> = OnceLock::new();
+
+fn bg_tasks() -> &'static StdMutex<HashMap<u32, BgTask>> {
+    BG_TASKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+/// 启动后台 shell 命令：spawn + 双流读者线程 + wait 线程，立即返回 task id。
+/// 输出进 256KB 尾部缓冲；secrets 只注入这一个派生进程（同前台 bash）。
+/// owner = 发起线程 id，落进 BgTask 供 task_output / task_stop 校验归属。
+fn run_bash_background(
+    cwd: &str,
+    command: &str,
+    secrets: &[(String, String)],
+    owner: &str,
+) -> Result<Value, String> {
+    let (file, prefix_args) = resolve_shell_command();
+    let mut cmd = Command::new(&file);
+    cmd.args(&prefix_args)
+        .arg(command)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::secret_env::apply_env(&mut cmd, secrets);
+    no_window(&mut cmd);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("failed to spawn {file}: {e}"))?;
+    let pid = child.id();
+
+    let combined = Arc::new(StdMutex::new(String::new()));
+    let killed = Arc::new(AtomicBool::new(false));
+    let running = Arc::new(AtomicBool::new(true));
+    let exit_code = Arc::new(StdMutex::new(None::<i32>));
+    let streams: Vec<Box<dyn Read + Send>> = vec![
+        Box::new(child.stdout.take().ok_or("no stdout")?),
+        Box::new(child.stderr.take().ok_or("no stderr")?),
+    ];
+    for stream in streams {
+        let sink = Arc::clone(&combined);
+        let killed_flag = Arc::clone(&killed);
+        std::thread::spawn(move || {
+            let mut reader = stream;
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if killed_flag.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if let Ok(mut out) = sink.lock() {
+                            out.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            // 超限丢头部：保留尾部 MAX_BG_OUTPUT 字节（字符边界对齐）
+                            if out.len() > MAX_BG_OUTPUT {
+                                let cut = out.len() - MAX_BG_OUTPUT;
+                                let mut cut2 = cut;
+                                while cut2 < out.len() && !out.is_char_boundary(cut2) {
+                                    cut2 += 1;
+                                }
+                                out.drain(..cut2);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // wait 线程：阻塞等退出，标记 done + exit code（孤儿进程自然回收，无泄漏）
+    let wait_running = Arc::clone(&running);
+    let wait_code = Arc::clone(&exit_code);
+    std::thread::spawn(move || {
+        let code = child.wait().ok().and_then(|s| s.code()).or(Some(-1));
+        if let Ok(mut c) = wait_code.lock() {
+            *c = code;
+        }
+        wait_running.store(false, Ordering::Relaxed);
+    });
+
+    let id = BG_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    // 淘汰最老的已完成任务，句柄表不无限增长（运行中的不淘汰）
+    if let Ok(mut map) = bg_tasks().lock() {
+        if map.len() >= MAX_BG_TASKS {
+            if let Some(oldest_done) = map.iter().find(|(_, t)| !t.running.load(Ordering::Relaxed)).map(|(k, _)| *k) {
+                map.remove(&oldest_done);
+            }
+        }
+        map.insert(id, BgTask {
+            command: command.to_string(),
+            pid,
+            combined: Arc::clone(&combined),
+            killed: Arc::clone(&killed),
+            running,
+            exit_code,
+            secrets: secrets.to_vec(),
+            owner: owner.to_string(),
+        });
+    }
+    Ok(json!({
+        "output": format!(
+            "Started in background (task {id}). The process keeps running across turns and is \
+             NOT killed when this turn is cancelled. Use task_output with taskId={id} to read \
+             collected output and check status; use task_stop with taskId={id} to kill it. \
+             Do not poll in a tight loop — do other work first, then check again."
+        ),
+        "taskId": id,
+    }))
+}
+
+/// 取本线程有权访问的任务句柄。任务表全进程共享，id 是自增小整数——不校验归属
+/// 的话任何线程都能读走别人的命令输出或杀掉别人的进程。owner 为空（旧版
+/// sidecar 不带该字段）时放行：宁可宽松，也不能因为对端没升级就把长跑任务
+/// 变成"查不到"。
+fn owned_task<'a>(
+    map: &'a HashMap<u32, BgTask>,
+    id: u32,
+    owner: &str,
+) -> Result<&'a BgTask, String> {
+    let task = map
+        .get(&id)
+        .ok_or_else(|| format!("no such background task: {id} (it may have been reaped after completion)"))?;
+    if !owner.is_empty() && !task.owner.is_empty() && task.owner != owner {
+        return Err(format!(
+            "background task {id} belongs to another thread; it is not readable or stoppable from here. \
+             Only task ids issued to this thread may be used."
+        ));
+    }
+    Ok(task)
+}
+
+/// task_output：返回缓冲内的全部输出（≤256KB 尾部）+ 运行状态
+/// （脱敏按任务启动时的 secrets 存档，见 BgTask.secrets）。
+fn handle_task_output(p: &Value, owner: &str) -> Result<Value, String> {
+    let id = p
+        .get("taskId")
+        .and_then(|v| v.as_u64())
+        .ok_or("taskId is required")? as u32;
+    let map = bg_tasks().lock().map_err(|_| "task registry poisoned")?;
+    let task = owned_task(&map, id, owner)?;
+    let out = task.combined.lock().map(|m| m.clone()).unwrap_or_default();
+    let running = task.running.load(Ordering::Relaxed);
+    let code = task.exit_code.lock().map(|c| *c).unwrap_or(None);
+    let out = crate::secret_env::redact(&out, &task.secrets);
+    let status = if running {
+        "\n[still running]".to_string()
+    } else {
+        match code {
+            Some(0) => "\n[exited cleanly]".to_string(),
+            Some(c) => format!("\n[exited with code {c}]"),
+            None => String::new(),
+        }
+    };
+    Ok(json!({
+        "output": format!("{}{}", out, status),
+        "running": running,
+        "exitCode": code,
+    }))
+}
+
+/// task_stop：杀整棵进程树（同前台 kill_tree 路径）
+fn handle_task_stop(p: &Value, owner: &str) -> Result<Value, String> {
+    let id = p
+        .get("taskId")
+        .and_then(|v| v.as_u64())
+        .ok_or("taskId is required")? as u32;
+    let map = bg_tasks().lock().map_err(|_| "task registry poisoned")?;
+    let task = owned_task(&map, id, owner)?;
+    if !task.running.load(Ordering::Relaxed) {
+        return Ok(json!({ "output": format!("task {id} already exited."), "running": false }));
+    }
+    task.killed.store(true, Ordering::Relaxed);
+    kill_tree(task.pid);
+    Ok(json!({
+        "output": format!("task {id} killed: {}", task.command.chars().take(120).collect::<String>()),
+        "running": false,
+    }))
+}
+
 fn resolve_path(cwd: &str, p: &str) -> Result<String, String> {
     let path = std::path::Path::new(p);
     if path.is_absolute() {
@@ -378,10 +595,47 @@ fn resolve_path(cwd: &str, p: &str) -> Result<String, String> {
     }
 }
 
+/// 按扩展名识别常见栅格图片 → MIME（与 sidecar image-parts.ts 白名单一致，svg 不放行）
+fn image_mime(file_path: &str) -> Option<&'static str> {
+    let ext = std::path::Path::new(file_path)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
 fn handle_read(p: &Value) -> Result<Value, String> {
     let file_path = str_param(p, "file_path")?;
     let cwd = p.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
     let (raw, _full) = read_text_file(cwd, &file_path)?;
+    // 图片直接以 base64 返回，sidecar 转成 image 内容块让模型"看见"（工作区截图/
+    // 生成图的查看路径）。2MiB 上限与 image-parts.ts 的 IMAGE_INLINE_MAX_BYTES 对齐。
+    if let Some(mime) = image_mime(&file_path) {
+        const MAX_IMAGE_BYTES: usize = 2 * 1024 * 1024;
+        if raw.len() > MAX_IMAGE_BYTES {
+            return Ok(json!({
+                "output": format!(
+                    "{file_path} is an image ({} KB) too large to attach inline (>2MiB). \
+                     Downscale it first, e.g. `sips -Z 1600 \"{file_path}\" --out small.png`, \
+                     then read the downscaled copy.",
+                    raw.len() / 1024
+                ),
+            }));
+        }
+        use base64::Engine as _;
+        return Ok(json!({
+            "output": format!("Image attached: {mime}, {} KB", raw.len() / 1024),
+            "base64": base64::engine::general_purpose::STANDARD.encode(&raw),
+            "mimeType": mime,
+            "bytes": raw.len(),
+        }));
+    }
     if raw.contains(&0u8) {
         return Err(format!("{file_path} is a binary file and cannot be read as text"));
     }
@@ -944,19 +1198,33 @@ pub fn handle_tool(id: &str, p: &Value) -> Result<Value, String> {
         map.entry("cwd")
             .or_insert_with(|| p.get("cwd").cloned().unwrap_or(Value::Null));
     }
+    // 后台任务的归属线程（sidecar 随信封带；旧版对端不带 → 空，放行）
+    let envelope_owner = p
+        .get("owner")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     match name.as_str() {
         "bash" => {
             let cwd = p.get("cwd").and_then(|v| v.as_str()).unwrap_or(".").to_string();
             let command = str_param(&inner, "command")?;
-            let timeout_ms = inner
-                .get("timeout")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(DEFAULT_BASH_TIMEOUT_MS);
             // 注入用的明文由 dispatch_host_query 预处理写在信封上（名字走
             // p.secretEnv，见 secret_env.rs）；读出来只喂给这一个派生进程
             let secrets = crate::secret_env::take_resolved(p);
+            // 后台模式：立即返回句柄（跨回合存活，不受 host_cancel 影响）
+            if inner.get("runInBackground").and_then(|v| v.as_bool()) == Some(true) {
+                return run_bash_background(&cwd, &command, &secrets, &envelope_owner);
+            }
+            let timeout_ms = inner
+                .get("timeout")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.clamp(1_000, MAX_BASH_TIMEOUT_MS))
+                .unwrap_or(DEFAULT_BASH_TIMEOUT_MS);
             run_bash(&cwd, &command, timeout_ms, &guard, &secrets)
         }
+        // 后台任务查询/终止（配 bash runInBackground）
+        "task_output" => handle_task_output(&inner, &envelope_owner),
+        "task_stop" => handle_task_stop(&inner, &envelope_owner),
         "read" => handle_read(&inner),
         "write" => handle_write(&inner),
         "edit" => handle_edit(&inner),
@@ -1070,7 +1338,7 @@ mod tests {
         let out = run_bash(".", cmd, 300, &guard, &[]).unwrap();
         assert_eq!(out["exitCode"], Value::Null);
         let text = out["output"].as_str().unwrap();
-        assert!(text.contains("[timeout]"), "output: {text}");
+        assert!(text.contains("[timeout after"), "output: {text}");
     }
 
     /// 密钥注入 + 脱敏的端到端（Rust 侧）：注入的明文能被命令读到，
@@ -1168,7 +1436,7 @@ mod tests {
         let start = Instant::now();
         let out = run_bash(".", cmd, 500, &guard, &[]).unwrap();
         let text = out["output"].as_str().unwrap();
-        assert!(text.contains("[timeout]"), "output: {text}");
+        assert!(text.contains("[timeout after"), "output: {text}");
         assert!(
             start.elapsed() < Duration::from_secs(10),
             "timeout path blocked for {:?}",
@@ -1187,7 +1455,7 @@ mod tests {
         let guard = CancelGuard::new("t-orphan-check");
         let cmd = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
         let out = run_bash(".", &cmd, 500, &guard, &[]).unwrap();
-        assert!(out["output"].as_str().unwrap().contains("[timeout]"));
+        assert!(out["output"].as_str().unwrap().contains("[timeout after"));
 
         let pid: i32 = std::fs::read_to_string(&pid_file)
             .expect("child pid file")
@@ -1198,6 +1466,67 @@ mod tests {
         let alive = unsafe { libc::kill(pid, 0) } == 0;
         assert!(!alive, "孙进程 {pid} 在超时后仍然存活（进程组没被收掉）");
         let _ = std::fs::remove_file(&pid_file);
+    }
+
+    /// 后台任务端到端：启动 → task_output 读到输出与运行态 → task_stop
+    /// 杀掉 → 状态收敛为已退出（wait/读者线程均异步，轮询收敛）
+    #[cfg(unix)]
+    #[test]
+    fn background_task_lifecycle_output_and_stop() {
+        let started = run_bash_background(".", "echo bg-marker; sleep 30", &[], "thread-a").unwrap();
+        let id = started["taskId"].as_u64().unwrap();
+        let mut text = String::new();
+        for _ in 0..40 {
+            text = handle_task_output(&json!({ "taskId": id }), "thread-a").unwrap()["output"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            if text.contains("bg-marker") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(text.contains("bg-marker"), "output: {text}");
+        assert!(text.contains("[still running]"), "output: {text}");
+        let stopped = handle_task_stop(&json!({ "taskId": id }), "thread-a").unwrap();
+        assert_eq!(stopped["running"], Value::Bool(false));
+        let mut final_text = String::new();
+        for _ in 0..40 {
+            final_text = handle_task_output(&json!({ "taskId": id }), "thread-a").unwrap()["output"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            if !final_text.contains("[still running]") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(final_text.contains("bg-marker"), "output: {final_text}");
+        assert!(!final_text.contains("[still running]"), "output: {final_text}");
+        // 兜底清理（正常路径上进程已被 task_stop 杀掉）
+        let _ = handle_task_stop(&json!({ "taskId": id }), "thread-a");
+    }
+
+    /// 归属隔离：任务表全进程共享，别的线程既读不到输出也停不掉进程。
+    /// 否则任意会话猜到一个自增小整数 taskId 就能窥探/破坏他人长跑命令。
+    #[cfg(unix)]
+    #[test]
+    fn background_task_is_scoped_to_its_thread() {
+        let started =
+            run_bash_background(".", "echo owner-marker; sleep 30", &[], "thread-owner").unwrap();
+        let id = started["taskId"].as_u64().unwrap();
+        // 本线程可读可停
+        assert!(handle_task_output(&json!({ "taskId": id }), "thread-owner").is_ok());
+        // 别的线程两条路都拒
+        let foreign_out = handle_task_output(&json!({ "taskId": id }), "thread-other")
+            .expect_err("cross-thread task_output must be rejected");
+        assert!(foreign_out.contains("another thread"), "{foreign_out}");
+        let foreign_stop = handle_task_stop(&json!({ "taskId": id }), "thread-other")
+            .expect_err("cross-thread task_stop must be rejected");
+        assert!(foreign_stop.contains("another thread"), "{foreign_stop}");
+        // 旧版 sidecar 不带 owner：不得因此把在跑任务变成"查不到"
+        assert!(handle_task_output(&json!({ "taskId": id }), "").is_ok());
+        let _ = handle_task_stop(&json!({ "taskId": id }), "thread-owner");
     }
 
     /// spawn 前就已取消：attach_pid 补杀进程树，结果同样报 [cancelled]（竞态窗口回归）

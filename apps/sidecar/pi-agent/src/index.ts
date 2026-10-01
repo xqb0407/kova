@@ -43,7 +43,7 @@ import { initHooks } from "./agent/hooks";
 import { initSubagentState } from "./subagent/subagent-definitions";
 import { initSkillsState } from "./skills/skills";
 import { initMcpEnabledState } from "./mcp/mcp-config";
-import { initPluginsState } from "./plugins/plugins";
+import { initPluginsState, syncBuiltinPlugins } from "./plugins/plugins";
 import { initSecretsConfig } from "./secrets/secrets";
 import { syncBuiltinThemes } from "./design-md/builtin-sync";
 import { clearRemovedBuiltinThemes } from "./design-md/ref-integrity";
@@ -120,6 +120,10 @@ async function main() {
     await initHooks();
     // 插件启用开关同走 kv（插件清单本身带签名扫描；四条合并链的插件层读取它）
     await initPluginsState();
+    // 内置插件包（随 app 分发的首方插件）按包内容版本做「物化/升级/剪旧」同步，
+    // 手法同设计主题包；永不抛、失败非致命。必须在闸门放行前完成——首批会话
+    // 读 skills/panels 等插件组件时内置条目要已就位于 cache/builtin/
+    await syncBuiltinPlugins();
     // 密钥绑定策略同走 kv（值本身是 Rust 侧的密文；bash 注入时实时读这份内存配置）
     await initSecretsConfig();
     // 设计主题三段初始化：内置主题包按 zip catalog 版本做「解压/升级/剪旧」同步

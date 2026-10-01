@@ -1,0 +1,65 @@
+diff --git a/dist/api/anthropic-messages.js b/dist/api/anthropic-messages.js
+index 106f2b9617fa3b810261e067a3c965f209907af3..1c28655e433b3016e9d97650912c9aee6fe974da 100644
+--- a/dist/api/anthropic-messages.js
++++ b/dist/api/anthropic-messages.js
+@@ -1072,7 +1072,7 @@ function convertMessages(transformedMessages, isOAuthToken, cacheControl, allowE
+                 });
+                 const filteredBlocks = blocks.filter((b) => {
+                     if (b.type === "text") {
+-                        return b.text.trim().length > 0;
++                        return typeof b.text === "string" && b.text.trim().length > 0;
+                     }
+                     return true;
+                 });
+@@ -1089,7 +1089,7 @@ function convertMessages(transformedMessages, isOAuthToken, cacheControl, allowE
+             const blocks = [];
+             for (const block of msg.content) {
+                 if (block.type === "text") {
+-                    if (block.text.trim().length === 0)
++                    if (typeof block.text !== "string" || block.text.trim().length === 0)
+                         continue;
+                     blocks.push({
+                         type: "text",
+diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
+index eecd83c753e3b758b8e44628f560b862f8252839..afb795dfab09dcedf33bf21842d533a91a6ea1e3 100644
+--- a/dist/api/openai-completions.js
++++ b/dist/api/openai-completions.js
+@@ -961,7 +961,7 @@ export function convertMessages(model, context, compat, options) {
+             };
+             const assistantTextParts = msg.content
+                 .filter(isTextContentBlock)
+-                .filter((block) => block.text.trim().length > 0)
++                .filter((block) => typeof block.text === "string" && block.text.trim().length > 0)
+                 .map((block) => ({
+                 type: "text",
+                 text: sanitizeSurrogates(block.text),
+diff --git a/dist/utils/estimate.js b/dist/utils/estimate.js
+index d04ff22cbe8d7357404b938e228b8e3a2dbdcb1d..048a7508cc0985465500abfc5993e43dc619d1a2 100644
+--- a/dist/utils/estimate.js
++++ b/dist/utils/estimate.js
+@@ -17,7 +17,7 @@ function estimateTextAndImageContentChars(content) {
+         return content.length;
+     let chars = 0;
+     for (const block of content)
+-        chars += block.type === "text" ? block.text.length : ESTIMATED_IMAGE_CHARS;
++        chars += block.type === "text" && typeof block.text === "string" ? block.text.length : ESTIMATED_IMAGE_CHARS;
+     return chars;
+ }
+ export function estimateTextTokens(text) {
+@@ -38,13 +38,13 @@ export function estimateMessageTokens(message) {
+     if (message.role === "toolResult")
+         return estimateTextAndImageContentTokens(message.content);
+     for (const block of message.content) {
+-        if (block.type === "text") {
++        if (block.type === "text" && typeof block.text === "string") {
+             chars += block.text.length;
+         }
+-        else if (block.type === "thinking") {
++        else if (block.type === "thinking" && typeof block.thinking === "string") {
+             chars += block.thinking.length;
+         }
+-        else {
++        else if (block.type === "toolCall" && typeof block.name === "string") {
+             chars += block.name.length + safeJsonStringify(block.arguments).length;
+         }
+     }

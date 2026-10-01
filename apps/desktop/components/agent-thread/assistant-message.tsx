@@ -191,6 +191,47 @@ const MessageError: FC = () => {
   );
 };
 
+/**
+ * data-errorAttribution 占位卡（sidecar transcript.ts / pi-transport 同名 part）。
+ * 崩溃轮次里助手消息可能一个内容块都没有——只有错误。此时若 part 无人渲染，
+ * 消息实体仍在但输出为空 div，折叠面也展不出东西，用户看到的就是「消息丢了」。
+ * 这里给它一块常显的红色卡：正文、source 归因、retryable 时的重试出口。
+ * 复刻 MessageError 的配色与按钮，但**不套** MessagePrimitive.Error ——
+ * 那条只在框架拿到 error chunk 时才存在，崩溃轮常常没有。
+ */
+const TurnErrorCard: FC<{ data: unknown }> = ({ data }) => {
+  const p = (data ?? {}) as { message?: unknown; source?: unknown; retryable?: unknown };
+  const message = typeof p.message === "string" && p.message ? p.message : "本回合因错误中断";
+  const source = typeof p.source === "string" ? p.source : "runtime";
+  const retryable = p.retryable === true;
+  return (
+    <div
+      data-slot="aui-turn-error"
+      className="border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 dark:text-red-200 mt-2 rounded-md border p-2 text-sm"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="line-clamp-2 min-w-0" title={message}>
+          {message}
+        </span>
+        {retryable && (
+          <ActionBarPrimitive.Reload asChild>
+            <button
+              type="button"
+              className="hover:bg-destructive/15 inline-flex shrink-0 items-center gap-1 rounded-md border border-destructive/40 px-1.5 py-0.5 text-xs transition-colors"
+            >
+              <RefreshCwIcon size="1em" />
+              重试
+            </button>
+          </ActionBarPrimitive.Reload>
+        )}
+      </div>
+      <div className="text-destructive/70 dark:text-red-200/70 mt-1 text-xs">
+        错误来源：{source}
+      </div>
+    </div>
+  );
+};
+
 const AssistantWorkingIndicator: FC = () => {
   const isEmpty = useAuiState((s) => s.message.content.length === 0);
   // 重试进行中时不显示（RetryMarker 顶替这条状态行，参照示例 base.tsx）
@@ -263,7 +304,11 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
           ? "aui_assistant-process-content"
           : "aui_assistant-message-content"
       }
-      className="text-foreground px-2 leading-relaxed wrap-break-word"
+      // gap-2 是消息正文**唯一**的 part 间距来源：工具行 / 思考 / 工具组
+      // 各自不再带 my-*、工具组内容不再带 gap-*，否则同一个屏里会同时存在
+      // 「文字→工具行」和「工具行→工具行」两套距离（实测 33px vs 55px），
+      // 节奏全乱。改节奏只改这里一处。
+      className="text-foreground flex flex-col gap-2 px-2 leading-relaxed wrap-break-word"
     >
       {/* 重试状态行：只渲染一次，attempt 原地更新（data part 本身就地不渲染） */}
       <MessagePrimitive.GroupedParts
@@ -303,13 +348,16 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
       >
         {({ part, children }) => {
           // 轮末拆分时的归属：正文与工具成图（data-image）归 answer 面
-          // （折叠后外层可见，成图是交付物不是过程噪音）；过程面跳过这两类，
-          // 避免展开态出现两份
+          // （折叠后外层可见，成图是交付物不是过程噪音）；错误占位
+          // （data-errorAttribution）同样归 answer 面——它是崩溃轮唯一的
+          // 内容，归过程面就等于收起后彻底看不见，正是「消息丢了」的观感；
+          // 过程面跳过这几类，避免展开态出现两份
           const dataName =
             part.type === "data" ? (part as { name?: string }).name : undefined;
           const onAnswerSide =
             part.type === "text" ||
             dataName === "image" ||
+            dataName === "errorAttribution" ||
             (part as { type?: string }).type === "group-images";
           if (onlyProcess && onAnswerSide) return null;
           // answer 面只保留正文、压缩分隔线与成图；工具/思考/其他 data 归过程面
@@ -488,6 +536,9 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
               case "indicator":
                 return <AssistantWorkingIndicator />;
               case "data":
+                // 崩溃轮的错误占位必须常显：它就是那条消息唯一的内容
+                if ((part as { name?: string }).name === "errorAttribution")
+                  return <TurnErrorCard data={(part as { data?: unknown }).data} />;
                 return part.dataRendererUI;
               default:
                 return null;
@@ -534,7 +585,7 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
           !stopped && "h-7.5 -mb-7.5",
         )}
       >
-        <div className="absolute inset-x-0 top-0 flex h-7.5 items-center pt-1.5 mt-4">
+        <div className="absolute inset-x-0 top-0 flex h-7.5 items-center pt-1.5  my-4 mt-2">
           <AssistantActionBar />
         </div>
       </div>

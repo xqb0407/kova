@@ -214,7 +214,7 @@ export const DesignThemesSettings: FC = () => {
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      <div className="flex w-full max-w-6xl flex-col gap-8 self-center px-8 py-8">
+      <div className="flex w-full max-w-7xl flex-col gap-8 self-center px-8 py-8">
         <div className="flex items-baseline justify-between gap-4">
           <h1 className="text-2xl font-bold tracking-tight">设计主题</h1>
           <span className={cn("text-xs", snap.error ? "text-destructive" : "text-muted-foreground")}>

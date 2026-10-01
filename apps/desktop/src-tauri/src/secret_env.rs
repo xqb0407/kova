@@ -236,9 +236,8 @@ mod tests {
         assert_eq!(got, vec![("GOOD".to_string(), "good-value-1234".to_string())]);
     }
 
-    /// 无 `enc:v1:` 前缀的值按旧明文透传（secret::decrypt 的既有语义）：
-    /// keychain 不可用时 secret::encrypt 退化为明文透传，此时密钥仍要能注入——
-    /// 严格拒绝非密文会让降级机器上"密钥静默永不注入"，比明文透传更糟。
+    /// 明文值原样注入（当前 secret::decrypt 即直通，见该模块「当前不加密」的说明）。
+    /// 残留的 `enc:v1:` 历史密文由 decrypt 判为缺失，不会被当明文注入。
     #[test]
     fn resolve_passes_through_legacy_plaintext() {
         let conn = mem_db();

@@ -28,6 +28,10 @@ import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
 import { subscribeAutomationFocus } from "@/lib/automation/automations";
+import {
+  subscribeConnectorManage,
+  type ManageTab,
+} from "@/lib/connector-nav";
 import { setAutomationFrameSync } from "@/lib/automation/automation-live";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
@@ -222,6 +226,17 @@ export const Base: FC = () => {
       }),
     [],
   );
+  // composer「+」菜单的「管理连接器 / 管理技能」：切主区到插件市场并直接落到
+  // 管理分段（分段本身是 MarketplaceView 的局部态，故经 prop 下发而非事件）
+  const [connectorManageTab, setConnectorManageTab] = useState<ManageTab | null>(null);
+  useEffect(
+    () =>
+      subscribeConnectorManage((tab) => {
+        setConnectorManageTab(tab);
+        setActiveMenu("connector");
+      }),
+    [],
+  );
   // 系统通知点击 → 切回聊天并打开对应会话（Rust notify_show 点击回调经
   // lib/notify 装配进 open-session 总线）；会话已被删则静默
   const aui = useAui();
@@ -258,6 +273,9 @@ export const Base: FC = () => {
   // 按钮/窗口控件交接跟着它走而不是 panelOpen，否则收起动画一起步
   // 顶栏按钮就瞬间跳位（"闪一下"的来源）
   const [panelGone, setPanelGone] = useState(false);
+  // 展开动画进行中：Header 窗口控件的卸载（docked 翻转）延迟到动画完成帧，
+  // 与面板顶栏控件可见性同帧交接，消除右上角控件空窗（展开闪的来源）
+  const [panelExpanding, setPanelExpanding] = useState(false);
   // 动画期间把 minSize 释放为 0：库对可折叠面板会把 minSize 以下的 resize
   // 钳回 minSize/0（中段瞬间消失），动画期间必须解除钳制，结束后恢复
   const [panelMinReleased, setPanelMinReleased] = useState(false);
@@ -347,6 +365,7 @@ export const Base: FC = () => {
     panelAnimRef.current?.stop();
     panelAnimRef.current = null;
     if (!isToggle) {
+      setPanelExpanding(false);
       if (panelOpen) {
         p.expand();
         p.resize(target);
@@ -371,6 +390,10 @@ export const Base: FC = () => {
       // 右侧被裁剪渐显——动画期间面板树零重排
       setPanelFrozenPx(Math.round(target));
       setPanelWebviewOccluded(true);
+      // 展开途中 Header 仍持有窗口控件（docked 延迟翻转）：面板顶栏控件要
+      // 随面板滑入才可见，若 docked 在起步帧就翻 true，Header 控件立即卸载
+      // 而顶栏控件还不可见——右上角出现一整段动画时长的控件空窗（闪）
+      setPanelExpanding(true);
       panelAnimRef.current = animate(p.getSize().inPixels, target, {
         duration: 0.3,
         ease: [0.32, 0.72, 0, 1],
@@ -379,6 +402,7 @@ export const Base: FC = () => {
           setPanelMinReleased(false);
           setPanelFrozenPx(null);
           setPanelWebviewOccluded(false);
+          setPanelExpanding(false);
         },
         onUpdate: (v) => p.resize(v),
       });
@@ -388,6 +412,7 @@ export const Base: FC = () => {
       // 右侧被裁剪滑出——与侧边栏折叠互为镜像
       setPanelFrozenPx(Math.round(from));
       setPanelWebviewOccluded(true);
+      setPanelExpanding(false);
       panelAnimRef.current = animate(from, 0, {
         duration: 0.26,
         ease: [0.32, 0.72, 0, 1],
@@ -682,7 +707,7 @@ export const Base: FC = () => {
     ) : activeMenu === "usage" ? (
       <UsageStatsView />
     ) : activeMenu === "connector" ? (
-      <MarketplaceView />
+      <MarketplaceView manageTab={connectorManageTab} />
     ) : activeMenu === "files" ? (
       <FilesView />
     ) : (
@@ -720,7 +745,7 @@ export const Base: FC = () => {
           // Header 露出展开按钮，避免动画途中按钮提前跳出来闪一下
           showPanelToggle={compact ? !panelOpen : panelGone}
           onTogglePanel={() => setPanelOpen((o) => !o)}
-          docked={panelDocked}
+          docked={panelDocked && !panelExpanding}
           variant={
             activeMenu === "automation" ||
             activeMenu === "usage" ||

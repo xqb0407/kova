@@ -207,6 +207,13 @@ export function openPanelTab(
   return id;
 }
 
+/** 激活指定标签（不改动标签集合）；供「同文件已开则聚焦」类精确复用 */
+export function activatePanelTab(id: string): void {
+  ensureHydrated();
+  if (state.activeId === id) return;
+  commit({ tabs: state.tabs, activeId: id });
+}
+
 /**
  * 定位式打开：已存在同类型标签则复用第一个（改写 extra 并激活），
  * 否则新开。工具行点击走这里，避免每点一行就堆一个标签。

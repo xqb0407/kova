@@ -256,7 +256,15 @@ function hostTool(
 ): AgentTool {
   return {
     name,
-    label: { bash: "Bash", read: "Read", write: "Write", edit: "Edit" }[name] ?? name,
+    label:
+      {
+        bash: "Bash",
+        read: "Read",
+        write: "Write",
+        edit: "Edit",
+        task_output: "Task Output",
+        task_stop: "Task Stop",
+      }[name] ?? name,
     description,
     parameters,
     execute: async (_id, params, signal) => {
@@ -266,8 +274,30 @@ function hostTool(
         params as Record<string, unknown>,
         augment?.(),
       );
-      // signal 透传给 hostToolCall：中断时向宿主发 host_cancel，bash 会被杀进程树
-      const data = await hostToolCall(name, cwd, payload, signal ?? undefined);
+      // signal 透传给 hostToolCall：中断时向宿主发 host_cancel，bash 会被杀进程树。
+      // owner 带线程 id：后台任务（runInBackground）跨回合存活于宿主全局表，
+      // 归属校验靠它，task_output/task_stop 才不会跨线程串味
+      const data = await hostToolCall(name, cwd, payload, signal ?? undefined, threadId);
+      // 宿主信封承诺 output:string，但个别 Rust handler 的失败分支可能返回其他
+      // 形状（如 {error}）——undefined 塞进 text 块会落成畸形转录，压缩统计等
+      // 遍历点（block.text.length）直接崩掉 agent 回合。这里统一兜底为可读文本。
+      const output =
+        typeof data.output === "string"
+          ? data.output
+          : data.output == null
+            ? `host tool "${name}" returned no output (raw: ${JSON.stringify(data).slice(0, 400)})`
+            : String(data.output);
+      // read 命中图片（Rust 侧按扩展名返回 base64，≤2MiB）：转成 text + image
+      // 内容块，模型直接"看见"图片；UI 投影（image-parts.ts 闸门）自动上屏
+      if (data.base64 && data.mimeType) {
+        return {
+          content: [
+            { type: "text" as const, text: output },
+            { type: "image" as const, data: data.base64, mimeType: data.mimeType },
+          ],
+          details: { bytes: data.bytes },
+        };
+      }
       // 落盘成功（失败已在 hostToolCall 抛出，走不到这里）：若文件被某 UI 面板
       // 的 opens 声明认领，自动发 data-pluginOpen——AI 写画布文档时用户端必上屏，
       // 不再依赖模型记得显式开板。异常绝不允许影响工具结果。
@@ -285,7 +315,7 @@ function hostTool(
       if (data.truncated !== undefined) details.truncated = data.truncated;
       if (data.exitCode !== undefined) details.exitCode = data.exitCode;
       if (data.totalLines !== undefined) details.totalLines = data.totalLines;
-      return textResult(data.output, Object.keys(details).length ? details : undefined);
+      return textResult(output, Object.keys(details).length ? details : undefined);
     },
   };
 }
@@ -300,11 +330,19 @@ export function buildTools(
     hostTool("bash", cwd, threadId,
       "Run a shell command in the workspace and return combined stdout/stderr. " +
         "Output is capped; use narrower commands (grep/tail/head) instead of dumping large files. " +
+        "Default timeout 120s — pass a larger timeout (up to 600000ms) for slow commands, or " +
+        "prefer runInBackground:true for long-running processes (dev servers, builds, watchers): " +
+        "it returns immediately with a taskId and the process keeps running across turns " +
+        "(not killed when a turn is cancelled); read output later with task_output, kill with task_stop. " +
+        "Never discard output with >/dev/null — invisible progress looks like a hang. " +
         "Windows runs Git Bash when available (cmd.exe fallback) — do not use PowerShell-only syntax like backtick escapes.",
       Type.Object({
         command: Type.String({ description: "The shell command to run" }),
         timeout: Type.Optional(
-          Type.Number({ description: "Timeout in milliseconds (default 120000)" }),
+          Type.Number({ description: "Timeout in ms (default 120000, max 600000); ignored with runInBackground" }),
+        ),
+        runInBackground: Type.Optional(
+          Type.Boolean({ description: "Run detached and return a taskId immediately (for dev servers, builds, watchers)" }),
         ),
       }),
       // 密钥注入：只把**名字**挂到信封上（值在 Rust 侧查库解密 + 输出脱敏，
@@ -315,9 +353,32 @@ export function buildTools(
         return secretEnv.length ? { secretEnv } : {};
       },
     ),
+    hostTool(
+      "task_output",
+      cwd,
+      threadId,
+      "Read collected output and status of a background task started with bash runInBackground:true. " +
+        "Returns everything the process printed so far (tail, up to 256KB) plus whether it is still running. " +
+        "Check after doing other work rather than polling in a tight loop.",
+      Type.Object({
+        taskId: Type.Number({ description: "The taskId returned when the background task started" }),
+      }),
+    ),
+    hostTool(
+      "task_stop",
+      cwd,
+      threadId,
+      "Kill a background task's whole process tree (started with bash runInBackground:true). " +
+        "Use when the task is no longer needed or stuck.",
+      Type.Object({
+        taskId: Type.Number({ description: "The taskId of the background task to kill" }),
+      }),
+    ),
     hostTool("read", cwd, threadId,
       "Read a text file. Returns up to 64KB with line numbers. " +
-        "Use offset/limit to paginate large files.",
+        "Use offset/limit to paginate large files. " +
+        "Image files (png/jpg/jpeg/gif/webp, up to 2MiB) are returned as an image " +
+        "you can see directly; larger images fail — downscale first (e.g. sips -Z 1600).",
       Type.Object({
         file_path: Type.String({ description: "Path (relative to workspace or absolute)" }),
         offset: Type.Optional(Type.Number({ description: "1-based start line" })),

@@ -205,6 +205,33 @@ describe("runCompaction", () => {
     expect(cp.details).toMatchObject({ strategy: "fresh_window" });
   });
 
+  test("摘要返回空串不得清空上下文：溢出路径同样走 fresh_window 兜底", async () => {
+    // 回归：core 的 generateSummary 对"响应里没有 text 块"返回 ok("") 而不是报错，
+    // 放行会把整段历史替换成一条空摘要（线上事故：112k tokens 上下文归零）。
+    const run = makeRun([userMsg("q"), assistantMsg("a")]);
+    const outcome = await runCompaction(run, "overflow", {
+      summarize: async () => "",
+    });
+    expect(outcome.ok && outcome.summarized).toBe(false);
+    const text = (
+      run.agent.state.messages[0] as unknown as { content: { text: string }[] }
+    ).content[0].text;
+    expect(text).toContain("[context rollover");
+    const cp = readCompaction(run.sessionId)!;
+    expect(cp.summary).not.toBe("");
+    expect(cp.details).toMatchObject({ strategy: "fresh_window" });
+  });
+
+  test("手动压缩拿到空摘要时报错不装填，会话原样", async () => {
+    const run = makeRun([userMsg("q"), assistantMsg("a")]);
+    const outcome = await runCompaction(run, "manual", {
+      summarize: async () => "   ",
+    });
+    expect(outcome.ok).toBe(false);
+    expect(run.agent.state.messages).toHaveLength(2);
+    expect(readCompaction(run.sessionId)).toBeUndefined();
+  });
+
   test("手动压缩失败不装填兜底，会话原样", async () => {
     const run = makeRun([userMsg("q"), assistantMsg("a")]);
     const outcome = await runCompaction(run, "manual", {

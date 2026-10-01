@@ -468,7 +468,13 @@ describe("design-md handlers（fake run 注入驻留表）", () => {
 
   function fakeRun(): Running {
     const run = {
-      agent: { state: { model: null, systemPrompt: "seed" } },
+      // 0.99 起提示词存于转录首条 system 消息（state.systemPrompt 只读回放）
+      agent: {
+        state: {
+          model: null,
+          messages: [{ role: "system", content: "seed", timestamp: 0 }],
+        },
+      },
       threadId: "t-handlers",
       sessionId: "sess-handlers",
       cwd: tmp,
@@ -486,6 +492,12 @@ describe("design-md handlers（fake run 注入驻留表）", () => {
   }
 
   let run: Running;
+  /** 0.99：断言转录首条 system 消息的 content（原 state.systemPrompt 的替身） */
+  function headContent(r: Running): string {
+    const head = (r.agent.state as { messages?: { role?: string; content?: unknown }[] })
+      .messages?.[0];
+    return head?.role === "system" ? String(head.content) : "";
+  }
   beforeAll(async () => {
     await installBundle(V1, DOCS_V1);
     await applyAppMode("design"); // 主题句只在 design 档出现：handler 重排走真实 compose
@@ -509,7 +521,7 @@ describe("design-md handlers（fake run 注入驻留表）", () => {
     expect(resp?.type).toBe("design_theme_set");
     expect(resp?.theme).toEqual({ scope: "builtin", id: "acme" });
     expect(run.designTheme).toEqual({ scope: "builtin", id: "acme" });
-    expect(String((run.agent.state as { systemPrompt?: string }).systemPrompt)).toContain("Design theme selected for this session");
+    expect(headContent(run)).toContain("Design theme selected for this session");
     await new Promise((r) => setTimeout(r, 10)); // fire-and-forget 落库
     const row = await kvGet(DESIGN_THEME_KV_KEY);
     expect(JSON.parse(String(row?.value))).toEqual({ scope: "builtin", id: "acme" });
@@ -517,7 +529,7 @@ describe("design-md handlers（fake run 注入驻留表）", () => {
     // 清除：null → ""（显式不使用），提示词主题句消失
     const cleared = await call("set_design_theme", { threadId: run.threadId, theme: null });
     expect(cleared?.theme).toBeNull();
-    expect(String((run.agent.state as { systemPrompt?: string }).systemPrompt)).not.toContain("Design theme selected");
+    expect(headContent(run)).not.toContain("Design theme selected");
     // 无 id 推送帧（多窗口/远程直更）：与应答同类型但无 id、带 threadId
     const push = frames.find((f) => f.type === "design_theme_set" && f.id === undefined);
     expect(push?.threadId).toBe(run.threadId);

@@ -12,7 +12,7 @@ import {
   usePanelTabs,
 } from "@/lib/panels/panel-tabs";
 import { newTerminalTab } from "@/lib/shell";
-import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { isTauri } from "@/lib/tauri";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { WindowControls } from "@/components/window-controls";
 import { cn } from "@/lib/utils";
@@ -180,7 +180,6 @@ const PanelShell: FC<{
   // + 停靠态接管的 Windows 三键。空标签态也保留顶栏：拖拽区/收起/三键不能
   // 随标签栏一起消失
   const desktop = isTauri();
-  const winControls = desktop && !isMacPlatform();
   const barActions: ReactNode =
     onCollapse || showWindowControls ? (
       <div
@@ -234,22 +233,14 @@ const PanelShell: FC<{
       className="bg-background border-border/60 flex h-full min-w-0 flex-col overflow-hidden rounded-xl border"
     >
       {tabs.length > 0 ? (
-        <TabBar
-          tabs={tabs}
-          activeId={activeId}
-          actions={barActions}
-          flushActions={winControls && showWindowControls}
-        />
+        <TabBar tabs={tabs} activeId={activeId} actions={barActions} />
       ) : (
         // 无标签时不渲染标签条:默认即"打开标签页"空态(Codex 同形),
         // 但顶栏（拖拽区 + "+"新标签菜单 + 右缘动作）常驻——
         // 零标签也能直接开标签/插件面板,不必先靠下方卡片网格
         <div
           data-tauri-drag-region={desktop ? "deep" : undefined}
-          className={cn(
-            "border-border/80 flex h-12 shrink-0 items-center justify-end gap-1 border-b-[0.5]",
-            winControls && showWindowControls ? "pr-0" : "pr-2",
-          )}
+          className="border-border/80 flex h-12 shrink-0 items-center justify-end gap-1 border-b-[0.5] pr-2"
         >
           <div
             className={cn(
