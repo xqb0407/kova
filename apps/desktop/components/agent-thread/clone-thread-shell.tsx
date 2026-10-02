@@ -37,6 +37,14 @@ import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
 import { clearWorkspace } from "@/lib/workspace/workspace-store";
 import {
+  enterThreadBatch,
+  exitThreadBatch,
+  setThreadBatchSelection,
+  useThreadBatchState,
+  type ThreadBatchTab,
+} from "@/lib/pi/pi-thread-batch";
+import { toast } from "@/components/ui/toast";
+import {
   formatShortcutParts,
   matchesShortcut,
   useShortcuts,
@@ -47,16 +55,20 @@ import { FluidHoverRow } from "@/components/fluid-hover-row";
 import { Logo } from "./header";
 import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import {
+  ArchiveIcon,
   ChartColumnIcon,
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
   FolderIcon,
   FolderOpenIcon,
+  ListChecksIcon,
   ListTodoIcon,
   MenuIcon,
   MessageSquareIcon,
   PanelLeftIcon,
   SearchIcon,
+  SquareCheckBigIcon,
+  XIcon,
   ZapIcon,
   PlugIcon,
   PlusIcon,
@@ -68,6 +80,7 @@ import {
 } from "lucide-react";
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -157,6 +170,47 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const threadItems = useAuiState((s) => s.threads.threadItems);
   const aui = useAui();
+
+  // 批量管理模式：跨 tab 统一勾选 → 批量归档（pi-thread-batch store）。
+  // 选中键 = remoteId（= item id，新链路同值）；归档动作把键映射回
+  // thread item id（旧数据兜底），跳过未落盘（status "new"）与已归档项
+  const batch = useThreadBatchState();
+  const batchTab: ThreadBatchTab = activeTab === "projects" ? "projects" : "tasks";
+  const batchVisibleIds = batch.visible[batchTab] ?? [];
+  const batchAllSelected =
+    batchVisibleIds.length > 0 &&
+    batchVisibleIds.every((id) => batch.selected.includes(id));
+  const archivableCount = useMemo(() => {
+    const byKey = new Map<string, (typeof threadItems)[number]>();
+    for (const item of threadItems) {
+      byKey.set(item.id, item);
+      if (item.remoteId) byKey.set(item.remoteId, item);
+    }
+    return batch.selected.filter((id) => byKey.get(id)?.status === "regular")
+      .length;
+  }, [batch.selected, threadItems]);
+  const toggleBatchSelectAll = () =>
+    setThreadBatchSelection(batchAllSelected ? [] : batchVisibleIds);
+  const archiveBatchSelected = () => {
+    if (archivableCount === 0) {
+      exitThreadBatch();
+      return;
+    }
+    const byKey = new Map<string, (typeof threadItems)[number]>();
+    for (const item of threadItems) {
+      byKey.set(item.id, item);
+      if (item.remoteId) byKey.set(item.remoteId, item);
+    }
+    for (const selected of batch.selected) {
+      const item = byKey.get(selected);
+      // 新建未落盘的会话（status "new"）不可归档，跳过；当前打开中的
+      // 会话由 core 先切走再归档（同右键归档语义）
+      if (item?.status !== "regular") continue;
+      aui.threads.item({ id: item.id }).archive();
+    }
+    toast.add({ title: `已归档 ${archivableCount} 个会话`, type: "success" });
+    exitThreadBatch();
+  };
 
   // 全局快捷键：绑定来自「设置 → 快捷键」，改动即时生效
   const { toggleSearch, newThread } = useShortcuts();
@@ -355,7 +409,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       label: "自动化",
       icon: ZapIcon,
     },
-    { id: "connector", label: "插件市场", icon: PlugIcon },
+    { id: "connector", label: "插件 / 专家 / 技能", icon: PlugIcon },
     { id: "files", label: "我的文件", icon: FolderOpenIcon },
   ];
 
@@ -500,7 +554,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           </div>
         </div>
 
-        {/* Tabs 胶囊分段器（左对齐）+ 项目 tab 的展开全部按钮 */}
+        {/* Tabs 胶囊分段器（左对齐）：批量模式下保留切换（两个 tab 勾选同一
+            池），右侧换成批量操作栏 */}
         <div className="flex w-full shrink-0 items-center justify-between gap-2 px-3 pt-2">
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList className="group-data-horizontal/tabs:h-8 h-8 rounded-full p-[3px]">
@@ -520,19 +575,67 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            {activeTab === "projects" && projectGroups.length > 0 && (
-              <TooltipIconButton
-                variant="ghost"
-                tooltip={allProjectsExpanded ? "收起全部" : "展开全部"}
-                className="text-muted-foreground hover:text-foreground h-7 gap-1 rounded-full px-2.5 text-xs"
-                onClick={toggleAllProjects}
-              >
-                {allProjectsExpanded ? (
-                  <Minimize2Icon className="size-3.5" />
-                ) : (
-                  <Maximize2Icon className="size-3.5" />
+            {batch.active ? (
+              /* 纯图标操作栏：tabs 行宽度有限，文字按钮放不下（计数进 tooltip） */
+              <div className="flex items-center gap-0.5">
+                <TooltipIconButton
+                  variant="ghost"
+                  tooltip={batchAllSelected ? "取消全选" : "全选"}
+                  disabled={batchVisibleIds.length === 0}
+                  className="text-muted-foreground hover:text-foreground size-7 rounded-full"
+                  onClick={toggleBatchSelectAll}
+                >
+                  <SquareCheckBigIcon className="size-3.5" />
+                </TooltipIconButton>
+                <TooltipIconButton
+                  variant="ghost"
+                  tooltip={
+                    archivableCount > 0 ? `归档（${archivableCount}）` : "归档"
+                  }
+                  disabled={archivableCount === 0}
+                  className="text-muted-foreground hover:text-foreground size-7 rounded-full"
+                  onClick={archiveBatchSelected}
+                >
+                  <ArchiveIcon className="size-3.5" />
+                </TooltipIconButton>
+                <TooltipIconButton
+                  variant="ghost"
+                  tooltip="退出批量管理"
+                  className="text-muted-foreground hover:text-foreground size-7 rounded-full"
+                  onClick={exitThreadBatch}
+                >
+                  <XIcon className="size-3.5" />
+                </TooltipIconButton>
+              </div>
+            ) : (
+              /* 必须包成单个 flex 子项：否则 justify-between 会把两枚按钮
+                 各自摊开，中间出现大空隙 */
+              <div className="flex items-center gap-0.5">
+                {activeTab === "projects" && projectGroups.length > 0 && (
+                  <TooltipIconButton
+                    variant="ghost"
+                    tooltip={allProjectsExpanded ? "收起全部" : "展开全部"}
+                    className="text-muted-foreground hover:text-foreground h-7 gap-1 rounded-full px-2.5 text-xs"
+                    onClick={toggleAllProjects}
+                  >
+                    {allProjectsExpanded ? (
+                      <Minimize2Icon className="size-3.5" />
+                    ) : (
+                      <Maximize2Icon className="size-3.5" />
+                    )}
+                  </TooltipIconButton>
                 )}
-              </TooltipIconButton>
+                {hasThreads && (
+                  <TooltipIconButton
+                    variant="ghost"
+                    tooltip="批量管理"
+                    className="text-muted-foreground hover:text-foreground size-7 rounded-full"
+                    onClick={enterThreadBatch}
+                  >
+                    <ListChecksIcon className="size-3.5" />
+                  </TooltipIconButton>
+                )}
+              </div>
             )}
         </div>
 
@@ -690,7 +793,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </div>
           </div>
 
-          {/* 移动端 Tabs 胶囊分段器（左对齐）+ 项目 tab 的展开全部按钮 */}
+          {/* 移动端 Tabs 胶囊分段器（左对齐）：批量模式下右侧换成操作栏 */}
           <div className="flex w-full shrink-0 items-center justify-between gap-2 px-4 pt-2">
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList className="group-data-horizontal/tabs:h-8 h-8 rounded-full p-[3px]">
@@ -710,19 +813,65 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            {activeTab === "projects" && projectGroups.length > 0 && (
-              <Button
-                variant="ghost"
-                className="text-muted-foreground hover:text-foreground h-7 gap-1 rounded-full px-2.5 text-xs"
-                onClick={toggleAllProjects}
-              >
-                {allProjectsExpanded ? (
-                  <ChevronsDownUpIcon className="size-3.5" />
-                ) : (
-                  <ChevronsUpDownIcon className="size-3.5" />
+            {batch.active ? (
+              /* 纯图标操作栏（移动端无 tooltip，用 title） */
+              <div className="flex items-center gap-0.5">
+                <Button
+                  variant="ghost"
+                  title={batchAllSelected ? "取消全选" : "全选"}
+                  disabled={batchVisibleIds.length === 0}
+                  className="text-muted-foreground hover:text-foreground size-7 rounded-full p-0"
+                  onClick={toggleBatchSelectAll}
+                >
+                  <SquareCheckBigIcon className="size-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  title={
+                    archivableCount > 0 ? `归档（${archivableCount}）` : "归档"
+                  }
+                  disabled={archivableCount === 0}
+                  className="text-muted-foreground hover:text-foreground size-7 rounded-full p-0"
+                  onClick={archiveBatchSelected}
+                >
+                  <ArchiveIcon className="size-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  title="退出批量管理"
+                  className="text-muted-foreground hover:text-foreground size-7 rounded-full p-0"
+                  onClick={exitThreadBatch}
+                >
+                  <XIcon className="size-3.5" />
+                </Button>
+              </div>
+            ) : (
+              /* 同桌面端：包成单个 flex 子项，避免 justify-between 摊开按钮 */
+              <div className="flex items-center gap-1">
+                {activeTab === "projects" && projectGroups.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    className="text-muted-foreground hover:text-foreground h-7 gap-1 rounded-full px-2.5 text-xs"
+                    onClick={toggleAllProjects}
+                  >
+                    {allProjectsExpanded ? (
+                      <ChevronsDownUpIcon className="size-3.5" />
+                    ) : (
+                      <ChevronsUpDownIcon className="size-3.5" />
+                    )}
+                    {allProjectsExpanded ? "收起全部" : "展开全部"}
+                  </Button>
                 )}
-                {allProjectsExpanded ? "收起全部" : "展开全部"}
-              </Button>
+                {hasThreads && (
+                  <Button
+                    variant="ghost"
+                    className="text-muted-foreground hover:text-foreground size-7 rounded-full p-0"
+                    onClick={enterThreadBatch}
+                  >
+                    <ListChecksIcon className="size-3.5" />
+                  </Button>
+                )}
+              </div>
             )}
           </div>
 

@@ -47,7 +47,10 @@ const TOOL_RPC_SLACK_MS = 15_000;
 function abortAsError(signal: AbortSignal): Error {
   const r: unknown = signal.reason;
   if (r instanceof Error) return r;
-  return new Error("Operation aborted");
+  // 保留原因：以前无差别返回 "Operation aborted"，超时/取消/谁触发的全被抹掉，
+  // 现场无法判断（写大文件反复失败就是这么被藏住的）。保留前缀做兼容，后面补原因。
+  const reason = typeof r === "string" && r ? r : r == null ? "无原因" : String(r);
+  return new Error(`Operation aborted：${reason}`);
 }
 
 /** 告知宿主「放弃这条请求」：Rust 侧据此杀对应工具进程树；无登记则无害 no-op */
@@ -135,5 +138,9 @@ export function toolRpcTimeoutMs(name: string, params: Record<string, unknown>):
   if (name.startsWith("browser_")) return 60_000 + TOOL_RPC_SLACK_MS;
   // screenshot：screencapture + 阶梯 sips 压缩，慢机/超大 Retina 留 30s 余量
   if (name === "screenshot") return 30_000;
-  return HOST_QUERY_TIMEOUT_MS; // read/write/edit 是本地文件操作
+  // read/write/edit：**不是本地文件操作**。host 模式下是一条完整往返——整份 payload
+  // 序列化进 host_query 写 stdout → 宿主落盘/读盘 → 结果再序列化回来。长文件
+  // （数百行）在负载下 15s 兜底根本不够，这正是「写入太长超时」的来源。
+  if (name === "read" || name === "write" || name === "edit") return 120_000;
+  return HOST_QUERY_TIMEOUT_MS;
 }

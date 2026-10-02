@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
-import { useAppMode } from "@/lib/pi/app-mode";
+import { useThreadAppMode } from "@/lib/pi/pi-session-app-mode";
 import {
   ensureDesignThemePush,
   findThemeEntry,
@@ -43,8 +43,8 @@ import {
  * 底部「管理设计主题…」跳设置页设计主题分区（CustomEvent，宿主见 base.tsx）。
  */
 export const DesignThemePicker: FC = () => {
-  const appMode = useAppMode();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const appMode = useThreadAppMode(threadId);
   const snap = useDesignThemes();
   const active = useSessionDesignTheme(threadId);
   const [open, setOpen] = useState(false);
@@ -104,7 +104,7 @@ export const DesignThemePicker: FC = () => {
             aria-label="Design theme"
             title="本会话的设计主题"
             className={cn(
-              "hover:bg-muted inline-flex h-7 max-w-44 items-center gap-1.5 rounded-full px-2.5 text-sm transition-colors",
+              "hover:bg-muted inline-flex h-7 max-w-44 items-center gap-1.5 rounded-full px-2.5 text-sm transition-colors @max-2xl:px-2",
               active
                 ? "bg-muted text-foreground"
                 : "text-muted-foreground hover:text-foreground",
@@ -124,7 +124,8 @@ export const DesignThemePicker: FC = () => {
                 )}
               </span>
             )}
-            <span className="truncate">{label}</span>
+            {/* 窄栏只留图标（代表色点仍在）：主题名收进 title */}
+            <span className="truncate @max-2xl:hidden">{label}</span>
           </button>
         }
       />

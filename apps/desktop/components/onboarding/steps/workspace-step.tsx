@@ -43,7 +43,7 @@ export const WorkspaceStep: FC = () => {
     <div className="flex flex-col">
       <StepHeading
         title="选择工作目录"
-        desc="Kova 读代码、跑命令、看 git 改动都发生在这个目录里。选一个你最近要动的项目就行，之后随时能在顶栏换。"
+        desc="给 Kova 指定一个默认工作区：它会在这个目录里读写文件、跑命令、看 git 改动。挑一个你最近要动的项目就行；不选也能继续，之后随时能在顶栏换。"
       />
 
       {!isTauri() ? (
@@ -65,7 +65,7 @@ export const WorkspaceStep: FC = () => {
               </>
             ) : (
               <div className="text-muted-foreground text-sm">
-                还没有选择目录
+                还没有选择目录（不选也能继续）
               </div>
             )}
           </div>
@@ -79,14 +79,10 @@ export const WorkspaceStep: FC = () => {
         </div>
       )}
 
-      <StepFooter
-        onBack={back}
-        // 网页端选不了目录，这一节就不能设成必填，否则下一步永远灰着、向导走不完
-        onSkip={!isTauri() ? next : undefined}
-      >
-        <Button disabled={isTauri() && !workspace} onClick={next}>
-          下一步
-        </Button>
+      {/* 目录是可选项：不选时 sidecar 会回落到按会话隔离的临时目录（resolve.ts），
+          功能不受影响，所以不设必填门槛，避免把没想好的人卡死在这一步 */}
+      <StepFooter onBack={back}>
+        <Button onClick={next}>下一步</Button>
       </StepFooter>
     </div>
   );

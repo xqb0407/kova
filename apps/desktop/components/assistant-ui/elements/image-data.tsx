@@ -163,8 +163,8 @@ export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = (
         onClick={() => setZoomed(true)}
         title="点击查看大图"
         className={cn(
-          "bg-muted/40 group relative block cursor-zoom-in overflow-hidden rounded-xl border focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-2",
-          compact ? "w-full" : "w-fit",
+          " group relative block cursor-zoom-in  rounded-xl  focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-2",
+          compact ? "w-full  max-h-64" : "w-fit max-h-64",
         )}
       >
         {/* lazy：长会话多图的解码压力推入视口再说；大图放大态挂在 Dialog 里延迟加载 */}
@@ -173,7 +173,7 @@ export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = (
           alt={label}
           loading="lazy"
           className={cn(
-            "block max-h-64 max-w-full object-contain",
+            "block max-h-64 max-w-full object-cover",
             compact && "h-auto w-full",
           )}
         />

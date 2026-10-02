@@ -37,19 +37,21 @@ import { kvSet, sessionPrefsSet } from "../storage/hostdb";
 import { beginInteraction, settleInteraction } from "../sessions/pending-interactions";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "../subagent/subagent-mgmt-tools";
 import { SKILL_MGMT_TOOL_NAMES } from "../skills/skill-mgmt-tools";
+import { DESIGN_THEME_MGMT_TOOL_NAMES } from "../design-md/mgmt-tools";
 import { SKILL_USE_TOOL_NAME } from "../skills/skill-use-tool";
 import { PLUGIN_MGMT_TOOL_NAMES } from "../plugins/plugin-mgmt-tools";
 import { getAutomationPolicy, automationDenyReason } from "../automation/policy";
 import { setLeadingSystemMessage } from "./context";
 import { buildHookPayload, runHooks } from "./hooks";
 import { personalizationPromptBlock } from "./personalization";
-import { appModePromptBlock } from "./app-mode";
+import { appModePromptBlock, type AppMode } from "./app-mode";
 import type { ThemeRef } from "../design-md/store";
 import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "../mcp/mcp-tools";
 import { skillsPromptBlock } from "../skills/skills";
 import { instructionsPromptBlock } from "./instructions";
 import { sendEventChunk } from "../protocol/stream";
+import { displayPath } from "../tools/open-file-tool";
 import type {
   ApprovalLevel,
   PlanningState,
@@ -141,8 +143,9 @@ export type PromptModelInfo = { provider: string; id: string; name?: string };
  * （日期/模型/OS/shell，末行是 cwd 行）。
  * 顺序保证缓存命中：静态核心在前（跨会话字节级一致），模式段夹中间（会话内
  * 切换时整段重排不可避免，但同一模式内前缀稳定），个性化/记忆段随设置变更热替换，
- * 工作模式段随全局 work/code/design 开关热替换（app-mode.ts，code 档为空串；
- * design 段随会话选中的设计主题增减一行主题句，正文由 use_design_theme 按需加载），
+ * 工作模式段随会话生效档（composeModeSystemPrompt 的 appMode 入参 = run.appMode，
+ * 会话级偏好列 ?? 全局默认，见 app-mode.ts；code 档为空串；design 段随会话选中的
+ * 设计主题增减一行主题句，正文由 use_design_theme 按需加载），
  * MCP 段随服务器配置变更热替换（无启用服务器时为空串），技能目录段只列生效技能的
  * name/description/location 三行元数据（正文模型按需 use_skill 加载，开关/遮蔽在
  * 缓存合并时裁决，随 reloadSkills 热替换），指令段读 AGENTS.md（全局 ~/.kova/AGENTS.md +
@@ -153,6 +156,7 @@ export type PromptModelInfo = { provider: string; id: string; name?: string };
 export function composeModeSystemPrompt(
   mode: SessionMode,
   cwd: string,
+  appMode: AppMode,
   model?: PromptModelInfo | null,
   designTheme?: ThemeRef | null,
 ): string {
@@ -165,7 +169,7 @@ export function composeModeSystemPrompt(
     core,
     extra,
     personalizationPromptBlock(),
-    appModePromptBlock(designTheme),
+    appModePromptBlock(appMode, designTheme),
     memoryPromptBlock(cwd),
     mcpPromptBlock(cwd),
     skillsPromptBlock(cwd),
@@ -294,6 +298,23 @@ async function writePlanFile(
   return run.planFilePath;
 }
 
+/**
+ * 把计划文件推到用户眼前的右侧面板：复用 open_file 的 data-panelOpen 帧，
+ * 「文件」标签走磁盘实时读取（同文件树点击）。计划写完与申请审批两处都发，
+ * 保证 plan_exit 挂起等待时用户已能看到计划原文。
+ */
+function emitPlanPanelOpen(run: Running): void {
+  if (!run.planFilePath) return;
+  sendEventChunk(
+    run.threadId,
+    {
+      type: "data-panelOpen",
+      data: { type: "file", path: displayPath(run.cwd, run.planFilePath), cwd: run.cwd },
+    },
+    run.sessionId,
+  );
+}
+
 /** 计划三件套（构建时捕获 run 引用；run.agent 在构造后回填） */
 function buildPlanTools(run: Running): AgentTool[] {
   const enterTool: AgentTool = {
@@ -332,6 +353,8 @@ function buildPlanTools(run: Running): AgentTool[] {
       const markdown = String(p.markdown ?? "");
       if (!markdown.trim()) throw new Error("markdown is required");
       const filePath = await writePlanFile(run, markdown, p.title);
+      // 写完即开面板：用户无需手动点行查看计划（修订覆盖后同样重开/刷新）
+      emitPlanPanelOpen(run);
       return textResult(`Plan written to ${filePath}`, {
         filePath,
         title: run.planTitle,
@@ -379,6 +402,8 @@ function buildPlanTools(run: Running): AgentTool[] {
         payload: { approvalId, toolCallId, toolName: PLAN_TOOL_NAMES.exit, input },
         createdAt: new Date().toISOString(),
       });
+      // 申请审批：先确保面板展示计划原文，再弹审批卡（用户看后决定）
+      emitPlanPanelOpen(run);
       sendEventChunk(
         run.threadId,
         {
@@ -430,9 +455,10 @@ function buildPlanTools(run: Running): AgentTool[] {
 /* ------------------------------ beforeToolCall ------------------------------ */
 
 /** 需要用户逐次确认的工具（有副作用的写操作）。
- *  子智能体/技能管理工具与 write 同级：save/delete 会改变后续会话可用的
- *  能力面，ask 模式逐次确认，auto-edit 模式与 write 一样豁免（AI 本就能用
- *  write 改这些文件，工具化是收紧而非扩权）。list 无副作用，不进审批。 */
+ *  子智能体/技能/设计主题管理工具与 write 同级：save/delete 会改变后续会话可用的
+ *  能力面（主题还会热换活动会话的提示词），ask 模式逐次确认，auto-edit 模式与 write
+ *  一样豁免（AI 本就能用 write 改这些文件，工具化是收紧而非扩权）。list 无副作用，
+ *  不进审批。 */
 export const APPROVAL_REQUIRED_TOOLS = new Set([
   "bash",
   "write",
@@ -441,6 +467,8 @@ export const APPROVAL_REQUIRED_TOOLS = new Set([
   SUBAGENT_MGMT_TOOL_NAMES.delete,
   SKILL_MGMT_TOOL_NAMES.save,
   SKILL_MGMT_TOOL_NAMES.delete,
+  DESIGN_THEME_MGMT_TOOL_NAMES.save,
+  DESIGN_THEME_MGMT_TOOL_NAMES.delete,
   PLUGIN_MGMT_TOOL_NAMES.install,
   PLUGIN_MGMT_TOOL_NAMES.scaffold,
 ]);
@@ -649,7 +677,13 @@ const PLANNING_BY_MODE: Record<SessionMode, PlanningState> = {
 export function applyMode(run: Running, mode: SessionMode): void {
   run.mode = mode;
   run.planning = PLANNING_BY_MODE[mode];
-  const prompt = composeModeSystemPrompt(mode, run.cwd, run.agent.state.model, run.designTheme);
+  const prompt = composeModeSystemPrompt(
+    mode,
+    run.cwd,
+    run.appMode,
+    run.agent.state.model,
+    run.designTheme,
+  );
   const tools = toolsForMode(run);
   // 0.99 迁移：state.systemPrompt 只读（转录首条 system 消息的回放），热换走
   // setLeadingSystemMessage；loopContext 亦无 systemPrompt 字段，改其 messages 首条

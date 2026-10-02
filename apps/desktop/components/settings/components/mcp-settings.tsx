@@ -1255,7 +1255,7 @@ const McpLogDialog: FC<{
 // 页面
 // ---------------------------------------------------------------------------
 
-/** 工作区目录切换器（与记忆/子智能体页同款）：候选 = 手动浏览 + 当前工作区 + 最近使用 */
+/** 工作区目录切换器（与记忆、子智能体管理页同款）：候选 = 手动浏览 + 当前工作区 + 最近使用 */
 const WorkspaceCwdMenu: FC<{
   value: string | null;
   following: boolean;
@@ -1463,7 +1463,7 @@ export const McpSettings: FC = () => {
     setEditor({ open: true, target: { mode: "json", layer: scopeTab } });
   };
 
-  /** 只读浏览：弹原生目录选择器，但不改主界面工作区（与记忆/子智能体页同款语义） */
+  /** 只读浏览：弹原生目录选择器，但不改主界面工作区（与记忆、子智能体管理页同款语义） */
   const pickBrowseDir = async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");

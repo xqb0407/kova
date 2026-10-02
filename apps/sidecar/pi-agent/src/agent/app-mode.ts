@@ -1,14 +1,20 @@
 /**
- * 应用工作模式（work / code / design）：设置 → 通用里的全局开关，控制系统提示词的
- * 人群附加段。git UI 显隐与消息工具行形态在前端（lib/app-mode.ts 镜像 store），
+ * 应用工作模式（work / code / design）：控制系统提示词的人群附加段。git UI 显隐与
+ * 消息工具行形态在前端（lib/app-mode.ts + lib/pi/pi-session-app-mode.ts 镜像 store），
  * 本模块只管 sidecar 侧的事实源。
- * - 事实源：SQLite kv（pi.app_mode）；启动 initAppMode() 恢复，非法值回落 "code"
- * - 注入点：modes.ts composeModeSystemPrompt 在个性化段之后插入 appModePromptBlock()；
- *   code 模式（默认）为空串，默认提示词与旧版字节级一致
+ * - 两档事实源：
+ *   · 全局默认 = SQLite kv（pi.app_mode），启动 initAppMode() 恢复，非法值回落 "code"；
+ *     设置 → 通用改的就是它，只影响「从未在本会话切换过模式」的会话。
+ *   · 会话覆盖 = sessions.app_mode 偏好列，定靶 set_app_mode 只写被点名的会话——
+ *     与 set_thinking / set_model 同型：A 会话切换不牵连 B 会话。
+ * - 裁决：run.appMode = 偏好列合法值 ?? 全局默认（effectiveAppMode），在
+ *   sessions/resolve.ts 建 run 时定档，之后随定靶 set_app_mode 热更新。
+ * - 注入点：modes.ts composeModeSystemPrompt(…, appMode) 在个性化段之后插入
+ *   appModePromptBlock(appMode, designTheme)；code 档为空串，默认提示词字节级不变。
  * - design 档附加段带插件可用条件句：compose 时现查 activePlugins() 是否含启用的
  *   ui-design 插件（前端门禁之外的兜底——绕过 UI 直发协议切档也有正确表现）
- * - 变更：protocol set_app_mode → applyAppMode 落 kv + 逐 running 会话重排系统
- *   提示词（set_personalization 同款广播），下一轮请求即生效
+ * - 变更：protocol set_app_mode → 带 sessionId 定靶单会话（落偏好列 + 只重排该 run）；
+ *   不带 sessionId 改全局默认（落 kv + 只重排未定靶的驻留 run），下一轮请求即生效。
  * - 与会话级 agent/plan 模式（modes.ts 状态机）正交：那个切权限，这个切人群定位
  */
 import { kvGet, kvSet } from "../storage/hostdb";
@@ -52,6 +58,17 @@ export function resetAppModeForTest(): void {
 
 export function getAppMode(): AppMode {
   return current;
+}
+
+/**
+ * 会话生效档裁决：sessions.app_mode 偏好列的合法值优先，NULL/脏值跟随全局默认
+ * （current，即「本会话从未切换过模式」）。建 run 时用（sessions/resolve.ts），
+ * 全局默认变更后也用同一判据挑出「未定靶」的驻留 run 去重排提示词。
+ */
+export function effectiveAppMode(pref: string | null | undefined): AppMode {
+  return typeof pref === "string" && (APP_MODES as readonly string[]).includes(pref)
+    ? (pref as AppMode)
+    : current;
 }
 
 /** 应用新模式：内存即时生效；持久化失败仅记日志（下次启动回落） */
@@ -126,10 +143,17 @@ function designModeBlock(designTheme?: ThemeRef | null): string {
   return lines.join("\n");
 }
 
-/** 当前档位的系统提示词附加段（code = 空串，composeModeSystemPrompt 过滤空段，
- *  默认提示词字节级不变；work/design 各自成段；design 段随会话主题热增减行） */
-export function appModePromptBlock(designTheme?: ThemeRef | null): string {
-  if (current === "work") return workModeBlock();
-  if (current === "design") return designModeBlock(designTheme);
+/**
+ * 指定档位的系统提示词附加段（code = 空串，composeModeSystemPrompt 过滤空段，
+ * 默认提示词字节级不变；work/design 各自成段；design 段随会话选中的设计主题增减一行主题句）。
+ * 档位由调用方传入（run.appMode），不读模块全局：全局 current 只是新会话的默认，
+ * 会话之间互不牵连——读全局会让 A 会话切档把 B 会话的提示词也换掉。
+ */
+export function appModePromptBlock(
+  appMode: AppMode,
+  designTheme?: ThemeRef | null,
+): string {
+  if (appMode === "work") return workModeBlock();
+  if (appMode === "design") return designModeBlock(designTheme);
   return "";
 }

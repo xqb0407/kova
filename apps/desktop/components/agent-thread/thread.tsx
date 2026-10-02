@@ -27,6 +27,7 @@ import { BranchPicker } from "./branch-picker";
 import { CheckpointTail } from "./checkpoint-card";
 import { ThreadPreviewRail } from "./thread-preview-rail";
 import { TurnSlot, TurnTimingRecorder } from "./turn-summary";
+import { TopAnchorKeeper } from "./top-anchor-keeper";
 import { prewarmShiki } from "@/lib/markdown/prewarm-shiki";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
@@ -133,14 +134,20 @@ export const Thread = memo(function Thread() {
       <ImageDataUI />
 
       <ThreadPrimitive.Viewport
-        turnAnchor="bottom"
+        // top 锚定（勿改回 "bottom"）：发送后新用户消息钉在视口顶部、更早的历史
+        // 滚出上方，回复在其下方流式展开。框架侧连带口径（见
+        // useThreadViewportAutoScroll）：autoScroll 随 "top" 默认变 false（不贴底
+        // 跟随，定位交给锚点 reserve）；scrollToBottomOnRunStart 对 top 直接空转。
+        // reserve 会按需在流式消息后插垫片顶住锚点；但它的置顶是一次性的，
+        // 本应用的 isRunning 空窗会把它吃掉，由 TopAnchorKeeper 兜底重放
+        turnAnchor="top"
         data-slot="aui_thread-viewport"
         className={cn(
           // 消息流禁止横向滚动：超长内容（工具行、composer 工具条等）应在各自层
           // 截断成省略号；overflow-x-clip 兜底，漏网溢出不产生底部滚动条
-          // 不加 scroll-smooth：behavior:"auto" 的跟随滚动会变成平滑动画，流式
-          // 期间每次内容增高都重启动画、永远追不上增长（龟速爬行）——跟随必须
-          // 即时到位；需要平滑跳转的入口（锚点刻度条等）自行显式传 "smooth"
+          // 不加 scroll-smooth：容器级平滑会把 behavior:"auto" 的赋值（回底按钮、
+          // 框架内部的落底滚动）也变成动画，连续触发互相打断、看起来像永远追不上；
+          // 需要平滑跳转的入口（锚点刻度条、面板定位）自行显式传 "smooth"
           "relative flex flex-1 flex-col overflow-x-clip overflow-y-scroll px-4 pt-4",
           isEmpty && "justify-center",
         )}
@@ -188,6 +195,9 @@ export const Thread = memo(function Thread() {
           <ThreadWorkingIndicator />
           {/* 直播轮耗时打点（渲染 null），见 turn-summary.tsx */}
           <TurnTimingRecorder />
+          {/* 顶部锚点兜底重放（渲染 null）：isRunning 空窗会吃掉框架的一次性
+              置顶，这里在锚点重新挂上后补回，见 top-anchor-keeper.tsx */}
+          <TopAnchorKeeper />
         </div>
 {/*  bg-[color-mix(in_oklab,var(--muted)_55%,var(--background))] */}
         <ThreadPrimitive.ViewportFooter

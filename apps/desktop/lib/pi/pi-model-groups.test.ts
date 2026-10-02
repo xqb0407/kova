@@ -54,9 +54,11 @@ describe("buildModelOptions", () => {
     expect(buildModelOptions([])).toEqual([]);
   });
 
-  test("基本字段映射：id/name/keywords/description", () => {
+  test("基本字段映射：id/name/keywords/description + 行内 mark", () => {
     const [opt] = buildModelOptions([mk()]);
-    expect(opt).toEqual({
+    const { icon, ...rest } = opt!;
+    expect(icon).toBeTruthy();
+    expect(rest).toEqual({
       id: "anthropic/claude-sonnet-4",
       name: "Claude Sonnet 4",
       disabled: false,
@@ -105,12 +107,12 @@ describe("groupModelOptions", () => {
     const options = buildModelOptions(models);
     const groups = groupModelOptions(models, options);
 
-    expect(groups.map(([title]) => title)).toEqual(["Anthropic", "OpenAI"]);
-    expect(groups[0]![1].map((o) => o.id)).toEqual([
+    expect(groups.map((g) => g.title)).toEqual(["Anthropic", "OpenAI"]);
+    expect(groups[0]!.options.map((o) => o.id)).toEqual([
       "anthropic/claude-sonnet-4",
       "anthropic/claude-haiku",
     ]);
-    expect(groups[1]![1].map((o) => o.id)).toEqual(["openai/gpt-4o"]);
+    expect(groups[1]!.options.map((o) => o.id)).toEqual(["openai/gpt-4o"]);
   });
 
   test("不同 provider 但同名服务合并到同一组", () => {
@@ -121,12 +123,14 @@ describe("groupModelOptions", () => {
     const groups = groupModelOptions(models, buildModelOptions(models));
 
     expect(groups).toHaveLength(1);
-    expect(groups[0]![0]).toBe("My Gateway");
-    expect(groups[0]![1].map((o) => o.id)).toEqual(["gw-a/m1", "gw-b/m2"]);
+    expect(groups[0]!.title).toBe("My Gateway");
+    expect(groups[0]!.options.map((o) => o.id)).toEqual(["gw-a/m1", "gw-b/m2"]);
   });
 
   test("选项不在目录中时回退到选项 id 作为分组标题", () => {
     const groups = groupModelOptions([], buildModelOptions([mk()]));
-    expect(groups).toEqual([["anthropic/claude-sonnet-4", groups[0]![1]]]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.title).toBe("anthropic/claude-sonnet-4");
+    expect(groups[0]!.options).toEqual(buildModelOptions([mk()]));
   });
 });

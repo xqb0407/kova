@@ -7,7 +7,12 @@ import {
   useComposerSlashMenu,
   useSubagentMention,
 } from "@/components/agent-thread/composer-commands";
-import { CmComposerInput } from "@/components/agent-thread/cm-composer-input";
+import {
+  CmComposerInput,
+  focusComposer,
+} from "@/components/agent-thread/cm-composer-input";
+import { PromptOptimizeOverlay } from "@/components/agent-thread/prompt-optimize-overlay";
+import { toast } from "@/components/ui/toast";
 import { directiveChipVariants } from "@/components/assistant-ui/elements/directive-text.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
@@ -33,9 +38,11 @@ import {
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
 import { usePiQueue } from "@/lib/pi/pi-runtime";
 import { addSteeredBadge } from "@/lib/pi/pi-steer-intent";
+import { cancelOptimize, optimizePrompt } from "@/lib/pi/pi-prompt-optimize";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
 import { usePendingQuestions } from "@/lib/pi/pi-question";
+import { useInteractionSessionId } from "@/lib/pi/pi-interaction-session";
 import { Button } from "@/components/ui/button";
 import {
   AuiIf,
@@ -62,6 +69,7 @@ import {
   Loader2Icon,
   MicIcon,
   PlusIcon,
+  SparklesIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
@@ -90,7 +98,7 @@ import { Input } from "../ui/input";
 import { cn } from "cn";
 import { useGitStatus } from "@/lib/git/git-status";
 import { gitBranches, gitCheckout, type GitBranches } from "@/lib/git/git";
-import { useAppMode } from "@/lib/pi/app-mode";
+import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
 
 const ModelPicker: FC = () => {
@@ -119,7 +127,9 @@ const ImeEnterGuard: FC<{
   interceptSend: boolean;
   noModel: boolean;
   noModelHint: string | null;
-}> = ({ children, send, interceptSend, noModel, noModelHint }) => {
+  /** 优化进行中：Enter/Escape 全吞，自定义发送组合只拦键不发送 */
+  blocked?: boolean;
+}> = ({ children, send, interceptSend, noModel, noModelHint, blocked = false }) => {
   const ref = useRef<HTMLDivElement>(null);
   const aui = useAui();
   useEffect(() => {
@@ -142,6 +152,12 @@ const ImeEnterGuard: FC<{
         event.stopPropagation();
         return;
       }
+      // 外部锁定态（提示词优化进行中）：Enter/Escape 连默认行为一起吞
+      if (blocked && (event.key === "Enter" || event.key === "Escape")) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       if (
         event.key === "Enter" &&
         composingEnterSeen &&
@@ -159,6 +175,8 @@ const ImeEnterGuard: FC<{
       if (interceptSend && !composing && matchesShortcut(event, send)) {
         event.preventDefault();
         event.stopPropagation();
+        // 锁定态：自定义发送组合只拦键，不发送
+        if (blocked) return;
         // 模型不可用：有草稿才拦（空草稿本就没得发，组合键等价于无操作）
         if (noModel && noModelHint && aui.composer.getState().canSend) {
           notifyNoModelSelected(noModelHint);
@@ -178,7 +196,7 @@ const ImeEnterGuard: FC<{
       el.removeEventListener("compositionstart", onCompositionStart, true);
       el.removeEventListener("compositionend", onCompositionEnd, true);
     };
-  }, [aui, interceptSend, noModel, noModelHint, send]);
+  }, [aui, interceptSend, noModel, noModelHint, send, blocked]);
   return (
     <div ref={ref} style={{ display: "contents" }}>
       {children}
@@ -193,7 +211,10 @@ export const Composer: FC = () => {
   // 提问卡片与输入框互斥：Question 工具挂起期间整条 composer 让位给卡片
   // （作答/跳过 → question_answer 结算 → finish chunk 清空，composer 复原）
   const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const questions = usePendingQuestions(threadId);
+  // 查询键必须是 sessionId：本会话新建的线程 mainThreadId 是 __LOCALID_ 草稿
+  // id，拿它查挂起台账永远 miss（卡片不上屏），见 pi-interaction-session
+  const interactionSessionId = useInteractionSessionId();
+  const questions = usePendingQuestions(interactionSessionId);
   // 发送键：Enter / ⌘Enter 交库原生提交；其余组合 submitMode="none"，由守卫拦截
   const { sendMessage } = useShortcuts();
   const submitMode = resolveComposerSubmitMode(sendMessage);
@@ -202,7 +223,69 @@ export const Composer: FC = () => {
   // 模型选择器（见 pi-model-gate）
   const gate = useModelGate();
   const noModel = !gate.usable;
-  if (threadId && questions.length > 0) return <QuestionCard />;
+
+  // 提示词优化：当前草稿交给会话模型做独立 one-shot 改写（芯片保护在
+  // sidecar 表驱动还原），进行中全锁、结果回填、toast 可撤销（⌘Z 同效）
+  const aui = useAui();
+  const [optimizing, setOptimizing] = useState(false);
+  const jobIdRef = useRef<string | null>(null);
+  const prevTextRef = useRef<string | null>(null);
+  const draftHasText = useAuiState((s) => s.composer.text.trim().length > 0);
+
+  const handleOptimize = async () => {
+    const draft = aui.composer.getState().text;
+    if (!draft.trim() || jobIdRef.current) return;
+    const jobId = crypto.randomUUID();
+    jobIdRef.current = jobId;
+    prevTextRef.current = draft;
+    setOptimizing(true);
+    try {
+      const res = await optimizePrompt({
+        threadId: threadId ?? "default",
+        ...(threadId ? { sessionId: threadId } : {}),
+        jobId,
+        text: draft,
+      });
+      // jobId 失配 = 已本地取消或被覆盖，晚到的应答作废、不回填
+      if (res === "cancelled" || jobIdRef.current !== jobId) return;
+      aui.composer.setText(res.text);
+      focusComposer();
+      toast.success({
+        title: `提示词已优化`,
+        // description: res.chipCount > 0 ? `${res.chipCount} 个芯片保持原样` : undefined,
+        duration: 6000,
+        action: {
+          label: "撤销",
+          onClick: () => {
+            aui.composer.setText(prevTextRef.current ?? draft);
+            focusComposer();
+          },
+        },
+      });
+    } catch (err) {
+      if (jobIdRef.current === jobId) {
+        toast.error(
+          `提示词优化失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    } finally {
+      if (jobIdRef.current === jobId) {
+        jobIdRef.current = null;
+        setOptimizing(false);
+      }
+    }
+  };
+
+  const handleCancelOptimize = () => {
+    const jobId = jobIdRef.current;
+    if (!jobId) return;
+    // 先作废 jobId 再解锁：后续任何应答帧都在 try 的失配检查里被丢弃
+    jobIdRef.current = null;
+    setOptimizing(false);
+    void cancelOptimize(jobId);
+  };
+
+  if (interactionSessionId && questions.length > 0) return <QuestionCard />;
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
@@ -212,8 +295,10 @@ export const Composer: FC = () => {
         <ComposerPrimitive.AttachmentDropzone asChild>
           <div
             data-slot="aui_composer-shell"
+            data-optimizing={optimizing ? "true" : undefined}
            className="
-    border-border/30
+    relative
+    border-border/50
     focus-within:border-border/60
     dark:focus-within:border-muted-foreground/25
     data-[dragging=true]:border-ring
@@ -229,19 +314,35 @@ export const Composer: FC = () => {
     data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_25%,var(--color-background))]
   "
           >
+            {/* 优化进行中的卡内多色晕染（三个模糊光团各自漂移，样式见 globals.css）：
+                必须是 shell 首个子节点——它绝对定位垫底，后面的输入区/底栏都是
+                relative 定位元素、按 DOM 顺序盖在它上面，正文因此完全不被染色 */}
+            {optimizing && (
+              <div aria-hidden className="aui-optimize-flow">
+                <div className="aui-optimize-blob aui-optimize-blob-1" />
+                <div className="aui-optimize-blob aui-optimize-blob-2" />
+                <div className="aui-optimize-blob aui-optimize-blob-3" />
+              </div>
+            )}
             <ComposerQuotePreview />
             <ComposerAttachments />
             <AskNeedsWorkChip />
-            <ImeEnterGuard send={sendMessage} interceptSend={interceptSend} noModel={noModel} noModelHint={gate.hint}>
+            <ImeEnterGuard send={sendMessage} interceptSend={interceptSend} noModel={noModel} noModelHint={gate.hint} blocked={optimizing}>
             <CmComposerInput
               submitMode={submitMode}
+              blocked={optimizing}
               placeholder={
                 gate.hint ?? "输入任务指令 @选择智能体，/打开指令菜单"
               }
               className={`aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground/60 [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
             />
             </ImeEnterGuard>
-            <ComposerAction />
+            <ComposerAction
+              optimizing={optimizing}
+              canOptimize={draftHasText && !noModel && !optimizing}
+              onOptimize={handleOptimize}
+            />
+            {optimizing && <PromptOptimizeOverlay onCancel={handleCancelOptimize} />}
           </div>
         </ComposerPrimitive.AttachmentDropzone>
 
@@ -481,13 +582,13 @@ const WorkspaceSessionPill: FC = () => {
  * 所选工作目录的 git 分支胶囊（目录选择后自动读取该目录的仓库/分支）：
  * 点开为分支菜单——搜索、分支列表（当前分支带勾选与"未提交的更改：N 个文件"）、
  * 切换/创建检出、Git 图谱（展开右侧面板的 Git 标签）。
- * 非 Tauri / 非 git 仓库 / 已开始对话 / 工作模式下静默不渲染（与 WorkspacePill 同步让位；
- * 工作模式下 Git 管理整体隐藏，见 general-settings「工作模式」）。
+ * 非 Tauri / 非 git 仓库 / 已开始对话 / 本会话工作模式为工作时静默不渲染（与
+ * WorkspacePill 同步让位；工作模式下 Git 管理整体隐藏，见顶栏模式切换器）。
  */
 const WorkspaceBranchPill: FC = () => {
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
-  const appMode = useAppMode();
+  const appMode = useCurrentAppMode();
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState<GitBranches | null>(null);
@@ -677,7 +778,7 @@ const WorkspaceBranchPill: FC = () => {
  *  运行中走手动 aui.composer.send({ steer }) 绕开 ComposerPrimitive.Send 的
  *  isRunning 禁用谓词；车道必须显式传（core 默认运行中并入当前轮，本应用
  *  语义相反：普通发送=排队，Alt/Shift+⌘Enter=并入） */
-const AdaptiveSendButton: FC = () => {
+const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
   const aui = useAui();
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const canSend = useAuiState((s) => s.composer.canSend);
@@ -691,6 +792,20 @@ const AdaptiveSendButton: FC = () => {
   // 删除请求在途标记：queue_update 回程内连点不重复发 queue_cancel
   const cancellingRef = useRef<string | null>(null);
 
+  // 优化进行中（在遮罩之下仍渲染禁用态，透模糊可辨）：任何状态下都不发送
+  if (blocked) {
+    return (
+      <span tabIndex={-1} className="inline-flex" aria-label="正在优化提示词">
+        <button
+          type="button"
+          disabled
+          className="aui-composer-send inline-flex size-7 items-center justify-center rounded-full bg-primary! opacity-50"
+        >
+          <ArrowUpIcon className="aui-composer-send-icon size-4 text-white!" />
+        </button>
+      </span>
+    );
+  }
   if (isRunning && !canSend) {
     // 排队非空（且输入为空）：■ = 删除最近入队的排队项（撤销上次发送）
     const last = queueItems[queueItems.length - 1];
@@ -856,14 +971,23 @@ const AskNeedsWorkChip: FC = () => {
   );
 };
 
-const ComposerAction: FC = () => {
+const ComposerAction: FC<{
+  /** 提示词优化进行中（发送键进禁用态，全锁的视觉一部分） */
+  optimizing: boolean;
+  /** 优化按钮可用谓词（有草稿 && 有模型 && 不在优化中） */
+  canOptimize: boolean;
+  onOptimize: () => void;
+}> = ({ optimizing, canOptimize, onOptimize }) => {
   // 问答档的底栏收敛：思考档与上下文用量是编码档的调参旋钮，问答场景没有
   // "这次思考强度调多少"的决策，只留模型选择器。切档即时生效，无需重启会话。
   const inAskMode = useSessionMode(useAuiState((s) => s.threads.mainThreadId)).mode === "ask";
   return (
     // flex-wrap：窄对话列（小窗口 + 右面板展开）时两组按钮各自成行，
     // 避免固有宽度撑破消息流（超长内容一律走截断，不靠横向滚动）
-    <div className="aui-composer-action-wrapper relative flex flex-wrap items-center justify-between gap-y-1.5">
+    // @container：本行自任容器——收成纯图标态的判据是「这条工具栏还剩多宽」，
+    // 而栏宽随右面板开合/对话宽度档变化，跟窗口宽不是一回事，视口断点会判错；
+    // 各按钮的文字在这个容器 < 42rem 时隐藏（@max-2xl:hidden），只留图标
+    <div className="aui-composer-action-wrapper @container relative flex flex-wrap items-center justify-between gap-y-1.5">
       <div className="flex items-center gap-1">
         {/* 「+」菜单：添加文件 / 模式 / 专家 / 技能 / 连接器（左栏分类 + 右栏条目） */}
         <ComposerPlusMenu />
@@ -872,6 +996,21 @@ const ComposerAction: FC = () => {
         <DesignThemePicker />
       </div>
       <div className="flex items-center gap-1.5">
+        {/* 提示词优化：草稿交给会话模型 one-shot 改写后回填（技能/子智能体
+            芯片原文不动，保护在 sidecar）；空草稿/无模型/进行中禁用 */}
+        <TooltipIconButton
+          tooltip="优化提示词（保留技能/智能体芯片）"
+          side="bottom"
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="aui-composer-optimize text-muted-foreground hover:text-foreground size-7 rounded-full"
+          aria-label="Optimize prompt"
+          disabled={!canOptimize}
+          onClick={() => void onOptimize()}
+        >
+          <SparklesIcon className="aui-composer-optimize-icon size-4" />
+        </TooltipIconButton>
         <ModelPicker />
         {/* 深度思考档位选择：模型右侧、发送按钮左侧，点开下拉选强度 */}
         {!inAskMode && <ThinkingPicker />}
@@ -908,7 +1047,7 @@ const ComposerAction: FC = () => {
             </ComposerPrimitive.StopDictation>
           </AuiIf>
         </AuiIf>
-        <AdaptiveSendButton />
+        <AdaptiveSendButton blocked={optimizing} />
       </div>
     </div>
   );

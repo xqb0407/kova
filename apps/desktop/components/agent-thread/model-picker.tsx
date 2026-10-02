@@ -6,13 +6,18 @@ import {
   ModelSelector,
   type ModelOption,
 } from "@/components/assistant-ui/elements/model-selector.aui";
+import { ProviderIcon } from "@/components/custom-ui/provider-icon";
 import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
-import type { PiModelSummary } from "@/lib/pi/pi-bridge";
+import {
+  buildModelOptions,
+  groupModelOptions,
+  modelOptionId,
+} from "@/lib/pi/pi-model-groups";
 import { hydrateThreadModel, setThreadModel } from "@/lib/pi/pi-session-model";
 import { useModelGate } from "@/lib/pi/pi-model-gate";
 import { useSendLock } from "@/lib/pi/pi-send-lock";
 import { setSelectedModel } from "@/lib/model/model-settings";
-import { fmtContextWindow } from "@/lib/model/model-format";
+import { cn } from "@/lib/utils";
 
 /**
  * 对话页模型选择器：只展示已配置凭据的服务（authed）的模型，按服务分组；
@@ -23,6 +28,9 @@ import { fmtContextWindow } from "@/lib/model/model-format";
  *
  * 发送锁（useSendLock）：消息发送完成前（在跑/排队待派发）禁止切换模型，
  * 见 pi-send-lock 头注。
+ *
+ * 选项与分组由 pi-model-groups 统一构造（与设置页、自动化弹窗同一份逻辑）：
+ * 行内 mark 按模型认厂家、分组标题按服务认，见 lib/model/provider-brand。
  */
 export const PiModelPicker: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
@@ -42,34 +50,21 @@ export const PiModelPicker: FC = () => {
     [allModels],
   );
 
-  const byCompositeId = useMemo(() => {
-    const map = new Map<string, PiModelSummary>();
-    for (const m of models) map.set(`${m.provider}/${m.id}`, m);
+  const nameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const m of models) map.set(modelOptionId(m), m.name || m.id);
     return map;
   }, [models]);
 
   const options = useMemo<ModelOption[]>(
-    () =>
-      models.map((m) => ({
-        id: `${m.provider}/${m.id}`,
-        name: m.name || m.id,
-        disabled: !m.authed,
-        keywords: [m.provider, m.providerName],
-        description: `${m.providerName} · ${fmtContextWindow(m.contextWindow)}`,
-      })),
+    () => buildModelOptions(models),
     [models],
   );
 
-  const groups = useMemo(() => {
-    const map = new Map<string, ModelOption[]>();
-    for (const o of options) {
-      const providerName = byCompositeId.get(o.id)?.providerName ?? o.id;
-      const list = map.get(providerName);
-      if (list) list.push(o);
-      else map.set(providerName, [o]);
-    }
-    return [...map.entries()];
-  }, [options, byCompositeId]);
+  const groups = useMemo(
+    () => groupModelOptions(models, options),
+    [models, options],
+  );
 
   // 只展示「还可用」的选择：provider 被删/停用后会话级记忆仍指着那个模型，
   // 直接显示会是一个目录里不存在的裸 provider/modelId（看着像 bug）。
@@ -77,9 +72,7 @@ export const PiModelPicker: FC = () => {
   const value = gate.selected
     ? `${gate.selected.provider}/${gate.selected.modelId}`
     : undefined;
-  const selectedLabel = value
-    ? (byCompositeId.get(value)?.name ?? value)
-    : undefined;
+  const selectedLabel = value ? (nameById.get(value) ?? value) : undefined;
 
   return (
     <ModelSelector.Root
@@ -103,11 +96,23 @@ export const PiModelPicker: FC = () => {
       <ModelSelector.Trigger
         variant="ghost"
         size="sm"
-        className="h-7 max-w-48 rounded-full [&>span]:min-w-0"
+        className="h-7 max-w-48 rounded-full [&>span]:min-w-0 @max-2xl:px-2"
         disabled={modelLocked}
         title={modelLocked ? "消息发送完成前禁止切换模型" : selectedLabel}
       >
-        <span className="truncate">
+        {/* 触发器自带 children，ModelSelector.Value 那条默认渲染路径不会走：
+            mark 得自己渲染。窄栏只留 mark（名单收进 title、chevron 保留），
+            占位「请选择模型」是行动指引而非读数，窄栏照常显示文字 */}
+        {gate.selected && (
+          <ProviderIcon
+            provider={gate.selected.provider}
+            modelId={gate.selected.modelId}
+            providerName={
+              models.find((m) => modelOptionId(m) === value)?.providerName
+            }
+          />
+        )}
+        <span className={cn("truncate", selectedLabel && "@max-2xl:hidden")}>
           {selectedLabel ?? (
             <span className="text-muted-foreground">请选择模型</span>
           )}
@@ -119,13 +124,13 @@ export const PiModelPicker: FC = () => {
           <ModelSelector.Empty>
             没有可用模型，请在设置 → 模型里添加服务
           </ModelSelector.Empty>
-          {groups.map(([providerName, opts]) => (
+          {groups.map((group) => (
             <ModelSelector.Group
-              key={providerName}
-              heading={providerName}
+              key={group.title}
+              heading={group.title}
               className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium"
             >
-              {opts.map((o) => (
+              {group.options.map((o) => (
                 <ModelSelector.Item key={o.id} model={o} />
               ))}
             </ModelSelector.Group>

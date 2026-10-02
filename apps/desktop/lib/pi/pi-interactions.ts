@@ -13,6 +13,11 @@
  *
  * 出口：用户点击 → tool_confirm / question_answer（原线形 + interactionId 寻址）
  * → 本地移除卡片；turn 结束（finish chunk）清空该线程残留，覆盖 abort/异常路径。
+ *
+ * ⚠ 两本台账的键是**线上 sessionId**，不是 threads.mainThreadId——本会话新建的
+ * 线程 mainThreadId 恒为 __LOCALID_ 草稿 id（只有刷新恢复的线程两者同值）。
+ * 渲染侧查台账一律用 useInteractionSessionId()（pi-interaction-session），
+ * 直接拿 mainThreadId 查会静默 miss。
  */
 import { useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi/pi-bridge";
@@ -338,6 +343,34 @@ export function usePendingQuestions(threadId: string | undefined): PendingQuesti
     subscribe,
     () => (threadId ? (questions.get(threadId) ?? EMPTY_QUESTIONS) : EMPTY_QUESTIONS),
     () => EMPTY_QUESTIONS,
+  );
+}
+
+/* ---------------- 侧边栏行徽标 ---------------- */
+
+/** 行徽标的两种挂起态（与 AGENT_EVENT_REGISTRY 的审批/提问一一对应） */
+export type PendingInteractionKind = "approval" | "question";
+
+/**
+ * 订阅某会话的挂起态，压成一个稳定原语（无挂起 = null）。
+ * 侧边栏每行都要问「有没有在等我」，但不该为此订阅整份列表——快照返回
+ * 字符串而非数组/对象：useSyncExternalStore 要求 getSnapshot 引用稳定，每次
+ * 渲染新建标签对象会直接回环。
+ * 审批优先于提问：两者同时挂起时审批是更靠前的阻塞关卡。
+ * 键是 pi sessionId（台账键空间），与列表行的 remoteId 同值。
+ */
+export function usePendingInteractionKind(
+  sessionId: string | undefined,
+): PendingInteractionKind | null {
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!sessionId) return null;
+      if (approvals.get(sessionId)?.length) return "approval";
+      if (questions.get(sessionId)?.length) return "question";
+      return null;
+    },
+    () => null,
   );
 }
 

@@ -3,7 +3,8 @@
  * 变更后的活动会话系统提示词热替换走同一套 composeModeSystemPrompt 整段重排。
  */
 import { send } from "../stream";
-import { running } from "../../sessions/sessions";
+import { logErr } from "../../log";
+import { findRunBySession, running } from "../../sessions/sessions";
 import { composeModeSystemPrompt } from "../../agent/modes";
 import { setLeadingSystemMessage } from "../../agent/context";
 import {
@@ -12,17 +13,34 @@ import {
   rulesFilePath,
   soulFilePath,
 } from "../../agent/personalization";
-import { applyAppMode, getAppMode } from "../../agent/app-mode";
+import {
+  applyAppMode,
+  effectiveAppMode,
+  getAppMode,
+  normalizeAppMode,
+  type AppMode,
+} from "../../agent/app-mode";
 import {
   applyMemoryConfig,
+  deleteMemoryTrash,
+  deleteMemoryVersion,
+  emptyMemoryTrash,
   getMemoryConfig,
+  listMemoryTrash,
+  listMemoryVersions,
   memoryScopesPayload,
   readMemoryFile,
+  readMemoryVersion,
+  restoreMemoryTrash,
+  restoreMemoryVersion,
+  snapshotMemoryVersion,
+  trashMemoryFile,
   writeMemoryFile,
   type MemoryScope,
 } from "../../agent/memory";
 import { getHookConfigs, setHookConfigs } from "../../agent/hooks";
 import { applyBrowserConfig, getBrowserConfig } from "../../tools/browser-config";
+import { applyMirrorConfig, getMirrorConfig } from "../../tools/mirror-config";
 import { applyImageGenConfig, getImageGenConfig } from "../../tools/imagegen-config";
 import {
   applySecretsConfig,
@@ -30,7 +48,14 @@ import {
   isValidSecretName,
   workspaceScope,
 } from "../../secrets/secrets";
-import { secretDelete, secretList, secretSet } from "../../storage/hostdb";
+import {
+  secretDelete,
+  secretList,
+  secretSet,
+  sessionGet,
+  sessionPrefsSet,
+} from "../../storage/hostdb";
+import type { Running } from "../../types";
 import {
   applyObservabilityConfig,
   getObservabilityConfig,
@@ -48,6 +73,21 @@ function expandSecretScope(scope: unknown, cwd: unknown): string | null {
   return dir ? workspaceScope(dir) : null;
 }
 
+/** 整段重排单会话系统提示词（工作模式/个性化等段变更后）。
+ *  除 agent.state 外必须同改 loopContext 转录首条：活循环每轮请求读的是后者，
+ *  只改前者等于没改——轮中切档本轮后续请求仍带旧模式段（0.99 迁移补漏点）。 */
+function recomposeRunPrompt(run: Running): void {
+  const prompt = composeModeSystemPrompt(
+    run.mode,
+    run.cwd,
+    run.appMode,
+    run.agent.state.model,
+    run.designTheme,
+  );
+  setLeadingSystemMessage(run.agent.state.messages, prompt);
+  if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
+}
+
 /** 密钥页整包应答：清单（无明文）+ 绑定策略，改完即回以刷新 UI */
 async function secretsPayload() {
   const config = getSecretsConfig();
@@ -56,6 +96,29 @@ async function secretsPayload() {
     enabled: config.enabled,
     bindings: config.bindings,
   };
+}
+
+/** 记忆命令的作用域/目录解析（工作区作用域必须带 cwd；错误信息带命令名便于排查） */
+function memoryTarget(
+  command: string,
+  msg: Record<string, unknown>,
+): { scope: MemoryScope; cwd: string } {
+  const scope: MemoryScope = msg.scope === "workspace" ? "workspace" : "global";
+  const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : "";
+  if (scope === "workspace" && !cwd) {
+    throw new Error(`${command}: workspace scope requires cwd`);
+  }
+  return { scope, cwd };
+}
+
+/** 记忆内容可能正被注入系统提示词：写入/删除/恢复后整段重排活动会话（与 set_memory 同款） */
+function restampMemoryPrompt(): void {
+  for (const run of running.values()) {
+    setLeadingSystemMessage(
+      run.agent.state.messages,
+      composeModeSystemPrompt(run.mode, run.cwd, run.appMode, run.agent.state.model, run.designTheme),
+    );
+  }
 }
 
 export const handlers: Record<string, CommandHandler> = {
@@ -89,7 +152,7 @@ export const handlers: Record<string, CommandHandler> = {
     for (const run of running.values()) {
       setLeadingSystemMessage(
         run.agent.state.messages,
-        composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme),
+        composeModeSystemPrompt(run.mode, run.cwd, run.appMode, run.agent.state.model, run.designTheme),
       );
     }
     send({
@@ -100,27 +163,46 @@ export const handlers: Record<string, CommandHandler> = {
     });
   },
 
-  get_app_mode: async (reqId) => {
+  get_app_mode: async (reqId, msg) => {
+    // 带 sessionId：该会话的生效档（偏好列合法值 ?? 全局默认）；不带：全局默认。
+    // 前端正常路径从会话列表偏好水合，这里只作兜底/诊断直查
+    const sessionId = typeof msg.sessionId === "string" ? msg.sessionId.trim() : "";
+    if (sessionId) {
+      const row = await sessionGet(sessionId);
+      send({ id: reqId, type: "app_mode", mode: effectiveAppMode(row?.appMode) });
+      return;
+    }
     send({ id: reqId, type: "app_mode", mode: getAppMode() });
   },
 
   set_app_mode: async (reqId, msg) => {
+    const sessionId = typeof msg.sessionId === "string" ? msg.sessionId.trim() : "";
+    // 定靶形态先校验会话存在（与 set_model / set_thinking 同规：被拒命令不得留状态变更）
+    if (sessionId && !(await sessionGet(sessionId))) {
+      throw new Error(`session not found: ${sessionId}`);
+    }
+    if (sessionId) {
+      // 会话定靶（顶栏模式切换器）：只落被点名会话的偏好列 + 只重排该会话提示词。
+      // 全局默认（kv pi.app_mode）不漂移——A 会话切档不得牵连 B 会话
+      const mode = normalizeAppMode(msg.mode);
+      const owner = findRunBySession(sessionId);
+      if (owner) {
+        owner.run.appMode = mode;
+        recomposeRunPrompt(owner.run);
+      }
+      await sessionPrefsSet(sessionId, { appMode: mode }).catch(() => {});
+      send({ id: reqId, type: "app_mode", mode });
+      return;
+    }
+    // 全局默认变更（设置 → 通用 / onboarding）：落 kv 供新会话与从未定靶的会话跟随；
+    // 驻留 run 只重排「偏好列为空」的那些（NULL = 真值跟随全局默认），
+    // 已在本会话切过档的保持自己的选择（与 set_thinking 的默认档分支同型）
     const mode = await applyAppMode(msg.mode);
-    // 与 set_personalization 同款广播：工作模式段变了就整段重排系统提示词，
-    // 活动会话下一轮请求即生效
     for (const run of running.values()) {
-      const prompt = composeModeSystemPrompt(
-        run.mode,
-        run.cwd,
-        run.agent.state.model,
-        run.designTheme,
-      );
-      setLeadingSystemMessage(run.agent.state.messages, prompt);
-      // 轮中切换：活循环读的是 loopContext 转录首条的提示词，只改 agent.state 等于
-      // 没改——本轮后续请求仍带旧模式段（design 段里含设计主题句，切到
-      // code/work 后模型仍在按旧模式行事）。其余重排点（applySessionTheme /
-      // recomposeAllRuns / applyMode）都写了这一行，此处原先漏了。
-      if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
+      const row = await sessionGet(run.sessionId);
+      if (row?.appMode) continue;
+      run.appMode = mode;
+      recomposeRunPrompt(run);
     }
     send({ id: reqId, type: "app_mode", mode });
   },
@@ -145,7 +227,7 @@ export const handlers: Record<string, CommandHandler> = {
     for (const run of running.values()) {
       setLeadingSystemMessage(
         run.agent.state.messages,
-        composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme),
+        composeModeSystemPrompt(run.mode, run.cwd, run.appMode, run.agent.state.model, run.designTheme),
       );
     }
     send({ id: reqId, type: "memory", settings });
@@ -159,6 +241,16 @@ export const handlers: Record<string, CommandHandler> = {
     // 只落 kv：browser_* 工具无提示词注入块，execute 内实时门控，写完即生效
     const settings = await applyBrowserConfig(msg.settings);
     send({ id: reqId, type: "browser", settings });
+  },
+
+  get_mirror: async (reqId) => {
+    send({ id: reqId, type: "mirror", settings: getMirrorConfig() });
+  },
+
+  set_mirror: async (reqId, msg) => {
+    // 只落 kv：WebFetch 与 bash 的 git 注入每次调用实时读，写完即生效
+    const settings = await applyMirrorConfig(msg.settings);
+    send({ id: reqId, type: "mirror", settings });
   },
 
   get_imagegen: async (reqId) => {
@@ -268,31 +360,93 @@ export const handlers: Record<string, CommandHandler> = {
 
   read_memory_file: async (reqId, msg) => {
     // 预览/编辑入口：不设总开关门控——关闭记忆也应能查看已有内容再决定
-    const scope: MemoryScope = msg.scope === "workspace" ? "workspace" : "global";
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
-    if (scope === "workspace" && !cwd) throw new Error("read_memory_file: workspace scope requires cwd");
+    const { scope, cwd } = memoryTarget("read_memory_file", msg);
     const file = String(msg.file ?? "");
     if (!file.trim()) throw new Error("read_memory_file: file is required");
-    const res = await readMemoryFile(getMemoryConfig(), scope, cwd ?? "", file);
+    const res = await readMemoryFile(getMemoryConfig(), scope, cwd, file);
     if (res.kind !== "text") throw new Error(`memory file not found: ${file}`);
+    // 外部编辑器改过的内容在这里补一版历史（与最新一版相同则跳过，反复打开无副作用）
+    await snapshotMemoryVersion(scope, cwd, file, "external").catch((err) =>
+      logErr("memory: external snapshot failed:", err),
+    );
     send({ id: reqId, type: "memory_file", file, content: res.content });
   },
 
   write_memory_file: async (reqId, msg) => {
-    const scope: MemoryScope = msg.scope === "workspace" ? "workspace" : "global";
-    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
-    if (scope === "workspace" && !cwd) throw new Error("write_memory_file: workspace scope requires cwd");
+    const { scope, cwd } = memoryTarget("write_memory_file", msg);
     const file = String(msg.file ?? "");
     const content = String(msg.content ?? "");
     // 整体覆盖保存（设置页编辑语义）；文件名/路径校验在 writeMemoryFile 内
-    const saved = await writeMemoryFile(scope, cwd ?? "", file, content, "overwrite");
-    // 内容可能正被注入：与 set_memory 同款热替换活动会话提示词
-    for (const run of running.values()) {
-      setLeadingSystemMessage(
-        run.agent.state.messages,
-        composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme),
-      );
-    }
+    const saved = await writeMemoryFile(scope, cwd, file, content, "overwrite", "page");
+    restampMemoryPrompt();
     send({ id: reqId, type: "memory_file_saved", scope, file: saved.rel, bytes: saved.bytes });
+  },
+
+  list_memory_versions: async (reqId, msg) => {
+    const { scope, cwd } = memoryTarget("list_memory_versions", msg);
+    const file = String(msg.file ?? "");
+    if (!file.trim()) throw new Error("list_memory_versions: file is required");
+    send({ id: reqId, type: "memory_versions", file, versions: listMemoryVersions(scope, cwd, file) });
+  },
+
+  read_memory_version: async (reqId, msg) => {
+    const { scope, cwd } = memoryTarget("read_memory_version", msg);
+    const file = String(msg.file ?? "");
+    const versionId = String(msg.versionId ?? "");
+    const content = await readMemoryVersion(scope, cwd, file, versionId);
+    send({ id: reqId, type: "memory_version", file, versionId, content });
+  },
+
+  restore_memory_version: async (reqId, msg) => {
+    const { scope, cwd } = memoryTarget("restore_memory_version", msg);
+    const file = String(msg.file ?? "");
+    const versionId = String(msg.versionId ?? "");
+    // 恢复 = 把该版内容写回（来源 restore，写回本身也进历史）；内容在注入里，需热替换
+    const saved = await restoreMemoryVersion(scope, cwd, file, versionId);
+    restampMemoryPrompt();
+    send({ id: reqId, type: "memory_version_restored", scope, file: saved.rel, bytes: saved.bytes, versionId });
+  },
+
+  delete_memory_version: async (reqId, msg) => {
+    const { scope, cwd } = memoryTarget("delete_memory_version", msg);
+    const file = String(msg.file ?? "");
+    const versionId = String(msg.versionId ?? "");
+    await deleteMemoryVersion(scope, cwd, file, versionId);
+    send({ id: reqId, type: "memory_version_deleted", file, versionId });
+  },
+
+  trash_memory_file: async (reqId, msg) => {
+    // 删除 = 移入回收站（可恢复）；内容可能正被注入，删后同样热替换
+    const { scope, cwd } = memoryTarget("trash_memory_file", msg);
+    const file = String(msg.file ?? "");
+    const res = await trashMemoryFile(scope, cwd, file);
+    restampMemoryPrompt();
+    send({ id: reqId, type: "memory_file_trashed", scope, file: res.name, trashId: res.id });
+  },
+
+  list_memory_trash: async (reqId, msg) => {
+    const { scope, cwd } = memoryTarget("list_memory_trash", msg);
+    send({ id: reqId, type: "memory_trash", scope, entries: listMemoryTrash(scope, cwd) });
+  },
+
+  restore_memory_trash: async (reqId, msg) => {
+    const { scope, cwd } = memoryTarget("restore_memory_trash", msg);
+    const trashId = String(msg.trashId ?? "");
+    const res = await restoreMemoryTrash(scope, cwd, trashId);
+    restampMemoryPrompt();
+    send({ id: reqId, type: "memory_trash_restored", scope, file: res.name, trashId });
+  },
+
+  delete_memory_trash: async (reqId, msg) => {
+    const { scope, cwd } = memoryTarget("delete_memory_trash", msg);
+    const trashId = String(msg.trashId ?? "");
+    await deleteMemoryTrash(scope, cwd, trashId);
+    send({ id: reqId, type: "memory_trash_deleted", scope, trashId });
+  },
+
+  empty_memory_trash: async (reqId, msg) => {
+    const { scope, cwd } = memoryTarget("empty_memory_trash", msg);
+    const removed = await emptyMemoryTrash(scope, cwd);
+    send({ id: reqId, type: "memory_trash_emptied", scope, removed });
   },
 };

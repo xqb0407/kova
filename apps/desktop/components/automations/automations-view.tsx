@@ -51,7 +51,6 @@ import {
   TimerIcon,
   Trash2Icon,
   XIcon,
-  ZapIcon,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -120,6 +119,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Dock, DockItem, DockSeparator } from "@/components/custom-ui/dock";
 import { Segmented } from "@/components/custom-ui/segmented";
+import { AutomationEmptyArt, HistoryEmptyArt } from "./automation-art";
 import { AutomationEditorDialog } from "./automation-editor-dialog";
 import { TemplateGallery } from "./template-gallery";
 
@@ -1078,9 +1078,9 @@ export const AutomationsView: FC<{
               ))}
             </div>
           ) : historyGroups.length === 0 ? (
-            <div className="border-border/60 text-muted-foreground mt-4 flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-14 text-center">
-              <HistoryIcon className="size-8 opacity-40" />
-              <p className="text-sm font-medium">
+            <div className="border-border/60 text-muted-foreground mt-4 flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-10 text-center">
+              <HistoryEmptyArt className="text-muted-foreground h-auto w-full max-w-md opacity-90" />
+              <p className="text-foreground text-sm font-semibold">
                 {query ? "没有匹配的运行记录" : "还没有运行记录"}
               </p>
               {!query && (
@@ -1131,18 +1131,24 @@ export const AutomationsView: FC<{
             ))}
           </div>
         ) : snap.loaded && snap.tasks.length === 0 ? (
-          /* 空态收到最简：模板区就在正下方，再摆一排按钮是重复的引导。
-             只留"还没有任务"这一句 + 会话创建这条旁路（模板区给的是第三条路） */
-          <div className="text-muted-foreground mt-4 flex flex-col items-center gap-2 py-10 text-center">
-            <div className="bg-muted/50 text-muted-foreground grid size-12 place-items-center rounded-2xl border">
-              <ZapIcon className="size-6" />
-            </div>
-            <p className="text-foreground text-sm font-medium">还没有自动化任务</p>
-            <p className="max-w-md text-xs leading-relaxed">
+          /* 空态：整幅插画（322×200 场景）顶掉原来那枚 48px 图标块。空页是
+             这一页唯一"整屏只剩一句话"的状态，纯文字留白最显单调；模板区
+             仍就在正下方，所以文字与按钮保持最简，视觉的分量交给插画 */
+          <div className="text-muted-foreground mt-4 flex flex-col items-center gap-3 py-6 text-center">
+            <AutomationEmptyArt className="text-primary mb-5 h-auto w-full max-w-[26rem]" />
+            <p className="text-foreground text-base font-semibold tracking-[-0.011em]">
+              还没有自动化任务
+            </p>
+            <p className="max-w-md text-sm leading-relaxed">
               从下方挑一个模板起步最快；也可以在对话里直接说
               "每天早上 9 点给我发一份昨日总结"，让 Agent 帮你建。
             </p>
-            <Button size="sm" variant="outline" className="mt-1 gap-1.5" onClick={() => openEditor(null)}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-3 gap-1.5"
+              onClick={() => openEditor(null)}
+            >
               <PlusIcon className="size-4" />
               新建第一个任务
             </Button>

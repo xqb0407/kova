@@ -12,8 +12,12 @@
  *   总开关默认关闭——默认提示词字节级不变（缓存纪律同 SYSTEM_PROMPT_CORE）。
  * - 工具在 tools.ts buildTools 常驻注册（工具表变更会破坏 Anthropic tools 块缓存，
  *   故不按开关增删），execute 时实时读配置门控。
+ * - 删除走回收站（.trash/）、每次改动留一版版本史（.history/<文件名>/）：两者都是
+ *   记忆目录下的隐藏子目录，只扫根级 *.md 的清单/注入/检索天然看不见它们；工作区
+ *   作用域会落进用户仓库，所以子目录里自带 .gitignore（内容 *）自忽略，git 无噪音。
+ *   也不进 SQLite —— hostdb 有 Rust 双实现，动表要两边改，文件系统这条路零跨语言成本。
  */
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
@@ -344,6 +348,302 @@ export function searchMemoryText(
   return hits.slice(0, maxHits);
 }
 
+/* -------------------------- 版本史（.history）与回收站（.trash） -------------------------- */
+
+const HISTORY_DIR = ".history";
+const TRASH_DIR = ".trash";
+/** 每文件保留的版本数（超出按时间从旧到新裁掉） */
+export const MAX_VERSIONS_PER_FILE = 50;
+
+/** 版本来源：设置页保存 / AI 工具写入 / 外部编辑器改动补录 / 从历史恢复 / 删除前留档 */
+export type MemoryVersionSource = "page" | "agent" | "external" | "restore" | "delete";
+
+const VERSION_SOURCES: readonly MemoryVersionSource[] = [
+  "page",
+  "agent",
+  "external",
+  "restore",
+  "delete",
+];
+
+export type MemoryVersionEntry = {
+  /** 版本 id（= 版本文件名），读取/恢复/删除都按它定位 */
+  id: string;
+  /** 该版记录时间（取文件 mtime，毫秒） */
+  ts: number;
+  source: MemoryVersionSource;
+  bytes: number;
+};
+
+export type MemoryTrashEntry = {
+  id: string;
+  /** 原文件名（回收站里的名字是 <时间戳>--<原名>） */
+  name: string;
+  /** 移入回收站的时间（毫秒） */
+  ts: number;
+  bytes: number;
+};
+
+/** 文件名安全的时间戳：ISO 里的 : 与 . 在 Windows 非法，一律换成 -（保持字典序=时间序） */
+const versionStamp = (d: Date): string => d.toISOString().replace(/[:.]/g, "-");
+
+/** 单调递增的版本时间戳：同一毫秒内连记多版时 +1，保证字典序恒等于记录顺序
+ *  （否则同毫秒的两版会退化成按来源字母序排，"删除前那一版"就可能排到 page 后面） */
+let lastVersionMs = 0;
+function monotonicStamp(): string {
+  const now = Date.now();
+  lastVersionMs = now > lastVersionMs ? now : lastVersionMs + 1;
+  return versionStamp(new Date(lastVersionMs));
+}
+
+/**
+ * 隐藏子目录（版本史/回收站）：惰性创建 + 放一个 `.gitignore`（内容 `*`）自忽略。
+ * 工作区作用域的记忆目录在用户仓库里，不加这行 `git status` 会冒出一堆版本文件。
+ */
+async function ensureSideDir(dir: string, name: string): Promise<string> {
+  const abs = join(dir, name);
+  await mkdir(abs, { recursive: true });
+  const ignore = join(abs, ".gitignore");
+  if (!existsSync(ignore)) {
+    await writeFile(ignore, "*\n", "utf8").catch(() => {});
+  }
+  return abs;
+}
+
+/** 版本文件名：<时间戳>--<来源>.md（字典序即时间序）；重名（重启后时钟回拨等）靠 -N 后缀避让 */
+async function uniqueVersionPath(vdir: string, source: MemoryVersionSource): Promise<string> {
+  const base = monotonicStamp();
+  for (let n = 0; n < 100; n += 1) {
+    const id = n === 0 ? `${base}--${source}.md` : `${base}-${n}--${source}.md`;
+    if (!existsSync(join(vdir, id))) return join(vdir, id);
+  }
+  // 极端情况（同毫秒百次写入）：退化成带随机段的名字，宁可排序略乱也不丢版本
+  return join(vdir, `${base}-${Math.random().toString(36).slice(2, 8)}--${source}.md`);
+}
+
+function parseVersionFile(id: string): { source: MemoryVersionSource } | null {
+  const m = /^[0-9TZ-]+--([a-z]+)\.md$/.exec(id);
+  if (!m) return null;
+  const source = m[1] as MemoryVersionSource;
+  return VERSION_SOURCES.includes(source) ? { source } : null;
+}
+
+/** 版本目录（每个记忆文件一个） */
+const versionDirFor = (dir: string, name: string): string => join(dir, HISTORY_DIR, name);
+
+/** 版本清单：按文件名倒序（最新在前）；坏名字跳过 */
+function listVersionIds(vdir: string): string[] {
+  if (!existsSync(vdir)) return [];
+  try {
+    return readdirSync(vdir)
+      .filter((n) => parseVersionFile(n) !== null)
+      .sort()
+      .reverse();
+  } catch {
+    return [];
+  }
+}
+
+/** 裁剪：只留最新 MAX_VERSIONS_PER_FILE 版 */
+async function pruneVersions(vdir: string): Promise<void> {
+  const ids = listVersionIds(vdir);
+  for (const id of ids.slice(MAX_VERSIONS_PER_FILE)) {
+    await unlink(join(vdir, id)).catch(() => {});
+  }
+}
+
+/**
+ * 把文件当前内容记成一版（内容与最新一版相同则跳过 —— 反复保存同一内容不刷屏）。
+ * 版本史语义是"该文件出现过的每个状态"，因此最新一版恒等于当前内容；
+ * 恢复旧版 = 用旧内容再写一次（来源 restore），历史只增不改，任何一步都能回退。
+ * force = 内容相同也记（删除事件必留痕：删除前那一版要让"删除于何时"看得见）。
+ */
+export async function snapshotMemoryVersion(
+  scope: MemoryScope,
+  cwd: string,
+  file: string,
+  source: MemoryVersionSource,
+  force = false,
+): Promise<void> {
+  const name = file.trim();
+  if (!FILE_NAME_RE.test(name)) return; // 名非法/目录不存在：静默跳过，不阻断写路径
+  const dir = scopeDir(scope, cwd);
+  const abs = join(dir, name);
+  let content: string;
+  try {
+    content = await readFile(abs, "utf8");
+  } catch {
+    return; // 文件还不存在（首次写入之前没有可记的状态）
+  }
+  const vdir = versionDirFor(dir, name);
+  const newest = listVersionIds(vdir)[0];
+  if (newest && !force) {
+    try {
+      if ((await readFile(join(vdir, newest), "utf8")) === content) return;
+    } catch {
+      /* 读不到就当需要新记一版 */
+    }
+  }
+  await ensureSideDir(dir, HISTORY_DIR);
+  await mkdir(vdir, { recursive: true });
+  await writeFile(await uniqueVersionPath(vdir, source), content, "utf8");
+  await pruneVersions(vdir);
+}
+
+/** 版本清单（最新在前） */
+export function listMemoryVersions(
+  scope: MemoryScope,
+  cwd: string,
+  file: string,
+): MemoryVersionEntry[] {
+  const name = file.trim();
+  if (!FILE_NAME_RE.test(name)) return [];
+  const vdir = versionDirFor(scopeDir(scope, cwd), name);
+  const out: MemoryVersionEntry[] = [];
+  for (const id of listVersionIds(vdir)) {
+    const parsed = parseVersionFile(id)!;
+    try {
+      const st = statSync(join(vdir, id));
+      out.push({ id, ts: Math.round(st.mtimeMs), source: parsed.source, bytes: st.size });
+    } catch {
+      /* 读不到的版本直接不展示 */
+    }
+  }
+  return out;
+}
+
+/** 读某一版内容；不存在抛错（调用方提示"版本已不存在"） */
+export async function readMemoryVersion(
+  scope: MemoryScope,
+  cwd: string,
+  file: string,
+  versionId: string,
+): Promise<string> {
+  const name = file.trim();
+  const id = versionId.trim();
+  if (!FILE_NAME_RE.test(name) || parseVersionFile(id) === null) {
+    throw new Error(`invalid memory version: ${file} / ${versionId}`);
+  }
+  const abs = join(versionDirFor(scopeDir(scope, cwd), name), id);
+  try {
+    return await readFile(abs, "utf8");
+  } catch {
+    throw new Error(`memory version not found: ${versionId}`);
+  }
+}
+
+/** 删单条版本（历史瘦身；当前内容不受影响） */
+export async function deleteMemoryVersion(
+  scope: MemoryScope,
+  cwd: string,
+  file: string,
+  versionId: string,
+): Promise<void> {
+  const name = file.trim();
+  const id = versionId.trim();
+  if (!FILE_NAME_RE.test(name) || parseVersionFile(id) === null) {
+    throw new Error(`invalid memory version: ${file} / ${versionId}`);
+  }
+  await unlink(join(versionDirFor(scopeDir(scope, cwd), name), id));
+}
+
+/** 把某一版写回文件（来源 restore：这次写回本身也会进历史） */
+export async function restoreMemoryVersion(
+  scope: MemoryScope,
+  cwd: string,
+  file: string,
+  versionId: string,
+): Promise<MemoryWriteResult> {
+  const content = await readMemoryVersion(scope, cwd, file, versionId);
+  // 版本内容自带 last updated 头，按 overwrite 写回会重新盖时间戳：预览与恢复后不再逐字相等
+  const body = content.replace(/^<!--\s*last updated:[^>]*-->\s*/i, "");
+  return writeMemoryFile(scope, cwd, file, body, "overwrite", "restore");
+}
+
+/* --------------------------------- 回收站 --------------------------------- */
+
+/** 移入回收站（可恢复）；先留一版历史，"彻底删除"前内容都还找得回来 */
+export async function trashMemoryFile(
+  scope: MemoryScope,
+  cwd: string,
+  file: string,
+): Promise<{ name: string; id: string }> {
+  const name = file.trim();
+  if (!FILE_NAME_RE.test(name)) {
+    throw new Error(`invalid memory file name: ${file}（根级 .md 文件名，仅限字母/数字/点/横线/下划线/空格）`);
+  }
+  const dir = scopeDir(scope, cwd);
+  const abs = safeResolve(dir, name);
+  if (!abs || !existsSync(abs)) throw new Error(`memory file not found: ${name}`);
+  // 删除是一个事件：内容没变也留一版（历史里看得见"是什么时候删的、删的是什么"）
+  await snapshotMemoryVersion(scope, cwd, name, "delete", true);
+  const tdir = await ensureSideDir(dir, TRASH_DIR);
+  const id = `${versionStamp(new Date())}--${name}`;
+  await rename(abs, join(tdir, id));
+  return { name, id };
+}
+
+/** 回收站清单（最新在前）；只认 <时间戳>--<原名>.md 形状，其它文件忽略 */
+export function listMemoryTrash(scope: MemoryScope, cwd: string): MemoryTrashEntry[] {
+  const dir = join(scopeDir(scope, cwd), TRASH_DIR);
+  if (!existsSync(dir)) return [];
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const out: MemoryTrashEntry[] = [];
+  for (const id of names.sort().reverse()) {
+    const m = /^([0-9TZ-]+)--(.+\.md)$/.exec(id);
+    if (!m || !FILE_NAME_RE.test(m[2])) continue;
+    try {
+      const st = statSync(join(dir, id));
+      out.push({ id, name: m[2], ts: Math.round(st.mtimeMs), bytes: st.size });
+    } catch {
+      /* 读不到的条目跳过 */
+    }
+  }
+  return out;
+}
+
+/** 从回收站恢复；同名文件已存在时拒绝（不覆盖当前内容） */
+export async function restoreMemoryTrash(
+  scope: MemoryScope,
+  cwd: string,
+  id: string,
+): Promise<{ name: string }> {
+  const dir = scopeDir(scope, cwd);
+  const entry = listMemoryTrash(scope, cwd).find((e) => e.id === id);
+  if (!entry) throw new Error(`trash entry not found: ${id}`);
+  const target = join(dir, entry.name);
+  if (existsSync(target)) {
+    throw new Error(`同名记忆文件已存在：${entry.name}（请先改名或删除当前文件）`);
+  }
+  await rename(join(dir, TRASH_DIR, id), target);
+  return { name: entry.name };
+}
+
+/** 彻底删除回收站里的一条：连同它的版本史一起清掉（"彻底"就是彻底） */
+export async function deleteMemoryTrash(scope: MemoryScope, cwd: string, id: string): Promise<void> {
+  const dir = scopeDir(scope, cwd);
+  const entry = listMemoryTrash(scope, cwd).find((e) => e.id === id);
+  if (!entry) throw new Error(`trash entry not found: ${id}`);
+  await rm(join(dir, TRASH_DIR, id), { force: true });
+  await rm(versionDirFor(dir, entry.name), { recursive: true, force: true });
+}
+
+/** 清空回收站：条目 + 各自的版本史一起删；活着的记忆文件的版本史不动 */
+export async function emptyMemoryTrash(scope: MemoryScope, cwd: string): Promise<number> {
+  const dir = scopeDir(scope, cwd);
+  const entries = listMemoryTrash(scope, cwd);
+  for (const entry of entries) {
+    await rm(join(dir, TRASH_DIR, entry.id), { force: true });
+    await rm(versionDirFor(dir, entry.name), { recursive: true, force: true });
+  }
+  return entries.length;
+}
+
 /* --------------------------------- 读与写 --------------------------------- */
 
 /** 目录内相对路径安全解析：越界（.. / 绝对路径）返回 null */
@@ -390,6 +690,7 @@ export type MemoryWriteResult = { rel: string; bytes: number; mode: "append" | "
 /**
  * 写记忆（根级 *.md；daily 日志不开放直写）：append 追加并盖时间戳注释，
  * overwrite 整体覆盖并盖 last updated 注释。调用方需先做 scopeActive 门控。
+ * source 只影响版本史里这一版的来源标签（设置页 page / AI agent / 恢复 restore）。
  */
 export async function writeMemoryFile(
   scope: MemoryScope,
@@ -397,6 +698,7 @@ export async function writeMemoryFile(
   file: string,
   content: string,
   mode: "append" | "overwrite" = "append",
+  source: MemoryVersionSource = "page",
 ): Promise<MemoryWriteResult> {
   const name = file.trim();
   if (!FILE_NAME_RE.test(name)) {
@@ -422,6 +724,10 @@ export async function writeMemoryFile(
     next = `${existing}${separator}<!-- ${ts} -->\n${body}\n`;
   }
   await writeFile(abs, next, "utf8");
+  // 版本史：写成功后把新状态记一版（与上一版相同会自动跳过）
+  await snapshotMemoryVersion(scope, cwd, name, source).catch((err) =>
+    logErr("memory: snapshot failed:", err),
+  );
   return { rel: name, bytes: Buffer.byteLength(next), mode };
 }
 
@@ -470,7 +776,7 @@ export function buildMemoryTools(cwd: string): AgentTool[] {
       if (blocked) return textResult(blocked);
       const mode = p.mode === "overwrite" ? "overwrite" : "append";
       try {
-        const res = await writeMemoryFile(scope, cwd, p.file ?? "MEMORY.md", String(p.content ?? ""), mode);
+        const res = await writeMemoryFile(scope, cwd, p.file ?? "MEMORY.md", String(p.content ?? ""), mode, "agent");
         return textResult(
           `Saved to ${scope}/${res.rel} (${res.mode}, ${res.bytes} bytes). It will be injected into future sessions.`,
           res,

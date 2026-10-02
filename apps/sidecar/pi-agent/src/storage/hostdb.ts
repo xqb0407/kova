@@ -59,6 +59,8 @@ export type SessionRow = {
   thinkingLevel: string | null;
   /** 设计主题偏好：JSON 字符串 {scope,id}；NULL = 从未设置；"" = 显式不使用主题 */
   designTheme: string | null;
+  /** 工作模式偏好（work|code|design）：NULL = 本会话从未切换过，跟随全局默认 */
+  appMode: string | null;
 };
 
 export type CustomProviderRow = {
@@ -71,7 +73,7 @@ export type CustomProviderRow = {
   enabled: boolean;
 };
 
-/** 会话持久化行：cwd/title + 会话级偏好（mode/approvalLevel/model/thinkingLevel/designTheme；NULL = 从未变更过） */
+/** 会话持久化行：cwd/title + 会话级偏好（mode/approvalLevel/model/thinkingLevel/designTheme/appMode；NULL = 从未变更过） */
 export type SessionPrefsRow = {
   cwd: string;
   title: string;
@@ -83,6 +85,8 @@ export type SessionPrefsRow = {
   thinkingLevel: string | null;
   /** 设计主题：JSON 字符串 {scope,id}；NULL = 从未设置（恢复链退到最近使用 kv）；"" = 显式不使用主题 */
   designTheme: string | null;
+  /** 工作模式偏好：NULL = 本会话从未切换过（恢复链退到全局默认 kv pi.app_mode） */
+  appMode: string | null;
 };
 
 export const sessionGet = (sessionId: string) =>
@@ -99,6 +103,8 @@ export const sessionPrefsSet = (
     modelId?: string;
     thinkingLevel?: string;
     designTheme?: string;
+    /** 会话级工作模式（work|code|design）：定靶 set_app_mode 只写被点名会话 */
+    appMode?: string;
   },
 ) => query("session_prefs_set", { sessionId, ...prefs });
 

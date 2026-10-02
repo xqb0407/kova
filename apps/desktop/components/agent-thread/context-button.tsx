@@ -193,13 +193,14 @@ export const ContextButton: FC = () => {
                     }`
             }
             className={cn(
-              "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-full px-2 text-sm text-muted-foreground transition-colors hover:text-foreground",
+              "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-full px-2 text-sm text-muted-foreground transition-colors hover:text-foreground @max-2xl:px-1.5",
               needsCompact && "text-amber-600 dark:text-amber-400",
             )}
           >
             <UsageRing pct={usedPct} />
+            {/* 窄栏只留占用环（弧长/颜色已表意）：百分比读数收进 title 与弹层 */}
             {usedPct !== null && (
-              <span className="tabular-nums">{Math.round(usedPct * 100)}%</span>
+              <span className="tabular-nums @max-2xl:hidden">{Math.round(usedPct * 100)}%</span>
             )}
           </button>
         }

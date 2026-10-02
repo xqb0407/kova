@@ -3,8 +3,8 @@
 import type { FC, ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 
-/** 步骤标题：小标题 + 一句说明，所有步骤共用 */
-export const StepHeading: FC<{ title: string; desc?: string }> = ({ title, desc }) => (
+/** 步骤标题：小标题 + 一句说明，所有步骤共用（标题可带行内元素，如服务 mark） */
+export const StepHeading: FC<{ title: ReactNode; desc?: string }> = ({ title, desc }) => (
   <div className="mb-6">
     <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
     {desc && (

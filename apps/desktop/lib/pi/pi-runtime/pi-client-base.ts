@@ -31,7 +31,11 @@ import {
 import { applyAskNeedsWorkChunk } from "@/lib/pi/pi-ask-needs-work";
 import { applyPlanningChunk } from "@/lib/pi/pi-session-mode";
 import { applyTodoChunk } from "@/lib/pi/pi-todo";
-import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
+import {
+  focusPanelTabFor,
+  focusPluginPanelFor,
+  getCurrentPanelThreadId,
+} from "@/lib/panels/panel-tabs";
 import {
   getTurnTiming,
   scopedTurnKey,
@@ -227,6 +231,12 @@ export class PiClientBase implements PiClient {
       type: "thread_snapshot",
       sessionId,
     });
+    // 耗时台账播种放在这条**唯一汇聚点**：refreshNow 派发路径之外，controller
+    // .load() 的冷读（空闲线程从不 connect → 不订阅 → 不派发；刷新页面/切换
+    // 会话正是这条路径）也只在这拿快照——播种若只挂 dispatch，空闲装载后全部
+    // 轮次时长缺失、摘要行退回「X 条较早消息」（2026-10-02 修复）。同一份快照
+    // 会经 refreshNow→dispatch 再播一次，由等值跳过兜住，无 notify 风暴。
+    this.seedHistoryTurnTimings(res.snapshot);
     return res.snapshot;
   }
 
@@ -249,6 +259,9 @@ export class PiClientBase implements PiClient {
   /**
    * 历史轮耗时播种（取代旧链路 loadPiHistory→seedHistoryTurnTimings——该路径
    * 随阶段 5b 退役，导致所有历史轮 durationMs 缺失、摘要行退回计数文案）。
+   * 调用点：fetchSnapshot（唯一快照汇聚点）——2026-10-02 从 dispatch 下沉，
+   * 覆盖 controller.load() 的冷读（空闲线程从不 connect/派发，刷新与切会话
+   * 正是这条路径，此前时长全缺失）。
    * 用转录行自带时间戳：user 行做轮锚（轮次键 = 投影稳定 id `pi-msg:${seq}`，
    * 与 message-turns 的 turnKey 同值），开始 = user 行 timestamp，结束 = 轮内
    * 最后一条非 user 行的 timestamp。跳过：锚行无 seq（在飞未落盘，轮次键无从
@@ -307,8 +320,6 @@ export class PiClientBase implements PiClient {
     }
     const set = this.listeners.get(id);
     if (!set) return;
-    // 耗时台账播种须在派发前：订阅组件同一渲染帧读台账就有值
-    this.seedHistoryTurnTimings(snapshot);
     const event: PiClientEvent = {
       type: "snapshot",
       snapshot,
@@ -525,27 +536,33 @@ export class PiClientBase implements PiClient {
       }
     }
     // ---- 面板唤起（4d）：browser_*/open_file/open_plugin_panel 发起的
-    // 线程无关 UI 副作用（形状校验与 pi-transport tap 同款）
+    // UI 副作用（形状校验与 pi-transport tap 同款）。按帧属主定靶落桶：
+    // sessionId 即分桶键（rekey 后一致），后台会话的工具不得写进用户正在
+    // 看的会话；展开/刷新事件只在属主=当前显示时派发，否则静默落桶、
+    // 切回属主会话时标签自然出现。
     if (chunkData?.type === "data-panelOpen") {
       const d = chunkData.data as
         | { type?: unknown; url?: unknown; path?: unknown; cwd?: unknown }
         | undefined;
+      const owner = sid ?? getCurrentPanelThreadId();
+      if (!owner) return;
+      const displayed = owner === getCurrentPanelThreadId();
       if (d && d.type === "browser") {
         const url =
           typeof d.url === "string" && d.url ? { url: d.url } : undefined;
-        focusPanelTab("browser", url);
-        window.dispatchEvent(new Event("agent-panel:open"));
+        focusPanelTabFor(owner, "browser", url);
+        if (displayed) window.dispatchEvent(new Event("agent-panel:open"));
         return;
       }
       // 文件唤起（sidecar open-file-tool.ts）：文件 tab 磁盘实时模式；
       // focus:undefined 清掉该 tab 可能残留的 read/plan 快照上下文
       if (d && d.type === "file" && typeof d.path === "string" && d.path) {
-        focusPanelTab("file", {
+        focusPanelTabFor(owner, "file", {
           cwd: typeof d.cwd === "string" && d.cwd ? d.cwd : undefined,
           path: d.path,
           focus: undefined,
         });
-        window.dispatchEvent(new Event("agent-panel:open"));
+        if (displayed) window.dispatchEvent(new Event("agent-panel:open"));
       }
       return;
     }
@@ -558,17 +575,24 @@ export class PiClientBase implements PiClient {
       if (d && plugin && panel) {
         const path = typeof d.path === "string" && d.path ? d.path : undefined;
         const cwd = typeof d.cwd === "string" && d.cwd ? d.cwd : undefined;
-        // 不传 path/cwd 键 = 保留该 tab 现有文档绑定（纯唤起不清绑）
-        focusPluginPanel(plugin, panel, {
+        const owner = sid ?? getCurrentPanelThreadId();
+        if (!owner) return;
+        // 不传 path/cwd 键 = 保留该 tab 现有文档绑定（纯唤起不清绑）；
+        // 属主定靶同 data-panelOpen：后台会话静默落桶，不抢面板。
+        // 刷新事件只在属主=显示会话时派发（视图挂载中才需要推文档）；
+        // 否则 path/cwd 已写进 tab extra，属主会话重挂载时自取。
+        focusPluginPanelFor(owner, plugin, panel, {
           ...(cwd ? { cwd } : {}),
           ...(path ? { path } : {}),
         });
-        window.dispatchEvent(
-          new CustomEvent("plugin-panel:refresh", {
-            detail: { plugin, panel, path, cwd },
-          }),
-        );
-        window.dispatchEvent(new Event("agent-panel:open"));
+        if (owner === getCurrentPanelThreadId()) {
+          window.dispatchEvent(
+            new CustomEvent("plugin-panel:refresh", {
+              detail: { plugin, panel, path, cwd },
+            }),
+          );
+          window.dispatchEvent(new Event("agent-panel:open"));
+        }
       }
       return;
     }

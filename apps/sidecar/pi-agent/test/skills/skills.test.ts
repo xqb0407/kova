@@ -230,10 +230,10 @@ describe("提示词注入", () => {
     try {
       await ensureSkillsLoaded(emptyWs);
       expect(skillsPromptBlock(emptyWs)).toBe("");
-      const withBlock = composeModeSystemPrompt("agent", emptyWs, null);
+      const withBlock = composeModeSystemPrompt("agent", emptyWs, "code", null);
       expect(withBlock).not.toContain("available_skills");
       // 且组装是纯函数：同一输入字节级一致
-      expect(withBlock).toBe(composeModeSystemPrompt("agent", emptyWs, null));
+      expect(withBlock).toBe(composeModeSystemPrompt("agent", emptyWs, "code", null));
     } finally {
       if (prevSkills === undefined) delete process.env.PI_SKILLS_DIR;
       else process.env.PI_SKILLS_DIR = prevSkills;

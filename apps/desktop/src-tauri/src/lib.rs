@@ -82,6 +82,12 @@ pub fn run() {
             }
             // 浏览器自动化（browser.rs）需要 AppHandle 全局入口
             browser::init(app.handle().clone());
+            // 冷启动清扫：上一次运行若在拍照途中被重启/崩溃/SIGKILL（进程内清理
+            // 全都跑不到），会留下一个不会自己退出的无头 Chrome——实测一组 9 个
+            // 进程约 870MB，且没有任何东西会回收它（browser_shot.rs 现场注释）。
+            // 这里收掉它并删临时条目；只认 owner pid 已死的命名，同机另一实例与
+            // 正在跑的测试不受影响。后台线程，不挡启动
+            std::thread::spawn(browser_shot::sweep_orphans);
             // SQLite KV 存储（workspace 等应用状态）
             match store::init(app.handle()) {
                 Ok(()) => log::info!("[store] init ok"),
@@ -217,6 +223,11 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
+                // 在飞工具的进程树（前台 bash、拍照的无头 Chrome）先同步收掉：
+                // 唯一另一条路径是 sidecar 退出回程里的 cancel_all_tools，而那是
+                // 个异步任务——app 先退出就没人执行它（2026-10-02 遗留 Chrome 的
+                // 成因）。这里不依赖回程，AppHandle 一收到 Exit 就杀
+                tool_exec::cancel_all_tools();
                 if let Some(state) = app_handle.try_state::<PiState>() {
                     pi_agent::kill_on_exit(&state);
                 }

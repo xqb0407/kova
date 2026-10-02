@@ -213,16 +213,47 @@ fn resolve_shell_command() -> (String, Vec<String>) {
     ("cmd.exe".into(), vec!["/d".into(), "/s".into(), "/c".into()])
 }
 
+/// 访问加速环境：sidecar 在 bash 信封上挂的 git `insteadOf` 改写（sidecar
+/// url-mirror.ts gitAccelEnv 生成，键名固定为 GIT_CONFIG_COUNT/KEY_n/VALUE_n）。
+///
+/// 白名单按字面过滤而不是无条件透传：sidecar 的 buildHostToolPayload 已经会把
+/// 模型参数里的 accelEnv 摘掉，但那道防线在另一个进程里，这里再收一次——
+/// 放行任意键名等于给了一条「模型 → PATH/LD_PRELOAD」的通路。
+/// 非法条目（非字符串值、越界键名）直接丢弃，不报错：加速是旁路能力，
+/// 参数不对劲时应当退化成「没有加速」，而不是让整条 bash 失败。
+fn accel_env(inner: &Value) -> Vec<(String, String)> {
+    let Some(map) = inner.get("accelEnv").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, value) in map {
+        let allowed = key == "GIT_CONFIG_COUNT"
+            || key.starts_with("GIT_CONFIG_KEY_")
+            || key.starts_with("GIT_CONFIG_VALUE_");
+        if !allowed {
+            continue;
+        }
+        if let Some(v) = value.as_str() {
+            out.push((key.clone(), v.to_string()));
+        }
+    }
+    out
+}
+
 /// 运行 shell 命令：合并 stdout/stderr，超时或收到取消（host_cancel）时
 /// taskkill /T /F 杀进程树提前退出。
 /// `secrets`：本次调用要注入的环境变量（名字 + 明文；由 secret_env 在进锁窗口外
 /// 解析好），只影响这一个派生进程——绝不写进父进程环境。
+/// `accel`：访问加速的 git 环境变量（GIT_CONFIG_*，见 accel_env），同样只影响
+/// 这一个派生进程。与 secrets 分开传：它不参与输出脱敏，混在一起会把镜像地址
+/// 在 git 输出里替换成 [REDACTED:…]。
 fn run_bash(
     cwd: &str,
     command: &str,
     timeout_ms: u64,
     cancel: &CancelGuard,
     secrets: &[(String, String)],
+    accel: &[(String, String)],
 ) -> Result<Value, String> {
     let (file, prefix_args) = resolve_shell_command();
     let mut cmd = Command::new(&file);
@@ -233,6 +264,7 @@ fn run_bash(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::secret_env::apply_env(&mut cmd, secrets);
+    crate::secret_env::apply_env(&mut cmd, accel);
     no_window(&mut cmd);
     // Unix：自立进程组，killpg 才能一次收掉命令派生出的全部子孙
     // （stdin 已是 null，不存在「脱离前台进程组读不到终端」的副作用）
@@ -411,12 +443,13 @@ fn bg_tasks() -> &'static StdMutex<HashMap<u32, BgTask>> {
 }
 
 /// 启动后台 shell 命令：spawn + 双流读者线程 + wait 线程，立即返回 task id。
-/// 输出进 256KB 尾部缓冲；secrets 只注入这一个派生进程（同前台 bash）。
+/// 输出进 256KB 尾部缓冲；secrets/accel 只注入这一个派生进程（同前台 bash）。
 /// owner = 发起线程 id，落进 BgTask 供 task_output / task_stop 校验归属。
 fn run_bash_background(
     cwd: &str,
     command: &str,
     secrets: &[(String, String)],
+    accel: &[(String, String)],
     owner: &str,
 ) -> Result<Value, String> {
     let (file, prefix_args) = resolve_shell_command();
@@ -428,6 +461,7 @@ fn run_bash_background(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::secret_env::apply_env(&mut cmd, secrets);
+    crate::secret_env::apply_env(&mut cmd, accel);
     no_window(&mut cmd);
     #[cfg(unix)]
     {
@@ -689,8 +723,24 @@ fn handle_write(p: &Value) -> Result<Value, String> {
     if let Some(parent) = std::path::Path::new(&full).parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("failed to create dirs for {file_path}: {e}"))?;
     }
-    std::fs::write(&full, content.as_bytes()).map_err(|e| format!("failed to write {file_path}: {e}"))?;
-    Ok(json!({ "output": format!("Wrote {} bytes to {}", content.len(), file_path) }))
+    // 大文件分段写：mode=append 时追加到文件尾，让模型可以「写第一段 → 逐段续写」，
+    // 每段 payload 都小、宿主往返不会超时（整份一次性写会撞 host_query 超时）。
+    // 缺省仍是覆盖写，老行为不变。
+    let append = p.get("mode").and_then(|v| v.as_str()) == Some("append");
+    if append {
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&full)
+            .map_err(|e| format!("failed to open {file_path}: {e}"))?;
+        f.write_all(content.as_bytes())
+            .map_err(|e| format!("failed to append {file_path}: {e}"))?;
+        Ok(json!({ "output": format!("Appended {} bytes to {}", content.len(), file_path) }))
+    } else {
+        std::fs::write(&full, content.as_bytes()).map_err(|e| format!("failed to write {file_path}: {e}"))?;
+        Ok(json!({ "output": format!("Wrote {} bytes to {}", content.len(), file_path) }))
+    }
 }
 
 fn handle_edit(p: &Value) -> Result<Value, String> {
@@ -1211,16 +1261,18 @@ pub fn handle_tool(id: &str, p: &Value) -> Result<Value, String> {
             // 注入用的明文由 dispatch_host_query 预处理写在信封上（名字走
             // p.secretEnv，见 secret_env.rs）；读出来只喂给这一个派生进程
             let secrets = crate::secret_env::take_resolved(p);
+            // 访问加速的 git 环境变量（sidecar 按配置决定给不给，此处只过滤键名）
+            let accel = accel_env(&inner);
             // 后台模式：立即返回句柄（跨回合存活，不受 host_cancel 影响）
             if inner.get("runInBackground").and_then(|v| v.as_bool()) == Some(true) {
-                return run_bash_background(&cwd, &command, &secrets, &envelope_owner);
+                return run_bash_background(&cwd, &command, &secrets, &accel, &envelope_owner);
             }
             let timeout_ms = inner
                 .get("timeout")
                 .and_then(|v| v.as_u64())
                 .map(|v| v.clamp(1_000, MAX_BASH_TIMEOUT_MS))
                 .unwrap_or(DEFAULT_BASH_TIMEOUT_MS);
-            run_bash(&cwd, &command, timeout_ms, &guard, &secrets)
+            run_bash(&cwd, &command, timeout_ms, &guard, &secrets, &accel)
         }
         // 后台任务查询/终止（配 bash runInBackground）
         "task_output" => handle_task_output(&inner, &envelope_owner),
@@ -1322,7 +1374,7 @@ mod tests {
     fn bash_runs_and_captures_output() {
         // Windows 下 Git Bash/cmd 都能跑 echo（bash.exe 缺失时回退 cmd.exe）
         let guard = CancelGuard::new("t-run-ok");
-        let out = run_bash(".", "echo pi-smoke-bash-ok", 10_000, &guard, &[]).unwrap();
+        let out = run_bash(".", "echo pi-smoke-bash-ok", 10_000, &guard, &[], &[]).unwrap();
         assert_eq!(out["exitCode"], 0);
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("pi-smoke-bash-ok"), "output: {text}");
@@ -1335,7 +1387,7 @@ mod tests {
         // Unix 用 sleep 2（ping -n 在 BSD/macOS 是不同语义，会立即报错）
         let cmd = if cfg!(windows) { "ping -n 3 127.0.0.1" } else { "sleep 2" };
         let guard = CancelGuard::new("t-timeout");
-        let out = run_bash(".", cmd, 300, &guard, &[]).unwrap();
+        let out = run_bash(".", cmd, 300, &guard, &[], &[]).unwrap();
         assert_eq!(out["exitCode"], Value::Null);
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[timeout after"), "output: {text}");
@@ -1352,7 +1404,7 @@ mod tests {
         } else {
             "printf %s \"$DEMO_TOKEN\""
         };
-        let out = run_bash(".", cmd, 10_000, &guard, &secrets).unwrap();
+        let out = run_bash(".", cmd, 10_000, &guard, &secrets, &[]).unwrap();
         assert_eq!(out["exitCode"], 0);
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[REDACTED:DEMO_TOKEN]"), "output: {text}");
@@ -1363,9 +1415,74 @@ mod tests {
     #[test]
     fn bash_without_secrets_leaves_output_untouched() {
         let guard = CancelGuard::new("t-no-secret");
-        let out = run_bash(".", "echo visible-token-abc", 10_000, &guard, &[]).unwrap();
+        let out = run_bash(".", "echo visible-token-abc", 10_000, &guard, &[], &[]).unwrap();
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("visible-token-abc"), "output: {text}");
+        assert!(!text.contains("[REDACTED"), "output: {text}");
+    }
+
+    /// 访问加速白名单：只放行 GIT_CONFIG_* 三个键，越界键名与非字符串值丢弃。
+    /// 这条边界是「模型伪造 accelEnv 也只能设 git 配置」的第二道防线。
+    #[test]
+    fn accel_env_keeps_only_git_config_keys() {
+        let inner = json!({
+            "accelEnv": {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "url.https://mirror/https://github.com/.insteadOf",
+                "GIT_CONFIG_VALUE_0": "https://github.com/",
+                "PATH": "/tmp/evil",
+                "LD_PRELOAD": "/tmp/evil.so",
+                "GIT_CONFIG_KEY_1": 42,
+            }
+        });
+        let mut env = accel_env(&inner);
+        env.sort();
+        assert_eq!(
+            env,
+            vec![
+                ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+                (
+                    "GIT_CONFIG_KEY_0".to_string(),
+                    "url.https://mirror/https://github.com/.insteadOf".to_string()
+                ),
+                ("GIT_CONFIG_VALUE_0".to_string(), "https://github.com/".to_string()),
+            ]
+        );
+        assert!(accel_env(&json!({})).is_empty());
+        assert!(accel_env(&json!({ "accelEnv": "nope" })).is_empty());
+    }
+
+    /// 加速环境端到端（Rust 侧）：GIT_CONFIG_* 真的进了 bash 子进程，
+    /// git 能按 insteadOf 把 github.com 改写到镜像（不联网，只读配置回显）。
+    #[test]
+    fn bash_injects_git_accel_env() {
+        // 环境里没有 git 时跳过：这条测的是注入通道，不是 git 是否安装
+        let probe = CancelGuard::new("t-accel-probe");
+        if run_bash(".", "git --version", 10_000, &probe, &[], &[]).unwrap()["exitCode"] != 0 {
+            return;
+        }
+        let guard = CancelGuard::new("t-accel-inject");
+        let accel = vec![
+            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+            (
+                "GIT_CONFIG_KEY_0".to_string(),
+                "url.https://mirror.test/https://github.com/.insteadOf".to_string(),
+            ),
+            ("GIT_CONFIG_VALUE_0".to_string(), "https://github.com/".to_string()),
+        ];
+        let out = run_bash(
+            ".",
+            "git config --get-all 'url.https://mirror.test/https://github.com/.insteadOf'",
+            10_000,
+            &guard,
+            &[],
+            &accel,
+        )
+        .unwrap();
+        let text = out["output"].as_str().unwrap();
+        assert_eq!(out["exitCode"], 0, "output: {text}");
+        assert_eq!(text.trim(), "https://github.com/");
+        // 加速值不参与脱敏：镜像地址出现在输出里必须原样可见
         assert!(!text.contains("[REDACTED"), "output: {text}");
     }
     /// 取消在跑的 bash：cancel_tool(id) 置标志 + 杀进程树，run_bash 快速带 [cancelled] 返回
@@ -1380,7 +1497,7 @@ mod tests {
             cancel_tool(&id_owned);
         });
         let start = Instant::now();
-        let out = run_bash(".", cmd, 60_000, &guard, &[]).unwrap();
+        let out = run_bash(".", cmd, 60_000, &guard, &[], &[]).unwrap();
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[cancelled]"), "output: {text}");
         assert_eq!(out["cancelled"], json!(true));
@@ -1414,7 +1531,7 @@ mod tests {
             cancel_tool(&id_owned);
         });
         let start = Instant::now();
-        let out = run_bash(".", cmd, 60_000, &guard, &[]).unwrap();
+        let out = run_bash(".", cmd, 60_000, &guard, &[], &[]).unwrap();
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[cancelled]"), "output: {text}");
         assert!(
@@ -1434,7 +1551,7 @@ mod tests {
             "sleep 30 & echo started; wait"
         };
         let start = Instant::now();
-        let out = run_bash(".", cmd, 500, &guard, &[]).unwrap();
+        let out = run_bash(".", cmd, 500, &guard, &[], &[]).unwrap();
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[timeout after"), "output: {text}");
         assert!(
@@ -1454,7 +1571,7 @@ mod tests {
         let _ = std::fs::remove_file(&pid_file);
         let guard = CancelGuard::new("t-orphan-check");
         let cmd = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
-        let out = run_bash(".", &cmd, 500, &guard, &[]).unwrap();
+        let out = run_bash(".", &cmd, 500, &guard, &[], &[]).unwrap();
         assert!(out["output"].as_str().unwrap().contains("[timeout after"));
 
         let pid: i32 = std::fs::read_to_string(&pid_file)
@@ -1473,7 +1590,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn background_task_lifecycle_output_and_stop() {
-        let started = run_bash_background(".", "echo bg-marker; sleep 30", &[], "thread-a").unwrap();
+        let started = run_bash_background(".", "echo bg-marker; sleep 30", &[], &[], "thread-a").unwrap();
         let id = started["taskId"].as_u64().unwrap();
         let mut text = String::new();
         for _ in 0..40 {
@@ -1513,7 +1630,7 @@ mod tests {
     #[test]
     fn background_task_is_scoped_to_its_thread() {
         let started =
-            run_bash_background(".", "echo owner-marker; sleep 30", &[], "thread-owner").unwrap();
+            run_bash_background(".", "echo owner-marker; sleep 30", &[], &[], "thread-owner").unwrap();
         let id = started["taskId"].as_u64().unwrap();
         // 本线程可读可停
         assert!(handle_task_output(&json!({ "taskId": id }), "thread-owner").is_ok());
@@ -1536,7 +1653,7 @@ mod tests {
         let guard = CancelGuard::new(id);
         cancel_tool(id); // 模拟 host_cancel 先于 bash 启动到达
         let cmd = if cfg!(windows) { "ping -n 30 127.0.0.1" } else { "sleep 30" };
-        let out = run_bash(".", cmd, 60_000, &guard, &[]).unwrap();
+        let out = run_bash(".", cmd, 60_000, &guard, &[], &[]).unwrap();
         let text = out["output"].as_str().unwrap();
         assert!(text.contains("[cancelled]"), "output: {text}");
     }
@@ -1653,6 +1770,34 @@ mod tests {
         handle_tool("t-dispatch-w", &w).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("sub/rel2.txt")).unwrap(), "x");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 加速环境走完分发全程：信封里的 accelEnv 真的进了 bash 子进程。
+    /// （上面的 accel_env / bash_injects_git_accel_env 各测一段，这条钉中间那段胶水：
+    /// 分发入口从 inner 取 accelEnv，而不是从别处。）
+    #[test]
+    fn tool_dispatch_passes_accel_env_to_child_process() {
+        let probe = CancelGuard::new("t-dispatch-accel-probe");
+        if run_bash(".", "git --version", 10_000, &probe, &[], &[]).unwrap()["exitCode"] != 0 {
+            return;
+        }
+        let p = json!({
+            "name": "bash",
+            "cwd": ".",
+            "params": {
+                "command": "git config --get-all 'url.https://mirror.test/https://github.com/.insteadOf'",
+                "accelEnv": {
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "url.https://mirror.test/https://github.com/.insteadOf",
+                    "GIT_CONFIG_VALUE_0": "https://github.com/",
+                    // 越界键名必须被 accel_env 拦掉，否则模型能改 PATH
+                    "PATH": "/tmp/evil",
+                },
+            },
+        });
+        let out = handle_tool("t-dispatch-accel", &p).unwrap();
+        assert_eq!(out["exitCode"], 0, "output: {}", out["output"]);
+        assert_eq!(out["output"].as_str().unwrap().trim(), "https://github.com/");
     }
 
     #[test]

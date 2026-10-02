@@ -25,6 +25,7 @@ const STATUS_LABEL: Record<string, string> = {
   truncated: "轮次超限",
   aborted: "已中止",
   stopped: "已停止",
+  interrupted: "已中断",
 };
 
 const RunHeader: FC<{ run: SubagentRunState }> = ({ run }) => {

@@ -36,7 +36,7 @@ import {
   TextSearchIcon,
 } from "lucide-react";
 import { openToolCallPanel } from "@/lib/panels/tool-panel";
-import { useAppMode } from "@/lib/pi/app-mode";
+import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import {
   openSubagentTab,
@@ -209,9 +209,14 @@ export const ToolRow: FC<ToolRowProps> = ({
   onOpenPanel,
 }) => {
   const [open, setOpen] = useState(false);
-  // 工作模式（设置 → 通用）与问答档：过程细节收敛——不渲染行内输出展开/流式预览，
+  // 两个档位 hook 必须各自无条件调用：写成 `useCurrentAppMode() === "work" || useIsAskMode()`
+  // 会让 useIsAskMode 的 hook 数量随档位短路变化，切档（工作 ⇄ 代码/设计）即触发
+  // React #310（Rendered more hooks than during the previous render，生产环境直接崩主区）
+  const appMode = useCurrentAppMode();
+  const askMode = useIsAskMode();
+  // 本会话工作模式为「工作」与问答档：过程细节收敛——不渲染行内输出展开/流式预览，
   // 行只剩摘要（保留 ±N 统计与开面板动作）；详情走右侧面板
-  const compact = useAppMode() === "work" || useIsAskMode();
+  const compact = appMode === "work" || askMode;
   const hasOutput = !compact && !!output;
   // 可展开 = 结束后有输出/自定义展开区；或运行中有流式预览（reasoning 同款
   // 折叠：默认收起，点开实时滚动看输出）——运行中同样可展开查看
@@ -387,6 +392,15 @@ export const ToolRow: FC<ToolRowProps> = ({
   );
 };
 
+/** 终端行的命令行（展开区顶部 / 运行中流式预览共用）：`$` 提示符绿色加粗高亮，
+ *  命令正文随所在容器的文本色（展开区 foreground/90、预览 muted-foreground）。 */
+const TerminalCommandLine: FC<{ command: string }> = ({ command }) => (
+  <>
+    <span className="font-bold text-emerald-600 dark:text-emerald-400">$</span>{" "}
+    {command}
+  </>
+);
+
 const BashToolUI: ToolCallMessagePartComponent = ({
   toolCallId,
   args,
@@ -411,8 +425,12 @@ const BashToolUI: ToolCallMessagePartComponent = ({
       running={running}
       failed={isError === true || (!!output && FAILED_RE.test(output))}
       output={output}
-      preview={running && command ? `$ ${command}` : undefined}
-      expandedHeader={command ? `$ ${command}` : undefined}
+      preview={
+        running && command ? <TerminalCommandLine command={command} /> : undefined
+      }
+      expandedHeader={
+        command ? <TerminalCommandLine command={command} /> : undefined
+      }
       onOpenPanel={
         command
           ? () => openToolCallPanel("bash", toolCallId, { command })
@@ -793,6 +811,7 @@ const DELEGATION_STATUS_LABEL: Record<string, string> = {
   truncated: "轮次超限",
   aborted: "已中止",
   stopped: "已停止",
+  interrupted: "已中断",
 };
 
 /** 委派的展示态：live 走 store 条目，历史重建（无绑定 chunk）从结果文本兜底解析短 id */
@@ -878,7 +897,9 @@ const SkillToolUI: ToolCallMessagePartComponent = ({
     <ToolRow
       label="调用技能"
       icon={<BookOpenIcon className="size-4 shrink-0" />}
-      primary={name}
+      primary={<div className="font-black text-blue-400">
+      {name}
+      </div>}
       primaryTitle={name}
       mono
       running={status?.type === "running"}

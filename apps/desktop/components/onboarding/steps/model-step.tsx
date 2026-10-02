@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ProviderIcon } from "@/components/custom-ui/provider-icon";
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/tauri";
 import {
@@ -14,7 +15,7 @@ import {
   type PiProviderSummary,
 } from "@/lib/pi/pi-bridge";
 import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
-import { setSelectedModel, useSelectedModel } from "@/lib/model/model-settings";
+import { getSelectedModel, setSelectedModel, useSelectedModel } from "@/lib/model/model-settings";
 import { useOnboarding } from "../onboarding-flow";
 import { Notice, StepFooter, StepHeading } from "./step-parts";
 import { CheckIcon, KeyRoundIcon, Loader2Icon } from "lucide-react";
@@ -116,10 +117,22 @@ export const ModelStep: FC = () => {
       if (!provider || busy) return;
       setBusy(true);
       setError(null);
-      await setSelectedModel({ provider, modelId: m.id });
-      patch("model", { done: true, summary: m.name || m.id });
-      setBusy(false);
-      next();
+      try {
+        await setSelectedModel({ provider, modelId: m.id });
+        // setSelectedModel 被 sidecar 拒绝时会静默回退、并不抛错：核对真值，
+        // 没生效就不标记「已配置」也不进入下一步，照实提示（否则完成页会谎报）。
+        const chosen = getSelectedModel();
+        if (chosen?.provider !== provider || chosen?.modelId !== m.id) {
+          setError(
+            "这个模型没能选中（可能缺少凭据或不在服务商目录里），换一个，或到「设置 → 模型配置」里检查。",
+          );
+          return;
+        }
+        patch("model", { done: true, summary: m.name || m.id });
+        next();
+      } finally {
+        setBusy(false);
+      }
     },
     [busy, next, patch, provider],
   );
@@ -128,7 +141,21 @@ export const ModelStep: FC = () => {
   return (
     <div className="flex flex-col">
       <StepHeading
-        title={phase === "model" ? `挑选模型 · ${providerName ?? ""}` : "连接模型服务"}
+        title={
+          phase === "model" ? (
+            <span className="flex items-center gap-2">
+              挑选模型 ·
+              <ProviderIcon
+                provider={provider ?? ""}
+                providerName={providerName ?? undefined}
+                className="size-5"
+              />
+              <span className="truncate">{providerName ?? ""}</span>
+            </span>
+          ) : (
+            "连接模型服务"
+          )
+        }
         desc={
           phase === "key"
             ? "填入该服务商的 API Key，只保存在你本机的凭据库里，不会上传到任何地方。"
@@ -163,7 +190,14 @@ export const ModelStep: FC = () => {
                     selected?.provider === p.id && "border-primary/40 bg-muted/60",
                   )}
                 >
-                  <span className="truncate text-sm font-medium">{p.name}</span>
+                  <span className="flex min-w-0 items-center gap-2.5">
+                    <ProviderIcon
+                      provider={p.id}
+                      providerName={p.name}
+                      className="size-5"
+                    />
+                    <span className="truncate text-sm font-medium">{p.name}</span>
+                  </span>
                   {hasKey && (
                     <Badge variant="secondary" className="shrink-0 gap-1">
                       <CheckIcon className="size-3" />
@@ -217,7 +251,16 @@ export const ModelStep: FC = () => {
                   active && "border-primary/40 bg-muted/60",
                 )}
               >
-                <span className="truncate text-sm font-medium">{m.name || m.id}</span>
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <ProviderIcon
+                    provider={m.provider}
+                    modelId={m.id}
+                    providerName={m.providerName}
+                  />
+                  <span className="truncate text-sm font-medium">
+                    {m.name || m.id}
+                  </span>
+                </span>
                 {active && <CheckIcon className="text-primary size-4 shrink-0" />}
               </button>
             );

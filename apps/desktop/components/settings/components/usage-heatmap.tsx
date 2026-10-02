@@ -43,12 +43,35 @@ export function heatColor(ratio: number): string {
 
 const CELL = 14;
 const GAP = 3;
-const WEEKS_DEFAULT = 53;
+const WEEKS_MAX = 53;
+const WEEKS_MIN = 4;
+
+/** 3D 视图专用：展示周数自适应数据，从最早活跃日往前推整周到今天（最少 4 周、
+ *  最多 53 周），保证瓦片在画面里足够大；平面视图不用它，恒为 53 周全年 */
+export function adaptiveWeeks(
+  days: UsageStatsDay[],
+  now = new Date(),
+): number {
+  let first: string | null = null;
+  for (const d of days) {
+    if (d.tokens > 0 && (first === null || d.date < first)) first = d.date;
+  }
+  if (!first) return WEEKS_MIN;
+  const [y, m, dd] = first.split("-").map(Number);
+  const daysSince = Math.floor(
+    (now.getTime() - new Date(y, (m ?? 1) - 1, dd ?? 1).getTime()) /
+      86_400_000,
+  );
+  return Math.min(
+    WEEKS_MAX,
+    Math.max(WEEKS_MIN, Math.ceil((daysSince + 1) / 7)),
+  );
+}
 
 export function buildHeatGrid(
   days: UsageStatsDay[],
   granularity: HeatGranularity,
-  weeks: number = WEEKS_DEFAULT,
+  weeks: number = WEEKS_MAX,
   now = new Date(),
 ): HeatGrid {
   const byDate = new Map(days.map((d) => [d.date, d]));
@@ -129,6 +152,8 @@ export const UsageHeatmap: FC<{
   days: UsageStatsDay[];
   granularity: HeatGranularity;
 }> = ({ days, granularity }) => {
+  // 平面视图固定 53 周全年（GitHub 经典样式），数据少时大片素色格子是预期观感；
+  // 按数据自适应收窄只用于 3D（adaptiveWeeks），否则稀疏数据瓦片小到看不见
   const grid = useMemo(() => buildHeatGrid(days, granularity), [days, granularity]);
   const [tip, setTip] = useState<{ x: number; y: number; cell: HeatCell } | null>(
     null,

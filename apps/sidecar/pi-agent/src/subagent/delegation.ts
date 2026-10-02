@@ -15,6 +15,13 @@ import type {
   SubagentRunResult,
   SubagentRunStatus,
 } from "../types";
+import {
+  appendDelegationActivity,
+  findActivityFileId,
+  openDelegationActivity,
+  pruneActivityFiles,
+  readDelegationActivity,
+} from "./activity-store";
 
 export const SUBAGENT_TOOL_NAME = "Task";
 /** 收敛运行中的委派并读取报告 */
@@ -43,12 +50,14 @@ export const MAX_ACTIVITY_ITEMS = 400;
 /** delegationId -> 记录（全局索引：delegationId 是 uuid，快照查询不必先定位会话） */
 const delegationIndex = new Map<string, DelegationRecord>();
 
-/** 委派进全局索引（Task 启动时调用；快照查询与 prune 清理共用同一份） */
+/** 委派进全局索引（Task 启动时调用；快照查询与 prune 清理共用同一份）。
+ *  同时开启活动落盘（meta 先行）——sidecar 重启后据此回读。 */
 export function registerDelegation(record: DelegationRecord): void {
   delegationIndex.set(record.delegationId, record);
+  openDelegationActivity(record);
 }
 
-/** 活动条目入缓冲（超限先丢最旧的增量项）并广播通知行 */
+/** 活动条目入缓冲（超限先丢最旧的增量项）并广播通知行；同时边干边落盘 */
 export function pushActivity(record: DelegationRecord, item: SubagentActivityItem): void {
   const buf = record.activity;
   if (buf.length >= MAX_ACTIVITY_ITEMS) {
@@ -58,6 +67,7 @@ export function pushActivity(record: DelegationRecord, item: SubagentActivityIte
     buf.splice(dropAt >= 0 ? dropAt : 0, 1);
   }
   buf.push(item);
+  appendDelegationActivity(record.delegationId, item);
   send({ type: "subagent_activity", delegationId: record.delegationId, item });
 }
 
@@ -73,6 +83,50 @@ export function summarizeToolArgs(args: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * 从磁盘活动文件重建一个委派记录（内存未命中时调用）。
+ * 无终态记录的委派由 readDelegationActivity 判为 interrupted——进程没了、没跑完。
+ * 重建项只服务回放：completion 立即 resolve、abort 为 no-op，不参与执行链。
+ */
+function restoreDelegation(idOrPrefix: string): DelegationRecord | undefined {
+  const fileId = findActivityFileId(idOrPrefix);
+  if (!fileId) return undefined;
+  const restored = readDelegationActivity(fileId);
+  if (!restored) return undefined;
+  const r = restored.record;
+  const record: DelegationRecord = {
+    delegationId: r.delegationId,
+    agentName: r.agentName,
+    modelId: r.modelId,
+    status: r.status,
+    ...(r.description ? { description: r.description } : {}),
+    activity: restored.items,
+    stopRequested: false,
+    startedAt: r.startedAt,
+    ...(r.completedAt !== undefined ? { completedAt: r.completedAt } : {}),
+    turns: r.turns,
+    toolCalls: r.toolCalls,
+    ...(r.report
+      ? {
+          result: {
+            agentName: r.agentName,
+            modelId: r.modelId,
+            status: r.status,
+            report: r.report,
+            turns: r.turns,
+            toolCalls: r.toolCalls,
+          } satisfies SubagentRunResult,
+        }
+      : {}),
+    reportedToParent: true,
+    completion: Promise.resolve(),
+    resolveCompletion: () => {},
+    abort: () => {},
+  };
+  delegationIndex.set(record.delegationId, record);
+  return record;
 }
 
 /** 快照应答载荷（protocol.ts get_subagent_activity 用） */
@@ -103,6 +157,8 @@ export function getDelegationSnapshot(delegationId: string):
       }
     }
   }
+  // 内存未命中 → 回读磁盘（sidecar 重启/记录被裁后仍能回放；无文件则保持 undefined）
+  if (!record) record = restoreDelegation(delegationId);
   if (!record) return undefined;
   return {
     record: {
@@ -166,6 +222,8 @@ export function settleDelegation(
   });
   record.resolveCompletion();
   pruneFinishedDelegations(run);
+  // 活动文件目录级清理（扫盘，跳过仍在跑的委派）
+  pruneActivityFiles((id) => delegationIndex.get(id)?.status === "running");
 }
 
 /** 已完成记录超上限时丢弃最旧的；running 永不丢弃 */

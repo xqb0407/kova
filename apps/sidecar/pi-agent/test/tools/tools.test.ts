@@ -31,6 +31,24 @@ describe("buildHostToolPayload（宿主信封组装的安全边界）", () => {
     buildHostToolPayload(input);
     expect(input.secretEnv).toHaveLength(1);
   });
+
+  test("模型伪造的 accelEnv 也被摘掉：加速前缀只能由本侧按用户设置决定", () => {
+    // 放行等于给模型一条「把 bash 流量导去任意主机」的通路——GIT_CONFIG_*
+    // 在 git 眼里就是任意 url.<base>.insteadOf 配置
+    const payload = buildHostToolPayload({
+      command: "git clone https://github.com/o/r.git",
+      accelEnv: { GIT_CONFIG_COUNT: "1" },
+    });
+    expect(payload).toEqual({ command: "git clone https://github.com/o/r.git" });
+  });
+
+  test("本侧 augment 给的 accelEnv 照常写入（覆盖模型同名键）", () => {
+    const payload = buildHostToolPayload(
+      { command: "git clone https://github.com/o/r.git", accelEnv: { EVIL: "1" } },
+      { accelEnv: { GIT_CONFIG_COUNT: "1" } },
+    );
+    expect(payload.accelEnv).toEqual({ GIT_CONFIG_COUNT: "1" });
+  });
 });
 
 describe("globToRegExp", () => {

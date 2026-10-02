@@ -38,6 +38,8 @@ describe("packTurnSlot / parseTurnSlot", () => {
       isLastTurn: false,
       interrupted: false,
       turnRunning: false,
+      isAnswerTail: false,
+      dividerOnly: false,
       anchorUserIndex: 0,
       turnKey: "u1",
     });
@@ -68,6 +70,46 @@ describe("packTurnSlot / parseTurnSlot", () => {
     expect(parseTurnSlot("")).toBeNull();
   });
 
+  test("尾部纯压缩分隔线：轮末身份归分隔线，答案尾位归前一条有内容的消息", () => {
+    const answer = {
+      id: "a1",
+      role: "assistant",
+      content: [{ type: "text", text: "改完了" }],
+      metadata: {},
+    } as unknown as ThreadMessage;
+    const divider = {
+      id: "cmp-9",
+      role: "assistant",
+      content: [
+        { type: "data", name: "compaction", data: { phase: "complete" } },
+      ],
+      metadata: {},
+    } as unknown as ThreadMessage;
+    // 空闲/手动压缩：检查点行落在轮末 → 分隔线消息排在本轮最后
+    const messages = [message("u1", "user"), answer, divider];
+    expect(parseTurnSlot(packTurnSlot(messages, "cmp-9"))).toMatchObject({
+      isTurnEnd: true,
+      isAnswerTail: false,
+      // 纯分隔线消息：没有答案面，不走轮末拆分（TurnSlot 收起时随之隐藏）
+      dividerOnly: true,
+    });
+    expect(parseTurnSlot(packTurnSlot(messages, "a1"))).toMatchObject({
+      isTurnEnd: false,
+      isAnswerTail: true,
+      dividerOnly: false,
+    });
+    // 普通轮（无尾部分隔线）：轮末即答案尾位，两位同时命中
+    const plain = [message("u2", "user"), answer];
+    expect(parseTurnSlot(packTurnSlot(plain, "a1"))).toMatchObject({
+      isTurnEnd: true,
+      isAnswerTail: true,
+    });
+    // 空 content 的 assistant 消息不占答案位（渲染不出内容，别把真答案挤掉）
+    const blank = [message("u3", "user"), answer, message("a2", "assistant")];
+    expect(parseTurnSlot(packTurnSlot(blank, "a1"))?.isAnswerTail).toBe(true);
+    expect(parseTurnSlot(packTurnSlot(blank, "a2"))?.isAnswerTail).toBe(false);
+  });
+
   test("带 keep 标记的往返：槽位与标记各归各位", () => {
     const messages = [message("u1", "user"), message("a1", "assistant")];
     const packed = packTurnSlotWithKeep(messages, "a1", true);
@@ -78,6 +120,8 @@ describe("packTurnSlot / parseTurnSlot", () => {
         isLastTurn: true,
         interrupted: false,
         turnRunning: false,
+        isAnswerTail: false,
+      dividerOnly: false,
         anchorUserIndex: 0,
         turnKey: "u1",
       },
@@ -158,12 +202,12 @@ describe("buildTurnIndex", () => {
     ];
     const index = buildTurnIndex(messages);
     expect(index.turns).toEqual([
-      { key: "u1", start: 0, end: 3, interrupted: false, running: false },
-      { key: "u2", start: 3, end: 5, interrupted: false, running: false },
+      { key: "u1", start: 0, end: 3, interrupted: false, running: false, answerTail: -1 },
+      { key: "u2", start: 3, end: 5, interrupted: false, running: false, answerTail: -1 },
     ]);
-    expect(index.slots.get("u1")).toEqual({ turnIndex: 0, isHeader: true });
-    expect(index.slots.get("a2")).toEqual({ turnIndex: 0, isHeader: false });
-    expect(index.slots.get("u2")).toEqual({ turnIndex: 1, isHeader: true });
+    expect(index.slots.get("u1")).toEqual({ turnIndex: 0, isHeader: true, isAnswerTail: false });
+    expect(index.slots.get("a2")).toEqual({ turnIndex: 0, isHeader: false, isAnswerTail: false });
+    expect(index.slots.get("u2")).toEqual({ turnIndex: 1, isHeader: true, isAnswerTail: false });
   });
 
   test("开场 assistant 预置段自成第 0 轮", () => {
@@ -174,18 +218,18 @@ describe("buildTurnIndex", () => {
     ];
     const index = buildTurnIndex(messages);
     expect(index.turns).toEqual([
-      { key: "a1", start: 0, end: 1, interrupted: false, running: false },
-      { key: "u1", start: 1, end: 3, interrupted: false, running: false },
+      { key: "a1", start: 0, end: 1, interrupted: false, running: false, answerTail: -1 },
+      { key: "u1", start: 1, end: 3, interrupted: false, running: false, answerTail: -1 },
     ]);
-    expect(index.slots.get("a1")).toEqual({ turnIndex: 0, isHeader: true });
+    expect(index.slots.get("a1")).toEqual({ turnIndex: 0, isHeader: true, isAnswerTail: false });
   });
 
   test("连续 user 消息各自成轮（排队/并入场景）", () => {
     const messages = [msg("u1", "user"), msg("u2", "user"), msg("a1", "assistant")];
     const index = buildTurnIndex(messages);
     expect(index.turns).toEqual([
-      { key: "u1", start: 0, end: 1, interrupted: false, running: false },
-      { key: "u2", start: 1, end: 3, interrupted: false, running: false },
+      { key: "u1", start: 0, end: 1, interrupted: false, running: false, answerTail: -1 },
+      { key: "u2", start: 1, end: 3, interrupted: false, running: false, answerTail: -1 },
     ]);
   });
 

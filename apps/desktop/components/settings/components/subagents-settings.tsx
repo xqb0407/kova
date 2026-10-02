@@ -1,7 +1,9 @@
 "use client";
 
 /**
- * 子智能体设置页（设置 → 智能体 → 子智能体）。
+ * 子智能体管理页。唯一入口：「插件 / 专家 / 技能」→ 管理 → 子智能体（分段器
+ * 首位）。文件仍在 settings/components/ 下——组件本身无设置页依赖，是就近
+ * 归档，不是残留入口。
  *
  * 事实源在 sidecar：三层定义（内置常量 / <app_data>/subagents / <cwd>/.kova/subagents）
  * + kv 里的启用开关；本页只渲染 useSubagents 镜像并发起变更命令。

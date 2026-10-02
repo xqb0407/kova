@@ -2,9 +2,6 @@
 
 import { useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { Streamdown } from "streamdown";
-import { code } from "@streamdown/code";
-import { cjk } from "@streamdown/cjk";
 import {
   CheckIcon,
   ClipboardListIcon,
@@ -15,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { openToolCallPanel } from "@/lib/panels/tool-panel";
+import { useInteractionSessionId } from "@/lib/pi/pi-interaction-session";
 import {
   confirmToolApproval,
   usePendingToolApprovals,
@@ -25,8 +23,9 @@ import {
  * 逐工具审批卡片：显示在 composer 上方，两类挂起共用 tool_confirm 通道：
  * - bash/write/edit 执行前（approvalBeforeToolCall 挂起）：批准放行执行，拒绝回 blocked 结果；
  * - plan_exit 的模式退出确认（modes.ts plan_exit execute 内挂起，input 带计划快照）：
- *   渲染计划审批卡，批准 = sidecar 回 agent 模式同轮实施；
- *   拒绝 = 计划作废（sidecar 删除计划文件）并 abort 终止本轮，会话留在 plan 模式。
+ *   计划正文由 sidecar 的 data-panelOpen 在右侧面板展示，卡片只留标题/rationale/操作，
+ *   批准 = sidecar 回 agent 模式同轮实施；拒绝 = 计划作废（sidecar 删除计划文件）并
+ *   abort 终止本轮，会话留在 plan 模式。
  */
 
 /** 工具参数的一行摘要（与 tool-fallback 卡片的风格一致） */
@@ -55,7 +54,6 @@ function planExitInfo(input: unknown) {
   return {
     rationale: typeof i.rationale === "string" ? i.rationale : "",
     title: typeof i.title === "string" ? i.title : "",
-    markdown: typeof i.markdown === "string" ? i.markdown : "",
     filePath: typeof i.filePath === "string" ? i.filePath : "",
   };
 }
@@ -79,9 +77,9 @@ function useLastPlanWriteToolCallId(): string | null {
   });
 }
 
-/** plan_exit：计划审批卡（标题 + 计划 Markdown 预览 + rationale + 批准/拒绝） */
-const PlanExitRow: FC<{ threadId: string; approval: PendingToolApprovalView }> = ({
-  threadId,
+/** plan_exit：计划审批卡（标题 + rationale + 批准/拒绝；计划正文在右侧面板） */
+const PlanExitRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> = ({
+  sessionId,
   approval,
 }) => {
   const [busy, setBusy] = useState(false);
@@ -90,7 +88,9 @@ const PlanExitRow: FC<{ threadId: string; approval: PendingToolApprovalView }> =
 
   const decide = (approved: boolean) => {
     setBusy(true);
-    confirmToolApproval(threadId, approval.approvalId, approved).catch(() => {});
+    confirmToolApproval(sessionId, approval.approvalId, approved).catch(
+      () => {},
+    );
   };
 
   return (
@@ -119,13 +119,8 @@ const PlanExitRow: FC<{ threadId: string; approval: PendingToolApprovalView }> =
           </button>
         )}
       </div>
-      <div className="scrollbar-thin mt-2 max-h-72 overflow-y-auto">
-        <div className="text-sm">
-          <Streamdown plugins={{ code, cjk }}>{info?.markdown || ""}</Streamdown>
-        </div>
-      </div>
       {info?.rationale && (
-        <p className="text-muted-foreground mt-3 border-t pt-3 text-sm">
+        <p className="text-muted-foreground mt-2 border-t pt-3 text-sm">
           {info.rationale}
         </p>
       )}
@@ -156,8 +151,8 @@ const PlanExitRow: FC<{ threadId: string; approval: PendingToolApprovalView }> =
   );
 };
 
-const ApprovalRow: FC<{ threadId: string; approval: PendingToolApprovalView }> = ({
-  threadId,
+const ApprovalRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> = ({
+  sessionId,
   approval,
 }) => {
   const [busy, setBusy] = useState(false);
@@ -165,11 +160,13 @@ const ApprovalRow: FC<{ threadId: string; approval: PendingToolApprovalView }> =
 
   const decide = (approved: boolean) => {
     setBusy(true);
-    confirmToolApproval(threadId, approval.approvalId, approved).catch(() => {});
+    confirmToolApproval(sessionId, approval.approvalId, approved).catch(
+      () => {},
+    );
   };
 
   if (approval.toolName === "plan_exit") {
-    return <PlanExitRow threadId={threadId} approval={approval} />;
+    return <PlanExitRow sessionId={sessionId} approval={approval} />;
   }
 
   return (
@@ -213,10 +210,12 @@ const ApprovalRow: FC<{ threadId: string; approval: PendingToolApprovalView }> =
 };
 
 export const ToolApprovalCard: FC = () => {
-  const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const approvals = usePendingToolApprovals(threadId);
+  // 台账键 = pi sessionId（不是 mainThreadId：本会话新建的线程是 __LOCALID_
+  // 草稿 id，拿它查永远 miss，卡片不上屏），结算也用同一键
+  const sessionId = useInteractionSessionId();
+  const approvals = usePendingToolApprovals(sessionId);
 
-  if (!threadId || approvals.length === 0) return null;
+  if (!sessionId || approvals.length === 0) return null;
 
   return (
     <div
@@ -227,7 +226,7 @@ export const ToolApprovalCard: FC = () => {
       )}
     >
       {approvals.map((a) => (
-        <ApprovalRow key={a.approvalId} threadId={threadId} approval={a} />
+        <ApprovalRow key={a.approvalId} sessionId={sessionId} approval={a} />
       ))}
     </div>
   );

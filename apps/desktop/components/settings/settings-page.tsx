@@ -10,7 +10,6 @@ import { WindowControls } from "@/components/window-controls";
 import {
   ArchiveIcon,
   BoxesIcon,
-  BotIcon,
   BrainIcon,
   ChevronLeftIcon,
   GlobeIcon,
@@ -21,6 +20,7 @@ import {
   KeyboardIcon,
   PaletteIcon,
   PaintbrushIcon,
+  RocketIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
   WebhookIcon,
@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { GeneralSettings } from "./components/general-settings";
 import { ComputerControlSettings } from "./components/computer-control-settings";
+import { AccessAccelSettings } from "./components/access-accel-settings";
 import { HooksSettings } from "./components/hooks-settings";
 import { WebhooksSettings } from "./components/webhooks-settings";
 import { ModelSettings } from "./components/model-settings";
@@ -38,7 +39,6 @@ import { ArchiveSettings } from "./components/archive-settings";
 import { MemorySettings } from "./components/memory-settings";
 import { BackupSettings } from "./components/backup-settings";
 import { PersonalizationSettings } from "./components/personalization-settings";
-import { SubagentsSettings } from "./components/subagents-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
 import { SecretsSettings } from "./components/secrets-settings";
 import { DesignThemesSettings } from "./components/design-themes-settings";
@@ -54,12 +54,12 @@ export type SettingsSection =
   | "memory"
   | "backup"
   | "shortcuts"
-  | "subagents"
   | "webhooks"
   | "hooks"
   | "secrets"
   | "design-themes"
-  | "computer-control";
+  | "computer-control"
+  | "access-accel";
 
 const GROUPS: {
   label: string;
@@ -83,7 +83,6 @@ const GROUPS: {
       // 电脑控制：agent 能碰本机的哪些能力（浏览器驱动 / 页面像素 / 屏幕画面）。
       // 归「智能体」组而不是「系统」——授权的对象是 agent，不是这台机器
       { id: "computer-control", label: "电脑控制", icon: MonitorSmartphoneIcon },
-      { id: "subagents", label: "子智能体", icon: BotIcon },
       { id: "memory", label: "记忆", icon: BrainIcon },
       { id: "hooks", label: "钩子", icon: ZapIcon },
       { id: "secrets", label: "密钥", icon: KeyRoundIcon },
@@ -94,6 +93,9 @@ const GROUPS: {
     label: "系统",
     items: [
       { id: "remote", label: "远程访问", icon: GlobeIcon },
+      // 访问加速：AI 联网时把 GitHub 等地址改走镜像站。归「系统」而不是
+      // 「智能体」——改的是这台机器的出网路径，与授予 agent 什么能力无关
+      { id: "access-accel", label: "访问加速", icon: RocketIcon },
       { id: "webhooks", label: "Webhooks", icon: WebhookIcon },
       { id: "about", label: "关于", icon: InfoIcon },
     ],
@@ -235,7 +237,6 @@ export const SettingsPage: FC<{
           {section === "memory" && <MemorySettings />}
           {section === "backup" && <BackupSettings />}
           {section === "shortcuts" && <ShortcutSettings />}
-          {section === "subagents" && <SubagentsSettings />}
           {section === "archive" && <ArchiveSettings />}
           {section === "webhooks" && <WebhooksSettings />}
           {section === "hooks" && <HooksSettings />}
@@ -244,6 +245,7 @@ export const SettingsPage: FC<{
           {section === "about" && <AboutSettings />}
           {section === "general" && <GeneralSettings />}
           {section === "computer-control" && <ComputerControlSettings />}
+          {section === "access-accel" && <AccessAccelSettings />}
         </div>
       </div>
     </div>

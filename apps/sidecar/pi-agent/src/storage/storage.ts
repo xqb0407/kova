@@ -35,6 +35,17 @@ export function tracePath(id: string): string {
   return path.join(sessionsDirPath, "traces", `${id}.jsonl`);
 }
 
+/** 子代理活动落盘目录（activity-store.ts）：每个委派一份 JSONL */
+export function subagentsDirPath(): string {
+  if (!sessionsDirPath) throw new Error("storage not initialized");
+  return path.join(sessionsDirPath, "subagents");
+}
+
+/** 单个委派的活动文件路径 */
+export function subagentPath(delegationId: string): string {
+  return path.join(subagentsDirPath(), `${delegationId}.jsonl`);
+}
+
 /** 生产模式：数据访问走 host_query RPC（index.ts 读到 PI_SESSIONS_DIR 时调用） */
 export function initHostMode(sessionsDir: string): void {
   sessionsDirPath = sessionsDir;

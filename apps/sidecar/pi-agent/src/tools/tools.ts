@@ -25,6 +25,7 @@ import { buildImageGenTool } from "./imagegen-tool";
 import { buildOpenFileTool } from "./open-file-tool";
 import { buildOpenPanelTool, maybeAutoOpenPanel } from "./open-panel-tool";
 import { buildWebTools } from "./http-tools";
+import { activeGitAccelEnv } from "./mirror-config";
 import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "../todo/todo";
 import { buildMemoryTools } from "../agent/memory";
@@ -231,7 +232,8 @@ function buildGrepTool(cwd: string): AgentTool {
 /** 模型参数 → 宿主信封。**保留字段在这里被摘掉**：`secretEnv` 只能由本侧的
  *  augment 决定；模型若在自己的参数里伪造同名键（工具 schema 里没有，但不妨碍
  * 它多吐一个字段），放行就等于绕过用户的密钥授权策略去注入任意密钥。
- * 纯函数，便于单测这条边界。 */
+ *  `accelEnv` 同理：放行等于让模型把流量导去任意主机。
+ *  纯函数，便于单测这条边界。 */
 export function buildHostToolPayload(
   params: Record<string, unknown>,
   extra?: Record<string, unknown>,
@@ -239,20 +241,21 @@ export function buildHostToolPayload(
   const base = { ...params };
   delete base.secretEnv;
   delete base.secretEnvResolved;
+  delete base.accelEnv;
   return extra && Object.keys(extra).length ? { ...base, ...extra } : base;
 }
 
 /** bash/read/write/edit：schema 留本侧，执行转发给 Rust 宿主（tool_exec.rs）；
  *  threadId 供 write/edit 落盘成功后的"面板认领文件自动开板"回路（open-panel-tool）；
- *  augment 在 execute 内追加宿主信封字段（bash 用它挂密钥注入名单——**不进工具
- *  schema**，模型无法自己要求密钥）。 */
+ *  augment 在 execute 内追加宿主信封字段（bash 用它挂密钥注入名单与访问加速环境——
+ *  **不进工具 schema**，模型无从要求密钥，也无从指定加速前缀）。 */
 function hostTool(
   name: string,
   cwd: string,
   threadId: string,
   description: string,
   parameters: AgentTool["parameters"],
-  augment?: () => Record<string, unknown>,
+  augment?: (params: Record<string, unknown>) => Record<string, unknown>,
 ): AgentTool {
   return {
     name,
@@ -272,7 +275,7 @@ function hostTool(
       // （augment 只给名字，值在 Rust 侧查出，见 docs/secrets-env-design.md）
       const payload = buildHostToolPayload(
         params as Record<string, unknown>,
-        augment?.(),
+        augment?.(params as Record<string, unknown>),
       );
       // signal 透传给 hostToolCall：中断时向宿主发 host_cancel，bash 会被杀进程树。
       // owner 带线程 id：后台任务（runInBackground）跨回合存活于宿主全局表，
@@ -348,9 +351,16 @@ export function buildTools(
       // 密钥注入：只把**名字**挂到信封上（值在 Rust 侧查库解密 + 输出脱敏，
       // 见 docs/secrets-env-design.md）。名单由用户绑定 + 本线程已加载技能决定，
       // 模型无从指定；本次没命中任何绑定时返回空对象，信封与从前完全一致。
-      () => {
+      // 访问加速：git clone/fetch 的 github.com 地址经 insteadOf 走镜像（环境变量
+      // 由 Rust 注入那一条派生进程，不落盘、不改用户 git 配置）；命令里带 push
+      // 时整个跳过——镜像只代理读。
+      (params) => {
+        const extra: Record<string, unknown> = {};
         const secretEnv = resolveSecretEnv(cwd, threadId);
-        return secretEnv.length ? { secretEnv } : {};
+        if (secretEnv.length) extra.secretEnv = secretEnv;
+        const accelEnv = activeGitAccelEnv(params.command);
+        if (accelEnv) extra.accelEnv = accelEnv;
+        return extra;
       },
     ),
     hostTool(
@@ -386,10 +396,23 @@ export function buildTools(
       }),
     ),
     hostTool("write", cwd, threadId,
-      "Write (or create) a file with the given content. Parent directories are created automatically.",
+      // 常驻拆分指引：write 的执行在 Rust 宿主（tool_exec.rs），整份内容是一次往返，
+      // 大文件必超时。以前只有失败后的自愈提示，模型在「还没失败」时没有任何约束，
+      // 这里把阈值与做法写进工具描述，让它一开始就分段写。
+      "Write (or create) a file with the given content. Parent directories are created automatically. " +
+        "For large files (roughly over 200 lines or 16KB), do NOT send the whole thing in one call — " +
+        "content goes to the host in a single round trip and an oversized write times out. " +
+        "Write the first part with mode \"overwrite\", then extend the file with " +
+        "mode \"append\" (or edit calls matching the file's current tail).",
       Type.Object({
         file_path: Type.String({ description: "Path (relative to workspace or absolute)" }),
         content: Type.String({ description: "Full file content" }),
+        mode: Type.Optional(
+          Type.Union([Type.Literal("overwrite"), Type.Literal("append")], {
+            description:
+              "Default overwrite. Use append to extend an existing file in parts (large-file strategy).",
+          }),
+        ),
       }),
     ),
     hostTool("edit", cwd, threadId,

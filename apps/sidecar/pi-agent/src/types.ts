@@ -4,6 +4,7 @@ import type * as ai from "ai";
 import type { RetryBudget } from "./model/provider-retry";
 import type { TraceRunRecorder } from "./protocol/trace";
 import type { ThemeRef } from "./design-md/store";
+import type { AppMode } from "./agent/app-mode";
 
 /** AI SDK UI 消息类型（协议流与 JSONL 持久化都用它） */
 export type UIMessage = ai.UIMessage;
@@ -62,6 +63,8 @@ export type SessionSummary = {
   modelId?: string;
   /** 会话级思考档位偏好（undefined = 从未定靶选过，跟随默认档位） */
   thinkingLevel?: string;
+  /** 会话级工作模式偏好（undefined = 本会话从未切换过，跟随全局默认 pi.app_mode） */
+  appMode?: "work" | "code" | "design";
 };
 
 /** 子代理一次执行的最终状态 */
@@ -71,7 +74,9 @@ export type SubagentRunStatus =
   | "failed"
   | "truncated"
   | "aborted"
-  | "stopped";
+  | "stopped"
+  /** 进程中断：持久化时仍是 running、重启后从磁盘回读的委派（见 subagent/activity-store.ts） */
+  | "interrupted";
 
 /** SubagentRun 的收敛结果（report 是唯一进入父代理上下文的内容） */
 export type SubagentRunResult = {
@@ -219,6 +224,13 @@ export type Running = {
    * row ?? 最近使用 kv ?? null（见 sessions/resolve.ts；变更见 handlers/design-md.ts）
    */
   designTheme?: ThemeRef | null;
+  /**
+   * 本会话生效的工作模式（work|code|design）：决定系统提示词的模式附加段。
+   * 事实源：sessions.app_mode 偏好列；从未切换过的会话跟随全局默认（kv
+   * pi.app_mode），恢复链 row ?? 全局默认（见 sessions/resolve.ts）。
+   * 与 mode（agent/plan/ask 权限模式）正交。变更见 handlers/preferences.ts。
+   */
+  appMode: AppMode;
   /**
    * 「主题全文已在上下文里」台账（key = scope/id，value = 正文哈希）：
    * use_design_theme 重复加载短路的数据面——同 ref 同哈希返回简短确认不再

@@ -665,6 +665,24 @@ describe("TauriPiClient 快照装载耗时播种（症状1）", () => {
     });
   });
 
+  test("冷读 getThread 也播种（空闲线程从不 connect/派发——刷新后时长缺失根因）", async () => {
+    // 刷新/切会话后线程是空闲态：usePiRuntime 只走 controller.load()→getThread
+    // 冷读，不 connect→不订阅→dispatch 永不执行。播种必须发生在 fetchSnapshot
+    // 汇聚点，否则台账全空、摘要行退回「X 条较早消息」。
+    __resetTurnStoresForTests();
+    snapshotReply = { type: "thread_snapshot", snapshot: historySnapshot() };
+    const client = new TauriPiClient();
+    await client.getThread("s1");
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:3"))).toEqual({
+      start: 1_000,
+      end: 6_000,
+    });
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:7"))).toEqual({
+      start: 20_000,
+      end: 23_000,
+    });
+  });
+
   test("live:true 轮（本窗口计时中）不被播种覆盖", async () => {
     __resetTurnStoresForTests();
     const key = scopedTurnKey("s1", "pi-msg:3");

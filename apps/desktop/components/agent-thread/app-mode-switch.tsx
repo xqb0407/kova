@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { useEffect, useState, type FC } from "react";
+import { useAuiState } from "@assistant-ui/react";
 import {
   BriefcaseIcon,
   CheckIcon,
@@ -17,13 +18,21 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { setAppMode, useAppMode, type AppMode } from "@/lib/pi/app-mode";
+import {
+  hydrateThreadAppMode,
+  setThreadAppMode,
+  useThreadAppMode,
+} from "@/lib/pi/pi-session-app-mode";
+import { setAppMode, type AppMode } from "@/lib/pi/app-mode";
 import { useEnsureUiDesignPlugin } from "@/components/design-mode-gate";
 
 /**
- * 全局工作模式切换器（会话顶栏，「更多」按钮左侧；设置 → 通用里同一事实源）。
- * 应用级开关：切换立即影响所有会话——提示词附加段、git UI 显隐、工具行形态；
- * 与 composer 旁的权限模式切换器（mode-picker，agent/plan）是正交的两个维度。
+ * 会话工作模式切换器（会话顶栏，「更多」按钮左侧）。
+ * 会话级开关（与模型/思考档位选择器同语义）：切换只作用于本会话——定靶写
+ * sessions.app_mode 偏好列，本会话保持自己的档；别的会话不受牵连。从未在本会话
+ * 切过档（含新对话）则跟随「设置 → 通用」的全局默认档，那一档仍由设置页维护。
+ * 影响面：提示词附加段、git UI 显隐、工具行形态；与 composer 旁的权限模式
+ * 切换器（mode-picker，agent/plan）是正交的两个维度。
  * 形态对齐 mode-picker：胶囊按钮 + 选项下拉（图标/说明/当前勾选）。
  * 设计档有插件前置门禁：ui-design 插件未装/禁用时先弹窗引导，通过才切档。
  */
@@ -57,10 +66,17 @@ const OPTIONS: ModeOption[] = [
 ];
 
 export const AppModeSwitch: FC = () => {
-  const appMode = useAppMode();
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const appMode = useThreadAppMode(threadId);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const { ensure, dialog } = useEnsureUiDesignPlugin();
+
+  // 切线程时水合该会话记住的档位（无记忆则回落全局默认档）
+  useEffect(() => {
+    if (!threadId) return;
+    hydrateThreadAppMode(threadId);
+  }, [threadId]);
 
   const current = OPTIONS.find((o) => o.value === appMode) ?? OPTIONS[0];
   const CurrentIcon = current.icon;
@@ -73,7 +89,12 @@ export const AppModeSwitch: FC = () => {
       try {
         // 设计档前置门禁：ui-design 插件未装/禁用时弹窗引导，通过才切档
         if (o.value === "design" && !(await ensure())) return;
-        await setAppMode(o.value);
+        if (threadId) {
+          await setThreadAppMode(threadId, o.value);
+        } else {
+          // 无主线程上下文（理论不可达）：退化为纯全局默认档变更
+          await setAppMode(o.value);
+        }
       } catch (err) {
         console.error("set_app_mode failed:", err);
       } finally {
@@ -93,7 +114,7 @@ export const AppModeSwitch: FC = () => {
             data-slot="aui-header-app-mode"
             aria-label="工作模式"
             disabled={busy}
-            title={current.description}
+            title={`本会话工作模式：${current.description}`}
             className={cn(
               "hover:bg-muted text-muted-foreground hover:text-foreground inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2.5 text-sm transition-colors disabled:opacity-50",
             )}

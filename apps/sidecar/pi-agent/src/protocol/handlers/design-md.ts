@@ -2,15 +2,18 @@
  * 设计主题命令：清单/取正文/保存/删除（管理页）+ 会话级选中（composer 胶囊）。
  * 存储与快照在 design-md/store，「最近使用」在 design-md/state，会话偏好落
  * sessions.design_theme 列（恢复链见 sessions/resolve.ts）。
- * 变更后热替换与 reloadSkills 同款：refreshThemes 刷快照 → 活动会话提示词里
- * design 段主题句行随之增删（set 只重排目标会话，save/delete 重排全部）。
+ * 变更后的生效链（引用重映射 → 刷快照 → 重排活动会话提示词 → 多窗口广播）在
+ * design-md/apply，与 AI 管理工具（design-md/mgmt-tools）共用同一条。
  */
 import { send } from "../stream";
 import { resolveSession } from "../../sessions/sessions";
-import { running } from "../../sessions/registry";
-import { composeModeSystemPrompt } from "../../agent/modes";
-import { setLeadingSystemMessage } from "../../agent/context";
-import { sessionPrefsSet } from "../../storage/hostdb";
+import {
+  applySessionTheme,
+  applyThemeDelete,
+  applyThemeSave,
+  broadcastThemeSet,
+  finishThemeMutation,
+} from "../../design-md/apply";
 import {
   deleteUserTheme,
   findTheme,
@@ -19,57 +22,10 @@ import {
   readThemeDocRaw,
   refreshThemes,
   saveUserTheme,
-  type DesignThemeSnapshot,
   type ThemeRef,
   type UserThemeDraft,
 } from "../../design-md/store";
-import { encodeThemeColumn, setLastUsedDesignTheme } from "../../design-md/state";
-import { remapThemeRefs } from "../../design-md/ref-integrity";
-import type { Running } from "../../types";
 import type { CommandHandler } from "../command";
-
-/** 管理页改主题（save/delete/fork）后全量热替换：快照变了，所有 design 档
- *  会话的主题句（名称/描述/被删后的消失）都要跟上 */
-function recomposeAllRuns(): void {
-  for (const run of running.values()) {
-    const prompt = composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme);
-    setLeadingSystemMessage(run.agent.state.messages, prompt);
-    if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
-  }
-}
-
-/** 会话级选中落点：改 run 字段 + 只重排该会话提示词 + 偏好列/最近使用落库
- *  （fire-and-forget，与 persistModePrefs 同款容错） */
-function applySessionTheme(run: Running, ref: ThemeRef | null): void {
-  run.designTheme = ref;
-  const prompt = composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme);
-  setLeadingSystemMessage(run.agent.state.messages, prompt);
-  if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
-  void sessionPrefsSet(run.sessionId, { designTheme: encodeThemeColumn(ref) }).catch(() => {});
-  void setLastUsedDesignTheme(ref).catch(() => {});
-}
-
-async function designThemesPayload(): Promise<DesignThemeSnapshot> {
-  return await refreshThemes();
-}
-
-/**
- * 多窗口/远程推送：无 id 自发通知帧（本地各窗口走 Rust pi-chunk-batch 原样
- * 广播，远程连接走 remote.rs 白名单）。发起方窗口已收带 id 应答，再收到同
- * 数据推送帧属幂等覆写不冲突。set 推送带 threadId 供他窗胶囊直更；
- * 清单推送只在 save/delete（set 不改清单）。
- */
-function pushDesignThemes(snap: DesignThemeSnapshot): void {
-  send({ type: "design_themes", ...snap });
-}
-
-function pushDesignThemeSet(t: {
-  threadId: string;
-  sessionId: string;
-  theme: ThemeRef | null;
-}): void {
-  send({ type: "design_theme_set", threadId: t.threadId, sessionId: t.sessionId, theme: t.theme });
-}
 
 export const handlers: Record<string, CommandHandler> = {
   list_design_themes: async (reqId, msg) => {
@@ -83,7 +39,7 @@ export const handlers: Record<string, CommandHandler> = {
       );
       active = { active: run.designTheme ?? null };
     }
-    send({ id: reqId, type: "design_themes", ...(await designThemesPayload()), ...active });
+    send({ id: reqId, type: "design_themes", ...(await refreshThemes()), ...active });
   },
 
   get_design_theme: async (reqId, msg) => {
@@ -131,22 +87,10 @@ export const handlers: Record<string, CommandHandler> = {
         ? msg.themeId.trim()
         : undefined;
     const { ref, clobbered } = await saveUserTheme(draft, { ...(replaceId ? { replaceId } : {}) });
-    // 改名（frontmatter name 变化 → 新 id）：指向旧 id 的一切引用重映射到新
-    // id，用户正在用的主题不断链（未驻留会话/驻留 run/最近使用 kv 一起跟齐）
-    const changed = replaceId && replaceId !== ref.id
-      ? await remapThemeRefs({ scope: "user", id: replaceId }, ref)
-      : [];
-    // 归一名撞车清扫（大小写不敏感文件系统上 "Kova"/"kova" 同一文件、或旧
-    // stem 不同但同名）：被合并掉的其他 id 的引用同样跟到新 id，不留悬空
-    for (const oldId of clobbered) {
-      if (oldId === ref.id || oldId === replaceId) continue;
-      changed.push(...(await remapThemeRefs({ scope: "user", id: oldId }, ref)));
-    }
-    const snap = await designThemesPayload();
-    recomposeAllRuns();
-    send({ id: reqId, type: "design_theme_saved", ref, ...snap });
-    pushDesignThemes(snap);
-    for (const t of changed) pushDesignThemeSet(t);
+    // 生效链：改名/合并清扫的引用重映射 → 刷快照 → 重排全部活动会话提示词
+    const mutation = await applyThemeSave(ref, { ...(replaceId ? { replaceId } : {}), clobbered });
+    send({ id: reqId, type: "design_theme_saved", ref, ...mutation.snap });
+    finishThemeMutation(mutation);
   },
 
   delete_design_theme: async (reqId, msg) => {
@@ -154,14 +98,11 @@ export const handlers: Record<string, CommandHandler> = {
     const id = String(msg.themeId ?? "");
     if (!id) throw new Error("delete_design_theme: themeId is required");
     deleteUserTheme(id);
-    // 引用了该主题的一切落点收口为「显式不使用」：未驻留会话的偏好列、驻留
-    // run 字段、恰好指向它的最近使用 kv（不静默回落成别的主题）
-    const changed = await remapThemeRefs({ scope: "user", id }, null);
-    const snap = await designThemesPayload();
-    recomposeAllRuns();
-    send({ id: reqId, type: "design_themes", ...snap });
-    pushDesignThemes(snap);
-    for (const t of changed) pushDesignThemeSet(t);
+    // 生效链：引用了该主题的一切落点收口为「显式不使用」（未驻留会话的偏好列、
+    // 驻留 run 字段、恰好指向它的最近使用 kv），再刷快照、重排
+    const mutation = await applyThemeDelete(id);
+    send({ id: reqId, type: "design_themes", ...mutation.snap });
+    finishThemeMutation(mutation);
   },
 
   set_design_theme: async (reqId, msg) => {
@@ -179,11 +120,12 @@ export const handlers: Record<string, CommandHandler> = {
       ref = normalizeThemeRef(msg.theme);
       if (!ref) throw new Error("set_design_theme: theme must be {scope,id} or null");
       // 存在性校验按实时快照（管理页可能刚删过）：缺失即拒绝，胶囊不落空指向
-      await designThemesPayload();
+      await refreshThemes();
       if (!findTheme(ref)) throw new Error(`set_design_theme: theme not found: ${ref.scope}/${ref.id}`);
     }
+    // set 只重排目标会话（变更全量重排在 apply 的 save/delete 链里）
     applySessionTheme(run, ref);
     send({ id: reqId, type: "design_theme_set", sessionId: run.sessionId, theme: ref });
-    pushDesignThemeSet({ threadId: run.threadId, sessionId: run.sessionId, theme: ref });
+    broadcastThemeSet({ threadId: run.threadId, sessionId: run.sessionId, theme: ref });
   },
 };

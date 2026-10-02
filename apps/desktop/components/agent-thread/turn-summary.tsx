@@ -131,6 +131,8 @@ const TurnProcess: FC<{ collapsed: boolean; children: ReactNode }> = ({
  *  - 轮首：用户气泡照常，底下跟工作摘要行（本轮过程已收起时）
  *  - 轮末：最终回答照常渲染（折叠时也保留）
  *  - 轮中：折叠时不渲染（过程性消息整体不挂载）
+ * 压缩分隔线一律归过程区（轮中/轮末同理，见 keepsVisible 与 dividerOnly
+ * 两处分支）：收起态不在外部露线，展开后各条仍在它发生时的那条消息位置上
  * 编辑中的消息强制展开（thread.tsx 已把该条换成 EditComposer，这里把整轮
  * 放开，避免出现「编辑器孤零零挂在收起的过程里」）。
  */
@@ -143,16 +145,18 @@ export const TurnSlot: FC<{
     packTurnSlotWithKeep(
       s.thread.messages,
       messageId,
-      // 压缩分隔线是保命锚点；工具成图（data-image）是本轮交付物——
-      // 轮中消息带这两类 part 时折叠后照常渲染，不然收起后外层看不到图
+      // 工具成图（data-image）是本轮交付物——轮中消息带它时折叠后照常渲染，
+      // 不然收起后外层看不到图。压缩分隔线不豁免：它按真实落点归过程面，
+      // 收起时随之隐藏（同轮多次压缩不再在收起后堆成一列），展开即见原位。
       s.message.content.some(
-        (part) =>
-          part.type === "data" &&
-          (part.name === "compaction" || part.name === "image"),
+        (part) => part.type === "data" && part.name === "image",
       ),
     ),
   );
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  // 线程级运行中：轮内消息状态位有空窗（压缩期间没有消息在流），末轮的
+  // 纯分隔线消息靠它判定「还在跑」——与 TurnWorkSummary 的 running 同款
+  const threadRunning = useAuiState((s) => s.thread.isRunning);
   const parsed = useMemo(() => parseTurnSlotWithKeep(packed), [packed]);
   const slot = parsed?.slot ?? null;
   const scopedKey = slot ? scopedTurnKey(threadId, slot.turnKey) : "";
@@ -183,7 +187,11 @@ export const TurnSlot: FC<{
   // 正文不会重挂。中断轮不参与"最新轮保持展开"（流已结束，可安全拆分）。
   // 轮末：「已结束的」才拆成 过程（可收起）+ 正文；还在流式的整条渲染
   // （正文与工具的交错不重排，正在跑的工具行也看得见）
-  if (slot.isTurnEnd && !isEditing && !slot.turnRunning) {
+  // isAnswerTail：空闲/手动压缩在轮末留下一列独立的分隔线消息，轮末身份归
+  // 分隔线，但答案面同样要拆出来——否则答案成了轮中消息，收起后连带消失
+  // dividerOnly：纯分隔线消息没有答案面，不进拆分（空 answer 面会多留一个
+  // 空节点），整条归过程区——收起隐藏，展开回它自己的位置
+  if ((slot.isTurnEnd || slot.isAnswerTail) && !slot.dividerOnly && !isEditing && !slot.turnRunning) {
     return (
       <>
         <TurnProcess collapsed={collapsed}>
@@ -193,9 +201,18 @@ export const TurnSlot: FC<{
       </>
     );
   }
-  // 最新轮整条照常（流式期间正文与工具的交错不重排）/ 编辑中 / 压缩分隔线保命
-  if (slot.isTurnEnd || isEditing || parsed?.keepsVisible) return <>{children}</>;
-  // 轮中过程：包进可动画的过程区（收起时整块卸载）
+  // 整条渲染：流式中的轮末（正文与工具交错不重排）。纯分隔线消息在压缩进行中
+  // 也走这里——它此刻就是最新一条，横幅（正在压缩上下文… → 已压缩）是这一段
+  // 唯一的进度反馈，静默几十秒的摘要生成没有提示会像卡死；判定同 TurnWorkSummary
+  // （轮内流状态为空窗，末轮要看线程级 isRunning）
+  // 轮中成图保命（keepsVisible）：交付物不随过程收起
+  const streamingTurnEnd =
+    slot.isTurnEnd &&
+    (!slot.dividerOnly ||
+      slot.turnRunning ||
+      (slot.isLastTurn && threadRunning));
+  if (streamingTurnEnd || isEditing || parsed?.keepsVisible) return <>{children}</>;
+  // 轮中过程 / 纯分隔线消息：包进可动画的过程区（收起时整块卸载）
   return <TurnProcess collapsed={collapsed}>{children}</TurnProcess>;
 };
 
@@ -239,6 +256,25 @@ const TurnWorkSummary: FC<{
   if (summary.toolCount > 0) details.push(`${summary.toolCount} 工具`);
   if (summary.fileCount > 0) details.push(`${summary.fileCount} 文件`);
   const title = [collapsed ? "展开本轮过程" : "收起本轮过程", ...details].join(" · ");
+
+  // 运行中的折叠箭头只在轮中真有独立消息时才有语义（compaction/bashExecution
+  // 等旁支行投影成独立 assistant 消息、包在 TurnProcess 里可收可开）。pi 投影
+  // 把一轮的 assistant+toolResult 合并成一条消息：过程正整条实时渲染（TurnSlot
+  // 只在轮次结束后才拆「过程+回答」），箭头无处可作用，点击还会悄悄写下折叠
+  // 覆盖、收尾后这轮被意外展开——这种时候渲染成纯进度行，无箭头不可点。
+  const hasMidTurnMessages = summary.messageCount > 2;
+  if (running && !hasMidTurnMessages) {
+    return (
+      <div
+        data-slot="aui_turn-summary"
+        className="border-border/60 mx-auto -mt-3 w-full max-w-(--thread-max-width) border-b px-2 pb-3"
+      >
+        <div className="text-muted-foreground flex w-fit cursor-default items-center gap-1.5 rounded-md py-0.5 text-sm">
+          <span className="tabular-nums shimmer motion-reduce:animate-none">{label}</span>
+        </div>
+      </div>
+    );
+  }
 
   // 运行中一律显示（发出消息就有这一行）；已结束的轮只在「真有过程可展开」
   // 时占位——纯聊天轮（无思考、无工具）过程面是空的，耗时再准也留不下内容，

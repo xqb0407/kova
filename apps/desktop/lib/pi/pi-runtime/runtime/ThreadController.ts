@@ -2,6 +2,14 @@
 // https://github.com/assistant-ui/assistant-ui/tree/main/packages/react-pi
 // 保留上游文件名与结构以便对照上游 cherry-pick；改动需在此注明：
 // vendored path: src/ThreadController.ts（runtime/ 子目录对应上游 src/runtime/）
+// - 重新生成/编辑重发的乐观镜像去重下界（2026-10-02 带图重生重复气泡修复）：
+//   截断后重发走 sendUserAppend(message, undefined, 0) 全文匹配——截断快照会把
+//   在飞数组收缩，回显落点低于按下标取的界，界匹配永远确认不了乐观镜像
+//  （气泡永久重复、顺序错乱，仅切会话/刷新恢复）；普通发送仍按下界匹配。
+// - 截断确认后的乐观本地截断 truncateLocally（2026-10-02 新旧互换顺序修复）：
+//   旧行不等截断后快照回程、确认服务端截断后立即在内存移除，与重发压入的
+//   新气泡同一提交帧上新旧互换——否则带图会话快照回程慢，新气泡先上屏、
+//   旧行滞留，视觉顺序颠倒。
 
 /**
  * Per-thread controller: bridges Pi client events into a snapshot-authoritative
@@ -520,6 +528,22 @@ export class PiThreadController implements PiThreadControllerLike {
   }
 
   public async sendMessage(message: AppendMessage, options?: PiSendOptions) {
+    return this.sendUserAppend(message, options, this.state.messages.length);
+  }
+
+  /** sendMessage 本体；baseMessageCount 是乐观镜像回显去重的匹配下界
+   *  （reconcileOptimisticUserMessages 只扫 .slice(下界)）。普通发送取当前
+   *  转录长度——回显只会追加在其后；重发路径（截断后）必须传 0 全文匹配：
+   *  压入镜像时在飞数组还是截断前长度，随后截断快照把数组收缩，服务端
+   *  回显落点低于旧下界，界匹配永远确认不了镜像 → 用户气泡永久重复
+   * （带图重新生成必现：大帧让「快照先落、回显后到」占主导）。截断已把
+   *  可能同文的旧尾部从服务端删掉，全文匹配安全——撞键只剩更早轮巧合
+   *  同文，提前摘除镜像无碍，真回显随 agent_start 同批帧即刻落位。 */
+  private async sendUserAppend(
+    message: AppendMessage,
+    options: PiSendOptions | undefined,
+    baseMessageCount: number,
+  ) {
     if (message.role !== "user") {
       throw new Error("Pi only supports sending user messages");
     }
@@ -545,7 +569,7 @@ export class PiThreadController implements PiThreadControllerLike {
     );
     this.optimisticUserMessages.push({
       message: optimistic,
-      baseMessageCount: this.state.messages.length,
+      baseMessageCount,
     });
     this.setState(markStateRunning(this.state));
     this.recomputeProjectedMessagesAndNotify();
@@ -623,8 +647,28 @@ export class PiThreadController implements PiThreadControllerLike {
       throw new Error("message is not persisted yet; cannot resend");
     }
     await this.client.truncateToSeq(this.threadId, Number(match[1]));
+    // 乐观本地截断先于重发压镜像：旧行与新气泡同一提交帧上新旧互换（旧的
+    // 立即消失、新的立即出现）——等截断后快照回程才移除的话，带图会话快照
+    // 是 MB 级大帧，新气泡会先上屏、旧行滞留到回程，视觉顺序颠倒
+    this.truncateLocally(Number(match[1]));
     this.refreshInBackground();
-    await this.sendMessage(message);
+    // 下界传 0（全文匹配）：见 sendUserAppend 头注——截断快照收缩在飞数组后，
+    // 回显落点低于按下标取的界，重生成/编辑重发的乐观镜像会永久滞留成重复气泡
+    await this.sendUserAppend(message, undefined, 0);
+  }
+
+  /** 乐观本地截断：truncate_session 确认后立即在内存丢掉 seq >= beforeSeq 的
+   *  转录行（消息与压缩检查点共用号段，一并移除），不等截断后快照回程。
+   *  快照随后整体替换，内容与本截断一致，自愈；lastSeq 不动——降低它会放行
+   *  已消费水位的陈旧事件重放。 */
+  private truncateLocally(beforeSeq: number) {
+    const kept = this.state.messages.filter((message) => {
+      const seq = (message as { __seq?: unknown }).__seq;
+      return !(typeof seq === "number" && seq >= beforeSeq);
+    });
+    if (kept.length === this.state.messages.length) return;
+    this.setState({ ...this.state, messages: kept });
+    this.recomputeProjectedMessagesAndNotify();
   }
 
   /** Mid-run sends land in Pi's queue, not the transcript (Pi appends the user

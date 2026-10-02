@@ -68,6 +68,7 @@ function makeRun(records: DelegationRecord[] = []): Running {
   return {
     agent: {} as Running["agent"],
     threadId: "t-subagent",
+    appMode: "code",
     sessionId: "s",
     cwd: ".",
     persistedSeq: 0,

@@ -8,6 +8,8 @@
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostHttpCall, type HostHttpData } from "../storage/hostdb";
+import { activeMirrorPolicy } from "./mirror-config";
+import { mirrorUrl, type MirrorMatch } from "./url-mirror";
 
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
 
@@ -32,6 +34,18 @@ export function fetchHeadline(
     data.truncated ? "(truncated)" : null,
   ].join(" · ");
   return `${meta}\nfinal url: ${data.url}`;
+}
+
+/**
+ * 加速注记：改写后必须告诉模型——结果里的 final url 是镜像地址。不说清楚，
+ * 模型会以为自己读的是源站，或者下次自己动手拼一个镜像地址（叠两层）。
+ */
+function accelNote(requested: string, match: MirrorMatch | undefined): string {
+  if (!match) return "";
+  return (
+    `\n[access acceleration] ${requested} was fetched through the mirror ${match.url}. ` +
+    "Keep passing the original URL — the app rewrites it automatically; do not prepend a mirror yourself."
+  );
 }
 
 export interface WebSearchResult {
@@ -145,6 +159,8 @@ function buildWebFetchTool(cwd: string): AgentTool {
       "Textual responses (text/*, json, xml…) are returned as-is; images come back inline; " +
       "other binary responses are summarized only. Body is truncated to maxResponseBytes. " +
       "Non-2xx responses are returned, not thrown.\n" +
+      "Known slow hosts (GitHub raw files, release assets, source archives) may be routed " +
+      "through a mirror automatically — always pass the original URL, never a mirror URL.\n" +
       "Use for: REST APIs, docs/pages, small assets. Not for streaming or large downloads.",
     parameters: FetchParams,
     execute: async (_id, raw, signal) => {
@@ -157,10 +173,14 @@ function buildWebFetchTool(cwd: string): AgentTool {
         maxResponseBytes?: number;
       };
       if (!p.url?.trim()) throw new Error("url is required");
+      const requested = p.url.trim();
+      // 访问加速：命中规则就把请求改走镜像（带凭据的链接不改，见 url-mirror.ts）
+      const policy = activeMirrorPolicy();
+      const accel = policy ? mirrorUrl(requested, policy, p.headers) : { url: requested };
       const data = await hostHttpCall(
         cwd,
         {
-          url: p.url.trim(),
+          url: accel.url,
           method: p.method ?? "GET",
           headers: p.headers,
           body: p.body,
@@ -169,13 +189,16 @@ function buildWebFetchTool(cwd: string): AgentTool {
         },
         signal ?? undefined,
       );
-      const details = {
+      const details: Record<string, unknown> = {
         status: data.status,
         contentType: data.contentType,
         totalBytes: data.totalBytes,
         truncated: data.truncated,
       };
-      const headline = `${(p.method ?? "GET").toUpperCase()} ${p.url.trim()} -> ${fetchHeadline(data)}`;
+      if (accel.match) details.accel = { from: requested, to: accel.match.url };
+      const headline =
+        `${(p.method ?? "GET").toUpperCase()} ${requested} -> ${fetchHeadline(data)}` +
+        accelNote(requested, accel.match);
 
       if (data.encoding === "base64") {
         if (data.contentType.startsWith("image/")) {

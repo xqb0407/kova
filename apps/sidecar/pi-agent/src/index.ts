@@ -38,9 +38,11 @@ import { initAppMode } from "./agent/app-mode";
 import { initMemory } from "./agent/memory";
 import { initBrowserConfig } from "./tools/browser-config";
 import { initImageGenConfig } from "./tools/imagegen-config";
+import { initMirrorConfig } from "./tools/mirror-config";
 import { initObservability } from "./observability/observability";
 import { initHooks } from "./agent/hooks";
 import { initSubagentState } from "./subagent/subagent-definitions";
+import { pruneActivityFiles } from "./subagent/activity-store";
 import { initSkillsState } from "./skills/skills";
 import { initMcpEnabledState } from "./mcp/mcp-config";
 import { initPluginsState, syncBuiltinPlugins } from "./plugins/plugins";
@@ -66,6 +68,9 @@ async function main() {
     // 冒烟/直跑：无宿主接 host_result，退回本地 SQLite
     initStorage(DB_PATH, sessionsDir);
   }
+  // 子代理活动文件：启动扫盘清理超限的旧文件（重启后内存注册表为空，只能靠扫盘；
+  // 此刻没有任何委派在跑，剔除谓词恒 false）
+  pruneActivityFiles(() => false);
   // 自动化调度器：store/锁放 <sessionsDir>/automation/，随进程存亡。
   // 失败不阻断主流程（任务系统坏掉不该拖垮聊天），错误进 stderr 日志。
   const automationReady = initAutomation(sessionsDir, automationRunner).catch((err) => {
@@ -106,6 +111,8 @@ async function main() {
     await initBrowserConfig();
     // 文生图配置同走 kv（generate_image 工具 execute 门控读这份内存配置）
     await initImageGenConfig();
+    // 访问加速（镜像改写）同走 kv：WebFetch 与 bash 的 git 注入每次调用实时读
+    await initMirrorConfig();
     // 可观测性导出配置同走 kv（otlp-exporter 每次 run 结算实时读这份内存配置）
     await initObservability();
     // 子智能体开关/工作区信任同走 kv，理由同上（定义文件本身按需带签名加载）

@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, type FC } from "react";
-import { useAui, useAuiState } from "@assistant-ui/react";
+import { useAui } from "@assistant-ui/react";
 import {
   AskUserQuestions,
   type AskUserAnswer,
   type AskUserQuestion,
 } from "@/components/ui/ask-user-questions";
+import { useInteractionSessionId } from "@/lib/pi/pi-interaction-session";
 import {
   answerQuestion,
   removePendingQuestion,
@@ -85,10 +86,12 @@ const QuestionFlow: FC<{ threadId: string; pending: PendingQuestionView }> = ({
 };
 
 export const QuestionCard: FC = () => {
-  const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const pending = usePendingQuestions(threadId);
+  // 台账键 = pi sessionId（不是 mainThreadId：本会话新建的线程是 __LOCALID_
+  // 草稿 id，拿它查永远 miss，卡片不上屏），作答/就地移除也用同一键
+  const sessionId = useInteractionSessionId();
+  const pending = usePendingQuestions(sessionId);
 
-  if (!threadId || pending.length === 0) return null;
+  if (!sessionId || pending.length === 0) return null;
 
   return (
     <div
@@ -96,7 +99,7 @@ export const QuestionCard: FC = () => {
       className="flex w-full flex-col items-center gap-2"
     >
       {pending.map((q) => (
-        <QuestionFlow key={q.questionId} threadId={threadId} pending={q} />
+        <QuestionFlow key={q.questionId} threadId={sessionId} pending={q} />
       ))}
     </div>
   );

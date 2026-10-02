@@ -200,7 +200,7 @@ export const handlers: Record<string, CommandHandler> = {
       run.agent.state.model = model;
       setLeadingSystemMessage(
         run.agent.state.messages,
-        composeModeSystemPrompt(run.mode, run.cwd, model, run.designTheme),
+        composeModeSystemPrompt(run.mode, run.cwd, run.appMode, model, run.designTheme),
       );
     };
     if (sessionId) {

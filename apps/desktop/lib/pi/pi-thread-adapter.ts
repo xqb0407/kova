@@ -64,15 +64,38 @@ export function piSessionIdForThread(threadId: string): string | undefined {
 }
 
 /**
+ * per-thread 快照 store（pi-todo / pi-session-mode / pi-ask-needs-work 等）的键归一。
+ *
+ * 这些 store 的事实源是 prompt 流的 data-* chunk，而 chunk 行只带 sessionId
+ * （pi-client-base 按 `parsed.sessionId` 写入）；渲染侧的 mainThreadId 对本会话
+ * 新建的线程却恒为 `__LOCALID_` 草稿 id（只有刷新恢复的线程才两者同值）。不归一
+ * 就会双键分裂：chunk 写会话键、UI 读草稿键，新建会话里这些状态永远不更新。
+ *
+ * 归一规则：能换出 sessionId 就用它；未发送草稿回落草稿 id——草稿期只有本地态
+ * （set_mode 草稿分支、todo 水合早退），此时 sessionId 尚不存在，草稿 id 就是唯一
+ * 可用的键；绑定后由 store 各自把草稿键上的本地快照搬到会话键（惰性 rekey）。
+ */
+export function piStoreKeyForThread(threadId: string): string {
+  return piSessionIdForThread(threadId) ?? threadId;
+}
+
+/**
  * 分支对话：sidecar 把源会话转录复制成一个全新 pi 会话（新 sessionId、
  * 标题加「（分支）」后缀），返回新 remoteId；调用方随后
  * threads.reload() + switchToThread(newRemoteId) 打开分支。
  * cwd 映射本地先登记，让列表刷新前分组归属就已正确。
+ * opts.upToSeq：位置分叉（消息气泡「分叉会话」入口）——只复制该转录 seq
+ * 及之前的行（同回合收尾行由 sidecar 延展带上），下方的轮次不进新会话；
+ * 缺省复制整个会话（会话列表的「分支对话」）。
  */
-export async function forkPiSession(remoteId: string): Promise<string> {
+export async function forkPiSession(
+  remoteId: string,
+  opts?: { upToSeq?: number },
+): Promise<string> {
   const res = await piRequest<{ type: "forked"; sessionId: string }>({
     type: "fork_session",
     sessionId: remoteId,
+    ...(opts?.upToSeq !== undefined ? { upToSeq: opts.upToSeq } : {}),
   });
   const cwd = piSessionCwdMap.get(remoteId);
   if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
