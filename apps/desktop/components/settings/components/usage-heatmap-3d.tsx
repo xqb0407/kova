@@ -1,11 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FC } from "react";
-import { Canvas, useThree } from "@react-three/fiber";
-import { Html, Instance, Instances, OrbitControls } from "@react-three/drei";
+import { useEffect, useMemo, useRef, useState, type FC } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import {
+  Html,
+  Instance,
+  Instances,
+  OrbitControls,
+  RoundedBoxGeometry,
+} from "@react-three/drei";
+import type { Group } from "three";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
 import { formatTokens, type UsageStatsDay } from "@/lib/model/usage-stats";
 import {
+  adaptiveWeeks,
   buildHeatGrid,
   heatColor,
   type HeatCell,
@@ -13,30 +21,98 @@ import {
 } from "./usage-heatmap";
 
 /**
- * Token 活动热力图 3D 视图（three.js skyline，对齐参考风格的三个要点）：
- * 1. 只有活跃日有柱子，空白日以细线网格铺底（不铺灰色占位块）；
- * 2. 柱子紧密排列（间距的 ~92%），颜色即强度色带；
- * 3. 低角度略带侧转的相机（长条斜向贯穿画面），距离按视口宽高比精确拟合撑满横向。
+ * Token 活动热力图 3D 视图（等距圆角瓦片风格）：
+ * 1. 每一天都是一块圆角瓦片——空白日为低矮的素色瓦片，活跃日按强度升高并着色，
+ *    数据稀疏时整张网格依然完整，不会出现「空旷线框 + 孤零零几根柱子」；
+ * 2. 展示周数按数据自适应（adaptiveWeeks；平面视图恒为 53 周，不受影响），
+ *    只有几天数据时网格也是紧凑的小方块；
+ * 3. 相机俯视略带侧转（等距感），按网格实际投影范围（宽度 + 俯仰后的深度 + 实际最高瓦片）
+ *    精确拟合，无论数据多少内容都撑满画面；
+ * 4. 挂载/切换粒度时瓦片从左到右波浪式生长。
  * 经 next/dynamic 按需加载（three 全家桶不进设置页首屏包），buildHeatGrid 与
  * 2D 共用同一网格。
  */
 
-const SPACING = 0.85;
-const MAX_HEIGHT = 2.6;
+const SPACING = 0.8;
+const TILE = SPACING * 0.86;
+const TILE_RADIUS = 0.13;
 const ROWS = 7;
-const FOV = 40;
+const FOV = 38;
+const ELEVATION = (52 * Math.PI) / 180;
+const AZIMUTH = (12 * Math.PI) / 180;
+const INACTIVE_H = 0.07;
+const ACTIVE_BASE = 0.16;
+const ACTIVE_RISE = 1.25;
+const STAGGER = 0.014; // 每列波浪延迟（秒）
+const RISE = 0.5; // 单块瓦片生长时长（秒）
 
-/** 相机拟合：按视口宽高比算水平 FOV，场景宽度 92% 入框；低角度 + 侧转让长条斜向贯穿 */
-function CameraRig({ width }: { width: number }) {
+type Tile = HeatCell & { x: number; z: number; h: number };
+
+/** hex 向白色混合 amt 比例（hover 提亮用） */
+function lighten(hex: string, amt: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const mix = (c: number) => Math.round(c + (255 - c) * amt);
+  return `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`;
+}
+
+/** 相机拟合：按视口宽高比把「网格宽度」与「俯仰后的深度+实际最高瓦片」两个投影范围都装进画面 */
+function CameraRig({
+  width,
+  depth,
+  maxH,
+}: {
+  width: number;
+  depth: number;
+  maxH: number;
+}) {
   const { camera, size } = useThree();
   useEffect(() => {
     const aspect = Math.max(size.width / Math.max(size.height, 1), 0.5);
     const halfVFov = (FOV / 2) * (Math.PI / 180);
     const halfHFov = Math.atan(Math.tan(halfVFov) * aspect);
-    const dist = width / 2 / Math.tan(halfHFov) / 0.92;
-    camera.position.set(width * 0.1, dist * 0.34, dist * 0.9);
-    camera.lookAt(0, 0.5, 0);
-  }, [camera, size.width, size.height, width]);
+    const distW = width / 2 / Math.tan(halfHFov);
+    const distH =
+      ((depth * Math.cos(ELEVATION)) / 2 +
+        (maxH * Math.sin(ELEVATION)) / 2 +
+        0.35) /
+      Math.tan(halfVFov);
+    const dist = Math.max(distW, distH) / 0.92;
+    camera.position.set(
+      dist * Math.cos(ELEVATION) * Math.sin(AZIMUTH),
+      0.3 + dist * Math.sin(ELEVATION),
+      dist * Math.cos(ELEVATION) * Math.cos(AZIMUTH),
+    );
+    camera.lookAt(0, 0.3, 0);
+  }, [camera, size.width, size.height, width, depth, maxH]);
+  return null;
+}
+
+/** 波浪生长动画：逐列延迟 + easeOutCubic，缩放/位移每帧直接写进实例 */
+function TilesAnimator({
+  tiles,
+  refs,
+  start,
+}: {
+  tiles: Tile[];
+  refs: React.RefObject<(Group | null)[]>;
+  start: React.RefObject<number>;
+}) {
+  useFrame(() => {
+    const t = performance.now() / 1000 - start.current;
+    for (let i = 0; i < tiles.length; i += 1) {
+      const obj = refs.current[i];
+      if (!obj) continue;
+      const { h, col } = tiles[i];
+      const p = Math.min(Math.max((t - col * STAGGER) / RISE, 0), 1);
+      const e = 1 - (1 - p) ** 3;
+      const hh = Math.max(h * e, 0.002);
+      // 几何体挤出轴是局部 Z（实例绕 X 转了 -90°，局部 Z 即世界 Y 高度）
+      obj.scale.set(1, 1, hh);
+      obj.position.y = hh / 2;
+    }
+  });
   return null;
 }
 
@@ -44,7 +120,11 @@ const UsageHeatmap3D: FC<{
   days: UsageStatsDay[];
   granularity: HeatGranularity;
 }> = ({ days, granularity }) => {
-  const grid = useMemo(() => buildHeatGrid(days, granularity), [days, granularity]);
+  const weeks = useMemo(() => adaptiveWeeks(days), [days]);
+  const grid = useMemo(
+    () => buildHeatGrid(days, granularity, weeks),
+    [days, granularity, weeks],
+  );
   const [hover, setHover] = useState<HeatCell | null>(null);
   const dark = useHtmlDark();
 
@@ -52,69 +132,80 @@ const UsageHeatmap3D: FC<{
   const depth = ROWS * SPACING;
   const halfW = width / 2;
   const halfD = depth / 2;
-  const fitDist = Math.max(24, width * 0.55);
+  const fitDist = Math.max(10, width * 0.6);
 
-  // 只有活跃日出柱子（空白日交给底部线框网格）
-  const activeCells = useMemo(
-    () => grid.cells.filter((c) => c.ratio > 0),
-    [grid],
+  const tiles = useMemo<Tile[]>(
+    () =>
+      grid.cells.map((c) => ({
+        ...c,
+        x: c.col * SPACING - halfW + SPACING / 2,
+        z: c.row * SPACING - halfD + SPACING / 2,
+        h: c.ratio > 0 ? ACTIVE_BASE + c.ratio * ACTIVE_RISE : INACTIVE_H,
+      })),
+    [grid, halfW, halfD],
   );
 
-  // 底部线框网格：列边界 (cols+1) 条 + 行边界 8 条，铺出空白日的格子
-  const floorLines = useMemo(() => {
-    const pts: number[] = [];
-    for (let i = 0; i <= grid.cols; i += 1) {
-      const x = i * SPACING - halfW;
-      pts.push(x, 0, -halfD, x, 0, halfD);
-    }
-    for (let j = 0; j <= ROWS; j += 1) {
-      const z = j * SPACING - halfD;
-      pts.push(-halfW, 0, z, halfW, 0, z);
-    }
-    return new Float32Array(pts);
-  }, [grid.cols, halfW, halfD]);
+  // 相机按实际最高瓦片拟合（数据少时不必为理论最大值留白）
+  const maxTileH = useMemo(
+    () => tiles.reduce((m, t) => Math.max(m, t.h), INACTIVE_H),
+    [tiles],
+  );
 
-  const gridColor = dark ? "#2f2f36" : "#e0e0e4";
+  const refs = useRef<(Group | null)[]>([]);
+  // ssr:false 保证客户端渲染；初值即挂载时刻，避免首帧在 effect 前跑完动画
+  const start = useRef(performance.now() / 1000);
+  useEffect(() => {
+    start.current = performance.now() / 1000;
+  }, [grid]);
+
+  const emptyColor = dark ? "#2b2b33" : "#e8e8ee";
 
   return (
-    <div className="h-72 w-full">
+    <div className="h-80 w-full">
       <Canvas camera={{ fov: FOV }} dpr={[1, 2]}>
-        <CameraRig width={width} />
-        <ambientLight intensity={0.9} />
-        <directionalLight position={[8, 14, 6]} intensity={1.5} />
-        {activeCells.length > 0 && (
-          <Instances range={activeCells.length} limit={activeCells.length}>
-            <boxGeometry args={[SPACING * 0.92, 1, SPACING * 0.92]} />
-            <meshStandardMaterial roughness={0.45} />
-            {activeCells.map((cell) => {
-              const h = 0.08 + cell.ratio * MAX_HEIGHT;
-              return (
-                <Instance
-                  key={cell.date}
-                  position={[
-                    cell.col * SPACING - halfW + SPACING / 2,
-                    h / 2,
-                    cell.row * SPACING - halfD + SPACING / 2,
-                  ]}
-                  scale={[1, h, 1]}
-                  color={heatColor(cell.ratio)}
-                  onPointerOver={(e) => {
-                    e.stopPropagation();
-                    setHover(cell);
-                  }}
-                  onPointerOut={() =>
-                    setHover((cur) => (cur?.date === cell.date ? null : cur))
-                  }
-                />
-              );
-            })}
-          </Instances>
-        )}
+        <CameraRig width={width} depth={depth} maxH={maxTileH} />
+        <ambientLight intensity={1.0} />
+        <directionalLight position={[6, 12, 8]} intensity={1.1} />
+        <TilesAnimator tiles={tiles} refs={refs} start={start} />
+        <Instances range={tiles.length} limit={tiles.length}>
+          <RoundedBoxGeometry
+            args={[TILE, TILE, 1]}
+            radius={TILE_RADIUS}
+            smoothness={4}
+            bevelSegments={3}
+          />
+          <meshStandardMaterial roughness={0.5} />
+          {tiles.map((tile, i) => {
+            const base = tile.ratio > 0 ? heatColor(tile.ratio) : emptyColor;
+            return (
+              <Instance
+                key={tile.date}
+                ref={(o) => {
+                  // drei 的 Instance ref 类型声明解析为 unknown，运行时即 PositionMesh（Group 子类）
+                  refs.current[i] = o as Group | null;
+                }}
+                position={[tile.x, 0.001, tile.z]}
+                rotation={[-Math.PI / 2, 0, 0]}
+                scale={[1, 1, 0.002]}
+                color={hover?.date === tile.date ? lighten(base, 0.4) : base}
+                onPointerOver={(e) => {
+                  e.stopPropagation();
+                  setHover(tile);
+                }}
+                onPointerOut={() =>
+                  setHover((cur) => (cur?.date === tile.date ? null : cur))
+                }
+              />
+            );
+          })}
+        </Instances>
         {hover && (
           <Html
             position={[
               hover.col * SPACING - halfW + SPACING / 2,
-              0.08 + hover.ratio * MAX_HEIGHT + 0.45,
+              (hover.ratio > 0
+                ? ACTIVE_BASE + hover.ratio * ACTIVE_RISE
+                : INACTIVE_H) + 0.35,
               hover.row * SPACING - halfD + SPACING / 2,
             ]}
             center
@@ -129,18 +220,12 @@ const UsageHeatmap3D: FC<{
             </div>
           </Html>
         )}
-        <lineSegments>
-          <bufferGeometry>
-            <bufferAttribute attach="attributes-position" args={[floorLines, 3]} />
-          </bufferGeometry>
-          <lineBasicMaterial color={gridColor} />
-        </lineSegments>
         <OrbitControls
           enablePan={false}
-          minDistance={fitDist * 0.3}
+          minDistance={fitDist * 0.4}
           maxDistance={fitDist * 1.8}
           maxPolarAngle={Math.PI / 2.05}
-          target={[0, 0.5, 0]}
+          target={[0, 0.3, 0]}
         />
       </Canvas>
     </div>

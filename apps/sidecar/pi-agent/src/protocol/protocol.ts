@@ -38,6 +38,16 @@
  *   { "type": "queue_pop", "id", "threadId"?, "sessionId"? } → { id, type: "queue_popped", threadId, popped }
  *       弹出队首交由前端重发（前端接力泵用；仅线程空闲且无串行链节时弹出，
  *       否则 popped 为 null——链节仍在，泵转而在跑轮探测重挂）
+ *   { "type": "optimize_prompt", "id", "threadId"?, "sessionId"?, "jobId", "text" }
+ *       → { id, type: "prompt_optimized", jobId, text, chipCount, model }
+ *       提示词优化（composer 的优化按钮）：用会话当前模型发一次独立 one-shot 改写草稿，
+ *       结果由前端回填输入框；芯片（`:skill[..]{..}` / `:agent[..]{..}`）经占位符掩码后
+ *       表驱动还原，绝不采纳模型改写的芯片文本（见 sessions/prompt-optimize.ts）。
+ *       应答**晚于命令返回**：几秒级 provider 请求不占 mgmt 串行队列，handler 校验派活
+ *       即返回，结果用同一 reqId 补发（Rust pending oneshot 按 id 配对、无超时）
+ *   { "type": "optimize_cancel", "id", "jobId" }              → { id, type: "prompt_optimize_cancel", jobId }
+ *       中止在飞优化：abort provider 请求；被中止任务另按其原 reqId 回
+ *       { id, type: "prompt_optimize_cancelled", jobId }（优化命令的应答帧二选一）
  *   prompt 排队（prompt-queue.ts）：队列按线程隔离，线程内上一轮未结束时到达的
  *       prompt 进该线程 FIFO 队列（多线程并行互不阻塞）；每次变更向该线程活跃
  *       请求广播 { chunk: { type: "data-queue-state", data: 全量快照 } }（前端
@@ -53,9 +63,11 @@
  *       record = { agentName, description?, status, startedAt, completedAt?, turns, toolCalls, report? }，
  *       items = SubagentActivityItem[]（见 types.ts）；记录不存在（重启/被清理）回 error
  *   { "type": "new_session", "id", "threadId", "cwd" }        → { id, type: "session", sessionId, threadId }
- *   { "type": "fork_session", "id", "sessionId" }             → { id, type: "forked", sessionId: <新会话> }
+ *   { "type": "fork_session", "id", "sessionId", "upToSeq"? } → { id, type: "forked", sessionId: <新会话> }
  *       分支对话：把源会话转录复制到全新 sessionId（seq 沿用、header 重写），
- *       索引行标题加「（分支）」后缀；与源会话此后再无关联
+ *       索引行标题加「（分支）」后缀；与源会话此后再无关联。可选 upToSeq =
+ *       位置分叉（消息气泡「分叉会话」）：只复制该转录 seq 及之前的行，其后
+ *       仅延展同回合收尾行（非用户行/自动续跑注入行），遇真正的用户输入即止
  *   { "type": "thread_snapshot", "id", "sessionId" }         → { id, type: "thread_snapshot", snapshot }
  *       PiClient 契约快照（react-pi 迁移）：JSONL 转录 → { metadata, messages, hostUiRequests?, seq?, lastError? }；
  *       messages 为 pi-ai 原生 agent 行直出（压缩检查点行重建为 compactionSummary 消息），
@@ -104,6 +116,8 @@
  *   { "type": "set_memory", "id", "settings" }                → { id, type: "memory", settings }（落 SQLite kv + 活动会话系统提示词热替换，同 personalization）
  *   { "type": "get_browser", "id" }                           → { id, type: "browser", settings }（浏览器驱动开关：browser_* 工具是否可用）
  *   { "type": "set_browser", "id", "settings" }               → { id, type: "browser", settings }（落 SQLite kv 即生效，工具 execute 实时门控）
+ *   { "type": "get_mirror", "id" }                            → { id, type: "mirror", settings }（访问加速：总开关/GitHub 加速前缀/git insteadOf 子开关/自定义规则）
+ *   { "type": "set_mirror", "id", "settings" }                → { id, type: "mirror", settings }（落 SQLite kv 即生效，WebFetch 与 bash 的 git 注入每次调用实时读）
  *   { "type": "get_imagegen", "id" }                           → { id, type: "imagegen", settings }（文生图：总开关/默认生图模型 provider+modelId/默认尺寸）
  *   { "type": "set_imagegen", "id", "settings" }               → { id, type: "imagegen", settings }（落 SQLite kv 即生效，generate_image execute 实时门控）
  *   { "type": "list_secrets", "id" }                          → { id, type: "secrets", entries, enabled, bindings }（密钥清单**只回名字与掩码**，明文落 Rust 侧密文存储，无 RPC 出口）
@@ -123,6 +137,18 @@
  *       读单个记忆文件（相对记忆目录，允许 daily/...；路径越界回 missing）；设置页点开文件预览/编辑用
  *   { "type": "write_memory_file", "id", "scope", "cwd"?, "file", "content" } → { id, type: "memory_file_saved", scope, file, bytes }
  *       保存设置页编辑的记忆文件（整体覆盖，根级 .md），成功后热替换活动会话提示词
+ *   { "type": "list_memory_versions", "id", "scope", "cwd"?, "file" } → { id, type: "memory_versions", file, versions: [{ id, ts, source, bytes }] }
+ *       该文件的版本史清单（最新在前；来源 page/agent/external/restore/delete，见 agent/memory.ts）
+ *   { "type": "read_memory_version", "id", "scope", "cwd"?, "file", "versionId" } → { id, type: "memory_version", file, versionId, content }
+ *   { "type": "restore_memory_version", "id", "scope", "cwd"?, "file", "versionId" } → { id, type: "memory_version_restored", scope, file, bytes, versionId }
+ *       把该版内容写回（来源 restore，写回本身也进历史）并热替换活动会话提示词
+ *   { "type": "delete_memory_version", "id", "scope", "cwd"?, "file", "versionId" } → { id, type: "memory_version_deleted", file, versionId }
+ *   { "type": "trash_memory_file", "id", "scope", "cwd"?, "file" } → { id, type: "memory_file_trashed", scope, file, trashId }
+ *       删除 = 移入 <记忆目录>/.trash（可恢复）；删除前留一版历史，删后热替换活动会话提示词
+ *   { "type": "list_memory_trash", "id", "scope", "cwd"? } → { id, type: "memory_trash", scope, entries: [{ id, name, ts, bytes }] }
+ *   { "type": "restore_memory_trash", "id", "scope", "cwd"?, "trashId" } → { id, type: "memory_trash_restored", scope, file, trashId }（同名占用即拒）
+ *   { "type": "delete_memory_trash", "id", "scope", "cwd"?, "trashId" } → { id, type: "memory_trash_deleted", scope, trashId }（连同该文件的版本史）
+ *   { "type": "empty_memory_trash", "id", "scope", "cwd"? } → { id, type: "memory_trash_emptied", scope, removed }
  *   { "type": "list_subagents", "id", "cwd"? }                → { id, type: "subagents", agents, workspaceCwd, diagnostics }
  *   { "type": "save_subagent", "id", "scope", "cwd"?, ("definition"|"raw"), "name"? } → 校验后写 <app_data>/subagents 或 <cwd>/.kova/subagents 的 YAML + 热重载 → 同款 subagents 应答（name=编辑前原名，改名时清旧文件）
  *   { "type": "delete_subagent", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 subagents 应答（内置不可删）
@@ -327,6 +353,7 @@ import { handlers as designMdHandlers } from "./handlers/design-md";
 import { handlers as mcpHandlers } from "./handlers/mcp";
 import { handlers as providerHandlers } from "./handlers/providers";
 import { handlers as interactiveHandlers } from "./handlers/interactive";
+import { handlers as optimizeHandlers } from "./handlers/optimize";
 import type { CommandHandler } from "./command";
 
 /** 启动初始化闸门：模型目录就绪（自定义提供商注册/覆盖合并）之前到达的命令先缓冲，
@@ -339,10 +366,11 @@ export function setInitGate(gate: Promise<void>): void {
   initGate = gate;
 }
 
-/** 命令注册表：全部非 prompt 命令按域登记（97 个命令，见 handlers/ 各域模块） */
+/** 命令注册表：全部非 prompt 命令按域登记（99 个命令，见 handlers/ 各域模块） */
 const registry: Record<string, CommandHandler> = {
   ...lifecycleHandlers,
   ...queueHandlers,
+  ...optimizeHandlers,
   ...sessionHandlers,
   ...modelHandlers,
   ...preferenceHandlers,

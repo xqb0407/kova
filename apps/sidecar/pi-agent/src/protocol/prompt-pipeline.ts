@@ -112,15 +112,26 @@ export type MidTurnCompactionHook = NonNullable<Agent["prepareNextTurnWithContex
  *  （agent-loop.js failTruncatedToolCalls；跨包耦合只认短语，升级时同步） */
 const TRUNCATED_TOOL_CALL_MARKER = "hit the output token limit";
 
+/** 宿主 RPC 侧的失败信号（storage/hostdb/transport.ts）：整份 payload 的读写往返
+ *  超时或中止，与截断同属「这次调用太大」。**以前只认截断文案，这类失败拿不到
+ *  任何指引，模型只会原样重发同一个大 write → 一直失败、看起来没有自愈。**
+ *  超时文案含 "host_query timeout:"，中止文案以 "Operation aborted" 开头。 */
+const HOST_RPC_FAILURE_MARKERS = ["host_query timeout:", "Operation aborted"];
+
+/** 需要「拆开写」指引的工具调用错误：输出截断 或 宿主 RPC 往返失败 */
+const isOversizedCallError = (text: string): boolean =>
+  text.includes(TRUNCATED_TOOL_CALL_MARKER) ||
+  HOST_RPC_FAILURE_MARKERS.some((m) => text.includes(m));
+
 const TRUNCATED_TOOL_CALL_HINT =
-  "\n\nHint: do NOT simply re-issue the same oversized call — it will hit the limit again. " +
+  "\n\nHint: do NOT simply re-issue the same oversized call — it will fail the same way. " +
   "For write, split the file into parts: write the first part, then append the rest with " +
   "edit calls (match the file's current tail as old_string). Keep each response small.";
 
-/** 截断错误自愈增强：输出撞限被 core 标记失败的 toolCall，原错误文案只让模型
- *  「重发完整参数」——同样的大 write 重发还会再撞限，弱模型会原地打转。在
- *  下一轮请求前就地给这类错误 toolResult 附加拆分写入指引。
- *  只改内存上下文（转录已按原文案落盘，历史保真；自愈指引只需紧接的下一轮
+/** 超大调用自愈增强：输出撞限（core 标记）或宿主 RPC 往返失败（超时/中止）的
+ *  toolCall，原错误文案只让模型「重发完整参数」——同一个大 write 重发还会照样
+ *  失败，弱模型会原地打转。在下一轮请求前就地给这类错误 toolResult 附加拆分写入
+ *  指引。只改内存上下文（转录已按原文案落盘，历史保真；自愈指引只需紧接的下一轮
  *  生效，刷新重建后消失无妨）。幂等：按 hint 特征短语防重复追加。 */
 export function augmentTruncatedToolCallErrors(messages: unknown[]): void {
   for (const m of messages) {
@@ -131,7 +142,7 @@ export function augmentTruncatedToolCallErrors(messages: unknown[]): void {
       if (
         block.type === "text" &&
         typeof block.text === "string" &&
-        block.text.includes(TRUNCATED_TOOL_CALL_MARKER) &&
+        isOversizedCallError(block.text) &&
         !block.text.includes("do NOT simply re-issue")
       ) {
         block.text += TRUNCATED_TOOL_CALL_HINT;
@@ -505,6 +516,7 @@ async function runTurnBody(
     composeModeSystemPrompt(
       run.mode,
       run.cwd,
+      run.appMode,
       run.agent.state.model,
       run.designTheme,
     ),

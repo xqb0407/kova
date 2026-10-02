@@ -3,13 +3,20 @@
 import { INTERNAL, unstable_useComposerInput, unstable_useTriggerPopoverAriaProps, unstable_useTriggerPopoverRootContextOptional, useAui, useAuiState } from "@assistant-ui/react";
 import { unstable_defaultDirectiveFormatter, type Unstable_TriggerItem } from "@assistant-ui/core";
 import { defaultKeymap, history } from "@codemirror/commands";
-import { Compartment, EditorState, Prec, RangeSetBuilder, Transaction, type RangeSet } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, placeholder as cmPlaceholder, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { Compartment, EditorState, Prec, Transaction } from "@codemirror/state";
+import { EditorView, keymap, placeholder as cmPlaceholder } from "@codemirror/view";
 import { useEffect, useRef, type FC } from "react";
 import { toast } from "@/components/ui/toast";
 import { extractDataUriImageFiles, validatePromptFile } from "@/lib/attachments/prompt-attachments";
 import { addSteeredBadge } from "@/lib/pi/pi-steer-intent";
 import { notifyNoModelSelected, useModelGate } from "@/lib/pi/pi-model-gate";
+import {
+  buildTriggerInsert,
+  detectTriggerLocal,
+  directiveChipPlugin,
+  directiveInputTheme,
+  WHITESPACE_RE,
+} from "./cm-directive";
 
 /**
  * CodeMirror 6 版 composer 输入（替代 LexicalComposerInput）：
@@ -21,21 +28,30 @@ import { notifyNoModelSelected, useModelGate } from "@/lib/pi/pi-model-gate";
  *   （atomicRanges 保证光标整体跳过、Backspace 整体删除）。
  * - / 指令（Action 行为）无需 override：库剥离触发文本后回调 onExecute。
  * - 外部 setText（技能/工具前置引导文本、排队条、引用）经最小前后缀 diff 回写
- *   CM 文档，光标按映射保留；组合期间跳过外部写入（compositionend 后对账）。
+ *   CM 文档，光标按映射保留；组合期间双向暂停（外部写入跳过、文档变更不写
+ *   store），compositionend 时把 CM 文档推回 store 对账。
  */
 type CmComposerInputProps = {
   /** Controls how Enter submits. @default "enter" */
   submitMode?: "enter" | "ctrlEnter" | "none";
   /** Whether Escape cancels editing. @default true */
   cancelOnEscape?: boolean;
+  /**
+   * 独立模式（自动化弹窗等非会话宿主）：Enter 只换行、Escape 不取消本轮，
+   * 提交交给宿主自己的按钮；其余（芯片插入、触发菜单）与会话内完全一致。
+   */
+  standalone?: boolean;
+  /**
+   * 优化进行中等外部锁定态：输入框不可编辑、Enter/Escape 一律吞掉。
+   * 与 isDisabled 不同——只掐键盘提交/编辑，不打断组合输入以外的库状态，
+   * 遮罩期间发送路径（s.send 是 JS 直调、不受 contenteditable 约束）也在
+   * 这里拦下。
+   */
+  blocked?: boolean;
   placeholder?: string;
   autoFocus?: boolean;
   className?: string;
 };
-
-/** 默认指令 formatter 的序列化格式：:type[label]{name=id}（id=label 时省略） */
-const DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/gu;
-const WHITESPACE_RE = /\s/u;
 
 /**
  * 外部 → 输入框的文本插入桥。
@@ -50,6 +66,16 @@ type ComposerViewHandle = {
   hasFocus: () => boolean;
 };
 const composerViews = new Set<ComposerViewHandle>();
+
+/**
+ * 把焦点还给输入框（提示词优化回填后用）：优先已持有焦点的那个，
+ * 否则取最早登记的实例（主 composer 通常先挂载）。
+ */
+export function focusComposer(): void {
+  const handles = [...composerViews];
+  const target = handles.find((h) => h.hasFocus()) ?? handles[0];
+  target?.view.focus();
+}
 
 /** 返回是否找到可插入的输入框（false = 输入框未挂载，调用方应放弃本次插入） */
 export function insertIntoComposer(text: string): boolean {
@@ -75,98 +101,11 @@ export function insertIntoComposer(text: string): boolean {
 }
 
 
-/** lucide wrench 图标（芯片左侧小扳手，非 command 类型显示） */
-const WRENCH_SVG =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>';
-
-class ChipWidget extends WidgetType {
-  constructor(
-    readonly directiveType: string,
-    readonly label: string,
-    readonly id: string,
-  ) {
-    super();
-  }
-  override eq(other: ChipWidget) {
-    return other.directiveType === this.directiveType && other.label === this.label && other.id === this.id;
-  }
-  override toDOM() {
-    const wrap = document.createElement("span");
-    wrap.className = "aui-directive-chip";
-    wrap.setAttribute("data-directive-type", this.directiveType);
-    wrap.setAttribute("data-directive-id", this.id);
-    if (this.directiveType !== "command") {
-      const icon = document.createElement("span");
-      icon.className = "aui-directive-chip-icon";
-      icon.innerHTML = WRENCH_SVG;
-      wrap.appendChild(icon);
-    }
-    const label = document.createElement("span");
-    label.className = "aui-directive-chip-label";
-    label.textContent = this.label;
-    wrap.appendChild(label);
-    return wrap;
-  }
-  override ignoreEvent() {
-    return false;
-  }
-}
-
-/** 扫描文档中的指令 token → 芯片替换 decoration；注册为 atomicRanges 使芯片原子化 */
-function buildChipDecorations(view: EditorView): RangeSet<Decoration> {
-  const builder = new RangeSetBuilder<Decoration>();
-  const text = view.state.doc.toString();
-  DIRECTIVE_RE.lastIndex = 0;
-  for (const match of text.matchAll(DIRECTIVE_RE)) {
-    const from = match.index!;
-    const to = from + match[0].length;
-    builder.add(from, to, Decoration.replace({ widget: new ChipWidget(match[1]!, match[2]!, match[3] ?? match[2]!) }));
-  }
-  return builder.finish();
-}
-
-const chipPlugin = ViewPlugin.fromClass(
-  class {
-    decorations: DecorationSet;
-    constructor(view: EditorView) {
-      this.decorations = buildChipDecorations(view);
-    }
-    update(update: ViewUpdate) {
-      if (update.docChanged) this.decorations = buildChipDecorations(update.view);
-    }
-  },
-  {
-    // 声明 decorations 才会让 CM 绘制替换 widget；atomicRanges 仅负责原子化
-    decorations: (v) => v.decorations,
-    provide: (plugin) =>
-      EditorView.atomicRanges.of((view) => view.plugin(plugin)?.decorations ?? Decoration.none),
-  },
-);
-
-/** 复刻库内 detectTrigger 的默认回溯：从光标前回退到 triggerChar（空白终止，前置非空白跳过） */
-function detectTriggerLocal(text: string, triggerChar: string, cursor: number): { offset: number; endOffset: number } | null {
-  const upTo = text.slice(0, cursor);
-  for (let i = upTo.length - 1; i >= 0; i--) {
-    if (WHITESPACE_RE.test(upTo[i]!)) return null;
-    if (upTo.startsWith(triggerChar, i)) {
-      if (i > 0 && !WHITESPACE_RE.test(upTo[i - 1]!)) continue;
-      return { offset: i, endOffset: cursor };
-    }
-  }
-  return null;
-}
-
-const baseTheme = EditorView.theme({
-  "&": { backgroundColor: "transparent", height: "auto", fontSize: "inherit" },
-  "&.cm-editor.cm-focused": { outline: "none" },
-  ".cm-scroller": { overflow: "auto", fontFamily: "inherit", lineHeight: "inherit" },
-  ".cm-content": { padding: "0", margin: "0", minHeight: "1lh", caretColor: "inherit" },
-  ".cm-line": { padding: "0" },
-});
-
 export const CmComposerInput: FC<CmComposerInputProps> = ({
   submitMode = "enter",
   cancelOnEscape = true,
+  standalone = false,
+  blocked = false,
   placeholder,
   autoFocus,
   className,
@@ -189,8 +128,8 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
   const editableComp = useRef(new Compartment()).current;
 
   // 闭包镜像：view 创建后 handler 里读最新 props/runtime（避免重建 view）
-  const latestRef = useRef({ submitMode, cancelOnEscape, canSend, aui, registry, setText, send, threadId, noModel, noModelHint });
-  latestRef.current = { submitMode, cancelOnEscape, canSend, aui, registry, setText, send, threadId, noModel, noModelHint };
+  const latestRef = useRef({ submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint });
+  latestRef.current = { submitMode, cancelOnEscape, standalone, blocked, canSend, aui, registry, setText, send, threadId, noModel, noModelHint };
   const valueRef = useRef(value);
   valueRef.current = value;
   const placeholderRef = useRef(placeholder);
@@ -249,13 +188,19 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
         composingEnterSeen = false;
         return true;
       }
+      // 外部锁定态（提示词优化进行中）：Enter（换行/steer/发送全变体）与
+      // Escape（取消 composer）一律吞掉——s.send 是 JS 直调，contenteditable
+      // 层的 editable=false 拦不住它
+      if (s.blocked && (event.key === "Enter" || event.key === "Escape")) {
+        return true;
+      }
       // 弹层打开时导航/选中/关闭优先（与 textarea 路径同序）
       if (s.registry) {
         for (const plugin of s.registry.getPlugins()) {
           if (plugin.handleKeyDown(event)) return true;
         }
       }
-      if (event.key === "Escape" && s.cancelOnEscape) {
+      if (event.key === "Escape" && s.cancelOnEscape && !s.standalone) {
         const composer = s.aui.composer;
         if (composer.getState().canCancel) {
           composer.cancel();
@@ -265,6 +210,8 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
         return false;
       }
       if (event.key === "Enter") {
+        // 独立宿主（自动化弹窗等）：Enter 只换行，提交交给宿主自己的按钮
+        if (s.standalone) return false;
         const thread = s.aui.thread.getState();
         // 模型不可用：所有提交路径（按提交模式 / steer）在有草稿时一律拦下并
         // toast 说明原因；纯 Shift+Enter 是换行语义，照常放行。拦下的按键照吞
@@ -318,13 +265,13 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
       state: EditorState.create({
         doc: valueRef.current,
         extensions: [
-          baseTheme,
+          directiveInputTheme,
           history(),
           // Tab 不做缩进（交还浏览器默认移动焦点）；弹层打开时 Tab 选中走插件层
           keymap.of(defaultKeymap.filter((b) => b.key !== "Tab" && b.key !== "Shift-Tab")),
           Prec.highest(keymap.of([{ any: (_view, event) => anyKeyHandler(event) }])),
           EditorView.lineWrapping,
-          chipPlugin,
+          directiveChipPlugin,
           placeholderComp.of(cmPlaceholder(placeholderRef.current ?? "")),
           EditorView.contentAttributes.of({ spellcheck: "false" }),
           ariaComp.of(EditorView.contentAttributes.of({})),
@@ -332,7 +279,16 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
           EditorView.updateListener.of((update) => {
             if (destroyed) return;
             if (update.docChanged) {
-              latestRef.current.setText(update.state.doc.toString());
+              // 组合期间不写 store：拼音预编辑每键都出文档变更，写回会让整棵
+              // composer 子树重渲染、拖卡输入法（compositionend 时补发一次）。
+              // 远端回写（reconcile 自己发起的）不再回声，省掉一轮
+              // setText → 重渲染 → reconcile 的往返。
+              const remote = update.transactions.some((tr) =>
+                tr.annotation(Transaction.remote),
+              );
+              if (!update.view.composing && !remote) {
+                latestRef.current.setText(update.state.doc.toString());
+              }
             }
             // 组合期间不上报光标（与 textarea 路径一致，避免弹层随拼音闪动）
             if (!update.view.composing) {
@@ -395,8 +351,13 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
             },
             compositionend: () => {
               compositionEndedAt = performance.now();
-              // 组合期被跳过的外部写入在此对账（微任务避免与更新循环交叠）
-              queueMicrotask(() => reconcile(valueRef.current));
+              // 组合期双向都暂停（外部写入跳过、文档变更不写 store），这里把 CM 文档
+              // 推回 store 对账。**不能反过来**用 store 值 reconcile：组合期 store 是
+              // 陈旧的，那样会把刚输入的中文整段冲掉（微任务避免与更新循环交叠）。
+              queueMicrotask(() => {
+                const v = viewRef.current;
+                if (!destroyed && v) latestRef.current.setText(v.state.doc.toString());
+              });
               return false;
             },
           }),
@@ -436,12 +397,14 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
     });
   }, [aria, ariaComp]);
 
-  // 禁用态 → editable
+  // 禁用/锁定态 → editable（blocked = 优化进行中；只锁编辑与提交，不打断库状态）
   useEffect(() => {
     viewRef.current?.dispatch({
-      effects: editableComp.reconfigure(EditorView.editable.of(!isDisabled)),
+      effects: editableComp.reconfigure(
+        EditorView.editable.of(!isDisabled && !blocked),
+      ),
     });
-  }, [isDisabled, editableComp]);
+  }, [isDisabled, blocked, editableComp]);
 
   // placeholder 变更（当前各调用点为静态，防御性支持）
   useEffect(() => {
@@ -498,13 +461,10 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
           const match = detectTriggerLocal(text, trigger.char, head);
           if (!match) return false;
           const insert = formatter.serialize(item);
-          const rest = (text.slice(0, match.offset) + text.slice(match.endOffset)).replace(/^\s+/, "");
-          const full = rest ? `${insert} ${rest}` : insert;
+          const { replace, caret } = buildTriggerInsert(text, match, insert);
           view.dispatch({
-            changes: { from: match.offset, to: match.endOffset, insert: full },
-            selection: {
-              anchor: match.offset + insert.length + (rest ? 1 : 0),
-            },
+            changes: { from: match.offset, to: match.endOffset, insert: replace },
+            selection: { anchor: caret },
             annotations: Transaction.userEvent.of("input.complete"),
           });
           return true;

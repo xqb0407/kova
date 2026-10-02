@@ -162,7 +162,7 @@ export const ModePicker: FC = () => {
             disabled={busy}
             title={current.description}
             className={cn(
-              "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors disabled:opacity-50",
+              "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
               // 高危模式选中时用警告色提醒（覆盖常规/计划态文字色）
               current.warning
                 ? "text-amber-600 dark:text-amber-400"
@@ -176,7 +176,8 @@ export const ModePicker: FC = () => {
             ) : (
               <CurrentIcon className="size-3.5 shrink-0" />
             )}
-            <span>{current.label}</span>
+            {/* 窄栏只留图标：档位名收进 title（悬停可见），图标形状 + 警告色已能区分五档 */}
+            <span className="@max-2xl:hidden">{current.label}</span>
           </button>
         }
       />

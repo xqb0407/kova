@@ -4,16 +4,32 @@ import { useCallback, useEffect, useRef, useState, type FC } from "react";
 import dynamic from "next/dynamic";
 import {
   ChevronDownIcon,
+  ChevronRightIcon,
   FileTextIcon,
   FolderOpenIcon,
+  HistoryIcon,
+  Loader2Icon,
   RefreshCwIcon,
+  RotateCcwIcon,
+  Trash2Icon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { toast } from "@/components/ui/toast";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -29,17 +45,30 @@ import {
   useWorkspaceRecents,
 } from "@/lib/workspace/workspace-store";
 import {
+  deleteMemoryTrash,
+  emptyMemoryTrash,
   listMemoryFiles,
+  listMemoryTrash,
   readMemoryEntry,
+  restoreMemoryTrash,
   saveMemoryConfig,
+  trashMemoryEntry,
   useMemoryConfig,
   writeMemoryEntry,
   type MemoryConfig,
 } from "@/lib/memory/memory";
-import type { PiMemoryFileEntry, PiMemoryScopeState } from "@/lib/pi/pi-bridge";
+import type {
+  PiMemoryFileEntry,
+  PiMemoryScopeState,
+  PiMemoryTrashEntry,
+} from "@/lib/pi/pi-bridge";
 
-/* 重依赖（CodeMirror / Streamdown）走异步分块：点开文件才拉取，不进设置页首屏包 */
+/* 重依赖（CodeMirror / Streamdown）走异步分块：点开才拉取，不进设置页首屏包 */
 const MarkdownEditDialog = dynamic(() => import("./markdown-edit-dialog"), {
+  ssr: false,
+  loading: () => null,
+});
+const MemoryHistoryDialog = dynamic(() => import("./memory-history-dialog"), {
   ssr: false,
   loading: () => null,
 });
@@ -145,6 +174,11 @@ const MemoryFileBrowser: FC<{
   onToggleFile: (name: string, on: boolean) => void;
   onOpenFile: (name: string) => void;
   openingFile: string | null;
+  /** 打开版本历史 / 移入回收站（行内动作，按钮各自 stopPropagation 不触发行点击） */
+  onOpenHistory: (name: string) => void;
+  onDeleteFile: (name: string) => void;
+  /** 行内操作进行中的文件名（禁用按钮防连点） */
+  rowBusy: string | null;
   // 工作区目录切换（仅工作区页签显示）：查看来源可与主界面当前工作区解耦
   following: boolean;
   followLabel: string | null;
@@ -168,6 +202,9 @@ const MemoryFileBrowser: FC<{
     onToggleFile,
     onOpenFile,
     openingFile,
+    onOpenHistory,
+    onDeleteFile,
+    rowBusy,
     following,
     followLabel,
     cwdCandidates,
@@ -278,7 +315,32 @@ const MemoryFileBrowser: FC<{
                   <div className="text-muted-foreground text-xs">{formatTime(f.mtime)}</div>
                 )}
               </div>
-              <div onClick={(e) => e.stopPropagation()}>
+              <div
+                className="flex shrink-0 items-center gap-0.5"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  title="版本历史"
+                  disabled={rowBusy === f.name}
+                  onClick={() => onOpenHistory(f.name)}
+                  className="text-muted-foreground hover:text-foreground hover:bg-muted flex size-7 items-center justify-center rounded-md transition-colors disabled:opacity-50"
+                >
+                  <HistoryIcon className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  title="删除（移入回收站）"
+                  disabled={rowBusy === f.name}
+                  onClick={() => onDeleteFile(f.name)}
+                  className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex size-7 items-center justify-center rounded-md transition-colors disabled:opacity-50"
+                >
+                  {rowBusy === f.name ? (
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                  ) : (
+                    <Trash2Icon className="size-3.5" />
+                  )}
+                </button>
                 <Switch
                   size="sm"
                   checked={fileOn(f.name)}
@@ -320,6 +382,14 @@ export const MemorySettings: FC = () => {
   const [openingFile, setOpeningFile] = useState<string | null>(null);
   const [editFile, setEditFile] = useState<{ name: string; content: string } | null>(null);
   const [editOpen, setEditOpen] = useState(false);
+  // 版本历史 / 删除 / 回收站
+  const [historyFile, setHistoryFile] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [trash, setTrash] = useState<PiMemoryTrashEntry[]>([]);
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [confirmEmpty, setConfirmEmpty] = useState(false);
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+  const [trashBusy, setTrashBusy] = useState<string | null>(null);
   const latest = useRef(config);
 
   useEffect(() => {
@@ -328,11 +398,15 @@ export const MemorySettings: FC = () => {
 
   const fetchFiles = useCallback(() => {
     setRefreshing(true);
-    return listMemoryFiles(viewingCwd)
-      .then((s) => setScopes(s))
-      .catch(() => setScopes(null))
-      .finally(() => setRefreshing(false));
-  }, [viewingCwd]);
+    return Promise.all([
+      listMemoryFiles(viewingCwd)
+        .then((s) => setScopes(s))
+        .catch(() => setScopes(null)),
+      listMemoryTrash(scopeTab, viewingCwd)
+        .then((entries) => setTrash(entries))
+        .catch(() => setTrash([])),
+    ]).finally(() => setRefreshing(false));
+  }, [viewingCwd, scopeTab]);
 
   useEffect(() => {
     void fetchFiles();
@@ -401,6 +475,56 @@ export const MemorySettings: FC = () => {
       if (typeof dir === "string") setOverrideCwd(dir === workspaceCwd ? null : dir);
     } catch {
       // 非 Tauri 环境：无原生目录选择器
+    }
+  };
+
+  /** 删除 = 移入回收站（可恢复；列表与检索立刻不再看到它） */
+  const deleteFile = async (name: string) => {
+    setRowBusy(name);
+    try {
+      await trashMemoryEntry(scopeTab, viewingCwd, name);
+      toast.success(`「${name}」已移入回收站`);
+      setTrashOpen(true);
+      await fetchFiles();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "删除失败，请重试");
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  const restoreTrash = async (entry: PiMemoryTrashEntry) => {
+    setTrashBusy(entry.id);
+    try {
+      await restoreMemoryTrash(scopeTab, viewingCwd, entry.id);
+      toast.success(`已恢复「${entry.name}」`);
+      await fetchFiles();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "恢复失败，请重试");
+    } finally {
+      setTrashBusy(null);
+    }
+  };
+
+  const purgeTrash = async (entry: PiMemoryTrashEntry) => {
+    setTrashBusy(entry.id);
+    try {
+      await deleteMemoryTrash(scopeTab, viewingCwd, entry.id);
+      await fetchFiles();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "彻底删除失败，请重试");
+    } finally {
+      setTrashBusy(null);
+    }
+  };
+
+  const emptyTrash = async () => {
+    try {
+      const removed = await emptyMemoryTrash(scopeTab, viewingCwd);
+      toast.success(`已清空回收站（${removed} 项）`);
+      await fetchFiles();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "清空失败，请重试");
     }
   };
 
@@ -494,6 +618,9 @@ export const MemorySettings: FC = () => {
           onToggleFile={updateEnabledFile}
           onOpenFile={openFile}
           openingFile={openingFile}
+          onOpenHistory={setHistoryFile}
+          onDeleteFile={setConfirmDelete}
+          rowBusy={rowBusy}
           following={!overrideCwd}
           followLabel={workspaceCwd ? pathBasename(workspaceCwd) : null}
           cwdCandidates={cwdCandidates}
@@ -501,6 +628,80 @@ export const MemorySettings: FC = () => {
           onFollowCurrent={() => setOverrideCwd(null)}
           onBrowse={() => void pickBrowseDir()}
         />
+
+        {/* 回收站：删除先落这里，可恢复/彻底删除/清空（彻底删除会连版本史一起清） */}
+        {trash.length > 0 && (
+          <section className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <div className="flex items-center gap-2 px-1 py-1">
+              <button
+                type="button"
+                onClick={() => setTrashOpen((v) => !v)}
+                className="text-muted-foreground hover:text-foreground flex min-w-0 items-center gap-1.5 text-sm transition-colors"
+              >
+                {trashOpen ? (
+                  <ChevronDownIcon className="size-3.5 shrink-0" />
+                ) : (
+                  <ChevronRightIcon className="size-3.5 shrink-0" />
+                )}
+                <Trash2Icon className="size-3.5 shrink-0" />
+                回收站 · {trash.length}
+              </button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-destructive ml-auto h-7 px-2 text-xs"
+                onClick={() => setConfirmEmpty(true)}
+              >
+                清空回收站
+              </Button>
+            </div>
+            {trashOpen &&
+              trash.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex items-center gap-3 rounded-xl px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">{entry.name}</div>
+                    <div className="text-muted-foreground text-xs">
+                      删除于 {formatTime(entry.ts)}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-muted-foreground hover:text-foreground h-7 gap-1.5 px-2 text-xs"
+                      disabled={trashBusy !== null}
+                      onClick={() => void restoreTrash(entry)}
+                    >
+                      {trashBusy === entry.id ? (
+                        <Loader2Icon className="size-3.5 animate-spin" />
+                      ) : (
+                        <RotateCcwIcon className="size-3.5" />
+                      )}
+                      恢复
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-7 gap-1.5 px-2 text-xs"
+                      disabled={trashBusy !== null}
+                      onClick={() => void purgeTrash(entry)}
+                    >
+                      <Trash2Icon className="size-3.5" />
+                      彻底删除
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            {trashOpen && (
+              <div className="text-muted-foreground px-3 pb-1 text-xs">
+                「彻底删除」会连同该文件的版本历史一起清掉，无法恢复。
+              </div>
+            )}
+          </section>
+        )}
       </div>
 
       {/* 点开记忆文件：预览 / 编辑两页签；保存走整体覆盖 + 提示词热替换 */}
@@ -516,6 +717,81 @@ export const MemorySettings: FC = () => {
           onSave={saveEdit}
         />
       )}
+
+      {/* 版本历史：每次改动自动记一版，可预览/恢复/删单版 */}
+      {historyFile && (
+        <MemoryHistoryDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setHistoryFile(null);
+          }}
+          scope={scopeTab}
+          cwd={viewingCwd}
+          file={historyFile}
+          onRestored={() => void fetchFiles()}
+        />
+      )}
+
+      {/* 删除确认：删 = 移入回收站，可恢复 */}
+      <AlertDialog
+        open={confirmDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除记忆文件？</AlertDialogTitle>
+            <AlertDialogDescription>
+              {`「${confirmDelete ?? ""}」将移入回收站（${scopeTab === "global" ? "全局" : "工作区"}记忆），不再参与注入与检索；随时可以在下方回收站里恢复。`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              size="default"
+              onClick={() => {
+                const name = confirmDelete;
+                setConfirmDelete(null);
+                if (name) void deleteFile(name);
+              }}
+            >
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 清空回收站确认：彻底删除不可恢复（连版本历史一起清） */}
+      <AlertDialog
+        open={confirmEmpty}
+        onOpenChange={(open) => {
+          if (!open) setConfirmEmpty(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>清空回收站？</AlertDialogTitle>
+            <AlertDialogDescription>
+              {`将彻底删除 ${trash.length} 项及其版本历史，此操作无法撤销。`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              size="default"
+              onClick={() => {
+                setConfirmEmpty(false);
+                void emptyTrash();
+              }}
+            >
+              清空
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

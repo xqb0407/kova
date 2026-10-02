@@ -16,6 +16,9 @@
 //! 3. **进程组回收**。Chrome 会派生 GPU/Renderer/utility 一串子孙；自己起进程才拿得到
 //!    pid，才能 `killpg` 整组收掉。交给 `Browser::new` 的话 pid 拿不到（不公开），
 //!    SIGKILL 主进程后子孙可能留下、抱着 profile 锁不退出。
+//!    这条纪律要覆盖**所有**离开路径：正常/提前返回/取消之外还有 panic，
+//!    见 [`ProcGroupGuard`]；连 panic 也收不到的情况（app 被 SIGKILL、崩溃）
+//!    由冷启动清扫 [`sweep_orphans`] 下一轮兜底。
 //! 4. **不碰用户的电脑**。只读 URL，不合成输入，不截屏。
 //!
 //! 依赖说明：CDP 客户端用 `headless_chrome`（即 browser-use-rs 的底座），
@@ -199,13 +202,28 @@ fn capture_inner(
     // 登记到取消令牌：host_cancel 到达时连 Chrome 带孙进程一起收，
     // 否则 agent 中途取消会留一个后台 Chrome 跑着
     guard.attach_pid(pid);
+    // panic 兜底：`drive` 里的 CDP 客户端有自己的 lock().unwrap()，展开会跳过
+    // 下面那行显式 kill_tree，Chrome 就此活下来。RAII 让任何离开方式都收进程组
+    // （重复 kill 幂等无害）
+    let _group = ProcGroupGuard(pid);
 
-    // 从这里起的每条错误路径都必须先 kill_tree 再返回
     let result = drive(&mut child, url, profile, viewport, quality, guard);
+    // 正常收尾：必须先杀组再 wait——不杀的话 wait 会一直等 Chrome
     crate::tool_exec::kill_tree(pid);
     // 回收子进程句柄：kill 之后 wait 才会立刻返回，否则留下未 wait 的僵尸
     let _ = child.wait();
     result
+}
+
+/// spawned Chrome 的兜底回收：无论正常返回、`?` 提前返回还是 panic 展开，
+/// 离开作用域即 `killpg` 整组。正常路径本来就显式 kill，这里补的是 panic 那条
+/// （2026-10-02 留在用户机器上 3 小时的那组 9 进程孤儿，根因就是展开跳过了 kill）。
+struct ProcGroupGuard(u32);
+
+impl Drop for ProcGroupGuard {
+    fn drop(&mut self) {
+        crate::tool_exec::kill_tree(self.0);
+    }
 }
 
 /// CDP 会话主体。`child` 借来只为握手期间能发现 Chrome 提前退出。
@@ -306,6 +324,134 @@ fn read_ws_endpoint(path: &Path) -> Option<String> {
 fn encode_b64(bytes: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/* --------------------------- 遗留进程/临时目录清扫 --------------------------- */
+
+/// 进程是否存活。信号 0 不投递，只做存在性与权限检查；EPERM 也算活着
+/// （判据同单测里的存活断言，两处必须一致）
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    let out = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output();
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()),
+        Err(_) => false,
+    }
+}
+
+/// 一次性条目的名字 → 它的 owner pid。
+///
+/// 命名有两族，共用 `pi-shot-` 前缀：
+/// - `pi-shot-<owner pid>-<stamp>`：拍照的临时 profile 目录（[`capture`]），
+///   以及屏幕截图工具的临时 png/jpg（`tool_exec::handle_screenshot`）；
+/// - `pi-shot-test-*`：Rust 单测自己的目录（[`mod tests`]）——必须落空，
+///   否则清扫会去动正在跑的测试。
+///
+/// owner pid 是**起进程的那个 app**（`std::process::id()`），不是 Chrome 的
+/// pid：判「这条是不是遗留」只能靠 app 是否还活着。
+fn owner_pid_of(entry: &str) -> Option<u32> {
+    let rest = entry.strip_prefix("pi-shot-")?;
+    let (pid, _) = rest.split_once('-')?;
+    pid.parse::<u32>().ok()
+}
+
+/// 杀掉命令行里引用了该临时条目的 Chrome 主进程（整组，子孙一并收）。
+///
+/// 只认同时满足三条的行：命令行含这个条目名（纳秒戳唯一）、不含 `--type=`
+/// （Helpers 是子孙，随组收）、且确实是个 chrome/chromium 可执行文件——最后
+/// 一条是防「恰好有别的进程把该路径写进了命令行」被误杀。
+#[cfg(unix)]
+fn kill_referencing(needle: &str) -> usize {
+    let Ok(out) = Command::new("ps").args(["-A", "-o", "pid=,command="]).output() else {
+        return 0;
+    };
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let mut killed = 0usize;
+    for line in text.lines() {
+        let line = line.trim_start();
+        let Some((pid_s, cmd)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        if !cmd.contains(needle) || cmd.contains("--type=") {
+            continue;
+        }
+        let lower = cmd.to_ascii_lowercase();
+        if !lower.contains("chrome") && !lower.contains("chromium") {
+            continue;
+        }
+        if let Ok(pid) = pid_s.parse::<u32>() {
+            // 主进程是自立的进程组组长（spawn 时的 process_group(0)），killpg 收整组
+            crate::tool_exec::kill_tree(pid);
+            killed += 1;
+        }
+    }
+    killed
+}
+
+/// Windows 侧只删临时条目、不清进程：拿不到命令行就没法把目录映射回进程
+/// （tasklist 不列 CommandLine）。要补需要 WMIC/PowerShell 或引进程枚举库，
+/// 在真机上验证过之前不写猜的实现。
+#[cfg(not(unix))]
+fn kill_referencing(_needle: &str) -> usize {
+    0
+}
+
+/// 冷启动清扫：收掉上一次运行遗留的无头 Chrome，并删掉它们的临时条目。
+///
+/// 为什么必须在**进程外**：正常路径的四道清理（`kill_tree` / `CancelGuard` /
+/// `cancel_all_tools` / 退出钩子）全都跑在本进程里。app 被 dev 重启、崩溃或被
+/// SIGKILL 时一行都不会执行，而 Chrome 是自立进程组、父进程一死就被 launchd
+/// 收养，`--headless=new` 又不会因为 CDP 客户端断开而退出——于是永久占着内存
+/// （实测一组 9 进程约 870MB，见 2026-10-02 的现场）。冷启动是唯一能看到
+/// 「上一个我」留下的垃圾的时刻。
+///
+/// 判定只认自己的命名**且 owner pid 已死**：同机另一个实例、或正在跑的测试的
+/// 条目一律跳过，误伤面为零。放后台线程调用，不挡启动。
+pub fn sweep_orphans() {
+    let (removed, killed) = sweep_in(&std::env::temp_dir());
+    if removed > 0 || killed > 0 {
+        log::info!(
+            "[browser_shot] 冷启动清扫：收掉 {killed} 个遗留 Chrome、删掉 {removed} 个临时条目"
+        );
+    }
+}
+
+/// 清扫主体（目录可注入，供单测）：返回 (删掉的条目数, 收掉的进程数)。
+fn sweep_in(dir: &Path) -> (usize, usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    let me = std::process::id();
+    let mut removed = 0usize;
+    let mut killed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(owner) = owner_pid_of(&name) else {
+            continue;
+        };
+        // 本进程自己的、或 owner 还活着的：不是遗留（另一个实例可能正在用）
+        if owner == me || pid_alive(owner) {
+            continue;
+        }
+        killed += kill_referencing(&name);
+        let path = entry.path();
+        let ok = if path.is_dir() {
+            std::fs::remove_dir_all(&path).is_ok()
+        } else {
+            std::fs::remove_file(&path).is_ok()
+        };
+        if ok {
+            removed += 1;
+        }
+    }
+    (removed, killed)
 }
 
 /// 从 JPEG 的 SOF 段读尺寸。读不出就返回 None（调用方退回视口尺寸）。
@@ -490,24 +636,118 @@ mod tests {
         let _ = std::fs::remove_dir_all(&profile);
     }
 
-    /// 平台相关的存活判据：Unix 查 /proc 不通用，用 kill(pid, 0)。
-    #[cfg(unix)]
-    fn pid_alive(pid: u32) -> bool {
-        // 信号 0 不投递，只做存在性与权限检查；EPERM 也算活着
-        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    /// 名称解析：只认 `pi-shot-<owner pid>-<stamp>`（目录与屏幕截图的 png/jpg
+    /// 两族），单测自己的 `pi-shot-test-*` 必须落空——清扫不能去动正在跑的测试。
+    #[test]
+    fn owner_pid_parsing_accepts_only_our_naming() {
+        // 拍照的临时 profile 目录（真实形态：纳秒戳）
+        assert_eq!(owner_pid_of("pi-shot-53175-1790925171615745000"), Some(53175));
+        // 屏幕截图工具的临时文件（毫秒戳 + 扩展名）
+        assert_eq!(owner_pid_of("pi-shot-1234-1700000000000.png"), Some(1234));
+        // 单测自己的命名：pid 位上是 test，必须不认领
+        assert_eq!(owner_pid_of("pi-shot-test-32444-e2e-0"), None);
+        assert_eq!(owner_pid_of("pi-shot-test-56699-e2e-0"), None);
+        // 前缀对但结构不对
+        assert_eq!(owner_pid_of("pi-shot-"), None);
+        assert_eq!(owner_pid_of("pi-shot-abc-1"), None);
+        assert_eq!(owner_pid_of("pi-shot-1234"), None, "缺 stamp 段");
+        assert_eq!(owner_pid_of("other-1-2"), None);
     }
-    #[cfg(windows)]
-    fn pid_alive(pid: u32) -> bool {
-        // Windows 没有 kill(pid,0)；OpenProcess 拿到句柄即视为存活
-        use std::os::windows::process::CommandExt;
-        let _ = std::marker::PhantomData::<CommandExt>;
-        let out = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .output();
-        match out {
-            Ok(o) => String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()),
-            Err(_) => false,
+
+    /// 清扫只动「owner 已死」的条目：本进程自己的、owner 还活着的、
+    /// 以及单测自己的目录，一条都不能碰。
+    #[test]
+    fn sweep_removes_only_dead_owner_entries() {
+        let dir = unique_dir("sweep");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 远超 pid 上限的 pid：必然不存在（不依赖真实进程表状态）
+        let dead = 4_000_000u32;
+        let dead_dir = dir.join(format!("pi-shot-{dead}-1"));
+        let dead_file = dir.join(format!("pi-shot-{dead}-3.png"));
+        let live_dir = dir.join(format!("pi-shot-{}-2", std::process::id()));
+        let test_dir = dir.join("pi-shot-test-9999-e2e-0");
+        for p in [&dead_dir, &live_dir, &test_dir] {
+            std::fs::create_dir_all(p).unwrap();
         }
+        std::fs::write(&dead_file, b"x").unwrap();
+
+        let (removed, killed) = sweep_in(&dir);
+        assert_eq!(killed, 0, "临时目录里没有真进程，不该杀任何东西");
+        assert_eq!(removed, 2, "死 owner 的目录与文件各一个");
+        assert!(!dead_dir.exists(), "死 owner 的目录应删掉");
+        assert!(!dead_file.exists(), "死 owner 的临时截图应删掉");
+        assert!(live_dir.exists(), "owner 还活着的条目必须留下");
+        assert!(
+            test_dir.exists(),
+            "单测自己的目录必须留下（名字不进认领集）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 端到端验收（本次修复的目标场景）：模拟「上一次运行留下的孤儿」——用
+    /// 必然不存在的 owner pid 给 profile 命名，起一个真 Chrome，然后跑清扫。
+    /// 真实事故：dev 重启打断拍照 → Chrome 被 launchd 收养 → 9 进程 870MB
+    /// 永久驻留（2026-10-02 现场）。
+    #[test]
+    fn sweep_kills_an_orphan_chrome_and_removes_its_profile() {
+        let Some(exe) = find_chrome() else {
+            eprintln!("跳过：本机没装 Chrome");
+            return;
+        };
+        let root = unique_dir("sweep-e2e");
+        std::fs::create_dir_all(&root).unwrap();
+        // 远超 pid 上限：清扫据此判「owner 已死 = 遗留」
+        let dead = 4_000_000u32;
+        let profile = root.join(format!("pi-shot-{dead}-7777"));
+        std::fs::create_dir_all(&profile).unwrap();
+
+        let mut cmd = Command::new(&exe);
+        cmd.arg("--headless=new")
+            .arg("--remote-debugging-port=0")
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let mut child = cmd.spawn().expect("spawn chrome");
+        let pid = child.id();
+        // 测试自身也别漏：断言失败/panic 时由它收尾（正常路径重复 kill 无害）
+        let _group = ProcGroupGuard(pid);
+        let ws = wait_for_devtools_ws(&mut child, &profile, &CancelGuard::detached());
+        assert!(ws.is_ok(), "Chrome 应起来并写出 DevToolsActivePort: {ws:?}");
+
+        let (mut removed, killed) = sweep_in(&root);
+        assert_eq!(killed, 1, "清扫应认领并杀掉这个孤儿 Chrome");
+        // 目录删除可能滞后 kill 一瞬（进程刚死、句柄才关）：有界重试，不引入抖动
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while removed == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+            removed = sweep_in(&root).0;
+        }
+        assert_eq!(removed, 1, "临时 profile 目录最终应被删掉");
+        assert!(!profile.exists());
+
+        // 存活断言必须先回收句柄：SIGKILL 后未 wait 的子进程是僵尸，kill(pid, 0)
+        // 对僵尸仍然成功（会把"已死"读成"还活着"）。有界轮询 try_wait 而不是
+        // wait()——真出现"清扫没杀掉"时，这里是断言失败而不是测试挂死
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut reaped = false;
+        while Instant::now() < deadline {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                reaped = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(reaped, "Chrome pid {pid} 清扫后仍未退出（wait 未见返回）");
+        assert!(!pid_alive(pid), "Chrome pid {pid} 回收后仍存活");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 相机不可用时必须是明确错误，且 webview 路完全不受影响——
@@ -528,3 +768,4 @@ mod tests {
         let _ = guard;
     }
 }
+

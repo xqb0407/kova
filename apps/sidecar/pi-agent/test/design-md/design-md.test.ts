@@ -25,6 +25,7 @@ import {
   saveUserTheme,
   themesSnapshot,
   themeFileSlug,
+  type ThemeRef,
 } from "../../src/design-md/store";
 import {
   DESIGN_THEME_KV_KEY,
@@ -36,7 +37,15 @@ import {
   setLastUsedDesignTheme,
 } from "../../src/design-md/state";
 import { buildUseDesignThemeTool } from "../../src/design-md/use-design-theme-tool";
+import { buildDesignThemeMgmtTools, DESIGN_THEME_MGMT_TOOL_NAMES } from "../../src/design-md/mgmt-tools";
+import {
+  applyThemeDelete,
+  applyThemeSave,
+  finishThemeMutation,
+  selectAndBroadcastSessionTheme,
+} from "../../src/design-md/apply";
 import { applyAppMode, appModePromptBlock, resetAppModeForTest, setUiDesignActiveProbeForTest } from "../../src/agent/app-mode";
+import { APPROVAL_REQUIRED_TOOLS } from "../../src/agent/modes";
 import { running } from "../../src/sessions/registry";
 // 必须先装载 protocol 图再取 handler 模块：handlers/design-md → sessions → automation
 // → protocol.ts 的环回在生产里由 index 先导 protocol 化解，测试直接先取 design-md
@@ -413,26 +422,26 @@ describe("design 提示词段主题句", () => {
   });
 
   test("未选中主题不追加主题句；选中追加一行（渐进披露）", async () => {
-    const plain = appModePromptBlock();
+    const plain = appModePromptBlock("design");
     expect(plain).toContain("You are operating in Design mode");
     expect(plain).not.toContain("Design theme selected");
 
-    const withTheme = appModePromptBlock({ scope: "builtin", id: "acme" });
+    const withTheme = appModePromptBlock("design", { scope: "builtin", id: "acme" });
     expect(withTheme).toContain("Design theme selected for this session: \"Acme\"");
     expect(withTheme).toContain("use_design_theme");
     // 只多一行：行数差 1，其余行保留
     expect(withTheme.split("\n").length).toBe(plain.split("\n").length + 1);
 
     // 快照里不存在的 ref（主题被删）→ 不加句，不抛错
-    expect(appModePromptBlock({ scope: "user", id: "ghost" })).toBe(plain);
+    expect(appModePromptBlock("design", { scope: "user", id: "ghost" })).toBe(plain);
   });
 
+  // 档位现在是入参而非模块全局（会话级工作模式：每会话自己的档决定自己的段）
   test("work/code 档不受主题参数影响", async () => {
-    await applyAppMode("code");
-    expect(appModePromptBlock({ scope: "builtin", id: "acme" })).toBe("");
-    await applyAppMode("work");
-    expect(appModePromptBlock({ scope: "builtin", id: "acme" })).not.toContain("Design theme selected");
-    await applyAppMode("design");
+    expect(appModePromptBlock("code", { scope: "builtin", id: "acme" })).toBe("");
+    expect(appModePromptBlock("work", { scope: "builtin", id: "acme" })).not.toContain(
+      "Design theme selected",
+    );
   });
 });
 
@@ -482,6 +491,9 @@ describe("design-md handlers（fake run 注入驻留表）", () => {
       mode: "agent",
       approvalLevel: "ask",
       planning: "inactive",
+      // 会话档现在是 run 字段（旧版读模块全局）：本组用例验证 design 段的主题句，
+      // 故 fake run 自档 design，与 describe 顶部 applyAppMode("design") 同口径
+      appMode: "design",
       designTheme: null,
       baseTools: [],
       subagentTools: [],
@@ -696,5 +708,241 @@ describe("ref-integrity：改名重映射 / 删除收口 / 升级剪旧", () => 
     expect((await sessionGet("s-removed"))?.designTheme).toBe("");
     expect(run.designTheme).toBeNull();
     running.delete("t-ref");
+  });
+});
+
+/* ---------------------------- AI 管理工具（design_themes_*） ---------------------------- */
+
+describe("design_themes 管理工具（AI 侧）", () => {
+  // send() 直写 process.stdout：捕获工具执行期间发出的帧做断言
+  let frames: Array<Record<string, unknown>> = [];
+  const realWrite = process.stdout.write.bind(process.stdout);
+  function capture(on: boolean): void {
+    if (on) {
+      frames = [];
+      process.stdout.write = ((line: string) => {
+        frames.push(JSON.parse(line));
+        return true;
+      }) as typeof process.stdout.write;
+    } else {
+      process.stdout.write = realWrite;
+    }
+  }
+
+  function fakeRun(): Running {
+    return {
+      agent: {
+        state: {
+          model: null,
+          messages: [{ role: "system", content: "seed", timestamp: 0 }],
+        },
+      },
+      threadId: "t-theme-mgmt",
+      sessionId: "sess-theme-mgmt",
+      cwd: tmp,
+      persistedCwd: tmp,
+      mode: "agent",
+      approvalLevel: "ask",
+      planning: "inactive",
+      appMode: "design",
+      designTheme: null,
+      baseTools: [],
+      subagentTools: [],
+      pendingToolApprovals: new Map(),
+      lastSeenAt: Date.now(),
+    } as unknown as Running;
+  }
+
+  function headContent(r: Running): string {
+    const head = (r.agent.state as { messages?: { role?: string; content?: unknown }[] }).messages?.[0];
+    return head?.role === "system" ? String(head.content) : "";
+  }
+
+  /** 与 sessions/resolve 同款装配：生效链用真实 apply（remap / 刷快照 / 重排 / 广播） */
+  function makeCaller(r: Running) {
+    const byName = new Map(
+      buildDesignThemeMgmtTools({
+        afterSave: async (ref, options) => {
+          const mutation = await applyThemeSave(ref, options);
+          finishThemeMutation(mutation);
+          return mutation.snap;
+        },
+        afterDelete: async (id) => {
+          const mutation = await applyThemeDelete(id);
+          finishThemeMutation(mutation);
+          return mutation.snap;
+        },
+        applyToSession: (ref) => selectAndBroadcastSessionTheme(r, ref),
+      }).map((t) => [t.name, t] as const),
+    );
+    return async (name: string, params: Record<string, unknown> = {}) => {
+      const tool = byName.get(name);
+      if (!tool) throw new Error(`no tool: ${name}`);
+      capture(true);
+      try {
+        return (await tool.execute("t1", params)) as {
+          content: Array<{ type: "text"; text: string }>;
+          details?: Record<string, unknown>;
+        };
+      } finally {
+        capture(false);
+      }
+    };
+  }
+
+  let run: Running;
+  let call: ReturnType<typeof makeCaller>;
+
+  beforeAll(async () => {
+    setUiDesignActiveProbeForTest(() => true);
+    await installBundle(V1, DOCS_V1);
+    run = fakeRun();
+    running.set(run.threadId, run);
+    call = makeCaller(run);
+  });
+  afterAll(async () => {
+    running.delete(run.threadId);
+    await setLastUsedDesignTheme(null);
+    resetDesignThemeStateForTest();
+  });
+
+  test("list：分层列出内置与我的主题；同名用户主题遮蔽内置", async () => {
+    const before = await call("design_themes_list");
+    expect(before.content[0].text).toContain("我的主题目录");
+    expect(before.content[0].text).toContain("Acme (id: acme)");
+
+    const saved = await call("design_theme_save", {
+      name: "Acme",
+      description: "我的 Acme",
+      content: "# My Acme\n\nPrimary #123456\n",
+    });
+    expect(saved.content[0].text).toContain("已保存");
+    expect(saved.content[0].text).toContain("已被遮蔽");
+
+    const after = await call("design_themes_list");
+    expect(after.content[0].text).toContain("已被同名我的主题覆盖");
+    // scope=user 只看自己那层
+    const userOnly = await call("design_themes_list", { scope: "user" });
+    expect(userOnly.content[0].text).not.toContain("内置主题包");
+
+    const del = await call("design_theme_delete", { name: "Acme" });
+    expect(del.content[0].text).toContain("已删除");
+  });
+
+  test("save：落盘 + 热刷快照；use=true 设为会话主题、重排提示词并广播", async () => {
+    const out = await call("design_theme_save", {
+      name: "AI 工坊",
+      description: "暖橙工坊感",
+      accents: ["#ff6b35", "#0f1117"],
+      content: "# 色板\n\n- Primary #ff6b35\n",
+      use: true,
+    });
+    const ref = (out.details as { ref: ThemeRef }).ref;
+    expect(ref.scope).toBe("user");
+    expect(existsSync(join(userThemesDir(), `${ref.id}.md`))).toBe(true);
+    expect(findTheme(ref)?.name).toBe("AI 工坊");
+    expect(findTheme(ref)?.accents).toEqual(["#ff6b35", "#0f1117"]);
+
+    // 会话选中 + 提示词重排（design 档追加主题句）
+    expect(run.designTheme).toEqual(ref);
+    expect(headContent(run)).toContain('Design theme selected for this session: "AI 工坊"');
+    // 广播帧：清单快照 + 选中（无 id 自发帧，多窗口/远程直更）
+    expect(frames.some((f) => f.type === "design_themes")).toBe(true);
+    expect(
+      frames.some(
+        (f) => f.type === "design_theme_set" && (f.theme as { id?: string } | null)?.id === ref.id,
+      ),
+    ).toBe(true);
+    // 正文确实可被 use_design_theme 读到（不带 name：走会话选中）
+    const readBack = (await buildUseDesignThemeTool(() => run.designTheme ?? null).execute("r1", {})) as {
+      content: Array<{ type: "text"; text: string }>;
+    };
+    expect(readBack.content[0].text).toContain("Primary #ff6b35");
+
+    await call("design_theme_delete", { name: "AI 工坊" });
+    expect(run.designTheme).toBeNull();
+  });
+
+  test("replace_name 改名：旧文件清掉、引用与提示词跟到新主题", async () => {
+    const first = await call("design_theme_save", { name: "旧名主题", content: "# v1\n" });
+    const oldRef = (first.details as { ref: { id: string } }).ref;
+    run.designTheme = { scope: "user", id: oldRef.id };
+
+    const renamed = await call("design_theme_save", {
+      name: "新名主题",
+      content: "# v2\n",
+      replace_name: "旧名主题",
+    });
+    const newRef = (renamed.details as { ref: { id: string } }).ref;
+    expect(newRef.id).not.toBe(oldRef.id);
+    expect(existsSync(join(userThemesDir(), `${oldRef.id}.md`))).toBe(false);
+    expect(run.designTheme).toEqual({ scope: "user", id: newRef.id });
+    expect(headContent(run)).toContain('"新名主题"');
+
+    await call("design_theme_delete", { name: "新名主题" });
+  });
+
+  test("正文自带 frontmatter：剥头保存，description/accents 从 frontmatter 回填", async () => {
+    const raw = [
+      "---",
+      "name: 会被忽略",
+      "description: frontmatter 概要",
+      "accents:",
+      '  - "#abcdef"',
+      "---",
+      "",
+      "# 正文",
+      "",
+      "Primary #abcdef",
+      "",
+    ].join("\n");
+    const out = await call("design_theme_save", { name: "带头的主题", content: raw });
+    const ref = (out.details as { ref: ThemeRef }).ref;
+    const entry = findTheme(ref);
+    expect(entry?.name).toBe("带头的主题");
+    expect(entry?.desc).toBe("frontmatter 概要");
+    expect(entry?.accents).toEqual(["#abcdef"]);
+    const body = await readThemeContent(ref);
+    expect(body).toContain("# 正文");
+    expect(body).not.toContain("name: 会被忽略");
+
+    await call("design_theme_delete", { name: "带头的主题" });
+  });
+
+  test("工具组三件套：save/delete 进审批门，list 不进", () => {
+    const noop = async () => {
+      throw new Error("unused");
+    };
+    const names = buildDesignThemeMgmtTools({
+      afterSave: noop,
+      afterDelete: noop,
+      applyToSession: () => {},
+    }).map((t) => t.name);
+    expect(names).toEqual([
+      DESIGN_THEME_MGMT_TOOL_NAMES.list,
+      DESIGN_THEME_MGMT_TOOL_NAMES.save,
+      DESIGN_THEME_MGMT_TOOL_NAMES.delete,
+    ]);
+    expect(APPROVAL_REQUIRED_TOOLS.has(DESIGN_THEME_MGMT_TOOL_NAMES.save)).toBe(true);
+    expect(APPROVAL_REQUIRED_TOOLS.has(DESIGN_THEME_MGMT_TOOL_NAMES.delete)).toBe(true);
+    expect(APPROVAL_REQUIRED_TOOLS.has(DESIGN_THEME_MGMT_TOOL_NAMES.list)).toBe(false);
+  });
+
+  test("错误路径：空正文 / 内置不可改名 / 内置不可删 / 删不存在的", async () => {
+    const empty = await call("design_theme_save", { name: "x", content: "   " });
+    expect(empty.content[0].text).toContain("不能为空");
+
+    const renameBuiltin = await call("design_theme_save", {
+      name: "我的 Acme",
+      content: "# x\n",
+      replace_name: "Acme",
+    });
+    expect(renameBuiltin.content[0].text).toContain("内置主题");
+
+    const delBuiltin = await call("design_theme_delete", { name: "Acme" });
+    expect(delBuiltin.content[0].text).toContain("不可删除");
+
+    const delMissing = await call("design_theme_delete", { name: "不存在的主题" });
+    expect(delMissing.content[0].text).toContain("没有名为");
   });
 });

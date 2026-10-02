@@ -62,8 +62,15 @@ export const PersonalizationStep: FC = () => {
     });
   }, [name, patch, persist]);
 
-  // 卸载兜底：还没失焦就翻页也要把最后敲的内容存下来
-  useEffect(() => () => flushNames(), [flushNames]);
+  // 卸载兜底：还没失焦就翻页也要把最后敲的内容存下来。
+  // 依赖必须放空——flushNames 每次输入都会换身份，直接进依赖会让 React 在依赖
+  // 变化时先跑上一版 cleanup，等于每敲一个字符就落盘一次（且写的是旧闭包的值）。
+  // 用 ref 始终指向最新实现，只在真正卸载时调用一次。
+  const flushRef = useRef(flushNames);
+  useEffect(() => {
+    flushRef.current = flushNames;
+  }, [flushNames]);
+  useEffect(() => () => flushRef.current(), []);
 
   const editName = (key: "userName" | "assistantName", value: string) => {
     dirty.current = true;

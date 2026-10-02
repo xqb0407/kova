@@ -100,7 +100,7 @@ describe("路径解析", () => {
 describe("composeModeSystemPrompt 集成", () => {
   test("有 AGENTS.md 时提示词含指令段，环境块仍收尾", () => {
     writeFileSync(wsPath, "Keep diffs minimal.\n");
-    const prompt = composeModeSystemPrompt("agent", ws);
+    const prompt = composeModeSystemPrompt("agent", ws, "code");
     expect(prompt).toContain("## Instructions (AGENTS.md)");
     expect(prompt).toContain("Keep diffs minimal.");
     expect(prompt.endsWith(workspacePromptLine(ws))).toBe(true);
@@ -113,7 +113,7 @@ describe("composeModeSystemPrompt 集成", () => {
   test("删除文件后重组：提示词回到不含指令段", () => {
     rmSync(wsPath, { recursive: true, force: true });
     rmSync(globalPath, { recursive: true, force: true });
-    const prompt = composeModeSystemPrompt("agent", ws);
+    const prompt = composeModeSystemPrompt("agent", ws, "code");
     expect(prompt).not.toContain("AGENTS.md");
   });
 });

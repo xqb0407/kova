@@ -19,7 +19,10 @@ import type { ChatModelAdapter, ThreadMessageLike } from "@assistant-ui/react";
 import { useEffect, useState } from "react";
 import { AssistantMessage } from "@/components/agent-thread/assistant-message";
 import { EditComposer, UserMessage } from "@/components/agent-thread/user-message";
-import { ManualCompactionTailAfter } from "@/components/agent-thread/compaction-banner";
+import {
+  CompactionDataUI,
+  ManualCompactionTailAfter,
+} from "@/components/agent-thread/compaction-banner";
 import { TurnSlot, TurnTimingRecorder } from "@/components/agent-thread/turn-summary";
 import { getTurnIndex, packTurnSlot } from "@/lib/panels/message-turns";
 
@@ -54,7 +57,7 @@ const MESSAGES: readonly ThreadMessageLike[] = [
     ],
     status: { type: "complete", reason: "stop" },
   },
-  // 轮中带压缩分隔线：折叠时也要保留可见（keepsVisible 规则）,
+  // 轮中带压缩分隔线：随过程区一起收起（收起态不再豁免可见，展开后按原位显示）,
   {
     id: "a2",
     role: "assistant",
@@ -170,6 +173,41 @@ const MESSAGES: readonly ThreadMessageLike[] = [
     status: { type: "complete", reason: "stop" },
   },
   // 第 4 轮：用户手动中断——过程应自动收起，只留回答与「已停止」标记,
+  // 第 6 轮：空闲时压缩（手动/检查点落在轮末）——分隔线是轮末独立消息：
+  // 轮末身份归它，但答案面按前一条拆出（答案不被折走）；分隔线自己归过程区，
+  // 收起态不露线、展开后出现在答案下方
+  {
+    id: "u6",
+    role: "user",
+    content: [text("上下文有点长了，压一下")],
+    createdAt: new Date(started + 900_000),
+  },
+  {
+    id: "a10",
+    role: "assistant",
+    content: [text("好，已经帮你压缩了当前区间的上下文。")],
+    status: { type: "complete", reason: "stop" },
+    metadata: {
+      timing: {
+        streamStartTime: started + 900_000,
+        totalStreamTime: 12_000,
+        totalChunks: 2,
+        toolCallCount: 0,
+      },
+    },
+  },
+  {
+    id: "a11",
+    role: "assistant",
+    content: [
+      {
+        type: "data",
+        name: "compaction",
+        data: { phase: "complete", generation: 3, tokensBefore: 112_000 },
+      },
+    ],
+    status: { type: "complete", reason: "stop" },
+  },
 ];
 
 
@@ -211,7 +249,9 @@ function Diagnostics() {
       const t = setTimeout(() => setReport(measure("快照")), 1200);
       return () => clearTimeout(t);
     }
-    const measure = (tag: string) => {
+    // 函数声明（提升）：非 autodiag 分支的 setTimeout 在它之前触发，写成
+    // const 箭头会在 TDZ 抛 "Cannot access 'measure' before initialization"
+    function measure(tag: string) {
       const lines: string[] = [`—— ${tag} ——`];
       const viewport = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
       lines.push(`viewport.scrollHeight=${viewport?.scrollHeight ?? -1}`);
@@ -239,7 +279,7 @@ function Diagnostics() {
           `  panel h=${Math.round(panel.getBoundingClientRect().height)} open=${panel.hasAttribute("data-open")} closed=${panel.hasAttribute("data-closed")} cssVar=${cs.getPropertyValue("--collapsible-panel-height") || "无"} anims=[${anims}]`,
         );
       }
-      // 轮 1：摘要行 → 轮末回答（轮中有 keepsVisible 的压缩分隔线，本来就占位）
+      // 轮 1：摘要行 → 轮末回答（轮中压缩分隔线随过程收起，收起态不再占位）
       const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-slot="aui_turn-summary"]'));
       const answer1 = document.querySelector<HTMLElement>('[data-message-id="a4"]');
       if (rows[0] && answer1) {
@@ -254,7 +294,7 @@ function Diagnostics() {
         );
       }
       return lines.join("\n");
-    };
+    }
 
     const parts: string[] = [];
     const timers: ReturnType<typeof setTimeout>[] = [];
@@ -376,6 +416,9 @@ export default function TurnsPreviewPage() {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="flex h-screen flex-col">
+        {/* 与 thread.tsx 同款注册：不注册的话 data-compaction part 渲染为 null，
+            分隔线的收起/展开行为在这里就量不到 */}
+        <CompactionDataUI />
         <LiveDemoDriver enabled={liveDemo} />
         <div className="text-muted-foreground px-3 py-1 text-xs">
           turns harness · 轮数={getTurnIndex(runtime.thread.getState().messages).turns.length}

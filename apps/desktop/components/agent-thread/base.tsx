@@ -40,7 +40,7 @@ import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
 import { useOverlayPresent } from "@/lib/overlay-occlusion";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
-import { Thread } from "./thread";
+import { Thread, isNewChatView } from "./thread";
 import { AgentPanel } from "./agent-panel";
 // 迭代1b（P6）：设置页整棵模块图（CodeMirror + 语言文法包、cmdk、input-otp、
 // qrcode.react）挪出首屏 chunk；外层 fixed inset-0 bg-background 容器保证
@@ -87,7 +87,7 @@ const AutomationsView = dynamic(
     ),
   },
 );
-// 插件市场页（市场 + 管理子页）：同款按需 chunk
+// 插件/专家/技能页（市场 + 管理子页）：同款按需 chunk
 const MarketplaceView = dynamic(
   () =>
     import("@/components/marketplace/marketplace-view").then(
@@ -228,8 +228,9 @@ export const Base: FC = () => {
       }),
     [],
   );
-  // composer「+」菜单的「管理连接器 / 管理技能」：切主区到插件市场并直接落到
-  // 管理分段（分段本身是 MarketplaceView 的局部态，故经 prop 下发而非事件）
+  // composer「+」菜单的「管理子智能体 / 管理连接器 / 管理技能」：切主区到
+  // 插件/专家/技能页并直接落到管理分段（分段本身是 MarketplaceView 的局部态，
+  // 故经 prop 下发而非事件）
   const [connectorManageTab, setConnectorManageTab] = useState<ManageTab | null>(null);
   useEffect(
     () =>
@@ -297,6 +298,16 @@ export const Base: FC = () => {
   // 会话列表等重排大户不再每帧 relayout）。null = 未冻结（拖拽/静止态
   // 内容恒 100% 跟手）
   const [panelFrozenPx, setPanelFrozenPx] = useState<number | null>(null);
+  // ── 面板显示闸 ─────────────────────────────────────────────────────────────
+  // 只有「真对话页且当前线程有内容」才允许显示 panel：自动化/插件/文件/使用
+  // 统计等非对话页（activeMenu 非空）、设置页，以及新对话（空会话，含启动期
+  // 占位线程）一律隐藏——panelShown 随之翻转走同款收起动画。panelOpen 仍是
+  // 用户本地开关偏好（localStorage 只记它），闸门翻转不改写偏好：切回有消息
+  // 的会话自动恢复展开。isNewChatView 为假即"非新对话态"（有消息，或正在
+  // 加载历史）。
+  const threadHasContent = useAuiState((s) => !isNewChatView(s));
+  const panelGate = view === "chat" && activeMenu === "" && threadHasContent;
+  const panelShown = panelOpen && panelGate;
   const panelRef = usePanelRef();
   // ── 面板全屏：收起聊天列，Agent 面板平铺主区 ─────────────────────────
   // 聊天列做成可折叠（collapsedSize=0），进全屏把它的宽度动画到 0 后 collapse()
@@ -372,14 +383,14 @@ export const Base: FC = () => {
     const target = panelTargetWidth();
     const isToggle =
       prevPanelOpenRef.current !== null &&
-      prevPanelOpenRef.current !== panelOpen;
-    prevPanelOpenRef.current = panelOpen;
+      prevPanelOpenRef.current !== panelShown;
+    prevPanelOpenRef.current = panelShown;
     panelAnimInterruptedRef.current = false;
     panelAnimRef.current?.stop();
     panelAnimRef.current = null;
     if (!isToggle) {
       setPanelExpanding(false);
-      if (panelOpen) {
+      if (panelShown) {
         p.expand();
         p.resize(target);
       } else {
@@ -392,7 +403,7 @@ export const Base: FC = () => {
       setPanelMinReleased(true);
       return;
     }
-    if (panelOpen) {
+    if (panelShown) {
       // 从收起态起步才需要先归零；收起动画途中反向（面板尚未真正收起）
       // 直接从当前宽度续走，避免 resize(0) 造成瞬间跳变
       if (p.isCollapsed()) {
@@ -440,7 +451,7 @@ export const Base: FC = () => {
       });
     }
   }, [
-    panelOpen,
+    panelShown,
     panelHydrated,
     compact,
     panelMinReleased,
@@ -620,7 +631,7 @@ export const Base: FC = () => {
     const p = panelRef.current;
     if (!p) return;
     const px = p.getSize().inPixels;
-    if (panelOpen) {
+    if (panelShown) {
       // 展开途中被拦停：宽度不足 minSize 直接落位到目标宽，避免留下窄条
       if (px < PANEL_MIN_WIDTH) {
         p.expand();
@@ -695,9 +706,9 @@ export const Base: FC = () => {
     if (view === "settings") window.getSelection()?.removeAllRanges();
   }, [view]);
 
-  // 进入自动化/使用统计页自动收起右侧 panel：它们是主区内的全幅管理页，
-  // 原先开着的面板既挤占内容又和页内自己的滚动区打架；全屏一并退出，
-  // 聊天列弹回接住版面
+  // 进入自动化/使用统计等全幅管理页时退出面板全屏：它们是主区内的全幅视图，
+  // 聊天列必须弹回接住版面；面板本身的隐藏交给 panelGate（非对话页统一收起，
+  // 不再改写用户的开合偏好）
   useEffect(() => {
     if (
       activeMenu === "automation" ||
@@ -706,7 +717,6 @@ export const Base: FC = () => {
       activeMenu === "files"
     ) {
       exitPanelFullscreen();
-      setPanelOpen(false);
     }
   }, [activeMenu, exitPanelFullscreen]);
 
@@ -742,21 +752,24 @@ export const Base: FC = () => {
     >
       {/* 自动化页环境光：挂在卡片内顶缘（header 之下、内容之上），
           光带从卡片顶垂下；固定不随内容滚 */}
-      {activeMenu === "automation" && (
+      {/* {activeMenu === "automation" && (
         <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 z-0 h-72 overflow-hidden">
           <div className="from-primary/5 absolute inset-x-0 top-0 h-full bg-gradient-to-b to-transparent" />
           <div className="bg-primary/10 absolute -top-20 left-[12%] hidden size-64 rounded-full blur-3xl dark:block" />
           <div className="bg-primary/[0.08] absolute -top-24 right-[15%] hidden size-72 rounded-full blur-3xl dark:block" />
         </div>
-      )}
+      )} */}
       <div className="relative z-10 shrink-0">
         <Header
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
           onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
           // 折叠按钮跟视觉状态走：面板完全收没（收起动画播完）才在
-          // Header 露出展开按钮，避免动画途中按钮提前跳出来闪一下
-          showPanelToggle={compact ? !panelOpen : panelGone}
+          // Header 露出展开按钮，避免动画途中按钮提前跳出来闪一下；
+          // 显示闸关着（非对话页/新对话空会话）时根本没有可展开的面板，不露按钮
+          showPanelToggle={
+            panelGate && (compact ? !panelShown : panelGone)
+          }
           onTogglePanel={() => setPanelOpen((o) => !o)}
           docked={panelDocked && !panelExpanding}
           variant={
@@ -777,7 +790,7 @@ export const Base: FC = () => {
         </ErrorBoundary>
         {compact ? (
           <AnimatePresence>
-            {panelOpen ? (
+            {panelShown ? (
               <>
                 <motion.div
                   key="panel-backdrop"
@@ -895,18 +908,10 @@ export const Base: FC = () => {
                     panelFullscreen && "pointer-events-none",
                   )}
                   disabled={
-                    panelFullscreen ||
-                    chatMinReleased ||
-                    activeMenu === "automation" ||
-                    activeMenu === "connector" ||
-                    activeMenu === "files"
+                    panelFullscreen || chatMinReleased || !panelGate
                   }
                   disableDoubleClick={
-                    panelFullscreen ||
-                    chatMinReleased ||
-                    activeMenu === "automation" ||
-                    activeMenu === "connector" ||
-                    activeMenu === "files"
+                    panelFullscreen || chatMinReleased || !panelGate
                   }
                   // 只在把手上拦停动画（面板内按钮点击不受影响，见 settle 注释）
                   onPointerDownCapture={interruptPanelAnim}
@@ -932,14 +937,14 @@ export const Base: FC = () => {
                     // panelGone 跟踪视觉状态（≤1px 且非展开意图），驱动按钮/控件交接
                     onResize={(size) => {
                       const collapsed = size.inPixels <= 1;
-                      setPanelGone(!panelOpen && collapsed);
+                      setPanelGone(!panelShown && collapsed);
                       if (collapsed === wasCollapsedRef.current) {
                         // 无收放边沿且无在途动画/待结算手势：尺寸仍在变即
                         // 用户在拖 —— 名义收起却拖到有效宽度（拦停后拖拽
                         // 复活）视为想展开，兜底防止面板卡在"开着但收不起来"
                         if (
                           !collapsed &&
-                          !panelOpen &&
+                          !panelShown &&
                           !panelAnimRef.current &&
                           !panelAnimInterruptedRef.current &&
                           size.inPixels >= PANEL_MIN_WIDTH
@@ -952,7 +957,11 @@ export const Base: FC = () => {
                       // 全屏中面板被收没（点面板顶栏收起/快捷键）：一并退出
                       // 全屏，聊天列弹回，主区不至于空掉
                       if (collapsed) exitPanelFullscreen();
-                      setPanelOpen(!collapsed);
+                      // 显示闸驱动的收/放（切页、切到空会话，含动画与挂载 snap
+                      // 两条路径）不改写用户开合偏好：动画在途或闸门关着时不回写，
+                      // 只有用户拖拽/双击落位才同步 panelOpen
+                      if (!panelAnimRef.current && panelGate)
+                        setPanelOpen(!collapsed);
                     }}
                 >
                   {panelEverOpened ? (

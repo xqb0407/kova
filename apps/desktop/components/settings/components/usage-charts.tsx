@@ -104,7 +104,12 @@ const UsageCharts: FC<{
     if (rest.length > 0) seriesKeys.push(OTHER_KEY);
     const restTokens = rest.reduce((s, [, v]) => s + v, 0);
 
-    const trendData = rangeDays7.map((day) => {
+    // 折线窗口收缩到范围内首个有用量的一天（含）：数据少时避免左边大片空白、
+    // 折线悬在半空（与 3D 热力图自适应同理）
+    const firstActive = rangeDays7.findIndex((d) => d.tokens > 0);
+    const trendDays =
+      firstActive > 0 ? rangeDays7.slice(firstActive) : rangeDays7;
+    const trendData = trendDays.map((day) => {
       const d = new Date(`${day.date}T00:00:00`);
       const row: Record<string, number | string> = {
         label: `${d.getMonth() + 1}月${d.getDate()}日`,
@@ -166,7 +171,7 @@ const UsageCharts: FC<{
           {rangeDays === 7 ? "近 7 日" : "近 30 日"} Token 趋势图
         </h3>
         <ResponsiveContainer width="100%" height={264}>
-          <LineChart data={trendData} margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
+          <LineChart data={trendData} margin={{ top: 10, right: 14, bottom: 0, left: 0 }}>
             <CartesianGrid
               strokeDasharray="3 3"
               vertical={false}
@@ -199,7 +204,8 @@ const UsageCharts: FC<{
                   name={modelLabel(key)}
                   stroke={modelColor(i)}
                   strokeWidth={2}
-                  dot={false}
+                  // 点少时画出数据点，一两个点的系列不会像断线
+                  dot={trendData.length <= 10 ? { r: 3, strokeWidth: 0 } : false}
                   activeDot={{ r: 3 }}
                 />
               ),
@@ -284,7 +290,8 @@ const UsageCharts: FC<{
                   title={hidden ? "点击显示" : "点击隐藏"}
                   onClick={() => toggleSeries(entry.name)}
                   className={cn(
-                    "flex items-center gap-2 text-sm transition-opacity",
+                    // text-left：button 默认居中，会把名称甩到行中间
+                    "flex items-center gap-2 text-left text-sm transition-opacity",
                     hidden ? "opacity-35" : "hover:opacity-70",
                   )}
                 >
@@ -299,7 +306,11 @@ const UsageCharts: FC<{
                   </span>
                   <span className="text-muted-foreground shrink-0 tabular-nums">
                     {formatTokens(entry.value)} tokens
-                    {percent !== null ? ` · ${percent}%` : ""}
+                    {percent !== null
+                      ? percent === 0 && entry.value > 0
+                        ? " · <1%"
+                        : ` · ${percent}%`
+                      : ""}
                   </span>
                 </button>
               );

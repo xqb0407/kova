@@ -26,6 +26,8 @@ import {
 import { getTodoState, replayTodoFromMessages } from "../../src/todo/todo";
 import { TODO_TOOL_NAME } from "../../src/todo/todo-state";
 import { isPromptActive, setActiveReqId } from "../../src/protocol/stream";
+import { toolsForMode } from "../../src/agent/modes";
+import { DESIGN_THEME_MGMT_TOOL_NAMES } from "../../src/design-md/mgmt-tools";
 import type { Running } from "../../src/types";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-sessions-"));
@@ -257,5 +259,30 @@ describe("sessions：刷新改绑（rebindRunThread）", () => {
       setActiveReqId(sid, null);
     }
     dropRun(sid);
+  });
+});
+
+describe("sessions：agent 档扩展工具组装配", () => {
+  test("设计主题管理三件套挂在 Task 旁（agent 档可见、plan/ask 结构性没有）", async () => {
+    const run = await resolveSession("ext-theme", undefined, tmp);
+    const extNames = run.subagentTools.map((t) => t.name);
+    expect(extNames).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.list);
+    expect(extNames).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
+    expect(extNames).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.delete);
+    // 管理组不进 baseTools：子代理按定义取工具时拿不到
+    expect(run.baseTools.map((t) => t.name)).not.toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
+
+    const original = run.mode;
+    try {
+      run.mode = "agent";
+      expect(toolsForMode(run).map((t) => t.name)).toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
+      run.mode = "plan";
+      expect(toolsForMode(run).map((t) => t.name)).not.toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
+      run.mode = "ask";
+      expect(toolsForMode(run).map((t) => t.name)).not.toContain(DESIGN_THEME_MGMT_TOOL_NAMES.save);
+    } finally {
+      run.mode = original;
+      dropRun("ext-theme");
+    }
   });
 });

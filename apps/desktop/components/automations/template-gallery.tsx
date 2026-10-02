@@ -14,11 +14,7 @@ import { useEffect, useState, type FC } from "react";
 import {
   AlertCircleIcon,
   ArrowRightIcon,
-  CalendarClockIcon,
-  HourglassIcon,
   LayersIcon,
-  RepeatIcon,
-  type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -28,27 +24,36 @@ import {
 } from "@/lib/automation/automations";
 import { describeTemplateSchedule } from "@/lib/automation/automation-format";
 import { cn } from "@/lib/utils";
+import { templateArtFor } from "./automation-art";
 
-/** 模板图标与底色按排期类型分（与任务卡的 IDENTITY_POOLS 同一套语义色）：
- *  cron=蓝（日历）· interval=青（循环）· once=琥珀（一次性）。
- *  两处色相一致，任务卡与模板卡排在一起不会看成两个设计系统 */
-const TEMPLATE_ICON: Record<AutomationTemplate["type"], LucideIcon> = {
-  cron: CalendarClockIcon,
-  interval: RepeatIcon,
-  once: HourglassIcon,
+/** 插画的语义色按模板 id 分，不按 type：三个 cron 模板（晨报/周报/体检）
+ *  在 type 维度上是同一档，五张卡会有三张同色——那正是"一排卡看着单调"
+ *  的来源。按各自的语义拆开后五张各占一色（晨报=晨蓝 · 周报=周次紫 ·
+ *  体检=健康绿 · 巡检=青 · 提醒=琥珀），色池仍取自任务卡 IDENTITY_POOLS，
+ *  两块内容排在一起还是同一套语言。插画只吃 currentColor，
+ *  换主题/换强调色都不用动 SVG。未登记的 id 落 type 兜底 */
+const TEMPLATE_TONE: Record<string, string> = {
+  "tpl-daily-briefing": "text-blue-600 dark:text-blue-400",
+  "tpl-weekly-report": "text-violet-600 dark:text-violet-400",
+  "tpl-repo-check": "text-emerald-600 dark:text-emerald-400",
+  "tpl-watch-scan": "text-teal-600 dark:text-teal-400",
+  "tpl-one-off": "text-amber-600 dark:text-amber-400",
 };
 
-const TEMPLATE_TONE: Record<AutomationTemplate["type"], string> = {
-  cron: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
-  interval: "bg-teal-500/15 text-teal-600 dark:text-teal-400",
-  once: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+const TYPE_FALLBACK_TONE: Record<AutomationTemplate["type"], string> = {
+  cron: "text-blue-600 dark:text-blue-400",
+  interval: "text-teal-600 dark:text-teal-400",
+  once: "text-amber-600 dark:text-amber-400",
 };
 
-const TemplateCard: FC<{
+const toneFor = (template: AutomationTemplate) =>
+  TEMPLATE_TONE[template.id] ?? TYPE_FALLBACK_TONE[template.type];
+
+export const TemplateCard: FC<{
   template: AutomationTemplate;
   onPick: (t: AutomationTemplate) => void;
 }> = ({ template, onPick }) => {
-  const Icon = TEMPLATE_ICON[template.type] ?? LayersIcon;
+  const Art = templateArtFor(template);
   return (
     <button
       type="button"
@@ -57,34 +62,45 @@ const TemplateCard: FC<{
       title={template.prompt}
       onClick={() => onPick(template)}
       className={cn(
-        "group bg-card hover:cursor-pointer  hover:bg-muted/30 flex flex-col gap-2.5 rounded-xl border p-4 text-start",
-        "transition-[border-color,box-shadow] duration-150",
+        // 整幅头图通栏压在卡片顶部（overflow-hidden 让图被卡片圆角裁掉），
+        // 文字退到图下方。插画放在标题行左侧 64px 见方的版本试过 —— 那个比例
+        // 下再细的线稿也会被读成"大号图标"；通栏铺满宽度后它才是插图
+        // 立面只给一道 hairline + 一层几乎看不见的投影，悬停时才把阴影放开：
+        // 常驻重投影会让五张卡一起变成"卡片墙"，静息状态应该只是贴着纸
+        "group bg-card border-border/60 flex flex-col overflow-hidden rounded-2xl border text-start",
+        "shadow-[0_1px_2px_rgb(0_0_0/0.04)]",
+        "transition-[border-color,box-shadow] duration-200",
+        "hover:shadow-[0_12px_32px_-14px_rgb(0_0_0/0.22)] dark:hover:shadow-[0_12px_32px_-14px_rgb(0_0_0/0.7)]",
+        "hover:cursor-pointer",
         "focus-visible:ring-ring/50 outline-none focus-visible:ring-2",
       )}
     >
-      <div className="flex min-w-0 items-center gap-2.5">
-        <span
-          className={cn(
-            "grid size-8 shrink-0 place-items-center rounded-lg transition-colors",
-            TEMPLATE_TONE[template.type],
-          )}
-        >
-          <Icon className="size-4" />
-        </span>
-        <span className="truncate text-sm font-medium">{template.name}</span>
-        {/* 排期胶囊常驻右上：模板之间的差别主要就在"什么时候跑" */}
-        <span className="text-muted-foreground bg-muted ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] tabular-nums">
-          {describeTemplateSchedule(template)}
-        </span>
+      {/* 悬停时头图极缓推近（只动 transform，溢出被外层裁掉）。
+          400ms ease-out 而不是 150ms —— 快进快出的缩放像 hover 特效，
+          慢推近才像"图自己呼吸了一下" */}
+      <div className={cn("aspect-[320/100] w-full overflow-hidden", toneFor(template))}>
+        <Art className="size-full transition-transform duration-[420ms] ease-out group-hover:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover:scale-100" />
       </div>
-      <p className="text-muted-foreground line-clamp-2 text-xs leading-relaxed">
-        {template.description}
-      </p>
-      {/* 悬停才出现的下一步提示：常驻会跟卡片描述抢注意力 */}
-      <span className="text-muted-foreground mt-auto flex items-center gap-1 pt-0.5 text-xs opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100">
-        用这个模板新建
-        <ArrowRightIcon className="size-3" />
-      </span>
+      {/* 两行就收住：标题行（名称 + 排期胶囊 + 悬停箭头）与描述。
+          原版这里的"用这个模板新建"提示常驻占一行，网格把卡拉高后
+          那一行变成卡底一条明显的空白带 —— 改成标题行右端一枚悬停箭头，
+          提示还在，空白没了 */}
+      <div className="flex flex-col gap-1 p-4">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-[15px] font-semibold tracking-[-0.011em]">
+            {template.name}
+          </span>
+          {/* 排期胶囊常驻右上：模板之间的差别主要就在"什么时候跑" */}
+          <span className="text-muted-foreground bg-muted ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] tabular-nums">
+            {describeTemplateSchedule(template)}
+          </span>
+          {/* 定宽占位 + 只动 transform/opacity：进场不推挤标题行 */}
+          <ArrowRightIcon className="text-muted-foreground size-3.5 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] duration-200 group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:translate-x-0 group-focus-visible:opacity-100 motion-reduce:transition-none" />
+        </div>
+        <p className="text-muted-foreground line-clamp-2 text-xs leading-relaxed">
+          {template.description}
+        </p>
+      </div>
     </button>
   );
 };
@@ -110,8 +126,10 @@ export const TemplateGallery: FC<{
   }, []);
 
   return (
-    <section className="mt-10 border-t pt-6">
-      <div className="mb-3 flex items-baseline gap-2">
+    // 回到"一道 hairline + 充足留白"的分隔：插画铺满卡面之后，这一区的视觉
+    // 分量已经够了；再垫一层灰底面板就是给内容加第二个框，页面反而变脏
+    <section className="border-border/60 mt-12 border-t pt-8">
+      <div className="mb-5 flex items-baseline gap-2">
         <h2 className="flex items-center gap-1.5 text-sm font-semibold">
           <LayersIcon className="text-muted-foreground size-4" />
           从模板开始
@@ -135,15 +153,15 @@ export const TemplateGallery: FC<{
           </Button>
         </div>
       ) : templates === null ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-[104px] rounded-xl" />
+            <Skeleton key={i} className="h-[200px] rounded-2xl" />
           ))}
         </div>
       ) : templates.length === 0 ? (
         <p className="text-muted-foreground py-6 text-center text-sm">暂无预置模板</p>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {templates.map((t) => (
             <TemplateCard key={t.id} template={t} onPick={onPick} />
           ))}

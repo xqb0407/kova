@@ -15,7 +15,7 @@ import { dispatch, dispatchPrompt, handleLine, setInitGate } from "../../src/pro
 import { rulesFilePath, soulFilePath } from "../../src/agent/personalization";
 import { dropRun, ensureTaskSessionDir, noteActiveTurn, resolveSession, running, trackSessionRun } from "../../src/sessions/sessions";
 import { setActiveReqId } from "../../src/protocol/stream";
-import { scanTranscript } from "../../src/sessions/transcript";
+import { scanTranscript, AUTO_CONTINUE_PREFIX } from "../../src/sessions/transcript";
 import {
   registerCustomProvider,
   setCurrentModelKey,
@@ -350,6 +350,62 @@ describe("dispatch: sessions", () => {
     await expect(
       dispatch("fk2", { type: "fork_session", sessionId: "fork-nope" }),
     ).rejects.toThrow("session not found: fork-nope");
+  });
+
+  test("fork_session upToSeq 位置分叉：带到锚点所在回合，下方轮次不带入", async () => {
+    const srcId = "fork-pos-source";
+    const now = new Date().toISOString();
+    await sessionInsert(srcId, tmp);
+    // 两回合：seq 0-1 第一回合；seq 2-6 第二回合（锚点 = 气泡首行 seq 3，
+    // 之后悬空 toolResult / 自动续跑注入行与投影并进同一气泡，须一并带上）；
+    // seq 7 压缩检查点、seq 8 第三回合用户输入 = 分叉点下方，一概不进新会话
+    writeFileSync(
+      sessionPath(srcId),
+      JSON.stringify({ type: "header", schema: 1, id: srcId, cwd: tmp, created_at: now }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 0, ui: {}, agent: { role: "user", content: "第一问" } }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 1, ui: {}, agent: { role: "assistant", content: "答一" } }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 2, ui: {}, agent: { role: "user", content: "第二问" } }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 3, ui: {}, agent: { role: "assistant", content: "答二" } }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 4, ui: {}, agent: { role: "toolResult", toolCallId: "t1", content: [] } }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 5, ui: null, agent: { role: "user", content: AUTO_CONTINUE_PREFIX + "继续" } }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 6, ui: {}, agent: { role: "assistant", content: "续答" } }) +
+        "\n" +
+        JSON.stringify({ type: "compaction", seq: 7, summary: "s", tokensBefore: 1, throughSeq: 6, createdAt: now }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 8, ui: {}, agent: { role: "user", content: "第三问" } }) +
+        "\n",
+      "utf8",
+    );
+    await sessionTouch(srcId, "位置分叉源", "第一问", 8);
+
+    await dispatch("fkp", {
+      type: "fork_session",
+      sessionId: srcId,
+      upToSeq: 3,
+    });
+    const res = last();
+    expect(res.type).toBe("forked");
+    const newId = res.sessionId as string;
+
+    // 新 JSONL：锚点及之前 4 行 + 同回合收尾 3 行；压缩检查点与第三回合截停
+    const forkLines = readFileSync(sessionPath(newId), "utf8").trim().split("\n");
+    expect(forkLines.map((l) => JSON.parse(l).seq)).toEqual([
+      undefined, 0, 1, 2, 3, 4, 5, 6,
+    ]);
+    const row = getLocalDb()!
+      .query<{ title: string; message_count: number }, [string]>(
+        "SELECT title, message_count FROM sessions WHERE id = ?",
+      )
+      .get(newId)!;
+    expect(row.title).toBe("位置分叉源（分支）");
+    expect(row.message_count).toBe(7);
   });
 
   test("delete_session removes row and file", async () => {
@@ -1015,6 +1071,82 @@ describe("dispatch: get_model / init gate", () => {
     await expect(
       dispatch("smx", { type: "set_model", provider: "proto-p", modelId: "m1", sessionId: "ghost-session" }),
     ).rejects.toThrow(/session not found/);
+  });
+
+  test("set_app_mode 定靶只改被点名会话（A 切档 B 不跟着变），默认变更只刷未定靶的", async () => {
+    const sidA = "am-target-a";
+    const sidB = "am-other-b";
+    await sessionInsert(sidA, tmp);
+    await sessionInsert(sidB, tmp);
+    const { applyAppMode, getAppMode } = await import("../../src/agent/app-mode");
+    const { kvGet } = await import("../../src/storage/hostdb");
+    const prevDefault = getAppMode();
+    const prevDefaultKv = (await kvGet("pi.app_mode"))?.value;
+    // 最小驻留 run：recomposeRunPrompt 只用 mode/cwd/appMode/agent.state.messages
+    const mkRun = (sid: string): Running =>
+      ({
+        sessionId: sid,
+        mode: "agent",
+        cwd: tmp,
+        appMode: "code",
+        designTheme: null,
+        agent: { state: { messages: [] } },
+      }) as unknown as Running;
+    const runA = mkRun(sidA);
+    const runB = mkRun(sidB);
+    running.set(sidA, runA);
+    trackSessionRun(sidA, sidA);
+    running.set(sidB, runB);
+    trackSessionRun(sidB, sidB);
+    const promptOf = (r: Running): string =>
+      String((r.agent.state.messages as unknown as [{ content?: string }])[0]?.content ?? "");
+    try {
+      // 会话定靶（顶栏切换器形态）：只落 A 的偏好列、只重排 A 的提示词
+      await dispatch("am1", { type: "set_app_mode", mode: "work", sessionId: sidA });
+      expect(last()).toEqual({ id: "am1", type: "app_mode", mode: "work" });
+      expect(runA.appMode).toBe("work");
+      expect(promptOf(runA)).toContain("You are operating in Work mode");
+      expect((await sessionGet(sidA))?.appMode).toBe("work");
+      // B：档位不动、提示词根本没被重排（空转录 = 未触碰的哨兵），偏好列仍空
+      expect(runB.appMode).toBe("code");
+      expect(runB.agent.state.messages).toEqual([]);
+      expect((await sessionGet(sidB))?.appMode).toBeNull();
+      // 定靶不漂移全局默认（内存 + kv pi.app_mode）：否则「A 切档、新对话跟着变」的病灶回来了
+      expect(getAppMode()).toBe(prevDefault);
+      expect((await kvGet("pi.app_mode"))?.value).toBe(prevDefaultKv);
+
+      // 生效档直查（前端兜底路径）：带 sessionId 回该会话的生效档，不带的回全局默认
+      await dispatch("am2", { type: "get_app_mode", sessionId: sidA });
+      expect(last()).toEqual({ id: "am2", type: "app_mode", mode: "work" });
+      await dispatch("am3", { type: "get_app_mode", sessionId: sidB });
+      expect(last()).toEqual({ id: "am3", type: "app_mode", mode: prevDefault });
+
+      // 全局默认变更（设置 → 通用）：未定靶的 B 即时跟随，已定靶的 A 保持自己的档；
+      // 默认变更不给任何会话落偏好列
+      await dispatch("am4", { type: "set_app_mode", mode: "design" });
+      expect(runB.appMode).toBe("design");
+      expect(promptOf(runB)).toContain("You are operating in Design mode");
+      expect((await sessionGet(sidB))?.appMode).toBeNull();
+      expect(runA.appMode).toBe("work");
+      expect(promptOf(runA)).toContain("You are operating in Work mode");
+      expect(promptOf(runA)).not.toContain("You are operating in Design mode");
+      expect((await sessionGet(sidA))?.appMode).toBe("work");
+      // kv 里是 JSON 编码（initAppMode 的读法同款）
+      expect(JSON.parse(String((await kvGet("pi.app_mode"))?.value))).toBe("design");
+    } finally {
+      dropRun(sidA);
+      dropRun(sidB);
+      await applyAppMode(prevDefault);
+    }
+  });
+
+  test("set_app_mode 定靶拒绝未知会话，且不留任何状态变更", async () => {
+    const { getAppMode } = await import("../../src/agent/app-mode");
+    const prevDefault = getAppMode();
+    await expect(
+      dispatch("amx", { type: "set_app_mode", mode: "work", sessionId: "ghost-session" }),
+    ).rejects.toThrow(/session not found/);
+    expect(getAppMode()).toBe(prevDefault);
   });
 
   test("commands arriving before the init gate are buffered", async () => {

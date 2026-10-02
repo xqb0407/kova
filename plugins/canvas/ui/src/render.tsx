@@ -546,7 +546,10 @@ export function EmbedElView({
   const b = elBox(el);
   const target = useMemo(() => resolveEmbed(el.url), [el.url]);
   const label = el.title || PROVIDER_LABELS[target.provider];
-  const active = mode === "canvas" && useEmbedActive() === el.id;
+  // useEmbedActive 必须无条件调用：`mode === "canvas" &&` 的短路会让 hook 数量随
+  // mode 变化，同一实例从 present 切回 canvas 时 React 抛 #310
+  const activeEmbed = useEmbedActive();
+  const active = mode === "canvas" && activeEmbed === el.id;
   const interactive = mode === "present" || active;
 
   // 激活期间监听父文档 pointerdown（捕获）：点画布/其他元素即退出。

@@ -56,7 +56,8 @@ export const UserMessage: FC = () => {
             bg-muted 气泡几乎同色，需容器显式挂蓝色配色（与 composer 同款） */}
         <div
           className={cn(
-            "aui-user-message-content peer bg-muted text-foreground rounded-md px-4 py-2 wrap-break-word empty:hidden",
+            // 大圆角 + 右下角收小 = 会话气泡的「尖」（iMessage 式：指向发送者）
+            "aui-user-message-content peer bg-muted text-foreground rounded-xl rounded-br-sm px-4 py-2 wrap-break-word empty:hidden",
             directiveChipVariants,
           )}
         >

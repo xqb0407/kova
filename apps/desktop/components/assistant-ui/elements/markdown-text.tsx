@@ -215,7 +215,7 @@ const StreamdownPart = () => {
       <Streamdown
         mode="streaming"
         isAnimating={status.type === "running"}
-        animated={{ animation: "fadeIn" }}
+        animated={{ animation: "blurIn" }}
         caret="block"
         plugins={sharedPlugins}
         shikiTheme={DEFAULT_SHIKI_THEME}

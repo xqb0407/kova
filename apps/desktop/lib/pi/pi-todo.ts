@@ -2,7 +2,10 @@
 
 import { useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi/pi-bridge";
-import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
+import {
+  piSessionIdForThread,
+  piStoreKeyForThread,
+} from "@/lib/pi/pi-thread-adapter";
 
 /**
  * 任务清单 store（sidecar todo 工具的 per-thread 快照镜像，形态同 pi-session-mode）：
@@ -38,8 +41,15 @@ function notify() {
   for (const l of listeners) l();
 }
 
+/** store 键归一（读写共用；规则见 piStoreKeyForThread）：chunk 按 sessionId 写，
+ *  渲染侧给的是 mainThreadId（新建会话恒为 __LOCALID_ 草稿 id）——不归一就会
+ *  chunk 写会话键、面板读草稿键，清单在新建会话里永远不动 */
+function storeKey(threadId: string): string {
+  return piStoreKeyForThread(threadId);
+}
+
 function setSnapshot(threadId: string, snap: TodoSnapshot) {
-  snapshots.set(threadId, snap);
+  snapshots.set(storeKey(threadId), snap);
   notify();
 }
 
@@ -64,7 +74,7 @@ function applyTodoSnapshot(
   const d = data as Partial<TodoSnapshot>;
   if (!Array.isArray(d.tasks)) return;
   if (typeof d.nextId !== "number" || !Number.isFinite(d.nextId)) return;
-  if (reopen && dismissed.delete(threadId)) notify();
+  if (reopen && dismissed.delete(storeKey(threadId))) notify();
   setSnapshot(threadId, {
     tasks: d.tasks.filter(validTask),
     nextId: d.nextId,
@@ -83,7 +93,10 @@ export function useThreadTodos(threadId: string | undefined): TodoSnapshot {
       listeners.add(cb);
       return () => listeners.delete(cb);
     },
-    () => (threadId ? (snapshots.get(threadId) ?? EMPTY_SNAPSHOT) : EMPTY_SNAPSHOT),
+    () =>
+      threadId
+        ? (snapshots.get(storeKey(threadId)) ?? EMPTY_SNAPSHOT)
+        : EMPTY_SNAPSHOT,
     () => EMPTY_SNAPSHOT,
   );
 }
@@ -93,10 +106,11 @@ export function useThreadTodos(threadId: string | undefined): TodoSnapshot {
  *  未发送草稿（尚无会话）直接跳过：清单必有会话才有，草稿天然为空，
  *  而 threadId-only 请求会懒建空白会话（污染）。 */
 export function fetchTodoState(threadId: string): void {
-  if (inflight.has(threadId)) return;
+  const key = storeKey(threadId);
+  if (inflight.has(key)) return;
   const sessionId = piSessionIdForThread(threadId);
   if (!sessionId) return;
-  inflight.add(threadId);
+  inflight.add(key);
   piRequest<{ type: "todo_state"; tasks: unknown[]; nextId: number }>({
     type: "get_todo_state",
     threadId,
@@ -106,20 +120,20 @@ export function fetchTodoState(threadId: string): void {
       applyTodoSnapshot(threadId, { tasks: res.tasks, nextId: res.nextId }, false);
     })
     .catch(() => {})
-    .finally(() => inflight.delete(threadId));
+    .finally(() => inflight.delete(key));
 }
 
 /* ------------------------- 手动开合（临时视图态） ------------------------- */
 
 /** 用户关闭面板：清单仍在，只是收敛成药丸 */
 export function dismissTodos(threadId: string): void {
-  dismissed.add(threadId);
+  dismissed.add(storeKey(threadId));
   notify();
 }
 
 /** 用户点药丸重新展开 */
 export function reopenTodos(threadId: string): void {
-  if (dismissed.delete(threadId)) notify();
+  if (dismissed.delete(storeKey(threadId))) notify();
 }
 
 /** 订阅当前线程面板是否被手动关闭 */
@@ -129,7 +143,15 @@ export function useTodosDismissed(threadId: string | undefined): boolean {
       listeners.add(cb);
       return () => listeners.delete(cb);
     },
-    () => (threadId ? dismissed.has(threadId) : false),
+    () => (threadId ? dismissed.has(storeKey(threadId)) : false),
     () => false,
   );
 }
+
+/* ---------------- 测试缝 ---------------- */
+
+/** 测试钩子：直读某线程清单快照 / 关闭态（与 hook 同源数据，绕开渲染器） */
+export const todoSnapshotForTest = (threadId: string): TodoSnapshot =>
+  snapshots.get(storeKey(threadId)) ?? EMPTY_SNAPSHOT;
+export const todosDismissedForTest = (threadId: string): boolean =>
+  dismissed.has(storeKey(threadId));

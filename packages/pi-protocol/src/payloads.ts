@@ -87,6 +87,10 @@ export const sessionSummarySchema = z.looseObject({
   /** 设计主题偏好（三态）：JSON {scope,id} 字符串 = 选中；"" = 显式不使用主题；
    *  null/缺失 = 从未设置（sidecar 恢复链回落最近使用，见 sessions/resolve.ts） */
   designTheme: z.string().nullable().optional(),
+  /** 会话级工作模式偏好 work|code|design（undefined = 本会话从未切换过，跟随全局默认
+   *  kv pi.app_mode；定靶 set_app_mode 只写被点名会话，见 pi-agent handlers/preferences.ts。
+   *  与 mode（agent/plan/ask 权限模式）正交：那个切权限，这个切人群定位） */
+  appMode: z.enum(["work", "code", "design"]).optional(),
 });
 
 /** list_running turns 明细项：一个确定在跑的轮次（会话 + 其 prompt requestId） */

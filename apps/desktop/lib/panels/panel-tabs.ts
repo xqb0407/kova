@@ -246,18 +246,98 @@ function getSnapshot(): PanelTabsState {
 }
 
 /**
- * 当前会话桶的变更通道：指针未登记（Base effect 尚未跑）时 no-op 防御；
- * 结果与原桶引用相等则不提交（保持「无变化不通知」的既有语义）。
+ * 任意会话桶的变更通道（按属主定靶的核心）：目标桶缺失即新建——后台会话
+ * 的首个标签不必等它被查看。结果与原桶引用相等则不提交（保持「无变化不
+ * 通知」的既有语义）；写入会 LRU touch 属主线程（它在被使用，不该被驱逐）。
+ */
+function mutateThread(
+  threadId: string,
+  next: (state: PanelTabsState) => PanelTabsState,
+): void {
+  ensureHydrated();
+  const prev = byThread[threadId] ?? EMPTY_STATE;
+  const value = next(prev);
+  if (value === prev) return;
+  byThread[threadId] = value;
+  touch(threadId);
+  commit();
+}
+
+/**
+ * 当前会话桶的变更通道：指针未登记（Base effect 尚未跑）时 no-op 防御。
  */
 function mutateCurrent(next: (state: PanelTabsState) => PanelTabsState): void {
   ensureHydrated();
   if (!currentThreadId) return;
-  const prev = byThread[currentThreadId] ?? EMPTY_STATE;
-  const value = next(prev);
-  if (value === prev) return;
-  byThread[currentThreadId] = value;
-  touch(currentThreadId);
-  commit();
+  mutateThread(currentThreadId, next);
+}
+
+// ---- 桶内原语（指针版与按属主定向版共用）----
+
+function openTabIn(threadId: string, type: PanelTabType, extra?: PanelTabExtra): string {
+  const id = `tab-${crypto.randomUUID()}`;
+  mutateThread(threadId, (s) => ({
+    tabs: [...s.tabs, { id, type, ...extra }],
+    activeId: id,
+  }));
+  return id;
+}
+
+function focusTabIn(threadId: string, type: PanelTabType, extra?: PanelTabExtra): string {
+  const existing = getPanelTabsFor(threadId).tabs.find((t) => t.type === type);
+  if (existing) {
+    mutateThread(threadId, (s) => ({
+      tabs: s.tabs.map((t) => (t.id === existing.id ? { ...t, ...extra } : t)),
+      activeId: existing.id,
+    }));
+    return existing.id;
+  }
+  return openTabIn(threadId, type, extra);
+}
+
+function focusPluginIn(
+  threadId: string,
+  pluginId: string,
+  panelId: string,
+  extra?: PanelTabExtra,
+): string {
+  const existing = getPanelTabsFor(threadId).tabs.find(
+    (t) =>
+      t.type === "plugin" && t.pluginId === pluginId && t.panelId === panelId,
+  );
+  if (existing) {
+    mutateThread(threadId, (s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === existing.id ? { ...t, pluginId, panelId, ...extra } : t,
+      ),
+      activeId: existing.id,
+    }));
+    return existing.id;
+  }
+  return openTabIn(threadId, "plugin", { ...extra, pluginId, panelId });
+}
+
+function closeTabIn(threadId: string, id: string): void {
+  mutateThread(threadId, (s) => {
+    const index = s.tabs.findIndex((t) => t.id === id);
+    if (index < 0) return s;
+    const tabs = s.tabs.filter((t) => t.id !== id);
+    let activeId = s.activeId;
+    if (activeId === id) {
+      const neighbor = tabs[Math.min(index, tabs.length - 1)];
+      activeId = neighbor?.id ?? null;
+    }
+    return { tabs, activeId };
+  });
+}
+
+function updateTabIn(threadId: string, id: string, patch: Partial<PanelTab>): void {
+  // 目标标签不在该桶：no-op 早退——既无变更通知，也不为后台属主凭空建空桶
+  if (!getPanelTabsFor(threadId).tabs.some((t) => t.id === id)) return;
+  mutateThread(threadId, (s) => ({
+    ...s,
+    tabs: s.tabs.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+  }));
 }
 
 export function usePanelTabs(): PanelTabsState {
@@ -294,6 +374,23 @@ export function setCurrentPanelThread(threadId: string | null): void {
 export function getAllThreadTabs(): ThreadTabs[] {
   ensureHydrated();
   return allSnapshot;
+}
+
+/**
+ * 按线程读取标签组（非 hook）：缺失桶返回稳定空态常量、不建桶。
+ * 给按属主定靶的读取方与桶内原语复用判定用。
+ */
+export function getPanelTabsFor(threadId: string): PanelTabsState {
+  ensureHydrated();
+  return byThread[threadId] ?? EMPTY_STATE;
+}
+
+/**
+ * 当前显示会话指针：agent 工具帧/后台进程在属主未知时的兜底靶，
+ * 以及「属主=显示会话」的事件门控判定用。
+ */
+export function getCurrentPanelThreadId(): string | null {
+  return currentThreadId;
 }
 
 /** 全部会话桶的快照（hook，引用稳定）；浏览器 webview 生命周期等 UI 判定用 */
@@ -341,7 +438,7 @@ export function purgeThreadPanelTabs(threadId: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// 标签操作（一律作用于当前会话的桶）
+// 标签操作：指针版作用于当前显示的会话桶；按属主定靶的 For 版见本节末尾
 // ---------------------------------------------------------------------------
 
 export type PanelTabExtra = Pick<
@@ -363,12 +460,10 @@ export function openPanelTab(
   type: PanelTabType,
   extra?: PanelTabExtra,
 ): string {
-  const id = `tab-${crypto.randomUUID()}`;
-  mutateCurrent((s) => ({
-    tabs: [...s.tabs, { id, type, ...extra }],
-    activeId: id,
-  }));
-  return id;
+  ensureHydrated();
+  // 指针未登记：保持旧 no-op 语义——返回 id 但不落任何桶
+  if (!currentThreadId) return `tab-${crypto.randomUUID()}`;
+  return openTabIn(currentThreadId, type, extra);
 }
 
 /** 激活指定标签（不改动标签集合）；供「同文件已开则聚焦」类精确复用 */
@@ -386,17 +481,8 @@ export function activatePanelTab(id: string): void {
  */
 export function focusPanelTab(type: PanelTabType, extra?: PanelTabExtra): string {
   ensureHydrated();
-  const existing = getSnapshot().tabs.find((t) => t.type === type);
-  if (existing) {
-    mutateCurrent((s) => ({
-      tabs: s.tabs.map((t) =>
-        t.id === existing.id ? { ...t, ...extra } : t,
-      ),
-      activeId: existing.id,
-    }));
-    return existing.id;
-  }
-  return openPanelTab(type, extra);
+  if (!currentThreadId) return `tab-${crypto.randomUUID()}`;
+  return focusTabIn(currentThreadId, type, extra);
 }
 
 /**
@@ -410,35 +496,15 @@ export function focusPluginPanel(
   extra?: PanelTabExtra,
 ): string {
   ensureHydrated();
-  const existing = getSnapshot().tabs.find(
-    (t) =>
-      t.type === "plugin" && t.pluginId === pluginId && t.panelId === panelId,
-  );
-  if (existing) {
-    mutateCurrent((s) => ({
-      tabs: s.tabs.map((t) =>
-        t.id === existing.id ? { ...t, pluginId, panelId, ...extra } : t,
-      ),
-      activeId: existing.id,
-    }));
-    return existing.id;
-  }
-  return openPanelTab("plugin", { ...extra, pluginId, panelId });
+  if (!currentThreadId) return `tab-${crypto.randomUUID()}`;
+  return focusPluginIn(currentThreadId, pluginId, panelId, extra);
 }
 
 /** 关闭标签:激活项被关时就近切到相邻标签 */
 export function closePanelTab(id: string): void {
-  mutateCurrent((s) => {
-    const index = s.tabs.findIndex((t) => t.id === id);
-    if (index < 0) return s;
-    const tabs = s.tabs.filter((t) => t.id !== id);
-    let activeId = s.activeId;
-    if (activeId === id) {
-      const neighbor = tabs[Math.min(index, tabs.length - 1)];
-      activeId = neighbor?.id ?? null;
-    }
-    return { tabs, activeId };
-  });
+  ensureHydrated();
+  if (!currentThreadId) return;
+  closeTabIn(currentThreadId, id);
 }
 
 /** 批量关闭的公共收尾:激活项幸存则不动,被关则切到 fallback */
@@ -495,8 +561,57 @@ export function setActivePanelTab(id: string): void {
 
 /** 局部更新标签(浏览器标签写回 url/标题) */
 export function updatePanelTab(id: string, patch: Partial<PanelTab>): void {
-  mutateCurrent((s) => ({
-    ...s,
-    tabs: s.tabs.map((t) => (t.id === id ? { ...t, ...patch } : t)),
-  }));
+  ensureHydrated();
+  if (!currentThreadId) return;
+  updateTabIn(currentThreadId, id, patch);
+}
+
+// ---------------------------------------------------------------------------
+// 按属主线程定靶的标签操作
+//
+// 给「可能发生在非显示会话」的写入方用：agent 工具帧（pi-client-base 按帧
+// 的 sessionId 归属）、后台终端进程退出/标题回写（shell 记录 ownerThread）。
+// 与指针版语义相同，只是靶是传入的属主桶；桶缺失即新建。
+// ---------------------------------------------------------------------------
+
+/** 属主版 openPanelTab */
+export function openPanelTabFor(
+  threadId: string,
+  type: PanelTabType,
+  extra?: PanelTabExtra,
+): string {
+  return openTabIn(threadId, type, extra);
+}
+
+/** 属主版 focusPanelTab */
+export function focusPanelTabFor(
+  threadId: string,
+  type: PanelTabType,
+  extra?: PanelTabExtra,
+): string {
+  return focusTabIn(threadId, type, extra);
+}
+
+/** 属主版 focusPluginPanel */
+export function focusPluginPanelFor(
+  threadId: string,
+  pluginId: string,
+  panelId: string,
+  extra?: PanelTabExtra,
+): string {
+  return focusPluginIn(threadId, pluginId, panelId, extra);
+}
+
+/** 属主版 closePanelTab */
+export function closePanelTabFor(threadId: string, id: string): void {
+  closeTabIn(threadId, id);
+}
+
+/** 属主版 updatePanelTab */
+export function updatePanelTabFor(
+  threadId: string,
+  id: string,
+  patch: Partial<PanelTab>,
+): void {
+  updateTabIn(threadId, id, patch);
 }

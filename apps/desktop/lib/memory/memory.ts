@@ -6,6 +6,9 @@ import type {
   PiMemoryConfig,
   PiMemoryFilesResponse,
   PiMemoryScopeState,
+  PiMemoryTrashEntry,
+  PiMemoryVersionEntry,
+  PiMemoryVersionSource,
 } from "@/lib/pi/pi-bridge";
 
 /**
@@ -123,6 +126,150 @@ export async function writeMemoryEntry(
 }
 
 export type { PiMemoryScopeState, PiMemoryFilesResponse };
+
+/* ------------------------------- 版本史与回收站 -------------------------------
+ * 版本史（.history/<文件名>/）：每次改动自动记一版，来源 page/agent/external/restore/delete；
+ * 回收站（.trash/）：删除 = 移入回收站，可恢复/彻底删除/清空（彻底删除会连版本史一起清）。
+ * 两者都是记忆目录下的隐藏子目录，不进文件清单、注入与检索（见 sidecar agent/memory.ts）。
+ */
+
+/** 某文件的版本清单（最新在前） */
+export async function listMemoryVersions(
+  scope: "global" | "workspace",
+  cwd: string | null,
+  file: string,
+): Promise<PiMemoryVersionEntry[]> {
+  const res = await piRequest<{ type: "memory_versions"; file: string; versions: PiMemoryVersionEntry[] }>({
+    type: "list_memory_versions",
+    scope,
+    file,
+    ...(cwd ? { cwd } : {}),
+  });
+  return res.versions;
+}
+
+/** 读某一版内容（历史弹窗预览用） */
+export async function readMemoryVersion(
+  scope: "global" | "workspace",
+  cwd: string | null,
+  file: string,
+  versionId: string,
+): Promise<string> {
+  const res = await piRequest<{ type: "memory_version"; file: string; versionId: string; content: string }>({
+    type: "read_memory_version",
+    scope,
+    file,
+    versionId,
+    ...(cwd ? { cwd } : {}),
+  });
+  return res.content;
+}
+
+/** 把某一版写回文件（写回本身也进历史，任何一步都能回退） */
+export async function restoreMemoryVersion(
+  scope: "global" | "workspace",
+  cwd: string | null,
+  file: string,
+  versionId: string,
+): Promise<void> {
+  await piRequest({
+    type: "restore_memory_version",
+    scope,
+    file,
+    versionId,
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
+/** 删单条版本（当前内容不受影响） */
+export async function deleteMemoryVersion(
+  scope: "global" | "workspace",
+  cwd: string | null,
+  file: string,
+  versionId: string,
+): Promise<void> {
+  await piRequest({
+    type: "delete_memory_version",
+    scope,
+    file,
+    versionId,
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
+/** 删除记忆文件 = 移入回收站（可恢复） */
+export async function trashMemoryEntry(
+  scope: "global" | "workspace",
+  cwd: string | null,
+  file: string,
+): Promise<void> {
+  await piRequest({
+    type: "trash_memory_file",
+    scope,
+    file,
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
+/** 回收站清单（最新在前） */
+export async function listMemoryTrash(
+  scope: "global" | "workspace",
+  cwd: string | null,
+): Promise<PiMemoryTrashEntry[]> {
+  const res = await piRequest<{ type: "memory_trash"; scope: "global" | "workspace"; entries: PiMemoryTrashEntry[] }>({
+    type: "list_memory_trash",
+    scope,
+    ...(cwd ? { cwd } : {}),
+  });
+  return res.entries;
+}
+
+/** 从回收站恢复（同名文件已存在时 sidecar 会拒绝，不覆盖当前内容） */
+export async function restoreMemoryTrash(
+  scope: "global" | "workspace",
+  cwd: string | null,
+  trashId: string,
+): Promise<void> {
+  await piRequest({
+    type: "restore_memory_trash",
+    scope,
+    trashId,
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
+/** 彻底删除回收站的一条（连同该文件的版本史） */
+export async function deleteMemoryTrash(
+  scope: "global" | "workspace",
+  cwd: string | null,
+  trashId: string,
+): Promise<void> {
+  await piRequest({
+    type: "delete_memory_trash",
+    scope,
+    trashId,
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
+/** 清空回收站（返回清掉的条数；活着的记忆文件的版本史不动） */
+export async function emptyMemoryTrash(
+  scope: "global" | "workspace",
+  cwd: string | null,
+): Promise<number> {
+  const res = await piRequest<{ type: "memory_trash_emptied"; scope: "global" | "workspace"; removed: number }>({
+    type: "empty_memory_trash",
+    scope,
+    ...(cwd ? { cwd } : {}),
+  });
+  return res.removed;
+}
+
+export type {
+  PiMemoryTrashEntry,
+  PiMemoryVersionEntry,
+  PiMemoryVersionSource,
+};
 
 // client bundle 加载即水合（SSR 端不请求，getServerSnapshot 返回默认值）
 void initMemoryConfig();

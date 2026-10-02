@@ -100,14 +100,15 @@ export const ThinkingPicker: FC = () => {
             title={title}
             disabled={sendLocked}
             className={cn(
-              "inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50",
+              "inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 @max-2xl:px-2",
               on
                 ? "bg-primary/10 text-primary hover:bg-primary/15"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
             <BrainIcon className="size-3.5 shrink-0" />
-            {currentLabel && <span>{currentLabel}</span>}
+            {/* 窄栏只留图标（开启态的主色底色仍在）：档位名收进 title */}
+            {currentLabel && <span className="@max-2xl:hidden">{currentLabel}</span>}
           </button>
         }
       />

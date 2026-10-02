@@ -106,6 +106,10 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN model_id TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN thinking_level TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN design_theme TEXT;");
+    // app_mode：会话级工作模式（work|code|design）。NULL = 本会话从未切换过模式，
+    // 跟随全局默认（kv pi.app_mode）；定靶 set_app_mode 只写被点名会话这一列，
+    // 其余会话不受波及（与 thinking_level 同型，见 pi-agent handlers/preferences.ts）。
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN app_mode TEXT;");
 
     // 旧数据迁移：早期版本把未选工作目录的会话 cwd 存成用户主目录；统一清空。
     let home = home_dir();
@@ -406,7 +410,7 @@ pub fn handle_host_query(
             let id = str_param(p, "sessionId")?;
             let row = conn
                 .query_row(
-                    "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme FROM sessions WHERE id = ?1",
+                    "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode FROM sessions WHERE id = ?1",
                     params![id],
                     |row| {
                         Ok(json!({
@@ -418,6 +422,7 @@ pub fn handle_host_query(
                             "modelId": row.get::<_, Option<String>>(5)?,
                             "thinkingLevel": row.get::<_, Option<String>>(6)?,
                             "designTheme": row.get::<_, Option<String>>(7)?,
+                            "appMode": row.get::<_, Option<String>>(8)?,
                         }))
                     },
                 )
@@ -438,7 +443,7 @@ pub fn handle_host_query(
         }
         "session_list" => {
             let rows = conn
-                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme FROM sessions ORDER BY updated_at DESC")
+                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode FROM sessions ORDER BY updated_at DESC")
                 .map_err(|e| e.to_string())?
                 .query_map([], |row| {
                     Ok(json!({
@@ -456,6 +461,7 @@ pub fn handle_host_query(
                         "modelId": row.get::<_, Option<String>>(10)?,
                         "thinkingLevel": row.get::<_, Option<String>>(11)?,
                         "designTheme": row.get::<_, Option<String>>(12)?,
+                        "appMode": row.get::<_, Option<String>>(13)?,
                     }))
                 })
                 .map_err(|e| e.to_string())?
@@ -527,6 +533,7 @@ pub fn handle_host_query(
             let model_id = p.get("modelId").and_then(|v| v.as_str());
             let thinking_level = p.get("thinkingLevel").and_then(|v| v.as_str());
             let design_theme = p.get("designTheme").and_then(|v| v.as_str());
+            let app_mode = p.get("appMode").and_then(|v| v.as_str());
             conn.execute(
                 "UPDATE sessions SET \
                  mode = COALESCE(?2, mode), \
@@ -534,9 +541,10 @@ pub fn handle_host_query(
                  model_provider = COALESCE(?4, model_provider), \
                  model_id = COALESCE(?5, model_id), \
                  thinking_level = COALESCE(?6, thinking_level), \
-                 design_theme = COALESCE(?7, design_theme) \
+                 design_theme = COALESCE(?7, design_theme), \
+                 app_mode = COALESCE(?8, app_mode) \
                  WHERE id = ?1",
-                params![id, mode, approval_level, model_provider, model_id, thinking_level, design_theme],
+                params![id, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode],
             )
             .map_err(|e| e.to_string())?;
             Ok(json!({}))
@@ -1245,6 +1253,45 @@ mod tests {
         // 显式不使用主题："" 是携带值，必须覆盖旧值
         q("session_prefs_set", json!({ "sessionId": "s1", "designTheme": "" }));
         assert_eq!(q("session_get", json!({ "sessionId": "s1" }))["data"]["designTheme"], "");
+    }
+
+    /// app_mode 偏好列往返（会话级工作模式，与 thinking_level 同型）：
+    /// NULL = 本会话从未切换过（跟随全局默认 kv pi.app_mode）；定靶写入只动本会话，
+    /// 未携带的其他偏好保持原值。列表投影 session_list 也必须带上该列，
+    /// 否则前端切回会话时无从水合（显示回落默认 = 看起来像"模式没记住"）。
+    #[test]
+    fn session_prefs_app_mode_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let q = |kind: &str, p: Value| {
+            dispatch_host_query(
+                &db,
+                &json!({ "id": "t", "kind": kind, "params": p }),
+            )
+        };
+        q("session_insert", json!({ "sessionId": "s1", "cwd": "", "now": "t" }));
+
+        // 从未切换：列存在且为 NULL
+        assert!(q("session_get", json!({ "sessionId": "s1" }))["data"]["appMode"].is_null());
+
+        // 定靶写入：落库，且不牵连其他偏好列
+        q("session_prefs_set", json!({ "sessionId": "s1", "appMode": "work" }));
+        let got = q("session_get", json!({ "sessionId": "s1" }))["data"].clone();
+        assert_eq!(got["appMode"], "work");
+        assert!(got["mode"].is_null());
+        assert!(got["thinkingLevel"].is_null());
+
+        // 再切一档：覆盖为最新选择
+        q("session_prefs_set", json!({ "sessionId": "s1", "appMode": "design" }));
+        assert_eq!(
+            q("session_get", json!({ "sessionId": "s1" }))["data"]["appMode"],
+            "design"
+        );
+
+        // 列表投影同样携带（前端 piSessionPrefsMap 的取数路径）
+        let list = q("session_list", json!({}))["data"].clone();
+        assert_eq!(list.as_array().unwrap()[0]["appMode"], "design");
     }
 
     /// 旧库（无 archived 列）打开时自动补列，session_list 正常返回。

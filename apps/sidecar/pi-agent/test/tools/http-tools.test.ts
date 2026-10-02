@@ -1,5 +1,12 @@
-import { describe, expect, test } from "bun:test";
-import { fetchHeadline, normalizeResults, parseSearchResults } from "../../src/tools/http-tools";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  buildWebTools,
+  fetchHeadline,
+  normalizeResults,
+  parseSearchResults,
+} from "../../src/tools/http-tools";
+import { resetMirrorConfigForTest, setMirrorConfigForTest } from "../../src/tools/mirror-config";
+import { getTransport, setTransport } from "../../src/storage/hostdb/transport";
 
 describe("parseSearchResults", () => {
   test("JSON 数组直接结构化", () => {
@@ -73,5 +80,81 @@ describe("fetchHeadline", () => {
     expect(line).toContain("1234 bytes");
     expect(line).toContain("(truncated)");
     expect(line).toContain("final url: https://api.example.com/final");
+  });
+});
+
+/**
+ * WebFetch 的加速改写走的是「改 URL → hostHttpCall」这条路，所以这里注入一个
+ * 假传输，直接看发出去的是什么 URL、以及回给模型的文本有没有说明改了。
+ */
+describe("WebFetch 访问加速（镜像改写）", () => {
+  const sent: Record<string, unknown>[] = [];
+  let previousTransport: ReturnType<typeof getTransport> = null;
+
+  beforeEach(() => {
+    sent.length = 0;
+    previousTransport = getTransport();
+    setTransport(async (_kind, params) => {
+      const inner = (params as { params: Record<string, unknown> }).params;
+      sent.push(inner);
+      return {
+        output: "hello",
+        status: 200,
+        statusText: "OK",
+        ok: true,
+        url: String(inner.url),
+        contentType: "text/plain",
+        headers: {},
+        totalBytes: 5,
+        truncated: false,
+        encoding: "utf-8",
+      };
+    });
+  });
+
+  afterEach(() => {
+    setTransport(previousTransport);
+    resetMirrorConfigForTest();
+  });
+
+  const fetchUrl = (url: string, headers?: Record<string, string>) =>
+    buildWebTools("/tmp")[0]!.execute("t1", { url, headers }, undefined) as Promise<{
+      content: { type: string; text: string }[];
+      details: Record<string, unknown>;
+    }>;
+
+  test("命中规则时改走镜像，并在结果里说明（否则模型会以为读的是源站）", async () => {
+    setMirrorConfigForTest({ enabled: true, githubPrefix: "https://ghfast.top" });
+    const res = await fetchUrl("https://raw.githubusercontent.com/o/r/main/a.ts");
+    expect(sent[0]!.url).toBe(
+      "https://ghfast.top/https://raw.githubusercontent.com/o/r/main/a.ts",
+    );
+    const text = res.content[0]!.text;
+    expect(text).toContain("[access acceleration]");
+    expect(text).toContain("do not prepend a mirror yourself");
+    expect(res.details.accel).toEqual({
+      from: "https://raw.githubusercontent.com/o/r/main/a.ts",
+      to: "https://ghfast.top/https://raw.githubusercontent.com/o/r/main/a.ts",
+    });
+  });
+
+  test("开关关闭 / 未命中主机时不改写，也不加注记", async () => {
+    setMirrorConfigForTest({ enabled: false });
+    await fetchUrl("https://raw.githubusercontent.com/o/r/main/a.ts");
+    expect(sent[0]!.url).toBe("https://raw.githubusercontent.com/o/r/main/a.ts");
+
+    setMirrorConfigForTest({ enabled: true });
+    const res = await fetchUrl("https://example.com/a.ts");
+    expect(sent.at(-1)!.url).toBe("https://example.com/a.ts");
+    expect(res.content[0]!.text).not.toContain("[access acceleration]");
+    expect(res.details.accel).toBeUndefined();
+  });
+
+  test("带凭据的请求不改写（token 不发给第三方加速站）", async () => {
+    setMirrorConfigForTest({ enabled: true, githubPrefix: "https://ghfast.top" });
+    await fetchUrl("https://raw.githubusercontent.com/o/r/main/a.ts", {
+      Authorization: "Bearer secret",
+    });
+    expect(sent[0]!.url).toBe("https://raw.githubusercontent.com/o/r/main/a.ts");
   });
 });

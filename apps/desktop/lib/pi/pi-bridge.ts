@@ -555,6 +555,20 @@ export type PiBrowserConfig = {
   screenShot: boolean;
 };
 
+/** 访问加速配置整包（设置 → 系统 → 访问加速；sidecar 持久化于 SQLite kv）。
+ *  改写规则与边界见 sidecar tools/url-mirror.ts：只改写 GitHub 的
+ *  raw/发行包/源码包地址，带凭据的链接与 git push 一律不动。 */
+export type PiMirrorConfig = {
+  /** 总开关 */
+  enabled: boolean;
+  /** GitHub 加速前缀（ghproxy 系，如 https://ghfast.top）；空串 = 不改写 GitHub */
+  githubPrefix: string;
+  /** bash 里 git clone/fetch 走镜像（insteadOf 环境变量）；push 始终不受影响 */
+  gitInsteadOf: boolean;
+  /** 自定义 from→to 规则，优先于内建 GitHub 规则 */
+  customRules: { from: string; to: string }[];
+};
+
 /** 文生图配置整包（设置 → 模型 → 文生图；sidecar 持久化于 SQLite kv）。
  *  provider/modelId 指向已配置的模型目录（OpenAI 兼容端点），密钥走「模型」页的
  *  provider 凭据，这里不存；关闭/未配置时 generate_image 工具婉拒。 */
@@ -668,6 +682,28 @@ export type PiMemoryFilesResponse = {
     global: PiMemoryScopeState;
     workspace: PiMemoryScopeState | null;
   };
+};
+
+/** 版本来源：设置页保存 / AI 工具写入 / 外部编辑器改动补录 / 从历史恢复 / 删除前留档 */
+export type PiMemoryVersionSource = "page" | "agent" | "external" | "restore" | "delete";
+
+/** 记忆文件的一个历史版本（list_memory_versions 应答项；id 即版本文件名） */
+export type PiMemoryVersionEntry = {
+  id: string;
+  /** 记录时间（毫秒） */
+  ts: number;
+  source: PiMemoryVersionSource;
+  bytes: number;
+};
+
+/** 回收站条目（list_memory_trash 应答项；id 即回收站文件名） */
+export type PiMemoryTrashEntry = {
+  id: string;
+  /** 原文件名 */
+  name: string;
+  /** 移入回收站时间（毫秒） */
+  ts: number;
+  bytes: number;
 };
 
 /** 协议自报图标（MCP 2025-11-25 serverInfo.icons；sidecar 已过滤为 http(s)/data src） */
@@ -895,6 +931,7 @@ export type PiResponse =
   | { type: "app_mode"; mode: PiAppMode }
   | { type: "memory"; settings: PiMemoryConfig }
   | { type: "browser"; settings: PiBrowserConfig }
+  | { type: "mirror"; settings: PiMirrorConfig }
   | { type: "imagegen"; settings: PiImageGenConfig }
   | PiSecretsResponse
   | { type: "observability"; settings: PiObservabilityConfig }
@@ -909,6 +946,35 @@ export type PiResponse =
       file: string;
       bytes: number;
     }
+  | { type: "memory_versions"; file: string; versions: PiMemoryVersionEntry[] }
+  | { type: "memory_version"; file: string; versionId: string; content: string }
+  | {
+      type: "memory_version_restored";
+      scope: "global" | "workspace";
+      file: string;
+      bytes: number;
+      versionId: string;
+    }
+  | { type: "memory_version_deleted"; file: string; versionId: string }
+  | {
+      type: "memory_file_trashed";
+      scope: "global" | "workspace";
+      file: string;
+      trashId: string;
+    }
+  | {
+      type: "memory_trash";
+      scope: "global" | "workspace";
+      entries: PiMemoryTrashEntry[];
+    }
+  | {
+      type: "memory_trash_restored";
+      scope: "global" | "workspace";
+      file: string;
+      trashId: string;
+    }
+  | { type: "memory_trash_deleted"; scope: "global" | "workspace"; trashId: string }
+  | { type: "memory_trash_emptied"; scope: "global" | "workspace"; removed: number }
   | PiSubagentsResponse
   | PiSkillsResponse
   | PiDesignThemesResponse
@@ -947,6 +1013,18 @@ export type PiResponse =
     }
   | PiContextInfo
   | PiCompacted
+  // 提示词优化（lib/pi/pi-prompt-optimize）：optimize_prompt 的晚响应与请求
+  // 共用 reqId（sidecar handlers/optimize.ts 派活即返回）；cancelled 是任务
+  // 自己被取消的终态帧，cancel 只是取消命令的即时回执
+  | {
+      type: "prompt_optimized";
+      jobId: string;
+      text: string;
+      chipCount: number;
+      model: string;
+    }
+  | { type: "prompt_optimize_cancelled"; jobId: string }
+  | { type: "prompt_optimize_cancel"; jobId: string }
   // §8 加性结构化归因：errorText 仍是兜底文案，error 缺省 = 旧端未升级
   | { type: "error"; errorText: string; error?: ErrorPayload }
   | { type: "tool_confirmed"; approvalId: string }

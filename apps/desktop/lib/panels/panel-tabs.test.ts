@@ -2,21 +2,29 @@
  * 面板标签 store 的测试（伪 window 环境，localStorage 走内存实现）。
  * 覆盖按会话分桶的核心语义——线程隔离、指针切换、草稿 id rekey、
  * 会话删除 purge、跨会话并集视图、LRU 落盘上限与 v1 旧键清除，
- * 以及 plugin 标签的复合键定位复用（agent open_plugin_panel 的落点语义）。
+ * plugin 标签的复合键定位复用（agent open_plugin_panel 的落点语义），
+ * 以及按属主定靶的 For 变体（后台会话的 agent 工具/终端回写字）。
  */
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { fakeLocalStorage, removeFakeWindow } from "./panel-tabs.test-window";
 import {
   closeAllPanelTabs,
   closePanelTab,
+  closePanelTabFor,
   focusPanelTab,
+  focusPanelTabFor,
   focusPluginPanel,
+  focusPluginPanelFor,
   getAllThreadTabs,
+  getCurrentPanelThreadId,
   getPanelTabs,
+  getPanelTabsFor,
   openPanelTab,
+  openPanelTabFor,
   purgeThreadPanelTabs,
   rekeyPanelThread,
   setCurrentPanelThread,
+  updatePanelTabFor,
 } from "@/lib/panels/panel-tabs";
 
 afterAll(removeFakeWindow);
@@ -105,6 +113,90 @@ describe("rekey / purge", () => {
     purgeThreadPanelTabs("tD");
     expect(getAllThreadTabs().map((b) => b.threadId)).toEqual(["tE"]);
     purgeThreadPanelTabs("tE");
+    expect(getPanelTabs().tabs).toHaveLength(0);
+  });
+});
+
+describe("按属主定靶（For 变体：后台会话的写入方）", () => {
+  test("focusPanelTabFor 写后台桶：显示桶快照引用不变、后台桶就地新建", () => {
+    setCurrentPanelThread("tA");
+    openPanelTab("activity");
+    const shown = getPanelTabs();
+    const bgTab = focusPanelTabFor("tB", "browser", { url: "https://x.dev" });
+    // 用户正在看的会话丝毫不受后台写入影响
+    expect(getPanelTabs()).toBe(shown);
+    expect(getPanelTabs().tabs).toHaveLength(1);
+    // 后台桶不存在即新建，标签落桶并激活
+    const b = getPanelTabsFor("tB");
+    expect(b.tabs).toHaveLength(1);
+    expect(b.activeId).toBe(bgTab);
+    expect(b.tabs[0]).toMatchObject({ type: "browser", url: "https://x.dev" });
+    expect(getAllThreadTabs().map((x) => x.threadId).sort()).toEqual(["tA", "tB"]);
+  });
+
+  test("定靶于显示会话时与指针版语义一致（同型复用）", () => {
+    setCurrentPanelThread("tA");
+    const first = focusPanelTabFor("tA", "file", { path: "a.ts" });
+    const second = focusPanelTabFor("tA", "file", { path: "b.ts" });
+    expect(second).toBe(first);
+    const state = getPanelTabs();
+    expect(state.tabs).toHaveLength(1);
+    expect(state.tabs[0]!.path).toBe("b.ts");
+    expect(state.activeId).toBe(first);
+  });
+
+  test("plugin 复合键复用也按属主桶：后台两次唤起同一面板只占一标签", () => {
+    setCurrentPanelThread("tA");
+    const x = focusPluginPanelFor("tB", "p@m", "canvas", { path: "one.json" });
+    const y = focusPluginPanelFor("tB", "p@m", "canvas", { path: "two.json" });
+    expect(y).toBe(x);
+    expect(getPanelTabs().tabs).toHaveLength(0);
+    expect(getPanelTabsFor("tB").tabs[0]!.path).toBe("two.json");
+  });
+
+  test("closePanelTabFor/updatePanelTabFor 定向属主桶；指错桶的指针版不误伤", () => {
+    setCurrentPanelThread("tA");
+    const aTab = openPanelTab("activity");
+    const bTab = focusPanelTabFor("tB", "browser", { url: "u1" });
+    updatePanelTabFor("tB", bTab, { url: "u2", title: "站点" });
+    expect(getPanelTabsFor("tB").tabs[0]).toMatchObject({ url: "u2", title: "站点" });
+    // 后台进程退出回写走指针版时是 no-op（这正是归属 bug 的死标签来源），
+    // For 版才关得掉
+    closePanelTab(bTab);
+    expect(getPanelTabsFor("tB").tabs).toHaveLength(1);
+    closePanelTabFor("tB", bTab);
+    expect(getPanelTabsFor("tB").tabs).toHaveLength(0);
+    // 显示桶全程无感
+    expect(getPanelTabs().tabs.map((t) => t.id)).toEqual([aTab]);
+  });
+
+  test("updatePanelTabFor 目标标签不在桶：no-op，不为后台凭空建空桶", () => {
+    setCurrentPanelThread("tA");
+    updatePanelTabFor("tGhost", "tab-nope", { title: "X" });
+    expect(getPanelTabsFor("tGhost").tabs).toHaveLength(0);
+    expect(getAllThreadTabs().map((x) => x.threadId)).toEqual([]);
+  });
+
+  test("指针为 null 时指针版 no-op 防脏，For 版照常落桶", () => {
+    expect(getCurrentPanelThreadId()).toBeNull();
+    const phantom = focusPanelTab("review");
+    expect(phantom.startsWith("tab-")).toBe(true);
+    expect(getAllThreadTabs()).toHaveLength(0);
+    const id = openPanelTabFor("tZ", "plan");
+    expect(getPanelTabsFor("tZ").activeId).toBe(id);
+    expect(getPanelTabs().tabs).toHaveLength(0);
+  });
+
+  test("rekey 后后台属主标签随桶迁移（shell 按 uuid 反查属主的依据）", () => {
+    setCurrentPanelThread("tView");
+    const id = openPanelTabFor("draftX", "shell", { sessionId: "pty-9", title: "终端" });
+    rekeyPanelThread("draftX", "sess-9");
+    const found = getAllThreadTabs().find((b) =>
+      b.tabs.some((t) => t.id === id),
+    );
+    expect(found?.threadId).toBe("sess-9");
+    expect(getPanelTabsFor("draftX").tabs).toHaveLength(0);
+    // 显示桶自始至终无感
     expect(getPanelTabs().tabs).toHaveLength(0);
   });
 });

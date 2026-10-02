@@ -25,6 +25,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { SettingRow } from "@/components/custom-ui/setting-row";
+import { ProviderIcon } from "@/components/custom-ui/provider-icon";
 import { cn } from "@/lib/utils";
 import {
   piRequest,
@@ -529,7 +530,16 @@ export const ModelSettings: FC = () => {
     .filter((m) => m.authed && m.enabled && m.t2i)
     .map((m) => ({
       value: `${m.provider}/${m.id}`,
-      label: `${m.providerName} · ${m.name || m.id}`,
+      label: (
+        <span className="flex items-center gap-2">
+          <ProviderIcon
+            provider={m.provider}
+            modelId={m.id}
+            providerName={m.providerName}
+          />
+          {`${m.providerName} · ${m.name || m.id}`}
+        </span>
+      ),
     }));
   {
     const cur =
@@ -537,7 +547,20 @@ export const ModelSettings: FC = () => {
         ? `${imagegen.provider}/${imagegen.modelId}`
         : "";
     if (cur && !imageModelOptions.some((o) => o.value === cur)) {
-      imageModelOptions.unshift({ value: cur, label: `${cur}（当前）` });
+      // 已不在清单的选择（服务删除/取消标记）：按复合 id 还原 mark，保住回显
+      const sep = cur.indexOf("/");
+      imageModelOptions.unshift({
+        value: cur,
+        label: (
+          <span className="flex items-center gap-2">
+            <ProviderIcon
+              provider={cur.slice(0, sep)}
+              modelId={cur.slice(sep + 1)}
+            />
+            {`${cur}（当前）`}
+          </span>
+        ),
+      });
     }
   }
 
@@ -1458,7 +1481,10 @@ export const ModelSettings: FC = () => {
               className="bg-muted/60 focus-visible:bg-background focus-visible:border-ring focus-visible:ring-ring/50 flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-transparent px-3 text-sm transition-colors outline-none hover:bg-muted focus-visible:ring-1 disabled:opacity-50"
             >
               {svcProvider ? (
-                svcProviderLabel
+                <span className="flex min-w-0 items-center gap-2">
+                  <ProviderIcon provider={svcProvider} providerName={svcProviderLabel} />
+                  <span className="truncate">{svcProviderLabel}</span>
+                </span>
               ) : (
                 <span className="text-muted-foreground">选择服务</span>
               )}
@@ -1493,6 +1519,8 @@ export const ModelSettings: FC = () => {
                   <span className="w-4 shrink-0">
                     {isSel && <CheckIcon className="size-4" />}
                   </span>
+                  {/* "自定义端点"不是厂商：无品牌 id，落兜底 mark */}
+                  <ProviderIcon provider={opt.id} providerName={opt.name} />
                   <span className="min-w-0 flex-1 truncate text-start">
                     {opt.name}
                   </span>
@@ -1556,6 +1584,8 @@ export const ModelSettings: FC = () => {
                   {groups.map(([providerName, items]) => (
                     <div key={providerName} className="pb-2">
                       <div className="text-muted-foreground px-2.5 pb-1 text-xs font-medium">
+                        {/* 标题只写服务名：行内已经有模型 mark，标题再挂服务 mark
+                            会出现同品牌两个图标 */}
                         {providerName}
                       </div>
                       <div className="flex flex-col gap-0.5">
@@ -1583,6 +1613,11 @@ export const ModelSettings: FC = () => {
                               <span className="w-4 shrink-0">
                                 {isSelected && <CheckIcon className="size-4" />}
                               </span>
+                              <ProviderIcon
+                                provider={m.provider}
+                                modelId={m.id}
+                                providerName={m.providerName}
+                              />
                               <span className="min-w-0 flex-1 truncate text-start">
                                 {m.name || m.id}
                               </span>
@@ -1766,6 +1801,14 @@ export const ModelSettings: FC = () => {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
+                      {/* 服务行 = provider 位置：只按服务身份认 mark（自定义端点的
+                          id 是 custom-<slug>、名字由用户起，两者都是线索），不借
+                          该服务下某个模型的品牌——那会让"我的中转站"挂上 Claude */}
+                      <ProviderIcon
+                        provider={cp.providerId}
+                        providerName={cp.name}
+                        className="size-4"
+                      />
                       <span
                         title={cp.enabled ? "已启用" : "已停用"}
                         className={cn(
@@ -1849,6 +1892,11 @@ export const ModelSettings: FC = () => {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
+                      <ProviderIcon
+                        provider={svc.providerId}
+                        providerName={svc.name}
+                        className="size-4"
+                      />
                       <span
                         title="已配置凭据"
                         className="size-2 shrink-0 rounded-full bg-lime-500"

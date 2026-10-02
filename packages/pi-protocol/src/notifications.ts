@@ -20,6 +20,8 @@ export const subagentRunStatusSchema = z.enum([
   "truncated",
   "aborted",
   "stopped",
+  /** 进程中断：持久化时仍是 running、重启后从磁盘回读的委派（见 subagent/activity-store.ts） */
+  "interrupted",
 ]);
 
 /** 子代理运行活动条目（思考/正文增量、工具起止、轮次、结算终态） */

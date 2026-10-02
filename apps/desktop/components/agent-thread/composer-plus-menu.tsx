@@ -49,10 +49,7 @@ import { useMcpServers, type McpServerEntry } from "@/lib/mcp/mcp";
 import { useMcpToolsByServer } from "@/components/agent-thread/composer-commands";
 import { setSessionMode, useSessionMode } from "@/lib/pi/pi-session-mode";
 import { OPTIONS as MODE_OPTIONS, currentOption } from "@/components/agent-thread/mode-picker";
-import {
-  requestConnectorManage,
-  requestSettingsSection,
-} from "@/lib/connector-nav";
+import { requestConnectorManage } from "@/lib/connector-nav";
 import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
 
@@ -423,7 +420,7 @@ const AgentSub: FC = () => {
       )}
       <ManageItem
         label="管理子智能体"
-        onClick={() => requestSettingsSection("subagents")}
+        onClick={() => requestConnectorManage("subagents")}
       />
     </CategorySub>
   );

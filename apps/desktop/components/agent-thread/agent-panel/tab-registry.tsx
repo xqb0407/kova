@@ -21,7 +21,7 @@ import { usePanelActivity } from "@/lib/panels/panel-activity";
 import { useThreadTodos } from "@/lib/pi/pi-todo";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { useGitStatus } from "@/lib/git/git-status";
-import { useAppMode } from "@/lib/pi/app-mode";
+import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import { isTauri } from "@/lib/tauri";
 import type { PanelTab, PanelTabType } from "@/lib/panels/panel-tabs";
@@ -56,14 +56,14 @@ export const PANEL_TAB_TYPES: readonly PanelTabType[] = [
 ];
 
 /**
- * 可打开的标签类型:git 标签仅在工作目录是 git 仓库且全局模式为编码时出现
- * (静默降级,不报错;工作模式下 Git 管理整体隐藏,见 general-settings「工作模式」);
+ * 可打开的标签类型:git 标签仅在工作目录是 git 仓库且本会话工作模式为编码时出现
+ * (静默降级,不报错;工作模式下 Git 管理整体隐藏,见顶栏模式切换器);
  * 文件树与真终端标签仅桌面端(web 端无本地 FS / 无 PTY,数据源整个不存在)。
  */
 export function useVisiblePanelTabTypes(): PanelTabType[] {
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
-  const appMode = useAppMode();
+  const appMode = useCurrentAppMode();
   // 问答档是只读的：终端和 Git 面板在这里没有可回滚的对象，显隐与 code 档的
   // Git 隐藏同源（同一个"这一档不碰工程"的判断）
   const ask = useIsAskMode();

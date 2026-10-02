@@ -6,6 +6,7 @@ import {
   applyAppMode,
   APP_MODE_KV_KEY,
   DEFAULT_APP_MODE,
+  effectiveAppMode,
   getAppMode,
   initAppMode,
   normalizeAppMode,
@@ -91,22 +92,20 @@ describe("initAppMode / applyAppMode（kv 往返）", () => {
   });
 });
 
-describe("appModePromptBlock / composeModeSystemPrompt", () => {
-  test("code 档为空串；work 档含 Work mode 段", async () => {
-    await applyAppMode("code");
-    expect(appModePromptBlock()).toBe("");
-    const P_code = composeModeSystemPrompt("agent", "/tmp/proj", null);
+describe("appModePromptBlock / composeModeSystemPrompt（档位是入参，不是模块全局）", () => {
+  test("code 档为空串；work 档含 Work mode 段", () => {
+    expect(appModePromptBlock("code")).toBe("");
+    const P_code = composeModeSystemPrompt("agent", "/tmp/proj", "code", null);
     expect(P_code).not.toContain("Work mode");
     expect(P_code).not.toContain("Design mode");
     expect(P_code.startsWith(SYSTEM_PROMPT_CORE)).toBe(true);
 
-    await applyAppMode("work");
-    const block = appModePromptBlock();
+    const block = appModePromptBlock("work");
     expect(block).toContain("You are operating in Work mode");
     expect(block).toContain("take precedence");
 
     // 个性化段为空时，work 段应恰好插在模式附加段之后（其余字节不动）
-    const P_work = composeModeSystemPrompt("agent", "/tmp/proj", null);
+    const P_work = composeModeSystemPrompt("agent", "/tmp/proj", "work", null);
     expect(P_work).toBe(
       P_code.replace(
         AGENT_MODE_PROMPT,
@@ -116,36 +115,52 @@ describe("appModePromptBlock / composeModeSystemPrompt", () => {
     expect(P_work.split("You are operating in Work mode").length - 1).toBe(1);
   });
 
-  test("design 档含 Design mode 段且插入位置与 work 同槽", async () => {
+  test("design 档含 Design mode 段且插入位置与 work 同槽", () => {
     setUiDesignActiveProbeForTest(() => true);
-    await applyAppMode("design");
-    const block = appModePromptBlock();
+    const block = appModePromptBlock("design");
     expect(block).toContain("You are operating in Design mode");
     expect(block).toContain("*.uidesign.json");
     expect(block).toContain("use_skill");
     expect(block).not.toContain("NOT currently installed");
 
-    const P_design = composeModeSystemPrompt("agent", "/tmp/proj", null);
+    const P_design = composeModeSystemPrompt("agent", "/tmp/proj", "design", null);
     expect(P_design).toContain(block);
     expect(P_design).not.toContain("Work mode");
     expect(P_design.split("You are operating in Design mode").length - 1).toBe(1);
   });
 
-  test("ui-design 插件未启用时 design 段追加引导安装句", async () => {
+  test("ui-design 插件未启用时 design 段追加引导安装句", () => {
     setUiDesignActiveProbeForTest(() => false);
-    await applyAppMode("design");
-    const block = appModePromptBlock();
+    const block = appModePromptBlock("design");
     expect(block).toContain("NOT currently installed");
     expect(block).toContain("UI 设计");
   });
 
-  test("切回 code 后提示词回到不含 work/design 段的形态", async () => {
+  /** 会话隔离的根：提示词段只随入参档变，切换全局默认不动已定档会话。
+   *  （旧行为是读模块全局 —— A 会话切档把所有驻留会话的提示词一起换掉） */
+  test("全局默认漂移不改写已定档会话的提示词", async () => {
     setUiDesignActiveProbeForTest(null);
+    await applyAppMode("work");
+    // 自己切过档、停在 code 的会话：偏好列有值 → 提示词不含 work 段
+    const P_code = composeModeSystemPrompt("agent", "/tmp/proj", effectiveAppMode("code"), null);
+    expect(P_code).not.toContain("Work mode");
+    // 从未切过档的会话：偏好列为 NULL → 跟默认档，含 work 段
+    const P_follow = composeModeSystemPrompt("agent", "/tmp/proj", effectiveAppMode(null), null);
+    expect(P_follow).toContain("You are operating in Work mode");
     await applyAppMode("code");
-    expect(appModePromptBlock()).toBe("");
-    const P = composeModeSystemPrompt("agent", "/tmp/proj", null);
-    expect(P).not.toContain("Work mode");
-    expect(P).not.toContain("Design mode");
+  });
+});
+
+describe("effectiveAppMode（会话生效档裁决：偏好列 ?? 全局默认）", () => {
+  test("合法偏好值优先；NULL/缺省/脏值跟随当前全局默认", async () => {
+    await applyAppMode("design");
+    expect(effectiveAppMode("work")).toBe("work");
+    expect(effectiveAppMode("code")).toBe("code");
+    expect(effectiveAppMode(null)).toBe("design");
+    expect(effectiveAppMode(undefined)).toBe("design");
+    expect(effectiveAppMode("banana")).toBe("design");
+    await applyAppMode("code");
+    expect(effectiveAppMode(null)).toBe("code");
   });
 });
 

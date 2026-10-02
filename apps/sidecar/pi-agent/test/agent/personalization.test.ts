@@ -125,7 +125,7 @@ describe("personalizationPromptBlock", () => {
   test("全默认时为空串，默认提示词字节级不变", async () => {
     await applyPersonalization(DEFAULT_PERSONALIZATION);
     expect(personalizationPromptBlock()).toBe("");
-    const baseline = composeModeSystemPrompt("agent", "/tmp/ws");
+    const baseline = composeModeSystemPrompt("agent", "/tmp/ws", "code");
     expect(baseline).toContain(SYSTEM_PROMPT_CORE);
     expect(baseline.endsWith(workspacePromptLine("/tmp/ws"))).toBe(true);
   });
@@ -145,7 +145,7 @@ describe("personalizationPromptBlock", () => {
     expect(block).toContain("Persona: 资深前端搭档");
     expect(block).toContain("always apply): 用中文回复");
 
-    const prompt = composeModeSystemPrompt("agent", "/tmp/ws");
+    const prompt = composeModeSystemPrompt("agent", "/tmp/ws", "code");
     expect(prompt).toContain(block);
     const cwdIndex = prompt.indexOf(workspacePromptLine("/tmp/ws"));
     expect(prompt.startsWith(SYSTEM_PROMPT_CORE)).toBe(true);
@@ -153,7 +153,7 @@ describe("personalizationPromptBlock", () => {
   });
 
   test("plan 模式同样携带个性化段", () => {
-    const prompt = composeModeSystemPrompt("plan", "/tmp/ws");
+    const prompt = composeModeSystemPrompt("plan", "/tmp/ws", "code");
     expect(prompt).toContain("Reply style - direct");
     expect(prompt).toContain("Plan mode");
   });
@@ -163,7 +163,7 @@ describe("personalizationPromptBlock", () => {
     writeFileSync(soulFilePath(), "灵魂：安静可靠的工程师搭档\n");
     writeFileSync(rulesFilePath(), "始终用中文回复\n");
     expect(getPersonalization().persona).toContain("灵魂：安静可靠的工程师搭档");
-    const prompt = composeModeSystemPrompt("agent", "/tmp/ws");
+    const prompt = composeModeSystemPrompt("agent", "/tmp/ws", "code");
     expect(prompt).toContain("Persona: 灵魂：安静可靠的工程师搭档");
     expect(prompt).toContain("always apply): 始终用中文回复");
 
@@ -179,14 +179,14 @@ describe("personalizationPromptBlock", () => {
 
   test("恢复默认后提示词回到基线", async () => {
     await applyPersonalization(DEFAULT_PERSONALIZATION);
-    const baseline = composeModeSystemPrompt("agent", "/tmp/ws");
+    const baseline = composeModeSystemPrompt("agent", "/tmp/ws", "code");
     await applyPersonalization({ style: "friendly" });
-    expect(composeModeSystemPrompt("agent", "/tmp/ws")).not.toBe(baseline);
-    expect(composeModeSystemPrompt("agent", "/tmp/ws")).toContain(
+    expect(composeModeSystemPrompt("agent", "/tmp/ws", "code")).not.toBe(baseline);
+    expect(composeModeSystemPrompt("agent", "/tmp/ws", "code")).toContain(
       "Reply style - warm and approachable",
     );
     await applyPersonalization(DEFAULT_PERSONALIZATION);
-    expect(composeModeSystemPrompt("agent", "/tmp/ws")).toBe(baseline);
+    expect(composeModeSystemPrompt("agent", "/tmp/ws", "code")).toBe(baseline);
   });
 
   test("内置档覆盖注入：prompt 原文注入不叠前缀；隐藏/空 prompt 仍走内置文案", async () => {
@@ -222,7 +222,7 @@ describe("personalizationPromptBlock", () => {
     });
     const block = personalizationPromptBlock();
     expect(block).toContain("Reply style - 文艺: 文风偏文学，善用比喻");
-    expect(composeModeSystemPrompt("agent", "/tmp/ws")).toContain(block);
+    expect(composeModeSystemPrompt("agent", "/tmp/ws", "code")).toContain(block);
 
     // 选中但描述为空的条目：风格段整体不注入（全默认其余字段 → 空串）
     await applyPersonalization({

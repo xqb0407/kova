@@ -8,7 +8,6 @@ import {
   useMemo,
   useState,
   type FC,
-  type ReactNode,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -42,7 +41,6 @@ const EMPTY_RESULTS: OnboardingResults = {};
 
 type OnboardingContextValue = {
   step: number;
-  total: number;
   results: OnboardingResults;
   /** 分区交回结果：patch(分区 id, { done, summary }) */
   patch: (id: string, next: Partial<OnboardingSectionResult>) => void;
@@ -59,7 +57,6 @@ export function useOnboarding(): OnboardingContextValue {
   return (
     useContext(OnboardingContext) ?? {
       step: 0,
-      total: 1,
       results: EMPTY_RESULTS,
       patch: () => {},
       next: () => {},
@@ -99,7 +96,6 @@ export const OnboardingFlow: FC = () => {
   const value = useMemo<OnboardingContextValue>(
     () => ({
       step,
-      total: COUNTED_STEPS,
       results,
       patch,
       next: () => setStep((s) => Math.min(s + 1, DONE_STEP)),

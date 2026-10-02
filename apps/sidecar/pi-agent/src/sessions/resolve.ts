@@ -30,6 +30,7 @@ import {
   composeModeSystemPrompt,
   toolsForMode,
 } from "../agent/modes";
+import { effectiveAppMode } from "../agent/app-mode";
 import {
   captureProviderResponse,
   carriesRetryDelayHeaders,
@@ -43,6 +44,13 @@ import { buildSubagentTools } from "../subagent/subagent";
 import { buildSkillMgmtTools } from "../skills/skill-mgmt-tools";
 import { buildPluginMgmtTools } from "../plugins/plugin-mgmt-tools";
 import { buildSchedulerTools } from "../automation/mgmt-tools";
+import { buildDesignThemeMgmtTools, type DesignThemeMgmtDeps } from "../design-md/mgmt-tools";
+import {
+  applyThemeDelete,
+  applyThemeSave,
+  finishThemeMutation,
+  selectAndBroadcastSessionTheme,
+} from "../design-md/apply";
 import { readCompaction, readTranscript, scanTranscript } from "./transcript";
 import type { PendingInteraction } from "pi-protocol";
 import { restoreUnsettled } from "./pending-interactions";
@@ -77,9 +85,32 @@ import type { ApprovalLevel, Running, SessionMode } from "../types";
 type PlanningModePrefs = { mode: SessionMode; approvalLevel: ApprovalLevel };
 
 /**
+ * 主题管理工具的生效链依赖：落盘后的重映射/刷快照/重排提示词/广播走
+ * design-md/apply（与设置页 handler 同一条链）。在这里注入而不是让
+ * mgmt-tools 直引 apply——apply 引 agent/modes，而 modes 要引 mgmt-tools
+ * 取审批名单，直引成环。
+ */
+function designThemeMgmtDeps(run: Running): DesignThemeMgmtDeps {
+  return {
+    afterSave: async (ref, options) => {
+      const mutation = await applyThemeSave(ref, options);
+      finishThemeMutation(mutation);
+      return mutation.snap;
+    },
+    afterDelete: async (id) => {
+      const mutation = await applyThemeDelete(id);
+      finishThemeMutation(mutation);
+      return mutation.snap;
+    },
+    applyToSession: (ref) => selectAndBroadcastSessionTheme(run, ref),
+  };
+}
+
+/**
  * agent 模式挂载的扩展工具组 = Task 组（含子智能体管理三件套）+ 技能管理三件套
- * + 排期管理组（scheduler_*，无人值守 run 自动为空）。都不进 baseTools：
- * delegate 按定义从基础目录取工具时结构性拿不到它们。
+ * + 设计主题管理三件套（design_themes_list / design_theme_save /
+ * design_theme_delete）+ 排期管理组（scheduler_*，无人值守 run 自动为空）。
+ * 都不进 baseTools：delegate 按定义从基础目录取工具时结构性拿不到它们。
  * run.subagentTools 即本组（字段名沿用，语义为"Task 旁的扩展组"）。
  */
 function buildAgentExtensions(
@@ -95,6 +126,7 @@ function buildAgentExtensions(
       await reloadSkills();
       await reloadSubagents();
     }),
+    ...buildDesignThemeMgmtTools(designThemeMgmtDeps(run)),
     ...buildSchedulerTools(run),
   ];
 }
@@ -146,6 +178,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
     composeModeSystemPrompt(
       run.mode,
       run.cwd,
+      run.appMode,
       run.agent.state.model,
       run.designTheme,
     ),
@@ -230,7 +263,13 @@ export async function reloadSkills(): Promise<void> {
   for (const run of running.values()) cwds.add(run.cwd);
   await Promise.all([...cwds].map((c) => ensureSkillsLoaded(c || undefined)));
   for (const run of running.values()) {
-    const prompt = composeModeSystemPrompt(run.mode, run.cwd, run.agent.state.model, run.designTheme);
+    const prompt = composeModeSystemPrompt(
+      run.mode,
+      run.cwd,
+      run.appMode,
+      run.agent.state.model,
+      run.designTheme,
+    );
     setLeadingSystemMessage(run.agent.state.messages, prompt);
     if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
   }
@@ -487,6 +526,11 @@ export async function resolveSession(
     initialDesignTheme = getLastUsedDesignTheme();
   }
 
+  // 会话级工作模式：sessions.app_mode 偏好列的合法值优先，NULL/脏值跟随全局默认
+  // （kv pi.app_mode）。从未在本会话切过档的（含新会话）显示与运行都跟默认档；
+  // 切过档就只认自己的列——A 会话切档不牵连 B 会话（定靶写入见 handlers/preferences.ts）
+  const initialAppMode = effectiveAppMode(restoredRow?.appMode);
+
   // 会话级模型：恢复的会话上次用哪个模型就继续用哪个（目录中已删除则回落全局）；
   // 新会话/自动化 turn 用全局当前选择（自动化的 per-task 模型由 runner 在 resolve 后覆盖）。
   // 真值优先级（§6 M4）：转录 model_change 行 > SQLite 偏好行（旧会话无行，回落投影）> 全局
@@ -556,6 +600,8 @@ export async function resolveSession(
     mode: initialMode,
     approvalLevel: initialApproval,
     designTheme: initialDesignTheme,
+    // 会话生效工作模式（偏好列 ?? 全局默认）：系统提示词模式段的事实源
+    appMode: initialAppMode,
     // 全文加载台账：每次新建 run 都是空表（恢复/压缩后宁可重贴不谎报已加载）
     designThemeLoads: new Map<string, string>(),
     planning: initialMode === "plan" ? "planning" : "inactive",
@@ -620,7 +666,13 @@ export async function resolveSession(
       );
     },
     initialState: {
-      systemPrompt: composeModeSystemPrompt(initialMode, resolvedCwd, model, initialDesignTheme),
+      systemPrompt: composeModeSystemPrompt(
+        initialMode,
+        resolvedCwd,
+        initialAppMode,
+        model,
+        initialDesignTheme,
+      ),
       model,
       // 深度思考档位：转录行回放，无行跟随全局（set_thinking 维护；off = 不发送 reasoning 参数）
       thinkingLevel: initialThinking,
@@ -735,6 +787,8 @@ export async function projectContextInfo(
   const projectedFromColumn = decodeThemeColumn(row.designTheme);
   const projectedTheme =
     projectedFromColumn === undefined ? getLastUsedDesignTheme() : projectedFromColumn;
+  // 工作模式读数同恢复链口径（偏好列合法值 ?? 全局默认），投影读数逐字段一致
+  const projectedAppMode = effectiveAppMode(row.appMode);
   const baseTools = buildTools(resolvedCwd, threadId, () => projectedTheme);
   const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包
@@ -746,6 +800,7 @@ export async function projectContextInfo(
   const stub = {
     mode: projectedMode,
     planning: projectedMode === "plan" ? "planning" : "inactive",
+    appMode: projectedAppMode,
     baseTools,
     subagentTools: [],
   } as unknown as Running;
@@ -754,7 +809,13 @@ export async function projectContextInfo(
   return contextInfoFrom({
     model,
     messages: messages as unknown as Parameters<typeof contextInfoFrom>[0]["messages"],
-    systemPrompt: composeModeSystemPrompt(projectedMode, resolvedCwd, model, projectedTheme),
+    systemPrompt: composeModeSystemPrompt(
+      projectedMode,
+      resolvedCwd,
+      projectedAppMode,
+      model,
+      projectedTheme,
+    ),
     tools: toolsForMode(stub),
     sessionId,
     compactionGeneration: generation,

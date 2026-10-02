@@ -90,9 +90,9 @@ export const ModeStep: FC = () => {
     if (value === "design") void refreshDesignThemes();
   };
 
-  // 选了设计档就把当前模式回报给完成清单（回到本页时以 store 为准）
+  // 完成清单以 store 当前值为准持续回报。不要对「设计」早退：当前已是设计档
+  // （重新查看引导 / 播种值水合）时早退会让完成页显示成「未配置」或旧档位。
   useEffect(() => {
-    if (mode === "design") return; // 设计档在上面单独回报过
     patch("appMode", { done: true, summary: MODE_LABELS[mode] });
   }, [mode, patch]);
 
@@ -101,7 +101,7 @@ export const ModeStep: FC = () => {
       {dialog}
       <StepHeading
         title="平时主要拿它做什么"
-        desc="全局开关，切了立刻生效于所有会话。之后在「设置 → 通用」里随时能改。"
+        desc="默认模式：切了立刻生效于新对话与未单独切过档的会话，单个会话之后可在顶栏改成自己的。这里随时能在「设置 → 通用」重设。"
       />
 
       {degraded && (

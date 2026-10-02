@@ -27,12 +27,20 @@ export type Turn = {
    *  只看线程级 isRunning 不够——它会有短暂为 false 的空窗（排队准备段、
    *  上一轮被中止的收尾），那些瞬间会被误判成"轮已结束"。 */
   running: boolean;
+  /** 轮内最后一条「有实质内容」的 assistant 消息下标（尾部纯压缩分隔线消息
+   *  不算，无内容消息也不算）；没有则 -1。答案面可见性挂它：空闲/手动压缩会
+   *  在轮末留下一条独立的分隔线消息，轮末身份归它，但答案不能被挤进过程面
+   *  ——轮中消息收起后整块卸载，答案会连同那一列分隔线一起消失。 */
+  answerTail: number;
 };
 
 export type TurnIndex = {
   turns: Turn[];
-  /** 消息 id → 所属轮次与是否轮首（折叠状态与耗时都用它） */
-  slots: Map<string, { turnIndex: number; isHeader: boolean }>;
+  /** 消息 id → 所属轮次、是否轮首、是否答案尾位（折叠状态与耗时都用它） */
+  slots: Map<
+    string,
+    { turnIndex: number; isHeader: boolean; isAnswerTail: boolean }
+  >;
   /** 消息 id → 数组下标（选择器里的 O(1) 定位；流式期间选择器每次通知都重跑，
    *  全量 findIndex 会随消息数平方膨胀） */
   byId: Map<string, number>;
@@ -75,6 +83,7 @@ export function buildTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
         end: i,
         interrupted: false,
         running: false,
+        answerTail: -1,
       });
       start = i;
     }
@@ -86,36 +95,74 @@ export function buildTurnIndex(messages: readonly ThreadMessage[]): TurnIndex {
       end: messages.length,
       interrupted: false,
       running: false,
+      answerTail: -1,
     });
   }
-  // 每轮补两个状态位（一次线性扫，索引本身已按 messages 数组身份缓存）：
+  // 每轮补状态位（一次线性扫，索引本身已按 messages 数组身份缓存）：
   //  - interrupted：轮末消息带 data-stopped（直播 abort chunk / 历史重建
   //    stopReason "aborted" 落同一个 part）
   //  - running：轮内任一消息仍在流式
+  //  - answerTail：轮内最后一条有实质内容的 assistant 消息（尾部纯压缩
+  //    分隔线消息不算，见 Turn.answerTail）
   for (const turn of turns) {
     const last = messages[turn.end - 1];
     turn.interrupted =
       last?.role === "assistant" &&
       last.content.some((part) => part.type === "data" && part.name === "stopped");
     for (let i = turn.start; i < turn.end; i++) {
-      if (messages[i].status?.type === "running") {
-        turn.running = true;
-        break;
-      }
+      const message = messages[i];
+      if (message.status?.type === "running") turn.running = true;
+      if (message.role !== "assistant") continue;
+      if (hasVisibleContent(message)) turn.answerTail = i;
     }
   }
 
-  const slots = new Map<string, { turnIndex: number; isHeader: boolean }>();
+  const slots = new Map<
+    string,
+    { turnIndex: number; isHeader: boolean; isAnswerTail: boolean }
+  >();
   const byId = new Map<string, number>();
   const turnByKey = new Map<string, Turn>();
   turns.forEach((turn, turnIndex) => {
     turnByKey.set(turn.key, turn);
     for (let i = turn.start; i < turn.end; i++) {
-      slots.set(String(messages[i].id), { turnIndex, isHeader: i === turn.start });
+      slots.set(String(messages[i].id), {
+        turnIndex,
+        isHeader: i === turn.start,
+        isAnswerTail: i === turn.answerTail,
+      });
       byId.set(String(messages[i].id), i);
     }
   });
   return { turns, slots, byId, turnByKey };
+}
+
+/**
+ * 消息是否有实质内容：至少一个非「压缩分隔线」part。历史重建/快照投影把每个
+ * 压缩检查点投成独立消息（内容只有一个 data-compaction part），它不承载答案；
+ * 空 content 的消息同判无内容（渲染不出东西，别占答案位）。
+ */
+function hasVisibleContent(message: ThreadMessage): boolean {
+  return message.content.some(
+    (part) =>
+      !(part.type === "data" && (part as { name?: string }).name === "compaction"),
+  );
+}
+
+/**
+ * 纯压缩分隔线消息（内容全是 data-compaction part）：没有答案面，轮末拆分对
+ * 它无意义——整条归过程区，收起隐藏、展开回原位（压缩线属于折叠里的过程记录，
+ * 不在收起态露在外部）。口径比 assistant-message 操作栏的 dividerOnly 窄：
+ * 那里是「全是 data part」（含成图），这里只认压缩分隔线。
+ */
+function isDividerOnly(message: ThreadMessage): boolean {
+  return (
+    message.content.length > 0 &&
+    message.content.every(
+      (part) =>
+        part.type === "data" && (part as { name?: string }).name === "compaction",
+    )
+  );
 }
 
 /**
@@ -133,7 +180,8 @@ export function messageIndexById(
 /**
  * 消息在本轮里的位置，打包成字符串供 useAuiState 选择器使用（原始值，
  * Object.is 挡住流式期间的重渲；内部走缓存索引，O(1)）：
- *   `"<isTurnStart>|<isTurnEnd>|<isLastTurn>|<anchorUserIndex>|<turnKey>"`
+ *   flags（逐位）`isTurnStart isTurnEnd isLastTurn interrupted turnRunning isAnswerTail dividerOnly`
+ *   ——`"<flags>|<anchorUserIndex>|<turnKey>"`
  * anchorUserIndex = 本轮触发的 user 消息下标（开场 assistant 段为 -1）。
  */
 export function packTurnSlot(
@@ -144,12 +192,15 @@ export function packTurnSlot(
   const info = index.slots.get(messageId);
   if (!info) return "";
   const turn = index.turns[info.turnIndex];
+  const messageIndex = index.byId.get(messageId);
+  const dividerOnly =
+    messageIndex !== undefined && isDividerOnly(messages[messageIndex]);
   const isTurnEnd = String(messages[turn.end - 1]?.id) === messageId;
   const isLastTurn = info.turnIndex === index.turns.length - 1;
   const anchorUserIndex =
     messages[turn.start]?.role === "user" ? turn.start : -1;
   return [
-    `${info.isHeader ? 1 : 0}${isTurnEnd ? 1 : 0}${isLastTurn ? 1 : 0}${turn.interrupted ? 1 : 0}${turn.running ? 1 : 0}`,
+    `${info.isHeader ? 1 : 0}${isTurnEnd ? 1 : 0}${isLastTurn ? 1 : 0}${turn.interrupted ? 1 : 0}${turn.running ? 1 : 0}${info.isAnswerTail ? 1 : 0}${dividerOnly ? 1 : 0}`,
     anchorUserIndex,
     turn.key,
   ].join("|");
@@ -163,6 +214,11 @@ export type TurnSlotInfo = {
   interrupted: boolean;
   /** 轮内仍在流式（不能收起、不显示摘要行） */
   turnRunning: boolean;
+  /** 轮内最后一条有实质内容的 assistant 消息（尾部纯压缩分隔线消息不算）：
+   *  答案面可见性挂它，见 Turn.answerTail */
+  isAnswerTail: boolean;
+  /** 纯压缩分隔线消息（没有答案面）：不走轮末拆分，整条归过程区 */
+  dividerOnly: boolean;
   /** 本轮触发的 user 消息下标（开场 assistant 段为 -1） */
   anchorUserIndex: number;
   turnKey: string;
@@ -177,13 +233,15 @@ export function parseTurnSlot(packed: string): TurnSlotInfo | null {
     isLastTurn: flags[2] === "1",
     interrupted: flags[3] === "1",
     turnRunning: flags[4] === "1",
+    isAnswerTail: flags[5] === "1",
+    dividerOnly: flags[6] === "1",
     anchorUserIndex: Number(anchorUserIndex),
     turnKey: rest.join("|"),
   };
 }
 
 /**
- * 槽位 +「压缩分隔线保命」标记的打包/解析：两者必须成对改。
+ * 槽位 +「轮中交付物豁免收起」标记的打包/解析：两者必须成对改。
  * 之前打包写成 `keep\u0000slot` 而解析按 `slot\u0000keep` 解，结果每条消息
  * 都解析成空槽位（全默认收起）——轮中消息全被隐藏，只有带压缩分隔线的侥幸
  * 渲染，看起来像"消息消失了"。收进同模块 + 单测锁住往返。

@@ -19,7 +19,7 @@ import {
   type GitDiffFile,
 } from "@/lib/git/git";
 import { refreshGitStatus } from "@/lib/git/git-status";
-import { useAppMode } from "@/lib/pi/app-mode";
+import { useThreadAppMode } from "@/lib/pi/pi-session-app-mode";
 import { packTurnSlot, parseTurnSlot } from "@/lib/panels/message-turns";
 import { focusPanelTab, openPanelTab } from "@/lib/panels/panel-tabs";
 import {
@@ -278,12 +278,12 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
  * 且本轮由 user 消息触发（锚点=该 user 消息下标）。挂轮末而不是「首条
  * assistant 回复」：折叠轮（Codex 风格）里轮中过程消息整体不挂载，挂首条
  * 会随过程一起被收起，撤销入口就没了。
- * 工作模式下不渲染（Git 管理整体隐藏，见 general-settings「工作模式」）；
+ * 本会话工作模式为「工作」时不渲染（Git 管理整体隐藏，见顶栏模式切换器）；
  * 影子仓库快照链路不动，切回编码模式时历史卡片可恢复。
  */
 export const MessageCheckpoint: FC = () => {
-  const appMode = useAppMode();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const appMode = useThreadAppMode(threadId);
   const entries = useRunCheckpoints(threadId ?? undefined);
   // 选择器只回 number（引用稳定）：本轮触发的 user 消息下标，非轮末/开场段为 -1
   const anchorUserIndex = useAuiState((s) => {
@@ -306,8 +306,8 @@ export const MessageCheckpoint: FC = () => {
 
 /** 兜底尾：锚点未知的条目（刷新重挂后补结算等）渲染在消息列表末尾；工作模式下不渲染 */
 export const CheckpointTail: FC = () => {
-  const appMode = useAppMode();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const appMode = useThreadAppMode(threadId);
   const entries = useRunCheckpoints(threadId ?? undefined);
   if (appMode !== "code") return null;
   if (!threadId) return null;

@@ -34,13 +34,15 @@ mockModule("@/lib/pi/pi-bridge", () => ({
 const registry = new Map<string, string>();
 const prefs = new Map<string, { mode?: string; approvalLevel?: string }>();
 const { isLocalDraftThreadId } = await import("@/lib/pi/pi-thread-identity");
+const sessionIdFor = (threadId: string) =>
+  registry.get(threadId) ?? (isLocalDraftThreadId(threadId) ? undefined : threadId);
 mockModule("@/lib/pi/pi-thread-adapter", () => ({
   piSessionRegistry: registry,
   piSessionPrefsMap: prefs,
   prefsSessionIdFor: (threadId: string) =>
     registry.get(threadId) ?? (prefs.has(threadId) ? threadId : undefined),
-  piSessionIdForThread: (threadId: string) =>
-    registry.get(threadId) ?? (isLocalDraftThreadId(threadId) ? undefined : threadId),
+  piSessionIdForThread: sessionIdFor,
+  piStoreKeyForThread: (threadId: string) => sessionIdFor(threadId) ?? threadId,
 }));
 
 afterAll(() => {
@@ -162,6 +164,47 @@ describe("fetchPlanningState：刷新后水合回问答档", () => {
     const req = calls.find((c) => c.type === "get_planning_state");
     expect(req?.sessionId).toBe("01890a5d-ac96-774b-bcce-b302099a8057");
     expect(sessionModeSnapshot("01890a5d-ac96-774b-bcce-b302099a8057").mode).toBe("ask");
+  });
+});
+
+describe("键归一：chunk 写会话键，mainThreadId（草稿 id）也读得到", () => {
+  test("绑定后的新建会话：chunk 落会话键，按 mainThreadId 读命中", () => {
+    reset();
+    const draft = "__LOCALID_draft-9";
+    registry.set(draft, "sess-9");
+    // chunk 行只带 sessionId（pi-client-base 按 parsed.sessionId 写入）
+    applyPlanningChunk("sess-9", {
+      mode: "ask",
+      approvalLevel: "ask",
+      planning: "inactive",
+    });
+    // 组件侧拿的还是 mainThreadId = 草稿 id：不归一就会读到默认档（UI 永远不更新）
+    expect(sessionModeSnapshot(draft).mode).toBe("ask");
+  });
+
+  test("草稿期选的档在绑定后仍可见（惰性 rekey，不闪回默认）", async () => {
+    reset();
+    const draft = "__LOCALID_draft-10";
+    responder = () => ({ type: "mode_changed", mode: "plan", planning: "planning" });
+    // 草稿期：无会话，纯本地快照落草稿键
+    await setSessionMode(draft, "plan");
+    expect(sessionModeSnapshot(draft).mode).toBe("plan");
+    // 首条消息发送 → initialize 登记绑定
+    registry.set(draft, "sess-10");
+    expect(sessionModeSnapshot(draft).mode).toBe("plan");
+  });
+
+  test("rekey 后 live 真值优先：会话键已有值时不被草稿快照覆盖", async () => {
+    reset();
+    const draft = "__LOCALID_draft-11";
+    await setSessionMode(draft, "plan");
+    registry.set(draft, "sess-11");
+    applyPlanningChunk("sess-11", {
+      mode: "agent",
+      approvalLevel: "ask",
+      planning: "inactive",
+    });
+    expect(sessionModeSnapshot(draft).mode).toBe("agent");
   });
 });
 

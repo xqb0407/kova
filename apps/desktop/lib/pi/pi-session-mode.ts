@@ -6,6 +6,7 @@ import { piRequest } from "@/lib/pi/pi-bridge";
 import {
   piSessionIdForThread,
   piSessionPrefsMap,
+  piStoreKeyForThread,
 } from "@/lib/pi/pi-thread-adapter";
 
 /**
@@ -42,7 +43,7 @@ export const DEFAULT_PLANNING_SNAPSHOT: PlanningSnapshot = {
   planning: "inactive",
 };
 
-/** threadId -> 最近一次已知的模式快照 */
+/** threadId -> 最近一次已知的模式快照（键 = piStoreKeyForThread 归一后的 sessionId） */
 const snapshots = new Map<string, PlanningSnapshot>();
 const listeners = new Set<() => void>();
 
@@ -50,8 +51,23 @@ function notify() {
   for (const l of listeners) l();
 }
 
+/**
+ * store 键归一（读写共用；规则见 piStoreKeyForThread）。草稿期落的本地快照
+ * 在绑定后惰性搬到会话键：不搬的话「新对话里选了 plan → 发送」会当场闪回默认档
+ * （UI 转读会话键，而草稿键上那份本地态再也无人读），随后才由 chunk/水合覆盖。
+ * 只搬一次，且会话键已有真值时不动它——live 真值永远优先。
+ */
+function storeKey(threadId: string, migrate = false): string {
+  const key = piStoreKeyForThread(threadId);
+  if (migrate && key !== threadId) {
+    const draft = snapshots.get(threadId);
+    if (draft && !snapshots.has(key)) snapshots.set(key, draft);
+  }
+  return key;
+}
+
 function setSnapshot(threadId: string, snap: PlanningSnapshot) {
-  snapshots.set(threadId, snap);
+  snapshots.set(storeKey(threadId, true), snap);
   notify();
 }
 
@@ -78,14 +94,19 @@ export function useSessionMode(threadId: string | undefined): PlanningSnapshot {
       listeners.add(cb);
       return () => listeners.delete(cb);
     },
-    () => (threadId ? (snapshots.get(threadId) ?? DEFAULT_PLANNING_SNAPSHOT) : DEFAULT_PLANNING_SNAPSHOT),
+    () =>
+      threadId
+        ? (snapshots.get(storeKey(threadId, true)) ?? DEFAULT_PLANNING_SNAPSHOT)
+        : DEFAULT_PLANNING_SNAPSHOT,
     () => DEFAULT_PLANNING_SNAPSHOT,
   );
 }
 
 /** React 之外的读法（测试、非组件调用点）。形态对齐 app-mode 的 getAppMode() */
 export function sessionModeSnapshot(threadId: string | undefined): PlanningSnapshot {
-  return threadId ? (snapshots.get(threadId) ?? DEFAULT_PLANNING_SNAPSHOT) : DEFAULT_PLANNING_SNAPSHOT;
+  return threadId
+    ? (snapshots.get(storeKey(threadId, true)) ?? DEFAULT_PLANNING_SNAPSHOT)
+    : DEFAULT_PLANNING_SNAPSHOT;
 }
 
 /** 工具行、面板标签、composer 底栏共用同一个判据：别处各自判 mode 会漂 */

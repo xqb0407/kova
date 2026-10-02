@@ -156,6 +156,12 @@ export const handlers: Record<string, CommandHandler> = {
         modelProvider: r.modelProvider ?? undefined,
         modelId: r.modelId ?? undefined,
         thinkingLevel: r.thinkingLevel ?? undefined,
+        // 会话级工作模式（宽松规整：列里只认三档字面量，脏值按「从未切换」处理，
+        // 前端据此回落全局默认，不会显示出一个非法档位）
+        appMode:
+          r.appMode === "work" || r.appMode === "code" || r.appMode === "design"
+            ? r.appMode
+            : undefined,
       }))
       .filter((s) => s.messageCount > 0);
     send({ id: reqId, type: "sessions", sessions });
@@ -197,9 +203,19 @@ export const handlers: Record<string, CommandHandler> = {
     if (!existsSync(sourceFile))
       throw new Error(`transcript not found: ${sourceId}`);
     // 逐行复制转录（header 行不拷、撕裂尾行丢弃、未知行型不拷）；
-    // 数据行原样保留 seq——seq 是文件内编号空间，跨会话不冲突
+    // 数据行原样保留 seq——seq 是文件内编号空间，跨会话不冲突。
+    // 位置分叉（可选 upToSeq，消息气泡「分叉会话」入口）：锚点行（气泡投影
+    // 首行的转录 seq）及之前照常复制；之后只延展同一回合的收尾行——非用户
+    // 行（悬空 toolResult / 续跑 assistant）与 [[auto-continue]] 注入行（投影
+    // 把它们并进同一条气泡），遇到真正的用户输入或压缩检查点即整段截停，
+    // 锚点下方的后续轮次不进入新会话
+    const upToSeq =
+      typeof msg.upToSeq === "number" && Number.isFinite(msg.upToSeq)
+        ? msg.upToSeq
+        : undefined;
     const dataLines: string[] = [];
     let messageCount = 0;
+    let afterAnchor = false;
     for (const line of readFileSync(sourceFile, "utf8").split("\n")) {
       if (!line.trim()) continue;
       let row: { type?: string; seq?: number; agent?: unknown };
@@ -210,6 +226,25 @@ export const handlers: Record<string, CommandHandler> = {
       }
       if (!row || row.type === "header" || typeof row.seq !== "number")
         continue;
+      if (upToSeq !== undefined && row.seq > upToSeq) {
+        if (afterAnchor) continue;
+        // 每条消息行都带 agent（模型面原文，user 行也不例外，见 persist），
+        // 「真正的用户输入」这一界标只能按 agent.role 判定
+        const payload =
+          row.type === "message"
+            ? (row.agent as { role?: string } | undefined)
+            : undefined;
+        const sameRunTail =
+          !!payload &&
+          (payload.role !== "user" || isAutoContinueMessage(payload));
+        if (!sameRunTail) {
+          afterAnchor = true;
+          continue;
+        }
+        messageCount += 1;
+        dataLines.push(line);
+        continue;
+      }
       if (row.type === "message") {
         if (!row.agent) continue;
         messageCount += 1;

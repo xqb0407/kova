@@ -54,7 +54,10 @@ const fakeTool = (name: string): AgentTool =>
     execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
   }) as unknown as AgentTool;
 
-function makeRun(mode: SessionMode = "agent"): Running {
+function makeRun(
+  mode: SessionMode = "agent",
+  appMode: "work" | "code" | "design" = "code",
+): Running {
   return {
     // 0.99 起 fake state 需带 messages：applyMode 经 setLeadingSystemMessage
     // 改写转录首条 system 消息（state.systemPrompt 是只读回放，fake 上不可写）
@@ -75,6 +78,7 @@ function makeRun(mode: SessionMode = "agent"): Running {
     stopRequested: false,
     mode,
     approvalLevel: "ask",
+    appMode,
     planning: mode === "plan" ? "planning" : "inactive",
     baseTools: BASE_NAMES.map(fakeTool),
     subagentTools: [fakeTool("task"), fakeTool("task_wait")],
@@ -513,7 +517,7 @@ describe("系统提示词结构（缓存友好）", () => {
         ? systemPromptCore(["identity", "discipline", "communication"])
         : SYSTEM_PROMPT_CORE;
     for (const mode of ["agent", "plan", "ask"] as const) {
-      const prompt = composeModeSystemPrompt(mode, CWD);
+      const prompt = composeModeSystemPrompt(mode, CWD, "code");
       const coreEnd = prompt.indexOf(coreFor(mode));
       const modePos = prompt.indexOf(modeMarker[mode]);
       const cwdPos = prompt.indexOf(workspaceLine);
@@ -525,7 +529,7 @@ describe("系统提示词结构（缓存友好）", () => {
   });
 
   test("plan 模式提示词指向三件套", () => {
-    const prompt = composeModeSystemPrompt("plan", CWD);
+    const prompt = composeModeSystemPrompt("plan", CWD, "code");
     expect(prompt).toContain(PLAN_TOOL_NAMES.write);
     expect(prompt).toContain(PLAN_TOOL_NAMES.exit);
     expect(prompt).not.toContain("SubmitPlan");
@@ -533,19 +537,19 @@ describe("系统提示词结构（缓存友好）", () => {
   });
 
   test("cwd 只在末段出现一次", () => {
-    const prompt = composeModeSystemPrompt("agent", CWD);
+    const prompt = composeModeSystemPrompt("agent", CWD, "code");
     expect(prompt.split(CWD).length - 1).toBe(1);
   });
 
   test("同一模式不同 cwd：静态前缀保持一致（仅末段不同）", () => {
-    const a = composeModeSystemPrompt("plan", "/tmp/a");
-    const b = composeModeSystemPrompt("plan", "/tmp/b");
+    const a = composeModeSystemPrompt("plan", "/tmp/a", "code");
+    const b = composeModeSystemPrompt("plan", "/tmp/b", "code");
     expect(a.slice(0, a.lastIndexOf("\n\n"))).toBe(b.slice(0, b.lastIndexOf("\n\n")));
     expect(a).not.toBe(b);
   });
 
   test("环境事实块：日期/模型/OS 在模式段之后、cwd 行之前，cwd 行仍在最尾", () => {
-    const prompt = composeModeSystemPrompt("agent", CWD, {
+    const prompt = composeModeSystemPrompt("agent", CWD, "code", {
       provider: "acme",
       id: "m-1",
       name: "Model One",
@@ -563,15 +567,15 @@ describe("系统提示词结构（缓存友好）", () => {
   });
 
   test("环境事实块：无模型时省略 Model 行；模型名与 id 相同时不重复标注", () => {
-    expect(composeModeSystemPrompt("agent", CWD)).not.toContain("- Model:");
-    expect(composeModeSystemPrompt("agent", CWD, { provider: "acme", id: "m-1" })).toContain(
+    expect(composeModeSystemPrompt("agent", CWD, "code")).not.toContain("- Model:");
+    expect(composeModeSystemPrompt("agent", CWD, "code", { provider: "acme", id: "m-1" })).toContain(
       "- Model: acme/m-1.",
     );
   });
 
   test("同参数连续组装字节级一致（环境块无秒级抖动，缓存前缀稳定）", () => {
-    const a = composeModeSystemPrompt("agent", CWD);
-    const b = composeModeSystemPrompt("agent", CWD);
+    const a = composeModeSystemPrompt("agent", CWD, "code");
+    const b = composeModeSystemPrompt("agent", CWD, "code");
     expect(a).toBe(b);
   });
 });
@@ -677,14 +681,14 @@ describe("问答模式提示词", () => {
   const CWD = "/tmp/ws";
 
   test("剔掉任务追踪与子代理两段", () => {
-    const prompt = composeModeSystemPrompt("ask", CWD);
+    const prompt = composeModeSystemPrompt("ask", CWD, "code");
     expect(prompt).not.toContain("Task tracking:");
     expect(prompt).not.toContain("Subagents:");
     expect(prompt).not.toContain("subagents_save");
   });
 
   test("保留读码纪律与沟通纪律，并指向出口工具", () => {
-    const prompt = composeModeSystemPrompt("ask", CWD);
+    const prompt = composeModeSystemPrompt("ask", CWD, "code");
     expect(prompt).toContain("Code change discipline:");
     expect(prompt).toContain("Reply in the same language the user writes in.");
     expect(prompt).toContain(ASK_NEEDS_WORK_TOOL_NAME);
@@ -692,22 +696,22 @@ describe("问答模式提示词", () => {
 
   test("agent / plan 档仍带任务追踪与子代理两段（分段未误伤）", () => {
     for (const mode of ["agent", "plan"] as const) {
-      const prompt = composeModeSystemPrompt(mode, CWD);
+      const prompt = composeModeSystemPrompt(mode, CWD, "code");
       expect(prompt).toContain("Task tracking:");
       expect(prompt).toContain("Subagents:");
     }
   });
 
   test("问答档显著短于 agent 档", () => {
-    const ask = composeModeSystemPrompt("ask", CWD);
-    const agent = composeModeSystemPrompt("agent", CWD);
+    const ask = composeModeSystemPrompt("ask", CWD, "code");
+    const agent = composeModeSystemPrompt("agent", CWD, "code");
     expect(ask.length).toBeLessThan(agent.length);
   });
 
   test("拆分静态核心未改 code/plan 档的字节（缓存前缀不变）", () => {
-    const agent = composeModeSystemPrompt("agent", CWD);
+    const agent = composeModeSystemPrompt("agent", CWD, "code");
     expect(agent.startsWith(SYSTEM_PROMPT_CORE)).toBe(true);
-    expect(agent).toBe(composeModeSystemPrompt("agent", CWD));
+    expect(agent).toBe(composeModeSystemPrompt("agent", CWD, "code"));
   });
 });
 

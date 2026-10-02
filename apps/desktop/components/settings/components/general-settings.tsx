@@ -52,11 +52,11 @@ export const GeneralSettings: FC = () => {
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">工作模式</h2>
           <p className="text-muted-foreground text-sm">
-            全局开关，立即生效于所有会话；与输入框旁的权限模式（确认/自动/计划）互不影响。
+            默认模式：新对话，以及从未在顶栏单独切过档的会话跟随这里；单独切过档的会话保持自己的档。与输入框旁的权限模式（确认/自动/计划）互不影响。
           </p>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             <SettingRow
-              label="模式"
+              label="默认模式"
               desc={
                 appModeDegraded
                   ? "当前 sidecar 版本不支持，切换仅影响界面，提示词不跟随"

@@ -36,6 +36,7 @@
     "@fontsource/roboto": "^5.3.0",
     "@hookform/resolvers": "^5.9.1",
     "@lezer/highlight": "^1.2.3",
+    "@lobehub/icons": "^5.22.0",
     "@pierre/diffs": "^1.4.2",
     "@react-three/drei": "^10.7.8",
     "@react-three/fiber": "^9.7.0",

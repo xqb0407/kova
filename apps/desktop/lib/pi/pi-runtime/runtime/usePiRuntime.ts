@@ -52,6 +52,7 @@ import { disposeControllers } from "./disposeControllers";
 // set_mode/主题胶囊等）全靠这张表把线程 id 换成 sessionId，否则 threadId-only
 // 请求会让 sidecar 懒建空白会话（对话失忆）。
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import { flushDraftAppModeSelection } from "@/lib/pi/pi-session-app-mode";
 import { flushDraftModelSelection } from "@/lib/pi/pi-session-model";
 import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
 import {
@@ -703,12 +704,13 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // 面板标签桶随绑定从草稿 id 迁到 sessionId 键下：刷新/重启后线程行
       // id 就是 sessionId，桶才接得上（含当前指针）
       if (threadId) rekeyPanelThread(threadId, remoteId);
-      // 会话级选择的补写：草稿期（尚无 sessionId）选的模型/档位只记在前端内存，
-      // 此刻 sessionId 已绑定、会话行已建，定靶落库后首条消息即用该选择应答
-      //（两者均 fire-and-forget 语义：内部自吞失败并回退显示）
+      // 会话级选择的补写：草稿期（尚无 sessionId）选的模型/思考档位/工作模式只记在
+      // 前端内存，此刻 sessionId 已绑定、会话行已建，定靶落库后首条消息即用该选择应答
+      //（三者均 fire-and-forget 语义：内部自吞失败并回退显示）
       if (threadId) {
         flushDraftModelSelection(threadId);
         flushDraftThinkingSelection(threadId);
+        flushDraftAppModeSelection(threadId);
       }
       return {
         remoteId,

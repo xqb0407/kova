@@ -145,8 +145,12 @@ get_subagent_activity(delegationId)
 ## 7. 保留与护栏
 
 - **单文件体积**：> 5MB 时截尾保留 1MB（同 `trimTraceFile` 的策略与阈值），防止长任务把磁盘打满。
-- **文件数量**：已完成委派的文件按"最旧先删"淘汰，保留上限对齐现有 `MAX_RETAINED_DELEGATIONS = 50`
+- **文件数量**：**按目录盘点**（不是按内存里的 `run.delegations`——重启后内存是空的，
+  必须扫盘才知道有哪些文件）：目录内文件超过上限时删最旧的 `mtime`，
+  上限对齐现有 `MAX_RETAINED_DELEGATIONS = 50`
   （[delegation.ts](../apps/sidecar/pi-agent/src/subagent/delegation.ts#L31-L32)）。
+  触发时机：sidecar 启动时一次 + 每次委派 settle 时一次。**只在无委派在跑时清理**，
+  避免删掉正在写的文件。
 - running 的委派文件永不淘汰。
 
 ---
@@ -192,8 +196,8 @@ get_subagent_activity(delegationId)
 - **`interrupted` 的传播面**：新增终态值需要 sidecar 与桌面的类型镜像同步改；
   漏改一处会导致状态标签回落为原始英文值（不致命，但难看）。实现时以
   `grep SubagentRunStatus` 全量核对。
-- **文件清理的时机**：淘汰逻辑挂在 settle 时机（同 `pruneFinishedDelegations`），
-  若进程频繁崩溃，未完成文件会累积——可接受（体积有 5MB 护栏）。
+- **文件清理的时机**：启动 + settle 两处触发；进程频繁崩溃时未结算的文件可能
+  暂时超出上限，等下次启动清理——可接受（单文件有 5MB 护栏）。
 - **回放的字体/顺序**：合并后的 `delta` 与原始逐条 `delta` 在 reducer 里等价，
   已由现有单测覆盖；若将来前端改为"按 delta 计数"渲染，需要重新评估。
 

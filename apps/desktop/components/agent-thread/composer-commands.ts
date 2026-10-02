@@ -196,27 +196,33 @@ export function useMcpToolsByServer(workspace: string | null) {
   return toolsByServer;
 }
 
-/** `/` 指令菜单：命令 + 技能 + MCP 工具 三分类 adapter，供 ComposerTriggerPopover 展开 */
-export function useComposerSlashMenu(): {
+/** `/` 指令菜单：命令 + 技能 + MCP 工具 三分类 adapter，供 ComposerTriggerPopover 展开。
+ *  includeCommands=false 时去掉面板类命令（自动化弹窗里没有可开的面板，留着只会误导）。 */
+export function useComposerSlashMenu(
+  opts: { includeCommands?: boolean } = {},
+): {
   adapter: Unstable_TriggerAdapter;
   action: { onExecute: (item: Unstable_TriggerItem) => void; removeOnExecute: true };
   iconMap: Record<string, FC<{ className?: string }>>;
   fallbackIcon: FC<{ className?: string }>;
 } {
+  const { includeCommands = true } = opts;
   const workspace = useWorkspace();
   const skills = useSkills(workspace);
   const toolsByServer = useMcpToolsByServer(workspace);
 
   const commandItems = useMemo<Unstable_TriggerItem[]>(
     () =>
-      SLASH_COMMANDS.filter((c) => !c.tauriOnly || isTauri()).map((c) => ({
-        id: c.id,
-        type: "command",
-        label: c.label,
-        description: c.description,
-        metadata: { icon: c.icon },
-      })),
-    [],
+      includeCommands
+        ? SLASH_COMMANDS.filter((c) => !c.tauriOnly || isTauri()).map((c) => ({
+            id: c.id,
+            type: "command",
+            label: c.label,
+            description: c.description,
+            metadata: { icon: c.icon },
+          }))
+        : [],
+    [includeCommands],
   );
 
   const skillItems = useMemo<Unstable_TriggerItem[]>(

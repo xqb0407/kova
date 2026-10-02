@@ -52,7 +52,7 @@ export const DoneStep: FC = () => {
         <p className="text-muted-foreground text-xs leading-relaxed">
           {"试试直接在输入框里说「帮我看看这个项目怎么跑起来」，或者按 "}
           <Kbd>/</Kbd>
-          {" 用斜杠命令。想知道还有哪些能力，侧边栏的插件市场和技能管理值得逛逛。"}
+          {" 用斜杠命令。想知道还有哪些能力，侧边栏的「插件 / 专家 / 技能」值得逛逛。"}
         </p>
       </div>
 

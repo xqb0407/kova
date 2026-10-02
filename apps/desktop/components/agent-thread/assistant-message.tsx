@@ -45,6 +45,7 @@ import {
   CheckIcon,
   CopyIcon,
   DownloadIcon,
+  GitBranchIcon,
   MoreHorizontalIcon,
   PencilLineIcon,
   RefreshCwIcon,
@@ -52,7 +53,14 @@ import {
   SquareTerminalIcon,
 } from "lucide-react";
 import type { FC, ReactNode } from "react";
+import { useState } from "react";
 import { randomLoadingPhrase } from "@/lib/panels/loading";
+import { requestOpenSession } from "@/lib/pi/open-session";
+import {
+  forkPiSession,
+  piSessionIdForThread,
+} from "@/lib/pi/pi-thread-adapter";
+import { toast } from "@/components/ui/toast";
 
 /**
  * 交互面在别处、消息列表不再渲染的工具：
@@ -361,14 +369,13 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
           // 过程面跳过这几类，避免展开态出现两份
           const dataName =
             part.type === "data" ? (part as { name?: string }).name : undefined;
-          // 压缩分隔线归 answer 面独有（收起后仍可见的"保命锚点"，与
-          // turn-summary 的 keepsVisible 同语义）：轮末两面同挂，若过程面
-          // 也放行会渲染出两条一模一样的线
+          // 压缩分隔线归过程面（不在此列）：它属于「这一轮被压过」的过程记录，
+          // 收起态一律不露在外部，展开后在它发生的位置可见（轮末那条同理，
+          // 纯分隔线消息不走轮末拆分，见 turn-summary.tsx 的 dividerOnly 分支）
           const onAnswerSide =
             part.type === "text" ||
             dataName === "image" ||
             dataName === "errorAttribution" ||
-            dataName === "compaction" ||
             (part as { type?: string }).type === "group-images";
           if (onlyProcess && onAnswerSide) return null;
           // answer 面只保留正文、压缩分隔线与成图；工具/思考/其他 data 归过程面
@@ -612,6 +619,55 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   );
 };
 
+/** 「···」菜单项共用的样式（导出/分叉同款） */
+const MORE_ITEM_CLASS =
+  "aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none";
+
+/**
+ * 「分叉会话」（··· 更多操作菜单）：以本条消息为锚点把会话一分为二——新
+ * 会话包含到这条消息为止的历史（同回合的工具收尾行由 sidecar 延展带上），
+ * 下方的后续轮次不带入。锚点取投影稳定 id `pi-msg:<seq>`：未落盘的乐观
+ * 消息（下标回退/乐观前缀 id）无从定位转录行，未绑定 sidecar 会话的本地
+ * 草稿同理，两种情况都不显示入口。
+ */
+const ForkSessionItem: FC = () => {
+  const messageId = useAuiState((s) => s.message.id);
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const [forking, setForking] = useState(false);
+  const remoteId = threadId ? piSessionIdForThread(threadId) : undefined;
+  const anchorSeq = /^pi-msg:(\d+)$/.exec(messageId ?? "")?.[1];
+  if (!remoteId || !anchorSeq) return null;
+  const fork = async () => {
+    if (forking) return;
+    setForking(true);
+    try {
+      const newId = await forkPiSession(remoteId, {
+        upToSeq: Number(anchorSeq),
+      });
+      // 走 open-session 总线：base 壳统一 reload 列表后切到新会话
+      requestOpenSession(newId);
+    } catch (err) {
+      toast.add({
+        title: "分叉会话失败",
+        description: err instanceof Error ? err.message : String(err),
+        type: "error",
+      });
+    } finally {
+      setForking(false);
+    }
+  };
+  return (
+    <ActionBarMorePrimitive.Item
+      className={MORE_ITEM_CLASS}
+      disabled={forking}
+      onClick={() => void fork()}
+    >
+      <GitBranchIcon size="1em" className="size-4" />
+      分叉会话
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
 const AssistantActionBar: FC = () => {
   // 纯分隔线消息（如历史重建的压缩分隔线）：不展示复制/重载等操作
   const dividerOnly = useAuiState(
@@ -640,7 +696,7 @@ const AssistantActionBar: FC = () => {
       className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ml-1 my-4 flex gap-1 duration-200"
     >
       <ActionBarPrimitive.Copy asChild>
-        <TooltipIconButton tooltip="Copy">
+        <TooltipIconButton tooltip="复制">
           <AuiIf condition={(s) => s.message.isCopied}>
             <CheckIcon
               size="1em"
@@ -656,14 +712,14 @@ const AssistantActionBar: FC = () => {
         </TooltipIconButton>
       </ActionBarPrimitive.Copy>
       <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="Refresh">
+        <TooltipIconButton tooltip="刷新">
           <RefreshCwIcon size="1em" />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
           <TooltipIconButton
-            tooltip="More"
+            tooltip="更多操作"
             className="data-[state=open]:bg-accent"
           >
             <MoreHorizontalIcon size="1em" />
@@ -675,10 +731,11 @@ const AssistantActionBar: FC = () => {
           sideOffset={6}
           className="aui-action-bar-more-content bg-popover text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-xl border p-1.5"
         >
+          <ForkSessionItem />
           <ActionBarPrimitive.ExportMarkdown asChild>
-            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none">
+            <ActionBarMorePrimitive.Item className={MORE_ITEM_CLASS}>
               <DownloadIcon size="1em" className="size-4" />
-              Export as Markdown
+              导出为 Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>

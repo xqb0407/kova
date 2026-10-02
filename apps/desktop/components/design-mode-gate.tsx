@@ -26,7 +26,8 @@ import {
  * 语义：UI 切换照常，提示词由下一次连接收敛）。
  * 用法（顶栏切换器与设置页同款）：
  *   const { ensure, dialog } = useEnsureUiDesignPlugin();
- *   if (await ensure()) void setAppMode("design");
+ *   if (await ensure()) void setThreadAppMode(threadId, "design"); // 顶栏：只切本会话
+ *   // 设置 → 通用改的是默认档：if (await ensure()) void setAppMode("design")
  *   ... 渲染 {dialog}
  */
 
@@ -133,7 +134,7 @@ export function useEnsureUiDesignPlugin(): {
             ) : (
               <>
                 设计模式依赖「UI 设计」插件（设计稿面板 + MCP 工具 + 平台规范技能）。
-                已添加的插件市场里没有该插件，请到「插件市场」页添加来源并安装后重试。
+                已添加的插件市场里没有该插件，请到「插件/专家/技能」页添加来源并安装后重试。
               </>
             )}
           </DialogDescription>

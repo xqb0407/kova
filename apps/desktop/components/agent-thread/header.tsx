@@ -30,7 +30,7 @@ import { usePanelActivity } from "@/lib/panels/panel-activity";
 import { useThreadTodos } from "@/lib/pi/pi-todo";
 import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
 import { useGitStatus } from "@/lib/git/git-status";
-import { useAppMode } from "@/lib/pi/app-mode";
+import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
@@ -155,13 +155,13 @@ const PanelToggleButton: FC<{ onToggle: () => void }> = ({ onToggle }) => {
 
 /** 标题旁的工作区/分支 tag 胶囊（样式对齐 composer 的 WorkspacePill）：
  *  未选择文件夹（workspace 为 null）时整体不渲染；
- *  分支 tag 仅在该目录是 git 仓库、状态已加载且全局模式为编码时出现
+ *  分支 tag 仅在该目录是 git 仓库、状态已加载且本会话工作模式为编码时出现
  *  （复用 git-status 缓存，不重复拉取；工作模式下 Git 管理整体隐藏）。
  *  纯展示，不做交互 —— 切换 workspace/分支仍走 composer 的胶囊入口 */
 const WorkspaceBadge: FC = () => {
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
-  const appMode = useAppMode();
+  const appMode = useCurrentAppMode();
   if (!workspace) return null;
 
   return (
@@ -299,8 +299,8 @@ export const Header: FC<{
       {pageMode ? null : <ThreadTitle />}
       {/* 所选工作区目录 + git 分支 tag（未选目录时不显示），位于「更多」按钮左侧 */}
       {!pageMode && !isEmptyThread && <WorkspaceBadge />}
-      {/* 全局工作模式切换（编码/工作）：应用级开关，常驻可见——设置→通用里是同一事实源。
-          仅对话页渲染：pageMode 的页面（文件/自动化/用量/连接器）是整页视图，
+      {/* 会话工作模式切换（编码/工作/设计）：只作用于本会话，与模型/思考档位选择器
+          同语义（未切过档的会话跟随设置→通用的全局默认）。仅对话页渲染：pageMode 的页面（文件/自动化/用量/连接器）是整页视图，
           标题区让位给页面自身，这个开关也一并收起，避免顶栏被应用级控件占住 */}
       {!pageMode && <AppModeSwitch />}
       {/* 标题右侧「更多」菜单 + 重命名任务 dialog（空会话不渲染） */}
