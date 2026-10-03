@@ -34,6 +34,7 @@ const tauriTransport: PiClientTransport = {
       cwd: args.cwd,
       attachments: args.attachments,
       steer: args.steer,
+      goalMaxAutoTurns: args.goalMaxAutoTurns ?? null,
     });
   },
 

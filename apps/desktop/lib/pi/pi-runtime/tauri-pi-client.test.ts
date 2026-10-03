@@ -91,6 +91,7 @@ const {
   subscribeThreadTitles,
 } = await import("@/lib/pi/pi-thread-titles");
 const { sessionModeSnapshot } = await import("@/lib/pi/pi-session-mode");
+const { goalSnapshotForTest } = await import("@/lib/pi/pi-goal");
 const {
   __resetTurnStoresForTests,
   getTurnTiming,
@@ -478,6 +479,38 @@ describe("TauriPiClient 交互卡旁路（4b）", () => {
     ]);
     expect(sessionModeSnapshot("s1").mode).toBe("plan");
     expect(events).toHaveLength(0);
+  });
+
+  test("data-goal-state 进目标 store 且不进消息流", async () => {
+    snapshotCalls = 0;
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const { events, feed } = subscribeAndSettle();
+    await tick();
+    events.length = 0;
+
+    const goal = {
+      id: "g1",
+      objective: "把 README 补全",
+      status: "active",
+      statusLine: "第 3/300 轮",
+      turnCount: 3,
+      maxAutoTurns: 25,
+      tokensUsed: 128_000,
+      startedAt: 1,
+      updatedAt: 2,
+    };
+    feed([chunkLine("s1", "data-goal-state", { goal })]);
+    expect(goalSnapshotForTest("s1").goal?.objective).toBe("把 README 补全");
+    expect(goalSnapshotForTest("s1").goal?.turnCount).toBe(3);
+    expect(events).toHaveLength(0);
+
+    // goal: null 是「清除」帧：条必须真的收起来，而不是留着上一次的旧目标
+    feed([chunkLine("s1", "data-goal-state", { goal: null })]);
+    expect(goalSnapshotForTest("s1").goal).toBeNull();
+
+    // 形状不完整的目标整条丢弃（loose 协议的脏数据兜底）
+    feed([chunkLine("s1", "data-goal-state", { goal: { id: "g2" } })]);
+    expect(goalSnapshotForTest("s1").goal).toBeNull();
   });
 });
 

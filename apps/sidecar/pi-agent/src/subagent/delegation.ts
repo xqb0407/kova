@@ -206,6 +206,8 @@ export function settleDelegation(
   result: SubagentRunResult,
 ): void {
   if (record.status !== "running") return;
+  // 子代理的用量记到父 run 的目标账上：它的消耗不进父会话转录，不收在这里就永远看不到
+  run.usagePending += result.tokens ?? 0;
   record.status =
     record.stopRequested && result.status === "aborted" ? "stopped" : result.status;
   record.result = result;

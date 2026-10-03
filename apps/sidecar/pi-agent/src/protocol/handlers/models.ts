@@ -10,7 +10,7 @@ import {
   appendModelChangeRow,
   appendThinkingLevelChangeRow,
 } from "../../sessions/transcript";
-import { composeModeSystemPrompt } from "../../agent/modes";
+import { composeRunPrompt } from "../../agent/modes";
 import { setLeadingSystemMessage } from "../../agent/context";
 import { kvSet, modelsAll, modelsDeleteProvider, modelsList, modelsReplace, sessionGet, sessionPrefsSet, type ModelReplaceItem } from "../../storage/hostdb";
 import {
@@ -200,7 +200,7 @@ export const handlers: Record<string, CommandHandler> = {
       run.agent.state.model = model;
       setLeadingSystemMessage(
         run.agent.state.messages,
-        composeModeSystemPrompt(run.mode, run.cwd, run.appMode, model, run.designTheme),
+        composeRunPrompt(run, model),
       );
     };
     if (sessionId) {

@@ -28,7 +28,7 @@ import { buildWebTools } from "./http-tools";
 import { activeGitAccelEnv } from "./mirror-config";
 import { buildQuestionTool } from "./question-tools";
 import { buildTodoTool } from "../todo/todo";
-import { buildMemoryTools } from "../agent/memory";
+import { buildMemoryTools, getMemoryConfig } from "../agent/memory";
 import { buildSkillUseTool } from "../skills/skill-use-tool";
 import { buildUseDesignThemeTool } from "../design-md/use-design-theme-tool";
 import type { ThemeRef } from "../design-md/store";
@@ -328,6 +328,10 @@ export function buildTools(
   threadId: string,
   getDesignTheme?: () => ThemeRef | null,
   getThemeLoads?: () => Map<string, string> | undefined,
+  /** 工作目录真正落盘点：bash 是唯一硬依赖 cwd 已存在的工具（宿主用
+   *  current_dir(cwd) spawn，目录没了直接失败）。无目录会话的任务子目录
+   *  推迟到这里、agent 真跑命令时才建；write 等其余路径写时自带 mkdir。 */
+  ensureCwd?: () => void,
 ): AgentTool[] {
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
@@ -355,6 +359,8 @@ export function buildTools(
       // 由 Rust 注入那一条派生进程，不落盘、不改用户 git 配置）；命令里带 push
       // 时整个跳过——镜像只代理读。
       (params) => {
+        // 任务目录落盘点（见 buildTools 的 ensureCwd 注释）：宿主 spawn 前必须存在
+        ensureCwd?.();
         const extra: Record<string, unknown> = {};
         const secretEnv = resolveSecretEnv(cwd, threadId);
         if (secretEnv.length) extra.secretEnv = secretEnv;
@@ -449,9 +455,12 @@ export function buildTools(
     buildQuestionTool(threadId),
     // todo：不触盘不触网，只维护会话内任务清单（per-thread 槽见 todo.ts）
     buildTodoTool(threadId),
-    // 记忆三件套（write/read/search）：常驻注册（工具表稳定缓存友好），开关在
-    // execute 内实时门控；cwd 供工作区作用域定位（rebindRunCwd 会重建）
-    ...buildMemoryTools(cwd),
+    // 记忆三件套（write/read/search）：按总开关**条件注册**——关闭时整组不下发，
+    // 模型看不见工具，记忆能力就是不存在（比"给了再拒绝"干净，也没有误报成功的余地）。
+    // 开关翻转由 reloadMemoryTools 整表重建活动会话；工具表只在用户拨开关那一次变化，
+    // 稳定期缓存照旧命中。开启时作用域/检索细项仍在 execute 内实时门控（第二道闸，
+    // 防轮中翻转后残留的旧工具表仍能写）。cwd 供工作区作用域定位（rebindRunCwd 也会重建）
+    ...(getMemoryConfig().enabled ? buildMemoryTools(cwd) : []),
     // 技能调用：按名加载生效技能正文（只读动作，不进审批；见 skill-use-tool.ts）；
     // threadId 供"已加载技能"台账登记（密钥注入的判定条件之一）
     buildSkillUseTool(cwd, threadId),

@@ -5,6 +5,7 @@ import type {
   Compacted,
   ContextInfo,
   ErrorPayload,
+  GoalState,
   SessionSummary,
   UsageTotals,
 } from "pi-protocol";
@@ -994,6 +995,7 @@ export type PiResponse =
   | { type: "usage_stats"; stats: PiUsageStats }
   | { type: "trace_query"; runs: PiTraceRun[] }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
+  | { type: "goal_state"; goal: GoalState["goal"] }
   | { type: "model_updated"; provider: string; modelId: string }
   | { type: "credential"; provider: string }
   | { type: "credentials"; credentials: PiCredentialSummary[] }
@@ -1007,8 +1009,8 @@ export type PiResponse =
   | { type: "provider_filter"; provider: string; models: string[] | null }
   | {
       type: "mode_changed" | "planning_state";
-      mode: "agent" | "plan" | "ask";
-      approvalLevel?: "ask" | "auto-edit" | "auto";
+      mode: "agent" | "plan" | "ask" | "goal";
+      approvalLevel?: "ask" | "workspace-write" | "auto-edit" | "auto";
       planning: "inactive" | "planning";
     }
   | PiContextInfo

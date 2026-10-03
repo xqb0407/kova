@@ -14,6 +14,11 @@ export const permissionPayloadSchema = z.looseObject({
   toolCallId: z.string(),
   toolName: z.string(),
   input: z.unknown(),
+  /** 需要额外说清「同意意味着什么」时的一句话（如：本次同意同时会记住这条目录）。
+   *  没有它，用户以为只放行这一次、实际授信了一个目录——静默的权限扩大 */
+  note: z.string().optional(),
+  /** 这条审批带可写根上下文：前端据此在卡上给「允许并记住」第三个按钮 */
+  canRemember: z.boolean().optional(),
 });
 
 /** 提问载荷：Question 工具的挂起提问（answers 结算见 question_answer 命令）。

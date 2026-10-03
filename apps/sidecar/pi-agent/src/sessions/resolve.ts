@@ -31,6 +31,7 @@ import {
   toolsForMode,
 } from "../agent/modes";
 import { effectiveAppMode } from "../agent/app-mode";
+import { isInside } from "../agent/workspace-boundary";
 import {
   captureProviderResponse,
   carriesRetryDelayHeaders,
@@ -66,6 +67,7 @@ import {
   trackSessionRun,
 } from "./registry";
 import { migrateTodoState, replayTodoFromMessages } from "../todo/todo";
+import { migrateGoal, parseGoalMaxTurnsPref, restoreGoal } from "../goal/goal";
 import { logErr } from "../log";
 import { sessionPath } from "../storage/storage";
 import {
@@ -162,12 +164,16 @@ async function persistSessionCwd(sessionId: string, cwd: string): Promise<void> 
 async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promise<void> {
   run.persistedCwd = cwd;
   run.cwd = cwd || taskSessionCwd(run.sessionId);
-  // 解绑（清空工作目录）会回落到任务工作区，而回落目标此刻可能尚未落盘
-  // （建目录已推迟到轮初）。会话还在跑、工具随后的每一次文件操作都要它存在，
-  // 故这里补建——自选了工作目录的会话内部判断自动跳过。
-  ensureTaskSessionDir(run);
+  // 解绑（清空工作目录）回落到任务工作区时同样不在此落盘：目录推迟到
+  // agent 真用时才建（bash 派发前 / 写文件时自带 mkdir），见 ensureTaskSessionDir。
   // 重建工具须沿用原 threadId：todo/question 工具按 threadId 归属，误传 sessionId 会挂错 key
-  run.baseTools = buildTools(run.cwd, threadId, () => run.designTheme ?? null, () => run.designThemeLoads);
+  run.baseTools = buildTools(
+    run.cwd,
+    threadId,
+    () => run.designTheme ?? null,
+    () => run.designThemeLoads,
+    () => ensureTaskSessionDir(run),
+  );
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -228,9 +234,16 @@ export async function rebindRunThread(
   run.threadId = newThreadId;
   trackSessionRun(run.sessionId, newThreadId);
   migrateTodoState(oldThreadId, newThreadId);
+  migrateGoal(oldThreadId, newThreadId);
   // 工具整组重建：browser/question/todo/mcp 的闭包烘着 threadId，
   // 事件推送与挂起归属（cancelPending* 按 threadId 过滤）都靠它
-  run.baseTools = buildTools(run.cwd, newThreadId, () => run.designTheme ?? null, () => run.designThemeLoads);
+  run.baseTools = buildTools(
+    run.cwd,
+    newThreadId,
+    () => run.designTheme ?? null,
+    () => run.designThemeLoads,
+    () => ensureTaskSessionDir(run),
+  );
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -250,6 +263,29 @@ export async function reloadSubagents(): Promise<void> {
     for (const d of diagnostics) logErr("subagent:", d);
     run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
     run.agent.state.tools = toolsForMode(run);
+  }
+}
+
+/**
+ * 记忆总开关翻转后的工具表热重建：记忆三件套在 buildTools 里按开关条件注册，
+ * 翻转后活会话必须整组重建 baseTools（Task 组从 baseTools 按名取工具，一并重建），
+ * 否则开关等于没拨——关不掉也开不出。轮中翻转同改 loopContext.tools（与 applyMode
+ * 同款手法）：本轮下一次请求即按新表走，不必等下一次 prompt。
+ */
+export async function reloadMemoryTools(): Promise<void> {
+  for (const run of running.values()) {
+    run.baseTools = buildTools(
+      run.cwd,
+      run.threadId,
+      () => run.designTheme ?? null,
+      () => run.designThemeLoads,
+      () => ensureTaskSessionDir(run),
+    );
+    const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
+    run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
+    const tools = toolsForMode(run);
+    run.agent.state.tools = tools;
+    if (run.loopContext) run.loopContext.tools = tools;
   }
 }
 
@@ -368,8 +404,12 @@ function taskSessionCwd(sessionId: string): string {
 }
 
 /**
- * 任务工作区目录的真正落盘点：这一轮确实要开始跑、agent 可能往里写产物时调用。
- * 幂等（recursive），重复调用无副作用。
+ * 任务工作区目录的真正落盘点：agent 真要**用**这个目录的那一刻调用——
+ * 目前唯一需要它已存在的消费点是 bash 工具（宿主用 current_dir(cwd) spawn，
+ * 目录缺失直接失败），由 buildTools 的 ensureCwd 闭包在每次派发 bash 前调用。
+ * 写文件路径（宿主 write 的 create_dir_all、imagegen/计划/附件的写时 mkdir）
+ * 天然自带落盘，不经过这里。纯聊天、既没跑命令也没写文件的会话因此永远
+ * 不会留下空壳目录。幂等（recursive），重复调用无副作用。
  *
  * 调用点必须自我设防：只有当 run 的 cwd **就是**任务目录时才建。用户自选了
  * 工作目录的会话（persistedCwd 非空）不该在这里凭空多出一个目录，而它们的
@@ -391,16 +431,40 @@ export function removeTaskSessionDir(sessionId: string): void {
   rmSync(join(taskWorkspaceBase(), seg), { recursive: true, force: true });
 }
 
+/**
+ * 前端送来的 cwd 里，哪些**可以**被持久化成会话工作目录。
+ *
+ * 任务兜底目录（<task-workspace>/<sessionId>）是运行时概念，绝不能落进会话行：
+ * 一旦落进去，这个会话就从「任务」变成「项目」——侧边栏按目录名分组（组名就是
+ * 那串 UUID）、全局工作区跟着它跑、之后每条 prompt 都带着它，永久回不去。
+ * 触发过一次的真实路径：内部起轮（goal 的 kickGoalLoop）把 run.cwd 当成请求 cwd
+ * 传进来，而 run.cwd 对无目录会话恰好就是这个兜底值。
+ *
+ * 这一层是兜底而不是主修复：调用方该传 persistedCwd 就传 persistedCwd，
+ * 这里拦的是"下一个忘了这件事的调用方"。
+ */
+function persistableCwd(cwd: string | undefined): string | undefined {
+  if (!cwd) return undefined;
+  // 任务工作区**整棵树**都不可持久化：不只是本会话的兜底目录，任何落在
+  // <task-workspace> 下的路径都是运行时产物。这样"全局工作区残留着上一个会话的
+  // 兜底目录、接着开了个新会话"这条同类路径也被一起挡住
+  if (isInside(resolve(taskWorkspaceBase()), resolve(cwd))) return undefined;
+  return cwd;
+}
+
 export async function resolveSession(
   threadId: string,
   sessionId?: string,
   cwd?: string,
 ): Promise<Running> {
+  const safeCwd = persistableCwd(cwd);
   const existing = running.get(threadId);
   if (existing) {
     // 会话已存在也要补绑：建会话时未选目录（persistedCwd 空）而这次请求带了
     // cwd —— 典型场景是先开了对话/先点了上下文面板，之后才选工作目录
-    if (cwd && !existing.persistedCwd) await rebindRunCwd(existing, cwd, threadId);
+    if (safeCwd && !existing.persistedCwd) {
+      await rebindRunCwd(existing, safeCwd, threadId);
+    }
     touchSession(threadId);
     return existing;
   }
@@ -416,10 +480,10 @@ export async function resolveSession(
       if (owner.threadId !== threadId && threadQuiescent(owner.threadId)) {
         await rebindRunThread(owner.run, owner.threadId, threadId);
       }
-      if (cwd && !owner.run.persistedCwd) {
+      if (safeCwd && !owner.run.persistedCwd) {
         // 用 run 的当前驻留键（改绑后即新键；未改绑仍是旧键）重建工具，
         // 保证工具闭包与 run.threadId 永远同键
-        await rebindRunCwd(owner.run, cwd, owner.run.threadId);
+        await rebindRunCwd(owner.run, safeCwd, owner.run.threadId);
       }
       // 按 run 的当前驻留键续龄（未改绑时新键不在 running 表里）
       touchSession(owner.run.threadId);
@@ -429,7 +493,10 @@ export async function resolveSession(
 
   // 持久化 cwd = 用户选择的工作目录（空串 = 未选目录的任务会话）；
   // 运行 cwd 兜底按会话隔离的任务子目录，仅影响 Agent 执行环境，不回写持久化
-  let persistedCwd = cwd ?? "";
+  // 新建会话：请求里的 cwd 就是这条会话的工作目录。任务工作区下的值一律不算
+  //「用户选了目录」（理由见 persistableCwd），否则新建出来的会话一出生就是
+  //「项目」形态——组名是上一个会话的 UUID
+  let persistedCwd = safeCwd ?? "";
   let restoredMessages: import("@earendil-works/pi-ai").Message[] = [];
   /** 未结算挂起交互行（§4）：物化后重放进台账，挂起卡跨重启不丢 */
   let restoredPending: PendingInteraction[] = [];
@@ -463,6 +530,10 @@ export async function resolveSession(
     scanThinking = scan.thinkingLevel;
   // 任务清单恢复：事件溯源回放转录里最后一个 todo 快照（见 todo.ts）
   replayTodoFromMessages(threadId, restoredMessages);
+    // 目标恢复：同款事件溯源（goal_state 行，last-wins）。回放出的 active 由
+    // restoreGoal 内部降级为 paused——驱动那个循环的 run 随进程一起没了，原样
+    // 带回来的 active 是谎报（见 docs/goal-mode-design.md「状态是 active ≠ 循环在跑」）
+    restoreGoal(threadId, sessionId!);
     persistedSeq = restoredMessages.length;
     jsonlSeq = maxSeq + 1;
   } else {
@@ -486,11 +557,19 @@ export async function resolveSession(
   let initialApproval: ApprovalLevel = "ask";
   if (!getAutomationPolicy(threadId)) {
     if (restoredRow) {
-      if (restoredRow.mode === "agent" || restoredRow.mode === "plan" || restoredRow.mode === "ask") {
+      // 四档都要在这里：漏一档的症状是「重启后回到默认档」——偏好行里明明存着，
+      // 却因为白名单少一个字符串被静默丢掉（goal 档曾经就漏在这里）
+      if (
+        restoredRow.mode === "agent" ||
+        restoredRow.mode === "plan" ||
+        restoredRow.mode === "ask" ||
+        restoredRow.mode === "goal"
+      ) {
         initialMode = restoredRow.mode;
       }
       if (
         restoredRow.approvalLevel === "ask" ||
+        restoredRow.approvalLevel === "workspace-write" ||
         restoredRow.approvalLevel === "auto-edit" ||
         restoredRow.approvalLevel === "auto"
       ) {
@@ -500,11 +579,17 @@ export async function resolveSession(
       try {
         const raw = await kvGet("pi.mode");
         const last = raw?.value ? (JSON.parse(raw.value) as Partial<PlanningModePrefs>) : null;
-        if (last?.mode === "agent" || last?.mode === "plan" || last?.mode === "ask") {
+        if (
+          last?.mode === "agent" ||
+          last?.mode === "plan" ||
+          last?.mode === "ask" ||
+          last?.mode === "goal"
+        ) {
           initialMode = last.mode;
         }
         if (
           last?.approvalLevel === "ask" ||
+          last?.approvalLevel === "workspace-write" ||
           last?.approvalLevel === "auto-edit" ||
           last?.approvalLevel === "auto"
         ) {
@@ -530,6 +615,11 @@ export async function resolveSession(
   // （kv pi.app_mode）。从未在本会话切过档的（含新会话）显示与运行都跟默认档；
   // 切过档就只认自己的列——A 会话切档不牵连 B 会话（定靶写入见 handlers/preferences.ts）
   const initialAppMode = effectiveAppMode(restoredRow?.appMode);
+
+  // 会话级目标轮数上限：与 app_mode 同型，定靶列优先、NULL 跟随默认 300。
+  // 建目标时用它（用户在条上填的值优先于这里），用户改上限时回写本列——
+  // 下一个目标就从上次的数开始，不用每次重新估
+  const initialGoalMaxTurns = parseGoalMaxTurnsPref(restoredRow?.goalMaxTurns);
 
   // 会话级模型：恢复的会话上次用哪个模型就继续用哪个（目录中已删除则回落全局）；
   // 新会话/自动化 turn 用全局当前选择（自动化的 per-task 模型由 runner 在 resolve 后覆盖）。
@@ -577,6 +667,7 @@ export async function resolveSession(
     threadId,
     () => run.designTheme ?? null,
     () => run.designThemeLoads,
+    () => ensureTaskSessionDir(run),
   );
   // run 先占位再回填 agent：beforeToolCall 闭包按引用捕获 run，模式校验在运行期才解引用
   const run: Running = {
@@ -602,6 +693,10 @@ export async function resolveSession(
     designTheme: initialDesignTheme,
     // 会话生效工作模式（偏好列 ?? 全局默认）：系统提示词模式段的事实源
     appMode: initialAppMode,
+    // 本会话的目标轮数上限偏好（null = 从未定过）：建目标时作为兜底预设
+    goalMaxTurns: initialGoalMaxTurns,
+    // 目标 token 账的现累器（message_end / 子代理结算累加，目标轮边界取走清零）
+    usagePending: 0,
     // 全文加载台账：每次新建 run 都是空表（恢复/压缩后宁可重贴不谎报已加载）
     designThemeLoads: new Map<string, string>(),
     planning: initialMode === "plan" ? "planning" : "inactive",
@@ -755,7 +850,7 @@ export async function resolveSession(
     }),
   );
   // 恢复的历史会话同样补绑：老会话建时未选目录（row.cwd 空）而这次请求带了 cwd
-  if (cwd && !persistedCwd) await rebindRunCwd(run, cwd, threadId);
+  if (safeCwd && !persistedCwd) await rebindRunCwd(run, safeCwd, threadId);
   // 迭代2：本次 resolve 代表用户当前意图，豁免驱逐；驱逐从最久未访问处开始
   enforceResidency(threadId);
   return run;

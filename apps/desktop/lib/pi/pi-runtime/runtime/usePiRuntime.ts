@@ -53,6 +53,7 @@ import { disposeControllers } from "./disposeControllers";
 // 请求会让 sidecar 懒建空白会话（对话失忆）。
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import { flushDraftAppModeSelection } from "@/lib/pi/pi-session-app-mode";
+import { flushDraftModeSelection } from "@/lib/pi/pi-session-mode";
 import { flushDraftModelSelection } from "@/lib/pi/pi-session-model";
 import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
 import {
@@ -711,6 +712,9 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
         flushDraftModelSelection(threadId);
         flushDraftThinkingSelection(threadId);
         flushDraftAppModeSelection(threadId);
+        // 会话模式 + 审批档：**必须 await**。它决定首轮改动前问不问，晚一拍就等于
+        // 首轮按全局默认档执行（选「工作区内自动」却直接跑命令，就是这么来的）
+        await flushDraftModeSelection(threadId);
       }
       return {
         remoteId,

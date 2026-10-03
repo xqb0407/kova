@@ -245,3 +245,4 @@ export const GeneralSettings: FC = () => {
     </div>
   );
 };
+

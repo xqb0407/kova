@@ -30,7 +30,7 @@ import {
 } from "../../src/agent/memory";
 import { composeModeSystemPrompt } from "../../src/agent/modes";
 import { initLocalStorage, kvGet, resetStorageForTest } from "../../src/storage/hostdb";
-import { SYSTEM_PROMPT_CORE, workspacePromptLine } from "../../src/tools/tools";
+import { buildTools, SYSTEM_PROMPT_CORE, workspacePromptLine } from "../../src/tools/tools";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-memory-"));
 const globalDir = path.join(tmp, "global-memory");
@@ -448,6 +448,26 @@ describe("buildMemoryTools", () => {
     await applyMemoryConfig({ ...getMemoryConfig(), workspace: false });
     expect(await run("memory_write", { scope: "workspace", content: "x" })).toContain("switched off");
     expect(await run("memory_write", { scope: "global", content: "still fine" })).toContain("global/MEMORY.md");
+  });
+});
+
+describe("buildTools 注册（总开关 = 结构的开与关）", () => {
+  const MEMORY_TOOL_NAMES = ["memory_write", "memory_read", "memory_search"];
+
+  test("总开关关闭：工具表里没有记忆三件套；开启：三件套按名可查", async () => {
+    await applyMemoryConfig({ ...DEFAULT_MEMORY_CONFIG });
+    const off = buildTools(ws, "t-mem-off").map((t) => t.name);
+    for (const name of MEMORY_TOOL_NAMES) expect(off).not.toContain(name);
+
+    await enableAll();
+    const on = buildTools(ws, "t-mem-on").map((t) => t.name);
+    for (const name of MEMORY_TOOL_NAMES) expect(on).toContain(name);
+  });
+
+  test("作用域/检索细项开关不影响注册：只有总开关管下发", async () => {
+    await applyMemoryConfig({ enabled: true, global: false, workspace: false, fileSearch: false });
+    const names = buildTools(ws, "t-mem-scope-off").map((t) => t.name);
+    for (const name of MEMORY_TOOL_NAMES) expect(names).toContain(name);
   });
 });
 

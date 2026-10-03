@@ -5,7 +5,12 @@
  */
 import { send } from "../stream";
 import { resolveSession } from "../../sessions/sessions";
-import { applyMode, planningPayload, resolveToolApproval } from "../../agent/modes";
+import {
+  applyMode,
+  normalizeSessionMode,
+  planningPayload,
+  resolveToolApproval,
+} from "../../agent/modes";
 import { resolveMcpApproval } from "../../mcp/mcp-tools";
 import { resolveQuestionAnswer, type QuestionAnswerItem } from "../../tools/question-tools";
 import {
@@ -13,6 +18,7 @@ import {
   settleInteraction,
 } from "../../sessions/pending-interactions";
 import { scanTranscript } from "../../sessions/transcript";
+import { logAt } from "../../log";
 import type { CommandHandler } from "../command";
 
 export const handlers: Record<string, CommandHandler> = {
@@ -20,6 +26,8 @@ export const handlers: Record<string, CommandHandler> = {
     // 结算逐工具审批：approved = 放行执行，false = 拦截（模型收到 blocked 工具结果）
     const approvalId = String(msg.approvalId ?? "");
     const approved = Boolean(msg.approved);
+    // 「允许并记住」：把这次要写的目录写进本机清单（sidecar 侧落盘，见 modes.ts）
+    const remember = Boolean(msg.remember);
     // MCP 网关工具的审批挂起不在 run 内（模块级表，见 mcp-tools.ts）：先查它，
     // 命中即结算返回，不去 resolveSession（审批期间会话可能尚未落库）
     if (resolveMcpApproval(approvalId, approved)) {
@@ -30,7 +38,7 @@ export const handlers: Record<string, CommandHandler> = {
       String(msg.threadId ?? "default"),
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
     );
-    if (!resolveToolApproval(run, approvalId, approved)) {
+    if (!resolveToolApproval(run, approvalId, approved, remember)) {
       // 重启后重放的陈旧条目（§4）：活 promise 已随旧进程消亡，结算只落行解禁
       // （台账里也没有 = 真不存在，维持原报错）
       if (!settleInteraction(approvalId, approved ? "approved" : "denied")) {
@@ -68,24 +76,38 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   set_mode: async (reqId, msg) => {
-    // 手动切换会话模式（agent/plan/ask），可选携带审批级别（agent 模式的
-    // ask/auto-edit/auto 对应前端"变更前确认/自动编辑/完全访问"）；重建工具集与系统提示词
+    // 手动切换会话模式（agent/plan/ask/goal），可选携带审批级别（agent 模式的
+    // ask/workspace-write/auto-edit/auto 对应前端"变更前确认/工作区内自动/自动编辑/完全访问"）；
+    // 重建工具集与系统提示词
     const run = await resolveSession(
       String(msg.threadId ?? "default"),
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
       typeof msg.cwd === "string" ? msg.cwd : undefined,
     );
-    const mode = String(msg.mode ?? "agent");
-    if (mode !== "agent" && mode !== "plan" && mode !== "ask") {
-      throw new Error(`invalid mode: ${mode}`);
+    const mode = normalizeSessionMode(msg.mode);
+    if (mode !== msg.mode) {
+      throw new Error(`invalid mode: ${String(msg.mode)}`);
     }
     if (typeof msg.approvalLevel === "string") {
-      if (msg.approvalLevel !== "ask" && msg.approvalLevel !== "auto-edit" && msg.approvalLevel !== "auto") {
+      if (
+        msg.approvalLevel !== "ask" &&
+        msg.approvalLevel !== "workspace-write" &&
+        msg.approvalLevel !== "auto-edit" &&
+        msg.approvalLevel !== "auto"
+      ) {
         throw new Error(`invalid approval level: ${msg.approvalLevel}`);
       }
       run.approvalLevel = msg.approvalLevel;
     }
     applyMode(run, mode);
+    // 模式是用户可见的状态变更，此前没有任何痕迹：出问题时无从判断是"前端发错了"
+    // 还是"服务端算错了"（排查「显示的模式莫名其妙变成另一档」时就需要这一行）
+    logAt(
+      "event",
+      `set_mode: thread=${run.threadId} session=${run.sessionId} ` +
+        `mode=${run.mode} approval=${run.approvalLevel} ` +
+        `(requested mode=${String(msg.mode)} approval=${String(msg.approvalLevel ?? "-")})`,
+    );
     send({ id: reqId, type: "mode_changed", ...planningPayload(run) });
   },
 

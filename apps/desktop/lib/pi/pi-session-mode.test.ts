@@ -51,7 +51,9 @@ afterAll(() => {
 
 const {
   applyPlanningChunk,
+  draftModePickForTest,
   fetchPlanningState,
+  flushDraftModeSelection,
   normalizeSessionMode,
   sessionModeSnapshot,
   setSessionMode,
@@ -218,7 +220,7 @@ describe("setSessionMode", () => {
     expect(sessionModeSnapshot(TID).mode).toBe("ask");
   });
 
-  test("从问答回编码时审批级别原样带上（AskNeedsWorkChip 依赖这个组合）", async () => {
+  test("从问答回编码时审批级别原样带上（AskNeedsWorkCard 依赖这个组合）", async () => {
     reset();
     responder = () => ({ type: "mode_changed", mode: "agent", planning: "inactive" });
     await setSessionMode(TID, "agent", "ask");
@@ -231,5 +233,115 @@ describe("setSessionMode", () => {
     await setSessionMode("__LOCALID_draft-2", "ask");
     expect(calls.some((c) => c.type === "set_mode")).toBe(false);
     expect(sessionModeSnapshot("__LOCALID_draft-2").mode).toBe("ask");
+  });
+});
+
+/**
+ * 草稿期选的档位必须补发。
+ *
+ * 这一组钉的是一条**权限漏洞**，不是显示问题：新对话里（会话还没建）选「工作区内自动」
+ * 只写前端快照、不发请求；首条消息建出的 run 于是按全局默认档装配——用户以为改动前
+ * 会问他，实际那一轮直接执行了，而 UI 一直显示他选的那一档。
+ * 实测症状：选了「工作区内自动」，bash 却未经确认直接跑（会话行 mode/approval 两列
+ * 都是 NULL、转录里没有任何审批挂起行，三处证据同指「这个选择从没告诉过 sidecar」）。
+ */
+describe("草稿期档位补发（flushDraftModeSelection）", () => {
+  const DRAFT = "__LOCALID_draft-mode";
+
+  test("草稿期选档只记不请求，但记了下来", async () => {
+    reset();
+    await setSessionMode(DRAFT, "agent", "workspace-write");
+    expect(calls).toHaveLength(0); // 没有 sessionId，发不出去
+    expect(draftModePickForTest(DRAFT)).toEqual({
+      mode: "agent",
+      approvalLevel: "workspace-write",
+    });
+  });
+
+  test("绑定会话后补发：把 mode + 审批档一起定靶写入", async () => {
+    reset();
+    await setSessionMode(DRAFT, "agent", "workspace-write");
+    registry.set(DRAFT, "sess-9");
+    responder = () => ({
+      type: "mode_changed",
+      mode: "agent",
+      approvalLevel: "workspace-write",
+      planning: "inactive",
+    });
+    await flushDraftModeSelection(DRAFT);
+    expect(calls.at(-1)).toEqual({
+      type: "set_mode",
+      mode: "agent",
+      approvalLevel: "workspace-write",
+      threadId: DRAFT,
+      sessionId: "sess-9",
+    });
+    // 补发成功即清草稿，不会重复发
+    expect(draftModePickForTest(DRAFT)).toBeUndefined();
+  });
+
+  test("还没有 sessionId 时不动（留着下次绑定再发）", async () => {
+    reset();
+    await setSessionMode(DRAFT, "agent", "auto");
+    await flushDraftModeSelection(DRAFT);
+    expect(calls).toHaveLength(0);
+    expect(draftModePickForTest(DRAFT)).toEqual({ mode: "agent", approvalLevel: "auto" });
+  });
+
+  test("补发失败保留草稿（下一次绑定重试，不能静默丢掉权限档）", async () => {
+    reset();
+    await setSessionMode(DRAFT, "agent", "auto");
+    registry.set(DRAFT, "sess-9");
+    responder = () => new Error("sidecar offline");
+    await flushDraftModeSelection(DRAFT);
+    expect(draftModePickForTest(DRAFT)).toEqual({ mode: "agent", approvalLevel: "auto" });
+  });
+
+  test("先选档位、再选能力模式：档位不丢（两级正交，缺哪级沿用上一句）", async () => {
+    reset();
+    await setSessionMode(DRAFT, "agent", "auto");
+    await setSessionMode(DRAFT, "plan"); // 能力模式不带审批档
+    expect(draftModePickForTest(DRAFT)).toEqual({ mode: "plan", approvalLevel: "auto" });
+    // 显示也不该退回默认档
+    expect(sessionModeSnapshot(DRAFT)).toMatchObject({
+      mode: "plan",
+      approvalLevel: "auto",
+      planning: "planning",
+    });
+    // 补发时两级一起带上
+    registry.set(DRAFT, "sess-7");
+    responder = () => ({
+      type: "mode_changed",
+      mode: "plan",
+      approvalLevel: "auto",
+      planning: "planning",
+    });
+    await flushDraftModeSelection(DRAFT);
+    expect(calls.at(-1)).toMatchObject({
+      type: "set_mode",
+      mode: "plan",
+      approvalLevel: "auto",
+    });
+  });
+
+  test("没选过的线程补发是空操作（不产生多余请求）", async () => {
+    reset();
+    registry.set(TID, "sess-1");
+    await flushDraftModeSelection(TID);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("已绑定会话上切档：直接发请求，不压草稿", async () => {
+    reset();
+    registry.set(TID, "sess-1");
+    responder = () => ({
+      type: "mode_changed",
+      mode: "plan",
+      approvalLevel: "ask",
+      planning: "planning",
+    });
+    await setSessionMode(TID, "plan");
+    expect(calls.at(-1)).toMatchObject({ type: "set_mode", mode: "plan" });
+    expect(draftModePickForTest(TID)).toBeUndefined();
   });
 });

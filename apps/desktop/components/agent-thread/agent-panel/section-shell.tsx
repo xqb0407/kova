@@ -130,12 +130,13 @@ export const StatusDot: FC<{ running?: boolean; failed?: boolean }> = ({
     />
   );
 
-/** 行级变更统计徽标:+N −M(绿/红,0 值淡化) */
-export const DiffStats: FC<{ added: number; removed: number }> = ({
-  added,
-  removed,
-}) => (
-  <span className="shrink-0 text-xs font-medium tabular-nums">
+/** 行级变更统计徽标:+N −M(绿/红,0 值淡化);className 供宿主覆盖字号 */
+export const DiffStats: FC<{
+  added: number;
+  removed: number;
+  className?: string;
+}> = ({ added, removed, className }) => (
+  <span className={cn("shrink-0 text-xs font-medium tabular-nums", className)}>
     <span className={cn(added > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground/40")}>
       +{added}
     </span>{" "}

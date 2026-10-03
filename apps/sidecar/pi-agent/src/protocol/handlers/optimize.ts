@@ -25,29 +25,64 @@ import type { CommandHandler } from "../command";
 /** jobId → 在飞优化的中止器（`optimize_cancel` 用；任务收尾自删） */
 const jobs = new Map<string, AbortController>();
 
+/** 解析结果与来源：via 只进诊断日志（排障时要能一眼看出「为什么用了这个模型」） */
+type ModelPick = {
+  model: Model<Api>;
+  via: "live" | "session" | "hint" | "global" | "default";
+};
+
+/**
+ * 前端界面当前显示的模型（请求体 `model` 字段）。草稿期的模型选择只活在前端内存
+ * ——会话还没建、会话偏好列无从落——所以会话解析不到模型时，这份 hint 是界面与
+ * 实际用模对齐的唯一通道。采用前必须过与 set_model 同款的校验（目录里存在 + 有凭据
+ * + 非占位）：坏值一律忽略并继续走后面的兜底，绝不因为前端塞了个用不了的模型而失败。
+ */
+async function resolveHintedModel(hint: unknown): Promise<Model<Api> | undefined> {
+  const h = hint as { provider?: unknown; modelId?: unknown } | null | undefined;
+  const provider = typeof h?.provider === "string" ? h.provider : "";
+  const modelId = typeof h?.modelId === "string" ? h.modelId : "";
+  if (!provider || !modelId) return undefined;
+  const model = getModels().getModel(provider, modelId);
+  if (!model || isModelUnavailable(model)) return undefined;
+  const auth = await getModels().getAuth(provider).catch(() => undefined);
+  return auth ? model : undefined;
+}
+
 /**
  * 会话当前模型（与 resolve.ts 的会话模型链同序，取其简化形）：
- * 驻留 run 的实时模型 > 该会话的偏好行 > 全局当前选择 > 目录默认。
+ * 驻留 run 的实时模型 > 该会话的偏好行 > 请求携带的界面当前模型 > 全局当前选择
+ * > 目录默认。
+ *
+ * hint 排在会话行之后而不是之前：会话行是「该会话的模型真值」，对话页选择器就
+ * 是从它水合显示的（会话存在时两者本就同值）；hint 真正要覆盖的是会话行不存在的
+ * 场景——未发送草稿（`__LOCALID_` 线程）没发过消息就没有行，此前一路落到全局
+ * 默认，界面显示 A、优化却跑 B 正是这么来的。
+ *
  * 不可用（无凭据/占位模型）返回 undefined，由调用方报错。
  */
 async function resolveSessionModel(
   threadId: string,
   sessionId: string,
-): Promise<Model<Api> | undefined> {
+  hint?: unknown,
+): Promise<ModelPick | undefined> {
   const run = running.get(threadId) ?? findRunBySession(sessionId || threadId)?.run;
   const live = run?.agent.state.model as Model<Api> | undefined;
-  if (live && !isModelUnavailable(live)) return live;
+  if (live && !isModelUnavailable(live)) return { model: live, via: "live" };
   const row = sessionId ? await sessionGet(sessionId).catch(() => null) : null;
   const saved =
     row?.modelProvider && row?.modelId
       ? getModels().getModel(row.modelProvider, row.modelId)
       : undefined;
-  if (saved) return saved;
+  if (saved) return { model: saved, via: "session" };
+  const hinted = await resolveHintedModel(hint);
+  if (hinted) return { model: hinted, via: "hint" };
   const mk = getCurrentModelKey();
   const global = mk ? getModels().getModel(mk.provider, mk.modelId) : undefined;
-  if (global) return global;
+  if (global) return { model: global, via: "global" };
   const fallback = (await defaultModel().catch(() => undefined)) as Model<Api> | undefined;
-  return fallback && !isModelUnavailable(fallback) ? fallback : undefined;
+  return fallback && !isModelUnavailable(fallback)
+    ? { model: fallback, via: "default" }
+    : undefined;
 }
 
 /** 异步失败的应答：与 handleLine 的 catch 同形（前端 piRequest 见 error 即抛） */
@@ -70,18 +105,21 @@ export const handlers: Record<string, CommandHandler> = {
     if (!jobId) throw new Error("jobId required");
     if (!text.trim()) throw new Error("草稿为空");
     if (jobs.has(jobId)) throw new Error(`optimize job already running: ${jobId}`);
-    const model = await resolveSessionModel(threadId, sessionId);
-    if (!model) throw new Error("没有可用模型，请先选择模型");
+    const pick = await resolveSessionModel(threadId, sessionId, msg.model);
+    if (!pick) throw new Error("没有可用模型，请先选择模型");
+    const model = pick.model;
 
     const controller = new AbortController();
     jobs.set(jobId, controller);
     beginOp();
-    // 诊断线：草稿字符数与所用模型（出问题时可从 pi-agent.log 回溯到底发了什么规模）
+    // 诊断线：草稿字符数、所用模型与来源（出问题时可从 pi-agent.log 回溯到底
+    // 发了什么规模、为什么用了这个模型——via=hint 即界面当前选择）
     logErr(
       "optimize_prompt:",
       `job=${jobId}`,
       `chars=${text.trim().length}`,
       `model=${model.provider}/${model.id}`,
+      `via=${pick.via}`,
     );
     void (async () => {
       try {

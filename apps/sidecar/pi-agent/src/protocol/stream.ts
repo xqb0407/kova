@@ -16,9 +16,11 @@ import { nextEventSeq } from "./event-seq";
 import { createTraceRunRecorder } from "./trace";
 import {
   makeAutoContinueMessage,
+  messageUsageTokens,
   MAX_LENGTH_CONTINUES,
   needsLengthContinuation,
 } from "../agent/context";
+import { continueGoalTurn } from "../goal/goal";
 import type { Running, UIMessageChunk } from "../types";
 
 export const send = (line: unknown) =>
@@ -150,6 +152,9 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
         await persist(run, { earlyUser: true });
         break;
       }
+      // 目标 token 账：现累而不是事后从转录重算（理由见 Running.usagePending）。
+      // 放在这里是因为 message_end 是 usage 唯一的到达点，且早于 turn_end 的结算
+      run.usagePending += messageUsageTokens(event.message);
       // assistant/toolResult 落定即持久化：agent_end 不再是唯一提交点，进程异常退出
       // （崩溃/dev 热重载进程组被杀）最多丢正在流式的那一条，不再丢整轮已完成消息。
       // 放在 reqId 短路之前：不带协议 reqId 的旁路/automation run 同样要落盘。
@@ -189,6 +194,16 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       // tool call"的轮失败重试），任务会"到一半停下"。补一条续跑消息进 followUp
       // 队列——循环在 turn_end 监听 settle 之后、退出之前恰好轮询该队列，时序是
       // vendor 契约。不依赖 reqId：无前端旁路跑（远程触发/刷新空窗）同样要续。
+      //
+      // goal 档不走这条路：目标续跑注入的那条消息本身会把目标原文重述一遍，
+      // 严格强于长度续跑的「继续」；而且 lengthContinues 是按用户轮重置的
+      // （dispatchPrompt 每轮清零），一个跑 25 轮的目标会在第 4 轮左右撞上
+      // MAX_LENGTH_CONTINUES 被误杀。两条路都是「本轮自然收尾 → 补一条续跑」，
+      // 目标档选信息量更大的那条。
+      if (run.mode === "goal") {
+        continueGoalTurn(run, event.message);
+        break;
+      }
       if (!needsLengthContinuation(event.message)) break;
       if ((run.lengthContinues ?? 0) >= MAX_LENGTH_CONTINUES) {
         logErr(

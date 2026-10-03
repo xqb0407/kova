@@ -58,13 +58,15 @@ export type SessionSummary = {
   archived?: boolean; // 归档标记：列表默认隐藏，正文不动
   /** 会话级偏好（undefined = 从未变更过；切回会话时恢复模式/模型用） */
   mode?: "agent" | "plan" | "ask";
-  approvalLevel?: "ask" | "auto-edit" | "auto";
+  approvalLevel?: "ask" | "workspace-write" | "auto-edit" | "auto";
   modelProvider?: string;
   modelId?: string;
   /** 会话级思考档位偏好（undefined = 从未定靶选过，跟随默认档位） */
   thinkingLevel?: string;
   /** 会话级工作模式偏好（undefined = 本会话从未切换过，跟随全局默认 pi.app_mode） */
   appMode?: "work" | "code" | "design";
+  /** 会话级目标轮数上限偏好（数字字符串："0" = 不限；undefined = 从未定过） */
+  goalMaxTurns?: string;
 };
 
 /** 子代理一次执行的最终状态 */
@@ -86,6 +88,12 @@ export type SubagentRunResult = {
   report: string;
   turns: number;
   toolCalls: number;
+  /**
+   * 这个子代理自己烧掉的 token（四项相加，错误/中止轮不计）。
+   * 它的用量不进父会话转录（独立 Agent、独立 messages），所以必须靠这里回传，
+   * 否则「目标靠委派干完了大半活」时父会话的目标读数会严重少报。
+   */
+  tokens?: number;
   error?: { code: string; message: string };
 };
 
@@ -210,11 +218,11 @@ export type Running = {
   steerEntries?: SteerEntry[];
   /** 本用户 prompt 轮内"length 截断无 toolCall"已注入的自动续跑次数（每轮重置，见 context.ts；缺省视为 0） */
   lengthContinues?: number;
-  /** 当前模式（agent = 正常执行；plan = 只读勘察 + 计划编写；ask = 纯问答只读） */
+  /** 当前模式（agent = 正常执行；plan = 只读勘察 + 计划编写；ask = 纯问答只读；goal = 完整工具集 + 自治续跑） */
   mode: SessionMode;
-  /** 逐工具审批级别（ask = 每次确认；auto-edit = 编辑免确认；auto = 全免） */
+  /** 逐工具审批级别（ask = 每次确认；workspace-write = 工作区内免确认；auto-edit = 编辑免确认；auto = 全免） */
   approvalLevel: ApprovalLevel;
-  /** 计划状态机（见 modes.ts）：agent=inactive，plan=planning，ask=inactive */
+  /** 计划状态机（见 modes.ts）：agent=inactive，plan=planning，ask=inactive，goal=inactive */
   planning: PlanningState;
   /** 当前会话计划文件绝对路径（plan_write 首写定名，之后覆盖写） */
   planFilePath?: string;
@@ -231,6 +239,25 @@ export type Running = {
    * 与 mode（agent/plan/ask 权限模式）正交。变更见 handlers/preferences.ts。
    */
   appMode: AppMode;
+  /**
+   * 本会话的目标轮数上限预设。三态，别合并（合并过一次，代价是「用户选了不限，
+   * 下次却被当成没设过」）：
+   *   undefined = 本会话从未定过 → 建目标回落默认 300
+   *   null      = 明确不限
+   *   number    = 具体轮数
+   * 事实源：sessions.goal_max_turns 偏好列；建目标时用户在常驻条上填的值优先于它，
+   * 用户改上限时回写该列（见 goal.ts 的 syncGoalOnUserPrompt / setGoalMaxTurns）。
+   */
+  goalMaxTurns?: number | null;
+  /**
+   * 本次 run 已消耗、但还没结算进目标账的 token（message_end 与子代理结算时累加，
+   * 目标轮边界取走后清零）。
+   *
+   * 为什么不从转录重算：那是「累计 − 基线」的重算值，既包含目标之外的活动
+   *（暂停期间用户在别的模式里干的活），又不含子代理（用量不进父转录），还要把
+   * 整个 JSONL 读一遍——目标每跑一轮读一次，是 O(n²)。现累的增量没有这三个毛病。
+   */
+  usagePending: number;
   /**
    * 「主题全文已在上下文里」台账（key = scope/id，value = 正文哈希）：
    * use_design_theme 重复加载短路的数据面——同 ref 同哈希返回简短确认不再
@@ -264,23 +291,39 @@ export type PendingToolApproval = {
   toolCallId: string;
   toolName: string;
   input: unknown;
-  resolve: (approved: boolean) => void;
+  /** remember = 用户点的是「允许并记住」（只有带可写根上下文的审批才有意义） */
+  resolve: (outcome: { approved: boolean; remember: boolean }) => void;
   /** 结算来源：confirm = 用户点了批准/拒绝；clear = Stop/新 prompt 兜底清理 */
   settledBy?: "confirm" | "clear";
+  /**
+   * 点「允许并记住」时应写进本机清单的那条根，以及解析它的工作区。
+   * 只在 workspace-write 档的写类工具上带——其余审批（bash、配置类、MCP）
+   * 没有「一条可记住的路径」可言，卡上也就不会出现第三个按钮。
+   */
+  rememberRoot?: string;
+  /** bash 的整条命令（逐字相等才免确认）：见 rememberCommand */
+  rememberCommand?: string;
+  cwd?: string;
 };
 
 /* ------------------------------- 模式与审批 ------------------------------- */
 
-/** 会话模式：agent 正常执行；plan 只读勘察 + 编写实施计划（plan_exit 批准后回 agent 实施）；ask 纯问答（只读工具子集，不改工作区） */
-export type SessionMode = "agent" | "plan" | "ask";
+/** 会话模式：agent 正常执行；plan 只读勘察 + 编写实施计划（plan_exit 批准后回 agent 实施）；ask 纯问答（只读工具子集，不改工作区）；goal 自治目标（完整工具集 + 跨轮续跑，靠 goal_complete/goal_blocked 收尾） */
+export type SessionMode = "agent" | "plan" | "ask" | "goal";
 
 /**
- * 逐工具审批级别（对齐参考项目 targetPermissionMode）：
+ * 逐工具审批级别（按"问多少"从紧到松排列）：
  * - ask：bash/write/edit 每次执行前都要用户确认（变更前确认）
- * - auto-edit：write/edit 自动放行，bash 仍需确认（自动编辑）
+ * - workspace-write：**工作区内的** write/edit 免确认，工作区之外（含别的项目）
+ *   一律确认；bash 与配置类工具照常确认（改成工作区前缀外的路径要你点头）
+ * - auto-edit：write/edit 全部放行（含工作区外），bash 仍确认（自动编辑）
  * - auto：全部自动放行（完全访问）
+ *
+ * workspace-write 的边界由 agent/workspace-boundary.ts 判定（软链接按真实落点算）。
+ * 它管不住 bash——一条命令能写到任何地方，参数里看不出目标路径，所以 bash 在这一档
+ * 仍然弹确认；要真正等价需要 OS 级沙箱，见 docs/permission-modes.md。
  */
-export type ApprovalLevel = "ask" | "auto-edit" | "auto";
+export type ApprovalLevel = "ask" | "workspace-write" | "auto-edit" | "auto";
 
 /** 计划审批状态机：inactive（agent 模式）↔ planning（plan 模式；执行确认挂起由 pendingToolApprovals 承担） */
 export type PlanningState = "inactive" | "planning";

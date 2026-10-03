@@ -383,7 +383,10 @@ fn last_commit_json(cwd: &str) -> Value {
 }
 
 fn status_impl(cwd: &str) -> Result<Value, String> {
-    ensure_repo(cwd)?;
+    // 不再先跑一次 rev-parse 探仓库：git status 对非仓库目录本身就退出非零且
+    // stderr 含 "not a git repository"，直接把该情形映射为 not-repo 即可——
+    // 胶囊/面板的每次失效刷新都少一次进程 spawn 的纯延迟（错误语义不变，
+    // 前端对所有 Err 一律按"无状态"缓存）
     let o = git_run(
         &user_git(
             cwd,
@@ -399,6 +402,9 @@ fn status_impl(cwd: &str) -> Result<Value, String> {
         &[],
     )?;
     if !o.ok {
+        if o.stderr.contains("not a git repository") {
+            return Err("not-repo".into());
+        }
         return Err(format!("git-status-failed: {}", o.stderr));
     }
     let p = parse_status_v2(&o.stdout);

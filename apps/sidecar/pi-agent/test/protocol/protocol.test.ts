@@ -14,6 +14,7 @@ import {
 import { dispatch, dispatchPrompt, handleLine, setInitGate } from "../../src/protocol/protocol";
 import { rulesFilePath, soulFilePath } from "../../src/agent/personalization";
 import { dropRun, ensureTaskSessionDir, noteActiveTurn, resolveSession, running, trackSessionRun } from "../../src/sessions/sessions";
+import { buildTools } from "../../src/tools/tools";
 import { setActiveReqId } from "../../src/protocol/stream";
 import { scanTranscript, AUTO_CONTINUE_PREFIX } from "../../src/sessions/transcript";
 import {
@@ -455,6 +456,43 @@ describe("dispatch: sessions", () => {
     }
   });
 
+  test("任务兜底目录不会被持久化成会话工作目录（一次「继续」就能毁掉归属）", async () => {
+    const threadId = "th-fallback";
+    const taskCwd = path.join(tmp, "task-fallback");
+    process.env.PI_TASK_CWD = taskCwd;
+    try {
+      await dispatch("bf1", { type: "new_session", threadId });
+      const sessionId = last().sessionId as string;
+      const run = running.get(threadId)!;
+      const fallback = path.join(taskCwd, sessionId);
+      expect(run.cwd).toBe(fallback);
+
+      // 内部起轮（goal 的 kickGoalLoop）曾把 run.cwd 当成请求 cwd 传回来：
+      // 会话会因此从「任务」变成「项目」——侧边栏按目录名分组，组名就是那串 UUID
+      await dispatch("bf2", { type: "context_info", threadId, sessionId, cwd: fallback });
+
+      expect(run.persistedCwd).toBe("");
+      expect((await sessionGet(sessionId))!.cwd).toBe("");
+      // 运行 cwd 不受影响（兜底照常生效）
+      expect(run.cwd).toBe(fallback);
+
+      // 同类：上一个会话的兜底目录残留也被挡住（新会话不能一出生就是项目）
+      const otherFallback = path.join(taskCwd, "some-other-session");
+      await dispatch("bf3", { type: "new_session", threadId: "th-fallback-2", cwd: otherFallback });
+      const secondId = last().sessionId as string;
+      expect((await sessionGet(secondId))!.cwd).toBe("");
+      expect(running.get("th-fallback-2")!.persistedCwd).toBe("");
+
+      // 用户真选的目录照常生效（守卫只认任务工作区这一棵树）
+      const workspace = path.join(tmp, "real-workspace");
+      await dispatch("bf4", { type: "context_info", threadId, sessionId, cwd: workspace });
+      expect(run.persistedCwd).toBe(workspace);
+      expect((await sessionGet(sessionId))!.cwd).toBe(workspace);
+    } finally {
+      delete process.env.PI_TASK_CWD;
+    }
+  });
+
   test("无目录会话按会话子目录隔离，互不覆盖", async () => {
     const taskCwd = path.join(tmp, "task-isolated");
     process.env.PI_TASK_CWD = taskCwd;
@@ -469,7 +507,8 @@ describe("dispatch: sessions", () => {
       expect(runB.cwd).toBe(path.join(taskCwd, idB));
       expect(runA.cwd).not.toBe(runB.cwd);
       // 解析阶段只算路径、不建目录：此刻还没有任何东西要落盘（启动时的草稿
-      // 线程也走这一步，无条件建就是空壳目录）。真正落盘在轮初，见下面那条用例。
+      // 线程也走这一步，无条件建就是空壳目录）。真正落盘推迟到 agent 用到它时
+      //（bash 派发前 ensure / 写文件时自带），见下面两条用例。
       expect(existsSync(runA.cwd)).toBe(false);
       expect(existsSync(runB.cwd)).toBe(false);
     } finally {
@@ -477,15 +516,27 @@ describe("dispatch: sessions", () => {
     }
   });
 
-  test("任务工作区目录推迟到轮初落盘，解析阶段不建空壳", async () => {
+  test("任务工作区目录解析与轮初都不建：纯聊天轮不落盘，ensure 在使用点落盘", async () => {
     const taskCwd = path.join(tmp, "task-lazy");
     process.env.PI_TASK_CWD = taskCwd;
+    // 无凭据环境下轮子按最坏路径也只是一次快速失败；关掉重试预算防拖时
+    const prevRetryMax = process.env.PI_PROVIDER_RETRY_MAX;
+    process.env.PI_PROVIDER_RETRY_MAX = "0";
     try {
       await dispatch("lz1", { type: "new_session", threadId: "th-lazy" });
       const sessionId = last().sessionId as string;
       const run = running.get("th-lazy")!;
       expect(existsSync(run.cwd)).toBe(false);
-      // 轮初 ensure 之后目录才在——agent 真要往里写产物时它必须存在
+      // 轮初不再落盘：跑一条 prompt（无凭据 → 无模型守卫/流式失败即结算）
+      // 之后目录仍不在。此前轮初无条件 ensure，"发一句纯聊天"的会话就是
+      //「我的文件」里空 UUID 文件夹的来源（2026-10 改造）。
+      await dispatchPrompt(
+        "lz2",
+        { type: "prompt", text: "hi", threadId: "th-lazy", sessionId },
+        () => {},
+      ).catch(() => {});
+      expect(existsSync(run.cwd)).toBe(false);
+      // 真正落盘点：使用时的 ensure（bash 工具闭包同款，这里直调）
       ensureTaskSessionDir(run);
       expect(existsSync(run.cwd)).toBe(true);
       // 幂等：重复调用不报错、不换目录
@@ -496,6 +547,36 @@ describe("dispatch: sessions", () => {
       withCwd.cwd = tmp;
       ensureTaskSessionDir(withCwd);
       expect(existsSync(path.join(taskCwd, sessionId))).toBe(true);
+    } finally {
+      if (prevRetryMax === undefined) delete process.env.PI_PROVIDER_RETRY_MAX;
+      else process.env.PI_PROVIDER_RETRY_MAX = prevRetryMax;
+      delete process.env.PI_TASK_CWD;
+    }
+  });
+
+  test("bash 工具派发前调用 ensureCwd：目录在真跑命令时落盘", async () => {
+    const taskCwd = path.join(tmp, "task-bash-ensure");
+    process.env.PI_TASK_CWD = taskCwd;
+    try {
+      await dispatch("be1", { type: "new_session", threadId: "th-bash-ensure" });
+      const sessionId = last().sessionId as string;
+      const run = running.get("th-bash-ensure")!;
+      const dir = path.join(taskCwd, sessionId);
+      expect(existsSync(dir)).toBe(false);
+      let calls = 0;
+      // 与 resolveSession 烘进 baseTools 的同款闭包
+      const tools = buildTools(run.cwd, "th-bash-ensure", undefined, undefined, () => {
+        calls += 1;
+        ensureTaskSessionDir(run);
+      });
+      const bash = tools.find((t) => t.name === "bash")!;
+      // execute 是 async，ensure 在派发 hostToolCall 前同步跑完；裸测试环境
+      // 没有宿主 RPC，不去 await 它的结算（自带 catch 防未处理拒绝）
+      bash
+        .execute("be-c1", { command: "true" }, new AbortController().signal)
+        .catch(() => {});
+      expect(calls).toBe(1);
+      expect(existsSync(dir)).toBe(true);
     } finally {
       delete process.env.PI_TASK_CWD;
     }
@@ -508,7 +589,7 @@ describe("dispatch: sessions", () => {
       await dispatch("ds1", { type: "new_session", threadId: "th-del" });
       const sessionId = last().sessionId as string;
       const dir = path.join(taskCwd, sessionId);
-      // 目录由轮初/产物写入时落盘（解析阶段不建），这里直接摆出待删的产物
+      // 目录由工具使用时落盘（解析阶段与轮初都不建），这里直接摆出待删的产物
       mkdirSync(dir, { recursive: true });
       writeFileSync(path.join(dir, "out.txt"), "artifact");
       await dispatch("ds2", { type: "delete_session", sessionId });
@@ -861,45 +942,11 @@ describe("dispatchPrompt", () => {
     expect(lines.filter((l) => l.includes('"context_changed"')).length).toBe(ctxBefore);
   });
 
-  // 崩溃隔离：会话准备段（agent 开跑之前）抛错时，turn 的内层 finally 还没接管。
-  // 那种情况下若没有隔离层，消息流永远收不到 finish —— AI SDK 的 status 停在
-  // streaming、Stop 失灵、线程看着一直忙，automation runner 更是永远等不到
-  // onOutcome。这里用「任务工作区目录被一个同名普通文件占住」把 ensureTaskSessionDir
-  // 的 mkdir 顶成 ENOTDIR/EEXIST，模拟真实准备段抛错。
-  test("pre-agent crash still terminates the stream with an error", async () => {
-    const base = path.join(tmp, "task-ws-crash");
-    mkdirSync(base, { recursive: true });
-    const prevTaskCwd = process.env.PI_TASK_CWD;
-    process.env.PI_TASK_CWD = base;
-    try {
-      await dispatch("cx0", { type: "new_session", threadId: "th-crash" });
-      const sessionId = last().sessionId as string;
-      // 占位：同名路径是文件不是目录 → mkdirSync(recursive) 必抛
-      writeFileSync(path.join(base, sessionId), "not-a-dir");
-
-      const outcomes: { ok: boolean; errorText?: string }[] = [];
-      await dispatchPrompt(
-        "cx1",
-        { type: "prompt", text: "hi", threadId: "th-crash", sessionId },
-        (o) => outcomes.push(o),
-      );
-
-      const mine = lines
-        .map((l) => JSON.parse(l) as { id?: string; chunk?: { type: string; errorText?: string } })
-        .filter((l) => l.id === "cx1" && l.chunk)
-        .map((l) => l.chunk!);
-      expect(mine.some((c) => c.type === "error")).toBe(true);
-      // 关键断言：流必须有终止帧，否则 UI 永远转圈
-      expect(mine.some((c) => c.type === "finish")).toBe(true);
-      // onOutcome 必须回调，否则无人值守 runner 永久挂起
-      expect(outcomes).toHaveLength(1);
-      expect(outcomes[0]!.ok).toBe(false);
-      expect(outcomes[0]!.errorText).toBeTruthy();
-    } finally {
-      if (prevTaskCwd === undefined) delete process.env.PI_TASK_CWD;
-      else process.env.PI_TASK_CWD = prevTaskCwd;
-    }
-  });
+  // 崩溃隔离（原「任务目录被同名文件占住 → 轮初 mkdir 抛」用例）：任务目录
+  // 落盘点已推迟到工具使用时刻（bash 派发前 ensure / 写文件时自带），准备段
+  // 不再有该同步 IO 抛错点，注入不成立、用例随之移除。runPromptTurn 的外层
+  // 隔离层保留为防御（准备段任何将来加的同步抛错仍须结算 finish/onOutcome）；
+  // resolveSession 失败的轮次结算由上面「errors for a missing session id」覆盖。
 });
 
 describe("dispatch: get_model / init gate", () => {
@@ -1324,9 +1371,18 @@ describe("dispatch: memory", () => {
     const run = running.get("th-mem")!;
     expect(run.agent.state.systemPrompt).toContain("## Memory");
 
-    // 恢复关闭：提示词不再含记忆段
+    // 恢复关闭：提示词不再含记忆段，工具表也不再下发三件套（结构上的关闭）
     await dispatch("me3", { type: "set_memory", settings: DEFAULT_MEMORY });
     expect(run.agent.state.systemPrompt).not.toContain("## Memory");
+    expect(run.agent.state.tools.map((t) => t.name)).not.toContain("memory_write");
+
+    // 再打开：活会话工具表即时收回/下发走同一路径（reloadMemoryTools 整表重建）
+    await dispatch("me3b", {
+      type: "set_memory",
+      settings: { ...DEFAULT_MEMORY, enabled: true },
+    });
+    expect(run.agent.state.tools.map((t) => t.name)).toContain("memory_write");
+    await dispatch("me3c", { type: "set_memory", settings: DEFAULT_MEMORY });
   });
 
   test("list_memory_files 返回两作用域目录；未带 cwd 时 workspace 为 null", async () => {
@@ -1409,10 +1465,14 @@ describe("set_session_cwd：对话中途换/清工作目录", () => {
         cwd: workspace,
       });
 
-      // 解绑（cwd=""）：持久化清空、运行目录回落按会话隔离的任务子目录
+      // 解绑（cwd=""）：持久化清空、运行目录回落按会话隔离的任务子目录。
+      // 回落目标此刻**不落盘**（建目录推迟到工具使用点，见 ensureTaskSessionDir），
+      // 后续 bash/写文件用到时才建
       await dispatch("sc3", { type: "set_session_cwd", sessionId, cwd: "" });
       expect(run.persistedCwd).toBe("");
       expect(run.cwd).toBe(path.join(taskCwd, sessionId));
+      expect(existsSync(run.cwd)).toBe(false);
+      ensureTaskSessionDir(run);
       expect(existsSync(run.cwd)).toBe(true);
       expect((await sessionGet(sessionId))!.cwd).toBe("");
       expect(JSON.parse(readFileSync(sessionPath(sessionId), "utf8").split("\n")[0])).toMatchObject({ cwd: "" });
@@ -1462,5 +1522,134 @@ describe("set_session_cwd：对话中途换/清工作目录", () => {
     await expect(
       dispatch("sc8", { type: "set_session_cwd", sessionId: "cwd-nope", cwd: tmp }),
     ).rejects.toThrow("session not found: cwd-nope");
+  });
+});
+
+/**
+ * optimize_prompt 的模型解析（回归：草稿线程「界面显示 A、优化却跑 B」）。
+ * 一台假 provider 把收到的 model 回显出来，断言实际用的是哪一个——
+ * 解析链：驻留 run > 会话偏好行 > 请求携带的界面模型 > 全局默认。
+ */
+describe("dispatch: optimize_prompt 模型解析", () => {
+  const seenModels: string[] = [];
+  let stopServer: (() => void) | undefined;
+
+  /** 优化命令派活即返回、结果晚点用同一 reqId 发回：等那一帧 */
+  async function waitForFrame(id: string, timeoutMs = 5000): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      for (const line of lines) {
+        let v: Record<string, unknown> | null = null;
+        try {
+          v = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (v && v.id === id) return v;
+      }
+      if (Date.now() > deadline) throw new Error(`应答帧迟于 ${timeoutMs}ms 未出现：${id}`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  const lastSeen = (): string => seenModels[seenModels.length - 1] ?? "";
+
+  beforeAll(async () => {
+    const srv = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const body = (await req.json().catch(() => null)) as { model?: unknown } | null;
+        const model = typeof body?.model === "string" ? body.model : "";
+        if (model) seenModels.push(model);
+        const chunk = (delta: Record<string, unknown>, finish: string | null) =>
+          `data: ${JSON.stringify({
+            id: "c1",
+            object: "chat.completion.chunk",
+            created: 0,
+            model,
+            choices: [{ index: 0, delta, finish_reason: finish }],
+          })}\n\n`;
+        return new Response(
+          chunk({ role: "assistant", content: "改写后的指令" }, null) +
+            chunk({}, "stop") +
+            "data: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    stopServer = () => srv.stop(true);
+    await modelsReplace("op-p", [
+      { modelId: "model-A", enabled: true },
+      { modelId: "model-B", enabled: true },
+    ]);
+    await registerCustomProvider({
+      id: "op-p",
+      name: "Op P",
+      baseUrl: `http://127.0.0.1:${srv.port}/v1`,
+      api: "openai-chat",
+    });
+    await dispatch("op-auth", { type: "set_credential", provider: "op-p", apiKey: "sk-op" });
+  });
+
+  afterAll(async () => {
+    stopServer?.();
+    setCurrentModelKey(null);
+    await dispatch("op-clean", { type: "delete_custom_provider", provider: "op-p" });
+  });
+
+  test("无会话（草稿线程）用请求携带的界面模型，而不是全局默认", async () => {
+    setCurrentModelKey({ provider: "op-p", modelId: "model-A" });
+    await dispatch("op-hint", {
+      type: "optimize_prompt",
+      threadId: "__LOCALID_draft",
+      jobId: "job-hint",
+      text: "把这段说清楚",
+      model: { provider: "op-p", modelId: "model-B" },
+    });
+    const frame = await waitForFrame("op-hint");
+    expect(frame.type).toBe("prompt_optimized");
+    expect(frame.model).toBe("op-p/model-B");
+    expect(lastSeen()).toBe("model-B");
+  });
+
+  test("会话偏好行是模型真值：界面 hint 不得盖过它", async () => {
+    const sid = "op-session";
+    await sessionInsert(sid, tmp);
+    await dispatch("op-row", {
+      type: "set_model",
+      provider: "op-p",
+      modelId: "model-A",
+      sessionId: sid,
+    });
+    expect(last()).toEqual({ id: "op-row", type: "model", provider: "op-p", modelId: "model-A" });
+    // 全局与 hint 都故意指向另一个模型：两者都不该赢
+    setCurrentModelKey({ provider: "op-p", modelId: "model-B" });
+    await dispatch("op-row-opt", {
+      type: "optimize_prompt",
+      threadId: sid,
+      sessionId: sid,
+      jobId: "job-row",
+      text: "把这段说清楚",
+      model: { provider: "op-p", modelId: "model-B" },
+    });
+    const frame = await waitForFrame("op-row-opt");
+    expect(frame.type).toBe("prompt_optimized");
+    expect(frame.model).toBe("op-p/model-A");
+    expect(lastSeen()).toBe("model-A");
+  });
+
+  test("坏 hint（目录里没有）被忽略，继续走全局默认而不是失败", async () => {
+    setCurrentModelKey({ provider: "op-p", modelId: "model-A" });
+    await dispatch("op-bad", {
+      type: "optimize_prompt",
+      threadId: "__LOCALID_draft2",
+      jobId: "job-bad",
+      text: "把这段说清楚",
+      model: { provider: "op-p", modelId: "ghost-model" },
+    });
+    const frame = await waitForFrame("op-bad");
+    expect(frame.type).toBe("prompt_optimized");
+    expect(frame.model).toBe("op-p/model-A");
+    expect(lastSeen()).toBe("model-A");
   });
 });

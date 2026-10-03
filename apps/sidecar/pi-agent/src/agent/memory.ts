@@ -10,8 +10,10 @@
  * - 配置整包存 SQLite kv（key = KV_KEY），前端经协议 get/set_memory 访问，set 时
  *   protocol.ts 热替换活动会话系统提示词（与 personalization 同款机制）。
  *   总开关默认关闭——默认提示词字节级不变（缓存纪律同 SYSTEM_PROMPT_CORE）。
- * - 工具在 tools.ts buildTools 常驻注册（工具表变更会破坏 Anthropic tools 块缓存，
- *   故不按开关增删），execute 时实时读配置门控。
+ * - 工具在 tools.ts buildTools 按总开关**条件注册**：关闭时三件套整组不下发
+ *   （模型看不见工具，记忆能力即不存在）。开关翻转由 resolve.reloadMemoryTools
+ *   整表重建活动会话；工具表只在拨开关那一次变化，稳定期照旧命中缓存。
+ *   execute 内仍实时读配置门控——第二道闸，兜住轮中翻转/旧工具表残留。
  * - 删除走回收站（.trash/）、每次改动留一版版本史（.history/<文件名>/）：两者都是
  *   记忆目录下的隐藏子目录，只扫根级 *.md 的清单/注入/检索天然看不见它们；工作区
  *   作用域会落进用户仓库，所以子目录里自带 .gitignore（内容 *）自忽略，git 无噪音。
@@ -739,7 +741,8 @@ function textResult(text: string, details?: unknown) {
 
 const SCOPE_DESC = "'global' = ~/.kova/memory (all sessions), 'workspace' = <workspace>/.kova/memory (this workspace only)";
 
-/** 记忆三件套（write/read/search）：常驻注册，execute 时实时读配置门控 */
+/** 记忆三件套（write/read/search）：由 tools.ts buildTools 按总开关条件注册；
+ *  这里的 execute 门控是第二道闸（轮中翻转/旧工具表残留的兜底，关=一律婉拒） */
 export function buildMemoryTools(cwd: string): AgentTool[] {
   const gate = (scope: MemoryScope): string | null => {
     const cfg = getMemoryConfig();

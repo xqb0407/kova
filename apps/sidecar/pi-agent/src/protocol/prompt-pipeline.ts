@@ -22,7 +22,9 @@ import {
   type CompactionOutcome,
 } from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
-import { clearPendingToolApprovals, composeModeSystemPrompt } from "../agent/modes";
+import { clearPendingToolApprovals, composeRunPrompt } from "../agent/modes";
+import { syncGoalOnUserPrompt } from "../goal/goal";
+import { emitPlanningState } from "../agent/modes";
 import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
 import { cancelPendingQuestions } from "../tools/question-tools";
 import { noticeAppendedText, preparePromptAttachments } from "./prompt-attachments";
@@ -41,7 +43,6 @@ import {
   takeFrontEntry,
 } from "../sessions/prompt-queue";
 import {
-  ensureTaskSessionDir,
   isModelUnavailable,
   noteActiveTurn,
   rebindRunThread,
@@ -234,6 +235,10 @@ export function steerIntoActiveRun(
     // 剥前缀并补「已并入当前回复」标记 part（刷新前后语义一致；模型侧前缀
     // 自解释，auto-continue 同款先例）
     const attachments = preparePromptAttachments(msg, { cwd: run.cwd });
+    // 并入当前轮与普通发送在「这条消息和目标什么关系」上必须是同一套判据：
+    // 用户插话就是在接管，目标该让位。少了这一句，steer 是唯一能绕过
+    // 「用户输入即接管」的入口，循环会在用户已经开口之后继续自己往下跑
+    syncGoalOnUserPrompt(run, String(msg.text ?? ""));
     const text = STEER_PREFIX + noticeAppendedText(String(msg.text ?? ""), attachments.noticeLines);
     const content: string | (ImageContent | { type: "text"; text: string })[] =
       attachments.images.length
@@ -416,8 +421,8 @@ export async function dispatchPrompt(
 /** 单个 prompt turn 的完整执行（原 dispatchPrompt 主体）：会话准备段入管理队列
  *  串行执行，agent.prompt 长任务在队列外运行。
  *
- *  外层是**崩溃隔离层**。内层的 try 只罩住 agent 段，会话准备段（ensureTaskSessionDir /
- *  rebindRunThread / 系统提示词重排 / 挂起清理）都在它之前：那几处任何一次同步抛错都会
+ *  外层是**崩溃隔离层**。内层的 try 只罩住 agent 段，会话准备段（rebindRunThread /
+ *  系统提示词重排 / 挂起清理）都在它之前：那几处任何一次同步抛错都会
  *  跳过内层 finally，于是——不发 finish（AI SDK 的 status 永远停在 streaming，Stop 失灵、
  *  线程看着一直忙）、不清 activeReqByThread（下一轮的内容 chunk 全被路由进这条死流）、
  *  不回调 onOutcome（无人值守的 automation runner 永远等下去）。protocol.ts 的兜底
@@ -480,9 +485,10 @@ async function runTurnBody(
     onOutcome?.({ ok: false, errorText });
     return;
   }
-  // 任务工作区目录到这一刻才落盘：会话解析阶段不建（启动时草稿线程也会解析，
-  // 那时无物可写，建了就是空壳目录）。自选了工作目录的会话内部自带判断跳过。
-  ensureTaskSessionDir(run);
+  // 任务工作区目录不在这里落盘：解析阶段不建（启动时草稿线程也会解析，那时无物
+  // 可写，建了就是空壳目录），轮初同样不建——本轮只聊天、不碰文件的会话不该留痕。
+  // 真正落盘推迟到 agent 用到它的时刻（bash 派发前 ensure / 写文件自带），
+  // 见 sessions/resolve.ts ensureTaskSessionDir。
   // 线程键漂移（刷新后草稿 id → sessionId）：resolveSession 在旧轮未收尾时
   // 不敢改绑 run.threadId（会把旧轮事件错路由进新请求），这里等旧键轮次
   // 完整结束（含委派收敛与 finish 收尾）后补改绑。不改绑的后果：事件路由按
@@ -507,19 +513,24 @@ async function runTurnBody(
     onOutcome?.({ ok: false, errorText });
     return;
   }
+  // 目标同步：goal 档下「这条用户消息」要么就是新目标（首个目标），要么是对
+  // 进行中目标的接管（暂停 + 清零安全 epoch）。必须排在下面那次提示词重排之前——
+  // 重排会把目标块写进系统提示词，晚一步这一轮的模型就看不到自己要做的是什么。
+  // 取 msg.text 原话而非拼了附件提示行的 promptText：目标原文是用户亲手打的那段，
+  // 不该把被拒附件的说明行算进目标。
+  syncGoalOnUserPrompt(run, String(msg.text ?? ""), msg.goalMaxAutoTurns);
+  // 每轮把模式盘面推一次：run 可能被驱逐后按「会话偏好行 ?? 全局 kv」重新物化，
+  // 而这两处一旦与前端上次看到的不一致（写入失败/滞后），前端就会一直显示另一档
+  // 而没有任何东西来纠正它——「档位自己变了」这类症状就是这么来的。推一次的成本
+  // 是一个小 chunk，换来的是任何漂移活不过一轮。无活跃请求时 sendEventChunk 自行丢弃
+  emitPlanningState(run);
   // 每轮请求前重排环境事实段（日历日跨天兜底：提示词只在建会话/切模式/改设置
   // 时重排，长会话跨过午夜日期会停旧）；纯字符串拼接零成本，块内容不变时
   // 重排出字节级相同的提示词，缓存前缀不受影响。
   // 0.99 迁移：提示词由转录首条 system 消息承载（state.systemPrompt 只读）
   setLeadingSystemMessage(
     run.agent.state.messages,
-    composeModeSystemPrompt(
-      run.mode,
-      run.cwd,
-      run.appMode,
-      run.agent.state.model,
-      run.designTheme,
-    ),
+    composeRunPrompt(run, run.agent.state.model),
   );
   setActiveReqId(threadId, reqId);
   run.stopRequested = false;

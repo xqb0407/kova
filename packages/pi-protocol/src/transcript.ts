@@ -87,3 +87,42 @@ export function isAutoContinueMessage(msg: unknown): boolean {
         : "";
   return isAutoContinueText(text);
 }
+
+/* ---------------------- goal 模式自动续跑哨兵 ---------------------- */
+
+/**
+ * goal 模式跨轮自动续跑注入消息的哨兵前缀（sidecar
+ * goal-continuation.makeGoalContinueMessage 构造，user 角色落转录）。
+ * 与 AUTO_CONTINUE_PREFIX 同款处理：模型上下文里保留作续跑指令，UI 各路径按前缀隐藏。
+ * 同样放契约层单源——sidecar 的 toUiMessage/historyToUiMessages、thread_snapshot
+ * 直出与桌面投影层过滤必须同口径，两端各写一份判定就会漏。
+ */
+export const GOAL_CONTINUE_PREFIX = "[[goal-continue]] ";
+
+/** 消息文本是否为目标模式自动续跑注入（按前缀识别） */
+export function isGoalContinueText(text: string): boolean {
+  return text.startsWith(GOAL_CONTINUE_PREFIX);
+}
+
+/** 目标模式全部内部注入前缀（UI 隐藏判定共用一个入口） */
+export const GOAL_INTERNAL_PREFIXES = [GOAL_CONTINUE_PREFIX] as const;
+
+export function isGoalInternalText(text: string): boolean {
+  return GOAL_INTERNAL_PREFIXES.some((p) => text.startsWith(p));
+}
+
+/** user 消息是否为 goal 模式的内部注入（续跑）——判定口径同 isAutoContinueMessage */
+export function isGoalInternalMessage(msg: unknown): boolean {
+  const m = msg as { role?: string; content?: unknown } | undefined;
+  if (!m || m.role !== "user") return false;
+  const text =
+    typeof m.content === "string"
+      ? m.content
+      : Array.isArray(m.content)
+        ? (m.content as { type?: string; text?: string }[])
+            .filter((c) => c?.type === "text")
+            .map((c) => c.text ?? "")
+            .join("")
+        : "";
+  return isGoalInternalText(text);
+}

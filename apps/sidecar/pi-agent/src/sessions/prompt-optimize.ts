@@ -171,6 +171,27 @@ function textFromAssistantMessage(message: unknown): string {
   return out;
 }
 
+/**
+ * 流错误事件 → 可读失败原因：优先 provider 的 errorMessage（billing 超额、配额、
+ * 排队 403 这类**可行动**的原文只有它有——直接压成「模型返回错误」时，用户在
+ * toast 里根本看不出是额度还是配置），压缩空白并截断防超长；拿不到原文才回落
+ * 通用文案。error 既可能是字符串（SDK 直抛），也可能是收尾消息对象。
+ */
+function describeStreamError(err: unknown): string {
+  const o = err as { errorMessage?: unknown; message?: unknown } | null | undefined;
+  const raw =
+    typeof o?.errorMessage === "string"
+      ? o.errorMessage
+      : typeof o?.message === "string"
+        ? o.message
+        : typeof err === "string"
+          ? err
+          : "";
+  const text = raw.trim().replace(/\s+/g, " ");
+  if (!text) return "模型返回错误";
+  return `模型返回错误：${text.length > 200 ? `${text.slice(0, 200)}…` : text}`;
+}
+
 /** one-shot 优化结果：失败带原因（前端 toast 用），成功带还原后文本与芯片数 */
 export type PromptOptimizeOutcome =
   | { ok: true; text: string; chipCount: number }
@@ -270,7 +291,7 @@ export async function optimizeDraftPrompt(
         finalMessageText = textFromAssistantMessage(ev.message);
       } else if (ev.type === "error") {
         logErr("prompt optimize stream error:", ev.error);
-        return { ok: false, error: "模型返回错误" };
+        return { ok: false, error: describeStreamError(ev.error) };
       }
     }
   } catch (err) {

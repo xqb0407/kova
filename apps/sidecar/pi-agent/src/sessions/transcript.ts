@@ -23,7 +23,10 @@ import {
   AUTO_CONTINUE_PREFIX,
   isAutoContinueMessage,
   isAutoContinueText,
+  isGoalInternalMessage,
+  isGoalInternalText,
 } from "pi-protocol";
+import { normalizeLoadedGoal, type Goal } from "../goal/goal-state";
 import type { Message } from "@earendil-works/pi-ai";
 import { projectToolResult, type ProjectableContentBlock } from "../tools/image-parts";
 import { sessionPath } from "../storage/storage";
@@ -303,6 +306,50 @@ export function appendThinkingLevelChangeRow(
   });
 }
 
+/* ------------------------------- goal 状态行 ------------------------------- */
+
+/**
+ * 目标状态行：每次目标变更（设定/续跑结算/暂停/完成/清除）追加一行，
+ * scanTranscript 单遍 last-wins 回放。与 queue_state 同款「不占 seq 的事件溯源」
+ * 形态——目标状态是派生盘面而非模型消息，不该混进消息 seq 序列。
+ *
+ * goal 字段可为 null（清除）。与 queue_state 不同，清除必须也落行：目标停在
+ * 「已完成」和「被用户清掉」在回放上要区分得开，否则重启后 UI 会把一个早就
+ * 收工的目标重新当成进行中显示。
+ */
+export function appendGoalStateRow(
+  sessionId: string,
+  goal: Goal | null,
+): void {
+  appendSettingRow(sessionId, {
+    type: "goal_state",
+    goal: goal ?? null,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/**
+ * 从转录回放目标状态（无行 = 无目标）。
+ * 畸形行不抛：normalizeLoadedGoal 整条判废，调用方按「无目标」处理——比让一条
+ * 撕裂行把整个会话恢复链带崩划算。
+ */
+export function readGoalState(sessionId: string): Goal | undefined {
+  const file = sessionPath(sessionId);
+  if (!existsSync(file)) return undefined;
+  let restored: Goal | undefined;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line.includes('"goal_state"')) continue;
+    try {
+      const row = JSON.parse(line) as { type?: string; goal?: unknown };
+      if (row.type !== "goal_state") continue;
+      restored = row.goal == null ? undefined : normalizeLoadedGoal(row.goal, Date.now());
+    } catch {
+      /* 撕裂行：保留上一份有效状态 */
+    }
+  }
+  return restored;
+}
+
 /** 会话命名行：rename 命令与智能标题共用的落盘面 */
 export function appendSessionInfoRow(sessionId: string, name: string): void {
   appendSettingRow(sessionId, {
@@ -353,7 +400,8 @@ export function isTruncationStoppedRow(
   }
   if (next) {
     const n = next.agent as { role?: string } | undefined;
-    if (n?.role === "user" && isAutoContinueMessage(n)) return false;
+    if (n?.role === "user" && (isAutoContinueMessage(n) || isGoalInternalMessage(n)))
+      return false;
   }
   return true;
 }
@@ -475,6 +523,9 @@ export function toUiMessage(msg: Message, seq: number): UIMessage | null {
     const up = userUiParts(msg, seq);
     if (!up) return null;
     if (isAutoContinueText(up.text)) return null;
+    // 目标模式的内部注入（自动续跑 / 预算收尾）同款隐藏：它们是系统给模型的
+    // 指令，不是用户说过的话，渲染出来会让对话流里全是用户没发过的文本
+    if (isGoalInternalText(up.text)) return null;
     return { id: `msg-${seq}`, role: "user", parts: up.parts };
   }
   if (msg.role === "assistant") {
@@ -559,6 +610,8 @@ export function historyToUiMessages(
       // 长度截断自动续跑的注入消息（与 toUiMessage 同口径按前缀隐藏）：
       // 历史重建不该把它渲染成用户提问
       if (isAutoContinueText(up.text)) continue;
+      // 目标模式内部注入（自动续跑 / 预算收尾）同口径隐藏
+      if (isGoalInternalText(up.text)) continue;
       messages.push({ id: `msg-${seq}`, role: "user", parts: up.parts, metadata });
       srcSeqs.push(seq);
       continue;

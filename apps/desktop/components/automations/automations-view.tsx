@@ -916,7 +916,7 @@ export const AutomationsView: FC<{
       {/* 版式对齐插件市场页：居中限宽、标题+右侧主操作、页签、检索条。
           环境光层抬到 base.tsx 主内容区根（透明 header 条也能被照到），
           这里不再叠一份，避免双层光带 */}
-      <div className="mx-auto flex w-full max-w-7xl shrink-0 flex-col gap-4 px-8 pt-8 pb-2 lg:px-12">
+      <div className="mx-auto flex w-full max-w-5xl shrink-0 flex-col gap-4 px-8 pt-8 pb-2">
         {/* 页头：标题/副标题在左，主操作在右 —— 主操作不再和搜索框挤同一行 */}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
@@ -1054,7 +1054,7 @@ export const AutomationsView: FC<{
         </div>
       </div>
 
-      <div className="mx-auto w-full max-w-7xl flex-1 px-8 pb-8 lg:px-12">
+      <div className="mx-auto w-full max-w-5xl flex-1 px-8 pb-8">
         {snap.error && (
           <div className="text-red-500 bg-red-500/5 border-red-500/20 mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs">
             <AlertCircleIcon className="size-4 shrink-0" />

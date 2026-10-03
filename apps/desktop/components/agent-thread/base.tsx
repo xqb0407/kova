@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
+import { toggleThemeMode } from "@/lib/settings/ui-prefs";
 import { subscribeAutomationFocus } from "@/lib/automation/automations";
 import {
   subscribeConnectorManage,
@@ -304,9 +305,17 @@ export const Base: FC = () => {
   // 占位线程）一律隐藏——panelShown 随之翻转走同款收起动画。panelOpen 仍是
   // 用户本地开关偏好（localStorage 只记它），闸门翻转不改写偏好：切回有消息
   // 的会话自动恢复展开。isNewChatView 为假即"非新对话态"（有消息，或正在
-  // 加载历史）。
+  // 加载历史）。例外：用户在空会话里显式点开面板（composer 分支菜单的
+  // 「Git 图谱」只在新对话态可见），经 panelRequestedEmpty 旁路放行。
   const threadHasContent = useAuiState((s) => !isNewChatView(s));
-  const panelGate = view === "chat" && activeMenu === "" && threadHasContent;
+  const [panelRequestedEmpty, setPanelRequestedEmpty] = useState(false);
+  // 旁路只在"空会话且面板保持打开"期间生效：会话有了内容（闸本来放行）或
+  // 用户手动收起面板即清除，避免切页回来时空会话又被旁路撑开。
+  useEffect(() => {
+    if (panelRequestedEmpty && (threadHasContent || !panelOpen)) setPanelRequestedEmpty(false);
+  }, [threadHasContent, panelOpen, panelRequestedEmpty]);
+  const panelGate =
+    view === "chat" && activeMenu === "" && (threadHasContent || panelRequestedEmpty);
   const panelShown = panelOpen && panelGate;
   const panelRef = usePanelRef();
   // ── 面板全屏：收起聊天列，Agent 面板平铺主区 ─────────────────────────
@@ -353,9 +362,14 @@ export const Base: FC = () => {
     if (panelHydrated && panelOpen) setPanelEverOpened(true);
   }, [panelHydrated, panelOpen]);
 
-  // 面板开合是本地态；composer 等外部入口（如分支菜单的"Git 图谱"）经此事件展开
+  // 面板开合是本地态；composer 等外部入口（如分支菜单的"Git 图谱"）经此事件展开。
+  // 同时置空会话旁路位：「Git 图谱」恰好只在空会话的新对话里可见，若只改
+  // panelOpen 会被 panelGate 按住不显示，点击看起来毫无反应。
   useEffect(() => {
-    const open = () => setPanelOpen(true);
+    const open = () => {
+      setPanelOpen(true);
+      setPanelRequestedEmpty(true);
+    };
     window.addEventListener("agent-panel:open", open);
     return () => window.removeEventListener("agent-panel:open", open);
   }, []);
@@ -678,8 +692,9 @@ export const Base: FC = () => {
     }, 200);
   };
 
-  // 全局快捷键：打开设置 / 直达自动化页 / 开合 Agent 面板（绑定来自「设置 → 快捷键」，改动即时生效）
-  const { openSettings, openAutomations, toggleAgentPanel } = useShortcuts();
+  // 全局快捷键：打开设置 / 直达自动化页 / 开合 Agent 面板 / 切换主题（绑定来自「设置 → 快捷键」，改动即时生效）
+  const { openSettings, openAutomations, toggleAgentPanel, toggleTheme } =
+    useShortcuts();
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
       if (matchesShortcut(event, openSettings)) {
@@ -693,11 +708,14 @@ export const Base: FC = () => {
       } else if (matchesShortcut(event, toggleAgentPanel)) {
         event.preventDefault();
         setPanelOpen((open) => !open);
+      } else if (matchesShortcut(event, toggleTheme)) {
+        event.preventDefault();
+        toggleThemeMode();
       }
     };
     document.addEventListener("keydown", down);
     return () => document.removeEventListener("keydown", down);
-  }, [openSettings, openAutomations, toggleAgentPanel]);
+  }, [openSettings, openAutomations, toggleAgentPanel, toggleTheme]);
 
   // 进入设置页时清掉文档里的活动选区：选区还在时 SelectionToolbar 的 quote
   // 气泡（挂 body 的 fixed 浮层）不会自动收起，经快捷键等不经鼠标的入口切

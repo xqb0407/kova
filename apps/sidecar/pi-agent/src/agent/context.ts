@@ -448,6 +448,24 @@ export function cacheHitRateOf(totals: UsageTotals): number | null {
   return totals.cacheRead / promptTotal;
 }
 
+/**
+ * 一条 assistant 消息的用量 → 计入口径的总数（四项相加）。
+ *
+ * 与 sessionUsageTotals / usage-stats 同一口径，也是目标模式 token 读数用的那个：
+ * error / aborted 轮不计（provider 没真正算完，账也是虚的）。抽出来是为了让
+ * 「从转录重算」和「从事件现累」两条路不会漂成两个数。
+ */
+export function messageUsageTokens(message: unknown): number {
+  const m = message as
+    | { role?: string; stopReason?: string; usage?: Partial<UsageTotals> | null }
+    | undefined;
+  if (!m || m.role !== "assistant") return 0;
+  if (m.stopReason === "error" || m.stopReason === "aborted") return 0;
+  const u = m.usage;
+  if (!u) return 0;
+  return (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
+}
+
 /** 从 JSONL 转录聚合会话累计用量（usage 随 assistant 消息行本来就落盘，不另建持久化） */
 export function sessionUsageTotals(sessionId: string): UsageTotals {
   const totals: UsageTotals = {

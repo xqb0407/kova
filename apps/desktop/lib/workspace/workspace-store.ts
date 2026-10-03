@@ -17,6 +17,7 @@ const RECENTS_LIMIT = 5;
 let current: string | null = null;
 let currentSource: WorkspaceSource | null = null;
 let recents: string[] = [];
+let kvWorkspaceWrite: Promise<unknown> = Promise.resolve();
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -86,15 +87,32 @@ export function setWorkspace(dir: string | null, source: WorkspaceSource = "user
   if (dir != null && source === "user") {
     recents = [dir, ...recents.filter((d) => d !== dir)].slice(0, RECENTS_LIMIT);
   }
-  emit();
 
-  if (!isTauri()) return;
-  const write =
-    dir == null
-      ? invoke("kv_delete", { key: KV_KEY })
-      : invoke("kv_set", { key: KV_KEY, value: dir });
-  void write.catch(() => {});
-  void invoke("kv_set", { key: RECENTS_KEY, value: JSON.stringify(recents) }).catch(() => {});
+  if (isTauri()) {
+    const write =
+      dir == null
+        ? invoke("kv_delete", { key: KV_KEY })
+        : invoke("kv_set", { key: KV_KEY, value: dir });
+    // 记下本次 kv 写入的完成（吞错）：git 状态拉取要等它落库才发（Rust 侧
+    // resolve_workspace 用 kv "workspace" 校验 cwd），见 whenWorkspacePersisted。
+    // 写入先行、emit 后置：订阅者（git 胶囊等）在 emit 后重挂载取
+    // whenWorkspacePersisted 时，拿到的必然是"包含这一次"的写入 Promise。
+    kvWorkspaceWrite = write.catch(() => {});
+    void invoke("kv_set", { key: RECENTS_KEY, value: JSON.stringify(recents) }).catch(() => {});
+  }
+
+  emit();
+}
+
+/**
+ * 最近一次 workspace kv 写入的完成 Promise（未安装 Tauri / 从未写入即立即完成）。
+ * lib/git/git-status.ts 的 refreshGitStatus 借此排在 kv_set 之后落库再发
+ * git_status：若抢在写入前执行，Rust 的 resolve_workspace 会读到旧值判
+ * cwd-not-allowed，被缓存成 null 且要到下次失效（聚焦/git-changed）才重试——
+ * 表现为"git 胶囊出现得很慢"。
+ */
+export function whenWorkspacePersisted(): Promise<unknown> {
+  return kvWorkspaceWrite;
 }
 
 /**

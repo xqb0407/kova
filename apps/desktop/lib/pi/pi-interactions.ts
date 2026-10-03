@@ -32,6 +32,12 @@ export type PendingToolApprovalView = {
   toolCallId: string;
   toolName: string;
   input: unknown;
+  /** 「同意意味着什么」的额外说明（如：这个项目请求放行某个目录）。
+   *  没有它，用户以为只放行这一次、实际可能被别的机制记住 */
+  note?: string;
+  /** 这条审批带可写根上下文（workspace-write 档的 write/edit）：卡上给第三个按钮
+   *  「允许并记住」。其余审批（bash、配置类）没有"一条可记住的路径"，不给 */
+  canRemember?: boolean;
 };
 
 export type QuestionOptionView = { title: string; description?: string };
@@ -99,6 +105,8 @@ export function applyToolApprovalChunk(threadId: string, data: unknown): void {
       toolCallId: String(d.toolCallId ?? ""),
       toolName: d.toolName,
       input: d.input ?? null,
+      ...(typeof d.note === "string" && d.note ? { note: d.note } : {}),
+      ...(d.canRemember === true ? { canRemember: true } : {}),
     },
   ]);
   notify();
@@ -151,6 +159,8 @@ function approvalFromInteraction(it: PendingInteraction): PendingToolApprovalVie
     toolCallId: typeof p.toolCallId === "string" ? p.toolCallId : it.anchorToolCallId,
     toolName: p.toolName,
     input: p.input ?? null,
+    ...(typeof p.note === "string" && p.note ? { note: p.note } : {}),
+    ...(p.canRemember === true ? { canRemember: true } : {}),
   };
 }
 
@@ -394,11 +404,14 @@ export const pendingQuestionsForTest = (threadId: string): PendingQuestionView[]
 type ToolConfirmResponse = { type: "tool_confirmed"; approvalId: string };
 
 /** 结算审批：approved = 放行执行；false = 拦截（模型收到 blocked 工具结果）。
+ *  remember = 点的是「允许并记住」：sidecar 会把这次要写的目录写进本机可写根清单，
+ *  之后该目录不再询问。只对带可写根上下文的审批有效，其余审批忽略它。
  *  interactionId 寻址为 §4 新增位（现值恒 = approvalId，服务端旧形不破） */
 export async function confirmToolApproval(
   threadId: string,
   approvalId: string,
   approved: boolean,
+  remember = false,
 ): Promise<void> {
   const sessionId = piSessionIdForThread(threadId);
   settlingLocally.add(approvalId);
@@ -408,6 +421,7 @@ export async function confirmToolApproval(
       approvalId,
       interactionId: approvalId,
       approved,
+      ...(approved && remember ? { remember: true } : {}),
       threadId,
       ...(sessionId ? { sessionId } : {}),
     });

@@ -19,6 +19,8 @@
  */
 import type { PiResponse, PiSessionSummary } from "@/lib/pi/pi-bridge";
 import type { PiPromptAttachment } from "@/lib/pi/pi-channel";
+import { sessionModeSnapshot } from "@/lib/pi/pi-session-mode";
+import { goalTurnDraftForSend } from "@/lib/pi/pi-goal-limit-draft";
 import {
   applyHistoryPending,
   removeResolvedInteraction,
@@ -31,6 +33,7 @@ import {
 import { applyAskNeedsWorkChunk } from "@/lib/pi/pi-ask-needs-work";
 import { applyPlanningChunk } from "@/lib/pi/pi-session-mode";
 import { applyTodoChunk } from "@/lib/pi/pi-todo";
+import { applyGoalChunk } from "@/lib/pi/pi-goal";
 import {
   focusPanelTabFor,
   focusPluginPanelFor,
@@ -167,6 +170,12 @@ function applyStreamDelta(
 }
 
 /** 传输依赖（构造注入）：桌面 = Tauri invoke/event，远程 = WebSocket 通道。 */
+/** 显式改过才带这个字段（见 pi-goal-limit-draft 的分层说明） */
+function sendGoalMaxAutoTurns(threadId: string): { goalMaxAutoTurns?: number } {
+  const value = goalTurnDraftForSend(threadId);
+  return value === undefined ? {} : { goalMaxAutoTurns: value };
+}
+
 export type PiClientTransport = {
   /** 管理类请求-响应（error 应答归一为异常，语义同 piRequest） */
   request<T extends PiResponse>(
@@ -181,6 +190,8 @@ export type PiClientTransport = {
     cwd: string | null;
     attachments: PiPromptAttachment[] | null;
     steer: boolean;
+    /** goal 档建目标时随首条消息带过去的轮次上限（0 = 不限；非 goal 档不发） */
+    goalMaxAutoTurns?: number;
   }): Promise<void>;
   /** 中断线程的运行轮 */
   abort(threadId: string): Promise<void>;
@@ -442,6 +453,7 @@ export class PiClientBase implements PiClient {
       raw.includes('"data-planningState"') ||
       raw.includes('"data-askNeedsWork"') ||
       raw.includes('"data-todo"') ||
+      raw.includes('"data-goal-state"') ||
       raw.includes('"data-panelOpen"') ||
       raw.includes('"data-pluginOpen"');
     if (
@@ -532,6 +544,11 @@ export class PiClientBase implements PiClient {
       }
       if (chunkData?.type === "data-todo") {
         applyTodoChunk(sid, chunkData.data);
+        return;
+      }
+      // ---- 目标状态（goal 档常驻条）：同为 per-thread store 直更
+      if (chunkData?.type === "data-goal-state") {
+        applyGoalChunk(sid, chunkData.data);
         return;
       }
     }
@@ -802,6 +819,11 @@ export class PiClientBase implements PiClient {
         cwd: getWorkspace() ?? null,
         attachments: attachments.length ? attachments : null,
         steer,
+        // 目标轮数上限只在 goal 档、且用户本次运行显式改过时才发。没改过就不带字段：
+        // sidecar 按「会话偏好 → 默认」自己裁决，前端补默认值只会冲掉会话记忆
+        ...(sessionModeSnapshot(threadId).mode === "goal"
+          ? sendGoalMaxAutoTurns(threadId)
+          : {}),
       });
     } catch (err) {
       this.inflight.delete(requestId);

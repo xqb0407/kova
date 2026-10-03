@@ -113,12 +113,14 @@ const POLICY_META: Record<
 > = {
   "read-only": {
     label: "只读",
-    desc: "只能读取与检索，写/命令自动拒绝（默认）",
+    desc: "只能读取与检索，写与命令一律拒绝（默认）",
     icon: HandIcon,
   },
   "workspace-write": {
     label: "工作区可写",
-    desc: "可在指定工作目录内写文件与执行命令",
+    // 与底栏「工作区内自动」同名不同义：那个按路径判（能判断目标在不在工作区），
+    // 这个按工具类别判（没人可问，只能一刀切）。描述里点破，免得看名字就选错
+    desc: "写文件放行、命令拒绝（无人值守，不看路径）",
     icon: SquarePenIcon,
   },
   full: {

@@ -17,17 +17,21 @@ import {
  * - plan_exit 的执行确认不在这里：它走逐工具审批通道（pi-tool-approval）
  */
 
-export type SessionMode = "agent" | "plan" | "ask";
+export type SessionMode = "agent" | "plan" | "ask" | "goal";
 
-/** 三档字面量的宽松规整。散落的 `x === "a" || x === "b"` 白名单是加枚举值时
+/** 四档字面量的宽松规整。散落的 `x === "a" || x === "b"` 白名单是加枚举值时
  *  最典型的静默漏改点——ask 的 chunk 会被整个丢弃，UI 卡在旧模式，表现为
  *  「点了没反应」。所有外部来源（chunk、会话列表偏好）一律经这里收口 */
 export function normalizeSessionMode(raw: unknown): SessionMode | null {
-  return raw === "agent" || raw === "plan" || raw === "ask" ? raw : null;
+  return raw === "agent" || raw === "plan" || raw === "ask" || raw === "goal" ? raw : null;
 }
 
-/** 逐工具审批级别（agent 模式）：ask = 每次确认；auto-edit = 编辑免确认；auto = 全免 */
-export type ApprovalLevel = "ask" | "auto-edit" | "auto";
+/**
+ * 逐工具审批级别（按「问多少」从紧到松）：
+ * ask = 每次确认；workspace-write = 工作区内的 write/edit 免确认、之外一律确认；
+ * auto-edit = 编辑全免确认；auto = 全免。边界判定在 sidecar（软链接按真实落点算）。
+ */
+export type ApprovalLevel = "ask" | "workspace-write" | "auto-edit" | "auto";
 
 export type PlanningStateValue = "inactive" | "planning";
 
@@ -82,7 +86,11 @@ export function applyPlanningChunk(threadId: string, data: unknown): void {
   setSnapshot(threadId, {
     mode,
     approvalLevel:
-      d.approvalLevel === "auto-edit" || d.approvalLevel === "auto" ? d.approvalLevel : "ask",
+      d.approvalLevel === "workspace-write" ||
+      d.approvalLevel === "auto-edit" ||
+      d.approvalLevel === "auto"
+        ? d.approvalLevel
+        : "ask",
     planning: d.planning,
   });
 }
@@ -140,24 +148,80 @@ async function requestMode(threadId: string, payload: Record<string, unknown>): 
  *  未发送草稿（尚无会话）只落本地快照：threadId-only 的 set_mode 会懒建空白
  *  会话（污染），而草稿真正建会话（首次发送走 createThread）后偏好跟随
  *  「最近一次使用」，届时再切一次即可同步 sidecar。 */
+/**
+ * 草稿期（还没有 sessionId）选过的档位。**必须留着补发**：这一档决定「改动前问不问」，
+ * 只写在前端内存里就等于没生效——首条消息建出来的 run 会按全局默认档装配，而 UI 一直
+ * 显示用户选的那一档（症状：选「工作区内自动」，bash 却直接跑了）。
+ * 与模型/思考档/工作模式的 flushDraftXxxSelection 同一套路，见 flushDraftModeSelection。
+ */
+const draftPicks = new Map<string, { mode: SessionMode; approvalLevel?: ApprovalLevel }>();
+
 export function setSessionMode(
   threadId: string,
   mode: SessionMode,
   approvalLevel?: ApprovalLevel,
 ): Promise<void> {
   if (!piSessionIdForThread(threadId)) {
+    // 两级档位正交：选能力模式（问答/计划/目标）不带审批档，**不能**因此把上一句
+    // 选的档位丢掉或显示成默认——草稿期是"用户已经选了什么"的本地模型，缺了哪一级
+    // 就沿用上一句的值，否则「先选完全访问、再选计划模式」会当场退回变更前确认
+    const prev =
+      draftPicks.get(threadId) ??
+      ({
+        mode: sessionModeSnapshot(threadId).mode,
+        approvalLevel: sessionModeSnapshot(threadId).approvalLevel,
+      } satisfies { mode: SessionMode; approvalLevel?: ApprovalLevel });
+    const nextLevel = approvalLevel ?? prev.approvalLevel ?? "ask";
+    draftPicks.set(threadId, {
+      mode,
+      ...(nextLevel ? { approvalLevel: nextLevel } : {}),
+    });
     setSnapshot(threadId, {
       mode,
-      approvalLevel: approvalLevel ?? "ask",
+      approvalLevel: nextLevel,
       planning: mode === "plan" ? "planning" : "inactive",
     });
     return Promise.resolve();
   }
+  // 已绑定会话：落库成功即不再需要草稿记忆
+  draftPicks.delete(threadId);
   return requestMode(threadId, {
     type: "set_mode",
     mode,
     ...(approvalLevel ? { approvalLevel } : {}),
   });
+}
+
+/**
+ * 首条消息派发前（会话绑定后）把草稿期选的档位定靶补发。
+ *
+ * 不补发的后果不是"显示不准"而是**权限档没生效**：run 按全局默认装配，用户以为
+ * 自己选了「工作区内自动」，实际跑的是全局那一档（可能更宽松），而 UI 显示的是他选的。
+ * 调用点与 flushDraftModelSelection 等三个同期（usePiRuntime 的 initialize），
+ * 且**要 await**：这一条决定首轮怎么执行，晚到就等于首轮按错档跑。
+ *
+ * 失败保留草稿，下次绑定再试（与三个同期 fire-and-forget 的取舍不同——它没有回退显示：
+ * 档位不像模型那样有"降级可用"的形态）。
+ */
+export async function flushDraftModeSelection(threadId: string): Promise<void> {
+  const pick = draftPicks.get(threadId);
+  if (!pick) return;
+  if (!piSessionIdForThread(threadId)) return;
+  try {
+    await requestMode(threadId, {
+      type: "set_mode",
+      mode: pick.mode,
+      ...(pick.approvalLevel ? { approvalLevel: pick.approvalLevel } : {}),
+    });
+    draftPicks.delete(threadId);
+  } catch {
+    // 保留草稿：下一次绑定（或用户再切一次档）会重试
+  }
+}
+
+/** 测试缝：某线程是否还压着未补发的草稿档 */
+export function draftModePickForTest(threadId: string) {
+  return draftPicks.get(threadId);
 }
 
 /**
@@ -177,7 +241,9 @@ export function fetchPlanningState(threadId: string): Promise<void> {
     setSnapshot(threadId, {
       mode: prefsMode,
       approvalLevel:
-        prefs.approvalLevel === "auto-edit" || prefs.approvalLevel === "auto"
+        prefs.approvalLevel === "workspace-write" ||
+        prefs.approvalLevel === "auto-edit" ||
+        prefs.approvalLevel === "auto"
           ? prefs.approvalLevel
           : "ask",
       planning: prefsMode === "plan" ? "planning" : "inactive",

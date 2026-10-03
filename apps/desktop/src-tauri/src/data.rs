@@ -110,6 +110,11 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
     // 跟随全局默认（kv pi.app_mode）；定靶 set_app_mode 只写被点名会话这一列，
     // 其余会话不受波及（与 thinking_level 同型，见 pi-agent handlers/preferences.ts）。
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN app_mode TEXT;");
+    // goal_max_turns：会话级目标轮数上限（文本存数字）。NULL = 本会话从未定过，
+    // 建目标时回落到默认 300；"0" = 不限（与条上「填 0 表示不限」同一套词汇）。
+    // 为什么不是 INTEGER：NULL 已经被「从未设置」占了，而「不限」也是一个要记住的
+    // 选择，两者必须分得开——与 design_theme 用 "" 表达"显式不使用主题"同一个套路。
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN goal_max_turns TEXT;");
 
     // 旧数据迁移：早期版本把未选工作目录的会话 cwd 存成用户主目录；统一清空。
     let home = home_dir();
@@ -410,7 +415,7 @@ pub fn handle_host_query(
             let id = str_param(p, "sessionId")?;
             let row = conn
                 .query_row(
-                    "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode FROM sessions WHERE id = ?1",
+                    "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns FROM sessions WHERE id = ?1",
                     params![id],
                     |row| {
                         Ok(json!({
@@ -423,6 +428,7 @@ pub fn handle_host_query(
                             "thinkingLevel": row.get::<_, Option<String>>(6)?,
                             "designTheme": row.get::<_, Option<String>>(7)?,
                             "appMode": row.get::<_, Option<String>>(8)?,
+                            "goalMaxTurns": row.get::<_, Option<String>>(9)?,
                         }))
                     },
                 )
@@ -443,7 +449,7 @@ pub fn handle_host_query(
         }
         "session_list" => {
             let rows = conn
-                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode FROM sessions ORDER BY updated_at DESC")
+                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns FROM sessions ORDER BY updated_at DESC")
                 .map_err(|e| e.to_string())?
                 .query_map([], |row| {
                     Ok(json!({
@@ -462,6 +468,7 @@ pub fn handle_host_query(
                         "thinkingLevel": row.get::<_, Option<String>>(11)?,
                         "designTheme": row.get::<_, Option<String>>(12)?,
                         "appMode": row.get::<_, Option<String>>(13)?,
+                        "goalMaxTurns": row.get::<_, Option<String>>(14)?,
                     }))
                 })
                 .map_err(|e| e.to_string())?
@@ -534,6 +541,7 @@ pub fn handle_host_query(
             let thinking_level = p.get("thinkingLevel").and_then(|v| v.as_str());
             let design_theme = p.get("designTheme").and_then(|v| v.as_str());
             let app_mode = p.get("appMode").and_then(|v| v.as_str());
+            let goal_max_turns = p.get("goalMaxTurns").and_then(|v| v.as_str());
             conn.execute(
                 "UPDATE sessions SET \
                  mode = COALESCE(?2, mode), \
@@ -542,9 +550,10 @@ pub fn handle_host_query(
                  model_id = COALESCE(?5, model_id), \
                  thinking_level = COALESCE(?6, thinking_level), \
                  design_theme = COALESCE(?7, design_theme), \
-                 app_mode = COALESCE(?8, app_mode) \
+                 app_mode = COALESCE(?8, app_mode), \
+                 goal_max_turns = COALESCE(?9, goal_max_turns) \
                  WHERE id = ?1",
-                params![id, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode],
+                params![id, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns],
             )
             .map_err(|e| e.to_string())?;
             Ok(json!({}))
@@ -1292,6 +1301,43 @@ mod tests {
         // 列表投影同样携带（前端 piSessionPrefsMap 的取数路径）
         let list = q("session_list", json!({}))["data"].clone();
         assert_eq!(list.as_array().unwrap()[0]["appMode"], "design");
+    }
+
+    /// goal_max_turns 偏好列往返（会话级目标轮数上限）。
+    /// 三态必须分得开：NULL = 从未定过（建目标回落默认 300）；"0" = 不限；
+    /// 其余 = 具体轮数。混成两态就会出现「用户选了不限，下次却被当成没设过」。
+    #[test]
+    fn session_prefs_goal_max_turns_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let q = |kind: &str, p: Value| {
+            dispatch_host_query(
+                &db,
+                &json!({ "id": "t", "kind": kind, "params": p }),
+            )
+        };
+        q("session_insert", json!({ "sessionId": "s1", "cwd": "", "now": "t" }));
+
+        assert!(q("session_get", json!({ "sessionId": "s1" }))["data"]["goalMaxTurns"].is_null());
+
+        q("session_prefs_set", json!({ "sessionId": "s1", "goalMaxTurns": "120" }));
+        let got = q("session_get", json!({ "sessionId": "s1" }))["data"].clone();
+        assert_eq!(got["goalMaxTurns"], "120");
+        // 不牵连其他偏好列
+        assert!(got["appMode"].is_null());
+        assert!(got["thinkingLevel"].is_null());
+
+        // 不限是一个要记住的选择，不是"没设过"
+        q("session_prefs_set", json!({ "sessionId": "s1", "goalMaxTurns": "0" }));
+        assert_eq!(
+            q("session_get", json!({ "sessionId": "s1" }))["data"]["goalMaxTurns"],
+            "0"
+        );
+
+        // 列表投影同样携带（前端 piSessionPrefsMap 的取数路径）
+        let list = q("session_list", json!({}))["data"].clone();
+        assert_eq!(list.as_array().unwrap()[0]["goalMaxTurns"], "0");
     }
 
     /// 旧库（无 archived 列）打开时自动补列，session_list 正常返回。

@@ -5,6 +5,7 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { send } from "../stream";
+import { logErr } from "../../log";
 import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
 import { runCompaction, contextInfo } from "../../agent/context";
@@ -18,9 +19,9 @@ import {
   setSessionName,
   windowTranscriptMessages,
 } from "../../sessions/transcript";
-import { isAutoContinueMessage } from "pi-protocol";
+import { isAutoContinueMessage, isGoalInternalMessage } from "pi-protocol";
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
-import { getQueueStateForThread } from "../../sessions/prompt-queue";
+import { getQueueStateForThread, isTurnBusy } from "../../sessions/prompt-queue";
 import { sessionPath } from "../../storage/storage";
 import {
   sessionDelete,
@@ -40,10 +41,21 @@ import {
   setSessionCwd,
 } from "../../sessions/sessions";
 import { getTodoState, replayTodoFromMessages } from "../../todo/todo";
+import {
+  getGoal,
+  goalStatePayload,
+  restoreGoal,
+  resume,
+  setGoalMaxTurns,
+  commitGoal,
+} from "../../goal/goal";
+import { goalContinueText } from "../../goal/goal-continuation";
+import { limitsFor } from "../../goal/goal-state";
+import { dispatchPrompt } from "../prompt-pipeline";
 import { getDelegationSnapshot } from "../../subagent/subagent";
 import { dropEventSeq, peekEventSeq } from "../event-seq";
 import { peekPartial } from "../thread-events";
-import type { SessionSummary } from "../../types";
+import type { Running, SessionSummary } from "../../types";
 import type { CommandHandler } from "../command";
 import type { CompactionRow } from "../../sessions/transcript";
 
@@ -112,6 +124,61 @@ export const handlers: Record<string, CommandHandler> = {
     });
   },
 
+  get_goal_state: async (reqId, msg) => {
+    // 目标快照：composer 常驻条的水合入口（刷新 / 切线程 / 切档后）。
+    // 与 get_todo_state 同款两段式：内存没有该线程就先只读回放转录里的
+    // goal_state 行重建槽位（不建 Agent、不写 running），再回快照。
+    // 拿不到 sessionId 时回「无目标」而不是抛——常驻条在还没建会话的新线程上
+    // 也会问一次，那不是错误状态
+    const threadId = String(msg.threadId ?? "default");
+    if (!running.has(threadId)) {
+      const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
+      if (sessionId) restoreGoal(threadId, sessionId);
+    }
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+  },
+
+  goal_resume: async (reqId, msg) => {
+    // 常驻条「继续」：paused/blocked → active 并清零安全 epoch（轮次与停滞计数）。
+    // 必须经 resolveSession 拿到 run：commitGoal 要按 run.threadId 落盘并发事件，
+    // 而请求带的 threadId 在改绑后可能不是真键
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    const goal = resume(run);
+    if (!goal) throw new Error(`no goal to resume: ${threadId}`);
+    // 先回快照：UI 立刻看到「进行中」，不用等这一轮的第一个 chunk
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    kickGoalLoop(run);
+  },
+
+  goal_clear: async (reqId, msg) => {
+    // 常驻条「清除」：连落一行 goal_state（null）而不是删内存键——「已完成」
+    // 和「被用户清掉」在重启回放上必须区分得开，否则重启后条会以为目标还在
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    commitGoal(run, undefined);
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+  },
+
+  // 改这条目标的轮次上限（常驻条上点分母改的就是它）。上限挂在目标上而不是全局
+  // 设置里：该跑多少轮取决于任务本身，随目标落盘、随目标回放
+  goal_set_limit: async (reqId, msg) => {
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    const goal = setGoalMaxTurns(run, msg.maxAutoTurns);
+    if (!goal) throw new Error(`no goal to set limit on: ${threadId}`);
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+  },
+
   context_info: async (reqId, msg) => {
     // 上下文面板读数：运行中也可查询（只读不阻塞）。
     // 迭代2（P2）：未驻留的会话走只读投影（不建 Agent、不写 running）；
@@ -150,7 +217,10 @@ export const handlers: Record<string, CommandHandler> = {
         // 会话级偏好（undefined = 从未变更过）：切回会话时前端据此恢复 mode/model
         mode: r.mode === "agent" || r.mode === "plan" || r.mode === "ask" ? r.mode : undefined,
         approvalLevel:
-          r.approvalLevel === "ask" || r.approvalLevel === "auto-edit" || r.approvalLevel === "auto"
+          r.approvalLevel === "ask" ||
+          r.approvalLevel === "workspace-write" ||
+          r.approvalLevel === "auto-edit" ||
+          r.approvalLevel === "auto"
             ? r.approvalLevel
             : undefined,
         modelProvider: r.modelProvider ?? undefined,
@@ -236,7 +306,9 @@ export const handlers: Record<string, CommandHandler> = {
             : undefined;
         const sameRunTail =
           !!payload &&
-          (payload.role !== "user" || isAutoContinueMessage(payload));
+          (payload.role !== "user" ||
+            isAutoContinueMessage(payload) ||
+            isGoalInternalMessage(payload));
         if (!sameRunTail) {
           afterAnchor = true;
           continue;
@@ -369,7 +441,7 @@ export const handlers: Record<string, CommandHandler> = {
       // 哨兵 user 行必须与 toUiMessage 同口径按前缀隐藏——快照直出原生行，
       // 此前不滤曾把裸前缀当用户提问上屏（桌面气泡泄漏）。
       const truncationStopped = isTruncationStoppedRow(m, scan.messages[mi + 1]);
-      if (isAutoContinueMessage(m.agent)) continue;
+      if (isAutoContinueMessage(m.agent) || isGoalInternalMessage(m.agent)) continue;
       messages.push({
         ...(m.agent as unknown as SnapMessage),
         __seq: m.seq,
@@ -527,3 +599,38 @@ export const handlers: Record<string, CommandHandler> = {
     send({ id: reqId, type: "session_cwd_set", sessionId, cwd });
   },
 };
+
+/**
+ * 「点继续」之后真正把循环点着。
+ *
+ * 背景：目标状态是 active ≠ 循环在跑。循环的唯一驱动源是「有 run 在飞 +
+ * turn_end 调 continueGoalTurn」——而 paused 意味着那个 run 早就结束了，
+ * 光把状态搬回 active 不会让任何东西跑起来（条上显示「进行中」+ 呼吸绿点，
+ * 实际什么都没有，这是修复前「继续按钮点了没用」的根因）。
+ *
+ * 所以空闲时补起一轮。两点讲究：
+ * - 用 GOAL_CONTINUE_PREFIX 开头的续跑文本：它会被 syncGoalOnUserPrompt 认出
+ *   是系统注入而不是用户接管，否则刚 resume 就被自己暂停；
+ * - 合成的 reqId：发起的这一轮流式事件按 sessionId 分流（桌面 pi-client-base），
+ *   所以用户照常看到输出，不需要给这次内部起轮接一条前端请求。
+ *
+ * 线程正忙时什么都不做：状态已是 active，那一轮的 turn_end 自然会续。
+ */
+function kickGoalLoop(run: Running): void {
+  if (isTurnBusy(run.threadId)) return;
+  const goal = getGoal(run.threadId);
+  if (!goal || goal.status !== "active") return;
+  const reqId = `goal-${run.sessionId}-${Date.now()}`;
+  void dispatchPrompt(reqId, {
+    threadId: run.threadId,
+    sessionId: run.sessionId,
+    // 必须是用户选的目录（persistedCwd），**不能**传 run.cwd：后者对无目录会话是
+    // 运行时兜底的 <task-workspace>/<sessionId>，而 dispatchPrompt 会把请求里的 cwd
+    // 当成「用户后来选了目录」持久化进会话行（resolveSession 的补绑分支）——一次
+    // 「继续」就把任务会话变成「项目」会话，侧边栏按 UUID 目录名分组
+    cwd: run.persistedCwd,
+    text: goalContinueText(goal, limitsFor(goal)),
+  }).catch((err) => {
+    logErr("goal resume: failed to start the continuation turn:", err);
+  });
+}

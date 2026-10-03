@@ -61,6 +61,9 @@ export type SessionRow = {
   designTheme: string | null;
   /** 工作模式偏好（work|code|design）：NULL = 本会话从未切换过，跟随全局默认 */
   appMode: string | null;
+  /** 目标轮数上限偏好（文本存数字）：NULL = 本会话从未定过（建目标回落默认 300）；
+   *  "0" = 不限。两态必须分得开——「不限」也是一个要记住的选择 */
+  goalMaxTurns: string | null;
 };
 
 export type CustomProviderRow = {
@@ -87,6 +90,8 @@ export type SessionPrefsRow = {
   designTheme: string | null;
   /** 工作模式偏好：NULL = 本会话从未切换过（恢复链退到全局默认 kv pi.app_mode） */
   appMode: string | null;
+  /** 目标轮数上限：NULL = 本会话从未定过（建目标回落默认 300）；"0" = 不限 */
+  goalMaxTurns: string | null;
 };
 
 export const sessionGet = (sessionId: string) =>
@@ -105,6 +110,8 @@ export const sessionPrefsSet = (
     designTheme?: string;
     /** 会话级工作模式（work|code|design）：定靶 set_app_mode 只写被点名会话 */
     appMode?: string;
+    /** 会话级目标轮数上限（数字字符串；"0" = 不限）：定靶写入只动本会话 */
+    goalMaxTurns?: string;
   },
 ) => query("session_prefs_set", { sessionId, ...prefs });
 
