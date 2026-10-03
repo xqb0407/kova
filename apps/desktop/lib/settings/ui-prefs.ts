@@ -166,4 +166,14 @@ export function setUiPref<K extends keyof UiPrefs>(key: K, value: UiPrefs[K]) {
   emit();
 }
 
+/**
+ * 浅 ↔ 深互切（快捷键 ⌥T 用）：以「当前实际显示的外观」为基准取反向，
+ * 因此处于「跟随系统」时也会落到具体的浅色或深色档，不回跟随系统。
+ */
+export function toggleThemeMode(): void {
+  const dark =
+    prefs.theme === "dark" || (prefs.theme === "system" && systemDark());
+  setUiPref("theme", dark ? "light" : "dark");
+}
+
 void initUiPrefs();

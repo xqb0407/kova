@@ -9,6 +9,7 @@ import {
   type GitProbe,
   type GitStatusInfo,
 } from "@/lib/git/git";
+import { whenWorkspacePersisted } from "@/lib/workspace/workspace-store";
 
 /**
  * git 状态缓存 store（形态仿 lib/pi-todo.ts 的 useSyncExternalStore）：
@@ -59,7 +60,13 @@ export function refreshGitStatus(cwd: string | null | undefined): void {
   if (!cwd || !isTauri() || loading.has(cwd)) return;
   loading.add(cwd);
   notify();
-  gitStatus(cwd)
+  // 先等 workspace 的 kv 写入落库再发查询：Rust 侧 resolve_workspace 用 kv
+  // "workspace" 校验 cwd，而选目录时 kv_set（主线程同步命令）与这里的
+  // git_status（异步命令）几乎同时发出、并行执行。status 若抢跑读到旧值会得
+  // cwd-not-allowed 并被缓存成 null——非仓库目录的 null 是终态不会重试，
+  // 胶囊要等到下次失效（聚焦/git-changed）才出现，表现为"出现得很慢"。
+  whenWorkspacePersisted()
+    .then(() => gitStatus(cwd))
     .then((s) => {
       cache.set(cwd, s);
     })
@@ -142,14 +149,11 @@ export function useGitStatus(cwd: string | null): GitView {
   useEffect(() => {
     void wireEvents();
     if (!cwd) return;
-    let alive = true;
-    void ensureGitProbe().then((p) => {
-      if (!alive || !p.available) return;
-      if (!cache.has(cwd)) refreshGitStatus(cwd);
-    });
-    return () => {
-      alive = false;
-    };
+    // probe 与 status 并行首发：胶囊显隐只取决于 status，git 不可用时
+    // git_status 自身报错（resolve_workspace 的 ensure_git）→ 缓存 null，
+    // 与串行走完 probe 再拉 status 殊途同归，省掉一个串在中间的 invoke 往返
+    void ensureGitProbe();
+    if (!cache.has(cwd)) refreshGitStatus(cwd);
   }, [cwd]);
   return view;
 }

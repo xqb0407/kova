@@ -4,8 +4,8 @@
  */
 import { send } from "../stream";
 import { logErr } from "../../log";
-import { findRunBySession, running } from "../../sessions/sessions";
-import { composeModeSystemPrompt } from "../../agent/modes";
+import { findRunBySession, reloadMemoryTools, running } from "../../sessions/sessions";
+import { composeRunPrompt } from "../../agent/modes";
 import { setLeadingSystemMessage } from "../../agent/context";
 import {
   applyPersonalization,
@@ -77,13 +77,7 @@ function expandSecretScope(scope: unknown, cwd: unknown): string | null {
  *  除 agent.state 外必须同改 loopContext 转录首条：活循环每轮请求读的是后者，
  *  只改前者等于没改——轮中切档本轮后续请求仍带旧模式段（0.99 迁移补漏点）。 */
 function recomposeRunPrompt(run: Running): void {
-  const prompt = composeModeSystemPrompt(
-    run.mode,
-    run.cwd,
-    run.appMode,
-    run.agent.state.model,
-    run.designTheme,
-  );
+  const prompt = composeRunPrompt(run, run.agent.state.model);
   setLeadingSystemMessage(run.agent.state.messages, prompt);
   if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
 }
@@ -111,13 +105,14 @@ function memoryTarget(
   return { scope, cwd };
 }
 
-/** 记忆内容可能正被注入系统提示词：写入/删除/恢复后整段重排活动会话（与 set_memory 同款） */
+/** 记忆内容可能正被注入系统提示词：写入/删除/恢复后整段重排活动会话（与 set_memory 同款）。
+ *  除 agent.state 外必须同改 loopContext 转录首条：活循环每轮请求读的是后者，
+ *  只改前者等于没改——轮中关掉记忆后本轮后续请求仍带着记忆段（与 recomposeRunPrompt 同一漏点） */
 function restampMemoryPrompt(): void {
   for (const run of running.values()) {
-    setLeadingSystemMessage(
-      run.agent.state.messages,
-      composeModeSystemPrompt(run.mode, run.cwd, run.appMode, run.agent.state.model, run.designTheme),
-    );
+    const prompt = composeRunPrompt(run, run.agent.state.model);
+    setLeadingSystemMessage(run.agent.state.messages, prompt);
+    if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
   }
 }
 
@@ -152,7 +147,7 @@ export const handlers: Record<string, CommandHandler> = {
     for (const run of running.values()) {
       setLeadingSystemMessage(
         run.agent.state.messages,
-        composeModeSystemPrompt(run.mode, run.cwd, run.appMode, run.agent.state.model, run.designTheme),
+        composeRunPrompt(run, run.agent.state.model),
       );
     }
     send({
@@ -221,15 +216,13 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   set_memory: async (reqId, msg) => {
+    const prevEnabled = getMemoryConfig().enabled;
     const settings = await applyMemoryConfig(msg.settings);
-    // 与 set_personalization 同款广播：记忆段变了就整段重排系统提示词；
-    // 工具表常驻不重建（execute 内实时读配置门控）
-    for (const run of running.values()) {
-      setLeadingSystemMessage(
-        run.agent.state.messages,
-        composeModeSystemPrompt(run.mode, run.cwd, run.appMode, run.agent.state.model, run.designTheme),
-      );
-    }
+    // 总开关翻转：记忆三件套按开关条件注册，整表重建活动会话——关 = 工具收回，
+    // 开 = 重新下发（细项改动不重建，execute 内实时读配置门控）
+    if (settings.enabled !== prevEnabled) await reloadMemoryTools();
+    // 与 set_personalization 同款广播：记忆段变了就整段重排系统提示词（含活循环上下文）
+    restampMemoryPrompt();
     send({ id: reqId, type: "memory", settings });
   },
 
@@ -365,10 +358,13 @@ export const handlers: Record<string, CommandHandler> = {
     if (!file.trim()) throw new Error("read_memory_file: file is required");
     const res = await readMemoryFile(getMemoryConfig(), scope, cwd, file);
     if (res.kind !== "text") throw new Error(`memory file not found: ${file}`);
-    // 外部编辑器改过的内容在这里补一版历史（与最新一版相同则跳过，反复打开无副作用）
-    await snapshotMemoryVersion(scope, cwd, file, "external").catch((err) =>
-      logErr("memory: external snapshot failed:", err),
-    );
+    // 外部编辑器改过的内容在这里补一版历史（与最新一版相同则跳过，反复打开无副作用）。
+    // 总开关关闭时不补：关 = 不写入，看一眼文件不该留下任何落盘（重开记忆后首次查看再补）
+    if (getMemoryConfig().enabled) {
+      await snapshotMemoryVersion(scope, cwd, file, "external").catch((err) =>
+        logErr("memory: external snapshot failed:", err),
+      );
+    }
     send({ id: reqId, type: "memory_file", file, content: res.content });
   },
 

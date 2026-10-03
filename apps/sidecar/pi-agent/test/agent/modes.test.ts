@@ -1,5 +1,15 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -16,6 +26,12 @@ import {
   resolveToolApproval,
   toolsForMode,
 } from "../../src/agent/modes";
+import { GOAL_TOOL_NAMES } from "../../src/goal/goal-state";
+import { getGoal, startGoal } from "../../src/goal/goal";
+import {
+  registerAutomationThread,
+  unregisterAutomationThread,
+} from "../../src/automation/policy";
 import { SYSTEM_PROMPT_CORE, systemPromptCore, workspacePromptLine } from "../../src/tools/tools";
 import { createRetryBudget } from "../../src/model/provider-retry";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
@@ -36,6 +52,13 @@ const BASE_NAMES = [
 ];
 
 // 个性化身份文件实时读盘：钉到空目录，提示词基线不受开发者真实 ~/.kova/ 影响
+// workspace-write 档的边界测试要真实目录（realpath 会解软链接，虚构路径判不出来）
+const WS_ROOT = mkdtempSync(join(tmpdir(), "modes-ws-"));
+const WS = join(WS_ROOT, "project");
+const OUTSIDE = join(WS_ROOT, "other");
+mkdirSync(join(WS, "src"), { recursive: true });
+mkdirSync(OUTSIDE, { recursive: true });
+
 const prevIdentityDir = process.env.PI_IDENTITY_DIR;
 beforeAll(() => {
   process.env.PI_IDENTITY_DIR = join(tmpdir(), "pi-agent-modes-identity");
@@ -84,15 +107,21 @@ function makeRun(
     subagentTools: [fakeTool("task"), fakeTool("task_wait")],
     pendingToolApprovals: new Map(),
     lastSeenAt: Date.now(),
+    usagePending: 0,
   };
 }
 
-function ctx(toolName: string, batch: string[] = [toolName]): BeforeToolCallContext {
+function ctx(
+  toolName: string,
+  batch: string[] = [toolName],
+  args: Record<string, unknown> = {},
+): BeforeToolCallContext {
   return {
     assistantMessage: {
-      content: batch.map((name) => ({ type: "toolCall", name, id: name, arguments: {} })),
+      content: batch.map((name) => ({ type: "toolCall", name, id: name, arguments: args })),
     },
-    toolCall: { name: toolName, id: toolName, arguments: {} },
+    toolCall: { name: toolName, id: toolName, arguments: args },
+    args,
   } as unknown as BeforeToolCallContext;
 }
 
@@ -159,6 +188,92 @@ describe("toolsForMode", () => {
       expect(names).not.toContain(n);
     }
   });
+
+  test("goal 模式 = 完整基础集 + Task 组 + 两个目标出口，无 plan 三件套", () => {
+    const names = toolsForMode(makeRun("goal")).map((t) => t.name);
+    // 完整工具集（含写与 bash）：目标模式的价值是「放手做完」，只读就退化成 plan
+    for (const n of ["read", "write", "edit", "bash", "task"]) {
+      expect(names).toContain(n);
+    }
+    expect(names).toContain(GOAL_TOOL_NAMES.complete);
+    expect(names).toContain(GOAL_TOOL_NAMES.blocked);
+    for (const n of [PLAN_TOOL_NAMES.enter, PLAN_TOOL_NAMES.write, PLAN_TOOL_NAMES.exit]) {
+      expect(names).not.toContain(n);
+    }
+  });
+});
+
+describe("applyMode 离开 goal 档", () => {
+  test("切走时目标转 paused——否则它会永远挂在 active，条上说在跑而实际没跑", () => {
+    const run = makeRun("goal");
+    startGoal(run, "把 README 补全");
+    applyMode(run, "agent");
+    const goal = getGoal(run.threadId)!;
+    expect(goal.status).toBe("paused");
+    expect(goal.pauseReason).toContain("user left goal mode");
+  });
+
+  test("切进来（agent → goal）不动目标", () => {
+    const run = makeRun("agent");
+    startGoal(run, "把 README 补全");
+    applyMode(run, "goal");
+    expect(getGoal(run.threadId)!.status).toBe("active");
+  });
+
+  test("goal → goal 不动目标", () => {
+    const run = makeRun("goal");
+    startGoal(run, "把 README 补全");
+    applyMode(run, "goal");
+    expect(getGoal(run.threadId)!.status).toBe("active");
+  });
+});
+
+describe("goal 模式门控", () => {
+  test("目标出口工具必须独占批次", () => {
+    const run = makeRun("goal");
+    const res = modeBeforeToolCall(
+      run,
+      ctx(GOAL_TOOL_NAMES.complete, ["bash", GOAL_TOOL_NAMES.complete]),
+    );
+    expect(res?.block).toBe(true);
+    // 独占批次时放行
+    expect(modeBeforeToolCall(run, ctx(GOAL_TOOL_NAMES.complete))).toBeUndefined();
+  });
+
+  test("目标出口工具仅在 goal 档可用（轮中切档的兜底闸）", () => {
+    for (const mode of ["agent", "plan", "ask"] as const) {
+      expect(modeBeforeToolCall(makeRun(mode), ctx(GOAL_TOOL_NAMES.complete))?.block).toBe(
+        true,
+      );
+    }
+    expect(modeBeforeToolCall(makeRun("goal"), ctx(GOAL_TOOL_NAMES.blocked))).toBeUndefined();
+  });
+
+  test("goal 档保留写入能力（不像 plan/ask 那样结构性只读）", () => {
+    const run = makeRun("goal");
+    expect(modeBeforeToolCall(run, ctx("write"))).toBeUndefined();
+    expect(modeBeforeToolCall(run, ctx("edit"))).toBeUndefined();
+    expect(modeBeforeToolCall(run, ctx("bash"))).toBeUndefined();
+  });
+
+  test("无人值守自动化 turn 里目标出口工具不可达", () => {
+    const run = makeRun("goal");
+    run.threadId = "t-auto-goal";
+    registerAutomationThread(run.threadId, "workspace-write");
+    try {
+      const res = modeBeforeToolCall(run, ctx(GOAL_TOOL_NAMES.complete));
+      expect(res?.block).toBe(true);
+      expect(res?.reason).toContain("goal mode is unavailable");
+    } finally {
+      unregisterAutomationThread(run.threadId);
+    }
+  });
+
+  test("planning 态在 goal 档是 inactive（枚举扩容塌陷点）", () => {
+    const run = makeRun("goal");
+    applyMode(run, "goal");
+    expect(planningPayload(run).planning).toBe("inactive");
+  });
 });
 
 describe("applyMode", () => {
@@ -191,6 +306,187 @@ describe("plan_enter 执行", () => {
     expect(run.planFilePath).toBeUndefined();
     expect(run.planTitle).toBeUndefined();
     expect(planningPayload(run).mode).toBe("plan");
+  });
+});
+
+
+/**
+ * 可写根清单（workspace-write 档的「额外放行目录」）。
+ *
+ * 单独成组是因为信任清单是**模块级内存 + kv** 的存量状态：不每个用例重置的话，
+ * 前一个用例授信过的根会让后一个用例直接放行，症状是「拒绝后仍被放行」这种
+ * 看起来像安全漏洞的假失败（实际只是测试之间串了状态）。
+ */
+/**
+ * 可写根清单（workspace-write 档的「额外放行目录」）。
+ *
+ * 单独成组：每条用例都在工作区里建/删清单文件，清干净才不串状态。
+ */
+describe("approvalBeforeToolCall：可写根清单", () => {
+  const clearConfig = () => {
+    rmSync(join(WS, ".kova", "permissions.json"), { force: true });
+    rmSync(join(WS, ".kova", "permissions.local.json"), { force: true });
+  };
+  beforeEach(clearConfig);
+  afterEach(clearConfig);
+
+  test("本地层声明的目录免确认（那是你自己机器上的文件，声明即授权）", async () => {
+    mkdirSync(join(WS, ".kova"), { recursive: true });
+    writeFileSync(
+      join(WS, ".kova", "permissions.local.json"),
+      JSON.stringify({ writeRoots: ["../other"] }),
+    );
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    await expect(
+      approvalBeforeToolCall(run, ctx("write", ["write"], { file_path: join(OUTSIDE, "s.ts") })),
+    ).resolves.toBeUndefined();
+    expect(run.pendingToolApprovals.size).toBe(0);
+  });
+
+  test("**项目层声明不生效**，只弹卡说明；点「允许并记住」才写进本机清单", async () => {
+    mkdirSync(join(WS, ".kova"), { recursive: true });
+    writeFileSync(
+      join(WS, ".kova", "permissions.json"),
+      JSON.stringify({ writeRoots: ["../other"] }),
+    );
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+
+    // 项目声明不能自己生效：仍然要问
+    const first = approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(OUTSIDE, "s.ts") }),
+    );
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    // 带可写根上下文 → 卡上会有第三个按钮
+    expect(run.pendingToolApprovals.get(id)?.rememberRoot).toBe(realpathSync(OUTSIDE));
+    resolveToolApproval(run, id, true, true); // 允许并记住
+    await expect(first).resolves.toBeUndefined();
+
+    // 落进了「你自己机器上的」那份文件，而不是项目共享那份
+    const local = JSON.parse(
+      readFileSync(join(WS, ".kova", "permissions.local.json"), "utf8"),
+    ) as { writeRoots: string[] };
+    expect(local.writeRoots).toEqual(["../other"]);
+    const project = JSON.parse(
+      readFileSync(join(WS, ".kova", "permissions.json"), "utf8"),
+    ) as { writeRoots: string[] };
+    expect(project.writeRoots).toEqual(["../other"]); // 原样未动
+
+    // 记过之后不再问
+    await expect(
+      approvalBeforeToolCall(run, ctx("write", ["write"], { file_path: join(OUTSIDE, "t.ts") })),
+    ).resolves.toBeUndefined();
+    expect(run.pendingToolApprovals.size).toBe(0);
+  });
+
+  test("只点「允许」（不带记住）不落任何盘：下一次仍然问", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    const hook = approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(OUTSIDE, "s.ts") }),
+    );
+    await Bun.sleep(0);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, id, true, false);
+    await expect(hook).resolves.toBeUndefined();
+    expect(existsSync(join(WS, ".kova", "permissions.local.json"))).toBe(false);
+
+    const again = approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(OUTSIDE, "t.ts") }),
+    );
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id2] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, id2, true, true);
+    await expect(again).resolves.toBeUndefined();
+  });
+
+  test("拒绝不留痕：不写文件，文件写不进去", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    const hook = approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(OUTSIDE, "s.ts") }),
+    );
+    await Bun.sleep(0);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, id, false, true); // 拒绝 + 记住 → 记住必须无效
+    expect((await hook)?.block).toBe(true);
+    expect(existsSync(join(WS, ".kova", "permissions.local.json"))).toBe(false);
+  });
+
+  test("bash 的卡带的是「记住这条命令」，记完就免确认（逐字相等）", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    const cmd = "cd /tmp && cat package.json";
+    const first = approvalBeforeToolCall(run, ctx("bash", ["bash"], { command: cmd }));
+    await Bun.sleep(0);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    // 没有可记住的**路径**（判不出来），但记住了**命令**
+    expect(run.pendingToolApprovals.get(id)?.rememberRoot).toBeUndefined();
+    expect(run.pendingToolApprovals.get(id)?.rememberCommand).toBe(cmd);
+    resolveToolApproval(run, id, true, true); // 允许并记住这条命令
+    await expect(first).resolves.toBeUndefined();
+
+    // 同一条命令再来：直接放行，不再问
+    await expect(
+      approvalBeforeToolCall(run, ctx("bash", ["bash"], { command: cmd })),
+    ).resolves.toBeUndefined();
+    expect(run.pendingToolApprovals.size).toBe(0);
+
+    // 前缀相同、整串不同（重定向！）必须重新问——这就是不做前缀匹配的理由
+    const sneaky = approvalBeforeToolCall(
+      run,
+      ctx("bash", ["bash"], { command: `${cmd} > /tmp/out` }),
+    );
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id2] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, id2, false);
+    await expect(sneaky).resolves.toBeTruthy();
+  });
+
+  test("记不上盘也不能拦住这次执行（用户批准的是执行，记住只是附带的账）", async () => {
+    // 把工作区做成只读：writeRoots 落盘必失败
+    mkdirSync(join(WS, ".kova"), { recursive: true });
+    chmodSync(join(WS, ".kova"), 0o500);
+    try {
+      const run = makeRun("agent");
+      run.approvalLevel = "workspace-write";
+      run.cwd = WS;
+      const hook = approvalBeforeToolCall(
+        run,
+        ctx("write", ["write"], { file_path: join(OUTSIDE, "s.ts") }),
+      );
+      await Bun.sleep(0);
+      const [id] = [...run.pendingToolApprovals.keys()];
+      resolveToolApproval(run, id, true, true); // 允许并记住 → 落盘失败
+      // 仍然放行（否则工具会莫名报错，而卡片已经消失）
+      await expect(hook).resolves.toBeUndefined();
+    } finally {
+      chmodSync(join(WS, ".kova"), 0o700);
+    }
+  });
+
+  test("对照：同一路径在 auto-edit 档下是放行的（新档确实更严）", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "auto-edit";
+    run.cwd = WS;
+    await expect(
+      approvalBeforeToolCall(run, ctx("write", ["write"], { file_path: join(OUTSIDE, "s.ts") })),
+    ).resolves.toBeUndefined();
+    expect(run.pendingToolApprovals.size).toBe(0);
   });
 });
 
@@ -228,6 +524,59 @@ describe("approvalBeforeToolCall", () => {
     const res = await hook;
     expect(res?.block).toBe(true);
     expect(res?.reason).toContain("rejected");
+  });
+
+  test("workspace-write：工作区内的 write/edit 免确认", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    await expect(
+      approvalBeforeToolCall(run, ctx("write", ["write"], { file_path: "src/a.ts" })),
+    ).resolves.toBeUndefined();
+    await expect(
+      approvalBeforeToolCall(run, ctx("edit", ["edit"], { file_path: join(WS, "b.ts") })),
+    ).resolves.toBeUndefined();
+    // 完全没弹过确认
+    expect(run.pendingToolApprovals.size).toBe(0);
+  });
+
+  test("workspace-write：工作区外（含别的项目）要确认——这正是它比 auto-edit 严的地方", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    for (const args of [
+      { file_path: "../other/secret.ts" },
+      { file_path: join(OUTSIDE, "secret.ts") },
+    ]) {
+      const hook = approvalBeforeToolCall(run, ctx("write", ["write"], args));
+      await Bun.sleep(0);
+      expect(run.pendingToolApprovals.size).toBe(1);
+      const [id] = [...run.pendingToolApprovals.keys()];
+      resolveToolApproval(run, id, true);
+      await expect(hook).resolves.toBeUndefined();
+    }
+  });
+
+  test("workspace-write：bash 照常确认（参数里看不出它会写到哪）", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    const hook = approvalBeforeToolCall(run, ctx("bash", ["bash"], { command: "touch x" }));
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, id, true);
+    await expect(hook).resolves.toBeUndefined();
+  });
+
+  test("对照：同一路径在 auto-edit 档下是放行的（新档确实更严）", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "auto-edit";
+    run.cwd = WS;
+    await expect(
+      approvalBeforeToolCall(run, ctx("write", ["write"], { file_path: join(OUTSIDE, "s.ts") })),
+    ).resolves.toBeUndefined();
+    expect(run.pendingToolApprovals.size).toBe(0);
   });
 
   test("resolveToolApproval 未知 id 返回 false；clearPendingToolApprovals 全部按拒绝结算", async () => {
@@ -509,14 +858,15 @@ describe("系统提示词结构（缓存友好）", () => {
       agent: "Agent mode",
       plan: "Plan mode",
       ask: "Ask mode",
+      goal: "Goal mode",
     };
     // 问答档的静态核心是子集（剔掉任务追踪与子代理两段），其余档用全量核心；
-    // 三档共有的不变式是"静态核心在最前、模式段居中、cwd 行在最尾"
+    // 四档共有的不变式是"静态核心在最前、模式段居中、cwd 行在最尾"
     const coreFor = (mode: SessionMode): string =>
       mode === "ask"
         ? systemPromptCore(["identity", "discipline", "communication"])
         : SYSTEM_PROMPT_CORE;
-    for (const mode of ["agent", "plan", "ask"] as const) {
+    for (const mode of ["agent", "plan", "ask", "goal"] as const) {
       const prompt = composeModeSystemPrompt(mode, CWD, "code");
       const coreEnd = prompt.indexOf(coreFor(mode));
       const modePos = prompt.indexOf(modeMarker[mode]);
@@ -716,10 +1066,11 @@ describe("问答模式提示词", () => {
 });
 
 describe("normalizeSessionMode", () => {
-  test("三档透传，其余回落 agent", () => {
+  test("四档透传，其余回落 agent", () => {
     expect(normalizeSessionMode("ask")).toBe("ask");
     expect(normalizeSessionMode("plan")).toBe("plan");
     expect(normalizeSessionMode("agent")).toBe("agent");
+    expect(normalizeSessionMode("goal")).toBe("goal");
     expect(normalizeSessionMode("nope")).toBe("agent");
     expect(normalizeSessionMode(undefined)).toBe("agent");
     expect(normalizeSessionMode(3)).toBe("agent");

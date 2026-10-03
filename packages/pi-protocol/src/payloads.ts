@@ -76,9 +76,12 @@ export const sessionSummarySchema = z.looseObject({
   modified: z.string(),
   cwd: z.string(),
   archived: z.boolean().optional(),
-  /** 会话级偏好（undefined = 从未变更过；切回会话时恢复选择用） */
-  mode: z.enum(["agent", "plan"]).optional(),
-  approvalLevel: z.enum(["ask", "auto-edit", "auto"]).optional(),
+  /** 会话级偏好（undefined = 从未变更过；切回会话时恢复选择用）。
+   *  四档必须与 sidecar 的 normalizeSessionMode / 桌面 pi-session-mode 同步——
+   *  曾经漏过 "ask"，表现为切到问答档后偏好不落索引表、刷新回默认档。
+   *  枚举扩容时三处一起改。 */
+  mode: z.enum(["agent", "plan", "ask", "goal"]).optional(),
+  approvalLevel: z.enum(["ask", "workspace-write", "auto-edit", "auto"]).optional(),
   modelProvider: z.string().optional(),
   modelId: z.string().optional(),
   /** 会话级思考档位偏好（undefined = 从未定靶选过，跟随默认档位；
@@ -91,7 +94,41 @@ export const sessionSummarySchema = z.looseObject({
    *  kv pi.app_mode；定靶 set_app_mode 只写被点名会话，见 pi-agent handlers/preferences.ts。
    *  与 mode（agent/plan/ask 权限模式）正交：那个切权限，这个切人群定位） */
   appMode: z.enum(["work", "code", "design"]).optional(),
+  /** 会话级目标轮数上限（数字字符串。undefined = 本会话从未定过，建目标回落默认 300；
+   *  "0" = 不限。为什么是字符串：列里 NULL 已经被「从未设置」占用，而「不限」也是一个
+   *  要记住的选择，两者必须分得开——与 designTheme 用 "" 表达「显式不使用主题」同型） */
+  goalMaxTurns: z.string().optional(),
 });
+
+/* --------------------------------- goal --------------------------------- */
+
+/**
+ * 目标模式的对外快照（data-goal-state chunk 与 get_goal_state 响应共用）。
+ * 与 sidecar 的 Goal 一一对应，但只投影 UI 要用的字段——指纹、暂停原因等内部
+ * 判据不进协议（桌面只需显示，拿它们做判断只会两端口径漂）。
+ */
+export const goalStateSchema = z.looseObject({
+  /** 无目标（未设定 / 已清除 / 已完成并归档） */
+  goal: z
+    .looseObject({
+      id: z.string(),
+      objective: z.string(),
+      status: z.enum(["active", "paused", "blocked", "complete"]),
+      /** 常驻条一行摘要（sidecar 侧 formatGoalStatus 算好的成品，两端不各算一遍） */
+      statusLine: z.string(),
+      turnCount: z.number(),
+      /** null = 未设上限 */
+      maxAutoTurns: z.number().nullable(),
+      tokensUsed: z.number(),
+      startedAt: z.number(),
+      updatedAt: z.number(),
+      pauseReason: z.string().optional(),
+      completionSummary: z.string().optional(),
+    })
+    .nullable(),
+});
+
+export type GoalState = z.infer<typeof goalStateSchema>;
 
 /** list_running turns 明细项：一个确定在跑的轮次（会话 + 其 prompt requestId） */
 export const runningTurnSchema = z.looseObject({

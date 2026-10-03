@@ -354,7 +354,7 @@ export const MarketplaceView: FC<{
     return (
       <div className="flex h-full min-h-0 flex-col">
         {/* 顶部条：与下方设置内容同宽同轴，返回 + 分段器（带计数） */}
-        <div className="mx-auto flex w-full max-w-7xl shrink-0 items-center justify-between px-8 pt-6">
+        <div className="mx-auto flex w-full max-w-6xl shrink-0 items-center justify-between px-8 pt-6">
           <Button
             variant="ghost"
             size="sm"
@@ -379,7 +379,7 @@ export const MarketplaceView: FC<{
           />
         </div>
         <div className="min-h-0 flex-1">
-          <div className="mx-auto h-full max-w-7xl px-8">
+          <div className="mx-auto h-full max-w-6xl px-8">
             {manageTab === "subagents" && <SubagentsSettings />}
             {manageTab === "plugins" && <McpSettings />}
             {manageTab === "skills" && <SkillsSettings />}
@@ -403,7 +403,7 @@ export const MarketplaceView: FC<{
 
   return (
     <div className="h-full">
-      <div className="mx-auto flex h-full w-full max-w-7xl flex-col px-8 py-8 lg:px-12">
+      <div className="mx-auto flex h-full w-full max-w-6xl flex-col px-8 py-8 lg:px-12">
         {/* 页头：标题即页签（插件 / 专家 / 技能），右上角「管理」进本段管理页 */}
         <div className="flex items-start justify-between gap-4">
           <div>

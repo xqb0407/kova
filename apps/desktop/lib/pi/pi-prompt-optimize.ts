@@ -35,10 +35,16 @@ export type PromptOptimizeResult = {
 /**
  * 发起一次草稿优化。成功返回结果；被取消（覆盖式新优化/手动取消）返回
  * "cancelled"；模型报错等经 sidecar error 帧抛 Error（消息即失败原因文案）。
+ *
+ * sessionId 必须是**真会话 id**（`piSessionIdForThread` 转换后的值）：sidecar 用它
+ * 读会话模型真值。model 是界面当前显示的模型，只在 sidecar 解析不到会话模型时
+ * 采用（草稿期选择只在前端内存，这是它唯一的过河通道）。
  */
 export async function optimizePrompt(params: {
   threadId: string;
   sessionId?: string;
+  /** 界面当前显示的模型（会话解析不到时 sidecar 的兜底档，采用前会校验凭据） */
+  model?: { provider: string; modelId: string };
   /** 前端生成的任务 id：同一时刻一个输入框只有一个在飞任务 */
   jobId: string;
   text: string;
@@ -48,6 +54,7 @@ export async function optimizePrompt(params: {
       type: "optimize_prompt",
       threadId: params.threadId,
       ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+      ...(params.model ? { model: params.model } : {}),
       jobId: params.jobId,
       text: params.text,
     },

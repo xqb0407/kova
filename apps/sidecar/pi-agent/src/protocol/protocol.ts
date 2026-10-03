@@ -38,11 +38,14 @@
  *   { "type": "queue_pop", "id", "threadId"?, "sessionId"? } → { id, type: "queue_popped", threadId, popped }
  *       弹出队首交由前端重发（前端接力泵用；仅线程空闲且无串行链节时弹出，
  *       否则 popped 为 null——链节仍在，泵转而在跑轮探测重挂）
- *   { "type": "optimize_prompt", "id", "threadId"?, "sessionId"?, "jobId", "text" }
+ *   { "type": "optimize_prompt", "id", "threadId"?, "sessionId"?, "jobId", "text", "model"? }
  *       → { id, type: "prompt_optimized", jobId, text, chipCount, model }
  *       提示词优化（composer 的优化按钮）：用会话当前模型发一次独立 one-shot 改写草稿，
  *       结果由前端回填输入框；芯片（`:skill[..]{..}` / `:agent[..]{..}`）经占位符掩码后
  *       表驱动还原，绝不采纳模型改写的芯片文本（见 sessions/prompt-optimize.ts）。
+ *       模型解析：驻留 run > 会话偏好行（sessionId 须是真会话 id——草稿线程 id 查不到
+ *       会话）> 请求携带的界面当前模型 model（过目录/凭据校验后采用；草稿期选择只活在
+ *       前端内存，这是它唯一的通道）> 全局默认 > 目录默认。
  *       应答**晚于命令返回**：几秒级 provider 请求不占 mgmt 串行队列，handler 校验派活
  *       即返回，结果用同一 reqId 补发（Rust pending oneshot 按 id 配对、无超时）
  *   { "type": "optimize_cancel", "id", "jobId" }              → { id, type: "prompt_optimize_cancel", jobId }
@@ -257,7 +260,11 @@
  *       mode = agent | plan；切换会热替换工具集与系统提示词
  *   { "type": "get_planning_state", "id", "threadId", "sessionId"? }     → { id, type: "planning_state", mode, planning }
  *       拉取当前模式快照（前端刷新/切线程后恢复模式选择器用）
- *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved" } → { id, type: "tool_confirmed", approvalId }
+ *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved", "remember"? }
+ *     → { id, type: "tool_confirmed", approvalId }
+ *     remember = 用户点的是「允许并记住」：把这次要写的目录写进本机可写根清单
+ *     （<cwd>/.kova/permissions.local.json），之后该目录不再询问。只对带可写根
+ *     上下文的审批有意义（workspace-write 档的 write/edit），其余忽略。
  *       结算逐工具审批（bash/write/edit 执行前）与 plan_exit 的模式退出确认
  *       （prompt 流内 data-toolApproval chunk 发起）
  *   { "type": "question_answer", "id", "threadId", "questionId", "answers": [{ questionId, selectedIds, otherText?, skipped? }] } → { id, type: "question_answered", questionId }

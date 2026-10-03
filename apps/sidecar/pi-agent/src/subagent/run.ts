@@ -22,6 +22,7 @@ import {
 import type { SubagentDefinition } from "./subagent-definitions";
 import { makeAutoContinueMessage, MAX_LENGTH_CONTINUES, needsLengthContinuation } from "../agent/context";
 import { createTraceRunRecorder, type TraceRunRecorder } from "../protocol/trace";
+import { messageUsageTokens } from "../agent/context";
 import type { SubagentActivityItem, SubagentRunResult, SubagentRunStatus } from "../types";
 import { boundedReport, summarizeToolArgs } from "./delegation";
 
@@ -79,6 +80,8 @@ export class SubagentRun {
   private lastReportText = "";
   private turns = 0;
   private toolCalls = 0;
+  /** 本次委派的 token 累计（四项相加，错误/中止轮不计），随结果回传父 run */
+  private tokens = 0;
   private cappedTurns = false;
   private streamError?: { code: string; message: string };
   /** 长度截断自动续跑计数（预算按一次委派；见 context.ts） */
@@ -237,6 +240,7 @@ export class SubagentRun {
       report: boundedReport(text),
       turns: this.turns,
       toolCalls: this.toolCalls,
+      tokens: this.tokens,
       ...(error ? { error } : {}),
     };
   }
@@ -247,6 +251,10 @@ export class SubagentRun {
     // 轨迹记账：全事件喂给记录器，agent_end 即结算（handle 先行保证 endMs 收在事件上）
     this.trace.handle(event);
     if (event.type === "agent_end") this.trace.settle();
+    // 自己的账自己记：子代理是独立 Agent，用量不进父会话转录，只能靠结果回传
+    if (event.type === "message_end") {
+      this.tokens += messageUsageTokens(event.message);
+    }
     switch (event.type) {
       case "turn_start":
         this.turns += 1;

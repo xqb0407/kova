@@ -279,14 +279,47 @@ describe("optimizeDraftPrompt", () => {
     expect(res).toEqual({ ok: false, error: "优化结果为空（输出被长度截断，多在思考上）" });
   });
 
-  test("流内 error 事件判失败", async () => {
+  test("流内 error 事件判失败（字符串形态带出原文）", async () => {
     const stream = () =>
       (async function* () {
         yield { type: "text_delta", delta: "半句" };
         yield { type: "error", error: "provider 500" };
       })();
     const res = await optimizeDraftPrompt(stream as never, MODEL, "改点东西");
-    expect(res).toEqual({ ok: false, error: "模型返回错误" });
+    expect(res).toEqual({ ok: false, error: "模型返回错误：provider 500" });
+  });
+
+  test("流错误对象里的 provider 原文透出（billing/配额可归因）", async () => {
+    const stream = () =>
+      (async function* () {
+        yield {
+          type: "error",
+          error: {
+            role: "assistant",
+            content: [],
+            stopReason: "error",
+            errorMessage: 'upstream 403: {"code":"110","message":"Billing daily count exceeded"}',
+          },
+        };
+      })();
+    const res = await optimizeDraftPrompt(stream as never, MODEL, "改点东西");
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toBe(
+      '模型返回错误：upstream 403: {"code":"110","message":"Billing daily count exceeded"}',
+    );
+  });
+
+  test("超长 provider 原文截断，不把输入框/toast 塞爆", async () => {
+    const stream = () =>
+      (async function* () {
+        yield { type: "error", error: { errorMessage: "x".repeat(1000) } };
+      })();
+    const res = await optimizeDraftPrompt(stream as never, MODEL, "改点东西");
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error.startsWith("模型返回错误：")).toBe(true);
+    expect(res.error.length).toBeLessThanOrEqual("模型返回错误：".length + 201);
   });
 
   test("signal 中止返回已取消", async () => {

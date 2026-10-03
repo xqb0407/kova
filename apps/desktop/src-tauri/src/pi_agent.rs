@@ -299,6 +299,11 @@ pub async fn pi_prompt(
     attachments: Option<serde_json::Value>,
     // steer = 并入当前轮：sidecar 忙线程把消息注入活跃轮（不排队），本请求退化流收尾
     steer: Option<bool>,
+    // goal_max_auto_turns = goal 档下这条目标的轮次上限（0 = 不限），建目标时用。
+    // **必须显式转发**：本命令是按固定键重建 JSON 的，invoke 传进来的多余参数会被
+    // serde 静默丢弃——漏了这一行，条上填的数永远到不了 sidecar，目标还是按默认
+    // 300 建（症状：填 100 发出去，条上仍显示 /300）
+    goal_max_auto_turns: Option<i64>,
 ) -> Result<(), String> {
     ensure_spawned(&app, &state).await?;
     let payload = serde_json::json!({
@@ -310,6 +315,7 @@ pub async fn pi_prompt(
         "cwd": cwd,
         "attachments": attachments,
         "steer": steer,
+        "goalMaxAutoTurns": goal_max_auto_turns,
     });
     write_line(&state, payload.to_string()).await
 }

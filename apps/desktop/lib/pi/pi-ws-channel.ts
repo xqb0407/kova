@@ -341,6 +341,7 @@ export class WsPiChannel implements PiChannel {
     cwd: string | null;
     attachments: import("@/lib/pi/pi-channel").PiPromptAttachment[] | null;
     steer: boolean;
+    goalMaxAutoTurns?: number;
   }): boolean {
     return this.sendRaw({
       type: "prompt",
@@ -354,6 +355,7 @@ export class WsPiChannel implements PiChannel {
       attachments: args.attachments,
       // 并入当前轮（steer）：sidecar 忙线程注入活跃轮
       steer: args.steer === true,
+      goalMaxAutoTurns: args.goalMaxAutoTurns,
     });
   }
 }

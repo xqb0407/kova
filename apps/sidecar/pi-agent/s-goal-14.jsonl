@@ -1,0 +1,2 @@
+{"type":"goal_state","goal":{"id":"8033aa9e-4f33-479a-bdf0-b10bf4bc085d","objective":"x","status":"active","startedAt":1790965522995,"updatedAt":1790965522995,"turnCount":0,"tokensUsed":0,"stallTurns":0,"maxAutoTurns":50},"timestamp":"2026-10-02T18:25:22.995Z"}
+{"type":"goal_state","goal":{"id":"679c4825-dafa-4dbe-9854-b60b960a007f","objective":"x","status":"active","startedAt":1790965546034,"updatedAt":1790965546034,"turnCount":0,"tokensUsed":0,"stallTurns":0,"maxAutoTurns":50},"timestamp":"2026-10-02T18:25:46.034Z"}

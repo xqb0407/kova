@@ -89,6 +89,7 @@ function makeRun(records: DelegationRecord[] = []): Running {
     subagentTools: [],
     pendingToolApprovals: new Map(),
     lastSeenAt: Date.now(),
+    usagePending: 0,
   };
 }
 
@@ -183,6 +184,29 @@ describe("settleDelegation", () => {
     const run = makeRun([record]);
     settleDelegation(run, record, settledResult("aborted"));
     expect(record.status).toBe("stopped");
+  });
+
+  test("子代理的 token 记账汇给父 run（它的用量不进父转录，不在这里收就永远看不到）", () => {
+    const record = makeRecord("r-tokens");
+    const run = makeRun([record]);
+    expect(run.usagePending).toBe(0);
+    settleDelegation(run, record, { ...settledResult("completed"), tokens: 12_345 });
+    expect(run.usagePending).toBe(12_345);
+  });
+
+  test("重复结算不重复记账（同一笔 token 只汇一次）", () => {
+    const record = makeRecord("r-tokens-dup");
+    const run = makeRun([record]);
+    settleDelegation(run, record, { ...settledResult("completed"), tokens: 100 });
+    settleDelegation(run, record, { ...settledResult("failed"), tokens: 999 });
+    expect(run.usagePending).toBe(100);
+  });
+
+  test("老结果没有 tokens 字段时按 0 处理（不产生 NaN）", () => {
+    const record = makeRecord("r-tokens-legacy");
+    const run = makeRun([record]);
+    settleDelegation(run, record, settledResult("completed"));
+    expect(run.usagePending).toBe(0);
   });
 
   test("重复结算被忽略", () => {

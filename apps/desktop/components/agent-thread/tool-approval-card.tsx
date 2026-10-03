@@ -3,6 +3,7 @@
 import { useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import {
+  BookmarkPlusIcon,
   CheckIcon,
   ClipboardListIcon,
   ShieldAlertIcon,
@@ -158,9 +159,9 @@ const ApprovalRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> 
   const [busy, setBusy] = useState(false);
   const summary = summarizeInput(approval.toolName, approval.input);
 
-  const decide = (approved: boolean) => {
+  const decide = (approved: boolean, remember = false) => {
     setBusy(true);
-    confirmToolApproval(sessionId, approval.approvalId, approved).catch(
+    confirmToolApproval(sessionId, approval.approvalId, approved, remember).catch(
       () => {},
     );
   };
@@ -170,19 +171,27 @@ const ApprovalRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> 
   }
 
   return (
-    <div className="flex items-start gap-2.5 px-4 py-2.5">
+    // flex-wrap：按钮组是 shrink-0（按钮不该被压扁），窄列下若不换行就会把文字块
+    // 挤成一条竖缝（实测：三个按钮占掉大半张卡，正文每行只剩七八个字）。
+    // 文字块给 basis-52 的最小可读宽度：放不下时按钮整组落到下一行右对齐
+    <div className="flex flex-wrap items-start gap-x-2.5 gap-y-2 px-4 py-2.5">
       <span className="mt-0.5 shrink-0 text-amber-500 [&_svg]:size-4">
         <ShieldAlertIcon />
       </span>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 basis-52">
         <p className="text-sm font-medium">
           请求执行 <span className="font-mono">{approval.toolName}</span>
         </p>
         {summary && (
           <p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">{summary}</p>
         )}
+        {/* 「同意意味着什么」：如可写根清单的授权。不显式写出就是静默扩大权限 */}
+        {approval.note && (
+          <p className="text-muted-foreground mt-1 text-xs leading-relaxed">{approval.note}</p>
+        )}
       </div>
-      <div className="flex shrink-0 gap-2">
+      {/* ml-auto 让按钮组在换行后仍贴右；自身也能换行（极窄时按钮之间折行） */}
+      <div className="ml-auto flex shrink-0 flex-wrap justify-end gap-2">
         <Button
           type="button"
           variant="ghost"
@@ -194,6 +203,26 @@ const ApprovalRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> 
           <XIcon className="size-3.5" />
           拒绝
         </Button>
+        {/* 「允许并记住」只在带可写根上下文的审批上出现（workspace-write 档的
+            write/edit）：其余的没有"一条可记住的路径"可言，给了按钮就是骗人 */}
+        {approval.canRemember && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => decide(true, true)}
+            title={
+              approval.toolName === "bash"
+                ? "把这条命令的前缀（如前两个词）记进 .kova/permissions.local.json，之后同类命令不再询问"
+                : "把这次要写的目录记进 .kova/permissions.local.json，之后该目录不再询问"
+            }
+            className="h-8 rounded-full px-3.5"
+          >
+            <BookmarkPlusIcon className="size-3.5" />
+            {approval.toolName === "bash" ? "允许并记住这类命令" : "允许并记住"}
+          </Button>
+        )}
         <Button
           type="button"
           size="sm"
@@ -202,7 +231,7 @@ const ApprovalRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> 
           className="h-8 rounded-full px-3.5"
         >
           <CheckIcon className="size-3.5" />
-          批准
+          {approval.canRemember ? "仅这一次" : "批准"}
         </Button>
       </div>
     </div>
@@ -221,7 +250,7 @@ export const ToolApprovalCard: FC = () => {
     <div
       data-slot="aui-tool-approval-card"
       className={cn(
-        "border-border/60  mb-1 bg-card overflow-hidden rounded-2xl border shadow-sm",
+        "border-border/60 mb-2 bg-card overflow-hidden rounded-2xl border shadow-sm",
         approvals.length > 1 && "divide-y",
       )}
     >

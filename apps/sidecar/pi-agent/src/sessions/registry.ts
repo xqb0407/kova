@@ -12,6 +12,7 @@ import {
   rememberThreadSession,
 } from "./pending-interactions";
 import { clearTodoState } from "../todo/todo";
+import { clearGoal } from "../goal/goal";
 import { clearLoadedSkills } from "../secrets/secrets";
 import type { Running } from "../types";
 
@@ -185,10 +186,12 @@ export function touchSession(threadId: string): void {
 }
 
 /** 驱逐/删除的旁路状态清理：todo 可由转录事件溯源回放重建（下次 resolve
- *  时 replayTodoFromMessages），驻留期清掉防止 per-thread Map 泄漏；
+ *  时 replayTodoFromMessages），目标同款（restoreGoal 读 goal_state 行）；
+ *  驻留期清掉防止 per-thread Map 泄漏；
  *  approval 挂在 run 上、question 挂在轮内——两者所在会话不可驱逐，无残留。 */
 export function forgetThreadStates(threadId: string): void {
   clearTodoState(threadId);
+  clearGoal(threadId);
   // 已加载技能台账同理：密钥注入的判定条件按线程累积，线程走了就清
   clearLoadedSkills(threadId);
 }

@@ -26,7 +26,11 @@ import {
 } from "@/lib/pi/pi-model-gate";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { ThinkingPicker } from "@/components/agent-thread/thinking-picker";
-import { ModePicker } from "@/components/agent-thread/mode-picker";
+import {
+  CapabilityModeChip,
+  ModePicker,
+} from "@/components/agent-thread/mode-picker";
+import { GoalStrip } from "@/components/agent-thread/goal-strip";
 import { ComposerPlusMenu } from "@/components/agent-thread/composer-plus-menu";
 import { DesignThemePicker } from "@/components/agent-thread/design-theme-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
@@ -38,6 +42,7 @@ import {
 import { PromptQueueBar } from "@/components/agent-thread/prompt-queue-bar";
 import { usePiQueue } from "@/lib/pi/pi-runtime";
 import { addSteeredBadge } from "@/lib/pi/pi-steer-intent";
+import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { cancelOptimize, optimizePrompt } from "@/lib/pi/pi-prompt-optimize";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
@@ -239,10 +244,17 @@ export const Composer: FC = () => {
     jobIdRef.current = jobId;
     prevTextRef.current = draft;
     setOptimizing(true);
+    // UI 线程 id ≠ 会话 id：本会话内新建的线程 id 恒为草稿 id（__LOCALID_…），
+    // 只有刷新恢复后才相等。sidecar 要用真会话 id 才能读到会话模型真值——
+    // 传草稿 id 会查不到会话、回落到全局默认模型（界面显示 A、优化却跑 B 的根因）。
+    const sessionId = threadId ? piSessionIdForThread(threadId) : undefined;
     try {
       const res = await optimizePrompt({
         threadId: threadId ?? "default",
-        ...(threadId ? { sessionId: threadId } : {}),
+        ...(sessionId ? { sessionId } : {}),
+        // 界面当前显示的模型：草稿期（会话行还不存在）sidecar 取不到会话模型，
+        // 这份 hint 是让「看到的模型 = 优化用的模型」成立的唯一通道
+        ...(gate.selected ? { model: gate.selected } : {}),
         jobId,
         text: draft,
       });
@@ -290,8 +302,19 @@ export const Composer: FC = () => {
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+        {/* 输入框上方四条悬浮条的间距约定：各自带
+            mb-2，满宽不缩边，与输入框同宽对齐。不给父级 gap——队列条是常驻挂载、
+            靠 grid-template-rows 0fr↔1fr 折叠的容器，父级 gap 会在它折叠时留下
+            幽灵间距。新加悬浮条请沿用 mb-2，别再引出第三种间距 */}
         <PromptQueueBar />
         <ToolApprovalCard />
+        {/* 问答档的切档提议（模型调 ask_needs_work）：与审批卡同一族——都是
+            「模型在等你拍板」，所以放在同一层、用同一套卡壳与按钮样式 */}
+        <AskNeedsWorkCard />
+        {/* 目标常驻条：排在审批卡之后、输入区之前——它讲的是「这一轮跑得怎么样」，
+            审批卡讲的是「这一轮卡在哪等你」，两者同时在场时目标态在更下面一层，
+            视线自然先落在阻塞上 */}
+        <GoalStrip />
         <ComposerPrimitive.AttachmentDropzone asChild>
           <div
             data-slot="aui_composer-shell"
@@ -326,7 +349,6 @@ export const Composer: FC = () => {
             )}
             <ComposerQuotePreview />
             <ComposerAttachments />
-            <AskNeedsWorkChip />
             <ImeEnterGuard send={sendMessage} interceptSend={interceptSend} noModel={noModel} noModelHint={gate.hint} blocked={optimizing}>
             <CmComposerInput
               submitMode={submitMode}
@@ -450,13 +472,15 @@ const WorkspacePill: FC = () => {
             </button>
           }
         />
+        {/* × 常驻占位（display 切换会在 hover 瞬间撑宽胶囊、且无过渡）：
+            平时透明缩着且不接指针，hover/键盘聚焦时淡入放大回位 */}
         {workspace && (
           <button
             type="button"
             aria-label="Clear workspace"
             title="取消选择当前目录"
             onClick={clear}
-            className="hidden h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full hover:text-destructive group-hover/pill:inline-flex"
+            className="hover:text-destructive pointer-events-none flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full opacity-0 scale-90 transition-[opacity,scale] duration-150 ease-out group-hover/pill:pointer-events-auto group-hover/pill:opacity-100 group-hover/pill:scale-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:scale-100"
           >
             <XIcon className="size-3.5" />
           </button>
@@ -801,7 +825,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           disabled
           className="aui-composer-send inline-flex size-7 items-center justify-center rounded-full bg-primary! opacity-50"
         >
-          <ArrowUpIcon className="aui-composer-send-icon size-4 text-white!" />
+          <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
         </button>
       </span>
     );
@@ -880,7 +904,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           aui.composer.send({ steer: false });
         }}
       >
-        <ArrowUpIcon className="size-4 text-white!" />
+        <ArrowUpIcon className="size-4 text-primary-foreground!" />
       </TooltipIconButton>
     );
   }
@@ -897,7 +921,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
                 disabled
                 className="aui-composer-send inline-flex size-7 items-center justify-center rounded-full bg-primary! opacity-50"
               >
-                <ArrowUpIcon className="aui-composer-send-icon size-4 text-white!" />
+                <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
               </button>
             </span>
           }
@@ -919,7 +943,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         className="aui-composer-send size-7 rounded-full bg-primary!"
         aria-label="Send message"
       >
-        <ArrowUpIcon className="aui-composer-send-icon size-4 text-white!" />
+        <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
       </TooltipIconButton>
     </ComposerPrimitive.Send>
   );
@@ -927,10 +951,14 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
 
 
 /**
- * 问答档的切档提议：模型调 ask_needs_work 后就地冒一条，不弹窗、不自动切。
- * 用户点「切到编码」才发 set_mode；点 × 只是收起提示，本轮照常继续。
+ * 问答档的切档提议：模型调 ask_needs_work 后冒一条，不弹窗、不自动切。
+ * 用户点「切到编码」才发 set_mode；点「忽略」只是收起提示，本轮照常继续。
+ *
+ * 视觉与位置都对齐审批卡（ToolApprovalCard）：两者是同一族交互——模型卡住了、
+ * 要用户拍一下板才能继续。此前这条是插在输入框内部的琥珀色小条，与审批卡
+ * 一个在框外一个在框内、按钮一个实心一个描边，同一种事长得像两个物种。
  */
-const AskNeedsWorkChip: FC = () => {
+const AskNeedsWorkCard: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const view = useAskNeedsWork(threadId);
   if (!threadId || !view) return null;
@@ -943,30 +971,47 @@ const AskNeedsWorkChip: FC = () => {
     );
   };
 
+  const dismiss = () => clearAskNeedsWork(threadId);
+
   return (
-    <div className="mx-2.5 mt-2 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs">
-      <ArrowRightLeftIcon className="mt-px size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-      <div className="min-w-0 flex-1">
-        <p className="font-medium">这题可能要动项目</p>
-        {view.reason && (
-          <p className="text-muted-foreground mt-0.5 leading-relaxed">{view.reason}</p>
-        )}
+    <div
+      data-slot="aui-ask-needs-work-card"
+      className="border-border/60 mb-2 bg-card overflow-hidden rounded-2xl border shadow-sm"
+    >
+      <div className="flex items-start gap-2.5 px-4 py-2.5">
+        <span className="mt-0.5 shrink-0 text-amber-500 [&_svg]:size-4">
+          <ArrowRightLeftIcon />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">这题可能要动项目</p>
+          {view.reason && (
+            <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">
+              {view.reason}
+            </p>
+          )}
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 rounded-full px-3.5"
+            onClick={dismiss}
+          >
+            <XIcon className="size-3.5" />
+            忽略
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 rounded-full px-3.5"
+            onClick={go}
+          >
+            <ArrowRightLeftIcon className="size-3.5" />
+            切到编码
+          </Button>
+        </div>
       </div>
-      <button
-        type="button"
-        onClick={go}
-        className="shrink-0 rounded-full bg-amber-600 px-2.5 py-1 font-medium text-white transition-colors hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-600"
-      >
-        切到编码
-      </button>
-      <button
-        type="button"
-        aria-label="忽略"
-        onClick={() => clearAskNeedsWork(threadId)}
-        className="text-muted-foreground hover:text-foreground mt-px shrink-0"
-      >
-        <XIcon className="size-3.5" />
-      </button>
     </div>
   );
 };
@@ -992,6 +1037,8 @@ const ComposerAction: FC<{
         {/* 「+」菜单：添加文件 / 模式 / 专家 / 技能 / 连接器（左栏分类 + 右栏条目） */}
         <ComposerPlusMenu />
         <ModePicker />
+        {/* 能力模式胶囊（问答/计划/目标）：非能力档不渲染，连竖线一起消失 */}
+        <CapabilityModeChip />
         {/* design 档独有的会话级主题胶囊（内部自判模式，非 design 不渲染） */}
         <DesignThemePicker />
       </div>

@@ -9,6 +9,7 @@ import {
   BookOpenIcon,
   BotIcon,
   Link2Icon,
+  MessageSquareIcon,
   PaperclipIcon,
   PlugIcon,
   PlusIcon,
@@ -21,6 +22,7 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
@@ -48,7 +50,14 @@ import { useSubagents } from "@/lib/subagent/subagents";
 import { useMcpServers, type McpServerEntry } from "@/lib/mcp/mcp";
 import { useMcpToolsByServer } from "@/components/agent-thread/composer-commands";
 import { setSessionMode, useSessionMode } from "@/lib/pi/pi-session-mode";
-import { OPTIONS as MODE_OPTIONS, currentOption } from "@/components/agent-thread/mode-picker";
+// 两个维度各自成组（权限 4 / 能力 3）——它们正交，混成一张单选表就分不清
+// "问不问"和"能不能干"；底栏下拉只列权限，能力在那里由胶囊显示
+import {
+  CAPABILITY_OPTIONS,
+  PERMISSION_OPTIONS,
+  capabilityOption,
+  permissionOption,
+} from "@/components/agent-thread/mode-picker";
 import { requestConnectorManage } from "@/lib/connector-nav";
 import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
@@ -60,7 +69,9 @@ import { useHtmlDark } from "@/lib/settings/use-html-dark";
  * 三类可选项各自落到既有事实源：
  *
  * - 附件：Tauri dialog 拿绝对路径 → composer 附件（零落盘，见 useAddAttachments）；
- * - 模式：set_session_mode，与底栏 ModePicker 同一份 OPTIONS；
+ * - 模式：set_session_mode，按维度分两组（权限 = 问不问；能力 = 能不能干）。
+ *   两组各是一个独立单选组（两个维度各存各的值），能力组另给一个「常规」
+ *   用于退回到不带特殊能力的形态——单选项点自己不会取消，没有它就没法退出；
  * - 专家/技能/连接器：插指令芯片（:agent/:skill/:tool），模型端凭芯片里的
  *   id 定位——与输入框里 `@`/`/` 弹层插的是同一种芯片（序列化同走
  *   unstable_defaultDirectiveFormatter，id 拼接口径同 composer-commands，不另立格式）。
@@ -86,7 +97,6 @@ export const ComposerPlusMenu: FC = () => {
   // 左栏「模式」行透出当前档位：快照是按 threadId 存的全局 store（ModePicker
   // 也在订阅同一份），这里多读一次无副作用，只为不点进子菜单就知道当前档位
   const modeSnap = useSessionMode(threadId);
-  const currentMode = threadId ? currentOption(modeSnap) : null;
   const { pick, fileInput } = useAddAttachments();
 
   return (
@@ -125,7 +135,7 @@ export const ComposerPlusMenu: FC = () => {
             </DropdownMenuItem>
             {/* 不放分隔线：直选动作与下钻分类靠有无 chevron 已足够区分，
                 通栏横线只会把五行的短菜单劈成两截，边框感更重 */}
-            <ModeSub currentKey={currentMode?.key} />
+            <ModeSub />
             <AgentSub />
             <SkillSub />
             <ConnectorSub />
@@ -339,15 +349,32 @@ const useAddAttachments = () => {
 
 /* ------------------------------------------------------------------ 模式 */
 
-const ModeSub: FC<{ currentKey?: string }> = ({ currentKey }) => {
+/** 「常规」：不带特殊能力（agent 档）。能力组必须留它一条退路——单选组里
+ *  点自己不会取消，没有这一项就问不出"怎么回到不带能力的形态"，只能去点权限组。
+ *  approvalLevel 不传 = 保留当前权限档（两个维度各改各的）。 */
+const PLAIN_CAPABILITY = {
+  key: "plain",
+  label: "常规",
+  description: "完整工具集，正常执行。",
+  icon: MessageSquareIcon,
+} as const;
+
+const ModeSub: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const snap = useSessionMode(threadId);
   const [busy, setBusy] = useState(false);
 
-  const apply = (key: string) => {
-    const o = MODE_OPTIONS.find((x) => x.key === key);
-    if (!o || !threadId || key === currentKey) return;
+  const perm = permissionOption(snap);
+  const cap = capabilityOption(snap);
+
+  const apply = (
+    key: string,
+    mode: "agent" | "ask" | "plan" | "goal",
+    approvalLevel?: "ask" | "workspace-write" | "auto-edit" | "auto",
+  ) => {
+    if (!threadId) return;
     setBusy(true);
-    setSessionMode(threadId, o.mode, o.approvalLevel)
+    setSessionMode(threadId, mode, approvalLevel)
       .catch((err) =>
         toast.error(`切换失败：${err instanceof Error ? err.message : String(err)}`),
       )
@@ -358,17 +385,63 @@ const ModeSub: FC<{ currentKey?: string }> = ({ currentKey }) => {
     <CategorySub
       icon={SlidersHorizontalIcon}
       label="模式"
-      shortcut={MODE_OPTIONS.find((o) => o.key === currentKey)?.label}
+      // 两个维度各显示一格：权限 + 能力（后者不在能力档时不占位）
+      shortcut={cap ? `${perm.label} · ${cap.label}` : perm.label}
     >
       {threadId ? (
-        <DropdownMenuRadioGroup value={currentKey ?? ""} onValueChange={apply}>
-          {MODE_OPTIONS.map((o) => (
-            <DropdownMenuRadioItem key={o.key} value={o.key} disabled={busy} title={o.description}>
-              <o.icon className="text-muted-foreground size-3.5 shrink-0" />
-              <span className="truncate">{o.label}</span>
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
+        <>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
+              权限
+            </DropdownMenuLabel>
+            {/* 两个组各是一个独立单选组：权限与能力各存各的值，互不覆盖 */}
+            <DropdownMenuRadioGroup
+              value={perm.key}
+              onValueChange={(key) => {
+                const o = PERMISSION_OPTIONS.find((x) => x.key === key);
+                if (o) apply(o.key, o.mode, o.approvalLevel);
+              }}
+            >
+              {PERMISSION_OPTIONS.map((o) => (
+                <DropdownMenuRadioItem
+                  key={o.key}
+                  value={o.key}
+                  disabled={busy}
+                  title={o.description}
+                >
+                  <o.icon className="text-muted-foreground size-3.5 shrink-0" />
+                  <span className="truncate">{o.label}</span>
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
+              能力
+            </DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={cap?.key ?? PLAIN_CAPABILITY.key}
+              onValueChange={(key) => {
+                if (key === PLAIN_CAPABILITY.key) return apply(key, "agent");
+                const o = CAPABILITY_OPTIONS.find((x) => x.key === key);
+                if (o) apply(o.key, o.mode);
+              }}
+            >
+              {[PLAIN_CAPABILITY, ...CAPABILITY_OPTIONS].map((o) => (
+                <DropdownMenuRadioItem
+                  key={o.key}
+                  value={o.key}
+                  disabled={busy}
+                  title={o.description}
+                >
+                  <o.icon className="text-muted-foreground size-3.5 shrink-0" />
+                  <span className="truncate">{o.label}</span>
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuGroup>
+        </>
       ) : (
         <MenuEmpty>会话未就绪</MenuEmpty>
       )}

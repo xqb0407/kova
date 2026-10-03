@@ -170,6 +170,8 @@ const MemoryFileBrowser: FC<{
   onQueryChange: (q: string) => void;
   onRefresh: () => void;
   refreshing: boolean;
+  /** 总开关（空态文案区分：关闭时 AI 不会写入，别再提示"让 AI 写入第一条"） */
+  memoryEnabled: boolean;
   fileOn: (name: string) => boolean;
   onToggleFile: (name: string, on: boolean) => void;
   onOpenFile: (name: string) => void;
@@ -198,6 +200,7 @@ const MemoryFileBrowser: FC<{
     onQueryChange,
     onRefresh,
     refreshing,
+    memoryEnabled,
     fileOn,
     onToggleFile,
     onOpenFile,
@@ -285,7 +288,9 @@ const MemoryFileBrowser: FC<{
             <span>
               {query.trim()
                 ? `没有匹配「${query.trim()}」的记忆文件。`
-                : "还没有记忆文件。点击右上角刷新，或让 AI 用 memory_write 写入第一条，也可以手动在目录下创建 .md 文件。"}
+                : !memoryEnabled
+                  ? "还没有记忆文件。记忆总开关已关闭：AI 既不下发记忆工具也不注入记忆段，不会写入任何文件；开启「启用记忆」后 AI 才能用 memory_write 写入第一条，也可以现在手动在目录下创建 .md 文件。"
+                  : "还没有记忆文件。点击右上角刷新，或让 AI 用 memory_write 写入第一条，也可以手动在目录下创建 .md 文件。"}
             </span>
             {!query.trim() && (
               <span className="flex items-center gap-1 font-mono text-xs">
@@ -614,6 +619,7 @@ export const MemorySettings: FC = () => {
           onQueryChange={setQuery}
           onRefresh={() => void fetchFiles()}
           refreshing={refreshing}
+          memoryEnabled={config.enabled}
           fileOn={fileOn}
           onToggleFile={updateEnabledFile}
           onOpenFile={openFile}

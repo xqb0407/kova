@@ -41,7 +41,22 @@ import { DESIGN_THEME_MGMT_TOOL_NAMES } from "../design-md/mgmt-tools";
 import { SKILL_USE_TOOL_NAME } from "../skills/skill-use-tool";
 import { PLUGIN_MGMT_TOOL_NAMES } from "../plugins/plugin-mgmt-tools";
 import { getAutomationPolicy, automationDenyReason } from "../automation/policy";
+import {
+  isPathBearingWrite,
+  writeTargetInsideWorkspace,
+  writeTargetPath,
+} from "./workspace-boundary";
+import {
+  commandMatchesRules,
+  displayRoot,
+  isWriteRootAllowed,
+  loadWriteRoots,
+  matchingWriteRoot,
+  rememberCommand,
+  rememberWriteRoot,
+} from "../permissions/write-roots";
 import { setLeadingSystemMessage } from "./context";
+import { logErr } from "../log";
 import { buildHookPayload, runHooks } from "./hooks";
 import { personalizationPromptBlock } from "./personalization";
 import { appModePromptBlock, type AppMode } from "./app-mode";
@@ -52,6 +67,9 @@ import { skillsPromptBlock } from "../skills/skills";
 import { instructionsPromptBlock } from "./instructions";
 import { sendEventChunk } from "../protocol/stream";
 import { displayPath } from "../tools/open-file-tool";
+import { GOAL_TOOL_NAMES, type Goal } from "../goal/goal-state";
+import { buildGoalTools, getGoal, pauseGoalOnModeExit } from "../goal/goal";
+import { GOAL_MODE_PROMPT, goalPromptBlock } from "../goal/prompt";
 import type {
   ApprovalLevel,
   PlanningState,
@@ -66,11 +84,11 @@ export const PLAN_TOOL_NAMES = {
   exit: "plan_exit",
 } as const;
 
-/** 三档字面量的宽松规整：库里的偏好值、协议消息、投影行都经这里收口。
+/** 四档字面量的宽松规整：库里的偏好值、协议消息、投影行都经这里收口。
  *  加枚举值时只改这一处——散落各处的 `x === "a" || x === "b"` 白名单是这类
  *  改动最典型的静默漏改点（新值不报错，只是被悄悄丢成旧档） */
 export function normalizeSessionMode(raw: unknown): SessionMode {
-  return raw === "plan" || raw === "ask" ? raw : "agent";
+  return raw === "plan" || raw === "ask" || raw === "goal" ? raw : "agent";
 }
 
 /** 问答档唯一的出口工具：模型调用它只是**提议**切回编码档，不自己切。
@@ -83,12 +101,20 @@ const MODE_EXCLUSIVE_TOOL_NAMES = new Set<string>([
   PLAN_TOOL_NAMES.enter,
   PLAN_TOOL_NAMES.exit,
   ASK_NEEDS_WORK_TOOL_NAME,
+  GOAL_TOOL_NAMES.complete,
+  GOAL_TOOL_NAMES.blocked,
 ]);
 
 /** 仅 plan 模式可用的工具 */
 const PLAN_ONLY_TOOL_NAMES = new Set<string>([
   PLAN_TOOL_NAMES.write,
   PLAN_TOOL_NAMES.exit,
+]);
+
+/** 仅 goal 模式可用的出口工具（goal_complete / goal_blocked，见 goal.ts） */
+const GOAL_ONLY_TOOL_NAMES = new Set<string>([
+  GOAL_TOOL_NAMES.complete,
+  GOAL_TOOL_NAMES.blocked,
 ]);
 
 /** plan 模式允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束）+ Question（规划正需要澄清提问）+ use_skill（加载技能指令，只读动作） */
@@ -159,15 +185,26 @@ export function composeModeSystemPrompt(
   appMode: AppMode,
   model?: PromptModelInfo | null,
   designTheme?: ThemeRef | null,
+  goal?: Goal | null,
 ): string {
   // 问答档换掉静态核心的取段（剔任务追踪与子代理），其余模式沿用全量核心——
   // 全量拼接与拆分前逐字节相同，缓存不变式不受影响
   const core = mode === "ask" ? systemPromptCore(ASK_CORE_SEGMENTS) : SYSTEM_PROMPT_CORE;
   const extra =
-    mode === "plan" ? PLAN_MODE_PROMPT : mode === "ask" ? ASK_MODE_PROMPT : AGENT_MODE_PROMPT;
+    mode === "plan"
+      ? PLAN_MODE_PROMPT
+      : mode === "ask"
+        ? ASK_MODE_PROMPT
+        : mode === "goal"
+          ? GOAL_MODE_PROMPT
+          : AGENT_MODE_PROMPT;
   return [
     core,
     extra,
+    // 目标块紧贴模式段：它是「当前这一轮为什么要接着干」的动态盘面，跟在模式身份
+    // 后面比塞到尾部更贴近模型对该段的归属感。目标文本本身是用户输入，进系统
+    // 提示词意味着它与指令同级——见 prompt.ts 的信任边界说明
+    mode === "goal" ? goalPromptBlock(goal ?? null) : "",
     personalizationPromptBlock(),
     appModePromptBlock(appMode, designTheme),
     memoryPromptBlock(cwd),
@@ -178,6 +215,27 @@ export function composeModeSystemPrompt(
   ]
     .filter(Boolean)
     .join("\n\n");
+}
+
+/**
+ * 按 run 重排系统提示词的统一入口。存在的理由是目标块：composeModeSystemPrompt
+ * 需要目标盘面入参，若各调用点各写一遍，早晚有一处（换模型、改记忆、设置项热替换
+ * ……）忘了传，症状是「目标还在跑但模型突然不知道自己在干什么」——提示词静默少一段，
+ * 不报错、只降级。所有基于 run 的重排走这里，漏传就编译不过。
+ *
+ * model 刻意保持「不传即不写模型段」的既有语义：调用点原本只有换模型那条显式传入
+ * 模型信息，其余各处省略；这里不做 run.agent.state.model 的兜底，否则会在
+ * 重排时把模型信息塞进原本为空的尾段，改变提示词字节、打破缓存前缀不变式。
+ */
+export function composeRunPrompt(run: Running, model?: PromptModelInfo | null): string {
+  return composeModeSystemPrompt(
+    run.mode,
+    run.cwd,
+    run.appMode,
+    model,
+    run.designTheme,
+    run.mode === "goal" ? getGoal(run.threadId) : undefined,
+  );
 }
 
 /* --------------------------------- 工具集 --------------------------------- */
@@ -214,13 +272,20 @@ function buildAskTools(run: Running): AgentTool[] {
 }
 
 /** 按模式重建工具目录：agent = 基础 + Task 组 + plan_enter；plan = 只读子集 + plan_write/plan_exit；
- *  ask = 纯只读子集（无 bash）+ 出口工具，不带 plan 三件套与子代理组 */
+ *  ask = 纯只读子集（无 bash）+ 出口工具，不带 plan 三件套与子代理组；
+ *  goal = 基础全集 + Task 组 + 两个目标出口工具，不带 plan 三件套 */
 export function toolsForMode(run: Running): AgentTool[] {
   if (run.mode === "ask") {
     return [
       ...run.baseTools.filter((t) => ASK_TOOL_NAMES.has(t.name)),
       ...buildAskTools(run),
     ];
+  }
+  // 目标档拿完整工具集（含 write/edit/bash），不含 plan 三件套：目标模式的价值是
+  // 「放手做完」，给它只读工具就退化成 plan 了。出口工具挂在工具表上而不是临到收尾
+  // 才动态插——模式切换本就是整表重建的既有路径，不必为它另立一套 schema 抖动面
+  if (run.mode === "goal") {
+    return [...run.baseTools, ...run.subagentTools, ...buildGoalTools(run)];
   }
   const planTools = buildPlanTools(run);
   if (run.mode === "agent") {
@@ -412,7 +477,8 @@ function buildPlanTools(run: Running): AgentTool[] {
         },
         run.sessionId,
       );
-      const approval = new Promise<boolean>((resolve) => {
+      // plan_exit 没有「记住」可言（计划审批不是路径授权），第三个按钮不出现在这张卡上
+      const approval = new Promise<{ approved: boolean }>((resolve) => {
         run.pendingToolApprovals.set(approvalId, {
           toolCallId,
           toolName: PLAN_TOOL_NAMES.exit,
@@ -421,7 +487,7 @@ function buildPlanTools(run: Running): AgentTool[] {
         });
       });
       const entry = run.pendingToolApprovals.get(approvalId)!;
-      const approved = await approval;
+      const { approved } = await approval;
       if (!approved) {
         const explicit = entry.settledBy === "confirm";
         if (explicit) {
@@ -484,7 +550,9 @@ export function modeBeforeToolCall(
   const toolCalls = (context.assistantMessage.content as Array<{ type?: string; name?: string }>)
     .filter((b) => b.type === "toolCall");
   const name = context.toolCall.name;
-  const isPlanTool = MODE_EXCLUSIVE_TOOL_NAMES.has(name) || PLAN_ONLY_TOOL_NAMES.has(name);
+  const isPlanTool =
+    MODE_EXCLUSIVE_TOOL_NAMES.has(name) || PLAN_ONLY_TOOL_NAMES.has(name);
+  const isGoalTool = GOAL_ONLY_TOOL_NAMES.has(name);
   const exclusiveInBatch = toolCalls.some((b) =>
     MODE_EXCLUSIVE_TOOL_NAMES.has(b.name ?? ""),
   );
@@ -517,14 +585,23 @@ export function modeBeforeToolCall(
       reason: `${name} is available only in Ask mode.`,
     };
   }
-  if (!isPlanTool) return undefined;
+  // 目标出口工具的档位校验：轮中切档时模型可能还带着 goal 档的旧 schema，
+  // agent 档收到 goal_complete 不能当作完成（那轮的语义根本不是目标循环）
+  if (isGoalTool && run.mode !== "goal") {
+    return {
+      block: true,
+      reason: `${name} is available only in Goal mode.`,
+    };
+  }
+  if (!isPlanTool && !isGoalTool) return undefined;
   // 无人值守自动化：plan_exit 的模式级 HITL 会永久挂起，禁止进入 plan 模式，
   // 从结构上让 plan_exit 不可达（agent 直接以当前档位执行）
   if (getAutomationPolicy(run.threadId)) {
     return {
       block: true,
-      reason:
-        "Unattended automation run: plan mode is unavailable (its HITL approval cannot be answered). Proceed directly under the current tool policy.",
+      reason: isGoalTool
+        ? "Unattended automation run: goal mode is unavailable (its autonomous loop keeps spending tokens with nobody there to stop it). Finish the work directly under the current tool policy."
+        : "Unattended automation run: plan mode is unavailable (its HITL approval cannot be answered). Proceed directly under the current tool policy.",
     };
   }
   if (name === PLAN_TOOL_NAMES.enter && run.mode !== "agent") {
@@ -539,7 +616,8 @@ export function modeBeforeToolCall(
 /**
  * 逐工具审批钩子（sessions.ts 注册的最终 beforeToolCall）：
  * 先做模式门控，再按审批级别决定 bash/write/edit 是否等待用户确认——
- * ask = 全部确认；auto-edit = 编辑免确认、bash 仍确认；auto = 全免。
+ * ask = 全部确认；workspace-write = 工作区内的 write/edit 免确认、其余确认；
+ * auto-edit = 编辑免确认、bash 仍确认；auto = 全免。
  * 挂起项记入 run.pendingToolApprovals 并经当前请求流推 data-toolApproval
  * chunk，await 到 tool_confirm（批准/拒绝）或清理（abort）后才放行/拦截。
  * plan_exit 的确认是模式级 HITL，不受审批级别影响，在其 execute 内自行挂起。
@@ -550,6 +628,12 @@ export async function approvalBeforeToolCall(
 ): Promise<BeforeToolCallResult | undefined> {
   // 捕获本轮循环的活上下文：applyMode 据此在轮中热换工具表/系统提示词
   if (context.context) run.loopContext = context.context;
+  /** 本次审批若点了「允许并记住」，要写进本机清单的那条根 */
+  let rememberRoot: string | undefined;
+  /** 同上，但记的是 bash 的整条命令（逐字相等） */
+  let rememberCmd: string | undefined;
+  /** 项目层声明、且覆盖本次目标的根（只用于卡上那句说明，不参与任何判定） */
+  let declaredRoot: string | undefined;
   const gated = modeBeforeToolCall(run, context);
   if (gated) return gated;
   // 无人值守自动化 turn：需审批的工具按档位即时裁决（read-only 全拒 /
@@ -565,6 +649,37 @@ export async function approvalBeforeToolCall(
   }
   if (run.approvalLevel === "auto") return undefined;
   if (!APPROVAL_REQUIRED_TOOLS.has(context.toolCall.name)) return undefined;
+  // workspace-write：工作区内 + 清单内的 write/edit 免确认。
+  // 判不了就是不放行——bash 与配置类工具在这里一律落到下面的挂起审批
+  if (run.approvalLevel === "workspace-write" && isPathBearingWrite(context.toolCall.name)) {
+    if (writeTargetInsideWorkspace(context.toolCall.name, context.args, run.cwd)) {
+      return undefined;
+    }
+    const target = writeTargetPath(context.toolCall.name, context.args, run.cwd);
+    if (target) {
+      const roots = await loadWriteRoots(run.cwd);
+      if (isWriteRootAllowed(target, roots.effective)) return undefined;
+      // 「允许并记住」要记哪条根：目标落在项目声明的根里就记那一条（正是该项目
+      // 请求的、也够宽），否则记目标文件所在目录（与用户看到的写入路径一致）
+      declaredRoot = matchingWriteRoot(target, roots.declared);
+      rememberRoot = declaredRoot ?? dirname(target);
+    }
+  }
+  // bash：参数里判不出写目标，只能用「记住命令前缀」这一条路（与 Claude Code 的
+  // `Bash(pnpm add *)` 同形态）。命中即免确认；没命中照常问，卡上给「允许并记住这条命令」。
+  // 前缀的安全性靠 commandMatchesRules 里的逐段校验 + 反重定向/命令替换守卫兜住
+  if (
+    run.approvalLevel === "workspace-write" &&
+    context.toolCall.name === "bash" &&
+    typeof (context.args as { command?: unknown })?.command === "string"
+  ) {
+    const command = String((context.args as { command?: unknown }).command).trim();
+    if (command) {
+      const { commands } = await loadWriteRoots(run.cwd);
+      if (commandMatchesRules(command, commands)) return undefined;
+      rememberCmd = command;
+    }
+  }
   if (run.approvalLevel === "auto-edit" && context.toolCall.name !== "bash") {
     return undefined;
   }
@@ -587,6 +702,14 @@ export async function approvalBeforeToolCall(
   if (hookDecision?.decision === "approve") return undefined;
 
   const approvalId = randomUUID();
+  // 说明只讲「项目请求了什么」；记不记由用户按哪个按钮决定
+  const note = declaredRoot
+    ? `这个项目在 .kova/permissions.json 里请求放行 ${displayRoot(declaredRoot, run.cwd)}；点「允许并记住」会把它写进你的 .kova/permissions.local.json`
+    : // bash 在 workspace-write 档下每次都问，而卡上没有「允许并记住」（无法判断它写到哪）。
+    // 不解释的话用户只会觉得"点了也没记住"——这行就是回答那个疑问的
+      run.approvalLevel === "workspace-write" && context.toolCall.name === "bash"
+      ? "命令写到哪判不出来，所以这一档下每条命令都要确认。点「允许并记住这类命令」记下命令词前缀（如 pnpm add *），换参数也命中；带重定向或命令替换的仍会问。"
+      : undefined;
   // 挂起交互登记落行 + 发起帧水印（同 plan_exit 审批，§3/§4）
   beginInteraction(run.threadId, {
     interactionId: approvalId,
@@ -597,6 +720,8 @@ export async function approvalBeforeToolCall(
       toolCallId: context.toolCall.id,
       toolName: context.toolCall.name,
       input: context.args ?? null,
+      ...(note ? { note } : {}),
+      ...(rememberRoot || rememberCmd ? { canRemember: true } : {}),
     },
     createdAt: new Date().toISOString(),
   });
@@ -609,16 +734,24 @@ export async function approvalBeforeToolCall(
         toolCallId: context.toolCall.id,
         toolName: context.toolCall.name,
         input: context.args ?? null,
+        ...(note ? { note } : {}),
+        ...(rememberRoot || rememberCmd ? { canRemember: true } : {}),
       },
     },
     run.sessionId,
   );
-  const approved = await new Promise<boolean>((resolve) => {
+  // 三个按钮：拒绝 / 允许 / 允许并记住。前两者只影响这一次，第三个才会落清单
+  const { approved, remember } = await new Promise<{
+    approved: boolean;
+    remember: boolean;
+  }>((resolve) => {
     run.pendingToolApprovals.set(approvalId, {
       toolCallId: context.toolCall.id,
       toolName: context.toolCall.name,
       input: context.args ?? null,
       resolve,
+      ...(rememberRoot ? { rememberRoot, cwd: run.cwd } : {}),
+      ...(rememberCmd ? { rememberCommand: rememberCmd, cwd: run.cwd } : {}),
     });
   });
   if (!approved) {
@@ -627,17 +760,35 @@ export async function approvalBeforeToolCall(
       reason: "User rejected this tool call. Ask how to proceed or adjust the approach.",
     };
   }
+  // 记在「同意之后」：拒绝或单纯允许都不该在盘上留下任何东西。
+  // 落盘失败**不能让这次调用失败**——用户批准的是"执行"，记住只是附带的账；
+  // 因为记不上而拦住执行是本末倒置（而且卡片已经消失，用户只会看到工具莫名报错）。
+  // 所以这里吞掉异常并记日志：症状退化为"下次还会问"，日志里有原因
+  try {
+    if (remember && rememberRoot) await rememberWriteRoot(run.cwd, rememberRoot);
+    if (remember && rememberCmd) await rememberCommand(run.cwd, rememberCmd);
+  } catch (err) {
+    logErr("permissions: failed to remember the approved rule:", err);
+  }
   return undefined;
 }
 
-/** 结算一条挂起审批（protocol 的 tool_confirm 调用）；返回是否存在 */
-export function resolveToolApproval(run: Running, approvalId: string, approved: boolean): boolean {
+/**
+ * 结算一条挂起审批（protocol 的 tool_confirm 调用）；返回是否存在。
+ * remember = 用户点的是「允许并记住」（只对带可写根上下文的审批有意义）。
+ */
+export function resolveToolApproval(
+  run: Running,
+  approvalId: string,
+  approved: boolean,
+  remember = false,
+): boolean {
   const pending = run.pendingToolApprovals.get(approvalId);
   if (!pending) return false;
   run.pendingToolApprovals.delete(approvalId);
   settleInteraction(approvalId, approved ? "approved" : "denied");
   pending.settledBy = "confirm";
-  pending.resolve(approved);
+  pending.resolve({ approved, remember: approved && remember });
   return true;
 }
 
@@ -646,7 +797,7 @@ export function clearPendingToolApprovals(run: Running): void {
   for (const [approvalId, pending] of run.pendingToolApprovals) {
     settleInteraction(approvalId, "cancelled");
     pending.settledBy = "clear";
-    pending.resolve(false);
+    pending.resolve({ approved: false, remember: false });
   }
   run.pendingToolApprovals.clear();
 }
@@ -660,30 +811,41 @@ export function clearPendingToolApprovals(run: Running): void {
  */
 function persistModePrefs(run: Running): void {
   const prefs = { mode: run.mode, approvalLevel: run.approvalLevel };
-  void sessionPrefsSet(run.sessionId, prefs).catch(() => {});
-  void kvSet("pi.mode", JSON.stringify(prefs)).catch(() => {});
+  // 落库失败必须留痕：这份偏好是"重新物化 run 时读回哪一档"的唯一依据，写不进去
+  // 就意味着「用户切了完全访问、下次重建却回到旧档」——而 .catch(() => {}) 让这种
+  // 症状看起来像"模式自己变了"，无从排查
+  void sessionPrefsSet(run.sessionId, prefs).catch((err) => {
+    logErr(`mode prefs persist failed (session=${run.sessionId}):`, err);
+  });
+  void kvSet("pi.mode", JSON.stringify(prefs)).catch((err) => {
+    logErr("mode prefs kv persist failed:", err);
+  });
 }
 
-/** 计划状态只属于 plan 档：agent 与 ask 都是 inactive。写成显式映射而不是
- *  `mode === "agent" ? ...`，否则新增的第三档会静默继承 planning 态、被前端
+/** 计划状态只属于 plan 档：其余三档都是 inactive。写成显式映射而不是
+ *  `mode === "agent" ? ...`，否则新增的第四档会静默继承 planning 态、被前端
  *  渲染成"正在计划"（枚举扩容最典型的塌陷点） */
 const PLANNING_BY_MODE: Record<SessionMode, PlanningState> = {
   agent: "inactive",
   plan: "planning",
   ask: "inactive",
+  goal: "inactive",
 };
 
-/** 切换模式：热替换 systemPrompt/tools 并推进计划状态（plan_write 的计划文件路径跨切换保留） */
+/**
+ * 切换模式：热替换 systemPrompt/tools 并推进计划状态（plan_write 的计划文件路径跨切换保留）。
+ *
+ * 离开 goal 档时顺手暂停目标：自治循环的续跑判定被 run.mode === "goal" 门着
+ * （stream.ts 的 turn_end 分支），切走之后循环既不会续、也走不到任何兜底停机逻辑，
+ * 目标会永远挂在 active 上——条上写着「进行中」，实际没有任何东西在跑。放在这里
+ * 而不是 set_mode handler，理由同 composeRunPrompt：模式变更的单一收口点，
+ * 将来多一条改模式的路径也不会漏。
+ */
 export function applyMode(run: Running, mode: SessionMode): void {
+  if (run.mode === "goal" && mode !== "goal") pauseGoalOnModeExit(run);
   run.mode = mode;
   run.planning = PLANNING_BY_MODE[mode];
-  const prompt = composeModeSystemPrompt(
-    mode,
-    run.cwd,
-    run.appMode,
-    run.agent.state.model,
-    run.designTheme,
-  );
+  const prompt = composeRunPrompt(run);
   const tools = toolsForMode(run);
   // 0.99 迁移：state.systemPrompt 只读（转录首条 system 消息的回放），热换走
   // setLeadingSystemMessage；loopContext 亦无 systemPrompt 字段，改其 messages 首条

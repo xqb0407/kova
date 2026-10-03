@@ -25,6 +25,7 @@ export {
   rebindRunThread,
   isModelUnavailable,
   reloadSubagents,
+  reloadMemoryTools,
   reloadSkills,
   resolveSession,
   setSessionCwd,
