@@ -12,9 +12,9 @@
 |---|---|---|
 | macOS Apple Silicon | `扣瓦_<ver>_aarch64.dmg` | 10.13+，2020 年后机型均可 |
 | Windows x64 | `扣瓦_<ver>_x64-setup.exe` | NSIS，按用户级安装，自动装 WebView2 |
-| iOS（未签名） | `Kova_<ver>_iOS-unsigned.ipa` | CI 免凭据产出；用 i4/爱思等工具以你的 Apple ID 自签安装（7 天） |
-| Android（未签名） | `Kova_<ver>_Android-unsigned.apk` | unsigned release APK，供自签或调试；正式分发需配 keystore 后走签名流程 |
 | 通用 | `SHA256SUMS.txt` | 校验和 |
+
+移动端拆在独立流水线 `release-mobile.yml`（**仅手动触发**，不进 tag 发布链路）：iOS `Kova_<ver>_iOS-unsigned.ipa`（未签名，i4/爱思自签）、Android `Kova_<ver>_Android-unsigned.apk`（未签名）。产物只作 workflow artifacts 保留 14 天，正式挂 Release 需先配签名凭据。
 
 sidecar（pi-agent）由 `bun build --compile` 在对应平台 runner 上原生编译，经 Tauri `externalBin` 一并打入安装包，无需用户装任何运行时。安装包约 100–150MB 属正常（bun 自包含二进制较大）。
 
