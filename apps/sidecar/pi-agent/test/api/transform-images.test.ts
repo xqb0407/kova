@@ -39,6 +39,7 @@ const toolResultWithImage = {
     { type: "text" as const, text: "screenshot" },
     { type: "image" as const, data: png1x1, mimeType: "image/png" },
   ],
+  isError: false,
   timestamp: Date.now(),
 };
 

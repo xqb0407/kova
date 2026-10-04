@@ -2,7 +2,7 @@
  * 偏好与观测命令：个性化/工作模式/记忆/钩子/浏览器驱动/密钥库/OTLP 观测/使用统计/轨迹。
  * 变更后的活动会话系统提示词热替换走同一套 composeModeSystemPrompt 整段重排。
  */
-import { send } from "../stream";
+import { send, sendSessionsChanged } from "../stream";
 import { logErr } from "../../log";
 import { findRunBySession, reloadMemoryTools, running } from "../../sessions/sessions";
 import { composeRunPrompt } from "../../agent/modes";
@@ -186,6 +186,7 @@ export const handlers: Record<string, CommandHandler> = {
         recomposeRunPrompt(owner.run);
       }
       await sessionPrefsSet(sessionId, { appMode: mode }).catch(() => {});
+      sendSessionsChanged("updated", sessionId);
       send({ id: reqId, type: "app_mode", mode });
       return;
     }

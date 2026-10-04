@@ -1,5 +1,6 @@
 import { Platform, useColorScheme } from "react-native";
 import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { useThemeMode } from "@/lib/settings/appearance-settings";
 
 /**
  * 主题：与桌面端逐令牌对齐。
@@ -291,14 +292,20 @@ export function ThemeProvider({
   accent = "default",
 }: {
   children: ReactNode;
-  /** 测试/截图用；不传则跟随系统 */
+  /** 测试/截图用；不传则按外观偏好（跟随系统时看系统） */
   forceScheme?: Scheme;
   accent?: AccentName;
 }) {
   const system = useColorScheme();
+  // 外观偏好（引导页/设置里改的那份）优先于系统；system 档才落到 useColorScheme
+  const mode = useThemeMode();
   const theme = useMemo(
-    () => makeTheme(forceScheme ?? (system === "light" ? "light" : "dark"), accent),
-    [system, forceScheme, accent],
+    () =>
+      makeTheme(
+        forceScheme ?? (mode === "system" ? (system === "light" ? "light" : "dark") : mode),
+        accent,
+      ),
+    [system, mode, forceScheme, accent],
   );
   return <ThemeContext.Provider value={theme}>{children}</ThemeContext.Provider>;
 }

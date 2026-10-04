@@ -56,7 +56,7 @@ import { readCompaction, readTranscript, scanTranscript } from "./transcript";
 import type { PendingInteraction } from "pi-protocol";
 import { restoreUnsettled } from "./pending-interactions";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, setLeadingSystemMessage, type ContextInfoResult } from "../agent/context";
-import { isPromptActive, onAgentEvent, send } from "../protocol/stream";
+import { isPromptActive, onAgentEvent, send, sendSessionsChanged } from "../protocol/stream";
 import { wireSessionEvents } from "../protocol/thread-events";
 import {
   enforceResidency,
@@ -541,6 +541,7 @@ export async function resolveSession(
     sessionId = randomUUID();
     const now = new Date().toISOString();
     await sessionInsert(sessionId, persistedCwd);
+    sendSessionsChanged("created", sessionId);
     writeFileSync(
       sessionPath(sessionId),
       JSON.stringify({ type: "header", schema: 1, id: sessionId, cwd: persistedCwd, created_at: now }) + "\n",

@@ -98,6 +98,43 @@ describe("sessions：只读投影", () => {
   });
 });
 
+describe("sessions：sessions_changed 跨端广播", () => {
+  const framesSince = (from: number) =>
+    lines
+      .slice(from)
+      .map((l) => {
+        try {
+          return JSON.parse(l) as Record<string, unknown>;
+        } catch {
+          return {} as Record<string, unknown>;
+        }
+      })
+      .filter((f) => f.type === "sessions_changed");
+
+  test("新建→created、改名→updated、删除→deleted（无 id 自发通知行）", async () => {
+    let mark = lines.length;
+    await dispatch("w1", { type: "new_session", threadId: "watch-1", cwd: tmp });
+    const sessionId = last().sessionId as string;
+    expect(framesSince(mark)).toEqual([
+      { type: "sessions_changed", op: "created", sessionId },
+    ]);
+    mark = lines.length;
+    await dispatch("w2", {
+      type: "rename_session",
+      sessionId,
+      name: "看门狗",
+    });
+    expect(framesSince(mark)).toEqual([
+      { type: "sessions_changed", op: "updated", sessionId },
+    ]);
+    mark = lines.length;
+    await dispatch("w3", { type: "delete_session", sessionId });
+    expect(framesSince(mark)).toEqual([
+      { type: "sessions_changed", op: "deleted", sessionId },
+    ]);
+  });
+});
+
 describe("sessions：LRU 驻留上限", () => {
   test("连续 resolve 超过上限 ⇒ 常驻数收敛到 MAX", async () => {
     for (let i = 0; i < MAX_RESIDENT_SESSIONS + 2; i++) {

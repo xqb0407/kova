@@ -288,7 +288,7 @@ export class MockPiTransport implements PiClientTransport {
     // ---- 工具调用（只有首条消息带，模拟"先看一眼文件再答"） ----
     if (session.messages.length <= 2) {
       const toolCall = {
-        type: "toolCall",
+        type: "toolCall" as const,
         id: `tool-${session.eventSeq}`,
         name: "read",
         arguments: { path: "apps/desktop/lib/pi/pi-channel.ts" },
@@ -325,9 +325,19 @@ export class MockPiTransport implements PiClientTransport {
         isError: false,
         timestamp: Date.now(),
       };
-      this.emit(session, { type: "message_end", message: assistantMessage([]) });
-      const toolSeq = ++session.seq;
-      session.messages.push({ ...toolMsg, __seq: toolSeq });
+      // 落盘与收尾对齐真链路：带工具调用的 assistant 行（thinking + toolCall）先落并
+      // 收尾，toolResult 行随后落并收尾。此前只发一条**空内容**的 assistant message_end，
+      // 直播投影因此看不到工具 part——轮次折叠判不出「本轮有过程」，脚本跑完摘要行不出现；
+      // 转录里也缺这条调用行，冷读与直播两副面孔（2026-10-04 实测发现）。
+      const callRow = {
+        ...assistantMessage([{ type: "thinking", thinking: thought }, toolCall]),
+        __seq: ++session.seq,
+      };
+      session.messages.push(callRow);
+      this.emit(session, { type: "message_end", message: callRow });
+      const toolRow = { ...toolMsg, __seq: ++session.seq };
+      session.messages.push(toolRow);
+      this.emit(session, { type: "message_end", message: toolRow });
 
       this.emit(session, {
         type: "tool_execution_start",
@@ -552,6 +562,24 @@ export class MockPiTransport implements PiClientTransport {
           session.seq = Math.min(session.seq, Math.max(0, beforeSeq - 1));
         }
         return { removed: 1 } as T;
+      }
+      // 逐项撤销（队列条上的「撤销」）：真链路由 sidecar queue_cancel(按 requestId
+      // 删项)实现，mock 这里同语义——此前落到 default 的 {type:"ok"} 假成功，
+      // 演示里点撤销看着没反应、轮末还会把条目泵回来（2026-10-04 实测对齐）。
+      case "queue_cancel": {
+        const requestId = String(payload.requestId ?? "");
+        for (const session of this.sessions.values()) {
+          const index = session.queue.findIndex((q) => q.id === requestId);
+          if (index < 0) continue;
+          session.queue.splice(index, 1);
+          this.emit(session, {
+            type: "queue_update",
+            steering: session.queue.filter((q) => q.mode === "steer"),
+            followUp: session.queue.filter((q) => q.mode === "followUp"),
+          });
+          return { type: "queue_cancelled", requestId } as T;
+        }
+        throw new Error(`no queued prompt: ${requestId}`);
       }
       case "queue_clear": {
         const session = byId(payload.threadId);

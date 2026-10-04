@@ -55,6 +55,12 @@
  */
 
 import { ExportedMessageRepository } from "@assistant-ui/react-native";
+import {
+  messageId,
+  seqOf,
+  withIdPins,
+  type StableIdAnchor,
+} from "./messageIdPins";
 import type {
   ThreadMessageLike,
 } from "@assistant-ui/react-native";
@@ -89,19 +95,6 @@ export interface PiProjectionInput {
   hostUiRequests: readonly PiHostUiRequest[];
 }
 
-/** 稳定 id 锚点：sidecar 快照透传的转录行 __seq / 前端乐观消息的 __optimisticId */
-type StableIdAnchor = { __seq?: number; __optimisticId?: string };
-
-const seqOf = (anchor: StableIdAnchor | undefined): number | undefined =>
-  typeof anchor?.__seq === "number" ? anchor.__seq : undefined;
-
-// seq 空间（落盘后单调不变）优先；在飞消息没有 seq，退回**独立前缀**的下标——
-// 独立前缀保证回退 id 绝不与别处已落盘行的 seq id 撞号（seq 与下标号段重叠）。
-const messageId = (anchor: StableIdAnchor | undefined, index: number) =>
-  anchor?.__optimisticId ??
-  (seqOf(anchor) !== undefined
-    ? `pi-msg:${seqOf(anchor)}`
-    : `pi-msg-idx:${index}`);
 const stepId = (anchor: StableIdAnchor | undefined, index: number) =>
   seqOf(anchor) !== undefined
     ? `pi-step:${seqOf(anchor)}`
@@ -178,19 +171,25 @@ const projectToolResult = (
   for (const part of content) {
     if (part.type !== "image") continue;
     const index = imgIndex++;
-    const b64 = part.data.trim();
+    // 落盘后的行（内存优化，见 lib/pi/image-materialize）：data 已换成 file://。
+    // src 直接用文件路径——JS 堆不再持有 base64，也不再受内联体积闸约束。
+    const fileUri =
+      typeof (part as unknown as { uri?: unknown }).uri === "string"
+        ? (part as unknown as { uri: string }).uri
+        : "";
+    const b64 = typeof part.data === "string" ? part.data.trim() : "";
     const mime = normalizeMime(part.mimeType);
     if (!mime) {
       const label = part.mimeType.trim() || "未知类型";
       notices.push(`[图片未展示：不支持的类型 ${label}（仅 png/jpeg/gif/webp）]`);
       continue;
     }
-    if (!b64) {
+    if (!fileUri && !b64) {
       notices.push(`[图片未展示：${mime} 数据为空]`);
       continue;
     }
-    const bytes = Math.floor((b64.length * 3) / 4); // base64 长度近似解码后字节，免解码
-    if (bytes > IMAGE_INLINE_MAX_BYTES) {
+    const bytes = fileUri ? 0 : Math.floor((b64.length * 3) / 4); // base64 长度近似解码后字节，免解码
+    if (!fileUri && bytes > IMAGE_INLINE_MAX_BYTES) {
       notices.push(
         `[图片未展示：约 ${(bytes / (1024 * 1024)).toFixed(1)} MiB，超过 ${(IMAGE_INLINE_MAX_BYTES / (1024 * 1024)).toFixed(1)} MiB 内联上限]`,
       );
@@ -199,10 +198,12 @@ const projectToolResult = (
     images.push({
       id: `img-${ctx.toolCallId ?? "direct"}-${index}`,
       data: {
-        src: `data:${mime};base64,${b64}`,
+        src: fileUri || `data:${mime};base64,${b64}`,
         mimeType: mime,
         bytes,
         toolCallId: ctx.toolCallId,
+        // 本端落盘的图：渲染守卫据此放行（不再卡 scheme，见 image-part-guard）
+        ...(fileUri ? { materialized: true } : {}),
         ...(alt ? { alt } : {}),
       },
     });
@@ -668,6 +669,27 @@ export const projectPiThreadMessages = (
   // A transcript ending on a `toolResult` leaves the assistant group open; mark
   // it last so the live run status ("running") propagates.
   flush(true);
+
+  // 直播起手空窗（本地改动 · 稳定 id）：user 行已落、assistant 行还没到的那一瞬，
+  // core 的 ExternalStoreThreadRuntimeCore 会自己往仓库里塞一条 **generateId()
+  // 随机 id** 的空助手占位（见 external-store-thread-runtime-core 的
+  // hasUpcomingMessage 分支），真实 assistant 行到达时这条占位被替换——React 侧
+  // 就是整条消息卸载重挂：markdown 重解析、代码块重挂、打字机归零，观感即
+  // "不丝滑"。这里提前补一条**同 id 规则**的空助手消息（索引与真实行一致，
+  // 转录只追加），core 判定"已有 upcoming 的 assistant 行"，随机占位不再出现。
+  if (input.runStatus === "running") {
+    const tail = out.at(-1);
+    if (tail && tail.role === "user") {
+      out.push({
+        id: messageId(undefined, messages.length),
+        role: "assistant",
+        createdAt: new Date(),
+        content: [],
+        status: { type: "running" },
+      } as ThreadMessageLike);
+    }
+  }
+
   return out;
 };
 

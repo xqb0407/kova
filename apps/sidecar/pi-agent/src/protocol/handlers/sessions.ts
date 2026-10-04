@@ -4,7 +4,7 @@
  */
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { send } from "../stream";
+import { send, sendSessionsChanged } from "../stream";
 import { logErr } from "../../log";
 import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
@@ -29,6 +29,7 @@ import {
   sessionList,
   sessionSetArchived,
   sessionTouch,
+  type SessionRow,
 } from "../../storage/hostdb";
 import {
   dropRun,
@@ -75,6 +76,38 @@ function compactionSnapMessage(c: CompactionRow) {
     timestamp: Date.parse(c.createdAt) || 0,
     // 转录行 seq 随消息透传：前端投影用它生成稳定消息 id（下标会因新行落盘漂移）
     __seq: c.seq,
+  };
+}
+
+/** 索引行 → 会话摘要（list_sessions / session_summary 共用单源）。
+ *  偏好的宽松规整在这里统一：列里只认合法字面量，脏值按「从未变更」处理，
+ *  前端据此回落全局默认，不会显示出一个非法档位。 */
+function sessionSummaryOf(r: SessionRow): SessionSummary {
+  return {
+    sessionId: r.id,
+    name: r.title || undefined,
+    firstMessage: r.first_message,
+    messageCount: r.message_count,
+    modified: r.updated_at,
+    cwd: r.cwd,
+    archived: r.archived === 1,
+    // 会话级偏好（undefined = 从未变更过）：切回会话时前端据此恢复 mode/model
+    mode: r.mode === "agent" || r.mode === "plan" || r.mode === "ask" ? r.mode : undefined,
+    approvalLevel:
+      r.approvalLevel === "ask" ||
+      r.approvalLevel === "workspace-write" ||
+      r.approvalLevel === "auto-edit" ||
+      r.approvalLevel === "auto"
+        ? r.approvalLevel
+        : undefined,
+    modelProvider: r.modelProvider ?? undefined,
+    modelId: r.modelId ?? undefined,
+    thinkingLevel: r.thinkingLevel ?? undefined,
+    // 会话级工作模式（宽松规整，同上）
+    appMode:
+      r.appMode === "work" || r.appMode === "code" || r.appMode === "design"
+        ? r.appMode
+        : undefined,
   };
 }
 
@@ -200,41 +233,39 @@ export const handlers: Record<string, CommandHandler> = {
     }
   },
 
-  list_sessions: async (reqId) => {
+  list_sessions: async (reqId, msg) => {
     // 迭代 4（P4）：消息计数改读索引表 message_count 列（session_touch
     // 增量维护 + Rust 启动一次性回填），不再逐会话读 JSONL。
     // 回调必须显式标注返回类型：链式 .filter 会截断外部 SessionSummary[] 的
     // 上下文推断，map 返回对象里的字面量类型（"agent"|"plan"）会被放宽成 string
-    const sessions: SessionSummary[] = (await sessionList())
-      .map((r): SessionSummary => ({
-        sessionId: r.id,
-        name: r.title || undefined,
-        firstMessage: r.first_message,
-        messageCount: r.message_count,
-        modified: r.updated_at,
-        cwd: r.cwd,
-        archived: r.archived === 1,
-        // 会话级偏好（undefined = 从未变更过）：切回会话时前端据此恢复 mode/model
-        mode: r.mode === "agent" || r.mode === "plan" || r.mode === "ask" ? r.mode : undefined,
-        approvalLevel:
-          r.approvalLevel === "ask" ||
-          r.approvalLevel === "workspace-write" ||
-          r.approvalLevel === "auto-edit" ||
-          r.approvalLevel === "auto"
-            ? r.approvalLevel
-            : undefined,
-        modelProvider: r.modelProvider ?? undefined,
-        modelId: r.modelId ?? undefined,
-        thinkingLevel: r.thinkingLevel ?? undefined,
-        // 会话级工作模式（宽松规整：列里只认三档字面量，脏值按「从未切换」处理，
-        // 前端据此回落全局默认，不会显示出一个非法档位）
-        appMode:
-          r.appMode === "work" || r.appMode === "code" || r.appMode === "design"
-            ? r.appMode
-            : undefined,
-      }))
-      .filter((s) => s.messageCount > 0);
-    send({ id: reqId, type: "sessions", sessions });
+    const all = (await sessionList()).map(sessionSummaryOf).filter((s) => s.messageCount > 0);
+    // §6 分页（移动端会话列表）：limit/offset 缺省 = 全量（旧端不破）；
+    // nextOffset 存在即表示还有下一页，客户端把它当 cursor 回传
+    const limit = Number.isInteger(msg?.limit) && (msg!.limit as number) > 0
+      ? (msg!.limit as number)
+      : undefined;
+    const offset = Number.isInteger(msg?.offset) && (msg!.offset as number) >= 0
+      ? (msg!.offset as number)
+      : 0;
+    const sessions = limit === undefined ? all : all.slice(offset, offset + limit);
+    const nextOffset =
+      limit !== undefined && offset + sessions.length < all.length
+        ? offset + sessions.length
+        : undefined;
+    send({
+      id: reqId,
+      type: "sessions",
+      sessions,
+      ...(nextOffset !== undefined ? { nextOffset } : {}),
+    });
+  },
+
+  // 单条会话摘要（§6）：列表分页后镜像只含已加载页，切到深页会话时前端
+  // 按需补这一条（mode/model/appMode/cwd 水合不能依赖该会话在已加载页里）
+  session_summary: async (reqId, msg) => {
+    const sessionId = String(msg.sessionId ?? "");
+    const row = sessionId ? (await sessionList()).find((r) => r.id === sessionId) : undefined;
+    send({ id: reqId, type: "session_summary", ...(row ? { summary: sessionSummaryOf(row) } : {}) });
   },
 
   list_running: async (reqId) => {
@@ -349,6 +380,7 @@ export const handlers: Record<string, CommandHandler> = {
       src.first_message,
       messageCount,
     );
+    sendSessionsChanged("created", newId);
     send({ id: reqId, type: "forked", sessionId: newId });
   },
 
@@ -403,7 +435,11 @@ export const handlers: Record<string, CommandHandler> = {
     }
     writeFileSync(file, kept.length ? kept.join("\n") + "\n" : "");
     // 索引计数按被删消息行做负增量（title/first_message 传 "" 不改原值）
-    if (removedMessages > 0) await sessionTouch(sessionId, "", "", -removedMessages);
+    if (removedMessages > 0) {
+      await sessionTouch(sessionId, "", "", -removedMessages);
+      // 计数回落到 0 会让会话退出清单可见集合；变化即广播
+      sendSessionsChanged("updated", sessionId);
+    }
     // 挂起交互台账随行消失（截断窗口内的发起/结算行已不在转录里）
     dropSessionInteractions(sessionId);
     // 驻留 run 的内存上下文与磁盘脱节：驱逐，下一 prompt 走截断后转录重建
@@ -426,11 +462,21 @@ export const handlers: Record<string, CommandHandler> = {
     const scan = scanTranscript(sessionId);
     const running = listActiveTurnSessions().includes(sessionId);
     const row = (await sessionList()).find((r) => r.id === sessionId);
+    // §6 分页窗（移动端无限上翻）：tail/beforeSeq 缺省 = 全量（旧端不破）；
+    // 游标 = 消息行 seq，与 get_history 同语义。窗口只从头部裁，
+    // 末行之后的行仍在 scan.messages 里（截断判定要它）。
+    const beforeSeq = typeof msg.beforeSeq === "number" ? msg.beforeSeq : undefined;
+    const { window: msgWindow, meta } = windowTranscriptMessages(scan.messages, {
+      tail: typeof msg.tail === "number" ? msg.tail : undefined,
+      beforeSeq,
+    });
+    const winStart = msgWindow.length ? scan.messages.indexOf(msgWindow[0]) : 0;
+    const winEnd = winStart + msgWindow.length - 1;
     // 消息与压缩检查点按 seq 归并（两者共用号段，单遍双指针）
     type SnapMessage = Record<string, unknown> & { role?: string };
     const messages: SnapMessage[] = [];
     let ci = 0;
-    for (let mi = 0; mi < scan.messages.length; mi++) {
+    for (let mi = winStart; mi <= winEnd; mi++) {
       const m = scan.messages[mi];
       while (ci < scan.compactions.length && scan.compactions[ci].seq < m.seq) {
         messages.push(compactionSnapMessage(scan.compactions[ci++]));
@@ -449,36 +495,44 @@ export const handlers: Record<string, CommandHandler> = {
       });
     }
     while (ci < scan.compactions.length) {
+      // 翻旧页（beforeSeq）时游标之后的行不属于这一页：分隔线随页走，避免旧页
+      // 被前置后把「未来」的压缩分隔线插到页尾
+      if (beforeSeq !== undefined && scan.compactions[ci].seq >= beforeSeq) break;
       messages.push(compactionSnapMessage(scan.compactions[ci++]));
     }
     // 流式中的 partial 并入（react-pi 迁移阶段 3c）：转录只在 message_end 落盘，
     // 运行中刷新靠快照自愈——把事件桥台账里的在飞 assistant 消息接到尾部
-    //（仅 running 会话有；空闲时台账已清）
-    const partial = peekPartial(sessionId);
+    //（仅 running 会话有；空闲时台账已清）。在飞 partial 恒属于会话尾部，
+    // 翻旧页不带（否则旧页会顶出一条进行中的消息）
+    const partial = beforeSeq === undefined ? peekPartial(sessionId) : undefined;
     if (partial) messages.push(partial as unknown as SnapMessage);
-    // 最后一条带 errorMessage 的 assistant 消息 = 会话级 lastError（兜底展示用）
+    // 最后一条带 errorMessage 的 assistant 消息 = 会话级 lastError（兜底展示用）；
+    // 同理只在整窗/尾窗上算——旧页的 lastError 不是会话级事实
     let lastError: string | undefined;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.role === "assistant" && typeof m.errorMessage === "string" && m.errorMessage) {
-        lastError = m.errorMessage;
-        break;
+    if (beforeSeq === undefined) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role === "assistant" && typeof m.errorMessage === "string" && m.errorMessage) {
+          lastError = m.errorMessage;
+          break;
+        }
       }
     }
     // 挂起交互行 → hostUiRequests：阶段 2 只映射逐工具审批（permission），
     // 投影层按 toolCallId 挂到工具卡上渲染审批；question 类卡片 UI 在阶段 4 接线。
-    const peek = peekEventSeq(sessionId);
+    // 挂起交互属于尾部状态，同 partial 只在整窗/尾窗上带
+    const peek = beforeSeq === undefined ? peekEventSeq(sessionId) : undefined;
     // 队列 → metadata.queuedMessages（4a）：快照权威携带排队条目（id=reqId，
     // mode 恒 followUp——引擎无 steering 常驻），刷新后 state.queue 由快照重建；
     // 内存为空时顺带从 session 回放采纳（sidecar 重启恢复路径）。新链路线程
     // 身份 = sessionId，引擎键同键。
     const queueSnapshotState = getQueueStateForThread(sessionId, sessionId);
-    const queuedMessages = (queueSnapshotState?.items ?? []).map((item) => ({
+    const queuedMessages = (beforeSeq === undefined ? queueSnapshotState?.items ?? [] : []).map((item) => ({
       id: item.reqId,
       mode: "followUp" as const,
       content: item.text,
     }));
-    const hostUiRequests = scan.pending.flatMap((it): unknown[] => {
+    const hostUiRequests = (beforeSeq === undefined ? scan.pending : []).flatMap((it): unknown[] => {
       if (it.kind !== "permission") return [];
       const p = it.payload as { approvalId?: string; toolCallId?: string; toolName?: string };
       if (!p.approvalId) return [];
@@ -514,6 +568,11 @@ export const handlers: Record<string, CommandHandler> = {
         ...(hostUiRequests.length ? { hostUiRequests } : {}),
         ...(peek !== undefined ? { seq: peek } : {}),
         ...(lastError ? { lastError } : {}),
+        // 分页元数据（§6）：缺省请求（无 tail/beforeSeq）时 firstSeq/lastSeq 为全窗首末，
+        // hasMore 恒 false——旧端读不到这些字段不受影响
+        ...(meta.firstSeq !== null ? { firstSeq: meta.firstSeq } : {}),
+        ...(meta.lastSeq !== null ? { lastSeq: meta.lastSeq } : {}),
+        hasMore: meta.hasMore,
       },
     });
   },
@@ -569,6 +628,7 @@ export const handlers: Record<string, CommandHandler> = {
     // 无目录会话的产物随会话走（<任务工作区>/<sessionId> 递归删；
     // 从未落过盘/项目会话是空操作），否则「我的文件」里只剩无名孤儿目录
     removeTaskSessionDir(sessionId);
+    sendSessionsChanged("deleted", sessionId);
     send({ id: reqId, type: "deleted" });
   },
 
@@ -579,6 +639,7 @@ export const handlers: Record<string, CommandHandler> = {
     await setSessionName(sessionId, name);
     // 原生事件通道（react-pi 迁移阶段 3）：reducer 的 metadata.title 由它驱动
     emitThreadEvent(sessionId, { type: "session_info_changed", name });
+    sendSessionsChanged("updated", sessionId);
     send({ id: reqId, type: "renamed" });
   },
 
@@ -586,6 +647,7 @@ export const handlers: Record<string, CommandHandler> = {
     const sessionId = String(msg.sessionId ?? "");
     const archived = msg.archived !== false;
     await sessionSetArchived(sessionId, archived);
+    sendSessionsChanged("updated", sessionId);
     send({ id: reqId, type: "archived" });
   },
 
@@ -596,6 +658,11 @@ export const handlers: Record<string, CommandHandler> = {
     const sessionId = String(msg.sessionId ?? "");
     const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
     await setSessionCwd(sessionId, cwd);
+    // 换目录 = 侧边栏项目分组归属变化，其它端需重取清单
+    sendSessionsChanged("updated", sessionId);
+    // 跨端同步：换目录改的是会话级偏好（清单/项目分组都看它）；发在响应之前，
+    // 响应恒为最后一行
+    sendSessionsChanged("updated", sessionId);
     send({ id: reqId, type: "session_cwd_set", sessionId, cwd });
   },
 };

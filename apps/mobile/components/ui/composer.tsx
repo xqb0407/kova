@@ -223,7 +223,12 @@ export function QueueBar() {
           <Text style={styles.queueText} numberOfLines={1}>
             {item.content}
           </Text>
-          <Pressable onPress={() => void cancel(item.id)} hitSlop={8}>
+          <Pressable
+            onPress={() => void cancel(item.id)}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel={`撤销排队消息：${item.content}`}
+          >
             <Text style={styles.queueCancel}>撤销</Text>
           </Pressable>
         </View>

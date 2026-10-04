@@ -32,6 +32,7 @@ import { projectToolResult, type ProjectableContentBlock } from "../tools/image-
 import { sessionPath } from "../storage/storage";
 import { sessionGet, sessionRename, sessionTouch } from "../storage/hostdb";
 import { emitThreadEvent } from "../protocol/thread-events";
+import { sendSessionsChanged } from "../protocol/stream";
 import { getModels } from "../model/model-catalog";
 import { stripDirectiveTokens, summarizeSessionTitle } from "./session-title-summarize";
 import { logErr } from "../log";
@@ -816,6 +817,9 @@ export async function persist(
 ): Promise<void> {
   const messages = run.agent.state.messages;
   if (messages.length <= run.persistedSeq) return;
+  // 本 run 此前从未落过盘 = 会话首条消息即将可见（list_sessions 过滤
+  // messageCount>0）；落盘后广播 updated，让其它端把这条新会话刷进列表
+  const wasEmpty = run.persistedSeq === 0;
   const file = sessionPath(run.sessionId);
   const lines: string[] = [];
   for (let i = run.persistedSeq; i < messages.length; i++) {
@@ -855,6 +859,9 @@ export async function persist(
     firstText,
     lines.length,
   );
+  // 首条消息落盘 = 会话进入清单可见集合（messageCount 0→>0）：广播一次，
+  // 之后每轮 persist 不再发（wasEmpty 按 run 代际判，恢复的 run 起点非 0）
+  if (wasEmpty && lines.length) sendSessionsChanged("updated", run.sessionId);
 
   // earlyUser：轮初补录还没有助手回复，此时总结标题会缺回答上下文，
   // 且每会话 one-shot 防抖会被白白消费——留给 agent_end 那次触发

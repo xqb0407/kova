@@ -39,6 +39,7 @@ import type {
   ContextChangedFrame,
   PluginOpResultFrame,
   RunningTurn,
+  SessionsChangedFrame,
   SubagentActivityItem,
   SubagentRunStatus,
 } from "pi-protocol";
@@ -50,6 +51,9 @@ export type PiRunningTurn = RunningTurn;
 
 /** 定时任务自发通知帧（sidecar automation 调度器钩子发出，无 id） */
 export type PiAutomationFrame = AutomationFiredFrame | AutomationRunDoneFrame;
+
+/** 会话清单变更自发通知帧（sidecar 落行/首条落盘/删除/改名/归档/截断/换目录时广播，无 id） */
+export type PiSessionsChangedFrame = SessionsChangedFrame;
 
 /**
  * 插件耗时操作结果自发通知帧（sidecar plugins 分发 case 发出，无 id；
@@ -143,6 +147,16 @@ export interface PiChannel {
   subscribeDesignThemes?(
     cb: (frame: PiDesignThemePush) => void,
   ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（同款无 id 自发通知通道）：订阅会话清单变更帧
+   * （sessions_changed，见 PiSessionsChangedFrame）：任一端（移动/网页/桌面）
+   * 建会话、首条消息落盘、删除、改名、归档、截断、换目录时 sidecar 广播。
+   * cb(null) = 事件源失效（WS 重连/登记种子），订阅方应重拉清单一次兜底
+   * 断档期的变化。WS 通道经网关白名单转发（remote.rs broadcast_notification）。
+   */
+  subscribeSessionsChanged?(
+    cb: (frame: PiSessionsChangedFrame | null) => void,
+  ): (() => void) | Promise<() => void>;
   /** 能力可选（与 subscribeTurns 成对）：当前正在跑 turn 的会话 id 种子清单 */
   listRunning?(): Promise<string[]>;
   /**
@@ -158,14 +172,28 @@ export interface PiChannel {
   close?(): void;
   /** WS 通道连接状态回调；Tauri 通道恒连接，可不实现 */
   onStatusChange?(cb: (s: PiChannelStatus) => void): () => void;
+  /** 立即重连一次（不等退避、清零计数）：前台唤醒与设置页的调试入口共用 */
+  reconnectNow?(): void;
 }
 
 // ---------- 模块级注册表 ----------
 
 let current: PiChannel | null = null;
 
+/** 通道注册变化监听：setPiChannel 时同步回调（含置 null 的注销）。
+ *  给"随通道装配"的常驻订阅器用（见 pi-sessions-sync），免除首帧
+ *  子组件 effect 早于 runtime-provider setPiChannel 的时序竞态。 */
+type ChannelListener = (ch: PiChannel | null) => void;
+const channelListeners = new Set<ChannelListener>();
+
+export function addPiChannelListener(cb: ChannelListener): () => void {
+  channelListeners.add(cb);
+  return () => channelListeners.delete(cb);
+}
+
 export function setPiChannel(ch: PiChannel | null) {
   current = ch;
+  for (const cb of [...channelListeners]) cb(ch);
 }
 
 /** 只读探测当前注册通道（无兜底副作用）：供卸载延迟销毁判断"注册表还是不是我" */

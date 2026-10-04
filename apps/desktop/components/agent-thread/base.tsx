@@ -34,6 +34,7 @@ import {
   type ManageTab,
 } from "@/lib/connector-nav";
 import { setAutomationFrameSync } from "@/lib/automation/automation-live";
+import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import { setCurrentPanelThread } from "@/lib/panels/panel-tabs";
@@ -275,6 +276,15 @@ export const Base: FC = () => {
       void aui.threads.reload().catch(() => {});
     });
     return () => setAutomationFrameSync(null);
+  }, [aui]);
+  // 跨端会话清单同步：移动端/网页端（或本端他窗）建会话、改名、删除、归档
+  // 等变更 → sidecar 广播 sessions_changed → 去抖整表 reload（此前移动端
+  // 新建的会话要手动刷新才能在侧边栏看到；去抖在 lib/pi/pi-sessions-sync）
+  useEffect(() => {
+    setSessionsChangedSync(() => {
+      void aui.threads.reload().catch(() => {});
+    });
+    return () => setSessionsChangedSync(null);
   }, [aui]);
   // Agent 面板：默认展开，挂载后从 localStorage 恢复开合/宽度
   // （SSR 首帧恒为展开，避免 hydration 不一致）

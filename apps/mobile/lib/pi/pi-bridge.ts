@@ -925,7 +925,15 @@ export type PiAutomationTemplatesResponse = {
 };
 
 export type PiResponse =
-  | { type: "sessions"; sessions: PiSessionSummary[] }
+  | {
+      type: "sessions";
+      sessions: PiSessionSummary[];
+      /** §6 分页（会话列表）：还有下一页时的游标（= 下一条的 offset）；
+       *  缺省请求（无 limit）不带——那时 sessions 就是全量 */
+      nextOffset?: number;
+    }
+  /** §6 单条会话摘要：列表分页后按需补某会话的偏好行（mode/model/cwd 水合） */
+  | { type: "session_summary"; summary?: PiSessionSummary }
   | { type: "running"; sessionIds: string[] }
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "forked"; sessionId: string }
@@ -1090,11 +1098,14 @@ export type PiResponse =
  * 投影闸门单点在 sidecar image-parts.ts，设计 docs/image-part-design.md。
  */
 export type PiImagePartData = {
-  /** 内联 data URL：`data:<mimeType>;base64,...` */
+  /** 展示源：内联 `data:<mimeType>;base64,...` 或本端落盘后的 `file://…`
+   *  （未来的隧道阶段为网关/对象存储的 URL） */
   src: string;
   mimeType: string;
-  /** 解码后原始字节（base64 长度 ×3/4 近似；渲染角标用） */
+  /** 解码后原始字节（base64 长度 ×3/4 近似；渲染角标用）。落盘后为 0（未知） */
   bytes: number;
+  /** 本端落盘的展示源标记（守卫放行尺度见 lib/pi/image-part-guard） */
+  materialized?: boolean;
   /** 产出该图的工具调用 id；非工具来源（P1 模型直出）为 null */
   toolCallId: string | null;
   /** 产出图的工具名 */

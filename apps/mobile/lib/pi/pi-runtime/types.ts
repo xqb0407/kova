@@ -462,6 +462,10 @@ export type PiSendMessageInput = {
   files?: PiInputFilePart[];
   /** REQUIRED while the thread is running. Pi `prompt()` throws otherwise. */
   streamingBehavior?: "followUp" | "steer";
+  /** 调用方预生成的请求 id（可选）。给了就用它，不再由客户端生成——
+   *  控制器要在发送**之前**就把乐观队列条目的 id 定成真实 reqId，
+   *  这样"撤销"点下去 sidecar 认得（对照 queue_cancel 按 requestId 删项）。 */
+  requestId?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -629,6 +633,11 @@ export type PiThreadSnapshot = {
   seq?: number;
   /** Last surfaced runtime/session error, if any. */
   lastError?: string;
+  /** 分页窗元数据（§6，移动端无限上翻）：本窗首/末行的转录 seq。
+   *  全量请求（不带 tail/beforeSeq）也有值；hasMore 描述本窗之前是否还有更早行。 */
+  firstSeq?: number;
+  lastSeq?: number;
+  hasMore?: boolean;
 };
 
 export interface PiClient {
@@ -636,12 +645,33 @@ export interface PiClient {
     workspacePath?: string;
     includeArchived?: boolean;
   }): Promise<PiThreadMetadata[]>;
+  /** §6 会话列表分页：limit/offset 窗口 + nextOffset 游标（会话列表无限下滑）。
+   *  可选——不实现时调用方退回全量 listThreads。单条摘要补齐走 pi-bridge 的
+   *  session_summary（见 pi-thread-adapter.ensureSessionSummary），不进本契约。 */
+  listThreadsPage?(input?: {
+    workspacePath?: string;
+    includeArchived?: boolean;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ threads: PiThreadMetadata[]; nextOffset?: number }>;
   createThread(input?: {
     workspacePath?: string;
     title?: string;
     initialMessage?: PiSendMessageInput;
   }): Promise<PiThreadSnapshot>;
-  getThread(threadId: string): Promise<PiThreadSnapshot>;
+  /** input.tail = 尾窗行数（§6 分页；缺省全量，旧端不破）。移动端冷读传尾窗，
+   *  更早的行由 getThreadPage 逐页上翻。 */
+  getThread(
+    threadId: string,
+    input?: { tail?: number },
+  ): Promise<PiThreadSnapshot>;
+  /** 分页窗拉取（移动端无限上翻，§6）：beforeSeq = 当前已加载的最早行 seq，
+   *  返回该游标之前的旧页（首末 seq/hasMore 随快照带）。可选——旧端不实现时
+   *  调用方退回全量 getThread。 */
+  getThreadPage?(
+    threadId: string,
+    input: { beforeSeq: number; tail?: number },
+  ): Promise<PiThreadSnapshot>;
 
   sendMessage(threadId: string, input: PiSendMessageInput): Promise<void>;
   cancelRun(threadId: string): Promise<void>;
