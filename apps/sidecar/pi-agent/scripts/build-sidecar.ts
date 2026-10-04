@@ -30,6 +30,16 @@ if (!host) {
 // 找不到入口文件。口径与同目录另两个脚本一致。
 const pkgRoot = resolve(import.meta.dir, "..");
 
+// 面板 HTML 为构建产物不入库：缺失时先构建（root scripts/build-plugins.mjs 幂等，
+// 已有产物即刻跳过）。放在这里保证任何入口——npm/tauri beforeBuildCommand、bun、
+// CI——都能自愈，调用方不必各自记得前置 build:plugins。
+const plugins = Bun.spawnSync([process.execPath, resolve(pkgRoot, "../../../scripts/build-plugins.mjs")], {
+  cwd: pkgRoot,
+  stdout: "inherit",
+  stderr: "inherit",
+});
+if (plugins.exitCode !== 0) process.exit(plugins.exitCode ?? 1);
+
 // 先重打内置插件包：`import ... with { type: "file" }` 在 compile 期读盘嵌入，
 // zip 不提交仓库，缺失时必须先产出（幂等：内容不变 zip 字节不变）
 const pack = Bun.spawnSync(["bun", "run", "scripts/build-builtin-plugins-zip.ts"], {
