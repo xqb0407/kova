@@ -12,7 +12,7 @@
  * - catalog.version 是升级同步的比对锚点。
  */
 import { unzipSync, strFromU8 } from "fflate";
-import zipUrl from "./bundle/design-themes.zip";
+import zipUrl from "./bundle/design-themes.zip" with { type: "file" };
 
 export type BuiltinThemeMeta = {
   id: string;
