@@ -19,6 +19,9 @@ apps/
                       # sidecar 拉起、host RPC 存储）
   sidecar/pi-agent/   # agent 运行时（Bun/TS）：stdin/stdout NDJSON 协议，
                       # sessions/MCP/skills/subagent/tools/model/secrets 按域分目录
+  mobile/             # 移动端（Expo SDK 57 + RN 0.86 + @assistant-ui/react-native）：
+                      # 无后端，经桌面远程网关的 /ws 连 sidecar；配对码换 token 存 Keychain
+                      # （见 apps/mobile/README.md）
 packages/
   pi-protocol/        # 前后端共享的跨端契约定义
 plugins/
@@ -43,7 +46,13 @@ bun run tauri:dev           # Tauri 桌面开发（Next 热更新 + Rust 增量�
 bun run dev                 # 仅浏览器内开发 Next 前端
 bun run test                # sidecar 单元测试（bun test）
 bun run build:sidecar       # 单独构建 agent sidecar
+bun run dev:mobile          # 移动端（Expo）开发；桌面端先开远程网关并允许局域网访问
+bun run typecheck:mobile    # 移动端类型检查
+bun run test:mobile         # 移动端单元测试
+bun run build:mobile:web    # 移动端 web 静态导出（apps/mobile/dist）
 ```
+
+移动端依赖装在 `apps/mobile/node_modules`（`install.hoistingLimits = "workspaces"`）：RN 0.86 只能配 react 19.2.3，与桌面的 Next 16 + react 19.3 各持一份，避免 hoisting 互相抬版本导致 Metro 双实例。
 
 Sidecar 冒烟：`cd apps/sidecar/pi-agent && bun run smoke`（无 Rust 宿主时自动回退本地 SQLite 存储）。
 
@@ -104,16 +113,16 @@ Kova·扣瓦 从架构到细节大量借鉴与依赖社区成果，特别感谢�
 
 ### ✅ 已落地
 
-桌面主应用（多轮对话 / 附件 / 检查点 / 提示词排队）、pi-agent sidecar 运行时（MCP、skills、子代理、记忆、上下文压缩）、插件系统与办公套件（office、canvas）、Keychain 凭据管理、定时任务与 Webhook 通知、**局域网远程访问**（桌面网关 + 配对码 + 浏览器网页端，见 [docs/remote-access.md](docs/remote-access.md)）。
+桌面主应用（多轮对话 / 附件 / 检查点 / 提示词排队）、pi-agent sidecar 运行时（MCP、skills、子代理、记忆、上下文压缩）、插件系统与办公套件（office、canvas）、Keychain 凭据管理、定时任务与 Webhook 通知、**局域网远程访问**（桌面网关 + 配对码 + 浏览器网页端，见 [docs/remote-access.md](docs/remote-access.md)）、**移动 App**（`apps/mobile`，Expo + RN，走同一 WS 网关，扫码配对、token 存 Keychain/Keystore）。
 
 ### 🚧 下一步：移动 App
 
-当前手机经浏览器访问桌面网关已可用，下一步是把它做成正经的移动应用：
+原生壳已落地（Expo，非 Tauri mobile：复用桌面网关的 `/ws` 协议，与浏览器网页端同源）。剩下的是移动场景真正需要的东西：
 
-- iOS / Android 原生壳（候选：Tauri v2 mobile），复用现有网页端对话 UI 与 WS 协议
-- 推送通知：任务完成、等待审批、定时任务结果到达手机
-- 扫码配对流程的原生化（Keychain / Keystore 保存 token、生物识别解锁）
-- 移动端适配：触控手势、离线草稿、会话列表的窄屏重排
+- 推送通知：任务完成、等待审批、定时任务结果到达手机（需要网关侧设备令牌登记与前台保活）
+- 生物识别解锁 + token 轮换（当前 token 长效不过期，撤销只能靠桌面「撤销所有设备」）
+- 离线草稿与弱网体验：蜂窝/Wi-Fi 切换下的排队发送与在飞流续播
+- 窄屏交互打磨：手势、附件选择、会话列表重排
 
 ### 🚧 下一步：远程能力增强
 
@@ -154,4 +163,6 @@ scripts\rename.bat <new-slug> [--app-name "Name"] [--dry-run]      # Windows
 | [docs/perf-baseline.md](docs/perf-baseline.md) | 性能基线 |
 | [docs/release.md](docs/release.md) | 构建与发布 |
 | [docs/remote-access.md](docs/remote-access.md) | 远程访问 |
+| [apps/mobile/README.md](apps/mobile/README.md) | 移动端（Expo）与 WS 链路 |
+| [plans/mobile-app-integration-plan.md](plans/mobile-app-integration-plan.md) | 移动端并入与通讯收敛计划（含 W6 抽包阻塞点） |
 | [docs/SELF_HOSTED_RUNTIME.md](docs/SELF_HOSTED_RUNTIME.md) | 自托管运行时 |

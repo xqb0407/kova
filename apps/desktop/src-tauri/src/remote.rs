@@ -8,7 +8,9 @@
 //!   客户端（authed）：sidecar 原样格式，如 {"type":"prompt","id":"..",..}、{"type":"abort"}
 //!   服务端：{"type":"paired","token":".."} | {"type":"authed"}
 //!           | {"type":"error","errorText":".."} | {"type":"closed","reason":".."}
-//!           authed 后全部为 sidecar 原样响应/chunk 行（id 已还原为客户端原始 id）
+//!           authed 后全部为 sidecar 原样响应/chunk 行（id 已还原为客户端原始 id）；
+//!           请求级失败（含 REMOTE_DENIED_TYPES 拒绝）也按原请求 id 回错误帧——
+//!           客户端据此结算该次调用（toast/错误条），不会误判成连接断开
 //!
 //! 安全：
 //!   - 配对码 6 位数字只存内存（重启即失效），每连接校验失败 5 次断开，未认证阶段 10s 超时
@@ -55,7 +57,8 @@ const BIND_LAN_KEY: &str = "remote.bind.lan";
 
 /// authed 后禁止远程转发的消息类型：凭据/提供商管理、MCP 管理（可拉起本地进程）、
 /// 技能/子代理写（注入可执行提示词内容）、记忆写、个性化/模型属性/过滤写、
-/// 自动化写。命中即断开该消息并回错。会话/聊天类与只读查询不在其列。
+/// 自动化写。命中即拒绝该消息，并按原请求 id 回错误帧（请求级错误——客户端
+/// 提示该操作不可用，不会误报成连接断开）。会话/聊天类与只读查询不在其列。
 /// 第二层防线是 list_custom_providers 只回掩码——即使漏网也读不到明文 key。
 const REMOTE_DENIED_TYPES: &[&str] = &[
     // 凭据与 AI 服务管理
@@ -840,27 +843,55 @@ async fn read_loop(
             continue;
         }
 
-        // authed：透传 sidecar 协议
+        // authed：透传 sidecar 协议。
+        // 本地拒绝（REMOTE_DENIED_TYPES）与转发失败都按"请求级错误"回帧（带原
+        // 请求 id）：客户端把失败结算到发起的那次调用（toast/错误条）。无 id 的
+        // 错误帧会被网页端当成连接级故障、误报"与桌面端的连接已断开"——远程页
+        // 点自动化里的开关/立即运行等桌面专属操作，曾因此被误读成掉线。
+        let req_id = v.get("id").and_then(|x| x.as_str()).map(str::to_owned);
+        let mtype = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if REMOTE_DENIED_TYPES.contains(&mtype) {
+            send(denied_frame(req_id.as_deref()));
+            continue;
+        }
         if let Err(e) = forward_to_agent(app, conn_id, v, &tx).await {
-            send(json!({"type": "error", "errorText": e}));
+            send(error_frame(req_id.as_deref(), &e));
         }
     }
     Ok(())
 }
 
-/// authed 消息转发：重写 id 为 rem-{conn}-{orig} 并登记路由后写入 sidecar stdin
+/// 请求级错误帧：有原请求 id 时回填，客户端据此把失败结算到发起的那次调用
+/// （toast/错误条），不会像无 id 错误帧那样被当成协议级故障、误报
+/// "与桌面端的连接已断开"。无 id 的消息（abort 等）退化为协议级错误帧。
+fn error_frame(req_id: Option<&str>, error_text: &str) -> Value {
+    match req_id {
+        Some(id) => json!({"id": id, "type": "error", "errorText": error_text}),
+        None => json!({"type": "error", "errorText": error_text}),
+    }
+}
+
+/// 桌面专属操作的拒绝帧：请求级错误 + 结构化 code（error 加性扩展，见
+/// pi-protocol §8），远程端可据此把"该操作仅限桌面端"与网络故障区别对待。
+fn denied_frame(req_id: Option<&str>) -> Value {
+    let mut frame = error_frame(req_id, "该操作仅限桌面端");
+    if let Some(obj) = frame.as_object_mut() {
+        obj.insert(
+            "error".into(),
+            json!({"code": "REMOTE_DENIED", "source": "runtime", "retryable": false}),
+        );
+    }
+    frame
+}
+
+/// authed 消息转发：重写 id 为 rem-{conn}-{orig} 并登记路由后写入 sidecar stdin。
+/// 桌面专属拒绝（REMOTE_DENIED_TYPES）已在 read_loop 前置处理，不进本函数。
 async fn forward_to_agent(
     app: &AppHandle,
     conn_id: u64,
     mut v: Value,
     tx: &mpsc::Sender<String>,
 ) -> Result<(), String> {
-    // 管理类消息在网关即拒（REMOTE_DENIED_TYPES 黑名单，见常量注释）：
-    // 远程只是对话延伸，凭据/MCP/技能/自动化等配置变更仅限桌面端。
-    let mtype = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-    if REMOTE_DENIED_TYPES.contains(&mtype) {
-        return Err("该操作仅限桌面端".into());
-    }
     // abort 无 id，全局透传，不占路由
     if v.get("type").and_then(|x| x.as_str()) == Some("abort") {
         let pi = app.state::<PiState>();
@@ -899,4 +930,50 @@ async fn forward_to_agent(
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{denied_frame, error_frame};
+    use serde_json::json;
+
+    /// 有原请求 id 的错误帧必须回填 id：网页端据此把失败结算到该请求。
+    /// 没回填时客户端会走无 id 分支，把操作级失败误报成"连接已断开"。
+    #[test]
+    fn request_error_echoes_client_id() {
+        let frame = error_frame(Some("ws-3-123"), "failed to spawn pi-agent");
+        assert_eq!(
+            frame,
+            json!({"id": "ws-3-123", "type": "error", "errorText": "failed to spawn pi-agent"})
+        );
+    }
+
+    /// abort 等无 id 的消息保持协议级错误帧（没有可回填的 id）。
+    #[test]
+    fn error_without_id_stays_protocol_level() {
+        let frame = error_frame(None, "pi-agent terminated");
+        assert_eq!(frame, json!({"type": "error", "errorText": "pi-agent terminated"}));
+        assert!(frame.get("id").is_none());
+    }
+
+    /// 桌面专属拒绝：带原 id + 结构化 code，远程端可把"仅限桌面端"与
+    /// 网络/连接故障区别开。
+    #[test]
+    fn denied_error_carries_code_and_id() {
+        let frame = denied_frame(Some("ws-1-9"));
+        assert_eq!(frame.get("id").and_then(|v| v.as_str()), Some("ws-1-9"));
+        assert_eq!(frame.get("errorText").and_then(|v| v.as_str()), Some("该操作仅限桌面端"));
+        assert_eq!(
+            frame.get("error"),
+            Some(&json!({"code": "REMOTE_DENIED", "source": "runtime", "retryable": false}))
+        );
+    }
+
+    /// 无 id 的拒绝帧不凭空造 id 字段（如 abort 类消息）。
+    #[test]
+    fn denied_error_without_id() {
+        let frame = denied_frame(None);
+        assert!(frame.get("id").is_none());
+        assert_eq!(frame.get("type").and_then(|v| v.as_str()), Some("error"));
+    }
 }

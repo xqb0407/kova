@@ -35,7 +35,20 @@ toolResult 触发此函数，且 `clampMaxTokensToContext` 每次请求前都跑
   thinking 为 string 时放行，活跃路径封死。
 - mistral-conversations.js:647/653：项目不使用 mistral provider。
 
-### 升级指引
+## @assistant-ui/core@0.3.22
+
+`dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js` 的
+`_switchToThread`：上游要等新线程 runtime 附着完成（`_whenRuntimeAttached`）
+才翻转 `_mainThreadId`，等待窗口内 UI 一直渲染上一条会话——移动端叠加
+index→chat 路由转场后「切换先闪上次对话，再骨架，才加载」肉眼可见。补丁
+改为切换一开始就乐观翻转 `_mainThreadId` 并 notify：`getMainThreadRuntimeCore`
+落到 `EMPTY_THREAD_CORE`（`isLoading=true`、`messages=[]`），thread UI 直接进
+`isHistoryLoadingView` 骨架态；附着失败（如线程被删）时回滚到原线程并原样
+抛错。副作用（均为改善）：`onThreadIdChange`/`threads.selectionChanged` 提前
+触发（chat 页水合更早开始）、切换窗口内对主线程发消息会落到 inert 空核报错
+而不是误发进旧线程。
+
+## 升级指引（同上）
 
 升级任一包版本时：`bun patch <pkg>@<ver>` 后**逐处核对**守卫是否需要迁移——
 不要以 node_modules 现状判断「上游已修」（它可能混着未注册的手工改动），
