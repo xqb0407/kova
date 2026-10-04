@@ -46,10 +46,10 @@ describe("builtinSubagents", () => {
   test("内置四份定义齐全且有效", () => {
     const definitions = builtinSubagents();
     expect(definitions.map((d) => d.name)).toEqual([
-      "explorer",
-      "code-reviewer",
-      "test-runner",
-      "fixer",
+      "Explorer",
+      "Code-reviewer",
+      "Test-runner",
+      "Fixer",
     ]);
     expect(BUILTIN_SUBAGENT_SPECS.length).toBe(definitions.length);
   });
@@ -62,15 +62,15 @@ describe("builtinSubagents", () => {
       for (const t of d.tools) expect(BASE_TOOLS.has(t)).toBe(true);
       expect(d.maxTurns).toBeGreaterThan(0);
       expect(d.scope).toBe("builtin");
-      expect(d.stateKey).toBe(`builtin:${d.name}`);
+      expect(d.stateKey).toBe(`builtin:${d.name.toLowerCase()}`);
     }
   });
 
   test("explorer 不直接写文件，fixer 可变更文件", () => {
     const byName = Object.fromEntries(builtinSubagents().map((d) => [d.name, d]));
-    expect(byName.explorer.tools.some((t: string) => ["write", "edit"].includes(t))).toBe(false);
-    expect(byName.fixer.tools).toContain("edit");
-    expect(byName.fixer.tools).toContain("write");
+    expect(byName.Explorer.tools.some((t: string) => ["write", "edit"].includes(t))).toBe(false);
+    expect(byName.Fixer.tools).toContain("edit");
+    expect(byName.Fixer.tools).toContain("write");
   });
 
   test("内置 raw 可被同一解析器读回（序列化/解析闭环）", () => {
@@ -235,9 +235,9 @@ describe("loadSubagentDefinitions（三层发现 / 开关）", () => {
     const loaded = await loadSubagentDefinitions({ systemDir: sys });
     const names = loaded.definitions.map((d) => d.name);
     expect(names).toContain("linter");
-    expect(names).toContain("explorer");
+    expect(names).toContain("Explorer");
     // 内置 + 系统都进清单，内置 editable=false
-    const explorer = loaded.entries.find((e) => e.name === "explorer")!;
+    const explorer = loaded.entries.find((e) => e.name === "Explorer")!;
     expect(explorer.editable).toBe(false);
     expect(explorer.enabled).toBe(true);
     const linter = loaded.entries.find((e) => e.name === "linter")!;
@@ -258,7 +258,7 @@ describe("loadSubagentDefinitions（三层发现 / 开关）", () => {
     // 内置也能关
     await setSubagentEnabled("builtin", "explorer", false);
     const loaded2 = await loadSubagentDefinitions({ systemDir: sys });
-    expect(loaded2.definitions.some((d) => d.name === "explorer")).toBe(false);
+    expect(loaded2.definitions.some((d) => d.name === "Explorer")).toBe(false);
     await setSubagentEnabled("builtin", "explorer", true);
     await setSubagentEnabled("system", "toggle-me", true);
   });

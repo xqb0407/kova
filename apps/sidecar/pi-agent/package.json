@@ -8,8 +8,9 @@
     "design:verify": "bun run scripts/verify-design-themes-zip.ts",
     "plugins:pack": "bun run scripts/build-builtin-plugins-zip.ts",
     "plugins:verify": "bun run scripts/verify-builtin-plugins-zip.ts",
-    "smoke": "bun run src/index.ts",
-    "test": "bun test",
+    "ensure:bundle": "bun run scripts/ensure-builtin-zip.ts",
+    "smoke": "bun run ensure:bundle && bun run src/index.ts",
+    "test": "bun run ensure:bundle && bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "croner": "^10.0.1",
     "fflate": "^0.8.3",
     "pi-protocol": "workspace:*",
+    "typebox": "1.3.27",
     "yaml": "^2.9.1",
     "zod": "^4.6.4"
   },

@@ -9,7 +9,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build --config ui/vite.config.ts",
-    "postbuild": "cp ui/dist/index.html office.html",
+    "postbuild": "node -e \"require('node:fs').copyFileSync('ui/dist/index.html','office.html')\"",
     "dev": "vite --config ui/vite.config.ts",
     "typecheck": "tsc --noEmit -p ui/tsconfig.json"
   },
