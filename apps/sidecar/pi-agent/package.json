@@ -11,6 +11,7 @@
     "ensure:bundle": "bun run scripts/ensure-builtin-zip.ts",
     "smoke": "bun run ensure:bundle && bun run src/index.ts",
     "test": "bun run ensure:bundle && bun test",
+    "test:isolated": "bun run ensure:bundle && bun scripts/run-tests-isolated.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
