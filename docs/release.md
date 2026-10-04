@@ -10,8 +10,8 @@
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| macOS Apple Silicon | `扣瓦_<ver>_aarch64.dmg` | 10.13+，2020 年后机型均可 |
-| Windows x64 | `扣瓦_<ver>_x64-setup.exe` | NSIS，按用户级安装，自动装 WebView2 |
+| macOS Apple Silicon | `Kova_<ver>_aarch64.dmg` | 10.13+，2020 年后机型均可 |
+| Windows x64 | `Kova_<ver>_x64-setup.exe` | NSIS，按用户级安装，自动装 WebView2 |
 | 通用 | `SHA256SUMS.txt` | 校验和 |
 
 移动端拆在独立流水线 `release-mobile.yml`（**仅手动触发**，不进 tag 发布链路）：iOS `Kova_<ver>_iOS-unsigned.ipa`（未签名，i4/爱思自签）、Android `Kova_<ver>_Android-unsigned.apk`（未签名）。产物只作 workflow artifacts 保留 14 天，正式挂 Release 需先配签名凭据。
@@ -47,17 +47,17 @@ bun run release 0.1.1
 
 ### macOS（Apple Silicon）
 
-1. 下载 `扣瓦_<ver>_aarch64.dmg`，打开后把 App 拖入「应用程序」。
+1. 下载 `Kova_<ver>_aarch64.dmg`，打开后把 App 拖入「应用程序」。
 2. 首次打开：**右键点击 App → 打开 → 打开**（只第一次需要）。
 3. 若提示「已损坏，无法打开」，在终端执行一次后正常打开：
    ```bash
-   xattr -cr "/Applications/扣瓦.app"
+   xattr -cr "/Applications/Kova.app"
    ```
    （应用未做苹果付费签名公证，macOS Gatekeeper 会拦截未公证应用；上述命令仅移除隔离标记，不影响使用。）
 
 ### Windows 10/11（64 位）
 
-1. 下载 `扣瓦_<ver>_x64-setup.exe` 双击安装（按当前用户安装，无需管理员）。
+1. 下载 `Kova_<ver>_x64-setup.exe` 双击安装（按当前用户安装，无需管理员）。
 2. 若 SmartScreen 弹「已保护你的电脑」：点 **更多信息 → 仍要运行**（仅首次）。
 3. 安装器会自动下载安装 WebView2 运行时（Win11 通常已内置）。
 

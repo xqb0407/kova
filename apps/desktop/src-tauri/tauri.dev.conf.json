@@ -1,5 +1,5 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "扣瓦 Dev",
+  "productName": "Kova Dev",
   "identifier": "com.kova.assistant.dev"
 }
