@@ -12,7 +12,7 @@
 set -euo pipefail
 
 BRANCH="${1:-main}"
-OWNER="40565511"
+OWNER="xqb0407"
 REPO="kova"
 REMOTE_URL="https://github.com/${OWNER}/${REPO}.git"
 
@@ -36,11 +36,18 @@ FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
       export GIT_COMMITTER_EMAIL="34675628@qq.com"
     fi
   ' \
+  --tag-name-filter cat \
   -- --all >/dev/null
 
-LEFT=$(git log --all --format='%ae %ce' | grep -c zkteco || true)
-echo ">> 校验: 历史中 zkteco 邮箱残留 = $LEFT（应为 0）"
-if [ "$LEFT" != "0" ]; then
+# filter-branch 会把原始 refs 备份在 refs/original/*，删除以免污染校验与镜像
+git for-each-ref --format='%(refname)' refs/original | while read -r ref; do
+  git update-ref -d "$ref"
+done
+
+LEFT_MAIL=$(git log --all --format='%ae %ce' | grep -c 'zkteco' || true)
+LEFT_ZCODE=$(git log --all --format='' --name-only --diff-filter=A | grep -c '^\.zcode/' || true)
+echo ">> 校验: zkteco 邮箱残留 = ${LEFT_MAIL}, .zcode 历史残留 = ${LEFT_ZCODE} (均应为 0)"
+if [ "${LEFT_MAIL}" -ne 0 ] || [ "${LEFT_ZCODE}" -ne 0 ]; then
   echo "!! 重写不彻底，中止推送" >&2
   exit 1
 fi
