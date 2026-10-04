@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { unzipSync, strFromU8 } from "fflate";
-import zipUrl from "./bundle/kova-plugins.zip";
+import zipUrl from "./bundle/kova-plugins.zip" with { type: "file" };
 import { logErr } from "../log";
 import {
   asString,
