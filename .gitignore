@@ -63,7 +63,10 @@ next-env.d.ts
 .trae/
 skills-lock.json
 
-.zcode/tmp/
+# AI 编码工具的内部状态与会话计划，不随开源仓库分发
+.zcode/
+# sidecar 运行时产生的目标状态数据，非源码
+/apps/sidecar/pi-agent/s.jsonl
 # 临时导出的凭据明文（用完即删，勿提交）
 .opencode-key.txt
 .dev-credentials.txt
