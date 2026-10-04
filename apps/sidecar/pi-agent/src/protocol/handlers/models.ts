@@ -30,7 +30,11 @@ import type { CommandHandler } from "../command";
 import type { Running } from "../../types";
 
 export const handlers: Record<string, CommandHandler> = {
-  list_models: async (reqId) => {
+  list_models: async (reqId, msg) => {
+    // authedOnly = 只回已配置凭据的厂商（移动端）：全目录是 1500+ 条/数百 KB 的
+    // 单帧 NDJSON，桌面浏览器无感，但 iOS 的 WebSocket 对超大单帧不友好——
+    // 手机上整帧丢失，表现为模型目录永远为空。桌面端不传此参数，行为不变。
+    const authedOnly = msg.authedOnly === true;
     const models = getModels();
     const out: {
       provider: string;
@@ -72,6 +76,7 @@ export const handlers: Record<string, CommandHandler> = {
       } catch {
         authed = false;
       }
+      if (authedOnly && !authed) continue;
       providerMap.set(p.id, { id: p.id, name: p.name, authed });
       for (const m of p.getModels()) {
         out.push({

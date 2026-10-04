@@ -94,8 +94,9 @@
  *       中途换/清会话工作目录（""=解绑，执行目录回落任务工作区会话子目录）：
  *       驻留 run 走完整换绑（重建工具/技能/提示词 + 回写索引行与 header），
  *       不驻留只写索引行与 header（下次物化自然生效）；本轮在跑时报 busy 拒绝
- *   { "type": "list_models", "id" }                           → { id, type: "models", models: [...], providers: [...] }
+ *   { "type": "list_models", "id", "authedOnly"?: bool }      → { id, type: "models", models: [...], providers: [...] }
  *       models 项含 enabled 与 maxTokens/input/cost 属性（enabled=false = 已被过滤隐藏，前端自行过滤）
+ *       authedOnly=true 只回已配置凭据的厂商（移动端用：全目录单帧数百 KB，iOS WS 扛不住）
  *   { "type": "set_model", "id", "provider", "modelId", "sessionId"? } → { id, type: "model", provider, modelId }
  *       sessionId 提供 = 会话定靶选择：转录 model_change 行与偏好列只落该会话（其余驻留会话不动）；
  *       缺省 = 全局默认模型变更（设置页/启动恢复）：写 kv pi.model，驻留会话中仅从未显式
@@ -360,6 +361,7 @@ import { handlers as designMdHandlers } from "./handlers/design-md";
 import { handlers as mcpHandlers } from "./handlers/mcp";
 import { handlers as providerHandlers } from "./handlers/providers";
 import { handlers as interactiveHandlers } from "./handlers/interactive";
+import { handlers as gitHandlers } from "./handlers/git";
 import { handlers as optimizeHandlers } from "./handlers/optimize";
 import type { CommandHandler } from "./command";
 
@@ -389,6 +391,7 @@ const registry: Record<string, CommandHandler> = {
   ...mcpHandlers,
   ...providerHandlers,
   ...interactiveHandlers,
+  ...gitHandlers,
 };
 
 export async function dispatch(reqId: string, msg: Record<string, unknown>) {

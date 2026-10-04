@@ -1,0 +1,37 @@
+diff --git a/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js b/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js
+index a67f0e27c4836f247f8c4e6285794c982cbe6c68..4c2a5f8472786aea3dcfe95f892b84f0f9f3d972 100644
+--- a/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js
++++ b/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js
+@@ -436,9 +436,29 @@ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
+ 		}
+ 		if (!data) throw threadNotFoundError(threadIdOrRemoteId, "switching to it");
+ 		if (this._mainThreadId === data.id) return;
+-		const task = this._hookManager.startThreadRuntime(data.id);
+-		if (this.mainThreadId !== void 0) await task;
+-		else task.then(() => this._notifySubscribers(), () => void 0);
++		{
++			// [kova patch] 乐观翻转：切换一开始就把主线程指针挪到目标线程。
++			// 上游要等新线程 runtime 附着完成才翻转，等待窗口内 UI 会一直渲染
++			// 上一条会话（移动端叠加路由转场后明显可见）。提前翻转让
++			// getMainThreadRuntimeCore 落到 EMPTY_THREAD_CORE（isLoading=true，
++			// messages=[]），UI 立即进入历史骨架态而不是闪旧消息。附着失败时
++			// 回滚到原线程并原样抛错。
++			const previousThreadId = this._mainThreadId;
++			this._mainThreadId = data.id;
++			this._notifySubscribers();
++			this._notifyThreadIdChange(emitThreadIdChange);
++			const task = this._hookManager.startThreadRuntime(data.id);
++			try {
++				await task;
++			} catch (error) {
++				if (generation === this._switchGeneration && this._mainThreadId === data.id) {
++					this._mainThreadId = previousThreadId;
++					this._notifySubscribers();
++					this._notifyThreadIdChange(emitThreadIdChange);
++				}
++				throw error;
++			}
++		}
+ 		if (generation !== this._switchGeneration) return;
+ 		let current = this.getItemById(data.id);
+ 		if (current?.id !== data.id) return;
