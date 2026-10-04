@@ -4,7 +4,8 @@
  * 插件的分发文件，产出 zip 条目表与内容聚合 hash（bundleVersion）。
  *
  * - plugins:pack（build-builtin-plugins-zip.ts）：zipSync(entries) 写
- *   src/plugins/bundle/kova-plugins.zip（**提交进仓库**，与 design-themes.zip 同款），
+ *   src/plugins/bundle/kova-plugins.zip（构建产物，gitignore 不入库；缺失时
+ *   ensure:bundle / build-sidecar.ts 编译前重打兜底，同源同字节幂等），
  *   sidecar 以 `import ... with { type: "file" }` 嵌进单文件二进制；
  * - plugins:verify（verify-builtin-plugins-zip.ts）与 pack-drift 测试：
  *   diffCommittedPluginZip 逐条目比对，源改了忘重打包即拦下。

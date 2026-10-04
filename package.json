@@ -17,7 +17,8 @@
   },
   "scripts": {
     "build": "bun run --filter desktop build",
-    "build:sidecar": "bun run --filter pi-agent-sidecar build",
+    "build:plugins": "node scripts/build-plugins.mjs",
+    "build:sidecar": "bun run build:plugins && bun run --filter pi-agent-sidecar build",
     "dev": "bun run --filter desktop dev",
     "dev:mobile": "bun run --filter mobile start",
     "build:mobile:web": "bun run --filter mobile export:web",

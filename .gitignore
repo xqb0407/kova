@@ -74,3 +74,11 @@ skills-lock.json
 # sidecar 构建冒烟的临时沙箱（build-sidecar.ts，正常路径自清理）
 apps/sidecar/pi-agent/.build-smoke/
 apps/sidecar/pi-agent/.build-smoke-sessions/
+
+# 插件面板单文件 HTML 与 ui/dist：vite 构建产物（scripts/build-plugins.mjs 生成）
+plugins/*/ui/dist/
+plugins/office/office.html
+plugins/canvas/canvas.html
+plugins/ui-design/design.html
+# 内置插件包 zip：plugins:pack / build:sidecar 幂等重打，缺失时 ensure:bundle 自愈
+/apps/sidecar/pi-agent/src/plugins/bundle/kova-plugins.zip
