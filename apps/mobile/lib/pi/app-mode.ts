@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi/pi-bridge";
+import { isConnectivityFailure } from "@/lib/pi/connectivity-errors";
 import type { PiAppMode } from "@/lib/pi/pi-bridge";
 import { syncStorage } from "@/lib/mobile/storage";
 
@@ -119,7 +120,11 @@ export function setAppMode(mode: AppMode): Promise<void> {
       degraded = true;
       emit(mode);
       writeSeed(mode);
-      console.error("set_app_mode failed:", err);
+      if (isConnectivityFailure(err)) {
+        console.log("[app-mode] set_app_mode 未送达（连接不可用）", err);
+      } else {
+        console.error("set_app_mode failed:", err);
+      }
     });
 }
 

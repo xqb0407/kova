@@ -1,3 +1,4 @@
+import { isConnectivityFailure } from "@/lib/pi/connectivity-errors";
 // 本地新增（react-pi 迁移缺口2·检查点卡接回）：旧链路 pi-transport 的
 // postTransform 管线在 start chunk 打影子仓库快照、finish/error 结算检查点卡
 // （git 集成 M2）。新链路没有 per-request 流，改挂全局事件通道：
@@ -141,7 +142,8 @@ export class TurnCheckpointTracker {
       const hash = await this.deps
         .create(cwd, `agent:${sessionId}:${this.deps.now()}`)
         .catch((err) => {
-          console.warn("[checkpoint] create failed", String(err));
+          if (isConnectivityFailure(err)) console.log("[checkpoint] create skipped（连接不可用）");
+          else console.warn("[checkpoint] create failed", String(err));
           return null;
         });
       if (hash) {
@@ -190,7 +192,8 @@ export class TurnCheckpointTracker {
       this.deps.refreshStatus(cwd);
       const d = await this.deps.diff(cwd, hash).catch((err) => {
         // 结算失败不弹窗打断对话，但必须留痕：静默吞错会让"卡去哪了"无从排查
-        console.warn("[checkpoint] settle diff failed", String(err));
+        if (isConnectivityFailure(err)) console.log("[checkpoint] settle skipped（连接不可用）");
+        else console.warn("[checkpoint] settle diff failed", String(err));
         return null;
       });
       if (!d || d.files.length === 0) return;

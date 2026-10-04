@@ -48,6 +48,7 @@ import {
   useRegisterComposerInput,
 } from "@/lib/pi/composer-focus";
 import { dismissKeyboard } from "@/components/ui/dismiss-tap";
+import { usePiQueue } from "@/lib/pi/pi-runtime";
 import {
   getTurnTiming,
   noteTurnEnd,
@@ -466,8 +467,15 @@ export const Thread: FC<ThreadProps> = ({
                     Rail && "pl-10",
                   )}
                   showsVerticalScrollIndicator={false}
-                  keyboardDismissMode="on-drag"
+                  keyboardDismissMode="interactive"
                   keyboardShouldPersistTaps="handled"
+                  // 消息列表分批渲染：一轮可能很长（工具行几十条），一次挂载
+                  // 全部可见项会让进入会话/流式期间的帧掉得厉害
+                  initialNumToRender={6}
+                  maxToRenderPerBatch={6}
+                  updateCellsBatchingPeriod={50}
+                  windowSize={9}
+                  removeClippedSubviews
                   {...(Rail
                     ? {
                         onContentSizeChange: onListContentSizeChange,
@@ -950,6 +958,8 @@ const composerShell = { gap: 8, padding: 8 } as const;
 const ComposerAction: FC<{ onPlus: () => void }> = ({ onPlus }) => {
   const aui = useAui();
   const { ComposerToolbar } = useContext(ThreadComponentsContext);
+  // 「停止」要连队列一起清（见该按钮的注释）：排队文本回填输入框，不丢输入
+  const { clear: clearQueue } = usePiQueue();
 
   // Pi 附加（发送后收键盘）：不劫持 Send 的 onPress——ComposerSend 把内部
   // onPress 排在 props 展开之前，外部传 onPress 会顶掉发送本身。统一信号改看
@@ -1048,14 +1058,38 @@ const ComposerAction: FC<{ onPlus: () => void }> = ({ onPlus }) => {
             s.composer.text.trim().length === 0
           }
         >
-          <ComposerPrimitive.Cancel
+          {/* 「停止」= 停当前轮 + **清空队列** + 排队内容回填输入框（2026-10-04）。
+              不用 ComposerPrimitive.Cancel 是因为它只中止当前轮：队列里排着的条目
+              会在收尾后由串行链自动接管，用户看到的是"我点了暂停，结果同一条又被
+              发了一遍"（sidecar 的 autoDrain 恒开，见 prompt-queue.ts 头注）。
+              这里显式把两件事一起做，且不丢用户的输入——排队文本回填到输入框
+              （这一分支只在草稿为空时出现，setText 不会覆盖正在打的字）。 */}
+          <Pressable
             className="aui-composer-cancel bg-primary active:bg-primary/90 size-7 items-center justify-center rounded-full"
             hitSlop={iconButtonHitSlop}
-            accessibilityLabel="Stop generating"
+            accessibilityRole="button"
+            accessibilityLabel="停止生成并清空队列"
+            accessibilityHint="当前轮与排队消息都会停止，排队内容回到输入框"
             onPressIn={dismissKeyboard}
+            onPress={() => {
+              aui.composer.cancel();
+              void (async () => {
+                try {
+                  const cleared = await clearQueue();
+                  const restored = [...cleared.steering, ...cleared.followUp]
+                    .map((text) => text.trim())
+                    .filter(Boolean)
+                    .join("\n");
+                  if (restored) aui.composer.setText(restored);
+                } catch {
+                  // 队列清理失败不影响"停止"本身：当前轮已中止，队列条目由
+                  // 后续 queue_update/快照自愈呈现
+                }
+              })();
+            }}
           >
             <View className="aui-composer-cancel-icon bg-primary-foreground size-3 rounded-[2px]" />
-          </ComposerPrimitive.Cancel>
+          </Pressable>
         </AuiIf>
         <AuiIf
           condition={(s) =>
@@ -1505,18 +1539,37 @@ const AssistantMessageContent: FC<{ variant?: "process" | "answer" }> = ({
  *
  * 移动端的投影把一轮的 assistant 段 + 工具结果并成一条消息，所以拆面在
  * 消息内部做（桌面是轮中/轮末两条消息拆）。摘要行与 pop 挂在「本轮第一条
- * 带过程的消息」上：正常一轮只有这一条，多消息轮的旁支消息（压缩分隔线等）
- * 在移动端本就没有注册 UI，不会漏内容。
+ * 带过程的消息」上（turn.host，正常一轮只有这一条）。
+ *
+ * 拆面的完备性（2026-10-04 接线复核）：正文面 = text / image / data-image /
+ * data-errorAttribution，其余一律算过程（isProcessPart 与之互补，见两处定义）。
+ * 所以每个 part 必落一侧：正文面在**每条**消息上都渲染（不只在 host 上——扩展
+ * 消息会把一轮切成多条，正文落在旁支消息时不能丢，这是此前"已结束轮次答案
+ * 正文不渲染"的一个来源）；过程面只进 pop，pop 开关挂在含过程的那条消息上，
+ * 有过程必有开关。开场（首条 user 之前）无轮锚，整条平铺不折叠。
  */
 const AssistantMessage: FC = () => {
-  // 说明：轮次摘要行 / 折叠拆面 / 过程 pop 这一套（"大折叠"）已从渲染链路摘除，
-  // 消息渲染与最初版本一致（TurnSummaryRow / TurnProcessSheet 组件仍保留在文件里，
-  // 需要时再接回来）。此前那一套在真机上出现"已结束轮次答案正文不渲染"的案例，
-  // 在查清之前不参与渲染。
+  const turn = parseTurnView(useAuiState(turnViewSelector));
+  // 台账键要带线程前缀（scopedTurnKey，与 TurnTimingRecorder / 历史播种同规）
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const running = turn.key !== "" && turn.running;
+  const folded = turn.key !== "" && !turn.running;
+  // 摘要行/进度行：运行中的轮挂轮首消息（进度行），结束的轮挂含过程的那条
+  const summaryHost = running ? turn.isFirst : folded && turn.host;
+
   return (
     <MessagePrimitive.Root className="aui-assistant-message-root">
       <View className="aui-assistant-message-content px-2">
-        <AssistantMessageContent />
+        {summaryHost ? (
+          <TurnSummaryRow
+            scopedKey={scopedTurnKey(threadId, turn.key)}
+            running={running}
+            hasProcess={turn.hasProcess}
+            toolCount={turn.toolCount}
+          />
+        ) : null}
+        {/* 运行中与开场整条平铺；结束的轮只留正文面，过程进底部 pop */}
+        <AssistantMessageContent {...(folded ? { variant: "answer" as const } : {})} />
         <MessageError />
       </View>
       <View className="aui-assistant-message-footer ms-2 min-h-7.5 flex-row items-center pt-1.5">

@@ -9,7 +9,7 @@ import {
   type LayoutChangeEvent,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { router as appRouter, useRouter } from "expo-router";
 import { useAui, useAuiState } from "@assistant-ui/react-native";
 import {
   BotIcon,
@@ -64,7 +64,15 @@ import {
   useThreadThinking,
 } from "@/lib/pi/pi-session-thinking";
 import { fetchPlanningState } from "@/lib/pi/pi-session-mode";
+import {
+  ensureSessionSummary,
+  piSessionIdForThread,
+  subscribeSessionPrefs,
+} from "@/lib/pi/pi-thread-adapter";
 import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
+import { usePiHistory } from "@/lib/pi/pi-runtime";
+import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
+import { refreshSessionPrefs } from "@/lib/pi/pi-thread-adapter";
 import {
   THINKING_LEVEL_LABELS,
   THINKING_LEVELS,
@@ -176,6 +184,9 @@ export default function ChatScreen() {
   const glass = glassControl(scheme);
   const meta = useComposerMeta();
   const title = useChatTitle();
+  // 分页窗（§6）：列表上沿的「加载更多」——引用只在 hasMore/loading 翻转时变，
+  // 不会把 Thread 元素的 memo 打散。
+  const history = usePiHistory();
   // 用户发过言（线程里有消息）后顶栏中间就交还给标题：mode 分段只在「还没开口
   // 的新对话」占位——一旦聊起来，切档请走胶囊，导航栏该给身份感而不是开关。
   const hasMessages = useAuiState((st) => st.thread.messages.length > 0);
@@ -186,11 +197,12 @@ export default function ChatScreen() {
   const thread = useMemo(
     () => (
       <Thread
+        history={history}
         components={{ Welcome, ComposerToolbar: meta.bar, ToolFallback: ToolCallRow }}
         aboveComposer={<AboveComposer />}
       />
     ),
-    [meta.bar],
+    [meta.bar, history],
   );
 
   // 返回键：与首页头部图标组同一套双分支——iOS 26+ 装进系统玻璃圆钮
@@ -284,6 +296,7 @@ function useChatTitle() {
  *  两者共用这份状态。 */
 function useComposerMeta() {
   const threadId = useAuiState((st) => st.threads.mainThreadId);
+  const { colors } = useTheme();
   const [open, setOpen] = useState<Picker | null>(null);
 
   const mode = useCurrentAppMode();
@@ -295,11 +308,44 @@ function useComposerMeta() {
   // 切线程时水合三颗胶囊的当前值：胶囊读的是各自的本地 store，事实源在
   // sidecar（会话偏好列 + planning state）。不水合的话永远显示默认档——
   // 桌面端三个 picker 都挂了这组 effect，移动端此前漏抄。
+  // §6 列表分页：深页会话不在已加载页的镜像里，先按需补单条摘要，到了再水合
+  //（subscribeSessionPrefs 触发重跑；模型/思考/权限三处都吃这张表）。
   useEffect(() => {
     if (!threadId) return;
-    hydrateThreadModel(threadId);
-    hydrateThreadThinking(threadId);
-    void fetchPlanningState(threadId).catch(() => {});
+    const hydrate = () => {
+      hydrateThreadModel(threadId);
+      hydrateThreadThinking(threadId);
+      void fetchPlanningState(threadId).catch(() => {});
+    };
+    ensureSessionSummary(piSessionIdForThread(threadId));
+    const unsubscribe = subscribeSessionPrefs(hydrate);
+    hydrate();
+    return unsubscribe;
+  }, [threadId]);
+
+  // 跨端同步（会话屏侧）：桌面/网页端动了**当前会话**
+  // - op=deleted：会话没了（转录也删了），退回列表，别停在一个死会话上；
+  // - op=updated：改名、归档、换目录、改模式/权限/模型/思考——重拉偏好镜像再水合，
+  //   胶囊与顶栏跟着变（这些 setter 在 sidecar 侧都会补发一帧，见 handlers）。
+  // 挂在会话屏而不是列表屏：两边各自只在自己可见时管自己的事（列表屏见 index.tsx）。
+  useEffect(() => {
+    if (!threadId) return;
+    const sessionId = piSessionIdForThread(threadId) ?? threadId;
+    setSessionsChangedSync((batch) => {
+      const frames = batch.frames;
+      if (frames.some((f) => f.op === "deleted" && f.sessionId === sessionId)) {
+        appRouter.replace("/");
+        return;
+      }
+      if (frames.some((f) => !f.op || f.op === "updated" || f.sessionId === sessionId)) {
+        void refreshSessionPrefs().then(() => {
+          hydrateThreadModel(threadId);
+          hydrateThreadThinking(threadId);
+          void fetchPlanningState(threadId).catch(() => {});
+        });
+      }
+    });
+    return () => setSessionsChangedSync(null);
   }, [threadId]);
 
   const modelLabel = model?.modelId ?? "默认";
@@ -385,9 +431,17 @@ function useComposerMeta() {
           }}
         />
         <MetaPill
-          icon={<ShieldIcon size={14} strokeWidth={1.9} />}
+          icon={
+            <ShieldIcon
+              size={14}
+              strokeWidth={1.9}
+              // 完全访问 = 全部自动执行：与桌面端 mode-picker 同款警示色
+              {...(session.approvalLevel === "auto" ? { color: colors.warning } : {})}
+            />
+          }
           label="权限"
           value={approvalLabel}
+          {...(session.approvalLevel === "auto" ? { tone: "warning" as const } : {})}
           onPress={() => setOpen("permission")}
         />
         {/* 能力模式（问答/计划/目标）：默认档也显示——手机没有 Shift+Tab，胶囊是
@@ -400,7 +454,7 @@ function useComposerMeta() {
         />
       </View>
     ),
-    [modelLabel, thinking, approvalLabel, modeLabel, ModeIcon],
+    [modelLabel, thinking, approvalLabel, modeLabel, ModeIcon, session.approvalLevel, colors.warning],
   );
 
   // 抽屉：模型一层（行尾 more）+ 思考二级叠在上面；权限是另一颗胶囊的一层。
@@ -621,14 +675,19 @@ function MetaPill({
   icon,
   label,
   value,
+  tone,
   onPress,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
+  /** 高危档的警示色（如权限=完全访问）：图标与值都用警告色，与桌面端
+   *  mode-picker 的高危档同款（那边是 amber-600/amber-400） */
+  tone?: "warning";
   onPress: () => void;
 }) {
   const s = useStyles();
+  const { colors: themeColors } = useTheme();
   // 按下时缩一点而不是只变淡：iOS 上按钮的反馈是「被压下去」，
   // 光是 opacity 变化在快速连点时几乎看不见，手感就发木
   const press = useRef(new Animated.Value(0)).current;
@@ -663,7 +722,13 @@ function MetaPill({
         {/* 「模型」「权限」这两个词不画出来：图标已经说明是哪一项，值才是要读的
             信息，两个词占着宽度把值挤窄。label 仍留在 accessibilityLabel 里，
             读屏时还得说清楚这一颗是什么。 */}
-        <Text numberOfLines={1} style={s.pillValue}>
+        <Text
+          numberOfLines={1}
+          style={[
+            s.pillValue,
+            tone === "warning" && { color: themeColors.warning, fontWeight: "600" },
+          ]}
+        >
           {value}
         </Text>
       </Pressable>

@@ -31,7 +31,7 @@ import type {
   PiThreadMetadata,
   PiThreadSnapshot,
 } from "../types";
-
+import { seqOf } from "./messageIdPins";
 export type PiRunStatus = "idle" | "running" | "failed";
 
 export type PiLoadState = "pending" | "loading" | "loaded";
@@ -52,6 +52,14 @@ export interface PiThreadState {
   metadata: PiThreadMetadata;
   /** Canonical transcript — source of truth for projection. */
   messages: readonly PiAgentMessage[];
+  /** 分页窗（§6）：本窗之前的更早转录行（loadMoreHistory 逐页前置；seq 升序，
+   *  与本窗衔接）。投影输入 = olderMessages + messages；快照替换只动 messages，
+   *  旧页因此不会被后台刷新冲掉。 */
+  olderMessages: readonly PiAgentMessage[];
+  /** 本窗/已加载页之前还有更早行（列表上沿「加载更多」的开关）。 */
+  historyHasMore: boolean;
+  /** 上一页拉取在途（列表上沿 loading 态；防重复触发）。 */
+  historyLoading: boolean;
   /** Index into `messages` of the assistant message currently streaming, or
    * `undefined` when not streaming. */
   streamingMessageIndex: number | undefined;
@@ -82,6 +90,9 @@ export const createPiThreadState = (threadId: string): PiThreadState => ({
   threadId,
   metadata: EMPTY_METADATA(threadId),
   messages: [],
+  olderMessages: [],
+  historyHasMore: false,
+  historyLoading: false,
   streamingMessageIndex: undefined,
   toolExecutions: {},
   runStatus: "idle",
@@ -121,6 +132,40 @@ const withMetadataActivity = (
         retryActive: retry.active,
         retryAttempt: retry.attempt,
       };
+
+/** 按 seq 归并「旧于 windowFirst」的行（olderMessages + 上一窗的行），seq 升序去重。
+ *  分页窗上任一快照替换 messages 时用它捡回本窗之前的已加载行：
+ *  ① 此前逐页前置的旧页；② 上一窗里落在新窗首之前的部分——转录增长后新窗首
+ *  右移，两窗之间的行只能从旧窗捡，否则上翻出现空档。
+ *  只有带分页元数据（firstSeq）的窗口才捡：全量快照本身已含全部行，捡了重复。
+ *  无 seq 的行（在飞 partial）恒属尾部，不捡。 */
+const carryOlderRows = (
+  older: readonly PiAgentMessage[],
+  previous: readonly PiAgentMessage[],
+  windowFirst: number | undefined,
+): readonly PiAgentMessage[] => {
+  if (windowFirst === undefined) return older.length ? [] : older;
+  const bySeq = new Map<number, PiAgentMessage>();
+  for (const message of [...older, ...previous]) {
+    const seq = seqOf(message);
+    if (seq === undefined || seq >= windowFirst) continue;
+    // 先见者胜：转录行按 seq append-only，同 seq 的行对象不会再变；保留已在
+    // 旧页里的那一份，重放同一页/快照反复派发不会换行身份（React 不重挂）
+    if (!bySeq.has(seq)) bySeq.set(seq, message);
+  }
+  if (bySeq.size === 0) return older.length ? [] : older;
+  const merged = [...bySeq.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, message]) => message);
+  // 内容与旧数组一致（同序同行）时保持引用：快照反复派发不产生新的投影输入
+  if (
+    merged.length === older.length &&
+    merged.every((message, index) => message === older[index])
+  ) {
+    return older;
+  }
+  return merged;
+};
 
 const applySnapshot = (
   state: PiThreadState,
@@ -168,6 +213,13 @@ const applySnapshot = (
     ...state,
     metadata: withMetadataActivity(snapshot.metadata, compaction, retry),
     messages: snapshot.messages,
+    // 分页窗：快照只含尾窗，前面已加载的旧行捡回（见 carryOlderRows）
+    olderMessages: carryOlderRows(
+      state.olderMessages,
+      state.messages,
+      snapshot.firstSeq,
+    ),
+    historyHasMore: snapshot.hasMore ?? false,
     // Snapshot is authoritative: drop transient streaming pointers/buffers so
     // any divergence self-heals — except the in-flight tail pointer rebuilt above.
     streamingMessageIndex,
@@ -194,6 +246,22 @@ const applySnapshot = (
     lastError: snapshot.lastError,
     loadState: "loaded",
   };
+};
+
+/** 上翻一页（§6）：更早的行前置进 olderMessages（seq 升序去重），并更新 hasMore。
+ *  windowFirst 取当前窗首行的 seq——页行只会落在它之前；窗口为空（空会话）时
+ *  视为无边界。全部行被去重吞掉时保持引用不变（避免无谓重渲）。 */
+export const prependOlderHistory = (
+  state: PiThreadState,
+  rows: readonly PiAgentMessage[],
+  hasMore: boolean,
+): PiThreadState => {
+  const windowFirst = seqOf(state.messages[0]) ?? Number.POSITIVE_INFINITY;
+  const merged = carryOlderRows(state.olderMessages, rows, windowFirst);
+  if (merged === state.olderMessages && state.historyHasMore === hasMore) {
+    return state;
+  }
+  return { ...state, olderMessages: merged, historyHasMore: hasMore };
 };
 
 const replaceAt = <T>(arr: readonly T[], index: number, value: T): T[] => {

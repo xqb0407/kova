@@ -3,7 +3,7 @@
  * 目录本体在 model/（catalog + state + thinking），覆盖应用见 custom-providers。
  */
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { send } from "../stream";
+import { send, sendSessionsChanged } from "../stream";
 import { getImageGenConfig } from "../../tools/imagegen-config";
 import { findRunBySession, running } from "../../sessions/sessions";
 import {
@@ -218,6 +218,7 @@ export const handlers: Record<string, CommandHandler> = {
       if (owner) restamp(owner.run);
       appendModelChangeRow(sessionId, provider, modelId);
       await sessionPrefsSet(sessionId, { modelProvider: provider, modelId }).catch(() => {});
+      sendSessionsChanged("updated", sessionId);
     } else {
       // 全局默认变更（设置页/启动恢复）：kv 持久化（重启由 initCurrentModelKey 恢复），
       // 供新会话与从未显式选过模型的会话跟随；只即时刷「从未显式选过模型」的驻留 run
@@ -259,6 +260,7 @@ export const handlers: Record<string, CommandHandler> = {
       if (owner) owner.run.agent.state.thinkingLevel = level as ThinkingLevel;
       appendThinkingLevelChangeRow(sessionId, level);
       await sessionPrefsSet(sessionId, { thinkingLevel: level }).catch(() => {});
+      sendSessionsChanged("updated", sessionId);
     } else {
       // 默认档位变更（设置页/启动恢复）：kv 持久化供新会话与从未定靶选档的会话跟随；
       // 只即时刷「从未显式选过档位」的驻留 run（无偏好行 = 真值跟随全局默认），不落行

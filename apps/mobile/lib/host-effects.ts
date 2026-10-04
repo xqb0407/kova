@@ -47,9 +47,7 @@ export function refreshFileTree(_workspacePath: string | null): void {
 
 // ---------- 侧边栏运行指示 ----------
 
-export function resyncPiRunning(): void {
-  /* 会话运行态由快照的 metadata.status 驱动，不靠侧边栏登记表 */
-}
+export { resyncPiRunning } from "@/lib/pi/pi-running";
 
 // ---------- 子代理活动 ----------
 

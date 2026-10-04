@@ -39,6 +39,7 @@ import type {
   ContextChangedFrame,
   PluginOpResultFrame,
   RunningTurn,
+  SessionsChangedFrame,
   SubagentActivityItem,
   SubagentRunStatus,
 } from "pi-protocol";
@@ -50,6 +51,9 @@ export type PiRunningTurn = RunningTurn;
 
 /** 定时任务自发通知帧（sidecar automation 调度器钩子发出，无 id） */
 export type PiAutomationFrame = AutomationFiredFrame | AutomationRunDoneFrame;
+
+/** 会话清单变更自发通知帧（sidecar 落行/首条落盘/删除/改名/归档/截断/换目录时广播，无 id） */
+export type PiSessionsChangedFrame = SessionsChangedFrame;
 
 /**
  * 插件耗时操作结果自发通知帧（sidecar plugins 分发 case 发出，无 id；
@@ -143,6 +147,16 @@ export interface PiChannel {
   subscribeDesignThemes?(
     cb: (frame: PiDesignThemePush) => void,
   ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（同款无 id 自发通知通道）：订阅会话清单变更帧
+   * （sessions_changed，见 PiSessionsChangedFrame）：任一端（移动/网页/桌面）
+   * 建会话、首条消息落盘、删除、改名、归档、截断、换目录时 sidecar 广播。
+   * cb(null) = 事件源失效（Tauri pi-exit / WS 重连），订阅方应重拉清单一次
+   * 兜底断档期的变化。WS 通道经网关白名单转发（remote.rs broadcast_notification）。
+   */
+  subscribeSessionsChanged?(
+    cb: (frame: PiSessionsChangedFrame | null) => void,
+  ): (() => void) | Promise<() => void>;
   /** 能力可选（与 subscribeTurns 成对）：当前正在跑 turn 的会话 id 种子清单 */
   listRunning?(): Promise<string[]>;
   /**
@@ -164,8 +178,20 @@ export interface PiChannel {
 
 let current: PiChannel | null = null;
 
+/** 通道注册变化监听：setPiChannel 时同步回调（含置 null 的注销）。
+ *  给"随通道装配"的常驻订阅器用（见 pi-sessions-sync），免除首帧
+ *  子组件 effect 早于父组件 setPiChannel 的时序竞态。 */
+type ChannelListener = (ch: PiChannel | null) => void;
+const channelListeners = new Set<ChannelListener>();
+
+export function addPiChannelListener(cb: ChannelListener): () => void {
+  channelListeners.add(cb);
+  return () => channelListeners.delete(cb);
+}
+
 export function setPiChannel(ch: PiChannel | null) {
   current = ch;
+  for (const cb of [...channelListeners]) cb(ch);
 }
 
 /** 只读探测当前注册通道（无兜底副作用）：供卸载延迟销毁判断"注册表还是不是我" */
@@ -174,8 +200,14 @@ export function peekPiChannel(): PiChannel | null {
 }
 
 export function getPiChannel(): PiChannel {
-  // 兜底：未注册时惰性创建 Tauri 通道（保持桌面端现网行为）
-  return (current ??= new TauriPiChannel());
+  // 兜底：未注册时惰性创建 Tauri 通道（保持桌面端现网行为）；惰性创建同样
+  // 是"通道注册"事件，经 setPiChannel 同步喂给变化监听（见 pi-sessions-sync）
+  if (!current) {
+    const ch = new TauriPiChannel();
+    setPiChannel(ch);
+    return ch;
+  }
+  return current;
 }
 
 // ---------- Tauri 通道 ----------
@@ -383,5 +415,36 @@ export class TauriPiChannel implements PiChannel {
         }
       }
     });
+  }
+
+  /**
+   * sessions_changed 自发通知帧（无 id，Rust 原样广播进 pi-chunk-batch）：同款
+   * 前缀预筛。清单变更低频，但热路径原则一致。pi-exit 转成 cb(null)"事件源
+   * 失效"：订阅方重拉一次清单兜底（sidecar 重启后清单可能与本地快照脱节）。
+   */
+  async subscribeSessionsChanged(
+    cb: (frame: PiSessionsChangedFrame | null) => void,
+  ): Promise<() => void> {
+    const [unlistenBatch, unlistenExit] = await Promise.all([
+      listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+        for (const wire of event.payload) {
+          if (!wire.l.startsWith('{"type":"sessions_changed"')) continue;
+          let parsed: PiSessionsChangedFrame;
+          try {
+            parsed = JSON.parse(wire.l);
+          } catch {
+            continue;
+          }
+          if (parsed?.type === "sessions_changed" && typeof parsed.sessionId === "string") {
+            cb(parsed);
+          }
+        }
+      }),
+      listen("pi-exit", () => cb(null)),
+    ]);
+    return () => {
+      unlistenBatch();
+      unlistenExit();
+    };
   }
 }

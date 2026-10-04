@@ -52,6 +52,12 @@ import { disposeControllers } from "./disposeControllers";
 // set_mode/主题胶囊等）全靠这张表把线程 id 换成 sessionId，否则 threadId-only
 // 请求会让 sidecar 懒建空白会话（对话失忆）。
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import { setImageRematerializeHandler } from "@/lib/pi/image-materialize";
+import {
+  MAX_CACHED_CONTROLLERS,
+  pruneControllers,
+  touchController,
+} from "./controllerCache";
 import { flushDraftAppModeSelection } from "@/lib/pi/pi-session-app-mode";
 import { flushDraftModelSelection } from "@/lib/pi/pi-session-model";
 import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
@@ -59,6 +65,9 @@ import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
 const EMPTY_THREAD_STATE = createPiThreadState("__pending__");
 const EMPTY_PROJECTED_MESSAGES: readonly ThreadMessageLike[] = [];
 const EMPTY_MESSAGE_REPOSITORY = ExportedMessageRepository.fromArray([]);
+
+/** §6 会话列表页大小：一页 40 条，滚到底自动续下一页（桌面端无分页，恒全量） */
+const SESSION_LIST_PAGE_SIZE = 40;
 
 // ---------------------------------------------------------------------------
 // Controller registry (cached across StrictMode remounts).
@@ -94,56 +103,20 @@ const createRegistry = (client: PiClient): PiControllerRegistry => {
   };
 };
 
-/**
- * 控制器 LRU 上限：切会话只为每个 threadId 建一个 PiThreadController，而每个
- * 控制器攥着整份投影消息（含 data-URL 图片的大字符串）+ 消息仓库 + 状态快照
- * ——没有上限的话，切一次会话内存就长一截且永不释放（真机 RAM 一路涨到
- * 900MB+ 的主因）。保留最近使用的 N 个 + 正在跑/有排队的（直播不能断），
- * 其余逐出；切回来时冷读快照重建（与冷打开同一条路径）。
- */
-const MAX_CACHED_CONTROLLERS = 3;
-const controllerLastUsed = new Map<string, number>();
-let controllerUseClock = 0;
-
-function pruneControllers(registry: PiControllerRegistry, activeId: string): void {
-  const entries = [...registry.controllers.entries()];
-  if (entries.length <= MAX_CACHED_CONTROLLERS) return;
-  const rank = ([threadId]: [string, PiThreadController]) => {
-    let score = controllerLastUsed.get(threadId) ?? 0;
-    // 直播中 / 有排队的控制器不逐出：逐出会拆掉事件订阅，直播就断了
-    try {
-      const st = registry.controllers.get(threadId)?.getState();
-      if (st && (st.runStatus === "running" || st.queue.steering.length > 0 || st.queue.followUp.length > 0)) {
-        score = Number.MAX_SAFE_INTEGER;
-      }
-    } catch {
-      /* 状态读不到就按 LRU 处理 */
-    }
-    return score;
-  };
-  const ranked = entries
-    .map(([threadId, controller]) => ({ threadId, controller, score: rank([threadId, controller]) }))
-    .sort((a, b) => b.score - a.score);
-  for (const { threadId, controller, score } of ranked.slice(MAX_CACHED_CONTROLLERS)) {
-    if (threadId === activeId) continue;
-    try {
-      controller.dispose();
-    } catch (error) {
-      console.error("[pi-runtime] controller dispose failed", error);
-    }
-    registry.controllers.delete(threadId);
-    controllerLastUsed.delete(threadId);
-  }
-}
-
+/** 内存治理：LRU 台账与逐出规则收在 controllerCache（纯逻辑，有单测）。
+ *  默认保留最近使用的 3 个；切会话时 useRuntimeHook 会收紧到「只留活动会话」，
+ *  上一会话的转录窗口（含图片 base64）随之可回收——RN 的 Image 没有清缓存 API
+ *  （0.86 只有 queryCache/prefetch），图片内存的闸门就在「行对象还有没有人引用」。 */
 const getController = (registry: PiControllerRegistry, threadId: string) => {
   const existing = registry.controllers.get(threadId);
   if (!existing) {
     const created = new PiThreadController(registry.client, threadId);
     registry.controllers.set(threadId, created);
   }
-  controllerLastUsed.set(threadId, ++controllerUseClock);
-  pruneControllers(registry, threadId);
+  touchController(threadId);
+  pruneControllers(registry.controllers, threadId, MAX_CACHED_CONTROLLERS, (error) =>
+    console.error("[pi-runtime] controller dispose failed", error),
+  );
   return registry.controllers.get(threadId)!;
 };
 
@@ -158,6 +131,8 @@ export const NOOP_CONTROLLER: PiThreadControllerLike = {
   connect: () => () => {},
   load: async () => {},
   refresh: async () => {},
+  // 分页窗（§6）：无活动线程时上翻是 no-op
+  loadMoreHistory: async () => {},
   sendMessage: async () => {},
   // 症状3：reload/edit 桩（无活动线程时静默 no-op，与 4a 队列桩同款语义）
   reloadMessage: async () => {},
@@ -202,6 +177,10 @@ const buildExtras = (
     compaction: state.compaction,
     retry: state.retry,
     lastError: state.lastError,
+    // 分页窗（§6）：列表上沿加载更多的开关/在途态 + 动作
+    historyHasMore: state.historyHasMore,
+    historyLoading: state.historyLoading,
+    loadMoreHistory: () => controller.loadMoreHistory(),
     cancel: () => controller.cancel(),
     refresh: () => controller.refresh(),
     clearQueue: () => controller.clearQueue(),
@@ -336,13 +315,16 @@ const usePiThreadStore = (
   // 改动（4a）：队列非空时同样保持订阅——空闲断开后，sidecar 串行链在上一轮
   // 收尾时自派发的下一轮 agent_start 对前端不可见（事件路由按订阅分流），
   // 接力泵无从感知；订阅保活让链节派发原生可见，泵只剩孤儿队列一种场景。
-  const queueBusy =
-    state.queue.steering.length > 0 || state.queue.followUp.length > 0;
+  // 活动会话**常驻订阅**（2026-10-04 改）：订阅只是本地登记监听（sidecar 的
+  // thread_event 本来就广播给这条连接，不订阅只是把帧丢掉），所以常驻订阅零流量
+  // 增量，换来的是"正看着的会话"对桌面/网页端改动的实时跟随——队列、计划、
+  // todo/目标、模式、轮次状态都走这条；此前空闲会话不订阅，看着会话也收不到它的
+  // 实时变更，只能等下一次快照（表现为"桌面改了手机不动"）。
+  // 后台线程仍不订阅：只有活动线程走到这里（非主线程传的是 NOOP_CONTROLLER）。
   useReplaySafeEffect(() => {
     if (controller === NOOP_CONTROLLER) return;
-    if (!isRunning && !queueBusy) return;
     return controller.connect();
-  }, [controller, isRunning, queueBusy]);
+  }, [controller]);
 
   const extras = useMemo<PiRuntimeExtrasInternal>(
     () => buildExtras(controller, state),
@@ -646,6 +628,15 @@ const useRuntimeHook = (
     ? getController(registry, threadId)
     : NOOP_CONTROLLER;
 
+  // 切会话即放（内存）：上一会话的控制器连同转录窗口（含图片 base64）立刻可回收。
+  // 直播中/有排队的控制器不逐出（逐出会拆事件订阅），切回来冷读快照重建。
+  useEffect(() => {
+    if (!threadId) return;
+    pruneControllers(registry.controllers, threadId, 1, (error) =>
+      console.error("[pi-runtime] controller dispose failed", error),
+    );
+  }, [registry, threadId]);
+
   const threadStore = usePiThreadStore(
     isMainThread ? controller : NOOP_CONTROLLER,
     options,
@@ -709,9 +700,41 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
     return () => registry.dispose();
   }, [registry]);
 
+  // 图片落盘失败的自愈入口（渲染层报"file:// 读不出来"时调用）：本运行时把
+  // 请求转给各控制器——摘掉坏 uri + 后台拉快照拿回 base64，随后重新落盘。
+  // 注册放这里是因为控制器登记表只在本 hook 内可见（单一实例，全局一份足够）。
+  useReplaySafeEffect(() => {
+    setImageRematerializeHandler(() => {
+      for (const controller of registry.controllers.values()) {
+        controller.handleImageMaterializationFailure();
+      }
+    });
+    return () => setImageRematerializeHandler(null);
+  }, [registry]);
+
   const { workspacePath, includeArchived } = options;
   const createAdapter = () => ({
-    list: async () => {
+    // §6 会话列表分页：首屏 limit 条，滚到底由 core 带 after=nextOffset 再拉
+    // 下一页（loadMore）。列表帧与 store 里的条目数都随之下限，聚焦重拉的
+    // 那一次 list() 也只重建一页（旧行为是 400+ 条整表重建）。
+    list: async (params?: { after?: string }) => {
+      const offset = params?.after ? Number(params.after) : 0;
+      const listThreadsPage = client.listThreadsPage?.bind(client);
+      if (listThreadsPage && Number.isFinite(offset) && offset >= 0) {
+        const page = await listThreadsPage({
+          ...(workspacePath !== undefined ? { workspacePath } : {}),
+          ...(includeArchived !== undefined ? { includeArchived } : {}),
+          limit: SESSION_LIST_PAGE_SIZE,
+          offset,
+        });
+        return {
+          threads: page.threads.map(mapThreadMetadata),
+          ...(page.nextOffset !== undefined
+            ? { nextCursor: String(page.nextOffset) }
+            : {}),
+        };
+      }
+      // 旧端（无分页面）：整表一页，无游标
       const threads = await client.listThreads({
         ...(workspacePath !== undefined ? { workspacePath } : {}),
         ...(includeArchived !== undefined ? { includeArchived } : {}),

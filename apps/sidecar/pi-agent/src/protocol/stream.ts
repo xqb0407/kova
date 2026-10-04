@@ -29,6 +29,15 @@ export const send = (line: unknown) =>
 export const sendChunk = (id: string, chunk: UIMessageChunk) =>
   send({ id, chunk });
 
+/** 会话清单变更广播（sessions_changed 自发通知帧，契约见 pi-protocol notifications）：
+ *  会话在索引表里的可见集合/标题/归档态发生变化时发（新建、首条消息落盘、分叉、
+ *  删除、改名、归档、截断、换目录）。宿主原样转发给所有前端（桌面 webview +
+ *  WS 网关白名单），前端据此防抖整表 reload——跨端（移动↔桌面↔网页）列表实时同步。 */
+export const sendSessionsChanged = (
+  op: "created" | "updated" | "deleted",
+  sessionId: string,
+) => send({ type: "sessions_changed", op, sessionId });
+
 /**
  * error chunk + 结构化归因（设计文档 §8）：AI SDK 的 error chunk 类型只有
  * errorText，`error` 字段是加性扩展（线形 = JSON，两端 passthrough）；

@@ -291,18 +291,20 @@ const usePiThreadStore = (
   // A running thread must stream live events even when this client never
   // called `sendMessage` — e.g. the first message of a new thread starts the
   // run server-side inside `createThread`. The supervisor already holds a live
-  // record for a running thread, so subscribing attaches to it; idle threads
-  // never connect and the cold-read path stays cheap.
+  // record for a running thread, so subscribing attaches to it.
   // 改动（4a）：队列非空时同样保持订阅——空闲断开后，sidecar 串行链在上一轮
   // 收尾时自派发的下一轮 agent_start 对前端不可见（事件路由按订阅分流），
   // 接力泵无从感知；订阅保活让链节派发原生可见，泵只剩孤儿队列一种场景。
-  const queueBusy =
-    state.queue.steering.length > 0 || state.queue.followUp.length > 0;
+  // 改动（2026-10-04，与移动端同款）：改为**活动会话常驻订阅**。原条件
+  // （running || 本地队列非空）会在"轮已收尾、本地队列已空"时退订；而队列变化
+  // 还有第三处来源——另一端：手机取消/清空排队消息时本端已退订，那条 queue_update
+  // 被丢掉，于是队列条永远留着一条已删的幽灵项，点它自己的 × 也无效（清空帧同样
+  // 收不到）。订阅只是本地登记监听（sidecar 的 thread_event 本就广播到这条连接），
+  // 零流量增量，换来"看着的会话"对另一端改动实时跟随。
   useReplaySafeEffect(() => {
     if (controller === NOOP_CONTROLLER) return;
-    if (!isRunning && !queueBusy) return;
     return controller.connect();
-  }, [controller, isRunning, queueBusy]);
+  }, [controller]);
 
   const extras = useMemo<PiRuntimeExtrasInternal>(
     () => buildExtras(controller, state),

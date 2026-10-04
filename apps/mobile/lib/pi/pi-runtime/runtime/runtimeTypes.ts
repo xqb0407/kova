@@ -63,6 +63,12 @@ export interface PiRuntimeExtras {
   compaction: PiThreadState["compaction"];
   retry: PiThreadState["retry"];
   lastError: string | undefined;
+  /** 分页窗（§6）：本窗/已加载页之前还有更早的历史（列表上沿可加载）。 */
+  historyHasMore: boolean;
+  /** 上一页拉取在途（列表上沿 loading 态）。 */
+  historyLoading: boolean;
+  /** 上翻一页更早的历史（前置进投影前部；幂等）。 */
+  loadMoreHistory: () => Promise<void>;
   cancel: () => Promise<void>;
   refresh: () => Promise<void>;
   /** Clear Pi's queued (steering + follow-up) messages; resolves with the

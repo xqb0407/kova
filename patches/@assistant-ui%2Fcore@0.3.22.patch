@@ -1,8 +1,50 @@
 diff --git a/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js b/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js
-index a67f0e27c4836f247f8c4e6285794c982cbe6c68..4c2a5f8472786aea3dcfe95f892b84f0f9f3d972 100644
+index a67f0e27c4836f247f8c4e6285794c982cbe6c68..dbae8d1bdbe8252bc8abead2ffc855d99d590d35 100644
 --- a/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js
 +++ b/dist/react/runtimes/RemoteThreadListThreadListRuntimeCore.js
-@@ -436,9 +436,29 @@ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
+@@ -19,6 +19,23 @@ import { jsx, jsxs } from "react/jsx-runtime";
+ const threadNotFoundError = (threadIdOrRemoteId, action) => /* @__PURE__ */ new Error(`Thread "${threadIdOrRemoteId}" not found while ${action}.`);
+ const threadStatusError = (threadIdOrRemoteId, status, action) => /* @__PURE__ */ new Error(`Thread "${threadIdOrRemoteId}" has status "${status}", so it cannot ${action}.`);
+ const EMPTY_REMOTE_STATE = createEmptyRemoteThreadState();
++
++// [kova patch] 断连类失败不落 LogBox：与桌面端网关断开时"列表加载失败"是必然的
++// 预期状态，而 React Native 开发构建会把 console.error 弹成底部红条/LogBox 通知，
++// 盖住 UI（真机上是"网关没开却弹 expo 错误"）。connectivity 类降级为 log（应用侧
++// 用自己的弹窗提示）；其它错误照旧 error，不掩盖真问题。
++const isConnectivityFailure = (error) => {
++	const text = String((error && error.message) || error || "");
++	return /connection closed|not connected|failed to fetch|network request failed|network error|timeout|unauthorized|is not running|reconnecting|socket/i.test(text);
++};
++const logThreadListFailure = (message, error) => {
++	if (isConnectivityFailure(error)) {
++		console.log(message, error);
++		return;
++	}
++	console.error(message, error);
++};
++
+ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
+ 	_options;
+ 	_hookManager;
+@@ -103,7 +120,7 @@ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
+ 				}
+ 			}).catch((error) => {
+ 				if (generation !== this._loadGeneration) return;
+-				console.error("[assistant-ui] thread list load failed:", error);
++				logThreadListFailure("[assistant-ui] thread list load failed:", error);
+ 				this._loadThreadsPromise = void 0;
+ 				if (!this._replaceListOnNextLoad) {
+ 					this._state.update({
+@@ -166,7 +183,7 @@ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
+ 			}
+ 		}).catch((error) => {
+ 			if (generation !== this._loadGeneration) return;
+-			console.error("[assistant-ui] thread list loadMore failed:", error);
++			logThreadListFailure("[assistant-ui] thread list loadMore failed:", error);
+ 		}).then(() => {
+ 			if (this._loadMorePromise === dedup) this._loadMorePromise = void 0;
+ 		});
+@@ -436,9 +453,29 @@ var RemoteThreadListThreadListRuntimeCore = class extends BaseSubscribable {
  		}
  		if (!data) throw threadNotFoundError(threadIdOrRemoteId, "switching to it");
  		if (this._mainThreadId === data.id) return;

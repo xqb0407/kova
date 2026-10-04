@@ -20,6 +20,21 @@ export const piSessionCwdMap = new Map<string, string>();
  *  mode/model picker 切回会话时据此水合，不依赖 sidecar 内存里的 Running 实例存活 */
 export const piSessionPrefsMap = new Map<string, PiSessionSummary>();
 
+/** 会话摘要镜像的变更订阅：分页列表下打开深页会话时，补到的偏好行异步到达，
+ *  消费侧据此重跑水合（mode/model/thinking/appMode/cwd 的读取方都靠这张表） */
+const prefsListeners = new Set<() => void>();
+
+export function subscribeSessionPrefs(listener: () => void): () => void {
+  prefsListeners.add(listener);
+  return () => {
+    prefsListeners.delete(listener);
+  };
+}
+
+function notifySessionPrefs(): void {
+  for (const listener of prefsListeners) listener();
+}
+
 /** 把 list_sessions 的快照落进内存映射（cwd 分组 + 偏好水合共用） */
 export function applySessionSummaries(sessions: PiSessionSummary[]): void {
   for (const s of sessions) {
@@ -29,6 +44,32 @@ export function applySessionSummaries(sessions: PiSessionSummary[]): void {
     else piSessionCwdMap.delete(s.sessionId);
     piSessionPrefsMap.set(s.sessionId, s);
   }
+  notifySessionPrefs();
+}
+
+/** 在途去重：同一会话的补拉只发一次 */
+const pendingSummaryFetches = new Set<string>();
+
+/** §6 会话列表分页后镜像只含已加载页：切到某会话时若镜像缺它，按需补拉单条
+ *  摘要（mode/model/thinking/appMode/cwd 的水合不能依赖该会话在已加载页里）。
+ *  到达后经 subscribeSessionPrefs 通知重水合；失败静默——列表翻页与下次刷新
+ *  仍会把该行带回来，用户看到的顶多是这一拍用默认值。 */
+export function ensureSessionSummary(sessionId: string | undefined): void {
+  if (!sessionId || piSessionPrefsMap.has(sessionId) || pendingSummaryFetches.has(sessionId)) {
+    return;
+  }
+  pendingSummaryFetches.add(sessionId);
+  void piRequest<{ type: "session_summary"; summary?: PiSessionSummary }>({
+    type: "session_summary",
+    sessionId,
+  })
+    .then((res) => {
+      if (res.summary) applySessionSummaries([res.summary]);
+    })
+    .catch(() => {})
+    .finally(() => {
+      pendingSummaryFetches.delete(sessionId);
+    });
 }
 
 /** 重新拉一份会话列表快照（轻量单条 SQL）：set_model / set_mode 后校准偏好镜像 */

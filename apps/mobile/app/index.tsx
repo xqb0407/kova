@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  RefreshControl,
   Animated,
   Platform,
   Pressable,
@@ -23,6 +25,7 @@ import {
   ArchiveIcon,
   ChevronDownIcon,
   FolderIcon,
+  MessageCircleQuestionIcon,
   MessageSquareIcon,
   MessagesSquareIcon,
   PencilIcon,
@@ -30,8 +33,13 @@ import {
   PinOffIcon,
   PlusIcon,
   TrashIcon,
+  ZapIcon,
 } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
+
+import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
+import { usePiSessionRunning } from "@/lib/pi/pi-running";
+import { usePendingInteractionKind } from "@/lib/pi/pi-interactions";
 
 import { HomeHeader } from "@/components/ui/home-header";
 import { ContextMenu } from "@/components/ui/context-menu";
@@ -106,6 +114,10 @@ export default function HomeScreen() {
   } | null>(null);
 
   const items = useAuiState((st) => st.threads.threadItems);
+  // §6 会话列表分页：底部「加载中」跟在列表尾（翻页游标由 core 管）；
+  // hasMoreThreads 决定项目段头要不要显会话数（没翻到底的数只是已加载页的数）
+  const isLoadingMore = useAuiState((st) => st.threads.isLoadingMore);
+  const hasMoreThreads = useAuiState((st) => st.threads.hasMore);
   const mainThreadId = useAuiState((st) => st.threads.mainThreadId);
   const workspace = useWorkspace();
   const pinnedIds = usePinnedThreadIds();
@@ -121,6 +133,28 @@ export default function HomeScreen() {
     }, [aui]),
   );
 
+  // 下拉刷新：与 focus 重拉同一条路径（整表 reload，游标回到第一页）。
+  // 补的是"人就在列表上、另一端刚改了东西"的场景——focus 重拉只在进屏时跑，
+  // sessions_changed 的推送虽然已接（见下），拉一下仍是手机上最本能的动作。
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    void aui.threads
+      .reload()
+      .catch(() => {})
+      .finally(() => setRefreshing(false));
+  }, [aui]);
+
+  // 跨端会话清单同步（live 版，补 focus 重拉的时延）：桌面/网页端建会话、
+  // 改名、删除、归档 → sidecar 广播 sessions_changed → 去抖整表 reload
+  // （去抖在 lib/pi/pi-sessions-sync，通道注册即装配，与桌面端同构）
+  useEffect(() => {
+    setSessionsChangedSync(() => {
+      void aui.threads.reload().catch(() => {});
+    });
+    return () => setSessionsChangedSync(null);
+  }, [aui]);
+
   type ThreadItem = (typeof items)[number];
   type HomeRow =
     | { kind: "thread"; key: string; item: ThreadItem }
@@ -129,12 +163,17 @@ export default function HomeScreen() {
         key: string;
         name: string;
         path: string;
-        count: number;
+        count: number | undefined;
       };
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const sorted = [...items].sort((a, b) => {
+    // 归档会话不上列表（2026-10-04）：桌面端归档后移动端还留着，点进去还会
+    // 让这条会话重新出现在桌面端——本端根本没有"已归档"这个视图，留着只会
+    // 多出一条点得动的幽灵行。取消归档在桌面端做（或归档视图里），列表
+    // 只认 status === "archived" 这一条判据（mapThreadMetadata 由 archived 映射）。
+    const listed = items.filter((item) => item.status !== "archived");
+    const sorted = [...listed].sort((a, b) => {
       // 置顶最前（用户显式钉的，压过一切），其次正在跑的，再按时间
       const aPin = pinnedIds.includes(a.id) ? 1 : 0;
       const bPin = pinnedIds.includes(b.id) ? 1 : 0;
@@ -179,7 +218,7 @@ export default function HomeScreen() {
         key: `p:${path}`,
         name: pathBasename(path),
         path,
-        count: bucket.list.length,
+        count: hasMoreThreads ? undefined : bucket.list.length,
       });
       // 折叠的组只留段头，组内会话行不进列表
       if (collapsedProjects.has(path)) continue;
@@ -188,7 +227,7 @@ export default function HomeScreen() {
       }
     }
     return out;
-  }, [view, visible, collapsedProjects]);
+  }, [view, visible, collapsedProjects, hasMoreThreads]);
 
   const toggleProject = useCallback((path: string) => {
     setCollapsedProjects((prev) => {
@@ -273,7 +312,36 @@ export default function HomeScreen() {
           ]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          // 长会话列表的分批渲染参数：首屏 12 行、每批 12 行、窗口 7 屏，
+          // 默认值（10/10/21 屏）在几百个会话时会一次挂载过多行——每行都有
+          // 手势+头像+时间戳，挂载成本高，滚动起点也会被拖迟。
+          initialNumToRender={12}
+          maxToRenderPerBatch={12}
+          updateCellsBatchingPeriod={50}
+          windowSize={7}
+          removeClippedSubviews
+          // §6 会话列表分页：core 的 cursor 用完即止（nextCursor 缺省时 loadMore
+          // 是 no-op，滚到底不会反复请求）。搜索只在已加载页内过滤——与桌面端
+          // 侧边栏同款语义：搜索框收窄的是可见列表，不是全库检索。
+          onEndReached={() => void aui.threads.loadMore()}
+          onEndReachedThreshold={0.6}
+          // 下拉刷新（iOS 上系统 spinner，tintColor 跟主题）；web 端 RNW 的
+          // RefreshControl 是空实现，仅在真机/模拟器可见
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={s.muted}
+            />
+          }
           ItemSeparatorComponent={RowSeparator}
+          ListFooterComponent={
+            isLoadingMore ? (
+              <View style={s.listFooter}>
+                <ActivityIndicator size="small" color={s.mutedFaint} />
+              </View>
+            ) : null
+          }
           ListHeaderComponent={
             <ListViewSwitcher
               label={view === "tasks" ? "任务" : "项目"}
@@ -343,6 +411,7 @@ export default function HomeScreen() {
                 }
               >
                 <ThreadRow
+                  id={row.item.id}
                   title={row.item.title}
                   subtitle={
                     view === "projects"
@@ -524,7 +593,9 @@ function ProjectHeader({
 }: {
   name: string;
   path: string;
-  count: number;
+  /** 会话数；列表还没翻到底时不给数（undefined）——那只是已加载页内的数，
+   *  标出来会被读成项目总数（分页见 §6） */
+  count: number | undefined;
   open: boolean;
   onToggle: () => void;
   /** 在该工作区开新对话（段头右侧「＋」） */
@@ -548,7 +619,9 @@ function ProjectHeader({
           <Text numberOfLines={1} style={s.projectName}>
             {name}
           </Text>
-          <Text style={s.projectCount}>{count}</Text>
+          {typeof count === "number" ? (
+            <Text style={s.projectCount}>{count}</Text>
+          ) : null}
         </View>
         <Text numberOfLines={1} style={s.projectPath}>
           {path}
@@ -743,6 +816,7 @@ function RowActions({
 }
 
 function ThreadRow({
+  id,
   title,
   subtitle,
   time,
@@ -751,6 +825,8 @@ function ThreadRow({
   onPress,
   onLongPress,
 }: {
+  /** pi sessionId（= remoteId）：行状态（后台运行/挂起交互/定时任务出身）都按它查 */
+  id: string;
   title?: string | undefined;
   subtitle?: string | undefined;
   time?: string | undefined;
@@ -761,6 +837,17 @@ function ThreadRow({
   onLongPress: (x: number, y: number) => void;
 }) {
   const s = useStyles();
+  const { colors: themeColors } = useTheme();
+  // 行状态三件事，与桌面端同口径：
+  // ① 运行中：框架的 isRunning 只覆盖挂载过的线程，并上 sidecar 运行集合才常驻
+  //    （定时任务、桌面端发起的后台轮也能亮）；② 挂起交互（等审批/等回答）：
+  //    后台会话卡在审批上时行上也要提示；③ 定时任务出身：会话 id 前缀即标记
+  //    （sidecar 的 createScheduledTaskRunSessionId 生成 scheduled-run-<uuid>），
+  //    持久、不依赖事件流。
+  const runningExternally = usePiSessionRunning(id);
+  const showRunning = running || runningExternally;
+  const pendingKind = usePendingInteractionKind(id);
+  const fromSchedule = id.startsWith("scheduled-run-");
   // 按下时整行轻轻缩一点再回弹。列表行是全 app 点得最多的东西，
   // 只换背景色的话按下去几乎没有反馈，手感发木
   const press = useRef(new Animated.Value(0)).current;
@@ -795,18 +882,31 @@ function ThreadRow({
         style={s.row}
       >
         <View style={[s.rowIcon, { backgroundColor: s.iconBg }]}>
-          {running ? (
-            <View style={s.rowIconRun} />
+          {showRunning ? (
+            <ActivityIndicator size="small" color={s.muted} />
           ) : pinned ? (
             <PinIcon size={17} strokeWidth={1.9} color={s.muted} />
+          ) : pendingKind ? (
+            // 挂起交互占用同一槽位（比定时任务出身更该被看见）：等待中不是"图"，是状态
+            <MessageCircleQuestionIcon size={17} strokeWidth={1.9} color={themeColors.warning} />
           ) : (
             <MessageSquareIcon size={18} strokeWidth={1.7} color={s.muted} />
           )}
         </View>
         <View style={s.rowBody}>
-          <Text numberOfLines={1} style={s.rowTitle}>
-            {title?.trim() || "未命名对话"}
-          </Text>
+          <View style={s.rowTitleRow}>
+            {fromSchedule ? (
+              <ZapIcon
+                size={13}
+                strokeWidth={2.2}
+                color={themeColors.warning}
+                accessibilityLabel="定时任务发起的会话"
+              />
+            ) : null}
+            <Text numberOfLines={1} style={s.rowTitle}>
+              {title?.trim() || "未命名对话"}
+            </Text>
+          </View>
           {subtitle ? (
             <View style={s.rowSub}>
               <FolderIcon size={11} strokeWidth={2} color={s.muted} />
@@ -816,7 +916,16 @@ function ThreadRow({
             </View>
           ) : null}
         </View>
-        {time ? <Text style={s.rowTime}>{time}</Text> : null}
+        {pendingKind ? (
+          // 徽标比用时优先（与桌面端同款：两者互斥，右侧槽位只放一个）
+          <Text style={[s.rowBadge, { color: themeColors.warning, borderColor: themeColors.warning }]}>
+            {pendingKind === "approval" ? "待审批" : "待回答"}
+          </Text>
+        ) : showRunning ? (
+          <Text style={s.rowTime}>刚刚</Text>
+        ) : time ? (
+          <Text style={s.rowTime}>{time}</Text>
+        ) : null}
       </Pressable>
     </Animated.View>
   );
@@ -854,6 +963,23 @@ function useStyles() {
     const s = StyleSheet.create({
       root: { flex: 1 },
       listContent: { paddingHorizontal: space(4) },
+      // 标题行：⚡ 与标题同基线（gap 小一点，别把标题推得离图标太远）
+      rowTitleRow: { flexDirection: "row", alignItems: "center", gap: 4 },
+      // 右侧挂起徽标：细边框小字，与时间占同一槽位
+      rowBadge: {
+        fontSize: 11,
+        fontWeight: fontWeight("600"),
+        borderWidth: StyleSheet.hairlineWidth,
+        borderRadius: 6,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        overflow: "hidden",
+      },
+      // 翻页指示（§6）：跟在列表尾，上下留白与行距同拍
+      listFooter: {
+        paddingVertical: space(4),
+        alignItems: "center",
+      },
       switcher: {
         flexDirection: "row",
         alignItems: "center",

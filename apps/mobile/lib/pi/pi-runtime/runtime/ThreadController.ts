@@ -29,10 +29,21 @@ import {
   clearComposerChips,
   composerDirectiveText,
 } from "@/lib/pi/composer-chips";
+import { seqOf, shiftIndexPins, withIdPins } from "./messageIdPins";
+import {
+  canMaterializeImages,
+  clearRowImageUri,
+  collectFailedImageParts,
+  collectInlineToolImages,
+  isMaterializedImageFailed,
+  materializeInlineImage,
+  patchRowImage,
+} from "@/lib/pi/image-materialize";
 import { ExportedMessageRepository } from "@assistant-ui/react-native";
 import type { AppendMessage, ThreadMessageLike } from "@assistant-ui/react-native";
 import {
   createPiThreadState,
+  prependOlderHistory,
   reducePiThreadState,
   removeHostUiRequest,
   type PiThreadState,
@@ -89,6 +100,8 @@ export interface PiThreadControllerLike {
   subscribeMessages(listener: () => void): () => void;
   load(force?: boolean): Promise<void>;
   refresh(): Promise<void>;
+  /** 分页窗（§6）：上翻一页更早历史（前置进投影；幂等，在途/无更多时短路）。 */
+  loadMoreHistory(): Promise<void>;
   sendMessage(message: AppendMessage, options?: PiSendOptions): Promise<void>;
   /** 重新生成（症状3）：服务端截断 parentId 之后（含下一条 user 消息）的
    *  转录，重发那条 user 消息。运行中由 sidecar busy 守卫拒绝。 */
@@ -336,6 +349,10 @@ const markStateRunning = (state: PiThreadState): PiThreadState => {
   };
 };
 
+/** 内联图片落盘开关：默认关（先走 base64）。隧道阶段打开即可复用整条链
+ *  （行内 data → file:// 或远端 URL → 渲染；见 lib/pi/image-materialize）。 */
+const IMAGE_MATERIALIZE_ENABLED = false;
+
 export class PiThreadController implements PiThreadControllerLike {
   private state: PiThreadState;
   private stateSnapshot: PiThreadState;
@@ -358,6 +375,14 @@ export class PiThreadController implements PiThreadControllerLike {
   private optimisticUserSeq = 0;
   /** Fallback sequence for snapshots without a supervisor-provided sequence. */
   private readonly localSnapshotSeq = 0;
+  /** 冷读/刷新尾窗行数（§6 分页）：一页约 2–4 个回合。更早的行按需上翻，
+   *  不与初始载荷一起搬（长会话冷开场的内存/渲染成本主要在这）。 */
+  private readonly historyPageSize = 60;
+
+  /** 图片落盘批大小：一次处理 2 张（解码/降采样在原生侧，别一口气排满队列） */
+  private static readonly IMAGE_MATERIALIZE_BATCH = 2;
+  /** 图片落盘排程标志（同一拍内只排一次；批间自续见 runImageMaterialization） */
+  private imageMaterializeScheduled = false;
 
   private readonly client: PiClient;
   private readonly threadId: string;
@@ -381,6 +406,11 @@ export class PiThreadController implements PiThreadControllerLike {
 
   public getState() {
     return this.state;
+  }
+
+  /** 渲染层反馈入口：坏图 uri 摘除 + 后台刷新（见 revertFailedImages） */
+  public handleImageMaterializationFailure(): void {
+    this.revertFailedImages();
   }
 
   public getStateSnapshot() {
@@ -498,7 +528,7 @@ export class PiThreadController implements PiThreadControllerLike {
     const sequenceAtStart = this.state.lastSeq;
 
     const request = this.client
-      .getThread(this.threadId)
+      .getThread(this.threadId, { tail: this.historyPageSize })
       .then((snapshot: PiThreadSnapshot) => {
         if (this.loadPromise !== request) return;
         this.applySnapshot(snapshot, sequenceAtStart);
@@ -524,6 +554,50 @@ export class PiThreadController implements PiThreadControllerLike {
     return this.load(true);
   }
 
+  /** 上翻一页更早的历史（§6 分页窗）：游标 = 已加载最早行的 seq，sidecar 返回
+   *  该游标之前的尾窗旧页，前置进 olderMessages（seq 去重）。幂等：在途或无更多
+   *  时短路；空转录/客户端不支持分页时关掉 hasMore，避免列表上沿反复触发。
+   *  旧页行不带 partial/挂起交互/队列（sidecar 只在整窗上带），投影侧无重放风险。 */
+  public async loadMoreHistory(): Promise<void> {
+    if (this.state.historyLoading || !this.state.historyHasMore) return;
+    const oldest = this.projectedInputMessages()[0];
+    const beforeSeq = oldest ? seqOf(oldest) : undefined;
+    const fetchPage = this.client.getThreadPage?.bind(this.client);
+    if (beforeSeq === undefined || !fetchPage) {
+      this.setState({ ...this.state, historyHasMore: false });
+      return;
+    }
+    this.setState({ ...this.state, historyLoading: true });
+    try {
+      const page = await fetchPage(this.threadId, {
+        beforeSeq,
+        tail: this.historyPageSize,
+      });
+      const before = this.state.olderMessages.length;
+      // 前置旧页会让本窗与在飞行的下标整体后移：先把下标型 id 钉扎右移
+      //（messageIdPins 的前提），错位会让在飞行落盘时回查落空、id 换新
+      shiftIndexPins(this.idPins, page.messages.length);
+      const next = prependOlderHistory(
+        { ...this.state, historyLoading: false },
+        page.messages,
+        page.hasMore ?? false,
+      );
+      // 去重吞掉了部分页行时，实际前置数少于页长——把多移的部分退回去
+      const added = next.olderMessages.length - before;
+      if (added >= 0 && added !== page.messages.length) {
+        shiftIndexPins(this.idPins, added - page.messages.length);
+      }
+      this.setState(next);
+      this.recomputeProjectedMessagesAndNotify();
+    } catch (error) {
+      this.setState({
+        ...this.state,
+        historyLoading: false,
+        lastError: errorText(error),
+      });
+    }
+  }
+
   private refreshInBackground() {
     if (this.loadPromise) return; // a load is already in flight; avoid storms
     void this.refresh().catch(() => {
@@ -532,6 +606,11 @@ export class PiThreadController implements PiThreadControllerLike {
   }
 
   public async sendMessage(message: AppendMessage, options?: PiSendOptions) {
+    // 乐观镜像保留独立前缀 id。**不要**把它对齐成"真实行将要得到的 id"：
+    // 延迟 flush（scheduleProjectedMessageFlush）可能在没有先跑 reconcile 的
+    // 情况下投影，镜像与真实行会短暂同帧并存，同 id 直接让
+    // ExportedMessageRepository 抛 "A message with the same id already exists"。
+    // 镜像被真实行替换时的那一次重挂，交给投影侧的 id 钉扎（i:<下标> → 复用）。
     return this.sendUserAppend(message, options, this.state.messages.length);
   }
 
@@ -543,6 +622,13 @@ export class PiThreadController implements PiThreadControllerLike {
    * （带图重新生成必现：大帧让「快照先落、回显后到」占主导）。截断已把
    *  可能同文的旧尾部从服务端删掉，全文匹配安全——撞键只剩更早轮巧合
    *  同文，提前摘除镜像无碍，真回显随 agent_start 同批帧即刻落位。 */
+  /**
+   * 消息 id 钉扎台账（见 messageProjection.withIdPins）：同一行在整个会话生命周期
+   * 里只发一个 id——直播行先拿下标形式、落盘后不再换成 seq 形式，避免 React 重挂；
+   * 历史行按 seq 记账，往上翻页 prepend 时下标平移也不受影响。
+   */
+  private readonly idPins = new Map<string, string>();
+
   private async sendUserAppend(
     message: AppendMessage,
     options: PiSendOptions | undefined,
@@ -662,22 +748,31 @@ export class PiThreadController implements PiThreadControllerLike {
     await this.resendAfterTruncate(target, message);
   }
 
-  /** 截断 + 重发的共用漏斗：只认 `pi-msg:<seq>` 稳定 id（乐观镜像与
-   *  下标回退 id 未落盘，无从截断）。截断成功后先后台刷一次快照收敛
+  /** 截断 + 重发的共用漏斗：id 是下标稳定形式 `pi-msg-idx:<下标>`，seq 从转录
+   *  行回查（未落盘的行没有 __seq，无从截断）。截断成功后先后台刷一次快照收敛
    *  UI，再走 sendMessage 的正常发送语义（乐观镜像 + running 标记）。 */
   private async resendAfterTruncate(
     target: ThreadMessageLike,
     message: AppendMessage,
   ) {
-    const match = /^pi-msg:(\d+)$/.exec(target.id ?? "");
-    if (!match) {
+    const match = /^pi-msg-idx:(\d+)$/.exec(target.id ?? "");
+    const index = match ? Number(match[1]) : -1;
+    // 下标基准 = 投影输入数组（olderMessages + 本窗 + 乐观镜像）——投影侧
+    // messageId 的 index 就是这个数（§6 分页后本窗前还有旧页，不能再拿
+    // state.messages 直取）
+    const row =
+      index >= 0
+        ? (this.projectedInputMessages()[index] as { __seq?: number } | undefined)
+        : undefined;
+    const seq = typeof row?.__seq === "number" ? row.__seq : undefined;
+    if (seq === undefined) {
       throw new Error("message is not persisted yet; cannot resend");
     }
-    await this.client.truncateToSeq(this.threadId, Number(match[1]));
+    await this.client.truncateToSeq(this.threadId, seq);
     // 乐观本地截断先于重发压镜像：旧行与新气泡同一提交帧上新旧互换（旧的
     // 立即消失、新的立即出现）——等截断后快照回程才移除的话，带图会话快照
     // 是 MB 级大帧，新气泡会先上屏、旧行滞留到回程，视觉顺序颠倒
-    this.truncateLocally(Number(match[1]));
+    this.truncateLocally(seq);
     this.refreshInBackground();
     // 下界传 0（全文匹配）：见 sendUserAppend 头注——截断快照收缩在飞数组后，
     // 回显落点低于按下标取的界，重生成/编辑重发的乐观镜像会永久滞留成重复气泡
@@ -689,12 +784,24 @@ export class PiThreadController implements PiThreadControllerLike {
    *  快照随后整体替换，内容与本截断一致，自愈；lastSeq 不动——降低它会放行
    *  已消费水位的陈旧事件重放。 */
   private truncateLocally(beforeSeq: number) {
-    const kept = this.state.messages.filter((message) => {
+    const below = (message: PiAgentMessage) => {
       const seq = (message as { __seq?: unknown }).__seq;
       return !(typeof seq === "number" && seq >= beforeSeq);
+    };
+    const kept = this.state.messages.filter(below);
+    // 分页旧页（olderMessages）同号段：截断点落在旧页内时一并移除
+    const keptOlder = this.state.olderMessages.filter(below);
+    if (
+      kept.length === this.state.messages.length &&
+      keptOlder.length === this.state.olderMessages.length
+    ) {
+      return;
+    }
+    this.setState({
+      ...this.state,
+      messages: kept,
+      olderMessages: keptOlder,
     });
-    if (kept.length === this.state.messages.length) return;
-    this.setState({ ...this.state, messages: kept });
     this.recomputeProjectedMessagesAndNotify();
   }
 
@@ -724,10 +831,15 @@ export class PiThreadController implements PiThreadControllerLike {
       }
       return;
     }
-    // 改动（4a）：乐观条目带临时 id——真实 reqId 由客户端在 sendMessage 内
-    // 生成，控制器无从得知；下一条 queue_update 以服务端条目整体替换自愈。
+    // 乐观条目的 id 就用**真实 reqId**：控制器先起一个 id 塞进 input.requestId，
+    // 客户端照用（不再自己生成）。这样队列条上的「撤销」在任何时刻点下去，
+    // sidecar 的 queue_cancel 都认得这条（此前用 pending-<时间戳> 的临时 id，
+    // 服务端查不到直接报错、被 void 吞掉——表现就是"点撤销没反应"）。下一条
+    // queue_update 以服务端条目整体替换，id 同值、无感自愈。
+    const queueRequestId =
+      input.requestId ?? `pi-${Date.now().toString(36)}-${++this.optimisticQueueSeq}`;
     const optimisticEntry: PiQueueEntry = {
-      id: `pending-${Date.now()}-${++this.optimisticQueueSeq}`,
+      id: queueRequestId,
       content: displayContent ?? input.content,
     };
     const optimisticQueue = {
@@ -737,7 +849,7 @@ export class PiThreadController implements PiThreadControllerLike {
     this.setState({ ...this.state, queue: optimisticQueue });
 
     try {
-      await this.client.sendMessage(this.threadId, input);
+      await this.client.sendMessage(this.threadId, { ...input, requestId: queueRequestId });
     } catch (error) {
       // Roll back only while our optimistic mirror is still exactly what we
       // set. Any queue write since — a `queue_update`, a snapshot on
@@ -800,7 +912,22 @@ export class PiThreadController implements PiThreadControllerLike {
     if (!this.client.queueCancel) {
       throw new Error("Pi client does not support per-item queue ops");
     }
-    await this.client.queueCancel(this.threadId, id);
+    // 先本地摘掉（撤销要立刻可见），再尽力通知服务端：真删掉了服务端会随后
+    // 发 queue_update；若这条其实早不在队列里（幽灵条目）或请求失败，也以
+    // 本地移除为准——真相在服务端，下一条 queue_update 会把它带回来，不会撒谎。
+    const before = this.state.queue;
+    const next = {
+      steering: before.steering.filter((entry) => entry.id !== id),
+      followUp: before.followUp.filter((entry) => entry.id !== id),
+    };
+    if (next.steering.length !== before.steering.length || next.followUp.length !== before.followUp.length) {
+      this.setState({ ...this.state, queue: next });
+    }
+    try {
+      await this.client.queueCancel(this.threadId, id);
+    } catch (error) {
+      console.warn("[pi-runtime] queue_cancel 失败（本地已移除，等服务端队列回执校正）", id, error);
+    }
   }
 
   public async queuePromote(id: string) {
@@ -945,6 +1072,11 @@ export class PiThreadController implements PiThreadControllerLike {
       }
     }
 
+    // 图片落盘默认关（先走 base64：display 直接用 data URL，行里的 base64 由
+    // 「切会话即放控制器」回收）。代码保留、投影/渲染/守卫对 uri 的支持也在，
+    // 等隧道阶段（sidecar 发引用 + 网关/对象存储出图）再把开关打开。
+    if (IMAGE_MATERIALIZE_ENABLED && changed) this.scheduleImageMaterialization();
+
     // Pi 0.80.7 emits entry_appended only for custom extension entries. Keep
     // snapshot reconciliation for other variants if Pi broadens that event.
     const needsSnapshotRefresh =
@@ -959,8 +1091,88 @@ export class PiThreadController implements PiThreadControllerLike {
     this.notifyMetadataListeners();
   }
 
+  /**
+   * 内联工具图片落盘（内存优化，见 lib/pi/image-materialize）：转录行里的 base64
+   * 是 JS 堆大户（实测单会话可达 20MB），投影还要再拼一份 data URL。这里逐张异步
+   * 换成缓存目录里的 file://（顺带降采样），换完写回状态并重投影。
+   *
+   * 只在状态刚变（新行到达）时排一次；一批处理完继续排下一批，全失败/无目标即停，
+   * 不会空转（失败留原 data，渲染照旧）。web 端整条跳过。
+   */
+  private scheduleImageMaterialization(): void {
+    if (!canMaterializeImages() || this.imageMaterializeScheduled) return;
+    this.imageMaterializeScheduled = true;
+    const schedule = this.options.scheduleNotify ?? defaultScheduleNotify;
+    schedule(() => {
+      this.imageMaterializeScheduled = false;
+      void this.runImageMaterialization();
+    });
+  }
+
+  /**
+   * 渲染层报过"这个 file:// 读不出来"后：把行上的 uri 摘掉（回到待落盘状态），
+   * 再后台拉一次快照——快照把 base64 带回来，落盘任务随即生成新文件。摘掉 uri 的
+   * 那一小会儿图是空占位（不是白屏），拿到 base64 就回来。
+   */
+  private revertFailedImages(): void {
+    const failed = collectFailedImageParts(
+      this.state.messages,
+      this.state.olderMessages,
+      isMaterializedImageFailed,
+    );
+    if (failed.length === 0) return;
+    let next = this.state;
+    for (const target of failed) {
+      const rows = target.where === "messages" ? next.messages : next.olderMessages;
+      const rowsNext = clearRowImageUri(rows, target.rowIndex, target.partIndex);
+      if (!rowsNext) continue;
+      next =
+        target.where === "messages"
+          ? { ...next, messages: rowsNext as typeof next.messages }
+          : { ...next, olderMessages: rowsNext as typeof next.olderMessages };
+    }
+    if (next === this.state) return;
+    this.setState(next);
+    this.recomputeProjectedMessagesAndNotify();
+    this.refreshInBackground();
+  }
+
+  private async runImageMaterialization(): Promise<void> {
+    const targets = collectInlineToolImages(
+      this.state.messages,
+      this.state.olderMessages,
+      PiThreadController.IMAGE_MATERIALIZE_BATCH,
+    );
+    if (targets.length === 0) return;
+    const results = await Promise.all(
+      targets.map(async (target) => ({
+        target,
+        materialized: await materializeInlineImage(target.data, target.mimeType),
+      })),
+    );
+    let next = this.state;
+    let patched = false;
+    for (const { target, materialized } of results) {
+      if (!materialized) continue;
+      const rows = target.where === "messages" ? next.messages : next.olderMessages;
+      const rowsNext = patchRowImage(rows, target.rowIndex, target.partIndex, materialized);
+      if (!rowsNext) continue;
+      next =
+        target.where === "messages"
+          ? { ...next, messages: rowsNext as typeof next.messages }
+          : { ...next, olderMessages: rowsNext as typeof next.olderMessages };
+      patched = true;
+    }
+    if (!patched) return;
+    this.setState(next);
+    this.recomputeProjectedMessagesAndNotify();
+    // 这一批有进展：继续下一批（剩下的图；无目标时自然停）
+    this.scheduleImageMaterialization();
+  }
+
   private projectedInputMessages() {
     return [
+      ...this.state.olderMessages,
       ...this.state.messages,
       ...this.optimisticUserMessages.map((entry) => entry.message),
     ];
@@ -984,14 +1196,16 @@ export class PiThreadController implements PiThreadControllerLike {
   }
 
   private projectMessages() {
-    return projectPiThreadMessagesShared(
-      {
-        messages: this.projectedInputMessages(),
-        toolExecutions: this.state.toolExecutions,
-        runStatus: this.state.runStatus,
-        hostUiRequests: this.state.hostUiRequests,
-      },
-      this.projectedMessages,
+    return withIdPins(this.idPins, () =>
+      projectPiThreadMessagesShared(
+        {
+          messages: this.projectedInputMessages(),
+          toolExecutions: this.state.toolExecutions,
+          runStatus: this.state.runStatus,
+          hostUiRequests: this.state.hostUiRequests,
+        },
+        this.projectedMessages,
+      ),
     );
   }
 

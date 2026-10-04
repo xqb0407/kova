@@ -12,6 +12,8 @@ import {
 } from "@/lib/pi/pi-channel";
 import { MockPiClient } from "@/lib/pi/mock/mock-transport";
 import { Banner } from "./banner";
+import { GatewayOfflineDialog } from "./gateway-offline-dialog";
+import { isConnectivityFailure } from "@/lib/pi/connectivity-errors";
 import type { RemoteConfig } from "@/lib/mobile/secure-store";
 
 /**
@@ -115,7 +117,13 @@ export function RuntimeProvider({
   const runtime = usePiRuntime({
     client,
     onError: (error) => {
-      // 运行期错误由各处的横幅/卡片呈现，这里只留痕，不打断
+      // 运行期错误由各处的横幅/卡片/弹窗呈现，这里只留痕、不打断。
+      // connectivity 类（断连、网关没开）在开发构建里会弹 LogBox 红条，降级为 log
+      // ——同样的口径用在 core 的 patch 里（见 patches/@assistant-ui core）。
+      if (isConnectivityFailure(error)) {
+        console.log("[pi-runtime] 连接不可用", error);
+        return;
+      }
       console.error("[pi-runtime]", error);
     },
   });
@@ -123,6 +131,42 @@ export function RuntimeProvider({
   const error = status.error;
   // "reconnecting..." 是通道自己在重连，横幅不打扰；其余是真断了
   const disconnected = typeof error === "string" && error !== "reconnecting...";
+
+  // 弹窗节奏（"app 开着但网关没开"要的是解释与出路，不是 LogBox 红条）：
+  //  - 只有**已判定失败**才弹（reconnecting... 不弹，短暂重连不打扰）；
+  //  - 延迟一拍再弹，避免重连抖动时闪一下；
+  //  - 「稍后」只抑制本轮：episode 计数在"连上→再断"时递增（新的失败重新弹）。
+  const [offlineVisible, setOfflineVisible] = useState(false);
+  const [dismissedEpisode, setDismissedEpisode] = useState(-1);
+  const [episode, setEpisode] = useState(0);
+  const wasConnected = useRef(false);
+  const [everConnected, setEverConnected] = useState(false);
+  useEffect(() => {
+    if (status.connected) {
+      setEverConnected(true);
+      if (!wasConnected.current) wasConnected.current = true;
+      setOfflineVisible(false);
+      return;
+    }
+    if (wasConnected.current) {
+      wasConnected.current = false;
+      setEpisode((n) => n + 1); // 连上过又断了 = 新一轮
+    }
+    // 从没连上过（app 开着但网关没开）：不等退避打满——通道那期间一直在
+    // 报 "reconnecting..."，等它落到终结态要几十秒，用户先看到的是 LogBox
+    // 红条。给一次建连的时间就弹窗（这是"没连上"，不是"运行中偶发断链"）。
+    const settled = disconnected || !everConnected;
+    if (!settled) {
+      setOfflineVisible(false);
+      return;
+    }
+    // 连过再断：1.2s（够一次重连抖动）；从没连上：4s（冷启动建连可能慢，
+    // 别把正常的慢连接弹成"网关没开"）
+    const timer = setTimeout(() => setOfflineVisible(true), everConnected ? 1200 : 4000);
+    return () => clearTimeout(timer);
+  }, [status.connected, disconnected, everConnected]);
+  const offline = !mock && !status.connected && (disconnected || !everConnected);
+  const showOffline = offline && offlineVisible && dismissedEpisode !== episode;
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -132,11 +176,44 @@ export function RuntimeProvider({
         // 掩盖真实连接状态，也不参与断链/重连判定）
         <Banner text="演示数据：未连接桌面端，回复来自本地脚本" />
       ) : null}
-      {disconnected ? (
+      {offline && !showOffline ? (
+        // 弹窗没显示（用户点了「稍后」/还没到延迟）：留一条常驻横幅，状态不丢
         <Banner
           tone="danger"
-          text={`与桌面端的连接已断开（${error}）`}
-          action={{ label: "重新配对", onPress: () => onFatal(error) }}
+          text={
+            disconnected
+              ? `与桌面端的连接已断开（${error ?? "未知原因"}）`
+              : "还连不上桌面端，正在重试…"
+          }
+          action={{
+            // 断链的默认动作是"再试一次"，不是"重新配对"——重新配对会清掉凭据、
+            // 逼用户回扫码页，对"桌面端没开/网断了"这种可自愈的情况太重；
+            // 重新配对留在弹窗（用户已表达要看详情）与设置页里。
+            label: "重试",
+            onPress: () => {
+              channel?.reconnectNow?.();
+              void runtime.threads.reload().catch(() => {});
+            },
+          }}
+        />
+      ) : null}
+      {showOffline ? (
+        <GatewayOfflineDialog
+          url={config.url}
+          reason={disconnected ? (error ?? "连接已断开") : "还连不上，正在重试…"}
+          onRetry={() => {
+            setOfflineVisible(false);
+            channel?.reconnectNow?.();
+            void runtime.threads.reload().catch(() => {});
+          }}
+          onRepair={() => {
+            setOfflineVisible(false);
+            onFatal(error ?? "手动重新配对");
+          }}
+          onDismiss={() => {
+            setOfflineVisible(false);
+            setDismissedEpisode(episode);
+          }}
         />
       ) : null}
       {children}

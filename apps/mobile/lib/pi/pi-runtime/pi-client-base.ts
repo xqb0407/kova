@@ -193,6 +193,9 @@ export type PiClientTransport = {
   watchGeneration(cb: () => void): Promise<() => void>;
 };
 
+/** 非追踪会话的 thread_event 超过这个长度就跳过解析（见 handleWireLine 预筛） */
+const BIG_UNTRACKED_EVENT_FRAME_CHARS = 4096;
+
 export class PiClientBase implements PiClient {
   private readonly listeners = new Map<string, Set<(e: PiClientEvent) => void>>();
   /** 每线程上次派发 seq（快照/事件共用 per-session 号段） */
@@ -228,10 +231,15 @@ export class PiClientBase implements PiClient {
 
   // ---------- 快照 ----------
 
-  private async fetchSnapshot(sessionId: string): Promise<PiThreadSnapshot> {
+  private async fetchSnapshot(
+    sessionId: string,
+    opts?: { beforeSeq?: number; tail?: number },
+  ): Promise<PiThreadSnapshot> {
     const res = await this.transport.request<SnapshotReply & PiResponse>({
       type: "thread_snapshot",
       sessionId,
+      ...(opts?.beforeSeq !== undefined ? { beforeSeq: opts.beforeSeq } : {}),
+      ...(opts?.tail !== undefined ? { tail: opts.tail } : {}),
     });
     // 耗时台账播种放在这条**唯一汇聚点**：refreshNow 派发路径之外，controller
     // .load() 的冷读（空闲线程从不 connect → 不订阅 → 不派发；刷新页面/切换
@@ -273,6 +281,10 @@ export class PiClientBase implements PiClient {
    */
   private seedHistoryTurnTimings(snapshot: PiThreadSnapshot): void {
     type SeedableLine = { role?: string; __seq?: number; timestamp?: number };
+    // 轮锚键：与投影同源的 id。冷读行（带 __seq）投影发 `pi-msg:<seq>`，台账必须
+    // 用同一形式，否则折叠摘要行读不到历史耗时、只显示「本轮过程」（2026-10-04
+    // 实测 7/7 轮全部读不到；此前按下标形式记账，分页窗下下标本身还会随窗漂移）。
+    // 本会话内直播过的轮由 TurnTimingRecorder 以投影 id 记 live 条目，与这里无关。
     const threadId = snapshot.metadata.id;
     let anchorSeq: number | undefined;
     let anchorTs: number | undefined;
@@ -286,10 +298,11 @@ export class PiClientBase implements PiClient {
       if (cur?.start === anchorTs && cur?.end === endTs) return;
       seedTurnTiming(scoped, { start: anchorTs, end: endTs });
     };
-    for (const line of snapshot.messages as unknown as SeedableLine[]) {
+    const lines = snapshot.messages as unknown as SeedableLine[];
+    for (const line of lines) {
       if (line.role === "user") {
         flush();
-        anchorSeq = line.__seq;
+        anchorSeq = typeof line.__seq === "number" ? line.__seq : undefined;
         anchorTs = line.timestamp;
         endTs = undefined;
         continue;
@@ -401,6 +414,15 @@ export class PiClientBase implements PiClient {
     this.unlistenLines = unlisten;
   }
 
+  /** 原始行是否提到追踪中的会话（子串级预筛，比 JSON 解析便宜得多）。
+   *  追踪集 = listeners 的键（恢复的会话 id 即 sessionId；新建会话在 rekey 后也是）。 */
+  private lineMentionsTrackedSession(raw: string): boolean {
+    for (const id of this.listeners.keys()) {
+      if (raw.includes(id)) return true;
+    }
+    return false;
+  }
+
   /** 事件源换代：清重建台账，逐订阅线程拉快照自愈（空闲态 + 已落盘内容） */
   private handleGenerationChange() {
     this.streams.clear();
@@ -453,6 +475,17 @@ export class PiClientBase implements PiClient {
       !raw.includes('"finish"') &&
       !raw.includes('"error"') &&
       !raw.includes('"start"')
+    ) {
+      return;
+    }
+    // 大帧预筛（内存/CPU）：网关把 thread_event 广播给所有已认证连接，桌面在别的
+    // 会话跑任务时手机也会收到那些帧。非追踪会话的**大帧**（别人的流式增量、工具
+    // 输出）直接丢——省掉 JSON 解析与对象图；小帧继续解析，因为后台轮的 agent_end
+    // 完成提醒（notifyTurnSettled）不依赖订阅者，不能一刀切。
+    if (
+      looksEvent &&
+      raw.length > BIG_UNTRACKED_EVENT_FRAME_CHARS &&
+      !this.lineMentionsTrackedSession(raw)
     ) {
       return;
     }
@@ -698,9 +731,26 @@ export class PiClientBase implements PiClient {
   // ---------- PiClient 契约 ----------
 
   async listThreads(): Promise<PiThreadMetadata[]> {
+    const { threads } = await this.listThreadsPage();
+    return threads;
+  }
+
+  /** §6 会话列表分页：limit/offset 窗口 → nextOffset 游标。会话镜像
+   *  （cwd/偏好水合）只覆盖已加载页——深页会话由 pi-thread-adapter 的
+   *  ensureSessionSummary 在打开时按需补单条，不靠这份列表兜全。 */
+  async listThreadsPage(input?: {
+    limit?: number;
+    offset?: number;
+  }): Promise<{ threads: PiThreadMetadata[]; nextOffset?: number }> {
     const [sessionsRes, runningRes] = await Promise.all([
-      this.transport.request<{ type: "sessions"; sessions: PiSessionSummary[] }>({
+      this.transport.request<{
+        type: "sessions";
+        sessions: PiSessionSummary[];
+        nextOffset?: number;
+      }>({
         type: "list_sessions",
+        ...(input?.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input?.offset !== undefined ? { offset: input.offset } : {}),
       }),
       this.transport.request<{ type: "running"; sessionIds: string[] }>({
         type: "list_running",
@@ -711,19 +761,24 @@ export class PiClientBase implements PiClient {
     // mode/model picker 切回会话拿不到偏好。
     applySessionSummaries(sessionsRes.sessions);
     const running = new Set(runningRes.sessionIds);
-    return sessionsRes.sessions.map((s) => ({
-      id: s.sessionId,
-      title: s.name || s.firstMessage?.slice(0, 50) || "新会话",
-      workspacePath: s.cwd || undefined,
-      archived: s.archived,
-      status: running.has(s.sessionId) ? ("running" as const) : ("idle" as const),
-      config: {
-        provider: s.modelProvider,
-        modelId: s.modelId,
-      },
-      messageCount: s.messageCount,
-      updatedAt: s.modified,
-    }));
+    return {
+      threads: sessionsRes.sessions.map((s) => ({
+        id: s.sessionId,
+        title: s.name || s.firstMessage?.slice(0, 50) || "新会话",
+        workspacePath: s.cwd || undefined,
+        archived: s.archived,
+        status: running.has(s.sessionId) ? ("running" as const) : ("idle" as const),
+        config: {
+          provider: s.modelProvider,
+          modelId: s.modelId,
+        },
+        messageCount: s.messageCount,
+        updatedAt: s.modified,
+      })),
+      ...(sessionsRes.nextOffset !== undefined
+        ? { nextOffset: sessionsRes.nextOffset }
+        : {}),
+    };
   }
 
   async createThread(input?: { workspacePath?: string }): Promise<PiThreadSnapshot> {
@@ -744,12 +799,26 @@ export class PiClientBase implements PiClient {
     return this.fetchSnapshot(res.sessionId);
   }
 
-  async getThread(threadId: string): Promise<PiThreadSnapshot> {
-    return this.fetchSnapshot(threadId);
+  async getThread(
+    threadId: string,
+    input?: { tail?: number },
+  ): Promise<PiThreadSnapshot> {
+    return this.fetchSnapshot(threadId, input);
+  }
+
+  /** 分页窗旧页拉取（§6）：beforeSeq = 已加载最早行 seq，返回其之前的 tail 行。
+   *  形状与 getThread 全量快照一致，含 firstSeq/lastSeq/hasMore 元数据。 */
+  async getThreadPage(
+    threadId: string,
+    input: { beforeSeq: number; tail?: number },
+  ): Promise<PiThreadSnapshot> {
+    return this.fetchSnapshot(threadId, input);
   }
 
   async sendMessage(threadId: string, input: PiSendMessageInput): Promise<void> {
-    const requestId = `pi-${newRequestId()}`;
+    // requestId 可由调用方预生成（队列条目的乐观 id 要与真实 reqId 同值，见
+    // PiSendMessageInput.requestId）：撤销按钮拿到的 id 必须 sidecar 认得
+    const requestId = input.requestId ?? `pi-${newRequestId()}`;
     // steer 意图桥接（4a）：composer 的 Alt+点击 / Shift+⌘+Enter 在发送前置
     // markSteerNextSend 标记（模块级单跳信号，runConfig 不透传）。显式
     // streamingBehavior 优先；无显式行为且标记在 → 升级为 steer（含控制器

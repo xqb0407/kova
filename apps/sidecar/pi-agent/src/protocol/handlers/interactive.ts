@@ -3,7 +3,7 @@
  * 应答、会话模式切换与 planning 快照。审批/提问的发起在 prompt 流内
  * （data-toolApproval / data-question chunk），这里是结算侧。
  */
-import { send } from "../stream";
+import { send, sendSessionsChanged } from "../stream";
 import { resolveSession } from "../../sessions/sessions";
 import {
   applyMode,
@@ -108,6 +108,9 @@ export const handlers: Record<string, CommandHandler> = {
         `mode=${run.mode} approval=${run.approvalLevel} ` +
         `(requested mode=${String(msg.mode)} approval=${String(msg.approvalLevel ?? "-")})`,
     );
+    // 跨端同步：模式/权限是会话级状态，另一端的模式胶囊要跟着变（清单帧 → 对端重拉偏好）。
+    // 注意发在**响应之前**：响应恒为最后一行（测试与前端都依赖 last() 约定）
+    sendSessionsChanged("updated", run.sessionId);
     send({ id: reqId, type: "mode_changed", ...planningPayload(run) });
   },
 

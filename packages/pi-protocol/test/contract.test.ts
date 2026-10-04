@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 import {
   queueSnapshotSchema,
   turnChangedFrameSchema,
+  sessionsChangedFrameSchema,
   subagentActivityFrameSchema,
   errorResponseFrameSchema,
   sessionStateFrameSchema,
@@ -57,6 +58,37 @@ describe("通知帧 schema", () => {
       eventSeq: 7,
     });
     expect((parsed as Record<string, unknown>).eventSeq).toBe(7);
+  });
+  test("sessions_changed：三档 op 可解析、缺 op/非法 op 拒收、未知字段透传", () => {
+    const parsed = sessionsChangedFrameSchema.parse({
+      type: "sessions_changed",
+      op: "created",
+      sessionId: "s1",
+      origin: "mobile", // 未知字段 loose 透传
+    });
+    expect((parsed as Record<string, unknown>).origin).toBe("mobile");
+    for (const op of ["created", "updated", "deleted"]) {
+      expect(
+        sessionsChangedFrameSchema.safeParse({
+          type: "sessions_changed",
+          op,
+          sessionId: "s1",
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      sessionsChangedFrameSchema.safeParse({
+        type: "sessions_changed",
+        sessionId: "s1",
+      }).success,
+    ).toBe(false);
+    expect(
+      sessionsChangedFrameSchema.safeParse({
+        type: "sessions_changed",
+        op: "moved",
+        sessionId: "s1",
+      }).success,
+    ).toBe(false);
   });
   test("subagent_activity 按 kind 分流；未知 kind 拒收", () => {
     expect(

@@ -8,6 +8,7 @@ import type {
   PiDesignThemePush,
   PiPluginOpFrame,
   PiRunningTurn,
+  PiSessionsChangedFrame,
 } from "@/lib/pi/pi-channel";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
 
@@ -69,6 +70,7 @@ export class WsPiChannel implements PiChannel {
   private statusCbs = new Set<(s: PiChannelStatus) => void>();
   private turnCbs = new Set<(sessionId: string | null, active: boolean) => void>();
   private automationCbs = new Set<(frame: PiAutomationFrame) => void>();
+  private sessionsCbs = new Set<(frame: PiSessionsChangedFrame | null) => void>();
   private pluginOpCbs = new Set<(frame: PiPluginOpFrame) => void>();
   private contextCbs = new Set<(frame: PiContextChangedFrame) => void>();
   private designCbs = new Set<(frame: PiDesignThemePush) => void>();
@@ -98,7 +100,12 @@ export class WsPiChannel implements PiChannel {
     };
   }
 
+  /** 最近一次状态（订阅时立即回放一次：设置页/横幅挂载即拿到当前值，
+   *  不必等下一次变化——此前订阅晚了就一直显示「连接中…」） */
+  private lastStatus: PiChannelStatus = { connected: false };
+
   private emitStatus(s: PiChannelStatus) {
+    this.lastStatus = s;
     for (const cb of this.statusCbs) {
       try {
         cb(s);
@@ -231,6 +238,9 @@ export class WsPiChannel implements PiChannel {
       this.emitStatus({ connected: true });
       // 重连成功：运行投影经 (null,false) 清空并按 list_running 重新水合
       for (const cb of this.turnCbs) cb(null, false);
+      // 清单变更订阅（sessions_changed）：断档期变化无法回补，cb(null)
+      // 提示订阅方重拉一次会话列表兜底
+      for (const cb of this.sessionsCbs) cb(null);
       // 重连换代（5c）：断线空洞无法补齐，基座逐订阅线程拉快照自愈
       for (const cb of this.authedCbs) cb();
       return;
@@ -276,6 +286,14 @@ export class WsPiChannel implements PiChannel {
     ) {
       const frame = v as unknown as PiDesignThemePush;
       for (const cb of this.designCbs) cb(frame);
+      return;
+    }
+    // 会话清单变更帧（remote.rs 白名单同款放行）：另一端建/删/改名/归档会话
+    if (type === "sessions_changed" && v.id === undefined) {
+      const frame = v as unknown as PiSessionsChangedFrame;
+      if (typeof frame.sessionId === "string") {
+        for (const cb of this.sessionsCbs) cb(frame);
+      }
       return;
     }
 
@@ -372,6 +390,16 @@ export class WsPiChannel implements PiChannel {
     return () => this.designCbs.delete(cb);
   }
 
+  subscribeSessionsChanged(
+    cb: (frame: PiSessionsChangedFrame | null) => void,
+  ): () => void {
+    this.sessionsCbs.add(cb);
+    // 登记即补一次 cb(null)：本连接建立前可能已有变化（且重连路径同款兜底），
+    // 订阅方按"重拉清单"语义合并去抖即可
+    cb(null);
+    return () => this.sessionsCbs.delete(cb);
+  }
+
   async listRunning(): Promise<string[]> {
     const res = await this.request({ type: "list_running" });
     return res.type === "running" ? res.sessionIds : [];
@@ -402,6 +430,8 @@ export class WsPiChannel implements PiChannel {
 
   onStatusChange(cb: (s: PiChannelStatus) => void): () => void {
     this.statusCbs.add(cb);
+    // 立即回放当前状态（订阅语义：先给现状，再等变化）
+    cb(this.lastStatus);
     return () => this.statusCbs.delete(cb);
   }
 

@@ -313,6 +313,10 @@
  *       盖事件水印，缺口回拉 context_info
  *   { "type": "turn_changed", "sessionId": "...", "active": true|false }
  *       某会话一轮 turn 开跑/收尾；发起方未带 sessionId 的轮次不广播
+ *   { "type": "sessions_changed", "op": "created"|"updated"|"deleted", "sessionId" }
+ *       会话清单变更（新建落行/首条消息落盘/分叉/删除/改名/归档/截断/换目录）：
+ *       前端防抖整表 reload，跨端（移动↔桌面↔网页）会话列表实时同步；契约见
+ *       pi-protocol notifications.ts，WS 网关白名单同步转发（remote.rs）
  *   { "type": "subagent_activity", "delegationId": "...", "item": SubagentActivityItem }
  *       子代理运行活动（思考/正文增量、工具起止、轮次、结算终态）；父 turn 已结束后
  *       后台委派继续广播；前端 store 按 delegationId 归并，面板 tab 流式渲染

@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Kova",
+    "name": "扣瓦",
     "slug": "kova-mobile",
     "version": "0.1.0",
     "orientation": "portrait",
@@ -14,13 +14,15 @@
       "infoPlist": {
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
-        }
+        },
+        "NSLocalNetworkUsageDescription": "扣瓦需要访问本地网络，以连接你电脑上的桌面端（网关）。"
       }
     },
+    "jsEngine": "hermes",
     "android": {
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#5E7AD0",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -40,10 +42,11 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
+          "backgroundColor": "#5E7AD0",
           "dark": {
-            "backgroundColor": "#18181b"
-          }
+            "backgroundColor": "#5E7AD0"
+          },
+          "autoHide": false
         }
       ],
       "expo-status-bar",

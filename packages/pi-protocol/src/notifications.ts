@@ -12,6 +12,16 @@ export const turnChangedFrameSchema = z.looseObject({
   active: z.boolean(),
 });
 
+/** 会话清单变更（跨端侧边栏刷新信号）：会话在索引表里的可见集合发生变化时广播——
+ *  新建落行 / 首条消息落盘（list_sessions 过滤 messageCount>0，此刻才可见）/
+ *  分叉 / 删除 / 改名 / 归档 / 截断。前端收到即防抖整表 reload（重拉
+ *  list_sessions 取权威快照，不做逐条补丁）；op 仅供调试与合并参考，不保证语义完备。 */
+export const sessionsChangedFrameSchema = z.looseObject({
+  type: z.literal("sessions_changed"),
+  op: z.enum(["created", "updated", "deleted"]),
+  sessionId: z.string(),
+});
+
 /** 子代理运行状态（与 sidecar types.ts SubagentRunStatus 同构） */
 export const subagentRunStatusSchema = z.enum([
   "running",
@@ -122,6 +132,7 @@ export const pluginOpResultFrameSchema = z.looseObject({
 });
 
 export type TurnChangedFrame = z.infer<typeof turnChangedFrameSchema>;
+export type SessionsChangedFrame = z.infer<typeof sessionsChangedFrameSchema>;
 export type SubagentRunStatus = z.infer<typeof subagentRunStatusSchema>;
 export type SubagentActivityItem = z.infer<typeof subagentActivityItemSchema>;
 export type SubagentActivityFrame = z.infer<typeof subagentActivityFrameSchema>;

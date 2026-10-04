@@ -166,3 +166,7 @@ scripts\rename.bat <new-slug> [--app-name "Name"] [--dry-run]      # Windows
 | [apps/mobile/README.md](apps/mobile/README.md) | 移动端（Expo）与 WS 链路 |
 | [plans/mobile-app-integration-plan.md](plans/mobile-app-integration-plan.md) | 移动端并入与通讯收敛计划（含 W6 抽包阻塞点） |
 | [docs/SELF_HOSTED_RUNTIME.md](docs/SELF_HOSTED_RUNTIME.md) | 自托管运行时 |
+
+## 许可证
+
+本项目以 [Apache License 2.0](LICENSE) 开源发布。基于本模板二次开发并分发时，请保留 LICENSE 与上游依赖各自的许可声明；同步到 GitHub 发布仓用 `./scripts/sync-github.sh`（详见脚本头注释）。
