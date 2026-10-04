@@ -74,4 +74,16 @@ if [ "${PUSH_OK}" != "1" ]; then
   echo "!! 多次重试后推送仍失败" >&2
   exit 1
 fi
+
+# 顺带推送指向本次分支顶端的 v* tag（tag 指向发布提交才会触发流水线；
+# 历史遗留的旧 v* 标记不指向顶端，自动跳过）。tag 必须走这里推：本地 tag
+# 指向未重写的历史，直接推会把待清理内容带上发布仓。
+TIP=$(git rev-parse "refs/heads/$BRANCH")
+VTAGS=$(git tag --points-at "$TIP" -l 'v*')
+if [ -n "$VTAGS" ]; then
+  echo ">> 推送发布 tag: $VTAGS"
+  for t in $VTAGS; do
+    git -c http.version=HTTP/1.1 push --force "$REMOTE_URL" "refs/tags/$t:refs/tags/$t" || echo "!! tag $t 推送失败，可重跑本脚本" >&2
+  done
+fi
 echo ">> 完成: https://github.com/${OWNER}/${REPO}"
