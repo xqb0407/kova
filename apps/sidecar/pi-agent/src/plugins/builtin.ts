@@ -2,7 +2,8 @@
  * 内置插件包（随 app 分发的首方插件）的装载、启动同步与市场读模型。
  *
  * 包 = src/plugins/bundle/kova-plugins.zip（scripts/build-builtin-plugins-zip.ts
- * 从仓库 plugins/ 生成、提交进仓库），由 `import ... with { type: "file" }` 嵌进
+ * 从仓库 plugins/ 生成；构建产物不入库，缺失时 ensure:bundle 自愈重打），由
+ * `import ... with { type: "file" }` 嵌进
  * bun --compile 单文件二进制（dev 走磁盘路径；测试经 setBuiltinBundleBytesForTest
  * 注入；PI_BUILTIN_PLUGINS_ZIP 可指向别处的包，为未来改走 Tauri resources 留口）。
  *

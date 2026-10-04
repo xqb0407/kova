@@ -45,7 +45,7 @@ bun install                 # 安装依赖（workspace: apps/*, apps/sidecar/*, 
 bun run tauri:dev           # Tauri 桌面开发（Next 热更新 + Rust 增量编译 + sidecar）
 bun run dev                 # 仅浏览器内开发 Next 前端
 bun run test                # sidecar 单元测试（bun test）
-bun run build:sidecar       # 单独构建 agent sidecar
+bun run build:sidecar       # 单独构建 agent sidecar（自动先补齐插件产物）
 bun run dev:mobile          # 移动端（Expo）开发；桌面端先开远程网关并允许局域网访问
 bun run typecheck:mobile    # 移动端类型检查
 bun run test:mobile         # 移动端单元测试
@@ -70,7 +70,7 @@ bun run release             # 发布流程（node scripts/release.mjs，见 docs
 
 ## 插件系统
 
-插件位于 `plugins/`，以 `.kova-plugin/plugin.json` 为清单（`skills/`、`panels.json` 可选），通过 `plugins/marketplace.json` 聚合为本地市场，应用内「插件市场」安装。UI 面板为单文件 HTML 构建产物（`bun run build` 于插件目录内执行 vite 构建）。设计文档见 `docs/plugin-system-design.md`。
+插件位于 `plugins/`，以 `.kova-plugin/plugin.json` 为清单（`skills/`、`panels.json` 可选），通过 `plugins/marketplace.json` 聚合为本地市场，应用内「插件市场」安装。UI 面板单文件 HTML（`plugins/<name>/<name>.html`）与内置插件包 zip 均为**构建产物、不入库**：根目录 `bun run build:plugins` 生成面板 HTML（`--force` 强制重建），`cd apps/sidecar/pi-agent && bun run plugins:pack` 重打 zip；`build:sidecar`、`test`、`smoke` 会自动补齐缺失产物。设计文档见 `docs/plugin-system-design.md`。
 
 ## 数据与配置
 
