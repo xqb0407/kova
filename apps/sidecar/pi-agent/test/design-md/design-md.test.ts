@@ -238,9 +238,11 @@ describe("refreshThemes 清单（内置 + 用户 + 遮蔽）", () => {
   test("用户主题正文现读磁盘（管理页直改后即见）", async () => {
     const { ref } = await saveUserTheme({ name: "Fresh", description: "", content: "first" });
     await refreshThemes();
-    writeFileSync(join(userThemesDir(), "fresh.md"), renderThemeDoc({ name: "Fresh", description: "", content: "second" }), "utf8");
+    // 文件名跟随 ref.id（themeFileSlug 保留大小写）：硬编码小写名在大小写敏感的
+    // Linux 文件系统上会写成另一个文件、并让 readThemeContent/delete 落空
+    writeFileSync(join(userThemesDir(), `${ref.id}.md`), renderThemeDoc({ name: "Fresh", description: "", content: "second" }), "utf8");
     expect(await readThemeContent(ref)).toContain("second");
-    deleteUserTheme("fresh");
+    deleteUserTheme(ref.id);
     await refreshThemes();
   });
 });
