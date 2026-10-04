@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type FC } from "react";
+import { useEffect, useRef, useState, type FC } from "react";
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { useFluidHover } from "@/hooks/use-fluid-hover";
@@ -10,21 +10,26 @@ import { WindowControls } from "@/components/window-controls";
 import {
   ArchiveIcon,
   BoxesIcon,
-  BotIcon,
   BrainIcon,
-  ChartColumnIcon,
   ChevronLeftIcon,
   GlobeIcon,
+  HardDriveDownloadIcon,
   InfoIcon,
+  MonitorSmartphoneIcon,
+  KeyRoundIcon,
   KeyboardIcon,
+  PaletteIcon,
   PaintbrushIcon,
-  PlugIcon,
-  PuzzleIcon,
+  RocketIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
   WebhookIcon,
+  ZapIcon,
 } from "lucide-react";
 import { GeneralSettings } from "./components/general-settings";
+import { ComputerControlSettings } from "./components/computer-control-settings";
+import { AccessAccelSettings } from "./components/access-accel-settings";
+import { HooksSettings } from "./components/hooks-settings";
 import { WebhooksSettings } from "./components/webhooks-settings";
 import { ModelSettings } from "./components/model-settings";
 import { RemoteSettings } from "./components/remote-settings";
@@ -32,15 +37,13 @@ import { AppearanceSettings } from "./components/appearance-settings";
 import { AboutSettings } from "./components/about-settings";
 import { ArchiveSettings } from "./components/archive-settings";
 import { MemorySettings } from "./components/memory-settings";
+import { BackupSettings } from "./components/backup-settings";
 import { PersonalizationSettings } from "./components/personalization-settings";
-import { SubagentsSettings } from "./components/subagents-settings";
-import { McpSettings } from "./components/mcp-settings";
-import { SkillsSettings } from "./components/skills-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
-import { UsageStatsSettings } from "./components/usage-stats-settings";
-import { Logo } from "../agent-thread/header";
+import { SecretsSettings } from "./components/secrets-settings";
+import { DesignThemesSettings } from "./components/design-themes-settings";
 
-type SettingsSection =
+export type SettingsSection =
   | "models"
   | "remote"
   | "appearance"
@@ -49,12 +52,14 @@ type SettingsSection =
   | "archive"
   | "personalization"
   | "memory"
+  | "backup"
   | "shortcuts"
-  | "subagents"
-  | "mcp"
-  | "skills"
-  | "usage"
-  | "webhooks";
+  | "webhooks"
+  | "hooks"
+  | "secrets"
+  | "design-themes"
+  | "computer-control"
+  | "access-accel";
 
 const GROUPS: {
   label: string;
@@ -68,28 +73,41 @@ const GROUPS: {
       { id: "personalization", label: "个性化", icon: SparklesIcon },
       { id: "shortcuts", label: "快捷键", icon: KeyboardIcon },
       { id: "archive", label: "归档", icon: ArchiveIcon },
-      { id: "usage", label: "使用统计", icon: ChartColumnIcon },
+      { id: "backup", label: "备份", icon: HardDriveDownloadIcon },
     ],
   },
   {
     label: "智能体",
     items: [
       { id: "models", label: "模型", icon: BoxesIcon },
-      { id: "subagents", label: "子智能体", icon: BotIcon },
-      { id: "mcp", label: "MCP", icon: PlugIcon },
-      { id: "skills", label: "技能", icon: PuzzleIcon },
+      // 电脑控制：agent 能碰本机的哪些能力（浏览器驱动 / 页面像素 / 屏幕画面）。
+      // 归「智能体」组而不是「系统」——授权的对象是 agent，不是这台机器
+      { id: "computer-control", label: "电脑控制", icon: MonitorSmartphoneIcon },
       { id: "memory", label: "记忆", icon: BrainIcon },
+      { id: "hooks", label: "钩子", icon: ZapIcon },
+      { id: "secrets", label: "密钥", icon: KeyRoundIcon },
+      { id: "design-themes", label: "设计主题", icon: PaletteIcon },
     ],
   },
   {
     label: "系统",
     items: [
       { id: "remote", label: "远程访问", icon: GlobeIcon },
+      // 访问加速：AI 联网时把 GitHub 等地址改走镜像站。归「系统」而不是
+      // 「智能体」——改的是这台机器的出网路径，与授予 agent 什么能力无关
+      { id: "access-accel", label: "访问加速", icon: RocketIcon },
       { id: "webhooks", label: "Webhooks", icon: WebhookIcon },
       { id: "about", label: "关于", icon: InfoIcon },
     ],
   },
 ];
+
+/** 事件详情等不可信来源 → section id 的收敛校验（composer 跳本页用）；
+ *  集合从 GROUPS 推导，导航加页即校验放开，两处不会漂移 */
+const ALL_SECTIONS = new Set<SettingsSection>(GROUPS.flatMap((g) => g.items.map((i) => i.id)));
+export function isSettingsSection(raw: unknown): raw is SettingsSection {
+  return typeof raw === "string" && ALL_SECTIONS.has(raw as SettingsSection);
+}
 
 // fluid hover 槽位：模块级常量保证注册序稳定。「返回应用」= 0，
 // 导航项按 GROUPS 顺序接在其后；分组标题不注册（高亮跳过，就近点亮条目）。
@@ -103,8 +121,19 @@ const NAV_ITEM_INDEX = (() => {
 })();
 
 /** 设置页：全窗口视图，左侧二级侧边栏导航，"返回应用"回到聊天 */
-export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
-  const [section, setSection] = useState<SettingsSection>("models");
+export const SettingsPage: FC<{
+  onBack: () => void;
+  /** 跳转目标分区 id（base.tsx 自 window 事件转来，不可信字符串，本模块校验） */
+  jumpSection?: string;
+  /** 单调递增序号：已挂载状态下同分区重复跳转也要生效，靠它触发 effect */
+  jumpSeq?: number;
+}> = ({ onBack, jumpSection, jumpSeq }) => {
+  const [section, setSection] = useState<SettingsSection>(() =>
+    isSettingsSection(jumpSection) ? jumpSection : "models",
+  );
+  useEffect(() => {
+    if (jumpSeq && isSettingsSection(jumpSection)) setSection(jumpSection);
+  }, [jumpSeq, jumpSection]);
   // 左侧导航与侧边栏列表同款 fluid hover：导航容器即滚动容器，
   // 高亮 rect 随 content 滚动（容器内 position:absolute 子元素随之滚动）
   const navRef = useRef<HTMLDivElement>(null);
@@ -195,10 +224,7 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
       <div className="flex min-w-0 flex-1 flex-col bg-background">
         <div
           data-tauri-drag-region={desktop ? "deep" : undefined}
-          className={cn(
-            "flex h-12 shrink-0 items-center justify-end",
-            winControls ? "pr-0" : "pr-4",
-          )}
+          className="flex h-12 shrink-0 items-center justify-end pr-4"
         >
           {/* 窗口控制固定在窗口右上角；仅 Windows/Linux 渲染 */}
           {winControls && <WindowControls />}
@@ -209,15 +235,17 @@ export const SettingsPage: FC<{ onBack: () => void }> = ({ onBack }) => {
           {section === "appearance" && <AppearanceSettings />}
           {section === "personalization" && <PersonalizationSettings />}
           {section === "memory" && <MemorySettings />}
+          {section === "backup" && <BackupSettings />}
           {section === "shortcuts" && <ShortcutSettings />}
-          {section === "subagents" && <SubagentsSettings />}
-          {section === "mcp" && <McpSettings />}
-          {section === "skills" && <SkillsSettings />}
           {section === "archive" && <ArchiveSettings />}
-          {section === "usage" && <UsageStatsSettings />}
           {section === "webhooks" && <WebhooksSettings />}
+          {section === "hooks" && <HooksSettings />}
+          {section === "secrets" && <SecretsSettings />}
+          {section === "design-themes" && <DesignThemesSettings />}
           {section === "about" && <AboutSettings />}
           {section === "general" && <GeneralSettings />}
+          {section === "computer-control" && <ComputerControlSettings />}
+          {section === "access-accel" && <AccessAccelSettings />}
         </div>
       </div>
     </div>

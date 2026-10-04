@@ -1,0 +1,10 @@
+[
+  {
+    "id": "design",
+    "title": "UI 设计",
+    "icon": "icon.svg",
+    "entry": "design.html",
+    "opens": ["*.uidesign.json"],
+    "permissions": ["document", "export", "agent", "notify"]
+  }
+]

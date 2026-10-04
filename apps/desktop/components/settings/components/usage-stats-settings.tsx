@@ -12,7 +12,7 @@ import {
   formatTokens,
   peakTokens,
   type UsageStats,
-} from "@/lib/usage-stats";
+} from "@/lib/model/usage-stats";
 import {
   UsageHeatmap,
   HEAT_RAMP,

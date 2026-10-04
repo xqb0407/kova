@@ -49,6 +49,39 @@ pub fn apply(window: &WebviewWindow, effect: Option<&str>) -> Result<(), String>
         .map_err(|e| format!("failed to set window effects: {e}"))
 }
 
+/// 同步 webview 表面透明度：WebView2 表面带 alpha（transparent:true）时
+/// ClearType 亚像素渲染被禁用，整窗文字退化为灰度抗锯齿——比浏览器
+/// （不透明表面）细/虚，即"字体很奇怪"的根因。材质开启时表面必须保持
+/// 透明（模糊要透出来，灰度 AA 是材质的代价）；材质关闭时表面恢复
+/// 不透明拿回 ClearType。仅动 webview 的 DefaultBackgroundColor，
+/// 不碰窗口背景画刷（避免干扰材质合成）。
+/// 注意：开屏（BootSplash）期间须保持透明（body 透明露出桌面），所以
+/// 材质关闭→不透明的翻转由前端在开屏结束时调 sync_webview_surface 触发，
+/// 这里不做启动时的自动判断。
+fn apply_webview_surface(app: &tauri::AppHandle, effect: Option<&str>) {
+    let Some(webview) = app.get_webview("main") else {
+        return;
+    };
+    let color = tauri::utils::config::Color(
+        255,
+        255,
+        255,
+        if effect.is_some() { 0 } else { 255 },
+    );
+    if let Err(e) = webview.set_background_color(Some(color)) {
+        log::warn!("[appearance] failed to set webview background color: {e}");
+    }
+}
+
+/// 开屏动画结束时由前端调用：按当前材质状态翻转表面透明度
+/// （材质关闭 → 不透明恢复 ClearType）
+#[tauri::command]
+pub fn sync_webview_surface(app: tauri::AppHandle) -> Result<(), String> {
+    let effect = store::kv_get_global(&app, KV_KEY).unwrap_or(None);
+    apply_webview_surface(&app, effect.as_deref());
+    Ok(())
+}
+
 /// 设置并持久化窗口背景效果。effect: "acrylic" | "mica" | None/"none"（不透明）。
 #[tauri::command]
 pub fn set_window_effect(window: WebviewWindow, effect: Option<String>) -> Result<(), String> {
@@ -59,6 +92,8 @@ pub fn set_window_effect(window: WebviewWindow, effect: Option<String>) -> Resul
         }
     }
     apply(&window, name)?;
+    // 材质开→表面透明 / 材质关→表面不透明（恢复 ClearType）
+    apply_webview_surface(window.app_handle(), name);
     let app = window.app_handle().clone();
     match name {
         Some(n) => store::kv_set_global(&app, KV_KEY, n)?,

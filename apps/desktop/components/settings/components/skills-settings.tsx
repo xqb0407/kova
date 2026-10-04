@@ -3,7 +3,7 @@
 /**
  * 技能设置页（设置 → 智能体 → 技能）。
  *
- * 事实源在 sidecar：托管层 .md 文档（<app_data>/skills / <cwd>/.xulux/skills）
+ * 事实源在 sidecar：托管层 .md 文档（<app_data>/skills / <cwd>/.kova/skills）
  * + 生态兼容层（.agents/skills，agentskills.io 标准，只读发现）+ kv 里的启用开关；
  * 本页只渲染 useSkills 镜像并发起变更命令。
  * 注入模型的是生效技能的目录元数据（name/description/location 三行），正文由
@@ -59,7 +59,7 @@ import {
   pathBasename,
   useWorkspace,
   useWorkspaceRecents,
-} from "@/lib/workspace-store";
+} from "@/lib/workspace/workspace-store";
 import {
   deleteSkill,
   refreshSkills,
@@ -70,7 +70,7 @@ import {
   useSkills,
   type SkillDraft,
   type SkillEntry,
-} from "@/lib/skills";
+} from "@/lib/skills/skills";
 
 /** 与 sidecar MAX_SKILL_BYTES 对齐（128 KB） */
 const MAX_SKILL_BYTES = 128 * 1024;
@@ -83,6 +83,7 @@ const SCOPE_LABEL: Record<SkillEntry["scope"], string> = {
   workspace: "工作区",
   compat: "生态 · 用户",
   "compat-workspace": "生态 · 工作区",
+  plugin: "插件",
 };
 
 /** 表单草稿（正文承载用户编辑的 Markdown；字节数实时提示上限） */
@@ -219,7 +220,7 @@ const SkillEditorDialog: FC<{
           </DialogTitle>
           <DialogDescription>
             {scope === "workspace"
-              ? `保存到 ${workspaceCwd ?? ""}/.xulux/skills/（随仓库共享）`
+              ? `保存到 ${workspaceCwd ?? ""}/.kova/skills/（随仓库共享）`
               : "保存到应用数据目录 skills/，对本机所有会话生效"}
           </DialogDescription>
         </DialogHeader>
@@ -369,6 +370,7 @@ const SCOPE_ICON: Record<SkillEntry["scope"], FC<{ className?: string }>> = {
   workspace: FolderGit2Icon,
   compat: GlobeIcon,
   "compat-workspace": GlobeIcon,
+  plugin: BlocksIcon,
 };
 
 const SkillRow: FC<{
@@ -666,7 +668,7 @@ export const SkillsSettings: FC = () => {
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
+      <div className="flex w-full max-w-7xl flex-col gap-8 self-center px-8 py-8">
         {/* 标题行：状态文字在右（MCP/记忆页同款） */}
         <div className="flex items-baseline justify-between gap-4">
           <h1 className="text-2xl font-bold tracking-tight">技能</h1>
@@ -783,7 +785,7 @@ export const SkillsSettings: FC = () => {
               // 目录选择器已常驻工具行（见上方 WorkspaceCwdMenu），这里只提示用途
               <div className="text-muted-foreground px-3 py-3 text-sm">
                 未选择工作区：点上方「选择工作区」挑选最近使用的仓库，或「浏览其他目录…」
-                直接定位某个仓库的 .xulux/skills/。
+                直接定位某个仓库的 .kova/skills/。
               </div>
             ) : visible.length === 0 ? (
               <div className="text-muted-foreground flex flex-col gap-1 px-3 py-3 text-sm">
@@ -793,7 +795,7 @@ export const SkillsSettings: FC = () => {
                     : scopeTab === "system"
                       ? "还没有系统级技能。点右上角「新建」添加，或把技能文件放进应用数据目录 skills/。"
                       : scopeTab === "workspace"
-                        ? "该工作区还没有技能。点右上角「新建」添加（保存到 .xulux/skills/，随仓库共享）。"
+                        ? "该工作区还没有技能。点右上角「新建」添加（保存到 .kova/skills/，随仓库共享）。"
                         : "该目录下暂无生态技能。把技能 .md 或 <技能>/SKILL.md 放进 .agents/skills/ 即被自动发现（只读，可开关）。"}
                 </span>
               </div>

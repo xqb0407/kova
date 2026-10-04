@@ -34,7 +34,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Segmented, type SegmentedOption } from "@/components/custom-ui/segmented";
-import { describeCron } from "@/lib/automation-format";
+import { describeCron } from "@/lib/automation/automation-format";
 import {
   CRON_FIELD_SEQUENCE,
   CRON_MODE_LABELS,
@@ -49,8 +49,8 @@ import {
   type CronFieldKey,
   type CronFieldMode,
   type CronFields,
-} from "@/lib/cron-fields";
-import { EASE_OUT } from "@/lib/ease";
+} from "@/lib/automation/cron-fields";
+import { EASE_OUT } from "@/lib/motion/ease";
 import { cn } from "@/lib/utils";
 
 /** chip 网格列数：分钟 60 颗按 12 列排 5 行，星期/月份一行一个词 */

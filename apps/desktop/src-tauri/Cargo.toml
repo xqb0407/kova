@@ -1,13 +1,13 @@
 [package]
-name = "xulux-assistant"
+name = "kova"
 version = "0.1.0"
-description = "Xulux AI Assistant Desktop Application"
-authors = ["Xulux"]
+description = "Kova AI Assistant Desktop Application"
+authors = ["Kova"]
 edition = "2021"
 rust-version = "1.77.2"
 
 [lib]
-name = "xulux_assistant_lib"
+name = "kova_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]
@@ -30,10 +30,24 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 if-addrs = "0.13"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+aes-gcm = "0.10"
 log = "0.4"
 chrono = "0.4"
 tauri-plugin-notification = "2"
 portable-pty = "0.9.0"
+# 备份/恢复：tar.gz 信封 + SigV4 签名 + 口令派生（均为纯 Rust 实现）
+tar = "0.4"
+flate2 = "1"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+pbkdf2 = "0.12"
+# Unix 侧杀进程组（killpg）：bash 自立进程组后，超时/取消要连孙进程一起收
+libc = "0.2"
+# offline 是 headless_chrome 唯一的默认 feature，且必须显式保留：其 build.rs
+# 走 auto_generate_cdp::init()，关掉 offline 后会改为构建期从 raw.githubusercontent.com
+# 拉 CDP 协议 json（compile.rs:1293），墙内必超时并 panic 掉整个 tauri build
+headless_chrome = { version = "1.0.10", features = ["offline"] }
 
 [profile.release]
 panic = "abort"

@@ -12,10 +12,11 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { SharedLayoutBg } from "./shared-layout-bg";
-import { EASE_OUT, SPRING_LAYOUT, SPRING_SWAP } from "@/lib/ease";
+import { EASE_OUT, SPRING_LAYOUT, SPRING_SWAP } from "@/lib/motion/ease";
 import { cn } from "@/lib/utils";
 
 type FileTreeItem = {
@@ -26,6 +27,7 @@ type FileTreeItem = {
   icon?: ReactNode;
   disabled?: boolean;
   className?: string;
+  onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 };
 
 export interface FileTreeFolderProps {
@@ -35,6 +37,8 @@ export interface FileTreeFolderProps {
   disabled?: boolean;
   children?: ReactNode;
   className?: string;
+  /** 右键回调（行按钮上触发，不冒泡到树的空白区） */
+  onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 }
 
 export interface FileTreeFileProps {
@@ -43,6 +47,8 @@ export interface FileTreeFileProps {
   icon?: ReactNode;
   disabled?: boolean;
   className?: string;
+  /** 右键回调（行按钮上触发，不冒泡到树的空白区） */
+  onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 }
 
 export type FileTreeClassNames = {
@@ -138,6 +144,7 @@ function itemsFromChildren(children: ReactNode): FileTreeItem[] {
         icon: props.icon,
         disabled: props.disabled,
         className: props.className,
+        onContextMenu: props.onContextMenu,
         children: itemsFromChildren(props.children),
       });
       return;
@@ -152,6 +159,7 @@ function itemsFromChildren(children: ReactNode): FileTreeItem[] {
         icon: props.icon,
         disabled: props.disabled,
         className: props.className,
+        onContextMenu: props.onContextMenu,
       });
     }
   });
@@ -357,6 +365,10 @@ export function FileTree({
                 tabIndex={focusedRow === row.item.value ? 0 : -1}
                 onFocus={() => setFocusedId(row.item.value)}
                 onKeyDown={(event) => handleKeyDown(event, row)}
+                onContextMenu={(event) => {
+                  if (row.item.disabled) return;
+                  row.item.onContextMenu?.(event);
+                }}
                 onClick={() => {
                   if (row.item.disabled) return;
                   selectItem(row.item);

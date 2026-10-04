@@ -1,28 +1,27 @@
 "use client";
 
-import {
-  AssistantRuntimeProvider,
-  useRemoteThreadListRuntime,
-} from "@assistant-ui/react";
-import { useChatRuntime } from "@assistant-ui/ai-sdk";
+import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { WsPiChannel } from "@/lib/pi-ws-channel";
-import { peekPiChannel, setPiChannel, type PiChannelStatus } from "@/lib/pi-channel";
-import { PiTransport } from "@/lib/pi-transport";
-import { createPiThreadListAdapter } from "@/lib/pi-thread-adapter";
+import { toast } from "@/components/ui/toast";
+import { WsPiChannel } from "@/lib/pi/pi-ws-channel";
+import { WsPiClient } from "@/lib/pi/pi-runtime/ws-pi-client";
+import { piRuntimeAdapters } from "@/lib/attachments/pi-attachment-adapter";
+import { usePiRuntime } from "@/lib/pi/pi-runtime";
+import { peekPiChannel, setPiChannel, type PiChannelStatus } from "@/lib/pi/pi-channel";
 import {
   clearRemoteConfig,
   type RemoteConfig,
 } from "@/lib/remote";
 
 /**
- * 远程运行时：通过 WsPiChannel 连接用户桌面端网关，
- * 与桌面 TauriRuntimeProvider 完全同构（RemoteThreadList + pi 会话事实源），仅通道不同。
+ * 远程运行时：通过 WsPiChannel 连接用户桌面端网关，react-pi 迁移阶段 5c 起
+ * 与桌面端完全同链路——usePiRuntime + PiClient 契约（快照权威 + 原生事件流），
+ * 仅客户端实现不同（WsPiClient 走 WebSocket，桌面 TauriPiClient 走 invoke）。
  *
- * 时序约束：setPiChannel 必须先于 useRemoteThreadListRuntime 触发其 adapter 的
- * list/initialize——同组件内 effect 按 hook 定义顺序执行，因此注册 effect 置于该
- * hook 之前。
+ * 时序约束：setPiChannel 必须先于任何 piRequest 型调用（会话偏好/分支等管理
+ * 模块走模块级通道表）——同组件内 effect 按 hook 定义顺序执行，因此注册
+ * effect 置于 usePiRuntime 之前。
  * StrictMode 注意：useMemo 工厂双跑时 React 提交的是第一次结果，"第二次工厂里
  * close 上一个"会杀掉真正保留的连接；改用惰性 useRef 使双跑幂等。
  */
@@ -66,12 +65,18 @@ export function RemoteRuntimeProvider({
     return channel.onStatusChange?.(setStatus);
   }, [channel]);
 
-  const transport = useMemo(() => new PiTransport(), []);
-  const adapter = useMemo(() => createPiThreadListAdapter(), []);
-
-  const runtime = useRemoteThreadListRuntime({
-    runtimeHook: () => useChatRuntime({ transport }),
-    adapter,
+  // 新链路（迁移阶段 5c）：channel 变化即换客户端（旧连接已 close，controller
+  // 随 provider 重挂重建）
+  const client = useMemo(() => new WsPiClient(channel), [channel]);
+  // 与桌面端同款：运行时操作失败经 onError 呈现，不静默吞错
+  const runtime = usePiRuntime({
+    client,
+    // 与桌面端同款：composer 附件 File 入口 + capabilities.attachments 开关
+    adapters: piRuntimeAdapters,
+    onError: (error) => {
+      console.error("[pi-runtime]", error);
+      toast.error(error instanceof Error ? error.message : String(error));
+    },
   });
 
   const disconnected =

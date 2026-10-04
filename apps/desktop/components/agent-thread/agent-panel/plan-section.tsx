@@ -6,7 +6,7 @@ import {
   TodoList,
   type TodoItem,
 } from "@/components/custom-ui/todo-list";
-import { fetchTodoState, useThreadTodos } from "@/lib/pi-todo";
+import { fetchTodoState, useThreadTodos } from "@/lib/pi/pi-todo";
 
 /**
  * 计划区块:agent 任务清单(todo 工具快照驱动,data-todo chunk 实时更新 +

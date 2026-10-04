@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, type FC } from "react";
+import { useMemo, useState, type FC } from "react";
 import {
   CartesianGrid,
   Cell,
@@ -13,13 +13,14 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { usePiModels } from "@/lib/pi-models";
+import { usePiModels } from "@/lib/pi/pi-models";
+import { cn } from "cn";
 import {
   formatTokens,
   modelColor,
   usageDayKey,
   type UsageStatsDay,
-} from "@/lib/usage-stats";
+} from "@/lib/model/usage-stats";
 
 /**
  * 使用统计图表（recharts）：每日 Token 趋势（近7/近30日，分模型）+ 模型用量环形图。
@@ -103,7 +104,12 @@ const UsageCharts: FC<{
     if (rest.length > 0) seriesKeys.push(OTHER_KEY);
     const restTokens = rest.reduce((s, [, v]) => s + v, 0);
 
-    const trendData = rangeDays7.map((day) => {
+    // 折线窗口收缩到范围内首个有用量的一天（含）：数据少时避免左边大片空白、
+    // 折线悬在半空（与 3D 热力图自适应同理）
+    const firstActive = rangeDays7.findIndex((d) => d.tokens > 0);
+    const trendDays =
+      firstActive > 0 ? rangeDays7.slice(firstActive) : rangeDays7;
+    const trendData = trendDays.map((day) => {
       const d = new Date(`${day.date}T00:00:00`);
       const row: Record<string, number | string> = {
         label: `${d.getMonth() + 1}月${d.getDate()}日`,
@@ -126,6 +132,29 @@ const UsageCharts: FC<{
     return { trendData, seriesKeys, donutData, total };
   }, [days, rangeDays]);
 
+  // 图例点击隐藏/显示系列：配色按下标绑定在 seriesKeys 上，藏掉的不渲染 Line
+  // 但颜色不变；至少保留一个可见系列（全藏了图表空屏像坏了）
+  const [hiddenSeries, setHiddenSeries] = useState<ReadonlySet<string>>(new Set());
+  const toggleSeries = (key: string) => {
+    setHiddenSeries((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        if (next.size >= seriesKeys.length - 1) return prev;
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  // 环形图的点击隐藏：隐藏项不参与占比重算（占比按可见项的合计算，隐藏 =
+  // 暂时不看它，不改变其余项之间的真实比例）；同样至少保留一个可见项
+  const visibleDonut = donutData.filter((d) => !hiddenSeries.has(d.name));
+  const visibleDonutTotal = visibleDonut.reduce((s, d) => s + d.value, 0);
+  // 配色锚定在全量列表的下标上，隐藏/显示不串色
+  const donutColorIndex = new Map(donutData.map((d, i) => [d.name, i] as const));
+
   if (total === 0) {
     return (
       <div className="text-muted-foreground flex h-40 items-center justify-center rounded-2xl text-sm">
@@ -142,7 +171,7 @@ const UsageCharts: FC<{
           {rangeDays === 7 ? "近 7 日" : "近 30 日"} Token 趋势图
         </h3>
         <ResponsiveContainer width="100%" height={264}>
-          <LineChart data={trendData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+          <LineChart data={trendData} margin={{ top: 10, right: 14, bottom: 0, left: 0 }}>
             <CartesianGrid
               strokeDasharray="3 3"
               vertical={false}
@@ -156,7 +185,7 @@ const UsageCharts: FC<{
               interval="preserveStartEnd"
             />
             <YAxis
-              width={52}
+              width={64}
               tick={{ fontSize: 11, fill: "var(--color-muted-foreground)" }}
               tickLine={false}
               axisLine={false}
@@ -166,31 +195,47 @@ const UsageCharts: FC<{
               contentStyle={tooltipStyle}
               formatter={(v) => `${formatTokens(Number(v))} tokens`}
             />
-            {seriesKeys.map((key, i) => (
-              <Line
-                key={key}
-                type="monotone"
-                dataKey={key}
-                name={modelLabel(key)}
-                stroke={modelColor(i)}
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 3 }}
-              />
-            ))}
+            {seriesKeys.map((key, i) =>
+              hiddenSeries.has(key) ? null : (
+                <Line
+                  key={key}
+                  type="monotone"
+                  dataKey={key}
+                  name={modelLabel(key)}
+                  stroke={modelColor(i)}
+                  strokeWidth={2}
+                  // 点少时画出数据点，一两个点的系列不会像断线
+                  dot={trendData.length <= 10 ? { r: 3, strokeWidth: 0 } : false}
+                  activeDot={{ r: 3 }}
+                />
+              ),
+            )}
           </LineChart>
         </ResponsiveContainer>
-        {/* 图例（自定义，与环形图配色一致） */}
+        {/* 图例（自定义，与环形图配色一致；点击隐藏/显示对应系列） */}
         <div className="text-muted-foreground mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-          {seriesKeys.map((key, i) => (
-            <span key={key} className="flex items-center gap-1.5">
-              <span
-                className="inline-block size-2 rounded-full"
-                style={{ backgroundColor: modelColor(i) }}
-              />
-              {modelLabel(key)}
-            </span>
-          ))}
+          {seriesKeys.map((key, i) => {
+            const hidden = hiddenSeries.has(key);
+            return (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={!hidden}
+                title={hidden ? "点击显示" : "点击隐藏"}
+                onClick={() => toggleSeries(key)}
+                className={cn(
+                  "flex items-center gap-1.5 transition-opacity",
+                  hidden ? "opacity-35" : "hover:opacity-70",
+                )}
+              >
+                <span
+                  className="inline-block size-2 rounded-full"
+                  style={{ backgroundColor: modelColor(i) }}
+                />
+                {modelLabel(key)}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -203,7 +248,7 @@ const UsageCharts: FC<{
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
-                  data={donutData}
+                  data={visibleDonut}
                   dataKey="value"
                   nameKey="name"
                   innerRadius="62%"
@@ -211,8 +256,11 @@ const UsageCharts: FC<{
                   paddingAngle={2}
                   stroke="none"
                 >
-                  {donutData.map((entry, i) => (
-                    <Cell key={entry.name} fill={modelColor(i)} />
+                  {visibleDonut.map((entry) => (
+                    <Cell
+                      key={entry.name}
+                      fill={modelColor(donutColorIndex.get(entry.name) ?? 0)}
+                    />
                   ))}
                 </Pie>
                 <Tooltip
@@ -225,26 +273,46 @@ const UsageCharts: FC<{
               </PieChart>
             </ResponsiveContainer>
           </div>
-          {/* 限宽：图例行保持紧凑（名称与数值相邻），不随卡片宽度拉满 */}
+          {/* 限宽：图例行保持紧凑（名称与数值相邻），不随卡片宽度拉满。
+              行可点击隐藏/显示：隐藏项置灰、不参与占比重算 */}
           <div className="flex w-full min-w-0 flex-1 flex-col gap-2 sm:max-w-md">
-            {donutData.map((entry, i) => {
-              const percent = total > 0 ? Math.round((entry.value / total) * 100) : 0;
+            {donutData.map((entry) => {
+              const hidden = hiddenSeries.has(entry.name);
+              const percent =
+                !hidden && visibleDonutTotal > 0
+                  ? Math.round((entry.value / visibleDonutTotal) * 100)
+                  : null;
               return (
-                <div key={entry.name} className="flex items-center gap-2 text-sm">
+                <button
+                  key={entry.name}
+                  type="button"
+                  aria-pressed={!hidden}
+                  title={hidden ? "点击显示" : "点击隐藏"}
+                  onClick={() => toggleSeries(entry.name)}
+                  className={cn(
+                    // text-left：button 默认居中，会把名称甩到行中间
+                    "flex items-center gap-2 text-left text-sm transition-opacity",
+                    hidden ? "opacity-35" : "hover:opacity-70",
+                  )}
+                >
                   <span
                     className="size-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: modelColor(i) }}
+                    style={{
+                      backgroundColor: modelColor(donutColorIndex.get(entry.name) ?? 0),
+                    }}
                   />
-                  <span
-                    className="min-w-0 flex-1 truncate"
-                    title={entry.name}
-                  >
+                  <span className="min-w-0 flex-1 truncate" title={entry.name}>
                     {modelLabel(entry.name)}
                   </span>
                   <span className="text-muted-foreground shrink-0 tabular-nums">
-                    {formatTokens(entry.value)} tokens · {percent}%
+                    {formatTokens(entry.value)} tokens
+                    {percent !== null
+                      ? percent === 0 && entry.value > 0
+                        ? " · <1%"
+                        : ` · ${percent}%`
+                      : ""}
                   </span>
-                </div>
+                </button>
               );
             })}
           </div>

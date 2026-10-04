@@ -6,7 +6,7 @@
  * 每 interval 秒采一次目标进程 RSS，写 perf-samples/<日期>-<label>.csv。
  * 角色划分（macOS）：
  *   sidecar    pi-agent（bun 编译产物）
- *   app        Tauri 主进程（xulux-assistant / Xulux Assistant.app）
+ *   app        Tauri 主进程（kova / 扣瓦.app）
  *   webview    WebKit WebContent 进程；macOS 上父进程都是 launchd，无法按
  *              父子链归因。启发式：取"启动时间不早于主 App"的 WebContent 中
  *              RSS 最大者（WKWebView 进程随窗口创建而 spawn）；仍存疑时用
@@ -41,7 +41,7 @@ const ROLE_MATCHERS = [
   {
     role: "app",
     test: (comm) =>
-      /xulux-assistant$/i.test(comm) || /Xulux Assistant(\.app)?\/.*MacOS\//.test(comm),
+      /kova$/i.test(comm) || /扣瓦(\.app)?\/.*MacOS\//.test(comm),
   },
   {
     role: "webview",

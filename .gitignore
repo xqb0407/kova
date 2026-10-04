@@ -10,8 +10,8 @@ pnpm-lock.yaml
 /coverage
 
 # next.js
-/apps/desktop/.next/
-/apps/desktop/out/
+.next/
+out/
 
 # production
 /build
@@ -40,6 +40,7 @@ yarn-error.log*
 next-env.d.ts
 
 # tauri
+
 /apps/desktop/src-tauri/target/
 /apps/desktop/src-tauri/gen/schemas
 /apps/desktop/src-tauri/binaries/
@@ -50,6 +51,9 @@ next-env.d.ts
 /apps/sidecar/pi-agent/stderr.log
 # sidecar 使用 bun 管理依赖，npm lock 为杂讯
 /apps/sidecar/pi-agent/package-lock.json
+# 无 PI_SESSIONS_DIR 直跑（bun run smoke）时回退的本地 SQLite，会落在包目录里。
+# 里面有 credentials / secrets 表，绝不能进仓库。
+/apps/sidecar/pi-agent/pi-agent.db*
 
 .agents/skills/
 
@@ -58,3 +62,15 @@ next-env.d.ts
 .agents/
 .trae/
 skills-lock.json
+
+# AI 编码工具的内部状态与会话计划，不随开源仓库分发
+.zcode/
+# sidecar 运行时产生的目标状态数据，非源码
+/apps/sidecar/pi-agent/s.jsonl
+# 临时导出的凭据明文（用完即删，勿提交）
+.opencode-key.txt
+.dev-credentials.txt
+
+# sidecar 构建冒烟的临时沙箱（build-sidecar.ts，正常路径自清理）
+apps/sidecar/pi-agent/.build-smoke/
+apps/sidecar/pi-agent/.build-smoke-sessions/

@@ -1,0 +1,178 @@
+/*
+ * ui-design 视觉层：ElevenLabs 设计语言（elevenlabs-DESIGN.md）× shadcn 组件范式。
+ * 要点：
+ *   · 近白面板 + 暖石灰（#f5f2ef）画布底，白画板浮在暖底上；
+ *   · 文字近黑，次级用暖灰 #777169；分隔只靠 #e5e5e5 发丝线；
+ *   · 浮层深度用多层柔影（rgba 描边圈 + 落地影 + 暖环境影），不靠重边框；
+ *   · 主按钮/激活态 = 黑底白字胶囊（9999px）；聚焦环淡蓝 rgb(147 197 253/.5)；
+ *   · 正文 Inter + 正向字距（.01em ≈ 0.14px），大标题细字重。
+ * 主题由宿主桥驱动：documentElement.dataset.theme = light|dark（bridge.ts 维护）。
+ * 令牌约定：--accent = chrome 强调色（浅态纯黑 / 深态近白，配 --accent-foreground 反色）；
+ * shadcn 的 bg-accent hover 面映射到 --secondary（极浅灰），两类语义不互踩；
+ * 画布上的选择框/把手是 leafer 侧常量（DesignStage.ACCENT 蓝），与 chrome 解耦。
+ */
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--secondary); /* shadcn 惯例：hover/focus 浅底（ElevenLabs 用极浅灰，不抢黑胶囊） */
+  --color-accent-foreground: var(--foreground);
+  --color-primary: var(--accent); /* chrome 强调：黑胶囊（老东家 ColorPicker 的 ring-primary 同源） */
+  --color-primary-foreground: var(--accent-foreground);
+  --color-ink: var(--foreground); /* shadcn 套件的 focus-visible border-ink */
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  /* 浮层三档影 */
+  --shadow-hair: var(--sh-outline);
+  --shadow-float: var(--sh-outline), var(--sh-elev), var(--sh-warm);
+  --shadow-pop: var(--sh-outline), 0 2px 6px rgba(0, 0, 0, 0.05), 0 12px 32px rgba(78, 50, 23, 0.1);
+}
+
+:root {
+  --radius: 0.5rem;
+  --accent: #000000; /* chrome 强调：黑胶囊（ElevenLabs 主按钮） */
+  --accent-foreground: #ffffff;
+  --background: #ffffff; /* chrome 面板底 */
+  --foreground: #0a0a0a;
+  --card: #ffffff;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --secondary: #f5f5f5; /* 分段控件/输入底 */
+  --secondary-foreground: #0a0a0a;
+  --muted: #f5f5f5;
+  --muted-foreground: #777169; /* 暖灰次级文字 */
+  --border: #e5e5e5; /* 发丝线 */
+  --input: #e5e5e5;
+  --ring: rgb(147 197 253 / 0.5); /* 淡蓝聚焦环 */
+  --canvas: #f5f2ef; /* 暖石灰画布底 */
+  --stone: #f5f2ef;
+  --destructive: #d8433c;
+  --sh-outline: 0 0 0 1px rgba(0, 0, 0, 0.05);
+  --sh-elev: 0 4px 4px rgba(0, 0, 0, 0.04);
+  --sh-warm: 0 6px 16px rgba(78, 50, 23, 0.05);
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --accent: #f5f5f5; /* 深态反相：白胶囊黑字 */
+  --accent-foreground: #0a0a0a;
+  --background: #1b1a19;
+  --foreground: #f2f0ed;
+  --card: #1b1a19;
+  --popover: #242321;
+  --popover-foreground: #f2f0ed;
+  --secondary: #2b2a27;
+  --secondary-foreground: #f2f0ed;
+  --muted: #262523;
+  --muted-foreground: #a49f96;
+  --border: #3a3833;
+  --input: #3a3833;
+  --ring: rgb(147 197 253 / 0.45);
+  --canvas: #141312; /* 暗态画布底更深 */
+  --stone: #1b1a19;
+  --destructive: #f0685f;
+  --sh-outline: 0 0 0 1px rgba(255, 255, 255, 0.07);
+  --sh-elev: 0 4px 10px rgba(0, 0, 0, 0.3);
+  --sh-warm: 0 10px 24px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family:
+    "Inter",
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  font-size: 12px; /* 紧凑小号 UI 文字 */
+  letter-spacing: 0.01em; /* ElevenLabs 正向字距 */
+  background: var(--canvas);
+  color: var(--foreground);
+  overscroll-behavior: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 数字输入框：去步进箭头，检视面板观感 */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* 全局滚动条：细身、透明轨道、随主题的胶囊滑块（悬停加深）。
+   注意：不能同时设 scrollbar-width/scrollbar-color —— Chromium 121+ 里标准属性一经设置
+   就会忽略下面所有 ::-webkit-scrollbar 自定义（实测退化回 1px overlay）。宿主为 Chromium。 */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  /* 透明描边内缩：滑块视觉细于轨道，贴边不顶格 */
+  background: color-mix(in srgb, var(--muted-foreground) 32%, transparent);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted-foreground) 58%, transparent);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 颜色选择器的色相条（老东家 ColorPicker 用；WebKit 原生 range 换皮） */
+.sc-hue {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 12px;
+  border-radius: 999px;
+  outline: none;
+}
+.sc-hue::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  cursor: grab;
+}
+.sc-hue::-webkit-slider-thumb:active {
+  cursor: grabbing;
+}

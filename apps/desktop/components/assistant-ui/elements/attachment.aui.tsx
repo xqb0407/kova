@@ -6,6 +6,7 @@ import {
   type FC,
   isValidElement,
 } from "react";
+import dynamic from "next/dynamic";
 import {
   XIcon,
   PlusIcon,
@@ -35,7 +36,21 @@ import {
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useAttachmentSrc } from "@/hooks/use-attachment-src";
+import { formatBytes } from "@/lib/panels/artifacts";
 import { cn } from "@/lib/utils";
+
+/** 彩色文件图标（material-file-icons ~1.5MB）按需加载，别拉进主 chunk；
+ *  path 只用扩展名查表，传附件文件名即可 */
+const FileTypeIcon = dynamic(
+  () =>
+    import("@/components/agent-thread/agent-panel/file-type-icon").then(
+      (m) => m.FileTypeIcon,
+    ),
+  {
+    ssr: false,
+    loading: () => <FileText className="text-muted-foreground size-8 shrink-0" />,
+  },
+);
 
 type AttachmentPreviewProps = {
   src: string;
@@ -141,6 +156,86 @@ const AttachmentUI: FC = () => {
       ? (s.attachment.status.message ?? "Upload failed")
       : undefined,
   );
+  // 矩形卡数据：文件名 + 类型/大小小字。size 只在草稿态有（PendingAttachment.file），
+  // 已发送消息的附件只剩 content parts，没有体积
+  const attName = useAuiState((s) => s.attachment.name);
+  const fileSize = useAuiState((s) => {
+    const a = s.attachment;
+    return "file" in a && a.file ? a.file.size : undefined;
+  });
+  const metaLabel = (() => {
+    const dot = attName.lastIndexOf(".");
+    const ext = dot > 0 ? attName.slice(dot + 1).toUpperCase() : "";
+    const base = ext || (isImage ? "图片" : typeLabel === "Image" ? "文件" : typeLabel);
+    return fileSize != null ? `${base} · ${formatBytes(fileSize)}` : base;
+  })();
+
+  // 图片保留方形缩略图（预览即内容）；文档/其他文件改参考稿的矩形卡：
+  // 彩色图标 + 名称（超宽省略号）+ 下方「类型 · 大小」小字
+  if (!isImage) {
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <AttachmentPrimitive.Root
+            className={cn(
+              "aui-attachment-root flex items-center gap-1",
+              isComposer &&
+                "animate-in fade-in-0 zoom-in-95 duration-200 motion-reduce:animate-none",
+            )}
+          >
+            <TooltipTrigger
+              render={
+                <div
+                  className={cn(
+                    "aui-attachment-card bg-muted/40 border-border/60 hover:bg-muted focus-visible:ring-ring/50 relative flex max-w-56 cursor-pointer items-center gap-2.5 overflow-hidden rounded-xl border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-1 active:scale-[0.96] motion-reduce:transition-none",
+                    isError && "border-destructive/60",
+                  )}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${typeLabel} attachment${
+                    isError ? ", upload failed" : isUploading ? ", uploading" : ""
+                  }`}
+                >
+                  <FileTypeIcon path={attName} className="size-8 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-foreground/90">
+                      {attName}
+                    </div>
+                    <div className="text-muted-foreground truncate text-xs">
+                      {metaLabel}
+                    </div>
+                  </div>
+                  {isUploading && (
+                    <div
+                      aria-hidden="true"
+                      className="aui-attachment-tile-uploading bg-background/60 animate-in fade-in-0 absolute inset-0 flex items-center justify-center backdrop-blur-[2px] motion-reduce:animate-none"
+                    >
+                      <Loader2Icon className="text-muted-foreground size-4 animate-spin" />
+                    </div>
+                  )}
+                  {isError && (
+                    <div
+                      aria-hidden="true"
+                      className="aui-attachment-tile-error bg-background/70 animate-in fade-in-0 absolute inset-0 flex items-center justify-center backdrop-blur-[2px] motion-reduce:animate-none"
+                    >
+                      <AlertCircleIcon className="text-destructive size-4" />
+                    </div>
+                  )}
+                </div>
+              }
+            />
+            {isComposer && <AttachmentRemoveInline />}
+          </AttachmentPrimitive.Root>
+          <TooltipContent side="top">
+            <AttachmentPrimitive.Name />
+            {errorMessage && (
+              <p className="aui-attachment-error-message">{errorMessage}</p>
+            )}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
 
   return (
     <TooltipProvider>
@@ -220,6 +315,23 @@ const AttachmentRemove: FC = () => {
       }
     >
       <XIcon className="aui-attachment-remove-icon size-3 stroke-[2.5]" />
+    </AttachmentPrimitive.Remove>
+  );
+};
+
+/** 矩形附件卡的移除按钮：随行内布局排布（不走方块卡的角标绝对定位） */
+const AttachmentRemoveInline: FC = () => {
+  return (
+    <AttachmentPrimitive.Remove
+      render={
+        <TooltipIconButton
+          tooltip="Remove file"
+          className="text-muted-foreground hover:text-foreground hover:bg-muted size-6 shrink-0 rounded-full active:scale-[0.96] motion-reduce:transition-none"
+          side="top"
+        />
+      }
+    >
+      <XIcon className="size-3.5 stroke-[2.5]" />
     </AttachmentPrimitive.Remove>
   );
 };

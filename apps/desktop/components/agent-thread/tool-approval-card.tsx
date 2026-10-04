@@ -2,10 +2,8 @@
 
 import { useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { Streamdown } from "streamdown";
-import { code } from "@streamdown/code";
-import { cjk } from "@streamdown/cjk";
 import {
+  BookmarkPlusIcon,
   CheckIcon,
   ClipboardListIcon,
   ShieldAlertIcon,
@@ -14,19 +12,21 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { openToolCallPanel } from "@/lib/tool-panel";
+import { openToolCallPanel } from "@/lib/panels/tool-panel";
+import { useInteractionSessionId } from "@/lib/pi/pi-interaction-session";
 import {
   confirmToolApproval,
   usePendingToolApprovals,
   type PendingToolApprovalView,
-} from "@/lib/pi-tool-approval";
+} from "@/lib/pi/pi-tool-approval";
 
 /**
  * 逐工具审批卡片：显示在 composer 上方，两类挂起共用 tool_confirm 通道：
  * - bash/write/edit 执行前（approvalBeforeToolCall 挂起）：批准放行执行，拒绝回 blocked 结果；
  * - plan_exit 的模式退出确认（modes.ts plan_exit execute 内挂起，input 带计划快照）：
- *   渲染计划审批卡，批准 = sidecar 回 agent 模式同轮实施；
- *   拒绝 = 计划作废（sidecar 删除计划文件）并 abort 终止本轮，会话留在 plan 模式。
+ *   计划正文由 sidecar 的 data-panelOpen 在右侧面板展示，卡片只留标题/rationale/操作，
+ *   批准 = sidecar 回 agent 模式同轮实施；拒绝 = 计划作废（sidecar 删除计划文件）并
+ *   abort 终止本轮，会话留在 plan 模式。
  */
 
 /** 工具参数的一行摘要（与 tool-fallback 卡片的风格一致） */
@@ -55,7 +55,6 @@ function planExitInfo(input: unknown) {
   return {
     rationale: typeof i.rationale === "string" ? i.rationale : "",
     title: typeof i.title === "string" ? i.title : "",
-    markdown: typeof i.markdown === "string" ? i.markdown : "",
     filePath: typeof i.filePath === "string" ? i.filePath : "",
   };
 }
@@ -79,9 +78,9 @@ function useLastPlanWriteToolCallId(): string | null {
   });
 }
 
-/** plan_exit：计划审批卡（标题 + 计划 Markdown 预览 + rationale + 批准/拒绝） */
-const PlanExitRow: FC<{ threadId: string; approval: PendingToolApprovalView }> = ({
-  threadId,
+/** plan_exit：计划审批卡（标题 + rationale + 批准/拒绝；计划正文在右侧面板） */
+const PlanExitRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> = ({
+  sessionId,
   approval,
 }) => {
   const [busy, setBusy] = useState(false);
@@ -90,7 +89,9 @@ const PlanExitRow: FC<{ threadId: string; approval: PendingToolApprovalView }> =
 
   const decide = (approved: boolean) => {
     setBusy(true);
-    confirmToolApproval(threadId, approval.approvalId, approved).catch(() => {});
+    confirmToolApproval(sessionId, approval.approvalId, approved).catch(
+      () => {},
+    );
   };
 
   return (
@@ -119,13 +120,8 @@ const PlanExitRow: FC<{ threadId: string; approval: PendingToolApprovalView }> =
           </button>
         )}
       </div>
-      <div className="scrollbar-thin mt-2 max-h-72 overflow-y-auto">
-        <div className="text-sm">
-          <Streamdown plugins={{ code, cjk }}>{info?.markdown || ""}</Streamdown>
-        </div>
-      </div>
       {info?.rationale && (
-        <p className="text-muted-foreground mt-3 border-t pt-3 text-sm">
+        <p className="text-muted-foreground mt-2 border-t pt-3 text-sm">
           {info.rationale}
         </p>
       )}
@@ -156,36 +152,46 @@ const PlanExitRow: FC<{ threadId: string; approval: PendingToolApprovalView }> =
   );
 };
 
-const ApprovalRow: FC<{ threadId: string; approval: PendingToolApprovalView }> = ({
-  threadId,
+const ApprovalRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> = ({
+  sessionId,
   approval,
 }) => {
   const [busy, setBusy] = useState(false);
   const summary = summarizeInput(approval.toolName, approval.input);
 
-  const decide = (approved: boolean) => {
+  const decide = (approved: boolean, remember = false) => {
     setBusy(true);
-    confirmToolApproval(threadId, approval.approvalId, approved).catch(() => {});
+    confirmToolApproval(sessionId, approval.approvalId, approved, remember).catch(
+      () => {},
+    );
   };
 
   if (approval.toolName === "plan_exit") {
-    return <PlanExitRow threadId={threadId} approval={approval} />;
+    return <PlanExitRow sessionId={sessionId} approval={approval} />;
   }
 
   return (
-    <div className="flex items-start gap-2.5 px-4 py-2.5">
+    // flex-wrap：按钮组是 shrink-0（按钮不该被压扁），窄列下若不换行就会把文字块
+    // 挤成一条竖缝（实测：三个按钮占掉大半张卡，正文每行只剩七八个字）。
+    // 文字块给 basis-52 的最小可读宽度：放不下时按钮整组落到下一行右对齐
+    <div className="flex flex-wrap items-start gap-x-2.5 gap-y-2 px-4 py-2.5">
       <span className="mt-0.5 shrink-0 text-amber-500 [&_svg]:size-4">
         <ShieldAlertIcon />
       </span>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 basis-52">
         <p className="text-sm font-medium">
           请求执行 <span className="font-mono">{approval.toolName}</span>
         </p>
         {summary && (
           <p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">{summary}</p>
         )}
+        {/* 「同意意味着什么」：如可写根清单的授权。不显式写出就是静默扩大权限 */}
+        {approval.note && (
+          <p className="text-muted-foreground mt-1 text-xs leading-relaxed">{approval.note}</p>
+        )}
       </div>
-      <div className="flex shrink-0 gap-2">
+      {/* ml-auto 让按钮组在换行后仍贴右；自身也能换行（极窄时按钮之间折行） */}
+      <div className="ml-auto flex shrink-0 flex-wrap justify-end gap-2">
         <Button
           type="button"
           variant="ghost"
@@ -197,6 +203,26 @@ const ApprovalRow: FC<{ threadId: string; approval: PendingToolApprovalView }> =
           <XIcon className="size-3.5" />
           拒绝
         </Button>
+        {/* 「允许并记住」只在带可写根上下文的审批上出现（workspace-write 档的
+            write/edit）：其余的没有"一条可记住的路径"可言，给了按钮就是骗人 */}
+        {approval.canRemember && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => decide(true, true)}
+            title={
+              approval.toolName === "bash"
+                ? "把这条命令的前缀（如前两个词）记进 .kova/permissions.local.json，之后同类命令不再询问"
+                : "把这次要写的目录记进 .kova/permissions.local.json，之后该目录不再询问"
+            }
+            className="h-8 rounded-full px-3.5"
+          >
+            <BookmarkPlusIcon className="size-3.5" />
+            {approval.toolName === "bash" ? "允许并记住这类命令" : "允许并记住"}
+          </Button>
+        )}
         <Button
           type="button"
           size="sm"
@@ -205,7 +231,7 @@ const ApprovalRow: FC<{ threadId: string; approval: PendingToolApprovalView }> =
           className="h-8 rounded-full px-3.5"
         >
           <CheckIcon className="size-3.5" />
-          批准
+          {approval.canRemember ? "仅这一次" : "批准"}
         </Button>
       </div>
     </div>
@@ -213,21 +239,23 @@ const ApprovalRow: FC<{ threadId: string; approval: PendingToolApprovalView }> =
 };
 
 export const ToolApprovalCard: FC = () => {
-  const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const approvals = usePendingToolApprovals(threadId);
+  // 台账键 = pi sessionId（不是 mainThreadId：本会话新建的线程是 __LOCALID_
+  // 草稿 id，拿它查永远 miss，卡片不上屏），结算也用同一键
+  const sessionId = useInteractionSessionId();
+  const approvals = usePendingToolApprovals(sessionId);
 
-  if (!threadId || approvals.length === 0) return null;
+  if (!sessionId || approvals.length === 0) return null;
 
   return (
     <div
       data-slot="aui-tool-approval-card"
       className={cn(
-        "border-border/60  mb-1 bg-card overflow-hidden rounded-2xl border shadow-sm",
+        "border-border/60 mb-2 bg-card overflow-hidden rounded-2xl border shadow-sm",
         approvals.length > 1 && "divide-y",
       )}
     >
       {approvals.map((a) => (
-        <ApprovalRow key={a.approvalId} threadId={threadId} approval={a} />
+        <ApprovalRow key={a.approvalId} sessionId={sessionId} approval={a} />
       ))}
     </div>
   );

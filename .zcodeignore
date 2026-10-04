@@ -1,0 +1,92 @@
+# dependencies
+node_modules/
+/.pnp
+.pnp.*
+# 主仓用 bun 管理依赖，npm/pnpm lock 为杂讯（历史遗留已删）
+package-lock.json
+pnpm-lock.yaml
+
+# testing
+/coverage
+
+# next.js
+.next/
+out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+*.log
+.claude/settings.local.json
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# tauri
+
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/gen/schemas
+/apps/desktop/src-tauri/binaries/
+# build:sidecar 脚本生成的复制产物，可再生
+/apps/desktop/src-tauri/resources/
+
+# pi agent sidecar
+/apps/sidecar/pi-agent/stderr.log
+# sidecar 使用 bun 管理依赖，npm lock 为杂讯
+/apps/sidecar/pi-agent/package-lock.json
+
+.agents/skills/
+
+# 性能迭代采样输出（docs/perf-baseline.md 约定不进 git）
+/perf-samples/
+.agents/
+.trae/
+skills-lock.json
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

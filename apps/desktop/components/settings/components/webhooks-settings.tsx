@@ -50,7 +50,7 @@ import {
   AGENT_EVENT_REGISTRY,
   eventLabel,
   type AgentEventName,
-} from "@/lib/agent-events";
+} from "@/lib/pi/agent-events";
 import {
   WEBHOOK_FORMATS,
   addWebhook,
@@ -59,14 +59,14 @@ import {
   useWebhookEndpoints,
   type WebhookEndpoint,
   type WebhookFormat,
-} from "@/lib/webhooks";
+} from "@/lib/notify/webhooks";
 import {
   DELIVERY_KEEP,
   pruneWebhookDeliveries,
   removeWebhookDeliveries,
   sendWebhookTest,
   useWebhookDeliveries,
-} from "@/lib/webhook-dispatcher";
+} from "@/lib/notify/webhook-dispatcher";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -91,7 +91,7 @@ const webhookFormSchema = z
       .min(1, "请输入 URL")
       .refine((v) => /^https?:\/\//i.test(v), "需以 http(s):// 开头"),
     secret: z.string().trim(),
-    format: z.enum(["generic", "dingtalk", "feishu", "slack"]),
+    format: z.enum(["generic", "dingtalk", "feishu", "slack", "bark"]),
     allEvents: z.boolean(),
     events: z.array(z.string()),
   })
@@ -134,6 +134,16 @@ const WebhookEditor: FC<{
     },
   });
   const allEvents = useWatch({ control, name: "allEvents" });
+  const formatValue = useWatch({ control, name: "format" });
+
+  /** URL 输入示例随格式切换（Bark 是 App 里复制的「服务器/设备Key」串） */
+  const URL_PLACEHOLDER: Record<WebhookFormat, string> = {
+    generic: "https://example.com/hook",
+    dingtalk: "https://oapi.dingtalk.com/robot/send?access_token=…",
+    feishu: "https://open.feishu.cn/open-apis/bot/v2/hook/…",
+    slack: "https://hooks.slack.com/services/…",
+    bark: "https://api.day.app/你的Key（Bark App 内复制）",
+  };
 
   const onSubmit = (values: WebhookFormValues) => {
     const value = {
@@ -248,27 +258,30 @@ const WebhookEditor: FC<{
                   id="wh-url"
                   {...field}
                   aria-invalid={fieldState.invalid}
-                  placeholder="https://oapi.dingtalk.com/robot/send?access_token=…"
+                  placeholder={URL_PLACEHOLDER[field.value as WebhookFormat]}
                 />
               )}
             />
             <FieldError errors={[errors.url]} />
           </Field>
-          <Field className="col-span-2">
-            <FieldLabel htmlFor="wh-secret">加签密钥（可选）</FieldLabel>
-            <Controller
-              control={control}
-              name="secret"
-              render={({ field }) => (
-                <Input
-                  id="wh-secret"
-                  {...field}
-                  type="password"
-                  placeholder="钉钉/飞书安全设置的 secret，或通用 HMAC 密钥"
-                />
-              )}
-            />
-          </Field>
+          {/* Bark 无加签机制：该格式下不渲染密钥字段，免得用户以为要填 */}
+          {formatValue !== "bark" && (
+            <Field className="col-span-2">
+              <FieldLabel htmlFor="wh-secret">加签密钥（可选）</FieldLabel>
+              <Controller
+                control={control}
+                name="secret"
+                render={({ field }) => (
+                  <Input
+                    id="wh-secret"
+                    {...field}
+                    type="password"
+                    placeholder="钉钉/飞书安全设置的 secret，或通用 HMAC 密钥"
+                  />
+                )}
+              />
+            </Field>
+          )}
           <Field className="col-span-2" data-invalid={!!errors.events}>
             <div className="flex items-center justify-between">
               <FieldLabel>订阅事件</FieldLabel>
@@ -433,7 +446,7 @@ export const WebhooksSettings: FC = () => {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Webhooks</h1>
             <p className="text-muted-foreground mt-1 text-sm">
-              把任务完成、等待审批、出错等事件推送到钉钉/飞书/Slack 或任意 HTTP 端点。
+              把任务完成、等待审批、出错等事件推送到钉钉/飞书/Slack/Bark 或任意 HTTP 端点。
             </p>
           </div>
           <Button  onClick={() => setEditing("new")}>

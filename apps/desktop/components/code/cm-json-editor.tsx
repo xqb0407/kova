@@ -11,9 +11,9 @@ import {
   codeThemeExtension,
   languageForPath,
   resolveCodeThemeName,
-} from "@/lib/code-theme";
-import { useHtmlDark } from "@/lib/use-html-dark";
-import { useUiPrefs } from "@/lib/ui-prefs";
+} from "@/lib/markdown/code-theme";
+import { useHtmlDark } from "@/lib/settings/use-html-dark";
+import { useUiPrefs } from "@/lib/settings/ui-prefs";
 import "@/app/styles/codemirror.css";
 
 /**

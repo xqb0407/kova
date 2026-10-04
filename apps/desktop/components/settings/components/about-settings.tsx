@@ -13,10 +13,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { isTauri } from "@/lib/tauri";
+import { FEEDBACK_ISSUES_URL } from "@/lib/feedback";
 import { FolderOpenIcon, SquareArrowOutUpRightIcon, Trash2Icon } from "lucide-react";
-
-/** 问题反馈：gitee 仓库 issue 页（origin remote） */
-const FEEDBACK_URL = "https://gitee.com/herther/pi-desktop/issues";
+import { ObservabilitySection } from "./observability-settings";
 
 type AppInfo = { name: string; version: string; tauri: string };
 
@@ -75,8 +74,8 @@ export const AboutSettings: FC = () => {
   const openFeedback = useCallback(async () => {
     setError(null);
     try {
-      if (desktop) await invoke("open_external", { url: FEEDBACK_URL });
-      else window.open(FEEDBACK_URL, "_blank", "noopener");
+      if (desktop) await invoke("open_external", { url: FEEDBACK_ISSUES_URL });
+      else window.open(FEEDBACK_ISSUES_URL, "_blank", "noopener");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -113,7 +112,7 @@ export const AboutSettings: FC = () => {
               <>
                 <SettingRow label="应用名称">
                   <span className="text-muted-foreground text-sm">
-                    {info?.name ?? "Xulux Assistant"}
+                    {info?.name ?? "扣瓦"}
                   </span>
                 </SettingRow>
                 <SettingRow label="应用版本">
@@ -123,7 +122,7 @@ export const AboutSettings: FC = () => {
                 </SettingRow>
               </>
             ) : (
-              <SettingRow label="Xulux Assistant（网页版）">
+              <SettingRow label="扣瓦（网页版）">
                 <span className="text-muted-foreground text-sm">远程访问</span>
               </SettingRow>
             )}
@@ -196,7 +195,7 @@ export const AboutSettings: FC = () => {
                 </div>
               </SettingRow>
             )}
-            <SettingRow label="问题反馈" desc={FEEDBACK_URL}>
+            <SettingRow label="问题反馈" desc={FEEDBACK_ISSUES_URL}>
               <Button size="sm" variant="outline" onClick={() => void openFeedback()}>
                 <SquareArrowOutUpRightIcon className="size-4" />
                 去反馈
@@ -204,6 +203,9 @@ export const AboutSettings: FC = () => {
             </SettingRow>
           </div>
         </section>
+
+        {/* 追踪：OTLP 导出配置（原独立「追踪」页并入） */}
+        <ObservabilitySection />
 
         {/* 开发者：DevTools 依赖桌面端 WebView 能力，网页端隐藏 */}
         {desktop && (

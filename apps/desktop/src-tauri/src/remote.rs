@@ -8,12 +8,20 @@
 //!   客户端（authed）：sidecar 原样格式，如 {"type":"prompt","id":"..",..}、{"type":"abort"}
 //!   服务端：{"type":"paired","token":".."} | {"type":"authed"}
 //!           | {"type":"error","errorText":".."} | {"type":"closed","reason":".."}
-//!           authed 后全部为 sidecar 原样响应/chunk 行（id 已还原为客户端原始 id）
+//!           authed 后全部为 sidecar 原样响应/chunk 行（id 已还原为客户端原始 id）；
+//!           请求级失败（含 REMOTE_DENIED_TYPES 拒绝）也按原请求 id 回错误帧——
+//!           客户端据此结算该次调用（toast/错误条），不会误判成连接断开
 //!
-//! 安全（MVP）：
+//! 安全：
 //!   - 配对码 6 位数字只存内存（重启即失效），每连接校验失败 5 次断开，未认证阶段 10s 超时
-//!   - token 64hex 持久化于 kv（key: remote.token），仅首次配对下发
-//!   - abort 无 id，sidecar 侧为全局中断——远程与本地会互相打断（MVP 接受）
+//!   - token 64hex 持久化于 kv（key: remote.token，secret.rs 加密落盘），仅首次配对下发；
+//!     pi_remote_revoke 删除 token 并踢掉全部在连设备（需重新扫码配对）
+//!   - authed 后仅转发会话/聊天类消息；凭据/MCP/技能/子代理/记忆/个性化/模型属性等
+//!     管理类消息命中 REMOTE_DENIED_TYPES 一律拒绝（远程是"对话延伸"，桌面端才能改配置）
+//!   - 绑定模式：默认只绑 127.0.0.1（仅本机）；"局域网访问"（remote.bind.lan=true）
+//!     才绑 0.0.0.0 跨设备。HTTP/WS 均无 TLS——token 与消息在局域网明文，
+//!     所以公网/大网络场景请走 Tailscale 之类的加密隧道，别直接开这个开关
+//!   - abort 无 id，sidecar 侧为全局中断——远程与本地会互相打断
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -44,6 +52,58 @@ const DEFAULT_PORT: u16 = 8787;
 const MAX_PAIR_ATTEMPTS: u8 = 5;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const TOKEN_KEY: &str = "remote.token";
+/// 绑定模式：true = 0.0.0.0（局域网跨设备，须显式打开），false = 仅本机回环（默认）
+const BIND_LAN_KEY: &str = "remote.bind.lan";
+
+/// authed 后禁止远程转发的消息类型：凭据/提供商管理、MCP 管理（可拉起本地进程）、
+/// 技能/子代理写（注入可执行提示词内容）、记忆写、个性化/模型属性/过滤写、
+/// 自动化写。命中即拒绝该消息，并按原请求 id 回错误帧（请求级错误——客户端
+/// 提示该操作不可用，不会误报成连接断开）。会话/聊天类与只读查询不在其列。
+/// 第二层防线是 list_custom_providers 只回掩码——即使漏网也读不到明文 key。
+const REMOTE_DENIED_TYPES: &[&str] = &[
+    // 凭据与 AI 服务管理
+    "set_credential",
+    "delete_credential",
+    "list_credentials",
+    "add_custom_provider",
+    "delete_custom_provider",
+    "toggle_custom_provider",
+    "test_provider",
+    "fetch_models",
+    // MCP：管理面（save/delete/test 可拉起本地进程）+ 授权流程 + 日志读取
+    "save_mcp_server",
+    "delete_mcp_server",
+    "set_mcp_server_enabled",
+    "test_mcp_server",
+    "authorize_mcp_server",
+    "revoke_mcp_server_auth",
+    "list_mcp_servers",
+    "get_mcp_server_tools",
+    "get_mcp_server_log",
+    "get_mcp_audit_log",
+    // 技能 / 子代理定义写
+    "save_skill",
+    "delete_skill",
+    "set_skill_enabled",
+    "set_skills_enabled",
+    "save_subagent",
+    "delete_subagent",
+    "set_subagent_enabled",
+    // 记忆与个性化写
+    "write_memory_file",
+    "set_memory",
+    "set_personalization",
+    // 模型属性 / 目录覆盖写
+    "update_model",
+    "set_provider_filter",
+    "set_thinking_maps",
+    // 自动化写（定时任务在桌面机执行带工具回合，仅桌面端可管理）
+    "automation_save",
+    "automation_delete",
+    "automation_set_enabled",
+    "automation_run_now",
+    "automation_history_delete",
+];
 
 // ---------- stdout 行 → 远程连接 的路由表 ----------
 
@@ -183,8 +243,14 @@ pub(crate) fn broadcast_notification(parsed: Option<&Value>) {
         return;
     }
     match v.get("type").and_then(|t| t.as_str()) {
-        Some("turn_changed") | Some("subagent_activity") | Some("automation_fired")
-        | Some("automation_run_done") => {}
+        Some("turn_changed") | Some("session_state") | Some("subagent_activity")
+        | Some("automation_fired") | Some("automation_run_done") | Some("plugin_op_result")
+        // 会话清单变更（移动/网页/桌面跨端列表同步）：收到即防抖重拉 list_sessions
+        | Some("sessions_changed")
+        | Some("context_changed") | Some("design_themes") | Some("design_theme_set")
+        // react-pi 迁移阶段 5c：新链路原生事件行（无 id 广播）随行转发，
+        // 远程网页端 WsPiClient 据此驱动快照/流式投影（桌面走 pi-chunk-batch 不受影响）
+        | Some("thread_event") => {}
         _ => return,
     }
     let Ok(map) = authed_txs().lock() else { return };
@@ -225,9 +291,11 @@ pub struct RemoteStatus {
     pub port: Option<u16>,
     pub code: Option<String>,
     pub connections: u32,
-    /// 局域网 WS 连接地址（ws://ip:port/ws，主网卡优先）
+    /// 绑定模式：true = 局域网可达（0.0.0.0），false = 仅本机（127.0.0.1）
+    pub lan: bool,
+    /// 局域网 WS 连接地址（ws://ip:port/ws，主网卡优先；仅本机模式只回回环地址）
     pub lan_addresses: Vec<String>,
-    /// 浏览器预览地址（http://ip:port，主网卡优先）
+    /// 浏览器预览地址（http://ip:port，主网卡优先；仅本机模式只回回环地址）
     pub http_addresses: Vec<String>,
 }
 
@@ -236,6 +304,8 @@ struct RemoteInner {
     task: StdMutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     port: StdMutex<Option<u16>>,
     code: StdMutex<Option<String>>,
+    /// 当前网关生效的绑定模式（与 kv remote.bind.lan 同步）
+    lan: StdMutex<bool>,
     conns: AtomicUsize,
 }
 
@@ -246,6 +316,7 @@ impl Default for RemoteInner {
             task: StdMutex::new(None),
             port: StdMutex::new(None),
             code: StdMutex::new(None),
+            lan: StdMutex::new(false),
             conns: AtomicUsize::new(0),
         }
     }
@@ -259,9 +330,15 @@ pub struct RemoteState {
 impl RemoteState {
     fn status(&self) -> RemoteStatus {
         let port = self.inner.port.lock().ok().and_then(|p| *p);
+        let lan = self.inner.lan.lock().map(|l| *l).unwrap_or(false);
         let (lan_addresses, http_addresses) = match port {
             Some(p) => {
-                let ips = lan_ips();
+                // 仅本机模式不枚举网卡地址（也没有可分享的局域网入口）
+                let ips: Vec<IpAddr> = if lan {
+                    lan_ips()
+                } else {
+                    vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]
+                };
                 (
                     ips.iter().map(|ip| format!("ws://{ip}:{p}/ws")).collect(),
                     ips.iter().map(|ip| format!("http://{ip}:{p}")).collect(),
@@ -279,6 +356,7 @@ impl RemoteState {
             port,
             code: self.inner.code.lock().ok().and_then(|c| c.clone()),
             connections: self.inner.conns.load(Ordering::Relaxed) as u32,
+            lan,
             lan_addresses,
             http_addresses,
         }
@@ -297,14 +375,36 @@ pub async fn pi_remote_start(
     app: AppHandle,
     state: State<'_, RemoteState>,
     port: Option<u16>,
+    lan: Option<bool>,
 ) -> Result<RemoteStatus, String> {
-    if state.inner.shutdown.lock().map_err(|e| e.to_string())?.is_some() {
-        return Ok(state.status());
+    // 绑定模式：显式传入则持久化（remote.bind.lan），否则沿用上次的选择。
+    // 默认回环——0.0.0.0 会把无 TLS 的网关直接暴露给整个局域网，必须显式打开。
+    // 网关在跑且模式有变 → 先停再起，让切换即时生效。
+    if let Some(v) = lan {
+        store::kv_set_global(&app, BIND_LAN_KEY, if v { "true" } else { "false" })?;
+    }
+    let lan = match lan {
+        Some(v) => v,
+        None => match store::kv_get_global(&app, BIND_LAN_KEY)? {
+            // 只有字面量 "true" 才算开；缺失或任何异常值一律按仅本机处理
+            Some(s) => s == "true",
+            None => false,
+        },
+    };
+    let running = state.inner.shutdown.lock().map_err(|e| e.to_string())?.is_some();
+    if running {
+        let same_mode = state.inner.lan.lock().map(|l| *l == lan).unwrap_or(true);
+        if same_mode {
+            return Ok(state.status());
+        }
+        stop_sync(&state.inner);
     }
     let port = port.unwrap_or(DEFAULT_PORT);
-    let listener = TcpListener::bind(("0.0.0.0", port))
+    let bind_ip = if lan { "0.0.0.0" } else { "127.0.0.1" };
+    let listener = TcpListener::bind((bind_ip, port))
         .await
-        .map_err(|e| format!("failed to bind 0.0.0.0:{port}: {e}"))?;
+        .map_err(|e| format!("failed to bind {bind_ip}:{port}: {e}"))?;
+    *state.inner.lan.lock().map_err(|e| e.to_string())? = lan;
     let code = generate_code();
 
     let ctx = GatewayCtx {
@@ -328,7 +428,7 @@ pub async fn pi_remote_start(
     *state.inner.task.lock().map_err(|e| e.to_string())? = Some(task);
     *state.inner.port.lock().map_err(|e| e.to_string())? = Some(port);
     *state.inner.code.lock().map_err(|e| e.to_string())? = Some(code);
-    log::info!("[remote] gateway started on 0.0.0.0:{port}");
+    log::info!("[remote] gateway started on {bind_ip}:{port} (lan={lan})");
     Ok(state.status())
 }
 
@@ -340,8 +440,19 @@ pub async fn pi_remote_stop(state: State<'_, RemoteState>) -> Result<(), String>
 }
 
 #[tauri::command]
-pub async fn pi_remote_status(state: State<'_, RemoteState>) -> Result<RemoteStatus, String> {
-    Ok(state.status())
+pub async fn pi_remote_status(
+    app: AppHandle,
+    state: State<'_, RemoteState>,
+) -> Result<RemoteStatus, String> {
+    let mut st = state.status();
+    if !st.running {
+        // 未运行时展示持久化的绑定模式（下次 start 生效的就是它）
+        st.lan = match store::kv_get_global(&app, BIND_LAN_KEY)? {
+            Some(s) => s != "false",
+            None => true,
+        };
+    }
+    Ok(st)
 }
 
 #[tauri::command]
@@ -358,6 +469,23 @@ pub async fn pi_remote_refresh_code(state: State<'_, RemoteState>) -> Result<Str
     let code = generate_code();
     *state.inner.code.lock().map_err(|e| e.to_string())? = Some(code.clone());
     Ok(code)
+}
+
+/// 撤销全部已配对设备：删除持久化 token 并踢掉当前所有连接。
+/// 之后旧 token 全部失效（含内存中已认证的连接），新设备需重新扫码配对。
+#[tauri::command]
+pub async fn pi_remote_revoke(app: AppHandle, state: State<'_, RemoteState>) -> Result<RemoteStatus, String> {
+    store::kv_delete_global(&app, TOKEN_KEY)?;
+    let ids: Vec<u64> = conns()
+        .lock()
+        .map(|m| m.keys().copied().collect())
+        .map_err(|e| e.to_string())?;
+    let n = ids.len();
+    for id in ids {
+        kick_conn(id);
+    }
+    log::info!("[remote] token revoked; {n} connection(s) kicked");
+    Ok(state.status())
 }
 
 /// 应用退出时同步停网关（lib.rs 的 RunEvent::Exit 钩子调用）
@@ -403,15 +531,20 @@ fn generate_code() -> String {
     format!("{n:06}")
 }
 
-/// token 持久化于 kv；首次生成后复用（重启网关/应用后旧 token 仍有效）
+/// token 持久化于 kv（secret.rs 加密落盘）；首次生成后复用（重启网关/应用
+/// 后旧 token 仍有效）。存量旧明文在下次写入时自动升级为密文；密文解密失败
+/// （keychain 重置/库搬机）则换新 token——所有已配对设备需重新扫码配对。
 fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
     if let Some(t) = store::kv_get_global(app, TOKEN_KEY)? {
         if !t.is_empty() {
-            return Ok(t);
+            match crate::secret::decrypt(&t) {
+                Ok(plain) => return Ok(plain),
+                Err(e) => log::warn!("[remote] stored token undecryptable, rotating: {e}"),
+            }
         }
     }
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    store::kv_set_global(app, TOKEN_KEY, &token)?;
+    store::kv_set_global(app, TOKEN_KEY, &crate::secret::encrypt(&token))?;
     Ok(token)
 }
 
@@ -479,6 +612,13 @@ fn frontend_dir(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+/// 远程网页的 CSP：与 tauri.conf.json 同策略（脚本只准同源+Next 导出内联；
+/// 禁 object/base 劫持；connect 放开 ws/wss 供连接页指向任意网关）
+const PAGE_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
+    style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data:; \
+    connect-src 'self' ws: wss:; worker-src 'self' blob:; frame-src 'self' data: blob:; \
+    media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'";
+
 /// Next 静态导出布局：精确文件 → path.html → path/index.html → 无扩展名时回退 index.html
 async fn serve_static(AxumState(ctx): AxumState<GatewayCtx>, uri: axum::http::Uri) -> Response {
     let Some(dir) = frontend_dir(&ctx.app) else {
@@ -501,7 +641,11 @@ async fn serve_static(AxumState(ctx): AxumState<GatewayCtx>, uri: axum::http::Ur
             if let Ok(bytes) = tokio::fs::read(&p).await {
                 let mime = mime_of(&p.to_string_lossy());
                 return (
-                    [(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")],
+                    [
+                        (header::CONTENT_TYPE, mime),
+                        (header::CACHE_CONTROL, "no-cache"),
+                        (header::CONTENT_SECURITY_POLICY, PAGE_CSP),
+                    ],
                     bytes,
                 )
                     .into_response();
@@ -515,6 +659,7 @@ async fn serve_static(AxumState(ctx): AxumState<GatewayCtx>, uri: axum::http::Ur
                 [
                     (header::CONTENT_TYPE, "text/html; charset=utf-8"),
                     (header::CACHE_CONTROL, "no-cache"),
+                    (header::CONTENT_SECURITY_POLICY, PAGE_CSP),
                 ],
                 bytes,
             )
@@ -700,15 +845,49 @@ async fn read_loop(
             continue;
         }
 
-        // authed：透传 sidecar 协议
+        // authed：透传 sidecar 协议。
+        // 本地拒绝（REMOTE_DENIED_TYPES）与转发失败都按"请求级错误"回帧（带原
+        // 请求 id）：客户端把失败结算到发起的那次调用（toast/错误条）。无 id 的
+        // 错误帧会被网页端当成连接级故障、误报"与桌面端的连接已断开"——远程页
+        // 点自动化里的开关/立即运行等桌面专属操作，曾因此被误读成掉线。
+        let req_id = v.get("id").and_then(|x| x.as_str()).map(str::to_owned);
+        let mtype = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if REMOTE_DENIED_TYPES.contains(&mtype) {
+            send(denied_frame(req_id.as_deref()));
+            continue;
+        }
         if let Err(e) = forward_to_agent(app, conn_id, v, &tx).await {
-            send(json!({"type": "error", "errorText": e}));
+            send(error_frame(req_id.as_deref(), &e));
         }
     }
     Ok(())
 }
 
-/// authed 消息转发：重写 id 为 rem-{conn}-{orig} 并登记路由后写入 sidecar stdin
+/// 请求级错误帧：有原请求 id 时回填，客户端据此把失败结算到发起的那次调用
+/// （toast/错误条），不会像无 id 错误帧那样被当成协议级故障、误报
+/// "与桌面端的连接已断开"。无 id 的消息（abort 等）退化为协议级错误帧。
+fn error_frame(req_id: Option<&str>, error_text: &str) -> Value {
+    match req_id {
+        Some(id) => json!({"id": id, "type": "error", "errorText": error_text}),
+        None => json!({"type": "error", "errorText": error_text}),
+    }
+}
+
+/// 桌面专属操作的拒绝帧：请求级错误 + 结构化 code（error 加性扩展，见
+/// pi-protocol §8），远程端可据此把"该操作仅限桌面端"与网络故障区别对待。
+fn denied_frame(req_id: Option<&str>) -> Value {
+    let mut frame = error_frame(req_id, "该操作仅限桌面端");
+    if let Some(obj) = frame.as_object_mut() {
+        obj.insert(
+            "error".into(),
+            json!({"code": "REMOTE_DENIED", "source": "runtime", "retryable": false}),
+        );
+    }
+    frame
+}
+
+/// authed 消息转发：重写 id 为 rem-{conn}-{orig} 并登记路由后写入 sidecar stdin。
+/// 桌面专属拒绝（REMOTE_DENIED_TYPES）已在 read_loop 前置处理，不进本函数。
 async fn forward_to_agent(
     app: &AppHandle,
     conn_id: u64,
@@ -753,4 +932,50 @@ async fn forward_to_agent(
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{denied_frame, error_frame};
+    use serde_json::json;
+
+    /// 有原请求 id 的错误帧必须回填 id：网页端据此把失败结算到该请求。
+    /// 没回填时客户端会走无 id 分支，把操作级失败误报成"连接已断开"。
+    #[test]
+    fn request_error_echoes_client_id() {
+        let frame = error_frame(Some("ws-3-123"), "failed to spawn pi-agent");
+        assert_eq!(
+            frame,
+            json!({"id": "ws-3-123", "type": "error", "errorText": "failed to spawn pi-agent"})
+        );
+    }
+
+    /// abort 等无 id 的消息保持协议级错误帧（没有可回填的 id）。
+    #[test]
+    fn error_without_id_stays_protocol_level() {
+        let frame = error_frame(None, "pi-agent terminated");
+        assert_eq!(frame, json!({"type": "error", "errorText": "pi-agent terminated"}));
+        assert!(frame.get("id").is_none());
+    }
+
+    /// 桌面专属拒绝：带原 id + 结构化 code，远程端可把"仅限桌面端"与
+    /// 网络/连接故障区别开。
+    #[test]
+    fn denied_error_carries_code_and_id() {
+        let frame = denied_frame(Some("ws-1-9"));
+        assert_eq!(frame.get("id").and_then(|v| v.as_str()), Some("ws-1-9"));
+        assert_eq!(frame.get("errorText").and_then(|v| v.as_str()), Some("该操作仅限桌面端"));
+        assert_eq!(
+            frame.get("error"),
+            Some(&json!({"code": "REMOTE_DENIED", "source": "runtime", "retryable": false}))
+        );
+    }
+
+    /// 无 id 的拒绝帧不凭空造 id 字段（如 abort 类消息）。
+    #[test]
+    fn denied_error_without_id() {
+        let frame = denied_frame(None);
+        assert!(frame.get("id").is_none());
+        assert_eq!(frame.get("type").and_then(|v| v.as_str()), Some("error"));
+    }
 }

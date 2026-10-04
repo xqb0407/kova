@@ -6,11 +6,12 @@
 @import "tw-shimmer";
 @plugin "tailwind-scrollbar";
 /* @source "../../../packages/ui/src"; */
-@source "../node_modules/streamdown/dist/*.js";
-@source "../node_modules/@streamdown/code/dist/*.js";
-@source "../node_modules/@streamdown/math/dist/*.js";
-@source "../node_modules/@streamdown/mermaid/dist/*.js";
-@source "../node_modules/@streamdown/cjk/dist/*.js";
+/* Tailwind v4 的 @source 相对本 CSS 文件所在目录解析：app/styles 下要上跳两级才到 apps/desktop */
+@source "../../node_modules/streamdown/dist/*.js";
+@source "../../node_modules/@streamdown/code/dist/*.js";
+@source "../../node_modules/@streamdown/math/dist/*.js";
+@source "../../node_modules/@streamdown/mermaid/dist/*.js";
+@source "../../node_modules/@streamdown/cjk/dist/*.js";
 
 @import "./animate.css";
 @import "./codehike.css";
@@ -182,11 +183,66 @@
   }
   --animate-shimmer: shimmer-sweep var(--shimmer-duration, 1000ms) linear
   infinite both;
+
+  /* 提示词优化进行中遮罩（prompt-optimize-overlay）：
+     星标上下浮动 / 芯片外发光脉冲（透遮罩呼吸）；边框流光的 keyframes
+     与 .aui-optimize-ring 在文件末尾（@property 需顶级注册） */
+  @keyframes optimize-float {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-3px);
+    }
+  }
+  --animate-optimize-float: optimize-float 2.2s ease-in-out infinite;
+  @keyframes optimize-glow {
+    0%,
+    100% {
+      box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 60%, transparent);
+    }
+    50% {
+      box-shadow:
+        0 0 10px 2px color-mix(in oklab, var(--accent) 70%, transparent),
+        0 0 2px 0 color-mix(in oklab, var(--accent) 80%, transparent);
+    }
+  }
+  --animate-optimize-glow: optimize-glow 1.6s ease-in-out infinite;
 }
 
 :root {
   --page-width: 80rem;
   --radius: 0.625rem;
+  /* 提示词优化遮罩配色（两层两套色，见文件末尾 .aui-optimize-flow / .aui-optimize-ring）：
+     候选 A「蓝紫晨雾」：
+     - 边框贪吃蛇：青蓝 → 天青 → 长春花 → 淡紫（绕色轮顺序推进，相邻色永远相邻，
+       叠色不会发灰；蛇头淡紫近白，最亮）；
+     - 卡内壁纸：同一家族的**淡彩**（高明度低彩度，苹果壁纸那种"洗过"的柔色）。 */
+  --optimize-hue-1: oklch(0.75 0.11 195);
+  --optimize-hue-2: oklch(0.7 0.15 230);
+  --optimize-hue-3: oklch(0.64 0.19 265);
+  --optimize-hue-4: oklch(0.6 0.17 300);
+  /* 卡内光团基色（浅色主题 = 中等浓度，三个光团各取一色）：
+     太淡则动感不可感知（实测反馈），彩度取在淡彩与边框饱和色之间。
+     注意：**透明度直接写进颜色**（oklch(… / a)），不要用 color-mix——Tailwind/
+     Lightning CSS 构建时会把 color-mix(in oklab, var(--x) N%, transparent)
+     简化成不透明的 var(--x)，alpha 全丢（线上实测：蛇尾变满色、显得又粗又重）。 */
+  --optimize-flow-1: oklch(0.86 0.1 195);
+  --optimize-flow-2: oklch(0.84 0.12 230);
+  --optimize-flow-3: oklch(0.82 0.13 265);
+  --optimize-flow-4: oklch(0.82 0.11 300);
+  /* 边框贪吃蛇的渐隐尾/亮头/外发光（同色族，预计算 alpha 与白色混合） */
+  --optimize-ring-1: oklch(0.75 0.11 195 / 0.55);
+  --optimize-ring-2: oklch(0.7 0.15 230 / 0.85);
+  --optimize-ring-3: oklch(0.64 0.19 265);
+  --optimize-ring-4: oklch(0.6 0.17 300);
+  --optimize-ring-head: oklch(0.86 0.06 300);
+  --optimize-ring-glow-1: oklch(0.64 0.19 265 / 0.75);
+  --optimize-ring-glow-2: oklch(0.6 0.17 300 / 0.6);
+  --optimize-blob-1-color: oklch(0.86 0.1 195 / 0.95);
+  --optimize-blob-2-color: oklch(0.82 0.13 265 / 0.92);
+  --optimize-blob-3-color: oklch(0.82 0.11 300 / 0.7);
   /* 界面字体栈（font-sans/font-display 经 @theme inline 引用本变量）。
      西文默认 Geist Variable（自带 tnum 等宽数字，UI 数字列对齐更干净），
      加载完成前回退系统字体；栈显式包含各平台中文字体，
@@ -504,12 +560,15 @@
   }
 }
 
-/* 穿透时右侧主内容区保持不透明，仅左侧侧边栏透出材质。
-   置于 layer 外以覆盖 utilities 层的 bg-muted/55 半透明底色。 */
-/* html[data-window-effect] [data-content-solid] {
-  background: var(--background);
+/* 窗口材质开启时消息区同样透出磨砂质感：内容容器整层透明（四周留边条
+   直接露出材质），聊天卡片覆 72% 底色薄纱——系统高斯模糊材质从纱底透出，
+   文字仍落在足够实的底上。置于 layer 外以覆盖 utilities 层的 bg-background。 */
+html[data-window-effect] [data-content-solid] {
+  background: transparent;
 }
- */
+html[data-window-effect] [data-chat-card] {
+  background: color-mix(in oklab, var(--background) 72%, transparent);
+}
 
 /* 窗口材质开启时选中底色改为半透明叠加（浅色黑、深色白），与 --hover/--active
    同款合成方式：不透明实色块压在透出桌面的 bg-muted/55 侧栏上，明暗对比会随桌面
@@ -531,4 +590,184 @@ html.dark[data-window-effect] {
 [data-slot="aui_assistant-message-content"] {
   content-visibility: auto;
   contain-intrinsic-size: auto 320px;
+}
+
+/* 轮内过程区（折叠轮的展开面板）：面板内不做屏外跳过。
+   展开动画在挂载那一帧就要量出目标高度，上面那条规则会让屏外的消息正文先按
+   320px 占位参与测量——动画收尾时高度再跳回真实值（观感是顿一下）。收起时整块
+   面板卸载，跳过与否没有收益差异；展开时这里正是用户在读的内容。 */
+[data-slot="aui_turn-process"] [data-slot="aui_assistant-message-content"] {
+  content-visibility: visible;
+}
+
+/* 提示词优化进行中：composer 卡片上的芯片透遮罩呼吸发光——视觉上直接说明
+   「芯片我不动」。data-optimizing 在 composer.tsx 的 shell 上。 */
+[data-optimizing="true"] .aui-directive-chip {
+  border-radius: 0.5rem;
+  animation: optimize-glow 1.6s ease-in-out infinite;
+}
+
+/* 优化进行中：卡片自带描边隐藏，让位给边框贪吃蛇——两圈描边同时在场（静态细边
+   + 动画环）看着像重影。本规则不放在 @layer 里，天然压过 Tailwind 工具类的
+   border-border/30 与 focus-within/dark 各态（shell 已有 border-color 过渡） */
+[data-optimizing="true"] {
+  border-color: transparent;
+}
+
+/* 优化进行中：底栏按钮压暗让位——遮罩不铺色，若按钮保持全亮，居中的状态行
+   会和按钮行抢读（看起来像浮在按钮上）；压暗后状态行自然接管这一条带 */
+[data-optimizing="true"] .aui-composer-action-wrapper {
+  opacity: 0.38;
+  transition: opacity 0.2s ease;
+}
+
+/* 提示词优化遮罩的两层动效（用户点名要的效果）：
+   ① 卡内 = 多色晕染（网格渐变）：三团不同色相的模糊光团各自漂移缩放，
+      颜色像在水里化开——比"一条色带平移"更接近苹果壁纸的多团颜色；
+      容器垫在正文下面（composer.tsx shell 首个子节点），文字不被染色。
+   ② 边框 = 贪吃蛇式渐变描边（同色族长尾渐入 + 亮头绕边跑）。
+   色相独立于主题色板（中性主题的 chart 系列是灰阶，出不来壁纸感），
+   靠透明度与 .dark 覆盖适配明暗。 */
+
+/* 三团光团各自的漂移路径（时长/方向/缩放/明暗都不同，互不同步 → 有机感）。
+   幅度按"一次优化（2~4 秒）之内就能看出在动"标定：时长 3.5/4.5/5.5s、
+   位移约 3/4 个光团宽、再叠透明度呼吸——更慢的档位在遮罩存活期内几乎不动
+   （13/17/21s 与 7/9/11s 两档都实测反馈"感觉不到"） */
+@keyframes optimize-blob-1 {
+  0% {
+    transform: translate3d(-10%, -6%, 0) scale(0.9);
+    opacity: 0.7;
+  }
+  100% {
+    transform: translate3d(72%, 40%, 0) scale(1.28);
+    opacity: 1;
+  }
+}
+@keyframes optimize-blob-2 {
+  0% {
+    transform: translate3d(10%, -8%, 0) scale(1.24);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(-70%, 36%, 0) scale(0.86);
+    opacity: 0.6;
+  }
+}
+@keyframes optimize-blob-3 {
+  0% {
+    transform: translate3d(8%, 14%, 0) scale(0.84);
+    opacity: 0.5;
+  }
+  100% {
+    transform: translate3d(-60%, -46%, 0) scale(1.3);
+    opacity: 1;
+  }
+}
+.aui-optimize-flow {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  overflow: hidden;
+  /* 卡内是氛围层（浅色 = 淡彩壁纸），边框贪吃蛇在遮罩层不裁剪、当主角 */
+  opacity: 0.9;
+}
+.aui-optimize-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(10px);
+}
+/* 色团 1：青（左上起漂，放大离场） */
+.aui-optimize-blob-1 {
+  width: 62%;
+  height: 150%;
+  left: -12%;
+  top: -40%;
+  background: radial-gradient(closest-side, var(--optimize-blob-1-color), transparent);
+  animation: optimize-blob-1 3.5s ease-in-out infinite alternate;
+}
+/* 色团 2：紫（右上起漂，收缩离场） */
+.aui-optimize-blob-2 {
+  width: 58%;
+  height: 150%;
+  right: -10%;
+  top: -30%;
+  background: radial-gradient(closest-side, var(--optimize-blob-2-color), transparent);
+  animation: optimize-blob-2 4.5s ease-in-out infinite alternate;
+}
+/* 色团 3：淡紫（底部升起，最淡，垫底兜住下缘） */
+.aui-optimize-blob-3 {
+  width: 70%;
+  height: 160%;
+  left: 22%;
+  bottom: -70%;
+  background: radial-gradient(closest-side, var(--optimize-blob-3-color), transparent);
+  animation: optimize-blob-3 5.5s ease-in-out infinite alternate;
+}
+/* 深色主题：淡彩在深底上会发灰白，光团改回同色族的饱和色并整体压淡 */
+.dark {
+  --optimize-blob-1-color: oklch(0.75 0.11 195 / 0.95);
+  --optimize-blob-2-color: oklch(0.64 0.19 265 / 0.92);
+  --optimize-blob-3-color: oklch(0.6 0.17 300 / 0.7);
+}
+.dark .aui-optimize-flow {
+  opacity: 0.5;
+}
+
+/* 提示词优化的边框贪吃蛇：conic 长尾从透明渐入三色、蛇头最亮，收口一刀切，
+   from var(--optimize-angle) 旋转 = 蛇沿边框跑圈。
+   @property 注册角度变量使其可插值（Safari 16.4+ / Chromium 111+；不支持时
+   蛇静止在初始角，仍有可见高光边）。mask 双层 + exclude 挖空内部，
+   只留 2px 细边带；双层 drop-shadow 给边带近光 + 弥散外发光。宿主是遮罩层
+   （rounded-[inherit]），所以 border-radius: inherit 跟卡片同圆角。 */
+@property --optimize-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes optimize-ring-spin {
+  to {
+    --optimize-angle: 360deg;
+  }
+}
+.aui-optimize-ring {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 2px;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--optimize-angle),
+    transparent 0deg,
+    transparent 195deg,
+    var(--optimize-ring-1) 240deg,
+    var(--optimize-ring-2) 272deg,
+    var(--optimize-ring-3) 304deg,
+    var(--optimize-ring-4) 328deg,
+    var(--optimize-ring-head) 341deg,
+    transparent 348deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  /* 双层外发光：亮头带一圈近光 + 一圈弥散光，边界从卡片底色里"跳"出来 */
+  filter: drop-shadow(0 0 5px var(--optimize-ring-glow-1))
+    drop-shadow(0 0 16px var(--optimize-ring-glow-2));
+  animation: optimize-ring-spin 2.4s linear infinite;
+}
+
+/* 系统减弱动效偏好：优化遮罩只留静态态（渐变流动停、蛇停跑、星标不浮动、
+   芯片不脉冲），胶囊与视觉锁定仍在——告知不中断（同 codehike.css 惯例） */
+@media (prefers-reduced-motion: reduce) {
+  /* 光团与边框环不压：它们是"优化进行中"的功能性指示（同 spinner 语义），
+     压掉会让用户看不出正在进行；只压纯粹的装饰性动效 */
+  .animate-optimize-float,
+  [data-optimizing="true"] .aui-directive-chip {
+    animation: none;
+  }
 }

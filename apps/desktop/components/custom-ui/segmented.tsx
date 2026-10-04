@@ -7,12 +7,15 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
 
 export type SegmentedOption<T extends string> = {
   value: T;
   label: string;
+  /** 可选前导图标，渲染在文字左侧（纯文字段不受影响） */
+  icon?: ReactNode;
 };
 
 /**
@@ -110,7 +113,7 @@ export function Segmented<T extends string>({
               aria-pressed={active}
               onClick={() => !active && onChange(opt.value)}
               className={cn(
-                "relative z-10 inline-flex h-7 items-center justify-center whitespace-nowrap rounded-full bg-transparent px-3 text-xs",
+                "relative z-10 inline-flex h-7 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-transparent px-3 text-xs",
                 "transition-colors",
                 "disabled:cursor-not-allowed",
                 // 指示器负责主色底，按钮自身保持透明，避免底色与滑动胶囊叠出双层圆角；
@@ -120,6 +123,7 @@ export function Segmented<T extends string>({
                   : "text-muted-foreground hover:bg-primary/10 hover:text-foreground",
               )}
             >
+              {opt.icon}
               {opt.label}
             </button>
           </div>

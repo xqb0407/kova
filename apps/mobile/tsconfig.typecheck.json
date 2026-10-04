@@ -1,0 +1,21 @@
+{
+  // Expo's Metro resolver maps `compilerOptions.paths` from tsconfig.json onto bare
+  // specifiers (@expo/cli createTypescriptResolver), and resolving an aliased package
+  // by directory skips its exports map, so `uniwind` there breaks the web export.
+  // That is why the react-native deduplication and the `uniwind` exclusion live here,
+  // where only tsc reads them, rather than in tsconfig.json which Metro also reads.
+  // `paths` replaces rather than merges, so the alias set is restated in full — it must
+  // match tsconfig.json, plus this file's own entries. An editor's language service
+  // loads tsconfig.json rather than this file, so it may report the duplicate-module
+  // errors this config resolves; `npm run typecheck` is the authority.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "react-native": ["./node_modules/react-native"],
+      "@/components/*": ["./components/*"],
+      "@/hooks/*": ["./hooks/*"],
+      "@/lib/*": ["./lib/*"],
+      "@/*": ["./*"]
+    }
+  }
+}

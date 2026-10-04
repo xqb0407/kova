@@ -73,6 +73,24 @@ rl.on("line", (line) => {
       const name = m.params?.name;
       const args = m.params?.arguments ?? {};
       if (name === "echo") {
+        // 特例 IMG：附带合法 1×1 PNG image 块，测 MCP 图片透传（工具数不变）
+        if (args.text === "IMG") {
+          send({
+            jsonrpc: "2.0",
+            id: m.id,
+            result: {
+              content: [
+                { type: "text", text: "echo:IMG" },
+                {
+                  type: "image",
+                  mimeType: "image/png",
+                  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+                },
+              ],
+            },
+          });
+          break;
+        }
         send({
           jsonrpc: "2.0",
           id: m.id,

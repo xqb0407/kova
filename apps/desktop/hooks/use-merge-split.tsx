@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { spring } from "@/lib/springs";
+import { spring } from "@/lib/motion/springs";
 import type { ItemRect } from "@/hooks/use-fluid-hover";
 
 // Run the layout effect on the client (where it must fire before paint, so a

@@ -1,12 +1,12 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Xulux Assistant",
+  "productName": "扣瓦",
   "version": "0.1.0",
-  "identifier": "com.xulux.assistant",
+  "identifier": "com.kova.assistant",
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://localhost:3000",
-    "beforeDevCommand": "npm run build:sidecar && npm run dev",
+    "beforeDevCommand": "npm run build:sidecar && npm run build && npm run dev",
     "beforeBuildCommand": "npm run build:sidecar && npm run build"
   },
   "app": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "create": false,
-        "title": "Xulux Assistant",
+        "title": "扣瓦",
         "width": 1600,
         "height": 800,
         "minWidth": 800,
@@ -30,13 +30,14 @@
         "shadow": true,
         "center": true,
         "trafficLightPosition": {
-          "x": 16,
-          "y": 20
+          "x": 20,
+          "y": 30
         }
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws: wss:; worker-src 'self' blob:; frame-src 'self' data: blob: https:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'",
+      "dangerousDisableAssetCspModification": ["style-src", "script-src"]
     },
     "trayIcon": {
       "iconPath": "icons/tray.png",
@@ -48,7 +49,6 @@
     "active": true,
     "targets": "all",
     "externalBin": ["binaries/pi-agent"],
-    "resources": ["../out"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -56,7 +56,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "publisher": "Xulux",
+    "publisher": "Kova",
     "category": "Productivity",
     "shortDescription": "AI Assistant Desktop Application",
     "longDescription": "A powerful AI assistant with chat, thread management, and file capabilities",

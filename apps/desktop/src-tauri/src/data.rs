@@ -31,6 +31,13 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
             api_key TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS secrets (
+            name TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'global',
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (name, scope)
+        );
         CREATE TABLE IF NOT EXISTS custom_providers (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -91,10 +98,23 @@ pub fn init_tables(conn: &Connection) -> Result<(), String> {
     // 会话级偏好：mode / approval_level（agent|plan、ask|auto-edit|auto）与
     // 最近一次随会话运行的模型。NULL = 从未变更过（打开时回落全局默认）。
     // 由 sidecar 在 set_mode / set_model / 模式状态机变更时经 session_prefs_set 写入。
+    // design_theme：设计主题 JSON 字符串 {scope,id}；NULL = 从未选中（回落最近使用），
+    // "" = 显式不使用主题（sidecar 的 set_design_theme 维护，见 pi-agent/src/design-md/）。
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN mode TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN approval_level TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN model_provider TEXT;");
     let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN model_id TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN thinking_level TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN design_theme TEXT;");
+    // app_mode：会话级工作模式（work|code|design）。NULL = 本会话从未切换过模式，
+    // 跟随全局默认（kv pi.app_mode）；定靶 set_app_mode 只写被点名会话这一列，
+    // 其余会话不受波及（与 thinking_level 同型，见 pi-agent handlers/preferences.ts）。
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN app_mode TEXT;");
+    // goal_max_turns：会话级目标轮数上限（文本存数字）。NULL = 本会话从未定过，
+    // 建目标时回落到默认 300；"0" = 不限（与条上「填 0 表示不限」同一套词汇）。
+    // 为什么不是 INTEGER：NULL 已经被「从未设置」占了，而「不限」也是一个要记住的
+    // 选择，两者必须分得开——与 design_theme 用 "" 表达"显式不使用主题"同一个套路。
+    let _ = conn.execute_batch("ALTER TABLE sessions ADD COLUMN goal_max_turns TEXT;");
 
     // 旧数据迁移：早期版本把未选工作目录的会话 cwd 存成用户主目录；统一清空。
     let home = home_dir();
@@ -310,6 +330,37 @@ fn str_param(params: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing param: {key}"))
 }
 
+/* ------------------------------- 密钥库辅助 ------------------------------- */
+
+/// 单个密钥值上限：密钥是 token 级的短串，8KB 足够且防滥用
+pub const MAX_SECRET_VALUE_BYTES: usize = 8 * 1024;
+
+/// 密钥名规则：它将成为环境变量名，与 MCP 的 ENV_KEY_RE 同款
+/// （sidecar/mcp-config.ts），字母/下划线开头。
+pub fn is_valid_secret_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    name.len() <= 128 && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// 作用域：global（全局）或 workspace:<cwd>（按工作区隔离，覆盖同名全局项）
+pub fn is_valid_secret_scope(scope: &str) -> bool {
+    scope == "global" || (scope.starts_with("workspace:") && scope.len() > "workspace:".len())
+}
+
+/// 掩码规则与 provider key 一致（payloads.ts）：`****` + 后四位
+fn mask_secret(plain: &str) -> String {
+    if plain.chars().count() > 4 {
+        let tail: String = plain.chars().skip(plain.chars().count() - 4).collect();
+        format!("****{tail}")
+    } else {
+        "****".to_string()
+    }
+}
+
 /// 查询 models 行（None = 全部 provider）。attrs 列可空（NULL = 继承内置值），
 /// input_json/cost_json 在此解析为结构化 JSON 返回。
 fn models_query(conn: &Connection, provider: Option<String>) -> Result<Value, String> {
@@ -364,7 +415,7 @@ pub fn handle_host_query(
             let id = str_param(p, "sessionId")?;
             let row = conn
                 .query_row(
-                    "SELECT cwd, title, mode, approval_level, model_provider, model_id FROM sessions WHERE id = ?1",
+                    "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns FROM sessions WHERE id = ?1",
                     params![id],
                     |row| {
                         Ok(json!({
@@ -374,6 +425,10 @@ pub fn handle_host_query(
                             "approvalLevel": row.get::<_, Option<String>>(3)?,
                             "modelProvider": row.get::<_, Option<String>>(4)?,
                             "modelId": row.get::<_, Option<String>>(5)?,
+                            "thinkingLevel": row.get::<_, Option<String>>(6)?,
+                            "designTheme": row.get::<_, Option<String>>(7)?,
+                            "appMode": row.get::<_, Option<String>>(8)?,
+                            "goalMaxTurns": row.get::<_, Option<String>>(9)?,
                         }))
                     },
                 )
@@ -394,7 +449,7 @@ pub fn handle_host_query(
         }
         "session_list" => {
             let rows = conn
-                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id FROM sessions ORDER BY updated_at DESC")
+                .prepare("SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns FROM sessions ORDER BY updated_at DESC")
                 .map_err(|e| e.to_string())?
                 .query_map([], |row| {
                     Ok(json!({
@@ -410,6 +465,10 @@ pub fn handle_host_query(
                         "approvalLevel": row.get::<_, Option<String>>(8)?,
                         "modelProvider": row.get::<_, Option<String>>(9)?,
                         "modelId": row.get::<_, Option<String>>(10)?,
+                        "thinkingLevel": row.get::<_, Option<String>>(11)?,
+                        "designTheme": row.get::<_, Option<String>>(12)?,
+                        "appMode": row.get::<_, Option<String>>(13)?,
+                        "goalMaxTurns": row.get::<_, Option<String>>(14)?,
                     }))
                 })
                 .map_err(|e| e.to_string())?
@@ -471,21 +530,30 @@ pub fn handle_host_query(
             Ok(json!({}))
         }
         "session_prefs_set" => {
-            // 会话级偏好写入（sidecar 在 set_mode / set_model / 模式状态机变更时调用）：
-            // 只更新携带的字段，未携带的保持原值（COALESCE 语义）。
+            // 会话级偏好写入（sidecar 在 set_mode / set_model / set_design_theme /
+            // 模式状态机变更时调用）：只更新携带的字段，未携带的保持原值（COALESCE 语义）。
+            // design_theme：JSON 字符串 = 选中主题；"" = 显式不使用主题（仍是携带的更新值）
             let id = str_param(p, "sessionId")?;
             let mode = p.get("mode").and_then(|v| v.as_str());
             let approval_level = p.get("approvalLevel").and_then(|v| v.as_str());
             let model_provider = p.get("modelProvider").and_then(|v| v.as_str());
             let model_id = p.get("modelId").and_then(|v| v.as_str());
+            let thinking_level = p.get("thinkingLevel").and_then(|v| v.as_str());
+            let design_theme = p.get("designTheme").and_then(|v| v.as_str());
+            let app_mode = p.get("appMode").and_then(|v| v.as_str());
+            let goal_max_turns = p.get("goalMaxTurns").and_then(|v| v.as_str());
             conn.execute(
                 "UPDATE sessions SET \
                  mode = COALESCE(?2, mode), \
                  approval_level = COALESCE(?3, approval_level), \
                  model_provider = COALESCE(?4, model_provider), \
-                 model_id = COALESCE(?5, model_id) \
+                 model_id = COALESCE(?5, model_id), \
+                 thinking_level = COALESCE(?6, thinking_level), \
+                 design_theme = COALESCE(?7, design_theme), \
+                 app_mode = COALESCE(?8, app_mode), \
+                 goal_max_turns = COALESCE(?9, goal_max_turns) \
                  WHERE id = ?1",
-                params![id, mode, approval_level, model_provider, model_id],
+                params![id, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns],
             )
             .map_err(|e| e.to_string())?;
             Ok(json!({}))
@@ -501,7 +569,14 @@ pub fn handle_host_query(
                 .optional()
                 .map_err(|e| e.to_string())?;
             Ok(match key {
-                Some(api_key) => json!({ "apiKey": api_key }),
+                // 密文解密失败（换机/主密钥丢失）按"无凭据"处理，用户重输即可
+                Some(stored) => match crate::secret::decrypt(&stored) {
+                    Ok(api_key) => json!({ "apiKey": api_key }),
+                    Err(e) => {
+                        log::warn!("[data] credential decrypt failed for {provider}: {e}");
+                        Value::Null
+                    }
+                },
                 None => Value::Null,
             })
         }
@@ -517,7 +592,7 @@ pub fn handle_host_query(
         }
         "credential_set" => {
             let provider = str_param(p, "provider")?;
-            let api_key = str_param(p, "apiKey")?;
+            let api_key = crate::secret::encrypt(&str_param(p, "apiKey")?);
             let now = str_param(p, "now")?;
             conn.execute(
                 "INSERT INTO credentials (provider, api_key, updated_at) VALUES (?, ?, ?) \
@@ -531,6 +606,76 @@ pub fn handle_host_query(
             let provider = str_param(p, "provider")?;
             conn.execute("DELETE FROM credentials WHERE provider = ?1", params![provider])
                 .map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
+        // ------------------------------- 密钥库 -------------------------------
+        // 值明文落盘（secret::encrypt 已是直通，见该模块「当前不加密」的说明），
+        // 本层**不提供 secret_get**：只有 secret_list 回掩码，明文没有 RPC 出口。
+        // 见 docs/secrets-env-design.md。
+        "secret_list" => {
+            let rows = conn
+                .prepare("SELECT name, scope, value, updated_at FROM secrets ORDER BY name, scope")
+                .map_err(|e| e.to_string())?
+                .query_map([], |row| {
+                    let value: String = row.get(2)?;
+                    // 解密只为算掩码，明文随即丢弃；解不开（换机/主密钥丢失）
+                    // 不报错也不外泄，标 readable=false 交给 UI 提示"需重填"
+                    let masked = match crate::secret::decrypt(&value) {
+                        Ok(plain) => (mask_secret(&plain), true),
+                        Err(_) => ("****".to_string(), false),
+                    };
+                    Ok(json!({
+                        "name": row.get::<_, String>(0)?,
+                        "scope": row.get::<_, String>(1)?,
+                        "masked": masked.0,
+                        "readable": masked.1,
+                        "updatedAt": row.get::<_, String>(3)?,
+                    }))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Array(rows))
+        }
+        "secret_set" => {
+            let name = str_param(p, "name")?;
+            if !is_valid_secret_name(&name) {
+                return Err(
+                    "secret name must match [A-Za-z_][A-Za-z0-9_]* (it becomes an env var name)"
+                        .into(),
+                );
+            }
+            let scope = p.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
+            if !is_valid_secret_scope(scope) {
+                return Err("secret scope must be \"global\" or \"workspace:<cwd>\"".into());
+            }
+            let value = str_param(p, "value")?;
+            if value.is_empty() {
+                return Err("secret value is required".into());
+            }
+            if value.len() > MAX_SECRET_VALUE_BYTES {
+                return Err(format!(
+                    "secret value too large ({} bytes > {MAX_SECRET_VALUE_BYTES})",
+                    value.len()
+                ));
+            }
+            let now = str_param(p, "now")?;
+            conn.execute(
+                "INSERT INTO secrets (name, scope, value, updated_at) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(name, scope) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                params![name, scope, crate::secret::encrypt(&value), now],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
+        "secret_delete" => {
+            let name = str_param(p, "name")?;
+            let scope = p.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
+            conn.execute(
+                "DELETE FROM secrets WHERE name = ?1 AND scope = ?2",
+                params![name, scope],
+            )
+            .map_err(|e| e.to_string())?;
             Ok(json!({}))
         }
         "custom_providers_list" => {
@@ -799,7 +944,12 @@ pub fn dispatch_host_query(db: &std::sync::Mutex<Connection>, msg: &Value) -> Va
         // 注意：不进 db 锁——长 bash 期间不阻塞其他 host_query，且 id 登记进
         // 在飞表后 sidecar 的 host_cancel{id} 可随时杀掉对应进程树。
         if kind == "tool" {
-            return crate::tool_exec::handle_tool(&id, &params);
+            let mut envelope = params;
+            // 密钥注入：sidecar 只送名字（p.secretEnv），这里短暂持锁解成明文写进
+            // p.secretEnvResolved，明文不跨 RPC 边界、不进长命令的锁窗口。
+            // 无 secretEnv 时零开销（不取锁），行为与从前一致。
+            crate::secret_env::resolve_into_envelope(db, &mut envelope);
+            return crate::tool_exec::handle_tool(&id, &envelope);
         }
         let conn = db.lock().map_err(|e| format!("db poisoned: {e}"))?;
         handle_host_query(&conn, kind, &params)
@@ -1056,6 +1206,138 @@ mod tests {
             .clone();
         let s1 = rows.iter().find(|r| r["id"] == "s1").unwrap();
         assert_eq!(s1["archived"], 0);
+    }
+
+    /// session_update_cwd 换绑/解绑往返：解绑写空串必须落库为空
+    /// （sidecar set_session_cwd 的"清目录"路径依赖这里能写回 ""）。
+    #[test]
+    fn session_update_cwd_binds_and_unbinds() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let q = |kind: &str, p: Value| {
+            dispatch_host_query(
+                &db,
+                &json!({ "id": "t", "kind": kind, "params": p }),
+            )
+        };
+        q("session_insert", json!({ "sessionId": "s1", "cwd": "", "now": "t" }));
+
+        q("session_update_cwd", json!({ "sessionId": "s1", "cwd": "/work/a" }));
+        assert_eq!(q("session_get", json!({ "sessionId": "s1" }))["data"]["cwd"], "/work/a");
+
+        // 解绑：空串写回（SQL 无空值短路，UPDATE 生效）
+        q("session_update_cwd", json!({ "sessionId": "s1", "cwd": "" }));
+        assert_eq!(q("session_get", json!({ "sessionId": "s1" }))["data"]["cwd"], "");
+    }
+
+    /// design_theme 偏好列往返（与 sidecar sessionPrefsSet 的 COALESCE 语义对齐）：
+    /// NULL = 从未选中（恢复链回落最近使用）；JSON 串 = 选中；"" = 显式不使用主题，
+    /// 且携带 "" 必须真的覆盖旧值（sidecar set_design_theme 的清除路径依赖这里）。
+    #[test]
+    fn session_prefs_design_theme_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let q = |kind: &str, p: Value| {
+            dispatch_host_query(
+                &db,
+                &json!({ "id": "t", "kind": kind, "params": p }),
+            )
+        };
+        q("session_insert", json!({ "sessionId": "s1", "cwd": "", "now": "t" }));
+
+        // 从未设置：列存在且为 NULL
+        assert!(q("session_get", json!({ "sessionId": "s1" }))["data"]["designTheme"].is_null());
+
+        // 选中：JSON 串落库；未携带的其他偏好保持原值（mode 仍 NULL）
+        q(
+            "session_prefs_set",
+            json!({ "sessionId": "s1", "designTheme": "{\"scope\":\"builtin\",\"id\":\"apple\"}" }),
+        );
+        let got = q("session_get", json!({ "sessionId": "s1" }))["data"].clone();
+        assert_eq!(got["designTheme"], "{\"scope\":\"builtin\",\"id\":\"apple\"}");
+        assert!(got["mode"].is_null());
+
+        // 显式不使用主题："" 是携带值，必须覆盖旧值
+        q("session_prefs_set", json!({ "sessionId": "s1", "designTheme": "" }));
+        assert_eq!(q("session_get", json!({ "sessionId": "s1" }))["data"]["designTheme"], "");
+    }
+
+    /// app_mode 偏好列往返（会话级工作模式，与 thinking_level 同型）：
+    /// NULL = 本会话从未切换过（跟随全局默认 kv pi.app_mode）；定靶写入只动本会话，
+    /// 未携带的其他偏好保持原值。列表投影 session_list 也必须带上该列，
+    /// 否则前端切回会话时无从水合（显示回落默认 = 看起来像"模式没记住"）。
+    #[test]
+    fn session_prefs_app_mode_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let q = |kind: &str, p: Value| {
+            dispatch_host_query(
+                &db,
+                &json!({ "id": "t", "kind": kind, "params": p }),
+            )
+        };
+        q("session_insert", json!({ "sessionId": "s1", "cwd": "", "now": "t" }));
+
+        // 从未切换：列存在且为 NULL
+        assert!(q("session_get", json!({ "sessionId": "s1" }))["data"]["appMode"].is_null());
+
+        // 定靶写入：落库，且不牵连其他偏好列
+        q("session_prefs_set", json!({ "sessionId": "s1", "appMode": "work" }));
+        let got = q("session_get", json!({ "sessionId": "s1" }))["data"].clone();
+        assert_eq!(got["appMode"], "work");
+        assert!(got["mode"].is_null());
+        assert!(got["thinkingLevel"].is_null());
+
+        // 再切一档：覆盖为最新选择
+        q("session_prefs_set", json!({ "sessionId": "s1", "appMode": "design" }));
+        assert_eq!(
+            q("session_get", json!({ "sessionId": "s1" }))["data"]["appMode"],
+            "design"
+        );
+
+        // 列表投影同样携带（前端 piSessionPrefsMap 的取数路径）
+        let list = q("session_list", json!({}))["data"].clone();
+        assert_eq!(list.as_array().unwrap()[0]["appMode"], "design");
+    }
+
+    /// goal_max_turns 偏好列往返（会话级目标轮数上限）。
+    /// 三态必须分得开：NULL = 从未定过（建目标回落默认 300）；"0" = 不限；
+    /// 其余 = 具体轮数。混成两态就会出现「用户选了不限，下次却被当成没设过」。
+    #[test]
+    fn session_prefs_goal_max_turns_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_tables(&conn).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let q = |kind: &str, p: Value| {
+            dispatch_host_query(
+                &db,
+                &json!({ "id": "t", "kind": kind, "params": p }),
+            )
+        };
+        q("session_insert", json!({ "sessionId": "s1", "cwd": "", "now": "t" }));
+
+        assert!(q("session_get", json!({ "sessionId": "s1" }))["data"]["goalMaxTurns"].is_null());
+
+        q("session_prefs_set", json!({ "sessionId": "s1", "goalMaxTurns": "120" }));
+        let got = q("session_get", json!({ "sessionId": "s1" }))["data"].clone();
+        assert_eq!(got["goalMaxTurns"], "120");
+        // 不牵连其他偏好列
+        assert!(got["appMode"].is_null());
+        assert!(got["thinkingLevel"].is_null());
+
+        // 不限是一个要记住的选择，不是"没设过"
+        q("session_prefs_set", json!({ "sessionId": "s1", "goalMaxTurns": "0" }));
+        assert_eq!(
+            q("session_get", json!({ "sessionId": "s1" }))["data"]["goalMaxTurns"],
+            "0"
+        );
+
+        // 列表投影同样携带（前端 piSessionPrefsMap 的取数路径）
+        let list = q("session_list", json!({}))["data"].clone();
+        assert_eq!(list.as_array().unwrap()[0]["goalMaxTurns"], "0");
     }
 
     /// 旧库（无 archived 列）打开时自动补列，session_list 正常返回。

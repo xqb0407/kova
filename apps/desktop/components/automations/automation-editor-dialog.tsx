@@ -49,8 +49,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/toast";
+import { AutomationPromptField } from "./automation-prompt-field";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -64,27 +64,33 @@ import {
   ModelSelector,
   type ModelOption,
 } from "@/components/assistant-ui/elements/model-selector.aui";
-import { fmtContextWindow } from "@/lib/model-format";
+import { ProviderIcon } from "@/components/custom-ui/provider-icon";
+import {
+  buildModelOptions,
+  groupModelOptions,
+  modelOptionId,
+  splitModelOptionId,
+} from "@/lib/pi/pi-model-groups";
 import {
   getWorkspace,
   openWorkspacePicker,
   pathBasename,
   useWorkspaceRecents,
-} from "@/lib/workspace-store";
+} from "@/lib/workspace/workspace-store";
 import {
   previewAutomationSchedule,
   saveAutomation,
   type AutomationDraft,
   type AutomationTask,
   type AutomationTemplate,
-} from "@/lib/automations";
+} from "@/lib/automation/automations";
 import {
   cronToPreset,
   formatDateTime,
   parseIntervalSeconds,
   presetToCron,
-} from "@/lib/automation-format";
-import { usePiModels, refreshPiModels } from "@/lib/pi-models";
+} from "@/lib/automation/automation-format";
+import { usePiModels, refreshPiModels } from "@/lib/pi/pi-models";
 import { cn } from "@/lib/utils";
 
 type FreqMode = "daily" | "weekly" | "monthly" | "interval" | "once" | "cron";
@@ -107,12 +113,14 @@ const POLICY_META: Record<
 > = {
   "read-only": {
     label: "只读",
-    desc: "只能读取与检索，写/命令自动拒绝（默认）",
+    desc: "只能读取与检索，写与命令一律拒绝（默认）",
     icon: HandIcon,
   },
   "workspace-write": {
     label: "工作区可写",
-    desc: "可在指定工作目录内写文件与执行命令",
+    // 与底栏「工作区内自动」同名不同义：那个按路径判（能判断目标在不在工作区），
+    // 这个按工具类别判（没人可问，只能一刀切）。描述里点破，免得看名字就选错
+    desc: "写文件放行、命令拒绝（无人值守，不看路径）",
     icon: SquarePenIcon,
   },
   full: {
@@ -412,7 +420,8 @@ const PolicyPill: FC<{
 };
 
 /** 模型胶囊：复用 composer 的 ModelSelector（会话无关，受控于任务字段）。
- *  "跟随全局默认"以伪选项身份进列表——运行时 runner 解析不到即用默认模型。 */
+ *  "跟随全局默认"以伪选项身份进列表——运行时 runner 解析不到即用默认模型。
+ *  选项/分组与 composer、设置页同源（pi-model-groups），mark 口径见 provider-brand。 */
 const FOLLOW_ID = "follow";
 const FOLLOW_OPTION: ModelOption = {
   id: FOLLOW_ID,
@@ -431,35 +440,27 @@ const TaskModelPill: FC<{ value: string; onChange: (v: string) => void }> = ({
   );
   const byId = useMemo(() => {
     const map = new Map<string, string>();
-    for (const m of list) map.set(`${m.provider}/${m.id}`, m.name || m.id);
+    for (const m of list) map.set(modelOptionId(m), m.name || m.id);
     return map;
   }, [list]);
   const options = useMemo<ModelOption[]>(
-    () => [
-      FOLLOW_OPTION,
-      ...list.map((m) => ({
-        id: `${m.provider}/${m.id}`,
-        name: m.name || m.id,
-        keywords: [m.provider, m.providerName],
-        description: `${m.providerName} · ${fmtContextWindow(m.contextWindow)}`,
-      })),
-    ],
+    () => [FOLLOW_OPTION, ...buildModelOptions(list)],
     [list],
   );
-  const groups = useMemo(() => {
-    const map = new Map<string, ModelOption[]>();
-    for (const o of options) {
-      if (o.id === FOLLOW_ID) continue;
-      const id = o.id;
-      const providerName = list.find((m) => `${m.provider}/${m.id}` === id)?.providerName ?? id;
-      const arr = map.get(providerName);
-      if (arr) arr.push(o);
-      else map.set(providerName, [o]);
-    }
-    return [...map.entries()];
-  }, [options, list]);
+  // "跟随全局默认"是伪选项，不进分组（没有服务可挂）
+  const groups = useMemo(
+    () =>
+      groupModelOptions(
+        list,
+        options.filter((o) => o.id !== FOLLOW_ID),
+      ),
+    [options, list],
+  );
   const selectedLabel =
     value === FOLLOW_ID ? "跟随全局" : (byId.get(value) ?? (value || "选择模型"));
+  // "跟随全局默认"没有具体模型可挂 mark，只显示文字
+  const selectedModel =
+    value === FOLLOW_ID ? undefined : splitModelOptionId(value);
   return (
     <ModelSelector.Root models={options} value={value} onValueChange={onChange}>
       <ModelSelector.Trigger
@@ -468,6 +469,15 @@ const TaskModelPill: FC<{ value: string; onChange: (v: string) => void }> = ({
         className={cn(pillTriggerClass(value !== FOLLOW_ID), "max-w-48 [&>span]:min-w-0")}
         title={selectedLabel}
       >
+        {selectedModel && (
+          <ProviderIcon
+            provider={selectedModel.provider}
+            modelId={selectedModel.modelId}
+            providerName={
+              list.find((m) => modelOptionId(m) === value)?.providerName
+            }
+          />
+        )}
         <span className="truncate">{selectedLabel}</span>
       </ModelSelector.Trigger>
       <ModelSelector.Content searchable className="w-80">
@@ -475,13 +485,13 @@ const TaskModelPill: FC<{ value: string; onChange: (v: string) => void }> = ({
         <ModelSelector.List>
           <ModelSelector.Item model={FOLLOW_OPTION} />
           <ModelSelector.Empty>没有可用模型，请在设置 → 模型里添加服务</ModelSelector.Empty>
-          {groups.map(([providerName, opts]) => (
+          {groups.map((group) => (
             <ModelSelector.Group
-              key={providerName}
-              heading={providerName}
+              key={group.title}
+              heading={group.title}
               className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium"
             >
-              {opts.map((o) => (
+              {group.options.map((o) => (
                 <ModelSelector.Item key={o.id} model={o} />
               ))}
             </ModelSelector.Group>
@@ -661,22 +671,22 @@ const ScheduleForm: FC<{
         </div>
 
         <div className="grid gap-1.5">
-          <Label htmlFor="auto-prompt">
-            执行指令 <span className="text-red-500">*</span>
-          </Label>
-          <Textarea
-            id="auto-prompt"
+          <Label>执行指令 *</Label>
+          {/* 直接复用聊天 composer 的输入组件与触发菜单（挂弹窗自己的本地 runtime，
+              不串会话草稿）：@ 选子智能体、/ 选技能与 MCP 工具 */}
+          <AutomationPromptField
             value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="要 Agent 做什么？写清楚范围和输出要求，无人值守时没人能追问你。"
-            rows={4}
+            onChange={setPrompt}
+            placeholder="要 Agent 做什么？写清范围与输出要求；@ 选智能体，/ 选技能"
+            // composer 同款配置行进外壳底部（与 composer 的动作行同位；受控于任务字段，不碰会话偏好）
+            footer={
+              <>
+                <TaskWorkspacePill value={workspaceDir} onChange={setWorkspaceDir} />
+                <PolicyPill value={policy} onChange={setPolicy} />
+                <TaskModelPill value={modelSel} onChange={setModelSel} />
+              </>
+            }
           />
-          {/* composer 同款配置行：工作目录 / 权限档 / 模型（受控于任务字段，不碰会话偏好） */}
-          <div className="flex flex-wrap items-center gap-1">
-            <TaskWorkspacePill value={workspaceDir} onChange={setWorkspaceDir} />
-            <PolicyPill value={policy} onChange={setPolicy} />
-            <TaskModelPill value={modelSel} onChange={setModelSel} />
-          </div>
           <p className="text-muted-foreground text-xs">{policyHint}</p>
         </div>
 

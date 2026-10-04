@@ -3,14 +3,12 @@
 //! 把子进程 stdout 合帧后以 `pi-chunk-batch` 事件转发给 webview（迭代 3，
 //! 见 CHUNK_BATCH_WINDOW 注释），并提供 prompt/abort/reset 三个 command 写入 stdin。
 //!
-//! 刷新恢复：stdout 循环同时为每个进行中的 prompt requestId 维护一份带 seq 的
-//! chunk 行缓冲（见 runs()），webview 刷新后前端经 `pi_attach` 取快照重放，
-//! 配合监听先行的 seq 去重实现"断线续流"。sidecar 协议零改动。
+//! 刷新恢复由 react-pi 新链路自行处理（PiClientBase 经 thread_event 行 +
+//! list_running 重建流状态），旧的 seq 重放缓冲与 `pi_attach` 已随迁移阶段 5 删除。
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use crate::logging;
@@ -44,12 +42,9 @@ pub fn new_request_id() -> String {
 const CHUNK_BATCH_WINDOW: Duration = Duration::from_millis(20);
 const CHUNK_BATCH_MAX: usize = 64;
 
-/// Rust→webview 转发的一行：`l` = sidecar 原始 NDJSON 行；`i` = 该行的 run 内
-/// 序号（仅带字符串 id 且含 chunk 对象的行有序号，其余为 null）。前端用 i 对
-/// pi_attach 快照与实时广播做幂等去重（两者在"挂监听→取快照"窗口内重叠）。
+/// Rust→webview 转发的一行：`l` = sidecar 原始 NDJSON 行。
 #[derive(Clone, serde::Serialize)]
 pub struct ChunkLine {
-    pub i: Option<u64>,
     pub l: String,
 }
 
@@ -61,69 +56,16 @@ fn flush_chunks(emitter: &AppHandle, batch: &mut Vec<ChunkLine>) {
     let _ = emitter.emit("pi-chunk-batch", &lines);
 }
 
-// ---------- 进行中 run 的重放缓冲（刷新恢复） ----------
-
-struct RunEntry {
-    /// 已分配的最后一个行序号（从 1 递增，稠密无洞）
-    seq: u64,
-    lines: Vec<(u64, String)>,
-    bytes: usize,
-    /// finish/error 后转 false；tombstone（active=false）保留供迟到的
-    /// pi_attach 完整重放（含收尾行），下一次 pi_prompt 时统一清扫
-    active: bool,
-    /// 超出缓冲上限：重放有洞，前端见此标志即放弃续流回退历史加载
-    truncated: bool,
-}
-
-fn runs() -> &'static StdMutex<HashMap<String, RunEntry>> {
-    static RUNS: OnceLock<StdMutex<HashMap<String, RunEntry>>> = OnceLock::new();
-    RUNS.get_or_init(|| StdMutex::new(HashMap::new()))
-}
-
-/// 单 run 缓冲上限：约一轮超长输出（token 级 chunk）的体量；到顶即 truncated
-/// 放弃重放（内存不随后台长跑无限增长）
-const RUN_BUFFER_MAX_LINES: usize = 30_000;
-const RUN_BUFFER_MAX_BYTES: usize = 4 * 1024 * 1024;
-
-/// stdout 行进入重放缓冲并领取 seq。只有"字符串 id + chunk 对象"的行参与；
-/// 远程行（rem-*）同样缓冲，为远程网关 resume（二期）留位。
-fn buffer_run_line(parsed: Option<&serde_json::Value>, line: &str) -> Option<u64> {
-    let v = parsed?;
-    let rid = v.get("id").and_then(|x| x.as_str())?;
-    let chunk = v.get("chunk")?;
-    let is_terminal = matches!(
-        chunk.get("type").and_then(|t| t.as_str()),
-        Some("finish") | Some("error")
-    );
-    let mut map = runs().lock().ok()?;
-    let e = map.entry(rid.to_owned()).or_insert(RunEntry {
-        seq: 0,
-        lines: Vec::new(),
-        bytes: 0,
-        active: true,
-        truncated: false,
-    });
-    e.seq += 1;
-    if !e.truncated {
-        if e.lines.len() + 1 > RUN_BUFFER_MAX_LINES || e.bytes + line.len() > RUN_BUFFER_MAX_BYTES {
-            e.truncated = true;
-            e.lines.clear();
-            e.bytes = 0;
-        } else {
-            e.bytes += line.len();
-            e.lines.push((e.seq, line.to_owned()));
-        }
-    }
-    if is_terminal {
-        e.active = false;
-    }
-    Some(e.seq)
-}
-
 /// 不允许在合帧窗口里滞留的行：chunk 的 finish/error（流收尾）与非 chunk
 /// 行（管理/通知类，低频）。解析失败的裸行也算，保持原样尽快送达。
+/// 例外：`thread_event` 行（react-pi 迁移阶段 3 的原生事件流）虽无 chunk 字段，
+/// 但与 token chunk 同频（message_update 逐 delta 一行），必须走合帧。
 fn is_flush_line(v: Option<&serde_json::Value>) -> bool {
-    match v.and_then(|v| v.get("chunk")) {
+    let Some(v) = v else { return true };
+    if v.get("type").and_then(|t| t.as_str()) == Some("thread_event") {
+        return false;
+    }
+    match v.get("chunk") {
         Some(c) => matches!(
             c.get("type").and_then(|t| t.as_str()),
             Some("finish") | Some("error")
@@ -159,7 +101,8 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
         .map_err(|e| format!("failed to resolve pi-agent sidecar: {e}"))?
         .env("PI_DB_PATH", data_dir.join("state.db").to_string_lossy().to_string())
         .env("PI_SESSIONS_DIR", sessions_dir.to_string_lossy().to_string())
-        // 无目录任务会话的执行目录兜底（sidecar defaultTaskCwd）：不落家目录
+        // 无目录任务会话的执行目录根（sidecar taskWorkspaceBase）：不落家目录；
+        // 根下按会话分子目录（<task-workspace>/<sessionId>），全局任务产物互不混堆
         .env(
             "PI_TASK_CWD",
             data_dir.join("task-workspace").to_string_lossy().to_string(),
@@ -256,9 +199,6 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                             }
                         }
                     }
-                    // 进入重放缓冲并领取 run 内 seq（刷新恢复用，见 runs()）；
-                    // 在路由分流之前做，本地/远程行统一缓冲
-                    let seq = buffer_run_line(parsed.as_ref(), &line);
                     // 无 id 自发通知行（turn_changed / subagent_activity）广播给远程连接，
                     // 本地照常走下方帧合批；远程路由（rem-*）行带 id，此处为 no-op
                     remote::broadcast_notification(parsed.as_ref());
@@ -271,16 +211,18 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                     }
                     let flush_now =
                         is_flush_line(parsed.as_ref()) || batch.len() + 1 >= CHUNK_BATCH_MAX;
-                    batch.push(ChunkLine { i: seq, l: line });
+                    batch.push(ChunkLine { l: line });
                     if flush_now {
                         flush_chunks(&emitter, &mut batch);
                         window_opened_at = None;
                     }
                 }
                 CommandEvent::Stderr(line) => {
-                    // 落盘 pi-agent.log（sidecar 零改动，stderr 由宿主转发）
-                    logging::write_sidecar_line(&String::from_utf8_lossy(&line));
-                    log::debug!("[pi_agent] stderr: {}", String::from_utf8_lossy(&line));
+                    // 落盘 pi-agent.log（sidecar 零改动，stderr 由宿主转发）；
+                    // 先脱敏：崩溃栈/依赖告警可能把带 key 的请求头写进日志
+                    let text = redact_secrets(&String::from_utf8_lossy(&line));
+                    logging::write_sidecar_line(&text);
+                    log::debug!("[pi_agent] stderr: {text}");
                 }
                 CommandEvent::Error(err) => {
                     log::error!("[pi_agent] {err}");
@@ -290,7 +232,6 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                     let _ = emitter.emit(
                         "pi-chunk-batch",
                         vec![ChunkLine {
-                            i: None,
                             l: format!(
                                 "{{\"id\":null,\"chunk\":{{\"type\":\"error\",\"errorText\":{}}}}}",
                                 serde_json::to_string(&err).unwrap_or_default()
@@ -305,10 +246,6 @@ pub(crate) async fn ensure_spawned(app: &AppHandle, state: &PiState) -> Result<(
                     // sidecar 已退出：清掉所有在飞工具（杀残留进程树、注销登记），
                     // 避免孤儿 bash 进程继续跑
                     crate::tool_exec::cancel_all_tools();
-                    // 重放缓冲随进程作废（重启后 requestId 语义不复存在）
-                    if let Ok(mut map) = runs().lock() {
-                        map.clear();
-                    }
                     // 清空所有挂起的请求
                     if let Ok(mut map) = state_for_rx.lock() {
                         for (_, tx) in map.drain() {
@@ -357,22 +294,18 @@ pub async fn pi_prompt(
     thread_id: Option<String>,
     session_id: Option<String>,
     cwd: Option<String>,
+    // attachments = 用户图片附件（多模态输入）：原样透传给 sidecar（闸门在彼端，
+    // 见 pi-agent prompt-attachments.ts）；无附件为 null
+    attachments: Option<serde_json::Value>,
+    // steer = 并入当前轮：sidecar 忙线程把消息注入活跃轮（不排队），本请求退化流收尾
+    steer: Option<bool>,
+    // goal_max_auto_turns = goal 档下这条目标的轮次上限（0 = 不限），建目标时用。
+    // **必须显式转发**：本命令是按固定键重建 JSON 的，invoke 传进来的多余参数会被
+    // serde 静默丢弃——漏了这一行，条上填的数永远到不了 sidecar，目标还是按默认
+    // 300 建（症状：填 100 发出去，条上仍显示 /300）
+    goal_max_auto_turns: Option<i64>,
 ) -> Result<(), String> {
     ensure_spawned(&app, &state).await?;
-    // 新 run 登记重放缓冲；顺带清扫上一批已结束（tombstone）的条目
-    if let Ok(mut map) = runs().lock() {
-        map.retain(|_, e| e.active);
-        map.insert(
-            request_id.clone(),
-            RunEntry {
-                seq: 0,
-                lines: Vec::new(),
-                bytes: 0,
-                active: true,
-                truncated: false,
-            },
-        );
-    }
     let payload = serde_json::json!({
         "type": "prompt",
         "id": request_id,
@@ -380,43 +313,11 @@ pub async fn pi_prompt(
         "threadId": thread_id,
         "sessionId": session_id,
         "cwd": cwd,
+        "attachments": attachments,
+        "steer": steer,
+        "goalMaxAutoTurns": goal_max_auto_turns,
     });
     write_line(&state, payload.to_string()).await
-}
-
-/// 刷新恢复：取某 requestId 的重放快照（不消费缓冲，直播照常续传）。
-/// 前端时序：先挂 pi-chunk-batch 监听（行带 i 序号暂存），再调本命令取快照，
-/// 两路按 seq 幂等合并；无条目（从未跑过/已被终止清空）= active:false 空快照，
-/// 调用方据此回退历史加载。
-#[derive(serde::Serialize)]
-pub(crate) struct AttachReply {
-    active: bool,
-    truncated: bool,
-    lines: Vec<ChunkLine>,
-}
-
-#[tauri::command]
-pub async fn pi_attach(request_id: String) -> Result<AttachReply, String> {
-    let map = runs().lock().map_err(|e| format!("runs lock poisoned: {e}"))?;
-    Ok(match map.get(&request_id) {
-        Some(e) => AttachReply {
-            active: e.active,
-            truncated: e.truncated,
-            lines: e
-                .lines
-                .iter()
-                .map(|(i, l)| ChunkLine {
-                    i: Some(*i),
-                    l: l.clone(),
-                })
-                .collect(),
-        },
-        None => AttachReply {
-            active: false,
-            truncated: false,
-            lines: Vec::new(),
-        },
-    })
 }
 
 #[tauri::command]
@@ -479,11 +380,86 @@ pub async fn pi_request(
     }
 }
 
-/// 应用退出时杀掉子进程
+/// sidecar 退出宽限：发 shutdown 后最多等多久（sidecar 内部结算封顶 5s，
+/// 留 1s 给 stdout 冲刷与进程收尾）
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(6);
+
+/// 应用退出时优雅终止子进程：先向 stdin 写 `shutdown`（sidecar 会把在飞 run
+/// 的 partial 结算落盘、断 MCP、冲刷 stdout 后自行退出），轮询子进程句柄
+/// 最多宽限 6s——stdout 读循环收到 Terminated 时会把句柄清成 None；
+/// 超时或写入失败照旧 SIGKILL 兜底。
+/// 注意：tauri dev 热重启走进程组信号、不经过本函数，该场景的丢消息兜底
+/// 靠 sidecar 在 message_end 的逐条落盘（stream.ts L0-1）。
 pub fn kill_on_exit(state: &PiState) {
+    let sent = tauri::async_runtime::block_on(write_line(state, "{\"type\":\"shutdown\"}".into()));
+    if sent.is_ok() {
+        let deadline = Instant::now() + SHUTDOWN_GRACE;
+        loop {
+            let exited = matches!(state.child.try_lock(), Ok(guard) if guard.is_none());
+            if exited || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
     if let Ok(mut guard) = state.child.try_lock() {
         if let Some(child) = guard.take() {
             let _ = child.kill();
         }
+    }
+}
+
+/// sidecar stderr 脱敏：把常见密钥形态（`sk-…` 长 token、`Bearer …`）打码后
+/// 再落盘/写日志——sidecar 崩溃栈或依赖库告警可能把请求头带进 stderr。
+/// 与 sidecar 侧 agent-errors.ts 的脱敏互为双保险。
+fn redact_secrets(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let rest = &input[i..];
+        if rest.starts_with("sk-") {
+            let mut j = i + 3;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'-' || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j - i > 10 {
+                out.push_str("sk-***");
+                i = j;
+                continue;
+            }
+        }
+        if rest.starts_with("Bearer ") {
+            let mut j = i + 7;
+            while j < bytes.len() && !bytes[j].is_ascii_whitespace() && bytes[j] != b'"' && bytes[j] != b',' {
+                j += 1;
+            }
+            out.push_str("Bearer ***");
+            i = j;
+            continue;
+        }
+        let c = rest.chars().next().unwrap();
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_secrets;
+
+    #[test]
+    fn masks_key_shaped_tokens() {
+        assert_eq!(
+            redact_secrets("auth failed sk-abcdefghij1234 x"),
+            "auth failed sk-*** x"
+        );
+        assert_eq!(
+            redact_secrets("{\"Authorization\":\"Bearer tok-1234567890\"}"),
+            "{\"Authorization\":\"Bearer ***\"}"
+        );
+        // 短 sk- 前缀（占位符/普通词）不误伤；非敏感文本原样
+        assert_eq!(redact_secrets("sk-... placeholder; sk short"), "sk-... placeholder; sk short");
     }
 }

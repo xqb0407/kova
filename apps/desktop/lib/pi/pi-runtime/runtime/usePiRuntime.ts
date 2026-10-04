@@ -1,0 +1,796 @@
+// vendored from assistant-ui `@assistant-ui/react-pi@0.0.25` (MIT) —
+// https://github.com/assistant-ui/assistant-ui/tree/main/packages/react-pi
+// 保留上游文件名与结构以便对照上游 cherry-pick；改动需在此注明：
+// vendored path: src/usePiRuntime.ts（runtime/ 子目录对应上游 src/runtime/）
+
+"use client";
+
+import {
+  ExportedMessageRepository,
+  useAui,
+  useAuiState,
+  useCloudThreadListAdapter,
+  useExternalStoreRuntime,
+  useRemoteThreadListRuntime,
+} from "@assistant-ui/react";
+import type {
+  AssistantRuntime,
+  ExternalStoreAdapter,
+  ExternalThreadQueueAdapter,
+  ThreadMessage,
+  ThreadMessageLike,
+} from "@assistant-ui/react";
+import { invokeUserCallback } from "@assistant-ui/core/internal";
+import { useReplaySafeEffect } from "./useReplaySafeEffect";
+import {
+  useEffect,
+  useEffectEvent,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import {
+  PiThreadController,
+  type PiThreadControllerLike,
+} from "./ThreadController";
+import { createPiThreadState, type PiThreadState } from "./threadState";
+import type { PiClient, PiThreadMetadata } from "../types";
+import {
+  responseForToolApproval,
+  splitHostUiRequests,
+  type PiInterruptAnswer,
+} from "./hostUi";
+import { piExtras } from "./piExtras";
+import type { PiRuntimeExtrasInternal, PiRuntimeOptions } from "./runtimeTypes";
+import { PI_SDK } from "../sdkIdentity";
+import { disposeControllers } from "./disposeControllers";
+// 桌面扩展（迁移 4c/5）：本地线程 id -> pi sessionId 绑定登记。新链路的
+// threadListItem.id 在本会话内保持 __LOCALID_ 原值（core reconcileInitializedThread
+// 保留原 mapping id），只有刷新后才等于 sessionId——消费侧请求（context_info/
+// set_mode/主题胶囊等）全靠这张表把线程 id 换成 sessionId，否则 threadId-only
+// 请求会让 sidecar 懒建空白会话（对话失忆）。
+import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
+import { flushDraftAppModeSelection } from "@/lib/pi/pi-session-app-mode";
+import { flushDraftModeSelection } from "@/lib/pi/pi-session-mode";
+import { flushDraftModelSelection } from "@/lib/pi/pi-session-model";
+import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
+import {
+  purgeThreadPanelTabs,
+  rekeyPanelThread,
+} from "@/lib/panels/panel-tabs";
+
+const EMPTY_THREAD_STATE = createPiThreadState("__pending__");
+const EMPTY_PROJECTED_MESSAGES: readonly ThreadMessageLike[] = [];
+const EMPTY_MESSAGE_REPOSITORY = ExportedMessageRepository.fromArray([]);
+
+// ---------------------------------------------------------------------------
+// Controller registry (cached across StrictMode remounts).
+// ---------------------------------------------------------------------------
+
+type PiControllerRegistry = {
+  /** The client these controllers are bound to (a new client ⇒ a new registry). */
+  client: PiClient;
+  controllers: Map<string, PiThreadController>;
+  readonly disposed: boolean;
+  activate(): void;
+  dispose(): void;
+};
+
+const createRegistry = (client: PiClient): PiControllerRegistry => {
+  const controllers = new Map<string, PiThreadController>();
+  let disposed = false;
+  return {
+    client,
+    controllers,
+    get disposed() {
+      return disposed;
+    },
+    activate() {
+      disposed = false;
+    },
+    dispose() {
+      disposed = true;
+      disposeControllers(controllers.values());
+      // Controllers stay cached so a StrictMode cleanup/remount reuses them;
+      // a real unmount drops this whole registry.
+    },
+  };
+};
+
+const getController = (registry: PiControllerRegistry, threadId: string) => {
+  const existing = registry.controllers.get(threadId);
+  if (existing) return existing;
+  const controller = new PiThreadController(registry.client, threadId);
+  registry.controllers.set(threadId, controller);
+  return controller;
+};
+
+export const NOOP_CONTROLLER: PiThreadControllerLike = {
+  getState: () => EMPTY_THREAD_STATE,
+  getProjectedMessages: () => EMPTY_PROJECTED_MESSAGES,
+  getMessageRepository: () => EMPTY_MESSAGE_REPOSITORY,
+  getVersion: () => 0,
+  subscribe: () => () => {},
+  subscribeMetadata: () => () => {},
+  subscribeMessages: () => () => {},
+  connect: () => () => {},
+  load: async () => {},
+  refresh: async () => {},
+  sendMessage: async () => {},
+  // 症状3：reload/edit 桩（无活动线程时静默 no-op，与 4a 队列桩同款语义）
+  reloadMessage: async () => {},
+  editMessage: async () => {},
+  cancel: async () => {},
+  clearQueue: async () => ({ steering: [], followUp: [] }),
+  // 改动（4a）：NOOP 桩补齐逐项操作（无活动线程时静默 no-op）
+  queueCancel: async () => {},
+  queuePromote: async () => {},
+  queueSteer: async () => {},
+  queuePop: async () => null,
+  setModel: async () => {},
+  setThinkingLevel: async () => {},
+  respondToToolApproval: async () => {},
+  resumeToolCall: async () => {},
+  respondToHostUiRequest: async () => {},
+  dispose: () => {},
+};
+
+const invokePiErrorCallback = (
+  onError: PiRuntimeOptions["onError"],
+  error: unknown,
+) => {
+  void invokeUserCallback("react-pi", "onError", onError, error);
+};
+
+const buildExtras = (
+  controller: PiThreadControllerLike,
+  state: PiThreadState,
+): PiRuntimeExtrasInternal => {
+  const { freeStanding } = splitHostUiRequests(state.hostUiRequests);
+  return piExtras.provide({
+    controller,
+    state,
+    metadata: state.metadata,
+    status: state.runStatus === "failed" ? "failed" : state.runStatus,
+    readiness: state.readiness,
+    contextUsage: state.contextUsage,
+    hostUiRequests: freeStanding,
+    allHostUiRequests: state.hostUiRequests,
+    queue: state.queue,
+    compaction: state.compaction,
+    retry: state.retry,
+    lastError: state.lastError,
+    cancel: () => controller.cancel(),
+    refresh: () => controller.refresh(),
+    clearQueue: () => controller.clearQueue(),
+    // 改动（4a）：逐项队列操作透出
+    queueCancel: (id) => controller.queueCancel(id),
+    queuePromote: (id) => controller.queuePromote(id),
+    queueSteer: (id) => controller.queueSteer(id),
+    queuePop: () => controller.queuePop(),
+    setModel: (input) => controller.setModel(input),
+    setThinkingLevel: (level) => controller.setThinkingLevel(level),
+    respondToHostUiRequest: (response) =>
+      controller.respondToHostUiRequest(response),
+    respondToToolApproval: (id, approved) =>
+      controller.respondToToolApproval(id, approved),
+    resumeToolCall: (toolCallId, payload) =>
+      controller.resumeToolCall(toolCallId, payload),
+  });
+};
+
+export const EMPTY_RUNTIME_EXTRAS = buildExtras(
+  NOOP_CONTROLLER,
+  EMPTY_THREAD_STATE,
+);
+
+// ---------------------------------------------------------------------------
+// Per-thread runtime.
+// ---------------------------------------------------------------------------
+
+const stateSnapshotOf = (controller: PiThreadControllerLike): PiThreadState =>
+  controller.getStateSnapshot?.() ?? controller.getState();
+
+const usePiControllerState = (
+  controller: PiThreadControllerLike,
+): PiThreadState => {
+  const getSnapshot = useCallback(
+    () => stateSnapshotOf(controller),
+    [controller],
+  );
+  return useSyncExternalStore(
+    useCallback(
+      (listener: () => void) => controller.subscribe(listener),
+      [controller],
+    ),
+    getSnapshot,
+    getSnapshot,
+  );
+};
+
+const usePiControllerMessageRepository = (
+  controller: PiThreadControllerLike,
+): ExportedMessageRepository => {
+  const getSnapshot = useCallback(
+    () => controller.getMessageRepository(),
+    [controller],
+  );
+  return useSyncExternalStore(
+    useCallback(
+      (listener: () => void) => controller.subscribeMessages(listener),
+      [controller],
+    ),
+    getSnapshot,
+    getSnapshot,
+  );
+};
+
+export const usePiControllerStateSelector = <T>(
+  controller: PiThreadControllerLike,
+  selector: (state: PiThreadState) => T,
+): T => {
+  // `useSyncExternalStore` compares snapshots with `Object.is`, so selecting
+  // inside `getSnapshot` is what lets the store observe the selected slice
+  // rather than the whole state. Memoizing on the source state keeps repeated
+  // reads of one state object referentially stable; re-keying the memo on the
+  // selector re-runs a changed closure instead of replaying its last result.
+  const getSelection = useMemo(() => {
+    let memo: { state: PiThreadState; selection: T } | undefined;
+    return () => {
+      const state = stateSnapshotOf(controller);
+      if (!memo || memo.state !== state)
+        memo = { state, selection: selector(state) };
+      return memo.selection;
+    };
+  }, [controller, selector]);
+
+  return useSyncExternalStore(
+    useCallback(
+      (listener: () => void) => controller.subscribe(listener),
+      [controller],
+    ),
+    getSelection,
+    getSelection,
+  );
+};
+
+const isPiStateRunning = (state: PiThreadState): boolean =>
+  state.runStatus === "running" ||
+  state.compaction.active ||
+  state.retry.active;
+
+const usePiThreadStore = (
+  controller: PiThreadControllerLike,
+  options: PiRuntimeOptions,
+): ExternalStoreAdapter<ThreadMessage> => {
+  const state = usePiControllerState(controller);
+  const messageRepository = usePiControllerMessageRepository(controller);
+
+  const {
+    adapters,
+    isDisabled,
+    isSendDisabled,
+    onError,
+    suggestions,
+    unstable_capabilities,
+  } = options;
+  const isLoading = state.loadState === "loading";
+  const isRunning = isPiStateRunning(state);
+
+  const onLoadError = useEffectEvent((error: unknown) => {
+    invokePiErrorCallback(onError, error);
+  });
+
+  useEffect(() => {
+    if (controller === NOOP_CONTROLLER) return;
+    void controller.load().catch(onLoadError);
+  }, [controller]);
+
+  // A running thread must stream live events even when this client never
+  // called `sendMessage` — e.g. the first message of a new thread starts the
+  // run server-side inside `createThread`. The supervisor already holds a live
+  // record for a running thread, so subscribing attaches to it.
+  // 改动（4a）：队列非空时同样保持订阅——空闲断开后，sidecar 串行链在上一轮
+  // 收尾时自派发的下一轮 agent_start 对前端不可见（事件路由按订阅分流），
+  // 接力泵无从感知；订阅保活让链节派发原生可见，泵只剩孤儿队列一种场景。
+  // 改动（2026-10-04，与移动端同款）：改为**活动会话常驻订阅**。原条件
+  // （running || 本地队列非空）会在"轮已收尾、本地队列已空"时退订；而队列变化
+  // 还有第三处来源——另一端：手机取消/清空排队消息时本端已退订，那条 queue_update
+  // 被丢掉，于是队列条永远留着一条已删的幽灵项，点它自己的 × 也无效（清空帧同样
+  // 收不到）。订阅只是本地登记监听（sidecar 的 thread_event 本就广播到这条连接），
+  // 零流量增量，换来"看着的会话"对另一端改动实时跟随。
+  useReplaySafeEffect(() => {
+    if (controller === NOOP_CONTROLLER) return;
+    return controller.connect();
+  }, [controller]);
+
+  const extras = useMemo<PiRuntimeExtrasInternal>(
+    () => buildExtras(controller, state),
+    [controller, state],
+  );
+
+  // Pi queues natively (`prompt()` steers/follows up mid-run), so the queue
+  // adapter forwards every send straight to the controller instead of
+  // buffering client-side. Exposing it flips on `capabilities.queue`, which is
+  // what lets the composer keep accepting input while a run is streaming
+  // (mid-run sends steer by default; `send({ steer: false })` queues a
+  // follow-up).
+  // 改动（4a）：条目 id 用真实 reqId（state.queue 条目化）；框架面的
+  // move/edit/remove 接到逐项操作——move 无锚点进 steer 车道 = 立即发送
+  // （中止当前轮并执行该项，语义与 queue_promote 一致），edit = 删旧项重发。
+  const queue = useMemo<ExternalThreadQueueAdapter>(
+    () => ({
+      items: state.queue.followUp.map((entry) => ({
+        id: entry.id,
+        prompt: entry.content,
+        parts: [{ type: "text" as const, text: entry.content }],
+      })),
+      steerItems: state.queue.steering.map((entry) => ({
+        id: entry.id,
+        prompt: entry.content,
+        parts: [{ type: "text" as const, text: entry.content }],
+      })),
+      enqueue: (message) => {
+        void controller
+          .sendMessage(message)
+          .catch((error: unknown) => invokePiErrorCallback(onError, error));
+      },
+      steer: (message) => {
+        void controller
+          .sendMessage(message, { streamingBehavior: "steer" })
+          .catch((error: unknown) => invokePiErrorCallback(onError, error));
+      },
+      move: (queueItemId, placement) => {
+        if (placement.lane !== "steer") return;
+        void controller
+          .queuePromote(queueItemId)
+          .catch((error: unknown) => invokePiErrorCallback(onError, error));
+      },
+      edit: (queueItemId, message) => {
+        void (async () => {
+          await controller.queueCancel(queueItemId);
+          await controller.sendMessage(message);
+        })().catch((error: unknown) => invokePiErrorCallback(onError, error));
+      },
+      remove: (queueItemId) => {
+        void controller
+          .queueCancel(queueItemId)
+          .catch((error: unknown) => invokePiErrorCallback(onError, error));
+      },
+    }),
+    [controller, state.queue, onError],
+  );
+
+  const store = useMemo<ExternalStoreAdapter<ThreadMessage>>(
+    () => ({
+      isDisabled,
+      isSendDisabled,
+      unstable_capabilities,
+      suggestions,
+      isLoading,
+      isRunning,
+      messageRepository,
+      extras,
+      queue,
+      ...(adapters ? { adapters } : {}),
+      onNew: async (message) => {
+        try {
+          await controller.sendMessage(message);
+        } catch (error) {
+          invokePiErrorCallback(onError, error);
+          throw error;
+        }
+      },
+      // 症状3：接上 onReload/onEdit 即激活重新生成/编辑按钮（capabilities
+      // 由字段存在性推导）；截断+重发在 controller 内完成，运行中由
+      // sidecar busy 守卫拒绝并走 onError 呈现。core 对这两个 handler 是
+      // 即发即忘（不 await 不 catch），失败必须收敛于此、禁止再抛——
+      // 否则成为未处理的 Promise 拒绝直接触发运行时错误遮罩
+      onReload: async (parentId) => {
+        try {
+          await controller.reloadMessage(parentId);
+        } catch (error) {
+          invokePiErrorCallback(onError, error);
+        }
+      },
+      onEdit: async (message) => {
+        try {
+          await controller.editMessage(message);
+        } catch (error) {
+          invokePiErrorCallback(onError, error);
+        }
+      },
+      onCancel: async () => {
+        try {
+          // 改动（4a）：去掉上游的 cancel 前 clearQueue——我们的停止语义 =
+          // 整线程停止（sidecar abort 命令在中止活跃轮的同时取消该线程全部
+          // 排队项），不存在「cancel 与队列续派之间被提升」的窗口
+          await controller.cancel();
+        } catch (error) {
+          invokePiErrorCallback(onError, error);
+          throw error;
+        }
+      },
+      onRespondToToolApproval: async (response) => {
+        try {
+          const request = controller
+            .getState()
+            .hostUiRequests.find((r) => r.id === response.approvalId);
+          if (!request) {
+            throw new Error(
+              `No pending host-UI request "${response.approvalId}"`,
+            );
+          }
+          await controller.respondToHostUiRequest(
+            responseForToolApproval(request, response),
+          );
+        } catch (error) {
+          invokePiErrorCallback(onError, error);
+          throw error;
+        }
+      },
+      onResumeToolCall: ({ toolCallId, payload }) => {
+        void controller
+          .resumeToolCall(toolCallId, payload as PiInterruptAnswer)
+          .catch((error) => invokePiErrorCallback(onError, error));
+      },
+    }),
+    [
+      controller,
+      extras,
+      messageRepository,
+      queue,
+      adapters,
+      isDisabled,
+      isLoading,
+      isRunning,
+      isSendDisabled,
+      onError,
+      suggestions,
+      unstable_capabilities,
+    ],
+  );
+
+  return store;
+};
+
+/** 本地改动（UI 格式回归）：新会话乐观消息与 messageProjection 的
+ * projectUserContent 对齐——图片投成 attachments（气泡外附件卡），不再拍进
+ * 气泡 content。composer 附件（CompleteAttachment，图片带 image 内容 part →
+ * useAttachmentSrc 出缩略图）直接透传；content 里的 image/file part 同样转成
+ * 附件形态。 */
+const toOptimisticThreadMessage = (
+  message: Parameters<ExternalStoreAdapter<ThreadMessageLike>["onNew"]>[0],
+  index: number,
+): ThreadMessageLike => {
+  const id = `pi-new-user:${index}`;
+  const parts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
+  const attachments: NonNullable<ThreadMessageLike["attachments"]>[number][] = [
+    ...(message.attachments ?? []),
+  ];
+  let imgSeq = 0;
+  for (const part of message.content) {
+    if (part.type === "image") {
+      imgSeq += 1;
+      attachments.push({
+        id: `${id}-att-${imgSeq}`,
+        type: "image",
+        name: part.filename ?? `image-${imgSeq}`,
+        status: { type: "complete" },
+        content: [part],
+      });
+    } else if (part.type === "file") {
+      const isImage = part.mimeType.startsWith("image/");
+      imgSeq += 1;
+      attachments.push({
+        id: `${id}-att-${imgSeq}`,
+        type: isImage ? "image" : "document",
+        name: part.filename ?? (isImage ? `image-${imgSeq}` : "attachment"),
+        contentType: part.mimeType,
+        status: { type: "complete" },
+        content: [part],
+      });
+    } else {
+      parts.push(part);
+    }
+  }
+  return {
+    id,
+    role: "user",
+    createdAt: new Date(),
+    content: parts,
+    ...(attachments.length ? { attachments } : {}),
+  };
+};
+
+const useNewPiThreadStore = (
+  registry: PiControllerRegistry,
+  options: PiRuntimeOptions,
+): ExternalStoreAdapter<ThreadMessage> => {
+  const aui = useAui();
+  const {
+    adapters,
+    cloud,
+    isDisabled,
+    isSendDisabled,
+    onError,
+    suggestions,
+    unstable_capabilities,
+  } = options;
+  const [optimisticMessages, setOptimisticMessages] = useState<
+    readonly ThreadMessageLike[]
+  >([]);
+  const optimisticMessageIndexRef = useRef(0);
+  const optimisticRepository = useMemo(
+    () => ExportedMessageRepository.fromArray(optimisticMessages),
+    [optimisticMessages],
+  );
+
+  const store = useMemo<ExternalStoreAdapter<ThreadMessage>>(
+    () => ({
+      isDisabled: isDisabled ?? false,
+      isSendDisabled,
+      unstable_capabilities,
+      suggestions,
+      isLoading: false,
+      isRunning: false,
+      messageRepository: optimisticRepository,
+      extras: EMPTY_RUNTIME_EXTRAS,
+      ...(adapters ? { adapters } : {}),
+      onNew: async (message) => {
+        const optimistic = toOptimisticThreadMessage(
+          message,
+          optimisticMessageIndexRef.current++,
+        );
+        setOptimisticMessages((messages) => [...messages, optimistic]);
+        const removeOptimisticMessage = () => {
+          setOptimisticMessages((messages) =>
+            messages.filter((candidate) => candidate !== optimistic),
+          );
+        };
+        try {
+          // The core starts thread initialization before dispatching onNew,
+          // so adapter.initialize has already created the thread empty;
+          // deliver the message to the live thread.
+          const { remoteId, externalId } =
+            await aui.threadListItem.initialize();
+          if (registry.disposed) {
+            removeOptimisticMessage();
+            return;
+          }
+          const piThreadId = cloud ? externalId : (externalId ?? remoteId);
+          if (!piThreadId) {
+            throw new Error("This thread has no Pi thread to send to.");
+          }
+          await getController(registry, piThreadId).sendMessage(message);
+          removeOptimisticMessage();
+        } catch (error) {
+          removeOptimisticMessage();
+          invokePiErrorCallback(onError, error);
+          throw error;
+        }
+      },
+    }),
+    [
+      aui,
+      optimisticRepository,
+      registry,
+      adapters,
+      cloud,
+      isDisabled,
+      isSendDisabled,
+      onError,
+      suggestions,
+      unstable_capabilities,
+    ],
+  );
+
+  return store;
+};
+
+const useRuntimeHook = (
+  registry: PiControllerRegistry,
+  options: PiRuntimeOptions,
+) => {
+  const threadListItem = useAuiState((state) => state.threadListItem);
+  const isMainThread = useAuiState(
+    (state) => state.threads.mainThreadId === state.threadListItem.id,
+  );
+  const threadId = options.cloud
+    ? threadListItem.externalId
+    : (threadListItem.externalId ?? threadListItem.remoteId);
+
+  // No render-local cache on top: `getController` is already an idempotent
+  // registry lookup, and a second cache could outlive a recreated registry.
+  const controller = threadId
+    ? getController(registry, threadId)
+    : NOOP_CONTROLLER;
+
+  const threadStore = usePiThreadStore(
+    isMainThread ? controller : NOOP_CONTROLLER,
+    options,
+  );
+  const newThreadStore = useNewPiThreadStore(registry, options);
+
+  // One runtime whose store CONTENT switches between the new-thread and
+  // live-thread branches. Returning two alternating runtime instances breaks
+  // the remote-thread-list main binding: it can latch onto the runtime that
+  // was current at switch time and miss the other one's later updates.
+  return useExternalStoreRuntime<ThreadMessage>(
+    threadId ? threadStore : newThreadStore,
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Thread-list metadata mapping.
+// ---------------------------------------------------------------------------
+
+const mapThreadMetadata = (metadata: PiThreadMetadata) => ({
+  status: metadata.archived ? ("archived" as const) : ("regular" as const),
+  remoteId: metadata.id,
+  externalId: metadata.id,
+  ...(metadata.title !== undefined ? { title: metadata.title } : {}),
+  // updatedAt（sidecar session.modified）→ AUI 列表项 lastMessageAt：侧边栏
+  // 「距最后一条消息」的时间源。上游映射漏了它，列表时间整体消失（2026-10-01）
+  ...(metadata.updatedAt ? { lastMessageAt: new Date(metadata.updatedAt) } : {}),
+  custom: {
+    status: metadata.status,
+    ...(metadata.workspacePath !== undefined
+      ? { workspacePath: metadata.workspacePath }
+      : {}),
+    ...(metadata.sessionFile !== undefined
+      ? { sessionFile: metadata.sessionFile }
+      : {}),
+    ...(metadata.parentSessionPath !== undefined
+      ? { parentSessionPath: metadata.parentSessionPath }
+      : {}),
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Public hook.
+// ---------------------------------------------------------------------------
+
+export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
+  const { client, cloud } = options;
+  const [pinnedRegistry, setPinnedRegistry] = useState(() => ({
+    client,
+    registry: createRegistry(client),
+  }));
+  let currentRegistry = pinnedRegistry;
+  if (pinnedRegistry.client !== client) {
+    currentRegistry = { client, registry: createRegistry(client) };
+    setPinnedRegistry(currentRegistry);
+  }
+  const { registry } = currentRegistry;
+
+  useReplaySafeEffect(() => {
+    registry.activate();
+    return () => registry.dispose();
+  }, [registry]);
+
+  const { workspacePath, includeArchived } = options;
+  const createAdapter = () => ({
+    list: async () => {
+      const threads = await client.listThreads({
+        ...(workspacePath !== undefined ? { workspacePath } : {}),
+        ...(includeArchived !== undefined ? { includeArchived } : {}),
+      });
+      return { threads: threads.map(mapThreadMetadata) };
+    },
+    rename: async (remoteId: string, newTitle: string) => {
+      await client.renameThread(remoteId, newTitle);
+    },
+    archive: async (remoteId: string) => {
+      await client.archiveThread?.(remoteId);
+    },
+    unarchive: async (remoteId: string) => {
+      await client.unarchiveThread?.(remoteId);
+    },
+    delete: async (remoteId: string) => {
+      await client.deleteThread?.(remoteId);
+      // 面板标签按会话分桶：会话删除即清它的桶（shell 桥回收其终端、
+      // 浏览器计数重估）；桶键经 rekey 已是 sessionId，与此处 remoteId 同空间
+      purgeThreadPanelTabs(remoteId);
+    },
+    initialize: async (threadId?: string) => {
+      const snapshot = await client.createThread({
+        ...(workspacePath !== undefined ? { workspacePath } : {}),
+      });
+      const remoteId = snapshot.metadata.id;
+      // 桌面扩展：登记本地线程 id -> sessionId 绑定（与旧链路 adapter 的
+      // unstable_useAdapters 同职责）。core 在首条消息派发前必跑 initialize，
+      // 故发送前绑定已就位；消费侧请求随后都能换出正确 sessionId。
+      if (threadId) piSessionRegistry.set(threadId, remoteId);
+      // 面板标签桶随绑定从草稿 id 迁到 sessionId 键下：刷新/重启后线程行
+      // id 就是 sessionId，桶才接得上（含当前指针）
+      if (threadId) rekeyPanelThread(threadId, remoteId);
+      // 会话级选择的补写：草稿期（尚无 sessionId）选的模型/思考档位/工作模式只记在
+      // 前端内存，此刻 sessionId 已绑定、会话行已建，定靶落库后首条消息即用该选择应答
+      //（三者均 fire-and-forget 语义：内部自吞失败并回退显示）
+      if (threadId) {
+        flushDraftModelSelection(threadId);
+        flushDraftThinkingSelection(threadId);
+        flushDraftAppModeSelection(threadId);
+        // 会话模式 + 审批档：**必须 await**。它决定首轮改动前问不问，晚一拍就等于
+        // 首轮按全局默认档执行（选「工作区内自动」却直接跑命令，就是这么来的）
+        await flushDraftModeSelection(threadId);
+      }
+      return {
+        remoteId,
+        externalId: snapshot.metadata.id,
+      };
+    },
+    generateTitle: async () =>
+      // Pi has no server-side title summarization; titles come from
+      // `session_info_changed`. Satisfy the contract with an empty stream.
+      new ReadableStream({
+        start(streamController) {
+          streamController.close();
+        },
+      }) as never,
+    fetch: async (threadId: string) => {
+      const snapshot = await client.getThread(threadId);
+      return mapThreadMetadata(snapshot.metadata);
+    },
+  });
+  const [pinnedAdapter, setPinnedAdapter] = useState(() => ({
+    client,
+    workspacePath,
+    includeArchived,
+    adapter: createAdapter(),
+  }));
+  let currentAdapter = pinnedAdapter;
+  if (
+    pinnedAdapter.client !== client ||
+    pinnedAdapter.workspacePath !== workspacePath ||
+    pinnedAdapter.includeArchived !== includeArchived
+  ) {
+    currentAdapter = {
+      client,
+      workspacePath,
+      includeArchived,
+      adapter: createAdapter(),
+    };
+    setPinnedAdapter(currentAdapter);
+  }
+  const piAdapter = currentAdapter.adapter;
+
+  const cloudAdapter = useCloudThreadListAdapter({
+    cloud,
+    sdk: cloud ? PI_SDK : undefined,
+    create: async () => {
+      const snapshot = await client.createThread({
+        ...(options.workspacePath !== undefined
+          ? { workspacePath: options.workspacePath }
+          : {}),
+      });
+      return { externalId: snapshot.metadata.id };
+    },
+    delete: async (threadId) => {
+      if (!cloud) return;
+      const { external_id } = await cloud.threads.get(threadId);
+      if (external_id) await client.deleteThread?.(external_id);
+    },
+  });
+
+  const adapter = cloud ? cloudAdapter : piAdapter;
+
+  return useRemoteThreadListRuntime({
+    runtimeHook: () => {
+      // oxlint-disable-next-line react-hooks/rules-of-hooks -- runtimeHook is invoked by useRemoteThreadListRuntime at the correct hook position
+      return useRuntimeHook(registry, options);
+    },
+    adapter,
+    allowNesting: true,
+    ...(options.initialThreadId !== undefined
+      ? { initialThreadId: options.initialThreadId }
+      : {}),
+    ...(options.threadId !== undefined ? { threadId: options.threadId } : {}),
+    ...(options.onThreadIdChange !== undefined
+      ? { onThreadIdChange: options.onThreadIdChange }
+      : {}),
+  });
+};

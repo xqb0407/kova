@@ -29,21 +29,25 @@ import {
   PencilLineIcon,
   SearchCheckIcon,
   SearchIcon,
+  SparklesIcon,
   SquareArrowOutUpRightIcon,
   SquareTerminalIcon,
   TargetIcon,
   TextSearchIcon,
 } from "lucide-react";
-import { openToolCallPanel } from "@/lib/tool-panel";
+import { openToolCallPanel } from "@/lib/panels/tool-panel";
+import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
+import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import {
   openSubagentTab,
   parseDelegationIdFromResult,
   subagentElapsedSeconds,
   useSubagentRunByToolCall,
-} from "@/lib/subagent-runs";
+} from "@/lib/subagent/subagent-runs";
 import { openExternal } from "@/lib/external-link";
-import { fileChangePair, fileChangeStats } from "@/lib/panel-activity";
-import { parseWebSearchResults, type WebSearchItem } from "@/lib/web-search";
+import { fileChangePair, fileChangeStats } from "@/lib/panels/panel-activity";
+import { parseWebSearchResults, type WebSearchItem } from "@/lib/pi/web-search";
+import { ImageGeneration } from "@/components/agents/image-generation";
 import { PanelFileDiff } from "@/components/code/panel-diff";
 import { SiteIcon } from "@/components/custom-ui/site-icon";
 import {
@@ -86,6 +90,12 @@ const FAILED_RE = /\[exit code: |\[timeout\]/;
 function resultText(result: unknown): string {
   if (result == null) return "";
   if (typeof result === "string") return result;
+  // 错误输出（state=output-error）经 convertMessage 包成 {error: errorText}：
+  // 剥出原文展示，避免失败行渲染成 JSON 转储
+  if (typeof result === "object" && "error" in result) {
+    const err = (result as { error?: unknown }).error;
+    if (typeof err === "string") return err;
+  }
   return JSON.stringify(result, null, 2);
 }
 
@@ -171,7 +181,8 @@ export type ToolRowProps = {
   output?: string;
   /** 展开区内容覆写（edit/write 用 @pierre/diffs 视图替掉原始输出文本） */
   expandedContent?: ReactNode;
-  /** 运行中（还没有输出）时，行下方显示这个滚动文本预览，行上主/次文本隐去 */
+  /** 运行中（还没有输出）的流式输出预览：reasoning 同款折叠，点开展开后
+   *  以滚动文本呈现（底部吸附实时跟随） */
   preview?: ReactNode;
   /** 展开内容顶部的命令行（终端用：`$ 完整命令`），与输出共用一个框 */
   expandedHeader?: ReactNode;
@@ -198,8 +209,20 @@ export const ToolRow: FC<ToolRowProps> = ({
   onOpenPanel,
 }) => {
   const [open, setOpen] = useState(false);
-  const hasOutput = !!output;
-  const canExpand = hasOutput || expandedContent != null;
+  // 两个档位 hook 必须各自无条件调用：写成 `useCurrentAppMode() === "work" || useIsAskMode()`
+  // 会让 useIsAskMode 的 hook 数量随档位短路变化，切档（工作 ⇄ 代码/设计）即触发
+  // React #310（Rendered more hooks than during the previous render，生产环境直接崩主区）
+  const appMode = useCurrentAppMode();
+  const askMode = useIsAskMode();
+  // 本会话工作模式为「工作」与问答档：过程细节收敛——不渲染行内输出展开/流式预览，
+  // 行只剩摘要（保留 ±N 统计与开面板动作）；详情走右侧面板
+  const compact = appMode === "work" || askMode;
+  const hasOutput = !compact && !!output;
+  // 可展开 = 结束后有输出/自定义展开区；或运行中有流式预览（reasoning 同款
+  // 折叠：默认收起，点开实时滚动看输出）——运行中同样可展开查看
+  const canExpand =
+    hasOutput ||
+    (!compact && (expandedContent != null || (!!preview && !!running)));
   // 展开内容顶部已有 `$ 命令` 时，行上的命令文本收起（终端行展开后只剩「终端」+箭头）
   const hideTexts = open && !!expandedHeader;
 
@@ -214,7 +237,7 @@ export const ToolRow: FC<ToolRowProps> = ({
       {fileIcon ? (
         <span className="inline-flex shrink-0 items-center">{fileIcon}</span>
       ) : null}
-      {!hideTexts && !preview && primary ? (
+      {!hideTexts && primary ? (
         primaryAsLink && onOpenPanel ? (
           // 标题即面板入口：默认观感同普通文本，悬浮出超链接态；
           // 点击截在 span 内（stopPropagation），不触发整行的展开/收起
@@ -241,10 +264,14 @@ export const ToolRow: FC<ToolRowProps> = ({
           </span>
         )
       ) : null}
-      {!hideTexts && !preview && secondary ? (
-        <span className="min-w-0 truncate text-xs opacity-60">{secondary}</span>
+      {/* secondary 限宽 45%：长摘要（如技能正文预览、文件行的长目录）不再
+          挤掉 primary——主文本优先保位，次文本自己截断 */}
+      {!hideTexts && secondary ? (
+        <span className="min-w-0 max-w-[45%] truncate text-xs opacity-60">
+          {secondary}
+        </span>
       ) : null}
-      {!hideTexts && !preview && stats ? (
+      {!hideTexts && stats ? (
         <span className="flex shrink-0 items-center gap-1 font-mono text-xs tabular-nums">
           {stats.added > 0 ? (
             <span className="text-emerald-600 dark:text-emerald-400">
@@ -268,9 +295,10 @@ export const ToolRow: FC<ToolRowProps> = ({
     </>
   );
 
-  // 展开框：顶部可选命令行（$ 完整命令）+ 下方输出；输出独立滚动，命令行常驻
+  // 展开框：顶部可选命令行（$ 完整命令）+ 下方输出；样式对齐运行中的滚动
+  // 预览（灰底无边框），输出限高折叠（内部滚动），命令行常驻
   const outputBox = (
-    <div className="bg-background border rounded-md  px-3 py-2 font-mono text-xs leading-relaxed">
+    <div className="bg-background border rounded-md px-3 py-2 font-mono text-xs leading-relaxed">
       {expandedHeader ? (
         <div className="text-foreground/90 break-all whitespace-pre-wrap">
           {expandedHeader}
@@ -279,7 +307,7 @@ export const ToolRow: FC<ToolRowProps> = ({
       {output ? (
         <pre
           className={cn(
-            "max-h-64 overflow-auto whitespace-pre-wrap",
+            "max-h-40 overflow-auto whitespace-pre-wrap",
             expandedHeader && "mt-2  pt-2",
             failed ? "text-destructive" : "text-muted-foreground",
           )}
@@ -290,7 +318,15 @@ export const ToolRow: FC<ToolRowProps> = ({
     </div>
   );
 
-  // 有输出/自定义展开内容：整行是展开触发器（Collapsible），开面板动作挪到行尾悬浮小按钮
+  // 运行中的展开区：流式输出滚动预览（底部吸附），reasoning 同款折叠交互
+  const previewBox = preview ? (
+    <ScrollingText className="bg-background border text-muted-foreground max-h-40 rounded-md px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+      {preview}
+    </ScrollingText>
+  ) : null;
+
+  // 有输出/自定义展开内容/运行中流式预览：整行是展开触发器（Collapsible，
+  // 默认收起），开面板动作挪到行尾悬浮小按钮
   if (canExpand)
     return (
       <Collapsible
@@ -330,12 +366,13 @@ export const ToolRow: FC<ToolRowProps> = ({
             "[--tw-duration:var(--animation-duration)]",
           )}
         >
-          {expandedContent ?? outputBox}
+          {expandedContent ?? (hasOutput ? outputBox : previewBox)}
         </CollapsibleContent>
       </Collapsible>
     );
 
-  // 无输出（多为运行中）：有面板目标则整行开面板，否则纯展示行；视觉同款 reasoning trigger
+  // 无输出无预览（多为运行中）：有面板目标则整行开面板，否则纯展示行；
+  // 视觉同款 reasoning trigger
   return (
     <div data-slot="aui_tool-row" className="min-w-0 text-sm">
       {onOpenPanel ? (
@@ -351,15 +388,18 @@ export const ToolRow: FC<ToolRowProps> = ({
           {content}
         </span>
       )}
-      {/* 运行中：命令以滚动文本预览呈现（底部吸附），结束后换回可展开的输出行 */}
-      {preview ? (
-        <ScrollingText className="bg-muted/30 text-muted-foreground max-h-40 rounded-md px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
-          {preview}
-        </ScrollingText>
-      ) : null}
     </div>
   );
 };
+
+/** 终端行的命令行（展开区顶部 / 运行中流式预览共用）：`$` 提示符绿色加粗高亮，
+ *  命令正文随所在容器的文本色（展开区 foreground/90、预览 muted-foreground）。 */
+const TerminalCommandLine: FC<{ command: string }> = ({ command }) => (
+  <>
+    <span className="font-bold text-emerald-600 dark:text-emerald-400">$</span>{" "}
+    {command}
+  </>
+);
 
 const BashToolUI: ToolCallMessagePartComponent = ({
   toolCallId,
@@ -385,8 +425,12 @@ const BashToolUI: ToolCallMessagePartComponent = ({
       running={running}
       failed={isError === true || (!!output && FAILED_RE.test(output))}
       output={output}
-      preview={running && command ? `$ ${command}` : undefined}
-      expandedHeader={command ? `$ ${command}` : undefined}
+      preview={
+        running && command ? <TerminalCommandLine command={command} /> : undefined
+      }
+      expandedHeader={
+        command ? <TerminalCommandLine command={command} /> : undefined
+      }
       onOpenPanel={
         command
           ? () => openToolCallPanel("bash", toolCallId, { command })
@@ -417,7 +461,7 @@ const fileToolUI =
         : null;
     const expandedContent =
       !failed && result && pair ? (
-        <div className="bg-muted/30 max-h-96 overflow-auto rounded-md">
+        <div className="bg-white dark:bg-background max-h-96 overflow-auto rounded-md p-2 border">
           <PanelFileDiff
             name={base}
             oldText={pair.oldText}
@@ -767,6 +811,7 @@ const DELEGATION_STATUS_LABEL: Record<string, string> = {
   truncated: "轮次超限",
   aborted: "已中止",
   stopped: "已停止",
+  interrupted: "已中断",
 };
 
 /** 委派的展示态：live 走 store 条目，历史重建（无绑定 chunk）从结果文本兜底解析短 id */
@@ -813,7 +858,12 @@ const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) 
     <ToolRow
       label="子智能体"
       icon={<BotIcon className="size-4 shrink-0" />}
-      primary={agentName || "委派"}
+      // agent 名加高亮底：一眼区分「派给了哪个子智能体」，与灰色描述语拉开层次
+      primary={
+        <span className="text-blue-400 text-md font-bold ">
+          {agentName || "委派"}
+        </span>
+      }
       mono
       primaryAsLink
       primaryTitle={delegationId ? `子智能体运行过程 · ${delegationId.slice(0, 8)}` : "子智能体"}
@@ -830,10 +880,102 @@ const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) 
   );
 };
 
+/** use_skill：「调用技能 · 名称」行，形态对齐终端——收起态只有名称
+ *  （名称后不挂预览文本），整行可点展开看完整回执（Collapsible 输出框，
+ *  work 模式与终端一样收敛展开态）；长名悬浮看全；
+ *  失败（sidecar 以「错误：」文本返回）行尾红点、展开看错误 */
+const SkillToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const name = strArg(args, "name") ?? "";
+  const output = resultText(result);
+  const failed = isError === true || output.startsWith("错误：");
+  return (
+    <ToolRow
+      label="调用技能"
+      icon={<BookOpenIcon className="size-4 shrink-0" />}
+      primary={<div className="font-black text-blue-400">
+      {name}
+      </div>}
+      primaryTitle={name}
+      mono
+      running={status?.type === "running"}
+      failed={failed}
+      output={output}
+    />
+  );
+};
+
+/** "1024x1024"/"1024×1792" → 宽高；"auto"/缺省 → null */
+const parseImageSize = (size: string | null): { w: number; h: number } | null => {
+  const m = /^(\d+)\s*[x×]\s*(\d+)$/i.exec((size ?? "").trim());
+  return m ? { w: Number(m[1]), h: Number(m[2]) } : null;
+};
+
+/** 预估出图秒数（占位卡 "Estimated ~Xs" 文案）：1792 级及以上更慢；网关排队时
+ *  只是估计，取偏保守的档位即可，超时兜底在服务端（GENERATE_TIMEOUT_MS） */
+const imageGenEstimateSeconds = (size: string | null): number => {
+  const px = parseImageSize(size);
+  if (px && px.w * px.h >= 1_500_000) return 60;
+  return 45;
+};
+
+/**
+ * generate_image：生图网关普遍要几十秒，通用行的空转圈等待不好看——运行中
+ * 用 ImageGeneration 的 202 占位卡：左对齐定宽瓦片（fluid + 显式宽度，compact
+ * 变体是页面展示用的居中样式，消息流里不用），头部「图标 + 生成图片」一行，
+ * 瓦片右上角 "Estimated ~Xs" 徽章；状态行与标题重复，showStatus 关掉；
+ * animated=false 入场一步到位（消息流里要干脆利落，页面展示才用渐变）。
+ * 成图由 data-image part 紧跟卡片之后上屏（投影链路见 docs/image-part-design.md），
+ * 结果到达后本行收敛为紧凑结果行。婉拒/失败结果（无图纯文本）同走行，展开看原文。
+ */
+const GenerateImageToolUI: ToolCallMessagePartComponent = ({
+  args,
+  result,
+  status,
+  isError,
+}) => {
+  const size = strArg(args, "size");
+  const running = status?.type === "running";
+  if (running) {
+    const px = parseImageSize(size);
+    const portrait = !!px && px.h > px.w;
+    return (
+      <ImageGeneration
+        status="generating"
+        title="生成图片"
+        titleIcon={<SparklesIcon className="size-4 shrink-0" />}
+        showStatus={false}
+        animated={false}
+        resolution={`Estimated ~${imageGenEstimateSeconds(size)}s`}
+        aspectRatio={px ? `${px.w} / ${px.h}` : "1 / 1"}
+        size="fluid"
+        tileClassName="border"
+        className={cn("my-1.5 w-64", portrait && "w-40")}
+      />
+    );
+  }
+  const output = resultText(result);
+  return (
+    <ToolRow
+      label="生成图片"
+      icon={<SparklesIcon className="size-4 shrink-0" />}
+      primary={output.split("\n")[0] || undefined}
+      failed={isError === true || (!!output && FAILED_RE.test(output))}
+      output={output}
+    />
+  );
+};
+
 /** 有专属扁平行渲染的工具名 → 组件；其余走 ToolFallback */
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
   Task: TaskToolUI,
+  use_skill: SkillToolUI,
+  generate_image: GenerateImageToolUI,
   read: fileToolUI("read", "查看"),
   edit: fileToolUI("edit", "编辑"),
   write: fileToolUI("write", "写入"),

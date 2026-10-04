@@ -20,6 +20,7 @@ export type ShortcutActionId =
   | "openSettings"
   | "openAutomations"
   | "toggleAgentPanel"
+  | "toggleTheme"
   | "sendMessage"
   | "newline";
 
@@ -85,6 +86,13 @@ export const SHORTCUT_ACTIONS: {
     desc: "进入自动化任务管理页",
     scope: "global",
     default: { key: "a", mod: true, shift: true, alt: false },
+  },
+  {
+    id: "toggleTheme",
+    label: "切换主题",
+    desc: "在浅色 / 深色之间互切（跟随系统时按当前显示取反向）",
+    scope: "global",
+    default: { key: "t", mod: true, shift: false, alt: true },
   },
   {
     id: "sendMessage",

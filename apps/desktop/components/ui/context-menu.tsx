@@ -4,6 +4,7 @@ import * as React from "react";
 import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu";
 
 import { cn } from "@/lib/utils";
+import { OcclusionSlot } from "@/components/custom-ui/occlusion-slot";
 
 /**
  * 右键上下文菜单(Base UI ContextMenu,与 dropdown-menu 同款视觉):
@@ -27,6 +28,7 @@ function ContextMenuContent({
 }) {
   return (
     <ContextMenuPrimitive.Portal>
+      <OcclusionSlot />
       <ContextMenuPrimitive.Positioner
         className="isolate z-50 outline-none"
         {...positionerProps}

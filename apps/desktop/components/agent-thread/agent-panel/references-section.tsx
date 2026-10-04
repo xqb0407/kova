@@ -2,7 +2,7 @@
 
 import { type FC, type RefObject } from "react";
 import { Link2Icon } from "lucide-react";
-import type { CitationEntry } from "@/lib/panel-activity";
+import type { CitationEntry } from "@/lib/panels/panel-activity";
 import { openExternal } from "@/lib/external-link";
 import { SiteIcon } from "@/components/custom-ui/site-icon";
 import { CountPill, PanelSection } from "./section-shell";

@@ -4,10 +4,21 @@ import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { cn } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
 import type { VariantProps } from "class-variance-authority";
+import { OcclusionSlot } from "@/components/custom-ui/occlusion-slot";
 
 const AlertDialogRoot = AlertDialog.Root;
 const AlertDialogTrigger = AlertDialog.Trigger;
-const AlertDialogPortal = AlertDialog.Portal;
+const AlertDialogPortal = ({
+  children,
+  ...props
+}: React.ComponentProps<typeof AlertDialog.Portal>) => (
+  // 同 dialog：children 必须解构出来合并——JSX 显式子节点会覆盖 {...props} 里的
+  // children，不显式渲染就会把调用方的子树悄悄丢掉
+  <AlertDialog.Portal {...props}>
+    <OcclusionSlot />
+    {children}
+  </AlertDialog.Portal>
+);
 
 const AlertDialogOverlay = React.forwardRef<
   React.ComponentRef<typeof AlertDialog.Backdrop>,

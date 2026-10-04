@@ -3,16 +3,18 @@
 import dynamic from "next/dynamic";
 import { useMemo, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { FileCodeIcon, FileIcon, GlobeIcon } from "lucide-react";
+import { FileCodeIcon, FileIcon, GlobeIcon, LayoutPanelTopIcon } from "lucide-react";
 import {
   formatBytes,
   isBrowserPreviewable,
   messageArtifacts,
+  toFileUrl,
   type MessageArtifact,
-} from "@/lib/artifacts";
-import { focusPanelTab } from "@/lib/panel-tabs";
-import { getWorkspace } from "@/lib/workspace-store";
-import { isTauri } from "@/lib/tauri";
+} from "@/lib/panels/artifacts";
+import { getTurnParts, packTurnSlot, parseTurnSlot } from "@/lib/panels/message-turns";
+import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
+import { findPanelForFile, usePluginPanels } from "@/lib/plugins/plugin-panels";
+import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
 import { cn } from "@/lib/utils";
 
 /** 彩色文件图标（material-file-icons ~1.5MB）按需加载，别拉进消息列表主 chunk */
@@ -25,19 +27,6 @@ const FileTypeIcon = dynamic(
   },
 );
 
-/**
- * 工作区相对/绝对路径 → file:// URL（内置浏览器只吃 URL，本地文件靠它加载）。
- * 逐段 encodeURIComponent 兼容空格/中文；Windows 盘符走三斜杠 file:///C:/…。
- */
-function toFileUrl(cwd: string, rel: string): string {
-  let abs = rel.replace(/\\/g, "/");
-  if (!/^[A-Za-z]:\//.test(abs) && !abs.startsWith("/")) {
-    abs = `${cwd.replace(/[\\/]+$/, "").replace(/\\/g, "/")}/${abs.replace(/^\/+/, "")}`;
-  }
-  const encoded = abs.split("/").map(encodeURIComponent).join("/");
-  return /^[A-Za-z]:\//.test(encoded) ? `file:///${encoded}` : `file://${encoded}`;
-}
-
 const iconBtn =
   "text-muted-foreground hover:bg-muted hover:text-foreground size-8 shrink-0 grid place-items-center rounded-lg transition-colors";
 
@@ -49,19 +38,35 @@ const iconBtn =
 export const ArtifactCard: FC<{ artifact: MessageArtifact }> = ({
   artifact,
 }) => {
-  const workspace = isTauri() ? getWorkspace() : null;
+  // 有效工作目录：当前工作区 → 任务工作区兜底（异步补齐后自动重渲染）。
+  // 没有它就没有任何相对路径可谈：预览/在画布中打开都以它为锚。
+  const cwd = usePanelCwd();
   // 地球按钮只对能在浏览器里渲染的类型出现（md 等交给「代码」的文件标签预览）
-  const canPreview = !!workspace && isBrowserPreviewable(artifact.path);
+  const canPreview = !!cwd && isBrowserPreviewable(artifact.path);
+  // 产物命中已装面板的 opens glob（如 *.canvas.json）→ 追加「在画布中打开」
+  const relPath = cwd && artifact.path.startsWith(`${cwd}/`)
+    ? artifact.path.slice(cwd.length + 1)
+    : artifact.path;
+  const { panels } = usePluginPanels();
+  const panelForFile = cwd ? findPanelForFile(panels, relPath) : undefined;
 
   const openCode = () => {
     focusPanelTab("file", { focus: artifact.toolCallId, title: artifact.base });
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   const openPreview = () => {
-    if (!workspace) return;
+    if (!cwd) return;
     focusPanelTab("browser", {
-      url: toFileUrl(workspace, artifact.path),
+      url: toFileUrl(cwd, artifact.path),
       title: artifact.base,
+    });
+    window.dispatchEvent(new Event("agent-panel:open"));
+  };
+  const openInPanel = () => {
+    if (!cwd || !panelForFile) return;
+    focusPluginPanel(panelForFile.pluginId, panelForFile.panel.id, {
+      cwd,
+      path: relPath,
     });
     window.dispatchEvent(new Event("agent-panel:open"));
   };
@@ -69,7 +74,7 @@ export const ArtifactCard: FC<{ artifact: MessageArtifact }> = ({
   return (
     <div
       data-slot="aui_artifact-card"
-      className="bg-muted/40 border-border/60 flex items-center gap-3 rounded-xl border px-3 py-2.5"
+      className="bg-muted/40 border-border/60 flex items-center gap-3 rounded-xl border px-3 py-2.5 my-4"
     >
       <FileTypeIcon path={artifact.path} className="size-8 shrink-0" />
       <div className="min-w-0 flex-1">
@@ -103,20 +108,42 @@ export const ArtifactCard: FC<{ artifact: MessageArtifact }> = ({
           <GlobeIcon className="size-4" />
         </button>
       ) : null}
+      {panelForFile ? (
+        <button
+          type="button"
+          onClick={openInPanel}
+          aria-label={`在${panelForFile.panel.title}中打开`}
+          title={`在${panelForFile.panel.title}中打开`}
+          className={cn(iconBtn)}
+        >
+          <LayoutPanelTopIcon className="size-4" />
+        </button>
+      ) : null}
     </div>
   );
 };
 
 /**
- * 一条 assistant 消息尾部的产物卡列表。
+ * 一轮对话尾部的产物卡列表。
  * 只在回合结束后计算一次：流式期间逐 token 重扫 parts、重算大文件字节数代价高，
  * 且半截内容出卡也不合理——运行中直接返回空。
+ * 挂在本轮末条 assistant 消息上、扫本轮全部 assistant 消息的 parts：
+ * 折叠轮（Codex 风格）里轮中过程消息整体不挂载，产物是交付物，必须保留可见。
  */
 export const MessageArtifacts: FC = () => {
   const running = useAuiState((s) => s.message.status?.type === "running");
-  const parts = useAuiState((s) => s.message.content);
+  // 选择器回的是缓存过的 parts 数组（按 messages 数组身份 + 轮次键缓存，
+  // 同一批消息下引用稳定），不是新数组——不会因新身份反复重渲
+  const parts = useAuiState((s) => {
+    if (s.message.role !== "assistant") return null;
+    const slot = parseTurnSlot(
+      packTurnSlot(s.thread.messages, String(s.message.id)),
+    );
+    if (!slot?.isTurnEnd) return null;
+    return getTurnParts(s.thread.messages, slot.turnKey);
+  });
   const artifacts = useMemo(
-    () => (running ? [] : messageArtifacts(parts)),
+    () => (running || !parts ? [] : messageArtifacts(parts)),
     [running, parts],
   );
   if (artifacts.length === 0) return null;

@@ -3,16 +3,18 @@
 import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import {
   unstable_useMentionAdapter,
+  useAuiState,
   type Unstable_Mention,
   type Unstable_TriggerItem,
 } from "@assistant-ui/react";
 import type { Unstable_TriggerAdapter } from "@assistant-ui/core";
-import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp";
-import { useSkills, type SkillEntry } from "@/lib/skills";
-import { useSubagents } from "@/lib/subagents";
-import { useWorkspace } from "@/lib/workspace-store";
+import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp/mcp";
+import { useSkills, type SkillEntry } from "@/lib/skills/skills";
+import { useSubagents } from "@/lib/subagent/subagents";
+import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { isTauri } from "@/lib/tauri";
-import { openPanelTab } from "@/lib/panel-tabs";
+import { openPanelTab } from "@/lib/panels/panel-tabs";
+import { setSessionMode } from "@/lib/pi/pi-session-mode";
 import {
   ActivityIcon,
   BookOpenIcon,
@@ -24,7 +26,10 @@ import {
   ListTodoIcon,
   PlugIcon,
   SlashIcon,
+  ClipboardListIcon,
+  MessageCircleQuestionIcon,
   SquareTerminalIcon,
+  TargetIcon,
   ZapIcon,
 } from "lucide-react";
 
@@ -60,12 +65,33 @@ const ICON_MAP: Record<string, FC<{ className?: string }>> = {
   Activity: ActivityIcon,
   ListTodo: ListTodoIcon,
   Eye: EyeIcon,
+  Target: TargetIcon,
+  MessageCircleQuestion: MessageCircleQuestionIcon,
+  ClipboardList: ClipboardListIcon,
 };
 
 /** 面板类命令：开右侧面板标签 + 展开面板（模式同分支菜单的「Git 图谱」） */
 const openPanel = (type: Parameters<typeof openPanelTab>[0]) => {
   openPanelTab(type);
   window.dispatchEvent(new Event("agent-panel:open"));
+};
+
+/**
+ * 模式类命令（问答 / 目标）的共同动作：切档，**不代发消息**。
+ *
+ * 不代发是刻意的：目标模式里「用户说的第一句话就是目标」，命令自己编一条目标会让
+ * 目标原文脱离用户原话——而那段原文要进系统提示词、还会被逐字重述进每一轮续跑。
+ * 问答模式同理，问什么得由用户打。
+ */
+const switchMode = (
+  threadId: string | undefined,
+  mode: "ask" | "plan" | "goal",
+  label: string,
+) => {
+  if (!threadId) return;
+  setSessionMode(threadId, mode).catch((err) =>
+    console.error(`set_mode(${mode}) from ${label} failed:`, err),
+  );
 };
 
 type SlashCommandDef = {
@@ -75,7 +101,11 @@ type SlashCommandDef = {
   icon: string;
   /** 面板标签仅 Tauri 桌面端可见（shell/explorer，见 tab-registry 过滤） */
   tauriOnly?: boolean;
-  run: () => void;
+  /**
+   * 命令动作。ctx.threadId 是当前会话线程（面板类命令用不到，模式类命令要用它发
+   * set_mode）——菜单在这一层才拿得到 threadId，所以作为参数注入而不是模块级闭包。
+   */
+  run: (ctx: { threadId: string | undefined }) => void;
 };
 
 const SLASH_COMMANDS: readonly SlashCommandDef[] = [
@@ -117,9 +147,9 @@ const SLASH_COMMANDS: readonly SlashCommandDef[] = [
     run: () => openPanel("activity"),
   },
   {
-    id: "plan",
-    label: "/plan",
-    description: "打开计划面板",
+    id: "plan-panel",
+    label: "/plan-panel",
+    description: "打开计划面板（任务清单）",
     icon: "ListTodo",
     run: () => openPanel("plan"),
   },
@@ -129,6 +159,27 @@ const SLASH_COMMANDS: readonly SlashCommandDef[] = [
     description: "打开审查面板",
     icon: "Eye",
     run: () => openPanel("review"),
+  },
+  {
+    id: "plan",
+    label: "/plan",
+    description: "切到计划模式：先出计划，批准后再实施",
+    icon: "ClipboardList",
+    run: ({ threadId }) => switchMode(threadId, "plan", "/plan"),
+  },
+  {
+    id: "ask",
+    label: "/ask",
+    description: "切到问答模式：只读工具，问问题就得到答案",
+    icon: "MessageCircleQuestion",
+    run: ({ threadId }) => switchMode(threadId, "ask", "/ask"),
+  },
+  {
+    id: "goal",
+    label: "/goal",
+    description: "切到目标模式：说一个目标，我跨轮把它做完",
+    icon: "Target",
+    run: ({ threadId }) => switchMode(threadId, "goal", "/goal"),
   },
 ];
 
@@ -153,10 +204,12 @@ function toToolItem(server: string, tool: McpToolInfo): Unstable_TriggerItem {
 }
 
 /** 拉取各就绪服务器的工具清单：sidecar 元数据缓存优先（ready 态必有缓存），缺失才握手。
- *  只取 ready 态——避免在输入框里打字就把懒服务器唤醒握手。 */
-function useMcpToolsByServer(workspace: string | null) {
+ *  只取 ready 态——避免在输入框里打字就把懒服务器唤醒握手。
+ *  导出给 composer 的 + 菜单「连接器」面板复用（同一份就绪集合，避免两处口径漂移）。 */
+export function useMcpToolsByServer(workspace: string | null) {
   const mcp = useMcpServers(workspace);
-  const readyKey = mcp.servers
+  // 插件服务器与常规服务器同场：只在 ready 态取工具（避免打字唤醒懒服务器）
+  const readyKey = [...mcp.servers, ...mcp.pluginServers]
     .filter((s) => s.enabled && s.status.state === "ready")
     .map((s) => s.name)
     .join(",");
@@ -194,35 +247,43 @@ function useMcpToolsByServer(workspace: string | null) {
   return toolsByServer;
 }
 
-/** `/` 指令菜单：命令 + 技能 + MCP 工具 三分类 adapter，供 ComposerTriggerPopover 展开 */
-export function useComposerSlashMenu(): {
+/** `/` 指令菜单：命令 + 技能 + MCP 工具 三分类 adapter，供 ComposerTriggerPopover 展开。
+ *  includeCommands=false 时去掉面板类命令（自动化弹窗里没有可开的面板，留着只会误导）。 */
+export function useComposerSlashMenu(
+  opts: { includeCommands?: boolean } = {},
+): {
   adapter: Unstable_TriggerAdapter;
   action: { onExecute: (item: Unstable_TriggerItem) => void; removeOnExecute: true };
   iconMap: Record<string, FC<{ className?: string }>>;
   fallbackIcon: FC<{ className?: string }>;
 } {
+  const { includeCommands = true } = opts;
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
   const workspace = useWorkspace();
   const skills = useSkills(workspace);
   const toolsByServer = useMcpToolsByServer(workspace);
 
   const commandItems = useMemo<Unstable_TriggerItem[]>(
     () =>
-      SLASH_COMMANDS.filter((c) => !c.tauriOnly || isTauri()).map((c) => ({
-        id: c.id,
-        type: "command",
-        label: c.label,
-        description: c.description,
-        metadata: { icon: c.icon },
-      })),
-    [],
+      includeCommands
+        ? SLASH_COMMANDS.filter((c) => !c.tauriOnly || isTauri()).map((c) => ({
+            id: c.id,
+            type: "command",
+            label: c.label,
+            description: c.description,
+            metadata: { icon: c.icon },
+          }))
+        : [],
+    [includeCommands],
   );
 
   const skillItems = useMemo<Unstable_TriggerItem[]>(
     () =>
-      skills.skills
+      // 插件技能（pluginSkills）与常规技能同场：芯片凭名定位，模型侧已同链生效
+      [...skills.skills, ...skills.pluginSkills]
         .filter((s) => s.enabled && !s.shadowed)
         .map(toSkillItem),
-    [skills.skills],
+    [skills.skills, skills.pluginSkills],
   );
 
   const toolItems = useMemo<Unstable_TriggerItem[]>(
@@ -257,7 +318,7 @@ export function useComposerSlashMenu(): {
   // onExecute 里读 getState() 会拿到未剥离的触发文本）
   const onExecute = (item: Unstable_TriggerItem) => {
     if (item.type !== "command") return;
-    SLASH_COMMANDS.find((c) => c.id === item.id)?.run();
+    SLASH_COMMANDS.find((c) => c.id === item.id)?.run({ threadId });
   };
 
   return {
@@ -268,13 +329,13 @@ export function useComposerSlashMenu(): {
   };
 }
 
-/** `@` 提及：子智能体清单（启用项），插芯片随消息发给模型 */
+/** `@` 提及：子智能体清单（启用项，含插件子智能体），插芯片随消息发给模型 */
 export function useSubagentMention() {
   const workspace = useWorkspace();
   const subagents = useSubagents(workspace);
   const items = useMemo<readonly Unstable_Mention[]>(
     () =>
-      subagents.agents
+      [...subagents.agents, ...subagents.pluginAgents]
         .filter((a) => a.enabled)
         .map((a) => ({
           id: `agent:${a.name}`,
@@ -283,7 +344,7 @@ export function useSubagentMention() {
           description: a.description,
           icon: "Bot",
         })),
-    [subagents.agents],
+    [subagents.agents, subagents.pluginAgents],
   );
   return unstable_useMentionAdapter({
     items,

@@ -23,6 +23,9 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { SettingRow } from "@/components/custom-ui/setting-row";
+import { ProviderIcon } from "@/components/custom-ui/provider-icon";
 import { cn } from "@/lib/utils";
 import {
   piRequest,
@@ -32,16 +35,28 @@ import {
   type PiCustomProviderSummary,
   type PiModelSummary,
   type PiProviderSummary,
-} from "@/lib/pi-bridge";
+  type PiThinkingSeed,
+} from "@/lib/pi/pi-bridge";
 import { isTauri } from "@/lib/tauri";
-import { setSelectedModel, useSelectedModel } from "@/lib/model-settings";
-import { refreshPiModels } from "@/lib/pi-models";
+import {
+  saveImageGenConfig,
+  setModelImageCapable,
+  useImageGenConfig,
+} from "@/lib/settings/imagegen-config";
+import { setSelectedModel, useSelectedModel } from "@/lib/model/model-settings";
+import {
+  THINKING_LEVEL_LABELS,
+  setThinkingLevel,
+  useThinkingLevel,
+  type ThinkingLevel,
+} from "@/lib/settings/thinking-settings";
+import { refreshPiModels } from "@/lib/pi/pi-models";
 import {
   getModelThinkingMap,
   setModelThinkingMap,
   type ModelThinkingMap,
-} from "@/lib/thinking-maps";
-import { fmtContextWindow } from "@/lib/model-format";
+} from "@/lib/pi/thinking-maps";
+import { fmtContextWindow } from "@/lib/model/model-format";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -215,6 +230,18 @@ const AttrEditor: FC<{
           />
           支持深度思考
         </Label>
+        {/* 输出能力标记（存 imagegen 配置覆盖层）：勾上才会出现在文生图默认模型下拉 */}
+        <Label
+          className="flex items-center gap-1.5 text-sm"
+          title="标记为可生成图片的模型（如 gpt-image-1 / dall-e-3 / seedream）：勾选后才会出现在「文生图 → 默认文生图模型」下拉里；供 generate_image 工具按 OpenAI images 协议调用"
+        >
+          <Checkbox
+            checked={draft.t2i}
+            onCheckedChange={(checked) => onChange({ t2i: checked })}
+            className="size-4"
+          />
+          可生成图片
+        </Label>
       </div>
       <Field label="输入单价">
         <Input
@@ -372,6 +399,8 @@ type AttrDraft = {
   text: boolean;
   image: boolean;
   reasoning: boolean;
+  /** 可生成图片标记（存 imagegen 配置覆盖层，非 models 表列）：文生图下拉过滤依据 */
+  t2i: boolean;
   tOff: string;
   tMin: boolean;
   tLow: boolean;
@@ -485,9 +514,55 @@ export const ModelSettings: FC = () => {
   const [svcModelAttrs, setSvcModelAttrs] = useState<Record<string, PiCustomModelSpec>>({});
   const [attrEditId, setAttrEditId] = useState<string | null>(null);
   const [attrDraft, setAttrDraft] = useState<AttrDraft | null>(null);
+  /** 与 attrEditId 同步的 ref：种子查找异步返回时核对弹窗还开着同一模型 */
+  const attrEditIdRef = useRef<string | null>(null);
   // 本次打开属性弹窗内，用户是否点了"手动覆盖"把自动折叠态展开
   const [thinkingOverrideEdit, setThinkingOverrideEdit] = useState(false);
   const selected = useSelectedModel();
+  const defaultThinking = useThinkingLevel();
+
+  // 文生图区块：整包配置在 sidecar kv（pi.imagegen），模型候选复用本页目录
+  const imagegen = useImageGenConfig();
+  // 只列已勾选「可生成图片」标记且已配好凭据、启用的模型（文生图能力存 imagegen
+  // 配置覆盖层，标记入口在本页模型属性弹窗）；当前选择若已不在清单（删除/取消标记），
+  // 合成一项保住回显
+  const imageModelOptions = (models ?? [])
+    .filter((m) => m.authed && m.enabled && m.t2i)
+    .map((m) => ({
+      value: `${m.provider}/${m.id}`,
+      label: (
+        <span className="flex items-center gap-2">
+          <ProviderIcon
+            provider={m.provider}
+            modelId={m.id}
+            providerName={m.providerName}
+          />
+          {`${m.providerName} · ${m.name || m.id}`}
+        </span>
+      ),
+    }));
+  {
+    const cur =
+      imagegen.provider && imagegen.modelId
+        ? `${imagegen.provider}/${imagegen.modelId}`
+        : "";
+    if (cur && !imageModelOptions.some((o) => o.value === cur)) {
+      // 已不在清单的选择（服务删除/取消标记）：按复合 id 还原 mark，保住回显
+      const sep = cur.indexOf("/");
+      imageModelOptions.unshift({
+        value: cur,
+        label: (
+          <span className="flex items-center gap-2">
+            <ProviderIcon
+              provider={cur.slice(0, sep)}
+              modelId={cur.slice(sep + 1)}
+            />
+            {`${cur}（当前）`}
+          </span>
+        ),
+      });
+    }
+  }
 
   const load = useCallback(() => {
     if (!isTauri()) return;
@@ -602,6 +677,10 @@ export const ModelSettings: FC = () => {
           provider: providerId,
         });
         load();
+        // 对话页的模型目录也得跟上：sidecar 已把它移出目录并清掉全局选中键，
+        // 不刷新的话对话页仍认为该模型可用，发送闸门会放过一轮「界面显示 A、
+        // sidecar 拿默认模型 B 应答」的请求
+        refreshPiModels();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -657,7 +736,8 @@ export const ModelSettings: FC = () => {
     setSvcOpen(true);
   }, []);
 
-  /** 打开"编辑 AI 服务"弹窗（仅自定义端点支持编辑），并回填已保存的 Key 与模型属性 */
+  /** 打开"编辑 AI 服务"弹窗（仅自定义端点支持编辑），回填模型属性；
+   * Key 不回填（sidecar 只回掩码），输入框留空保存 = 保持原 Key */
   const openEditService = useCallback((cp: PiCustomProviderSummary) => {
     const ids = cp.models.map((m) => m.id);
     const attrs: Record<string, PiCustomModelSpec> = {};
@@ -677,7 +757,8 @@ export const ModelSettings: FC = () => {
     setSvcProvSearch("");
     setSvcName(cp.name);
     setSvcBaseUrl(cp.baseUrl);
-    setSvcApiKey(cp.apiKey ?? "");
+    // 不回填已存 Key（sidecar 只回掩码）：留空保存 = 保持原 Key
+    setSvcApiKey("");
     setSvcApi(cp.api);
     setSvcAvail(ids);
     setSvcSelected(ids);
@@ -706,6 +787,8 @@ export const ModelSettings: FC = () => {
         type: "fetch_models",
         baseUrl,
         apiKey: svcApiKey.trim(),
+        // 编辑态且留空：sidecar 按 providerId 取已存凭据兜底
+        ...(svcEditing ? { providerId: svcEditing } : {}),
         api: svcApi,
       });
       if (seq !== svcFetchSeq.current) return;
@@ -716,7 +799,7 @@ export const ModelSettings: FC = () => {
       setSvcFetchState("error");
       setSvcFetchError(err instanceof Error ? err.message : String(err));
     }
-  }, [svcProvider, svcBaseUrl, svcApiKey, svcApi]);
+  }, [svcProvider, svcBaseUrl, svcApiKey, svcEditing, svcApi]);
 
   // 填好接口地址后自动拉取模型列表（防抖）
   useEffect(() => {
@@ -745,13 +828,21 @@ export const ModelSettings: FC = () => {
     setSvcTestState("testing");
     setSvcTestError(null);
     try {
-      await piRequest({ type: "test_provider", baseUrl, apiKey: svcApiKey.trim(), api: svcApi, model });
+      await piRequest({
+        type: "test_provider",
+        baseUrl,
+        apiKey: svcApiKey.trim(),
+        // 编辑态且留空：sidecar 按 providerId 取已存凭据兜底（明文 key 不出渲染进程）
+        ...(svcEditing ? { providerId: svcEditing } : {}),
+        api: svcApi,
+        model,
+      });
       setSvcTestState("ok");
     } catch (err) {
       setSvcTestState("error");
       setSvcTestError(err instanceof Error ? err.message : String(err));
     }
-  }, [svcProvider, svcBaseUrl, svcApiKey, svcApi, svcSelected]);
+  }, [svcProvider, svcBaseUrl, svcApiKey, svcEditing, svcApi, svcSelected]);
 
   /** 启用/停用自定义服务 */
   const toggleCustomProvider = useCallback(
@@ -765,6 +856,8 @@ export const ModelSettings: FC = () => {
           enabled: !cp.enabled,
         });
         load();
+        // 停用同删除：模型离开目录、选中键被清，对话页目录必须同步刷新
+        refreshPiModels();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -785,7 +878,9 @@ export const ModelSettings: FC = () => {
         await piRequest({
           type: "test_provider",
           baseUrl: cp.baseUrl,
-          apiKey: cp.apiKey ?? "",
+          // 不回传明文：providerId 让 sidecar 端取已存凭据
+          apiKey: "",
+          providerId: cp.providerId,
           api: cp.api,
           model,
         });
@@ -795,7 +890,8 @@ export const ModelSettings: FC = () => {
           1500,
         );
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        // setError(err instanceof Error ? err.message : String(err));
+        toast.error(err instanceof Error ? err.message : String(err));
       } finally {
         setBusy(false);
       }
@@ -811,10 +907,27 @@ export const ModelSettings: FC = () => {
     setSvcCustomInput("");
   }, [svcCustomInput]);
 
-  /** 属性编辑的当前值来源：custom 用表单草稿，内置厂商用目录（已含 pi_models 覆盖） */
+  /** 属性编辑的当前值来源：custom 优先表单草稿（本次编辑会话内），没有草稿回退
+   *  目录摘要（已含 sidecar 种子与用户历史值）；内置厂商直接用目录 */
   const resolveAttrSource = useCallback(
     (id: string): Partial<PiCustomModelSpec> => {
-      if (svcProvider === "custom") return svcModelAttrs[id] ?? {};
+      if (svcProvider === "custom") {
+        const draft = svcModelAttrs[id];
+        if (draft) return draft;
+        const m = (models ?? []).find(
+          (x) => x.provider === (svcEditing ?? "") && x.id === id,
+        );
+        return m
+          ? {
+              name: m.name,
+              reasoning: m.reasoning,
+              contextWindow: m.contextWindow,
+              maxTokens: m.maxTokens,
+              input: m.input,
+              cost: m.cost,
+            }
+          : {};
+      }
       const m = (models ?? []).find(
         (x) => x.provider === svcProvider && x.id === id,
       );
@@ -829,7 +942,7 @@ export const ModelSettings: FC = () => {
           }
         : {};
     },
-    [svcProvider, svcModelAttrs, models],
+    [svcProvider, svcEditing, svcModelAttrs, models],
   );
 
   /** 思考映射归属的 provider id：custom 服务只有"编辑已有服务"时才确定 */
@@ -848,6 +961,7 @@ export const ModelSettings: FC = () => {
       );
       setThinkingOverrideEdit(false);
       setAttrEditId(id);
+      attrEditIdRef.current = id;
       setAttrDraft({
         name: src.name ?? id,
         ctx: src.contextWindow != null ? String(src.contextWindow) : "",
@@ -855,6 +969,11 @@ export const ModelSettings: FC = () => {
         text: (src.input ?? ["text"]).includes("text"),
         image: (src.input ?? []).includes("image"),
         reasoning: src.reasoning ?? false,
+        // 生图标记现值：provider 明确时从 list_models 行取（新服务的模型无归属，false）
+        t2i: tKey
+          ? ((models ?? []).find((x) => x.provider === tKey && x.id === id)?.t2i ??
+            false)
+          : false,
         tOff: tSeed.off,
         tMin: tSeed.enabled("minimal"),
         tLow: tSeed.enabled("low"),
@@ -867,12 +986,57 @@ export const ModelSettings: FC = () => {
         cRead: String(src.cost?.cacheRead ?? 0),
         cWrite: String(src.cost?.cacheWrite ?? 0),
       });
+      // 目录里查不到该模型（自定义端点新模型/目录外新增）：按 modelId 反查内置
+      // 目录拿种子异步补进草稿——同名官方模型直接继承 reasoning/关闭下发值
+      //（如 off:"none"）与 contextWindow/maxTokens/input/cost 目录真值，
+      // 避免弹窗默认假值覆盖种子；用户已改过的字段不覆盖
+      if (src.reasoning === undefined) {
+        void piRequest<{ type: "thinking_seed"; seed: PiThinkingSeed | null }>({
+          type: "lookup_thinking_seed",
+          modelId: id,
+        })
+          .then((res) => {
+            const seed = res.seed;
+            if (!seed || attrEditIdRef.current !== id) return;
+            setAttrDraft((prev) => {
+              if (!prev) return prev;
+              const off =
+                typeof seed.thinkingLevelMap?.off === "string"
+                  ? seed.thinkingLevelMap.off
+                  : "";
+              // 单价初值是 "0"，仅在仍是初值时补目录真值
+              const costNum = (cur: string, val: number): string =>
+                cur.trim() === "" || cur.trim() === "0" ? String(val) : cur;
+              return {
+                ...prev,
+                reasoning: prev.reasoning || seed.reasoning,
+                ctx: prev.ctx || String(seed.contextWindow),
+                max: prev.max || String(seed.maxTokens),
+                text: prev.text || seed.input.includes("text"),
+                image: prev.image || seed.input.includes("image"),
+                tOff: prev.tOff || off,
+                tMin: seed.supportedThinkingLevels.includes("minimal"),
+                tLow: seed.supportedThinkingLevels.includes("low"),
+                tMed: seed.supportedThinkingLevels.includes("medium"),
+                tHigh: seed.supportedThinkingLevels.includes("high"),
+                tXhigh: seed.supportedThinkingLevels.includes("xhigh"),
+                tMax: seed.supportedThinkingLevels.includes("max"),
+                cIn: costNum(prev.cIn, seed.cost.input),
+                cOut: costNum(prev.cOut, seed.cost.output),
+                cRead: costNum(prev.cRead, seed.cost.cacheRead),
+                cWrite: costNum(prev.cWrite, seed.cost.cacheWrite),
+              };
+            });
+          })
+          .catch(() => {});
+      }
     },
     [resolveAttrSource, svcProvider, svcEditing, models],
   );
 
   const cancelAttrEditor = useCallback(() => {
     setAttrEditId(null);
+    attrEditIdRef.current = null;
     setAttrDraft(null);
   }, []);
 
@@ -931,6 +1095,22 @@ export const ModelSettings: FC = () => {
         }
       }
     }
+    // 生图标记：imagegen 配置覆盖层（与思考映射同路数），provider 明确才提交
+    if (thinkingProvider) {
+      const t2iCur =
+        (models ?? []).find((x) => x.provider === thinkingProvider && x.id === attrEditId)
+          ?.t2i ?? false;
+      if (attrDraft.t2i !== t2iCur) {
+        void setModelImageCapable(thinkingProvider, attrEditId, attrDraft.t2i)
+          .then(() => {
+            void load();
+            refreshPiModels();
+          })
+          .catch((err) =>
+            setError(err instanceof Error ? err.message : String(err)),
+          );
+      }
+    }
     // 思考映射：种子取目录生效值，只把改动的键推给 setModelThinkingMap
     if (thinkingProvider) {
       const tInfo = (models ?? []).find(
@@ -957,6 +1137,7 @@ export const ModelSettings: FC = () => {
       }
     }
     setAttrEditId(null);
+    attrEditIdRef.current = null;
     setAttrDraft(null);
   }, [
     attrEditId,
@@ -1300,7 +1481,10 @@ export const ModelSettings: FC = () => {
               className="bg-muted/60 focus-visible:bg-background focus-visible:border-ring focus-visible:ring-ring/50 flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-transparent px-3 text-sm transition-colors outline-none hover:bg-muted focus-visible:ring-1 disabled:opacity-50"
             >
               {svcProvider ? (
-                svcProviderLabel
+                <span className="flex min-w-0 items-center gap-2">
+                  <ProviderIcon provider={svcProvider} providerName={svcProviderLabel} />
+                  <span className="truncate">{svcProviderLabel}</span>
+                </span>
               ) : (
                 <span className="text-muted-foreground">选择服务</span>
               )}
@@ -1335,6 +1519,8 @@ export const ModelSettings: FC = () => {
                   <span className="w-4 shrink-0">
                     {isSel && <CheckIcon className="size-4" />}
                   </span>
+                  {/* "自定义端点"不是厂商：无品牌 id，落兜底 mark */}
+                  <ProviderIcon provider={opt.id} providerName={opt.name} />
                   <span className="min-w-0 flex-1 truncate text-start">
                     {opt.name}
                   </span>
@@ -1398,6 +1584,8 @@ export const ModelSettings: FC = () => {
                   {groups.map(([providerName, items]) => (
                     <div key={providerName} className="pb-2">
                       <div className="text-muted-foreground px-2.5 pb-1 text-xs font-medium">
+                        {/* 标题只写服务名：行内已经有模型 mark，标题再挂服务 mark
+                            会出现同品牌两个图标 */}
                         {providerName}
                       </div>
                       <div className="flex flex-col gap-0.5">
@@ -1425,6 +1613,11 @@ export const ModelSettings: FC = () => {
                               <span className="w-4 shrink-0">
                                 {isSelected && <CheckIcon className="size-4" />}
                               </span>
+                              <ProviderIcon
+                                provider={m.provider}
+                                modelId={m.id}
+                                providerName={m.providerName}
+                              />
                               <span className="min-w-0 flex-1 truncate text-start">
                                 {m.name || m.id}
                               </span>
@@ -1450,6 +1643,128 @@ export const ModelSettings: FC = () => {
                 </div>
               </PopoverContent>
             </Popover>
+          </div>
+          <div className="bg-muted/50 flex items-center gap-4 rounded-2xl px-5 py-4">
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">默认档位</div>
+              <div className="text-muted-foreground truncate text-sm">
+                新对话与从未在对话页选过档位的会话的深度思考档位；
+                对话页改档位只影响该会话，不会改这里
+              </div>
+            </div>
+            <Select
+              value={defaultThinking}
+              items={Object.entries(THINKING_LEVEL_LABELS).map(
+                ([value, label]) => ({ value, label }),
+              )}
+              onValueChange={(v) => void setThinkingLevel(v as ThinkingLevel)}
+            >
+              <SelectTrigger size="sm" className="w-40 border bg-background">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(THINKING_LEVEL_LABELS).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </section>
+
+        {/* 文生图：generate_image 工具的开关/默认模型/尺寸（云端 API，配置存 sidecar kv） */}
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">文生图</h2>
+          <p className="text-muted-foreground text-sm">
+            智能体按对话需要调用 generate_image 生成图片（文生图/图生图），图片直接展示在对话中，
+            并存到工作区 .kova/imagegen 下——把保存的路径交给智能体即可继续改图。
+            按张计费，默认关闭；生图模型需先在下方「模型服务」添加（OpenAI 兼容端点），
+            并在其模型属性里勾选「可生成图片」。
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow
+              label="启用文生图"
+              desc="关闭时智能体遇到画图请求会婉拒并提示到这里开启。"
+            >
+              <Switch
+                checked={imagegen.enabled}
+                onCheckedChange={(v) =>
+                  void saveImageGenConfig({ ...imagegen, enabled: v }).catch(
+                    () => toast.error("保存失败，请重试"),
+                  )
+                }
+              />
+            </SettingRow>
+            <SettingRow
+              label="默认文生图模型"
+              desc={
+                imageModelOptions.length
+                  ? "只列在模型属性里勾选了「可生成图片」的模型；密钥沿用其 provider 凭据。"
+                  : "暂无可选生图模型：先在下方「AI 服务」为 OpenAI 兼容端点添加生图模型（如 gpt-image-1），再进该模型的属性编辑勾选「可生成图片」。"
+              }
+            >
+              <Select
+                value={
+                  imagegen.provider && imagegen.modelId
+                    ? `${imagegen.provider}/${imagegen.modelId}`
+                    : ""
+                }
+                onValueChange={(v) => {
+                  if (!v) return;
+                  const at = v.lastIndexOf("/");
+                  const provider = at > 0 ? v.slice(0, at) : v;
+                  const modelId = at > 0 ? v.slice(at + 1) : "";
+                  void saveImageGenConfig({
+                    ...imagegen,
+                    provider,
+                    modelId,
+                  }).catch(() => toast.error("保存失败，请重试"));
+                }}
+                items={imageModelOptions}
+              >
+                <SelectTrigger size="sm" className="w-64 border bg-background">
+                  <SelectValue placeholder="选择模型" />
+                </SelectTrigger>
+                <SelectContent>
+                  {imageModelOptions.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </SettingRow>
+            <SettingRow
+              label="默认尺寸"
+              desc="模型可按单次生成需要覆盖；大图建议模型侧选 jpeg。"
+            >
+              <Select
+                value={imagegen.size}
+                onValueChange={(v) => {
+                  if (!v) return;
+                  void saveImageGenConfig({ ...imagegen, size: v }).catch(
+                    () => toast.error("保存失败，请重试"),
+                  );
+                }}
+                items={[
+                  { value: "1024x1024", label: "1024×1024 方图" },
+                  { value: "1792x1024", label: "1792×1024 横图" },
+                  { value: "1024x1792", label: "1024×1792 竖图" },
+                  { value: "auto", label: "自动" },
+                ]}
+              >
+                <SelectTrigger size="sm" className="w-44 border bg-background">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1024x1024">1024×1024 方图</SelectItem>
+                  <SelectItem value="1792x1024">1792×1024 横图</SelectItem>
+                  <SelectItem value="1024x1792">1024×1792 竖图</SelectItem>
+                  <SelectItem value="auto">自动</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingRow>
           </div>
         </section>
 
@@ -1486,6 +1801,14 @@ export const ModelSettings: FC = () => {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
+                      {/* 服务行 = provider 位置：只按服务身份认 mark（自定义端点的
+                          id 是 custom-<slug>、名字由用户起，两者都是线索），不借
+                          该服务下某个模型的品牌——那会让"我的中转站"挂上 Claude */}
+                      <ProviderIcon
+                        provider={cp.providerId}
+                        providerName={cp.name}
+                        className="size-4"
+                      />
                       <span
                         title={cp.enabled ? "已启用" : "已停用"}
                         className={cn(
@@ -1569,6 +1892,11 @@ export const ModelSettings: FC = () => {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
+                      <ProviderIcon
+                        provider={svc.providerId}
+                        providerName={svc.name}
+                        className="size-4"
+                      />
                       <span
                         title="已配置凭据"
                         className="size-2 shrink-0 rounded-full bg-lime-500"
@@ -1847,7 +2175,11 @@ export const ModelSettings: FC = () => {
                       type="password"
                       value={svcApiKey}
                       onChange={(e) => setSvcApiKey(e.target.value)}
-                      placeholder={svcEditing ? "留空保留原 Key" : "sk-..."}
+                      placeholder={
+                        svcEditing
+                          ? `已保存 ${customProviders.find((c) => c.providerId === svcEditing)?.apiKeyMasked ?? ""}，留空保持不变`
+                          : "sk-..."
+                      }
                       autoComplete="off"
                       className="h-9"
                     />

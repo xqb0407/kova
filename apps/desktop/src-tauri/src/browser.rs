@@ -121,7 +121,7 @@ fn create_webview(
                 emit_navigated(payload.url().to_string(), "finished", None);
                 // 标题不在 payload 里，load 完成后异步取一次再推
                 let _ = wv.eval_with_callback(STATE_JS, move |res| {
-                    if let Ok(v) = serde_json::from_str::<Value>(&res) {
+                    if let Ok(v) = parse_eval_result(&res) {
                         emit_navigated(
                             v["url"].as_str().unwrap_or("").to_string(),
                             "title",
@@ -151,9 +151,35 @@ fn create_webview(
     Ok(())
 }
 
+/// 关掉面板 webview 并等它真正从注册表里消失。
+/// `Webview::close()` 只是发起关闭，注销在平台侧异步完成；不等到 `get_webview`
+/// 返回 None 就重建的话，`create_webview` 的"已存在就跳过"守卫会让我们拿着
+/// 同一个正在消亡的句柄重试一遍，白等一个 NAVIGATE_SETTLE。
+fn close_and_wait_unregistered(app: &AppHandle, max: Duration) {
+    if let Some(wv) = app.get_webview(BROWSER_LABEL) {
+        let _ = wv.close();
+    }
+    let deadline = Instant::now() + max;
+    while Instant::now() < deadline {
+        if app.get_webview(BROWSER_LABEL).is_none() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    log::warn!("[browser] panel webview still registered after close; recreate may be a no-op");
+}
+
+/// 落地页与请求页是否算同一个。只容忍尾斜杠这种纯规范化差异——http→https
+/// 升级、带 query 的重定向都算"落到别处去了"，必须让 agent 知道。
+fn same_page(a: &str, b: &str) -> bool {
+    fn norm(s: &str) -> &str {
+        s.trim().trim_end_matches('/')
+    }
+    !norm(a).is_empty() && norm(a) == norm(b)
+}
+
 /// 物理像素 bounds 辅助：Rect{position,size}，子 webview 相对父窗口客户区定位
-fn physical_rect(x: i32, y: i32, width: u32, height: u32) -> Rect {
-    Rect {
+fn physical_rect(x: i32, y: i32, width: u32, height: u32) -> Rect {    Rect {
         position: Position::Physical(PhysicalPosition::new(x, y)),
         size: Size::Physical(PhysicalSize::new(width, height)),
     }
@@ -228,6 +254,17 @@ pub fn browser_detach(app: AppHandle, destroy: Option<bool>) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+/// 主 webview 开始（重新）加载时移除子 webview：原生子 webview 不随主页面
+/// 重载销毁，若不在此处移除，刷新后旧页面会悬浮在旧 bounds 上盖住启动画面
+/// （前端 React 挂载后才清，中间隔数秒）。lib.rs 的全局 on_page_load 在
+/// Started 阶段调用本函数——移除时机最早、无闪烁。无子 webview 时幂等无害。
+pub fn destroy_for_reload(app: &AppHandle) {
+    if let Some(wv) = app.get_webview(BROWSER_LABEL) {
+        let _ = wv.close();
+        log::info!("[browser] main webview reload: destroyed child webview");
+    }
 }
 
 /// React 占位区的物理像素 bounds 同步（ResizeObserver / resize / scroll 驱动）。
@@ -352,10 +389,83 @@ pub fn browser_open_devtools(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 读面板页面状态，并把「脚本自己失败」与「页面确实没有地址」区分开。
+///
+/// `eval_json` 只负责把回调字符串解析成 JSON，不看 `ok` 字段。而 `STATE_JS`
+/// 的 catch 分支返回的是 `{ok:false, error}` —— 直接去取 `url` 只会得到空串，
+/// 于是「webview 已经失效」和「从没导航过」被压成同一句误导性的 `<empty>`。
+/// 那正是上一次 browser_shot 报 `<empty>` 却其实什么也没说出来的原因。
+fn page_state(wv: &tauri::webview::Webview<Wry>, guard: &CancelGuard) -> Result<Value, String> {
+    let v = eval_json(wv, STATE_JS, guard)?;
+    if v["ok"] == false {
+        return Err(format!(
+            "the panel webview did not answer (its page script failed: {}). The panel is \
+             most likely stale or already torn down — reopen the browser panel, or pass an \
+             explicit url to browser_shot to photograph a specific page instead.",
+            v["error"].as_str().unwrap_or("unknown error")
+        ));
+    }
+    Ok(v)
+}
+
+/// 面板 webview 当前的 URL（browser_shot 的相机就是对着它拍的）。
+/// 面板没开或读不到就报错——不猜 URL，拍一个用户没看的页面比不拍更糟。
+pub fn current_url(guard: &CancelGuard) -> Result<String, String> {
+    let app = APP.get().ok_or("browser: app not initialized")?;
+    let wv = app
+        .get_webview(BROWSER_LABEL)
+        .ok_or("browser panel is not open: call browser_navigate first")?;
+    let v = page_state(&wv, guard)?;
+    let url = v["url"].as_str().unwrap_or("").trim().to_string();
+    if url.is_empty() {
+        return Err(
+            "the panel webview has no loaded document yet (location.href is empty). \
+             Navigate it first, or pass an explicit url to browser_shot."
+                .into(),
+        );
+    }
+    if url == "about:blank" {
+        return Err(
+            "the browser panel is still on about:blank — it has not navigated anywhere yet. \
+             Pass an explicit url to browser_shot to photograph a specific page instead."
+                .into(),
+        );
+    }
+    Ok(url)
+}
+
 /* ------------------------------ eval 基元 ------------------------------ */
 
+/// 解析 wry eval 回调给回的字符串为 JSON。
+///
+/// wry 0.55 的 WKWebView 回调把 JS 结果整体过了一遍 NSJSONSerialization
+/// （FragmentsAllowed）：脚本返回的是字符串（JSON.stringify 产物）时，回调给回
+/// 的是二次编码的 `"..."`——这里解一层才是真正的 payload；脚本直接返回对象时
+/// 回调给的就是对象，原样透传。JS 结果为 nil（页面尚未加载/脚本没跑）时回调
+/// 给空串，报成明确的「页面未就绪」而不是费解的 JSON 解析错误。
+fn parse_eval_result(s: &str) -> Result<Value, String> {
+    if s.trim().is_empty() {
+        return Err(
+            "browser eval returned no result — the panel webview has no live page yet \
+             (load failed or still initializing)"
+                .into(),
+        );
+    }
+    let v: Value =
+        serde_json::from_str(s).map_err(|e| format!("browser eval result is not json: {e}"))?;
+    if let Value::String(inner) = &v {
+        if let Ok(parsed) = serde_json::from_str::<Value>(inner) {
+            if parsed.is_object() {
+                return Ok(parsed);
+            }
+        }
+    }
+    Ok(v)
+}
+
 /// eval JS 并等回调结果，解析为 JSON。阻塞等待（宿主工具线程），轮询取消标志。
-/// 回调只给 JSON 字符串（wry 不回传异常）——脚本自带 try/catch 兜底，ok/error 在内容里。
+/// 回调给回的是经 NSJSONSerialization 的结果字符串（wry 不回传异常）——
+/// 脚本自带 try/catch 兜底，ok/error 在内容里。
 fn eval_json(
     wv: &tauri::webview::Webview<Wry>,
     js: &str,
@@ -376,8 +486,7 @@ fn eval_json(
         }
         match rx.recv_timeout(Duration::from_millis(150)) {
             Ok(s) => {
-                return serde_json::from_str::<Value>(&s)
-                    .map_err(|e| format!("browser eval result is not json: {e}"));
+                return parse_eval_result(&s);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if Instant::now() >= deadline {
@@ -421,7 +530,7 @@ async fn current_page(wv: &tauri::webview::Webview<Wry>) -> Result<Value, String
         .await
         .map_err(|_| "browser eval timeout".to_string())?
         .ok_or("browser eval channel closed")?;
-    serde_json::from_str::<Value>(&s).map_err(|e| format!("browser eval result is not json: {e}"))
+    parse_eval_result(&s)
 }
 
 /// 等页面稳定：readyState=complete 且 url 连续两次轮询不变（覆盖导航与 SPA 变化），
@@ -442,7 +551,7 @@ fn wait_stable(
             if guard.is_cancelled() {
                 return Err("cancelled".into());
             }
-            if let Ok(v) = eval_json(wv, STATE_JS, guard) {
+            if let Ok(v) = page_state(wv, guard) {
                 let url = v["url"].as_str().unwrap_or("");
                 let ready = v["readyState"].as_str().unwrap_or("complete");
                 if (!url.is_empty() && url != before_url) || ready != "complete" {
@@ -453,31 +562,54 @@ fn wait_stable(
         }
     }
     let mut last_url = String::new();
+    let mut last_ready = String::new();
+    let mut last_err = String::new();
     let mut stable = 0u32;
+    // 是否真的见过一个加载完成的页面。整轮都没见过 = 这次导航压根没落到
+    // 这个 webview 上（面板还没 attach、webview 被换掉、地址打不开……），
+    // 继续往下走只会拿 about:blank 的空快照去骗模型说"这页是 canvas 画的"。
+    let mut saw_page = false;
     while Instant::now() < deadline {
         if guard.is_cancelled() {
             return Err("cancelled".into());
         }
-        match eval_json(wv, STATE_JS, guard) {
+        match page_state(wv, guard) {
             Ok(v) => {
                 let url = v["url"].as_str().unwrap_or("").to_string();
-                if v["readyState"].as_str() == Some("complete")
-                    && !url.is_empty()
-                    && url == last_url
-                {
+                let ready = v["readyState"].as_str().unwrap_or("").to_string();
+                last_err.clear();
+                if ready == "complete" && !url.is_empty() && url != "about:blank" {
+                    saw_page = true;
+                }
+                if ready == "complete" && !url.is_empty() && url == last_url {
                     stable += 1;
                     if stable >= 2 {
                         break;
                     }
                 } else {
                     stable = 0;
-                    last_url = url;
+                    last_url = url.clone();
+                    last_ready = ready.clone();
                 }
             }
             // 单次轮询失败（如导航瞬间 eval 丢失）不计败，等下一轮
-            Err(_) => stable = 0,
+            Err(e) => {
+                stable = 0;
+                last_err = e;
+            }
         }
         std::thread::sleep(Duration::from_millis(250));
+    }
+    if !saw_page {
+        // 到这里还没见过一个真页面：如实报错，别把失败包装成成功的空快照
+        return Err(format!(
+            "browser navigation did not load: the panel webview stayed on {} \
+             (readyState={:?}, last eval error={:?}). The browser panel may not be open or \
+             attached yet — open it, or retry browser_navigate.",
+            if last_url.is_empty() { "<empty>" } else { &last_url },
+            last_ready,
+            last_err
+        ));
     }
     std::thread::sleep(Duration::from_millis(400));
     Ok(())
@@ -485,11 +617,31 @@ fn wait_stable(
 
 /* ------------------------------ agent 动作（host_query 入口） ------------------------------ */
 
-/// 快照并组装模型可读的输出（url/标题/树）
+/// 快照并组装模型可读的输出（url/标题/树）。
+///
+/// ARIA 快照优先（Playwright 注入脚本，见 playwright_script.rs）：能表达
+/// canvas/无文本区域，元素带 ref 可精确定位。取不到就装一次 runtime 再试，
+/// 仍不行则降级回旧的文本快照——agent 不能因为一次注入失败就失去 DOM 能力。
+/// 每一次 browser_* 动作的收尾都走这里，所以降级对调用方完全透明。
 fn snapshot_output(
     wv: &tauri::webview::Webview<Wry>,
     guard: &CancelGuard,
 ) -> Result<Value, String> {
+    match aria_snapshot(wv, guard) {
+        Ok(v) => return render_snapshot(&v, true),
+        Err(first) => {
+            // 常见原因是 runtime 没装（页面刚导航过）。装一次再试，仍失败才降级。
+            if let Err(err) = eval_json(wv, &crate::playwright_script::install_js(), guard) {
+                log::warn!("browser: playwright runtime install failed: {err}");
+            }
+            match aria_snapshot(wv, guard) {
+                Ok(v) => return render_snapshot(&v, true),
+                Err(_) => {
+                    log::warn!("browser: ARIA snapshot unavailable, falling back to text: {first}");
+                }
+            }
+        }
+    }
     let v = eval_json(wv, SNAPSHOT_JS, guard)?;
     if v["ok"] == false {
         return Err(format!(
@@ -497,17 +649,55 @@ fn snapshot_output(
             v["error"].as_str().unwrap_or("unknown error")
         ));
     }
+    render_snapshot(&v, false)
+}
+
+/// 取 ARIA 快照。runtime 未装或注入脚本在新版 Playwright 上失配时返回 Err，
+/// 由 [`snapshot_output`] 决定重装还是降级。
+fn aria_snapshot(
+    wv: &tauri::webview::Webview<Wry>,
+    guard: &CancelGuard,
+) -> Result<Value, String> {
+    let v = eval_json(wv, &crate::playwright_script::aria_snapshot_js(), guard)?;
+    if v["ok"] == false {
+        return Err(v["error"].as_str().unwrap_or("unknown error").to_string());
+    }
+    Ok(v)
+}
+
+/// 把快照脚本的返回值拼成模型可读输出。`aria` 决定空树的解释——
+/// 文本快照的空多半是"还没加载完"，ARIA 的空往往是"这页真的没有可访问元素"
+/// （canvas 渲染的图/WebGL 场景），两者的正确下一步不一样，不能共用一句话。
+fn render_snapshot(v: &Value, aria: bool) -> Result<Value, String> {
     let url = v["url"].as_str().unwrap_or("").to_string();
     let title = v["title"].as_str().unwrap_or("").to_string();
-    let tree = v["tree"].as_str().unwrap_or("").to_string();
+    let tree = if aria {
+        v["snapshot"].as_str().unwrap_or("")
+    } else {
+        v["tree"].as_str().unwrap_or("")
+    };
     let mut out = format!("{url}\n{title}\n");
     if v["truncated"] == true {
         out.push_str("（快照被截断：用 browser_scroll 分段查看或聚焦目标区域）\n");
     }
     if tree.trim().is_empty() {
-        out.push_str("（页面无可交互元素或文本，可能仍在加载，稍后重新 browser_snapshot）");
+        // 空树有两种完全不同的成因，下一步也不同。地址还是 about:blank 时
+        // 根本不是"这页没元素"，而是页面没加载出来——绝不能报成 canvas。
+        if url.is_empty() || url == "about:blank" {
+            out.push_str(
+                "（面板还停在 about:blank，这一页根本没加载出来。别在这里重试快照：\
+                 先确认浏览器面板已打开，或重新 browser_navigate）",
+            );
+        } else {
+            out.push_str(if aria {
+                "（本页无可访问元素，多半是 canvas/图片渲染——DOM 里没有可点的东西。\
+                 要看画面请用 browser_shot 拍照，不要在这里反复重试快照）"
+            } else {
+                "（页面无可交互元素或文本，可能仍在加载，稍后重新 browser_snapshot）"
+            });
+        }
     } else {
-        out.push_str(&tree);
+        out.push_str(tree);
     }
     Ok(json!({ "output": out, "url": url, "title": title, "truncated": v["truncated"] == true }))
 }
@@ -524,26 +714,69 @@ pub fn run_tool(name: &str, p: &Value, guard: &CancelGuard) -> Result<Value, Str
 
     if name == "browser_navigate" {
         let url = parse_web_url(p["url"].as_str().unwrap_or(""))?;
-        let wv = match app.get_webview(BROWSER_LABEL) {
-            Some(wv) => wv,
-            None => {
-                // 尚未打开面板：凭空创建（隐藏，等面板 attach 再显示）
-                let state = app.state::<BrowserState>();
-                create_webview(app, &state, url.clone(), None)?;
-                app.get_webview(BROWSER_LABEL)
-                    .ok_or("failed to create browser webview")?
+        // 面板 webview 只是"当前这一页"的缓存：句柄失效（主 webview 重载后
+        // destroy_for_reload 关过它、或与前端 attach 的那个不是同一个实例）
+        // 时重建一次的代价只是一次页面加载，比让 agent 对着 about:blank
+        // 空转三十秒划算得多。故第一轮失败后重建重试一次。
+        let mut rebuilt = false;
+        loop {
+            // 重建轮必须先确保旧实例真的摘掉了：create_webview 见到同 label 的
+            // webview 还注册着就直接返回 Ok，那样的"重建"是空操作，重试的仍
+            // 是那个已经死掉的句柄。close() 的注销不是瞬时的，所以这里轮询等。
+            if rebuilt {
+                close_and_wait_unregistered(app, Duration::from_secs(3));
             }
-        };
-        // 同址跳过（重入/幂等），避免 attach 链路上的二次加载
-        let before = eval_json(&wv, STATE_JS, guard)
-            .ok()
-            .and_then(|v| v["url"].as_str().map(String::from))
-            .unwrap_or_default();
-        if before != url.as_str() {
-            wv.navigate(url).map_err(|e| e.to_string())?;
-            wait_stable(&wv, guard, NAVIGATE_SETTLE, true, &before)?;
+            let wv = match app.get_webview(BROWSER_LABEL) {
+                Some(wv) => wv,
+                None => {
+                    // 尚未打开面板：凭空创建（隐藏，等面板 attach 再显示）
+                    let state = app.state::<BrowserState>();
+                    create_webview(app, &state, url.clone(), None)?;
+                    app.get_webview(BROWSER_LABEL)
+                        .ok_or("failed to create browser webview")?
+                }
+            };
+            // 同址跳过（重入/幂等），避免 attach 链路上的二次加载
+            let before = page_state(&wv, guard)
+                .ok()
+                .and_then(|v| v["url"].as_str().map(String::from))
+                .unwrap_or_default();
+            if before != url.as_str() {
+                wv.navigate(url.clone())
+                    .map_err(|e| format!("browser_navigate: navigate failed: {e}"))?;
+            }
+            match wait_stable(&wv, guard, NAVIGATE_SETTLE, !rebuilt, &before) {
+                // wait_stable 只保证"见过一个加载完成的页面"，不保证那是我们要的
+                // 那一页。落地页跳、代理拦截、webview 复用了别的实例时两者会不一致，
+                // 而把 A 页的快照当 B 页交给模型，比直接报错糟得多。
+                Ok(()) => match page_state(&wv, guard) {
+                    Ok(v) => {
+                        let landed = v["url"].as_str().unwrap_or("").trim().to_string();
+                        if same_page(&landed, url.as_str()) {
+                            return snapshot_output(&wv, guard);
+                        }
+                        let e = format!(
+                            "browser_navigate: asked for {url} but the panel landed on \
+                             {landed:?}. The page redirected, or the panel webview is not \
+                             the one being driven. Reopen the browser panel and retry."
+                        );
+                        if !rebuilt {
+                            log::warn!("[browser] {e}");
+                            rebuilt = true;
+                            continue;
+                        }
+                        return Err(e);
+                    }
+                    Err(e) => return Err(e),
+                },
+                Err(e) if !rebuilt && e.starts_with("browser navigation did not load") => {
+                    log::warn!("[browser] {e}; recreating the panel webview and retrying once");
+                    let _ = wv.close();
+                    rebuilt = true;
+                }
+                Err(e) => return Err(e),
+            }
         }
-        return snapshot_output(&wv, guard);
     }
 
     let wv = app
@@ -608,13 +841,13 @@ pub fn run_tool(name: &str, p: &Value, guard: &CancelGuard) -> Result<Value, Str
             snapshot_output(&wv, guard)
         }
         "browser_back" => {
-            let before = eval_json(&wv, STATE_JS, guard)?["url"]
+            let before = page_state(&wv, guard)?["url"]
                 .as_str()
                 .unwrap_or("")
                 .to_string();
             eval_action(&wv, BACK_JS, guard, "back")?;
             wait_stable(&wv, guard, ACTION_SETTLE, false, "")?;
-            let after = eval_json(&wv, STATE_JS, guard)?["url"]
+            let after = page_state(&wv, guard)?["url"]
                 .as_str()
                 .unwrap_or("")
                 .to_string();
@@ -654,5 +887,40 @@ mod tests {
         assert_eq!(js_escape("a\\b"), "a\\\\b");
         assert_eq!(js_escape("a\nb"), "a\\nb");
         assert_eq!(js_escape("a\rb"), "a\\rb");
+    }
+
+    #[test]
+    fn parse_eval_result_unwraps_double_encoded_string() {
+        // wry 0.55 WKWebView 回调：脚本返回 JSON.stringify 字符串时整体被
+        // NSJSONSerialization 再编码一次，外层是 JSON string
+        let s = r#""{\"ok\":true,\"url\":\"https://example.com/\",\"readyState\":\"complete\",\"title\":\"T\"}""#;
+        let v = parse_eval_result(s).expect("should parse");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["url"], "https://example.com/");
+        assert_eq!(v["readyState"], "complete");
+
+        // 脚本直接返回对象时回调给的就是对象，透传
+        let direct = r#"{"ok":true,"url":"about:blank"}"#;
+        let v = parse_eval_result(direct).expect("should parse");
+        assert_eq!(v["url"], "about:blank");
+
+        // 页面未加载（JS 结果 nil）时回调给空串，应为明确错误而非 JSON 报错
+        assert!(parse_eval_result("").unwrap_err().contains("no live page"));
+        assert!(parse_eval_result("  ").unwrap_err().contains("no live page"));
+    }
+
+    #[test]
+    fn same_page_tolerates_only_trailing_slash() {
+        // 容忍的：纯规范化差异
+        assert!(same_page("https://a.com/x", "https://a.com/x/"));
+        assert!(same_page("  https://a.com/x  ", "https://a.com/x"));
+        // 不容忍的：落到别处去了，必须报错而不是把别的页快照当它交出去
+        assert!(!same_page("about:blank", "https://a.com/x"));
+        assert!(!same_page("", "https://a.com/x"));
+        assert!(!same_page("https://a.com/login", "https://a.com/x"));
+        assert!(!same_page("https://b.com/x", "https://a.com/x"));
+        assert!(!same_page("https://a.com/x?next=1", "https://a.com/x"));
+        // 两边都空不算同一个页面
+        assert!(!same_page("", ""));
     }
 }

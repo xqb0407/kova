@@ -5,15 +5,17 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { isTauri } from "@/lib/tauri";
-import { getWorkspace, pathBasename } from "@/lib/workspace-store";
+import { getWorkspace, pathBasename } from "@/lib/workspace/workspace-store";
 import {
-  closePanelTab,
-  getPanelTabs,
+  closePanelTabFor,
+  getAllThreadTabs,
+  getPanelTabsFor,
   openPanelTab,
   subscribePanelTabs,
   updatePanelTab,
+  updatePanelTabFor,
   type PanelTab,
-} from "@/lib/panel-tabs";
+} from "@/lib/panels/panel-tabs";
 
 /**
  * 交互式真终端（PTY，Rust 侧 pty.rs）会话 store + 面板标签桥：
@@ -135,10 +137,28 @@ if (typeof document !== "undefined") {
 // ---- 标签 ↔ 会话桥：面板标签是会话生命周期的单一事实源 ----
 
 function syncSessionsToTabs(): void {
-  const { tabs } = getPanelTabs();
+  // 标签按会话分桶后回收口径必须是**全部桶的并集**：只看当前会话会在
+  // 切走会话时把别的会话正开着的终端杀光
   const bound = new Set<string>();
-  for (const t of tabs) if (t.type === "shell" && t.sessionId) bound.add(t.sessionId);
+  for (const bucket of getAllThreadTabs()) {
+    for (const t of bucket.tabs)
+      if (t.type === "shell" && t.sessionId) bound.add(t.sessionId);
+  }
   for (const s of [...list]) if (!bound.has(s.id)) closeShell(s.id);
+}
+
+/**
+ * 由标签全局唯一 uuid 反查所属会话桶：进程退出关闭、OSC 标题回写一律按
+ * 属主落桶，后台会话的回写不得污染用户正在看的桶。比在会话上记录打开时
+ * 指针更稳——草稿期开的终端经历 rekey（桶键 __LOCALID_→sessionId）后，
+ * 反查依然跟着标签走。标签不在任何桶（已被用户关闭/会话已删）返回 null，
+ * 调用方静默跳过。
+ */
+function tabOwnerThread(tabId: string): string | null {
+  return (
+    getAllThreadTabs().find((b) => b.tabs.some((t) => t.id === tabId))
+      ?.threadId ?? null
+  );
 }
 
 let bridgeInstalled = false;
@@ -230,7 +250,8 @@ async function spawnShell(id: string, tabId: string): Promise<ShellSession> {
     if (!next || next === session.title) return;
     session.title = next;
     commit();
-    updatePanelTab(tabId, { title: next });
+    const owner = tabOwnerThread(tabId);
+    if (owner) updatePanelTabFor(owner, tabId, { title: next });
   });
   const channel = new Channel<number[]>();
   channel.onmessage = (bytes) => {
@@ -240,8 +261,12 @@ async function spawnShell(id: string, tabId: string): Promise<ShellSession> {
       session.alive = false;
       commit();
       // 进程退出（如 exit / Ctrl-D）→ 直接关闭所属标签；桥随即杀壳 +
-      // dispose（本通道连带失效），不留一个"死标签"占顶栏位置占内存
-      if (session.tabId) closePanelTab(session.tabId);
+      // dispose（本通道连带失效），不留一个"死标签"占顶栏位置占内存。
+      // 按属主桶关闭：后台会话的进程退出不得关掉显示会话里的标签
+      if (session.tabId) {
+        const owner = tabOwnerThread(session.tabId);
+        if (owner) closePanelTabFor(owner, session.tabId);
+      }
       return;
     }
     terminal.write(Uint8Array.from(bytes));
@@ -263,10 +288,13 @@ async function spawnShell(id: string, tabId: string): Promise<ShellSession> {
   return session;
 }
 
-/** 标签还挂着“终端”占位标题才回写：shell 若已上报过 OSC 标题则不覆盖 */
+/** 标签还挂着“终端”占位标题才回写：shell 若已上报过 OSC 标题则不覆盖。
+ * 异步拉起完成时用户可能已切走会话——回写按属主桶定靶，不碰显示会话 */
 function claimTabTitle(tabId: string, title: string): void {
-  const cur = getPanelTabs().tabs.find((t) => t.id === tabId);
-  if (cur && cur.title === "终端") updatePanelTab(tabId, { title });
+  const owner = tabOwnerThread(tabId);
+  if (!owner) return;
+  const cur = getPanelTabsFor(owner).tabs.find((t) => t.id === tabId);
+  if (cur && cur.title === "终端") updatePanelTabFor(owner, tabId, { title });
 }
 
 /** 新开一个终端标签：标签即刻落地（视图先渲染加载态），异步拉起会话后回绑标题 */
@@ -279,8 +307,9 @@ export function newTerminalTab(): void {
   void spawnShell(id, tabId)
     .then((s) => claimTabTitle(tabId, s.title))
     .catch(() => {
-      // 连 xterm 都没加载起来：不留空标签（期间用户已关则此处 no-op）
-      closePanelTab(tabId);
+      // 连 xterm 都没加载起来：不留空标签（期间用户已关则反查落空 no-op）
+      const owner = tabOwnerThread(tabId);
+      if (owner) closePanelTabFor(owner, tabId);
     })
     .finally(() => pendingIds.delete(id));
 }

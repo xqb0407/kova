@@ -16,16 +16,16 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import type { FileDiffContentsLoader } from "@pierre/diffs/react";
-import { scrollIntoScroller } from "@/lib/scroll";
+import { scrollIntoScroller } from "@/lib/motion/scroll";
 import {
   gitDiff,
   gitShow,
   gitWorktreeRead,
   type GitDiffFile,
   type GitDiffResult,
-} from "@/lib/git";
-import { onGitChanged } from "@/lib/git-status";
-import { pathMatches } from "@/lib/tool-panel";
+} from "@/lib/git/git";
+import { onGitChanged } from "@/lib/git/git-status";
+import { pathMatches } from "@/lib/panels/tool-panel";
 import { cn } from "@/lib/utils";
 import { PanelPatchDiff } from "@/components/code/panel-diff";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -115,20 +115,20 @@ const GitFileCard: FC<{
         aria-expanded={open}
         onClick={toggle}
         className={cn(
-          "sticky top-0  z-10 flex w-full items-center gap-2 px-3 py-1.5 text-left",
+          "sticky top-0  z-10 flex w-full items-center gap-2 px-3 py-2 text-left",
           open ? "bg-muted " : "bg-background hover:bg-muted/40 ",
         )}
       >
         <FileTypeIcon path={f.path} />
-        <span className="shrink-0 truncate text-[13px] font-medium text-foreground/90">
+        <span className="shrink-0 truncate text-sm font-medium text-foreground/90">
           {base}
         </span>
         {dir ? (
-          <span className="min-w-0 truncate text-xs text-muted-foreground/70">
+          <span className="min-w-0 truncate text-[13px] text-muted-foreground/70">
             {dir}
           </span>
         ) : null}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs tabular-nums">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[13px] tabular-nums">
           {f.binary ? (
             <span className="text-muted-foreground">二进制</span>
           ) : (
@@ -150,7 +150,7 @@ const GitFileCard: FC<{
       </button>
       {open ? (
         f.binary || f.patch.length === 0 ? (
-          <div className="px-3 py-2  font-mono text-[11px] text-muted-foreground">
+          <div className="px-3 py-2  font-mono text-xs text-muted-foreground">
             {f.binary ? "（二进制文件，无文本 diff）" : "（diff 超出体积上限，未展开）"}
           </div>
         ) : diffMounted ? (
@@ -255,7 +255,7 @@ export const GitReview: FC<{
       {/* 头部：暂存范围筛选 / 刷新 */}
       <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-2">
         {checkpoint ? (
-          <span className="text-[13px] font-medium text-foreground/80">
+          <span className="text-sm font-medium text-foreground/80">
             检查点改动
           </span>
         ) : (
@@ -263,7 +263,7 @@ export const GitReview: FC<{
             value={scope}
             onValueChange={(v) => setScope(v as DiffScope)}
           >
-            <SelectTrigger size="sm" className="w-auto min-w-[92px] gap-1.5 border-border/60 px-2 text-xs shadow-none">
+            <SelectTrigger size="sm" className="w-auto min-w-[92px] gap-1.5 border-border/60 px-2 text-[13px] shadow-none">
               {/* Base UI 的 SelectValue 默认回显原始 value，显式渲染中文文案 */}
               <SelectValue>{SCOPE_LABELS[scope]}</SelectValue>
             </SelectTrigger>
@@ -277,17 +277,17 @@ export const GitReview: FC<{
         <button
           type="button"
           onClick={() => load()}
-          className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          className="ml-auto flex items-center gap-1.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
         >
-          <RefreshCwIcon className={cn("size-3.5", loading && "animate-spin")} />
+          <RefreshCwIcon className={cn("size-4", loading && "animate-spin")} />
           刷新
         </button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto py-2 pt-0">
         {diff && diff.truncated ? (
-          <div className="mb-1 flex items-center gap-1.5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-            <TriangleAlertIcon className="size-3.5 shrink-0" />
+          <div className="mb-1 flex items-center gap-1.5 px-3 py-2 text-[13px] text-amber-600 dark:text-amber-400">
+            <TriangleAlertIcon className="size-4 shrink-0" />
             改动过多，diff 已部分截断
           </div>
         ) : null}

@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    xulux_assistant_lib::run();
+    kova_lib::run();
 }

@@ -178,10 +178,12 @@ function ToolGroupContent({
     >
       <div
         className={cn(
-          "mt-2 flex flex-col gap-2",
-          // ghost（消息内分组）：缩进 + 左侧引导线，行内容与触发器文字错位分层
-          // （border-border/60 只给颜色，宽度在 border-s；ps-3 让行内容退到线后）
-          "group-data-[variant=ghost]/tool-group-root:mt-1 group-data-[variant=ghost]/tool-group-root:gap-1 group-data-[variant=ghost]/tool-group-root:border-border/60 group-data-[variant=ghost]/tool-group-root:border-s group-data-[variant=ghost]/tool-group-root:ps-3 group-data-[variant=ghost]/tool-group-root:py-0.5",
+          "flex flex-col",
+          // ghost（消息内分组，唯一在用）：缩进 + 左侧引导线，行内容与触发器
+          // 文字错位分层（border-border/60 只给颜色，宽度在 border-s；ps-3 让行
+          // 内容退到线后）。组内行距 gap-2 与消息正文的 part 间距对齐——组内外
+          // 必须是同一个值，否则折叠组一开合节奏就跳。
+          "group-data-[variant=ghost]/tool-group-root:gap-2 group-data-[variant=ghost]/tool-group-root:border-border/60 group-data-[variant=ghost]/tool-group-root:border-s group-data-[variant=ghost]/tool-group-root:ps-3 group-data-[variant=ghost]/tool-group-root:py-0.5",
           "group-data-[variant=outline]/tool-group-root:mt-3 group-data-[variant=outline]/tool-group-root:border-t group-data-[variant=outline]/tool-group-root:px-4 group-data-[variant=outline]/tool-group-root:pt-3",
           "group-data-[variant=muted]/tool-group-root:mt-3 group-data-[variant=muted]/tool-group-root:border-t group-data-[variant=muted]/tool-group-root:px-4 group-data-[variant=muted]/tool-group-root:pt-3",
           "[&>*]:animate-in [&>*]:fade-in-0 [&>*]:blur-in-[2px] [&>*]:slide-in-from-top-1 [&>*]:animation-duration-(--animation-duration) [&>*]:ease-[cubic-bezier(0.32,0.72,0,1)]",

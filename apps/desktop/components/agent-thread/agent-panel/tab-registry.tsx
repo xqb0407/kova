@@ -12,14 +12,19 @@ import {
   GlobeIcon,
   ListTodoIcon,
   Loader2Icon,
+  LayoutPanelTopIcon,
+  PackageIcon,
   SquareTerminalIcon,
+  WaypointsIcon,
 } from "lucide-react";
-import { usePanelActivity } from "@/lib/panel-activity";
-import { useThreadTodos } from "@/lib/pi-todo";
-import { useWorkspace } from "@/lib/workspace-store";
-import { useGitStatus } from "@/lib/git-status";
+import { usePanelActivity } from "@/lib/panels/panel-activity";
+import { useThreadTodos } from "@/lib/pi/pi-todo";
+import { useWorkspace } from "@/lib/workspace/workspace-store";
+import { useGitStatus } from "@/lib/git/git-status";
+import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
+import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import { isTauri } from "@/lib/tauri";
-import type { PanelTab, PanelTabType } from "@/lib/panel-tabs";
+import type { PanelTab, PanelTabType } from "@/lib/panels/panel-tabs";
 import { ActivityView } from "./activity-view";
 import { PlanSection } from "./plan-section";
 import { FilesSection } from "./files-section";
@@ -30,6 +35,9 @@ import { BrowserView } from "./browser-view";
 import { FileTab } from "./file-view";
 import { FileTreeTab } from "./file-tree-tab";
 import { SubagentTab } from "./subagent-tab";
+import { TraceTab } from "./trace-tab";
+import { ArtifactsTab } from "./artifacts-tab";
+import { PluginPanelHost } from "./plugin-panel-host";
 import { TabEmpty } from "./tab-empty";
 
 /**
@@ -40,6 +48,7 @@ export const PANEL_TAB_TYPES: readonly PanelTabType[] = [
   "activity",
   "plan",
   "review",
+  "artifacts",
   "explorer",
   "shell",
   "browser",
@@ -47,16 +56,21 @@ export const PANEL_TAB_TYPES: readonly PanelTabType[] = [
 ];
 
 /**
- * 可打开的标签类型:git 标签仅在工作目录是 git 仓库时出现(静默降级,不报错);
+ * 可打开的标签类型:git 标签仅在工作目录是 git 仓库且本会话工作模式为编码时出现
+ * (静默降级,不报错;工作模式下 Git 管理整体隐藏,见顶栏模式切换器);
  * 文件树与真终端标签仅桌面端(web 端无本地 FS / 无 PTY,数据源整个不存在)。
  */
 export function useVisiblePanelTabTypes(): PanelTabType[] {
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
+  const appMode = useCurrentAppMode();
+  // 问答档是只读的：终端和 Git 面板在这里没有可回滚的对象，显隐与 code 档的
+  // Git 隐藏同源（同一个"这一档不碰工程"的判断）
+  const ask = useIsAskMode();
   return PANEL_TAB_TYPES.filter((t) => {
     if (t === "explorer") return isTauri();
-    if (t === "shell") return isTauri();
-    if (t === "git") return !!status;
+    if (t === "shell") return isTauri() && !ask;
+    if (t === "git") return appMode === "code" && !!status && !ask;
     return true;
   });
 }
@@ -80,6 +94,11 @@ export const TAB_META: Record<
     description: "文件变更与行级 diff",
     icon: FileCodeIcon,
   },
+  artifacts: {
+    label: "产物",
+    description: "会话生成的网页、文档等交付文件，随时重新打开预览",
+    icon: PackageIcon,
+  },
   file: {
     label: "文件",
     description: "读取结果回看",
@@ -87,7 +106,7 @@ export const TAB_META: Record<
   },
   explorer: {
     label: "文件树",
-    description: "浏览工作区文件，点击实时预览",
+    description: "浏览当前工作目录（无工作区时为会话任务目录），点击实时预览",
     icon: FolderTreeIcon,
   },
   shell: {
@@ -109,6 +128,16 @@ export const TAB_META: Record<
     label: "子智能体",
     description: "Task 委派的运行过程",
     icon: BotIcon,
+  },
+  trace: {
+    label: "链路追踪",
+    description: "agent 运行的 LLM / 工具 / 重试时间线",
+    icon: WaypointsIcon,
+  },
+  plugin: {
+    label: "插件面板",
+    description: "已安装插件贡献的界面（实际标题为面板声明名）",
+    icon: LayoutPanelTopIcon,
   },
 };
 
@@ -193,6 +222,8 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
       return <PlanTab />;
     case "review":
       return <ReviewTab tab={tab} />;
+    case "artifacts":
+      return <ArtifactsTab />;
     case "file":
       return <FileTab tab={tab} />;
     case "explorer":
@@ -207,6 +238,12 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
     case "subagent":
       // 一个委派一个 tab（delegationId 绑定 lib/subagent-runs store 条目）
       return <SubagentTab tab={tab} />;
+    case "trace":
+      // 链路追踪：tab.sessionId 绑定 sidecar 会话（header「更多」唤起）
+      return <TraceTab tab={tab} />;
+    case "plugin":
+      // UI 插件面板：blob iframe + kova-ui-plugin/1 桥（tab.pluginId/panelId 定位）
+      return <PluginPanelHost tab={tab} />;
     default:
       return null;
   }

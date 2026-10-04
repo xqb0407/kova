@@ -71,7 +71,11 @@ const GroupedItems: FC<{
   emptyLabel: string;
 }> = ({ iconMap, fallbackIcon, emptyLabel }) => {
   const scrollRef = useHighlightScrollIntoView();
-  const { isLoading } = unstable_useTriggerPopoverScopeContext();
+  const { isLoading, open } = unstable_useTriggerPopoverScopeContext();
+  // 关闭态下库会原样渲染 children（TriggerPopoverItems 自己 return null，
+  // 但外层滚动 div 还在）：弹层是 Root 的 flex 子项时，这个空 div 连同它的
+  // gap 会在输入框底部撑出一段死间隙，必须整个不渲染
+  if (!open) return null;
   return (
     <div ref={scrollRef} className="max-h-72 overflow-y-auto overscroll-contain">
       <ComposerPrimitive.Unstable_TriggerPopoverItems>
