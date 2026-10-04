@@ -201,7 +201,7 @@ describe("subagents_list", () => {
     const res = await call(tools, SUBAGENT_MGMT_TOOL_NAMES.list, {});
     expect(res.text).toContain(process.env.PI_SUBAGENTS_DIR!);
     expect(res.text).toContain(workspaceSubagentsDir(run.cwd));
-    expect(res.text).toContain("[内置] explorer");
+    expect(res.text).toContain("[内置] Explorer");
   });
 });
 
