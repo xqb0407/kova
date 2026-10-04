@@ -66,7 +66,7 @@ bun run tauri:build         # 仅桌面安装包(beforeBuildCommand 会自动先
 bun run release             # 发布流程（node scripts/release.mjs，见 docs/release.md）
 ```
 
-安装包产物在 `apps/desktop/src-tauri/target/release/bundle/`（macOS `.dmg`/`.app`，Windows NSIS setup `.exe`；Windows 不产 MSI——WiX 对中文产品名不稳）。流水线同时产出移动端**未签名**包：iOS `Kova_<ver>_iOS-unsigned.ipa`（i4/爱思自签）、Android `Kova_<ver>_Android-unsigned.apk`。打包 ≠ 发版：`release.mjs` 只做版本号同步、打 tag 与推送远端；GitHub 发布镜像（含 tag 与历史清理）用 `./scripts/sync-github.sh`，详见 [docs/release.md](docs/release.md)。
+安装包产物在 `apps/desktop/src-tauri/target/release/bundle/`（macOS `.dmg`/`.app`，Windows NSIS setup `.exe`；Windows 不产 MSI——WiX 对中文产品名不稳）。移动端拆在独立流水线 `release-mobile.yml`（仅手动触发，产出未签名 IPA/APK 作 artifacts 保留，不挂 Release）。打包 ≠ 发版：`release.mjs` 只做版本号同步、打 tag 与推送远端；GitHub 发布镜像（含 tag 与历史清理）用 `./scripts/sync-github.sh`，详见 [docs/release.md](docs/release.md)。
 
 ## 插件系统
 
