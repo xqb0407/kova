@@ -531,6 +531,11 @@ export const handlers: Record<string, CommandHandler> = {
       id: item.reqId,
       mode: "followUp" as const,
       content: item.text,
+      // 图片附件随快照回放（与 queue_update/queue_pop 同一形状）：刷新/重启后
+      // 前端重建条目与接力泵重发都不丢图
+      ...(item.attachments && item.attachments.length > 0
+        ? { attachments: item.attachments }
+        : {}),
     }));
     const hostUiRequests = (beforeSeq === undefined ? scan.pending : []).flatMap((it): unknown[] => {
       if (it.kind !== "permission") return [];

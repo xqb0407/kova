@@ -44,6 +44,7 @@ import {
 } from "./hostUi";
 import { maybeWarnUnsupportedImages } from "@/lib/pi/pi-vision-warning";
 import type {
+  PiClearedQueue,
   PiClient,
   PiClientEvent,
   PiAgentMessage,
@@ -61,6 +62,9 @@ export type PiSendOptions = {
    * REQUIRED by Pi (`prompt()` throws otherwise); the controller derives a
    * `"followUp"` default from run status when omitted. */
   streamingBehavior?: "followUp" | "steer";
+  /** 预生成的请求 id（队列条目 id = 真实 reqId）：接力泵重发沿用原条目 id，
+   *  控制器排队发送时自行生成——客户端见值照用。 */
+  requestId?: string;
 };
 
 export type PiNotificationScheduler = (flush: () => void) => void;
@@ -93,9 +97,14 @@ export interface PiThreadControllerLike {
    *  发送编辑后的新内容。投影不保留文档附件，file parts 无法随重发还原。 */
   editMessage(message: AppendMessage): Promise<void>;
   cancel(): Promise<void>;
-  /** Clear Pi's server-side queue; resolves with the cleared text so the UI
-   * can restore it to the composer. */
-  clearQueue(): Promise<{ steering: string[]; followUp: string[] }>;
+  /** Clear Pi's server-side queue; resolves with the cleared items (text +
+   * image attachments) so the UI can restore them to the composer. */
+  clearQueue(): Promise<PiClearedQueue>;
+  /** 停止生成前的排队取回：先清队拿载荷（文本+图片）再中止。见 drainQueueForStop。 */
+  drainQueueForStop(): Promise<PiQueueEntry[]>;
+  /** 此刻发送是否会进队列（与 sendUserAppend 的 isQueuedSend 同口径）：
+   *  runtime 层的新线程乐观气泡据此决定压不压（排队消息不进消息列表）。 */
+  willQueueSend(): boolean;
   // 改动（4a）：逐项队列操作（id = 真实 reqId）。客户端不支持时抛错——
   // 官方契约只有整队清空，no-op 会静默吞掉用户的操作意图。
   queueCancel(id: string): Promise<void>;
@@ -103,6 +112,10 @@ export interface PiThreadControllerLike {
   queueSteer(id: string): Promise<void>;
   /** 改动（4a）：弹出队首交由前端重发（刷新接力泵用）；无孤儿队列时为 null。 */
   queuePop(): Promise<PiQueueEntry | null>;
+  /** 接力泵直发重发：按原载荷（文本+附件）走 sendMessage 汇聚点，绕开
+   *  composer 共用车道（泵弹出后前后端队列短暂分歧时 composer 车道会把
+   *  重发误判进排队，压出 pending 幽灵条目）。 */
+  queueResend(entry: PiQueueEntry): Promise<void>;
   setModel(input: { provider: string; modelId: string }): Promise<void>;
   setThinkingLevel(level: PiThinkingLevel): Promise<void>;
   /** Answer a request by its id with a decision alone: a `confirm` takes it as
@@ -344,12 +357,12 @@ export class PiThreadController implements PiThreadControllerLike {
   private connectionRetainers = 0;
   private readonly optimisticUserMessages: OptimisticUserMessage[] = [];
   private unsubscribeFromEvents: (() => void) | null = null;
+  /** prompt 起跑通知退订（见 ensureEventSubscription / dropLocalQueueEntry） */
+  private unsubscribeFromPromptStart: (() => void) | null = null;
   private eventSubscriptionGeneration = 0;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private loadPromise: Promise<void> | null = null;
   private messageFlushScheduled = false;
-  /** 乐观队列条目的临时 id 序号（真实 reqId 由客户端生成，见 sendQueued）。 */
-  private optimisticQueueSeq = 0;
   /** 改动（稳定消息 id）：乐观用户消息的自生成 id 序号（`pi-optimistic:${n}`）。 */
   private optimisticUserSeq = 0;
   /** Fallback sequence for snapshots without a supervisor-provided sequence. */
@@ -452,14 +465,20 @@ export class PiThreadController implements PiThreadControllerLike {
       },
       options,
     );
+    // prompt 起跑对账（见 dropLocalQueueEntry）：客户端无此面（旧实现）时跳过
+    this.unsubscribeFromPromptStart =
+      this.client.onPromptStart?.(this.threadId, (requestId) => {
+        if (generation !== this.eventSubscriptionGeneration) return;
+        this.dropLocalQueueEntry(requestId);
+      }) ?? null;
   }
 
   private disconnectFromEvents() {
-    const unsubscribe = this.unsubscribeFromEvents;
-    if (!unsubscribe) return;
+    if (!this.unsubscribeFromEvents && !this.unsubscribeFromPromptStart) return;
     this.unsubscribeFromEvents = null;
+    this.unsubscribeFromPromptStart?.();
+    this.unsubscribeFromPromptStart = null;
     this.eventSubscriptionGeneration += 1;
-    unsubscribe();
   }
 
   private hasConsumers(): boolean {
@@ -538,23 +557,38 @@ export class PiThreadController implements PiThreadControllerLike {
    *  回显落点低于旧下界，界匹配永远确认不了镜像 → 用户气泡永久重复
    * （带图重新生成必现：大帧让「快照先落、回显后到」占主导）。截断已把
    *  可能同文的旧尾部从服务端删掉，全文匹配安全——撞键只剩更早轮巧合
-   *  同文，提前摘除镜像无碍，真回显随 agent_start 同批帧即刻落位。 */
+   *  同文，提前摘除镜像无碍，真回显随 agent_start 同批帧即刻落位。
+   *
+   *  bypassQueueLane：接力泵直发重发（queueResend）走这里——弹出项的排队
+   *  归属已由 sidecar 定论，控制器不能再按本地残留队列把它误判进排队分支
+   *  （旧实现只绕开 composer 车道，isQueuedSend 仍会压出 pending 幽灵）。 */
   private async sendUserAppend(
     message: AppendMessage,
     options: PiSendOptions | undefined,
     baseMessageCount: number,
+    optimisticMirror = false,
+    bypassQueueLane = false,
   ) {
     if (message.role !== "user") {
       throw new Error("Pi only supports sending user messages");
     }
 
-    const isQueuedSend = this.state.runStatus === "running";
+    // 排队判定必须与 sidecar shouldQueue（busyThreads || 队列非空）同口径：
+    // agent_end 之后 turn 仍占线的窗口（委派收敛、轮间压缩、收尾 finally）里
+    // runStatus 已翻 idle，但 sidecar 会照常入队。此时若走普通发送分支会压入
+    // 乐观气泡，回显又排在队列里 → 气泡与队列条并存（"排队消息提前渲染"）
+    const isQueuedSend = !bypassQueueLane && this.willQueueSend();
     const behavior =
       options?.streamingBehavior ??
       readSteeringIntent(message) ??
       (isQueuedSend ? "followUp" : undefined);
 
-    const input = buildPiSendInput(message, behavior);
+    const built = buildPiSendInput(message, behavior);
+    // 预生成 id（队列/重发路径）：乐观队列条目 id 与协议 reqId 必须同值，
+    // 逐项操作才能在任意时刻按 id 命中服务端条目（见 sendQueued）
+    const input: PiSendMessageInput = options?.requestId
+      ? { ...built, requestId: options.requestId }
+      : built;
     // 改动（发图能力提示）：当前模型目录元数据标为纯文本输入而本次发送含图时
     // toast 提醒——不拦截（sidecar 因元数据不可靠已移除硬门，见
     // lib/pi/pi-vision-warning.ts 头注）。排队/steer/重生重发同经此汇聚点。
@@ -562,6 +596,21 @@ export class PiThreadController implements PiThreadControllerLike {
     this.ensureEventSubscription({ includeSnapshot: false });
 
     if (isQueuedSend) return this.sendQueued(input, behavior ?? "followUp");
+
+    // 普通发送不压乐观气泡：回显（sidecar message_start 的 user 行）是用户
+    // 气泡唯一来源。盲区竞态里压出的镜像永远等不到回显去重（消息在 sidecar
+    // 排队未派发，转录里没有这条），气泡与队列条并存。仅截断重发
+    // （reloadMessage/editMessage → resendAfterTruncate）沿用本地镜像——
+    // 它先截断转录再发，等待回显期间旧气泡已被截掉，需要镜像占位。
+    if (!optimisticMirror) {
+      try {
+        await this.client.sendMessage(this.threadId, input);
+      } catch (error) {
+        this.setState({ ...this.state, lastError: errorText(error) });
+        throw error;
+      }
+      return;
+    }
 
     const optimistic = optimisticUserMessageFromInput(
       input,
@@ -654,7 +703,7 @@ export class PiThreadController implements PiThreadControllerLike {
     this.refreshInBackground();
     // 下界传 0（全文匹配）：见 sendUserAppend 头注——截断快照收缩在飞数组后，
     // 回显落点低于按下标取的界，重生成/编辑重发的乐观镜像会永久滞留成重复气泡
-    await this.sendUserAppend(message, undefined, 0);
+    await this.sendUserAppend(message, undefined, 0, true);
   }
 
   /** 乐观本地截断：truncate_session 确认后立即在内存丢掉 seq >= beforeSeq 的
@@ -675,7 +724,14 @@ export class PiThreadController implements PiThreadControllerLike {
    * message only when the queue flushes), so the optimistic mirror goes into
    * `state.queue` — the thread stays clean and the queue UI shows it instantly.
    * The next real `queue_update` replaces the arrays wholesale and self-heals.
-   *  steer 模式除外（见下）：并入无队列条目可镜像。 */
+   *  steer 模式除外（见下）：并入无队列条目可镜像。
+   *
+   *  乐观条目的 id 用**真实 reqId**（控制器先生成、随 `input.requestId` 下发，
+   *  客户端照用）：这样队列条的 ✕/并入/立即发送在任何时刻点下去 sidecar 都认得
+   *  这条。此前用 `pending-<时间戳>` 临时 id，服务端查不到 → 撤销无效果，且当
+   *  服务端其实没排队（空闲直接执行）时没有任何 queue_update 来清它，条目永远
+   *  挂着（幽灵行 + 气泡并存）。附件随条目带上（协议形状）：队列条出缩略图，
+   *  纯图消息不再是空行。 */
   private async sendQueued(
     input: PiSendMessageInput,
     behavior: "followUp" | "steer",
@@ -695,11 +751,20 @@ export class PiThreadController implements PiThreadControllerLike {
       }
       return;
     }
-    // 改动（4a）：乐观条目带临时 id——真实 reqId 由客户端在 sendMessage 内
-    // 生成，控制器无从得知；下一条 queue_update 以服务端条目整体替换自愈。
+    const requestId = input.requestId ?? this.newQueueRequestId();
+    const wireInput: PiSendMessageInput = { ...input, requestId };
     const optimisticEntry: PiQueueEntry = {
-      id: `pending-${Date.now()}-${++this.optimisticQueueSeq}`,
+      id: requestId,
       content: input.content,
+      ...(input.attachments && input.attachments.length > 0
+        ? {
+            attachments: input.attachments.map((a, index) => ({
+              name: `image-${index + 1}.${a.mimeType.split("/")[1] ?? "png"}`,
+              mimeType: a.mimeType,
+              data: a.data,
+            })),
+          }
+        : {}),
     };
     const optimisticQueue = {
       ...this.state.queue,
@@ -708,19 +773,18 @@ export class PiThreadController implements PiThreadControllerLike {
     this.setState({ ...this.state, queue: optimisticQueue });
 
     try {
-      await this.client.sendMessage(this.threadId, input);
+      await this.client.sendMessage(this.threadId, wireInput);
     } catch (error) {
       // Roll back only while our optimistic mirror is still exactly what we
       // set. Any queue write since — a `queue_update`, a snapshot on
       // (re)connect/refresh, a clear, or a sibling send — replaces the queue
-      // object, and the entry is then no longer ours to match by content:
-      // removing by `lastIndexOf` could delete a surviving identical message.
-      // A later `queue_update` self-heals the stale entry instead.
+      // object, and the entry is then no longer ours to match: removing the
+      // stale entry is left to the authoritative writes instead.
       const reconciled = this.state.queue !== optimisticQueue;
       const entries = this.state.queue[mode];
       const index = reconciled
         ? -1
-        : entries.map((entry) => entry.content).lastIndexOf(input.content);
+        : entries.findIndex((entry) => entry.id === requestId);
       this.setState({
         ...this.state,
         lastError: errorText(error),
@@ -737,7 +801,47 @@ export class PiThreadController implements PiThreadControllerLike {
     }
   }
 
-  public async clearQueue() {
+  /** 此刻发送是否会进队列（与 sendUserAppend 的 isQueuedSend 同口径）：
+   *  运行中/压缩中/重试中，或本地队列非空（含乐观条目）。runtime 层的新线程
+   *  乐观气泡据此决定压不压——排队消息不进消息列表（设计文档 §3.3 R1）。 */
+  public willQueueSend(): boolean {
+    return (
+      this.state.runStatus === "running" ||
+      this.state.metadata.compactionActive === true ||
+      this.state.metadata.retryActive === true ||
+      this.state.queue.steering.length > 0 ||
+      this.state.queue.followUp.length > 0
+    );
+  }
+
+  /** 队列条目 id = 真实 reqId：控制器先生成（复用给乐观条目与协议帧），
+   *  客户端 sendMessage 见 requestId 直接照用、不再自造。 */
+  private newQueueRequestId(): string {
+    const uuid =
+      typeof globalThis.crypto?.randomUUID === "function"
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    return `pi-${uuid}`;
+  }
+
+  /** 「这条消息真的开跑了」对账（客户端 start chunk 观察）：服务端没排过队的
+   *  消息永远不会广播 queue_update，本地乐观条目只能靠这个信号摘除——否则
+   *  就是「气泡已渲染 + 队列条还挂着一条」的幽灵。派发中的条目本就在
+   *  出队快照里消失（wholesale 替换），这里只兜本地残留。 */
+  private dropLocalQueueEntry(requestId: string) {
+    const queue = this.state.queue;
+    const steering = queue.steering.filter((entry) => entry.id !== requestId);
+    const followUp = queue.followUp.filter((entry) => entry.id !== requestId);
+    if (
+      steering.length === queue.steering.length &&
+      followUp.length === queue.followUp.length
+    ) {
+      return;
+    }
+    this.setState({ ...this.state, queue: { steering, followUp } });
+  }
+
+  public async clearQueue(): Promise<PiClearedQueue> {
     // Snapshot the queue we are clearing. Every queue write allocates a fresh
     // object — sendQueued, the `queue_update` reducer, and a reconnect/refresh
     // snapshot (applySnapshot, even when the contents are unchanged) — so a
@@ -762,14 +866,74 @@ export class PiThreadController implements PiThreadControllerLike {
     return cleared;
   }
 
-  /** 改动（4a）：逐项队列操作，直通客户端（id = 真实 reqId）。状态更新由
-   *  sidecar 的 queue_update 事件驱动，控制器不做乐观改写——逐项操作的
-   *  失败（如并入时活跃轮恰好收尾）需要条目原位保留，乐观删除会闪动。 */
+  /** 停止生成前的排队取回（产品语义：停止 = 未派发的排队项回到输入框）。
+   *  先 queue_clear 拿完整条目载荷（文本 + 图片附件）再 abort——abort 本身
+   *  会取消整队，先清后停才拿得到载荷。失败不阻断停止：调用方仍继续 abort，
+   *  只是没有可回填的内容。 */
+  public async drainQueueForStop(): Promise<PiQueueEntry[]> {
+    try {
+      const drained = await this.clearQueue();
+      return drained.items;
+    } catch (error) {
+      this.setState({ ...this.state, lastError: errorText(error) });
+      return [];
+    }
+  }
+
+  /** 改动（4a）：逐项队列操作，id = 真实 reqId，直通 sidecar 队列引擎。
+   *  先本地摘掉（撤销要立刻可见——服务端若真的没这条/已被派发，下一条
+   *  queue_update 或快照会把它带回来，真相在服务端、不撒谎），再尽力通知
+   *  服务端；失败（传输层异常）时条目已被权威快照恢复路径兜住。 */
   public async queueCancel(id: string) {
     if (!this.client.queueCancel) {
       throw new Error("Pi client does not support per-item queue ops");
     }
+    this.dropLocalQueueEntry(id);
     await this.client.queueCancel(this.threadId, id);
+  }
+
+  /** 接力泵直发重发：弹出项按原载荷（文本 + 图片附件）直接走 sendMessage
+   *  汇聚点。必须绕开 composer 共用车道（aui.composer.send）——泵弹出后前端
+   *  队列条与 sidecar 引擎可能短暂分歧（空快照事件在途），composer 车道的
+   *  isQueuedSend 会按「队列非空」误判进排队分支，压出 pending 幽灵条目
+   *  （sidecar 空闲直接执行，永远没有 queue_update 来清它）。直发把判定收敛
+   *  到与 sidecar 同口径的单点：撞竞态轮（线程又忙了）时 isQueuedSend 照常
+   *  接管续排队，语义不变；空闲则回显直接落气泡（回显是气泡唯一来源）。 */
+  public async queueResend(entry: PiQueueEntry): Promise<void> {
+    type ResendPart =
+      | { type: "text"; text: string }
+      | { type: "image"; image: string };
+    const parts: ResendPart[] = [];
+    if (entry.content.length > 0) parts.push({ type: "text", text: entry.content });
+    for (const attachment of entry.attachments ?? []) {
+      if (!attachment.data) continue;
+      // 协议附件 data 是无前缀 base64，还原成 data URL 让 buildPiSendInput 的
+      // image 分支原样收回（sidecar 出队时已把 path-only 项读盘内联）
+      parts.push({
+        type: "image",
+        image: `data:${attachment.mimeType};base64,${attachment.data}`,
+      });
+    }
+    if (parts.length === 0) return;
+    const message: AppendMessage = {
+      role: "user",
+      content: parts,
+      createdAt: new Date(),
+      metadata: { custom: {} },
+      parentId: null,
+      sourceId: null,
+      runConfig: undefined,
+    };
+    // bypassQueueLane：不做本地排队镜像（该条已不在服务端队列里，是泵弹出来
+    // 直发的）；requestId 沿用原条目 id——重发若又进队列（撞竞态轮），队列条
+    // 的 ✕/并入仍按同一 id 命中
+    await this.sendUserAppend(
+      message,
+      { requestId: entry.id },
+      this.state.messages.length,
+      false,
+      true,
+    );
   }
 
   public async queuePromote(id: string) {
@@ -943,7 +1107,16 @@ export class PiThreadController implements PiThreadControllerLike {
       const key = userContentKey(entry.message);
       const confirmed = this.state.messages
         .slice(entry.baseMessageCount)
-        .some((message) => userContentKey(message) === key);
+        .some((message) => {
+          const echoed = userContentKey(message);
+          // 前缀匹配：附件被 sidecar 拒收时，落盘文本是 noticeAppendedText
+          // 原文 + 拒收/落盘说明行（prompt-attachments），全文相等会让镜像
+          // 永远摘不掉 → 气泡与回显行重复并存
+          return (
+            echoed === key ||
+            (key !== null && key.length > 0 && echoed?.startsWith(key) === true)
+          );
+        });
       if (!confirmed) remaining.push(entry);
     }
 

@@ -192,3 +192,78 @@ describe("context 占用镜像（§7）", () => {
     expect(() => ctx.teardownContextSubscription()).not.toThrow();
   });
 });
+
+describe("contextTokenBreakdown（占用分项 = 请求总占用的分区）", () => {
+  test("usage 分支：messageTokens 已含系统提示词/工具，三段和 == usedTokens", () => {
+    // 实测形状（128K 窗口的会话）：messageTokens = 末条 usage 的请求总量，
+    // 明显大于系统段 + 工具段之和 → 它本就是总量，分区后消息段为扣掉两项的余量
+    const bd = ctx.contextTokenBreakdown({
+      messageTokens: 94_976,
+      systemPromptTokens: 7_040,
+      toolTokens: 9_216,
+      usedTokens: 94_976,
+    });
+    expect(bd).toEqual({
+      message: 94_976 - 7_040 - 9_216,
+      system: 7_040,
+      tool: 9_216,
+      used: 94_976,
+    });
+    expect(bd.message + bd.system + bd.tool).toBe(bd.used);
+    // 旧口径（三项相加）= 111_232，离 111_616 阈值只差 384 → 视觉上贴着竖线，
+    // 而守卫认的 94_976 还差 15%：这正是"看着越线却没压缩"的来源
+    const rawSum = 94_976 + 7_040 + 9_216;
+    expect(rawSum).toBe(111_232);
+    expect(bd.message + bd.system + bd.tool).toBeLessThan(rawSum);
+    expect(bd.used).toBeLessThan(111_616);
+  });
+
+  test("纯估算分支（旧 sidecar 无 usedTokens）：退化为三项各原值", () => {
+    const bd = ctx.contextTokenBreakdown({
+      messageTokens: 10,
+      systemPromptTokens: 5,
+      toolTokens: 3,
+    });
+    expect(bd).toEqual({ message: 10, system: 5, tool: 3, used: 18 });
+    expect(bd.message + bd.system + bd.tool).toBe(bd.used);
+  });
+
+  test("夹取：分项估算超过总量时不出现负宽，消息段归零", () => {
+    const bd = ctx.contextTokenBreakdown({
+      messageTokens: 100,
+      systemPromptTokens: 80,
+      toolTokens: 80,
+      usedTokens: 90,
+    });
+    expect(bd).toEqual({ message: 0, system: 80, tool: 10, used: 90 });
+    expect(bd.message + bd.system + bd.tool).toBe(bd.used);
+  });
+});
+
+describe("cacheMissCause（缓存重算归因文案）", () => {
+  test("模型切换优先于空闲（换模型本来就必然重建）", () => {
+    expect(ctx.cacheMissCause({ idleMs: 10 * 60_000, modelChanged: true })).toBe(
+      "模型切换",
+    );
+  });
+
+  test("空闲越过 5 分钟 TTL：按分钟报数", () => {
+    expect(ctx.cacheMissCause({ idleMs: 5 * 60_000, modelChanged: false })).toBe(
+      "空闲 5 分钟，越过缓存有效期",
+    );
+    expect(
+      ctx.cacheMissCause({ idleMs: 5 * 60_000 + 27_000, modelChanged: false }),
+    ).toBe("空闲 5 分钟，越过缓存有效期");
+  });
+
+  test("两项都不成立 = 未归因（前缀被改写或网关侧失效）", () => {
+    expect(ctx.cacheMissCause({ idleMs: 40_000, modelChanged: false })).toBe(
+      "未归因（前缀被改写或网关侧失效）",
+    );
+  });
+
+  test("没有重算记录时返回 null", () => {
+    expect(ctx.cacheMissCause(null)).toBeNull();
+    expect(ctx.cacheMissCause(undefined)).toBeNull();
+  });
+});

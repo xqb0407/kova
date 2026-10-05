@@ -9,6 +9,7 @@ import {
   makeAutoContinueMessage,
   MAX_LENGTH_CONTINUES,
   needsLengthContinuation,
+  needsStreamBreakContinuation,
 } from "../../src/agent/context";
 import { onAgentEvent } from "../../src/protocol/stream";
 import { AUTO_CONTINUE_PREFIX, toUiMessage } from "../../src/sessions/transcript";
@@ -70,6 +71,16 @@ describe("makeAutoContinueMessage", () => {
     expect(m.role).toBe("user");
     expect(m.content[0].text.startsWith(AUTO_CONTINUE_PREFIX)).toBe(true);
   });
+  test("流中断的措辞：说清是传输问题，别让模型道歉或复述", () => {
+    const m = makeAutoContinueMessage(1, "stream") as unknown as {
+      content: { text: string }[];
+    };
+    const text = m.content[0].text;
+    expect(text.startsWith(AUTO_CONTINUE_PREFIX)).toBe(true);
+    expect(text.includes("传输中被中断")).toBe(true);
+    expect(text.includes("输出 token 上限")).toBe(false);
+    expect(text.includes("不要道歉或评论这次中断")).toBe(true);
+  });
   test("第 1 次续跑不带反长思考指引", () => {
     const m = makeAutoContinueMessage(1) as unknown as {
       content: { text: string }[];
@@ -84,6 +95,55 @@ describe("makeAutoContinueMessage", () => {
       expect(m.content[0].text.includes("输出预算有限")).toBe(true);
       expect(m.content[0].text.includes("不要再进行长篇思考")).toBe(true);
     }
+  });
+});
+
+describe("needsStreamBreakContinuation（provider 流中断 + 零 toolCall）", () => {
+  const broken = (
+    errorMessage = "Stream ended without finish_reason",
+    content: Array<Record<string, unknown>> = [{ type: "text", text: "半截回答" }],
+  ) => ({ role: "assistant", stopReason: "error", errorMessage, content });
+
+  test("可重试类错误且无 toolCall → 需要续跑（线上'回答到一半'场景）", () => {
+    expect(needsStreamBreakContinuation(ev(broken()) as never)).toBe(true);
+    expect(
+      needsStreamBreakContinuation(ev(broken("503 service unavailable")) as never),
+    ).toBe(true);
+  });
+
+  test("带 toolCall → 不自动续（重发可能重复执行已跑过的工具）", () => {
+    expect(
+      needsStreamBreakContinuation(
+        ev(
+          broken("Stream ended without finish_reason", [
+            { type: "text", text: "我先写文件" },
+            { type: "toolCall", id: "t1", name: "write", arguments: {} },
+          ]),
+        ) as never,
+      ),
+    ).toBe(false);
+  });
+
+  test("确定性失败（配额/鉴权）不自动续：重发只会再撞同一堵墙", () => {
+    expect(
+      needsStreamBreakContinuation(ev(broken("insufficient_quota")) as never),
+    ).toBe(false);
+    expect(
+      needsStreamBreakContinuation(ev(broken("invalid api key")) as never),
+    ).toBe(false);
+  });
+
+  test("非 error 停止原因 / 非 assistant 消息都不触发", () => {
+    expect(
+      needsStreamBreakContinuation(
+        ev({ role: "assistant", stopReason: "length", content: [] }) as never,
+      ),
+    ).toBe(false);
+    expect(
+      needsStreamBreakContinuation(
+        ev({ role: "user", content: [{ type: "text", text: "hi" }] }) as never,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -153,5 +213,63 @@ describe("onAgentEvent turn_end 续跑注入", () => {
       run,
     );
     expect(followUps.length).toBe(0);
+  });
+
+  test("provider 流中断（可重试、零 toolCall）注入续跑并计数——'回答到一半'自愈", async () => {
+    const { run, followUps } = fakeRun(0);
+    await onAgentEvent(
+      ev({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "Stream ended without finish_reason",
+          content: [{ type: "text", text: "半截回答" }],
+        },
+        toolResults: [],
+      }),
+      run,
+    );
+    expect(followUps.length).toBe(1);
+    expect(run.lengthContinues).toBe(1);
+    const injected = followUps[0] as { content: { text: string }[] };
+    expect(injected.content[0].text.includes("传输中被中断")).toBe(true);
+  });
+
+  test("配额耗尽（确定性失败）不注入续跑", async () => {
+    const { run, followUps } = fakeRun(0);
+    await onAgentEvent(
+      ev({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "insufficient_quota",
+          content: [{ type: "text", text: "半截回答" }],
+        },
+        toolResults: [],
+      }),
+      run,
+    );
+    expect(followUps.length).toBe(0);
+  });
+
+  test("流中断同样受共享预算约束（网关持续抖动不会无限续）", async () => {
+    const { run, followUps } = fakeRun(MAX_LENGTH_CONTINUES);
+    await onAgentEvent(
+      ev({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "Stream ended without finish_reason",
+          content: [{ type: "text", text: "半截回答" }],
+        },
+        toolResults: [],
+      }),
+      run,
+    );
+    expect(followUps.length).toBe(0);
+    expect(run.lengthContinues).toBe(MAX_LENGTH_CONTINUES);
   });
 });

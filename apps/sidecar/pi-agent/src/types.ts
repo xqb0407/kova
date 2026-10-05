@@ -172,6 +172,9 @@ export type SteerEntry = {
   msg: Record<string, unknown>;
   message: unknown;
   gen: number;
+  /** 该注入行落盘的转录 seq（persist 按对象身份登记）：未获回应回收时按它把行
+   *  从转录撤回，气泡随条目回收一起消失（见 prompt-pipeline.withdrawInjectedSteer） */
+  seq?: number;
 };
 
 /** threadId 对应的活动会话（每个前端线程一个 Agent 实例） */

@@ -36,7 +36,9 @@ import {
   type PiThreadControllerLike,
 } from "./ThreadController";
 import { createPiThreadState, type PiThreadState } from "./threadState";
-import type { PiClient, PiThreadMetadata } from "../types";
+import type { PiClient, PiQueueEntry, PiThreadMetadata } from "../types";
+import { base64ImageFile } from "@/lib/attachments/prompt-attachments";
+import { toast } from "@/components/ui/toast";
 import {
   responseForToolApproval,
   splitHostUiRequests,
@@ -52,7 +54,8 @@ import { disposeControllers } from "./disposeControllers";
 // set_mode/主题胶囊等）全靠这张表把线程 id 换成 sessionId，否则 threadId-only
 // 请求会让 sidecar 懒建空白会话（对话失忆）。
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
-import { flushDraftAppModeSelection } from "@/lib/pi/pi-session-app-mode";
+import { flushDraftAppModeSelectionAsync } from "@/lib/pi/pi-session-app-mode";
+import { flushDraftThemeSelection } from "@/lib/design-themes/design-themes";
 import { flushDraftModeSelection } from "@/lib/pi/pi-session-mode";
 import { flushDraftModelSelection } from "@/lib/pi/pi-session-model";
 import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
@@ -123,12 +126,15 @@ export const NOOP_CONTROLLER: PiThreadControllerLike = {
   reloadMessage: async () => {},
   editMessage: async () => {},
   cancel: async () => {},
-  clearQueue: async () => ({ steering: [], followUp: [] }),
+  clearQueue: async () => ({ steering: [], followUp: [], items: [] }),
+  drainQueueForStop: async () => [],
+  willQueueSend: () => false,
   // 改动（4a）：NOOP 桩补齐逐项操作（无活动线程时静默 no-op）
   queueCancel: async () => {},
   queuePromote: async () => {},
   queueSteer: async () => {},
   queuePop: async () => null,
+  queueResend: async () => {},
   setModel: async () => {},
   setThinkingLevel: async () => {},
   respondToToolApproval: async () => {},
@@ -170,6 +176,7 @@ const buildExtras = (
     queuePromote: (id) => controller.queuePromote(id),
     queueSteer: (id) => controller.queueSteer(id),
     queuePop: () => controller.queuePop(),
+    queueResend: (entry) => controller.queueResend(entry),
     setModel: (input) => controller.setModel(input),
     setThinkingLevel: (level) => controller.setThinkingLevel(level),
     respondToHostUiRequest: (response) =>
@@ -261,10 +268,48 @@ const isPiStateRunning = (state: PiThreadState): boolean =>
   state.compaction.active ||
   state.retry.active;
 
+/** 停止生成回填：被 queue_clear 取回的排队条目落回输入框（文本进草稿、图片
+ *  还原成 composer 附件）。文本合并成一段（多条排队消息按原顺序、空行分隔）；
+ *  草稿已有内容时追加在其后，不覆盖用户正在写的东西。返回回填的条目数。 */
+const restoreQueueItemsToComposer = async (
+  aui: ReturnType<typeof useAui>,
+  items: readonly PiQueueEntry[],
+): Promise<number> => {
+  if (items.length === 0) return 0;
+  const texts = items.map((item) => item.content).filter((text) => text.trim().length > 0);
+  if (texts.length > 0) {
+    const restored = texts.join("\n\n");
+    const draft = aui.composer.getState().text;
+    aui.composer.setText(draft.trim().length > 0 ? `${draft}\n\n${restored}` : restored);
+  }
+  let index = 0;
+  for (const item of items) {
+    for (const attachment of item.attachments ?? []) {
+      if (!attachment.data) continue;
+      const file = base64ImageFile(
+        attachment.name,
+        attachment.mimeType,
+        attachment.data,
+        index++,
+      );
+      if (!file) continue;
+      await aui.composer.addAttachment(file).catch(() => {});
+    }
+  }
+  return items.length;
+};
+
 const usePiThreadStore = (
   controller: PiThreadControllerLike,
   options: PiRuntimeOptions,
 ): ExternalStoreAdapter<ThreadMessage> => {
+  // aui 只经 ref 取用，**不进 useMemo 依赖**：@assistant-ui/tap 的 memo 依赖
+  // 比较在 dev 下会对依赖数组做 join()，把 aui 客户端代理塞进依赖会触发
+  // "The current scope does not have a toString property"（依赖数组长度变化时
+  // 直接红屏）；停收回填是事件回调，读当前值即可，无需依赖参与比较。
+  const aui = useAui();
+  const auiRef = useRef(aui);
+  auiRef.current = aui;
   const state = usePiControllerState(controller);
   const messageRepository = usePiControllerMessageRepository(controller);
 
@@ -404,10 +449,22 @@ const usePiThreadStore = (
       },
       onCancel: async () => {
         try {
-          // 改动（4a）：去掉上游的 cancel 前 clearQueue——我们的停止语义 =
-          // 整线程停止（sidecar abort 命令在中止活跃轮的同时取消该线程全部
-          // 排队项），不存在「cancel 与队列续派之间被提升」的窗口
+          // 停止语义（产品决策 2026-10-05，与用户确认）= 中止整线程
+          //（sidecar abort 在中止活跃轮的同时取消该线程全部排队项）+
+          // **未派发的排队内容退回输入框**。顺序必须是「先取回再中止」：
+          // abort 自己就清队，先停一步就拿不到回填载荷（文本+图片）。
+          // 取回失败（传输异常）不阻断停止，只是没有可回填的内容。
+          const drained = await controller.drainQueueForStop();
           await controller.cancel();
+          if (drained.length > 0) {
+            const restored = await restoreQueueItemsToComposer(auiRef.current, drained);
+            if (restored > 0) {
+              toast.message({
+                title: `已停止生成`,
+                description: `${restored} 条排队消息已退回输入框`,
+              });
+            }
+          }
         } catch (error) {
           invokePiErrorCallback(onError, error);
           throw error;
@@ -540,34 +597,38 @@ const useNewPiThreadStore = (
       extras: EMPTY_RUNTIME_EXTRAS,
       ...(adapters ? { adapters } : {}),
       onNew: async (message) => {
-        const optimistic = toOptimisticThreadMessage(
-          message,
-          optimisticMessageIndexRef.current++,
-        );
-        setOptimisticMessages((messages) => [...messages, optimistic]);
-        const removeOptimisticMessage = () => {
-          setOptimisticMessages((messages) =>
-            messages.filter((candidate) => candidate !== optimistic),
-          );
-        };
         try {
           // The core starts thread initialization before dispatching onNew,
           // so adapter.initialize has already created the thread empty;
           // deliver the message to the live thread.
           const { remoteId, externalId } =
             await aui.threadListItem.initialize();
-          if (registry.disposed) {
-            removeOptimisticMessage();
-            return;
-          }
+          if (registry.disposed) return;
           const piThreadId = cloud ? externalId : (externalId ?? remoteId);
           if (!piThreadId) {
             throw new Error("This thread has no Pi thread to send to.");
           }
-          await getController(registry, piThreadId).sendMessage(message);
+          const target = getController(registry, piThreadId);
+          // 排队中的消息不进消息列表（设计文档 §3.3 R1）：目标线程忙时这条会进
+          // 队列，唯一呈现是排队条——压乐观气泡会留下"已发送"的幻影，且队列条
+          // 上同时挂着它，删队列行也撤不回（气泡不挂在队列条目上）。判定口径
+          // 与控制器 sendUserAppend 的 isQueuedSend 同源（controller.willQueueSend）。
+          const queued = target.willQueueSend();
+          const optimistic = queued
+            ? null
+            : toOptimisticThreadMessage(message, optimisticMessageIndexRef.current++);
+          if (optimistic) {
+            setOptimisticMessages((messages) => [...messages, optimistic]);
+          }
+          const removeOptimisticMessage = () => {
+            if (!optimistic) return;
+            setOptimisticMessages((messages) =>
+              messages.filter((candidate) => candidate !== optimistic),
+            );
+          };
+          await target.sendMessage(message);
           removeOptimisticMessage();
         } catch (error) {
-          removeOptimisticMessage();
           invokePiErrorCallback(onError, error);
           throw error;
         }
@@ -713,9 +774,13 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       if (threadId) {
         flushDraftModelSelection(threadId);
         flushDraftThinkingSelection(threadId);
-        flushDraftAppModeSelection(threadId);
-        // 会话模式 + 审批档：**必须 await**。它决定首轮改动前问不问，晚一拍就等于
-        // 首轮按全局默认档执行（选「工作区内自动」却直接跑命令，就是这么来的）
+        // 工作模式 + 设计主题 + 会话模式/审批档：**必须 await**。工作模式决定首轮
+        // 系统提示词的人群附加段（design/work），主题句随 design 段注入，会话模式
+        // 决定首轮改动前问不问——晚一拍就等于首轮按全局默认档执行（选了设计却按
+        // 工作答、选「工作区内自动」却直接跑命令，就是这么来的）。三者失败均内部
+        // 自吞（保留草稿/本地选中态），不阻断发送
+        await flushDraftAppModeSelectionAsync(threadId);
+        await flushDraftThemeSelection(threadId);
         await flushDraftModeSelection(threadId);
       }
       return {

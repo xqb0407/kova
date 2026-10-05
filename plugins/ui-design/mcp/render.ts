@@ -7,13 +7,50 @@
  *    （面板里那条 asset.request→宿主 base64 的桥在这里不需要）；
  * ② 文本测量：浏览器 canvas measureText 没有等价物 → 按 Unicode 区间近似字宽
  *    （CJK 全宽=1em、拉丁分桶），只影响折行位置，观感与面板一致的近似；
- * ③ 光栅化：@resvg/resvg-js（Skia 光栅器，napi，同步）把 SVG 画成 PNG，
- *    字体走系统解析（PingFang/Helvetica 与画布同源）。PNG 超内联闸门（2MiB，
- *    见 sidecar tools/image-parts.ts）时自动降倍率重渲。
+ * ③ 光栅化：@resvg/resvg-wasm（纯 wasm，随插件 node_modules 分发——napi 原生
+ *    版无法进内置插件包）把 SVG 画成 PNG。字体用插件内置的 Noto Sans SC
+ *    （mcp/fonts/，OFL）：wasm 沙箱读不了系统字体（loadSystemFonts 在 wasm
+ *    胶水里是空实现），内置字体换来开发/打包、跨平台完全一致的渲染。PNG 超
+ *    内联闸门（2MiB，见 sidecar tools/image-parts.ts）时自动降倍率重渲。
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { Resvg } from "@resvg/resvg-js";
+import { Resvg, initWasm } from "@resvg/resvg-wasm";
+
+// wasm 只能初始化一次且必须先于任何 Resvg 构造；模块顶层的 await 保证同步 API
+// （rasterizePng）拿到即用。字节从依赖包本体读：mcp/ 往上一级即插件根，开发态
+// （仓库 node_modules）与物化态（插件根 node_modules，打包器 vendor）同布局。
+// 缺文件 = 包被裁了运行时依赖，直接报可读错误。
+try {
+  await initWasm(
+    readFileSync(
+      new URL("../node_modules/@resvg/resvg-wasm/index_bg.wasm", import.meta.url),
+    ),
+  );
+} catch (err) {
+  throw new Error(
+    "ui-design mcp: 初始化 resvg wasm 失败（node_modules/@resvg/resvg-wasm 不可达，插件包不完整？）",
+    { cause: err },
+  );
+}
+
+/** 内置渲染字体：wasm 只认 fontBuffers（系统字体发现未实现），一次性读入复用 */
+const FONT_BUFFERS = (() => {
+  try {
+    return [readFileSync(new URL("./fonts/NotoSansSC-Regular.otf", import.meta.url))];
+  } catch (err) {
+    throw new Error("ui-design mcp: 内置字体 mcp/fonts/NotoSansSC-Regular.otf 缺失（插件包不完整？）", {
+      cause: err,
+    });
+  }
+})();
+
+/** resvg 字体档：家族名兜底接住 FONT_STACK 里的 system-ui/…/sans-serif 各写法 */
+const FONT_OPTIONS = {
+  fontBuffers: FONT_BUFFERS,
+  defaultFontFamily: "Noto Sans SC",
+  sansSerifFamily: "Noto Sans SC",
+} as const;
 import { findNode, type DesignDoc, type DesignNode } from "../ui/src/doc";
 import { buildSvg, collectImageSrcs } from "../ui/src/svg";
 import type { MeasureFn } from "../ui/src/leafer/scene";
@@ -173,7 +210,7 @@ export function rasterizePng(
   const draw = (r: number) => {
     const resvg = new Resvg(svg, {
       fitTo: { mode: "width", value: Math.max(1, Math.round(boxW * r)) },
-      font: { loadSystemFonts: true },
+      font: { ...FONT_OPTIONS },
     });
     const img = resvg.render();
     return { png: img.asPng(), width: img.width, height: img.height };

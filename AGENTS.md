@@ -8,10 +8,3 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
-
-
-<!-- BEGIN:assistant-ui docs -->
-
-# 这是assistant-ui 文档，里面包含了使用assistant-ui的详细信息
-.agents/skills
-<!-- END:assistant-ui docs -->

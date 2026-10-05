@@ -222,6 +222,84 @@ describe("runCompaction", () => {
     expect(cp.details).toMatchObject({ strategy: "fresh_window" });
   });
 
+  test("摘要撞满输出上限（truncated）不得落成 checkpoint：走兜底", async () => {
+    // 回归：半截摘要比空摘要更隐蔽——看起来是成功的，实际把不完整上下文写进了
+    // 检查点（pi 的 getSummarizationFailure 同判定：length stop 不得成为 checkpoint）
+    const run = makeRun([userMsg("q"), assistantMsg("a")]);
+    const outcome = await runCompaction(run, "overflow", {
+      summarize: async () => ({
+        text: "HALF A SUMMARY...",
+        truncated: true,
+        usage: { input: 100, output: 8_192, cacheRead: 0, cacheWrite: 0 },
+      }),
+    });
+    expect(outcome.ok && outcome.summarized).toBe(false);
+    const cp = readCompaction(run.sessionId)!;
+    expect(cp.summary).toContain("[context rollover");
+    expect(cp.details).toMatchObject({ strategy: "fresh_window" });
+  });
+
+  test("摘要用量与尝试次数写进 checkpoint details（观测位）", async () => {
+    const run = makeRun([userMsg("q"), assistantMsg("a")]);
+    const usage = { input: 100, output: 200, cacheRead: 50, cacheWrite: 0, reasoning: 80 };
+    await runCompaction(run, "threshold", {
+      summarize: async () => ({ text: "S", usage, attempts: 2 }),
+    });
+    const cp = readCompaction(run.sessionId)!;
+    expect(cp.summary).toBe("S");
+    expect(cp.details).toMatchObject({
+      strategy: "summary",
+      summaryUsage: usage,
+      summaryAttempts: 2,
+    });
+  });
+
+  test("兜底保留最近原文尾部：只丢最老，切点落在合法边界上", async () => {
+    // 生产事故（2026-10-05）：摘要失败 → 整段历史换成一条 rollover marker，
+    // 模型当场失忆、向用户重新要上下文。改为保留最近 ~24K tokens 原文；
+    // 切点走 core 的 findCutPoint（保留 ≥ 预算的那一条，toolResult 不作切点）。
+    const sessionId = `ctx-tail-${sessionCounter++}`;
+    const recentQuestion = "最近的问题" + "x".repeat(120_000); // ~30K tokens，越过预算
+    const rows: { seq: number; agent: Message }[] = [
+      { seq: 0, agent: userMsg("老问题") },
+      { seq: 1, agent: assistantMsg("老回答") },
+      { seq: 2, agent: userMsg(recentQuestion) },
+      { seq: 3, agent: assistantMsg("最近的回答") },
+    ];
+    writeFileSync(
+      sessionPath(sessionId),
+      rows
+        .map((r) => JSON.stringify({ type: "message", seq: r.seq, ui: null, agent: r.agent }))
+        .join("\n") + "\n",
+    );
+    const run = makeRun(rows.map((r) => r.agent));
+    run.sessionId = sessionId;
+    const outcome = await runCompaction(run, "threshold", {
+      summarize: async () => {
+        throw new Error("upstream stream dropped");
+      },
+    });
+    expect(outcome.ok && outcome.summarized).toBe(false);
+    const state = run.agent.state.messages as unknown as Message[];
+    // 摘要头 + 最近两条
+    expect(state.length).toBe(3);
+    expect(isSummaryMessage(state[0] as never)).toBe(true);
+    expect((state[1] as { content: unknown }).content).toBe(recentQuestion);
+    expect((state[2] as { content: unknown }).content).toEqual([
+      { type: "text", text: "最近的回答" },
+    ]);
+    const cp = readCompaction(sessionId)!;
+    expect(cp.throughSeq).toBe(1); // 丢弃 seq ≤ 1，保留 seq 2/3
+    expect(cp.details).toMatchObject({ strategy: "fresh_window", keptTailMessages: 2 });
+    // 刷新后的装载必须复原出同一形状（摘要头 + 保留尾部）
+    const restored = projectRestoreContext(rows, cp);
+    expect(restored.length).toBe(3);
+    expect((restored[1] as { content: unknown }).content).toBe(recentQuestion);
+    expect((restored[2] as { content: unknown }).content).toEqual([
+      { type: "text", text: "最近的回答" },
+    ]);
+  });
+
   test("手动压缩拿到空摘要时报错不装填，会话原样", async () => {
     const run = makeRun([userMsg("q"), assistantMsg("a")]);
     const outcome = await runCompaction(run, "manual", {
@@ -569,50 +647,135 @@ describe("sessionCacheMissStats", () => {
       requests: 0,
       misses: 0,
       rebuilds: 0,
+      missedTokens: 0,
+      missCount: 0,
+      lastMiss: null,
+      recent: { requests: 0, hitRate: null },
     });
   });
 
-  test("冷启动/预期重建不计 miss；≥2000 且 ≥5% 记 miss；错误轮不计", () => {
-    const id = `miss-${sessionCounter++}`;
-    const line = (seq: number, usage: Record<string, number>, stopReason = "stop") =>
+  const line =
+    (at: number, usage: Record<string, number>, extra: Record<string, unknown> = {}) =>
       JSON.stringify({
         type: "message",
-        seq,
+        seq: at,
         ui: null,
         agent: {
           role: "assistant",
           content: [{ type: "text", text: "a" }],
-          stopReason,
+          stopReason: "stop",
+          timestamp: 1_000 + at * 1_000,
+          model: "m",
+          provider: "p",
           usage,
+          ...extra,
         },
       });
-    writeFileSync(
-      sessionPath(id),
-      [
-        // 0：冷启动首轮（全是写入），不计 miss
-        line(0, { input: 9000, cacheRead: 0, cacheWrite: 9000, output: 10 }),
-        // 1：正常命中
-        line(1, { input: 10, cacheRead: 9000, cacheWrite: 100, output: 10 }),
-        // 2：重处理 3000/9000=33% 且 ≥2000 → miss
-        line(2, { input: 3000, cacheRead: 6000, cacheWrite: 0, output: 10 }),
-        // 3：重处理 600 token <2000 → 不计
-        line(3, { input: 600, cacheRead: 8400, cacheWrite: 0, output: 10 }),
-        // 4：错误轮整行不计
-        line(4, { input: 50000, cacheRead: 0, cacheWrite: 0, output: 0 }, "error"),
-      ].join("\n") + "\n",
-      "utf8",
-    );
-    expect(sessionCacheMissStats(id, null)).toEqual({
+  const writeSession = (id: string, rows: string[]) =>
+    writeFileSync(sessionPath(id), rows.join("\n") + "\n", "utf8");
+
+  test("冷启动/预期重建不计 miss；≥2000 且 ≥5% 记 miss；错误轮不计", () => {
+    const id = `miss-${sessionCounter++}`;
+    const row = (seq: number, usage: Record<string, number>, stopReason = "stop") =>
+      line(seq, usage, { stopReason });
+    writeSession(id, [
+      // 0：冷启动首轮（全是写入），不计 miss
+      row(0, { input: 9000, cacheRead: 0, cacheWrite: 9000, output: 10 }),
+      // 1：正常命中
+      row(1, { input: 10, cacheRead: 9000, cacheWrite: 100, output: 10 }),
+      // 2：重处理 3000/9000=33% 且 ≥2000 → miss
+      row(2, { input: 3000, cacheRead: 6000, cacheWrite: 0, output: 10 }),
+      // 3：重处理 600 token <2000 → 不计
+      row(3, { input: 600, cacheRead: 8400, cacheWrite: 0, output: 10 }),
+      // 4：错误轮整行不计
+      row(4, { input: 50000, cacheRead: 0, cacheWrite: 0, output: 0 }, "error"),
+    ]);
+    expect(sessionCacheMissStats(id, null)).toMatchObject({
       requests: 4,
       misses: 1,
       rebuilds: 0,
+      // pi 口径只认第 2 轮那次真重算：min(上一轮 9110, 本轮 9000) − 6000 = 3000
+      missedTokens: 3_000,
+      missCount: 1,
     });
     // 检查点 afterSeq=1：seq>1 的首个请求记为预期重建，miss 相应少一次
-    expect(sessionCacheMissStats(id, 1)).toEqual({
+    expect(sessionCacheMissStats(id, 1)).toMatchObject({
       requests: 4,
       misses: 0,
       rebuilds: 1,
     });
+  });
+
+  test("新增内容不算重算：上一轮 prompt 全命中时 missedTokens = 0", () => {
+    // 旧口径会把这轮记成 miss（input 3000 ≥2000 且 ≥5%），但 cacheRead 已经
+    // 覆盖了上一轮全部 prompt → 纯新增内容，没有重算。这正是 18/48 里大多数"miss"。
+    const id = `miss-new-${sessionCounter++}`;
+    writeSession(id, [
+      line(0, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 0 }),
+      line(1, { input: 3_000, output: 100, cacheRead: 20_000, cacheWrite: 0 }),
+      line(2, { input: 200, output: 100, cacheRead: 23_000, cacheWrite: 0 }),
+    ]);
+    const stats = sessionCacheMissStats(id);
+    expect(stats.misses).toBe(1); // 旧口径仍会记（兼容旧面板分母）
+    expect(stats.missCount).toBe(0);
+    expect(stats.missedTokens).toBe(0);
+    // 近 N 轮命中率（含冷启动轮）：43,000 / 66,200
+    expect(stats.recent.requests).toBe(3);
+    expect(stats.recent.hitRate).toBeCloseTo(43_000 / 66_200, 4);
+  });
+
+  test("整段重算（空闲越过 TTL）计入 missedTokens 并带空闲归因", () => {
+    const id = `miss-ttl-${sessionCounter++}`;
+    writeSession(id, [
+      line(0, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 0 }),
+      // 6 分钟后：上一轮 20,000 的 prompt（input+cacheRead+cacheWrite，不含 output）
+      // 只剩 128 命中 → 重算 19,872
+      JSON.stringify({
+        type: "message",
+        seq: 1,
+        ui: null,
+        agent: {
+          role: "assistant",
+          content: [{ type: "text", text: "a" }],
+          stopReason: "stop",
+          timestamp: 1_000 + 6 * 60_000,
+          model: "m",
+          provider: "p",
+          usage: { input: 19_972, output: 100, cacheRead: 128, cacheWrite: 0 },
+        },
+      }),
+    ]);
+    const stats = sessionCacheMissStats(id);
+    expect(stats.missCount).toBe(1);
+    expect(stats.missedTokens).toBe(19_872);
+    expect(stats.lastMiss).toMatchObject({
+      tokens: 19_872,
+      idleMs: 6 * 60_000,
+      modelChanged: false,
+    });
+  });
+
+  test("模型切换：归因走 modelChanged（即使间隔很短）", () => {
+    const id = `miss-model-${sessionCounter++}`;
+    writeSession(id, [
+      // 冷启动要带一次缓存写入：否则整段"从未上报缓存活动"，按 pi 判据不计重算
+      line(0, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 20_000 }, { model: "a" }),
+      line(1, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 0 }, { model: "b" }),
+    ]);
+    const stats = sessionCacheMissStats(id);
+    expect(stats.missCount).toBe(1);
+    expect(stats.lastMiss).toMatchObject({ modelChanged: true });
+  });
+
+  test("provider 从未上报缓存活动：整段不计重算（reportedCache 判据）", () => {
+    const id = `miss-nocache-${sessionCounter++}`;
+    writeSession(id, [
+      line(0, { input: 20_000, output: 100, cacheRead: 0, cacheWrite: 0 }),
+      line(1, { input: 21_000, output: 100, cacheRead: 0, cacheWrite: 0 }),
+    ]);
+    const stats = sessionCacheMissStats(id);
+    expect(stats.missCount).toBe(0);
+    expect(stats.missedTokens).toBe(0);
   });
 });
 

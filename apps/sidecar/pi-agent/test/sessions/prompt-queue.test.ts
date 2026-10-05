@@ -18,6 +18,7 @@ import {
   queueSnapshot,
   resetQueueForTests,
   shouldQueue,
+  snapshotOf,
   takeFrontEntry,
 } from "../../src/sessions/prompt-queue";
 import { dispatch, dispatchPrompt } from "../../src/protocol/protocol";
@@ -185,16 +186,109 @@ describe("prompt-queue state machine", () => {
 });
 
 describe("dispatch: queue commands", () => {
-  test("queue_cancel / queue_promote / queue_steer reject unknown requestIds", async () => {
+  test("queue_cancel / queue_promote are idempotent on unknown requestIds; queue_steer still rejects", async () => {
+    // 幂等（前后端队列视图分歧是兜底场景）：条目已被泵弹出/链节派发/并发
+    // 取消时「没删到」= 无事可删，照常回执成功，不再升级成 no queued prompt
+    // 红屏；并入对不存在条目是真实错误，保持拒绝
     await expect(
       dispatch("qx2", { type: "queue_cancel", requestId: "ghost" }),
-    ).rejects.toThrow("no queued prompt: ghost");
+    ).resolves.toBeUndefined();
+    expect(responses("qx2").some((r) => r.type === "queue_cancelled")).toBe(true);
     await expect(
       dispatch("qx3", { type: "queue_promote", requestId: "ghost" }),
-    ).rejects.toThrow("no queued prompt: ghost");
+    ).resolves.toBeUndefined();
+    expect(responses("qx3").some((r) => r.type === "queue_promoted")).toBe(true);
     await expect(
       dispatch("qx4", { type: "queue_steer", requestId: "ghost" }),
     ).rejects.toThrow("no active turn to steer into: ghost");
+  });
+
+  test("queue_pop carries the entry's image attachments", async () => {
+    resetQueueForTests();
+    // 前端真实帧形状 { name, mimeType, data | path }（**没有** type 字段）：
+    // 曾经这里的过滤器要求 type:"image"，与线上形状不符 → 带图排队项出队即丢图
+    enqueueTurn("att-1", "t-att", {
+      text: "带图消息",
+      sessionId: "sess-att",
+      attachments: [
+        { name: "image-1.png", mimeType: "image/png", data: "AAAA" },
+        { name: "readme.pdf", mimeType: "application/pdf", data: "CCCC" },
+        { garbage: true },
+      ],
+    });
+    await dispatch("q-att", { type: "queue_pop", threadId: "t-att" });
+    const res = responses("q-att").find((r) => r.type === "queue_popped") as {
+      popped?: { reqId?: string; text?: string; attachments?: unknown[] } | null;
+    };
+    expect(res.popped?.reqId).toBe("att-1");
+    expect(res.popped?.text).toBe("带图消息");
+    // 形状过滤：只有合法图片（白名单 mime）随载荷走，脏帧/文档丢弃
+    expect(res.popped?.attachments).toEqual([
+      { name: "image-1.png", mimeType: "image/png", data: "AAAA" },
+    ]);
+    // 快照同样随行附件（重启采纳 → 泵直发重发不失真）
+    const snap = getQueueStateForThread("t-att", "sess-att");
+    expect(snap?.items.length ?? 0).toBe(0); // 已被 pop 清空
+    resetQueueForTests();
+  });
+
+  test("queue_pop drops path-only images it cannot inline (重发只要 data 载荷)", async () => {
+    resetQueueForTests();
+    enqueueTurn("att-path", "t-att-path", {
+      text: "路径图",
+      attachments: [
+        { name: "gone.png", mimeType: "image/png", path: "/nonexistent/definitely-gone.png" },
+      ],
+    });
+    await dispatch("q-att-path", { type: "queue_pop", threadId: "t-att-path" });
+    const res = responses("q-att-path").find((r) => r.type === "queue_popped") as {
+      popped?: { attachments?: unknown[] } | null;
+    };
+    expect(res.popped).toBeTruthy();
+    expect(res.popped?.attachments).toBeUndefined();
+    resetQueueForTests();
+  });
+
+  test("queue snapshot carries image attachments for restored dispatch", () => {
+    resetQueueForTests();
+    enqueueTurn("att-2", "t-snap", {
+      text: "带图消息",
+      attachments: [{ name: "image-1.jpg", mimeType: "image/jpeg", data: "BBBB" }],
+    });
+    const snapshot = snapshotOf("t-snap");
+    expect(snapshot.items[0]?.attachments).toEqual([
+      { name: "image-1.jpg", mimeType: "image/jpeg", data: "BBBB" },
+    ]);
+    // 无附件条目不带字段（向后兼容旧快照行）
+    enqueueTurn("att-3", "t-snap", { text: "纯文本" });
+    expect(snapshotOf("t-snap").items[1]?.attachments).toBeUndefined();
+    resetQueueForTests();
+  });
+
+  test("queue_clear 回执带条目载荷（文本 + 图片附件），供停止生成回填输入框", async () => {
+    resetQueueForTests();
+    enqueueTurn("clear-1", "t-clear", {
+      text: "带图消息",
+      sessionId: "sess-clear",
+      attachments: [{ name: "image-1.png", mimeType: "image/png", data: "DDDD" }],
+    });
+    enqueueTurn("clear-2", "t-clear", { text: "纯文本", sessionId: "sess-clear" });
+    await dispatch("q-clear", { type: "queue_clear", threadId: "t-clear" });
+    const res = responses("q-clear").find((r) => r.type === "queue_cleared") as {
+      cleared?: string[];
+      items?: { reqId?: string; text?: string; attachments?: unknown[] }[];
+    };
+    expect(res.cleared).toEqual(["带图消息", "纯文本"]);
+    expect(res.items).toEqual([
+      {
+        reqId: "clear-1",
+        text: "带图消息",
+        attachments: [{ name: "image-1.png", mimeType: "image/png", data: "DDDD" }],
+      },
+      { reqId: "clear-2", text: "纯文本" },
+    ]);
+    expect(queueSnapshot("t-clear")).toEqual([]);
+    resetQueueForTests();
   });
 
   test("queue_cancel removes a live entry; queue_pop pops head only when idle", async () => {
@@ -739,6 +833,37 @@ describe("空队列快照必须落盘（复活 bug 回归）", () => {
     resetQueueForTests();
     const snap = getQueueStateForThread("th-pr", "s-pr");
     expect(snap?.items).toEqual([]);
+    resetQueueForTests();
+  });
+
+  test("整队取消（停止生成路径）：先清再广播——落盘的是空快照，重启不复活、泵不重发", () => {
+    resetQueueForTests();
+    enqueueTurn("all-1", "th-all", {
+      text: "第一条",
+      threadId: "th-all",
+      sessionId: "s-all",
+    });
+    enqueueTurn("all-2", "th-all", {
+      text: "第二条",
+      threadId: "th-all",
+      sessionId: "s-all",
+      attachments: [{ name: "image-0.png", mimeType: "image/png", data: "AAAA" }],
+    });
+
+    expect(cancelAllEntries("th-all")).toBe(2);
+    expect(queueSnapshot("th-all")).toEqual([]);
+
+    const queueLines = readFileSync(sessionPath("s-all"), "utf8")
+      .split("\n")
+      .filter((l) => l.includes('"queue_state"'))
+      .map((l) => JSON.parse(l) as { snapshot: { items: unknown[] } });
+    // 最后一条落盘快照必须是空的：带条目的快照行会在回放采纳里复活它们，
+    // 前端接力泵随即弹出重发（停止生成后消息又被发出去一次）
+    expect(queueLines.at(-1)!.snapshot.items).toEqual([]);
+
+    // 重启/快照刷新语义：内存清空 → 回放采纳 → 不复活
+    resetQueueForTests();
+    expect(getQueueStateForThread("th-all", "s-all")?.items ?? []).toEqual([]);
     resetQueueForTests();
   });
 });

@@ -71,6 +71,7 @@ export const usePiQueue = () => {
       promote: extras.queuePromote,
       steer: extras.queueSteer,
       pop: extras.queuePop,
+      resend: extras.queueResend,
       clear: extras.clearQueue,
     }),
     [extras],

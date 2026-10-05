@@ -180,13 +180,27 @@ const applySnapshot = (
     // all) — keeping the prior queue here would let items drained while the
     // event stream was down survive a reconnect snapshot forever.
     // 改动（4a）：快照条目直映（queuedMessages 的 id/content 即队列条目）。
+    // 附件随条目回放（协议形状，见 PiQueuedMessage.attachments）：刷新/重启后
+    // 队列条缩略图与接力泵重发都不丢图
     queue: {
       steering: (snapshot.metadata.queuedMessages ?? [])
         .filter((m) => m.mode === "steer")
-        .map((m) => ({ id: m.id, content: m.content })),
+        .map((m) => ({
+          id: m.id,
+          content: m.content,
+          ...(m.attachments && m.attachments.length > 0
+            ? { attachments: m.attachments }
+            : {}),
+        })),
       followUp: (snapshot.metadata.queuedMessages ?? [])
         .filter((m) => m.mode === "followUp")
-        .map((m) => ({ id: m.id, content: m.content })),
+        .map((m) => ({
+          id: m.id,
+          content: m.content,
+          ...(m.attachments && m.attachments.length > 0
+            ? { attachments: m.attachments }
+            : {}),
+        })),
     },
     contextUsage: snapshot.metadata.contextUsage ?? state.contextUsage,
     hostUiRequests: snapshot.hostUiRequests ?? [],

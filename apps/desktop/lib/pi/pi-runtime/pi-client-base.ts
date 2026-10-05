@@ -60,15 +60,17 @@ import {
   TurnCheckpointTracker,
   type TurnCheckpointObserver,
 } from "./turn-checkpoints";
-import type { PendingInteraction } from "pi-protocol";
+import type { PendingInteraction, QueueAttachment } from "pi-protocol";
 import type {
   PiAgentMessage,
   PiAssistantMessageDelta,
+  PiClearedQueue,
   PiClient,
   PiClientEvent,
   PiHostUiResponse,
   PiModelInfo,
   PiQueueEntry,
+  PiImageContent,
   PiSendMessageInput,
   PiThinkingLevel,
   PiThreadMetadata,
@@ -216,6 +218,12 @@ export class PiClientBase implements PiClient {
   /** 每会话最近一次发送的 prompt（完成提醒正文用）；仅本实例发起的会话入表
    *  ——automation/他窗发起的 turn 不在表内，不重复提醒（旧链路同语义） */
   private readonly lastPrompts = new Map<string, string>();
+  /** prompt 起跑通知台账（sessionId → 监听者）：start 帧是「这条消息真的
+   *  开跑了」的权威信号，控制器据此摘掉本地乐观队列条目（见 onPromptStart） */
+  private readonly promptStartListeners = new Map<
+    string,
+    Set<(requestId: string) => void>
+  >();
   /** 检查点卡观察者（缺口2）：agent_start 打影子仓库快照、agent_end 结算。
    *  默认实现走 turn-checkpoints 的真实依赖；测试可注入记录型假件 */
   private readonly checkpoints: TurnCheckpointObserver;
@@ -618,6 +626,20 @@ export class PiClientBase implements PiClient {
     const requestId = parsed.id;
     if (!requestId || !this.inflight.has(requestId)) return;
     const type = parsed.chunk?.type;
+    // 起跑帧（start）：通知控制器「这条消息真的开跑了」。此前只观察 finish/error，
+    // 控制器无从知道某条本地乐观队列条目其实没在服务端排队（空闲直接执行），
+    // 那条幽灵永远等不到 queue_update 来清——气泡已渲染、队列条还挂着它。
+    if (type === "start") {
+      const sessionId = this.inflight.get(requestId)!;
+      for (const listener of this.promptStartListeners.get(sessionId) ?? []) {
+        try {
+          listener(requestId);
+        } catch (err) {
+          console.error("[PiClientBase] promptStart listener threw", err);
+        }
+      }
+      return;
+    }
     if (type === "finish" || type === "error") {
       const sessionId = this.inflight.get(requestId)!;
       this.inflight.delete(requestId);
@@ -771,7 +793,9 @@ export class PiClientBase implements PiClient {
   }
 
   async sendMessage(threadId: string, input: PiSendMessageInput): Promise<void> {
-    const requestId = `pi-${crypto.randomUUID()}`;
+    // requestId 可由调用方预生成（队列条目 id 与真实 reqId 同值，见控制器
+    // sendQueued/queueResend）：撤销/并入/立即发送拿到的 id 必须 sidecar 认得
+    const requestId = input.requestId ?? `pi-${crypto.randomUUID()}`;
     // steer 意图桥接（4a）：composer 的 Alt+点击 / Shift+⌘+Enter 在发送前置
     // markSteerNextSend 标记（模块级单跳信号，runConfig 不透传）。显式
     // streamingBehavior 优先；无显式行为且标记在 → 升级为 steer（含控制器
@@ -847,12 +871,41 @@ export class PiClientBase implements PiClient {
     });
   }
 
-  /** 整队清空（4a 实装）：queue_clear 命令，返回被清文本供 UI 回填 composer。 */
-  async clearQueue(threadId: string): Promise<{ steering: string[]; followUp: string[] }> {
+  /** 整队清空（4a 实装）：queue_clear 命令，返回被清条目载荷（文本 + 图片
+   *  附件）——「停止生成」把排队内容原样回填 composer（文本进草稿、图片还原
+   *  成附件），不再静默丢弃。 */
+  async clearQueue(threadId: string): Promise<PiClearedQueue> {
     const res = await this.transport.request<{
       cleared?: string[];
+      items?: {
+        reqId?: string;
+        text?: string;
+        attachments?: QueueAttachment[];
+      }[];
     } & PiResponse>({ type: "queue_clear", threadId });
-    return { steering: [], followUp: res.cleared ?? [] };
+    const items: PiQueueEntry[] = (res.items ?? []).flatMap((item) =>
+      typeof item.reqId === "string" && typeof item.text === "string"
+        ? [
+            {
+              id: item.reqId,
+              content: item.text,
+              ...(item.attachments && item.attachments.length > 0
+                ? { attachments: item.attachments }
+                : {}),
+            },
+          ]
+        : [],
+    );
+    // 旧 sidecar 只回 cleared（无 items）：退化成纯文本条目，后端能力不一致时
+    // 也不丢「回填文本」这个主诉求
+    const fallback =
+      items.length === 0
+        ? (res.cleared ?? []).map((text, index) => ({
+            id: `queue-cleared-${index}`,
+            content: text,
+          }))
+        : items;
+    return { steering: [], followUp: fallback.map((i) => i.content), items: fallback };
   }
 
   /** 逐项队列操作（4a）：id = 真实 reqId，直通 sidecar 队列引擎。
@@ -873,13 +926,27 @@ export class PiClientBase implements PiClient {
   }
 
   /** 弹出队首（4a：刷新接力泵的孤儿队列场景）。线程忙或链节仍在时
-   *  popped 为 null（sidecar 双保险），泵据此判定无孤儿、转由事件流接力。 */
+   *  popped 为 null（sidecar 双保险），泵据此判定无孤儿、转由事件流接力。
+   *  附件为协议形状（{ name, mimeType, data }）——sidecar 已把 path-only 项
+   *  读盘内联，重发只需 data。 */
   async queuePop(threadId: string): Promise<PiQueueEntry | null> {
     const res = await this.transport.request<{
-      popped?: { reqId: string; text: string; sessionId?: string } | null;
+      popped?: {
+        reqId: string;
+        text: string;
+        sessionId?: string;
+        attachments?: QueueAttachment[];
+      } | null;
     } & PiResponse>({ type: "queue_pop", threadId });
     const popped = res.popped;
-    return popped ? { id: popped.reqId, content: popped.text } : null;
+    if (!popped) return null;
+    return {
+      id: popped.reqId,
+      content: popped.text,
+      ...(popped.attachments && popped.attachments.length > 0
+        ? { attachments: popped.attachments }
+        : {}),
+    };
   }
 
   async getAvailableModels(): Promise<PiModelInfo[]> {
@@ -984,6 +1051,27 @@ export class PiClientBase implements PiClient {
         this.stamps.delete(threadId);
         this.lastSeq.delete(threadId);
       }
+    };
+  }
+
+  /** prompt 真的开跑（start 帧）的观察席：控制器用它把「本地乐观队列条目」与
+   *  「服务端实际没排队、已直接执行」的对账收敛（见 ThreadController 的
+   *  dropLocalQueueEntry）。同一 id 只会通知一次（start 每流一帧）。 */
+  onPromptStart(
+    threadId: string,
+    listener: (requestId: string) => void,
+  ): () => void {
+    let set = this.promptStartListeners.get(threadId);
+    if (!set) {
+      set = new Set();
+      this.promptStartListeners.set(threadId, set);
+    }
+    set.add(listener);
+    return () => {
+      const current = this.promptStartListeners.get(threadId);
+      if (!current) return;
+      current.delete(listener);
+      if (current.size === 0) this.promptStartListeners.delete(threadId);
     };
   }
 }

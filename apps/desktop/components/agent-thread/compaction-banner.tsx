@@ -78,7 +78,9 @@ export function CompactionBanner({ data }: { data: CompactionData }) {
     typeof data.tokensBefore === "number"
       ? `压缩前 ${fmtTokens(data.tokensBefore)} tokens`
       : null,
-    data.summarized === false ? "摘要失败，已开新窗口" : null,
+    data.summarized === false
+      ? "摘要失败，已保留最近对话"
+      : null,
   ]
     .filter(Boolean)
     .join(" · ");

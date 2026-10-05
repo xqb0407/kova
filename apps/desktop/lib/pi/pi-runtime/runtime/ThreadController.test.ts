@@ -207,13 +207,17 @@ describe("reloadMessage（重新生成 = 截断 + 重发）", () => {
   it("乐观镜像未落盘（pi-optimistic id）不可截断，抛错", async () => {
     const recorded: Recorded[] = [];
     const controller = await loadedController(transcripts, recorded);
-    // 空闲发送产生乐观镜像（pi-optimistic id，未落盘无 seq）
-    await controller.sendMessage(appendUser("pending"));
-    recorded.length = 0;
+    // 镜像只来自重发路径（普通发送不压镜像，回显是气泡唯一来源）：编辑重发
+    // 产生 pi-optimistic 镜像——编辑后文本不在陈旧快照里，reconcile 摘不掉
+    await controller.editMessage(
+      appendUser("second, edited", { sourceId: "pi-msg:2" }),
+    );
     const optimistic = controller
       .getProjectedMessages()
       .find((m) => m.id?.startsWith("pi-optimistic:"));
     expect(optimistic).toBeDefined();
+    recorded.length = 0;
+    // 镜像未落盘（无 pi-msg:<seq> id）：对它再编辑必须拒绝——无从截断
     await expect(
       controller.editMessage(appendUser("edited", { sourceId: optimistic!.id! })),
     ).rejects.toThrow("cannot resend");

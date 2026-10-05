@@ -793,9 +793,12 @@ const WorkspaceBranchPill: FC = () => {
 /** 发送/停止/撤队共用按钮（单按钮四态，同一槽位，方块⇄箭头随输入切换）：
  *  - 空闲且模型不可用：↑ 禁用（悬停说明原因，见 pi-model-gate）；
  *  - 空闲：↑ 发送（库原生 Send，沿用其禁用谓词）；
- *  - 运行中输入为空且队列有排队的消息：■ 点击=删除最近入队的一条（撤销上次
- *    发送；多条逐条删），⌥/Alt+点击=停止生成；
- *  - 运行中输入为空且队列为空：■ 停止生成；
+ *  - 运行中输入为空：■ 停止生成——**永远**是停止，不再按队列是否非空改语义。
+ *    停止的动作 = 中止本轮 + 把未派发的排队项原样退回输入框（见
+ *    ThreadController.drainQueueForStop / usePiRuntime.onCancel）。这里不再
+ *    兼职「删除最近入队的消息」：队列非空时把 ■ 变成删除键，用户按"暂停"
+ *    只会把排队消息悄悄丢掉、还得再点一次才真停（2026-10-05 反馈）；
+ *    丢弃单条走队列条上的 ✕（逐项删除），语义各自单一；
  *  - 运行中输入有内容：↑ 点击=进发送队列（sidecar 当前轮结束后自动执行），
  *    ⌥/Alt+点击=并入当前轮（steer：注入活跃轮，不排队不中止）；
  *    键盘 Enter/⌘Enter 同提交语义，Shift+⌘/Ctrl+Enter=并入。
@@ -811,10 +814,8 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
   const noModel = !gate.usable;
   const gateHint = gate.hint;
   // 改动（4a）：队列数据源换 react-pi state.queue（条目 id = 真实 reqId）
-  const { queue, cancel: queueCancel } = usePiQueue();
+  const { queue } = usePiQueue();
   const queueItems = queue.followUp;
-  // 删除请求在途标记：queue_update 回程内连点不重复发 queue_cancel
-  const cancellingRef = useRef<string | null>(null);
 
   // 优化进行中（在遮罩之下仍渲染禁用态，透模糊可辨）：任何状态下都不发送
   if (blocked) {
@@ -831,42 +832,14 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
     );
   }
   if (isRunning && !canSend) {
-    // 排队非空（且输入为空）：■ = 删除最近入队的排队项（撤销上次发送）
-    const last = queueItems[queueItems.length - 1];
-    if (last) {
-      return (
-        <TooltipIconButton
-          tooltip={
-            queueItems.length > 1
-              ? `删除最近排队的消息（共 ${queueItems.length} 条）· ⌥/Alt 点击停止生成`
-              : "删除排队的消息 · ⌥/Alt 点击停止生成"
-          }
-          side="bottom"
-          type="button"
-          variant="default"
-          size="icon"
-          className="aui-composer-cancel size-7 bg-primary rounded-full hover:bg-primary/80"
-          aria-label="Delete queued message"
-          onClick={(e) => {
-            if (e.altKey) {
-              aui.composer.cancel();
-              return;
-            }
-            if (cancellingRef.current) return;
-            cancellingRef.current = last.id;
-            void queueCancel(last.id).finally(() => {
-              if (cancellingRef.current === last.id) cancellingRef.current = null;
-            });
-          }}
-        >
-          <div className="size-3 fill-current bg-white " />
-        </TooltipIconButton>
-      );
-    }
     return (
       <ComposerPrimitive.Cancel asChild>
         <TooltipIconButton
-          tooltip="停止生成"
+          tooltip={
+            queueItems.length > 0
+              ? `停止生成（${queueItems.length} 条排队消息将退回输入框）`
+              : "停止生成"
+          }
           side="bottom"
           type="button"
           variant="default"

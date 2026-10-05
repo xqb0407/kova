@@ -14,6 +14,7 @@ import type { PiThreadControllerLike } from "./ThreadController";
 import type { PiInterruptAnswer } from "./hostUi";
 import type { PiThreadState } from "./threadState";
 import type {
+  PiClearedQueue,
   PiClient,
   PiContextUsage,
   PiHostUiRequest,
@@ -63,8 +64,9 @@ export interface PiRuntimeExtras {
   cancel: () => Promise<void>;
   refresh: () => Promise<void>;
   /** Clear Pi's queued (steering + follow-up) messages; resolves with the
-   * cleared text so it can be restored into the composer. */
-  clearQueue: () => Promise<{ steering: string[]; followUp: string[] }>;
+   * cleared items (text + image attachments) so they can be restored into the
+   * composer. */
+  clearQueue: () => Promise<PiClearedQueue>;
   // 改动（4a）：逐项队列操作（id = 真实 reqId）。编辑 = 回填 composer +
   // queueCancel，由队列栏 UI 组合，不单设 edit 面。
   queueCancel: (id: string) => Promise<void>;
@@ -72,6 +74,10 @@ export interface PiRuntimeExtras {
   queueSteer: (id: string) => Promise<void>;
   // 改动（4a）：弹出队首交由前端重发（接力泵用）；无孤儿队列时为 null。
   queuePop: () => Promise<PiQueueEntry | null>;
+  // 接力泵直发重发：按原载荷（文本+附件）走 sendMessage 汇聚点，绕开
+  // composer 共用车道（泵弹出后前后端队列短暂分歧时 composer 车道会把
+  // 重发误判进排队，压出 pending 幽灵条目）
+  queueResend: (entry: PiQueueEntry) => Promise<void>;
   setModel: (input: { provider: string; modelId: string }) => Promise<void>;
   setThinkingLevel: (level: PiThinkingLevel) => Promise<void>;
   respondToHostUiRequest: (response: PiHostUiResponse) => Promise<void>;

@@ -203,7 +203,11 @@ export function composeModeSystemPrompt(
     extra,
     // 目标块紧贴模式段：它是「当前这一轮为什么要接着干」的动态盘面，跟在模式身份
     // 后面比塞到尾部更贴近模型对该段的归属感。目标文本本身是用户输入，进系统
-    // 提示词意味着它与指令同级——见 prompt.ts 的信任边界说明
+    // 提示词意味着它与指令同级——见 prompt.ts 的信任边界说明。
+    //
+    // 纪律：**系统头必须跨轮字节稳定**（服务端前缀缓存以系统消息为界，动一个字节
+    // 整段对话缓存全废——goal 档曾把每轮 +1 的轮次计数放进来，实测 439/442 个请求
+    // cacheRead=0）。任何每轮会变的字段（计数、时间、进度）一律走尾部注入。
     mode === "goal" ? goalPromptBlock(goal ?? null) : "",
     personalizationPromptBlock(),
     appModePromptBlock(appMode, designTheme),

@@ -19,6 +19,8 @@ import {
   messageUsageTokens,
   MAX_LENGTH_CONTINUES,
   needsLengthContinuation,
+  needsStreamBreakContinuation,
+  type ContinuationReason,
 } from "../agent/context";
 import { continueGoalTurn } from "../goal/goal";
 import type { Running, UIMessageChunk } from "../types";
@@ -213,11 +215,24 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
         continueGoalTurn(run, event.message);
         break;
       }
-      if (!needsLengthContinuation(event.message)) break;
+      // 两种中断都走这条注入路径：
+      //  - length 截断（预算烧在思考/正文上，vendor 当自然收尾）；
+      //  - provider 流中断（可重试类错误，如 Stream ended without finish_reason）
+      //    ——线上实测的"回答到一半"，此前只能手动点重试。
+      // 两者都要求本轮零 toolCall：带工具调用的轮重发可能重复执行已跑过的工具。
+      const contReason: ContinuationReason | null = needsLengthContinuation(
+        event.message,
+      )
+        ? "length"
+        : needsStreamBreakContinuation(event.message)
+          ? "stream"
+          : null;
+      if (!contReason) break;
       if ((run.lengthContinues ?? 0) >= MAX_LENGTH_CONTINUES) {
         logErr(
-          "length-truncated turn: auto-continue budget exhausted, ending run " +
-            "(若该模型反复把输出预算烧在 reasoning 上，调大其 maxTokens——自定义端点默认 8192)",
+          `${contReason}-interrupted turn: auto-continue budget exhausted, ending run ` +
+            "(length 反复撞顶就调大该模型 maxTokens——自定义端点默认 8192；" +
+            "流中断多为 free 中转/代理超时)",
         );
         // 静默中止补信号：桌面据此渲染「连续输出截断，任务已中止」分隔线
         //（data-stopped 同款机制；快照/历史侧由 thread_snapshot 标注与
@@ -232,8 +247,11 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
         break;
       }
       run.lengthContinues = (run.lengthContinues ?? 0) + 1;
-      logAt("event", `length-truncated turn: injecting auto-continue #${run.lengthContinues}`);
-      run.agent.followUp(makeAutoContinueMessage(run.lengthContinues));
+      logAt(
+        "event",
+        `${contReason}-interrupted turn: injecting auto-continue #${run.lengthContinues}`,
+      );
+      run.agent.followUp(makeAutoContinueMessage(run.lengthContinues, contReason));
       break;
     }
     case "message_update": {

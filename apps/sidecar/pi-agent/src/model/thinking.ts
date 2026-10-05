@@ -8,7 +8,9 @@ import {
   type SimpleStreamOptions,
   type ThinkingLevelMap,
 } from "@earendil-works/pi-ai";
+import { createHash } from "node:crypto";
 import { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
+import { logAt } from "../log";
 import { getModels } from "./catalog";
 
 /**
@@ -102,11 +104,59 @@ export function makePromptCacheKeyPayloadHook(
 ): NonNullable<SimpleStreamOptions["onPayload"]> {
   const cacheKey = clampOpenAIPromptCacheKey(sessionId);
   return (payload: unknown, model: Model<Api>) => {
+    if (model.api === "openai-completions") logPayloadFingerprint(payload, model);
     if (!cacheKey || model.api !== "openai-completions") return undefined;
     const params = payload as Record<string, unknown> | null;
     if (!params || params.prompt_cache_key !== undefined) return undefined;
     return { ...params, prompt_cache_key: cacheKey };
   };
+}
+
+/**
+ * 出站载荷指纹（只读诊断，event 级日志）：前缀缓存能不能命中全看"这次请求的
+ * 开头和上次是不是逐字节同一串"，而请求体在两条路径上分头组装——聊天走 core 的
+ * convertToLlm 链路，压缩摘要（context.defaultSummarize）走我们自己的组装。
+ * 线上实测摘要请求只命中 128 token（一个缓存块）就分叉，说明两者序列化不同源。
+ *
+ * 这里对最可能分叉的三段各记一个短哈希 + 尺寸：tools（条数 + 指纹）、首条
+ * system 消息（长度 + 指纹）、消息条数。两行日志一比对就知道差在哪一段——
+ * 不用再猜。
+ */
+function logPayloadFingerprint(payload: unknown, model: Model<Api>): void {
+  const params = payload as {
+    tools?: unknown[];
+    messages?: { role?: string; content?: unknown }[];
+  } | null;
+  if (!params) return;
+  const fp = (value: unknown): string =>
+    createHash("sha1").update(JSON.stringify(value) ?? "").digest("hex").slice(0, 8);
+  const messages = params.messages ?? [];
+  const sys = messages[0];
+  const sysText =
+    sys && sys.role === "system"
+      ? typeof sys.content === "string"
+        ? sys.content
+        : JSON.stringify(sys.content)
+      : "";
+  // 参数也一起打：某些端点把参数算进缓存键（Anthropic 按 max_tokens 推导的
+  // thinking 预算做键），两条路径参数不一致同样会失配
+  const opts = payload as {
+    reasoning?: unknown;
+    max_tokens?: unknown;
+    max_completion_tokens?: unknown;
+    temperature?: unknown;
+    stream?: unknown;
+  };
+  logAt(
+    "event",
+    `payload-fingerprint: ${model.provider}/${model.id} tools=${(params.tools ?? []).length}#${fp(params.tools ?? [])} ` +
+      `sys=${sysText.length}ch#${fp(sysText)} msgs=${messages.length} roles=${messages
+        .slice(0, 4)
+        .map((m) => m.role ?? "?")
+        .join(",")} ` +
+      `reasoning=${String(opts.reasoning)} max_tokens=${String(opts.max_tokens ?? opts.max_completion_tokens)} ` +
+      `temp=${String(opts.temperature)} stream=${String(opts.stream)}`,
+  );
 }
 
 /**

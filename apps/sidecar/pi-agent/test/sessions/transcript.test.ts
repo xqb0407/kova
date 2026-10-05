@@ -6,6 +6,7 @@ import { initStorage, sessionPath } from "../../src/storage/storage";
 import { sessionInsert, sessionRename, getLocalDb } from "../../src/storage/hostdb";
 import {
   readTranscript,
+  removeTranscriptRow,
   toUiMessage,
   persist,
   historyToUiMessages,
@@ -24,7 +25,7 @@ import {
 } from "../../src/sessions/transcript";
 import { makeSummaryMessage, projectRestoreContext } from "../../src/agent/context";
 import type { Message } from "@earendil-works/pi-ai";
-import type { Running } from "../../src/types";
+import type { Running, SteerEntry } from "../../src/types";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-transcript-"));
 
@@ -600,6 +601,42 @@ describe("persist", () => {
         output: "hi",
       },
     ]);
+  });
+
+  test("并入注入行登记 seq（回收时按它撤回转录行）", async () => {
+    const id = "persist-steer-seq";
+    await sessionInsert(id, tmp);
+    writeFileSync(sessionPath(id), "", "utf8");
+
+    const injected = userMsg(`${STEER_PREFIX}插话内容`);
+    const steerEntry: SteerEntry = {
+      reqId: "pi-steer-1",
+      msg: { text: "插话内容" },
+      message: injected,
+      gen: 0,
+    };
+    const run = {
+      agent: { state: { messages: [userMsg("首轮"), injected] } },
+      sessionId: id,
+      cwd: tmp,
+      persistedSeq: 0,
+      jsonlSeq: 0,
+      steerEntries: [steerEntry],
+    } as unknown as Running;
+
+    await persist(run);
+    // 注入行是第 2 条 → seq = 1（身份登记，非文本匹配）
+    expect(steerEntry.seq).toBe(1);
+
+    const before = readTranscript(id);
+    expect(before.length).toBe(2);
+    expect(removeTranscriptRow(id, steerEntry.seq!)).toBe(1);
+    const after = readTranscript(id);
+    expect(after.length).toBe(1);
+    expect((after[0].agent as { content?: unknown }).content).toBe("首轮");
+    // 幂等：行不在（或已删）时返回 0，不误删别的行
+    expect(removeTranscriptRow(id, steerEntry.seq!)).toBe(0);
+    expect(readTranscript(id).length).toBe(1);
   });
 });
 

@@ -50,7 +50,8 @@ import {
   running,
   whenThreadIdle,
 } from "../sessions/sessions";
-import { persist, STEER_PREFIX } from "../sessions/transcript";
+import { persist, removeTranscriptRow, STEER_PREFIX } from "../sessions/transcript";
+import { sessionTouch } from "../storage/hostdb";
 import { delegationResumeText, runningDelegations } from "../subagent/subagent";
 import { enqueueMgmt } from "./mgmt-queue";
 import type { Running, SteerEntry } from "../types";
@@ -277,6 +278,46 @@ export function steerIntoActiveRun(
   } catch {
     return false;
   }
+}
+
+/** 撤回一条未获回应的注入消息（内存上下文 + 转录行），返回是否真的撤到了
+ *  什么。内存侧按对象身份定位（与 findUnansweredSteers 同款），转录侧按
+ *  persist 登记的 seq（SteerEntry.seq）：行没落盘（边界未抵达就中止）时只做
+ *  内存侧（此时它还在 steering 队列里，findUnansweredSteers 已 drain 清出）。 */
+function withdrawInjectedSteer(run: Running, entry: SteerEntry): boolean {
+  let withdrew = false;
+  const messages = run.agent.state.messages as unknown[];
+  const index = messages.indexOf(entry.message);
+  if (index >= 0) {
+    messages.splice(index, 1);
+    // 该行此前已随 persist 入账（persistedSeq 是按 state.messages 下标记账的
+    // 「已落盘前缀长度」）：从中间摘一条，长度与下标记账同步收缩 1，
+    // 否则后续 persist 会跳过下一条未落盘的消息（漏写转录）
+    if (run.persistedSeq > index) run.persistedSeq -= 1;
+    withdrew = true;
+  }
+  if (entry.seq !== undefined) {
+    try {
+      if (removeTranscriptRow(run.sessionId, entry.seq) > 0) {
+        withdrew = true;
+        // 索引计数负增量（与 truncate_session 同款）：消息行少了一条
+        void sessionTouch(run.sessionId, "", "", -1).catch(() => {});
+      }
+    } catch (err) {
+      // 撤行失败不阻断回收：气泡多留一条，但消息绝不丢（回队重发优先）
+      logErr("steer withdraw: transcript row removal failed:", err);
+    }
+  }
+  if (withdrew && run.sessionId) {
+    // 转录被就地改写，得让前端重拉快照（本轮 finish 触发的刷新可能早于这次改写，
+    // 只靠它会把已撤回的气泡留在屏上）。entry_appended 非 custom 变体在桌面端
+    // 走 needsSnapshotRefresh → refreshInBackground，是既有的「快照对账」钩子。
+    emitThreadEvent(run.sessionId, {
+      type: "entry_appended",
+      entry: { type: "steer_withdrawn", reqId: entry.reqId },
+    });
+  }
+  return withdrew;
 }
 
 /** 并入回收检测：本轮注入的 steer 条目里「始终没被回应」的部分。
@@ -732,13 +773,22 @@ async function runTurnBody(
     // 并入回收（「并入不丢」保证）：注入后本轮始终没给出回应的条目回队该线程
     // 队列尾（queue_update 广播，前端 pill 恢复显示、「已并入」徽标让位），由
     // 既有链节/接力泵按普通轮次派发——失败并入自动降级为排队，绝不静默丢消息。
+    // 撤回注入行（转录 + 内存上下文，见 withdrawInjectedSteer）：未获回应的并入
+    // 不算送达，气泡必须随条目回收一起消失，否则同一内容既有气泡又在队列条、
+    // 重发还再落一条同文行（前端两条同文气泡，删队列行也撤不回）。
     const stranded = findUnansweredSteers(run);
     run.steerEntries = undefined;
     for (const e of stranded) {
+      const withdrew = withdrawInjectedSteer(run, e);
       // force 旁路每线程限流：队列已被普通排队占满（5 条）也必须收下，
       // 否则就是静默丢弃用户已受理的消息，违背上面的「并入不丢」承诺
       enqueueTurn(e.reqId, threadId, e.msg, { force: true });
-      logAt("event", `steer reclaim: reqId=${e.reqId} thread=${threadId} 未获回应 → 回队`);
+      logAt(
+        "event",
+        `steer reclaim: reqId=${e.reqId} thread=${threadId} 未获回应 → 回队${
+          withdrew ? "（注入行已撤回）" : ""
+        }`,
+      );
     }
     // Stop 中止可能不带 error chunk（abort() 让 prompt 静默收敛）：按失败结算
     const outcome: PromptTurnOutcome = turnError

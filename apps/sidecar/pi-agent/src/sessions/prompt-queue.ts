@@ -27,11 +27,13 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { sendChunk, sendEventChunk } from "../protocol/stream";
 import { emitThreadEvent } from "../protocol/thread-events";
+import { queueImageAttachments } from "../protocol/prompt-attachments";
 import { sessionPath } from "../storage/storage";
 import {
   queueSnapshotSchema,
   checkFrame,
   isStrictEnv,
+  type QueueAttachment,
   type QueueSnapshot,
   type QueueSnapshotItem,
 } from "pi-protocol";
@@ -129,13 +131,29 @@ function emitQueueState(threadId: string, sessionId?: string): void {
   // 驱动。条目形状（4a 扩展）：id = 真实 reqId（「队列条目 id = 真实 reqId」
   // 约束，逐项取消/并入/立即发送都按它寻址），content = 展示文本。本引擎无
   // steering 常驻（并入当前轮即时注入），steering 恒空。
+  // 图片附件随条目下发（与快照 items 同源）：队列条据此出缩略图/「含图片」
+  // 标记——此前只带文本，纯图条目在队列条上是空行，看起来像"已经发出去了"
   if (sid) {
     emitThreadEvent(sid, {
       type: "queue_update",
       steering: [],
-      followUp: q.items.map((item) => ({ id: item.reqId, content: item.text })),
+      followUp: snapshot.items.map((item) => ({
+        id: item.reqId,
+        content: item.text,
+        ...(item.attachments && item.attachments.length > 0
+          ? { attachments: item.attachments }
+          : {}),
+      })),
     });
   }
+}
+
+/** 快照随行的图片附件：入队帧的 attachments 只含合法图片（文档类已被
+ *  preparePromptAttachments 落盘折算说明行），过滤按前端真实帧形状
+ *  { name, mimeType, data | path } 走（见 protocol/prompt-attachments.ts
+ *  的 queueImageAttachments——快照与出队共用，防形状漂移再次丢图） */
+function snapshotAttachmentsOf(item: QueueItem): QueueAttachment[] {
+  return queueImageAttachments(item.msg);
 }
 
 export function snapshotOf(threadId: string): QueueSnapshot {
@@ -143,12 +161,16 @@ export function snapshotOf(threadId: string): QueueSnapshot {
   return {
     version: 2,
     threadId,
-    items: q.items.map((item) => ({
-      id: item.id,
-      reqId: item.reqId,
-      text: item.text,
-      createdAt: item.createdAt,
-    })),
+    items: q.items.map((item) => {
+      const attachments = snapshotAttachmentsOf(item);
+      return {
+        id: item.id,
+        reqId: item.reqId,
+        text: item.text,
+        createdAt: item.createdAt,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      };
+    }),
     nextId: q.nextId,
   };
 }
@@ -200,9 +222,25 @@ export function adoptRestoredQueue(threadId: string, sessionId: string): QueueSn
     threadId,
     text: item.text,
     createdAt: item.createdAt,
-    // 最小重建帧：恢复项的派发走前端泵（queue_pop → 前端按文本重发），不依赖完整帧
-    msg: { type: "prompt", text: item.text, threadId, sessionId },
+    // 最小重建帧：恢复项的派发走前端泵（queue_pop → 前端按原载荷直发），
+    // 不依赖完整帧；图片附件随快照携带（见 snapshotOf），重发不失真
+    msg: {
+      type: "prompt",
+      text: item.text,
+      threadId,
+      sessionId,
+      ...(item.attachments && item.attachments.length > 0
+        ? { attachments: item.attachments }
+        : {}),
+    },
   }));
+  // 播种 lastSessionId（根因修复）：emitQueueState 的 sid 兜底链是
+  // 参数 ?? lastSessionId ?? items[0].msg.sessionId——采纳后第一次队列
+  // 变更若是出队（popFrontForDispatch 先 splice 再 emitQueueState），
+  // items 已空、本函数不播种的话三层全空，空快照（queue_update）永远
+  // 发不出去：前端队列条冻结在旧 reqId（cancel/promote 必炸 no queued
+  // prompt），JSONL 旧行还会在下次重启复活重发（同一条消息跨重启重复执行）
+  q.lastSessionId = sessionId;
   q.nextId = Math.max(restored.nextId, ...restored.items.map((item) => item.id + 1), 1);
   return snapshotOf(threadId);
 }
@@ -271,6 +309,13 @@ export function popFrontForDispatch(threadId: string): QueueItem | null {
   const q = engines.get(threadId);
   if (!q || q.items.length === 0) return null;
   if (busyThreads.has(threadId)) return null;
+  // 先播种再 splice（保险层）：emitQueueState 的 sid 兜底链要查 items[0]，
+  // splice 后队列已空；采纳帧/enqueueTurn 理论上已播种 lastSessionId，
+  // 这里兜住任何绕过两条路径进队的条目
+  const front = q.items[0];
+  if (front && typeof front.msg.sessionId === "string") {
+    q.lastSessionId = front.msg.sessionId as string;
+  }
   const [item] = q.items.splice(0, 1);
   // 先广播（含空快照）再清引擎，见 takeFrontEntry
   emitQueueState(threadId);
@@ -292,6 +337,13 @@ export function takeFrontEntry(threadId: string): QueueItem | null {
 /** 快照广播（data-queue-state）：变更后调用；线程无活跃请求时静默丢弃 */
 export function broadcastQueueState(threadId: string): void {
   emitQueueState(threadId);
+}
+
+/** 对账广播：现存引擎的当前快照全部广播一遍。cancel/promote 撞空（条目已被
+ *  泵弹出/链节派发/并发取消）时前端队列条自愈用——前后端队列视图分歧是
+ *  兜底场景而非异常，引擎量小可整扫 */
+export function rebroadcastAllQueueStates(): void {
+  for (const threadId of engines.keys()) emitQueueState(threadId);
 }
 
 /** 删除单个排队项：流立即 abort + finish 收尾，不执行 */
@@ -351,7 +403,11 @@ export function steerOutEntry(
 }
 
 /** 取消排队项（threadId 提供时仅该线程）：各自流立即 abort+finish 收尾；
- *  返回取消条数 */
+ *  返回取消条数。**先清条目再广播**（与 cancelEntry 同款）：广播与落盘的
+ *  必须是空快照——带着已取消条目广播，前端队列条会把它们当成还在排队，
+ *  而 JSONL 里那条「还带着条目」的快照行会在下次回放采纳
+ *  （adoptRestoredQueue）里把它们复活，接力泵随即弹出重发
+ *（2026-10-05「停止生成后队列消息又被发出去一次」根因）。 */
 export function cancelAllEntries(threadId?: string): number {
   const targets = threadId
     ? [...engines].filter(([tid]) => tid === threadId)
@@ -359,9 +415,9 @@ export function cancelAllEntries(threadId?: string): number {
   let cancelled = 0;
   for (const [tid, q] of targets) {
     const entries = [...q.items];
-    // 先广播（含空快照）再清引擎，见 takeFrontEntry
+    q.items = [];
     emitQueueState(tid);
-    engines.delete(tid);
+    dropEngineIfEmpty(tid);
     for (const entry of entries) {
       sendChunkAbortFinish(entry.reqId);
     }

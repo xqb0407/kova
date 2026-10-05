@@ -13,7 +13,9 @@ import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { fmtTokens } from "@/lib/model/model-format";
 import {
+  cacheMissCause,
   compactContext,
+  contextTokenBreakdown,
   fetchContextInfo,
   markManualCompaction,
   markManualCompactionStart,
@@ -167,11 +169,20 @@ export const ContextButton: FC = () => {
     : threshold > 0 && used >= threshold;
   const toCompactPct =
     threshold > 0 ? Math.max(0, Math.round(((threshold - used) / threshold) * 100)) : null;
-  const rows: MeterRow[] = info
+  // 占用条/分项行按「请求总占用的分区」呈现（三段相加 = usedTokens，与占用环、
+  // 压缩守卫、阈值竖线同一口径；直接相加会把系统提示词/工具重复计一遍）
+  const parts = info ? contextTokenBreakdown(info) : null;
+  // 端点是否上报缓存字段：cacheRead/cacheWrite 全零 = 该 provider 不给缓存数据
+  //（OpenAI 兼容端点常不回传 prompt_tokens_details.cached_tokens），与"真 0 命中"
+  // 区分展示——命中率与重算量两行共用这一判据
+  const cacheReporting = info
+    ? info.usage.cacheRead + info.usage.cacheWrite > 0
+    : false;
+  const rows: MeterRow[] = parts
     ? [
-        { label: "消息占用", tokens: info.messageTokens, dotClass: "bg-sky-500" },
-        { label: "系统提示词占用", tokens: info.systemPromptTokens, dotClass: "bg-violet-500" },
-        { label: "工具占用", tokens: info.toolTokens, dotClass: "bg-amber-500" },
+        { label: "消息占用", tokens: parts.message, dotClass: "bg-sky-500" },
+        { label: "系统提示词占用", tokens: parts.system, dotClass: "bg-violet-500" },
+        { label: "工具占用", tokens: parts.tool, dotClass: "bg-amber-500" },
       ]
     : [];
 
@@ -219,22 +230,23 @@ export const ContextButton: FC = () => {
             )}
           </div>
 
-          {info ? (
+          {info && parts ? (
             <>
-              {/* 占用条：三段堆叠，竖线为压缩阈值位置 */}
+              {/* 占用条：三段堆叠（= 请求总占用的分区，总长恒等于占用环口径），
+                  竖线为压缩阈值位置 */}
               <div className="bg-muted relative h-2 w-full overflow-hidden rounded-full">
                 <div className="absolute inset-0 flex">
                   <div
                     className="bg-sky-500"
-                    style={{ width: `${(info.messageTokens / Math.max(1, info.contextWindow)) * 100}%` }}
+                    style={{ width: `${(parts.message / Math.max(1, info.contextWindow)) * 100}%` }}
                   />
                   <div
                     className="bg-violet-500"
-                    style={{ width: `${(info.systemPromptTokens / Math.max(1, info.contextWindow)) * 100}%` }}
+                    style={{ width: `${(parts.system / Math.max(1, info.contextWindow)) * 100}%` }}
                   />
                   <div
                     className="bg-amber-500"
-                    style={{ width: `${(info.toolTokens / Math.max(1, info.contextWindow)) * 100}%` }}
+                    style={{ width: `${(parts.tool / Math.max(1, info.contextWindow)) * 100}%` }}
                   />
                 </div>
                 {info.hardLimit > 0 && (
@@ -256,29 +268,86 @@ export const ContextButton: FC = () => {
                     </span>
                   </div>
                 ))}
+                {/* 合计行：三段之和 = 请求总占用（占用环/守卫/阈值竖线同一口径），
+                    给占用条一个可对线读的读数，避免拿彩条长度当唯一依据 */}
+                <div className="flex items-center gap-2 border-t pt-2">
+                  <span className="size-2 shrink-0" />
+                  <span className="flex-1 font-medium">合计（请求总占用）</span>
+                  <span className="w-14 text-right tabular-nums">
+                    {pctOf(parts.used, info.contextWindow)}
+                  </span>
+                </div>
                 {/* cacheRead+cacheWrite 全零 = 该 provider 根本不报缓存字段（OpenAI 兼容
                     端点常不回传 prompt_tokens_details.cached_tokens），与真实 0% 区分展示 */}
-                <div className="flex items-center gap-2">
+                <div
+                  className="flex items-center gap-2"
+                  title={
+                    cacheReporting
+                      ? "cacheRead / (input + cacheRead + cacheWrite)，全历史累计"
+                      : "该端点不上报缓存字段（cacheRead/cacheWrite 恒 0），命中率无法计算"
+                  }
+                >
                   <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
-                  <span className="text-muted-foreground flex-1">平均缓存命中率</span>
+                  <span className="text-muted-foreground flex-1">
+                    平均缓存命中率
+                    {/* 累计值被冷启动与重建轮稀释：短窗读数才看得到稳态。
+                        provider 根本不上报缓存字段时（主值显示 "-"）不附短窗，
+                        否则会出现"近 N 轮 0.0%"与"-"打架的读数 */}
+                    {info.cacheMisses?.recent?.hitRate != null &&
+                      cacheReporting && (
+                        <span className="text-muted-foreground/70">
+                          （近 {info.cacheMisses.recent.requests} 轮{" "}
+                          {(info.cacheMisses.recent.hitRate * 100).toFixed(1)}%）
+                        </span>
+                      )}
+                  </span>
                   <span
                     className={cn(
                       "w-14 text-right text-xs tabular-nums",
-                      info.cacheHitRate !== null &&
-                        info.usage.cacheRead + info.usage.cacheWrite === 0 &&
-                        "text-muted-foreground",
+                      !cacheReporting && "text-muted-foreground",
                     )}
                   >
-                    {info.cacheHitRate === null
+                    {info.cacheHitRate === null || !cacheReporting
                       ? "-"
-                      : info.usage.cacheRead + info.usage.cacheWrite === 0
-                        ? "-"
-                        : `${(info.cacheHitRate * 100).toFixed(1)}%`}
+                      : `${(info.cacheHitRate * 100).toFixed(1)}%`}
                   </span>
                 </div>
-                {/* 逐请求 miss（参考 Claude Code 的 miss 判定思路）：累计 % 会被
-                    冷启动与重建轮稀释，逐请求计数更能定位"哪一轮真的没吃到缓存" */}
-                {(info.cacheMisses?.requests ?? 0) > 1 && (
+                {/* 缓存重算（pi 口径）：上一轮 prompt 里没被缓存读到的 token 量——
+                    "input 大"分不清新增内容与重算，这个数才是真多付的账。
+                    端点不上报缓存字段（cacheRead/cacheWrite 恒 0）时显示 "-"：
+                    此时"重算 0"是假读数，我们根本没有数据可判。 */}
+                {info.cacheMisses?.missedTokens != null ? (
+                  cacheReporting ? (
+                    <div
+                      className="flex items-center gap-2"
+                      title={`重算量 = 上一轮 prompt 里未被缓存读到的部分（地板 1024 token）。最近一次：${
+                        cacheMissCause(info.cacheMisses?.lastMiss) ?? "无"
+                      }`}
+                    >
+                      <span className="size-2 shrink-0 rounded-full bg-transparent" />
+                      <span className="text-muted-foreground flex-1">
+                        缓存重算
+                        <span className="text-muted-foreground/70">
+                          （{info.cacheMisses?.missCount ?? 0} 次）
+                        </span>
+                      </span>
+                      <span className="text-foreground w-14 text-right text-xs tabular-nums">
+                        {fmtTokens(info.cacheMisses?.missedTokens ?? 0)}
+                      </span>
+                    </div>
+                  ) : (
+                    <div
+                      className="flex items-center gap-2"
+                      title="该端点不上报缓存字段（cacheRead/cacheWrite 恒 0），无法判定重算量"
+                    >
+                      <span className="size-2 shrink-0 rounded-full bg-transparent" />
+                      <span className="text-muted-foreground flex-1">缓存重算</span>
+                      <span className="text-muted-foreground w-14 text-right text-xs tabular-nums">
+                        -
+                      </span>
+                    </div>
+                  )
+                ) : (info.cacheMisses?.requests ?? 0) > 1 ? (
                   <div
                     className="flex items-center gap-2"
                     title={`单请求重处理 ≥2000 token 且 ≥5% 记一次 miss；已排除 ${info.cacheMisses?.rebuilds ?? 0} 次预期重建`}
@@ -297,25 +366,34 @@ export const ContextButton: FC = () => {
                       )}
                     </span>
                   </div>
-                )}
+                ) : null}
               </div>
 
               <Separator />
 
-              {/* 压缩状态 */}
+              {/* 压缩状态（未越线时附上距阈值的余量：与占用环 title 同一读数，
+                  说明彩条虽可能贴近竖线、守卫仍不会触发） */}
               <div className="text-muted-foreground  text-xs">
                 {info.needsCompaction ? (
                   <span className="text-amber-600 dark:text-amber-400">
                     已越过压缩阈值（{fmtTokens(info.hardLimit)}），下次发送前自动压缩
                   </span>
                 ) : info.generation === 0 ? (
-                  <span>共 {info.messageCount} 条消息 · 尚未压缩过</span>
+                  <span>
+                    共 {info.messageCount} 条消息 · 尚未压缩过
+                    {toCompactPct !== null && toCompactPct > 0
+                      ? ` · 距自动压缩 ${toCompactPct}%`
+                      : ""}
+                  </span>
                 ) : (
                   <span>
                     已压缩 {info.generation} 次 · 最近一次前{" "}
                     {fmtTokens(info.lastCompaction?.tokensBefore ?? 0)} tokens
                     {info.lastCompaction && !info.lastCompaction.summarized
-                      ? "（未摘要直接开新窗口）"
+                      ? "（摘要失败，保留最近对话）"
+                      : ""}
+                    {toCompactPct !== null && toCompactPct > 0
+                      ? ` · 距自动压缩 ${toCompactPct}%`
                       : ""}
                   </span>
                 )}
