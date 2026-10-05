@@ -8,8 +8,10 @@ import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
  * 2. 未发送草稿的选择只记内存（发请求会懒建空白会话——被禁止的危险链）；
  * 3. 首条消息绑定 sessionId 后 flushDraftAppModeSelection 把草稿记忆定靶落库；
  * 4. 无记忆的会话回落全局默认，且默认档变化要能被读到（新对话跟随设置 → 通用）。
- * 草稿记忆表模块私有、hydrate 不清草稿条目（语义如此），所以每个用例用各自
- * 唯一的草稿 threadId，避免用例间串味。
+ * 5. 发送链路的 flush（Async 版）失败时保留草稿记忆与显示并退避重试——新会话
+ *    此刻的落库真值就是全局默认档，「回退显示」等于把显式选择静默改成默认档；
+ * 6. 绑定窗口（刚绑定、list 快照未回）内的水合不抹本地选择：事实源不可见 ≠ 落库为空。
+ * 草稿记忆表模块私有，reset 经 clearThreadAppModesForTest 清表与在飞重试定时器。
  */
 
 type Req = Record<string, unknown>;
@@ -53,7 +55,9 @@ afterAll(() => {
 
 const { setAppMode } = await import("@/lib/pi/app-mode");
 const {
+  clearThreadAppModesForTest,
   flushDraftAppModeSelection,
+  flushDraftAppModeSelectionAsync,
   getThreadAppModeSnapshot,
   hydrateThreadAppMode,
   setThreadAppMode,
@@ -66,20 +70,20 @@ async function setDefaultMode(mode: "work" | "code" | "design") {
   calls = [];
 }
 
-/** 每用例重置：桩行为、请求记录、两张表、默认档；threadIds 清本用例的普通线程条目 */
-async function reset(...threadIds: string[]) {
+/** 每用例重置：桩行为、请求记录、两张表、默认档、草稿记忆与在飞重试定时器 */
+async function reset() {
   calls = [];
   responder = () => ({ type: "app_mode", mode: "code" });
   registry.clear();
   prefs.clear();
   refreshImpl = async () => {};
-  for (const tid of threadIds) hydrateThreadAppMode(tid); // 无 prefs → 清残留条目
+  clearThreadAppModesForTest();
   await setDefaultMode("code");
 }
 
 describe("setThreadAppMode：定靶语义", () => {
   test("已绑定会话：请求带 sessionId，绝不发默认形态（不漂移全局默认档）", async () => {
-    await reset("thread-1");
+    await reset();
     registry.set("thread-1", "sess-1");
     // 模拟服务端持久化：回拉的列表快照带上新档位（真 sidecar 的定靶
     // set_app_mode 会同步 await sessionPrefsSet，刷新必然读到新值）
@@ -95,7 +99,7 @@ describe("setThreadAppMode：定靶语义", () => {
   });
 
   test("成功回拉偏好后记忆与落库真值一致", async () => {
-    await reset("thread-2");
+    await reset();
     registry.set("thread-2", "sess-2");
     refreshImpl = async () => {
       prefs.set("sess-2", { appMode: "design" });
@@ -106,7 +110,7 @@ describe("setThreadAppMode：定靶语义", () => {
   });
 
   test("定靶被拒（会话不存在等）：回退到落库真值，不留下假记忆", async () => {
-    await reset("thread-3");
+    await reset();
     registry.set("thread-3", "sess-3");
     prefs.set("sess-3", { appMode: "work" });
     responder = () => new Error("session not found");
@@ -133,7 +137,7 @@ describe("hydrateThreadAppMode：水合与回落", () => {
   });
 
   test("偏好列为空的已建会话：清掉陈旧条目，回落全局默认档", async () => {
-    await reset("thread-4");
+    await reset();
     registry.set("thread-4", "sess-4");
     await setThreadAppMode("thread-4", "work"); // 乐观条目（prefs 未灌，refresh no-op）
     prefs.set("sess-4", { appMode: null });
@@ -143,7 +147,7 @@ describe("hydrateThreadAppMode：水合与回落", () => {
   });
 
   test("偏好列脏值（白名单外）视同无记忆", async () => {
-    await reset("thread-5");
+    await reset();
     registry.set("thread-5", "sess-5");
     prefs.set("sess-5", { appMode: "ultra" });
     hydrateThreadAppMode("thread-5");
@@ -180,5 +184,60 @@ describe("flushDraftAppModeSelection：首条派发前的草稿落库", () => {
     flushDraftAppModeSelection("__LOCALID_draft-f");
     expect(calls.length).toBe(0);
     expect(getThreadAppModeSnapshot("__LOCALID_draft-f")).toBe("work");
+  });
+});
+
+describe("flushDraftAppModeSelectionAsync：失败保留草稿（发送链路 await 语义）", () => {
+  test("定靶失败：草稿记忆与显示保留，不回退全局默认档", async () => {
+    await reset();
+    await setDefaultMode("work"); // 全局默认档 = work（若无保护，回落面就是它）
+    await setThreadAppMode("__LOCALID_draft-g", "design");
+    registry.set("__LOCALID_draft-g", "sess-g");
+    responder = () => new Error("session not found");
+    await flushDraftAppModeSelectionAsync("__LOCALID_draft-g");
+    expect(getThreadAppModeSnapshot("__LOCALID_draft-g")).toBe("design");
+    clearThreadAppModesForTest(); // 清掉在飞重试定时器，不打穿后续用例的桩
+  });
+
+  test("退避重试成交：请求带 sessionId 重发，成功后记忆与落库一致", async () => {
+    await reset();
+    await setThreadAppMode("__LOCALID_draft-h", "design");
+    registry.set("__LOCALID_draft-h", "sess-h");
+    responder = () => new Error("busy");
+    await flushDraftAppModeSelectionAsync("__LOCALID_draft-h");
+    expect(getThreadAppModeSnapshot("__LOCALID_draft-h")).toBe("design");
+    // 模拟退避后重试：sidecar 恢复，列表快照带上新档位
+    responder = () => ({ type: "app_mode", mode: "design" });
+    refreshImpl = async () => {
+      prefs.set("sess-h", { appMode: "design" });
+    };
+    calls = [];
+    await flushDraftAppModeSelectionAsync("__LOCALID_draft-h");
+    const req = calls.find((c) => c.type === "set_app_mode");
+    expect(req).toMatchObject({ mode: "design", sessionId: "sess-h" });
+    expect(getThreadAppModeSnapshot("__LOCALID_draft-h")).toBe("design");
+    clearThreadAppModesForTest(); // 清掉首次失败留下的在飞重试定时器
+  });
+});
+
+describe("hydrateThreadAppMode：绑定窗口", () => {
+  test("镜像还没有该会话条目：不抹本地草稿选择（事实源不可见 ≠ 落库为空）", async () => {
+    await reset();
+    await setDefaultMode("work");
+    await setThreadAppMode("__LOCALID_draft-i", "design");
+    registry.set("__LOCALID_draft-i", "sess-i"); // 刚绑定，list 快照未回（prefs 空）
+    hydrateThreadAppMode("__LOCALID_draft-i");
+    expect(getThreadAppModeSnapshot("__LOCALID_draft-i")).toBe("design");
+  });
+});
+
+describe("setThreadAppMode：定靶被拒且镜像不可见", () => {
+  test("保留乐观显示，不静默改成全局默认档", async () => {
+    await reset();
+    await setDefaultMode("work");
+    registry.set("thread-6", "sess-6"); // prefs 无 sess-6 条目：真值不可判
+    responder = () => new Error("session not found");
+    await setThreadAppMode("thread-6", "design");
+    expect(getThreadAppModeSnapshot("thread-6")).toBe("design");
   });
 });

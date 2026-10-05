@@ -18,7 +18,8 @@ import {
  * - 无会话级记忆的线程回落**全局默认档**（设置 → 通用维护的 kv pi.app_mode，
  *   镜像在 lib/pi/app-mode.ts——新对话用的就是它）；
  * - 未发送草稿（还没有 sessionId）的档位选择只记内存，首条消息派发前经
- *   flushDraftAppModeSelection 定靶写入新建会话。
+ *   flushDraftAppModeSelectionAsync 定靶写入新建会话（await 语义：它决定首轮
+ *   系统提示词的人群附加段；失败保留草稿记忆并退避重试，不回退显示）。
  *
  * 与 pi-session-mode（agent/plan/ask 权限档）正交：那个切权限，这个切人群定位。
  */
@@ -64,13 +65,18 @@ export function useCurrentAppMode(): AppMode {
   return useThreadAppMode(threadId);
 }
 
-/** 切线程时水合：取该会话持久化的档位；没有记忆的已建线程清掉陈旧条目回落默认档。
- *  未落库草稿不清——草稿期的显式选择跟随到其会话诞生 */
+/**
+ * 切线程时水合：取该会话持久化的档位；镜像可见且偏好列为空/脏值时清掉陈旧条目
+ * 回落默认档。镜像里还没有该会话条目（刚绑定、list 快照未回）时**不动本地记忆**：
+ * 「事实源不可见」≠「落库为空」，据此删除会把绑定窗口内的草稿期显式选择抹掉
+ * （回落全局默认档——「发送后变回工作档」的显示侧病灶）。
+ */
 export function hydrateThreadAppMode(threadId: string): void {
   const sessionId = piSessionIdForThread(threadId);
   if (!sessionId) return;
   const prefs = piSessionPrefsMap.get(sessionId);
-  const own = asAppMode(prefs?.appMode);
+  if (!prefs) return;
+  const own = asAppMode(prefs.appMode);
   const current = threadModes.get(threadId) ?? null;
   if (own === current) return;
   if (own) threadModes.set(threadId, own);
@@ -94,8 +100,13 @@ export async function setThreadAppMode(
   try {
     await piRequest({ type: "set_app_mode", mode, sessionId });
   } catch {
-    hydrateThreadAppMode(threadId);
-    notify();
+    // 定靶被拒（sidecar 不可用/会话不存在）：仅当镜像可见该会话（落库真值可判）
+    // 才回退显示；镜像还没带上它时保留本地乐观值——新绑定会话的列表快照往往
+    // 未回，此时回退等于把显式选择静默改成全局默认档
+    if (piSessionPrefsMap.has(sessionId)) {
+      hydrateThreadAppMode(threadId);
+      notify();
+    }
     return;
   }
   await refreshSessionPrefs();
@@ -103,15 +114,63 @@ export async function setThreadAppMode(
   notify();
 }
 
-/** 首条消息派发前（initialize 绑定 sessionId 后）把草稿期记忆的档位定靶写入新建会话 */
-export function flushDraftAppModeSelection(threadId: string): void {
+/** 重试退避（毫秒）：flush 定靶失败时保留草稿记忆并按此重试，全部失败后交给
+ *  后续水合校准（显示真值）。2s/4s/8s 覆盖 sidecar 管理队列被占住的瞬时抖动 */
+const APP_MODE_FLUSH_RETRY_DELAYS_MS = [2000, 4000, 8000];
+const flushRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleAppModeFlushRetry(threadId: string, attempt: number): void {
+  if (attempt >= APP_MODE_FLUSH_RETRY_DELAYS_MS.length) return;
+  const prev = flushRetryTimers.get(threadId);
+  if (prev) clearTimeout(prev);
+  flushRetryTimers.set(
+    threadId,
+    setTimeout(() => {
+      flushRetryTimers.delete(threadId);
+      void flushDraftAppModeSelectionAsync(threadId, attempt + 1);
+    }, APP_MODE_FLUSH_RETRY_DELAYS_MS[attempt]),
+  );
+}
+
+/**
+ * 首条消息派发前（initialize 绑定 sessionId 后）把草稿期记忆的档位定靶写入新建
+ * 会话。**await 语义**：它决定首轮系统提示词（design/work 人群段），fire-and-forget
+ * 会输给 prompt 装配——首轮按全局默认档应答。失败保留草稿记忆与当前显示并退避
+ * 重试（新会话此刻的落库真值就是全局默认档，「回退显示」等于静默改档）；重试
+ * 仍不成交给后续水合校准。
+ */
+export async function flushDraftAppModeSelectionAsync(
+  threadId: string,
+  attempt = 0,
+): Promise<void> {
   const saved = threadModes.get(threadId);
   if (!saved) return;
   const sessionId = piSessionIdForThread(threadId);
   if (!sessionId) return;
   const prefs = piSessionPrefsMap.get(sessionId);
   if (asAppMode(prefs?.appMode)) return;
-  void setThreadAppMode(threadId, saved);
+  try {
+    await piRequest({ type: "set_app_mode", mode: saved, sessionId });
+  } catch (err) {
+    console.warn("flush app_mode failed; keeping draft selection:", err);
+    scheduleAppModeFlushRetry(threadId, attempt);
+    return;
+  }
+  await refreshSessionPrefs();
+  hydrateThreadAppMode(threadId);
+  notify();
+}
+
+/** fire-and-forget 包装（非发送链路的旧调用点/诊断用；发送链路用 Async 版） */
+export function flushDraftAppModeSelection(threadId: string): void {
+  void flushDraftAppModeSelectionAsync(threadId);
+}
+
+/** 测试缝：清空草稿记忆表与在飞重试定时器（防测试结束后定时器打穿 mock） */
+export function clearThreadAppModesForTest(): void {
+  threadModes.clear();
+  for (const t of flushRetryTimers.values()) clearTimeout(t);
+  flushRetryTimers.clear();
 }
 
 /** 诊断/测试用：当前线程生效档位的直读（非响应式） */

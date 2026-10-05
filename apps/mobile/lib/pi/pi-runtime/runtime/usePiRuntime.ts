@@ -58,7 +58,7 @@ import {
   pruneControllers,
   touchController,
 } from "./controllerCache";
-import { flushDraftAppModeSelection } from "@/lib/pi/pi-session-app-mode";
+import { flushDraftAppModeSelectionAsync } from "@/lib/pi/pi-session-app-mode";
 import { flushDraftModelSelection } from "@/lib/pi/pi-session-model";
 import { flushDraftThinkingSelection } from "@/lib/pi/pi-session-thinking";
 
@@ -768,11 +768,13 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // 移动端没有面板桶，省略。
       // 会话级选择的补写：草稿期（尚无 sessionId）选的模型/思考档位/工作模式只记在
       // 前端内存，此刻 sessionId 已绑定、会话行已建，定靶落库后首条消息即用该选择应答
-      //（三者均 fire-and-forget 语义：内部自吞失败并回退显示）
+      //（模型/思考档 fire-and-forget；工作模式 **必须 await**——它决定首轮系统
+      // 提示词的人群附加段，晚一拍首轮就按全局默认档应答。失败内部自吞保留草稿，
+      // 不阻断发送）
       if (threadId) {
         flushDraftModelSelection(threadId);
         flushDraftThinkingSelection(threadId);
-        flushDraftAppModeSelection(threadId);
+        await flushDraftAppModeSelectionAsync(threadId);
       }
       return {
         remoteId,

@@ -28,6 +28,8 @@
 // Content parts — mirror of `@earendil-works/pi-ai` content blocks.
 // ---------------------------------------------------------------------------
 
+import type { QueueAttachment } from "pi-protocol";
+
 export interface PiTextContent {
   type: "text";
   text: string;
@@ -406,6 +408,9 @@ export type PiQueuedMessage = {
   id: string;
   mode: "followUp" | "steer";
   content: string;
+  /** 排队时随帧下发的图片附件（协议形状 { name, mimeType, data | path }）：
+   *  快照恢复/队列条缩略图/接力泵重发都靠它——此前快照只带文本，刷新后图片丢 */
+  attachments?: readonly QueueAttachment[];
 };
 
 /** 改动（4a）：队列条目带稳定 id + 文本。上游 queue_update/队列状态只携带
@@ -414,6 +419,18 @@ export type PiQueuedMessage = {
 export type PiQueueEntry = {
   id: string;
   content: string;
+  /** 原载荷图片附件（协议形状，与 prompt 帧 attachments 同形：粘贴/网页端带
+   *  data 裸 base64，dialog 路径直选带 path）——接力泵直发重发/队列条缩略图用，
+   *  可选：旧 sidecar/快照行不带。文档类附件不入队（sidecar 落盘后折算说明行） */
+  attachments?: readonly QueueAttachment[];
+};
+
+/** 整队清空回执：文本数组保留（旧调用面）+ 完整条目载荷（停止生成回填
+ *  输入框：文本与图片都还原，见 ThreadController.drainQueueForStop）。 */
+export type PiClearedQueue = {
+  steering: string[];
+  followUp: string[];
+  items: PiQueueEntry[];
 };
 
 export type PiThreadMetadata = {
@@ -462,6 +479,9 @@ export type PiSendMessageInput = {
   files?: PiInputFilePart[];
   /** REQUIRED while the thread is running. Pi `prompt()` throws otherwise. */
   streamingBehavior?: "followUp" | "steer";
+  /** 调用方预生成的请求 id（队列条目 id = 真实 reqId 的落点）：控制器为
+   *  乐观队列条目先起 id 再随帧下发，客户端见值照用、缺省自造。 */
+  requestId?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -652,10 +672,10 @@ export interface PiClient {
 
   /** Clear all queued (steering + follow-up) messages and return their text so
    * the UI can restore it to the composer. Pi exposes no per-item remove or
-   * promote — clearing everything is the only queue mutation. */
-  clearQueue(
-    threadId: string,
-  ): Promise<{ steering: string[]; followUp: string[] }>;
+   * promote — clearing everything is the only queue mutation.
+   * 改动（停止回填）：items 带完整条目载荷（文本 + 图片附件），供「停止生成」
+   * 把排队内容原样退回输入框。 */
+  clearQueue(threadId: string): Promise<PiClearedQueue>;
 
   // 改动（4a）：逐项队列操作。上游 Pi 无此面（契约只有整队清空，官方运行时
   // 对 per-item 操作 no-op）；我们经 sidecar queue_cancel/queue_promote/
@@ -699,5 +719,13 @@ export interface PiClient {
     threadId: string,
     listener: (event: PiClientEvent) => void,
     options?: { includeSnapshot?: boolean },
+  ): () => void;
+
+  /** prompt 真的开跑（该 reqId 的 start 帧）时回调：控制器用它摘掉本地乐观
+   *  队列条目（服务端没排过队的消息永远不会广播 queue_update）。
+   *  可选面——旧客户端缺失时控制器退回纯事件驱动。 */
+  onPromptStart?(
+    threadId: string,
+    listener: (requestId: string) => void,
   ): () => void;
 }

@@ -16,6 +16,7 @@ import {
 import {
   piSessionPrefsMap,
   piSessionIdForThread,
+  refreshSessionPrefs,
 } from "@/lib/pi/pi-thread-adapter";
 
 /**
@@ -257,6 +258,26 @@ export async function hydrateSessionTheme(threadId: string): Promise<void> {
   } catch {
     // 请求失败保持播种值（胶囊下次进 design 档再试）
   }
+}
+
+/**
+ * 首条消息派发前（initialize 绑定 sessionId 后）把草稿期选的主题定靶写入新建
+ * 会话。草稿期 setSessionDesignTheme 只落本地选中态（threadId-only 的请求会懒建
+ * 空白会话），没有这一步用户选的主题就静默丢失——首轮 design 提示词不带主题句，
+ * 胶囊显示与 sidecar 真值分叉，直到用户重选。会话偏好列已设置（含显式"不使用"）
+ * 时不覆盖；失败保留本地选中态（胶囊仍显示所选，sidecar 真值由后续选择收敛）。
+ */
+export async function flushDraftThemeSelection(threadId: string): Promise<void> {
+  const picked = activeByThread.get(threadId);
+  if (picked === undefined) return;
+  const sessionId = piSessionIdForThread(threadId);
+  if (!sessionId) return;
+  const mirror = piSessionPrefsMap.get(sessionId);
+  if (mirror && decodeColumn(mirror.designTheme) !== undefined) return;
+  await setSessionDesignTheme(threadId, picked).catch((err) => {
+    console.warn("flush design_theme failed; keeping local selection:", err);
+  });
+  await refreshSessionPrefs();
 }
 
 /** 订阅全局清单快照 */

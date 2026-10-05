@@ -47,6 +47,28 @@ describe("queueSnapshotSchema", () => {
       queueSnapshotSchema.safeParse({ ...good, items: [{ id: 1 }] }).success,
     ).toBe(false);
   });
+  test("条目附件 = prompt 帧同形（name/mimeType/data|path，无 type 字段）", () => {
+    const withAttachments = {
+      ...good,
+      items: [
+        {
+          ...good.items[0],
+          attachments: [
+            { name: "image-1.png", mimeType: "image/png", data: "AAAA" },
+            { mimeType: "image/jpeg", path: "/tmp/shot.jpg" },
+          ],
+        },
+      ],
+    };
+    expect(queueSnapshotSchema.safeParse(withAttachments).success).toBe(true);
+    // mimeType 缺省即拒（附件种类判定单源在 mimeType，没有 data/path 也拒）
+    expect(
+      queueSnapshotSchema.safeParse({
+        ...good,
+        items: [{ ...good.items[0], attachments: [{ data: "AAAA" }] }],
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("通知帧 schema", () => {

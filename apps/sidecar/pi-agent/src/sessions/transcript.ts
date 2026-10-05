@@ -17,7 +17,7 @@
  *   树位 id/parentId，§11 决策 4）。header 行加性 `parentSession`（fork 溯源）。
  *   读端跳过撕裂尾行，append 中途崩溃不影响已有内容。
  */
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { HistoryWindowMeta, PendingInteraction } from "pi-protocol";
 import {
   AUTO_CONTINUE_PREFIX,
@@ -358,6 +358,45 @@ export function appendSessionInfoRow(sessionId: string, name: string): void {
     name,
     timestamp: new Date().toISOString(),
   });
+}
+
+/**
+ * 撤回单条已落盘的转录行（按 seq，幂等；只删第一处命中）。
+ *
+ * 使用面很窄：**只服务「并入（steer）未获回应回收」**——注入即真实 user 行
+ * 落转录，但那条轮次始终没回应用户，回收把它塞回队列重发时必须连同这条行
+ * 一起撤回，否则同一内容既有气泡（已并入徽标）又在队列条，重发还再落一条
+ * 同文行（前端两条同文气泡，删队列行也撤不回）。常规截断走 truncate_session
+ * （它连审计与 run 驱逐一起做），这里只做单行撤回，不动 run。
+ *
+ * 返回被移除的消息行数（0 = 行不在文件里，调用方无需修正计数）。
+ */
+export function removeTranscriptRow(sessionId: string, seq: number): number {
+  const file = sessionPath(sessionId);
+  if (!existsSync(file)) return 0;
+  const lines = readFileSync(file, "utf8").split("\n");
+  const kept: string[] = [];
+  let removed = 0;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    if (removed === 0) {
+      let rowSeq: unknown;
+      try {
+        rowSeq = (JSON.parse(line) as { seq?: unknown }).seq;
+      } catch {
+        kept.push(line); // 坏行/撕裂尾行原样保留
+        continue;
+      }
+      if (rowSeq === seq) {
+        removed = 1;
+        continue;
+      }
+    }
+    kept.push(line);
+  }
+  if (!removed) return 0;
+  writeFileSync(file, kept.length ? kept.join("\n") + "\n" : "");
+  return removed;
 }
 
 /** 改名统一入口：先落 session_info 行（转录真值），再同步索引 title 列（投影）。
@@ -831,6 +870,11 @@ export async function persist(
     // 每条 agent 消息都落盘（含纯工具调用与 toolResult）：恢复模型上下文需要完整
     // 的 toolCall/toolResult 对，前端历史重建也需要工具部件
     const seq = run.jsonlSeq++;
+    // 并入（steer）注入的行登记 seq：轮末「未获回应回收」要按它把这条行从
+    // 转录与内存上下文里撤回（见 reconcileUnansweredSteers）——同一内容不能
+    // 既留一条气泡又回队重发。身份比较（对象引用）与 findUnansweredSteers 同款
+    const steerEntry = run.steerEntries?.find((entry) => entry.message === agent);
+    if (steerEntry) steerEntry.seq = seq;
     // 归一后再落盘：脏块（text/data 缺失）在文件里只是"少个字段"，事后无法
     // 定位，且每次请求前的上下文估算都会撞上它——绝不能写进去
     const safe = normalizeMessage(agent);

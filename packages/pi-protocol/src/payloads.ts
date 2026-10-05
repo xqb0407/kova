@@ -47,12 +47,34 @@ export const contextInfoSchema = z.looseObject({
   usage: usageTotalsSchema,
   /** 平均缓存命中率 0..1；无用量数据为 null */
   cacheHitRate: z.number().nullable(),
-  /** 逐请求缓存 miss 计数（旧 sidecar 无此字段时按缺省处理） */
+  /** 缓存统计（旧 sidecar 无新字段时按缺省处理）。两套口径并存：
+   *  misses/rebuilds 是旧口径（面板分母），missedTokens/missCount/lastMiss/recent
+   *  是 pi 口径（真·重算量与归因），见 sidecar context.ts 的 CacheMissStats */
   cacheMisses: z
     .looseObject({
       requests: z.number(),
       misses: z.number(),
       rebuilds: z.number(),
+      /** 真·重算 tokens：min(上一轮 prompt, 本轮 prompt) − cacheRead，地板 1024 */
+      missedTokens: z.number().optional(),
+      /** 触发重算的轮次数 */
+      missCount: z.number().optional(),
+      /** 最近一次重算的归因（idleMs ≥ TTL / 模型切换；都否 = 未归因） */
+      lastMiss: z
+        .looseObject({
+          tokens: z.number(),
+          idleMs: z.number(),
+          modelChanged: z.boolean(),
+        })
+        .nullable()
+        .optional(),
+      /** 最近 N 轮命中率（累计值被冷启动与重建轮稀释，短窗看稳态） */
+      recent: z
+        .looseObject({
+          requests: z.number(),
+          hitRate: z.number().nullable(),
+        })
+        .optional(),
     })
     .optional(),
 });

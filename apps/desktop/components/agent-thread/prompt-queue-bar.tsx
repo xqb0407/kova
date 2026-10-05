@@ -8,7 +8,7 @@ import {
   removeSteeredBadge,
   useSteeredBadges,
 } from "@/lib/pi/pi-steer-intent";
-import { CheckIcon, MergeIcon, XIcon, ZapIcon } from "lucide-react";
+import { CheckIcon, ImageIcon, MergeIcon, XIcon, ZapIcon } from "lucide-react";
 import { useEffect, useRef, useState, type FC } from "react";
 import { cn } from "cn";
 
@@ -28,13 +28,14 @@ import { cn } from "cn";
  * agent_start 原生可见——泵只剩一种场景：sidecar 重启后无链节的孤儿队列。
  * 挂载/快照恢复（队列从空变非空）与 isRunning 下降沿时探测：线程空闲且队列
  * 非空 → queue_pop（sidecar 守卫 isTurnBusy + hasPromptChain 双保险，链节
- * 在时绝不误弹）→ 弹出队首按文本走正常发送路径重发。
+ * 在时绝不误弹）→ 弹出队首按原载荷直发重发（文本+图片附件，绕开 composer
+ * 共用车道防幽灵 pending）。
  */
 export const PromptQueueBar: FC = () => {
   const aui = useAui();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const isRunning = useAuiState((s) => s.thread.isRunning);
-  const { queue, cancel, promote, steer, pop } = usePiQueue();
+  const { queue, cancel, promote, steer, pop, resend } = usePiQueue();
   const steered = useSteeredBadges(threadId ?? "");
   const [busy, setBusy] = useState(false);
 
@@ -51,12 +52,11 @@ export const PromptQueueBar: FC = () => {
       if (aui.thread.getState().isRunning) return;
       const popped = await pop();
       if (!popped) return;
-      // 无孤儿不入此分支（popped=null）。按文本走正常发送路径重发——
-      // 线程空闲即刻派发，队列条目随 queue_update 事件自然消失
-      aui.composer.setText(popped.content);
-      // steer:false：弹出重发若撞上竞态轮（线程又忙了）应续排队，
-      // 而不是被 core 的运行中默认车道并入当前轮
-      aui.composer.send({ steer: false });
+      // 直发重发（controller.queueResend）：带原载荷图片附件，且绕开 composer
+      // 共用车道——弹出后前端队列条与 sidecar 引擎可能短暂分歧（空快照事件
+      // 在途），composer 车道会把重发误判进排队压出 pending 幽灵。撞竞态轮
+      // （线程又忙了）时 isQueuedSend 照常接管续排队，语义不变
+      await resend(popped);
     } catch (err) {
       // 通道异常：下一次下降沿/队列变化再试；留痕防"泵凭空失效"无从排查
       console.warn("[queue-pump] dispatch failed", String(err));
@@ -149,56 +149,78 @@ export const PromptQueueBar: FC = () => {
           {items.length} 条排队
         </div>
       )}
-      {items.map((item, index) => (
-        <div
-          key={item.id}
-          className="group border-border/50 dark:border-muted-foreground/10 flex items-center gap-2 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-1.5 pl-3.5 backdrop-blur-md animate-in fade-in slide-in-from-bottom-1 duration-200"
-        >
-          <span
-            className="w-3 shrink-0 text-center text-[11px] leading-none text-muted-foreground/50 tabular-nums"
-            aria-label={`排队第 ${index + 1} 位`}
+      {items.map((item, index) => {
+        // 附件随条目下发（sidecar 快照/pop 与本地乐观条目同形状）：出缩略图，
+        // 纯图条目回退成「[图片]」文案——此前纯图排队项在队列条上是空行，
+        // 看起来像"已经发出去了"，是误判「排队消息已发送」的一环
+        const images = item.attachments ?? [];
+        const thumb = images.find((attachment) => attachment.data);
+        const label = item.content.trim()
+          ? item.content
+          : images.length > 0
+            ? `[图片${images.length > 1 ? ` ×${images.length}` : ""}]`
+            : item.content;
+        return (
+          <div
+            key={item.id}
+            className="group border-border/50 dark:border-muted-foreground/10 flex items-center gap-2 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-1.5 pl-3.5 backdrop-blur-md animate-in fade-in slide-in-from-bottom-1 duration-200"
           >
-            {index + 1}
-          </span>
-          <span
-            className="text-foreground/70 min-w-0 flex-1 truncate text-sm"
-            title={item.content}
-          >
-            {item.content}
-          </span>
-          <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100">
-            <QueueIconButton
-              label="并入当前回复（不中止本轮）"
-              disabled={busy}
-              onClick={() =>
-                void act(async () => {
-                  await steer(item.id);
-                  // 并入成功（sidecar 从队列移除该条并注入活跃轮）才记徽标；
-                  // 失败时条目原位保留，不记
-                  addSteeredBadge(threadId, item.content);
-                })
-              }
+            <span
+              className="w-3 shrink-0 text-center text-[11px] leading-none text-muted-foreground/50 tabular-nums"
+              aria-label={`排队第 ${index + 1} 位`}
             >
-              <MergeIcon className="size-3.5" />
-            </QueueIconButton>
-            <QueueIconButton
-              label="立即发送（中止当前回复）"
-              disabled={busy}
-              onClick={() => void act(() => promote(item.id))}
+              {index + 1}
+            </span>
+            {images.length > 0 &&
+              (thumb ? (
+                <img
+                  src={`data:${thumb.mimeType};base64,${thumb.data}`}
+                  alt={thumb.name ?? "排队消息附图"}
+                  className="border-border/50 size-6 shrink-0 rounded border object-cover"
+                />
+              ) : (
+                <ImageIcon className="text-muted-foreground/60 size-3.5 shrink-0" />
+              ))}
+            <span
+              className="text-foreground/70 min-w-0 flex-1 truncate text-sm"
+              title={item.content || label}
             >
-              <ZapIcon className="size-3.5" />
-            </QueueIconButton>
-            <QueueIconButton
-              label="删除"
-              disabled={busy}
-              className="hover:text-destructive"
-              onClick={() => void act(() => cancel(item.id))}
-            >
-              <XIcon className="size-3.5" />
-            </QueueIconButton>
+              {label}
+            </span>
+            <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100">
+              <QueueIconButton
+                label="并入当前回复（不中止本轮）"
+                disabled={busy}
+                onClick={() =>
+                  void act(async () => {
+                    await steer(item.id);
+                    // 并入成功（sidecar 从队列移除该条并注入活跃轮）才记徽标；
+                    // 失败时条目原位保留，不记
+                    addSteeredBadge(threadId, item.content);
+                  })
+                }
+              >
+                <MergeIcon className="size-3.5" />
+              </QueueIconButton>
+              <QueueIconButton
+                label="立即发送（中止当前回复）"
+                disabled={busy}
+                onClick={() => void act(() => promote(item.id))}
+              >
+                <ZapIcon className="size-3.5" />
+              </QueueIconButton>
+              <QueueIconButton
+                label="删除"
+                disabled={busy}
+                className="hover:text-destructive"
+                onClick={() => void act(() => cancel(item.id))}
+              >
+                <XIcon className="size-3.5" />
+              </QueueIconButton>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
         </div>
       </div>
     </div>

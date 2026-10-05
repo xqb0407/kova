@@ -23,7 +23,15 @@ export const GOAL_MODE_PROMPT = [
   "Project files can be modified freely in Goal mode. Use the todo tool to keep an explicit checklist when the goal has several distinct parts.",
 ].join("\n");
 
-/** 目标块：紧贴模式段，每轮热换（目标文本 / 轮次）。
+/** 目标块：紧贴模式段。
+ *
+ *  **跨轮字节稳定是硬约束**（服务端前缀缓存以系统消息为界：这块里动一个字节，
+ *  整段对话缓存全废）。曾经的 `This is turn N of the goal.` 就是这么把 goal 档
+ *  打成"每轮全价重算"的——实测同一会话 439/442 个请求 cacheRead=0，两小时运行
+ *  重复计费两千多万 tokens。轮次信息现在只随续跑消息走尾部
+ *  （goalContinueText 的 `Continuing the active goal (turn N of M)`），
+ *  每轮都会变的字段一律不得进这块。
+ *
  *  无目标时返回空串——静态契约已经由 GOAL_MODE_PROMPT 承担，这里再抄一遍只会
  *  让同一段提示词在提示词里出现两次；composeModeSystemPrompt 的 filter(Boolean)
  *  会把空串整段剔除，于是「切到 goal 档还没发第一条消息」时提示词与 agent 档
@@ -43,7 +51,6 @@ export function goalPromptBlock(goal: Goal | null): string {
     goal.objective,
     `</goal_objective>`,
     `Goal id: ${goal.id} (only used as the goal_complete stale-turn guard).`,
-    `This is turn ${goal.turnCount + 1} of the goal.`,
     "",
     GOAL_RULES,
   ].join("\n");

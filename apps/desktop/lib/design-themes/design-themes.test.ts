@@ -37,6 +37,7 @@ function listFrame(active?: Ref | null): Req {
  *  无会话返回 undefined；其余 id 本身就是 sessionId——新链路/恢复线程行） */
 const registry = new Map<string, string>();
 const prefs = new Map<string, PrefsEntry>();
+let refreshImpl: () => Promise<void> = async () => {};
 const { isLocalDraftThreadId } = await import("@/lib/pi/pi-thread-identity");
 mockModule("@/lib/pi/pi-thread-adapter", () => ({
   piSessionRegistry: registry,
@@ -45,6 +46,7 @@ mockModule("@/lib/pi/pi-thread-adapter", () => ({
     registry.get(threadId) ?? (prefs.has(threadId) ? threadId : undefined),
   piSessionIdForThread: (threadId: string) =>
     registry.get(threadId) ?? (isLocalDraftThreadId(threadId) ? undefined : threadId),
+  refreshSessionPrefs: () => refreshImpl(),
 }));
 
 mockModule("@/lib/pi/pi-bridge", () => ({
@@ -63,6 +65,7 @@ afterAll(() => {
 const {
   deleteDesignTheme,
   findThemeEntry,
+  flushDraftThemeSelection,
   getSessionDesignTheme,
   handleDesignThemePush,
   hydrateSessionTheme,
@@ -80,6 +83,7 @@ async function reset() {
   responder = () => listFrame();
   registry.clear();
   prefs.clear();
+  refreshImpl = async () => {};
 }
 
 describe("清单镜像", () => {
@@ -231,6 +235,56 @@ describe("会话级选中（三态播种与写回）", () => {
     await setSessionDesignTheme("__LOCALID_draft-2", { scope: "builtin", id: "nova" });
     expect(calls.some((c) => c.type === "set_design_theme")).toBe(false);
     expect(getSessionDesignTheme("__LOCALID_draft-2")).toEqual({ scope: "builtin", id: "nova" });
+  });
+});
+
+describe("flushDraftThemeSelection：首条派发前的草稿主题落库", () => {
+  test("草稿期选过主题：绑定后定靶写入新会话并校准偏好镜像", async () => {
+    await reset();
+    await setSessionDesignTheme("__LOCALID_draft-3", { scope: "builtin", id: "nova" });
+    registry.set("__LOCALID_draft-3", "sess-new-t");
+    responder = (req) =>
+      req.type === "set_design_theme"
+        ? { type: "design_theme_set", sessionId: "sess-new-t", theme: { scope: "builtin", id: "nova" } }
+        : listFrame();
+    refreshImpl = async () => {
+      prefs.set("sess-new-t", { designTheme: JSON.stringify({ scope: "builtin", id: "nova" }) });
+    };
+    await flushDraftThemeSelection("__LOCALID_draft-3");
+    const req = calls.find((c) => c.type === "set_design_theme");
+    expect(req).toMatchObject({
+      sessionId: "sess-new-t",
+      theme: { scope: "builtin", id: "nova" },
+    });
+    expect(prefs.get("sess-new-t")?.designTheme).toBe(
+      JSON.stringify({ scope: "builtin", id: "nova" }),
+    );
+  });
+
+  test("草稿期未选主题（未水合）：不发请求", async () => {
+    await reset();
+    registry.set("__LOCALID_draft-4", "sess-idle");
+    await flushDraftThemeSelection("__LOCALID_draft-4");
+    expect(calls.some((c) => c.type === "set_design_theme")).toBe(false);
+  });
+
+  test("会话偏好列已设置（含显式不使用）：不覆盖落库真值", async () => {
+    await reset();
+    await setSessionDesignTheme("__LOCALID_draft-5", { scope: "builtin", id: "nova" });
+    registry.set("__LOCALID_draft-5", "sess-old-t");
+    prefs.set("sess-old-t", { designTheme: "" }); // 显式不使用也算已设置
+    calls = [];
+    await flushDraftThemeSelection("__LOCALID_draft-5");
+    expect(calls.some((c) => c.type === "set_design_theme")).toBe(false);
+  });
+
+  test("写入失败：保留本地选中态（胶囊仍显示所选，sidecar 真值由后续选择收敛）", async () => {
+    await reset();
+    await setSessionDesignTheme("__LOCALID_draft-6", { scope: "builtin", id: "nova" });
+    registry.set("__LOCALID_draft-6", "sess-fail");
+    responder = () => new Error("boom");
+    await flushDraftThemeSelection("__LOCALID_draft-6");
+    expect(getSessionDesignTheme("__LOCALID_draft-6")).toEqual({ scope: "builtin", id: "nova" });
   });
 });
 

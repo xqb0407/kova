@@ -9,6 +9,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initStorage } from "../../src/storage/storage";
+import { appendModelChangeRow } from "../../src/sessions/transcript";
+import { getModels } from "../../src/model/model-catalog";
 import { dispatch } from "../../src/protocol/protocol";
 import { contextInfo } from "../../src/agent/context";
 import {
@@ -69,6 +71,35 @@ describe("sessions：只读投影", () => {
     const live = contextInfo(run);
     const proj = await projectContextInfo("prj-1", run.sessionId);
     expect(proj).toEqual(live);
+  });
+
+  test("投影用会话自己的模型（转录 model_change 行），不是全局默认", async () => {
+    // 线上实测：会话跑 custom-qoder/qfmodel，run 被驱逐后面板显示全局默认
+    // agnes-3.0-flash + 524K 窗口——头部、容量、占用百分比、压缩阈值整片错的。
+    // 真值优先级（§6 M4）：转录行 > 偏好列 > 全局；投影必须与 resolveSession 同口径。
+    const run = await resolveSession("prj-model", undefined, tmp);
+    const sessionId = run.sessionId;
+    const live = run.agent.state.model;
+    const elsewhere = getModels()
+      .getProviders()
+      .flatMap((p) => p.getModels().map((m) => ({ provider: p.id, modelId: m.id, m })))
+      .find(
+        (x) =>
+          x.modelId !== live?.id || x.provider !== (live as { provider?: string } | undefined)?.provider,
+      );
+    expect(elsewhere).toBeTruthy();
+    appendModelChangeRow(sessionId, elsewhere!.provider, elsewhere!.modelId);
+    running.delete("prj-model"); // 模拟被驱逐/未加载
+
+    const proj = await projectContextInfo("prj-model", sessionId);
+    expect(proj.model).toMatchObject({
+      provider: elsewhere!.provider,
+      id: elsewhere!.modelId,
+    });
+    // 容量/阈值也按会话模型的窗口算（曾经按全局默认的窗口）
+    expect(proj.contextWindow).toBe(
+      Math.max(1, Math.round(elsewhere!.m.contextWindow || 128_000)),
+    );
   });
 
   test("投影不写 running（context_info 不再造成驻留）", async () => {

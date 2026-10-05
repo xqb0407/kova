@@ -34,6 +34,18 @@ const CONTEXT_PATTERN =
 const STREAM_TERMINATION_PATTERN =
   /\bterminated\b|stream ended without finish_reason|premature(?:ly)?\s+(?:closed|ended)|(?:stream|response).*(?:closed|interrupted)/i;
 
+/**
+ * 配额/账单耗尽：确定性失败，重发只会再撞同一堵墙（pi-ai 的
+ * NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN 同款清单）。
+ *
+ * 必须在 status 判定**之前**按文案拦下：OpenAI 系把配额错误也包在 HTTP 429 里
+ *（body 是 `insufficient_quota`），只看状态码会被当成可重试限流，把重试预算与
+ * 退避等待全烧在一个救不回来的错误上。也不用裸 "quota"——它常出现在真正的限流
+ * 话术里（"quota exceeded, retry later"），那些该走限流桶。
+ */
+const QUOTA_EXHAUSTED_PATTERN =
+  /insufficient[ _-]?quota|exceeded your current quota|out of budget|usage limit reached|available balance|monthly usage limit|free ?usage ?limit|GoUsageLimitError|FreeUsageLimitError|billing (?:hard )?limit/i;
+
 function redactSensitiveErrorText(message: string): string {
   return message
     .replace(
@@ -164,6 +176,11 @@ export function classifyAgentError(
   ) {
     return result("RUNTIME_ERROR", false, "runtime");
   }
+  // 配额/账单耗尽：确定性失败。排在网络与 status 判定之前——OpenAI 系把
+  // insufficient_quota 包在 429 里，靠状态码会被误判成可重试限流。
+  if (QUOTA_EXHAUSTED_PATTERN.test(rawMessage)) {
+    return result("PROVIDER_QUOTA_EXHAUSTED", false);
+  }
   // 网络失败不带 HTTP status：先于 status 逻辑探一遍，
   // 免得 "fetch failed" 之类落到通用桶里。
   if (hasNetworkCause(err, rawMessage)) {
@@ -188,7 +205,7 @@ export function classifyAgentError(
   if (/invalid[ _]api[ _]key|api key not valid|unauthorized|authentication|permission denied/i.test(rawMessage)) {
     return result("PROVIDER_UNAUTHORIZED", false);
   }
-  if (/rate.?limit|too many requests|quota|overloaded/i.test(rawMessage)) {
+  if (/rate.?limit|too many requests|overloaded/i.test(rawMessage)) {
     return result("PROVIDER_RATE_LIMITED", true);
   }
   if (CONTEXT_PATTERN.test(rawMessage)) {

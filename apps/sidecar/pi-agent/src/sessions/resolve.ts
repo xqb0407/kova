@@ -347,6 +347,37 @@ async function resolveCurrentModel(): Promise<NonNullable<Awaited<ReturnType<typ
 }
 
 /**
+ * 会话模型真值（§6 M4 优先级，与 resolveSession 的恢复链同一口径）：
+ * **转录 model_change 行 > SQLite 偏好行 > 全局当前选择**。
+ *
+ * resolveSession 一直在按这个优先级取模型；只读投影（非驻留会话的
+ * context_info）曾经只取全局——于是「run 被驱逐 / 尚未物化」时，上下文面板
+ * 会把头部、容量、占用百分比、压缩阈值整片按**别的模型**显示（线上实测：
+ * 会话跑 custom-qoder/qfmodel，面板显示全局默认 agnes-3.0-flash + 524K 窗口，
+ * 刷新后线程驻留才恢复正常）。投影与 live 读数必须逐字段一致，所以走同一条
+ * 优先级链。
+ */
+async function sessionModelFor(
+  scanModel: { provider: string; modelId: string } | null,
+  row: { modelProvider?: string | null; modelId?: string | null } | undefined,
+): Promise<NonNullable<Awaited<ReturnType<typeof defaultModel>>>> {
+  const key =
+    scanModel ??
+    (row?.modelProvider && row?.modelId
+      ? { provider: row.modelProvider, modelId: row.modelId }
+      : null);
+  if (key) {
+    const saved = getModels().getModel(key.provider, key.modelId);
+    if (saved) return saved;
+    logErr(
+      "projectContextInfo: session model missing from catalog, falling back to current:",
+      `${key.provider}/${key.modelId}`,
+    );
+  }
+  return resolveCurrentModel();
+}
+
+/**
  * 「模型不可用」的判定：模型对象缺失，或上面那个 CORE_DEFAULT_MODEL 占位
  * （provider 为 "unknown"）。
  *
@@ -870,11 +901,15 @@ export async function projectContextInfo(
 ): Promise<ContextInfoResult> {
   const row = await sessionGet(sessionId);
   if (!row) throw new Error(`session not found: ${sessionId}`);
-  const transcript = readTranscript(sessionId);
+  // 单遍扫描同取消息行与 model_change 行（转录真值，§6 M4）
+  const scan = scanTranscript(sessionId);
+  const transcript = scan.messages;
   const checkpoint = readCompaction(sessionId);
   const messages = projectRestoreContext(transcript, checkpoint);
   const generation = checkpoint ? checkpointGeneration(checkpoint.details) : 0;
-  const model = await resolveCurrentModel();
+  // 会话模型真值：转录行 > 偏好列 > 全局（与 resolveSession 同口径）。
+  // 只取全局的话，非驻留会话的面板头部/容量/阈值百分比会整片显示成别的模型。
+  const model = await sessionModelFor(scan.model, row);
 
   const resolvedCwd = row.cwd || taskSessionCwd(sessionId);
   // 技能段预热：投影读数与随后真正打开该会话时逐字段一致（同款 ensureSkillsLoaded）

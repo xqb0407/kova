@@ -27,6 +27,7 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ImageContent } from "@earendil-works/pi-ai";
+import type { QueueAttachment } from "pi-protocol";
 import { IMAGE_INLINE_MAX_BYTES, normalizeMime } from "../tools/image-parts";
 
 /** 单条 prompt 允许携带的图片上限 */
@@ -273,4 +274,50 @@ export function preparePromptAttachments(
     );
   }
   return { images, noticeLines };
+}
+
+/* ------------------------- 队列条目的附件透传 -------------------------
+ * 队列快照（sessions/prompt-queue.ts）与出队（protocol/handlers/queue.ts）
+ * 必须按**前端真实帧形状**过滤附件：{ name, mimeType, data | path }——
+ * 这里没有 `type: "image"` 字段（曾按它过滤，导致带图排队项的图片在快照/
+ * 出队时被整体丢弃，刷新、重启、接力泵重发全丢图）。两处共用本函数，
+ * 形状一旦再漂移只需改一处。
+ * ------------------------------------------------------------------------- */
+
+/** prompt 帧 attachments → 可随队列携带的图片附件（白名单 + 有 data/path 才收） */
+export function queueImageAttachments(msg: Record<string, unknown>): QueueAttachment[] {
+  const raw = Array.isArray(msg.attachments) ? msg.attachments : [];
+  const out: QueueAttachment[] = [];
+  for (const entry of raw) {
+    const item = (entry ?? {}) as Record<string, unknown>;
+    if (!normalizeMime(item.mimeType ?? item.mediaType)) continue;
+    const data = typeof item.data === "string" && item.data.trim() ? item.data : undefined;
+    const path = typeof item.path === "string" && item.path.trim() ? item.path.trim() : undefined;
+    if (!data && !path) continue;
+    const name =
+      typeof item.name === "string" && item.name.trim()
+        ? item.name.trim().slice(0, 120)
+        : undefined;
+    out.push({
+      ...(name ? { name } : {}),
+      mimeType: (item.mimeType ?? item.mediaType) as string,
+      ...(data ? { data: stripDataUrl(data.trim()) } : {}),
+      ...(path ? { path } : {}),
+    });
+  }
+  return out;
+}
+
+/** 出队/重发用：path-only 图片读出字节内联（同 2MiB 闸门）；读不了返回 null
+ *  （调用方丢弃该项并留痕——重发链路要的是可直接进 prompt 的 data 载荷） */
+export function inlineQueueAttachment(att: QueueAttachment): QueueAttachment | null {
+  if (att.data) return att;
+  if (!att.path) return null;
+  try {
+    const st = statSync(att.path);
+    if (!st.isFile() || st.size > IMAGE_INLINE_MAX_BYTES) return null;
+    return { ...att, data: readFileSync(att.path).toString("base64") };
+  } catch {
+    return null;
+  }
 }

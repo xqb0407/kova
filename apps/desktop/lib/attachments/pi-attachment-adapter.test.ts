@@ -6,6 +6,24 @@ import { buildPiSendInput } from "@/lib/pi/pi-runtime/runtime/ThreadController";
 
 type Pending = Awaited<ReturnType<typeof piPromptAttachmentAdapter.add>>;
 
+/** add 刻意越过 PendingAttachment 契约返回 complete（见 adapter 头注）：
+ *  运行时形状按 complete 的宽类型断言，测试才看得到 content/status */
+type AdapterAttachment = {
+  id: string;
+  type: string;
+  name: string;
+  contentType?: string;
+  file?: File;
+  status: { type: string; reason?: string };
+  content?: readonly {
+    type: string;
+    image?: string;
+    data?: string;
+    mimeType?: string;
+    filename?: string;
+  }[];
+};
+
 const pngBytes = Uint8Array.from(
   atob(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
@@ -14,38 +32,45 @@ const pngBytes = Uint8Array.from(
 );
 
 /** adapter.add 契约上是 Promise | AsyncGenerator；本实现恒走 Promise 分支 */
-const addPending = async (file: File): Promise<Extract<Pending, { status: unknown }>> => {
+const addAttachment = async (file: File): Promise<AdapterAttachment> => {
   const result = await piPromptAttachmentAdapter.add({ file });
   if ("next" in result) throw new Error("generator form not used by this adapter");
-  return result as Extract<Pending, { status: unknown }>;
+  return result as unknown as AdapterAttachment;
 };
 
 const completeOf = async (file: File) => {
-  const pending = await addPending(file);
-  expect(pending.status).toEqual({
-    type: "requires-action",
-    reason: "composer-send",
-  });
-  return piPromptAttachmentAdapter.send(
-    pending as Parameters<typeof piPromptAttachmentAdapter.send>[0],
-  );
+  const attachment = await addAttachment(file);
+  // 关键契约（2026-10-05「排队消息多一条已发送气泡」根因）：add 就返回
+  // complete（带 content），发送走同步 _dispatch 而不是异步准备提交——
+  // 异步提交会被框架登记进 composer 的 in-transit，而 store 层把它当线程
+  // 消息渲染；排队发送永远等不到回显，气泡就永久挂在那
+  expect(attachment.status).toEqual({ type: "complete" });
+  expect(attachment.content?.length ?? 0).toBeGreaterThan(0);
+  return attachment;
 };
 
 describe("piPromptAttachmentAdapter.add", () => {
-  test("剪贴板图片（有 MIME）→ image 类 Pending", async () => {
+  test("剪贴板图片（有 MIME）→ image 类且已 complete（含内联 dataURL）", async () => {
     const file = new File([pngBytes], "image.png", { type: "image/png" });
-    const pending = await addPending(file);
+    const pending = await addAttachment(file);
     expect(pending.type).toBe("image");
     expect(pending.contentType).toBe("image/png");
+    expect(pending.status).toEqual({ type: "complete" });
+    expect(pending.content).toEqual([
+      {
+        type: "image",
+        image: expect.stringContaining("data:image/png;base64,"),
+      },
+    ]);
   });
 
   test("MIME 缺失按扩展名推断，image/jpg 变体归一为 jpeg", async () => {
     const untyped = new File([pngBytes], "photo.webp");
-    const pending = await addPending(untyped);
+    const pending = await addAttachment(untyped);
     expect(pending.contentType).toBe("image/webp");
 
     const jpg = new File([pngBytes], "shot.jpg", { type: "image/jpg" });
-    const jpgPending = await addPending(jpg);
+    const jpgPending = await addAttachment(jpg);
     expect(jpgPending.contentType).toBe("image/jpeg");
   });
 
@@ -54,6 +79,16 @@ describe("piPromptAttachmentAdapter.add", () => {
     expect(piPromptAttachmentAdapter.add({ file })).rejects.toThrow(
       /不是支持的附件/,
     );
+  });
+
+  test("兜底 send 对 complete 附件幂等（幂等返回同一 content，不重读文件）", async () => {
+    const file = new File([pngBytes], "image.png", { type: "image/png" });
+    const attachment = await addAttachment(file);
+    const sent = (await piPromptAttachmentAdapter.send(
+      attachment as unknown as Parameters<typeof piPromptAttachmentAdapter.send>[0],
+    )) as unknown as AdapterAttachment;
+    expect(sent.status).toEqual({ type: "complete" });
+    expect(sent.content).toEqual(attachment.content);
   });
 });
 

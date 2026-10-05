@@ -313,6 +313,34 @@ function dataUriToImageFile(mimeSub: string, base64: string, index: number): Fil
 }
 
 /**
+ * 裸 base64 + mime + 展示名 → 图片 File（停止生成回填队列条目用；命名沿用
+ *  sidecar/转录的 image-N.ext 约定，mime 子型兜底）。解码失败返回 null。
+ *  走与粘贴同一条 composer 附件管线：回填的图片与用户手选的在草稿里同形。
+ */
+export function base64ImageFile(
+  name: string | undefined,
+  mimeType: string,
+  base64: string,
+  index: number,
+): File | null {
+  const sub =
+    (mimeType.split("/")[1] ?? "png").toLowerCase() === "jpg"
+      ? "jpeg"
+      : (mimeType.split("/")[1] ?? "png").toLowerCase();
+  let binary: string;
+  try {
+    binary = atob(base64.replace(/\s+/g, ""));
+  } catch {
+    return null;
+  }
+  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  const ext = sub === "jpeg" ? "jpg" : sub;
+  return new File([bytes], name?.trim() || `image-${index + 1}.${ext}`, {
+    type: `image/${sub}`,
+  });
+}
+
+/**
  * 从粘贴文本中提取 data URI 图片转成 File 附件。返回 files 为空时 rest 为原文
  * （不做破坏性改动）；有命中时 rest 为剥掉 URI 后的剩余文本（内联场景由调用方
  * 插回光标处）。

@@ -15,11 +15,21 @@ const goal = (over: Partial<Goal> = {}): Goal => ({
 });
 
 describe("active 目标块", () => {
-  test("含目标原文、goal_id 与轮次", () => {
+  test("含目标原文与 goal_id", () => {
     const block = goalPromptBlock(goal({ turnCount: 4 }));
     expect(block).toContain("把 README 补全");
     expect(block).toContain("Goal id:");
-    expect(block).toContain("This is turn 5 of the goal.");
+  });
+
+  test("跨轮字节稳定：轮次计数不得进系统块（前缀缓存回归）", () => {
+    // 生产实测：goal 会话 439/442 个请求 cacheRead=0，两小时运行重复计费 2 千多万
+    // tokens——系统消息里嵌了每轮 +1 的 `This is turn N of the goal.`，而服务端
+    // 前缀缓存以系统消息为界，一个字节变了整段缓存全废。轮次改随续跑消息走尾部。
+    const base = goal({ turnCount: 0 });
+    const first = goalPromptBlock(base);
+    const later = goalPromptBlock({ ...base, turnCount: 17 });
+    expect(later).toBe(first);
+    expect(first).not.toContain("This is turn");
   });
 
   test("含信任边界声明（目标文本是用户输入，可能带注入）", () => {
