@@ -245,8 +245,11 @@
  *                                                             → { id, type: "model_updated", provider, modelId }
  *       消息里携带的字段写入 models 表（null = 重置为继承内置值；未携带 = 保留现值）并原地应用到目录；
  *       目录外的 modelId 同样会挂载为新增模型
- *   { "type": "set_credential", "id", "provider", "apiKey" }  → { id, type: "credential", provider }
+ *   { "type": "set_credential", "id", "provider", "apiKey", "env"? }  → { id, type: "credential", provider }
+ *       env = 非密钥补充字段（如 Cloudflare 网关的 Account/Gateway ID，pi-ai 解析凭据必需）；
+ *       只收非空字符串键值对，携带即整体替换（可传 {} 清空）；apiKey 允许为空 = 只更新 env
  *   { "type": "list_credentials", "id" }                      → { id, type: "credentials", credentials: [...] }
+ *       credentials[].env = 已存补充字段（非密钥，明文回传供编辑弹窗预填）
  *   { "type": "delete_credential", "id", "provider" }         → { id, type: "credential_deleted", provider }
  *   { "type": "fetch_models", "id", "baseUrl", "apiKey", "api", "providerId"? } → { id, type: "fetched_models", models: [...] }
  *       api = openai-chat | openai-responses | anthropic-messages，决定列表端点与鉴权方式

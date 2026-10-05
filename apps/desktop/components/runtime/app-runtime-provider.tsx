@@ -32,11 +32,12 @@ import {
   getRemoteConfig,
   type RemoteConfig,
 } from "@/lib/remote";
-import { WanderingEyes } from "@/components/loading-ui/wandering-eyes";
+import { KovaBoot } from "@/components/loading-ui/kova-boot";
 /** splash 最小展示时长：保证启动动画至少播一会儿，不被快速水合直接闪没。
  *  迭代1b（P6）：3000 → 800——固定 3s 开屏把分块/按需加载的全部启动收益
- *  掩盖在动画里；800ms 仍够眼睛动画起步，观感待重启后重新评估。 */
-const SPLASH_MIN_MS = 800;
+ *  掩盖在动画里。换 KovaBoot 品牌开屏后定在 1800：逐字聚焦约 1.5s 播完，
+ *  掐在半模糊状态不可接受，1800ms 留出落定帧的停留。 */
+const SPLASH_MIN_MS = 900;
 
 /**
  * 启动占位屏：随静态导出的预渲染 HTML 直接输出，webview 导航后立即可见，
@@ -44,8 +45,9 @@ const SPLASH_MIN_MS = 800;
  * Windows 全透明区域点击穿透、macOS 看似未启动——占位屏提供可见可点击
  * 的加载反馈，直到运行时就绪。
  *
- * 角色为 WanderingEyes 眼睛动画（components/loading-ui/wandering-eyes）：
- * 纯 CSS 合成器动画，预渲染 HTML 即可播放（无 canvas 引擎、无接管时序），
+ * 角色为 KovaBoot 品牌开屏动画（components/loading-ui/kova-boot）：
+ * 猫图标常驻 + 「扣瓦」字标逐字聚焦落定；纯 CSS 合成器动画，
+ * 预渲染 HTML 即可播放（无 canvas 引擎、无接管时序），
  * ready 即回调 onFinished 由宿主卸载（最短展示时长由宿主 SPLASH_MIN_MS 兜底）。
  *
  * 挂载期间在 html 上打 data-boot-splash（globals.css 据此让 body 透明，
@@ -75,8 +77,8 @@ function BootSplash({
   }, [ready]);
 
   return (
-    <div className="flex h-full flex-1 flex-col items-center justify-center bg-background/95">
-      <WanderingEyes className="w-56 text-zinc-400 dark:text-zinc-500" />
+    <div className="flex h-full flex-1 flex-col items-center justify-center bg-background">
+      <KovaBoot className="text-zinc-950 dark:text-zinc-50" />
     </div>
   );
 }

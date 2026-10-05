@@ -151,6 +151,38 @@ export const credentialSet = (provider: string, apiKey: string) =>
 
 export const credentialDelete = (provider: string) => query("credential_delete", { provider });
 
+/* 凭据的非密钥补充字段（如 Cloudflare 网关的 Account/Gateway ID）：
+ * credentials 表只有 api_key 一列，这类值不进密钥库，挂 kv
+ * （key = credential.env.<provider>，值 = JSON 对象）。空串 = 已清除。 */
+const credentialEnvKey = (provider: string) => `credential.env.${provider}`;
+
+/** 读凭据补充字段（无值/空/解析失败都返回空对象，语义 = 无补充字段） */
+export const credentialEnvGet = async (
+  provider: string,
+): Promise<Record<string, string>> => {
+  const row = await kvGet(credentialEnvKey(provider));
+  if (!row?.value) return {};
+  try {
+    const parsed: unknown = JSON.parse(row.value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (k && typeof v === "string") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+};
+
+/** 整体替换凭据补充字段（传空对象 = 清空） */
+export const credentialEnvSet = (provider: string, env: Record<string, string>) =>
+  kvSet(credentialEnvKey(provider), JSON.stringify(env));
+
+/** 删除服务的凭据补充字段（删除凭据时同步调用，不留孤儿行） */
+export const credentialEnvDelete = (provider: string) =>
+  kvSet(credentialEnvKey(provider), "");
+
 /* ------------------------------ secrets（加密密钥库） ------------------------------ */
 
 /** 密钥清单行：**无明文**（值在 Rust 侧加密落盘，这里只有掩码与可读性标记）。

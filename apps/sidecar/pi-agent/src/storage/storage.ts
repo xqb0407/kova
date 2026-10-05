@@ -14,6 +14,7 @@ import type {
   CredentialStore,
 } from "@earendil-works/pi-ai";
 import {
+  credentialEnvGet,
   credentialGet,
   credentialList,
   credentialSet,
@@ -64,7 +65,15 @@ export function initStorage(dbPath: string, sessionsDir: string): void {
 export const credentialStore: CredentialStore = {
   async read(providerId: string): Promise<Credential | undefined> {
     const row = await credentialGet(providerId);
-    return row ? { type: "api_key", key: row.apiKey } : undefined;
+    if (!row) return undefined;
+    // 非密钥补充字段（Cloudflare 网关的 Account/Gateway ID 等）挂 kv：缺了它们
+    // pi-ai 解析不出该 provider 的凭据，所有模型被标成未认证而从模型选择里消失
+    const env = await credentialEnvGet(providerId);
+    return {
+      type: "api_key",
+      key: row.apiKey,
+      ...(Object.keys(env).length > 0 ? { env } : {}),
+    };
   },
   async list(): Promise<readonly CredentialInfo[]> {
     const providers = await credentialList();
