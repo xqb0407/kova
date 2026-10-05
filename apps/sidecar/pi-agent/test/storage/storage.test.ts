@@ -35,6 +35,37 @@ describe("credentialStore", () => {
     await credentialStore.delete("prov-a");
     expect(await credentialStore.read("prov-a")).toBeUndefined();
   });
+
+  test("read 合并 kv 里的凭据补充字段（Cloudflare 网关 Account/Gateway ID）", async () => {
+    const { credentialEnvSet, credentialDelete } = await import(
+      "../../src/storage/hostdb"
+    );
+    await credentialStore.modify("prov-env-cf", async () => ({
+      type: "api_key",
+      key: "sk-cf",
+    }));
+    await credentialEnvSet("prov-env-cf", {
+      CLOUDFLARE_ACCOUNT_ID: "acct",
+      CLOUDFLARE_GATEWAY_ID: "gw",
+    });
+    expect(await credentialStore.read("prov-env-cf")).toEqual({
+      type: "api_key",
+      key: "sk-cf",
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_GATEWAY_ID: "gw" },
+    });
+    // 没存补充字段的凭据不带 env 键（toEqual 全量断言）
+    expect(await credentialStore.read("prov-bare")).toBeUndefined();
+    await credentialStore.modify("prov-bare", async () => ({
+      type: "api_key",
+      key: "sk-bare",
+    }));
+    expect(await credentialStore.read("prov-bare")).toEqual({
+      type: "api_key",
+      key: "sk-bare",
+    });
+    await credentialDelete("prov-env-cf");
+    await credentialDelete("prov-bare");
+  });
 });
 
 describe("schema", () => {

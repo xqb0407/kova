@@ -84,6 +84,29 @@ const API_FORMATS: {
   { value: "anthropic-messages", label: "Anthropic Messages", endpoint: "/v1/messages" },
 ];
 
+/**
+ * 部分内置服务的凭据除 API Key 外还需要补充字段（pi-ai 侧按字段名回落
+ * process.env，缺了就解析不出凭据 → 该服务所有模型被标成未认证，从
+ * 默认模型/对话页选择器里整体消失）。值随 set_credential.env 存 sidecar kv
+ * （credential.env.<provider>），非密钥、明文回传预填。
+ */
+const BUILTIN_CREDENTIAL_EXTRA_FIELDS: Record<
+  string,
+  { name: string; label: string; hint?: string }[]
+> = {
+  "cloudflare-ai-gateway": [
+    { name: "CLOUDFLARE_ACCOUNT_ID", label: "Cloudflare Account ID" },
+    {
+      name: "CLOUDFLARE_GATEWAY_ID",
+      label: "AI Gateway ID",
+      hint: "在 Cloudflare 控制台 AI Gateway 页查看；两者缺一，模型无法通过鉴权",
+    },
+  ],
+  "cloudflare-workers-ai": [
+    { name: "CLOUDFLARE_ACCOUNT_ID", label: "Cloudflare Account ID" },
+  ],
+};
+
 /** 弹窗表单字段：小标签 + 控件 */
 const Field: FC<{
   label: ReactNode;
@@ -492,6 +515,8 @@ export const ModelSettings: FC = () => {
   const [svcName, setSvcName] = useState("");
   const [svcBaseUrl, setSvcBaseUrl] = useState("");
   const [svcApiKey, setSvcApiKey] = useState("");
+  // 内置服务的非密钥补充字段（如 Cloudflare 网关的 Account/Gateway ID），随 set_credential.env 提交
+  const [svcEnv, setSvcEnv] = useState<Record<string, string>>({});
   const [svcApi, setSvcApi] = useState<PiCustomApiKind>("openai-chat");
   // 双栏模型面板：左侧可用模型（自定义端点为远端拉取，内置厂商为目录过滤），右侧已勾选
   const [svcAvail, setSvcAvail] = useState<string[]>([]);
@@ -699,6 +724,7 @@ export const ModelSettings: FC = () => {
     setSvcName("");
     setSvcBaseUrl("");
     setSvcApiKey("");
+    setSvcEnv({});
     setSvcApi("openai-chat");
     setSvcAvail([]);
     setSvcSelected([]);
@@ -721,6 +747,7 @@ export const ModelSettings: FC = () => {
     setSvcName("");
     setSvcBaseUrl("");
     setSvcApiKey("");
+    setSvcEnv({});
     setSvcApi("openai-chat");
     setSvcAvail([]);
     setSvcSelected([]);
@@ -759,6 +786,7 @@ export const ModelSettings: FC = () => {
     setSvcBaseUrl(cp.baseUrl);
     // 不回填已存 Key（sidecar 只回掩码）：留空保存 = 保持原 Key
     setSvcApiKey("");
+    setSvcEnv({});
     setSvcApi(cp.api);
     setSvcAvail(ids);
     setSvcSelected(ids);
@@ -1198,12 +1226,16 @@ export const ModelSettings: FC = () => {
       : svcBuiltinCatalog;
   }, [svcBuiltinCatalog, svcModelSearch]);
 
-  /** 选择服务：custom 清空勾选；内置厂商预填已保存的模型过滤（无过滤 = 目录全选） */
+  /** 选择服务：custom 清空勾选；内置厂商预填已保存的模型过滤（无过滤 = 目录全选）与凭据补充字段 */
   const pickProvider = useCallback(
     async (id: string) => {
       setSvcProvider(id);
       setSvcProvOpen(false);
       setSvcProvSearch("");
+      // 补充字段（如 Cloudflare 的 Account/Gateway ID）明文存 kv，直接回填可改
+      setSvcEnv(
+        credentials.find((c) => c.providerId === id)?.env ?? {},
+      );
       if (id === "custom") {
         setSvcSelected([]);
         return;
@@ -1224,7 +1256,7 @@ export const ModelSettings: FC = () => {
         setSvcSelected([]);
       }
     },
-    [models],
+    [models, credentials],
   );
 
   /** 提交服务弹窗：自定义端点走 add_custom_provider，内置厂商走凭据 + 模型过滤 */
@@ -1247,16 +1279,28 @@ export const ModelSettings: FC = () => {
         // saveCustomProvider 内已 setError
       }
     } else {
-      // 内置厂商：保存凭据（已有凭据时密钥可留空）+ 模型过滤（勾选集写 pi_models 行）
+      // 内置厂商：保存凭据（已有凭据时密钥可留空）+ 模型过滤（勾选集写 pi_models 行）。
+      // 声明了补充字段的 provider 始终发 set_credential：即使 Key 留空也要同步 env
       const credExists = credentials.some((c) => c.providerId === svcProvider);
+      const envFields = BUILTIN_CREDENTIAL_EXTRA_FIELDS[svcProvider];
       if (!svcApiKey.trim() && !credExists) return;
       setBusy(true);
       try {
-        if (svcApiKey.trim()) {
+        if (svcApiKey.trim() || envFields) {
           await piRequest({
             type: "set_credential",
             provider: svcProvider,
             apiKey: svcApiKey.trim(),
+            ...(envFields
+              ? {
+                  // 空值剔除：清空的字段从 kv 移除，pi-ai 回落 process.env
+                  env: Object.fromEntries(
+                    envFields
+                      .map((f) => [f.name, (svcEnv[f.name] ?? "").trim()])
+                      .filter(([, v]) => v !== ""),
+                  ),
+                }
+              : {}),
           });
         }
         await piRequest({
@@ -1278,6 +1322,7 @@ export const ModelSettings: FC = () => {
     svcName,
     svcBaseUrl,
     svcApiKey,
+    svcEnv,
     svcApi,
     svcSelected,
     svcEditing,
@@ -1371,9 +1416,15 @@ export const ModelSettings: FC = () => {
       .filter((c) => !customIds.has(c.providerId))
       .map((c) => {
         const p = providers.find((x) => x.id === c.providerId);
+        // authed 来自 list_models 的行（sidecar 侧 getAuth 解析结果）：凭据存了
+        // 但解析不出（如 Cloudflare 缺 Account/Gateway ID）时为 false，卡片要照实说
+        const authed = (models ?? [])
+          .filter((m) => m.provider === c.providerId)
+          .some((m) => m.authed);
         return {
           providerId: c.providerId,
           name: p?.name ?? c.providerId,
+          authed,
           modelCount: (models ?? []).filter(
             (m) => m.provider === c.providerId && m.enabled !== false,
           ).length,
@@ -1898,8 +1949,15 @@ export const ModelSettings: FC = () => {
                         className="size-4"
                       />
                       <span
-                        title="已配置凭据"
-                        className="size-2 shrink-0 rounded-full bg-lime-500"
+                        title={
+                          svc.authed
+                            ? "已配置凭据"
+                            : "凭据未生效：已保存但解析不出（缺补充字段或 Key 无效），模型不会出现在模型选择里"
+                        }
+                        className={cn(
+                          "size-2 shrink-0 rounded-full",
+                          svc.authed ? "bg-lime-500" : "bg-amber-500",
+                        )}
                       />
                       <span className="shrink-0 text-sm font-medium">
                         {svc.name}
@@ -1915,6 +1973,7 @@ export const ModelSettings: FC = () => {
                     </div>
                     <div className="text-muted-foreground mt-0.5 truncate text-xs">
                       {svc.modelCount} 个模型
+                      {!svc.authed && " · 凭据未生效，点编辑补齐凭据字段"}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
@@ -2235,6 +2294,40 @@ export const ModelSettings: FC = () => {
                     在下方勾选该服务要启用的模型；全部勾选表示不筛选。
                   </span>
                 </Field>
+                {/* 凭据补充字段（如 Cloudflare 网关的 Account/Gateway ID）：
+                    缺了它们 pi-ai 解析不出凭据，该服务模型不会出现在模型选择里 */}
+                {(BUILTIN_CREDENTIAL_EXTRA_FIELDS[svcProvider] ?? []).map(
+                  (f) => (
+                    <Field key={f.name} label={f.label}>
+                      <Input
+                        value={svcEnv[f.name] ?? ""}
+                        onChange={(e) =>
+                          setSvcEnv((prev) => ({
+                            ...prev,
+                            [f.name]: e.target.value,
+                          }))
+                        }
+                        placeholder={
+                          credentials.some((c) => c.providerId === svcProvider)
+                            ? `${f.name}，留空清除`
+                            : f.name
+                        }
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        className="h-9 font-mono text-xs"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void submitService();
+                        }}
+                      />
+                      {f.hint && (
+                        <span className="text-muted-foreground text-[11px]">
+                          {f.hint}
+                        </span>
+                      )}
+                    </Field>
+                  ),
+                )}
               </div>
             )}
 

@@ -84,10 +84,11 @@ export type PiThinkingSeed = {
   cost: PiModelCost;
 };
 
-/** 已配置凭据（不含密钥本体） */
+/** 已配置凭据（不含密钥本体；env = 非密钥补充字段，如 Cloudflare 网关的 Account/Gateway ID） */
 export type PiCredentialSummary = {
   providerId: string;
   type: "api_key";
+  env?: Record<string, string>;
 };
 
 /** 自定义 OpenAI 兼容提供商里的模型定义 */

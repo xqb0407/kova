@@ -479,7 +479,7 @@
   html[data-window-effect] body {
     background: transparent;
   }
-  /* 启动占位屏（BootSplash）挂载期间：根层透明露出桌面/窗口材质，仅眼睛动画浮在上面。
+  /* 启动占位屏（BootSplash）挂载期间：根层透明露出桌面/窗口材质，仅品牌开屏动画浮在上面。
      标记由 layout.tsx 预渲染输出，BootSplash 卸载时摘除，恢复 body 正常底色。 */
   html[data-boot-splash] body {
     background: transparent;

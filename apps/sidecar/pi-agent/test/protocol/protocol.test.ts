@@ -656,7 +656,42 @@ describe("dispatch: credentials", () => {
   test("set_credential validates input", async () => {
     await expect(
       dispatch("c4", { type: "set_credential", provider: "", apiKey: "k" }),
-    ).rejects.toThrow("provider and apiKey are required");
+    ).rejects.toThrow("provider and (apiKey or env) are required");
+    // 只有 provider、Key 与 env 全空：拒绝
+    await expect(
+      dispatch("c4b", { type: "set_credential", provider: "prov-x", apiKey: "" }),
+    ).rejects.toThrow("provider and (apiKey or env) are required");
+  });
+
+  test("set_credential env 补充字段：存取回传、整体替换、删凭据一并清", async () => {
+    // list_credentials 按 credential 表遍历（无 Key 行不出现），先带 Key 落行
+    await dispatch("c5", {
+      type: "set_credential",
+      provider: "prov-env",
+      apiKey: "sk-env",
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_GATEWAY_ID: "gw" },
+    });
+    await dispatch("c6", { type: "list_credentials" });
+    const row = (last().credentials as { providerId: string; env?: Record<string, string> }[])
+      .find((c) => c.providerId === "prov-env");
+    expect(row?.env).toEqual({ CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_GATEWAY_ID: "gw" });
+
+    // 再存（带 Key）= env 整体替换：清掉 Gateway ID、空值剔除
+    await dispatch("c7", {
+      type: "set_credential",
+      provider: "prov-env",
+      apiKey: "sk-env",
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct2", CLOUDFLARE_GATEWAY_ID: "" },
+    });
+    await dispatch("c8", { type: "list_credentials" });
+    const row2 = (last().credentials as { providerId: string; env?: Record<string, string> }[])
+      .find((c) => c.providerId === "prov-env");
+    expect(row2?.env).toEqual({ CLOUDFLARE_ACCOUNT_ID: "acct2" });
+
+    // 删凭据：补充字段一并清，不留孤儿 kv 行
+    await dispatch("c9", { type: "delete_credential", provider: "prov-env" });
+    const { credentialEnvGet } = await import("../../src/storage/hostdb");
+    await expect(credentialEnvGet("prov-env")).resolves.toEqual({});
   });
 });
 

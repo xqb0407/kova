@@ -8,6 +8,9 @@ import { send } from "../stream";
 import { running } from "../../sessions/sessions";
 import {
   credentialDelete,
+  credentialEnvDelete,
+  credentialEnvGet,
+  credentialEnvSet,
   credentialGet,
   credentialList,
   credentialSet,
@@ -71,27 +74,53 @@ async function repointCurrentModelAwayFrom(provider: string): Promise<void> {
   void kvSet("pi.model", JSON.stringify(key)).catch(() => {});
 }
 
+/**
+ * 归一化凭据补充字段：只收非空字符串键值对（空值剔除 = 该字段回落
+ * process.env）；env 键缺省（未携带）时返回 undefined = 不动已存的 kv。
+ */
+const parseCredentialEnv = (value: unknown): Record<string, string> | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k && typeof v === "string" && v.trim()) out[k] = v.trim();
+  }
+  return out;
+};
+
 export const handlers: Record<string, CommandHandler> = {
   set_credential: async (reqId, msg) => {
     const provider = String(msg.provider ?? "");
     const apiKey = String(msg.apiKey ?? "");
-    if (!provider || !apiKey) throw new Error("provider and apiKey are required");
-    await credentialSet(provider, apiKey);
+    // env = 凭据的非密钥补充字段（如 Cloudflare 网关的 Account/Gateway ID）。
+    // 只存 Key 解不出凭据的 provider 靠它补齐；apiKey 允许为空 = 只更新 env
+    const env = parseCredentialEnv(msg.env);
+    if (!provider || (!apiKey && !env)) {
+      throw new Error("provider and (apiKey or env) are required");
+    }
+    if (apiKey) await credentialSet(provider, apiKey);
+    if (env) await credentialEnvSet(provider, env);
     send({ id: reqId, type: "credential", provider });
   },
 
   list_credentials: async (reqId) => {
     const providers = await credentialList();
-    const credentials = providers.map((providerId) => ({
-      providerId,
-      type: "api_key" as const,
-    }));
+    const credentials = await Promise.all(
+      providers.map(async (providerId) => {
+        const env = await credentialEnvGet(providerId);
+        return {
+          providerId,
+          type: "api_key" as const,
+          ...(Object.keys(env).length > 0 ? { env } : {}),
+        };
+      }),
+    );
     send({ id: reqId, type: "credentials", credentials });
   },
 
   delete_credential: async (reqId, msg) => {
     const provider = String(msg.provider ?? "");
     await credentialDelete(provider);
+    await credentialEnvDelete(provider);
     send({ id: reqId, type: "credential_deleted", provider });
   },
 
