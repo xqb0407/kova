@@ -1,5 +1,5 @@
 /**
- * 子智能体定义命令：清单/保存/删除/开关（保存类命令改完热重载再回清单）。
+ * 子智能体定义命令：清单/保存/删除/开关/设模型（保存类命令改完热重载再回清单）。
  * 定义三层发现与落盘在 subagent/subagent-definitions.ts，重载在 sessions。
  */
 import { send } from "../stream";
@@ -10,6 +10,7 @@ import {
   parseSubagentDraftYaml,
   saveSubagentDefinition,
   setSubagentEnabled,
+  setSubagentModelOverride,
   type SubagentDraft,
   type SubagentScope,
 } from "../../subagent/subagent-definitions";
@@ -89,6 +90,32 @@ export const handlers: Record<string, CommandHandler> = {
     const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
     const enabled = msg.enabled === true;
     await setSubagentEnabled(scope, name, enabled, cwd, pluginId);
+    await reloadSubagents();
+    send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
+  },
+
+  // 模型覆盖走 kv 而不是定义文件：内置/插件两层永不落盘，只能这样选模型。
+  // 重载是必需的——工具闭包捕获的是 definitions 数组，不重载当次会话仍拿着旧的 model。
+  set_subagent_model: async (reqId, msg) => {
+    const scope: SubagentScope | null =
+      msg.scope === "builtin" ||
+      msg.scope === "system" ||
+      msg.scope === "workspace" ||
+      msg.scope === "plugin"
+        ? msg.scope
+        : null;
+    if (!scope) throw new Error("set_subagent_model: invalid scope");
+    const name = String(msg.name ?? "");
+    if (!name) throw new Error("set_subagent_model: name is required");
+    const pluginId =
+      scope === "plugin" && typeof msg.pluginId === "string" ? msg.pluginId : undefined;
+    if (scope === "plugin" && !pluginId) {
+      throw new Error("set_subagent_model: plugin scope requires pluginId");
+    }
+    const cwd = typeof msg.cwd === "string" && msg.cwd.trim() ? msg.cwd : undefined;
+    // 空串 = 清除覆盖，回落定义自带 model，再回落会话模型
+    const model = typeof msg.model === "string" ? msg.model : "";
+    await setSubagentModelOverride(scope, name, model, cwd, pluginId);
     await reloadSubagents();
     send({ id: reqId, type: "subagents", ...(await subagentsPayload(cwd)) });
   },

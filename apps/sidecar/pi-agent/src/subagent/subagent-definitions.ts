@@ -7,9 +7,10 @@
  *   PI_SUBAGENTS_DIR；兜底 PI_DB_PATH 同级 subagents/，再兜底 ~/.kova/subagents）。
  * - 工作区：`<cwd>/.kova/subagents/*.yml`，与 .kova/plans 同族。
  *
- * 定义文件是纯 YAML（yaml 包解析/序列化）。启用开关是"本机的运行时决定"，
- * 不写进定义文件（工作区文件在 git 里）：整包存 SQLite kv（key = STATE_KV_KEY），
- * 与个性化设置同款链路。
+ * 定义文件是纯 YAML（yaml 包解析/序列化）。启用开关与模型覆盖都是"本机的运行时
+ * 决定"，不写进定义文件（工作区文件在 git 里，内置更是永不写）：整包存 SQLite kv
+ * （key = STATE_KV_KEY），与个性化设置同款链路。模型覆盖因此成为只读层（内置/插件）
+ * 也能在设置页选模型的落点——生效优先级：Task 参数 > kv 覆盖 > 定义自带 > 会话模型。
  *
  * 动态化：每次加载对目录做签名（文件名+mtime+大小），签名没变用缓存——
  * 设置页保存/删除后缓存自然失效，活动会话由 protocol 层的 reloadSubagents
@@ -33,11 +34,13 @@ export type SubagentDefinition = {
   tools: string[];
   /** 轮次上限；达到后终止并按 truncated 收敛 */
   maxTurns?: number;
-  /** 模型固定 "provider/modelId"；缺省继承会话当前模型 */
+  /** 模型固定 "provider/modelId"；缺省继承会话当前模型（只读层由 kv 覆盖注入） */
   model?: string;
   /** 正文 prompt（定义自身的行为说明） */
   prompt: string;
   scope: SubagentScope;
+  /** scope = "plugin" 时的来源插件身份（开关与模型覆盖都靠它命名空间） */
+  pluginId?: string;
   /** YAML 原文（设置页"YAML 视图"与保存回读用；内置由常量序列化而来） */
   raw?: string;
   /** 定义文件路径（内置为 undefined） */
@@ -319,6 +322,9 @@ export function parseSubagentYaml(
       tools,
       prompt,
       scope: options.scope,
+      ...(options.scope === "plugin" && options.pluginId
+        ? { pluginId: options.pluginId }
+        : {}),
       ...(options.filePath ? { path: options.filePath } : {}),
       stateKey: subagentStateKey(
         options.scope,
@@ -378,15 +384,17 @@ export function subagentFileName(name: string): string {
 export type SubagentState = {
   /** stateKey -> 被显式关闭 */
   disabled: Record<string, true>;
+  /** stateKey -> "provider/modelId" 模型覆盖；只读层（内置/插件）靠它选模型 */
+  modelOverrides: Record<string, string>;
 };
 
 export const SUBAGENT_STATE_KV_KEY = "pi.subagents";
 
-let state: SubagentState = { disabled: {} };
+let state: SubagentState = emptyState();
 let stateLoad: Promise<void> | undefined;
 
 function emptyState(): SubagentState {
-  return { disabled: {} };
+  return { disabled: {}, modelOverrides: {} };
 }
 
 /** 启动装配调一次（index.ts 闸门内）；幂等 */
@@ -398,6 +406,8 @@ export function initSubagentState(): Promise<void> {
       const parsed = JSON.parse(row.value) as Partial<SubagentState>;
       state = {
         disabled: (parsed.disabled ?? {}) as Record<string, true>,
+        // 老载荷只有 disabled；缺失即无覆盖，解析失败也不该赔上整个清单
+        modelOverrides: parsed.modelOverrides ?? {},
       };
     } catch (err) {
       logErr("subagents-state:", err instanceof Error ? err.message : String(err));
@@ -439,6 +449,35 @@ export async function setSubagentEnabled(
   const key = subagentStateKey(scope, name, cwd, pluginId);
   if (enabled) delete state.disabled[key];
   else state.disabled[key] = true;
+  await persistState();
+}
+
+/**
+ * 设一条模型覆盖（"provider/modelId"）。传空串/空白即清除覆盖，该定义回落
+ * 自带 model，再回落会话当前模型。
+ *
+ * 只校验形状，不查目录：模型目录是惰性单例，把保存绑死在目录就绪上会让
+ * "服务还没配好就存不进去"。拼错的键在 Task 解析时已有明确报错
+ * （subagent/tools.ts 的 resolveDelegateModel）。
+ */
+export async function setSubagentModelOverride(
+  scope: SubagentScope,
+  name: string,
+  model: string | undefined,
+  cwd?: string,
+  pluginId?: string,
+): Promise<void> {
+  await ensureSubagentState();
+  const key = subagentStateKey(scope, name, cwd, pluginId);
+  const trimmed = model?.trim() ?? "";
+  if (!trimmed) {
+    delete state.modelOverrides[key];
+  } else {
+    if (!trimmed.includes("/")) {
+      throw new Error(`模型需为 "provider/modelId" 形式，收到 "${trimmed}"`);
+    }
+    state.modelOverrides[key] = trimmed;
+  }
   await persistState();
 }
 
@@ -536,6 +575,33 @@ export type SubagentLoadResult = {
 };
 
 /**
+ * 把 kv 里的模型覆盖烘焙进定义。覆盖优先于定义自带的 model，并重算 raw
+ * （设置页"YAML 原文"页签与表单读的是同一份 raw，两者不能各说各话）。
+ * 逐字段重挑而不是 spread 整个 def：emitSubagentYaml 收的是 SubagentDraft，
+ * 带上 scope/raw/stateKey 这些运行时字段过不了结构检查。
+ */
+function applyModelOverride(def: SubagentDefinition): SubagentDefinition {
+  const override = state.modelOverrides[def.stateKey];
+  if (!override || override === def.model) return def;
+  return {
+    ...def,
+    model: override,
+    ...(def.raw
+      ? {
+          raw: emitSubagentYaml({
+            name: def.name,
+            description: def.description,
+            tools: def.tools,
+            ...(def.maxTurns !== undefined ? { maxTurns: def.maxTurns } : {}),
+            model: override,
+            prompt: def.prompt,
+          }),
+        }
+      : {}),
+  };
+}
+
+/**
  * 会话可用的定义集合：内置 + 系统层 + 工作区层。
  * 一份坏文档降级为诊断，不赔上其它 delegate，更不能赔上整个 turn。
  */
@@ -600,7 +666,7 @@ export async function loadSubagentDefinitions(options: {
     ...globalEntry.definitions,
     ...workspaceEntry.definitions,
     ...pluginEntries.flatMap((e) => e.definitions),
-  ];
+  ].map(applyModelOverride);
   for (const def of ordered) {
     if (!isEnabled(def)) continue;
     mounted.set(normalizeSubagentName(def.name), def);
@@ -773,4 +839,6 @@ export async function deleteSubagentDefinition(
   }
   if (!removed) throw new Error(`未找到 ${scope === "system" ? "系统" : "工作区"}定义 "${name}"`);
   await setSubagentEnabled(scope, name, true, cwd).catch(() => {});
+  // 覆盖是按 stateKey 存的，定义没了就该一起走，别在 kv 里留孤儿键
+  await setSubagentModelOverride(scope, name, undefined, cwd).catch(() => {});
 }

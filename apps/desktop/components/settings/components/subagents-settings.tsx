@@ -31,6 +31,22 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  ModelSelectorContent,
+  ModelSelectorEmpty,
+  ModelSelectorGroup,
+  ModelSelectorItem,
+  ModelSelectorList,
+  ModelSelectorRoot,
+  ModelSelectorSearch,
+  ModelSelectorTrigger,
+  type ModelOption,
+} from "@/components/assistant-ui/elements/model-selector";
+import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
+import {
+  buildModelOptions,
+  groupModelOptions,
+} from "@/lib/pi/pi-model-groups";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -63,6 +79,7 @@ import {
   refreshSubagents,
   saveSubagent,
   setSubagentEnabled,
+  setSubagentModel,
   useSubagents,
   type SubagentDraft,
   type SubagentEntry,
@@ -392,8 +409,11 @@ const BuiltinViewDialog: FC<{
           {entry.maxTurns !== undefined && (
             <span className="text-muted-foreground px-1">maxTurns: {entry.maxTurns}</span>
           )}
+          {/* 内置定义自身不带 model，能出现在这里的只可能是 kv 里的本机覆盖 */}
           {entry.model && (
-            <span className="text-muted-foreground px-1 font-mono">{entry.model}</span>
+            <span className="text-muted-foreground px-1">
+              模型 <span className="font-mono">{entry.model}</span>（本机设定）
+            </span>
           )}
         </div>
         <pre className="bg-muted/50 max-h-80 overflow-y-auto rounded-xl p-4 text-xs whitespace-pre-wrap">
@@ -419,6 +439,91 @@ const BuiltinViewDialog: FC<{
 };
 
 // ---------------------------------------------------------------------------
+// 行内模型控件
+// ---------------------------------------------------------------------------
+
+/** 「跟随会话」的哨兵 id：空串在 cmdk 里语义不干净，用一个不会撞上 provider/modelId 的值 */
+const FOLLOW_SESSION_ID = "__follow_session__";
+const FOLLOW_SESSION_LABEL = "跟随会话模型";
+
+/**
+ * 子智能体的模型选择器。只读层（内置/插件）唯一的改模型入口——它们的定义永不落盘，
+ * 选中的值存进 sidecar kv 的覆盖层；可编辑层的模型在编辑弹窗的输入框里改，
+ * 不在这里给第二套持久化路径。
+ *
+ * 交互与同行的启用开关同款：改即存，不进弹窗。
+ */
+const SubagentModelControl: FC<{
+  /** 当前生效的 "provider/modelId"；空 = 跟随会话模型 */
+  value: string | undefined;
+  onChange: (model: string) => void;
+}> = ({ value, onChange }) => {
+  const allModels = usePiModels();
+  // 与对话页选择器同口径：没配凭据的服务不出现，被过滤隐藏的模型也不出现
+  const models = useMemo(
+    () => allModels.filter((m) => m.authed && m.enabled !== false),
+    [allModels],
+  );
+  const options = useMemo(() => buildModelOptions(models), [models]);
+  const groups = useMemo(
+    () => groupModelOptions(models, options),
+    [models, options],
+  );
+
+  const followSession: ModelOption = {
+    id: FOLLOW_SESSION_ID,
+    name: FOLLOW_SESSION_LABEL,
+    description: "不固定，用会话当前的模型",
+  };
+  const selectedId = value || FOLLOW_SESSION_ID;
+  // 覆盖的模型可能已从目录里删掉（服务被移除），回落显示原始键而不是空占位
+  const selectedLabel =
+    selectedId === FOLLOW_SESSION_ID
+      ? FOLLOW_SESSION_LABEL
+      : (options.find((o) => o.id === selectedId)?.name ?? selectedId);
+
+  return (
+    <ModelSelectorRoot
+      models={[followSession, ...options]}
+      value={selectedId}
+      onValueChange={(v) => onChange(v === FOLLOW_SESSION_ID ? "" : v)}
+      onOpenChange={(open) => open && refreshPiModels()}
+    >
+      <ModelSelectorTrigger
+        variant="ghost"
+        size="sm"
+        className="text-muted-foreground h-7 max-w-56 rounded-full text-xs [@max-2xl]:px-2"
+        title={selectedLabel}
+      >
+        <span className="truncate">{selectedLabel}</span>
+      </ModelSelectorTrigger>
+      <ModelSelectorContent searchable className="w-80">
+        <ModelSelectorSearch placeholder="搜索模型..." />
+        <ModelSelectorList>
+          <ModelSelectorEmpty>
+            没有可用模型，请在设置 → 模型里添加服务
+          </ModelSelectorEmpty>
+          <ModelSelectorGroup>
+            <ModelSelectorItem model={followSession} />
+          </ModelSelectorGroup>
+          {groups.map((group) => (
+            <ModelSelectorGroup
+              key={group.title}
+              heading={group.title}
+              className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium"
+            >
+              {group.options.map((o) => (
+                <ModelSelectorItem key={o.id} model={o} />
+              ))}
+            </ModelSelectorGroup>
+          ))}
+        </ModelSelectorList>
+      </ModelSelectorContent>
+    </ModelSelectorRoot>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // 列表行
 // ---------------------------------------------------------------------------
 
@@ -432,6 +537,7 @@ const SubagentRow: FC<{
   onCopy: () => void;
   onDelete: () => void;
   onConfirmDelete: () => void;
+  onModelChange: (model: string) => void;
 }> = ({
   entry,
   workspaceCwd,
@@ -442,6 +548,7 @@ const SubagentRow: FC<{
   onCopy,
   onDelete,
   onConfirmDelete,
+  onModelChange,
 }) => {
   const relPath = entry.path
     ? entry.scope === "workspace" &&
@@ -481,6 +588,17 @@ const SubagentRow: FC<{
       onCheckedChange={onToggle}
       aria-label={`${entry.name} 启用`}
     />
+    {/* 只读层直接在这里改模型（改即存）；可编辑层的模型归编辑弹窗管，行内只读展示 */}
+    {entry.editable ? (
+      <span
+        className="text-muted-foreground hidden w-56 shrink-0 truncate text-right text-xs lg:block"
+        title={entry.model ?? "跟随会话模型"}
+      >
+        {entry.model ?? "跟随会话模型"}
+      </span>
+    ) : (
+      <SubagentModelControl value={entry.model} onChange={onModelChange} />
+    )}
     <div className="flex shrink-0 items-center gap-1">
       {!entry.editable && (
         <Button variant="ghost" size="icon" className="size-7" onClick={onView} title="查看定义">
@@ -637,6 +755,13 @@ export const SubagentsSettings: FC = () => {
     setConfirmDelete(null);
   };
 
+  /** 模型覆盖落 kv；失败已由 mutate 记到 snap.error，这里不重复处理 */
+  const changeModel = (entry: SubagentEntry, model: string) => {
+    void setSubagentModel(entry.scope, entry.name, model, viewingCwd, entry.pluginId).catch(
+      () => {},
+    );
+  };
+
   const workspaceCandidates = useMemo(() => {
     const list = [overrideCwd, workspace, ...recents].filter(
       (d): d is string => typeof d === "string" && d.length > 0,
@@ -698,6 +823,7 @@ export const SubagentsSettings: FC = () => {
               onCopy={() => openEditor({ mode: "copy", entry })}
               onDelete={() => setConfirmDelete(`${entry.scope}:${entry.name}`)}
               onConfirmDelete={() => remove(entry)}
+              onModelChange={(model) => changeModel(entry, model)}
             />
           ))
         )}
@@ -707,7 +833,7 @@ export const SubagentsSettings: FC = () => {
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
+      <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-0 py-8">
         {/* 标题行：状态文字在右（MCP/技能页同款） */}
         <div className="flex items-baseline justify-between gap-4">
           <h1 className="text-2xl font-bold tracking-tight">子智能体</h1>
@@ -775,7 +901,7 @@ export const SubagentsSettings: FC = () => {
 
         {renderSection(
           "内置",
-          "随应用发布的四个 delegate：只读，可关闭，可复制为系统级后定制。",
+          "随应用发布的四个 delegate：可开关、可在行内指定模型（存在本机，不随版本走）；正文只读，需要改行为请复制为系统级。",
           groups.builtin,
         )}
         {renderSection(

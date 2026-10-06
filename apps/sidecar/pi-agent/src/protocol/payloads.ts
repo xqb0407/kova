@@ -31,6 +31,8 @@ export async function subagentsPayload(cwd?: string) {
     ...(e.raw ? { raw: e.raw } : {}),
     enabled: e.enabled,
     editable: e.editable,
+    // 插件层的开关与模型覆盖都按 pluginId 命名空间，前端回命令时必须带上
+    ...(e.scope === "plugin" ? { pluginId: e.pluginId } : {}),
   });
   return {
     agents: r.entries.filter((e) => e.scope !== "plugin").map(toEntry),
