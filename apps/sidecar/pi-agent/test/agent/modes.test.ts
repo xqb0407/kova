@@ -27,6 +27,7 @@ import {
   planningPayload,
   resolveToolApproval,
   toolsForMode,
+  workflowBashViolation,
 } from "../../src/agent/modes";
 import { GOAL_TOOL_NAMES, proposeCriteria } from "../../src/goal/goal-state";
 import { WORKFLOW_TOOL_NAMES } from "../../src/workflow/plan-state";
@@ -1229,5 +1230,44 @@ describe("workflow 档工具表与门控(实机反馈修复)", () => {
     const agentRun = makeRun("agent");
     const proposeGated = modeBeforeToolCall(agentRun, ctx(WORKFLOW_TOOL_NAMES.propose));
     expect(proposeGated?.block).toBe(true);
+  });
+});
+
+describe("workflow 档 bash 只读守卫", () => {
+  test("勘察命令放行:ls/cat/git 只读/搜索", () => {
+    expect(workflowBashViolation("ls -la .kova/subagents")).toBe("");
+    expect(workflowBashViolation("cat package.json")).toBe("");
+    expect(workflowBashViolation("git status --short")).toBe("");
+    expect(workflowBashViolation("git log --oneline -5")).toBe("");
+    expect(workflowBashViolation("git diff HEAD~1")).toBe("");
+    expect(workflowBashViolation("grep -rn TODO src | head -20")).toBe("");
+    expect(workflowBashViolation("rg --files")).toBe("");
+  });
+
+  test("写类命令拒绝:重定向/rm/就地编辑/git 写/装包", () => {
+    expect(workflowBashViolation("echo hi > out.txt")).not.toBe("");
+    expect(workflowBashViolation("cat a >> b")).not.toBe("");
+    expect(workflowBashViolation("rm -rf build")).not.toBe("");
+    expect(workflowBashViolation("mkdir -p out")).not.toBe("");
+    expect(workflowBashViolation("sed -i 's/a/b/' f.ts")).not.toBe("");
+    expect(workflowBashViolation("git commit -m 'x'")).not.toBe("");
+    expect(workflowBashViolation("git checkout -b feat")).not.toBe("");
+    expect(workflowBashViolation("npm install lodash")).not.toBe("");
+    expect(workflowBashViolation("pnpm add -D vitest")).not.toBe("");
+  });
+
+  test("门控接上了守卫:workflow 档写类 bash 被拒、勘察 bash 放行", () => {
+    const run = makeRun("workflow");
+    const write = modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "echo x > f" }));
+    expect(write?.block).toBe(true);
+    const read = modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "ls -la" }));
+    expect(read).toBeUndefined();
+    // 其他档不受影响
+    const agentRun = makeRun("agent");
+    const agentWrite = modeBeforeToolCall(
+      agentRun,
+      ctx("bash", ["bash"], { command: "echo x > f" }),
+    );
+    expect(agentWrite).toBeUndefined();
   });
 });

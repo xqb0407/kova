@@ -12,6 +12,7 @@
  */
 import type { Running } from "../types";
 import { sendEventChunk } from "../protocol/stream";
+import { logAt } from "../log";
 import { WORKFLOW_CONTINUE_PREFIX, type Playbook, type WorkflowRunSummary } from "pi-protocol";
 import { appendWorkflowStateRow, readWorkflowStateRow } from "../sessions/transcript";
 import {
@@ -287,8 +288,11 @@ export function syncWorkflowOnUserPrompt(run: Running, rawText: string): void {
   const current = getWorkflow(run.threadId);
   if (!current) {
     const objective = rawText.trim();
+    // 空白消息(纯附件/提示行)建不出运行:跳过,让这一轮按普通请求跑
     if (!validateObjectiveText(objective)) return;
-    startWorkflow(run, objective);
+    const created = startWorkflow(run, objective);
+    // 诊断留痕:实机排查「发了消息却没有运行槽」时,这条日志是分水岭
+    logAt("event", `workflow: started run ${created.id} from user prompt (thread ${run.threadId})`);
     return;
   }
   if (current.status === "proposed") {

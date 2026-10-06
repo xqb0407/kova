@@ -163,8 +163,36 @@ const ASK_ONLY_TOOL_NAMES = new Set([ASK_NEEDS_WORK_TOOL_NAME]);
  *  轮中切换前模型可能仍带着旧 schema（与 plan 模式同一理由） */
 const ASK_MODE_MUTATING_TOOLS = new Set(["write", "edit", "bash"]);
 
-/** 工作流档结构性拦截：只拦写类（plan 档同款取舍——bash 用于勘察，靠提示词约束用途） */
+/** 工作流档结构性拦截：只拦写类（bash 用于勘察，但下面是只读守卫的第二道闸） */
 const WORKFLOW_MODE_MUTATING_TOOLS = new Set(["write", "edit"]);
+
+/**
+ * 工作流档 bash 的只读守卫：命中即拒。
+ *
+ * 为什么需要:bash 能写文件(重定向)、改 git 状态、装包——"编排器只拟剧本不干活"
+ * 若只靠提示词约束,模型一旦决定"那我直接做吧"(实机出现过:用户一句"编排工作流"
+ * 被读成"去做吧",主代理自己搜数据、写报告文件),整套编排就成了摆设。
+ * denylist 有意保守:漏拦的极端写法仍靠提示词兜底;误拦有清晰出路(读文件用
+ * read/glob/grep,看 git 用只读子命令,执行交给剧本)。
+ */
+const WORKFLOW_BASH_MUTATION_PATTERNS: Array<{ re: RegExp; label: string }> = [
+  { re: />>?/, label: "重定向(写文件)" },
+  { re: /(?:^|[;&|(\s])(?:rm|rmdir|mv|cp|mkdir|touch|tee|chmod|chown|ln)\s/, label: "改文件的命令" },
+  { re: /\bsed\s+-i\b|\bperl\s+-i\b/, label: "就地编辑" },
+  { re: /\bgit\s+(?:commit|push|checkout|switch|reset|clean|apply|merge|rebase|stash|add|restore)\b/, label: "写 git 状态的命令" },
+  { re: /\b(?:npm|pnpm|yarn|bun|pip|cargo|go)\s+(?:i|install|add|remove|uninstall|upgrade|update)\b/, label: "装包/改依赖" },
+  { re: /\b(?:kill|pkill|killall|shutdown|reboot)\b/, label: "进程/系统控制" },
+];
+
+/** 返回违规标签(命中即拒);空串 = 允许 */
+export function workflowBashViolation(command: string): string {
+  const trimmed = command.trim();
+  if (!trimmed) return "";
+  for (const { re, label } of WORKFLOW_BASH_MUTATION_PATTERNS) {
+    if (re.test(trimmed)) return label;
+  }
+  return "";
+}
 
 /* ------------------------------- 系统提示词 ------------------------------- */
 
@@ -195,6 +223,7 @@ const WORKFLOW_MODE_PROMPT = [
   "Write titles, phases and step prompts in the user's language.",
   "A request to design/plan/orchestrate a workflow — including 「帮我设计一个工作流」, a pre-filled design instruction, or any decomposable job — MEANS: call workflow_propose_plan. The plan card is the design the user reviews; never deliver the plan as a prose answer or a design document, and never stop to ask about ambiguity first — propose your best interpretation and let the user correct it by rejecting the card with feedback. Only genuine questions and chit-chat (what can you do, explain X) get a direct answer.",
   "A playbook is not a scheduled task: cron/定时任务 belongs to the automation feature; this mode's deliverable is the workflow plan card.",
+  "bash is inspection-only here (ls/cat/git status/read-only search; redirections and mutating commands are blocked). And never execute the plan's steps yourself — not even when the user says 编排/开始/去做: proposing is yours, confirming is the user's, executing is the runtime's.",
   "After workflow_propose_plan is accepted you must stop: the user confirms the plan (including every gate command), then the runtime executes it and delivers the report. If the user rejects or comments, revise and propose again.",
 ].join("\n");
 
@@ -663,14 +692,31 @@ export function modeBeforeToolCall(
     };
   }
   // 工作流档的编排器只拟剧本不干活:工具表里没有写类工具,这里是轮中切换前的兜底。
-  // bash 放行(勘察同 plan 档——模型需要 ls/git status 这类只读命令来摸清现状,
-  // 实机反馈里"查子代理定义"这一步就是靠它),write/edit 结构性拦
+  // bash 放行(勘察同 plan 档——模型需要 ls/git status 这类只读命令来摸清现状),
+  // write/edit 结构性拦
   if (run.mode === "workflow" && WORKFLOW_MODE_MUTATING_TOOLS.has(name)) {
     return {
       block: true,
       reason:
         "Workflow mode plans the work; it does not perform it. Inspect with read-only tools, then call workflow_propose_plan — the runtime executes the confirmed plan.",
     };
+  }
+  // bash 只读守卫:勘察允许,写文件/改状态/装包拒绝(见 WORKFLOW_BASH_MUTATION_PATTERNS)
+  if (run.mode === "workflow" && name === "bash") {
+    const command =
+      typeof (context.args as { command?: unknown })?.command === "string"
+        ? String((context.args as { command: string }).command)
+        : "";
+    const violation = workflowBashViolation(command);
+    if (violation) {
+      return {
+        block: true,
+        reason:
+          `Workflow mode is inspection-only for bash: this command looks like ${violation}. ` +
+          "Read files with read/glob/grep, check git with read-only subcommands, and let the confirmed plan do the work — " +
+          "if you need something done, put it in a step and call workflow_propose_plan.",
+      };
+    }
   }
   // 目标契约还没落定（协商中 / 已提议等用户确认）：这一轮只读。与 plan/ask 同款
   // 结构性保证，不依赖工具表或提示词是否新鲜。只在**目标已存在**时生效——goal 档下
