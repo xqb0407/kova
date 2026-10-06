@@ -947,12 +947,31 @@ setWorkflowDeliveryHook(kickWorkflowDelivery);
  * 报告在运行记录与常驻条上都可见,用户点「继续」(workflow_resume 会拒绝,
  * complete 是终态)或清掉后重新编排;M1 接受这个缺口。
  */
+const DELIVERY_RETRY_MS = 5_000;
+const DELIVERY_MAX_TRIES = 120; // 忙时最多等 10 分钟(用户一直在聊的情况)
+
 function kickWorkflowDelivery(run: Running, wf: WorkflowRun): void {
   const synth = wf.plan?.steps.find((s) => s.kind === "synthesize");
   const report = (synth ? wf.steps[synth.key]?.result : undefined) ?? "";
   if (!report.trim()) return;
-  if (isTurnBusy(run.threadId)) return;
   const title = wf.title ?? wf.objective.slice(0, 60);
+  // 投递不丢:忙(用户正在聊)时**排队重试到空闲**,而不是静默丢弃——
+  // 「跑完了报告却不来」正是最伤闭环的一环(审计交付层)
+  const attempt = (tries: number) => {
+    if (isTurnBusy(run.threadId)) {
+      if (tries >= DELIVERY_MAX_TRIES) {
+        logErr(`workflow delivery: gave up after ${tries} tries (thread busy): ${run.threadId}`);
+        return;
+      }
+      setTimeout(() => attempt(tries + 1), DELIVERY_RETRY_MS);
+      return;
+    }
+    deliverNow(run, title, report);
+  };
+  attempt(0);
+}
+
+function deliverNow(run: Running, title: string, report: string): void {
   const reqId = `workflow-${run.sessionId}-${Date.now()}`;
   void dispatchPrompt(reqId, {
     threadId: run.threadId,

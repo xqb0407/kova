@@ -63,6 +63,9 @@ export type WorkflowStep = {
   verify?: { reviewers?: number; threshold?: number };
   /** 可恢复失败(provider 错误/空报告)的额外重试次数,默认 0;对 gate 无效(退出码是值不是失败) */
   retries?: number;
+  /** 单步超时(ms);缺省用 DEFAULT_STEP_TIMEOUT_MS。超时按可恢复失败计(进重试/onFail);
+   *  对 gate 无效(它有自己的命令超时) */
+  timeoutMs?: number;
   /** 失败传播,默认 "abort"(一步失败整个 run 失败);"skip" 记 skipped、下游按缺口继续。
    *  仅 delegate/verify 可用——synthesize 是出口、gate 的存在意义就是判定,跳不了 */
   onFail?: "abort" | "skip";
@@ -143,6 +146,11 @@ export const MAX_VERIFY_REVIEWERS = 5;
 /** gate 命令超时边界(与 bash 宿主工具的 600s 上限对齐) */
 export const GATE_TIMEOUT_MIN_MS = 1_000;
 export const GATE_TIMEOUT_MAX_MS = 600_000;
+/** 步骤默认超时(delegate/verify/synthesize):兜住挂死的 provider 流/自旋 agent,
+ *  让 run 一定收敛到成功或失败,而不是永远「运行中」(审计缺陷 4) */
+export const DEFAULT_STEP_TIMEOUT_MS = 20 * 60_000;
+export const STEP_TIMEOUT_MIN_MS = 1_000;
+export const STEP_TIMEOUT_MAX_MS = 3_600_000;
 
 /* ------------------------------- 建档与提案 ------------------------------- */
 
@@ -181,6 +189,7 @@ type RawStep = {
   verify?: unknown;
   use?: unknown;
   retries?: unknown;
+  timeoutMs?: unknown;
   onFail?: unknown;
 };
 
@@ -373,6 +382,21 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
         };
       }
       if (retries > 0) step.retries = retries;
+    }
+    const timeoutMs = entry.timeoutMs;
+    if (timeoutMs !== undefined) {
+      if (
+        typeof timeoutMs !== "number" ||
+        !Number.isInteger(timeoutMs) ||
+        timeoutMs < STEP_TIMEOUT_MIN_MS ||
+        timeoutMs > STEP_TIMEOUT_MAX_MS
+      ) {
+        return {
+          ok: false,
+          reason: `steps[${i}] (${key}) timeoutMs must be an integer between ${STEP_TIMEOUT_MIN_MS} and ${STEP_TIMEOUT_MAX_MS} (ms).`,
+        };
+      }
+      step.timeoutMs = timeoutMs;
     }
     const onFail = asTrimmedString(entry.onFail);
     if (onFail) {
@@ -835,6 +859,28 @@ export function isWorkflowRun(value: unknown): value is WorkflowRun {
     typeof r.steps === "object" &&
     r.steps !== null
   );
+}
+
+/**
+ * 恢复水合:瘦身转录行(+行里记的 cwd)→ 完整运行。
+ * 全量 run 文件(含各步结果与指纹)存在且 runId 一致时以文件为准——重启后
+ * resume 才能按指纹免费回放;文件缺失退回瘦身行(状态可读、结果不可用)。
+ * 读取器注入,便于单测。
+ */
+export function hydrateRestoredRun(
+  row: unknown,
+  readFile: (cwd: string, runId: string) => WorkflowRun | undefined,
+): WorkflowRun | undefined {
+  if (!row || typeof row !== "object") return undefined;
+  const raw = row as Record<string, unknown>;
+  const cwd = typeof raw.cwd === "string" ? raw.cwd : undefined;
+  const parsed: unknown = JSON.parse(JSON.stringify(row));
+  if (!isWorkflowRun(parsed)) return undefined;
+  if (cwd) {
+    const file = readFile(cwd, parsed.id);
+    if (file && file.id === parsed.id) return file;
+  }
+  return parsed;
 }
 
 /** 常驻条一行摘要(sidecar 算成品,两端不各算一遍;对齐 formatGoalStatus)。

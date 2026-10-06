@@ -114,6 +114,15 @@ export interface PiChannel {
     cb: (delegationId: string, item: SubagentActivityItem) => void,
   ): (() => void) | Promise<() => void>;
   /**
+   * 能力可选（同款无 id 自发通知通道）：订阅工作流后台推进帧
+   * （workflow_state_push：执行器的每次状态提交）。这是工作流进度的**主通道**
+   * ——执行器多数提交发生在模型回合之外，轮内 chunk 通道发不出去；WS 通道
+   * 暂缺 → 缺省即降级（轮询兜底）。
+   */
+  subscribeWorkflowProgress?(
+    cb: (threadId: string, sessionId: string | undefined, data: unknown) => void,
+  ): (() => void) | Promise<() => void>;
+  /**
    * 能力可选（同款无 id 自发通知通道）：订阅定时任务通知帧
    * （automation_fired / automation_run_done，见 PiAutomationFrame）。
    * WS 通道经网关白名单转发（remote.rs broadcast_notification）。
@@ -307,6 +316,33 @@ export class TauriPiChannel implements PiChannel {
         }
         if (typeof parsed.delegationId === "string" && parsed.item) {
           cb(parsed.delegationId, parsed.item);
+        }
+      }
+    });
+  }
+
+  /**
+   * workflow_state_push 自发通知行（无 id）：工作流执行器的后台推进。
+   * 与 subscribeSubagentActivity 同款前缀预筛。
+   */
+  async subscribeWorkflowProgress(
+    cb: (threadId: string, sessionId: string | undefined, data: unknown) => void,
+  ): Promise<() => void> {
+    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+      for (const wire of event.payload) {
+        if (!wire.l.startsWith('{"type":"workflow_state_push"')) continue;
+        let parsed: { threadId?: string; sessionId?: string; data?: unknown };
+        try {
+          parsed = JSON.parse(wire.l);
+        } catch {
+          continue;
+        }
+        if (typeof parsed.threadId === "string" && parsed.data !== undefined) {
+          cb(
+            parsed.threadId,
+            typeof parsed.sessionId === "string" ? parsed.sessionId : undefined,
+            parsed.data,
+          );
         }
       }
     });

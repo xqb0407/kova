@@ -2,6 +2,7 @@
 
 import { useEffect, useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi/pi-bridge";
+import { getPiChannel } from "@/lib/pi/pi-channel";
 import { piSessionIdForThread, piStoreKeyForThread } from "@/lib/pi/pi-thread-adapter";
 import type { Playbook, WorkflowRunSummary, WorkflowState } from "pi-protocol";
 
@@ -342,19 +343,39 @@ export function clearWorkflowNow(threadId: string): Promise<void> {
 }
 
 /**
- * 运行中定期水合:后台提交的推进 chunk 可能因线程键错位(草稿 __LOCALID_ vs
- * 会话 UUID)而丢——UI 会冻在「运行中 0/7 步」。轮询是兜底(status 离开 running
- * 即停),代价是每 2.5s 一个小请求。
+ * 后台推进的主通道:订阅 workflow_state_push 通知行(执行器的每次状态提交,
+ * 无 id、Rust 原样广播,与 subagent_activity 同款)。轮内 chunk 在模型回合外
+ * 发不出去——实机里条冻在「运行中 0/7」就是这个原因;通知行与回合无关。
+ * 进程内只订阅一次;WS 通道无此能力时静默(轮询兜底)。
+ */
+let progressWatchStarted = false;
+export function ensureWorkflowProgressWatch(): void {
+  if (progressWatchStarted) return;
+  progressWatchStarted = true;
+  const channel = getPiChannel();
+  if (!channel.subscribeWorkflowProgress) return;
+  void (async () => {
+    await channel.subscribeWorkflowProgress?.((threadId, sessionId, data) => {
+      // 键归一:优先 sessionId(与 chunk 路由同源),草稿期回退 threadId
+      applyWorkflowChunk(sessionId ?? threadId, data);
+    });
+  })();
+}
+
+/**
+ * 运行中定期水合:通知行之外的**低频对账**(10s)。通知行可能因桌面端未订阅、
+ * 广播丢失等原因漏收,轮询是最后一道兜底(status 离开 running 即停)。
  */
 export function useWorkflowLiveHydration(
   threadId: string | undefined,
   active: boolean,
 ): void {
   useEffect(() => {
+    ensureWorkflowProgressWatch();
     if (!threadId || !active) return;
     const timer = setInterval(() => {
       fetchWorkflowState(threadId).catch(() => {});
-    }, 2500);
+    }, 10_000);
     return () => clearInterval(timer);
   }, [threadId, active]);
 }

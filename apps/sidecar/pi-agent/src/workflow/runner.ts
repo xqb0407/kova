@@ -34,6 +34,7 @@ import {
 import {
   addTokens,
   allStepsSettled,
+  DEFAULT_STEP_TIMEOUT_MS,
   expandForeach,
   findStepForEntry,
   hasOpenSteps,
@@ -322,9 +323,13 @@ async function executeStepWithRetries(
   key: string,
 ): Promise<StepAttemptResult> {
   const maxAttempts = step.kind === "gate" ? 1 : 1 + (step.retries ?? 0);
+  // gate 有自己的命令超时;其余步骤套一层硬超时:挂死的 provider 流/自旋 agent
+  // 不再让 run 永远「运行中」(超时按可恢复失败计,可以走 retries/onFail)
+  const timeoutMs =
+    step.kind === "gate" ? undefined : (step.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS);
   let last: StepAttemptResult | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    last = await executeStep(run, step, wf, key, attempt);
+    last = await executeStepAttempt(run, step, wf, key, attempt, timeoutMs);
     if (last.status !== "failed" || attempt >= maxAttempts) break;
     const current = getWorkflow(run.threadId);
     if (!current || current.status !== "running") break;
@@ -337,6 +342,60 @@ async function executeStepWithRetries(
   return last!;
 }
 
+/**
+ * 一次尝试 + 硬超时。超时 = 中止本 attempt 的控制器(子代理会被协作中止)并返回
+ * 可恢复的失败结果;与用户中止(aborted)区分,后者仍走 interrupted 语义。
+ * 超时后给被中止的执行一点收敛时间(最多 5s),避免它继续在后台烧钱。
+ */
+async function executeStepAttempt(
+  run: Running,
+  step: WorkflowStep,
+  wf: WorkflowRun,
+  key: string,
+  attempt: number,
+  timeoutMs: number | undefined,
+): Promise<StepAttemptResult> {
+  if (timeoutMs === undefined) return executeStep(run, step, wf, key, attempt);
+  const timeoutController = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const execution = executeStep(run, step, wf, key, attempt, timeoutController.signal);
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => {
+      timeoutController.abort();
+      resolve("timeout");
+    }, timeoutMs);
+  });
+  const winner = await Promise.race([
+    execution.then((result) => ({ kind: "result" as const, result })),
+    timeout.then(() => ({ kind: "timeout" as const })),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (winner.kind === "result") return winner.result;
+  const settled = await Promise.race([
+    execution,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+  ]);
+  return {
+    status: "failed",
+    report: "",
+    tokens: settled?.tokens ?? 0,
+    error: {
+      code: "WORKFLOW_STEP_TIMEOUT",
+      message: `step timed out after ${Math.round(timeoutMs / 1000)}s`,
+    },
+  };
+}
+
+/** 把外部中止信号接进步骤自己的控制器(超时/用户接管共用一条中止路径) */
+function linkAbort(controller: AbortController, external?: AbortSignal): void {
+  if (!external) return;
+  if (external.aborted) {
+    controller.abort();
+    return;
+  }
+  external.addEventListener("abort", () => controller.abort(), { once: true });
+}
+
 /** 按步骤类型分派:gate 确定性命令门 / verify 评审投票 / delegate+synthesize 委派 */
 async function executeStep(
   run: Running,
@@ -344,10 +403,11 @@ async function executeStep(
   wf: WorkflowRun,
   key: string,
   attempt: number,
+  externalSignal?: AbortSignal,
 ): Promise<StepAttemptResult> {
-  if (step.kind === "gate") return executeGate(run, step, key, attempt);
-  if (step.kind === "verify") return executeVerify(run, step, wf, key);
-  return executeDelegateStep(run, step, wf, key);
+  if (step.kind === "gate") return executeGate(run, step, key, attempt, externalSignal);
+  if (step.kind === "verify") return executeVerify(run, step, wf, key, externalSignal);
+  return executeDelegateStep(run, step, wf, key, externalSignal);
 }
 
 /**
@@ -360,6 +420,7 @@ async function executeGate(
   step: WorkflowStep,
   key: string,
   attempt: number,
+  externalSignal?: AbortSignal,
 ): Promise<StepAttemptResult> {
   const gate = step.gate;
   if (!gate) return failedResult("gate command is missing");
@@ -367,6 +428,7 @@ async function executeGate(
   if (!bash) return failedResult("this session has no bash tool available for gate steps");
   const command = [gate.command, ...(gate.args ?? [])].join(" ");
   const controller = new AbortController();
+  linkAbort(controller, externalSignal);
   const abortEntry = { threadId: run.threadId, abort: () => controller.abort() };
   abortTargets.add(abortEntry);
   try {
@@ -432,6 +494,7 @@ async function executeVerify(
   step: WorkflowStep,
   wf: WorkflowRun,
   key: string,
+  externalSignal?: AbortSignal,
 ): Promise<StepAttemptResult> {
   const reviewers = step.verify?.reviewers ?? 2;
   const threshold = step.verify?.threshold ?? 0.5;
@@ -444,6 +507,7 @@ async function executeVerify(
     .map((name) => run.baseTools.find((t) => t.name === name.toLowerCase()))
     .filter((t) => t !== undefined);
   const controller = new AbortController();
+  linkAbort(controller, externalSignal);
   const abortEntry = { threadId: run.threadId, abort: () => controller.abort() };
   abortTargets.add(abortEntry);
   try {
@@ -513,6 +577,7 @@ async function executeDelegateStep(
   step: WorkflowStep,
   wf: WorkflowRun,
   key: string,
+  externalSignal?: AbortSignal,
 ): Promise<StepAttemptResult> {
   const task = resolveStepPrompt(wf, step, key);
 
@@ -556,6 +621,7 @@ async function executeDelegateStep(
 
   const delegationId = randomUUID();
   const controller = new AbortController();
+  linkAbort(controller, externalSignal);
   const abortEntry = { threadId: run.threadId, abort: () => controller.abort() };
   abortTargets.add(abortEntry);
   let resolveCompletion: () => void = () => {};

@@ -8,6 +8,7 @@ import {
   expandForeach,
   formatWorkflowStatus,
   hasOpenSteps,
+  hydrateRestoredRun,
   interpolatePrompt,
   isWorkflowRun,
   readyStepKeys,
@@ -498,5 +499,45 @@ describe("M3:剧本参数(args)", () => {
     const fp3 = stepFingerprint(step, [], '{"months":24}');
     expect(fp1).toBe(fp3);
     expect(fp1).not.toBe(fp2);
+  });
+});
+
+describe("恢复水合(审计缺陷 1 的修复点)", () => {
+  const fullRun = () => {
+    const wf = runWithPlan().run;
+    const started = confirmProposal(wf)!;
+    return settleStep(started, "a", { status: "done", result: "A 的结果", fingerprint: "fa" });
+  };
+
+  test("行带 cwd 且 run 文件存在 → 以文件为准(结果与指纹都在)", () => {
+    const file = fullRun();
+    const slimRow = { ...file, cwd: "/tmp/ws", steps: { a: { key: "a", status: "done" } } };
+    let cwdSeen: string | undefined;
+    const hydrated = hydrateRestoredRun(slimRow, (cwd, id) => {
+      cwdSeen = cwd;
+      return id === file.id ? file : undefined;
+    });
+    expect(hydrated?.steps["a"]?.result).toBe("A 的结果");
+    expect(hydrated?.steps["a"]?.fingerprint).toBe("fa");
+    expect(cwdSeen).toBe("/tmp/ws");
+  });
+
+  test("文件缺失/runId 不一致 → 退回瘦身行(状态可读,结果不可用)", () => {
+    const file = fullRun();
+    const slimRow = { ...file, cwd: "/tmp/ws", steps: { a: { key: "a", status: "done" } } };
+    const missing = hydrateRestoredRun(slimRow, () => undefined);
+    expect(missing?.steps["a"]?.status).toBe("done");
+    expect(missing?.steps["a"]?.result).toBeUndefined();
+    const mismatch = hydrateRestoredRun(slimRow, () => ({ ...file, id: "wf-other" }));
+    expect(mismatch?.steps["a"]?.result).toBeUndefined();
+  });
+
+  test("无 cwd 的旧行 → 退回瘦身行;畸形行 → undefined", () => {
+    const file = fullRun();
+    const noCwd = hydrateRestoredRun({ ...file, steps: {} }, () => file);
+    expect(noCwd).toBeDefined();
+    expect(noCwd?.steps["a"]).toBeUndefined();
+    expect(hydrateRestoredRun({ id: "x" }, () => undefined)).toBeUndefined();
+    expect(hydrateRestoredRun(null, () => undefined)).toBeUndefined();
   });
 });

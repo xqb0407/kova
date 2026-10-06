@@ -11,7 +11,7 @@
  * 出口工具的结算路径,终态迁移都发生在 runner。
  */
 import type { Running } from "../types";
-import { sendEventChunk } from "../protocol/stream";
+import { send, sendEventChunk } from "../protocol/stream";
 import { logAt } from "../log";
 import { WORKFLOW_CONTINUE_PREFIX, type Playbook, type WorkflowRunSummary } from "pi-protocol";
 import { appendWorkflowStateRow, readWorkflowStateRow } from "../sessions/transcript";
@@ -20,13 +20,14 @@ import {
   confirmProposal,
   createWorkflowRun,
   formatWorkflowStatus,
+  hydrateRestoredRun,
   isWorkflowRun,
   rejectProposal,
   transitionRun,
   validateObjectiveText,
   type WorkflowRun,
 } from "./plan-state";
-import { listRunFiles, pruneRunFiles, writeRunFile } from "./journal";
+import { listRunFiles, pruneRunFiles, readRunFile, writeRunFile } from "./journal";
 import { playbookSteps } from "./library";
 
 /** threadId -> 当前运行(per-thread 槽,对应 goal 的 goals) */
@@ -93,7 +94,12 @@ export function commitWorkflow(run: Running, wf: WorkflowRun | undefined): void 
   }
   if (run.sessionId) {
     try {
-      appendWorkflowStateRow(run.sessionId, wf ? slimRunForTranscript(wf) : null);
+      // cwd 一并落行:重启恢复时据此找到 .kova/workflows/<runId>.json 的
+      // 全量 journal(结果与指纹都在文件里,行只留状态)
+      appendWorkflowStateRow(
+        run.sessionId,
+        wf ? { ...slimRunForTranscript(wf), cwd: run.cwd } : null,
+      );
     } catch {
       // 落盘失败不阻断:内存里的事实还在,下一次变更会再落
     }
@@ -116,13 +122,22 @@ function slimRunForTranscript(wf: WorkflowRun): Record<string, unknown> {
   return { ...wf, steps };
 }
 
-/** 推全量快照给常驻条/面板(无活跃请求时 sendEventChunk 自行丢弃) */
+/**
+ * 推全量快照给常驻条/面板。两条通道,分工不同:
+ * - sendEventChunk:轮内即时刷新(依赖活跃请求;回合外静默丢弃);
+ * - workflow_state_push 通知行:后台推进的**主通道**——执行器大多数提交发生在
+ *   模型回合之外,轮内 chunk 根本发不出去(实机表现:条冻在「运行中 0/7」)。
+ *   通知行无 id、Rust 原样广播,与 subagent_activity 同款(turn 无关)。
+ */
 export function emitWorkflowState(run: Running): void {
-  sendEventChunk(
-    run.threadId,
-    { type: "data-workflow-state", data: workflowStatePayload(run.threadId) },
-    run.sessionId,
-  );
+  const payload = workflowStatePayload(run.threadId);
+  sendEventChunk(run.threadId, { type: "data-workflow-state", data: payload }, run.sessionId);
+  send({
+    type: "workflow_state_push",
+    threadId: run.threadId,
+    ...(run.sessionId ? { sessionId: run.sessionId } : {}),
+    data: payload,
+  });
 }
 
 /** 协议投影:只带 UI 要用的字段(prompt 模板、指纹、并发调度等内部判据不进协议) */
@@ -322,8 +337,15 @@ function isInternalInjectionText(text: string): boolean {
 export function restoreWorkflow(threadId: string, sessionId: string): void {
   const row = readWorkflowStateRow(sessionId);
   if (!row) return;
-  const parsed: unknown = JSON.parse(JSON.stringify(row));
-  if (!isWorkflowRun(parsed)) return;
+  // 瘦身行 + 全量 run 文件(结果/指纹在里面)水合;文件缺失时退回瘦身行
+  // (此时历史结果不可用,resume 会重跑——审计缺陷 1 的修复点)
+  const parsed = hydrateRestoredRun(row, readRunFile);
+  if (!parsed) return;
+  if (!parsed.steps) return;
+  const hydratedResults = Object.values(parsed.steps).some((e) => e.result !== undefined);
+  if (!hydratedResults && Object.values(parsed.steps).some((e) => e.status === "done")) {
+    logAt("event", `workflow restore: run ${parsed.id} restored without step results (run file missing)`);
+  }
   const wf: WorkflowRun =
     parsed.status === "running"
       ? {
