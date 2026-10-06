@@ -157,6 +157,7 @@
  *   { "type": "save_subagent", "id", "scope", "cwd"?, ("definition"|"raw"), "name"? } → 校验后写 <app_data>/subagents 或 <cwd>/.kova/subagents 的 YAML + 热重载 → 同款 subagents 应答（name=编辑前原名，改名时清旧文件）
  *   { "type": "delete_subagent", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 subagents 应答（内置不可删）
  *   { "type": "set_subagent_enabled", "id", "scope", "name", "cwd"?, "enabled" } → 开关落 kv + 热重载 → 同款 subagents 应答
+ *   { "type": "set_subagent_model", "id", "scope", "name", "cwd"?, "model" } → 模型覆盖落 kv（"provider/modelId"，空串=清除）+ 热重载 → 同款 subagents 应答；只读层（内置/插件）靠它选模型
  *   { "type": "automation_list", "id" }                        → { id, type: "automation_list", tasks }
  *   { "type": "automation_save", "id", "task" }                → 无 task.id 建 / 有则全量覆盖（排期经 resolveScheduledTaskDefinition 校验）→ automation_list 应答
  *   { "type": "automation_delete", "id", "taskId" }            → 删任务 → automation_list 应答

@@ -14,6 +14,7 @@ import {
   resetSubagentsForTest,
   saveSubagentDefinition,
   setSubagentEnabled,
+  setSubagentModelOverride,
   subagentFileName,
   subagentStateKey,
   type SubagentDraft,
@@ -301,6 +302,105 @@ describe("loadSubagentDefinitions（三层发现 / 开关）", () => {
     writeFileSync(file, emitSubagentYaml(draft({ name: "siggy", description: "v2-longer" })));
     const second = await loadSubagentDefinitions({ systemDir: sys });
     expect(second.definitions.find((d) => d.name === "siggy")?.description).toBe("v2-longer");
+  });
+});
+
+describe("模型覆盖（kv，只读层专用）", () => {
+  test("内置覆盖后 definitions 与 entries 都带上该模型", async () => {
+    const sys = join(tmp, "model-builtin");
+    mkdirSync(sys, { recursive: true });
+    const before = await loadSubagentDefinitions({ systemDir: sys });
+    expect(before.definitions.find((d) => d.name === "Explorer")?.model).toBeUndefined();
+
+    await setSubagentModelOverride("builtin", "Explorer", "deepseek/deepseek-chat");
+    const after = await loadSubagentDefinitions({ systemDir: sys });
+    expect(after.definitions.find((d) => d.name === "Explorer")?.model).toBe(
+      "deepseek/deepseek-chat",
+    );
+    expect(after.entries.find((e) => e.name === "Explorer")?.model).toBe(
+      "deepseek/deepseek-chat",
+    );
+    await setSubagentModelOverride("builtin", "Explorer", "");
+  });
+
+  test("覆盖同步进 raw（设置页 YAML 页签与表单不打架）", async () => {
+    const sys = join(tmp, "model-raw");
+    mkdirSync(sys, { recursive: true });
+    await setSubagentModelOverride("builtin", "Test-runner", "deepseek/deepseek-chat");
+    const loaded = await loadSubagentDefinitions({ systemDir: sys });
+    const entry = loaded.entries.find((e) => e.name === "Test-runner")!;
+    expect(entry.raw).toContain("model: deepseek/deepseek-chat");
+    // 覆盖后的 raw 必须仍能被同一解析器读回来
+    const reparsed = parseSubagentYaml(entry.raw!, { scope: "builtin" });
+    expect(reparsed.ok && reparsed.definition.model).toBe("deepseek/deepseek-chat");
+    await setSubagentModelOverride("builtin", "Test-runner", "");
+  });
+
+  test("覆盖优先于定义自带的 model；清除后回落自带值", async () => {
+    const sys = join(tmp, "model-priority");
+    mkdirSync(sys, { recursive: true });
+    writeFileSync(
+      join(sys, "own.yml"),
+      emitSubagentYaml(draft({ name: "own-model", model: "anthropic/claude-sonnet-4" })),
+    );
+    const original = await loadSubagentDefinitions({ systemDir: sys });
+    expect(original.definitions.find((d) => d.name === "own-model")?.model).toBe(
+      "anthropic/claude-sonnet-4",
+    );
+
+    await setSubagentModelOverride("system", "own-model", "deepseek/deepseek-chat");
+    const overridden = await loadSubagentDefinitions({ systemDir: sys });
+    expect(overridden.definitions.find((d) => d.name === "own-model")?.model).toBe(
+      "deepseek/deepseek-chat",
+    );
+
+    // 空串 = 清除覆盖，回落定义自带值而不是清空
+    await setSubagentModelOverride("system", "own-model", "");
+    const cleared = await loadSubagentDefinitions({ systemDir: sys });
+    expect(cleared.definitions.find((d) => d.name === "own-model")?.model).toBe(
+      "anthropic/claude-sonnet-4",
+    );
+  });
+
+  test("无 provider 前缀的模型键被拒", async () => {
+    const sys = join(tmp, "model-bad-key");
+    mkdirSync(sys, { recursive: true });
+    expect(
+      setSubagentModelOverride("builtin", "Fixer", "gpt-oss-120b"),
+    ).rejects.toThrow(/provider\/modelId/);
+    const loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.definitions.find((d) => d.name === "Fixer")?.model).toBeUndefined();
+  });
+
+  test("工作区层覆盖按 cwd 隔离，同名定义互不串味", async () => {
+    const wsA = join(tmp, "model-ws-a");
+    const wsB = join(tmp, "model-ws-b");
+    mkdirSync(join(wsA, ".kova", "subagents"), { recursive: true });
+    mkdirSync(join(wsB, ".kova", "subagents"), { recursive: true });
+    const body = emitSubagentYaml(draft({ name: "ws-agent" }));
+    writeFileSync(join(wsA, ".kova", "subagents", "ws-agent.yml"), body);
+    writeFileSync(join(wsB, ".kova", "subagents", "ws-agent.yml"), body);
+
+    await setSubagentModelOverride("workspace", "ws-agent", "deepseek/deepseek-chat", wsA);
+    const a = await loadSubagentDefinitions({ cwd: wsA });
+    const b = await loadSubagentDefinitions({ cwd: wsB });
+    expect(a.definitions.find((d) => d.name === "ws-agent")?.model).toBe(
+      "deepseek/deepseek-chat",
+    );
+    expect(b.definitions.find((d) => d.name === "ws-agent")?.model).toBeUndefined();
+  });
+
+  test("删除定义顺带清掉覆盖键，不在 kv 里留孤儿", async () => {
+    const sys = join(tmp, "model-delete");
+    mkdirSync(sys, { recursive: true });
+    await saveSubagentDefinition("system", draft({ name: "doomed" }), { systemDir: sys });
+    await setSubagentModelOverride("system", "doomed", "deepseek/deepseek-chat", undefined);
+    await deleteSubagentDefinition("system", "doomed", { systemDir: sys });
+
+    // 覆盖键已清：同名重建后不应继承旧模型
+    await saveSubagentDefinition("system", draft({ name: "doomed" }), { systemDir: sys });
+    const loaded = await loadSubagentDefinitions({ systemDir: sys });
+    expect(loaded.definitions.find((d) => d.name === "doomed")?.model).toBeUndefined();
   });
 });
 

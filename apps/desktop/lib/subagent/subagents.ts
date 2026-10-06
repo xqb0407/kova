@@ -148,6 +148,27 @@ export function setSubagentEnabled(
   });
 }
 
+/**
+ * 设模型覆盖（"provider/modelId"）。落 sidecar 的 kv 而不是定义文件——内置与插件
+ * 两层永不落盘，只有覆盖这条路能让它们选模型；空串清除覆盖（回落会话模型）。
+ */
+export function setSubagentModel(
+  scope: SubagentScope,
+  name: string,
+  model: string,
+  cwd?: string | null,
+  pluginId?: string,
+): Promise<void> {
+  return mutate({
+    type: "set_subagent_model",
+    scope,
+    name,
+    model,
+    ...(pluginId ? { pluginId } : {}),
+    ...(cwd ? { cwd } : {}),
+  });
+}
+
 /** 订阅清单快照；cwd 变化时自动重取（工作区层随所选工作区呈现） */
 export function useSubagents(cwd: string | null): SubagentsSnapshot {
   const snapshot = useSyncExternalStore(
