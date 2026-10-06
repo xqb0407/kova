@@ -299,10 +299,11 @@ export function syncWorkflowOnUserPrompt(run: Running, rawText: string): void {
     const rejected = rejectWorkflowPlan(run, rawText);
     if (rejected) return;
   }
-  if (current.status === "running") {
-    pauseWorkflowForUserInput(run);
-  }
-  // proposing / paused / complete / failed:不动(见上)
+  // running:用户消息**不再**接管/暂停。工作流执行是后台确定性的,一句聊天话
+  // (实机里的「确认」「怎么样了?」)不该把正在跑的子代理全掐掉——用户从条上
+  // 看不到推进时正会这么做,而暂停反而让「点了没反应」成真。要停有暂停按钮。
+  // (goal 档「用户输入即接管」那条语义属于模型在轮次里干活的形态,不适用于执行器)
+  // proposing / running / paused / complete / failed:不动(见上)
 }
 
 /** 注入文本的识别:协议契约层的前缀判定单源 */

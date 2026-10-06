@@ -19,6 +19,7 @@ import {
   pauseWorkflowNow,
   rejectWorkflowNow,
   resumeWorkflowNow,
+  useWorkflowLiveHydration,
   useWorkflowState,
   type WorkflowSnapshot,
 } from "@/lib/pi/pi-workflow";
@@ -67,6 +68,8 @@ export const WorkflowStrip: FC = () => {
     if (!threadId) return;
     fetchWorkflowState(threadId).catch(() => {});
   }, [threadId]);
+  // 运行中兜底轮询:推进 chunk 丢掉时条不至于冻在「运行中 0/7 步」
+  useWorkflowLiveHydration(threadId, run?.status === "running");
 
   // workflow 档下即使还没有运行也要挂:这一行提示是编排目标唯一的建运行入口
   if (!threadId || (mode !== "workflow" && !run)) return null;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi/pi-bridge";
 import { piSessionIdForThread, piStoreKeyForThread } from "@/lib/pi/pi-thread-adapter";
 import type { Playbook, WorkflowRunSummary, WorkflowState } from "pi-protocol";
@@ -339,6 +339,24 @@ export function resumeWorkflowNow(threadId: string): Promise<void> {
 
 export function clearWorkflowNow(threadId: string): Promise<void> {
   return requestWorkflow(threadId, { type: "workflow_clear" });
+}
+
+/**
+ * 运行中定期水合:后台提交的推进 chunk 可能因线程键错位(草稿 __LOCALID_ vs
+ * 会话 UUID)而丢——UI 会冻在「运行中 0/7 步」。轮询是兜底(status 离开 running
+ * 即停),代价是每 2.5s 一个小请求。
+ */
+export function useWorkflowLiveHydration(
+  threadId: string | undefined,
+  active: boolean,
+): void {
+  useEffect(() => {
+    if (!threadId || !active) return;
+    const timer = setInterval(() => {
+      fetchWorkflowState(threadId).catch(() => {});
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [threadId, active]);
 }
 
 /* ------------------------------ 剧本库 ------------------------------ */

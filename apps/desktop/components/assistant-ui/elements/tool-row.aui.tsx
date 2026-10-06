@@ -49,6 +49,7 @@ import {
   resumeWorkflowNow,
   savePlaybookFromRunNow,
   useWorkflowAnchor,
+  useWorkflowLiveHydration,
   useWorkflowRunById,
 } from "@/lib/pi/pi-workflow";
 import { WorkflowPlanCard, WorkflowRunCard } from "@/components/agent-thread/workflow-cards";
@@ -853,6 +854,8 @@ const WorkflowPlanToolUI: ToolCallMessagePartComponent = ({
     if (run || !fallbackRunId || !actionThread) return;
     fetchWorkflowState(actionThread).catch(() => {});
   }, [run, fallbackRunId, actionThread]);
+  // 运行中兜底轮询(与常驻条同源):卡片上的步骤状态不随 chunk 丢失而冻结
+  useWorkflowLiveHydration(actionThread, run?.status === "running");
 
   if (isError || !run) {
     return (
