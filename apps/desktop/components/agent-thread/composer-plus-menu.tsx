@@ -399,7 +399,9 @@ const ModeSub: FC = () => {
               value={perm.key}
               onValueChange={(key) => {
                 const o = PERMISSION_OPTIONS.find((x) => x.key === key);
-                if (o) apply(o.key, o.mode, o.approvalLevel);
+                // 权限项不带 mode（见 mode-picker 的类型说明）：切成「当前档位 + 新权限」，
+                // 不能顺手把会话踢出问答/计划/目标档
+                if (o) apply(o.key, snap.mode, o.approvalLevel);
               }}
             >
               {PERMISSION_OPTIONS.map((o) => (

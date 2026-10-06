@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  cancelQuestionAnswer,
   formatAnswersForLLM,
   resolveQuestionAnswer,
   validateQuestions,
@@ -72,8 +73,25 @@ describe("validateQuestions", () => {
   });
 });
 
-describe("resolveQuestionAnswer", () => {
+describe("resolveQuestionAnswer / cancelQuestionAnswer", () => {
   test("无挂起项返回 false（协议层据此报错）", () => {
     expect(resolveQuestionAnswer("no-such-id", [])).toBe(false);
+    expect(cancelQuestionAnswer("no-such-id")).toBe(false);
+  });
+
+  test("取消是「未作答」，不是「停轮」：模型拿到的文本要求它自行判断继续", () => {
+    // 这条钉的是「关掉提问卡把目标暂停了」那个症状：宿主从"abort 整轮"改成
+    // "按取消结算"之后，模型必须收到一份能据以继续的答复，而不是空结果。
+    // 目标模式正是靠这句话接着往下跑（abort 会被它当终局，于是整条目标停住）
+    const text = formatAnswersForLLM(qs, { cancelled: true });
+    expect(text).toContain("自行判断是否继续");
+    expect(text).toContain("不要原样重发");
+  });
+
+  test("取消与「逐题跳过」是两回事：前者不逐题列清单，后者逐题标未答", () => {
+    const cancelled = formatAnswersForLLM(qs, { cancelled: true });
+    const skipped = formatAnswersForLLM(qs, { answers: [] });
+    expect(cancelled).not.toContain("Q1:");
+    expect(skipped).toContain("Q1:");
   });
 });

@@ -33,6 +33,7 @@ import {
   liquidGlassAvailable,
 } from "@/components/ui/glass";
 
+import { GoalCriteriaCard } from "@/components/ui/goal-criteria-card";
 import { QuestionCard } from "@/components/ui/question-card";
 import { ToolApprovalCard } from "@/components/ui/tool-approval-card";
 import { QueueBar } from "@/components/ui/composer";
@@ -995,14 +996,15 @@ function useEntrance(delay: number | null) {
 
 /** composer 上方那一槽。模型/权限/思考已经搬进 composer 内部（ComposerToolbar），
  *  这里只剩真正「浮在输入条之上」的东西：面板药丸（计划 / 文件变更 / 终端 /
- *  引用 → 底部抽屉，桌面端右侧 agent-panel 的移动端对应物）、排队条、审批卡与
- *  提问卡（pi-interactions 台账版，键 = pi sessionId）。工具关联的旧
- *  hostUiRequests 旁路在移动端恒空，已移除。 */
+ *  引用 → 底部抽屉，桌面端右侧 agent-panel 的移动端对应物）、排队条、审批卡、
+ *  提问卡（pi-interactions 台账版，键 = pi sessionId）与目标验收标准待确认卡。
+ *  工具关联的旧 hostUiRequests 旁路在移动端恒空，已移除。 */
 function AboveComposer() {
   return (
     <View style={{ gap: 8 }}>
       <AgentPanelBar />
       <QueueBar />
+      <GoalCriteriaCard />
       <ToolApprovalCard />
       <QuestionCard />
     </View>

@@ -146,6 +146,18 @@ export const goalStateSchema = z.looseObject({
       updatedAt: z.number(),
       pauseReason: z.string().optional(),
       completionSummary: z.string().optional(),
+      /**
+       * 验收标准契约：pending 协商中 / proposed 待用户确认 / confirmed 已生效 /
+       * skipped 用户跳过（含老目标回放）。UI 据它决定待确认卡片出不出来。
+       * 完成对账明细（completionAudit）与工作台账（workSeen）都是内部判据，不进协议。
+       */
+      acceptance: z
+        .looseObject({
+          status: z.enum(["pending", "proposed", "confirmed", "skipped"]),
+          items: z.array(z.looseObject({ id: z.string(), text: z.string() })).optional(),
+          feedback: z.string().optional(),
+        })
+        .optional(),
     })
     .nullable(),
 });

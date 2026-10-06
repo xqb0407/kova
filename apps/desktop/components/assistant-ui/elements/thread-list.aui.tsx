@@ -741,6 +741,8 @@ export const ProjectListItems: FC<{
   const { threadIds, pinnedProjectIndices, projectGroups } =
     useThreadListGroups();
   const threadItems = useAuiState((s) => s.threads.threadItems);
+  // 任务 tab 同款：threads 初始加载期间渲染骨架（groups 为空不能当「暂无」）
+  const isLoading = useAuiState((s) => s.threads.isLoading);
   // 组头未读蓝点：组内任一会话未读即点亮（与会话行蓝点同款式）
   const unreadIds = useUnreadSessionIds();
   // 批量模式「全选」的可见集注册：项目 tab 全部会话（置顶卡 + 各组全员，
@@ -827,6 +829,9 @@ export const ProjectListItems: FC<{
       aui.threads.item({ id }).archive();
     }
   };
+
+  // 加载中先于空态判断：骨架行与任务 tab 同款（5 条 h-3.5 条带）
+  if (isLoading) return <ThreadListSkeleton />;
 
   if (projectGroups.length === 0 && pinnedProjectIndices.length === 0) {
     return (

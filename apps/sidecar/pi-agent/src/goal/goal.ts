@@ -22,19 +22,31 @@ import {
   GOAL_TOOL_NAMES,
   GOAL_TURN_LIMIT_MAX,
   GOAL_TURN_LIMIT_MIN,
+  MAX_CRITERIA,
+  MAX_CRITERION_LENGTH,
   MAX_GOAL_ID_LENGTH,
   MAX_GOAL_REASON_LENGTH,
   MAX_GOAL_SUMMARY_LENGTH,
+  acceptanceFeedback,
+  confirmCriteria,
+  confirmedCriteria,
   createGoal,
   formatGoalStatus,
   limitsFor,
+  normalizeCriteria,
   normalizeTurnLimitValue,
+  proposeCriteria,
+  rejectCriteria,
+  resetSafetyEpoch,
+  setObjective,
   setTurnLimit,
+  skipCriteria,
   transitionGoal,
   validateObjective,
   type Goal,
 } from "./goal-state";
 import { resumeGoal, pauseForUserInput, decideContinuation } from "./goal-continuation";
+import { writeGoalArtifactAsync } from "./goal-artifact";
 
 /** threadId -> 当前目标（per-thread 槽，对应 todo 的 todoStates） */
 const goals = new Map<string, Goal>();
@@ -65,6 +77,18 @@ function drainUsagePending(run: Running, goal: Goal): number {
 /** 会话销毁 / 线程销毁时回收槽位 */
 export function clearGoal(threadId: string): void {
   goals.delete(threadId);
+}
+
+/**
+ * 「这条目标动过手」台账：任何非目标工具被放行执行前翻一次。
+ *
+ * 幂等且**只改内存不落盘**（见 Goal.workSeen）：翻过一次就没必要再写，落盘的权威
+ * 副本是 goal_state 行，而这个标记只在活着的这一轮里被读到。
+ */
+export function markGoalWorkSeen(run: Running): void {
+  const goal = goals.get(run.threadId);
+  if (!goal || goal.workSeen) return;
+  goals.set(run.threadId, { ...goal, workSeen: true });
 }
 
 /** 线程键迁移（刷新后 run 改绑新 threadId）：槽位原样挪过去，目标不随改绑丢失 */
@@ -120,6 +144,14 @@ export function commitGoal(run: Running, goal: Goal | undefined): void {
       // 落盘失败不阻断（重启后这批目标态丢失，用户重新设一次即可）
     }
   }
+  // 目标产物：契约有人读才有意义，所以每次变更都重写同一份文件。清除时**不动**
+  // 文件——用户可能正开着它看上一轮为什么被驳回，删掉反而是数据丢失。下一份
+  // 目标会重新定名（见 startGoal / syncGoalOnUserPrompt 的路径重置）
+  if (goal && run.cwd) {
+    writeGoalArtifactAsync(run.cwd, goal, run.goalFilePath, (path) => {
+      run.goalFilePath = path;
+    });
+  }
   emitGoalState(run);
 }
 
@@ -132,11 +164,18 @@ export function emitGoalState(run: Running): void {
   );
 }
 
-/** 协议投影：只带 UI 要用的字段（指纹等内部判据不进协议） */
+/** 协议投影：只带 UI 要用的字段（指纹、对账明细、工作台账等内部判据不进协议） */
 export function goalStatePayload(threadId: string): GoalState {
   const goal = goals.get(threadId);
   if (!goal) return { goal: null };
   const limits = limitsFor(goal);
+  const acceptance = goal.acceptance;
+  // 驳回/退回意见：pending（等重提）与 proposed（重提后再审）两态都要给 UI——
+  // 用户复审新版标准时最需要看到的就是「我提的那点它真改了吗」
+  const feedback =
+    acceptance?.status === "pending" || acceptance?.status === "proposed"
+      ? acceptance.feedback
+      : undefined;
   return {
     goal: {
       id: goal.id,
@@ -152,6 +191,20 @@ export function goalStatePayload(threadId: string): GoalState {
       ...(goal.completionSummary === undefined
         ? {}
         : { completionSummary: goal.completionSummary }),
+      // 契约阶段必须投影：常驻条靠它决定待确认卡片出不出来、状态行写什么。
+      // 漏了它整个验收标准特性在 UI 上就是不可见的（条上只会显示「进行中」，
+      // 没有任何确认入口——而循环正停着等确认）
+      ...(acceptance === undefined
+        ? {}
+        : {
+            acceptance: {
+              status: acceptance.status,
+              ...(acceptance.status === "proposed" || acceptance.status === "confirmed"
+                ? { items: acceptance.items }
+                : {}),
+              ...(feedback ? { feedback } : {}),
+            },
+          }),
     },
   };
 }
@@ -179,6 +232,8 @@ export function startGoal(
   const goal = createGoal(objective, preset);
   // 建目标之前同一 run 里已经花掉的（比如用户先聊了两句才切到目标档）：不算这条目标的
   run.usagePending = 0;
+  // 换目标就换一份新产物：路径重置，commitGoal 会按新标题重新定名
+  run.goalFilePath = undefined;
   commitGoal(run, goal);
   return goal;
 }
@@ -195,6 +250,64 @@ export function resume(run: Running): Goal | undefined {
   const goal = goals.get(run.threadId);
   if (!goal) return undefined;
   const next = resumeGoal(goal);
+  commitGoal(run, next);
+  return next;
+}
+
+/**
+ * 改目标原文（常驻条上点目标文字改的就是它）。
+ *
+ * 三件副作用都是有意为之：
+ * - 安全 epoch 清零：换了要达到的东西，旧目标上攒的轮次与停滞计数没有参考价值，
+ *   换来的是新目标一开始就背着旧预算（与用户纠偏、手动 resume 同一处理）
+ * - 产物路径重置：文件名按旧标题定的，新目标该有自己的那份契约文件；旧文件留在
+ *   盘上作为记录，不删（用户可能正开着它对比）
+ * - 契约可能作废：规则见 goal-state 的 setObjective
+ */
+export function setGoalObjective(run: Running, raw: string): Goal | undefined {
+  const goal = goals.get(run.threadId);
+  if (!goal) return undefined;
+  const next = setObjective(goal, raw);
+  if (!next) return undefined;
+  // 文本一字未变：原样返回，连落盘都省掉（一次无意义的 goal_state 行）
+  if (next === goal) return goal;
+  run.goalFilePath = undefined;
+  const settled = resetSafetyEpoch(next);
+  commitGoal(run, settled);
+  return settled;
+}
+
+/**
+ * 用户确认验收标准（常驻条待确认卡片）：proposed → confirmed。
+ *
+ * 只改契约、不起轮：起轮由 handler 的 kickGoalLoop 负责（与 resume 同一分工，
+ * goal.ts 不持有协议层的请求上下文）。
+ */
+export function confirmGoalCriteria(run: Running): Goal | undefined {
+  const goal = goals.get(run.threadId);
+  if (!goal) return undefined;
+  const next = confirmCriteria(goal);
+  if (!next) return undefined;
+  commitGoal(run, next);
+  return next;
+}
+
+/** 用户驳回验收标准：proposed → pending 并带回意见，下一轮协商据此重来 */
+export function rejectGoalCriteria(run: Running, feedback?: string): Goal | undefined {
+  const goal = goals.get(run.threadId);
+  if (!goal) return undefined;
+  const next = rejectCriteria(goal, feedback);
+  if (!next) return undefined;
+  commitGoal(run, next);
+  return next;
+}
+
+/** 用户跳过验收标准：直接进执行阶段，完成时不做对账 */
+export function skipGoalCriteria(run: Running): Goal | undefined {
+  const goal = goals.get(run.threadId);
+  if (!goal) return undefined;
+  const next = skipCriteria(goal);
+  if (!next) return undefined;
   commitGoal(run, next);
   return next;
 }
@@ -354,7 +467,25 @@ export function syncGoalOnUserPrompt(
     if (explicit) rememberGoalMaxTurns(run, preset);
     // 同一 run 里建目标之前已花的不算这条目标的（见 startGoal 同款说明）
     run.usagePending = 0;
+    run.goalFilePath = undefined;
     commitGoal(run, createGoal(objective, preset));
+    return;
+  }
+  // 目标标准还没定下来时，用户这条消息是**对标准的意见**，不是接管目标。
+  // 分叉点很实际：用户看着待确认的清单回一句「第 2 条不对」，那是在改契约；
+  // 按接管处理会把刚提交的标准连目标一起挂起，用户还得再点一次「继续」
+  if (current.acceptance?.status === "proposed") {
+    const revised = acceptanceFeedback(current, rawText);
+    if (revised) commitGoal(run, revised);
+    return;
+  }
+  // 还在协商（标准都没提出来）：用户插话是**补充需求**，同样不是接管。
+  // 模型此刻本来就在读工作区、还没动手，「顺便把 X 也算上」是这一步的常态；
+  // 按接管处理会把目标暂停，用户得先点「继续」才能让协商接着走——而那条消息
+  // 本身已经进了对话，模型下一轮照样读得到，暂停只是白白多一次点击。
+  // 安全 epoch 照清零：用户给了新输入，协商预算与停滞计数该重新起算
+  if (current.status === "active" && current.acceptance?.status === "pending") {
+    commitGoal(run, resetSafetyEpoch(current));
     return;
   }
   if (current.status !== "active") return;
@@ -392,17 +523,173 @@ const INCOMPLETE_CLAIM_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
+ * 把模型交的对账表收窄成安全形状。id 必须是服务端发的 c<N>，evidence 必填。
+ * 这里只做形状校验，集合是否完整由 auditAgainstCriteria 判。
+ */
+function normalizeAudit(
+  raw: unknown,
+): Array<{ id: string; met: boolean; evidence: string }> | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const rows: Array<{ id: string; met: boolean; evidence: string }> = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") return undefined;
+    const r = entry as { id?: unknown; met?: unknown; evidence?: unknown };
+    if (typeof r.id !== "string") return undefined;
+    if (typeof r.met !== "boolean") return undefined;
+    const evidence = typeof r.evidence === "string" ? r.evidence.trim() : "";
+    if (!evidence) return undefined;
+    rows.push({ id: r.id.trim(), met: r.met, evidence: evidence.slice(0, MAX_GOAL_SUMMARY_LENGTH) });
+  }
+  return rows;
+}
+
+/**
+ * 逐条对账：模型的表必须与已确认的标准**集合相等**——缺条目、多条目、id 不认识
+ * 都算不合格。
+ *
+ * 为什么按 id 而不是按文本：模型换个说法（哪怕只是补个句号）就会被判成缺条目，
+ * 它会反复重试同一份内容而永远过不了。id 是服务端发的稳定键，模型只需原样回传。
+ * 报告里展示的标准原文也一律取服务端那份，不采信模型复述。
+ */
+function auditAgainstCriteria(
+  criteria: readonly { id: string; text: string }[],
+  rows: Array<{ id: string; met: boolean; evidence: string }> | undefined,
+): { ok: true; rows: Array<{ id: string; text: string; met: boolean; evidence: string }> } | { ok: false; reason: string } {
+  const want = new Set(criteria.map((c) => c.id));
+  if (!rows) {
+    return {
+      ok: false,
+      reason:
+        "results is required and must be an array of { id, met, evidence } — one entry per acceptance criterion. " +
+        `The criteria are: ${criteria.map((c) => `${c.id} (${c.text})`).join("; ")}.`,
+    };
+  }
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (!want.has(row.id)) {
+      return {
+        ok: false,
+        reason: `results contains unknown criterion id "${row.id}". Use exactly the ids shown in the goal block: ${[...want].join(", ")}.`,
+      };
+    }
+    if (seen.has(row.id)) {
+      return { ok: false, reason: `results lists criterion ${row.id} more than once.` };
+    }
+    seen.add(row.id);
+  }
+  const missing = criteria.filter((c) => !seen.has(c.id));
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `results is missing ${missing.length} of ${criteria.length} acceptance criteria: ` +
+        `${missing.map((c) => `${c.id} (${c.text})`).join("; ")}. ` +
+        "Every criterion needs a verdict with the evidence that proves it — go verify the missing ones and call again.",
+    };
+  }
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return {
+    ok: true,
+    rows: criteria.map((c) => ({
+      id: c.id,
+      text: c.text,
+      met: byId.get(c.id)!.met,
+      evidence: byId.get(c.id)!.evidence,
+    })),
+  };
+}
+
+/**
  * goal 模式工具（只挂 goal 档，见 modes.ts toolsForMode）。
  * 构建时捕获 run 引用（与 plan 三件套同一路子）。
+ *
+ * 按协商阶段给不同的一组：协商轮只有 propose，等确认时一个都不给（循环本就停着），
+ * 契约生效或跳过之后才给 complete / blocked。工具表本身就是「这一轮能做什么」的
+ * 第一道边界，把不该出现的工具留在表里只会诱使模型去调它。
  */
 export function buildGoalTools(run: Running): AgentTool[] {
-  const completeTool: AgentTool = {
+  const goal = goals.get(run.threadId);
+  const acceptance = goal?.acceptance;
+  if (!goal) return [];
+
+  if (acceptance?.status === "pending" || acceptance === undefined) {
+    return [buildProposeTool(run)];
+  }
+  if (acceptance.status === "proposed") return [];
+  return [buildCompleteTool(run), buildBlockedTool(run)];
+}
+
+/**
+ * 协商轮的唯一出口：提出验收标准。
+ *
+ * 不挂起等待用户（不同于 plan_exit）：提交即改状态，本轮终止，由 UI 上的确认卡片
+ * 决定下一步。这样不占用挂起交互台账，而且重启后卡片能从 goal_state 行重建——
+ * 挂起式 promise 随进程消亡，恢复要靠另一套台账，不值。
+ */
+function buildProposeTool(run: Running): AgentTool {
+  return {
+    name: GOAL_TOOL_NAMES.propose,
+    label: "Propose Acceptance Criteria",
+    description:
+      "Propose the acceptance criteria for the goal you are negotiating. Each criterion must be " +
+      "objectively checkable by you later — a command that must pass, an observable behaviour, a " +
+      "file that must exist. Do not propose implementation steps; those are yours to decide. " +
+      "Must be the only tool call in your message.",
+    parameters: Type.Object({
+      criteria: Type.Array(
+        Type.String({
+          description:
+            "One acceptance criterion, phrased as a result that can be verified after the work is done.",
+          maxLength: MAX_CRITERION_LENGTH,
+        }),
+        {
+          minItems: 1,
+          maxItems: MAX_CRITERIA,
+          description: "The complete list of acceptance criteria, in the order you will verify them.",
+        },
+      ),
+    }),
+    async execute(_toolCallId: string, params: Record<string, unknown>) {
+      const current = goals.get(run.threadId);
+      if (!current) return textResult("goal_propose_criteria rejected: there is no active goal.");
+      const proposed = proposeCriteria(current, params.criteria);
+      if (!proposed) {
+        const items = normalizeCriteria(params.criteria);
+        if (items.length === 0) {
+          return textResult(
+            "goal_propose_criteria rejected: criteria must be a non-empty list of non-empty strings.",
+          );
+        }
+        return textResult(
+          "goal_propose_criteria rejected: the acceptance criteria are already settled for this goal.",
+        );
+      }
+      commitGoal(run, proposed);
+      const a = proposed.acceptance as { items: { id: string; text: string }[] };
+      return textResult(
+        [
+          `${a.items.length} acceptance criteria submitted for user confirmation.`,
+          ...a.items.map((c) => `- ${c.id}: ${c.text}`),
+          "",
+          "Stop here. Do not start implementing — the user has to confirm the contract first.",
+        ].join("\n"),
+        { criteria: a.items },
+      );
+    },
+  } as unknown as AgentTool;
+}
+
+/** 完成后收尾：契约生效时逐条对账，通过才转终态 */
+function buildCompleteTool(run: Running): AgentTool {
+  return {
     name: GOAL_TOOL_NAMES.complete,
     label: "Goal Complete",
     description:
       "Mark the goal as finished. Only call this after every requirement in the objective is " +
       "implemented and verified against real evidence — a passing subset, a plan for the rest, " +
       "or progress you would describe in a status update does not count. " +
+      "When the goal has confirmed acceptance criteria you must pass one result per criterion " +
+      "(same ids as the goal block), each with the evidence you observed. " +
       "Must be the only tool call in your message.",
     parameters: Type.Object({
       goal_id: Type.String({
@@ -417,6 +704,25 @@ export function buildGoalTools(run: Running): AgentTool[] {
           "partial progress, blockers, failures, or remaining work.",
         maxLength: MAX_GOAL_SUMMARY_LENGTH,
       }),
+      results: Type.Optional(
+        Type.Array(
+          Type.Object({
+            id: Type.String({
+              description: "Criterion id exactly as shown in the goal block (c1, c2, …).",
+            }),
+            met: Type.Boolean({ description: "Whether this criterion is met right now." }),
+            evidence: Type.String({
+              description:
+                "The concrete evidence you observed: command output, file state, observed behaviour.",
+              maxLength: MAX_GOAL_SUMMARY_LENGTH,
+            }),
+          }),
+          {
+            description:
+              "One entry per confirmed acceptance criterion. Required when the goal has acceptance criteria.",
+          },
+        ),
+      ),
     }),
     async execute(_toolCallId: string, params: Record<string, unknown>) {
       const requestedId = params.goal_id;
@@ -430,6 +736,46 @@ export function buildGoalTools(run: Running): AgentTool[] {
           goal_id: requestedId,
         });
       }
+
+      // 契约对账：目标带已确认标准时，完成声明必须逐条被验证过
+      const criteria = confirmedCriteria(current!.acceptance);
+      let audit: Array<{ id: string; text: string; met: boolean; evidence: string }> | undefined;
+      if (criteria.length > 0) {
+        // 先校形状/完整性再校「有没有干活」：残缺的对账表是更具体的诊断，
+        // 先回给模型它就知道该补哪几条，而不是笼统地被告知去干活
+        const checked = auditAgainstCriteria(criteria, normalizeAudit(params.results));
+        if (!checked.ok) {
+          return textResult(`goal_complete rejected: ${checked.reason}`, {
+            goal_id: requestedId,
+          });
+        }
+        // 完成声明背后必须有动作。这条挡的是「模型纯靠总结宣布完成」：整条目标
+        // 从头到尾没调过任何非目标工具，就没有任何可验证的进展可言——哪怕它
+        // 交上来一份格式完美、证据全是编的对账表
+        if (!current!.workSeen) {
+          return textResult(
+            "goal_complete rejected: no tool has been used to work on this goal yet, so there is " +
+              "nothing that could verify any criterion. Do the work first.",
+            { goal_id: requestedId },
+          );
+        }
+        audit = checked.rows;
+        const unmet = audit.filter((r) => !r.met);
+        if (unmet.length > 0) {
+          // 不转 complete：还有标准没达到，目标就该继续跑。把缺口原样回给模型，
+          // 它接着这条继续干——这正是自治循环该有的反应
+          return textResult(
+            [
+              `goal_complete rejected: ${unmet.length} of ${criteria.length} acceptance criteria are not met.`,
+              ...unmet.map((r) => `- ${r.id} (${r.text}): ${r.evidence}`),
+              "",
+              "Keep working on the unmet criteria, then call goal_complete again once every one of them is verified.",
+            ].join("\n"),
+            { goal_id: requestedId, unmet: unmet.map((r) => r.id) },
+          );
+        }
+      }
+
       if (INCOMPLETE_CLAIM_PATTERNS.some((p) => p.test(summary))) {
         return textResult(
           "goal_complete rejected: the summary says the work is not complete. " +
@@ -442,12 +788,18 @@ export function buildGoalTools(run: Running): AgentTool[] {
         summary,
       });
       if (!done) return textResult(staleRejection(requestedId, current), { goal_id: requestedId });
-      commitGoal(run, done);
-      return textResult(`Goal complete: ${summary}`, { goal: done.objective, summary });
+      commitGoal(run, audit ? { ...done, completionAudit: audit } : done);
+      return textResult(`Goal complete: ${summary}`, {
+        goal: done.objective,
+        summary,
+        ...(audit ? { audit } : {}),
+      });
     },
   } as unknown as AgentTool;
+}
 
-  const blockedTool: AgentTool = {
+function buildBlockedTool(run: Running): AgentTool {
+  return {
     name: GOAL_TOOL_NAMES.blocked,
     label: "Goal Blocked",
     description:
@@ -503,6 +855,4 @@ export function buildGoalTools(run: Running): AgentTool[] {
       });
     },
   } as unknown as AgentTool;
-
-  return [completeTool, blockedTool];
 }

@@ -230,6 +230,12 @@ export type Running = {
   /** 当前会话计划文件绝对路径（plan_write 首写定名，之后覆盖写） */
   planFilePath?: string;
   /**
+   * 当前目标产物的绝对路径（建目标首写定名，之后每次目标变更覆盖写）。
+   * 与 planFilePath 同型：换一份新目标就重置，重新定名。事实源在 goal_state 行，
+   * 这份文件是给人看的投影（见 goal/goal-artifact.ts）。
+   */
+  goalFilePath?: string;
+  /**
    * 本会话选中的设计主题（design 模式提示词段与 use_design_theme 缺省目标；
    * null/缺省 = 不使用主题）。事实源：sessions.design_theme 偏好列，恢复链
    * row ?? 最近使用 kv ?? null（见 sessions/resolve.ts；变更见 handlers/design-md.ts）

@@ -6,7 +6,7 @@
  * 目标块靠后且只在目标模式下非空——agent / plan / ask 三档的提示词不因本模块
  * 产生任何字节变化。
  */
-import type { Goal } from "./goal-state";
+import { confirmedCriteria, type Goal } from "./goal-state";
 
 /**
  * goal 模式的静态段：身份是「把一个目标做完」，纪律段的核心是「不把未完成说成完成」。
@@ -20,8 +20,20 @@ export const GOAL_MODE_PROMPT = [
   "Each turn ends on its own; when a turn finishes with the goal unfinished, the system automatically starts the next turn with the full objective restated. Do not wrap up, hand back, or ask whether to continue — keep working instead.",
   "When every requirement of the goal is implemented and verified, call goal_complete with a summary of what was done and what evidence proves it. That is the only way the goal ends.",
   "If you hit a true impasse that needs the user or an external party to act, call goal_blocked with the concrete evidence and the number of separate turns you spent on it.",
-  "Project files can be modified freely in Goal mode. Use the todo tool to keep an explicit checklist when the goal has several distinct parts.",
+  "Project files can be modified freely in Goal mode, except while the acceptance criteria are still being agreed (see the goal block below) — then this turn is read-only. Use the todo tool to keep an explicit checklist when the goal has several distinct parts.",
 ].join("\n");
+
+/** 目标原文（各态共用） */
+function objectiveLines(goal: Goal): string[] {
+  return [
+    GOAL_OBJECTIVE_TRUST_BOUNDARY,
+    "",
+    `<goal_objective>`,
+    goal.objective,
+    `</goal_objective>`,
+    `Goal id: ${goal.id} (only used as the goal_complete stale-turn guard).`,
+  ];
+}
 
 /** 目标块：紧贴模式段。
  *
@@ -32,6 +44,10 @@ export const GOAL_MODE_PROMPT = [
  *  （goalContinueText 的 `Continuing the active goal (turn N of M)`），
  *  每轮都会变的字段一律不得进这块。
  *
+ *  验收标准清单**可以**进这块：它在用户确认那一刻就定死了（proposed/confirmed
+ *  之间只差一个状态字），之后跨轮不变；对账用的进度标记只出现在 goal_complete
+ *  的调用里，不进提示词。
+ *
  *  无目标时返回空串——静态契约已经由 GOAL_MODE_PROMPT 承担，这里再抄一遍只会
  *  让同一段提示词在提示词里出现两次；composeModeSystemPrompt 的 filter(Boolean)
  *  会把空串整段剔除，于是「切到 goal 档还没发第一条消息」时提示词与 agent 档
@@ -39,21 +55,81 @@ export const GOAL_MODE_PROMPT = [
 export function goalPromptBlock(goal: Goal | null): string {
   if (!goal) return "";
   // 停下来的目标必须换一套说法：静态模式段（GOAL_MODE_PROMPT）通篇在讲「别收手、
-  // 别问、系统会自动续下一轮」，那是给 active 写的。目标 paused 之后自治循环已经
-  // 停了，但模式段还在，模型照样读得到——不在这块里显式撤销，它会在用户这条消息
-  // 的轮次里继续埋头干目标，而条上明明写着「已暂停」。修复前的症状正是：
-  // 「上面说暂停了，对话还在进行中」
+  // 别问、系统会自动续下一轮」，那是给正在跑的目标写的。目标 paused 之后自治循环
+  // 已经停了，但模式段还在，模型照样读得到——不在这块里显式撤销，它会在用户这条
+  // 消息的轮次里继续埋头干目标，而条上明明写着「已暂停」
   if (goal.status !== "active") return stoppedGoalBlock(goal);
+  switch (goal.acceptance?.status) {
+    case "pending":
+      return negotiatingBlock(goal);
+    case "proposed":
+      return awaitingConfirmationBlock(goal);
+    case "confirmed":
+      return confirmedBlock(goal);
+    // skipped（含老目标回放）与字段缺失走原有执行块，行为与引入本机制之前一致
+    default:
+      return executionBlock(goal);
+  }
+}
+
+/** 协商轮块：目标刚建 / 用户驳回后重新协商。这一轮只勘察 + 提议标准 */
+function negotiatingBlock(goal: Goal): string {
+  const feedback = goal.acceptance?.status === "pending" ? goal.acceptance.feedback : undefined;
   return [
-    GOAL_OBJECTIVE_TRUST_BOUNDARY,
+    ...objectiveLines(goal),
     "",
-    `<goal_objective>`,
-    goal.objective,
-    `</goal_objective>`,
-    `Goal id: ${goal.id} (only used as the goal_complete stale-turn guard).`,
+    "## This turn: agree on the acceptance criteria",
+    "The user has not yet confirmed what counts as done, so this turn is about the contract, not the code.",
+    "Inspect the workspace and the objective, then call goal_propose_criteria exactly once with the complete list of criteria.",
+    "Each criterion must be objectively checkable by you after the work: a command that must pass, an observable behaviour, a file that must exist. State results to verify, not implementation steps.",
+    "The goal-mode instructions above about working across turns do NOT apply yet: this turn is READ-ONLY. Do not create, overwrite, delete or otherwise mutate workspace files, and do not start implementing. Write and Edit are blocked by the system right now.",
+    "If the objective is genuinely ambiguous in a way that changes what the criteria should be, ask the user with the Question tool first, then propose.",
+    ...(feedback
+      ? [
+          "",
+          "## Your earlier criteria were not accepted",
+          "Why:",
+          `"${feedback}"`,
+          "Revise the list accordingly. Do not resubmit the same list unchanged.",
+        ]
+      : []),
+  ].join("\n");
+}
+
+/** 等用户确认：循环停着，模型不该动手 */
+function awaitingConfirmationBlock(goal: Goal): string {
+  const items = goal.acceptance?.status === "proposed" ? goal.acceptance.items : [];
+  return [
+    ...objectiveLines(goal),
+    "",
+    "## Acceptance criteria (submitted, waiting for the user)",
+    ...items.map((c) => `${c.id}. ${c.text}`),
+    "",
+    "The user is deciding whether these criteria are the right contract. No autonomous turn is running and none will start until they answer.",
+    "Do not start implementing and do not call goal_complete — work done before the contract is confirmed would make the confirmation meaningless.",
+    "Answer normally if the user asks something; otherwise wait for their decision.",
+  ].join("\n");
+}
+
+/** 契约生效：执行轮的块，带逐条对账纪律 */
+function confirmedBlock(goal: Goal): string {
+  const items = confirmedCriteria(goal.acceptance);
+  return [
+    ...objectiveLines(goal),
+    "",
+    "## Acceptance criteria (confirmed — these define done)",
+    ...items.map((c) => `${c.id}. ${c.text}`),
+    "",
+    "When you call goal_complete you must pass a `results` entry for EVERY criterion id above, each with the evidence you actually observed. The call is rejected outright if any criterion is missing from `results`.",
+    "A criterion you have not verified is not a criterion you have met. If some are still unmet, do not call goal_complete — keep working on them.",
     "",
     GOAL_RULES,
   ].join("\n");
+}
+
+/** 原有执行块（用户跳过标准 / 老目标回放）：不做对账 */
+function executionBlock(goal: Goal): string {
+  return [...objectiveLines(goal), "", GOAL_RULES].join("\n");
 }
 
 /** 非 active 目标的状态行（告诉模型循环为什么停了，别让它自己猜） */

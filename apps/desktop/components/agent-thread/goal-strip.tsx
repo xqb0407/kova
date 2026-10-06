@@ -23,9 +23,15 @@ import {
 } from "@/components/ui/input-group";
 import {
   clearGoalNow,
+  confirmGoalCriteriaNow,
   fetchGoalState,
+  isGoalAwaitingConfirmation,
+  isGoalNegotiating,
+  rejectGoalCriteriaNow,
   resumeGoalNow,
   setGoalLimitNow,
+  setGoalObjectiveNow,
+  skipGoalCriteriaNow,
   useGoalState,
   type GoalSnapshot,
 } from "@/lib/pi/pi-goal";
@@ -76,6 +82,8 @@ function pauseHint(goal: GoalSnapshot): string | null {
   if (r.startsWith("automatic turn limit lowered"))
     return "上限调到了已跑轮数以下";
   if (r.startsWith("no progress across")) return "连续多轮没有新进展";
+  if (r.startsWith("no acceptance criteria proposed"))
+    return "连续几轮都没提出验收标准，已停下等你";
   if (r.startsWith("user sent a message")) return "你发了新消息，目标已让位";
   if (r.startsWith("user left goal mode")) return "你切出了目标模式";
   if (r.startsWith("sidecar restarted"))
@@ -252,6 +260,297 @@ const TurnLimitDraftPicker: FC<{ threadId: string }> = ({ threadId }) => {
   );
 };
 
+/**
+ * 条上显示的状态：不能只读 goal.status。
+ *
+ * 「待确认验收标准」时 goal.status 仍是 active（循环没跑，只是停着等人），
+ * 按 status 渲染会把「等你确认」写成「进行中」——条上说在跑、实际什么都没跑，
+ * 正是这条最该避免的一类谎报。
+ */
+function displayState(goal: GoalSnapshot): {
+  label: string;
+  className: string;
+  /** 显示运行中的呼吸点（协商轮也算在跑：那一轮确实在勘察与提议） */
+  live: boolean;
+  /** 显示「继续」按钮 */
+  resumable: boolean;
+} {
+  if (isGoalAwaitingConfirmation(goal)) {
+    return {
+      label: "待确认标准",
+      className: "text-amber-600 dark:text-amber-400",
+      live: false,
+      resumable: false,
+    };
+  }
+  if (isGoalNegotiating(goal) && goal.status === "active") {
+    return {
+      label: "拟定标准中",
+      className: STATUS_CLASS.active,
+      live: true,
+      resumable: false,
+    };
+  }
+  return {
+    label: STATUS_LABEL[goal.status],
+    className: STATUS_CLASS[goal.status],
+    live: goal.status === "active",
+    resumable: goal.status !== "complete",
+  };
+}
+
+/** 确认卡片上的权限档（与 sidecar 的 ApprovalLevel 同值） */
+const APPROVAL_LEVELS: ReadonlyArray<{ value: string; label: string; hint: string }> = [
+  { value: "ask", label: "每次确认", hint: "每条 write/edit/bash 都问一次（最保守）" },
+  { value: "workspace-write", label: "工作区免确认", hint: "工作区内的写入免问，bash 仍问" },
+  { value: "auto-edit", label: "编辑免确认", hint: "改文件免问，bash 仍问" },
+  { value: "auto", label: "完全访问", hint: "全程不问（适合放手跑完的目标）" },
+];
+
+/**
+ * 目标原文编辑器（点条上的目标文字打开）。
+ *
+ * 为什么需要一个显式入口：协商阶段用户直接在对话里发一句「算了，改成做 Y 吧」，
+ * 系统按「补充需求」处理——验收标准会照新意图提，但条上的目标原文仍是第一句话，
+ * 两边对不上。靠自然语言猜「这是在补需求还是换目标」不可靠，不如给个动作。
+ *
+ * 改原文会让已提/已确认的标准作废重谈（sidecar 侧的规则），所以这里要说清楚，
+ * 否则用户会以为只是改个措辞、标准还在。
+ */
+const ObjectiveEditor: FC<{
+  initial: string;
+  /** 当前阶段的契约会不会被这次改动作废（决定提示文案） */
+  willVoidCriteria: boolean;
+  onCommit: (objective: string) => void;
+  onCancel: () => void;
+}> = ({ initial, willVoidCriteria, onCommit, onCancel }) => {
+  const [text, setText] = useState(initial);
+  const trimmed = text.trim();
+  const valid = trimmed.length > 0 && trimmed !== initial.trim();
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-xs font-medium">这条目标要做的事</div>
+      <textarea
+        autoFocus
+        rows={4}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && valid) onCommit(trimmed);
+          if (e.key === "Escape") onCancel();
+        }}
+        className="border-border/60 bg-background w-full resize-none rounded border p-2 text-[11px] leading-relaxed outline-none"
+      />
+      <p className="text-muted-foreground text-[11px] leading-relaxed">
+        {willVoidCriteria
+          ? "验收标准是按原目标提的，改动后它们会作废、重新协商一轮。"
+          : "改动后轮次与停滞计数重新起算，产物另存一份。"}
+      </p>
+      <div className="flex items-center justify-end gap-1.5">
+        <Button variant="ghost" size="sm" className="h-7 px-2.5" onClick={onCancel}>
+          取消
+        </Button>
+        <Button
+          size="sm"
+          className="h-7 px-3"
+          disabled={!valid}
+          onClick={() => onCommit(trimmed)}
+        >
+          确定
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * 条上可点的目标原文。
+ *
+ * 只在能改的时候可点：已完成的目标是收工记录不是待办，改它没有意义
+ * （要接着做就新设一个），所以那时退化成一段纯文本。
+ */
+const ObjectiveText: FC<{
+  goal: GoalSnapshot;
+  disabled?: boolean;
+  onCommit: (objective: string) => void;
+}> = ({ goal, disabled, onCommit }) => {
+  const [open, setOpen] = useState(false);
+  const editable = goal.status !== "complete";
+  const voids =
+    goal.acceptance?.status === "proposed" || goal.acceptance?.status === "confirmed";
+
+  if (!editable) {
+    return (
+      <span className="min-w-0 flex-1 truncate" title={goal.objective}>
+        {goal.objective}
+      </span>
+    );
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            disabled={disabled}
+            title="点这里改目标原文"
+            className="hover:text-foreground focus-visible:ring-ring min-w-0 flex-1 truncate rounded text-left transition-colors focus-visible:ring-1 focus-visible:outline-none disabled:opacity-50"
+          >
+            {goal.objective}
+          </button>
+        }
+      />
+      <PopoverContent align="start" className="w-96 p-3">
+        {open && (
+          <ObjectiveEditor
+            initial={goal.objective}
+            willVoidCriteria={voids}
+            onCommit={(objective) => {
+              setOpen(false);
+              onCommit(objective);
+            }}
+            onCancel={() => setOpen(false)}
+          />
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+};
+
+/**
+ * 验收标准待确认卡片。
+ *
+ * 为什么在这里选权限档：默认档下每条 write/bash 都要弹审批卡，而目标要跑几十
+ * 上百轮——用户在「确认这份契约」的时刻顺带定下这条目标跑在哪个档，比跑到第 30
+ * 轮才发现要一条条点确认强。这个值落的是会话级审批偏好，不是目标字段。
+ */
+const CriteriaConfirmCard: FC<{
+  goal: GoalSnapshot;
+  busy: boolean;
+  onConfirm: (approvalLevel: string) => void;
+  onReject: (feedback: string) => void;
+  onSkip: () => void;
+}> = ({ goal, busy, onConfirm, onReject, onSkip }) => {
+  const [approvalLevel, setApprovalLevel] = useState("auto-edit");
+  const [rejecting, setRejecting] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const items = goal.acceptance?.items ?? [];
+  // 上一版为什么被退回（用户自己的意见 / 目标被改过）：sidecar 让这条意见跨过一次
+  // 重提（见 Acceptance.proposed），所以模型改完再提交时这里还看得到——用户复审
+  // 新版标准时最需要的就是「我提的那点它真改了吗」
+  const previousFeedback = goal.acceptance?.feedback;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-xs font-medium">验收标准（确认后开始执行）</div>
+      {previousFeedback && (
+        <div className="border-border/60 text-muted-foreground rounded border border-dashed p-2 text-[11px] leading-relaxed">
+          上一版为什么被退回：{previousFeedback}
+        </div>
+      )}
+      <ol className="flex flex-col gap-1">
+        {items.map((c) => (
+          <li key={c.id} className="flex gap-1.5 text-[11px] leading-relaxed">
+            <span className="text-muted-foreground shrink-0 tabular-nums">{c.id}</span>
+            <span className="min-w-0">{c.text}</span>
+          </li>
+        ))}
+      </ol>
+
+      {!rejecting && (
+        <>
+          <div className="text-muted-foreground mt-1 text-[11px]">
+            这条目标跑在这些操作上的确认档
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            {APPROVAL_LEVELS.map((l) => (
+              <button
+                key={l.value}
+                type="button"
+                title={l.hint}
+                onClick={() => setApprovalLevel(l.value)}
+                className={cn(
+                  "rounded border px-1.5 py-1 text-[11px] transition-colors",
+                  approvalLevel === l.value
+                    ? "border-foreground/30 bg-foreground/5 font-medium"
+                    : "border-border/60 text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {l.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-muted-foreground text-[11px] leading-relaxed">
+            按这个标准完成时，模型必须逐条给出证据；有标准没达标就不算完成。
+          </p>
+          <div className="flex items-center justify-end gap-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2.5"
+              disabled={busy}
+              onClick={() => setRejecting(true)}
+            >
+              驳回
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2.5"
+              disabled={busy}
+              title="不要验收标准，直接开始干活"
+              onClick={() => onSkip()}
+            >
+              跳过
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 px-3"
+              disabled={busy}
+              onClick={() => onConfirm(approvalLevel)}
+            >
+              确认并开始
+            </Button>
+          </div>
+        </>
+      )}
+
+      {rejecting && (
+        <>
+          <textarea
+            autoFocus
+            rows={3}
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            placeholder="哪里不对？模型下一轮会按这段意见重提（留空也能提交，但它只能靠猜）"
+            className="border-border/60 bg-background w-full resize-none rounded border p-2 text-[11px] leading-relaxed outline-none"
+          />
+          <div className="flex items-center justify-end gap-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2.5"
+              onClick={() => setRejecting(false)}
+            >
+              返回
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 px-3"
+              disabled={busy}
+              onClick={() => onReject(feedback)}
+            >
+              提交意见
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
 export const GoalStrip: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const { mode } = useSessionMode(threadId);
@@ -297,7 +596,9 @@ export const GoalStrip: FC = () => {
   }
 
   const hint = pauseHint(goal);
-  const running = goal.status === "active";
+  const view = displayState(goal);
+  const running = view.live;
+  const awaiting = isGoalAwaitingConfirmation(goal);
   // 目标停了但这一轮仍在跑（用户刚发消息接管、队列里还有排队的轮次）：
   // 两个事实同时成立，条上要同时说，否则「已暂停」会被读成「什么都没在跑」
   const turnBusy = isRunning && !running;
@@ -313,16 +614,16 @@ export const GoalStrip: FC = () => {
       <TargetIcon
         className={cn(
           "size-3.5 shrink-0",
-          running ? STATUS_CLASS.active : STATUS_CLASS[goal.status],
+          view.className,
         )}
       />
-      <span className="min-w-0 flex-1 truncate" title={goal.objective}>
-        {goal.objective}
-      </span>
+      <ObjectiveText
+        goal={goal}
+        disabled={busy}
+        onCommit={(objective) => act((id) => setGoalObjectiveNow(id, objective))}
+      />
       <span className="text-muted-foreground flex shrink-0 items-center gap-2">
-        <span className={cn("shrink-0", STATUS_CLASS[goal.status])}>
-          {STATUS_LABEL[goal.status]}
-        </span>
+        <span className={cn("shrink-0", view.className)}>{view.label}</span>
         <span className="hidden shrink-0 sm:inline">
           <TurnReadout
             goal={goal}
@@ -344,6 +645,36 @@ export const GoalStrip: FC = () => {
           {formatTokens(goal.tokensUsed)} token
         </span>
       </span>
+      {/* 待确认标准：这是整条目标的契约，不能只给个图标——清单与三个决定
+          （确认/驳回/跳过）都在这张卡里，条上那个按钮只是它的入口 */}
+      {awaiting && (
+        <Popover>
+          <PopoverTrigger
+            render={
+              <Button
+                size="sm"
+                className="h-6 shrink-0 px-2 text-[11px]"
+                disabled={busy}
+                title="查看并确认验收标准"
+              >
+                确认标准
+                {goal.acceptance?.items.length
+                  ? `（${goal.acceptance.items.length} 条）`
+                  : ""}
+              </Button>
+            }
+          />
+          <PopoverContent align="end" className="w-80 p-3">
+            <CriteriaConfirmCard
+              goal={goal}
+              busy={busy}
+              onConfirm={(level) => act((id) => confirmGoalCriteriaNow(id, level))}
+              onReject={(text) => act((id) => rejectGoalCriteriaNow(id, text))}
+              onSkip={() => act(skipGoalCriteriaNow)}
+            />
+          </PopoverContent>
+        </Popover>
+      )}
       {turnBusy ? (
         <span className="text-muted-foreground/80 hidden shrink-0 md:inline">
           正在处理这条消息
@@ -356,13 +687,19 @@ export const GoalStrip: FC = () => {
           </span>
         )
       )}
-      {!running && goal.status !== "complete" && (
+      {!running && view.resumable && (
         <Button
           variant="ghost"
           size="sm"
           disabled={busy}
           onClick={() => act(resumeGoalNow)}
-          title="继续这个目标（轮次与停滞计数重新起算）"
+          // 不在目标档时，「继续」会顺手把档位切回目标模式（sidecar 的 ensureGoalMode：
+          // 目标只在 goal 档跑）。按钮上直说这件事，别让用户发现自己的档位被换了
+          title={
+            mode === "goal"
+              ? "继续这个目标（轮次与停滞计数重新起算）"
+              : "继续这个目标（会切回目标模式——它只在这一档跑）"
+          }
           className="h-6 shrink-0 px-2"
         >
           {busy ? (

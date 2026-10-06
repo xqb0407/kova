@@ -21,8 +21,12 @@
  * 拒掉旧 goal_id、或摘要命中「说没做完」的正则——一次误判就终止整个目标。
  */
 import {
+  DEFAULT_MAX_NEGOTIATION_TURNS,
+  countNegotiationTurn,
   hasSubstantiveToolCall,
+  isNegotiating,
   nextStallState,
+  resetNegotiationProgress,
   resetSafetyEpoch,
   settleGoalTurn,
   transitionGoal,
@@ -39,24 +43,67 @@ export type ContinuationDecision =
 /** 终局的 stopReason：这三种都意味着 provider 已经不在正常工作，续跑只会重复失败 */
 const TERMINAL_STOP_REASONS = new Set(["error", "aborted"]);
 
+/** 协商轮上限也可由调用方覆盖（测试用；生产走默认） */
+export type ContinuationLimits = {
+  maxAutoTurns: number | null;
+  maxStallTurns: number | null;
+  maxNegotiationTurns?: number;
+};
+
 /**
  * 一个 turn 结束后的续跑决策。
  *
- * @param goal      结算前的目标盘面
- * @param message   本轮的 assistant 消息（判终局 / 停滞用）
- * @param tokensUsed 会话累计 token（与目标建立时的基线作差后的目标内用量）
- * @param limits    安全阀参数
+ * 判定顺序敏感，逐条短路。契约阶段（协商 / 等确认）的判定排在停机阀之前——
+ * 那两态的语义是「这一轮该不该继续」，不是「还能不能继续」，轮次上限与停滞检测
+ * 都不该在协商还没完成时先把目标停掉。
  */
 export function decideContinuation(
   goal: Goal,
   message: unknown,
   tokensUsed: number,
-  limits: { maxAutoTurns: number | null; maxStallTurns: number | null },
+  limits: ContinuationLimits,
 ): ContinuationDecision {
   // 目标已经不在自治态：没有任何东西可以注入。
   // complete / blocked 由工具自己结算；paused 是人为停的，都不该被自动叫醒。
   if (goal.status !== "active") {
     return { action: "stop", goal, reason: `goal is ${goal.status}` };
+  }
+
+  // 契约阶段先结算用量再分流：continueGoalTurn 里 drainUsagePending 已经把
+  // run.usagePending 清零并交到这里，提前 return 而不折进目标就会让这批 token
+  // 凭空消失（账目少算，且没有任何症状）。结算轮次同样照旧——协商轮也是 turn_end
+  // 走到这里的一轮，与「只有 turn_end 才 +1」的既有口径一致。
+  if (goal.acceptance?.status === "proposed") {
+    // 等用户确认：轮次与用量照常入账，但不注入任何续跑消息。
+    // 这是唯一的「active 却停着」的合法态——条上会写明「待你确认验收标准」
+    return {
+      action: "stop",
+      goal: settleGoalTurn(goal, tokensUsed),
+      reason: "acceptance criteria awaiting user confirmation",
+    };
+  }
+  // 协商阶段：只在显式 pending 时成立。字段缺失 = 老目标（回落 skipped 语义），
+  // 必须走执行块保持原有行为，不能被拉进协商循环
+  if (isNegotiating(goal.acceptance)) {
+    const settled = settleGoalTurn(goal, tokensUsed);
+    // 只有空转轮计入协商预算：勘察轮（读文件、跑只读命令）是提出可验证标准的前提，
+    // 大仓库跑十几轮很正常——这条阀要抓的是「只说不做」的原地打转，不是刨得深。
+    // 判据与停滞检测同源（hasSubstantiveToolCall），两处的「做了事」含义必须一致
+    const worked = hasSubstantiveToolCall(message);
+    const counted = worked ? resetNegotiationProgress(settled) : countNegotiationTurn(settled);
+    const maxNegotiation = limits.maxNegotiationTurns ?? DEFAULT_MAX_NEGOTIATION_TURNS;
+    if (counted.negotiationTurns >= maxNegotiation) {
+      const paused = transitionGoal(counted, "paused", {
+        expectedGoalId: counted.id,
+        reason: `no acceptance criteria proposed across ${counted.negotiationTurns} idle turns`,
+      });
+      return { action: "stop", goal: paused ?? counted, reason: "no criteria proposed" };
+    }
+    return {
+      action: "continue",
+      goal: counted,
+      message: makeGoalNegotiationMessage(counted),
+    };
   }
 
   const stopReason = (message as { stopReason?: string } | undefined)?.stopReason;
@@ -99,6 +146,42 @@ export function decideContinuation(
     goal: withStall,
     message: makeGoalContinueMessage(withStall, limits),
   };
+}
+
+/**
+ * 协商轮的续跑注入：模型这一轮勘察完却没提议标准时的下一轮指令。
+ *
+ * 与执行轮续跑分开写而不是复用一条：两条消息要模型做的事完全不同——执行轮是
+ * 「接着干目标」，协商轮是「别干活，先把标准提出来」。混用会让模型在协商轮里
+ * 看到「继续推进目标」然后开始改文件。
+ *
+ * 同样带哨兵前缀：它也要过 syncGoalOnUserPrompt，不加前缀会被当成用户接管，
+ * 目标在协商中途被自己的注入暂停。
+ */
+export function makeGoalNegotiationMessage(goal: Goal): AgentMessage {
+  return goalUserMessage(goalNegotiationText(goal), GOAL_CONTINUE_PREFIX);
+}
+
+export function goalNegotiationText(goal: Goal): string {
+  const feedback = goal.acceptance?.status === "pending" ? goal.acceptance.feedback : undefined;
+  return GOAL_CONTINUE_PREFIX + [
+    "You are still agreeing on the acceptance criteria — nothing has been proposed yet.",
+    "",
+    "The goal is not done and no implementation should start. Inspect the workspace if you have not, then call goal_propose_criteria with the complete list of criteria.",
+    "",
+    "<goal_objective>",
+    goal.objective,
+    "</goal_objective>",
+    ...(feedback
+      ? [
+          "",
+          `The user rejected your previous criteria: "${feedback}"`,
+          "Revise the list accordingly.",
+        ]
+      : []),
+    "",
+    "Do not modify any file in this turn. Do not start implementing.",
+  ].join("\n");
 }
 
 /**

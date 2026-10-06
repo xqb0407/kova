@@ -49,9 +49,14 @@ import {
   resume,
   setGoalMaxTurns,
   commitGoal,
+  confirmGoalCriteria,
+  rejectGoalCriteria,
+  setGoalObjective,
+  skipGoalCriteria,
 } from "../../goal/goal";
-import { goalContinueText } from "../../goal/goal-continuation";
-import { limitsFor } from "../../goal/goal-state";
+import { goalContinueText, goalNegotiationText } from "../../goal/goal-continuation";
+import { isNegotiating, limitsFor } from "../../goal/goal-state";
+import { ensureGoalMode, persistModePrefs } from "../../agent/modes";
 import { dispatchPrompt } from "../prompt-pipeline";
 import { getDelegationSnapshot } from "../../subagent/subagent";
 import { dropEventSeq, peekEventSeq } from "../event-seq";
@@ -210,6 +215,76 @@ export const handlers: Record<string, CommandHandler> = {
     const goal = setGoalMaxTurns(run, msg.maxAutoTurns);
     if (!goal) throw new Error(`no goal to set limit on: ${threadId}`);
     send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+  },
+
+  // 改目标原文（常驻条上点目标文字改的就是它）。存在的理由是「协商阶段那条补充
+  // 需求的消息」判不出用户是在加要求还是换目标——猜意图不如给个显式动作：
+  // 改原文走这条命令，契约按规则作废重谈（见 goal-state 的 setObjective）
+  goal_set_objective: async (reqId, msg) => {
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    const goal = setGoalObjective(run, typeof msg.objective === "string" ? msg.objective : "");
+    if (!goal) throw new Error(`no goal to set the objective on: ${threadId}`);
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    // 换了目标就要按新目标跑：空闲时补起一轮（协商或执行，按契约阶段选文本）。
+    // 正忙时什么也不做——那一轮的 turn_end 自然会按新盘面续
+    kickGoalLoop(run);
+  },
+
+  // 验收标准契约的三个决定（常驻条待确认卡片上的三个按钮）。三者都只改契约、
+  // 然后经 kickGoalLoop 起下一轮——确认要开始干活，驳回/跳过要让模型重新协商或
+  // 直接动手，总之都需要一轮。空闲时先回快照再起轮，UI 立刻看到新状态
+  goal_confirm_criteria: async (reqId, msg) => {
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    // 权限档与确认是同一件事的两半：默认 ask 档下每条 write/bash 都要弹审批卡，
+    // 而目标要跑几十上百轮。用户在确认契约时就该一并决定这条目标跑在哪个档
+    if (
+      msg.approvalLevel === "ask" ||
+      msg.approvalLevel === "workspace-write" ||
+      msg.approvalLevel === "auto-edit" ||
+      msg.approvalLevel === "auto"
+    ) {
+      run.approvalLevel = msg.approvalLevel;
+      persistModePrefs(run);
+    }
+    const goal = confirmGoalCriteria(run);
+    if (!goal) throw new Error(`no proposed criteria to confirm: ${threadId}`);
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    kickGoalLoop(run);
+  },
+
+  goal_reject_criteria: async (reqId, msg) => {
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    const feedback = typeof msg.feedback === "string" ? msg.feedback : undefined;
+    const goal = rejectGoalCriteria(run, feedback);
+    if (!goal) throw new Error(`no proposed criteria to reject: ${threadId}`);
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    // 驳回后立刻起新一轮协商：用户在卡片上写了意见，等的就是模型据此重提，
+    // 还要再点一次「继续」才算数的话，这个按钮就白点了
+    kickGoalLoop(run);
+  },
+
+  goal_skip_criteria: async (reqId, msg) => {
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    const goal = skipGoalCriteria(run);
+    if (!goal) throw new Error(`no criteria to skip: ${threadId}`);
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    kickGoalLoop(run);
   },
 
   context_info: async (reqId, msg) => {
@@ -692,6 +767,14 @@ function kickGoalLoop(run: Running): void {
   if (isTurnBusy(run.threadId)) return;
   const goal = getGoal(run.threadId);
   if (!goal || goal.status !== "active") return;
+  // 等用户确认契约时没有活可干：起一轮只会让模型读着「等用户决定」的系统提示词
+  // 收到一条「继续推进目标」的注入，两边打架（而且这个阶段它手里一个目标工具
+  // 都没有，收到 execution 指令只会去调不存在的 goal_complete）
+  if (goal.acceptance?.status === "proposed") return;
+  // 目标只在 goal 档跑：这里的入口都是「继续这条目标」的明确动作，档位不对就先
+  // 扶正（理由见 ensureGoalMode）。不对端补一条会话变更帧的话，前端胶囊会停在
+  // 旧档位，看起来像"档位自己变了"
+  if (ensureGoalMode(run) && run.sessionId) sendSessionsChanged("updated", run.sessionId);
   const reqId = `goal-${run.sessionId}-${Date.now()}`;
   void dispatchPrompt(reqId, {
     threadId: run.threadId,
@@ -701,7 +784,12 @@ function kickGoalLoop(run: Running): void {
     // 当成「用户后来选了目录」持久化进会话行（resolveSession 的补绑分支）——一次
     // 「继续」就把任务会话变成「项目」会话，侧边栏按 UUID 目录名分组
     cwd: run.persistedCwd,
-    text: goalContinueText(goal, limitsFor(goal)),
+    // 协商阶段与执行阶段的注入文本不是一回事：前者要模型「别动手，先提标准」，
+    // 后者才是「接着干」。用错文本的后果是模型按执行纪律去改文件，
+    // 而写类工具正被协商只读门控拦着——它只会一遍遍撞门
+    text: isNegotiating(goal.acceptance)
+      ? goalNegotiationText(goal)
+      : goalContinueText(goal, limitsFor(goal)),
   }).catch((err) => {
     logErr("goal resume: failed to start the continuation turn:", err);
   });

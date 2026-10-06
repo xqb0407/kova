@@ -52,16 +52,31 @@ import {
  * Shift+Tab 在选项间循环（与 Cursor / Claude Code 一致），下拉未展开时生效。
  */
 
-export type PickerOption = {
+/** 两个维度共用的展示字段 */
+type PickerOptionBase = {
   key: string;
   label: string;
   description: string;
   icon: LucideIcon;
-  mode: SessionMode;
-  approvalLevel?: ApprovalLevel;
+};
+
+/**
+ * 权限档位：只回答「改之前问不问」。
+ *
+ * **刻意不带 mode**。带上就会有人把那一项当成"切到这一档"的完整指令发出去——
+ * 曾经四项都硬编码 `mode: "agent"`，于是在目标模式里点一下权限档，请求成了
+ * `set_mode { mode: "agent", approvalLevel }`：会话被踢出目标模式，applyMode 的
+ * 「离开 goal 档收尾」顺手把目标暂停了，而用户以为只是调了个问不问。
+ * 类型上分开之后，想从权限项里读 mode 会直接编译不过。
+ */
+export type PermissionOption = PickerOptionBase & {
+  approvalLevel: ApprovalLevel;
   /** 高危选项：选中后以警告色提示（如完全访问） */
   warning?: boolean;
 };
+
+/** 能力档位：回答「能不能改、以什么形态干活」。决定 mode 的只有这一维。 */
+export type CapabilityOption = PickerOptionBase & { mode: SessionMode };
 
 /**
  * 权限档位：只回答「改之前问不问」。这是下拉里唯一的四个选项，也是 Shift+Tab 的循环集。
@@ -70,13 +85,12 @@ export type PickerOption = {
  * 两个字段（`run.approvalLevel` 与 `run.mode`），所以这里按维度分成两张表，
  * 而不是像以前那样把七项混在一个下拉里。
  */
-export const PERMISSION_OPTIONS: PickerOption[] = [
+export const PERMISSION_OPTIONS: PermissionOption[] = [
   {
     key: "confirm",
     label: "变更前确认",
     description: "改文件前先问我。",
     icon: HandIcon,
-    mode: "agent",
     approvalLevel: "ask",
   },
   {
@@ -84,7 +98,6 @@ export const PERMISSION_OPTIONS: PickerOption[] = [
     label: "工作区内自动",
     description: "项目内改文件免确认；命令仍要确认。",
     icon: FolderLockIcon,
-    mode: "agent",
     approvalLevel: "workspace-write",
   },
   {
@@ -92,7 +105,6 @@ export const PERMISSION_OPTIONS: PickerOption[] = [
     label: "自动编辑",
     description: "自动编辑文件。",
     icon: SquarePenIcon,
-    mode: "agent",
     approvalLevel: "auto-edit",
   },
   {
@@ -100,7 +112,6 @@ export const PERMISSION_OPTIONS: PickerOption[] = [
     label: "完全访问",
     description: "减少确认次数。",
     icon: LockOpenIcon,
-    mode: "agent",
     approvalLevel: "auto",
     warning: true,
   },
@@ -111,7 +122,7 @@ export const PERMISSION_OPTIONS: PickerOption[] = [
  * 由底栏的分隔线右侧那行字显示（CapabilityModeChip），退出点那行字。
  * 入口是 `/` 指令菜单（/ask /plan /goal）与 composer 的「+」菜单。
  */
-export const CAPABILITY_OPTIONS: PickerOption[] = [
+export const CAPABILITY_OPTIONS: CapabilityOption[] = [
   {
     key: "ask",
     label: "问答",
@@ -144,7 +155,7 @@ export const CAPABILITY_OPTIONS: PickerOption[] = [
  * 以前这里按「能力优先」挑选项，于是切到问答档时下拉按钮会显示"问答"而不是权限档；
  * 拆开两个维度之后，下拉只表达权限，能力由旁边的胶囊表达。
  */
-export function permissionOption(snap: PlanningSnapshot): PickerOption {
+export function permissionOption(snap: PlanningSnapshot): PermissionOption {
   return (
     PERMISSION_OPTIONS.find((o) => o.approvalLevel === snap.approvalLevel) ??
     PERMISSION_OPTIONS[0]
@@ -152,7 +163,7 @@ export function permissionOption(snap: PlanningSnapshot): PickerOption {
 }
 
 /** 能力模式解析：不在能力档（agent）时返回 null —— 胶囊据此决定渲染与否 */
-export function capabilityOption(snap: PlanningSnapshot): PickerOption | null {
+export function capabilityOption(snap: PlanningSnapshot): CapabilityOption | null {
   if (snap.mode === "agent") return null;
   return CAPABILITY_OPTIONS.find((o) => o.mode === snap.mode) ?? null;
 }
@@ -174,11 +185,14 @@ export const ModePicker: FC = () => {
   const current = permissionOption(snap);
   const CurrentIcon = current.icon;
 
-  const pick = (o: PickerOption) => {
+  const pick = (o: PermissionOption) => {
     setOpen(false);
     if (o === current) return;
     setBusy(true);
-    setSessionMode(threadId, o.mode, o.approvalLevel)
+    // 权限项里没有 mode：能力档位是正交的另一维，切权限时原样沿用**当前**档位。
+    // 传 o.mode（曾经是硬编码的 "agent"）等于顺手把会话踢出问答/计划/目标档——
+    // 目标模式那边还会因此暂停目标，而用户只是想改个问不问
+    setSessionMode(threadId, snap.mode, o.approvalLevel)
       .catch((err) => console.error("set_mode failed:", err))
       .finally(() => setBusy(false));
   };
