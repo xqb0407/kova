@@ -24,10 +24,13 @@ let seq = 0;
 function makeRun(): Running {
   seq += 1;
   const cwd = mkdtempSync(join(tmpdir(), "wf-sync-"));
+  // sessionId 用临时目录下的绝对路径:测试未初始化 storage,sessionPath 会把它
+  // 拼到进程 cwd(sidecar 包目录)——相对 id 会把会话行写进仓库
+  const sessionId = join(cwd, "session");
   return {
     agent: { state: { messages: [] } } as unknown as Running["agent"],
     threadId: `t-wf-sync-${seq}`,
-    sessionId: `s-wf-sync-${seq}`,
+    sessionId,
     cwd,
     persistedSeq: 0,
     jsonlSeq: 0,
