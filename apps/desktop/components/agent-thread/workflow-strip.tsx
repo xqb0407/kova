@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { Loader2Icon, PlayIcon, WorkflowIcon, XIcon } from "lucide-react";
+import { Loader2Icon, PauseIcon, PlayIcon, WorkflowIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useSessionMode } from "@/lib/pi/pi-session-mode";
@@ -21,20 +21,19 @@ import {
   resumeWorkflowNow,
   useWorkflowState,
   type WorkflowSnapshot,
-  type WorkflowStepState,
-  type WorkflowStepView,
 } from "@/lib/pi/pi-workflow";
+import { WorkflowPlanCard } from "@/components/agent-thread/workflow-cards";
 
 /**
  * 工作流模式常驻条(composer 正上方,与 goal-strip 同一外壳与定位)。
  *
- * 「常驻」的理由同 goal-strip:工作流的后台执行是静默的——用户离开十分钟回来,
- * 扇出的步骤可能已经跑完/暂停/失败,条必须一直在,显示停在哪一步、还剩几步。
+ * 定位:一条始终在场的状态行——运行执行在 sidecar 后台,用户离开十分钟回来,
+ * 条上要能立刻看出「跑到哪一步、停在哪、还是跑完了」。步骤级的展开视图在
+ * 对话里的运行卡(workflow-cards)与这条的 Popover 里,条本身只报状态。
  *
  * 三个状态面:
- * - proposed:待确认剧本卡(折叠在 Popover 里,steps 按 phase 分组)——确认即授权
- *   整个计划,含每个 delegate 步骤要跑的子智能体
- * - running:状态行 + 呼吸点 + 暂停(执行器在 sidecar 后台跑,条只是投影)
+ * - proposed:待确认剧本 → Popover 里是共享的 WorkflowPlanCard(与提案行同卡)
+ * - running:状态行 + 呼吸点 + 暂停
  * - paused/complete/failed:继续/摘要/原因 + 清除
  */
 
@@ -50,163 +49,11 @@ const STATUS_CLASS: Record<WorkflowSnapshot["status"], string> = {
   failed: "text-red-600 dark:text-red-400",
 };
 
-const STEP_STATUS_LABEL: Record<WorkflowStepState["status"], string> = {
-  pending: "待跑",
-  running: "运行中",
-  done: "完成",
-  failed: "失败",
-  skipped: "跳过",
-  interrupted: "已中断",
-};
-
-const STEP_STATUS_CLASS: Record<WorkflowStepState["status"], string> = {
-  pending: "text-muted-foreground",
-  running: "text-emerald-600 dark:text-emerald-400",
-  done: "text-muted-foreground",
-  failed: "text-red-600 dark:text-red-400",
-  skipped: "text-muted-foreground",
-  interrupted: "text-amber-600 dark:text-amber-400",
-};
-
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return String(n);
 }
-
-/** 步骤按 phase 分组(phase 是编排器写的中文展示分组) */
-function groupByPhase(steps: WorkflowStepView[]): Array<[string, WorkflowStepView[]]> {
-  const groups = new Map<string, WorkflowStepView[]>();
-  for (const s of steps) {
-    const phase = s.phase || "执行";
-    groups.set(phase, [...(groups.get(phase) ?? []), s]);
-  }
-  return [...groups.entries()];
-}
-
-/**
- * 待确认剧本卡:确认 = 授权整个计划(含每个步骤跑的子智能体)。
- * 驳回必须带意见回流——重提轮的提示词里只有用户的这段话可依据。
- */
-const ProposalConfirmCard: FC<{
-  run: WorkflowSnapshot;
-  busy: boolean;
-  onConfirm: () => void;
-  onReject: (feedback: string) => void;
-}> = ({ run, busy, onConfirm, onReject }) => {
-  const [rejecting, setRejecting] = useState(false);
-  const [feedback, setFeedback] = useState("");
-  const steps = run.steps ?? [];
-  const previousFeedback = run.proposalFeedback;
-
-  if (rejecting) {
-    return (
-      <div className="flex flex-col gap-2">
-        <textarea
-          autoFocus
-          rows={3}
-          value={feedback}
-          onChange={(e) => setFeedback(e.target.value)}
-          placeholder="哪里不对?模型下一轮会按这段意见重拟剧本"
-          className="border-border/60 bg-background w-full resize-none rounded border p-2 text-[11px] leading-relaxed outline-none"
-        />
-        <div className="flex items-center justify-end gap-1.5">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2.5"
-            onClick={() => setRejecting(false)}
-          >
-            返回
-          </Button>
-          <Button
-            size="sm"
-            className="h-7 px-3"
-            disabled={busy}
-            onClick={() => onReject(feedback)}
-          >
-            提交意见
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="text-xs font-medium">剧本(确认后开始执行)</div>
-      {previousFeedback && (
-        <div className="border-border/60 text-muted-foreground rounded border border-dashed p-2 text-[11px] leading-relaxed">
-          上一版为什么被退回:{previousFeedback}
-        </div>
-      )}
-      {groupByPhase(steps).map(([phase, phaseSteps]) => (
-        <div key={phase} className="flex flex-col gap-1">
-          <div className="text-muted-foreground text-[11px] font-medium">{phase}</div>
-          {phaseSteps.map((s) => (
-            <div key={s.key} className="flex flex-col gap-0.5 text-[11px] leading-relaxed">
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-muted-foreground shrink-0">
-                  {s.kind === "synthesize"
-                    ? "◆ 汇总"
-                    : s.kind === "gate"
-                      ? "▣ 门"
-                      : s.kind === "verify"
-                        ? "◈ 复核"
-                        : "▸"}{" "}
-                  {s.title}
-                </span>
-                {s.agent && (
-                  <span className="text-muted-foreground/70 shrink-0">@{s.agent}</span>
-                )}
-                {s.verify && (
-                  <span className="text-muted-foreground/70 shrink-0">
-                    {s.verify.reviewers ?? 2} 位评审 · 阈值{" "}
-                    {Math.round((s.verify.threshold ?? 0.5) * 100)}%
-                  </span>
-                )}
-                {s.foreach && (
-                  <span className="text-muted-foreground/70 shrink-0">
-                    按 {s.foreach.from} 逐行展开
-                  </span>
-                )}
-                {s.dependsOn.length > 0 && (
-                  <span className="text-muted-foreground/70 hidden shrink-0 sm:inline">
-                    ← {s.dependsOn.join(", ")}
-                  </span>
-                )}
-              </div>
-              {/* gate 命令逐字展示:用户确认的就是要执行的这串字面量 */}
-              {s.gate && (
-                <code className="border-border/60 bg-background/70 text-foreground/80 block truncate rounded border px-1.5 py-0.5 font-mono text-[10px]">
-                  {[s.gate.command, ...(s.gate.args ?? [])].join(" ")}
-                </code>
-              )}
-            </div>
-          ))}
-        </div>
-      ))}
-      <p className="text-muted-foreground text-[11px] leading-relaxed">
-        确认后由执行器自动编排:无依赖的步骤并发跑,命令门按退出码判定,
-        全部完成后自动交付报告。
-      </p>
-      <div className="flex items-center justify-end gap-1.5">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2.5"
-          disabled={busy}
-          onClick={() => setRejecting(true)}
-        >
-          驳回
-        </Button>
-        <Button size="sm" className="h-7 px-3" disabled={busy} onClick={() => onConfirm()}>
-          确认并开始
-        </Button>
-      </div>
-    </div>
-  );
-};
 
 export const WorkflowStrip: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
@@ -251,7 +98,6 @@ export const WorkflowStrip: FC = () => {
 
   const awaiting = isWorkflowAwaitingConfirmation(run);
   const live = run.status === "running" || run.status === "proposing";
-  const done = (run.stepStates ?? []).filter((s) => s.status === "done").length;
   const total = (run.steps ?? []).length;
   // 运行停了但对话轮还在跑(用户刚发消息接管):两个事实同时成立,条上要同时说
   const turnBusy = isRunning && !live;
@@ -293,7 +139,7 @@ export const WorkflowStrip: FC = () => {
             }
           />
           <PopoverContent align="end" className="w-80 p-3">
-            <ProposalConfirmCard
+            <WorkflowPlanCard
               run={run}
               busy={busy}
               onConfirm={() => act(confirmWorkflowNow)}
@@ -306,6 +152,19 @@ export const WorkflowStrip: FC = () => {
         <span title="执行器运行中" className="flex shrink-0 items-center">
           <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
         </span>
+      )}
+      {run.status === "running" && (
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={busy}
+          onClick={() => act(pauseWorkflowNow)}
+          title="暂停运行(已完成的步骤不重跑)"
+          className="h-6 shrink-0 px-2"
+        >
+          <PauseIcon className="size-3" />
+          <span className="sr-only">暂停</span>
+        </Button>
       )}
       {run.status === "paused" && (
         <Button

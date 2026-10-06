@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
+import { useAuiState } from "@assistant-ui/react";
 import {
   BookOpenIcon,
   BotIcon,
@@ -34,10 +35,21 @@ import {
   SquareTerminalIcon,
   TargetIcon,
   TextSearchIcon,
+  WorkflowIcon,
 } from "lucide-react";
 import { openToolCallPanel } from "@/lib/panels/tool-panel";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useIsAskMode } from "@/lib/pi/pi-session-mode";
+import {
+  confirmWorkflowNow,
+  parseRunIdFromResultText,
+  pauseWorkflowNow,
+  rejectWorkflowNow,
+  resumeWorkflowNow,
+  useWorkflowAnchor,
+  useWorkflowRunById,
+} from "@/lib/pi/pi-workflow";
+import { WorkflowPlanCard, WorkflowRunCard } from "@/components/agent-thread/workflow-cards";
 import {
   openSubagentTab,
   parseDelegationIdFromResult,
@@ -814,6 +826,70 @@ const DELEGATION_STATUS_LABEL: Record<string, string> = {
   interrupted: "已中断",
 };
 
+/**
+ * 工作流提案行:发起剧本的工具行原地变卡——proposed 时是待确认剧本卡,
+ * 确认后同一张卡转成运行进度卡(phase 分节 + 步骤状态 + 子项点阵 + 暂停/继续)。
+ * 运行状态经 toolCallId↔runId 锚点(data-workflowPlan chunk)从工作流 store 订阅,
+ * 卡随对话历史留存;历史重建无锚点时从结果文本解析 Run ID 兜底。
+ */
+const WorkflowPlanToolUI: ToolCallMessagePartComponent = ({
+  toolCallId,
+  result,
+  isError,
+}) => {
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const anchor = useWorkflowAnchor(toolCallId);
+  const fallbackRunId = anchor?.runId ?? parseRunIdFromResultText(resultText(result) ?? "");
+  const run = useWorkflowRunById(fallbackRunId);
+  const [busy, setBusy] = useState(false);
+  // 动作的 threadId 优先取锚点里记录的(提案发生的那个线程,与当前显示线程可能不同)
+  const actionThread = anchor?.threadId ?? threadId;
+
+  if (isError || !run) {
+    return (
+      <ToolRow
+        label="工作流剧本"
+        icon={<WorkflowIcon className="size-4 shrink-0" />}
+        primary={run?.title}
+        secondary={fallbackRunId ? `Run ID ${fallbackRunId}` : undefined}
+        failed={isError === true}
+        output={isError ? resultText(result) : undefined}
+      />
+    );
+  }
+
+  const act = (fn: (id: string) => Promise<void>) => {
+    if (!actionThread) return;
+    setBusy(true);
+    fn(actionThread)
+      .catch((err) => console.error("workflow action failed:", err))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div
+      data-slot="aui-workflow-card"
+      className="border-border/60 bg-card my-1.5 rounded-lg border p-3 text-xs"
+    >
+      {run.status === "proposed" ? (
+        <WorkflowPlanCard
+          run={run}
+          busy={busy}
+          onConfirm={() => act(confirmWorkflowNow)}
+          onReject={(text) => act((id) => rejectWorkflowNow(id, text))}
+        />
+      ) : (
+        <WorkflowRunCard
+          run={run}
+          busy={busy}
+          onPause={() => act(pauseWorkflowNow)}
+          onResume={() => act(resumeWorkflowNow)}
+        />
+      )}
+    </div>
+  );
+};
+
 /** 委派的展示态：live 走 store 条目，历史重建（无绑定 chunk）从结果文本兜底解析短 id */
 function useDelegationView(toolCallId: string, result: unknown) {
   const run = useSubagentRunByToolCall(toolCallId);
@@ -974,6 +1050,7 @@ const GenerateImageToolUI: ToolCallMessagePartComponent = ({
 export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   bash: BashToolUI,
   Task: TaskToolUI,
+  workflow_propose_plan: WorkflowPlanToolUI,
   use_skill: SkillToolUI,
   generate_image: GenerateImageToolUI,
   read: fileToolUI("read", "查看"),

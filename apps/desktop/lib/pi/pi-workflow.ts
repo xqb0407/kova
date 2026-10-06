@@ -192,6 +192,17 @@ function normalizeRun(raw: unknown): WorkflowSnapshot | null {
 }
 
 const states = new Map<string, WorkflowStoreState>();
+/**
+ * runId -> 运行快照(全局):供对话里的运行卡按 runId 直接取——工具行组件拿到的
+ * 是 toolCallId,经锚点表查到 runId 后不依赖「当前线程」这个渲染期上下文
+ * (历史线程、切线程后的行重渲染都能取到各自的运行)。
+ */
+const runsById = new Map<string, WorkflowSnapshot>();
+/**
+ * toolCallId -> 锚点(发起剧本提案的那次工具调用)。同 subagent-runs 的
+ * data-subagentDelegation 绑定:prompt 流 chunk 建立,刷新 attach 回放重建。
+ */
+const anchors = new Map<string, { threadId: string; runId: string }>();
 const listeners = new Set<() => void>();
 
 function notify() {
@@ -209,6 +220,7 @@ function storeKey(threadId: string, migrate = false): string {
 
 function setState(threadId: string, next: WorkflowStoreState) {
   states.set(storeKey(threadId, true), next);
+  if (next.run) runsById.set(next.run.id, next.run);
   notify();
 }
 
@@ -217,6 +229,47 @@ export function applyWorkflowChunk(threadId: string, data: unknown): void {
   if (!data || typeof data !== "object") return;
   const d = data as { run?: unknown };
   setState(threadId, { run: normalizeRun(d.run) });
+}
+
+/** 消费 data-workflowPlan chunk:把运行锚定到发起提案的工具行 */
+export function applyWorkflowPlanChunk(threadId: string, data: unknown): void {
+  if (!data || typeof data !== "object") return;
+  const d = data as { toolCallId?: unknown; runId?: unknown };
+  if (typeof d.toolCallId !== "string" || typeof d.runId !== "string") return;
+  anchors.set(d.toolCallId, { threadId, runId: d.runId });
+  notify();
+}
+
+/** 工具行专用:这次提案锚定的运行(无锚点时 undefined,行渲染退化为普通行) */
+export function useWorkflowAnchor(
+  toolCallId: string,
+): { threadId: string; runId: string } | undefined {
+  return useSyncExternalStore(
+    (cb) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    () => anchors.get(toolCallId),
+    () => undefined,
+  );
+}
+
+/** 工具行专用:按 runId 取运行快照(路由与线程无关) */
+export function useWorkflowRunById(runId: string | undefined): WorkflowSnapshot | null {
+  return useSyncExternalStore(
+    (cb) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    () => (runId ? (runsById.get(runId) ?? null) : null),
+    () => null,
+  );
+}
+
+/** 从工具结果文本兜底解析 Run ID(历史重建没有绑定 chunk 时的退化路径) */
+export function parseRunIdFromResultText(text: string): string | undefined {
+  const m = text.match(/Run ID:\s*(\S+)/);
+  return m?.[1];
 }
 
 /** 订阅当前线程的运行快照 */

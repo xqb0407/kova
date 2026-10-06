@@ -8,6 +8,7 @@
  */
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { sendEventChunk } from "../protocol/stream";
 import { MAX_STEP_TEXT_LENGTH, MAX_WORKFLOW_TITLE_LENGTH, MAX_STEPS_PER_RUN } from "./plan-state";
 import {
   acceptProposal,
@@ -141,7 +142,7 @@ function buildProposeTool(run: Running): AgentTool {
         description: "The complete plan, in execution order where it matters.",
       }),
     }),
-    async execute(_toolCallId: string, params: Record<string, unknown>) {
+    async execute(toolCallId: string, params: Record<string, unknown>) {
       const p = params as { title?: unknown; steps?: unknown };
       const current = getWorkflow(run.threadId);
       if (!current || current.status !== "proposing") {
@@ -157,6 +158,13 @@ function buildProposeTool(run: Running): AgentTool {
       const title = typeof p.title === "string" ? p.title : "";
       const accepted = acceptProposal(current, checked.steps, title);
       commitWorkflow(run, accepted);
+      // 剧本卡锚定:toolCallId ↔ runId 绑定(同 data-subagentDelegation 的消息行绑定),
+      // 前端据此把整张运行卡挂到这次工具调用的行上,运行状态随对话历史留存
+      sendEventChunk(
+        run.threadId,
+        { type: "data-workflowPlan", data: { toolCallId, runId: accepted.id } },
+        run.sessionId,
+      );
       const summary = checked.steps
         .map(
           (s) =>
@@ -168,6 +176,7 @@ function buildProposeTool(run: Running): AgentTool {
           `Plan "${accepted.title ?? accepted.objective.slice(0, 60)}" submitted with ${checked.steps.length} step(s):`,
           summary,
           "",
+          `Run ID: ${accepted.id}`,
           "Stop here. Do not start any step yourself — the user confirms the plan first, then the runtime executes it.",
         ].join("\n"),
         { runId: accepted.id, stepCount: checked.steps.length },
