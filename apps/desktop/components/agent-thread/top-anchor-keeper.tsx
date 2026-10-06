@@ -19,6 +19,19 @@
 
 import { useAuiState } from "@assistant-ui/react";
 import { useEffect } from "react";
+import { noteRender } from "@/components/debug/perf-store";
+
+/** 计时探针：这里读 getBoundingClientRect + 写 scrollTop（布局后读写交替，
+ *  会强制同步布局），是候选卡顿源。只在开发构建计时。 */
+const span = <T,>(label: string, fn: () => T): T => {
+  if (process.env.NODE_ENV === "production") return fn();
+  const t0 = performance.now();
+  try {
+    return fn();
+  } finally {
+    noteRender(label, performance.now() - t0);
+  }
+};
 
 const VIEWPORT_SELECTOR = '[data-slot="aui_thread-viewport"]';
 /** 位置容差：框架自己滚到位后这里不再动作 */
@@ -73,7 +86,9 @@ export const TopAnchorKeeper = () => {
       yieldToUser();
     };
 
-    const repin = () => {
+    const repin = () => span("顶锚点兜底", repinInner);
+
+    const repinInner = () => {
       if (yielded) return;
       const anchor = viewport.querySelector<HTMLElement>(
         `[data-message-id="${CSS.escape(anchorId)}"][data-aui-top-anchor-user]`,

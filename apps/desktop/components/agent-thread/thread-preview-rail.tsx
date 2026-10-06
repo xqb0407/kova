@@ -13,6 +13,19 @@ import {
 import { getMessagePreview } from "@/components/custom-ui/message-scroller";
 import { EASE_OUT } from "@/lib/motion/ease";
 import { pickRoundAnchors } from "@/lib/panels/message-round-anchors";
+import { noteRender } from "@/components/debug/perf-store";
+
+/** 计时探针：这段几何测量是候选卡顿源（对每个锚点 getBoundingClientRect，
+ *  content-visibility 下会强制逐个布局）。只在开发构建计时，生产零开销。 */
+const span = <T,>(label: string, fn: () => T): T => {
+  if (process.env.NODE_ENV === "production") return fn();
+  const t0 = performance.now();
+  try {
+    return fn();
+  } finally {
+    noteRender(label, performance.now() - t0);
+  }
+};
 
 const VIEWPORT_SELECTOR = '[data-slot="aui_thread-viewport"]';
 const ANCHOR_SELECTOR =
@@ -175,7 +188,7 @@ export function ThreadPreviewRail() {
     if (syncFrameRef.current) cancelAnimationFrame(syncFrameRef.current);
     syncFrameRef.current = requestAnimationFrame(() => {
       // 锚点集合没变（纯流式文本）⇒ 跳过全量几何测量
-      if (syncItems()) updateActiveItem();
+      if (span("刻度条-重建", syncItems)) span("刻度条-测激活", updateActiveItem);
     });
   }, [syncItems, updateActiveItem]);
 
@@ -189,7 +202,9 @@ export function ThreadPreviewRail() {
 
   const scheduleActive = useCallback(() => {
     if (activeFrameRef.current) cancelAnimationFrame(activeFrameRef.current);
-    activeFrameRef.current = requestAnimationFrame(updateActiveItem);
+    activeFrameRef.current = requestAnimationFrame(() =>
+      span("刻度条-测激活", updateActiveItem),
+    );
   }, [updateActiveItem]);
 
   // 视口监听：消息增删 → 重建刻度；滚动/尺寸变化 → 更新激活项。

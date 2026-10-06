@@ -9,8 +9,9 @@
  * 一切非预期形状（脏历史/伪造 src/白名单外类型）都降级为占位行。
  */
 import { makeAssistantDataUI } from "@assistant-ui/react";
+import { blobUrlFor, ensureThumb, getThumb } from "@/lib/pi/image-blob-url";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
-import { type FC, useEffect, useRef, useState } from "react";
+import { type FC, useEffect, useMemo, useRef, useState } from "react";
 import {
   DownloadIcon,
   ImageIcon,
@@ -136,6 +137,24 @@ export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = (
   };
 
   const src = typeof data?.src === "string" ? data.src : "";
+  // DOM 里不挂 base64：data URL → Blob URL（实测 DOM 上曾驻留 6.5MB base64，
+  // 换来 fps 6.0。见 lib/pi/image-blob-url.ts 的说明）
+  const blobSrc = useMemo(() => blobUrlFor(src), [src]);
+  // 瓦片用缩略图：只显示一两百像素却在解码全尺寸图，实测绘制段 258ms、fps 9-18
+  // ——换成缩略图后绘制像素量差上百倍，解码那一次也在主线程外且只做一次。
+  // 拿不到就继续用原图：优化绝不允许把图弄没。
+  const [thumbSrc, setThumbSrc] = useState<string | undefined>(() => getThumb(src));
+  useEffect(() => {
+    setThumbSrc(getThumb(src));
+    let alive = true;
+    void ensureThumb(src).then((url) => {
+      if (alive && url) setThumbSrc(url);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [src]);
+  const tileSrc = thumbSrc ?? blobSrc;
   const mime = typeof data?.mimeType === "string" ? data?.mimeType : "";
   // 只认投影侧产生的内联 data URL（P1 引用式上屏时在此扩展前缀分支）
   const ok = src.startsWith("data:") && ALLOWED_MIME.has(mime);
@@ -169,9 +188,12 @@ export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = (
       >
         {/* lazy：长会话多图的解码压力推入视口再说；大图放大态挂在 Dialog 里延迟加载 */}
         <img
-          src={src}
-          alt={label}
+          src={tileSrc}
+          // decoding="async"：把解码挪出主线程（WebKit 会照做）——这是 Chrome 在这类
+          // 页面上比 WKWebView 快的核心差别之一，而不是什么 GPU 开关
+          decoding="async"
           loading="lazy"
+          alt={label}
           className={cn(
             "block max-h-64 max-w-full object-cover",
             compact && "h-auto w-full",
@@ -215,7 +237,9 @@ export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = (
             <DialogTitle className="sr-only">{label}
             </DialogTitle>
             <img
-              src={src}
+              src={blobSrc}
+              // 大图也异步解码，但不 lazy——用户正等着看它
+              decoding="async"
               alt={label}
               draggable={false}
               onLoad={(e) =>

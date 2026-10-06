@@ -18,6 +18,7 @@ import {
   syncClearLastThread,
 } from "@/lib/pi/pi-last-thread";
 import { piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
+import { initAppearance } from "@/lib/settings/appearance";
 import { piRuntimeAdapters } from "@/lib/attachments/pi-attachment-adapter";
 import { usePiRuntime } from "@/lib/pi/pi-runtime";
 import { TauriPiClient } from "@/lib/pi/pi-runtime/tauri-pi-client";
@@ -302,6 +303,11 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
     });
     // 通知管线：事件总线 → 提示音 + webhook 派发（幂等，桌面/远程网页都装配）
     initNotifyPipeline();
+    // 窗口材质透明标记恢复：appearance.ts 的模块级自执行只在设置页 chunk
+    // 加载时触发，刷新后若没进过设置，html 缺 data-window-effect 标记，
+    // body 被 bg-background 盖住（窗口材质在但被遮成不透明）。这里任何
+    // 启动路径（含刷新）都提前补标——趁 BootSplash 期间应用，无闪白。
+    void initAppearance();
     const remain = Math.max(0, SPLASH_MIN_MS - (Date.now() - splashStartRef.current));
     const timer = setTimeout(() => setSplashMinDone(true), remain);
     return () => {

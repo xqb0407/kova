@@ -41,8 +41,30 @@ import "@/app/styles/markdown.css";
  * plugins 时只认 code/math/cjk/mermaid 四个键、会丢弃 renderers（0.3.13 为
  * 最新版仍如此），所以消息流分支改用下方 StreamdownPart 直连原生 Streamdown。
  */
+/**
+ * 流式期间不高亮「还在长的」代码块。
+ *
+ * 依据：streamdown 会把 isIncomplete 传给插件的 highlight()（其 dist 里是
+ * `o.highlight({ code, isIncomplete, language, themes }, cb)`），但 @streamdown/code
+ * 忽略这个参数，而它的缓存键只由代码文本决定——于是流式期间每个 chunk 都是一段
+ * 新文本 = 每次 cache miss = **整块重新高亮 + 重建几百个 span**。真机实测（只有
+ * 14 条消息、2 张图、解码共 2 百万像素的会话）渲染 173ms + 绘制 136ms、最长帧
+ * 737ms，形状与之吻合；图片与消息数都已被排除。
+ *
+ * 做法：isIncomplete 时直接不返回结果 → streamdown 落回原始文本（纯等宽显示），
+ * 围栏闭合时再高亮一次。半截代码的高亮本来就是白做的功——每个 chunk 都要重做。
+ * 视觉差异：流式中的代码块暂时不高亮，闭合后一次性上色。
+ */
+const codeNotWhileStreaming: typeof code = {
+  ...code,
+  highlight: (options, callback) => {
+    if ((options as { isIncomplete?: boolean }).isIncomplete) return null;
+    return code.highlight(options, callback);
+  },
+};
+
 const sharedPlugins: PluginConfig = {
-  code,
+  code: codeNotWhileStreaming,
   math,
   mermaid,
   cjk,
@@ -215,6 +237,12 @@ const StreamdownPart = () => {
       <Streamdown
         mode="streaming"
         isAnimating={status.type === "running"}
+        // 逐词入场动画。曾被怀疑是卡顿主因（blurIn 关键帧是
+        // `filter: blur(4px) → blur(0)`，而 filter 在 WebKit 里不可合成），但在
+        // WebKit 里实测过、**没有差别**：dev-preview/long-turn 追加式流式负载下
+        // blurIn 50.1fps / fadeIn 50.2fps、最长帧 98ms vs 104ms。故保留原样。
+        // 要继续试的话，streamdown 还提供可合成的 fadeIn（只动 opacity）与
+        // slideUp（opacity + transform），改这一个词即可。
         animated={{ animation: "blurIn" }}
         caret="block"
         plugins={sharedPlugins}
