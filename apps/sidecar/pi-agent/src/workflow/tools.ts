@@ -158,7 +158,7 @@ function buildProposeTool(run: Running): AgentTool {
       "A gate step runs a literal shell command (user-approved with the plan) and branches on its exit code — use it wherever a command can decide. A verify step puts an upstream result in front of N adversarial reviewers and fails when they refute it.",
       "Steps run concurrently once their dependsOn are done; keep independent steps dependency-free and chain only real data dependencies. Steps that may fail without killing the run can set onFail:\"skip\".",
       'Each delegate step names a subagent definition with "agent" — call subagents_list first when you do not already know which definitions exist; a wrong name fails the run at execution, not at proposal.',
-      "Must be the only tool call in your message. After submitting, stop — the user has to confirm the plan before anything runs.",
+      "When the user asks you to design a workflow, this tool call IS the answer — never write the design out as prose. Must be the only tool call in your message. After submitting, stop — the user has to confirm the plan before anything runs.",
     ].join("\n"),
     parameters: Type.Object({
       title: Type.Optional(

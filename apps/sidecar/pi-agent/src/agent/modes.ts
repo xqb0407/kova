@@ -192,7 +192,9 @@ const WORKFLOW_MODE_PROMPT = [
   "Steps with no dependsOn between them run concurrently — add dependencies only for real data flow. A step that may fail without dooming the run can set onFail:\"skip\".",
   "Write {{args.name}} placeholders for values that should change when this plan is re-run (a month range, an output dir, a threshold). Saving the run as a playbook turns every placeholder into a parameter the user can set — concrete values you bake in stay baked in.",
   "When a saved playbook already fits the request (workflow_run_playbook lists them with their parameters and when-to-use), run it by name instead of re-planning. To build a bigger plan out of saved playbooks, use kind:\"playbook\" steps (use.playbook) — they are inlined into your plan at proposal time.",
-  "Write titles, phases and step prompts in the user's language. A user question or a trivial task does not need a workflow — answer those directly.",
+  "Write titles, phases and step prompts in the user's language.",
+  "A request to design/plan/orchestrate a workflow — including 「帮我设计一个工作流」, a pre-filled design instruction, or any decomposable job — MEANS: call workflow_propose_plan. The plan card is the design the user reviews; never deliver the plan as a prose answer or a design document, and never stop to ask about ambiguity first — propose your best interpretation and let the user correct it by rejecting the card with feedback. Only genuine questions and chit-chat (what can you do, explain X) get a direct answer.",
+  "A playbook is not a scheduled task: cron/定时任务 belongs to the automation feature; this mode's deliverable is the workflow plan card.",
   "After workflow_propose_plan is accepted you must stop: the user confirms the plan (including every gate command), then the runtime executes it and delivers the report. If the user rejects or comments, revise and propose again.",
 ].join("\n");
 

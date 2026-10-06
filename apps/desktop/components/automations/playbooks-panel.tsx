@@ -284,7 +284,9 @@ export const PlaybooksPanel: FC<{
       if (threadId) {
         void setSessionMode(threadId, "workflow").catch(() => {});
       }
-      aui.composer.setText("帮我设计一个工作流（说明要编排什么、每步产出什么）：");
+      // 祈使式:让这句读起来是「去拟剧本」而不是「聊一个设计」——实机反馈里
+      // 「帮我设计一个工作流」被模型当成了设计咨询,回了整篇 prose
+      aui.composer.setText("把这件事编排成工作流剧本（我确认后执行）：");
     });
   };
 
