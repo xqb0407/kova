@@ -29,6 +29,7 @@ import {
   toolsForMode,
 } from "../../src/agent/modes";
 import { GOAL_TOOL_NAMES, proposeCriteria } from "../../src/goal/goal-state";
+import { WORKFLOW_TOOL_NAMES } from "../../src/workflow/plan-state";
 import { commitGoal, confirmGoalCriteria, getGoal, resume, startGoal } from "../../src/goal/goal";
 import {
   registerAutomationThread,
@@ -1196,5 +1197,37 @@ describe("normalizeSessionMode", () => {
     expect(normalizeSessionMode("nope")).toBe("agent");
     expect(normalizeSessionMode(undefined)).toBe("agent");
     expect(normalizeSessionMode(3)).toBe("agent");
+  });
+});
+
+describe("workflow 档工具表与门控(实机反馈修复)", () => {
+  test("工具表:含勘察只读集 + subagents_list + 提案工具;不含写类/Task 组", () => {
+    const run = makeRun("workflow");
+    // 管理组挂在 subagentTools(不在 baseTools):夹具补上只读的 list
+    run.subagentTools = [...run.subagentTools, fakeTool("subagents_list")];
+    // 无运行槽位:buildWorkflowTools 返回提案+跑剧本两个工具
+    const names = toolsForMode(run).map((t) => t.name);
+    expect(names).toContain("bash"); // 勘察放行(plan 档同款)
+    expect(names).toContain("read");
+    expect(names).toContain("subagents_list"); // 编排器写 delegate 前要能查定义名
+    expect(names).toContain(WORKFLOW_TOOL_NAMES.propose);
+    expect(names).toContain(WORKFLOW_TOOL_NAMES.runPlaybook);
+    expect(names).not.toContain("write");
+    expect(names).not.toContain("edit");
+    expect(names).not.toContain("task"); // 编排器不委派,活是执行器的
+    expect(names).not.toContain("subagents_save");
+    expect(names).not.toContain("subagents_delete");
+  });
+
+  test("门控:bash 放行(勘察);write/edit 结构性拦;提案工具只在 workflow 档", () => {
+    const workflowRun = makeRun("workflow");
+    const bashGated = modeBeforeToolCall(workflowRun, ctx("bash"));
+    expect(bashGated).toBeUndefined();
+    const writeGated = modeBeforeToolCall(workflowRun, ctx("write"));
+    expect(writeGated?.block).toBe(true);
+
+    const agentRun = makeRun("agent");
+    const proposeGated = modeBeforeToolCall(agentRun, ctx(WORKFLOW_TOOL_NAMES.propose));
+    expect(proposeGated?.block).toBe(true);
   });
 });

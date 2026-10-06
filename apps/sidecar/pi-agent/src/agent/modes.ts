@@ -163,6 +163,9 @@ const ASK_ONLY_TOOL_NAMES = new Set([ASK_NEEDS_WORK_TOOL_NAME]);
  *  轮中切换前模型可能仍带着旧 schema（与 plan 模式同一理由） */
 const ASK_MODE_MUTATING_TOOLS = new Set(["write", "edit", "bash"]);
 
+/** 工作流档结构性拦截：只拦写类（plan 档同款取舍——bash 用于勘察，靠提示词约束用途） */
+const WORKFLOW_MODE_MUTATING_TOOLS = new Set(["write", "edit"]);
+
 /* ------------------------------- 系统提示词 ------------------------------- */
 
 const PLAN_MODE_PROMPT = [
@@ -184,7 +187,7 @@ export { AGENT_MODE_PROMPT };
  */
 const WORKFLOW_MODE_PROMPT = [
   "You are operating in Workflow mode: your only deliverable is a workflow PLAN the runtime executes — you never do the work yourself, and you cannot see step results.",
-  "First inspect the workspace with the read-only tools if the request depends on facts you do not have, then call workflow_propose_plan with the complete plan.",
+  "First inspect the workspace with the read-only tools (read/glob/grep, ls/git via bash) if the request depends on facts you do not have; call subagents_list when you need to know which subagent definitions exist. Then call workflow_propose_plan with the complete plan.",
   "Step kinds: delegate runs one subagent on a self-contained brief (add foreach.from to run it once per line of an upstream result, with {{item}} in the prompt); gate runs a literal shell command and branches on its exit code — reach for it wherever a command can decide, and never build the command from a variable; verify puts an upstream result in front of adversarial reviewers; the single synthesize step weaves upstream results ({{step-key}} references) into the final report.",
   "Steps with no dependsOn between them run concurrently — add dependencies only for real data flow. A step that may fail without dooming the run can set onFail:\"skip\".",
   "Write {{args.name}} placeholders for values that should change when this plan is re-run (a month range, an output dir, a threshold). Saving the run as a playbook turns every placeholder into a parameter the user can set — concrete values you bake in stay baked in.",
@@ -337,6 +340,9 @@ export function toolsForMode(run: Running): AgentTool[] {
   if (run.mode === "workflow") {
     return [
       ...run.baseTools.filter((t) => CONTRACT_TOOL_NAMES.has(t.name)),
+      // 编排器写 delegate 步骤前要能查到子代理定义名:只放只读的 list
+      // (save/delete 是配置变更,不进口)
+      ...run.subagentTools.filter((t) => t.name === SUBAGENT_MGMT_TOOL_NAMES.list),
       ...buildWorkflowTools(run),
     ];
   }
@@ -655,8 +661,9 @@ export function modeBeforeToolCall(
     };
   }
   // 工作流档的编排器只拟剧本不干活:工具表里没有写类工具,这里是轮中切换前的兜底。
-  // bash 放行(勘察同 plan 档),write/edit 结构性拦
-  if (run.mode === "workflow" && ASK_MODE_MUTATING_TOOLS.has(name)) {
+  // bash 放行(勘察同 plan 档——模型需要 ls/git status 这类只读命令来摸清现状,
+  // 实机反馈里"查子代理定义"这一步就是靠它),write/edit 结构性拦
+  if (run.mode === "workflow" && WORKFLOW_MODE_MUTATING_TOOLS.has(name)) {
     return {
       block: true,
       reason:

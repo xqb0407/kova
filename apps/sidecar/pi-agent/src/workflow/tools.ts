@@ -49,11 +49,13 @@ const stepSchema = Type.Object({
     description: "Short step title shown to the user, in the user's language.",
     maxLength: MAX_WORKFLOW_TITLE_LENGTH,
   }),
-  prompt: Type.String({
-    description:
-      "delegate: the complete brief for the subagent (it cannot see this conversation); for a fanned-out delegate the item text replaces {{item}}. synthesize/verify: the instructions/what to judge; reference upstream results with {{step-key}} placeholders. gate: one sentence saying what this check decides (shown on the plan card).",
-    maxLength: MAX_STEP_TEXT_LENGTH,
-  }),
+  prompt: Type.Optional(
+    Type.String({
+      description:
+        "delegate: the complete brief for the subagent (it cannot see this conversation); for a fanned-out delegate the item text replaces {{item}}. synthesize/verify: the instructions/what to judge; reference upstream results with {{step-key}} placeholders. gate: one sentence saying what this check decides (shown on the plan card). Required for every kind except playbook.",
+      maxLength: MAX_STEP_TEXT_LENGTH,
+    }),
+  ),
   agent: Type.Optional(
     Type.String({ description: "delegate only: name of the subagent definition to run." }),
   ),
@@ -155,6 +157,7 @@ function buildProposeTool(run: Running): AgentTool {
       "Each delegate step runs a subagent with an isolated context; state in `prompt` everything it cannot infer. A delegate with `foreach` fans out over the lines of an upstream result ({{item}} per line). The single synthesize step weaves upstream results (reference them with {{step-key}}) into the report the user will read.",
       "A gate step runs a literal shell command (user-approved with the plan) and branches on its exit code — use it wherever a command can decide. A verify step puts an upstream result in front of N adversarial reviewers and fails when they refute it.",
       "Steps run concurrently once their dependsOn are done; keep independent steps dependency-free and chain only real data dependencies. Steps that may fail without killing the run can set onFail:\"skip\".",
+      'Each delegate step names a subagent definition with "agent" — call subagents_list first when you do not already know which definitions exist; a wrong name fails the run at execution, not at proposal.',
       "Must be the only tool call in your message. After submitting, stop — the user has to confirm the plan before anything runs.",
     ].join("\n"),
     parameters: Type.Object({

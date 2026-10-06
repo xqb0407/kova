@@ -241,7 +241,13 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
     const prompt = asTrimmedString(entry.prompt).slice(0, MAX_STEP_TEXT_LENGTH);
     // playbook 组合步骤不需要自己的 prompt(展开后被引用剧本的步骤取代)
     if (!prompt && kind !== "playbook") {
-      return { ok: false, reason: `steps[${i}].prompt is required (the complete brief for this step).` };
+      return {
+        ok: false,
+        reason:
+          kind === "gate"
+            ? `steps[${i}] (${key}) is a gate step and needs prompt — one sentence saying what this check decides (shown to the user on the plan card).`
+            : `steps[${i}].prompt is required (the complete brief for this step).`,
+      };
     }
     const step: WorkflowStep = {
       key,
