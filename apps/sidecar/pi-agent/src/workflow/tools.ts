@@ -15,7 +15,18 @@ import {
   validatePlan,
   WORKFLOW_TOOL_NAMES,
 } from "./plan-state";
-import { commitWorkflow, getWorkflow } from "./workflow";
+import {
+  commitWorkflow,
+  getWorkflow,
+  startPlaybookRun,
+} from "./workflow";
+import {
+  cachedPlaybooksSync,
+  expandComposition,
+  getPlaybook,
+  validatePlaybookArgs,
+} from "./library";
+import { startWorkflowExecution } from "./runner";
 import type { Running } from "../types";
 
 function textResult(text: string, details?: unknown) {
@@ -29,7 +40,7 @@ const stepSchema = Type.Object({
   }),
   kind: Type.String({
     description:
-      '"delegate" runs a subagent; "gate" runs a literal shell command and branches on its exit code; "verify" puts a result in front of N adversarial reviewers; "synthesize" (exactly one) produces the final report from upstream results.',
+      '"delegate" runs a subagent; "gate" runs a literal shell command and branches on its exit code; "verify" puts a result in front of N adversarial reviewers; "playbook" inlines a saved playbook (use.playbook) as prefixed sub-steps; "synthesize" (exactly one at the top level) produces the final report from upstream results.',
   }),
   phase: Type.Optional(
     Type.String({ description: "Display group shown in the progress panel, in the user's language (e.g. 勘察 / 执行).", maxLength: 40 }),
@@ -105,6 +116,21 @@ const stepSchema = Type.Object({
         '"abort" (default) fails the whole run; "skip" marks the step skipped and lets downstream continue with an explicit gap marker. Only delegate/verify may skip.',
     }),
   ),
+  use: Type.Optional(
+    Type.Object({
+      playbook: Type.String({
+        description:
+          'kind:"playbook" only: name of a saved playbook (see the list in workflow_run_playbook). Its steps are inlined here at proposal time with the placeholder {{args.NAME}} values you pass in args.',
+      }),
+      args: Type.Optional(
+        Type.Unsafe<Record<string, unknown>>({
+          type: "object",
+          description:
+            "Values for the playbook's parameters; parameters you leave out stay runtime placeholders bound by this run's args.",
+        }),
+      ),
+    }),
+  ),
 });
 
 /**
@@ -113,8 +139,10 @@ const stepSchema = Type.Object({
  */
 export function buildWorkflowTools(run: Running): AgentTool[] {
   const wf = getWorkflow(run.threadId);
-  if (!wf) return [];
-  if (wf.status === "proposing") return [buildProposeTool(run)];
+  // 无运行(极短暂)与编排中都可提剧本;有库时可改走「直接跑剧本」这条快路
+  if (!wf || wf.status === "proposing") {
+    return [buildProposeTool(run), buildRunPlaybookTool(run)];
+  }
   return [];
 }
 
@@ -155,8 +183,22 @@ function buildProposeTool(run: Running): AgentTool {
         // 校验 reason 是给模型改错的完整诊断:哪里不合法、该改成什么样
         return textResult(`workflow_propose_plan rejected: ${checked.reason}`);
       }
+      // 组合展开:kind:"playbook" 的步骤在这里平铺成带前缀的子步骤(提案期 macro,
+      // 运行期只有一份扁平 DAG);展开后的结构再过一遍校验(依赖/环/顶层汇点)
+      let steps = checked.steps;
+      if (steps.some((s) => s.kind === "playbook")) {
+        const expanded = await expandComposition(steps);
+        if (!expanded.ok) {
+          return textResult(`workflow_propose_plan rejected: ${expanded.reason}`);
+        }
+        const recheck = validatePlan(expanded.steps);
+        if (!recheck.ok) {
+          return textResult(`workflow_propose_plan rejected: ${recheck.reason}`);
+        }
+        steps = recheck.steps;
+      }
       const title = typeof p.title === "string" ? p.title : "";
-      const accepted = acceptProposal(current, checked.steps, title);
+      const accepted = acceptProposal(current, steps, title);
       commitWorkflow(run, accepted);
       // 剧本卡锚定:toolCallId ↔ runId 绑定(同 data-subagentDelegation 的消息行绑定),
       // 前端据此把整张运行卡挂到这次工具调用的行上,运行状态随对话历史留存
@@ -165,7 +207,7 @@ function buildProposeTool(run: Running): AgentTool {
         { type: "data-workflowPlan", data: { toolCallId, runId: accepted.id } },
         run.sessionId,
       );
-      const summary = checked.steps
+      const summary = steps
         .map(
           (s) =>
             `- [${s.kind}] ${s.key} (${s.title})${s.dependsOn.length ? ` <- ${s.dependsOn.join(", ")}` : ""}`,
@@ -173,13 +215,88 @@ function buildProposeTool(run: Running): AgentTool {
         .join("\n");
       return textResult(
         [
-          `Plan "${accepted.title ?? accepted.objective.slice(0, 60)}" submitted with ${checked.steps.length} step(s):`,
+          `Plan "${accepted.title ?? accepted.objective.slice(0, 60)}" submitted with ${steps.length} step(s):`,
           summary,
           "",
           `Run ID: ${accepted.id}`,
           "Stop here. Do not start any step yourself — the user confirms the plan first, then the runtime executes it.",
         ].join("\n"),
         { runId: accepted.id, stepCount: checked.steps.length },
+      );
+    },
+  } as unknown as AgentTool;
+}
+
+/**
+ * 按名直接跑一条已存剧本(库路径):只有提出剧本与直接跑两条出口,没有第三条。
+ * 与设置页「运行」同一落点(startPlaybookRun 直入 running)——剧本已检视过,
+ * 不再走确认卡;描述里带库目录(名/说明/使用时机/参数),模型据此选路。
+ */
+function buildRunPlaybookTool(run: Running): AgentTool {
+  const catalog = cachedPlaybooksSync() ?? [];
+  const catalogText =
+    catalog.length === 0
+      ? "No playbooks are saved yet — propose a plan instead (the user can save it as a playbook afterwards)."
+      : [
+          "Saved playbooks:",
+          ...catalog.map((p) => {
+            const args = p.args.length
+              ? ` args: ${p.args.map((a) => `${a.name}${a.required ? " (required)" : ""}`).join(", ")}`
+              : " args: none";
+            return `- ${p.name} (${p.steps.length} 步${args})${p.whenToUse ? ` — when: ${p.whenToUse}` : p.description ? ` — ${p.description}` : ""}`;
+          }),
+        ].join("\n");
+  return {
+    name: WORKFLOW_TOOL_NAMES.runPlaybook,
+    label: "Run Saved Playbook",
+    description: [
+      "Run a SAVED playbook by name: its steps are executed immediately with the parameters you pass — no re-planning, no confirmation card, because the user already reviewed this playbook.",
+      "Use this instead of workflow_propose_plan when one of the saved playbooks below fits the request. If it does not fit, propose a new plan.",
+      "Must be the only tool call in your message. After calling it, stop and tell the user the run has started.",
+      "",
+      catalogText,
+    ].join("\n"),
+    parameters: Type.Object({
+      name: Type.String({ description: "The playbook name exactly as listed above." }),
+      args: Type.Optional(
+        Type.Unsafe<Record<string, unknown>>({
+          type: "object",
+          description:
+            "Values for the playbook's parameters (see the args list above). Missing required parameters are rejected — ask the user instead of guessing.",
+        }),
+      ),
+    }),
+    async execute(_toolCallId: string, params: Record<string, unknown>) {
+      const p = params as { name?: unknown; args?: unknown };
+      const current = getWorkflow(run.threadId);
+      if (current && (current.status === "running" || current.status === "proposed" || current.status === "paused")) {
+        return textResult(`${WORKFLOW_TOOL_NAMES.runPlaybook} rejected: this thread already has a workflow run in progress.`);
+      }
+      const playbook = await getPlaybook(String(p.name ?? ""));
+      if (!playbook) {
+        return textResult(
+          `${WORKFLOW_TOOL_NAMES.runPlaybook} rejected: unknown playbook "${String(p.name ?? "")}". Saved playbooks:\n${catalogText}`,
+        );
+      }
+      const checked = validatePlaybookArgs(
+        playbook.args,
+        (p.args && typeof p.args === "object" ? p.args : {}) as Record<string, unknown>,
+      );
+      if (!checked.ok) {
+        return textResult(
+          `${WORKFLOW_TOOL_NAMES.runPlaybook} rejected: ${checked.errors.join("; ")}. Ask the user for the missing values.`,
+        );
+      }
+      // 换运行:清掉本轮刚建的「编排中」槽位,再按库路径直入 running
+      commitWorkflow(run, undefined);
+      startPlaybookRun(run, playbook, checked.values);
+      void startWorkflowExecution(run);
+      return textResult(
+        [
+          `Playbook "${playbook.name}" started with ${playbook.steps.length} step(s).`,
+          "Stop here — the runtime executes it in the background and delivers the report when it finishes.",
+        ].join("\n"),
+        { playbook: playbook.name },
       );
     },
   } as unknown as AgentTool;

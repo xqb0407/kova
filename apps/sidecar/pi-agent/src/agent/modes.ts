@@ -114,6 +114,7 @@ const MODE_EXCLUSIVE_TOOL_NAMES = new Set<string>([
   GOAL_TOOL_NAMES.complete,
   GOAL_TOOL_NAMES.blocked,
   WORKFLOW_TOOL_NAMES.propose,
+  WORKFLOW_TOOL_NAMES.runPlaybook,
 ]);
 
 /** 仅 plan 模式可用的工具 */
@@ -187,6 +188,7 @@ const WORKFLOW_MODE_PROMPT = [
   "Step kinds: delegate runs one subagent on a self-contained brief (add foreach.from to run it once per line of an upstream result, with {{item}} in the prompt); gate runs a literal shell command and branches on its exit code — reach for it wherever a command can decide, and never build the command from a variable; verify puts an upstream result in front of adversarial reviewers; the single synthesize step weaves upstream results ({{step-key}} references) into the final report.",
   "Steps with no dependsOn between them run concurrently — add dependencies only for real data flow. A step that may fail without dooming the run can set onFail:\"skip\".",
   "Write {{args.name}} placeholders for values that should change when this plan is re-run (a month range, an output dir, a threshold). Saving the run as a playbook turns every placeholder into a parameter the user can set — concrete values you bake in stay baked in.",
+  "When a saved playbook already fits the request (workflow_run_playbook lists them with their parameters and when-to-use), run it by name instead of re-planning. To build a bigger plan out of saved playbooks, use kind:\"playbook\" steps (use.playbook) — they are inlined into your plan at proposal time.",
   "Write titles, phases and step prompts in the user's language. A user question or a trivial task does not need a workflow — answer those directly.",
   "After workflow_propose_plan is accepted you must stop: the user confirms the plan (including every gate command), then the runtime executes it and delivers the report. If the user rejects or comments, revise and propose again.",
 ].join("\n");

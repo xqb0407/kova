@@ -31,6 +31,7 @@
  */
 import { createInterface } from "node:readline";
 import { logErr } from "./log";
+import { warmLibrary } from "./workflow/library";
 import { initHostMode, initStorage } from "./storage/storage";
 import { loadCustomProviders, applyModelOverrides, initCurrentModelKey } from "./model/model-catalog";
 import { initPersonalization } from "./agent/personalization";
@@ -117,6 +118,9 @@ async function main() {
     await initObservability();
     // 子智能体开关/工作区信任同走 kv，理由同上（定义文件本身按需带签名加载）
     await initSubagentState();
+    // 工作流剧本库预热：工作流工具目录与提示词是同步面（读内存缓存），
+    // 这里先填上；失败静默——首次真实访问(listPlaybooks)会再试
+    await warmLibrary().catch(() => {});
     // 技能启用开关同走 kv（技能目录本身按需带签名加载，resolveSession 预热）
     await initSkillsState();
     // MCP 启用开关同走 kv（服务器定义文件按需带签名加载）；就绪后启动空闲连接回收

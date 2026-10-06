@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { kvGet, kvSet } from "../storage/hostdb";
 import { logErr } from "../log";
-import { validatePlan, type WorkflowStep } from "./plan-state";
+import { DEFAULT_PHASE, validatePlan, type WorkflowStep } from "./plan-state";
 import type { Playbook, PlaybookArg } from "pi-protocol";
 
 const PLAYBOOK_KV_KEY = "pi.workflow.playbooks";
@@ -52,6 +52,16 @@ function isPlaybookShaped(value: unknown): value is Playbook {
     Array.isArray(p.steps) &&
     Array.isArray(p.args)
   );
+}
+
+/** 同步读缓存(sidecar 启动时 warmLibrary 预热;工具目录/提示词这类同步面用) */
+export function cachedPlaybooksSync(): Playbook[] | undefined {
+  return cache ?? undefined;
+}
+
+/** 预热缓存(sidecar 启动调用;失败静默——首次真实访问会再试一次) */
+export async function warmLibrary(): Promise<void> {
+  await loadAll();
 }
 
 export async function listPlaybooks(): Promise<Playbook[]> {
@@ -208,6 +218,117 @@ export function playbookSteps(playbook: Playbook): WorkflowStep[] {
   const checked = validatePlan(playbook.steps);
   if (!checked.ok) throw new Error(`playbook "${playbook.name}" is invalid: ${checked.reason}`);
   return checked.steps;
+}
+
+/* --------------------------- 组合展开(macro) --------------------------- */
+
+/** 展开深度上限:顶层(0)引剧本(1),被引剧本的步骤还可以再引一层(2),再深就该拆开 */
+const MAX_COMPOSE_DEPTH = 2;
+
+/**
+ * 组合展开:把 kind:"playbook" 的步骤平铺成被引剧本的步骤(设计文档 §5.1)。
+ * - 子步骤键加 `父key.` 前缀,phase 继承引用处(引用处没显式写就用子步自己的);
+ * - use.args 里给了值的 `{{args.NAME}}` 就地替换(具体值固化);没给的留到运行时
+ *   按本 run 的 args 解析——被引剧本的未绑参数因此仍是顶层可参数化的;
+ * - 被引剧本的内部依赖原样保留并加前缀,子步骤整体依赖引用处的 dependsOn;
+ * - 环引用(名字栈)与深度上限直接拒绝——与运行时嵌套不同,这里零运行时成本。
+ * 返回的新 steps 需要再经 validatePlan(展开后的结构检查)。
+ */
+export async function expandComposition(
+  steps: WorkflowStep[],
+  options: {
+    /** 剧本解析器(测试注入;生产默认走库) */
+    resolve?: (name: string) => Promise<Playbook | undefined>;
+  } = {},
+  depth = 0,
+  stack: string[] = [],
+): Promise<{ ok: true; steps: WorkflowStep[] } | { ok: false; reason: string }> {
+  const resolve = options.resolve ?? getPlaybook;
+  const out: WorkflowStep[] = [];
+  /**
+   * 父键 → 组汇点键(被引剧本顶层 synthesize 的前缀化键)。外层步骤对父键的
+   * 引用(依赖与 {{父键}} 插值)在展开后必须重写到汇点,否则指向了不存在的键。
+   */
+  const renames = new Map<string, string>();
+  for (const step of steps) {
+    if (step.kind !== "playbook" || !step.use) {
+      out.push({ ...step, dependsOn: [...step.dependsOn] });
+      continue;
+    }
+    const refName = step.use.playbook;
+    if (depth >= MAX_COMPOSE_DEPTH) {
+      return {
+        ok: false,
+        reason: `playbook "${refName}" is nested deeper than ${MAX_COMPOSE_DEPTH} levels — flatten the composition instead.`,
+      };
+    }
+    if (stack.some((n) => n.toLowerCase() === refName.toLowerCase())) {
+      return {
+        ok: false,
+        reason: `playbook composition cycle: ${[...stack, refName].join(" -> ")}.`,
+      };
+    }
+    const playbook = await resolve(refName);
+    if (!playbook) {
+      return {
+        ok: false,
+        reason: `unknown playbook "${refName}" — check the name in Settings → 工作流剧本.`,
+      };
+    }
+    let inner: WorkflowStep[];
+    try {
+      inner = playbookSteps(playbook);
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+    const boundArgs = step.use.args ?? {};
+    const prefix = `${step.key}.`;
+    const mapped = inner.map((child) => {
+      const key = `${prefix}${child.key}`;
+      return {
+        ...child,
+        key,
+        phase: step.phase !== DEFAULT_PHASE ? step.phase : child.phase,
+        dependsOn: child.dependsOn.map((d) => `${prefix}${d}`),
+        prompt: bindPlaybookArgs(child.prompt, boundArgs),
+      };
+    });
+    // 被引剧本的内部引用继续展开(深度 +1,名字栈进一层)
+    const nested = await expandComposition(mapped, options, depth + 1, [...stack, refName]);
+    if (!nested.ok) return nested;
+    // 子步骤整体接上引用处的依赖(引用处等待谁,它们就等谁)
+    for (const child of nested.steps) {
+      child.dependsOn = [...new Set([...child.dependsOn, ...step.dependsOn])];
+    }
+    // 组汇点 = 被引剧本的顶层 synthesize(前缀化后);校验过的剧本必有恰好一个
+    const sink = inner.find((s) => s.kind === "synthesize" && !s.key.includes("."));
+    if (!sink) {
+      return { ok: false, reason: `playbook "${refName}" has no top-level synthesize step (its sub-report is the composition's result).` };
+    }
+    renames.set(step.key, `${prefix}${sink.key}`);
+    out.push(...nested.steps);
+  }
+  // 后处理:把对父键的引用(依赖 + {{占位符}})重写到组汇点。放最后做,前向引用也覆盖
+  if (renames.size > 0) {
+    for (const step of out) {
+      step.dependsOn = step.dependsOn.map((d) => renames.get(d) ?? d);
+      for (const [parentKey, sinkKey] of renames) {
+        step.prompt = step.prompt.replace(
+          new RegExp(`\\{\\{\\s*${parentKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\}\\}`, "g"),
+          `{{${sinkKey}}}`,
+        );
+      }
+    }
+  }
+  return { ok: true, steps: out };
+}
+
+/** 把 use.args 里给了值的 {{args.NAME}} 就地替换;没给的保持占位符(运行时解析) */
+function bindPlaybookArgs(prompt: string, bound: Record<string, unknown>): string {
+  return prompt.replace(/\{\{\s*args\.([A-Za-z0-9_]+)\s*\}\}/g, (m, name: string) => {
+    const value = bound[name];
+    return value === undefined ? m : String(value);
+  });
 }
 
 /** 测试缝:清缓存 */

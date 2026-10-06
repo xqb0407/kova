@@ -19,17 +19,21 @@ import { createHash, randomUUID } from "node:crypto";
 /** 工作流模式专属工具(必须独占 tool call 批次,modes.ts 的 modeBeforeToolCall 拦) */
 export const WORKFLOW_TOOL_NAMES = {
   propose: "workflow_propose_plan",
+  runPlaybook: "workflow_run_playbook",
 } as const;
 
-export const WORKFLOW_TOOL_NAME_LIST: readonly string[] = [WORKFLOW_TOOL_NAMES.propose];
+export const WORKFLOW_TOOL_NAME_LIST: readonly string[] = [
+  WORKFLOW_TOOL_NAMES.propose,
+  WORKFLOW_TOOL_NAMES.runPlaybook,
+];
 
 export function isWorkflowToolName(name: string): boolean {
-  return name === WORKFLOW_TOOL_NAMES.propose;
+  return WORKFLOW_TOOL_NAME_LIST.includes(name);
 }
 
 /* --------------------------------- 类型 --------------------------------- */
 
-export type WorkflowStepKind = "delegate" | "synthesize" | "gate" | "verify";
+export type WorkflowStepKind = "delegate" | "synthesize" | "gate" | "verify" | "playbook";
 
 export type WorkflowStep = {
   /** 剧本内唯一、模型起的稳定键;journal 与插值的寻址键 */
@@ -50,6 +54,9 @@ export type WorkflowStep = {
   /** foreach 扇出(仅 delegate):按 from 步骤的结果逐行展开,展开键 `${key}#${index}`,
    *  prompt 里 `{{item}}` 换成该行。from 自动进 dependsOn */
   foreach?: { from: string };
+  /** 组合(仅 kind:"playbook"):引用已存剧本,提案期平铺成带前缀的子步骤。
+   *  args 提供被引剧本的 {{args.NAME}} 值;未提供的留到运行时按本 run 的 args 解析 */
+  use?: { playbook: string; args?: Record<string, unknown> };
   /** gate:确定性命令门。command 必须是提案时的字面量(用户确认的就是它),args 可含插值 */
   gate?: { command: string; args?: string[]; timeoutMs?: number };
   /** verify:N 个评审委派对抗式投票,{real, reason} 占比 ≥ threshold 判真 */
@@ -124,7 +131,8 @@ export const MAX_WORKFLOW_TITLE_LENGTH = 80;
 export const MAX_STEP_RESULT_CHARS = 12_000;
 /** 插值后单条 prompt 的上限:超限截断,防止上游全量结果把下游 brief 撑爆 */
 export const MAX_INTERPOLATED_PROMPT_CHARS = 24_000;
-export const STEP_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+/** 步骤键:组合展开会加 `父.子` 前缀,点号因此合法(模型自起的键也允许点) */
+export const STEP_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,96}$/;
 export const DEFAULT_PHASE = "执行";
 /** 单步可恢复失败的最大额外重试次数(退避与 pi-dw 同款:250ms 起指数封顶 2s) */
 export const MAX_STEP_RETRIES = 3;
@@ -171,6 +179,7 @@ type RawStep = {
   foreach?: unknown;
   gate?: unknown;
   verify?: unknown;
+  use?: unknown;
   retries?: unknown;
   onFail?: unknown;
 };
@@ -213,10 +222,16 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
     }
     seen.add(key);
     const kind = asTrimmedString(entry.kind);
-    if (kind !== "delegate" && kind !== "synthesize" && kind !== "gate" && kind !== "verify") {
+    if (
+      kind !== "delegate" &&
+      kind !== "synthesize" &&
+      kind !== "gate" &&
+      kind !== "verify" &&
+      kind !== "playbook"
+    ) {
       return {
         ok: false,
-        reason: `steps[${i}].kind must be "delegate", "synthesize", "gate" or "verify", got "${kind}".`,
+        reason: `steps[${i}].kind must be "delegate", "synthesize", "gate", "verify" or "playbook", got "${kind}".`,
       };
     }
     const title = asTrimmedString(entry.title).slice(0, MAX_WORKFLOW_TITLE_LENGTH);
@@ -224,7 +239,8 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
       return { ok: false, reason: `steps[${i}].title is required (shown to the user on the step card).` };
     }
     const prompt = asTrimmedString(entry.prompt).slice(0, MAX_STEP_TEXT_LENGTH);
-    if (!prompt) {
+    // playbook 组合步骤不需要自己的 prompt(展开后被引用剧本的步骤取代)
+    if (!prompt && kind !== "playbook") {
       return { ok: false, reason: `steps[${i}].prompt is required (the complete brief for this step).` };
     }
     const step: WorkflowStep = {
@@ -301,6 +317,27 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
         return { ok: false, reason: `steps[${i}] (${key}) depends on itself.` };
       }
       if (!step.dependsOn.includes(dep)) step.dependsOn.push(dep);
+    }
+    // 组合:仅 kind:"playbook";引用名与参数在这里只验形,展开(加载库、加前缀、
+    // 深度与环)在 library.expandComposition(提案接受前由工具层调用)
+    if (kind === "playbook") {
+      const u = entry.use as { playbook?: unknown; args?: unknown } | undefined;
+      const playbookName = asTrimmedString(u?.playbook);
+      if (!playbookName) {
+        return {
+          ok: false,
+          reason: `steps[${i}] (${key}) is a playbook step and needs use.playbook — the name of a saved playbook (see Settings → 工作流剧本).`,
+        };
+      }
+      const use: { playbook: string; args?: Record<string, unknown> } = { playbook: playbookName };
+      if (u?.args && typeof u.args === "object" && !Array.isArray(u.args)) {
+        const args: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(u.args as Record<string, unknown>)) {
+          if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") args[k] = v;
+        }
+        if (Object.keys(args).length > 0) use.args = args;
+      }
+      step.use = use;
     }
     // foreach 扇出:仅 delegate;from 必须是另一个步骤(自动成为隐式依赖)
     if (entry.foreach !== undefined) {
@@ -398,17 +435,20 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
       reason: `steps form a dependency cycle involving: ${stuck.join(", ")}.`,
     };
   }
-  // synthesize 恰好一个,且必须能沿依赖边到达每个非 synthesize 步(M2 的收束语义,
-  // 含 gate/verify)。够不着的步骤产出进不了最终报告,等于白跑
-  const synths = steps.filter((s) => s.kind === "synthesize");
+  // synthesize 恰好一个,**只数顶层**(组合展开进来的内层 synthesize 是子报告的
+  // 汇点——它作为普通步骤产出子报告,再喂给顶层汇点)。顶层 = 键里没有点号前缀
+  const topLevel = steps.filter((s) => !s.key.includes("."));
+  const synths = topLevel.filter((s) => s.kind === "synthesize");
   if (synths.length !== 1) {
     return {
       ok: false,
-      reason: `exactly one synthesize step is required (got ${synths.length}) — it produces the final report.`,
+      reason: `exactly one top-level synthesize step is required (got ${synths.length}) — it produces the final report.`,
     };
   }
   const synth = synths[0]!;
-  const unreachable = steps.find((s) => s.kind !== "synthesize" && !reaches(synth, s.key, steps));
+  const unreachable = steps.find(
+    (s) => s !== synth && !reaches(synth, s.key, steps) && s.kind !== "playbook",
+  );
   if (unreachable) {
     return {
       ok: false,

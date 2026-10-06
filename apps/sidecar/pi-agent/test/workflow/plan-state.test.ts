@@ -71,7 +71,7 @@ describe("validatePlan", () => {
       { key: "s2", kind: "synthesize", title: "S2", prompt: "2", dependsOn: ["a"] },
     ]);
     expect(checked.ok).toBe(false);
-    if (!checked.ok) expect(checked.reason).toContain("exactly one synthesize");
+    if (!checked.ok) expect(checked.reason).toContain("exactly one top-level synthesize");
   });
 
   test("未知依赖被拒", () => {
