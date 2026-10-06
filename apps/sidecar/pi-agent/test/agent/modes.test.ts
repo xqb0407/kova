@@ -980,6 +980,7 @@ describe("系统提示词结构（缓存友好）", () => {
       plan: "Plan mode",
       ask: "Ask mode",
       goal: "Goal mode",
+      workflow: "Workflow mode",
     };
     // 问答档的静态核心是子集（剔掉任务追踪与子代理两段），其余档用全量核心；
     // 四档共有的不变式是"静态核心在最前、模式段居中、cwd 行在最尾"

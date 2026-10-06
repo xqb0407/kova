@@ -361,6 +361,38 @@ export function appendSessionInfoRow(sessionId: string, name: string): void {
 }
 
 /**
+ * 工作流运行状态的瘦身投影行(无各步结果文本——全量在 .kova/workflows/<runId>.json,
+ * 见 workflow/journal.ts)。形状由调用方(workflow 门面)归一,这里只管存取:
+ * goal_state 行的形状守卫在 transcript 里是为了复用 Goal 类型守卫,工作流的本体
+ * 在独立文件里,判废逻辑跟着本体走,不在这重复一份。
+ */
+export function appendWorkflowStateRow(sessionId: string, run: unknown | null): void {
+  appendSettingRow(sessionId, {
+    type: "workflow_state",
+    run: run ?? null,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/** 从转录回放工作流运行(最后一行胜出;无行 = 无运行)。返回原始 JSON,判废在门面 */
+export function readWorkflowStateRow(sessionId: string): unknown | undefined {
+  const file = sessionPath(sessionId);
+  if (!existsSync(file)) return undefined;
+  let restored: unknown | undefined;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line.includes('"workflow_state"')) continue;
+    try {
+      const row = JSON.parse(line) as { type?: string; run?: unknown };
+      if (row.type !== "workflow_state") continue;
+      restored = row.run == null ? undefined : row.run;
+    } catch {
+      /* 撕裂行:保留上一份有效状态 */
+    }
+  }
+  return restored;
+}
+
+/**
  * 撤回单条已落盘的转录行（按 seq，幂等；只删第一处命中）。
  *
  * 使用面很窄：**只服务「并入（steer）未获回应回收」**——注入即真实 user 行

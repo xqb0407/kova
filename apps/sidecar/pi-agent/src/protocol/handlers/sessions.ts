@@ -56,7 +56,18 @@ import {
 } from "../../goal/goal";
 import { goalContinueText, goalNegotiationText } from "../../goal/goal-continuation";
 import { isNegotiating, limitsFor } from "../../goal/goal-state";
-import { ensureGoalMode, persistModePrefs } from "../../agent/modes";
+import { ensureGoalMode, ensureWorkflowMode, persistModePrefs } from "../../agent/modes";
+import {
+  commitWorkflow,
+  getWorkflow,
+  pauseWorkflowForUserInput,
+  setWorkflowDeliveryHook,
+  workflowStatePayload,
+} from "../../workflow/workflow";
+import { registerWorkflowRunner, startWorkflowExecution } from "../../workflow/runner";
+import { rejectWorkflowPlan, restoreWorkflow } from "../../workflow/workflow";
+import { WORKFLOW_CONTINUE_PREFIX } from "pi-protocol";
+import { confirmProposal, resumeRun, type WorkflowRun } from "../../workflow/plan-state";
 import { dispatchPrompt } from "../prompt-pipeline";
 import { getDelegationSnapshot } from "../../subagent/subagent";
 import { dropEventSeq, peekEventSeq } from "../event-seq";
@@ -285,6 +296,99 @@ export const handlers: Record<string, CommandHandler> = {
     if (!goal) throw new Error(`no criteria to skip: ${threadId}`);
     send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
     kickGoalLoop(run);
+  },
+
+  /* -------------------------------- 工作流 -------------------------------- */
+
+  get_workflow_state: async (reqId, msg) => {
+    // 工作流快照:常驻条/面板的水合入口。与 get_goal_state 同款两段式:
+    // 内存没有该线程就先只读回放转录里的 workflow_state 行重建槽位
+    //(不建 Agent、不写 running),再回快照
+    const threadId = String(msg.threadId ?? "default");
+    if (!running.has(threadId)) {
+      const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
+      if (sessionId) restoreWorkflow(threadId, sessionId);
+    }
+    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+  },
+
+  workflow_confirm: async (reqId, msg) => {
+    // 常驻条提案卡「确认开跑」:proposed → running,执行器接管(后台)。
+    // 档位扶正与 goal_confirm→kickGoalLoop 同理:执行虽不门在档位上,
+    // 交付轮与后续重提都要在正确的模式语境里
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    if (ensureWorkflowMode(run) && run.sessionId) sendSessionsChanged("updated", run.sessionId);
+    const wf = getWorkflow(threadId);
+    if (!wf) throw new Error(`no workflow to confirm: ${threadId}`);
+    const confirmed = confirmProposal(wf);
+    if (!confirmed) throw new Error(`workflow is not awaiting confirmation: ${threadId}`);
+    commitWorkflow(run, confirmed);
+    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+    void startWorkflowExecution(run);
+  },
+
+  workflow_reject: async (reqId, msg) => {
+    // 提案卡「驳回」:proposed → proposing 并带回意见,紧接着注入一轮让模型重提。
+    // 与 goal_reject 同一个判断——用户在卡片上写了意见,等的就是模型据此重提
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    const wf = getWorkflow(threadId);
+    if (!wf) throw new Error(`no workflow to reject: ${threadId}`);
+    const feedback = typeof msg.feedback === "string" ? msg.feedback : undefined;
+    const rejected = rejectWorkflowPlan(run, feedback);
+    if (!rejected) throw new Error(`workflow is not awaiting confirmation: ${threadId}`);
+    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+    kickWorkflowReplan(run, rejected);
+  },
+
+  workflow_pause: async (reqId, msg) => {
+    // 常驻条「暂停」:running → paused,中止在跑委派(restoreWorkflow 恢复的
+    // paused 无执行器,天然幂等)
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    pauseWorkflowForUserInput(run);
+    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+  },
+
+  workflow_resume: async (reqId, msg) => {
+    // 常驻条「继续」:paused → running 并重启执行器;journal 里指纹一致的 done
+    // 步骤免费回放(runner 负责),中断的步骤重跑
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    if (ensureWorkflowMode(run) && run.sessionId) sendSessionsChanged("updated", run.sessionId);
+    const wf = getWorkflow(threadId);
+    if (!wf) throw new Error(`no workflow to resume: ${threadId}`);
+    const resumed = resumeRun(wf);
+    if (!resumed) throw new Error(`workflow is not resumable: ${threadId}`);
+    commitWorkflow(run, resumed);
+    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+    void startWorkflowExecution(run);
+  },
+
+  workflow_clear: async (reqId, msg) => {
+    // 常驻条「清除」:先停执行器再清槽位(顺序不能反——清了槽,执行器的结算
+    // 写不回账,在跑委派也停不下来)。落一行 null,重启后条不再显示
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    pauseWorkflowForUserInput(run);
+    commitWorkflow(run, undefined);
+    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
   },
 
   context_info: async (reqId, msg) => {
@@ -746,6 +850,68 @@ export const handlers: Record<string, CommandHandler> = {
     send({ id: reqId, type: "session_cwd_set", sessionId, cwd });
   },
 };
+
+/* --------------------------- 工作流执行器装配 --------------------------- */
+
+registerWorkflowRunner();
+setWorkflowDeliveryHook(kickWorkflowDelivery);
+
+/**
+ * 工作流完成后的交付轮:把合成报告注入续跑,由编排器向用户复述。
+ * 与 kickGoalLoop 同一个注入通路(dispatchPrompt + 哨兵前缀,前缀被
+ * syncWorkflowOnUserPrompt 认出是系统注入)。线程忙时不抢当前轮——
+ * 报告在运行记录与常驻条上都可见,用户点「继续」(workflow_resume 会拒绝,
+ * complete 是终态)或清掉后重新编排;M1 接受这个缺口。
+ */
+function kickWorkflowDelivery(run: Running, wf: WorkflowRun): void {
+  const synth = wf.plan?.steps.find((s) => s.kind === "synthesize");
+  const report = (synth ? wf.steps[synth.key]?.result : undefined) ?? "";
+  if (!report.trim()) return;
+  if (isTurnBusy(run.threadId)) return;
+  const title = wf.title ?? wf.objective.slice(0, 60);
+  const reqId = `workflow-${run.sessionId}-${Date.now()}`;
+  void dispatchPrompt(reqId, {
+    threadId: run.threadId,
+    sessionId: run.sessionId,
+    cwd: run.persistedCwd,
+    text:
+      WORKFLOW_CONTINUE_PREFIX +
+      [
+        `The workflow "${title}" has finished. Present its final report to the user in their language.`,
+        "Retell the report faithfully — do not re-run, extend or re-check the work unless the user asks.",
+        "",
+        "<workflow_report>",
+        report,
+        "</workflow_report>",
+      ].join("\n"),
+  }).catch((err) => {
+    logErr("workflow delivery: failed to start the continuation turn:", err);
+  });
+}
+
+/**
+ * 提案驳回后的重提轮:注入一条「按用户意见修改剧本」的指令。与交付轮同一通路;
+ * 此时 run.status 已回到 proposing,提案工具重新可用。
+ */
+function kickWorkflowReplan(run: Running, wf: WorkflowRun): void {
+  if (isTurnBusy(run.threadId)) return;
+  if (ensureWorkflowMode(run) && run.sessionId) sendSessionsChanged("updated", run.sessionId);
+  const feedback = wf.proposalFeedback ? `The user rejected your plan with this feedback: "${wf.proposalFeedback}"` : "The user rejected your plan.";
+  const reqId = `workflow-${run.sessionId}-${Date.now()}`;
+  void dispatchPrompt(reqId, {
+    threadId: run.threadId,
+    sessionId: run.sessionId,
+    cwd: run.persistedCwd,
+    text:
+      WORKFLOW_CONTINUE_PREFIX +
+      [
+        feedback,
+        "Revise the workflow plan accordingly and call workflow_propose_plan again with the complete revised plan. Then stop.",
+      ].join("\n"),
+  }).catch((err) => {
+    logErr("workflow replan: failed to start the continuation turn:", err);
+  });
+}
 
 /**
  * 「点继续」之后真正把循环点着。

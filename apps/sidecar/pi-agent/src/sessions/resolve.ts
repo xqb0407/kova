@@ -68,6 +68,7 @@ import {
 } from "./registry";
 import { migrateTodoState, replayTodoFromMessages } from "../todo/todo";
 import { migrateGoal, parseGoalMaxTurnsPref, restoreGoal } from "../goal/goal";
+import { migrateWorkflow, restoreWorkflow } from "../workflow/workflow";
 import { logErr } from "../log";
 import { sessionPath } from "../storage/storage";
 import {
@@ -235,6 +236,7 @@ export async function rebindRunThread(
   trackSessionRun(run.sessionId, newThreadId);
   migrateTodoState(oldThreadId, newThreadId);
   migrateGoal(oldThreadId, newThreadId);
+  migrateWorkflow(oldThreadId, newThreadId);
   // 工具整组重建：browser/question/todo/mcp 的闭包烘着 threadId，
   // 事件推送与挂起归属（cancelPending* 按 threadId 过滤）都靠它
   run.baseTools = buildTools(
@@ -565,6 +567,11 @@ export async function resolveSession(
     // restoreGoal 内部降级为 paused——驱动那个循环的 run 随进程一起没了，原样
     // 带回来的 active 是谎报（见 docs/goal-mode-design.md「状态是 active ≠ 循环在跑」）
     restoreGoal(threadId, sessionId!);
+    // 工作流恢复:workflow_state 行同款事件溯源。回放出的 running 由
+    // restoreWorkflow 内部降级为 paused(驱动执行的进程随重启没了)并在跑步骤
+    // 记 interrupted;结果全文的权威副本在 .kova/workflows/<runId>.json,resume
+    // 时由 runner 按指纹回放
+    restoreWorkflow(threadId, sessionId!);
     persistedSeq = restoredMessages.length;
     jsonlSeq = maxSeq + 1;
   } else {

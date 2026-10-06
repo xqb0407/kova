@@ -34,6 +34,7 @@ import { applyAskNeedsWorkChunk } from "@/lib/pi/pi-ask-needs-work";
 import { applyPlanningChunk } from "@/lib/pi/pi-session-mode";
 import { applyTodoChunk } from "@/lib/pi/pi-todo";
 import { applyGoalChunk } from "@/lib/pi/pi-goal";
+import { applyWorkflowChunk } from "@/lib/pi/pi-workflow";
 import {
   focusPanelTabFor,
   focusPluginPanelFor,
@@ -462,6 +463,7 @@ export class PiClientBase implements PiClient {
       raw.includes('"data-askNeedsWork"') ||
       raw.includes('"data-todo"') ||
       raw.includes('"data-goal-state"') ||
+      raw.includes('"data-workflow-state"') ||
       raw.includes('"data-panelOpen"') ||
       raw.includes('"data-pluginOpen"');
     if (
@@ -557,6 +559,11 @@ export class PiClientBase implements PiClient {
       // ---- 目标状态（goal 档常驻条）：同为 per-thread store 直更
       if (chunkData?.type === "data-goal-state") {
         applyGoalChunk(sid, chunkData.data);
+        return;
+      }
+      // ---- 工作流状态（workflow 档常驻条/面板）：同款 per-thread store 直更
+      if (chunkData?.type === "data-workflow-state") {
+        applyWorkflowChunk(sid, chunkData.data);
         return;
       }
     }

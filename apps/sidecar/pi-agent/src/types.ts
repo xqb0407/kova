@@ -317,8 +317,8 @@ export type PendingToolApproval = {
 
 /* ------------------------------- 模式与审批 ------------------------------- */
 
-/** 会话模式：agent 正常执行；plan 只读勘察 + 编写实施计划（plan_exit 批准后回 agent 实施）；ask 纯问答（只读工具子集，不改工作区）；goal 自治目标（完整工具集 + 跨轮续跑，靠 goal_complete/goal_blocked 收尾） */
-export type SessionMode = "agent" | "plan" | "ask" | "goal";
+/** 会话模式:agent 正常执行;plan 只读勘察 + 编写实施计划(plan_exit 批准后回 agent 实施);ask 纯问答(只读工具子集,不改工作区);goal 自治目标(完整工具集 + 跨轮续跑,靠 goal_complete/goal_blocked 收尾);workflow 多代理编排(模型拟剧本,执行器后台跑 Task 委派,见 workflow/) */
+export type SessionMode = "agent" | "plan" | "ask" | "goal" | "workflow";
 
 /**
  * 逐工具审批级别（按"问多少"从紧到松排列）：

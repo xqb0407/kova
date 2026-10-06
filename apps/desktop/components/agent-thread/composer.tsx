@@ -31,6 +31,7 @@ import {
   ModePicker,
 } from "@/components/agent-thread/mode-picker";
 import { GoalStrip } from "@/components/agent-thread/goal-strip";
+import { WorkflowStrip } from "@/components/agent-thread/workflow-strip";
 import { ComposerPlusMenu } from "@/components/agent-thread/composer-plus-menu";
 import { DesignThemePicker } from "@/components/agent-thread/design-theme-picker";
 import { ContextButton } from "@/components/agent-thread/context-button";
@@ -315,6 +316,8 @@ export const Composer: FC = () => {
             审批卡讲的是「这一轮卡在哪等你」，两者同时在场时目标态在更下面一层，
             视线自然先落在阻塞上 */}
         <GoalStrip />
+        {/* 工作流常驻条:与目标条同层。运行执行在 sidecar 后台,条是唯一常驻投影 */}
+        <WorkflowStrip />
         <ComposerPrimitive.AttachmentDropzone asChild>
           <div
             data-slot="aui_composer-shell"

@@ -22,8 +22,9 @@ import {
   type CompactionOutcome,
 } from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
-import { clearPendingToolApprovals, composeRunPrompt, refreshGoalToolset } from "../agent/modes";
+import { clearPendingToolApprovals, composeRunPrompt, refreshGoalToolset, refreshWorkflowToolset } from "../agent/modes";
 import { syncGoalOnUserPrompt } from "../goal/goal";
+import { syncWorkflowOnUserPrompt } from "../workflow/workflow";
 import { emitPlanningState } from "../agent/modes";
 import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
 import { cancelPendingQuestions } from "../tools/question-tools";
@@ -240,6 +241,9 @@ export function steerIntoActiveRun(
     // 用户插话就是在接管，目标该让位。少了这一句，steer 是唯一能绕过
     // 「用户输入即接管」的入口，循环会在用户已经开口之后继续自己往下跑
     syncGoalOnUserPrompt(run, String(msg.text ?? ""));
+    // 工作流同款:运行中并入 = 用户接管(暂停 + 中止在跑步骤),proposed 中并入 =
+    // 对剧本的意见(驳回带回 feedback)。判据必须与普通发送一致
+    syncWorkflowOnUserPrompt(run, String(msg.text ?? ""));
     const text = STEER_PREFIX + noticeAppendedText(String(msg.text ?? ""), attachments.noticeLines);
     const content: string | (ImageContent | { type: "text"; text: string })[] =
       attachments.images.length
@@ -566,6 +570,11 @@ async function runTurnBody(
   // 到协商计数耗尽）。必须在下面那次提示词重排之前：重排会按新的契约阶段写目标块，
   // 表与块要同源地描述同一轮能做什么
   refreshGoalToolset(run);
+  // 工作流同步(与 goal 同构):workflow 档下这条消息要么就是编排目标(建「编排中」
+  // 运行),要么是对已提出剧本的意见(驳回并带回 feedback)。同样必须在提示词重排
+  // 之前——工具表(提案工具)与运行状态要同源地描述这一轮
+  syncWorkflowOnUserPrompt(run, String(msg.text ?? ""));
+  refreshWorkflowToolset(run);
   // 每轮把模式盘面推一次：run 可能被驱逐后按「会话偏好行 ?? 全局 kv」重新物化，
   // 而这两处一旦与前端上次看到的不一致（写入失败/滞后），前端就会一直显示另一档
   // 而没有任何东西来纠正它——「档位自己变了」这类症状就是这么来的。推一次的成本

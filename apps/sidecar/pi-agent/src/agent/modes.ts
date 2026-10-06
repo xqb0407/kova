@@ -76,6 +76,9 @@ import {
 } from "../goal/goal-state";
 import { buildGoalTools, getGoal, markGoalWorkSeen, pauseGoalOnModeExit } from "../goal/goal";
 import { GOAL_MODE_PROMPT, goalPromptBlock } from "../goal/prompt";
+import { isWorkflowToolName, WORKFLOW_TOOL_NAMES } from "../workflow/plan-state";
+import { buildWorkflowTools } from "../workflow/tools";
+import { pauseWorkflowOnModeExit } from "../workflow/workflow";
 import type {
   ApprovalLevel,
   PlanningState,
@@ -90,11 +93,11 @@ export const PLAN_TOOL_NAMES = {
   exit: "plan_exit",
 } as const;
 
-/** 四档字面量的宽松规整：库里的偏好值、协议消息、投影行都经这里收口。
+/** 四档字面量的宽松规整:库里的偏好值、协议消息、投影行都经这里收口。
  *  加枚举值时只改这一处——散落各处的 `x === "a" || x === "b"` 白名单是这类
- *  改动最典型的静默漏改点（新值不报错，只是被悄悄丢成旧档） */
+ *  改动最典型的静默漏改点(新值不报错,只是被悄悄丢成旧档) */
 export function normalizeSessionMode(raw: unknown): SessionMode {
-  return raw === "plan" || raw === "ask" || raw === "goal" ? raw : "agent";
+  return raw === "plan" || raw === "ask" || raw === "goal" || raw === "workflow" ? raw : "agent";
 }
 
 /** 问答档唯一的出口工具：模型调用它只是**提议**切回编码档，不自己切。
@@ -110,6 +113,7 @@ const MODE_EXCLUSIVE_TOOL_NAMES = new Set<string>([
   GOAL_TOOL_NAMES.propose,
   GOAL_TOOL_NAMES.complete,
   GOAL_TOOL_NAMES.blocked,
+  WORKFLOW_TOOL_NAMES.propose,
 ]);
 
 /** 仅 plan 模式可用的工具 */
@@ -170,6 +174,21 @@ const AGENT_MODE_PROMPT =
   "You are operating in Agent mode: carry out the requested work with the available tools and report the result clearly. When a task is large or ambiguous, enter Plan mode via plan_enter to research and draft an implementation plan; the plan needs user approval via plan_exit before you implement.";
 export { AGENT_MODE_PROMPT };
 
+/**
+ * 工作流模式的系统提示词:编排器只拟剧本,不干活。
+ *
+ * 提示词刻意只讲「怎么拟一份好剧本」:步骤切分、谁上、结果怎么流——不教它委派
+ * 细节(那是 Task 组的事,这档根本没有 Task)也不讲执行纪律(执行是执行器的事)。
+ * 提案被驳回时,驳回意见出现在 proposalFeedback 相关的提案结果文本里,模型据此重提。
+ */
+const WORKFLOW_MODE_PROMPT = [
+  "You are operating in Workflow mode: your only deliverable is a workflow PLAN the runtime executes — you never do the work yourself, and you cannot see step results.",
+  "First inspect the workspace with the read-only tools if the request depends on facts you do not have, then call workflow_propose_plan with the complete plan.",
+  "Plan shape: each delegate step runs one subagent on a self-contained brief; the single synthesize step weaves the upstream results ({{step-key}} references) into the final report. Independent steps run concurrently — add dependsOn only for real data dependencies.",
+  "Write titles, phases and step prompts in the user's language. A user question or a trivial task does not need a workflow — answer those directly.",
+  "After workflow_propose_plan is accepted you must stop: the user confirms the plan, then the runtime executes it and delivers the report. If the user rejects or comments, revise and propose again.",
+].join("\n");
+
 /** 问答模式的系统提示词：身份段换掉"coding agent"，纪律段只留"读—答—不动手"。
  *  静态核心里剔掉 taskTracking / subagents 两段（见 systemPromptCore）——那六行
  *  子代理说明和多轮委派纪律是"工程味"的主要来源，问答场景整段无意义 */
@@ -220,7 +239,9 @@ export function composeModeSystemPrompt(
         ? ASK_MODE_PROMPT
         : mode === "goal"
           ? GOAL_MODE_PROMPT
-          : AGENT_MODE_PROMPT;
+          : mode === "workflow"
+            ? WORKFLOW_MODE_PROMPT
+            : AGENT_MODE_PROMPT;
   return [
     core,
     extra,
@@ -300,12 +321,19 @@ function buildAskTools(run: Running): AgentTool[] {
 
 /** 按模式重建工具目录：agent = 基础 + Task 组 + plan_enter；plan = 只读子集 + plan_write/plan_exit；
  *  ask = 纯只读子集（无 bash）+ 出口工具，不带 plan 三件套与子代理组；
- *  goal = 基础全集 + Task 组 + 按契约阶段给的出口工具，不带 plan 三件套 */
+ *  goal = 基础全集 + Task 组 + 按契约阶段给的出口工具，不带 plan 三件套；
+ *  workflow = 只读勘察子集 + 按协商阶段给的提案工具（编排器不干活,活是执行器的） */
 export function toolsForMode(run: Running): AgentTool[] {
   if (run.mode === "ask") {
     return [
       ...run.baseTools.filter((t) => ASK_TOOL_NAMES.has(t.name)),
       ...buildAskTools(run),
+    ];
+  }
+  if (run.mode === "workflow") {
+    return [
+      ...run.baseTools.filter((t) => CONTRACT_TOOL_NAMES.has(t.name)),
+      ...buildWorkflowTools(run),
     ];
   }
   // 目标档拿完整工具集（含 write/edit/bash），不含 plan 三件套：目标模式的价值是
@@ -345,6 +373,18 @@ export function toolsForMode(run: Running): AgentTool[] {
  */
 export function refreshGoalToolset(run: Running): void {
   if (run.mode !== "goal") return;
+  const tools = toolsForMode(run);
+  run.agent.state.tools = tools;
+  if (run.loopContext) run.loopContext.tools = tools;
+}
+
+/**
+ * 工作流协商阶段变化后重建工具表(syncWorkflowOnUserPrompt 建「编排中」运行之后
+ * 调用,理由与 refreshGoalToolset 全同:这条路径在 dispatch 过程里建运行,
+ * 不补这次,提案轮拿到的表里根本没有 workflow_propose_plan)。
+ */
+export function refreshWorkflowToolset(run: Running): void {
+  if (run.mode !== "workflow") return;
   const tools = toolsForMode(run);
   run.agent.state.tools = tools;
   if (run.loopContext) run.loopContext.tools = tools;
@@ -610,6 +650,15 @@ export function modeBeforeToolCall(
         "Ask mode is read-only and cannot run commands or modify files. Answer the question with the read-only tools; if the request genuinely needs project changes, call ask_needs_work to offer switching to Agent mode.",
     };
   }
+  // 工作流档的编排器只拟剧本不干活:工具表里没有写类工具,这里是轮中切换前的兜底。
+  // bash 放行(勘察同 plan 档),write/edit 结构性拦
+  if (run.mode === "workflow" && ASK_MODE_MUTATING_TOOLS.has(name)) {
+    return {
+      block: true,
+      reason:
+        "Workflow mode plans the work; it does not perform it. Inspect with read-only tools, then call workflow_propose_plan — the runtime executes the confirmed plan.",
+    };
+  }
   // 目标契约还没落定（协商中 / 已提议等用户确认）：这一轮只读。与 plan/ask 同款
   // 结构性保证，不依赖工具表或提示词是否新鲜。只在**目标已存在**时生效——goal 档下
   // 空白消息不建目标（syncGoalOnUserPrompt 跳过），那一轮是普通请求，不该被这条拦住
@@ -632,6 +681,13 @@ export function modeBeforeToolCall(
       reason: `${name} is available only in Ask mode.`,
     };
   }
+  // 工作流提案工具的档位校验:轮中切档时模型可能还带着 workflow 档的旧 schema
+  if (isWorkflowToolName(name) && run.mode !== "workflow") {
+    return {
+      block: true,
+      reason: `${name} is available only in Workflow mode.`,
+    };
+  }
   // 目标出口工具的档位校验：轮中切档时模型可能还带着 goal 档的旧 schema，
   // agent 档收到 goal_complete 不能当作完成（那轮的语义根本不是目标循环）
   if (isGoalTool && run.mode !== "goal") {
@@ -642,7 +698,8 @@ export function modeBeforeToolCall(
   }
   if (!isPlanTool && !isGoalTool) return undefined;
   // 无人值守自动化：plan_exit 的模式级 HITL 会永久挂起，禁止进入 plan 模式，
-  // 从结构上让 plan_exit 不可达（agent 直接以当前档位执行）
+  // 从结构上让 plan_exit 不可达（agent 直接以当前档位执行）。
+  // 工作流同理:提案后的确认卡片没人点,proposed 会永远挂着——一并挡掉
   if (getAutomationPolicy(run.threadId)) {
     return {
       block: true,
@@ -881,14 +938,15 @@ export function persistModePrefs(run: Running): void {
   });
 }
 
-/** 计划状态只属于 plan 档：其余三档都是 inactive。写成显式映射而不是
- *  `mode === "agent" ? ...`，否则新增的第四档会静默继承 planning 态、被前端
+/** 计划状态只属于 plan 档：其余各档都是 inactive。写成显式映射而不是
+ *  `mode === "agent" ? ...`，否则新增档会静默继承 planning 态、被前端
  *  渲染成"正在计划"（枚举扩容最典型的塌陷点） */
 const PLANNING_BY_MODE: Record<SessionMode, PlanningState> = {
   agent: "inactive",
   plan: "planning",
   ask: "inactive",
   goal: "inactive",
+  workflow: "inactive",
 };
 
 /**
@@ -902,6 +960,7 @@ const PLANNING_BY_MODE: Record<SessionMode, PlanningState> = {
  */
 export function applyMode(run: Running, mode: SessionMode): void {
   if (run.mode === "goal" && mode !== "goal") pauseGoalOnModeExit(run);
+  if (run.mode === "workflow" && mode !== "workflow") pauseWorkflowOnModeExit(run);
   run.mode = mode;
   run.planning = PLANNING_BY_MODE[mode];
   const prompt = composeRunPrompt(run);
@@ -938,6 +997,16 @@ export function applyMode(run: Running, mode: SessionMode): void {
 export function ensureGoalMode(run: Running): boolean {
   if (run.mode === "goal") return false;
   applyMode(run, "goal");
+  return true;
+}
+
+/**
+ * 把档位扶正到 workflow——「确认/恢复这条运行」动作的前提,与 ensureGoalMode 同款
+ * 理由:运行的状态机由 run.mode === "workflow" 门着,档位不对的确认轮是普通对话。
+ */
+export function ensureWorkflowMode(run: Running): boolean {
+  if (run.mode === "workflow") return false;
+  applyMode(run, "workflow");
   return true;
 }
 

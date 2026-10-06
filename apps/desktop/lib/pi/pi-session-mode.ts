@@ -17,13 +17,15 @@ import {
  * - plan_exit 的执行确认不在这里：它走逐工具审批通道（pi-tool-approval）
  */
 
-export type SessionMode = "agent" | "plan" | "ask" | "goal";
+export type SessionMode = "agent" | "plan" | "ask" | "goal" | "workflow";
 
 /** 四档字面量的宽松规整。散落的 `x === "a" || x === "b"` 白名单是加枚举值时
  *  最典型的静默漏改点——ask 的 chunk 会被整个丢弃，UI 卡在旧模式，表现为
  *  「点了没反应」。所有外部来源（chunk、会话列表偏好）一律经这里收口 */
 export function normalizeSessionMode(raw: unknown): SessionMode | null {
-  return raw === "agent" || raw === "plan" || raw === "ask" || raw === "goal" ? raw : null;
+  return raw === "agent" || raw === "plan" || raw === "ask" || raw === "goal" || raw === "workflow"
+    ? raw
+    : null;
 }
 
 /**

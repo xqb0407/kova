@@ -85,7 +85,7 @@ const openPanel = (type: Parameters<typeof openPanelTab>[0]) => {
  */
 const switchMode = (
   threadId: string | undefined,
-  mode: "ask" | "plan" | "goal",
+  mode: "ask" | "plan" | "goal" | "workflow",
   label: string,
 ) => {
   if (!threadId) return;
@@ -180,6 +180,13 @@ const SLASH_COMMANDS: readonly SlashCommandDef[] = [
     description: "切到目标模式：说一个目标，我跨轮把它做完",
     icon: "Target",
     run: ({ threadId }) => switchMode(threadId, "goal", "/goal"),
+  },
+  {
+    id: "workflow",
+    label: "/workflow",
+    description: "切到工作流模式：我拟一份多智能体剧本，你确认后自动执行",
+    icon: "Workflow",
+    run: ({ threadId }) => switchMode(threadId, "workflow", "/workflow"),
   },
 ];
 

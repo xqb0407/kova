@@ -7,6 +7,7 @@ import type {
   ErrorPayload,
   GoalState,
   SessionSummary,
+  WorkflowState,
   UsageTotals,
 } from "pi-protocol";
 
@@ -997,6 +998,7 @@ export type PiResponse =
   | { type: "trace_query"; runs: PiTraceRun[] }
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "goal_state"; goal: GoalState["goal"] }
+  | { type: "workflow_state"; run: WorkflowState["run"] }
   | { type: "model_updated"; provider: string; modelId: string }
   | { type: "credential"; provider: string }
   | { type: "credentials"; credentials: PiCredentialSummary[] }
@@ -1010,7 +1012,7 @@ export type PiResponse =
   | { type: "provider_filter"; provider: string; models: string[] | null }
   | {
       type: "mode_changed" | "planning_state";
-      mode: "agent" | "plan" | "ask" | "goal";
+      mode: "agent" | "plan" | "ask" | "goal" | "workflow";
       approvalLevel?: "ask" | "workspace-write" | "auto-edit" | "auto";
       planning: "inactive" | "planning";
     }

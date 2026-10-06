@@ -38,8 +38,9 @@ const TASKWAIT_MAX_TIMEOUT_SECONDS = 3600;
 /**
  * 解析 delegate 用的模型：Task 的 model 覆盖 > 定义固定 > 继承会话当前模型。
  * 目录里查不到或没凭据时返回 error 文本（放进工具结果，模型可读）。
+ * runner（工作流执行器）同样用它解析步骤的模型覆盖，所以 export。
  */
-async function resolveDelegateModel(
+export async function resolveDelegateModel(
   run: Running,
   definition: SubagentDefinition,
   override: string,

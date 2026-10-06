@@ -12,6 +12,7 @@ import {
   MessageCircleQuestionIcon,
   SquarePenIcon,
   TargetIcon,
+  WorkflowIcon,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -143,6 +144,13 @@ export const CAPABILITY_OPTIONS: CapabilityOption[] = [
     description: "给一个目标，我跨轮把它做完。",
     icon: TargetIcon,
     mode: "goal",
+  },
+  {
+    key: "workflow",
+    label: "工作流",
+    description: "拟一份多智能体剧本，确认后自动编排执行。",
+    icon: WorkflowIcon,
+    mode: "workflow",
   },
 ];
 

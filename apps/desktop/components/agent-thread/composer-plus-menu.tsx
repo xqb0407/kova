@@ -369,7 +369,7 @@ const ModeSub: FC = () => {
 
   const apply = (
     key: string,
-    mode: "agent" | "ask" | "plan" | "goal",
+    mode: "agent" | "ask" | "plan" | "goal" | "workflow",
     approvalLevel?: "ask" | "workspace-write" | "auto-edit" | "auto",
   ) => {
     if (!threadId) return;
