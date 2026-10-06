@@ -22,7 +22,7 @@ import {
   type CompactionOutcome,
 } from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
-import { clearPendingToolApprovals, composeRunPrompt } from "../agent/modes";
+import { clearPendingToolApprovals, composeRunPrompt, refreshGoalToolset } from "../agent/modes";
 import { syncGoalOnUserPrompt } from "../goal/goal";
 import { emitPlanningState } from "../agent/modes";
 import { cancelPendingMcpApprovals } from "../mcp/mcp-tools";
@@ -560,6 +560,12 @@ async function runTurnBody(
   // 取 msg.text 原话而非拼了附件提示行的 promptText：目标原文是用户亲手打的那段，
   // 不该把被拒附件的说明行算进目标。
   syncGoalOnUserPrompt(run, String(msg.text ?? ""), msg.goalMaxAutoTurns);
+  // 目标刚建起来时工具表要跟着换：这一条路径是在 dispatch 过程里建目标的，而
+  // state.tools 只在会话物化 / 切模式 / 几个设置项 reload 时重建——不补这一次，
+  // 协商轮拿到的仍是上一阶段的表，goal_propose_criteria 不在里面（模型只能空转
+  // 到协商计数耗尽）。必须在下面那次提示词重排之前：重排会按新的契约阶段写目标块，
+  // 表与块要同源地描述同一轮能做什么
+  refreshGoalToolset(run);
   // 每轮把模式盘面推一次：run 可能被驱逐后按「会话偏好行 ?? 全局 kv」重新物化，
   // 而这两处一旦与前端上次看到的不一致（写入失败/滞后），前端就会一直显示另一档
   // 而没有任何东西来纠正它——「档位自己变了」这类症状就是这么来的。推一次的成本

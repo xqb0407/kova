@@ -19,6 +19,18 @@ import type { GoalState } from "pi-protocol";
 
 export type GoalStatus = "active" | "paused" | "blocked" | "complete";
 
+/** 一条验收标准（id 由 sidecar 分配，UI 只展示与回传） */
+export type Criterion = { id: string; text: string };
+
+/** 验收标准契约的四态（与桌面同构，见 apps/desktop/lib/pi/pi-goal.ts 的说明） */
+export type AcceptanceStatus = "pending" | "proposed" | "confirmed" | "skipped";
+
+export type GoalAcceptance = {
+  status: AcceptanceStatus;
+  items: Criterion[];
+  feedback?: string;
+};
+
 export type GoalSnapshot = {
   id: string;
   objective: string;
@@ -34,11 +46,45 @@ export type GoalSnapshot = {
   updatedAt: number;
   pauseReason?: string;
   completionSummary?: string;
+  acceptance?: GoalAcceptance;
 };
 
 export type GoalStoreState = { goal: GoalSnapshot | null };
 
 export const EMPTY_GOAL_STATE: GoalStoreState = { goal: null };
+
+/** 契约待确认时循环停着，条上不能报「进行中」（同桌面 pi-goal.ts 的理由） */
+export function isGoalAwaitingConfirmation(goal: GoalSnapshot): boolean {
+  return goal.status === "active" && goal.acceptance?.status === "proposed";
+}
+
+function normalizeAcceptance(raw: unknown): GoalAcceptance | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const a = raw as { status?: unknown; items?: unknown; feedback?: unknown };
+  const status = a.status;
+  if (
+    status !== "pending" &&
+    status !== "proposed" &&
+    status !== "confirmed" &&
+    status !== "skipped"
+  ) {
+    return undefined;
+  }
+  const items: Criterion[] = [];
+  if (Array.isArray(a.items)) {
+    for (const entry of a.items) {
+      if (!entry || typeof entry !== "object") continue;
+      const c = entry as { id?: unknown; text?: unknown };
+      if (typeof c.id !== "string" || typeof c.text !== "string") continue;
+      items.push({ id: c.id, text: c.text });
+    }
+  }
+  return {
+    status,
+    items,
+    ...(typeof a.feedback === "string" ? { feedback: a.feedback } : {}),
+  };
+}
 
 /** chunk / 响应里的 goal 是否形状完整（loose 协议：未知字段透传，脏数据一律当无目标） */
 function normalizeGoal(raw: unknown): GoalSnapshot | null {
@@ -55,6 +101,7 @@ function normalizeGoal(raw: unknown): GoalSnapshot | null {
     return null;
   }
   if (typeof g.statusLine !== "string" || typeof g.turnCount !== "number") return null;
+  const acceptance = normalizeAcceptance(g.acceptance);
   return {
     id: g.id,
     objective: g.objective,
@@ -69,6 +116,7 @@ function normalizeGoal(raw: unknown): GoalSnapshot | null {
     ...(typeof g.completionSummary === "string"
       ? { completionSummary: g.completionSummary }
       : {}),
+    ...(acceptance ? { acceptance } : {}),
   };
 }
 
@@ -158,6 +206,37 @@ export function resumeGoalNow(threadId: string): Promise<void> {
 
 export function clearGoalNow(threadId: string): Promise<void> {
   return requestGoal(threadId, { type: "goal_clear" });
+}
+
+/* ------------------------ 验收标准契约的三个决定 ------------------------ */
+
+/** 改目标原文（侧滑/卡片上的入口）。契约按阶段作废的规则见 desktop 同名函数 */
+export function setGoalObjectiveNow(threadId: string, objective: string): Promise<void> {
+  return requestGoal(threadId, { type: "goal_set_objective", objective });
+}
+
+/** 确认待确认的标准（见 desktop 同名函数的说明：权限档与确认绑在一起的理由） */
+export function confirmGoalCriteriaNow(
+  threadId: string,
+  approvalLevel?: string,
+): Promise<void> {
+  return requestGoal(threadId, {
+    type: "goal_confirm_criteria",
+    ...(approvalLevel ? { approvalLevel } : {}),
+  });
+}
+
+/** 驳回并带上意见——模型下一轮协商据此重提，不带意见等于让它猜 */
+export function rejectGoalCriteriaNow(
+  threadId: string,
+  feedback: string,
+): Promise<void> {
+  return requestGoal(threadId, { type: "goal_reject_criteria", feedback });
+}
+
+/** 用户不想要这道门：直接进执行阶段，完成时不做对账 */
+export function skipGoalCriteriaNow(threadId: string): Promise<void> {
+  return requestGoal(threadId, { type: "goal_skip_criteria" });
 }
 
 /* ---------------- 测试缝 ---------------- */

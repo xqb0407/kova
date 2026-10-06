@@ -38,13 +38,21 @@ import { createHash, randomUUID } from "node:crypto";
 
 /* --------------------------------- 工具名 --------------------------------- */
 
-/** 目标模式专属工具。goal_complete / goal_blocked 均须独占 tool call 批次。 */
+/**
+ * 目标模式专属工具。三个都必须独占 tool call 批次。
+ *
+ * propose 也在这一组里，理由与另两个相同且更要紧：它界定的是「协商轮到此为止」——
+ * 与同一批里的 read/bash 并行会让结算顺序与勘察结果脱节（模型可能先提交了标准、
+ * 之后才读到真正该写进标准的那个文件）。
+ */
 export const GOAL_TOOL_NAMES = {
+  propose: "goal_propose_criteria",
   complete: "goal_complete",
   blocked: "goal_blocked",
 } as const;
 
 export const GOAL_TOOL_NAME_LIST: readonly string[] = [
+  GOAL_TOOL_NAMES.propose,
   GOAL_TOOL_NAMES.complete,
   GOAL_TOOL_NAMES.blocked,
 ];
@@ -57,11 +65,101 @@ export function isGoalToolName(name: string): boolean {
 
 export type GoalStatus = "active" | "paused" | "blocked" | "complete";
 
+/* ------------------------------ 验收标准契约 ------------------------------ */
+
+/**
+ * 一条验收标准。id 由**服务端**在提议时按序分配（c1/c2/…），不是模型给的——
+ * 它是完成对账的唯一键：按文本匹配会被模型换个说法就判成「缺条目」，陷入无谓的
+ * 拒绝循环；按位置匹配挡不住模型重排。id 是稳定集合，两个问题一起解决。
+ */
+export type Criterion = { id: string; text: string };
+
+/** 提议序号 → 标准 id（唯一的分配点，回放与对账都靠它对齐） */
+export function criterionId(index: number): string {
+  return `c${index + 1}`;
+}
+
+/**
+ * 验收标准契约的四态。
+ *
+ * 为什么不用「字段缺失 = 未协商」：那会让「用户跳过标准」与「还没开始协商」
+ * 分不开——跳过之后立刻又被当成没协商、要求重新提议，模型永远出不来。
+ *
+ * 为什么状态挂在 acceptance 而不是 Goal.status：Goal.status 只回答「循环在不在
+ * 跑」（active/paused/blocked/complete），协商阶段是这个问题之外的第三种情形。
+ * 分开表达意味着迁移表、pauseGoalOnModeExit、resumeGoal、停滞检测全部零改动。
+ */
+export type Acceptance =
+  /** 协商中：等模型提议，或用户驳回后带回 feedback 等重提 */
+  | { status: "pending"; feedback?: string }
+  /**
+   * 已提议，等用户确认——此阶段循环不跑。
+   *
+   * feedback 会从 pending **带过来**：用户驳回并写了意见，模型改完重新提交时，
+   * 那条意见正是用户复审这一版时最需要看到的（「我提的那点它真改了吗」）。
+   * 提议时就丢掉的话，卡片上永远显示不出「上一版为什么被退回」。
+   */
+  | { status: "proposed"; items: Criterion[]; feedback?: string }
+  /** 已确认，成为完成判定的契约（意见到此已经解决，不再携带） */
+  | { status: "confirmed"; items: Criterion[]; confirmedAt: number }
+  /** 用户跳过 / 老目标回放：不做对账，行为与引入本机制之前一致 */
+  | { status: "skipped" };
+
+export type AcceptanceStatus = Acceptance["status"];
+
+/** 目标当前是否处于「验收标准已生效、完成时必须逐条对账」的阶段 */
+export function hasConfirmedCriteria(acceptance: Acceptance | undefined): boolean {
+  return acceptance?.status === "confirmed" && acceptance.items.length > 0;
+}
+
+/** 已生效的标准清单（其余状态一律空数组，调用方无需再判 status） */
+export function confirmedCriteria(acceptance: Acceptance | undefined): Criterion[] {
+  if (acceptance?.status !== "confirmed") return [];
+  return acceptance.items;
+}
+
+/**
+ * 协商阶段（提议前 / 驳回后）：循环在跑但要写类门控拦住，且只该提议标准。
+ *
+ * `undefined`（字段整个缺失）**不算**协商——它只有一个来源：引入本契约之前落盘的
+ * 老目标。老目标必须保持原有行为（直接执行），否则升级后每一条在跑的历史目标都会
+ * 突然停下要求补一套标准。回放路径上 normalizeLoadedGoal 已经把它补成 skipped，
+ * 这里再兜一层是防绕过回放直接构造 Goal 的调用点。
+ */
+export function isNegotiating(acceptance: Acceptance | undefined): boolean {
+  return acceptance?.status === "pending";
+}
+
+/**
+ * 契约还没落定（协商中 / 已提议等用户确认）——**只读边界的判据**。
+ *
+ * 与 isNegotiating 的区别是 proposed：从「循环该不该续跑」看，proposed 是停着的
+ * 第三种情形（isNegotiating 为 false）；但从「这一轮能不能改项目文件」看，
+ * proposed 和 pending 完全一样——用户还没点头，动手就失去意义。
+ *
+ * 两者必须分开的理由见 goal-continuation 的协商分支：那里用 isNegotiating 是对的，
+ * 拿这个谓词去判会把它误当成「还该继续协商」而无限续轮。
+ */
+export function isContractUnsettled(acceptance: Acceptance | undefined): boolean {
+  return acceptance?.status === "pending" || acceptance?.status === "proposed";
+}
+
 export type Goal = {
   id: string;
   /** 用户设定/首次发送的目标原文 */
   objective: string;
   status: GoalStatus;
+  /**
+   * 验收标准契约。`undefined` 只可能来自老转录行（引入本字段之前的快照），
+   * 回放时由 normalizeLoadedGoal 补成 skipped——目标内不再有「未定义」这一态。
+   */
+  acceptance?: Acceptance;
+  /**
+   * 连续「什么也没做」的协商轮数。只在协商轮跑完、模型既没提议标准、这一轮也
+   * 没调用任何实质工具时 +1；勘察轮（读文件、跑只读命令）一律清零重来。
+   * 数到上限就暂停目标——否则模型可以永远「只说不做」地空转到撞轮次上限。
+   */
+  negotiationTurns: number;
   startedAt: number;
   updatedAt: number;
   /** 已结算的自动续跑轮数（轮次上限的计数口径；续跑注入本身不计，只在结算时 +1） */
@@ -88,6 +186,19 @@ export type Goal = {
   pauseReason?: string;
   /** complete 时模型的完成说明 */
   completionSummary?: string;
+  /**
+   * 完成时的逐条对账明细（契约生效的目标才有）。存下来是为了让产物文件与
+   * 「已完成」的目标能回答「它到底拿什么证明做到了」。
+   */
+  completionAudit?: Array<{ id: string; text: string; met: boolean; evidence: string }>;
+  /**
+   * 这条目标是否真的动过手（调过任何非目标工具）。
+   *
+   * **只在内存里翻，不落盘**：它服务于 goal_complete 的「完成声明背后必须有动作」
+   * 检查，而重启后目标一律降级 paused，重新跑起来时新的动作会把它翻回来。
+   * 落盘会让每个工具调用都追加一行 goal_state，代价远大于收益。
+   */
+  workSeen?: boolean;
 };
 
 /** 一次停机判定的入参：轮次上限来自目标自身，停滞阈值来自全局常量 */
@@ -139,6 +250,19 @@ export const MAX_GOAL_OBJECTIVE_LENGTH = 4_000;
 export const MAX_GOAL_SUMMARY_LENGTH = 4_000;
 export const MAX_GOAL_REASON_LENGTH = 1_000;
 export const MAX_GOAL_ID_LENGTH = 128;
+export const MAX_CRITERION_LENGTH = 500;
+/** 一条目标的验收标准条数上限。再多就不是契约而是清单了，模型也逐条验不过来 */
+export const MAX_CRITERIA = 8;
+/**
+ * 连续的**空转**协商轮上限（见 Goal.negotiationTurns）。
+ *
+ * 只数「这一轮什么也没做」的轮次，勘察轮不计——在仓库里读一圈正是提出可验证
+ * 标准的前提，大仓库跑十几轮勘察很正常，把那些也数进去等于惩罚刨得深。
+ * 阈值与 DEFAULT_MAX_STALL_TURNS 同值同义：连续三轮零动作就停。
+ */
+export const DEFAULT_MAX_NEGOTIATION_TURNS = 3;
+/** 用户驳回意见的长度上限（进提示词，必须有界） */
+export const MAX_GOAL_FEEDBACK_LENGTH = 1_000;
 
 /* ------------------------------- 状态迁移表 ------------------------------- */
 
@@ -165,6 +289,10 @@ export function isResumableStatus(status: GoalStatus): boolean {
 /**
  * 建目标。maxAutoTurns 由调用方给（用户在常驻条上的预设），不传用默认 300；
  * 传 null 表示这条目标不限轮次。
+ *
+ * 新目标一律从 pending 起步：第一轮是协商轮，只勘察 + 提议验收标准，不动文件。
+ * 用户在建目标时已经能选「跳过标准」（走 skipCriteria），那条路径由 UI 在确认
+ * 卡片上给，不在这里分支——目标本身不知道用户打算怎么回。
  */
 export function createGoal(
   objective: string,
@@ -175,6 +303,8 @@ export function createGoal(
     id: randomUUID(),
     objective: objective.trim(),
     status: "active",
+    acceptance: { status: "pending" },
+    negotiationTurns: 0,
     startedAt: now,
     updatedAt: now,
     turnCount: 0,
@@ -187,6 +317,161 @@ export function createGoal(
 /** 改这条目标的轮次上限（不动状态；调低到已跑轮数以下由调用方处理） */
 export function setTurnLimit(goal: Goal, raw: unknown): Goal {
   return { ...goal, maxAutoTurns: normalizeTurnLimitValue(raw), updatedAt: Date.now() };
+}
+
+/* ---------------------------- 验收标准的迁移 ---------------------------- */
+
+/**
+ * 清洗模型提来的标准清单：逐条 trim、丢空串、按文本去重（大小写与空白归一后比较）、
+ * 截断到条数与长度上限，再按序分配服务端 id。
+ *
+ * 去重按归一化文本而不是原样比较：模型重复提同一条（换个大小写或补个句号）并不
+ * 罕见，留着会让对账要求两条几乎一样的条目，纯属自找麻烦。
+ *
+ * @returns 清洗后的清单；一条都不剩时返回空数组（调用方据此拒绝这次提议）
+ */
+export function normalizeCriteria(raw: unknown): Criterion[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const items: Criterion[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    const text = entry.trim().slice(0, MAX_CRITERION_LENGTH);
+    if (!text) continue;
+    const key = text.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({ id: criterionId(items.length), text });
+    if (items.length >= MAX_CRITERIA) break;
+  }
+  return items;
+}
+
+/** 模型提议验收标准：pending → proposed。已在其他态时返回 undefined（调用方拒掉） */
+export function proposeCriteria(goal: Goal, raw: unknown): Goal | undefined {
+  if (!isNegotiating(goal.acceptance)) return undefined;
+  if (goal.status !== "active") return undefined;
+  const items = normalizeCriteria(raw);
+  if (items.length === 0) return undefined;
+  // 驳回意见带过去（见 Acceptance.proposed 的说明）：用户复审新版时要能对上它
+  const feedback =
+    goal.acceptance?.status === "pending" ? goal.acceptance.feedback : undefined;
+  return {
+    ...goal,
+    acceptance: { status: "proposed", items, ...(feedback ? { feedback } : {}) },
+    updatedAt: Date.now(),
+  };
+}
+
+/** 用户确认：proposed → confirmed（契约就此定型，之后的完成判定按它对账） */
+export function confirmCriteria(goal: Goal): Goal | undefined {
+  if (goal.acceptance?.status !== "proposed") return undefined;
+  return {
+    ...goal,
+    acceptance: {
+      status: "confirmed",
+      items: goal.acceptance.items,
+      confirmedAt: Date.now(),
+    },
+    updatedAt: Date.now(),
+  };
+}
+
+/**
+ * 用户驳回：proposed → pending 并带回意见，下一轮协商从这条意见重来。
+ * 模型无从知道用户到底哪里不满意，把意见带进提示词是唯一的信息通道。
+ */
+export function rejectCriteria(goal: Goal, feedback: string | undefined): Goal | undefined {
+  if (goal.acceptance?.status !== "proposed") return undefined;
+  const trimmed = (feedback ?? "").trim().slice(0, MAX_GOAL_FEEDBACK_LENGTH);
+  return {
+    ...goal,
+    acceptance: { status: "pending", ...(trimmed ? { feedback: trimmed } : {}) },
+    // 驳回后重新计时：用户明确表了态，不该把上一轮的协商计数继续算在模型头上
+    negotiationTurns: 0,
+    updatedAt: Date.now(),
+  };
+}
+
+/**
+ * 用户跳过验收标准：直接进执行阶段，不做对账。
+ *
+ * 与「没协商过」必须区分得开——跳过的目标不该再被要求提议标准，也不该在完成时
+ * 被硬门拦住（用户已经明确表示不想要这道门）。这就是 skipped 单独成态的理由。
+ */
+export function skipCriteria(goal: Goal): Goal | undefined {
+  if (goal.status === "complete") return undefined;
+  if (goal.acceptance?.status === "confirmed") return undefined;
+  return { ...goal, acceptance: { status: "skipped" }, updatedAt: Date.now() };
+}
+
+/**
+ * 用户改目标原文（常驻条上点目标文字改的就是它）。
+ *
+ * 这是**显式动作**，与「协商阶段那条补充需求的消息」是两回事：那条是往现有目标
+ * 上加要求，这条是换掉目标本身。
+ *
+ * 契约失效规则——改掉的是「要达到什么」，而验收标准是「怎么算达到」，两者不能
+ * 各说各话，所以按阶段分别处理：
+ *  - proposed / confirmed：标准是按旧目标提的（甚至已经被确认过），一律作废退回
+ *    pending 重谈。留着旧标准比没有更糟：模型会拿一套对不上目标的判据去收工
+ *  - pending：本来就还没提，保持
+ *  - skipped：用户明确说过不要标准这道门，不借这次改动把它装回去
+ *
+ * @returns 新目标；文本没变时原样返回（同一个对象，调用方据此跳过落盘）；
+ *          目标已完成或文本非法时 undefined（调用方拒掉这次改动）
+ */
+export function setObjective(goal: Goal, raw: string): Goal | undefined {
+  // 已完成的目标不接受改：它是收工记录，不是待办。要接着做就新设一个
+  if (goal.status === "complete") return undefined;
+  if (validateObjective(raw)) return undefined;
+  const objective = raw.trim();
+  // 文本一字未变：这次「改」没有发生，不该顺手把契约作废
+  if (objective === goal.objective) return goal;
+  const voided = goal.acceptance?.status === "proposed" || goal.acceptance?.status === "confirmed";
+  return {
+    ...goal,
+    objective,
+    acceptance: voided
+      ? {
+          status: "pending",
+          // 作废必须说明原因：不说的话模型多半会把同一份标准原样再提一遍——
+          // 它看见的只是一条「再提一次标准」的指令，而旧列表还躺在转录里
+          // （文案进提示词的协商块与产物文件，不冒充用户原话）
+          feedback:
+            "The user edited the goal objective above. Any criteria you proposed earlier are void — " +
+            "propose a fresh list for the new objective. Do not resubmit the old one.",
+        }
+      : goal.acceptance,
+    updatedAt: Date.now(),
+  };
+}
+
+/**
+ * 空转协商轮 +1（与 turnCount 无关——那个是执行轮的账，协商轮照样走
+ * settleGoalTurn，这里的计数只服务于「连续几轮只说不做就停」这一条）。
+ *
+ * 调用方负责判「这一轮是不是空转」：勘察轮不该调它，见 decideContinuation。
+ */
+export function countNegotiationTurn(goal: Goal): Goal {
+  return { ...goal, negotiationTurns: goal.negotiationTurns + 1 };
+}
+
+/** 勘察轮结算：这一轮读了文件、跑了命令，协商预算直接清零重来（不是不计数，是归零） */
+export function resetNegotiationProgress(goal: Goal): Goal {
+  return goal.negotiationTurns === 0 ? goal : { ...goal, negotiationTurns: 0 };
+}
+
+/**
+ * 用户在 proposed 阶段发了普通消息：这条消息是对标准的意见，不是接管目标。
+ *
+ * 与 pauseForUserInput 的分叉点很实际——用户看到待确认的清单，回一句「第 2 条
+ * 不对」，那是在改契约，不是在叫停目标。按接管处理会把刚提交的标准连目标一起
+ * 挂起，用户还得再点一次「继续」才能说下一句。
+ */
+export function acceptanceFeedback(goal: Goal, text: string): Goal | undefined {
+  if (goal.acceptance?.status !== "proposed") return undefined;
+  return rejectCriteria(goal, text);
 }
 
 /**
@@ -241,6 +526,9 @@ export function resetSafetyEpoch(goal: Goal): Goal {
     ...goal,
     turnCount: 0,
     stallTurns: 0,
+    // 协商计数一并清零：用户点了继续/纠偏就是一次新的开始，上一轮的「连 N 轮
+    // 没提议」不该继续算在模型头上
+    negotiationTurns: 0,
     lastOutputFingerprint: undefined,
     updatedAt: Date.now(),
   };
@@ -364,6 +652,12 @@ export function formatGoalStatus(goal: Goal, limits: GoalLimits = limitsFor(goal
       ? `第 ${goal.turnCount + 1} 轮`
       : `第 ${goal.turnCount + 1}/${limits.maxAutoTurns} 轮`;
   const tokenPart = formatTokenCount(goal.tokensUsed);
+  // 协商阶段先于 status 判定：此时目标确实是 active，但循环没在跑（turn_end 看到
+  // proposed 就停轮等用户）。按 status 渲染会把「等你确认验收标准」写成
+  // 「进行中 · 第 1 轮」——条上说一套、实际干另一套，正是这个条最该避免的
+  if (goal.status !== "complete" && goal.acceptance?.status === "proposed") {
+    return `待你确认验收标准 · ${tokenPart}`;
+  }
   switch (goal.status) {
     case "complete":
       return "已完成";
@@ -372,8 +666,62 @@ export function formatGoalStatus(goal: Goal, limits: GoalLimits = limitsFor(goal
     case "blocked":
       return `受阻 · ${turnPart} · ${tokenPart}`;
     default:
+      if (goal.acceptance?.status === "pending") {
+        return `正在拟定验收标准 · ${tokenPart}`;
+      }
       return `进行中 · ${turnPart} · ${tokenPart}`;
   }
+}
+
+/**
+ * 从持久化行还原一条验收标准契约。
+ *
+ * 缺失或畸形一律回落 skipped 而不是 pending：老转录行（本字段之前落的）没有它，
+ * 回落 pending 会让升级后每一条在跑的历史目标突然停下、要求补一套标准。
+ * 畸形值同理——宁可少一道校验，也不能让一条撕裂的 JSON 把在跑的目标卡死。
+ */
+function normalizeAcceptance(raw: unknown): Acceptance {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { status: "skipped" };
+  const a = raw as { status?: unknown; items?: unknown; feedback?: unknown; confirmedAt?: unknown };
+  const feedback =
+    typeof a.feedback === "string" && a.feedback.trim()
+      ? a.feedback.slice(0, MAX_GOAL_FEEDBACK_LENGTH)
+      : undefined;
+  if (a.status === "pending") {
+    return { status: "pending", ...(feedback ? { feedback } : {}) };
+  }
+  if (a.status === "skipped") return { status: "skipped" };
+  if (a.status === "proposed" || a.status === "confirmed") {
+    // 回放走的是原样清单：id 已经在提议时定死，不能再分配一次——重开会打乱
+    // 对账键，正在跑的模型手里那个 id 就对不上了
+    const items = restoreCriteria(a.items);
+    // 提议/确认态却没有标准 = 撕裂行，退回 skipped（不把目标卡在等确认上）
+    if (items.length === 0) return { status: "skipped" };
+    if (a.status === "proposed") {
+      return { status: "proposed", items, ...(feedback ? { feedback } : {}) };
+    }
+    return {
+      status: "confirmed",
+      items,
+      confirmedAt: finite(a.confirmedAt, Date.now()),
+    };
+  }
+  return { status: "skipped" };
+}
+
+/** 回放标准清单：只做形状收窄与 id 合法校，不重排、不去重（见 normalizeAcceptance） */
+function restoreCriteria(raw: unknown): Criterion[] {
+  if (!Array.isArray(raw)) return [];
+  const items: Criterion[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const c = entry as { id?: unknown; text?: unknown };
+    if (typeof c.id !== "string" || !/^c\d{1,3}$/u.test(c.id)) continue;
+    if (typeof c.text !== "string" || !c.text.trim()) continue;
+    items.push({ id: c.id, text: c.text });
+    if (items.length >= MAX_CRITERIA) break;
+  }
+  return items;
 }
 
 /* ------------------------------ 快照卫生 ------------------------------ */
@@ -405,6 +753,8 @@ export function normalizeLoadedGoal(raw: unknown, now: number): Goal | undefined
     id: g.id,
     objective: g.objective,
     status: g.status,
+    acceptance: normalizeAcceptance(g.acceptance),
+    negotiationTurns: counter(g.negotiationTurns),
     startedAt: finite(g.startedAt, now),
     updatedAt: finite(g.updatedAt, now),
     turnCount: counter(g.turnCount),

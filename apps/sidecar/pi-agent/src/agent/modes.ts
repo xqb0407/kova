@@ -33,6 +33,7 @@ import type {
   BeforeToolCallResult,
 } from "@earendil-works/pi-agent-core";
 import { SYSTEM_PROMPT_CORE, environmentPromptBlock, systemPromptCore } from "../tools/tools";
+import { fileTimestamp, sanitizeFileName } from "./artifact-naming";
 import { kvSet, sessionPrefsSet } from "../storage/hostdb";
 import { beginInteraction, settleInteraction } from "../sessions/pending-interactions";
 import { SUBAGENT_MGMT_TOOL_NAMES } from "../subagent/subagent-mgmt-tools";
@@ -67,8 +68,13 @@ import { skillsPromptBlock } from "../skills/skills";
 import { instructionsPromptBlock } from "./instructions";
 import { sendEventChunk } from "../protocol/stream";
 import { displayPath } from "../tools/open-file-tool";
-import { GOAL_TOOL_NAMES, type Goal } from "../goal/goal-state";
-import { buildGoalTools, getGoal, pauseGoalOnModeExit } from "../goal/goal";
+import {
+  GOAL_TOOL_NAMES,
+  isContractUnsettled,
+  isGoalToolName,
+  type Goal,
+} from "../goal/goal-state";
+import { buildGoalTools, getGoal, markGoalWorkSeen, pauseGoalOnModeExit } from "../goal/goal";
 import { GOAL_MODE_PROMPT, goalPromptBlock } from "../goal/prompt";
 import type {
   ApprovalLevel,
@@ -101,6 +107,7 @@ const MODE_EXCLUSIVE_TOOL_NAMES = new Set<string>([
   PLAN_TOOL_NAMES.enter,
   PLAN_TOOL_NAMES.exit,
   ASK_NEEDS_WORK_TOOL_NAME,
+  GOAL_TOOL_NAMES.propose,
   GOAL_TOOL_NAMES.complete,
   GOAL_TOOL_NAMES.blocked,
 ]);
@@ -111,11 +118,27 @@ const PLAN_ONLY_TOOL_NAMES = new Set<string>([
   PLAN_TOOL_NAMES.exit,
 ]);
 
-/** 仅 goal 模式可用的出口工具（goal_complete / goal_blocked，见 goal.ts） */
+/** 仅 goal 模式可用的出口工具（见 goal/goal.ts） */
 const GOAL_ONLY_TOOL_NAMES = new Set<string>([
+  GOAL_TOOL_NAMES.propose,
   GOAL_TOOL_NAMES.complete,
   GOAL_TOOL_NAMES.blocked,
 ]);
+
+/**
+ * 目标协商阶段的只读边界：验收标准还没定下来时，这一轮的产出是契约不是代码。
+ *
+ * 只拦 write/edit 而不拦 bash，与 plan 档同一取舍：「测试跑不跑得起来」这类判断
+ * 正是拟定可验证标准的前提，把 bash 一并封掉会让模型只能提出没法验证的标准。
+ */
+const GOAL_NEGOTIATION_MUTATING_TOOLS = new Set(["write", "edit"]);
+
+/**
+ * 不进「这条目标动过手」台账的工具：它们不改变工作区的任何状态，因此不能作为
+ * goal_complete 完成声明的依据。Question 是唯一一个——模型问完用户什么也没做，
+ * 下一轮照样得真干活才能标完成。
+ */
+const GOAL_WORK_EXEMPT_TOOLS = new Set(["Question"]);
 
 /** plan 模式允许的工具：只读（含联网勘察 WebFetch/WebSearch）+ bash（承诺仅用于勘察，靠提示词约束）+ Question（规划正需要澄清提问）+ use_skill（加载技能指令，只读动作） */
 const CONTRACT_TOOL_NAMES = new Set(["read", "glob", "grep", "bash", "WebFetch", "WebSearch", "Question", SKILL_USE_TOOL_NAME]);
@@ -277,7 +300,7 @@ function buildAskTools(run: Running): AgentTool[] {
 
 /** 按模式重建工具目录：agent = 基础 + Task 组 + plan_enter；plan = 只读子集 + plan_write/plan_exit；
  *  ask = 纯只读子集（无 bash）+ 出口工具，不带 plan 三件套与子代理组；
- *  goal = 基础全集 + Task 组 + 两个目标出口工具，不带 plan 三件套 */
+ *  goal = 基础全集 + Task 组 + 按契约阶段给的出口工具，不带 plan 三件套 */
 export function toolsForMode(run: Running): AgentTool[] {
   if (run.mode === "ask") {
     return [
@@ -287,7 +310,11 @@ export function toolsForMode(run: Running): AgentTool[] {
   }
   // 目标档拿完整工具集（含 write/edit/bash），不含 plan 三件套：目标模式的价值是
   // 「放手做完」，给它只读工具就退化成 plan 了。出口工具挂在工具表上而不是临到收尾
-  // 才动态插——模式切换本就是整表重建的既有路径，不必为它另立一套 schema 抖动面
+  // 才动态插——模式切换本就是整表重建的既有路径，不必为它另立一套 schema 抖动面。
+  //
+  // 契约阶段是例外：验收标准没定下来时这一轮只读（buildGoalTools 只给 propose），
+  // 写类工具由 modeBeforeToolCall 另外拦一道——工具表是快照，轮中变档时模型手里
+  // 可能还带着旧 schema
   if (run.mode === "goal") {
     return [...run.baseTools, ...run.subagentTools, ...buildGoalTools(run)];
   }
@@ -305,29 +332,26 @@ export function toolsForMode(run: Running): AgentTool[] {
   ];
 }
 
+/**
+ * 目标契约阶段变化后重建工具表（建目标 / 提议 / 确认 / 驳回 / 跳过之后）。
+ *
+ * 存在的理由：`run.agent.state.tools` 只在会话物化、rebind 与几个设置项 reload
+ * 时重建，`dispatchPrompt` 全程不碰它。而「用户第一句话就是目标」这条路径是在
+ * dispatch 过程里建目标的——不在这里补一次，协商轮拿到的仍是上一阶段的表，
+ * goal_propose_criteria 根本不在里面（模型只能空转到协商计数耗尽）。
+ *
+ * 与 reloadMemoryTools 同款：state 与 loopContext 一起换，轮中经 loopContext
+ * 立即生效。非 goal 档直接返回——工具表不由契约阶段决定。
+ */
+export function refreshGoalToolset(run: Running): void {
+  if (run.mode !== "goal") return;
+  const tools = toolsForMode(run);
+  run.agent.state.tools = tools;
+  if (run.loopContext) run.loopContext.tools = tools;
+}
+
 function textResult(text: string, details?: unknown) {
   return { content: [{ type: "text" as const, text }], details };
-}
-
-/**
- * 文件名清洗：任何非文字/数字串（空白、破折号、全角标点、Windows 非法字符等）
- * 折叠为单个连字符，去掉首尾连接符，限长 60。
- * 如 “PRD WiFi 化 — 门店入口” → PRD-WiFi-化-门店入口
- */
-function sanitizeFileName(input: string): string {
-  return input
-    .replace(/[^\p{L}\p{N}]+/gu, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60);
-}
-
-/** 时间戳：YYYYMMDD-HHmmss */
-function fileTimestamp(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return (
-    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
-    `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  );
 }
 
 /** Markdown 首个标题行做兜底标题（plan_write 未给 title 时） */
@@ -341,6 +365,9 @@ function firstHeading(markdown: string): string {
  * 之后每次调用整体覆盖同一路径。run.cwd 由 sessions 解析（未选工作目录时
  * 兜底按会话隔离的任务子目录，见 sessions.ts taskSessionCwd），两种场景统一处理。
  * 失败直接抛出（工具调用失败对模型可见）。
+ *
+ * 命名函数（sanitizeFileName / fileTimestamp）落在 artifact-naming.ts：
+ * 目标产物要用它们，而从本文件导出会绕成 modes → goal → goal-artifact → modes 的环。
  */
 async function writePlanFile(
   run: Running,
@@ -583,6 +610,22 @@ export function modeBeforeToolCall(
         "Ask mode is read-only and cannot run commands or modify files. Answer the question with the read-only tools; if the request genuinely needs project changes, call ask_needs_work to offer switching to Agent mode.",
     };
   }
+  // 目标契约还没落定（协商中 / 已提议等用户确认）：这一轮只读。与 plan/ask 同款
+  // 结构性保证，不依赖工具表或提示词是否新鲜。只在**目标已存在**时生效——goal 档下
+  // 空白消息不建目标（syncGoalOnUserPrompt 跳过），那一轮是普通请求，不该被这条拦住
+  //
+  // 判据必须覆盖 proposed：模型可以在同一轮里先提交标准（独占批次）再继续用后续
+  // 批次动手——只拦 pending 的话，「等用户确认期间不改文件」就只是提示词里的一句话
+  const goal = run.mode === "goal" ? getGoal(run.threadId) : undefined;
+  if (goal && GOAL_NEGOTIATION_MUTATING_TOOLS.has(name) && isContractUnsettled(goal.acceptance)) {
+    return {
+      block: true,
+      reason:
+        "The acceptance criteria for this goal are not settled yet, so this turn is read-only. " +
+        "Inspect the workspace, then call goal_propose_criteria with the criteria that define done. " +
+        "Implementation starts only after the user confirms them.",
+    };
+  }
   if (name === ASK_NEEDS_WORK_TOOL_NAME && run.mode !== "ask") {
     return {
       block: true,
@@ -640,6 +683,15 @@ export async function approvalBeforeToolCall(
   let declaredRoot: string | undefined;
   const gated = modeBeforeToolCall(run, context);
   if (gated) return gated;
+  // 模式门控放行之后才记账：被拦下的调用不算「动过手」。目标模式的这条台账是
+  // goal_complete 完成声明的前提（见 goal/goal.ts 的对账硬门）——没有它，模型
+  // 可以只靠一段总结就把目标标成完成，而全程没有任何可验证的动作。
+  //
+  // 问询类工具不算：Question 只是把问题抛回给用户，它本身不产生任何可被验收
+  // 标准核对的状态，把它记成「干过活」等于给纯提问的轮次发一张完成许可证
+  if (run.mode === "goal" && !isGoalToolName(context.toolCall.name) && !GOAL_WORK_EXEMPT_TOOLS.has(context.toolCall.name)) {
+    markGoalWorkSeen(run);
+  }
   // 无人值守自动化 turn：需审批的工具按档位即时裁决（read-only 全拒 /
   // workspace-write 拒 bash / full 放行），永不挂起等待前端 tool_confirm
   const autoPolicy = getAutomationPolicy(run.threadId);
@@ -812,8 +864,11 @@ export function clearPendingToolApprovals(run: Running): void {
  * 模式偏好落库（applyMode 末尾调用，覆盖 set_mode / plan_enter / plan_exit
  * 批准全部切换路径）：写会话偏好行 + kv「最近一次使用」（新会话初始模式取这份）。
  * 同步函数内 fire-and-forget：落库失败不影响模式切换本身。
+ *
+ * 导出给目标验收标准确认那条路径复用（确认契约时一并改这条目标的权限档）：
+ * 偏好只有这一个写入口，多开一条早晚漂。
  */
-function persistModePrefs(run: Running): void {
+export function persistModePrefs(run: Running): void {
   const prefs = { mode: run.mode, approvalLevel: run.approvalLevel };
   // 落库失败必须留痕：这份偏好是"重新物化 run 时读回哪一档"的唯一依据，写不进去
   // 就意味着「用户切了完全访问、下次重建却回到旧档」——而 .catch(() => {}) 让这种
@@ -863,6 +918,27 @@ export function applyMode(run: Running, mode: SessionMode): void {
     run.loopContext.tools = tools;
   }
   persistModePrefs(run);
+}
+
+/**
+ * 把档位扶正到 goal——「让这条目标继续跑」这个动作的前提。
+ *
+ * 目标只能在 goal 档跑：续跑判定被 `run.mode === "goal"` 门着（stream.ts 的 turn_end
+ * 分支），工具表与系统提示词也由档位决定。所以任何「继续这条目标」的入口都得先保证
+ * 档位对——否则补起的那一轮是个**没有目标工具**的普通对话，跑完不会有任何东西再续，
+ * 而条上写着「进行中」：明明有 active 目标却没人驱动它，是这套机制里最难查的一类谎报
+ * （没有异常、没有报错，只有一条永远不动的呼吸绿点）。
+ *
+ * 走到这里的都是用户明确要求「继续这个目标」的动作（常驻条的继续、确认标准、
+ * 驳回重谈、改目标），所以扶正档位是他们要的，不是替他做主。
+ *
+ * @returns 是否发生了档位切换——调用方据此通知对端刷新模式胶囊
+ *          （applyMode 自己只推 data-planningState，那条帧需要活跃请求才送得出去）
+ */
+export function ensureGoalMode(run: Running): boolean {
+  if (run.mode === "goal") return false;
+  applyMode(run, "goal");
+  return true;
 }
 
 /** 当前模式状态的对外快照（响应/chunk 共用） */

@@ -56,11 +56,26 @@ export function resolveQuestionAnswer(
   questionId: string,
   answers: QuestionAnswerItem[],
 ): boolean {
+  return settlePending(questionId, { answers });
+}
+
+/**
+ * 用户关掉提问卡（不回答）：按取消结算。
+ *
+ * 与 resolveQuestionAnswer 分开是为了让「关掉」有一个明确的落点，而不是让宿主去
+ * 猜「空答案数组算不算回答」。模型收到的是「用户取消了这次提问，不要原样重发，
+ * 自行判断是否继续」——目标模式正是靠这句话继续往下跑，而不是被整轮 abort 打断。
+ */
+export function cancelQuestionAnswer(questionId: string): boolean {
+  return settlePending(questionId, { cancelled: true });
+}
+
+function settlePending(questionId: string, result: QuestionAnswers): boolean {
   const entry = pendingQuestions.get(questionId);
   if (!entry) return false;
   pendingQuestions.delete(questionId);
-  settleInteraction(questionId, "answered");
-  entry.resolve({ answers });
+  settleInteraction(questionId, result.cancelled ? "cancelled" : "answered");
+  entry.resolve(result);
   return true;
 }
 

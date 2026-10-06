@@ -12,7 +12,11 @@ import {
   resolveToolApproval,
 } from "../../agent/modes";
 import { resolveMcpApproval } from "../../mcp/mcp-tools";
-import { resolveQuestionAnswer, type QuestionAnswerItem } from "../../tools/question-tools";
+import {
+  cancelQuestionAnswer,
+  resolveQuestionAnswer,
+  type QuestionAnswerItem,
+} from "../../tools/question-tools";
 import {
   sessionForThread,
   settleInteraction,
@@ -50,14 +54,23 @@ export const handlers: Record<string, CommandHandler> = {
 
   question_answer: async (reqId, msg) => {
     // 结算 Question 工具的挂起提问：execute 拿到答案后格式化回模型（toolCallId 全局唯一，无需按会话查 run）
+    //
+    // cancelled = 用户关掉提问卡而不作答。它与「回答」是两种结算，但**都不是停轮**：
+    // 两种情况模型都拿到一条 tool result（取消时是「用户取消了这次提问，自行判断
+    // 是否继续」），这一轮照常走完。关掉一张卡就 abort 整轮，会把目标模式的自治
+    // 循环一起打断——用户只是收起了一张卡，不是要停掉整条目标
     const questionId = String(msg.questionId ?? "");
+    const cancelled = msg.cancelled === true;
     const answers = Array.isArray(msg.answers)
       ? (msg.answers as QuestionAnswerItem[])
       : [];
+    const settled = cancelled
+      ? cancelQuestionAnswer(questionId)
+      : resolveQuestionAnswer(questionId, answers);
     if (
-      !resolveQuestionAnswer(questionId, answers) &&
+      !settled &&
       // 陈旧条目兜底（同 tool_confirm）
-      !settleInteraction(questionId, "answered")
+      !settleInteraction(questionId, cancelled ? "cancelled" : "answered")
     ) {
       throw new Error(`no pending question: ${questionId}`);
     }

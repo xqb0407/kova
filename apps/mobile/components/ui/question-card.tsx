@@ -13,7 +13,6 @@ import { XIcon } from "lucide-react-native";
 import { fontWeight, radius, space, useTheme, withAlpha } from "./theme";
 import { PillButton } from "./pill-button";
 import { useInteractionSessionId } from "@/lib/pi/pi-interaction-session";
-import { usePiRuntimeExtras } from "@/lib/pi/pi-runtime";
 import {
   answerQuestion,
   removePendingQuestion,
@@ -29,11 +28,11 @@ import {
  * RN 精简版提问流：逐题推进——单选题点选即前进；多选题勾选 + 继续；allowOther
  * 给「其它」输入行；freeText 是纯输入框；可跳过当前题。
  *
- * 关闭（header X）＝ 停止本轮：走与 Stop 按钮同一条 PiRuntimeExtras.cancel 路径
- * （全局中断，手机和桌面看到的是同一个 agent），sidecar abortRun 把挂起提问按
- * 取消结算并回 finish，台账随 clearQuestions 清空。取消前先本地 removePendingQuestion：
- * cancelRun 拆掉本地流后 finish chunk 不会再来 clearQuestions，不就地移除会让
- * 卡片常驻。
+ * 关闭（header X）＝ **不回答**，不是停止：按取消结算提问，模型收到「用户取消了
+ * 这次提问，自行判断是否继续」后把这一轮走完。它**不能**走 PiRuntimeExtras.cancel
+ * ——那会 abort 整轮，而目标模式把 abort 当终局，于是「收起一张卡」把整条自治目标
+ * 停了。要停整条运行，composer 上的取消是明确入口，不该由 X 顺带完成。
+ * 关闭前先本地 removePendingQuestion：结算请求也会摘条目，这里只是先一步收卡。
  */
 
 /** 单题草稿（键 = q-<i>，与 sidecar 格式化端同约定） */
@@ -53,7 +52,6 @@ function QuestionFlow({
   pending: PendingQuestionView;
 }) {
   const styles = useStyles();
-  const extras = usePiRuntimeExtras();
   const [step, setStep] = useState(0);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   // onComplete 后本地隐藏：结算回环（sidecar 恢复流式输出）期间不该再允许重复提交
@@ -128,12 +126,17 @@ function QuestionFlow({
         </Text>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="关闭并停止"
+          accessibilityLabel="关闭（不回答）"
           onPress={() => {
             void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
             setDismissed(true);
+            // 关掉卡 ≠ 停掉这一轮：按「未作答」结算，模型收到「用户取消了这次提问，
+            // 自行判断是否继续」后把这一轮走完。原来走的 extras.cancel() 会 abort
+            // 整轮，而目标模式把 abort 当终局——「收起一张卡」于是把整条目标停了
             removePendingQuestion(threadId, pending.questionId);
-            extras.cancel();
+            answerQuestion(threadId, pending.questionId, [], { cancelled: true }).catch(
+              () => {},
+            );
           }}
           hitSlop={8}
           style={({ pressed }) => [styles.close, pressed && { opacity: 0.6 }]}

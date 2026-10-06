@@ -443,11 +443,18 @@ export async function confirmToolApproval(
 
 type QuestionAnswerResponse = { type: "question_answered"; questionId: string };
 
-/** 结算提问：sidecar 的 execute 由此解开，把格式化答案回给模型 */
+/**
+ * 结算提问：sidecar 的 execute 由此解开，把格式化答案回给模型。
+ *
+ * cancelled = 用户关掉提问卡而不作答。它与「回答」是两种结算但都**不停轮**：
+ * 模型收到的是「用户取消了这次提问，自行判断是否继续」，这一轮照常走完。
+ * 宿主不要拿它当停止按钮用——那是 composer 的 Stop 该干的事。
+ */
 export async function answerQuestion(
   threadId: string,
   questionId: string,
   answers: QuestionAnswerItem[],
+  opts: { cancelled?: boolean } = {},
 ): Promise<void> {
   const sessionId = piSessionIdForThread(threadId);
   settlingLocally.add(questionId);
@@ -456,7 +463,7 @@ export async function answerQuestion(
       type: "question_answer",
       questionId,
       interactionId: questionId,
-      answers,
+      ...(opts.cancelled ? { cancelled: true } : { answers }),
       threadId,
       ...(sessionId ? { sessionId } : {}),
     });

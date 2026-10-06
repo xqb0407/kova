@@ -492,7 +492,7 @@ const SubagentModelControl: FC<{
       <ModelSelectorTrigger
         variant="ghost"
         size="sm"
-        className="text-muted-foreground h-7 max-w-56 rounded-full text-xs [@max-2xl]:px-2"
+        className="text-muted-foreground h-7 max-w-56 rounded-full text-xs max-2xl:px-2"
         title={selectedLabel}
       >
         <span className="truncate">{selectedLabel}</span>

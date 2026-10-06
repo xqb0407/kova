@@ -18,9 +18,11 @@ import {
   setTurnLimit,
   resetSafetyEpoch,
   settleGoalTurn,
+  skipCriteria,
   transitionGoal,
   validateObjective,
   visibleAssistantText,
+  type Goal,
 } from "../../src/goal/goal-state";
 
 /** 构造一条 assistant 消息：text 块 + 可选 toolCall 块 */
@@ -231,22 +233,38 @@ describe("无进展检测推进", () => {
 });
 
 describe("状态摘要展示", () => {
+  /** 执行阶段的目标：新目标从协商轮起步，摘要按契约阶段分支（见 formatGoalStatus） */
+  const running = (over: Partial<Goal> = {}): Goal => ({
+    ...skipCriteria(createGoal("重构鉴权模块"))!,
+    ...over,
+  });
+
   test("formatGoalStatus 各态给出一行摘要", () => {
-    const goal = { ...createGoal("重构鉴权模块"), tokensUsed: 128_000 };
+    const goal = { ...running(), tokensUsed: 128_000 };
     expect(formatGoalStatus({ ...goal, turnCount: 2 })).toBe("进行中 · 第 3/300 轮 · 128k");
     expect(formatGoalStatus({ ...goal, status: "paused" })).toContain("已暂停");
     expect(formatGoalStatus({ ...goal, status: "blocked" })).toContain("受阻");
     expect(formatGoalStatus({ ...goal, status: "complete" })).toBe("已完成");
   });
 
+  test("契约阶段各有一行独立摘要（不能报成「进行中」）", () => {
+    // 待确认时循环停着，报「进行中」就是条上说一套、实际干另一套
+    expect(formatGoalStatus(createGoal("x"))).toBe("正在拟定验收标准 · 0");
+    const proposed: Goal = {
+      ...createGoal("x"),
+      acceptance: { status: "proposed", items: [{ id: "c1", text: "测试全绿" }] },
+    };
+    expect(formatGoalStatus(proposed)).toBe("待你确认验收标准 · 0");
+  });
+
   test("tokensUsed 再大也不产生停机判定：10m token 的目标仍在进行中", () => {
-    const goal = { ...createGoal("x"), tokensUsed: 10_000_000 };
+    const goal = { ...running(), tokensUsed: 10_000_000 };
     expect(formatGoalStatus(goal)).toBe("进行中 · 第 1/300 轮 · 10m");
     expect(settleGoalTurn(goal, 10_000_000).status).toBe("active");
   });
 
   test("无上限时轮次不写分母", () => {
-    const goal = createGoal("x", null);
+    const goal = running({ maxAutoTurns: null });
     const limits = { ...limitsFor(goal), maxAutoTurns: null };
     expect(formatGoalStatus(goal, limits)).toContain("第 1 轮");
     expect(formatGoalStatus(goal, limits)).not.toContain("/300");

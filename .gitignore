@@ -82,3 +82,14 @@ plugins/canvas/canvas.html
 plugins/ui-design/design.html
 # 内置插件包 zip：plugins:pack / build:sidecar 幂等重打，缺失时 ensure:bundle 自愈
 /apps/sidecar/pi-agent/src/plugins/bundle/kova-plugins.zip
+
+# .kova/：宿主在**工作目录**里写的运行期数据（plan_write 的计划文件、
+# 目标模式的契约产物 .kova/goals/*.md）。它是被操作项目的运行产物而不是本仓
+# 源码；测试用 cwd "." 跑时也会在这里落盘，所以整目录忽略
+.kova/
+
+# 目标模式测试的转录落盘残留：goal 测试用固定 sessionId + cwd "." 跑，
+# commitGoal 会把 goal_state 行写进包根。真正的修法是那些用例改指临时目录，
+# 在那之前先用窄模式挡住——刻意不写成 s-*.jsonl：s-restore-*.jsonl 是**入库的**
+# 夹具文件，宽模式会让「为什么这几个没被忽略」变成新的困惑
+/apps/sidecar/pi-agent/s-goal-*.jsonl

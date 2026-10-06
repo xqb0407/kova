@@ -20,14 +20,16 @@ import {
   approvalBeforeToolCall,
   clearPendingToolApprovals,
   composeModeSystemPrompt,
+  composeRunPrompt,
+  ensureGoalMode,
   modeBeforeToolCall,
   normalizeSessionMode,
   planningPayload,
   resolveToolApproval,
   toolsForMode,
 } from "../../src/agent/modes";
-import { GOAL_TOOL_NAMES } from "../../src/goal/goal-state";
-import { getGoal, startGoal } from "../../src/goal/goal";
+import { GOAL_TOOL_NAMES, proposeCriteria } from "../../src/goal/goal-state";
+import { commitGoal, confirmGoalCriteria, getGoal, resume, startGoal } from "../../src/goal/goal";
 import {
   registerAutomationThread,
   unregisterAutomationThread,
@@ -111,6 +113,20 @@ function makeRun(
   };
 }
 
+let goalRunSeq = 0;
+
+/**
+ * 目标槽位是模块级 Map（threadId → Goal），而 makeRun 的 threadId 固定为 "t-modes"。
+ * 凡是要建目标的用例都用这个：否则目标会泄漏给同文件后续用例，表现为
+ * 「还没有目标」那类断言假失败。
+ */
+function freshGoalRun(mode: SessionMode = "goal"): Running {
+  goalRunSeq += 1;
+  const run = makeRun(mode);
+  run.threadId = `t-modes-goal-${goalRunSeq}`;
+  return run;
+}
+
 function ctx(
   toolName: string,
   batch: string[] = [toolName],
@@ -189,22 +205,94 @@ describe("toolsForMode", () => {
     }
   });
 
-  test("goal 模式 = 完整基础集 + Task 组 + 两个目标出口，无 plan 三件套", () => {
-    const names = toolsForMode(makeRun("goal")).map((t) => t.name);
-    // 完整工具集（含写与 bash）：目标模式的价值是「放手做完」，只读就退化成 plan
+  test("goal 模式 = 完整基础集 + Task 组 + 按契约阶段给的出口，无 plan 三件套", () => {
+    // 必须用独立 threadId：目标槽位是模块级 Map，而 makeRun 的 threadId 是固定的，
+    // 复用会把目标泄漏给同文件后续用例（下面那条「还没有目标」就会假失败）
+    const run = freshGoalRun();
+    const goal = startGoal(run, "把 README 补全");
+    // 完整工具集（含写与 bash）：目标模式的价值是「放手做完」，只读就退化成 plan。
+    // 写类工具在协商阶段由 modeBeforeToolCall 拦，不在表里缺席——表是快照，
+    // 轮中变档时模型手里可能还带着旧 schema，缺了它反而给不出「为什么不能用」的理由
+    const names = toolsForMode(run).map((t) => t.name);
     for (const n of ["read", "write", "edit", "bash", "task"]) {
       expect(names).toContain(n);
     }
-    expect(names).toContain(GOAL_TOOL_NAMES.complete);
-    expect(names).toContain(GOAL_TOOL_NAMES.blocked);
+    // 新目标从协商轮起步：这一阶段只有 propose，没有收工的口子
+    expect(names).toContain(GOAL_TOOL_NAMES.propose);
+    expect(names).not.toContain(GOAL_TOOL_NAMES.complete);
+    expect(names).not.toContain(GOAL_TOOL_NAMES.blocked);
     for (const n of [PLAN_TOOL_NAMES.enter, PLAN_TOOL_NAMES.write, PLAN_TOOL_NAMES.exit]) {
       expect(names).not.toContain(n);
     }
+    expect(goal.acceptance?.status).toBe("pending");
+
+    // 契约生效后才交出两个出口工具
+    commitGoal(run, proposeCriteria(goal, ["测试全绿"])!);
+    commitGoal(run, confirmGoalCriteria(run)!);
+    const confirmedNames = toolsForMode(run).map((t) => t.name);
+    expect(confirmedNames).toContain(GOAL_TOOL_NAMES.complete);
+    expect(confirmedNames).toContain(GOAL_TOOL_NAMES.blocked);
+    expect(confirmedNames).not.toContain(GOAL_TOOL_NAMES.propose);
+  });
+
+  test("goal 档还没有目标时不给任何目标工具（刚切档、还没说第一句话）", () => {
+    expect(toolsForMode(makeRun("goal")).map((t) => t.name)).not.toContain(
+      GOAL_TOOL_NAMES.complete,
+    );
   });
 });
 
-describe("applyMode 离开 goal 档", () => {
-  test("切走时目标转 paused——否则它会永远挂在 active，条上说在跑而实际没跑", () => {
+describe("ensureGoalMode：目标只能在 goal 档跑", () => {
+  test("已经在 goal 档什么都不做（返回 false，不重复落偏好）", () => {
+    const run = freshGoalRun();
+    expect(ensureGoalMode(run)).toBe(false);
+    expect(run.mode).toBe("goal");
+  });
+
+  test("不在 goal 档就扶正：这是「继续这条目标」的前提", () => {
+    // 不扶正的后果不是"少切一次档"，而是补起的那一轮没有目标工具、跑完没人再续，
+    // 目标停在 active 而条上写着「进行中」——没有异常也没有报错的一类谎报
+    for (const from of ["agent", "plan", "ask"] as const) {
+      const run = freshGoalRun();
+      applyMode(run, from);
+      expect(ensureGoalMode(run)).toBe(true);
+      expect(run.mode).toBe("goal");
+    }
+  });
+
+  test("扶正后：档位、目标工具、目标模式段一起回来", () => {
+    const run = freshGoalRun();
+    startGoal(run, "把 README 补全");
+    // 走出 goal 档（目标随之被暂停，与本用例无关）
+    applyMode(run, "agent");
+    expect(toolsForMode(run).map((t) => t.name)).not.toContain(GOAL_TOOL_NAMES.propose);
+
+    ensureGoalMode(run);
+    // 工具表按档位重建：目标工具回来了
+    expect(toolsForMode(run).map((t) => t.name)).toContain(GOAL_TOOL_NAMES.propose);
+    // 提示词的模式段也回来了（具体的目标块取决于目标状态，那是另一回事）
+    expect(composeRunPrompt(run)).toContain("You are operating in Goal mode");
+  });
+
+  test("用户报的那个症状：切权限被踢出 goal 档 → 继续 → 目标真的能跑", () => {
+    // 修复前的完整链条：切权限发的是 set_mode(mode:"agent") → 目标被暂停 →
+    // 点「继续」把目标搬回 active，但档位还是 agent → 续跑判定被 run.mode === "goal"
+    // 门着，那一轮跑完再没有任何东西续它 → 条上「进行中」，实际永远不动
+    const run = freshGoalRun();
+    startGoal(run, "把 README 补全");
+    applyMode(run, "agent");
+
+    // 「继续」= 先把档位扶正（kickGoalLoop 里的 ensureGoalMode），再搬状态
+    ensureGoalMode(run);
+    const resumed = resume(run)!;
+    expect(run.mode).toBe("goal");
+    expect(resumed.status).toBe("active");
+    // 两条都对了，这一轮的提示词才是「接着协商/接着干」而不是「已暂停，别自作主张」
+    expect(composeRunPrompt(run)).toContain("goal_propose_criteria");
+  });
+});
+
+describe("applyMode 离开 goal 档", () => {  test("切走时目标转 paused——否则它会永远挂在 active，条上说在跑而实际没跑", () => {
     const run = makeRun("goal");
     startGoal(run, "把 README 补全");
     applyMode(run, "agent");
@@ -249,11 +337,44 @@ describe("goal 模式门控", () => {
     expect(modeBeforeToolCall(makeRun("goal"), ctx(GOAL_TOOL_NAMES.blocked))).toBeUndefined();
   });
 
-  test("goal 档保留写入能力（不像 plan/ask 那样结构性只读）", () => {
-    const run = makeRun("goal");
+  test("goal 档在执行阶段保留写入能力，契约未落定时结构性只读", () => {
+    // 执行阶段：契约定下来之后就该放手做完
+    const run = freshGoalRun();
+    const goal = startGoal(run, "把 README 补全");
+    commitGoal(run, proposeCriteria(goal, ["测试全绿"])!);
+    commitGoal(run, confirmGoalCriteria(run)!);
     expect(modeBeforeToolCall(run, ctx("write"))).toBeUndefined();
     expect(modeBeforeToolCall(run, ctx("edit"))).toBeUndefined();
     expect(modeBeforeToolCall(run, ctx("bash"))).toBeUndefined();
+
+    // 协商阶段：这一轮的产出是契约不是代码。只拦 write/edit——bash 要留着，
+    // 「测试跑不跑得起来」正是拟定可验证标准的前提（与 plan 档同一取舍）
+    const negotiating = freshGoalRun();
+    startGoal(negotiating, "把 README 补全");
+    const writeBlocked = modeBeforeToolCall(negotiating, ctx("write"));
+    expect(writeBlocked?.block).toBe(true);
+    expect(writeBlocked?.reason).toContain("acceptance criteria");
+    expect(modeBeforeToolCall(negotiating, ctx("edit"))?.block).toBe(true);
+    expect(modeBeforeToolCall(negotiating, ctx("bash"))).toBeUndefined();
+  });
+
+  test("等用户确认期间（proposed）同样只读：模型能在同一轮里先提交标准再动手", () => {
+    // 只拦 pending 是漏的：goal_propose_criteria 只要求独占**那一批**，之后模型
+    // 完全可以继续用后续批次改文件，而用户还在看清单。「等确认期间不动手」若只靠
+    // 提示词，就是一句随时会被跨过的建议
+    const run = freshGoalRun();
+    const goal = startGoal(run, "把 README 补全");
+    commitGoal(run, proposeCriteria(goal, ["测试全绿"])!);
+    expect(modeBeforeToolCall(run, ctx("write"))?.block).toBe(true);
+    expect(modeBeforeToolCall(run, ctx("edit"))?.block).toBe(true);
+    // bash 仍放行（与协商阶段同一取舍）
+    expect(modeBeforeToolCall(run, ctx("bash"))).toBeUndefined();
+  });
+
+  test("goal 档还没有目标时不拦写（空白消息那一轮按普通请求跑）", () => {
+    // syncGoalOnUserPrompt 对空白消息不建目标，那一轮是普通请求，
+    // 被协商只读规则拦住就把正常对话也堵死了
+    expect(modeBeforeToolCall(freshGoalRun(), ctx("write"))).toBeUndefined();
   });
 
   test("无人值守自动化 turn 里目标出口工具不可达", () => {
