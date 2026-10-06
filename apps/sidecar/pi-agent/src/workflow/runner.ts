@@ -33,10 +33,14 @@ import {
 } from "./workflow";
 import {
   addTokens,
+  allStepsSettled,
+  expandForeach,
+  findStepForEntry,
   hasOpenSteps,
-  interpolatePrompt,
   MAX_STEP_RESULT_CHARS,
   readyStepKeys,
+  resolveStepPrompt,
+  settleForeachParent,
   settleStep,
   stepFingerprint,
   transitionRun,
@@ -129,6 +133,32 @@ export async function startWorkflowExecution(run: Running): Promise<void> {
     logAt("event", `workflow ${wf.id}: replaying ${replayed} journaled step(s) from cache`);
   }
 
+  // 恢复展开:上次执行里 from 已 done 但父步还没展开的 foreach(中断在两步之间),
+  // 按同一拆行规则重建子项——指纹链因此与原始执行完全一致,已结算的子项可回放
+  let withExpansion = next;
+  for (const step of next.plan?.steps ?? []) {
+    if (!step.foreach) continue;
+    const entry = withExpansion.steps[step.key];
+    if (!entry || entry.status !== "pending" || entry.children?.length) continue;
+    if (withExpansion.steps[step.foreach.from]?.status !== "done") continue;
+    const expanded = expandForeach(withExpansion, step.key);
+    if (expanded.ok) {
+      withExpansion = expanded.run;
+      continue;
+    }
+    withExpansion = settleStep(withExpansion, step.key, {
+      status: step.onFail === "skip" ? "skipped" : "failed",
+      error: expanded.reason,
+      endedAt: Date.now(),
+    });
+    commitWorkflow(run, withExpansion);
+    if (step.onFail !== "skip") {
+      failRun(run, step, expanded.reason);
+      return;
+    }
+  }
+  if (withExpansion !== next) commitWorkflow(run, withExpansion);
+
   const exec: WorkflowExecution = {
     runId: wf.id,
     threadId: run.threadId,
@@ -180,24 +210,34 @@ export async function startWorkflowExecution(run: Running): Promise<void> {
   }
 }
 
-/** 一步的完整执行:journal 置 running → 委派/合成 → 结算回 journal → 终局判定 */
+/** 一步的一次执行结果(四种步骤统一收口;与 SubagentRunResult 解耦,gate 不是一个委派) */
+type StepAttemptResult = {
+  status: "completed" | "truncated" | "failed" | "aborted";
+  report: string;
+  tokens: number;
+  delegationId?: string;
+  error?: { code: string; message: string };
+};
+
+/** 一步的完整执行:journal 置 running → (按类型的)执行 → 结算回 journal → 推进下游/终局 */
 async function spawnStep(run: Running, wfAtLaunch: WorkflowRun, key: string): Promise<void> {
+  let step: WorkflowStep | undefined;
   try {
     const wf = getWorkflow(run.threadId);
-    const step = (wf ?? wfAtLaunch).plan?.steps.find((s) => s.key === key);
-    if (!step || !wf) return;
+    if (!wf) return;
+    step = findStepForEntry(wf, key);
+    if (!step) return;
     const fingerprint = stepFingerprint(
       step,
       step.dependsOn.map((d) => wf.steps[d]?.fingerprint ?? ""),
     );
-    const startedAt = Date.now();
-    commitWorkflow(run, settleStep(wf, key, { status: "running", fingerprint, startedAt }));
+    commitWorkflow(run, settleStep(wf, key, { status: "running", fingerprint, startedAt: Date.now() }));
 
-    const result = await executeStep(run, step, wf);
+    const result = await executeStepWithRetries(run, step, wf, key);
     const after = getWorkflow(run.threadId);
     if (!after || after.id !== wf.id) return; // 运行已被清除/替换:账不回写
 
-    // 用户中止:委派返回 aborted——记 interrupted,终局由 abort 发起方搬成 paused
+    // 用户中止:执行返回 aborted——记 interrupted,终局由 abort 发起方搬成 paused
     if (result.status === "aborted") {
       commitWorkflow(
         run,
@@ -217,51 +257,262 @@ async function spawnStep(run: Running, wfAtLaunch: WorkflowRun, key: string): Pr
         endedAt: Date.now(),
         tokens: result.tokens,
         delegationId: result.delegationId,
+        error: undefined,
       };
       commitWorkflow(run, settleStep(addTokens(after, result.tokens ?? 0), key, entry));
-      settleTerminal(run);
+      advanceAfterSettlement(run, key);
       return;
     }
 
-    // failed:传播固定 abort(M1)。一步失败整个 run 转 failed,原因带上步骤名
+    // failed:onFail 决定传播——abort(默认)整个 run 失败;skip 记 skipped、
+    // 下游按缺口继续(插值出显式 <step … was skipped> 标记,不当事实)
+    const reason = result.error?.message ?? "step failed";
+    if (step.onFail === "skip") {
+      commitWorkflow(
+        run,
+        settleStep(after, key, {
+          status: "skipped",
+          error: reason,
+          endedAt: Date.now(),
+          tokens: result.tokens,
+        }),
+      );
+      advanceAfterSettlement(run, key);
+      return;
+    }
     commitWorkflow(
       run,
       settleStep(after, key, {
         status: "failed",
-        error: result.error?.message ?? "step failed",
+        error: reason,
         endedAt: Date.now(),
         tokens: result.tokens,
       }),
     );
-    failRun(run, step, result.error?.message ?? "step failed");
+    failRun(run, step, reason);
   } catch (err) {
     // spawnStep 永不 reject:意外异常折成步骤失败(runner 的调度循环依赖这一点)
     logErr(`workflow step ${key} crashed:`, err);
     const after = getWorkflow(run.threadId);
     if (after?.id === wfAtLaunch.id) {
-      commitWorkflow(
-        run,
-        settleStep(after, key, {
-          status: "failed",
-          error: err instanceof Error ? err.message : String(err),
-          endedAt: Date.now(),
-        }),
-      );
-      failRun(run, wfAtLaunch.plan?.steps.find((s) => s.key === key), err instanceof Error ? err.message : String(err));
+      const reason = err instanceof Error ? err.message : String(err);
+      const target = step ?? findStepForEntry(after, key);
+      if (target?.onFail === "skip") {
+        commitWorkflow(run, settleStep(after, key, { status: "skipped", error: reason, endedAt: Date.now() }));
+        advanceAfterSettlement(run, key);
+      } else {
+        commitWorkflow(run, settleStep(after, key, { status: "failed", error: reason, endedAt: Date.now() }));
+        failRun(run, target, reason);
+      }
     }
   }
 }
 
-/** delegate:走委派层;synthesize:无工具的一次性合成委派(prompt 模板插值上游结果) */
+/**
+ * 重试退避:gate 之外的步骤在可恢复失败上重试(默认 0 次,步骤声明 retries 可加)。
+ * 退避与 pi-dw 同款:250ms 起指数、封顶 2s;中止/暂停后不再重试(下一次只会撞
+ * 同一堵墙)。gate 的退出码是值不是失败,不重试——同一个命令重跑只会得到同一结果。
+ */
+async function executeStepWithRetries(
+  run: Running,
+  step: WorkflowStep,
+  wf: WorkflowRun,
+  key: string,
+): Promise<StepAttemptResult> {
+  const maxAttempts = step.kind === "gate" ? 1 : 1 + (step.retries ?? 0);
+  let last: StepAttemptResult | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    last = await executeStep(run, step, wf, key, attempt);
+    if (last.status !== "failed" || attempt >= maxAttempts) break;
+    const current = getWorkflow(run.threadId);
+    if (!current || current.status !== "running") break;
+    logAt(
+      "event",
+      `workflow step ${key} attempt ${attempt}/${maxAttempts} failed: ${last.error?.message ?? ""}; retrying`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250 * 2 ** (attempt - 1), 2_000)));
+  }
+  return last!;
+}
+
+/** 按步骤类型分派:gate 确定性命令门 / verify 评审投票 / delegate+synthesize 委派 */
 async function executeStep(
   run: Running,
   step: WorkflowStep,
   wf: WorkflowRun,
-): Promise<SubagentRunResult & { delegationId?: string }> {
-  const task =
-    step.kind === "synthesize"
-      ? interpolatePrompt(step.prompt, (dep) => wf.steps[dep]?.result)
-      : step.prompt;
+  key: string,
+  attempt: number,
+): Promise<StepAttemptResult> {
+  if (step.kind === "gate") return executeGate(run, step, key, attempt);
+  if (step.kind === "verify") return executeVerify(run, step, wf, key);
+  return executeDelegateStep(run, step, wf, key);
+}
+
+/**
+ * gate:确定性命令门。命令复用会话的 bash 宿主工具直接执行(不经模型),
+ * 退出码即判定——对齐 ZCode world.run 的思想:命令能决定的事不烧委派、也不信
+ * 任何模型的转述。命令字面量在提案时已被用户确认,这里不再走审批层。
+ */
+async function executeGate(
+  run: Running,
+  step: WorkflowStep,
+  key: string,
+  attempt: number,
+): Promise<StepAttemptResult> {
+  const gate = step.gate;
+  if (!gate) return failedResult("gate command is missing");
+  const bash = run.baseTools.find((t) => t.name === "bash");
+  if (!bash) return failedResult("this session has no bash tool available for gate steps");
+  const command = [gate.command, ...(gate.args ?? [])].join(" ");
+  const controller = new AbortController();
+  const abortEntry = { threadId: run.threadId, abort: () => controller.abort() };
+  abortTargets.add(abortEntry);
+  try {
+    const res = (await bash.execute(
+      `workflow-gate-${key}-${attempt}`,
+      { command, ...(gate.timeoutMs ? { timeout: gate.timeoutMs } : {}) },
+      controller.signal,
+    )) as { content?: { type: string; text?: string }[] };
+    if (controller.signal.aborted) return abortedResult();
+    const output = (res?.content ?? [])
+      .map((c) => (c.type === "text" ? (c.text ?? "") : ""))
+      .join("\n")
+      .trim();
+    if (/\[timeout\]/.test(output)) {
+      return failedResult(`gate command timed out: ${tail(output)}`);
+    }
+    const exit = output.match(/\[exit code:\s*(\d+)\]/);
+    if (exit && exit[1] !== "0") {
+      return failedResult(`gate command exited ${exit[1]}: ${tail(output)}`);
+    }
+    // 无 exit code 标记也无 timeout:宿主回的是成功输出(exit 0 常被省略)
+    return {
+      status: "completed",
+      report: [`gate passed: ${command}`, tail(output)].filter((l) => l.trim()).join("\n\n"),
+      tokens: 0,
+    };
+  } catch (err) {
+    if (controller.signal.aborted) return abortedResult();
+    return failedResult(
+      `gate command failed to run: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
+    abortTargets.delete(abortEntry);
+  }
+}
+
+/** verify 评审的对抗式要求 —— 与 pi-dw verify() 的投票 schema 同构 */
+const VERDICT_INSTRUCTION =
+  'Answer with a single JSON object on the last line: {"real": true, "reason": "<one sentence>"}';
+
+function reviewerDefinition(): SubagentDefinition {
+  return {
+    name: "workflow-reviewer",
+    description: "对抗式复核一个结论是否真实成立(只读)",
+    tools: ["read", "glob", "grep"],
+    prompt: [
+      "You are an adversarial reviewer inside a multi-agent workflow. Your job is to REFUTE, not to approve.",
+      "Check the claim against the actual files and evidence; read files as needed. Do not edit anything.",
+      "Default to real=false when you are unsure.",
+    ].join("\n"),
+    scope: "builtin",
+    stateKey: "workflow:reviewer",
+  };
+}
+
+/**
+ * verify:N 个只读评审委派对抗式投票,real 占比 ≥ threshold 判真。
+ * 票面不可解析的评审不计入分母(与 pi-dw 过滤 Boolean 同款);一票都没有 = 失败。
+ * 判伪 = 步骤 failed,由 onFail 决定整个 run 的传播。
+ */
+async function executeVerify(
+  run: Running,
+  step: WorkflowStep,
+  wf: WorkflowRun,
+  key: string,
+): Promise<StepAttemptResult> {
+  const reviewers = step.verify?.reviewers ?? 2;
+  const threshold = step.verify?.threshold ?? 0.5;
+  const claim = resolveStepPrompt(wf, step, key);
+  const definition = reviewerDefinition();
+  const resolved = await resolveDelegateModel(run, definition, step.model ?? "");
+  const model = resolved.model;
+  if (!model) return failedResult(resolved.error ?? "model unavailable");
+  const tools = definition.tools
+    .map((name) => run.baseTools.find((t) => t.name === name.toLowerCase()))
+    .filter((t) => t !== undefined);
+  const controller = new AbortController();
+  const abortEntry = { threadId: run.threadId, abort: () => controller.abort() };
+  abortTargets.add(abortEntry);
+  try {
+    const results = await Promise.all(
+      Array.from({ length: reviewers }, (_v, i) =>
+        new SubagentRun({
+          definition,
+          task: [
+            `You are reviewer ${i + 1}. Adversarially verify whether the following work/claim is CORRECT and REAL. Try to refute it.`,
+            VERDICT_INSTRUCTION,
+            "",
+            "<claim>",
+            claim,
+            "</claim>",
+          ].join("\n"),
+          model,
+          cwd: run.cwd,
+          tools,
+          sessionId: randomUUID(),
+          traceSessionId: run.sessionId,
+          signal: controller.signal,
+        }).run(),
+      ),
+    );
+    if (controller.signal.aborted) return abortedResult();
+    const tokens = results.reduce((sum, r) => sum + (r.tokens ?? 0), 0);
+    const votes = results
+      .filter((r) => r.status === "completed")
+      .map((r) => extractVerdict(r.report))
+      .filter((v): v is { real: boolean; reason?: string } => v !== undefined);
+    if (votes.length === 0) {
+      return {
+        status: "failed",
+        report: "",
+        tokens,
+        error: {
+          code: "WORKFLOW_VERIFY_NO_VOTES",
+          message: `${reviewers} reviewer(s) produced no parseable verdict`,
+        },
+      };
+    }
+    const realCount = votes.filter((v) => v.real).length;
+    const passed = realCount / votes.length >= threshold;
+    const summary = [
+      `verify: ${realCount}/${votes.length} reviewers judged the claim real (threshold ${threshold}) → ${passed ? "verified" : "refuted"}`,
+      ...votes.map(
+        (v, i) => `- reviewer ${i + 1}: ${v.real ? "real" : "not real"}${v.reason ? ` — ${v.reason}` : ""}`,
+      ),
+    ].join("\n");
+    if (!passed) {
+      return {
+        status: "failed",
+        report: summary,
+        tokens,
+        error: { code: "WORKFLOW_VERIFY_REFUTED", message: summary.slice(0, MAX_STEP_RESULT_CHARS) },
+      };
+    }
+    return { status: "completed", report: summary, tokens };
+  } finally {
+    abortTargets.delete(abortEntry);
+  }
+}
+
+/** delegate / synthesize:走委派层;synthesize 是无工具的一次性合成委派 */
+async function executeDelegateStep(
+  run: Running,
+  step: WorkflowStep,
+  wf: WorkflowRun,
+  key: string,
+): Promise<StepAttemptResult> {
+  const task = resolveStepPrompt(wf, step, key);
 
   let definition: SubagentDefinition;
   if (step.kind === "synthesize") {
@@ -280,14 +531,16 @@ async function executeStep(
       (d) => normalizeSubagentName(d.name) === normalizeSubagentName(String(step.agent)),
     );
     if (!found) {
-      return failedResult(step, `Unknown subagent "${step.agent}". Pick one of: ${definitions.map((d) => d.name).join(", ")}.`);
+      return failedResult(
+        `Unknown subagent "${step.agent}". Pick one of: ${definitions.map((d) => d.name).join(", ")}.`,
+      );
     }
     definition = found;
   }
 
   const resolved = await resolveDelegateModel(run, definition, step.model ?? "");
   const model = resolved.model;
-  if (!model) return failedResult(step, resolved.error ?? "model unavailable");
+  if (!model) return failedResult(resolved.error ?? "model unavailable");
 
   const tools =
     step.kind === "synthesize"
@@ -296,7 +549,7 @@ async function executeStep(
           .map((name) => run.baseTools.find((t) => t.name === name.toLowerCase()))
           .filter((t) => t !== undefined);
   if (tools.length === 0 && step.kind === "delegate") {
-    return failedResult(step, `The ${definition.name} subagent declares no tool available in this session.`);
+    return failedResult(`The ${definition.name} subagent declares no tool available in this session.`);
   }
 
   const delegationId = randomUUID();
@@ -338,31 +591,103 @@ async function executeStep(
   }).run();
   abortTargets.delete(abortEntry);
   settleDelegation(run, record, result);
-  return { ...result, delegationId };
+  const status: StepAttemptResult["status"] =
+    result.status === "completed" || result.status === "truncated" || result.status === "aborted"
+      ? result.status
+      : "failed";
+  return {
+    status,
+    report: result.report,
+    tokens: result.tokens ?? 0,
+    delegationId,
+    ...(result.error ? { error: result.error } : {}),
+  };
 }
 
-function failedResult(step: WorkflowStep, message: string): SubagentRunResult {
+/** 从评审报告里提取投票面:围栏 JSON → 首个 {...} 块 → 整段(逐级退化,不可解析返回 undefined) */
+function extractVerdict(text: string): { real: boolean; reason?: string } | undefined {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const brace =
+    text.includes("{") && text.lastIndexOf("}") > text.indexOf("{")
+      ? text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)
+      : undefined;
+  for (const candidate of [fenced?.[1], brace, text]) {
+    if (!candidate) continue;
+    try {
+      const parsed: unknown = JSON.parse(candidate.trim());
+      if (parsed && typeof parsed === "object" && typeof (parsed as { real?: unknown }).real === "boolean") {
+        const reason = (parsed as { reason?: unknown }).reason;
+        return { real: (parsed as { real: boolean }).real, ...(typeof reason === "string" ? { reason } : {}) };
+      }
+    } catch {
+      /* 试下一个候选面 */
+    }
+  }
+  return undefined;
+}
+
+function failedResult(message: string): StepAttemptResult {
   return {
-    agentName: step.kind === "synthesize" ? "workflow-synthesizer" : String(step.agent),
-    modelId: "",
     status: "failed",
     report: "",
-    turns: 0,
-    toolCalls: 0,
     tokens: 0,
     error: { code: "WORKFLOW_STEP_FAILED", message },
   };
 }
 
-/** 全部步骤结算后的终局判定:全 done → complete(交付);有 failed/skip 缺口已由 failRun 处理 */
+function abortedResult(): StepAttemptResult {
+  return { status: "aborted", report: "", tokens: 0 };
+}
+
+function tail(text: string): string {
+  const t = text.trim();
+  return t.length <= 2_000 ? t : `…${t.slice(-2_000)}`;
+}
+
+/**
+ * 结算后的盘面推进:子项结算推进父条目 → done 步骤触发下游 foreach 展开 →
+ * 终局判定。展开失败(上游无项/超限)按该步的 onFail 传播。
+ */
+function advanceAfterSettlement(run: Running, settledKey: string): void {
+  const before = getWorkflow(run.threadId);
+  if (!before || before.status !== "running") return;
+  let wf = settleForeachParent(before, settledKey);
+  let failed: { step: WorkflowStep | undefined; reason: string } | undefined;
+  if (wf.steps[settledKey]?.status === "done" && wf.plan) {
+    for (const s of wf.plan.steps) {
+      if (s.foreach?.from !== settledKey) continue;
+      const entry = wf.steps[s.key];
+      if (!entry || entry.status !== "pending" || entry.children?.length) continue;
+      const expanded = expandForeach(wf, s.key);
+      if (expanded.ok) {
+        wf = expanded.run;
+        continue;
+      }
+      if (s.onFail === "skip") {
+        wf = settleStep(wf, s.key, { status: "skipped", error: expanded.reason, endedAt: Date.now() });
+      } else {
+        failed = { step: s, reason: expanded.reason };
+      }
+    }
+  }
+  if (wf !== before) commitWorkflow(run, wf);
+  if (failed) {
+    failRun(run, failed.step, failed.reason);
+    return;
+  }
+  settleTerminal(run);
+}
+
+/** 全部条目结算后的终局判定:全 done/skipped(且汇总已 done)→ complete(交付) */
 function settleTerminal(run: Running): void {
   const wf = getWorkflow(run.threadId);
   if (!wf || wf.status !== "running" || !wf.plan) return;
-  const entries = Object.values(wf.steps);
-  if (entries.length === 0 || !wf.plan.steps.every((s) => wf.steps[s.key]?.status === "done")) return;
-  // 空产出舰队警告的对应物:全 done 但合成报告为空的 run 不许装成功
+  if (!allStepsSettled(wf)) return;
   const synth = wf.plan.steps.find((s) => s.kind === "synthesize");
-  const synthResult = synth ? wf.steps[synth.key]?.result ?? "" : "";
+  const synthEntry = synth ? wf.steps[synth.key] : undefined;
+  // 汇总步必须真的跑完:skip 语义在校验层就不许落在 synthesize 上,这里是兜底
+  if (!synthEntry || synthEntry.status !== "done") return;
+  const synthResult = synthEntry.result ?? "";
   const summary = synthResult.trim().slice(0, 400);
   const done = transitionRun(wf, "complete", {
     expectedRunId: wf.id,

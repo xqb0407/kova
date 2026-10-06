@@ -135,6 +135,12 @@ export function workflowStatePayload(threadId: string): {
     ...(s.agent ? { agent: s.agent } : {}),
     ...(s.model ? { model: s.model } : {}),
     dependsOn: s.dependsOn,
+    // gate 命令逐字进协议:确认卡展示的就是用户授权执行的那串字面量
+    ...(s.gate ? { gate: { command: s.gate.command, ...(s.gate.args ? { args: s.gate.args } : {}) } } : {}),
+    ...(s.foreach ? { foreach: { from: s.foreach.from } } : {}),
+    ...(s.verify ? { verify: { reviewers: s.verify.reviewers ?? 2, threshold: s.verify.threshold ?? 0.5 } } : {}),
+    ...(s.retries ? { retries: s.retries } : {}),
+    ...(s.onFail ? { onFail: s.onFail } : {}),
   }));
   const stepStates = Object.values(wf.steps).map((e) => ({
     key: e.key,
@@ -144,6 +150,9 @@ export function workflowStatePayload(threadId: string): {
     ...(e.endedAt !== undefined ? { endedAt: e.endedAt } : {}),
     ...(e.tokens !== undefined ? { tokens: e.tokens } : {}),
     ...(e.delegationId ? { delegationId: e.delegationId } : {}),
+    // foreach 子项:父键与项原文(截断)——运行卡要能展开显示每个子项
+    ...(e.parent ? { parent: e.parent } : {}),
+    ...(e.item ? { item: e.item.slice(0, 200) } : {}),
   }));
   return {
     run: {

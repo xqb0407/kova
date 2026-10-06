@@ -27,7 +27,8 @@ const stepSchema = Type.Object({
       "Stable unique id for this step (1-64 letters/digits/-/_). It addresses the step in the run journal — choose meaningful keys like 'audit-routes'.",
   }),
   kind: Type.String({
-    description: '"delegate" runs a subagent; "synthesize" (exactly one) produces the final report from upstream results.',
+    description:
+      '"delegate" runs a subagent; "gate" runs a literal shell command and branches on its exit code; "verify" puts a result in front of N adversarial reviewers; "synthesize" (exactly one) produces the final report from upstream results.',
   }),
   phase: Type.Optional(
     Type.String({ description: "Display group shown in the progress panel, in the user's language (e.g. 勘察 / 执行).", maxLength: 40 }),
@@ -38,7 +39,7 @@ const stepSchema = Type.Object({
   }),
   prompt: Type.String({
     description:
-      "delegate: the complete brief for the subagent (it cannot see this conversation). synthesize: the report instructions; reference upstream results inline with {{step-key}} placeholders.",
+      "delegate: the complete brief for the subagent (it cannot see this conversation); for a fanned-out delegate the item text replaces {{item}}. synthesize/verify: the instructions/what to judge; reference upstream results with {{step-key}} placeholders. gate: one sentence saying what this check decides (shown on the plan card).",
     maxLength: MAX_STEP_TEXT_LENGTH,
   }),
   agent: Type.Optional(
@@ -47,12 +48,60 @@ const stepSchema = Type.Object({
   model: Type.Optional(
     Type.String({
       description:
-        'delegate only: model override "provider/modelId" (e.g. "anthropic/claude-sonnet-4"). Omit to inherit the session model.',
+        'Model override "provider/modelId" (e.g. "anthropic/claude-sonnet-4"). Omit to inherit the session model.',
     }),
   ),
   dependsOn: Type.Optional(
     Type.Array(Type.String({ description: "Step key this step waits on." }), {
       description: "Dependencies: this step starts only after all of them are done.",
+    }),
+  ),
+  foreach: Type.Optional(
+    Type.Object({
+      from: Type.String({
+        description:
+          "Step key whose result is split into items (one per non-empty line). This step runs once per item; {{item}} in the prompt is replaced by the item text.",
+      }),
+    }),
+  ),
+  gate: Type.Optional(
+    Type.Object({
+      command: Type.String({
+        description:
+          'The literal command to run (e.g. "npm"), approved by the user with the plan — never build it from a variable. Runtime values go in args.',
+      }),
+      args: Type.Optional(
+        Type.Array(Type.String({ description: "One argv entry." }), {
+          description: "Arguments passed after the command; {{step-key}} placeholders may be used here.",
+        }),
+      ),
+      timeoutMs: Type.Optional(
+        Type.Number({ description: "Timeout in ms (1000-600000). Omit for the bash tool default." }),
+      ),
+    }),
+  ),
+  verify: Type.Optional(
+    Type.Object({
+      reviewers: Type.Optional(
+        Type.Number({ description: "Number of adversarial reviewers (1-5, default 2)." }),
+      ),
+      threshold: Type.Optional(
+        Type.Number({
+          description: "Fraction of reviewers that must judge it real, in (0,1]; default 0.5.",
+        }),
+      ),
+    }),
+  ),
+  retries: Type.Optional(
+    Type.Number({
+      description:
+        "Extra attempts after a recoverable failure (provider error / empty report), 0-3; default 0. Gate steps never retry — an exit code is a value.",
+    }),
+  ),
+  onFail: Type.Optional(
+    Type.String({
+      description:
+        '"abort" (default) fails the whole run; "skip" marks the step skipped and lets downstream continue with an explicit gap marker. Only delegate/verify may skip.',
     }),
   ),
 });
@@ -74,8 +123,9 @@ function buildProposeTool(run: Running): AgentTool {
     label: "Propose Workflow Plan",
     description: [
       "Propose the complete workflow plan for the user's request: the steps, who runs each one, and how their results flow into the final report.",
-      "Each delegate step runs a subagent with an isolated context; state in `prompt` everything it cannot infer. The single synthesize step weaves upstream results (reference them with {{step-key}}) into the report the user will read.",
-      "Steps run concurrently once their dependsOn are done; keep independent steps dependency-free and chain only real data dependencies.",
+      "Each delegate step runs a subagent with an isolated context; state in `prompt` everything it cannot infer. A delegate with `foreach` fans out over the lines of an upstream result ({{item}} per line). The single synthesize step weaves upstream results (reference them with {{step-key}}) into the report the user will read.",
+      "A gate step runs a literal shell command (user-approved with the plan) and branches on its exit code — use it wherever a command can decide. A verify step puts an upstream result in front of N adversarial reviewers and fails when they refute it.",
+      "Steps run concurrently once their dependsOn are done; keep independent steps dependency-free and chain only real data dependencies. Steps that may fail without killing the run can set onFail:\"skip\".",
       "Must be the only tool call in your message. After submitting, stop — the user has to confirm the plan before anything runs.",
     ].join("\n"),
     parameters: Type.Object({

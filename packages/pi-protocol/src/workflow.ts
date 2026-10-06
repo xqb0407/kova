@@ -9,15 +9,32 @@ import { z } from "zod";
 /** 单个剧本步骤的 UI 投影（声明侧；运行状态在 stepStates 里按 key 对齐） */
 export const workflowStepViewSchema = z.looseObject({
   key: z.string(),
-  /** M1: "delegate" | "synthesize" */
+  /** "delegate" | "synthesize" | "gate" | "verify" */
   kind: z.string(),
   phase: z.string().optional(),
   title: z.string(),
-  /** 子智能体定义名（delegate）；synthesize 步骤缺省 */
+  /** 子智能体定义名（delegate）；synthesize/verify/gate 缺省 */
   agent: z.string().optional(),
   /** 模型覆盖（"provider/modelId"）；缺省继承会话模型 */
   model: z.string().optional(),
   dependsOn: z.array(z.string()),
+  /** gate 步骤的确定性命令：确认卡要逐字展示——用户确认的就是这个命令集 */
+  gate: z
+    .looseObject({
+      command: z.string(),
+      args: z.array(z.string()).optional(),
+    })
+    .optional(),
+  /** foreach 扇出（仅 delegate）：按 from 步骤结果逐行展开 */
+  foreach: z.looseObject({ from: z.string() }).optional(),
+  /** verify：N 个对抗式评审投票 */
+  verify: z
+    .looseObject({ reviewers: z.number().optional(), threshold: z.number().optional() })
+    .optional(),
+  /** 可恢复失败的额外重试次数 */
+  retries: z.number().optional(),
+  /** 失败传播："abort"（默认）| "skip" */
+  onFail: z.string().optional(),
 });
 
 /** 单个步骤的运行状态投影（key 对齐 steps） */

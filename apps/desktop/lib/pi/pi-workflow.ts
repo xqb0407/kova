@@ -29,9 +29,17 @@ export type WorkflowStepView = {
   agent?: string;
   model?: string;
   dependsOn: string[];
+  /** gate 的确定性命令(确认卡逐字展示;用户确认的就是它) */
+  gate?: { command: string; args?: string[] };
+  /** foreach 扇出(仅 delegate) */
+  foreach?: { from: string };
+  /** verify:N 个对抗式评审投票 */
+  verify?: { reviewers?: number; threshold?: number };
+  retries?: number;
+  onFail?: string;
 };
 
-/** 步骤运行状态(与 steps 按 key 对齐) */
+/** 步骤运行状态(与 steps 按 key 对齐;foreach 子项带 parent/item) */
 export type WorkflowStepState = {
   key: string;
   status: "pending" | "running" | "done" | "failed" | "skipped" | "interrupted";
@@ -40,6 +48,8 @@ export type WorkflowStepState = {
   endedAt?: number;
   tokens?: number;
   delegationId?: string;
+  parent?: string;
+  item?: string;
 };
 
 export type WorkflowSnapshot = {
@@ -86,6 +96,9 @@ function normalizeSteps(raw: unknown): WorkflowStepView[] | undefined {
     if (typeof s.key !== "string" || typeof s.kind !== "string" || typeof s.title !== "string") {
       continue;
     }
+    const gateRaw = s.gate as { command?: unknown; args?: unknown } | undefined;
+    const foreachRaw = s.foreach as { from?: unknown } | undefined;
+    const verifyRaw = s.verify as { reviewers?: unknown; threshold?: unknown } | undefined;
     steps.push({
       key: s.key,
       kind: s.kind,
@@ -94,6 +107,27 @@ function normalizeSteps(raw: unknown): WorkflowStepView[] | undefined {
       ...(typeof s.agent === "string" ? { agent: s.agent } : {}),
       ...(typeof s.model === "string" ? { model: s.model } : {}),
       dependsOn: Array.isArray(s.dependsOn) ? s.dependsOn.filter((d): d is string => typeof d === "string") : [],
+      ...(gateRaw && typeof gateRaw.command === "string"
+        ? {
+            gate: {
+              command: gateRaw.command,
+              ...(Array.isArray(gateRaw.args)
+                ? { args: gateRaw.args.filter((a): a is string => typeof a === "string") }
+                : {}),
+            },
+          }
+        : {}),
+      ...(foreachRaw && typeof foreachRaw.from === "string" ? { foreach: { from: foreachRaw.from } } : {}),
+      ...(verifyRaw
+        ? {
+            verify: {
+              ...(typeof verifyRaw.reviewers === "number" ? { reviewers: verifyRaw.reviewers } : {}),
+              ...(typeof verifyRaw.threshold === "number" ? { threshold: verifyRaw.threshold } : {}),
+            },
+          }
+        : {}),
+      ...(typeof s.retries === "number" ? { retries: s.retries } : {}),
+      ...(typeof s.onFail === "string" ? { onFail: s.onFail } : {}),
     });
   }
   return steps;
@@ -125,6 +159,8 @@ function normalizeStepStates(raw: unknown): WorkflowStepState[] | undefined {
       ...(typeof s.endedAt === "number" ? { endedAt: s.endedAt } : {}),
       ...(typeof s.tokens === "number" ? { tokens: s.tokens } : {}),
       ...(typeof s.delegationId === "string" ? { delegationId: s.delegationId } : {}),
+      ...(typeof s.parent === "string" ? { parent: s.parent } : {}),
+      ...(typeof s.item === "string" ? { item: s.item } : {}),
     });
   }
   return states;

@@ -184,9 +184,10 @@ export { AGENT_MODE_PROMPT };
 const WORKFLOW_MODE_PROMPT = [
   "You are operating in Workflow mode: your only deliverable is a workflow PLAN the runtime executes — you never do the work yourself, and you cannot see step results.",
   "First inspect the workspace with the read-only tools if the request depends on facts you do not have, then call workflow_propose_plan with the complete plan.",
-  "Plan shape: each delegate step runs one subagent on a self-contained brief; the single synthesize step weaves the upstream results ({{step-key}} references) into the final report. Independent steps run concurrently — add dependsOn only for real data dependencies.",
+  "Step kinds: delegate runs one subagent on a self-contained brief (add foreach.from to run it once per line of an upstream result, with {{item}} in the prompt); gate runs a literal shell command and branches on its exit code — reach for it wherever a command can decide, and never build the command from a variable; verify puts an upstream result in front of adversarial reviewers; the single synthesize step weaves upstream results ({{step-key}} references) into the final report.",
+  "Steps with no dependsOn between them run concurrently — add dependencies only for real data flow. A step that may fail without dooming the run can set onFail:\"skip\".",
   "Write titles, phases and step prompts in the user's language. A user question or a trivial task does not need a workflow — answer those directly.",
-  "After workflow_propose_plan is accepted you must stop: the user confirms the plan, then the runtime executes it and delivers the report. If the user rejects or comments, revise and propose again.",
+  "After workflow_propose_plan is accepted you must stop: the user confirms the plan (including every gate command), then the runtime executes it and delivers the report. If the user rejects or comments, revise and propose again.",
 ].join("\n");
 
 /** 问答模式的系统提示词：身份段换掉"coding agent"，纪律段只留"读—答—不动手"。

@@ -97,7 +97,6 @@ const ProposalConfirmCard: FC<{
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
   const steps = run.steps ?? [];
-  const states = new Map((run.stepStates ?? []).map((s) => [s.key, s]));
   const previousFeedback = run.proposalFeedback;
 
   if (rejecting) {
@@ -144,15 +143,32 @@ const ProposalConfirmCard: FC<{
       {groupByPhase(steps).map(([phase, phaseSteps]) => (
         <div key={phase} className="flex flex-col gap-1">
           <div className="text-muted-foreground text-[11px] font-medium">{phase}</div>
-          {phaseSteps.map((s) => {
-            const st = states.get(s.key);
-            return (
-              <div key={s.key} className="flex items-baseline gap-1.5 text-[11px] leading-relaxed">
+          {phaseSteps.map((s) => (
+            <div key={s.key} className="flex flex-col gap-0.5 text-[11px] leading-relaxed">
+              <div className="flex items-baseline gap-1.5">
                 <span className="text-muted-foreground shrink-0">
-                  {s.kind === "synthesize" ? "◆ 汇总" : "▸"} {s.title}
+                  {s.kind === "synthesize"
+                    ? "◆ 汇总"
+                    : s.kind === "gate"
+                      ? "▣ 门"
+                      : s.kind === "verify"
+                        ? "◈ 复核"
+                        : "▸"}{" "}
+                  {s.title}
                 </span>
                 {s.agent && (
                   <span className="text-muted-foreground/70 shrink-0">@{s.agent}</span>
+                )}
+                {s.verify && (
+                  <span className="text-muted-foreground/70 shrink-0">
+                    {s.verify.reviewers ?? 2} 位评审 · 阈值{" "}
+                    {Math.round((s.verify.threshold ?? 0.5) * 100)}%
+                  </span>
+                )}
+                {s.foreach && (
+                  <span className="text-muted-foreground/70 shrink-0">
+                    按 {s.foreach.from} 逐行展开
+                  </span>
                 )}
                 {s.dependsOn.length > 0 && (
                   <span className="text-muted-foreground/70 hidden shrink-0 sm:inline">
@@ -160,12 +176,19 @@ const ProposalConfirmCard: FC<{
                   </span>
                 )}
               </div>
-            );
-          })}
+              {/* gate 命令逐字展示:用户确认的就是要执行的这串字面量 */}
+              {s.gate && (
+                <code className="border-border/60 bg-background/70 text-foreground/80 block truncate rounded border px-1.5 py-0.5 font-mono text-[10px]">
+                  {[s.gate.command, ...(s.gate.args ?? [])].join(" ")}
+                </code>
+              )}
+            </div>
+          ))}
         </div>
       ))}
       <p className="text-muted-foreground text-[11px] leading-relaxed">
-        确认后由执行器自动编排:无依赖的步骤并发跑,全部完成后自动交付报告。
+        确认后由执行器自动编排:无依赖的步骤并发跑,命令门按退出码判定,
+        全部完成后自动交付报告。
       </p>
       <div className="flex items-center justify-end gap-1.5">
         <Button

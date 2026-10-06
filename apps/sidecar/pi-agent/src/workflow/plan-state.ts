@@ -29,7 +29,7 @@ export function isWorkflowToolName(name: string): boolean {
 
 /* --------------------------------- 类型 --------------------------------- */
 
-export type WorkflowStepKind = "delegate" | "synthesize";
+export type WorkflowStepKind = "delegate" | "synthesize" | "gate" | "verify";
 
 export type WorkflowStep = {
   /** 剧本内唯一、模型起的稳定键;journal 与插值的寻址键 */
@@ -39,13 +39,26 @@ export type WorkflowStep = {
   phase: string;
   /** 步骤卡标题(用户语言) */
   title: string;
-  /** 任务说明。delegate:给子代理的 brief;synthesize:合成指令模板(可插 {{key}}) */
+  /** 任务说明。delegate:给子代理的 brief;synthesize/verify:指令模板(可插 {{key}});
+   *  gate:一句人类可读的判定说明(prompt 对 gate 是必填的展示面) */
   prompt: string;
   /** delegate 必填:子智能体定义名 */
   agent?: string;
   /** 模型覆盖 "provider/modelId";缺省继承会话模型 */
   model?: string;
   dependsOn: string[];
+  /** foreach 扇出(仅 delegate):按 from 步骤的结果逐行展开,展开键 `${key}#${index}`,
+   *  prompt 里 `{{item}}` 换成该行。from 自动进 dependsOn */
+  foreach?: { from: string };
+  /** gate:确定性命令门。command 必须是提案时的字面量(用户确认的就是它),args 可含插值 */
+  gate?: { command: string; args?: string[]; timeoutMs?: number };
+  /** verify:N 个评审委派对抗式投票,{real, reason} 占比 ≥ threshold 判真 */
+  verify?: { reviewers?: number; threshold?: number };
+  /** 可恢复失败(provider 错误/空报告)的额外重试次数,默认 0;对 gate 无效(退出码是值不是失败) */
+  retries?: number;
+  /** 失败传播,默认 "abort"(一步失败整个 run 失败);"skip" 记 skipped、下游按缺口继续。
+   *  仅 delegate/verify 可用——synthesize 是出口、gate 的存在意义就是判定,跳不了 */
+  onFail?: "abort" | "skip";
 };
 
 /** journal 条目:一步的完整执行账(结果有界,见 MAX_STEP_RESULT_CHARS) */
@@ -59,6 +72,11 @@ export type StepJournalEntry = {
   endedAt?: number;
   tokens?: number;
   delegationId?: string;
+  /** foreach 展开出的子项:所属父键与该项的原文(供 prompt 的 {{item}} 替换) */
+  parent?: string;
+  item?: string;
+  /** 父条目:展开出的子键列表(有条目即代表等待子项结算,自身不再被调度) */
+  children?: string[];
 };
 
 export type StepStatus = "pending" | "running" | "done" | "failed" | "skipped" | "interrupted";
@@ -103,6 +121,15 @@ export const MAX_STEP_RESULT_CHARS = 12_000;
 export const MAX_INTERPOLATED_PROMPT_CHARS = 24_000;
 export const STEP_KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 export const DEFAULT_PHASE = "执行";
+/** 单步可恢复失败的最大额外重试次数(退避与 pi-dw 同款:250ms 起指数封顶 2s) */
+export const MAX_STEP_RETRIES = 3;
+/** foreach 单步最多展开多少项(展开项计入 MAX_STEPS_PER_RUN 总量) */
+export const MAX_FOREACH_ITEMS = 50;
+/** verify 评审人数上限(一次 verify = N 个并发委派) */
+export const MAX_VERIFY_REVIEWERS = 5;
+/** gate 命令超时边界(与 bash 宿主工具的 600s 上限对齐) */
+export const GATE_TIMEOUT_MIN_MS = 1_000;
+export const GATE_TIMEOUT_MAX_MS = 600_000;
 
 /* ------------------------------- 建档与提案 ------------------------------- */
 
@@ -136,6 +163,11 @@ type RawStep = {
   agent?: unknown;
   model?: unknown;
   dependsOn?: unknown;
+  foreach?: unknown;
+  gate?: unknown;
+  verify?: unknown;
+  retries?: unknown;
+  onFail?: unknown;
 };
 
 function asTrimmedString(v: unknown): string {
@@ -176,10 +208,10 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
     }
     seen.add(key);
     const kind = asTrimmedString(entry.kind);
-    if (kind !== "delegate" && kind !== "synthesize") {
+    if (kind !== "delegate" && kind !== "synthesize" && kind !== "gate" && kind !== "verify") {
       return {
         ok: false,
-        reason: `steps[${i}].kind must be "delegate" or "synthesize", got "${kind}".`,
+        reason: `steps[${i}].kind must be "delegate", "synthesize", "gate" or "verify", got "${kind}".`,
       };
     }
     const title = asTrimmedString(entry.title).slice(0, MAX_WORKFLOW_TITLE_LENGTH);
@@ -210,6 +242,52 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
       const model = asTrimmedString(entry.model);
       if (model) step.model = model;
     }
+    if (kind === "gate") {
+      const g = entry.gate as { command?: unknown; args?: unknown; timeoutMs?: unknown } | undefined;
+      const command = asTrimmedString(g?.command);
+      if (!command) {
+        return {
+          ok: false,
+          reason: `steps[${i}] (${key}) is a gate step and needs gate.command — a literal shell command whose exit code decides (the user approves this exact command with the plan).`,
+        };
+      }
+      const gate: WorkflowStep["gate"] = { command: command.slice(0, MAX_STEP_TEXT_LENGTH) };
+      if (Array.isArray(g?.args)) {
+        const args = g.args.filter((a): a is string => typeof a === "string").map((a) => a.slice(0, 500));
+        if (args.length > 0) gate.args = args;
+      }
+      if (typeof g?.timeoutMs === "number" && Number.isFinite(g.timeoutMs)) {
+        const t = Math.floor(g.timeoutMs);
+        if (t < GATE_TIMEOUT_MIN_MS || t > GATE_TIMEOUT_MAX_MS) {
+          return {
+            ok: false,
+            reason: `steps[${i}] (${key}) gate.timeoutMs must be between ${GATE_TIMEOUT_MIN_MS} and ${GATE_TIMEOUT_MAX_MS}.`,
+          };
+        }
+        gate.timeoutMs = t;
+      }
+      step.gate = gate;
+    }
+    if (kind === "verify") {
+      const v = entry.verify as { reviewers?: unknown; threshold?: unknown } | undefined;
+      const reviewers =
+        typeof v?.reviewers === "number" && Number.isInteger(v.reviewers) ? v.reviewers : 2;
+      if (reviewers < 1 || reviewers > MAX_VERIFY_REVIEWERS) {
+        return {
+          ok: false,
+          reason: `steps[${i}] (${key}) verify.reviewers must be an integer between 1 and ${MAX_VERIFY_REVIEWERS}.`,
+        };
+      }
+      const threshold =
+        typeof v?.threshold === "number" && Number.isFinite(v.threshold) ? v.threshold : 0.5;
+      if (threshold <= 0 || threshold > 1) {
+        return {
+          ok: false,
+          reason: `steps[${i}] (${key}) verify.threshold must be in (0, 1].`,
+        };
+      }
+      step.verify = { reviewers, threshold };
+    }
     const deps = Array.isArray(entry.dependsOn) ? entry.dependsOn : [];
     for (const d of deps) {
       const dep = asTrimmedString(d);
@@ -217,12 +295,62 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
       if (dep === key) {
         return { ok: false, reason: `steps[${i}] (${key}) depends on itself.` };
       }
-      step.dependsOn.push(dep);
+      if (!step.dependsOn.includes(dep)) step.dependsOn.push(dep);
+    }
+    // foreach 扇出:仅 delegate;from 必须是另一个步骤(自动成为隐式依赖)
+    if (entry.foreach !== undefined) {
+      const f = entry.foreach as { from?: unknown } | undefined;
+      const from = asTrimmedString(f?.from);
+      if (kind !== "delegate") {
+        return {
+          ok: false,
+          reason: `steps[${i}] (${key}) has foreach but is not a delegate step — only delegate steps fan out.`,
+        };
+      }
+      if (!from || from === key) {
+        return {
+          ok: false,
+          reason: `steps[${i}] (${key}) foreach.from must name another step whose result lists the items.`,
+        };
+      }
+      step.foreach = { from };
+      if (!step.dependsOn.includes(from)) step.dependsOn.push(from);
+    }
+    const retries = entry.retries;
+    if (retries !== undefined) {
+      if (typeof retries !== "number" || !Number.isInteger(retries) || retries < 0 || retries > MAX_STEP_RETRIES) {
+        return {
+          ok: false,
+          reason: `steps[${i}] (${key}) retries must be an integer between 0 and ${MAX_STEP_RETRIES}.`,
+        };
+      }
+      if (retries > 0) step.retries = retries;
+    }
+    const onFail = asTrimmedString(entry.onFail);
+    if (onFail) {
+      if (onFail !== "abort" && onFail !== "skip") {
+        return { ok: false, reason: `steps[${i}] (${key}) onFail must be "abort" or "skip".` };
+      }
+      if (onFail === "skip") {
+        if (kind !== "delegate" && kind !== "verify") {
+          return {
+            ok: false,
+            reason: `steps[${i}] (${key}) cannot set onFail:"skip" — the synthesize step produces the final report and a gate exists to decide; neither can be skipped.`,
+          };
+        }
+        step.onFail = "skip";
+      }
     }
     if (kind === "synthesize" && step.dependsOn.length === 0) {
       return {
         ok: false,
         reason: `steps[${i}] (${key}) is a synthesize step and must depend on at least one upstream step.`,
+      };
+    }
+    if (kind === "verify" && step.dependsOn.length === 0) {
+      return {
+        ok: false,
+        reason: `steps[${i}] (${key}) is a verify step and must depend on the step(s) whose output it reviews.`,
       };
     }
     steps.push(step);
@@ -265,8 +393,8 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
       reason: `steps form a dependency cycle involving: ${stuck.join(", ")}.`,
     };
   }
-  // synthesize 恰好一个,且必须能沿依赖边到达每个 delegate 步(M1 的收束语义;
-  // M2 引 gate/verify 后放宽)。够不着的 delegate 的产出进不了最终报告,等于白跑
+  // synthesize 恰好一个,且必须能沿依赖边到达每个非 synthesize 步(M2 的收束语义,
+  // 含 gate/verify)。够不着的步骤产出进不了最终报告,等于白跑
   const synths = steps.filter((s) => s.kind === "synthesize");
   if (synths.length !== 1) {
     return {
@@ -275,11 +403,11 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
     };
   }
   const synth = synths[0]!;
-  const unreachable = steps.find((s) => s.kind === "delegate" && !reaches(synth, s.key, steps));
+  const unreachable = steps.find((s) => s.kind !== "synthesize" && !reaches(synth, s.key, steps));
   if (unreachable) {
     return {
       ok: false,
-      reason: `synthesize step "${synth.key}" cannot reach delegate step "${unreachable.key}" — every delegate step must feed the final report (add it to dependsOn, directly or via an intermediate step).`,
+      reason: `synthesize step "${synth.key}" cannot reach step "${unreachable.key}" (${unreachable.kind}) — every step must feed the final report (add it to dependsOn, directly or via an intermediate step).`,
     };
   }
   return { ok: true, steps };
@@ -424,16 +552,43 @@ export function stepFingerprint(step: WorkflowStep, depFingerprints: string[]): 
     .digest("hex");
 }
 
-/** 依赖全部 done 的 pending 步骤 = 现在可以调度的 */
+/** 依赖已满足(含 skipped:onFail:"skip" 的步骤产出按缺口继续,不阻塞下游) */
+function depsSatisfied(run: WorkflowRun, step: WorkflowStep): boolean {
+  return step.dependsOn.every((d) => {
+    const s = run.steps[d]?.status;
+    return s === "done" || s === "skipped";
+  });
+}
+
+/**
+ * 依赖全部就绪的 pending 条目 = 现在可以调度的。
+ * 两类:顶层步骤(自身 pending 且未展开)与 foreach 展开出的子项(继承父步的依赖)。
+ * foreach 父条目等子项结算,自身不再被调度。
+ */
 export function readyStepKeys(run: WorkflowRun): string[] {
   if (!run.plan) return [];
-  return run.plan.steps
-    .filter((s) => {
-      const entry = run.steps[s.key];
-      if (!entry || entry.status !== "pending") return false;
-      return s.dependsOn.every((d) => run.steps[d]?.status === "done");
-    })
-    .map((s) => s.key);
+  const ready: string[] = [];
+  for (const step of run.plan.steps) {
+    const entry = run.steps[step.key];
+    if (entry && entry.status === "pending" && !entry.children?.length && depsSatisfied(run, step)) {
+      ready.push(step.key);
+      continue;
+    }
+    // 已展开的 foreach 父步:子项按父步的依赖判就绪(from 在展开时已 done)
+    if (!entry?.children?.length) continue;
+    if (!depsSatisfied(run, step)) continue;
+    for (const childKey of entry.children) {
+      if (run.steps[childKey]?.status === "pending") ready.push(childKey);
+    }
+  }
+  return ready;
+}
+
+/** 全部条目进入终态(done/skipped);failed 由 failRun 处理,不参与完成判定 */
+export function allStepsSettled(run: WorkflowRun): boolean {
+  const entries = Object.values(run.steps);
+  if (entries.length === 0) return false;
+  return entries.every((e) => e.status === "done" || e.status === "skipped");
 }
 
 /** 是否还有会动/该动的步骤(running 或 pending) */
@@ -467,9 +622,142 @@ export function interpolatePrompt(
   return replaced.slice(0, Math.ceil(avail / 2)) + marker + replaced.slice(-Math.floor(avail / 2));
 }
 
+/* --------------------------- 步骤解析与扇出展开 --------------------------- */
+
+/** 由条目键找回所属步骤声明:普通键直查;foreach 展开键 `${parent}#${i}` 归到父声明 */
+export function findStepForEntry(run: WorkflowRun, key: string): WorkflowStep | undefined {
+  if (!run.plan) return undefined;
+  const direct = run.plan.steps.find((s) => s.key === key);
+  if (direct) return direct;
+  const hash = key.indexOf("#");
+  if (hash <= 0) return undefined;
+  const parent = key.slice(0, hash);
+  return run.plan.steps.find((s) => s.key === parent);
+}
+
+/**
+ * 步骤的最终 prompt:`{{item}}`(foreach 子项原文)替换在前,`{{key}}` 上游插值在后。
+ * 被 skip 的依赖插值成显式缺口标记——静默留空会让下游把缺口当事实(design §4.3)。
+ */
+export function resolveStepPrompt(run: WorkflowRun, step: WorkflowStep, key: string): string {
+  let template = step.prompt;
+  const entry = run.steps[key];
+  if (entry?.item !== undefined) {
+    template = template.replace(/\{\{\s*item\s*\}\}/g, entry.item);
+  }
+  return interpolatePrompt(template, (dep) => {
+    const depEntry = run.steps[dep];
+    if (!depEntry) return undefined;
+    if (depEntry.status === "skipped") {
+      return `<step "${dep}" was skipped: ${depEntry.error ?? "no result"}>`;
+    }
+    return depEntry.result;
+  });
+}
+
+/**
+ * foreach 展开:父步的 from 依赖 done 后,把结果逐行拆成子项,父条目挂 children
+ * 列表并转 running(等子项结算,自身不再被调度)。
+ * - 拆行规则:按行 trim、滤空——上游报告是文本,一行一项是唯一稳定的约定;
+ * - 展开项计入 MAX_STEPS_PER_RUN 总量(超限拒绝,不静默截断队列);
+ * - 无任何可展开项 = 上游产出为空 → 失败(调用方按 onFail 传播)。
+ * 返回新盘面;不变时返回原对象(调用方据此判有无展开)。
+ */
+export function expandForeach(
+  run: WorkflowRun,
+  parentKey: string,
+): { ok: true; run: WorkflowRun; expanded: number } | { ok: false; reason: string } {
+  const step = run.plan?.steps.find((s) => s.key === parentKey);
+  const entry = run.steps[parentKey];
+  if (!step?.foreach || !entry || entry.status !== "pending" || entry.children?.length) {
+    return { ok: true, run, expanded: 0 };
+  }
+  const source = run.steps[step.foreach.from];
+  if (!source || source.status !== "done") return { ok: true, run, expanded: 0 };
+  const items = (source.result ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => line.slice(0, MAX_STEP_TEXT_LENGTH));
+  if (items.length === 0) {
+    return {
+      ok: false,
+      reason: `upstream step "${step.foreach.from}" produced no listable items (one item per non-empty line)`,
+    };
+  }
+  if (items.length > MAX_FOREACH_ITEMS) {
+    return { ok: false, reason: `foreach expanded to ${items.length} items, over the ${MAX_FOREACH_ITEMS}-item limit` };
+  }
+  const capacity = MAX_STEPS_PER_RUN - Object.keys(run.steps).length;
+  if (items.length > capacity) {
+    return { ok: false, reason: `foreach needs ${items.length} slots but only ${capacity} of the ${MAX_STEPS_PER_RUN}-step run cap remain` };
+  }
+  const children: string[] = [];
+  const nextSteps = { ...run.steps };
+  for (let i = 0; i < items.length; i++) {
+    const childKey = `${parentKey}#${i}`;
+    children.push(childKey);
+    nextSteps[childKey] = {
+      key: childKey,
+      status: "pending",
+      parent: parentKey,
+      item: items[i]!,
+    };
+  }
+  nextSteps[parentKey] = { ...entry, status: "running", children, startedAt: entry.startedAt ?? Date.now() };
+  return {
+    ok: true,
+    expanded: items.length,
+    run: { ...run, steps: nextSteps, updatedAt: Date.now() },
+  };
+}
+
+/**
+ * 子项结算后推进父条目。两条规则:
+ * - 任一子项 failed → 父立即 failed(不等兄弟:abort 传播会中止其余在跑的兄弟,
+ *   它们落 interrupted 永不终态,等齐就永远等不到);
+ * - 全部子项 done/skipped → 父 done(结果按序拼合,跳过的项留显式标记)。
+ * 返回新盘面;父仍未到齐时原样返回。
+ */
+export function settleForeachParent(run: WorkflowRun, childKey: string): WorkflowRun {
+  const child = run.steps[childKey];
+  if (!child?.parent) return run;
+  const parent = run.steps[child.parent];
+  if (!parent?.children?.length) return run;
+  const children = parent.children.map((k) => run.steps[k]).filter((e) => e !== undefined);
+  if (children.length !== parent.children.length) return run;
+  const failed = children.find((e) => e.status === "failed");
+  if (failed) {
+    return settleStep(run, child.parent, {
+      status: "failed",
+      error: `item ${failed.key} failed: ${failed.error ?? "unknown"}`,
+      endedAt: Date.now(),
+    });
+  }
+  if (!children.every((e) => e.status === "done" || e.status === "skipped")) {
+    return run;
+  }
+  const skipped = children.filter((e) => e.status === "skipped").length;
+  const tokens = children.reduce((sum, e) => sum + (e.tokens ?? 0), 0);
+  const result = children
+    .map((e) => {
+      const label = `### ${e.key}`;
+      return e.status === "skipped" ? `${label}\n(skipped: ${e.error ?? "no result"})` : `${label}\n${e.result ?? ""}`;
+    })
+    .join("\n\n")
+    .slice(0, MAX_STEP_RESULT_CHARS);
+  return settleStep(run, child.parent, {
+    status: "done",
+    result,
+    endedAt: Date.now(),
+    tokens,
+    error: skipped > 0 ? `${skipped}/${children.length} items skipped` : undefined,
+  });
+}
+
 /* --------------------------------- 展示 --------------------------------- */
 
-/** 盘上 JSON 的运行记录形状守卫(撕烈/畸形行整条判废,调用方按「无记录」处理) */
+/** 盘上 JSON 的运行记录形状守卫(撕裂/畸形整条判废,调用方按「无记录」处理) */
 export function isWorkflowRun(value: unknown): value is WorkflowRun {
   if (!value || typeof value !== "object") return false;
   const r = value as Record<string, unknown>;
@@ -484,17 +772,19 @@ export function isWorkflowRun(value: unknown): value is WorkflowRun {
   );
 }
 
-/** 常驻条一行摘要(sidecar 算成品,两端不各算一遍;对齐 formatGoalStatus) */
+/** 常驻条一行摘要(sidecar 算成品,两端不各算一遍;对齐 formatGoalStatus)。
+ *  计数只算顶层剧本步骤——foreach 展开的子项不把分母撑成「3 步变 13 步」 */
 export function formatWorkflowStatus(run: WorkflowRun): string {
-  const total = Object.keys(run.steps).length;
-  const done = Object.values(run.steps).filter((e) => e.status === "done").length;
+  const topKeys = run.plan?.steps.map((s) => s.key) ?? [];
+  const total = topKeys.length;
+  const done = topKeys.filter((k) => run.steps[k]?.status === "done").length;
   switch (run.status) {
     case "proposing":
       return "编排中:正在拟剧本";
     case "proposed":
       return "剧本待你确认";
     case "running": {
-      const running = Object.values(run.steps).filter((e) => e.status === "running").length;
+      const running = topKeys.filter((k) => run.steps[k]?.status === "running").length;
       return running > 0
         ? `运行中 ${done}/${total} 步(并发 ${running})`
         : `运行中 ${done}/${total} 步`;

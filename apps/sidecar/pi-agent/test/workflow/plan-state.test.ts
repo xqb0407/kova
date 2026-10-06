@@ -2,15 +2,19 @@ import { describe, expect, test } from "bun:test";
 import {
   acceptProposal,
   addTokens,
+  allStepsSettled,
   confirmProposal,
   createWorkflowRun,
+  expandForeach,
   formatWorkflowStatus,
   hasOpenSteps,
   interpolatePrompt,
   isWorkflowRun,
   readyStepKeys,
   rejectProposal,
+  resolveStepPrompt,
   resumeRun,
+  settleForeachParent,
   settleStep,
   stepFingerprint,
   transitionRun,
@@ -236,3 +240,235 @@ type WorkflowRunForTest = ReturnType<typeof createWorkflowRun>;
 function confirmedProposalStatus(run: { status: string }): string {
   return run.status === "proposed" ? "running" : run.status;
 }
+
+describe("M2:gate / verify 校验", () => {
+  test("gate 需要字面量 command", () => {
+    const missing = validatePlan([
+      { key: "g", kind: "gate", title: "测试", prompt: "确认测试通过" },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总 {{g}}", dependsOn: ["g"] },
+    ]);
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toContain("gate.command");
+
+    const ok = validatePlan([
+      {
+        key: "g",
+        kind: "gate",
+        title: "测试",
+        prompt: "确认测试通过",
+        gate: { command: "bun", args: ["test"], timeoutMs: 300000 },
+      },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总", dependsOn: ["g"] },
+    ]);
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.steps[0]!.gate).toEqual({ command: "bun", args: ["test"], timeoutMs: 300000 });
+  });
+
+  test("gate 超时越界被拒", () => {
+    const r = validatePlan([
+      { key: "g", kind: "gate", title: "G", prompt: "p", gate: { command: "ls", timeoutMs: 10 } },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总", dependsOn: ["g"] },
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("timeoutMs");
+  });
+
+  test("verify 需要依赖 + 人数/阈值边界", () => {
+    const noDep = validatePlan([
+      { key: "v", kind: "verify", title: "V", prompt: "复核", verify: {} },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总", dependsOn: ["v"] },
+    ]);
+    expect(noDep.ok).toBe(false);
+    if (!noDep.ok) expect(noDep.reason).toContain("depend on");
+
+    const badCount = validatePlan([
+      { key: "a", kind: "delegate", title: "A", prompt: "任务", agent: "x" },
+      { key: "v", kind: "verify", title: "V", prompt: "复核 {{a}}", dependsOn: ["a"], verify: { reviewers: 9 } },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总", dependsOn: ["v"] },
+    ]);
+    expect(badCount.ok).toBe(false);
+    if (!badCount.ok) expect(badCount.reason).toContain("reviewers");
+
+    const badThreshold = validatePlan([
+      { key: "a", kind: "delegate", title: "A", prompt: "任务", agent: "x" },
+      { key: "v", kind: "verify", title: "V", prompt: "复核 {{a}}", dependsOn: ["a"], verify: { threshold: 0 } },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总", dependsOn: ["v"] },
+    ]);
+    expect(badThreshold.ok).toBe(false);
+    if (!badThreshold.ok) expect(badThreshold.reason).toContain("threshold");
+
+    const ok = validatePlan([
+      { key: "a", kind: "delegate", title: "A", prompt: "任务", agent: "x" },
+      { key: "v", kind: "verify", title: "V", prompt: "复核 {{a}}", dependsOn: ["a"] },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总 {{v}}", dependsOn: ["v"] },
+    ]);
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.steps[1]!.verify).toEqual({ reviewers: 2, threshold: 0.5 });
+  });
+
+  test("onFail:skip 只允许 delegate/verify;synthesize/gate 拒绝", () => {
+    const synthSkip = validatePlan([
+      { key: "a", kind: "delegate", title: "A", prompt: "任务", agent: "x" },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总", dependsOn: ["a"], onFail: "skip" },
+    ]);
+    expect(synthSkip.ok).toBe(false);
+    if (!synthSkip.ok) expect(synthSkip.reason).toContain("skip");
+
+    const gateSkip = validatePlan([
+      { key: "g", kind: "gate", title: "G", prompt: "p", gate: { command: "ls" }, onFail: "skip" },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总", dependsOn: ["g"] },
+    ]);
+    expect(gateSkip.ok).toBe(false);
+
+    const ok = validatePlan([
+      { key: "a", kind: "delegate", title: "A", prompt: "任务", agent: "x", onFail: "skip", retries: 2 },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总", dependsOn: ["a"] },
+    ]);
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.steps[0]!.onFail).toBe("skip");
+      expect(ok.steps[0]!.retries).toBe(2);
+    }
+  });
+
+  test("retries 越界被拒", () => {
+    const r = validatePlan([
+      { key: "a", kind: "delegate", title: "A", prompt: "任务", agent: "x", retries: 9 },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总", dependsOn: ["a"] },
+    ]);
+    expect(r.ok).toBe(false);
+  });
+
+  test("gate/verify 够不着 synthesize 也被拒", () => {
+    const r = validatePlan([
+      { key: "a", kind: "delegate", title: "A", prompt: "任务", agent: "x" },
+      { key: "g", kind: "gate", title: "G", prompt: "p", gate: { command: "ls" } },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总", dependsOn: ["a"] },
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("cannot reach");
+  });
+});
+
+describe("M2:foreach 展开与父条目结算", () => {
+  function foreachRun() {
+    const run = createWorkflowRun("t1", "批量翻译");
+    const checked = validatePlan([
+      { key: "list", kind: "delegate", title: "列清单", prompt: "列出文件", agent: "explorer" },
+      {
+        key: "each",
+        kind: "delegate",
+        title: "逐个处理",
+        prompt: "处理这一项:{{item}}",
+        agent: "fixer",
+        foreach: { from: "list" },
+      },
+      { key: "s", kind: "synthesize", title: "汇总", prompt: "汇总 {{each}}", dependsOn: ["each"] },
+    ]);
+    if (!checked.ok) throw new Error(checked.reason);
+    let wf = acceptProposal(run, checked.steps, "批量");
+    // list 结算:结果三行(含空行与空白,应被过滤)
+    wf = settleStep(wf, "list", { status: "done", result: "a.ts\n\n  b.ts  \nc.ts\n", fingerprint: "fl" });
+    return wf;
+  }
+
+  test("foreach.from 自动进依赖", () => {
+    const wf = foreachRun();
+    const step = wf.plan!.steps.find((s) => s.key === "each")!;
+    expect(step.dependsOn).toContain("list");
+    expect(step.foreach).toEqual({ from: "list" });
+  });
+
+  test("展开:逐行成子项,父挂 children 转 running,子项指纹/调度就绪", () => {
+    const wf = foreachRun();
+    const expanded = expandForeach(wf, "each");
+    expect(expanded.ok).toBe(true);
+    if (!expanded.ok) return;
+    expect(expanded.expanded).toBe(3);
+    expect(expanded.run.steps["each#0"]!.item).toBe("a.ts");
+    expect(expanded.run.steps["each#2"]!.item).toBe("c.ts");
+    expect(expanded.run.steps["each"]!.children).toEqual(["each#0", "each#1", "each#2"]);
+    expect(expanded.run.steps["each"]!.status).toBe("running");
+    // 父不再被调度;子项就绪;依赖父的 synthesize 尚未就绪
+    expect(readyStepKeys(expanded.run)).toEqual(["each#0", "each#1", "each#2"]);
+  });
+
+  test("展开幂等:已展开的父不再展开", () => {
+    const wf = foreachRun();
+    const first = expandForeach(wf, "each");
+    if (!first.ok) throw new Error(first.reason);
+    const second = expandForeach(first.run, "each");
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.expanded).toBe(0);
+  });
+
+  test("上游无项 → 展开失败(空产出不静默成空批次)", () => {
+    let wf = foreachRun();
+    wf = settleStep(wf, "list", { status: "done", result: "   \n\n", fingerprint: "fl" });
+    const r = expandForeach(wf, "each");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("no listable items");
+  });
+
+  test("子项全 done → 父 done,结果按序拼合含项标题", () => {
+    const wf = foreachRun();
+    const expanded = expandForeach(wf, "each");
+    if (!expanded.ok) throw new Error(expanded.reason);
+    let wf2 = expanded.run;
+    wf2 = settleStep(wf2, "each#0", { status: "done", result: "A 结果" });
+    wf2 = settleStep(wf2, "each#1", { status: "skipped", error: "provider down" });
+    wf2 = settleForeachParent(wf2, "each#1");
+    expect(wf2.steps["each"]!.status).toBe("running"); // 还差一个
+    wf2 = settleStep(wf2, "each#2", { status: "done", result: "C 结果" });
+    wf2 = settleForeachParent(wf2, "each#2");
+    expect(wf2.steps["each"]!.status).toBe("done");
+    expect(wf2.steps["each"]!.result).toContain("A 结果");
+    expect(wf2.steps["each"]!.result).toContain("skipped: provider down");
+    expect(wf2.steps["each"]!.error).toContain("1/3 items skipped");
+    // 依赖已满足,汇总结算就绪
+    expect(readyStepKeys(wf2)).toEqual(["s"]);
+  });
+
+  test("子项失败(非 skip)→ 父 failed", () => {
+    const wf = foreachRun();
+    const expanded = expandForeach(wf, "each");
+    if (!expanded.ok) throw new Error(expanded.reason);
+    let wf2 = expanded.run;
+    wf2 = settleStep(wf2, "each#0", { status: "failed", error: "崩溃" });
+    wf2 = settleForeachParent(wf2, "each#0");
+    expect(wf2.steps["each"]!.status).toBe("failed");
+    expect(wf2.steps["each"]!.error).toContain("each#0");
+  });
+
+  test("prompt 解析:{{item}} 与上游 {{key}},skip 依赖出显式缺口", () => {
+    const wf = foreachRun();
+    const expanded = expandForeach(wf, "each");
+    if (!expanded.ok) throw new Error(expanded.reason);
+    const step = expanded.run.plan!.steps.find((s) => s.key === "each")!;
+    expect(resolveStepPrompt(expanded.run, step, "each#1")).toBe("处理这一项:b.ts");
+    // synthesize 的 {{each}} 在父 done 后取拼合结果
+    let wf2 = settleStep(expanded.run, "each#1", { status: "done", result: "B 结果" });
+    wf2 = settleStep(wf2, "each#0", { status: "done", result: "A" });
+    wf2 = settleStep(wf2, "each#2", { status: "done", result: "C" });
+    wf2 = settleForeachParent(wf2, "each#2");
+    const synth = wf2.plan!.steps.find((s) => s.key === "s")!;
+    expect(resolveStepPrompt(wf2, synth, "s")).toContain("B 结果");
+    // skip 的依赖在插值处出显式标记
+    const wf3 = settleStep(wf2, "each", { status: "skipped", error: "手动跳过" });
+    expect(resolveStepPrompt(wf3, synth, "s")).toContain('was skipped');
+  });
+
+  test("allStepsSettled:skipped 计入终态;父未结算不算", () => {
+    const wf = foreachRun();
+    expect(allStepsSettled(wf)).toBe(false);
+    const expanded = expandForeach(wf, "each");
+    if (!expanded.ok) throw new Error(expanded.reason);
+    let wf2 = expanded.run;
+    for (const k of ["each#0", "each#1", "each#2"]) wf2 = settleStep(wf2, k, { status: "skipped" });
+    wf2 = settleForeachParent(wf2, "each#2");
+    wf2 = settleStep(wf2, "list", { status: "done", result: "x" });
+    expect(allStepsSettled(wf2)).toBe(false); // synthesize 还没跑
+    wf2 = settleStep(wf2, "s", { status: "done", result: "报告" });
+    expect(allStepsSettled(wf2)).toBe(true);
+  });
+});
