@@ -26,7 +26,11 @@
  */
 
 import { ExportedMessageRepository } from "@assistant-ui/react";
-import type { AppendMessage, ThreadMessageLike } from "@assistant-ui/react";
+import type {
+  AppendMessage,
+  ThreadMessage,
+  ThreadMessageLike,
+} from "@assistant-ui/react";
 import {
   createPiThreadState,
   reducePiThreadState,
@@ -35,7 +39,11 @@ import {
 } from "./threadState";
 import { errorText } from "../utils";
 import { isKnownPiClientEventType } from "../eventTypes";
-import { projectPiThreadMessagesShared } from "./messageProjection";
+import {
+  createPiProjectionCache,
+  projectPiThreadMessagesShared,
+} from "./messageProjection";
+import { noteSpan } from "@/components/debug/perf-store";
 import {
   responseForApproval,
   responseForInterrupt,
@@ -349,7 +357,25 @@ export class PiThreadController implements PiThreadControllerLike {
   private state: PiThreadState;
   private stateSnapshot: PiThreadState;
   private projectedMessages: readonly ThreadMessageLike[] = [];
+  /** 增量投影的续算锚点（见 messageProjection 的 PiProjectionCache）：流式期间
+   *  每帧只重投影真正变过的尾部，而不是整份转录。一线程一份，不跨线程共享。 */
+  private readonly projectionCache = createPiProjectionCache();
   private messageRepository = ExportedMessageRepository.fromArray([]);
+  /** 投影消息 → 已转换的运行时消息，按对象身份记忆。
+   *
+   *  为什么必须做：`ExportedMessageRepository.fromArray` 会对**每一条**消息重跑
+   *  `fromThreadMessageLike`，而后者给每个 tool-call part 造新对象、给 content 造
+   *  新数组——流式期间每帧全量跑一遍，代价是 O(全部消息 × 全部 part)，并且**摧毁
+   *  对象身份**：上层所有按身份做的缓存（框架自己的 thread-message-client、面板的
+   *  文件索引、getTurnParts…）统统失效。实测（真机日志）：消息 <10 时卡顿 0.09
+   *  次/窗口，消息 ≥50 时 3.62 次/窗口、最差 2.7fps。
+   *
+   *  单条转换仍走框架自己的 fromArray（只喂一条），这样 status 的兜底口径与原来
+   *  完全一致，不用重实现它内部未导出的 getRepositoryContentAutoStatus。 */
+  private readonly runtimeMessageCache = new WeakMap<
+    ThreadMessageLike,
+    ThreadMessage
+  >();
   private version = 0;
   private readonly allListeners = new Set<() => void>();
   private readonly metadataListeners = new Set<() => void>();
@@ -1134,20 +1160,41 @@ export class PiThreadController implements PiThreadControllerLike {
         hostUiRequests: this.state.hostUiRequests,
       },
       this.projectedMessages,
+      this.projectionCache,
     );
   }
 
   private recomputeProjectedMessagesAndNotify() {
+    const t0 =
+      process.env.NODE_ENV === "production" ? 0 : performance.now();
     const next = this.projectMessages();
     if (next === this.projectedMessages) {
       if (this.state !== this.stateSnapshot) this.publishState();
+      if (t0) noteSpan("投影+通知", performance.now() - t0);
       return;
     }
     this.projectedMessages = next;
-    // `fromArray` chains messages linearly and keeps their stable `pi-msg:N`
-    // ids (its generated id is only a fallback for id-less messages).
-    this.messageRepository = ExportedMessageRepository.fromArray(next);
+    // 增量重建仓库：未变的投影消息复用上次的转换结果（对象身份因此跨帧稳定），
+    // 只有真正变过的那条走一遍转换。链式 parentId 与原 fromArray 口径一致。
+    const converted = next.map((m) => {
+      const hit = this.runtimeMessageCache.get(m);
+      if (hit) return hit;
+      const one = ExportedMessageRepository.fromArray([m]).messages[0]!.message;
+      this.runtimeMessageCache.set(m, one);
+      return one;
+    });
+    this.messageRepository = {
+      messages: converted.map((m, idx) => ({
+        parentId: idx > 0 ? converted[idx - 1]!.id : null,
+        message: m,
+      })),
+    };
+    // 通知扇出跑完才算完：store 每次更新都会把所有已挂载的 useAuiState 选择器
+    // 同步跑一遍（见 @assistant-ui/store 的 notifySubscribers），这笔开销既不在
+    // React 的 render 阶段里、也不在 paint 里——正是「最长帧远大于渲染+绘制」的
+    // 缺口中最大的一块嫌疑。计时口径含投影 + 仓库重建 + 通知扇出。
     this.notifyMessageListeners();
+    if (t0) noteSpan("投影+通知", performance.now() - t0);
   }
 
   private scheduleProjectedMessageFlush() {

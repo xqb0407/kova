@@ -303,23 +303,51 @@ const dataPart = (
   data,
 });
 
-/** Build the toolCallId → result pairing map across the whole transcript so
- * out-of-order parallel results pair correctly. */
-const buildToolResultMap = (messages: readonly PiAgentMessage[]) => {
-  const map = new Map<
-    string,
-    { result?: string; images: ProjectedImage[]; isError: boolean; details: unknown }
-  >();
-  for (const message of messages) {
-    if (message.role !== "toolResult") continue;
-    const m = message as PiToolResultMessage;
-    map.set(m.toolCallId, {
+type ToolResultEntry = {
+  result?: string;
+  images: ProjectedImage[];
+  isError: boolean;
+  details: unknown;
+};
+
+/** toolResult 消息 → 解析结果，按消息对象身份记忆。
+ *
+ *  解析本身是字节级重活：`projectToolResult` 对输出做 `map().join()` 与 `trim()`，
+ *  等于把整份工具输出复制一遍。转录里已落盘的 toolResult 行对象跨帧同一引用
+ *  （reducer 只替换流式那一条，见 threadState.ts 的 replaceAt），所以按身份记忆
+ *  就能让「每帧重投影」不再等于「每帧重抄一遍全部工具输出」。
+ *
+ *  前提是 toolResult 行落盘后不再改写；Pi 的转录语义即如此。 */
+const toolResultEntries = new WeakMap<PiToolResultMessage, ToolResultEntry>();
+
+const toolResultEntry = (m: PiToolResultMessage): ToolResultEntry => {
+  let entry = toolResultEntries.get(m);
+  if (!entry) {
+    entry = {
       ...projectToolResult(readToolResultContent({ content: m.content }), {
         toolCallId: m.toolCallId,
       }),
       isError: m.isError,
       details: m.details,
-    });
+    };
+    toolResultEntries.set(m, entry);
+  }
+  return entry;
+};
+
+/** Build the toolCallId → result pairing map so out-of-order parallel results
+ * pair correctly. `from` 起建：增量投影只重投影尾部，而尾部里每个 tool-call 的
+ * 结果行必然也在尾部（结果行落在调用行之后），复用掉的前缀不需要查表。 */
+const buildToolResultMap = (
+  messages: readonly PiAgentMessage[],
+  from = 0,
+) => {
+  const map = new Map<string, ToolResultEntry>();
+  for (let i = from; i < messages.length; i++) {
+    const message = messages[i];
+    if (message.role !== "toolResult") continue;
+    const m = message as PiToolResultMessage;
+    map.set(m.toolCallId, toolResultEntry(m));
   }
   return map;
 };
@@ -333,6 +361,18 @@ type GroupAccumulator = {
   /** The most recent assistant message in the group (drives final status). */
   lastAssistant: PiAssistantMessage;
   hasPendingHostUi: boolean;
+  /** 同组内 toolCallId → 它在 `parts` 里的下标，供重复检测 O(1) 查。
+   *
+   *  这份表是性能刚需：重复检测原先每次都对着整组 parts 跑线性 `findIndex`，
+   *  而「一轮的全部步骤并成一条消息」意味着一个组能有上千个工具调用、数千个
+   *  part——代价于是成了 O(调用数 × part 数)。实测单轮 1600 步的投影
+   *  11.01ms/帧，改成查表后 1.26ms（8.7×），增长也从二次回到线性。
+   *  只在重复分支重建（那条路径会 filter 掉旧拷贝的成图，使下标左移）。 */
+  toolCallSlots: Map<string, number>;
+  /** 本组的产出是否吃过「活」输入（未配对的工具调用的直播状态 / 挂起的主机
+   *  UI）。只有这样标记过的段才在 toolExecutions / hostUiRequests 变化时有
+   *  重投影义务——其余段的产出只由转录行决定，可以整段复用。 */
+  live: boolean;
 };
 
 const projectAssistantInto = (
@@ -381,9 +421,14 @@ const projectAssistantInto = (
           toolCallId: part.id,
         });
       const isError = paired?.isError ?? live?.status === "error";
+      // 结果行还没落盘时，这一行 part 的内容完全来自直播台账（partialResult /
+      // status）——标记成「活」，台账一变就必须重投影本段
+      if (paired === undefined && live !== undefined) group.live = true;
 
       const hostUi = hostUiByToolCall.get(part.id);
       const approval = hostUi && approvalForRequest(hostUi);
+      // 审批卡的内容来自 hostUiRequests，同样算活输入
+      if (approval) group.live = true;
 
       const toolCall: ToolCallPart = {
         type: "tool-call",
@@ -409,9 +454,8 @@ const projectAssistantInto = (
       // assistant 的两份拷贝并入同组，part 查找表按 toolCallId 键控会直接
       // Duplicate key 崩溃。保留后一份（更推进的状态，带齐结果），就地替换；
       // 旧拷贝挂的成图一并移除，随后按新状态照常补图，避免图廊重复。
-      const dupIndex = group.parts.findIndex(
-        (p) => p.type === "tool-call" && p.toolCallId === part.id,
-      );
+      // 查找走 group.toolCallSlots（线性扫描会让长轮变成 O(n²)，见表上注释）。
+      const dupIndex = group.toolCallSlots.get(part.id) ?? -1;
       if (dupIndex >= 0) {
         group.parts[dupIndex] = toolCall;
         group.parts = group.parts.filter(
@@ -423,7 +467,15 @@ const projectAssistantInto = (
               (p.data as Partial<PiImagePartData>).toolCallId === part.id
             ),
         );
+        // filter 让下标左移，表跟着重建（重复是罕见兜底路径，重建不心疼）
+        group.toolCallSlots.clear();
+        group.parts.forEach((p, i) => {
+          if (p.type === "tool-call" && p.toolCallId !== undefined) {
+            group.toolCallSlots.set(p.toolCallId, i);
+          }
+        });
       } else {
+        group.toolCallSlots.set(part.id, group.parts.length);
         group.parts.push(toolCall);
       }
       // 工具图片 data part：紧跟 tool-call part（旧链路 chunk 顺序契约——结果行
@@ -514,27 +566,116 @@ const assistantStatus = (
   return { type: "complete", reason: "stop" };
 };
 
-export const projectPiThreadMessages = (
+/** 一条输出消息对应的输入区间与其「活」性（见 GroupAccumulator.live） */
+type ProjectionSegment = {
+  start: number;
+  end: number;
+  live: boolean;
+};
+
+/**
+ * 单条输出消息的 part 数上限：超了就切成下一条消息。
+ *
+ * 为什么需要：一轮里连续的 assistant + toolResult 会合并成**一条**消息，于是
+ * 「一个任务跑了很多步」= 一条消息里几千个 part，而每次流式增量都会让 React
+ * 重走整条消息（框架侧 GroupedParts 按 parts 全量重建分组树，part 层面没有
+ * 增量）。实测单轮每帧渲染成本（无头 Chrome / next dev / React Profiler）：
+ *
+ *   part   101 → p50  6.30ms      part   801 → p50 28.70ms
+ *   part   201 → p50 10.60ms      part  1601 → p50 48.50ms
+ *
+ * 线性、约 0.03–0.05ms/part/帧。对照：同一形态下投影侧每帧只花 0.46ms（1601
+ * part），所以瓶颈在渲染侧，且只能靠压住「正在变的那条消息的 part 数」解决——
+ * 前面的块内容不再变，连投影带渲染都整块复用（见 projectPiThreadMessagesShared）。
+ *
+ * 200 是按上表定的：切块后单帧 ≈ 10ms（dev 实测），生产构建更快；再小则每条消息
+ * 的固定开销（约 2ms/条）开始划不来。
+ */
+export const MAX_PARTS_PER_OUTPUT = 200;
+
+/**
+ * 一次投影的续算锚点：上一次的输入身份 + 输出分段。
+ *
+ * 存在的理由：转录行对象跨帧大多同一引用（唯一被替换的是正在流式的那条，见
+ * threadState.ts 的 replaceAt），而投影每次都是全量重算——一次长任务里每帧都
+ * 把整份转录重新投影一遍，成本随转录增长（实测 2800 条消息时单帧 24ms，已经
+ * 超过 16.7ms 的帧预算）。有了锚点，下一帧只需重投影真正变过的那一段。
+ *
+ * 调用方持有（ThreadController 一线程一个），不共享：跨线程共用一个槽位会让
+ * 身份比对永远落空，缓存白做。
+ */
+export type PiProjectionCache = {
+  messages: readonly PiAgentMessage[];
+  toolExecutions: PiThreadState["toolExecutions"];
+  hostUiRequests: readonly PiHostUiRequest[];
+  runStatus: PiThreadState["runStatus"];
+  out: ThreadMessageLike[];
+  segments: ProjectionSegment[];
+  /** 上一次收尾段的起点：该段带 isLast 语义，且流式增长（同一消息对象就地
+   *  改写，身份扫描发现不了）就发生在它身上——增量侧永不复用它。 */
+  tailStart: number;
+};
+
+export const createPiProjectionCache = (): PiProjectionCache => ({
+  messages: [],
+  toolExecutions: {},
+  hostUiRequests: [],
+  runStatus: "idle",
+  out: [],
+  segments: [],
+  tailStart: 0,
+});
+
+/**
+ * 从输入下标 `from` 起把转录投影到 `out`，并逐条记录每段输出对应的输入区间。
+ *
+ * `from` 必须落在一个**段边界**上（组已 flush、group 为 null 的位置）：即某个
+ * 非 toolResult 消息的下标，或转录末尾。这样「从 from 起投影」与「整趟投影到
+ * from」的结果逐字一致，增量投影才能安全地复用 from 之前那一段输出。
+ */
+const projectFrom = (
   input: PiProjectionInput,
-): ThreadMessageLike[] => {
+  from: number,
+  out: ThreadMessageLike[],
+  segments: ProjectionSegment[],
+): void => {
   const { messages } = input;
-  const toolResults = buildToolResultMap(messages);
+  const toolResults = buildToolResultMap(messages, from);
   const hostUiByToolCall = splitHostUiRequests(
     input.hostUiRequests,
   ).toolAssociated;
-  const out: ThreadMessageLike[] = [];
   let group: GroupAccumulator | null = null;
 
-  const flush = (isLast: boolean) => {
+  /** 段边界即 `end`：组的 end 取把它顶掉的那条消息的下标（那条必是 user /
+   *  独立角色，不会是 toolResult——toolResult 只会把组续下去），收尾的组取
+   *  转录长度。 */
+  const flush = (isLast: boolean, end: number) => {
     if (!group) return;
     out.push(buildAssistantMessage(group, input, isLast));
+    // 收尾段带 isLast 语义（status 由 runStatus 决定），且流式增长就发生在它
+    // 身上——一律标活，增量侧永不复用它
+    segments.push({ start: group.firstIndex, end, live: group.live || isLast });
     group = null;
   };
 
-  messages.forEach((message, index) => {
+  /** 独立角色消息：一条一输出、一条一段 */
+  const emit = (message: ThreadMessageLike, index: number) => {
+    out.push(message);
+    segments.push({ start: index, end: index + 1, live: false });
+  };
+
+  for (let index = from; index < messages.length; index++) {
+    const message = messages[index];
     const isLast = index === messages.length - 1;
     switch (message.role) {
       case "assistant": {
+        // 切块：下一步的 assistant 消息是一个安全的切点——它前面那一步的工具结果
+        // 已全部并入本组（结果行落在调用行之后、下一条 assistant 之前），切开不会
+        // 把 tool-call 与它的结果行分到两块里（那会让配对丢失，因为增量重投影只
+        // 从切点起建结果表）。切完 group 为 null，切点即段边界，续算照常。
+        if (group && group.parts.length >= MAX_PARTS_PER_OUTPUT) {
+          flush(false, index);
+        }
         if (!group) {
           group = {
             firstIndex: index,
@@ -543,6 +684,8 @@ export const projectPiThreadMessages = (
             steps: [],
             lastAssistant: message as PiAssistantMessage,
             hasPendingHostUi: false,
+            toolCallSlots: new Map(),
+            live: false,
           };
         }
         projectAssistantInto(
@@ -555,7 +698,7 @@ export const projectPiThreadMessages = (
         );
         // If this is the final transcript message, the group's status reflects
         // the live run; flush so that propagates.
-        if (isLast) flush(true);
+        if (isLast) flush(true, messages.length);
         break;
       }
 
@@ -570,26 +713,29 @@ export const projectPiThreadMessages = (
         // thread_snapshot 直出漏成用户提问气泡。跳过但不 flush——直播上连续
         // assistant 轮（截断轮→续跑轮）本就并入同组，保持「刷新=直播」同构。
         if (isAutoContinueMessage(message)) break;
-        flush(false);
+        flush(false, index);
         const id = messageId(message as PiUserMessage, index);
         const { parts, attachments } = projectUserContent(
           (message as PiUserMessage).content,
           id,
         );
-        out.push({
-          id,
-          role: "user",
-          createdAt: createdAtOf(message as PiUserMessage),
-          content: parts,
-          ...(attachments.length ? { attachments } : {}),
-        });
+        emit(
+          {
+            id,
+            role: "user",
+            createdAt: createdAtOf(message as PiUserMessage),
+            content: parts,
+            ...(attachments.length ? { attachments } : {}),
+          },
+          index,
+        );
         break;
       }
 
       case "bashExecution": {
-        flush(false);
+        flush(false, index);
         const m = message as PiBashExecutionMessage;
-        out.push(
+        emit(
           standaloneData(index, m, "pi-bash-execution", {
             command: m.command,
             output: m.output,
@@ -598,48 +744,53 @@ export const projectPiThreadMessages = (
             truncated: m.truncated,
             fullOutputPath: m.fullOutputPath,
           }),
+          index,
         );
         break;
       }
 
       case "custom": {
-        flush(false);
+        flush(false, index);
         const m = message as PiCustomMessage;
         if (!m.display) break; // hidden from UI, still in LLM context
-        out.push({
-          id: messageId(m, index),
-          role: "assistant",
-          createdAt: createdAtOf(m),
-          content: [
-            dataPart("pi-custom-message", {
-              customType: m.customType,
-              details: m.details,
-            }),
-            ...projectUserContent(m.content).parts,
-          ],
-        });
+        emit(
+          {
+            id: messageId(m, index),
+            role: "assistant",
+            createdAt: createdAtOf(m),
+            content: [
+              dataPart("pi-custom-message", {
+                customType: m.customType,
+                details: m.details,
+              }),
+              ...projectUserContent(m.content).parts,
+            ],
+          },
+          index,
+        );
         break;
       }
 
       case "branchSummary": {
-        flush(false);
+        flush(false, index);
         const m = message as PiBranchSummaryMessage;
-        out.push(
+        emit(
           standaloneData(index, m, "pi-branch-summary", {
             summary: m.summary,
             fromId: m.fromId,
           }),
+          index,
         );
         break;
       }
 
       case "compactionSummary": {
-        flush(false);
+        flush(false, index);
         const m = message as PiCompactionSummaryMessage;
         // 本地改动（快照分隔线保真）：data part 名与载荷对齐 UI 注册端
         // （compaction-banner CompactionDataUI）与 get_history 的
         // data-compaction part——旧名 "pi-compaction-summary" 分隔线渲染不出
-        out.push(
+        emit(
           standaloneData(index, m, "compaction", {
             phase: "complete",
             generation: m.generation,
@@ -649,25 +800,34 @@ export const projectPiThreadMessages = (
             // 分隔线横幅只认 phase，多带一个字段无副作用
             summary: m.summary,
           }),
+          index,
         );
         break;
       }
 
       default:
-        flush(false);
-        out.push(
+        flush(false, index);
+        emit(
           standaloneData(index, message, "pi-unsupported-message", {
             role: message.role,
             message,
           }),
+          index,
         );
         break;
     }
-  });
+  }
 
   // A transcript ending on a `toolResult` leaves the assistant group open; mark
   // it last so the live run status ("running") propagates.
-  flush(true);
+  flush(true, messages.length);
+};
+
+export const projectPiThreadMessages = (
+  input: PiProjectionInput,
+): ThreadMessageLike[] => {
+  const out: ThreadMessageLike[] = [];
+  projectFrom(input, 0, out, []);
   return out;
 };
 
@@ -727,13 +887,15 @@ const sameThreadMessageLike = (
   a: ThreadMessageLike,
   b: ThreadMessageLike,
 ): boolean =>
-  a.id === b.id &&
-  a.role === b.role &&
-  deepEqual(a.createdAt, b.createdAt) &&
-  deepEqual(a.content, b.content) &&
-  deepEqual(a.attachments, b.attachments) &&
-  deepEqual(a.status, b.status) &&
-  deepEqual(a.metadata, b.metadata);
+  // 增量投影下绝大多数消息是同一批对象，先走引用相等（O(1)）再退深比较
+  a === b ||
+  (a.id === b.id &&
+    a.role === b.role &&
+    deepEqual(a.createdAt, b.createdAt) &&
+    deepEqual(a.content, b.content) &&
+    deepEqual(a.attachments, b.attachments) &&
+    deepEqual(a.status, b.status) &&
+    deepEqual(a.metadata, b.metadata));
 
 export const shareProjectedThreadMessages = (
   next: readonly ThreadMessageLike[],
@@ -750,11 +912,81 @@ export const shareProjectedThreadMessages = (
   return changed ? shared : previous;
 };
 
+/**
+ * 增量投影：复用 `cache` 里上一帧的输出分段，只重投影真正变过的尾部。
+ *
+ * 复用上界取三者的最小值：
+ *  1. 前缀身份扫描出的首个变化点——转录行对象跨帧保持引用，所以逐条比引用就能
+ *     定位「从哪一条起是新的」。注意这条**发现不了**流式消息的就地改写
+ *     （applyStreamDelta 原地改同一个对象），那份安全性由第 2 条兜住。
+ *  2. 上一帧的收尾段起点——流式增长只发生在收尾段里，永不越它复用。
+ *  3. 活输入（toolExecutions / hostUiRequests / runStatus）变化时，再退到最近
+ *     一个吃过活输入的段之前。
+ *
+ * 被复用的是**整条输出消息对象**，不只是省下重建：shareProjectedThreadMessages
+ * 拿到同一批引用后会直接判定「没变」，下游（store 通知、React）连选择器重跑都
+ * 省了。
+ */
 export const projectPiThreadMessagesShared = (
   input: PiProjectionInput,
   previous: readonly ThreadMessageLike[],
-): readonly ThreadMessageLike[] =>
-  shareProjectedThreadMessages(projectPiThreadMessages(input), previous);
+  cache: PiProjectionCache,
+): readonly ThreadMessageLike[] => {
+  const { messages } = input;
+
+  // 1) 前缀身份扫描：找第一条被换掉的消息。长度变化天然落在 common 上。
+  const prevMessages = cache.messages;
+  const common = Math.min(prevMessages.length, messages.length);
+  let firstChanged = common;
+  for (let i = 0; i < common; i++) {
+    if (prevMessages[i] !== messages[i]) {
+      firstChanged = i;
+      break;
+    }
+  }
+
+  // 2) 复用上界（输入下标）
+  let reuseTo = Math.min(firstChanged, cache.tailStart);
+  if (
+    cache.toolExecutions !== input.toolExecutions ||
+    cache.hostUiRequests !== input.hostUiRequests ||
+    cache.runStatus !== input.runStatus
+  ) {
+    for (const seg of cache.segments) {
+      if (seg.live && seg.start < reuseTo) reuseTo = seg.start;
+    }
+  }
+
+  // 3) 对齐到段边界：只有整段落在上界之内才可复用
+  let reuseCount = 0;
+  while (
+    reuseCount < cache.segments.length &&
+    cache.segments[reuseCount].end <= reuseTo
+  ) {
+    reuseCount++;
+  }
+  // 新的收尾段必须重投影：isLast 决定 status（runStatus 为 running 时是
+  // "running"），而转录被截短时，旧的末段在新转录里成了收尾段，身份扫描看不出来
+  if (reuseCount > 0 && cache.segments[reuseCount - 1].end === messages.length) {
+    reuseCount--;
+  }
+
+  const out = cache.out.slice(0, reuseCount);
+  const segments = cache.segments.slice(0, reuseCount);
+  const resumeFrom = reuseCount > 0 ? segments[reuseCount - 1].end : 0;
+
+  projectFrom(input, resumeFrom, out, segments);
+
+  cache.messages = messages;
+  cache.toolExecutions = input.toolExecutions;
+  cache.hostUiRequests = input.hostUiRequests;
+  cache.runStatus = input.runStatus;
+  cache.out = out;
+  cache.segments = segments;
+  cache.tailStart = segments.length > 0 ? segments[segments.length - 1].start : 0;
+
+  return shareProjectedThreadMessages(out, previous);
+};
 
 export const projectPiThreadRepository = (input: PiProjectionInput) =>
   ExportedMessageRepository.fromArray(projectPiThreadMessages(input));

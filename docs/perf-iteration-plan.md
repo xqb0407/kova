@@ -223,6 +223,33 @@ MessageWindow（IO 带 ±2500px 进出换挂载、等高占位、还原滚动补
 线程缓存上限维持原结论：框架无公开 per-thread dispose（仅
 __internal_dispose 整核），记为框架限制。
 
+### 5a 路线补充（2026-10-06）：**框架级窗口化同样不可行**
+
+本轮排查卡顿时曾建议改用 `unstable_useThreadMessageIds` +
+`ThreadPrimitive.Unstable_MessageById` 做消息列表窗口化——它**同属「JS 卸载式」**，
+与上面 5a 记录的三连回归（流式抖动 / 发送后空白 / 回底失效）同因，**勿再提议**。
+P5 剩余可行方向仍以 5b（历史分页：数据层根本不产生占位高度游戏）为首选；
+`content-visibility: auto` + `contain-intrinsic-size` 已在
+`app/styles/globals.css` 用于 `aui_assistant-message-content`（原生离屏跳过，
+DOM 不卸载 ⇒ 无状态翻转、无补偿）。
+
+### 迭代6 记录（2026-10-06，未提交）：卡顿主因不在「规模」而在「每帧重做」
+
+排查顺序与结论（避免以后重复走）：**图片数量/像素、消息条数、刻度条、
+面板、顶锚点、store 通知扇出——逐一被实测排除**（真机探针，
+见 perf-baseline「前端自助探针」）。最终定位在**流式代码块每帧重新高亮**：
+`@streamdown/code` 的缓存键只按代码文本，流式每个 chunk 都是新文本 ⇒ 每次
+cache miss ⇒ 整块重高亮 + 重建几百 span。修法：`markdown-text.tsx` 里给 code
+插件包一层，`isIncomplete` 时不返回结果（streamdown 落回原始文本），闭合后再
+高亮一次。实测打包版最差 fps 2.7 → 29.7、卡顿率 1.9 → 0.19 次/窗口。
+
+遗留（按优先级）：
+1. `刻度条-重建` 67ms（峰值 116ms）——现为近期最大项，但**偶发**（消息增删时，
+   debounce 180ms）。改法：刻度从消息状态（轮次）推导，元素按点击/悬停取。
+2. 图片路径（Blob URL / 缩略图）**尚未在真实多图会话验证**：两次会话都只有
+   2-3 张图、≈2MP，量太小未被有效触发。
+3. 窗口化维持 5a/5b 原结论（见上）。
+
 ## 附录 A：每迭代必跑的回归清单
 
 自动：`cd sidecar/pi-agent && bun test`；`bun run build`（Next 构建过类型）；

@@ -22,6 +22,7 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/700.css";
 import "./styles/globals.css";
 import { Toaster } from "@/components/ui/toast";
+import { PerfHud } from "@/components/debug/perf-hud";
 
 export const metadata: Metadata = {
   title: "Kova Harness Agent",
@@ -57,7 +58,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: UI_PREFS_BOOTSTRAP }} />
       </head>
       <body>
-        {children} <Toaster />
+        {children} <Toaster /> <PerfHud />
       </body>
     </html>
   );

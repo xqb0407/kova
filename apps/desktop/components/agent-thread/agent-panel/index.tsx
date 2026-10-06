@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useEffect, useRef, useState, type FC, type ReactNode } from "react";
+import { RenderProbe } from "@/components/debug/render-probe";
 import {
   Maximize2Icon,
   Minimize2Icon,
@@ -90,6 +91,8 @@ const AgentPanelImpl: FC<{
   const { tabs, activeId } = usePanelTabs();
   const active = tabs.find((t) => t.id === activeId) ?? null;
   return (
+    // 渲染耗时自检（仅开发构建）：与消息流各挂一个 label，见 render-probe.tsx
+    <RenderProbe label="右侧面板">
     <PanelShell
       tabs={tabs}
       activeId={activeId}
@@ -99,6 +102,7 @@ const AgentPanelImpl: FC<{
       fullscreen={fullscreen}
       onToggleFullscreen={onToggleFullscreen}
     />
+    </RenderProbe>
   );
 };
 

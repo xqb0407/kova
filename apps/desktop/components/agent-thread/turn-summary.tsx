@@ -212,6 +212,14 @@ export const TurnSlot: FC<{
       slot.turnRunning ||
       (slot.isLastTurn && threadRunning));
   if (streamingTurnEnd || isEditing || parsed?.keepsVisible) return <>{children}</>;
+  // 正在进行的轮：过程照常展开。
+  // 合并成一条消息的时代，「正在跑的那一步可见」天然成立——轮末整条渲染，而一轮
+  // 只有那一条消息。投影侧按 part 数切块后，一轮会有多条过程消息，不放开的话除
+  // 末块外都会被默认收起（收起即整块卸载），跑的过程中只剩最后一块可见。
+  // TurnProcess 根节点的 -mt-6 抵消消息组的 gap-y-6，所以块与块之间不多出间距。
+  if (slot.turnRunning || (slot.isLastTurn && threadRunning)) {
+    return <TurnProcess collapsed={false}>{children}</TurnProcess>;
+  }
   // 轮中过程 / 纯分隔线消息：包进可动画的过程区（收起时整块卸载）
   return <TurnProcess collapsed={collapsed}>{children}</TurnProcess>;
 };

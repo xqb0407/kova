@@ -29,6 +29,8 @@ import { ThreadPreviewRail } from "./thread-preview-rail";
 import { TurnSlot, TurnTimingRecorder } from "./turn-summary";
 import { TopAnchorKeeper } from "./top-anchor-keeper";
 import { prewarmShiki } from "@/lib/markdown/prewarm-shiki";
+import { RenderProbe } from "@/components/debug/render-probe";
+import { noteFact } from "@/components/debug/perf-store";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -106,6 +108,13 @@ const ThreadWorkingIndicator: FC = () => {
  * CodeMirror 输入框）都同步 reconcile 一遍，是开合卡顿的主因。会话数据经
  * useAuiState 订阅照常驱动更新，不受 memo 影响。
  */
+/** 事实探针：把当前消息条数上报（渲染耗时要配这个数才读得出含义）。 */
+const ThreadSizeProbe: FC = () => {
+  const count = useAuiState((s) => s.thread.messages.length);
+  noteFact("消息条数", count);
+  return null;
+};
+
 export const Thread = memo(function Thread() {
   const isEmpty = useAuiState(isNewChatView);
   // 空闲时预建热点语言的 Shiki 缓存，消掉流式中首个代码块的高亮停顿
@@ -114,6 +123,10 @@ export const Thread = memo(function Thread() {
   }, []);
 
   return (
+    // 渲染耗时自检（仅开发构建）：与右侧面板各挂一个 label，卡顿时看 console 的
+    // [perf] 行就能分清贵在消息流还是面板，见 components/debug/render-probe.tsx
+    <RenderProbe label="消息流">
+      <ThreadSizeProbe />
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root bg-transparent relative @container flex h-full flex-col"
       style={{
@@ -224,5 +237,6 @@ export const Thread = memo(function Thread() {
 
       <SelectionToolbar />
     </ThreadPrimitive.Root>
+    </RenderProbe>
   );
 });

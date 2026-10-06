@@ -52,6 +52,49 @@ bun scripts/perf-sample.mjs <场景名> [--interval 2] [--duration 秒] [--webvi
 - 实测快照（重启加载新包后，空闲 4min）：app 133MB / sidecar 120MB /
   webview ~700MB（基线 183/123/1327）。
 
+- 迭代6（渲染热路径·流式代码块高亮）**已实现，未提交（见工作区）**：
+  流式期间不再重复高亮「未闭合」的代码块。根因：`@streamdown/code` 的高亮结果
+  缓存键只由代码文本决定，而流式每个 chunk 都是一段新文本 ⇒ **每帧整块重高亮 +
+  重建几百个 span**。同款重任务（agent 正在写 HTML/SVG 文件）实测：
+
+  | 口径 | 修前 | 修后 |
+  |---|---|---|
+  | 打包版 最差 fps / 最长帧 / 卡顿率 | 2.7 / 764ms / 1.9 次每窗口 | **29.7 / 357ms / 0.19** |
+  | dev 版 实时帧率（近 3s） | 2.9 - 5.9 fps | **34 - 60 fps** |
+
+  同日同轮一并落地的还有（均未提交）：投影段级增量复用 + O(1) 重复检测 +
+  按 part 数切块（`MAX_PARTS_PER_OUTPUT=200`，见 messageProjection.ts 注释）、
+  消息仓库增量重建（ThreadController，修回对象身份）、图片不再以 base64 常驻
+  DOM（Blob URL）+ 瓦片走缩略图 + `decoding="async"`。
+  数字与下面 S2 的 DevTools 口径不同，勿混用。
+
+## 前端自助探针（2026-10-06 起，定位「卡在哪」用）
+
+- 源码 `components/debug/`：`perf-hud`（rAF 采样 500ms 窗口 + 汇总上报）、
+  `render-probe`（React `<Profiler>` 包住消息流与右侧面板）、`perf-store`（中转）。
+- 出口：dev 构建在左下角显示一行、点一下复制；**打包版静默，只把汇总
+  `console.warn` 出去**，桌面端 frontend-logging 转发进
+  `~/Library/Logs/<identifier>/<日期>/web.log`
+  （打包版 identifier = `com.kova.assistant`，dev = `com.kova.assistant.dev`）。
+- **判据：看「近 3s 帧率」行与「近况最慢」栏**。`最差 fps / 最长帧 / 卡顿帧` 是
+  会话累计最大值，改完代码仍带着旧峰值，不能用来读改动前后。
+- 归因字段：`消息流`/`右侧面板`=React 渲染；`-绘制`=渲染完到出帧（提交+布局+
+  绘制+合成）；`投影+通知`=投影+仓库重建+store 扇出；`刻度条-*`/`顶锚点兜底`
+  =两处几何测量。
+
+### 用这套探针踩过的坑（勿重蹈）
+
+1. **不要用 `--dump-dom --virtual-time-budget` 量时间**：虚拟时间会把
+   `performance.now()` 一起虚拟化，而 React Profiler 内部就用它 → 读数恒为 0。
+   要真实时间就 `scripts/measure-dev-preview.mjs`（CDP）。
+2. **`tauri:dev` 比打包版慢 2-4 倍**：判断**体感**必须用打包版；判断**相对变化**
+   可用 dev。曾据 dev 数字误判过一次结论。
+3. **打包版前端资源嵌在二进制里**：在 `out/` 里 grep 到 ≠ 应用包里有；改完必须
+   重新 `tauri:build`（dev 走 HMR 即时生效）。
+4. **窗口在后台时 WKWebView 会暂停 rAF**：探针一条都不写。必须前台使用才有数据。
+5. 测量页 `app/dev-preview/long-turn/`（`?steps=&chunks=&msgs=&panel=&open=&report=`）
+   可把 part 摊到 N 条消息、挂真实面板、把报告 POST 回本地接收端。
+
 ## 场景与待填数字（跑一个填一个）
 
 ### S1 sidecar 会话驻留（P2）

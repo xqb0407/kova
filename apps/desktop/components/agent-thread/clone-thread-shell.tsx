@@ -137,6 +137,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     onActiveMenuChange?.(value);
   };
   const [activeTab, setActiveTab] = useState<string>("tasks");
+  // 红绿灯避让只在 macOS 桌面端（Tauri）成立：isMacPlatform() 只看 UA，
+  // 网页在 mac 浏览器里打开时同样为 true，但无窗口 chrome，必须走 Logo 分支
+  // （与 base.tsx 的 mac 同口径）
+  const macDesktop = isTauri() && isMacPlatform();
   // 项目分组的展开状态提升到 shell：「展开全部/收起全部」按钮与列表共用
   const [projOpenDirs, setProjOpenDirs] = useState<Set<string>>(
     () => new Set(),
@@ -445,8 +449,8 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           data-tauri-drag-region={isTauri() ? "deep" : undefined}
           className={cn(
             "flex h-16 shrink-0 items-center overflow-hidden px-2 gap-2",
-            // macOS：内容靠右（左上为悬浮红绿灯位）；Windows/网页：Logo 靠左、操作靠右
-            isMacPlatform() ? "justify-end" : "justify-start",
+            // macOS 桌面端：内容靠右（左上为悬浮红绿灯位）；Windows/网页：Logo 靠左、操作靠右
+            macDesktop ? "justify-end" : "justify-start",
           )}
         >
           {!collapsedControlled && (
@@ -463,7 +467,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           )}
           {(() => {
             // 搜索入口紧挨折叠按钮左侧（折叠按钮经 headerContent 传入）。
-            // 折叠时内容随整列平移出屏，无需卸载；mac 侧的红绿灯避让
+            // 折叠时内容随整列平移出屏，无需卸载；mac 桌面端的红绿灯避让
             // （ml-18）由组内第一个元素（搜索）承接
             const searchButton = (
               <TooltipIconButton
@@ -472,7 +476,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 tooltip="搜索对话"
                 side="bottom"
                 onClick={() => setSearchOpen(true)}
-                className={cn("size-8", isMacPlatform() && "ml-18")}
+                className={cn("size-8", macDesktop && "ml-18")}
               >
                 <SearchIcon className="size-4" />
               </TooltipIconButton>
@@ -485,7 +489,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                       Chats
                     </span>
                   );
-            if (isMacPlatform())
+            if (macDesktop)
               return (
                 <>
                   {searchButton}

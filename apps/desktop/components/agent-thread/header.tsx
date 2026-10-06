@@ -47,12 +47,12 @@ export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
     >
       <Image
         src={logo}
-        alt="logo"
+        alt="Kova"
         className="size-5 shrink-0 dark:hue-rotate-180 dark:invert"
       />
-      {/* {!collapsed && (
-        <span className="text-foreground/90 truncate">搞个锤子</span>
-      )} */}
+      {!collapsed && (
+        <span className="text-foreground/90 truncate">扣瓦</span>
+      )}
     </div>
   );
 };
