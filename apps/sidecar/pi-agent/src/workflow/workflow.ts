@@ -12,9 +12,11 @@
  */
 import type { Running } from "../types";
 import { sendEventChunk } from "../protocol/stream";
-import { WORKFLOW_CONTINUE_PREFIX } from "pi-protocol";
+import { WORKFLOW_CONTINUE_PREFIX, type Playbook, type WorkflowRunSummary } from "pi-protocol";
 import { appendWorkflowStateRow, readWorkflowStateRow } from "../sessions/transcript";
 import {
+  acceptProposal,
+  confirmProposal,
   createWorkflowRun,
   formatWorkflowStatus,
   isWorkflowRun,
@@ -23,7 +25,8 @@ import {
   validateObjectiveText,
   type WorkflowRun,
 } from "./plan-state";
-import { pruneRunFiles, writeRunFile } from "./journal";
+import { listRunFiles, pruneRunFiles, writeRunFile } from "./journal";
+import { playbookSteps } from "./library";
 
 /** threadId -> 当前运行(per-thread 槽,对应 goal 的 goals) */
 const workflows = new Map<string, WorkflowRun>();
@@ -165,6 +168,8 @@ export function workflowStatePayload(threadId: string): {
       ...(wf.plan ? { stepStates } : {}),
       ...(wf.proposalFeedback ? { proposalFeedback: wf.proposalFeedback } : {}),
       ...(wf.completionSummary ? { completionSummary: wf.completionSummary } : {}),
+      ...(wf.playbookName ? { playbookName: wf.playbookName } : {}),
+      ...(wf.playbookId ? { playbookId: wf.playbookId } : {}),
       tokensUsed: wf.tokensUsed,
       startedAt: wf.startedAt,
       updatedAt: wf.updatedAt,
@@ -182,6 +187,53 @@ export function startWorkflow(run: Running, objective: string): WorkflowRun {
   const wf = createWorkflowRun(run.threadId, objective);
   commitWorkflow(run, wf);
   return wf;
+}
+
+/**
+ * 从剧本库发起一次运行(设置页「运行」按钮 / 参数化重放):
+ * 校验过的参数与剧本溯源一并写进 run,直接到 running——剧本本身在保存时
+ * 已经过提案校验与人工检视,不再走确认卡(与 ZCode 的「运行」按钮同语义)。
+ * 执行器由调用方(handler)启动。
+ */
+export function startPlaybookRun(
+  run: Running,
+  playbook: Playbook,
+  args: Record<string, unknown>,
+): WorkflowRun {
+  const steps = playbookSteps(playbook);
+  const objective = playbook.description.trim() || playbook.name;
+  let wf = createWorkflowRun(run.threadId, objective);
+  wf = {
+    ...wf,
+    args,
+    playbookId: playbook.id,
+    playbookName: playbook.name,
+  };
+  wf = acceptProposal(wf, steps, playbook.name);
+  const running = confirmProposal(wf);
+  if (!running) throw new Error("failed to start the playbook run (not in proposed state)");
+  commitWorkflow(run, running);
+  return running;
+}
+
+/** 运行历史(设置页):.kova/workflows 目录投影成摘要列表 */
+export function listRunSummaries(cwd: string): WorkflowRunSummary[] {
+  return listRunFiles(cwd).map((wf) => {
+    const topKeys = wf.plan?.steps.map((s) => s.key) ?? [];
+    return {
+      runId: wf.id,
+      ...(wf.title ? { title: wf.title } : {}),
+      objective: wf.objective,
+      status: wf.status,
+      startedAt: wf.startedAt,
+      updatedAt: wf.updatedAt,
+      tokensUsed: wf.tokensUsed,
+      stepCount: topKeys.length,
+      doneCount: topKeys.filter((k) => wf.steps[k]?.status === "done").length,
+      ...(wf.playbookName ? { playbookName: wf.playbookName } : {}),
+      ...(wf.playbookId ? { playbookId: wf.playbookId } : {}),
+    };
+  });
 }
 
 /** 提案驳回(proposed → proposing 并带回意见):重提轮据此修改剧本 */

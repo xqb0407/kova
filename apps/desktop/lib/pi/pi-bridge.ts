@@ -6,7 +6,9 @@ import type {
   ContextInfo,
   ErrorPayload,
   GoalState,
+  Playbook,
   SessionSummary,
+  WorkflowRunSummary,
   WorkflowState,
   UsageTotals,
 } from "pi-protocol";
@@ -999,6 +1001,8 @@ export type PiResponse =
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "goal_state"; goal: GoalState["goal"] }
   | { type: "workflow_state"; run: WorkflowState["run"] }
+  | { type: "workflow_playbooks"; playbooks: Playbook[] }
+  | { type: "workflow_runs"; runs: WorkflowRunSummary[] }
   | { type: "model_updated"; provider: string; modelId: string }
   | { type: "credential"; provider: string }
   | { type: "credentials"; credentials: PiCredentialSummary[] }

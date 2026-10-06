@@ -65,7 +65,19 @@ import {
   workflowStatePayload,
 } from "../../workflow/workflow";
 import { registerWorkflowRunner, startWorkflowExecution } from "../../workflow/runner";
-import { rejectWorkflowPlan, restoreWorkflow } from "../../workflow/workflow";
+import {
+  listRunSummaries,
+  rejectWorkflowPlan,
+  restoreWorkflow,
+  startPlaybookRun,
+} from "../../workflow/workflow";
+import {
+  deletePlaybook,
+  getPlaybook,
+  listPlaybooks,
+  savePlaybook,
+  validatePlaybookArgs,
+} from "../../workflow/library";
 import { WORKFLOW_CONTINUE_PREFIX } from "pi-protocol";
 import { confirmProposal, resumeRun, type WorkflowRun } from "../../workflow/plan-state";
 import { dispatchPrompt } from "../prompt-pipeline";
@@ -389,6 +401,78 @@ export const handlers: Record<string, CommandHandler> = {
     pauseWorkflowForUserInput(run);
     commitWorkflow(run, undefined);
     send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+  },
+
+  /* ------------------------------ 剧本库 ------------------------------ */
+
+  workflow_list_playbooks: async (reqId) => {
+    send({ id: reqId, type: "workflow_playbooks", playbooks: await listPlaybooks() });
+  },
+
+  workflow_save_playbook: async (reqId, msg) => {
+    // 从当前运行存为剧本(运行卡的「存为剧本」/设置页)。参数声明自动从步骤
+    // prompt 的 {{args.NAME}} 占位符提取(sidecar 侧 deriveArgsFromSteps)
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    const wf = getWorkflow(threadId);
+    if (!wf?.plan) throw new Error(`no workflow plan to save: ${threadId}`);
+    const name =
+      (typeof msg.name === "string" && msg.name.trim()) ||
+      wf.title ||
+      wf.objective.slice(0, 40);
+    await savePlaybook({
+      steps: wf.plan.steps,
+      name,
+      description: wf.objective,
+      ...(typeof msg.whenToUse === "string" ? { whenToUse: msg.whenToUse } : {}),
+      source: "from-run",
+    });
+    send({ id: reqId, type: "workflow_playbooks", playbooks: await listPlaybooks() });
+  },
+
+  workflow_delete_playbook: async (reqId, msg) => {
+    const name = String(msg.name ?? "");
+    if (!(await deletePlaybook(name))) throw new Error(`no such playbook: ${name}`);
+    send({ id: reqId, type: "workflow_playbooks", playbooks: await listPlaybooks() });
+  },
+
+  workflow_run_playbook: async (reqId, msg) => {
+    // 设置页「运行」:校验参数 → 建 run(直入 running,不再走确认卡——剧本本身
+    // 已检视过)→ 起执行器。线程已有活跃运行时拒绝(单槽位语义),让用户先清
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    const playbook = await getPlaybook(String(msg.name ?? ""));
+    if (!playbook) throw new Error(`no such playbook: ${String(msg.name ?? "")}`);
+    const checked = validatePlaybookArgs(
+      playbook.args,
+      (msg.args && typeof msg.args === "object" ? msg.args : {}) as Record<string, unknown>,
+    );
+    if (!checked.ok) throw new Error(`参数不合法:${checked.errors.join("; ")}`);
+    const current = getWorkflow(threadId);
+    if (current && (current.status === "running" || current.status === "proposed" || current.status === "paused")) {
+      throw new Error("这个线程还有未结束的工作流运行,先清除或等它结束再发起剧本");
+    }
+    if (ensureWorkflowMode(run) && run.sessionId) sendSessionsChanged("updated", run.sessionId);
+    commitWorkflow(run, undefined);
+    startPlaybookRun(run, playbook, checked.values);
+    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+    void startWorkflowExecution(run);
+  },
+
+  workflow_list_runs: async (reqId, msg) => {
+    // 运行历史(设置页):.kova/workflows 目录的摘要投影
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    send({ id: reqId, type: "workflow_runs", runs: listRunSummaries(run.cwd) });
   },
 
   context_info: async (reqId, msg) => {

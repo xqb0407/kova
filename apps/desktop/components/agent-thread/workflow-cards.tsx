@@ -204,7 +204,10 @@ export const WorkflowRunCard: FC<{
   busy: boolean;
   onPause: () => void;
   onResume: () => void;
-}> = ({ run, busy, onPause, onResume }) => {
+  /** 存为剧本(仅完成的运行显示);解析后按钮转「已存为剧本」 */
+  onSave?: () => Promise<void>;
+}> = ({ run, busy, onPause, onResume, onSave }) => {
+  const [saved, setSaved] = useState(false);
   const steps = run.steps ?? [];
   const states = new Map<string, WorkflowStepState>();
   const childrenByParent = new Map<string, WorkflowStepState[]>();
@@ -268,6 +271,22 @@ export const WorkflowRunCard: FC<{
           >
             {busy ? <Loader2Icon className="size-3 animate-spin" /> : <PlayIcon className="size-3" />}
             <span className="sr-only">继续</span>
+          </Button>
+        )}
+        {onSave && run.status === "complete" && !run.playbookName && (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy || saved}
+            onClick={() => {
+              void onSave()
+                .then(() => setSaved(true))
+                .catch((err) => console.error("save playbook failed:", err));
+            }}
+            title="把这套剧本存进剧本库,以后可带参数重跑(设置 → 工作流剧本)"
+            className="h-6 shrink-0 px-2 text-[11px]"
+          >
+            {saved ? "已存为剧本 ✓" : "存为剧本"}
           </Button>
         )}
       </div>

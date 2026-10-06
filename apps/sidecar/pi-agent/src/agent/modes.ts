@@ -186,6 +186,7 @@ const WORKFLOW_MODE_PROMPT = [
   "First inspect the workspace with the read-only tools if the request depends on facts you do not have, then call workflow_propose_plan with the complete plan.",
   "Step kinds: delegate runs one subagent on a self-contained brief (add foreach.from to run it once per line of an upstream result, with {{item}} in the prompt); gate runs a literal shell command and branches on its exit code — reach for it wherever a command can decide, and never build the command from a variable; verify puts an upstream result in front of adversarial reviewers; the single synthesize step weaves upstream results ({{step-key}} references) into the final report.",
   "Steps with no dependsOn between them run concurrently — add dependencies only for real data flow. A step that may fail without dooming the run can set onFail:\"skip\".",
+  "Write {{args.name}} placeholders for values that should change when this plan is re-run (a month range, an output dir, a threshold). Saving the run as a playbook turns every placeholder into a parameter the user can set — concrete values you bake in stay baked in.",
   "Write titles, phases and step prompts in the user's language. A user question or a trivial task does not need a workflow — answer those directly.",
   "After workflow_propose_plan is accepted you must stop: the user confirms the plan (including every gate command), then the runtime executes it and delivers the report. If the user rejects or comments, revise and propose again.",
 ].join("\n");

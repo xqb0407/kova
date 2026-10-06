@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi/pi-bridge";
 import { piSessionIdForThread, piStoreKeyForThread } from "@/lib/pi/pi-thread-adapter";
-import type { WorkflowState } from "pi-protocol";
+import type { Playbook, WorkflowRunSummary, WorkflowState } from "pi-protocol";
 
 /**
  * 工作流模式常驻条/面板的运行快照(sidecar workflow/workflow.ts 状态机镜像)。
@@ -62,6 +62,9 @@ export type WorkflowSnapshot = {
   stepStates?: WorkflowStepState[];
   proposalFeedback?: string;
   completionSummary?: string;
+  /** 由哪个剧本发起（库路径运行；运行卡的「存为剧本」据此避免重复保存） */
+  playbookName?: string;
+  playbookId?: string;
   tokensUsed: number;
   startedAt: number;
   updatedAt: number;
@@ -185,6 +188,8 @@ function normalizeRun(raw: unknown): WorkflowSnapshot | null {
       : {}),
     ...(typeof r.proposalFeedback === "string" ? { proposalFeedback: r.proposalFeedback } : {}),
     ...(typeof r.completionSummary === "string" ? { completionSummary: r.completionSummary } : {}),
+    ...(typeof r.playbookName === "string" ? { playbookName: r.playbookName } : {}),
+    ...(typeof r.playbookId === "string" ? { playbookId: r.playbookId } : {}),
     tokensUsed: typeof r.tokensUsed === "number" ? r.tokensUsed : 0,
     startedAt: typeof r.startedAt === "number" ? r.startedAt : 0,
     updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
@@ -334,6 +339,70 @@ export function resumeWorkflowNow(threadId: string): Promise<void> {
 
 export function clearWorkflowNow(threadId: string): Promise<void> {
   return requestWorkflow(threadId, { type: "workflow_clear" });
+}
+
+/* ------------------------------ 剧本库 ------------------------------ */
+
+/** 剧本列表(设置页水合;保存/删除回包也是同一形状,直接复用) */
+export async function listPlaybooksNow(): Promise<Playbook[]> {
+  const res = await piRequest<{ type: "workflow_playbooks"; playbooks: Playbook[] }>({
+    type: "workflow_list_playbooks",
+  });
+  return Array.isArray(res?.playbooks) ? res.playbooks : [];
+}
+
+/** 把当前线程的运行存为剧本(运行卡「存为剧本」按钮) */
+export async function savePlaybookFromRunNow(
+  threadId: string,
+  name?: string,
+): Promise<Playbook[]> {
+  const sessionId = piSessionIdForThread(threadId);
+  const res = await piRequest<{ type: "workflow_playbooks"; playbooks: Playbook[] }>({
+    type: "workflow_save_playbook",
+    threadId,
+    ...(sessionId ? { sessionId } : {}),
+    ...(name ? { name } : {}),
+  });
+  return Array.isArray(res?.playbooks) ? res.playbooks : [];
+}
+
+export async function deletePlaybookNow(name: string): Promise<Playbook[]> {
+  const res = await piRequest<{ type: "workflow_playbooks"; playbooks: Playbook[] }>({
+    type: "workflow_delete_playbook",
+    name,
+  });
+  return Array.isArray(res?.playbooks) ? res.playbooks : [];
+}
+
+/**
+ * 从剧本发起运行(设置页「运行」按钮)。回包是 workflow_state(该线程的运行),
+ * 顺带写进本地 store——用户从设置页跑完回聊天能直接看到运行卡/常驻条
+ */
+export async function runPlaybookNow(
+  threadId: string,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<void> {
+  const sessionId = piSessionIdForThread(threadId);
+  const res = await piRequest<{ type: "workflow_state"; run: WorkflowState["run"] }>({
+    type: "workflow_run_playbook",
+    threadId,
+    ...(sessionId ? { sessionId } : {}),
+    name,
+    args,
+  });
+  setState(threadId, { run: normalizeRun(res?.run) });
+}
+
+/** 运行历史(设置页;.kova/workflows 目录摘要) */
+export async function listRunsNow(threadId: string | undefined): Promise<WorkflowRunSummary[]> {
+  const sessionId = threadId ? piSessionIdForThread(threadId) : undefined;
+  const res = await piRequest<{ type: "workflow_runs"; runs: WorkflowRunSummary[] }>({
+    type: "workflow_list_runs",
+    ...(threadId ? { threadId } : {}),
+    ...(sessionId ? { sessionId } : {}),
+  });
+  return Array.isArray(res?.runs) ? res.runs : [];
 }
 
 /* ---------------- 测试缝 ---------------- */

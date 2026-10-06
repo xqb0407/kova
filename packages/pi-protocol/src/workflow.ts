@@ -64,6 +64,9 @@ export const workflowRunStateSchema = z.looseObject({
       stepStates: z.array(workflowStepStateSchema).optional(),
       /** 提案被驳回时用户的意见，重提轮据此修改剧本 */
       proposalFeedback: z.string().optional(),
+      /** 由哪个剧本发起（库路径运行） */
+      playbookName: z.string().optional(),
+      playbookId: z.string().optional(),
       completionSummary: z.string().optional(),
       tokensUsed: z.number(),
       startedAt: z.number(),
@@ -89,3 +92,59 @@ export const WORKFLOW_CONTINUE_PREFIX = "[[workflow-continue]] ";
 export function isWorkflowContinueText(text: string): boolean {
   return text.startsWith(WORKFLOW_CONTINUE_PREFIX);
 }
+
+/* ------------------------------- 剧本库 ------------------------------- */
+
+/**
+ * 剧本参数声明:name 是 `{{args.name}}` 占位符的键。保存时从步骤 prompt 里
+ * 自动提取(见 sidecar workflow/library.ts 的 deriveArgsFromSteps),也可由调用方
+ * 显式给出;运行时按声明校验填充。type 只支持三种原始值——剧本参数是给 prompt
+ * 插值用的,不是数据管道。
+ */
+export const playbookArgSchema = z.looseObject({
+  name: z.string(),
+  type: z.enum(["string", "number", "boolean"]),
+  required: z.boolean().optional(),
+  default: z.unknown().optional(),
+  description: z.string().optional(),
+});
+
+export type PlaybookArg = z.infer<typeof playbookArgSchema>;
+
+/**
+ * 已保存的剧本(库条目)。steps 用与提案卡同一份 UI 投影(workflowStepViewSchema)
+ * ——设置页的剧本详情与运行卡渲染同一形状,不为库再造一套。
+ */
+export const playbookSchema = z.looseObject({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  /** 给模型/用户看的选择时机(对齐 ZCode 的「使用时机」字段) */
+  whenToUse: z.string().optional(),
+  steps: z.array(workflowStepViewSchema),
+  args: z.array(playbookArgSchema),
+  /** 来源:from-run(从运行存下)/ manual */
+  source: z.string().optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+
+export type Playbook = z.infer<typeof playbookSchema>;
+
+/** 运行历史的一条摘要(设置页「运行历史」tab;从 .kova/workflows 目录投影) */
+export const workflowRunSummarySchema = z.looseObject({
+  runId: z.string(),
+  title: z.string().optional(),
+  objective: z.string(),
+  status: z.string(),
+  startedAt: z.number(),
+  updatedAt: z.number(),
+  tokensUsed: z.number(),
+  stepCount: z.number(),
+  doneCount: z.number(),
+  /** 由哪个剧本发起(库路径运行时记录) */
+  playbookName: z.string().optional(),
+  playbookId: z.string().optional(),
+});
+
+export type WorkflowRunSummary = z.infer<typeof workflowRunSummarySchema>;

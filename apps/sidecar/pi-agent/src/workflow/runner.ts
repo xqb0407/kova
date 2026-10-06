@@ -113,6 +113,7 @@ export async function startWorkflowExecution(run: Running): Promise<void> {
             const fp = stepFingerprint(
               step,
               step.dependsOn.map((d) => wf.steps[d]?.fingerprint ?? ""),
+              JSON.stringify(wf.args ?? {}),
             );
             if (entry.fingerprint === fp) {
               replayed += 1;
@@ -230,6 +231,7 @@ async function spawnStep(run: Running, wfAtLaunch: WorkflowRun, key: string): Pr
     const fingerprint = stepFingerprint(
       step,
       step.dependsOn.map((d) => wf.steps[d]?.fingerprint ?? ""),
+      JSON.stringify(wf.args ?? {}),
     );
     commitWorkflow(run, settleStep(wf, key, { status: "running", fingerprint, startedAt: Date.now() }));
 

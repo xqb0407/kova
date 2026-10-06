@@ -58,6 +58,27 @@ export function readRunFile(cwd: string, runId: string): WorkflowRun | undefined
   }
 }
 
+/** 列出目录里的全部运行记录(设置页「运行历史」;畸形文件跳过) */
+export function listRunFiles(cwd: string): WorkflowRun[] {
+  const runs: WorkflowRun[] = [];
+  try {
+    const dir = workflowsDir(cwd);
+    if (!existsSync(dir)) return runs;
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".json") || name.endsWith(".tmp")) continue;
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(join(dir, name), "utf8"));
+        if (isWorkflowRun(parsed)) runs.push(parsed);
+      } catch {
+        /* 撕裂文件跳过 */
+      }
+    }
+  } catch (err) {
+    logRunFileError("list", err);
+  }
+  return runs.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
 /**
  * 目录级清理:终态且超出保留上限的最旧记录先删。正在跑/暂停的记录由调用方的
  * isActive 判定保护(delegation 的 pruneActivityFiles 同款形状)。

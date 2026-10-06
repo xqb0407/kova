@@ -46,6 +46,7 @@ import {
   pauseWorkflowNow,
   rejectWorkflowNow,
   resumeWorkflowNow,
+  savePlaybookFromRunNow,
   useWorkflowAnchor,
   useWorkflowRunById,
 } from "@/lib/pi/pi-workflow";
@@ -884,6 +885,13 @@ const WorkflowPlanToolUI: ToolCallMessagePartComponent = ({
           busy={busy}
           onPause={() => act(pauseWorkflowNow)}
           onResume={() => act(resumeWorkflowNow)}
+          onSave={
+            actionThread
+              ? async () => {
+                  await savePlaybookFromRunNow(actionThread);
+                }
+              : undefined
+          }
         />
       )}
     </div>

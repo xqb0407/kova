@@ -104,6 +104,11 @@ export type WorkflowRun = {
   steps: Record<string, StepJournalEntry>;
   pauseReason?: string;
   completionSummary?: string;
+  /** 剧本参数(库路径运行时携带):{{args.key}} 插值的值域,进步骤指纹 */
+  args?: Record<string, unknown>;
+  /** 由哪个剧本发起(运行历史据此关联;手拟剧本的 run 无此字段) */
+  playbookId?: string;
+  playbookName?: string;
   /** 纯展示字段(goal-state 同款裁决:不做 token 预算阀,见其头注释) */
   tokensUsed: number;
   startedAt: number;
@@ -537,7 +542,13 @@ export function addTokens(run: WorkflowRun, tokens: number): WorkflowRun {
  * 必须带上依赖的指纹,否则上游变了下游还命中旧账。指纹一致的 done 步骤在
  * resume/重跑时直接取 journal(0 token),这是内容寻址恢复的全部依据。
  */
-export function stepFingerprint(step: WorkflowStep, depFingerprints: string[]): string {
+export function stepFingerprint(
+  step: WorkflowStep,
+  depFingerprints: string[],
+  /** 剧本参数种子:{{args.key}} 插值让同一个声明在不同参数下产出不同 prompt,
+   *  指纹必须跟着参数走,否则换参数重跑会错误命中旧缓存 */
+  argsSeed = "",
+): string {
   const normalized = {
     key: step.key,
     kind: step.kind,
@@ -548,7 +559,7 @@ export function stepFingerprint(step: WorkflowStep, depFingerprints: string[]): 
     dependsOn: [...step.dependsOn].sort(),
   };
   return createHash("sha256")
-    .update(JSON.stringify({ step: normalized, deps: [...depFingerprints].sort() }))
+    .update(JSON.stringify({ step: normalized, deps: [...depFingerprints].sort(), args: argsSeed }))
     .digest("hex");
 }
 
@@ -645,6 +656,14 @@ export function resolveStepPrompt(run: WorkflowRun, step: WorkflowStep, key: str
   if (entry?.item !== undefined) {
     template = template.replace(/\{\{\s*item\s*\}\}/g, entry.item);
   }
+  // 剧本参数:未提供的参数留显式缺口标记(静默留空会让下游把缺口当事实)
+  template = template.replace(/\{\{\s*args\.([A-Za-z0-9_]+)\s*\}\}/g, (_m, name: string) => {
+    const value = run.args?.[name];
+    if (value === undefined || value === null || value === "") {
+      return `<missing arg: ${name}>`;
+    }
+    return String(value);
+  });
   return interpolatePrompt(template, (dep) => {
     const depEntry = run.steps[dep];
     if (!depEntry) return undefined;

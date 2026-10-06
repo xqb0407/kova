@@ -472,3 +472,31 @@ describe("M2:foreach 展开与父条目结算", () => {
     expect(allStepsSettled(wf2)).toBe(true);
   });
 });
+
+describe("M3:剧本参数(args)", () => {
+  test("{{args.key}} 替换;未提供的参数留显式缺口", () => {
+    const run = createWorkflowRun("t1", "参数化");
+    const checked = validatePlan([
+      { key: "a", kind: "delegate", title: "A", prompt: "回溯 {{args.months}} 个月", agent: "x" },
+      { key: "s", kind: "synthesize", title: "S", prompt: "汇总 {{a}}", dependsOn: ["a"] },
+    ]);
+    if (!checked.ok) throw new Error(checked.reason);
+    let wf = acceptProposal(run, checked.steps, "参数化");
+    wf = { ...wf, args: { months: 24 } };
+    const step = wf.plan!.steps[0]!;
+    expect(resolveStepPrompt(wf, step, "a")).toBe("回溯 24 个月");
+    // 未提供的参数 → 显式缺口(静默留空会把缺口当事实)
+    const missing = { ...wf, args: {} };
+    expect(resolveStepPrompt(missing, step, "a")).toContain("<missing arg: months>");
+  });
+
+  test("指纹纳入参数种子:换参数 = 不同指纹(不会错误命中旧缓存)", () => {
+    const { steps } = runWithPlan();
+    const step = steps[0]!;
+    const fp1 = stepFingerprint(step, [], '{"months":24}');
+    const fp2 = stepFingerprint(step, [], '{"months":12}');
+    const fp3 = stepFingerprint(step, [], '{"months":24}');
+    expect(fp1).toBe(fp3);
+    expect(fp1).not.toBe(fp2);
+  });
+});
