@@ -42,6 +42,7 @@ import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import {
   confirmWorkflowNow,
+  fetchWorkflowState,
   parseRunIdFromResultText,
   pauseWorkflowNow,
   rejectWorkflowNow,
@@ -845,6 +846,13 @@ const WorkflowPlanToolUI: ToolCallMessagePartComponent = ({
   const [busy, setBusy] = useState(false);
   // 动作的 threadId 优先取锚点里记录的(提案发生的那个线程,与当前显示线程可能不同)
   const actionThread = anchor?.threadId ?? threadId;
+
+  // 自愈:有 runId 但 store 里没有快照(chunk 漏收/历史重建),主动水合一次
+  // get_workflow_state(该线程当前运行就是它,状态会经回包写进 store)
+  useEffect(() => {
+    if (run || !fallbackRunId || !actionThread) return;
+    fetchWorkflowState(actionThread).catch(() => {});
+  }, [run, fallbackRunId, actionThread]);
 
   if (isError || !run) {
     return (

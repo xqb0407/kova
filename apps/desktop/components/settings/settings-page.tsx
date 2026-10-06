@@ -24,7 +24,6 @@ import {
   SlidersHorizontalIcon,
   SparklesIcon,
   WebhookIcon,
-  WorkflowIcon,
   ZapIcon,
 } from "lucide-react";
 import { GeneralSettings } from "./components/general-settings";
@@ -43,7 +42,6 @@ import { PersonalizationSettings } from "./components/personalization-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
 import { SecretsSettings } from "./components/secrets-settings";
 import { DesignThemesSettings } from "./components/design-themes-settings";
-import { PlaybooksSettings } from "./components/playbooks-settings";
 
 export type SettingsSection =
   | "models"
@@ -61,8 +59,7 @@ export type SettingsSection =
   | "secrets"
   | "design-themes"
   | "computer-control"
-  | "access-accel"
-  | "workflow-playbooks";
+  | "access-accel";
 
 const GROUPS: {
   label: string;
@@ -90,8 +87,6 @@ const GROUPS: {
       { id: "hooks", label: "钩子", icon: ZapIcon },
       { id: "secrets", label: "密钥", icon: KeyRoundIcon },
       { id: "design-themes", label: "设计主题", icon: PaletteIcon },
-      // 工作流剧本：可参数化重放的多智能体编排资产（运行卡「存为剧本」的落点）
-      { id: "workflow-playbooks", label: "工作流剧本", icon: WorkflowIcon },
     ],
   },
   {
@@ -251,7 +246,6 @@ export const SettingsPage: FC<{
           {section === "general" && <GeneralSettings />}
           {section === "computer-control" && <ComputerControlSettings />}
           {section === "access-accel" && <AccessAccelSettings />}
-          {section === "workflow-playbooks" && <PlaybooksSettings />}
         </div>
       </div>
     </div>

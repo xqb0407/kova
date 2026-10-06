@@ -119,6 +119,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Dock, DockItem, DockSeparator } from "@/components/custom-ui/dock";
 import { Segmented } from "@/components/custom-ui/segmented";
+import { PlaybooksPanel } from "@/components/automations/playbooks-panel";
 import { AutomationEmptyArt, HistoryEmptyArt } from "./automation-art";
 import { AutomationEditorDialog } from "./automation-editor-dialog";
 import { TemplateGallery } from "./template-gallery";
@@ -646,7 +647,7 @@ export const AutomationsView: FC<{
 }> = ({ onBackToChat, focusTask, onFocusConsumed }) => {
   const snap = useAutomations();
   const aui = useAui();
-  const [tab, setTab] = useState<"tasks" | "history">("tasks");
+  const [tab, setTab] = useState<"tasks" | "history" | "playbooks">("tasks");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<TaskFilter>("all");
   const [editorOpen, setEditorOpen] = useState(false);
@@ -952,7 +953,7 @@ export const AutomationsView: FC<{
         {/* tab：定时任务 | 运行记录。分段器与设置页各分区同款；计数并入文案。
             清单总数也在右侧：切到运行记录页时它是这页唯一的全局读数 */}
         <div className="flex items-center justify-between gap-4">
-          <Segmented<"tasks" | "history">
+          <Segmented<"tasks" | "history" | "playbooks">
             value={tab}
             className="w-fit"
             options={[
@@ -965,6 +966,8 @@ export const AutomationsView: FC<{
                 label:
                   totalHistoryCount > 0 ? `运行记录 ${totalHistoryCount}` : "运行记录",
               },
+              // 工作流剧本(形态参考 ZCode 的 自动化→工作流):可参数化重放的编排资产
+              { value: "playbooks", label: "工作流" },
             ]}
             onChange={(v) => {
               setTab(v);
@@ -987,8 +990,9 @@ export const AutomationsView: FC<{
         </div>
 
         {/* 检索条：搜索 + 筛选在左，刷新/批量在右（都贴着清单，
-            模板入口已下沉到清单下方的模板区，这里不再重复给一个按钮） */}
-        <div className="flex flex-wrap items-center gap-2">
+            模板入口已下沉到清单下方的模板区，这里不再重复给一个按钮）。
+            剧本 tab 隐藏整条（搜索/批量都是任务与记录的语义，剧本有自己的刷新） */}
+        <div className={cn("flex flex-wrap items-center gap-2", tab === "playbooks" && "hidden")}>
           {/* 搜索框固定紧凑宽度（设置页同款 w-56），不再 flex-1 撑满整行 */}
           <div className="relative w-56 max-w-full shrink-0">
             <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
@@ -1070,7 +1074,9 @@ export const AutomationsView: FC<{
           </div>
         )}
 
-        {tab === "history" ? (
+        {tab === "playbooks" ? (
+          <PlaybooksPanel onBackToChat={onBackToChat} />
+        ) : tab === "history" ? (
           !snap.loaded && !snap.error ? (
             <div className="flex flex-col gap-2">
               {Array.from({ length: 4 }).map((_, i) => (
