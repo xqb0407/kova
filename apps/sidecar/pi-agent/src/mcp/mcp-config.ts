@@ -28,6 +28,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { activePlugins, currentPluginsStateVersion, resolvePluginComponent } from "../plugins/plugins";
+import { expandPluginValue } from "../plugins/expand";
 import { kvGet, kvSet } from "../storage/hostdb";
 import { logErr } from "../log";
 
@@ -314,34 +315,18 @@ export type PluginLayerCtx = {
 
 /**
  * 插件层 stdio 条目占位符展开（command / args / env 的字符串值）：
- * - `${PLUGIN_ROOT}` → 插件根绝对路径（插件自带的 server 脚本由此定位）
+ * - `${PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_ROOT}` → 插件根绝对路径（插件自带的 server
+ *   脚本由此定位；后者是 Claude 生态 hooks.json 的写法，作同义别名同等对待）
  * - `${WORKSPACE}`   → 会话工作区（MCP server 据此解析工作区相对路径）
  * - `${BUN}`         → 应用内置 JS/TS 运行时（process.execPath）；命中时自动补
  *   `BUN_BE_BUN=1`——编译态 sidecar 二进制由此充当完整 bun CLI（真实 bun 上该
  *   变量无副作用），插件因而无需用户机器预装 node/bun。
  * 展开只在插件层发生：用户/系统层配置里的同名写法保持字面量，语义不意外。
+ *
+ * 实现已移至 plugins/expand（与插件 hooks 命令串共用，且避免 mcp-config ↔
+ * plugins/store 循环依赖）；此处保留转发，既有导入路径不变。
  */
-export function expandPluginValue(
-  value: string,
-  ctx: { root?: string; workspace?: string },
-): { value: string; usedBun: boolean; missing: string[] } {
-  let out = value;
-  const missing: string[] = [];
-  let usedBun = false;
-  if (out.includes("${PLUGIN_ROOT}")) {
-    if (ctx.root) out = out.split("${PLUGIN_ROOT}").join(ctx.root);
-    else missing.push("${PLUGIN_ROOT}");
-  }
-  if (out.includes("${WORKSPACE}")) {
-    if (ctx.workspace) out = out.split("${WORKSPACE}").join(ctx.workspace);
-    else missing.push("${WORKSPACE}");
-  }
-  if (out.includes("${BUN}")) {
-    out = out.split("${BUN}").join(process.execPath);
-    usedBun = true;
-  }
-  return { value: out, usedBun, missing };
-}
+export { expandPluginValue };
 
 /** 就地展开一个插件层 stdio 定义；缺展开值的占位符保留原样并记诊断 */
 function expandPluginDef(def: McpServerDef, ctx: PluginLayerCtx, diagnostics: string[]): void {

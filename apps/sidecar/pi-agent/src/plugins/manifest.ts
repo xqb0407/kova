@@ -379,7 +379,10 @@ const KNOWN_HOOK_EVENTS: ReadonlySet<string> = new Set([
   "Stop",
 ]);
 
-export type PluginHookEntry = Pick<HookConfig, "id" | "name" | "command" | "args" | "matcher" | "timeoutMs" | "event" | "enabled">;
+export type PluginHookEntry = Pick<
+  HookConfig,
+  "id" | "name" | "command" | "args" | "matcher" | "timeoutMs" | "event" | "enabled" | "type" | "shell"
+>;
 
 function readHooksOurs(doc: unknown, pluginId: string, diagnostics: string[]): PluginHookEntry[] {
   if (!Array.isArray(doc)) return [];
@@ -401,6 +404,8 @@ function readHooksOurs(doc: unknown, pluginId: string, diagnostics: string[]): P
       event: event as HookEventName,
       enabled: true,
       ...(Array.isArray(item.args) ? { args: item.args.filter((a): a is string => typeof a === "string") } : {}),
+      ...(item.type === "shell" || item.type === "process" ? { type: item.type } : {}),
+      ...(typeof item.shell === "string" && item.shell.trim() ? { shell: item.shell.trim() } : {}),
       ...(typeof item.matcher === "string" && item.matcher.trim() ? { matcher: item.matcher.trim() } : {}),
       ...(typeof item.timeoutMs === "number" && Number.isFinite(item.timeoutMs)
         ? { timeoutMs: Math.min(Math.max(item.timeoutMs, 1_000), 120_000) }
@@ -448,6 +453,11 @@ function readHooksClaude(
           command: h.command,
           event: event as HookEventName,
           enabled: true,
+          // Claude 的 type:"command" 语义是整串交 shell 解释（引号/变量由 shell 处理），
+          // 对应 kova 的 type:"shell"；不映射会被当 process 走 argv 直执行，含引号与
+          // 空格参数的第三方命令串会整个找不到文件。其 shell 字段（Claude 默认用户 shell）一并透传。
+          type: "shell",
+          ...(typeof h.shell === "string" && h.shell.trim() ? { shell: h.shell.trim() } : {}),
           ...(matcher ? { matcher } : {}),
           ...(timeoutSec !== undefined
             ? { timeoutMs: Math.min(Math.max(Math.round(timeoutSec * 1000), 1_000), 120_000) }
@@ -476,7 +486,14 @@ export function readPluginHooksFile(
     return [];
   }
   if (Array.isArray(doc)) return readHooksOurs(doc, pluginId, diagnostics);
-  if (isRecord(doc)) return readHooksClaude(doc, pluginId, pluginName, diagnostics);
+  if (isRecord(doc)) {
+    // Claude 的 hooks.json 外层还有一层 `{"hooks": {事件名: [...]}}` 包装，而
+    // readHooksClaude 吃的是内层「事件名 → 分组数组」。不拆这层的话顶层唯一的键
+    // `hooks` 会被当成事件名，撞进未知事件白名单被丢弃（诊断：未知事件 "hooks"），
+    // 整个插件的 hooks 静默为空。裸事件名对象仍按原样吃，两种写法都支持。
+    const inner = isRecord(doc.hooks) ? doc.hooks : doc;
+    return readHooksClaude(inner, pluginId, pluginName, diagnostics);
+  }
   diagnostics.push("hooks: 顶层必须是数组或对象");
   return [];
 }

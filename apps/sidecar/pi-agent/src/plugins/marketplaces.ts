@@ -107,6 +107,7 @@ function parseMarketplaceCatalog(
     //   "./plugins/xxx"（相对路径字符串）
     //   { source: "directory" | "local", path: "./plugins/xxx" }（自有格式）
     //   { source: "./plugins/xxx" }（对象包路径字符串，Claude 生态变体）
+    //   "./" 或 "."（插件根即市场根本身，单插件仓库的写法，如 obra/superpowers）
     const src = raw.source;
     let relPath: string | undefined;
     if (typeof src === "string") {
@@ -114,13 +115,16 @@ function parseMarketplaceCatalog(
     } else if (isRecord(src)) {
       if (typeof src.path === "string" && (src.source === "directory" || src.source === "local")) {
         relPath = src.path;
-      } else if (typeof src.source === "string" && /^(\/|\.\/)/.test(src.source)) {
+      } else if (typeof src.source === "string" && /^(\/|\.\/|\.)/.test(src.source)) {
         relPath = src.source;
       }
     }
     if (!relPath) continue;
-    const contained = containedRelPath(root, relPath, `plugins[${entryName}]`, []);
-    if (!contained) continue;
+    // 根写法（"./"）归一为空相对路径 = 市场根本身；不能走 containedRelPath，
+    // 它按组件路径语义把空串判为非法（那对 manifest 组件指针是对的，对 source 不是）
+    const isRootSource = /^(\.|\.\/)$/.test(relPath.trim());
+    const contained = isRootSource ? "" : containedRelPath(root, relPath, `plugins[${entryName}]`, []);
+    if (contained === undefined) continue;
     seen.add(entryName);
     plugins.push({
       name: entryName,
@@ -404,7 +408,10 @@ export async function installPlugin(mktId: string, name: string, opts: InstallOp
   if (!existsSync(sourceRoot)) throw new Error(`插件源目录不存在：${sourceRoot}`);
 
   // 安装前先解析源清单（名字与目录名一致等硬校验在物化前拦截）
-  const manifest = parsePluginManifest(sourceRoot);
+  // 根写法条目（source: "./"）的源目录就是市场根本身——git 市场下目录名是 clone 出来的
+  // git-<hash>，与清单名无关，目录名比对在此无意义；改为校验「清单名 == 市场条目名」，
+  // 缓存目录名仍由 manifest.name 决定（原不变量由 dest 保证）
+  const manifest = parsePluginManifest(sourceRoot, entry.path === "" ? { dirName: entry.name } : {});
 
   const dest = installedPluginDir(mktId, manifest.name);
   let destIsLink = false;
