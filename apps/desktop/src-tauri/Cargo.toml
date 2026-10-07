@@ -50,7 +50,10 @@ libc = "0.2"
 headless_chrome = { version = "1.0.10", features = ["offline"] }
 
 [profile.release]
-panic = "abort"
+# 刻意不设 panic = "abort"：abort 不回卷栈，catch_unwind 就捕获不到 panic，
+# 任何一个命令里的意外 panic 都会直接终止进程（曾因 stderr 写失败而实机崩溃，
+# 见 src/panic_guard.rs）。代价是二进制带展开表：实测 13.33MB → 16.62MB
+# （+3.29MB / +24.7%，同机同 profile 单变量对比），换稳定性值得。
 codegen-units = 1
 lto = true
 opt-level = "s"
