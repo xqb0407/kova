@@ -29,6 +29,8 @@ const KNOWN_TOOLS = ["bash", "read", "write", "edit", "glob", "grep"];
 - 能力按需加载（渐进式披露），不预加载正文，不占满上下文
 - 作用域是结构性的：未声明即不可达，不是"给了再拒绝"
 - 子代理记忆与用户主记忆隔离，结构上不可能互相污染
+- 设置页用真实候选（技能名 / MCP 服务器名）而非自由文本声明能力，
+  引用不存在的实体时显式警示而非静默丢弃
 - 未声明任何新维度的既有定义，行为与提示词字节级不变
 
 ### 非目标（本期明确不做）
@@ -41,7 +43,7 @@ const KNOWN_TOOLS = ["bash", "read", "write", "edit", "glob", "grep"];
 - 子代理嵌套委派。维持现状：delegate 不能继续 `Task`。
 - 让子代理影响主代理的记忆。子代理只能读主记忆（`shared` 档）或完全不碰，
   但主代理的 `memory_write` 语义、子代理记忆导入主记忆的动作都不做。
-- 跨工作区共享子代理记忆。见 §9。
+- 跨工作区共享子代理记忆。见 §10。
 
 ## 3. 方案选择
 
@@ -304,7 +306,101 @@ crm, notion
 **字节级不变** —— `tools.ts:483` 的静态核心提示词缓存不变式依赖这一点。
 此不变量进测试。
 
-## 7. 改动点
+## 7. UI 设计
+
+编辑弹窗（`subagents-settings.tsx`，现 968 行）现有形态是
+`Dialog(sm:max-w-2xl)` 内两个页签：**表单** 与 **YAML 原文**。
+五个能力维度若平铺进表单会变成十几个字段的墙，必须分区。
+
+### 7.1 表单分区
+
+表单页签内改为三组，组间以小标题分隔（不引入嵌套页签——现有 Dialog 已有一层
+Tabs，再嵌一层会让 YAML 视图更深）：
+
+**基本信息**（现状不动）：名称、轮次上限、模型、描述、可用工具、系统提示词。
+
+**能力授予**（新增）：三个选择器 + 一个记忆档位。
+
+**知识源**（新增）：可增删的行列表。
+
+### 7.2 三个选择器都用真实候选，不给自由文本
+
+关键约束：能力声明是**引用**既有实体的名字（技能名、MCP 服务器名），
+不是新定义。若给自由文本框，用户会写出不存在的名字，而保存期只有
+"该技能在本作用域不存在"这种弱诊断。
+
+三处**既有数据源已就绪**，直接复用，不新建通道：
+
+| 选择器 | 数据源 | 备注 |
+|---|---|---|
+| 工具 | `list_subagents` 应答扩展 `grantableTools` | 现 `TOOL_OPTIONS` 硬编码 6 项（`:89`） |
+| 技能 | `useSkills(cwd)`（`lib/skills/skills.ts:166`） | 协议 `list_skills` 已存在 |
+| MCP 服务器 | `lib/mcp/mcp.ts` 的清单 | 与 MCP 设置页同源 |
+
+未命中的名字（定义文件手写、或技能被删）以**警示色 chip** 显示，
+hover 提示"当前作用域不存在"，可点击移除。不能静默丢弃——
+用户需要知道自己声明的东西没生效。
+
+### 7.3 三处必须修的既有缺陷
+
+读 UI 代码时发现三处漂移/静默失败，本期一并修：
+
+**① 工具清单双写。** `TOOL_OPTIONS = ["read","glob","grep","bash","edit","write"]`
+（`:89`）是后端 `KNOWN_TOOLS` 的前端副本。加可授予工具只改后端会漏掉前端，
+两边必然漂移。改为从协议取数，后端 `GRANTABLE_TOOLS` 是唯一事实源；
+应答缺字段时回落旧 6 项（不因旧 sidecar 白屏）。
+
+**② `formToYaml` 丢字段。** 手写序列化器（`:143`）只吐 5 个键。
+"复制内置为系统级"和"新建初始 YAML"都走它，新增四维度会被**静默丢弃**——
+用户点了复制，能力全没了。改为复用 `subagent-definitions` 的
+`emitSubagentYaml`，或至少补齐四维度并加测试守住。
+
+**③ YAML 页签丢能力。** `save()`（`:225`）按当前页签二选一提交：
+`tab === "yaml" ? { raw: yaml } : { definition: formToDraft(form) }`。
+YAML 视图里手写的 `skills:` 走 `{ raw }` 路径进 sidecar 解析，本就可用——
+**但前提是 sidecar 的 `parseSubagentYaml` 已认这些键**（§4.1）。
+这一条本期随 schema 改动自然成立，但要在测试里守住：
+"YAML 页签手写能力字段 → 保存 → 重新加载 → 字段仍在"。
+
+### 7.4 记忆档位的 UI
+
+三档分段控件（`无 / 私有 / 共享`），每档一行说明：
+
+- **无** — 不注入、不给工具（缺省）
+- **私有** — `<cwd>/.kova/agent-memory/<name>/`，跨委派累积
+- **共享** — 与主代理工作区记忆同一目录
+
+"共享"档附一行警示文案：子代理写入的内容会出现在主代理后续对话中。
+不是阻止，是知情。
+
+**不新增开关**：子代理记忆不受主记忆设置页的总开关控制（§4.5），
+UI 上不提供联动开关，避免用户以为自己关掉了主记忆就关掉了它。
+
+### 7.5 知识源行编辑器
+
+每行一个 `KnowledgeSource`，字段随 `type` 切换：
+
+| type | 显示字段 |
+|---|---|
+| `files` | 名称 + glob 路径（占位符提示 `如 ./docs/**/*.md`） |
+| `mcp` | 名称 + 服务器（下拉，取自 MCP 清单）+ 工具名（取自该服务器的工具面） |
+
+`files` 源缺 `read` 工具时，该行显示内联警示，与 §4.4 的校验呼应——
+保存时报错，但编辑时就提示，不让用户填完才被拒。
+
+MCP 工具下拉需要该服务器的工具清单。协议侧已有
+`get_mcp_server_tools`（`pi-bridge.ts:792`），按需拉取并缓存，不预载全部服务器。
+
+### 7.6 只读与复制路径
+
+`BuiltinViewDialog`（内置定义的只读弹窗）加四段只读展示：
+能力授予用 chip 列表，知识源用只读行，记忆档位用一行文字。
+内置定义不可编辑，但**必须能看见自己有哪些能力**——
+否则"为什么这个 agent 够不到我的 Notion"无从排查。
+
+"复制为系统级"沿用现有路径，但经修好的 `formToYaml`/复制逻辑**完整携带四维度**。
+
+## 8. 改动点
 
 | 文件 | 改动 |
 |---|---|
@@ -314,10 +410,11 @@ crm, notion
 | `subagent/memory.ts` | **新增**：私有命名空间路径解析、`subagentMemoryPromptBlock`、写队列序列化；`truncateMiddle` 从 `agent/memory.ts` 导出复用 |
 | `mcp/mcp-tools.ts` | `buildMcpTool` 增可选 `allowedServers` 参数；过滤 search/describe、拒绝越权 call |
 | `subagent/run.ts` | `composeSubagentSystemPrompt` 组装 `capabilityBlock`（含记忆段） |
-| `protocol/payloads.ts` + `pi-protocol` | `PiSubagentEntry` 携带新字段 |
-| `desktop/.../subagents-settings.tsx` | 编辑表单加四段（技能/MCP/知识/记忆）；沿用现有表单与 YAML 双视图模式 |
+| `protocol/payloads.ts` + `pi-protocol` | `PiSubagentEntry` 携带新字段；`list_subagents` 应答增 `grantableTools` |
+| `desktop/.../subagents-settings.tsx` | 三段式表单（§7.1）；三个真实候选选择器；知识源行编辑器；记忆分段控件；修 `TOOL_OPTIONS` 双写与 `formToYaml` 丢字段 |
+| `desktop/.../subagents.ts`（store） | `SubagentDraft` 携带新字段 |
 
-## 8. 测试
+## 9. 测试
 
 新增 `test/subagent/`，沿用现有断言风格：
 
@@ -340,7 +437,18 @@ crm, notion
 10. **并发写序列化** — 同一子代理两次并发 `memory_write` append 不丢行
 11. **跨层解析** — 插件层 / 工作区层定义的 `stateKey` 与开关语义不变（回归）
 
-## 9. 未决与后续
+### 前端（desktop 侧）
+
+12. **`formToYaml` 完整性** — 含五维度的表单转 YAML 后再解析，四维度无损
+    （守住 §7.3② 的静默丢字段）
+13. **YAML 页签往返** — YAML 页签手写 `skills:` / `mcp:` / `knowledge:` /
+    `memory:` → 保存 → `list_subagents` 重新加载 → 字段仍在（守住 §7.3③）
+14. **工具清单单一事实源** — `list_subagents` 应答缺 `grantableTools` 时
+    回落旧 6 项，不白屏；存在时表单渲染的是协议值而非硬编码常量
+15. **未命中候选显式化** — 定义里写了不存在的技能名，chip 以警示色出现
+    而非被静默丢弃
+
+## 10. 未决与后续
 
 - 业务 API（HTTP）受约束工具：本期不做。触发条件是出现"既有 MCP 覆盖不到的
   业务 API"这一真实需求。
