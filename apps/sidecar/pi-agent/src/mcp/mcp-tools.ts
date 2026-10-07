@@ -128,11 +128,17 @@ export function scoreToolEntry(entry: ToolIndexEntry, query: string): number | n
   return score;
 }
 
-/** 汇集全部启用服务器的工具索引（已连接用池内实时清单，未连接用元数据缓存） */
-async function buildToolIndex(cwd: string | undefined): Promise<ToolIndexEntry[]> {
+/** 汇集启用服务器的工具索引（已连接用池内实时清单，未连接用元数据缓存）。
+ *  allowedServers 非空时索引只收白名单内的服务器——子代理的作用域网关靠它收窄。 */
+async function buildToolIndex(
+  cwd: string | undefined,
+  allowedServers?: readonly string[],
+): Promise<ToolIndexEntry[]> {
+  const allowed = allowedServers?.length ? new Set(allowedServers) : undefined;
   const defs = await activeMcpServers(cwd);
   const index: ToolIndexEntry[] = [];
   for (const def of defs) {
+    if (allowed && !allowed.has(def.name)) continue;
     const tools = mcpManager.getLiveTools(def) ?? getValidTools(def) ?? [];
     for (const tool of tools) {
       index.push({ server: def.name, def, tool });
@@ -191,22 +197,44 @@ export async function findServerDef(
   return defs.find((d) => d.name === serverName) ?? null;
 }
 
-export function buildMcpTool(cwd: string, threadId: string): AgentTool {
+/**
+ * 网关的作用域选项。allowedServers 非空即"白名单网关"——只暴露列出的服务器，
+ * 其余一律拒绝。主代理侧不传（等价于无限制，保持既有行为）。
+ */
+export type McpToolScope = {
+  /** 白名单服务器名；空/缺省 = 不限制 */
+  allowedServers?: readonly string[];
+  /** 白名单里当前并不存在的服务器名——出现在拒绝文案里，帮模型自我纠正 */
+  allowedNames?: readonly string[];
+};
+
+export function buildMcpTool(
+  cwd: string,
+  threadId: string,
+  scope?: McpToolScope,
+): AgentTool {
   // 会话装配预连：eager 服务器后台握手（fire-and-forget，不阻塞装配；
   // 失败由连接池落退避/日志/审计，lazy 服务器维持首调才连）
   void activeMcpServers(cwd)
     .then((defs) => mcpManager.prewarm(defs))
     .catch(() => {});
+  const scoped = scope?.allowedServers?.length ? scope.allowedServers : undefined;
   return {
     name: "mcp",
     label: "MCP",
-    description:
+    description: [
       "Use tools from configured MCP servers (external integrations: databases, browsers, SaaS APIs). " +
-      'Workflow: mcp({ action: "search", query: "..." }) to discover tools (returns full names like `server__tool`), ' +
-      'mcp({ action: "describe", tool: "server__tool" }) to check parameters, ' +
-      'then mcp({ action: "call", tool: "server__tool", args: "{...}" }) to execute. ' +
+        'Workflow: mcp({ action: "search", query: "..." }) to discover tools (returns full names like `server__tool`), ' +
+        'mcp({ action: "describe", tool: "server__tool" }) to check parameters, ' +
+        'then mcp({ action: "call", tool: "server__tool", args: "{...}" }) to execute. ' +
       "args is a JSON object serialized as a string. " +
-      'mcp({ action: "status" }) lists configured servers and their connection state.',
+        'mcp({ action: "status" }) lists configured servers and their connection state.',
+      scoped
+        ? `Scope: you may ONLY use these servers: ${scoped.join(", ")}. Calls to any other server are rejected before they run — search and status are filtered to this list too.`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
     parameters: Type.Object({
       action: Type.Union([
         Type.Literal("search"),
@@ -243,13 +271,13 @@ export function buildMcpTool(cwd: string, threadId: string): AgentTool {
       };
       switch (params.action) {
         case "search":
-          return executeSearch(cwd, params);
+          return executeSearch(cwd, params, scope?.allowedServers);
         case "describe":
-          return executeDescribe(cwd, params);
+          return executeDescribe(cwd, params, scope?.allowedServers);
         case "call":
-          return executeCall(cwd, threadId, toolCallId, params, signal);
+          return executeCall(cwd, threadId, toolCallId, params, signal, scope);
         case "status":
-          return executeStatus(cwd);
+          return executeStatus(cwd, scope?.allowedServers);
         default:
           return textResult(`unknown action: ${String(params.action)}`);
       }
@@ -257,16 +285,22 @@ export function buildMcpTool(cwd: string, threadId: string): AgentTool {
   };
 }
 
-async function executeSearch(cwd: string, params: { query?: string; limit?: number }) {
+async function executeSearch(
+  cwd: string,
+  params: { query?: string; limit?: number },
+  allowedServers?: readonly string[],
+) {
   const query = String(params.query ?? "").trim();
   if (!query) {
     return textResult("query is required for search");
   }
-  const index = await buildToolIndex(cwd);
+  const index = await buildToolIndex(cwd, allowedServers);
   if (index.length === 0) {
     return textResult(
-      "No MCP tools available. Servers may be disabled, unconfigured, or not yet connected " +
-        "(connect happens on first call; ask the user to check Settings → MCP).",
+      allowedServers?.length
+        ? `No tools available on the MCP servers this agent may use (${allowedServers.join(", ")}). They may be disabled, unconfigured, or not yet connected (connect happens on first call; ask the user to check Settings → MCP).`
+        : "No MCP tools available. Servers may be disabled, unconfigured, or not yet connected " +
+          "(connect happens on first call; ask the user to check Settings → MCP).",
       { total: 0 },
     );
   }
@@ -298,10 +332,14 @@ async function executeSearch(cwd: string, params: { query?: string; limit?: numb
   });
 }
 
-async function executeDescribe(cwd: string, params: { tool?: string }) {
+async function executeDescribe(
+  cwd: string,
+  params: { tool?: string },
+  allowedServers?: readonly string[],
+) {
   const fullName = String(params.tool ?? "").trim();
   if (!fullName) return textResult("tool is required for describe (full name `server__tool`)");
-  const index = await buildToolIndex(cwd);
+  const index = await buildToolIndex(cwd, allowedServers);
   const hit = index.find((entry) => mcpToolFullName(entry.server, entry.tool.name) === fullName);
   if (!hit) {
     return textResult(
@@ -326,6 +364,7 @@ async function executeCall(
   toolCallId: string,
   params: { tool?: string; args?: string },
   signal?: AbortSignal,
+  scope?: McpToolScope,
 ) {
   const fullName = String(params.tool ?? "").trim();
   if (!fullName) return textResult("tool is required for call (full name `server__tool`)");
@@ -354,6 +393,18 @@ async function executeCall(
   if (!parsed) {
     return textResult(
       `Unknown MCP server for "${fullName}". Use mcp({ action: "search" }) to list available tools.`,
+    );
+  }
+  // 作用域闸门：白名单网关下，越权服务器在连接/审批之前就拒绝。
+  // 放在这里（而非审批后）是因为连接握手本身已构成对外动作，
+  // 一个无权调用的子代理不该触发它。
+  const allowed = scope?.allowedServers;
+  if (allowed?.length && !allowed.includes(parsed.server)) {
+    const usable = scope?.allowedNames?.length ? scope.allowedNames : allowed;
+    return textResult(
+      `You are not allowed to use the MCP server "${parsed.server}". This agent may only use: ${usable.join(", ")}. ` +
+        "Do not retry the same call; use a permitted server or report the limitation.",
+      { server: parsed.server, allowed: false, allowedServers: [...usable] },
     );
   }
   const def = await findServerDef(cwd, parsed.server);
@@ -453,10 +504,13 @@ async function requestMcpApproval(
   });
 }
 
-async function executeStatus(cwd: string) {
+async function executeStatus(cwd: string, allowedServers?: readonly string[]) {
   const { defs, enabledBy, diagnostics } = await loadMcpServers(cwd);
+  const allowed = allowedServers?.length ? new Set(allowedServers) : undefined;
   const lines: string[] = [];
   for (const def of defs) {
+    // 白名单网关：未授权的服务器连"存在"都不该泄露给子代理
+    if (allowed && !allowed.has(def.name)) continue;
     const enabled = enabledBy.get(def.name) === true;
     if (!enabled) {
       lines.push(`${def.name}: disabled`);

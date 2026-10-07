@@ -213,8 +213,9 @@ export function memoryScopesPayload(cwd?: string): {
 const PER_FILE_MAX_CHARS = 4_000;
 const MEMORY_BLOCK_TOTAL_CHARS = 12_000;
 
-/** 中间截断：保头尾，超长时中间省略（长记忆的结尾往往与开头同等重要） */
-function truncateMiddle(text: string, maxChars: number): string {
+/** 中间截断：保头尾，超长时中间省略（长记忆的结尾往往与开头同等重要）。
+ *  导出供 subagent/memory.ts 复用——子代理记忆段的预算纪律与此一致。 */
+export function truncateMiddle(text: string, maxChars: number): string {
   const trimmed = text.trim();
   if (trimmed.length <= maxChars) return trimmed;
   const marker = "\n…[truncated]…\n";
