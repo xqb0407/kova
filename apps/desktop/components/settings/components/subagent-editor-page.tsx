@@ -14,7 +14,7 @@
  * 滚动位置、已选分段都不丢。
  */
 import { useEffect, useMemo, useState, type FC } from "react";
-import { ChevronLeftIcon, PlusIcon } from "lucide-react";
+import { ChevronLeftIcon, FolderOpenIcon, PlusIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,6 +40,7 @@ import {
 // 纯逻辑（表单↔草稿↔YAML、作用域推导）在 lib/subagent/editor-form.ts，
 // 单独成模块是为了能单测——那里出过"复制内置静默丢能力"的事故。
 import {
+  dirToWorkspaceGlob,
   editorScope,
   EMPTY_FORM,
   entryToForm,
@@ -82,6 +83,8 @@ export const SubagentEditorPage: FC<{
   const [tab, setTab] = useState("form");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 知识源选目录的失败提示（越界等）——按行号记，免得一行出错全列表都带句错话 */
+  const [pickError, setPickError] = useState<{ row: number; text: string } | null>(null);
 
   const skillsSnapshot = useSkills(workspaceCwd);
   const mcpSnapshot = useMcpServers(workspaceCwd);
@@ -146,6 +149,36 @@ export const SubagentEditorPage: FC<{
   // 知识源要靠 read 打开检索结果：提前提示，不等保存被拒
   const missingReadForKnowledge =
     form.knowledge.length > 0 && !form.tools.includes("read");
+
+  /** 走原生目录选择器填 glob。手打文档 glob 需要知道通配语法，
+   *  而那不该是"给 agent 一个知识库"的前置知识。 */
+  const pickKnowledgeDir = async (row: number) => {
+    setPickError(null);
+    if (!workspaceCwd) {
+      setPickError({ row, text: "未选择工作区，无法解析相对路径。先在主界面选好工作目录。" });
+      return;
+    }
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const dir = await open({ directory: true, multiple: false, title: "选择知识库目录" });
+      if (typeof dir !== "string") return; // 用户取消
+      const rel = dirToWorkspaceGlob(dir, workspaceCwd);
+      if (!rel.ok) {
+        setPickError({
+          row,
+          text:
+            rel.reason === "outside"
+              ? "该目录不在当前工作区内。知识源按工作区相对路径检索，请把资料放进工作区，或手工填写路径。"
+              : "路径无法解析，请手工填写。",
+        });
+        return;
+      }
+      patchKnowledge(row, { path: rel.glob });
+    } catch {
+      // 非 Tauri 环境没有原生选择器：保持输入框手填
+      setPickError({ row, text: "当前环境没有原生目录选择器，请手工填写路径。" });
+    }
+  };
 
   const save = async () => {
     if (busy) return;
@@ -341,6 +374,17 @@ export const SubagentEditorPage: FC<{
                   />
                   <Button
                     type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 shrink-0 gap-1.5 text-xs"
+                    onClick={() => void pickKnowledgeDir(i)}
+                    title="选择一个目录，自动填入工作区相对路径"
+                  >
+                    <FolderOpenIcon className="size-3.5" />
+                    选择目录
+                  </Button>
+                  <Button
+                    type="button"
                     variant="ghost"
                     size="sm"
                     className="text-muted-foreground hover:text-destructive h-9 shrink-0 px-2 text-xs"
@@ -353,6 +397,9 @@ export const SubagentEditorPage: FC<{
                   >
                     移除
                   </Button>
+                  {pickError?.row === i && (
+                    <p className="text-destructive w-full text-xs">{pickError.text}</p>
+                  )}
                 </div>
               ))}
               <Button

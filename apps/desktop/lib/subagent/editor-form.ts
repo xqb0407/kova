@@ -141,3 +141,39 @@ export function formToYaml(form: FormDraft): string {
   for (const line of body.split("\n")) lines.push(line ? `  ${line}` : "");
   return lines.join("\n");
 }
+
+/* ---------------------------------------------------------------------------
+ * 知识源路径：选择器结果 → 工作区相对 glob
+ *
+ * 让人手打 `./docs/**\/*.md` 是没道理的——glob 语法不该是使用知识库的前置知识。
+ * 浏览按钮选完目录，这里负责把绝对路径收敛成 workspace 相对 glob。
+ * 抽成纯函数是因为它有真实的分支（工作区内外、分隔符、尾斜杠），
+ * 而这些分支在 UI 里没法可靠地手测。
+ * ------------------------------------------------------------------------- */
+
+/** 一个知识源默认收哪些文件：目录下全部（检索侧会跳过二进制与超大文件） */
+export const KNOWLEDGE_GLOB_SUFFIX = "/**/*";
+
+export type RelGlobResult =
+  | { ok: true; glob: string }
+  | { ok: false; reason: "outside" | "invalid" };
+
+/**
+ * 绝对目录 → 工作区相对 glob。
+ * 不在工作区内就拒绝：检索侧按 `path.join(cwd, rel)` 解析，绝对路径会被拼成
+ * `cwd + 绝对路径` 这种无意义的串，静默搜不到任何东西。
+ */
+export function dirToWorkspaceGlob(dir: string, cwd: string): RelGlobResult {
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const d = norm(dir);
+  const w = norm(cwd);
+  if (!d || !w) return { ok: false, reason: "invalid" };
+  // 大小写不敏感比较：macOS/Windows 默认文件系统大小写不敏感，
+  // 用户从选择器拿到的路径大小写与工作区记录未必一致
+  const dl = d.toLowerCase();
+  const wl = w.toLowerCase();
+  if (dl === wl) return { ok: true, glob: `./${KNOWLEDGE_GLOB_SUFFIX.slice(1)}` };
+  if (!dl.startsWith(`${wl}/`)) return { ok: false, reason: "outside" };
+  const rel = d.slice(w.length + 1);
+  return { ok: true, glob: `./${rel}${KNOWLEDGE_GLOB_SUFFIX}` };
+}
