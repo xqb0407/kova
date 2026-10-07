@@ -488,3 +488,154 @@ describe("保存路径", () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 9. 子代理记忆不受主记忆总开关否决
+// ---------------------------------------------------------------------------
+
+describe("记忆与主开关解耦", () => {
+  test("主记忆 enabled=false 时子代理记忆仍可写可注入", async () => {
+    const mem = await import("../../src/agent/memory");
+    const { applyMemoryConfig } = mem;
+    // 主记忆总开关默认就是关的（缓存纪律），子代理记忆不该因此消失
+    mem.resetMemoryConfigForTest();
+    expect(mem.getMemoryConfig().enabled).toBe(false);
+
+    const dir = privateSubagentMemoryDir(tmp, "cs");
+    // 不读 getMemoryConfig，不看 enabled，照写不误
+    await writeSubagentMemory(dir, "MEMORY.md", "主开关关着也要能记", "append");
+    expect(readFileSync(join(dir, "MEMORY.md"), "utf8")).toContain("主开关关着也要能记");
+    expect(subagentMemoryPromptBlock(dir)).toContain("主开关关着也要能记");
+    mem.resetMemoryConfigForTest();
+  });
+
+  test("子代理记忆工具不读 getMemoryConfig（源码级隔离）", async () => {
+    // execute 闭包里若引用了主记忆开关，关掉主记忆会让子代理记忆工具集体婉拒
+    const src = readFileSync(
+      new URL("../../src/subagent/memory.ts", import.meta.url).pathname,
+      "utf8",
+    );
+    const body = src.slice(src.indexOf("buildSubagentMemoryTools"));
+    expect(body).not.toContain("getMemoryConfig");
+    expect(body).not.toContain("scopeActive");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. 未声明即不可达（解析器层：真正的运行时保证，不只是提示词里没有）
+// ---------------------------------------------------------------------------
+
+describe("解析器：未声明即不可达", () => {
+  const FAKE_BASE = [
+    { name: "read", label: "Read", description: "", parameters: {}, execute: async () => ({ content: [] }) },
+    { name: "grep", label: "Grep", description: "", parameters: {}, execute: async () => ({ content: [] }) },
+    { name: "use_skill", label: "Skill", description: "", parameters: {}, execute: async () => ({ content: [] }) },
+  ] as unknown as Parameters<
+    typeof import("../../src/subagent/capabilities").resolveSubagentCapabilities
+  >[2];
+
+  const base = (over: Partial<SubagentDefinition> = {}): SubagentDefinition => ({
+    name: "cs",
+    description: "d",
+    tools: ["read"],
+    prompt: "p",
+    scope: "workspace",
+    stateKey: "workspace:::cs",
+    ...over,
+  });
+
+  test("只声明 tools 时：没有 kb_search / mcp / 记忆工具，也没有能力目录块", async () => {
+    const { resolveSubagentCapabilities } = await import("../../src/subagent/capabilities");
+    const r = await resolveSubagentCapabilities(base(), CWD, FAKE_BASE, "thread-1");
+    const names = r.tools.map((t) => t.name);
+    expect(names).toEqual(["read"]);
+    expect(names).not.toContain("kb_search");
+    expect(names).not.toContain("mcp");
+    expect(names).not.toContain("memory_write");
+    expect(r.promptBlock).toBe("");
+  });
+
+  test("未声明 skills 时：use_skill 不进工具表（不给再拒）", async () => {
+    const { resolveSubagentCapabilities } = await import("../../src/subagent/capabilities");
+    const r = await resolveSubagentCapabilities(base(), CWD, FAKE_BASE, "thread-1");
+    expect(r.tools.map((t) => t.name)).not.toContain("use_skill");
+  });
+
+  test("声明 files 知识源时：kb_search 挂载，mcp 类知识源不额外挂工具", async () => {
+    const { resolveSubagentCapabilities } = await import("../../src/subagent/capabilities");
+    const r = await resolveSubagentCapabilities(
+      base({
+        tools: ["read"],
+        knowledge: [
+          { name: "手册", type: "files", path: "./docs/*.md" },
+          { name: "政策", type: "mcp", server: "notion", tool: "notion__search" },
+        ],
+      }),
+      CWD,
+      FAKE_BASE,
+      "thread-1",
+    );
+    const names = r.tools.map((t) => t.name);
+    expect(names).toContain("kb_search");
+    // 未声明 mcp.servers → 不挂网关，即便 knowledge 里引用了一个 mcp 源
+    expect(names).not.toContain("mcp");
+    expect(r.promptBlock).toContain("手册");
+  });
+
+  test("声明 memory: private 时：三件套挂载 + 记忆段进提示词", async () => {
+    const { resolveSubagentCapabilities } = await import("../../src/subagent/capabilities");
+    const r = await resolveSubagentCapabilities(
+      base({ memory: "private" }),
+      CWD,
+      FAKE_BASE,
+      "thread-1",
+    );
+    const names = r.tools.map((t) => t.name);
+    expect(names).toContain("memory_write");
+    expect(names).toContain("memory_read");
+    expect(names).toContain("memory_search");
+    expect(r.promptBlock).toContain("## Your memory");
+  });
+
+  test("memory: none 时三件套不挂载（默认无记忆）", async () => {
+    const { resolveSubagentCapabilities } = await import("../../src/subagent/capabilities");
+    for (const memory of [undefined, "none"] as const) {
+      const r = await resolveSubagentCapabilities(
+        base({ ...(memory ? { memory } : {}) }),
+        CWD,
+        FAKE_BASE,
+        "thread-1",
+      );
+      expect(r.tools.map((t) => t.name)).not.toContain("memory_write");
+      expect(r.promptBlock).toBe("");
+    }
+  });
+
+  test("声明的工具在会话中不存在时诊断而非静默丢弃", async () => {
+    const { resolveSubagentCapabilities } = await import("../../src/subagent/capabilities");
+    const r = await resolveSubagentCapabilities(
+      base({ tools: ["read", "WebFetch"] }),
+      CWD,
+      FAKE_BASE,
+      "thread-1",
+    );
+    expect(r.tools.map((t) => t.name)).toEqual(["read"]);
+    expect(r.diagnostics.some((d) => d.includes("WebFetch"))).toBe(true);
+  });
+
+  test("MCP 审批路由到父线程（子代理自己挂起的卡没人能看见）", async () => {
+    const { resolveSubagentCapabilities } = await import("../../src/subagent/capabilities");
+    const r = await resolveSubagentCapabilities(
+      base({ mcpServers: ["definitely-not-configured-server"] }),
+      CWD,
+      FAKE_BASE,
+      "parent-thread-42",
+    );
+    const mcpTool = r.tools.find((t) => t.name === "mcp");
+    expect(mcpTool).toBeDefined();
+    expect(mcpTool!.description).toContain("definitely-not-configured-server");
+    // 未配置也要挂网关：否则模型以为"能力不存在"，而真相是"配置没到位"，
+    // 两者的下一步动作完全不同
+    expect(r.diagnostics.some((d) => d.includes("not enabled or unconfigured"))).toBe(true);
+  });
+});

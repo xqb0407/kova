@@ -756,7 +756,51 @@ const BuiltinViewDialog: FC<{
               模型 <span className="font-mono">{entry.model}</span>（本机设定）
             </span>
           )}
+          {entry.memory && entry.memory !== "none" && (
+            <span className="text-muted-foreground px-1">
+              记忆 {MEMORY_OPTIONS.find((o) => o.value === entry.memory)?.label ?? entry.memory}
+            </span>
+          )}
         </div>
+        {/* 能力授予维度只读展示：内置不可编辑，但必须看得见自己有哪些能力——
+            否则"为什么这个 agent 够不到我的 Notion"无从排查 */}
+        {(entry.skills?.length || entry.mcpServers?.length || entry.knowledge?.length) && (
+          <div className="flex flex-col gap-1.5 text-xs">
+            {entry.skills?.length ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-muted-foreground">技能</span>
+                {entry.skills.map((s) => (
+                  <span key={s} className="bg-muted rounded-full px-2 py-0.5">
+                    {s}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {entry.mcpServers?.length ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-muted-foreground">MCP</span>
+                {entry.mcpServers.map((s) => (
+                  <span key={s} className="bg-muted rounded-full px-2 py-0.5 font-mono">
+                    {s}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {entry.knowledge?.length ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-muted-foreground">知识源</span>
+                {entry.knowledge.map((k, i) => (
+                  <span key={i} className="bg-muted rounded-full px-2 py-0.5">
+                    {k.name}
+                    <span className="text-muted-foreground ml-1 font-mono">
+                      {k.type === "files" ? k.path : `${k.server}__${k.tool}`}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )}
         <pre className="bg-muted/50 max-h-80 overflow-y-auto rounded-xl p-4 text-xs whitespace-pre-wrap">
           {entry.prompt}
         </pre>

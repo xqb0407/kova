@@ -97,6 +97,11 @@ export async function resolveSubagentCapabilities(
   const tools: AgentTool[] = [];
   const blocks: string[] = [];
 
+  // 技能目录读的是同步缓存：冷缓存会返回空档，于是 skills 白名单静默失效
+  // （子代理看不到任何技能，且没有任何报错）。会话物化时通常已预热过，
+  // 但那是隐式依赖——签名未变时这里零 IO，不预热才需要担心。
+  await ensureSkillsLoaded(cwd);
+
   // 1) 声明的基础工具：按规范注册名精确匹配会话工具表。
   //    声明名已在解析期归一（WebFetch 不是 webfetch），这里不做大小写变换。
   for (const name of definition.tools) {
@@ -155,9 +160,4 @@ export async function resolveSubagentCapabilities(
   }
 
   return { tools, promptBlock: blocks.filter((b) => b.trim()).join("\n\n"), diagnostics };
-}
-
-/** 委派前预热技能缓存：skillsSnapshot 是同步读缓存，冷启动时会是空的 */
-export async function prepareSubagentCapabilities(cwd: string): Promise<void> {
-  await ensureSkillsLoaded(cwd);
 }
