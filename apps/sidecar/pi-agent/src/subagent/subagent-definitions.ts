@@ -717,6 +717,23 @@ export function listPluginSubagentEntries(
   }));
 }
 
+/**
+ * 插件子智能体定义原文（插件详情页"查看内容"用）：按名取该条目的 YAML 原文与
+ * 文件路径。清单只带 name/description（见上），正文按需现取——列表页不必为
+ * 每个子智能体把整段 prompt 带在每次 list_plugins 应答里。
+ * 未找到或该条目无可用原文（如内置序列化而来）返回 undefined。
+ */
+export function readPluginSubagentDoc(
+  dir: string,
+  pluginId: string,
+  name: string,
+): { raw: string; path: string } | undefined {
+  const { definitions } = loadLayer(dir, "plugin", pluginId);
+  const def = definitions.find((d) => d.name === name);
+  if (!def?.raw || !def.path) return undefined;
+  return { raw: def.raw, path: def.path };
+}
+
 // ---------------------------------------------------------------------------
 // 三层加载（签名缓存）
 // ---------------------------------------------------------------------------

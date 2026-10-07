@@ -4,15 +4,31 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { unstable_defaultDirectiveFormatter } from "@assistant-ui/core";
-import { useMemo, useRef, useState, type ChangeEvent, type FC, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ComponentPropsWithoutRef,
+  type FC,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+} from "react";
 import {
   BookOpenIcon,
   BotIcon,
+  ChevronRightIcon,
   Link2Icon,
   MessageSquareIcon,
   PaperclipIcon,
   PlugIcon,
   PlusIcon,
+  SearchIcon,
   SettingsIcon,
   SlidersHorizontalIcon,
   type LucideIcon,
@@ -32,6 +48,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/tauri";
@@ -81,9 +98,18 @@ import { useHtmlDark } from "@/lib/settings/use-html-dark";
  * 连接器 = MCP 服务器清单（含插件层）：就绪且有工具的服务器再下钻一层列工具，
  * 未启用/未连/无工具的只读展示状态；启停归「管理连接器」（插件市场的 MCP 页）。
  *
- * 为什么没有搜索框：base-ui 菜单的 typeahead 对 popup 上的任意字符键
- * stopEvent（不看 event.target），嵌在菜单里的文本框会被吃掉按键。分类列表
- * 靠 popup 自身的 max-h + 滚动即可，故一律不做行内搜索。
+ * 三个分类面板（专家/技能/连接器）都是「悬浮展开 + 定高 + 带搜索框」
+ * （SearchableCategorySub），与「模式」子菜单同一套展开手感：
+ *
+ * - 为什么定高：技能动辄几十条，面板贴着 --available-height 会长成一整屏，
+ *   底部的「管理技能」还得滚到最后才够得着；三级（工具）同理。高度上限
+ *   PANEL_MAX_H，超出的在面板内的条目区滚，搜索头与页脚常驻。
+ * - 为什么是 Popover 而不是 Menu 子菜单：实测 Menu 浮层里放任何可输入元素都
+ *   收不到键盘字符（连临时塞进去的裸 input 也一样，输入法自然也弹不出来），
+ *   Popover 没这个问题，焦点/输入/方向键/回车全正常。行组件随之换成普通按钮
+ *   （PanelRow），菜单项语义由触发行自己带（role="menuitem"）。
+ * - 交互细节（悬浮开合、钉住、互斥、瞬时切换）都在 SearchableCategorySub，那里
+ *   逐条写了为什么。
  */
 
 /** dialog 文件类型过滤（与 prompt-attachments 白名单同源） */
@@ -92,17 +118,79 @@ const ATTACHMENT_DIALOG_EXTENSIONS = [
   "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md", "rtf",
 ];
 
+/** 关闭整个「+」菜单。面板（Popover）只知道自己那一层，选中条目 / 点管理
+ *  入口后要连菜单一起收掉，开关在 ComposerPlusMenu 手上，经 context 递下来 */
+const MenuCloseContext = createContext<() => void>(() => {});
+
+/**
+ * 分类面板的互斥登记：同一时间只允许一个面板开着。没有它就会出现
+ * 「点了技能把面板钉住，再悬浮专家又开一个」——两个面板同屏重叠。
+ *
+ * 刻意不走 React state：悬浮切换若 setState，登记值经 context 一变，几个面板
+ * 连同各自几十行条目会整体重渲染——而切换本该只动「被抢的」和「新开的」两个。
+ * 这里用订阅式的小登记表，抢占时只通知被抢的那个自收。null = 没挂登记
+ * （单挂一个面板的场景），不做互斥。
+ */
+type PanelGroup = {
+  claim: (key: string) => void;
+  release: (key: string) => void;
+  subscribe: (listener: (current: string | null) => void) => () => void;
+  reset: () => void;
+};
+
+function createPanelGroup(): PanelGroup {
+  let current: string | null = null;
+  const listeners = new Set<(current: string | null) => void>();
+  const emit = () => {
+    for (const listener of listeners) listener(current);
+  };
+  return {
+    claim(key) {
+      current = key;
+      emit();
+    },
+    release(key) {
+      if (current === key) current = null;
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    reset() {
+      current = null;
+    },
+  };
+}
+
+const PanelGroupContext = createContext<PanelGroup | null>(null);
+
+/** 面板内嵌套子面板时，父面板是否开着。父面板一关（display:none），锚点矩形
+ *  会塌成 0×0，而子面板自己还开着的话会被定位到 (0,0)——屏幕上就是左上角一闪。
+ *  所以子面板的可见性要跟着父面板走。菜单层级没有父面板，默认 true。 */
+const PanelParentOpenContext = createContext(true);
+
 export const ComposerPlusMenu: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   // 左栏「模式」行透出当前档位：快照是按 threadId 存的全局 store（ModePicker
   // 也在订阅同一份），这里多读一次无副作用，只为不点进子菜单就知道当前档位
   const modeSnap = useSessionMode(threadId);
   const { pick, fileInput } = useAddAttachments();
+  // 菜单开关上提到这里：搜索面板选中条目后要能反手把整个菜单关掉
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  // 分类面板的互斥登记（见 PanelGroupContext）
+  const panelGroup = useMemo(createPanelGroup, []);
+  // 菜单一关就把登记清掉，否则下次打开会认为自己还占着位
+  useEffect(() => {
+    if (!menuOpen) panelGroup.reset();
+  }, [menuOpen, panelGroup]);
 
   return (
     <>
       {fileInput}
-      <DropdownMenu>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
         <DropdownMenuTrigger
           render={
             <button
@@ -123,30 +211,40 @@ export const ComposerPlusMenu: FC = () => {
         />
         {/*  composer 贴在窗口下沿，菜单必须朝上开  */}
         <DropdownMenuContent align="start" side="top" sideOffset={6} className="w-48">
-          <DropdownMenuGroup className="p-0">
-            <DropdownMenuItem
-              onClick={() => {
-                // 桌面端 dialog 是模态的原生窗，等菜单退场动画走完再开，免得被浮层压住
-                setTimeout(pick, 120);
-              }}
-            >
-              <PaperclipIcon className="text-muted-foreground size-3.5 shrink-0" />
-              添加文件
-            </DropdownMenuItem>
-            {/* 不放分隔线：直选动作与下钻分类靠有无 chevron 已足够区分，
-                通栏横线只会把五行的短菜单劈成两截，边框感更重 */}
-            <ModeSub />
-            <AgentSub />
-            <SkillSub />
-            <ConnectorSub />
-          </DropdownMenuGroup>
+          <MenuCloseContext.Provider value={closeMenu}>
+            <PanelGroupContext.Provider value={panelGroup}>
+              <DropdownMenuGroup className="p-0">
+                <DropdownMenuItem
+                  onClick={() => {
+                    // 桌面端 dialog 是模态的原生窗，等菜单退场动画走完再开，免得被浮层压住
+                    setTimeout(pick, 120);
+                  }}
+                >
+                  <PaperclipIcon className="text-muted-foreground size-3.5 shrink-0" />
+                  添加文件
+                </DropdownMenuItem>
+                {/* 分隔线把「直选动作」和「下钻分类」分成两段：添加文件点下去就执行，
+                    其余四行都要再展开一层。线的样式跟面板页脚一致（浅色 + 两侧内收），
+                    免得在五行短菜单里读成硬边框 */}
+                <DropdownMenuSeparator className="bg-foreground/5 mx-2 my-1" />
+                <ModeSub />
+                <AgentSub />
+                <SkillSub />
+                <ConnectorSub />
+              </DropdownMenuGroup>
+            </PanelGroupContext.Provider>
+          </MenuCloseContext.Provider>
         </DropdownMenuContent>
       </DropdownMenu>
     </>
   );
 };
 
-/** 一个分类的下钻行：主菜单里的触发项 + 右飞的内容面板 */
+/** 分类面板的高度上限：搜索头 + 约 8 行条目 + 管理行。留 min() 是为了贴着
+ *  窗口边缘时先让位给 --available-height，不至于顶出可视区。 */
+const PANEL_MAX_H = "max-h-[min(var(--available-height),22rem)]";
+
+/** 一个分类的下钻行：主菜单里的触发项 + 右飞的内容面板（模式用，无搜索） */
 const CategorySub: FC<{
   icon: LucideIcon;
   label: string;
@@ -168,7 +266,7 @@ const CategorySub: FC<{
     {/*  popup 自带 max-h-(--available-height) + overflow-y-auto，长列表就地滚。
         border-0：SubContent 默认在 ring-1 之外又叠一圈 1px border，两层描边
         在浅色主题下发灰加重，浮层边缘由 ring 单独承担即可  */}
-    <DropdownMenuSubContent className={cn(width, "border-0")}>
+    <DropdownMenuSubContent className={cn(width, "border-0", PANEL_MAX_H)}>
       {children}
     </DropdownMenuSubContent>
   </DropdownMenuSub>
@@ -176,17 +274,6 @@ const CategorySub: FC<{
 
 const MenuEmpty: FC<{ children: ReactNode }> = ({ children }) => (
   <div className="text-muted-foreground px-2 py-3 text-center text-xs">{children}</div>
-);
-
-/** 子菜单页脚：跳管理页（各分类的管理入口都在插件市场/设置，菜单内不重复那些表单） */
-const ManageItem: FC<{ label: string; onClick: () => void }> = ({ label, onClick }) => (
-  <>
-    <DropdownMenuSeparator className="bg-foreground/5 mx-2 my-1" />
-    <DropdownMenuItem onClick={onClick}>
-      <SettingsIcon className="text-muted-foreground size-3.5 shrink-0" />
-      {label}
-    </DropdownMenuItem>
-  </>
 );
 
 /* ------------------------------------------------------------------ 附件 */
@@ -467,37 +554,451 @@ function useChipInserter() {
   };
 }
 
+/** 面板里能被搜索命中的条目最小形状：技能 / 专家 / 连接器都满足 */
+type PanelItem = { key: string; name: string; description?: string };
+
+/** 面板里的一行。面板是 Popover，行就是普通按钮，不再有 menu 上下文——
+ *  也就不吃菜单的焦点/typeahead 管理，这是搜索框能打字的根源。也用作下级
+ *  菜单的触发元素（render 进 DropdownMenuTrigger）。data-row 让回车激活
+ *  「高亮行」时能按 DOM 顺序找到它。 */
+const PanelRow: FC<
+  ComponentPropsWithoutRef<"button"> & {
+    /** 行首图标 */
+    leading?: ReactNode;
+    /** 行尾内容（计数/状态） */
+    trailing?: ReactNode;
+    /** 行尾 chevron（还有下级面板） */
+    chevron?: boolean;
+    /** 键盘高亮（回车要点的行） */
+    active?: boolean;
+  }
+> = ({ leading, trailing, chevron, active, className, children, ...rest }) => (
+  <button
+    type="button"
+    data-row=""
+    data-active={active || undefined}
+    className={cn(
+      "hover:bg-foreground/[0.06] focus-visible:bg-foreground/[0.06] data-active:bg-foreground/[0.06]",
+      "flex w-full cursor-default items-center gap-2 rounded-lg px-2 py-1.5 text-start text-sm outline-hidden select-none",
+      "disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+      className,
+    )}
+    {...rest}
+  >
+    {leading}
+    {children}
+    {trailing}
+    {chevron && (
+      <ChevronRightIcon className="text-muted-foreground ms-auto size-3.5 shrink-0 rtl:rotate-180" />
+    )}
+  </button>
+);
+
+type SearchPanelProps<T extends PanelItem> = {
+  placeholder: string;
+  /** 一个条目都没有：未加载或确实为空 */
+  emptyLabel: string;
+  /** 有条目，但全被搜索词滤掉了 */
+  noMatchLabel: string;
+  items: readonly T[];
+  /** 渲染单行；key 由条目自己带（item.key），点击后要自己调 close() 收起面板 */
+  renderRow: (item: T, ctx: PanelRowContext) => ReactNode;
+  /** 页脚的管理入口；工具面板没有，不传就不渲染页脚 */
+  manage?: { label: string; onClick: () => void };
+  close: () => void;
+  /** 把面板钉住（下钻出下一级时用，见 PanelRowContext） */
+  pin: () => void;
+  /** 面板是否开着：常驻挂载（keepMounted）之后，焦点与搜索词都得跟着开合走 */
+  open: boolean;
+  /** 挂载时是否把焦点交给搜索框：悬浮展开为 false（别抢走 composer 的光标），
+   *  点击展开为 true */
+  autoFocus: boolean;
+};
+
+/** 面板行拿到的上下文：close = 选中后收面板（+ 菜单），pin = 把面板钉住
+ *  （下钻出下一级面板时用，免得鼠标一离开这一层就被悬浮逻辑收走） */
+type PanelRowContext = { active: boolean; close: () => void; pin: () => void };
+
+/**
+ * 面板层级的全部开合逻辑，两级面板（分类 / 工具）共用：
+ *
+ * - 悬浮展开（延迟压到 20ms，行进到面板的斜线由 safePolygon 兜着）；
+ * - 面板内按过鼠标就钉住，不再随 mouseleave 收——不然刚点进搜索框打字，
+ *   鼠标一挪面板就没了。base-ui 只在「打开那一下是不是点击」上判这个，
+ *   悬浮打开的照样会随 mouseleave 关，所以这里自己用 openOnHover 钉；
+ * - 悬浮展开不抢焦点，点击展开才把焦点交给搜索框；
+ * - 互斥登记：同一时间只允许一个面板开着；谁打开谁登记，被抢的那个在对方
+ *   打开的那一帧自收（不是鼠标压上去就收，理由见下面那段注释）。
+ */
+function usePanelFlyout(panelKey: string) {
+  const [open, setOpen] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [autoFocus, setAutoFocus] = useState(true);
+  const group = useContext(PanelGroupContext);
+  const closeMenu = useContext(MenuCloseContext);
+  // 父面板（二级）关了就跟着关：见 PanelParentOpenContext 的说明
+  const parentOpen = useContext(PanelParentOpenContext);
+  useEffect(() => {
+    if (parentOpen) return;
+    setOpen(false);
+    setPinned(false);
+  }, [parentOpen]);
+
+  // 选中条目 / 点管理入口后连整个菜单一起收（与旧菜单项点击的行为一致）；
+  // Esc / 点面板外只收面板这一层，菜单留着
+  const close = useCallback(() => {
+    setOpen(false);
+    closeMenu();
+  }, [closeMenu]);
+  const pin = useCallback(() => setPinned(true), []);
+
+  // 【收在「别人真的开了」那一刻，而不是「鼠标压在别的行上」那一刻】：
+  // 悬浮切换的手感全在这。若鼠标一压到别的行就自收，会先空一段时间（新面板
+  // 的展开延迟）才见到下一个面板，看起来就是一闪一卡的；等到对方 setOpen
+  // 提交时再收，两个面板的显隐落在同一批更新里，切换就是一帧内的替换。
+  // 走订阅而不是 context 值：这里的收合不该引发其它面板重渲染。
+  useEffect(() => {
+    if (!group) return;
+    return group.subscribe((current) => {
+      if (current === null || current === panelKey) return;
+      setOpen(false);
+      setPinned(false);
+    });
+  }, [group, panelKey]);
+
+  const onOpenChange = (next: boolean, details: { reason?: string }) => {
+    setOpen(next);
+    if (next) {
+      setAutoFocus(details.reason !== "trigger-hover");
+      group?.claim(panelKey);
+      return;
+    }
+    setPinned(false);
+    group?.release(panelKey);
+  };
+
+  const triggerProps = {
+    openOnHover: !pinned,
+    delay: 20,
+    closeDelay: 40,
+  };
+
+  const contentProps = {
+    onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
+      pin();
+      const target = event.target as HTMLElement | null;
+      // 点非可聚焦的空白（行间留白、滚动条、内边距）时焦点会掉到 body，
+      // base-ui 的浮层焦点一出去就把面板收掉——挡掉默认的焦点转移，
+      // 光标始终留在搜索框里，接着打字不丢
+      if (!target?.closest("button,a,input,textarea,select,[tabindex]")) {
+        event.preventDefault();
+      }
+    },
+  };
+
+  return {
+    // 交给调用方的是「实际可见」的开合：父面板一关，哪怕自己的 open 还是 true，
+    // 渲染出去也得是关的，否则就是上面说的左上角一闪
+    open: open && parentOpen,
+    pinned,
+    autoFocus,
+    onOpenChange,
+    triggerProps,
+    contentProps,
+    close,
+    pin,
+  };
+}
+
+/** 面板本体：搜索框常驻顶部，条目区在固定高度里滚，管理行常驻底部。
+ *  搜索词/高亮行都活在组件 state 里——面板关闭即随 PopoverContent 卸载，
+ *  下次打开是干净的。键盘：↑/↓ 在行间挪高亮，回车点高亮行（没有就点第一行），
+ *  Esc 交给 Popover 自己的 dismiss 关面板。 */
+function SearchPanel<T extends PanelItem>({
+  placeholder,
+  emptyLabel,
+  noMatchLabel,
+  items,
+  renderRow,
+  manage,
+  close,
+  pin,
+  open,
+  autoFocus,
+}: SearchPanelProps<T>) {
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(-1);
+  // 面板内部再开一层互斥登记域：这一层里下钻出来的面板（三级）只在同级之间
+  // 互斥，不跟外层分类面板争同一个名额——不然一打开三级就会把父面板顶掉
+  const childPanels = useMemo(createPanelGroup, []);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // 点击展开时 Popover 的焦点管理会自己给浮层里第一个可聚焦元素（就是这
+  // 输入框）；这里兜个底，并且把「悬浮展开不抢焦点」这条说死在这里。
+  // keepMounted 下面板常驻，只有真打开才落焦点——否则菜单一开，几个隐藏
+  // 面板的输入框会轮流抢 composer 的光标
+  useEffect(() => {
+    if (open && autoFocus) inputRef.current?.focus();
+  }, [open, autoFocus]);
+
+  // 常驻挂载让搜索词活过了关闭：收面板时清干净，下次打开是新的
+  useEffect(() => {
+    if (open) return;
+    setQuery("");
+    setActiveIndex(-1);
+  }, [open]);
+
+  const needle = query.trim().toLowerCase();
+  /** 名称或描述的子串命中即保留——技能名多是 kebab-case，描述里常是中文关键词 */
+  const shown = useMemo(
+    () =>
+      needle === ""
+        ? [...items]
+        : items.filter(
+            (item) =>
+              item.name.toLowerCase().includes(needle) ||
+              (item.description ?? "").toLowerCase().includes(needle),
+          ),
+    [items, needle],
+  );
+
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // 【必须自己断冒泡】菜单的 typeahead 挂在菜单浮层上，而 Portal 只挪 DOM
+    // 不挪 React 树：按键照样沿组件树冒到菜单那层，被它 preventDefault 掉——
+    // 字符进不了输入框，表现就是「打字没反应、输入法也不弹」。字符键在这里
+    // 只 stopPropagation、不 preventDefault，浏览器照常把字落进来，中文输入法
+    // 也照常组字。组字期间（含回车确认候选）同样只断冒泡，不动默认行为。
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) {
+      event.stopPropagation();
+      return;
+    }
+    if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.stopPropagation();
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (shown.length > 0) {
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        setActiveIndex((index) => (index + delta + shown.length) % shown.length);
+      }
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      const rows = listRef.current?.querySelectorAll<HTMLButtonElement>("[data-row]");
+      rows?.[activeIndex >= 0 ? activeIndex : 0]?.click();
+    }
+  };
+
+  // 高亮行滚进视野（搜索后列表变短，高亮可能落在滚动容器外）
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    listRef.current
+      ?.querySelectorAll<HTMLButtonElement>("[data-row]")
+      [activeIndex]?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
+
+  return (
+    <>
+      <div className="px-1.5 pt-1.5">
+        {/* 图标压在输入框自己的相对容器里：容器带 pt 时按 50% 定位会偏 */}
+        <div className="relative">
+          <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setActiveIndex(-1);
+            }}
+            onKeyDown={onKeyDown}
+            placeholder={placeholder}
+            aria-label={placeholder}
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            className="placeholder:text-muted-foreground/70 bg-foreground/[0.04] h-8 w-full rounded-lg ps-8 pe-2 text-sm outline-none"
+          />
+        </div>
+      </div>
+      <PanelParentOpenContext.Provider value={open}>
+      <PanelGroupContext.Provider value={childPanels}>
+        <div
+          ref={listRef}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5"
+        >
+          {shown.length === 0 ? (
+            <MenuEmpty>{items.length === 0 ? emptyLabel : noMatchLabel}</MenuEmpty>
+          ) : (
+            shown.map((item, index) =>
+              renderRow(item, { active: index === activeIndex, close, pin }),
+            )
+          )}
+        </div>
+        {manage && (
+          <div className="p-1.5 pt-0">
+            <DropdownMenuSeparator className="bg-foreground/5 mx-2 my-1" />
+            <PanelRow
+              onClick={() => {
+                close();
+                manage.onClick();
+              }}
+            >
+              <SettingsIcon className="text-muted-foreground size-3.5 shrink-0" />
+              <span className="truncate">{manage.label}</span>
+            </PanelRow>
+          </div>
+        )}
+      </PanelGroupContext.Provider>
+      </PanelParentOpenContext.Provider>
+    </>
+  );
+}
+
+type SearchableCategorySubProps<T extends PanelItem> = {
+  icon: LucideIcon;
+  label: string;
+  /** 搜索框占位文案 */
+  placeholder: string;
+  emptyLabel: string;
+  noMatchLabel: string;
+  width?: string;
+  items: readonly T[];
+  renderRow: (item: T, ctx: PanelRowContext) => ReactNode;
+  manage: { label: string; onClick: () => void };
+};
+
+/** 面板外壳（两级共用）：右飞、定高、搜索头/页脚常驻、只有条目区滚。
+ *  过渡全部瞬时化：animate-none 压掉淡入淡出/位移/缩放，data-closed:hidden
+ *  让退场那一帧直接消失——base-ui 要等「退场动画结束」才卸载，动画关掉后仍会
+ *  多留 ~100ms，正好和刚打开的下一个面板同屏，看起来就是两块面板叠着。
+ *  border-0 + ring：SubContent/Popup 默认在 ring 之外还有一圈 border，
+ *  两层描边在浅色主题下发灰加重（理由同 CategorySub）。 */
+const PanelSurface: FC<{
+  width: string;
+  /** usePanelFlyout 给的浮层事件（点空白钉住 + 挡焦点转移） */
+  contentProps: ComponentPropsWithoutRef<typeof PopoverContent>;
+  children: ReactNode;
+}> = ({ width, contentProps, children }) => (
+  <PopoverContent
+    side="right"
+    align="start"
+    alignOffset={-3}
+    sideOffset={0}
+    // 面板关掉也不卸载：悬浮划过几行就是几套 portal + 焦点管理 + 列表的建与拆，
+    // 每切一次卡一次；常驻之后切换只是显隐（配合 data-closed:hidden）
+    keepMounted
+    {...contentProps}
+    className={cn(
+      width,
+      "gap-0 overflow-hidden border-0 p-0 ring-1 ring-foreground/10",
+      "data-open:animate-none data-closed:animate-none data-closed:hidden",
+      PANEL_MAX_H,
+    )}
+  >
+    {children}
+  </PopoverContent>
+);
+
+/** 带搜索的分类面板（见文件头为什么是 Popover 而不是 Menu 子菜单）。触发行
+ *  仍是菜单项：closeOnClick={false} 让点它不关整个菜单，面板右飞，交互上
+ *  还是「下钻一层」的样子。开合逻辑见 usePanelFlyout。 */
+function SearchableCategorySub<T extends PanelItem>({
+  icon: Icon,
+  label,
+  placeholder,
+  emptyLabel,
+  noMatchLabel,
+  width = "w-72",
+  items,
+  renderRow,
+  manage,
+}: SearchableCategorySubProps<T>) {
+  const flyout = usePanelFlyout(`cat:${label}`);
+
+  return (
+    <Popover open={flyout.open} onOpenChange={flyout.onOpenChange}>
+      <PopoverTrigger
+        nativeButton={false}
+        role="menuitem"
+        {...flyout.triggerProps}
+        render={
+          <DropdownMenuItem
+            closeOnClick={false}
+            className="hover:bg-foreground/[0.06] data-popup-open:bg-foreground/[0.06]"
+          >
+            <Icon className="text-muted-foreground size-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+            <ChevronRightIcon className="text-muted-foreground ms-auto size-3.5 shrink-0 rtl:rotate-180" />
+          </DropdownMenuItem>
+        }
+      />
+      <PanelSurface
+        width={width}
+        contentProps={flyout.contentProps}
+      >
+        <SearchPanel
+          placeholder={placeholder}
+          emptyLabel={emptyLabel}
+          noMatchLabel={noMatchLabel}
+          items={items}
+          renderRow={renderRow}
+          manage={manage}
+          close={flyout.close}
+          pin={flyout.pin}
+          open={flyout.open}
+          autoFocus={flyout.autoFocus}
+        />
+      </PanelSurface>
+    </Popover>
+  );
+}
+
+
 const AgentSub: FC = () => {
   const workspace = useWorkspace();
   const { agents, pluginAgents, loading } = useSubagents(workspace);
   const insert = useChipInserter();
 
-  const list = useMemo(
-    () => [...agents, ...pluginAgents].filter((a) => a.enabled),
+  const items = useMemo(
+    () =>
+      [...agents, ...pluginAgents]
+        .filter((a) => a.enabled)
+        .map((a) => ({ key: `${a.scope}-${a.name}`, name: a.name, description: a.description })),
     [agents, pluginAgents],
   );
 
   return (
-    <CategorySub icon={BotIcon} label="专家">
-      {list.length === 0 ? (
-        <MenuEmpty>{loading ? "加载中…" : "暂无子智能体"}</MenuEmpty>
-      ) : (
-        list.map((a) => (
-          <DropdownMenuItem
-            key={`${a.scope}-${a.name}`}
-            title={a.description}
-            onClick={() => insert("agent", a.name, `agent:${a.name}`)}
-          >
-            <BotIcon className="text-muted-foreground size-3.5 shrink-0" />
-            <span className="truncate">{a.name}</span>
-          </DropdownMenuItem>
-        ))
+    <SearchableCategorySub
+      icon={BotIcon}
+      label="专家"
+      placeholder="搜索专家"
+      emptyLabel={loading ? "加载中…" : "暂无子智能体"}
+      noMatchLabel="没有匹配的专家"
+      items={items}
+      renderRow={(item, { active, close }) => (
+        <PanelRow
+          key={item.key}
+          title={item.description}
+          active={active}
+          onClick={() => {
+            insert("agent", item.name, `agent:${item.name}`);
+            close();
+          }}
+        >
+          <BotIcon className="text-muted-foreground size-3.5 shrink-0" />
+          <span className="truncate">{item.name}</span>
+        </PanelRow>
       )}
-      <ManageItem
-        label="管理子智能体"
-        onClick={() => requestConnectorManage("subagents")}
-      />
-    </CategorySub>
+      manage={{
+        label: "管理子智能体",
+        onClick: () => requestConnectorManage("subagents"),
+      }}
+    />
   );
 };
 
@@ -506,29 +1007,38 @@ const SkillSub: FC = () => {
   const { skills, pluginSkills, loading } = useSkills(workspace);
   const insert = useChipInserter();
 
-  const list = useMemo(
-    () => [...skills, ...pluginSkills].filter((s) => s.enabled && !s.shadowed),
+  const items = useMemo(
+    () =>
+      [...skills, ...pluginSkills]
+        .filter((s) => s.enabled && !s.shadowed)
+        .map((s) => ({ key: `${s.scope}-${s.name}`, name: s.name, description: s.description })),
     [skills, pluginSkills],
   );
 
   return (
-    <CategorySub icon={BookOpenIcon} label="技能">
-      {list.length === 0 ? (
-        <MenuEmpty>{loading ? "加载中…" : "暂无技能"}</MenuEmpty>
-      ) : (
-        list.map((s) => (
-          <DropdownMenuItem
-            key={`${s.scope}-${s.name}`}
-            title={s.description}
-            onClick={() => insert("skill", s.name, `skill:${s.name}`)}
-          >
-            <BookOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
-            <span className="truncate">{s.name}</span>
-          </DropdownMenuItem>
-        ))
+    <SearchableCategorySub
+      icon={BookOpenIcon}
+      label="技能"
+      placeholder="搜索技能"
+      emptyLabel={loading ? "加载中…" : "暂无技能"}
+      noMatchLabel="没有匹配的技能"
+      items={items}
+      renderRow={(item, { active, close }) => (
+        <PanelRow
+          key={item.key}
+          title={item.description}
+          active={active}
+          onClick={() => {
+            insert("skill", item.name, `skill:${item.name}`);
+            close();
+          }}
+        >
+          <BookOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+          <span className="truncate">{item.name}</span>
+        </PanelRow>
       )}
-      <ManageItem label="管理技能" onClick={() => requestConnectorManage("skills")} />
-    </CategorySub>
+      manage={{ label: "管理技能", onClick: () => requestConnectorManage("skills") }}
+    />
   );
 };
 
@@ -570,66 +1080,140 @@ const ConnectorSub: FC = () => {
   const toolsByServer = useMcpToolsByServer(workspace);
   const insert = useChipInserter();
 
-  const servers = useMemo(
-    () => [...mcp.servers, ...mcp.pluginServers],
+  const items = useMemo(
+    () =>
+      [...mcp.servers, ...mcp.pluginServers].map((entry) => ({
+        key: `${entry.layer}-${entry.name}`,
+        name: entry.name,
+        description: entry.description,
+        entry,
+      })),
     [mcp.servers, mcp.pluginServers],
   );
 
   return (
-    <CategorySub icon={Link2Icon} label="连接器">
-      {servers.length === 0 ? (
-        <MenuEmpty>{mcp.loading ? "加载中…" : "暂无连接器"}</MenuEmpty>
-      ) : (
-        servers.map((entry) => {
-          const tools = toolsByServer[entry.name] ?? [];
-          const ready = entry.enabled && entry.status.state === "ready";
-          const key = `${entry.layer}-${entry.name}`;
-          // 只有「就绪且有工具」才值得再下钻一层；其余把状态摊在这一行上，
-          // 启停/修复都在「管理连接器」里做，菜单不复制那些表单
-          if (!ready || tools.length === 0) {
-            return (
-              <DropdownMenuItem disabled key={key} title={entry.description}>
-                <ServerIcon entry={entry} />
-                <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-                <DropdownMenuShortcut className="shrink-0 whitespace-nowrap">
+    <SearchableCategorySub
+      icon={Link2Icon}
+      label="连接器"
+      placeholder="搜索连接器"
+      emptyLabel={mcp.loading ? "加载中…" : "暂无连接器"}
+      noMatchLabel="没有匹配的连接器"
+      items={items}
+      renderRow={(item, { active, close, pin }) => {
+        const { entry } = item;
+        const tools = toolsByServer[entry.name] ?? [];
+        const ready = entry.enabled && entry.status.state === "ready";
+        // 只有「就绪且有工具」才值得再下钻一层；其余把状态摊在这一行上，
+        // 启停/修复都在「管理连接器」里做，面板不复制那些表单
+        if (!ready || tools.length === 0) {
+          return (
+            <PanelRow
+              key={item.key}
+              disabled
+              active={active}
+              title={item.description}
+              trailing={
+                <span className="text-muted-foreground shrink-0 whitespace-nowrap font-mono text-[11px] tracking-wider">
                   {!entry.enabled
                     ? "未启用"
                     : ready
                       ? "无工具"
                       : STATUS_TEXT[entry.status.state] ?? entry.status.state}
-                </DropdownMenuShortcut>
-              </DropdownMenuItem>
-            );
-          }
-          return (
-            <DropdownMenuSub key={key}>
-              <DropdownMenuSubTrigger>
-                <ServerIcon entry={entry} />
-                <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-                <DropdownMenuShortcut className="me-1 shrink-0 whitespace-nowrap">{tools.length}</DropdownMenuShortcut>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-64 border-0">
-                {tools.map((tool) => (
-                  <DropdownMenuItem
-                    key={tool.name}
-                    title={tool.description}
-                    onClick={() =>
-                      insert("tool", tool.name, `tool:${entry.name}:${tool.name}`)
-                    }
-                  >
-                    <PlugIcon className="text-muted-foreground size-3.5 shrink-0" />
-                    <span className="truncate">{tool.name}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
+                </span>
+              }
+            >
+              <ServerIcon entry={entry} />
+              <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+            </PanelRow>
           );
-        })
-      )}
-      <ManageItem
-        label="管理连接器"
-        onClick={() => requestConnectorManage("plugins")}
+        }
+        // 三级同样是带搜索的 Popover 面板（工具动辄几十个，菜单那种长条既没
+        // 搜索也吃不到定高）；触发行是面板里的普通按钮，悬浮即展开
+        return (
+          <ToolFlyout
+            key={item.key}
+            entry={entry}
+            tools={tools}
+            active={active}
+            title={item.description}
+            pinParent={pin}
+            onPick={(toolName) => {
+              insert("tool", toolName, `tool:${entry.name}:${toolName}`);
+              close();
+            }}
+          />
+        );
+      }}
+      manage={{ label: "管理连接器", onClick: () => requestConnectorManage("plugins") }}
+    />
+  );
+};
+
+/** 连接器某一行的工具下钻面板（三级）。悬浮展开、带搜索、定高，与二级同一套
+ *  壳；pinParent = 展开时把二级钉住——鼠标从二级面板移到三级浮层，二级会收到
+ *  mouseleave，不钉住就连着三级一起被收走 */
+const ToolFlyout: FC<{
+  entry: McpServerEntry;
+  tools: { name: string; description?: string }[];
+  active: boolean;
+  title?: string;
+  pinParent: () => void;
+  onPick: (toolName: string) => void;
+}> = ({ entry, tools, active, title, pinParent, onPick }) => {
+  const flyout = usePanelFlyout(`tool:${entry.layer}-${entry.name}`);
+  const items = useMemo(
+    () => tools.map((t) => ({ key: t.name, name: t.name, description: t.description })),
+    [tools],
+  );
+
+  return (
+    <Popover
+      open={flyout.open}
+      onOpenChange={(next, details) => {
+        // 三级真的打开时才钉住父面板：鼠标从二级面板移进三级浮层会先触发
+        // 二级的 mouseleave，不钉住就会连带三级一起被悬浮逻辑收走；而只是
+        // 扫过这一行（三级没开）就别钉，免得父面板变得过度粘滞
+        if (next) pinParent();
+        flyout.onOpenChange(next, details);
+      }}
+    >
+      {/* 触发行是真 <button>（PanelRow），nativeButton 保持默认 true；分类那边
+          的触发行是菜单项 div，才要显式 false */}
+      <PopoverTrigger
+        {...flyout.triggerProps}
+        render={
+          <PanelRow active={active} title={title} chevron>
+            <ServerIcon entry={entry} />
+            <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+            <span className="text-muted-foreground me-1 shrink-0 font-mono text-[11px] tracking-wider whitespace-nowrap">
+              {tools.length}
+            </span>
+          </PanelRow>
+        }
       />
-    </CategorySub>
+      <PanelSurface width="w-72" contentProps={flyout.contentProps}>
+        <SearchPanel
+          placeholder="搜索工具"
+          emptyLabel="该连接器暂无工具"
+          noMatchLabel="没有匹配的工具"
+          items={items}
+          renderRow={(item, ctx) => (
+            <PanelRow
+              key={item.key}
+              title={item.description}
+              active={ctx.active}
+              onClick={() => onPick(item.name)}
+            >
+              <PlugIcon className="text-muted-foreground size-3.5 shrink-0" />
+              <span className="truncate">{item.name}</span>
+            </PanelRow>
+          )}
+          close={flyout.close}
+          pin={flyout.pin}
+          open={flyout.open}
+          autoFocus={flyout.autoFocus}
+        />
+      </PanelSurface>
+    </Popover>
   );
 };

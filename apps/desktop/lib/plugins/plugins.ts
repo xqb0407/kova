@@ -5,6 +5,8 @@ import {
   piRequest,
   type PiMarketplaceEntry,
   type PiPluginComponentEntry,
+  type PiPluginComponentDocResponse,
+  type PiPluginComponentKind,
   type PiPluginEntry,
   type PiPluginOpAccepted,
   type PiPluginsResponse,
@@ -26,6 +28,7 @@ import { getWorkspace } from "@/lib/workspace/workspace-store";
 export type PluginEntry = PiPluginEntry;
 export type MarketplaceEntry = PiMarketplaceEntry;
 export type PluginComponentEntry = PiPluginComponentEntry;
+export type { PiPluginComponentDocResponse, PiPluginComponentKind };
 
 export type PluginsSnapshot = {
   loading: boolean;
@@ -245,6 +248,26 @@ export async function setPluginComponentEnabled(
     });
   }
   await refreshPlugins(cwd);
+}
+
+// ---------------------------------------------------------------------------
+// 组件正文（详情页"查看内容"）
+// ---------------------------------------------------------------------------
+
+/** 取单个插件组件的原文：技能 SKILL.md 全文 / 子智能体 YAML / MCP 条目 JSON。
+ *  清单只带 name/description，正文按需现取（见 PiPluginComponentDocResponse）。
+ *  组件不存在/未安装时 sidecar 回 error，这里以异常上抛，调用方自行呈现。 */
+export async function getPluginComponentDoc(
+  pluginId: string,
+  kind: PiPluginComponentKind,
+  name: string,
+): Promise<PiPluginComponentDocResponse> {
+  return piRequest<PiPluginComponentDocResponse>({
+    type: "get_plugin_component_doc",
+    pluginId,
+    kind,
+    name,
+  });
 }
 
 /** 移除市场登记（不卸载已装插件）。marketplaceId 字段传市场身份——

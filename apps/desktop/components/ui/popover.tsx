@@ -20,7 +20,11 @@ const PopoverContent = React.forwardRef<
     Pick<
       PopoverPrimitive.Positioner.Props,
       "align" | "alignOffset" | "side" | "sideOffset"
-    >
+    > & {
+      /** 关掉后仍留在 DOM 里（内容不卸载）。给需要反复开合的浮层用：省掉每次
+       *  重建 portal + 焦点管理 + 子树的开销，配合 data-closed:hidden 显隐即可 */
+      keepMounted?: boolean;
+    }
 >(function PopoverContent(
   {
     className,
@@ -28,12 +32,13 @@ const PopoverContent = React.forwardRef<
     alignOffset = 0,
     side = "bottom",
     sideOffset = 4,
+    keepMounted = false,
     ...props
   },
   ref,
 ) {
   return (
-    <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Portal keepMounted={keepMounted}>
       <OcclusionSlot />
       <PopoverPrimitive.Positioner
         align={align}

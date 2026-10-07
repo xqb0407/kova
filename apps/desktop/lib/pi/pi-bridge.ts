@@ -483,6 +483,24 @@ export type PiPluginPanelAssetResponse = {
   rev: string;
 };
 
+/** 组件类别：技能 / MCP 服务器 / 子智能体（面板不走这条，见 plugin_panel_asset） */
+export type PiPluginComponentKind = "skill" | "mcp" | "subagent";
+
+/** get_plugin_component_doc 应答：单个组件的原文（详情页"查看内容"用）。
+ *  正文按需现取而非随 list_plugins 下发：技能/子智能体正文动辄几十 KB，
+ *  一个插件十几条组件，全量带在清单里每次刷新都要搬运一遍。 */
+export type PiPluginComponentDocResponse = {
+  type: "plugin_component_doc";
+  kind: PiPluginComponentKind;
+  name: string;
+  /** 来源文件绝对路径（技能/子智能体为定义文件，MCP 为 mcpServers 文件） */
+  path: string;
+  /** 技能 SKILL.md 全文 / 子智能体 YAML / MCP 条目 JSON */
+  content: string;
+  /** 超上限被截断 */
+  truncated: boolean;
+};
+
 /** get_plugin_panel_rev 应答：入口文件轻量指纹（只 stat），宿主 dev 自动重载轮询用 */
 export type PiPluginPanelRevResponse = {
   type: "plugin_panel_rev";
@@ -1010,6 +1028,7 @@ export type PiResponse =
   | PiMcpAuditLogResponse
   | PiPluginsResponse
   | PiPluginPanelAssetResponse
+  | PiPluginComponentDocResponse
   | PiPluginPanelRevResponse
   | PiMarketplacesResponse
   | PiPluginOpAccepted
