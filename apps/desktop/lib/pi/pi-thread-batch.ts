@@ -77,12 +77,22 @@ export function setThreadBatchSelection(ids: readonly string[]): void {
   setState({ ...state, selected: [...ids] });
 }
 
-/** 列表组件注册/注销当前 tab 的可见 id 集（搜索/分页/空列表同步跟进） */
+/** 列表组件注册/注销当前 tab 的可见 id 集（搜索/分页/空列表同步跟进）。
+ *
+ *  按内容比对，不是引用比对：可见集是列表组件里 useMemo 出来的数组，上游
+ *  （threadIds / 分组 / 置顶）只要换个新引用身份就变，而注册发生在 effect 里
+ *  ——引用不等就写入 → 订阅整份 state 的 CloneThreadShell 重渲染 → 列表重算
+ *  又给一个新数组 → 再写入，就是那条「Maximum update depth exceeded」。
+ *  内容一样就当作没发生（可见集是集合语义，身份对消费者没有意义）。 */
 export function setThreadBatchVisible(
   tab: ThreadBatchTab,
   ids: readonly string[] | undefined,
 ): void {
-  if (state.visible[tab] === ids) return;
+  const prev = state.visible[tab];
+  if (prev === ids) return;
+  if (prev && ids && prev.length === ids.length && prev.every((id, i) => id === ids[i])) {
+    return;
+  }
   setState({ ...state, visible: { ...state.visible, [tab]: ids } });
 }
 

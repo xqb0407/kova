@@ -663,8 +663,8 @@ export const MarketplaceView: FC<{
                             className="bg-white dark:bg-background hover:bg-muted/50 flex cursor-pointer flex-col rounded-2xl border p-4"
                           >
                             <div className="flex items-start gap-3">
-                              <div className="bg-background grid size-9 shrink-0 place-items-center overflow-hidden rounded-xl border">
-                                <PluginIcon src={entry.icon} />
+                              <div className="bg-background grid size-9 shrink-0 place-items-center overflow-hidden rounded-xl">
+                                <PluginIcon src={entry.icon} name={entry.name} />
                               </div>
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-1.5">
@@ -688,7 +688,7 @@ export const MarketplaceView: FC<{
                               </div>
                             </div>
                             {entry.description && (
-                              <p className="text-muted-foreground mt-2 line-clamp-3 flex-1 text-sm">
+                              <p className="text-muted-foreground mt-2 line-clamp-3 flex-1 text-xs">
                                 {entry.description}
                               </p>
                             )}

@@ -626,11 +626,24 @@ const ThreadListItemGroups: FC<{
     useThreadListGroups(searchQuery);
   const query = searchQuery.trim();
 
+  // 任务 tab 分页：默认渲染最近 10 条，尾部的「显示更多」每点一次放出一页。
+  // 不做滚动自动加载——会话多时侧栏会变成无限流，想定位旧会话反而更难；
+  // 搜索时全量展示（结果已经过滤过，截断会让人误以为漏了条目），query 变化即重置页数。
+  const [taskVisibleCount, setTaskVisibleCount] = useState(TASK_VISIBLE_LIMIT);
+  useEffect(() => {
+    setTaskVisibleCount(TASK_VISIBLE_LIMIT);
+  }, [query]);
+  const visibleTaskIndices = query
+    ? taskIndices
+    : taskIndices.slice(0, taskVisibleCount);
+  const hiddenTaskCount = taskIndices.length - visibleTaskIndices.length;
+
   // 批量模式「全选」的可见集注册：任务 tab 当前渲染的会话（含置顶组，
   // 搜索过滤后口径一致）。跨 tab 统一选择池的一侧，见 pi-thread-batch.ts
   const visibleTaskIds = useMemo(
-    () => [...pinnedIndices, ...taskIndices].map((index) => threadIds[index]),
-    [threadIds, pinnedIndices, taskIndices],
+    () =>
+      [...pinnedIndices, ...visibleTaskIndices].map((index) => threadIds[index]),
+    [threadIds, pinnedIndices, visibleTaskIndices],
   );
   useEffect(() => {
     setThreadBatchVisible("tasks", visibleTaskIds);
@@ -690,7 +703,7 @@ const ThreadListItemGroups: FC<{
           ))}
         </PinnedCard>
       )}
-      {taskIndices.map((index, i) => (
+      {visibleTaskIndices.map((index, i) => (
         <RowHoverContext.Provider
           key={threadIds[index]}
           value={{ registerItem, index: pinnedIndices.length + i }}
@@ -703,6 +716,25 @@ const ThreadListItemGroups: FC<{
           </TreeRow>
         </RowHoverContext.Provider>
       ))}
+      {/* 分页尾巴：与项目组的「显示更多」同一套（会话标题的左缘对齐位 +
+          hover 槽位），只是页大小是任务 tab 自己的 */}
+      {hiddenTaskCount > 0 && (
+        <TreeRow position={visibleTaskIndices.length}>
+          <FluidHoverRow
+            registerItem={registerItem}
+            index={pinnedIndices.length + visibleTaskIndices.length}
+          >
+            <Button
+              variant="ghost"
+              // 左缘与会话标题对齐：行 ps-2.5(10px) + 占位图标 size-3.5(14px) + me-1.5(6px) = 30px
+              className="h-7 w-full justify-start ps-[30px] text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+              onClick={() => setTaskVisibleCount((c) => c + TASK_VISIBLE_LIMIT)}
+            >
+              {`显示更多（${Math.min(hiddenTaskCount, TASK_VISIBLE_LIMIT)}）`}
+            </Button>
+          </FluidHoverRow>
+        </TreeRow>
+      )}
     </>
   );
 };
@@ -731,6 +763,8 @@ const PinnedCard: FC<{ children: ReactNode }> = ({ children }) => (
 
 /** 项目展开后默认可见的会话行数，超出折叠进「显示更多」 */
 const PROJECT_VISIBLE_LIMIT = 5;
+/** 任务 tab 每页行数：尾部「显示更多」每点一次放出一页（不做滚动自动加载） */
+const TASK_VISIBLE_LIMIT = 10;
 
 export const ProjectListItems: FC<{
   openDirs?: Set<string>;

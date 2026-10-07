@@ -57,4 +57,22 @@ describe("pi-thread-batch", () => {
     enterThreadBatch();
     expect(getThreadBatchState().selected).toEqual(["a"]);
   });
+
+  test("可见集内容未变时重复注册不写 state（防 effect 无限循环）", () => {
+    enterThreadBatch();
+    setThreadBatchVisible("tasks", ["t1", "t2"]);
+    const before = getThreadBatchState();
+    // 列表每次重渲染都会给个新数组；内容相同就不该再写——否则
+    // 「写入 → 订阅者重渲染 → 再算一个新数组 → 再写入」会无限循环
+    setThreadBatchVisible("tasks", ["t1", "t2"]);
+    expect(getThreadBatchState()).toBe(before);
+    // 内容真变了才写
+    setThreadBatchVisible("tasks", ["t1"]);
+    expect(getThreadBatchState()).not.toBe(before);
+    // 注销（undefined）与「空数组」不是一回事，正常写入
+    const cleared = getThreadBatchState();
+    setThreadBatchVisible("tasks", undefined);
+    expect(getThreadBatchState()).not.toBe(cleared);
+    expect(getThreadBatchState().visible.tasks).toBeUndefined();
+  });
 });
