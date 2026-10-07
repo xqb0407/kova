@@ -34,45 +34,56 @@ export type SelectOption = {
 
 export const MultiSelectField: FC<{
   label: string;
+  /** 追加在标签后的说明，与 FieldRow 同款呈现 */
+  hint?: string;
   options: SelectOption[];
   value: string[];
   onChange: (next: string[]) => void;
   /** 空态提示（如「还没配置技能，到设置 → 技能里添加」） */
   emptyHint?: string;
-  /** 已选项在弹层里显示的 hint 兜底 */
-  missingLabel?: string;
-}> = ({ label, options, value, onChange, emptyHint }) => {
+  /** 候选表是否已就绪。未就绪时**不把已选项标成缺失**——
+   *  清单还没拉回来时 options 是空的，照常判定会让每个已选项都闪一次
+   *  "当前作用域不存在"的红标，那是假警报。 */
+  optionsReady?: boolean;
+}> = ({ label, hint, options, value, onChange, emptyHint, optionsReady = true }) => {
   const [open, setOpen] = useState(false);
   // 已被显式移除的名字仍要出现在弹层里（否则用户再点一次才能加回来，
   // 会以为"这个技能不可用"）
   const optionByValue = new Map(options.map((o) => [o.value, o]));
-  const missingSelected = value.filter((v) => !optionByValue.has(v));
+  // 未就绪时不谈缺失：只有候选表确实拿到了，缺席才说明"这个真没了"
+  const missingSelected = optionsReady
+    ? value.filter((v) => !optionByValue.has(v))
+    : [];
 
   const toggle = (v: string) =>
     onChange(value.includes(v) ? value.filter((x) => x !== v) : [...value, v]);
 
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-muted-foreground text-xs">{label}</span>
+      <span className="text-muted-foreground text-xs">
+        {label}
+        {hint ? ` —— ${hint}` : ""}
+      </span>
       {value.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {value.map((v) => {
             const known = optionByValue.get(v);
+            const missing = missingSelected.includes(v);
             return (
               <span
                 key={v}
                 className={cn(
-                  "inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs",
-                  known ? "bg-muted/60" : "border-destructive/50 text-destructive",
+                  "inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-xs",
+                  missing ? "border-destructive/50 text-destructive" : "bg-muted/60 border-input",
                 )}
-                title={known?.hint ?? "当前作用域不存在，这条声明不会生效"}
+                title={missing ? "当前作用域不存在，这条声明不会生效" : known?.hint}
               >
                 {known?.label ?? v}
                 <button
                   type="button"
                   aria-label={`移除 ${known?.label ?? v}`}
                   onClick={() => onChange(value.filter((x) => x !== v))}
-                  className="text-muted-foreground hover:text-foreground -mr-1 cursor-pointer"
+                  className="text-muted-foreground hover:text-foreground -mr-1 cursor-pointer text-sm leading-none"
                 >
                   ×
                 </button>
@@ -82,9 +93,7 @@ export const MultiSelectField: FC<{
         </div>
       )}
       <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger
-          className="border-input text-muted-foreground hover:bg-muted inline-flex h-7 w-fit cursor-pointer items-center gap-1 rounded-full border px-2.5 text-xs transition-colors"
-        >
+        <PopoverTrigger className={addChipClass}>
           <PlusIcon className="size-3" />
           添加
           <ChevronDownIcon className="size-3 opacity-60" />
@@ -176,3 +185,59 @@ export const ReadonlyChips: FC<{ label: string; items: string[]; mono?: boolean 
       ))}
     </div>
   );
+/* ---------------------------------------------------------------------------
+ * 统一的 chip 家族
+ *
+ * 这一页此前有四套手写的胶囊：工具 chip 是 py-0.5（约 22px）「添加」按钮是
+ * h-7，知识源按钮是 Button outline，记忆档位又是另一套 padding。同屏三种
+ * 高度，看起来像几个不同组件拼起来的。
+ *
+ * 现在统一到本应用小控件的标准高度 h-7（与 ui/button 的 size=sm、
+ * custom-ui/segmented 的段高一致），圆角一律 rounded-full，
+ * 选中态只有一处定义。
+ * ------------------------------------------------------------------------- */
+
+/** 可切换的多选 chip（工具、技能、MCP 用）。mono 供工具名这类标识符 */
+export const ToggleChip: FC<{
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  mono?: boolean;
+  title?: string;
+}> = ({ active, onClick, children, mono, title }) => (
+  <button
+    type="button"
+    aria-pressed={active}
+    onClick={onClick}
+    title={title}
+    className={cn(
+      "inline-flex h-7 shrink-0 cursor-pointer items-center rounded-full border px-2.5 text-xs transition-colors",
+      mono && "font-mono",
+      active
+        ? "bg-primary text-primary-foreground border-primary"
+        : "text-muted-foreground hover:bg-muted border-input",
+    )}
+  >
+    {children}
+  </button>
+);
+
+/** 新增动作 chip 的外观：与 ToggleChip 同高同圆角，语义是「加一个」而非「切换」。
+ *  导出成 class 而非组件，因为 PopoverTrigger / Button 都要挂它。 */
+export const addChipClass =
+  "border-input text-muted-foreground hover:bg-muted inline-flex h-7 w-fit cursor-pointer items-center gap-1 rounded-full border px-2.5 text-xs transition-colors";
+
+/** 分区里的一行「标签 + 内容」：标签样式统一，不再各节各写一遍 */
+export const FieldRow: FC<{ label: string; hint?: string; children: React.ReactNode }> = ({
+  label,
+  hint,
+  children,
+}) => (
+  <div className="flex flex-col gap-1.5">
+    <span className="text-muted-foreground text-xs">
+      {label}
+      {hint ? ` —— ${hint}` : ""}
+    </span>
+    {children}
+  </div>
+);
