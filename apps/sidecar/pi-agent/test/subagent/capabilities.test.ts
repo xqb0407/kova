@@ -449,3 +449,42 @@ describe("GRANTABLE_TOOLS", () => {
     }
   });
 });
+// ---------------------------------------------------------------------------
+// 保存路径往返（守住协议层的静默丢字段）
+// ---------------------------------------------------------------------------
+
+describe("保存路径", () => {
+  test("表单草稿经 emit → parse 保住全部维度（含 CamelCase 工具）", () => {
+    const draft: SubagentDraft = {
+      name: "cs",
+      description: "客服",
+      tools: ["read", "WebFetch"],
+      prompt: "你是售后\n",
+      skills: ["refund"],
+      mcpServers: ["crm"],
+      knowledge: [
+        { name: "手册", type: "files", path: "./docs/*.md" },
+        { name: "政策", type: "mcp", server: "notion", tool: "notion__search" },
+      ],
+      memory: "private",
+    };
+    const r = parse(emitSubagentYaml(draft));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.definition.tools).toEqual(["read", "WebFetch"]);
+    expect(r.definition.skills).toEqual(["refund"]);
+    expect(r.definition.mcpServers).toEqual(["crm"]);
+    expect(r.definition.knowledge).toHaveLength(2);
+    expect(r.definition.memory).toBe("private");
+  });
+
+  test("canonicalToolName 保住 WebFetch 大小写（协议层不再无条件小写化）", () => {
+    // 协议 handler 曾对 d.tools 无条件 toLowerCase()，把 WebFetch 变成 webfetch，
+    // 保存后定义里的工具永远匹配不上会话工具表
+    expect(["WebFetch", "webfetch", "WEBFETCH"].map(canonicalToolName)).toEqual([
+      "WebFetch",
+      "WebFetch",
+      "WebFetch",
+    ]);
+  });
+});
