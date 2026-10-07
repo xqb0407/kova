@@ -18,6 +18,28 @@ use chrono::{Duration as ChronoDuration, Local, NaiveDate};
 use log::{LevelFilter, Metadata, Record};
 use tauri::{AppHandle, Manager};
 
+/// 写 stderr，**失败即忽略**。
+///
+/// `eprintln!` 在写 stderr 失败时会 panic——这是 std 的保证行为。对 GUI 应用是致命的：
+/// 从 Finder 或由别的进程（IDE/Electron）拉起时，stderr 可能是一根无人读取的管道，
+/// 父进程一退出写入就失败，于是"记一条日志"变成 panic；release 档 `panic = "abort"`
+/// （见 Cargo.toml），而这条 panic 又发生在 Tauri 命令处理器里，直接带走整个进程。
+/// 崩溃栈就是 frontend_log → __eprint → panic_fmt → abort。
+///
+/// 日志的职责是记录，不是把程序带走。所有 stderr 输出一律走这里。
+fn eprint_lossy(line: &str) {
+    write_lossy(&mut std::io::stderr(), line);
+}
+
+/// `eprint_lossy` 的可测内核：把一行写给任意 writer，**错误一律吞掉**。
+/// 单独抽出来是为了能用"必定失败的 writer"在测试里钉住这个契约，
+/// 而不必去动测试进程的 fd 2（那会污染同进程内并行跑的其他测试）。
+fn write_lossy<W: Write>(w: &mut W, line: &str) {
+    let _ = writeln!(w, "{line}");
+}
+
+
+
 const KEEP_DAYS: i64 = 7;
 const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const FRONTEND_MSG_MAX: usize = 8000;
@@ -89,14 +111,14 @@ impl SourceFile {
         };
         let payload = format!("{line}\n");
         if let Err(e) = file.write_all(payload.as_bytes()) {
-            eprintln!("[logging] write {name} failed: {e}");
+            eprint_lossy(&format!("[logging] write {name} failed: {e}"));
             self.file = None;
             return;
         }
         self.bytes += payload.len() as u64;
         if self.last_flush.elapsed() >= LOG_FLUSH_AFTER {
             if let Err(e) = file.flush() {
-                eprintln!("[logging] flush {name} failed: {e}");
+                eprint_lossy(&format!("[logging] flush {name} failed: {e}"));
             }
             self.last_flush = Instant::now();
         }
@@ -105,7 +127,7 @@ impl SourceFile {
     fn open(&mut self, root: &Path, name: &str) {
         let dir = root.join(self.date.format("%Y-%m-%d").to_string());
         if let Err(e) = fs::create_dir_all(&dir) {
-            eprintln!("[logging] create log dir failed: {e}");
+            eprint_lossy(&format!("[logging] create log dir failed: {e}"));
             self.file = None;
             return;
         }
@@ -117,7 +139,7 @@ impl SourceFile {
                 self.last_flush = Instant::now();
             }
             Err(e) => {
-                eprintln!("[logging] open log file failed: {e}");
+                eprint_lossy(&format!("[logging] open log file failed: {e}"));
                 self.file = None;
             }
         }
@@ -200,7 +222,7 @@ impl log::Log for Logger {
             record.target(),
             record.args()
         );
-        eprintln!("{line}");
+        eprint_lossy(&line);
         self.append_source("app.log", &line);
     }
 
@@ -217,7 +239,7 @@ pub fn init(app: &AppHandle) {
     let root = app.path().app_log_dir().ok();
     if let Some(dir) = root.as_ref() {
         if let Err(e) = fs::create_dir_all(dir) {
-            eprintln!("[logging] create log root failed: {e}");
+            eprint_lossy(&format!("[logging] create log root failed: {e}"));
         }
     }
     if let Ok(raw) = std::env::var("KOVA_LOG_LEVEL") {
@@ -270,7 +292,7 @@ pub fn frontend_log(level: String, message: String) {
     }
     if let Some(logger) = LOGGER.get() {
         let line = format!("{} [{level}] {message}", ts_now());
-        eprintln!("{line}");
+        eprint_lossy(&line);
         logger.append_source("web.log", &line);
     }
 }
@@ -330,6 +352,7 @@ pub fn cleanup_logs(before_days: i64) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
 
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -407,5 +430,47 @@ mod tests {
         let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
         assert!(root.join(&today).join("app.log").exists());
         fs::remove_dir_all(&root).ok();
+    }
+
+    /// 回归：日志写入失败绝不能让进程崩掉。
+    ///
+    /// 实机崩溃栈（macOS crash report）：frontend_log → std::io::stdio::__eprint
+    /// → core::panicking::panic_fmt → abort。`eprintln!` 在写 stderr 失败时 panic，
+    /// 而 release 档 panic = "abort"，且这条 panic 发生在 Tauri 命令处理器里，
+    /// 于是"stderr 不可写"升级成"整个应用被带走"。触发场景很普通：
+    /// 应用由别的进程拉起（IDE/Electron），父进程退出后 stderr 成为断管。
+    #[test]
+    fn write_lossy_swallows_a_broken_stderr() {
+        struct DeadPipe;
+        impl Write for DeadPipe {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+            }
+        }
+        // 不 panic 即通过——这正是修复本身
+        write_lossy(&mut DeadPipe, "2026-10-07 21:54:36 [ERROR] 崩给你看");
+    }
+
+    /// 反证：同一个 writer 上，`eprintln!` 那种"失败即 panic"的写法确实会炸。
+    /// 没有这条，上面的测试可能只是在空转。
+    #[test]
+    fn writing_to_a_dead_pipe_panics_when_unwrapped() {
+        struct DeadPipe;
+        impl Write for DeadPipe {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+            }
+        }
+        let caught = std::panic::catch_unwind(|| {
+            let mut w = DeadPipe;
+            writeln!(w, "x").expect("eprintln! 语义：写失败即 panic");
+        });
+        assert!(caught.is_err(), "写失败必须表现为 panic，否则上面那条测试是空转");
     }
 }
