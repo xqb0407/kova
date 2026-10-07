@@ -10,7 +10,7 @@
  * 能力边界与 sidecar 对齐：内置只读（可查看/开关/复制为系统级）；系统/工作区
  * 可编辑可删除，工作区层随所选目录呈现。
  */
-import { useMemo, useState, type FC, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FC, type ReactNode } from "react";
 import {
   BotIcon,
   CheckIcon,
@@ -451,7 +451,12 @@ const WorkspaceCwdMenu: FC<{
   </DropdownMenu>
 );
 
-export const SubagentsSettings: FC = () => {
+export const SubagentsSettings: FC<{
+  /** 编辑态上抛：父级（MarketplaceView）据此收掉自己的顶栏。
+   *  不收会撞出两个「返回」——外层那个退出整个管理页，内层这个只返回列表，
+   *  语义不同却长一样，用户点哪个全凭运气。 */
+  onEditingChange?: (editing: boolean) => void;
+}> = ({ onEditingChange }) => {
   const workspace = useWorkspace();
   const recents = useWorkspaceRecents();
   // 工作区级区块允许浏览任意目录：overrideCwd 为 null 时跟随主界面当前工作区，
@@ -463,6 +468,12 @@ export const SubagentsSettings: FC = () => {
   const [editorTarget, setEditorTarget] = useState<EditorTarget | null>(null);
   const [viewing, setViewing] = useState<SubagentEntry | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  // 编辑态同步给父级（卸载时也上报一次 false，避免切走页面后顶栏一直藏著）
+  useEffect(() => {
+    onEditingChange?.(editorTarget !== null);
+  }, [editorTarget, onEditingChange]);
+  useEffect(() => () => onEditingChange?.(false), [onEditingChange]);
 
   const groups = useMemo(
     () => ({
