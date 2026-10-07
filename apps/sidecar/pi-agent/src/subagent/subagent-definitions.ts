@@ -38,22 +38,18 @@ export type SubagentScope = "builtin" | "system" | "workspace" | "plugin";
 export type SubagentMemoryMode = "none" | "private" | "shared";
 
 /**
- * 声明式知识源。知识形态很杂（本地文档、飞书表格、Notion…），
- * 这里抽象成两种投递方式：
- * - files：工作区相对 glob，正文经 kb_search 关键词检索后按需 read
- * - mcp：命名一个 MCP 服务器与工具，agent 走作用域化网关自行调用
+ * 声明式知识源：就是一份文档（或一组文档）。
  *
- * 两条路都不预加载正文——系统提示词只拿到一行目录。
+ * 只有文档一种形态。外部系统（飞书表格、Notion、数据库）不走这里——
+ * 它们由 mcp.servers 授予，agent 直接调那些服务器的工具。把 MCP 也做进
+ * 知识源等于同一件事说两遍，还多一套要维护的类型分支。
+ *
+ * 正文永不预加载：提示词只拿到一行目录，kb_search 关键词检索后按需 read。
  */
 export type KnowledgeSource = {
   name: string;
-  type: "files" | "mcp";
-  /** type = "files"：工作区相对 glob */
-  path?: string;
-  /** type = "mcp"：服务器名 */
-  server?: string;
-  /** type = "mcp"：工具名（或 <server>__<tool> 全名） */
-  tool?: string;
+  /** 工作区相对 glob，如 ./docs/**\/*.md */
+  path: string;
 };
 
 /** 一份子代理定义（解析产物与运行时共用同一形状） */
@@ -175,29 +171,24 @@ function parseKnowledgeSources(
     }
     const e = entry as Record<string, unknown>;
     const name = typeof e.name === "string" ? e.name.trim() : "";
-    const type = typeof e.type === "string" ? e.type.trim().toLowerCase() : "";
     if (!name) {
       warnings.push(`${at} missing name`);
       continue;
     }
-    if (type === "files") {
-      const path = typeof e.path === "string" ? e.path.trim() : "";
-      if (!path) {
-        warnings.push(`${at} missing path (files source)`);
-        continue;
-      }
-      out.push({ name, type: "files", path });
-    } else if (type === "mcp") {
-      const server = typeof e.server === "string" ? e.server.trim() : "";
-      const tool = typeof e.tool === "string" ? e.tool.trim() : "";
-      if (!server || !tool) {
-        warnings.push(`${at} missing server or tool (mcp source)`);
-        continue;
-      }
-      out.push({ name, type: "mcp", server, tool });
-    } else {
-      warnings.push(`${at} ignoring unknown type "${e.type === undefined ? "" : String(e.type)}"`);
+    // 知识源只有文档一种。外部系统（飞书/Notion/数据库）走 mcp.servers
+    // ——那条路已经能直接调服务器工具，再拿知识源指一遍是同一件事说两遍。
+    // 这条判定必须排在 path 校验之前：MCP 条目本来就没有 path，先报"缺 path"
+    // 会让用户以为补个路径就行，而正确做法是改用 mcp.servers。
+    if (e.type === "mcp") {
+      warnings.push(`${at} MCP 知识源已不再支持：改用 mcp.servers 授予该服务器`);
+      continue;
     }
+    const path = typeof e.path === "string" ? e.path.trim() : "";
+    if (!path) {
+      warnings.push(`${at} missing path`);
+      continue;
+    }
+    out.push({ name, path });
   }
   return out.length ? out : undefined;
 }
@@ -508,9 +499,9 @@ export function parseSubagentYaml(
     }
   }
 
-  // 能力依赖：files 知识源需要 read 才能打开检索到的文件
-  if (knowledge?.some((k) => k.type === "files") && !tools.includes("read")) {
-    warnings.push(`${label} declares a files knowledge source but not the read tool; search hits cannot be opened`);
+  // 能力依赖：知识源需要 read 才能打开检索到的文件
+  if (knowledge?.length && !tools.includes("read")) {
+    warnings.push(`${label} declares a knowledge source but not the read tool; search hits cannot be opened`);
   }
 
   let maxTurns: number | undefined;
@@ -939,7 +930,7 @@ function validateDraft(draft: SubagentDraft): string[] {
   }
   // 知识源依赖 read：解析层只警告，写路径直接拒（用户点了保存就不该静默放过）
   if (
-    draft.knowledge?.some((k) => k.type === "files") &&
+    draft.knowledge?.length &&
     !draft.tools.some((t) => canonicalToolName(t) === "read")
   ) {
     errors.push("声明了 files 知识源就必须授予 read 工具，否则检索结果无法打开");
@@ -952,10 +943,7 @@ function validateDraft(draft: SubagentDraft): string[] {
   }
   for (const k of draft.knowledge ?? []) {
     if (!k.name.trim()) errors.push("知识源缺少名称");
-    if (k.type === "files" && !k.path?.trim()) errors.push(`知识源 "${k.name}" 缺少 path`);
-    if (k.type === "mcp" && (!k.server?.trim() || !k.tool?.trim())) {
-      errors.push(`知识源 "${k.name}" 缺少 server 或 tool`);
-    }
+    if (!k.path?.trim()) errors.push(`知识源 "${k.name}" 缺少 path`);
   }
   if (!draft.prompt.trim()) errors.push("prompt 不能为空");
   if (draft.maxTurns !== undefined && (!Number.isFinite(draft.maxTurns) || draft.maxTurns < 1)) {

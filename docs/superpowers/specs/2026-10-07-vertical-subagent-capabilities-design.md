@@ -78,12 +78,7 @@ mcp:
   servers: [crm, notion]
 knowledge:
   - name: 产品手册
-    type: files
     path: ./docs/**/*.md
-  - name: 售后政策库
-    type: mcp
-    server: notion
-    tool: notion__search
 memory: private
 maxTurns: 60
 ```
@@ -172,8 +167,11 @@ CamelCase 注册名永远匹配失败。新解析器按规范注册名做精确�
 
 知识源是通用抽象，覆盖形态各异的来源：
 
-- `type: files` — 工作区相对 glob，指向 markdown / 文本 / 表格等本地资料
-- `type: mcp` — 命名一个 MCP 服务器与工具（如飞书表格、Notion）
+只有一种形态：工作区相对 glob，指向 markdown / 文本 / 表格等本地资料。
+
+外部系统（飞书表格、Notion、数据库）**不经知识源**——它们由 `mcp.servers`
+授予，agent 直接调那些服务器的工具。把 MCP 也做进知识源等于同一件事说两遍，
+还多一套要维护的类型分支。`type: mcp` 现在会被拒绝并提示改用 `mcp.servers`。
 
 **按需拉取，永不预加载。** 系统提示词只得到每源一行的目录；`kb_search` 对
 file 类源做关键词检索，返回排序后的 `path:line` 命中，agent 再自行 `read`。
@@ -185,9 +183,6 @@ file 类源做关键词检索，返回排序后的 `path:line` 命中，agent �
 | 单次检索读取字节 | 8 MiB | 覆盖常规产品手册规模 |
 | 返回命中条数 | 50 | 与 `grep` 的 200 上限同族，取更紧 |
 | 单命中行长度 | 400 字符 | 与 `grep` 一致 |
-
-`type: mcp` 的知识源不进 `kb_search`；目录行直接告知服务器与工具名，
-agent 走作用域化的 MCP 网关调用。
 
 **依赖约束**：声明了 `knowledge` 的 `files` 源，就必须同时授予 `read`，
 否则 agent 拿到 `path:line` 却打不开文件。此约束在 `validateDraft` 与

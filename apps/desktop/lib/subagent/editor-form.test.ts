@@ -36,8 +36,8 @@ const fullForm = (): FormDraft => ({
   skills: ["refund-policy", "tone-guide"],
   mcpServers: ["crm", "notion"],
   knowledge: [
-    { name: "产品手册", type: "files", path: "./docs/**/*.md" },
-    { name: "政策库", type: "mcp", server: "notion", tool: "notion__search" },
+    { name: "产品手册", path: "./docs/**/*.md" },
+    { name: "政策库", path: "./policies/*.md" },
   ],
   memory: "private",
 });
@@ -88,10 +88,7 @@ describe("formToYaml 不丢字段", () => {
     expect(yaml).toContain("servers: [crm, notion]");
     expect(yaml).toContain("knowledge:");
     expect(yaml).toContain('name: "产品手册"');
-    expect(yaml).toContain("type: files");
-    expect(yaml).toContain("type: mcp");
-    expect(yaml).toContain('server: "notion"');
-    expect(yaml).toContain('tool: "notion__search"');
+    expect(yaml).toContain('path: "./docs/**/*.md"');
     expect(yaml).toContain("memory: private");
   });
 

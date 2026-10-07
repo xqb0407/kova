@@ -258,13 +258,11 @@ export type PiSubagentScope = "builtin" | "system" | "workspace" | "plugin";
 /** 子智能体记忆档位：none = 无记忆（缺省）；private = 私有命名空间；shared = 与主代理共享工作区记忆 */
 export type PiSubagentMemoryMode = "none" | "private" | "shared";
 
-/** 声明式知识源：files 走工作区 glob + kb_search；mcp 走作用域化 MCP 网关 */
+/** 声明式知识源：就是一份文档（glob 指向）。外部系统走 mcpServers 授予，不经这里 */
 export type PiKnowledgeSource = {
   name: string;
-  type: "files" | "mcp";
-  path?: string;
-  server?: string;
-  tool?: string;
+  /** 工作区相对 glob */
+  path: string;
 };
 
 /** 子智能体定义条目（设置 → 子智能体；list/save/delete/开关/信任的应答共用清单形状） */
