@@ -24,9 +24,11 @@ const KNOWN_TOOLS = ["bash", "read", "write", "edit", "glob", "grep"];
 
 ### 目标
 
-- 定义文件能声明四个正交能力维度：基础工具、技能白名单、MCP 服务器白名单、知识源
+- 定义文件能声明五个正交能力维度：基础工具、技能白名单、MCP 服务器白名单、
+  知识源、记忆
 - 能力按需加载（渐进式披露），不预加载正文，不占满上下文
 - 作用域是结构性的：未声明即不可达，不是"给了再拒绝"
+- 子代理记忆与用户主记忆隔离，结构上不可能互相污染
 - 未声明任何新维度的既有定义，行为与提示词字节级不变
 
 ### 非目标（本期明确不做）
@@ -37,6 +39,9 @@ const KNOWN_TOOLS = ["bash", "read", "write", "edit", "glob", "grep"];
 - 把垂直业务包做成插件发行形态。`plugins/manifest.ts` 已能打包
   skills + mcpServers + subagents，未来可复用，但不是本期交付物。
 - 子代理嵌套委派。维持现状：delegate 不能继续 `Task`。
+- 让子代理影响主代理的记忆。子代理只能读主记忆（`shared` 档）或完全不碰，
+  但主代理的 `memory_write` 语义、子代理记忆导入主记忆的动作都不做。
+- 跨工作区共享子代理记忆。见 §9。
 
 ## 3. 方案选择
 
@@ -46,7 +51,7 @@ const KNOWN_TOOLS = ["bash", "read", "write", "edit", "glob", "grep"];
 但它是平表、无作用域：声明 `mcp` 的子代理能碰到所有已配置服务器，
 `skills` / `knowledge` 仍无处声明。表达不了"垂直业务 agent"。**否决。**
 
-**方案 B — 能力授予模型。** 定义携带四个正交维度，每维有独立解析步骤与独立的
+**方案 B — 能力授予模型。** 定义携带五个正交维度，每维有独立解析步骤与独立的
 提示词目录块。定义本身就是能力包。**采纳。**
 
 **方案 C — 插件作为打包单位。** 发行形态最佳，但在"加一个客服 agent"和
@@ -57,7 +62,8 @@ const KNOWN_TOOLS = ["bash", "read", "write", "edit", "glob", "grep"];
 
 ### 4.1 定义 schema
 
-`SubagentDefinition` 在现有字段旁新增三个字段：
+`SubagentDefinition` 在既有字段（`tools` 语义不变，但白名单扩容）旁新增四个字段
+（`skills` / `mcp` / `knowledge` / `memory`），合计五个能力维度：
 
 ```yaml
 name: Customer-Service
@@ -76,6 +82,7 @@ knowledge:
     type: mcp
     server: notion
     tool: notion__search
+memory: private
 maxTurns: 60
 ```
 
@@ -95,11 +102,17 @@ export type SubagentDefinition = {
   skills?: string[];
   mcpServers?: string[];
   knowledge?: KnowledgeSource[];
+  /** 子代理记忆模式；缺省即 none（§4.5） */
+  memory?: "none" | "private" | "shared";
 };
 ```
 
 `parseSubagentYaml` 的未知键白名单（现 `subagent-definitions.ts:312`）加入
-`skills` / `mcp` / `knowledge`。解析错误仍按现有约定降级为诊断，不赔上整个清单。
+`skills` / `mcp` / `knowledge` / `memory`。解析错误仍按现有约定降级为诊断，
+不赔上整个清单。
+
+**`memory` 缺省即 `none`**——未声明的既有定义（四个内置 + 现存用户定义）
+完全不受影响，提示词字节级不变。
 
 ### 4.2 可授予工具目录
 
@@ -112,10 +125,13 @@ export const GRANTABLE_TOOLS = [
   "task_output", "task_stop",
   // 网络（http-tools.ts 注册名是 CamelCase：WebFetch / WebSearch）
   "WebFetch", "WebSearch",
-  // 能力授予目标（skill-use-tool.ts / todo-state.ts / agent-memory.ts）
-  "use_skill", "todo", "memory_read", "memory_search",
+  // 能力授予目标（skill-use-tool.ts / todo-state.ts）
+  "use_skill", "todo",
 ] as const;
 ```
+
+`memory_write` / `memory_read` / `memory_search` **不在此表**：它们只由
+`memory` 维度挂载（§4.5），不能按裸工具名声明，与 `mcp` 同理。
 
 **默认不授予、且刻意缺席的工具：**
 
@@ -177,6 +193,59 @@ agent 走作用域化的 MCP 网关调用。
 写路径层报错（拒绝保存）。`grep` / `glob` 同理：建议授予但不强制，
 强制会让知识型定义无谓地拿到写权限以外的全套检索工具。
 
+### 4.5 记忆
+
+现状有两个缺口：
+
+1. **子代理完全没有记忆注入。** `memoryPromptBlock` 只在
+   `modes.ts composeModeSystemPrompt`（主代理路径）被调用；
+   `composeSubagentSystemPrompt`（`run.ts:33`）从不调用它。每次委派都是冷启动。
+2. **即便授予记忆工具也不对。** 子代理拿到 `memory_write` 会写进**用户的主记忆**——
+   一个客服 agent 可能把「客户 X 偏好退款」持久化进用户本人的全局记忆。
+
+外加并发现实：`MAX_SUBAGENT_CONCURRENCY` 为 8，`Task` 的
+`executionMode` 是 `parallel`，同一子代理的并发委派会竞争同一份记忆文件。
+
+三档模式：
+
+| 值 | 语义 | 目录 |
+|---|---|---|
+| `none`（缺省） | 无记忆，不注入不给工具 | — |
+| `private` | 私有命名空间，跨委派累积，只本子代理可见 | `<cwd>/.kova/agent-memory/<name>/` |
+| `shared` | 与主代理共享 workspace 作用域记忆 | `<cwd>/.kova/memory/` |
+
+**`private` 是默认推荐**（`shared` 需显式声明）：子代理的读写永远进不了用户主记忆，
+结构上不可能污染。`shared` 保留是因为"业务 agent 与主代理共享一条经验"确有场景，
+但要清楚代价——子代理生成的内容（可能是幻觉）会进主代理下一次的提示词，
+且落在用户仓库里。
+
+**投递方式**：与主代理同构的两层消费。根级 `*.md` 视为常驻记忆，经
+`subagentMemoryPromptBlock` 注入 `composeSubagentSystemPrompt`；
+`daily/*.md` 只参与 `memory_search` 关键词检索。逐文件 4K、整段 12K 预算，
+超预算的文件整体略去并留一行说明——与 `memoryPromptBlock`
+（`agent/memory.ts:240`）同款，`memory.ts` 的 `truncateMiddle` 直接复用。
+
+**工具**：`memory_write` / `memory_read` / `memory_search` 三件套，
+仅在 `memory` 非 `none` 时挂载。命名空间在闭包里固定——
+`memory_write` 的 `scope` 参数对子代理**不暴露**，工具直接写死到该子代理的
+命名空间。子代理在参数里伪造 `scope: "global"` 无门可过：scope 不在 schema 里。
+
+**并发写**：同一子代理的并发委派写同一目录。`memory_write` 的 append 模式按
+进程内 promise 串行化（同一 `cwd + name` 键一串队列），overwrite 模式取
+最后一次写入胜出并记诊断。不用文件锁——sidecar 是单进程，
+进程内串行即足矣。跨进程（两个 sidecar 实例指向同一工作区）不在本期防护范围，
+按 `.kova` 目录已有的协作假设处理。
+
+**不与主记忆配置联动**：主记忆总开关（`MemoryConfig.enabled`，默认关闭）
+**不控制**子代理记忆。子代理记忆由定义里的 `memory` 字段单独决定。
+理由：子代理记忆是私有命名空间，不注入主提示词，与用户记忆设置正交；
+让一个默认关闭的全局开关去否决用户显式声明的 `memory: private` 是错的耦合。
+`private` 模式不受 `getMemoryConfig().enabled` 门控。
+
+**与 `knowledge` 的分工**：`knowledge` 是**外部权威资料**（产品手册、政策库），
+只读，本设计不提供写入路径；`memory` 是**agent 自己攒下的经验**，
+可读可写。一个是"世界告诉它的"，一个是"它自己记住的"。
+
 ## 5. 作用域化 MCP 与审批问题
 
 这是本次设计里唯一需要额外论证的部分。
@@ -208,7 +277,7 @@ agent 走作用域化的 MCP 网关调用。
 ## 6. 提示词组装
 
 `composeSubagentSystemPrompt`（`run.ts:33`）现有输出 = 固定框架 + `definition.prompt`。
-新增一个 `capabilityBlock`，由新的解析器组装，最多三段：
+新增一个 `capabilityBlock`，由新的解析器组装，最多四段：
 
 ```
 <available_skills>
@@ -223,7 +292,13 @@ agent 走作用域化的 MCP 网关调用。
 <allowed_mcp_servers>
 crm, notion
 </allowed_mcp_servers>
+
+（memory: private 时）## Memory
+（子代理记忆段的引导 + 根级常驻文件正文，结构同 memoryPromptBlock）
 ```
+
+段序即拼接序：技能 → 知识源 → MCP → 记忆。记忆在最后，与主代理的
+`composeModeSystemPrompt` 保持"记忆段在环境段之前、个性化段之后"的相对位置。
 
 **不变量**：每个维度未声明时，该段整体省略。因此既有定义的输出提示词
 **字节级不变** —— `tools.ts:483` 的静态核心提示词缓存不变式依赖这一点。
@@ -233,13 +308,14 @@ crm, notion
 
 | 文件 | 改动 |
 |---|---|
-| `subagent/subagent-definitions.ts` | schema 解析/序列化/校验；`GRANTABLE_TOOLS`；`skills`/`mcpServers`/`knowledge` 字段 |
-| `subagent/tools.ts` | `resolveSubagentTools` 取代 `definition.tools.map(baseTools.find)`；挂载 `kb_search` 与作用域化 MCP 网关 |
+| `subagent/subagent-definitions.ts` | schema 解析/序列化/校验；`GRANTABLE_TOOLS`；`skills`/`mcpServers`/`knowledge`/`memory` 字段 |
+| `subagent/tools.ts` | `resolveSubagentTools` 取代 `definition.tools.map(baseTools.find)`；挂载 `kb_search`、作用域化 MCP 网关、记忆三件套 |
 | `subagent/knowledge.ts` | **新增**：`kb_search` 工具与 file 类知识源检索 |
+| `subagent/memory.ts` | **新增**：私有命名空间路径解析、`subagentMemoryPromptBlock`、写队列序列化；`truncateMiddle` 从 `agent/memory.ts` 导出复用 |
 | `mcp/mcp-tools.ts` | `buildMcpTool` 增可选 `allowedServers` 参数；过滤 search/describe、拒绝越权 call |
-| `subagent/run.ts` | `composeSubagentSystemPrompt` 组装 `capabilityBlock` |
+| `subagent/run.ts` | `composeSubagentSystemPrompt` 组装 `capabilityBlock`（含记忆段） |
 | `protocol/payloads.ts` + `pi-protocol` | `PiSubagentEntry` 携带新字段 |
-| `desktop/.../subagents-settings.tsx` | 编辑表单加三段；沿用现有表单与 YAML 双视图模式 |
+| `desktop/.../subagents-settings.tsx` | 编辑表单加四段（技能/MCP/知识/记忆）；沿用现有表单与 YAML 双视图模式 |
 
 ## 8. 测试
 
@@ -257,7 +333,12 @@ crm, notion
 6. **`kb_search` 上限** — 超大语料按字节上限截断并显式标注截断，不静默
 7. **`read` 依赖校验** — 声明 `files` 知识源但未授予 `read` 时，解析层出警告、
    保存路径报错
-8. **跨层解析** — 插件层 / 工作区层定义的 `stateKey` 与开关语义不变（回归）
+8. **记忆隔离** — `memory: private` 的子代理写不进 `<cwd>/.kova/memory/`
+   与全局记忆目录；`scope` 参数不出现在工具 schema 里
+9. **记忆不受主开关否决** — 主记忆 `enabled: false` 时，`memory: private`
+   的子代理仍能注入与写入
+10. **并发写序列化** — 同一子代理两次并发 `memory_write` append 不丢行
+11. **跨层解析** — 插件层 / 工作区层定义的 `stateKey` 与开关语义不变（回归）
 
 ## 9. 未决与后续
 
@@ -265,4 +346,10 @@ crm, notion
   业务 API"这一真实需求。
 - 向量 RAG：本期不做。若 `kb_search` 的关键词检索在真实语料上召回不足，
   再评估——届时它是 `knowledge` 维度下的实现替换，不影响 schema。
+- 记忆跨工作区复用：`private` 记忆绑在 `<cwd>` 下，同一定义在两个工作区
+  各有一份记忆。若出现"这份业务知识应当跨工作区通用"的需求，
+  可加 `global-private` 档（落 `~/.kova/agent-memory/<name>/`）；本期不加。
 - 垂直业务包的发行：走插件层，复用现有打包。schema 已兼容。
+- 子代理记忆与用户主记忆之间的**主动导入**：目前 `shared` 档让子代理直接写
+  主记忆，但没有"把这个子代理的 private 记忆导入主记忆"的动作。
+  本期不加——需要时人工复制文件即可，加了反而引入不可逆的合并语义。
