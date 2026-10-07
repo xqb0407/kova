@@ -141,7 +141,7 @@ const BuiltinViewDialog: FC<{
           <ReadonlyChips
             label="知识源"
             items={(entry.knowledge ?? []).map(
-              (k) => `${k.name} ${k.type === "files" ? k.path : `${k.server}__${k.tool}`}`,
+              (k) => `${k.name} ${k.path}`,
             )}
             mono
           />

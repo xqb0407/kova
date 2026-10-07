@@ -137,9 +137,9 @@ export const SubagentEditorPage: FC<{
       knowledge: f.knowledge.map((k, j) => (j === i ? { ...k, ...patch } : k)),
     }));
 
-  // files 知识源要靠 read 打开检索结果：提前提示，不等保存被拒
+  // 知识源要靠 read 打开检索结果：提前提示，不等保存被拒
   const missingReadForKnowledge =
-    form.knowledge.some((k) => k.type === "files") && !form.tools.includes("read");
+    form.knowledge.length > 0 && !form.tools.includes("read");
 
   const save = async () => {
     if (busy) return;
@@ -359,44 +359,12 @@ export const SubagentEditorPage: FC<{
                     </Button>
                   </div>
                   <div className="flex gap-2">
-                    <select
-                      value={k.type}
-                      onChange={(e) =>
-                        patchKnowledge(i, {
-                          type: e.target.value as "files" | "mcp",
-                          ...(e.target.value === "files"
-                            ? { path: k.path ?? "", server: "", tool: "" }
-                            : { server: k.server ?? "", tool: k.tool ?? "", path: "" }),
-                        })
-                      }
-                      className="border-input bg-background rounded-md border px-2 text-xs"
-                    >
-                      <option value="files">工作区文件</option>
-                      <option value="mcp">MCP 服务器</option>
-                    </select>
-                    {k.type === "files" ? (
-                      <Input
-                        value={k.path ?? ""}
-                        onChange={(e) => patchKnowledge(i, { path: e.target.value })}
-                        placeholder="如 ./docs/**/*.md"
-                        className="flex-1 font-mono text-xs"
-                      />
-                    ) : (
-                      <>
-                        <Input
-                          value={k.server ?? ""}
-                          onChange={(e) => patchKnowledge(i, { server: e.target.value })}
-                          placeholder="服务器名"
-                          className="w-32 font-mono text-xs"
-                        />
-                        <Input
-                          value={k.tool ?? ""}
-                          onChange={(e) => patchKnowledge(i, { tool: e.target.value })}
-                          placeholder="工具名"
-                          className="flex-1 font-mono text-xs"
-                        />
-                      </>
-                    )}
+                    <Input
+                      value={k.path}
+                      onChange={(e) => patchKnowledge(i, { path: e.target.value })}
+                      placeholder="文档路径，如 ./docs/**/*.md"
+                      className="flex-1 font-mono text-xs"
+                    />
                   </div>
                 </div>
               ))}
@@ -408,7 +376,7 @@ export const SubagentEditorPage: FC<{
                 onClick={() =>
                   setField("knowledge", [
                     ...form.knowledge,
-                    { name: "", type: "files", path: "" },
+                    { name: "", path: "" },
                   ])
                 }
               >

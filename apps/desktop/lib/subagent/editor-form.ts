@@ -133,12 +133,7 @@ export function formToYaml(form: FormDraft): string {
   for (const k of form.knowledge) {
     lines.push("knowledge:");
     lines.push(`  - name: ${JSON.stringify(k.name)}`);
-    lines.push(`    type: ${k.type}`);
-    if (k.type === "files") lines.push(`    path: ${JSON.stringify(k.path ?? "")}`);
-    else {
-      lines.push(`    server: ${JSON.stringify(k.server ?? "")}`);
-      lines.push(`    tool: ${JSON.stringify(k.tool ?? "")}`);
-    }
+    lines.push(`    path: ${JSON.stringify(k.path)}`);
   }
   if (form.memory !== "none") lines.push(`memory: ${form.memory}`);
   lines.push("prompt: |");

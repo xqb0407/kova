@@ -129,7 +129,7 @@ export function searchKnowledge(
 ): { hits: KnowledgeHit[]; scannedBytes: number; truncated: boolean } {
   const terms = parseQuery(query);
   if (terms.length === 0) return { hits: [], scannedBytes: 0, truncated: false };
-  const fileSources = sources.filter((s) => s.type === "files" && s.path);
+  const fileSources = sources.filter((s) => s.path.trim());
   if (fileSources.length === 0) return { hits: [], scannedBytes: 0, truncated: false };
 
   const hits: KnowledgeHit[] = [];
@@ -189,7 +189,7 @@ export function buildKnowledgeTool(
   cwd: string,
   sources: readonly KnowledgeSource[],
 ): AgentTool {
-  const names = sources.filter((s) => s.type === "files").map((s) => s.name);
+  const names = sources.map((s) => s.name);
   return {
     name: "kb_search",
     label: "Knowledge Search",

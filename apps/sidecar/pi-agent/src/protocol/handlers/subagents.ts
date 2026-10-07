@@ -19,23 +19,15 @@ import {
 import { subagentsPayload } from "../payloads";
 import type { CommandHandler } from "../command";
 
-/** 协议载荷 → 知识源列表。字段缺失的条目就地丢弃（validateDraft 会兜住必填项） */
+/** 协议载荷 → 知识源列表。缺 name/path 的条目就地丢弃（validateDraft 会报错兜底） */
 function normalizeKnowledgeDrafts(raw: unknown[]): KnowledgeSource[] {
   const out: KnowledgeSource[] = [];
   for (const entry of raw) {
     if (typeof entry !== "object" || entry === null) continue;
     const e = entry as Record<string, unknown>;
     const name = String(e.name ?? "").trim();
-    if (!name) continue;
-    const type = String(e.type ?? "").trim().toLowerCase();
-    if (type === "files") {
-      const path = String(e.path ?? "").trim();
-      if (path) out.push({ name, type: "files", path });
-    } else if (type === "mcp") {
-      const server = String(e.server ?? "").trim();
-      const tool = String(e.tool ?? "").trim();
-      if (server && tool) out.push({ name, type: "mcp", server, tool });
-    }
+    const path = String(e.path ?? "").trim();
+    if (name && path) out.push({ name, path });
   }
   return out;
 }

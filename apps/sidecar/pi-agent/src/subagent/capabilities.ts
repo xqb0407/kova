@@ -61,9 +61,8 @@ function knowledgeBlock(
   definition: SubagentDefinition,
 ): { block: string; sources: NonNullable<SubagentDefinition["knowledge"]> } {
   const sources = definition.knowledge ?? [];
-  const files = sources.filter((s) => s.type === "files");
-  if (files.length === 0) return { block: "", sources };
-  const lines = files.map((s) => `- ${s.name} (files: ${s.path})`);
+  if (sources.length === 0) return { block: "", sources };
+  const lines = sources.map((s) => `- ${s.name} (${s.path})`);
   return { block: `<knowledge_sources>\n${lines.join("\n")}\n</knowledge_sources>`, sources };
 }
 
@@ -124,7 +123,7 @@ export async function resolveSubagentCapabilities(
   // 3) 知识源：目录 + kb_search（仅 files 类；mcp 类走下面的网关）
   const knowledge = knowledgeBlock(definition);
   if (knowledge.block) blocks.push(knowledge.block);
-  if (knowledge.sources.some((s) => s.type === "files")) {
+  if (knowledge.sources.length > 0) {
     tools.push(buildKnowledgeTool(cwd, knowledge.sources));
   }
 

@@ -66,12 +66,7 @@ mcp:
   servers: [crm, notion]
 knowledge:
   - name: 产品手册
-    type: files
     path: ./docs/**/*.md
-  - name: 政策库
-    type: mcp
-    server: notion
-    tool: notion__search
 memory: private
 `);
     expect(r.ok).toBe(true);
@@ -79,8 +74,7 @@ memory: private
     expect(r.definition.skills).toEqual(["refund", "tone"]);
     expect(r.definition.mcpServers).toEqual(["crm", "notion"]);
     expect(r.definition.knowledge).toEqual([
-      { name: "产品手册", type: "files", path: "./docs/**/*.md" },
-      { name: "政策库", type: "mcp", server: "notion", tool: "notion__search" },
+      { name: "产品手册", path: "./docs/**/*.md" },
     ]);
     expect(r.definition.memory).toBe("private");
   });
@@ -93,7 +87,7 @@ memory: private
       prompt: "body\n",
       skills: ["refund"],
       mcpServers: ["crm"],
-      knowledge: [{ name: "手册", type: "files", path: "./docs/*.md" }],
+      knowledge: [{ name: "手册", path: "./docs/*.md" }],
       memory: "private",
     };
     const r = parse(emitSubagentYaml(draft));
@@ -131,16 +125,14 @@ memory: private
   test("知识源格式错误只丢该条", () => {
     const r = parse(defYaml("read", `knowledge:
   - name: ok
-    type: files
     path: ./a.md
   - name: bad
-    type: files
-  - name: alsoBad
-    type: quantum
+  - just-a-string
 `));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.definition.knowledge).toEqual([{ name: "ok", type: "files", path: "./a.md" }]);
+    expect(r.definition.knowledge).toEqual([{ name: "ok", path: "./a.md" }]);
+    // 坏条目各自记一条：缺 path、不是映射。一份坏源不该赔掉整个列表
     expect(r.warnings.length).toBeGreaterThanOrEqual(2);
   });
 });
@@ -187,7 +179,6 @@ describe("知识源的工具依赖", () => {
   test("files 知识源缺 read 出警告", () => {
     const r = parse(defYaml("grep", `knowledge:
   - name: m
-    type: files
     path: ./x.md
 `));
     expect(r.warnings.some((w) => w.includes("read"))).toBe(true);
@@ -196,7 +187,6 @@ describe("知识源的工具依赖", () => {
   test("有 read 时不出该警告", () => {
     const r = parse(defYaml("read", `knowledge:
   - name: m
-    type: files
     path: ./x.md
 `));
     expect(r.warnings.some((w) => w.includes("read tool"))).toBe(false);
@@ -251,7 +241,7 @@ describe("提示词不变式", () => {
 // ---------------------------------------------------------------------------
 
 describe("kb_search", () => {
-  const sources: KnowledgeSource[] = [{ name: "手册", type: "files", path: "./docs/**/*.md" }];
+  const sources: KnowledgeSource[] = [{ name: "手册", path: "./docs/**/*.md" }];
 
   function fixture(): string {
     mkdirSync(join(tmp, "docs/api"), { recursive: true });
@@ -272,7 +262,7 @@ describe("kb_search", () => {
     const root = fixture();
     const r = searchKnowledge(
       root,
-      [{ name: "手册", type: "files", path: "./docs/*.md" }],
+      [{ name: "手册", path: "./docs/*.md" }],
       "退款",
       10,
     );
@@ -283,7 +273,7 @@ describe("kb_search", () => {
     const root = fixture();
     const r = searchKnowledge(
       root,
-      [{ name: "手册", type: "files", path: "./docs/manual.md" }],
+      [{ name: "手册", path: "./docs/manual.md" }],
       "退款",
       10,
     );
@@ -302,7 +292,7 @@ describe("kb_search", () => {
     const root = fixture();
     const r = searchKnowledge(
       root,
-      [{ name: "全", type: "files", path: "./docs/*" }],
+      [{ name: "全", path: "./docs/*" }],
       "退款",
       10,
     );
@@ -319,7 +309,7 @@ describe("kb_search", () => {
     }
     const r = searchKnowledge(
       big,
-      [{ name: "大", type: "files", path: "./docs/*.md" }],
+      [{ name: "大", path: "./docs/*.md" }],
       "退款",
       5,
     );
@@ -462,10 +452,7 @@ describe("保存路径", () => {
       prompt: "你是售后\n",
       skills: ["refund"],
       mcpServers: ["crm"],
-      knowledge: [
-        { name: "手册", type: "files", path: "./docs/*.md" },
-        { name: "政策", type: "mcp", server: "notion", tool: "notion__search" },
-      ],
+      knowledge: [{ name: "手册", path: "./docs/*.md" }],
       memory: "private",
     };
     const r = parse(emitSubagentYaml(draft));
@@ -474,7 +461,7 @@ describe("保存路径", () => {
     expect(r.definition.tools).toEqual(["read", "WebFetch"]);
     expect(r.definition.skills).toEqual(["refund"]);
     expect(r.definition.mcpServers).toEqual(["crm"]);
-    expect(r.definition.knowledge).toHaveLength(2);
+    expect(r.definition.knowledge).toHaveLength(1);
     expect(r.definition.memory).toBe("private");
   });
 
@@ -566,10 +553,7 @@ describe("解析器：未声明即不可达", () => {
     const r = await resolveSubagentCapabilities(
       base({
         tools: ["read"],
-        knowledge: [
-          { name: "手册", type: "files", path: "./docs/*.md" },
-          { name: "政策", type: "mcp", server: "notion", tool: "notion__search" },
-        ],
+        knowledge: [{ name: "手册", path: "./docs/*.md" }],
       }),
       CWD,
       FAKE_BASE,
@@ -577,7 +561,7 @@ describe("解析器：未声明即不可达", () => {
     );
     const names = r.tools.map((t) => t.name);
     expect(names).toContain("kb_search");
-    // 未声明 mcp.servers → 不挂网关，即便 knowledge 里引用了一个 mcp 源
+    // 知识源与 MCP 是两条独立通道：有知识源不等于有 MCP 访问权
     expect(names).not.toContain("mcp");
     expect(r.promptBlock).toContain("手册");
   });
@@ -637,5 +621,58 @@ describe("解析器：未声明即不可达", () => {
     // 未配置也要挂网关：否则模型以为"能力不存在"，而真相是"配置没到位"，
     // 两者的下一步动作完全不同
     expect(r.diagnostics.some((d) => d.includes("not enabled or unconfigured"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 知识源只有文档一种（MCP 走 mcp.servers，不再经知识源）
+// ---------------------------------------------------------------------------
+
+describe("知识源只认文档", () => {
+  test("MCP 知识源被拒并给出迁移指引", () => {
+    const r = parse(defYaml("read", `knowledge:
+  - name: 政策库
+    type: mcp
+    server: notion
+    tool: notion__search
+`));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.definition.knowledge).toBeUndefined();
+    // 报错必须指向正确的做法，否则用户不知道该改什么
+    expect(r.warnings.some((w) => w.includes("mcp.servers"))).toBe(true);
+  });
+
+  test("缺 path 的条目被丢弃", () => {
+    const r = parse(defYaml("read", `knowledge:
+  - name: 没有路径
+`));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.definition.knowledge).toBeUndefined();
+    expect(r.warnings.some((w) => w.includes("missing path"))).toBe(true);
+  });
+
+  test("多份文档各自带名与 glob", () => {
+    const r = parse(defYaml("read", `knowledge:
+  - name: 产品手册
+    path: ./docs/**/*.md
+  - name: 政策
+    path: ./policies/*.md
+`));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.definition.knowledge).toEqual([
+      { name: "产品手册", path: "./docs/**/*.md" },
+      { name: "政策", path: "./policies/*.md" },
+    ]);
+  });
+
+  test("有知识源但没 read：警告（检索到了也打不开）", () => {
+    const r = parse(defYaml("grep", `knowledge:
+  - name: 手册
+    path: ./docs/*.md
+`));
+    expect(r.warnings.some((w) => w.includes("read tool"))).toBe(true);
   });
 });
