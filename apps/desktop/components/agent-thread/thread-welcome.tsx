@@ -3,6 +3,7 @@
 import { useMemo, type FC } from "react";
 import { usePiModels } from "@/lib/pi/pi-models";
 import { useModelGate } from "@/lib/pi/pi-model-gate";
+import { AppModeSwitch } from "./app-mode-switch";
 
 /**
  * 新会话欢迎页：一句把当前模型织进去的问候语。
@@ -92,7 +93,13 @@ export const ThreadWelcome: FC = () => {
   const greeting = useMemo(() => pickGreeting(new Date(), modelName), [modelName]);
 
   return (
-    <div className="aui-thread-welcome-root mx-auto mb-6 flex w-full max-w-(--thread-max-width) flex-col items-center gap-2 px-4 text-center">
+    // gap-3（12px）：分段器与问候语是两块独立的东西，原来 gap-2（8px）在大一号
+    // 的控件下面显得贴在一起，像问候语的一行标签
+    <div className="aui-thread-welcome-root mx-auto mb-6 flex w-full max-w-(--thread-max-width) flex-col items-center gap-3 px-4 text-center">
+      {/* 会话工作模式切换（编码/工作/设计）：从 header 搬来——新对话还没有会话
+          标题可看，顶栏空着一片，模式放在"开聊之前"这个位置反而更顺手。
+          语义不变：只作用于本会话，未切过档的跟随设置→通用的全局默认 */}
+      <AppModeSwitch />
       <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-2xl font-medium tracking-tight duration-200">
         {greeting}
       </p>

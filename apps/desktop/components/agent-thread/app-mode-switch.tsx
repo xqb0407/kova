@@ -2,22 +2,8 @@
 
 import { useEffect, useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import {
-  BriefcaseIcon,
-  CheckIcon,
-  CodeIcon,
-  Loader2Icon,
-  PaletteIcon,
-  type LucideIcon,
-} from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { cn } from "@/lib/utils";
+import { BriefcaseIcon, CodeIcon, PaletteIcon, type LucideIcon } from "lucide-react";
+import { Segmented } from "@/components/custom-ui/segmented";
 import {
   hydrateThreadAppMode,
   setThreadAppMode,
@@ -27,14 +13,19 @@ import { setAppMode, type AppMode } from "@/lib/pi/app-mode";
 import { useEnsureUiDesignPlugin } from "@/components/design-mode-gate";
 
 /**
- * 会话工作模式切换器（会话顶栏，「更多」按钮左侧）。
+ * 会话工作模式切换器（新对话欢迎页，问候语上方）。
+ *
  * 会话级开关（与模型/思考档位选择器同语义）：切换只作用于本会话——定靶写
  * sessions.app_mode 偏好列，本会话保持自己的档；别的会话不受牵连。从未在本会话
  * 切过档（含新对话）则跟随「设置 → 通用」的全局默认档，那一档仍由设置页维护。
  * 影响面：提示词附加段、git UI 显隐、工具行形态；与 composer 旁的权限模式
  * 切换器（mode-picker，agent/plan）是正交的两个维度。
- * 形态对齐 mode-picker：胶囊按钮 + 选项下拉（图标/说明/当前勾选）。
- * 设计档有插件前置门禁：ui-design 插件未装/禁用时先弹窗引导，通过才切档。
+ *
+ * 形态：用 custom-ui/segmented（与「插件市场 / 已安装插件」同一个组件、同一套
+ * 主色滑块），只是取 size="lg"——它是欢迎页的主操作，跟问候语同处一屏，设置页
+ * 那档 h-7/text-xs 会被压得看不见。三档一屏看全、一点即切；说明退到 title 里
+ * （分段器没地方铺描述）。设计档有插件前置门禁：ui-design 插件未装/禁用时先
+ * 弹窗引导，通过才切档。
  */
 
 type ModeOption = {
@@ -68,7 +59,6 @@ const OPTIONS: ModeOption[] = [
 export const AppModeSwitch: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const appMode = useThreadAppMode(threadId);
-  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const { ensure, dialog } = useEnsureUiDesignPlugin();
 
@@ -78,22 +68,18 @@ export const AppModeSwitch: FC = () => {
     hydrateThreadAppMode(threadId);
   }, [threadId]);
 
-  const current = OPTIONS.find((o) => o.value === appMode) ?? OPTIONS[0];
-  const CurrentIcon = current.icon;
-
-  const pick = (o: ModeOption) => {
-    setOpen(false);
-    if (o.value === appMode) return;
+  const pick = (value: AppMode) => {
+    if (value === appMode) return;
     setBusy(true);
     void (async () => {
       try {
         // 设计档前置门禁：ui-design 插件未装/禁用时弹窗引导，通过才切档
-        if (o.value === "design" && !(await ensure())) return;
+        if (value === "design" && !(await ensure())) return;
         if (threadId) {
-          await setThreadAppMode(threadId, o.value);
+          await setThreadAppMode(threadId, value);
         } else {
           // 无主线程上下文（理论不可达）：退化为纯全局默认档变更
-          await setAppMode(o.value);
+          await setAppMode(value);
         }
       } catch (err) {
         console.error("set_app_mode failed:", err);
@@ -106,51 +92,22 @@ export const AppModeSwitch: FC = () => {
   return (
     <>
       {dialog}
-      <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger
-        render={
-          <button
-            type="button"
-            data-slot="aui-header-app-mode"
-            aria-label="工作模式"
-            disabled={busy}
-            title={`本会话工作模式：${current.description}`}
-            className={cn(
-              "hover:bg-muted text-muted-foreground hover:text-foreground inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2.5 text-sm transition-colors disabled:opacity-50",
-            )}
-          >
-            {busy ? (
-              <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
-            ) : (
-              <CurrentIcon className="size-3.5 shrink-0" />
-            )}
-            <span>{current.label}</span>
-          </button>
-        }
+      {/* 与「插件市场 / 已安装插件」同一个分段器（custom-ui/segmented，主色滑块 +
+          500ms EASE_OUT）。size="lg" 是它在欢迎页当主操作的尺寸；图标交给选项的
+          icon 传，尺寸由这里的 size-4 决定 */}
+      <Segmented
+        size="lg"
+        value={appMode}
+        onChange={pick}
+        disabled={busy}
+        options={OPTIONS.map((o) => ({
+          value: o.value,
+          label: o.label,
+          icon: <o.icon className="size-4 shrink-0" />,
+          // 分段器里铺不下描述，退到原生 tooltip 里
+          title: o.description,
+        }))}
       />
-      <DropdownMenuContent align="end" className="w-64">
-        <DropdownMenuGroup>
-          {OPTIONS.map((o) => (
-            <DropdownMenuItem
-              key={o.value}
-              onClick={() => pick(o)}
-              className="gap-2.5 py-2"
-            >
-              <o.icon className="text-muted-foreground size-4 shrink-0" />
-              <div className="flex min-w-0 flex-col">
-                <span className="text-sm font-medium">{o.label}</span>
-                <span className="text-muted-foreground text-xs">
-                  {o.description}
-                </span>
-              </div>
-              {o.value === appMode && (
-                <CheckIcon className="ml-auto size-4 shrink-0" />
-              )}
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuGroup>
-      </DropdownMenuContent>
-      </DropdownMenu>
     </>
   );
 };

@@ -16,6 +16,8 @@ export type SegmentedOption<T extends string> = {
   label: string;
   /** 可选前导图标，渲染在文字左侧（纯文字段不受影响） */
   icon?: ReactNode;
+  /** 原生 tooltip：分段器里放不下说明文字，需要时挂在按钮上 */
+  title?: string;
 };
 
 /**
@@ -38,14 +40,18 @@ export function Segmented<T extends string>({
   options,
   onChange,
   disabled,
+  size = "md",
   className,
 }: {
   value: T;
   options: SegmentedOption<T>[];
   onChange: (value: T) => void;
   disabled?: boolean;
+  /** md = 默认（h-7 / text-xs，设置页与市场用）；lg 给主区里的主操作（h-9 / text-sm） */
+  size?: "md" | "lg";
   className?: string;
 }) {
+  const large = size === "lg";
   const containerRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef(new Map<T, HTMLButtonElement>());
   const [vars, setVars] = useState<CSSProperties>({});
@@ -85,7 +91,8 @@ export function Segmented<T extends string>({
     <div
       ref={containerRef}
       className={cn(
-        "bg-background/70 relative flex shrink-0 items-center gap-0.5 rounded-full border-[0.5] p-0.5",
+        "bg-background/70 relative flex shrink-0 items-center gap-0.5 rounded-full border-[0.5]",
+        large ? "p-[3px]" : "p-0.5",
         className,
       )}
     >
@@ -110,10 +117,12 @@ export function Segmented<T extends string>({
               }}
               type="button"
               disabled={disabled}
+              title={opt.title}
               aria-pressed={active}
               onClick={() => !active && onChange(opt.value)}
               className={cn(
-                "relative z-10 inline-flex h-7 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-transparent px-3 text-xs",
+                "relative z-10 inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-transparent",
+                large ? "h-9 px-3.5 text-sm" : "h-7 px-3 text-xs",
                 "transition-colors",
                 "disabled:cursor-not-allowed",
                 // 指示器负责主色底，按钮自身保持透明，避免底色与滑动胶囊叠出双层圆角；
