@@ -4,7 +4,14 @@ import { useEffect, useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi/pi-bridge";
 import { getPiChannel } from "@/lib/pi/pi-channel";
 import { piSessionIdForThread, piStoreKeyForThread } from "@/lib/pi/pi-thread-adapter";
-import type { Playbook, WorkflowRunSummary, WorkflowState } from "pi-protocol";
+import { getPanelTabs, openPanelTab, activatePanelTab } from "@/lib/panels/panel-tabs";
+import type {
+  Playbook,
+  PlaybookArg,
+  WorkflowRunSummary,
+  WorkflowState,
+  WorkflowStepDetail,
+} from "pi-protocol";
 
 /**
  * 工作流模式常驻条/面板的运行快照(sidecar workflow/workflow.ts 状态机镜像)。
@@ -38,6 +45,8 @@ export type WorkflowStepView = {
   verify?: { reviewers?: number; threshold?: number };
   retries?: number;
   onFail?: string;
+  /** 单步超时上限(ms);缺省由执行器用默认值。超时兜底标记据此画 */
+  timeoutMs?: number;
 };
 
 /** 步骤运行状态(与 steps 按 key 对齐;foreach 子项带 parent/item) */
@@ -49,6 +58,8 @@ export type WorkflowStepState = {
   endedAt?: number;
   tokens?: number;
   delegationId?: string;
+  /** verify:N 个评审的委派 id(顺序 = 评审 1..N) */
+  delegationIds?: string[];
   parent?: string;
   item?: string;
 };
@@ -61,11 +72,17 @@ export type WorkflowSnapshot = {
   title?: string;
   steps?: WorkflowStepView[];
   stepStates?: WorkflowStepState[];
+  /** 参数声明(从步骤 prompt 的 {{args.NAME}} 提取):提案卡据此渲染参数槽表单 */
+  args?: PlaybookArg[];
+  /** 参数当前值(手拟剧本通常为空,确认时由表单填) */
+  argValues?: Record<string, unknown>;
   proposalFeedback?: string;
   completionSummary?: string;
   /** 由哪个剧本发起（库路径运行；运行卡的「存为剧本」据此避免重复保存） */
   playbookName?: string;
   playbookId?: string;
+  /** 重启恢复退回瘦身行：步骤结果不可用，相关步骤将重跑（UI 显式提示） */
+  resultsUnavailable?: boolean;
   tokensUsed: number;
   startedAt: number;
   updatedAt: number;
@@ -132,13 +149,42 @@ function normalizeSteps(raw: unknown): WorkflowStepView[] | undefined {
         : {}),
       ...(typeof s.retries === "number" ? { retries: s.retries } : {}),
       ...(typeof s.onFail === "string" ? { onFail: s.onFail } : {}),
+      ...(typeof s.timeoutMs === "number" ? { timeoutMs: s.timeoutMs } : {}),
     });
   }
   return steps;
 }
 
-function normalizeStepStates(raw: unknown): WorkflowStepState[] | undefined {
+/** 参数声明归一(与 Playbook.args 同形):名字缺失的条目整个剔除 */
+function normalizeArgs(raw: unknown): PlaybookArg[] | undefined {
   if (!Array.isArray(raw)) return undefined;
+  const args: PlaybookArg[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const a = entry as Record<string, unknown>;
+    if (typeof a.name !== "string" || !a.name) continue;
+    args.push({
+      name: a.name,
+      type: a.type === "number" || a.type === "boolean" ? a.type : "string",
+      ...(typeof a.required === "boolean" ? { required: a.required } : {}),
+      ...(a.default !== undefined ? { default: a.default } : {}),
+      ...(typeof a.description === "string" ? { description: a.description } : {}),
+    });
+  }
+  return args;
+}
+
+/** 参数值归一:只留原始值(参数是给 prompt 插值用的,不是数据管道) */
+function normalizeArgValues(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const values: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") values[k] = v;
+  }
+  return Object.keys(values).length ? values : undefined;
+}
+
+function normalizeStepStates(raw: unknown): WorkflowStepState[] | undefined {  if (!Array.isArray(raw)) return undefined;
   const states: WorkflowStepState[] = [];
   for (const entry of raw) {
     if (!entry || typeof entry !== "object") continue;
@@ -163,6 +209,9 @@ function normalizeStepStates(raw: unknown): WorkflowStepState[] | undefined {
       ...(typeof s.endedAt === "number" ? { endedAt: s.endedAt } : {}),
       ...(typeof s.tokens === "number" ? { tokens: s.tokens } : {}),
       ...(typeof s.delegationId === "string" ? { delegationId: s.delegationId } : {}),
+      ...(Array.isArray(s.delegationIds)
+        ? { delegationIds: s.delegationIds.filter((x): x is string => typeof x === "string") }
+        : {}),
       ...(typeof s.parent === "string" ? { parent: s.parent } : {}),
       ...(typeof s.item === "string" ? { item: s.item } : {}),
     });
@@ -187,10 +236,13 @@ function normalizeRun(raw: unknown): WorkflowSnapshot | null {
     ...(normalizeStepStates(r.stepStates)
       ? { stepStates: normalizeStepStates(r.stepStates) }
       : {}),
+    ...(normalizeArgs(r.args) ? { args: normalizeArgs(r.args) } : {}),
+    ...(normalizeArgValues(r.argValues) ? { argValues: normalizeArgValues(r.argValues) } : {}),
     ...(typeof r.proposalFeedback === "string" ? { proposalFeedback: r.proposalFeedback } : {}),
     ...(typeof r.completionSummary === "string" ? { completionSummary: r.completionSummary } : {}),
     ...(typeof r.playbookName === "string" ? { playbookName: r.playbookName } : {}),
     ...(typeof r.playbookId === "string" ? { playbookId: r.playbookId } : {}),
+    ...(r.resultsUnavailable === true ? { resultsUnavailable: true } : {}),
     tokensUsed: typeof r.tokensUsed === "number" ? r.tokensUsed : 0,
     startedAt: typeof r.startedAt === "number" ? r.startedAt : 0,
     updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
@@ -224,9 +276,41 @@ function storeKey(threadId: string, migrate = false): string {
   return key;
 }
 
-function setState(threadId: string, next: WorkflowStoreState) {
-  states.set(storeKey(threadId, true), next);
-  if (next.run) runsById.set(next.run.id, next.run);
+/**
+ * 快照合并规则(单一合并点):按 updatedAt 取新——迟到的轮询回包/旧 chunk
+ * 不能把新的通知行推进顶掉(实机里「卡片退回旧状态」的成因)。
+ * 同刻同 run 保留现有对象,让轮询的重复包不触发通知(10s 一次的空渲染)。
+ * incoming 为 null 时接受:清除是显式动作,水合回的空槽也是事实。
+ */
+function pickNewerRun(
+  prev: WorkflowSnapshot | null,
+  incoming: WorkflowSnapshot | null,
+): WorkflowSnapshot | null {
+  if (!incoming) return null;
+  if (!prev) return incoming;
+  if (incoming.updatedAt !== prev.updatedAt) {
+    return incoming.updatedAt > prev.updatedAt ? incoming : prev;
+  }
+  // 同刻:同一 run 保对象;不同 run(清除后新建)用新包
+  return incoming.id === prev.id ? prev : incoming;
+}
+
+/** 合并写入的唯一入口:chunk / 通知行 / 轮询水合 / 动作回包四条路都汇到这里 */
+function setState(threadId: string, incoming: WorkflowStoreState, source: string) {
+  const key = storeKey(threadId, true);
+  const prev = states.get(key)?.run ?? null;
+  const next = pickNewerRun(prev, incoming.run);
+  if (next === prev) return; // 迟到旧包/重复包:不写不通知
+  states.set(key, { run: next });
+  if (next) runsById.set(next.id, next);
+  // 诊断分水岭:run 更替与状态迁移各留一条(排查「条冻住/卡片不动」时先看这里)
+  if (!prev || !next || prev.id !== next.id || prev.status !== next.status) {
+    console.debug(
+      `[workflow] ${source}: ${prev ? `${prev.id.slice(0, 12)} ${prev.status}` : "∅"} → ${
+        next ? `${next.id.slice(0, 12)} ${next.status}` : "∅"
+      }`,
+    );
+  }
   notify();
 }
 
@@ -234,7 +318,7 @@ function setState(threadId: string, next: WorkflowStoreState) {
 export function applyWorkflowChunk(threadId: string, data: unknown): void {
   if (!data || typeof data !== "object") return;
   const d = data as { run?: unknown };
-  setState(threadId, { run: normalizeRun(d.run) });
+  setState(threadId, { run: normalizeRun(d.run) }, "chunk");
 }
 
 /** 消费 data-workflowPlan chunk:把运行锚定到发起提案的工具行 */
@@ -314,16 +398,25 @@ async function requestWorkflow(
     threadId,
     ...(sessionId ? { sessionId } : {}),
   });
-  setState(threadId, { run: normalizeRun(res?.run) });
+  setState(threadId, { run: normalizeRun(res?.run) }, String(payload.type ?? "request"));
 }
 
 /**
  * 常驻条/面板的动作(确认 / 驳回 / 暂停 / 继续 / 清除)。
  * 不做乐观更新:这些动作的落点是运行状态机(确认会启动后台执行器、清除要落
  * 一行 workflow_state),前端算不出正确的新盘面,等 sidecar 回包刷新。
+ *
+ * 确认可带参数槽表单的值:参数必须在执行器起点前落进 run(进步骤指纹),
+ * 校验不过 sidecar 回错误、状态不动,用户改值再点。
  */
-export function confirmWorkflowNow(threadId: string): Promise<void> {
-  return requestWorkflow(threadId, { type: "workflow_confirm" });
+export function confirmWorkflowNow(
+  threadId: string,
+  args?: Record<string, unknown>,
+): Promise<void> {
+  return requestWorkflow(threadId, {
+    type: "workflow_confirm",
+    ...(args && Object.keys(args).length ? { args } : {}),
+  });
 }
 
 export function rejectWorkflowNow(threadId: string, feedback: string): Promise<void> {
@@ -358,8 +451,7 @@ export function ensureWorkflowProgressWatch(): void {
     await channel.subscribeWorkflowProgress?.((threadId, sessionId, data) => {
       // 键归一:优先 sessionId(与 chunk 路由同源),草稿期回退 threadId
       applyWorkflowChunk(sessionId ?? threadId, data);
-    });
-  })();
+    });  })();
 }
 
 /**
@@ -430,7 +522,7 @@ export async function runPlaybookNow(
     name,
     args,
   });
-  setState(threadId, { run: normalizeRun(res?.run) });
+  setState(threadId, { run: normalizeRun(res?.run) }, "playbook-run");
 }
 
 /** 运行历史(设置页;.kova/workflows 目录摘要) */
@@ -442,6 +534,38 @@ export async function listRunsNow(threadId: string | undefined): Promise<Workflo
     ...(sessionId ? { sessionId } : {}),
   });
   return Array.isArray(res?.runs) ? res.runs : [];
+}
+
+/**
+ * 在右侧面板打开(或激活)工作流标签:面板里有完整可读的编排图与暂停/继续/清除。
+ * 与 openSubagentTab 同款——已开则聚焦,否则新开,并唤起收起状态的面板。
+ */
+export function openWorkflowPanel(title?: string): void {
+  const existing = getPanelTabs().tabs.find((t) => t.type === "workflow");
+  if (existing) activatePanelTab(existing.id);
+  else openPanelTab("workflow", title ? { title } : undefined);
+  window.dispatchEvent(new Event("agent-panel:open"));
+}
+
+/* ---------------- 步骤详情(抽屉按需) ---------------- */
+
+/**
+ * 拉取单步详情(prompt 插值结果 / 步骤结果 / gate 命令 / 委派 id)。
+ * 不进 store:详情是「点开的那一步」的瞬时数据,没有跨面共享与订阅需求,
+ * 组件本地 state 持有即可——也避免把 12k 的步骤结果灌进全局快照。
+ */
+export async function fetchWorkflowStepDetail(
+  threadId: string,
+  key: string,
+): Promise<WorkflowStepDetail | null> {
+  const sessionId = piSessionIdForThread(threadId);
+  const res = await piRequest<{ type: "workflow_step_detail"; detail: WorkflowStepDetail | null }>({
+    type: "workflow_step_detail",
+    threadId,
+    ...(sessionId ? { sessionId } : {}),
+    key,
+  });
+  return res?.detail ?? null;
 }
 
 /* ---------------- 测试缝 ---------------- */

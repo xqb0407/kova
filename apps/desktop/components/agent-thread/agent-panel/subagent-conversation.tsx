@@ -206,16 +206,32 @@ const CollapsibleBubbleContent: FC<{ children: ReactNode }> = ({ children }) => 
   useEffect(() => {
     const element = contentRef.current;
     if (!element) return;
+    let raf = 0;
     const measure = () => {
       const height = element.scrollHeight;
-      setContentHeight(height);
-      setIsLong(height > BUBBLE_COLLAPSED_HEIGHT);
+      // 只在真变了才写:同一个数写下去 React 会 bail,但流式内容下这条链被
+      // 「渲染→重建 observer→measure→setState」串起来时会退化成更新风暴
+      setContentHeight((prev) => (prev === height ? prev : height));
+      setIsLong((prev) => {
+        const next = height > BUBBLE_COLLAPSED_HEIGHT;
+        return prev === next ? prev : next;
+      });
+    };
+    const schedule = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(measure);
     };
     measure();
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver(schedule);
     observer.observe(element);
-    return () => observer.disconnect();
-  }, [children]);
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
+    // 依赖**必须为空**:children 每次渲染都是新 React 元素,挂上它等于「每个流式
+    // 增量重建一个 observer 并 setState」——子代理面板在工作流并发推流时会打成
+    // 「Maximum update depth exceeded」把页面冻住(实机)。内容变化由 observer 驱动
+  }, []);
 
   const collapsed = isLong && !expanded;
   const visibleHeight = collapsed
@@ -277,10 +293,12 @@ function resultAnnouncesDelegation(result: unknown, shortId: string): boolean {
 }
 
 /**
- * 派活说明的来源：主会话里那条 Task 工具调用的 args.task。
- * 优先按 binding 的 toolCallId 精确命中（实时委派即刻可得），
- * 否则回退按结果文本里的 "Delegation <8位> started" 认领（刷新/历史重建）。
- * 两者都取不到返回 undefined，由 user 气泡兜底占位。
+ * 派活说明的来源，两级：
+ * 1. 主会话里那条 Task 工具调用的 args.task（优先按 binding 的 toolCallId 精确命中，
+ *    否则回退按结果文本里的 "Delegation <8位> started" 认领）；
+ * 2. **委派记录自带的 task**（快照带回）——工作流的 delegate/verify 没有 Task 工具行，
+ *    没有这一级面板只能显示「（未能取得任务说明）」。
+ * 两级都取不到返回 undefined，由 user 气泡兜底占位。
  */
 function useSubagentTaskBrief(delegationId: string | undefined): string | undefined {
   const messages = useAuiState((s) => s.thread.messages);
@@ -360,7 +378,7 @@ const AssistantMessageView: FC<{
 
 /** 面板对话列表：派活说明（user）+ 各轮输出与报告（assistant） */
 export const SubagentConversation: FC<{ run: SubagentRunState }> = ({ run }) => {
-  const brief = useSubagentTaskBrief(run.delegationId);
+  const brief = useSubagentTaskBrief(run.delegationId) ?? run.task;
   const messages = useMemo(
     () => buildSubagentTranscript(run, brief),
     [run, brief],

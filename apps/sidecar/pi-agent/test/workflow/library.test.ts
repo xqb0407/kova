@@ -14,6 +14,15 @@ function stepsFrom(raw: unknown[]): WorkflowStep[] {
   return checked.steps;
 }
 
+describe("中文参数名(实机事故:ASCII-only 正则让声明与插值双双静默失效)", () => {
+  test("deriveArgsFromSteps:中文参数名同样提取(与运行时插值同一字符集)", () => {
+    const steps = [
+      { key: "a", kind: "delegate", title: "调研", agent: "Explorer", phase: "执行", dependsOn: [], prompt: "调研 {{args.行业}} 的 {{args.目标市场}} 情况" },
+    ] as unknown as Parameters<typeof deriveArgsFromSteps>[0];
+    expect(deriveArgsFromSteps(steps).map((a) => a.name)).toEqual(["行业", "目标市场"]);
+  });
+});
+
 describe("剧本参数:提取与校验", () => {
   test("deriveArgsFromSteps:扫 {{args.NAME}} 去重保序,非参数占位符不误收", () => {
     const steps = stepsFrom([

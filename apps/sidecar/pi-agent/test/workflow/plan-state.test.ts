@@ -6,6 +6,7 @@ import {
   confirmProposal,
   createWorkflowRun,
   expandForeach,
+  replayJournal,
   formatWorkflowStatus,
   hasOpenSteps,
   hydrateRestoredRun,
@@ -502,6 +503,159 @@ describe("M3:剧本参数(args)", () => {
   });
 });
 
+describe("gate 形状容忍(实机:弱模型把 command 写在步骤顶层,折腾六轮)", () => {
+  const withGate = (gateStep: Record<string, unknown>) => [
+    { key: "a", kind: "delegate", title: "调研", prompt: "做调研", agent: "Explorer" },
+    gateStep,
+    { key: "s", kind: "synthesize", title: "汇总", prompt: "汇总 {{a}}", dependsOn: ["a", "g"] },
+  ];
+
+  test("顶层 command/args 被归一进 gate(能跑就不让用户等)", () => {
+    const checked = validatePlan(
+      withGate({
+        key: "g",
+        kind: "gate",
+        title: "报告存在性校验",
+        prompt: "确认报告已产出",
+        command: "ls",
+        args: ["market-research/06-report.md"],
+      }),
+    );
+    expect(checked.ok).toBe(true);
+    if (!checked.ok) return;
+    const gate = checked.steps.find((x) => x.key === "g")!.gate;
+    expect(gate?.command).toBe("ls");
+    expect(gate?.args).toEqual(["market-research/06-report.md"]);
+  });
+
+  test("嵌套形态优先于顶层(两者都在时)", () => {
+    const checked = validatePlan(
+      withGate({
+        key: "g",
+        kind: "gate",
+        title: "门",
+        prompt: "判定",
+        command: "顶层不应生效",
+        gate: { command: "test", args: ["-s", "x"] },
+      }),
+    );
+    expect(checked.ok).toBe(true);
+    if (!checked.ok) return;
+    expect(checked.steps.find((x) => x.key === "g")!.gate?.command).toBe("test");
+  });
+
+  test("真缺命令时,报错给出嵌套形状(自解释的诊断)", () => {
+    const checked = validatePlan(withGate({ key: "g", kind: "gate", title: "门", prompt: "判定" }));
+    expect(checked.ok).toBe(false);
+    if (checked.ok) return;
+    expect(checked.reason).toContain('nested "gate" object');
+    expect(checked.reason).toContain('{"kind":"gate"');
+  });
+});
+
+describe("接线守卫(实机:漏传一处回调,「启动即写 delegationId」静默失效)", () => {
+  test("runner 的重试循环必须把 onDelegationsStarted 透传下去", async () => {
+    // 这处漏传过一次:delegationId 只在结算时写,运行中的节点没有委派 id,
+    // 点节点开不出实时输出面板。纯接线问题,单测覆盖不到执行链,用结构断言兜住。
+    const src = await Bun.file(
+      new URL("../../src/workflow/runner.ts", import.meta.url).pathname,
+    ).text();
+    expect(src).toContain(
+      "executeStepAttempt(run, step, wf, key, attempt, timeoutMs, onDelegationsStarted)",
+    );
+  });
+
+  test("verify 的评审 id 必须在 await 之前报出(否则运行中的复核点不开面板)", async () => {
+    const src = await Bun.file(
+      new URL("../../src/workflow/runner.ts", import.meta.url).pathname,
+    ).text();
+    const call = src.indexOf("onDelegationsStarted?.(reviewerIds)");
+    const awaitAt = src.indexOf("const results = await resultsPromise");
+    expect(call).toBeGreaterThan(-1);
+    expect(awaitAt).toBeGreaterThan(-1);
+    expect(call).toBeLessThan(awaitAt);
+  });
+
+  test("步骤(重)启动时清掉上一次的 endedAt(否则「已 Xs」算成 0s)", async () => {
+    const src = await Bun.file(
+      new URL("../../src/workflow/runner.ts", import.meta.url).pathname,
+    ).text();
+    const start = src.indexOf('status: "running",\n        fingerprint,');
+    expect(start).toBeGreaterThan(-1);
+    expect(src.slice(start, start + 320)).toContain("endedAt: undefined");
+  });
+});
+
+describe("恢复重放(实机:wf-muxx6qbo 的 8 个 foreach 子项全 interrupted → 就绪缺口停摆)", () => {
+  /** 一个 foreach 父步 + 8 个已展开子项的最小现场 */
+  const foreachRun = () => {
+    const checked = validatePlan([
+      { key: "plan", kind: "delegate", title: "选题", prompt: "定题", agent: "Explorer" },
+      {
+        key: "gather",
+        kind: "delegate",
+        title: "并行调研",
+        prompt: "调研 {{item}}",
+        agent: "Explorer",
+        foreach: { from: "plan" },
+        dependsOn: ["plan"],
+      },
+      { key: "report", kind: "synthesize", title: "汇总", prompt: "汇总 {{plan}}", dependsOn: ["gather"] },
+    ]);
+    if (!checked.ok) throw new Error(checked.reason);
+    const run = confirmProposal(acceptProposal(createWorkflowRun("t-replay", "调研"), checked.steps, "调研"))!;
+    const withPlanDone = settleStep(run, "plan", { status: "done", result: "选题：半导体", fingerprint: "fp-plan" });
+    const expanded = expandForeach(withPlanDone, "gather");
+    if (!expanded.ok) throw new Error(expanded.reason);
+    return expanded.run;
+  };
+
+  test("展开后的子项是 running 残影 → 重放回 pending(不再永远 interrupted)", () => {
+    const run = foreachRun();
+    const children = run.steps.gather!.children!;
+    expect(children).toHaveLength(1); // 「选题：半导体」一行 = 一个子项
+    const stale: typeof run = {
+      ...run,
+      steps: {
+        ...run.steps,
+        [children[0]!]: { ...run.steps[children[0]!]!, status: "interrupted" },
+      },
+    };
+    const { run: replayed } = replayJournal(stale);
+    expect(replayed.steps[children[0]!]!.status).toBe("pending");
+    // 父步回到容器态 running(它不再被调度,等子项),不是 pending
+    expect(replayed.steps.gather!.status).toBe("running");
+  });
+
+  /** 声明里的某一步(真指纹要用声明本身算,不能用字面量冒充) */
+  const decl = (run: ReturnType<typeof foreachRun>, key: string) =>
+    run.plan!.steps.find((x) => x.key === key)!;
+
+  test("子项全部 done → 父步直接收口为 done(不靠下一次结算触发)", () => {
+    const run = foreachRun();
+    const child = run.steps.gather!.children![0]!;
+    const childFp = stepFingerprint(decl(run, "gather"), [run.steps.plan!.fingerprint ?? ""], "{}");
+    const allDone = {
+      ...run,
+      steps: {
+        ...run.steps,
+        [child]: { ...run.steps[child]!, status: "done" as const, result: "取材完成", fingerprint: childFp },
+      },
+    };
+    const { run: replayed } = replayJournal(allDone);
+    expect(replayed.steps.gather!.status).toBe("done");
+  });
+
+  test("done 且指纹一致保留(0 token 回放);指纹缺失 → 重跑", () => {
+    const run = foreachRun();
+    const planFp = stepFingerprint(decl(run, "plan"), [], "{}");
+    const withReal = settleStep(run, "plan", { status: "done", result: "x", fingerprint: planFp });
+    expect(replayJournal(withReal).run.steps.plan!.status).toBe("done");
+    const noFp = { ...withReal, steps: { ...withReal.steps, plan: { ...withReal.steps.plan!, fingerprint: undefined } } };
+    expect(replayJournal(noFp).run.steps.plan!.status).toBe("pending");
+  });
+});
+
 describe("恢复水合(审计缺陷 1 的修复点)", () => {
   const fullRun = () => {
     const wf = runWithPlan().run;
@@ -522,21 +676,32 @@ describe("恢复水合(审计缺陷 1 的修复点)", () => {
     expect(cwdSeen).toBe("/tmp/ws");
   });
 
+  test("文件水合成功不带不可用标记(结果与指纹都在)", () => {
+    const file = fullRun();
+    const slimRow = { ...file, cwd: "/tmp/ws", steps: { a: { key: "a", status: "done" } } };
+    const hydrated = hydrateRestoredRun(slimRow, () => file);
+    expect(hydrated?.resultsUnavailable).toBeUndefined();
+  });
+
   test("文件缺失/runId 不一致 → 退回瘦身行(状态可读,结果不可用)", () => {
     const file = fullRun();
     const slimRow = { ...file, cwd: "/tmp/ws", steps: { a: { key: "a", status: "done" } } };
     const missing = hydrateRestoredRun(slimRow, () => undefined);
     expect(missing?.steps["a"]?.status).toBe("done");
     expect(missing?.steps["a"]?.result).toBeUndefined();
+    // 显式标注结果不可用:UI 据此提示「相关步骤将重跑」,而不是把缺口显示成「还没跑到」
+    expect(missing?.resultsUnavailable).toBe(true);
     const mismatch = hydrateRestoredRun(slimRow, () => ({ ...file, id: "wf-other" }));
     expect(mismatch?.steps["a"]?.result).toBeUndefined();
+    expect(mismatch?.resultsUnavailable).toBe(true);
   });
 
-  test("无 cwd 的旧行 → 退回瘦身行;畸形行 → undefined", () => {
+  test("无 cwd 的旧行 → 退回瘦身行(同样标注不可用);畸形行 → undefined", () => {
     const file = fullRun();
     const noCwd = hydrateRestoredRun({ ...file, steps: {} }, () => file);
     expect(noCwd).toBeDefined();
     expect(noCwd?.steps["a"]).toBeUndefined();
+    expect(noCwd?.resultsUnavailable).toBe(true);
     expect(hydrateRestoredRun({ id: "x" }, () => undefined)).toBeUndefined();
     expect(hydrateRestoredRun(null, () => undefined)).toBeUndefined();
   });

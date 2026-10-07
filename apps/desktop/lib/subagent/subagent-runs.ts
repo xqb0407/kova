@@ -53,6 +53,8 @@ export type SubagentRunState = {
   delegationId: string;
   agentName: string;
   description?: string;
+  /** 派活说明原文（快照带回）：面板第一条气泡的后备来源 */
+  task?: string;
   status: SubagentRunStatus;
   startedAt?: number;
   completedAt?: number;
@@ -294,6 +296,7 @@ export async function hydrateSubagentSnapshot(idOrPrefix: string): Promise<void>
     updateRun(canonical, (draft) => {
       draft.agentName = res.record.agentName || draft.agentName;
       draft.description = res.record.description ?? draft.description;
+      draft.task = res.record.task ?? draft.task;
       draft.status = res.record.status as SubagentRunStatus;
       draft.startedAt = res.record.startedAt;
       draft.completedAt = res.record.completedAt;

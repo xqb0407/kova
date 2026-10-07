@@ -126,6 +126,17 @@ describe("toUiMessage", () => {
 });
 
 describe("historyToUiMessages", () => {
+  test("工作流交付注入不进用户气泡（实机:整段内部指令以用户消息直出）", () => {
+    const rows = [
+      { agent: userMsg("帮我调研这个仓库") },
+      { agent: userMsg("[[workflow-continue]] The workflow \"x\" has finished. <workflow_report># 报告…") },
+      { agent: assistantMsg([{ type: "text", text: "调研结果如下…" }]) },
+    ];
+    const messages = historyToUiMessages(rows);
+    expect(messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(JSON.stringify(messages)).not.toContain("workflow-continue");
+  });
+
   test("用户图片行重建为 file part（与直播 UIMessage 同构）", () => {
     const imageUser = {
       role: "user",

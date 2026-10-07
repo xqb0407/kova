@@ -27,6 +27,14 @@
   border-bottom-style: solid;
 }
 @theme inline {
+  /* 工作流编排图:「运行中」的边用虚线流动表示有东西正经过(静态图里唯一的动效,
+     没有它就只能靠颜色深浅猜——实机反馈「没看到有跑,线条都是灰」) */
+  --animate-wf-edge-flow: wf-edge-flow 0.9s linear infinite;
+  @keyframes wf-edge-flow {
+    to {
+      stroke-dashoffset: -20;
+    }
+  }
   @keyframes collapsible-down {
     from {
       height: 0;

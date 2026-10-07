@@ -59,10 +59,13 @@ import { isNegotiating, limitsFor } from "../../goal/goal-state";
 import { ensureGoalMode, ensureWorkflowMode, persistModePrefs } from "../../agent/modes";
 import {
   commitWorkflow,
+  confirmWorkflowPlan,
+  findWorkflowRun,
   getWorkflow,
   pauseWorkflowForUserInput,
   setWorkflowDeliveryHook,
   workflowStatePayload,
+  workflowStepDetailPayload,
 } from "../../workflow/workflow";
 import { registerWorkflowRunner, startWorkflowExecution } from "../../workflow/runner";
 import {
@@ -79,7 +82,7 @@ import {
   validatePlaybookArgs,
 } from "../../workflow/library";
 import { WORKFLOW_CONTINUE_PREFIX } from "pi-protocol";
-import { confirmProposal, resumeRun, type WorkflowRun } from "../../workflow/plan-state";
+import { resumeRun, type WorkflowRun } from "../../workflow/plan-state";
 import { dispatchPrompt } from "../prompt-pipeline";
 import { getDelegationSnapshot } from "../../subagent/subagent";
 import { dropEventSeq, peekEventSeq } from "../event-seq";
@@ -317,11 +320,14 @@ export const handlers: Record<string, CommandHandler> = {
     // 内存没有该线程就先只读回放转录里的 workflow_state 行重建槽位
     //(不建 Agent、不写 running),再回快照
     const threadId = String(msg.threadId ?? "default");
-    if (!running.has(threadId)) {
-      const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
-      if (sessionId) restoreWorkflow(threadId, sessionId);
-    }
-    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+    // 总是走一遍 restoreWorkflow:有活槽即返回(幂等),但顺带把「同会话挂在
+    // 旧线程键下」的槽认回来(刷新/热更换键;见 workflow.ts 的 adoptWorkflowSlot)
+    restoreWorkflow(threadId, typeof msg.sessionId === "string" ? msg.sessionId : "");
+    send({
+      id: reqId,
+      type: "workflow_state",
+      ...workflowStatePayload(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined),
+    });
   },
 
   workflow_confirm: async (reqId, msg) => {
@@ -334,13 +340,34 @@ export const handlers: Record<string, CommandHandler> = {
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
     );
     if (ensureWorkflowMode(run) && run.sessionId) sendSessionsChanged("updated", run.sessionId);
-    const wf = getWorkflow(threadId);
-    if (!wf) throw new Error(`no workflow to confirm: ${threadId}`);
-    const confirmed = confirmProposal(wf);
-    if (!confirmed) throw new Error(`workflow is not awaiting confirmation: ${threadId}`);
-    commitWorkflow(run, confirmed);
-    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+    // 认亲:提案在这条线程上创建,确认却可能经刷新后的会话键到来(见 adoptWorkflowSlot)
+    if (run.sessionId) restoreWorkflow(threadId, run.sessionId);
+    // 参数槽表单的值(提案卡确认时携带);形状不对当没带,让 sidecar 按声明校验
+    const args =
+      msg.args && typeof msg.args === "object" && !Array.isArray(msg.args)
+        ? (msg.args as Record<string, unknown>)
+        : undefined;
+    const confirmed = confirmWorkflowPlan(run, args);
+    if (!confirmed.ok) throw new Error(confirmed.errors.join("; "));
+    send({
+      id: reqId,
+      type: "workflow_state",
+      ...workflowStatePayload(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined),
+    });
     void startWorkflowExecution(run);
+  },
+
+  workflow_step_detail: async (reqId, msg) => {
+    // 步骤抽屉的按需详情(prompt 插值结果 / 步骤结果)。与 get_workflow_state
+    // 同款两段式:内存没有该线程先只读回放转录重建槽位,再答详情
+    const threadId = String(msg.threadId ?? "default");
+    restoreWorkflow(threadId, typeof msg.sessionId === "string" ? msg.sessionId : "");
+    const key = typeof msg.key === "string" ? msg.key : "";
+    send({
+      id: reqId,
+      type: "workflow_step_detail",
+      ...workflowStepDetailPayload(threadId, key, typeof msg.sessionId === "string" ? msg.sessionId : undefined),
+    });
   },
 
   workflow_reject: async (reqId, msg) => {
@@ -351,12 +378,16 @@ export const handlers: Record<string, CommandHandler> = {
       threadId,
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
     );
-    const wf = getWorkflow(threadId);
+    const wf = findWorkflowRun(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined);
     if (!wf) throw new Error(`no workflow to reject: ${threadId}`);
     const feedback = typeof msg.feedback === "string" ? msg.feedback : undefined;
     const rejected = rejectWorkflowPlan(run, feedback);
     if (!rejected) throw new Error(`workflow is not awaiting confirmation: ${threadId}`);
-    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+    send({
+      id: reqId,
+      type: "workflow_state",
+      ...workflowStatePayload(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined),
+    });
     kickWorkflowReplan(run, rejected);
   },
 
@@ -368,31 +399,55 @@ export const handlers: Record<string, CommandHandler> = {
       threadId,
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
     );
+    if (run.sessionId) restoreWorkflow(threadId, run.sessionId);
     pauseWorkflowForUserInput(run);
-    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+    send({
+      id: reqId,
+      type: "workflow_state",
+      ...workflowStatePayload(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined),
+    });
   },
 
   workflow_resume: async (reqId, msg) => {
     // 常驻条「继续」:paused → running 并重启执行器;journal 里指纹一致的 done
-    // 步骤免费回放(runner 负责),中断的步骤重跑
+    // 步骤免费回放(runner 负责),中断的步骤重跑。
+    // 幂等:槽位缺失先从转录水合(与 get_workflow_state 同款两段式);
+    // 已经是 running 时不报错——把点击当成「确认执行器还活着」重踢一次
+    // (去重在 runner 内),回当前快照。实机教训:UI 拿着过期的「已暂停」快照,
+    // 点继续得到 not resumable,按钮看起来是坏的,而运行其实跑得好好的。
     const threadId = String(msg.threadId ?? "default");
-    const run = await resolveSession(
-      threadId,
-      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
-    );
+    const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
+    const run = await resolveSession(threadId, sessionId || undefined);
     if (ensureWorkflowMode(run) && run.sessionId) sendSessionsChanged("updated", run.sessionId);
-    const wf = getWorkflow(threadId);
+    restoreWorkflow(threadId, sessionId);
+    const wf = findWorkflowRun(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined);
     if (!wf) throw new Error(`no workflow to resume: ${threadId}`);
+    if (wf.status === "running") {
+      send({
+      id: reqId,
+      type: "workflow_state",
+      ...workflowStatePayload(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined),
+    });
+      void startWorkflowExecution(run);
+      return;
+    }
     const resumed = resumeRun(wf);
-    if (!resumed) throw new Error(`workflow is not resumable: ${threadId}`);
+    if (!resumed) {
+      throw new Error(`workflow is not resumable (status=${wf.status}): ${threadId}`);
+    }
     commitWorkflow(run, resumed);
-    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+    send({
+      id: reqId,
+      type: "workflow_state",
+      ...workflowStatePayload(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined),
+    });
     void startWorkflowExecution(run);
   },
 
   workflow_clear: async (reqId, msg) => {
     // 常驻条「清除」:先停执行器再清槽位(顺序不能反——清了槽,执行器的结算
-    // 写不回账,在跑委派也停不下来)。落一行 null,重启后条不再显示
+    // 写不回账,在跑委派也停不下来)。落一行 null,重启后条不再显示。
+    // 认亲在前:换键后的清除必须落到真正在跑的那个槽上
     const threadId = String(msg.threadId ?? "default");
     const run = await resolveSession(
       threadId,
@@ -400,7 +455,11 @@ export const handlers: Record<string, CommandHandler> = {
     );
     pauseWorkflowForUserInput(run);
     commitWorkflow(run, undefined);
-    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+    send({
+      id: reqId,
+      type: "workflow_state",
+      ...workflowStatePayload(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined),
+    });
   },
 
   /* ------------------------------ 剧本库 ------------------------------ */
@@ -417,7 +476,7 @@ export const handlers: Record<string, CommandHandler> = {
       threadId,
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
     );
-    const wf = getWorkflow(threadId);
+    const wf = findWorkflowRun(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined);
     if (!wf?.plan) throw new Error(`no workflow plan to save: ${threadId}`);
     const name =
       (typeof msg.name === "string" && msg.name.trim()) ||
@@ -429,6 +488,8 @@ export const handlers: Record<string, CommandHandler> = {
       description: wf.objective,
       ...(typeof msg.whenToUse === "string" ? { whenToUse: msg.whenToUse } : {}),
       source: "from-run",
+      // 溯源:剧本库卡片显示「来自运行 <短id>」
+      sourceRunId: wf.id,
     });
     send({ id: reqId, type: "workflow_playbooks", playbooks: await listPlaybooks() });
   },
@@ -454,14 +515,18 @@ export const handlers: Record<string, CommandHandler> = {
       (msg.args && typeof msg.args === "object" ? msg.args : {}) as Record<string, unknown>,
     );
     if (!checked.ok) throw new Error(`参数不合法:${checked.errors.join("; ")}`);
-    const current = getWorkflow(threadId);
+    const current = findWorkflowRun(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined);
     if (current && (current.status === "running" || current.status === "proposed" || current.status === "paused")) {
       throw new Error("这个线程还有未结束的工作流运行,先清除或等它结束再发起剧本");
     }
     if (ensureWorkflowMode(run) && run.sessionId) sendSessionsChanged("updated", run.sessionId);
     commitWorkflow(run, undefined);
     startPlaybookRun(run, playbook, checked.values);
-    send({ id: reqId, type: "workflow_state", ...workflowStatePayload(threadId) });
+    send({
+      id: reqId,
+      type: "workflow_state",
+      ...workflowStatePayload(threadId, typeof msg.sessionId === "string" ? msg.sessionId : undefined),
+    });
     void startWorkflowExecution(run);
   },
 

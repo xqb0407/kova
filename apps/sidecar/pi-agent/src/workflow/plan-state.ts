@@ -82,6 +82,8 @@ export type StepJournalEntry = {
   endedAt?: number;
   tokens?: number;
   delegationId?: string;
+  /** verify 的 N 个评审各自是一条委派:全部 id(顺序 = 评审 1..N),面板逐个可开 */
+  delegationIds?: string[];
   /** foreach 展开出的子项:所属父键与该项的原文(供 prompt 的 {{item}} 替换) */
   parent?: string;
   item?: string;
@@ -102,6 +104,8 @@ export type WorkflowRunStatus =
 export type WorkflowRun = {
   id: string;
   threadId: string;
+  /** 所属会话:线程键漂移(刷新/热更把草稿键换成会话键)时据此把活槽认回来 */
+  sessionId?: string;
   /** 用户切到工作流档后的第一句话 */
   objective: string;
   status: WorkflowRunStatus;
@@ -119,6 +123,12 @@ export type WorkflowRun = {
   /** 由哪个剧本发起(运行历史据此关联;手拟剧本的 run 无此字段) */
   playbookId?: string;
   playbookName?: string;
+  /**
+   * 进程重启恢复时全量 run 文件缺失、退回转录瘦身行:状态可读,但步骤结果与
+   * 指纹不可用(相关步骤会重跑)。显式标注——静默回退会让 UI 把「没有结果」
+   * 显示成「还没跑到」,用户对异常毫无感知(审计缺陷 1 的 UI 侧显式化)。
+   */
+  resultsUnavailable?: boolean;
   /** 纯展示字段(goal-state 同款裁决:不做 token 预算阀,见其头注释) */
   tokensUsed: number;
   startedAt: number;
@@ -136,6 +146,18 @@ export const MAX_STEP_RESULT_CHARS = 12_000;
 export const MAX_INTERPOLATED_PROMPT_CHARS = 24_000;
 /** 步骤键:组合展开会加 `父.子` 前缀,点号因此合法(模型自起的键也允许点) */
 export const STEP_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,96}$/;
+/**
+ * 参数名 `{{args.NAME}}` 的字符集:允许 Unicode 字母/数字/下划线/连字符。
+ * 必须允许非 ASCII——模型很自然地写中文参数名(`{{args.行业}}`),而 ASCII-only
+ * 的字符集会让「声明提取」与「运行时插值」双双静默失效:提案卡上没有参数槽可填,
+ * 占位符原样漏进子代理的任务简报(实机事故)。
+ */
+export const ARG_NAME_CHARS = "[\\p{L}\\p{N}_-]{1,40}";
+const ARG_NAME_RE = new RegExp(`^(?:${ARG_NAME_CHARS})$`, "u");
+/** 某个名字是否是可声明的参数名(与占位符字符集同源,不各写一份) */
+export function isArgName(name: string): boolean {
+  return ARG_NAME_RE.test(name);
+}
 export const DEFAULT_PHASE = "执行";
 /** 单步可恢复失败的最大额外重试次数(退避与 pi-dw 同款:250ms 起指数封顶 2s) */
 export const MAX_STEP_RETRIES = 3;
@@ -186,6 +208,9 @@ type RawStep = {
   dependsOn?: unknown;
   foreach?: unknown;
   gate?: unknown;
+  /** gate 字段被写到步骤顶层的容忍形态(弱模型常读不出嵌套 schema,见 gate 归一) */
+  command?: unknown;
+  args?: unknown;
   verify?: unknown;
   use?: unknown;
   retries?: unknown;
@@ -279,12 +304,31 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
       if (model) step.model = model;
     }
     if (kind === "gate") {
-      const g = entry.gate as { command?: unknown; args?: unknown; timeoutMs?: unknown } | undefined;
+      const nested = entry.gate as { command?: unknown; args?: unknown; timeoutMs?: unknown } | undefined;
+      // 容忍扁平写法:弱模型（agnes-3.0-flash 实机两回）常把 command/args 写成步骤
+      // 顶层字段——schema 明明是嵌套的，但报错只说「needs gate.command」，它便一轮轮
+      // 改命令内容而不是结构（实机折腾六轮，含一次 `pwd` 的「最小化诊断」）。
+      // 这里把顶层形态归一进 gate：能跑就让它跑，别把结构读错变成用户的等待。
+      // 嵌套形态优先；两者都在时以嵌套为准。
+      const flatCommand = asTrimmedString(entry.command);
+      const g = nested?.command !== undefined
+        ? nested
+        : flatCommand
+          ? {
+              command: entry.command,
+              ...(entry.args !== undefined ? { args: entry.args } : {}),
+              ...(nested?.timeoutMs !== undefined ? { timeoutMs: nested.timeoutMs } : entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs } : {}),
+            }
+          : nested;
       const command = asTrimmedString(g?.command);
       if (!command) {
         return {
           ok: false,
-          reason: `steps[${i}] (${key}) is a gate step and needs gate.command — a literal shell command whose exit code decides (the user approves this exact command with the plan).`,
+          reason:
+            `steps[${i}] (${key}) is a gate step and needs gate.command — a literal shell command whose exit code decides. ` +
+            `The command lives INSIDE a nested "gate" object, not as a top-level step field: ` +
+            `{"kind":"gate","gate":{"command":"test","args":["-s","out/report.md"]}} ` +
+            `(the user approves this exact command with the plan).`,
         };
       }
       const gate: WorkflowStep["gate"] = { command: command.slice(0, MAX_STEP_TEXT_LENGTH) };
@@ -341,7 +385,7 @@ export function validatePlan(raw: unknown): { ok: true; steps: WorkflowStep[] } 
       if (!playbookName) {
         return {
           ok: false,
-          reason: `steps[${i}] (${key}) is a playbook step and needs use.playbook — the name of a saved playbook (see Settings → 工作流剧本).`,
+          reason: `steps[${i}] (${key}) is a playbook step and needs use.playbook — the name of a saved playbook (see the playbook library under 自动化 / 工作流).`,
         };
       }
       const use: { playbook: string; args?: Record<string, unknown> } = { playbook: playbookName };
@@ -703,6 +747,64 @@ export function interpolatePrompt(
   return replaced.slice(0, Math.ceil(avail / 2)) + marker + replaced.slice(-Math.floor(avail / 2));
 }
 
+/* ------------------------------- 恢复重放 ------------------------------- */
+
+/**
+ * 恢复重放:算出一份可以接着跑的 journal(纯函数,便于单测)。
+ *
+ * - `done` 且指纹一致 → 原样保留(0 token 回放);指纹不一致 → pending 重跑;
+ * - `running` / `interrupted` 残影 → pending 重跑;
+ * - **foreach 展开项**(key 形如 `父#i`)没有自己的声明:走 `findStepForEntry`
+ *   归到父声明上再判。漏掉这一条,子项会永远停在 `interrupted`——既不会被派发、
+ *   也不会触发结算,父步因此永远等不到「全部子项结算」,整轮以「就绪缺口」停摆
+ *   (实机事故:wf-muxx6qbo 的 8 个 gather#i 全 interrupted → ready=0)。
+ * - foreach 父步随后对账:子项全部结算 → 直接收口;否则回到 `running`
+ *   这个容器态(它不再被调度,等子项)——避免出现「pending 的父步 + 非 pending
+ *   的子项」这种谁都推不动的中间态。
+ */
+export function replayJournal(wf: WorkflowRun): { run: WorkflowRun; replayed: number } {
+  let replayed = 0;
+  const steps: Record<string, StepJournalEntry> = {};
+  for (const [key, entry] of Object.entries(wf.steps)) {
+    const step = findStepForEntry(wf, key);
+    if (!step) {
+      steps[key] = entry;
+      continue;
+    }
+    if (entry.status === "done") {
+      const fp = stepFingerprint(
+        step,
+        step.dependsOn.map((d) => wf.steps[d]?.fingerprint ?? ""),
+        JSON.stringify(wf.args ?? {}),
+      );
+      if (entry.fingerprint === fp) {
+        replayed += 1;
+        steps[key] = entry;
+      } else {
+        steps[key] = { ...entry, status: "pending" };
+      }
+      continue;
+    }
+    if (entry.status === "running" || entry.status === "interrupted") {
+      steps[key] = { ...entry, status: "pending" };
+      continue;
+    }
+    steps[key] = entry;
+  }
+
+  let run: WorkflowRun = { ...wf, steps };
+  for (const step of wf.plan?.steps ?? []) {
+    const entry = run.steps[step.key];
+    if (!entry?.children?.length) continue;
+    const reconciled = settleForeachParent(run, entry.children[0]!);
+    run =
+      reconciled === run
+        ? { ...run, steps: { ...run.steps, [step.key]: { ...entry, status: "running" } } }
+        : reconciled;
+  }
+  return { run, replayed };
+}
+
 /* --------------------------- 步骤解析与扇出展开 --------------------------- */
 
 /** 由条目键找回所属步骤声明:普通键直查;foreach 展开键 `${parent}#${i}` 归到父声明 */
@@ -727,7 +829,7 @@ export function resolveStepPrompt(run: WorkflowRun, step: WorkflowStep, key: str
     template = template.replace(/\{\{\s*item\s*\}\}/g, entry.item);
   }
   // 剧本参数:未提供的参数留显式缺口标记(静默留空会让下游把缺口当事实)
-  template = template.replace(/\{\{\s*args\.([A-Za-z0-9_]+)\s*\}\}/g, (_m, name: string) => {
+  template = template.replace(new RegExp(`\\{\\{\\s*args\\.(${ARG_NAME_CHARS})\\s*\\}\\}`, "gu"), (_m, name: string) => {
     const value = run.args?.[name];
     if (value === undefined || value === null || value === "") {
       return `<missing arg: ${name}>`;
@@ -880,7 +982,8 @@ export function hydrateRestoredRun(
     const file = readFile(cwd, parsed.id);
     if (file && file.id === parsed.id) return file;
   }
-  return parsed;
+  // 文件缺失/不可读:退回瘦身行,显式标注结果不可用(见 WorkflowRun 字段注释)
+  return { ...parsed, resultsUnavailable: true };
 }
 
 /** 常驻条一行摘要(sidecar 算成品,两端不各算一遍;对齐 formatGoalStatus)。

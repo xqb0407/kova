@@ -24,6 +24,7 @@ import {
   isAutoContinueMessage,
   isAutoContinueText,
   isGoalInternalMessage,
+  isWorkflowContinueText,
   isGoalInternalText,
 } from "pi-protocol";
 import { normalizeLoadedGoal, type Goal } from "../goal/goal-state";
@@ -684,6 +685,8 @@ export function historyToUiMessages(
       if (isAutoContinueText(up.text)) continue;
       // 目标模式内部注入（自动续跑 / 预算收尾）同口径隐藏
       if (isGoalInternalText(up.text)) continue;
+      // 工作流交付注入(前缀判定,pi-protocol 单源):内部指令不进用户气泡
+      if (isWorkflowContinueText(up.text)) continue;
       messages.push({ id: `msg-${seq}`, role: "user", parts: up.parts, metadata });
       srcSeqs.push(seq);
       continue;

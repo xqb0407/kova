@@ -210,6 +210,7 @@ function buildProposeTool(run: Running): AgentTool {
         { type: "data-workflowPlan", data: { toolCallId, runId: accepted.id } },
         run.sessionId,
       );
+      const warnings = gateDependencyWarnings(steps);
       const summary = steps
         .map(
           (s) =>
@@ -220,19 +221,47 @@ function buildProposeTool(run: Running): AgentTool {
         [
           `Plan "${accepted.title ?? accepted.objective.slice(0, 60)}" submitted with ${steps.length} step(s):`,
           summary,
+          ...(warnings.length ? ["", ...warnings] : []),
           "",
           `Run ID: ${accepted.id}`,
-          "Stop here. Do not start any step yourself — the user confirms the plan first, then the runtime executes it.",
+          `Stop here. Do not start any step yourself — the user confirms the plan first, then the runtime executes it.`,
+          ...(warnings.length
+            ? [
+                "If a warning above applies, fix it in your NEXT proposal (the user can reject this card with a comment): re-submit with the missing dependsOn rather than letting the run fail.",
+              ]
+            : []),
         ].join("\n"),
-        { runId: accepted.id, stepCount: checked.steps.length },
+        { runId: accepted.id, stepCount: checked.steps.length, ...(warnings.length ? { warnings } : {}) },
       );
     },
   } as unknown as AgentTool;
 }
 
 /**
+ * 提案期提醒(不阻断):**无依赖的 gate 会排在第一波执行**。实机事故:质检门
+ * 校验的是上游几个步骤产出的文件,但模型在改 gate 结构时把 dependsOn 弄丢了
+ * ——门在全空的工作区上 `test -f ...` 退出 1,而 gate 失败默认 abort,整轮在
+ * 一开始就死,用户看到「运行失败 0 token」却没有任何前兆。
+ *
+ * 只提醒、不拒绝:依赖为空的门有完全正当的用法(对**既有**代码/环境做检查,
+ * 比如 `pnpm test`)。判据只排除「整个剧本只有这一个门」这种没有上游可言的情形。
+ */
+export function gateDependencyWarnings(
+  steps: { key: string; kind: string; title: string; dependsOn: readonly string[] }[],
+): string[] {
+  const hasUpstream = steps.some((s) => s.kind !== "gate");
+  if (!hasUpstream) return [];
+  return steps
+    .filter((s) => s.kind === "gate" && s.dependsOn.length === 0)
+    .map(
+      (s) =>
+        `warning: gate step "${s.key}" (${s.title}) has no dependsOn, so it runs in the FIRST wave — if its command checks files produced by other steps, add those steps to dependsOn, or the run will fail immediately on empty outputs.`,
+    );
+}
+
+/**
  * 按名直接跑一条已存剧本(库路径):只有提出剧本与直接跑两条出口,没有第三条。
- * 与设置页「运行」同一落点(startPlaybookRun 直入 running)——剧本已检视过,
+ * 与剧本库的「运行」按钮同一落点(startPlaybookRun 直入 running)——剧本已检视过,
  * 不再走确认卡;描述里带库目录(名/说明/使用时机/参数),模型据此选路。
  */
 function buildRunPlaybookTool(run: Running): AgentTool {

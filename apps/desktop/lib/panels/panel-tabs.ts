@@ -35,6 +35,8 @@ export type PanelTabType =
   | "explorer"
   /** 子智能体运行过程：消息里 Task 委派行唤起（不进 + 菜单,只能从行进入） */
   | "subagent"
+  /** 工作流编排图与运行控制：常驻条/运行卡/「+」菜单唤起（进 + 菜单） */
+  | "workflow"
   /** Agent 调用轨迹（trace_query）：header「更多」唤起（不进 + 菜单），sessionId 绑定 sidecar 会话 */
   | "trace"
   /** UI 插件面板：已装启用插件的面板贡献（agent open_plugin_panel 工具 / + 菜单 / 产物卡唤起） */

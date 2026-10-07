@@ -124,6 +124,25 @@ import { AutomationEmptyArt, HistoryEmptyArt } from "./automation-art";
 import { AutomationEditorDialog } from "./automation-editor-dialog";
 import { TemplateGallery } from "./template-gallery";
 
+/** 主区页签:标题上的「自动化 / 工作流」即页签(形态同「插件 / 专家 / 技能」) */
+type Section = "automation" | "workflow";
+/** 自动化段内的分段器(定时任务 / 运行记录) */
+type AutomationTab = "tasks" | "history";
+
+/** 页签与其副标题(副标题只说该段真有的能力) */
+const SECTION_META: { value: Section; label: string; desc: string }[] = [
+  {
+    value: "automation",
+    label: "自动化",
+    desc: "按计划自动运行 Agent 任务，每次执行开一个独立会话",
+  },
+  {
+    value: "workflow",
+    label: "工作流",
+    desc: "把多智能体编排成可保存、可重放的剧本，确认后由执行器自动跑完并交付报告",
+  },
+];
+
 /** 30s 心跳：倒计时/相对时间标签自然刷新（避免逐秒重渲染整页） */
 function useNowTick(ms = 30_000): number {
   const [now, setNow] = useState(() => Date.now());
@@ -647,7 +666,12 @@ export const AutomationsView: FC<{
 }> = ({ onBackToChat, focusTask, onFocusConsumed }) => {
   const snap = useAutomations();
   const aui = useAui();
-  const [tab, setTab] = useState<"tasks" | "history" | "playbooks">("tasks");
+  /** 主区页签:标题上的「自动化 / 工作流」即页签(形态同「插件 / 专家 / 技能」)。
+   *  工作流不再是自动化段内的第三个分段——剧本库与运行历史是独立资产面,
+   *  与定时任务同级 */
+  const [section, setSection] = useState<Section>("automation");
+  /** 自动化段内的分段器(任务/记录)；工作流段不显示它 */
+  const [tab, setTab] = useState<AutomationTab>("tasks");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<TaskFilter>("all");
   const [editorOpen, setEditorOpen] = useState(false);
@@ -671,6 +695,8 @@ export const AutomationsView: FC<{
   // 不在 effect 里同步清 —— 那会立刻重跑本 effect 并掐掉计时器）
   useEffect(() => {
     if (!focusTask) return;
+    // 徽标来自定时任务卡:先回到自动化段的任务页,再定位滚动
+    setSection("automation");
     setTab("tasks");
     let cancelled = false;
     let tries = 0;
@@ -918,42 +944,72 @@ export const AutomationsView: FC<{
           环境光层抬到 base.tsx 主内容区根（透明 header 条也能被照到），
           这里不再叠一份，避免双层光带 */}
       <div className="mx-auto flex w-full max-w-5xl shrink-0 flex-col gap-4 px-8 pt-8 pb-2">
-        {/* 页头：标题/副标题在左，主操作在右 —— 主操作不再和搜索框挤同一行 */}
+        {/* 页头：标题即页签（自动化 / 工作流，与「插件 / 专家 / 技能」同款），
+            副标题随段切换；主操作在右 */}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight">自动化</h1>
+            <h1 className="flex items-baseline gap-2 text-2xl font-semibold tracking-tight">
+              {SECTION_META.map((s, i) => (
+                <span key={s.value} className="flex items-baseline gap-2">
+                  {i > 0 && (
+                    <span className="text-muted-foreground/40 font-normal">/</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSection(s.value);
+                      exitBatch();
+                      exitHistoryBatch();
+                    }}
+                    aria-current={section === s.value}
+                    className={
+                      section === s.value
+                        ? "transition-colors"
+                        : "text-muted-foreground/60 hover:text-foreground transition-colors"
+                    }
+                  >
+                    {s.label}
+                  </button>
+                </span>
+              ))}
+            </h1>
             <p className="text-muted-foreground mt-1 text-sm">
-              按计划自动运行 Agent 任务，每次执行开一个独立会话
+              {SECTION_META.find((s) => s.value === section)!.desc}
             </p>
           </div>
-          {/* 新建拆两径：手动表单 or 回聊天让 agent 建（scheduler_* 工具） */}
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button className="shrink-0 gap-1">
-                  <PlusIcon className="size-4" />
-                  新建任务
-                  <ChevronDownIcon className="size-3 opacity-60" />
-                </Button>
-              }
-            />
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem onClick={() => openEditor(null)}>
-                <PencilIcon className="size-4" />
-                手动创建
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={startViaChat}>
-                <MessageSquareIcon className="size-4" />
-                会话创建
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* 新建拆两径：手动表单 or 回聊天让 agent 建（scheduler_* 工具）。
+              只属于自动化段——工作流段的入口在剧本面板自己身上（通过对话创建 / 运行） */}
+          {section === "automation" && (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button className="shrink-0 gap-1">
+                    <PlusIcon className="size-4" />
+                    新建任务
+                    <ChevronDownIcon className="size-3 opacity-60" />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuItem onClick={() => openEditor(null)}>
+                  <PencilIcon className="size-4" />
+                  手动创建
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={startViaChat}>
+                  <MessageSquareIcon className="size-4" />
+                  会话创建
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
 
-        {/* tab：定时任务 | 运行记录。分段器与设置页各分区同款；计数并入文案。
-            清单总数也在右侧：切到运行记录页时它是这页唯一的全局读数 */}
+        {/* 自动化段的分段器：定时任务 | 运行记录（工作流已是标题页签，
+            不再混在这里）。计数并入文案；清单总数在右侧——切到运行记录页时
+            它是这页唯一的全局读数 */}
+        {section === "automation" && (
         <div className="flex items-center justify-between gap-4">
-          <Segmented<"tasks" | "history" | "playbooks">
+          <Segmented<AutomationTab>
             value={tab}
             className="w-fit"
             options={[
@@ -966,8 +1022,6 @@ export const AutomationsView: FC<{
                 label:
                   totalHistoryCount > 0 ? `运行记录 ${totalHistoryCount}` : "运行记录",
               },
-              // 工作流剧本(形态参考 ZCode 的 自动化→工作流):可参数化重放的编排资产
-              { value: "playbooks", label: "工作流" },
             ]}
             onChange={(v) => {
               setTab(v);
@@ -988,11 +1042,13 @@ export const AutomationsView: FC<{
                 : ""}
           </span>
         </div>
+        )}
 
         {/* 检索条：搜索 + 筛选在左，刷新/批量在右（都贴着清单，
             模板入口已下沉到清单下方的模板区，这里不再重复给一个按钮）。
-            剧本 tab 隐藏整条（搜索/批量都是任务与记录的语义，剧本有自己的刷新） */}
-        <div className={cn("flex flex-wrap items-center gap-2", tab === "playbooks" && "hidden")}>
+            只在自动化段渲染：搜索/批量都是任务与记录的语义，剧本面板有自己的刷新 */}
+        {section === "automation" && (
+        <div className="flex flex-wrap items-center gap-2">
           {/* 搜索框固定紧凑宽度（设置页同款 w-56），不再 flex-1 撑满整行 */}
           <div className="relative w-56 max-w-full shrink-0">
             <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
@@ -1056,10 +1112,12 @@ export const AutomationsView: FC<{
             );
           })()}
         </div>
+        )}
       </div>
 
       <div className="mx-auto w-full max-w-5xl flex-1 px-8 pb-8">
-        {snap.error && (
+        {/* 任务清单的加载错误只在自动化段提示:工作流段不依赖这份清单 */}
+        {section === "automation" && snap.error && (
           <div className="text-red-500 bg-red-500/5 border-red-500/20 mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs">
             <AlertCircleIcon className="size-4 shrink-0" />
             <span className="min-w-0 flex-1 truncate">{snap.error}</span>
@@ -1074,8 +1132,8 @@ export const AutomationsView: FC<{
           </div>
         )}
 
-        {tab === "playbooks" ? (
-          <PlaybooksPanel onBackToChat={onBackToChat} />
+        {section === "workflow" ? (
+          <PlaybooksPanel onBackToChat={onBackToChat} onOpenSession={openSession} />
         ) : tab === "history" ? (
           !snap.loaded && !snap.error ? (
             <div className="flex flex-col gap-2">
@@ -1184,9 +1242,12 @@ export const AutomationsView: FC<{
             ))}
           </div>
         )}
-        {/* 模板区沉到清单下方（只挂任务 tab）：这是新用户的第一条路径，
-            不该和搜索框挤在同一条工具条里，也不再藏进二级弹窗 */}
-        {tab === "tasks" && !batchMode && <TemplateGallery onPick={openFromTemplate} />}
+        {/* 模板区沉到清单下方（只挂自动化段的任务页）：这是新用户的第一条路径，
+            不该和搜索框挤在同一条工具条里，也不再藏进二级弹窗。
+            工作流段不显示——那是定时任务的模板，不是剧本 */}
+        {section === "automation" && tab === "tasks" && !batchMode && (
+          <TemplateGallery onPick={openFromTemplate} />
+        )}
       </div>
 
       {/* 批量操作坞：底部居中的悬浮图标条（Dock 风格）。外层 pointer-events-none
@@ -1195,7 +1256,7 @@ export const AutomationsView: FC<{
           不改变文档流高度，避免批量切换时列表尾部回流错位（另一种"抖"） */}
       <div className="pointer-events-none sticky bottom-0 z-20 h-[62px]">
         <AnimatePresence initial={false}>
-          {batchMode && tab === "tasks" && (
+          {section === "automation" && batchMode && tab === "tasks" && (
             <motion.div
               key="batch-dock"
               className="flex justify-center pb-6"
@@ -1278,7 +1339,7 @@ export const AutomationsView: FC<{
               </Dock>
             </motion.div>
           )}
-          {historyBatch && tab === "history" && (
+          {section === "automation" && historyBatch && tab === "history" && (
             <motion.div
               key="history-dock"
               className="flex justify-center pb-6"

@@ -10,6 +10,7 @@ import type {
   SessionSummary,
   WorkflowRunSummary,
   WorkflowState,
+  WorkflowStepDetail,
   UsageTotals,
 } from "pi-protocol";
 
@@ -1001,6 +1002,7 @@ export type PiResponse =
   | { type: "todo_state"; tasks: unknown[]; nextId: number }
   | { type: "goal_state"; goal: GoalState["goal"] }
   | { type: "workflow_state"; run: WorkflowState["run"] }
+  | { type: "workflow_step_detail"; detail: WorkflowStepDetail | null }
   | { type: "workflow_playbooks"; playbooks: Playbook[] }
   | { type: "workflow_runs"; runs: WorkflowRunSummary[] }
   | { type: "model_updated"; provider: string; modelId: string }
@@ -1045,6 +1047,8 @@ export type PiResponse =
         delegationId: string;
         agentName: string;
         description?: string;
+        /** 派活说明原文：面板渲染成第一条「任务说明」气泡（工作流委派没有 Task 工具行可回溯） */
+        task?: string;
         status: string;
         startedAt: number;
         completedAt?: number;

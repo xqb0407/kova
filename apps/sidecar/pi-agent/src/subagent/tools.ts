@@ -180,6 +180,7 @@ export function buildSubagentTools(
         modelId: model.id,
         status: "running",
         description: label || undefined,
+        task: brief,
         activity: [],
         stopRequested: false,
         startedAt: Date.now(),

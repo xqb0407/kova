@@ -56,6 +56,7 @@ import type { FC, ReactNode } from "react";
 import { useState } from "react";
 import { randomLoadingPhrase } from "@/lib/panels/loading";
 import { requestOpenSession } from "@/lib/pi/open-session";
+import { WORKFLOW_TOOL_NAMES, isWorkflowCardPart } from "@/lib/pi/workflow-part";
 import {
   forkPiSession,
   piSessionIdForThread,
@@ -349,9 +350,15 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
             return ["group-chainOfThought", "group-reasoning"];
           if (part.type === "tool-call") {
             // Task 委派行独立成行，不并入工具折叠组（并行多个各一行）；
-            // generate_image 运行中是占位卡片，折叠组装不下大卡
-            if (part.toolName === "Task" || part.toolName === "generate_image")
-              return [];
+            // generate_image 运行中是占位卡片，折叠组装不下大卡；
+            // 工作流卡（剧本/运行）同理——它是这一轮的「交付面」而非过程噪音，
+            // 折进过程组等于用户收起后看不见自己确认过的剧本（实机反馈:放出来）
+            if (part.toolName === "Task" || part.toolName === "generate_image") return [];
+            if (part.toolName && WORKFLOW_TOOL_NAMES.has(part.toolName)) {
+              // 卡片(有 Run ID)独立成行;被驳回的提案尝试是过程噪音,归工具组
+              if (isWorkflowCardPart(part)) return [];
+              return ["group-chainOfThought", "group-tool"];
+            }
             const cat = TOOL_CATEGORY[part.toolName];
             return [
               "group-chainOfThought",
@@ -376,7 +383,10 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
             part.type === "text" ||
             dataName === "image" ||
             dataName === "errorAttribution" ||
-            (part as { type?: string }).type === "group-images";
+            (part as { type?: string }).type === "group-images" ||
+            // 工作流**卡片**归回答面：折叠轮里它是「用户批准的剧本 + 运行结果」，
+            // 属于可见的内容面;被驳回的提案尝试仍归过程面(判据见 isWorkflowCardPart)
+            isWorkflowCardPart(part);
           if (onlyProcess && onAnswerSide) return null;
           // answer 面只保留正文、压缩分隔线与成图；工具/思考/其他 data 归过程面
           if (onlyAnswer && !onAnswerSide) return null;

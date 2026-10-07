@@ -13,12 +13,17 @@
 import { randomUUID } from "node:crypto";
 import { kvGet, kvSet } from "../storage/hostdb";
 import { logErr } from "../log";
-import { DEFAULT_PHASE, validatePlan, type WorkflowStep } from "./plan-state";
+import {
+  ARG_NAME_CHARS,
+  DEFAULT_PHASE,
+  isArgName,
+  validatePlan,
+  type WorkflowStep,
+} from "./plan-state";
 import type { Playbook, PlaybookArg } from "pi-protocol";
 
 const PLAYBOOK_KV_KEY = "pi.workflow.playbooks";
 const MAX_PLAYBOOKS = 100;
-const ARG_NAME_PATTERN = /[A-Za-z][A-Za-z0-9_]{0,40}/;
 
 /** 内存缓存:hostdb 读写是异步 RPC,列表/详情路径要能同步取(加载一次后写穿) */
 let cache: Playbook[] | null = null;
@@ -82,11 +87,14 @@ export async function getPlaybook(idOrName: string): Promise<Playbook | undefine
  */
 export function deriveArgsFromSteps(steps: WorkflowStep[]): PlaybookArg[] {
   const seen = new Map<string, PlaybookArg>();
+  // 字符集与「运行时插值」同源(plan-state 的 ARG_NAME_CHARS):中文参数名也是合法
+  // 参数名,两边各写一份 ASCII 会让声明与插值分别静默失效
+  const placeholder = new RegExp(`\\{\\{\\s*args\\.(${ARG_NAME_CHARS})\\s*\\}\\}`, "gu");
   for (const step of steps) {
-    const matches = step.prompt.matchAll(/\{\{\s*args\.([A-Za-z0-9_]+)\s*\}\}/g);
+    const matches = step.prompt.matchAll(placeholder);
     for (const m of matches) {
       const name = m[1]!;
-      if (!ARG_NAME_PATTERN.test(name) || seen.has(name)) continue;
+      if (!isArgName(name) || seen.has(name)) continue;
       seen.set(name, { name, type: "string", required: false });
     }
   }
@@ -151,6 +159,8 @@ export type SavePlaybookInput = {
   whenToUse?: string;
   args?: PlaybookArg[];
   source?: string;
+  /** 存下它的那次运行 id(source=from-run 时),卡片溯源徽标用 */
+  sourceRunId?: string;
 };
 
 /** 保存(按 name 去重:同名覆盖,保住 id 让历史链接不断) */
@@ -173,6 +183,10 @@ export async function savePlaybook(input: SavePlaybookInput): Promise<Playbook> 
     steps: checked.steps.map((s) => toView(s)),
     args: input.args ?? existing?.args ?? deriveArgsFromSteps(checked.steps),
     source: input.source ?? existing?.source ?? "manual",
+    // 溯源:同名覆盖时保留原来的来源运行 id(除非这次显式给了新的)
+    ...(input.sourceRunId ?? existing?.sourceRunId
+      ? { sourceRunId: input.sourceRunId ?? existing?.sourceRunId }
+      : {}),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -272,7 +286,7 @@ export async function expandComposition(
     if (!playbook) {
       return {
         ok: false,
-        reason: `unknown playbook "${refName}" — check the name in Settings → 工作流剧本.`,
+        reason: `unknown playbook "${refName}" — check the name in the playbook library under 自动化 / 工作流.`,
       };
     }
     let inner: WorkflowStep[];
@@ -325,7 +339,7 @@ export async function expandComposition(
 
 /** 把 use.args 里给了值的 {{args.NAME}} 就地替换;没给的保持占位符(运行时解析) */
 function bindPlaybookArgs(prompt: string, bound: Record<string, unknown>): string {
-  return prompt.replace(/\{\{\s*args\.([A-Za-z0-9_]+)\s*\}\}/g, (m, name: string) => {
+  return prompt.replace(new RegExp(`\\{\\{\\s*args\\.(${ARG_NAME_CHARS})\\s*\\}\\}`, "gu"), (m, name: string) => {
     const value = bound[name];
     return value === undefined ? m : String(value);
   });

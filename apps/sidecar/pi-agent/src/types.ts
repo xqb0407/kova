@@ -139,6 +139,12 @@ export type DelegationRecord = {
   status: SubagentRunStatus;
   /** Task 的 description 参数：给用户看的一行短描述（消息行与面板 tab 标题） */
   description?: string;
+  /**
+   * 派活说明原文（Task 的 task / 工作流步骤插值后的 prompt / 评审的简报）。
+   * 面板把它渲染成那条 user 气泡；工作流的委派没有 Task 工具行可回溯，
+   * 不带这个字段面板只能显示「（未能取得任务说明）」。
+   */
+  task?: string;
   /** 运行活动流的内存环形缓冲（见 pushActivity 的上限与丢弃策略） */
   activity: SubagentActivityItem[];
   /** TaskStop / 用户 Stop 置位，结算时把 aborted 归类为 stopped */

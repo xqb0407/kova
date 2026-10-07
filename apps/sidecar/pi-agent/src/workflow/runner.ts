@@ -41,6 +41,7 @@ import {
   MAX_STEP_RESULT_CHARS,
   readyStepKeys,
   resolveStepPrompt,
+  replayJournal,
   settleForeachParent,
   settleStep,
   stepFingerprint,
@@ -58,6 +59,8 @@ interface WorkflowExecution {
   stopped: boolean;
   /** 已派发过的步骤 key(防重复派发;journal 是权威,这只是本次执行的现场簿) */
   launched: Set<string>;
+  /** 已自愈过一次的 key(记账错位重派;每个键只做一次,防死循环) */
+  healed: Set<string>;
   /** 在跑步骤的 promise(spawnStep 保证 resolve 不 reject) */
   active: Set<Promise<void>>;
 }
@@ -99,37 +102,8 @@ export async function startWorkflowExecution(run: Running): Promise<void> {
   for (const exec of executions.values()) {
     if (exec.threadId === run.threadId || exec.runId === wf.id) return;
   }
-  // 指纹重算:done 且指纹一致 → 保留;不一致 / interrupted / running 残影 → pending。
-  // 失败步骤在 resume 时也重试:失败的 run 本身是终态进不来这里,能 resume 的
-  // paused 里失败步只可能来自「失败前已被中止的现场」,重跑是用户要的语义
-  let replayed = 0;
-  const next: WorkflowRun = {
-    ...wf,
-    steps: Object.fromEntries(
-      await Promise.all(
-        Object.entries(wf.steps).map(async ([key, entry]) => {
-          const step = wf.plan!.steps.find((s) => s.key === key);
-          if (!step) return [key, entry] as const;
-          if (entry.status === "done") {
-            const fp = stepFingerprint(
-              step,
-              step.dependsOn.map((d) => wf.steps[d]?.fingerprint ?? ""),
-              JSON.stringify(wf.args ?? {}),
-            );
-            if (entry.fingerprint === fp) {
-              replayed += 1;
-              return [key, entry] as const;
-            }
-            return [key, { ...entry, status: "pending" as const }] as const;
-          }
-          if (entry.status === "running" || entry.status === "interrupted") {
-            return [key, { ...entry, status: "pending" as const }] as const;
-          }
-          return [key, entry] as const;
-        }),
-      ),
-    ),
-  };
+  // 重放算法在 plan-state(纯函数,含 foreach 子项与父步对账——见那里的事故注释)
+  const { run: next, replayed } = replayJournal(wf);
   commitWorkflow(run, next);
   if (replayed > 0) {
     logAt("event", `workflow ${wf.id}: replaying ${replayed} journaled step(s) from cache`);
@@ -166,6 +140,7 @@ export async function startWorkflowExecution(run: Running): Promise<void> {
     threadId: run.threadId,
     stopped: false,
     launched: new Set(),
+    healed: new Set(),
     active: new Set(),
   };
   executions.set(wf.id, exec);
@@ -185,6 +160,16 @@ export async function startWorkflowExecution(run: Running): Promise<void> {
         exec.active.add(promise);
       }
       if (exec.active.size === 0) {
+        // 记账错位自愈(每个键一次):ready 里的键已经在 launched 里,说明现场簿
+        // 与 journal 不一致(槽位被外部覆盖过、状态被回退过——实机事故的常见残影)。
+        // 不清掉的话「已派发」这条记忆会把就绪步骤永久挡在门外,下一轮就假报
+        // 「就绪缺口」把整轮停掉;清了再派一轮,真派不出去时仍会落回停摆
+        const stuck = ready.filter((k) => exec.launched.has(k) && !exec.healed.has(k));
+        if (stuck.length) {
+          for (const k of stuck) exec.healed.add(k);
+          logAt("event", `workflow ${wf.id}: bookkeeping mismatch, re-dispatching ${stuck.join(", ")}`);
+          continue;
+        }
         // 无在跑且无可派发:要么全部结算,要么就绪缺口(校验过的无环 DAG 理论
         // 不可达,这里兜底防死循环)
         break;
@@ -198,6 +183,21 @@ export async function startWorkflowExecution(run: Running): Promise<void> {
     const settled = getWorkflow(run.threadId);
     if (settled?.status === "running") {
       if (hasOpenSteps(settled)) {
+        // 诊断留痕:停摆时把判据摊开——哪一步、什么状态、依赖谁、依赖处于什么
+        // 状态。没有这一行,「就绪缺口」只是一句结论,排查要从头推演(实机教训)
+        const open = Object.entries(settled.steps)
+          .filter(([, e]) => e.status === "pending" || e.status === "running")
+          .map(([k, e]) => {
+            const step = settled.plan?.steps.find((x) => x.key === k);
+            const deps = (step?.dependsOn ?? [])
+              .map((d) => `${d}=${settled.steps[d]?.status ?? "缺失"}`)
+              .join(" ");
+            return `${k}(${e.status}${e.children?.length ? `,children=${e.children.length}` : ""}${deps ? ` ← ${deps}` : ""})`;
+          });
+        logAt(
+          "event",
+          `workflow ${settled.id}: stalled — plan=${settled.plan ? `${settled.plan.steps.length} steps` : "MISSING"} ready=${readyStepKeys(settled).length} launched=${exec.launched.size} open=[${open.join("; ")}]`,
+        );
         const paused = transitionRun(settled, "paused", {
           expectedRunId: settled.id,
           reason: "执行器停摆:存在无法就绪的步骤(就绪缺口)",
@@ -234,9 +234,34 @@ async function spawnStep(run: Running, wfAtLaunch: WorkflowRun, key: string): Pr
       step.dependsOn.map((d) => wf.steps[d]?.fingerprint ?? ""),
       JSON.stringify(wf.args ?? {}),
     );
-    commitWorkflow(run, settleStep(wf, key, { status: "running", fingerprint, startedAt: Date.now() }));
+    commitWorkflow(
+      run,
+      settleStep(wf, key, {
+        status: "running",
+        fingerprint,
+        startedAt: Date.now(),
+        // 重试是在同一条目上再跑一次:上一次的 endedAt/error 必须清掉,否则
+        // UI 用 endedAt 算时长会得到 0s/负数(实机:重试中的步骤显示「已 0s」)
+        endedAt: undefined,
+        error: undefined,
+      }),
+    );
 
-    const result = await executeStepWithRetries(run, step, wf, key);
+    // 委派一落地就把 id 记进 journal:运行中的节点据此打开「子智能体」面板看实时输出
+    // (只在结算时记的话,想看流的那一刻恰好没有 id——正是最需要它的时刻)
+    const onDelegationsStarted = (delegationIds: string[]) => {
+      const current = getWorkflow(run.threadId);
+      if (!current || current.id !== wf.id || delegationIds.length === 0) return;
+      commitWorkflow(
+        run,
+        settleStep(current, key, {
+          delegationId: delegationIds[0],
+          ...(delegationIds.length > 1 ? { delegationIds } : {}),
+        }),
+      );
+    };
+
+    const result = await executeStepWithRetries(run, step, wf, key, onDelegationsStarted);
     const after = getWorkflow(run.threadId);
     if (!after || after.id !== wf.id) return; // 运行已被清除/替换:账不回写
 
@@ -321,6 +346,7 @@ async function executeStepWithRetries(
   step: WorkflowStep,
   wf: WorkflowRun,
   key: string,
+  onDelegationsStarted?: (delegationIds: string[]) => void,
 ): Promise<StepAttemptResult> {
   const maxAttempts = step.kind === "gate" ? 1 : 1 + (step.retries ?? 0);
   // gate 有自己的命令超时;其余步骤套一层硬超时:挂死的 provider 流/自旋 agent
@@ -329,7 +355,7 @@ async function executeStepWithRetries(
     step.kind === "gate" ? undefined : (step.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS);
   let last: StepAttemptResult | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    last = await executeStepAttempt(run, step, wf, key, attempt, timeoutMs);
+    last = await executeStepAttempt(run, step, wf, key, attempt, timeoutMs, onDelegationsStarted);
     if (last.status !== "failed" || attempt >= maxAttempts) break;
     const current = getWorkflow(run.threadId);
     if (!current || current.status !== "running") break;
@@ -354,11 +380,12 @@ async function executeStepAttempt(
   key: string,
   attempt: number,
   timeoutMs: number | undefined,
+  onDelegationsStarted?: (delegationIds: string[]) => void,
 ): Promise<StepAttemptResult> {
-  if (timeoutMs === undefined) return executeStep(run, step, wf, key, attempt);
+  if (timeoutMs === undefined) return executeStep(run, step, wf, key, attempt, undefined, onDelegationsStarted);
   const timeoutController = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const execution = executeStep(run, step, wf, key, attempt, timeoutController.signal);
+  const execution = executeStep(run, step, wf, key, attempt, timeoutController.signal, onDelegationsStarted);
   const timeout = new Promise<"timeout">((resolve) => {
     timer = setTimeout(() => {
       timeoutController.abort();
@@ -404,10 +431,11 @@ async function executeStep(
   key: string,
   attempt: number,
   externalSignal?: AbortSignal,
+  onDelegationsStarted?: (delegationIds: string[]) => void,
 ): Promise<StepAttemptResult> {
   if (step.kind === "gate") return executeGate(run, step, key, attempt, externalSignal);
-  if (step.kind === "verify") return executeVerify(run, step, wf, key, externalSignal);
-  return executeDelegateStep(run, step, wf, key, externalSignal);
+  if (step.kind === "verify") return executeVerify(run, step, wf, key, externalSignal, onDelegationsStarted);
+  return executeDelegateStep(run, step, wf, key, externalSignal, onDelegationsStarted);
 }
 
 /**
@@ -495,6 +523,7 @@ async function executeVerify(
   wf: WorkflowRun,
   key: string,
   externalSignal?: AbortSignal,
+  onDelegationsStarted?: (delegationIds: string[]) => void,
 ): Promise<StepAttemptResult> {
   const reviewers = step.verify?.reviewers ?? 2;
   const threshold = step.verify?.threshold ?? 0.5;
@@ -511,9 +540,49 @@ async function executeVerify(
   const abortEntry = { threadId: run.threadId, abort: () => controller.abort() };
   abortTargets.add(abortEntry);
   try {
-    const results = await Promise.all(
-      Array.from({ length: reviewers }, (_v, i) =>
-        new SubagentRun({
+    // 每个评审登记一条委派:活动流随之可看(与 delegate 步骤同一条通路)。
+    // 复核是「对抗式投票」,只看最后几行票决等于把过程全丢了——评审各自的检索
+    // 与推理恰恰是这一步的价值所在(实机反馈:点复核节点什么也看不到)
+    const reviewerIds: string[] = [];
+    // 先建 promise 再 await:Array.from 的映射体是**同步**执行的,所以这一刻 N 位
+    // 评审都已 registerDelegation 完毕——立刻把 id 报出去,「运行中」的复核节点才
+    // 有 id 可开面板。放在 await 之后(in 实机踩过)等于要等两位评审都跑完才有 id,
+    // 运行中的复核永远点不开实时输出
+    const resultsPromise = Promise.all(
+      Array.from({ length: reviewers }, (_v, i) => {
+        const delegationId = randomUUID();
+        reviewerIds.push(delegationId);
+        let resolveCompletion: () => void = () => {};
+        const completion = new Promise<void>((resolve) => {
+          resolveCompletion = resolve;
+        });
+        const record: DelegationRecord = {
+          delegationId,
+          agentName: `${definition.name} ${i + 1}/${reviewers}`,
+          modelId: model.id,
+          status: "running",
+          description: `[workflow] 复核 ${i + 1}/${reviewers} · ${step.title}`,
+          // 评审简报:面板据此显示「这位评审被交代了什么」
+          task: [
+            `You are reviewer ${i + 1}. Adversarially verify whether the following work/claim is CORRECT and REAL. Try to refute it.`,
+            VERDICT_INSTRUCTION,
+            "",
+            "<claim>",
+            claim,
+            "</claim>",
+          ].join("\n"),
+          activity: [],
+          stopRequested: false,
+          startedAt: Date.now(),
+          turns: 0,
+          toolCalls: 0,
+          reportedToParent: true,
+          completion,
+          resolveCompletion,
+          abort: abortEntry.abort,
+        };
+        registerDelegation(record);
+        return new SubagentRun({
           definition,
           task: [
             `You are reviewer ${i + 1}. Adversarially verify whether the following work/claim is CORRECT and REAL. Try to refute it.`,
@@ -526,12 +595,21 @@ async function executeVerify(
           model,
           cwd: run.cwd,
           tools,
-          sessionId: randomUUID(),
+          sessionId: delegationId,
           traceSessionId: run.sessionId,
           signal: controller.signal,
-        }).run(),
-      ),
+          onActivity: (item) => pushActivity(record, item),
+        })
+          .run()
+          .then((r) => {
+            settleDelegation(run, record, r);
+            return r;
+          });
+      }),
     );
+    // 全部登记完就报(见上:必须在 await 之前)
+    onDelegationsStarted?.(reviewerIds);
+    const results = await resultsPromise;
     if (controller.signal.aborted) return abortedResult();
     const tokens = results.reduce((sum, r) => sum + (r.tokens ?? 0), 0);
     const votes = results
@@ -578,6 +656,7 @@ async function executeDelegateStep(
   wf: WorkflowRun,
   key: string,
   externalSignal?: AbortSignal,
+  onDelegationsStarted?: (delegationIds: string[]) => void,
 ): Promise<StepAttemptResult> {
   const task = resolveStepPrompt(wf, step, key);
 
@@ -634,6 +713,8 @@ async function executeDelegateStep(
     modelId: model.id,
     status: "running",
     description: `[workflow] ${step.title}`,
+    // 插值后的最终 prompt:面板渲染成那条「派活说明」气泡(没有 Task 工具行可回溯)
+    task,
     activity: [],
     stopRequested: false,
     startedAt: Date.now(),
@@ -645,6 +726,7 @@ async function executeDelegateStep(
     abort: abortEntry.abort,
   };
   registerDelegation(record);
+  onDelegationsStarted?.([delegationId]);
 
   const result = await new SubagentRun({
     definition,

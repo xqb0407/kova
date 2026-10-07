@@ -3,6 +3,7 @@
 import { useRef, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import {
+  WorkflowIcon,
   ActivityIcon,
   BotIcon,
   FileCodeIcon,
@@ -35,6 +36,7 @@ import { BrowserView } from "./browser-view";
 import { FileTab } from "./file-view";
 import { FileTreeTab } from "./file-tree-tab";
 import { SubagentTab } from "./subagent-tab";
+import { WorkflowTab } from "./workflow-tab";
 import { TraceTab } from "./trace-tab";
 import { ArtifactsTab } from "./artifacts-tab";
 import { PluginPanelHost } from "./plugin-panel-host";
@@ -53,6 +55,9 @@ export const PANEL_TAB_TYPES: readonly PanelTabType[] = [
   "shell",
   "browser",
   "git",
+  // 工作流:编排图与运行控制(与常驻条/运行卡同源)。无运行时为空态说明——
+  // 它不像 git 那样有「这一档用不到」的档位前提,工作流档之外也可能有活着的运行
+  "workflow",
 ];
 
 /**
@@ -128,6 +133,11 @@ export const TAB_META: Record<
     label: "子智能体",
     description: "Task 委派的运行过程",
     icon: BotIcon,
+  },
+  workflow: {
+    label: "工作流",
+    description: "编排图、每步进度与暂停/继续/清除",
+    icon: WorkflowIcon,
   },
   trace: {
     label: "链路追踪",
@@ -238,6 +248,9 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
     case "subagent":
       // 一个委派一个 tab（delegationId 绑定 lib/subagent-runs store 条目）
       return <SubagentTab tab={tab} />;
+    case "workflow":
+      // 当前线程的工作流（数据源 = pi-workflow store，与常驻条/运行卡同源）
+      return <WorkflowTab />;
     case "trace":
       // 链路追踪：tab.sessionId 绑定 sidecar 会话（header「更多」唤起）
       return <TraceTab tab={tab} />;

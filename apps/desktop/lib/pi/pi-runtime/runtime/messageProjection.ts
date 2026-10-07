@@ -58,7 +58,11 @@ import { ExportedMessageRepository } from "@assistant-ui/react";
 import type {
   ThreadMessageLike,
 } from "@assistant-ui/react";
-import { isAutoContinueMessage } from "pi-protocol";
+import {
+  isAutoContinueMessage,
+  isGoalInternalMessage,
+  isWorkflowContinueMessage,
+} from "pi-protocol";
 import { approvalForRequest, splitHostUiRequests } from "./hostUi";
 import type { PiThreadState } from "./threadState";
 import type {
@@ -712,7 +716,15 @@ const projectFrom = (
         // sidecar toUiMessage/historyToUiMessages 同口径隐藏，此前经
         // thread_snapshot 直出漏成用户提问气泡。跳过但不 flush——直播上连续
         // assistant 轮（截断轮→续跑轮）本就并入同组，保持「刷新=直播」同构。
-        if (isAutoContinueMessage(message)) break;
+        // 内部注入消息一律不进用户气泡(哨兵前缀,pi-protocol 单源判定):
+        // 长度截断续跑 / goal 续跑 / 工作流交付指令。工作流那条此前两个投影都漏了,
+        // 于是 `[[workflow-continue]] …<workflow_report>…` 整段以用户气泡直出
+        if (
+          isAutoContinueMessage(message) ||
+          isGoalInternalMessage(message) ||
+          isWorkflowContinueMessage(message)
+        )
+          break;
         flush(false, index);
         const id = messageId(message as PiUserMessage, index);
         const { parts, attachments } = projectUserContent(

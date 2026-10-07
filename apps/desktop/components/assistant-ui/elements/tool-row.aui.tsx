@@ -41,6 +41,7 @@ import { openToolCallPanel } from "@/lib/panels/tool-panel";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import {
+  clearWorkflowNow,
   confirmWorkflowNow,
   fetchWorkflowState,
   parseRunIdFromResultText,
@@ -884,16 +885,13 @@ const WorkflowPlanToolUI: ToolCallMessagePartComponent = ({
       className="border-border/60 bg-card my-1.5 rounded-lg border p-3 text-xs"
     >
       {run.status === "proposed" ? (
-        <WorkflowPlanCard
-          run={run}
-          busy={busy}
-          onConfirm={() => act(confirmWorkflowNow)}
-          onReject={(text) => act((id) => rejectWorkflowNow(id, text))}
-        />
+        /* 只读记录:确认/驳回在输入框上方的确认面板里(见 WorkflowPlanCard 注释) */
+        <WorkflowPlanCard run={run} threadId={actionThread} />
       ) : (
         <WorkflowRunCard
           run={run}
           busy={busy}
+          threadId={actionThread}
           onPause={() => act(pauseWorkflowNow)}
           onResume={() => act(resumeWorkflowNow)}
           onSave={
@@ -903,6 +901,7 @@ const WorkflowPlanToolUI: ToolCallMessagePartComponent = ({
                 }
               : undefined
           }
+          onClear={actionThread ? () => act(clearWorkflowNow) : undefined}
         />
       )}
     </div>

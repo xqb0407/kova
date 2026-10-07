@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * 工作流剧本面板(自动化页「工作流」段;形态参考 ZCode 的 自动化→工作流 页)。
+ * 工作流剧本面板(自动化页的「工作流」页签,与「自动化」页签同级;
+ * 形态参考 ZCode 的 自动化→工作流 页)。
  *
  * 与 ZCode 的对应关系:
  * - 卡片直排操作(运行 / ⋯删除) + 描述 + 底部「最近运行状态 + 参数 chips」
@@ -183,6 +184,14 @@ const PlaybookCard: FC<{
             ? `上次运行 ${formatRelative(lastRun.updatedAt)} · ${RUN_STATUS_LABEL[lastRun.status] ?? lastRun.status}`
             : "尚未运行"}
         </span>
+        {playbook.sourceRunId && (
+          <span
+            className="border-border/60 bg-muted/50 text-muted-foreground shrink-0 rounded border px-1.5 py-px text-[10px]"
+            title={`从运行 ${playbook.sourceRunId} 存下`}
+          >
+            来自运行 {playbook.sourceRunId.slice(0, 8)}
+          </span>
+        )}
         <span className="flex-1" />
         {playbook.args.map((a) => (
           <span
@@ -206,7 +215,9 @@ const PlaybookCard: FC<{
 export const PlaybooksPanel: FC<{
   /** 空态「通过对话创建」:回到聊天并切到工作流档 */
   onBackToChat?: () => void;
-}> = ({ onBackToChat }) => {
+  /** 运行历史「查看」:切到该运行所在的会话(与自动化的会话跳转同一条路径) */
+  onOpenSession?: (sessionId: string) => void;
+}> = ({ onBackToChat, onOpenSession }) => {
   const aui = useAui();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const [playbooks, setPlaybooks] = useState<Playbook[] | null>(null);
@@ -401,6 +412,19 @@ export const PlaybooksPanel: FC<{
                 {r.doneCount}/{r.stepCount} 步 · {formatTokens(r.tokensUsed)} token ·{" "}
                 {formatRelative(r.updatedAt)}
               </span>
+              {/* 回到现场:切到该运行所在会话(草稿期线程键的 run 没有可切的目标,
+                  sidecar 已不发 threadId) */}
+              {onOpenSession && r.threadId && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 shrink-0 px-2 text-[11px]"
+                  title="切到该运行所在的会话"
+                  onClick={() => onOpenSession(r.threadId!)}
+                >
+                  查看
+                </Button>
+              )}
             </div>
           ))}
         </div>

@@ -409,8 +409,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       ),
     },
     {
+      // 页内两个同级页签（自动化 / 工作流）共用这条入口，与「插件 / 专家 / 技能」同款命名
       id: "automation",
-      label: "自动化",
+      label: "自动化 / 工作流",
       icon: ZapIcon,
     },
     { id: "connector", label: "插件 / 专家 / 技能", icon: PlugIcon },

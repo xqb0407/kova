@@ -49,6 +49,7 @@ type ActivityFileLine =
       agentName: string;
       modelId: string;
       description?: string;
+      task?: string;
       startedAt: number;
     }
   | { t: "item"; item: SubagentActivityItem };
@@ -60,6 +61,9 @@ type DelegationWriter = {
   /** 待刷字节估算（增量累加，不做全量重算） */
   bytes: number;
 };
+
+/** meta 里派活说明的落盘上限:面板要的是「这一步被交代了什么」,不是全文 */
+const TASK_META_CHARS = 4_000;
 
 const writers = new Map<string, DelegationWriter>();
 
@@ -132,6 +136,8 @@ export function openDelegationActivity(record: DelegationRecord): void {
     agentName: record.agentName,
     modelId: record.modelId,
     ...(record.description ? { description: record.description } : {}),
+    // 派活说明随 meta 落盘(截断):重启后回放面板时仍能看到这一步被交代了什么
+    ...(record.task ? { task: record.task.slice(0, TASK_META_CHARS) } : {}),
     startedAt: record.startedAt,
   };
   w.pending.push(meta);
@@ -221,6 +227,8 @@ export function readDelegationActivity(delegationId: string):
         agentName: string;
         modelId: string;
         description?: string;
+        /** 派活说明原文(落盘时截断)——面板拿它渲染「这一步被交代了什么」 */
+        task?: string;
         status: SubagentRunStatus;
         startedAt: number;
         completedAt?: number;
@@ -276,6 +284,7 @@ export function readDelegationActivity(delegationId: string):
       agentName: meta.agentName,
       modelId: meta.modelId,
       description: meta.description,
+      task: meta.task,
       status,
       startedAt: meta.startedAt,
       completedAt,
