@@ -386,6 +386,21 @@ async function executeCall(
       );
     }
   }
+  // 作用域闸门先行：在查"服务器是否存在"之前就按声明白名单拒绝。
+// 这样拒绝文案不泄露哪些服务器真的配置着——先查存在性会把
+// "未授权"变成"未配置"，等于给子代理一张服务器清单做探测。
+const scopeAllowed = scope?.allowedServers;
+if (scopeAllowed?.length) {
+  const requestedServer = fullName.split("__")[0] ?? "";
+  if (!scopeAllowed.includes(requestedServer)) {
+    const usable = scope?.allowedNames?.length ? scope.allowedNames : scopeAllowed;
+    return textResult(
+      `You are not allowed to use the MCP server "${requestedServer}". This agent may only use: ${usable.join(", ")}. ` +
+        "Do not retry the same call; use a permitted server or report the limitation.",
+      { server: requestedServer, allowed: false, allowedServers: [...usable] },
+    );
+  }
+}
   const parsed = parseMcpToolFullName(
     fullName,
     (await activeMcpServers(cwd)).map((d) => d.name),
@@ -393,18 +408,6 @@ async function executeCall(
   if (!parsed) {
     return textResult(
       `Unknown MCP server for "${fullName}". Use mcp({ action: "search" }) to list available tools.`,
-    );
-  }
-  // 作用域闸门：白名单网关下，越权服务器在连接/审批之前就拒绝。
-  // 放在这里（而非审批后）是因为连接握手本身已构成对外动作，
-  // 一个无权调用的子代理不该触发它。
-  const allowed = scope?.allowedServers;
-  if (allowed?.length && !allowed.includes(parsed.server)) {
-    const usable = scope?.allowedNames?.length ? scope.allowedNames : allowed;
-    return textResult(
-      `You are not allowed to use the MCP server "${parsed.server}". This agent may only use: ${usable.join(", ")}. ` +
-        "Do not retry the same call; use a permitted server or report the limitation.",
-      { server: parsed.server, allowed: false, allowedServers: [...usable] },
     );
   }
   const def = await findServerDef(cwd, parsed.server);
