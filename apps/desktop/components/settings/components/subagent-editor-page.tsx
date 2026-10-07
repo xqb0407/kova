@@ -15,7 +15,6 @@
  */
 import { useEffect, useMemo, useState, type FC } from "react";
 import { ChevronLeftIcon, PlusIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,7 +28,14 @@ import {
   saveSubagent,
   type PiKnowledgeSource,
 } from "@/lib/subagent/subagents";
-import { EditorSection, MultiSelectField } from "./subagent-editor";
+import { Segmented } from "@/components/custom-ui/segmented";
+import {
+  addChipClass,
+  EditorSection,
+  FieldRow,
+  MultiSelectField,
+  ToggleChip,
+} from "./subagent-editor";
 
 // 纯逻辑（表单↔草稿↔YAML、作用域推导）在 lib/subagent/editor-form.ts，
 // 单独成模块是为了能单测——那里出过"复制内置静默丢能力"的事故。
@@ -259,24 +265,16 @@ export const SubagentEditorPage: FC<{
               hint="未勾选的工具它看不到——不是调用时被拒，是压根不在它的工具表里。"
             >
               <div className="flex flex-wrap gap-1.5">
-                {toolOptions.map((tool) => {
-                  const active = form.tools.includes(tool);
-                  return (
-                    <button
-                      key={tool}
-                      type="button"
-                      onClick={() => toggleTool(tool)}
-                      className={cn(
-                        "rounded-full border px-2.5 py-0.5 font-mono text-xs transition-colors",
-                        active
-                          ? "bg-primary text-primary-foreground border-primary"
-                          : "text-muted-foreground hover:bg-muted",
-                      )}
-                    >
-                      {tool}
-                    </button>
-                  );
-                })}
+                {toolOptions.map((tool) => (
+                  <ToggleChip
+                    key={tool}
+                    mono
+                    active={form.tools.includes(tool)}
+                    onClick={() => toggleTool(tool)}
+                  >
+                    {tool}
+                  </ToggleChip>
+                ))}
               </div>
             </EditorSection>
 
@@ -290,39 +288,32 @@ export const SubagentEditorPage: FC<{
                 value={form.skills}
                 onChange={(v) => setField("skills", v)}
                 emptyHint="还没有技能。到设置 → 技能 里添加，或留空（它将看不到任何技能）。"
+                optionsReady={!skillsSnapshot.loading && !skillsSnapshot.error}
               />
               <MultiSelectField
-                label="MCP 服务器 —— 只能访问这里列出的"
+                label="MCP 服务器"
+                hint="只能访问这里列出的"
                 options={mcpOptions}
                 value={form.mcpServers}
                 onChange={(v) => setField("mcpServers", v)}
                 emptyHint="还没有 MCP 服务器。到设置 → MCP 里添加，或留空（它将访问不到任何外部集成）。"
+                optionsReady={!mcpSnapshot.loading && !mcpSnapshot.error}
               />
-              <div className="flex flex-col gap-1.5">
-                <span className="text-muted-foreground text-xs">
-                  记忆 —— 独立于设置 → 记忆的全局开关
-                </span>
-                <div className="flex gap-1.5">
-                  {MEMORY_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      onClick={() => setField("memory", opt.value)}
-                      className={cn(
-                        "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
-                        form.memory === opt.value
-                          ? "bg-primary text-primary-foreground border-primary"
-                          : "text-muted-foreground hover:bg-muted",
-                      )}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
+              <FieldRow label="记忆" hint="独立于设置 → 记忆的全局开关">
+                {/* 三档互斥，用仓库的 Segmented 而不是又一套手写胶囊 */}
+                <Segmented
+                  value={form.memory}
+                  onChange={(v) => setField("memory", v)}
+                  options={MEMORY_OPTIONS.map((o) => ({
+                    value: o.value,
+                    label: o.label,
+                  }))}
+                  className="w-fit"
+                />
                 <p className="text-muted-foreground text-xs">
                   {MEMORY_OPTIONS.find((o) => o.value === form.memory)?.hint}
                 </p>
-              </div>
+              </FieldRow>
             </EditorSection>
 
             <EditorSection
@@ -335,49 +326,42 @@ export const SubagentEditorPage: FC<{
                 </p>
               )}
               {form.knowledge.map((k, i) => (
-                <div key={i} className="flex flex-col gap-2 rounded-xl border p-3">
-                  <div className="flex gap-2">
-                    <Input
-                      value={k.name}
-                      onChange={(e) => patchKnowledge(i, { name: e.target.value })}
-                      placeholder="名称（它检索结果里看到的）"
-                      className="text-xs"
-                    />
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive shrink-0 text-xs"
-                      onClick={() =>
-                        setField(
-                          "knowledge",
-                          form.knowledge.filter((_, j) => j !== i),
-                        )
-                      }
-                    >
-                      移除
-                    </Button>
-                  </div>
-                  <div className="flex gap-2">
-                    <Input
-                      value={k.path}
-                      onChange={(e) => patchKnowledge(i, { path: e.target.value })}
-                      placeholder="文档路径，如 ./docs/**/*.md"
-                      className="flex-1 font-mono text-xs"
-                    />
-                  </div>
+                <div key={i} className="flex items-start gap-2">
+                  <Input
+                    value={k.name}
+                    onChange={(e) => patchKnowledge(i, { name: e.target.value })}
+                    placeholder="名称（它检索结果里看到的）"
+                    className="h-9 w-48 shrink-0 text-xs"
+                  />
+                  <Input
+                    value={k.path}
+                    onChange={(e) => patchKnowledge(i, { path: e.target.value })}
+                    placeholder="文档路径，如 ./docs/**/*.md"
+                    className="h-9 flex-1 font-mono text-xs"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground hover:text-destructive h-9 shrink-0 px-2 text-xs"
+                    onClick={() =>
+                      setField(
+                        "knowledge",
+                        form.knowledge.filter((_, j) => j !== i),
+                      )
+                    }
+                  >
+                    移除
+                  </Button>
                 </div>
               ))}
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="text-muted-foreground h-7 w-fit rounded-full px-2.5 text-xs"
+                className={addChipClass}
                 onClick={() =>
-                  setField("knowledge", [
-                    ...form.knowledge,
-                    { name: "", path: "" },
-                  ])
+                  setField("knowledge", [...form.knowledge, { name: "", path: "" }])
                 }
               >
                 <PlusIcon className="size-3" />
