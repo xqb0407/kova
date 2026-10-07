@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+  dirToWorkspaceGlob,
   editorScope,
   EMPTY_FORM,
   entryToForm,
@@ -136,5 +137,65 @@ describe("editorScope", () => {
     expect(editorScope({ mode: "edit", entry: entry({ scope: "workspace" }) })).toBe("workspace");
     expect(editorScope({ mode: "edit", entry: entry({ scope: "builtin" }) })).toBe("system");
     expect(editorScope({ mode: "copy", entry: entry({ scope: "plugin" }) })).toBe("system");
+  });
+});
+
+describe("dirToWorkspaceGlob", () => {
+  test("工作区内的子目录 → 相对 glob", () => {
+    expect(dirToWorkspaceGlob("/ws/acme/docs", "/ws/acme")).toEqual({
+      ok: true,
+      glob: "./docs/**/*",
+    });
+  });
+
+  test("嵌套多层", () => {
+    expect(dirToWorkspaceGlob("/ws/acme/a/b/c", "/ws/acme")).toEqual({
+      ok: true,
+      glob: "./a/b/c/**/*",
+    });
+  });
+
+  test("目录就是工作区本身", () => {
+    expect(dirToWorkspaceGlob("/ws/acme", "/ws/acme")).toEqual({
+      ok: true,
+      glob: "./**/*",
+    });
+  });
+
+  test("尾斜杠与反斜杠都归一", () => {
+    expect(dirToWorkspaceGlob("/ws/acme/docs/", "/ws/acme/")).toEqual({
+      ok: true,
+      glob: "./docs/**/*",
+    });
+    expect(dirToWorkspaceGlob("C:\\ws\\docs", "C:\\ws")).toEqual({
+      ok: true,
+      glob: "./docs/**/*",
+    });
+  });
+
+  test("大小写差异仍判定为工作区内（macOS/Windows 文件系统不敏感）", () => {
+    expect(dirToWorkspaceGlob("/WS/Acme/Docs", "/ws/acme")).toEqual({
+      ok: true,
+      glob: "./Docs/**/*",
+    });
+  });
+
+  test("工作区之外被拒（绝对路径会被拼成 cwd+abs，静默搜不到）", () => {
+    expect(dirToWorkspaceGlob("/elsewhere/docs", "/ws/acme")).toEqual({
+      ok: false,
+      reason: "outside",
+    });
+  });
+
+  test("前缀相同但不同级不算内部（/ws/acme-other 不在 /ws/acme 里）", () => {
+    expect(dirToWorkspaceGlob("/ws/acme-other", "/ws/acme")).toEqual({
+      ok: false,
+      reason: "outside",
+    });
+  });
+
+  test("空输入被拒", () => {
+    expect(dirToWorkspaceGlob("", "/ws")).toEqual({ ok: false, reason: "invalid" });
+    expect(dirToWorkspaceGlob("/ws", "")).toEqual({ ok: false, reason: "invalid" });
   });
 });
