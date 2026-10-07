@@ -7,7 +7,11 @@ import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl,
 import { listPluginMcpEntries, loadMcpServers, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
 import { mcpManager } from "../mcp/mcp-manager";
 import { ensureSkillsLoaded, skillsSnapshot, listPluginSkillEntries } from "../skills/skills";
-import { listPluginSubagentEntries, loadSubagentDefinitions } from "../subagent/subagent-definitions";
+import {
+  GRANTABLE_TOOLS,
+  listPluginSubagentEntries,
+  loadSubagentDefinitions,
+} from "../subagent/subagent-definitions";
 import { reloadSkills, reloadSubagents } from "../sessions/sessions";
 
 export function maskApiKey(key: string): string {
@@ -27,6 +31,11 @@ export async function subagentsPayload(cwd?: string) {
     ...(e.model ? { model: e.model } : {}),
     prompt: e.prompt,
     scope: e.scope,
+    // 能力授予维度：未声明就不出现（前端据此决定是否渲染对应控件）
+    ...(e.skills?.length ? { skills: e.skills } : {}),
+    ...(e.mcpServers?.length ? { mcpServers: e.mcpServers } : {}),
+    ...(e.knowledge?.length ? { knowledge: e.knowledge } : {}),
+    ...(e.memory ? { memory: e.memory } : {}),
     ...(e.path ? { path: e.path } : {}),
     ...(e.raw ? { raw: e.raw } : {}),
     enabled: e.enabled,
@@ -39,6 +48,9 @@ export async function subagentsPayload(cwd?: string) {
     pluginAgents: r.entries.filter((e) => e.scope === "plugin").map(toEntry),
     workspaceCwd: cwd ?? null,
     diagnostics: r.diagnostics,
+    // 可授予工具目录：设置页表单据此渲染，不在前端留硬编码副本
+    // （旧实现把六个名字写死在 TOOL_OPTIONS，后端一改就漂移）
+    grantableTools: [...GRANTABLE_TOOLS],
   };
 }
 

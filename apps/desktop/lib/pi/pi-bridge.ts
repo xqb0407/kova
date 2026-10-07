@@ -255,6 +255,18 @@ export type PiTraceRun = {
 /** 子智能体定义所在层（事实源在 sidecar：内置常量 / <app_data>/subagents / <cwd>/.kova/subagents） */
 export type PiSubagentScope = "builtin" | "system" | "workspace" | "plugin";
 
+/** 子智能体记忆档位：none = 无记忆（缺省）；private = 私有命名空间；shared = 与主代理共享工作区记忆 */
+export type PiSubagentMemoryMode = "none" | "private" | "shared";
+
+/** 声明式知识源：files 走工作区 glob + kb_search；mcp 走作用域化 MCP 网关 */
+export type PiKnowledgeSource = {
+  name: string;
+  type: "files" | "mcp";
+  path?: string;
+  server?: string;
+  tool?: string;
+};
+
 /** 子智能体定义条目（设置 → 子智能体；list/save/delete/开关/信任的应答共用清单形状） */
 export type PiSubagentEntry = {
   name: string;
@@ -264,6 +276,14 @@ export type PiSubagentEntry = {
   model?: string;
   prompt: string;
   scope: PiSubagentScope;
+  /** 技能白名单（按名）；未声明即不可见 */
+  skills?: string[];
+  /** MCP 服务器白名单；未声明即不可达 */
+  mcpServers?: string[];
+  /** 声明式知识源 */
+  knowledge?: PiKnowledgeSource[];
+  /** 记忆档位；缺省/none = 无记忆 */
+  memory?: PiSubagentMemoryMode;
   /** 定义文件路径（内置无） */
   path?: string;
   /** YAML 原文（编辑器"YAML 视图"与 raw 保存回读用） */
@@ -284,6 +304,8 @@ export type PiSubagentsResponse = {
   pluginAgents: PiSubagentEntry[];
   workspaceCwd: string | null;
   diagnostics: string[];
+  /** 可授予工具目录（后端唯一事实源）；旧版 sidecar 缺此字段时前端回落旧 6 项 */
+  grantableTools?: string[];
 };
 
 /** 技能来源层（事实源在 sidecar：托管层 <cwd>/.kova/skills 与 <app_data>/skills 可编辑，
