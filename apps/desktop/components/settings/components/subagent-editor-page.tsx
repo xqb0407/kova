@@ -28,141 +28,33 @@ import {
   FALLBACK_GRANTABLE_TOOLS,
   saveSubagent,
   type PiKnowledgeSource,
-  type SubagentDraft,
-  type SubagentEntry,
 } from "@/lib/subagent/subagents";
 import { EditorSection, MultiSelectField } from "./subagent-editor";
 
-/** 编辑目标：新建 / 编辑既有 / 把内置或系统级复制为可编辑层 */
-export type EditorTarget =
-  | { mode: "create"; scope: "system" | "workspace" }
-  | { mode: "edit"; entry: SubagentEntry }
-  | { mode: "copy"; entry: SubagentEntry };
+// 纯逻辑（表单↔草稿↔YAML、作用域推导）在 lib/subagent/editor-form.ts，
+// 单独成模块是为了能单测——那里出过"复制内置静默丢能力"的事故。
+import {
+  editorScope,
+  EMPTY_FORM,
+  entryToForm,
+  formToDraft,
+  formToYaml,
+  MEMORY_OPTIONS,
+  type EditorTarget,
+  type FormDraft,
+} from "@/lib/subagent/editor-form";
 
-export type EditorScope = "system" | "workspace";
-
-export function editorScope(target: EditorTarget): EditorScope {
-  if (target.mode === "create") return target.scope;
-  return target.entry.scope === "workspace" ? "workspace" : "system";
-}
-
-/** 记忆档位。缺省 none；这里的开关独立于设置 → 记忆的全局开关 */
-export const MEMORY_OPTIONS: Array<{
-  value: NonNullable<SubagentDraft["memory"]>;
-  label: string;
-  hint: string;
-}> = [
-  { value: "none", label: "无", hint: "不注入、不给工具。每次委派都是冷启动。" },
-  {
-    value: "private",
-    label: "私有",
-    hint: "存在本工作区的专属目录里，跨委派累积，只有它自己看得见。",
-  },
-  {
-    value: "shared",
-    label: "共享",
-    hint: "与主代理的工作区记忆同一目录。它写的内容会出现在你后续的对话里。",
-  },
-];
-
-/** 表单草稿（maxTurns 用字符串承载，空 = 不设置） */
-export type FormDraft = {
-  name: string;
-  description: string;
-  tools: string[];
-  maxTurns: string;
-  model: string;
-  prompt: string;
-  skills: string[];
-  mcpServers: string[];
-  knowledge: PiKnowledgeSource[];
-  memory: NonNullable<SubagentDraft["memory"]>;
-};
-
-export const EMPTY_FORM: FormDraft = {
-  name: "",
-  description: "",
-  tools: ["read", "glob", "grep"],
-  maxTurns: "",
-  model: "",
-  prompt: "",
-  skills: [],
-  mcpServers: [],
-  knowledge: [],
-  memory: "none",
-};
-
-export function entryToForm(entry: SubagentEntry): FormDraft {
-  return {
-    name: entry.name,
-    description: entry.description,
-    tools: entry.tools,
-    maxTurns: entry.maxTurns !== undefined ? String(entry.maxTurns) : "",
-    model: entry.model ?? "",
-    prompt: entry.prompt,
-    // 能力维度：未声明回落成"空"，控件统一按空数组/默认值渲染
-    skills: entry.skills ?? [],
-    mcpServers: entry.mcpServers ?? [],
-    knowledge: entry.knowledge ?? [],
-    memory: entry.memory ?? "none",
-  };
-}
-
-export function formToDraft(form: FormDraft): SubagentDraft {
-  const maxTurns = Number(form.maxTurns);
-  return {
-    name: form.name.trim(),
-    description: form.description.trim(),
-    tools: form.tools,
-    prompt: form.prompt,
-    ...(form.maxTurns.trim() && Number.isFinite(maxTurns) && maxTurns > 0
-      ? { maxTurns: Math.floor(maxTurns) }
-      : {}),
-    ...(form.model.trim() ? { model: form.model.trim() } : {}),
-    // 空值一律不落草稿：sidecar 据此判定"未声明"，落了空数组反而会让
-    // YAML 视图糊上一层空壳
-    ...(form.skills.length ? { skills: form.skills } : {}),
-    ...(form.mcpServers.length ? { mcpServers: form.mcpServers } : {}),
-    ...(form.knowledge.length ? { knowledge: form.knowledge } : {}),
-    ...(form.memory !== "none" ? { memory: form.memory } : {}),
-  };
-}
-
-/** 表单 → YAML 文本（新建/复制时的初始展示；合法性与回读以 sidecar 解析为准）。
- *  能力维度必须一并写出——漏掉任一个，"复制内置"就会静默丢掉能力。 */
-export function formToYaml(form: FormDraft): string {
-  const lines = [
-    "# Kova subagent definition — managed via Settings → Subagents",
-    `name: ${JSON.stringify(form.name.trim())}`,
-    `description: ${JSON.stringify(form.description.trim())}`,
-    `tools: [${form.tools.join(", ")}]`,
-  ];
-  const maxTurns = Number(form.maxTurns);
-  if (form.maxTurns.trim() && Number.isFinite(maxTurns) && maxTurns > 0) {
-    lines.push(`maxTurns: ${Math.floor(maxTurns)}`);
-  }
-  if (form.model.trim()) lines.push(`model: ${form.model.trim()}`);
-  if (form.skills.length) lines.push(`skills: [${form.skills.join(", ")}]`);
-  if (form.mcpServers.length) {
-    lines.push("mcp:");
-    lines.push(`  servers: [${form.mcpServers.join(", ")}]`);
-  }
-  for (const k of form.knowledge) {
-    lines.push("knowledge:");
-    lines.push(`  - name: ${JSON.stringify(k.name)}`);
-    lines.push(`    type: ${k.type}`);
-    if (k.type === "files") lines.push(`    path: ${JSON.stringify(k.path ?? "")}`);
-    else {
-      lines.push(`    server: ${JSON.stringify(k.server ?? "")}`);
-      lines.push(`    tool: ${JSON.stringify(k.tool ?? "")}`);
-    }
-  }
-  if (form.memory !== "none") lines.push(`memory: ${form.memory}`);
-  lines.push("prompt: |");
-  const body = form.prompt.endsWith("\n") ? form.prompt : `${form.prompt}\n`;
-  for (const line of body.split("\n")) lines.push(line ? `  ${line}` : "");
-  return lines.join("\n");
-}
+export {
+  editorScope,
+  EMPTY_FORM,
+  entryToForm,
+  formToDraft,
+  formToYaml,
+  MEMORY_OPTIONS,
+  type EditorScope,
+  type EditorTarget,
+  type FormDraft,
+} from "@/lib/subagent/editor-form";
 
 export const SubagentEditorPage: FC<{
   target: EditorTarget;
@@ -306,10 +198,12 @@ export const SubagentEditorPage: FC<{
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="form" className="flex flex-col gap-6 pt-4">
+          <TabsContent value="form" className="flex max-w-3xl flex-col gap-6 pt-4">
             <EditorSection title="基本信息">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_7rem_14rem]">
-                <Label className="flex flex-col items-start gap-1 text-sm">
+              {/* 名称占满余量但封顶：1fr 在 6xl 容器里会把单行输入拉成八百多像素，
+                  表单需要可读的行宽，不是把容器填满 */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_7rem_13rem]">
+                <Label className="flex min-w-0 flex-col items-start gap-1 text-sm">
                   <span className="text-muted-foreground text-xs">名称</span>
                   <Input
                     value={form.name}
@@ -529,7 +423,7 @@ export const SubagentEditorPage: FC<{
             </EditorSection>
           </TabsContent>
 
-          <TabsContent value="yaml" className="pt-4">
+          <TabsContent value="yaml" className="max-w-4xl pt-4">
             <Textarea
               value={yaml}
               onChange={(e) => setYaml(e.target.value)}
