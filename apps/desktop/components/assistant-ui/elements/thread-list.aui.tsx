@@ -79,6 +79,12 @@ import {
 import { useThreadActivity } from "@/lib/pi/pi-last-activity";
 import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
 import {
+  setThreadTimeRange,
+  threadRangeStart,
+  threadTimeRangeLabel,
+  useThreadTimeRange,
+} from "@/lib/pi/pi-thread-filter";
+import {
   usePendingInteractionKind,
   type PendingInteractionKind,
 } from "@/lib/pi/pi-interactions";
@@ -550,12 +556,13 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const threadItems = useAuiState((s) => s.threads.threadItems);
   const pinnedIds = usePinnedSessionIds();
+  const timeRange = useThreadTimeRange();
 
   const query = searchQuery.trim().toLowerCase();
 
   return useMemo(() => {
     const itemsById = new Map(threadItems.map((item) => [item.id, item]));
-    const filteredIndices = threadIds
+    const searchedIndices = threadIds
       .map((id, index) => ({ id, index }))
       .filter(
         ({ id }) =>
@@ -569,6 +576,18 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
     const dates = threadIds.map((id) => itemsById.get(id)?.lastMessageAt);
     const time = (index: number) =>
       dates[index]?.getTime() ?? Number.MAX_SAFE_INTEGER;
+
+    // 时间筛选（侧栏 tabs 行右侧的按钮）：按最近活跃时间卡自然日区间。
+    // 没有时间戳的（刚建还没聊过）当"新"处理——它们不是旧会话，任何区间
+    // 都留着，否则新建一个空会话就会被筛选吃掉。
+    const rangeStart = threadRangeStart(timeRange);
+    const filteredIndices =
+      rangeStart == null
+        ? searchedIndices
+        : searchedIndices.filter((index) => {
+            const at = dates[index];
+            return at == null || at.getTime() >= rangeStart;
+          });
 
     // cwd 归属只看会话自己记录的 cwd：空（含新建未落盘）= 任务，非空 = 项目分组。
     // 不用当前 workspace 兜底——那会让"默认选中的目录"污染会话归属
@@ -615,7 +634,35 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       taskIndices,
       projectGroups,
     };
-  }, [threadIds, threadItems, query, pinnedIds]);
+  }, [threadIds, threadItems, query, pinnedIds, timeRange]);
+};
+
+/** 列表空态。时间筛选开着时换一套文案并给「清除筛选」——否则一句「暂无任务
+ *  对话」会让人以为会话没了，其实只是被区间挡在外面 */
+const ThreadListEmpty: FC<{ searching?: boolean; children: ReactNode }> = ({
+  searching,
+  children,
+}) => {
+  const range = useThreadTimeRange();
+  return (
+    <div
+      data-slot="aui_thread-list-empty"
+      className="text-muted-foreground px-2.5 py-4 text-sm"
+    >
+      {range === "all"
+        ? children
+        : `「${threadTimeRangeLabel(range)}」内没有${searching ? "匹配的" : ""}会话`}
+      {range !== "all" && (
+        <Button
+          variant="ghost"
+          className="mt-1.5 -ms-2 h-6 gap-1 px-2 text-xs font-normal"
+          onClick={() => setThreadTimeRange("all")}
+        >
+          清除筛选
+        </Button>
+      )}
+    </div>
+  );
 };
 
 const ThreadListItemGroups: FC<{
@@ -660,26 +707,12 @@ const ThreadListItemGroups: FC<{
   });
 
   if (query && filteredIndices.length === 0) {
-    return (
-      <div
-        data-slot="aui_thread-list-empty"
-        className="text-muted-foreground px-2.5 py-4 text-sm"
-      >
-        No threads found
-      </div>
-    );
+    return <ThreadListEmpty searching>No threads found</ThreadListEmpty>;
   }
 
   // 已归档会话不在侧栏展示，统一到「设置 → 归档」查看与恢复
   if (pinnedIndices.length === 0 && taskIndices.length === 0) {
-    return (
-      <div
-        data-slot="aui_thread-list-empty"
-        className="text-muted-foreground px-2.5 py-4 text-sm"
-      >
-        暂无任务对话
-      </div>
-    );
+    return <ThreadListEmpty>暂无任务对话</ThreadListEmpty>;
   }
 
   return (
@@ -869,12 +902,9 @@ export const ProjectListItems: FC<{
 
   if (projectGroups.length === 0 && pinnedProjectIndices.length === 0) {
     return (
-      <div
-        data-slot="aui_thread-list-empty"
-        className="text-muted-foreground px-2.5 py-4 text-sm"
-      >
+      <ThreadListEmpty>
         暂无项目对话，选择工作目录后新建的对话会出现在这里
-      </div>
+      </ThreadListEmpty>
     );
   }
 
