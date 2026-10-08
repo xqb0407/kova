@@ -102,22 +102,17 @@ describe("planSuggestions", () => {
     expect(labelsOf(work)).not.toContain("写代码");
   });
 
-  test("案例卡片的数据随规划一起带出来（说明 + 示意图）", () => {
+  test("案例数据随规划一起带出来（标题 + 提示词）", () => {
     const work = planSuggestions({ ...base, appMode: "work" });
     const cards = work[0].options;
     expect(work[0].label).toBe("办公");
     for (const card of cards) {
-      expect(card.hint.length).toBeGreaterThan(0);
-      expect(card.art).toBeTruthy();
+      expect(card.label.length).toBeGreaterThan(0);
+      expect(card.prompt.length).toBeGreaterThan(0);
     }
-    // 抽查两条：说明是"点了会得到什么"，图是各自那类活
+    // 抽查一条：提示词内容正确
     const mail = work[0].options.find((o) => o.label === "起草一封邮件");
-    expect(mail?.hint).toBe("专业但不生硬");
-    expect(mail?.art).toBe("mail");
-    const code = planSuggestions({ ...base, appMode: "code" });
-    expect(
-      code.flatMap((g) => g.options).find((o) => o.label === "设计一个接口")?.art,
-    ).toBe("api");
+    expect(mail?.prompt).toContain("帮我起草一封邮件");
   });
 
   test("工作区模板：选了目录就把 {ws} 换成目录名", () => {
