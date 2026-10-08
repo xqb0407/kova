@@ -401,7 +401,7 @@ export const ThreadSuggestions: FC = () => {
                 // （浅色 ≈ blue-600，深色 ≈ blue-400）；hover 一并染蓝，
                 // 免得悬停时底色跳回灰
                 group.label === activeLabel &&
-                  "border-blue-500/30 bg-blue-500/10 text-blue-600 hover:bg-blue-500/15 dark:border-blue-400/30 dark:bg-blue-400/15 dark:text-blue-400 dark:hover:bg-blue-400/20",
+                  " bg-primary/10 text-primary hover:bg-primary/15  dark:bg-primary/15 dark:text-primary dark:hover:bg-primary/20",
               )}
               onClick={() =>
                 setPickedLabel(
