@@ -23,7 +23,7 @@
 //!     所以公网/大网络场景请走 Tailscale 之类的加密隧道，别直接开这个开关
 //!   - abort 无 id，sidecar 侧为全局中断——远程与本地会互相打断
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -595,7 +595,8 @@ fn lan_ips() -> Vec<IpAddr> {
 
 // ---------- HTTP 静态页 ----------
 
-/// 构建产物 out/ 目录：生产取打包资源，开发回退源码树
+/// 构建产物 out/ 目录：生产取打包资源，开发回退源码树。
+/// 注意打包后这里通常是拿不到的——见 [`embedded_keys`]。
 fn frontend_dir(app: &AppHandle) -> Option<PathBuf> {
     if let Ok(dir) = app.path().resource_dir() {
         let p = dir.join("out");
@@ -612,6 +613,48 @@ fn frontend_dir(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+/// 内置前端资源键集合（Tauri 打包时嵌进可执行文件，键相对 frontendDist 根，如 `index.html`）。
+///
+/// 打包形态下前端**不在磁盘上**：Tauri v2 把 `frontendDist` 编进二进制，macOS 的
+/// `Kova.app/Contents/Resources/` 里只有图标，`resource_dir()/out` 恒不存在。只查磁盘
+/// 会让安装后的应用永远停在「网页界面尚未构建」提示页上。开发模式（`tauri dev`）资源表
+/// 是空的，此时仍走 `frontend_dir` 的源码树 out/。
+///
+/// 只取键不取字节：键用来做精确命中判定（缺失就是 404），字节仍按需从
+/// `asset_resolver().get()` 现取——迭代器在开启压缩时给的是 brotli 原始字节。
+fn embedded_keys(app: &AppHandle) -> Option<&'static HashSet<String>> {
+    static KEYS: OnceLock<Option<HashSet<String>>> = OnceLock::new();
+    KEYS.get_or_init(|| {
+        let keys: HashSet<String> = app
+            .asset_resolver()
+            .iter()
+            .map(|(k, _)| k.trim_start_matches('/').to_string())
+            .collect();
+        (!keys.is_empty()).then_some(keys)
+    })
+    .as_ref()
+}
+
+/// `uri.path()` 是百分号编码的，内置资源键是解码后的文件名——比对前先解码
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = |c: u8| (c as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// 远程网页的 CSP：与 tauri.conf.json 同策略（脚本只准同源+Next 导出内联；
 /// 禁 object/base 劫持；connect 放开 ws/wss 供连接页指向任意网关）
 const PAGE_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
@@ -619,61 +662,73 @@ const PAGE_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'w
     connect-src 'self' ws: wss:; worker-src 'self' blob:; frame-src 'self' data: blob:; \
     media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'";
 
-/// Next 静态导出布局：精确文件 → path.html → path/index.html → 无扩展名时回退 index.html
+/// Next 静态导出布局：精确文件 → path.html → path/index.html → 无扩展名时回退 index.html。
+/// 磁盘目录与内置资源表共用同一份候选顺序，两条来源逐个候选试。
 async fn serve_static(AxumState(ctx): AxumState<GatewayCtx>, uri: axum::http::Uri) -> Response {
-    let Some(dir) = frontend_dir(&ctx.app) else {
-        return hint_page();
-    };
     let raw = uri.path().trim_start_matches('/');
-    // 目录穿越防护
+    // 目录穿越防护（两条来源共用候选表，先挡掉再拼路径）
     if raw.split(['/', '\\']).any(|seg| seg == "..") {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let path = if raw.is_empty() { "index.html" } else { raw };
+    let decoded = percent_decode(raw);
+    let path = if decoded.is_empty() {
+        "index.html".to_string()
+    } else {
+        decoded
+    };
 
-    let mut candidates: Vec<PathBuf> = vec![dir.join(path)];
-    if !path.ends_with(".html") {
-        candidates.push(dir.join(format!("{path}.html")));
-        candidates.push(dir.join(path).join("index.html"));
+    let dir = frontend_dir(&ctx.app);
+    let embedded = embedded_keys(&ctx.app);
+    // 两个来源都空 = 前端确实没构建
+    if dir.is_none() && embedded.is_none() {
+        return hint_page();
     }
-    for p in candidates {
-        if p.is_file() {
-            if let Ok(bytes) = tokio::fs::read(&p).await {
-                let mime = mime_of(&p.to_string_lossy());
-                return (
-                    [
-                        (header::CONTENT_TYPE, mime),
-                        (header::CACHE_CONTROL, "no-cache"),
-                        (header::CONTENT_SECURITY_POLICY, PAGE_CSP),
-                    ],
-                    bytes,
-                )
-                    .into_response();
-            }
-        }
+
+    let mut candidates: Vec<String> = vec![path.clone()];
+    if !path.ends_with(".html") {
+        candidates.push(format!("{path}.html"));
+        candidates.push(format!("{path}/index.html"));
     }
     // 无扩展名的导航请求回退首页（SPA 客户端路由）
     if !path.contains('.') {
-        if let Ok(bytes) = tokio::fs::read(dir.join("index.html")).await {
-            return (
-                [
-                    (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                    (header::CACHE_CONTROL, "no-cache"),
-                    (header::CONTENT_SECURITY_POLICY, PAGE_CSP),
-                ],
-                bytes,
-            )
-                .into_response();
+        candidates.push("index.html".to_string());
+    }
+
+    for cand in &candidates {
+        // 内置资源（打包形态的主路径）
+        if embedded.is_some_and(|keys| keys.contains(cand.as_str())) {
+            if let Some(asset) = ctx.app.asset_resolver().get(format!("/{cand}")) {
+                return asset_response(cand, asset.bytes);
+            }
+        }
+        let Some(dir) = &dir else { continue };
+        let p = dir.join(cand);
+        if p.is_file() {
+            if let Ok(bytes) = tokio::fs::read(&p).await {
+                return asset_response(cand, bytes);
+            }
         }
     }
     StatusCode::NOT_FOUND.into_response()
 }
 
-/// out/ 缺失（如开发模式未构建前端）时的提示页
+fn asset_response(name: &str, bytes: Vec<u8>) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, mime_of(name)),
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::CONTENT_SECURITY_POLICY, PAGE_CSP),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+/// 前端资源两个来源都拿不到时的提示页
 fn hint_page() -> Response {
     (
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        "<!doctype html><meta charset='utf-8'><body style='font-family:system-ui;display:grid;place-items:center;height:100dvh;margin:0'><p style='color:#666'>网页界面尚未构建：请在项目根目录运行 <code>pnpm build</code> 后重启应用。</p></body>",
+        "<!doctype html><meta charset='utf-8'><body style='font-family:system-ui;display:grid;place-items:center;height:100dvh;margin:0'><p style='color:#666'>网页界面尚未构建：请在项目根目录运行 <code>bun run build</code> 后重新打包。</p></body>",
     )
         .into_response()
 }
