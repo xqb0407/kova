@@ -109,6 +109,7 @@ import {
   clearWorkspace,
   openWorkspacePicker,
   pathBasename,
+  setWorkspace,
   useWorkspace,
 } from "@/lib/workspace/workspace-store";
 import {
@@ -145,6 +146,7 @@ import {
 } from "@/hooks/use-fluid-hover";
 import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
 import { FluidHoverRow } from "@/components/fluid-hover-row";
+import { TooltipIconButton } from "./tooltip-icon-button";
 
 // ---------------------------------------------------------------------------
 // Fluid hover — 侧边栏列表与菜单（MenuItem）共用同一套悬浮机制：列表容器跑
@@ -886,6 +888,21 @@ export const ProjectListItems: FC<{
     });
   }, [openDirs]);
 
+  /** 项目内"新对话"：先把 workspace 设为该组目录（与手动在胶囊选目录后
+   *  点新对话同语义——首条消息落盘时会话带上此 cwd，即归入本组），再切新草稿。
+   *  顺手展开该组，落盘后的新会话出现时不被折叠挡住 */
+  const newChatInProject = (group: ThreadListProjectGroup) => {
+    clearLastThread();
+    setWorkspace(group.cwd);
+    setOpenDirs((prev) => {
+      if (prev.has(group.cwd)) return prev;
+      const next = new Set(prev);
+      next.add(group.cwd);
+      return next;
+    });
+    void aui.threads.switchToNewThread();
+  };
+
   /** 归档项目：组内全部已落盘会话批量归档；当前打开的会话由运行时先切走再归档 */
   const archiveProject = (group: ThreadListProjectGroup) => {
     const statusById = new Map(
@@ -977,7 +994,7 @@ export const ProjectListItems: FC<{
                       title={group.cwd}
                       // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                       // 自带的 hover/aria-expanded 底色，避免与高亮叠加
-                      className="h-8 justify-start gap-2 px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent group-hover/proj:pe-8 aria-expanded:bg-transparent"
+                      className="h-8 justify-start gap-2 px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent group-hover/proj:pe-14 aria-expanded:bg-transparent"
                     >
                       {/* file-tree 同款箭头：开合时弹簧旋转 90° */}
                       {/* <motion.span
@@ -1005,6 +1022,17 @@ export const ProjectListItems: FC<{
                     </Button>
                   }
                 />
+              {/* 该项目内新建对话：位置在「项目操作」按钮左侧 */}
+              <TooltipIconButton
+                variant="ghost"
+                size="icon"
+                tooltip={`在 ${group.label} 新建对话`}
+                className="absolute end-[30px] top-1/2 size-6 -translate-y-1/2 p-0 opacity-0 group-hover/proj:opacity-100 focus-visible:opacity-100"
+                onClick={() => newChatInProject(group)}
+              >
+                <PlusIcon className="size-3.5" />
+                <span className="sr-only">项目内新建对话</span>
+              </TooltipIconButton>
               {/* 项目操作菜单：归档整个项目（组内全部会话） */}
               <DropdownMenu>
                 <DropdownMenuTrigger

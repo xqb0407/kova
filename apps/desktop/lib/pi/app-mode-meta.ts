@@ -2,7 +2,7 @@
 
 import {
   BriefcaseIcon,
-  CodeIcon,
+  FileBracesIcon,
   PaletteIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -16,7 +16,7 @@ export const APP_MODE_META: Record<
   AppMode,
   { label: string; icon: LucideIcon }
 > = {
-  code: { label: "编码", icon: CodeIcon },
+  code: { label: "编码", icon: FileBracesIcon },
   work: { label: "工作", icon: BriefcaseIcon },
   design: { label: "设计", icon: PaletteIcon },
 };
