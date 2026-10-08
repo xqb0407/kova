@@ -250,8 +250,11 @@ const CONTEXT_PINS: ContextPin[] = [
   },
 ];
 
+// 尾部 active:…translate-y-0：Button 基类按压时整体下移 1px（和 transition-all 组合
+// 出"上下跳"的观感），推荐区是常驻入口不是动作按钮，压平它。
+// 变体栈必须和基类逐字一致，tailwind-merge 才认得出是同一组、把基类那条删掉
 const suggestionChipClass =
-  "aui-thread-welcome-suggestion text-foreground hover:bg-muted border-border/60 h-auto gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-normal whitespace-nowrap transition-colors [&_svg]:size-4";
+  "aui-thread-welcome-suggestion text-foreground hover:bg-muted border-border/60 h-auto gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-normal whitespace-nowrap transition-colors [&_svg]:size-4 active:not-aria-[haspopup]:translate-y-0";
 
 /**
  * 从候选池算出这一次要展示的分组与条目（纯函数：时钟、工作区、git、模式都由
@@ -394,7 +397,11 @@ export const ThreadSuggestions: FC = () => {
               variant="ghost"
               className={cn(
                 suggestionChipClass,
-                group.label === activeLabel && "bg-muted",
+                // 选中态蓝色高亮：色相跟外观设置里「蓝色」强调色预设同一族
+                // （浅色 ≈ blue-600，深色 ≈ blue-400）；hover 一并染蓝，
+                // 免得悬停时底色跳回灰
+                group.label === activeLabel &&
+                  "border-blue-500/30 bg-blue-500/10 text-blue-600 hover:bg-blue-500/15 dark:border-blue-400/30 dark:bg-blue-400/15 dark:text-blue-400 dark:hover:bg-blue-400/20",
               )}
               onClick={() =>
                 setPickedLabel(

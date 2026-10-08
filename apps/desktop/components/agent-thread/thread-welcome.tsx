@@ -10,7 +10,8 @@ import { AppModeSwitch } from "./app-mode-switch";
  *
  * 问候语每个时段备了几句、按当日日期轮换（同一天内打开都稳定，隔天换一批），
  * 句中的 {model} 占位替换为当前会话选中的模型显示名（目录未命中退回
- * modelId，还没有模型选择时用「AI」兜底），例如「今晚要在 GLM 完成点什么？」。
+ * modelId，还没有模型选择时用「AI」兜底），例如「下午好，GLM 随时待命。」。
+ * 措辞保持克制：一句时段问候 + 模型在位，不玩梗、不替用户安排作息。
  */
 
 const GREETINGS: { from: number; to: number; lines: string[] }[] = [
@@ -18,42 +19,42 @@ const GREETINGS: { from: number; to: number; lines: string[] }[] = [
     from: 5,
     to: 11,
     lines: [
-      "早安呀，今天要在 {model} 创造点什么？",
-      "早上好，趁脑子清醒，让 {model} 来搭把手？",
-      "早安呀，{model} 已就位，想先干哪件正事？",
+      "早上好，今天想在 {model} 上做点什么？",
+      "早上好，{model} 已就绪。",
+      "新的一天，{model} 在线待命。",
     ],
   },
   {
     from: 11,
     to: 13,
     lines: [
-      "中午好呀，上午告一段落，{model} 接着上？",
-      "午安，边吃饭边和 {model} 聊点技术？",
+      "中午好，{model} 在线，随时继续。",
+      "午安，有什么想让 {model} 处理的？",
     ],
   },
   {
     from: 13,
     to: 18,
     lines: [
-      "下午好呀，接着开工，{model} 随时待命。",
-      "下午好，有什么需要 {model} 搭把手的？",
-      "午后时光，和 {model} 来点进展？",
+      "下午好，{model} 随时待命。",
+      "下午好，有什么需要 {model} 协助的？",
+      "继续工作，{model} 在线。",
     ],
   },
   {
     from: 18,
     to: 22,
     lines: [
-      "晚上好呀，今晚要在 {model} 完成点什么？",
-      "晚上好，白天没收的尾，让 {model} 陪你收一收？",
+      "晚上好，今晚想在 {model} 上完成什么？",
+      "晚上好，{model} 在线待命。",
     ],
   },
   {
     from: 22,
     to: 5,
     lines: [
-      "夜深了，注意休息——{model} 值夜班，有事我顶上",
-      "深夜模式：{model} 在线，速战速决，早点睡",
+      "夜深了，注意休息，{model} 仍在待命。",
+      "深夜了，{model} 在线，尽快收工。",
     ],
   },
 ];
@@ -93,16 +94,16 @@ export const ThreadWelcome: FC = () => {
   const greeting = useMemo(() => pickGreeting(new Date(), modelName), [modelName]);
 
   return (
-    // gap-3（12px）：分段器与问候语是两块独立的东西，原来 gap-2（8px）在大一号
+    // gap-3（12px）：问候语与分段器是两块独立的东西，原来 gap-2（8px）在大一号
     // 的控件下面显得贴在一起，像问候语的一行标签
-    <div className="aui-thread-welcome-root mx-auto mb-6 flex w-full max-w-(--thread-max-width) flex-col items-center gap-3 px-4 text-center">
-      {/* 会话工作模式切换（编码/工作/设计）：从 header 搬来——新对话还没有会话
-          标题可看，顶栏空着一片，模式放在"开聊之前"这个位置反而更顺手。
-          语义不变：只作用于本会话，未切过档的跟随设置→通用的全局默认 */}
-      <AppModeSwitch />
-      <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-2xl font-medium tracking-tight duration-200">
+    <div className="aui-thread-welcome-root mx-auto mb-8 flex w-full max-w-(--thread-max-width) flex-col items-center gap-3 px-4 text-center">
+      <p className="aui-thread-welcome-message-inner my-2  fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-3xl font-medium tracking-tight duration-200">
         {greeting}
       </p>
+      {/* 会话工作模式切换（编码/工作/设计）：问候语之下、输入框之上——先读到
+          问候，再确认自己在哪个档，紧接着开聊。
+          语义不变：只作用于本会话，未切过档的跟随设置→通用的全局默认 */}
+      <AppModeSwitch />
     </div>
   );
 };

@@ -73,6 +73,8 @@ export type PermissionOption = PickerOptionBase & {
   approvalLevel: ApprovalLevel;
   /** 高危选项：选中后以警告色提示（如完全访问） */
   warning?: boolean;
+  /** 值得醒目但不示警的档位：选中后以蓝色强调（如工作区内自动） */
+  highlight?: boolean;
 };
 
 /** 能力档位：回答「能不能改、以什么形态干活」。决定 mode 的只有这一维。 */
@@ -99,6 +101,7 @@ export const PERMISSION_OPTIONS: PermissionOption[] = [
     description: "项目内改文件免确认；命令仍要确认。",
     icon: FolderLockIcon,
     approvalLevel: "workspace-write",
+    highlight: true,
   },
   {
     key: "auto-edit",
@@ -226,11 +229,13 @@ export const ModePicker: FC = () => {
             title={current.description}
             className={cn(
               "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
-              // 高危档选中时用警告色提醒。计划态的高亮不在这里——那描述的是能力模式，
-              // 已经挪到右侧胶囊上
+              // 高危档选中时用警告色提醒，工作区内自动用蓝色强调（值得注意但不是示警）。
+              // 计划态的高亮不在这里——那描述的是能力模式，已经挪到右侧胶囊上
               current.warning
                 ? "text-amber-600 dark:text-amber-400"
-                : "text-muted-foreground hover:text-foreground",
+                : current.highlight
+                  ? "text-blue-600 dark:text-blue-400"
+                  : "text-muted-foreground hover:text-foreground",
             )}
           >
             {busy ? (
@@ -256,8 +261,9 @@ export const ModePicker: FC = () => {
                 <span
                   className={cn(
                     "text-sm font-medium",
-                    // 高危选项在选中态下也用警告色
+                    // 选中态下颜色跟随触发器同一套规则（警告黄 / 强调蓝）
                     o.warning && o === current && "text-amber-600 dark:text-amber-400",
+                    o.highlight && o === current && "text-blue-600 dark:text-blue-400",
                   )}
                 >
                   {o.label}
