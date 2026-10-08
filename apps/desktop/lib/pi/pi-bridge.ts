@@ -264,7 +264,7 @@ export type PiTraceSpan = {
   status: PiTraceStatus;
   attrs?: Record<string, string | number | boolean>;
   children?: PiTraceSpan[];
-  /** 内容详情（llm_call）：请求上下文与回复正文的截断渲染 */
+  /** 内容详情：llm_call 是请求上下文与回复正文；tool_call 的 response 是工具出参 */
   detail?: { request?: string; response?: string };
 };
 
@@ -282,9 +282,19 @@ export type PiTraceRun = {
   startMs: number;
   endMs: number;
   status: PiTraceStatus;
+  /**
+   * 终止归因（sidecar trace.ts TraceOutcomeInfo 镜像）。旧记录缺失，消费方按
+   * status 兜底翻译。user-stop 与 error 必须分开：用户点 Stop 不是错误。
+   */
+  outcome?: { reason: string; detail?: string };
   model?: string;
   usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   spans: PiTraceSpan[];
+  /**
+   * 记录不完整：在飞 run（live 增量落盘的轮行拼回）或进程中断抢救的残留。
+   * 中断的带 outcome.reason="interrupted"；在飞的无 outcome。
+   */
+  partial?: boolean;
 };
 
 /** 子智能体定义所在层（事实源在 sidecar：内置常量 / <app_data>/subagents / <cwd>/.kova/subagents） */
@@ -966,6 +976,7 @@ export type PiAutomationTemplatesResponse = {
 
 export type PiResponse =
   | { type: "sessions"; sessions: PiSessionSummary[] }
+  | { type: "trace_live_query"; runs: PiTraceRun[] }
   | { type: "running"; sessionIds: string[] }
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "forked"; sessionId: string }

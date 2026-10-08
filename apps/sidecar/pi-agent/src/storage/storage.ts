@@ -36,6 +36,16 @@ export function tracePath(id: string): string {
   return path.join(sessionsDirPath, "traces", `${id}.jsonl`);
 }
 
+/**
+ * 在飞 run 的增量落盘（trace.ts）：按轮追加，`turn_end` 时写一次。
+ * 与主 trace 文件分开是刻意的——主文件「一行 = 一个完整 run」是读取端与
+ * OTLP 导出器共同假定的不变量，半截 run 不能写进去。
+ */
+export function traceLivePath(id: string): string {
+  if (!sessionsDirPath) throw new Error("storage not initialized");
+  return path.join(sessionsDirPath, "traces", `${id}.live.jsonl`);
+}
+
 /** 子代理活动落盘目录（activity-store.ts）：每个委派一份 JSONL */
 export function subagentsDirPath(): string {
   if (!sessionsDirPath) throw new Error("storage not initialized");

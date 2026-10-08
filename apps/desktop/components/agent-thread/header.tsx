@@ -7,6 +7,7 @@ import { isMacPlatform, isTauri } from "@/lib/tauri";
 import { WindowControls } from "@/components/window-controls";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
+  IterationCcwIcon,
   MenuIcon,
   MoreHorizontalIcon,
   PanelLeftIcon,
@@ -89,7 +90,9 @@ const HeaderMoreMenu: FC<{
   onRename: () => void;
   canOpenTrace: boolean;
   onOpenTrace: () => void;
-}> = ({ canRename, onRename, canOpenTrace, onOpenTrace }) => {
+  canOpenLoop: boolean;
+  onOpenLoop: () => void;
+}> = ({ canRename, onRename, canOpenTrace, onOpenTrace, canOpenLoop, onOpenLoop }) => {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -112,6 +115,10 @@ const HeaderMoreMenu: FC<{
         <DropdownMenuItem disabled={!canOpenTrace} onClick={onOpenTrace}>
           <WaypointsIcon className="size-4" />
           链路追踪
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!canOpenLoop} onClick={onOpenLoop}>
+          <IterationCcwIcon className="size-4" />
+          循环
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -242,6 +249,12 @@ export const Header: FC<{
     // 面板开合是 Base 的本地态，经事件请求展开（与 composer「Git 图谱」同款）
     window.dispatchEvent(new Event("agent-panel:open"));
   };
+  // 循环视图：与链路追踪同一个会话 id（同一份 traces，两种切法）
+  const openLoop = () => {
+    if (!traceSessionId) return;
+    openPanelTab("loop", { sessionId: traceSessionId });
+    window.dispatchEvent(new Event("agent-panel:open"));
+  };
   return (
     <header
       data-tauri-drag-region={desktop ? "deep" : undefined}
@@ -312,6 +325,8 @@ export const Header: FC<{
             onRename={() => setRenameOpen(true)}
             canOpenTrace={!!traceSessionId}
             onOpenTrace={openTrace}
+            canOpenLoop={!!traceSessionId}
+            onOpenLoop={openLoop}
           />
           <RenameTaskDialog
             open={renameOpen}

@@ -11,11 +11,18 @@
  * 归属父会话的 trace 文件）。retry 打点在 provider-retry 的控制器回调
  * （makeUiRetryController / subagent 内联控制器），两条装配都覆盖。
  */
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
-import { tracePath } from "../storage/storage";
+import { traceLivePath, tracePath } from "../storage/storage";
 import { logErr } from "../log";
 import { exportTraceRun } from "../observability/otlp-exporter";
 
@@ -40,7 +47,9 @@ export type TraceOutcomeReason =
   | "user-stop"
   | "context-overflow"
   | "length-budget-exhausted"
-  | "error";
+  | "error"
+  /** 进程中断：从 live 增量落盘抢救回来的 run（partial 记录专用） */
+  | "interrupted";
 
 /** stream 侧上报的终止归因；detail 是给面板看的一句话说明 */
 export type TraceOutcomeInfo = { reason: TraceOutcomeReason; detail?: string };
@@ -98,7 +107,32 @@ export type TraceRunRecord = {
   model?: string;
   usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   spans: TraceSpan[];
+  /**
+   * 这条记录是「意外中断」抢救出来的：进程死在 run 中途，下次启动从
+   * <sessionId>.live.jsonl 的轮行拼回。此时 spans 只到最后一个闭合的轮，
+   * 不完整。消费方（面板/导出）据此提示截断，不要当成正常 run。
+   */
+  partial?: boolean;
 };
+
+/* --------------------- 在飞 run 的增量落盘（live） --------------------- */
+
+/** live 文件里 run 的头部行：一份在飞 run 写一次，带 pid 供残留判定 */
+type LiveRunHeader = {
+  kind: "run";
+  /** 写入进程。崩溃 = 换进程 = pid 不同；同进程并发的 run pid 相同，不会被误判 */
+  pid: number;
+  traceId: string;
+  sessionId: string;
+  source: TraceSource;
+  startMs: number;
+  model?: string;
+};
+
+/** live 文件里一轮闭合时追加的行。轮在 turn_end 已收口，之后不再变 */
+type LiveTurnLine = { kind: "turn"; traceId: string; turn: TraceSpan };
+
+type LiveLine = LiveRunHeader | LiveTurnLine;
 
 /** 单文件体积护栏：超过即重写为末尾 1MB（长会话不给磁盘埋炸弹） */
 const MAX_TRACE_FILE_BYTES = 5 * 1024 * 1024;
@@ -109,6 +143,27 @@ const ATTR_TEXT_MAX = 200;
 const MSG_TEXT_MAX = 2_000;
 const REQUEST_MAX = 64_000;
 const RESPONSE_MAX = 8_000;
+/** 成功工具出参的独立上限：比 RESPONSE_MAX 小得多，理由见 DETAIL_BUDGET_BYTES。
+ *  失败出参不砍——stderr 是诊断核心，用 TOOL_RESULT_ERR_MAX */
+const TOOL_RESULT_OK_MAX = 1_500;
+const TOOL_RESULT_ERR_MAX = 8_000;
+/** 面板那行红字（attrs.errorMessage）的上限，与检查器里展开的正文分开 */
+const TOOL_ERR_LINE_MAX = 2_000;
+/**
+ * detail 正文的 per-run 内存预算。
+ *
+ * 没有它，recorder 的常驻内存随 run 长度线性涨：detail.request ≤64KB/llm 调用、
+ * detail.response ≤8KB/llm、工具出参 ≤8KB/个。100 轮 × 3 工具 ≈ 9.6MB 一直挂到
+ * settle()。文件侧早有 5MB 护栏（MAX_TRACE_FILE_BYTES），内存侧此前零护栏。
+ *
+ * 超预算时从**最旧的 span** 起摘掉 detail 正文（只摘正文，kind/时间/status/attrs
+ * 一律保留——视图的骨架不能缺）。最旧优先的理由：最新的那次请求才是要看的那次。
+ * 摘下后 100 轮 run ≈ 结构 400KB + 预算 512KB ≈ 1MB 封顶。
+ */
+const DETAIL_BUDGET_BYTES = 512 * 1024;
+
+const detailBytes = (span: TraceSpan): number =>
+  (span.detail?.request?.length ?? 0) + (span.detail?.response?.length ?? 0);
 
 const clip = (value: unknown, max = ATTR_TEXT_MAX): string | undefined => {
   if (value === undefined || value === null) return undefined;
@@ -196,6 +251,16 @@ type OpenRun = {
   outcome?: TraceOutcomeInfo;
   model?: string;
   usage: UsageAcc;
+  /**
+   * detail 正文的内存记账：detailQueue 按时间序持有带正文的 span 引用，
+   * detailTotal 是它们正文的字节和。超 DETAIL_BUDGET_BYTES 就从队首摘——
+   * 摘一个减一笔，均摊 O(1)；每次全遍历会是 O(n²)。
+   * 只摘 detail 正文，span 本身留在树里（视图骨架不能缺）。
+   */
+  detailQueue: TraceSpan[];
+  detailTotal: number;
+  /** 已追加到 live 文件的轮数（turn_end 时按差额补写） */
+  liveTurnsWritten: number;
 };
 
 const statusOfStopReason = (stopReason: unknown): TraceStatus =>
@@ -251,7 +316,27 @@ export function createTraceRunRecorder(
     openRetry: null,
     turnSeq: 0,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    detailQueue: [],
+    detailTotal: 0,
+    liveTurnsWritten: 0,
   });
+
+  /**
+   * 登记一个带 detail 正文的 span 并结算内存预算。
+   * 超预算从队首（最旧）摘到回预算内——只摘正文，span 结构原样保留。
+   */
+  const registerDetail = (r: OpenRun, span: TraceSpan): void => {
+    const bytes = detailBytes(span);
+    if (bytes === 0) return;
+    r.detailQueue.push(span);
+    r.detailTotal += bytes;
+    while (r.detailTotal > DETAIL_BUDGET_BYTES && r.detailQueue.length > 0) {
+      const oldest = r.detailQueue.shift()!;
+      r.detailTotal -= detailBytes(oldest);
+      // 摘正文但留下结构：面板仍能看到那次调用/那个工具，只是点开没正文
+      delete oldest.detail;
+    }
+  };
 
   /** 兜底收口仍在打开中的子 span（正常路径已在各自 end 事件闭合；atMs 之后的 status 只落在异常残留上） */
   const closePendingChildren = (r: OpenRun, status: TraceStatus, atMs: number): void => {
@@ -337,12 +422,31 @@ export function createTraceRunRecorder(
     return (r.openTurn.children ??= []);
   };
 
+  /**
+   * 喂一条 agent 事件。
+   *
+   * 整体包 try/catch 是刻意的：handle 被 onAgentEvent 调用，而 agent-core 派发
+   * 监听器时**没有 try/catch**（`for (const l of listeners) await l(event)`），
+   * 这里抛出去会一路冒到 runAgentLoop，直接打断用户的 run。轨迹是纯观察者，
+   * 它出问题最多少一条记录，绝不该毁掉对话。异常只 logErr。
+   */
   const handle = (event: AgentEvent): void => {
+    try {
+      handleInner(event);
+    } catch (err) {
+      logErr("trace: handle failed:", err);
+    }
+  };
+
+  const handleInner = (event: AgentEvent): void => {
     if (event.type === "agent_start") {
       // 复用场景的残留保护（stream.ts/subagent 正常都会先 settle）：按 error 收
       // 进 pending，不阻塞新 run，也不丢轨迹（finalize 一并清掉未消费的请求快照）
       if (run) pending.push(finalize("error")!);
       run = openRun();
+      // 上一个进程崩在这会话里留下的 live 行，抢救进主文件再开新 run
+      promoteLive();
+      writeLiveHeader(run);
       return;
     }
     if (!run) return;
@@ -446,6 +550,8 @@ export function createTraceRunRecorder(
         pendingRequest = null;
         const response = renderResponse(m.content);
         if (response) span.detail = { ...span.detail, response };
+        // llm span 的 detail 是本 run 最大的一块（request 上限 64KB）
+        registerDetail(r, span);
         break;
       }
       case "tool_execution_start": {
@@ -479,12 +585,20 @@ export function createTraceRunRecorder(
           | undefined;
         const text = renderContent(res?.content);
         if (text) {
-          const clipped = clip(text, RESPONSE_MAX);
+          // 失败出参不砍（stderr 是诊断核心），成功出参用小上限——见常量注释
+          const clipped = clip(
+            text,
+            event.isError ? TOOL_RESULT_ERR_MAX : TOOL_RESULT_OK_MAX,
+          );
           span.detail = { ...span.detail, response: clipped };
           // 失败正文另存一份 attrs，面板不必解析 detail 就能直接显示
           if (event.isError && clipped) {
-            span.attrs = { ...span.attrs, errorMessage: clipped };
+            span.attrs = {
+              ...span.attrs,
+              errorMessage: clip(text, TOOL_ERR_LINE_MAX) ?? clipped,
+            };
           }
+          registerDetail(r, span);
         }
         // bash 类工具的退出码在 details 里；取不到就不记，不猜
         const code = num(
@@ -500,6 +614,9 @@ export function createTraceRunRecorder(
         const atMs = Date.now();
         closePendingChildren(r, "error", atMs);
         closeTurn(r, atMs);
+        // 本轮已收口、之后不再变 → 追加进 live（崩溃兜底 + 近实时）。
+        // 只在这里落盘：轮级事件，一次迭代一下；token 级的 message_update 不碰
+        appendLiveTurns(r);
         break;
       }
       case "agent_end":
@@ -547,6 +664,144 @@ export function createTraceRunRecorder(
     run.openRetry = null;
   };
 
+  /* --------------------------- 在飞 run 的增量落盘 --------------------------- */
+  // 全部包 try/catch：这些函数会被 handle() 调用，而 handle() 的异常能一路冒到
+  // runAgentLoop 打断用户的 run。轨迹是纯观察者，它失败最多少条记录。
+  // 前提：同一进程 + 全同步 API + Node 单线程，所以多 recorder 并发 append 同一
+  // live 文件不会撕裂单行。若将来把 trace 改成 async，这个前提就破了。
+
+  const appendLive = (line: LiveLine): void => {
+    try {
+      const file = traceLivePath(sessionId);
+      mkdirSync(dirname(file), { recursive: true });
+      try {
+        trimTraceFile(file);
+      } catch {
+        // 首写/竞态，跳过护栏
+      }
+      appendFileSync(file, JSON.stringify(line) + "\n");
+    } catch (err) {
+      logErr("trace: live append failed:", err);
+    }
+  };
+
+  /** 写 run 头部行（一份在飞 run 一次） */
+  const writeLiveHeader = (r: OpenRun): void => {
+    appendLive({
+      kind: "run",
+      pid: process.pid,
+      traceId: r.traceId,
+      sessionId,
+      source,
+      startMs: r.startMs,
+      ...(r.model ? { model: r.model } : {}),
+    });
+  };
+
+  /** turn_end 时把本轮追加进 live（按差额补写，防漏防重） */
+  const appendLiveTurns = (r: OpenRun): void => {
+    for (let i = r.liveTurnsWritten; i < r.turns.length; i++) {
+      appendLive({ kind: "turn", traceId: r.traceId, turn: r.turns[i]! });
+    }
+    r.liveTurnsWritten = r.turns.length;
+  };
+
+  /** 读 live 文件并按 traceId 分组（容错撕裂行） */
+  const readLiveLines = (): Map<string, LiveLine[]> => {
+    const groups = new Map<string, LiveLine[]>();
+    let raw: string;
+    try {
+      raw = readFileSync(traceLivePath(sessionId), "utf8");
+    } catch {
+      return groups;
+    }
+    for (const line of raw.split("\n")) {
+      const t = line.trim();
+      if (!t) continue;
+      try {
+        const parsed = JSON.parse(t) as LiveLine;
+        if (!parsed?.traceId) continue;
+        const list = groups.get(parsed.traceId);
+        if (list) list.push(parsed);
+        else groups.set(parsed.traceId, [parsed]);
+      } catch {
+        // 撕裂行跳过
+      }
+    }
+    return groups;
+  };
+
+  /**
+   * 把崩溃残留（pid 不是当前进程的组）从 live 抢救进主文件。
+   *
+   * pid 判定是必需的：automation 旁路 run 与 ui run 可以并发写同一个会话。
+   * 若不加区分地 promote，正在跑的那个 run 会被误判成残留、提前写成 partial，
+   * 之后它自己 settle 又写一条完整的 → 同一 traceId 两条记录。崩溃必然换进程，
+   * 所以 pid 不同 = 残留；同进程并发 = pid 相同 = 不动。
+   */
+  const promoteLive = (): void => {
+    try {
+      const groups = readLiveLines();
+      if (groups.size === 0) return;
+      let changed = false;
+      for (const [traceId, lines] of groups) {
+        const header = lines.find((l): l is LiveRunHeader => l.kind === "run");
+        // 无头部（撕裂/被 trim 掉）无法判定归属，保守跳过
+        if (!header) continue;
+        if (header.pid === process.pid) continue; // 同进程的在飞 run，不能动
+        const turns = lines
+          .filter((l): l is LiveTurnLine => l.kind === "turn")
+          .map((l) => l.turn);
+        changed = true;
+        if (turns.length === 0) continue; // 只写了头没跑完一轮，没有可抢救的内容
+        const endMs = turns.reduce((m, t) => Math.max(m, t.endMs || t.startMs), header.startMs);
+        pending.push({
+          traceId,
+          runId: traceId,
+          sessionId,
+          source: header.source,
+          startMs: header.startMs,
+          endMs,
+          status: "error",
+          outcome: {
+            reason: "interrupted",
+            detail: "进程中断，本 run 未正常收尾（记录取自增量落盘，只到最后一个闭合的轮）",
+          },
+          ...(header.model ? { model: header.model } : {}),
+          spans: turns,
+          partial: true,
+        });
+      }
+      if (changed) clearLive(null); // 残留组清掉；能清的都清了
+    } catch (err) {
+      logErr("trace: promote failed:", err);
+    }
+  };
+
+  /**
+   * 从 live 文件里清掉某个 traceId 的行；传 null 清全部。
+   * 保留并发 run 的行——不能整文件删。
+   */
+  const clearLive = (traceId: string | null): void => {
+    try {
+      const groups = readLiveLines();
+      if (groups.size === 0) return;
+      const keep: string[] = [];
+      for (const [id, lines] of groups) {
+        if (traceId !== null && id === traceId) continue;
+        for (const l of lines) keep.push(JSON.stringify(l));
+      }
+      const file = traceLivePath(sessionId);
+      if (keep.length === 0) {
+        rmSync(file, { force: true });
+        return;
+      }
+      writeFileSync(file, keep.join("\n") + "\n");
+    } catch (err) {
+      logErr("trace: live clear failed:", err);
+    }
+  };
+
   const settle = (forcedStatus?: TraceStatus): boolean => {
     const record = finalize(forcedStatus);
     if (record) pending.push(record);
@@ -559,6 +814,8 @@ export function createTraceRunRecorder(
       // 轨迹失败绝不影响主流程
       logErr("trace: write failed:", err);
     }
+    // 完整记录已落主文件，live 里本 run 的行可以清了（保留并发 run 的）
+    for (const item of toWrite) clearLive(item.traceId ?? null);
     // OTLP 导出（enabled 门控/采样在 exporter 内部；入队零 IO，失败不抛）
     for (const item of toWrite) exportTraceRun(item);
     return true;
@@ -622,4 +879,66 @@ export function readTraceRuns(sessionId: string, limit = 50): TraceRunRecord[] {
     }
   }
   return runs.slice(-Math.max(1, limit));
+}
+
+/* ------------------------- 在飞 run 的读取（面板用） ------------------------- */
+
+/**
+ * 读某会话当前在飞的 run（live 增量落盘的轮行拼回）。
+ *
+ * 与 readTraceRuns 分开是为了省 IO：readTraceRuns 要 readFileSync 整个主文件
+ * （可达 5MB）并逐行 parse，面板 2 秒轮一次太浪费；live 文件只有一个在飞 run。
+ *
+ * 只读，不做 promote——抢救残留是写入端的职责（agent_start 时按 pid 判定）。
+ * pid 与当前进程不同的组视为崩溃残留，也一并返回，标注 partial，让面板能显示
+ * 「上次跑到哪就断了」，而不是等下次有新 run 才看到。
+ */
+export function readLiveRun(sessionId: string): TraceRunRecord[] {
+  let raw: string;
+  try {
+    raw = readFileSync(traceLivePath(sessionId), "utf8");
+  } catch {
+    return [];
+  }
+  // 按 traceId 分组（主 run 与并行子代理共写同一文件）
+  const groups = new Map<string, LiveLine[]>();
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    try {
+      const parsed = JSON.parse(t) as LiveLine;
+      if (!parsed?.traceId) continue;
+      const list = groups.get(parsed.traceId);
+      if (list) list.push(parsed);
+      else groups.set(parsed.traceId, [parsed]);
+    } catch {
+      // 撕裂行跳过
+    }
+  }
+
+  const out: TraceRunRecord[] = [];
+  for (const [traceId, lines] of groups) {
+    const header = lines.find((l): l is LiveRunHeader => l.kind === "run");
+    if (!header) continue; // 无头部无法判定归属
+    const turns = lines.filter((l): l is LiveTurnLine => l.kind === "turn").map((l) => l.turn);
+    const gone = header.pid !== process.pid;
+    const endMs = turns.reduce((m, t) => Math.max(m, t.endMs || t.startMs), header.startMs);
+    out.push({
+      traceId,
+      runId: traceId,
+      sessionId,
+      source: header.source,
+      startMs: header.startMs,
+      // 在飞：endMs 用「已录到的最后时刻」，消费方靠 partial 区分是否已收尾
+      endMs,
+      status: gone ? "error" : "ok",
+      outcome: gone
+        ? { reason: "interrupted", detail: "进程中断，只到最后一个闭合的轮" }
+        : undefined,
+      ...(header.model ? { model: header.model } : {}),
+      spans: turns,
+      partial: true,
+    });
+  }
+  return out;
 }

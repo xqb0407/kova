@@ -474,3 +474,48 @@ describe("saveSubagentDefinition / deleteSubagentDefinition", () => {
     await expect(deleteSubagentDefinition("system", "gone", { systemDir: sys })).rejects.toThrow(/未找到/);
   });
 });
+
+describe("知识源格式守卫", () => {
+  test("保存路径拒绝指向二进制文档的知识源（单个文件与 glob 形态都拒）", async () => {
+    const sys = join(tmp, "save-kb-binary");
+    const paths = ["./docs/手册.pdf", "./kb/manual.docx", "./kb/**/*.XLSX"];
+    for (const [i, path] of paths.entries()) {
+      await expect(
+        saveSubagentDefinition(
+          "system",
+          draft({ name: `kb-bin-${i}`, knowledge: [{ name: "资料", path }] }),
+          { systemDir: sys },
+        ),
+      ).rejects.toThrow(/二进制文档/);
+    }
+  });
+
+  test("文本类源（glob 或单文件）可落盘读回", async () => {
+    const sys = join(tmp, "save-kb-text");
+    await saveSubagentDefinition(
+      "system",
+      draft({
+        name: "kb-ok",
+        knowledge: [
+          { name: "流程", path: "./docs/**/*.md" },
+          { name: "价格表", path: "./pricing.csv" },
+        ],
+      }),
+      { systemDir: sys },
+    );
+    const loaded = await loadSubagentDefinitions({ systemDir: sys });
+    const def = loaded.definitions.find((d) => d.name === "kb-ok")!;
+    expect(def.knowledge?.map((k) => k.path)).toEqual(["./docs/**/*.md", "./pricing.csv"]);
+  });
+
+  test("既有 YAML 含二进制源：加载只警告不丢条目（静默删除会带走用户数据）", () => {
+    const raw = emitSubagentYaml(
+      draft({ name: "kb-legacy", knowledge: [{ name: "旧手册", path: "./docs/旧手册.pdf" }] }),
+    );
+    const parsed = parseSubagentYaml(raw, { scope: "system" });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.definition.knowledge?.[0]?.path).toBe("./docs/旧手册.pdf");
+    expect(parsed.warnings.join("\n")).toMatch(/binary/);
+  });
+});

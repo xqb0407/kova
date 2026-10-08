@@ -406,3 +406,270 @@ describe("readTraceRuns", () => {
     expect(readTraceRuns("no-such-session", 10)).toEqual([]);
   });
 });
+
+/* ------------------------- 内存预算 / live 增量落盘 ------------------------- */
+
+import { existsSync, readFileSync, writeFileSync, mkdirSync as mkdirS } from "node:fs";
+import { traceLivePath, tracePath } from "../../src/storage/storage";
+import { readLiveRun } from "../../src/protocol/trace";
+
+/** 造一轮：1 次 llm（可带 detail）+ n 个工具 */
+function oneTurn(i: number, toolCount: number, detailSize = 0) {
+  const events: AgentEvent[] = [
+    ev("turn_start"),
+    ev("message_start", { message: assistantMsg() }),
+    ev("message_end", {
+      message: assistantMsg({
+        stopReason: "toolUse",
+        content: detailSize ? [{ type: "text", text: "x".repeat(detailSize) }] : [],
+      }),
+    }),
+  ];
+  for (let k = 0; k < toolCount; k++) {
+    events.push(
+      ev("tool_execution_start", {
+        toolCallId: `t${i}-${k}`,
+        toolName: "bash",
+        args: { cmd: "ls" },
+      }),
+      ev("tool_execution_end", {
+        toolCallId: `t${i}-${k}`,
+        toolName: "bash",
+        isError: false,
+        result: detailSize ? { content: [{ type: "text", text: "y".repeat(detailSize) }] } : {},
+      }),
+    );
+  }
+  events.push(ev("turn_end", { message: {}, toolResults: [] }));
+  return events;
+}
+
+const liveFile = (sid: string) => traceLivePath(sid);
+
+describe("detail 内存预算", () => {
+  test("超预算时从最旧摘正文，结构完整保留", () => {
+    const rec = createTraceRunRecorder("sess-budget", "ui");
+    rec.handle(ev("agent_start"));
+    // 每轮 llm 写 60KB 请求上下文，40 轮 = 2.4MB，远超 512KB 预算
+    for (let i = 0; i < 40; i++) {
+      // renderRequest 对每条消息 clip 到 2000 字符，单条 systemPrompt 拉不高总量；
+      // 凑到 REQUEST_MAX(64KB) 要靠多条消息
+      rec.noteRequest({
+        systemPrompt: "s",
+        messages: Array.from({ length: 40 }, () => ({
+          role: "user",
+          content: "m".repeat(2_000),
+        })),
+      });
+      for (const e of oneTurn(i, 2)) rec.handle(e);
+    }
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const run = readTraceRuns("sess-budget", 1)[0]!;
+    const allSpans = run.spans.flatMap((t) => [t, ...(t.children ?? [])]);
+    const retained = allSpans.reduce(
+      (n, sp) => n + (sp.detail?.request?.length ?? 0) + (sp.detail?.response?.length ?? 0),
+      0,
+    );
+    // 正文总量受预算约束
+    expect(retained).toBeLessThanOrEqual(512 * 1024 + 64_000 + 8_000);
+    // 但结构一个不少：40 轮、每轮 1 llm + 2 工具
+    expect(run.spans).toHaveLength(40);
+    for (const turn of run.spans) {
+      expect(turn.children).toHaveLength(3);
+      expect(turn.children!.every((c) => typeof c.spanId === "string")).toBe(true);
+      expect(turn.children!.every((c) => c.endMs > 0)).toBe(true);
+    }
+    // 最旧的正文被摘掉，最新的还在（最旧优先）
+    expect(run.spans[0]!.children![0]!.detail?.request).toBeUndefined();
+    expect(run.spans[39]!.children![0]!.detail?.request).toBeDefined();
+  });
+
+  test("预算内不动任何正文", () => {
+    const rec = createTraceRunRecorder("sess-budget-small", "ui");
+    rec.handle(ev("agent_start"));
+    rec.noteRequest({ systemPrompt: "short", messages: [] });
+    for (const e of oneTurn(0, 1)) rec.handle(e);
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const run = readTraceRuns("sess-budget-small", 1)[0]!;
+    expect(run.spans[0]!.children![0]!.detail?.request).toContain("short");
+  });
+
+  test("工具出参：成功截 1.5KB，失败保 8KB", () => {
+    const rec = createTraceRunRecorder("sess-caps", "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("turn_start"));
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    // 成功：20KB 正文
+    rec.handle(ev("tool_execution_start", { toolCallId: "ok1", toolName: "read", args: {} }));
+    rec.handle(
+      ev("tool_execution_end", {
+        toolCallId: "ok1",
+        toolName: "read",
+        isError: false,
+        result: { content: [{ type: "text", text: "a".repeat(20_000) }] },
+      }),
+    );
+    // 失败：20KB stderr
+    rec.handle(ev("tool_execution_start", { toolCallId: "bad1", toolName: "bash", args: {} }));
+    rec.handle(
+      ev("tool_execution_end", {
+        toolCallId: "bad1",
+        toolName: "bash",
+        isError: true,
+        result: { content: [{ type: "text", text: "e".repeat(20_000) }] },
+      }),
+    );
+    rec.handle(ev("message_end", { message: assistantMsg({ stopReason: "endTurn" }) }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const kids = readTraceRuns("sess-caps", 1)[0]!.spans[0]!.children!;
+    const ok = kids.find((s) => s.name === "read")!;
+    const bad = kids.find((s) => s.name === "bash")!;
+    expect(ok.detail!.response!.length).toBe(1_500);
+    expect(bad.detail!.response!.length).toBe(8_000);
+    // 面板红字那行另有 2KB 上限，短于正文
+    expect(String(bad.attrs!.errorMessage).length).toBe(2_000);
+  });
+});
+
+describe("live 增量落盘", () => {
+  test("turn_end 追加轮行；settle 后本 run 的行被清", () => {
+    const sid = "sess-live";
+    const rec = createTraceRunRecorder(sid, "ui");
+    rec.handle(ev("agent_start"));
+    for (const e of oneTurn(0, 1)) rec.handle(e);
+
+    // 跑到第 1 轮结束：live 里应有头行 + 1 条轮行
+    expect(existsSync(liveFile(sid))).toBe(true);
+    const lines = readFileSync(liveFile(sid), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.filter((l) => l.kind === "run")).toHaveLength(1);
+    expect(lines.filter((l) => l.kind === "turn")).toHaveLength(1);
+    expect(lines[0].pid).toBe(process.pid);
+
+    // 再跑一轮 → 第 2 条轮行
+    for (const e of oneTurn(1, 1)) rec.handle(e);
+    const lines2 = readFileSync(liveFile(sid), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines2.filter((l) => l.kind === "turn")).toHaveLength(2);
+
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+    // 完整记录落主文件后 live 清零
+    expect(readTraceRuns(sid, 1)).toHaveLength(1);
+    expect(existsSync(liveFile(sid))).toBe(false);
+  });
+
+  test("readLiveRun：在飞 run 标 partial 且无 outcome", () => {
+    const sid = "sess-live-read";
+    const rec = createTraceRunRecorder(sid, "ui");
+    rec.handle(ev("agent_start"));
+    for (const e of oneTurn(0, 2)) rec.handle(e);
+
+    const live = readLiveRun(sid);
+    expect(live).toHaveLength(1);
+    expect(live[0]!.partial).toBe(true);
+    expect(live[0]!.outcome).toBeUndefined();
+    expect(live[0]!.spans).toHaveLength(1);
+  });
+
+  test("崩溃残留（异 pid）被 promote 成 partial + interrupted，live 被清", () => {
+    const sid = "sess-crash";
+    const file = liveFile(sid);
+    mkdirS(path.dirname(file), { recursive: true });
+    // 伪造另一个进程留下的残留：头行 pid 换成不可能的值
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          kind: "run",
+          pid: 999_999,
+          traceId: "dead-run",
+          sessionId: sid,
+          source: "ui",
+          startMs: 1_000,
+          model: "test/model",
+        }),
+        JSON.stringify({
+          kind: "turn",
+          traceId: "dead-run",
+          turn: {
+            spanId: "abc",
+            kind: "turn",
+            startMs: 1_000,
+            endMs: 2_000,
+            status: "ok",
+            children: [],
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    // 新 run 起步 → promote 抢救
+    const rec = createTraceRunRecorder(sid, "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const runs = readTraceRuns(sid, 10);
+    const rescued = runs.find((r) => r.traceId === "dead-run")!;
+    expect(rescued.partial).toBe(true);
+    expect(rescued.outcome?.reason).toBe("interrupted");
+    expect(rescued.spans).toHaveLength(1);
+    // 残留组是唯一内容 → 整个 live 文件被删（正确行为）；文件在不在都要断言不含残留
+    const left = existsSync(file) ? readFileSync(file, "utf8") : "";
+    expect(left).not.toContain("dead-run");
+  });
+
+  test("同 pid 的并发 run 不被误 promote（守住重复记录那个 bug）", () => {
+    const sid = "sess-concurrent";
+    // 主 run 在飞（同 pid），子代理并发写同一会话
+    const main = createTraceRunRecorder(sid, "ui");
+    main.handle(ev("agent_start"));
+    for (const e of oneTurn(0, 1)) main.handle(e);
+
+    // 此时另起一个 recorder（模拟 automation/子代理的另一个 run）
+    const other = createTraceRunRecorder(sid, "subagent");
+    other.handle(ev("agent_start"));
+    other.handle(ev("agent_end", { messages: [] }));
+    other.settle();
+
+    // 主 run 的 live 行必须还在（没被当成残留抢走）
+    const live = readLiveRun(sid);
+    expect(live.some((r) => r.partial && r.spans.length === 1)).toBe(true);
+    // 且主 run 还没进主文件（它还没收尾）
+    expect(readTraceRuns(sid, 10).some((r) => r.outcome?.reason === "interrupted")).toBe(false);
+
+    main.handle(ev("agent_end", { messages: [] }));
+    main.settle();
+    // 主 run 正常落盘为一条完整记录，没有重复
+    const uiRuns = readTraceRuns(sid, 10).filter((r) => r.source === "ui");
+    expect(uiRuns).toHaveLength(1);
+    expect(uiRuns[0]!.partial).toBeUndefined();
+  });
+
+  test("反向：live 路径写失败时 handle 不抛、主记录照常落盘", () => {
+    const sid = "sess-live-broken";
+    // 把 live 路径变成一个目录 → appendFileSync 必然失败
+    const file = liveFile(sid);
+    mkdirS(file, { recursive: true });
+
+    const rec = createTraceRunRecorder(sid, "ui");
+    expect(() => rec.handle(ev("agent_start"))).not.toThrow();
+    expect(() => {
+      for (const e of oneTurn(0, 2)) rec.handle(e);
+    }).not.toThrow();
+    expect(() => rec.handle(ev("agent_end", { messages: [] }))).not.toThrow();
+    expect(() => rec.settle()).not.toThrow();
+
+    // 关键断言：live 挂了，主文件照常
+    const runs = readTraceRuns(sid, 5);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.spans).toHaveLength(1);
+    expect(runs[0]!.spans[0]!.children).toHaveLength(3);
+  });
+});

@@ -158,22 +158,52 @@ export type RelGlobResult =
   | { ok: true; glob: string }
   | { ok: false; reason: "outside" | "invalid" };
 
+type RelResult = { ok: true; rel: string } | { ok: false; reason: "outside" | "invalid" };
+
+/** 绝对路径（目录或文件）→ 工作区相对 rel；目录恰好是工作区本身时 rel 为空串 */
+function pathToWorkspaceRel(absPath: string, cwd: string): RelResult {
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const a = norm(absPath);
+  const w = norm(cwd);
+  if (!a || !w) return { ok: false, reason: "invalid" };
+  // 大小写不敏感比较：macOS/Windows 默认文件系统大小写不敏感，
+  // 用户从选择器拿到的路径大小写与工作区记录未必一致
+  const al = a.toLowerCase();
+  const wl = w.toLowerCase();
+  if (al === wl) return { ok: true, rel: "" };
+  if (!al.startsWith(`${wl}/`)) return { ok: false, reason: "outside" };
+  return { ok: true, rel: a.slice(w.length + 1) };
+}
+
 /**
  * 绝对目录 → 工作区相对 glob。
  * 不在工作区内就拒绝：检索侧按 `path.join(cwd, rel)` 解析，绝对路径会被拼成
  * `cwd + 绝对路径` 这种无意义的串，静默搜不到任何东西。
  */
 export function dirToWorkspaceGlob(dir: string, cwd: string): RelGlobResult {
-  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
-  const d = norm(dir);
-  const w = norm(cwd);
-  if (!d || !w) return { ok: false, reason: "invalid" };
-  // 大小写不敏感比较：macOS/Windows 默认文件系统大小写不敏感，
-  // 用户从选择器拿到的路径大小写与工作区记录未必一致
-  const dl = d.toLowerCase();
-  const wl = w.toLowerCase();
-  if (dl === wl) return { ok: true, glob: `./${KNOWLEDGE_GLOB_SUFFIX.slice(1)}` };
-  if (!dl.startsWith(`${wl}/`)) return { ok: false, reason: "outside" };
-  const rel = d.slice(w.length + 1);
-  return { ok: true, glob: `./${rel}${KNOWLEDGE_GLOB_SUFFIX}` };
+  const r = pathToWorkspaceRel(dir, cwd);
+  if (!r.ok) return r;
+  return {
+    ok: true,
+    glob: r.rel ? `./${r.rel}${KNOWLEDGE_GLOB_SUFFIX}` : `./${KNOWLEDGE_GLOB_SUFFIX.slice(1)}`,
+  };
+}
+
+/**
+ * 绝对文件 → 工作区相对单文件路径。检索侧对不含通配的 path 走存在性直查
+ * （knowledge.ts expandGlob），所以单个文件本身就是合法的知识源，不必是目录或 glob。
+ */
+export function fileToWorkspaceRel(file: string, cwd: string): RelGlobResult {
+  const r = pathToWorkspaceRel(file, cwd);
+  if (!r.ok) return r;
+  // 文件不可能恰好等于工作区根，真撞上就是调用方给了目录或脏路径
+  if (!r.rel) return { ok: false, reason: "invalid" };
+  return { ok: true, glob: `./${r.rel}` };
+}
+
+/** 知识源名称自动填充：取路径末段去扩展名（产品手册.pdf → 产品手册） */
+export function knowledgeNameFromPath(file: string): string {
+  const base = file.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? file;
+  const stem = base.replace(/\.[^./]+$/, "");
+  return stem || base;
 }

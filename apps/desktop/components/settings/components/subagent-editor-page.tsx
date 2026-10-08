@@ -14,7 +14,7 @@
  * 滚动位置、已选分段都不丢。
  */
 import { useEffect, useMemo, useState, type FC } from "react";
-import { ChevronLeftIcon, FolderOpenIcon, PlusIcon } from "lucide-react";
+import { ChevronLeftIcon, FileTextIcon, FolderOpenIcon, PlusIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,8 +44,10 @@ import {
   editorScope,
   EMPTY_FORM,
   entryToForm,
+  fileToWorkspaceRel,
   formToDraft,
   formToYaml,
+  knowledgeNameFromPath,
   MEMORY_OPTIONS,
   type EditorTarget,
   type FormDraft,
@@ -177,6 +179,44 @@ export const SubagentEditorPage: FC<{
     } catch {
       // 非 Tauri 环境没有原生选择器：保持输入框手填
       setPickError({ row, text: "当前环境没有原生目录选择器，请手工填写路径。" });
+    }
+  };
+
+  /** 多选散落文件：第一个填进当前行，其余按序追加成行（检索侧支持单文件 path） */
+  const pickKnowledgeFiles = async (row: number) => {
+    setPickError(null);
+    if (!workspaceCwd) {
+      setPickError({ row, text: "未选择工作区，无法解析相对路径。先在主界面选好工作目录。" });
+      return;
+    }
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({ multiple: true, directory: false, title: "选择知识文件（可多选）" });
+      if (!Array.isArray(picked) || picked.length === 0) return; // 用户取消
+      const sources: PiKnowledgeSource[] = [];
+      for (const file of picked) {
+        const rel = fileToWorkspaceRel(file, workspaceCwd);
+        if (!rel.ok) {
+          setPickError({
+            row,
+            text:
+              rel.reason === "outside"
+                ? "所选文件不在当前工作区内。知识源按工作区相对路径检索，请把资料放进工作区，或手工填写路径。"
+                : "路径无法解析，请手工填写。",
+          });
+          return;
+        }
+        sources.push({ name: knowledgeNameFromPath(file), path: rel.glob });
+      }
+      setForm((f) => {
+        const rows = f.knowledge.map((k, j) => (j === row ? { ...k, ...sources[0] } : k));
+        const extra = sources
+          .slice(1)
+          .filter((s) => !f.knowledge.some((k) => k.path === s.path));
+        return { ...f, knowledge: [...rows, ...extra] };
+      });
+    } catch {
+      setPickError({ row, text: "当前环境没有原生文件选择器，请手工填写路径。" });
     }
   };
 
@@ -351,7 +391,7 @@ export const SubagentEditorPage: FC<{
 
             <EditorSection
               title="知识源"
-              hint="按需检索，正文不预加载进提示词。"
+              hint="按需检索，正文不预加载进提示词。收全部文本格式（md/txt/csv/json/代码等）；PDF/Word/Excel 二进制文档检索读不了，请先转成 Markdown 或 CSV。"
             >
               {form.knowledge.length === 0 && (
                 <p className="text-muted-foreground text-xs">
@@ -369,7 +409,7 @@ export const SubagentEditorPage: FC<{
                   <Input
                     value={k.path}
                     onChange={(e) => patchKnowledge(i, { path: e.target.value })}
-                    placeholder="文档路径，如 ./docs/**/*.md"
+                    placeholder="文档路径或 glob，如 ./docs/**/*.md（任何文本格式皆可，也支持单个文件）"
                     className="h-9 flex-1 font-mono text-xs"
                   />
                   <Button
@@ -382,6 +422,17 @@ export const SubagentEditorPage: FC<{
                   >
                     <FolderOpenIcon className="size-3.5" />
                     选择目录
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 shrink-0 gap-1.5 text-xs"
+                    onClick={() => void pickKnowledgeFiles(i)}
+                    title="多选工作区内的文件；第一个填进本行，其余各追加一行"
+                  >
+                    <FileTextIcon className="size-3.5" />
+                    选择文件
                   </Button>
                   <Button
                     type="button"

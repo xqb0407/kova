@@ -37,6 +37,8 @@ export type PanelTabType =
   | "subagent"
   /** Agent 调用轨迹（trace_query）：header「更多」唤起（不进 + 菜单），sessionId 绑定 sidecar 会话 */
   | "trace"
+  /** Agent 循环视图：按迭代看意图/工具/回喂（与 trace 同一份数据、两种切法），同样不进 + 菜单 */
+  | "loop"
   /** UI 插件面板：已装启用插件的面板贡献（agent open_plugin_panel 工具 / + 菜单 / 产物卡唤起） */
   | "plugin";
 
@@ -98,6 +100,7 @@ const VALID_TYPES = new Set<PanelTabType>([
   "explorer",
   "subagent",
   "trace",
+  "loop",
   "plugin",
 ]);
 

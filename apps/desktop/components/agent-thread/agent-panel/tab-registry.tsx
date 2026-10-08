@@ -13,6 +13,7 @@ import {
   ListTodoIcon,
   Loader2Icon,
   LayoutPanelTopIcon,
+  IterationCcwIcon as IterationIcon,
   PackageIcon,
   SquareTerminalIcon,
   WaypointsIcon,
@@ -36,6 +37,7 @@ import { FileTab } from "./file-view";
 import { FileTreeTab } from "./file-tree-tab";
 import { SubagentTab } from "./subagent-tab";
 import { TraceTab } from "./trace-tab";
+import { LoopTab } from "./loop-tab";
 import { ArtifactsTab } from "./artifacts-tab";
 import { PluginPanelHost } from "./plugin-panel-host";
 import { TabEmpty } from "./tab-empty";
@@ -133,6 +135,11 @@ export const TAB_META: Record<
     label: "链路追踪",
     description: "agent 运行的 LLM / 工具 / 重试时间线",
     icon: WaypointsIcon,
+  },
+  loop: {
+    label: "循环",
+    description: "按迭代看模型意图、工具调用与结果回喂",
+    icon: IterationIcon,
   },
   plugin: {
     label: "插件面板",
@@ -241,6 +248,9 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
     case "trace":
       // 链路追踪：tab.sessionId 绑定 sidecar 会话（header「更多」唤起）
       return <TraceTab tab={tab} />;
+    case "loop":
+      // 循环视图：与链路追踪同一份 traces，按迭代而非 span 类型切
+      return <LoopTab tab={tab} />;
     case "plugin":
       // UI 插件面板：blob iframe + kova-ui-plugin/1 桥（tab.pluginId/panelId 定位）
       return <PluginPanelHost tab={tab} />;

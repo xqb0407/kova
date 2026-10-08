@@ -10,8 +10,10 @@ import {
   editorScope,
   EMPTY_FORM,
   entryToForm,
+  fileToWorkspaceRel,
   formToDraft,
   formToYaml,
+  knowledgeNameFromPath,
   type FormDraft,
 } from "./editor-form";
 import type { SubagentEntry } from "./subagents";
@@ -197,5 +199,48 @@ describe("dirToWorkspaceGlob", () => {
   test("空输入被拒", () => {
     expect(dirToWorkspaceGlob("", "/ws")).toEqual({ ok: false, reason: "invalid" });
     expect(dirToWorkspaceGlob("/ws", "")).toEqual({ ok: false, reason: "invalid" });
+  });
+});
+
+describe("fileToWorkspaceRel", () => {
+  test("工作区内文件 → 单文件相对路径（不带 glob 后缀）", () => {
+    expect(fileToWorkspaceRel("/ws/acme/docs/手册.md", "/ws/acme")).toEqual({
+      ok: true,
+      glob: "./docs/手册.md",
+    });
+  });
+
+  test("反斜杠归一 + 大小写不敏感判界", () => {
+    expect(fileToWorkspaceRel("C:\\ws\\docs\\a.csv", "C:\\ws")).toEqual({
+      ok: true,
+      glob: "./docs/a.csv",
+    });
+    expect(fileToWorkspaceRel("/WS/Acme/Docs/B.MD", "/ws/acme")).toEqual({
+      ok: true,
+      glob: "./Docs/B.MD",
+    });
+  });
+
+  test("工作区之外被拒", () => {
+    expect(fileToWorkspaceRel("/elsewhere/a.txt", "/ws/acme")).toEqual({
+      ok: false,
+      reason: "outside",
+    });
+  });
+
+  test("路径恰好等于工作区根（给的是目录不是文件）判 invalid", () => {
+    expect(fileToWorkspaceRel("/ws/acme", "/ws/acme")).toEqual({ ok: false, reason: "invalid" });
+  });
+});
+
+describe("knowledgeNameFromPath", () => {
+  test("取末段去扩展名", () => {
+    expect(knowledgeNameFromPath("/ws/docs/产品手册.pdf")).toBe("产品手册");
+    expect(knowledgeNameFromPath("pricing.csv")).toBe("pricing");
+  });
+
+  test("无扩展名保留原名；纯点开头文件不被剥成空串", () => {
+    expect(knowledgeNameFromPath("/ws/docs/README")).toBe("README");
+    expect(knowledgeNameFromPath("/ws/docs/.gitkeep")).toBe(".gitkeep");
   });
 });

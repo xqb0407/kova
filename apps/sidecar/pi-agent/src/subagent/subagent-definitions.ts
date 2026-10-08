@@ -144,6 +144,13 @@ const MAX_SKILL_TARGETS = 16;
 const MAX_KNOWLEDGE_SOURCES = 12;
 
 /**
+ * 检索读不了的二进制文档扩展名：knowledge.ts 按 \0 探测跳过二进制，
+ * 指向这类文件的知识源永远零命中，是白给的配置。解析层警告（不毁文件），
+ * 写路径直接拒（用户点了保存就不该静默放过）——与 read 工具依赖同策略。
+ */
+const BINARY_DOC_PATH = /\.(pdf|doc|docx|xls|xlsx|ppt|pptx)\s*$/i;
+
+/**
  * 解析 knowledge 列表。格式错误的条目丢弃并记警告——一份坏知识源不该
  * 赔掉整份定义（与工具列表同哲学）。
  */
@@ -187,6 +194,11 @@ function parseKnowledgeSources(
     if (!path) {
       warnings.push(`${at} missing path`);
       continue;
+    }
+    // 不丢条目只警告：文件是磁盘上的用户数据，二进制源虽检索不到，
+    // 静默删除会让下次保存把条目带走；写路径（validateDraft）才拒绝
+    if (BINARY_DOC_PATH.test(path)) {
+      warnings.push(`${at} points to a binary document, kb_search cannot read it — convert to Markdown/CSV or plain text`);
     }
     out.push({ name, path });
   }
@@ -960,7 +972,13 @@ function validateDraft(draft: SubagentDraft): string[] {
   }
   for (const k of draft.knowledge ?? []) {
     if (!k.name.trim()) errors.push("知识源缺少名称");
-    if (!k.path?.trim()) errors.push(`知识源 "${k.name}" 缺少 path`);
+    if (!k.path?.trim()) {
+      errors.push(`知识源 "${k.name}" 缺少 path`);
+    } else if (BINARY_DOC_PATH.test(k.path.trim())) {
+      errors.push(
+        `知识源 "${k.name}" 指向 PDF/Office 二进制文档，检索读不了：请先把资料转成 Markdown/CSV/纯文本，或改指向文本目录`,
+      );
+    }
   }
   if (!draft.prompt.trim()) errors.push("prompt 不能为空");
   if (draft.maxTurns !== undefined && (!Number.isFinite(draft.maxTurns) || draft.maxTurns < 1)) {

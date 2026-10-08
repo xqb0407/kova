@@ -63,7 +63,7 @@ import {
 } from "../../observability/observability";
 import { probeOtlpEndpoint } from "../../observability/otlp-exporter";
 import { aggregateUsageStats } from "../../model/usage-stats";
-import { readTraceRuns } from "../trace";
+import { readLiveRun, readTraceRuns } from "../trace";
 import type { CommandHandler } from "../command";
 
 /** 密钥作用域展开：协议层收"层级"（global|workspace），落库用展开串（workspace:<cwd>） */
@@ -137,6 +137,16 @@ export const handlers: Record<string, CommandHandler> = {
     const limit =
       typeof msg.limit === "number" && msg.limit > 0 ? Math.min(msg.limit, 200) : 50;
     send({ id: reqId, type: "trace_query", runs: readTraceRuns(traceSession, limit) });
+  },
+
+  /**
+   * 在飞 run 的增量视图（trace.ts 的 live 文件）。与 trace_query 分开是省 IO：
+   * trace_query 要读整个主文件（可达 5MB）并逐行 parse，面板按秒轮询太浪费。
+   */
+  trace_live_query: async (reqId, msg) => {
+    const traceSession = typeof msg.sessionId === "string" ? msg.sessionId.trim() : "";
+    if (!traceSession) throw new Error("trace_live_query: sessionId is required");
+    send({ id: reqId, type: "trace_live_query", runs: readLiveRun(traceSession) });
   },
 
   set_personalization: async (reqId, msg) => {

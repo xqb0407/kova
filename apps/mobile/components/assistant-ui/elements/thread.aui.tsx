@@ -1246,6 +1246,9 @@ type TurnView = {
   hasAnswer: boolean;
   /** 本轮工具调用数（pop 副标题） */
   toolCount: number;
+  /** 本轮过程块数（reasoning + tool-call，与桌面 collapsedCount 同口径）：
+   *  耗时台账缺数时摘要行退回「N 条较早消息」 */
+  collapsedCount: number;
 };
 
 const EMPTY_TURN_VIEW: TurnView = {
@@ -1256,11 +1259,12 @@ const EMPTY_TURN_VIEW: TurnView = {
   host: false,
   hasAnswer: false,
   toolCount: 0,
+  collapsedCount: 0,
 };
 
 const parseTurnView = (encoded: string): TurnView => {
   if (!encoded) return EMPTY_TURN_VIEW;
-  const [key = "", first, running, hasProcess, host, hasAnswer, toolCount] =
+  const [key = "", first, running, hasProcess, host, hasAnswer, toolCount, collapsedCount] =
     encoded.split(TURN_FIELD_SEP);
   return {
     key,
@@ -1270,6 +1274,7 @@ const parseTurnView = (encoded: string): TurnView => {
     host: host === "1",
     hasAnswer: hasAnswer === "1",
     toolCount: Number.parseInt(toolCount ?? "0", 10) || 0,
+    collapsedCount: Number.parseInt(collapsedCount ?? "0", 10) || 0,
   };
 };
 
@@ -1297,6 +1302,8 @@ const turnViewSelector = (s: AssistantState): string => {
   let hasProcess = false;
   let host = -1;
   let toolCount = 0;
+  // 过程块口径对齐桌面 packTurnSummary：reasoning + tool-call，text/data 不计
+  let collapsedCount = 0;
   for (let i = start + 1; i < end; i++) {
     const message = messages[i];
     if (!running && message.status?.type === "running") running = true;
@@ -1307,7 +1314,12 @@ const turnViewSelector = (s: AssistantState): string => {
       if (host === -1) host = i;
     }
     for (const part of parts) {
-      if (part.type === "tool-call") toolCount += 1;
+      if (part.type === "tool-call") {
+        toolCount += 1;
+        collapsedCount += 1;
+      } else if (part.type === "reasoning") {
+        collapsedCount += 1;
+      }
     }
   }
   // 末轮空窗：user 行刚落、assistant 消息还没挂上 running 的那一瞬逐消息
@@ -1324,6 +1336,7 @@ const turnViewSelector = (s: AssistantState): string => {
     index === host ? "1" : "0",
     hasAnswer ? "1" : "0",
     String(toolCount),
+    String(collapsedCount),
   ].join(TURN_FIELD_SEP);
 };
 
@@ -1348,7 +1361,8 @@ const TurnSummaryRow: FC<{
   running: boolean;
   hasProcess: boolean;
   toolCount: number;
-}> = ({ scopedKey, running, hasProcess, toolCount }) => {
+  collapsedCount: number;
+}> = ({ scopedKey, running, hasProcess, toolCount, collapsedCount }) => {
   const [open, setOpen] = useState(false);
   const durationMs = useTurnDurationMs(scopedKey, null, running);
   // 运行中的秒表：每秒 tick 一次，从台账里的开始时刻算起
@@ -1361,13 +1375,17 @@ const TurnSummaryRow: FC<{
   const startedAt = getTurnTiming(scopedKey)?.start;
   const elapsedMs =
     running && startedAt !== undefined ? Date.now() - startedAt : undefined;
+  // 文案优先级对齐桌面 TurnWorkSummary：耗时算不出（台账缺数/亚秒轮）时
+  // 退回「N 条较早消息」，连过程块都没有才是「本轮过程」
   const label = running
     ? elapsedMs !== undefined && elapsedMs >= 1000
       ? `工作中 ${formatDuration(elapsedMs)}`
       : "工作中"
     : durationMs !== undefined
       ? `已工作 ${formatDuration(durationMs)}`
-      : "本轮过程";
+      : collapsedCount > 0
+        ? `${collapsedCount} 条较早消息`
+        : "本轮过程";
   const subtitle = [
     running ? label : durationMs !== undefined ? `已工作 ${formatDuration(durationMs)}` : null,
     toolCount > 0 ? `${toolCount} 个工具` : null,
@@ -1566,6 +1584,7 @@ const AssistantMessage: FC = () => {
             running={running}
             hasProcess={turn.hasProcess}
             toolCount={turn.toolCount}
+            collapsedCount={turn.collapsedCount}
           />
         ) : null}
         {/* 运行中与开场整条平铺；结束的轮只留正文面，过程进底部 pop */}
