@@ -25,6 +25,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { SettingRow } from "@/components/custom-ui/setting-row";
+import { ModelImportDialog } from "@/components/settings/components/model-import-dialog";
 import { ProviderIcon } from "@/components/custom-ui/provider-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -61,6 +62,7 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
+  ImportIcon,
   KeyRoundIcon,
   PencilIcon,
   PlugIcon,
@@ -504,6 +506,8 @@ export const ModelSettings: FC = () => {
   const [newProvider, setNewProvider] = useState("");
   const [newKey, setNewKey] = useState("");
   const [busy, setBusy] = useState(false);
+  // 从 opencode / Codex / ZCode 导入模型服务的预览弹窗
+  const [importOpen, setImportOpen] = useState(false);
 
   // 添加/编辑 AI 服务弹窗：svcProvider = ""（未选择）/ "custom"（自定义端点）/ 内置 providerId
   const [svcOpen, setSvcOpen] = useState(false);
@@ -1823,10 +1827,16 @@ export const ModelSettings: FC = () => {
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold">AI 服务</h2>
-            <Button onClick={openNewService}>
-              <PlusIcon className="size-4" />
-              添加服务
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={() => setImportOpen(true)}>
+                <ImportIcon className="size-4" />
+                从其他工具导入
+              </Button>
+              <Button onClick={openNewService}>
+                <PlusIcon className="size-4" />
+                添加服务
+              </Button>
+            </div>
           </div>
 
           {customProviders.length === 0 && builtinServices.length === 0 ? (
@@ -1836,12 +1846,18 @@ export const ModelSettings: FC = () => {
               </div>
               <div className="mt-3 text-sm font-medium">还没有 AI 服务</div>
               <div className="text-muted-foreground mt-1 text-xs">
-                添加 AI 服务即可开始。
+                添加 AI 服务，或从 opencode / Codex / ZCode 导入已有配置。
               </div>
-              <Button className="mt-4" onClick={openNewService}>
-                <PlusIcon className="size-4" />
-                添加服务
-              </Button>
+              <div className="mt-4 flex items-center gap-2">
+                <Button onClick={openNewService}>
+                  <PlusIcon className="size-4" />
+                  添加服务
+                </Button>
+                <Button variant="outline" onClick={() => setImportOpen(true)}>
+                  <ImportIcon className="size-4" />
+                  从其他工具导入
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -2128,6 +2144,17 @@ export const ModelSettings: FC = () => {
           </Button>
         </div>
       </div>
+
+      {/* 从其它工具导入模型服务：解析在 sidecar，写入复用 add_custom_provider */}
+      <ModelImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        existingProviders={customProviders.map((cp) => ({
+          name: cp.name,
+          providerId: cp.providerId,
+        }))}
+        onImported={load}
+      />
 
       {/* 添加/编辑 AI 服务弹窗 */}
       <Dialog

@@ -278,6 +278,105 @@ describe("createTraceRunRecorder", () => {
     const taskSpan = (parentRun.spans[0]!.children ?? []).find((s) => s.name === "task")!;
     expect(taskSpan.spanId).toBe(parentSpanId);
   });
+
+  test("工具收口：错误原因、出参与退出码都进 span", () => {
+    const rec = createTraceRunRecorder("sess-tool-detail", "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("turn_start"));
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    rec.handle(
+      ev("tool_execution_start", { toolCallId: "t1", toolName: "bash", args: { cmd: "pnpm i" } }),
+    );
+    rec.handle(
+      ev("tool_execution_end", {
+        toolCallId: "t1",
+        toolName: "bash",
+        isError: true,
+        result: {
+          content: [{ type: "text", text: "sh: pnpm: command not found" }],
+          details: { exitCode: 127 },
+        },
+      }),
+    );
+    rec.handle(ev("message_end", { message: assistantMsg({ stopReason: "endTurn" }) }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const run = readTraceRuns("sess-tool-detail", 1)[0]!;
+    const toolSpan = run.spans[0]!.children!.find((s) => s.kind === "tool_call")!;
+    expect(toolSpan.status).toBe("error");
+    // 失败正文两处都在：attrs 供面板直接显示，detail.response 供检查器展开
+    expect(toolSpan.attrs?.errorMessage).toContain("pnpm: command not found");
+    expect(toolSpan.detail?.response).toContain("pnpm: command not found");
+    expect(toolSpan.attrs?.exitCode).toBe(127);
+    // 入参仍在 attrs.args，不被结果挤掉
+    expect(toolSpan.attrs?.args).toContain("pnpm i");
+  });
+
+  test("工具成功也记出参", () => {
+    const rec = createTraceRunRecorder("sess-tool-ok", "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("turn_start"));
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    rec.handle(ev("tool_execution_start", { toolCallId: "t1", toolName: "read", args: {} }));
+    rec.handle(
+      ev("tool_execution_end", {
+        toolCallId: "t1",
+        toolName: "read",
+        isError: false,
+        result: { content: [{ type: "text", text: "42 lines" }] },
+      }),
+    );
+    rec.handle(ev("message_end", { message: assistantMsg({ stopReason: "endTurn" }) }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const run = readTraceRuns("sess-tool-ok", 1)[0]!;
+    const toolSpan = run.spans[0]!.children!.find((s) => s.kind === "tool_call")!;
+    expect(toolSpan.status).toBe("ok");
+    expect(toolSpan.detail?.response).toContain("42 lines");
+    // 成功路径不写 errorMessage（面板据此上红，没有就是没有）
+    expect(toolSpan.attrs?.errorMessage).toBeUndefined();
+  });
+
+  test("终止归因：noteOutcome 上报优先于 stopReason 兜底", () => {
+    const rec = createTraceRunRecorder("sess-outcome", "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("turn_start"));
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    rec.handle(ev("message_end", { message: assistantMsg({ stopReason: "endTurn" }) }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    // 编排层：长度续跑预算烧完（stream.ts 才拿得到这个信息）
+    rec.noteOutcome({ reason: "length-budget-exhausted", detail: "连续 3 次续跑未收尾" });
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const run = readTraceRuns("sess-outcome", 1)[0]!;
+    expect(run.outcome?.reason).toBe("length-budget-exhausted");
+    expect(run.outcome?.detail).toContain("续跑");
+  });
+
+  test("终止归因兜底：未上报时按 stopReason 翻译", () => {
+    const rec = createTraceRunRecorder("sess-outcome-fallback", "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("turn_start"));
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    rec.handle(ev("message_end", { message: assistantMsg({ stopReason: "aborted" }) }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    // aborted 必须翻成 user-stop 而不是 error：用户取消不是错误
+    expect(readTraceRuns("sess-outcome-fallback", 1)[0]!.outcome?.reason).toBe("user-stop");
+  });
+
+  test("noteOutcome 无打开中的 run 时 no-op", () => {
+    const rec = createTraceRunRecorder("sess-outcome-noop", "ui");
+    expect(() => rec.noteOutcome({ reason: "error" })).not.toThrow();
+    expect(rec.settle()).toBe(false);
+  });
 });
 
 describe("readTraceRuns", () => {

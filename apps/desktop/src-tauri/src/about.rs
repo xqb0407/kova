@@ -7,6 +7,7 @@ use std::process::Command;
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 use crate::store;
+use crate::tool_exec::no_window;
 
 pub const DEV_KV_KEY: &str = "dev.mode";
 
@@ -30,6 +31,11 @@ fn open_with_default(target: &str) -> Result<(), String> {
         c.arg(target);
         c
     };
+    // release 是 windows_subsystem = "windows"（main.rs），主进程无控制台，spawn
+    // 出来的 cmd.exe 会被 Windows 新分配一个控制台——打开外链/日志目录时先闪一个
+    // 黑窗再拉起浏览器。CREATE_NO_WINDOW 抑制它（dev 下主进程自带控制台，cmd 继承，
+    // 故只有打包后才复现）。与 tool_exec::no_window 同一套 flag。
+    no_window(&mut cmd);
     cmd.spawn().map_err(|e| format!("open failed: {e}"))?;
     Ok(())
 }

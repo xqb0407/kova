@@ -40,6 +40,7 @@ import {
   setCurrentModelKey,
 } from "../../model/model-catalog";
 import { maskApiKey } from "../payloads";
+import { scanProviderImports } from "../../model/import";
 import type { CustomModelSpec } from "../../types";
 import type { CommandHandler } from "../command";
 
@@ -320,6 +321,13 @@ export const handlers: Record<string, CommandHandler> = {
       cost: item.cost ?? null,
     });
     send({ id: reqId, type: "model_updated", provider, modelId });
+  },
+
+  scan_provider_imports: async (reqId) => {
+    // 扫本机其它工具（opencode / Codex / ZCode）的配置，列出可导入的模型服务。
+    // 只读命令：写入仍走 add_custom_provider，冲突与启停策略全在那一侧
+    const scan = scanProviderImports();
+    send({ id: reqId, type: "provider_import_candidates", ...scan });
   },
 
   test_provider: async (reqId, msg) => {

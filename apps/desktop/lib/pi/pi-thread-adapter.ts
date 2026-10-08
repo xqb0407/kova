@@ -1,5 +1,6 @@
 "use client";
 
+import { useSyncExternalStore } from "react";
 import { piRequest, type PiSessionSummary } from "@/lib/pi/pi-bridge";
 import { isLocalDraftThreadId } from "@/lib/pi/pi-thread-identity";
 
@@ -29,6 +30,36 @@ export function applySessionSummaries(sessions: PiSessionSummary[]): void {
     else piSessionCwdMap.delete(s.sessionId);
     piSessionPrefsMap.set(s.sessionId, s);
   }
+  bumpSessionPrefsVersion();
+}
+
+/**
+ * 偏好镜像的响应式信号。piSessionPrefsMap 是普通 Map——原地 set 不会触发任何
+ * 渲染，而「一次要画很多行」的消费点（侧栏行首的会话档位图标）不能靠切线程
+ * 时的水合驱动。版本号每次快照落库自增，组件订阅它后在渲染期直读镜像。
+ */
+let prefsVersion = 0;
+const prefsListeners = new Set<() => void>();
+
+function bumpSessionPrefsVersion() {
+  prefsVersion += 1;
+  for (const l of prefsListeners) l();
+}
+
+function subscribeSessionPrefs(listener: () => void) {
+  prefsListeners.add(listener);
+  return () => {
+    prefsListeners.delete(listener);
+  };
+}
+
+/** 订阅偏好镜像更新。返回值本身不用，只为在快照落库时重渲染 */
+export function useSessionPrefsVersion(): number {
+  return useSyncExternalStore(
+    subscribeSessionPrefs,
+    () => prefsVersion,
+    () => 0,
+  );
 }
 
 /** 重新拉一份会话列表快照（轻量单条 SQL）：set_model / set_mode 后校准偏好镜像 */

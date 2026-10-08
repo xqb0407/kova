@@ -25,6 +25,26 @@ export type TraceSource = "ui" | "automation" | "subagent";
 export type TraceSpanKind = "turn" | "llm_call" | "tool_call" | "retry";
 export type TraceStatus = "ok" | "error" | "aborted";
 
+/**
+ * 为什么整个 run 停了。
+ *
+ * 这一维度推导不出来：记录器只看得到 AgentEvent，而长度续跑、context overflow
+ * 重跑、goal 续跑、用户 Stop 这些编排决策都发生在 stream.ts 里，压根不经过
+ * handle()。没有 noteOutcome 上报，记录永远只知道 stopReason，不知道是
+ * 「自然收尾」还是「续跑预算烧完了」。
+ *
+ * aborted 单独成一类而不是并进 error：用户点 Stop 不是错误，混进去会污染错误率。
+ */
+export type TraceOutcomeReason =
+  | "completed"
+  | "user-stop"
+  | "context-overflow"
+  | "length-budget-exhausted"
+  | "error";
+
+/** stream 侧上报的终止归因；detail 是给面板看的一句话说明 */
+export type TraceOutcomeInfo = { reason: TraceOutcomeReason; detail?: string };
+
 export type TraceSpan = {
   /**
    * 创建时生成的 16hex 唯一 id（v2 身份模型）：面板与 OTLP 都从它取 id，
@@ -68,6 +88,12 @@ export type TraceRunRecord = {
   startMs: number;
   endMs: number;
   status: TraceStatus;
+  /**
+   * 终止归因（v2 新增）。缺省时由 lastStopReason 兜底推导（aborted→user-stop，
+   * error→error，其余→completed），但那只是 stopReason 的翻译；真正的编排
+   * 决策（续跑/溢出/Stop）只能靠 stream 侧 noteOutcome 上报。
+   */
+  outcome?: TraceOutcomeInfo;
   /** 末轮模型 "provider/model" */
   model?: string;
   usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
@@ -166,6 +192,8 @@ type OpenRun = {
   turnSeq: number;
   /** 末条 assistant 消息的 stopReason（决定 run status） */
   lastStopReason?: string;
+  /** stream 侧上报的终止归因；未上报时 finalize 按 stopReason 兜底推导 */
+  outcome?: TraceOutcomeInfo;
   model?: string;
   usage: UsageAcc;
 };
@@ -189,6 +217,12 @@ export type TraceRunRecorder = {
   noteRetrySettled(): void;
   /** 该 toolCallId 对应 tool_call span 的 spanId（工具收口后仍可查）；无则 undefined */
   spanIdForToolCall(toolCallId: string): string | undefined;
+  /**
+   * 上报终止归因（stream.ts 编排层调用）。
+   * 编排决策不经过 AgentEvent，记录器只能靠这个口拿到「为什么停在这」。
+   * 后写覆盖先写（续跑注入多条时以最后一次为准）；无打开中的 run 时忽略。
+   */
+  noteOutcome(info: TraceOutcomeInfo): void;
   /**
    * 结算当前 run 并写入 traces JSONL。无打开中的 run 时 no-op 返回 false。
    * forcedStatus 用于异常残留（没走到 agent_end 就被新 run 顶替）：按 error 收。
@@ -254,6 +288,15 @@ export function createTraceRunRecorder(
     const status = forcedStatus ?? statusOfStopReason(r.lastStopReason);
     closePendingChildren(r, status === "ok" ? "ok" : status, endMs);
     closeTurn(r, endMs);
+    // 终止归因：stream 上报优先；没上报就用 stopReason 兜底翻译（用户 Stop 的
+    // 路径由 stream 显式传 aborted，这条兜底只在异常残留时兜底）
+    const outcome =
+      r.outcome ??
+      (status === "aborted"
+        ? { reason: "user-stop" as const }
+        : status === "error"
+          ? { reason: "error" as const }
+          : { reason: "completed" as const });
     const hasUsage =
       r.usage.input > 0 || r.usage.output > 0 || r.usage.cacheRead > 0 || r.usage.cacheWrite > 0;
     return {
@@ -266,10 +309,16 @@ export function createTraceRunRecorder(
       startMs: r.startMs,
       endMs,
       status,
+      outcome,
       ...(r.model ? { model: r.model } : {}),
       ...(hasUsage ? { usage: { ...r.usage } } : {}),
       spans: r.turns,
     };
+  };
+
+  const noteOutcome = (info: TraceOutcomeInfo): void => {
+    if (!run) return;
+    run.outcome = info;
   };
 
   const childrenOf = (r: OpenRun): TraceSpan[] => {
@@ -423,6 +472,25 @@ export function createTraceRunRecorder(
         r.openTools.delete(event.toolCallId);
         span.endMs = Date.now();
         span.status = event.isError ? "error" : "ok";
+        // 失败原因与出参：此前这里只记 status，面板能答「哪个工具失败」答不了
+        // 「为什么失败」。正文复用 detail.response（request 位已有 args，不重复占）。
+        const res = event.result as
+          | { content?: unknown; details?: Record<string, unknown> }
+          | undefined;
+        const text = renderContent(res?.content);
+        if (text) {
+          const clipped = clip(text, RESPONSE_MAX);
+          span.detail = { ...span.detail, response: clipped };
+          // 失败正文另存一份 attrs，面板不必解析 detail 就能直接显示
+          if (event.isError && clipped) {
+            span.attrs = { ...span.attrs, errorMessage: clipped };
+          }
+        }
+        // bash 类工具的退出码在 details 里；取不到就不记，不猜
+        const code = num(
+          res?.details?.exitCode ?? res?.details?.exit_code ?? res?.details?.code,
+        );
+        if (code != null) span.attrs = { ...span.attrs, exitCode: code };
         break;
       }
       case "turn_end": {
@@ -507,6 +575,7 @@ export function createTraceRunRecorder(
     noteRetry,
     noteRetrySettled,
     spanIdForToolCall: (toolCallId) => run?.toolSpanIds.get(toolCallId),
+    noteOutcome,
     settle,
   };
 }

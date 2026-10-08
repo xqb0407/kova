@@ -88,6 +88,8 @@ import {
   usePendingInteractionKind,
   type PendingInteractionKind,
 } from "@/lib/pi/pi-interactions";
+import { useSessionAppMode } from "@/lib/pi/pi-session-app-mode";
+import { APP_MODE_META } from "@/lib/pi/app-mode-meta";
 import {
   requestAutomationFocus,
   useAutomationTaskIdForSession,
@@ -1266,6 +1268,10 @@ export const ThreadListItem: FC = () => {
   const [deleting, setDeleting] = useState(false);
   // 未读标记（键 = remoteId = item id，新链路同值；草稿无 remoteId 恒已读）
   const unread = useIsThreadUnread(remoteId);
+  // 行首档位图标：会话的工作模式（工作/编码/设计）。键取 remoteId（= pi
+  // sessionId，会话偏好镜像的键）；未落盘草稿无 remoteId，回落全局默认档
+  const sessionAppMode = useSessionAppMode(remoteId);
+  const ModeIcon = APP_MODE_META[sessionAppMode].icon;
   // 批量模式：行首换勾选框、点击行切换选中（不激活会话）
   const batchActive = useThreadBatchActive();
   const batchSelected = useIsThreadBatchSelected(remoteId ?? "");
@@ -1345,6 +1351,12 @@ export const ThreadListItem: FC = () => {
           >
             {batchSelected && <CheckIcon className="size-3" />}
           </span>
+          {/* 档位图标：批量模式行首被勾选框占了，图标改挂在勾选框右侧（此模式下
+              不与置顶/未读/运行态抢槽位，它们都让位给勾选流了） */}
+          <ModeIcon
+            aria-label={`工作模式：${APP_MODE_META[sessionAppMode].label}`}
+            className="text-muted-foreground me-1.5 size-3.5 shrink-0"
+          />
           <MarqueeTitle
             data-slot="aui_thread-list-item-title"
             className={cn("me-3", unread && "font-medium")}
@@ -1384,6 +1396,18 @@ export const ThreadListItem: FC = () => {
               data-slot="aui_thread-list-item-unread"
               className="bg-blue-500 absolute start-[14px] top-1/2 size-1.5 -translate-y-1/2 rounded-full group-hover:opacity-0"
             />
+          )}
+          {/* 档位图标：与 loader/未读点/置顶图钉同占行首槽位（trigger ps-2.5 后
+              的 14px 位，标题左缘仍是 30px，与「显示更多」对齐），故三者互斥出图。
+              hover 让位给置顶按钮，同未读点/图钉的规则 */}
+          {!showRunning && !pinned && !unread && (
+            <span
+              data-slot="aui_thread-list-item-mode"
+              title={`工作模式：${APP_MODE_META[sessionAppMode].label}`}
+              className="text-muted-foreground absolute start-2.5 top-1/2 grid size-3.5 -translate-y-1/2 place-items-center group-hover:opacity-0"
+            >
+              <ModeIcon className="size-3.5" />
+            </span>
           )}
           {/* {automationTaskId && (
             <ZapIcon

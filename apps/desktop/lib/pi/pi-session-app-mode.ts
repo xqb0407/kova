@@ -8,6 +8,7 @@ import {
   refreshSessionPrefs,
   piSessionIdForThread,
   piSessionPrefsMap,
+  useSessionPrefsVersion,
 } from "@/lib/pi/pi-thread-adapter";
 
 /**
@@ -53,6 +54,23 @@ export function useThreadAppMode(threadId: string | undefined): AppMode {
   );
   const fallback = useAppMode();
   return own ?? fallback;
+}
+
+/**
+ * 任意会话（通常不是当前打开的那个）的生效档位：落库偏好列 → 全局默认档。
+ *
+ * 与 useThreadAppMode 的分工：那个读 threadModes（只记被打开/切档过的线程，
+ * 且键是 threadId），供「当前会话」的控件用；这个直读服务端镜像、键是
+ * sessionId，供侧栏行首图标这类一次要画几十行的消费点用——那些会话大多没被
+ * 打开过，走 threadModes 会一律显示成全局默认档。
+ */
+export function useSessionAppMode(sessionId: string | undefined): AppMode {
+  // 订阅偏好镜像：piSessionPrefsMap 是普通 Map，原地 set 不触发渲染
+  useSessionPrefsVersion();
+  const own = sessionId
+    ? asAppMode(piSessionPrefsMap.get(sessionId)?.appMode)
+    : null;
+  return own ?? useAppMode();
 }
 
 /**

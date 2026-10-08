@@ -175,12 +175,20 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       // 裸 Agent 的 stream 异常（网络/401 等）会合成 stopReason:"error" 的失败消息
       if (!reqId) break;
       const m = event.message as { stopReason?: string; errorMessage?: string };
+      // 用户 Stop 与模型错误在 trace 里必须分开：前者不是错误，混进去污染错误率
+      if (m?.stopReason === "aborted") {
+        run.trace?.noteOutcome({ reason: "user-stop", detail: "用户按 Stop 中断" });
+      }
       if (m?.stopReason === "error") {
         // 上下文溢出：不发 error chunk（会终结本条消息流），置位交给
         // dispatchPrompt 压缩后同文本重跑；非溢出错误照常上报
         const model = run.agent.state.model;
         if (isContextOverflow(event.message as AssistantMessage, model?.contextWindow)) {
           run.pendingOverflowRecovery = true;
+          run.trace?.noteOutcome({
+            reason: "context-overflow",
+            detail: "上下文溢出，协议层压缩后重跑本轮",
+          });
           logErr("event: message_end context overflow, recovery deferred to protocol");
         } else {
           // provider 流出路：含糊串按最可能来源（供应商）归因
@@ -212,6 +220,10 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       // MAX_LENGTH_CONTINUES 被误杀。两条路都是「本轮自然收尾 → 补一条续跑」，
       // 目标档选信息量更大的那条。
       if (run.mode === "goal") {
+        run.trace?.noteOutcome({
+          reason: "completed",
+          detail: "goal 档：目标续跑中",
+        });
         continueGoalTurn(run, event.message);
         break;
       }
@@ -229,6 +241,11 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
           : null;
       if (!contReason) break;
       if ((run.lengthContinues ?? 0) >= MAX_LENGTH_CONTINUES) {
+        // 续跑预算烧完：这是编排层的决定，记录器只能靠这里知道
+        run.trace?.noteOutcome({
+          reason: "length-budget-exhausted",
+          detail: `连续 ${MAX_LENGTH_CONTINUES} 次长度续跑仍未收尾，本轮中止`,
+        });
         logErr(
           `${contReason}-interrupted turn: auto-continue budget exhausted, ending run ` +
             "(length 反复撞顶就调大该模型 maxTokens——自定义端点默认 8192；" +

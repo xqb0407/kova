@@ -11,14 +11,16 @@ import { isTauri } from "@/lib/tauri";
 import {
   piRequest,
   type PiCredentialSummary,
+  type PiCustomProviderSummary,
   type PiModelSummary,
   type PiProviderSummary,
 } from "@/lib/pi/pi-bridge";
 import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
 import { getSelectedModel, setSelectedModel, useSelectedModel } from "@/lib/model/model-settings";
+import { ModelImportDialog } from "@/components/settings/components/model-import-dialog";
 import { useOnboarding } from "../onboarding-flow";
 import { Notice, StepFooter, StepHeading } from "./step-parts";
-import { CheckIcon, KeyRoundIcon, Loader2Icon } from "lucide-react";
+import { CheckIcon, ImportIcon, KeyRoundIcon, Loader2Icon } from "lucide-react";
 
 /**
  * 模型配置：选服务商 → 填 API Key → 挑一个模型。
@@ -42,32 +44,47 @@ export const ModelStep: FC = () => {
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 从其他工具导入：预览弹窗开关 + Kova 已有的自定义服务（同名冲突提示用）
+  const [importOpen, setImportOpen] = useState(false);
+  const [customProviders, setCustomProviders] = useState<
+    { name: string; providerId: string }[]
+  >([]);
 
-  // 服务商清单 + 已配凭据：sidecar 起来后拉一次
-  useEffect(() => {
-    let alive = true;
-    piRequest<{
-      type: "models";
-      models: PiModelSummary[];
-      providers: PiProviderSummary[];
-    }>({ type: "list_models" })
-      .then((res) => {
-        if (alive) setProviders(res.providers);
-      })
-      .catch(() => {
-        if (alive) setProviders([]);
-      });
-    piRequest<{ type: "credentials"; credentials: PiCredentialSummary[] }>({
-      type: "list_credentials",
-    })
-      .then((res) => {
-        if (alive) setAuthed(new Set(res.credentials.map((c) => c.providerId)));
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
+  /** 重拉服务商清单 / 凭据 / 已配自定义服务（挂载时与导入后各跑一次） */
+  const reloadLists = useCallback(async () => {
+    const [modelsRes, credRes, customRes] = await Promise.allSettled([
+      piRequest<{
+        type: "models";
+        models: PiModelSummary[];
+        providers: PiProviderSummary[];
+      }>({ type: "list_models" }),
+      piRequest<{ type: "credentials"; credentials: PiCredentialSummary[] }>({
+        type: "list_credentials",
+      }),
+      piRequest<{
+        type: "custom_providers";
+        providers: PiCustomProviderSummary[];
+      }>({ type: "list_custom_providers" }),
+    ]);
+    if (modelsRes.status === "fulfilled") setProviders(modelsRes.value.providers);
+    else setProviders([]);
+    if (credRes.status === "fulfilled") {
+      setAuthed(new Set(credRes.value.credentials.map((c) => c.providerId)));
+    }
+    if (customRes.status === "fulfilled") {
+      setCustomProviders(
+        customRes.value.providers.map((p) => ({
+          name: p.name,
+          providerId: p.providerId,
+        })),
+      );
+    }
   }, []);
+
+  // 服务商清单 + 已配凭据 + 已有自定义服务：sidecar 起来后拉一次
+  useEffect(() => {
+    void reloadLists();
+  }, [reloadLists]);
 
   const providerName = useMemo(
     () => providers?.find((p) => p.id === provider)?.name ?? provider,
@@ -268,7 +285,44 @@ export const ModelStep: FC = () => {
         </div>
       )}
 
+      {/* 次要入口：已在 opencode / Codex / ZCode 配过就别重填一遍。
+          只在选服务商这步露出来——那时才是"我该用哪家"的分叉点，
+          后面的填 Key / 挑模型都已经定下服务了 */}
+      {phase === "provider" && (
+        <div className="mt-3 flex flex-col gap-1.5">
+          <p className="text-muted-foreground text-xs">
+            已经在别处配好了？把那边的模型服务直接搬过来。
+          </p>
+          <Button
+            variant="outline"
+            className="self-start"
+            onClick={() => setImportOpen(true)}
+          >
+            <ImportIcon className="size-4" />
+            从其他工具导入
+          </Button>
+        </div>
+      )}
+
       {error && phase !== "key" && <p className="text-destructive mt-3 text-xs">{error}</p>}
+
+      <ModelImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        // 引导期从 sidecar 拉一次已配清单：同名冲突要能提示，且导进来的服务
+        // 不会在下一步的模型列表里变成第二个同名项
+        existingProviders={customProviders}
+        onImported={() => {
+          // 重拉服务商与凭据：导入的服务已带 key，会作为一项出现在上面的
+          // 服务商网格里，用户点它直接进"挑模型"（凭据齐全时跳过填 Key）
+          void reloadLists();
+          refreshPiModels();
+          setPhase("provider");
+          setProvider(null);
+          setApiKey("");
+          setError(null);
+        }}
+      />
 
       <StepFooter
         onBack={phase === "provider" ? back : () => setPhase("provider")}

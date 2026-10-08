@@ -2,13 +2,13 @@
 
 import { useEffect, useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { BriefcaseIcon, CodeIcon, PaletteIcon, type LucideIcon } from "lucide-react";
 import { Segmented } from "@/components/custom-ui/segmented";
 import {
   hydrateThreadAppMode,
   setThreadAppMode,
   useThreadAppMode,
 } from "@/lib/pi/pi-session-app-mode";
+import { APP_MODE_META } from "@/lib/pi/app-mode-meta";
 import { setAppMode, type AppMode } from "@/lib/pi/app-mode";
 import { useEnsureUiDesignPlugin } from "@/components/design-mode-gate";
 
@@ -28,31 +28,18 @@ import { useEnsureUiDesignPlugin } from "@/components/design-mode-gate";
  * 弹窗引导，通过才切档。
  */
 
-type ModeOption = {
-  value: AppMode;
-  label: string;
-  description: string;
-  icon: LucideIcon;
-};
-
-const OPTIONS: ModeOption[] = [
+const OPTIONS: { value: AppMode; description: string }[] = [
   {
     value: "code",
-    label: "编码",
     description: "面向开发：完整工具与细节（Git、可展开的工具输出）。",
-    icon: CodeIcon,
   },
   {
     value: "work",
-    label: "工作",
     description: "面向日常办公：交付导向，隐藏 Git，工具步骤收敛为摘要。",
-    icon: BriefcaseIcon,
   },
   {
     value: "design",
-    label: "设计",
     description: "面向 UI 设计：设计稿与高保真原型优先，隐藏 Git（需 UI 设计插件）。",
-    icon: PaletteIcon,
   },
 ];
 
@@ -100,13 +87,17 @@ export const AppModeSwitch: FC = () => {
         value={appMode}
         onChange={pick}
         disabled={busy}
-        options={OPTIONS.map((o) => ({
-          value: o.value,
-          label: o.label,
-          icon: <o.icon className="size-4 shrink-0" />,
-          // 分段器里铺不下描述，退到原生 tooltip 里
-          title: o.description,
-        }))}
+        options={OPTIONS.map((o) => {
+          const Icon = APP_MODE_META[o.value].icon;
+          return {
+            value: o.value,
+            label: APP_MODE_META[o.value].label,
+            // 图标尺寸由这里的 size-4 决定
+            icon: <Icon className="size-4 shrink-0" />,
+            // 分段器里铺不下描述，退到原生 tooltip 里
+            title: o.description,
+          };
+        })}
       />
     </>
   );

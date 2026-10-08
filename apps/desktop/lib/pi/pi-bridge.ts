@@ -120,6 +120,41 @@ export type PiCustomProviderSummary = {
   enabled: boolean;
 };
 
+/** 外部工具导入来源（镜像 sidecar src/model/import/types.ts 的 ImportSource） */
+export type PiImportSource = "opencode" | "codex" | "zcode" | "ccswitch";
+
+/**
+ * 归一化后的可导入服务（镜像 sidecar ImportedProvider）。解析在 sidecar 做，
+ * 前端只认这个形状。
+ *
+ * apiKey 是**明文**：写进钥匙串必需，因此这一项是"明文不回传渲染进程"的
+ * 有意例外——只在导入弹窗内使用、掩码展示，不落任何持久化存储。
+ */
+export type PiImportedProvider = {
+  source: PiImportSource;
+  /** 来源内的稳定标识（opencode 的 slug / Codex 的 model_providers 键 / ZCode 的 providerId） */
+  sourceKey: string;
+  sourceLabel: string;
+  name: string;
+  baseUrl: string;
+  api: PiCustomApiKind;
+  apiKey?: string;
+  /** 该来源记录在案的模型；空数组合法（导入后在编辑弹窗点「获取列表」现拉）。
+   *  contextWindow 只有来源真记了才有（cc-switch 的 modelCatalog 会给） */
+  models: { id: string; name?: string; contextWindow?: number }[];
+  /** 来源侧已停用（如 opencode 的 disabled_providers），导入后默认停用 */
+  disabled: boolean;
+};
+
+/** 单个来源的扫描结果：文件不存在是常态，此时 foundPath 为 null 且 error 为 null */
+export type PiImportSourceStatus = {
+  source: PiImportSource;
+  paths: string[];
+  foundPath: string | null;
+  count: number;
+  error: string | null;
+};
+
 /** 会话累计用量（sidecar 从 JSONL assistant 消息行的 usage 聚合） */
 export type PiUsageTotals = UsageTotals;
 
@@ -1044,6 +1079,11 @@ export type PiResponse =
   | { type: "custom_providers"; providers: PiCustomProviderSummary[] }
   | { type: "custom_provider_deleted"; provider: string }
   | { type: "custom_provider_toggled"; provider: string; enabled: boolean }
+  | {
+      type: "provider_import_candidates";
+      candidates: PiImportedProvider[];
+      sources: PiImportSourceStatus[];
+    }
   | { type: "fetched_models"; models: string[] }
   | { type: "tested"; ok: true }
   | { type: "provider_filter"; provider: string; models: string[] | null }

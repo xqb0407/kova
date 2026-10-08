@@ -44,6 +44,8 @@ mockModule("@/lib/pi/pi-thread-adapter", () => ({
   piSessionIdForThread: (threadId: string) =>
     registry.get(threadId) ?? (isLocalDraftThreadId(threadId) ? undefined : threadId),
   refreshSessionPrefs: () => refreshImpl(),
+  // 本模块的用例全是直读快照、不测响应式订阅，桩成常量即可
+  useSessionPrefsVersion: () => 0,
 }));
 
 // 全局默认档 store（设置 → 通用）用**真实模块**：app-mode.test.ts 在文件顶层

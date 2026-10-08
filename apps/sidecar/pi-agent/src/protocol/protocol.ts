@@ -260,6 +260,10 @@
  *       providerId = 编辑目标的业务 id（协议 reqId 占用了 "id" 字段，故改名）；缺省为新建
  *   { "type": "list_custom_providers", "id" }                 → { id, type: "custom_providers", providers: [...] }
  *       providers[].apiKeyMasked = 掩码（****+后4位）；明文 key 不回传渲染进程
+ *   { "type": "scan_provider_imports", "id" }                 → { id, type: "provider_import_candidates", candidates, sources }
+ *       只读：扫本机 opencode / Codex / ZCode 的配置，列出可导入的模型服务。
+ *       candidates[].apiKey 是明文（写钥匙串必需），只在导入弹窗内使用、掩码展示；
+ *       sources[] 如实回报每个来源"找到 / 不存在 / 解析失败+原因"。写入仍走 add_custom_provider。
  *   { "type": "toggle_custom_provider", "id", "provider", "enabled" } → { id, type: "custom_provider_toggled", provider, enabled }
  *   { "type": "set_mode", "id", "threadId", "sessionId"?, "mode" }       → { id, type: "mode_changed", mode, planning }
  *       mode = agent | plan；切换会热替换工具集与系统提示词
