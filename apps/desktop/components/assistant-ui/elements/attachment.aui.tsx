@@ -27,12 +27,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { Dialog, DialogTrigger } from "@/components/ui/dialog";
+import { ImageQuickLook } from "@/components/assistant-ui/elements/image-quick-look";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useAttachmentSrc } from "@/hooks/use-attachment-src";
@@ -52,34 +48,16 @@ const FileTypeIcon = dynamic(
   },
 );
 
-type AttachmentPreviewProps = {
-  src: string;
-};
-
-const AttachmentPreview: FC<AttachmentPreviewProps> = ({ src }) => {
-  const [isLoaded, setIsLoaded] = useState(false);
-  return (
-    <img
-      src={src}
-      alt="Attachment preview"
-      className={cn(
-        "block h-auto max-h-[80vh] w-auto max-w-full rounded-sm object-contain transition-opacity duration-300 motion-reduce:transition-none",
-        isLoaded
-          ? "aui-attachment-preview-image-loaded opacity-100"
-          : "aui-attachment-preview-image-loading opacity-0",
-      )}
-      onLoad={() => setIsLoaded(true)}
-    />
-  );
-};
-
+/** 附件预览与工具产图预览共用同一套「快速查看」查看器（缩放/平移/旋转/存本地） */
 const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
   const src = useAttachmentSrc();
+  const name = useAuiState((s) => s.attachment.name);
+  const [open, setOpen] = useState(false);
 
   if (!src) return children;
 
   return (
-    <Dialog>
+    <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger
         nativeButton={false}
         className="aui-attachment-preview-trigger cursor-zoom-in"
@@ -91,14 +69,13 @@ const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
           )
         }
       />
-      <DialogContent className="aui-attachment-preview-dialog-content [&>button]:bg-foreground/60 [&>button]:hover:bg-foreground/80 [&_svg]:text-background p-2 sm:max-w-3xl [&>button]:rounded-full [&>button]:p-1 [&>button]:opacity-100 [&>button]:ring-0!">
-        <DialogTitle className="aui-sr-only sr-only">
-          Image Attachment Preview
-        </DialogTitle>
-        <div className="aui-attachment-preview bg-background relative mx-auto flex max-h-[80dvh] w-full items-center justify-center overflow-hidden rounded-sm">
-          <AttachmentPreview src={src} />
-        </div>
-      </DialogContent>
+      <ImageQuickLook
+        open={open}
+        onOpenChange={setOpen}
+        src={src}
+        alt={name || "Image Attachment Preview"}
+        downloadName={name}
+      />
     </Dialog>
   );
 };
