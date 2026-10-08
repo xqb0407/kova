@@ -26,10 +26,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import {
   ModelSelectorContent,
   ModelSelectorEmpty,
@@ -55,12 +52,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
-import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
@@ -77,16 +68,17 @@ import {
 import {
   deleteSubagent,
   refreshSubagents,
-  saveSubagent,
   setSubagentEnabled,
   setSubagentModel,
   useSubagents,
-  type SubagentDraft,
   type SubagentEntry,
 } from "@/lib/subagent/subagents";
-
-/** 可声明的工具全集（与 sidecar KNOWN_TOOLS 对齐） */
-const TOOL_OPTIONS = ["read", "glob", "grep", "bash", "edit", "write"] as const;
+import { ReadonlyChips } from "./subagent-editor";
+import {
+  MEMORY_OPTIONS,
+  SubagentEditorPage,
+  type EditorTarget,
+} from "./subagent-editor-page";
 
 const SCOPE_LABEL: Record<SubagentEntry["scope"], string> = {
   builtin: "内置",
@@ -95,290 +87,10 @@ const SCOPE_LABEL: Record<SubagentEntry["scope"], string> = {
   plugin: "插件",
 };
 
-/** 表单草稿（maxTurns 用字符串承载，空 = 不设置） */
-type FormDraft = {
-  name: string;
-  description: string;
-  tools: string[];
-  maxTurns: string;
-  model: string;
-  prompt: string;
-};
-
-const EMPTY_FORM: FormDraft = {
-  name: "",
-  description: "",
-  tools: ["read", "glob", "grep"],
-  maxTurns: "",
-  model: "",
-  prompt: "",
-};
-
-function entryToForm(entry: SubagentEntry): FormDraft {
-  return {
-    name: entry.name,
-    description: entry.description,
-    tools: entry.tools,
-    maxTurns: entry.maxTurns !== undefined ? String(entry.maxTurns) : "",
-    model: entry.model ?? "",
-    prompt: entry.prompt,
-  };
-}
-
-function formToDraft(form: FormDraft): SubagentDraft {
-  const maxTurns = Number(form.maxTurns);
-  return {
-    name: form.name.trim(),
-    description: form.description.trim(),
-    tools: form.tools,
-    prompt: form.prompt,
-    ...(form.maxTurns.trim() && Number.isFinite(maxTurns) && maxTurns > 0
-      ? { maxTurns: Math.floor(maxTurns) }
-      : {}),
-    ...(form.model.trim() ? { model: form.model.trim() } : {}),
-  };
-}
-
-/** 表单 → YAML 文本（仅用于新建时的初始展示；合法性与回读以 sidecar 解析为准） */
-function formToYaml(form: FormDraft): string {
-  const lines = [
-    "# Kova subagent definition — managed via Settings → Subagents",
-    `name: ${JSON.stringify(form.name.trim())}`,
-    `description: ${JSON.stringify(form.description.trim())}`,
-    `tools: [${form.tools.join(", ")}]`,
-  ];
-  const maxTurns = Number(form.maxTurns);
-  if (form.maxTurns.trim() && Number.isFinite(maxTurns) && maxTurns > 0) {
-    lines.push(`maxTurns: ${Math.floor(maxTurns)}`);
-  }
-  if (form.model.trim()) lines.push(`model: ${form.model.trim()}`);
-  lines.push("prompt: |");
-  const body = form.prompt.endsWith("\n") ? form.prompt : `${form.prompt}\n`;
-  for (const line of body.split("\n")) lines.push(line ? `  ${line}` : "");
-  return lines.join("\n");
-}
-
-/** 弹窗的目标：新建 / 编辑既有 / 把内置复制为系统级 */
-type EditorTarget =
-  | { mode: "create"; scope: "system" | "workspace" }
-  | { mode: "edit"; entry: SubagentEntry }
-  | { mode: "copy"; entry: SubagentEntry };
-
-function editorScope(target: EditorTarget): "system" | "workspace" {
-  if (target.mode === "create") return target.scope;
-  return target.entry.scope === "workspace" ? "workspace" : "system";
-}
 
 // ---------------------------------------------------------------------------
 // 编辑 / 查看弹窗
 // ---------------------------------------------------------------------------
-
-const SubagentEditorDialog: FC<{
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  target: EditorTarget | null;
-  /** 工作区层保存所需的 cwd（当前选中工作区） */
-  workspaceCwd: string | null;
-}> = ({ open, onOpenChange, target, workspaceCwd }) => {
-  const isEdit = target?.mode === "edit";
-  const [form, setForm] = useState<FormDraft>(EMPTY_FORM);
-  const [yaml, setYaml] = useState("");
-  const [tab, setTab] = useState("form");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // 打开时回填（编辑途中不随外部清单刷新重置）
-  useEffect(() => {
-    if (!open || !target) return;
-    const seed =
-      target.mode === "create"
-        ? EMPTY_FORM
-        : target.mode === "copy"
-          ? { ...entryToForm(target.entry), name: `${target.entry.name}-copy` }
-          : entryToForm(target.entry);
-    setForm(seed);
-    setYaml(
-      target.mode === "edit" && target.entry.raw
-        ? target.entry.raw
-        : target.mode === "copy" && target.entry.raw
-          ? formToYaml(seed)
-          : formToYaml(seed),
-    );
-    setTab("form");
-    setError(null);
-    setBusy(false);
-  }, [open, target]);
-
-  if (!target) return null;
-  const scope = editorScope(target);
-  const scopeNeedsCwd = scope === "workspace" && !workspaceCwd;
-
-  const setField = <K extends keyof FormDraft>(key: K, value: FormDraft[K]) =>
-    setForm((f) => ({ ...f, [key]: value }));
-
-  const toggleTool = (tool: string) =>
-    setForm((f) => ({
-      ...f,
-      tools: f.tools.includes(tool)
-        ? f.tools.filter((t) => t !== tool)
-        : [...f.tools, tool],
-    }));
-
-  const save = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await saveSubagent({
-        scope,
-        cwd: scope === "workspace" ? workspaceCwd ?? undefined : undefined,
-        ...(isEdit ? { name: target.entry.name } : {}),
-        ...(tab === "yaml"
-          ? { raw: yaml }
-          : { definition: formToDraft(form) }),
-      });
-      onOpenChange(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>
-            {target.mode === "create"
-              ? "新建子智能体"
-              : target.mode === "copy"
-                ? "复制为系统级子智能体"
-                : `编辑 ${target.entry.name}`}
-          </DialogTitle>
-          <DialogDescription>
-            {scope === "workspace"
-              ? `保存到所选工作区 ${workspaceCwd ?? ""}/.kova/subagents/（随仓库共享）`
-              : "保存到应用数据目录，对本机所有会话生效"}
-          </DialogDescription>
-        </DialogHeader>
-        <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
-          <TabsList className="h-8 rounded-full p-[3px]">
-            <TabsTrigger value="form" className="rounded-full px-3 py-0 text-xs">
-              表单
-            </TabsTrigger>
-            <TabsTrigger value="yaml" className="rounded-full px-3 py-0 text-xs">
-              YAML 原文
-            </TabsTrigger>
-          </TabsList>
-          <TabsContent value="form" className="flex flex-col gap-3 pt-2">
-            <div className="flex gap-3">
-              <Label className="flex min-w-0 flex-1 flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-xs">名称</span>
-                <Input
-                  value={form.name}
-                  onChange={(e) => setField("name", e.target.value)}
-                  placeholder="如 api-auditor"
-                />
-              </Label>
-              <Label className="flex w-28 shrink-0 flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-xs">轮次上限</span>
-                <Input
-                  value={form.maxTurns}
-                  onChange={(e) => setField("maxTurns", e.target.value)}
-                  placeholder="如 40"
-                  inputMode="numeric"
-                />
-              </Label>
-              <Label className="flex w-48 shrink-0 flex-col items-start gap-1 text-sm">
-                <span className="text-muted-foreground text-xs">模型（留空继承会话）</span>
-                <Input
-                  value={form.model}
-                  onChange={(e) => setField("model", e.target.value)}
-                  placeholder="provider/modelId"
-                />
-              </Label>
-            </div>
-            <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-xs">
-                描述（主代理据此决定何时委派）
-              </span>
-              <Textarea
-                value={form.description}
-                onChange={(e) => setField("description", e.target.value)}
-                rows={2}
-              />
-            </Label>
-            <div className="flex flex-col gap-1 text-sm">
-              <span className="text-muted-foreground text-xs">可用工具</span>
-              <div className="flex flex-wrap gap-1.5">
-                {TOOL_OPTIONS.map((tool) => {
-                  const active = form.tools.includes(tool);
-                  return (
-                    <button
-                      key={tool}
-                      type="button"
-                      onClick={() => toggleTool(tool)}
-                      className={cn(
-                        "rounded-full border px-2.5 py-0.5 font-mono text-xs transition-colors",
-                        active
-                          ? "bg-primary text-primary-foreground border-primary"
-                          : "text-muted-foreground hover:bg-muted",
-                      )}
-                    >
-                      {tool}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            <Label className="flex flex-col items-start gap-1 text-sm">
-              <span className="text-muted-foreground text-xs">
-                系统提示词（delegate 的行为说明）
-              </span>
-              <Textarea
-                value={form.prompt}
-                onChange={(e) => setField("prompt", e.target.value)}
-                rows={10}
-                className="font-mono text-xs"
-              />
-            </Label>
-          </TabsContent>
-          <TabsContent value="yaml" className="pt-2">
-            <Textarea
-              value={yaml}
-              onChange={(e) => setYaml(e.target.value)}
-              rows={18}
-              className="font-mono text-xs"
-              spellCheck={false}
-            />
-            <p className="text-muted-foreground pt-1 text-xs">
-              保存时由 sidecar 以与加载定义文件完全相同的解析校验处理；表单页签的内容不会覆盖此处编辑。
-            </p>
-          </TabsContent>
-        </Tabs>
-        {error && (
-          <p className="text-destructive text-xs" role="alert">
-            {error}
-          </p>
-        )}
-        {scopeNeedsCwd && (
-          <p className="text-muted-foreground text-xs">
-            未选择工作区：先在主界面选好工作目录，或改用"新建系统级"。
-          </p>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button onClick={save} disabled={busy || scopeNeedsCwd}>
-            {busy ? "保存中…" : "保存"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-};
 
 /** 内置定义的只读查看弹窗 */
 const BuiltinViewDialog: FC<{
@@ -415,6 +127,24 @@ const BuiltinViewDialog: FC<{
               模型 <span className="font-mono">{entry.model}</span>（本机设定）
             </span>
           )}
+          {entry.memory && entry.memory !== "none" && (
+            <span className="text-muted-foreground px-1">
+              记忆 {MEMORY_OPTIONS.find((o) => o.value === entry.memory)?.label ?? entry.memory}
+            </span>
+          )}
+        </div>
+        {/* 能力授予维度只读展示：内置不可编辑，但必须看得见自己有哪些能力——
+            否则"为什么这个 agent 够不到我的 Notion"无从排查 */}
+        <div className="flex flex-col gap-1.5">
+          <ReadonlyChips label="技能" items={entry.skills ?? []} />
+          <ReadonlyChips label="MCP" items={entry.mcpServers ?? []} mono />
+          <ReadonlyChips
+            label="知识源"
+            items={(entry.knowledge ?? []).map(
+              (k) => `${k.name} ${k.path}`,
+            )}
+            mono
+          />
         </div>
         <pre className="bg-muted/50 max-h-80 overflow-y-auto rounded-xl p-4 text-xs whitespace-pre-wrap">
           {entry.prompt}
@@ -721,7 +451,12 @@ const WorkspaceCwdMenu: FC<{
   </DropdownMenu>
 );
 
-export const SubagentsSettings: FC = () => {
+export const SubagentsSettings: FC<{
+  /** 编辑态上抛：父级（MarketplaceView）据此收掉自己的顶栏。
+   *  不收会撞出两个「返回」——外层那个退出整个管理页，内层这个只返回列表，
+   *  语义不同却长一样，用户点哪个全凭运气。 */
+  onEditingChange?: (editing: boolean) => void;
+}> = ({ onEditingChange }) => {
   const workspace = useWorkspace();
   const recents = useWorkspaceRecents();
   // 工作区级区块允许浏览任意目录：overrideCwd 为 null 时跟随主界面当前工作区，
@@ -729,12 +464,16 @@ export const SubagentsSettings: FC = () => {
   const [overrideCwd, setOverrideCwd] = useState<string | null>(null);
   const viewingCwd = overrideCwd ?? workspace;
   const snap = useSubagents(viewingCwd);
-  const [editor, setEditor] = useState<{ open: boolean; target: EditorTarget | null }>({
-    open: false,
-    target: null,
-  });
+  // 编辑目标（非空即处于编辑态，容器渲染编辑器而非列表）
+  const [editorTarget, setEditorTarget] = useState<EditorTarget | null>(null);
   const [viewing, setViewing] = useState<SubagentEntry | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  // 编辑态同步给父级（卸载时也上报一次 false，避免切走页面后顶栏一直藏著）
+  useEffect(() => {
+    onEditingChange?.(editorTarget !== null);
+  }, [editorTarget, onEditingChange]);
+  useEffect(() => () => onEditingChange?.(false), [onEditingChange]);
 
   const groups = useMemo(
     () => ({
@@ -787,7 +526,7 @@ export const SubagentsSettings: FC = () => {
     }
   };
 
-  const openEditor = (target: EditorTarget) => setEditor({ open: true, target });
+  const openEditor = (target: EditorTarget) => setEditorTarget(target);
 
   const renderSection = (
     title: string,
@@ -830,6 +569,23 @@ export const SubagentsSettings: FC = () => {
       </div>
     </section>
   );
+
+  // 编辑态：整页换成编辑器（与列表同一容器，返回即回到原处）
+  if (editorTarget) {
+    return (
+      <div className="h-full min-h-0 py-4">
+        <SubagentEditorPage
+          target={editorTarget}
+          workspaceCwd={viewingCwd}
+          grantableTools={snap.grantableTools}
+          onBack={() => setEditorTarget(null)}
+          renderModelControl={(value, onChange) => (
+            <SubagentModelControl value={value} onChange={onChange} />
+          )}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
@@ -948,12 +704,6 @@ export const SubagentsSettings: FC = () => {
           </details>
         )}
 
-        <SubagentEditorDialog
-          open={editor.open}
-          onOpenChange={(open) => setEditor((e) => ({ ...e, open }))}
-          target={editor.target}
-          workspaceCwd={viewingCwd}
-        />
         <BuiltinViewDialog
           open={viewing !== null}
           onOpenChange={(open) => {

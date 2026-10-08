@@ -31,6 +31,8 @@ import {
   SUBAGENT_WAIT_TOOL_NAME,
 } from "./delegation";
 import { SubagentRun } from "./run";
+import { resolveSubagentCapabilities } from "./capabilities";
+import { logErr } from "../log";
 
 const TASKWAIT_DEFAULT_TIMEOUT_SECONDS = 300;
 const TASKWAIT_MAX_TIMEOUT_SECONDS = 3600;
@@ -158,9 +160,15 @@ export function buildSubagentTools(
       const resolved = await resolveDelegateModel(run, definition, String(p.model ?? "").trim());
       const model = resolved.model;
       if (!model) return subagentToolError(resolved.error ?? "model unavailable");
-      const tools = definition.tools
-        .map((name) => baseTools.find((t) => t.name === name.toLowerCase()))
-        .filter((t): t is AgentTool => t !== undefined);
+      // 五个能力维度在一次解析里全部落地（tools / skills / knowledge / mcp / memory）
+      const caps = await resolveSubagentCapabilities(
+        definition,
+        run.cwd,
+        baseTools,
+        run.threadId,
+      );
+      const tools = caps.tools;
+      for (const d of caps.diagnostics) logErr("subagent capability:", d);
       if (tools.length === 0) {
         return subagentToolError(
           `The ${definition.name} subagent declares no tool available in this session.`,
@@ -208,6 +216,7 @@ export function buildSubagentTools(
         model,
         cwd: run.cwd,
         tools,
+        capabilityBlock: caps.promptBlock,
         sessionId: delegationId,
         traceSessionId: run.sessionId,
         // 轨迹因果边：把这次 Task tool_call 的父 run/父 span 身份写到子 run 上

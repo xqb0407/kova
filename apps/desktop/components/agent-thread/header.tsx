@@ -25,7 +25,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
-import { AppModeSwitch } from "./app-mode-switch";
 import { usePanelActivity } from "@/lib/panels/panel-activity";
 import { useThreadTodos } from "@/lib/pi/pi-todo";
 import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
@@ -252,7 +251,9 @@ export const Header: FC<{
         // 完全一致（300ms + 同一曲线），否则槽位先收没、侧栏按钮后到位，
         // 中间出现"按钮凭空消失"的空窗
         "flex h-12 shrink-0 items-center gap-2 transition-[padding] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
-        !pageMode && "border-b-[0.5]",
+        // 下边框只在「有会话内容」时画：新对话顶栏空着，一条横线反而把空页
+        // 劈成两截；有消息（标题已显示）时恢复，与正文分开
+        !pageMode && !isEmptyThread && "border-b-[0.5]",
         "pr-4",
         sidebarCollapsed && mac ? "md:pl-24" : "pl-4",
       )}
@@ -295,14 +296,14 @@ export const Header: FC<{
         </TooltipIconButton>
       </div>
       
-      {/* 整页视图不属于任何会话：标题/徽章/重命名/面板开关都让位给页面自身 */}
-      {pageMode ? null : <ThreadTitle />}
+      {/* 整页视图不属于任何会话：标题/徽章/重命名/面板开关都让位给页面自身；
+          空会话（新对话）同样不显示标题——顶栏留着干净，等有消息了再出现 */}
+      {pageMode || isEmptyThread ? null : <ThreadTitle />}
       {/* 所选工作区目录 + git 分支 tag（未选目录时不显示），位于「更多」按钮左侧 */}
       {!pageMode && !isEmptyThread && <WorkspaceBadge />}
-      {/* 会话工作模式切换（编码/工作/设计）：只作用于本会话，与模型/思考档位选择器
-          同语义（未切过档的会话跟随设置→通用的全局默认）。仅对话页渲染：pageMode 的页面（文件/自动化/用量/连接器）是整页视图，
-          标题区让位给页面自身，这个开关也一并收起，避免顶栏被应用级控件占住 */}
-      {!pageMode && <AppModeSwitch />}
+      {/* 会话工作模式切换（编码/工作/设计）已挪到新对话欢迎页的问候语上方：
+          新对话没有标题可看，顶栏空着一片，模式放在"开聊之前"更顺手。
+          有消息之后本页不再有它的入口（需要时再定放哪） */}
       {/* 标题右侧「更多」菜单 + 重命名任务 dialog（空会话不渲染） */}
       {pageMode || isEmptyThread ? null : (
         <>

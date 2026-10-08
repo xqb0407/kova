@@ -17,6 +17,7 @@ import {
   uninstallPlugin,
 } from "../../plugins/plugins";
 import { nextFallbackSeq } from "../command";
+import { readPluginComponentDoc } from "../plugin-component-docs";
 import { marketplacesPayload, pluginsPayload, reloadAllPluginComponents } from "../payloads";
 import type { CommandHandler } from "../command";
 
@@ -91,6 +92,29 @@ export const handlers: Record<string, CommandHandler> = {
       base64: asset.base64,
       rev: asset.rev,
     });
+  },
+
+  /**
+   * 单个插件组件的正文（插件详情页"查看内容"）：技能 SKILL.md / 子智能体 YAML /
+   * MCP 条目 JSON，按需现取。插件未安装或该组件不存在回 error。
+   */
+  get_plugin_component_doc: async (reqId, msg) => {
+    const pluginId = String(msg.pluginId ?? "");
+    const kind = String(msg.kind ?? "");
+    const name = String(msg.name ?? "");
+    if (!pluginId || !name || (kind !== "skill" && kind !== "mcp" && kind !== "subagent")) {
+      throw new Error("get_plugin_component_doc: pluginId, kind and name are required");
+    }
+    const doc = await readPluginComponentDoc(pluginId, kind, name);
+    if (!doc) {
+      send({
+        id: reqId,
+        type: "error",
+        errorText: `get_plugin_component_doc: 组件不可用（未安装/不存在/读失败）：${name}@${pluginId}`,
+      });
+      return;
+    }
+    send({ id: reqId, type: "plugin_component_doc", ...doc });
   },
 
   /**

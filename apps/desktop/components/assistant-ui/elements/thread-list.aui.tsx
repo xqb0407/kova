@@ -79,6 +79,12 @@ import {
 import { useThreadActivity } from "@/lib/pi/pi-last-activity";
 import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
 import {
+  setThreadTimeRange,
+  threadRangeStart,
+  threadTimeRangeLabel,
+  useThreadTimeRange,
+} from "@/lib/pi/pi-thread-filter";
+import {
   usePendingInteractionKind,
   type PendingInteractionKind,
 } from "@/lib/pi/pi-interactions";
@@ -550,12 +556,13 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const threadItems = useAuiState((s) => s.threads.threadItems);
   const pinnedIds = usePinnedSessionIds();
+  const timeRange = useThreadTimeRange();
 
   const query = searchQuery.trim().toLowerCase();
 
   return useMemo(() => {
     const itemsById = new Map(threadItems.map((item) => [item.id, item]));
-    const filteredIndices = threadIds
+    const searchedIndices = threadIds
       .map((id, index) => ({ id, index }))
       .filter(
         ({ id }) =>
@@ -569,6 +576,18 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
     const dates = threadIds.map((id) => itemsById.get(id)?.lastMessageAt);
     const time = (index: number) =>
       dates[index]?.getTime() ?? Number.MAX_SAFE_INTEGER;
+
+    // 时间筛选（侧栏 tabs 行右侧的按钮）：按最近活跃时间卡自然日区间。
+    // 没有时间戳的（刚建还没聊过）当"新"处理——它们不是旧会话，任何区间
+    // 都留着，否则新建一个空会话就会被筛选吃掉。
+    const rangeStart = threadRangeStart(timeRange);
+    const filteredIndices =
+      rangeStart == null
+        ? searchedIndices
+        : searchedIndices.filter((index) => {
+            const at = dates[index];
+            return at == null || at.getTime() >= rangeStart;
+          });
 
     // cwd 归属只看会话自己记录的 cwd：空（含新建未落盘）= 任务，非空 = 项目分组。
     // 不用当前 workspace 兜底——那会让"默认选中的目录"污染会话归属
@@ -615,7 +634,35 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       taskIndices,
       projectGroups,
     };
-  }, [threadIds, threadItems, query, pinnedIds]);
+  }, [threadIds, threadItems, query, pinnedIds, timeRange]);
+};
+
+/** 列表空态。时间筛选开着时换一套文案并给「清除筛选」——否则一句「暂无任务
+ *  对话」会让人以为会话没了，其实只是被区间挡在外面 */
+const ThreadListEmpty: FC<{ searching?: boolean; children: ReactNode }> = ({
+  searching,
+  children,
+}) => {
+  const range = useThreadTimeRange();
+  return (
+    <div
+      data-slot="aui_thread-list-empty"
+      className="text-muted-foreground px-2.5 py-4 text-sm"
+    >
+      {range === "all"
+        ? children
+        : `「${threadTimeRangeLabel(range)}」内没有${searching ? "匹配的" : ""}会话`}
+      {range !== "all" && (
+        <Button
+          variant="ghost"
+          className="mt-1.5 -ms-2 h-6 gap-1 px-2 text-xs font-normal"
+          onClick={() => setThreadTimeRange("all")}
+        >
+          清除筛选
+        </Button>
+      )}
+    </div>
+  );
 };
 
 const ThreadListItemGroups: FC<{
@@ -626,11 +673,24 @@ const ThreadListItemGroups: FC<{
     useThreadListGroups(searchQuery);
   const query = searchQuery.trim();
 
+  // 任务 tab 分页：默认渲染最近 10 条，尾部的「显示更多」每点一次放出一页。
+  // 不做滚动自动加载——会话多时侧栏会变成无限流，想定位旧会话反而更难；
+  // 搜索时全量展示（结果已经过滤过，截断会让人误以为漏了条目），query 变化即重置页数。
+  const [taskVisibleCount, setTaskVisibleCount] = useState(TASK_VISIBLE_LIMIT);
+  useEffect(() => {
+    setTaskVisibleCount(TASK_VISIBLE_LIMIT);
+  }, [query]);
+  const visibleTaskIndices = query
+    ? taskIndices
+    : taskIndices.slice(0, taskVisibleCount);
+  const hiddenTaskCount = taskIndices.length - visibleTaskIndices.length;
+
   // 批量模式「全选」的可见集注册：任务 tab 当前渲染的会话（含置顶组，
   // 搜索过滤后口径一致）。跨 tab 统一选择池的一侧，见 pi-thread-batch.ts
   const visibleTaskIds = useMemo(
-    () => [...pinnedIndices, ...taskIndices].map((index) => threadIds[index]),
-    [threadIds, pinnedIndices, taskIndices],
+    () =>
+      [...pinnedIndices, ...visibleTaskIndices].map((index) => threadIds[index]),
+    [threadIds, pinnedIndices, visibleTaskIndices],
   );
   useEffect(() => {
     setThreadBatchVisible("tasks", visibleTaskIds);
@@ -647,26 +707,12 @@ const ThreadListItemGroups: FC<{
   });
 
   if (query && filteredIndices.length === 0) {
-    return (
-      <div
-        data-slot="aui_thread-list-empty"
-        className="text-muted-foreground px-2.5 py-4 text-sm"
-      >
-        No threads found
-      </div>
-    );
+    return <ThreadListEmpty searching>No threads found</ThreadListEmpty>;
   }
 
   // 已归档会话不在侧栏展示，统一到「设置 → 归档」查看与恢复
   if (pinnedIndices.length === 0 && taskIndices.length === 0) {
-    return (
-      <div
-        data-slot="aui_thread-list-empty"
-        className="text-muted-foreground px-2.5 py-4 text-sm"
-      >
-        暂无任务对话
-      </div>
-    );
+    return <ThreadListEmpty>暂无任务对话</ThreadListEmpty>;
   }
 
   return (
@@ -690,7 +736,7 @@ const ThreadListItemGroups: FC<{
           ))}
         </PinnedCard>
       )}
-      {taskIndices.map((index, i) => (
+      {visibleTaskIndices.map((index, i) => (
         <RowHoverContext.Provider
           key={threadIds[index]}
           value={{ registerItem, index: pinnedIndices.length + i }}
@@ -703,6 +749,25 @@ const ThreadListItemGroups: FC<{
           </TreeRow>
         </RowHoverContext.Provider>
       ))}
+      {/* 分页尾巴：与项目组的「显示更多」同一套（会话标题的左缘对齐位 +
+          hover 槽位），只是页大小是任务 tab 自己的 */}
+      {hiddenTaskCount > 0 && (
+        <TreeRow position={visibleTaskIndices.length}>
+          <FluidHoverRow
+            registerItem={registerItem}
+            index={pinnedIndices.length + visibleTaskIndices.length}
+          >
+            <Button
+              variant="ghost"
+              // 左缘与会话标题对齐：行 ps-2.5(10px) + 占位图标 size-3.5(14px) + me-1.5(6px) = 30px
+              className="h-7 w-full justify-start ps-[30px] text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+              onClick={() => setTaskVisibleCount((c) => c + TASK_VISIBLE_LIMIT)}
+            >
+              {`显示更多（${Math.min(hiddenTaskCount, TASK_VISIBLE_LIMIT)}）`}
+            </Button>
+          </FluidHoverRow>
+        </TreeRow>
+      )}
     </>
   );
 };
@@ -731,6 +796,8 @@ const PinnedCard: FC<{ children: ReactNode }> = ({ children }) => (
 
 /** 项目展开后默认可见的会话行数，超出折叠进「显示更多」 */
 const PROJECT_VISIBLE_LIMIT = 5;
+/** 任务 tab 每页行数：尾部「显示更多」每点一次放出一页（不做滚动自动加载） */
+const TASK_VISIBLE_LIMIT = 10;
 
 export const ProjectListItems: FC<{
   openDirs?: Set<string>;
@@ -835,12 +902,9 @@ export const ProjectListItems: FC<{
 
   if (projectGroups.length === 0 && pinnedProjectIndices.length === 0) {
     return (
-      <div
-        data-slot="aui_thread-list-empty"
-        className="text-muted-foreground px-2.5 py-4 text-sm"
-      >
+      <ThreadListEmpty>
         暂无项目对话，选择工作目录后新建的对话会出现在这里
-      </div>
+      </ThreadListEmpty>
     );
   }
 

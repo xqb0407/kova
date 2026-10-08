@@ -11,6 +11,7 @@ mod gpu;
 mod http;
 mod logging;
 mod notify;
+mod panic_guard;
 mod pi_agent;
 mod playwright_script;
 mod pty;
@@ -74,6 +75,8 @@ pub fn run() {
         .setup(|app| {
             // 磁盘日志最先初始化（后续任何失败都能记到 app.log）
             logging::init(app.handle());
+            // panic 落盘：必须排在日志器之后，否则第一批 panic 记不进文件
+            panic_guard::install_panic_hook();
             // 待恢复备份换入：必须在任何存储打开之前（state.db / sessions 换新）
             match backup::apply_pending_restore(app.handle()) {
                 Ok(Some(summary)) => log::info!("[backup] restore applied: {summary}"),
@@ -141,7 +144,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(panic_guard::guard_invoke_handler(tauri::generate_handler![
             pi_agent::pi_prompt,
             pi_agent::pi_abort,
             pi_agent::pi_reset,
@@ -218,7 +221,7 @@ pub fn run() {
             backup::backup_restore,
             backup::backup_peek_header,
             backup::backup_restart_app
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {

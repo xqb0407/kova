@@ -24,6 +24,7 @@ import {
   type InstalledPlugin,
 } from "./manifest";
 import { readMarketplaceRecords } from "./registry";
+import { expandPluginValue } from "./expand";
 
 // ---------------------------------------------------------------------------
 // 启用开关（kv 整包，默认启用，显式关闭记键）
@@ -304,7 +305,21 @@ export function activePluginHooks(): PluginHookEntry[] {
       continue;
     }
     const diagnostics: string[] = [];
-    const hooks = readPluginHooksFile(file, plugin.pluginId, plugin.name, diagnostics);
+    const raw = readPluginHooksFile(file, plugin.pluginId, plugin.name, diagnostics);
+    // 命令串按插件根展开占位符：第三方 hooks.json 普遍用 ${CLAUDE_PLUGIN_ROOT}
+    // 定位自带脚本（Claude Code 由宿主注入同名环境变量）。不展开的话命令原样
+    // 交给 shell，spawn 因路径不存在而失败——而 spawn 失败是静默放行的，症状是
+    // 插件「装了但没反应」且无任何日志。
+    const ctx = { root: plugin.manifest.root };
+    const hooks: PluginHookEntry[] = [];
+    for (const h of raw) {
+      const cmd = expandPluginValue(h.command, ctx);
+      const args = h.args?.map((a) => expandPluginValue(a, ctx).value);
+      for (const token of [...cmd.missing, ...(h.args ?? []).flatMap((a) => expandPluginValue(a, ctx).missing)]) {
+        diagnostics.push(`hooks ${h.id}: 占位符 ${token} 无法展开（插件根缺失）`);
+      }
+      hooks.push({ ...h, command: cmd.value, ...(args ? { args } : {}) });
+    }
     hookCache.set(plugin.pluginId, { sig, hooks });
     for (const d of diagnostics) logErr(`plugin ${plugin.pluginId}:`, d);
     out.push(...hooks);
