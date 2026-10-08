@@ -207,6 +207,8 @@ export const MarketplaceView: FC<{
   const [view, setView] = useState<SectionView>("market");
   const [manageOpen, setManageOpen] = useState(false);
   const [manageTab, setManageTab] = useState<ManageTab>("subagents");
+  /** 子智能体编辑器占用了内容区：顶栏让位给它（编辑器自带返回 + 标题） */
+  const [subagentEditing, setSubagentEditing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [localInstallOpen, setLocalInstallOpen] = useState(false);
   const [activeMktId, setActiveMktId] = useState<string | null>(null);
@@ -353,34 +355,38 @@ export const MarketplaceView: FC<{
   if (manageOpen) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        {/* 顶部条：与下方设置内容同宽同轴，返回 + 分段器（带计数） */}
-        <div className="mx-auto flex w-full max-w-6xl shrink-0 items-center justify-between px-8 pt-6">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground -ml-2 gap-1"
-            onClick={() => setManageOpen(false)}
-          >
-            <ChevronLeftIcon className="size-4" />
-            返回
-          </Button>
-          <Segmented
-            value={manageTab}
-            onChange={setManageTab}
-            options={[
-              {
-                value: "subagents",
-                label: `子智能体 ${subagentsSnap.agents.length + subagentsSnap.pluginAgents.length}`,
-              },
-              { value: "plugins", label: `MCP ${mcpSnap.servers.length}` },
-              { value: "skills", label: `技能 ${skillsSnap.skills.length}` },
-              { value: "apps", label: "应用授权 0" },
-            ]}
-          />
-        </div>
+        {/* 顶部条：与下方设置内容同宽同轴，返回 + 分段器（带计数）。
+            子智能体编辑器打开时整条让位——它自带返回与标题，
+            留着会出现两个语义不同的「返回」叠在一起。 */}
+        {!subagentEditing && (
+          <div className="mx-auto flex w-full max-w-6xl shrink-0 items-center justify-between px-8 pt-6">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground -ml-2 gap-1"
+              onClick={() => setManageOpen(false)}
+            >
+              <ChevronLeftIcon className="size-4" />
+              返回
+            </Button>
+            <Segmented
+              value={manageTab}
+              onChange={setManageTab}
+              options={[
+                {
+                  value: "subagents",
+                  label: `子智能体 ${subagentsSnap.agents.length + subagentsSnap.pluginAgents.length}`,
+                },
+                { value: "plugins", label: `MCP ${mcpSnap.servers.length}` },
+                { value: "skills", label: `技能 ${skillsSnap.skills.length}` },
+                { value: "apps", label: "应用授权 0" },
+              ]}
+            />
+          </div>
+        )}
         <div className="min-h-0 flex-1">
           <div className="mx-auto h-full max-w-6xl px-8">
-            {manageTab === "subagents" && <SubagentsSettings />}
+            {manageTab === "subagents" && <SubagentsSettings onEditingChange={setSubagentEditing} />}
             {manageTab === "plugins" && <McpSettings />}
             {manageTab === "skills" && <SkillsSettings />}
             {manageTab === "apps" && (
@@ -657,8 +663,8 @@ export const MarketplaceView: FC<{
                             className="bg-white dark:bg-background hover:bg-muted/50 flex cursor-pointer flex-col rounded-2xl border p-4"
                           >
                             <div className="flex items-start gap-3">
-                              <div className="bg-background grid size-9 shrink-0 place-items-center overflow-hidden rounded-xl border">
-                                <PluginIcon src={entry.icon} />
+                              <div className="bg-background grid size-9 shrink-0 place-items-center overflow-hidden rounded-xl">
+                                <PluginIcon src={entry.icon} name={entry.name} />
                               </div>
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-1.5">
@@ -682,7 +688,7 @@ export const MarketplaceView: FC<{
                               </div>
                             </div>
                             {entry.description && (
-                              <p className="text-muted-foreground mt-2 line-clamp-3 flex-1 text-sm">
+                              <p className="text-muted-foreground mt-2 line-clamp-3 flex-1 text-xs">
                                 {entry.description}
                               </p>
                             )}

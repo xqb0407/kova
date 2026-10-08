@@ -9,11 +9,14 @@
  * 已装=启停/检查更新/卸载），本组件纯展示。
  * 关闭态（preview=null）children 仍挂载，一律按空值安全求值。
  */
-import type { FC, ReactNode } from "react";
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useState, type FC, type ReactNode } from "react";
 import {
   BotIcon,
+  EyeIcon,
   InfoIcon,
   LayersIcon,
+  Loader2Icon,
   ServerIcon,
   SparklesIcon,
   TriangleAlertIcon,
@@ -27,8 +30,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { ClampedText } from "@/components/ui/clamped-text";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { PluginEntry } from "@/lib/plugins/plugins";
+import {
+  getPluginComponentDoc,
+  type PluginEntry,
+  type PiPluginComponentKind,
+} from "@/lib/plugins/plugins";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
 
 export type PluginPreviewData = {
@@ -42,6 +51,16 @@ export type PluginPreviewData = {
   /** 已装镜像；null = 市场里未安装的条目 */
   installed: PluginEntry | null;
 };
+
+/** 正文视图带 Streamdown 重依赖：点开"查看内容"才异步拉取，不进市场页首屏包 */
+const ComponentDocView = dynamic(() => import("./component-doc-view"), {
+  ssr: false,
+  // 分块在飞的时候留一行占位：只渲染 null 会在正文已到手、视图还没到位时
+  // 露出一块空白，看着像"内容是空的"
+  loading: () => (
+    <p className="text-muted-foreground mt-3 text-sm">正在加载视图…</p>
+  ),
+});
 
 const MANIFEST_KIND_LABEL: Record<PluginEntry["manifestKind"], string> = {
   kova: "kova",
@@ -71,13 +90,123 @@ const Section: FC<{
   </section>
 );
 
-/** 组件条目卡：名称 + 启用状态点 + 完整描述（网格排布，替代旧的一行摘要） */
+/** 二级弹窗当前展示的组件（null = 未打开） */
+type ComponentDocTarget = {
+  pluginId: string;
+  kind: PiPluginComponentKind;
+  name: string;
+};
+
+const COMPONENT_KIND_LABEL: Record<PiPluginComponentKind, string> = {
+  skill: "技能",
+  mcp: "MCP 服务器",
+  subagent: "子智能体",
+};
+
+/** 组件正文二级弹窗：按需现取的原文 + 来源路径（懒加载，打开才发请求）。
+ *  走二级弹窗而非卡片内联展开：正文可达几十 KB，在三列网格卡里就地展开会把
+ *  整行撑成参差的高墙，也把滚动位置挤乱；独立窗口让详情页版式保持不动。 */
+const ComponentDocDialog: FC<{
+  target: ComponentDocTarget | null;
+  onClose: () => void;
+}> = ({ target, onClose }) => {
+  const [state, setState] = useState<
+    | { status: "loading" }
+    | { status: "ready"; path: string; content: string; truncated: boolean }
+    | { status: "error"; text: string }
+    | null
+  >(null);
+
+  // 换组件（target 变化）重置：先归零再取，避免上一条的正文在新标题下闪一下
+  useEffect(() => {
+    if (!target) {
+      setState(null);
+      return;
+    }
+    let cancelled = false;
+    setState({ status: "loading" });
+    void (async () => {
+      try {
+        const doc = await getPluginComponentDoc(target.pluginId, target.kind, target.name);
+        if (!cancelled) {
+          setState({
+            status: "ready",
+            path: doc.path,
+            content: doc.content,
+            truncated: doc.truncated,
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setState({
+            status: "error",
+            text: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [target]);
+
+  return (
+    <Dialog open={target !== null} onOpenChange={(open) => !open && onClose()}>
+      {/* 正文可能几十 KB：整窗封顶 + 头部/页脚固定、只有正文区滚动。
+          上限取 min(70vh, 36rem)：短文档不该占满视口（这是嵌在详情页上的二级
+          窗口，全屏高会把底下的详情整页盖掉），长文档又确实需要一个能滚动的
+          阅读区。少了 max-h，minmax(0,1fr) 那行没有可解算的高度，会一路撑到
+          内容高度并溢出视口。 */}
+      <DialogContent className="max-h-[min(70vh,36rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-3xl">
+        <DialogHeader className="px-6 pt-6 pb-4">
+          <DialogTitle className="flex items-center gap-2 text-base">
+            {target?.name ?? ""}
+            {target && (
+              <Badge variant="secondary" className="font-normal">
+                {COMPONENT_KIND_LABEL[target.kind]}
+              </Badge>
+            )}
+          </DialogTitle>
+          <DialogDescription className="text-xs">
+            内容来自插件安装目录，只读。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 overflow-y-auto px-6 pb-6">
+          {!target || !state || state.status === "loading" ? (
+            <p className="text-muted-foreground flex items-center gap-2 text-sm">
+              <Loader2Icon className="size-4 animate-spin" />
+              正在读取内容…
+            </p>
+          ) : state.status === "error" ? (
+            <p className="text-destructive text-sm break-words">{state.text}</p>
+          ) : (
+            <>
+              <ComponentDocView
+                markdown={target.kind === "skill"}
+                content={state.content}
+              />
+            </>
+          )}
+        </div>
+        <DialogFooter className="px-6 py-4">
+          <Button variant="outline" onClick={onClose}>
+            关闭
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+/** 组件条目卡：名称 + 启用状态点 + 描述（网格排布）+ "查看内容"入口。
+ *  pluginId 为 null 时（市场里未安装的条目）没有本地文件可读，不给入口。 */
 const ComponentCard: FC<{
   name: string;
   description: string;
   enabled: boolean;
+  onInspect: (() => void) | null;
   extra?: ReactNode;
-}> = ({ name, description, enabled, extra }) => (
+}> = ({ name, description, enabled, onInspect, extra }) => (
   <div className="rounded-xl border p-4">
     <div className="flex items-center gap-2">
       <span
@@ -90,11 +219,32 @@ const ComponentCard: FC<{
       <span className="min-w-0 truncate text-sm font-medium">{name}</span>
     </div>
     {description && (
-      <p className="text-muted-foreground mt-1.5 line-clamp-3 text-[13px] leading-6">
-        {description}
-      </p>
+      <ClampedText
+        text={description}
+        lines={2}
+        className="text-muted-foreground mt-1.5 text-[13px] leading-6"
+      />
     )}
-    {extra}
+    {/* 徽标与"查看内容"同处一条弹性行：卡片本体是普通块级容器，而 Badge 和
+        Button 都是 inline-flex，直接并排写在 JSX 里会流到同一行、且按钮原先的
+        -ml-2 会把它顶进徽标里（截图里 stdio 与按钮贴成一坨就是这个原因）。
+        收进 flex + gap 后既有间距，宽度不够时也只会折行而不是重叠。 */}
+    {(extra || onInspect) && (
+      <div className="mt-2.5 flex flex-wrap items-center gap-2">
+        {extra}
+        {onInspect && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onInspect}
+            className="text-muted-foreground hover:text-foreground h-7 gap-1 px-2 text-xs"
+          >
+            <EyeIcon className="size-3.5" />
+            查看内容
+          </Button>
+        )}
+      </div>
+    )}
   </div>
 );
 
@@ -108,8 +258,12 @@ type PreviewComponentItem = {
 
 const ComponentGrid: FC<{
   items: PreviewComponentItem[];
+  kind: PiPluginComponentKind;
+  /** 未安装的插件没有本地组件文件，传 null 收起"查看内容"入口 */
+  pluginId: string | null;
+  onInspect: (target: Omit<ComponentDocTarget, "kind">) => void;
   render?: (item: PreviewComponentItem) => ReactNode;
-}> = ({ items, render }) => (
+}> = ({ items, kind, pluginId, onInspect, render }) => (
   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
     {items.map((c) => (
       <ComponentCard
@@ -117,6 +271,9 @@ const ComponentGrid: FC<{
         name={c.name}
         description={c.description}
         enabled={c.enabled}
+        onInspect={
+          pluginId ? () => onInspect({ pluginId, name: c.name }) : null
+        }
         extra={render?.(c)}
       />
     ))}
@@ -138,15 +295,27 @@ export const PluginPreviewDialog: FC<{
 }> = ({ preview, onClose, footer }) => {
   const installed = preview?.installed ?? null;
   const components = installed?.components;
+  // 组件正文二级弹窗的目标组件（null = 未打开）
+  const [docTarget, setDocTarget] = useState<ComponentDocTarget | null>(null);
+  const inspect = useCallback(
+    (kind: PiPluginComponentKind) => (base: Omit<ComponentDocTarget, "kind">) =>
+      setDocTarget({ ...base, kind }),
+    [],
+  );
+  // 关掉详情弹窗时一并收起二级弹窗：否则它会孤零零留在已关闭的详情之上
+  useEffect(() => {
+    if (preview === null) setDocTarget(null);
+  }, [preview]);
   return (
-    <Dialog open={preview !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[85vh] w-[min(92vw,64rem)] max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-none">
+    <>
+      <Dialog open={preview !== null} onOpenChange={(open) => !open && onClose()}>
+        <DialogContent className="max-h-[85vh] w-[min(92vw,64rem)] max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-none">
         {/* 头部：大图标 + 名称/徽标/来源，底部分隔线 */}
         <div className="px-8 pt-7 pb-6">
           <DialogHeader>
             <div className="flex items-start gap-5 pr-8">
               <div className="bg-background grid size-16 shrink-0 place-items-center overflow-hidden rounded-2xl ">
-                <PluginIcon src={preview?.icon} className="size-10" />
+                <PluginIcon src={preview?.icon} name={preview?.name} className="size-10 text-xl" />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
@@ -225,9 +394,14 @@ export const PluginPreviewDialog: FC<{
             <Section
               icon={<SparklesIcon className="size-4" />}
               title="技能"
-              hint="Skills 会在与对话相关时由智能体自动调用。"
+              hint="Skills 会在与对话相关时由智能体自动调用。点标题右侧箭头可展开查看 SKILL.md 原文。"
             >
-              <ComponentGrid items={components.skills} />
+              <ComponentGrid
+                items={components.skills}
+                kind="skill"
+                pluginId={installed?.pluginId ?? null}
+                onInspect={inspect("skill")}
+              />
             </Section>
           )}
 
@@ -239,11 +413,14 @@ export const PluginPreviewDialog: FC<{
             >
               <ComponentGrid
                 items={components.mcpServers}
+                kind="mcp"
+                pluginId={installed?.pluginId ?? null}
+                onInspect={inspect("mcp")}
                 render={(c) =>
                   c.transport ? (
                     <Badge
                       variant="outline"
-                      className="mt-2 px-1.5 font-mono text-[11px] font-normal"
+                      className="px-1.5 font-mono text-[11px] font-normal"
                     >
                       {c.transport}
                     </Badge>
@@ -259,7 +436,12 @@ export const PluginPreviewDialog: FC<{
               title="子智能体"
               hint="可被主智能体委派，独立执行子任务。"
             >
-              <ComponentGrid items={components.subagents} />
+              <ComponentGrid
+                items={components.subagents}
+                kind="subagent"
+                pluginId={installed?.pluginId ?? null}
+                onInspect={inspect("subagent")}
+              />
             </Section>
           )}
 
@@ -359,7 +541,12 @@ export const PluginPreviewDialog: FC<{
         {footer ? (
           <DialogFooter className="px-8 py-4">{footer}</DialogFooter>
         ) : null}
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+
+      {/* 组件正文二级弹窗：与详情弹窗平级（不嵌在 DialogContent 内），
+          关闭详情时由上面的 effect 连带收起，不会孤零零留在已关的详情之上 */}
+      <ComponentDocDialog target={docTarget} onClose={() => setDocTarget(null)} />
+    </>
   );
 };

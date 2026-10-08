@@ -33,6 +33,10 @@ import { boundedReport, summarizeToolArgs } from "./delegation";
 export function composeSubagentSystemPrompt(options: {
   definition: SubagentDefinition;
   cwd: string;
+  /** 能力目录块（技能/知识源/MCP/记忆）；各维度未声明时该块为空串。
+   *  省略此参数或传空串时，输出与本能力模型引入前**逐字节相同**——
+   *  这是缓存不变式，进测试（§8 测试 5）。 */
+  capabilityBlock?: string;
 }): string {
   const { definition, cwd } = options;
   const toolList = definition.tools.join(", ") || "none";
@@ -47,7 +51,11 @@ export function composeSubagentSystemPrompt(options: {
     "Your final message is the report the main agent receives when you finish. Make it self-contained: what you did, what you found with exact paths and line numbers, and anything you could not finish.",
     "Keep the report tight. Report findings, not narration, and never pad it with a summary of your own process.",
   ].join("\n");
-  return [framing, definition.prompt].filter((b) => b.trim().length > 0).join("\n\n");
+  // 顺序：框架 → 能力目录 → 定义正文。正文放最后，让定义对"怎么干活"
+  // 有最后发言权（与能力目录的"你有什么"分层）。
+  return [framing, options.capabilityBlock, definition.prompt]
+    .filter((b) => b && b.trim().length > 0)
+    .join("\n\n");
 }
 
 type SubagentRunOptions = {
@@ -56,6 +64,8 @@ type SubagentRunOptions = {
   model: Model<Api>;
   cwd: string;
   tools: AgentTool[];
+  /** 能力目录块（技能/知识源/MCP/记忆）；空串时提示词与引入前逐字节相同 */
+  capabilityBlock?: string;
   /** 委派 id：透传给 provider 做缓存路由（OpenAI prompt_cache_key / Anthropic session-affinity） */
   sessionId: string;
   /** 父会话 id：轨迹归属（trace.ts 写进父会话的 traces 文件；sessionId 是 delegationId） */
@@ -164,6 +174,7 @@ export class SubagentRun {
         systemPrompt: composeSubagentSystemPrompt({
           definition: this.opts.definition,
           cwd: this.opts.cwd,
+          capabilityBlock: this.opts.capabilityBlock,
         }),
         model: this.opts.model,
         tools: this.opts.tools,

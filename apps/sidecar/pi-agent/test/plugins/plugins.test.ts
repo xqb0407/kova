@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  activePluginHooks,
   addMarketplace,
   getMarketplaceCatalog,
   installLocalPlugin,
@@ -210,6 +211,33 @@ describe("readPluginHooksFile", () => {
     expect(hooks[0]!.event).toBe("PreToolUse");
     expect(hooks[0]!.matcher).toBe("bash");
     expect(hooks[0]!.timeoutMs).toBe(5000);
+    // Claude 的 type:"command" 语义是整串交 shell；不映射会被当 argv 直执行
+    expect(hooks[0]!.type).toBe("shell");
+  });
+
+  test("Claude hooks.json 的外层 {hooks:{...}} 包装被拆开（裸事件名对象仍兼容）", () => {
+    const wrapped = path.join(tmp, "hooks-wrapped.json");
+    writeFileSync(
+      wrapped,
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            { matcher: "startup", hooks: [{ type: "command", command: "echo hi", shell: "bash" }] },
+          ],
+        },
+      }),
+    );
+    const hooks = readPluginHooksFile(wrapped, "w@m", "w", []);
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0]!.event).toBe("SessionStart");
+    expect(hooks[0]!.matcher).toBe("startup");
+    expect(hooks[0]!.shell).toBe("bash");
+    expect(hooks[0]!.type).toBe("shell");
+
+    // 裸形状（无 hooks 包装）行为不变
+    const bare = path.join(tmp, "hooks-bare.json");
+    writeFileSync(bare, JSON.stringify({ Stop: [{ hooks: [{ type: "command", command: "echo" }] }] }));
+    expect(readPluginHooksFile(bare, "b@m", "b", [])[0]!.event).toBe("Stop");
   });
 });
 
@@ -342,6 +370,65 @@ describe("市场与安装全链路", () => {
     await ensureSkillsLoaded();
     const snap = skillsSnapshot();
     expect(snap.activeSkills.some((s) => s.name === "eco-skill")).toBe(true);
+    await uninstallPlugin(plugin.pluginId);
+    removeMarketplace(record.id);
+  });
+
+  // 单插件仓库（市场根本身就是插件根，如 obra/superpowers）：source 写 "./"。
+  // 回归点是两处：containedRelPath 曾把 "./" 剥成空串判非法，条目被静默丢弃
+  // （市场加得进去、插件列表恒为空）；安装时目录名一致性校验又拿 clone 目录名
+  // git-<hash> 去比清单名。两条都断在"扫不到插件"。
+  test("单插件仓库：source './' 的条目可解析、可安装，hooks 占位符按插件根展开", async () => {
+    const rootMkt = path.join(tmp, "root-market");
+    mkdirSync(path.join(rootMkt, ".claude-plugin"), { recursive: true });
+    writeFileSync(
+      path.join(rootMkt, ".claude-plugin", "marketplace.json"),
+      JSON.stringify({
+        name: "single-plugin-market",
+        plugins: [{ name: "solo", version: "2.0.0", description: "Solo", source: "./" }],
+      }),
+    );
+    writeFileSync(
+      path.join(rootMkt, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "solo", version: "2.0.0", description: "Solo" }),
+    );
+    mkdirSync(path.join(rootMkt, "skills", "solo-skill"), { recursive: true });
+    writeFileSync(
+      path.join(rootMkt, "skills", "solo-skill", "SKILL.md"),
+      skillDoc("solo-skill", "Skill from a single-plugin repo."),
+    );
+    // Claude 形状 hooks：外层包装 + ${CLAUDE_PLUGIN_ROOT} 占位符（第三方生态通例）
+    mkdirSync(path.join(rootMkt, "hooks"), { recursive: true });
+    writeFileSync(
+      path.join(rootMkt, "hooks", "hooks.json"),
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            { hooks: [{ type: "command", command: '"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" start', shell: "bash" }] },
+          ],
+        },
+      }),
+    );
+
+    const { record } = await addMarketplace({ type: "directory", path: rootMkt });
+    const { catalog } = getMarketplaceCatalog(record.id);
+    expect(catalog.plugins).toHaveLength(1);
+    expect(catalog.plugins[0]!.name).toBe("solo");
+    // 根写法归一为空相对路径（= 市场根本身）
+    expect(catalog.plugins[0]!.path).toBe("");
+
+    const { plugin } = await installPlugin(record.id, "solo");
+    expect(plugin.name).toBe("solo");
+
+    // 占位符在 activePluginHooks 侧展开为插件根；命令串不再含 ${...}
+    const hooks = activePluginHooks().filter((h) => h.event === "SessionStart");
+    expect(hooks.length).toBeGreaterThan(0);
+    const soloHook = hooks.find((h) => h.command.includes("run.sh"));
+    expect(soloHook).toBeDefined();
+    expect(soloHook!.command).not.toContain("${");
+    expect(soloHook!.command).toContain(path.join(installedPluginDir(record.id, "solo"), "hooks", "run.sh"));
+    expect(soloHook!.type).toBe("shell");
+
     await uninstallPlugin(plugin.pluginId);
     removeMarketplace(record.id);
   });

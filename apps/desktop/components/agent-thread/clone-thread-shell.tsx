@@ -20,6 +20,13 @@ import {
 } from "@/components/ui/command";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Sheet,
   SheetContent,
   SheetTitle,
@@ -43,6 +50,13 @@ import {
   useThreadBatchState,
   type ThreadBatchTab,
 } from "@/lib/pi/pi-thread-batch";
+import {
+  THREAD_TIME_RANGES,
+  setThreadTimeRange,
+  threadTimeRangeLabel,
+  useThreadTimeRange,
+  type ThreadTimeRange,
+} from "@/lib/pi/pi-thread-filter";
 import { toast } from "@/components/ui/toast";
 import {
   formatShortcutParts,
@@ -62,6 +76,7 @@ import {
   FolderIcon,
   FolderOpenIcon,
   ListChecksIcon,
+  ListFilterIcon,
   ListTodoIcon,
   MenuIcon,
   MessageSquareIcon,
@@ -146,6 +161,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     () => new Set(),
   );
   const { projectGroups } = useThreadListGroups();
+  // 时间筛选（tabs 行右侧按钮；值由 pi-thread-filter store 持有，
+  // useThreadListGroups 侧读取，这里只为按钮的当前值/高亮）
+  const timeRange = useThreadTimeRange();
   const allProjectsExpanded =
     projectGroups.length > 0 &&
     projectGroups.every((g) => projOpenDirs.has(g.cwd));
@@ -628,6 +646,52 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                       <Maximize2Icon className="size-3.5" />
                     )}
                   </TooltipIconButton>
+                )}
+                {hasThreads && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={
+                        <TooltipIconButton
+                          variant="ghost"
+                          tooltip={
+                            timeRange === "all"
+                              ? "筛选会话"
+                              : `筛选：${threadTimeRangeLabel(timeRange)}`
+                          }
+                          // 筛选生效时给个常驻的底色：菜单关掉后也得看得出
+                          // 「列表现在是被筛过的」
+                          className={cn(
+                            "text-muted-foreground hover:text-foreground size-7 rounded-full",
+                            timeRange !== "all" &&
+                              "text-foreground bg-muted hover:bg-muted",
+                          )}
+                        >
+                          <ListFilterIcon className="size-3.5" />
+                        </TooltipIconButton>
+                      }
+                    />
+                    <DropdownMenuContent align="end" className="w-36">
+                      <DropdownMenuRadioGroup
+                        value={timeRange}
+                        onValueChange={(value) =>
+                          setThreadTimeRange(value as ThreadTimeRange)
+                        }
+                      >
+                        {THREAD_TIME_RANGES.map((option) => (
+                          <DropdownMenuRadioItem
+                            key={option.value}
+                            value={option.value}
+                            // base-ui 的 RadioItem 默认选中不关菜单（与 Item
+                            // 相反）。筛选是"选完就走"的动作，这里显式关掉
+                            closeOnClick
+                            className="text-xs"
+                          >
+                            {option.label}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 )}
                 {hasThreads && (
                   <TooltipIconButton

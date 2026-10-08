@@ -159,37 +159,32 @@ const sharedComponents = {
  * 元数据块会被 CommonMark 当成 setext 标题撑成巨型字号，这里拆出来
  * 以键值对展示（数组渲染成小徽章），正文再走下方 Streamdown。
  */
-const FrontmatterCard: FC<{ entries: [string, FrontmatterValue][] }> = ({
-  entries,
-}) => (
-  <div className="mb-4 overflow-hidden rounded-md border border-border/80 text-xs">
-    <div className="px-3 py-1.5 font-medium text-muted-foreground">
-      元信息
+const FrontmatterCard: FC<{ entries: [string, FrontmatterValue][] }> = ({ entries }) => (
+ <div className="mb-4 overflow-hidden rounded-lg border border-border/70 text-xs bg-muted/60">
+      <div className="px-3 py-2 font-medium text-muted-foreground ">
+        元信息
+      </div>
+      <div className="flex flex-wrap gap-2 px-3 py-3 border border-border/60 rounded-md border-l-0 border-r-0 border-b-0 bg-background">
+        {entries.map(([_key, value]) => (
+          <Fragment key={_key}>
+            {Array.isArray(value)
+              ? value.map((item, i) => (
+                  <span
+                    key={i}
+                    className="bg-muted font-medium inline-block rounded px-1.5 py-0.5 "
+                  >
+                    {item}
+                  </span>
+                ))
+              : value && (
+                  <span className="inline-block rounded px-1.5 py-0.5">
+                    {value}
+                  </span>
+                )}
+          </Fragment>
+        ))}
+      </div>
     </div>
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 px-3 py-2.5 leading-relaxed">
-      {entries.map(([key, value]) => (
-        <Fragment key={key}>
-          <dt className="break-all font-mono text-muted-foreground">{key}</dt>
-          <dd className="min-w-0 break-words whitespace-pre-wrap">
-            {Array.isArray(value) ? (
-              value.map((item, i) => (
-                <span
-                  key={i}
-                  className="bg-muted mr-1 inline-block rounded px-1.5 py-px"
-                >
-                  {item}
-                </span>
-              ))
-            ) : value ? (
-              value
-            ) : (
-              <span className="text-muted-foreground">—</span>
-            )}
-          </dd>
-        </Fragment>
-      ))}
-    </dl>
-  </div>
 );
 
 // useMessagePartText 已废弃（v0.12 迁移）：改用 useAuiState 选择并 narrow `s.part`。

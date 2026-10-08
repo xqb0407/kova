@@ -255,6 +255,16 @@ export type PiTraceRun = {
 /** 子智能体定义所在层（事实源在 sidecar：内置常量 / <app_data>/subagents / <cwd>/.kova/subagents） */
 export type PiSubagentScope = "builtin" | "system" | "workspace" | "plugin";
 
+/** 子智能体记忆档位：none = 无记忆（缺省）；private = 私有命名空间；shared = 与主代理共享工作区记忆 */
+export type PiSubagentMemoryMode = "none" | "private" | "shared";
+
+/** 声明式知识源：就是一份文档（glob 指向）。外部系统走 mcpServers 授予，不经这里 */
+export type PiKnowledgeSource = {
+  name: string;
+  /** 工作区相对 glob */
+  path: string;
+};
+
 /** 子智能体定义条目（设置 → 子智能体；list/save/delete/开关/信任的应答共用清单形状） */
 export type PiSubagentEntry = {
   name: string;
@@ -264,6 +274,14 @@ export type PiSubagentEntry = {
   model?: string;
   prompt: string;
   scope: PiSubagentScope;
+  /** 技能白名单（按名）；未声明即不可见 */
+  skills?: string[];
+  /** MCP 服务器白名单；未声明即不可达 */
+  mcpServers?: string[];
+  /** 声明式知识源 */
+  knowledge?: PiKnowledgeSource[];
+  /** 记忆档位；缺省/none = 无记忆 */
+  memory?: PiSubagentMemoryMode;
   /** 定义文件路径（内置无） */
   path?: string;
   /** YAML 原文（编辑器"YAML 视图"与 raw 保存回读用） */
@@ -284,6 +302,8 @@ export type PiSubagentsResponse = {
   pluginAgents: PiSubagentEntry[];
   workspaceCwd: string | null;
   diagnostics: string[];
+  /** 可授予工具目录（后端唯一事实源）；旧版 sidecar 缺此字段时前端回落旧 6 项 */
+  grantableTools?: string[];
 };
 
 /** 技能来源层（事实源在 sidecar：托管层 <cwd>/.kova/skills 与 <app_data>/skills 可编辑，
@@ -461,6 +481,24 @@ export type PiPluginPanelAssetResponse = {
   base64: string;
   /** entry 文件 mtime+size 指纹：变更即换 URL 重载 iframe */
   rev: string;
+};
+
+/** 组件类别：技能 / MCP 服务器 / 子智能体（面板不走这条，见 plugin_panel_asset） */
+export type PiPluginComponentKind = "skill" | "mcp" | "subagent";
+
+/** get_plugin_component_doc 应答：单个组件的原文（详情页"查看内容"用）。
+ *  正文按需现取而非随 list_plugins 下发：技能/子智能体正文动辄几十 KB，
+ *  一个插件十几条组件，全量带在清单里每次刷新都要搬运一遍。 */
+export type PiPluginComponentDocResponse = {
+  type: "plugin_component_doc";
+  kind: PiPluginComponentKind;
+  name: string;
+  /** 来源文件绝对路径（技能/子智能体为定义文件，MCP 为 mcpServers 文件） */
+  path: string;
+  /** 技能 SKILL.md 全文 / 子智能体 YAML / MCP 条目 JSON */
+  content: string;
+  /** 超上限被截断 */
+  truncated: boolean;
 };
 
 /** get_plugin_panel_rev 应答：入口文件轻量指纹（只 stat），宿主 dev 自动重载轮询用 */
@@ -990,6 +1028,7 @@ export type PiResponse =
   | PiMcpAuditLogResponse
   | PiPluginsResponse
   | PiPluginPanelAssetResponse
+  | PiPluginComponentDocResponse
   | PiPluginPanelRevResponse
   | PiMarketplacesResponse
   | PiPluginOpAccepted

@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { piRequest, type PiSubagentEntry, type PiSubagentScope, type PiSubagentsResponse } from "@/lib/pi/pi-bridge";
+import {
+  piRequest,
+  type PiKnowledgeSource,
+  type PiSubagentEntry,
+  type PiSubagentMemoryMode,
+  type PiSubagentScope,
+  type PiSubagentsResponse,
+} from "@/lib/pi/pi-bridge";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 
 /**
@@ -12,6 +19,20 @@ import { getWorkspace } from "@/lib/workspace/workspace-store";
  */
 export type SubagentEntry = PiSubagentEntry;
 export type SubagentScope = PiSubagentScope;
+export type { PiKnowledgeSource, PiSubagentMemoryMode };
+
+/**
+ * 旧版 sidecar 的回落工具目录（应答缺 grantableTools 时的兜底）。
+ * 与引入能力模型前的六个内置工具一致——UI 不会因为 sidecar 没升级而白屏。
+ */
+export const FALLBACK_GRANTABLE_TOOLS = [
+  "read",
+  "glob",
+  "grep",
+  "bash",
+  "edit",
+  "write",
+] as const;
 
 /** 表单/原文两种保存载荷共用的草稿形状 */
 export type SubagentDraft = {
@@ -21,6 +42,14 @@ export type SubagentDraft = {
   maxTurns?: number;
   model?: string;
   prompt: string;
+  /** 技能白名单（按名）；空 = 该子代理看不到任何技能 */
+  skills?: string[];
+  /** MCP 服务器白名单；空 = 够不到任何 MCP 服务器 */
+  mcpServers?: string[];
+  /** 声明式知识源 */
+  knowledge?: PiKnowledgeSource[];
+  /** 记忆档位；不传 = 无记忆（不跟随主记忆的全局开关） */
+  memory?: PiSubagentMemoryMode;
 };
 
 export type SubagentsSnapshot = {
@@ -33,6 +62,8 @@ export type SubagentsSnapshot = {
   workspaceCwd: string | null;
   /** 加载诊断（坏文件等），不致命 */
   diagnostics: string[];
+  /** 可授予工具目录（sidecar 事实源）；旧版 sidecar 缺省时 UI 回落旧 6 项 */
+  grantableTools: string[];
 };
 
 const EMPTY: SubagentsSnapshot = {
@@ -42,6 +73,7 @@ const EMPTY: SubagentsSnapshot = {
   pluginAgents: [],
   workspaceCwd: null,
   diagnostics: [],
+  grantableTools: [...FALLBACK_GRANTABLE_TOOLS],
 };
 
 let current: SubagentsSnapshot = EMPTY;
@@ -64,6 +96,10 @@ function fromResponse(res: PiSubagentsResponse): SubagentsSnapshot {
     pluginAgents: res.pluginAgents ?? [],
     workspaceCwd: res.workspaceCwd,
     diagnostics: res.diagnostics,
+    // 旧 sidecar 应答没有这个字段：回落旧 6 项，UI 不白屏
+    grantableTools: res.grantableTools?.length
+      ? res.grantableTools
+      : [...FALLBACK_GRANTABLE_TOOLS],
   };
 }
 

@@ -223,10 +223,10 @@ export const Thread = memo(function Thread() {
           <ThreadScrollToBottom />
           <Composer />
           <AuiIf condition={isNewChatView}>
+            {/* 推荐常驻（不随 composer 为空/非空起落）：它是"接下来还能做什么"的
+                入口，填入提示词后仍要能换个案例；离开新对话页时整块让位 */}
             <div className="aui-thread-welcome-suggestions-shell min-h-19">
-              <AuiIf condition={(s) => s.composer.isEmpty}>
-                <ThreadSuggestions />
-              </AuiIf>
+              <ThreadSuggestions />
             </div>
           </AuiIf>
         </ThreadPrimitive.ViewportFooter>
