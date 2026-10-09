@@ -14,6 +14,7 @@ import { readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "
 import path from "node:path";
 import {
   DEVICE_PRESETS,
+  SHAPE_TYPES,
   bakeInstanceNodes,
   blankDoc,
   collectVarRefs,
@@ -21,7 +22,9 @@ import {
   findComponent,
   findNode,
   instanceView,
+  layerText,
   newFrame,
+  parseLayerText,
   newNode,
   parseDesignDoc,
   patchInstancePath,
@@ -42,8 +45,10 @@ import {
   type LineDir,
   type NodeType,
   type Page,
+  type ShapeNode,
   type Stroke,
   type TextRun,
+  type TextNode,
 } from "../ui/src/doc";
 import {
   aabbRotated,
@@ -59,10 +64,30 @@ import { renderDocPng } from "./render";
 import { exportBundle, saveToWorkspace } from "./export";
 import type { ExportFormat } from "../ui/src/bundle";
 import { resolveIconName, searchIcons, DEFAULT_ICON } from "../ui/src/icons";
+import {
+  INTERACTION_ACTIONS,
+  INTERACTION_TRIGGERS,
+  OVERLAY_POSITIONS,
+  PROTOTYPE_TRANSITIONS,
+  SCROLL_AXES,
+  hasInteraction,
+  nodeInteractions,
+  normalizeAction,
+  normalizeOverlayPosition,
+  normalizeScrollAxis,
+  normalizeTransition,
+  normalizeTrigger,
+  type Interaction,
+  type ScrollAxis,
+} from "../ui/src/doc";
+import { checkInteractionTarget, topLevelFrameOf } from "../ui/src/prototype";
 import { normalizeBlendMode } from "../ui/src/doc";
 import { mergeImportedDoc } from "../ui/src/merge";
 import { booleanPath, isBoolShape, normalizeBoolOp } from "../ui/src/boolean";
 import { reflowWithin } from "../ui/src/layout";
+import { lintDoc, lintSummary, LINT_CODES, LINT_SEVERITIES } from "../ui/src/lint";
+import { runDesignScript } from "./script";
+import { STENCILS, STENCIL_CATEGORIES, buildStencilSpecs, findStencil, searchStencils } from "../ui/src/stencils";
 import type { FrameLayout } from "../ui/src/doc";
 
 export type ToolCtx = { workspace: string };
@@ -73,6 +98,7 @@ export type ToolDef = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** 可同步返回，也可返回 Promise（run_design_script 要等 worker）——server.ts 一律 await */
   run: (args: Spec, ctx: ToolCtx) => unknown;
 };
 
@@ -95,6 +121,25 @@ function pickStr(o: Record<string, unknown>, ...keys: string[]): string | undefi
 }
 const num = (v: unknown): number | undefined =>
   typeof v === "number" && Number.isFinite(v) ? v : undefined;
+
+/** 支持描边的节点类型（与 doc.ts 的 Schema 一致：形状/线/箭头/画板/图片/矢量） */
+const SUPPORTS_STROKES = new Set<NodeType>([
+  ...SHAPE_TYPES,
+  "line",
+  "arrow",
+  "frame",
+  "image",
+  "vector",
+]);
+
+/** 首个非 null/undefined 的字段值（值可能是字符串/对象/数组，如形状标签的多种写法） */
+function pickAny(o: Record<string, unknown>, ...keys: string[]): unknown {
+  for (const k of keys) {
+    const v = o[k];
+    if (v !== undefined && v !== null) return v;
+  }
+  return undefined;
+}
 
 function resolveDocPath(raw: unknown, ctx: ToolCtx): string {
   const p = str(raw)?.trim();
@@ -255,6 +300,53 @@ function parseOnTapInput(v: unknown): { to: string } | null {
   return { to: to.trim().slice(0, 120) };
 }
 
+/**
+ * interactions 的**严格**解析（与文档解析层的宽容相反）：MCP 是 agent 的写入面，
+ * 写错必须当场报错并列出可用取值，让 agent 自纠；文档解析层遇到的坏数据才需要静默降级。
+ */
+function parseInteractionsInput(v: unknown): Interaction[] {
+  if (!Array.isArray(v)) {
+    throw new Error('interactions 需为数组，如 [{ "trigger": "tap", "action": "navigate", "to": "画板id" }]（null 清除）');
+  }
+  return v.map((raw, i) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`interactions[${i}] 需为对象`);
+    const o = raw as Record<string, unknown>;
+    const trigger = normalizeTrigger(o.trigger);
+    if (!trigger) {
+      throw new Error(`interactions[${i}].trigger 无法识别："${String(o.trigger)}"（可用：${INTERACTION_TRIGGERS.join(" / ")}）`);
+    }
+    const action = normalizeAction(o.action);
+    if (!action) {
+      throw new Error(`interactions[${i}].action 无法识别："${String(o.action)}"（可用：${INTERACTION_ACTIONS.join(" / ")}）`);
+    }
+    const it: Interaction = { trigger, action };
+    const to = str(o.to);
+    if (to && to.trim()) it.to = to.trim().slice(0, 120);
+    if (o.position !== undefined && o.position !== null && o.position !== "") {
+      const pos = normalizeOverlayPosition(o.position);
+      if (!pos) throw new Error(`interactions[${i}].position 无法识别："${String(o.position)}"（可用：${OVERLAY_POSITIONS.join(" / ")}）`);
+      it.position = pos;
+    }
+    if (o.transition !== undefined && o.transition !== null && o.transition !== "") {
+      const tr = normalizeTransition(o.transition);
+      if (!tr) throw new Error(`interactions[${i}].transition 无法识别："${String(o.transition)}"（可用：${PROTOTYPE_TRANSITIONS.join(" / ")}）`);
+      it.transition = tr;
+    }
+    const dur = num(o.duration);
+    if (dur !== undefined && dur > 0) it.duration = Math.min(2000, Math.max(40, Math.round(dur)));
+    if (o.dismissOnTapOutside === false) it.dismissOnTapOutside = false;
+    return it;
+  });
+}
+
+/** frame 的滚动轴输入（严格版；scroll:false/null 清除） */
+function parseScrollInput(v: unknown): ScrollAxis | null {
+  if (v === false || v === null || v === undefined || v === "" || v === "none" || v === "off") return null;
+  const axis = normalizeScrollAxis(v);
+  if (!axis) throw new Error(`scroll 无法识别："${String(v)}"（可用：v / h / both，或 false 关闭）`);
+  return axis;
+}
+
 function firstSolidColor(fills: unknown): string | undefined {
   if (!Array.isArray(fills)) return undefined;
   for (const f of fills) {
@@ -318,6 +410,29 @@ function asRuns(spec: Spec): TextRun[] {
     return [run];
   }
   return [{ text: "文本", size: 16, color: "#111111" }];
+}
+
+/**
+ * 只给 color/size/weight 而不给 text/runs 时，就地改现有 run 的样式而不重置文案。
+ * 没有这条，update_nodes {id, color} 对文字节点是空操作——而这正是 lint_doc 报告
+ * text-contrast 后最自然的修法（拿报告里的 nodeId 直接改）。
+ */
+function mergeRunStyle(node: TextNode, spec: Spec): void {
+  const color = fillColor(spec.color) ?? fillColor(spec.tint);
+  const size = num(spec.size);
+  const weight = num(spec.weight);
+  const italic = typeof spec.italic === "boolean" ? spec.italic : undefined;
+  const underline = typeof spec.underline === "boolean" ? spec.underline : undefined;
+  if (color === undefined && size === undefined && weight === undefined && italic === undefined && underline === undefined) return;
+  const runs = node.runs?.length ? node.runs : [{ text: "文本" }];
+  node.runs = runs.map((r) => ({
+    ...r,
+    ...(color !== undefined ? { color } : {}),
+    ...(size !== undefined ? { size } : {}),
+    ...(weight !== undefined ? { weight } : {}),
+    ...(italic !== undefined ? { italic } : {}),
+    ...(underline !== undefined ? { underline } : {}),
+  }));
 }
 
 function applyCommon(node: DesignNode, spec: Spec): void {
@@ -419,8 +534,22 @@ function buildNode(spec: Spec, opts?: { id?: string }): DesignNode {
   return node;
 }
 
-/** 类型相关字段（fill/fills/stroke/strokes/runs/align/dir/src/fit/clip/grow/mask/blend/flip）在构造后套用 */
+/**
+ * 类型相关字段（fill/fills/stroke/strokes/runs/align/dir/src/fit/clip/grow/mask/blend/flip/
+ * interactions/scroll）在构造后套用。add_nodes 与 update_nodes 共用本函数，
+ * 新字段加在这里两条路径同时生效。
+ */
 function applyTypeFields(node: DesignNode, spec: Spec): void {
+  // 原型交互：整表替换语义（写了就是全部）。要增删单条用 edit_interactions。
+  if (spec.interactions !== undefined) {
+    if (spec.interactions === null || (Array.isArray(spec.interactions) && spec.interactions.length === 0)) {
+      delete node.interactions;
+      delete node.onTap; // 两条路径并存会让"到底跳哪儿"有歧义，整表替换时一并清掉旧式字段
+    } else {
+      node.interactions = parseInteractionsInput(spec.interactions);
+      delete node.onTap;
+    }
+  }
   const gr = num(spec.grow);
   if (gr !== undefined) {
     if (gr > 0) node.grow = Math.min(100, Math.max(0, gr));
@@ -451,13 +580,26 @@ function applyTypeFields(node: DesignNode, spec: Spec): void {
     node.fills = spec.fills !== undefined ? asFills(spec.fills, "fills") : [solid(fillColor(spec.fill) ?? "#d9d9d9")];
   }
   if (spec.stroke !== undefined || spec.strokes !== undefined) {
-    if (!("strokes" in node) || node.strokes === undefined) {
-      throw new Error(`${node.type} 不支持 stroke/strokes（节点 ${node.id}）`);
+    // 按**类型能力**判，不能按"字段是否存在"判：newFrame 不预置 strokes 字段，
+    // 但 FrameNode 明明支持描边（画板加边框是常规需求），早先的写法会把这种调用拒掉。
+    if (!SUPPORTS_STROKES.has(node.type)) throw new Error(`${node.type} 不支持 stroke/strokes（节点 ${node.id}）`);
+    (node as { strokes?: Stroke[] }).strokes = spec.strokes !== undefined ? asStrokes(spec.strokes, "strokes") : asStrokes(spec.stroke, "stroke");
+  }
+  // 形状的内嵌标签（Figma layer text / 墨刀「双击矩形直接打字」）：
+  // 解析走 doc.ts 的 parseLayerText —— 与文件格式**同一份**写法容错
+  // （裸串 / {runs|text|label, align, vAlign} / run 数组），不在工具侧另立一套。
+  if (node.type !== "text" && SHAPE_TYPES.includes(node.type)) {
+    const raw = pickAny(spec, "text", "label", "layerText");
+    if (raw !== undefined) {
+      const lt = parseLayerText(raw);
+      const shape = node as ShapeNode;
+      if (lt) shape.text = lt;
+      else delete shape.text;
     }
-    node.strokes = spec.strokes !== undefined ? asStrokes(spec.strokes, "strokes") : asStrokes(spec.stroke, "stroke");
   }
   if (node.type === "text") {
     if (typeof spec.text === "string" || Array.isArray(spec.runs)) node.runs = asRuns(spec);
+    else mergeRunStyle(node, spec);
     const align = str(spec.align);
     if (align) {
       if (align !== "left" && align !== "center" && align !== "right") throw new Error('align 需为 left|center|right');
@@ -507,7 +649,22 @@ function applyTypeFields(node: DesignNode, spec: Spec): void {
     if (d !== undefined) (node as { path: string }).path = d.slice(0, 40000);
   }
   if (node.type === "frame") {
+    // 嵌套子树：一次调用把画板连内容一起建出来（子节点坐标 = 画板局部坐标，不做自动落位）。
+    // 没有这条就只能"先建画板、再逐层 add_nodes 挂 parent"，素材/组件这类成块插入会被拆成 N 次。
+    if (Array.isArray(spec.children)) {
+      node.children = (spec.children as Spec[]).slice(0, 400).map((child, i) => {
+        if (!child || typeof child !== "object") throw new Error(`children[${i}] 需为节点规格对象`);
+        const built = buildNode(child);
+        applyTypeFields(built, child);
+        return built;
+      });
+    }
     if (spec.clip !== undefined && typeof spec.clip === "boolean") node.clip = spec.clip;
+    if (spec.scroll !== undefined) {
+      const axis = parseScrollInput(spec.scroll);
+      if (axis) node.scroll = axis;
+      else delete node.scroll;
+    }
     if (spec.layout !== undefined) {
       if (spec.layout === null) {
         delete node.layout;
@@ -574,6 +731,19 @@ function nodeSummary(n: DesignNode, depth: number, doc?: DesignDoc): Record<stri
   if (n.mask) out.mask = true;
   if (n.radius !== undefined) out.radius = n.radius;
   if (n.onTap) out.onTap = n.onTap;
+  if (hasInteraction(n)) {
+    const list = nodeInteractions(n);
+    out.interactions = list;
+    // 目标已失效的交互在摘要里直接标出来（agent 读一次就能发现要修哪条）
+    if (doc) {
+      const frame = topLevelFrameOf(doc, n.id);
+      const bad = list
+        .map((it, i) => ({ i, check: checkInteractionTarget(doc, frame, it) }))
+        .filter((x) => !x.check.ok)
+        .map((x) => ({ index: x.i, action: list[x.i]!.action, to: list[x.i]!.to, reason: (x.check as { reason: string }).reason }));
+      if (bad.length) out.interactionProblems = bad;
+    }
+  }
   if ("fills" in n && n.fills.length > 0) out.fill = firstFillLabel(n.fills);
   if ("strokes" in n && n.strokes && n.strokes.length > 0 && n.strokes[0]) {
     out.stroke = `${n.strokes[0].color}/${n.strokes[0].width}`;
@@ -583,6 +753,11 @@ function nodeSummary(n: DesignNode, depth: number, doc?: DesignDoc): Record<stri
     out.text = text.length > 80 ? `${text.slice(0, 80)}…` : text;
     out.fontSize = n.runs[0]?.size ?? 16;
   }
+  if (n.type !== "text") {
+    // 形状的内嵌标签（layer text）在摘要里也报出来，改文案才知道字段在哪
+    const lt = layerText(n);
+    if (lt) out.label = lt.runs.map((r) => r.text).join("").slice(0, 80);
+  }
   if (n.type === "line" || n.type === "arrow") out.dir = n.dir ?? 0;
   if (n.type === "image") out.src = n.src;
   if (n.grow) out.grow = n.grow;
@@ -590,6 +765,7 @@ function nodeSummary(n: DesignNode, depth: number, doc?: DesignDoc): Record<stri
   if (n.flipX) out.flipX = true;
   if (n.flipY) out.flipY = true;
   if (n.type === "frame" && n.layout) out.layout = n.layout;
+  if (n.type === "frame" && n.scroll) out.scroll = n.scroll;
   if (n.type === "vector") out.d = `${n.path.slice(0, 80)}${n.path.length > 80 ? "…" : ""}`;
   if (n.type === "icon") {
     out.icon = n.icon;
@@ -694,6 +870,110 @@ function opReadDoc(args: Spec, ctx: ToolCtx): unknown {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* 页面骨架模板（create_doc 的 template 参数）                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 骨架 = 只有分区与栅格、没有真实内容的画板。分层工作流第一步用它定结构，
+ * 内容交给 run_design_script 批量铺——避免一上来就把整屏塞满再回头改结构。
+ *
+ * 分区一律用 frame 命名（"顶栏"/"列表"/…），后续脚本拿 read_doc 给的 id 往里填。
+ */
+type TemplateSpec = { name: string; x: number; y: number; w: number; h: number; layout?: FrameLayout };
+
+type TemplateDef = {
+  /** 平台倾向：手机/桌面，用于挑分区比例 */
+  kind: "mobile" | "desktop";
+  build: (w: number, h: number) => TemplateSpec[];
+};
+
+const vStack = (gap: number, padding: number): FrameLayout => ({
+  mode: "v",
+  gap,
+  padding: [padding, padding, padding, padding],
+  main: "start",
+  cross: "stretch",
+});
+
+const TEMPLATES: Record<string, TemplateDef> = {
+  login: {
+    kind: "mobile",
+    build: (w, h) => [
+      { name: "品牌区", x: 0, y: 0, w, h: Math.round(h * 0.42), layout: vStack(12, 24) },
+      { name: "表单区", x: 0, y: Math.round(h * 0.42), w, h: Math.round(h * 0.38), layout: vStack(16, 24) },
+      { name: "底部操作", x: 0, y: Math.round(h * 0.8), w, h: h - Math.round(h * 0.8), layout: vStack(12, 24) },
+    ],
+  },
+  list: {
+    kind: "mobile",
+    build: (w, h) => [
+      { name: "顶栏", x: 0, y: 0, w, h: 88, layout: { mode: "h", gap: 12, padding: [16, 16, 16, 16], main: "start", cross: "center" } },
+      { name: "筛选栏", x: 0, y: 88, w, h: 56, layout: { mode: "h", gap: 8, padding: [8, 16, 8, 16], main: "start", cross: "center" } },
+      { name: "列表", x: 0, y: 144, w, h: h - 144 - 84, layout: vStack(0, 0) },
+      { name: "底栏", x: 0, y: h - 84, w, h: 84, layout: { mode: "h", gap: 0, padding: [0, 0, 0, 0], main: "between", cross: "center" } },
+    ],
+  },
+  detail: {
+    kind: "mobile",
+    build: (w, h) => [
+      { name: "顶栏", x: 0, y: 0, w, h: 88, layout: { mode: "h", gap: 12, padding: [16, 16, 16, 16], main: "between", cross: "center" } },
+      { name: "头图", x: 0, y: 88, w, h: Math.round(h * 0.32), layout: vStack(8, 16) },
+      { name: "正文", x: 0, y: 88 + Math.round(h * 0.32), w, h: Math.round(h * 0.4), layout: vStack(12, 20) },
+      { name: "底部操作", x: 0, y: h - 96, w, h: 96, layout: { mode: "h", gap: 12, padding: [16, 16, 16, 16], main: "end", cross: "center" } },
+    ],
+  },
+  settings: {
+    kind: "mobile",
+    build: (w, h) => [
+      { name: "标题", x: 0, y: 0, w, h: 96, layout: vStack(8, 20) },
+      { name: "分组一", x: 0, y: 96, w, h: Math.round(h * 0.26), layout: vStack(0, 0) },
+      { name: "分组二", x: 0, y: 96 + Math.round(h * 0.26), w, h: Math.round(h * 0.3), layout: vStack(0, 0) },
+      { name: "分组三", x: 0, y: 96 + Math.round(h * 0.56), w, h: h - 96 - Math.round(h * 0.56), layout: vStack(0, 0) },
+    ],
+  },
+  dashboard: {
+    kind: "desktop",
+    build: (w, h) => {
+      const side = Math.min(240, Math.round(w * 0.18));
+      const top = 72;
+      const pad = 24;
+      const metricH = 120;
+      return [
+        { name: "侧栏", x: 0, y: 0, w: side, h, layout: vStack(8, 16) },
+        { name: "顶栏", x: side, y: 0, w: w - side, h: top, layout: { mode: "h", gap: 12, padding: [0, pad, 0, pad], main: "between", cross: "center" } },
+        { name: "指标行", x: side, y: top, w: w - side, h: metricH, layout: { mode: "h", gap: 16, padding: [pad, pad, pad, pad], main: "start", cross: "stretch" } },
+        { name: "主区", x: side, y: top + metricH, w: w - side, h: h - top - metricH, layout: vStack(16, pad) },
+      ];
+    },
+  },
+  empty: {
+    kind: "mobile",
+    build: (w, h) => [{ name: "空状态", x: 0, y: Math.round(h * 0.3), w, h: Math.round(h * 0.4), layout: vStack(12, 24) }],
+  },
+};
+
+export const TEMPLATE_KEYS = ["blank", ...Object.keys(TEMPLATES)];
+
+/** 按设备尺寸铺一套分区骨架；未知键返回 null（调用方报错） */
+function buildTemplateFrame(key: string, w: number, h: number): FrameNode | null {
+  const tpl = TEMPLATES[key];
+  if (!tpl) return null;
+  const frame = newFrame({ name: "首页", w, h, x: 0, y: 0 }) as FrameNode;
+  for (const s of tpl.build(w, h)) {
+    const sec = newFrame({
+      name: s.name,
+      w: Math.max(1, s.w),
+      h: Math.max(1, s.h),
+      x: s.x,
+      y: s.y,
+    }) as FrameNode;
+    if (s.layout) sec.layout = s.layout;
+    frame.children.push(sec);
+  }
+  return frame;
+}
+
 function opCreateDoc(args: Spec, ctx: ToolCtx): unknown {
   const abs = resolveDocPath(args.path, ctx);
   const overwrite = args.overwrite === true;
@@ -725,7 +1005,14 @@ function opCreateDoc(args: Spec, ctx: ToolCtx): unknown {
     const presetKey = str(args.preset)?.trim() || "ios-390";
     const preset = DEVICE_PRESETS[presetKey];
     if (!preset) throw new Error(`未知设备预设 "${presetKey}"（可用：${Object.keys(DEVICE_PRESETS).join(" / ")}）`);
-    page.nodes.push(newFrame({ name: "首页", w: preset.w, h: preset.h, x: 0, y: 0, preset: presetKey }));
+    const tplKey = str(args.template)?.trim();
+    if (tplKey && tplKey !== "blank") {
+      const frame = buildTemplateFrame(tplKey, preset.w, preset.h);
+      if (!frame) throw new Error(`未知模板 "${tplKey}"（可用：${TEMPLATE_KEYS.join(" / ")}）`);
+      page.nodes.push(frame);
+    } else {
+      page.nodes.push(newFrame({ name: "首页", w: preset.w, h: preset.h, x: 0, y: 0, preset: presetKey }));
+    }
   }
   writeFileSync(abs, serializeDoc(doc), "utf8");
   return {
@@ -779,7 +1066,7 @@ function opAddNodes(args: Spec, ctx: ToolCtx): unknown {
     }
   }
   saveDoc(abs, doc);
-  return { path: relPath(abs, ctx), pageId: page.id, created, reflowed };
+  return { path: relPath(abs, ctx), pageId: page.id, created, reflowed, lint: lintSummary(doc) };
 }
 
 /** 把 patch 里的通用/类型字段套到节点上（就地改）；idLabel 仅用于报错文案 */
@@ -886,7 +1173,7 @@ function opUpdateNodes(args: Spec, ctx: ToolCtx): unknown {
     }
   }
   saveDoc(abs, doc);
-  return { path: relPath(abs, ctx), updated: applied, reflowed };
+  return { path: relPath(abs, ctx), updated: applied, reflowed, lint: lintSummary(doc) };
 }
 
 function opDeleteNodes(args: Spec, ctx: ToolCtx): unknown {
@@ -1135,7 +1422,28 @@ const NODE_SPEC_SCHEMA: {
     visible: { type: "boolean" },
     locked: { type: "boolean" },
     radius: { description: "数字或 [左上,右上,右下,左下]" },
-    onTap: { description: '原型交互：{ "to": "顶层画板id" } 单击跳转（跨页可）；null = 清除' },
+    onTap: { description: '旧式单击跳转：{ "to": "顶层画板id" }（等价于 interactions 里一条 tap→navigate）；新稿请用 interactions' },
+    interactions: {
+      type: "array",
+      description:
+        "原型交互表（整表替换；null/[] 清除）。每条 { trigger, action, to?, position?, transition?, duration?, dismissOnTapOutside? }。" +
+        `trigger: ${INTERACTION_TRIGGERS.join("/")}；action: ${INTERACTION_ACTIONS.join("/")}；` +
+        `transition: ${PROTOTYPE_TRANSITIONS.join("/")}（缺省按 动作+停靠位 自动选）；position: ${OVERLAY_POSITIONS.join("/")}。` +
+        "navigate/overlay 的 to = 顶层画板 id；scrollTo/toggleVisible 的 to = 同画板内节点 id。增删单条用 edit_interactions。",
+      items: {
+        type: "object",
+        properties: {
+          trigger: { type: "string", enum: [...INTERACTION_TRIGGERS] },
+          action: { type: "string", enum: [...INTERACTION_ACTIONS] },
+          to: { type: "string" },
+          position: { type: "string", enum: [...OVERLAY_POSITIONS] },
+          transition: { type: "string", enum: [...PROTOTYPE_TRANSITIONS] },
+          duration: { type: "number" },
+          dismissOnTapOutside: { type: "boolean" },
+        },
+        required: ["trigger", "action"],
+      },
+    },
     fill: { type: "string", description: "纯色简写：#rgb/#rrggbb/#rrggbbaa" },
     fills: { type: "array", description: "Fill[]（solid/linear/radial，见 SKILL.md）" },
     stroke: { description: "描边简写：颜色字符串或 { color, width, align, style }" },
@@ -1155,6 +1463,13 @@ const NODE_SPEC_SCHEMA: {
     fit: { type: "string", enum: ["cover", "contain", "stretch"] },
     preset: { type: "string", description: "frame：设备预设键（ios-390 / android-360 / desktop-1440…）" },
     clip: { type: "boolean", description: "frame：是否裁切超框内容（缺省 true）" },
+    scroll: {
+      type: "string",
+      enum: [...SCROLL_AXES],
+      description:
+        'frame：滚动区域（v 纵向/h 横向/both 双向；false 关闭）。内容超框时在原型预览与 HTML 导出里可滚动，' +
+        "画布与静态导出仍按顶部一屏呈现。长页面（内容高于画板）必须开它，否则 lint 会报 overflow-clipped。",
+    },
     componentId: { type: "string", description: "instance：主档组件 id（list_components 可查）；w/h 省略时取主档包围盒" },
     overrides: { description: 'instance：内部节点覆盖表 { "内部id": { 字段: 值 } }（如 { "t1": { "text": "提交" } }）' },
   },
@@ -1244,6 +1559,105 @@ function opApplyLayout(args: Spec, ctx: ToolCtx): unknown {
   }
   if (changed) saveDoc(abs, doc);
   return { path: relPath(abs, ctx), reflowed: reflowedFrames, changed };
+}
+
+/** lint_doc：设计体检——返回带 nodeId / code / suggestion 的问题清单（只报不修） */
+function opLintDoc(args: Spec, ctx: ToolCtx): unknown {
+  const abs = resolveDocPath(args.path, ctx);
+  const { doc } = loadDoc(abs);
+  const ids = Array.isArray(args.ids) ? args.ids.filter((x): x is string => typeof x === "string") : undefined;
+  const codeList = Array.isArray(args.codes)
+    ? args.codes.filter((x): x is string => typeof x === "string")
+    : Array.isArray(args.code)
+      ? args.code.filter((x): x is string => typeof x === "string")
+      : undefined;
+  for (const c of codeList ?? []) {
+    if (!LINT_CODES.includes(c)) throw new Error(`未知规则 "${c}"（可用：${LINT_CODES.join(" / ")}）`);
+  }
+  const sevRaw = str(args.severity)?.trim().toLowerCase();
+  if (sevRaw && !LINT_SEVERITIES.includes(sevRaw as (typeof LINT_SEVERITIES)[number])) {
+    throw new Error(`severity 需为 ${LINT_SEVERITIES.join(" / ")} 之一，收到 "${sevRaw}"`);
+  }
+  const report = lintDoc(doc, {
+    page: str(args.page)?.trim(),
+    ids,
+    minSeverity: sevRaw as (typeof LINT_SEVERITIES)[number] | undefined,
+    codes: codeList,
+  });
+  return {
+    path: relPath(abs, ctx),
+    scanned: report.scanned,
+    counts: report.counts,
+    // 干净时给一句人话，省得 agent 以为工具没跑
+    summary: report.issues.length === 0 ? "未发现问题" : `${report.counts.error} 错 / ${report.counts.warning} 警告 / ${report.counts.info} 提示`,
+    issues: report.issues,
+  };
+}
+
+/**
+ * run_design_script：把一段 JS 放进沙箱 worker 跑，只收 I()/U() 录出来的操作，
+ * 再走 add_nodes / update_nodes 的同一套 buildNode + applyUpdateFields 落盘——
+ * 所以脚本产物与直接调那两个工具逐字节同构，语义不会分叉。
+ */
+async function opRunDesignScript(args: Spec, ctx: ToolCtx): Promise<unknown> {
+  const abs = resolveDocPath(args.path, ctx);
+  const script = str(args.script);
+  if (!script) throw new Error("script 必填：一段 JS 源码");
+  const pageArg = str(args.page)?.trim();
+
+  const { ops, logs, result } = await runDesignScript(script, num(args.timeoutMs));
+
+  // 脚本只产出操作录；真正的读写在这里，且一次落盘（中途失败不写半截）
+  const { doc } = loadDoc(abs);
+  const page = pickPage(doc, pageArg);
+  const inserted: Array<Record<string, unknown>> = [];
+  const updated: string[] = [];
+  const reflowIds = new Set<string>();
+
+  for (const op of ops) {
+    if (op.kind === "insert") {
+      // findOrThrow 认得 "实例id/内部id" 形态（展开视图节点），与 update_nodes 同源
+      const parentNode = findOrThrow(doc, op.parent).node;
+      if (!("children" in parentNode)) {
+        throw new Error(`I 的 parent ${op.parent}（${parentNode.type}）不是可容纳子节点的容器`);
+      }
+      const node = buildNode(op.spec as Spec);
+      if (findNode(doc, node.id)) throw new Error(`id 已存在：${node.id}（脚本里换一个，或删掉 id 让沙箱自动分配）`);
+      applyTypeFields(node, op.spec as Spec);
+      const explicit = num(op.spec.x) !== undefined && num(op.spec.y) !== undefined;
+      insertNode(doc, parentNode, page, node, explicit);
+      inserted.push({ id: node.id, type: node.type, name: node.name, x: node.x, y: node.y, w: node.w, h: node.h });
+      reflowIds.add(node.id);
+    } else {
+      if (op.id.includes("/")) {
+        updateInstanceInternal(doc, op.id, op.patch as Spec);
+        updated.push(op.id);
+        continue;
+      }
+      const loc = findOrThrow(doc, op.id);
+      applyUpdateFields(loc.node, op.patch as Spec, op.id);
+      updated.push(op.id);
+      for (const k of LAYOUT_SENSITIVE) if (op.patch[k] !== undefined) reflowIds.add(op.id);
+    }
+  }
+
+  let reflowed = false;
+  if (args.reflow !== false) {
+    for (const rid of reflowIds) {
+      if (reflowWithin(page.nodes, rid)) reflowed = true;
+    }
+  }
+  saveDoc(abs, doc);
+  return {
+    path: relPath(abs, ctx),
+    pageId: page.id,
+    inserted,
+    updated,
+    reflowed,
+    logs,
+    result,
+    lint: lintSummary(doc),
+  };
 }
 
 /** list_icons：搜索内置 lucide 图标名（icon 节点的 icon 字段取值） */
@@ -1578,6 +1992,142 @@ function opImportDoc(args: Spec, ctx: ToolCtx): unknown {
 
 const PATH_SCHEMA = { type: "string", description: `设计档路径（*.uidesign.json；绝对或相对工作区）` };
 
+/** list_stencils：素材库盘点/检索（内置图形与部件） */
+function opListStencils(args: Spec): unknown {
+  const query = str(args.query) ?? "";
+  const category = str(args.category);
+  let list = searchStencils(query, 200);
+  if (category) list = list.filter((s) => s.category === category);
+  return {
+    total: STENCILS.length,
+    categories: STENCIL_CATEGORIES.map((c) => ({ name: c, count: STENCILS.filter((s) => s.category === c).length })),
+    stencils: list.map((s) => ({
+      id: s.id,
+      name: s.name,
+      category: s.category,
+      size: `${s.w}×${s.h}`,
+      keys: s.keys.slice(0, 6),
+    })),
+    hint: "用 insert_stencil 落盘：{ path, stencil:\"<id>\", parent:\"<画板id>\", x, y, w?, h? }。w/h 按等比缩放（不拉伸），省略 = 用素材标称尺寸。",
+  };
+}
+
+/** insert_stencil：把素材落到画板（MCP 侧走 buildNode，与面板插入同一份规格） */
+function opInsertStencil(args: Spec, ctx: ToolCtx): unknown {
+  const abs = resolveDocPath(args.path, ctx);
+  const { doc } = loadDoc(abs);
+  const wanted = (str(args.stencil) ?? "").trim();
+  if (!wanted) throw new Error('stencil 不能为空（先用 list_stencils 搜可用 id）');
+  let st = findStencil(wanted);
+  if (!st) {
+    const hits = searchStencils(wanted, 5);
+    const names = hits.map((h) => `${h.id}(${h.name})`).join("、");
+    throw new Error(`没有这个素材："${wanted}"${names ? `。你是想找：${names}` : "（list_stencils 看全集）"}`);
+  }
+  const page = pickPage(doc, args.page);
+  const parentId = str(args.parent)?.trim();
+  let parent: DesignNode | null = null;
+  if (parentId) {
+    const loc = findNode(doc, parentId);
+    if (!loc) throw new Error(`父容器不存在：${parentId}（先 read_doc 拿最新 id）`);
+    if (!("children" in loc.node)) throw new Error(`父容器 ${parentId}（${loc.node.type}）不能容纳子节点`);
+    parent = loc.node;
+  }
+  const w = num(args.w);
+  const h = num(args.h);
+  const at = { x: num(args.x) ?? 0, y: num(args.y) ?? 0, ...(w !== undefined ? { w } : {}), ...(h !== undefined ? { h } : {}) };
+  const specs = buildStencilSpecs(st, at, (hint) => uid(hint[0] ?? "s"));
+  const built = specs.map((spec) => {
+    const node = buildNode(spec);
+    applyTypeFields(node, spec);
+    return node;
+  });
+  const created = built.map((n) => n.id);
+  if (parent && "children" in parent) parent.children.push(...built);
+  else page.nodes.push(...built);
+  saveDoc(abs, doc);
+  return {
+    path: relPath(abs, ctx),
+    stencil: st.id,
+    name: st.name,
+    added: created,
+    count: built.length,
+    parent: parentId ?? null,
+    ...(parentId ? {} : { note: "未给 parent：素材落在页面顶层（absolute 坐标）" }),
+    hint: "素材是普通节点，可直接 update_nodes 改色/改字；成组用 group_nodes。",
+  };
+}
+
+/**
+ * edit_interactions：单节点的原型交互增删改（比让 agent 重写整表更省事也更不容易写错）。
+ * 写完当场校验每条目标，把「跳转目标不存在」这类问题作为 feedback 返回——
+ * 原型最怕的是"看着连上了，点下去没反应"，这里让它在写入那一刻就暴露。
+ */
+function opEditInteractions(args: Spec, ctx: ToolCtx): unknown {
+  const abs = resolveDocPath(args.path, ctx);
+  const { doc } = loadDoc(abs);
+  const nodeId = str(args.node)?.trim();
+  if (!nodeId) throw new Error('node 需要节点 id（read_doc 拿；实例内部节点写 "实例id/内部id"）');
+  const op = (str(args.op) ?? "set").trim();
+  const loc = findOrThrow(doc, nodeId);
+
+  let next: Interaction[];
+  if (op === "set") {
+    next = parseInteractionsInput(args.list ?? []);
+  } else if (op === "add") {
+    const add = parseInteractionsInput(args.list ?? []);
+    if (add.length === 0) throw new Error("add 需要 list 里至少一条交互");
+    next = [...nodeInteractions(loc.node), ...add];
+  } else if (op === "clear") {
+    next = [];
+  } else if (op === "remove") {
+    const current = nodeInteractions(loc.node);
+    const idx = num(args.index);
+    if (idx !== undefined) {
+      if (idx < 0 || idx >= current.length) throw new Error(`index ${idx} 越界（该节点有 ${current.length} 条交互）`);
+      next = current.filter((_, i) => i !== idx);
+    } else {
+      const trig = normalizeTrigger(args.trigger);
+      if (!trig) throw new Error('remove 需要 trigger（或 index）：先 read_doc 看现有交互的 trigger/a 可选值');
+      const act = args.action === undefined ? undefined : normalizeAction(args.action);
+      if (args.action !== undefined && !act) {
+        throw new Error(`action 无法识别："${String(args.action)}"（可用：${INTERACTION_ACTIONS.join(" / ")}）`);
+      }
+      const kept = current.filter((it) => !(it.trigger === trig && (act === undefined || it.action === act)));
+      if (kept.length === current.length) throw new Error(`该节点没有 trigger="${trig}"${act ? ` + action="${act}"` : ""} 的交互`);
+      next = kept;
+    }
+  } else {
+    throw new Error("op 需为 set（整表替换）| add（追加）| remove（按 index 或 trigger[+action] 删）| clear（清空）");
+  }
+
+  const patch: Spec = { interactions: next.length ? next : null };
+  if (nodeId.includes("/")) updateInstanceInternal(doc, nodeId, patch);
+  else applyUpdateFields(loc.node, patch, nodeId);
+
+  saveDoc(abs, doc);
+  const after = findOrThrow(doc, nodeId).node;
+  const list = nodeInteractions(after);
+  const frame = topLevelFrameOf(doc, nodeId);
+  const problems = list
+    .map((it, i) => {
+      const check = checkInteractionTarget(doc, frame, it);
+      return check.ok ? null : { index: i, trigger: it.trigger, action: it.action, to: it.to, reason: check.reason };
+    })
+    .filter((x): x is NonNullable<typeof x> => !!x);
+  return {
+    path: relPath(abs, ctx),
+    node: nodeId,
+    interactions: list,
+    ...(problems.length
+      ? {
+          problems,
+          hint: "这些交互的目标不可用：预览/导出里点了不会有反应（会画红圈）。navigate/overlay 的 to 必须是顶层画板 id（read_doc 看 frames），scrollTo/toggleVisible 的 to 必须在同一块画板内。",
+        }
+      : { hint: "目标全部可解析；面板按 P 即可预览（缺省转场已按 动作+停靠位 自动选好，写 transition:\"none\" 可关）" }),
+  };
+}
+
 /** edit_variables：共享颜色变量 list / set（新建或更新，改值全稿联动）/ delete（可选 detach 烘焙） */
 function opEditVariables(args: Spec, ctx: ToolCtx): unknown {
   const abs = resolveDocPath(args.path, ctx);
@@ -1679,13 +2229,24 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "create_doc",
     description:
-      "新建一份 *.uidesign.json：默认按设备预设（缺省 ios-390）建一块「首页」画板；也可给 frames 一次建多块（x 省略时自动横排、间距按画板宽 32%）。已存在同名文件会报错（除非 overwrite:true）。",
+      "新建一份 *.uidesign.json：默认按设备预设（缺省 ios-390）建一块「首页」画板；也可给 frames 一次建多块（x 省略时自动横排、间距按画板宽 32%）。已存在同名文件会报错（除非 overwrite:true）。" +
+      "分层工作流第一步可用 template 直接铺出**页面骨架**（只含命名分区与栅格、没有真实内容），" +
+      "再用 run_design_script 往各分区里批量填内容——比一上来就塞满整屏再回头调结构稳得多。",
     inputSchema: {
       type: "object",
       properties: {
         path: PATH_SCHEMA,
         name: { type: "string", description: "文档名（缺省取文件名）" },
         preset: { type: "string", description: "设备预设键：ios-375/ios-390/android-360/tablet-768/desktop-1440/watch-168" },
+        template: {
+          type: "string",
+          enum: TEMPLATE_KEYS,
+          description:
+            `页面骨架模板（与 preset 搭配使用）：${TEMPLATE_KEYS.join(" / ")}。` +
+            "login=品牌区/表单区/底部操作；list=顶栏/筛选栏/列表/底栏；detail=顶栏/头图/正文/底部操作；" +
+            "settings=标题/分组一二三（适合 run_design_script 铺设置行）；dashboard=侧栏/顶栏/指标行/主区（配 desktop-1440）；empty=空状态。" +
+            "blank = 空白画板。",
+        },
         pageName: { type: "string" },
         frames: { type: "array", description: "画板列表 [{ name?, preset?, w?, h?, x?, y?, fill? }]", items: NODE_SPEC_SCHEMA },
         overwrite: { type: "boolean", description: "true = 覆盖已存在的文件" },
@@ -1905,6 +2466,62 @@ export const TOOL_DEFS: ToolDef[] = [
     run: opApplyLayout,
   },
   {
+    name: "run_design_script",
+    description:
+      "用一段 JS 批量建/改节点——**重复结构（列表行、卡片网格、导航项、表格行）首选这个**，" +
+      "而不是手写 N 段几乎一样的 JSON。支持 for/while/map/模板字符串/算术，几十个节点一次成型。\n" +
+      "脚本里只有三个记录器，它们不直接改文档，只往操作录里追加，执行完由本工具统一落盘：\n" +
+      "  I(parentId, spec) —— 建节点，spec 与 add_nodes 的节点规格**完全同构**；返回新 id（可继续当 parent 传给下一次 I）\n" +
+      "  U(nodeId, patch)  —— 改字段，patch 与 update_nodes 的一致（也支持 \"实例id/内部id\" 寻址）\n" +
+      "  log(...)          —— 把中间量收进返回值，方便你回读\n" +
+      "脚本可以 return，最终原样出现在返回值的 result 里。\n" +
+      "示例（画 12 行设置列表）：\n" +
+      "  const items = [\"蓝牙\",\"Wi-Fi\",\"蜂窝网络\"];\n" +
+      "  for (let i = 0; i < items.length; i++) {\n" +
+      "    const row = I(\"画板id\", { type:\"frame\", name:`行${i}`, y:160+i*56, h:48 });\n" +
+      "    I(row, { type:\"text\", text: items[i], w: 300 });\n" +
+      "  }\n" +
+      "约束：脚本在独立 worker 里跑，硬超时默认 5 秒（timeoutMs 可调到 30000），死循环会被强制中断；" +
+      "单次最多 2000 个操作；require/process/fetch/Buffer 是抛错桩，脚本只做纯计算。" +
+      "（一次调用 = 一次原子落盘，中途出错不会写半截；产物与直接调 add_nodes/update_nodes 同构。）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: PATH_SCHEMA,
+        page: { type: "string", description: "页面 id 或名称（缺省当前活跃页）——省略 parent 时节点加在这一页顶层" },
+        script: { type: "string", description: "JS 源码。可用 I()/U()/log()，可 return；支持循环与模板字符串" },
+        timeoutMs: { type: "number", description: "硬超时毫秒，缺省 5000（500–30000）" },
+        reflow: { type: "boolean", description: "默认 true：落盘前对涉及的自动布局画板重排" },
+      },
+      required: ["path", "script"],
+    },
+    run: opRunDesignScript,
+  },
+  {
+    name: "lint_doc",
+    description:
+      "设计体检：扫全档（或指定页/画板）返回**可验证的问题清单**，每条带 nodeId / code / message / suggestion。\n" +
+      "这是给生成稿收尾用的判据——skills 里的规范是建议，这里是能跑的检查。改完稿跑一次，按 suggestion 改到干净。\n" +
+      "12 条规则：text-contrast（文字对比度，WCAG AA）、dangling-var（变量引用未定义）、tap-target-small（触控区 <44）、" +
+      "overflow-clipped（内容被画板裁掉）、nesting-depth（嵌套过深）、mixed-sibling-radius（同尺寸兄弟圆角不一致）、" +
+      "slop-three-card-row（AI 三卡功能区）、slop-rounded-card-wall（满屏圆角卡片）、slop-purple-glow（紫渐变+大光晕）、" +
+      "unknown-icon（图标名非法）、empty-container（空容器）、layout-drift（自动布局里手动挪过子项）。\n" +
+      "只报不修（不会自动改你的稿子）。实例内部节点一并体检，nodeId 形如 \"实例id/内部id\"，可直接喂给 update_nodes。\n" +
+      "usage：全档扫一遍看 counts；改某一处时给 ids 只看那块。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: PATH_SCHEMA,
+        page: { type: "string", description: "只体检某一页（页 id 或名称）；省略 = 全部页" },
+        ids: { type: "array", items: { type: "string" }, description: "只体检这些顶层节点（子树整体纳入）" },
+        severity: { type: "string", enum: ["error", "warning", "info"], description: "保留到哪一级：warning = 只看 error+warning（默认全给）" },
+        codes: { type: "array", items: { type: "string" }, description: `规则白名单，如 ["text-contrast"]；可用：${LINT_CODES.join(" / ")}` },
+      },
+      required: ["path"],
+    },
+    run: opLintDoc,
+  },
+  {
     name: "boolean_nodes",
     description:
       "布尔运算：把 2+ 个**同容器同层**的形状合并成一个新的 vector 矢量节点。" +
@@ -1997,6 +2614,83 @@ export const TOOL_DEFS: ToolDef[] = [
       required: ["path", "from"],
     },
     run: opImportDoc,
+  },
+  {
+    name: "list_stencils",
+    description:
+      "素材库盘点/检索：内置的现成图形与部件（按钮/标签/占位符/链接区域/表格/滚动面板/分割线、胶囊/多边形/气泡框/波浪、" +
+      "流程图全套（流程/判定/开始结束/文档/数据/子流程）、图表（饼图/环形图/进度圆环/柱状图/面积图/雷达图）、" +
+      "界面件（状态栏/导航栏/标签栏/搜索框/列表项/卡片））。query 支持中英文（\"按钮\"/\"button\"），category 可选。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "检索词（id/名称/关键词/分类，中英文皆可）；省略 = 列全部" },
+        category: { type: "string", enum: [...STENCIL_CATEGORIES], description: "只要某一类" },
+      },
+    },
+    run: opListStencils,
+  },
+  {
+    name: "insert_stencil",
+    description:
+      "把一个内置素材落到画板（一次调用产出整棵子树，含嵌套子节点）。w/h 按**等比**缩放到目标框内并居中（不拉伸，图表/图标不会变形）；" +
+      "省略 w/h = 用素材标称尺寸。落点是画板局部坐标（与 add_nodes 同口径）。素材就是普通节点，落盘后照常 update_nodes 改色改字。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: PATH_SCHEMA,
+        stencil: { type: "string", description: "素材 id（list_stencils 查；名称/关键词写错会给出近似候选）" },
+        parent: { type: "string", description: "父画板/容器 id（省略 = 页面顶层，坐标为画布绝对坐标）" },
+        page: { type: "string", description: "页面 id 或名称（缺省活跃页；仅 parent 省略时生效）" },
+        x: { type: "number", description: "目标框左上角 x（父容器局部坐标，缺省 0）" },
+        y: { type: "number", description: "目标框左上角 y（缺省 0）" },
+        w: { type: "number", description: "目标框宽（等比缩放到框内；省略 = 素材标称宽）" },
+        h: { type: "number", description: "目标框高（省略 = 素材标称高）" },
+      },
+      required: ["path", "stencil"],
+    },
+    run: opInsertStencil,
+  },
+  {
+    name: "edit_interactions",
+    description:
+      "原型交互增删改（单节点，原子落盘）：op=set（整表替换）/ add（追加）/ remove（按 index 或 trigger[+action] 删）/ clear。" +
+      "每条交互 = { trigger, action, to?, position?, transition?, duration?, dismissOnTapOutside? }。" +
+      `trigger ${INTERACTION_TRIGGERS.join("/")}；action ${INTERACTION_ACTIONS.join("/")}。` +
+      "navigate/overlay 的 to 必须指向**顶层画板**（做弹窗/底部抽屉：把浮层单独做成一块画板，overlay + position:bottom）；" +
+      "back 回上一屏、closeOverlay 关最上层浮层（不需要 to）；scrollTo/toggleVisible 作用于同一画板内节点。" +
+      "缺省转场按 动作+停靠位 自动选（跳转左推、返回右推、居中浮层缩放、底部抽屉上滑），写 transition:\"none\" 可关。" +
+      "返回里带 problems 列表 = 目标不可解析的交互（预览里点了没反应），按 reason 修。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: PATH_SCHEMA,
+        node: { type: "string", description: '节点 id（read_doc 拿）；也支持实例内部 "实例id/内部id"' },
+        op: { type: "string", enum: ["set", "add", "remove", "clear"], description: "set 整表替换 / add 追加 / remove 删除 / clear 清空（缺省 set）" },
+        list: {
+          type: "array",
+          description: "set / add 的交互数组",
+          items: {
+            type: "object",
+            properties: {
+              trigger: { type: "string", enum: [...INTERACTION_TRIGGERS] },
+              action: { type: "string", enum: [...INTERACTION_ACTIONS] },
+              to: { type: "string", description: "目标 id（navigate/overlay = 顶层画板；scrollTo/toggleVisible = 同画板内节点）" },
+              position: { type: "string", enum: [...OVERLAY_POSITIONS], description: "overlay 停靠位（缺省 center）" },
+              transition: { type: "string", enum: [...PROTOTYPE_TRANSITIONS] },
+              duration: { type: "number", description: "转场时长 ms（40..2000）" },
+              dismissOnTapOutside: { type: "boolean", description: "overlay：点遮罩关闭（缺省 true）" },
+            },
+            required: ["trigger", "action"],
+          },
+        },
+        index: { type: "number", description: "remove：按序号删（0 起，read_doc 的 interactions 顺序）" },
+        trigger: { type: "string", description: "remove：按触发器删（可配 action 再收窄）" },
+        action: { type: "string", description: "remove：配合 trigger 收窄" },
+      },
+      required: ["path", "node"],
+    },
+    run: opEditInteractions,
   },
   {
     name: "edit_variables",

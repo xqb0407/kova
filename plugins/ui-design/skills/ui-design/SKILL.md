@@ -1,6 +1,6 @@
 ---
 name: ui-design
-description: 用「UI 设计」面板创作/修改 UI 设计稿：独立文档格式 *.uidesign.json（Figma 式图层树：页面 → 画板 frame → 子节点），画板/图层树/属性检视（填充/渐变/描边/圆角/阴影/文字）+ 吸附对齐 + PNG/SVG 导出；插件自带 `ui-design` MCP 工具（增删改节点/对齐/堆叠排版/成组/页面管理/画布截图自检/export_doc 导出工程包=静态文件目录包+路径清单），结构化编辑优先走 MCP。当用户想做 App 页面、移动端/桌面界面稿、原型、落地页视觉稿、组件库画板，或提到"设计稿/UI/界面/figma 式"并期望在工作区可视化编辑时使用。旧「无限画布」的 kind:"ui" 档由 canvas 面板的「让 AI 迁移」转成本格式。
+description: 用「UI 设计」面板创作/修改 UI 设计稿与可点原型：独立文档格式 *.uidesign.json（Figma 式图层树：页面 → 画板 frame → 子节点），画板/图层树/属性检视（填充/渐变/描边/圆角/阴影/文字）+ 吸附对齐 + PNG/SVG 导出；插件自带 `ui-design` MCP 工具（增删改节点/对齐/堆叠排版/成组/页面管理/画布截图自检/export_doc 导出工程包=静态文件目录包+路径清单），结构化编辑优先走 MCP。**图形能力与原型对标墨刀**：形状双击即可就地打字（内嵌标签）、选中后拖四角小圆点改圆角（Alt 拖只改单角）、内置素材库（按钮/表格/流程图全套/图表/状态栏导航栏等 30 件，`list_stencils`/`insert_stencil` 一键落盘）；节点可挂多触发器（单击/双击/长按/四向滑动）× 多动作（跳转/返回/打开浮层/关闭浮层/滚动到/显隐）× 转场动画（左推右推上下推/淡入/缩放/抽屉滑入），画板可设滚动区域——预览与导出的 HTML 跑同一份运行时，所见即所得。当用户想做 App 页面、移动端/桌面界面稿、可点原型、多屏流程稿、落地页视觉稿、组件库画板，或提到"设计稿/UI/界面/figma 式/墨刀式原型"并期望在工作区可视化编辑时使用。旧「无限画布」的 kind:"ui" 档由 canvas 面板的「让 AI 迁移」转成本格式。
 ---
 
 # UI 设计：Figma 式设计引擎（*.uidesign.json）
@@ -42,19 +42,23 @@ agent 统一经 `mcp` 网关调用：
 |---|---|
 | `list_docs` | 列工作区里的设计档（找目标档先跑它） |
 | `read_doc` | 图层树摘要（id/盒/填充/文字）/ 单节点完整 JSON；**编辑前先读拿最新 id** |
-| `create_doc` | 按设备预设建档（多画板可一次建，自动横排） |
-| `add_nodes` | 批量加节点；`parent` 给画板/组 id 即画板内局部坐标；x/y 省略自动落位 |
-| `update_nodes` | 按 id 批量改：x/y 绝对值或 dx/dy 位移、name/尺寸/旋转/透明度/圆角/填充/描边/文字… |
+| `create_doc` | 按设备预设建档（多画板可一次建，自动横排）；`template` 直接铺**页面骨架**（`login`/`list`/`detail`/`settings`/`dashboard`/`empty`/`blank`）——只含命名分区与栅格、无内容，适合先定结构再填 |
+| `add_nodes` | 批量加节点；`parent` 给画板/组 id 即画板内局部坐标；x/y 省略自动落位。**画板规格里可直接带 `children`**（递归建整棵子树，子节点坐标 = 画板局部坐标，不做自动落位）——成块的结构不用拆成 N 次调用 |
+| `update_nodes` | 按 id 批量改：x/y 绝对值或 dx/dy 位移、name/尺寸/旋转/透明度/圆角/填充/描边/文字/`interactions`（整表替换）/`scroll`（画板滚动轴）… |
 | `delete_nodes` | 按 id 删（含子树） |
+| `list_stencils` / `insert_stencil` | **素材库**：内置现成图形与部件（按钮/标签/占位符/表格/滚动面板/胶囊/多边形/气泡框、流程图全套、饼图环形图柱状图面积图雷达图进度圆环、状态栏/导航栏/标签栏/搜索框/列表项/卡片）。`list_stencils { query }` 检索（中英文都认），`insert_stencil { path, stencil, parent, x, y, w?, h? }` 落盘——一次产出整棵子树，w/h 按**等比**缩放到目标框内居中（不拉伸）。详见「素材库」节 |
 | `group_nodes` / `ungroup_nodes` | 成组 / 拆组（子节点坐标自动换算） |
 | `align_nodes` | 对齐 / 等距分布（left/hcenter/right/top/vcenter/bottom/hdist/vdist；可指定画板为参照） |
 | `stack_nodes` | 行 / 列堆叠排版（列表、导航栏、卡片流；gap + 交叉轴对齐） |
 | `reorder_nodes` | z 序：front/back/forward/backward |
 | `edit_pages` | 页面：add/rename/activate/remove |
+| `edit_interactions` | **原型交互增删改**（单节点）：`set` / `add` / `remove`（按 index 或 trigger）/ `clear`。一条交互 = `{ trigger, action, to?, position?, transition?, duration? }`。写完返回里带 `problems`（目标解析不了的交互 + 原因）——**拿它自检，别让按钮点下去没反应**。详见「交互原型」节 |
 | `screenshot_doc` | **把画布内容渲染成 PNG 以图像返回**（非屏幕截图，截的是文档）。缺省截当前页全部可见顶层节点，`ids` 可只截某画板；改稿后自检构图/配色/文字排布；给 `saveTo` 时同时把 PNG 落盘到工作区路径并回报 |
 | `boolean_nodes` | **布尔运算**：2+ 个同容器同层形状 → 合并为一个 vector。`operation`：union 并集 / subtract 减去（第一个减其余）/ intersect 交集 / exclude 排除（别名 merge/minus/xor）。结果烤平为路径、继承第一个节点的填充描边 |
 | `apply_layout` | 对画板重排**自动布局**（按 frame 的 layout 字段与子节点 grow 重算子项位置尺寸，含嵌套与祖先链）。结构改动后 add/update 已自动重排；手动挪过子项想恢复排布时用它 |
 | `list_icons` | 搜索内置 lucide 图标名（icon 节点的 `icon` 字段取值）：query 前缀/子串匹配 + 别名折算（home→house）。要放界面小图标先搜再加节点 |
+| `run_design_script` | **重复结构首选**：写一段 JS（支持 for/while/map/模板字符串），用 `I(parentId, spec)` 建节点、`U(id, patch)` 改节点、`log(...)` 收中间量，可 `return`。几十个同构节点一次成型，**不要手写 N 段近似 JSON**。spec/patch 与 add_nodes/update_nodes 完全同构，产物一致。硬超时默认 5 秒，单次上限 2000 操作 |
+| `lint_doc` | **设计体检（只报不修）**：扫全档/指定页/指定画板，返回带 `nodeId`/`code`/`message`/`suggestion` 的问题清单。14 条规则：文字对比度（WCAG AA）、变量坏引用、触控区 <44、内容被裁（**开滚动的轴不报**）、嵌套过深、同尺寸兄弟圆角不一致、AI 三卡功能区、满屏圆角卡片、紫渐变大光晕、图标名非法、空容器、布局漂移、**交互目标失效**（`dangling-interaction`，error）、**原型流程完整性**（`prototype-flow`，孤儿屏/断头屏）。`severity` 过滤级别、`codes` 过滤规则。报告里的 nodeId 可直接喂 `update_nodes` |
 | `list_components` | 组件库盘点：每个组件的 id/名称/主档节点 id/包围盒/被引用实例数 |
 | `create_component` | 把 1+ 个同层节点转成组件：主档进 `components` 表，原位替换为 1:1 实例（返回 componentId/instanceId/masterNodeIds） |
 | `edit_component` | 组件操作：`insert` 再插实例 / `patch_master` 改主档（所有实例联动）/ `rename` / `reset_overrides` 清除覆盖 / `detach` 分离为普通图层 / `remove` 删主档（`detach:true` 先把引用烘焙成普通图层，不留占位） |
@@ -87,17 +91,23 @@ agent 统一经 `mcp` 网关调用：
    而工具调用每一步都校验、坏参数当场报错可自纠。`write` 仅当 MCP 不可用时兜底（写坏也有
    修复层兜底，但别依赖）。`create_doc` 后可补 `open_plugin_panel(plugin="ui-design",
    panel="design", path=…)` 开板。
-2. **逐画板填充**：优先 `add_nodes`（parent=画板 id）；节点多、样式重复时也可整档 `edit`。
-   落盘一次上屏一次；**已有节点的 `id` 必须保持稳定**（选择、撤销、增量编辑都按 id diff）。
+2. **逐画板填充**：优先 `add_nodes`（parent=画板 id）；**结构重复的（列表行/卡片网格/导航项/
+   表格行）一律用 `run_design_script`**——写一段带 for 的 JS 比手写 N 段近似 JSON 短得多也稳得多，
+   产物与 `add_nodes` 完全同构。落盘一次上屏一次；**已有节点的 `id` 必须保持稳定**（选择、撤销、
+   增量编辑都按 id diff）。
 3. **迭代**：用户说"把主按钮改成绿色"→ `read_doc` 找 id → `update_nodes` 只改它
    （或 read + edit 落盘）。
-4. **视觉自检**：一屏成型后 `screenshot_doc`（可 `ids` 只截某个画板）拿到渲染图，
-   核对构图/配色/文字是否溢出或错位——不满意就回到第 3 步调，满意再交付。
+4. **收尾体检 + 视觉自检**：一屏成型后先 `lint_doc`（可 `ids` 只查某块）拿到问题清单，按
+   `suggestion` 改到 `counts.error`/`counts.warning` 归零；再用 `screenshot_doc`（可 `ids` 只截
+   某个画板）拿到渲染图，核对构图/配色/文字是否溢出或错位——不满意就回到第 3 步调。
+   **两者配套：lint 管「有毛病」，截图管「不好看」，缺一不可。**
    注意：截图里文字折行为近似测量，与面板可能有极轻微差异；位图资产读不到会画灰占位。
 5. **交付产物**（用户要"导出/给我成品/静态文件"时）：`export_doc` 落盘工程包目录，回报
    路径清单——`<目录>/index.html` 浏览器直接打开可点原型，`screens/*.png` 逐画板高清图，
    `manifest.json` 是全部静态文件的路径/尺寸/字节清单。单张预览图走 `screenshot_doc` 的
    `saveTo` 即可，别为一张图开一包。
+
+> 多屏设计稿的分段流程（骨架 → 内容 → 精修）见 `ui-design-workflow` 技能。
 
 ## Schema 字段全表
 
@@ -124,9 +134,10 @@ agent 统一经 `mcp` 网关调用：
 | `rotation` | number | 度，绕盒中心；缺省 0 |
 | `opacity` | number | 0..1，缺省 1 |
 | `visible` / `locked` | boolean | 缺省 true / false |
-| `radius` | number \| [tl,tr,br,bl] | 圆角（rect/frame/image 生效），0..4096 |
+| `radius` | number \| [tl,tr,br,bl] | 圆角（rect/frame/image 生效），0..4096。数字 = 四角统一；数组 = 逐角（面板：选中后**拖四角的小圆点**即可改，按住 Alt 拖只改当前那一角；拖回 0 自动摘掉字段） |
 | `effects` | Effect[] | 见下 |
-| `onTap` | `{ "to": "画板id" }` | 原型交互：单击跳转（见「交互原型」节）；缺省无 |
+| `interactions` | Interaction[] | **原型交互**：多触发器 × 多动作 × 转场（见「交互原型」节）；缺省无 |
+| `onTap` | `{ "to": "画板id" }` | 旧式单击跳转（仍支持，等价于一条 单击→跳转）；新稿写 `interactions` |
 | `mask` | boolean | 用作蒙版：自身不绘制，几何裁剪同容器内位于其上方的兄弟（头像/卡片遮罩常用） |
 | `grow` | number | 父画板开了自动布局时的弹性权重：0 固定，>0 按权重瓜分主轴剩余空间 |
 | `blendMode` | string | 混合模式：multiply/screen/overlay/darken/lighten/color-dodge/color-burn/hard-light/soft-light/difference/exclusion/hue/saturation/color/luminosity（缺省 normal） |
@@ -149,7 +160,7 @@ agent 统一经 `mcp` 网关调用：
 **Stroke**（`strokes: Stroke[]`）：`{ "color": "#e6e6e6", "width": 1, "align": "inside" | "center" | "outside", "style": "solid" | "dashed" | "dotted", "visible": true }`
 
 **各类型专属**：
-- `frame`：`children: DesignNode[]`、`fills`（画板底色）、`strokes?`、`clip?`（缺省 true）、`preset?`（设备预设键，仅记录）、`layout?`（**自动布局**，见下节）
+- `frame`：`children: DesignNode[]`、`fills`（画板底色）、`strokes?`、`clip?`（缺省 true）、`preset?`（设备预设键，仅记录）、`layout?`（**自动布局**，见下节）、`scroll?`（**滚动区域** `v`/`h`/`both`，见「滚动区域」节）
 - `group`：`children`
 - `text`：`runs: [{ "text", "size"?, "weight"?, "color"?, "italic"?, "underline"?, "font"? }]`（多 run = 混排样式，自动换行按盒宽）、`align?: left|center|right`、`vAlign?: top|middle|bottom`、`lineHeight?`（倍数，缺省 1.4）、`letterSpacing?`（px）
 - `line` / `arrow`：`strokes`（必填至少一条）、`dir?: 0|1|2|3`——端点在盒内的走向：**0=↘ 1=↗ 2=↖ 3=↙**（缺省 0）。画"从 A 到 B 的箭头"：盒取两点包围盒，dir 按 B 相对 A 的象限选
@@ -277,24 +288,111 @@ MCP 侧照常可读写它（`update_nodes` 改 `path`/颜色/填充，或直接�
 锚点编辑浮层（选中后拖锚/拖柄、线上加点、删锚）为下一档；在此之前需要改形请用
 `update_nodes` 直接改 `path`，或删除重画。
 
-## 交互原型（onTap：让稿子能点）
+## 交互原型（interactions：多触发器 × 多动作 × 转场）
 
-任何节点可加 `"onTap": { "to": "<顶层画板id>" }`——**单击该节点跳转到目标画板那一屏**。
-面板「预览原型」（P 键 / 文件菜单）与「导出 HTML 原型」共用这套数据。
-
-- `to` 指向**页面级的顶层 frame** 的 id（跨页可跳；指向普通节点/嵌套 frame/已删 id = 死链，
-  预览里红圈提示、HTML 导出里自动丢弃）。
-- 热点 = 节点自身盒子（含组内嵌套偏移自动累加）；节点或其祖先 `visible:false` 则整支不响应。
-- 跳转挂在**按钮整块**（含文字的容器矩形）上，别只挂文字；返回箭头/底部 tab 各挂各的。
-- 出多屏流程稿时**主动接好线**：首页卡→详情、详情返回→首页、tab 互跳、CTA→下一步，
-  让用户按 P 就能顺着点完整个流程。
+任何节点可挂 `interactions` 数组——**这是稿子变成可演示原型的地方**。面板预览（P 键）与
+「导出 HTML 原型」消费同一份数据，且跑的是同一份运行时源码，所以预览里怎么点，交付的
+静态 HTML 里就怎么点。
 
 ```jsonc
-// 首页的主按钮跳到详情页（详情页 = 同档另一个顶层画板）
 { "id": "btn-cta", "name": "主按钮", "type": "rect", "x": 24, "y": 740, "w": 342, "h": 48, "radius": 24,
   "fills": [{ "type": "solid", "color": "#0d99ff" }],
-  "onTap": { "to": "page-detail" } }
+  "interactions": [
+    { "trigger": "tap", "action": "navigate", "to": "page-detail" },
+    { "trigger": "longPress", "action": "overlay", "to": "dlg-confirm", "position": "bottom" },
+    { "trigger": "swipeRight", "action": "back" }
+  ] }
 ```
+
+**触发方式 `trigger`**：`tap` 单击 / `doubleTap` 双击 / `longPress` 长按 / `swipeLeft` `swipeRight` `swipeUp` `swipeDown` 四向滑动。
+
+**动作 `action`** 与 `to` 的口径（**to 的类型按动作分流，选错 = 死链**）：
+
+| action | `to` 指向 | 说明 |
+|---|---|---|
+| `navigate` | 顶层画板 id | 跳转到那一屏（跨页可跳） |
+| `overlay` | 顶层画板 id | 把那块画板当**浮层**压在当前屏上（弹窗/底部抽屉/侧边栏）。配 `position` |
+| `back` | 不需要 | 有浮层先关浮层，否则退回上一屏 |
+| `closeOverlay` | 不需要 | 关掉最上层浮层 |
+| `scrollTo` | **本屏内**节点 id | 滚动到该节点（画板要开 `scroll`） |
+| `toggleVisible` | **本屏内**节点 id | 显隐该节点（每次触发翻转一次） |
+
+**转场 `transition`**：`none` / `pushLeft` `pushRight` `pushUp` `pushDown`（四向推入）/
+`fade` 淡入 / `scale` 缩放 / `slideUp` `slideDown`（抽屉滑入）。**省略即自动**：
+跳转→左推、返回→右推、居中浮层→缩放、底部浮层→上滑、顶部浮层→下滑。想关掉动画才写 `"transition": "none"`。
+`duration` 是毫秒（40–2000），一般不用写。
+
+**浮层 `position`**：`center` 居中（缺省，带遮罩）/ `top` 顶部 / `bottom` 底部（抽屉）/ `left` `right` 侧边。
+浮层画板自身的 x/y 不参与定位——它的 w/h 就是浮层尺寸，位置由 `position` 决定。
+写 `"dismissOnTapOutside": false` 可禁止点遮罩关闭。
+
+**纪律**：
+
+- 跳转/浮层挂在**按钮整块**（含文字的容器矩形）上，别只挂文字；返回箭头、底部 tab 各挂各的。
+- 一条触发器配多条动作时**按数组序命中第一条**；同一触发方式写两条只会有第一条生效。
+- **屏内动作（scrollTo/toggleVisible）的 `to` 必须是该屏自己的后代节点**；跨屏的引用是死链。
+- 出多屏流程稿时**主动接好线**：首页卡→详情、详情返回→首页、tab 互跳、CTA→下一步、
+  列表项长按→操作浮层。让用户按 P 就能顺着点完整个流程，而不是每屏都靠底部画板条硬切。
+- 改完交互跑 `lint_doc`：`dangling-interaction`（error，点了没反应）和 `prototype-flow`
+  （info，孤儿屏/断头屏）两条规则专管原型质量。
+- 旧写法 `"onTap": { "to": "画板id" }` 仍然认（等价于一条 单击→跳转），但新稿一律写 `interactions`。
+
+## 形状内嵌标签（双击矩形直接打字）
+
+形状（rect/ellipse/triangle/diamond/pentagon/hexagon/star）可以带**内嵌文字**，就是
+按钮/标签/徽标上那行字——数据上落在形状自己的 `text` 字段（Figma 的 layer text），
+**不是**另建一个 text 节点再对齐进去：
+
+```jsonc
+{ "id": "btn-cta", "type": "rect", "name": "主按钮", "x": 24, "y": 740, "w": 342, "h": 48,
+  "radius": 24, "fills": [{ "type": "solid", "color": "#0d99ff" }],
+  "text": { "runs": [{ "text": "开始训练", "size": 16, "weight": 600, "color": "#ffffff" }] } }
+```
+
+- 面板侧：**双击形状**即可就地打字（色块保留可见），Esc 取消、⌘Enter 提交；文字清空即摘掉标签。
+- 工具侧：`add_nodes`/`update_nodes` 给形状传 `text`（或 `runs`）即写标签，写法与 text 节点同构
+  （裸串 / `{runs:[…]}` / run 数组都认）；传空串 = 摘掉标签。
+- 排版字段 `align`/`vAlign` 写在 `text` 对象里；**形状缺省是水平垂直双居中**（它是「形状的内容」，
+  不像 text 节点那样左对齐）。`lineHeight`/`letterSpacing` 同理。
+- 标签字号要随形状缩放：小按钮 13–15、大按钮 16–17、标签 12；颜色用按钮底色的对比色（白/品牌色）。
+- 什么时候用形状标签、什么时候用 text 节点：**形状上的一行字用标签**（跟着形状移动/缩放/删除），
+  独立成段的多行文字用 text 节点。
+
+## 素材库（stencils：现成的图形与部件）
+
+`list_stencils` 盘点/检索，`insert_stencil` 落盘。素材按四类收：
+**基础**（按钮/描边按钮/标签/占位符/链接区域/表格/滚动面板/分割线）、
+**形状**（胶囊/多边形/气泡框/波浪）、**流程**（流程/判定/开始结束/文档/数据/子流程）、
+**图表**（饼图/环形图/进度圆环/柱状图/面积图/雷达图）、**界面**（状态栏/导航栏/标签栏/搜索框/列表项/卡片）。
+
+```js
+list_stencils({ query: "按钮" })                      // → [{ id: "button", name: "按钮", … }]
+insert_stencil({ path, stencil: "flow-decision", parent: "<画板id>", x: 120, y: 300, w: 140, h: 90 })
+```
+
+- **什么时候用素材**：形状每次都要现画的（流程图/图表）、结构固定容易摆歪的（表格/状态栏/标签栏）、
+  纯占位（占位符/链接区域）。**什么时候不用**：内容型组合件（导航栏/列表行/卡片）——那些该用
+  `run_design_script` 批量铺或做成组件（components），素材只是"骨架糖"。
+- 面板侧：左栏「素材」页签是同一份素材的网格，点一下就插进当前选中的画板（连点会依次往下排开）。
+- 素材产物是**普通节点**，落盘后照常 `update_nodes` 改色改字、`group_nodes` 成组、挂 `interactions`。
+- 缩放是等比的：给的 `w`/`h` 与素材标称比例不一致时按较小的一边适配并居中留边，不会把图表拉变形。
+
+## 滚动区域（scroll：长页面）
+
+画板加 `"scroll": "v"`（纵向）/ `"h"`（横向）/ `"both"` 即声明**滚动区域**：原型预览与 HTML
+导出里可以滚（滚轮 / 拖动），画布与 PNG/SVG 导出仍按顶部一屏静态呈现（三端不打架）。
+
+```jsonc
+{ "id": "home", "type": "frame", "x": 0, "y": 0, "w": 390, "h": 844, "scroll": "v",
+  "children": [ /* 总高 2000 的内容：底部部分在预览里滚动才能看到 */ ] }
+```
+
+- **长页面必须开它**：内容超过画板高度时，不开 scroll 会被 `lint_doc` 报 `overflow-clipped`
+  （内容被裁掉、演示时永远看不到）。
+- 开了滚动只是让**滚动轴方向**的溢出合法；另一个方向仍然会被裁（也会被 lint 报出来）。
+- 想让某个按钮把内容滚到指定位置：在该按钮上挂
+  `{ "trigger": "tap", "action": "scrollTo", "to": "<目标节点id>" }`。
+- 滚动区域画板在画布上仍显示为普通画板（内容超框部分正常绘制、只是预览里才滚）。
 
 ## 常见组件 JSON 范例
 

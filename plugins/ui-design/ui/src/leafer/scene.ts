@@ -18,6 +18,7 @@
  */
 import {
   HAS_FILL_BOX,
+  layerText,
   instanceView,
   resolveVarColor,
   type DesignDoc,
@@ -26,8 +27,10 @@ import {
   type Fill,
   type GradientStop,
   type LineDir,
+  type LayerText,
   type Page,
   type Stroke,
+  type TextNode,
   type TextRun,
 } from "../doc";
 import { iconDrawSpec } from "../icons";
@@ -41,6 +44,17 @@ export type SceneCtx = {
   /** 画布底色（frame 无填充时的对照）；仅占位，节点自身不画底 */
   /** 组件实例渲染需全档来解析主档（instance 分支按 id 现取） */
   doc?: DesignDoc;
+  /**
+   * 正在就地编辑的文字节点 id（含实例内部 id）。命中则该节点的画布渲染整体隐藏——
+   * 编辑浮层是透明 textarea，不隐藏底下的文字就会叠出两份（浮层一份、画布一份）。
+   */
+  hiddenNodeId?: string | null;
+  /**
+   * 就地编辑中的节点：**只藏它的文字**，不藏节点本身。
+   * 形状的标签是画在色块之上的，藏掉整个形状会让正在打字的按钮凭空消失——
+   * 编辑时应当能看见按钮底色。text 节点整支都是文字，效果等价于全藏。
+   */
+  hideTextId?: string | null;
 };
 
 export type SceneTag = "group" | "rect" | "ellipse" | "path" | "line" | "image" | "text";
@@ -429,7 +443,68 @@ function rootGroupProps(node: DesignNode, container: boolean, clip = false, inte
   };
 }
 
-/** 逐层叠绘同几何视觉件（fills 各一 + strokes 各一），返回子节点数组 */
+/** 一块文字（text 节点或形状内嵌文字）的排版输入 */
+export type TextBlockSpec = {
+  runs: TextRun[];
+  align?: "left" | "center" | "right";
+  vAlign?: "top" | "middle" | "bottom";
+  lineHeight?: number;
+  letterSpacing?: number;
+};
+
+/**
+ * 文字片段 → 场景节点。text 节点与**形状内嵌文字**共用这一份，保证两处渲染同源，
+ * 也就不会出现「按钮上的字和文本框里的字排得不一样」。
+ * keyPrefix 用来给片段编稳定 key（`<节点id>#t<i>` / `<节点id>#lt<i>`）。
+ */
+export function textSceneChildren(keyPrefix: string, block: TextBlockSpec, w: number, h: number, ctx: SceneCtx): SceneNode[] {
+  const frags = layoutText(
+    runsToSpec(block.runs),
+    w,
+    h,
+    block.align ?? "left",
+    block.vAlign ?? "top",
+    block.lineHeight ?? LINE_HEIGHT,
+    ctx.measure,
+  );
+  const children: SceneNode[] = frags.map((f, i) => ({
+    tag: "text",
+    key: `${keyPrefix}${i}`,
+    props: {
+      x: f.x,
+      y: f.baseline - f.run.fontSize * BASELINE_K,
+      text: f.text,
+      fontSize: f.run.fontSize,
+      lineHeight: f.run.fontSize,
+      fill: resolveVarColor(ctx.doc, f.run.color),
+      fontFamily: f.run.font,
+      ...(f.run.bold ? { fontWeight: 700 } : {}),
+      ...(f.run.italic ? { italic: true } : {}),
+      ...(block.letterSpacing ? { letterSpacing: block.letterSpacing } : {}),
+    },
+  }));
+  // 无折行内容也放一个空占位保证 key 稳定
+  if (children.length === 0) children.push({ tag: "text", key: `${keyPrefix}0`, props: { text: "", opacity: 0 } });
+  return children;
+}
+
+/** 内嵌文字的排版参数：缺省水平垂直双居中（它是「形状里的内容」，不是一块独立文字） */
+export const layerTextBlock = (lt: LayerText): TextBlockSpec => ({
+  runs: lt.runs,
+  align: lt.align ?? "center",
+  vAlign: lt.vAlign ?? "middle",
+  lineHeight: lt.lineHeight,
+  letterSpacing: lt.letterSpacing,
+});
+
+function buildTextNode(node: TextNode, ctx: SceneCtx, internal: boolean): SceneNode {
+  return {
+    tag: "group",
+    key: node.id,
+    props: rootGroupProps(node, false, false, internal),
+    children: textSceneChildren(`${node.id}#t`, node, node.w, node.h, ctx),
+  };
+}
 function paintChildren(
   id: string,
   kind: "rect" | "ellipse" | "path",
@@ -497,34 +572,11 @@ function buildNode(node: DesignNode, ctx: SceneCtx, internal = false): SceneNode
     return { tag: "group", key: node.id, props: rootGroupProps(node, true, false, internal), children: view.map((c) => buildNode(c, ctx, true)) };
   }
   if (node.type === "text") {
-    const frags = layoutText(
-      runsToSpec(node.runs),
-      node.w,
-      node.h,
-      node.align ?? "left",
-      node.vAlign ?? "top",
-      node.lineHeight ?? LINE_HEIGHT,
-      ctx.measure,
-    );
-    const children: SceneNode[] = frags.map((f, i) => ({
-      tag: "text",
-      key: `${node.id}#t${i}`,
-      props: {
-        x: f.x,
-        y: f.baseline - f.run.fontSize * BASELINE_K,
-        text: f.text,
-        fontSize: f.run.fontSize,
-        lineHeight: f.run.fontSize,
-        fill: resolveVarColor(ctx.doc, f.run.color),
-        fontFamily: f.run.font,
-        ...(f.run.bold ? { fontWeight: 700 } : {}),
-        ...(f.run.italic ? { italic: true } : {}),
-        ...(node.letterSpacing ? { letterSpacing: node.letterSpacing } : {}),
-      },
-    }));
-    // 无折行内容也放一个空占位保证 key 稳定
-    if (children.length === 0) children.push({ tag: "text", key: `${node.id}#t0`, props: { text: "", opacity: 0 } });
-    return { tag: "group", key: node.id, props: rootGroupProps(node, false, false, internal), children };
+    const out = buildTextNode(node, ctx, internal);
+    // 就地编辑中：隐藏画布这份，避免与透明 textarea 浮层叠成两份文字
+    if (ctx.hiddenNodeId && ctx.hiddenNodeId === node.id) out.props.visible = false;
+    if (ctx.hideTextId && ctx.hideTextId === node.id) out.props.visible = false;
+    return out;
   }
   if (node.type === "image") {
     const view = ctx.asset(node.src);
@@ -606,7 +658,13 @@ function buildNode(node: DesignNode, ctx: SceneCtx, internal = false): SceneNode
   const kind: "rect" | "ellipse" | "path" = d ? "path" : shape.type === "ellipse" ? "ellipse" : "rect";
   // 多边形走 path 几何：必须把 d 传下去（漏传 = path:undefined，画布上永远不渲染）
   const children = paintChildren(shape.id, kind, shape, shape.fills, shape.strokes, d ?? undefined, ctx);
-  return { tag: "group", key: node.id, props: rootGroupProps(node, false, false, internal), children };
+  // 内嵌文字画在形状之上（同 group，按 z 序排在 fills/strokes 之后）
+  // 就地编辑该形状的标签时只跳过这段：色块留着，用户在原地打字能看见自己写的字
+  const lt = ctx.hideTextId && ctx.hideTextId === node.id ? null : layerText(node);
+  if (lt) children.push(...textSceneChildren(`${node.id}#lt`, layerTextBlock(lt), node.w, node.h, ctx));
+  const props = rootGroupProps(node, false, false, internal);
+  if (ctx.hiddenNodeId && ctx.hiddenNodeId === node.id) props.visible = false;
+  return { tag: "group", key: node.id, props, children };
 }
 
 /** 页面 → 顶层节点场景列表（各自带局部坐标，落在 world group 内） */

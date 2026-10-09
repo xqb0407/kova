@@ -22,7 +22,7 @@ import { useEffect, useMemo, useRef, useState, type FC } from "react";
 import { App, DragEvent, Ellipse, Group, Image as LeaferImage, Line, MoveEvent, Path, Rect, Text } from "leafer-ui";
 import "@leafer-ui/mask";
 import { Editor, EditorEvent } from "@leafer-in/editor";
-import { findNode, type LineDir, type NodeType } from "../doc";
+import { canHoldText, findNode, nodeTextRuns, nodeTextStyle, type LineDir, type NodeType } from "../doc";
 import { hitAnchor, penPathD, penToNode, type Anchor } from "../pen";
 import { uid, type DesignNode } from "../doc";
 import {
@@ -43,6 +43,7 @@ import { patchTree, type PatchEntry, type PatchNodeObj } from "./patch";
 import { ensureAsset, getAssetState, useAssetsVersion } from "./assets";
 import { makeMeasure } from "./measure";
 import { ContextMenu, canvasMenu, nodeMenu } from "../chrome/ContextMenu";
+import { RadiusHandles } from "../chrome/RadiusHandles";
 import type { DesignStore } from "../state";
 
 const ACCENT = "#0d99ff"; // Figma 蓝：选择框/把手/框选/创建预览共用
@@ -302,7 +303,8 @@ export const DesignStage: FC<{ store: DesignStore }> = ({ store }) => {
       const hit = hitPoint(d, pg, { x: wx, y: wy });
       if (!hit) return;
       const loc = findNode(d, hit);
-      if (loc && loc.node.type === "text" && !loc.node.locked) {
+      // 双击写字：文本节点写自身，形状写字形内嵌标签（墨刀/Figma 的「双击矩形直接打字」）
+      if (loc && canHoldText(loc.node) && !loc.node.locked) {
         st.setSel([hit]);
         st.setEditingTextId(hit);
       }
@@ -461,10 +463,13 @@ export const DesignStage: FC<{ store: DesignStore }> = ({ store }) => {
       // 实例 live 解析要全档：依赖必须含 doc——改主档只动 doc.components、不动页引用，
       // 只依赖 page 的话实例不会重绘
       doc,
+      // 就地编辑：只藏那一段文字（浮层是透明 textarea，不藏会叠出两份）；
+      // 形状的色块保留可见——编辑按钮标签时要看得见按钮
+      hideTextId: editingTextId,
     };
     return buildPageScene(page, ctx);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, assetsVersion, doc]);
+  }, [page, assetsVersion, doc, editingTextId]);
 
   // 视口变换独立 effect：平移/缩放只动 world，不重跑场景 patch。
   // ⚠️ 编辑器选框在独立图层、不随 world 平移——视口变化后必须刷新选中框。
@@ -543,13 +548,16 @@ export const DesignStage: FC<{ store: DesignStore }> = ({ store }) => {
   const editingNode = useMemo(() => {
     if (!editingTextId) return null;
     const loc = findNode(doc, editingTextId);
-    return loc && loc.node.type === "text" ? loc.node : null;
+    return loc && canHoldText(loc.node) ? loc.node : null;
   }, [editingTextId, doc]);
+  // 就地编辑的排版：text 节点看自身字段，形状看内嵌标签（缺省双居中）
+  const editingStyle = useMemo(() => (editingNode ? nodeTextStyle(editingNode) : null), [editingNode]);
+  const editingRuns = useMemo(() => (editingNode ? nodeTextRuns(editingNode) : []), [editingNode]);
   // id 变了就从 runs 重灌草稿；节点没了（被删/undo）就关掉编辑态
   useEffect(() => {
     if (draftIdRef.current === editingTextId) return;
     draftIdRef.current = editingTextId;
-    if (editingTextId) setDraft(editingNode ? editingNode.runs.map((r) => r.text).join("") : "");
+    if (editingTextId) setDraft(editingNode ? nodeTextRuns(editingNode).map((r) => r.text).join("") : "");
   }, [editingTextId, editingNode]);
   useEffect(() => {
     if (editingTextId && !editingNode) store.setEditingTextId(null);
@@ -557,11 +565,12 @@ export const DesignStage: FC<{ store: DesignStore }> = ({ store }) => {
 
   const commitText = () => {
     if (editingTextId && editingNode) {
-      const base = editingNode.runs[0];
+      const base = nodeTextRuns(editingNode)[0];
       store.setTextRuns(editingTextId, [
         {
           text: draft,
-          ...(base?.color ? { color: base.color } : {}),
+          // 形状新建标签时给一组像样的缺省：白字 15px 半粗（按钮/标签上的字）
+          ...(base?.color ? { color: base.color } : editingNode.type === "text" ? {} : { color: "#ffffff", size: 15, weight: 600 }),
           ...(base?.size ? { size: base.size } : {}),
           ...(base?.weight ? { weight: base.weight } : {}),
           ...(base?.italic ? { italic: true } : {}),
@@ -901,6 +910,8 @@ export const DesignStage: FC<{ store: DesignStore }> = ({ store }) => {
           ))}
         </div>
       )}
+      {/* 圆角手柄：选中矩形/画板/图片时四角可拖（墨刀手感） */}
+      <RadiusHandles store={store} />
       {editingNode && tbox && (
         <div style={{ position: "absolute", inset: 0 }} onPointerDown={() => commitText()}>
           <textarea
@@ -932,14 +943,14 @@ export const DesignStage: FC<{ store: DesignStore }> = ({ store }) => {
               margin: 0,
               background: "transparent",
               overflow: "hidden",
-              fontSize: (editingNode.runs[0]?.size ?? 14) * view.s,
-              fontFamily: editingNode.runs[0]?.font,
-              fontWeight: (editingNode.runs[0]?.weight ?? 400) >= 600 ? 700 : 400,
-              fontStyle: editingNode.runs[0]?.italic ? "italic" : "normal",
-              color: editingNode.runs[0]?.color ?? "#111111",
-              textAlign: editingNode.align ?? "left",
-              lineHeight: editingNode.lineHeight ?? 1.4,
-              letterSpacing: editingNode.letterSpacing ? editingNode.letterSpacing * view.s : undefined,
+              fontSize: (editingRuns[0]?.size ?? 14) * view.s,
+              fontFamily: editingRuns[0]?.font,
+              fontWeight: (editingRuns[0]?.weight ?? 400) >= 600 ? 700 : 400,
+              fontStyle: editingRuns[0]?.italic ? "italic" : "normal",
+              color: editingRuns[0]?.color ?? "#111111",
+              textAlign: editingStyle?.align ?? "left",
+              lineHeight: editingStyle?.lineHeight ?? 1.4,
+              letterSpacing: editingStyle?.letterSpacing ? editingStyle.letterSpacing * view.s : undefined,
             }}
           />
         </div>

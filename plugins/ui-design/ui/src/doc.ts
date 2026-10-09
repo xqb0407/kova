@@ -101,6 +101,199 @@ export const LINE_TYPES: readonly NodeType[] = ["line", "arrow"];
 /** line/arrow 走向（bbox 局部）：0=↘（缺省）1=↗ 2=↖ 3=↙（同 CanvasDoc 对角语义） */
 export type LineDir = 0 | 1 | 2 | 3;
 
+/* ---------------- 原型交互（多触发器 + 多动作 + 转场） ---------------- */
+
+/** 触发方式：单击 / 双击 / 长按 / 四向滑动（移动端原型的全部常用手势） */
+export type InteractionTrigger =
+  | "tap"
+  | "doubleTap"
+  | "longPress"
+  | "swipeLeft"
+  | "swipeRight"
+  | "swipeUp"
+  | "swipeDown";
+
+export const INTERACTION_TRIGGERS: readonly InteractionTrigger[] = [
+  "tap", "doubleTap", "longPress", "swipeLeft", "swipeRight", "swipeUp", "swipeDown",
+];
+
+/**
+ * 动作：跳转 / 返回 / 打开浮层 / 关闭浮层 / 滚动到 / 显隐。
+ * navigate 与 overlay 的 `to` 指向**顶层画板**；scrollTo 指向本屏内节点；toggleVisible 指向本屏内节点。
+ */
+export type InteractionAction =
+  | "navigate"
+  | "back"
+  | "overlay"
+  | "closeOverlay"
+  | "scrollTo"
+  | "toggleVisible";
+
+export const INTERACTION_ACTIONS: readonly InteractionAction[] = [
+  "navigate", "back", "overlay", "closeOverlay", "scrollTo", "toggleVisible",
+];
+
+/** 转场动画：无 / 四向推入 / 淡入 / 缩放（弹窗）/ 上下滑入（抽屉） */
+export type PrototypeTransition =
+  | "none"
+  | "pushLeft"
+  | "pushRight"
+  | "pushUp"
+  | "pushDown"
+  | "fade"
+  | "scale"
+  | "slideUp"
+  | "slideDown";
+
+export const PROTOTYPE_TRANSITIONS: readonly PrototypeTransition[] = [
+  "none", "pushLeft", "pushRight", "pushUp", "pushDown", "fade", "scale", "slideUp", "slideDown",
+];
+
+/** 浮层停靠位：决定缺省转场与贴边对齐 */
+export type OverlayPosition = "center" | "top" | "bottom" | "left" | "right";
+export const OVERLAY_POSITIONS: readonly OverlayPosition[] = ["center", "top", "bottom", "left", "right"];
+
+/**
+ * 一条原型交互。触发器挂在节点上；同名触发器可挂多条（按数组序命中第一条）。
+ * 缺省值策略（`protoDefaults`）保证「只写 trigger + action + to」也有像样的动画，
+ * 显式写 `"transition": "none"` 可关。
+ */
+export type Interaction = {
+  trigger: InteractionTrigger;
+  action: InteractionAction;
+  /** 目标 id：navigate/overlay = 顶层画板 id；scrollTo/toggleVisible = 本屏内节点 id */
+  to?: string;
+  /** overlay 停靠位，缺省 center */
+  position?: OverlayPosition;
+  /** 转场动画，缺省按 动作 + 停靠位 推导 */
+  transition?: PrototypeTransition;
+  /** 转场时长 ms（40..2000），缺省按转场类型 */
+  duration?: number;
+  /** overlay：点击遮罩关闭，缺省 true */
+  dismissOnTapOutside?: boolean;
+};
+
+/** 滚动区域轴：v 纵向 / h 横向 / both 双向（FrameNode.scroll） */
+export type ScrollAxis = "v" | "h" | "both";
+export const SCROLL_AXES: readonly ScrollAxis[] = ["v", "h", "both"];
+
+/** 宽松归一：大小写/空格/下划线/连字符容错（AI 常写 double_tap / Swipe-Left） */
+function looseKey(raw: unknown): string {
+  return typeof raw === "string" ? raw.trim().toLowerCase().replace(/[\s_-]+/g, "") : "";
+}
+
+const TRIGGER_ALIASES: Record<string, InteractionTrigger> = {
+  tap: "tap", click: "tap", touch: "tap", press: "tap", onclick: "tap",
+  doubletap: "doubleTap", dbltap: "doubleTap", doubleclick: "doubleTap", dbclick: "doubleTap",
+  longpress: "longPress", longclick: "longPress", hold: "longPress", presshold: "longPress",
+  swipeleft: "swipeLeft", left: "swipeLeft",
+  swiperight: "swipeRight", right: "swipeRight",
+  swipeup: "swipeUp", up: "swipeUp",
+  swipedown: "swipeDown", down: "swipeDown",
+};
+
+export function normalizeTrigger(raw: unknown): InteractionTrigger | undefined {
+  return TRIGGER_ALIASES[looseKey(raw)];
+}
+
+const ACTION_ALIASES: Record<string, InteractionAction> = {
+  navigate: "navigate", jump: "navigate", goto: "navigate", link: "navigate", open: "navigate", navigateto: "navigate",
+  back: "back", prev: "back", previous: "back", return: "back", goback: "back",
+  overlay: "overlay", popup: "overlay", modal: "overlay", dialog: "overlay", sheet: "overlay", showoverlay: "overlay",
+  closeoverlay: "closeOverlay", close: "closeOverlay", closepopup: "closeOverlay", dismiss: "closeOverlay", hideoverlay: "closeOverlay",
+  scrollto: "scrollTo", scroll: "scrollTo",
+  togglevisible: "toggleVisible", toggle: "toggleVisible", showhide: "toggleVisible", visibility: "toggleVisible",
+};
+
+export function normalizeAction(raw: unknown): InteractionAction | undefined {
+  return ACTION_ALIASES[looseKey(raw)];
+}
+
+const TRANSITION_ALIASES: Record<string, PrototypeTransition> = {
+  none: "none", no: "none", instant: "none", off: "none",
+  pushleft: "pushLeft", slideleft: "pushLeft", left: "pushLeft",
+  pushright: "pushRight", slideright: "pushRight", right: "pushRight",
+  pushup: "pushUp", slideup: "slideUp", up: "pushUp",
+  pushdown: "pushDown", slidedown: "slideDown", down: "pushDown",
+  fade: "fade", fadein: "fade", dissolve: "fade",
+  scale: "scale", zoom: "scale", pop: "scale",
+};
+
+export function normalizeTransition(raw: unknown): PrototypeTransition | undefined {
+  return TRANSITION_ALIASES[looseKey(raw)];
+}
+
+const OVERLAY_ALIASES: Record<string, OverlayPosition> = {
+  center: "center", middle: "center", centre: "center",
+  top: "top", above: "top",
+  bottom: "bottom", below: "bottom", sheet: "bottom",
+  left: "left", right: "right",
+};
+
+export function normalizeOverlayPosition(raw: unknown): OverlayPosition | undefined {
+  return OVERLAY_ALIASES[looseKey(raw)];
+}
+
+export function normalizeScrollAxis(raw: unknown): ScrollAxis | undefined {
+  if (raw === true) return "v";
+  const k = looseKey(raw);
+  if (!k) return undefined;
+  if (k === "v" || k === "vertical" || k === "y" || k === "column") return "v";
+  if (k === "h" || k === "horizontal" || k === "x" || k === "row") return "h";
+  if (k === "both" || k === "all" || k === "xy" || k === "vh" || k === "hv") return "both";
+  return undefined;
+}
+
+/**
+ * 单条交互容错解析：trigger 与 action 都认得出才算数（写错宁可丢掉并由 lint/警告报，不猜）。
+ * `to` 允许省略（back / closeOverlay 无目标）。
+ */
+function parseInteraction(raw: unknown): Interaction | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const o = raw as Record<string, unknown>;
+  const trigger = normalizeTrigger(pick(o, "trigger", "on", "when", "event"));
+  const action = normalizeAction(pick(o, "action", "do", "type", "behavior"));
+  if (!trigger || !action) return null;
+  const it: Interaction = { trigger, action };
+  const to = str(pick(o, "to", "target", "destination", "dest", "frame", "page"));
+  if (to) it.to = to.trim().slice(0, 120);
+  const pos = normalizeOverlayPosition(pick(o, "position", "placement", "anchor"));
+  if (pos) it.position = pos;
+  const tr = normalizeTransition(pick(o, "transition", "animation", "anim", "effect"));
+  if (tr) it.transition = tr;
+  const durRaw = pick(o, "duration", "speed");
+  if (typeof durRaw === "number" && Number.isFinite(durRaw) && durRaw > 0) {
+    it.duration = clamp(Math.round(durRaw), 40, 2000);
+  }
+  if (o.dismissOnTapOutside === false || o.dismissOnTapOutside === "false") it.dismissOnTapOutside = false;
+  return it;
+}
+
+function parseInteractions(raw: unknown): Interaction[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: Interaction[] = [];
+  for (const item of raw.slice(0, 24)) {
+    const it = parseInteraction(item);
+    if (it) out.push(it);
+  }
+  return out.length ? out : undefined;
+}
+
+/**
+ * 节点的有效交互表：interactions 优先；缺省把旧式 onTap 折算成一条单击跳转
+ * （旧档不迁移也能在预览/导出/体检里按同一口径处理）。
+ */
+export function nodeInteractions(n: DesignNode): Interaction[] {
+  if (n.interactions && n.interactions.length) return n.interactions;
+  if (n.onTap?.to) return [{ trigger: "tap", action: "navigate", to: n.onTap.to }];
+  return [];
+}
+
+/** 节点是否带任何原型交互（画布角标 / 体检用） */
+export function hasInteraction(n: DesignNode): boolean {
+  return !!(n.interactions?.length || n.onTap?.to);
+}
+
 type NodeBase = {
   id: string;
   name: string;
@@ -116,7 +309,9 @@ type NodeBase = {
   /** 圆角：统一值或 [tl,tr,br,bl]；0..4096 */
   radius?: number | [number, number, number, number];
   effects?: Effect[];
-  /** 原型交互：单击本节点后跳转 to 指向的画板（全档任意 frame id，跨页可用；死链渲染时忽略） */
+  /** 原型交互（多触发器 + 多动作 + 转场）。见 Interaction；旧式 onTap 仍支持 */
+  interactions?: Interaction[];
+  /** 旧式单击跳转：等价于 interactions 里一条 { trigger:"tap", action:"navigate", to }。新稿写 interactions */
   onTap?: { to: string };
   /** 蒙版：用本节点几何裁剪同容器内位于其上方的兄弟（Figma 语义；自身不绘制内容） */
   mask?: boolean;
@@ -183,11 +378,29 @@ export type FrameLayout = {
 /** 纯几何盒形状判别子集（区别于 NodeType 全集，供联合类型可辨识收窄用） */
 export type BoxShapeType = "rect" | "ellipse" | "triangle" | "diamond" | "pentagon" | "hexagon" | "star";
 
-export type ShapeNode = NodeBase & { type: BoxShapeType; fills: Fill[]; strokes: Stroke[] };
+export type ShapeNode = NodeBase & {
+  type: BoxShapeType;
+  fills: Fill[];
+  strokes: Stroke[];
+  /** 内嵌文字（Figma/Sketch 的 layer text）：画在形状自身盒内，随形状移动/删除/成组 */
+  text?: LayerText;
+};
 export type LineNode = NodeBase & {
   type: "line" | "arrow";
   dir?: LineDir;
   strokes: Stroke[];
+};
+/**
+ * 形状内嵌文字：典型用途是按钮、标签、徽标——「双击矩形直接打字」，不必另起一个
+ * text 节点再对齐进去。缺省水平 + 垂直居中（与 text 节点缺省左上不同，因为它是
+ * 「形状里的内容」而不是「一块文字」）。文字色在 runs[].color 上，与形状 fills 无关。
+ */
+export type LayerText = {
+  runs: TextRun[];
+  align?: "left" | "center" | "right"; // 缺省 center
+  vAlign?: "top" | "middle" | "bottom"; // 缺省 middle
+  lineHeight?: number; // 倍数，缺省 1.4
+  letterSpacing?: number; // px，缺省 0
 };
 export type TextNode = NodeBase & {
   type: "text";
@@ -239,6 +452,12 @@ export type FrameNode = NodeBase & {
   preset?: string;
   /** 自动布局：声明后子节点由重排引擎接管排布（ui/src/layout.ts） */
   layout?: FrameLayout;
+  /**
+   * 滚动区域：声明后本画板是一个可滚动视口（内容超框部分在原型预览 / HTML 导出里可滚动查看）。
+   * 画布、PNG/SVG 导出、MCP 截图按 offset 0 的静态一屏呈现（三端一致），滚动只在可交互端存在。
+   * 隐式开启裁切（clip 语义）。
+   */
+  scroll?: ScrollAxis;
 };
 
 /**
@@ -899,6 +1118,8 @@ export function collectVarRefs(doc: DesignDoc): Map<string, number> {
     for (const s of (n as { strokes?: Stroke[] }).strokes ?? []) bump(s.color);
     for (const e of (n as { effects?: Effect[] }).effects ?? []) bump((e as { color?: string }).color);
     for (const r of (n as { runs?: TextRun[] }).runs ?? []) bump(r.color);
+    // 形状内嵌文字：颜色在 text.runs[] 上，同样可绑 var:，盘点不能漏
+    for (const r of (n as { text?: { runs?: TextRun[] } }).text?.runs ?? []) bump(r.color);
     bump((n as { color?: string }).color);
   };
   for (const { node } of walkDoc(doc)) walk(node);
@@ -1211,6 +1432,8 @@ function parseNode(raw: unknown, seenIds: Set<string>, warn?: ParseWarn): Design
   if (radius !== undefined) base.radius = radius;
   const effects = parseEffects(o.effects);
   if (effects) base.effects = effects;
+  const interactions = parseInteractions(pick(o, "interactions", "prototype", "triggers"));
+  if (interactions) base.interactions = interactions;
   if (typeof o.onTap === "object" && o.onTap !== null) {
     const to = str((o.onTap as Record<string, unknown>).to);
     if (to) base.onTap = { to: to.slice(0, 120) };
@@ -1233,6 +1456,8 @@ function parseNode(raw: unknown, seenIds: Set<string>, warn?: ParseWarn): Design
     if (typeof o.preset === "string" && o.preset in DEVICE_PRESETS) node.preset = o.preset;
     const layout = normalizeLayout(o.layout);
     if (layout) node.layout = layout;
+    const scroll = normalizeScrollAxis(pick(o, "scroll", "scrollAxis", "overflow"));
+    if (scroll) node.scroll = scroll;
     return node;
   }
   if (t === "text") {
@@ -1300,7 +1525,110 @@ function parseNode(raw: unknown, seenIds: Set<string>, warn?: ParseWarn): Design
     return node;
   }
   const node: ShapeNode = { ...base, type: t as BoxShapeType, fills: fillsForNode(o), strokes: strokesForNode(o) };
+  const lt = parseLayerText(pick(o, "text", "label", "layerText"));
+  if (lt) node.text = lt;
   return node;
+}
+
+/**
+ * 内嵌文字宽松解析：接受 "按钮"（裸串）/ {runs|text|label, align, vAlign, ...} / run 数组。
+ * 无有效文字返回 null（不落字段，保持序列化幂等）。
+ *
+ * 导出给 MCP 侧复用：形状标签的写法容错必须只有一份实现，否则
+ * "面板/文件写的 {runs:[…]} 工具不认、工具的简写文件不认"这种漂移必然发生。
+ */
+export function parseLayerText(raw: unknown): LayerText | null {
+  if (raw === undefined || raw === null) return null;
+  const box = typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  const src = box ? pick(box, "runs", "text", "label") : raw;
+  if (src === undefined || src === null) return null;
+  const rawRuns: unknown[] = Array.isArray(src) ? src : typeof src === "string" ? [{ text: src }] : [src];
+  const runs = rawRuns.map(parseRun).filter((r): r is TextRun => r !== null).slice(0, 64);
+  if (runs.length === 0 || runs.every((r) => !r.text)) return null;
+  const out: LayerText = { runs };
+  if (box) {
+    // 缺省是 center / middle：只有偏离缺省才落字段，保证序列化幂等
+    if (box.align === "left" || box.align === "right") out.align = box.align;
+    if (box.vAlign === "top" || box.vAlign === "bottom") out.vAlign = box.vAlign;
+    if (box.lineHeight !== undefined) out.lineHeight = clamp(num(box.lineHeight, 1.4), 0.5, 4);
+    if (box.letterSpacing !== undefined) out.letterSpacing = clamp(num(box.letterSpacing, 0), -20, 40);
+  }
+  return out;
+}
+
+/** 取节点的内嵌文字（仅形状有）；text 节点走自己的 runs，故返回 null */
+export const layerText = (n: DesignNode): LayerText | null =>
+  n.type === "text" ? null : ((n as { text?: LayerText }).text ?? null);
+
+/**
+ * 「可以承载一段文字」的节点：text 节点本身，或形状（内嵌 text 字段，即 Figma 的 layer text）。
+ * 双击就地编辑、面板/MCP 改文案都按这个口径判断，避免两处对"哪些节点能写字"各说各话。
+ */
+export function canHoldText(n: DesignNode): boolean {
+  if (n.type === "text") return true;
+  return SHAPE_TYPES.includes(n.type);
+}
+
+/** 统一的文字读取口：text 节点取 runs，形状取内嵌 text.runs，其余空数组 */
+export function nodeTextRuns(n: DesignNode): TextRun[] {
+  if (n.type === "text") return n.runs;
+  return layerText(n)?.runs ?? [];
+}
+
+/** 统一的排版参数读取口（text 节点看自身字段，形状看 LayerText） */
+export function nodeTextStyle(n: DesignNode): {
+  align: "left" | "center" | "right";
+  vAlign: "top" | "middle" | "bottom";
+  lineHeight?: number;
+  letterSpacing?: number;
+} {
+  if (n.type === "text") {
+    return { align: n.align ?? "left", vAlign: n.vAlign ?? "top", ...(n.lineHeight !== undefined ? { lineHeight: n.lineHeight } : {}), ...(n.letterSpacing !== undefined ? { letterSpacing: n.letterSpacing } : {}) };
+  }
+  const lt = layerText(n);
+  // 形状里的文字是「形状的内容」，缺省双居中（与 select 无关，见 layerTextBlock）
+  return { align: lt?.align ?? "center", vAlign: lt?.vAlign ?? "middle", ...(lt?.lineHeight !== undefined ? { lineHeight: lt.lineHeight } : {}), ...(lt?.letterSpacing !== undefined ? { letterSpacing: lt.letterSpacing } : {}) };
+}
+
+/**
+ * 就地写形状的内嵌标签（LayerText）。
+ * 空 runs = **摘掉标签**回到纯色块，而不是留一个空 text 对象——
+ * 否则「没写字」和「写了空串」在文档里长得不一样，diff 与体检都难判。
+ */
+export function applyLayerText(
+  shape: ShapeNode,
+  runs: TextRun[],
+  style?: { align?: "left" | "center" | "right"; vAlign?: "top" | "middle" | "bottom" },
+): void {
+  if (runs.length === 0 || (runs.length === 1 && runs[0]!.text === "")) {
+    delete shape.text;
+    return;
+  }
+  const next: LayerText = { ...(shape.text ?? {}), runs };
+  if (style?.align) next.align = style.align;
+  if (style?.vAlign) next.vAlign = style.vAlign;
+  shape.text = next;
+}
+
+/**
+ * 把一段文字写进节点（形状写内嵌 text；text 节点写 runs），返回新节点（immutable）。
+ * 面板与 MCP 都从这里走，保证「双击矩形打字」与工具写文案落在同一个字段。
+ */
+export function withTextRuns(
+  n: DesignNode,
+  runs: TextRun[],
+  style?: { align?: "left" | "center" | "right"; vAlign?: "top" | "middle" | "bottom" },
+): DesignNode {
+  if (n.type === "text") {
+    const out = { ...n, runs } as TextNode;
+    if (style?.align) out.align = style.align;
+    if (style?.vAlign) out.vAlign = style.vAlign;
+    return out;
+  }
+  if (!SHAPE_TYPES.includes(n.type)) return n;
+  const shape = { ...n } as ShapeNode;
+  applyLayerText(shape, runs, style);
+  return shape;
 }
 
 function parseFills(raw: unknown): Fill[] {

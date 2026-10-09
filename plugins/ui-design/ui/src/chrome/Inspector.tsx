@@ -21,17 +21,14 @@ import {
   FlipHorizontal2,
   FlipVertical2,
   Italic,
-  Link2,
   Lock,
   LockOpen,
-  Play,
   Plus,
   Trash2,
   Underline,
 } from "lucide-react";
 import {
   DEVICE_PRESETS,
-  allFrames,
   findComponent,
   findNode,
   TYPE_LABELS,
@@ -50,6 +47,7 @@ import { resolveIconName } from "../icons";
 import type { BlendMode, FrameLayout } from "../doc";
 import { copyText } from "../lib/clipboard";
 import { IconPicker } from "./IconPicker";
+import { InteractionEditor } from "./InteractionEditor";
 import { ColorInput, IconBtn, Menu, MenuItem, MiniSelect, NumField, Section, VarColorCell } from "./ui";
 
 /* ---------------- 类型收窄小工具 ---------------- */
@@ -555,6 +553,24 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
                 onChange={(v) => updateNode(n.id, { clip: v === "on" } as Partial<DesignNode>)}
                 title="画板是否裁切溢出内容"
               />
+              <MiniSelect
+                value={n.scroll ?? "none"}
+                options={[
+                  { value: "none", label: "不滚动" },
+                  { value: "v", label: "竖向滚动" },
+                  { value: "h", label: "横向滚动" },
+                  { value: "both", label: "双向滚动" },
+                ]}
+                onChange={(v) =>
+                  updateNode(n.id, (m) => {
+                    const c = { ...m } as DesignNode & { scroll?: unknown };
+                    if (v === "none") delete c.scroll;
+                    else c.scroll = v;
+                    return c;
+                  })
+                }
+                title="滚动区域：内容超框时在原型预览与 HTML 导出里可滚动"
+              />
             </div>
           )}
         </div>
@@ -972,52 +988,8 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
         </Section>
       )}
 
-      {/* 原型交互：单击 → 跳转画板 */}
-      <Section title="原型">
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-1.5">
-            <span className="flex w-11 shrink-0 items-center gap-1 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-              <Link2 size={11} />
-              单击
-            </span>
-            <MiniSelect
-              value={n.onTap?.to ?? ""}
-              options={[
-                { value: "", label: "无跳转" },
-                ...allFrames(doc).map(({ pageId, frame }) => ({
-                  value: frame.id,
-                  label: `${doc.pages.find((p) => p.id === pageId)?.name ?? "?"} / ${frame.name}`,
-                })),
-              ]}
-              onChange={(v) =>
-                v
-                  ? updateNode(n.id, { onTap: { to: v } } as Partial<DesignNode>)
-                  : updateNode(n.id, (m) => {
-                      const c = { ...m } as DesignNode & { onTap?: unknown };
-                      delete c.onTap;
-                      return c;
-                    })
-              }
-              title="点击该元素时跳转的目标画板"
-            />
-          </div>
-          {n.onTap && findNode(doc, n.onTap.to)?.node.type !== "frame" && (
-            <div className="text-[11px]" style={{ color: "var(--destructive)" }}>
-              跳转目标已删除或不是画板，预览/导出时忽略
-            </div>
-          )}
-          {onPreview && (
-            <button
-              type="button"
-              onClick={onPreview}
-              className="flex h-7 w-full items-center justify-center gap-1.5 rounded-md text-[11px] font-medium transition-all hover:brightness-95"
-              style={{ background: "var(--secondary)", color: "var(--foreground)" }}
-            >
-              <Play size={12} /> 预览原型
-            </button>
-          )}
-        </div>
-      </Section>
+      {/* 原型交互：多触发器 × 多动作（编辑在独立组件里，Inspector 只装配） */}
+      <InteractionEditor store={store} node={n} onPreview={onPreview} />
 
       {/* 锁定/显隐快捷 */}
       <Section title="状态">

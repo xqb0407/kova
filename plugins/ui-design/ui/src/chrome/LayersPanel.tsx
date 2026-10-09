@@ -37,6 +37,7 @@ import { instanceView, TYPE_LABELS, type DesignNode, type InstanceNode, type Nod
 import type { DesignStore } from "../state";
 import { ContextMenu, nodeMenu } from "./ContextMenu";
 import { VariablesManager } from "./VariablesPanel";
+import { StencilPanel } from "./StencilPanel";
 import { InlineEdit, Menu, MenuItem } from "./ui";
 
 const TYPE_ICONS: Record<NodeType, FC<{ size?: number }>> = {
@@ -226,7 +227,7 @@ const selHasGroup = (store: DesignStore, node: DesignNode) =>
 export const LayersPanel: FC<{ store: DesignStore }> = ({ store }) => {
   const { doc, page, selIds, setSel } = store;
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [tab, setTab] = useState<"layers" | "variables">("layers");
+  const [tab, setTab] = useState<"layers" | "stencils" | "variables">("layers");
   const toggle = (id: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -296,7 +297,7 @@ export const LayersPanel: FC<{ store: DesignStore }> = ({ store }) => {
       </div>
       <div className="flex shrink-0 items-center justify-between px-4 pb-1 pt-1">
         <div className="flex items-center gap-2.5">
-          {([["layers", "图层"], ["variables", "变量"]] as const).map(([key, label]) => (
+          {([["layers", "图层"], ["stencils", "素材"], ["variables", "变量"]] as const).map(([key, label]) => (
             <button
               key={key}
               type="button"
@@ -311,6 +312,8 @@ export const LayersPanel: FC<{ store: DesignStore }> = ({ store }) => {
       </div>
       {tab === "variables" ? (
         <VariablesManager store={store} />
+      ) : tab === "stencils" ? (
+        <StencilPanel store={store} />
       ) : (
       <div className="px-1.5 pb-1 pt-0 text-[10px]" style={{ color: "var(--muted-foreground)" }} />
       )}

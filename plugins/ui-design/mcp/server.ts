@@ -43,6 +43,13 @@ const replyError = (id: unknown, code: number, message: string): void => {
 };
 
 function handle(message: Record<string, unknown>): void {
+  void handleAsync(message).catch((err) => {
+    const message2 = err instanceof Error ? err.message : String(err);
+    log(`处理失败：${err instanceof Error ? err.stack ?? message2 : message2}`);
+  });
+}
+
+async function handleAsync(message: Record<string, unknown>): Promise<void> {
   const { id, method, params } = message;
   // 通知（无 id）：initialized / cancelled 等一律静默
   if (id === undefined || id === null) return;
@@ -57,8 +64,13 @@ function handle(message: Record<string, unknown>): void {
         instructions:
           "UI 设计画布（*.uidesign.json）控制面：先 list_docs / read_doc 了解现状拿 id，" +
           "再用 add_nodes / update_nodes / stack_nodes / align_nodes / group_nodes 等结构化修改。" +
-          "改动直接落盘，打开的面板约半秒内自动刷新。改完可用 screenshot_doc 把画布渲染成 PNG " +
-          "图像直接看效果做视觉自检（非屏幕截图，截的是文档内容；saveTo 可顺带落盘）。" +
+          "改动直接落盘，打开的面板约半秒内自动刷新。\n" +
+          "重复结构（列表行/卡片网格/导航项/表格行）用 run_design_script：写一段 JS，用 " +
+          "I(parentId, spec)/U(id, patch) 记录操作，支持循环——比手写 N 段近似 JSON 稳得多。\n" +
+          "收尾闭环：lint_doc 拿到带 nodeId 与 suggestion 的问题清单（对比度、AI 三卡套路、满屏圆角卡片、" +
+          "紫渐变光晕、触控区过小、内容被裁…）改到 error/warning 归零，再用 screenshot_doc 把画布渲成 PNG " +
+          "直接看效果做视觉自检（非屏幕截图，截的是文档内容；saveTo 可顺带落盘）。" +
+          "lint 管「有毛病」，截图管「不好看」，两者配套。\n" +
           "定稿交付用 export_doc 导出多文件工程包（源档副本 + 逐画板 PNG/SVG + 外链 assets/ + " +
           "index.html 原型 + manifest.json），返回全部静态文件路径清单。",
       });
@@ -85,7 +97,8 @@ function handle(message: Record<string, unknown>): void {
           ? (p.arguments as Record<string, unknown>)
           : {};
       try {
-        const payload = tool.run(args, ctx);
+        // run 可返回 Promise（run_design_script 要等沙箱 worker），必须 await 后再判形态
+        const payload = await tool.run(args, ctx);
         // 截图类工具返回 { mcpContent }：text/image 内容块原样透传
         // （image 块经 sidecar 摘图与 2MiB/白名单闸门上屏，其余工具仍是 JSON 文本）
         if (
@@ -121,11 +134,7 @@ rl.on("line", (line) => {
     return;
   }
   if (!message || typeof message !== "object") return;
-  try {
-    handle(message as Record<string, unknown>);
-  } catch (err) {
-    log(`处理失败：${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-  }
+  handle(message as Record<string, unknown>);
 });
 rl.on("close", () => process.exit(0));
 process.on("SIGTERM", () => process.exit(0));

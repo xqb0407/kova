@@ -24,6 +24,7 @@ import {
   componentBounds,
   patchInstancePath,
   bakeInstanceNodes,
+  withTextRuns,
   type ComponentDef,
   type DesignDoc,
   type DesignNode,
@@ -48,6 +49,7 @@ import { booleanPath, isBoolShape, type BooleanOp } from "./boolean";
 import { preloadDocAssets } from "./leafer/assets";
 import { mergeImportedDoc } from "./merge";
 import { importSvg } from "./svg-import";
+import { stencilNodes, type Stencil } from "./stencils";
 
 export const HISTORY_MAX = 100;
 const SAVE_DEBOUNCE_MS = 800;
@@ -649,6 +651,24 @@ export function useDesign() {
     [mutatePage],
   );
 
+  /**
+   * 插入素材（stencils）：一次把整棵子树落进画板/页面并选中新节点，一步撤销。
+   * `parentId` 为 null = 落页面顶层（absolute 坐标）。
+   */
+  const insertStencilSpecs = useCallback(
+    (stencil: Stencil, box: { x: number; y: number; w?: number; h?: number }, parentId: string | null): string[] => {
+      const nodes = stencilNodes(stencil, box, (hint) => uid(hint[0] ?? "s"));
+      if (nodes.length === 0) return [];
+      mutatePage((list) => {
+        if (!parentId) return [...list, ...nodes];
+        return replaceNode(list, parentId, (p) => ("children" in p ? { ...p, children: [...p.children, ...nodes] } : p));
+      });
+      setSel(nodes.map((n) => n.id));
+      return nodes.map((n) => n.id);
+    },
+    [mutatePage, setSel],
+  );
+
   /** 新建节点：parentId 缺省落页面级；返回新节点 id */
   const addNode = useCallback(
     (node: DesignNode, parentId?: string): string => {
@@ -910,9 +930,14 @@ export function useDesign() {
 
   /* ---------------- 文本就地编辑 ---------------- */
 
+  /**
+   * 写一段文字。text 节点写自身 runs；形状写内嵌标签（LayerText）——
+   * 路由在 doc.ts 的 withTextRuns 里，面板与 MCP 共用同一口径，
+   * 免得「双击矩形打字」写进去的字段和工具改文案读的字段不是同一个。
+   */
   const setTextRuns = useCallback(
     (id: string, runs: TextRun[]) => {
-      updateNode(id, { runs } as Partial<DesignNode>);
+      updateNode(id, (n) => withTextRuns(n, runs));
     },
     [updateNode],
   );
@@ -1245,6 +1270,7 @@ export function useDesign() {
     addNode,
     createComponentFromSelection,
     insertComponent,
+    insertStencilSpecs,
     detachInstance,
     resetInstanceOverrides,
     createBoxed,

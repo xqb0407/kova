@@ -4,13 +4,52 @@
  * 几何与文字排版用 leafer/scene.ts 同一套函数（shapePath/lineEnds/layoutText），
  * 渲染端只需提供 measure（文本测量）与 images（src → dataURL 资产表）。
  */
-import { findNode, instanceView, resolveVarColor, type DesignDoc, type DesignNode, type Effect, type Fill, type Stroke } from "./doc";
+import { findNode, instanceView, layerText, resolveVarColor, type DesignDoc, type DesignNode, type Effect, type Fill, type Stroke, type TextRun } from "./doc";
 import { unionBox, worldBoxOf, type Box } from "./geometry";
 import { arrowHeadPath, layoutText, lineEnds, radiusProp, runsToSpec, shapePath, type MeasureFn } from "./leafer/scene";
 import { iconDrawSpec } from "./icons";
 
 const esc = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** 文字排版参数：text 节点与形状内嵌文字都落成这个形状再交给 textBody */
+type TextBlock = {
+  runs: TextRun[];
+  align?: "left" | "center" | "right";
+  vAlign?: "top" | "middle" | "bottom";
+  lineHeight?: number;
+  letterSpacing?: number;
+};
+
+/**
+ * 一块文字的 SVG 片段。text 节点与**形状内嵌文字**共用，且与画布 scene.ts 同源
+ * （都调 layoutText），所以导出/原型/截图与画布的文字落位一致。
+ */
+function textBody(block: TextBlock, w: number, h: number, ctx: Ctx): string {
+  const frags = layoutText(
+    runsToSpec(block.runs),
+    w,
+    h,
+    block.align ?? "left",
+    block.vAlign ?? "top",
+    block.lineHeight ?? 1.4,
+    ctx.measure,
+  );
+  const ls = block.letterSpacing ? ` letter-spacing="${block.letterSpacing}"` : "";
+  return frags
+    .map(
+      (f) =>
+        `<text x="${f.x.toFixed(2)}" y="${f.baseline.toFixed(2)}" font-size="${f.run.fontSize}" font-family="${esc(f.run.font)}" fill="${esc(resolveVarColor(ctx.doc, f.run.color))}"${f.run.bold ? ' font-weight="700"' : ""}${f.run.italic ? ' font-style="italic"' : ""}${ls}>${esc(f.text)}</text>`,
+    )
+    .join("");
+}
+
+/** 形状内嵌文字：缺省水平垂直双居中（与画布 scene.ts 的 layerTextBlock 同一份缺省） */
+function layerTextBody(node: DesignNode, w: number, h: number, ctx: Ctx): string {
+  const lt = layerText(node);
+  if (!lt) return "";
+  return textBody({ runs: lt.runs, align: lt.align ?? "center", vAlign: lt.vAlign ?? "middle", lineHeight: lt.lineHeight, letterSpacing: lt.letterSpacing }, w, h, ctx);
+}
 
 type Ctx = {
   defs: string[];
@@ -206,7 +245,9 @@ function renderNode(node: DesignNode, ctx: Ctx): string {
     tf.push(`scale(${node.flipX ? -1 : 1} ${node.flipY ? -1 : 1})`);
   }
   const blendAttr = node.blendMode ? ` mix-blend-mode="${node.blendMode}" style="mix-blend-mode:${node.blendMode}"` : "";
-  const gAttr = `transform="${tf.join(" ")}"${(node.opacity ?? 1) < 1 ? ` opacity="${node.opacity}"` : ""}${blendAttr}`;
+  // data-id：原型运行时按 id 定位节点（toggleVisible 显隐 / scrollTo 定位）；
+  // 静态导出（PNG/SVG 文件）多一个属性无副作用，换来预览与导出跑同一份语义。
+  const gAttr = `transform="${tf.join(" ")}"${(node.opacity ?? 1) < 1 ? ` opacity="${node.opacity}"` : ""}${blendAttr} data-id="${esc(node.id)}"`;
   const fx = filterAttr(node.effects, ctx);
 
   if (node.type === "group") {
@@ -215,11 +256,15 @@ function renderNode(node: DesignNode, ctx: Ctx): string {
   if (node.type === "frame") {
     ctx.uid += 1;
     const clipId = `c${ctx.uid}`;
-    const clip = node.clip !== false;
+    // 滚动区域隐式裁切（内容超框才有得滚，裁掉框外部分）
+    const clip = node.clip !== false || !!node.scroll;
     if (clip) ctx.defs.push(`<clipPath id="${clipId}"><rect width="${node.w}" height="${node.h}"/></clipPath>`);
     const bg = boxEls(node, ctx, "rect");
-    const kids = renderChildrenMasks(node.children, ctx);
-    return `<g ${gAttr}>${bg}<g${clip ? ` clip-path="url(#${clipId})"` : ""}>${kids}</g></g>`;
+    const rendered = renderChildrenMasks(node.children, ctx);
+    // 滚动体：运行时给它加 translate(0 -scrollTop)，静态端无 transform = offset 0
+    const kids = node.scroll ? `<g data-scroll-body="${esc(node.scroll)}">${rendered}</g>` : rendered;
+    const scrollAttr = node.scroll ? ` data-scroll="${esc(node.scroll)}"` : "";
+    return `<g ${gAttr}${scrollAttr}>${bg}<g${clip ? ` clip-path="url(#${clipId})"` : ""}>${kids}</g></g>`;
   }
   if (node.type === "instance") {
     // 与画布同口径：instanceView（主档+覆盖烘焙到实例局部、字号随缩放）；坏引用虚线占位
@@ -233,11 +278,11 @@ function renderNode(node: DesignNode, ctx: Ctx): string {
     return `<g ${gAttr}>${renderChildrenMasks(view, ctx)}</g>`;
   }
   if (node.type === "rect" || node.type === "ellipse") {
-    return `<g ${gAttr}${fx}>${boxEls(node, ctx, node.type === "rect" ? "rect" : "ellipse")}</g>`;
+    return `<g ${gAttr}${fx}>${boxEls(node, ctx, node.type === "rect" ? "rect" : "ellipse")}${layerTextBody(node, node.w, node.h, ctx)}</g>`;
   }
   if (["triangle", "diamond", "pentagon", "hexagon", "star"].includes(node.type)) {
     const d = shapePath(node.type, node.w, node.h) ?? "";
-    return `<g ${gAttr}${fx}>${boxEls(node, ctx, "path", d)}</g>`;
+    return `<g ${gAttr}${fx}>${boxEls(node, ctx, "path", d)}${layerTextBody(node, node.w, node.h, ctx)}</g>`;
   }
   if (node.type === "line" || node.type === "arrow") {
     const { x1, y1, x2, y2 } = lineEnds((node.dir ?? 0) as 0 | 1 | 2 | 3, node.w, node.h);
@@ -251,23 +296,7 @@ function renderNode(node: DesignNode, ctx: Ctx): string {
     return `<g ${gAttr}${fx}><line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" ${sa}/>${head}</g>`;
   }
   if (node.type === "text") {
-    const frags = layoutText(
-      runsToSpec(node.runs),
-      node.w,
-      node.h,
-      node.align ?? "left",
-      node.vAlign ?? "top",
-      node.lineHeight ?? 1.4,
-      ctx.measure,
-    );
-    const ls = node.letterSpacing ? ` letter-spacing="${node.letterSpacing}"` : "";
-    const body = frags
-      .map(
-        (f) =>
-          `<text x="${f.x.toFixed(2)}" y="${f.baseline.toFixed(2)}" font-size="${f.run.fontSize}" font-family="${esc(f.run.font)}" fill="${esc(resolveVarColor(ctx.doc, f.run.color))}"${f.run.bold ? ' font-weight="700"' : ""}${f.run.italic ? ' font-style="italic"' : ""}${ls}>${esc(f.text)}</text>`,
-      )
-      .join("");
-    return `<g ${gAttr}${fx}>${body}</g>`;
+    return `<g ${gAttr}${fx}>${textBody(node, node.w, node.h, ctx)}</g>`;
   }
   if (node.type === "vector") {
     return `<g ${gAttr}${fx}>${boxEls(node, ctx, "path", node.path)}</g>`;
