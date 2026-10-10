@@ -16,6 +16,8 @@ import {
   waitForDelegations,
 } from "../../src/subagent/subagent";
 import { createRetryBudget } from "../../src/model/provider-retry";
+import { SubagentRun } from "../../src/subagent/run";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { DelegationRecord, Running, SubagentRunResult } from "../../src/types";
 
 /** 捕获 pushActivity/settleDelegation 的自发通知行（避免污染测试输出，并可断言） */
@@ -410,5 +412,46 @@ describe("waitForDelegations", () => {
     const promise = waitForDelegations([record], 1, null, controller.signal);
     controller.abort();
     expect(await promise).toBe(true);
+  });
+});
+
+describe("SubagentRun 的审批闸门接线", () => {
+  // 曾经的洞就在这一行接线上：SubagentRun 的 Agent 只有 afterToolCall（管轮次上限），
+  // 没有 beforeToolCall —— 于是子代理的 write/edit/bash 整条链都在审批之外，
+  // 而默认的 Fixer 定义就带这三个工具。这条测试钉死"接上了、且判定落在
+  // 委托方给的闸门上"，防止将来有人重构 SubagentRun 时又把它摘掉。
+  test("子代理 Agent 带 beforeToolCall，判定走委托方的闸门", async () => {
+    const seen: string[] = [];
+    const subagent = new SubagentRun({
+      definition: {
+        name: "Fixer",
+        description: "test fixture",
+        tools: ["write"],
+        prompt: "write things",
+        scope: "builtin",
+        stateKey: "test:fixer",
+      },
+      task: "t",
+      model: { provider: "test", id: "model" } as unknown as Model<Api>,
+      cwd: "/tmp",
+      tools: [],
+      sessionId: "deleg-1",
+      traceSessionId: "trace-1",
+      toolGate: async (context) => {
+        seen.push(context.toolCall.name);
+        return { block: true, reason: "gate" };
+      },
+    });
+    // Agent.beforeToolCall 是公开字段（pi-agent-core 的 Agent 上可直接读到）
+    const agent = (subagent as unknown as {
+      agent: { beforeToolCall?: (c: unknown) => Promise<unknown> };
+    }).agent;
+    expect(typeof agent.beforeToolCall).toBe("function");
+    const result = await agent.beforeToolCall!({
+      toolCall: { name: "write", id: "tc1", arguments: { file_path: "/tmp/x" } },
+      args: { file_path: "/tmp/x" },
+    });
+    expect(seen).toEqual(["write"]);
+    expect((result as { block?: boolean }).block).toBe(true);
   });
 });

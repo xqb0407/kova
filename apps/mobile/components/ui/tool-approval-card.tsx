@@ -236,7 +236,13 @@ function ApprovalRow({
             write/edit）：其余的没有"一条可记住的路径"可言，给了按钮就是骗人 */}
         {approval.canRemember ? (
           <PillButton
-            label={approval.toolName === "bash" ? "记住这类命令" : "允许并记住"}
+            label={
+              approval.toolName === "bash"
+                ? "记住这类命令"
+                : approval.toolName === "mcp"
+                  ? "记住这个工具"
+                  : "允许并记住"
+            }
             variant="ghost"
             disabled={busy}
             onPress={() => decide(true, true)}

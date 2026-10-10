@@ -18,6 +18,7 @@ import {
   PLAN_TOOL_NAMES,
   applyMode,
   approvalBeforeToolCall,
+  clearApprovalsForDelegation,
   clearPendingToolApprovals,
   composeModeSystemPrompt,
   composeRunPrompt,
@@ -26,6 +27,7 @@ import {
   normalizeSessionMode,
   planningPayload,
   resolveToolApproval,
+  subagentToolGate,
   toolsForMode,
 } from "../../src/agent/modes";
 import { GOAL_TOOL_NAMES, proposeCriteria } from "../../src/goal/goal-state";
@@ -34,6 +36,7 @@ import {
   registerAutomationThread,
   unregisterAutomationThread,
 } from "../../src/automation/policy";
+import { SUBAGENT_MGMT_TOOL_NAMES } from "../../src/subagent/subagent-mgmt-tools";
 import { SYSTEM_PROMPT_CORE, systemPromptCore, workspacePromptLine } from "../../src/tools/tools";
 import { createRetryBudget } from "../../src/model/provider-retry";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
@@ -578,6 +581,53 @@ describe("approvalBeforeToolCall：可写根清单", () => {
     await expect(sneaky).resolves.toBeTruthy();
   });
 
+  test("**解析不可信的命令不提供「记住」**：记不下规则时不许装作记住了", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    // `$'…'` 的转义规则与普通引号不同，解析层直接判死（见 write-roots 的对照测试）。
+    // 这里要问的是：卡上有没有「允许并记住这类命令」——给了按钮就是在承诺
+    // "这类命令以后不问"，而 rememberCommand 一条规则都压不出来
+    const cmd = "echo $'it\\'s' ; rm -rf /tmp/pwned";
+    const hook = approvalBeforeToolCall(run, ctx("bash", ["bash"], { command: cmd }));
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1); // 仍然要问
+    const [id] = [...run.pendingToolApprovals.keys()];
+    expect(run.pendingToolApprovals.get(id)?.rememberCommand).toBeUndefined();
+    resolveToolApproval(run, id, true, true); // 就算客户端硬点了记住
+    await expect(hook).resolves.toBeUndefined();
+    expect(existsSync(join(WS, ".kova", "permissions.local.json"))).toBe(false);
+  });
+
+  test("压不出规则段的命令（循环体）同样不给「记住」", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    const hook = approvalBeforeToolCall(
+      run,
+      ctx("bash", ["bash"], { command: "for d in *; do echo $d; done" }),
+    );
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    expect(run.pendingToolApprovals.get(id)?.rememberCommand).toBeUndefined();
+    resolveToolApproval(run, id, false);
+    await expect(hook).resolves.toBeTruthy();
+  });
+
+  test("能压出规则的命令照旧提供「记住」（正常路径不能被误伤）", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    const cmd = "pnpm add -D react";
+    const hook = approvalBeforeToolCall(run, ctx("bash", ["bash"], { command: cmd }));
+    await Bun.sleep(0);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    expect(run.pendingToolApprovals.get(id)?.rememberCommand).toBe(cmd);
+    resolveToolApproval(run, id, false);
+    await expect(hook).resolves.toBeTruthy();
+  });
+
   test("记不上盘也不能拦住这次执行（用户批准的是执行，记住只是附带的账）", async () => {
     // 把工作区做成只读：writeRoots 落盘必失败
     mkdirSync(join(WS, ".kova"), { recursive: true });
@@ -608,6 +658,167 @@ describe("approvalBeforeToolCall：可写根清单", () => {
       approvalBeforeToolCall(run, ctx("write", ["write"], { file_path: join(OUTSIDE, "s.ts") })),
     ).resolves.toBeUndefined();
     expect(run.pendingToolApprovals.size).toBe(0);
+  });
+});
+
+describe("subagentToolGate：子代理的工具接回父会话审批链", () => {
+  // 子代理此前整条链在审批之外（SubagentRun 的 Agent 只有 afterToolCall），
+  // 而 Task 本身不在 APPROVAL_REQUIRED_TOOLS 里 —— 委派一次 Fixer 就等于
+  // 把档位放大一档。这组用例钉的就是"档位、边界、自动化策略对子代理同样成立"。
+
+  test("ask 档：子代理的 write 挂起在父会话，且挂起项带委派标记", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "ask";
+    run.cwd = WS;
+    const gate = subagentToolGate(run, "d-ask");
+    const hook = gate(ctx("write", ["write"], { file_path: join(WS, "src/a.ts") }));
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    // 标记是清理的依据：TaskStop / 委派结算要靠它结算掉这张卡
+    expect(run.pendingToolApprovals.get(id)?.delegationId).toBe("d-ask");
+    resolveToolApproval(run, id, false);
+    expect((await hook)?.block).toBe(true);
+  });
+
+  test("workspace-write 档：工作区外对子代理同样要问，工作区内免问", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    const gate = subagentToolGate(run, "d-ws");
+    const outside = gate(ctx("write", ["write"], { file_path: join(OUTSIDE, "x.ts") }));
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, id, true);
+    await expect(outside).resolves.toBeUndefined();
+
+    await expect(
+      gate(ctx("write", ["write"], { file_path: join(WS, "src/b.ts") })),
+    ).resolves.toBeUndefined();
+    expect(run.pendingToolApprovals.size).toBe(0);
+  });
+
+  test("无人值守 read-only：子代理的 write 即时拒绝、不挂起（没人在场答卡）", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "auto"; // 档位再宽也不能让无人值守的 read-only 失效
+    run.cwd = WS;
+    registerAutomationThread(run.threadId, "read-only");
+    try {
+      const res = await subagentToolGate(run, "d-auto")(
+        ctx("write", ["write"], { file_path: join(WS, "src/c.ts") }),
+      );
+      expect(res?.block).toBe(true);
+      expect(run.pendingToolApprovals.size).toBe(0);
+    } finally {
+      unregisterAutomationThread(run.threadId);
+    }
+  });
+
+  test("clearApprovalsForDelegation 只结算自己那次的挂起项（按拒绝）", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "ask";
+    run.cwd = WS;
+    const a = subagentToolGate(run, "dA")(ctx("bash", ["bash"], { command: "echo a" }));
+    const b = subagentToolGate(run, "dB")(ctx("bash", ["bash"], { command: "echo b" }));
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(2);
+    clearApprovalsForDelegation(run, "dA");
+    expect(run.pendingToolApprovals.size).toBe(1);
+    expect((await a)?.block).toBe(true); // 被停止的委派不等卡，按拒绝收敛
+    const [idB] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, idB, false);
+    await expect(b).resolves.toBeTruthy();
+  });
+
+  test("子代理的调用不改写父会话的活循环上下文（轮中切表不能被踩）", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "auto";
+    run.cwd = WS;
+    const parentLoop = { messages: [], tools: [] } as unknown as Running["loopContext"];
+    run.loopContext = parentLoop;
+    await subagentToolGate(run, "d-loop")(
+      ctx("write", ["write"], { file_path: join(WS, "src/d.ts") }),
+    );
+    expect(run.loopContext).toBe(parentLoop);
+  });
+
+  test("对照：主代理的调用照旧捕获活循环上下文", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "auto";
+    const loop = { messages: [], tools: [] };
+    await approvalBeforeToolCall(run, {
+      ...ctx("read", ["read"], {}),
+      context: loop,
+    } as unknown as BeforeToolCallContext);
+    expect(run.loopContext).toBe(loop);
+  });
+});
+
+describe("无人值守自动化：档位语义与显式授权", () => {
+  // 无人值守的定位是"没人在场答卡"，不是沙箱：判定与交互式路径同一套，只是把
+  // "挂起等确认"换成"即时拒绝"。所以——档位名承诺的边界必须成立（workspace-write
+  // 不该变成"除 bash 外随便写"），而用户显式记过的 allow-list 照旧算常驻授权
+  // （那是"不弹卡的东西"，与 MCP 侧的豁免优先级对齐）。
+
+  test("workspace-write：工作区内放行，工作区外即时拒绝", async () => {
+    const run = makeRun("agent");
+    run.cwd = WS;
+    registerAutomationThread(run.threadId, "workspace-write");
+    try {
+      await expect(
+        approvalBeforeToolCall(run, ctx("write", ["write"], { file_path: join(WS, "src/auto.ts") })),
+      ).resolves.toBeUndefined();
+      const outside = await approvalBeforeToolCall(
+        run,
+        ctx("write", ["write"], { file_path: join(OUTSIDE, "auto.ts") }),
+      );
+      expect(outside?.block).toBe(true);
+      expect(outside?.reason).toContain("outside the workspace");
+      expect(run.pendingToolApprovals.size).toBe(0); // 永不挂起
+    } finally {
+      unregisterAutomationThread(run.threadId);
+    }
+  });
+
+  test("workspace-write：配置类工具（子代理/技能增删）不再放行", async () => {
+    const run = makeRun("agent");
+    run.cwd = WS;
+    registerAutomationThread(run.threadId, "workspace-write");
+    try {
+      const res = await approvalBeforeToolCall(
+        run,
+        ctx(SUBAGENT_MGMT_TOOL_NAMES.save, [SUBAGENT_MGMT_TOOL_NAMES.save], {}),
+      );
+      expect(res?.block).toBe(true);
+    } finally {
+      unregisterAutomationThread(run.threadId);
+    }
+  });
+
+  test("read-only：用户显式记过的命令照常放行（allow-list 是常驻授权，不是这次要放行的东西）", async () => {
+    mkdirSync(join(WS, ".kova"), { recursive: true });
+    writeFileSync(
+      join(WS, ".kova", "permissions.local.json"),
+      JSON.stringify({ allowCommands: ["pwd *"] }),
+    );
+    const run = makeRun("agent");
+    run.cwd = WS;
+    registerAutomationThread(run.threadId, "read-only");
+    try {
+      await expect(
+        approvalBeforeToolCall(run, ctx("bash", ["bash"], { command: "pwd -P" })),
+      ).resolves.toBeUndefined();
+      // 没记过的命令仍然即时拒绝（read-only 的基本盘不变）
+      const denied = await approvalBeforeToolCall(
+        run,
+        ctx("bash", ["bash"], { command: "rm -rf /tmp/x" }),
+      );
+      expect(denied?.block).toBe(true);
+    } finally {
+      unregisterAutomationThread(run.threadId);
+      rmSync(join(WS, ".kova", "permissions.local.json"), { force: true });
+    }
   });
 });
 

@@ -14,6 +14,8 @@
  *
  * 启用开关是"本机的运行时决定"，不写进配置文件（工作区文件在 git 里）：整包存
  * SQLite kv（key = ENABLED_KV_KEY），键规则与 subagents 一致（工作区按 cwd 隔离）。
+ * **工作区来源默认关闭**（系统层/插件层默认开）：服务器命令在首次调用时就会被拉起，
+ * 早于任何审批，所以"仓库带来的服务器"要由用户在本机显式启用后才运行。
  *
  * 动态化：每次加载对三份文件做签名（mtime+大小），签名没变用缓存——设置页保存/
  * 删除后缓存自然失效；网关工具每次 execute 前重载，改动即时生效，无需重启。
@@ -49,7 +51,14 @@ export type McpServerDef = {
   idleTimeout?: number;
   /** 工具调用超时（毫秒），未配置用 MCP_CALL_TIMEOUT_MS 兜底 */
   callTimeout?: number;
-  /** 工具名 glob 免审批（对 gateway 的 call 动作） */
+  /**
+   * 工具名 glob 免审批（对 gateway 的 call 动作）。
+   *
+   * ⚠️ **只有非工作区层才是授权**：工作区层（`.mcp.json` / `.kova/mcp.json`，都跟着
+   * 仓库走）里的这份声明不产生豁免效力，只作为审批卡上「这个项目请求放行 X」的说明
+   * ——clone 一个别人的项目不该让那个仓库给自己的工具免审批。判定的收口点在
+   * mcp-tools 的 executeCall（isToolApprovedBy 仍是纯匹配函数）。
+   */
   approveTools?: string[];
   /** 所属层与来源文件，设置页展示与写路径用（plugin 层只读：插件市场贡献） */
   layer: "system" | "workspace" | "plugin";
@@ -245,15 +254,111 @@ function parseEntry(
     else def.description = r.description.trim();
   }
 
-  // ---- kova 层专属字段（标准层一律忽略：警告后返回 undefined，调用方不赋值）----
+  // kova 专属字段（标准层一律忽略：警告后不赋值）。与纯补丁条目共用同一份实现
+  applyKovaFields(def, r, label, opts.standard, warnings);
+
+  for (const key of Object.keys(r)) {
+    const known =
+      STANDARD_FIELDS.has(key) ||
+      ["description", "lifecycle", "idleTimeout", "callTimeout", "approveTools"].includes(key);
+    if (!known) warnings.push(`${label}: 忽略未知字段 "${key}"`);
+  }
+  return def;
+}
+
+type LayerParse = {
+  defs: McpServerDef[];
+  diagnostics: string[];
+};
+
+/**
+ * kova 专属字段：标准层 `.mcp.json` 不认（见 STANDARD_FIELDS 的注释）。
+ * `description` 不在此列——它在标准层也生效，所以不构成「这是补丁条目」的信号。
+ */
+const KOVA_ONLY_FIELDS = [
+  "lifecycle",
+  "idleTimeout",
+  "callTimeout",
+  "approveTools",
+] as const;
+
+/**
+ * 这条 raw 是不是「纯补丁条目」：非标准层、不带任何标准字段、且至少带一个
+ * kova 专属字段。
+ *
+ * 标准层（`.mcp.json`）不走这条：那是生态共享格式，条目缺 command/url 就是
+ * 写错了，静默当成补丁会让一个坏文件看起来生效了。插件层虽然也是非标准层，
+ * 但它同样要自带完整定义（插件市场贡献的是服务器本身，不是对别人的补丁）。
+ */
+function isKovaPatchEntry(raw: unknown, standard: boolean): boolean {
+  if (standard) return false;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+  const r = raw as Record<string, unknown>;
+  const hasStandard = ["command", "args", "env", "url", "headers", "type"].some(
+    (k) => r[k] !== undefined,
+  );
+  if (hasStandard) return false;
+  return KOVA_ONLY_FIELDS.some((k) => r[k] !== undefined);
+}
+
+/**
+ * 解析纯补丁条目。transport 留空（`""`）标记「从低层继承」——mergeEntry 见
+ * 到空 transport 会保留低层的 transport 与全部标准字段，只叠加上层显式给出的
+ * 字段。低层没有同名条目时这条无处可继承，由合并阶段报诊断。
+ *
+ * 字段的取用与校验全部委托 `applyKovaFields`，与 parseEntry 同一份实现——
+ * 两处各写一遍 inevitably 会漂，而漂的方向是某个字段在补丁里被静默忽略。
+ */
+function parseKovaPatchEntry(
+  name: string,
+  raw: unknown,
+  opts: { layer: "system" | "workspace" | "plugin"; source: string; pluginId?: string },
+  warnings: string[],
+): McpServerDef | null {
+  const label = `[${name}]`;
+  if (!NAME_RE.test(name)) {
+    warnings.push(`${label}: 名称需匹配 [a-zA-Z0-9_-]{1,64}`);
+    return null;
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    warnings.push(`${label}: 必须是对象`);
+    return null;
+  }
+  const def: McpServerDef = {
+    name,
+    transport: "" as unknown as McpServerDef["transport"],
+    layer: opts.layer,
+    source: opts.source,
+    ...(opts.pluginId ? { pluginId: opts.pluginId } : {}),
+  };
+  applyKovaFields(def, raw as RawEntry, label, false, warnings);
+  return def;
+}
+
+/**
+ * kova 专属字段（description/lifecycle/idleTimeout/callTimeout/approveTools）
+ * 的取用与校验。两个解析路径共用：完整条目与纯补丁条目对同一字段必须给出
+ * 同样的判定，否则「在覆盖层里改不动」会变成一类查不出来的怪问题。
+ */
+function applyKovaFields(
+  def: McpServerDef,
+  r: RawEntry,
+  label: string,
+  standard: boolean,
+  warnings: string[],
+): void {
   const extra = (key: string): unknown => {
     if (r[key] === undefined) return undefined;
-    if (opts.standard) {
+    if (standard) {
       warnings.push(`${label}: 标准层忽略 kova 专属字段 "${key}"`);
       return undefined;
     }
     return r[key];
   };
+  const description = extra("description");
+  if (typeof description === "string" && description.trim()) {
+    def.description = description.trim();
+  }
   const lifecycle = extra("lifecycle");
   if (typeof lifecycle === "string" && ["lazy", "eager", "keep-alive"].includes(lifecycle)) {
     def.lifecycle = lifecycle as McpServerDef["lifecycle"];
@@ -274,26 +379,21 @@ function parseEntry(
   }
   const approve = extra("approveTools");
   if (Array.isArray(approve) && approve.every((g) => typeof g === "string" && g.trim())) {
-    def.approveTools = (approve as string[]).map((g) => g.trim());
+    // 条数封顶：这份列表可能来自仓库里的文件，而每次判定都要按 glob 编正则；
+    // 畸形的长列表不该把工具调用拖成开销（同 write-roots 的 MAX_ROOTS）
+    def.approveTools = (approve as string[]).map((g) => g.trim()).slice(0, MAX_APPROVE_TOOLS);
+    if ((approve as unknown[]).length > MAX_APPROVE_TOOLS) {
+      warnings.push(`${label}: approveTools 超出 ${MAX_APPROVE_TOOLS} 条，多余的已忽略`);
+    }
   } else if (approve === true) {
     def.approveTools = ["*"];
   } else if (approve !== undefined) {
     warnings.push(`${label}: 忽略非法 approveTools（需 glob 字符串数组）`);
   }
-
-  for (const key of Object.keys(r)) {
-    const known =
-      STANDARD_FIELDS.has(key) ||
-      ["description", "lifecycle", "idleTimeout", "callTimeout", "approveTools"].includes(key);
-    if (!known) warnings.push(`${label}: 忽略未知字段 "${key}"`);
-  }
-  return def;
 }
 
-type LayerParse = {
-  defs: McpServerDef[];
-  diagnostics: string[];
-};
+/** 单份配置里 approveTools 的条数上限（判定时逐条编 glob 正则，必须有界） */
+const MAX_APPROVE_TOOLS = 64;
 
 function fileSignature(path: string): string {
   try {
@@ -394,13 +494,27 @@ function parseLayer(
       continue;
     }
     seen.add(name);
-    const def = parseEntry(
-      name,
-      (servers as Record<string, unknown>)[name],
-      { layer, source: path, standard, ...(plugin ? { pluginId: plugin.pluginId } : {}) },
-      errors,
-      warnings,
-    );
+    const raw = (servers as Record<string, unknown>)[name];
+    // 非标准层的「纯补丁条目」：只带 kova 专属字段（approveTools/lifecycle…），
+    // 不带 command/url。存在的意义就是给低层同名条目补字段——要求重抄 command
+    // 会让「只想加一条 approveTools」这件事变成一次复制粘贴，而复制的那份
+    // command 迟早与插件实际使用的脱节（插件升级换路径就静默失效）。
+    // transport 留空由 mergeEntry 从低层继承；低层也没有同名条目时报错，
+    // 不产出一条无 transport 的悬空定义。
+    const def = isKovaPatchEntry(raw, standard)
+      ? parseKovaPatchEntry(
+          name,
+          raw,
+          { layer, source: path, ...(plugin ? { pluginId: plugin.pluginId } : {}) },
+          warnings,
+        )
+      : parseEntry(
+          name,
+          raw,
+          { layer, source: path, standard, ...(plugin ? { pluginId: plugin.pluginId } : {}) },
+          errors,
+          warnings,
+        );
     if (def) {
       if (layer === "plugin" && plugin) expandPluginDef(def, plugin, diagnostics);
       defs.push(def);
@@ -420,6 +534,15 @@ const URL_BOUND_FIELDS = ["headers"] as const;
 
 function mergeEntry(base: McpServerDef, next: McpServerDef): McpServerDef {
   const merged: McpServerDef = { ...base, ...next };
+  // 纯补丁条目（覆盖层只补 kova 字段、不重抄 command）：空 transport 是「从低层
+  // 继承」的标记。补丁条目压根不带 command/args/env/url/headers 这些键，
+  // 展开时低层的值原样留下——**不需要**（也不能）在这里 delete 任何标准字段。
+  // 这里必须早于下面的换型判断：空串与低层 transport 必然「不同」，
+  // 若不先返回，换型分支会把低层的 command/args/env 全删掉，正好把补丁反做掉
+  if ((next.transport as string) === "") {
+    merged.transport = base.transport;
+    return merged;
+  }
   // transport 换型：低层字段全部不继承（stdio/env 与 http/headers 是不同世界）
   if (base.transport !== next.transport) {
     if (next.transport === "stdio") {
@@ -445,11 +568,23 @@ function mergeEntry(base: McpServerDef, next: McpServerDef): McpServerDef {
 // 启用开关（kv 整包，键规则同 subagents）
 // ---------------------------------------------------------------------------
 
-export type McpEnabledState = { disabled: Record<string, true> };
+/**
+ * 启用开关的本机状态（kv 整包，键规则同 subagents）。
+ *
+ * 两个映射而不是一个 `disabled`：**工作区来源的服务器默认关闭**——`.mcp.json` /
+ * `.kova/mcp.json` 跟着仓库走，clone 一个别人的项目不该让那个仓库决定"本机跑什么
+ * 进程"（服务器命令在首次调用时就会被拉起，早于任何审批）。默认关闭 + 显式启用
+ * = 唯一能授权的状态在你自己机器上，与可写根清单的纪律同一套。
+ * `enabled` 记的就是那个显式启用（也是"这台机器上我认过这个服务器"的唯一凭据）。
+ */
+export type McpEnabledState = {
+  disabled: Record<string, true>;
+  enabled: Record<string, true>;
+};
 
 export const MCP_ENABLED_KV_KEY = "pi.mcp";
 
-let enabledState: McpEnabledState = { disabled: {} };
+let enabledState: McpEnabledState = { disabled: {}, enabled: {} };
 let enabledLoad: Promise<void> | undefined;
 
 export function mcpStateKey(
@@ -462,6 +597,23 @@ export function mcpStateKey(
   return layer === "workspace" ? `workspace:${cwd ?? ""}::${name}` : `system:${name}`;
 }
 
+/**
+ * 该服务器在本机是否启用：显式禁用 > 显式启用 > 层默认。
+ * 层默认：系统层（`~/.kova/mcp.json`）与插件层默认开——那是你自己装的；
+ * 工作区层默认关——那是仓库里的文件。
+ */
+function isEnabledByState(
+  layer: "system" | "workspace" | "plugin",
+  name: string,
+  cwd?: string,
+  pluginId?: string,
+): boolean {
+  const key = mcpStateKey(layer, name, cwd, pluginId);
+  if (enabledState.disabled[key] === true) return false;
+  if (enabledState.enabled[key] === true) return true;
+  return layer !== "workspace";
+}
+
 /** 启动装配调一次（index.ts 闸门内）；幂等 */
 export function initMcpEnabledState(): Promise<void> {
   enabledLoad ??= (async () => {
@@ -469,7 +621,11 @@ export function initMcpEnabledState(): Promise<void> {
       const row = await kvGet(MCP_ENABLED_KV_KEY);
       if (!row?.value) return;
       const parsed = JSON.parse(row.value) as Partial<McpEnabledState>;
-      enabledState = { disabled: (parsed.disabled ?? {}) as Record<string, true> };
+      // 旧载荷只有 disabled（工作区条目当时默认开）：照读，缺的 enabled 视作空集
+      enabledState = {
+        disabled: (parsed.disabled ?? {}) as Record<string, true>,
+        enabled: (parsed.enabled ?? {}) as Record<string, true>,
+      };
     } catch (err) {
       logErr("mcp-state:", err instanceof Error ? err.message : String(err));
     }
@@ -494,15 +650,22 @@ export async function setMcpServerEnabled(
 ): Promise<void> {
   await initMcpEnabledState();
   const key = mcpStateKey(layer, name, cwd, pluginId);
-  if (enabled) delete enabledState.disabled[key];
-  else enabledState.disabled[key] = true;
+  // 两侧都写：留下的那条就是用户的显式决定，另一条要删掉——否则
+  // "先禁用再启用"会被旧的 disabled 记录压住（反之亦然）
+  if (enabled) {
+    enabledState.enabled[key] = true;
+    delete enabledState.disabled[key];
+  } else {
+    enabledState.disabled[key] = true;
+    delete enabledState.enabled[key];
+  }
   await persistEnabledState();
   loadCache.clear();
 }
 
 /** 测试钩子：清掉 kv 装载与文件签名缓存 */
 export function resetMcpConfigForTest(): void {
-  enabledState = { disabled: {} };
+  enabledState = { disabled: {}, enabled: {} };
   enabledLoad = undefined;
   loadCache.clear();
 }
@@ -584,6 +747,15 @@ function loadSync(cwd: string | undefined): McpLoadResult {
   for (const def of [...system.defs, ...standard.defs, ...override.defs, ...pluginDefs]) {
     const base = byName.get(def.name);
     if (!base) {
+      // 补丁条目没有低层可继承：留着它会得到一条 transport 为空的定义，
+      // 而它既连不上也不报错——只是让设置页多出一个点不动的条目。报诊断丢弃
+      if (def.transport === ("") as unknown as McpServerDef["transport"]) {
+        diagnostics.push(
+          `${def.source}: [${def.name}] 只声明了 kova 专属字段（approveTools/lifecycle 等），` +
+            `但没有任何一层定义过这个服务器——补丁必须有可继承的底子`,
+        );
+        continue;
+      }
       byName.set(def.name, { ...def });
       continue;
     }
@@ -599,14 +771,7 @@ function loadSync(cwd: string | undefined): McpLoadResult {
   for (const def of byName.values()) {
     enabledBy.set(
       def.name,
-      enabledState.disabled[
-        mcpStateKey(
-          def.layer,
-          def.name,
-          def.layer === "workspace" ? cwd : undefined,
-          def.pluginId,
-        )
-      ] !== true,
+      isEnabledByState(def.layer, def.name, def.layer === "workspace" ? cwd : undefined, def.pluginId),
     );
   }
 

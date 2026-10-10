@@ -208,6 +208,40 @@ const MESSAGES: readonly ThreadMessageLike[] = [
     ],
     status: { type: "complete", reason: "stop" },
   },
+  // 第 7 轮：一整轮 loop 合并成一条消息（react-pi 投影的真实形态）——每一步的
+  // 叙述正文与工具调用交错，收起后**只有最后一次动手之后的正文**（最终回答）
+  // 该留在外面，前面的叙述随工具/思考一起收进过程区。这条用例锁住这个切分：
+  // 若答案面又按「所有 text」放行，收起态会摊出一墙过程叙述（曾经的真实回归）。
+  {
+    id: "u7",
+    role: "user",
+    content: [text("把那份文档补齐，顺手跑一遍体检")],
+    createdAt: new Date(started + 1_000_000),
+  },
+  {
+    id: "a12",
+    role: "assistant",
+    content: [
+      { type: "reasoning", text: "先确认工具参数再动手" },
+      text("开始动工。先查 ui-design 的完整参数。"),
+      tool("t10", "read", { file_path: "/design.md" }),
+      text("换个词搜一下，并看服务器状态。"),
+      tool("t11", "bash", { command: "bun run status" }),
+      { type: "reasoning", text: "报错像是路径问题" },
+      text("两个名字都报 ENOENT，先看工作区实际存在与否。"),
+      tool("t12", "write", { file_path: "/design.md" }),
+      text("## 结论\n\n三屏内容已铺好，体检报告全绿。"),
+    ],
+    status: { type: "complete", reason: "stop" },
+    metadata: {
+      timing: {
+        streamStartTime: started + 1_000_000,
+        totalStreamTime: 30_000,
+        totalChunks: 20,
+        toolCallCount: 3,
+      },
+    },
+  },
 ];
 
 

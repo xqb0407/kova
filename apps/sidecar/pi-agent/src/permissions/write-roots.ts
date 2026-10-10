@@ -13,6 +13,9 @@
  * 形状：`{ "writeRoots": ["../shared-lib", "~/work/cache"] }`
  * 相对路径相对 `cwd` 解析，`~/` 相对家目录。
  *
+ * 同一份文件里还住着另外两种授权规则（`allowCommands` / `allowMcpTools`），
+ * 三者同属「本机许可」，写回时互不抹掉。
+ *
  * ## 项目文件只能提议，不能授权
  *
  * `.kova/permissions.json` 跟着仓库走——clone 一个别人的项目，那个仓库不该有权
@@ -42,12 +45,20 @@ export type WriteRootsResolution = {
    */
   declared: string[];
   /**
-   * 免除确认的**完整命令**（用户级 + 本地级）。粒度是整串逐字相等，不是前缀——
-   * 前缀匹配会被重定向绕过（记住 `cat` 就等于放行 `cat x > /etc/hosts`）。
-   * 代价是命中率低：模型很少原样重复同一条命令。真正消掉弹窗要靠只读判定或
-   * OS 级沙箱（见 docs/permission-modes.md），这里是安全的那一半。
+   * 免除确认的**命令词前缀规则**（用户级 + 本地级），形态 `pnpm add *`：
+   * 逐段校验 + 反藏写守卫 + 转义感知的分段三件套齐了才命中（见
+   * commandMatchesRules 的注释）。单靠前缀本身不是边界——前缀规则只是便利，
+   * 真正的隔离要靠 OS 级沙箱（见 docs/permission-modes.md）。
    */
   commands: string[];
+  /**
+   * 免审批的 MCP 工具（`server__tool` 全名，逐字相等）。
+   *
+   * 为什么是全名而不是 glob：MCP 工具的副作用面完全由服务器作者决定，
+   * `dbx__execute_query` 与 `dbx__describe_table` 的风险差着量级，而工具名
+   * 本身没有可依赖的语义前缀。前缀规则那套「命中即放行」的便利在这里没有对应物。
+   */
+  mcpTools: string[];
   /** 读文件/解析的异常说明（不阻断，只进日志与诊断） */
   diagnostics: string[];
 };
@@ -56,17 +67,24 @@ export type WriteRootsResolution = {
 export function parseWriteRootsFile(raw: unknown): {
   roots: string[];
   commands: string[];
+  mcpTools: string[];
   error?: string;
 } {
-  if (raw === null || raw === undefined) return { roots: [], commands: [] };
+  if (raw === null || raw === undefined) return { roots: [], commands: [], mcpTools: [] };
   if (typeof raw !== "object" || Array.isArray(raw)) {
-    return { roots: [], commands: [], error: "not a JSON object" };
+    return { roots: [], commands: [], mcpTools: [], error: "not a JSON object" };
   }
-  const obj = raw as { writeRoots?: unknown; allowCommands?: unknown };
+  const obj = raw as { writeRoots?: unknown; allowCommands?: unknown; allowMcpTools?: unknown };
   const roots = readStringList(obj.writeRoots, "writeRoots");
   const commands = readStringList(obj.allowCommands, "allowCommands");
-  const error = [roots.error, commands.error].filter(Boolean).join("; ") || undefined;
-  return { roots: roots.list, commands: commands.list, ...(error ? { error } : {}) };
+  const mcpTools = readStringList(obj.allowMcpTools, "allowMcpTools");
+  const error = [roots.error, commands.error, mcpTools.error].filter(Boolean).join("; ") || undefined;
+  return {
+    roots: roots.list,
+    commands: commands.list,
+    mcpTools: mcpTools.list,
+    ...(error ? { error } : {}),
+  };
 }
 
 /**
@@ -107,6 +125,29 @@ export function resolveWriteRoot(
 }
 
 /**
+ * 把一份清单文件里三种规则**原样带回**的写回载荷。
+ *
+ * 三种规则同住一个文件，任何一处写盘都必须带上另外两种——否则「记住一条命令」
+ * 会顺手抹掉用户早先记住的目录与 MCP 工具。各 writer 自己拼 payload 正是当年
+ * 那个 bug 的成因，所以收敛到这一个函数。
+ */
+function payloadWith(
+  parsed: { roots: string[]; commands: string[]; mcpTools: string[] },
+  patch: Partial<{ writeRoots: string[]; allowCommands: string[]; allowMcpTools: string[] }>,
+): string {
+  const merged = {
+    writeRoots: patch.writeRoots ?? parsed.roots,
+    allowCommands: patch.allowCommands ?? parsed.commands,
+    allowMcpTools: patch.allowMcpTools ?? parsed.mcpTools,
+  };
+  const body: Record<string, string[]> = {};
+  for (const [key, list] of Object.entries(merged)) {
+    if (list.length) body[key] = list;
+  }
+  return JSON.stringify(body, null, 2) + "\n";
+}
+
+/**
  * 把一条根记进本机的 local 清单（用户在审批卡上点「允许并记住」时调用）。
  *
  * 写进 `<cwd>/.kova/permissions.local.json` 而不是项目共享那份：这是**你在本机**
@@ -130,12 +171,12 @@ export async function rememberWriteRoot(cwd: string, root: string): Promise<void
   const asRel = relative(realCwd, real);
   const entry = asRel && asRel.length <= real.length ? asRel : real;
   if (existing.some((r) => resolveWriteRoot(r, cwd) === real)) return;
-  // 两种规则同住一份文件：写回时把另一种原样带上，别互相抹掉
-  const payload = {
-    writeRoots: [...existing, entry],
-    ...(parsedFile.commands.length ? { allowCommands: parsedFile.commands } : {}),
-  };
-  await writeFile(file, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  // 三种规则同住一份文件：写回时把另外两种原样带上，别互相抹掉
+  await writeFile(
+    file,
+    payloadWith(parsedFile, { writeRoots: [...existing, entry] }),
+    "utf8",
+  );
   await ensureGitignored(cwd, relative(cwd, file));
 }
 
@@ -157,72 +198,238 @@ export async function rememberCommand(cwd: string, command: string): Promise<voi
   const merged = [...existing.commands];
   for (const rule of rules) if (!merged.includes(rule)) merged.push(rule);
   if (merged.length === existing.commands.length) return;
-  const payload = {
-    ...(existing.roots.length ? { writeRoots: existing.roots } : {}),
-    allowCommands: merged,
-  };
-  await writeFile(file, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  await writeFile(file, payloadWith(existing, { allowCommands: merged }), "utf8");
   await ensureGitignored(cwd, relative(cwd, file));
 }
 
 /**
- * 按 shell 运算符拆成简单命令。分隔符取自 Claude Code 的同一份集合
- * （`&&` `||` `;` `|` `|&` `&` 换行，外加括号——那是子 shell 的边界）：
- * 少列一个就是一条绕过路径——原先漏了 `&`，于是 `ls & rm -rf ~` 会被当成
- * 一段、被 `ls *` 规则整条放行。
+ * 把一个 MCP 工具记进本机清单（MCP 审批卡上点「允许并记住这个工具」时调用）。
  *
- * 引号内的分隔符不拆；`2>&1`、`&>` 里的 `&` 不是后台运算符（前后必有 `>` 或数字），
- * 不当分隔符。
+ * 粒度是 `server__tool` 全名逐字相等，不带 glob：这条授权的对面是一次真实的
+ * 外部副作用（改文件、发请求、写数据库），而 MCP 工具名没有可依赖的语义前缀，
+ * `read_*` 未必只读。宁可多问一次。
+ *
+ * 与另两条规则同纪律：只写本机 local 文件，项目共享那份永远不获得授权效力。
  */
-export function splitShellSegments(command: string): string[] {
+export async function rememberMcpTool(cwd: string, fullName: string): Promise<void> {
+  const trimmed = fullName.trim();
+  if (!trimmed) return;
+  const file = layerPaths(cwd).local;
+  const parsed = parseWriteRootsFile(readLayerFile(file).value);
+  if (parsed.mcpTools.includes(trimmed)) return;
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(
+    file,
+    payloadWith(parsed, { allowMcpTools: [...parsed.mcpTools, trimmed] }),
+    "utf8",
+  );
+  await ensureGitignored(cwd, relative(cwd, file));
+}
+
+/** 解析结果：分段 + 这次解析能不能作为放行依据 */
+export type ShellParse = {
+  /** 简单命令段（引号与转义内的分隔符不拆，与 shell 一致） */
+  segments: string[];
+  /**
+   * 存在**未加引号的写方向重定向**，且目标不是垃圾桶（`/dev/null`）或 fd 复制
+   * （`&N`）。在这一次扫描里顺手判定，不另起一个正则：重定向的识别与分词共用
+   * 同一套引号/转义词法，分开写就会漂移（漂移的方向是"一处能绕一处不能绕"）。
+   */
+  writeRedirect: boolean;
+  /**
+   * `false` = 分段结果**不可依赖**，调用方必须按"不解析不放行"处理。三种情形：
+   * - 引号未闭合（含悬空反斜杠）：shell 本身就是语法错误；
+   * - `$'…'`（ANSI-C）与 `$"…"`（本地化）：转义规则与普通单/双引号不同——
+   *   `$'it\'s'` 在 shell 里是一个词，而普通单引号在 `\` 后就会收尾。
+   * 模拟不了就不模拟：判死比假装解析对更安全。
+   */
+  balanced: boolean;
+};
+
+/**
+ * 从一个**未加引号**的 `>`（下标 i）读出重定向目标与结束位置。
+ *
+ * 目标为空（`echo a >`）、是路径（`> out.txt`）都算落盘；`>&2` / `2>&1` 是 fd 复制，
+ * 不算。`&>f` 形态由调用方的 `&` 分支让位给这里的 `>`，不必单独认。
+ */
+function readRedirectTarget(command: string, i: number): { target: string; end: number } {
+  let j = i + 1;
+  if (command[j] === ">") j += 1; // >>
+  while (command[j] === " " || command[j] === "\t") j += 1;
+  if (command[j] === "&") {
+    let k = j + 1;
+    let digits = "";
+    while (k < command.length && command[k]! >= "0" && command[k]! <= "9") {
+      digits += command[k];
+      k += 1;
+    }
+    if (digits) return { target: `&${digits}`, end: k };
+  }
+  let quote: '"' | "'" | null = null;
+  let target = "";
+  while (j < command.length) {
+    const c = command[j]!;
+    if (quote) {
+      target += c;
+      if (c === quote) quote = null;
+      j += 1;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      target += c;
+      j += 1;
+      continue;
+    }
+    if (c === "\\") {
+      target += c;
+      j += 1;
+      if (j < command.length) {
+        target += command[j];
+        j += 1;
+      }
+      continue;
+    }
+    if (" \t\n;|&()".includes(c)) break;
+    target += c;
+    j += 1;
+  }
+  return { target, end: j };
+}
+
+/** 目标词去掉一层成对引号后是否算无害（`/dev/null` 或 `&N`） */
+function redirectTargetIsHarmless(rawTarget: string): boolean {
+  const quoted = /^(["'])(.*)\1$/.exec(rawTarget);
+  return isHarmlessRedirectTarget(quoted ? quoted[2]! : rawTarget);
+}
+
+/**
+ * 把一条命令拆成简单命令段，并判定这次解析是否可信。
+ *
+ * 分隔符取自 Claude Code 的同一份集合（`&&` `||` `;` `|` `|&` `&` 换行，外加括号
+ * ——那是子 shell 的边界）：少列一个就是一条绕过路径——原先漏了 `&`，于是
+ * `ls & rm -rf ~` 会被当成一段、被 `ls *` 规则整条放行。
+ *
+ * **反斜杠必须模拟**（这条是本函数存在的另一半理由）：`\` 转义的下一个字符既不是
+ * 分隔符也不开引号，而引号内的转义规则逐种不同——引号外 `\'` 是字面量引号、
+ * 单引号内根本没有转义、双引号内只有 `"` `\` `$` 反引号与换行被转义。旧实现只
+ * 记一个 quote 状态、收尾时看"前一个字符是不是 \"，于是 `echo a\' ; rm -rf ~`
+ * 被压成一段（以为引号一直开着），而 shell 会执行第二条命令——一条 `echo *`
+ * 规则就把任意命令链放行了。同族的还有 `"a\\" ; rm -rf ~`（偶数反斜杠后真的
+ * 收尾）与 `$'…'`（转义规则又不一样）。
+ *
+ * 写方向的重定向也在这里判（`writeRedirect`）：**不能靠"`>` 前面是不是空格"**——
+ * `echo alpha${IFS}>f` 里 `>` 前面是 `}`，而 shell 里它是货真价实的重定向
+ * （参数展开发生在分词之后，`${IFS}` 只把它与前一个词分开），实测会写出文件。
+ */
+export function parseShellCommand(command: string): ShellParse {
+  if (command.includes("$'") || command.includes('$"')) {
+    return { segments: [], writeRedirect: false, balanced: false };
+  }
   const segments: string[] = [];
   let current = "";
   let quote: '"' | "'" | null = null;
-  for (let i = 0; i < command.length; i++) {
+  let writeRedirect = false;
+  let i = 0;
+  const flush = () => {
+    segments.push(current);
+    current = "";
+  };
+  while (i < command.length) {
     const ch = command[i]!;
-    if (quote) {
+    if (quote === "'") {
+      // 单引号内没有转义：下一个 `'` 一定收尾（要写一个单引号靠 `'\''`：
+      // 收尾、转义、重开）
       current += ch;
-      if (ch === quote && command[i - 1] !== "\\") quote = null;
+      if (ch === "'") quote = null;
+      i += 1;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\") {
+        const next = command[i + 1];
+        // 双引号内只对 `"` `\` `$` 反引号与换行是转义，其余反斜杠是字面量
+        if (next !== undefined && '"\\$`\n'.includes(next)) {
+          current += ch + next;
+          i += 2;
+          continue;
+        }
+        current += ch;
+        i += 1;
+        continue;
+      }
+      current += ch;
+      if (ch === '"') quote = null;
+      i += 1;
+      continue;
+    }
+    // ↓ 引号外
+    if (ch === "\\") {
+      const next = command[i + 1];
+      if (next === undefined)
+        return { segments: [], writeRedirect: false, balanced: false }; // 悬空反斜杠
+      current += ch + next;
+      i += 2;
       continue;
     }
     if (ch === '"' || ch === "'") {
       quote = ch;
       current += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === ">") {
+      // 写方向重定向：这里与分词共用同一套引号/转义状态，所以"`>` 前面是什么"
+      // 不影响判定（`alpha${IFS}>f`、`2>f`、`x>>f`、`&>f` 都在这一支收口）
+      const { target, end } = readRedirectTarget(command, i);
+      if (!redirectTargetIsHarmless(target)) writeRedirect = true;
+      current += command.slice(i, end);
+      i = end;
       continue;
     }
     if (ch === "\n" || ch === ";" || ch === "(" || ch === ")") {
-      segments.push(current);
-      current = "";
+      flush();
+      i += 1;
       continue;
     }
     if (ch === "&") {
       const prev = command[i - 1];
       const next = command[i + 1];
-      // `&&`、`>&1`、`>&`、`&>` 都不是后台运算符
+      // `&&`、`>&1`、`>&`、`&>` 都不是后台运算符（后两种让位给 `>` 那一支）
       if (next === "&") {
-        segments.push(current);
-        current = "";
-        i++;
+        flush();
+        i += 2;
         continue;
       }
       if (prev === ">" || prev === "<" || next === ">") {
         current += ch;
+        i += 1;
         continue;
       }
-      segments.push(current);
-      current = "";
+      flush();
+      i += 1;
       continue;
     }
     if (ch === "|") {
-      segments.push(current);
-      current = "";
-      if (command[i + 1] === "|" || command[i + 1] === "&") i++;
+      flush();
+      i += command[i + 1] === "|" || command[i + 1] === "&" ? 2 : 1;
       continue;
     }
     current += ch;
+    i += 1;
   }
-  segments.push(current);
-  return segments.map((s) => s.trim()).filter(Boolean);
+  if (quote !== null) return { segments: [], writeRedirect, balanced: false }; // 引号未闭合
+  flush();
+  return {
+    segments: segments.map((s) => s.trim()).filter(Boolean),
+    writeRedirect,
+    balanced: true,
+  };
+}
+
+/** 只要分段的调用方（诊断/推导）；需要判解析可信度的走 parseShellCommand */
+export function splitShellSegments(command: string): string[] {
+  return parseShellCommand(command).segments;
 }
 
 /**
@@ -240,6 +447,16 @@ export function hasDanglingOperator(command: string): boolean {
  * `cat notes.txt > /etc/hosts` —— 前缀规则本身只是个便利，不是边界。
  * 唯一放行的重定向目标是 `/dev/null`（`2>/dev/null`、`&>/dev/null`），
  * 因为那是只读命令里最常用的写法，且写它等于写垃圾桶。
+ *
+ * 重定向的识别**不做独立正则**，而是取 parseShellCommand 里那次扫描的结果：
+ * 判定与分词共用同一套引号/转义词法。独立正则的两个方向都错过——按"`>` 前面
+ * 必须是空格/数字/开头"扫，`echo alpha${IFS}>f` 漏判（shell 里真的写盘）；
+ * 而照正则的字面扫描，引号里的 `>`（`echo "a > b"`）又被误判成重定向，
+ * 让这类只读命令永远弹卡、永远记不住。
+ *
+ * `$'…'` / `$"…"` 也在这里判死：它们的转义规则与普通引号不同（见
+ * parseShellCommand），任何"语义模拟不了"的写法都不该走到放行——
+ * 分段层已经判死，这里再挡一道，让本函数单独被使用时也不会漏。
  */
 /** 写出式重定向的目标：/dev/null（垃圾桶）与 `&2`/`&1`（fd 复制）不算落盘 */
 function isHarmlessRedirectTarget(target: string): boolean {
@@ -250,14 +467,12 @@ function isHarmlessRedirectTarget(target: string): boolean {
 export function hasWriteHidingSyntax(command: string): boolean {
   if (command.includes("`")) return true;
   if (command.includes("$(")) return true;
+  if (command.includes("$'") || command.includes('$"')) return true;
   // 只查**写**方向的重定向。`<` 是读，而这一层管写不管读——读从来没经过审批
   // （read/glob/grep 这些工具都不问），为它破例只会让规则更难命中
-  const re = /(?:^|\s|\d)&?>>?\s*(\S+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(command))) {
-    if (!isHarmlessRedirectTarget(m[1]!.replace(/[;,|&]+$/, ""))) return true;
-  }
-  return false;
+  const parsed = parseShellCommand(command);
+  // 解析不可信（引号未闭合等）时保守当"能藏写"：这一层是谓词，不是裁决者
+  return parsed.balanced ? parsed.writeRedirect : true;
 }
 
 /**
@@ -314,7 +529,12 @@ export function commandMatchesRules(command: string, rules: readonly string[]): 
   if (!cmd) return false;
   if (hasDanglingOperator(cmd)) return false;
   if (hasWriteHidingSyntax(cmd)) return false;
-  const segments = splitShellSegments(cmd);
+  // 解析不可信（引号未闭合 / 悬空反斜杠 / `$'…'`）就不放行：分段数是"逐段校验"
+  // 的地基，地基不可信时每段命中也没有意义（`echo a\' ; rm -rf ~` 就是靠
+  // 少拆一段混过整条规则集的）
+  const parsed = parseShellCommand(cmd);
+  if (!parsed.balanced) return false;
+  const segments = parsed.segments;
   if (!segments.length) return false;
   return segments.every((seg) => {
     const first = seg.split(/\s+/)[0];
@@ -327,21 +547,27 @@ export function commandMatchesRules(command: string, rules: readonly string[]): 
 /**
  * 从一条被批准的命令推出要记的规则：逐段取**命令前缀**，`cd` 段跳过。
  *
- * 形态与 Claude Code 完全对齐：
+ * 形态与 Claude Code 对齐：
  * - 前缀 = 开头的词，直到第一个参数（含 `/`、`.`、`=` 或带引号的）为止；
  *   选项留在前缀里（`ls *`、`git log *`、`pnpm add *`）。
  * - 每条**子命令**各记一条规则（不是整条复合命令一条），单条命令最多 5 条——
  *   这也是它的口径（approve `git status && npm test` 会分别记下两条）。
- * - 悬空运算符、循环/条件体不做压缩（那两种它也只按子命令匹配）。
+ * - 悬空运算符、循环/条件体、解释器类命令（见 isCodeExecutingPrefix）不做压缩。
  *
  * **不区分只读与写类命令**：它的清单里就有 `Bash(node *)`、`Bash(kill *)` 这种宽规则。
  * 这是刻意的定位——Bash 前缀规则是**便利，不是边界**（它的文档原话：这类模式
  * "fragile"，要真隔离请用沙箱）。想收窄就直接改这份 JSON。
+ * 唯一的例外是解释器类：那条规则等于"永久放行任意代码"，由 UI 的一次点击产生
+ * 太容易顺手点掉，所以不派生（手写 JSON 仍然有效）。
  */
 export function deriveCommandRules(command: string): string[] {
   const out: string[] = [];
   if (hasDanglingOperator(command)) return out;
-  for (const seg of splitShellSegments(command)) {
+  // 不可解析的命令不记规则：分段不可信时，"每段各记一条"可能给用户没看见的
+  // 那条命令也记上（`echo a\' ; rm -rf ~` 的段划分与 shell 不一致）
+  const parsed = parseShellCommand(command);
+  if (!parsed.balanced) return out;
+  for (const seg of parsed.segments) {
     const trimmed = seg.trim();
     const tokens = trimmed.split(/\s+/).filter(Boolean);
     const first = tokens[0];
@@ -355,6 +581,7 @@ export function deriveCommandRules(command: string): string[] {
       /[/.=$]/.test(second) ||
       second.startsWith('"') ||
       second.startsWith("'");
+    if (isCodeExecutingPrefix(first, secondIsValue ? undefined : second)) continue;
     push(secondIsValue ? `${first} *` : `${first} ${second} *`);
     if (out.length >= MAX_RULES_PER_COMMAND) break;
   }
@@ -364,6 +591,127 @@ export function deriveCommandRules(command: string): string[] {
     if (!out.includes(rule)) out.push(rule);
   }
 }
+
+/**
+ * 这条前缀是不是"第一词之后就是代码"——是则不派生规则。
+ *
+ * `node script.js` → `node *`、`bash scripts/deploy.sh` → `bash *`、
+ * `npx --yes x` → `npx *`、`env FOO=1 node x.js` → `env *`：规则一记下来，
+ * **之后每次运行都不再问**，等于用一次点击换永久生效的任意代码执行。这类命令
+ * 在"允许并记住"这条路上是最容易被顺手点掉的一个坑，所以由 UI 产生的规则不含它。
+ *
+ * 名单宁可长、判定宁可钝：误判的代价是"下次再问一次"，漏判的代价是"永久免问"。
+ * 真想放开就手改 `.kova/permissions.local.json`——那是你自己机器上的文件，
+ * 与写根清单同一条纪律（文件是你的，UI 不递刀）。
+ */
+function isCodeExecutingPrefix(first: string, second?: string): boolean {
+  // 包装器/远端执行/破坏性写删：**第二词也不是"被钉住的目标"**——
+  // `ssh host uptime` 的第二词是主机名（命令从第三个词开始）、`docker run <image>`
+  // 的镜像是别人打包好的代码、`sudo rm` 的 `rm` 后面是任意路径。这类一律不记。
+  if (CODE_EXECUTING_ANY_POSITION.has(first)) return true;
+  // 解释器/运行器：后面直接跟"要执行的代码"，只有单词语前缀这一种形态
+  // （`node *`、`bash *`、`npx *`），两词的（`node run.js` → `node run.js *`）是
+  // 钉住了具体脚本的窄规则，照记
+  if (second === undefined) return CODE_EXECUTING_SINGLE_WORD.has(first);
+  // 第二词是"跑远端包 / 跑任意命令"的子命令（`pnpm dlx *`、`npm exec *`、`yarn x *`）
+  return CODE_EXECUTING_SUBCOMMANDS.has(second);
+}
+
+/**
+ * 第一词之后的**任意**参数都可能是要执行的代码/远端命令，或任意路径的写删：
+ * 两词前缀也压不出安全的规则。
+ */
+const CODE_EXECUTING_ANY_POSITION = new Set([
+  // 包装 / 提权 / 远端执行：其后紧跟的就是"要跑的东西"
+  "sudo",
+  "doas",
+  "su",
+  "env",
+  "xargs",
+  "parallel",
+  "time",
+  "nohup",
+  "nice",
+  "command",
+  "exec",
+  "eval",
+  "source",
+  ".",
+  "ssh",
+  "docker",
+  "podman",
+  "nerdctl",
+  "kubectl",
+  // 任意参数 = 任意路径的写/删：一次点击换来"以后随便删哪都行"太容易顺手点掉
+  "rm",
+  "rmdir",
+  "mv",
+  "cp",
+  "install",
+  "ln",
+  "mkdir",
+  "touch",
+  "truncate",
+  "dd",
+  "tee",
+  "chmod",
+  "chown",
+  "chgrp",
+  "tar",
+  "rsync",
+  "unzip",
+  "find",
+  "patch",
+  "sed",
+  "awk",
+]);
+
+/** 第一词即解释器/运行器：后面跟什么就是执行什么（单词语前缀不记） */
+const CODE_EXECUTING_SINGLE_WORD = new Set([
+  // shell 本体
+  "sh",
+  "bash",
+  "zsh",
+  "dash",
+  "ksh",
+  "fish",
+  "csh",
+  "tcsh",
+  "ash",
+  "busybox",
+  "pwsh",
+  "powershell",
+  // 语言解释器 / 运行器
+  "node",
+  "deno",
+  "bun",
+  "tsx",
+  "ts-node",
+  "python",
+  "python3",
+  "py",
+  "ruby",
+  "perl",
+  "php",
+  "lua",
+  "Rscript",
+  "groovy",
+  "java",
+  "osascript",
+  "swift",
+  "dotnet",
+  // 包运行器（等于执行远端拿到的代码）
+  "npx",
+  "bunx",
+  "uvx",
+  "pipx",
+  // 构建系统（Makefile 里是什么不由规则决定）
+  "make",
+  "gmake",
+]);
+
+/** 第二词是"执行后面的东西"的子命令（配合包管理器/运行器使用） */
+const CODE_EXECUTING_SUBCOMMANDS = new Set(["dlx", "exec", "x"]);
 
 /** 单条命令最多记几条规则（同 Claude Code 的上限） */
 const MAX_RULES_PER_COMMAND = 5;
@@ -432,15 +780,15 @@ export async function loadWriteRoots(cwd: string): Promise<WriteRootsResolution>
   const collect = (
     layer: "user" | "project" | "local",
     file: string,
-  ): { roots: string[]; commands: string[] } => {
+  ): { roots: string[]; commands: string[]; mcpTools: string[] } => {
     const read = readLayerFile(file);
     if (read.error) {
       diagnostics.push(`${layer}: ${read.error}`);
-      return { roots: [], commands: [] };
+      return { roots: [], commands: [], mcpTools: [] };
     }
     const parsed = parseWriteRootsFile(read.value);
     if (parsed.error) diagnostics.push(`${layer}: ${parsed.error}`);
-    return { roots: parsed.roots, commands: parsed.commands };
+    return { roots: parsed.roots, commands: parsed.commands, mcpTools: parsed.mcpTools };
   };
 
   const resolved = (roots: string[]): string[] =>
@@ -457,10 +805,13 @@ export async function loadWriteRoots(cwd: string): Promise<WriteRootsResolution>
   ];
   // 命令白名单不做路径展开，原样比对；与写根同一套规矩——项目层只提议不生效
   const commands = [...new Set([...userLayer.commands, ...localLayer.commands])];
+  // MCP 工具同理：项目层声明的免审批名单只出现在审批卡说明里，不产生授权效力
+  const mcpTools = [...new Set([...userLayer.mcpTools, ...localLayer.mcpTools])];
   return {
     effective,
     declared: resolved(project.roots).filter((r) => !effective.includes(r)),
     commands,
+    mcpTools,
     diagnostics,
   };
 }

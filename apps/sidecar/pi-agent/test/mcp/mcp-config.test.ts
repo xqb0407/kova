@@ -200,13 +200,67 @@ describe("三层加载与合并", () => {
   });
 });
 
+describe("纯补丁条目（只补 kova 字段、不重抄 command）", () => {
+  // 名字取得偏门：这仓库的测试环境会加载真实安装的插件，占用 ui-design 这类常用名
+  const NAME = "patch_probe";
+
+  test("覆盖层只写 approveTools：补上，且标准字段全部从低层继承", async () => {
+    writeJson(systemPath, {
+      mcpServers: { [NAME]: { type: "stdio", command: "bun", args: ["run", "s.ts"] } },
+    });
+    writeJson(workspaceOverrideMcpPath(cwd), {
+      mcpServers: { [NAME]: { approveTools: ["*"] } },
+    });
+    const d = (await loadMcpServers(cwd)).defs.find((x) => x.name === NAME);
+    expect(d?.approveTools).toEqual(["*"]);
+    // 重抄 command 的做法会在这里失效：插件升级换路径后这份拷贝就静默过期了
+    expect(d?.command).toBe("bun");
+    expect(d?.args).toEqual(["run", "s.ts"]);
+    expect(d?.transport).toBe("stdio");
+  });
+
+  test("可同时补多个 kova 字段，且不动低层的 transport/端点", async () => {
+    writeJson(systemPath, {
+      mcpServers: { [NAME]: { type: "http", url: "http://x/mcp", headers: { A: "1" } } },
+    });
+    writeJson(workspaceOverrideMcpPath(cwd), {
+      mcpServers: { [NAME]: { lifecycle: "eager", callTimeout: 9000 } },
+    });
+    const d = (await loadMcpServers(cwd)).defs.find((x) => x.name === NAME);
+    expect(d?.lifecycle).toBe("eager");
+    expect(d?.callTimeout).toBe(9000);
+    expect(d?.url).toBe("http://x/mcp");
+    expect(d?.headers?.A).toBe("1");
+  });
+
+  test("没有低层可继承时报诊断丢弃，不产出一条连不上的悬空定义", async () => {
+    writeJson(workspaceOverrideMcpPath(cwd), {
+      mcpServers: { orphan_probe: { approveTools: ["*"] } },
+    });
+    const r = await loadMcpServers(cwd);
+    expect(r.defs.some((d) => d.name === "orphan_probe")).toBe(false);
+    expect(r.diagnostics.some((d) => d.includes("补丁必须有可继承的底子"))).toBe(true);
+  });
+
+  test("标准层不走补丁路径：缺 command 照旧报错（生态格式不被 kova 字段污染）", async () => {
+    writeJson(workspaceStandardMcpPath(cwd), {
+      mcpServers: { solo_probe: { approveTools: ["*"] } },
+    });
+    const r = await loadMcpServers(cwd);
+    expect(r.defs.some((d) => d.name === "solo_probe")).toBe(false);
+    expect(r.diagnostics.some((d) => d.includes("缺少 command"))).toBe(true);
+  });
+});
+
 describe("启用开关（kv，键规则同 subagents）", () => {
   test("禁用系统层不影响工作区同名条目", async () => {
     writeJson(systemPath, { mcpServers: { a: { type: "stdio", command: "npx" } } });
     writeJson(workspaceOverrideMcpPath(cwd), { mcpServers: { a: { type: "stdio", command: "bun" } } });
     await setMcpServerEnabled("system", "a", false);
+    // 工作区条目按**自己的**键判定：system:<name> 的禁用不命中它（合并后层语义
+    // 跟最终提供者走）。工作区来源默认关闭，所以要它生效必须显式启用
+    await setMcpServerEnabled("workspace", "a", true, cwd);
     let r = await loadMcpServers(cwd);
-    // 合并后层语义跟最终提供者走（workspace），system:<name> 键不再命中
     expect(r.enabledBy.get("a")).toBe(true);
     await setMcpServerEnabled("workspace", "a", false, cwd);
     r = await loadMcpServers(cwd);
@@ -302,5 +356,39 @@ describe("写路径", () => {
     expect(existsSync(workspaceStandardMcpPath(cwd))).toBe(true);
 
     expect(deleteMcpServer("workspace", "b", { cwd })).rejects.toThrow("不直接改写");
+  });
+});
+
+describe("工作区来源的服务器默认关闭（仓库文件不能自己把服务器点开）", () => {
+  // 这一组的威胁模型与可写根清单同一套：`.mcp.json` / `.kova/mcp.json` 跟着仓库走，
+  // clone 一个别人的项目不该让那个仓库决定"本机跑什么进程"。启用开关是本机的
+  // 运行时决定（kv），默认关闭 + 显式启用 = 唯一能授权的状态在你自己机器上。
+  const writeWs = (name: string) =>
+    writeJson(workspaceOverrideMcpPath(cwd), {
+      mcpServers: { [name]: { type: "stdio", command: "bun" } },
+    });
+
+  test("工作区层声明默认不启用；本机显式启用后才生效", async () => {
+    writeWs("ws_default_probe");
+    let r = await loadMcpServers(cwd);
+    expect(r.enabledBy.get("ws_default_probe")).toBe(false);
+    await setMcpServerEnabled("workspace", "ws_default_probe", true, cwd);
+    r = await loadMcpServers(cwd);
+    expect(r.enabledBy.get("ws_default_probe")).toBe(true);
+  });
+
+  test("系统层照旧默认启用（那是你自己机器上的配置文件）", async () => {
+    writeJson(systemPath, {
+      mcpServers: { sys_default_probe: { type: "stdio", command: "bun" } },
+    });
+    const r = await loadMcpServers(cwd);
+    expect(r.enabledBy.get("sys_default_probe")).toBe(true);
+  });
+
+  test("工作区层声明的服务器也默认不进生效集（activeMcpServers 拿不到它）", async () => {
+    writeWs("ws_inactive_probe");
+    const r = await loadMcpServers(cwd);
+    const active = r.defs.filter((d) => r.enabledBy.get(d.name) === true).map((d) => d.name);
+    expect(active).not.toContain("ws_inactive_probe");
   });
 });

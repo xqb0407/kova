@@ -86,6 +86,11 @@ import type { ApprovalLevel, Running, SessionMode } from "../types";
 /** kv pi.mode 的载重（applyMode 写入的「最近一次使用的模式偏好」） */
 type PlanningModePrefs = { mode: SessionMode; approvalLevel: ApprovalLevel };
 
+/** 会话行/偏好里的审批档 → 合法枚举；非法或缺省一律回落最严的 `ask` */
+function decodeApprovalLevel(raw: unknown): ApprovalLevel {
+  return raw === "workspace-write" || raw === "auto-edit" || raw === "auto" ? raw : "ask";
+}
+
 /**
  * 主题管理工具的生效链依赖：落盘后的重映射/刷快照/重排提示词/广播走
  * design-md/apply（与设置页 handler 同一条链）。在这里注入而不是让
@@ -173,6 +178,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
     () => run.designTheme ?? null,
     () => run.designThemeLoads,
     () => ensureTaskSessionDir(run),
+    () => run.approvalLevel,
   );
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -243,6 +249,7 @@ export async function rebindRunThread(
     () => run.designTheme ?? null,
     () => run.designThemeLoads,
     () => ensureTaskSessionDir(run),
+    () => run.approvalLevel,
   );
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -280,6 +287,7 @@ export async function reloadMemoryTools(): Promise<void> {
       () => run.designTheme ?? null,
       () => run.designThemeLoads,
       () => ensureTaskSessionDir(run),
+      () => run.approvalLevel,
     );
     const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
     run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -700,6 +708,7 @@ export async function resolveSession(
     () => run.designTheme ?? null,
     () => run.designThemeLoads,
     () => ensureTaskSessionDir(run),
+    () => run.approvalLevel,
   );
   // run 先占位再回填 agent：beforeToolCall 闭包按引用捕获 run，模式校验在运行期才解引用
   const run: Running = {
@@ -920,7 +929,16 @@ export async function projectContextInfo(
     projectedFromColumn === undefined ? getLastUsedDesignTheme() : projectedFromColumn;
   // 工作模式读数同恢复链口径（偏好列合法值 ?? 全局默认），投影读数逐字段一致
   const projectedAppMode = effectiveAppMode(row.appMode);
-  const baseTools = buildTools(resolvedCwd, threadId, () => projectedTheme);
+  const baseTools = buildTools(
+    resolvedCwd,
+    threadId,
+    () => projectedTheme,
+    undefined,
+    undefined,
+    // 投影下 MCP 审批闭包不会被调用，仍按行里的真实档位投影：万一这个前提
+    // 哪天不成立，一个 `auto` 会话也不该因为投影缺省而退化成逐次询问
+    () => decodeApprovalLevel(row.approvalLevel),
+  );
   const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包
   // 运行期才解引用 run，投影下这些闭包永远不会被调用。

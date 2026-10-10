@@ -50,6 +50,7 @@ import {
 import { dismissKeyboard } from "@/components/ui/dismiss-tap";
 import { usePiQueue } from "@/lib/pi/pi-runtime";
 import {
+  collectProcessTexts,
   getTurnTiming,
   noteTurnEnd,
   noteTurnStart,
@@ -1482,8 +1483,9 @@ const TurnProcessSheet: FC<{ subtitle: string; onClose: () => void }> = ({
 
 /**
  * 消息内容（可按面过滤）：
- * - variant "process"：只渲染过程 part（思考、工具行、其余 data）
- * - variant "answer"：只渲染正文 part（文字、图片、错误占位）
+ * - variant "process"：只渲染过程 part（思考、工具行、其余 data，以及更早步骤的
+ *   过程叙述）
+ * - variant "answer"：只渲染正文 part（最后一次动手之后的文字、图片、错误占位）
  * - 不传：全部渲染（流式中的轮与开场内容）
  */
 const AssistantMessageContent: FC<{ variant?: "process" | "answer" }> = ({
@@ -1495,6 +1497,13 @@ const AssistantMessageContent: FC<{ variant?: "process" | "answer" }> = ({
   const groupBy = TaskGroupComponent ? taskAwareGroupBy : messageGroupBy;
   const onlyProcess = variant === "process";
   const onlyAnswer = variant === "answer";
+  // 折叠面切分（整条渲染时不过滤）：投影把一轮合并成一条消息，正文里夹着每一步
+  // 的叙述——更早的叙述归过程面，正文面只留最后一次动手之后的回答
+  const msgParts = useAuiState((s) => s.message.parts);
+  const processTexts = useMemo(
+    () => (variant === undefined ? null : collectProcessTexts(msgParts)),
+    [variant, msgParts],
+  );
 
   return (
     <MessagePrimitive.GroupedParts groupBy={groupBy}>
@@ -1506,8 +1515,11 @@ const AssistantMessageContent: FC<{ variant?: "process" | "answer" }> = ({
           part.type === "image" ||
           dataName === "image" ||
           dataName === "errorAttribution";
-        if (onlyProcess && onAnswerSide) return <></>;
-        if (onlyAnswer && !onAnswerSide) return <></>;
+        // 过程叙述（更早步骤里的正文）：归过程面
+        const foldedText =
+          processTexts !== null && part.type === "text" && processTexts.has(part);
+        if (onlyProcess && onAnswerSide && !foldedText) return <></>;
+        if (onlyAnswer && (!onAnswerSide || foldedText)) return <></>;
         switch (part.type) {
           case "group-chainOfThought":
           case "group-tool":

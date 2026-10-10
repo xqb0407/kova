@@ -17,6 +17,7 @@ import { ensureSkillsLoaded, skillsSnapshot } from "../skills/discovery";
 import { buildKnowledgeTool } from "./knowledge";
 import { buildSubagentMemoryTools, subagentMemoryDir, subagentMemoryPromptBlock } from "./memory";
 import type { SubagentDefinition } from "./subagent-definitions";
+import type { ApprovalLevel } from "../types";
 
 /** 一个子代理本次委派实际拿到的能力（工具表 + 提示词目录块） */
 export type ResolvedCapabilities = {
@@ -91,6 +92,9 @@ export async function resolveSubagentCapabilities(
   baseTools: readonly AgentTool[],
   /** 父线程 id：MCP 审批卡转发到这里（子代理自己挂起的卡没人能看见） */
   parentThreadId: string,
+  /** 父会话审批档位（闭包）：MCP 网关按它决定是否逐次审批。子代理跑在父会话的
+   *  授权范围内，不因是子代理就拿到更宽松的一档 */
+  getApprovalLevel?: () => ApprovalLevel,
 ): Promise<ResolvedCapabilities> {
   const diagnostics: string[] = [];
   const tools: AgentTool[] = [];
@@ -141,12 +145,19 @@ export async function resolveSubagentCapabilities(
     }
     blocks.push(mcp.block);
     // threadId 传父线程：子代理在后台跑、自己挂起的审批卡没有 UI 承载，
-    // 卡片必须出现在用户真正在看的那个会话里（§5）
+    // 卡片必须出现在用户真正在看的那个会话里（§5）。
+    // 审批档位同样继承父会话：子代理跑在父会话的授权范围内，
+    // 不该因为是子代理就拿到更宽松的一档
     tools.push(
-      buildMcpTool(cwd, parentThreadId, {
-        allowedServers: mcp.servers,
-        allowedNames: mcp.servers,
-      }),
+      buildMcpTool(
+        cwd,
+        parentThreadId,
+        {
+          allowedServers: mcp.servers,
+          allowedNames: mcp.servers,
+        },
+        getApprovalLevel,
+      ),
     );
   }
 

@@ -461,6 +461,14 @@ const McpEditorDialog: FC<{
                     placeholder="留空 = 每次调用都需确认"
                     className="font-mono  text-xs"
                   />
+                  {layer === "workspace" && (
+                    // 工作区文件跟着仓库走：不能给自己授权。要免审批就在审批卡上点
+                    // 「允许并记住这个工具」（记进本机 permissions.local.json）
+                    <span className="text-muted-foreground text-xs">
+                      工作区配置里的免审批名单不在本机生效（仓库不能给自己授权），只作为审批卡上的说明；
+                      要免审批请在审批卡上点「允许并记住这个工具」，或把该服务器配到系统层。
+                    </span>
+                  )}
                 </Label>
               </div>
               <div className="flex gap-3">

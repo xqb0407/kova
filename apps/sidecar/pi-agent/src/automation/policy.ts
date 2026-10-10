@@ -11,10 +11,17 @@
  * （同一 automation 线程键理论上可被复用），且 threadId 表让 mcp-tools /
  * question-tools 零依赖接入（它们只有 threadId，拿不到 run）。
  *
- * 档位语义（键名沿用 vendored task.toolPolicyProfile）：
- *   read-only       需审批的副作用工具（bash/write/edit/子代理与技能管理）一律拒绝
- *   workspace-write write/edit 放行；bash 与 MCP（任意执行/外部副作用）拒绝
+ * 档位语义（键名沿用 vendored task.toolPolicyProfile）——与交互式档位同名同义，
+ * 差别只在"要问的"变成"即时拒绝"（没人在场答卡）：
+ *   read-only       需审批的副作用工具（bash/write/edit/配置类）一律拒绝
+ *   workspace-write write/edit 仅在工作区内或本机可写根清单内放行；bash 与 MCP
+ *                   （任意执行/外部副作用）拒绝
  *   full            全部放行（MCP 亦需显式选 full 才无人值守放行）
+ *
+ * 各档都**不会**推翻用户显式记过的授权：allowCommands（命令词前缀）与
+ * allowMcpTools（工具全名）是常驻授权，判在自动化档位之前。理由：无人值守要解决的
+ * 是"没人应答挂起"，不是"把用户已授权的东西再收回去"——收回去只会让同一个
+ * allow-list 在两条路径上语义相反。
  */
 export type AutomationToolPolicy = "read-only" | "workspace-write" | "full";
 
@@ -53,10 +60,13 @@ export function getAutomationPolicy(threadId: string): AutomationToolPolicy | un
 export function automationDenyReason(
   profile: AutomationToolPolicy,
   toolName: string,
+  /** 补充说明（如"写目标在工作区与可写根清单之外"）：给模型能自我纠正的线索 */
+  detail?: string,
 ): string {
   return (
     `Unattended automation run with tool policy "${profile}": ` +
     `"${toolName}" requires approval and was auto-denied (nobody is online to approve). ` +
+    (detail ? `${detail} ` : "") +
     "Do not retry this tool; finish the task with allowed read-only operations, " +
     "state your assumption, and note what could not be done."
   );

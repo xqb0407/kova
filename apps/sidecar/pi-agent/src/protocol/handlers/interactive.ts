@@ -33,8 +33,9 @@ export const handlers: Record<string, CommandHandler> = {
     // 「允许并记住」：把这次要写的目录写进本机清单（sidecar 侧落盘，见 modes.ts）
     const remember = Boolean(msg.remember);
     // MCP 网关工具的审批挂起不在 run 内（模块级表，见 mcp-tools.ts）：先查它，
-    // 命中即结算返回，不去 resolveSession（审批期间会话可能尚未落库）
-    if (resolveMcpApproval(approvalId, approved)) {
+    // 命中即结算返回，不去 resolveSession（审批期间会话可能尚未落库）。
+    // remember 一起带过去：「允许并记住这个工具」要落盘，记的是这次批准的范围
+    if (resolveMcpApproval(approvalId, approved, remember)) {
       send({ id: reqId, type: "tool_confirmed", approvalId });
       return;
     }

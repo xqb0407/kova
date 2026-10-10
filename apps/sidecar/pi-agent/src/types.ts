@@ -310,9 +310,17 @@ export type PendingToolApproval = {
    * 没有「一条可记住的路径」可言，卡上也就不会出现第三个按钮。
    */
   rememberRoot?: string;
-  /** bash 的整条命令（逐字相等才免确认）：见 rememberCommand */
+  /** bash 的命令词前缀规则（点「记住」时按 deriveCommandRules 记下）：见 rememberCommand */
   rememberCommand?: string;
   cwd?: string;
+  /**
+   * 发起这次审批的委派 id（子代理的调用才带）。
+   *
+   * 存在的理由：子代理的 await 挂在工具调用里，abort 断不了它（BeforeToolCallContext
+   * 不带 signal），TaskStop / 委派结算必须按这个标记把它名下的挂起项结算掉，
+   * 否则那张卡永远没人答、那个子代理永远不返回。
+   */
+  delegationId?: string;
 };
 
 /* ------------------------------- 模式与审批 ------------------------------- */

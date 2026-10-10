@@ -25,8 +25,10 @@ import {
   matchingWriteRoot,
   parseWriteRootsFile,
   rememberCommand,
+  rememberMcpTool,
   rememberWriteRoot,
   resolveWriteRoot,
+  splitShellSegments,
 } from "../../src/permissions/write-roots";
 
 // 必须取 canonical 形态：macOS 的 /var 是指向 /private/var 的软链，而模块里
@@ -190,7 +192,57 @@ describe("命令前缀规则（与 Claude Code 的 Bash(pnpm add *) 同形态）
     expect(deriveCommandRules("ls -la")).toEqual(["ls *"]);
     // 第二词是词（子命令）就留在前缀里——这正是 Claude Code 清单里的 `Bash(git checkout *)`
     expect(deriveCommandRules("git checkout .")).toEqual(["git checkout *"]);
-    expect(deriveCommandRules("pnpm dlx shadcn@latest add button")).toEqual(["pnpm dlx *"]);
+  });
+
+  test("**解释器类命令不派生规则**：一次点击不该换来永久生效的任意代码执行", () => {
+    // `node script.js` 记成 `node *`、`bash -c …` 记成 `bash *`、`npx --yes x` 记成
+    // `npx *`——规则的第一词之后就是"要执行的代码"，之后每次运行都不再问。
+    // 这些一律不派生：用户点「记住」只得到这一次放行，下次照问。
+    // 想真放开就手改 .kova/permissions.local.json（文件是你的）
+    for (const cmd of [
+      "node script.js",
+      "bash scripts/deploy.sh prod",
+      "sh -c 'echo hi'",
+      "npx --yes evil-pkg",
+      "python -m http.server",
+      "ruby -e 'x'",
+      "eval ls",
+      "env FOO=1 node x.js",
+      "sudo rm -rf /tmp/x",
+      "xargs ls",
+      "ssh host uptime", // 第二词是主机名，真正的命令在后面
+      "docker run alpine sh",
+      "pnpm dlx shadcn@latest add button", // dlx = 跑远端包，同 npx 一类
+      "npm exec -- pkg",
+      // 任意参数 = 任意路径的写/删：`sudo rm *`、`cp a *` 这类规则一键产生太容易
+      "rm -rf /tmp/x",
+      "cp a b",
+      "chmod 777 f",
+      "find . -exec rm {} +",
+      "sed -i s/a/b/ f",
+    ]) {
+      expect(deriveCommandRules(cmd)).toEqual([]);
+    }
+  });
+
+  test("钉住目标的窄规则照记（正常开发流程不能被误伤）", () => {
+    expect(deriveCommandRules("pnpm test")).toEqual(["pnpm test *"]);
+    expect(deriveCommandRules("npm run build")).toEqual(["npm run *"]);
+    expect(deriveCommandRules("cargo test")).toEqual(["cargo test *"]);
+    // `bash run-tests.sh` 的路径形态（含 `.`）本来就会压成单词语 `bash *`，
+    // 所以解释器这条一样不收——脚本名钉不住，规则就是"跑任何东西"
+    expect(deriveCommandRules("bash run-tests.sh")).toEqual([]);
+  });
+
+  test("链里只压掉解释器那段，别的段照记（用户批准的是整条链，能安全记的就记）", () => {
+    expect(deriveCommandRules("git log --oneline && node evil.js")).toEqual(["git log *"]);
+    expect(deriveCommandRules("pnpm add -D react && node evil.js")).toEqual(["pnpm add *"]);
+  });
+
+  test("同族：解释器段在匹配侧照常需要规则（不派生 ≠ 放行）", () => {
+    // 不派生只影响"记住"；匹配时它仍然要命中某条已有规则
+    expect(commandMatchesRules("node script.js", ["git log *"])).toBe(false);
+    expect(commandMatchesRules("node script.js", ["node *"])).toBe(true); // 手写的规则仍然有效
   });
 
   test("子 shell 的括号不算词：`(cd frontend && ls)` 不该产出 `(cd frontend *`", () => {
@@ -243,6 +295,37 @@ describe("命令前缀规则（与 Claude Code 的 Bash(pnpm add *) 同形态）
     expect(commandMatchesRules("cat < /etc/shadow", rules)).toBe(true);
   });
 
+  test("**重定向判定不能看「前一个字符」**：`${IFS}` 紧挨着 `>` 时照样是写", () => {
+    // 参数展开发生在分词之后：`>` 是输入里本来就有的运算符，`${IFS}` 只负责把它
+    // 与前一个词分开。实测 `sh -c 'echo alpha${IFS}>f'` 真的写出文件——而按
+    // "`>` 前面必须是空格/数字/开头"的口径扫，这里前面是 `}`，整条命令被
+    // 前缀规则放行（`echo *` 命中第一段），窗口就开了
+    const rules = ["echo *", "cat *"];
+    expect(commandMatchesRules("echo alpha${IFS}>/tmp/pwned", rules)).toBe(false);
+    expect(commandMatchesRules("echo alpha$IFS>/tmp/pwned", rules)).toBe(false);
+    expect(commandMatchesRules("cat a${IFS}${IFS}>/tmp/pwned", rules)).toBe(false);
+    expect(commandMatchesRules("cat a${IFS}>>/tmp/pwned", rules)).toBe(false);
+    expect(commandMatchesRules("cat a${IFS}&>/tmp/pwned", rules)).toBe(false);
+  });
+
+  test("反向：变量**装着** `>` 不构成重定向（shell 实测不写盘），别误伤", () => {
+    // 实测 `sh -c 'X=">"; echo beta $X out.txt'` 只把 `> out.txt` 当普通参数打出来，
+    // 不产生重定向——这类"展开出来的运算符"在 shell 里不是运算符，判定不该拦
+    const rules = ["echo *"];
+    expect(commandMatchesRules("echo beta $X out.txt", rules)).toBe(true);
+    expect(commandMatchesRules("echo beta $(echo x) out.txt", rules)).toBe(false); // 命令替换仍然一律拦
+  });
+
+  test("引号里/被转义的 `>` 不是运算符（不能因为逐字符扫就误伤）", () => {
+    const rules = ["echo *"];
+    expect(commandMatchesRules('echo "a > b"', rules)).toBe(true);
+    expect(commandMatchesRules("echo 'a > b'", rules)).toBe(true);
+    expect(commandMatchesRules("echo a \\> b", rules)).toBe(true); // `\>` 是字面量
+    expect(commandMatchesRules('echo "a\\"b > c"', rules)).toBe(true); // `\"` 不闭合引号，`>` 还在引号里
+    // `2>/dev/null` 这类白名单不受影响（引号与转义之外的目标才判）
+    expect(commandMatchesRules("grep -rn port . 2>/dev/null | head -20", ["grep *", "head *"])).toBe(true);
+  });
+
   test("fd 复制放行：2>&1 / >&2 是只读命令的常客，不是落盘", () => {
     const rules = ["npm *", "pnpm *"];
     expect(commandMatchesRules("npm run build 2>&1", rules)).toBe(true);
@@ -293,6 +376,70 @@ describe("命令前缀规则（与 Claude Code 的 Bash(pnpm add *) 同形态）
   test("空命令、空规则集不放行", () => {
     expect(commandMatchesRules("   ", ["cat *"])).toBe(false);
     expect(commandMatchesRules("cat x", [])).toBe(false);
+  });
+});
+
+describe("转义与引号：分段必须与 shell 一致（否则规则整体失效）", () => {
+  // 这一组的每个载荷都实测过 `sh -c`：它们是**两条命令**，第二段必须自己命中规则。
+  // 共同根因是引号状态机不模拟反斜杠——分段与 shell 不一致时，"逐段校验"就只是
+  // 在数一段被吞掉的长字符串，前缀规则会被整条放行（等于 `cat *` 放行 `cat x > f`）。
+
+  test("**引号外转义的单引号不是引号**：`echo a\\' ; rm -rf X` 是两条命令", () => {
+    const cmd = "echo a\\' ; rm -rf /tmp/pwned";
+    // shell：`\'` 是字面量单引号，`;` 照常分段
+    expect(splitShellSegments(cmd)).toHaveLength(2);
+    expect(splitShellSegments(cmd)[1]).toBe("rm -rf /tmp/pwned");
+    expect(commandMatchesRules(cmd, ["echo *"])).toBe(false);
+  });
+
+  test("**引号外转义的双引号同理**：`echo \\\" ; rm -rf X` 是两条命令", () => {
+    const cmd = 'echo \\" ; rm -rf /tmp/pwned';
+    expect(splitShellSegments(cmd)).toHaveLength(2);
+    expect(commandMatchesRules(cmd, ["echo *"])).toBe(false);
+  });
+
+  test("**双引号内偶数个反斜杠后是真的收尾**：`echo \"a\\\\\" ; rm -rf X` 是两条命令", () => {
+    const cmd = 'echo "a\\\\" ; rm -rf /tmp/pwned';
+    // shell：`\\` 是转义的反斜杠，随后的 `"` 收尾；状态机不能靠"前一个字符是 \"
+    // 判断是否收尾（那正是旧实现 -- 见本组的第三条）
+    expect(splitShellSegments(cmd)).toHaveLength(2);
+    expect(commandMatchesRules(cmd, ["echo *"])).toBe(false);
+  });
+
+  test("**单引号内没有转义**：`echo 'a\\' ; rm -rf X` 在 `\\` 处就闭合", () => {
+    const cmd = "echo 'a\\' ; rm -rf /tmp/pwned";
+    expect(splitShellSegments(cmd)).toHaveLength(2);
+    expect(commandMatchesRules(cmd, ["echo *"])).toBe(false);
+  });
+
+  test("引号未闭合一律不可解析（shell 会语法报错，绝不能当命中）", () => {
+    expect(commandMatchesRules("echo 'unclosed ; rm -rf /tmp/x", ["echo *"])).toBe(false);
+    expect(commandMatchesRules('echo "unclosed', ["echo *"])).toBe(false);
+    expect(deriveCommandRules("echo 'unclosed ; rm -rf /tmp/x")).toEqual([]);
+  });
+
+  test("悬空反斜杠同样不可解析（那也是 shell 语法错误）", () => {
+    expect(commandMatchesRules("echo x \\", ["echo *"])).toBe(false);
+    expect(deriveCommandRules("git log \\")).toEqual([]);
+  });
+
+  test("ANSI-C / 本地化引号 `$'…'`、`$\"…\"` 的转义规则不同 → 不可解析", () => {
+    // `$'it\'s'` 在 shell 里是一个词（`\'` 是转义），普通过滤器会在 `\'` 处提前收尾
+    expect(commandMatchesRules("echo $'it\\'s' ; rm -rf /tmp/x", ["echo *"])).toBe(false);
+    expect(commandMatchesRules('echo $"x"', ["echo *"])).toBe(false);
+    expect(deriveCommandRules("echo $'it\\'s' ; rm -rf /tmp/x")).toEqual([]);
+  });
+
+  test("引号内的分隔符仍然不拆（正常路径不能被误伤）", () => {
+    const cmd = "echo 'a; b' && git log";
+    expect(splitShellSegments(cmd)).toEqual(["echo 'a; b'", "git log"]);
+    expect(commandMatchesRules(cmd, ["echo *", "git log *"])).toBe(true);
+  });
+
+  test("反斜杠续行不产生新命令：`cat a \\<换行>rm b` 在 shell 里只是一条 cat", () => {
+    const cmd = "cat a \\\nrm b";
+    expect(splitShellSegments(cmd)).toHaveLength(1);
+    expect(commandMatchesRules(cmd, ["cat *"])).toBe(true);
   });
 });
 
@@ -388,5 +535,72 @@ describe("rememberWriteRoot（「允许并记住」的落点）", () => {
     } finally {
       rmSync(join(ws, ".git"), { recursive: true, force: true });
     }
+  });
+});
+
+describe("三种规则同住一份文件（互不抹掉）", () => {
+  // 每种 writer 都重写整份文件，任何一处漏带另外两种，用户早先点过的
+  // 「允许并记住」就会被后一次无关的授权悄悄清空——授权丢失的方向恰恰
+  // 是让人误以为还有防护的那一侧，所以这条要在解析层之外再验一遍落盘。
+  test("记 MCP 工具不抹掉已有的写根与命令规则", async () => {
+    await rememberWriteRoot(ws, shared);
+    await rememberCommand(ws, "pnpm add -D react");
+    await rememberMcpTool(ws, "ui-design__add_nodes");
+    const file = JSON.parse(
+      readFileSync(join(ws, ".kova", "permissions.local.json"), "utf8"),
+    ) as { writeRoots: string[]; allowCommands: string[]; allowMcpTools: string[] };
+    expect(file.writeRoots).toEqual(["../shared-lib"]);
+    expect(file.allowCommands).toEqual(["pnpm add *"]);
+    expect(file.allowMcpTools).toEqual(["ui-design__add_nodes"]);
+  });
+
+  test("记写根 / 记命令同样不抹掉 MCP 授权", async () => {
+    await rememberMcpTool(ws, "ui-design__add_nodes");
+    await rememberWriteRoot(ws, shared);
+    await rememberCommand(ws, "pnpm add react");
+    const file = JSON.parse(
+      readFileSync(join(ws, ".kova", "permissions.local.json"), "utf8"),
+    ) as { writeRoots: string[]; allowCommands: string[]; allowMcpTools: string[] };
+    expect(file.allowMcpTools).toEqual(["ui-design__add_nodes"]);
+    expect(file.writeRoots).toEqual(["../shared-lib"]);
+    expect(file.allowCommands).toEqual(["pnpm add *"]);
+  });
+});
+
+describe("rememberMcpTool 与 mcpTools 清单", () => {
+  test("落进 local 并立刻生效（免审批工具全名逐字相等）", async () => {
+    await rememberMcpTool(ws, "ui-design__add_nodes");
+    const { mcpTools } = await loadWriteRoots(ws);
+    expect(mcpTools).toEqual(["ui-design__add_nodes"]);
+  });
+
+  test("重复记同一条不膨胀；空工具名不落盘", async () => {
+    await rememberMcpTool(ws, "ui-design__add_nodes");
+    await rememberMcpTool(ws, "ui-design__add_nodes");
+    await rememberMcpTool(ws, "   ");
+    const file = JSON.parse(
+      readFileSync(join(ws, ".kova", "permissions.local.json"), "utf8"),
+    ) as { allowMcpTools: string[] };
+    expect(file.allowMcpTools).toEqual(["ui-design__add_nodes"]);
+  });
+
+  test("项目共享的声明不产生授权效力（只提议不生效，与写根同纪律）", async () => {
+    // clone 别人的仓库不该让那个仓库有权给你的 agent 免审批
+    writeConfig("project", { allowMcpTools: ["evil__exec"] });
+    const { mcpTools } = await loadWriteRoots(ws);
+    expect(mcpTools).toEqual([]);
+  });
+
+  test("多条授权累积（并集，不覆盖）", async () => {
+    await rememberMcpTool(ws, "a__b");
+    await rememberMcpTool(ws, "c__d");
+    const { mcpTools } = await loadWriteRoots(ws);
+    expect(mcpTools).toEqual(["a__b", "c__d"]);
+  });
+
+  test("字段类型错要报诊断（不是静默丢弃）", () => {
+    const parsed = parseWriteRootsFile({ allowMcpTools: "not-an-array" });
+    expect(parsed.mcpTools).toEqual([]);
+    expect(parsed.error).toContain("allowMcpTools");
   });
 });

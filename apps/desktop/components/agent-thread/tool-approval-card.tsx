@@ -215,12 +215,18 @@ const ApprovalRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> 
             title={
               approval.toolName === "bash"
                 ? "把这条命令的前缀（如前两个词）记进 .kova/permissions.local.json，之后同类命令不再询问"
-                : "把这次要写的目录记进 .kova/permissions.local.json，之后该目录不再询问"
+                : approval.toolName === "mcp"
+                  ? "把这个 MCP 工具（server__tool）记进 .kova/permissions.local.json，之后本机再调它不再询问；同一服务器的其他工具仍会逐次问"
+                  : "把这次要写的目录记进 .kova/permissions.local.json，之后该目录不再询问"
             }
             className="h-8 rounded-full px-3.5"
           >
             <BookmarkPlusIcon className="size-3.5" />
-            {approval.toolName === "bash" ? "允许并记住这类命令" : "允许并记住"}
+            {approval.toolName === "bash"
+              ? "允许并记住这类命令"
+              : approval.toolName === "mcp"
+                ? "允许并记住这个工具"
+                : "允许并记住"}
           </Button>
         )}
         <Button

@@ -4,6 +4,9 @@
  * 断言"永不挂起"：每个调用都同步（await 立即）返回放行/拦截结果。
  */
 import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   BeforeToolCallContext,
   BeforeToolCallResult,
@@ -11,6 +14,7 @@ import type {
 import type { Running } from "../../src/types";
 import { approvalBeforeToolCall } from "../../src/agent/modes";
 import { buildQuestionTool } from "../../src/tools/question-tools";
+import { SUBAGENT_MGMT_TOOL_NAMES } from "../../src/subagent/subagent-mgmt-tools";
 import {
   getAutomationPolicy,
   normalizeToolPolicyProfile,
@@ -31,13 +35,13 @@ function fakeRun(threadId: string): Running {
   } as unknown as Running;
 }
 
-function ctxFor(toolName: string): BeforeToolCallContext {
+function ctxFor(toolName: string, args: Record<string, unknown> = {}): BeforeToolCallContext {
   return {
     toolCall: { type: "toolCall", id: `call-${toolName}`, name: toolName },
     assistantMessage: {
       content: [{ type: "toolCall", id: `call-${toolName}`, name: toolName }],
     },
-    args: {},
+    args,
   } as unknown as BeforeToolCallContext;
 }
 
@@ -68,10 +72,38 @@ describe("automation tool policy tiers", () => {
     expect(await gate("read-only", "read")).toBeUndefined();
   });
 
-  it("workspace-write：write/edit 放行，bash 拒绝", async () => {
-    expect(await gate("workspace-write", "write")).toBeUndefined();
-    expect(await gate("workspace-write", "edit")).toBeUndefined();
-    expect((await gate("workspace-write", "bash"))?.block).toBe(true);
+  it("workspace-write：工作区内 write/edit 放行；工作区外、bash、配置类工具拒绝", async () => {
+    // 档位名承诺的边界必须是真的：以前这一档只把 bash 拒掉，write/edit 与配置类
+    // 工具（子代理/技能/主题/插件增删）一律放行——写得到工作区外，
+    // 与交互式同名档位差着一整条边界
+    const ws = realpathSync(mkdtempSync(join(tmpdir(), "auto-ws-")));
+    registerAutomationThread(THREAD, "workspace-write");
+    try {
+      const run = fakeRun(THREAD);
+      run.cwd = ws;
+      expect(
+        await approvalBeforeToolCall(run, ctxFor("write", { file_path: join(ws, "a.ts") })),
+      ).toBeUndefined();
+      expect(
+        await approvalBeforeToolCall(run, ctxFor("edit", { file_path: join(ws, "b.ts") })),
+      ).toBeUndefined();
+      const outside = await approvalBeforeToolCall(
+        run,
+        ctxFor("write", { file_path: join(ws, "..", "outside.ts") }),
+      );
+      expect(outside?.block).toBe(true);
+      expect(String(outside?.reason)).toContain("outside the workspace");
+      expect((await approvalBeforeToolCall(run, ctxFor("bash", { command: "ls" })))?.block).toBe(
+        true,
+      );
+      expect(
+        (await approvalBeforeToolCall(run, ctxFor(SUBAGENT_MGMT_TOOL_NAMES.save)))?.block,
+      ).toBe(true);
+      expect(run.pendingToolApprovals.size).toBe(0); // 永不挂起
+    } finally {
+      unregisterAutomationThread(THREAD);
+      rmSync(ws, { recursive: true, force: true });
+    }
   });
 
   it("full：需审批工具也放行", async () => {

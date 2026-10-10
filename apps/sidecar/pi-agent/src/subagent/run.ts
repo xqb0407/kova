@@ -3,7 +3,13 @@
  * 可固定模型、定义声明的工具集），provider 重试/轨迹/长度续跑与主代理同款。
  * 委派注册表与活动流见 delegation.ts，Task 工具组见 tools.ts。
  */
-import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
+import {
+  Agent,
+  type AgentEvent,
+  type AgentTool,
+  type BeforeToolCallContext,
+  type BeforeToolCallResult,
+} from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
   getModels,
@@ -74,6 +80,13 @@ type SubagentRunOptions = {
   parentRunId?: string;
   /** 触发本次委派的父 span：父 run 里那次 Task tool_call 的 spanId */
   parentSpanId?: string;
+  /**
+   * 工具闸门：每次工具调用前问一次，接**父会话**的审批链
+   * （modes.subagentToolGate）。刻意必填——子代理拿到的是父会话的基础工具表，
+   * 里面就有 write/edit/bash，漏接这一个参数等于整条链绕过审批；写成必填，
+   * 漏接会编译不过，而不是静默放行。
+   */
+  toolGate: (context: BeforeToolCallContext) => Promise<BeforeToolCallResult | undefined>;
   signal?: AbortSignal;
   /** 归一化活动条目回调（进缓冲 + 广播；见 pushActivity） */
   onActivity?: (item: SubagentActivityItem) => void;
@@ -170,6 +183,8 @@ export class SubagentRun {
         if (capped) this.cappedTurns = true;
         return capped ? { terminate: true } : undefined;
       },
+      // 审批闸门：委托方的 run 决定档位与边界（主代理侧注册的是同一个判定核心）
+      beforeToolCall: (context) => this.opts.toolGate(context),
       initialState: {
         systemPrompt: composeSubagentSystemPrompt({
           definition: this.opts.definition,

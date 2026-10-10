@@ -32,6 +32,7 @@ import {
 } from "./delegation";
 import { SubagentRun } from "./run";
 import { resolveSubagentCapabilities } from "./capabilities";
+import { clearApprovalsForDelegation, subagentToolGate } from "../agent/modes";
 import { logErr } from "../log";
 
 const TASKWAIT_DEFAULT_TIMEOUT_SECONDS = 300;
@@ -166,6 +167,7 @@ export function buildSubagentTools(
         run.cwd,
         baseTools,
         run.threadId,
+        () => run.approvalLevel,
       );
       const tools = caps.tools;
       for (const d of caps.diagnostics) logErr("subagent capability:", d);
@@ -222,16 +224,25 @@ export function buildSubagentTools(
         // 轨迹因果边：把这次 Task tool_call 的父 run/父 span 身份写到子 run 上
         parentRunId: run.trace?.traceId,
         parentSpanId: run.trace?.spanIdForToolCall(toolCallId),
+        // 子代理的 write/edit/bash 走**父会话**的审批链：档位、工作区边界、
+        // 写根清单、无人值守策略与主代理同一套判定（见 modes.subagentToolGate）
+        toolGate: subagentToolGate(run, delegationId),
         signal: controller.signal,
         onActivity: (item) => pushActivity(record, item),
       })
         .run()
         .then(
-          (result) => settleDelegation(run, record, result),
+          (result) => {
+            // 委派结束即清理它名下的挂起审批：子代理不会再等它们了，
+            // 留着就是一张永远没人答的卡（子代理已返回，没人在等）
+            clearApprovalsForDelegation(run, delegationId);
+            return settleDelegation(run, record, result);
+          },
           // SubagentRun.run() 自会把错误折进结果；这个兜底只是防止意外 rejection
           // 让委派永远卡在 running。
-          (error: unknown) =>
-            settleDelegation(run, record, {
+          (error: unknown) => {
+            clearApprovalsForDelegation(run, delegationId);
+            return settleDelegation(run, record, {
               agentName: definition.name,
               modelId: model.id,
               status: "failed",
@@ -242,7 +253,8 @@ export function buildSubagentTools(
                 code: "UNEXPECTED_DELEGATION_REJECTION",
                 message: error instanceof Error ? error.message : String(error),
               },
-            }),
+            });
+          },
         );
       return {
         content: [
@@ -419,6 +431,9 @@ export function buildSubagentTools(
       for (const record of stopping) {
         record.stopRequested = true;
         record.abort();
+        // 挂起中的审批按拒绝结算：abort 断不了子代理挂在工具调用里的 await，
+        // 不结算掉它就停不下来（而那张卡此刻也没人会点）
+        clearApprovalsForDelegation(run, record.delegationId);
       }
       return {
         content: [

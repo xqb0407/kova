@@ -183,3 +183,63 @@ export function __resetTurnStoresForTests(): void {
   collapseOverrides.reset();
   turnTimings.reset();
 }
+
+/* ------------------------- 折叠面：过程叙述切分 ------------------------- */
+
+/**
+ * 折叠轮的「过程叙述」正文集合（镜像桌面 lib/panels/message-turns.ts 的
+ * collectProcessTexts，改动需两处同步）。
+ *
+ * 为什么要切：一轮（= 一次 loop）在投影侧被合并成**一条**消息（见
+ * pi-runtime/runtime/messageProjection 的合并语义），消息里夹着每一步的叙述
+ * 正文。折叠后正文面只该留**最后一次动手（工具调用 / 思考）之后的正文**
+ * （最终回答），更早的叙述归过程面（底部 pop）——不切的话消息流里会摊出一墙
+ * 过程叙述（真实回归：一轮 22 步留下 15 段叙述）。
+ *
+ * 兜底：最后一次动手之后没有正文（手动中断、停在工具调用上）时退回「最后一次
+ * 开口说的话」，被中断的轮也该看得见它停在哪句话上。整轮没写过正文则返回空
+ * 集合，折叠后只剩摘要行。
+ *
+ * 返回按对象身份匹配的集合：渲染回调拿不到 part 下标（GroupedParts 只给 part
+ * 本身），而库里 text part 的 state 与 message.parts[i] 是同一个引用。认不出
+ * （身份不成立）时集合为空 ⇒ 正文全部留在正文面，退回改动前的行为：宁可不折叠，
+ * 不吞正文。
+ */
+export function collectProcessTexts(
+  parts: readonly { type?: string; text?: string }[],
+): WeakSet<object> {
+  // 「有内容的正文」才算数：投影会留下只有空白的 text part（工具间隙的换行），
+  // 拿它当回答会让折叠态看起来是空的
+  const hasText = (part: { type?: string; text?: string } | undefined) =>
+    part?.type === "text" && (part.text ?? "").trim().length > 0;
+  // 最后一次「动手」的位置：工具调用与思考都算，与过程面的呈现口径一致
+  let lastWork = -1;
+  for (let i = 0; i < parts.length; i++) {
+    const type = parts[i]?.type;
+    if (type === "tool-call" || type === "reasoning") lastWork = i;
+  }
+  let answerFrom = lastWork + 1;
+  let hasAnswerText = false;
+  for (let i = answerFrom; i < parts.length; i++) {
+    if (hasText(parts[i])) {
+      hasAnswerText = true;
+      break;
+    }
+  }
+  if (!hasAnswerText) {
+    let lastText = -1;
+    for (let i = 0; i < parts.length; i++) {
+      if (hasText(parts[i])) lastText = i;
+    }
+    answerFrom = lastText >= 0 ? lastText : parts.length;
+  }
+
+  const processTexts = new WeakSet<object>();
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part?.type !== "text") continue;
+    // 界外的正文（更早的叙述）+ 只有空白的正文都归过程面
+    if (i < answerFrom || !hasText(part)) processTexts.add(part);
+  }
+  return processTexts;
+}

@@ -49,6 +49,7 @@ import {
 } from "./workspace-boundary";
 import {
   commandMatchesRules,
+  deriveCommandRules,
   displayRoot,
   isWriteRootAllowed,
   loadWriteRoots,
@@ -57,7 +58,7 @@ import {
   rememberWriteRoot,
 } from "../permissions/write-roots";
 import { setLeadingSystemMessage } from "./context";
-import { logErr } from "../log";
+import { logAt, logErr } from "../log";
 import { buildHookPayload, runHooks } from "./hooks";
 import { personalizationPromptBlock } from "./personalization";
 import { appModePromptBlock, type AppMode } from "./app-mode";
@@ -66,7 +67,7 @@ import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "../mcp/mcp-tools";
 import { skillsPromptBlock } from "../skills/skills";
 import { instructionsPromptBlock } from "./instructions";
-import { sendEventChunk } from "../protocol/stream";
+import { sendEventChunk, isPromptActive } from "../protocol/stream";
 import { displayPath } from "../tools/open-file-tool";
 import {
   GOAL_TOOL_NAMES,
@@ -661,24 +662,36 @@ export function modeBeforeToolCall(
 }
 
 /**
- * 逐工具审批钩子（sessions.ts 注册的最终 beforeToolCall）：
- * 先做模式门控，再按审批级别决定 bash/write/edit 是否等待用户确认——
- * ask = 全部确认；workspace-write = 工作区内的 write/edit 免确认、其余确认；
- * auto-edit = 编辑免确认、bash 仍确认；auto = 全免。
- * 挂起项记入 run.pendingToolApprovals 并经当前请求流推 data-toolApproval
- * chunk，await 到 tool_confirm（批准/拒绝）或清理（abort）后才放行/拦截。
+ * 逐工具审批链的**唯一判定核心**：主代理与子代理共用（sessions.ts 注册的
+ * beforeToolCall 与 subagentToolGate 都落到这里）。
+ *
+ * 为什么不给子代理另写一套：判定一旦分家，两边迟早漂成"子代理更宽松"——
+ * 而那个方向正是权限被静默放大的方向。顺序与语义只有这一处：
+ * 模式门控 → 目标台账 → 无人值守自动化策略 → 审批级别
+ * （ask = 全部确认；workspace-write = 工作区内的 write/edit 免确认、其余确认；
+ * auto-edit = 编辑免确认、bash 仍确认；auto = 全免）→ PermissionRequest 钩子 →
+ * 挂起等待 tool_confirm（挂起项记入 run.pendingToolApprovals，经当前请求流推
+ * data-toolApproval chunk，await 到批准/拒绝或清理后才放行/拦截）。
+ *
  * plan_exit 的确认是模式级 HITL，不受审批级别影响，在其 execute 内自行挂起。
  */
-export async function approvalBeforeToolCall(
+export async function gateToolCall(
   run: Running,
   context: BeforeToolCallContext,
+  opts: { captureLoopContext?: boolean; delegationId?: string } = {},
 ): Promise<BeforeToolCallResult | undefined> {
-  // 捕获本轮循环的活上下文：applyMode 据此在轮中热换工具表/系统提示词
-  if (context.context) run.loopContext = context.context;
+  // 捕获本轮循环的活上下文：applyMode 据此在轮中热换工具表/系统提示词。
+  // **子代理的调用绝不能写这里**（captureLoopContext=false）：那会把父会话的
+  // 活循环上下文换成子代理自己的，父会话轮中切模式就换不动工具表了
+  if (opts.captureLoopContext !== false && context.context) {
+    run.loopContext = context.context;
+  }
   /** 本次审批若点了「允许并记住」，要写进本机清单的那条根 */
   let rememberRoot: string | undefined;
-  /** 同上，但记的是 bash 的整条命令（逐字相等） */
+  /** 同上，但记的是 bash 的命令词前缀规则（`pnpm add *` 那种，不是整串逐字） */
   let rememberCmd: string | undefined;
+  /** bash 命令压不出规则时的标记：卡上不给「记住」，说明文字也要换（见 note） */
+  let bashNotRememberable: string | undefined;
   /** 项目层声明、且覆盖本次目标的根（只用于卡上那句说明，不参与任何判定） */
   let declaredRoot: string | undefined;
   const gated = modeBeforeToolCall(run, context);
@@ -692,16 +705,50 @@ export async function approvalBeforeToolCall(
   if (run.mode === "goal" && !isGoalToolName(context.toolCall.name) && !GOAL_WORK_EXEMPT_TOOLS.has(context.toolCall.name)) {
     markGoalWorkSeen(run);
   }
-  // 无人值守自动化 turn：需审批的工具按档位即时裁决（read-only 全拒 /
-  // workspace-write 拒 bash / full 放行），永不挂起等待前端 tool_confirm
+  // 无人值守自动化 turn：需审批的工具按档位即时裁决，永不挂起等待前端 tool_confirm。
+  // 顺序与交互式路径一致——**先看用户显式记过的授权**（那是"不会弹卡的东西"，
+  // 不是"这次要放行的东西"；MCP 侧的豁免也在自动化判定之前，两条路必须同序，
+  // 否则同一个 allow-list 会一边放行一边拒绝），再按档位裁：
+  //   full            全放
+  //   workspace-write write/edit 仅落在工作区内或本机可写根清单内放行；bash 与配置类拒绝
+  //   read-only       一律拒绝
+  // 档位名承诺的边界在这里是真的：以前 workspace-write 只把 bash 拒掉，write/edit
+  // 与配置类工具（子代理/技能/主题/插件增删）一律放行——写得到工作区外，
+  // 与交互式同名档位的语义差着一整条边界
   const autoPolicy = getAutomationPolicy(run.threadId);
   if (autoPolicy && APPROVAL_REQUIRED_TOOLS.has(context.toolCall.name)) {
-    const allow =
-      autoPolicy === "full" ||
-      (autoPolicy === "workspace-write" && context.toolCall.name !== "bash");
-    return allow
-      ? undefined
-      : { block: true, reason: automationDenyReason(autoPolicy, context.toolCall.name) };
+    if (autoPolicy === "full") return undefined;
+    if (
+      context.toolCall.name === "bash" &&
+      typeof (context.args as { command?: unknown })?.command === "string"
+    ) {
+      const command = String((context.args as { command?: unknown }).command).trim();
+      if (command) {
+        const { commands } = await loadWriteRoots(run.cwd);
+        if (commandMatchesRules(command, commands)) return undefined;
+      }
+    }
+    if (autoPolicy === "workspace-write" && isPathBearingWrite(context.toolCall.name)) {
+      if (writeTargetInsideWorkspace(context.toolCall.name, context.args, run.cwd)) {
+        return undefined;
+      }
+      const target = writeTargetPath(context.toolCall.name, context.args, run.cwd);
+      if (target) {
+        const roots = await loadWriteRoots(run.cwd);
+        if (isWriteRootAllowed(target, roots.effective)) return undefined;
+      }
+    }
+    return {
+      block: true,
+      reason: automationDenyReason(
+        autoPolicy,
+        context.toolCall.name,
+        // 越界写被拒不是"缺一个人点确认"：这条路径本来就不允许写到那儿，说清才有用
+        autoPolicy === "workspace-write" && isPathBearingWrite(context.toolCall.name)
+          ? "The write target is outside the workspace and the configured write roots."
+          : undefined,
+      ),
+    };
   }
   if (run.approvalLevel === "auto") return undefined;
   if (!APPROVAL_REQUIRED_TOOLS.has(context.toolCall.name)) return undefined;
@@ -733,7 +780,11 @@ export async function approvalBeforeToolCall(
     if (command) {
       const { commands } = await loadWriteRoots(run.cwd);
       if (commandMatchesRules(command, commands)) return undefined;
-      rememberCmd = command;
+      // 只有能压出规则时才给「记住」：解析不可信（引号不闭合 / `$'…'`）或没有
+      // 可压缩的段（悬空运算符、循环体）时按不下任何东西——按钮承诺的
+      // "这类命令以后不问了"兑现不了，等于骗人
+      if (deriveCommandRules(command).length) rememberCmd = command;
+      else bashNotRememberable = command;
     }
   }
   if (run.approvalLevel === "auto-edit" && context.toolCall.name !== "bash") {
@@ -758,13 +809,26 @@ export async function approvalBeforeToolCall(
   if (hookDecision?.decision === "approve") return undefined;
 
   const approvalId = randomUUID();
+  // 子代理在后台跑，父会话可能已经没有活跃请求：这时 sendEventChunk 直接丢弃
+  // （protocol/stream.ts），卡片只能靠台账行 + 前端 attach 时的 list_pending 回拉
+  // 才现身。留一行日志，别让"卡片没出现、子代理卡住"变成无从排查的悬案
+  if (opts.delegationId && !isPromptActive(run.threadId)) {
+    logAt(
+      "event",
+      `subagent approval pending with no active request: thread=${run.threadId} ` +
+        `delegation=${opts.delegationId} approval=${approvalId} (card appears on next attach)`,
+    );
+  }
   // 说明只讲「项目请求了什么」；记不记由用户按哪个按钮决定
   const note = declaredRoot
     ? `这个项目在 .kova/permissions.json 里请求放行 ${displayRoot(declaredRoot, run.cwd)}；点「允许并记住」会把它写进你的 .kova/permissions.local.json`
-    : // bash 在 workspace-write 档下每次都问，而卡上没有「允许并记住」（无法判断它写到哪）。
-    // 不解释的话用户只会觉得"点了也没记住"——这行就是回答那个疑问的
+    : // bash 在 workspace-write 档下每次都问（参数里判不出写到哪），这行是回答
+      // "为什么又问 / 点了记住能不能少问"——能不能记有两种，文案必须分开：
+      // 记不下却写着「点记住以后不问」，用户点完发现还问，只会认为功能坏了
       run.approvalLevel === "workspace-write" && context.toolCall.name === "bash"
-      ? "命令写到哪判不出来，所以这一档下每条命令都要确认。点「允许并记住这类命令」记下命令词前缀（如 pnpm add *），换参数也命中；带重定向或命令替换的仍会问。"
+      ? bashNotRememberable
+        ? "命令写到哪判不出来，所以这一档下每条命令都要确认；这条命令压不出安全的前缀规则（解释器类命令如 node/npx/bash、循环/条件体、引号不闭合或含 `$'…'`），只能这一次放行。"
+        : "命令写到哪判不出来，所以这一档下每条命令都要确认。点「允许并记住这类命令」记下命令词前缀（如 pnpm add *），换参数也命中；带重定向或命令替换的仍会问。"
       : undefined;
   // 挂起交互登记落行 + 发起帧水印（同 plan_exit 审批，§3/§4）
   beginInteraction(run.threadId, {
@@ -806,6 +870,7 @@ export async function approvalBeforeToolCall(
       toolName: context.toolCall.name,
       input: context.args ?? null,
       resolve,
+      ...(opts.delegationId ? { delegationId: opts.delegationId } : {}),
       ...(rememberRoot ? { rememberRoot, cwd: run.cwd } : {}),
       ...(rememberCmd ? { rememberCommand: rememberCmd, cwd: run.cwd } : {}),
     });
@@ -856,6 +921,55 @@ export function clearPendingToolApprovals(run: Running): void {
     pending.resolve({ approved: false, remember: false });
   }
   run.pendingToolApprovals.clear();
+}
+
+/**
+ * 主代理的逐工具审批钩子（sessions.ts 注册的 beforeToolCall）：
+ * 判定核心 + 捕获活循环上下文（默认行为）。
+ */
+export function approvalBeforeToolCall(
+  run: Running,
+  context: BeforeToolCallContext,
+): Promise<BeforeToolCallResult | undefined> {
+  return gateToolCall(run, context);
+}
+
+/**
+ * 子代理的工具闸门：把子代理的每次工具调用接回**父会话**的审批链。
+ *
+ * 为什么必须接回来：子代理用的是独立 pi Agent，钩子不接的话它整条链都在审批之外
+ * ——ask 档承诺的"每次写都问"、workspace-write 承诺的工作区边界、配置类工具的
+ * 逐次确认、以及无人值守的 read-only 策略全部形同虚设。而 `Task` 本身**不在**
+ * APPROVAL_REQUIRED_TOOLS 里（委派不写盘、无副作用），于是"把活交给 Fixer"=
+ * 把权限放大一档，全程零确认。默认的 Fixer 定义就带 write/edit/bash。
+ *
+ * 与主代理的两点差异：
+ * - 不捕获活循环上下文（子代理的 context 不是父会话的，见 gateToolCall 的 opts）；
+ * - 挂起项带 delegationId：委派被 Stop / 结算时要按 id 清理（见
+ *   clearApprovalsForDelegation）。
+ */
+export function subagentToolGate(
+  run: Running,
+  delegationId: string,
+): (context: BeforeToolCallContext) => Promise<BeforeToolCallResult | undefined> {
+  return (context) => gateToolCall(run, context, { captureLoopContext: false, delegationId });
+}
+
+/**
+ * 清理某次委派名下的挂起审批（按拒绝结算）。
+ *
+ * 必需而不是可选：子代理的 await 挂在工具调用里，而 abort 断不了它
+ * （BeforeToolCallContext 不带 signal）。TaskStop / 委派结算不结算掉这些挂起项，
+ * 那个子代理就永远不返回（卡上也没人点），委派停在一半、**条上还写着在跑**。
+ */
+export function clearApprovalsForDelegation(run: Running, delegationId: string): void {
+  for (const [approvalId, pending] of [...run.pendingToolApprovals]) {
+    if (pending.delegationId !== delegationId) continue;
+    run.pendingToolApprovals.delete(approvalId);
+    settleInteraction(approvalId, "cancelled");
+    pending.settledBy = "clear";
+    pending.resolve({ approved: false, remember: false });
+  }
 }
 
 /* ------------------------------ 模式切换与状态推送 ------------------------------ */

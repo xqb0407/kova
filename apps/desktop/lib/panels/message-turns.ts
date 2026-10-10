@@ -266,6 +266,66 @@ export function parseTurnSlotWithKeep(packed: string): TurnSlotWithKeep | null {
 }
 
 /**
+ * 折叠轮的「过程叙述」正文集合（折叠面的切分，纯函数便于单测）。
+ *
+ * 为什么要切：一轮（= 一次 loop）在投影侧被合并成**一条**消息，消息里夹着
+ * 每一步的叙述正文（"换个词搜一下" 这类过程记录，见 messageProjection 的
+ * 合并语义）。收起一轮时该收的是整个过程——叙述正文与工具行、思考一样归过程面，
+ * 最外层只留**最后一次动手（工具调用 / 思考）之后的正文**，也就是最终回答；
+ * 不切的话收起态会摊出一墙过程叙述（真实回归：一轮 22 步留下 15 段叙述）。
+ *
+ * 兜底：最后一次动手之后没有正文（用户手动中断、停在工具调用上）时退回
+ * 「最后一次开口说的话」——被中断的轮也该看得见它停在哪句话上，而不是收起成
+ * 一行空白。「回答」为空的极端情况（整轮没写过正文）返回空集合，收起后只剩
+ * 工作摘要行。
+ *
+ * 返回按对象身份匹配的集合：渲染回调拿不到 part 下标（GroupedParts 只给 part
+ * 本身），而库里 text part 的 state 对象与 message.parts[i] 是同一个引用
+ * （part client 的浅记忆化 subject），按身份判是 O(1) 且无下标扫描。
+ * 认不出（身份不成立）时集合为空 ⇒ 正文全部留在答案面，退回改动前的行为：
+ * 宁可不折叠，不吞正文。
+ */
+export function collectProcessTexts(
+  parts: readonly { type?: string; text?: string }[],
+): WeakSet<object> {
+  // 「有内容的正文」才算数：投影会留下只有空白的 text part（工具间隙的换行），
+  // 拿它当回答会让收起态看起来是空的
+  const hasText = (part: { type?: string; text?: string } | undefined) =>
+    part?.type === "text" && (part.text ?? "").trim().length > 0;
+  // 最后一次「动手」的位置：工具调用与思考都算，与过程面的呈现口径一致
+  let lastWork = -1;
+  for (let i = 0; i < parts.length; i++) {
+    const type = parts[i]?.type;
+    if (type === "tool-call" || type === "reasoning") lastWork = i;
+  }
+  let answerFrom = lastWork + 1;
+  let hasAnswerText = false;
+  for (let i = answerFrom; i < parts.length; i++) {
+    if (hasText(parts[i])) {
+      hasAnswerText = true;
+      break;
+    }
+  }
+  if (!hasAnswerText) {
+    let lastText = -1;
+    for (let i = 0; i < parts.length; i++) {
+      if (hasText(parts[i])) lastText = i;
+    }
+    answerFrom = lastText >= 0 ? lastText : parts.length;
+  }
+
+  const processTexts = new WeakSet<object>();
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part?.type !== "text") continue;
+    // 界外的正文（更早的叙述）+ 只有空白的正文都归过程面：空白渲染不出内容，
+    // 别占着答案面的位置
+    if (i < answerFrom || !hasText(part)) processTexts.add(part);
+  }
+  return processTexts;
+}
+
+/**
  * 本轮全部 assistant 消息的 parts（按顺序摊平），引用按 messages 数组身份
  * 缓存——折叠轮里轮中消息不挂载，产物卡/检查点这类「交付物」统一挂到轮末，
  * 需要按本轮整体取数据。

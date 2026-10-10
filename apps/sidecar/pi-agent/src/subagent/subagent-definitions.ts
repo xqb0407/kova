@@ -330,7 +330,7 @@ raw output out of the report except for the lines that carry the failure.`,
   {
     name: "Fixer",
     description:
-      "Implement a complete multi-file change from a spec. Use when a feature or fix spans several files and the work is separable — it can write files inside the workspace while you keep working.",
+      "Implement a complete multi-file change from a spec. Use when a feature or fix spans several files and the work is separable — it can edit files and run commands while you keep working; its writes and commands go through the same permission checks as yours.",
     tools: ["read", "glob", "grep", "edit", "write", "bash"],
     maxTurns: 80,
     prompt: `You are Fixer — a fast, focused implementation specialist. The main agent
@@ -340,8 +340,9 @@ not research beyond what the task needs.
 - Read every file you will change first; never edit or write from memory or
   from stale content.
 - Keep changes minimal and scoped to the task. Do not touch unrelated code.
-- You may write inside the workspace; never write outside it. Prefer the
-  workspace-relative paths the main agent gave you.
+- Prefer the workspace-relative paths the main agent gave you. Writes and
+  commands outside the workspace need the user's approval first: a rejected
+  call comes back blocked — adjust the task, never work around it.
 - Run the relevant validation when it is clearly applicable (test, build or
   lint command the task names); otherwise report it skipped with a reason.
 - Do not delegate, do not ask the user, do not search the web. If the spec

@@ -36,7 +36,7 @@ import {
   TruncationStoppedMarker,
   isTruncationStoppedMessageState,
 } from "./truncation-marker";
-import { messageIndexById } from "@/lib/panels/message-turns";
+import { collectProcessTexts, messageIndexById } from "@/lib/panels/message-turns";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageCheckpoint } from "./checkpoint-card";
 import { cn } from "cn";
@@ -53,7 +53,7 @@ import {
   SquareTerminalIcon,
 } from "lucide-react";
 import type { FC, ReactNode } from "react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { randomLoadingPhrase } from "@/lib/panels/loading";
 import { requestOpenSession } from "@/lib/pi/open-session";
 import {
@@ -265,13 +265,15 @@ const AssistantWorkingIndicator: FC = () => {
 /**
  * 消息的三种渲染面（折叠用）：
  *  - full（默认）：整条消息——直播、最新轮、展开态都是这一面
- *  - answer：只要「回答」——正文 text part（外加压缩分隔线、产物卡、检查点、
- *    停止标记、操作栏）；轮中夹带的工具调用与思考不在这里渲染
- *  - process：只要「过程」——除正文外的全部 part（工具组/思考/data），不带
- *    操作栏，也不带 assistant-message-content 槽位（否则会污染刻度条的预览取值）
- * 折叠轮把轮末消息拆成 process（收进过程面板）+ answer（可见），于是收起后只剩
- * 回答正文，最后一条消息里夹带的工具调用不再漏在外面（对齐 Codex：可见的是
- * "回答"，不是"最后一条消息的所有内容"）。
+ *  - answer：只要「回答」——最后一次动手（工具调用 / 思考）之后的正文（外加
+ *    成图、压缩分隔线、错误占位、产物卡、检查点、停止标记、操作栏）；更早步骤
+ *    的过程叙述归过程面，不在这里渲染
+ *  - process：只要「过程」——工具组/思考/data 加上更早步骤的过程叙述（收起后
+ *    外面只剩最终回答的由来），不带操作栏，也不带 assistant-message-content
+ *    槽位（否则会污染刻度条的预览取值）
+ * 折叠轮把轮末消息拆成 process（收进过程面板）+ answer（可见）：投影把一整轮
+ * 合并成一条消息，消息里夹着每一步的叙述正文——切分要按「最后一次动手」划界
+ * （见 collectProcessTexts），否则收起后摊出的是整轮的过程叙述而不是最终回答。
  */
 export type AssistantMessageVariant = "full" | "answer" | "process";
 
@@ -309,6 +311,12 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   // 成图画廊按组 indices 回查成员 part：与 GroupedParts 同源取 parts
   // （content 的增强态，带 status/result/data）
   const msgParts = useAuiState((s) => s.message.parts);
+  // 折叠面切分（full 面不过滤）：更早步骤的过程叙述归过程面，答案面只留
+  // 最后一次动手之后的正文。见 collectProcessTexts 的注释。
+  const processTexts = useMemo(
+    () => (variant === "full" ? null : collectProcessTexts(msgParts)),
+    [variant, msgParts],
+  );
 
   const content = (
     <div
@@ -377,9 +385,14 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
             dataName === "image" ||
             dataName === "errorAttribution" ||
             (part as { type?: string }).type === "group-images";
-          if (onlyProcess && onAnswerSide) return null;
-          // answer 面只保留正文、压缩分隔线与成图；工具/思考/其他 data 归过程面
-          if (onlyAnswer && !onAnswerSide) return null;
+          // 过程叙述（更早步骤里的正文）：归过程面——收起后外层只剩最终回答，
+          // 叙述随工具行/思考一起收进过程区。成图与错误占位不参与这个切分
+          // （它们是交付物/崩溃轮唯一内容，见上）
+          const foldedText =
+            processTexts !== null && part.type === "text" && processTexts.has(part);
+          if (onlyProcess && onAnswerSide && !foldedText) return null;
+          // answer 面只保留回答正文、压缩分隔线与成图；工具/思考/其他 data 归过程面
+          if (onlyAnswer && (!onAnswerSide || foldedText)) return null;
           switch (part.type) {
               case "group-chainOfThought":
                 return <div data-slot="aui_chain-of-thought">{children}</div>;

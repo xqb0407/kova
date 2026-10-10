@@ -32,6 +32,7 @@ import { buildMemoryTools, getMemoryConfig } from "../agent/memory";
 import { buildSkillUseTool } from "../skills/skill-use-tool";
 import { buildUseDesignThemeTool } from "../design-md/use-design-theme-tool";
 import type { ThemeRef } from "../design-md/store";
+import type { ApprovalLevel } from "../types";
 import { buildMcpTool } from "../mcp/mcp-tools";
 import { buildEchoImageTool } from "./echo-image-tool";
 import { resolveSecretEnv } from "../secrets/secrets";
@@ -332,6 +333,9 @@ export function buildTools(
    *  current_dir(cwd) spawn，目录没了直接失败）。无目录会话的任务子目录
    *  推迟到这里、agent 真跑命令时才建；write 等其余路径写时自带 mkdir。 */
   ensureCwd?: () => void,
+  /** 当前会话的审批档位（闭包，运行期才解引用 run）：MCP 网关按它决定是否逐次审批。
+   *  缺省 `ask`——与内置工具同一保守缺省，宁可多问一次。 */
+  getApprovalLevel?: () => ApprovalLevel,
 ): AgentTool[] {
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
@@ -470,8 +474,9 @@ export function buildTools(
     // getThemeLoads 台账供重复加载短路（同 ref 同正文哈希 → 简短确认不重贴全文）
     buildUseDesignThemeTool(getDesignTheme ?? (() => null), getThemeLoads),
     // MCP 网关（search/describe/call/status）：常驻注册的代理工具，全部服务器
-    // 的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd 会重建）
-    buildMcpTool(cwd, threadId),
+    // 的工具面走这一个入口；cwd 决定工作区层配置来源（rebindRunCwd 会重建），
+    // 审批档位决定 call 动作要不要逐次弹审批（「完全访问」档不弹）
+    buildMcpTool(cwd, threadId, undefined, getApprovalLevel),
     // 【临时】图片投影链路验收工具（docs/image-part-design.md §10 PR4）：
     // 验收通过后连同 echo-image-tool.ts 一并删除并摘除此注册
     buildEchoImageTool(),
