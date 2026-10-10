@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Kova",
-  "version": "1.1.1-preview",
+  "version": "1.1.2-preview",
   "identifier": "com.kova.assistant",
   "build": {
     "frontendDist": "../out",
