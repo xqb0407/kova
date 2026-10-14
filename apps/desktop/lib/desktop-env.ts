@@ -1,6 +1,6 @@
 /**
  * 桌面环境检测与平台判定（Electron 壳）。
- * 检测标记沿用前端既有约定（__KOVA_DESKTOP__/__TAURI__ 由 preload 注入），
+ * 检测标记沿用前端既有约定（__KOVA_DESKTOP__/__KOVA_DESKTOP__ 由 preload 注入），
  * 这样前端桌面分支的既有判断逻辑不需要改动。
  */
 
@@ -10,7 +10,7 @@
 export const isDesktop = (): boolean => {
   return (
     typeof window !== "undefined" &&
-    ("__KOVA_DESKTOP__" in window || "__TAURI__" in window)
+    ("__KOVA_DESKTOP__" in window || "__KOVA_DESKTOP__" in window)
   );
 };
 

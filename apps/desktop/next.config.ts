@@ -1,6 +1,6 @@
 import type { NextConfig } from "next";
 
-// 静态导出到 out/：生产模式下 Tauri 内嵌为桌面 UI，远程网关同时将其作为网页 serve
+// 静态导出到 out/：生产模式下 旧桌面壳 内嵌为桌面 UI，远程网关同时将其作为网页 serve
 const nextConfig: NextConfig = {
   // 关闭 StrictMode 的 effect 双调用，避免开发期重复发起请求
   reactStrictMode: false,

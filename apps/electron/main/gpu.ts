@@ -1,7 +1,7 @@
 /**
  * 硬件加速开关（对齐 gpu.rs）：kv gpu.disabled="1" 关加速。
  * Electron 等价：建窗前读 kv，关闭则 appendSwitch('disable-gpu')——
- * 与 Tauri 相同的时序要求（Chromium 参数只在环境创建时读取）。
+ * 与 旧桌面壳 相同的时序要求（Chromium 参数只在环境创建时读取）。
  */
 import { app } from "electron";
 import { kvGet, kvSet, kvDelete } from "./store";

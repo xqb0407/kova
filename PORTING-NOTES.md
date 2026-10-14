@@ -1,6 +1,6 @@
-# PORTING-NOTES — Rust(Tauri) → Node(Electron) 差异与遗留
+# PORTING-NOTES — Rust(旧桌面壳) → Node(Electron) 差异与遗留
 
-> 本文件记录 Electron 版与 Tauri 版的**行为差异**与**尚未接线**的能力，供接续开发
+> 本文件记录 Electron 版与旧版的**行为差异**与**尚未接线**的能力，供接续开发
 > 与发布说明使用。实现进度事实以代码与构建产物为准；分阶段计划见 `PLAN.md`。
 
 ## 已完整移植（行为对齐，契约逐条对照 Rust 源码）
@@ -33,33 +33,33 @@
 
 ## 行为差异（已知且有意）
 
-1. **应用内升级**：Tauri 走 minisign 包原地替换；Electron 版 `update_install` 改为
+1. **应用内升级**：旧桌面壳 走 minisign 包原地替换；Electron 版 `update_install` 改为
    打开当前平台下载直链（清单 `downloads[platform]`，缺省 pageUrl），不再自替换。
    前端错误分支（"去网页下载"）语义不变。
-2. **单实例锁**：Electron 的 `requestSingleInstanceLock` 按 userData 目录；Tauri 版按
+2. **单实例锁**：Electron 的 `requestSingleInstanceLock` 按 userData 目录；旧版按
    应用 id。行为等价（第二次启动唤回主窗），但 `KOVA_DATA_DIR` 沙箱实例可与真实实例并存
    （这是 e2e 需要的能力，也意味着"同目录双开"仍由用户自行避免）。
-3. **数据目录共享**：默认仍指向 `com.kova.assistant`（与 Tauri 版共享 state.db/会话/密钥）。
+3. **数据目录共享**：默认仍指向 `com.kova.assistant`（与旧版共享 state.db/会话/密钥）。
    两壳同时运行会双写同一库（WAL + busy_timeout=5s 保不损坏，但双 sidecar 会互抢任务）——
-   与 Tauri 版并存时请只开一个。
+   与旧版并存时请只开一个。
 4. **screenshot 工具**：Windows 分支未接线（macOS 已完整移植）；Windows 上调用会得到
    明确错误而非错误结果。
-5. **CSP**：沿用 tauri.conf 的 CSP 字符串（去掉 `ipc.localhost` 项），由 `kova://` 协议
+5. **CSP**：沿用 旧桌面壳.conf 的 CSP 字符串（去掉 `ipc.localhost` 项），由 `kova://` 协议
    处理器逐响应注入；dev（localhost:3000）不注入。
-6. **命令参数大小写**：保持 Tauri v2 约定（JS 侧 camelCase 对应 Rust snake_case 参数名），
+6. **命令参数大小写**：保持 旧桌面壳 v2 约定（JS 侧 camelCase 对应 Rust snake_case 参数名），
    Node 处理器直接读取与前端调用点一致的名字（逐命令核对过调用点）。
-7. **窗口拖拽区（JS 实现，非 CSS）**：前端以 `data-tauri-drag-region="true|deep|false"`
-   标记拖拽区（Tauri 专有机制）。**首版用 CSS `-webkit-app-region: drag` 是错的**——它把整块
+7. **窗口拖拽区（JS 实现，非 CSS）**：前端以 `data-drag-region="true|deep|false"`
+   标记拖拽区（旧桌面壳 专有机制）。**首版用 CSS `-webkit-app-region: drag` 是错的**——它把整块
    区域变成 Chromium"标题栏"捕捉区：整窗任意处可拖（连子元素），且吞掉滚轮（用户实测
-   "滚动用不了 + 随便哪里都能拖"）。现改为 preload 内 JS 精确实现 Tauri `drag.js` 语义：
+   "滚动用不了 + 随便哪里都能拖"）。现改为 preload 内 JS 精确实现 旧桌面壳 `drag.js` 语义：
    `false` 截停 / `deep` 子树（交互元素除外）可拖 / `true` 仅元素自身；拖拽本体取窗口位置后按
    屏幕坐标增量 `setPosition`（rAF 节流），双击拖拽区切换最大化。回归验证（`e2e-drag.mjs`）：
    顶栏 DRAG、标题/按钮 NO_DRAG、正文不误拖、拖拽位移与派发一致；滚轮双向可用（0→300→150）。
 8. **dev / 生产双渠道**：
-   - 正式包 `Kova.app`（`release/mac-arm64/`）：`com.kova.assistant`，与 Tauri 发布版共享数据；
+   - 正式包 `Kova.app`（`release/mac-arm64/`）：`com.kova.assistant`，与旧版发布包共享数据；
    - dev 包 `Kova Dev.app`（`release-dev/mac-arm64/`，`bun --filter kova-electron-main dist:dev`）：
      `com.kova.assistant.dev` + extraMetadata `kovaChannel: dev`，运行时自动使用
-     `com.kova.assistant.dev` 数据目录 —— 与 `tauri.dev.conf.json` 的 identifier 完全对齐；
+     `com.kova.assistant.dev` 数据目录 —— 与 `旧桌面壳的 dev 配置` 的 identifier 完全对齐；
    - 未打包运行（`electron .`）与 `--dev` 同样归入 dev 渠道。`KOVA_DATA_DIR` 仍可显式覆盖。
 9. **资源管理器窗口路由**：静态导出产物是 `out/resource.html`，子窗口须加载
    `kova://app/resource`（协议处理器按 精确→`path.html`→`path/index.html` 命中）；
@@ -74,21 +74,21 @@
 
 ### 桌面打包与品牌（logo/图标）
 
-- 图标资产：原 `src-tauri/icons/*`（icon.icns / icon.ico / icon.png / 各尺寸 + tray.png）已复制到
+- 图标资产：原 `原 Rust 宿主/icons/*`（icon.icns / icon.ico / icon.png / 各尺寸 + tray.png）已复制到
   `apps/electron/icons/`；窗口图标（Windows/Linux）、macOS dev 的 Dock 图标、托盘图标均接线。
 - 应用名：`app.setName("Kova")`（显示名与 productName 一致）；userData 仍显式钉在
-  `com.kova.assistant`，数据继续与 Tauri 版共享。
+  `com.kova.assistant`，数据继续与旧版共享。
 - electron-builder（`apps/electron/electron-builder.yml`）：appId com.kova.assistant、
   productName Kova、files=dist/renderer-out/icons、extraResources 带 sidecar 二进制（asar 外）、
-  mac icon.icns、`identity: null`（不签名，与 Tauri 版 ad-hoc 口径一致）、win NSIS / linux 配置就绪。
+  mac icon.icns、`identity: null`（不签名，与旧版 ad-hoc 口径一致）、win NSIS / linux 配置就绪。
 - 已验证：`electron-builder --mac --dir` 产出 `release/mac-arm64/Kova.app`（520MB，含 Electron 运行时
   + 87MB sidecar）；启动冒烟全绿（store/sidecar/页面），CFBundleName=Kova、
   CFBundleIdentifier=com.kova.assistant、CFBundleIconFile=icon.icns，Dock 显示扣瓦 logo。
 - 打包注意：bun 不执行 postinstall——electron 二进制与 node-pty 需手动补装（`electron/install.js`、
   `npx node-gyp rebuild`；node-pty 走 N-API，Node/Electron ABI 通用）。
-- 未做：dmg/nsis 安装包产物（配置就绪未构建）、代码签名/公证（与 Tauri 版同样未签）。
+- 未做：dmg/nsis 安装包产物（配置就绪未构建）、代码签名/公证（与旧版同样未签）。
 
-### Chromium 专属渲染坑（已在迁移版修掉，Tauri/WKWebView 不出现）
+### Chromium 专属渲染坑（已在迁移版修掉，旧桌面壳/WKWebView 不出现）
 
 - **shimmer × 每秒变化的文本 = 旧字形重影**：轮次耗时片（「工作中 N 秒」）用 `shimmer`
   （tw-shimmer：`background-clip:text` + `background-position` 扫光，动画提升合成层），
@@ -125,22 +125,22 @@ host_cancel 12:41:30.853 → tool_execution_end 12:41:30.858 → `sleep 300` 进
 工具自身超时（模型可传 timeout，默认 120s）同样杀进程树（实测 timeout:6000 六秒清空）；
 终端（pty）是真终端：Ctrl-C 生效（实测 `^C` 回提示符）、关闭标签 = 杀壳。
 
-### @tauri-apps 痕迹清理（用户要求"去干净"）
+### 桌面桥 痕迹清理（用户要求"去干净"）
 
-前端 58 个文件的 `@tauri-apps/*` import 已全部改指本仓自有桥，并进一步改名去品牌：
+前端 58 个文件的 `桌面桥/*` import 已全部改指本仓自有桥，并进一步改名去品牌：
 
 | 原 | 现 | 说明 |
 |---|---|---|
-| `@tauri-apps/{api,plugin}/x` import | `@/desktop-bridge/x` | 桥目录 `tauri-bridge/` → `desktop-bridge/`；tsconfig 别名已删除（漏网 import 会硬报错） |
-| `@tauri-apps/api` npm 依赖 | 已删除 | 早先已不被打进包（被 paths 覆盖），现从依赖与 lock 里一并清掉 |
-| `lib/tauri.ts` / `tauri-pi-client.ts` | `lib/desktop-env.ts` / `desktop-pi-client.ts` | 文件与类名（`TauriPiClient`→`DesktopPiClient`） |
-| `isTauri` / `isDesktopDev` 等 | `isDesktop` / `isDesktopDev` / `safeDesktopCall` | **机制保留**（同一份静态产物也会被远程网关当网页 serve，需要区分"桌面壳 vs 网页访客"），仅改口径 |
-| 环境标记 `__TAURI_INTERNALS__`/`__TAURI__` | `__KOVA_DESKTOP__` | preload 注入、前端检测、桥全局类型三处同步 |
-| 通道 kind `"tauri"` | `"desktop"` | pi-channel 及测试 |
-| `getTauriVersion()`（假兼容串） | `getRuntimeVersion()` → **真实 Electron 版本** | 关于页新增「Electron 版本」行（原来取值为死字段，从不渲染） |
-| 注释/文案里的 Tauri 指称 | 桌面壳 / 桌面桥 / 旧桌面壳（历史对照） | 三轮短语清理；用户可见文案（"请在 Tauri 应用中打开设置"）已改为桌面应用 |
+| `桌面桥/{api,plugin}/x` import | `@/desktop-bridge/x` | 桥目录 `旧桌面壳-bridge/` → `desktop-bridge/`；tsconfig 别名已删除（漏网 import 会硬报错） |
+| `桌面桥/api` npm 依赖 | 已删除 | 早先已不被打进包（被 paths 覆盖），现从依赖与 lock 里一并清掉 |
+| `lib/旧桌面壳.ts` / `旧桌面壳-pi-client.ts` | `lib/desktop-env.ts` / `desktop-pi-client.ts` | 文件与类名（`旧桌面壳PiClient`→`DesktopPiClient`） |
+| `is旧桌面壳` / `isDesktopDev` 等 | `isDesktop` / `isDesktopDev` / `safeDesktopCall` | **机制保留**（同一份静态产物也会被远程网关当网页 serve，需要区分"桌面壳 vs 网页访客"），仅改口径 |
+| 环境标记 `__KOVA_DESKTOP__`/`__KOVA_DESKTOP__` | `__KOVA_DESKTOP__` | preload 注入、前端检测、桥全局类型三处同步 |
+| 通道 kind `"旧桌面壳"` | `"desktop"` | pi-channel 及测试 |
+| `get旧桌面壳Version()`（假兼容串） | `getRuntimeVersion()` → **真实 Electron 版本** | 关于页新增「Electron 版本」行（原来取值为死字段，从不渲染） |
+| 注释/文案里的 旧桌面壳 指称 | 桌面壳 / 桌面桥 / 旧桌面壳（历史对照） | 三轮短语清理；用户可见文案（"请在 旧桌面壳 应用中打开设置"）已改为桌面应用 |
 
-唯一保留的 `tauri` 字样是**拖拽契约属性名 `data-tauri-drag-region`**（7 个前端文件 + preload 拖拽桥）：
+唯一保留的 `旧桌面壳` 字样是**拖拽契约属性名 `data-drag-region`**（7 个前端文件 + preload 拖拽桥）：
 它是前端 markup 的既定接口，改它需要同步改前端标记；如要彻底改名，可加 `data-desktop-drag-region`
 支持后逐个文件替换。
 
@@ -158,7 +158,7 @@ host_cancel 12:41:30.853 → tool_execution_end 12:41:30.858 → `sleep 300` 进
 - `bun run build:renderer`：Next 静态导出 16 条路由成功。
 - `bun run build:main` + `tsc --noEmit`：Electron 主进程 0 错误。
 - 启动冒烟（CDP，`apps/electron/scripts/e2e-smoke.mjs`）：`kova://app/index.html` 加载、
-  `__TAURI_INTERNALS__` 标记为真、invoke 往返（kv_set/kv_get）、未知命令错误串同形、
+  `__KOVA_DESKTOP__` 标记为真、invoke 往返（kv_set/kv_get）、未知命令错误串同形、
   控制台零错误、真实数据目录下侧栏/会话列表/设置渲染完整。
 - 隧道监管（`apps/electron/scripts/e2e-tunnel.mjs`）：默认态 → 无网关 start 报错 →
   set_binary 非法路径报错 → 假二进制（/bin/ls）启动后立即退出 → 状态机落 error 且
@@ -186,7 +186,7 @@ host_cancel 12:41:30.853 → tool_execution_end 12:41:30.858 → `sleep 300` 进
 
 ## 接续开发建议顺序
 
-1. `browser.ts`：Tauri 子 webview → Electron `WebContentsView`（attach/detach/syncBounds 直译），
+1. `browser.ts`：旧桌面壳 子 webview → Electron `WebContentsView`（attach/detach/syncBounds 直译），
    agent 驱动经 `executeJavaScript`；`browser:navigated/viewport` 事件名不变。
 3. `remote.ts`：axum HTTP+WS → `node:http` + `ws`，静态 serve `out/`，pair/auth/REMOT E_DENIED
    协议原样；`try_route`（rem-* id 前缀）与 `broadcast_notification` 挂点已在 pi-agent.ts 预留。

@@ -51,17 +51,21 @@ telemetry ingest  ←── 批量上报 ─────  enterprise_telemetry_e
 
 ### 2.1 结论
 
+> **架构形态：模块化单体（Modular Monolith）—— 单个可部署 Java 应用，内部按限界上下文分模块。明确不做微服务。** 私有化内网交付要的是低运维、单进程内调用、无分布式复杂度；模块边界靠代码结构（而非网络）约束。
+
 | 层 | 选型 | 理由 |
 |---|---|---|
+| **架构形态** | **模块化单体**：一个 Java 应用（单镜像单进程），内含身份 / 席位 / 网关 / 计量 / 推送 / 管理台各模块 | 单进程内调用，无分布式事务与跨服务路由；运维面最小 |
 | 语言 / 运行时 | **Java 21（LTS）**，启用 Virtual Threads | 长期支持、生态成熟；虚拟线程让「阻塞式调用（JDBC / IdP / OIDC）」也能高并发，配合信号量做背压 |
 | 主框架 | **Spring Boot 3.x + WebFlux（Project Reactor）** | 原生 **Reactive Streams** 语义，`request(n)` 就是背压的原语 |
-| 备选框架 | Vert.x（如需更轻、更贴近事件循环） | 同样基于 Reactive Streams；适合纯网关进程 |
+| **DDD 结构** | **Spring Modulith + jMolecules** | 模块边界 = 限界上下文；领域事件驱动跨模块协作；`modulith-verification` / ArchUnit 守护边界不被腐蚀 |
 | 主库 | **PostgreSQL 16** + **R2DBC**（响应式驱动） | 事务与关系模型适合席位/授权；R2DBC 不阻塞事件循环 |
-| 缓存 / 计数 | **Redis**（原子 Lua 计数） | 配额与限流的低延迟计数，避免 DB 热点 |
-| 计量削峰 | **Kafka / Pulsar**（可选；小客户可先用库内队列） | 上报洪峰与聚合解耦，本身即天然背压缓冲 |
-| 对象存储 | S3 兼容（MinIO 内网） | 技能包、离线 bundle、镜像制品 |
-| 前端管理台 | 独立 SPA（静态资源由服务端静态托管） | 管理面与数据面隔离 |
-| 交付 | 容器镜像（Docker）+ Helm | 与总览 §7 部署形态对齐 |
+| 缓存 / 计数 | Redis（**可选**） | 配额与限流的低延迟计数；小客户可**纯 PG**（原子 `UPDATE ... WHERE used < limit`） |
+| 计量削峰 | **进程内有界队列 + PG 持久队列**（`FOR UPDATE SKIP LOCKED` + 批量 upsert） | 单体下无需消息中间件；削峰在进程内 + 库表完成。Kafka / Pulsar **仅超大规模时可选**，不进基线 |
+| 对象存储 | S3 兼容（MinIO）——**可选** | 技能包 / 制品；单机部署可用本地卷 |
+| 管理台 | **同进程模块**（静态 SPA 由同进程托管） | 管理面与数据面**同进程、不同路由前缀 + 鉴权隔离**，不另起进程 |
+| 模型网关 | **同进程内 WebFlux 流式代理模块** | 不再独立部署网关；仅**借鉴** ShenYu 的插件化设计思想，不引入其 admin/bootstrap 双进程 |
+| 交付 | 容器镜像（Docker）+ Helm（**单镜像**） | 与总览 §7 部署形态对齐 |
 
 ### 2.2 为什么是 Java + 响应式（与背压强相关）
 
@@ -70,6 +74,22 @@ telemetry ingest  ←── 批量上报 ─────  enterprise_telemetry_e
   - 模型网关要**流式**把上游 token 转发给客户端，慢客户端不能拖垮服务端内存；
   - 控制通道是 **WS 长连接**，客户端消费慢时不能无限积压推送。
 - 这些正是 **背压**问题。Java 21 + WebFlux 的组合把背压做成**框架级能力**（Reactive Streams `request(n)`），而不是靠业务代码打补丁。
+
+### 2.3 基座与许可评估（可否直接二开）
+
+**结论：没有单一开源项目同时具备「端到端背压 + DDD」，且多数与「单体」冲突——因此采用「框架组合」，不选单一项目二开。**
+
+| 候选 | 许可 | 背压机制 | DDD 贴合 | 单体适配 / 结论 |
+|---|---|---|---|---|
+| **Spring Boot + WebFlux/Reactor + Spring Modulith + jMolecules** | Apache-2.0（全部） | Reactive Streams `request(n)` | **高**（模块=限界上下文 + 领域事件 + 边界校验） | ✅ **选为基座**：Modulith 本就是为模块化单体设计 |
+| Apache ShenYu | Apache-2.0 | Reactor/WebFlux RS；转发主要靠 Redis 令牌桶 | 中（插件化，无 DDD 原语） | ⚠️ admin + bootstrap **双进程**，与单体冲突 → **仅借鉴插件化设计**，不作基座 |
+| COLA（阿里） | **LGPL-2.1** | 无 | 极高（分层契约） | ⚠️ 非 Apache 许可，二开后再分发需法务评估 → **不采用**，以 Modulith/jMolecules 替代 |
+| Axon FW / Server | 核心 Apache-2.0，**Server 企业版商业** | 查询 pull 式 + Server gRPC permits（**非 RS 语义**） | 极高（聚合/命令/事件溯源/CQRS/Saga） | ⚠️ 需 Axon Server（事件存储）与 WebFlux 摩擦大 → 单体下不选 |
+| Apache Pekko | Apache-2.0 | Akka Streams RS（最强） | 低 | ⚠️ 需自建 DDD 层；**注意 Akka 已转 BSL**，如需 Actor/Streams 用 Pekko |
+| RSocket-Java | Apache-2.0 | 协议级 `request-n` / Leasing | 无关 | ◐ 半休眠；可作**客户端传输**可选（协议级背压），不作应用基座 |
+| Spring Cloud Gateway | Apache-2.0 | Reactor RS | 低 | ◐ 独立网关进程 → 与单体冲突，仅取 Filter 思路 |
+
+> 许可红线（私有化交付前必须确认）：**Akka → BSL**（用 Pekko 替代）；**COLA → LGPL-2.1**（非 Apache）；**Axon Server 企业版 → 商业授权**。
 
 ---
 
@@ -82,16 +102,16 @@ telemetry ingest  ←── 批量上报 ─────  enterprise_telemetry_e
 | telemetry 批量上报 | 洪峰打满线程/内存 → OOM；或阻塞主库 → 控制面整体不可用 |
 | 模型网关流式转发 | 慢客户端导致服务端缓冲无限增长 → 内存爆炸 |
 | WS 控制通道推送 | 客户端消费慢 → 出站队列无界 → 单连接拖垮进程 |
-| 配额计数 | Redis/DB 计数成为热点 → 延迟抖动，反压到网关 |
+| 配额计数 | 计数成为热点 → 延迟抖动，反压到网关 |
 
 ### 3.2 四类背压场景与策略
 
 | # | 场景 | 背压机制 | 溢出策略 |
 |---|---|---|---|
-| B1 | **telemetry 批量上报**（客户端 → 服务端） | **credit-based pull**：客户端按服务端下发的 credit（可上报条数/并发）拉式上报；服务端用**有界队列 + 水位阈值** | 水位超限返回 `429 + Retry-After`；客户端本地缓冲继续累积（见总览 §6.4） |
+| B1 | **telemetry 批量上报**（客户端 → 服务端） | **credit-based pull**：客户端按服务端下发的 credit（可上报条数/并发）拉式上报；服务端用**进程内有界队列 + 水位阈值**，落库走 **PG 持久队列**（`FOR UPDATE SKIP LOCKED` + 批量 upsert） | 水位超限返回 `429 + Retry-After`；客户端本地缓冲继续累积（见总览 §6.4） |
 | B2 | **模型网关流式转发**（上游 → 网关 → 客户端） | `Flux<DataBuffer>` + `request(n)` **逐块拉取**；`limitRate` 控制批大小 | 客户端断开即向上游 `cancel()`；上游慢则反压上游（不本地无界缓冲） |
 | B3 | **WS 控制通道推送**（服务端 → 客户端） | 每连接**有界出站队列**；`onBackpressureBuffer(limit, onOverflow)` | **合并丢弃旧值**：能力集/清单类推送只保留最新（幂等覆盖），并标记 `coalesced` |
-| B4 | **配额计数**（网关切点） | Redis 原子计数 + 本地预聚合（按用户/时间窗口）；热点键分片 | 计数不可用时 **fail-closed**（拒调用）或 fail-open（放行并记账）——策略可配，默认 fail-closed |
+| B4 | **配额计数**（网关切点） | **进程内**原子计数（`AtomicLong` / Caffeine）+ 本地预聚合（按用户/时间窗口）；PG 原子 `UPDATE ... WHERE used < limit` 兜底；仅在**多实例**部署时可选引入 Redis | 计数不可用时 **fail-closed**（拒调用）或 fail-open（放行并记账）——策略可配，默认 fail-closed |
 
 ### 3.3 机制清单（Java / WebFlux 语境）
 
@@ -105,8 +125,9 @@ telemetry ingest  ←── 批量上报 ─────  enterprise_telemetry_e
 | Resilience4j：RateLimiter / Bulkhead / CircuitBreaker | 舱壁隔离与熔断，防单租户/单端点拖垮全局 |
 | Java 21 虚拟线程 + `Semaphore` | 阻塞式调用（JDBC / OIDC / LDAP）的**并发上限即背压** |
 | 连接池上限（R2DBC / Reactor Netty） | 池满即排队，天然反压到上游 |
-| Kafka/Pulsar 消费者拉取 | 计量削峰：生产端快则队列增长，消费端按能力拉取 |
-| gRPC `FlowControl`（若走 gRPC） | 流控窗口，适合内部服务间 |
+| **PG 持久队列**（`SELECT ... FOR UPDATE SKIP LOCKED`） | 计量削峰：入库消费端按能力取批，生产端快则表内堆积（有 table-level 上限与监控） |
+| 信号量 / 舱壁（`Semaphore` + Resilience4j Bulkhead） | 单体下**同进程资源隔离**：telemetry 洪峰不得挤占网关与管理面 |
+| gRPC `FlowControl` | **单体内部不需要**；若未来走 RSocket 客户端传输，可用协议级流控窗口 |
 
 ### 3.4 端到端流控链路
 
@@ -114,10 +135,11 @@ telemetry ingest  ←── 批量上报 ─────  enterprise_telemetry_e
 客户端埋点 buffer
    │  (credit 拉取 / 4096 条上限)
    ▼
-[服务端 ingest 入口] ──限流(令牌桶)──► [有界队列 + 水位] ──背压(429/Retry-After)──► 客户端退避
+[服务端 ingest 入口] ──限流(令牌桶)──► [进程内有界队列 + 水位] ──背压(429/Retry-After)──► 客户端退避
                                           │
                                           ▼
-                                   [Kafka/Pulsar 削峰] ──拉取式──► [聚合写入 PG]
+                              [PG 持久队列表] ──SKIP LOCKED 批量取──► [聚合 upsert PG]
+                              （进程内削峰；Kafka 仅超大规模可选）
 ```
 
 模型网关链路：
@@ -142,7 +164,17 @@ telemetry ingest  ←── 批量上报 ─────  enterprise_telemetry_e
 
 ---
 
-## 4. 服务端 API 面（五个面）
+## 4. 服务端 API 面（五个面 = 同一进程内的五个模块）
+
+> **这五个「面」是同一个模块化单体进程内的五个 Spring Modulith 模块（各自包边界与 API 契约），不是五个可独立部署的服务。** 模块之间只通过 Spring Modulith 允许的**具名接口 / 领域事件**协作，禁止直接跨模块访问内部类型（由 `modulith-verification` + ArchUnit 守护）。
+
+| 面 | 模块（限界上下文） | 挂载路由前缀 |
+|---|---|---|
+| ① | `admin`（管理台，静态 SPA 由同进程托管） | `/admin/*` |
+| ② | `identity` + `seat` + `catalog`（客户端面） | `/auth/*`、`/entitlement`、`/catalog/*`、`/telemetry/*`、`/usage/*` |
+| ③ | `gateway`（模型网关，同进程 WebFlux 流式代理） | `/v1/*` |
+| ④ | `control`（控制通道 WS 推送） | `WS /control` |
+| ⑤ | `integration`（集成 API，服务账号） | `/oauth/token`、`/v1/*`（服务标签）、`/knowledge/*` |
 
 ### 4.1 面 ① 管理台 REST（仅管理员席位）
 

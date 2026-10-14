@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld("kovaHost", {
       try {
         cb(m);
       } catch {
-        /* 渲染侧订阅者异常不拖垮通道（与 Tauri 前端行为一致） */
+        /* 渲染侧订阅者异常不拖垮通道（与 旧桌面壳 前端行为一致） */
       }
     });
   },
@@ -39,11 +39,11 @@ const internals = {
 contextBridge.exposeInMainWorld("__KOVA_DESKTOP__", internals);
 
 /**
- * 窗口拖拽区桥接（Tauri `data-tauri-drag-region` → Electron JS 拖拽）。
+ * 窗口拖拽区桥接（旧桌面壳 `data-drag-region` → Electron JS 拖拽）。
  *
  * 为什么不用 CSS `-webkit-app-region: drag`：它把整块区域变成 Chromium 的"标题栏"
  * 捕捉区——整窗任意处可拖（连子元素一起），且滚轮事件被吞、面板滚不动
- * （用户实测反馈）。改为 JS 精确实现 Tauri `drag.js` 的判定语义，拖拽只由
+ * （用户实测反馈）。改为 JS 精确实现 旧桌面壳 `drag.js` 的判定语义，拖拽只由
  * mousedown 目标决定，不影响滚轮/点击：
  *   - "false"：截停（显式豁免子树，如可选中文本、交互槽）
  *   - "deep" ：子树内（交互元素除外）可拖
@@ -85,7 +85,7 @@ function isInteractive(el: Element | null): boolean {
 function dragRegionFor(target: Element | null): Element | null {
   let el: Element | null = target;
   while (el && el !== document.body && el !== document.documentElement) {
-    const v = el.getAttribute("data-tauri-drag-region");
+    const v = el.getAttribute("data-drag-region");
     if (v === "false") return null; // 显式截停
     if (v === "deep") return isInteractive(target) ? null : el; // 子树可拖，交互元素除外
     if (v === "true") return el === target ? el : null; // 仅自身命中
@@ -137,7 +137,7 @@ function installDragRegionBridge(): void {
       const target = e.target as Element | null;
       if (isInteractive(target)) return; // 交互元素：点击/拖选/滚动照常，不拦
       if (!dragRegionFor(target)) return;
-      e.preventDefault(); // 与 Tauri 一致：拖拽区内不起文本选区
+      e.preventDefault(); // 与 旧桌面壳 一致：拖拽区内不起文本选区
       void beginWindowDrag(e);
     },
     true,

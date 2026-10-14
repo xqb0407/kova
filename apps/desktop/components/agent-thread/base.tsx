@@ -888,7 +888,7 @@ export const Base: FC = () => {
               跟随 panelGone（视觉收没）而非 panelOpen，避免收起动画
               刚起步就跳 padding */}
           <main
-            data-tauri-drag-region={isDesktop() ? "true" : undefined}
+            data-drag-region={isDesktop() ? "true" : undefined}
             className={cn(
               "bg-muted/40 relative flex-1 overflow-hidden p-2 pl-0",
               !compact && panelGone && "pr-0",

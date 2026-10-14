@@ -3,7 +3,7 @@
 # rename.sh — 项目一键改名
 #
 # 把当前模板项目的品牌名(kova / Kova / KOVA)与内部标识(pi-kova)
-# 批量替换为新名称: 文件内容、文件/目录名、tauri 显示名与 bundle id 一次改完。
+# 批量替换为新名称: 文件内容、文件/目录名、旧桌面壳 显示名与 bundle id 一次改完。
 # 兼容 macOS 自带 bash 3.2。
 #
 # 用法:
@@ -119,9 +119,9 @@ while IFS= read -r p; do [ -n "$p" ] && MATCH_PATHS+=("$p"); done < <(
 # ---------- 读取旧显示名 / 旧 bundle id ----------
 OLD_PRODUCT=""
 OLD_IDENTIFIER=""
-if [ -f apps/desktop/src-tauri/tauri.conf.json ] && command -v node >/dev/null 2>&1; then
-  OLD_PRODUCT="$(node -e 'try{process.stdout.write(require("./apps/desktop/src-tauri/tauri.conf.json").productName||"")}catch(e){}' || true)"
-  OLD_IDENTIFIER="$(node -e 'try{process.stdout.write(require("./apps/desktop/src-tauri/tauri.conf.json").identifier||"")}catch(e){}' || true)"
+if [ -f apps/desktop/原 Rust 宿主/旧桌面壳的窗口配置 ] && command -v node >/dev/null 2>&1; then
+  OLD_PRODUCT="$(node -e 'try{process.stdout.write(require("./apps/desktop/原 Rust 宿主/旧桌面壳的窗口配置").productName||"")}catch(e){}' || true)"
+  OLD_IDENTIFIER="$(node -e 'try{process.stdout.write(require("./apps/desktop/原 Rust 宿主/旧桌面壳的窗口配置").identifier||"")}catch(e){}' || true)"
 fi
 
 if [ -z "$APP_NAME" ]; then

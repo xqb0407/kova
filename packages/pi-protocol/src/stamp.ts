@@ -10,7 +10,7 @@
  *   {id, chunk, sessionId, eventSeq}，通知行是 {type, sessionId, eventSeq, ...}）。
  * - desktop 按 sessionId 检查连续性：跳号 → 回拉权威接口（检漂移不重放）；
  *   回退号 = 陈旧代际（重放缓冲/换代），静默忽略。换代清零走显式 reset
- *   （Tauri pi-exit / WS authed），不经帧推断。
+ *   （桌面壳的 pi-exit 行 / WS authed 行），不经帧推断。
  */
 import { z } from "zod";
 

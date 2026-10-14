@@ -1,12 +1,12 @@
 /**
  * 内置编码工具（bash / read / write / edit / glob / grep）与系统提示词。
- * bash/read/write/edit 的执行已下沉到 Rust 宿主（src-tauri/src/tool_exec.rs）：
+ * bash/read/write/edit 的执行已下沉到 Rust 宿主（原 Rust 宿主/src/tool_exec.rs）：
  * 本文件只保留工具 schema（LLM 需要）并通过 hostdb 转发执行——bash 由 Rust
  * 杀整棵进程树，避免 Windows 上孙进程残留。
  * glob/grep 仍在本侧实现：纯只读内存计算，且 JS 正则（lookahead 等）与
  * Rust regex 语法不兼容。
  * WebFetch/WebSearch 见 http-tools.ts：schema 在彼处定义，网络执行同样下沉
- * Rust（handle_http）——sidecar 不在 Tauri 运行时内，出口统一到宿主。
+ * Rust（handle_http）——sidecar 不在 旧桌面壳 运行时内，出口统一到宿主。
  * Question 见 question-tools.ts：挂起等 UI 作答的交互工具，回路仿逐工具审批。
  */
 import {

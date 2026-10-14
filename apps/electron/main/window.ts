@@ -104,7 +104,7 @@ export function createMainWindow(devUrl: string | null): BrowserWindow {
   return win;
 }
 
-/** 外链拦截：主窗口内点击 http(s) 链接一律走系统浏览器（Tauri 同策） */
+/** 外链拦截：主窗口内点击 http(s) 链接一律走系统浏览器（旧桌面壳 同策） */
 export function attachExternalLinkGuards(win: BrowserWindow): void {
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("http://") || url.startsWith("https://")) {

@@ -18,8 +18,8 @@ type HostShape = {
 declare global {
   interface Window {
     kovaHost: HostShape;
+    /** preload 注入的桌面标记（前端 isDesktop() 检测它；远程网页端没有） */
     __KOVA_DESKTOP__?: unknown;
-    __TAURI__?: unknown;
   }
 }
 

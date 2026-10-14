@@ -3,7 +3,7 @@
  * 本模块零依赖（protocol/stream 与 sessions/registry 都单向引它，无环）。
  *
  * 代际语义：计数器活在 sidecar 进程内；重启换代由前端显式重置
- * （Tauri pi-exit / WS authed），不跨进程持久化——页面侧 lastSeq 同样
+ * （旧桌面壳 pi-exit / WS authed），不跨进程持久化——页面侧 lastSeq 同样
  * 随刷新清零，两端的生命周期天然对齐。种子取转录最大 seq（resolve 时
  * 传入 jsonlSeq），仅为号段可读性，不承担续号正确性。
  */

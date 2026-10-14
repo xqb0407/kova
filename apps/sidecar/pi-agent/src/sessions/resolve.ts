@@ -867,7 +867,7 @@ export async function resolveSession(
 
   agent.subscribe((event) => onAgentEvent(event, run));
   // 原生事件通道（react-pi 迁移阶段 3）：AgentEvent → thread_event 帧
-  //（delta 化），桌面端 TauriPiClient 订阅重建流式状态
+  //（delta 化），桌面端 旧桌面壳PiClient 订阅重建流式状态
   wireSessionEvents(run);
   running.set(threadId, run);
   // 水印播种：号段接续转录行号（设计文档 §3；jsonlSeq 是"下一个待分配"）

@@ -14,7 +14,7 @@ import { logAt } from "../log";
 import { getModels } from "./catalog";
 
 /**
- * 模型级思考参数映射覆盖。事实源在前端 Tauri kv（pi.model_thinking），这里只是
+ * 模型级思考参数映射覆盖。事实源在前端 旧桌面壳 kv（pi.model_thinking），这里只是
  * 内存副本，启动恢复与编辑保存时经 set_thinking_maps 整包推下来。pi-ai 语义：
  * 档位键字符串值 = 该档可用且按映射值下发（透传档位名即可，如 medium→"medium"）；
  * null = 显式禁用（composer 档位下拉不再出现该档）；off 字符串 = 关闭思考时显式

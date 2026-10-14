@@ -1,8 +1,8 @@
 /**
- * 命令路由：渲染层 invoke → 主进程注册表（对齐旧桌面壳 的 invoke_handler +
+ * 命令路由：渲染层 invoke → 主进程注册表（对齐旧桌面壳的 invoke_handler +
  * panic_guard：任何 handler 异常都被捕获为 {ok:false,error}，绝不让主进程崩）。
  * 事件面：emitToWindows 对齐旧桌面壳 app.emit；Channel 参数（{__ch__:id}）
- * 提供反向推送器，对齐 tauri::ipc::Channel。
+ * 提供反向推送器，对齐 旧桌面壳的 IPC Channel。
  */
 import { BrowserWindow, ipcMain, type WebContents } from "electron";
 import { logError, logInfo } from "./logging";
@@ -40,7 +40,7 @@ export function setupIpc(): void {
     const { cmd, args } = payload ?? ({} as any);
     const fn = commands.get(cmd);
     if (!fn) {
-      // Tauri 未知命令报错形状：command <name> not found
+      // 旧桌面壳 未知命令报错形状：command <name> not found
       return { ok: false, error: `command ${cmd} not found` };
     }
     try {

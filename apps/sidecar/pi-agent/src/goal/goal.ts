@@ -454,7 +454,7 @@ export function syncGoalOnUserPrompt(
     // 不让一条空目标把常驻条卡在「进行中」上
     if (validateObjective(objective)) return;
     // 取值顺序：本次请求显式带的值 → 本会话上次定过的 → 默认 300。
-    // 注意 null 在协议里只能是「没带」（Tauri 侧 Option 缺失会序列化成 null），
+    // 注意 null 在协议里只能是「没带」（旧桌面壳 侧 Option 缺失会序列化成 null），
     // 所以它并按「没带」处理；真正的「不限」在这条链路上表现为数字 0
     const explicit = rawMaxAutoTurns !== undefined && rawMaxAutoTurns !== null;
     // 注意不能用 ??：goalMaxTurns 的三态里 null 是「明确不限」，?? 会把它当成缺省

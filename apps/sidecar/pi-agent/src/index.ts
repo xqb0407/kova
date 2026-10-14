@@ -1,5 +1,5 @@
 /**
- * pi-agent sidecar 入口：由 Tauri(Rust) 以子进程方式拉起。
+ * pi-agent sidecar 入口：由 旧桌面壳(Rust) 以子进程方式拉起。
  * 职责只有装配：初始化存储 → 加载自定义提供商 → 启动 stdin NDJSON 读取循环。
  *
  * 存储双模式：
@@ -63,7 +63,7 @@ const SESSIONS_DIR = process.env.PI_SESSIONS_DIR;
 async function main() {
   const sessionsDir = SESSIONS_DIR ?? "./sessions";
   if (SESSIONS_DIR) {
-    // 生产：数据层在 Rust 宿主（src-tauri/src/data.rs）
+    // 生产：数据层在 Rust 宿主（原 Rust 宿主/src/data.rs）
     initHostMode(SESSIONS_DIR);
   } else {
     // 冒烟/直跑：无宿主接 host_result，退回本地 SQLite

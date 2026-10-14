@@ -250,7 +250,7 @@ const PanelShell: FC<{
         // 但顶栏（拖拽区 + "+"新标签菜单 + 右缘动作）常驻——
         // 零标签也能直接开标签/插件面板,不必先靠下方卡片网格
         <div
-          data-tauri-drag-region={desktop ? "deep" : undefined}
+          data-drag-region={desktop ? "deep" : undefined}
           className="border-border/80 flex h-12 shrink-0 items-center justify-end gap-1 border-b-[0.5] pr-2"
         >
           <div

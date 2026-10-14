@@ -44,5 +44,5 @@ export function init(): void {
 
 /** 关窗进托盘时的一次性提示钩子（对齐 on_hidden_to_tray） */
 export function onHiddenToTray(): void {
-  // Windows 版可在此弹"已最小化到托盘"气泡；保持静默与 Tauri 行为一致
+  // Windows 版可在此弹"已最小化到托盘"气泡；保持静默与 旧桌面壳 行为一致
 }

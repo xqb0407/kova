@@ -3,7 +3,7 @@
  *
  * 三层发现，同名时后层遮蔽前层（工作区 > 系统 > 内置）：
  * - 内置：内联常量，设置页只读查看，只可启用/关闭，永不被写。
- * - 系统：应用数据目录 `<app_data>/subagents/*.yml`（生产由 Tauri 注入
+ * - 系统：应用数据目录 `<app_data>/subagents/*.yml`（生产由 旧桌面壳 注入
  *   PI_SUBAGENTS_DIR；兜底 PI_DB_PATH 同级 subagents/，再兜底 ~/.kova/subagents）。
  * - 工作区：`<cwd>/.kova/subagents/*.yml`，与 .kova/plans 同族。
  *
