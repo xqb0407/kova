@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { trackWindow, getWindow } from "./ipc";
 import { appDataDir, appLogDir, sessionsDir } from "./paths";
 import { logInfo, logWarn } from "./logging";
+import { piAgentChildPid } from "./pi-agent";
 
 /** 整机 CPU 采样器：保留上一次的 per-core 时间片快照算差值。
  *  不能用 os.loadavg()/核数——在 Apple Silicon 大小核上语义完全不同
@@ -214,18 +215,19 @@ function shortName(comm: string): string {
   return base.slice(0, 40);
 }
 function friendlyName(type: string, pid: number): string {
-  switch (type.toUpperCase()) {
-    case "Browser":
-    case "MAIN":
+  // app.getAppMetrics() 的 type 取值为 "Browser"/"Tab"/"GPU"/"Utility"/…（大小写不定），
+  // 统一小写比较，别按大写匹配（否则 Browser/Tab 全部落 default）
+  switch (type.toLowerCase()) {
+    case "browser":
+    case "main":
       return "主进程";
-    case "Tab":
-    case "Renderer":
+    case "tab":
+    case "renderer":
       return "渲染进程";
-    case "GPU":
-    case "Gpu-process":
-    case "GPU":
+    case "gpu":
+    case "gpu-process":
       return "GPU 进程";
-    case "Utility":
+    case "utility":
       return "服务进程";
     default:
       return `${type} ${pid}`;
@@ -235,18 +237,9 @@ function friendlyName(type: string, pid: number): string {
 let piPidResolved: { pid: number | null; at: number } = { pid: null, at: 0 };
 function piAgentPid(): number | null {
   if (Date.now() - piPidResolved.at < 2000) return piPidResolved.pid;
-  try {
-    const { piAgentChildPid } = require0("./pi-agent") as { piAgentChildPid?: () => number | null };
-    const pid = piAgentChildPid?.() ?? null;
-    piPidResolved = { pid, at: Date.now() };
-    return pid;
-  } catch {
-    return null;
-  }
-}
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-function require0(m: string): any {
-  return require(m);
+  const pid = piAgentChildPid() ?? null;
+  piPidResolved = { pid, at: Date.now() };
+  return pid;
 }
 
 /* ------------------------------ 存储扫描 ------------------------------ */
