@@ -15,7 +15,6 @@
  * 用法：
  *   node scripts/publish-update.mjs --version 1.1.4-preview \
  *        [--notes-file NOTES.md | --notes "一行说明"] \
- *        [--dmg <旧壳安装包>] [--exe <旧壳安装包>] \
  *        [--electron-dmg <Kova_x_arm64.dmg>] [--electron-exe <Kova_x_x64-setup.exe>] \
  *        [--channel preview|stable] [--repo <owner/name>] \
  *        [--release-base <资产前缀>] [--page-url <release 页>] \
@@ -36,7 +35,7 @@ const flag = (name) => argv.includes(`--${name}`);
 const version = arg("version");
 if (!version || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
   console.error(
-    "用法: node scripts/publish-update.mjs --version 1.1.4-preview [--notes-file NOTES.md] [--dmg <路径>] [--exe <路径>] [--mac-updater <路径>] [--win-updater <路径>]",
+    "用法: node scripts/publish-update.mjs --version 1.1.4-preview [--notes-file NOTES.md] [--dmg <路径>] [--exe <路径>]",
   );
   process.exit(1);
 }
@@ -126,17 +125,6 @@ function put(key, doc) {
 }
 
 put(`manifest:${channel}`, manifest);
-if (updaterDoc) {
-  // 同一份文档写进每个平台键：Worker 按请求的 target-arch 取键，文档里含该平台的
-  // url+signature 即可（旧桌面壳 只读自己那一条）
-  for (const key of Object.keys(platforms)) {
-    put(`updater:${key}`, updaterDoc);
-  }
-}
 
 console.log("\n✓ 已发布。验证：");
 console.log(`  curl -sS https://dl.openkova.site/${channel}/latest.json`);
-if (updaterDoc) {
-  const [t, a] = Object.keys(platforms)[0].split("-");
-  console.log(`  curl -sS https://dl.openkova.site/updater/${t}/${a}/${version}`);
-}
