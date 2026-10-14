@@ -227,8 +227,22 @@ async function handleLine(line: string): Promise<void> {
     return;
   }
   if (msgType === "host_query") {
-    const reply = await dispatchHostQuery(getDb(), parsed);
-    if (child) queueWrite(reply).catch(() => undefined);
+    const kind = typeof parsed?.kind === "string" ? parsed.kind : "?";
+    if (process.env.KOVA_LOG_HOST_QUERY) logInfo(`[host_query] recv ${kind} id=${parsed?.id ?? ""}`);
+    try {
+      const reply = await dispatchHostQuery(getDb(), parsed);
+      if (process.env.KOVA_LOG_HOST_QUERY) logInfo(`[host_query] reply ${kind} bytes=${reply.length}`);
+      if (child) queueWrite(reply).catch(() => undefined);
+    } catch (e: any) {
+      // 绝不能静默：无回帧时侧车要干等满 15s 超时（初始化里几十步串起来=界面几分钟空白）
+      logError(`[host_query] ${kind} failed before reply: ${e?.message ?? e}`);
+      if (child) {
+        const id = typeof parsed?.id === "string" ? parsed.id : "";
+        queueWrite(
+          JSON.stringify({ type: "host_result", id, ok: false, error: String(e?.message ?? e) }),
+        ).catch(() => undefined);
+      }
+    }
     return;
   }
   const reqId = typeof parsed?.id === "string" ? parsed.id : null;

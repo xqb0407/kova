@@ -62,7 +62,36 @@ if (build.exitCode !== 0) process.exit(build.exitCode ?? 1);
 
 // 稳定别名：宿主按不带三元组的 pi-agent(.exe) 拉起，免去运行时解析 host triple
 const aliasExt = process.platform === "win32" ? ".exe" : "";
-Bun.spawnSync(["cp", "-f", resolve(pkgRoot, outfile), join(outfileDir, `pi-agent${aliasExt}`)]);
+const aliasPath = join(outfileDir, `pi-agent${aliasExt}`);
+const copy = Bun.spawnSync(["cp", "-f", resolve(pkgRoot, outfile), aliasPath], {
+  stdout: "inherit",
+  stderr: "inherit",
+});
+if (copy.exitCode !== 0) {
+  console.error(`✗ 复制稳定别名失败：${aliasPath}`);
+  process.exit(copy.exitCode ?? 1);
+}
+
+// macOS：必须重新 ad-hoc 签名，不能留 bun 的 linker-signed 状态。
+// 实测（Apple Silicon，macOS 24.6）：bun --compile 产物带 flags=adhoc,linker-signed
+// 且 `codesign --verify` 报 "code or signature have been modified"；该状态的二进制
+// 被 cp 成别名后，内核 exec 会既不运行也不报错地**卡死**——进程停在 UE 状态、零输出、
+// kill -9 无效，表现为「app 起得来、界面却一片空白」：侧车从不回 host_query，
+// 渲染层 15s 超时（会话列表/资源管理器全空）。`codesign --force --sign -` 后
+// verify 通过、启动稳定。打包版此前一直正常，正是 afterPack 深度签名把 bundle 里的
+// 二进制重签了一遍——这条注释是给「为什么开发态也必须签」留的证据。
+if (process.platform === "darwin") {
+  for (const target of [resolve(pkgRoot, outfile), aliasPath]) {
+    const sign = Bun.spawnSync(["codesign", "--force", "--sign", "-", target], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (sign.exitCode !== 0) {
+      console.error(`✗ ad-hoc 签名失败：${target}\n${sign.stderr.toString()}`);
+      process.exit(sign.exitCode ?? 1);
+    }
+  }
+}
 
 /** 冒烟：起进程 → 写一行 ping → 等 pong。任一环不成立即构建失败（带 stderr）。 */
 async function smokeCheck(binary: string): Promise<void> {
