@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>browser use 验收页</title>
+<style>
+  body { font: 15px/1.6 system-ui, sans-serif; margin: 24px; max-width: 900px; }
+  h1 { font-size: 22px; }
+  section { border: 1px solid #ddd; border-radius: 10px; padding: 16px; margin: 16px 0; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  canvas { border: 1px solid #999; display: block; }
+  button, input, select { font: inherit; padding: 6px 10px; margin: 4px 4px 0 0; }
+  #out { background: #f4f4f4; padding: 10px; border-radius: 6px; font-family: ui-monospace, monospace; font-size: 13px; min-height: 60px; }
+  .hint { color: #666; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>browser use 验收页</h1>
+<p class="hint">给 agent 用的三个场景：普通表单（该被 ARIA 快照看见）、canvas 绘图（快照应当<em>看不见</em>，要靠截图）、纯 WebGL（快照全空，只剩截图能看）。</p>
+
+<section>
+  <h2>① 普通表单 —— ARIA 快照应当完整</h2>
+  <p><strong id="greet">还没提交</strong></p>
+  <input id="name" placeholder="你的名字" aria-label="你的名字">
+  <select id="color" aria-label="喜欢的颜色">
+    <option>红</option><option>绿</option><option>蓝</option>
+  </select>
+  <button id="go" aria-label="打招呼">打招呼</button>
+  <a href="https://example.com" aria-label="外部链接">一个链接</a>
+</section>
+
+<section>
+  <h2>② Canvas 2D —— 画面在这里，DOM 里什么都没有</h2>
+  <canvas id="c2d" width="420" height="140"></canvas>
+  <p class="hint">上面这块画布里写着"CANVAS 2D"，但 ARIA 树里不会有它。</p>
+</section>
+
+<section>
+  <h2>③ WebGL —— 整页只有它，快照应当是空的</h2>
+  <canvas id="gl" width="420" height="200"></canvas>
+  <p class="hint">如果 agent 报告"这页没有可访问元素"，然后要求截图并给你看出一张彩色三角形，那就是预期行为。</p>
+</section>
+
+<section>
+  <h2>④ 隐藏内容 —— 快照里不应该出现</h2>
+  <button style="display:none">display:none 的按钮</button>
+  <button style="visibility:hidden">visibility:hidden 的按钮</button>
+  <div hidden><button>hidden 属性里的按钮</button></div>
+  <p class="hint">上面三个按钮都不可见，ARIA 树里都不该出现。如果出现了，说明可见性过滤没生效。</p>
+</section>
+
+<div id="out">事件日志（点按钮会写在这里）</div>
+
+<script>
+  // ① 表单：验证 click / type 真的作用到了元素上
+  document.getElementById("go").addEventListener("click", () => {
+    const name = document.getElementById("name").value.trim() || "（空）";
+    const color = document.getElementById("color").value;
+    document.getElementById("greet").textContent = `你好，${name}！你的颜色是${color}。`;
+    log(`click: greet -> ${document.getElementById("greet").textContent}`);
+  });
+
+  // ② Canvas 2D：文字对 DOM 完全不可见
+  const c2 = document.getElementById("c2d").getContext("2d");
+  c2.fillStyle = "#111"; c2.fillRect(0, 0, 420, 140);
+  c2.fillStyle = "#4ade80"; c2.font = "bold 34px system-ui";
+  c2.fillText("CANVAS 2D", 90, 82);
+
+  // ③ WebGL：一个会自转的三角形，逐帧重绘
+  const gl = document.getElementById("gl").getContext("webgl");
+  if (gl) {
+    const vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs, "attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}");
+    gl.compileShader(vs);
+    const fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs, "precision mediump float;void main(){gl_FragColor=vec4(0.1,0.75,0.95,1.);}");
+    gl.compileShader(fs);
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+    gl.useProgram(prog);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0.6, -0.6,-0.6, 0.6,-0.6]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, "p");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    gl.enable(gl.DEPTH_TEST);
+    (function frame(t) {
+      gl.clearColor(0.06, 0.07, 0.1, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      requestAnimationFrame(frame);
+    })(0);
+  }
+
+  function log(s) {
+    const el = document.getElementById("out");
+    el.textContent = s + "\n" + el.textContent;
+  }
+</script>
+</body>
+</html>

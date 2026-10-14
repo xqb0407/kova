@@ -1,0 +1,21 @@
+diff --git a/dist/harness/compaction/compaction.js b/dist/harness/compaction/compaction.js
+index d430a3f966cc9624cc2e78638fd207a83a75b312..fcd1ad37046ca6c6c45ba2b67791de619c8a8844 100644
+--- a/dist/harness/compaction/compaction.js
++++ b/dist/harness/compaction/compaction.js
+@@ -173,13 +173,13 @@ export function estimateTokens(message) {
+         case "assistant": {
+             const assistant = message;
+             for (const block of assistant.content) {
+-                if (block.type === "text") {
++                if (block.type === "text" && typeof block.text === "string") {
+                     chars += block.text.length;
+                 }
+-                else if (block.type === "thinking") {
++                else if (block.type === "thinking" && typeof block.thinking === "string") {
+                     chars += block.thinking.length;
+                 }
+-                else if (block.type === "toolCall") {
++                else if (block.type === "toolCall" && typeof block.name === "string") {
+                     chars += block.name.length + safeJsonStringify(block.arguments).length;
+                 }
+             }

@@ -1,0 +1,30 @@
+{
+  "name": "kova-local",
+  "displayName": "本仓库插件市场",
+  "plugins": [
+    {
+      "name": "canvas",
+      "source": "./canvas",
+      "version": "0.1.0",
+      "description": "无限画布工作台：Excalidraw 式无限空间，文本/形状/图片/Mermaid/表格/图表/网页嵌入自由摆放，整画布导出 SVG",
+      "category": "效率",
+      "keywords": ["canvas", "whiteboard", "diagram"]
+    },
+    {
+      "name": "ui-design",
+      "source": "./ui-design",
+      "version": "0.1.0",
+      "description": "Figma 式 UI 设计工作台：页面/画板/图层树 + 完整属性检视（填充/渐变/描边/圆角/阴影/文字），独立 *.uidesign.json 文档；自带 ui-design MCP 工具，agent 可直接控制画布（增删改节点/对齐/堆叠排版/成组）",
+      "category": "效率",
+      "keywords": ["ui", "design", "figma", "prototype", "mobile"]
+    },
+    {
+      "name": "office",
+      "source": "./office",
+      "version": "0.1.0",
+      "description": "办公套件工作台（首发幻灯片）：逐页编辑、放映与 .pptx 导出，文档为 *.deck.canvas.json；后续扩展文档/表格",
+      "category": "效率",
+      "keywords": ["office", "slides", "pptx", "presentation", "deck"]
+    }
+  ]
+}

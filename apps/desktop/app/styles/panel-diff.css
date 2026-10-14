@@ -1,0 +1,20 @@
+/* @pierre/diffs 全高渲染的滚动优化：diff 随面板整体滚动（无内部视口），
+   大 diff 的数千行 DOM 靠 content-visibility 跳过屏外部分的布局与绘制，
+   滚动时只渲染进入视口的行。auto 关键字让滚动条按"上次实际高度"估算。 */
+
+.pierre-diff-host {
+  display: block;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 400px;
+}
+
+/* 消息流里的展开框（编辑/写入行的限高滚动框）不做跳过，理由同 globals.css 里
+   轮内过程区那条：展开动画在挂载那一帧就要量出目标高度，而展开期间祖先还被裁剪成
+   0 高，宿主会被判成屏外、按 contain-intrinsic-size 的 400px 占位参与测量——
+   表现是先拉高到 400px（框被 max-h-96 截到 384），真实布局回来后缩回真实高度
+   （一瞬间的拉高）。这个框展开后就一直落在视口内（限高滚动，宿主始终部分可见），
+   跳过省不下什么；代价是展开时同步布局整段 diff，换高度首帧即真值。
+   右侧面板里的全高 diff 仍保留跳过。 */
+[data-slot="aui_tool-row"] .pierre-diff-host {
+  content-visibility: visible;
+}

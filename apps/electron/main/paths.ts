@@ -1,0 +1,62 @@
+/**
+ * 宿主路径约定（对齐 Tauri identifier com.kova.assistant）：
+ * userData 显式指向同一目录，Electron 与 Tauri 版共享 state.db/sessions/kv（D4）。
+ */
+import { app } from "electron";
+import { join } from "node:path";
+import { mkdirSync, readFileSync } from "node:fs";
+
+/** 打包渠道：electron-builder 的 extraMetadata.kovaChannel（dev 包 = "dev"）。
+ *  asar 内 package.json 随 app 一起打包，运行时读取即可判定。 */
+function packagedChannel(): string | null {
+  try {
+    const pkgPath = join(app.getAppPath(), "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    const ch = pkg?.kovaChannel;
+    return typeof ch === "string" && ch.length > 0 ? ch : null;
+  } catch {
+    return null;
+  }
+}
+
+let dataDir = "";
+let logDir = "";
+
+/** 必须在 ready 之前调用（gpu 开关要先读，对齐 gpu.rs 建窗前读配置）。
+ *  数据目录三段式（与 Tauri 版一致）：
+ *    - KOVA_DATA_DIR 显式覆盖（e2e/多实例沙箱）；
+ *    - dev（未打包，或 --dev）：com.kova.assistant.dev + 显示名 "Kova Dev"
+ *      —— 与 tauri.dev.conf.json 的 identifier 对齐，dev 数据不污染正式库；
+ *    - 打包版：com.kova.assistant（与 Tauri 发布版共享 state.db/会话/密钥）。 */
+export function initPaths(): void {
+  // dev 三态：未打包运行 / --dev / dev 渠道包（Kova Dev.app，identifier 与 Tauri dev 对齐）
+  const isDevRun = !app.isPackaged || process.argv.includes("--dev") || packagedChannel() === "dev";
+  app.setName(isDevRun ? "Kova Dev" : "Kova");
+  const override = process.env.KOVA_DATA_DIR;
+  const identifier = isDevRun ? "com.kova.assistant.dev" : "com.kova.assistant";
+  dataDir = override && override.length > 0 ? override : join(app.getPath("appData"), identifier);
+  logDir = join(dataDir, "logs");
+  app.setPath("userData", dataDir);
+  app.setPath("logs", logDir);
+  mkdirSync(dataDir, { recursive: true });
+  mkdirSync(join(dataDir, "sessions"), { recursive: true });
+  mkdirSync(join(dataDir, "task-workspace"), { recursive: true });
+}
+
+/** app data 目录（= Tauri app_data_dir） */
+export function appDataDir(): string {
+  return dataDir || join(app.getPath("appData"), "com.kova.assistant");
+}
+
+/** 日志根目录：<dir>/<YYYY-MM-DD>/ 按日分目录（对齐 logging.rs） */
+export function appLogDir(): string {
+  return logDir || join(appDataDir(), "logs");
+}
+
+export function sessionsDir(): string {
+  return join(appDataDir(), "sessions");
+}
+
+export function dbPath(): string {
+  return join(appDataDir(), "state.db");
+}

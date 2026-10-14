@@ -1,0 +1,442 @@
+"use client";
+
+import { useCallback, useEffect, useState, type FC } from "react";
+import { useAuiState } from "@assistant-ui/react";
+import { Loader2Icon } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
+import { toast } from "@/components/ui/toast";
+import { cn } from "@/lib/utils";
+import { fmtTokens } from "@/lib/model/model-format";
+import {
+  cacheMissCause,
+  compactContext,
+  contextTokenBreakdown,
+  fetchContextInfo,
+  markManualCompaction,
+  markManualCompactionStart,
+  setContextMirrorFromPull,
+  usePiContextMirror,
+} from "@/lib/pi/pi-context";
+import { clearManualCompactionMarker } from "@/lib/pi/pi-compaction-marker";
+import { usePiThreadState } from "@/lib/pi/pi-runtime";
+import type { PiContextInfo } from "@/lib/pi/pi-bridge";
+import { Separator } from "../ui/separator";
+
+/**
+ * 上下文占用查看器（composer 区，模型选择器旁）：点击弹出当前会话的
+ * 上下文读数——容量、消息/系统提示词/工具占用、平均缓存命中率、压缩状态。
+ * 数据全部由 sidecar 现算；占用环走 §7 推送镜像（轮收尾 context_changed
+ * 直更，首挂/切线程水合拉一次，常显占用与距自动压缩），popover 打开才
+ * 拉完整 context_info（分项/命中率/压缩代数不在推送里）。
+ * 附「立即压缩」按钮：走 compact 命令手动触发 compaction（运行中会被拒绝）。
+ */
+
+/** 占用圆环：18px 描边环，弧长按 已用/容量 比例，颜色随占用升温 */
+const UsageRing: FC<{ pct: number | null }> = ({ pct }) => {
+  const r = 7;
+  const c = 2 * Math.PI * r;
+  const f = pct === null ? 0 : Math.min(1, Math.max(0, pct));
+  const color =
+    pct !== null && pct >= 0.9
+      ? "stroke-red-500"
+      : pct !== null && pct >= 0.7
+        ? "stroke-amber-500"
+        : "stroke-sky-500";
+  return (
+    <svg viewBox="0 0 18 18" className="size-[18px] shrink-0" aria-hidden>
+      <circle
+        cx="9"
+        cy="9"
+        r={r}
+        fill="none"
+        strokeWidth="2.5"
+        className="stroke-muted-foreground/25"
+      />
+      <circle
+        cx="9"
+        cy="9"
+        r={r}
+        fill="none"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeDasharray={`${f * c} ${c}`}
+        transform="rotate(-90 9 9)"
+        className={color}
+      />
+    </svg>
+  );
+};
+
+const pctOf = (n: number, total: number): string =>
+  total > 0 ? `${((n / total) * 100).toFixed(1)}%` : "—";
+
+type MeterRow = { label: string; tokens: number; dotClass: string };
+
+export const ContextButton: FC = () => {
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const messageCount = useAuiState((s) => s.thread.messages.length);
+  const isRunning = useAuiState((s) => s.thread.isRunning);
+  // §7 推送镜像：占用环的常态数据源（轮收尾 context_changed 直更）
+  const mirror = usePiContextMirror(threadId);
+  // react-pi 状态里的 context_usage 读数（迁移 4c 双轨之二，thread_event
+  // 直驱）：镜像缺位（切线程后尚未收轮等）时兜底环显示
+  const liveUsage = usePiThreadState((s) => s.contextUsage);
+  const [open, setOpen] = useState(false);
+  const [info, setInfo] = useState<PiContextInfo | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [compacting, setCompacting] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!threadId) return;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const res = await fetchContextInfo(threadId);
+      setInfo(res);
+      // 完整读数顺带校准镜像（拉取胜推送：口径同源、时间更新）
+      setContextMirrorFromPull(threadId, res);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [threadId]);
+
+  const onOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (next) void load();
+  };
+
+  const compact = async () => {
+    if (!threadId) return;
+    setCompacting(true);
+    // 压缩边界 = 点击时刻的消息前缀；start/complete 共用同一锚点，
+    // 保证后续新消息渲染在分隔线之下而不是把它顶到列表尾部
+    const anchorIndex = messageCount;
+    // 先打 start marker：即时显示「正在压缩上下文…」（请求-响应期间的过程反馈）
+    markManualCompactionStart(threadId, anchorIndex);
+    try {
+      const res = await compactContext(threadId);
+      toast.add({
+        title: res.summarized ? "上下文已压缩" : "上下文已重置为新窗口（摘要失败兜底）",
+        description: `压缩前 ${fmtTokens(res.tokensBefore)} tokens`,
+        type: "success",
+      });
+      // 替换为完成态分隔线（持续显示，历史装载后由重建的分隔线接管）
+      markManualCompaction(threadId, res, anchorIndex);
+      await load();
+    } catch (err) {
+      // 失败撤掉「正在压缩」marker，只留 toast 提示
+      clearManualCompactionMarker(threadId);
+      toast.add({
+        title: "压缩失败",
+        description: err instanceof Error ? err.message : String(err),
+        type: "error",
+      });
+    } finally {
+      setCompacting(false);
+    }
+  };
+
+  // 空对话没有上下文可看，不占 composer 位
+  if (!threadId || messageCount === 0) return null;
+
+  // 占用环数据源：§7 镜像优先（轮收尾推送直更，常态在线），完整读数次之，
+  // react-pi 的 context_usage 读数（迁移 4c 双轨）最后兜底。
+  // usedTokens 是 sidecar 统一口径的请求总占用（usage 已含系统提示词/工具，
+  // 不得再叠加两项——重复计数会把环推到虚高越线）；旧 sidecar 缺字段时三项相加
+  const used = mirror
+    ? mirror.usedTokens
+    : info
+      ? (info.usedTokens ?? info.messageTokens + info.systemPromptTokens + info.toolTokens)
+      : (liveUsage?.tokens ?? 0);
+  const capacity = mirror
+    ? mirror.contextWindow
+    : info
+      ? info.contextWindow
+      : (liveUsage?.contextWindow ?? 0);
+  // 自动压缩阈值（hardLimit）：占用距它的百分比常显在 title/popover
+  const threshold = mirror ? mirror.threshold : info ? info.hardLimit : 0;
+  const usedPct = capacity > 0 ? used / capacity : null;
+  const needsCompact = info
+    ? info.needsCompaction
+    : threshold > 0 && used >= threshold;
+  const toCompactPct =
+    threshold > 0 ? Math.max(0, Math.round(((threshold - used) / threshold) * 100)) : null;
+  // 占用条/分项行按「请求总占用的分区」呈现（三段相加 = usedTokens，与占用环、
+  // 压缩守卫、阈值竖线同一口径；直接相加会把系统提示词/工具重复计一遍）
+  const parts = info ? contextTokenBreakdown(info) : null;
+  // 端点是否上报缓存字段：cacheRead/cacheWrite 全零 = 该 provider 不给缓存数据
+  //（OpenAI 兼容端点常不回传 prompt_tokens_details.cached_tokens），与"真 0 命中"
+  // 区分展示——命中率与重算量两行共用这一判据
+  const cacheReporting = info
+    ? info.usage.cacheRead + info.usage.cacheWrite > 0
+    : false;
+  const rows: MeterRow[] = parts
+    ? [
+        { label: "消息占用", tokens: parts.message, dotClass: "bg-sky-500" },
+        { label: "系统提示词占用", tokens: parts.system, dotClass: "bg-violet-500" },
+        { label: "工具占用", tokens: parts.tool, dotClass: "bg-amber-500" },
+      ]
+    : [];
+
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            data-slot="aui-composer-context"
+            aria-label="Context usage"
+            title={
+              usedPct === null
+                ? "上下文占用"
+                : toCompactPct === null
+                  ? `上下文占用 ${(usedPct * 100).toFixed(1)}%`
+                  : `上下文占用 ${(usedPct * 100).toFixed(1)}% · ${
+                      toCompactPct > 0 ? `距自动压缩 ${toCompactPct}%` : "已越过自动压缩阈值"
+                    }`
+            }
+            className={cn(
+              "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-full px-2 text-sm text-muted-foreground transition-colors hover:text-foreground @max-2xl:px-1.5",
+              needsCompact && "text-amber-600 dark:text-amber-400",
+            )}
+          >
+            <UsageRing pct={usedPct} />
+            {/* 窄栏只留占用环（弧长/颜色已表意）：百分比读数收进 title 与弹层 */}
+            {usedPct !== null && (
+              <span className="tabular-nums @max-2xl:hidden">{Math.round(usedPct * 100)}%</span>
+            )}
+          </button>
+        }
+      />
+      <PopoverContent align="end" side="top" className="w-84">
+        <div className="flex flex-col gap-3 p-1">
+          {/* 头部：模型 + 容量 */}
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="truncate text-sm font-medium">
+              {info?.model?.name ?? "上下文"}
+            </span>
+            {info && (
+              <span className="text-muted-foreground shrink-0 text-xs">
+                容量 {fmtTokens(info.contextWindow)}
+              </span>
+            )}
+          </div>
+
+          {info && parts ? (
+            <>
+              {/* 占用条：三段堆叠（= 请求总占用的分区，总长恒等于占用环口径），
+                  竖线为压缩阈值位置 */}
+              <div className="bg-muted relative h-2 w-full overflow-hidden rounded-full">
+                <div className="absolute inset-0 flex">
+                  <div
+                    className="bg-sky-500"
+                    style={{ width: `${(parts.message / Math.max(1, info.contextWindow)) * 100}%` }}
+                  />
+                  <div
+                    className="bg-violet-500"
+                    style={{ width: `${(parts.system / Math.max(1, info.contextWindow)) * 100}%` }}
+                  />
+                  <div
+                    className="bg-amber-500"
+                    style={{ width: `${(parts.tool / Math.max(1, info.contextWindow)) * 100}%` }}
+                  />
+                </div>
+                {info.hardLimit > 0 && (
+                  <div
+                    className="bg-foreground/70 absolute top-0 h-full w-px"
+                    style={{ left: `${(info.hardLimit / Math.max(1, info.contextWindow)) * 100}%` }}
+                  />
+                )}
+              </div>
+
+              <div className="flex flex-col gap-2 text-sm">
+                {rows.map((r) => (
+                  <div key={r.label} className="flex items-center gap-2">
+                    <span className={cn("size-2 shrink-0 rounded-full", r.dotClass)} />
+                    <span className="text-muted-foreground flex-1">{r.label}</span>
+                    {/* <span className="tabular-nums">{fmtTokens(r.tokens)}</span> */}
+                    <span className="text-muted-foreground w-14 text-right tabular-nums">
+                      {pctOf(r.tokens, info.contextWindow)}
+                    </span>
+                  </div>
+                ))}
+                {/* 合计行：三段之和 = 请求总占用（占用环/守卫/阈值竖线同一口径），
+                    给占用条一个可对线读的读数，避免拿彩条长度当唯一依据 */}
+                <div className="flex items-center gap-2 border-t pt-2">
+                  <span className="size-2 shrink-0" />
+                  <span className="flex-1 font-medium">合计（请求总占用）</span>
+                  <span className="w-14 text-right tabular-nums">
+                    {pctOf(parts.used, info.contextWindow)}
+                  </span>
+                </div>
+                {/* cacheRead+cacheWrite 全零 = 该 provider 根本不报缓存字段（OpenAI 兼容
+                    端点常不回传 prompt_tokens_details.cached_tokens），与真实 0% 区分展示 */}
+                <div
+                  className="flex items-center gap-2"
+                  title={
+                    cacheReporting
+                      ? "cacheRead / (input + cacheRead + cacheWrite)，全历史累计"
+                      : "该端点不上报缓存字段（cacheRead/cacheWrite 恒 0），命中率无法计算"
+                  }
+                >
+                  <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
+                  <span className="text-muted-foreground flex-1">
+                    平均缓存命中率
+                    {/* 累计值被冷启动与重建轮稀释：短窗读数才看得到稳态。
+                        provider 根本不上报缓存字段时（主值显示 "-"）不附短窗，
+                        否则会出现"近 N 轮 0.0%"与"-"打架的读数 */}
+                    {info.cacheMisses?.recent?.hitRate != null &&
+                      cacheReporting && (
+                        <span className="text-muted-foreground/70">
+                          （近 {info.cacheMisses.recent.requests} 轮{" "}
+                          {(info.cacheMisses.recent.hitRate * 100).toFixed(1)}%）
+                        </span>
+                      )}
+                  </span>
+                  <span
+                    className={cn(
+                      "w-14 text-right text-xs tabular-nums",
+                      !cacheReporting && "text-muted-foreground",
+                    )}
+                  >
+                    {info.cacheHitRate === null || !cacheReporting
+                      ? "-"
+                      : `${(info.cacheHitRate * 100).toFixed(1)}%`}
+                  </span>
+                </div>
+                {/* 缓存重算（pi 口径）：上一轮 prompt 里没被缓存读到的 token 量——
+                    "input 大"分不清新增内容与重算，这个数才是真多付的账。
+                    端点不上报缓存字段（cacheRead/cacheWrite 恒 0）时显示 "-"：
+                    此时"重算 0"是假读数，我们根本没有数据可判。 */}
+                {info.cacheMisses?.missedTokens != null ? (
+                  cacheReporting ? (
+                    <div
+                      className="flex items-center gap-2"
+                      title={`重算量 = 上一轮 prompt 里未被缓存读到的部分（地板 1024 token）。最近一次：${
+                        cacheMissCause(info.cacheMisses?.lastMiss) ?? "无"
+                      }`}
+                    >
+                      <span className="size-2 shrink-0 rounded-full bg-transparent" />
+                      <span className="text-muted-foreground flex-1">
+                        缓存重算
+                        <span className="text-muted-foreground/70">
+                          （{info.cacheMisses?.missCount ?? 0} 次）
+                        </span>
+                      </span>
+                      <span className="text-foreground w-14 text-right text-xs tabular-nums">
+                        {fmtTokens(info.cacheMisses?.missedTokens ?? 0)}
+                      </span>
+                    </div>
+                  ) : (
+                    <div
+                      className="flex items-center gap-2"
+                      title="该端点不上报缓存字段（cacheRead/cacheWrite 恒 0），无法判定重算量"
+                    >
+                      <span className="size-2 shrink-0 rounded-full bg-transparent" />
+                      <span className="text-muted-foreground flex-1">缓存重算</span>
+                      <span className="text-muted-foreground w-14 text-right text-xs tabular-nums">
+                        -
+                      </span>
+                    </div>
+                  )
+                ) : (info.cacheMisses?.requests ?? 0) > 1 ? (
+                  <div
+                    className="flex items-center gap-2"
+                    title={`单请求重处理 ≥2000 token 且 ≥5% 记一次 miss；已排除 ${info.cacheMisses?.rebuilds ?? 0} 次预期重建`}
+                  >
+                    <span className="size-2 shrink-0 rounded-full bg-transparent" />
+                    <span className="text-muted-foreground flex-1">
+                      逐请求缓存 miss
+                    </span>
+                    <span className="text-foreground w-14 text-right text-xs tabular-nums">
+                      {info.cacheMisses?.misses ?? 0}/
+                      {Math.max(
+                        0,
+                        (info.cacheMisses?.requests ?? 0) -
+                          1 -
+                          (info.cacheMisses?.rebuilds ?? 0),
+                      )}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+
+              <Separator />
+
+              {/* 压缩状态（未越线时附上距阈值的余量：与占用环 title 同一读数，
+                  说明彩条虽可能贴近竖线、守卫仍不会触发） */}
+              <div className="text-muted-foreground  text-xs">
+                {info.needsCompaction ? (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    已越过压缩阈值（{fmtTokens(info.hardLimit)}），下次发送前自动压缩
+                  </span>
+                ) : info.generation === 0 ? (
+                  <span>
+                    共 {info.messageCount} 条消息 · 尚未压缩过
+                    {toCompactPct !== null && toCompactPct > 0
+                      ? ` · 距自动压缩 ${toCompactPct}%`
+                      : ""}
+                  </span>
+                ) : (
+                  <span>
+                    已压缩 {info.generation} 次 · 最近一次前{" "}
+                    {fmtTokens(info.lastCompaction?.tokensBefore ?? 0)} tokens
+                    {info.lastCompaction && !info.lastCompaction.summarized
+                      ? "（摘要失败，保留最近对话）"
+                      : ""}
+                    {toCompactPct !== null && toCompactPct > 0
+                      ? ` · 距自动压缩 ${toCompactPct}%`
+                      : ""}
+                  </span>
+                )}
+              </div>
+
+              <Button
+                variant="secondary"
+                disabled={compacting || loading || isRunning}
+                title={isRunning ? "回复进行中，完成后可手动压缩" : undefined}
+                onClick={() => void compact()}
+              >
+                {compacting ? (
+                  <>
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                    压缩中…
+                  </>
+                ) : (
+                  "立即压缩"
+                )}
+              </Button>
+            </>
+          ) : loading ? (
+            <div className="text-muted-foreground flex items-center gap-2 py-4 text-sm">
+              <Loader2Icon className="size-4 animate-spin" />
+              读取中…
+            </div>
+          ) : loadError ? (
+            <div className="text-destructive flex items-center justify-between gap-2 text-sm">
+              <span className="min-w-0 break-words">{loadError}</span>
+              <Button size="sm" variant="ghost" onClick={() => void load()}>
+                重试
+              </Button>
+            </div>
+          ) : mirror ? (
+            // 完整读数还没到位、但 §7 推送镜像已在：先呈现占用与压缩距离
+            <div className="text-muted-foreground py-2 text-sm">
+              占用 {usedPct === null ? "—" : `${(usedPct * 100).toFixed(1)}%`}
+              {toCompactPct !== null &&
+                ` · ${toCompactPct > 0 ? `距自动压缩 ${toCompactPct}%` : "已越过自动压缩阈值"}`}
+            </div>
+          ) : null}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+};

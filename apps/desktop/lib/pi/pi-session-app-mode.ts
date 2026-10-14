@@ -1,0 +1,197 @@
+"use client";
+
+import { useSyncExternalStore } from "react";
+import { useAuiState } from "@assistant-ui/react";
+import { piRequest } from "@/lib/pi/pi-bridge";
+import { getAppMode, useAppMode, type AppMode } from "@/lib/pi/app-mode";
+import {
+  refreshSessionPrefs,
+  piSessionIdForThread,
+  piSessionPrefsMap,
+  useSessionPrefsVersion,
+} from "@/lib/pi/pi-thread-adapter";
+
+/**
+ * 会话级工作模式（work / code / design）的前端镜像（与 pi-session-thinking 同款形态）：
+ * - 事实源在 sidecar：sessions 表 app_mode 偏好列（NULL = 本会话从未切过档），
+ *   投影进 list_sessions 快照供水合；定靶 set_app_mode 只写被点名会话，
+ *   A 会话切档不牵连 B 会话，也不动全局默认；
+ * - 无会话级记忆的线程回落**全局默认档**（设置 → 通用维护的 kv pi.app_mode，
+ *   镜像在 lib/pi/app-mode.ts——新对话用的就是它）；
+ * - 未发送草稿（还没有 sessionId）的档位选择只记内存，首条消息派发前经
+ *   flushDraftAppModeSelectionAsync 定靶写入新建会话（await 语义：它决定首轮
+ *   系统提示词的人群附加段；失败保留草稿记忆并退避重试，不回退显示）。
+ *
+ * 与 pi-session-mode（agent/plan/ask 权限档）正交：那个切权限，这个切人群定位。
+ */
+
+/** threadId -> 该线程记住的档位（会话偏好列有值、或草稿期用户显式选过才有条目） */
+const threadModes = new Map<string, AppMode>();
+const listeners = new Set<() => void>();
+
+function notify() {
+  for (const l of listeners) l();
+}
+
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/** 白名单外的脏值视同「本会话没有记忆」，交由回落处理 */
+function asAppMode(raw: unknown): AppMode | null {
+  return raw === "work" || raw === "code" || raw === "design" ? raw : null;
+}
+
+/** 当前线程的档位显示值：会话级记忆优先，无则回落全局默认档 */
+export function useThreadAppMode(threadId: string | undefined): AppMode {
+  const own = useSyncExternalStore(
+    subscribe,
+    () => (threadId ? (threadModes.get(threadId) ?? null) : null),
+    () => null,
+  );
+  const fallback = useAppMode();
+  return own ?? fallback;
+}
+
+/**
+ * 任意会话（通常不是当前打开的那个）的生效档位：落库偏好列 → 全局默认档。
+ *
+ * 与 useThreadAppMode 的分工：那个读 threadModes（只记被打开/切档过的线程，
+ * 且键是 threadId），供「当前会话」的控件用；这个直读服务端镜像、键是
+ * sessionId，供侧栏行首图标这类一次要画几十行的消费点用——那些会话大多没被
+ * 打开过，走 threadModes 会一律显示成全局默认档。
+ */
+export function useSessionAppMode(sessionId: string | undefined): AppMode {
+  // 订阅偏好镜像：piSessionPrefsMap 是普通 Map，原地 set 不触发渲染
+  useSessionPrefsVersion();
+  const own = sessionId
+    ? asAppMode(piSessionPrefsMap.get(sessionId)?.appMode)
+    : null;
+  return own ?? useAppMode();
+}
+
+/**
+ * 主线程的生效档位（不在顶栏、又处处要看档位的消费点用：工具行收敛、Git 胶囊
+ * 显隐、面板标签…）。形态对齐 pi-session-mode 的 useIsAskMode：自取 mainThreadId，
+ * 调用方不必层层透传 threadId。
+ */
+export function useCurrentAppMode(): AppMode {
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  return useThreadAppMode(threadId);
+}
+
+/**
+ * 切线程时水合：取该会话持久化的档位；镜像可见且偏好列为空/脏值时清掉陈旧条目
+ * 回落默认档。镜像里还没有该会话条目（刚绑定、list 快照未回）时**不动本地记忆**：
+ * 「事实源不可见」≠「落库为空」，据此删除会把绑定窗口内的草稿期显式选择抹掉
+ * （回落全局默认档——「发送后变回工作档」的显示侧病灶）。
+ */
+export function hydrateThreadAppMode(threadId: string): void {
+  const sessionId = piSessionIdForThread(threadId);
+  if (!sessionId) return;
+  const prefs = piSessionPrefsMap.get(sessionId);
+  if (!prefs) return;
+  const own = asAppMode(prefs.appMode);
+  const current = threadModes.get(threadId) ?? null;
+  if (own === current) return;
+  if (own) threadModes.set(threadId, own);
+  else threadModes.delete(threadId);
+  notify();
+}
+
+/**
+ * 在线程里选档位：带本线程 sessionId 定靶 set_app_mode（sidecar 只对该会话落
+ * 偏好列并重排该会话提示词，全局默认与其它会话不动）；未发送草稿只记内存，
+ * 首条发送建会话后 flush。定靶被拒（sidecar 不可用/会话不存在）回退到落库真值显示。
+ */
+export async function setThreadAppMode(
+  threadId: string,
+  mode: AppMode,
+): Promise<void> {
+  threadModes.set(threadId, mode);
+  notify();
+  const sessionId = piSessionIdForThread(threadId);
+  if (!sessionId) return;
+  try {
+    await piRequest({ type: "set_app_mode", mode, sessionId });
+  } catch {
+    // 定靶被拒（sidecar 不可用/会话不存在）：仅当镜像可见该会话（落库真值可判）
+    // 才回退显示；镜像还没带上它时保留本地乐观值——新绑定会话的列表快照往往
+    // 未回，此时回退等于把显式选择静默改成全局默认档
+    if (piSessionPrefsMap.has(sessionId)) {
+      hydrateThreadAppMode(threadId);
+      notify();
+    }
+    return;
+  }
+  await refreshSessionPrefs();
+  hydrateThreadAppMode(threadId);
+  notify();
+}
+
+/** 重试退避（毫秒）：flush 定靶失败时保留草稿记忆并按此重试，全部失败后交给
+ *  后续水合校准（显示真值）。2s/4s/8s 覆盖 sidecar 管理队列被占住的瞬时抖动 */
+const APP_MODE_FLUSH_RETRY_DELAYS_MS = [2000, 4000, 8000];
+const flushRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleAppModeFlushRetry(threadId: string, attempt: number): void {
+  if (attempt >= APP_MODE_FLUSH_RETRY_DELAYS_MS.length) return;
+  const prev = flushRetryTimers.get(threadId);
+  if (prev) clearTimeout(prev);
+  flushRetryTimers.set(
+    threadId,
+    setTimeout(() => {
+      flushRetryTimers.delete(threadId);
+      void flushDraftAppModeSelectionAsync(threadId, attempt + 1);
+    }, APP_MODE_FLUSH_RETRY_DELAYS_MS[attempt]),
+  );
+}
+
+/**
+ * 首条消息派发前（initialize 绑定 sessionId 后）把草稿期记忆的档位定靶写入新建
+ * 会话。**await 语义**：它决定首轮系统提示词（design/work 人群段），fire-and-forget
+ * 会输给 prompt 装配——首轮按全局默认档应答。失败保留草稿记忆与当前显示并退避
+ * 重试（新会话此刻的落库真值就是全局默认档，「回退显示」等于静默改档）；重试
+ * 仍不成交给后续水合校准。
+ */
+export async function flushDraftAppModeSelectionAsync(
+  threadId: string,
+  attempt = 0,
+): Promise<void> {
+  const saved = threadModes.get(threadId);
+  if (!saved) return;
+  const sessionId = piSessionIdForThread(threadId);
+  if (!sessionId) return;
+  const prefs = piSessionPrefsMap.get(sessionId);
+  if (asAppMode(prefs?.appMode)) return;
+  try {
+    await piRequest({ type: "set_app_mode", mode: saved, sessionId });
+  } catch (err) {
+    console.warn("flush app_mode failed; keeping draft selection:", err);
+    scheduleAppModeFlushRetry(threadId, attempt);
+    return;
+  }
+  await refreshSessionPrefs();
+  hydrateThreadAppMode(threadId);
+  notify();
+}
+
+/** fire-and-forget 包装（非发送链路的旧调用点/诊断用；发送链路用 Async 版） */
+export function flushDraftAppModeSelection(threadId: string): void {
+  void flushDraftAppModeSelectionAsync(threadId);
+}
+
+/** 测试缝：清空草稿记忆表与在飞重试定时器（防测试结束后定时器打穿 mock） */
+export function clearThreadAppModesForTest(): void {
+  threadModes.clear();
+  for (const t of flushRetryTimers.values()) clearTimeout(t);
+  flushRetryTimers.clear();
+}
+
+/** 诊断/测试用：当前线程生效档位的直读（非响应式） */
+export function getThreadAppModeSnapshot(threadId: string): AppMode {
+  return threadModes.get(threadId) ?? getAppMode();
+}
