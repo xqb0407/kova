@@ -1,29 +1,33 @@
-# 发版流水线（Electron 版）：打 tag → 构建 macOS 产物 → 建 Draft Release
+# 发版流水线（Electron 版）：打 tag → 构建 macOS + Windows 产物 → 汇总建 Draft Release
 #
-# 与 Tauri 版 release.yml 的差异：
-#   - 不跑 cargo build（宿主是 Node/Electron）；rustc 只为 sidecar 产物命名取 host 三元组
-#   - 打包由 electron-builder 完成，产物 dmg 在打包流程里做 ad-hoc 深签（afterPack 钩子）
-#   - 未公证：首次打开仍需一次 GUI 引导（与 Tauri 版一致，docs/macos-first-open 口径沿用）
+# 与旧壳流水线的对应关系：旧版是 "test → build ×2（mac/win）→ release"，
+# 本版同构：build-macos / build-windows 各自上传 workflow artifact，
+# release job 汇总后才创建 Draft Release（避免两个 job 同时建 draft 打架）。
 #
-# 用法：bun run release <版本号>（推 tag 触发本流水线）→ 到 Releases 页检查 Draft → 手动发布
+# 签名口径：mac 包在打包流程里做 ad-hoc 深签（apps/electron/scripts/after-pack.cjs，
+# 不加 hardened runtime——Electron 自带 Framework 在 ad-hoc 下会被 dyld 拒载）；
+# 未公证 → 首次打开一次 GUI 引导。Win 未签名 → SmartScreen 提示（与旧版一致）。
+#
+# 用法：bun run release <版本号>（推 tag 触发）；也可在 Actions 页手动 workflow_dispatch
 name: release
 on:
   push:
     tags: ["v*"]
   workflow_dispatch: {}
 
+env:
+  BUN_VERSION: 1.3.14
+
 jobs:
   build-macos:
     runs-on: macos-14
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: ${{ env.BUN_VERSION }}
       - uses: dtolnay/rust-toolchain@stable
-        # sidecar 构建脚本读 `rustc -vV` 的 host 三元组给产物命名（不需要 cargo 编译）
+        # sidecar 构建脚本读 `rustc -vV` 的 host 三元组给产物命名（bun --compile 不需要 cargo）
       - name: Install deps
         run: bun install
       - name: Build native deps (node-pty)
@@ -31,12 +35,10 @@ jobs:
         # 漏这步打出来的包里终端是坏的（N-API 编译后 Node/Electron ABI 通用）
         run: |
           PKG_DIR=$(node -e 'console.log(require("path").dirname(require.resolve("node-pty/package.json")))')
-          cd "$PKG_DIR" && npx --yes node-gyp rebuild
+          cd "$PKG_DIR" && node scripts/install.js
           ls build/Release/pty.node
-      - name: Build sidecar (bun --compile + smoke)
-        run: bun run build:sidecar
-      - name: Build renderer + main
-        run: bun run build:renderer && bun run build:main
+      - name: Build sidecar + renderer + main
+        run: bun run build:sidecar && bun run build:renderer && bun run build:main
       - name: Package dmg (ad-hoc signed via afterPack)
         run: cd apps/electron && ./node_modules/.bin/electron-builder --mac dmg
       - name: Checksums
@@ -44,10 +46,60 @@ jobs:
           cd apps/electron/release
           shasum -a 256 *.dmg | awk '{print $1"  "$2}' > SHA256SUMS.txt
           cat SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dist
+          path: |
+            apps/electron/release/*.dmg
+            apps/electron/release/SHA256SUMS.txt
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install deps
+        run: bun install
+      - name: Build native deps (node-pty)
+        shell: bash
+        run: |
+          PKG_DIR=$(node -e 'console.log(require("path").dirname(require.resolve("node-pty/package.json")))')
+          cd "$PKG_DIR" && node scripts/install.js
+          ls build/Release/pty.node
+      - name: Build sidecar + renderer + main
+        run: bun run build:sidecar && bun run build:renderer && bun run build:main
+      - name: Package NSIS installer
+        run: cd apps/electron && ./node_modules/.bin/electron-builder --win nsis
+      - name: Checksums
+        shell: bash
+        run: |
+          cd apps/electron/release
+          sha256sum *.exe | awk '{print $1"  "$2}' > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-dist
+          path: |
+            apps/electron/release/*.exe
+            apps/electron/release/SHA256SUMS.txt
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: List
+        run: ls -lh dist
       - name: Draft release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: |
-            apps/electron/release/*.dmg
-            apps/electron/release/SHA256SUMS.txt
+          files: dist/*

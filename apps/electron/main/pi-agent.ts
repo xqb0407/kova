@@ -78,11 +78,13 @@ export function redactSecrets(input: string): string {
 function sidecarBinaryPath(): string {
   // 打包环境：resources/binaries/；开发环境：apps/electron/binaries/
   const here = __dirname;
+  // Windows 产物带 .exe 后缀（构建脚本在 win 上输出 pi-agent.exe）
+  const names = process.platform === "win32" ? ["pi-agent.exe", "pi-agent"] : ["pi-agent"];
   const candidates = [
     process.env.PI_AGENT_BIN ?? "",
-    existsSync(join(process.resourcesPath ?? "", "binaries")) ? join(process.resourcesPath, "binaries", "pi-agent") : "",
-    join(here, "..", "binaries", "pi-agent"),
-    join(here, "..", "..", "binaries", "pi-agent"),
+    ...(process.resourcesPath ? names.map((n) => join(process.resourcesPath, "binaries", n)) : []),
+    ...names.map((n) => join(here, "..", "binaries", n)),
+    ...names.map((n) => join(here, "..", "..", "binaries", n)),
   ].filter(Boolean);
   for (const c of candidates) if (existsSync(c)) return c;
   throw new Error(`pi-agent sidecar binary not found (looked: ${candidates.join(", ")})`);
