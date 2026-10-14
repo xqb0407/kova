@@ -2,13 +2,13 @@
 
 import { invoke } from "@/lib/mobile/platform";
 import { useSyncExternalStore } from "react";
-import { isTauri } from "@/lib/mobile/platform";
+import { isDesktopShell } from "@/lib/mobile/platform";
 
 /**
  * 当前 workspace（工作目录）状态：持久化到 Rust 侧 SQLite（state.db 的 kv 表）。
  * - getWorkspace()：非 React 场景读取（adapter/transport）
  * - useWorkspace()：React 组件订阅
- * 非 Tauri 环境（web 预览）仅内存态，不持久化。
+ * 无桌面壳环境（web 预览）仅内存态，不持久化。
  */
 const KV_KEY = "workspace";
 const RECENTS_KEY = "workspace.recents";
@@ -88,7 +88,7 @@ export function setWorkspace(dir: string | null, source: WorkspaceSource = "user
   }
   emit();
 
-  if (!isTauri()) return;
+  if (!isDesktopShell()) return;
   const write =
     dir == null
       ? invoke("kv_delete", { key: KV_KEY })
@@ -104,7 +104,7 @@ export function setWorkspace(dir: string | null, source: WorkspaceSource = "user
  * 上次目录通过 recents 一键可达；kv 写入保留（无害死数据，也兼容旧版本回退）。
  */
 export async function initWorkspaceStore(): Promise<void> {
-  if (!isTauri()) return;
+  if (!isDesktopShell()) return;
   try {
     const recentValues = await invoke<string | null>("kv_get", { key: RECENTS_KEY });
     if (typeof recentValues === "string" && recentValues) {
@@ -119,7 +119,7 @@ export async function initWorkspaceStore(): Promise<void> {
   }
 }
 
-// client bundle 加载即恢复（SSR 端 isTauri() 为 false，直接跳过）
+// client bundle 加载即恢复（SSR 端 isDesktopShell() 为 false，直接跳过）
 void initWorkspaceStore();
 
 /**

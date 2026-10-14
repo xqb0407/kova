@@ -705,7 +705,7 @@ function queryDimsMac(path: string): { w: number; h: number } {
 }
 
 async function handleScreenshot(inner: any): Promise<any> {
-  const maxDim = clampInt(inner?.maxDim, SCREENSHOT_DEFAULT_MAX_DIM, 320, 7680);
+  const maxDim = clampInt(inner?.maxDim, SCREENSHOT_DEFAULT_MAX_DIM, 640, 3840);
   const quality = clampInt(inner?.quality, SCREENSHOT_DEFAULT_QUALITY, 30, 100);
   if (process.platform === "darwin") {
     const dir = mkdtempSync(join(tmpdir(), "kova-shot-"));
@@ -752,8 +752,7 @@ async function handleScreenshot(inner: any): Promise<any> {
     }
   }
   if (process.platform === "win32") {
-    // P2：PowerShell System.Drawing 阶梯截图（windows_capture_script 移植），暂给出可诊断错误
-    throw new Error("screenshot on Windows is not wired in the Electron port yet");
+    return captureWindows(maxDim, quality);
   }
   throw new Error("screenshot is only supported on macOS/Windows");
 }
@@ -761,6 +760,127 @@ async function handleScreenshot(inner: any): Promise<any> {
 function clampInt(v: unknown, def: number, min: number, max: number): number {
   const n = typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : def;
   return Math.max(min, Math.min(max, n));
+}
+
+/* ------------------------------ screenshot（Windows：PowerShell + System.Drawing） ------------------------------ */
+
+/**
+ * PowerShell 抓图脚本（照 Rust windows_capture_script 逐条移植）：
+ * - DPI 感知：不先 SetProcessDPIAware，HiDPI 缩放下 VirtualScreen/CopyFromScreen
+ *   会按逻辑像素工作，抓出来是错尺寸的半分辨率图；
+ * - 抓整块虚拟桌面（多显示器合并）→ 按阶梯缩放 + JPEG 编码，命中预算即停；
+ * - 全内存（Bitmap → MemoryStream），不落盘；
+ * - 只用 ConvertTo-Json -Compress 输出一行 JSON。
+ * tiersJson 只含整数（无注入面）；budget 为内联预算字节数。
+ */
+function windowsCaptureScript(tiersJson: string, budget: number): string {
+  return `$ErrorActionPreference = 'Stop'
+try {
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class KovaDpi { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }'
+[void][KovaDpi]::SetProcessDPIAware()
+
+$vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
+if ($vs.Width -le 0 -or $vs.Height -le 0) { throw 'virtual screen has no area' }
+$full = New-Object System.Drawing.Bitmap -ArgumentList $vs.Width, $vs.Height
+$g = [System.Drawing.Graphics]::FromImage($full)
+try {
+  $g.CopyFromScreen($vs.X, $vs.Y, 0, 0, $full.Size, [System.Drawing.CopyPixelOperation]::SourceCopy)
+} finally { $g.Dispose() }
+
+$tiers = ConvertFrom-Json '${tiersJson}'
+$codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
+if ($null -eq $codec) { throw 'no JPEG encoder available' }
+$best = $null
+foreach ($t in $tiers) {
+  $dim = [int]$t.d
+  $scale = [Math]::Min(1.0, $dim / [double][Math]::Max($full.Width, $full.Height))
+  $w = [int][Math]::Max(1, [Math]::Round($full.Width * $scale))
+  $h = [int][Math]::Max(1, [Math]::Round($full.Height * $scale))
+  $bmp = $null
+  $ms = $null
+  try {
+    $bmp = New-Object System.Drawing.Bitmap -ArgumentList $w, $h
+    $g2 = [System.Drawing.Graphics]::FromImage($bmp)
+    try {
+      $g2.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+      $g2.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+      $g2.DrawImage($full, (New-Object System.Drawing.Rectangle -ArgumentList 0, 0, $w, $h))
+    } finally { $g2.Dispose() }
+    $enc = New-Object System.Drawing.Imaging.EncoderParameters -ArgumentList 1
+    $enc.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter -ArgumentList ([System.Drawing.Imaging.Encoder]::Quality), ([long]$t.q)
+    $ms = New-Object System.IO.MemoryStream
+    $bmp.Save($ms, $codec, $enc)
+    $bytes = $ms.ToArray()
+    if ($null -eq $best -or $bytes.Length -lt $best.bytes.Length) {
+      $best = [pscustomobject]@{ bytes = $bytes; width = $w; height = $h }
+    }
+  } finally {
+    if ($null -ne $ms) { $ms.Dispose() }
+    if ($null -ne $bmp) { $bmp.Dispose() }
+  }
+  if ($null -ne $best -and $best.bytes.Length -le ${budget}) { break }
+}
+if ($null -eq $best) { throw 'screenshot produced no output at every tier' }
+$full.Dispose()
+@{
+  base64 = [Convert]::ToBase64String($best.bytes)
+  mimeType = 'image/jpeg'
+  bytes = $best.bytes.Length
+  width = $best.width
+  height = $best.height
+} | ConvertTo-Json -Compress
+} catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1
+}
+`;
+}
+
+function captureWindows(maxDim: number, quality: number): ScreenshotResult {
+  const tiersJson = JSON.stringify(buildLadder(maxDim, quality).map(([d, q]) => ({ d, q })));
+  const script = windowsCaptureScript(tiersJson, SCREENSHOT_INLINE_BUDGET_BYTES);
+  // -EncodedCommand 收 Base64(UTF-16LE)：绕开引号转义，也绕开 ExecutionPolicy 限制
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const out = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+    { windowsHide: true, maxBuffer: 64 * 1024 * 1024 }, // base64 结果可达 ~2.4MB
+  );
+  if (out.error) throw new Error(`failed to launch powershell: ${out.error.message}`);
+  if (out.status !== 0) {
+    const err = (out.stderr ?? Buffer.alloc(0)).toString("utf8").trim();
+    throw new Error(
+      err.length > 0 ? `screenshot capture failed: ${err}` : `screenshot capture failed (exit ${out.status})`,
+    );
+  }
+  // 取最后一行 JSON：脚本只输出一行，前面若有杂音也不影响
+  const stdout = (out.stdout ?? Buffer.alloc(0)).toString("utf8");
+  const line = stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .reverse()
+    .find((l) => l.startsWith("{"));
+  if (!line) throw new Error("powershell produced no screenshot JSON");
+  let parsed: any;
+  try {
+    parsed = JSON.parse(line);
+  } catch (e: any) {
+    throw new Error(`screenshot payload parse failed: ${e?.message ?? e}`);
+  }
+  // 形状校验：payload 缺 base64 时早失败，别让 UI 收到空图才发现
+  if (typeof parsed?.base64 !== "string" || parsed.base64.length === 0) {
+    throw new Error("screenshot payload missing base64");
+  }
+  return {
+    base64: parsed.base64,
+    mimeType: typeof parsed.mimeType === "string" ? parsed.mimeType : "image/jpeg",
+    bytes: Number(parsed.bytes) || Buffer.from(parsed.base64, "base64").length,
+    width: Number(parsed.width) || 0,
+    height: Number(parsed.height) || 0,
+  };
 }
 
 /* ------------------------------ 总入口 ------------------------------ */

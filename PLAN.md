@@ -228,9 +228,9 @@ onCloseRequested?）、`app`（getVersion）、`path`（join）、`plugin-dialog
 | M3 P2 | ✅ | remote 网关（配对/限次/id 往返还原真实数据/REMOTE_DENIED/静态页 CSP）、tunnel 监管（状态机/假二进制 error/日志尾巴）、backup（明密文备份→peek→staging→重启换入全链路，含残行修剪/错口令清理/credentials 清空）三项 E2E 全绿 |
 | M4 收尾 | 部分 | 全量 `bun run build` 三阶段绿 + `tsc --noEmit` 0 错误；electron-builder 打包未跑（devDependencies 已备） |
 
-已知差异与遗留以 `PORTING-NOTES.md` 为准（ARIA 快照未移植、update_install 改打开下载页、
-Windows screenshot 分支未接线；未验证项：cloudflared 真实下载、S3/WebDAV 真实远端连通、
-与 Rust 版备份包的交叉解开）。
+已知差异与遗留以 `PORTING-NOTES.md` 为准（ARIA 快照未移植、update_install 改打开下载页；
+Windows screenshot 分支已按 Rust 版移植，纯 macOS 环境无法实跑 PowerShell，仅完成脚本级自检；
+未验证项：cloudflared 真实下载、S3/WebDAV 真实远端连通、与 Rust 版备份包的交叉解开）。
 
 ## 7. 成功判据（完成审计）
 

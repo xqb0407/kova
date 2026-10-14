@@ -6,11 +6,11 @@ import type { PiResponse } from "@/lib/pi/pi-bridge";
  * pi-agent 通道抽象：把"管理类请求-响应 + 自发通知订阅 + 全局中断"收口成接口。
  *
  * 移动端只有一种实现：WsPiChannel（走 WebSocket 连桌面端的 remote.rs 网关，
- * 见 pi-ws-channel.ts）。主工程的另一个实现 TauriPiChannel 依赖 Tauri
+ * 见 pi-ws-channel.ts）。主工程的另一个实现 DesktopPiChannel 依赖桌面壳
  * invoke/event，本工程不含该部分——通道注册表与接口定义原样保留。
  *
  * prompt 流式输出不走本接口：react-pi 新链路（pi-runtime/PiClientBase）经
- * Tauri 事件行 / WS 原始行自行分流并重建 partial。piRequest 通过模块级注册表
+ * 事件行 / WS 原始行自行分流并重建 partial。piRequest 通过模块级注册表
  * （setPiChannel/getPiChannel）与具体通道解耦：运行时 provider 挂载前 set，
  * 之后所有调用原样工作在任一通道上。
  */
@@ -86,14 +86,14 @@ export type PiDesignThemeSetPushFrame = {
 export type PiDesignThemePush = PiDesignThemesPushFrame | PiDesignThemeSetPushFrame;
 
 export interface PiChannel {
-  readonly kind: "tauri" | "ws";
-  /** 管理类请求-响应；id 注入由实现负责（Tauri 侧 Rust 注入，WS 侧 JS 注入） */
+  readonly kind: "desktop" | "ws";
+  /** 管理类请求-响应；id 注入由实现负责（桌面壳侧主进程注入，WS 侧 JS 注入） */
   request(payload: Record<string, unknown>, timeoutMs?: number): Promise<PiResponse>;
   /**
    * 能力可选（与 listRunning 成对）：订阅"会话 turn 起止"事件流。
    * cb(sessionId, active)；sessionId = null 表示事件源失效（后端重启等），
    * 订阅方应清空集合并用 listRunning 重新水合。返回退订函数。
-   * 时序契约：监听登记本身可能是异步的（Tauri listen 返回 Promise）。注册
+   * 时序契约：监听登记本身可能是异步的（桌面壳 listen 返回 Promise）。注册
    * 窗口里广播的 turn_changed 会永久丢失，而种子无法替它兜底（种子早于事件
    * 时就看不到），所以订阅方必须先 await 返回的退订函数就绪、再发起 listRunning
    * 种子——sidecar 对 turn_changed 与 list_running 响应按 stdout 全序写出，
@@ -170,7 +170,7 @@ export interface PiChannel {
   /** 中断指定线程的活跃 turn 与其排队消息（缺省 = 全局兜底，停掉一切） */
   abort(threadId?: string): Promise<void>;
   close?(): void;
-  /** WS 通道连接状态回调；Tauri 通道恒连接，可不实现 */
+  /** WS 通道连接状态回调；桌面壳通道恒连接，可不实现 */
   onStatusChange?(cb: (s: PiChannelStatus) => void): () => void;
   /** 立即重连一次（不等退避、清零计数）：前台唤醒与设置页的调试入口共用 */
   reconnectNow?(): void;
@@ -202,7 +202,7 @@ export function peekPiChannel(): PiChannel | null {
 }
 
 export function getPiChannel(): PiChannel {
-  // 桌面端这里兜底惰性创建 TauriPiChannel；移动端不能——没有 Tauri 宿主，
+  // 桌面端这里兜底惰性创建 DesktopPiChannel；移动端不能——没有桌面壳宿主，
   // 兜底只会把「还没配对/还没连上」伪装成一个更晚、更难定位的失败。
   // 明确早失败，让调用方（piRequest）把「未连接」如实抛给 UI。
   if (!current) {

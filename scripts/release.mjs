@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * 发版脚本（Electron 版）：同步三处版本号 → 提交 → 打 tag → 推送到主仓与 GitHub 镜像仓。
- * 与 Tauri 版的差异只在"bump 哪三个文件"——原版同步 tauri.conf.json / desktop/package.json /
- * Cargo.toml，本仓没有 tauri/Cargo，改为 root / apps/desktop / apps/electron 三个 package.json
+ * 与旧桌面壳版的差异只在"bump 哪三个文件"——旧版同步壳配置 / desktop/package.json /
+ * Cargo.toml，本仓没有 Rust 壳与 Cargo，改为 root / apps/desktop / apps/electron 三个 package.json
  * （apps/electron 的 package.json 是打包权威来源，electron-builder 从它读 version）。
  *
  * 用法：
