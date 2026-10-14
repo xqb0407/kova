@@ -213,3 +213,27 @@ host_cancel 12:41:30.853 → tool_execution_end 12:41:30.858 → `sleep 300` 进
   `is…`旧名 → `isDesktopShell()`、`PiChannel.kind` 取值旧名 → `"desktop"`（与桌面端实现类
   `DesktopPiChannel` 同名约定）、README/注释中的壳指代与旧壳 remote 源路径改为
   `apps/electron/main/remote.ts`；引用文档 `docs/remote-access.md` 一并搬入并更新该行。
+
+## 侧车二进制的 macOS 签名坑（开发态）
+
+**症状**：`bun run start` / `bun run dev`（未打包）启动后界面一片空白——侧栏会话列表、
+资源管理器全空，渲染层报 `pi-agent request timed out`；侧车进程停在 `UE` 状态（内核态等待
++ 正在退出）、零输出、`kill -9` 无效，且每启动一次就多留一个。打包版（Kova.app /
+Kova Dev.app）一切正常，数据完好（本仓只读过它，未写入）。
+
+**根因**：`bun build --compile` 产物带的是 `flags=adhoc,linker-signed` 的签名，
+`codesign --verify` 报 "code or signature have been modified"；该状态的二进制被
+`cp -f` 成稳定别名 `binaries/pi-agent` 后，Apple Silicon 上内核 `exec` 会**既不运行也不报错
+地卡死**（不是 SIGKILL，是挂住）。宿主于是永远等不到 `host_result`；侧车初始化闸门里几十步
+`host_query` 每步各等 15s，界面自然"半天拉不出来"。
+
+**判定证据**：同一份字节（md5 相同、大小相同）——`pi-agent-aarch64-apple-darwin` 能跑，
+`pi-agent` 卡死；把它 `cp` 成新名字能跑；`codesign --force --sign -` 后 verify 通过、稳定能跑。
+打包版一直正常，是因为 `afterPack` 的深度 ad-hoc 签名把 bundle 里的二进制重签了一遍。
+
+**修复**：`apps/sidecar/pi-agent/scripts/build-sidecar.ts` 在产出三元组文件与稳定别名后，
+每次都在 darwin 上 `codesign --force --sign -` 重签（两处都签），失败即构建失败。
+另：宿主侧的 `host_query` 分支加了显式日志（`KOVA_LOG_HOST_QUERY=1` 打点）与异常兜底回帧——
+异常时回 `host_result{ok:false}` 而不是静默，避免侧车白等满 15s 超时。
+
+**清理**：调试期间留下的卡死侧车进程无法 kill（`UE` 状态），重启机器即清；它们不持有 DB 句柄。
