@@ -26,6 +26,13 @@ jobs:
         # sidecar 构建脚本读 `rustc -vV` 的 host 三元组给产物命名（不需要 cargo 编译）
       - name: Install deps
         run: bun install
+      - name: Build native deps (node-pty)
+        # bun install 默认不跑 postinstall：node-pty 的 .node 不会自己出现，
+        # 漏这步打出来的包里终端是坏的（N-API 编译后 Node/Electron ABI 通用）
+        run: |
+          PKG_DIR=$(node -e 'console.log(require("path").dirname(require.resolve("node-pty/package.json")))')
+          cd "$PKG_DIR" && npx --yes node-gyp rebuild
+          ls build/Release/pty.node
       - name: Build sidecar (bun --compile + smoke)
         run: bun run build:sidecar
       - name: Build renderer + main

@@ -60,7 +60,11 @@ for (const f of versionFiles) {
 
 // 只提交版本文件，避免误带入其他改动
 sh(`git add ${versionFiles.join(" ")}`);
-sh(`git commit -m "release: v${version}"`);
+if (sh("git diff --cached --name-only").length > 0) {
+  sh(`git commit -m "release: v${version}"`);
+} else {
+  console.log("版本未变化：跳过提交，直接打 tag");
+}
 sh(`git tag ${tag}`);
 
 // 推送：Gitee 主仓 + GitHub 镜像（CI 触发源）
