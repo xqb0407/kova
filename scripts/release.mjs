@@ -70,12 +70,15 @@ sh(`git tag ${tag}`);
 // 推送：Gitee 主仓 + GitHub 镜像（CI 触发源）
 sh(`git push origin HEAD ${tag}`);
 console.log(`✓ 已推送到 origin`);
+let hasRelease = true;
 try {
-  sh(`git push release HEAD ${tag}`);
-  console.log(`✓ 已推送到 release (GitHub)，Actions 将自动构建并创建 Draft Release`);
+  sh("git remote get-url release");
 } catch {
-  console.error(`✗ 推送 release 远端失败。若尚未配置，执行：`);
-  console.error(`    git remote add release https://github.com/<user>/<repo>.git`);
-  console.error(`  然后：git push release HEAD ${tag}`);
-  process.exit(1);
+  hasRelease = false;
+}
+if (hasRelease) {
+  sh(`git push release HEAD ${tag}`);
+  console.log("✓ 已推送到 release，Actions 将自动构建并创建 Draft Release");
+} else {
+  console.log("（未配置 release 远端：跳过；若 CI 由 origin 触发则无需配置）");
 }

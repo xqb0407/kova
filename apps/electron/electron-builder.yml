@@ -28,6 +28,7 @@ mac:
     NSAppleEventsUsageDescription: Kova 需要访问系统事件以支持自动化能力
     NSMicrophoneUsageDescription: Kova 录音相关能力需要麦克风权限
 win:
+  artifactName: ${productName}_${version}_${arch}-setup.${ext}
   icon: icons/icon.ico
   target:
     - nsis

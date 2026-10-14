@@ -28,6 +28,7 @@ mac:
       arch: arm64
   identity: null
 win:
+  artifactName: ${productName}_${version}_${arch}-setup.${ext}
   icon: icons/icon.ico
 linux:
   icon: icons/icon.png
