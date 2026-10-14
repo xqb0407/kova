@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { isTauri } from "@/lib/tauri";
+import { listen } from "@/desktop-bridge/event";
+import { isDesktop } from "@/lib/desktop-env";
 import {
   gitProbe,
   gitStatus,
@@ -38,10 +38,10 @@ function subscribe(cb: () => void) {
   return () => listeners.delete(cb);
 }
 
-/** git 可用性探测（进程内缓存一次）；非 Tauri 恒不可用 */
+/** git 可用性探测（进程内缓存一次）；非 桌面壳 恒不可用 */
 export async function ensureGitProbe(): Promise<GitProbe> {
   if (probe) return probe;
-  if (!isTauri()) {
+  if (!isDesktop()) {
     probe = { available: false, version: null };
     notify();
     return probe;
@@ -57,7 +57,7 @@ export async function ensureGitProbe(): Promise<GitProbe> {
 
 /** 拉取/刷新某 cwd 的 git 状态（在途去重；结果无论新旧都触发订阅） */
 export function refreshGitStatus(cwd: string | null | undefined): void {
-  if (!cwd || !isTauri() || loading.has(cwd)) return;
+  if (!cwd || !isDesktop() || loading.has(cwd)) return;
   loading.add(cwd);
   notify();
   // 先等 workspace 的 kv 写入落库再发查询：Rust 侧 resolve_workspace 用 kv
@@ -93,7 +93,7 @@ export function onGitChanged(cb: (cwd: string) => void): () => void {
 async function wireEvents(): Promise<void> {
   if (wired || typeof window === "undefined") return;
   wired = true;
-  if (isTauri()) {
+  if (isDesktop()) {
     try {
       await listen<{ cwd: string }>("git-changed", (event) => {
         const cwd = event.payload?.cwd;

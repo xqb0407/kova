@@ -1,10 +1,10 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
-import { isTauri } from "@/lib/tauri";
+import { invoke } from "@/desktop-bridge/core";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
- * Rust 侧文件树命令（src-tauri/src/fs.rs）的 invoke 封装 + Tauri 门控。
+ * Rust 侧文件树命令（原 Rust 宿主的 fs.rs）的 invoke 封装 + 桌面壳门控。
  * 网页端没有本地 FS：读类接口整体返回 null，UI 静默降级（仿 lib/git.ts）。
  * 载荷刻意从简：条目只有 name+dir（Rust 侧不做逐项 stat），文件内容带
  * truncated/binary 标志——渲染层据此提示，不整读大文件。
@@ -25,7 +25,7 @@ export async function fsListDir(
   cwd: string,
   dir: string,
 ): Promise<FsDirListing | null> {
-  if (!isTauri()) return null;
+  if (!isDesktop()) return null;
   try {
     return await invoke<FsDirListing>("fs_list_dir", { cwd, dir });
   } catch {
@@ -39,7 +39,7 @@ export async function fsReadFile(
   cwd: string,
   path: string,
 ): Promise<FsFileContent | null> {
-  if (!isTauri()) return null;
+  if (!isDesktop()) return null;
   try {
     return await invoke<FsFileContent>("fs_read_file", { cwd, path });
   } catch {
@@ -80,7 +80,7 @@ export async function fsReadFileBase64(
   cwd: string,
   path: string,
 ): Promise<FsBinaryContent | "too-large" | null> {
-  if (!isTauri()) return null;
+  if (!isDesktop()) return null;
   try {
     return await invoke<FsBinaryContent>("fs_read_file_base64", { cwd, path });
   } catch (err) {
@@ -98,7 +98,7 @@ export async function fsWriteFileBase64(
   path: string,
   base64: string,
 ): Promise<string | null> {
-  if (!isTauri()) return "not-tauri";
+  if (!isDesktop()) return "not-desktop";
   try {
     await invoke("fs_write_file", { cwd, path, base64 });
     return null;
@@ -129,7 +129,7 @@ async function fsWriteCommand(
   cmd: "fs_mkdir" | "fs_touch" | "fs_rename" | "fs_delete" | "fs_reveal",
   args: Record<string, string>,
 ): Promise<string | null> {
-  if (!isTauri()) return "not-tauri";
+  if (!isDesktop()) return "not-desktop";
   try {
     await invoke(cmd, args);
     return null;
@@ -181,7 +181,7 @@ export function fsErrorText(code: string): string {
     "rename-failed": "重命名失败",
     "delete-failed": "删除失败",
     "reveal-failed": "打开系统文件管理器失败",
-    "not-tauri": "仅桌面端可用",
+    "not-desktop": "仅桌面端可用",
     "bad-base64": "内容编码异常，写入被拒绝",
     "too-large": "内容超过 32MB 上限",
   };

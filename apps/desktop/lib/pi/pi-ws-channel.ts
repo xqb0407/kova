@@ -15,7 +15,7 @@ import type { PiResponse } from "@/lib/pi/pi-bridge";
 /**
  * 远程 WebSocket 通道：浏览器 ⇄ 桌面端 remote.rs WS 网关 ⇄ pi-agent sidecar。
  *
- * 第一层协议（见 src-tauri/src/remote.rs）：
+ * 第一层协议（见 原 Rust 宿主的 remote.rs）：
  *   连接后先发 {"type":"auth","token"} → {"type":"authed"}；
  *   之后客户端消息为 sidecar 原样 NDJSON（id 由本通道注入），
  *   服务端回发 sidecar 原样行（{id, chunk} 流或管理响应，id 已还原），
@@ -263,7 +263,7 @@ export class WsPiChannel implements PiChannel {
     this.sendRaw({ type: "abort", threadId: threadId ?? null });
   }
 
-  /** 与 Tauri 通道同款语义：登记同步返回（ws onmessage 即事件源），退订即摘除 */
+  /** 与 桌面通道同款语义：登记同步返回（ws onmessage 即事件源），退订即摘除 */
   subscribeTurns(
     cb: (sessionId: string | null, active: boolean) => void,
   ): () => void {

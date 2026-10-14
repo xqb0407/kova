@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kova 企业私有化版 · 设计文档（席位体系）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#14171a; --muted:#5c6672; --faint:#8a94a0;
+    --surface:#f6f8fa; --surface-2:#eef1f4; --line:#e2e7ec; --line-strong:#cfd6dd;
+    --brand:#1867d8; --brand-soft:#e8f0fd; --brand-text:#1257b8;
+    --warn:#b26a00; --warn-soft:#fdf3e2; --danger:#c0392b;
+    --radius:10px; --radius-sm:7px;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#14161a; --fg:#e8ecf1; --muted:#9aa6b4; --faint:#73808f;
+      --surface:#1c1f24; --surface-2:#23272d; --line:#2e343b; --line-strong:#3c444d;
+      --brand:#5b9cf8; --brand-soft:#1b2a42; --brand-text:#8fbbff;
+      --warn:#e0a94a; --warn-soft:#3a2f1c; --danger:#ef6f62;
+    }
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:16px;line-height:1.7;letter-spacing:.01em}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px 96px}
+  a{color:var(--brand-text);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{font-family:var(--mono);font-size:.86em;background:var(--surface-2);padding:.12em .38em;border-radius:5px;white-space:nowrap}
+  h1,h2,h3,h4{line-height:1.35;font-weight:650;letter-spacing:-.01em}
+  h2{font-size:1.42rem;margin:0 0 .6rem}
+  h3{font-size:1.1rem;margin:2rem 0 .5rem}
+  h4{font-size:.98rem;margin:1.4rem 0 .4rem;color:var(--muted)}
+  p{margin:.55rem 0}
+  ul,ol{margin:.5rem 0;padding-left:1.35rem}
+  li{margin:.28rem 0}
+  hr{border:0;border-top:1px solid var(--line);margin:2.4rem 0}
+
+  /* header */
+  header{padding:56px 0 28px;border-bottom:1px solid var(--line)}
+  .eyebrow{font-size:.78rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--brand-text)}
+  h1{font-size:2.05rem;margin:.5rem 0 .35rem}
+  .lede{color:var(--muted);max-width:62ch;margin:0}
+  .badges{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+  .badge{font-size:.78rem;padding:4px 10px;border-radius:999px;background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
+  .badge.b{background:var(--brand-soft);color:var(--brand-text);border-color:transparent;font-weight:600}
+
+  /* toc */
+  nav.toc{margin:26px 0 8px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px 20px}
+  nav.toc h2{font-size:.82rem;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:0 0 10px}
+  nav.toc ol{list-style:none;margin:0;padding:0;columns:2;column-gap:36px}
+  @media (max-width:640px){nav.toc ol{columns:1}}
+  nav.toc li{margin:.18rem 0;font-size:.94rem}
+  nav.toc .n{display:inline-block;width:1.6em;color:var(--faint);font-variant-numeric:tabular-nums}
+
+  /* section */
+  section{margin-top:3.4rem;scroll-margin-top:24px}
+  .sec-head{display:flex;align-items:baseline;gap:12px;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:6px}
+  .sec-no{font-family:var(--mono);font-size:.95rem;font-weight:600;color:var(--brand-text);background:var(--brand-soft);border-radius:6px;padding:2px 8px}
+  .note{border-left:3px solid var(--brand);background:var(--brand-soft);padding:10px 14px;border-radius:0 var(--radius-sm) var(--radius-sm) 0;margin:14px 0;font-size:.94rem;color:var(--fg)}
+  .note.warn{border-color:var(--warn);background:var(--warn-soft)}
+  .note p{margin:.2rem 0}
+
+  /* tables */
+  .tablewrap{overflow-x:auto;margin:14px 0;border:1px solid var(--line);border-radius:var(--radius)}
+  table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:560px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{background:var(--surface-2);font-weight:600;font-size:.84rem;color:var(--muted);white-space:nowrap}
+  tbody tr:last-child td{border-bottom:0}
+  td.c,th.c{text-align:center}
+  tbody tr:hover{background:var(--surface)}
+
+  /* cards */
+  .grid{display:grid;gap:14px;margin:16px 0}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  @media (max-width:900px){.g4{grid-template-columns:repeat(2,1fr)}.g3{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:620px){.g4,.g3,.g2{grid-template-columns:1fr}}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+  .card h4{margin:0 0 6px;color:var(--fg);font-size:1rem;display:flex;align-items:center;gap:8px}
+  .card p{margin:.25rem 0;font-size:.9rem;color:var(--muted)}
+  .card .tag{font-size:.72rem;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--brand-soft);color:var(--brand-text)}
+  .card ul{padding-left:1.1rem;margin:.4rem 0 0}
+  .card li{font-size:.88rem;color:var(--fg)}
+
+  /* code / ascii */
+  pre{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius-sm);padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:.82rem;line-height:1.6;margin:14px 0}
+  pre code{background:none;padding:0;white-space:pre}
+
+  /* diagram */
+  .fig{margin:18px 0;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+  .fig svg{width:100%;height:auto;display:block}
+  .figcap{font-size:.82rem;color:var(--faint);margin-top:8px;text-align:center}
+  .s-label{font-family:var(--sans);fill:var(--fg)}
+  .s-sub{font-family:var(--sans);fill:var(--muted);font-size:12px}
+  .s-box{fill:var(--surface-2);stroke:var(--line-strong);stroke-width:1.2}
+  .s-box.brand{fill:var(--brand-soft);stroke:var(--brand);stroke-width:1.4}
+  .s-box.ghost{fill:transparent;stroke:var(--line-strong);stroke-dasharray:5 4}
+  .s-line{stroke:var(--line-strong);stroke-width:1.6;fill:none}
+  .s-line.brand{stroke:var(--brand)}
+  .s-tick{fill:var(--faint);font-family:var(--mono);font-size:11px}
+
+  .kv{font-size:.88rem;color:var(--muted)}
+  footer{margin-top:56px;padding-top:20px;border-top:1px solid var(--line);font-size:.84rem;color:var(--faint)}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.84rem;color:var(--muted);margin:8px 0}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;background:var(--brand)}
+  .pill{font-size:.74rem;font-weight:600;border-radius:999px;padding:1px 8px;background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
+  .pill.ok{background:var(--brand-soft);color:var(--brand-text);border-color:transparent}
+  .pill.no{background:transparent;color:var(--faint)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">设计文档 · v0.1 · 未实现</div>
+  <h1>Kova 企业私有化版 · 席位体系设计</h1>
+  <p class="lede">以「席位」为组织骨架：企业统一管控登录账号、下发模型、共享企业/团队知识与 Skill，并完整交付到客户内网闭环运行（含本地 GPU 模型集群）。含<strong>按用户 token 计量与埋点</strong>设计。</p>
+  <div class="badges">
+    <span class="badge b">完整私有化</span>
+    <span class="badge b">复用企业 IdP</span>
+    <span class="badge">KB 先接 MCP</span>
+    <span class="badge">同应用双档案</span>
+    <span class="badge">四档席位</span>
+    <span class="badge">仅设计，不改代码</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#s1"><span class="n">1</span>概述与目标</a></li>
+    <li><a href="#s2"><span class="n">2</span>现状与差距</a></li>
+    <li><a href="#s3"><span class="n">3</span>总体架构</a></li>
+    <li><a href="#s4"><span class="n">4</span>席位体系（核心）</a></li>
+    <li><a href="#s5"><span class="n">5</span>能力域（按席位展开）</a></li>
+    <li><a href="#s6"><span class="n">6</span>计量与埋点体系</a></li>
+    <li><a href="#s7"><span class="n">7</span>私有化部署形态</a></li>
+    <li><a href="#s8"><span class="n">8</span>与现有代码的落点</a></li>
+    <li><a href="#s9"><span class="n">9</span>分期路线与验收</a></li>
+    <li><a href="#s10"><span class="n">10</span>风险与开放问题</a></li>
+  </ol>
+</nav>
+
+<!-- 1 -->
+<section id="s1">
+  <div class="sec-head"><span class="sec-no">1</span><h2>概述与目标</h2></div>
+  <p>目标形态是企业私有化部署：<strong>企业统一管控登录账号</strong>，登录后由企业下发模型、客户端本地调用；<strong>企业知识库 / 团队知识库共享</strong>；<strong>企业 Skill / 团队 Skill 共享</strong>；整体交付到客户内网闭环，空气隔离可用。</p>
+
+  <h3>1.1 目标</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>编号</th><th>目标</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>G1</td><td>统一身份</td><td>复用企业已有 IdP（OIDC / LDAP / 飞书·钉钉），企业发号、企业回收</td></tr>
+      <tr><td>G2</td><td>模型管控下发</td><td>企业统一下发模型与凭据，客户端本地调用；支持内网 GPU 集群（空气隔离）</td></tr>
+      <tr><td>G3</td><td>知识可控共享</td><td>企业库 / 团队库分层可见；先接企业已有检索（MCP），后续可选自建 RAG</td></tr>
+      <tr><td>G4</td><td>技能可控共享</td><td>企业 Skill / 团队 Skill 注册、签名、下发；管理员可强制启停</td></tr>
+      <tr><td>G5</td><td>席位化授权</td><td>以「席位」作为授权与计量单位，分层售卖 / 分层发放</td></tr>
+      <tr><td>G6</td><td>可私有化交付</td><td>docker-compose + Helm；离线 License；信创与等保合规路径</td></tr>
+      <tr><td>G7</td><td>单应用双档案</td><td>同一 Kova 应用新增「企业模式」，与个人档案数据隔离</td></tr>
+      <tr><td>G8</td><td>按用户计量与埋点</td><td>能回答「每个用户 / 团队 / 模型用了多少 token」，支撑配额与成本治理</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>1.2 设计原则</h3>
+  <div class="grid g2">
+    <div class="card"><h4>控制面 / 数据面分离</h4><p>身份、授权、配额、审计、下发集中在服务端；推理、会话、文件读写留在客户端与内网集群。</p></div>
+    <div class="card"><h4>本地优先 + 优雅降级</h4><p>断连时按最近一次有效授权继续本地工作，恢复后对账；仅席位硬限制生效。</p></div>
+    <div class="card"><h4>档案隔离</h4><p>企业模式与个人模式使用独立 appId / 数据目录 / 密钥环，互不读写。</p></div>
+    <div class="card"><h4>协议只增不改</h4><p>沿用 <code>pi-protocol</code> 的 loose schema，企业能力以 <code>enterprise_*</code> 增量叠加。</p></div>
+  </div>
+</section>
+
+<!-- 2 -->
+<section id="s2">
+  <div class="sec-head"><span class="sec-no">2</span><h2>现状与差距</h2></div>
+  <h3>2.1 现状盘点</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>能力</th><th>代码位置</th><th>现状</th></tr></thead>
+    <tbody>
+      <tr><td>数据目录</td><td><code>main/paths.ts</code></td><td>三段式：<code>KOVA_DATA_DIR</code> / dev / 正式 <code>com.kova.assistant</code>；含 <code>state.db</code>、<code>sessions/</code></td></tr>
+      <tr><td>数据库</td><td><code>main/db.ts</code>·<code>store.ts</code>·<code>data.ts</code></td><td>node:sqlite 优先、better-sqlite3 兜底；表：<code>sessions/credentials/secrets/custom_providers/models/usage_daily/usage_scan</code></td></tr>
+      <tr><td>密钥落盘</td><td><code>main/secret.ts</code></td><td><strong>明文直通</strong>（<code>encrypt</code> 返回原值）；历史 <code>enc:v1:</code> 密文判为缺失</td></tr>
+      <tr><td>模型配置</td><td><code>data.ts</code> custom_providers + models</td><td>已支持自定义 <code>base_url/api/headers</code> → <strong>模型下发≈配置层近乎免费</strong></td></tr>
+      <tr><td>技能发现</td><td><code>skills/discovery.ts</code>·<code>state.ts</code></td><td>五层：工作区 &gt; 生态·工作区 &gt; 系统 &gt; 生态·用户 &gt; 插件；启用态存 kv</td></tr>
+      <tr><td>知识源</td><td><code>subagent/knowledge.ts</code></td><td>只有 <code>files</code>（关键词扫描）与 <code>mcp</code>；<strong>纯内存扫描、无嵌入/向量 RAG</strong></td></tr>
+      <tr><td>协议</td><td><code>packages/pi-protocol</code></td><td>「只增不改；schema loose」</td></tr>
+      <tr><td>IPC</td><td><code>preload</code>·<code>ipc.ts</code>·<code>registry.ts</code></td><td><code>window.kovaHost</code>；已移植 85 条命令</td></tr>
+      <tr><td>服务端雏形</td><td><code>remote.ts</code>·<code>update.ts</code>·<code>backup.ts</code></td><td>HTTP+WS 网关（配对码/token/<code>REMOTE_DENIED</code>）、R2 更新、PIABK 备份</td></tr>
+      <tr><td>用量统计</td><td><code>data.ts</code> usage_daily / usage_scan</td><td>已有<strong>会话×日期</strong> token 计数；<strong>仅本地、无用户归属、无上报</strong></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>2.2 差距清单</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>差距</th><th>影响</th><th class="c">严重度</th></tr></thead>
+    <tbody>
+      <tr><td><strong>完全无身份 / 无认证概念</strong></td><td>企业管控的根基缺失</td><td class="c"><span class="pill no">阻断</span></td></tr>
+      <tr><td>密钥明文落盘</td><td>企业凭证不可这样存</td><td class="c"><span class="pill no">高</span></td></tr>
+      <tr><td>无多用户 / 无档案隔离</td><td>企业与个人串数据</td><td class="c"><span class="pill no">高</span></td></tr>
+      <tr><td>技能 / 插件仅本地</td><td>无法企业共享与强制</td><td class="c"><span class="pill no">高</span></td></tr>
+      <tr><td><strong>无按用户计量 / 无埋点上报</strong></td><td>无法回答「谁用了多少 token」</td><td class="c"><span class="pill no">高</span></td></tr>
+      <tr><td>无 RAG 能力</td><td>检索质量受限（MCP 兜底）</td><td class="c"><span class="pill">中</span></td></tr>
+      <tr><td>无配额 / 计量下发</td><td>席位售卖缺依据</td><td class="c"><span class="pill">中</span></td></tr>
+      <tr><td>无审计</td><td>等保 / 内控不达标</td><td class="c"><span class="pill">中</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><p><strong>可复用资产：</strong>① 模型下发（<code>custom_providers</code> + <code>models</code> 已支持自定义 <code>base_url</code>）；② <code>remote.ts</code> 网关作为控制通道底座；③ <code>update.ts</code>/<code>backup.ts</code> 复刻为内网下发与备份；④ 协议 loose schema 零破坏扩展；⑤ <code>usage_daily</code>/<code>usage_scan</code> 作为计量底座，只需加用户归属。</p></div>
+</section>
+
+<!-- 3 -->
+<section id="s3">
+  <div class="sec-head"><span class="sec-no">3</span><h2>总体架构</h2></div>
+  <div class="fig">
+    <svg viewBox="0 0 1000 560" role="img" aria-label="总体架构拓扑图">
+      <defs>
+        <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+          <path d="M0,0 L9,4.5 L0,9 z" fill="var(--line-strong)"/>
+        </marker>
+        <marker id="ahb" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto-start-reverse">
+          <path d="M0,0 L9,4.5 L0,9 z" fill="var(--brand)"/>
+        </marker>
+      </defs>
+
+      <rect x="16" y="46" width="968" height="498" rx="14" class="s-box ghost"/>
+      <text x="34" y="70" class="s-label" font-size="13" font-weight="600">客户内网（空气隔离可选）</text>
+
+      <rect x="48" y="84" width="904" height="106" rx="10" class="s-box"/>
+      <text x="66" y="108" class="s-label" font-size="14" font-weight="650">控制面 · Kova Enterprise Server</text>
+      <g>
+        <rect x="64"  y="122" width="166" height="46" rx="8" class="s-box"/>
+        <text x="147" y="150" class="s-sub" text-anchor="middle">IdP 连接器</text>
+        <rect x="242" y="122" width="166" height="46" rx="8" class="s-box"/>
+        <text x="325" y="150" class="s-sub" text-anchor="middle">席位 · 授权中心</text>
+        <rect x="420" y="122" width="166" height="46" rx="8" class="s-box"/>
+        <text x="503" y="150" class="s-sub" text-anchor="middle">模型网关</text>
+        <rect x="598" y="122" width="166" height="46" rx="8" class="s-box"/>
+        <text x="681" y="150" class="s-sub" text-anchor="middle">技能注册中心</text>
+        <rect x="776" y="122" width="166" height="46" rx="8" class="s-box brand"/>
+        <text x="859" y="150" class="s-sub" text-anchor="middle" style="fill:var(--brand-text);font-weight:600">审计 · 计量中心</text>
+      </g>
+
+      <rect x="336" y="238" width="328" height="70" rx="10" class="s-box brand"/>
+      <text x="500" y="267" class="s-label" font-size="14" font-weight="650" text-anchor="middle">客户端 · Kova 桌面（企业模式）</text>
+      <text x="500" y="290" class="s-sub" text-anchor="middle">身份会话 · 能力门禁 · 本地执行（数据面）</text>
+
+      <line x1="500" y1="238" x2="500" y2="192" class="s-line brand" marker-start="url(#ahb)" marker-end="url(#ahb)"/>
+      <text x="512" y="216" class="s-tick">控制通道 · 下发 / 上报</text>
+
+      <rect x="48"  y="398" width="284" height="78" rx="10" class="s-box"/>
+      <text x="190" y="429" class="s-label" font-size="13" font-weight="600" text-anchor="middle">本地 GPU 模型集群</text>
+      <text x="190" y="451" class="s-sub" text-anchor="middle">vLLM / Ollama（OpenAI 兼容）</text>
+      <text x="190" y="467" class="s-tick" text-anchor="middle">路径 B 前置计量代理（缺则盲区）</text>
+
+      <rect x="358" y="398" width="284" height="78" rx="10" class="s-box"/>
+      <text x="500" y="429" class="s-label" font-size="13" font-weight="600" text-anchor="middle">企业检索系统（MCP）/ 自建 RAG</text>
+      <text x="500" y="453" class="s-sub" text-anchor="middle">查询时按席位 / 角色裁剪 ACL</text>
+
+      <rect x="668" y="398" width="284" height="78" rx="10" class="s-box"/>
+      <text x="810" y="429" class="s-label" font-size="13" font-weight="600" text-anchor="middle">企业 / 团队 KB 存储</text>
+      <text x="810" y="453" class="s-sub" text-anchor="middle">对象存储 / DB · 版本与授权</text>
+
+      <line x1="430" y1="308" x2="205" y2="398" class="s-line" marker-end="url(#ah)"/>
+      <text x="250" y="352" class="s-tick">推理请求</text>
+      <line x1="500" y1="310" x2="500" y2="398" class="s-line" marker-end="url(#ah)"/>
+      <text x="510" y="356" class="s-tick">检索请求</text>
+      <line x1="570" y1="308" x2="795" y2="398" class="s-line" marker-end="url(#ah)"/>
+      <text x="700" y="352" class="s-tick">知识源同步</text>
+    </svg>
+    <div class="figcap">图 1 · 控制面 / 数据面分离：企业意志在控制面，推理与检索流量走数据面</div>
+  </div>
+
+  <h3>3.1 档案隔离（个人 vs 企业）</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>维度</th><th>个人档案</th><th>企业档案</th></tr></thead>
+    <tbody>
+      <tr><td>appId</td><td><code>com.kova.assistant</code>（现状）</td><td>新增 <code>com.kova.assistant.enterprise</code></td></tr>
+      <tr><td>数据目录</td><td>复用现状</td><td>独立目录 / userData</td></tr>
+      <tr><td>密钥环</td><td>现有钥匙串条目</td><td>独立命名空间</td></tr>
+      <tr><td>会话 / 技能</td><td>现状</td><td>独立，互不读取</td></tr>
+      <tr><td>协议</td><td>现状命令</td><td>现状命令 + <code>enterprise_*</code></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 4 -->
+<section id="s4">
+  <div class="sec-head"><span class="sec-no">4</span><h2>席位体系（核心）</h2></div>
+  <h3>4.1 四档席位</h3>
+  <div class="grid g4">
+    <div class="card"><h4><span class="tag">管理员</span></h4><p>企业治理者：IT / 安全负责人</p><ul><li>管人、管模型、管技能、看审计</li><li>配额高（含管理开销）</li><li>可访问管理台</li></ul></div>
+    <div class="card"><h4><span class="tag">标准</span></h4><p>主力生产力：研发 / 产品 / 设计 / 职能</p><ul><li>全量企业/团队知识与技能</li><li>独立配额</li><li>仅见自己用量</li></ul></div>
+    <div class="card"><h4><span class="tag">受限</span></h4><p>受控使用者：外包 / 实习生 / 试点</p><ul><li>可见范围小、白名单</li><li>低配额 + 速率上限</li><li>默认禁外网出口</li></ul></div>
+    <div class="card"><h4><span class="tag">集成 API</span></h4><p>系统对接：服务账号 / CI / 上游平台</p><ul><li>无 UI，纯 API / 批处理</li><li>服务级限流与审计标签</li><li>按服务标签计量</li></ul></div>
+  </div>
+
+  <h3>4.2 席位权益矩阵</h3>
+  <div class="legend">
+    <span><span class="dot"></span>● 全量</span><span><span class="pill ok">◐</span>受限</span><span><span class="pill no">○</span>无</span><span><span class="pill ok">✎</span>可管理（非仅使用）</span>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>能力维度</th><th class="c">管理员</th><th class="c">标准</th><th class="c">受限</th><th class="c">集成 API</th></tr></thead>
+    <tbody>
+      <tr><td>客户端形态</td><td class="c">桌面 + 管理台</td><td class="c">桌面</td><td class="c">桌面</td><td class="c"><strong>无 UI</strong></td></tr>
+      <tr><td>模型可见范围</td><td class="c">● 全部 + ✎</td><td class="c">◐ 策略集合</td><td class="c">○ 受限集合</td><td class="c">● 策略集合</td></tr>
+      <tr><td>模型配额</td><td class="c">高</td><td class="c">独立配额</td><td class="c"><strong>低 + 速率上限</strong></td><td class="c">服务级并发</td></tr>
+      <tr><td>企业知识库</td><td class="c">● + ✎ 授权</td><td class="c">● 部门/团队</td><td class="c">○ / ◐ 白名单</td><td class="c">● 服务范围</td></tr>
+      <tr><td>团队知识库</td><td class="c">● + ✎</td><td class="c">● 本团队</td><td class="c">◐ 只读子集</td><td class="c">● 指定团队</td></tr>
+      <tr><td>自建 RAG（后期）</td><td class="c">✎ 建库/切分/重排</td><td class="c">◐ 使用</td><td class="c">○</td><td class="c">◐ 调用</td></tr>
+      <tr><td>企业 / 团队 Skill</td><td class="c">● + ✎ 强制启停</td><td class="c">● 可用</td><td class="c">◐ 白名单</td><td class="c">● 白名单</td></tr>
+      <tr><td>个人 Skill / 插件</td><td class="c">●</td><td class="c">●（策略可禁）</td><td class="c">◐ 仅本地</td><td class="c">○</td></tr>
+      <tr><td>自定义模型 / Provider</td><td class="c">✎ 策略级</td><td class="c">◐ 策略允许</td><td class="c">○</td><td class="c">○</td></tr>
+      <tr><td>外部网络出口</td><td class="c">✎</td><td class="c">◐ 策略</td><td class="c"><strong>○ 默认禁</strong></td><td class="c">◐ 策略</td></tr>
+      <tr><td>文件 / 内容导出</td><td class="c">● + 审计</td><td class="c">●（水印可选）</td><td class="c"><strong>◐ 可禁导出</strong></td><td class="c">◐ API 出口</td></tr>
+      <tr><td>审计可见性</td><td class="c"><strong>✎ 全量</strong></td><td class="c">○ 仅自己</td><td class="c">○</td><td class="c">○ 自身可查</td></tr>
+      <tr><td><strong>用量计量与报表</strong></td><td class="c"><strong>✎ 全量下钻</strong></td><td class="c">◐ 仅见自己</td><td class="c">◐ 仅见自己</td><td class="c">◐ 按服务标签</td></tr>
+      <tr><td><strong>用量上报</strong></td><td class="c">服务端直采 + 客户端</td><td class="c">客户端埋点</td><td class="c">客户端埋点</td><td class="c">服务端直采</td></tr>
+      <tr><td>设备绑定额度</td><td class="c">多设备</td><td class="c">1~N（策略）</td><td class="c">1</td><td class="c">服务实例</td></tr>
+      <tr><td>管理台访问</td><td class="c">●</td><td class="c">○</td><td class="c">○</td><td class="c">○</td></tr>
+      <tr><td>席位转移</td><td class="c">✎ 执行</td><td class="c">—</td><td class="c">—</td><td class="c">—</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><p>矩阵是<strong>策略默认值</strong>，管理员可在企业策略里对「标准 / 受限」进一步收窄。</p></div>
+
+  <h3>4.3 席位与角色的关系</h3>
+  <pre><code>最终能力 = 席位档位（天花板） ∩ 角色策略（可见范围/团队） ∩ 企业策略（全局开关）</code></pre>
+  <p><strong>席位</strong> = 授权容量与权益档（售卖/发放单位、License 计量单位）；<strong>角色</strong> = 职责边界（映射 IdP 组，决定部门/团队/知识范围）。</p>
+
+  <h3>4.4 席位生命周期</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>阶段</th><th>触发</th><th>动作</th><th>客户端表现</th></tr></thead>
+    <tbody>
+      <tr><td>发放</td><td>管理台建席位 / IdP 组同步</td><td>生成席位，绑定用户/角色/配额，更新 License 已用</td><td>登录后拉取能力集，即时生效</td></tr>
+      <tr><td>变更</td><td>调档位 / 加角色 / 调配额</td><td>版本 +1，推送 <code>enterprise_entitlement_changed</code></td><td>热更新能力集</td></tr>
+      <tr><td>冻结</td><td>试用到期 / 风控</td><td>保留席位但禁用登录</td><td>心跳被拒，转降级页</td></tr>
+      <tr><td>回收</td><td>离职 / 合同结束</td><td>释放席位、撤销令牌</td><td>会话失效，企业数据不可访问</td></tr>
+      <tr><td>转移</td><td>回收后重新分配</td><td>席位 ID 复用，审计记录 A→B</td><td>新持有人正常登录</td></tr>
+      <tr><td>续期</td><td>License 续签</td><td>更新有效期</td><td>到期前提示，到期按策略降级</td></tr>
+    </tbody>
+  </table></div>
+  <p class="kv"><strong>离线 License 席位校验：</strong>服务端签名凭证 <code>{ org, edition, seatTiers{admin,standard,restricted,api}, expiry, limits }</code>；启动校验签名 + 有效期 + <strong>用量 ≤ 授权数</strong>，超发拒发；客户端不校验 License（信任服务端）；续期 = 导入新 <code>.lic</code>。</p>
+
+  <h3>4.5 客户端按席位降级</h3>
+  <pre><code>{
+  "seat": "standard",
+  "capabilities": {
+    "model.scope":     ["qwen3-32b", "gpt-oss-120b"],
+    "knowledge.scope": ["kb://team/rd-frontend"],
+    "skills.allow":    ["enterprise/*", "team/rd-frontend/*"],
+    "export.enabled":  true,
+    "egress.enabled":  false,
+    "device.limit":    2
+  },
+  "quota": { "tokensDaily": 500000, "ratePerMin": 60 },
+  "revision": 17,
+  "expiresAt": "2026-12-31T23:59:59Z"
+}</code></pre>
+  <ol>
+    <li><strong>在线</strong>：以服务端最新能力集为准，本地缓存兜底。</li>
+    <li><strong>断连未过期</strong>：沿用缓存能力集继续本地工作，仅硬限制生效。</li>
+    <li><strong>过期 / 撤销</strong>：转受限降级——只读已有会话、禁新建外部调用。</li>
+    <li><strong>档位变化</strong>：热更新 UI，不删除已有本地数据。</li>
+  </ol>
+</section>
+
+<!-- 5 -->
+<section id="s5">
+  <div class="sec-head"><span class="sec-no">5</span><h2>能力域（按席位展开）</h2></div>
+
+  <h3>5.1 身份与准入</h3>
+  <pre><code>登录：客户端 → 系统浏览器/内嵌页 → IdP(OIDC / LDAP / 飞书·钉钉)
+      → 回调换取企业会话 → 拉取席位能力集 + 短期令牌 → 入网
+设备：首次登录需设备入网（设备指纹 + device.limit 校验），管理员可踢设备
+令牌：短期 access + 可刷新 refresh，存系统钥匙串（替换明文口径）
+撤销：管理员撤销 → 控制通道推送 → 客户端立即失效会话</code></pre>
+  <div class="tablewrap"><table>
+    <thead><tr><th>席位差异</th><th class="c">管理员</th><th class="c">标准</th><th class="c">受限</th><th class="c">集成 API</th></tr></thead>
+    <tbody>
+      <tr><td>登录方式</td><td class="c">IdP + 管理台</td><td class="c">IdP</td><td class="c">IdP</td><td class="c">Client Credentials</td></tr>
+      <tr><td>设备数</td><td class="c">多</td><td class="c">默认 2</td><td class="c">1</td><td class="c">服务实例</td></tr>
+      <tr><td>会话时长</td><td class="c">长</td><td class="c">标准</td><td class="c"><strong>短，复验频繁</strong></td><td class="c">Token 短 + 轮换</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>5.2 模型供给</h3>
+  <div class="grid g2">
+    <div class="card"><h4>路径 A · 企业模型网关</h4><p>客户端配置「虚拟密钥 + 网关 base_url」，走现有 <code>custom_providers</code>；网关做鉴权、路由、配额、审计。<strong>客户端改动最小。</strong></p></div>
+    <div class="card"><h4>路径 B · 内网 GPU 集群</h4><p>vLLM / Ollama 暴露 OpenAI 兼容端点，同样以 <code>custom_providers</code> 接入；空气隔离场景。<strong>需前置计量代理才有硬配额。</strong></p></div>
+  </div>
+
+  <h3>5.3 知识库</h3>
+  <ol>
+    <li><strong>P3a 先做</strong>：以 <strong>MCP 代理</strong>接企业已有检索（复用 <code>knowledge.ts</code> 的 <code>mcp</code> 源）。</li>
+    <li><strong>P3b 后做（可选）</strong>：自建 RAG 作为实现替换，不改 schema 与上层调用。</li>
+    <li><strong>权限在查询时判定（服务端）</strong>：不全库同步，检索时按席位 + 角色裁剪（服务端 ACL）。</li>
+  </ol>
+
+  <h3>5.4 技能与插件</h3>
+  <pre><code>工作区 &gt; 生态·工作区 &gt; 团队(企业下发) &gt; 企业(企业下发) &gt; 系统 &gt; 生态·用户 &gt; 插件</code></pre>
+  <p>注册中心：上传 → 签名（内容哈希 + 企业签名）→ 版本 → 可见范围 → 下发。<strong>管理员强制启停覆盖用户 kv</strong>（在 <code>state.ts</code> 判定之上加「策略优先」层）。空气隔离以签名 bundle 下发。</p>
+
+  <h3>5.5 集成 API 席位（无 UI）</h3>
+  <p>服务账号（Client Credentials），纯 API / 批处理；能力含模型调用、KB 检索、企业 Skill 白名单，带服务级限流与审计标签。复用 <code>remote.ts</code> 鉴权/路由骨架。典型：CI 代码评审、上游批处理、问答机器人后端。</p>
+</section>
+
+<!-- 6 -->
+<section id="s6">
+  <div class="sec-head"><span class="sec-no">6</span><h2>计量与埋点体系</h2></div>
+  <div class="note warn"><p><strong>需求源头：</strong>企业要能回答「<strong>每个用户用了多少 token</strong>」——按用户 / 团队 / 模型 / 席位下钻，支撑配额与成本治理。现有 <code>usage_daily</code> 只是本地、按会话的计数，必须补上 <strong>用户归属 + 埋点上报 + 集中聚合</strong>。</p></div>
+
+  <h3>6.1 两条计量线（关键设计）</h3>
+  <div class="note"><p>一句话：<strong>权威计量必须落在流量路径上</strong>。客户端埋点解决「可见性」，解决不了「可信」。</p></div>
+  <div class="tablewrap"><table>
+    <thead><tr><th></th><th>路径 A · 企业模型网关</th><th>路径 B · 空气隔离直连内网 GPU</th></tr></thead>
+    <tbody>
+      <tr><td>流量路径</td><td>客户端 → 网关 → 上游/集群</td><td>客户端 → 内网 vLLM/Ollama</td></tr>
+      <tr><td>服务端可见性</td><td class="c">● 全量可见</td><td class="c"><strong>○ 网关不在路径上 → 看不到</strong></td></tr>
+      <tr><td>权威计量</td><td class="c"><strong>网关同步计量</strong>（可信、可硬控）</td><td class="c">服务端无数据</td></tr>
+      <tr><td>硬配额执行</td><td class="c">网关实时判定并拒绝（429）</td><td class="c">需<strong>集群前置计量代理</strong>才能硬控</td></tr>
+      <tr><td>客户端埋点用途</td><td class="c">本人可见性 + 断连对账</td><td class="c">唯一来源，但<strong>不可信</strong>：仅成本可见性</td></tr>
+    </tbody>
+  </table></div>
+  <p><strong>结论：</strong>异步统计（报表、成本可见性）可走客户端埋点，容忍延迟；<strong>同步硬配额（计费、限流）必须由网关或集群前置代理在路径上实时执行</strong>。路径 B 优先在集群前架轻量计量代理（OpenAI 兼容入口 + 计量 + 配额）；客户拒绝代理则明确告知「硬配额不可用」。</p>
+
+  <h3>6.2 埋点点清单</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>埋点点</th><th>触发时机</th><th>关键字段</th><th>权威来源</th></tr></thead>
+    <tbody>
+      <tr><td><code>model.call</code></td><td>每次 LLM 调用完成</td><td>provider、model、input/output/cache tokens、latencyMs、result、会话、席位、用户、团队</td><td>网关（A）／客户端（B）</td></tr>
+      <tr><td><code>model.stream.end</code></td><td>流式结束</td><td>同上 + 首字延迟</td><td>同上</td></tr>
+      <tr><td><code>kb.query</code></td><td>每次知识检索</td><td>来源 ID、scope、命中数、耗时、席位</td><td>服务端代理／客户端</td></tr>
+      <tr><td><code>skill.invoke</code></td><td>每次 Skill 调用</td><td>skill id、scope、版本、result</td><td>客户端</td></tr>
+      <tr><td><code>auth.login</code> / <code>device.enroll</code></td><td>登录 / 设备入网</td><td>用户、席位、设备指纹、IP、result</td><td>服务端（权威）</td></tr>
+      <tr><td><code>seat.change</code> / <code>policy.change</code></td><td>席位/策略变更</td><td>操作者、目标、前后值</td><td>服务端（权威）</td></tr>
+      <tr><td><code>export</code></td><td>内容导出</td><td>类型、目标、字节数</td><td>客户端 + 服务端</td></tr>
+      <tr><td><code>quota.exceeded</code></td><td>触达硬配额</td><td>用户、维度、当前值/上限</td><td>网关／代理（权威）</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>6.3 事件 schema（统一）</h3>
+  <pre><code>// enterprise_telemetry 事件（schema loose，只增不改）
+{
+  "eid": "01H...",                 // 幂等键，客户端生成 UUIDv7
+  "ts":  "2026-10-14T12:00:00Z",
+  "org": "acme",
+  "kind": "usage.model.call",      // 命名空间：usage.* / audit.*
+  "user": "u_123", "team": "rd-frontend", "seat": "standard",
+  "session": "s_abc", "device": "d_9f",
+  "model": "qwen3-32b", "provider": "gw-1",
+  "usage": { "input": 1200, "output": 300, "cacheRead": 0, "cacheWrite": 0, "tokens": 1500 },
+  "cost": 0.012,
+  "result": "ok", "latencyMs": 840,
+  "src": "gateway"                 // gateway | client | server
+}
+// 只采计量与元数据，绝不采 prompt/response 正文</code></pre>
+
+  <h3>6.4 上报管道</h3>
+  <div class="fig">
+    <svg viewBox="0 0 1000 300" role="img" aria-label="计量数据流拓扑图">
+      <defs>
+        <marker id="mh" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+          <path d="M0,0 L9,4.5 L0,9 z" fill="var(--brand)"/>
+        </marker>
+      </defs>
+      <text x="24" y="34" class="s-label" font-size="13" font-weight="650">路径 A：网关同步计量（权威 · 硬配额）</text>
+      <rect x="24" y="44" width="300" height="40" rx="8" class="s-box brand"/>
+      <text x="174" y="69" class="s-sub" text-anchor="middle" style="fill:var(--brand-text)">Gateway Metering（实时判定 · 429）</text>
+
+      <text x="360" y="34" class="s-label" font-size="13" font-weight="650">路径 B：集群前置代理 / 客户端上报（软统计）</text>
+      <rect x="360" y="44" width="330" height="40" rx="8" class="s-box"/>
+      <text x="525" y="69" class="s-sub" text-anchor="middle">Proxy / Client Report（不可信 · 仅可见性）</text>
+
+      <g>
+        <rect x="24"  y="140" width="168" height="66" rx="9" class="s-box"/>
+        <text x="108" y="167" class="s-label" font-size="13" font-weight="600" text-anchor="middle">① 埋点产生</text>
+        <text x="108" y="188" class="s-sub" text-anchor="middle">客户端 / 网关</text>
+
+        <rect x="228" y="140" width="168" height="66" rx="9" class="s-box"/>
+        <text x="312" y="167" class="s-label" font-size="13" font-weight="600" text-anchor="middle">② 本地缓冲</text>
+        <text x="312" y="188" class="s-sub" text-anchor="middle">enterprise_telemetry</text>
+
+        <rect x="432" y="140" width="168" height="66" rx="9" class="s-box"/>
+        <text x="516" y="167" class="s-label" font-size="13" font-weight="600" text-anchor="middle">③ 批量上报</text>
+        <text x="516" y="188" class="s-sub" text-anchor="middle">分批 + gzip + 退避重试</text>
+
+        <rect x="636" y="140" width="168" height="66" rx="9" class="s-box"/>
+        <text x="720" y="167" class="s-label" font-size="13" font-weight="600" text-anchor="middle">④ 服务端入库</text>
+        <text x="720" y="188" class="s-sub" text-anchor="middle">按 eid 幂等 upsert</text>
+
+        <rect x="840" y="140" width="136" height="66" rx="9" class="s-box brand"/>
+        <text x="908" y="167" class="s-label" font-size="13" font-weight="600" text-anchor="middle">⑤ 聚合报表</text>
+        <text x="908" y="188" class="s-sub" text-anchor="middle">管理台下钻</text>
+      </g>
+
+      <line x1="174" y1="84" x2="108" y2="140" class="s-line brand" marker-end="url(#mh)"/>
+      <line x1="525" y1="84" x2="450" y2="140" class="s-line" marker-end="url(#mh)"/>
+
+      <line x1="192" y1="173" x2="228" y2="173" class="s-line" marker-end="url(#mh)"/>
+      <line x1="396" y1="173" x2="432" y2="173" class="s-line" marker-end="url(#mh)"/>
+      <line x1="600" y1="173" x2="636" y2="173" class="s-line" marker-end="url(#mh)"/>
+      <line x1="804" y1="173" x2="840" y2="173" class="s-line" marker-end="url(#mh)"/>
+
+      <rect x="24" y="238" width="952" height="44" rx="8" class="s-box" style="fill:var(--surface-2)"/>
+      <text x="500" y="265" class="s-sub" text-anchor="middle">缓冲双上限 + lossy 标记（不撑爆磁盘、不静默丢） · 断连按 usage_scan 水印增量对账 · 允许乱序按 date 归集</text>
+    </svg>
+    <div class="figcap">图 2 · 计量数据流：埋点 → 本地缓冲 → 批量上报 → 幂等入库 → 聚合报表</div>
+  </div>
+
+  <h3>6.5 服务端聚合与报表</h3>
+  <ul>
+    <li><strong>维度</strong>：用户 / 团队 / 部门 / 模型 / 席位档 / 时间（日、周、月）。</li>
+    <li><strong>报表</strong>：Top N 用户与团队、按模型 token 分布、席位配额消耗率、异常突增/越权告警。</li>
+    <li><strong>权限</strong>：管理员全量下钻；标准/受限只见自己；集成 API 按服务标签聚合。</li>
+  </ul>
+
+  <h3>6.6 审计与计量合并为单一通道</h3>
+  <p>原草案的 <code>enterprise_audit_emit</code> 与计量埋点<strong>合并为同一机制 <code>enterprise_telemetry</code></strong>，用 <code>kind</code> 前缀区分 <code>audit.*</code> / <code>usage.*</code>；缓冲表统一为 <code>enterprise_telemetry</code>，服务端按 kind 分流入审计库 / 计量库。</p>
+
+  <h3>6.7 隐私与合规</h3>
+  <ul>
+    <li><strong>只采计量与元数据，不采内容正文</strong>（prompt / response 不入埋点）。</li>
+    <li>保留周期可配（默认 180 天）；支持按用户/时间导出与删除。</li>
+    <li>审计事件按等保要求单独留存（可长于计量）。</li>
+  </ul>
+</section>
+
+<!-- 7 -->
+<section id="s7">
+  <div class="sec-head"><span class="sec-no">7</span><h2>私有化部署形态</h2></div>
+  <h3>7.1 编排</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>形态</th><th>适用</th><th>组成</th></tr></thead>
+    <tbody>
+      <tr><td>docker-compose</td><td>中小客户 / 试点</td><td>控制面 + 网关 + 管理台 +（可选）向量库 +（可选）模型集群接入</td></tr>
+      <tr><td>Helm / K8s</td><td>大型客户 / 已有 K8s</td><td>StatefulSet / Deployment，含 HPA、PVC、Secret</td></tr>
+      <tr><td>单机一体化</td><td>POC / 演示</td><td>一个容器内含控制面 + 网关（无 GPU）</td></tr>
+    </tbody>
+  </table></div>
+  <h3>7.2 卸载与安装</h3>
+  <ul>
+    <li><strong>离线安装包</strong>：镜像 tar + Helm chart + License <code>.lic</code> + 企业根证书 + 技能签名 bundle。</li>
+    <li><strong>空气隔离</strong>：介质离线带入；客户端企业模式预置内网地址（不可改外网）。</li>
+    <li><strong>升级</strong>：沿用 <code>update.ts</code> 清单模式（<code>latest.json</code> + 节流），企业侧改为内网制品库。</li>
+  </ul>
+  <h3>7.3 合规</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>项</th><th>措施</th></tr></thead>
+    <tbody>
+      <tr><td>等保三级</td><td>审计全留存、最小权限、传输加密、账号可追溯、双因子（管理员）</td></tr>
+      <tr><td>密评</td><td>国密 SM2/SM3/SM4 可选套件（HTTPS/TLS、签名、落盘）</td></tr>
+      <tr><td>信创</td><td>麒麟 / 统信 UOS 客户端；鲲鹏 / 龙芯服务端 arm64 / loongarch 构建</td></tr>
+      <tr><td>数据出境</td><td>默认不出内网；外网出口按席位默认关闭（受限强制关）</td></tr>
+      <tr><td>计量留存</td><td>只采元数据不采正文（见 §6.7）；审计与计量分流留存</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 8 -->
+<section id="s8">
+  <div class="sec-head"><span class="sec-no">8</span><h2>与现有代码的落点（增量）</h2></div>
+  <p class="kv">原则：<strong>只增不改</strong>。下列均为新增，既有命令 / 表 / 事件保持兼容。</p>
+  <h3>8.1 新增命令</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>命令</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>enterprise_login</code> / <code>enterprise_logout</code></td><td>IdP 登录 / 登出</td></tr>
+      <tr><td><code>enterprise_session</code> / <code>enterprise_refresh</code></td><td>取会话与能力集 / 刷新令牌</td></tr>
+      <tr><td><code>enterprise_enroll_device</code></td><td>设备入网注册</td></tr>
+      <tr><td><code>enterprise_models</code> / <code>enterprise_skills</code> / <code>enterprise_knowledge</code></td><td>下发模型 / 技能 / 知识源清单</td></tr>
+      <tr><td><code>enterprise_telemetry_emit</code></td><td><strong>计量 + 审计统一上报</strong>（本地缓冲，<code>kind</code> 区分）</td></tr>
+      <tr><td><code>enterprise_usage</code> / <code>enterprise_usage_flush</code></td><td>用量查询 / 触发批量上报</td></tr>
+      <tr><td><code>enterprise_admin_*</code></td><td>管理台侧（席位/配额/策略/报表）——服务端 API</td></tr>
+    </tbody>
+  </table></div>
+  <h3>8.2 新增事件</h3>
+  <p><code>enterprise_entitlement_changed</code> · <code>enterprise_session_revoked</code> · <code>enterprise_models_updated</code> · <code>enterprise_skills_updated</code> · <code>enterprise_license_notice</code> · <code>enterprise_quota_notice</code></p>
+  <h3>8.3 新增表</h3>
+  <pre><code>enterprise_profile    (id, org_id, user_id, seat_tier, role, revision, expires_at)
+enterprise_entitle    (profile_id, capability_json, quota_json, updated_at)
+enterprise_device     (device_id, profile_id, fingerprint, enrolled_at, last_seen, state)
+enterprise_skill      (id, scope, version, signature, enabled_forced, source)
+enterprise_knowledge  (id, scope, kind, endpoint, acl_json)
+-- 计量与埋点（§6）
+enterprise_telemetry  (eid PRIMARY KEY, ts, kind, profile_id, user_id, team_id, seat,
+                       session_id, model, input, output, cache_read, cache_write, tokens,
+                       cost, result, latency_ms, src, state, retry, meta_json)</code></pre>
+  <p class="kv"><strong>用量归属：</strong><code>sessions</code> 增列 <code>profile_id</code> / <code>user_id</code> / <code>team_id</code>（沿用补列范式），使 <code>usage_daily</code> 聚合行带用户维度。缓冲表兼作审计缓冲，不出第二张表。</p>
+  <h3>8.4 复用点</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>复用</th><th>位置</th><th>用法</th></tr></thead>
+    <tbody>
+      <tr><td>数据目录三段式</td><td><code>paths.ts</code></td><td>扩展「档案」维度 → 企业独立目录</td></tr>
+      <tr><td>自定义模型</td><td><code>data.ts</code></td><td>企业模型以「虚拟密钥 + 网关地址」写入</td></tr>
+      <tr><td>网关 / token / 撤销</td><td><code>remote.ts</code></td><td>控制通道骨架（鉴权换 IdP）</td></tr>
+      <tr><td>更新清单 / 备份信封</td><td><code>update.ts</code> / <code>backup.ts</code></td><td>内网下发 / 企业备份</td></tr>
+      <tr><td>技能分层 / 开关</td><td><code>discovery.ts</code> / <code>state.ts</code></td><td>插入企业层·团队层 / 策略优先层</td></tr>
+      <tr><td>知识源</td><td><code>knowledge.ts</code></td><td>复用 <code>mcp</code> 源；RAG 为实现替换</td></tr>
+      <tr><td>用量统计</td><td><code>data.ts</code> usage_daily/usage_scan</td><td>加用户归属列后作为本地账本与上报源</td></tr>
+      <tr><td>协议</td><td><code>pi-protocol</code></td><td>loose schema 零破坏扩展</td></tr>
+    </tbody>
+  </table></div>
+  <h3>8.5 密钥处置</h3>
+  <p>企业相关密钥（模型虚拟 Key、KB Token、服务账号密钥）必须走<strong>系统钥匙串 / safeStorage</strong> 并限定档案命名空间；个人档案沿用现状（不强制迁移）。建议新增 <code>enterpriseSecretStore</code>（旁路新增，不动 <code>secret.ts</code> 原函数），仅企业模式启用。</p>
+</section>
+
+<!-- 9 -->
+<section id="s9">
+  <div class="sec-head"><span class="sec-no">9</span><h2>分期路线与验收</h2></div>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">期</th><th>主题</th><th>交付</th><th>验收标准</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><strong>P0</strong></td><td>安全基线 + 身份骨架 + 埋点底座</td><td>档案隔离、钥匙串企业密钥、IdP 登录、设备入网、四档席位、能力集门禁；<strong><code>enterprise_telemetry</code> 缓冲表 + 上报通道 + 用量归属列</strong></td><td>管理员可发放/回收席位；三种登录态可分；断连可降级；密钥不再明文；<strong>本地可按用户查 token 用量</strong></td></tr>
+      <tr><td class="c"><strong>P1</strong></td><td>模型下发 + 权威计量</td><td>模型网关（虚拟密钥 + 配额 + 审计 + <strong>同步计量</strong>）、模型清单下发、内网 GPU 集群接入（<strong>前置计量代理</strong>）</td><td>企业下发模型即可用；配额实时生效；<strong>管理台可按用户/团队/模型下钻 token</strong>；空气隔离下计量可用</td></tr>
+      <tr><td class="c"><strong>P2</strong></td><td>技能共享</td><td>注册中心、签名、企业层/团队层发现、管理员强制启停、离线 bundle</td><td>企业/团队技能可下发；管理员强制覆盖用户开关；离线包签名校验通过</td></tr>
+      <tr><td class="c"><strong>P3</strong></td><td>知识库</td><td>MCP 代理接企业检索；权限查询时裁剪；（可选）自建 RAG</td><td>标准见团队库、受限只见白名单；越权被拒；RAG 为可选加装</td></tr>
+      <tr><td class="c"><strong>P4</strong></td><td>私有化交付</td><td>docker-compose + Helm、离线 License、空气隔离安装包、信创与合规材料</td><td>客户内网一键起；离线席位校验正确；超发被拒；等保/密评材料齐；计量留存策略生效</td></tr>
+    </tbody>
+  </table></div>
+  <p class="kv"><strong>依赖：</strong>P1 依赖 P0 的身份、能力集与埋点底座；P2 依赖 P0 的档案与密钥；P3 依赖 P0 的席位 ACL；P4 依赖 P0~P3 全部可离线运行。</p>
+</section>
+
+<!-- 10 -->
+<section id="s10">
+  <div class="sec-head"><span class="sec-no">10</span><h2>风险与开放问题</h2></div>
+  <h3>10.1 风险</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>风险</th><th>影响</th><th>缓解</th></tr></thead>
+    <tbody>
+      <tr><td>协议扩展膨胀</td><td>维护成本上升</td><td>集中命名空间 <code>enterprise_*</code>，独立文档与版本</td></tr>
+      <tr><td>空气隔离下下发难</td><td>技能/模型更新滞后</td><td>离线签名 bundle + 内网制品库</td></tr>
+      <tr><td>服务端 ACL 单点</td><td>检索延迟/可用性</td><td>结果缓存 + 客户端本地兜底</td></tr>
+      <tr><td>明文密钥历史包袱</td><td>迁移成本</td><td>仅企业档案强制钥匙串</td></tr>
+      <tr><td><strong>路径 B 无网关 → 计量盲区</strong></td><td>无法权威计量/硬配额</td><td>集群前置计量代理；纯直连声明「仅统计、不硬控」</td></tr>
+      <tr><td><strong>客户端上报不可信</strong></td><td>只可可见性、不可计费</td><td>计费/硬配额以网关或代理为准</td></tr>
+      <tr><td>埋点缓冲撑爆磁盘 / 静默丢数</td><td>数据不完整或占空间</td><td>双上限 + <code>lossy</code> 标记 + 显式提示</td></tr>
+    </tbody>
+  </table></div>
+  <h3>10.2 开放问题（待确认）</h3>
+  <ol>
+    <li>管理台形态：独立 Web 管理台，还是复用桌面端「管理员模式」？</li>
+    <li>IdP 首选顺序：OIDC / 飞书 / 钉钉 / LDAP 哪个先行？</li>
+    <li>席位档位是否可再细分（「标准」再分知识范围档）？</li>
+    <li>企业模式与个人模式如何切换（同一进程双档案 / 独立实例）？</li>
+    <li>License 机器绑定是否需要？绑定粒度（客户 / 集群 / 设备）？</li>
+    <li>计量上报频率与离线缓冲策略（断连多久、缓冲多大）。</li>
+    <li>技能签名的信任根由谁签发（Kova 官方 / 客户自签）？</li>
+    <li>计费口径：按 token 计费还是按席位订阅？（决定是否必须网关权威计量）</li>
+    <li>埋点上报路径：走控制通道（WS）还是独立 HTTP 端点？</li>
+    <li>路径 B 是否强制部署计量代理，还是接受「硬配额不可用」的降级交付？</li>
+  </ol>
+</section>
+
+<footer>
+  <p>源文件 <code>docs/enterprise/EKOVA-DESIGN.md</code> · 阅读版 <code>docs/enterprise/EKOVA-DESIGN.html</code> · 目标仓库 Kova Electron 移植版 · 状态：设计稿，未实现，不含代码改动。</p>
+</footer>
+
+</div>
+</body>
+</html>

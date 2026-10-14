@@ -13,8 +13,8 @@ afterAll(restoreAllMocks);
  * - 合并语义：种子快照 + 增量双向修正 / 幂等 / 事件源失效清空重水合
  * - resync 纠偏：end 事件丢失留下的陈旧 true 增量在种子回来时清除，
  *   种子发起之后才 start 的会话不受误伤
- * - TauriPiChannel.subscribeTurns：turn_changed 行解析与 pi-exit 失效信号（旧 transport）
- * mock Tauri invoke/listen（沿用 pi-channel-attach.test.ts 的桩风格）。
+ * - DesktopPiChannel.subscribeTurns：turn_changed 行解析与 pi-exit 失效信号（旧 transport）
+ * mock 桌面壳 invoke/listen（沿用 pi-channel-attach.test.ts 的桩风格）。
  */
 
 type WireLine = { i: number | null; l: string };
@@ -25,7 +25,7 @@ type ListenFn = (event: EventLike) => void;
 const listenersByEvent = new Map<string, ListenFn>();
 let listRunningSeed: string[] = [];
 
-mockModule("@tauri-apps/api/core", () => ({
+mockModule("@/desktop-bridge/core", () => ({
   invoke: (cmd: string) => {
     if (cmd === "pi_request") {
       return Promise.resolve(
@@ -36,7 +36,7 @@ mockModule("@tauri-apps/api/core", () => ({
   },
 }));
 
-mockModule("@tauri-apps/api/event", () => ({
+mockModule("@/desktop-bridge/event", () => ({
   listen: (event: string, cb: ListenFn) => {
     listenersByEvent.set(event, cb);
     return Promise.resolve(() => {
@@ -45,7 +45,7 @@ mockModule("@tauri-apps/api/event", () => ({
   },
 }));
 
-const { TauriPiChannel, setPiChannel } = await import("@/lib/pi/pi-channel");
+const { DesktopPiChannel, setPiChannel } = await import("@/lib/pi/pi-channel");
 const {
   startPiRunningWatch,
   resyncPiRunning,
@@ -56,7 +56,7 @@ const {
 const { piResumableStorage } = await import("@/lib/pi/pi-resume-storage");
 
 // 通道单例收尾：setPiChannel 写的是共享模块的模块级 current，bun 同进程跑
-// 整个 lib/pi/ 时会把本文件的 fake 泄漏给后跑文件（tauri-pi-client.test.ts
+// 整个 lib/pi/ 时会把本文件的 fake 泄漏给后跑文件（desktop-pi-client.test.ts
 // 的 thread_snapshot 路径被毒化，3 个用例失败）——跑完清空注册表
 afterAll(() => setPiChannel(null));
 
@@ -77,7 +77,7 @@ describe("pi-running store", () => {
     // listRunning 导致置位后毒化下一个用例的 startPiRunningWatch（早退），
     // resolveListen 恒空而挂。这也与生产降级形态一致（旧 sidecar 无种子能力）。
     const bare: PiChannel = {
-      kind: "tauri",
+      kind: "desktop",
       request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
       abort: async () => {},
     };
@@ -92,7 +92,7 @@ describe("pi-running store", () => {
     let seedMode: "auto" | "manual" = "auto";
     let manualSeedResolve: ((ids: string[]) => void) | null = null;
     const fake: PiChannel = {
-      kind: "tauri",
+      kind: "desktop",
       request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
       abort: async () => {},
       listRunning: () => {
@@ -169,10 +169,10 @@ describe("pi-running store", () => {
   });
 });
 
-describe("TauriPiChannel.subscribeTurns", () => {
+describe("DesktopPiChannel.subscribeTurns", () => {
   test("登记就绪后 resolve 退订；只解析 turn_changed 通知行；pi-exit 转失效信号", async () => {
     listRunningSeed = ["s9"];
-    const channel = new TauriPiChannel();
+    const channel = new DesktopPiChannel();
     const got: [string | null, boolean][] = [];
     const teardown = channel.subscribeTurns!((sessionId, active) => {
       got.push([sessionId, active]);
@@ -211,7 +211,7 @@ describe("hydrateRunningRegistrations（启动水合）", () => {
     expect(piResumableStorage.getStreamId("sid-stale")).toBe("req-stale");
 
     const fake: PiChannel = {
-      kind: "tauri",
+      kind: "desktop",
       request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
       abort: async () => {},
       listRunningTurns: async () => [{ requestId: "req-run", sessionId: "sid-run" }],
@@ -226,7 +226,7 @@ describe("hydrateRunningRegistrations（启动水合）", () => {
   test("通道缺 listRunningTurns 能力：仍清空残留（降级路径同样不劫持回切）", async () => {
     piResumableStorage.setStreamId("req-stale2", "pi-draft-old2", "sid-stale2");
     const bare: PiChannel = {
-      kind: "tauri",
+      kind: "desktop",
       request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
       abort: async () => {},
     };

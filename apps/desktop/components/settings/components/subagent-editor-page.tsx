@@ -161,7 +161,7 @@ export const SubagentEditorPage: FC<{
       return;
     }
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { open } = await import("@/desktop-bridge/plugin-dialog");
       const dir = await open({ directory: true, multiple: false, title: "选择知识库目录" });
       if (typeof dir !== "string") return; // 用户取消
       const rel = dirToWorkspaceGlob(dir, workspaceCwd);
@@ -177,7 +177,7 @@ export const SubagentEditorPage: FC<{
       }
       patchKnowledge(row, { path: rel.glob });
     } catch {
-      // 非 Tauri 环境没有原生选择器：保持输入框手填
+      // 非 桌面壳环境没有原生选择器：保持输入框手填
       setPickError({ row, text: "当前环境没有原生目录选择器，请手工填写路径。" });
     }
   };
@@ -190,7 +190,7 @@ export const SubagentEditorPage: FC<{
       return;
     }
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { open } = await import("@/desktop-bridge/plugin-dialog");
       const picked = await open({ multiple: true, directory: false, title: "选择知识文件（可多选）" });
       if (!Array.isArray(picked) || picked.length === 0) return; // 用户取消
       const sources: PiKnowledgeSource[] = [];

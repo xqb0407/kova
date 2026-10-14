@@ -7,7 +7,7 @@ import {
 import type { PiAgentMessage, PiThreadSnapshot } from "./types";
 
 /**
- * 检查点卡观察者（缺口2）单测：全依赖注入，不碰 tauri/git——
+ * 检查点卡观察者（缺口2）单测：全依赖注入，不碰桌面桥/git——
  * 锚点换算（投影前缀口径）、begin/settle 台账生命周期、刷新重挂桥复用。
  */
 

@@ -8,8 +8,8 @@ Kova（扣瓦）AI 助手的 **Electron 版**：前端与 sidecar 直接沿用�
 ## 目录结构
 
 ```
-apps/desktop/            前端（原样复制自 Tauri 版；tauri-bridge/ 为 @tauri-apps/* 的
-                         Electron 兼容实现，经 tsconfig paths 注入，业务代码零改写）
+apps/desktop/            前端（复制自原 Tauri 版；desktop-bridge/ 为桌面桥实现，
+                        import 已直接指向它——@tauri-apps 依赖与别名均已移除）
 apps/electron/           Electron 壳
   main/                  主进程：命令路由 + 30 个 Rust 模块的 Node 移植
   preload/               window.kovaHost + __TAURI_INTERNALS__ 标记

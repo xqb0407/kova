@@ -1,8 +1,8 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import { useSyncExternalStore } from "react";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * 窗口背景效果（穿透高斯模糊）：持久化到 SQLite（kv 表），
@@ -49,7 +49,7 @@ export function useWindowEffect(): WindowEffectName {
 
 /** 切换效果：先应用窗口材质再透明根层（开启）/先恢复根层再移除材质（关闭），避免闪白 */
 export async function setWindowEffect(effect: WindowEffectName): Promise<void> {
-  if (!isTauri()) return;
+  if (!isDesktop()) return;
   if (effect !== "none") {
     await invoke("set_window_effect", { effect });
     current = effect;
@@ -64,7 +64,7 @@ export async function setWindowEffect(effect: WindowEffectName): Promise<void> {
 
 /** 从 SQLite 恢复并应用，应用启动时调用（窗口材质已由 Rust setup 恢复，这里补透明标记） */
 export async function initAppearance(): Promise<void> {
-  if (initialized || !isTauri()) return;
+  if (initialized || !isDesktop()) return;
   initialized = true;
   try {
     const value = await invoke<string | null>("kv_get", { key: KV_KEY });
@@ -78,5 +78,5 @@ export async function initAppearance(): Promise<void> {
   }
 }
 
-// client bundle 加载即恢复（SSR 端 isTauri() 为 false，直接跳过）
+// client bundle 加载即恢复（SSR 端 isDesktop() 为 false，直接跳过）
 void initAppearance();

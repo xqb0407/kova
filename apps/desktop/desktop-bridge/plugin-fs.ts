@@ -1,6 +1,5 @@
 /**
- * `@tauri-apps/plugin-fs` 兼容实现（项目仅用 writeTextFile 绝对路径写出，
- * 来源为 dialog 用户亲选——与 File input 同等的用户授权语义）。
+ * 桌面桥 · 文件读写：写/读用户经对话框亲选的绝对路径（file input 同授权语义）。
  */
 import { invokeBridge } from "./_host";
 

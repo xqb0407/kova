@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kova 企业服务端（控制面）设计文档 · Java + 背压</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#14171a; --muted:#5c6672; --faint:#8a94a0;
+    --surface:#f6f8fa; --surface-2:#eef1f4; --line:#e2e7ec; --line-strong:#cfd6dd;
+    --brand:#1867d8; --brand-soft:#e8f0fd; --brand-text:#1257b8;
+    --hot:#c2610a; --hot-soft:#fdf1e2;
+    --radius:10px; --radius-sm:7px;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#14161a; --fg:#e8ecf1; --muted:#9aa6b4; --faint:#73808f;
+      --surface:#1c1f24; --surface-2:#23272d; --line:#2e343b; --line-strong:#3c444d;
+      --brand:#5b9cf8; --brand-soft:#1b2a42; --brand-text:#8fbbff;
+      --hot:#e0a94a; --hot-soft:#3a2f1c;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:16px;line-height:1.7}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px 96px}
+  a{color:var(--brand-text);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{font-family:var(--mono);font-size:.86em;background:var(--surface-2);padding:.12em .38em;border-radius:5px;white-space:nowrap}
+  h1,h2,h3,h4{line-height:1.35;font-weight:650;letter-spacing:-.01em}
+  h2{font-size:1.4rem;margin:0 0 .5rem}
+  h3{font-size:1.08rem;margin:1.9rem 0 .5rem}
+  p{margin:.55rem 0}
+  ul,ol{margin:.5rem 0;padding-left:1.3rem}
+  li{margin:.26rem 0}
+  header{padding:56px 0 26px;border-bottom:1px solid var(--line)}
+  .eyebrow{font-size:.78rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--brand-text)}
+  h1{font-size:2rem;margin:.5rem 0 .35rem}
+  .lede{color:var(--muted);max-width:64ch;margin:0}
+  .badges{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+  .badge{font-size:.78rem;padding:4px 10px;border-radius:999px;background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
+  .badge.b{background:var(--brand-soft);color:var(--brand-text);border-color:transparent;font-weight:600}
+  .badge.h{background:var(--hot-soft);color:var(--hot);border-color:transparent;font-weight:600}
+  nav.toc{margin:24px 0 8px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px 20px}
+  nav.toc h2{font-size:.82rem;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:0 0 10px}
+  nav.toc ol{list-style:none;margin:0;padding:0;columns:2;column-gap:36px}
+  @media (max-width:640px){nav.toc ol{columns:1}}
+  nav.toc .n{display:inline-block;width:1.7em;color:var(--faint)}
+  section{margin-top:3.2rem;scroll-margin-top:24px}
+  .sec-head{display:flex;align-items:baseline;gap:12px;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:6px}
+  .sec-no{font-family:var(--mono);font-size:.95rem;font-weight:600;color:var(--brand-text);background:var(--brand-soft);border-radius:6px;padding:2px 8px}
+  .note{border-left:3px solid var(--brand);background:var(--brand-soft);padding:10px 14px;border-radius:0 var(--radius-sm) var(--radius-sm) 0;margin:14px 0;font-size:.94rem}
+  .note.hot{border-color:var(--hot);background:var(--hot-soft)}
+  .tablewrap{overflow-x:auto;margin:14px 0;border:1px solid var(--line);border-radius:var(--radius)}
+  table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:560px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{background:var(--surface-2);font-weight:600;font-size:.84rem;color:var(--muted);white-space:nowrap}
+  tbody tr:last-child td{border-bottom:0}
+  td.c,th.c{text-align:center}
+  tbody tr:hover{background:var(--surface)}
+  pre{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius-sm);padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:.82rem;line-height:1.6;margin:14px 0}
+  pre code{background:none;padding:0;white-space:pre}
+  .grid{display:grid;gap:14px;margin:16px 0}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  @media (max-width:820px){.g3{grid-template-columns:1fr}}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+  .card h4{margin:0 0 6px;font-size:.98rem}
+  .card p{margin:.2rem 0;font-size:.9rem;color:var(--muted)}
+  .fig{margin:18px 0;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+  .fig svg{width:100%;height:auto;display:block}
+  .figcap{font-size:.82rem;color:var(--faint);margin-top:8px;text-align:center}
+  .s-label{font-family:var(--sans);fill:var(--fg)}
+  .s-sub{font-family:var(--sans);fill:var(--muted);font-size:12px}
+  .s-box{fill:var(--surface-2);stroke:var(--line-strong);stroke-width:1.2}
+  .s-box.brand{fill:var(--brand-soft);stroke:var(--brand);stroke-width:1.4}
+  .s-box.hot{fill:var(--hot-soft);stroke:var(--hot);stroke-width:1.4}
+  .s-box.ghost{fill:transparent;stroke:var(--line-strong);stroke-dasharray:5 4}
+  .s-line{stroke:var(--line-strong);stroke-width:1.6;fill:none}
+  .s-line.brand{stroke:var(--brand)}
+  .s-line.hot{stroke:var(--hot);stroke-dasharray:6 4}
+  .s-tick{fill:var(--faint);font-family:var(--mono);font-size:11px}
+  .pill{font-size:.74rem;font-weight:600;border-radius:999px;padding:1px 8px;background:var(--hot-soft);color:var(--hot)}
+  .kv{font-size:.88rem;color:var(--muted)}
+  footer{margin-top:56px;padding-top:20px;border-top:1px solid var(--line);font-size:.84rem;color:var(--faint)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">服务端设计 · v0.1 · 未实现</div>
+  <h1>Kova 企业服务端（控制面）设计</h1>
+  <p class="lede">控制面是客户端契约的源头。<strong>服务端优先</strong>：客户端 <code>enterprise_*</code> 命令由本契约反向推导。技术栈 <strong>Java</strong>，<strong>背压（Backpressure）为一等设计约束</strong>。</p>
+  <div class="badges">
+    <span class="badge b">Java 21 LTS</span>
+    <span class="badge b">Spring Boot 3 + WebFlux</span>
+    <span class="badge h">背压为核心</span>
+    <span class="badge">PostgreSQL + Redis</span>
+    <span class="badge">Kafka 削峰</span>
+    <span class="badge">仅设计，不改代码</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#s1"><span class="n">1</span>定位与范围</a></li>
+    <li><a href="#s2"><span class="n">2</span>技术选型</a></li>
+    <li><a href="#s3"><span class="n">3</span>背压设计（核心）</a></li>
+    <li><a href="#s4"><span class="n">4</span>五个 API 面</a></li>
+    <li><a href="#s5"><span class="n">5</span>数据模型</a></li>
+    <li><a href="#s6"><span class="n">6</span>关键流程</a></li>
+    <li><a href="#s7"><span class="n">7</span>与客户端契约映射</a></li>
+    <li><a href="#s8"><span class="n">8</span>部署与非功能</a></li>
+    <li><a href="#s9"><span class="n">9</span>分期映射</a></li>
+    <li><a href="#s10"><span class="n">10</span>风险与开放问题</a></li>
+  </ol>
+</nav>
+
+<!-- 1 -->
+<section id="s1">
+  <div class="sec-head"><span class="sec-no">1</span><h2>定位与范围</h2></div>
+  <p>服务端 = <strong>控制面</strong>，承载所有「企业意志」：身份、席位、License、模型网关、技能注册、知识代理、审计与计量、管理台。</p>
+  <pre><code>服务端（控制面，权威）                客户端（企业模式，消费方）
+──────────────────────────            ──────────────────────────
+席位 / 角色 / 配额 ─── entitlement ─→ 能力门禁（model.scope / knowledge.scope / skills.allow）
+模型网关 + 虚拟密钥 ── 配置下发 ────→ custom_providers（base_url / api_key）
+telemetry ingest  ←── 批量上报 ─────  enterprise_telemetry_emit
+席位变更 ───────── WS 推送 ───────→  热更新能力集</code></pre>
+  <div class="note"><p>原则：<strong>权威在服务端</strong>。客户端只做消费契约 + 本地降级，不自行定义能力边界。</p></div>
+  <p class="kv"><strong>边界：</strong>不做客户端 UI；不做模型推理本体（内网 GPU 集群由 vLLM / Ollama 承担）；不做自建 RAG 检索引擎（P3b 可选模块替换）。</p>
+</section>
+
+<!-- 2 -->
+<section id="s2">
+  <div class="sec-head"><span class="sec-no">2</span><h2>技术选型</h2></div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>层</th><th>选型</th><th>理由</th></tr></thead>
+    <tbody>
+      <tr><td>语言 / 运行时</td><td><strong>Java 21（LTS）</strong> + Virtual Threads</td><td>长期支持、生态成熟；虚拟线程让阻塞调用（JDBC / IdP）也能高并发，配信号量做背压</td></tr>
+      <tr><td>主框架</td><td><strong>Spring Boot 3.x + WebFlux</strong>（Project Reactor）</td><td>原生 <strong>Reactive Streams</strong>，<code>request(n)</code> 即背压原语</td></tr>
+      <tr><td>备选框架</td><td>Vert.x</td><td>更轻、更贴近事件循环；适合纯网关进程</td></tr>
+      <tr><td>主库</td><td>PostgreSQL 16 + R2DBC</td><td>关系模型适合席位/授权；响应式驱动不阻塞事件循环</td></tr>
+      <tr><td>缓存 / 计数</td><td>Redis（原子 Lua）</td><td>配额与限流的低延迟计数，避免 DB 热点</td></tr>
+      <tr><td>计量削峰</td><td>Kafka / Pulsar（可选）</td><td>上报洪峰与聚合解耦，本身即天然背压缓冲</td></tr>
+      <tr><td>对象存储</td><td>S3 兼容（MinIO）</td><td>技能包 / 离线 bundle / 制品</td></tr>
+      <tr><td>管理台</td><td>独立 SPA，服务端静态托管</td><td>管理面与数据面隔离</td></tr>
+      <tr><td>交付</td><td>Docker 镜像 + Helm</td><td>与总览 §7 部署形态对齐</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><p><strong>为什么 Java + 响应式：</strong>企业流量特征不是「高 QPS」，而是<strong>多客户端 + 突发批量上报 + 长连接推送 + 流式推理</strong>——全是背压问题。WebFlux 把背压做进框架（<code>request(n)</code>），而非业务补丁。</p></div>
+</section>
+
+<!-- 3 -->
+<section id="s3">
+  <div class="sec-head"><span class="sec-no">3</span><h2>背压设计（核心）</h2></div>
+  <h3>3.1 为什么必须显式做背压</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>场景</th><th>无背压的后果</th></tr></thead>
+    <tbody>
+      <tr><td>telemetry 批量上报</td><td>洪峰打满线程/内存 → OOM；或阻塞主库 → 控制面整体不可用</td></tr>
+      <tr><td>模型网关流式转发</td><td>慢客户端导致服务端缓冲无限增长 → 内存爆炸</td></tr>
+      <tr><td>WS 控制通道推送</td><td>客户端消费慢 → 出站队列无界 → 单连接拖垮进程</td></tr>
+      <tr><td>配额计数</td><td>Redis/DB 计数成为热点 → 延迟抖动，反压到网关</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>3.2 四类背压场景与策略</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">#</th><th>场景</th><th>背压机制</th><th>溢出策略</th></tr></thead>
+    <tbody>
+      <tr><td class="c">B1</td><td><strong>telemetry 批量上报</strong></td><td><strong>credit-based pull</strong> + 有界队列 + 水位阈值</td><td>水位超限返回 <code>429 + Retry-After</code>；客户端本地缓冲继续累积</td></tr>
+      <tr><td class="c">B2</td><td><strong>模型网关流式转发</strong></td><td><code>Flux&lt;DataBuffer&gt;</code> + <code>request(n)</code> 逐块拉取 + <code>limitRate</code></td><td>客户端断开即向上游 <code>cancel()</code>；上游慢则反压上游（不本地无界缓冲）</td></tr>
+      <tr><td class="c">B3</td><td><strong>WS 控制通道推送</strong></td><td>每连接有界出站队列 + <code>onBackpressureBuffer(limit, onOverflow)</code></td><td><strong>合并丢弃旧值</strong>（能力集类幂等），标记 <code>coalesced</code></td></tr>
+      <tr><td class="c">B4</td><td><strong>配额计数</strong></td><td>Redis 原子计数 + 本地预聚合 + 热点键分片</td><td>默认 <strong>fail-closed</strong>（拒绝），可配 fail-open（放行并记账）</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>3.3 端到端流控链路</h3>
+  <div class="fig">
+    <svg viewBox="0 0 1000 330" role="img" aria-label="telemetry 背压链路图">
+      <defs>
+        <marker id="b1" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--line-strong)"/></marker>
+        <marker id="b2" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--hot)"/></marker>
+      </defs>
+      <text x="20" y="26" class="s-label" font-size="13" font-weight="650">telemetry 上报链路（credit 拉式 + 有界水位 + 削峰）</text>
+
+      <g>
+        <rect x="20"  y="120" width="170" height="66" rx="9" class="s-box"/>
+        <text x="105" y="147" class="s-label" font-size="13" font-weight="600" text-anchor="middle">客户端 buffer</text>
+        <text x="105" y="168" class="s-sub" text-anchor="middle">本地 SQLite 队列</text>
+
+        <rect x="216" y="120" width="170" height="66" rx="9" class="s-box"/>
+        <text x="301" y="147" class="s-label" font-size="13" font-weight="600" text-anchor="middle">ingest 入口</text>
+        <text x="301" y="168" class="s-sub" text-anchor="middle">令牌桶限流 · 舱壁</text>
+
+        <rect x="412" y="120" width="170" height="66" rx="9" class="s-box hot"/>
+        <text x="497" y="147" class="s-label" font-size="13" font-weight="600" text-anchor="middle">有界队列 + 水位</text>
+        <text x="497" y="168" class="s-sub" text-anchor="middle">10k 条 / 32 MB</text>
+
+        <rect x="608" y="120" width="170" height="66" rx="9" class="s-box"/>
+        <text x="693" y="147" class="s-label" font-size="13" font-weight="600" text-anchor="middle">Kafka 削峰</text>
+        <text x="693" y="168" class="s-sub" text-anchor="middle">拉取式消费</text>
+
+        <rect x="804" y="120" width="170" height="66" rx="9" class="s-box brand"/>
+        <text x="889" y="147" class="s-label" font-size="13" font-weight="600" text-anchor="middle">聚合写 PG</text>
+        <text x="889" y="168" class="s-sub" text-anchor="middle">eid 幂等 upsert</text>
+      </g>
+
+      <line x1="190" y1="153" x2="216" y2="153" class="s-line" marker-end="url(#b1)"/>
+      <line x1="386" y1="153" x2="412" y2="153" class="s-line" marker-end="url(#b1)"/>
+      <line x1="582" y1="153" x2="608" y2="153" class="s-line" marker-end="url(#b1)"/>
+      <line x1="778" y1="153" x2="804" y2="153" class="s-line" marker-end="url(#b1)"/>
+
+      <path d="M497,186 L497,236 L105,236 L105,190" class="s-line hot" marker-end="url(#b2)"/>
+      <text x="600" y="228" class="s-tick" style="fill:var(--hot)">背压 · 429 + Retry-After（客户端指数退避，本地缓冲不丢）</text>
+
+      <text x="20" y="292" class="s-sub">credit 拉式：客户端先 <tspan>GET /telemetry/credit</tspan> 申请批量上限，服务端按水位下发或直接 429，避免被动挨打。</text>
+    </svg>
+    <div class="figcap">图 1 · telemetry 上报的端到端背压：credit 拉取 → 限流 → 有界水位 → 429 反压 → 客户端退避</div>
+  </div>
+  <pre><code>模型网关链路：
+客户端 ◄──request(n)── 网关 ◄──request(n)── 上游 / 内网集群
+        （慢客户端只影响本连接，不拖垮进程）</code></pre>
+
+  <h3>3.4 机制清单（Java / WebFlux 语境）</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>机制</th><th>用法</th></tr></thead>
+    <tbody>
+      <tr><td>Reactive Streams <code>request(n)</code></td><td>背压原语：消费者按需拉取，生产者不超发</td></tr>
+      <tr><td><code>limitRate(n)</code> / <code>onBackpressureBuffer(limit, onOverflow)</code></td><td>控制批大小与缓冲上界</td></tr>
+      <tr><td>有界队列 + 水位（low/high watermark）</td><td>明确「何时开始拒 / 何时恢复」</td></tr>
+      <tr><td>令牌桶 / 漏桶限流</td><td>按席位档与用户维度限流</td></tr>
+      <tr><td><code>429 + Retry-After</code></td><td>标准背压反馈，配合客户端指数退避</td></tr>
+      <tr><td>Resilience4j（RateLimiter / Bulkhead / CircuitBreaker）</td><td>舱壁隔离与熔断，防单租户拖垮全局</td></tr>
+      <tr><td>Java 21 虚拟线程 + <code>Semaphore</code></td><td>阻塞调用（JDBC / OIDC / LDAP）的并发上限即背压</td></tr>
+      <tr><td>连接池上限（R2DBC / Reactor Netty）</td><td>池满即排队，天然反压上游</td></tr>
+      <tr><td>Kafka / Pulsar 消费者拉取</td><td>计量削峰：生产端快则队列增长，消费端按能力拉取</td></tr>
+      <tr><td>gRPC FlowControl（若走 gRPC）</td><td>流控窗口，适合内部服务间</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>3.5 阈值与参数（可配，示意）</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>参数</th><th class="c">默认（示意）</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>ingest 并发上限</td><td class="c">每租户 32</td><td>舱壁隔离，防单客户打满</td></tr>
+      <tr><td>ingest 有界队列</td><td class="c">10k 条 / 32 MB</td><td>超限即 429</td></tr>
+      <tr><td>WS 每连接出站缓冲</td><td class="c">256 条</td><td>超限合并丢弃旧值</td></tr>
+      <tr><td>WS 推送合并窗口</td><td class="c">500 ms</td><td>能力集变更合并</td></tr>
+      <tr><td>客户端上报 credit</td><td class="c">512 条 / 次</td><td>拉式上报批大小</td></tr>
+      <tr><td>配额计数窗口</td><td class="c">日 / 分钟双窗</td><td>日配额 + 每分钟速率</td></tr>
+      <tr><td>限流（受限席位）</td><td class="c">标准席位 1/5</td><td>按席位档缩放</td></tr>
+      <tr><td>熔断阈值</td><td class="c">错误率 50% / 10s</td><td>打开后快速失败</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 4 -->
+<section id="s4">
+  <div class="sec-head"><span class="sec-no">4</span><h2>五个 API 面</h2></div>
+  <div class="fig">
+    <svg viewBox="0 0 1000 400" role="img" aria-label="服务端组件与 API 面">
+      <defs>
+        <marker id="c1" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--line-strong)"/></marker>
+      </defs>
+      <text x="20" y="24" class="s-label" font-size="13" font-weight="650">服务端组件视图：参与方 → 五个 API 面 → 后端存储</text>
+
+      <!-- actors -->
+      <rect x="28"  y="40" width="176" height="52" rx="9" class="s-box"/>
+      <text x="116" y="71" class="s-sub" text-anchor="middle">管理台（管理员）</text>
+      <rect x="220" y="40" width="176" height="52" rx="9" class="s-box brand"/>
+      <text x="308" y="71" class="s-sub" text-anchor="middle" style="fill:var(--brand-text)">Kova 客户端</text>
+      <rect x="412" y="40" width="176" height="52" rx="9" class="s-box"/>
+      <text x="500" y="71" class="s-sub" text-anchor="middle">上游 / 内网 GPU 集群</text>
+      <rect x="796" y="40" width="176" height="52" rx="9" class="s-box"/>
+      <text x="884" y="71" class="s-sub" text-anchor="middle">集成服务 / CI</text>
+
+      <!-- faces -->
+      <rect x="28"  y="140" width="176" height="76" rx="9" class="s-box"/>
+      <text x="116" y="170" class="s-label" font-size="13" font-weight="600" text-anchor="middle">① 管理台 REST</text>
+      <text x="116" y="191" class="s-sub" text-anchor="middle">席位/配额/报表/审计</text>
+      <rect x="220" y="140" width="176" height="76" rx="9" class="s-box brand"/>
+      <text x="308" y="170" class="s-label" font-size="13" font-weight="600" text-anchor="middle">② 客户端 API</text>
+      <text x="308" y="191" class="s-sub" text-anchor="middle">登录/能力集/telemetry</text>
+      <rect x="412" y="140" width="176" height="76" rx="9" class="s-box hot"/>
+      <text x="500" y="170" class="s-label" font-size="13" font-weight="600" text-anchor="middle">③ 模型网关</text>
+      <text x="500" y="191" class="s-sub" text-anchor="middle">OpenAI 兼容 · 计量 · 背压</text>
+      <rect x="604" y="140" width="176" height="76" rx="9" class="s-box brand"/>
+      <text x="692" y="170" class="s-label" font-size="13" font-weight="600" text-anchor="middle">④ 控制通道 WS</text>
+      <text x="692" y="191" class="s-sub" text-anchor="middle">推送 · 有界合并</text>
+      <rect x="796" y="140" width="176" height="76" rx="9" class="s-box"/>
+      <text x="884" y="170" class="s-label" font-size="13" font-weight="600" text-anchor="middle">⑤ 集成 API</text>
+      <text x="884" y="191" class="s-sub" text-anchor="middle">Client Credentials</text>
+
+      <line x1="116" y1="92" x2="116" y2="140" class="s-line" marker-end="url(#c1)"/>
+      <line x1="308" y1="92" x2="308" y2="140" class="s-line brand" marker-end="url(#c1)"/>
+      <line x1="308" y1="92" x2="672" y2="140" class="s-line brand" marker-end="url(#c1)"/>
+      <line x1="500" y1="92" x2="500" y2="140" class="s-line" marker-end="url(#c1)"/>
+      <line x1="884" y1="92" x2="884" y2="140" class="s-line" marker-end="url(#c1)"/>
+
+      <!-- stores -->
+      <rect x="28"  y="288" width="224" height="76" rx="9" class="s-box"/>
+      <text x="140" y="318" class="s-label" font-size="13" font-weight="600" text-anchor="middle">PostgreSQL</text>
+      <text x="140" y="339" class="s-sub" text-anchor="middle">主库 · 席位/授权/计量</text>
+      <rect x="268" y="288" width="224" height="76" rx="9" class="s-box"/>
+      <text x="380" y="318" class="s-label" font-size="13" font-weight="600" text-anchor="middle">Redis</text>
+      <text x="380" y="339" class="s-sub" text-anchor="middle">配额 · 限流 · pub/sub</text>
+      <rect x="508" y="288" width="224" height="76" rx="9" class="s-box"/>
+      <text x="620" y="318" class="s-label" font-size="13" font-weight="600" text-anchor="middle">Kafka / Pulsar</text>
+      <text x="620" y="339" class="s-sub" text-anchor="middle">计量削峰 · 审计流</text>
+      <rect x="748" y="288" width="224" height="76" rx="9" class="s-box"/>
+      <text x="860" y="318" class="s-label" font-size="13" font-weight="600" text-anchor="middle">S3 / MinIO</text>
+      <text x="860" y="339" class="s-sub" text-anchor="middle">技能包 · 制品</text>
+
+      <line x1="116" y1="216" x2="140" y2="288" class="s-line" marker-end="url(#c1)"/>
+      <line x1="308" y1="216" x2="380" y2="288" class="s-line" marker-end="url(#c1)"/>
+      <line x1="500" y1="216" x2="620" y2="288" class="s-line" marker-end="url(#c1)"/>
+      <line x1="692" y1="216" x2="860" y2="288" class="s-line" marker-end="url(#c1)"/>
+    </svg>
+    <div class="figcap">图 2 · 服务端组件视图：管理台注入面 ①；客户端用面 ②④；网关面 ③；集成面 ⑤</div>
+  </div>
+
+  <h3>4.1 面 ① 管理台 REST（仅管理员）</h3>
+  <p><code>/admin/seats</code> · <code>/admin/seats/{id}</code>（PATCH/DELETE）· <code>/admin/seats/{id}/transfer</code> · <code>/admin/quota</code> · <code>/admin/policy</code> · <code>/admin/license</code> · <code>/admin/reports/usage</code> · <code>/admin/audit</code></p>
+
+  <h3>4.2 面 ② 客户端 API</h3>
+  <p><code>/auth/oidc/callback</code> · <code>/auth/device/enroll</code> · <code>/auth/token/refresh</code> · <code>/entitlement</code> · <code>/catalog/models|skills|knowledge</code> · <strong><code>/telemetry/credit</code></strong> · <strong><code>/telemetry/batch</code></strong>（幂等 eid，可 429）· <code>/usage/me</code></p>
+
+  <h3>4.3 面 ③ 模型网关（OpenAI 兼容）</h3>
+  <p><code>/v1/models</code> · <code>/v1/chat/completions</code>（流式/非流式，虚拟密钥鉴权，<strong>同步计量 + 硬配额</strong>，<code>request(n)</code> 背压转发）· <code>/v1/embeddings</code></p>
+  <div class="note hot"><p>网关是<strong>路径 A 的权威计量点</strong>：调用完成即写计量，配额超限直接 <code>429</code>（见总览 §6.1）。</p></div>
+
+  <h3>4.4 面 ④ 控制通道 WS</h3>
+  <p><code>WS /control</code> 推送 <code>entitlement_changed</code> / <code>session_revoked</code> / <code>models_updated</code> / <code>skills_updated</code> / <code>license_notice</code> / <code>quota_notice</code>。复用客户端 <code>remote.ts</code> 的 token/撤销/踢线模式，服务端为其收端；推送<strong>有界 + 合并</strong>。</p>
+
+  <h3>4.5 面 ⑤ 集成 API（服务账号）</h3>
+  <p><code>/oauth/token</code>（Client Credentials）· 与面 ③ 同入口按服务标签计量与限流 · <code>/knowledge/query</code>。</p>
+</section>
+
+<!-- 5 -->
+<section id="s5">
+  <div class="sec-head"><span class="sec-no">5</span><h2>数据模型</h2></div>
+  <pre><code>org            (id, name, edition, created_at)
+team           (id, org_id, parent_id, name)
+user           (id, org_id, external_id, idp_subject, status)
+seat           (id, org_id, user_id, tier /*admin|standard|restricted|api*/, role_id,
+                state /*active|frozen|revoked|transferred*/, issued_at, revoked_at)
+entitlement    (id, seat_id, revision, capability_json, quota_json, updated_at)
+license        (id, org_id, edition, seat_limits_json, expiry, signature, imported_at)
+device         (id, seat_id, fingerprint, enrolled_at, last_seen, state)
+credential     (id, owner_id /*user|service*/, kind, secret_ref, rotated_at, revoked)
+skill          (id, scope /*enterprise|team*/, team_id, version, signature, acl_json, enabled_forced)
+knowledge      (id, scope, team_id, kind /*mcp|rag*/, endpoint, acl_json)
+provider       (id, org_id, base_url, api, allow_models_json)
+telemetry      (eid PRIMARY KEY, ts, kind, org_id, user_id, team_id, seat_tier,
+                session_id, model, input, output, cache_read, cache_write, tokens,
+                cost, result, latency_ms, src /*gateway|client|server*/)
+audit          (id, ts, org_id, actor, action, target, meta_json)
+quota_counter  (date, scope /*user|team|org*/, ref_id, dimension, used, limit)</code></pre>
+  <ul>
+    <li><strong><code>telemetry.eid</code> 唯一</strong>：幂等 upsert，天然去重（重试 / 补报安全）。</li>
+    <li><strong>分区</strong>：<code>telemetry</code> 按月分区 + <code>(org_id, ts)</code> / <code>(user_id, ts)</code> 索引，支撑按用户下钻。</li>
+    <li><strong>配额计数</strong>：Redis 原子计数为准，PG 存窗口快照便于对账与报表。</li>
+    <li>客户端 <code>enterprise_telemetry</code> 表字段是本表子集（总览 §8.3）。</li>
+  </ul>
+</section>
+
+<!-- 6 -->
+<section id="s6">
+  <div class="sec-head"><span class="sec-no">6</span><h2>关键流程</h2></div>
+  <h3>6.1 IdP 登录与会话换发</h3>
+  <pre><code>客户端 → /auth/oidc/callback（IdP 授权码）
+      → 校验 IdP 断言、解析 subject/组
+      → 匹配 user + seat（无席位 → 拒绝 / 默认受限席位）
+      → 设备入网校验（device.limit）
+      → 签发 access（短）+ refresh（存客户端钥匙串）
+      → 返回 entitlement（含 revision）</code></pre>
+  <h3>6.2 席位变更 → 能力集版本化推送</h3>
+  <pre><code>管理台改席位/配额/策略
+  → entitlement.revision += 1
+  → WS /control 推送 entitlement_changed（有界 + 合并）
+  → 客户端热更新；断连客户端下次拉取按 revision 对账</code></pre>
+  <h3>6.3 telemetry 上报（幂等 + 背压）</h3>
+  <pre><code>GET  /telemetry/credit  → 按水位下发 credit（或 429 + Retry-After）
+POST /telemetry/batch   → 限流 → 有界队列 → Kafka → 聚合写 PG（eid upsert）
+429                     → 客户端指数退避，本地缓冲继续累积（不丢、不静默）</code></pre>
+  <h3>6.4 License 席位校验（在线 + 离线）</h3>
+  <p>在线：发放前校验 <code>已用席位 + 1 ≤ seat_limits[tier]</code> 且未过期，超发拒发。离线（空气隔离）：<code>license</code> 为服务端签名凭证，本服务端即校验方，信任根随离线包提供；导入 <code>.lic</code> 即续期。客户端<strong>不校验</strong> License。</p>
+  <h3>6.5 模型调用</h3>
+  <pre><code>1) 虚拟密钥鉴权 → user/seat/service
+2) Redis 原子预扣配额（日窗 + 分钟窗）；超限 429
+3) 路由：路径 A 上游 provider / 路径 B 内网集群
+4) 流式转发（request(n) 背压，见 §3.2 B2）
+5) 完成计数：input/output/cache tokens → telemetry（src = gateway）
+6) 审计：调用级事件（可选抽样）</code></pre>
+</section>
+
+<!-- 7 -->
+<section id="s7">
+  <div class="sec-head"><span class="sec-no">7</span><h2>与客户端契约的映射</h2></div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>客户端命令（总览 §8.1）</th><th>服务端端点</th></tr></thead>
+    <tbody>
+      <tr><td><code>enterprise_login</code> / <code>enterprise_logout</code></td><td>面 ② <code>/auth/oidc/callback</code>、<code>/auth/token/refresh</code></td></tr>
+      <tr><td><code>enterprise_session</code> / <code>enterprise_refresh</code></td><td>面 ② <code>/entitlement</code></td></tr>
+      <tr><td><code>enterprise_enroll_device</code></td><td>面 ② <code>/auth/device/enroll</code></td></tr>
+      <tr><td><code>enterprise_models</code> / <code>_skills</code> / <code>_knowledge</code></td><td>面 ② <code>/catalog/*</code></td></tr>
+      <tr><td><code>enterprise_telemetry_emit</code></td><td>面 ② <code>/telemetry/credit</code> + <code>/telemetry/batch</code></td></tr>
+      <tr><td><code>enterprise_usage</code> / <code>enterprise_usage_flush</code></td><td>面 ② <code>/usage/me</code>（flush 即 batch）</td></tr>
+      <tr><td>（客户端 WS 收端）</td><td>面 ④ <code>WS /control</code></td></tr>
+      <tr><td>—（管理台独占）</td><td>面 ① <code>/admin/*</code></td></tr>
+      <tr><td>—（服务账号独占）</td><td>面 ⑤ <code>/oauth/token</code> 等</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><p>客户端事件 <code>enterprise_*</code>（总览 §8.2）由面 ④ 推送触发。</p></div>
+</section>
+
+<!-- 8 -->
+<section id="s8">
+  <div class="sec-head"><span class="sec-no">8</span><h2>部署与非功能</h2></div>
+  <div class="grid g3">
+    <div class="card"><h4>伸缩</h4><p>API（①②③⑤）无状态水平扩；WS 有状态需共享状态（Redis pub/sub 或 Sticky + 路由）；计量消费者按 <code>org_id</code> 分区。</p></div>
+    <div class="card"><h4>可观测性</h4><p>队列水位、429 比例、WS 积压、网关 P99、配额拒率；OpenTelemetry 贯穿；<strong>上报成功率与 lossy 计数自身作为指标</strong>。</p></div>
+    <div class="card"><h4>安全</h4><p>mTLS / TLS + 令牌、管理员双因子；密钥只存 <code>secret_ref</code>（Vault/KMS）；全表 <code>org_id</code> + 可选 RLS；审计独立留存；国密可选套件。</p></div>
+  </div>
+  <h3>8.1 性能目标（示意，待压测）</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>指标</th><th class="c">目标</th></tr></thead>
+    <tbody>
+      <tr><td>网关非流式 P99（不含上游推理）</td><td class="c">&lt; 200 ms</td></tr>
+      <tr><td>网关首字延迟（流式，与上游差值）</td><td class="c">&lt; 50 ms</td></tr>
+      <tr><td>telemetry ingest 吞吐（单实例批量）</td><td class="c">≥ 20k 事件/秒</td></tr>
+      <tr><td>ingest 429 比例（稳态）</td><td class="c">&lt; 0.1%</td></tr>
+      <tr><td>WS 推送延迟</td><td class="c">P99 &lt; 1 s</td></tr>
+      <tr><td>席位变更生效（在线端）</td><td class="c">&lt; 2 s</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 9 -->
+<section id="s9">
+  <div class="sec-head"><span class="sec-no">9</span><h2>分期映射（服务端视角）</h2></div>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">期</th><th>服务端交付</th><th class="c">对齐总览</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><strong>S0</strong></td><td>身份（面 ②）+ 席位/授权 + License 骨架 + <strong>telemetry ingest（背压）</strong> + 审计骨架</td><td class="c">P0</td></tr>
+      <tr><td class="c"><strong>S1</strong></td><td><strong>模型网关（面 ③：同步计量 + 硬配额 + 流式背压）</strong> + 报表（面 ①）</td><td class="c">P1</td></tr>
+      <tr><td class="c"><strong>S2</strong></td><td>技能注册中心（面 ① + <code>/catalog/skills</code>）+ 签名校验 + 强制启停下发</td><td class="c">P2</td></tr>
+      <tr><td class="c"><strong>S3</strong></td><td>MCP 代理 + 查询时 ACL（面 ②）+（可选）RAG</td><td class="c">P3</td></tr>
+      <tr><td class="c"><strong>S4</strong></td><td>离线 License、Helm/Compose、信创/国密套件、管理台</td><td class="c">P4</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><p><strong>服务端先行：</strong>S0 + S1 是客户端全部 <code>enterprise_*</code> 契约的来源，应最先落地并冻结契约版本。</p></div>
+</section>
+
+<!-- 10 -->
+<section id="s10">
+  <div class="sec-head"><span class="sec-no">10</span><h2>风险与开放问题</h2></div>
+  <h3>10.1 风险</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>风险</th><th>影响</th><th>缓解</th></tr></thead>
+    <tbody>
+      <tr><td>响应式编程门槛</td><td>学习成本、误用阻塞调用</td><td>阻塞调用统一走虚拟线程 + 信号量舱壁；评审强制</td></tr>
+      <tr><td>WS 有状态与水平扩冲突</td><td>推送漏达</td><td>Redis pub/sub 广播 + 客户端 revision 对账兜底</td></tr>
+      <tr><td>背压策略选错（fail-open vs fail-closed）</td><td>成本失控 / 可用性下降</td><td>策略可配；配额默认 fail-closed，计数类可 fail-open</td></tr>
+      <tr><td>计量洪峰集中于断连恢复</td><td>ingest 打满</td><td>credit 拉式 + 429 退避 + Kafka 削峰</td></tr>
+      <tr><td>单租户内多团队数据隔离</td><td>越权风险</td><td>全表 <code>org_id</code> + RLS，查询强制带 scope</td></tr>
+      <tr><td>Java 服务端与 Bun/TS 客户端栈割裂</td><td>契约漂移</td><td>以 OpenAPI/proto 冻结契约，双端生成校验</td></tr>
+    </tbody>
+  </table></div>
+  <h3>10.2 开放问题（待确认）</h3>
+  <ol>
+    <li>网关上游协议：只做 OpenAI 兼容，还是兼容 Anthropic 等多家？</li>
+    <li>telemetry 走 HTTP 批量，还是复用控制通道 WS 连接？（影响背压实现位置）</li>
+    <li>Kafka 是否必装（小客户内网成本）？还是先用库内队列 + 单机 PG？</li>
+    <li>配额计数默认 fail-open / fail-closed 由谁定（客户可配？）。</li>
+    <li>WS 控制通道是否与客户端 <code>remote.ts</code> 网关复用同端口与鉴权模型？</li>
+    <li>管理台与 API 是否分进程（隔离管理面）？</li>
+    <li>国密套件是可选插件还是基线（影响密钥与 TLS 实现）。</li>
+    <li>是否引入 gRPC（内部服务间）以利用其流控窗口。</li>
+  </ol>
+</section>
+
+<footer>
+  <p>源文件 <code>docs/enterprise/EKOVA-SERVER-DESIGN.md</code> · 阅读版 <code>docs/enterprise/EKOVA-SERVER-DESIGN.html</code> · 与总览 <code>EKOVA-DESIGN.md</code> 交叉引用 · 状态：设计稿，未实现，不含代码改动。</p>
+</footer>
+
+</div>
+</body>
+</html>

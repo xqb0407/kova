@@ -1,7 +1,7 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@/desktop-bridge/core";
+import { open as openDialog } from "@/desktop-bridge/plugin-dialog";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { unstable_defaultDirectiveFormatter } from "@assistant-ui/core";
 import {
@@ -51,7 +51,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import {
   docMimeFromName,
   imageMimeFromName,
@@ -85,7 +85,7 @@ import { useHtmlDark } from "@/lib/settings/use-html-dark";
  *
  * 三类可选项各自落到既有事实源：
  *
- * - 附件：Tauri dialog 拿绝对路径 → composer 附件（零落盘，见 useAddAttachments）；
+ * - 附件：系统对话框 拿绝对路径 → composer 附件（零落盘，见 useAddAttachments）；
  * - 模式：set_session_mode，按维度分两组（权限 = 问不问；能力 = 能不能干）。
  *   两组各是一个独立单选组（两个维度各存各的值），能力组另给一个「常规」
  *   用于退回到不带特殊能力的形态——单选项点自己不会取消，没有它就没法退出；
@@ -287,7 +287,7 @@ function b64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-/** 附件添加。桌面端 Tauri dialog 拿绝对路径后分两类：
+/** 附件添加。桌面端 系统对话框 拿绝对路径后分两类：
  *  - 图片：读盘成字节（Rust attachment_read_base64，2MiB 上限超限即 toast）
  *    合成 File 走与粘贴同一条 adapter 管线——草稿缩略图、发送 data URL 内联、
  *    转录 image 块与粘贴图片完全同构。早前用 file:// 路径对象添加的图片
@@ -404,7 +404,7 @@ const useAddAttachments = () => {
 
   /** 打开系统文件选择器（网页端走隐藏 input） */
   const pick = () => {
-    if (isTauri()) {
+    if (isDesktop()) {
       void openDialog({
         multiple: true,
         filters: [{ name: "支持的附件", extensions: ATTACHMENT_DIALOG_EXTENSIONS }],

@@ -3,7 +3,7 @@
 /**
  * PiClientBase：PiClient 契约的传输无关基座（react-pi 迁移阶段 5c）。
  *
- * TauriPiClient（桌面）与 WsPiClient（远程网页）都是它的薄适配，只注入
+ * DesktopPiClient（桌面）与 WsPiClient（远程网页）都是它的薄适配，只注入
  * 传输依赖（管理请求 / prompt 直发 / 中断 / 原始 NDJSON 行回流 / 事件源换代），
  * 其余全部逻辑在此共享：
  * - 管理类方法走 request 通道（管理队列串行）；
@@ -171,7 +171,7 @@ function applyStreamDelta(
   }
 }
 
-/** 传输依赖（构造注入）：桌面 = Tauri invoke/event，远程 = WebSocket 通道。 */
+/** 传输依赖（构造注入）：桌面 = 桌面壳 invoke/event，远程 = WebSocket 通道。 */
 /** 显式改过才带这个字段（见 pi-goal-limit-draft 的分层说明） */
 function sendGoalMaxAutoTurns(threadId: string): { goalMaxAutoTurns?: number } {
   const value = goalTurnDraftForSend(threadId);
@@ -394,7 +394,7 @@ export class PiClientBase implements PiClient {
   /** 事件源注册（幂等）。⚠ 必须 promise 锁收口：unlistenLines 要等
    *  transport.watchLines 的异步注册完成才有值，同一 tick 内两次进入
    *  （多线程序订阅并发、StrictMode 挂载-卸载-重挂、订阅+发送同帧）若只查
-   *  空值会双双通过检查、各注册一份监听——Tauri listen 每次都是独立订阅，
+   *  空值会双双通过检查、各注册一份监听——桌面壳 listen 每次都是独立订阅，
    *  于是每行 NDJSON 喂两遍、流式 delta 应用两遍（文本成倍重复，终态整条
    *  替换后才恢复正常）。 */
   private ensureEventWatcher(): Promise<void> {

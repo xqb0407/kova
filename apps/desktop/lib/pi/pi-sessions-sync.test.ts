@@ -82,7 +82,7 @@ describe("pi-sessions-sync", () => {
   });
 
   test("无能力通道静默降级：注册/发帧都不抛", async () => {
-    const plain = { kind: "tauri" } as unknown as PiChannel;
+    const plain = { kind: "desktop" } as unknown as PiChannel;
     setPiChannel(plain);
     let calls = 0;
     expect(() => sync.setSessionsChangedSync(() => calls++)).not.toThrow();

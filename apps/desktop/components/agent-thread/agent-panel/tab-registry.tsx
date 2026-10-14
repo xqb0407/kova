@@ -24,7 +24,7 @@ import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { useGitStatus } from "@/lib/git/git-status";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { useIsAskMode } from "@/lib/pi/pi-session-mode";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import type { PanelTab, PanelTabType } from "@/lib/panels/panel-tabs";
 import { ActivityView } from "./activity-view";
 import { PlanSection } from "./plan-section";
@@ -70,8 +70,8 @@ export function useVisiblePanelTabTypes(): PanelTabType[] {
   // Git 隐藏同源（同一个"这一档不碰工程"的判断）
   const ask = useIsAskMode();
   return PANEL_TAB_TYPES.filter((t) => {
-    if (t === "explorer") return isTauri();
-    if (t === "shell") return isTauri() && !ask;
+    if (t === "explorer") return isDesktop();
+    if (t === "shell") return isDesktop() && !ask;
     if (t === "git") return appMode === "code" && !!status && !ask;
     return true;
   });

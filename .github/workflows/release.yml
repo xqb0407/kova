@@ -1,0 +1,46 @@
+# 发版流水线（Electron 版）：打 tag → 构建 macOS 产物 → 建 Draft Release
+#
+# 与 Tauri 版 release.yml 的差异：
+#   - 不跑 cargo build（宿主是 Node/Electron）；rustc 只为 sidecar 产物命名取 host 三元组
+#   - 打包由 electron-builder 完成，产物 dmg 在打包流程里做 ad-hoc 深签（afterPack 钩子）
+#   - 未公证：首次打开仍需一次 GUI 引导（与 Tauri 版一致，docs/macos-first-open 口径沿用）
+#
+# 用法：bun run release <版本号>（推 tag 触发本流水线）→ 到 Releases 页检查 Draft → 手动发布
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: dtolnay/rust-toolchain@stable
+        # sidecar 构建脚本读 `rustc -vV` 的 host 三元组给产物命名（不需要 cargo 编译）
+      - name: Install deps
+        run: bun install
+      - name: Build sidecar (bun --compile + smoke)
+        run: bun run build:sidecar
+      - name: Build renderer + main
+        run: bun run build:renderer && bun run build:main
+      - name: Package dmg (ad-hoc signed via afterPack)
+        run: cd apps/electron && ./node_modules/.bin/electron-builder --mac dmg
+      - name: Checksums
+        run: |
+          cd apps/electron/release
+          shasum -a 256 *.dmg | awk '{print $1"  "$2}' > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            apps/electron/release/*.dmg
+            apps/electron/release/SHA256SUMS.txt

@@ -70,7 +70,7 @@ export const ModeStep: FC = () => {
 
   const choose = async (value: AppMode) => {
     if (switching) return;
-    // piRequest 在链路断开时可能**同步**抛（Tauri 的 invoke 尚未注入），.catch()
+    // piRequest 在链路断开时可能**同步**抛（桌面壳的 invoke 尚未注入），.catch()
     // 根本挂不上，整个向导会被这一次点击带崩。这里兜住，失败就当没切。
     try {
       // 设计档前置门禁：插件没装/没启用时弹窗询问，通过才切

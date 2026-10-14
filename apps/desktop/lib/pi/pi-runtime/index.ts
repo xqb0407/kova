@@ -3,7 +3,7 @@
 // 保留上游文件名与结构以便对照上游 cherry-pick；改动需在此注明：
 // vendored path: src/index.ts（浏览器半入口）
 // 改动：本仓库未 vendor client/httpClient 与 client/eventSource（HTTP/SSE 传输层
-// 由 TauriPiClient 直接实现 PiClient 契约替代），对应导出移除。
+// 由 DesktopPiClient 直接实现 PiClient 契约替代），对应导出移除。
 
 export * from "./types";
 export { piQueueItemId, isPiSteerQueueItemId } from "./queueIds";

@@ -1,6 +1,5 @@
 /**
- * `@tauri-apps/plugin-notification` 兼容实现：Electron renderer 有原生
- * Notification API（权限与 Tauri 插件同语义：macOS 首次弹授权框）。
+ * 桌面桥 · 通知：requestPermission/sendNotification（renderer 原生 Notification API）。
  */
 export async function requestPermission(): Promise<"granted" | "denied" | "default"> {
   try {

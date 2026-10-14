@@ -1,6 +1,5 @@
 /**
- * `@tauri-apps/api/window` 兼容实现（仅 getCurrentWindow 及其被用到的方法）。
- * 成员映射：主进程 BrowserWindow（label 'main'）。
+ * 桌面桥 · 窗口：getCurrentWindow 及其被用到的方法，映射主进程 BrowserWindow。
  */
 import { invokeBridge } from "./_host";
 import { listen, type Event, type UnlistenFn } from "./event";
@@ -51,7 +50,7 @@ class KovaWindow {
   async onCloseRequested(
     handler: (e: { payload: { preventClose: (v: boolean) => void } }) => void | Promise<void>,
   ): Promise<UnlistenFn> {
-    // Tauri 语义占位：本项目关窗策略全在主进程（托盘/退出），前端不拦。
+    // 桌面壳 语义占位：本项目关窗策略全在主进程（托盘/退出），前端不拦。
     void handler;
     return () => {};
   }

@@ -1,6 +1,6 @@
 /**
- * 宿主路径约定（对齐 Tauri identifier com.kova.assistant）：
- * userData 显式指向同一目录，Electron 与 Tauri 版共享 state.db/sessions/kv（D4）。
+ * 宿主路径约定（对齐旧桌面壳 identifier com.kova.assistant）：
+ * userData 显式指向同一目录，Electron 与 旧桌面壳共享 state.db/sessions/kv（D4）。
  */
 import { app } from "electron";
 import { join } from "node:path";
@@ -23,7 +23,7 @@ let dataDir = "";
 let logDir = "";
 
 /** 必须在 ready 之前调用（gpu 开关要先读，对齐 gpu.rs 建窗前读配置）。
- *  数据目录三段式（与 Tauri 版一致）：
+ *  数据目录三段式（与 旧桌面壳一致）：
  *    - KOVA_DATA_DIR 显式覆盖（e2e/多实例沙箱）；
  *    - dev（未打包，或 --dev）：com.kova.assistant.dev + 显示名 "Kova Dev"
  *      —— 与 tauri.dev.conf.json 的 identifier 对齐，dev 数据不污染正式库；

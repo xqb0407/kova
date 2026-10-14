@@ -1,12 +1,12 @@
 /**
- * 前端日志落盘转发：Tauri 桌面端把 console.warn/error 与全局崩溃
+ * 前端日志落盘转发：桌面端把 console.warn/error 与全局崩溃
  * 旁路到 Rust 的 frontend_log 命令（写 <app_log_dir>/<日期>/web.log）。
  * - 仅桌面端生效；浏览器 dev / 远程网页端保持原生 console 行为
  * - 原有 console 行为不受影响（先原样输出，再旁路转发）
  * - 转发失败静默忽略，绝不再触发 console.error（防递归）
  */
-import { invoke } from "@tauri-apps/api/core";
-import { isTauri } from "@/lib/tauri";
+import { invoke } from "@/desktop-bridge/core";
+import { isDesktop } from "@/lib/desktop-env";
 
 const MSG_MAX = 8000;
 let installed = false;
@@ -51,7 +51,7 @@ function send(level: "info" | "warn" | "error", message: string) {
  * 回调里的错误不受影响）。边界在 componentDidCatch 里走这里补上落盘。
  */
 export function reportFrontendError(message: string): void {
-  if (!isTauri()) {
+  if (!isDesktop()) {
     console.error(message);
     return;
   }
@@ -60,7 +60,7 @@ export function reportFrontendError(message: string): void {
 
 /** 显式上报一条非致命的告警（卡顿、资源加载失败等），同样不依赖 window 监听 */
 export function reportFrontendWarning(message: string): void {
-  if (!isTauri()) {
+  if (!isDesktop()) {
     console.warn(message);
     return;
   }
@@ -68,7 +68,7 @@ export function reportFrontendWarning(message: string): void {
 }
 
 export function installFrontendLogging(): void {
-  if (installed || !isTauri()) return;
+  if (installed || !isDesktop()) return;
   installed = true;
 
   const origWarn = console.warn.bind(console);

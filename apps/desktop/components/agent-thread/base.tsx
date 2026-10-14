@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
-import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
 import { toggleThemeMode } from "@/lib/settings/ui-prefs";
 import { subscribeAutomationFocus } from "@/lib/automation/automations";
@@ -357,7 +357,7 @@ export const Base: FC = () => {
   const wasCollapsedRef = useRef(false);
   const compact = useIsCompact();
   // 仅 macOS 有悬浮红绿灯，需在侧边栏顶栏让位
-  const mac = isTauri() && isMacPlatform();
+  const mac = isDesktop() && isMacPlatform();
 
   // 恢复上次偏好
   useEffect(() => {
@@ -888,7 +888,7 @@ export const Base: FC = () => {
               跟随 panelGone（视觉收没）而非 panelOpen，避免收起动画
               刚起步就跳 padding */}
           <main
-            data-tauri-drag-region={isTauri() ? "true" : undefined}
+            data-tauri-drag-region={isDesktop() ? "true" : undefined}
             className={cn(
               "bg-muted/40 relative flex-1 overflow-hidden p-2 pl-0",
               !compact && panelGone && "pr-0",

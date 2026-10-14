@@ -1,6 +1,6 @@
 "use client";
 
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "@/desktop-bridge/event";
 import { useEffect, useSyncExternalStore } from "react";
 import { getPiChannel, type PiRunningTurn } from "@/lib/pi/pi-channel";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
@@ -11,7 +11,7 @@ import { markThreadActivity } from "@/lib/pi/pi-last-activity";
  * - 事实源在 sidecar：agent 轮起止以 thread_event（agent_start/agent_end）
  *   广播（迁移 4c 起为本 store 的增量源，替代 pi-channel 的 turn_changed
  *   订阅）。自持 pi-chunk-batch 监听（与 pi-channel 的旁路监听同款模式）：
- *   不能挂在 TauriPiClient 的事件 watcher 上——它按「有订阅/在飞请求」早退，
+ *   不能挂在 DesktopPiClient 的事件 watcher 上——它按「有订阅/在飞请求」早退，
  *   空闲期侧边栏的起止增量会断流；双前缀预筛（thread_event + agent_start/
  *   agent_end）后正文里的同名词因 JSON 转义不会误匹配
  * - listRunning（管理通道）做种子水合；合并规则：快照 = 最近一次种子 fold

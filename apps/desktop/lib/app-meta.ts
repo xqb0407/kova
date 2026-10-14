@@ -1,12 +1,12 @@
 "use client";
 
-import { getAppVersion, isTauri } from "@/lib/tauri";
+import { getAppVersion, isDesktop } from "@/lib/desktop-env";
 
 /**
  * 崩溃/卡顿报告里的应用指纹。
  *
  * 拿到一堆堆栈却不知道对应哪个 build 是没法排查的，所以每次上报都带上
- * 版本与平台。这里做进程内缓存：版本只能异步取（Tauri 调 getVersion），
+ * 版本与平台。这里做进程内缓存：版本只能异步取（桌面壳 调 getVersion），
  * 而上报路径（错误边界的 componentDidCatch、反馈页预填）都在渲染期，
  * 必须同步可读。AppRuntimeProvider 挂载时预热，绝大多数时候早已就绪。
  */
@@ -15,12 +15,12 @@ let version: string | null = null;
 let platform: string | null = null;
 let primed = false;
 
-/** 与 tauri.conf.json 的 productName 对齐 */
+/** 与 旧桌面壳配置 的 productName 对齐 */
 const APP_NAME = "扣瓦";
 
 function detectPlatform(): string {
   if (typeof navigator === "undefined") return "unknown";
-  // 桌面包在 Tauri webview 里，UA 带平台；远程网页走真实浏览器 UA
+  // 桌面包在 桌面壳 webview 里，UA 带平台；远程网页走真实浏览器 UA
   const ua = navigator.userAgent;
   if (/Windows/i.test(ua)) return "Windows";
   if (/Mac OS X|Macintosh/i.test(ua)) return "macOS";
@@ -35,7 +35,7 @@ export function primeAppMeta(): void {
   if (primed) return;
   primed = true;
   platform = detectPlatform();
-  if (!isTauri()) return;
+  if (!isDesktop()) return;
   void getAppVersion()
     .then((v) => {
       version = v ?? null;

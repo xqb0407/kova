@@ -4,8 +4,8 @@ import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
 afterAll(restoreAllMocks);
 
 /**
- * TauriPiClient 的事件路由核心语义测试（react-pi 迁移阶段 3b）：
- * mock Tauri invoke/listen，验证 thread_event 分流、delta→partial 重建
+ * DesktopPiClient 的事件路由核心语义测试（react-pi 迁移阶段 3b）：
+ * mock 桌面壳 invoke/listen，验证 thread_event 分流、delta→partial 重建
  * （文本累积 / toolcall 参数缓冲与权威替换 / done 终态替换）、快照基底
  * 对齐（运行中线程中途打开）与收尾帧观察兜底。
  */
@@ -14,7 +14,7 @@ type WireLine = { i: number | null; l: string };
 type EventLike = { payload: WireLine[] };
 type ListenFn = (event: EventLike) => void;
 
-/** 每次测试重置的假 Tauri 状态。注意 listen 是多播：pi-channel 单例（首次
+/** 每次测试重置的假 桌面壳 状态。注意 listen 是多播：pi-channel 单例（首次
  *  piRequest 时构造）也会注册 pi-chunk-batch/pi-exit 监听，且每个用例都
  *  new 一个 client（各自注册一份监听）——不能像单回调那样互相覆盖，
  *  由 subscribeAndSettle 按注册下标精确喂给被测 client 的处理器 */
@@ -23,7 +23,7 @@ let snapshotReply: unknown = null;
 let snapshotCalls = 0;
 let promptArgs: Record<string, unknown> | null = null;
 
-mockModule("@tauri-apps/api/core", () => ({
+mockModule("@/desktop-bridge/core", () => ({
   invoke: (cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "pi_request") {
       const payload = (args?.payload ?? {}) as { type?: string };
@@ -44,7 +44,7 @@ mockModule("@tauri-apps/api/core", () => ({
   },
 }));
 
-mockModule("@tauri-apps/api/event", () => ({
+mockModule("@/desktop-bridge/event", () => ({
   listen: (event: string, cb: ListenFn) => {
     if (event === "pi-chunk-batch") {
       return Promise.resolve().then(() => {
@@ -79,7 +79,7 @@ mockModule("@/lib/pi/pi-bridge", () => {
   };
 });
 
-const { TauriPiClient } = await import("@/lib/pi/pi-runtime/tauri-pi-client");
+const { DesktopPiClient } = await import("@/lib/pi/pi-runtime/desktop-pi-client");
 const {
   pendingApprovalsForTest,
   pendingQuestionsForTest,
@@ -135,14 +135,14 @@ const runningSnapshot = (text: string) => ({
 
 function subscribeAndSettle(): {
   events: PiClientEvent[];
-  client: import("@/lib/pi/pi-runtime/tauri-pi-client").TauriPiClient;
+  client: import("@/lib/pi/pi-runtime/desktop-pi-client").DesktopPiClient;
   feed: (lines: WireLine[]) => void;
 } {
   const events: PiClientEvent[] = [];
   // 被测 client 的监听在 subscribe 里同步注册（先于首个用例里 pi-channel
   // 单例的注册），push 顺序 FIFO，记录下标即可精确定位本用例的处理器
   const cbIndex = chunkCbs.length;
-  const client = new TauriPiClient();
+  const client = new DesktopPiClient();
   client.subscribe("s1", (e) => events.push(e));
   const feed = (lines: WireLine[]) => chunkCbs[cbIndex]?.({ payload: lines });
   return { events, client, feed };
@@ -150,7 +150,7 @@ function subscribeAndSettle(): {
 
 // ---------- 用例 ----------
 
-describe("TauriPiClient 事件路由", () => {
+describe("DesktopPiClient 事件路由", () => {
   test("快照基底 + delta 重建：中途打开线程后续 delta 续上", async () => {
     snapshotCalls = 0;
     snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("Hel") };
@@ -180,11 +180,11 @@ describe("TauriPiClient 事件路由", () => {
     snapshotCalls = 0;
     snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
     // 热身：让 pi-channel 单例的线监听先注册完，避免混入本次计数
-    const warm = new TauriPiClient();
+    const warm = new DesktopPiClient();
     warm.subscribe("warm-thread", () => {});
     await tick();
     const before = chunkCbs.length;
-    const client = new TauriPiClient();
+    const client = new DesktopPiClient();
     // 同一 tick 两次进入 ensureEventWatcher（多线程订阅/StrictMode 重挂同构）：
     // 旧实现 unlistenLines 要等 watchLines 的异步注册完成才有值，两次都过
     // 空值检查 → 双监听 → 每行喂两遍、流式 delta 应用两遍
@@ -402,7 +402,7 @@ describe("TauriPiClient 事件路由", () => {
   });
 });
 
-describe("TauriPiClient 交互卡旁路（4b）", () => {
+describe("DesktopPiClient 交互卡旁路（4b）", () => {
   beforeEach(() => resetInteractionsForTest());
 
   /** 构造旁路 chunk 行（带 sessionId：拦截按会话喂 pi-interactions 台账） */
@@ -514,7 +514,7 @@ describe("TauriPiClient 交互卡旁路（4b）", () => {
   });
 });
 
-describe("TauriPiClient 完成提醒（缺口3）", () => {
+describe("DesktopPiClient 完成提醒（缺口3）", () => {
   test("agent_end 收尾定调：completed/error 提醒，aborted 与外来会话不提醒", async () => {
     snapshotCalls = 0;
     snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
@@ -554,7 +554,7 @@ describe("TauriPiClient 完成提醒（缺口3）", () => {
   });
 });
 
-describe("TauriPiClient 检查点卡观察（缺口2）", () => {
+describe("DesktopPiClient 检查点卡观察（缺口2）", () => {
   test("agent_start→begin / agent_end→settle；旁路会话不跟踪", async () => {
     snapshotCalls = 0;
     snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
@@ -565,7 +565,7 @@ describe("TauriPiClient 检查点卡观察（缺口2）", () => {
     };
     const events: PiClientEvent[] = [];
     const cbIndex = chunkCbs.length;
-    const client = new TauriPiClient(observer);
+    const client = new DesktopPiClient(observer);
     client.subscribe("s1", (e) => events.push(e));
     const feed = (lines: WireLine[]) => chunkCbs[cbIndex]?.({ payload: lines });
     await tick(); // 快照先行
@@ -586,14 +586,14 @@ describe("TauriPiClient 检查点卡观察（缺口2）", () => {
   });
 });
 
-describe("TauriPiClient composer file parts 附件透传（迁移缺口修复）", () => {
+describe("DesktopPiClient composer file parts 附件透传（迁移缺口修复）", () => {
   type Att = { name: string; mimeType: string; data?: string; path?: string };
   const sentAttachments = (): Att[] =>
     (promptArgs as unknown as { attachments: Att[] }).attachments;
 
   test("file:// 对话框直选：文档/图片走 path 载荷零拷贝，与内联图片合并", async () => {
     promptArgs = null;
-    const client = new TauriPiClient();
+    const client = new DesktopPiClient();
     await client.sendMessage("s1", {
       content: "看下这份文档",
       attachments: [{ type: "image", mimeType: "image/png", data: "AAAA" }],
@@ -626,8 +626,8 @@ describe("TauriPiClient composer file parts 附件透传（迁移缺口修复）
 
   test("裸 base64（assistant-ui 非 url 约定）包成 data: URL 走内联载荷", async () => {
     promptArgs = null;
-    const client = new TauriPiClient();
-    // bun 环境无 window → isTauri()=false → 文档内联回退（data 载荷）
+    const client = new DesktopPiClient();
+    // bun 环境无 window → isDesktop()=false → 文档内联回退（data 载荷）
     await client.sendMessage("s1", {
       content: "数据在这",
       files: [
@@ -641,14 +641,14 @@ describe("TauriPiClient composer file parts 附件透传（迁移缺口修复）
 
   test("无附件时 attachments 为 null（prompt 帧不带字段语义不变）", async () => {
     promptArgs = null;
-    const client = new TauriPiClient();
+    const client = new DesktopPiClient();
     await client.sendMessage("s1", { content: "纯文本" });
     expect(promptArgs).not.toBeNull();
     expect((promptArgs as unknown as Record<string, unknown>).attachments).toBeNull();
   });
 });
 
-describe("TauriPiClient 快照装载耗时播种（症状1）", () => {
+describe("DesktopPiClient 快照装载耗时播种（症状1）", () => {
   /** 两轮历史转录：行带 __seq + timestamp（sidecar thread_snapshot 透传形状） */
   const historySnapshot = () => ({
     metadata: { id: "s1", status: "idle" },
@@ -704,7 +704,7 @@ describe("TauriPiClient 快照装载耗时播种（症状1）", () => {
     // 汇聚点，否则台账全空、摘要行退回「X 条较早消息」。
     __resetTurnStoresForTests();
     snapshotReply = { type: "thread_snapshot", snapshot: historySnapshot() };
-    const client = new TauriPiClient();
+    const client = new DesktopPiClient();
     await client.getThread("s1");
     expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:3"))).toEqual({
       start: 1_000,
@@ -761,7 +761,7 @@ describe("TauriPiClient 快照装载耗时播种（症状1）", () => {
   });
 });
 
-describe("TauriPiClient 会话标题实时回流（session_info_changed）", () => {
+describe("DesktopPiClient 会话标题实时回流（session_info_changed）", () => {
   test("智能标题/改名落到本地标题表，顶栏与侧边栏不必等整表 reload", async () => {
     snapshotCalls = 0;
     snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("hi") };

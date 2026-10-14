@@ -26,6 +26,9 @@ interface CachedManifest {
   notes?: string | null;
   pageUrl?: string | null;
   downloads: Record<string, string>;
+  /** Electron 版专用直链（downloadsElectron.<platformKey>）：与 Tauri 的 downloads 分键，
+   *  否则把 Electron 产物写进 downloads 会把 Tauri 老用户的"应用内更新"引到装不上的包 */
+  downloadsElectron?: Record<string, string>;
   checkedAt: number;
 }
 
@@ -105,11 +108,14 @@ function cachedManifest(): CachedManifest | null {
   try {
     const m = JSON.parse(raw);
     if (typeof m?.version !== "string" || !m.version) return null;
+    const dl = m.downloads ?? {};
+    const dlElectron = m.downloadsElectron ?? {};
     return {
       version: m.version,
       notes: m.notes ?? null,
       pageUrl: m.pageUrl ?? null,
-      downloads: m.downloads ?? {},
+      downloads: { ...dl, ...dlElectron },
+      downloadsElectron: dlElectron,
       checkedAt: Number(m.checkedAt ?? 0),
     };
   } catch {
@@ -147,17 +153,21 @@ async function fetchManifest(url: string): Promise<CachedManifest> {
   }
   const version = typeof v?.version === "string" ? v.version.trim() : "";
   if (!version) throw new Error("manifest has no version");
-  const downloads: Record<string, string> = {};
-  if (v?.downloads && typeof v.downloads === "object") {
-    for (const [k, val] of Object.entries(v.downloads)) {
-      if (typeof val === "string") downloads[k] = val;
+  const pickStrings = (src: unknown): Record<string, string> => {
+    const out: Record<string, string> = {};
+    if (src && typeof src === "object") {
+      for (const [k, val] of Object.entries(src)) {
+        if (typeof val === "string") out[k] = val;
+      }
     }
-  }
+    return out;
+  };
   return {
     version,
     notes: typeof v?.notes === "string" ? v.notes : null,
     pageUrl: typeof v?.pageUrl === "string" ? v.pageUrl : null,
-    downloads,
+    downloads: pickStrings(v?.downloads),
+    downloadsElectron: pickStrings(v?.downloadsElectron),
     checkedAt: nowMs(),
   };
 }
@@ -173,7 +183,7 @@ function buildInfo(current: string, m: CachedManifest | null, fromCache: boolean
     channel: channelOf(current),
     notes: m?.notes ?? null,
     pageUrl: m?.pageUrl ?? null,
-    downloadUrl: m ? m.downloads[platformKey()] ?? null : null,
+    downloadUrl: m ? (m.downloadsElectron?.[platformKey()] ?? m.downloads[platformKey()]) ?? null : null,
     checkedAt: m ? m.checkedAt : null,
     skipped,
     autoCheck: autoCheckEnabled(),

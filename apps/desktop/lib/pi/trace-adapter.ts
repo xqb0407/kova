@@ -1,6 +1,6 @@
 import type { SpanData } from "@assistant-ui/react-o11y";
 import type { PiTraceRun, PiTraceSpan, PiTraceStatus } from "@/lib/pi/pi-bridge";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * Agent 轨迹适配层：PiTraceRun / PiTraceSpan（sidecar trace.ts 树形）→
@@ -107,16 +107,16 @@ export async function exportTraceRunsJson(
   const filename = `${sessionId}-traces-${date}.json`;
   const payload = JSON.stringify(runs, null, 2);
 
-  if (isTauri()) {
+  if (isDesktop()) {
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { save } = await import("@/desktop-bridge/plugin-dialog");
       const path = await save({
         defaultPath: filename,
         title: "导出调用轨迹",
         filters: [{ name: "JSON", extensions: ["json"] }],
       });
       if (!path) return false;
-      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+      const { writeTextFile } = await import("@/desktop-bridge/plugin-fs");
       await writeTextFile(path, payload);
       return true;
     } catch {

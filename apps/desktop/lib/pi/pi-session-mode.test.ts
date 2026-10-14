@@ -28,7 +28,7 @@ mockModule("@/lib/pi/pi-bridge", () => ({
   },
 }));
 
-// pi-thread-adapter 牵出 tauri / 线程适配的整条链，这里只保留本模块真正用到的几块。
+// pi-thread-adapter 牵出 桌面桥 / 线程适配的整条链，这里只保留本模块真正用到的几块。
 // piSessionIdForThread 与真实现同语义：registry 优先；__LOCALID_ 草稿无会话返回
 // undefined；其余 id 本身就是 sessionId（新链路刷新后的行 id / 旧链路恢复线程）。
 const registry = new Map<string, string>();

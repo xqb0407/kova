@@ -1,19 +1,19 @@
 "use client";
 
 import { useEffect, useState, type FC } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@/desktop-bridge/window";
 import { CopyIcon, MinusIcon, SquareIcon, XIcon } from "lucide-react";
-import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 
 /**
  * 自绘窗口控制按钮（最小化/最大化/关闭），Windows 风格。
  *
- * 仅在「桌面端且非 macOS」时渲染（Windows/Linux 由 tauri.windows.conf.json 关闭系统
+ * 仅在「桌面端且非 macOS」时渲染（Windows/Linux 由 旧桌面壳窗口配置 关闭系统
  * 标题栏 decorations:false）；macOS 使用系统红绿灯，网页端无窗口 chrome。
  * 按钮内部自行判定环境，父组件可直接渲染，无需条件包裹。
  */
 export const WindowControls: FC = () => {
-  const enabled = isTauri() && !isMacPlatform();
+  const enabled = isDesktop() && !isMacPlatform();
   const [maximized, setMaximized] = useState(false);
 
   // 跟随窗口尺寸变化同步最大化状态（最大化/还原均有 resize 事件）

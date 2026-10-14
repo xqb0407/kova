@@ -1,7 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 
 /**
  * 备份与恢复（设置 → 系统 → 备份）的前端配置镜像与命令封装。
@@ -121,14 +121,14 @@ export function useBackupConfig(): BackupConfigView {
   );
 }
 
-/** 非 Tauri 环境（SSR/网页端）不打水合 */
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+/** 非 桌面壳环境（SSR/网页端）不打水合 */
+function isDesktopRuntime(): boolean {
+  return typeof window !== "undefined" && "__KOVA_DESKTOP__" in window;
 }
 
 /** 模块加载水合一次；失败保持默认（设置页保存时仍会尝试） */
 export async function initBackupConfig(): Promise<void> {
-  if (initialized || !isTauriRuntime()) return;
+  if (initialized || !isDesktopRuntime()) return;
   initialized = true;
   try {
     current = { ...DEFAULT_BACKUP_CONFIG, ...(await invoke<BackupConfigView>("backup_config_get")) };

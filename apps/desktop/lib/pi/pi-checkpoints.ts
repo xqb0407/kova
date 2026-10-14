@@ -4,7 +4,7 @@ import { useSyncExternalStore } from "react";
 
 /**
  * 运行检查点 store（git 集成 M2）：每次 agent 运行前在影子仓库打快照
- * （见 src-tauri/src/git.rs），运行结束 diff 出"本次改动"后写入这里，
+ * （见 原 Rust 宿主的 git.rs），运行结束 diff 出"本次改动"后写入这里，
  * 供消息尾部的检查点卡（components/agent-thread/checkpoint-card.tsx）消费。
  *
  * 每轮一条、互不覆盖：条目锚定"触发该轮的 user 消息下标"（anchorIndex），

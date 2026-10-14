@@ -6,7 +6,7 @@
  * 原先有两个出口：屏幕左下角那一行实时数字（点一下复制整段会话汇总），以及
  * `console.warn` 定期上报（**所有构建**）→ 桌面端的 frontend-logging 把它转发到
  * `~/Library/Logs/com.kova.assistant/<日期>/web.log`（见 lib/frontend-logging.ts
- * 与 src-tauri/src/logging.rs）。**屏上那行已按需求去掉**（连同它的点击复制），
+ * 与 原 Rust 宿主的 logging.rs）。**屏上那行已按需求去掉**（连同它的点击复制），
  * 现在只剩上报这一路，而且默认关着——开关是 perf-store 的 `PERF_LOG`。
  *
  * 为什么不用 devtools 测：Web Inspector 挂在 WKWebView 上本身就会让页面明显

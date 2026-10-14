@@ -6,7 +6,7 @@
  * （~/.kova/soul.md、rules.md，可外部编辑，get 回实时内容）+ 活动会话系统提示词
  * 热替换。这里只做镜像缓存：启动 get_personalization 水合，保存走 set_personalization。
  * 桌面与远程网页共用同一链路（远程经 WS 转发到同一 sidecar），桌面端无需
- * 直接读写 Tauri kv，远程改动也能持久化。
+ * 直接读写 桌面壳 kv，远程改动也能持久化。
  */
 import { useSyncExternalStore } from "react";
 import { piRequest } from "@/lib/pi/pi-bridge";

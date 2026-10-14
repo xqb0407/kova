@@ -1,7 +1,7 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
-import { isTauri } from "@/lib/tauri";
+import { invoke } from "@/desktop-bridge/core";
+import { isDesktop } from "@/lib/desktop-env";
 import { piRequest } from "@/lib/pi/pi-bridge";
 
 /**
@@ -11,7 +11,7 @@ import { piRequest } from "@/lib/pi/pi-bridge";
  *   off 的字符串 = 关闭思考时显式下发的参数值——默认开思考的网关必须靠它关得掉，
  *   常见 "none"（OpenAI 兼容 reasoning_effort））；
  *   null = 显式禁用该档（档位下拉里不再出现）。
- * 持久化在 Tauri kv（pi.model_thinking，与 pi.model 同套路），整包经
+ * 持久化在 桌面壳 kv（pi.model_thinking，与 pi.model 同套路），整包经
  * set_thinking_maps 推给 sidecar 覆盖到模型目录（见 model-catalog.ts）。
  */
 export type ModelThinkingMap = Record<string, string | null>;
@@ -74,7 +74,7 @@ export async function setModelThinkingMap(
     maps = next;
   }
   await syncToSidecar();
-  if (!isTauri()) return;
+  if (!isDesktop()) return;
   void invoke("kv_set", { key: KV_KEY, value: JSON.stringify(maps) }).catch(
     () => {},
   );
@@ -82,7 +82,7 @@ export async function setModelThinkingMap(
 
 /** 从 SQLite kv 恢复映射并下发 sidecar；client bundle 加载即执行 */
 export async function initThinkingMaps(): Promise<void> {
-  if (initialized || !isTauri()) return;
+  if (initialized || !isDesktop()) return;
   initialized = true;
   try {
     const value = await invoke<string | null>("kv_get", { key: KV_KEY });

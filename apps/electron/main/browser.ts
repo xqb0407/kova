@@ -1,6 +1,6 @@
 /**
  * 面板内置浏览器（对齐 browser.rs + browser_scripts.rs）：
- * WebContentsView 子视图（替代 Tauri 子 webview）、物理像素 bounds 同步、
+ * WebContentsView 子视图（替代 原生子视图）、物理像素 bounds 同步、
  * 视口模式（fill/fixed）、agent 动作原语（导航/快照/点击/输入/滚动/后退）。
  *
  * 与 Rust 版的差异（PORTING-NOTES 记录）：ARIA 快照（Playwright 注入运行时）

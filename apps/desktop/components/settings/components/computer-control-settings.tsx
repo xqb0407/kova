@@ -8,7 +8,7 @@ import {
   saveBrowserConfig,
   useBrowserConfig,
 } from "@/lib/settings/browser-config";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * 电脑控制区块（设置 → 智能体 → 智能体配置）——AI 驱动本机能力的总闸。
@@ -92,7 +92,7 @@ export const ComputerControlSettings: FC = () => {
         </div>
       </div>
 
-      {!isTauri() ? (
+      {!isDesktop() ? (
         <p className="text-muted-foreground/60 text-xs">
           当前为网页端：电脑控制能力依赖桌面宿主，设置仅作展示。
         </p>

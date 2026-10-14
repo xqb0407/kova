@@ -60,7 +60,7 @@ const MIME: Record<string, string> = {
   ".webmanifest": "application/manifest+json",
 };
 
-/** 与 tauri.conf.json security.csp 等价（去掉 ipc.localhost 项） */
+/** 与 旧桌面壳配置 security.csp 等价（去掉 ipc.localhost 项） */
 const CSP =
   "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data: blob: https: http:; font-src 'self' data:; connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https:; " +

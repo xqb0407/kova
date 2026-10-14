@@ -1,4 +1,4 @@
-/** `@tauri-apps/plugin-os` 兼容实现（当前仅 platform()） */
+/** 桌面桥 · 平台：platform()（UA 判定）。 */
 export type Platform = "macos" | "windows" | "linux" | "android" | "ios";
 
 export async function platform(): Promise<Platform> {

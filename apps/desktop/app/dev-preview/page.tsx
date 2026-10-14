@@ -49,7 +49,7 @@ export function enqueue(item: Task) {
 $$E = mc^2$$
 `;
 
-const TS_SAMPLE = `import { invoke } from "@tauri-apps/api/core";
+const TS_SAMPLE = `import { invoke } from "@/desktop-bridge/core";
 
 /** 队列条目:一次待发送的用户输入 */
 export interface QueueEntry {

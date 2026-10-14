@@ -1,8 +1,8 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import { useSyncExternalStore } from "react";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { piRequest } from "@/lib/pi/pi-bridge";
 import { addPiChannelListener } from "@/lib/pi/pi-channel";
 import { isRemoteMode } from "@/lib/remote";
@@ -112,7 +112,7 @@ export async function setSelectedModel(
     }
   }
 
-  if (!isTauri()) return;
+  if (!isDesktop()) return;
   const write =
     model == null
       ? invoke("kv_delete", { key: KV_KEY })
@@ -122,7 +122,7 @@ export async function setSelectedModel(
 
 /** 从 SQLite 恢复选中模型并同步 sidecar，应用启动时调用 */
 export async function initModelSettings(): Promise<void> {
-  if (initialized || !isTauri()) return;
+  if (initialized || !isDesktop()) return;
   initialized = true;
   try {
     const value = await invoke<string | null>("kv_get", { key: KV_KEY });
@@ -152,7 +152,7 @@ export async function initModelSettings(): Promise<void> {
   }
 }
 
-// client bundle 加载即恢复（SSR 端 isTauri() 为 false，直接跳过）
+// client bundle 加载即恢复（SSR 端 isDesktop() 为 false，直接跳过）
 void initModelSettings();
 
 // 远程模式：无本地 kv，initModelSettings 整体跳过，sidecar 仍持有当前模型

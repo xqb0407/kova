@@ -17,7 +17,7 @@ import {
 /**
  * 远程运行时：通过 WsPiChannel 连接用户桌面端网关，react-pi 迁移阶段 5c 起
  * 与桌面端完全同链路——usePiRuntime + PiClient 契约（快照权威 + 原生事件流），
- * 仅客户端实现不同（WsPiClient 走 WebSocket，桌面 TauriPiClient 走 invoke）。
+ * 仅客户端实现不同（WsPiClient 走 WebSocket，桌面 DesktopPiClient 走 invoke）。
  *
  * 时序约束：setPiChannel 必须先于任何 piRequest 型调用（会话偏好/分支等管理
  * 模块走模块级通道表）——同组件内 effect 按 hook 定义顺序执行，因此注册

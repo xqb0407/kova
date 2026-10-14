@@ -56,7 +56,7 @@ describe("promptFileKind / validatePromptFile", () => {
     expect(
       validatePromptFile({ name: "a.png", type: "image/png", size: PROMPT_IMAGE_MAX_BYTES + 1 }),
     ).toContain("2MiB");
-    // 测试环境非 Tauri → 网页端内联回退上限 8MiB；桌面端（isTauri）走 20MiB 落盘
+    // 测试环境非 桌面壳 → 网页端内联回退上限 8MiB；桌面端（isDesktop）走 20MiB 落盘
     expect(PROMPT_DOC_MAX_BYTES).toBe(20 * 1024 * 1024);
     expect(validatePromptFile({ name: "a.docx", size: PROMPT_DOC_INLINE_MAX_BYTES })).toBeNull();
     expect(

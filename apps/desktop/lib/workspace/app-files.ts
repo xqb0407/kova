@@ -1,6 +1,6 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 
 /**
  * 「我的文件 → 本地」文件清单与操作（AI 产物目录）。

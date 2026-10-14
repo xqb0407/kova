@@ -2,7 +2,7 @@
 
 import { useState, type FC } from "react";
 import { cn } from "@/lib/utils";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import {
@@ -141,7 +141,7 @@ const FONT_FAMILY_OPTIONS: {
  *  + 桌面端外观（窗口背景材质，需 Rust 窗口能力）。版式对齐模型/远程访问页。 */
 export const AppearanceSettings: FC = () => {
   const prefs = useUiPrefs();
-  const desktop = isTauri();
+  const desktop = isDesktop();
   const effect = useWindowEffect();
   const [busy, setBusy] = useState<WindowEffectName | null>(null);
 
@@ -235,7 +235,7 @@ export const AppearanceSettings: FC = () => {
             </SettingRow>
           </div>
         </section>
- {/* 桌面端：窗口材质依赖 Tauri 能力，远程网页端隐藏整组 */}
+ {/* 桌面端：窗口材质依赖 桌面壳能力，远程网页端隐藏整组 */}
         {desktop && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">桌面端</h2>

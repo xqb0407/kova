@@ -87,8 +87,8 @@ export async function installUpdate(
   let unlisten: (() => void) | undefined;
   try {
     const [{ invoke }, { listen }] = await Promise.all([
-      import("@tauri-apps/api/core"),
-      import("@tauri-apps/api/event"),
+      import("@/desktop-bridge/core"),
+      import("@/desktop-bridge/event"),
     ]);
     unlisten = await listen<UpdateProgress>(UPDATE_PROGRESS_EVENT, (e) =>
       onProgress?.(e.payload),

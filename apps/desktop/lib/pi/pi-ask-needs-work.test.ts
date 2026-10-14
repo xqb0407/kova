@@ -8,7 +8,7 @@ import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
  * 清草稿键 miss，而条目实际躺在会话键上。
  */
 
-// pi-thread-adapter 牵出 tauri 整条链，这里只保留本模块用到的几块（语义与真实现一致）
+// pi-thread-adapter 牵出 桌面桥整条链，这里只保留本模块用到的几块（语义与真实现一致）
 const registry = new Map<string, string>();
 const { isLocalDraftThreadId } = await import("@/lib/pi/pi-thread-identity");
 const sessionIdFor = (threadId: string) =>

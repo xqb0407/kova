@@ -40,7 +40,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { isRemoteMode } from "@/lib/remote";
-import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
 import { clearWorkspace } from "@/lib/workspace/workspace-store";
 import {
@@ -152,10 +152,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     onActiveMenuChange?.(value);
   };
   const [activeTab, setActiveTab] = useState<string>("tasks");
-  // 红绿灯避让只在 macOS 桌面端（Tauri）成立：isMacPlatform() 只看 UA，
+  // 红绿灯避让只在 macOS 桌面端（Electron）成立：isMacPlatform() 只看 UA，
   // 网页在 mac 浏览器里打开时同样为 true，但无窗口 chrome，必须走 Logo 分支
   // （与 base.tsx 的 mac 同口径）
-  const macDesktop = isTauri() && isMacPlatform();
+  const macDesktop = isDesktop() && isMacPlatform();
   // 项目分组的展开状态提升到 shell：「展开全部/收起全部」按钮与列表共用
   const [projOpenDirs, setProjOpenDirs] = useState<Set<string>>(
     () => new Set(),
@@ -464,7 +464,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         >
         {/* header */}
         <div
-          data-tauri-drag-region={isTauri() ? "deep" : undefined}
+          data-tauri-drag-region={isDesktop() ? "deep" : undefined}
           className={cn(
             "flex h-16 shrink-0 items-center overflow-hidden px-2 gap-2",
             // macOS 桌面端：内容靠右（左上为悬浮红绿灯位）；Windows/网页：Logo 靠左、操作靠右

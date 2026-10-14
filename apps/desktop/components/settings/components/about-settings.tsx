@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FC } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { getName, getTauriVersion, getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@/desktop-bridge/core";
+import { getName, getRuntimeVersion, getVersion } from "@/desktop-bridge/app";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { SettingRow } from "@/components/custom-ui/setting-row";
@@ -12,7 +12,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { FEEDBACK_ISSUES_URL } from "@/lib/feedback";
 import {
   installUpdate,
@@ -35,11 +35,11 @@ import {
 } from "lucide-react";
 import { ObservabilitySection } from "./observability-settings";
 
-type AppInfo = { name: string; version: string; tauri: string };
+type AppInfo = { name: string; version: string; runtime: string };
 
 /** 关于页：应用信息、日志目录、问题反馈、开发者模式（DevTools，仅桌面端） */
 export const AboutSettings: FC = () => {
-  const desktop = isTauri();
+  const desktop = isDesktop();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [devMode, setDevMode] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -60,12 +60,12 @@ export const AboutSettings: FC = () => {
     if (!desktop) return;
     (async () => {
       try {
-        const [name, version, tauri] = await Promise.all([
+        const [name, version, runtime] = await Promise.all([
           getName(),
           getVersion(),
-          getTauriVersion(),
+          getRuntimeVersion(),
         ]);
-        setInfo({ name, version, tauri });
+        setInfo({ name, version, runtime });
         const dev = await invoke<string | null>("kv_get", { key: "dev.mode" });
         setDevMode(dev === "1");
       } catch (err) {
@@ -199,7 +199,7 @@ export const AboutSettings: FC = () => {
       <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
         <h1 className="text-2xl font-bold tracking-tight">关于</h1>
 
-        {/* 应用信息：桌面端取 Tauri 元数据，网页端为静态降级 */}
+        {/* 应用信息：桌面端取 桌面壳元数据，网页端为静态降级 */}
         <section className="flex flex-col gap-3">
           <h2 className="text-base font-semibold">应用信息</h2>
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
@@ -215,6 +215,11 @@ export const AboutSettings: FC = () => {
                     {info?.version ?? "-"}
                   </span>
                 </SettingRow>
+                <SettingRow label="Electron 版本">
+                  <span className="text-muted-foreground font-mono text-sm tabular-nums">
+                    {info?.runtime ?? "-"}
+                  </span>
+                </SettingRow>
               </>
             ) : (
               <SettingRow label="扣瓦（网页版）">
@@ -224,7 +229,7 @@ export const AboutSettings: FC = () => {
           </div>
         </section>
 
-        {/* 应用更新：通知清单走 dl.openkova.site（Rust 侧节流/忽略）；升级包由 Tauri updater 安装 */}
+        {/* 应用更新：通知清单走 dl.openkova.site（Rust 侧节流/忽略）；升级包由 桌面壳升级器 安装 */}
         {desktop && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">更新</h2>

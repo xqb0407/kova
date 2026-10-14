@@ -1,4 +1,4 @@
-/** `@tauri-apps/api/app` 兼容实现 */
+/** 桌面桥 · 应用信息：getVersion/getName（主进程 app 元信息）。 */
 import { invokeBridge } from "./_host";
 
 export async function getVersion(): Promise<string> {
@@ -13,7 +13,7 @@ export async function getAppWindow(): Promise<{ width: number; height: number }>
   return invokeBridge("bridge_app_window_size");
 }
 
-/** 兼容占位：前端用它显示 Tauri 版本行，桥环境下给出可诊断值 */
-export async function getTauriVersion(): Promise<string> {
-  return "2.0-electron-compat";
+/** 运行时版本（关于页"Electron 版本"行）：主进程读 process.versions.electron */
+export async function getRuntimeVersion(): Promise<string> {
+  return invokeBridge<string>("bridge_runtime_version");
 }

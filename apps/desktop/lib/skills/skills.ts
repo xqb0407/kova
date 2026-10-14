@@ -203,9 +203,9 @@ Anything the model would otherwise guess wrong.
 // client bundle 加载即按当前工作区水合（SSR 端返回空快照，不请求）
 if (typeof window !== "undefined") void refreshSkills(getWorkspace());
 
-// 远程模式：上面的首帧水合发生在 WS 通道注册之前（落到 Tauri 兜底通道失败，
+// 远程模式：上面的首帧水合发生在 WS 通道注册之前（落到 桌面壳 兜底通道失败，
 // 镜像停在错误态且无人重试），通道换代时按当前工作区重拉一次
-// （与 pi-sessions-sync 同款思路；桌面端走 Tauri 通道既有路径无需重拉，
+// （与 pi-sessions-sync 同款思路；桌面端走 桌面通道既有路径无需重拉，
 // 测试/预览环境的假通道由 isRemoteMode 挡掉）
 addPiChannelListener((ch) => {
   if (ch?.kind === "ws" && isRemoteMode()) void refreshSkills(getWorkspace());

@@ -16,7 +16,7 @@ import {
   RotateCwIcon,
 } from "lucide-react";
 import { updatePanelTab, type PanelTab } from "@/lib/panels/panel-tabs";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { cn } from "@/lib/utils";
 
 /** 无协议输入补 https://;非法输入返回 null。file:// 放行（产物浏览器预览本地文件） */
@@ -53,7 +53,7 @@ function hostOf(url: string): string {
   }
 }
 
-const tauriCore = () => import("@tauri-apps/api/core");
+const desktopCore = () => import("@/desktop-bridge/core");
 
 type VpState = {
   mode: "fill" | "fixed";
@@ -74,7 +74,7 @@ const VP_PRESETS: VpPreset[] = [
 ];
 
 /**
- * 浏览器标签:地址栏 + Tauri 子 webview（unstable 多 webview，宿主侧 browser.rs 管理）。
+ * 浏览器标签:地址栏 + 原生子视图（unstable 多 webview，宿主侧 browser.rs 管理）。
  * React 渲染一个常驻占位容器，ResizeObserver/resize/scroll 驱动 browser_sync_bounds
  * 把物理像素 bounds 同步给宿主；页面导航经 "browser:navigated" 事件回推维护
  * 地址栏、历史栈与 tab 记录。相比原 iframe：X-Frame-Options 站点（GitHub 等）
@@ -126,7 +126,7 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
    *  先落位再重新 attach 显示。 */
   const syncBounds = useCallback((): Promise<boolean> => {
     const el = hostRef.current;
-    if (!isTauri() || !el) return Promise.resolve(false);
+    if (!isDesktop() || !el) return Promise.resolve(false);
     // 全屏视图覆盖期间（设置等）主视图不可见：冻结同步，恢复时统一补一次
     if (occludedRef.current) return Promise.resolve(false);
     cancelAnimationFrame(rafRef.current);
@@ -137,13 +137,13 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
         if (r.width < 1 || r.height < 1) {
           // 不可见：隐藏（幂等），不动宿主 bounds
           hiddenRef.current = true;
-          tauriCore()
+          desktopCore()
             .then(({ invoke }) => invoke("browser_detach", { destroy: false }))
             .catch(() => {})
             .finally(() => resolve(false));
           return;
         }
-        tauriCore()
+        desktopCore()
           .then(({ invoke }) =>
             invoke("browser_sync_bounds", {
               x: Math.round(r.left * dpr),
@@ -158,7 +158,7 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
               // 收起期间被隐藏过：落位后恢复（attach 幂等：同址仅显示不重载；
               // webview 不存在则按刚同步的 frame 创建）。空 tab 无 url 保持隐藏。
               if (urlRef.current) {
-                tauriCore()
+                desktopCore()
                   .then(({ invoke }) =>
                     invoke("browser_attach", { url: urlRef.current }),
                   )
@@ -176,11 +176,11 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
    *  定义在 syncBounds 之后：deps 引用它。 */
   const setOccluded = useCallback(
     (occluded: boolean) => {
-      if (occludedRef.current === occluded || !isTauri()) return;
+      if (occludedRef.current === occluded || !isDesktop()) return;
       occludedRef.current = occluded;
       if (occluded) {
         hiddenRef.current = true; // 恢复时走"收起隐藏"分支重新落位显示
-        tauriCore()
+        desktopCore()
           .then(({ invoke }) => invoke("browser_detach", { destroy: false }))
           .catch(() => {});
       } else {
@@ -216,11 +216,11 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
   // 下面的 url→attach effect 会因 attached 去重被跳过，传 null 时宿主在 webview
   // 不存在的情况下拒绝创建——表现为首次「浏览器预览」空白，点刷新才出现。
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isDesktop()) return;
     let alive = true;
     void syncBounds().then(() => {
       if (!alive) return;
-      tauriCore().then(({ invoke }) => {
+      desktopCore().then(({ invoke }) => {
         if (!alive) return;
         if (initialRef.current) {
           invoke("browser_attach", { url: initialRef.current }).catch(() => {});
@@ -232,7 +232,7 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
     return () => {
       alive = false;
       cancelAnimationFrame(rafRef.current);
-      tauriCore()
+      desktopCore()
         .then(({ invoke }) => invoke("browser_detach", { destroy: false }))
         .catch(() => {});
     };
@@ -242,11 +242,11 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
   // 同步无效（面板收起等）就不创建：展开后的 ResizeObserver 同步会经
   // hiddenRef 恢复路径按 urlRef 重新 attach。
   useEffect(() => {
-    if (!isTauri() || !url || attached.current === url) return;
+    if (!isDesktop() || !url || attached.current === url) return;
     attached.current = url;
     void syncBounds().then((ok) => {
       if (!ok) return;
-      tauriCore()
+      desktopCore()
         .then(({ invoke }) => invoke("browser_attach", { url }))
         .catch(() => {});
     });
@@ -254,7 +254,7 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
 
   // 布局/滚动跟随：窗口缩放、面板宽度动画、容器滚动都会改变占位区域
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isDesktop()) return;
     const el = hostRef.current;
     if (!el) return;
     const ro = new ResizeObserver(syncBounds);
@@ -275,7 +275,7 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
   // 错误区域（z 序在 DOM 之上）盖住 panel/composer 吞点击。监听 DPR 变化
   // 立即重同步（matchMedia 一次性监听：注册当前分辨率，偏离即触发重挂）
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isDesktop()) return;
     let mq: MediaQueryList | null = null;
     const onChange = () => {
       mq?.removeEventListener("change", onChange);
@@ -294,13 +294,13 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
 
   // 视口模式：挂载取当前值（AI resize 的面板外落位也回读），并跟随宿主事件
   useEffect(() => {
-    if (!isTauri()) return;
-    tauriCore()
+    if (!isDesktop()) return;
+    desktopCore()
       .then(({ invoke }) => invoke<VpState>("browser_viewport_get"))
       .then((v) => setVp(v))
       .catch(() => {});
     let unlisten: (() => void) | undefined;
-    import("@tauri-apps/api/event")
+    import("@/desktop-bridge/event")
       .then(({ listen }) =>
         listen<VpState>("browser:viewport", (e) => setVp(e.payload)),
       )
@@ -313,10 +313,10 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
 
   // 宿主导航事件：started/finished/title 三阶段，维护地址栏、栈与 tab 记录
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isDesktop()) return;
     let unlisten: (() => void) | undefined;
     let alive = true;
-    import("@tauri-apps/api/event")
+    import("@/desktop-bridge/event")
       .then(({ listen }) =>
         listen<{ url: string; phase: string; title?: string | null }>(
           "browser:navigated",
@@ -367,7 +367,7 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
   // 全屏视图（设置等）覆盖主窗口时隐藏子 webview（base.tsx 广播）；
   // 返回应用后由 syncBounds 状态机恢复显示（面板展开 → 落位+attach）。
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isDesktop()) return;
     const onOccluded = (e: Event) => {
       setOccluded(
         (e as CustomEvent<{ occluded?: boolean }>).detail?.occluded ?? true,
@@ -394,7 +394,7 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
 
   const reload = () => {
     if (!url) return;
-    tauriCore()
+    desktopCore()
       .then(({ invoke }) => invoke("browser_attach", { url, force: true }))
       .catch(() => {});
   };
@@ -410,8 +410,8 @@ export const BrowserView: FC<{ tab: PanelTab }> = ({ tab }) => {
         ? { mode: "fill", width: null, height: null }
         : { mode: "fixed", width: p.width, height: p.height },
     );
-    if (!isTauri()) return;
-    tauriCore()
+    if (!isDesktop()) return;
+    desktopCore()
       .then(({ invoke }) =>
         invoke("browser_viewport_set", {
           mode: p.mode,

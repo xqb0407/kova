@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ProviderIcon } from "@/components/custom-ui/provider-icon";
 import { cn } from "@/lib/utils";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import {
   piRequest,
   type PiCredentialSummary,
@@ -182,7 +182,7 @@ export const ModelStep: FC = () => {
         }
       />
 
-      {!isTauri() ? (
+      {!isDesktop() ? (
         <Notice>当前不是桌面环境，模型配置请在 Kova 客户端里完成。</Notice>
       ) : phase === "provider" ? (
         providers === null ? (

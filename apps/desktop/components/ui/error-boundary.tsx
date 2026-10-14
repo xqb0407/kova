@@ -1,7 +1,7 @@
 "use client";
 
 import { Component, useState, type ErrorInfo, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import {
   AlertTriangleIcon,
   BugIcon,
@@ -16,7 +16,7 @@ import { appMetaLine } from "@/lib/app-meta";
 import { buildFeedbackIssueUrl } from "@/lib/feedback";
 import { recentJankReport } from "@/lib/perf-watch";
 import { openExternal } from "@/lib/external-link";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /** 崩溃详情取前几帧就够定位，再长只是刷屏 */
 function head(frames: string | null | undefined, n: number): string {
@@ -116,7 +116,7 @@ export function CrashFallback({
           {copy === "copied" ? <CheckIcon /> : <CopyIcon />}
           {copy === "copied" ? "已复制" : copy === "failed" ? "复制失败" : "复制错误详情"}
         </Button>
-        {isTauri() ? (
+        {isDesktop() ? (
           <Button size="sm" variant="outline" onClick={handleOpenLogs}>
             <FolderOpenIcon />
             打开日志目录

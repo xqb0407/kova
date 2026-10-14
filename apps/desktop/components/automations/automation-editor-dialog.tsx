@@ -237,7 +237,7 @@ const TaskWorkspacePill: FC<{ value: string; onChange: (v: string) => void }> = 
       if (dir) onChange(dir);
       setOpen(false);
     } catch {
-      // 非 Tauri 环境：手动输入路径兜底
+      // 非 桌面壳环境：手动输入路径兜底
     } finally {
       setBusy(false);
     }

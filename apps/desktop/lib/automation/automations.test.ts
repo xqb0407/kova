@@ -7,7 +7,7 @@ afterAll(restoreAllMocks);
  * 前端镜像 store 的写世代 guard 回归：
  * 运行帧/事件触发的 refreshAutomations 与用户暂停操作竞速时，先出单后应答的
  * 陈旧清单不得覆盖已落盘的写结果（曾致暂停开关回弹）。
- * 桩掉 pi-bridge（手动控制应答顺序）与 tauri/事件通道（模块求值依赖）。
+ * 桩掉 pi-bridge（手动控制应答顺序）与桌面桥/事件通道（模块求值依赖）。
  */
 
 type Deferred = {
@@ -32,9 +32,9 @@ mockModule("@/lib/pi/pi-bridge", () => ({
 }));
 // agent-events 不 mock：真实实现是纯内存 pub-sub，被动订阅无副作用；
 // 曾在此 mock 成仅含 subscribe 的残缺模块——bun 的模块 mock 恢复不可靠，
-// 泄漏进后续测试文件（tauri-pi-client.test.ts）后 emitAgentEvent 缺失，
+// 泄漏进后续测试文件（desktop-pi-client.test.ts）后 emitAgentEvent 缺失，
 // 完成提醒用例全量跑必挂（2026-10-01）
-mockModule("@tauri-apps/api/core", () => ({
+mockModule("@/desktop-bridge/core", () => ({
   invoke: () => Promise.resolve(),
 }));
 

@@ -12,7 +12,7 @@
  *
  * 日志默认静音（perf-store 的 `PERF_LOG`）：控制台要干净。数据照旧收进
  * perf-store（label→最大值的小表，成本可忽略），要排性能时把那个开关改回 true，
- * 慢帧行与采样汇总一起活过来。用法：`bun run tauri:dev`（或 next dev + 浏览器），
+ * 慢帧行与采样汇总一起活过来。用法：`electron --dev`（或 next dev + 浏览器），
  * 复现卡顿，把 [perf] 开头的几行贴出来即可——不需要看火焰图。
  */
 

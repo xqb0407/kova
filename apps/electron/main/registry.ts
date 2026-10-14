@@ -1,5 +1,5 @@
 /**
- * 命令注册总装：一个 ipcMain.handle 收全部渲染层 invoke（对齐 Tauri
+ * 命令注册总装：一个 ipcMain.handle 收全部渲染层 invoke（对齐旧桌面壳
  * generate_handler 清单）。命令名、参数名（camelCase）、错误字符串与 Rust 版一致。
  */
 import { register, makeChannelPusher, isChannelArg, type CmdCtx } from "./ipc";

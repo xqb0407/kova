@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FC } from "react";
 import { Button } from "@/components/ui/button";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import {
   openWorkspacePicker,
   pathBasename,
@@ -46,7 +46,7 @@ export const WorkspaceStep: FC = () => {
         desc="给 Kova 指定一个默认工作区：它会在这个目录里读写文件、跑命令、看 git 改动。挑一个你最近要动的项目就行；不选也能继续，之后随时能在顶栏换。"
       />
 
-      {!isTauri() ? (
+      {!isDesktop() ? (
         <Notice>当前不是桌面环境，无法选择本地目录。客户端里可以随时在顶栏切换。</Notice>
       ) : (
         <div className="bg-muted/50 flex items-center gap-3 rounded-2xl p-4">

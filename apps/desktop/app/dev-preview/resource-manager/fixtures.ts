@@ -2,7 +2,7 @@
  * dev-preview 预览页的固定数据（形状与 Rust 侧 `resource_sample` /
  * `resource_storage_scan` 的返回值一致，见 lib/resource/types.ts）。
  *
- * 预览页只用于在没有 Tauri 的浏览器里核对版式——真实数据一律走 IPC，这里不参与
+ * 预览页只用于在没有桌面壳的浏览器里核对版式——真实数据一律走 IPC，这里不参与
  * 生产路径（页面自身也只挂在 /dev-preview 下）。
  */
 

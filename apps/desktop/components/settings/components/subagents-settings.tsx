@@ -59,7 +59,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import {
   pathBasename,
   useWorkspace,
@@ -514,7 +514,7 @@ export const SubagentsSettings: FC<{
   /** 只读浏览：弹原生目录选择器，但不改主界面工作区（区别于 openWorkspacePicker） */
   const pickBrowseDir = async () => {
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { open } = await import("@/desktop-bridge/plugin-dialog");
       const dir = await open({
         directory: true,
         multiple: false,
@@ -522,7 +522,7 @@ export const SubagentsSettings: FC<{
       });
       if (typeof dir === "string") switchWorkspaceView(dir);
     } catch {
-      // 非 Tauri 环境：无原生目录选择器
+      // 非 桌面壳环境：无原生目录选择器
     }
   };
 
@@ -676,7 +676,7 @@ export const SubagentsSettings: FC<{
             following={overrideCwd === null}
             followLabel={workspace ? pathBasename(workspace) : null}
             candidates={workspaceCandidates}
-            showBrowse={isTauri()}
+            showBrowse={isDesktop()}
             onChange={switchWorkspaceView}
             onFollowCurrent={() => setOverrideCwd(null)}
             onBrowse={() => void pickBrowseDir()}

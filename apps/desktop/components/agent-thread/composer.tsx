@@ -79,7 +79,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import {
   clearWorkspace,
   openWorkspacePicker,
@@ -414,7 +414,7 @@ const WorkspacePill: FC = () => {
   const [busy, setBusy] = useState(false);
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
 
-  if (!isTauri() || hasMessages) return null;
+  if (!isDesktop() || hasMessages) return null;
 
   const clear = () => {
     clearWorkspace();
@@ -555,7 +555,7 @@ const WorkspaceSessionPill: FC = () => {
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
   const [expanded, setExpanded] = useState(false);
 
-  if (!isTauri() || !hasMessages || !workspace) return null;
+  if (!isDesktop() || !hasMessages || !workspace) return null;
 
   return (
     <div
@@ -608,7 +608,7 @@ const WorkspaceSessionPill: FC = () => {
  * 所选工作目录的 git 分支胶囊（目录选择后自动读取该目录的仓库/分支）：
  * 点开为分支菜单——搜索、分支列表（当前分支带勾选与"未提交的更改：N 个文件"）、
  * 切换/创建检出、Git 图谱（展开右侧面板的 Git 标签）。
- * 非 Tauri / 非 git 仓库 / 已开始对话 / 本会话工作模式为工作时静默不渲染（与
+ * 非 桌面壳 / 非 git 仓库 / 已开始对话 / 本会话工作模式为工作时静默不渲染（与
  * WorkspacePill 同步让位；工作模式下 Git 管理整体隐藏，见顶栏模式切换器）。
  */
 const WorkspaceBranchPill: FC = () => {
@@ -638,7 +638,7 @@ const WorkspaceBranchPill: FC = () => {
     };
   }, [open, workspace]);
 
-  if (!isTauri() || appMode !== "code" || hasMessages || !workspace || !status) return null;
+  if (!isDesktop() || appMode !== "code" || hasMessages || !workspace || !status) return null;
 
   const close = () => {
     setOpen(false);

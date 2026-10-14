@@ -1,10 +1,10 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@/desktop-bridge/core";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { ITheme, Terminal } from "@xterm/xterm";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { getWorkspace, pathBasename } from "@/lib/workspace/workspace-store";
 import {
   closePanelTabFor,
@@ -168,7 +168,7 @@ let bridgeInstalled = false;
  * 下面板收起也不漏杀。由 newTerminalTab/ShellTab 首次触达时安装。
  */
 export function ensureShellTabBridge(): void {
-  if (bridgeInstalled || typeof window === "undefined" || !isTauri()) return;
+  if (bridgeInstalled || typeof window === "undefined" || !isDesktop()) return;
   bridgeInstalled = true;
   subscribePanelTabs(syncSessionsToTabs);
   syncSessionsToTabs();
@@ -299,7 +299,7 @@ function claimTabTitle(tabId: string, title: string): void {
 
 /** 新开一个终端标签：标签即刻落地（视图先渲染加载态），异步拉起会话后回绑标题 */
 export function newTerminalTab(): void {
-  if (!isTauri() || shellCapacityFull()) return;
+  if (!isDesktop() || shellCapacityFull()) return;
   ensureShellTabBridge();
   const id = crypto.randomUUID();
   pendingIds.add(id);
@@ -320,7 +320,7 @@ export function newTerminalTab(): void {
  * 本次 updatePanelTab 的提交即被桥回收，无需手动杀。
  */
 export function restartShellTab(tab: PanelTab): void {
-  if (!isTauri() || shellCapacityFull()) return;
+  if (!isDesktop() || shellCapacityFull()) return;
   ensureShellTabBridge();
   const id = crypto.randomUUID();
   pendingIds.add(id);

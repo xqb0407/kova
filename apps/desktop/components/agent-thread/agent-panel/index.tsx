@@ -14,7 +14,7 @@ import {
   usePanelTabs,
 } from "@/lib/panels/panel-tabs";
 import { newTerminalTab } from "@/lib/shell";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { WindowControls } from "@/components/window-controls";
 import { cn } from "@/lib/utils";
@@ -144,8 +144,8 @@ const PanelShell: FC<{
   );
   const prevCount = useRef(browserCount);
   useEffect(() => {
-    if (prevCount.current > 0 && browserCount === 0 && isTauri()) {
-      import("@tauri-apps/api/core")
+    if (prevCount.current > 0 && browserCount === 0 && isDesktop()) {
+      import("@/desktop-bridge/core")
         .then(({ invoke }) => invoke("browser_detach", { destroy: true }))
         .catch(() => {});
     }
@@ -160,8 +160,8 @@ const PanelShell: FC<{
   useEffect(() => {
     if (bootChecked.current) return;
     bootChecked.current = true;
-    if (browserCount > 0 || !isTauri() || !isPageReload()) return;
-    import("@tauri-apps/api/core")
+    if (browserCount > 0 || !isDesktop() || !isPageReload()) return;
+    import("@/desktop-bridge/core")
       .then(({ invoke }) => invoke("browser_detach", { destroy: true }))
       .catch(() => {});
   }, [browserCount]);
@@ -190,7 +190,7 @@ const PanelShell: FC<{
   // 顶栏右缘动作：收起按钮（TRAE 式，面板展开时收起入口从 Header 移到这里）
   // + 停靠态接管的 Windows 三键。空标签态也保留顶栏：拖拽区/收起/三键不能
   // 随标签栏一起消失
-  const desktop = isTauri();
+  const desktop = isDesktop();
   const barActions: ReactNode =
     onCollapse || showWindowControls ? (
       <div

@@ -1,10 +1,10 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
-import { isTauri } from "@/lib/tauri";
+import { invoke } from "@/desktop-bridge/core";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
- * Rust 侧 git 命令（src-tauri/src/git.rs）的 invoke 封装 + Tauri 门控。
+ * Rust 侧 git 命令（原 Rust 宿主的 git.rs）的 invoke 封装 + 桌面壳门控。
  * 网页端（远程 WS）没有本地 FS：读类接口整体返回 null（等同"git 不可用"），
  * 写类接口直接 reject；UI 据此静默降级，不弹错。
  *
@@ -120,7 +120,7 @@ function swallowNotRepo(err: unknown): null {
 const NOT_ON_WEB = "web: git is desktop-only";
 
 export async function gitProbe(): Promise<GitProbe> {
-  if (!isTauri()) return { available: false, version: null };
+  if (!isDesktop()) return { available: false, version: null };
   try {
     return await invoke<GitProbe>("git_probe");
   } catch {
@@ -130,7 +130,7 @@ export async function gitProbe(): Promise<GitProbe> {
 
 /** null = 非 git 仓库 / git 不可用 / 网页端 */
 export async function gitStatus(cwd: string): Promise<GitStatusInfo | null> {
-  if (!isTauri()) return null;
+  if (!isDesktop()) return null;
   try {
     return await invoke<GitStatusInfo>("git_status", { cwd });
   } catch (err) {
@@ -143,7 +143,7 @@ export async function gitDiff(
   cwd: string,
   opts?: { checkpoint?: string },
 ): Promise<GitDiffResult | null> {
-  if (!isTauri()) return null;
+  if (!isDesktop()) return null;
   try {
     return await invoke<GitDiffResult>("git_diff", {
       cwd,
@@ -159,7 +159,7 @@ export async function gitShow(
   reference: string,
   path: string,
 ): Promise<{ content: string; truncated: boolean; binary: boolean } | null> {
-  if (!isTauri()) return null;
+  if (!isDesktop()) return null;
   try {
     return await invoke("git_show", { cwd, reference, path });
   } catch (err) {
@@ -172,7 +172,7 @@ export async function gitWorktreeRead(
   cwd: string,
   path: string,
 ): Promise<{ content: string; truncated: boolean; binary: boolean } | null> {
-  if (!isTauri()) return null;
+  if (!isDesktop()) return null;
   try {
     return await invoke("git_worktree_read", { cwd, path });
   } catch (err) {
@@ -184,7 +184,7 @@ export async function gitLog(
   cwd: string,
   limit = 50,
 ): Promise<GitLogEntry[] | null> {
-  if (!isTauri()) return null;
+  if (!isDesktop()) return null;
   try {
     return await invoke<GitLogEntry[]>("git_log", { cwd, limit });
   } catch (err) {
@@ -197,7 +197,7 @@ export async function gitLogGraph(
   cwd: string,
   limit = 200,
 ): Promise<GitGraphEntry[] | null> {
-  if (!isTauri()) return null;
+  if (!isDesktop()) return null;
   try {
     return await invoke<GitGraphEntry[]>("git_log_graph", { cwd, limit });
   } catch (err) {
@@ -210,7 +210,7 @@ export async function gitCheckpointCreate(
   cwd: string,
   tag: string,
 ): Promise<string | null> {
-  if (!isTauri()) return null;
+  if (!isDesktop()) return null;
   try {
     const r = await invoke<{ hash: string }>("git_checkpoint_create", {
       cwd,
@@ -238,7 +238,7 @@ export async function gitCheckpointRestore(
   cwd: string,
   hash: string,
 ): Promise<boolean> {
-  if (!isTauri()) throw NOT_ON_WEB;
+  if (!isDesktop()) throw NOT_ON_WEB;
   await invoke("git_checkpoint_restore", { cwd, hash });
   return true;
 }
@@ -249,7 +249,7 @@ export async function gitStage(
   paths: string[],
   on: boolean,
 ): Promise<void> {
-  if (!isTauri()) throw NOT_ON_WEB;
+  if (!isDesktop()) throw NOT_ON_WEB;
   await invoke("git_stage", { cwd, paths, on });
 }
 
@@ -257,13 +257,13 @@ export async function gitCommit(
   cwd: string,
   message: string,
 ): Promise<string> {
-  if (!isTauri()) throw NOT_ON_WEB;
+  if (!isDesktop()) throw NOT_ON_WEB;
   const r = await invoke<{ hash: string }>("git_commit", { cwd, message });
   return r.hash;
 }
 
 export async function gitBranches(cwd: string): Promise<GitBranches | null> {
-  if (!isTauri()) return null;
+  if (!isDesktop()) return null;
   try {
     return await invoke<GitBranches>("git_branches", { cwd });
   } catch (err) {
@@ -276,6 +276,6 @@ export async function gitCheckout(
   name: string,
   create: boolean,
 ): Promise<void> {
-  if (!isTauri()) throw NOT_ON_WEB;
+  if (!isDesktop()) throw NOT_ON_WEB;
   await invoke("git_checkout", { cwd, name, create });
 }

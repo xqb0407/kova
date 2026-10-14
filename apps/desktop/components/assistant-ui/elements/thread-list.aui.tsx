@@ -70,7 +70,7 @@ import {
   fsReveal,
 } from "@/lib/workspace/fs";
 import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import {
   togglePinSession,
   useIsPinned,
@@ -1179,7 +1179,7 @@ const ThreadListSkeleton: FC = () => {
 /** 会话标题：溢出时右缘渐隐（shadcn scroll-fade-e 的等效形态）取代省略号，
  *  hover 左滚展示全文期间同样保留（文字从渐隐下滚过，即真实滚动容器的观感）。
  *  不挂工具类而走内联 mask：scroll-fade-e 依赖 @property + animation-timeline
- *  + 嵌套 @supports 的机制，在 Tauri 的 WKWebView 上不可靠（实测无效果）；
+ *  + 嵌套 @supports 的机制，在 Chromium 下不可靠（实测无效果）；
  *  这里直接写等价 mask 渐变，并仍按实测溢出施加（短标题不蚀尾字）。 */
 const TITLE_FADE =
   "linear-gradient(to right, #000 calc(100% - 16px), transparent)";
@@ -1731,7 +1731,7 @@ const useThreadRowMenu = ({
     }
   };
 
-  const desktop = isTauri();
+  const desktop = isDesktop();
 
   const items: ThreadRowMenuItem[] = [
     ...(remoteId

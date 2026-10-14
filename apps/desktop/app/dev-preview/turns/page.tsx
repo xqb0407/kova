@@ -5,7 +5,7 @@
  * 用真实组件（TurnSlot / UserMessage / AssistantMessage + TurnWorkSummary）
  * 配假消息渲染，页面自己把每条消息的实际布局测量结果写进 <pre data-slot="diag">，
  * 供无头浏览器 --dump-dom 抓出来核对（折叠是否吞消息、屏外跳过有没有把高度打没）。
- * 不依赖 Tauri：运行时用 useLocalRuntime + initialMessages 喂数据。
+ * 不依赖桌面壳：运行时用 useLocalRuntime + initialMessages 喂数据。
  */
 
 import {

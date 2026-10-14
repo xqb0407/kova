@@ -43,7 +43,7 @@ import {
   getPanelTabs,
   openPanelTab,
 } from "@/lib/panels/panel-tabs";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
@@ -94,7 +94,7 @@ import { TabEmpty } from "./tab-empty";
  * 资源管理器中显示/复制路径/重命名/删除；文件夹可新建文件(夹)/重命名/删除；
  * 空白区 = 根目录菜单（新建文件(夹)/刷新）。写操作走 fs.rs 新命令，
  * 完成后 refreshFileTree 失效缓存，视图靠版本 bump 自动补水。
- * 仅 Tauri 桌面端出现（tab-registry 可见性过滤），web 端不渲染。
+ * 仅 桌面端出现（tab-registry 可见性过滤），web 端不渲染。
  */
 
 const joinRel = (parent: string, name: string) =>
@@ -302,7 +302,7 @@ export const FileTreeTab: FC = () => {
 
   // 补水：可见目录链缺缓存就拉（挂载、展开变化、失效 bump 后各收敛一次）
   useEffect(() => {
-    if (!rootCwd || !isTauri()) return;
+    if (!rootCwd || !isDesktop()) return;
     for (const dir of collectVisibleDirs(rootCwd, expandedSet)) {
       ensureDir(rootCwd, dir);
     }
@@ -461,7 +461,7 @@ export const FileTreeTab: FC = () => {
   // 未变化的已加载子树复用同一批元素引用，React 只 diff 不重建
   const children = useMemo(
     () =>
-      rootCwd && isTauri()
+      rootCwd && isDesktop()
         ? renderEntries(rootCwd, "", expandedSet, handleRowContextMenu)
         : null,
     [rootCwd, expandedSet, treeVersion, handleRowContextMenu],
@@ -470,7 +470,7 @@ export const FileTreeTab: FC = () => {
   // 根目录空态：listing 已缓存且零条目才显示缺省页。补水中（isDirLoading）
   // 不算空，避免首次进面板闪一下缺省页再闪回
   const isEmptyRoot = useMemo(() => {
-    if (!rootCwd || !isTauri()) return false;
+    if (!rootCwd || !isDesktop()) return false;
     if (isDirLoading(rootCwd, "")) return false;
     const listing = getDir(rootCwd, "");
     return (
@@ -490,7 +490,7 @@ export const FileTreeTab: FC = () => {
     [menu],
   );
 
-  if (!isTauri())
+  if (!isDesktop())
     return <TabEmpty icon={FolderOpenIcon} text="文件树仅在桌面端可用" />;
   // 面板根目录异步解析（appDataDir / 会话物化）中，只闪现一瞬
   if (!rootCwd) return <TabEmpty icon={FolderOpenIcon} text="正在准备任务目录…" />;
