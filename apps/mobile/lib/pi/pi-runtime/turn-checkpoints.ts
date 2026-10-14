@@ -2,7 +2,7 @@ import { isConnectivityFailure } from "@/lib/pi/connectivity-errors";
 // 本地新增（react-pi 迁移缺口2·检查点卡接回）：旧链路 pi-transport 的
 // postTransform 管线在 start chunk 打影子仓库快照、finish/error 结算检查点卡
 // （git 集成 M2）。新链路没有 per-request 流，改挂全局事件通道：
-// TauriPiClient 在 agent_start / agent_end 帧上调本模块的 begin/settle。
+// DesktopPiClient 在 agent_start / agent_end 帧上调本模块的 begin/settle。
 //
 // 锚点语义（与旧链路 messages.indexOf(lastUser) 对齐）：anchorIndex = 触发本轮
 // 的 user 消息在渲染列表中的下标。渲染列表 = 转录的投影（assistant+toolResult
@@ -64,7 +64,7 @@ export interface TurnCheckpointDeps {
  *
  * 检查点的实质是让桌面端在 git 影子仓库里打快照、结算 diff，然后在消息流里
  * 插一张「本轮改了哪些文件」的卡片。这套能力要求手机能操作桌面机上的 git
- * 仓库（要 Tauri invoke + 本地 git 二进制），远程网关也不提供这条命令。
+ * 仓库（要桌面壳 invoke + 本地 git 二进制），远程网关也不提供这条命令。
  * 手机端只能拿到消息与快照，看不到桌面磁盘。
  *
  * 因此 create/diff 一律返回 null（= 无检查点，Tracker 走空转分支），
@@ -214,5 +214,5 @@ export class TurnCheckpointTracker {
   }
 }
 
-/** TauriPiClient 构造注入面（测试换记录型假件） */
+/** DesktopPiClient 构造注入面（测试换记录型假件） */
 export type TurnCheckpointObserver = Pick<TurnCheckpointTracker, "begin" | "settle">;

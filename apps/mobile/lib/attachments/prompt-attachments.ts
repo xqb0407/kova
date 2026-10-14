@@ -1,6 +1,6 @@
 import type { PiPromptAttachment } from "../pi/pi-channel";
 import { invoke } from "@/lib/mobile/platform";
-import { isTauri } from "@/lib/mobile/platform";
+import { isDesktopShell } from "@/lib/mobile/platform";
 
 /**
  * 用户附件（多模态输入）的前端组装与前置校验（设计：docs/user-image-attachment-plan.md）。
@@ -125,7 +125,7 @@ export function promptFileKind(
 }
 
 /**
- * 只有文件名/路径、没有 MIME 时的判类（Tauri dialog 直选就是这种）：先按扩展名
+ * 只有文件名/路径、没有 MIME 时的判类（桌面壳 dialog 直选就是这种）：先按扩展名
  * 推 MIME，再交给 promptFileKind。
  *
  * 别写成 promptFileKind(name, undefined)：它认图片只认 MIME 白名单，扩展名那条
@@ -153,7 +153,7 @@ export function validatePromptFile(file: {
     return null;
   }
   if (kind === "document") {
-    const cap = isTauri() ? PROMPT_DOC_MAX_BYTES : PROMPT_DOC_INLINE_MAX_BYTES;
+    const cap = isDesktopShell() ? PROMPT_DOC_MAX_BYTES : PROMPT_DOC_INLINE_MAX_BYTES;
     if (file.size > cap) {
       return `「${file.name || "文档"}」超过 ${(cap / (1024 * 1024)).toFixed(0)}MiB 上限`;
     }
@@ -228,7 +228,7 @@ async function filePartToAttachment(
     };
   }
 
-  if (kind === "document" && isTauri()) {
+  if (kind === "document" && isDesktopShell()) {
     let bytes: Uint8Array | null;
     if (url.startsWith("data:")) {
       const base64 = url.slice(url.indexOf(",") + 1);

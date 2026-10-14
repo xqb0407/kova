@@ -2,7 +2,7 @@
 
 import { invoke } from "@/lib/mobile/platform";
 import { useSyncExternalStore } from "react";
-import { isTauri } from "@/lib/mobile/platform";
+import { isDesktopShell } from "@/lib/mobile/platform";
 import { piRequest } from "@/lib/pi/pi-bridge";
 
 /**
@@ -81,13 +81,13 @@ export async function setThinkingLevel(level: ThinkingLevel): Promise<void> {
     // sidecar 不可用时仍保留本地选择，下次启动再同步
   }
 
-  if (!isTauri()) return;
+  if (!isDesktopShell()) return;
   void invoke("kv_set", { key: KV_KEY, value: level }).catch(() => {});
 }
 
 /** 从 SQLite 恢复档位并同步 sidecar，应用启动时自动调用 */
 export async function initThinkingSettings(): Promise<void> {
-  if (initialized || !isTauri()) return;
+  if (initialized || !isDesktopShell()) return;
   initialized = true;
   try {
     const value = await invoke<string | null>("kv_get", { key: KV_KEY });
@@ -101,5 +101,5 @@ export async function initThinkingSettings(): Promise<void> {
   }
 }
 
-// client bundle 加载即恢复（SSR 端 isTauri() 为 false，直接跳过）
+// client bundle 加载即恢复（SSR 端 isDesktopShell() 为 false，直接跳过）
 void initThinkingSettings();

@@ -2,7 +2,7 @@
 
 import { invoke } from "@/lib/mobile/platform";
 import { useSyncExternalStore } from "react";
-import { isTauri } from "@/lib/mobile/platform";
+import { isDesktopShell } from "@/lib/mobile/platform";
 import { piRequest } from "@/lib/pi/pi-bridge";
 
 /**
@@ -110,7 +110,7 @@ export async function setSelectedModel(
     }
   }
 
-  if (!isTauri()) return;
+  if (!isDesktopShell()) return;
   const write =
     model == null
       ? invoke("kv_delete", { key: KV_KEY })
@@ -120,7 +120,7 @@ export async function setSelectedModel(
 
 /** 从 SQLite 恢复选中模型并同步 sidecar，应用启动时调用 */
 export async function initModelSettings(): Promise<void> {
-  if (initialized || !isTauri()) return;
+  if (initialized || !isDesktopShell()) return;
   initialized = true;
   try {
     const value = await invoke<string | null>("kv_get", { key: KV_KEY });
@@ -150,5 +150,5 @@ export async function initModelSettings(): Promise<void> {
   }
 }
 
-// client bundle 加载即恢复（SSR 端 isTauri() 为 false，直接跳过）
+// client bundle 加载即恢复（SSR 端 isDesktopShell() 为 false，直接跳过）
 void initModelSettings();

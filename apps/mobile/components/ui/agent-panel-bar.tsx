@@ -303,7 +303,7 @@ function PanelSheet({
 
 /**
  * Git 变更（只读）：会话工作目录的仓库状态与单文件 diff，数据来自 sidecar 的
- * git_status / git_diff（远程端没有 Tauri 本地 git，故由 sidecar 代跑只读命令）。
+ * git_status / git_diff（远程端没有桌面壳本地 git，故由 sidecar 代跑只读命令）。
  * 桌面端对应的是「审查」标签（真 git diff）；这里给同一件事的移动端读法。
  */
 function GitSection() {

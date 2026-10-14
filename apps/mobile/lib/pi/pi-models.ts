@@ -33,7 +33,7 @@ function setState(next: Partial<State>) {
   for (const listener of listeners) listener();
 }
 
-/** 不再用 isTauri() 把这条路掐死：移动端虽然不是 Tauri 宿主，远程网关的
+/** 不再用 isDesktopShell() 把这条路掐死：移动端虽然不是桌面壳宿主，远程网关的
  *  list_models 一样通，掐掉的话对话页的模型切换永远是一颗空胶囊。
  *  拉取失败（未配对 / 网关不可达）就记 failed，不再随订阅者反复重试，
  *  显式重试的入口是 refreshPiModels()。 */

@@ -42,8 +42,16 @@
 3. **数据目录共享**：默认仍指向 `com.kova.assistant`（与旧版共享 state.db/会话/密钥）。
    两壳同时运行会双写同一库（WAL + busy_timeout=5s 保不损坏，但双 sidecar 会互抢任务）——
    与旧版并存时请只开一个。
-4. **screenshot 工具**：Windows 分支未接线（macOS 已完整移植）；Windows 上调用会得到
-   明确错误而非错误结果。
+4. **screenshot 工具**：两端均已移植。macOS = `screencapture -x` + `sips` 阶梯；
+   Windows = PowerShell `-EncodedCommand`（脚本按 UTF-16LE + Base64 传入，绕开引号转义与
+   ExecutionPolicy）+ System.Drawing：先 `SetProcessDPIAware()`（不设会按逻辑像素抓半分辨率图）
+   → 抓整块 VirtualScreen → 按阶梯（最大边 + 质量三档 → 1600/1280/1024）`HighQualityBicubic`
+   缩放 + JPEG `EncoderParameter` 编码，全内存不落盘，命中 1.8MB 内联预算即停，取最小者，
+   末行 `ConvertTo-Json -Compress` 输出 `{base64,mimeType,bytes,width,height}`（与 macOS 同形状）；
+   失败走 stderr + `exit 1`。返回前做形状校验（缺 base64 早失败）。纯 macOS 环境无法实跑
+   PowerShell，已做脚本渲染自检（要素齐备、括号/引号配平、UTF-16LE 往返一致、63 行 7.6KB
+   在 `-EncodedCommand` 限制内）——Windows 实机截图仍待一次真机验证。
+   maxDim 夹取与 Rust 对齐为 640..3840（quality 30..100）。
 5. **CSP**：沿用 旧桌面壳.conf 的 CSP 字符串（去掉 `ipc.localhost` 项），由 `kova://` 协议
    处理器逐响应注入；dev（localhost:3000）不注入。
 6. **命令参数大小写**：保持 旧桌面壳 v2 约定（JS 侧 camelCase 对应 Rust snake_case 参数名），
@@ -193,3 +201,15 @@ host_cancel 12:41:30.853 → tool_execution_end 12:41:30.858 → `sleep 300` 进
 4. `tunnel.ts`：cloudflared spawn + stderr 抓 URL，逻辑最直白。
 5. `backup.ts`：PIABK 信封（tar.gz + AES-256-GCM/PBKDF2 + SigV4/WebDAV）——纯 Node crypto 可实现，
    注意与 Rust 版**字节级兼容**（口令派生参数、信封头字段）。
+
+## mobile（apps/mobile）迁移
+
+- `apps/mobile` 整体搬入新仓（Expo 客户端，无后端；经 WS 连桌面远程网关）。共享包
+  `packages/pi-protocol` 已在仓内，移入后 `bun install` + `typecheck` + `vitest`（13 文件/67 测试）全绿。
+- 依赖统一：mobile 精确锁的 `assistant-cloud@0.2.3` 与 `@assistant-ui/react-native` 要的
+  `^0.2.6`（解析到 0.2.7）类型不兼容（私有字段 `cloud` 声明不同），已把 mobile 的 pin 提到
+  0.2.7 收敛为单版本；桌面/web 侧不受影响（本就解析 0.2.7），`apps/desktop` typecheck 保持 0 错。
+- 去旧壳痕迹（与桌面同标准，全仓旧壳字样零残留）：mobile 侧恒 false 的宿主判定函数
+  `is…`旧名 → `isDesktopShell()`、`PiChannel.kind` 取值旧名 → `"desktop"`（与桌面端实现类
+  `DesktopPiChannel` 同名约定）、README/注释中的壳指代与旧壳 remote 源路径改为
+  `apps/electron/main/remote.ts`；引用文档 `docs/remote-access.md` 一并搬入并更新该行。
