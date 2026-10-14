@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type FC } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { copyText, encodePairPayload, type PairPayload } from "@/lib/remote";
 import { QRCodeSVG } from "qrcode.react";
 import { CheckIcon, CopyIcon, RefreshCwIcon } from "lucide-react";
@@ -74,7 +74,7 @@ export const RemoteSettings: FC = () => {
     tunnel?.state === "running" || tunnel?.state === "starting";
 
   const load = useCallback(() => {
-    if (!isTauri()) return;
+    if (!isDesktop()) return;
     invoke<RemoteStatus>("pi_remote_status")
       .then(setStatus)
       .catch((err) =>
@@ -90,11 +90,11 @@ export const RemoteSettings: FC = () => {
     load();
   }, [load]);
 
-  // 下载进度事件：listen 只在 Tauri 环境注册，卸载时解绑
+  // 下载进度事件：listen 只在 桌面壳环境注册，卸载时解绑
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isDesktop()) return;
     let unlisten: (() => void) | undefined;
-    void import("@tauri-apps/api/event").then(({ listen }) =>
+    void import("@/desktop-bridge/event").then(({ listen }) =>
       listen<TunnelDownload>("tunnel:download", (e) => {
         setDownload(e.payload);
       }).then((u) => {
@@ -175,7 +175,7 @@ export const RemoteSettings: FC = () => {
   }, []);
 
   const loadTunnel = useCallback(() => {
-    if (!isTauri()) return;
+    if (!isDesktop()) return;
     invoke<TunnelStatus>("pi_tunnel_status")
       .then(setTunnel)
       .catch(() => {});
@@ -239,7 +239,7 @@ export const RemoteSettings: FC = () => {
 
   const pickCloudflared = useCallback(async () => {
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { open } = await import("@/desktop-bridge/plugin-dialog");
       const picked = await open({
         directory: false,
         multiple: false,
@@ -247,7 +247,7 @@ export const RemoteSettings: FC = () => {
       });
       if (typeof picked === "string") await setCloudflaredPath(picked);
     } catch {
-      // 非 Tauri 环境：无原生文件选择器
+      // 非 桌面壳环境：无原生文件选择器
     }
   }, [setCloudflaredPath]);
 
@@ -278,10 +278,10 @@ export const RemoteSettings: FC = () => {
     tunnelUrl,
   ]);
 
-  if (!isTauri()) {
+  if (!isDesktop()) {
     return (
       <div className="text-muted-foreground p-8 text-sm">
-        远程访问配置依赖桌面端，请在 Tauri 应用中打开设置。
+        远程访问配置依赖桌面端，请在桌面应用中打开设置。
       </div>
     );
   }

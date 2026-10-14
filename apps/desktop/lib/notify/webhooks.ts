@@ -1,8 +1,8 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import { useSyncExternalStore } from "react";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import type { AgentEventName } from "@/lib/pi/agent-events";
 
 /**
@@ -61,7 +61,7 @@ export function useWebhookEndpoints(): WebhookEndpoint[] {
 
 function persist(list: WebhookEndpoint[]) {
   const value = JSON.stringify(list);
-  if (isTauri()) {
+  if (isDesktop()) {
     void invoke("kv_set", { key: KV_KEY, value }).catch(() => {});
   } else {
     try {
@@ -77,7 +77,7 @@ export async function initWebhooks(): Promise<void> {
   if (loaded || typeof window === "undefined") return;
   loaded = true;
   try {
-    const raw = isTauri()
+    const raw = isDesktop()
       ? await invoke<string | null>("kv_get", { key: KV_KEY })
       : window.localStorage.getItem(KV_KEY);
     if (typeof raw === "string" && raw) {

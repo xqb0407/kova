@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 消息尾部产物清单的渲染 harness（对齐 dev-preview 其它页：URL 直达，不接 Tauri）：
+ * 消息尾部产物清单的渲染 harness（对齐 dev-preview 其它页：URL 直达，不接桌面桥）：
  * 5 个产物（超阈值→默认折起）/ 3 个 / 2 个 / 1 个（单卡）四种用例，
  * 页面把折叠头、清单、行高的实测值写进 <pre data-slot="diag">，供无头浏览器抓取。
  * workspace 用内存态钉一个，让 html 产物同时出现「代码」与「浏览器预览」两个出口
@@ -158,7 +158,7 @@ export default function ArtifactsPreviewPage() {
   const [messages] = useState(() => MESSAGES);
   const runtime = useLocalRuntime(noopChatModel, { initialMessages: messages });
 
-  // 固定一个工作区（非 Tauri 下只改内存态）：html 产物才会出现「浏览器预览」出口
+  // 固定一个工作区（非桌面端下只改内存态）：html 产物才会出现「浏览器预览」出口
   useEffect(() => {
     setWorkspace(WS, "user");
   }, []);

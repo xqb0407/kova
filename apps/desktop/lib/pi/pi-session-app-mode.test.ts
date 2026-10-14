@@ -28,7 +28,7 @@ mockModule("@/lib/pi/pi-bridge", () => ({
   },
 }));
 
-// pi-thread-adapter 牵出 tauri 整条链；桩只保留本模块用到的三块。
+// pi-thread-adapter 牵出 桌面桥整条链；桩只保留本模块用到的三块。
 // piSessionIdForThread 与真实现同语义：registry 优先；__LOCALID_ 草稿返回
 // undefined；其余 id 本身就是 sessionId。refreshSessionPrefs 的「服务端持久化」
 // 效果由每个用例自己灌 prefs 模拟。

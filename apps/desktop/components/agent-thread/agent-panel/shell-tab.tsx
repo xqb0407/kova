@@ -14,7 +14,7 @@ import {
   useShellStore,
 } from "@/lib/shell";
 import type { PanelTab } from "@/lib/panels/panel-tabs";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { TabEmpty } from "./tab-empty";
 
 /**
@@ -59,7 +59,7 @@ export const ShellTab: FC<{ tab: PanelTab }> = ({ tab }) => {
     };
   }, [session]);
 
-  if (!isTauri())
+  if (!isDesktop())
     return <TabEmpty icon={SquareTerminalIcon} text="交互式终端仅桌面端可用" />;
 
   // 刷新恢复/启动失败：标签还在但会话不在了（pending = 创建中，出加载态）

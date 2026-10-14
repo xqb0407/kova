@@ -1,7 +1,7 @@
 /**
- * Electron 宿主通道（渲染层内部模块，不被业务代码直接 import）。
+ * Electron 宿主通道（渲染层内部模块，业务代码经 desktop-bridge/* 间接使用）。
  * preload 以 contextBridge 暴露 window.kovaHost；本文件收口订阅与分发：
- * - invoke：请求-响应；错误 reject 原始值（对齐 Tauri v2 `throw Err(String)`，
+ * - invoke：请求-响应；错误 reject 原始值（沿用旧桌面壳 `throw Err(String)` 的形状，
  *   业务侧 `String(e)` 取到的就是宿主错误字符串本身）。
  * - 事件/通道：主进程把所有事件广播过来，渲染层按事件名/通道 id 本地分发，
  *   因此 unlisten 是纯本地操作（规避 contextBridge 不能返回函数的限制）。
@@ -18,7 +18,7 @@ type HostShape = {
 declare global {
   interface Window {
     kovaHost: HostShape;
-    __TAURI_INTERNALS__?: unknown;
+    __KOVA_DESKTOP__?: unknown;
     __TAURI__?: unknown;
   }
 }

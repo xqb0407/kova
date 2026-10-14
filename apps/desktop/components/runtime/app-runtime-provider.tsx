@@ -1,9 +1,9 @@
 "use client";
 
 import { AssistantRuntimeProvider, useAui, useAuiState } from "@assistant-ui/react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { installFrontendLogging } from "@/lib/frontend-logging";
 import { primeAppMeta } from "@/lib/app-meta";
 import { installPerfWatch, uninstallPerfWatch } from "@/lib/perf-watch";
@@ -22,7 +22,7 @@ import { piSessionCwdMap } from "@/lib/pi/pi-thread-adapter";
 import { initAppearance } from "@/lib/settings/appearance";
 import { piRuntimeAdapters } from "@/lib/attachments/pi-attachment-adapter";
 import { usePiRuntime } from "@/lib/pi/pi-runtime";
-import { TauriPiClient } from "@/lib/pi/pi-runtime/tauri-pi-client";
+import { DesktopPiClient } from "@/lib/pi/pi-runtime/desktop-pi-client";
 import {
   getWorkspace,
   getWorkspaceSource,
@@ -207,15 +207,15 @@ function ResumeRunningThread() {
 }
 
 /**
- * Tauri 桌面端：pi-agent sidecar 作为会话事实源（RemoteThreadList + 持久化 session 文件）。
+ * 桌面端：pi-agent sidecar 作为会话事实源（RemoteThreadList + 持久化 session 文件）。
  * 远程网页端：经隧道直连桌面端 WS 网关（配对码认证），运行时与桌面同构。
- * 构建目标固定、环境互不切换，按 isTauri/远程拆分组件避免条件 hook。
+ * 构建目标固定、环境互不切换，按 isDesktop/远程拆分组件避免条件 hook。
  */
-function TauriRuntimeProvider({ children }: { children: React.ReactNode }) {
+function DesktopRuntimeProvider({ children }: { children: React.ReactNode }) {
   // react-pi 迁移阶段 2c：渲染链路切到 usePiRuntime（快照权威 + 降级轮询订阅）。
   // 线程身份 = pi sessionId；旧 AI SDK 链路（PiTransport + createPiThreadListAdapter）
   // 保留未删，仅服务回滚（revert 本 commit 即整体还原）。
-  const client = useMemo(() => new TauriPiClient(), []);
+  const client = useMemo(() => new DesktopPiClient(), []);
 
   // 运行时操作失败（重新生成/编辑重发/队列/abort 等）必须可见：
   // usePiRuntime 内部把 handler 异常统一收敛到 onError（core 对
@@ -261,7 +261,7 @@ function RemoteGate({ children }: { children: React.ReactNode }) {
 
   // 开屏动画由 AppRuntimeProvider 层的 BootSplash 统一播完，
   // 到这里只剩读 localStorage 的一帧空档；此分支仅 web 端会走到（桌面端进
-  // TauriRuntimeProvider），透明窗口问题不存在，直接空渲染即可——若在这里再挂
+  // DesktopRuntimeProvider），透明窗口问题不存在，直接空渲染即可——若在这里再挂
   // 一个 BootSplash，开屏会重复播放一遍，时长翻倍。
   if (phase === "loading") return null;
   if (phase === "connect" || !config) {
@@ -278,7 +278,7 @@ function RemoteGate({ children }: { children: React.ReactNode }) {
 }
 
 export function AppRuntimeProvider({ children }: { children: React.ReactNode }) {
-  // 环境判定推迟到水合完成后：静态导出的预渲染 HTML 无 window（isTauri()=false），
+  // 环境判定推迟到水合完成后：静态导出的预渲染 HTML 无 window（isDesktop()=false），
   // 若水合首帧直接按环境分支渲染，桌面端会因 SSR 树（null）与客户端树（完整 UI）不一致
   // 触发 hydration mismatch。首帧恒为 null，水合成功后再切真实分支。
   const [desktop, setDesktop] = useState<boolean | null>(null);
@@ -288,7 +288,7 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
   const splashStartRef = useRef(Date.now());
 
   useEffect(() => {
-    setDesktop(isTauri());
+    setDesktop(isDesktop());
     // 先取版本号：崩溃反馈要带 build 号，而这个值只能异步拿
     primeAppMeta();
     // 桌面端挂载 console.warn/error 与崩溃转发（写 web.log，内部自判环境）
@@ -392,6 +392,6 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
         onFinished={() => setSplashDone(true)}
       />
     );
-  if (desktop) return <TauriRuntimeProvider>{children}</TauriRuntimeProvider>;
+  if (desktop) return <DesktopRuntimeProvider>{children}</DesktopRuntimeProvider>;
   return <RemoteGate>{children}</RemoteGate>;
 }

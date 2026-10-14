@@ -1,7 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import {
   piRequest,
   type PiModelSummary,
@@ -14,7 +14,7 @@ import { syncSelectedModelFromSidecar } from "@/lib/model/model-settings";
 /**
  * pi sidecar 的模型目录（内置 + 自定义服务），供对话页模型选择器等共享。
  * 惰性加载（首次订阅时拉取），设置变更后可 refreshPiModels() 强制刷新。
- * 走模块级通道注册表：桌面端 Tauri invoke，远程网页端 WS 网关（list_models
+ * 走模块级通道注册表：桌面端 桌面壳 invoke，远程网页端 WS 网关（list_models
  * 不在网关拒绝名单，与桌面同一份 sidecar 目录）。web 预览（既非桌面也无配对
  * 存档）不发请求——避免 getPiChannel 兜底注册假通道污染无通道环境的消费方。
  */
@@ -30,15 +30,15 @@ function setState(next: Partial<State>) {
 }
 
 // 在途期间的刷新请求不丢弃：记一笔，当前拉取结束（成功或失败）后补拉一次。
-// 远程首帧尤其依赖这条：订阅触发的首次拉取可能落在 Tauri 兜底通道上（15s
+// 远程首帧尤其依赖这条：订阅触发的首次拉取可能落在 桌面壳 兜底通道上（15s
 // 超时在途），WS 通道注册后的补水合若被 loading 吞掉，目录就要等到用户
 // 点开选择器才出来。
 let pendingReload = false;
 
 async function load() {
-  // 桌面走 Tauri 通道；远程网页端走 WS 通道（配对存档存在才算远程模式）。
+  // 桌面走 桌面通道；远程网页端走 WS 通道（配对存档存在才算远程模式）。
   // 两者都不是（web 预览/测试环境）就不发请求，见文件头注释。
-  if (!isTauri() && !isRemoteMode()) return;
+  if (!isDesktop() && !isRemoteMode()) return;
   if (state.loading) {
     pendingReload = true;
     return;
@@ -79,7 +79,7 @@ export function getPiModelsSnapshot(): PiModelSummary[] {
  *  判定快照在两次调用之间变了（"should be cached"），严重时陷进无限重渲染 */
 const NO_MODELS: PiModelSummary[] = [];
 
-/** 订阅模型目录；web 预览（无 Tauri 也无远程通道）拉取失败恒空 */
+/** 订阅模型目录；web 预览（无 桌面壳 也无远程通道）拉取失败恒空 */
 export function usePiModels(): PiModelSummary[] {
   return useSyncExternalStore(
     subscribe,
@@ -93,8 +93,8 @@ export function refreshPiModels() {
   void load();
 }
 
-// 远程模式：首帧订阅/惰性拉取都发生在 WS 通道注册之前（落到 Tauri 兜底通道
-// 失败），通道换代时补水合一次（桌面端走 Tauri 通道既有路径，无需重拉；
+// 远程模式：首帧订阅/惰性拉取都发生在 WS 通道注册之前（落到 桌面壳 兜底通道
+// 失败），通道换代时补水合一次（桌面端走 桌面通道既有路径，无需重拉；
 // 与 pi-sessions-sync 同款思路）
 addPiChannelListener((ch) => {
   if (ch?.kind === "ws") void load();

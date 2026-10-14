@@ -1,8 +1,8 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import { useSyncExternalStore } from "react";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * Chrome(WebView2) 硬件加速开关：持久化于 SQLite kv（Rust 侧 gpu.rs），
@@ -36,7 +36,7 @@ export function useGpuAccelEnabled(): boolean {
 }
 
 export async function setGpuAccelEnabled(next: boolean): Promise<void> {
-  if (!isTauri() || next === enabled) return;
+  if (!isDesktop() || next === enabled) return;
   try {
     await invoke("set_gpu_acceleration", { enabled: next });
   } catch {
@@ -47,9 +47,9 @@ export async function setGpuAccelEnabled(next: boolean): Promise<void> {
   emit();
 }
 
-/** 启动恢复已保存的开关值，client bundle 加载即执行（SSR 端 isTauri() 为 false，跳过） */
+/** 启动恢复已保存的开关值，client bundle 加载即执行（SSR 端 isDesktop() 为 false，跳过） */
 export async function initGpuAccel(): Promise<void> {
-  if (initialized || !isTauri()) return;
+  if (initialized || !isDesktop()) return;
   initialized = true;
   try {
     const value = await invoke<boolean>("get_gpu_acceleration");

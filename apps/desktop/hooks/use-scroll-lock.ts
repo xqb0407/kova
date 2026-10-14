@@ -7,7 +7,7 @@ import { useEffect, useRef, type RefObject } from "react";
  * （高度动画期间钉住最近滚动祖先的 scrollTop），但不做滚动条补偿。
  *
  * 库版本在动画期间对滚动容器执行 `scrollbar-width: none` 并把实测滚动条宽度
- * 加进 `paddingRight`，假定隐藏一定生效。WKWebView（Tauri）不支持
+ * 加进 `paddingRight`，假定隐藏一定生效。WKWebView（Electron）不支持
  * `scrollbar-width`：globals.css 的 `*::-webkit-scrollbar { width: 6px }`
  * 仍占着布局空间，padding 补偿却照常叠加——整个对话列右侧凭空宽 6px，
  * 动画结束还原时再弹回，即展开/收起时的 margin 闪烁。

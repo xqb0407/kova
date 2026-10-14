@@ -13,7 +13,7 @@ import {
 } from "@/lib/panels/artifacts";
 import { focusPanelTab } from "@/lib/panels/panel-tabs";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { cn } from "@/lib/utils";
 import { TabEmpty } from "./tab-empty";
 
@@ -65,8 +65,8 @@ const ArtifactRow: FC<{ artifact: MessageArtifact; cwd: string | null }> = ({
   artifact,
   cwd,
 }) => {
-  // 预览仅 Tauri（file:// 喂原生 webview）；网页类才进浏览器，其余走「代码」
-  const canPreview = isTauri() && isBrowserPreviewable(artifact.path);
+  // 预览仅 桌面壳（file:// 喂原生 webview）；网页类才进浏览器，其余走「代码」
+  const canPreview = isDesktop() && isBrowserPreviewable(artifact.path);
   const openCode = () => {
     focusPanelTab("file", { focus: artifact.toolCallId, title: artifact.base });
     window.dispatchEvent(new Event("agent-panel:open"));

@@ -45,7 +45,7 @@ import {
   type PiStoredModelAttrs,
   type PiThinkingSeed,
 } from "@/lib/pi/pi-bridge";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import {
   saveImageGenConfig,
   setModelImageCapable,
@@ -677,7 +677,7 @@ export const ModelSettings: FC = () => {
   }
 
   const load = useCallback(() => {
-    if (!isTauri()) return;
+    if (!isDesktop()) return;
     setError(null);
     piRequest<{
       type: "models";
@@ -1684,11 +1684,11 @@ export const ModelSettings: FC = () => {
     [load],
   );
 
-  // web 预览没有 Tauri 后端（pi sidecar / invoke），直接给出降级提示
-  if (!isTauri()) {
+  // web 预览没有 桌面后端（pi sidecar / invoke），直接给出降级提示
+  if (!isDesktop()) {
     return (
       <div className="text-muted-foreground p-8 text-sm">
-        模型配置依赖桌面端 pi 服务，请在 Tauri 应用中打开设置。
+        模型配置依赖桌面端 pi 服务，请在桌面应用中打开设置。
       </div>
     );
   }

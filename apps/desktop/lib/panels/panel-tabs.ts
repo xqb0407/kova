@@ -23,7 +23,7 @@ export type PanelTabType =
   | "activity"
   | "plan"
   | "review"
-  /** 真终端：PTY 交互会话（仅 Tauri 桌面端,见 tab-registry 可见性过滤） */
+  /** 真终端：PTY 交互会话（仅 桌面端,见 tab-registry 可见性过滤） */
   | "shell"
   | "browser"
   | "git"
@@ -31,7 +31,7 @@ export type PanelTabType =
   | "artifacts"
   /** 文件内容预览：消息 read 工具行唤起（快照），或文件树标签唤起（tab.path=磁盘实时） */
   | "file"
-  /** 工作区文件树浏览（仅 Tauri 桌面端,见 tab-registry 的可见性过滤） */
+  /** 工作区文件树浏览（仅 桌面端,见 tab-registry 的可见性过滤） */
   | "explorer"
   /** 子智能体运行过程：消息里 Task 委派行唤起（不进 + 菜单,只能从行进入） */
   | "subagent"
@@ -116,7 +116,7 @@ function validTab(raw: unknown): raw is PanelTab {
 /** 本次页面加载是否为「刷新」(reload)而非冷启动/首次进入。
  *  sessionStorage 哨兵在模块求值时判定：同一 webview 会话内 reload 会保留
  *  sessionStorage，冷启动/重启应用则是全新会话。不用 PerformanceNavigation
- *  Timing——WKWebView 下 tauri 自定义协议导航的 timing type 不稳定为 "reload"。
+ *  Timing——WKWebView 下 自定义协议导航的 timing type 不稳定为 "reload"。
  *  sessionStorage 不可用（隐私模式等）时按非刷新处理（保守回退原设计） */
 const RELOAD_FLAG = "agent-panel-reloaded";
 const pageReloaded: boolean = (() => {

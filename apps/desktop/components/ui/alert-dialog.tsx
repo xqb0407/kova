@@ -27,7 +27,7 @@ const AlertDialogOverlay = React.forwardRef<
   <AlertDialog.Backdrop
     ref={ref}
      className={cn(
-        // 不给遮罩加 backdrop-blur：WKWebView（Tauri macOS）对带
+        // 不给遮罩加 backdrop-blur：Chromium（Electron）对带
         // backdrop-filter 的元素做 opacity 动画/销毁图层时会闪黑帧
         "fixed inset-0 isolate z-50 bg-black/10 duration-200 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
         className

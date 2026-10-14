@@ -54,7 +54,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import {
   pathBasename,
   useWorkspace,
@@ -650,11 +650,11 @@ export const SkillsSettings: FC = () => {
   /** 只读浏览：弹原生目录选择器，但不改主界面工作区（与 MCP/记忆页同款语义） */
   const pickBrowseDir = async () => {
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { open } = await import("@/desktop-bridge/plugin-dialog");
       const dir = await open({ directory: true, multiple: false, title: "浏览工作区技能目录" });
       if (typeof dir === "string") setOverrideCwd(dir === workspace ? null : dir);
     } catch {
-      // 非 Tauri 环境：无原生目录选择器
+      // 非 桌面壳环境：无原生目录选择器
     }
   };
 
@@ -704,7 +704,7 @@ export const SkillsSettings: FC = () => {
                 following={!overrideCwd}
                 followLabel={workspace ? pathBasename(workspace) : null}
                 candidates={cwdCandidates}
-                showBrowse={isTauri()}
+                showBrowse={isDesktop()}
                 onChange={(dir) => setOverrideCwd(dir === workspace ? null : dir)}
                 onFollowCurrent={() => setOverrideCwd(null)}
                 onBrowse={() => void pickBrowseDir()}

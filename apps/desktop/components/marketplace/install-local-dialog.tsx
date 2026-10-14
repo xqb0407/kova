@@ -67,7 +67,7 @@ export const InstallLocalDialog: FC<{
 
   const browse = async () => {
     try {
-      const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
+      const { open: openDialog } = await import("@/desktop-bridge/plugin-dialog");
       const dir = await openDialog({ directory: true, multiple: false, title: "选择插件目录" });
       if (typeof dir === "string") {
         setPath(dir);
@@ -75,7 +75,7 @@ export const InstallLocalDialog: FC<{
         void runInstall(dir);
       }
     } catch {
-      // 非 Tauri 环境：无原生目录选择器，手输路径
+      // 非 桌面壳环境：无原生目录选择器，手输路径
     }
   };
 

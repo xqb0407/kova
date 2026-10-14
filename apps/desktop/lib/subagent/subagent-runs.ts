@@ -16,7 +16,7 @@ import { getPanelTabs, openPanelTab, setActivePanelTab } from "@/lib/panels/pane
  * 1. prompt 流内 data-subagentDelegation chunk（Task 启动时发起）：
  *    toolCallId ↔ delegationId 绑定 + 元信息；刷新 attach 会回放，
  *    transport postTransform 拦截后喂 applyDelegationChunk。
- * 2. 无 id 通知行 subagent_activity（subscribeSubagentActivity，Tauri 通道）：
+ * 2. 无 id 通知行 subagent_activity（subscribeSubagentActivity，桌面通道）：
  *    delegate 的思考/正文增量、工具起止、轮次、结算终态，实时流式进 blocks。
  * 3. get_subagent_activity 快照（打开 tab 时按需拉）：刷新后补历史活动、
  *    点开已完成的委派；查无记录（sidecar 重启/被清理）置 expired。

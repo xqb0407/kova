@@ -1,4 +1,4 @@
-/** `@tauri-apps/api/path` 兼容实现（项目仅用 appDataDir，join 为完备性保留） */
+/** 桌面桥 · 路径：appDataDir（项目仅用这一个；join/homeDir 为完备性保留）。 */
 import { invokeBridge } from "./_host";
 
 export async function appDataDir(): Promise<string> {

@@ -1,6 +1,6 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import { useSyncExternalStore } from "react";
 import {
   eventLabel,
@@ -13,7 +13,7 @@ import {
   initWebhooks,
   type WebhookEndpoint,
 } from "@/lib/notify/webhooks";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { toast } from "@/components/ui/toast";
 
 /**
@@ -72,7 +72,7 @@ function rowToDelivery(row: WebhookDeliveryRow): WebhookDelivery {
 function record(delivery: WebhookDelivery) {
   deliveries = [delivery, ...deliveries].slice(0, DELIVERY_KEEP);
   emitDeliveries();
-  if (isTauri()) {
+  if (isDesktop()) {
     void invoke("webhook_delivery_add", {
       endpoint: delivery.endpointName,
       event: delivery.event,
@@ -85,7 +85,7 @@ function record(delivery: WebhookDelivery) {
 
 /** 从 SQLite 水合最近 20 条（dispatcher 初始化时调用） */
 async function loadDeliveries(): Promise<void> {
-  if (!isTauri()) return;
+  if (!isDesktop()) return;
   try {
     const rows = await invoke<WebhookDeliveryRow[]>("webhook_delivery_list", {
       limit: DELIVERY_KEEP,
@@ -115,7 +115,7 @@ export async function removeWebhookDeliveries(endpointName: string): Promise<voi
     deliveries = next;
     emitDeliveries();
   }
-  if (isTauri()) {
+  if (isDesktop()) {
     try {
       await invoke("webhook_delivery_delete", { endpoint: endpointName });
     } catch {
@@ -135,7 +135,7 @@ export async function pruneWebhookDeliveries(
       emitDeliveries();
     }
   };
-  if (!isTauri()) {
+  if (!isDesktop()) {
     const removed = Math.max(0, deliveries.length - keep);
     truncate();
     return removed;
@@ -287,7 +287,7 @@ interface PostResult {
 }
 
 async function post(request: BuiltRequest): Promise<PostResult> {
-  if (isTauri()) {
+  if (isDesktop()) {
     try {
       const res = await invoke<{ status: number; ok: boolean; snippet: string }>(
         "http_post",

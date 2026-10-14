@@ -9,22 +9,22 @@
  *   用来在没跑真会话时把形态摆出来
  * - 真实：list_sessions 选会话 → trace_query 拉该会话 traces → loop-adapter 映射
  *
- * 真实源需要 sidecar 通道，只有 Tauri 桌面端有——裸浏览器打开这个路由时
- * getPiChannel 会兜底造 Tauri 通道然后炸在 invoke 上，所以这里显式挡掉。
+ * 真实源需要 sidecar 通道，只有桌面端有——裸浏览器打开这个路由时
+ * getPiChannel 会兜底造桌面通道然后炸在 invoke 上，所以这里显式挡掉。
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { toLoopRuns } from "@/lib/pi/loop-adapter";
 import { piRequest, type PiSessionSummary, type PiTraceRun } from "@/lib/pi/pi-bridge";
 import type { LoopRun } from "@/lib/pi/loop-model";
 import { LoopExplorer } from "@/components/agent-thread/agent-panel/loop-view";
 import { RUNS, RUN_SCALE } from "./fixtures";
 
-/** 真实源在非 Tauri 环境下不可用（没有 sidecar 通道） */
-const NEED_DESKTOP = "真实数据需要桌面端（Tauri）环境：请用 bun run tauri:dev 打开本页";
+/** 真实源在非 桌面壳环境下不可用（没有 sidecar 通道） */
+const NEED_DESKTOP = "真实数据需要桌面端（Electron）环境：请用 electron --dev 打开本页";
 
 export default function AgentLoopDevPreview() {
   const [source, setSource] = useState<"fixture" | "live">("fixture");
@@ -56,7 +56,7 @@ export default function AgentLoopDevPreview() {
   // 切到真实源：先拉会话清单，默认最近一个，再拉它的轨迹
   useEffect(() => {
     if (source !== "live") return;
-    if (!isTauri()) {
+    if (!isDesktop()) {
       setErr(NEED_DESKTOP);
       setLiveRuns([]);
       return;

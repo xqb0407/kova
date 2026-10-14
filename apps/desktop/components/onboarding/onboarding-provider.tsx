@@ -9,7 +9,7 @@ import {
   type FC,
   type ReactNode,
 } from "react";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * 首次启动配置向导的开关状态：走没走过、当前展不展开。
@@ -48,7 +48,7 @@ export const OnboardingProvider: FC<{ children: ReactNode }> = ({ children }) =>
   const [active, setActive] = useState(false);
 
   useEffect(() => {
-    if (!isTauri()) return; // 远程/预览端永不弹向导，见文件头注释
+    if (!isDesktop()) return; // 远程/预览端永不弹向导，见文件头注释
     let completed = false;
     try {
       completed = window.localStorage.getItem(COMPLETED_KEY) === "1";
@@ -68,7 +68,7 @@ export const OnboardingProvider: FC<{ children: ReactNode }> = ({ children }) =>
   }, []);
 
   const reopen = useCallback(() => {
-    if (!isTauri()) return; // 远程端设置页的「重新查看引导」同样无处安放
+    if (!isDesktop()) return; // 远程端设置页的「重新查看引导」同样无处安放
     try {
       window.localStorage.removeItem(COMPLETED_KEY);
     } catch {

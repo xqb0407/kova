@@ -1,7 +1,7 @@
 // 本地新增（react-pi 迁移缺口2·检查点卡接回）：旧链路 pi-transport 的
 // postTransform 管线在 start chunk 打影子仓库快照、finish/error 结算检查点卡
 // （git 集成 M2）。新链路没有 per-request 流，改挂全局事件通道：
-// TauriPiClient 在 agent_start / agent_end 帧上调本模块的 begin/settle。
+// DesktopPiClient 在 agent_start / agent_end 帧上调本模块的 begin/settle。
 //
 // 锚点语义（与旧链路 messages.indexOf(lastUser) 对齐）：anchorIndex = 触发本轮
 // 的 user 消息在渲染列表中的下标。渲染列表 = 转录的投影（assistant+toolResult
@@ -46,7 +46,7 @@ export const defaultTurnCheckpointDeps = (): TurnCheckpointDeps => ({
   diff: (cwd, hash) => gitCheckpointDiff(cwd, hash),
   refreshStatus: (cwd) => refreshGitStatus(cwd),
   resolveCwd: (snapshot) => snapshot.metadata.workspacePath ?? getWorkspace(),
-  fetchSnapshot: async () => undefined, // 由 TauriPiClient 注入自有快照通道
+  fetchSnapshot: async () => undefined, // 由 DesktopPiClient 注入自有快照通道
   saveHash: saveRunHash,
   loadHash: loadRunHash,
   push: pushRunCheckpoint,
@@ -181,5 +181,5 @@ export class TurnCheckpointTracker {
   }
 }
 
-/** TauriPiClient 构造注入面（测试换记录型假件） */
+/** DesktopPiClient 构造注入面（测试换记录型假件） */
 export type TurnCheckpointObserver = Pick<TurnCheckpointTracker, "begin" | "settle">;

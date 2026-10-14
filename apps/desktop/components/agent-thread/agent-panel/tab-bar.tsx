@@ -31,7 +31,7 @@ import {
   type PanelTab,
 } from "@/lib/panels/panel-tabs";
 import { newTerminalTab } from "@/lib/shell";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { usePluginPanels } from "@/lib/plugins/plugin-panels";
 import { TAB_META, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
 import { cn } from "@/lib/utils";
@@ -233,7 +233,7 @@ export const NewTabMenu: FC = () => {
  * 面板标签栏(Codex 同款):左为标签总览下拉(溢出时快速跳转),
  * 中间横向滚动标签条,右为 "+" 新标签菜单,再往右是 actions 插槽
  * (收起按钮/停靠态的 Windows 三键,由 PanelShell 注入)。
- * 整条是 Tauri 窗口拖拽区(TRAE 式全高分割下,面板顶栏贴着窗口顶缘)。
+ * 整条是 窗口拖拽区(TRAE 式全高分割下,面板顶栏贴着窗口顶缘)。
  */
 export const TabBar: FC<{
   tabs: PanelTab[];
@@ -244,7 +244,7 @@ export const TabBar: FC<{
   const pillLayoutId = useId();
   return (
     <div
-      data-tauri-drag-region={isTauri() ? "deep" : undefined}
+      data-tauri-drag-region={isDesktop() ? "deep" : undefined}
       className="flex h-12 shrink-0 items-center gap-1 border-b-[0.5] pr-2 pl-2"
     >
       <DropdownMenu>
@@ -289,7 +289,7 @@ export const TabBar: FC<{
           的 mousedown 劫持成窗口拖动（preventDefault + start_dragging），
           滚轮/触控板/拖拽平移全都失效 */}
       <div
-        data-tauri-drag-region={isTauri() ? "false" : undefined}
+        data-tauri-drag-region={isDesktop() ? "false" : undefined}
         className="scrollbar-hide flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
       >
         {tabs.map((t, i) => (

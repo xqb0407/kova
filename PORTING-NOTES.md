@@ -125,6 +125,25 @@ host_cancel 12:41:30.853 → tool_execution_end 12:41:30.858 → `sleep 300` 进
 工具自身超时（模型可传 timeout，默认 120s）同样杀进程树（实测 timeout:6000 六秒清空）；
 终端（pty）是真终端：Ctrl-C 生效（实测 `^C` 回提示符）、关闭标签 = 杀壳。
 
+### @tauri-apps 痕迹清理（用户要求"去干净"）
+
+前端 58 个文件的 `@tauri-apps/*` import 已全部改指本仓自有桥，并进一步改名去品牌：
+
+| 原 | 现 | 说明 |
+|---|---|---|
+| `@tauri-apps/{api,plugin}/x` import | `@/desktop-bridge/x` | 桥目录 `tauri-bridge/` → `desktop-bridge/`；tsconfig 别名已删除（漏网 import 会硬报错） |
+| `@tauri-apps/api` npm 依赖 | 已删除 | 早先已不被打进包（被 paths 覆盖），现从依赖与 lock 里一并清掉 |
+| `lib/tauri.ts` / `tauri-pi-client.ts` | `lib/desktop-env.ts` / `desktop-pi-client.ts` | 文件与类名（`TauriPiClient`→`DesktopPiClient`） |
+| `isTauri` / `isDesktopDev` 等 | `isDesktop` / `isDesktopDev` / `safeDesktopCall` | **机制保留**（同一份静态产物也会被远程网关当网页 serve，需要区分"桌面壳 vs 网页访客"），仅改口径 |
+| 环境标记 `__TAURI_INTERNALS__`/`__TAURI__` | `__KOVA_DESKTOP__` | preload 注入、前端检测、桥全局类型三处同步 |
+| 通道 kind `"tauri"` | `"desktop"` | pi-channel 及测试 |
+| `getTauriVersion()`（假兼容串） | `getRuntimeVersion()` → **真实 Electron 版本** | 关于页新增「Electron 版本」行（原来取值为死字段，从不渲染） |
+| 注释/文案里的 Tauri 指称 | 桌面壳 / 桌面桥 / 旧桌面壳（历史对照） | 三轮短语清理；用户可见文案（"请在 Tauri 应用中打开设置"）已改为桌面应用 |
+
+唯一保留的 `tauri` 字样是**拖拽契约属性名 `data-tauri-drag-region`**（7 个前端文件 + preload 拖拽桥）：
+它是前端 markup 的既定接口，改它需要同步改前端标记；如要彻底改名，可加 `data-desktop-drag-region`
+支持后逐个文件替换。
+
 ### 未验证项（诚实清单）
 
 - `pi_tunnel_download` 的真实下载链路未跑（需拉取 GitHub Releases ~40MB）：解析/sha256 校验/

@@ -5,7 +5,7 @@
  */
 import { describe, expect, mock, test } from "bun:test";
 
-// fs 走 Tauri 命令，测试里替换成内存目录树
+// fs 走 桌面桥命令，测试里替换成内存目录树
 const tree = new Map<string, string>();
 const dirs = new Set<string>();
 

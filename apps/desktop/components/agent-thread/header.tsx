@@ -3,7 +3,7 @@
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { cn } from "@/lib/utils";
-import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { WindowControls } from "@/components/window-controls";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
@@ -73,7 +73,7 @@ const ThreadTitle: FC = () => {
   return (
     <span
       // header 是 deep 拖拽区，普通文本的 mousedown 会被 preventDefault
-      // 拿去做窗口拖动，选区无法开始；"false" 让 Tauri 的事件路径遍历在
+      // 拿去做窗口拖动，选区无法开始；"false" 让 桌面壳的事件路径遍历在
       // 这棵子树截停（drag.js isDragRegion），恢复常规文字选中
       data-tauri-drag-region="false"
       className="min-w-0 truncate text-sm font-medium"
@@ -224,7 +224,7 @@ export const Header: FC<{
   const pageMode = variant === "page";
   // 桌面端自绘 titlebar：拖拽区所有桌面端生效；红绿灯让位仅 macOS（Windows 隐藏系统
   // 标题栏后由 WindowControls 接管，网页端无窗口 chrome）
-  const desktop = isTauri();
+  const desktop = isDesktop();
   const mac = desktop && isMacPlatform();
   // 重命名任务：菜单入口 + dialog 开合；全新未落库会话 rename 会抛错，禁用入口
   const aui = useAui();

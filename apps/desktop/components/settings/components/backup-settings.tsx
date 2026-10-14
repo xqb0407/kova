@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState, type FC } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { listen } from "@/desktop-bridge/event";
+import { open as openDialog, save as saveDialog } from "@/desktop-bridge/plugin-dialog";
 import {
   CloudIcon,
   DownloadIcon,

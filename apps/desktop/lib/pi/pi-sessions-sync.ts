@@ -55,7 +55,7 @@ function detachCurrent(): void {
     teardown = null;
     f();
   }
-  // 异步登记（Tauri listen）尚未 settle 就换代：settle 后补退订
+  // 异步登记（桌面壳 listen）尚未 settle 就换代：settle 后补退订
   if (teardownPending) {
     const p = teardownPending;
     teardownPending = null;

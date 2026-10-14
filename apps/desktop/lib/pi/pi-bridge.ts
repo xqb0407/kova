@@ -13,7 +13,7 @@ import type {
 
 /**
  * pi-agent 管理类请求-响应桥。
- * 具体传输由 PiChannel 决定（桌面 = Tauri invoke；远程网页 = WebSocket，见 pi-channel.ts），
+ * 具体传输由 PiChannel 决定（桌面 = 桌面壳 invoke；远程网页 = WebSocket，见 pi-channel.ts），
  * 桥只负责类型定义与错误归一。跨端载荷单源 pi-protocol（设计文档 §1），
  * 本地保留 Pi* 惯用名。
  */

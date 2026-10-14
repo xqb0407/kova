@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "@/desktop-bridge/event";
 import { fsListDir, type FsDirListing } from "@/lib/workspace/fs";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * 文件树目录缓存 store（失效时机仿 lib/git-status.ts，不做文件 watcher）：
@@ -44,7 +44,7 @@ function subscribe(cb: () => void) {
  * 失败按空目录缓存，避免每次版本 bump 对坏路径反复重拉。
  */
 export function ensureDir(cwd: string, dir: string): void {
-  if (!cwd || !isTauri()) return;
+  if (!cwd || !isDesktop()) return;
   const key = keyOf(cwd, dir);
   if (cache.has(key) || loading.has(key)) return;
   loading.add(key);
@@ -100,7 +100,7 @@ function invalidateCwd(cwd: string) {
 async function wireEvents(): Promise<void> {
   if (wired || typeof window === "undefined") return;
   wired = true;
-  if (isTauri()) {
+  if (isDesktop()) {
     try {
       await listen<{ cwd: string }>("git-changed", (event) => {
         const cwd = event.payload?.cwd;

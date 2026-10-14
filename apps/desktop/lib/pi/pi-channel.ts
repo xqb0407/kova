@@ -1,16 +1,16 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@/desktop-bridge/core";
+import { listen } from "@/desktop-bridge/event";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
 
 /**
  * pi-agent 通道抽象：把"管理类请求-响应 + 自发通知订阅 + 全局中断"收口成接口。
- * - TauriPiChannel：桌面端，走 Tauri invoke/event
+ * - DesktopPiChannel：桌面端，走 桌面壳 invoke/event
  * - WsPiChannel：远程网页端，走 WebSocket（见 pi-ws-channel.ts）
  *
  * prompt 流式输出不走本接口：react-pi 新链路（pi-runtime/PiClientBase）经
- * Tauri 事件行 / WS 原始行自行分流并重建 partial。piRequest 通过模块级注册表
+ * 桌面桥事件行 / WS 原始行自行分流并重建 partial。piRequest 通过模块级注册表
  * （setPiChannel/getPiChannel）与具体通道解耦：运行时 provider 挂载前 set，
  * 之后所有调用原样工作在任一通道上。
  */
@@ -86,14 +86,14 @@ export type PiDesignThemeSetPushFrame = {
 export type PiDesignThemePush = PiDesignThemesPushFrame | PiDesignThemeSetPushFrame;
 
 export interface PiChannel {
-  readonly kind: "tauri" | "ws";
-  /** 管理类请求-响应；id 注入由实现负责（Tauri 侧 Rust 注入，WS 侧 JS 注入） */
+  readonly kind: "desktop" | "ws";
+  /** 管理类请求-响应；id 注入由实现负责（桌面壳侧 Rust 注入，WS 侧 JS 注入） */
   request(payload: Record<string, unknown>, timeoutMs?: number): Promise<PiResponse>;
   /**
    * 能力可选（与 listRunning 成对）：订阅"会话 turn 起止"事件流。
    * cb(sessionId, active)；sessionId = null 表示事件源失效（后端重启等），
    * 订阅方应清空集合并用 listRunning 重新水合。返回退订函数。
-   * 时序契约：监听登记本身可能是异步的（Tauri listen 返回 Promise）。注册
+   * 时序契约：监听登记本身可能是异步的（桌面壳 listen 返回 Promise）。注册
    * 窗口里广播的 turn_changed 会永久丢失，而种子无法替它兜底（种子早于事件
    * 时就看不到），所以订阅方必须先 await 返回的退订函数就绪、再发起 listRunning
    * 种子——sidecar 对 turn_changed 与 list_running 响应按 stdout 全序写出，
@@ -151,7 +151,7 @@ export interface PiChannel {
    * 能力可选（同款无 id 自发通知通道）：订阅会话清单变更帧
    * （sessions_changed，见 PiSessionsChangedFrame）：任一端（移动/网页/桌面）
    * 建会话、首条消息落盘、删除、改名、归档、截断、换目录时 sidecar 广播。
-   * cb(null) = 事件源失效（Tauri pi-exit / WS 重连），订阅方应重拉清单一次
+   * cb(null) = 事件源失效（桌面壳 pi-exit / WS 重连），订阅方应重拉清单一次
    * 兜底断档期的变化。WS 通道经网关白名单转发（remote.rs broadcast_notification）。
    */
   subscribeSessionsChanged?(
@@ -170,7 +170,7 @@ export interface PiChannel {
   /** 中断指定线程的活跃 turn 与其排队消息（缺省 = 全局兜底，停掉一切） */
   abort(threadId?: string): Promise<void>;
   close?(): void;
-  /** WS 通道连接状态回调；Tauri 通道恒连接，可不实现 */
+  /** WS 通道连接状态回调；桌面通道恒连接，可不实现 */
   onStatusChange?(cb: (s: PiChannelStatus) => void): () => void;
 }
 
@@ -200,23 +200,23 @@ export function peekPiChannel(): PiChannel | null {
 }
 
 export function getPiChannel(): PiChannel {
-  // 兜底：未注册时惰性创建 Tauri 通道（保持桌面端现网行为）；惰性创建同样
+  // 兜底：未注册时惰性创建 桌面通道（保持桌面端现网行为）；惰性创建同样
   // 是"通道注册"事件，经 setPiChannel 同步喂给变化监听（见 pi-sessions-sync）
   if (!current) {
-    const ch = new TauriPiChannel();
+    const ch = new DesktopPiChannel();
     setPiChannel(ch);
     return ch;
   }
   return current;
 }
 
-// ---------- Tauri 通道 ----------
+// ---------- 桌面通道 ----------
 
 /** pi-chunk-batch 载荷的一行（见 pi_agent.rs ChunkLine）：l = sidecar 原始 NDJSON 行 */
 type ChunkWireLine = { l: string };
 
-export class TauriPiChannel implements PiChannel {
-  readonly kind = "tauri" as const;
+export class DesktopPiChannel implements PiChannel {
+  readonly kind = "desktop" as const;
 
   async request(
     payload: Record<string, unknown>,

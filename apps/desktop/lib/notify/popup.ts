@@ -5,13 +5,13 @@ import {
   subscribeAgentEvents,
   type AgentEvent,
 } from "@/lib/pi/agent-events";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { getUiPrefs } from "@/lib/settings/ui-prefs";
 
 /**
  * 弹窗通知：agent 生命周期事件 → 系统级桌面通知（Windows 右下角 / macOS 通知中心，
- * 最小化/切走也可见），走 tauri-plugin-notification。桌面端专属：
- * 远程浏览器（非 Tauri）一律不弹。门控：窗口失焦才发——前台看得见，不必打扰。
+ * 最小化/切走也可见），走 通知插件。桌面端专属：
+ * 远程浏览器（非 桌面壳）一律不弹。门控：窗口失焦才发——前台看得见，不必打扰。
  * 正文动态组装（notifyBody）：标题取注册表 label，内容取事件 data
  * （prompt/错误原因/工具名/首个问题标题），注册表 desc 仅兜底。
  * 已知平台限制（只影响展示归属，逻辑两端一致、无 OS 分支）：
@@ -35,14 +35,14 @@ let permission: Promise<boolean> | null = null;
 async function notifyDesktop(title: string, body: string, session?: string): Promise<void> {
   if (session) {
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
+      const { invoke } = await import("@/desktop-bridge/core");
       await invoke("notify_show", { title, body, session });
       return;
     } catch {
       // 落到下面的 JS 插件路径
     }
   }
-  const n = await import("@tauri-apps/plugin-notification");
+  const n = await import("@/desktop-bridge/plugin-notification");
   permission ??= n
     .requestPermission()
     .then((state) => state === "granted")
@@ -82,7 +82,7 @@ export function initNotifyPopups(): void {
   if (initialized) return;
   initialized = true;
   subscribeAgentEvents((event) => {
-    if (!isTauri()) return; // 桌面端专属：远程浏览器不弹窗
+    if (!isDesktop()) return; // 桌面端专属：远程浏览器不弹窗
     const entry = AGENT_EVENT_REGISTRY.find((e) => e.name === event.name);
     if (!entry) return; // system.test 不弹窗
     if (!getUiPrefs().popupEnabled) return;

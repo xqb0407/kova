@@ -38,7 +38,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import {
   pathBasename,
   useWorkspace,
@@ -241,7 +241,7 @@ const MemoryFileBrowser: FC<{
             following={following}
             followLabel={followLabel}
             candidates={cwdCandidates}
-            showBrowse={isTauri()}
+            showBrowse={isDesktop()}
             onChange={onSwitchCwd}
             onFollowCurrent={onFollowCurrent}
             onBrowse={onBrowse}
@@ -475,11 +475,11 @@ export const MemorySettings: FC = () => {
   /** 只读浏览：弹原生目录选择器，但不改主界面工作区（与子智能体页同款语义） */
   const pickBrowseDir = async () => {
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { open } = await import("@/desktop-bridge/plugin-dialog");
       const dir = await open({ directory: true, multiple: false, title: "浏览工作区记忆目录" });
       if (typeof dir === "string") setOverrideCwd(dir === workspaceCwd ? null : dir);
     } catch {
-      // 非 Tauri 环境：无原生目录选择器
+      // 非 桌面壳环境：无原生目录选择器
     }
   };
 

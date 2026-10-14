@@ -1,5 +1,5 @@
 /**
- * preload：暴露 window.kovaHost（渲染层 tauri-bridge 的唯一宿主通道）。
+ * preload：暴露 window.kovaHost（渲染层 desktop-bridge 的唯一宿主通道）。
  * contextBridge 不跨界传函数：事件/通道在此侧订阅，回调留在渲染侧本地分发。
  */
 import { contextBridge, ipcRenderer } from "electron";
@@ -26,18 +26,17 @@ contextBridge.exposeInMainWorld("kovaHost", {
   },
 });
 
-// 桌面环境标记：前端 isTauri() 检测 __TAURI_INTERNALS__/__TAURI__（见 lib/tauri.ts），
+// 桌面环境标记：前端 isDesktop() 检测 __KOVA_DESKTOP__（见 lib/desktop-env.ts），
 // 缺了它整个 UI 会退化成"网页访客"（远程配对页）。invoke 一并挂上，保证任何
-// 未走 bridge 别名的直接调用也有真实出口。
+// 直接调用也有真实出口。
 const internals = {
   invoke: (cmd: string, args?: unknown) => ipcRenderer.invoke("kova-invoke", { cmd, args: args ?? {} }),
-  // 形状占位：真正的回调分发走 kovaHost；这里只需可被 @tauri-apps/api 内部
-  // 惯用法探测到且不抛异常（返回自增 id，不跨桥回传函数）
+  // 形状占位：真正的回调分发走 kovaHost；这里只需可被探测到且不抛异常
+  // （返回随机 id，不跨桥回传函数）
   transformCallback: (_cb: unknown, _once?: boolean) => Math.floor(Math.random() * 1e9),
   metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
 };
-contextBridge.exposeInMainWorld("__TAURI_INTERNALS__", internals);
-contextBridge.exposeInMainWorld("__TAURI__", { core: { invoke: internals.invoke } });
+contextBridge.exposeInMainWorld("__KOVA_DESKTOP__", internals);
 
 /**
  * 窗口拖拽区桥接（Tauri `data-tauri-drag-region` → Electron JS 拖拽）。
@@ -82,7 +81,7 @@ function isInteractive(el: Element | null): boolean {
   return false;
 }
 
-/** 对齐 Tauri drag.js：返回"本次 mousedown 命中哪个拖拽区"，null = 不拖 */
+/** 对齐旧桌面壳 drag.js：返回"本次 mousedown 命中哪个拖拽区"，null = 不拖 */
 function dragRegionFor(target: Element | null): Element | null {
   let el: Element | null = target;
   while (el && el !== document.body && el !== document.documentElement) {

@@ -1,4 +1,4 @@
-/** `@tauri-apps/plugin-dialog` 兼容实现：主进程 Electron dialog。 */
+/** 桌面桥 · 系统对话框：open/save/message/ask/confirm → 主进程 Electron dialog。 */
 import { invokeBridge } from "./_host";
 
 export interface OpenDialogOptions {

@@ -1,6 +1,6 @@
 /**
  * 系统托盘（对齐 tray.rs 行为）：Windows 常驻（关窗进托盘、菜单唤回/退出）；
- * macOS 也建托盘入口（关 Dock 不退出、保持与 Tauri 版一致的用户心智）。
+ * macOS 也建托盘入口（关 Dock 不退出、保持与 旧桌面壳一致的用户心智）。
  */
 import { app, Menu, Tray, nativeImage } from "electron";
 import { existsSync } from "node:fs";

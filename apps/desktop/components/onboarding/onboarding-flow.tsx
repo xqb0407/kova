@@ -12,7 +12,7 @@ import {
 import { AnimatePresence, motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { useOnboardingGate } from "./onboarding-provider";
 import { ONBOARDING_SECTIONS } from "./onboarding-sections";
 import { WelcomeStep } from "./steps/welcome-step";
@@ -109,7 +109,7 @@ export const OnboardingFlow: FC = () => {
   // overlay 淡入衔接，不会露出底下的应用。
   if (!active) return null;
 
-  const desktop = isTauri();
+  const desktop = isDesktop();
   const isWelcome = step === 0;
   const isDone = step === DONE_STEP;
   // 0 是欢迎页，1..N 是分区，N+1 是完成页

@@ -34,11 +34,11 @@ export const AddMarketplaceDialog: FC<{
 
   const browse = async () => {
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { open } = await import("@/desktop-bridge/plugin-dialog");
       const dir = await open({ directory: true, multiple: false, title: "选择插件市场目录" });
       if (typeof dir === "string") setPath(dir);
     } catch {
-      // 非 Tauri 环境：无原生目录选择器，手输路径
+      // 非 桌面壳环境：无原生目录选择器，手输路径
     }
   };
 

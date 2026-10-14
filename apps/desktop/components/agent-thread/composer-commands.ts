@@ -12,7 +12,7 @@ import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp/
 import { useSkills, type SkillEntry } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
 import { setSessionMode } from "@/lib/pi/pi-session-mode";
 import {
@@ -99,8 +99,8 @@ type SlashCommandDef = {
   label: string;
   description: string;
   icon: string;
-  /** 面板标签仅 Tauri 桌面端可见（shell/explorer，见 tab-registry 过滤） */
-  tauriOnly?: boolean;
+  /** 面板标签仅 桌面端可见（shell/explorer，见 tab-registry 过滤） */
+  desktopOnly?: boolean;
   /**
    * 命令动作。ctx.threadId 是当前会话线程（面板类命令用不到，模式类命令要用它发
    * set_mode）——菜单在这一层才拿得到 threadId，所以作为参数注入而不是模块级闭包。
@@ -121,7 +121,7 @@ const SLASH_COMMANDS: readonly SlashCommandDef[] = [
     label: "/shell",
     description: "打开终端面板",
     icon: "SquareTerminal",
-    tauriOnly: true,
+    desktopOnly: true,
     run: () => openPanel("shell"),
   },
   {
@@ -136,7 +136,7 @@ const SLASH_COMMANDS: readonly SlashCommandDef[] = [
     label: "/explorer",
     description: "打开文件树面板",
     icon: "FolderTree",
-    tauriOnly: true,
+    desktopOnly: true,
     run: () => openPanel("explorer"),
   },
   {
@@ -266,7 +266,7 @@ export function useComposerSlashMenu(
   const commandItems = useMemo<Unstable_TriggerItem[]>(
     () =>
       includeCommands
-        ? SLASH_COMMANDS.filter((c) => !c.tauriOnly || isTauri()).map((c) => ({
+        ? SLASH_COMMANDS.filter((c) => !c.desktopOnly || isDesktop()).map((c) => ({
             id: c.id,
             type: "command",
             label: c.label,

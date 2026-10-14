@@ -1,5 +1,5 @@
 /**
- * 主窗口创建（对齐 tauri.conf.json windows[0] + gpu.rs create_windows +
+ * 主窗口创建（对齐 旧桌面壳配置 windows[0] + gpu.rs create_windows +
  * lib.rs on_page_load 首帧显窗 + 5s 兜底 show）。
  */
 import { app, BrowserWindow, shell } from "electron";
@@ -27,7 +27,7 @@ export function createMainWindow(devUrl: string | null): BrowserWindow {
     minWidth: 800,
     minHeight: 600,
     center: true,
-    show: false, // visible:false：等首帧就绪再 show（对齐 Tauri 消闪烁策略）
+    show: false, // visible:false：等首帧就绪再 show（对齐旧桌面壳 消闪烁策略）
     transparent: true,
     backgroundColor: "#00000000",
     ...(isMac

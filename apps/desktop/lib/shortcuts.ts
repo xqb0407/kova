@@ -1,8 +1,8 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import { useSyncExternalStore } from "react";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * 应用级快捷键（设置 → 快捷键）：目前是 ⌘K 搜索命令面板、⌘B 侧边栏开合。
@@ -170,7 +170,7 @@ export async function initShortcuts(): Promise<void> {
   initialized = true;
   try {
     let raw: string | null = null;
-    if (isTauri()) raw = await invoke<string | null>("kv_get", { key: KV_KEY });
+    if (isDesktop()) raw = await invoke<string | null>("kv_get", { key: KV_KEY });
     else raw = window.localStorage.getItem(LS_KEY);
     if (raw) {
       bindings = normalizeBindings(JSON.parse(raw));
@@ -188,7 +188,7 @@ function persist() {
   } catch {
     // localStorage 不可用时仅本次会话生效
   }
-  if (isTauri()) {
+  if (isDesktop()) {
     void invoke("kv_set", { key: KV_KEY, value: json }).catch(() => {});
   }
 }
@@ -339,5 +339,5 @@ export function formatShortcutParts(
   return parts;
 }
 
-// client bundle 加载即恢复（SSR 端 isTauri() 为 false，跳过 kv）
+// client bundle 加载即恢复（SSR 端 isDesktop() 为 false，跳过 kv）
 void initShortcuts();

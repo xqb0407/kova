@@ -14,14 +14,14 @@ import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
 
 type FrameHandler = (frame: unknown) => void;
 
-mockModule("@tauri-apps/api/core", () => ({
+mockModule("@/desktop-bridge/core", () => ({
   invoke: () => Promise.reject(new Error("unexpected invoke")),
 }));
-mockModule("@tauri-apps/api/event", () => ({
+mockModule("@/desktop-bridge/event", () => ({
   listen: () => Promise.resolve(() => {}),
 }));
 
-// startAutomationLiveWatch 的 window 守卫（避免 SSR 触碰 Tauri API）在测试环境放行；
+// startAutomationLiveWatch 的 window 守卫（避免 SSR 触碰 桌面桥 API）在测试环境放行；
 // 跑完连同 mock 注入一起回滚，别把桩留给同进程的后续测试文件
 const hadWindow = "window" in globalThis;
 (globalThis as { window?: unknown }).window ??= {};
@@ -45,7 +45,7 @@ let feed: FrameHandler | null = null;
 
 function fakeChannel(): PiChannel {
   return {
-    kind: "tauri",
+    kind: "desktop",
     request: async (): Promise<PiResponse> => ({ type: "sessions", sessions: [] }),
     promptStream: () => new ReadableStream(),
     abort: async () => {},

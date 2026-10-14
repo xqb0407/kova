@@ -3,7 +3,7 @@
  *
  * 目标不是做性能分析，而是回答用户反馈「页面卡住了」时我们缺的那句话：
  * 卡了多久、什么时候卡的、卡之前刚跑过什么。整个实现不依赖任何性能 API，
- * 只靠一个 setInterval 计时器测漂移——macOS 的 Tauri 用的是 WKWebView，
+ * 只靠一个 setInterval 计时器测漂移——macOS 的 桌面壳 用的是 WKWebView，
  * PerformanceObserver('longtask') 是 Chromium 独有的，在那儿根本不存在。
  * 所以这里把 longtask 当可选增强：能用就补上归因（哪个容器/脚本），
  * 不能用就退化成纯计时器结论，一样能落进 web.log。

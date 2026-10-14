@@ -1,12 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mockModule, restoreAllMocks } from "@/lib/testing/mock-module";
 
-// isTauri() 是查 window.__TAURI_INTERNALS__ 的纯函数：给 window 垫片即可，
-// 不 mock "@/lib/tauri"（别名 id 的 mock.module 跨文件 restore 不可靠，会
-// 泄漏 isTauri=true 污染后续文件——mock-module.ts 头注实证过的坑）
+// isDesktop() 是查 window.__KOVA_DESKTOP__ 的纯函数：给 window 垫片即可，
+// 不 mock "@/lib/desktop-env"（别名 id 的 mock.module 跨文件 restore 不可靠，会
+// 泄漏 isDesktop=true 污染后续文件——mock-module.ts 头注实证过的坑）
 const hadWindow = "window" in globalThis;
 (globalThis as unknown as { window?: Record<string, unknown> }).window = {
-  __TAURI_INTERNALS__: {},
+  __KOVA_DESKTOP__: {},
   location: { hostname: "localhost" },
 };
 
@@ -25,7 +25,7 @@ const hadWindow = "window" in globalThis;
 
 const kv = new Map<string, string>();
 
-mockModule("@tauri-apps/api/core", () => ({
+mockModule("@/desktop-bridge/core", () => ({
   invoke: (cmd: string, args?: Record<string, string>) => {
     const key = args?.key ?? "";
     if (cmd === "kv_get") return Promise.resolve(kv.get(key) ?? null);

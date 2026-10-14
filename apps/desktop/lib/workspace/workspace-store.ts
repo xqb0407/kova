@@ -1,14 +1,14 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import { useSyncExternalStore } from "react";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * 当前 workspace（工作目录）状态：持久化到 Rust 侧 SQLite（state.db 的 kv 表）。
  * - getWorkspace()：非 React 场景读取（adapter/transport）
  * - useWorkspace()：React 组件订阅
- * 非 Tauri 环境（web 预览）仅内存态，不持久化。
+ * 非 桌面壳环境（web 预览）仅内存态，不持久化。
  */
 const KV_KEY = "workspace";
 const RECENTS_KEY = "workspace.recents";
@@ -88,7 +88,7 @@ export function setWorkspace(dir: string | null, source: WorkspaceSource = "user
     recents = [dir, ...recents.filter((d) => d !== dir)].slice(0, RECENTS_LIMIT);
   }
 
-  if (isTauri()) {
+  if (isDesktop()) {
     const write =
       dir == null
         ? invoke("kv_delete", { key: KV_KEY })
@@ -105,7 +105,7 @@ export function setWorkspace(dir: string | null, source: WorkspaceSource = "user
 }
 
 /**
- * 最近一次 workspace kv 写入的完成 Promise（未安装 Tauri / 从未写入即立即完成）。
+ * 最近一次 workspace kv 写入的完成 Promise（未安装 桌面壳 / 从未写入即立即完成）。
  * lib/git/git-status.ts 的 refreshGitStatus 借此排在 kv_set 之后落库再发
  * git_status：若抢在写入前执行，Rust 的 resolve_workspace 会读到旧值判
  * cwd-not-allowed，被缓存成 null 且要到下次失效（聚焦/git-changed）才重试——
@@ -122,7 +122,7 @@ export function whenWorkspacePersisted(): Promise<unknown> {
  * 上次目录通过 recents 一键可达；kv 写入保留（无害死数据，也兼容旧版本回退）。
  */
 export async function initWorkspaceStore(): Promise<void> {
-  if (!isTauri()) return;
+  if (!isDesktop()) return;
   try {
     const recentValues = await invoke<string | null>("kv_get", { key: RECENTS_KEY });
     if (typeof recentValues === "string" && recentValues) {
@@ -137,16 +137,16 @@ export async function initWorkspaceStore(): Promise<void> {
   }
 }
 
-// client bundle 加载即恢复（SSR 端 isTauri() 为 false，直接跳过）
+// client bundle 加载即恢复（SSR 端 isDesktop() 为 false，直接跳过）
 void initWorkspaceStore();
 
 /**
  * 弹出系统目录选择框，选中后设为当前 workspace。
- * 非 Tauri 环境（web 预览）没有原生 dialog，返回 null。
+ * 非 桌面壳环境（web 预览）没有原生 dialog，返回 null。
  */
 export async function openWorkspacePicker(): Promise<string | null> {
   try {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/desktop-bridge/plugin-dialog");
     const dir = await open({
       directory: true,
       multiple: false,
@@ -157,7 +157,7 @@ export async function openWorkspacePicker(): Promise<string | null> {
       return dir;
     }
   } catch {
-    // 非 Tauri 环境
+    // 非 桌面壳环境
   }
   return null;
 }

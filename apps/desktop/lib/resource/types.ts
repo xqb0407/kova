@@ -1,5 +1,5 @@
 /**
- * 资源管理器的数据契约：与 `src-tauri/src/resource.rs` 的 serde 结构一一对应
+ * 资源管理器的数据契约：与 `原 Rust 宿主的 resource.rs` 的 serde 结构一一对应
  * （Rust 侧统一 `rename_all = "camelCase"`）。字段改名要两边同改，否则前端拿到
  * undefined 而不是报错。
  */

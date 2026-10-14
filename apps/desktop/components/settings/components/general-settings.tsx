@@ -22,7 +22,7 @@ import {
 import { setAppMode, useAppMode, useAppModeDegraded, type AppMode } from "@/lib/pi/app-mode";
 import { setGpuAccelEnabled, useGpuAccelEnabled } from "@/lib/settings/gpu-accel";
 import { SOUND_PACKS } from "@/lib/notify/sounds";
-import { isTauri, isWindowsPlatform } from "@/lib/tauri";
+import { isDesktop, isWindowsPlatform } from "@/lib/desktop-env";
 import { setUiPref, useUiPrefs, type SoundPackName } from "@/lib/settings/ui-prefs";
 
 /**
@@ -169,7 +169,7 @@ export const GeneralSettings: FC = () => {
         </section>
 
         {/* 附件中转缓存仅桌面端存在（粘贴的文档中转落盘）；网页端无本地 FS */}
-        {isTauri() && (
+        {isDesktop() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">附件</h2>
             <p className="text-muted-foreground text-sm">
@@ -205,7 +205,7 @@ export const GeneralSettings: FC = () => {
         )}
 
         {/* WebView2 专属参数，远程网页端与 macOS 均无可调项，仅 Win 桌面端展示 */}
-        {isTauri() && isWindowsPlatform() && (
+        {isDesktop() && isWindowsPlatform() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">渲染</h2>
             <p className="text-muted-foreground text-sm">桌面端渲染兼容性选项。</p>
@@ -225,7 +225,7 @@ export const GeneralSettings: FC = () => {
 
         {/* 新手引导是桌面首启流程（远程端 Provider 永不展开、reopen 也是空
             操作），入口只在桌面端呈现 */}
-        {isTauri() && (
+        {isDesktop() && (
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold">入门</h2>
             <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">

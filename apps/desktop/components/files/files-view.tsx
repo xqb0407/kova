@@ -38,7 +38,7 @@ import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/custom-ui/segmented";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { save as saveDialog } from "@/desktop-bridge/plugin-dialog";
 import {
   deleteAppFile,
   listAppFiles,

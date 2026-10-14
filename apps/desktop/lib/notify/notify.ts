@@ -6,7 +6,7 @@ import { initWebhookDispatcher } from "@/lib/notify/webhook-dispatcher";
 import { startAutomationLiveWatch } from "@/lib/automation/automation-live";
 import { initAutomationSessionMap } from "@/lib/automation/automations";
 import { requestOpenSession } from "@/lib/pi/open-session";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * 通知管线装配：把三个消费者（提示音、弹窗通知、webhook 派发）挂到 agent 事件总线。
@@ -26,13 +26,13 @@ export function initNotifyPipeline(): void {
   startAutomationLiveWatch();
   // 会话归属记账 + 清单种子（侧边栏 ⚡ 徽标与管理页共用的数据底座）
   initAutomationSessionMap();
-  // 通知点击 → 打开会话：桌面版 tauri-plugin-notification 是 notify-rust 薄封装，
+  // 通知点击 → 打开会话：桌面版 通知插件 是 notify-rust 薄封装，
   // 没有点击回调；等价路径是"点击通知卡片 → 系统激活应用 → 窗口重新获焦"。
   // 失焦后再次回焦时向 Rust 取走 30s 内的待发会话（一次性、消费即清）转成开窗
   // 事件由 Base 切会话；命令失败/无待发都静默（通知本身已发出，不丢打扰只丢跳转）
-  if (isTauri()) {
+  if (isDesktop()) {
     void (async () => {
-      const { invoke } = await import("@tauri-apps/api/core");
+      const { invoke } = await import("@/desktop-bridge/core");
       let wasBlurred = false;
       window.addEventListener("blur", () => {
         wasBlurred = true;

@@ -9,8 +9,8 @@
  *     N 条消息上，对照 msgs=1（切块前）与 msgs=8（切块后）。
  *  3. 右侧 panel 打开为什么更卡 —— `panel=1` 挂上真实的 <AgentPanel />。
  *
- * 跑法（不需要 Tauri：Tauri 外壳只提供 sidecar 传输，渲染层是纯 Next，
- * tauri.conf.json 的 devUrl 就是 http://localhost:3000）：
+ * 跑法（不需要桌面壳：桌面壳只提供 sidecar 传输，渲染层是纯 Next，
+ * 旧桌面壳配置 的 devUrl 就是 http://localhost:3000）：
  *   cd apps/desktop && bun run dev
  *   bun scripts/measure-dev-preview.mjs \
  *     "http://localhost:3000/dev-preview/long-turn?steps=800&chunks=30&msgs=1&panel=1"
@@ -77,7 +77,7 @@ type Cfg = {
    *  只有在文件标签打开时才挂载——panel 挂着但没开标签时开销≈0，测不出东西） */
   open: string | null;
   /** 把最终报告 POST 到这个地址（sendBeacon）。某些浏览器（Safari/WebKit，
-   *  也就是 Tauri 桌面端同款引擎）没法被无头驱动读 DOM，只能让页面自己回传。 */
+   *  也就是 桌面端同款引擎）没法被无头驱动读 DOM，只能让页面自己回传。 */
   report: string | null;
   /** 每帧流式正文重复次数：动画负载旋钮（逐词动画的成本靠它放大） */
   words: number;

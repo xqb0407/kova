@@ -20,7 +20,7 @@ afterAll(() => {
  * - id 解析：完整 id / ≥4 位唯一前缀 / 歧义与过短前缀不猜
  * - 快照水合：meta 权威覆盖、blocks 仅本地为空时回放、失败置 expired、幂等
  * - openSubagentTab：同委派复用激活、新委派开 tab
- * mock Tauri API 与 panel-tabs（沿用 pi-running.test.ts 的桩风格）。
+ * mock 桌面桥 API 与 panel-tabs（沿用 pi-running.test.ts 的桩风格）。
  */
 
 type ActivityCb = (delegationId: string, item: SubagentActivityItem) => void;
@@ -29,10 +29,10 @@ let emitActivity: ActivityCb | null = null;
 const snapshotResponses = new Map<string, unknown>();
 const requestCounts = new Map<string, number>();
 
-mockModule("@tauri-apps/api/core", () => ({
+mockModule("@/desktop-bridge/core", () => ({
   invoke: () => Promise.reject(new Error("unused in store tests")),
 }));
-mockModule("@tauri-apps/api/event", () => ({
+mockModule("@/desktop-bridge/event", () => ({
   listen: () => Promise.resolve(() => {}),
 }));
 
@@ -80,7 +80,7 @@ const {
 
 // 假通道：request 按 delegationId 应答快照；subscribeSubagentActivity 捕获广播回调
 const channel: PiChannel = {
-  kind: "tauri",
+  kind: "desktop",
   request: async (payload): Promise<PiResponse> => {
     if (payload.type === "get_subagent_activity") {
       const id = String(payload.delegationId);

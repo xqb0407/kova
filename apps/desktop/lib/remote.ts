@@ -1,10 +1,10 @@
 "use client";
 
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * 远程模式配置：网页端保存桌面网关地址与配对换取的 token。
- * 仅在非 Tauri 环境下生效（桌面端永远走本地通道）。
+ * 仅在非 桌面壳环境下生效（桌面端永远走本地通道）。
  */
 
 export type RemoteConfig = {
@@ -17,7 +17,7 @@ export type RemoteConfig = {
 const KEY = "pi.remote";
 
 export function getRemoteConfig(): RemoteConfig | null {
-  if (typeof window === "undefined" || isTauri()) return null;
+  if (typeof window === "undefined" || isDesktop()) return null;
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
@@ -37,7 +37,7 @@ export function clearRemoteConfig() {
   localStorage.removeItem(KEY);
 }
 
-/** 远程模式：非 Tauri 环境且已配置过远程连接（SSR 端恒 false） */
+/** 远程模式：非 桌面壳环境且已配置过远程连接（SSR 端恒 false） */
 export function isRemoteMode(): boolean {
   return getRemoteConfig() !== null;
 }
@@ -77,7 +77,7 @@ export function decodePairPayload(raw: string): PairPayload | null {
   return null;
 }
 
-/** 复制文本：优先 Clipboard API，失败退回 execCommand（Tauri WebView 兼容） */
+/** 复制文本：优先 Clipboard API，失败退回 execCommand（桌面壳 WebView 兼容） */
 export async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);

@@ -31,7 +31,7 @@ import {
 import { usePluginPanels } from "@/lib/plugins/plugin-panels";
 import { listCanvasDocs } from "@/lib/plugins/canvas-doc-list";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 import { toast } from "@/components/ui/toast";
 import { TabEmpty } from "./tab-empty";
 
@@ -48,7 +48,7 @@ import { TabEmpty } from "./tab-empty";
  *
  * 安全边界：event.source 严格等于本 iframe 的 contentWindow；消息经
  * decodeUiMessage 白名单解码；kind→权限门控取面板声明（未声明即拒绝）；
- * 文件读写全部走 Tauri fs 命令（workspace 信任根 + 相对路径守卫）。
+ * 文件读写全部走 桌面桥文件命令（workspace 信任根 + 相对路径守卫）。
  */
 
 /** doc.change 写盘防抖；与插件侧自动保存体感一致 */
@@ -221,7 +221,7 @@ export const PluginPanelHost: FC<{ tab: PanelTab }> = ({ tab }) => {
       switch (msg.kind) {
         case "ui.ready": {
           frameReadyRef.current = true;
-          if (cwd || !isTauri()) {
+          if (cwd || !isDesktop()) {
             sendHandshake();
             return;
           }

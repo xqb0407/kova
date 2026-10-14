@@ -1,5 +1,5 @@
 /**
- * 渲染桥命令（tauri-bridge 的非业务面）：窗口控制、系统对话框、
+ * 渲染桥命令（desktop-bridge 的非业务面）：窗口控制、系统对话框、
  * 应用元信息、路径助手、http_post（对齐 http.rs）。
  */
 import { app, BrowserWindow, dialog } from "electron";
@@ -129,6 +129,8 @@ export function setupBridgeCommands(register: (name: string, fn: (args: any, ctx
 
   /* 应用元信息 / 路径 */
   register("bridge_app_version", () => app.getVersion());
+  // 真实运行时版本（关于页"Electron 版本"行）：旧桌面壳那栏曾显示兼容占位串
+  register("bridge_runtime_version", () => process.versions.electron ?? "unknown");
   register("bridge_app_name", () => app.getName());
   register("bridge_app_data_dir", () => app.getPath("userData"));
   register("bridge_home_dir", () => app.getPath("home"));

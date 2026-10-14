@@ -1,8 +1,8 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import { useSyncExternalStore } from "react";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * 附件中转缓存保留期限（通用设置）：粘贴的文档唯一副本落
@@ -39,7 +39,7 @@ function normalize(raw: unknown): number {
 }
 
 async function hydrate(): Promise<void> {
-  if (hydrated || !isTauri()) {
+  if (hydrated || !isDesktop()) {
     hydrated = true;
     emit();
     return;
@@ -63,7 +63,7 @@ export async function setAttachmentRetentionDays(days: number): Promise<void> {
   const next = normalize(days);
   current = next;
   emit();
-  if (!isTauri()) return;
+  if (!isDesktop()) return;
   try {
     await invoke("kv_set", { key: KV_KEY, value: String(next) });
   } catch {}

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 资源管理器窗口的页面（Tauri 独立窗口 label=resource 加载本路由）。
+ * 资源管理器窗口的页面（独立窗口 label=resource 加载本路由）。
  *
  * 取数全在容器里，视图组件只负责画（同一份视图给 dev-preview 预览页复用，见
  * components/resource/resource-manager.tsx 的注释）：
@@ -44,7 +44,7 @@ const CLEAN_PROMPT: Record<string, string> = {
 };
 
 export default function ResourcePage() {
-  // 运行环境必须在**挂载后**再判定：服务端预渲染时 isTauri() 必然为 false，
+  // 运行环境必须在**挂载后**再判定：服务端预渲染时 isDesktop() 必然为 false，
   // 若在渲染期直接用它，桌面窗口注水时首帧与 HTML 不一致（React 会丢掉服务端
   // HTML 改走客户端整树渲染，控制台报 "Encountered a script tag while rendering"
   // 一类的注水错误）。null = 尚未判定。

@@ -1,7 +1,6 @@
 /**
- * `@tauri-apps/api/event` 兼容实现：listen/emit。
- * 事件语义与 Tauri 一致：handler 收到 `{ event, payload }`；
- * listen 返回 Promise<UnlistenFn>（注册完成前的事件不投递——与 Tauri 同契约）。
+ * 桌面桥 · 事件：listen/emit 的 Electron 实现（事件经主进程广播，语义同旧桌面壳：
+ * handler 收到 `{ event, payload }`，listen 返回 Promise<UnlistenFn>）。
  */
 import { addEvent, invokeBridge } from "./_host";
 

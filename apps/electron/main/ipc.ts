@@ -1,7 +1,7 @@
 /**
- * 命令路由：渲染层 invoke → 主进程注册表（对齐 Tauri 的 invoke_handler +
+ * 命令路由：渲染层 invoke → 主进程注册表（对齐旧桌面壳 的 invoke_handler +
  * panic_guard：任何 handler 异常都被捕获为 {ok:false,error}，绝不让主进程崩）。
- * 事件面：emitToWindows 对齐 Tauri app.emit；Channel 参数（{__ch__:id}）
+ * 事件面：emitToWindows 对齐旧桌面壳 app.emit；Channel 参数（{__ch__:id}）
  * 提供反向推送器，对齐 tauri::ipc::Channel。
  */
 import { BrowserWindow, ipcMain, type WebContents } from "electron";
@@ -54,7 +54,7 @@ export function setupIpc(): void {
   });
 }
 
-/** 对齐 Tauri `app.emit(name, payload)`：广播到全部窗口 */
+/** 对齐旧桌面壳 `app.emit(name, payload)`：广播到全部窗口 */
 export function emitToWindows(name: string, payload: unknown): void {
   for (const w of BrowserWindow.getAllWindows()) {
     if (!w.isDestroyed()) w.webContents.send("kova-event", { event: name, payload });

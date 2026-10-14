@@ -1,6 +1,6 @@
 "use client";
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/desktop-bridge/core";
 import { useEffect, useSyncExternalStore } from "react";
 import {
   piRequest,
@@ -10,7 +10,7 @@ import {
   type PiAutomationTemplatesResponse,
 } from "@/lib/pi/pi-bridge";
 import { subscribeAgentEvents } from "@/lib/pi/agent-events";
-import { isTauri } from "@/lib/tauri";
+import { isDesktop } from "@/lib/desktop-env";
 
 /**
  * 自动化定时任务（主区管理页）：前端镜像 store。
@@ -268,10 +268,10 @@ async function loadMap(): Promise<void> {
   mapLoaded = true;
   try {
     const [sessionRaw, runRaw] = await Promise.all([
-      isTauri()
+      isDesktop()
         ? invoke<string | null>("kv_get", { key: MAP_KEY }).catch(() => null)
         : Promise.resolve(window.localStorage.getItem(MAP_KEY)),
-      isTauri()
+      isDesktop()
         ? invoke<string | null>("kv_get", { key: RUN_MAP_KEY }).catch(() => null)
         : Promise.resolve(window.localStorage.getItem(RUN_MAP_KEY)),
     ]);
@@ -293,7 +293,7 @@ async function loadMap(): Promise<void> {
 }
 
 function persistMap(): void {
-  if (isTauri()) {
+  if (isDesktop()) {
     void invoke("kv_set", { key: MAP_KEY, value: JSON.stringify(sessionMap) }).catch(() => {});
     void invoke("kv_set", { key: RUN_MAP_KEY, value: JSON.stringify(runSessionMap) }).catch(
       () => {},

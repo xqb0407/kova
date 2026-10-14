@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type FC } from "react";
 import { cn } from "@/lib/utils";
-import { isMacPlatform, isTauri } from "@/lib/tauri";
+import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { useFluidHover } from "@/hooks/use-fluid-hover";
 import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
 import { FluidHoverRow } from "@/components/fluid-hover-row";
@@ -141,7 +141,7 @@ export const SettingsPage: FC<{
   const navHover = useFluidHover(navRef);
   // 桌面端自绘 titlebar：拖拽区所有桌面端生效；macOS 红绿灯悬浮于侧边栏顶栏，
   // Windows 隐藏系统标题栏后由 WindowControls 接管，网页端无窗口 chrome
-  const desktop = isTauri();
+  const desktop = isDesktop();
   const winControls = desktop && !isMacPlatform();
 
   return (
