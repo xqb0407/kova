@@ -32,11 +32,10 @@ jobs:
         run: bun install
       - name: Build native deps (node-pty)
         # bun install 默认不跑 postinstall：node-pty 的 .node 不会自己出现，
-        # 漏这步打出来的包里终端是坏的（N-API 编译后 Node/Electron ABI 通用）
-        run: |
-          PKG_DIR=$(node -e 'console.log(require("path").dirname(require.resolve("node-pty/package.json")))')
-          cd "$PKG_DIR" && node scripts/install.js
-          ls build/Release/pty.node
+        # 漏这步打出来的包里终端是坏的（N-API 编译后 Node/Electron ABI 通用）。
+        # 定位包目录走 scripts/build-native-deps.mjs 的多路径探测，
+        # 不用 require.resolve：bun workspace 下 node-pty 未必提升到根 node_modules。
+        run: node scripts/build-native-deps.mjs
       - name: Build sidecar + renderer + main
         run: bun run build:sidecar && bun run build:renderer && bun run build:main
       - name: Package dmg (ad-hoc signed via afterPack)
@@ -65,10 +64,7 @@ jobs:
         run: bun install
       - name: Build native deps (node-pty)
         shell: bash
-        run: |
-          PKG_DIR=$(node -e 'console.log(require("path").dirname(require.resolve("node-pty/package.json")))')
-          cd "$PKG_DIR" && node scripts/install.js
-          ls build/Release/pty.node
+        run: node scripts/build-native-deps.mjs
       - name: Build sidecar + renderer + main
         run: bun run build:sidecar && bun run build:renderer && bun run build:main
       - name: Package NSIS installer
