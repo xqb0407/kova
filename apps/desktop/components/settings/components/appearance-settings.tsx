@@ -1,0 +1,324 @@
+"use client";
+
+import { useState, type FC } from "react";
+import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/tauri";
+import { Segmented } from "@/components/custom-ui/segmented";
+import { SettingRow } from "@/components/custom-ui/setting-row";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  setWindowEffect,
+  useWindowEffect,
+  type WindowEffectName,
+} from "@/lib/settings/appearance";
+import {
+  setUiPref,
+  useUiPrefs,
+  type AccentName,
+  type CodeThemeName,
+  type FontFamilyName,
+} from "@/lib/settings/ui-prefs";
+import { CODE_THEME_DARK_OPTIONS, CODE_THEME_LIGHT_OPTIONS } from "@/lib/markdown/code-theme";
+import { Switch } from "@/components/ui/switch";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
+import { CodeThemePreview } from "./code-theme-preview";
+
+/** 强调色预设：color 与 globals.css 中 :root[data-accent] 的 --primary 一致 */
+const ACCENTS: { value: AccentName; label: string; color: string | null }[] = [
+  { value: "default", label: "默认（单色）", color: null },
+  { value: "blue", label: "蓝色", color: "oklch(0.55 0.22 257)" },
+  { value: "violet", label: "紫色", color: "oklch(0.55 0.21 292)" },
+  { value: "green", label: "绿色", color: "oklch(0.55 0.16 155)" },
+  { value: "orange", label: "橙色", color: "oklch(0.62 0.18 55)" },
+  { value: "rose", label: "玫红", color: "oklch(0.58 0.21 350)" },
+  { value: "periwinkle", label: "长春花蓝（图标蓝）", color: "oklch(0.606 0.136 269)" },
+];
+
+const AccentPicker: FC<{ value: AccentName }> = ({ value }) => (
+  <div className="flex shrink-0 items-center gap-1.5">
+    {ACCENTS.map((accent) => {
+      const active = accent.value === value;
+      return (
+        <button
+          key={accent.value}
+          type="button"
+          title={accent.label}
+          aria-label={accent.label}
+          onClick={() => setUiPref("accent", accent.value)}
+          className={cn(
+            "size-5 rounded-full border border-black/10 transition-transform active:scale-90",
+            active && "scale-110 outline-2 outline-offset-2 outline-primary",
+          )}
+          style={
+            accent.color
+              ? { background: accent.color }
+              : {
+                  background:
+                    "linear-gradient(135deg, var(--color-foreground) 50%, var(--color-muted-foreground) 50%)",
+                }
+          }
+        />
+      );
+    })}
+  </div>
+);
+
+/** 代码主题下拉：浅/深两行共用（受控回显与字体下拉同款处理） */
+const CodeThemeSelect: FC<{
+  value: CodeThemeName;
+  options: { value: CodeThemeName; label: string }[];
+  onChange: (value: CodeThemeName) => void;
+}> = ({ value, options, onChange }) => (
+  <Select value={value} onValueChange={(v) => v && onChange(v as CodeThemeName)}>
+    <SelectTrigger size="sm" className="w-44 bg-background border">
+      <SelectValue>{options.find((c) => c.value === value)?.label}</SelectValue>
+    </SelectTrigger>
+    <SelectContent align="end">
+      {options.map((c) => (
+        <SelectItem key={c.value} value={c.value}>
+          {c.label}
+        </SelectItem>
+      ))}
+    </SelectContent>
+  </Select>
+);
+
+const EFFECT_OPTIONS: { value: WindowEffectName; label: string }[] = [
+  { value: "none", label: "不透明" },
+  { value: "acrylic", label: "高斯模糊" },
+  { value: "mica", label: "Mica" },
+];
+
+/** 字体档位：value 对应 globals.css 的 :root[data-font] 覆盖规则；
+ *  stack 用于触发器与下拉项的字体预览 */
+const FONT_FAMILY_OPTIONS: {
+  value: FontFamilyName;
+  label: string;
+  stack: string;
+}[] = [
+  { value: "default", label: "默认（系统）", stack: "var(--app-font-sans)" },
+  { value: "inter", label: "Inter", stack: '"Inter", sans-serif' },
+  { value: "segoe", label: "Segoe UI", stack: '"Segoe UI", sans-serif' },
+  {
+    value: "yahei",
+    label: "微软雅黑",
+    stack: '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
+  },
+  { value: "roboto", label: "Roboto", stack: '"Roboto", sans-serif' },
+  { value: "open-sans", label: "Open Sans", stack: '"Open Sans", sans-serif' },
+  {
+    value: "noto-sans-sc",
+    label: "思源黑体",
+    stack: '"Noto Sans SC", sans-serif',
+  },
+  { value: "serif", label: "衬线", stack: 'Georgia, "Songti SC", serif' },
+  {
+    value: "noto-serif-sc",
+    label: "思源宋体",
+    stack: '"Noto Serif SC", serif',
+  },
+  { value: "kai", label: "楷体", stack: '"Kaiti SC", KaiTi, serif' },
+  { value: "wenkai", label: "霞鹜文楷", stack: '"LXGW WenKai", serif' },
+  { value: "mono", label: "等宽", stack: 'Consolas, Menlo, monospace' },
+  {
+    value: "jetbrains",
+    label: "JetBrains Mono",
+    stack: '"JetBrains Mono", monospace',
+  },
+];
+
+/** 外观配置页：通用外观（主题/强调色/字号/对话宽度，localStorage 按客户端保存）
+ *  + 桌面端外观（窗口背景材质，需 Rust 窗口能力）。版式对齐模型/远程访问页。 */
+export const AppearanceSettings: FC = () => {
+  const prefs = useUiPrefs();
+  const desktop = isTauri();
+  const effect = useWindowEffect();
+  const [busy, setBusy] = useState<WindowEffectName | null>(null);
+
+  const pickEffect = (value: WindowEffectName) => {
+    if (value === effect || busy) return;
+    setBusy(value);
+    void setWindowEffect(value).finally(() => setBusy(null));
+  };
+
+  return (
+    <div className="flex h-full flex-col overflow-y-auto">
+      <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
+        <h1 className="text-2xl font-bold tracking-tight">外观</h1>
+
+        {/* 界面：桌面端与远程网页端各自独立生效 */}
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">界面</h2>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow label="主题" desc="跟随系统，或固定浅色/深色">
+              <Segmented
+                value={prefs.theme}
+                options={[
+                  { value: "system", label: "跟随系统" },
+                  { value: "light", label: "浅色" },
+                  { value: "dark", label: "深色" },
+                ]}
+                onChange={(v) => setUiPref("theme", v)}
+              />
+            </SettingRow>
+            <SettingRow label="强调色" desc="按钮、高亮与选中的主色">
+              <AccentPicker value={prefs.accent} />
+            </SettingRow>
+            <SettingRow label="字号" desc="整体缩放界面文字与元素">
+              <Segmented
+                value={prefs.fontSize}
+                options={[
+                  { value: "sm", label: "小" },
+                  { value: "md", label: "标准" },
+                  { value: "lg", label: "大" },
+                ]}
+                onChange={(v) => setUiPref("fontSize", v)}
+              />
+            </SettingRow>
+            <SettingRow label="字体" desc="界面文字的字体风格">
+              <Select
+                value={prefs.fontFamily}
+                onValueChange={(v) => v && setUiPref("fontFamily", v)}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="w-44 bg-background border"
+                  style={{
+                    fontFamily: FONT_FAMILY_OPTIONS.find(
+                      (f) => f.value === prefs.fontFamily,
+                    )?.stack,
+                  }}
+                >
+                  {/* 显式回显：Radix SelectValue 依赖 item 注册（打开过下拉才有），
+                      受控 value 在未打开过下拉时会回显为空，因此用 children 覆盖 */}
+                  <SelectValue>
+                    {
+                      FONT_FAMILY_OPTIONS.find(
+                        (f) => f.value === prefs.fontFamily,
+                      )?.label
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {FONT_FAMILY_OPTIONS.map((f) => (
+                    <SelectItem
+                      key={f.value}
+                      value={f.value}
+                      style={{ fontFamily: f.stack }}
+                    >
+                      {f.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </SettingRow>
+            <SettingRow label="对话宽度" desc="消息内容区的最大宽度">
+              <Segmented
+                value={prefs.chatWidth}
+                options={[
+                  { value: "narrow", label: "窄" },
+                  { value: "md", label: "默认" },
+                  { value: "wide", label: "宽" },
+                ]}
+                onChange={(v) => setUiPref("chatWidth", v)}
+              />
+            </SettingRow>
+          </div>
+        </section>
+ {/* 桌面端：窗口材质依赖 Tauri 能力，远程网页端隐藏整组 */}
+        {desktop && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-base font-semibold">桌面端</h2>
+            <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+              <SettingRow
+                label="窗口背景"
+                desc="半透明可透出桌面模糊背景，系统渲染、拖动可能轻微掉帧；Acrylic 需 Win10 1809+（macOS 映射系统材质），Mica 需 Win11，不支持时自动回退不透明"
+              >
+                <Segmented
+                  value={effect}
+                  options={EFFECT_OPTIONS}
+                  onChange={pickEffect}
+                  disabled={busy !== null}
+                />
+              </SettingRow>
+            </div>
+          </section>
+        )}
+        {/* 代码设置：CodeMirror 渲染参数（浅/深主题、行号、换行、字号），
+            独立于界面字号档位，作用于右侧面板 diff 与代码预览 */}
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">代码设置</h2>
+          <p className="text-muted-foreground text-sm">
+            设置代码内容的主题、字号和显示方式，不受界面字号影响。
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow label="浅色代码主题" desc="浅色界面下代码内容使用的高亮主题。">
+              <CodeThemeSelect
+                value={prefs.codeThemeLight}
+                options={CODE_THEME_LIGHT_OPTIONS}
+                onChange={(v) => setUiPref("codeThemeLight", v)}
+              />
+            </SettingRow>
+            <SettingRow label="深色代码主题" desc="深色界面下代码内容使用的高亮主题。">
+              <CodeThemeSelect
+                value={prefs.codeThemeDark}
+                options={CODE_THEME_DARK_OPTIONS}
+                onChange={(v) => setUiPref("codeThemeDark", v)}
+              />
+            </SettingRow>
+            <SettingRow label="显示行号" desc="在代码内容和差异视图中显示行号。">
+              <Switch
+                checked={prefs.codeLineNumbers}
+                onCheckedChange={(c) => setUiPref("codeLineNumbers", c)}
+              />
+            </SettingRow>
+            <SettingRow label="长行自动换行" desc="代码内容过长时自动换行。">
+              <Switch
+                checked={prefs.codeWrap}
+                onCheckedChange={(c) => setUiPref("codeWrap", c)}
+              />
+            </SettingRow>
+            <SettingRow label="代码字号" desc="调整代码块、文件预览和差异视图的默认字号。">
+              <InputGroup className="w-28 bg-background" >
+                <InputGroupInput
+                  type="number"
+                  min={10}
+                  max={24}
+                  className="text-right tabular-nums [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
+                  value={prefs.codeFontSize}
+                  onChange={(e) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    if (!Number.isNaN(n))
+                      setUiPref("codeFontSize", Math.min(24, Math.max(10, n)));
+                  }}
+                />
+                <InputGroupAddon  align="inline-end">px</InputGroupAddon>
+              </InputGroup>
+            </SettingRow>
+          </div>
+        </section>
+
+        {/* 代码预览：浅深两套并排实时渲染，当前界面生效的一侧标记"当前生效" */}
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-semibold">代码预览</h2>
+          <p className="text-muted-foreground text-sm">
+            同时预览浅色与深色代码主题，当前界面使用的主题会标记为"当前生效"。
+          </p>
+          <CodeThemePreview />
+        </section>
+
+       
+      </div>
+    </div>
+  );
+};

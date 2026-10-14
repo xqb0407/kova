@@ -1,0 +1,17 @@
+[
+  {
+    "id": "canvas",
+    "title": "无限画布",
+    "icon": "icon.svg",
+    "entry": "canvas.html",
+    "opens": [
+      "*.canvas.json"
+    ],
+    "permissions": [
+      "document",
+      "export",
+      "agent",
+      "notify"
+    ]
+  }
+]

@@ -1,0 +1,443 @@
+/**
+ * 凭据与模型服务命令：凭据 CRUD、端点模型列表拉取/连通性测试、自定义 provider
+ * 全套（增删改/启停/清单）、模型属性编辑。目录与注册见 model/（catalog +
+ * custom-providers），表操作见 storage/hostdb.ts。
+ */
+import { randomUUID } from "node:crypto";
+import { send } from "../stream";
+import { running } from "../../sessions/sessions";
+import {
+  credentialDelete,
+  credentialEnvDelete,
+  credentialEnvGet,
+  credentialEnvSet,
+  credentialGet,
+  credentialList,
+  credentialSet,
+  customProviderDelete,
+  customProviderGet,
+  customProviderSetEnabled,
+  customProviderUpsert,
+  customProvidersList,
+  kvSet,
+  modelsAll,
+  modelsDeleteProvider,
+  modelsList,
+  modelsReplace,
+  type ModelReplaceItem,
+} from "../../storage/hostdb";
+import {
+  applyCustomHeaders,
+  applyRowToCatalogModel,
+  CUSTOM_MODEL_DEFAULTS,
+  defaultModel,
+  getCurrentModelKey,
+  getModels,
+  lookupCatalogModelSeed,
+  normalizeApi,
+  parseModelCost,
+  parseModelInput,
+  parseStoredHeaders,
+  registerCustomProvider,
+  setCurrentModelKey,
+  validateHeaderInput,
+  type CatalogModelSeed,
+} from "../../model/model-catalog";
+import { maskApiKey } from "../payloads";
+import { scanProviderImports } from "../../model/import";
+import { logAt } from "../../log";
+import type { CustomModelSpec, StoredModelAttrs } from "../../types";
+import type { CommandHandler } from "../command";
+
+/**
+ * 被删/停用的 provider 若正挂在全局选中键上：把键改指到目录里另一个可用模型，
+ * 而不是清成 null。
+ *
+ * 清空会殃及无关会话：会话级模型记忆（sessions.model_provider/model_id）只在
+ * 「用户在该会话里亲手选过模型」时才有行，没有行的会话显示的是同一个全局
+ * 「最近一次使用」值。键一清，这些会话**同时**变成「未选择」——它们从没指向被删
+ * 的那个 provider，只是共用了这一份全局视图。改指后它们显示的就是真正会应答的
+ * 模型（与 resolveCurrentModel 的回落同一口径，界面不再与实际用模型分叉）。
+ * 目录里一个可用模型都没有时才清成 null：前端显示「选择模型」，发送闸门拦下。
+ *
+ * 必须在 getModels().deleteProvider(provider) 之后调用——否则回落会挑回刚被删
+ * 的那个模型。
+ */
+async function repointCurrentModelAwayFrom(provider: string): Promise<void> {
+  if (getCurrentModelKey()?.provider !== provider) return;
+  const next = await defaultModel();
+  if (!next) {
+    setCurrentModelKey(null);
+    // 没有 kvDelete：写显式 null 占位（initCurrentModelKey 与前端
+    // initModelSettings 都按「解析不出 provider/modelId ⇒ 无选择」处理），
+    // 否则重启会把已删 provider 的键读回来
+    void kvSet("pi.model", "null").catch(() => {});
+    return;
+  }
+  const key = { provider: next.provider, modelId: next.id };
+  setCurrentModelKey(key);
+  // 同步落 kv：否则重启后 initCurrentModelKey 又把已删的键读回来
+  void kvSet("pi.model", JSON.stringify(key)).catch(() => {});
+}
+
+/**
+ * 归一化凭据补充字段：只收非空字符串键值对（空值剔除 = 该字段回落
+ * process.env）；env 键缺省（未携带）时返回 undefined = 不动已存的 kv。
+ */
+const parseCredentialEnv = (value: unknown): Record<string, string> | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k && typeof v === "string" && v.trim()) out[k] = v.trim();
+  }
+  return out;
+};
+
+export const handlers: Record<string, CommandHandler> = {
+  set_credential: async (reqId, msg) => {
+    const provider = String(msg.provider ?? "");
+    const apiKey = String(msg.apiKey ?? "");
+    // env = 凭据的非密钥补充字段（如 Cloudflare 网关的 Account/Gateway ID）。
+    // 只存 Key 解不出凭据的 provider 靠它补齐；apiKey 允许为空 = 只更新 env
+    const env = parseCredentialEnv(msg.env);
+    if (!provider || (!apiKey && !env)) {
+      throw new Error("provider and (apiKey or env) are required");
+    }
+    if (apiKey) await credentialSet(provider, apiKey);
+    if (env) await credentialEnvSet(provider, env);
+    send({ id: reqId, type: "credential", provider });
+  },
+
+  list_credentials: async (reqId) => {
+    const providers = await credentialList();
+    const credentials = await Promise.all(
+      providers.map(async (providerId) => {
+        const env = await credentialEnvGet(providerId);
+        return {
+          providerId,
+          type: "api_key" as const,
+          ...(Object.keys(env).length > 0 ? { env } : {}),
+        };
+      }),
+    );
+    send({ id: reqId, type: "credentials", credentials });
+  },
+
+  delete_credential: async (reqId, msg) => {
+    const provider = String(msg.provider ?? "");
+    await credentialDelete(provider);
+    await credentialEnvDelete(provider);
+    send({ id: reqId, type: "credential_deleted", provider });
+  },
+
+  fetch_models: async (reqId, msg) => {
+    // 拉取端点的模型列表（添加 AI 服务弹窗"获取列表"用），按接口格式区分：
+    //   openai-chat / openai-responses → GET {baseUrl}/models（baseUrl 含 /v1），Bearer
+    //   anthropic-messages → GET {baseUrl}/v1/models，x-api-key + anthropic-version
+    const baseUrl = String(msg.baseUrl ?? "").trim().replace(/\/+$/, "");
+    let apiKey = String(msg.apiKey ?? "").trim();
+    const providerId = String(msg.providerId ?? "").trim();
+    if (!apiKey && providerId) {
+      const stored = await credentialGet(providerId);
+      if (stored) apiKey = stored.apiKey;
+    }
+    const apiKind = normalizeApi(msg.api);
+    // 自定义请求头：表单当前值优先；编辑态不带该字段时回落到已存行（与 test_provider 同口径）
+    const customHeaders =
+      msg.headers === undefined
+        ? parseStoredHeaders(
+            providerId ? (await customProviderGet(providerId))?.headers : undefined,
+            providerId,
+          )
+        : validateHeaderInput(msg.headers);
+    if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
+    const anthropic = apiKind === "anthropic-messages";
+    const url = anthropic
+      ? `${baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`}/models?limit=1000`
+      : `${baseUrl}/models`;
+    const requestHeaders: Record<string, string> = anthropic
+      ? {
+          ...(apiKey ? { "x-api-key": apiKey } : {}),
+          "anthropic-version": "2023-06-01",
+        }
+      : apiKey
+        ? { Authorization: `Bearer ${apiKey}` }
+        : {};
+    // 自定义头最后合并（用户显式填的覆盖默认 Authorization 等）
+    applyCustomHeaders(requestHeaders, customHeaders);
+    const res = await fetch(url, {
+      headers: Object.keys(requestHeaders).length ? requestHeaders : undefined,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`获取模型列表失败: HTTP ${res.status}`);
+    const json = (await res.json()) as { data?: unknown };
+    const raw = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
+    const ids = raw
+      .map((m) => (typeof m === "string" ? m : (m as { id?: unknown })?.id))
+      .filter((s): s is string => typeof s === "string" && !!s.trim());
+    send({ id: reqId, type: "fetched_models", models: [...new Set(ids)] });
+  },
+
+  add_custom_provider: async (reqId, msg) => {
+    const name = String(msg.name ?? "").trim();
+    const baseUrl = String(msg.baseUrl ?? "").trim();
+    const apiKey = String(msg.apiKey ?? "").trim();
+    const modelSpecs = Array.isArray(msg.models)
+      ? (msg.models as CustomModelSpec[]).filter(
+          (m) => m && typeof m.id === "string" && m.id.trim(),
+        )
+      : [];
+    if (!name) throw new Error("name is required");
+    if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
+    if (!modelSpecs.length) throw new Error("at least one model id is required");
+    const api = normalizeApi(msg.api);
+    // 注意：协议层 reqId 占用了 "id" 字段，编辑目标的业务 id 走 "providerId"
+    const existingId = typeof msg.providerId === "string" ? msg.providerId.trim() : "";
+    const id =
+      existingId ||
+      `custom-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || randomUUID().slice(0, 8)}`;
+    // 自定义请求头：msg 不带该字段（老客户端/导入流程）= 保留原值，不误清；
+    // 带了就严格校验（非法名/控制字符直接抛错，见 validateHeaderInput）
+    const headersJson =
+      msg.headers === undefined
+        ? ((await customProviderGet(id))?.headers ?? "{}")
+        : JSON.stringify(validateHeaderInput(msg.headers));
+    // 模型行统一存 models 表（custom_providers.models 旧列保持 '[]'，仅留 schema 兼容）
+    await customProviderUpsert({ id, name, baseUrl, models: "[]", api, headers: headersJson });
+    // 事件级一行：排"保存没生效"时先看这里存了几个头（曾因前端闭包旧值静默存成 {}）
+    logAt(
+      "event",
+      `[provider] saved ${id} (${name}, ${modelSpecs.length} models, ${Object.keys(parseStoredHeaders(headersJson, id)).length} headers)`,
+    );
+    await modelsReplace(
+      id,
+      modelSpecs.map((m) => ({
+        modelId: m.id.trim(),
+        enabled: true,
+        name: typeof m.name === "string" ? m.name : null,
+        reasoning: typeof m.reasoning === "boolean" ? m.reasoning : null,
+        contextWindow: typeof m.contextWindow === "number" ? m.contextWindow : null,
+        maxTokens: typeof m.maxTokens === "number" ? m.maxTokens : null,
+        input: Array.isArray(m.input) ? m.input : null,
+        cost: m.cost && typeof m.cost === "object" && !Array.isArray(m.cost) ? m.cost : null,
+      })),
+    );
+    // apiKey 留空表示保留原有凭据
+    if (apiKey) {
+      await credentialSet(id, apiKey);
+    }
+    // 停用的服务保存后保持停用：不注册进目录，并从目录移除
+    const enabledRow = await customProviderGet(id);
+    if (!enabledRow || enabledRow.enabled) {
+      await registerCustomProvider(enabledRow ?? { id, name, baseUrl, api });
+    } else {
+      getModels().deleteProvider(id);
+      if (getCurrentModelKey()?.provider === id) setCurrentModelKey(null);
+    }
+    // 已恢复会话若用旧的同名模型定义，同步刷新其 baseUrl 等字段
+    if (getCurrentModelKey()?.provider === id) {
+      const model = getModels().getModel(id, getCurrentModelKey()!.modelId);
+      if (model) for (const run of running.values()) run.agent.state.model = model;
+    }
+    send({ id: reqId, type: "custom_provider", provider: id });
+  },
+
+  list_custom_providers: async (reqId) => {
+    const providers = await customProvidersList();
+    const out = await Promise.all(
+      providers.map(async (r) => {
+        // 模型行读 models 表（enabled=1），属性与注册同口径三级兜底：
+        // 行值 → 内置目录同名模型种子 → 注册默认值，供编辑表单回填
+        const specs: (CustomModelSpec & {
+          stored: StoredModelAttrs;
+          seedSource: CatalogModelSeed["source"] | null;
+          seedMatchedId: string | null;
+        })[] = (await modelsList(r.id))
+          .filter((row) => row.enabled && row.modelId.trim())
+          .map((row) => {
+            const seed = lookupCatalogModelSeed(row.modelId);
+            return {
+              id: row.modelId,
+              name: row.name?.trim() || row.modelId,
+              reasoning:
+                row.reasoning ?? seed?.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning,
+              contextWindow:
+                row.contextWindow ??
+                seed?.contextWindow ??
+                CUSTOM_MODEL_DEFAULTS.contextWindow,
+              maxTokens:
+                row.maxTokens ?? seed?.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+              input:
+                parseModelInput(row.input) ??
+                seed?.input ??
+                [...CUSTOM_MODEL_DEFAULTS.input],
+              cost: {
+                ...(parseModelCost(row.cost) ??
+                  seed?.cost ??
+                  CUSTOM_MODEL_DEFAULTS.cost),
+              },
+              // 行里显式存过的值（null = 仍是继承态，生效值来自目录种子或缺省）。
+              // 编辑弹窗靠它区分"用户填过"与"算出来的"，保存时才不会把生效值
+              // 反写成显式值——那会把目录/归一化命中的真值永久冻住
+              stored: {
+                name: row.name,
+                reasoning: row.reasoning,
+                contextWindow: row.contextWindow,
+                maxTokens: row.maxTokens,
+                input: parseModelInput(row.input),
+                cost: parseModelCost(row.cost),
+              },
+              // 种子来源：exact = 完整 id 同名；normalized = 剥掉一层命名空间前缀
+              // 后同名。属性弹窗据此把"目录推测"与"目录真值"分开标注
+              seedSource: seed?.source ?? null,
+              seedMatchedId: seed?.matchedId ?? null,
+            };
+          });
+        // 只回掩码：明文 key 不进渲染进程（编辑弹窗输入框留空 = 保持原 key，
+        // 见 add_custom_provider 的空串语义）
+        const keyRow = await credentialGet(r.id);
+        return {
+          providerId: r.id,
+          name: r.name,
+          baseUrl: r.baseUrl,
+          models: specs,
+          api: normalizeApi(r.api),
+          hasApiKey: keyRow !== null,
+          apiKeyMasked: keyRow ? maskApiKey(keyRow.apiKey) : undefined,
+          enabled: r.enabled,
+          // 自定义请求头（解析为对象供编辑弹窗回填；坏值已在解析时丢弃）
+          headers: parseStoredHeaders(r.headers, r.id),
+        };
+      }),
+    );
+    send({ id: reqId, type: "custom_providers", providers: out });
+  },
+
+  delete_custom_provider: async (reqId, msg) => {
+    const provider = String(msg.provider ?? "");
+    await customProviderDelete(provider);
+    await modelsDeleteProvider(provider);
+    await credentialDelete(provider);
+    getModels().deleteProvider(provider);
+    await repointCurrentModelAwayFrom(provider);
+    send({ id: reqId, type: "custom_provider_deleted", provider });
+  },
+
+  toggle_custom_provider: async (reqId, msg) => {
+    // 启用/停用服务：停用时从模型目录移除，启用时重新注册（模型行读 models 表）
+    const provider = String(msg.provider ?? "");
+    const enabled = msg.enabled === true;
+    await customProviderSetEnabled(provider, enabled);
+    if (enabled) {
+      const row = await customProviderGet(provider);
+      if (row) await registerCustomProvider(row);
+    } else {
+      getModels().deleteProvider(provider);
+      await repointCurrentModelAwayFrom(provider);
+    }
+    send({ id: reqId, type: "custom_provider_toggled", provider, enabled });
+  },
+
+  update_model: async (reqId, msg) => {
+    // 模型属性编辑：消息里携带的字段写入 models 表（null = 重置继承内置值，
+    // 未携带 = 保留现值），并原地应用到目录模型对象
+    const provider = String(msg.provider ?? "");
+    const modelId = String(msg.modelId ?? "");
+    if (!provider || !modelId) throw new Error("provider and modelId are required");
+    const base = (await modelsList(provider)).find((r) => r.modelId === modelId);
+    const pick = (key: string, fallback: unknown): unknown =>
+      key in msg ? (msg[key] ?? null) : fallback;
+    const item: ModelReplaceItem = {
+      modelId,
+      enabled: base?.enabled ?? true,
+      name: pick("name", base?.name ?? null) as string | null,
+      reasoning: pick("reasoning", base?.reasoning ?? null) as boolean | null,
+      contextWindow: pick("contextWindow", base?.contextWindow ?? null) as number | null,
+      maxTokens: pick("maxTokens", base?.maxTokens ?? null) as number | null,
+      input: pick("input", base?.input ?? null) as unknown[] | null,
+      cost: pick("cost", base?.cost ?? null) as Record<string, unknown> | null,
+    };
+    await modelsReplace(provider, [item]);
+    applyRowToCatalogModel({
+      provider,
+      modelId,
+      name: item.name ?? null,
+      reasoning: item.reasoning ?? null,
+      contextWindow: item.contextWindow ?? null,
+      maxTokens: item.maxTokens ?? null,
+      input: item.input ?? null,
+      cost: item.cost ?? null,
+    });
+    send({ id: reqId, type: "model_updated", provider, modelId });
+  },
+
+  scan_provider_imports: async (reqId) => {
+    // 扫本机其它工具（opencode / Codex / ZCode）的配置，列出可导入的模型服务。
+    // 只读命令：写入仍走 add_custom_provider，冲突与启停策略全在那一侧
+    const scan = scanProviderImports();
+    send({ id: reqId, type: "provider_import_candidates", ...scan });
+  },
+
+  test_provider: async (reqId, msg) => {
+    // 测试服务连通性：按接口格式发一条最小请求。apiKey 留空且给了
+    // providerId 时取已存凭据——编辑弹窗不再回传明文 key，测试要能用旧 key
+    const baseUrl = String(msg.baseUrl ?? "").trim().replace(/\/+$/, "");
+    let apiKey = String(msg.apiKey ?? "").trim();
+    const providerId = String(msg.providerId ?? "").trim();
+    if (!apiKey && providerId) {
+      const stored = await credentialGet(providerId);
+      if (stored) apiKey = stored.apiKey;
+    }
+    const model = String(msg.model ?? "").trim();
+    const apiKind = normalizeApi(msg.api);
+    // 自定义请求头：表单当前值优先；编辑弹窗不带该字段时回落到已存行的头
+    const customHeaders =
+      msg.headers === undefined
+        ? parseStoredHeaders(
+            providerId ? (await customProviderGet(providerId))?.headers : undefined,
+            providerId,
+          )
+        : validateHeaderInput(msg.headers);
+    if (!/^https?:\/\//.test(baseUrl)) throw new Error("baseUrl must start with http(s)://");
+    if (!model) throw new Error("model is required");
+    let url: string;
+    let headers: Record<string, string>;
+    let body: unknown;
+    if (apiKind === "anthropic-messages") {
+      url = `${baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`}/messages`;
+      headers = {
+        "content-type": "application/json",
+        ...(apiKey ? { "x-api-key": apiKey } : {}),
+        "anthropic-version": "2023-06-01",
+      };
+      body = { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] };
+    } else if (apiKind === "openai-responses") {
+      url = `${baseUrl}/responses`;
+      headers = {
+        "content-type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      };
+      body = { model, input: "ping", max_output_tokens: 16 };
+    } else {
+      url = `${baseUrl}/chat/completions`;
+      headers = {
+        "content-type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      };
+      body = { model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] };
+    }
+    // 自定义头最后合并：用户显式填的覆盖默认 Authorization 等内容（大小写不敏感）
+    applyCustomHeaders(headers, customHeaders);
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      const text = (await res.text()).slice(0, 300);
+      throw new Error(`连接失败: HTTP ${res.status}${text ? ` · ${text}` : ""}`);
+    }
+    send({ id: reqId, type: "tested", ok: true });
+  },
+};

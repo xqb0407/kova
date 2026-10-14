@@ -1,0 +1,40 @@
+{
+  "name": "kova-electron",
+  "private": true,
+  "version": "1.1.6-preview",
+  "description": "Kova AI Assistant (Electron port of the Tauri desktop app)",
+  "workspaces": [
+    "apps/*",
+    "apps/sidecar/*",
+    "packages/*",
+    "plugins/*"
+  ],
+  "overrides": {
+    "unified": "^11.0.5",
+    "@codemirror/view": "^6.43.12",
+    "ai": "^7.0.105",
+    "@assistant-ui/store": "^0.3.16",
+    "@assistant-ui/core": "^0.3.22",
+    "@assistant-ui/tap": "^0.9.20"
+  },
+  "scripts": {
+    "dev": "bun run scripts/dev.mjs",
+    "build:renderer": "bun run --filter desktop build && node scripts/sync-renderer.mjs",
+    "build:plugins": "node scripts/build-plugins.mjs",
+    "build:sidecar": "bun run build:plugins && bun run --filter pi-agent-sidecar build",
+    "build:main": "bun run --filter kova-electron-main build",
+    "build": "bun run build:sidecar && bun run build:renderer && bun run build:main",
+    "start": "bun run --filter kova-electron-main start",
+    "typecheck": "bun run --filter desktop typecheck && bun run --filter kova-electron-main typecheck",
+    "test": "bun run --filter pi-agent-sidecar test",
+    "dist": "bun run --filter kova-electron-main dist"
+  },
+  "patchedDependencies": {
+    "@earendil-works/pi-ai@0.99.2": "patches/@earendil-works%2Fpi-ai@0.99.2.patch",
+    "@earendil-works/pi-agent-core@0.99.2": "patches/@earendil-works%2Fpi-agent-core@0.99.2.patch",
+    "@assistant-ui/core@0.3.22": "patches/@assistant-ui%2Fcore@0.3.22.patch"
+  },
+  "devDependencies": {
+    "playwright-core": "1.56.1"
+  }
+}

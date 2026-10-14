@@ -1,0 +1,33 @@
+# dev 渠道包：Kova Dev.app —— identifier 与 tauri.dev.conf.json 的 com.kova.assistant.dev
+# 对齐，运行时按 extraMetadata.kovaChannel=dev 自动使用 dev 数据目录（互不污染）
+appId: com.kova.assistant.dev
+productName: Kova Dev
+copyright: Copyright © Kova
+directories:
+  output: release-dev
+  buildResources: icons
+files:
+  - dist/**
+  - renderer-out/**
+  - icons/**
+  - package.json
+extraResources:
+  - from: binaries
+    to: binaries
+extraMetadata:
+  kovaChannel: dev
+asar: true
+afterPack: scripts/after-pack.cjs
+npmRebuild: false
+mac:
+  artifactName: ${productName}_${version}_${arch}.${ext}
+  category: public.app-category.productivity
+  icon: icons/icon.icns
+  target:
+    - target: dir
+      arch: arm64
+  identity: null
+win:
+  icon: icons/icon.ico
+linux:
+  icon: icons/icon.png

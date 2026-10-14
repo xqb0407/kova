@@ -1,0 +1,45 @@
+/* CodeMirror 代码/diff 视图（右侧面板 / 设置页预览）的统一皮肤：
+   字号由「外观 → 代码设置」注入 --cm-font-size（独立于界面字号），
+   主题背景/前景色由 JS extension 注入，这里只排版面细节。 */
+
+.aui-cm-code .cm-editor {
+  font-size: var(--cm-font-size, 12px);
+  outline: none;
+}
+
+.aui-cm-code .cm-scroller {
+  font-family: var(--font-mono);
+  line-height: 1.6;
+}
+
+.aui-cm-code .cm-content {
+  padding: 4px 0;
+  caret-color: transparent;
+}
+
+.aui-cm-code .cm-line {
+  padding: 0 8px;
+}
+
+/* 行号槽不要分隔边框（各主题 extension 默认带 border-right） */
+.aui-cm-code .cm-gutters {
+  border-right: none;
+}
+
+/* 行号槽加宽：最小宽度 + 与代码之间留呼吸感 */
+.aui-cm-code .cm-gutter-linenumbers {
+  min-width: 3.2em;
+}
+
+.aui-cm-code .cm-lineNumbers .cm-gutterElement {
+  padding: 0 10px 0 8px;
+}
+
+/* 可编辑视图（Markdown 编辑器等）：只读容器隐藏光标，编辑场景恢复 */
+.aui-cm-edit .cm-content {
+  caret-color: auto;
+}
+
+.aui-cm-edit .cm-editor {
+  height: 100%;
+}

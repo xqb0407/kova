@@ -1,0 +1,27 @@
+{
+  "name": "kova-electron-main",
+  "private": true,
+  "version": "1.1.6-preview",
+  "type": "module",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "electron .",
+    "dev": "node scripts/build.mjs && electron . --dev",
+    "typecheck": "tsc --noEmit",
+    "dist": "electron-builder",
+    "dist:dev": "electron-builder --config electron-builder.dev.yml"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "@types/ws": "^8.5.0",
+    "electron": "^38.2.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3"
+  }
+}

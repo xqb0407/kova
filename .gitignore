@@ -1,0 +1,115 @@
+# dependencies
+node_modules/
+/.pnp
+.pnp.*
+# 主仓用 bun 管理依赖，npm/pnpm lock 为杂讯（历史遗留已删）
+package-lock.json
+pnpm-lock.yaml
+
+# testing
+/coverage
+
+# next.js
+.next/
+out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+*.log
+.claude/settings.local.json
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# tauri
+
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/gen/schemas
+/apps/desktop/src-tauri/binaries/
+# build:sidecar 脚本生成的复制产物，可再生
+/apps/desktop/src-tauri/resources/
+
+# pi agent sidecar
+/apps/sidecar/pi-agent/stderr.log
+# sidecar 使用 bun 管理依赖，npm lock 为杂讯
+/apps/sidecar/pi-agent/package-lock.json
+# 无 PI_SESSIONS_DIR 直跑（bun run smoke）时回退的本地 SQLite，会落在包目录里。
+# 里面有 credentials / secrets 表，绝不能进仓库。
+/apps/sidecar/pi-agent/pi-agent.db*
+
+.agents/skills/
+
+# 性能迭代采样输出（docs/perf-baseline.md 约定不进 git）
+/perf-samples/
+.agents/
+.trae/
+skills-lock.json
+
+# AI 编码工具的内部状态与会话计划，不随开源仓库分发
+.zcode/
+# sidecar 运行时产生的目标状态数据，非源码
+/apps/sidecar/pi-agent/s.jsonl
+# 临时导出的凭据明文（用完即删，勿提交）
+.opencode-key.txt
+.dev-credentials.txt
+
+# sidecar 构建冒烟的临时沙箱（build-sidecar.ts，正常路径自清理）
+apps/sidecar/pi-agent/.build-smoke/
+apps/sidecar/pi-agent/.build-smoke-sessions/
+
+# 插件面板单文件 HTML 与 ui/dist：vite 构建产物（scripts/build-plugins.mjs 生成）
+plugins/*/ui/dist/
+plugins/office/office.html
+plugins/canvas/canvas.html
+plugins/ui-design/design.html
+# 内置插件包 zip：plugins:pack / build:sidecar 幂等重打，缺失时 ensure:bundle 自愈
+/apps/sidecar/pi-agent/src/plugins/bundle/kova-plugins.zip
+
+# .kova/：宿主在**工作目录**里写的运行期数据（plan_write 的计划文件、
+# 目标模式的契约产物 .kova/goals/*.md）。它是被操作项目的运行产物而不是本仓
+# 源码；测试用 cwd "." 跑时也会在这里落盘，所以整目录忽略
+.kova/
+
+# 目标模式测试的转录落盘残留：goal 测试用固定 sessionId + cwd "." 跑，
+# commitGoal 会把 goal_state 行写进包根。真正的修法是那些用例改指临时目录，
+# 在那之前先用窄模式挡住——刻意不写成 s-*.jsonl：s-restore-*.jsonl 是**入库的**
+# 夹具文件，宽模式会让「为什么这几个没被忽略」变成新的困惑
+/apps/sidecar/pi-agent/s-goal-*.jsonl
+
+# AOCI agent host integration (machine-bound; do not commit)
+.mcp.json
+.mcp.json.backup.*
+# updater 签名私钥：只放本机 ~/.tauri/ 与 CI secret，绝不入库（兜住"顺手生成在仓库里"）
+*.key
+.aoci/
+aoci.code.txt
+aoci.meta.txt
+aoci.txt
+AGENTS.md.backup.20261010_120137.085e28af42defddd030030c24d79d69d82f636e073cd8e27dd29add460f1e67e
+
+# Electron 版构建产物（新仓）
+apps/electron/binaries/
+apps/electron/renderer-out/
+apps/electron/dist/
+apps/electron/release/
+apps/electron/release-dev/
+apps/desktop/out/
+*.piabk
