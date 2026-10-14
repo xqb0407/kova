@@ -1,0 +1,335 @@
+@import "tailwindcss";
+@import "uniwind";
+
+/* streamdown（web 端 markdown 渲染，底层 react-markdown + shiki + mermaid）
+   的默认组件整套都是 Tailwind 类名，而 Tailwind v4 默认不扫 node_modules。
+   不登记这几条，代码块/表格/工具栏会全部退化成无样式的裸元素——看着像
+   markdown 根本没生效。与主工程 apps/desktop/app/styles/globals.css 同款。 */
+@source "./node_modules/streamdown/dist/*.js";
+@source "./node_modules/@streamdown/code/dist/*.js";
+@source "./node_modules/@streamdown/math/dist/*.js";
+@source "./node_modules/@streamdown/mermaid/dist/*.js";
+@source "./node_modules/@streamdown/cjk/dist/*.js";
+
+@theme {
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+  --radius-3xl: 24px;
+}
+
+@layer theme {
+  :root {
+    @variant light {
+      --color-background: oklch(0.96 0.003 286.32);
+      --color-foreground: oklch(0.141 0.005 285.823);
+      --color-card: oklch(1 0 0);
+      --color-card-foreground: oklch(0.141 0.005 285.823);
+      --color-primary: oklch(0.21 0.006 285.885);
+      --color-primary-foreground: oklch(0.985 0 0);
+      --color-secondary: oklch(0.967 0.001 286.375);
+      --color-secondary-foreground: oklch(0.21 0.006 285.885);
+      --color-muted: oklch(0.94 0.001 286.375);
+      --color-muted-foreground: oklch(0.552 0.016 285.938);
+      --color-accent: oklch(0.967 0.001 286.375);
+      --color-accent-foreground: oklch(0.21 0.006 285.885);
+      --color-destructive: oklch(0.577 0.245 27.325);
+      --color-border: oklch(1 0 0);
+      --color-input: oklch(0.92 0.004 286.32);
+      --color-ring: oklch(0.705 0.015 286.067);
+    }
+
+    @variant dark {
+      --color-background: oklch(0.141 0.005 285.823);
+      --color-foreground: oklch(0.985 0 0);
+      --color-card: oklch(0.21 0.006 285.885);
+      --color-card-foreground: oklch(0.985 0 0);
+      --color-primary: oklch(0.92 0.004 286.32);
+      --color-primary-foreground: oklch(0.21 0.006 285.885);
+      --color-secondary: oklch(0.274 0.006 286.033);
+      --color-secondary-foreground: oklch(0.985 0 0);
+      --color-muted: oklch(0.24 0.006 286.033);
+      --color-muted-foreground: oklch(0.705 0.015 286.067);
+      --color-accent: oklch(0.274 0.006 286.033);
+      --color-accent-foreground: oklch(0.985 0 0);
+      --color-destructive: oklch(0.704 0.191 22.216);
+      --color-border: oklch(1 0 0 / 14%);
+      --color-input: oklch(1 0 0 / 15%);
+      --color-ring: oklch(0.552 0.016 285.938);
+    }
+  }
+}
+
+/* web 上浏览器会给聚焦的 input 画一圈默认蓝框，组件自己又画了一层聚焦态，
+   两者叠在一起。聚焦反馈统一由组件给（配对码格子是自定义描边），浏览器这圈
+   直接去掉。写在文件末尾、不进 @layer，保证压得住 Tailwind 的分层规则。 */
+input:focus,
+input:focus-visible,
+textarea:focus,
+select:focus {
+  outline: none;
+}
+
+/* ============================================================================
+   web 端 markdown（streamdown）样式
+   —— 原本是两份独立文件：node_modules/streamdown/styles.css 与主工程的
+   apps/desktop/app/styles/markdown.css。Expo 的 Metro 不处理 CSS import，
+   uniwind 也只认 global.css 这一个入口，所以直接并进来。内容与主工程保持
+   一致，去掉了只服务于桌面端的部分（an-edit-* diff 卡、artifact-block 预览
+   卡——那两块依赖 svg-code-block / mermaid-code-block 组件，本工程没跟过来）。
+   ========================================================================= */
+
+/* ---- streamdown 自带：词级入场动画与列表标记 ---- */
+@keyframes sd-fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sd-blurIn {
+  from {
+    opacity: 0;
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+@keyframes sd-slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+[data-sd-animate] {
+  animation: var(--sd-animation, sd-fadeIn) var(--sd-duration, 150ms)
+    var(--sd-easing, ease) var(--sd-delay, 0ms) both;
+}
+
+/*
+ * 列表标记（圆点/序号）由浏览器 ::marker 绘制，animate 插件包不到它；
+ * ::marker 又不吃 opacity/transform 动画，于是改用 color 淡入。
+ */
+@keyframes sd-markerIn {
+  from {
+    color: transparent;
+  }
+}
+
+[data-sd-animate-marker]::marker {
+  animation: sd-markerIn var(--sd-marker-duration, 150ms)
+    var(--sd-marker-easing, ease) var(--sd-marker-delay, 0ms) both;
+}
+
+/* ---- 列表：Notion/Tiptap 风格，标记悬挂在外，任务项去列表标记 ---- */
+.aui-md [data-streamdown="unordered-list"],
+.aui-md [data-streamdown="ordered-list"] {
+  list-style-position: outside;
+  padding-left: 1.5em;
+}
+.aui-md li:has(> input[type="checkbox"]) {
+  list-style: none;
+}
+.aui-md li:has(> input[type="checkbox"])::marker {
+  content: none;
+}
+
+/* 任务复选框：圆角方框，尺寸随字号、与首行文字对齐 */
+.aui-md li > input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-block;
+  box-sizing: border-box;
+  width: 1rem;
+  height: 1rem;
+  margin: 0 0.5rem 0 0;
+  border: 1.5px solid
+    color-mix(in oklab, var(--color-muted-foreground, #71717a) 55%, transparent);
+  border-radius: 0.25rem;
+  vertical-align: -0.15em;
+  background: transparent;
+}
+.aui-md li > input[type="checkbox"]:checked {
+  border-color: transparent;
+  background-color: var(--color-primary, #2383e2);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M3 8.5 6.5 12 13 4.5'/%3E%3C/svg%3E");
+  background-size: 80%;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* 勾选完成态：文字置灰；叶子任务（无嵌套内容）再划线——text-decoration 会
+   传播进子列表，带子项的父任务只置灰不划线，避免贯穿子内容 */
+.aui-md li:has(> input[type="checkbox"]:checked) {
+  color: var(--color-muted-foreground, #71717a);
+}
+.aui-md li:has(> input[type="checkbox"]:checked):not(:has(ul, ol)) {
+  text-decoration: line-through;
+}
+
+.aui-markdown pre code > span::before {
+  content: none !important;
+  display: none !important;
+}
+
+.aui-markdown pre code > span {
+  padding-left: 0 !important;
+}
+
+.aui-markdown pre code {
+  counter-reset: none !important;
+}
+
+/* ---- 代码块（ChatGPT 式卡片：圆角 + 极简标签行，无底色无分隔线） ---- */
+.aui-markdown [data-streamdown="code-block"] {
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0.75rem;
+  background-color: var(--color-muted);
+  gap: 0;
+}
+
+.aui-markdown [data-streamdown="code-block-header"] {
+  padding: 0 10px 0 12px;
+  height: 34px;
+  font-size: 12px;
+  background: transparent;
+  position: relative;
+}
+
+.aui-markdown div:has(> [data-streamdown="code-block-actions"]) {
+  position: absolute;
+  height: 34px;
+  margin: 0;
+  top: 0;
+  right: 0;
+  padding-right: 8px;
+}
+
+.aui-markdown [data-streamdown="code-block-actions"] {
+  background: transparent;
+  border: none;
+  backdrop-filter: none;
+  padding: 0;
+}
+
+.aui-markdown [data-streamdown="code-block-actions"] button > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.aui-markdown [data-streamdown="code-block-body"] {
+  margin: 0;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  background: var(--color-background);
+  border: none;
+  overflow-x: auto;
+}
+
+/* 列表项内嵌的代码/图表块：上下补呼吸间距（顶层代码块有自己的外边距，
+   列表内会被 li 的内边距吃紧） */
+.aui-markdown li [data-streamdown="code-block"],
+.aui-markdown li [data-streamdown="mermaid-block"] {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.aui-markdown [data-streamdown="code-block"] pre,
+.aui-markdown [data-streamdown="code-block"] code {
+  font-size: 12px;
+  background: transparent;
+}
+
+/* ---- Mermaid（与 code 块同款极简头部） ---- */
+.aui-markdown [data-streamdown="mermaid-block"] {
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: transparent;
+  gap: 0;
+}
+
+.aui-markdown [data-streamdown="mermaid-block-header"] {
+  padding: 0 10px 0 12px;
+  height: 34px;
+  font-size: 12px;
+  background: transparent;
+  position: relative;
+}
+
+.aui-markdown div:has(> [data-streamdown="mermaid-block-actions"]) {
+  position: absolute;
+  height: 34px;
+  margin: 0;
+  top: 0;
+  right: 0;
+  padding-right: 8px;
+}
+
+.aui-markdown [data-streamdown="mermaid-block-actions"] {
+  background: transparent;
+  border: none;
+  backdrop-filter: none;
+  padding: 0;
+}
+
+.aui-markdown [data-streamdown="mermaid-block-actions"] button > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.aui-markdown [data-streamdown="mermaid-block-body"] {
+  margin: 0;
+  padding: 12px;
+  background: transparent;
+  overflow-x: auto;
+}
+
+.aui-markdown [data-streamdown="mermaid-block"] pre,
+.aui-markdown [data-streamdown="mermaid-block"] code {
+  font-size: 12px;
+  background: transparent;
+}
+
+/* Mermaid 缩放控件：streamdown 默认是左下角带边框的竖排盒，和卡片风格不搭。
+   改成右下角横排悬浮胶囊（无边框、阴影、悬停块体时淡入）。
+   选择器依赖 streamdown 默认英文 aria-label（这里没覆写 translations） */
+.aui-markdown
+  [data-streamdown="mermaid-block"]
+  div:has(> button[aria-label="Zoom in"]) {
+  left: auto;
+  right: 8px;
+  bottom: 8px;
+  flex-direction: row;
+  gap: 2px;
+  padding: 3px;
+  border: none;
+  border-radius: 9999px;
+  background: color-mix(in oklab, var(--color-card) 85%, transparent);
+  box-shadow: 0 1px 6px rgb(0 0 0 / 0.14);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.aui-markdown
+  [data-streamdown="mermaid-block"]:hover
+  div:has(> button[aria-label="Zoom in"]),
+.aui-markdown
+  [data-streamdown="mermaid-block"]
+  div:has(> button[aria-label="Zoom in"]):focus-within {
+  opacity: 1;
+}

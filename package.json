@@ -27,7 +27,11 @@
     "start": "bun run --filter kova-electron-main start",
     "typecheck": "bun run --filter desktop typecheck && bun run --filter kova-electron-main typecheck",
     "test": "bun run --filter pi-agent-sidecar test",
-    "dist": "bun run --filter kova-electron-main dist"
+    "dist": "bun run --filter kova-electron-main dist",
+    "dev:mobile": "bun run --filter mobile start",
+    "build:mobile:web": "bun run --filter mobile export:web",
+    "typecheck:mobile": "bun run --filter mobile typecheck",
+    "test:mobile": "bun run --filter mobile test"
   },
   "patchedDependencies": {
     "@earendil-works/pi-ai@0.99.2": "patches/@earendil-works%2Fpi-ai@0.99.2.patch",
