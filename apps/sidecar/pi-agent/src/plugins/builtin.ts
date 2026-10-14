@@ -5,7 +5,7 @@
  * 从仓库 plugins/ 生成；构建产物不入库，缺失时 ensure:bundle 自愈重打），由
  * `import ... with { type: "file" }` 嵌进
  * bun --compile 单文件二进制（dev 走磁盘路径；测试经 setBuiltinBundleBytesForTest
- * 注入；PI_BUILTIN_PLUGINS_ZIP 可指向别处的包，为未来改走 Tauri resources 留口）。
+ * 注入；PI_BUILTIN_PLUGINS_ZIP 可指向别处的包，为未来改走 旧桌面壳 resources 留口）。
  *
  * 启动同步 syncBuiltinPlugins()（手法对齐 design-md/builtin-sync.ts）：
  * - 物化位置 cache/builtin/<name>/（身份 `name@builtin`，「本地安装」同族的伪市场），

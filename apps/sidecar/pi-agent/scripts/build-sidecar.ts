@@ -1,6 +1,6 @@
 /**
- * 构建 sidecar 单文件二进制到 Tauri externalBin 约定路径：
- *   src-tauri/binaries/pi-agent-<rustc host 三元组>（Windows 上自动追加 .exe）
+ * 构建 sidecar 单文件二进制到 Electron 壳的产物目录：
+ *   原 Rust 宿主/binaries/pi-agent-<rustc host 三元组>（Windows 上自动追加 .exe）
  *
  * 用 rustc 的 host 三元组而不是硬编码平台，保证本地与 CI 矩阵
  * （macos-latest / windows-latest）各自原生构建时产物路径都正确。
@@ -9,7 +9,7 @@
  * 重打，同源同字节幂等）：见 scripts/build-builtin-plugins-zip.ts。
  *
  * compile 后**冒烟验产物**：拉起刚编出来的二进制，走一次 ping/pong。dev 模式下
- * sidecar 只在 tauri dev 启动那刻编一次，之后改 TS 源码不会自动生效——真正
+ * sidecar 只在 electron dev 启动那刻编一次，之后改 TS 源码不会自动生效——真正
  * 咬人的场景是「产物压根没跑起来」：三元组写错落到了别的路径、上一台机器的
  * 旧二进制被照单全收、编出来启动即崩。没有这一步，这些都要等到用户发出第一
  * 条消息才以"助手没反应"的形式暴露出来，而那时人已经在查模型/网络了。
@@ -31,7 +31,7 @@ if (!host) {
 const pkgRoot = resolve(import.meta.dir, "..");
 
 // 面板 HTML 为构建产物不入库：缺失时先构建（root scripts/build-plugins.mjs 幂等，
-// 已有产物即刻跳过）。放在这里保证任何入口——npm/tauri beforeBuildCommand、bun、
+// 已有产物即刻跳过）。放在这里保证任何入口——npm、electron 构建脚本、bun、
 // CI——都能自愈，调用方不必各自记得前置 build:plugins。
 const plugins = Bun.spawnSync([process.execPath, resolve(pkgRoot, "../../../scripts/build-plugins.mjs")], {
   cwd: pkgRoot,
@@ -135,7 +135,7 @@ try {
       `产物：${outfile}\n` +
       `宿主三元组：${host}\n` +
       (stderr ? `产物 stderr：\n${stderr.slice(0, 2000)}\n` : "") +
-      `若产物根本不在该路径，先删掉 src-tauri/binaries/ 下别的三元组产物再重编。`,
+      `若产物根本不在该路径，先删掉 原 Rust 宿主/binaries/ 下别的三元组产物再重编。`,
   );
   process.exit(1);
 }

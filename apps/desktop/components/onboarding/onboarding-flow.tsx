@@ -21,7 +21,7 @@ import { DoneStep } from "./steps/done-step";
 /**
  * 首次启动的配置向导：欢迎页 → 配模型 → 选工作目录 → 调外观 → 完成页。
  *
- * 全屏浮层盖在主界面之上，桌面端顶栏留出拖拽区（data-tauri-drag-region），
+ * 全屏浮层盖在主界面之上，桌面端顶栏留出拖拽区（data-drag-region），
  * 否则无边框窗口里用户抓不到窗口拖走。步骤间的结果存在 context 里，
  * 完成页据此做「你已配置好什么」的回顾。
  *
@@ -128,7 +128,7 @@ export const OnboardingFlow: FC = () => {
             deep 会把整棵子树的 mousedown 劫持成窗口拖动，按钮必须显式标
             "false" 退出，否则桌面端点不动（与 agent-panel/tab-bar 同款处理）。 */}
         <div
-          data-tauri-drag-region={desktop ? "deep" : undefined}
+          data-drag-region={desktop ? "deep" : undefined}
           className="flex h-11 shrink-0 items-center justify-end gap-2 px-4"
         >
           {isWelcome ? null : (
@@ -138,7 +138,7 @@ export const OnboardingFlow: FC = () => {
               </span>
               {!isDone && (
                 <Button
-                  data-tauri-drag-region="false"
+                  data-drag-region="false"
                   variant="ghost"
                   size="sm"
                   className="text-muted-foreground"

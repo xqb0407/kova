@@ -2,7 +2,7 @@
  * 升级检查（对齐 update.rs 的清单协议与节流纪律）：
  * R2 latest.json（{channel}/latest.json）、渠道不串、12h 节流、失败静默、
  * 结果缓存进 kv。差异（PORTING-NOTES）：update_install 不做到地替换——
- * Tauri minisign 包格式与 Electron 产物不通用，安装动作退回打开下载页。
+ * 旧桌面壳 minisign 包格式与 Electron 产物不通用，安装动作退回打开下载页。
  */
 import { app, shell } from "electron";
 import { kvGet, kvSet, kvDelete } from "./store";
@@ -26,8 +26,8 @@ interface CachedManifest {
   notes?: string | null;
   pageUrl?: string | null;
   downloads: Record<string, string>;
-  /** Electron 版专用直链（downloadsElectron.<platformKey>）：与 Tauri 的 downloads 分键，
-   *  否则把 Electron 产物写进 downloads 会把 Tauri 老用户的"应用内更新"引到装不上的包 */
+  /** Electron 版专用直链（downloadsElectron.<platformKey>）：与 旧桌面壳的 downloads 分键，
+   *  否则把 Electron 产物写进 downloads 会把 旧桌面壳 老用户的"应用内更新"引到装不上的包 */
   downloadsElectron?: Record<string, string>;
   checkedAt: number;
 }
@@ -230,7 +230,7 @@ function emitProgress(phase: string, done: number, total: number, message: strin
 }
 
 /**
- * Electron 版安装：产物格式与 Tauri updater 包不通用，
+ * Electron 版安装：产物格式与 旧桌面壳 updater 包不通用，
  * 改为打开当前平台下载直链（无直链退回下载页）。失败时按前端语义抛错。
  */
 export async function updateInstall(): Promise<null> {

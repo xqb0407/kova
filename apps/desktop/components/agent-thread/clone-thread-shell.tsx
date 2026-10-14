@@ -464,7 +464,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         >
         {/* header */}
         <div
-          data-tauri-drag-region={isDesktop() ? "deep" : undefined}
+          data-drag-region={isDesktop() ? "deep" : undefined}
           className={cn(
             "flex h-16 shrink-0 items-center overflow-hidden px-2 gap-2",
             // macOS 桌面端：内容靠右（左上为悬浮红绿灯位）；Windows/网页：Logo 靠左、操作靠右

@@ -9,25 +9,25 @@
 
 | 原话 | 解读 | 决定 |
 |---|---|---|
-| 改造成 electron | 桌面壳从 Tauri 换成 Electron | 新壳 = Electron 主进程（Node/TS），渲染层不变 |
+| 改造成 electron | 桌面壳从 旧桌面壳 换成 Electron | 新壳 = Electron 主进程（Node/TS），渲染层不变 |
 | 在桌面新增一个项目（文件夹） | 独立目录，不动原仓 | `~/Desktop/kova-electron`，自含 workspace |
-| 前端可以直接搬 | UI 代码整体复制 | 原样复制 `apps/desktop`（除 `src-tauri/`），**零逐行改写**，靠兼容层衔接（D1） |
-| 还要 Rust 部分 | src-tauri 的 30 个 Rust 模块（17,159 行、85 个命令）承载的能力要保留 | 全部在 Electron 主进程用 Node 等价实现（D2），按 P0→P2 分期 |
+| 前端可以直接搬 | UI 代码整体复制 | 原样复制 `apps/desktop`（除 `原 Rust 宿主/`），**零逐行改写**，靠兼容层衔接（D1） |
+| 还要 Rust 部分 | 原 Rust 宿主 的 30 个 Rust 模块（17,159 行、85 个命令）承载的能力要保留 | 全部在 Electron 主进程用 Node 等价实现（D2），按 P0→P2 分期 |
 | electron 可以直接用 node | 不用 Rust、不引 N-API 桥，宿主逻辑直接写 Node | 成立：fs/sqlite/child_process/fetch/ws/notification/tray/pty 全有 Node 对应 |
-| sidebar（sidecar？）还要不要 | 按我的设计来 | **要**。"sidecar" 就是 `apps/sidecar/pi-agent`——AI Agent 本体（对话/工具/自动化调度），Tauri 版也是靠它干活的，Electron 没有理由丢（D3）。UI 侧边栏随前端原样保留 |
+| sidebar（sidecar？）还要不要 | 按我的设计来 | **要**。"sidecar" 就是 `apps/sidecar/pi-agent`——AI Agent 本体（对话/工具/自动化调度），旧版也是靠它干活的，Electron 没有理由丢（D3）。UI 侧边栏随前端原样保留 |
 | 计划先写，写完再开发 | 本文档即计划；批准后进入实施 | 实施顺序 = §5 里程碑 |
 
 ## 1. 调研结论（现状架构，全部有源码证据）
 
 ```
 ┌─ WebView（Next.js 16 静态导出 out/，output:"export"）─────────────┐
-│  components/ hooks/ lib/ app/      40 个文件 import @tauri-apps/* │
-│  isTauri() = "__TAURI_INTERNALS__" in window   ← 桌面能力开关     │
+│  components/ hooks/ lib/ app/      40 个文件 import 桌面桥/* │
+│  is旧桌面壳() = "__KOVA_DESKTOP__" in window   ← 桌面能力开关     │
 └──────────────┬───────────────────────────────────────────────────┘
    invoke(85 命令) / listen(8 事件) / Channel(pty 字节流) / plugin-dialog
 ┌──────────────▼───────────────────────────────────────────────────┐
-│  Tauri Rust 宿主 src-tauri/src（30 模块 17,159 行）                │
-│  lib.rs：85 个 #[tauri::command] + 生命周期（单实例/托盘/退出收尸）│
+│  旧桌面壳 Rust 宿主 原 Rust 宿主/src（30 模块 17,159 行）                │
+│  lib.rs：85 个 #[旧桌面壳::command] + 生命周期（单实例/托盘/退出收尸）│
 │  store.rs：SQLite(state.db, WAL, kv 表)；data.rs：30 种 host_query │
 │  tool_exec.rs：bash/read/write/edit/http（进程组杀、stale 守卫）   │
 │  secret_env/secret：明文落库 + 名字→明文注入 + 输出脱敏            │
@@ -66,7 +66,7 @@
    kv_get/kv_set、usage_* ×4，外加 `tool`（→ secret_env 解析 + tool_exec 执行）。
 6. **数据目录**（macOS）：`~/Library/Application Support/com.kova.assistant`，
    内含 `state.db`、`sessions/`、`task-workspace/`、日志、checkpoints、
-   browser-panel、attachments 等。Tauri 命令里 `open_logs_dir`、备份范围、
+   browser-panel、attachments 等。旧桌面壳 命令里 `open_logs_dir`、备份范围、
    git 影子目录全部以此为根。
 
 ## 2. 目标架构
@@ -75,13 +75,13 @@
 kova-electron/                     ← 本目录（bun workspace，结构镜像原仓）
 ├── PLAN.md
 ├── package.json                   workspaces: apps/desktop、apps/sidecar/*、packages/*、apps/electron
-├── apps/desktop/                  前端原样复制（删 src-tauri/、out/、tmp-verify*）
+├── apps/desktop/                  前端原样复制（删 原 Rust 宿主/、out/、tmp-verify*）
 │   ├── next.config.ts             + 仅改两处：加载形态（dev localhost / prod kova://）
-│   └── src 兼容层在 @tauri-apps/* 别名指向的 renderer-bridge/
+│   └── src 兼容层在 桌面桥/* 别名指向的 renderer-bridge/
 ├── apps/electron/                 ★ 新写的 Electron 壳（TS，esbuild 打包）
 │   ├── main/                      主进程：入口 + 30 个模块的 Node 移植
-│   ├── preload.ts                 注入 __TAURI_INTERNALS__ 桥（invoke/event/Channel）
-│   └── renderer-bridge/           @tauri-apps/* 的 API 兼容实现（core/event/window/app/path/dialog）
+│   ├── preload.ts                 注入 __KOVA_DESKTOP__ 桥（invoke/event/Channel）
+│   └── renderer-bridge/           桌面桥/* 的 API 兼容实现（core/event/window/app/path/dialog）
 ├── apps/sidecar/pi-agent/         sidecar 源码复制（不改）+ 新构建脚本
 ├── packages/pi-protocol/ shared/  复制（不改）
 ├── plugins/ scripts/              复制（面板 HTML 构建 + 内置插件 zip，sidecar 编译前置）
@@ -91,9 +91,9 @@ kova-electron/                     ← 本目录（bun workspace，结构镜像�
 ### 设计决定
 
 - **D1 前端零改写**：不移植 40 个 import，而是用 tsconfig `paths` 把
-  `@tauri-apps/api/*`、`@tauri-apps/plugin-dialog` 映射到 `renderer-bridge/`
-  的同签名实现；preload 在 `window` 上挂 `__TAURI_INTERNALS__`/`__TAURI__`
-  标记使 `isTauri()` 为真。`getVersion()/join()`/dialog 全部走 `invoke` 通道，
+  `桌面桥/api/*`、`桌面桥/plugin-dialog` 映射到 `renderer-bridge/`
+  的同签名实现；preload 在 `window` 上挂 `__KOVA_DESKTOP__`/`__KOVA_DESKTOP__`
+  标记使 `is旧桌面壳()` 为真。`getVersion()/join()`/dialog 全部走 `invoke` 通道，
   bridge 只实现薄封装。以后同步上游前端改动 = 直接覆盖复制。
 - **D2 Rust → Node 全替换**：不用 napi-rs、不做 sidecar 化 Rust。主进程内一个
   命令路由器（`ipcMain.handle('invoke')`）按名分发到 ~30 个 TS 模块，命令名、
@@ -105,12 +105,12 @@ kova-electron/                     ← 本目录（bun workspace，结构镜像�
   `bun build --compile`（含内置插件 zip / 面板 HTML 前置产物），冒烟 ping/pong 同脚本。
 - **D4 数据延续**：Electron 复用 `com.kova.assistant` 目录
   （`app.setPath('userData', …)`），历史会话/密钥/设置**开箱即得**。
-  风险：与 Tauri 版同时运行会双写同一库（WAL+busy_timeout 5s 可保不损坏，
+  风险：与旧版同时运行会双写同一库（WAL+busy_timeout 5s 可保不损坏，
   但双 sidecar 会互抢任务）→ 本壳用单实例锁，并约定不同时开两壳。
 - **D5 加载形态**：prod 用特权自定义协议 `kova://app/`（映射 `out/`，
   标准 CSP、可被 service worker 接受），dev `http://localhost:3000`。
-  `isTauriDev()` 逻辑不变。
-- **D6 窗口参数对齐 tauri.conf**：1600×800/min 800×600、transparent、
+  `is旧桌面壳Dev()` 逻辑不变。
+- **D6 窗口参数对齐 旧桌面壳.conf**：1600×800/min 800×600、transparent、
   macOS `titleBarStyle: hiddenInset` + 红绿灯偏移 (20,30)（trafficLightPosition
   近似等价）、Windows/Linux 无边框 + 前端自绘控制（WindowControls 已有，走
   bridge 的 window API）、初始不可见 → DOMContentLoaded/5s 兜底 show、
@@ -121,7 +121,7 @@ kova-electron/                     ← 本目录（bun workspace，结构镜像�
 - **D8 PTY**：node-pty（Unix forkpty 等价实现），输出用 MessagePort/IPC 流
   模拟 `Channel`；上限 12 会话、同 id 顶替、channel 死 → 杀壳，与 pty.rs 对齐。
 - **D9 浏览器面板**：`WebContentsView` 挂在主 BrowserWindow 上
-  （attach/detach/sync_bounds/viewport），替代 Tauri 子 webview；
+  （attach/detach/sync_bounds/viewport），替代 旧桌面壳 子 webview；
   `browser:navigated/viewport` 事件、独立分区（persist:browser-panel）、
   agent 驱动（tool_exec 的 browser_* 子命令）经 `executeJavaScript` 实现。
 - **D10 升级/备份/隧道/远程**：按原协议移植，不另造轮子——升级读 R2
@@ -130,7 +130,7 @@ kova-electron/                     ← 本目录（bun workspace，结构镜像�
   （tar.gz + AES-256-GCM/pbkdf2 + S3 SigV4 + WebDAV），恢复"staging+待换入"
   启动流程；隧道 spawn cloudflared 同参数同状态机；远程网关 Node http+ws
   重写，协议（pair/auth/透传/REMOT DENIED 名单）不变，静态 serve `out/`。
-- **D11 安全**：`contextIsolation: true`，preload 只暴露 `__TAURI_INTERNALS__`
+- **D11 安全**：`contextIsolation: true`，preload 只暴露 `__KOVA_DESKTOP__`
   一个通道；所有文件系统命令在主进程执行，路径校验策略照抄 Rust 版
   （fs.rs/app_file_* 的白名单根）；不开放任意 Node。
 
@@ -167,7 +167,7 @@ kova-electron/                     ← 本目录（bun workspace，结构镜像�
 | panic_guard.rs | invoke 兜底 | 路由层 try/catch | — | P0 |
 | browser 内嵌 devtools/dev_mode | open_devtools | webContents.openDevTools | — | P1 |
 
-bridge（渲染层兼容模块，签名对齐 @tauri-apps/api v2）：
+bridge（渲染层兼容模块，签名对齐 桌面桥/api v2）：
 `core`（invoke/Channel）、`event`（listen/emit/unlisten）、`window`
 （getCurrentWindow：minimize/toggleMaximize/close/isMaximized/onResized/
 onCloseRequested?）、`app`（getVersion）、`path`（join）、`plugin-dialog`
@@ -175,7 +175,7 @@ onCloseRequested?）、`app`（getVersion）、`path`（join）、`plugin-dialog
 
 ## 4. 复制与构建管线
 
-- **复制清单**：`apps/desktop`（除 src-tauri/out/node_modules/tmp-*）、
+- **复制清单**：`apps/desktop`（除 原 Rust 宿主/out/node_modules/tmp-*）、
   `apps/sidecar/pi-agent`、`packages/pi-protocol`、`packages/shared`、
   `plugins/`、`scripts/build-plugins.mjs`（sidecar 编译前置依赖相对路径，保持
   目录层级一致）。原仓 `node_modules`（3GB）不复制，新仓独立 `bun install`
@@ -190,7 +190,7 @@ onCloseRequested?）、`app`（getVersion）、`path`（join）、`plugin-dialog
 ## 5. 里程碑（先计划后开发 → 实施顺序）
 
 - **M0 骨架**：目录脚手架 + 复制 + 新 workspace 可 `bun install`；
-  Electron 起空窗能显示静态页。验收：截图可见 UI、`isTauri()` 为真。
+  Electron 起空窗能显示静态页。验收：截图可见 UI、`is旧桌面壳()` 为真。
 - **M1 P0 全链路（"能聊"）**：store/data/tool_exec/secret_env/pi_agent/http/
   fs/notify/webhook/logging/about/gpu + bridge(core/event/window/app/dialog)。
   验收：发一条消息收到流式回复（pi-chunk-batch 合帧）；bash/read/write/edit
@@ -213,8 +213,8 @@ onCloseRequested?）、`app`（getVersion）、`path`（join）、`plugin-dialog
 | `bun install`/electron 下载失败（网络） | npmmirror 源已在本机缓存中（bun 缓存里有 registry.npmmirror.com 痕迹）→ 配置镜像重试；electron 可手动下 zip 解压 |
 | node:sqlite 在 Electron 内不可用 | db 适配层切 better-sqlite3（预编译包）；再不行退 bun spawn 的 sqlite helper 进程（最后手段） |
 | node-pty 编译失败 | 降级：pty 面板显示"启动失败"卡片（前端已有该路径），不阻塞其他能力；重试 electron-rebuild |
-| 与 Tauri 版双开数据竞争 | 文档声明互斥 + 启动检测（pidfile） |
-| Channel/on_data 序列化差异 | bridge 层用回调 id 注册表模拟（与 Tauri JS 版同款机制） |
+| 与旧版双开数据竞争 | 文档声明互斥 + 启动检测（pidfile） |
+| Channel/on_data 序列化差异 | bridge 层用回调 id 注册表模拟（与旧版JS 版同款机制） |
 | 命令参数 camelCase 映射错 | 用原前端调用点逐个比对参数名；router 对未知命令返回明确错误名，开发期全量点一遍 |
 | WebContentsView bounds 与 CSS 像素差 | devicePixelRatio 换算（sync_bounds 传物理像素，同 browser.rs 口径） |
 

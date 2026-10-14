@@ -5,7 +5,7 @@
  *
  * delta 化（计划 §3a）：message_update 的 assistantMessageEvent 不带 `partial`
  * （完整消息副本）——逐 token 携带 O(n) 副本是 O(n²) wire 成本的根源；客户端
- * 在 TauriPiClient 内按 accumulator 重建 partial。仅 start/toolcall_start 需
+ * 在 旧桌面壳PiClient 内按 accumulator 重建 partial。仅 start/toolcall_start 需
  * 附加小字段（toolCall 的 id/name 从 partial 抽取），done/error 为每流一帧的
  * 终态，保留完整 message/error。
  *

@@ -105,7 +105,7 @@ function registerStaticProtocol(): void {
 
 /* ------------------------------ 生命周期 ------------------------------ */
 
-// 单实例（对齐 tauri_plugin_single_instance）：第二次启动只唤回已有窗口。
+// 单实例（对齐 旧桌面壳_plugin_single_instance）：第二次启动只唤回已有窗口。
 // 必须先 initPaths：Electron 的单实例锁按 userData 目录走，KOVA_DATA_DIR
 // 沙箱实例需要与真实实例并存（e2e），锁的落点必须跟随同一份路径决定。
 initPaths(); // userData 指向 com.kova.assistant（或 KOVA_DATA_DIR 覆盖）

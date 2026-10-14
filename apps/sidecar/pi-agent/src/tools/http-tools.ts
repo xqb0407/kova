@@ -1,6 +1,6 @@
 /**
  * 联网工具（WebFetch / WebSearch）：schema 留本侧，实际网络执行下沉 Rust 宿主
- * （tool_exec.rs handle_http）——sidecar 是裸 Node 子进程，不在 Tauri 运行时里，
+ * （tool_exec.rs handle_http）——sidecar 是裸 Node 子进程，不在 旧桌面壳 运行时里，
  * 统一由 Rust 发出网络请求（与 bash/read/write/edit 的下沉模式一致）。
  * 结果装配逻辑移植自 harness-x create-http-tools.ts：超时/截断/文本检测在 Rust，
  * 搜索响应解析是纯字符串计算留在本侧。

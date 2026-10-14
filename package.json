@@ -2,7 +2,7 @@
   "name": "kova-electron",
   "private": true,
   "version": "1.1.6-preview",
-  "description": "Kova AI Assistant (Electron port of the Tauri desktop app)",
+  "description": "Kova AI Assistant (Electron port of the 旧桌面壳 desktop app)",
   "workspaces": [
     "apps/*",
     "apps/sidecar/*",

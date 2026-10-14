@@ -1,7 +1,7 @@
 /**
  * 密钥库模块测试：绑定解析（注入名单）+ 已加载技能台账。
  * 只测纯逻辑（策略判定），值本身不经过 sidecar——加密/注入/脱敏在 Rust 侧
- * （src-tauri/src/secret_env.rs 有对应单测 + 端到端 bash 注入测试）。
+ * （原 Rust 宿主/src/secret_env.rs 有对应单测 + 端到端 bash 注入测试）。
  */
 import { describe, expect, test, beforeEach, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync } from "node:fs";

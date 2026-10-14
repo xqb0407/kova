@@ -1,6 +1,6 @@
 /**
  * pi-agent sidecar 协议层：stdin NDJSON 命令分发中枢。
- * 由 Tauri(Rust) 以子进程方式拉起，本层职责只有装配：
+ * 由 旧桌面壳(Rust) 以子进程方式拉起，本层职责只有装配：
  * 解析 stdin 行 → initGate 就绪闸门 → mgmtQueue 串行（prompt 例外）→ 注册表路由。
  *
  * ===== 线协议 =====

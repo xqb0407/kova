@@ -34,7 +34,7 @@ out.regions = await page.evaluate(() => {
   const dragRegionFor = (target) => {
     let el = target;
     while (el && el !== document.body && el !== document.documentElement) {
-      const v = el.getAttribute("data-tauri-drag-region");
+      const v = el.getAttribute("data-drag-region");
       if (v === "false") return null;
       if (v === "deep") return isInteractive(target) ? null : el;
       if (v === "true") return el === target ? el : null;
@@ -51,7 +51,7 @@ out.regions = await page.evaluate(() => {
   let titleSpan = "NO_ELEM";
   let headerBtn = "NO_ELEM";
   if (header) {
-    const span = header.querySelector('[data-tauri-drag-region="false"]');
+    const span = header.querySelector('[data-drag-region="false"]');
     if (span) titleSpan = dragRegionFor(span) ? "DRAG" : "NO_DRAG";
     const btn = header.querySelector("button");
     if (btn) headerBtn = dragRegionFor(btn) ? "DRAG" : "NO_DRAG";
@@ -60,8 +60,8 @@ out.regions = await page.evaluate(() => {
     headerPlain: header ? (dragRegionFor(header) ? "DRAG" : "NO_DRAG") : "NO_ELEM",
     headerTitleSpanFALSE: titleSpan,
     headerButton: headerBtn,
-    mainTrueRegionSelf: probe('main[data-tauri-drag-region="true"]'),
-    mainTrueChild: probe('main[data-tauri-drag-region="true"] .cm-content'),
+    mainTrueRegionSelf: probe('main[data-drag-region="true"]'),
+    mainTrueChild: probe('main[data-drag-region="true"] .cm-content'),
     chatBodyDeep: header ? (dragRegionFor(header.parentElement) ? "DRAG" : "NO_DRAG") : "n/a",
   };
 });

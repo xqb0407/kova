@@ -30,7 +30,7 @@ export async function renderMermaid(code: string, theme: MermaidThemeName): Prom
     // 被 Leafer 轨当成图渲染（面板里出现巨大错误图而不是我们的提示文案）。
     // 打开后失败只抛错，由调用方统一渲染友好提示。
     suppressErrorRendering: true,
-    // 关掉 HTML 标签（foreignObject）改用纯 SVG <text>：WKWebView（Tauri 外壳）
+    // 关掉 HTML 标签（foreignObject）改用纯 SVG <text>：WKWebView（Safari）
     // 用 <img> 加载含 foreignObject 的 SVG 会直接失败 —— 表现就是画布轨
     // "mermaid 光栅化失败"（DOM 轨反而正常，很难查）。v12 里这是根级开关，
     // 子图级的 flowchart.htmlLabels 已废弃。

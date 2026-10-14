@@ -75,7 +75,7 @@ const ThreadTitle: FC = () => {
       // header 是 deep 拖拽区，普通文本的 mousedown 会被 preventDefault
       // 拿去做窗口拖动，选区无法开始；"false" 让 桌面壳的事件路径遍历在
       // 这棵子树截停（drag.js isDragRegion），恢复常规文字选中
-      data-tauri-drag-region="false"
+      data-drag-region="false"
       className="min-w-0 truncate text-sm font-medium"
     >
       {title ?? "New Chat"}
@@ -257,7 +257,7 @@ export const Header: FC<{
   };
   return (
     <header
-      data-tauri-drag-region={desktop ? "deep" : undefined}
+      data-drag-region={desktop ? "deep" : undefined}
       className={cn(
         // 左 padding 随折叠变化（macOS 红绿灯让位），与折叠按钮槽同节拍过渡，
         // 标题被连续挤开而不是瞬间跳位；时长/缓动必须与侧栏 width 收拢

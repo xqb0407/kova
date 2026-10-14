@@ -244,7 +244,7 @@ export const TabBar: FC<{
   const pillLayoutId = useId();
   return (
     <div
-      data-tauri-drag-region={isDesktop() ? "deep" : undefined}
+      data-drag-region={isDesktop() ? "deep" : undefined}
       className="flex h-12 shrink-0 items-center gap-1 border-b-[0.5] pr-2 pl-2"
     >
       <DropdownMenu>
@@ -289,7 +289,7 @@ export const TabBar: FC<{
           的 mousedown 劫持成窗口拖动（preventDefault + start_dragging），
           滚轮/触控板/拖拽平移全都失效 */}
       <div
-        data-tauri-drag-region={isDesktop() ? "false" : undefined}
+        data-drag-region={isDesktop() ? "false" : undefined}
         className="scrollbar-hide flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
       >
         {tabs.map((t, i) => (

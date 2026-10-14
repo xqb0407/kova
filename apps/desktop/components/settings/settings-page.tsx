@@ -153,7 +153,7 @@ export const SettingsPage: FC<{
       >
         {/* 顶栏仅作拖拽区：macOS 红绿灯悬浮于此行，"返回应用"单独成行在其下方 */}
         <div
-          data-tauri-drag-region={desktop ? "deep" : undefined}
+          data-drag-region={desktop ? "deep" : undefined}
           className="h-12 shrink-0"
        />
          
@@ -224,7 +224,7 @@ export const SettingsPage: FC<{
       {/* 内容区 */}
       <div className="flex min-w-0 flex-1 flex-col bg-background">
         <div
-          data-tauri-drag-region={desktop ? "deep" : undefined}
+          data-drag-region={desktop ? "deep" : undefined}
           className="flex h-12 shrink-0 items-center justify-end pr-4"
         >
           {/* 窗口控制固定在窗口右上角；仅 Windows/Linux 渲染 */}

@@ -123,7 +123,7 @@ body {
 
 /* ---------- 高斯磨砂容器（工具条/侧栏/对话框共用配方） ---------- */
 /* 滤镜函数存自定义属性：Lightning CSS 压缩会去掉函数间空格成 blur(28px)saturate(180%)，
-   WebKit（Tauri 的 WKWebView）解析器对无空格形式整条丢弃——磨砂模糊会静默失效。
+   WebKit（Safari）解析器对无空格形式整条丢弃——磨砂模糊会静默失效。
    自定义属性值内的空格压缩器不动，var() 代入后 WebKit 正常解析。 */
 .glass {
   background: var(--glass);

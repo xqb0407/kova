@@ -1,23 +1,25 @@
 #!/usr/bin/env node
 /**
- * 升级发布脚本：把两类清单写进 Cloudflare KV，由 `dl.openkova.site` 上的只读 Worker 转发。
+ * 升级发布脚本：把通知清单写进 Cloudflare KV，由 `dl.openkova.site` 上的只读 Worker 转发。
  *
- *   1. 通知清单 manifest:{preview|stable}  → /{channel}/latest.json   （应用内"发现新版本"提示）
- *   2. 升级包清单 updater:{target}-{arch}  → /updater/{target}/{arch}/{ver}（Tauri updater 安装用）
+ *   通知清单 manifest:{preview|stable} → /{channel}/latest.json（应用内"发现新版本"提示）
  *
  * 为什么不是 R2：R2 启用要绑支付方式；Workers + KV 免费档不需要。
- * 安装包本身不进 KV —— 它们挂在 GitHub Releases（公开仓），这里只写 URL 与签名。
+ * 安装包本身不进 KV —— 它们挂在 GitHub Releases（公开仓），这里只写 URL。
+ *
+ * 键位约定（与应用侧 update.ts 对齐）：
+ *   downloads.macos-aarch64 / downloads.windows-x64        ≈ 通用下载页直链
+ *   downloadsElectron.macos-aarch64 / …windows-x64        ≈ 本 Electron 版专用直链
+ * 两个键分开写：把 Electron 产物写进 downloads 会误导仍在用旧桌面壳的客户端。
  *
  * 用法：
  *   node scripts/publish-update.mjs --version 1.1.4-preview \
  *        [--notes-file NOTES.md | --notes "一行说明"] \
- *        [--dmg <Kova_x_aarch64.dmg>] [--exe <Kova_x_x64-setup.exe>] \
- *        [--mac-updater <Kova.app.tar.gz>] [--win-updater <Kova_x_x64-setup.exe>] \
- *        [--channel preview|stable] [--release-base <资产前缀>] \
- *        [--page-url <release 页>] [--namespace-id <KV id>] [--dry-run]
- *
- * `--mac-updater/--win-updater` 会自动读同目录的 `<文件>.sig`（tauri build 开
- * createUpdaterArtifacts 后产物）；缺它俩时只更新通知清单，应用内升级不可用。
+ *        [--dmg <旧壳安装包>] [--exe <旧壳安装包>] \
+ *        [--electron-dmg <Kova_x_arm64.dmg>] [--electron-exe <Kova_x_x64-setup.exe>] \
+ *        [--channel preview|stable] [--repo <owner/name>] \
+ *        [--release-base <资产前缀>] [--page-url <release 页>] \
+ *        [--namespace-id <KV id>] [--dry-run]
  */
 import { execFileSync } from "node:child_process";
 import { basename, join } from "node:path";
@@ -47,10 +49,11 @@ if (channel !== "preview" && channel !== "stable") {
 }
 // KV 命名空间（cloudfleare/kova-update/wrangler.toml 的 binding UPDATES）
 const namespaceId = arg("namespace-id", "e7cba5852a25481a906bae6613831d42");
-const pageUrl = arg("page-url", `https://github.com/xqb0407/kova/releases/tag/v${version}`);
+const repo = arg("repo", "xqb0407/kova-electron");
+const pageUrl = arg("page-url", `https://github.com/${repo}/releases/tag/v${version}`);
 const releaseBase = arg(
   "release-base",
-  `https://github.com/xqb0407/kova/releases/download/v${version}`,
+  `https://github.com/${repo}/releases/download/v${version}`,
 ).replace(/\/+$/, "");
 const notesFile = arg("notes-file");
 const notes = notesFile
@@ -71,6 +74,15 @@ for (const [name, key] of [
   if (!path) continue;
   downloads[key] = `${releaseBase}/${basename(path)}`;
 }
+const downloadsElectron = {};
+for (const [name, key] of [
+  ["electron-dmg", "macos-aarch64"],
+  ["electron-exe", "windows-x64"],
+]) {
+  const path = arg(name);
+  if (!path) continue;
+  downloadsElectron[key] = `${releaseBase}/${basename(path)}`;
+}
 const manifest = {
   channel,
   version,
@@ -78,47 +90,8 @@ const manifest = {
   ...(notes ? { notes } : {}),
   pageUrl,
   downloads,
+  ...(Object.keys(downloadsElectron).length ? { downloadsElectron } : {}),
 };
-
-// ---------------------------------------------------------------------------
-// 2) 升级包清单（Tauri updater 标准格式）
-//    --mac-updater/--win-updater 可以给本地产物路径，也可以只给 Release 资产文件名。
-//    签名优先读本地 <文件>.sig；没有就从 Release 拉（公开仓，顺带证明资产已发布）。
-// ---------------------------------------------------------------------------
-const platforms = {};
-for (const [name, key] of [
-  ["mac-updater", "darwin-aarch64"],
-  ["win-updater", "windows-x86_64"],
-]) {
-  const path = arg(name);
-  if (!path) continue;
-  const fileName = basename(path);
-  const url = `${releaseBase}/${fileName}`;
-  let signature = null;
-  const localSig = `${path}.sig`;
-  if (dry) {
-    // 预演不校验/不拉签名（资产可能还没发布）
-    signature = "<dry-run>";
-  } else if (existsSync(localSig)) {
-    signature = readFileSync(localSig, "utf8").trim();
-    console.log(`签名来源: 本地 ${localSig}`);
-  } else {
-    const res = await fetch(`${url}.sig`).catch(() => null);
-    if (!res || !res.ok) {
-      console.error(
-        `✗ 取不到签名文件：${url}.sig${res ? `（HTTP ${res.status}）` : ""}\n` +
-          `  要么本地放好 ${localSig}，要么确认 Release 资产已发布且文件名正确`,
-      );
-      process.exit(1);
-    }
-    signature = (await res.text()).trim();
-    console.log(`签名来源: Release ${url}.sig`);
-  }
-  platforms[key] = { url, signature };
-}
-const updaterDoc = Object.keys(platforms).length
-  ? { version, ...(notes ? { notes } : {}), pub_date: releasedAt, platforms }
-  : null;
 
 // ---------------------------------------------------------------------------
 // 汇总 + 上传
@@ -129,17 +102,14 @@ for (const [k, v] of Object.entries(downloads)) console.log(`  下载: ${k} → 
 if (Object.keys(downloads).length === 0) {
   console.log("  （未指定 --dmg/--exe：downloads 为空，「去网页下载」退回 Release 页）");
 }
-if (updaterDoc) {
-  for (const [k, v] of Object.entries(platforms)) {
-    console.log(`升级包: ${k} → ${v.url}（签名 ${v.signature.slice(0, 24)}…）`);
-  }
-} else {
-  console.log("（未指定 --mac-updater/--win-updater：不写升级清单，应用内「下载并安装」不可用）");
+for (const [k, v] of Object.entries(downloadsElectron)) console.log(`  Electron 专用下载: ${k} → ${v}`);
+if (Object.keys(downloadsElectron).length === 0) {
+  console.log("  （未指定 --electron-dmg：Electron 版将退回通用 downloads/pageUrl）");
 }
 
 if (dry) {
   console.log("\n--- dry-run：写入内容如下，未落 KV ---");
-  console.log(JSON.stringify({ [`manifest:${channel}`]: manifest, ...(updaterDoc ? { "updater:*": updaterDoc } : {}) }, null, 2));
+  console.log(JSON.stringify({ [`manifest:${channel}`]: manifest }, null, 2));
   process.exit(0);
 }
 
@@ -158,7 +128,7 @@ function put(key, doc) {
 put(`manifest:${channel}`, manifest);
 if (updaterDoc) {
   // 同一份文档写进每个平台键：Worker 按请求的 target-arch 取键，文档里含该平台的
-  // url+signature 即可（Tauri 只读自己那一条）
+  // url+signature 即可（旧桌面壳 只读自己那一条）
   for (const key of Object.keys(platforms)) {
     put(`updater:${key}`, updaterDoc);
   }

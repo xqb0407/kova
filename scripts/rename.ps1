@@ -170,11 +170,11 @@ foreach ($n in $AllNodes) { $MatchPaths += (Get-Rel $n.FullName) }
 
 # ---------- 读取旧显示名 / bundle id ----------
 $OldProduct = ''; $OldIdentifier = ''
-$tauriConf = Join-Path $RepoRoot 'apps\desktop\src-tauri\tauri.conf.json'
-if (-not (Test-Path -LiteralPath $tauriConf)) { $tauriConf = Join-Path $RepoRoot 'apps/desktop/src-tauri/tauri.conf.json' }
-if (Test-Path -LiteralPath $tauriConf) {
+$旧桌面壳Conf = Join-Path $RepoRoot 'apps\desktop\原 Rust 宿主\旧桌面壳的窗口配置'
+if (-not (Test-Path -LiteralPath $旧桌面壳Conf)) { $旧桌面壳Conf = Join-Path $RepoRoot 'apps/desktop/原 Rust 宿主/旧桌面壳的窗口配置' }
+if (Test-Path -LiteralPath $旧桌面壳Conf) {
   try {
-    $confBytes = [IO.File]::ReadAllBytes($tauriConf)
+    $confBytes = [IO.File]::ReadAllBytes($旧桌面壳Conf)
     $confJson = [Text.Encoding]::UTF8.GetString($confBytes)
     $conf = $confJson | ConvertFrom-Json
     $OldProduct = [string]$conf.productName

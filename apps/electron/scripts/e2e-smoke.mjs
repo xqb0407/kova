@@ -1,7 +1,7 @@
 /**
  * Electron 渲染层冒烟（CDP 直连，仅测试用）：
  *   node apps/electron/scripts/e2e-smoke.mjs [cdpPort]
- * 校验：kova:// 页面加载、桥标记（__TAURI_INTERNALS__）、invoke 往返、
+ * 校验：kova:// 页面加载、桥标记（__KOVA_DESKTOP__）、invoke 往返、
  * 主界面 DOM 结构、会话列表渲染、渲染层错误日志；并截取渲染内容 PNG。
  */
 import { chromium } from "playwright-core";
@@ -33,7 +33,7 @@ const info = await page.evaluate(async () => {
   out.url = location.href;
   out.title = document.title;
   out.hasHost = typeof window.kovaHost === "object" && window.kovaHost !== null;
-  out.hasInternals = "__TAURI_INTERNALS__" in window;
+  out.hasInternals = "__KOVA_DESKTOP__" in window;
   out.bodyChars = (document.body?.innerText ?? "").length;
   // 桥往返：kv_set → kv_get
   try {

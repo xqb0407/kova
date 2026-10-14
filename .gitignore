@@ -39,13 +39,11 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# tauri
-
-/apps/desktop/src-tauri/target/
-/apps/desktop/src-tauri/gen/schemas
-/apps/desktop/src-tauri/binaries/
+/apps/desktop/原 Rust 宿主/target/
+/apps/desktop/原 Rust 宿主/gen/schemas
+/apps/desktop/原 Rust 宿主/binaries/
 # build:sidecar 脚本生成的复制产物，可再生
-/apps/desktop/src-tauri/resources/
+/apps/desktop/原 Rust 宿主/resources/
 
 # pi agent sidecar
 /apps/sidecar/pi-agent/stderr.log
@@ -97,7 +95,6 @@ plugins/ui-design/design.html
 # AOCI agent host integration (machine-bound; do not commit)
 .mcp.json
 .mcp.json.backup.*
-# updater 签名私钥：只放本机 ~/.tauri/ 与 CI secret，绝不入库（兜住"顺手生成在仓库里"）
 *.key
 .aoci/
 aoci.code.txt

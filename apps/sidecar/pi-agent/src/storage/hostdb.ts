@@ -5,7 +5,7 @@
  * - 本文件                 模式初始化 + 类型化表 API（session/credential/custom_provider/models/kv/usage/tool）
  *
  * 双模式说明：
- * - host 模式（生产）：业务表由 Rust 宿主持有（src-tauri/src/data.rs），本侧经 stdout 上的
+ * - host 模式（生产）：业务表由 Rust 宿主持有（原 Rust 宿主/src/data.rs），本侧经 stdout 上的
  *   host_query RPC 读写，宿主从 stdin 回写 host_result。
  * - local 模式（测试/冒烟）：直接用 bun:sqlite 打开本地库。
  *

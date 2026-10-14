@@ -26,10 +26,10 @@ let logDir = "";
  *  数据目录三段式（与 旧桌面壳一致）：
  *    - KOVA_DATA_DIR 显式覆盖（e2e/多实例沙箱）；
  *    - dev（未打包，或 --dev）：com.kova.assistant.dev + 显示名 "Kova Dev"
- *      —— 与 tauri.dev.conf.json 的 identifier 对齐，dev 数据不污染正式库；
- *    - 打包版：com.kova.assistant（与 Tauri 发布版共享 state.db/会话/密钥）。 */
+ *      —— 与旧桌面壳的 dev identifier 对齐，dev 数据不污染正式库；
+ *    - 打包版：com.kova.assistant（与 旧桌面壳 发布版共享 state.db/会话/密钥）。 */
 export function initPaths(): void {
-  // dev 三态：未打包运行 / --dev / dev 渠道包（Kova Dev.app，identifier 与 Tauri dev 对齐）
+  // dev 三态：未打包运行 / --dev / dev 渠道包（Kova Dev.app，identifier 与 旧桌面壳 dev 对齐）
   const isDevRun = !app.isPackaged || process.argv.includes("--dev") || packagedChannel() === "dev";
   app.setName(isDevRun ? "Kova Dev" : "Kova");
   const override = process.env.KOVA_DATA_DIR;
@@ -43,7 +43,7 @@ export function initPaths(): void {
   mkdirSync(join(dataDir, "task-workspace"), { recursive: true });
 }
 
-/** app data 目录（= Tauri app_data_dir） */
+/** app data 目录（= 旧桌面壳 app_data_dir） */
 export function appDataDir(): string {
   return dataDir || join(app.getPath("appData"), "com.kova.assistant");
 }

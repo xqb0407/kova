@@ -10,7 +10,7 @@
 #
 # 产物：apps/electron/release/（或 release-dev/）下的 .dmg / .app，
 #       macOS 包在打包流程里做 **ad-hoc 深签**（apps/electron/scripts/after-pack.cjs），
-#       未公证 → 用户首次打开需一次 GUI 引导（与 Tauri 版口径一致）。
+#       未公证 → 用户首次打开需一次 GUI 引导（与 旧桌面壳版口径一致）。
 #
 set -euo pipefail
 

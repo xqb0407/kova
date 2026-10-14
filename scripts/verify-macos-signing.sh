@@ -23,7 +23,7 @@
 #     ⑤ spctl accepted(source=Notarized Developer ID)
 #     ⑥ xcrun stapler validate 通过(.app 与 .dmg 各自)
 #
-# .dmg 会**挂载后校验里面的 .app**——Tauri 打完 dmg 就删掉 bundle/macos/*.app,
+# .dmg 会**挂载后校验里面的 .app**——旧桌面壳 打完 dmg 就删掉 bundle/macos/*.app,
 # 用户拿到的其实是 dmg 里那份,只查 dmg 文件本身等于没查。
 #
 # 退出码: 0 满足期望;1 校验不通过;2 用法错误
@@ -168,7 +168,7 @@ verify_dmg() {
     bad "hdiutil verify 失败 —— 镜像本身损坏,用户会看到「已损坏」"
   fi
 
-  # Tauri 出完 dmg 会删掉 bundle 里的 .app:用户实际安装的是 dmg 里这份,
+  # 旧桌面壳 出完 dmg 会删掉 bundle 里的 .app:用户实际安装的是 dmg 里这份,
   # 所以必须挂上去查它(只查 dmg 文件等于没查签名)
   MOUNT_POINT="$(mktemp -d)"
   if ! hdiutil attach "$dmg" -readonly -nobrowse -noautoopen -mountpoint "$MOUNT_POINT" >/dev/null 2>&1; then
