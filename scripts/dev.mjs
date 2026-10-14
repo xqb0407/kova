@@ -13,7 +13,7 @@
  * 开发期跑源码等价（同一条 bun 运行时、同一套 env），只有分发才需要编译。
  *
  * 开关：
- *   KOVA_DEV_BINARY=1  用编译好的侧车二进制（先确保已构建；验产物行为时用）
+ *   KOVA_DEV_BINARY=1  用编译好的侧车二进制（apps/electron/binaries/kova-worker）（先确保已构建；验产物行为时用）
  *   KOVA_DEV_URL=…     渲染层地址（默认 http://localhost:3000）
  *   KOVA_DATA_DIR=…    数据目录（默认 dev 渠道库；换沙箱可避免与常开实例抢单实例锁）
  */
@@ -178,15 +178,15 @@ if (useBinary) {
 
   const wrapperDir = join(tmpdir(), `kova-dev-${process.pid}`);
   mkdirSync(wrapperDir, { recursive: true });
-  const wrapper = join(wrapperDir, "pi-agent");
+  const wrapper = join(wrapperDir, "kova-worker");
   writeFileSync(
     wrapper,
-    `#!/bin/bash\n# dev.mjs 生成的临时包装：宿主经 PI_AGENT_BIN 拉起它，改源码即原地重启\ncd ${JSON.stringify(sidecarDir)} || exit 1\nexec bun --watch src/index.ts\n`,
+    `#!/bin/bash\n# dev.mjs 生成的临时包装：宿主经 KOVA_WORKER_BIN 拉起它，改源码即原地重启\ncd ${JSON.stringify(sidecarDir)} || exit 1\nexec bun --watch src/index.ts\n`,
   );
   chmodSync(wrapper, 0o755);
   const cleanupWrapper = () => rmSync(wrapperDir, { recursive: true, force: true });
   process.on("exit", cleanupWrapper);
-  envForElectron.PI_AGENT_BIN = wrapper;
+  envForElectron.KOVA_WORKER_BIN = wrapper;
   log("侧车：源码模式（bun --watch，改 apps/sidecar 源码即时重启）");
 }
 

@@ -16,7 +16,7 @@ apps/electron/           Electron 壳
   main/                  主进程：命令路由 + 30 个模块的 Node 移植（约 8.8k 行）
   preload/               window.kovaHost + __KOVA_DESKTOP__ 桌面标记 + 拖拽区桥
   renderer-out/          next build 静态导出产物（构建时自动同步，勿手改）
-  binaries/              pi-agent sidecar 二进制（bun --compile 产物）
+  binaries/              kova-worker（侧车）二进制：bun --compile 产物
   icons/                 应用/托盘图标（构建时随包）
 apps/sidecar/pi-agent/   AI Agent 本体（原样复制；bun 编译为单文件二进制）
 packages/pi-protocol     前后端共享协议类型
@@ -30,7 +30,7 @@ scripts/                 构建/打包/发版/改名校验脚本
 bun install                    # 首次；Electron 二进制缺失时补跑 apps/electron/node_modules/electron/install.js
 
 # 三条构建链（可分别执行）
-bun run build:sidecar          # pi-agent → apps/electron/binaries（含 ping/pong 冒烟）
+bun run build:sidecar          # 侧车 → apps/electron/binaries/kova-worker（含 ping/pong 冒烟）
 bun run build:renderer         # next build 静态导出 → apps/desktop/out，并自动同步到 renderer-out
 bun run build:main             # 主进程/preload → apps/electron/dist
 

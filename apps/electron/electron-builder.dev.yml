@@ -12,8 +12,16 @@ files:
   - icons/**
   - package.json
 extraResources:
+  # sidecar 二进制必须在 asar 之外（可执行文件）——宿主经 process.resourcesPath/binaries 拉起。
+  # filter 是保险：万一有人在 binaries/ 里跑过侧车（本机模式会落下 *.db 与 sessions/），
+  # 不让这些运行残留进包。
   - from: binaries
     to: binaries
+    filter:
+      - "**/*"
+      - "!*.db"
+      - "!*.db-*"
+      - "!sessions/**"
 extraMetadata:
   kovaChannel: dev
 asar: true

@@ -14,7 +14,7 @@
  * 旧二进制被照单全收、编出来启动即崩。没有这一步，这些都要等到用户发出第一
  * 条消息才以"助手没反应"的形式暴露出来，而那时人已经在查模型/网络了。
  */
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const rustc = Bun.spawnSync(["rustc", "-vV"]);
@@ -52,7 +52,7 @@ if (pack.exitCode !== 0) process.exit(pack.exitCode ?? 1);
 // Electron 壳：产物进 apps/electron/binaries/（宿主 pi-agent.ts 按此路径拉起）
 const outfileDir = resolve(pkgRoot, "../../electron/binaries");
 mkdirSync(outfileDir, { recursive: true });
-const outfile = `../../electron/binaries/pi-agent-${host}`;
+const outfile = `../../electron/binaries/kova-worker-${host}`;
 const build = Bun.spawnSync(["bun", "build", "src/index.ts", "--compile", "--outfile", outfile], {
   cwd: pkgRoot,
   stdout: "inherit",
@@ -60,9 +60,20 @@ const build = Bun.spawnSync(["bun", "build", "src/index.ts", "--compile", "--out
 });
 if (build.exitCode !== 0) process.exit(build.exitCode ?? 1);
 
-// 稳定别名：宿主按不带三元组的 pi-agent(.exe) 拉起，免去运行时解析 host triple
+// 改名卫生：清掉旧名（pi-agent*）产物，免得打包目录里新旧两套并存、
+// 任务管理器里也看不出到底在跑哪个
+for (const stale of readdirSync(outfileDir)) {
+  const isOldName = stale.startsWith("pi-agent");
+  const isRunDroppings = stale.endsWith(".db") || stale.includes(".db-") || stale === "sessions";
+  if (isOldName || isRunDroppings) {
+    rmSync(join(outfileDir, stale), { recursive: true, force: true });
+    console.log(`[build] 清理 ${isOldName ? "旧名产物" : "运行残留"}：${stale}`);
+  }
+}
+
+// 稳定别名：宿主按不带三元组的 kova-worker(.exe) 拉起，免去运行时解析 host triple
 const aliasExt = process.platform === "win32" ? ".exe" : "";
-const aliasPath = join(outfileDir, `pi-agent${aliasExt}`);
+const aliasPath = join(outfileDir, `kova-worker${aliasExt}`);
 const copy = Bun.spawnSync(["cp", "-f", resolve(pkgRoot, outfile), aliasPath], {
   stdout: "inherit",
   stderr: "inherit",

@@ -33,7 +33,7 @@ export const SAMPLE_FIXTURE: Sample = {
       mem: 5.9 * GB,
       processes: [
         { pid: 33070, name: "Kova 主进程", detail: "/Applications/Kova.app/Contents/MacOS/kova", cpu: 3.7, mem: 1.1 * GB },
-        { pid: 33074, name: "pi-agent 运行时", detail: "/Applications/Kova.app/Contents/MacOS/pi-agent", cpu: 1.4, mem: 1.4 * GB },
+        { pid: 33074, name: "kova-worker 运行时", detail: "/Applications/Kova.app/Contents/Resources/binaries/kova-worker", cpu: 1.4, mem: 1.4 * GB },
         { pid: 33073, name: "网络进程", detail: "com.apple.WebKit.Networking", cpu: 0.1, mem: 0.9 * GB },
         { pid: 33071, name: "GPU 进程", detail: "com.apple.WebKit.GPU", cpu: 0.2, mem: 1.2 * GB },
         { pid: 33120, name: "WebKit 辅助进程", detail: "com.apple.WebKit.WebContent", cpu: 0.0, mem: 1.3 * GB },
@@ -104,7 +104,7 @@ const categories: Category[] = [
   {
     id: "logs",
     label: "日志与崩溃报告",
-    hint: "按天分目录的应用 / pi-agent / 网页日志",
+    hint: "按天分目录的应用 / kova-worker / 网页日志",
     bytes: 466 * MB,
     paths: ["~/Library/Logs/com.kova.assistant"],
     cleanable: true,

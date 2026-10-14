@@ -17,7 +17,7 @@
 #   用户侧唯一出路是终端 xattr,对非开发者等于死路。所以发版前必须确认:
 #     ① bundle 有 _CodeSignature/CodeResources(封印落地)
 #     ② codesign --verify --deep --strict 通过(封印自洽)
-#     ③ Contents/MacOS/* 每个可执行文件都签了(含 sidecar pi-agent)
+#     ③ Contents/MacOS/* 每个可执行文件都签了(含 sidecar kova-worker)
 #     ④ hardened runtime + JIT entitlements 齐(缺 allow-jit 应用"启动即死")
 #   拿到 Developer ID 后追加:
 #     ⑤ spctl accepted(source=Notarized Developer ID)
@@ -125,7 +125,7 @@ verify_app() {
     fi
   done
   if [ -z "$unsigned_exes" ]; then
-    ok "Contents/MacOS/* 全部有签名(含 sidecar pi-agent)"
+    ok "Contents/MacOS/* 全部有签名(含 sidecar kova-worker)"
   else
     bad "可执行文件未签名:${unsigned_exes}"
   fi
