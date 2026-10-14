@@ -34,17 +34,31 @@ bun run build:sidecar          # pi-agent → apps/electron/binaries（含 ping/
 bun run build:renderer         # next build 静态导出 → apps/desktop/out，并自动同步到 renderer-out
 bun run build:main             # 主进程/preload → apps/electron/dist
 
-# 一把梭 + 启动（开发渠道：dev 数据目录）
+# 跑构建产物（等价装机版行为；**没有热更新**，改代码要重新 build）
 bun run build && bun run start
 ```
 
-### 开发模式（热更新）
+### 开发模式（一条命令，三层各自热更）
 
 ```bash
-cd apps/desktop  && bun run dev     # 终端 1：Next dev @ http://localhost:3000
-cd apps/electron && bun run dev     # 终端 2：主进程构建后以 --dev 启动，加载上面的地址
+bun run dev                        # 需要时自动起 next dev(:3000) 并拉起 Electron
+bun run dev -- --remote-debugging-port=9222   # 额外参数透传给 Electron
 ```
-`--dev` 同时把数据目录切到 dev 渠道（见下），与打包的 `Kova Dev.app` 行为一致。
+
+| 改哪里 | 生效方式 | 耗时 |
+|---|---|---|
+| 前端 `apps/desktop/**` | Next dev **HMR**：界面直接变，不重启 | 立即 |
+| 主进程/preload `apps/electron/main·preload/**` | esbuild 重建 → **自动重启 Electron** | ~2s |
+| 侧车 `apps/sidecar/pi-agent/**` | `bun --watch` **原地重启侧车**（app 不动） | <1s |
+
+几点说明：
+- 侧车在开发态**直接跑 `src/index.ts`**（dev.mjs 生成临时包装脚本，经 `PI_AGENT_BIN` 交给宿主）：
+  不必每次编 87MB 单文件、也不牵扯 macOS 产物签名问题；`KOVA_DEV_BINARY=1` 可切回编译产物。
+- `--dev` 同时把数据目录切到 dev 渠道（见下），与打包的 `Kova Dev.app` 一致。
+- 想换数据目录/避免与常开实例抢单实例锁：`KOVA_DATA_DIR=/tmp/kova-dev bun run dev`。
+- 老的"两个终端"手动流程仍可用：`cd apps/desktop && bun run dev` 起前端，另开一个终端
+  `cd apps/electron && bun run dev`（= 构建 main/preload 后 `electron . --dev`）；
+  该路径下改主进程/侧车需要自己重跑，没有自动重启。
 
 ### 打包桌面应用
 
