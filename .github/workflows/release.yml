@@ -30,11 +30,9 @@ jobs:
         # sidecar 构建脚本读 `rustc -vV` 的 host 三元组给产物命名（bun --compile 不需要 cargo）
       - name: Install deps
         run: bun install
-      - name: Build native deps (node-pty)
-        # bun install 默认不跑 postinstall：node-pty 的 .node 不会自己出现，
-        # 漏这步打出来的包里终端是坏的（N-API 编译后 Node/Electron ABI 通用）。
-        # 定位包目录走 scripts/build-native-deps.mjs 的多路径探测，
-        # 不用 require.resolve：bun workspace 下 node-pty 未必提升到根 node_modules。
+      - name: Ensure node-pty native binary
+        # node-pty 1.1.x 自带 prebuilds/<plat>-<arch>/pty.node（N-API 跨 ABI 通用），
+        # 正常无需编译；脚本先校验三个加载位置，缺失才走包自身的 install/postinstall。
         run: node scripts/build-native-deps.mjs
       - name: Build sidecar + renderer + main
         run: bun run build:sidecar && bun run build:renderer && bun run build:main
@@ -62,7 +60,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install deps
         run: bun install
-      - name: Build native deps (node-pty)
+      - name: Ensure node-pty native binary
         shell: bash
         run: node scripts/build-native-deps.mjs
       - name: Build sidecar + renderer + main

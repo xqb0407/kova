@@ -14,6 +14,11 @@ extraResources:
   - from: binaries
     to: binaries
 asar: true
+# node-pty 的原生产物必须留在 asar 外：pty.node 要被 dlopen，Windows 侧还要
+# 从 conpty.node 同目录的 conpty/ 子目录加载 conpty.dll 与 winpty 的 dll/exe。
+# 1.1.x 起走 prebuilds/<plat>-<arch>/，不做显式解包时它可能被塞进 asar。
+asarUnpack:
+  - "**/node_modules/node-pty/**"
 afterPack: scripts/after-pack.cjs
 npmRebuild: false
 mac:
