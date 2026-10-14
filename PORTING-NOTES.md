@@ -223,12 +223,12 @@ Kova Dev.app）一切正常，数据完好（本仓只读过它，未写入）�
 
 **根因**：`bun build --compile` 产物带的是 `flags=adhoc,linker-signed` 的签名，
 `codesign --verify` 报 "code or signature have been modified"；该状态的二进制被
-`cp -f` 成稳定别名 `binaries/pi-agent` 后，Apple Silicon 上内核 `exec` 会**既不运行也不报错
+`cp -f` 成稳定别名（当时叫 `binaries/pi-agent`，现名 `kova-worker`）后，Apple Silicon 上内核 `exec` 会**既不运行也不报错
 地卡死**（不是 SIGKILL，是挂住）。宿主于是永远等不到 `host_result`；侧车初始化闸门里几十步
 `host_query` 每步各等 15s，界面自然"半天拉不出来"。
 
 **判定证据**：同一份字节（md5 相同、大小相同）——`pi-agent-aarch64-apple-darwin` 能跑，
-`pi-agent` 卡死；把它 `cp` 成新名字能跑；`codesign --force --sign -` 后 verify 通过、稳定能跑。
+旧名那份卡死；把它 `cp` 成新名字能跑；`codesign --force --sign -` 后 verify 通过、稳定能跑。
 打包版一直正常，是因为 `afterPack` 的深度 ad-hoc 签名把 bundle 里的二进制重签了一遍。
 
 **修复**：`apps/sidecar/pi-agent/scripts/build-sidecar.ts` 在产出三元组文件与稳定别名后，
@@ -244,5 +244,18 @@ Kova Dev.app）一切正常，数据完好（本仓只读过它，未写入）�
 - 31 个尸体全部产生于修复前（23:33–23:57），修复后（约 00:20 起）几十次启停 + 强杀 **零新增**；
 - 对修复后的实例：`kill -9 <Electron 主进程>` 或 `kill -TERM`，侧车都会**自行退出**（stdin EOF → 优雅关闭），
   两种方式都不留尸体。即"尸体"是坏签名专有现象，不是强杀 app 的副作用。
-- 识别办法：`ps -ax -o pid,ppid,stat,command | grep binaries/pi-agent`——`UE` + `ppid=1` 是尸体；
+- 识别办法：`ps -ax -o pid,ppid,stat,command | grep binaries/kova-worker`——`UE` + `ppid=1` 是尸体；
   `SN`/`S+` 且 ppid 指向 app 主进程是活着的侧车（别杀）。
+
+## 侧车进程改名（2026-10-15）
+
+可执行文件与进程显示名从 `pi-agent` 改为 **`kova-worker`**（活动监视器/任务管理器里看到的就是它）：
+- 构建产出 `kova-worker-<triple>` + 稳定别名 `kova-worker(.exe)`（`build-sidecar.ts`），
+  构建时顺带清掉同目录旧名 `pi-agent*` 产物，避免新旧并存；
+- 宿主解析名与 `PI_AGENT_BIN` → `KOVA_WORKER_BIN`（`main/pi-agent.ts`），dev.mjs 的临时包装同名；
+- 侧车入口设 `process.title = "Kova Worker"` 作为显示名兜底；
+- 侧车日志文件 `pi-agent.log` → `kova-worker.log`；宿主日志标签 `[pi_agent]` → `[worker]`。
+
+**范围刻意限定在"进程/可执行名"**：`pi-agent` 作为项目名、包名（`pi-agent-sidecar`）与
+`PI_*` 协议环境变量（`PI_DB_PATH`/`PI_SESSIONS_DIR`/…）、`pi_request` 等线协议消息名一律不动——
+那些牵涉持久化键与前后端契约，改了会让既有数据/两端不匹配，与"显示名好看"无关。

@@ -143,7 +143,7 @@ if (!gotLock) {
     }
     startAttachmentPruneTimer();
     // 预热拉起 sidecar：自动化调度器必须早于用户首条消息存活
-    void pi.ensureSpawned().catch((e) => logError(`[pi_agent] warm start failed: ${e?.message ?? e}`));
+    void pi.ensureSpawned().catch((e) => logError(`[worker] warm start failed: ${e?.message ?? e}`));
     logInfo(`[kova] electron shell ready (data: ${appDataDir()}, dev=${DEV})`);
   });
 

@@ -78,16 +78,16 @@ export function redactSecrets(input: string): string {
 function sidecarBinaryPath(): string {
   // 打包环境：resources/binaries/；开发环境：apps/electron/binaries/
   const here = __dirname;
-  // Windows 产物带 .exe 后缀（构建脚本在 win 上输出 pi-agent.exe）
-  const names = process.platform === "win32" ? ["pi-agent.exe", "pi-agent"] : ["pi-agent"];
+  // Windows 产物带 .exe 后缀（构建脚本在 win 上输出 kova-worker.exe）
+  const names = process.platform === "win32" ? ["kova-worker.exe", "kova-worker"] : ["kova-worker"];
   const candidates = [
-    process.env.PI_AGENT_BIN ?? "",
+    process.env.KOVA_WORKER_BIN ?? "",
     ...(process.resourcesPath ? names.map((n) => join(process.resourcesPath, "binaries", n)) : []),
     ...names.map((n) => join(here, "..", "binaries", n)),
     ...names.map((n) => join(here, "..", "..", "binaries", n)),
   ].filter(Boolean);
   for (const c of candidates) if (existsSync(c)) return c;
-  throw new Error(`pi-agent sidecar binary not found (looked: ${candidates.join(", ")})`);
+  throw new Error(`kova-worker sidecar binary not found (looked: ${candidates.join(", ")})`);
 }
 
 function dirnameOf(p: string): string {
@@ -152,7 +152,7 @@ export async function ensureSpawned(): Promise<void> {
       stdio: ["pipe", "pipe", "pipe"],
     });
     child = proc as ChildProcessWithoutNullStreams;
-    logInfo("[pi_agent] sidecar spawned");
+    logInfo("[worker] sidecar spawned");
 
     const rl = createInterface({ input: proc.stdout });
     rl.on("line", (line) => void handleLine(line));
@@ -164,7 +164,7 @@ export async function ensureSpawned(): Promise<void> {
     });
 
     proc.on("error", (e) => {
-      logError(`[pi_agent] ${e.message}`);
+      logError(`[worker] ${e.message}`);
       flushChunks();
       emitToWindows("pi-chunk-batch", [
         { l: `{"id":null,"chunk":{"type":"error","errorText":${JSON.stringify(String(e.message))}}}` },
@@ -182,7 +182,7 @@ export async function ensureSpawned(): Promise<void> {
       remote?.notifyTerminated();
       emitToWindows("pi-exit", String(code ?? -1));
       child = null;
-      logWarn(`[pi_agent] terminated ${code}`);
+      logWarn(`[worker] terminated ${code}`);
     });
   })();
   try {

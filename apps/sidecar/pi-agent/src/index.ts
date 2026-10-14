@@ -61,6 +61,14 @@ const DB_PATH = process.env.PI_DB_PATH || "pi-agent.db";
 const SESSIONS_DIR = process.env.PI_SESSIONS_DIR;
 
 async function main() {
+  // 进程显示名：活动监视器 / 任务管理器里看到的是它（二进制名之外的兜底，
+  // 例如有人直接跑 kova-worker-<triple> 或 bun src/index.ts 时）
+  try {
+    process.title = "Kova Worker";
+  } catch {
+    /* 平台不支持则忽略：只是显示名 */
+  }
+
   const sessionsDir = SESSIONS_DIR ?? "./sessions";
   if (SESSIONS_DIR) {
     // 生产：数据层在 Rust 宿主（原 Rust 宿主/src/data.rs）

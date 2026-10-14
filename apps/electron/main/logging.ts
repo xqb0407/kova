@@ -114,7 +114,7 @@ class SourceFile {
 }
 
 const appFile = new SourceFile("app.log");
-const piFile = new SourceFile("pi-agent.log");
+const piFile = new SourceFile("kova-worker.log");
 const webFile = new SourceFile("web.log");
 let initialized = false;
 
