@@ -20,6 +20,7 @@ import {
   providerSetupRetryDelayMs,
   stripOutputLimitFields,
   withoutDerivedOutputLimit,
+  bodyRetryDelayMs,
 } from "../../src/model/provider-retry";
 import { setActiveReqId } from "../../src/protocol/stream";
 import type { Running } from "../../src/types";
@@ -939,5 +940,31 @@ describe("makeUiRetryController", () => {
     expect(chunks[1].data).toEqual({ phase: "resolved" });
     expect(run.providerRetryActive).toBe(false);
     setActiveReqId("th-retry", null);
+  });
+});
+
+describe("bodyRetryDelayMs（429 只在 body 写话术、不给头的网关）", () => {
+  const MAX = 30_000;
+  it("JSON retry_after / 秒 / ms / 分钟话术都提取，单位归一", () => {
+    expect(bodyRetryDelayMs('{"error":{"type":"rate_limit_error"},"retry_after":30}', MAX)).toBe(30_000);
+    expect(bodyRetryDelayMs("Error performing call: retry after 12s.", MAX)).toBe(12_000);
+    expect(bodyRetryDelayMs("Too many requests. Please try again in 34s", MAX)).toBe(30_000); // 封顶
+    expect(bodyRetryDelayMs("retrying after 750ms", MAX)).toBe(750);
+    expect(bodyRetryDelayMs("try again in 2m", MAX)).toBe(30_000); // 分钟单位归一后照样封顶 30s
+  });
+  it("没有话术 / 不认识的句子 → undefined（回落指数退避）", () => {
+    expect(bodyRetryDelayMs("upstream busy, come back later", MAX)).toBeUndefined();
+    expect(bodyRetryDelayMs(undefined, MAX)).toBeUndefined();
+    expect(bodyRetryDelayMs("", MAX)).toBeUndefined();
+  });
+  it("优先序：响应头压过 body 话术；无头时话术生效；都没有走退避", () => {
+    const msg = "retry after 12s";
+    expect(
+      providerRateLimitDelayMs(1, { "retry-after": "3" }, 0, 0, msg),
+    ).toBe(3_000);
+    expect(providerRateLimitDelayMs(1, {}, 0, 0, msg)).toBe(12_000);
+    const fallback = providerRateLimitDelayMs(1, {}, 0, 0, undefined);
+    expect(fallback).toBeGreaterThanOrEqual(2_000); // INITIAL 2s（jitter 0）
+    expect(fallback).toBeLessThanOrEqual(2_500);
   });
 });

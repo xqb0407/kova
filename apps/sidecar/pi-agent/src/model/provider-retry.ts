@@ -213,13 +213,46 @@ function boundedServerDelay(
 }
 
 /**
+ * 请求体话术里的重试延迟：大量 OpenAI 兼容/Anthropic 网关只在 429 的
+ * **body** 写 `retry after 12s` / `try again in 34s` / `{"retry_after":30}`，
+ * 不给响应头。优先序仍是头优先（更接近权威），话术提取只作兜底；结果与
+ * 头一样封顶——话术撒谎最多是白等，不会比默认退避更糟。
+ */
+export function bodyRetryDelayMs(
+  message: string | undefined,
+  maxDelayMs: number,
+): number | undefined {
+  if (!message) return undefined;
+  const patterns: RegExp[] = [
+    /"retry_after"\s*:\s*"?(\d+(?:\.\d+)?)(ms|milliseconds|s|secs?|seconds?)?/i,
+    /retry(?:ing)?\s+after\s+(\d+(?:\.\d+)?)\s*(ms|milliseconds|s|secs?|seconds?|mins?|minutes?)/i,
+    /try again in (\d+(?:\.\d+)?)\s*(ms|milliseconds|s|secs?|seconds?|mins?|minutes?|m)/i,
+    /please retry (?:your request )?in (\d+(?:\.\d+)?)\s*(ms|milliseconds|s|secs?|seconds?|mins?|minutes?)/i,
+  ];
+  for (const re of patterns) {
+    const m = re.exec(message);
+    if (!m) continue;
+    const value = Number.parseFloat(m[1]);
+    if (!Number.isFinite(value)) continue;
+    const unit = (m[2] ?? "s").toLowerCase();
+    let ms: number;
+    if (unit === "ms" || unit.startsWith("millisecond")) ms = value;
+    else if (unit === "m" || unit.startsWith("min")) ms = value * 60_000;
+    else ms = value * 1000;
+    return boundedServerDelay(ms, maxDelayMs);
+  }
+  return undefined;
+}
+
+/**
  * 按 OpenCode 的优先序读服务端要求的延迟：provider 毫秒头 → `Retry-After`
- * 秒数 → `Retry-After` HTTP-date。没有可用头时返回 undefined。
+ * 秒数 → `Retry-After` HTTP-date → 错误文本话术兜底。都没有时返回 undefined。
  */
 function serverRetryDelayMs(
   headers: Readonly<Record<string, string>> | undefined,
   maxDelayMs: number,
   now: number,
+  errorMessage?: string,
 ): number | undefined {
   const retryAfterMs = headerValue(headers, "retry-after-ms");
   if (retryAfterMs !== undefined && retryAfterMs.trim() !== "") {
@@ -238,7 +271,7 @@ function serverRetryDelayMs(
       return boundedServerDelay(dateMs, maxDelayMs);
     }
   }
-  return undefined;
+  return bodyRetryDelayMs(errorMessage, maxDelayMs);
 }
 
 /**
@@ -250,11 +283,13 @@ export function providerRateLimitDelayMs(
   headers?: Readonly<Record<string, string>>,
   now = Date.now(),
   random = Math.random(),
+  errorMessage?: string,
 ): number {
   const serverDelay = serverRetryDelayMs(
     headers,
     PROVIDER_RATE_LIMIT_MAX_DELAY_MS,
     now,
+    errorMessage,
   );
   if (serverDelay !== undefined) return serverDelay;
 
@@ -279,12 +314,14 @@ export function providerSetupRetryDelayMs(
   random?: number,
   headers?: Readonly<Record<string, string>>,
   now = Date.now(),
+  errorMessage?: string,
 ): number {
   void random;
   const serverDelay = serverRetryDelayMs(
     headers,
     PROVIDER_SETUP_MAX_RETRY_DELAY_MS,
     now,
+    errorMessage,
   );
   // 服务端自报的延迟无条件生效，哪怕短于调用方下限：网关知道自己何时恢复。
   if (serverDelay !== undefined) return serverDelay;
@@ -564,11 +601,16 @@ export function createProviderRetryStream(
           ? providerRateLimitDelayMs(
               retry.attempt,
               controller.headers(),
+              undefined,
+              undefined,
+              retry.error.message,
             )
           : providerSetupRetryDelayMs(
               retry.attempt,
               undefined,
               controller.headers(),
+              undefined,
+              retry.error.message,
             );
       controller.onRetry?.({
         error: retry.error,
