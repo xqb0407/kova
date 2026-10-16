@@ -497,6 +497,22 @@ function persistableCwd(cwd: string | undefined): string | undefined {
   return cwd;
 }
 
+/**
+ * 补绑闸（"草稿会话"判定）：只有一条用户消息都没产生过的会话，才允许被
+ * **请求携带的 cwd** 补绑工作目录。
+ *
+ * 为什么必须有这道闸：prompt 恒携带"当前全局 workspace"（前端 pi-client-base
+ * 的 sendPrompt），而补绑会把 cwd 写进索引行与 JSONL header（数据库可见）。
+ * 没有闸时：切到一个很久以前创建的无目录旧会话、发一条消息，它就被"此刻恰
+ * 好打开的项目"永久收养——侧栏里从全局区跑进该项目分组，用户看到的就是
+ * "全局会话莫名其妙进了项目"（2026-10 实报）。
+ *
+ * 保留的原始意图：先开对话（草稿）→ 之后才选工作目录 → 首条消息/上下文
+ * 面板请求把目录补上。显式换目录通道（set_session_cwd）不受此闸约束。
+ */
+const hasNoUserTurn = (messages: readonly { role?: string }[]): boolean =>
+  !messages.some((m) => m.role === "user");
+
 export async function resolveSession(
   threadId: string,
   sessionId?: string,
@@ -506,8 +522,9 @@ export async function resolveSession(
   const existing = running.get(threadId);
   if (existing) {
     // 会话已存在也要补绑：建会话时未选目录（persistedCwd 空）而这次请求带了
-    // cwd —— 典型场景是先开了对话/先点了上下文面板，之后才选工作目录
-    if (safeCwd && !existing.persistedCwd) {
+    // cwd —— 典型场景是先开了对话/先点了上下文面板，之后才选工作目录。
+    // 闸：仅草稿会话（hasNoUserTurn）——有过对话的旧会话不再被消息里的 cwd 收养
+    if (safeCwd && !existing.persistedCwd && hasNoUserTurn(existing.agent.state.messages)) {
       await rebindRunCwd(existing, safeCwd, threadId);
     }
     touchSession(threadId);
@@ -525,7 +542,11 @@ export async function resolveSession(
       if (owner.threadId !== threadId && threadQuiescent(owner.threadId)) {
         await rebindRunThread(owner.run, owner.threadId, threadId);
       }
-      if (safeCwd && !owner.run.persistedCwd) {
+      if (
+        safeCwd &&
+        !owner.run.persistedCwd &&
+        hasNoUserTurn(owner.run.agent.state.messages)
+      ) {
         // 用 run 的当前驻留键（改绑后即新键；未改绑仍是旧键）重建工具，
         // 保证工具闭包与 run.threadId 永远同键
         await rebindRunCwd(owner.run, safeCwd, owner.run.threadId);
@@ -632,6 +653,17 @@ export async function resolveSession(
       } catch {
         // kv 不可用/损坏：保持默认
       }
+      // 生效档位当场落进偏好行。不落的话这两列会一直是 NULL，而 NULL 在重建时
+      // 按 decodeApprovalLevel 解码回 ask——同一条对话就出现「被驱逐重建后突然
+      // 开始弹卡」「重启后从完全访问变回变更前确认」这类漂移。落的是 run 真正
+      // 要用的值，从此建会话（kv）、重建（偏好行）、UI 水合三处读的是同一个数。
+      // 失败只记日志：档位本身已经生效，落不上退化为旧行为（重建后按 NULL 兜底）
+      void sessionPrefsSet(sessionId!, {
+        mode: initialMode,
+        approvalLevel: initialApproval,
+      }).catch((err) =>
+        logErr(`new session mode prefs seed failed (session=${sessionId}):`, err),
+      );
     }
   }
 
@@ -885,8 +917,11 @@ export async function resolveSession(
       source: restoredMessages.length > 0 ? "resume" : "create",
     }),
   );
-  // 恢复的历史会话同样补绑：老会话建时未选目录（row.cwd 空）而这次请求带了 cwd
-  if (safeCwd && !persistedCwd) await rebindRunCwd(run, safeCwd, threadId);
+  // 恢复的历史会话同样补绑：老会话建时未选目录（row.cwd 空）而这次请求带了 cwd。
+  // 闸：仅草稿会话——有对话记录的旧会话被恢复时，不再让请求里的 cwd 改写归属
+  if (safeCwd && !persistedCwd && hasNoUserTurn(restoredMessages)) {
+    await rebindRunCwd(run, safeCwd, threadId);
+  }
   // 迭代2：本次 resolve 代表用户当前意图，豁免驱逐；驱逐从最久未访问处开始
   enforceResidency(threadId);
   return run;
