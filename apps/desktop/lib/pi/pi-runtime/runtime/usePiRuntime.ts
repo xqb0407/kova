@@ -63,6 +63,7 @@ import {
   purgeThreadPanelTabs,
   rekeyPanelThread,
 } from "@/lib/panels/panel-tabs";
+import { rekeyPanelOpenPref } from "@/lib/panels/panel-open-pref";
 import { purgeThreadTurns } from "@/lib/panels/turn-collapse";
 import { registerPerfProbeSource } from "@/lib/perf-probe";
 
@@ -78,6 +79,8 @@ type PiControllerRegistry = {
   /** The client these controllers are bound to (a new client ⇒ a new registry). */
   client: PiClient;
   controllers: Map<string, PiThreadController>;
+  /** 最近一次取用/创建时刻（淘汰冷却，见 CONTROLLER_EVICT_GRACE_MS） */
+  touchedAt: Map<string, number>;
   readonly disposed: boolean;
   activate(): void;
   dispose(): void;
@@ -93,10 +96,13 @@ let lastRegistry: PiControllerRegistry | null = null;
 
 const createRegistry = (client: PiClient): PiControllerRegistry => {
   const controllers = new Map<string, PiThreadController>();
+  /** 最近一次被取用/创建的时刻（淘汰冷却用，见 getController） */
+  const touchedAt = new Map<string, number>();
   let disposed = false;
   const registry: PiControllerRegistry = {
     client,
     controllers,
+    touchedAt,
     get disposed() {
       return disposed;
     },
@@ -114,22 +120,36 @@ const createRegistry = (client: PiClient): PiControllerRegistry => {
   return registry;
 };
 
+/** 淘汰冷却：创建后/最近使用后这段时间内绝不淘汰。刚创建的控制器在 effect
+ *  订阅之前 hasConsumers() 为 false，同一渲染趟里的后续创建会把它当作"空闲"
+ *  误淘——被淘掉的却是当前会话正在挂载的实例，于是每趟渲染都重建：
+ *  `[controller]` 挂载 effect 重跑 load() → 发布 loading → 全量通知 → 再渲染，
+ *  和 store「每次提交都 notify」的泵叠成同步嵌套自环（Maximum update depth
+ *  exceeded，界面完全卡死）。冷却只推迟空闲释放，常态下仍按上限回收。 */
+const CONTROLLER_EVICT_GRACE_MS = 15_000;
+
 const getController = (registry: PiControllerRegistry, threadId: string) => {
-  const { controllers } = registry;
+  const { controllers, touchedAt } = registry;
   const existing = controllers.get(threadId);
   if (existing) {
     // LRU touch：Map 迭代序=插入序，删了再插把它沉到尾（最近使用）
     controllers.delete(threadId);
     controllers.set(threadId, existing);
+    touchedAt.set(threadId, Date.now());
     return existing;
   }
   const controller = new PiThreadController(registry.client, threadId);
+  touchedAt.set(threadId, Date.now());
   controllers.set(threadId, controller);
   if (controllers.size > MAX_CACHED_CONTROLLERS) {
+    const now = Date.now();
     for (const [id, cached] of controllers) {
       if (controllers.size <= MAX_CACHED_CONTROLLERS) break;
       if (id === threadId || cached.isInUse()) continue;
+      // 冷却期内（含"刚创建尚未订阅"）一律不淘汰
+      if (now - (touchedAt.get(id) ?? 0) < CONTROLLER_EVICT_GRACE_MS) continue;
       controllers.delete(id);
+      touchedAt.delete(id);
       try {
         cached.dispose();
       } catch (error) {
@@ -689,13 +709,19 @@ const useRuntimeHook = (
   registry: PiControllerRegistry,
   options: PiRuntimeOptions,
 ) => {
-  const threadListItem = useAuiState((state) => state.threadListItem);
+  // 切片纪律（卡死修复）：只选 primitive，绝不返回整个对象。
+  // s.threadListItem 是派生对象切片，特定时序下每次读取都会换引用；配合 store
+  // 「每次提交都 notifySubscribers」的泵，会形成 forceStoreRerender → commit →
+  // notify 的同步嵌套自环（Maximum update depth exceeded，界面卡死）。
+  // 拆成三个 primitive 切片后语义不变，身份抖动无从传播。
   const isMainThread = useAuiState(
     (state) => state.threads.mainThreadId === state.threadListItem.id,
   );
+  const itemExternalId = useAuiState((state) => state.threadListItem.externalId);
+  const itemRemoteId = useAuiState((state) => state.threadListItem.remoteId);
   const threadId = options.cloud
-    ? threadListItem.externalId
-    : (threadListItem.externalId ?? threadListItem.remoteId);
+    ? itemExternalId
+    : (itemExternalId ?? itemRemoteId);
 
   // No render-local cache on top: `getController` is already an idempotent
   // registry lookup, and a second cache could outlive a recreated registry.
@@ -802,6 +828,8 @@ export const usePiRuntime = (options: PiRuntimeOptions): AssistantRuntime => {
       // 面板标签桶随绑定从草稿 id 迁到 sessionId 键下：刷新/重启后线程行
       // id 就是 sessionId，桶才接得上（含当前指针）
       if (threadId) rekeyPanelThread(threadId, remoteId);
+      // 面板开合的会话分区记录同点迁移：草稿期开的"开着"要跟到 sessionId 键下
+      if (threadId) rekeyPanelOpenPref(threadId, remoteId);
       // 会话级选择的补写：草稿期（尚无 sessionId）选的模型/思考档位/工作模式只记在
       // 前端内存，此刻 sessionId 已绑定、会话行已建，定靶落库后首条消息即用该选择应答
       //（三者均 fire-and-forget 语义：内部自吞失败并回退显示）

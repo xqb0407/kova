@@ -17,7 +17,7 @@
  *   KOVA_DEV_URL=…     渲染层地址（默认 http://localhost:3000）
  *   KOVA_DATA_DIR=…    数据目录（默认 dev 渠道库；换沙箱可避免与常开实例抢单实例锁）
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,6 +77,70 @@ async function reachable(url, timeoutMs = 800) {
   } catch {
     return false;
   }
+}
+
+/**
+ * 回收僵死的渲染层 next 进程。
+ *
+ * 场景（今天复现过三次的坑）：上一个 dev 会话被强杀/退出不干净，留下一个
+ * "活着但不服务"的 next-server——端口探测不通（走不到复用分支），但 Next 的
+ * 进程锁还在，新 `next dev` 直接报 "Another next dev server is already
+ * running" 退出，整个 `bun run dev` 起不来。
+ *
+ * 判定纪律：
+ * - **只在本函数被调用时执行**（调用点已确认 devUrl 探测不通，故此路径上任何
+ *   自家 next 进程都属于僵死残留）；
+ * - 包装进程（`.../apps/desktop/node_modules/.bin/next dev`）按仓库路径精确
+ *   认定；next-server 会改写进程标题、丢路径，改按"占用 devUrl 端口"认定，
+ *   且只认 next 系命令行，其他服务绝不误伤。
+ */
+function reclaimStaleRenderer() {
+  const killed = [];
+  const kill = (pid, why) => {
+    try {
+      process.kill(pid, "SIGKILL");
+      killed.push(`${pid}（${why}）`);
+    } catch {
+      /* 已退出或无权 */
+    }
+  };
+
+  // ① 本仓的 next dev 包装进程：命令行含仓库路径，可精确认定
+  try {
+    const out = execFileSync("ps", ["-eo", "pid=,command="], { encoding: "utf8" });
+    for (const line of out.split("\n")) {
+      const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (!m) continue;
+      const pid = Number(m[1]);
+      const cmd = m[2] ?? "";
+      if (cmd.includes("dev.mjs")) continue;
+      if (!cmd.includes(root) || !/next/.test(cmd)) continue;
+      kill(pid, "本仓 next dev 残留");
+    }
+  } catch {}
+
+  // ② 占用 devUrl 端口的 next-server（标题被改写、无路径，按端口+命令行认定）
+  const port = new URL(devUrl).port || "80";
+  try {
+    const out = execFileSync(
+      "lsof",
+      ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"],
+      { encoding: "utf8" },
+    );
+    for (const raw of out.split(/\s+/).filter(Boolean)) {
+      const pid = Number(raw);
+      let cmd = "";
+      try {
+        cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+          encoding: "utf8",
+        }).trim();
+      } catch {}
+      if (!/next-server|next dev/.test(cmd)) continue;
+      kill(pid, `占用 ${port} 的 next-server`);
+    }
+  } catch {}
+
+  return killed;
 }
 
 async function waitForUrl(url, label, timeoutMs = 90_000) {
@@ -194,6 +258,15 @@ if (useBinary) {
 if (await reachable(devUrl)) {
   log(`渲染层：复用已在运行的 ${devUrl}`);
 } else {
+  // 探测不通 ≠ 没有服务在跑：先给一次长探测（另一端可能正在启动，800ms 探测
+  // 会误判），仍不通才按"僵死残留"回收（见 reclaimStaleRenderer）
+  if (!(await reachable(devUrl, 3_000))) {
+    const reclaimed = reclaimStaleRenderer();
+    if (reclaimed.length > 0) {
+      log(`渲染层：回收僵死进程 ${reclaimed.join("、")}，重新启动`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
   track(
     spawn("bun", ["run", "--filter", "desktop", "dev"], { cwd: root, stdio: "inherit" }),
   );

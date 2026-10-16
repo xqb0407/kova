@@ -4,7 +4,7 @@
 // 监听器、快照按队列出队（可塞 deferred 挂起）、sendMessage 可挂起。
 
 import { describe, expect, it } from "bun:test";
-import { PiThreadController } from "./ThreadController";
+import { buildPiSendInput, PiThreadController } from "./ThreadController";
 import type { AppendMessage } from "@assistant-ui/react";
 import type { PiClient, PiClientEvent, PiThreadSnapshot } from "../types";
 
@@ -379,5 +379,126 @@ describe("reloadMessage 乐观镜像去重（截断后数组收缩的时序）",
     expect(optimisticResidue(controller)).toBe(false);
     // 旧轮行已随乐观本地截断移除：投影 = 前两行 + 回显
     expect(controller.getProjectedMessages()).toHaveLength(3);
+  });
+});
+
+// —— 卡死回归（2026-10-16）——
+// 症状：侧边栏快速切换会话后界面完全卡死（Maximum update depth exceeded 风暴）。
+// 归因：控制器缓存把「渲染期刚建、effect 尚未订阅」的实例当空闲淘汰 → 挂载
+// effect [controller] 每趟重跑 → load() 无条件回写 loadState("loading") →
+// 发布 + 全量通知 → store「每次提交都 notify」的泵把它放大成
+// forceStoreRerender → commit → notify 的同步嵌套自环。
+// 本组用例锁住 load() 侧的不变式：已加载的会话重复 load 不得再改写状态。
+describe("load() 幂等（卡死回归）", () => {
+  it("已加载的会话再次 load() 不再回写 loading 态（重挂触发的冷读只做后台刷新）", async () => {
+    const recorded: Recorded[] = [];
+    const controller = await loadedController([user(1, "hi")], recorded);
+
+    const seen: string[] = [];
+    const unsubscribe = controller.subscribe(() => {
+      seen.push(controller.getStateSnapshot().loadState);
+    });
+
+    // 模拟挂载 effect 重跑（切回/重挂/控制器抖动）触发的冷读
+    await controller.load();
+
+    // 关键不变式：不得把已加载的界面打回 loading（每次回写都是一次全量
+    // 发布；挂载抖动下就是卡死自环的燃料）。后台快照刷新本身允许。
+    expect(seen).not.toContain("loading");
+    expect(seen.every((state) => state === "loaded")).toBe(true);
+    unsubscribe();
+  });
+
+  it("首次加载仍回写 loading 态（pending → loading），强制刷新保持原语义", async () => {
+    const recorded: Recorded[] = [];
+    const controller = new PiThreadController(
+      makeClient([user(1, "hi")], recorded),
+      "thread-1",
+    );
+    const states: string[] = [];
+    const unsubscribe = controller.subscribe(() => {
+      states.push(controller.getStateSnapshot().loadState);
+    });
+
+    const first = controller.load();
+    expect(controller.getStateSnapshot().loadState).toBe("loading");
+    await first;
+    expect(controller.getStateSnapshot().loadState).toBe("loaded");
+    expect(states).toContain("loading");
+    unsubscribe();
+  });
+});
+
+
+// —— 引用（SelectionToolbar「询问」）——
+// 库把引用放在 AppendMessage.metadata.custom.quote（不占 content）。发送前
+// 必须把引用文本以 Markdown 引用块前置进正文：模型才看得到"针对哪段文字"，
+// 且引用随转录持久化（投影侧按同约定还原成引用块渲染，见 messageProjection）。
+describe("buildPiSendInput 引用（「询问」）", () => {
+  const withQuote = (text: string, quote: string | undefined): AppendMessage =>
+    ({
+      role: "user",
+      content: text ? [{ type: "text", text }] : [],
+      createdAt: new Date(0),
+      metadata: quote !== undefined ? { custom: { quote: { text: quote, messageId: "m-1" } } } : {},
+    }) as unknown as AppendMessage;
+
+  it("引用以 Markdown 引用块前置进正文", () => {
+    expect(buildPiSendInput(withQuote("问题是什么？", "引用的原文"), undefined).content).toBe(
+      "> 引用的原文\n\n问题是什么？",
+    );
+  });
+
+  it("多行引用逐行加前缀", () => {
+    expect(buildPiSendInput(withQuote("", "第一行\n第二行"), undefined).content).toBe(
+      "> 第一行\n> 第二行",
+    );
+  });
+
+  it("只选引用不写正文也能发出（纯询问）", () => {
+    expect(buildPiSendInput(withQuote("", "引用的原文"), undefined).content).toBe(
+      "> 引用的原文",
+    );
+  });
+
+  it("无引用不改动正文", () => {
+    expect(buildPiSendInput(withQuote("你好", undefined), undefined).content).toBe("你好");
+  });
+
+  it("空/空白引用视作无引用", () => {
+    expect(buildPiSendInput(withQuote("你好", "   "), undefined).content).toBe("你好");
+  });
+});
+
+
+// —— 代码引用芯片（文件视图「引用到对话」）——
+// 芯片以 :code[...] 序列化文本活在输入框里；发送时必须展开成
+// `@path (lines N-M)` 引用形式（模型看到引用，内容由 agent 按行号自己读）。
+describe("buildPiSendInput 代码引用芯片", () => {
+  const withChip = (text: string): AppendMessage =>
+    ({
+      role: "user",
+      content: [{ type: "text", text }],
+      createdAt: new Date(0),
+      metadata: {},
+    }) as unknown as AppendMessage;
+  const chip = (path: string, start: number, end: number) =>
+    `:code[${path}:${start}${start === end ? "" : `-${end}`}]{name=code:${path}:${start}${start === end ? "" : `-${end}`}}`;
+
+  it("芯片展开成 @path (lines N-M)，正文保留", () => {
+    const built = buildPiSendInput(
+      withChip(`看下 ${chip("src/foo.ts", 11, 16)} 这段`),
+      undefined,
+    );
+    expect(built.content).toBe("看下 @src/foo.ts (lines 11-16) 这段");
+  });
+
+  it("整条消息只有芯片（纯引用直接发）", () => {
+    const built = buildPiSendInput(withChip(chip("src/foo.ts", 12, 12)), undefined);
+    expect(built.content).toBe("@src/foo.ts (line 12)");
+  });
+
+  it("无芯片的普通消息不改动", () => {
+    expect(buildPiSendInput(withChip("你好"), undefined).content).toBe("你好");
   });
 });

@@ -12,6 +12,13 @@
  * 代价是系统性偏小：阻塞往往起在上一次 tick 之后，那段没被计到，最多少算
  * 一个 TICK_MS（实测 1200ms 的阻塞测出 900ms，3600ms 测出 3100ms）。当作
  * 「量级」看没问题，别拿它做回归基线。
+ *
+ * 漂移法有一个必须显式排除的假卡顿来源：窗口被遮挡/最小化时页面转 hidden，
+ * 浏览器把定时器降频（秒级 → 分钟级），恢复可见时逾期任务又被立刻补跑。
+ * 这段间隔里主线程并没有被占住，但回焦后的第一拍会把它整段算成阻塞——表现
+ * 为「切到别的软件再切回来必弹一次界面冻结」。所以判定要求「自上次采样以来
+ * 时钟一直可信」，隐藏期间与跨可见性变化的那一拍只对齐基准、不判定
+ * （见 isMeasureableGap）。
  */
 import { reportFrontendWarning } from "@/lib/frontend-logging";
 
@@ -53,6 +60,8 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let observer: PerformanceObserver | null = null;
 let lastTick = 0;
 let lastFreezeToast = 0;
+/** 最近一次「时钟不可信」的时刻：页面可见性变化 / 从冻结恢复 */
+let lastClockUnstableAt = 0;
 let options: PerfWatchOptions = {};
 /** 事件按时间正序，尾部是最新 */
 const events: JankEvent[] = [];
@@ -140,14 +149,43 @@ function record(
 function announce(event: JankEvent, isNew: boolean): void {
   if (isNew) {
     const time = new Date(event.at).toTimeString().slice(0, 8);
+    const src = event.source === "longtask" ? "longtask" : "计时器";
     reportFrontendWarning(
-      `[卡顿] ${event.kind === "freeze" ? "界面冻结" : "主线程卡顿"} ${event.ms}ms @ ${time}`,
+      `[卡顿] ${event.kind === "freeze" ? "界面冻结" : "主线程卡顿"} ${event.ms}ms（${src}）@ ${time}`,
     );
   }
   if (event.kind === "freeze" && event.at - lastFreezeToast >= FREEZE_TOAST_COOLDOWN_MS) {
     lastFreezeToast = event.at;
     options.onFreeze?.(event);
   }
+}
+
+/**
+ * 标记一次「时钟不可信」：页面被隐藏期间 Chromium 会把定时器降频（先是秒级，
+ * 超预算后分钟级），恢复可见时逾期任务又会被立刻补跑——回焦后的第一拍于是
+ * 可能测到整段隐藏时长，被记成主线程冻结。踩个点，跨过它的间隔一律丢弃。
+ */
+function markClockUnstable(): void {
+  lastClockUnstableAt = now();
+}
+
+/**
+ * 这一拍能不能用来判定卡顿。两个否定条件：
+ * - 此刻页面不可见：定时器正被降频，间隔不代表主线程被占用；
+ * - 上一拍之后发生过可见性变化：这一格里夹着被挂起/降频的时间，无法归因于
+ *   主线程（`prevTick > lastClockUnstableAt` 即「自上次采样以来时钟一直可信」）。
+ *
+ * 只看 hidden 是不够的：降频期间的下一拍可能落在「已经可见」之后，届时
+ * `document.hidden` 已是 false，测到的却是整段隐藏时长——这正是「切到别的
+ * 软件再切回来必弹一次界面冻结」的成因。
+ */
+export function isMeasureableGap(
+  prevTick: number,
+  clockUnstableAt: number,
+  hidden: boolean,
+): boolean {
+  if (hidden) return false;
+  return prevTick > clockUnstableAt;
 }
 
 function tick(): void {
@@ -157,8 +195,10 @@ function tick(): void {
     lastTick = t;
     return;
   }
+  // 不可判定（页面隐藏 / 间隔里发生过可见性变化）时只对齐基准：
   // 后台标签页的 setInterval 会被浏览器降频到分钟级，测出来的全是假卡顿
-  if (typeof document !== "undefined" && document.hidden) {
+  const hidden = typeof document !== "undefined" && document.hidden;
+  if (!isMeasureableGap(lastTick, lastClockUnstableAt, hidden)) {
     lastTick = t;
     return;
   }
@@ -176,7 +216,15 @@ export function installPerfWatch(opts: PerfWatchOptions = {}): void {
   options = opts;
   lastTick = 0;
   lastFreezeToast = 0;
+  lastClockUnstableAt = 0;
   installLongtask();
+  // 可见性变化与「从冻结恢复」（Page Lifecycle）都要踩点：两者都意味着定时器
+  // 可能被挂起过。resume 在多数宿主上根本不触发，多挂无害——removeEventListener
+  // 用同一个函数引用，重复安装/卸载不会累积监听
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", markClockUnstable);
+    document.addEventListener("resume", markClockUnstable);
+  }
   timer = setInterval(tick, TICK_MS);
 }
 
@@ -186,6 +234,10 @@ export function uninstallPerfWatch(): void {
   observer?.disconnect();
   observer = null;
   lastTick = 0;
+  if (typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", markClockUnstable);
+    document.removeEventListener("resume", markClockUnstable);
+  }
 }
 
 /** 取最近一段时间的卡顿记录，给崩溃反馈 / 排查当上下文用 */

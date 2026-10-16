@@ -10,6 +10,11 @@
 //   旧行不等截断后快照回程、确认服务端截断后立即在内存移除，与重发压入的
 //   新气泡同一提交帧上新旧互换——否则带图会话快照回程慢，新气泡先上屏、
 //   旧行滞留，视觉顺序颠倒。
+// - 隐藏页面合并刷新改走定时器（2026-10-16 回焦首帧长任务修复，见
+//   defaultScheduleNotify）：rAF 在隐藏页不跑，整段隐藏期的 message_update
+//   原本会憋到回焦第一帧一次性渲染（流式期间跳过的代码高亮这时集中补上，
+//   叠加布局与贴尾滚动就是一次秒级长任务，被卡顿看门狗记成界面冻结）。
+//   defaultScheduleNotify 因此从模块私有变为具名导出，供单测覆盖。
 
 /**
  * Per-thread controller: bridges Pi client events into a snapshot-authoritative
@@ -42,7 +47,9 @@ import { isKnownPiClientEventType } from "../eventTypes";
 import {
   createPiProjectionCache,
   projectPiThreadMessagesShared,
+  quoteToMarkdownBlock,
 } from "./messageProjection";
+import { expandCodeDirectives } from "@/lib/composer/code-reference";
 import { noteSpan } from "@/components/debug/perf-store";
 import {
   responseForApproval,
@@ -137,7 +144,16 @@ export interface PiThreadControllerLike {
   dispose(): void;
 }
 
-const defaultScheduleNotify: PiNotificationScheduler = (flush) => {
+export const defaultScheduleNotify: PiNotificationScheduler = (flush) => {
+  // 隐藏页面 rAF 不跑，继续挂在 rAF 上等于把整段隐藏期间的 message_update
+  // 攒到回焦第一帧一次性渲染——隐藏期可能长达分钟级（流式期间跳过高亮的代码
+  // 块也正好在这一帧集中补高亮），首帧因此被顶成秒级长任务。退回定时器给合并
+  // 窗口一个上限：隐藏页的定时器本身会被降频到秒级/分钟级，总渲染量不变，
+  // 只是不再全部堆在同一帧。
+  if (typeof document !== "undefined" && document.hidden) {
+    setTimeout(flush, 16);
+    return;
+  }
   if (typeof globalThis.requestAnimationFrame === "function") {
     globalThis.requestAnimationFrame(() => flush());
     return;
@@ -212,6 +228,29 @@ export const appendMessageParts = (message: AppendMessage) => [
   ...(message.attachments?.flatMap((a) => a.content ?? []) ?? []),
 ];
 
+/** AppendMessage 携带的引用（SelectionToolbar「询问」）。库把引用放在
+ *  metadata.custom.quote（QuoteInfo = { text, messageId }），不占 content——
+ *  空文本引用直接忽略，其余原样透传。 */
+export const appendMessageQuote = (
+  message: AppendMessage,
+): { text: string; messageId?: string } | undefined => {
+  const custom = (
+    message.metadata as { custom?: { quote?: unknown } } | undefined
+  )?.custom;
+  const quote = custom?.quote as
+    | { text?: unknown; messageId?: unknown }
+    | undefined;
+  if (!quote || typeof quote.text !== "string" || quote.text.trim() === "") {
+    return undefined;
+  }
+  return {
+    text: quote.text,
+    ...(typeof quote.messageId === "string"
+      ? { messageId: quote.messageId }
+      : {}),
+  };
+};
+
 export const buildPiSendInput = (
   message: AppendMessage,
   streamingBehavior: "followUp" | "steer" | undefined,
@@ -237,8 +276,24 @@ export const buildPiSendInput = (
     }
   }
 
+  // 引用（「询问」）：把引用文本以 Markdown 引用块前置进正文——模型因此看到
+  // "针对哪段文字"的完整上下文；只要引用没有正文也照样发出（纯询问"这段是
+  // 什么意思"）。投影侧按同一条约定还原成引用块渲染（splitLeadingQuoteBlock）
+  const quote = appendMessageQuote(message);
+  // 代码引用芯片（`:code[...]`，文件视图选区「引用到对话」插入）：展开成
+  // `@path (lines N-M)` 引用形式——模型看到标准引用，代码内容由 agent 用
+  // 文件工具按行号自己读（见 lib/composer/code-reference 的设计说明）
+  const userText = textChunks
+    .map((chunk) => expandCodeDirectives(chunk))
+    .join("\n\n");
+  const content = quote
+    ? userText
+      ? `${quoteToMarkdownBlock(quote.text)}\n\n${userText}`
+      : quoteToMarkdownBlock(quote.text)
+    : userText;
+
   return {
-    content: textChunks.join("\n\n"),
+    content,
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(files.length > 0 ? { files } : {}),
     ...(streamingBehavior ? { streamingBehavior } : {}),
@@ -308,11 +363,16 @@ const appendMessageFromUserProjection = (
   // 本版本 AppendMessage 必填 createdAt/metadata（含 custom）与
   // parentId/sourceId/runConfig；重发链路只消费 role/content
   // （buildPiSendInput），其余补占位值即可。
+  // 引用随 metadata 一起带回：投影把引用还原成 metadata.custom.quote（正文里
+  // 已剥掉引用块），重发/编辑若丢掉它，重发的 prompt 就少了引用文本
+  const carriedQuote = (
+    message.metadata as { custom?: { quote?: unknown } } | undefined
+  )?.custom?.quote;
   return {
     role: "user",
     content: parts,
     createdAt: new Date(),
-    metadata: { custom: {} },
+    metadata: { custom: carriedQuote ? { quote: carriedQuote } : {} },
     parentId: null,
     sourceId: null,
     runConfig: undefined,
@@ -543,7 +603,14 @@ export class PiThreadController implements PiThreadControllerLike {
   public async load(force = false) {
     if (this.loadPromise && !force) return this.loadPromise;
 
-    this.setState({ ...this.state, loadState: "loading" });
+    // 冷读已完成的会话（切回/重挂触发）不再回写 loadState：每次回写都会
+    // 「发布 → 全量通知」，而 store 每次提交都会 notifySubscribers；在挂载抖动
+    // （控制器重建等）下这会放大成 forceStoreRerender → commit → notify 的
+    // 同步嵌套自环（Maximum update depth exceeded / 界面卡死）。后台刷新照旧
+    // 取快照；首次加载（pending）与强制刷新（refresh()）保持原 loading 语义。
+    if (force || this.state.loadState !== "loaded") {
+      this.setState({ ...this.state, loadState: "loading" });
+    }
     const sequenceAtStart = this.state.lastSeq;
 
     const request = this.client
