@@ -1,19 +1,19 @@
 # Checkpoint（回合级改动快照与 Undo）实现计划
 
-> 参考实现：`/Users/herther/Downloads/monocode-main/src-tauri/src/checkpoint.rs`（2172 行）+ `checkpoint/turn.rs`（915 行）。
+> 参考实现：`参考档案仓（本地留存，不入库）/src-tauri/src/checkpoint.rs`（2172 行）+ `checkpoint/turn.rs`（915 行）。
 > 目标：kova 的会话获得「这一轮 agent 改了什么、单文件回滚、整轮回滚」能力，且**所有权判定严格**——没把握的编辑只展示、不提供 Undo。
-> 本文档 = MonoCode 拆解 + kova 落地方案 + 分期。文末附「其他值得学习且改动不大」清单。
+> 本文档 = 参考实现 拆解 + kova 落地方案 + 分期。文末附「其他值得学习且改动不大」清单。
 
 ---
 
-## 1. MonoCode 是怎么做的（拆解）
+## 1. 参考实现 是怎么做的（拆解）
 
 ### 1.1 双层结构
 
 | 层 | 存储 | 职责 | Undo 资格 |
 |---|---|---|---|
 | **条目层**（shadow copy） | app 数据目录 `checkpoints/<session>/files/` 下按路径镜像 before/after 两份 blob + `manifest.json` | 会话所有权的 before/after 对、行数统计、跨会话分歧检测 | 只有在**结构化编辑开始前**捕获过 before 快照（`prepared` 集）的文件 |
-| **回合层**（git-backed） | 仓库内隐藏 refs `refs/monocode/checkpoints/<session>/<turn>/{before,after}`（commit-tree 产物） | 整轮工作区 diff 审阅（含 bash 等无边界改动的兜底）、隔离 worker 的增量搬运（`apply`） | 整轮回滚走 git restore；共享/分支移动/事后被改 → 拒绝 |
+| **回合层**（git-backed） | 仓库内隐藏 refs `refs/<项目名>/checkpoints/<session>/<turn>/{before,after}`（commit-tree 产物） | 整轮工作区 diff 审阅（含 bash 等无边界改动的兜底）、隔离 worker 的增量搬运（`apply`） | 整轮回滚走 git restore；共享/分支移动/事后被改 → 拒绝 |
 
 两层并存的目的不同：条目层回答「这几行是不是本会话写的」，回合层回答「这一轮工作区实际发生了什么」。**cleanup/清理路径比 review UI 更严**（`verified_worker_delta`，checkpoint.rs:800——无法重建归属的增量宁可不删）。
 
@@ -45,7 +45,7 @@ prepare/capture 按会话排队串行（`enqueueCheckpoint`）。**先 prepare �
 
 ### 1.4 git 捕获不碰用户状态（turn.rs:641 `capture_workspace`）
 
-- 临时 `GIT_INDEX_FILE=<os tmp>/monocode-checkpoint-<uuid>`：`read-tree HEAD` → `add -A` → `write-tree` → `commit-tree` → `update-ref`。**用户的 index、stash、分支全程不动**（undo 注释同调："The user's Git index is never reset"）。
+- 临时 `GIT_INDEX_FILE=<os tmp>/<项目名>-checkpoint-<uuid>`：`read-tree HEAD` → `add -A` → `write-tree` → `commit-tree` → `update-ref`。**用户的 index、stash、分支全程不动**（undo 注释同调："The user's Git index is never reset"）。
 - `-c core.fsync=objects,reference` 强制落盘，快照必须比 app 活得久。
 - sparse checkout 仓库直接拒绝（add -A 语义会被破坏）。
 - refs 挂在用户仓库对象库里白嫖去重与打包；会话删除时 `forget_turns` 按前缀 `for-each-ref` 统一 `update-ref -d`。
@@ -71,10 +71,10 @@ prepare/capture 按会话排队串行（`enqueueCheckpoint`）。**先 prepare �
 
 ### 2.0 架构差异与一个关键简化
 
-MonoCode 的事件流是「provider 进程 → Rust → 前端」，前端观察 tool 事件再回调 checkpoint，边界靠事件语义推断。kova 的 **write/edit 工具 execute 就在 sidecar 进程里**（`src/tools/tools.ts:417` 起的自建 Write/Edit，`AgentTool.execute` 全可控），所以：
+参考实现 的事件流是「provider 进程 → Rust → 前端」，前端观察 tool 事件再回调 checkpoint，边界靠事件语义推断。kova 的 **write/edit 工具 execute 就在 sidecar 进程里**（`src/tools/tools.ts:417` 起的自建 Write/Edit，`AgentTool.execute` 全可控），所以：
 
-- 条目层的 prepare/capture 直接包在 execute 前后——路径来自工具参数，**边界天然精确，不需要从事件猜**，比 MonoCode 更可靠也更简单。
-- git 层保留，但只用于**回合审阅与 bash 兜底**；**恢复源统一用条目层 shadow copy**（非 git 仓库同样可用），git 层不做文件恢复。取舍写死：bash 改过的文件无事前快照 → 只审不 undo（与 MonoCode "deliberately not undoable" 同一语义，但少一条 git restore 恢复路径要维护）。
+- 条目层的 prepare/capture 直接包在 execute 前后——路径来自工具参数，**边界天然精确，不需要从事件猜**，比 参考实现 更可靠也更简单。
+- git 层保留，但只用于**回合审阅与 bash 兜底**；**恢复源统一用条目层 shadow copy**（非 git 仓库同样可用），git 层不做文件恢复。取舍写死：bash 改过的文件无事前快照 → 只审不 undo（与 参考实现 "deliberately not undoable" 同一语义，但少一条 git restore 恢复路径要维护）。
 
 ### 2.1 模块与目录
 
@@ -92,7 +92,7 @@ apps/electron/main/checkpoint-ipc.ts   # 主进程转发 + 目录托管（PI_CHE
 
 | 时机 | 位置 | 动作 |
 |---|---|---|
-| 会话启动 | `sessions/sessions.ts` run 初始化 | `ensure(threadId,cwd)`：git 基线 diff 预快照（上限 500 文件，对齐 MonoCode）；cwd 变更 → 整目录重建 |
+| 会话启动 | `sessions/sessions.ts` run 初始化 | `ensure(threadId,cwd)`：git 基线 diff 预快照（上限 500 文件，对齐 参考实现）；cwd 变更 → 整目录重建 |
 | 回合开始/结束 | sidecar 的 agent loop 回合边界（与 appMode 热替换同层的 hook，落地时定位 `protocol.ts`/`sessions` 的 turn start/finish 点） | `begin_turn` / `finish_turn`（含 pending 恢复，§1.5） |
 | Write/Edit 执行 | `tools/tools.ts` 各编辑 execute 包装器 | 入口 `prepare(paths)` → 真 execute → 成功 `capture(paths)`；失败不 capture（改动可能半途，保守留 diverged） |
 | MultiEdit/批量 | 同工具参数里的全路径集 | 一次 prepare/capture（对应 HarnessEvent `paths[]` 多文件语义） |
@@ -113,7 +113,7 @@ checkpoint_keep    { threadId, turnId, rel? } → { status }        # 接受改�
 ### 2.4 UI（apps/desktop）
 
 - 回合结束在 transcript 该回合尾部出「本轮改动 N 文件 +M −K」卡片：展开逐文件 diff（original/current），每行按钮 [回滚此文件]；卡片头 [整轮回滚]（全 undoable 才出现，否则只 [审阅]）；[保留] 收起。
-- 拒绝原因如实显示（"文件在快照后被其他会话/你改动过"），对齐 MonoCode 的文案风格——**宁可少给一个 undo 按钮，不给错误的安全感**。
+- 拒绝原因如实显示（"文件在快照后被其他会话/你改动过"），对齐 参考实现 的文案风格——**宁可少给一个 undo 按钮，不给错误的安全感**。
 
 ## 3. 分期
 
@@ -128,8 +128,8 @@ checkpoint_keep    { threadId, turnId, rel? } → { status }        # 接受改�
 ## 4. 测试
 
 - 表驱动单测（`PI_CHECKPOINT_DIR` 临时目录 + 临时 git 仓库 fixture，对齐现有 PI_*_DIR 纪律）：prepare→改→capture 的 undo 精确还原；无 prepare 的 capture 不可 undo；diverged 置 exact=false；新文件（before=Missing）undo=删除；同 cwd 换 thread 并发 shared；head 移动拒绝；begin 无 finish 的 pending 续档。
-- 恢复资格断言写成「先验全部、后写任何」——中途失败不留半恢复（对齐 MonoCode apply 的 preflight）。
-- 回归红线：checkpoint 目录异常（坏 manifest）时**工具照常执行**，快照失败只记日志降级（capture 全链路 catch，MonoCode 前端 `void …catch(()=>undefined)` 同纪律——checkpoint 永远不能挡住干活）。
+- 恢复资格断言写成「先验全部、后写任何」——中途失败不留半恢复（对齐 参考实现 apply 的 preflight）。
+- 回归红线：checkpoint 目录异常（坏 manifest）时**工具照常执行**，快照失败只记日志降级（capture 全链路 catch，参考实现 前端 `void …catch(()=>undefined)` 同纪律——checkpoint 永远不能挡住干活）。
 
 ## 5. 刻意不做的
 
@@ -163,7 +163,7 @@ checkpoint_keep    { threadId, turnId, rel? } → { status }        # 接受改�
 
 ## 附录：其他「值得学习、改动不大」清单（按性价比排序）
 
-| # | 借鉴点 | MonoCode 出处 | kova 落点 | 量级 |
+| # | 借鉴点 | 参考实现 出处 | kova 落点 | 量级 |
 |---|---|---|---|---|
 | 1 | **配额墙事件**：`usage.limited {resetsAt}` —— provider 限流不是报错文案，是"重置倒计时"UI | `harness/core/types.ts` | sidecar 错误分类 → protocol 事件 → 输入框禁用+倒计时 | 小 |
 | 2 | **后台让出提示**：`background.updated {tasks[]}` —— agent 让出回合但 runInBackground 任务在跑，UI 显示"还在忙"，跑完唤醒 | 同上；kova 已有 runInBackground/task_output，缺这条事件与状态 | agent loop 结束检查活体 task → 事件 + 侧栏转圈 | 小 |

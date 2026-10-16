@@ -110,3 +110,13 @@ node scripts/publish-update.mjs --version <版本号> --electron-dmg Kova_<版�
 ```
 CI：`.github/workflows/release.yml`（tag 触发，macos-14 构建 dmg + SHA256SUMS → Draft Release）。
 Windows 安装包（NSIS 配置已就绪）建议在 CI/Windows 机器上构建。
+
+## 参考与致谢
+
+- **Kova 桌面版**（Tauri，Apache-2.0）—— 本 Electron 版的移植前身
+- [MonoCode](https://github.com/hardbeat920/monocode)（MIT）—— 检查点逐文件回滚、记忆条目化、自定义智能体的设计参考
+- [pi](https://github.com/earendil-works/pi)（MIT）—— 内嵌的 agent 运行时（pi-agent sidecar / pi-ai / pi-agent-core）
+- [assistant-ui](https://github.com/assistant-ui/assistant-ui)（MIT）—— 会话界面组件库
+- [Univer](https://github.com/dream-num/univer)（Apache-2.0）—— office 插件的表格/文档引擎
+- [Leafer](https://github.com/leaferjs/Leafer)（MIT）—— canvas 插件渲染引擎（白板交互设计参考 [Excalidraw](https://github.com/excalidraw/excalidraw)，MIT）
+- 桌面壳：[Tauri](https://tauri.app/)（前身所用）/ [Electron](https://www.electronjs.org/)（本项目，MIT）
