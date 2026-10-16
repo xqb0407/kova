@@ -14,19 +14,19 @@ import {
   BookOpenIcon,
   ChevronDownIcon,
   FileSearchIcon,
-  LoaderCircleIcon,
   NotebookPen,
   PencilLineIcon,
   SearchIcon,
   SquareTerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
+import {
+  ReasoningContent,
+  ReasoningRoot,
+  ReasoningText,
+  ReasoningTrigger,
+} from "@/components/assistant-ui/elements/reasoning.aui";
 import {
   ScrollingText,
   ToolRow,
@@ -71,44 +71,23 @@ const TOOL_META: Record<
 
 type TextishBlock = Extract<SubagentBlock, { id: string }>;
 
-const cnRotate = (open: boolean) =>
-  `size-3 transition-transform ${open ? "" : "-rotate-90"}`;
-
+/**
+ * 思考块：直接复用主会话的 Reasoning 原语（assistant-message 的 group-reasoning
+ * 同款接线），观感与行为逐一对齐——流式期间展开且底部吸附预览（max-h 滚动 +
+ * 渐隐）、思考结束自动收拢、收尾后的手动开合长期接管、展开动画与滚动锁定同套。
+ * streaming 用 block.done 折算：活动流未收到该块的结束事件即在思考中。
+ */
 const ThinkingBlockView: FC<{ block: TextishBlock }> = ({ block }) => {
-  const [open, setOpen] = useState(!block.done);
-  // 用户手动开合过就不再自动收（done 时默认收起对齐主会话思考流的观感）
-  const touched = useRef(false);
-  useEffect(() => {
-    if (block.done && !touched.current) setOpen(false);
-  }, [block.done]);
-  const seconds =
-    block.done && block.endedAt
-      ? Math.max(1, Math.round((block.endedAt - block.startedAt) / 1000))
-      : undefined;
+  const streaming = !block.done;
   return (
-    <Collapsible
-      open={open}
-      onOpenChange={(v) => {
-        touched.current = true;
-        setOpen(v);
-      }}
-    >
-      <CollapsibleTrigger className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs">
-        {block.done ? (
-          <ChevronDownIcon className={cnRotate(open)} />
-        ) : (
-          <LoaderCircleIcon className="size-3 animate-spin" />
-        )}
-        <span>
-          {seconds !== undefined ? `思考 · 持续 ${seconds} 秒` : "思考中…"}
-        </span>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <p className="text-muted-foreground mt-1 mb-2 text-xs leading-relaxed whitespace-pre-wrap">
-          {block.text}
-        </p>
-      </CollapsibleContent>
-    </Collapsible>
+    <ReasoningRoot variant="ghost" streaming={streaming}>
+      <ReasoningTrigger active={streaming} />
+      <ReasoningContent aria-busy={streaming}>
+        <ReasoningText>
+          <MarkdownText text={block.text} />
+        </ReasoningText>
+      </ReasoningContent>
+    </ReasoningRoot>
   );
 };
 
