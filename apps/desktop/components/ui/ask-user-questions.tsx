@@ -234,7 +234,9 @@ const AskUserQuestions = forwardRef<HTMLDivElement, AskUserQuestionsProps>(
     );
 
     // Detect the platform so the Continue shortcut hint shows the right
-    // modifier: ⌘ on macOS, ⌃ (Control) elsewhere. Computed in a lazy
+    // modifier: ⌘ on macOS, "Ctrl" text elsewhere (matches shortcuts.ts
+    // formatShortcutParts — ⌃/U+2303 has no glyph in Windows UI fonts and
+    // falls back to a stray caret). Computed in a lazy
     // initializer (guarded for SSR, where `navigator` doesn't exist) rather
     // than an effect — an effect resolves a frame late, so ⌘/⌃+Enter would
     // check ctrlKey on Macs for the first frames. The server can't know the
@@ -1609,11 +1611,11 @@ const AskUserQuestions = forwardRef<HTMLDivElement, AskUserQuestionsProps>(
                               (safeIndex >= total - 1 ? "Finish" : "Continue")}
                             {/* Shortcut hint — replaces the trailing arrow. Sits
                                 inside the button so it dims with the disabled
-                                state. ⌘↵ on macOS, ⌃↵ elsewhere. Desktop-only:
+                                state. ⌘↵ on macOS, Ctrl↵ elsewhere. Desktop-only:
                                 mobile has no physical keyboard to trigger it. */}
                             <span className="hidden sm:contents">
                               <ShortcutChip shape={shape} tone="inverted">
-                                {isMac ? "⌘" : "⌃"}
+                                {isMac ? "⌘" : "Ctrl"}
                                 {"↵"}
                               </ShortcutChip>
                             </span>
@@ -1640,11 +1642,11 @@ AskUserQuestions.displayName = "AskUserQuestions";
 
 // ── Shortcut chip ─────────────────────────────────────────────
 // Small keycap showing the keyboard shortcut for an action, so Back (←),
-// Skip (→) and Continue (⌘↵ / ⌃↵) all read consistently. `tone="inverted"`
+// Skip (→) and Continue (⌘↵ / Ctrl) all read consistently. `tone="inverted"`
 // sits on the dark primary button; the default reads on quiet ghost buttons.
-// suppressHydrationWarning: the ⌘/⌃ glyph is platform-detected in a lazy
-// initializer (see isMac), so the server always renders ⌃ while a Mac client
-// renders ⌘ — a benign one-character text mismatch on hydration.
+// suppressHydrationWarning: the modifier label is platform-detected in a lazy
+// initializer (see isMac), so the server always renders Ctrl while a Mac client
+// renders ⌘ — a benign text mismatch on hydration.
 function ShortcutChip({
   children,
   tone = "muted",
