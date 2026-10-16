@@ -1,7 +1,7 @@
 {
   "name": "kova-electron",
   "private": true,
-  "version": "1.1.8-preview",
+  "version": "1.1.9-preview",
   "description": "Kova AI Assistant (Electron port of the 旧桌面壳 desktop app)",
   "workspaces": [
     "apps/*",
