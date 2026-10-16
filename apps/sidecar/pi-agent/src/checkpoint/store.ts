@@ -1,8 +1,8 @@
 /**
  * 编辑检查点（条目所有权层）：把 write/edit 这类**结构化编辑**的每次边界录下来，
  * 回答桌面检查点卡回答不了的问题——"这个文件这一轮的改动是不是全属 agent？敢不敢
- * 只回滚它一个？"（对齐 MonoCode checkpoint.rs 的 prepared/after/diverged/exact/
- * undoable 语义；只取其中条目层一侧，回合整仓快照仍由影子仓库负责）。
+ * 只回滚它一个？"（所有权判据语义：prepared/after/diverged/exact/
+ * undoable 五元组；本层只做条目层，回合整仓快照仍由影子仓库负责）。
  *
  * 与影子仓库检查点的分工（互不替代）：
  * - 影子仓库（Electron 侧）：轮开始前整仓快照、轮末 diff、整轮撤销走 patch --check。
@@ -23,7 +23,7 @@
  * - 辅助设施不挡主路：门面函数吃掉一切异常（logErr），工具执行结果不受影响。
  * - 单会话串行：per-session promise 队列（同 subagent/memory.ts 的做法），
  *   prepare/capture/status/undo 严格互斥，manifest 读-改-写不跨 await 撕裂。
- * - cwd 变了整套作废重建（对齐 MonoCode ensure 的 same_cwd 语义）。
+ * - cwd 变了整套作废重建（same_cwd 语义：相对路径归属随工作区失效）。
  * - 快照上限 2MiB/文件（超限 skipped = 永不可回滚，卡片仍展示整仓 diff 的行数）；
  *   每会话最多保留 24 轮记录（超出裁最老；卡片上限 20 与此对齐有余量）。
  * - 回滚拒绝含符号链接的路径（逐分量 lstat），不写穿链接。
@@ -46,7 +46,7 @@ import { logErr } from "../log";
 
 /* --------------------------------- 类型与常量 --------------------------------- */
 
-/** 快照三态（对齐 MonoCode SnapshotKind）：内容 / 当时不存在 / 超限不录 */
+/** 快照三态：内容 / 当时不存在 / 超限不录 */
 export type SnapshotKind = "contents" | "missing" | "skipped";
 
 export type TurnFileStatus = "added" | "modified";
@@ -252,7 +252,7 @@ function looksBinary(buf: Buffer): boolean {
 
 /**
  * 行数增量：公共前后缀裁剪 + 中段 LCS（两行滚动 DP，单侧 ≤4000 行，超限退化为
- * 全量集合差计数）。口径 = 相对该轮 before 基线（同 MonoCode session_stats）。
+ * 全量集合差计数）。口径 = 相对该轮 before 基线（会话级统计，非 HEAD 对比）。
  * -1 = 无法判定（二进制/坏编码），前端不显示数字。
  */
 function lineStats(a: Buffer, b: Buffer): { additions: number; deletions: number } {
@@ -339,7 +339,7 @@ async function ensureTurn(
   const root = normalizeCwd(cwd);
   let current = manifest;
   if (current && normalizeCwd(current.cwd) !== root) {
-    // 换工作区：旧轮次相对路径的归属已无意义，整套清零（对齐 MonoCode same_cwd 重建）
+    // 换工作区：旧轮次相对路径的归属已无意义，整套清零（same_cwd 语义）
     await rm(dir, { recursive: true, force: true });
     current = null;
   }
@@ -393,8 +393,8 @@ function enqueue<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
 
 /**
  * 编辑开始前：为本轮尚无基线的路径抓 before。
- * 首次 prepare 的所有权边界不随后续编辑移动（对齐 MonoCode "The first tool-start
- * event owns the safe undo boundary"）。
+ * 首次 prepare 的所有权边界不随后续编辑移动——本轮首个编辑事件拥有
+ * 安全回滚边界。
  */
 async function opPrepare(
   sessionId: string,
@@ -453,7 +453,7 @@ async function opCapture(
     let rec = turn.files[rel];
     if (!rec) {
       // capture 没有配对的 prepare（旧数据/异常路径）：为 review 保留记录，
-      // before 记当前态但标 null 边界？——保守对齐 MonoCode：不录 before，
+      // before 记当前态但标 null 边界？——保守不录 before，
       // 该文件永不可 undoable。after 正常记。
       rec = { before: null, after: null, ext: false };
       turn.files[rel] = rec;
@@ -631,7 +631,7 @@ async function opForget(sessionId: string): Promise<void> {
 
 /* --------------------------------- 公共门面 --------------------------------- */
 
-/** 工具路径入口：吃掉一切异常，绝不影响工具结果（对齐 MonoCode void-catch 旁路） */
+/** 工具路径入口：吃掉一切异常，绝不影响工具结果（旁路降级纪律） */
 export function checkpointPrepare(
   sessionId: string,
   cwd: string,

@@ -1,8 +1,8 @@
-# 改造方案：自定义 Agent 实例 + 条目化记忆（借鉴 MonoCode Monos）
+# 改造方案：自定义 Agent 实例 + 条目化记忆（借鉴 参考实现 持久 agent）
 
 > 范围：仅 kova-electron（apps/sidecar/pi-agent、apps/electron、apps/desktop、packages）。
-> 不引入 MonoCode 的多 provider harness、/operator 全局控制 CLI；这两块另行立项。
-> 参考实现：`/Users/herther/Downloads/monocode-main`（下文简称 Mono，引用其文件路径供对照）。
+> 不引入 参考实现 的多 provider harness、/operator 全局控制 CLI；这两块另行立项。
+> 参考实现：`参考档案仓（本地留存，不入库）`（下文简称 参考实现，引用其文件路径供对照）。
 
 ---
 
@@ -10,7 +10,7 @@
 
 **一句话**：在 kova 现有的「全局人格 + 文件级记忆 + 子代理 + 定时任务」四块能力之上，长出第五个一等产品——**可创建的 Agent 实例**：每个实例有自己的持久人格（SOUL）、条目化记忆（会过期、会归档、可自维护）、自己的习惯（habits，跑完向本体会话汇报），并且用户能像普通会话一样与它开**长驻对话**。
 
-Mono 的完整形态见 `monocode-main/src-tauri/src/mono.rs:1-15`（目录合同）与 `src/features/monos/model/monoFiles.ts:333`（注入块）。本方案取其中 kova 缺的三件事：
+参考实现 的完整形态见 `参考档案仓/src-tauri/src/mono.rs:1-15`（目录合同）与 `src/features/monos/model/monoFiles.ts:333`（注入块）。本方案取其中 kova 缺的三件事：
 
 1. **记忆条目语义**：条目级 add/replace/remove、日期戳、`until` 过期、满员自动归档、截断信息反哺提示词让 agent 自整理、写入脱敏。
 2. **人格实例化 + 写权分层**：人格从全局单例变成每实例一份；agent 自改人格走 CAS，且只有长驻前台会话有写权，habit 运行只读。
@@ -18,7 +18,7 @@ Mono 的完整形态见 `monocode-main/src-tauri/src/mono.rs:1-15`（目录合�
 
 ## 2. 现状盘点与差距
 
-| 能力 | kova 现状 | 与 Mono 的差距 |
+| 能力 | kova 现状 | 与 参考实现 的差距 |
 |---|---|---|
 | 人格 | `agent/personalization.ts`：全局 `~/.kova/soul.md` + `rules.md`，实时读盘，注入点 `modes.ts:237`（`personalizationPromptBlock`），set 时全量热替换活动会话 | 单例；agent 不能自改；无 CAS；无"每次会话绑定不同人格"的概念 |
 | 主记忆 | `agent/memory.ts`：global/workspace 双作用域、文件粒度 markdown、注入（`memoryPromptBlock`，逐文件 4K/整段 12K，`truncateMiddle`）+ `memory_search` 行检索；版本史 `.history/`、回收站 `.trash/`、append 盖时间戳 | 文件级而非**条目级**：没有单条 add/replace/remove、没有 `until` 过期、没有满员归档、截断行不告知 agent（agent 无从自整理）、写入不脱敏 |
@@ -26,7 +26,7 @@ Mono 的完整形态见 `monocode-main/src-tauri/src/mono.rs:1-15`（目录合�
 | 自动化 | `automation/`：croner + tasks.json + 启动补跑 + 单实例锁 + 并发闸（`runtime.ts`），任务形状 `ScheduledTask`（`automation/index.ts:40-60`，含 `sessionId`、`toolPolicyProfile`、runHistory） | 任务是应用级资产：不归属任何人格、结果不回投某个"本体的聊天"、无 posted/quiet/failed 三态回填、无"沉默是对的答案"判定 |
 | 协议 | `get/set_personalization`、`get/set_memory`、`new_session(mode/model/appMode/cwd)`（`protocol.ts:68,115-120`；`handlers/sessions.ts:109`） | 无 agent 实例 CRUD；会话不携带实例绑定 |
 
-**架构判断**：不要新造一套"Mono"。kova 的子代理系统已经解决了实例最难的部分——三层发现、YAML schema、能力解析、缓存签名、reload 链路。本方案 = **给子代理定义体系增加一种新形态 `resident: true`（长驻代理）**，配一份实例作用域的用户资产目录；记忆条目语义则直接升级 `agent/memory.ts` 的工具面，两条线在"长驻会话"处汇合。
+**架构判断**：不要新造一套"参考实现"。kova 的子代理系统已经解决了实例最难的部分——三层发现、YAML schema、能力解析、缓存签名、reload 链路。本方案 = **给子代理定义体系增加一种新形态 `resident: true`（长驻代理）**，配一份实例作用域的用户资产目录；记忆条目语义则直接升级 `agent/memory.ts` 的工具面，两条线在"长驻会话"处汇合。
 
 ## 3. 数据设计
 
@@ -35,14 +35,14 @@ Mono 的完整形态见 `monocode-main/src-tauri/src/mono.rs:1-15`（目录合�
 ```
 ~/.kova/agents/<id>/            # PI_AGENTS_DIR 可覆盖（与 PI_MEMORY_DIR 同纪律，测试用）
   agent.yml                     # 实例元数据：复用 SubagentDefinition schema + 新字段（见 3.2）
-  SOUL.md                       # 人格（对齐 Mono：与全局 personalization 分离，用户在设置页编辑，agent 经工具 CAS 改）
+  SOUL.md                       # 人格（对齐 参考实现：与全局 personalization 分离，用户在设置页编辑，agent 经工具 CAS 改）
   RULES.md                      # 常驻指令
   MEMORY.md                     # 条目化主记忆（预算注入，见 3.4）
   memory/<topic>.md             # 主题笔记（按需读，不注入）
   memory/archive.md             # 溢出/过期条目（只进检索，不注入）
 ```
 
-目录纪律照抄 Mono 的两条（`mono.rs:1-15,88`）：
+目录纪律照抄 参考实现 的两条（`mono.rs:1-15,88`）：
 
 - **身份文件不放仓库**：agent 对仓库有完整写权，人格放仓库里等于可被任何会话或 PR 改掉。
 - **枚举制路径**：agent 侧工具只允许上述五类文件（不嵌套、不隐藏、不可逃逸目录）；程序内部写用旁写 + rename（kova 已有 `automation/json-file.ts` 的原子写模式可复用）。
@@ -58,7 +58,7 @@ emoji: 🚢
 resident: true             # 关键新字段：可开长驻会话（缺省 false = 仅作委派子代理）
 description: 盯发布窗口和回归
 model: { provider, model, thinkingLevel }   # 默认模型（沿用现有覆盖链）
-projects:                  # 工作范围（Mono 的 monoProjectsBrief 对应物，可空）
+projects:                  # 工作范围（参考实现 的 monoProjectsBrief 对应物，可空）
   - path: /Users/x/repo-a
   - path: /Users/x/repo-b
 capabilities: ...          # 沿用五维「未声明即不可达」
@@ -83,7 +83,7 @@ memory: private            # 长驻形态强制 private（实例目录），shar
 - [2026-09-20] ~~用户偏好中文回复~~ → 用户改要英文简报
 ```
 
-规则与 Mono `control_cli.rs:107-240` 对齐：
+规则与 参考实现 `control_cli.rs:107-240` 对齐：
 
 | 动作 | 语义 |
 |---|---|
@@ -99,9 +99,9 @@ memory: private            # 长驻形态强制 private（实例目录），shar
 [12 more lines in MEMORY.md did not load; move older detail into topic files or prune.]
 ```
 
-——让 agent 知道该整理自己的记忆了。程序侧兜底：MEMORY.md 超过硬上限（如 400 行）时，最老条目自动搬 archive.md（对齐 Mono「Oldest entries move to the archive when MEMORY.md is full」）。
+——让 agent 知道该整理自己的记忆了。程序侧兜底：MEMORY.md 超过硬上限（如 400 行）时，最老条目自动搬 archive.md（对齐 参考实现「Oldest entries move to the archive when MEMORY.md is full」）。
 
-**写入脱敏**：`memory_add` 落盘前跑 secret 正则集（`sk-`、AKIA、`ghp_`、PEM 头、`Bearer `…），命中则拒写并提示。对齐 Mono `<memory_rules>` 末句「Never save secrets… they are redacted anyway」。
+**写入脱敏**：`memory_add` 落盘前跑 secret 正则集（`sk-`、AKIA、`ghp_`、PEM 头、`Bearer `…），命中则拒写并提示。对齐 参考实现 `<memory_rules>` 末句「Never save secrets… they are redacted anyway」。
 
 ## 4. 注入与协议改造
 
@@ -113,7 +113,7 @@ memory: private            # 长驻形态强制 private（实例目录），shar
 静态核心 → 模式段 → 【实例段】agentRulesBlock(agentDir) → 记忆段（实例 MEMORY.md + workspace/global 主记忆，沿用现预算） → cwd 行 → 环境段
 ```
 
-`agentRulesBlock` 的内容直接借 Mono `monoContext` 的写法（`monoFiles.ts:333-360`），逐段对应：
+`agentRulesBlock` 的内容直接借 参考实现 `monoContext` 的写法（`monoFiles.ts:333-360`），逐段对应：
 
 - `<identity>`：你是谁 + 工作范围（`monoProjectsBrief` 的中文改写，projects 来自 agent.yml）。
 - `<soul>`：SOUL.md 全文（预算沿用 `PERSONA_MAX_CHARS` 4K），附**自改流程规则**：只在用户明确要求时改；先 `soul_read` 拿全文+hash，保留其余内容合入修改，再 `soul_update {text, expectedHash}`；文件变了重读重放；habit 运行与其他会话永远不能改 soul。
@@ -121,7 +121,7 @@ memory: private            # 长驻形态强制 private（实例目录），shar
 - `<habits_rules>`：见 4.3。
 - 记忆正文 `<memory>` 块：预算截断 + 主题名目录行。
 
-**hash 门控**：实例段与记忆段各自带内容 hash，记录到会话的 run 状态里（对齐 Mono `Handed { soulHash, memoryHash }`）。现热替换链路（protocol 层重建活动会话系统提示词）改为**只重建该 agent 的会话**且内容真变了才重建——避免每次记忆写入引爆全量热替换，守住缓存纪律。
+**hash 门控**：实例段与记忆段各自带内容 hash，记录到会话的 run 状态里（对齐 参考实现 `Handed { soulHash, memoryHash }`）。现热替换链路（protocol 层重建活动会话系统提示词）改为**只重建该 agent 的会话**且内容真变了才重建——避免每次记忆写入引爆全量热替换，守住缓存纪律。
 
 ### 4.2 工具面（绑定会话才注册，条件注册纪律沿用 `memory.ts:745-758` 双闸模式）
 
@@ -129,13 +129,13 @@ memory: private            # 长驻形态强制 private（实例目录），shar
 |---|---|---|
 | `agent_memory_add / replace / remove / read / search` | 见 3.4 | 实例目录；execute 内实时校验会话仍绑定 |
 | `soul_read {}` / `soul_update {text, expectedHash}` | CAS | 仅长驻前台会话；`residentRun: false` |
-| `habits_add / update / run / remove` | 见 4.3 | 描述里写明"先向用户建议、同意后才加"（Mono `<habits_rules>` 纪律）|
+| `habits_add / update / run / remove` | 见 4.3 | 描述里写明"先向用户建议、同意后才加"（参考实现 `<habits_rules>` 纪律）|
 
 ### 4.3 习惯（habits）= 带 `agentId` 的自动化任务
 
 **不另起存储**：给 `ScheduledTask`（`automation/index.ts:40-60`）增加可选 `agentId`、`lastOutcome?: "posted" | "quiet" | "failed"`。复用 croner、补跑、单实例锁、并发闸、`toolPolicyProfile`。`habits_*` 工具是对 `automation/` mgmt 通道的实例作用域封装。
 
-运行形态对齐 Mono：
+运行形态对齐 参考实现：
 
 1. 每次触发开**隐藏会话**（现有 runner 已会建 run session），首条消息用 `<habit_run>` 模板（借 `monoHabits.ts:353-375`），要点：告知"用户不会看到这次运行"；回填 `lastRunAt` + 上次 `lastOutcome` 的一句话（"上次没发现值得说的"/"上次未能完成"）；要求**最终回复要么是一条用户想看的汇报，要么恰好是 `QUIET` 标记**；"回复前先用 memory 工具保存值得记住的事"。
 2. 结果判定：末段匹配 QUIET（容忍先絮叨后宣布沉默的截尾逻辑，`monoHabits.ts:377`）→ `quiet` 不发；有正文 → `posted`，作为一条带 habit 标记的**内部块**写入该 agent 的长驻会话 transcript（会话开着则实时投、关着则落 transcript 待恢复）。
@@ -180,19 +180,19 @@ automation 载荷 + agentId、lastOutcome
 ## 8. 风险与对策
 
 1. **热替换风暴**：记忆写频繁 × 多实例多会话 → hash 门控（4.1）把重建收敛到"该实例 ∧ 内容真变"。
-2. **habit 无人监督跑全工具**：每次运行独立会话 + 沿用 `toolPolicyProfile`；提示词纪律"只建议敢无人值守的习惯，说明会改动（push/评论/关闭）而非只查看"（Mono `<habits_rules>`）；连败自动停用兜底。
+2. **habit 无人监督跑全工具**：每次运行独立会话 + 沿用 `toolPolicyProfile`；提示词纪律"只建议敢无人值守的习惯，说明会改动（push/评论/关闭）而非只查看"（参考实现 `<habits_rules>`）；连败自动停用兜底。
 3. **agent 自我污染人格**：soul 只有前台长驻会话可改 + CAS + 用户在设置页随时看得到全文并覆写（覆写 = 版本号变化，agent 侧 CAS 自动失效）。
 4. **条目化迁移**：旧 MEMORY.md 无条目格式的行按普通文本兼容，不做一次性改写；agent 后续自然把新事实按条目格式追加。
 5. **两个记忆面并存**（实例 MEMORY.md vs workspace 记忆）：注入时明确标注来源头（`agent/<id>/MEMORY.md` vs `workspace/.kova/memory`），`<memory_rules>` 写清"关于'我'的事实进实例，关于'这个项目'的进 workspace"。
 
-## 9. 附录：Mono 参考点位速查
+## 9. 附录：参考实现 参考点位速查
 
 | 主题 | 位置 |
 |---|---|
-| 实例目录合同与防篡改理由 | `monocode-main/src-tauri/src/mono.rs:1-15`、`resolve_file` :88 |
-| 注入块全量写法（identity/soul/memory/habits/delegation） | `monocode-main/src/features/monos/model/monoFiles.ts:313-360` |
-| 记忆动作语义 | `monocode-main/src-tauri/src/control_cli.rs:107-111,225-240` |
-| 预算截断反哺提示 | `monocode-main/src/features/monos/model/monoFiles.ts:48,195` |
-| habit_run 模板 / QUIET 判定 / while_you_were_away | `monocode-main/src/features/monos/model/monoHabits.ts:353-402` |
+| 实例目录合同与防篡改理由 | `参考档案仓/src-tauri/src/mono.rs:1-15`、`resolve_file` :88 |
+| 注入块全量写法（identity/soul/memory/habits/delegation） | `参考档案仓/src/features/monos/model/monoFiles.ts:313-360` |
+| 记忆动作语义 | `参考档案仓/src-tauri/src/control_cli.rs:107-111,225-240` |
+| 预算截断反哺提示 | `参考档案仓/src/features/monos/model/monoFiles.ts:48,195` |
+| habit_run 模板 / QUIET 判定 / while_you_were_away | `参考档案仓/src/features/monos/model/monoHabits.ts:353-402` |
 | 三态结果回填 | 同上 `:33-58`（Habit 类型） |
 | 记忆写权 CAS | `mono.rs` `save` :272 + `monoFiles.ts <soul>` 块 |
