@@ -41,6 +41,7 @@
     "@streamdown/code": "^1.1.1",
     "@streamdown/math": "^1.0.2",
     "@streamdown/mermaid": "^1.0.2",
+    "@tanstack/react-virtual": "^3.14.20",
     "@uiw/codemirror-theme-github": "^4.25.11",
     "@uiw/codemirror-theme-vscode": "^4.25.11",
     "@uiw/codemirror-themes": "^4.25.11",

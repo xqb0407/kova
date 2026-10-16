@@ -1,7 +1,11 @@
 "use client";
 // beui.dev/components/motion/file-tree
+// 本地改造（对齐 VSCode explorer 的做法）：树拍平成固定行高的虚拟列表，
+// 只挂载视口 ±overscan 行；行/分支线入场动画与 hover pill 全部移除
+// （虚拟滚动下行随滚动回收复用，动画会闪烁且成本极高）。
 
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { motion, useReducedMotion } from "framer-motion";
 import { ChevronRight, File, Folder, FolderOpen } from "lucide-react";
 import {
   Children,
@@ -15,8 +19,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
-import { SharedLayoutBg } from "./shared-layout-bg";
-import { EASE_OUT, SPRING_LAYOUT, SPRING_SWAP } from "@/lib/motion/ease";
+import { SPRING_SWAP } from "@/lib/motion/ease";
 import { cn } from "@/lib/utils";
 
 type FileTreeItem = {
@@ -90,8 +93,8 @@ export function FileTreeFile(_props: FileTreeFileProps) {
   return null;
 }
 
-const ROW_ENTER = { duration: 0.22, ease: EASE_OUT } as const;
-const BRANCH_DRAW = { duration: 0.3, ease: EASE_OUT } as const;
+/** 行高（px），与行按钮固定高度一致；虚拟滚动的前提是等高行 */
+const ROW_HEIGHT = 36;
 
 function flattenItems(
   items: FileTreeItem[],
@@ -167,41 +170,14 @@ function itemsFromChildren(children: ReactNode): FileTreeItem[] {
   return items;
 }
 
-function DefaultIcon({
-  item,
-  open,
-  reduce,
-}: {
-  item: FileTreeItem;
-  open: boolean;
-  reduce: boolean;
-}) {
+// 文件夹开合图标直接切换（此前是每行一个 AnimatePresence popLayout，
+// 大列表下测量成本显著，且与树的高频重渲染叠加成卡顿）
+function DefaultIcon({ item, open }: { item: FileTreeItem; open: boolean }) {
   if (item.type === "file") return <File className="size-4" />;
-  if (reduce) {
-    return open ? (
-      <FolderOpen className="size-4" />
-    ) : (
-      <Folder className="size-4" />
-    );
-  }
-
-  return (
-    <AnimatePresence initial={false} mode="popLayout">
-      <motion.span
-        key={open ? "open" : "closed"}
-        initial={{ opacity: 0, scale: 0.75, rotate: open ? -8 : 8 }}
-        animate={{ opacity: 1, scale: 1, rotate: 0 }}
-        exit={{ opacity: 0, scale: 0.75, rotate: open ? 8 : -8 }}
-        transition={SPRING_SWAP}
-        className="absolute inset-0 grid place-items-center"
-      >
-        {open ? (
-          <FolderOpen className="size-4" />
-        ) : (
-          <Folder className="size-4" />
-        )}
-      </motion.span>
-    </AnimatePresence>
+  return open ? (
+    <FolderOpen className="size-4" />
+  ) : (
+    <Folder className="size-4" />
   );
 }
 
@@ -236,6 +212,15 @@ export function FileTree({
   const items = useMemo(() => itemsFromChildren(children), [children]);
   const rows = useMemo(() => flattenItems(items, expanded), [expanded, items]);
 
+  // 虚拟滚动：count = 展开后的总行数，只渲染视口 ±overscan；固定行高免动态测量
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 8,
+  });
+
   // Keep a real row tabbable in the first commit and immediately after a
   // collapse removes the previously focused descendant.
   const focusedRow =
@@ -244,12 +229,18 @@ export function FileTree({
       : (rows[0]?.item.value ?? null);
   if (focusedId !== focusedRow) setFocusedId(focusedRow);
 
-  const focusRow = useCallback((id: string) => {
-    setFocusedId(id);
-    const row = rowRefs.current.get(id);
-    if (row) row.focus();
-    else requestAnimationFrame(() => rowRefs.current.get(id)?.focus());
-  }, []);
+  const focusRow = useCallback(
+    (id: string) => {
+      setFocusedId(id);
+      // 虚拟化下目标行可能未挂载：先滚进视口，下一帧行挂上后再聚焦
+      const index = rows.findIndex((row) => row.item.value === id);
+      if (index >= 0) virtualizer.scrollToIndex(index, { align: "auto" });
+      const row = rowRefs.current.get(id);
+      if (row) row.focus();
+      else requestAnimationFrame(() => rowRefs.current.get(id)?.focus());
+    },
+    [rows, virtualizer],
+  );
 
   const selectItem = useCallback(
     (item: FileTreeItem) => {
@@ -317,126 +308,113 @@ export function FileTree({
     [expanded, focusRow, rows, selectItem, toggleFolder],
   );
 
+  // 容器自身是滚动视口（virtualizer 锚定它）。行绝对定位在等高网格上，
+  // 只挂载视口 ±overscan 行；hover/选中反馈走行自身的 CSS 底色
   return (
-    <SharedLayoutBg
+    <div
+      ref={scrollRef}
       role="tree"
       aria-label={ariaLabel}
-      aria-multiselectable="false"
-      inset={0}
-      pillClassName="rounded-xl bg-muted"
-      pillContainerClassName="inset-y-auto top-0 h-9"
-      className={cn("min-w-0", className, classNames?.tree)}
+      aria-multiselectable={false}
+      className={cn(
+        "h-full min-w-0 overflow-y-auto p-1.5",
+        className,
+        classNames?.tree,
+      )}
     >
-      {rows.map((row) => {
+      <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
+        {virtualizer.getVirtualItems().map((vi) => {
+          const row = rows[vi.index];
+          if (!row) return null; // rows 与 virtualizer 计数短暂不一致的兜底
           const isFolder = row.item.type === "folder";
           const isOpen = isFolder && expanded.has(row.item.value);
           const isSelected = selectedId === row.item.value;
 
           return (
-            <motion.div
-              layout={reduce ? false : "position"}
+            <button
               key={row.item.value}
-              initial={reduce ? false : { opacity: 0, y: -6 }}
-              animate={{
-                opacity: row.item.disabled ? 0.42 : 1,
-                y: 0,
-                transition: reduce
-                  ? { duration: 0 }
-                  : {
-                      ...ROW_ENTER,
-                      delay: Math.min(row.position * 0.025, 0.1),
-                    },
+              ref={(node) => {
+                if (node) rowRefs.current.set(row.item.value, node);
+                else rowRefs.current.delete(row.item.value);
               }}
-              transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+              type="button"
+              role="treeitem"
+              aria-level={row.depth + 1}
+              aria-posinset={row.position}
+              aria-setsize={row.setSize}
+              aria-selected={isSelected}
+              aria-expanded={isFolder ? isOpen : undefined}
+              aria-disabled={row.item.disabled || undefined}
+              tabIndex={focusedRow === row.item.value ? 0 : -1}
+              onFocus={() => setFocusedId(row.item.value)}
+              onKeyDown={(event) => handleKeyDown(event, row)}
+              onContextMenu={(event) => {
+                if (row.item.disabled) return;
+                row.item.onContextMenu?.(event);
+              }}
+              onClick={() => {
+                if (row.item.disabled) return;
+                selectItem(row.item);
+                if (isFolder) toggleFolder(row.item.value);
+              }}
+              className={cn(
+                "group/file-tree absolute left-0 flex w-full items-center gap-2 overflow-hidden rounded-lg pr-2 text-left text-sm text-muted-foreground outline-none",
+                "transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                "aria-disabled:cursor-not-allowed",
+                row.item.disabled && "opacity-[0.42]",
+                isSelected && "bg-muted font-medium text-foreground",
+                classNames?.item,
+                row.item.className,
+              )}
+              style={{
+                top: vi.start,
+                height: ROW_HEIGHT,
+                paddingLeft: 8 + row.depth * indent,
+              }}
             >
-              <button
-                ref={(node) => {
-                  if (node) rowRefs.current.set(row.item.value, node);
-                  else rowRefs.current.delete(row.item.value);
-                }}
-                type="button"
-                role="treeitem"
-                aria-level={row.depth + 1}
-                aria-posinset={row.position}
-                aria-setsize={row.setSize}
-                aria-selected={isSelected}
-                aria-expanded={isFolder ? isOpen : undefined}
-                aria-disabled={row.item.disabled || undefined}
-                tabIndex={focusedRow === row.item.value ? 0 : -1}
-                onFocus={() => setFocusedId(row.item.value)}
-                onKeyDown={(event) => handleKeyDown(event, row)}
-                onContextMenu={(event) => {
-                  if (row.item.disabled) return;
-                  row.item.onContextMenu?.(event);
-                }}
-                onClick={() => {
-                  if (row.item.disabled) return;
-                  selectItem(row.item);
-                  if (isFolder) toggleFolder(row.item.value);
-                }}
+              {row.depth > 0 ? (
+                <span
+                  aria-hidden="true"
+                  className="absolute top-0 bottom-0 w-px bg-border/70"
+                  style={{ left: 16 + (row.depth - 1) * indent }}
+                />
+              ) : null}
+
+              <motion.span
+                aria-hidden="true"
+                animate={{ rotate: isOpen ? 90 : 0 }}
+                transition={reduce ? { duration: 0 } : SPRING_SWAP}
                 className={cn(
-                  "group/file-tree relative flex h-9 w-full items-center gap-2 overflow-hidden rounded-lg pr-2 text-left text-sm text-muted-foreground outline-none",
-                  "transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                  "aria-disabled:cursor-not-allowed",
-                  isSelected && "bg-muted font-medium text-foreground",
-                  classNames?.item,
-                  row.item.className,
+                  "relative z-10 grid size-4 shrink-0 place-items-center",
+                  !isFolder && "opacity-0",
                 )}
-                style={{ paddingLeft: 8 + row.depth * indent }}
               >
-                {row.depth > 0 ? (
-                  <motion.span
-                    aria-hidden="true"
-                    initial={reduce ? false : { opacity: 0, scaleY: 0 }}
-                    animate={{ opacity: 1, scaleY: 1 }}
-                    exit={{ opacity: 0, scaleY: 0 }}
-                    transition={reduce ? { duration: 0 } : BRANCH_DRAW}
-                    className="absolute top-0 bottom-0 w-px origin-top bg-border/70"
-                    style={{ left: 16 + (row.depth - 1) * indent }}
-                  />
-                ) : null}
+                <ChevronRight className="size-3.5" />
+              </motion.span>
 
-                <motion.span
-                  aria-hidden="true"
-                  animate={{ rotate: isOpen ? 90 : 0 }}
-                  transition={reduce ? { duration: 0 } : SPRING_SWAP}
-                  className={cn(
-                    "relative z-10 grid size-4 shrink-0 place-items-center",
-                    !isFolder && "opacity-0",
-                  )}
-                >
-                  <ChevronRight className="size-3.5" />
-                </motion.span>
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "relative z-10 grid size-4 shrink-0 place-items-center text-muted-foreground transition-colors group-hover/file-tree:text-foreground",
+                  isFolder && isOpen && "text-foreground",
+                  classNames?.icon,
+                )}
+              >
+                {row.item.icon ?? <DefaultIcon item={row.item} open={isOpen} />}
+              </span>
 
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "relative z-10 grid size-4 shrink-0 place-items-center text-muted-foreground transition-colors group-hover/file-tree:text-foreground",
-                    isFolder && isOpen && "text-foreground",
-                    classNames?.icon,
-                  )}
-                >
-                  {row.item.icon ?? (
-                    <DefaultIcon
-                      item={row.item}
-                      open={isOpen}
-                      reduce={reduce}
-                    />
-                  )}
-                </span>
-
-                <span
-                  className={cn(
-                    "relative z-10 min-w-0 flex-1 truncate",
-                    classNames?.label,
-                  )}
-                >
-                  {row.item.name}
-                </span>
-              </button>
-            </motion.div>
+              <span
+                className={cn(
+                  "relative z-10 min-w-0 flex-1 truncate",
+                  classNames?.label,
+                )}
+              >
+                {row.item.name}
+              </span>
+            </button>
           );
         })}
-    </SharedLayoutBg>
+      </div>
+    </div>
   );
 }

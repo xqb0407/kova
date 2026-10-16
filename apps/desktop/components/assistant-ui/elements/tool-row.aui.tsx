@@ -900,6 +900,12 @@ const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) 
           .join(" ")
     : undefined;
   const failed = !!run && run.status !== "running" && run.status !== "completed";
+  // 委派没起来（模型无凭据、未知子智能体、并发超限等）：sidecar 以普通文本
+  // 返回原因（isError 不置真），永远不会有 delegationId——此时整行既无面板
+  // 入口也无输出可看，点/悬浮都毫无反应，看起来像坏了。把失败原因作为行内
+  // 输出展开并标红点，让这行诚实报错。
+  const startOutput = resultText(result);
+  const startFailed = !run && !delegationId && !!startOutput;
   return (
     <ToolRow
       label="子智能体"
@@ -915,8 +921,10 @@ const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) 
       primaryTitle={delegationId ? `子智能体运行过程 · ${delegationId.slice(0, 8)}` : "子智能体"}
       secondary={[description, statusSuffix].filter(Boolean).join(" · ") || undefined}
       running={running}
-      failed={failed}
-      // 无展开输出：整行即面板入口（委派详情在专属 tab 流式呈现，行内不放原始文本）
+      failed={failed || startFailed}
+      // 成功启动的行无展开输出：整行即面板入口（委派详情在专属 tab 流式呈现）；
+      // 启动失败的行把 sidecar 返回的原因文本收进展开框，行尾红点
+      output={startFailed ? startOutput : undefined}
       onOpenPanel={
         delegationId
           ? () => openSubagentTab(delegationId, description || agentName)

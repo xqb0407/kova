@@ -211,6 +211,19 @@
   --animate-optimize-glow: optimize-glow 1.6s ease-in-out infinite;
 }
 
+/* tw-shimmer 高亮带亮色模式修正：库默认把扫光带画成 20% 透明的 currentColor
+   （Chromium 走 ::before 白遮罩路径），是为深色背景设计的——白带在黑底上醒目。
+   亮色底上这条白带会把文字「刷没」：加载态文案（「正在思考中」随机文案、
+   「工作中」、压缩横幅、工具组等全部 shimmer 文本）扫到带心时几乎不可见，
+   观感像文字闪烁/缺半截，与字重无关。亮色下把带色改成满前景色（比正文更深，
+   扫过是「加深」而非「刷白」），暗色保持库默认（白/亮带）。.shimmer-bg 是
+   背景遮罩变体，不吃文字遮罩，排除在外。 */
+html:not(.dark) .shimmer:not(.shimmer-bg) {
+  /* 用 :root 的原始 --foreground 令牌；--color-foreground 只是 @theme inline
+     的间接名，inline 模式不把它落到 :root，var() 会解析为空回退成白色 */
+  --shimmer-color: var(--foreground);
+}
+
 :root {
   --page-width: 80rem;
   --radius: 0.625rem;
@@ -596,6 +609,18 @@ html.dark[data-window-effect] {
   contain-intrinsic-size: auto 320px;
 }
 
+/* 聊天视口关掉原生滚动锚定（overflow-anchor）：展开/收起高度动画把锚点上方的
+   屏内内容向下推，原生补偿逐帧写 scrollTop「保持锚点视觉不动」，而
+   useScrollLock 逐帧把位置钉回动画开始值——两个写源同帧对打，观感是整个消息
+   框上下抖（与是否流式无关，管理器让位也拦不住它，因为写入方是浏览器自己）。
+   本视口的滚动位置全部由自有体系拥有：框架 turn 锚定 + ViewportScrollManager
+   （钉顶/贴尾）+ 动画锁钉位，原生锚定介入只会添乱；同口径先例见
+   custom-ui/message-scroller 的 [overflow-anchor:none]。320px 屏外占位的
+   尺寸突变同样会诱发它反复校正（manager 头注点名过的跳变源）。 */
+[data-slot="aui_thread-viewport"] {
+  overflow-anchor: none;
+}
+
 /* 轮内过程区（折叠轮的展开面板）：面板内不做屏外跳过。
    展开动画在挂载那一帧就要量出目标高度，上面那条规则会让屏外的消息正文先按
    320px 占位参与测量——动画收尾时高度再跳回真实值（观感是顿一下）。收起时整块
@@ -639,6 +664,29 @@ html.dark[data-window-effect] {
 [data-optimizing="true"] .aui-directive-chip {
   border-radius: 0.5rem;
   animation: optimize-glow 1.6s ease-in-out infinite;
+}
+
+/* 可交互指令芯片（element 元素引用 / console 控制台日志）：鼠标悬浮时左侧类型
+   图标**原地换成 ✕**（标签页关闭按钮同款心智），点击把整段 token 从文档删掉
+   （cm-directive.ts 里挂事件）。芯片 DOM 是 CodeMirror widget 手建的，
+   类名而非 Tailwind 工具类在此集中维护；叉与图标同尺寸同位，hover 时宽度不跳。 */
+.aui-directive-chip-interactive .aui-directive-chip-delete {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  /* 与类型图标同位同尺寸（16px）：hover 切换时芯片宽度零跳动 */
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.aui-directive-chip-interactive:hover .aui-directive-chip-icon {
+  display: none;
+}
+.aui-directive-chip-interactive:hover .aui-directive-chip-delete {
+  display: inline-flex;
+  opacity: 1;
 }
 
 /* 优化进行中：底栏按钮压暗让位——遮罩不铺色，若按钮保持全亮，居中的状态行

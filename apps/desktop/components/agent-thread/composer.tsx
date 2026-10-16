@@ -14,6 +14,7 @@ import {
 import { PromptOptimizeOverlay } from "@/components/agent-thread/prompt-optimize-overlay";
 import { toast } from "@/components/ui/toast";
 import { directiveChipVariants } from "@/components/assistant-ui/elements/directive-text.aui";
+import { ElementRefDialogHost } from "./element-ref-dialog";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import {
   Tooltip,
@@ -301,6 +302,9 @@ export const Composer: FC = () => {
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      {/* 元素引用详情 Dialog 宿主：浏览器面板「选择元素」插入的芯片被点击时，
+          由它弹出元素详情（截图/选择器/HTML，见 lib/element-refs） */}
+      <ElementRefDialogHost />
       <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
         {/* 输入框上方四条悬浮条的间距约定：各自带
             mb-2，满宽不缩边，与输入框同宽对齐。不给父级 gap——队列条是常驻挂载、

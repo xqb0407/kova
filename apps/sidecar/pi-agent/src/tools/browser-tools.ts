@@ -15,6 +15,7 @@ import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostToolCall } from "../storage/hostdb";
 import { sendEventChunk } from "../protocol/stream";
+import { sessionForThread } from "../sessions/pending-interactions";
 import { getBrowserConfig } from "./browser-config";
 
 const LABELS: Record<string, string> = {
@@ -71,10 +72,12 @@ function browserTool(
         typeof (params as { url?: unknown })?.url === "string"
           ? (params as { url: string }).url
           : undefined;
+      // 第三参带上属主 sessionId：缺它时前端按「当前显示会话」兜底落桶——
+      // 后台会话的浏览器会错开在用户正看的会话里
       sendEventChunk(threadId, {
         type: "data-panelOpen",
         data: { type: "browser", ...(url ? { url } : {}) },
-      });
+      }, sessionForThread(threadId));
       const data = await hostToolCall(
         name,
         "",

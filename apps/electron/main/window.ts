@@ -21,6 +21,13 @@ export function getMainWindow(): BrowserWindow | null {
 
 export function createMainWindow(devUrl: string | null): BrowserWindow {
   const isMac = process.platform === "darwin";
+  // Win 走非分层窗：transparent:true 让 DWM 把窗口视为自合成表面——
+  // Win11 系统圆角/投影不给（roundedCorners 仅对非分层窗生效）、
+  // acrylic/mica backdrop 同样不支持分层窗、表面 alpha 还会禁掉 ClearType
+  // （见 app-runtime-provider sync_webview_surface 注释）。圆角/阴影/材质
+  // 全部交回 DWM：创建即实体窗，材质开启时由 appearance.ts 把背景色切成
+  // 透明底色透出 backdrop。Linux 维持自绘透明路径不变。
+  const isWin = process.platform === "win32";
   const win = new BrowserWindow({
     width: 1600,
     height: 800,
@@ -28,8 +35,8 @@ export function createMainWindow(devUrl: string | null): BrowserWindow {
     minHeight: 600,
     center: true,
     show: false, // visible:false：等首帧就绪再 show（对齐旧桌面壳 消闪烁策略）
-    transparent: true,
-    backgroundColor: "#00000000",
+    transparent: !isWin,
+    backgroundColor: isWin ? "#ffffffff" : "#00000000",
     ...(isMac
       ? {
           title: "扣瓦",
@@ -49,6 +56,10 @@ export function createMainWindow(devUrl: string | null): BrowserWindow {
       nodeIntegration: false,
       sandbox: false,
       spellcheck: false,
+      // 面板内置浏览器走 <webview>（DOM 嵌入渲染）：层级/圆角/遮罩/裁剪随主
+      // webview 的 DOM 合成自然成立，对齐 ZCode 的内置浏览器架构；guest 由
+      // 主进程 browser.ts 经 did-attach 上报的 webContentsId 绑定驱动
+      webviewTag: true,
     },
   });
   mainWindow = win;

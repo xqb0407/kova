@@ -7,7 +7,6 @@ import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { WindowControls } from "@/components/window-controls";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
-  IterationCcwIcon,
   MenuIcon,
   MoreHorizontalIcon,
   PanelLeftIcon,
@@ -90,9 +89,7 @@ const HeaderMoreMenu: FC<{
   onRename: () => void;
   canOpenTrace: boolean;
   onOpenTrace: () => void;
-  canOpenLoop: boolean;
-  onOpenLoop: () => void;
-}> = ({ canRename, onRename, canOpenTrace, onOpenTrace, canOpenLoop, onOpenLoop }) => {
+}> = ({ canRename, onRename, canOpenTrace, onOpenTrace }) => {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -115,10 +112,6 @@ const HeaderMoreMenu: FC<{
         <DropdownMenuItem disabled={!canOpenTrace} onClick={onOpenTrace}>
           <WaypointsIcon className="size-4" />
           链路追踪
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled={!canOpenLoop} onClick={onOpenLoop}>
-          <IterationCcwIcon className="size-4" />
-          循环
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -245,14 +238,8 @@ export const Header: FC<{
     : undefined;
   const openTrace = () => {
     if (!traceSessionId) return;
-    openPanelTab("trace", { sessionId: traceSessionId });
-    // 面板开合是 Base 的本地态，经事件请求展开（与 composer「Git 图谱」同款）
-    window.dispatchEvent(new Event("agent-panel:open"));
-  };
-  // 循环视图：与链路追踪同一个会话 id（同一份 traces，两种切法）
-  const openLoop = () => {
-    if (!traceSessionId) return;
     openPanelTab("loop", { sessionId: traceSessionId });
+    // 面板开合是 Base 的本地态，经事件请求展开（与 composer「Git 图谱」同款）
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   return (
@@ -325,8 +312,6 @@ export const Header: FC<{
             onRename={() => setRenameOpen(true)}
             canOpenTrace={!!traceSessionId}
             onOpenTrace={openTrace}
-            canOpenLoop={!!traceSessionId}
-            onOpenLoop={openLoop}
           />
           <RenameTaskDialog
             open={renameOpen}

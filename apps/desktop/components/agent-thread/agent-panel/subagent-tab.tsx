@@ -49,7 +49,7 @@ const RunHeader: FC<{ run: SubagentRunState }> = ({ run }) => {
         .filter(Boolean)
         .join(" · ");
   return (
-    <div className="border-b px-3 py-2.5">
+    <div className="px-4 py-2">
       <div className="flex min-w-0 items-center gap-2">
         <BotIcon className="size-4 shrink-0" />
         <span className="truncate font-mono text-sm">{run.agentName || "子智能体"}</span>

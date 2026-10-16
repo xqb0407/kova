@@ -11,6 +11,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
+import { sessionForThread } from "../sessions/pending-interactions";
 
 /** 与 tools.ts textResult 同形（AgentToolResult.details 必填） */
 const textResult = (text: string) => ({
@@ -56,10 +57,11 @@ export function buildOpenFileTool(cwd: string, threadId: string): AgentTool {
       }
       const shown = displayPath(cwd, raw);
       // 文件标签磁盘实时模式：cwd + 相对 path（file-view 的 tab.path 分支）
+      // 第三参带上属主 sessionId：缺它时前端按「当前显示会话」兜底落桶
       sendEventChunk(threadId, {
         type: "data-panelOpen",
         data: { type: "file", path: shown, cwd },
-      });
+      }, sessionForThread(threadId));
       return textResult(`已在面板打开 ${shown}`);
     },
   };

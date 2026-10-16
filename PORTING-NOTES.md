@@ -19,11 +19,11 @@
 | 日志 | logging.rs | `logging.ts` | 按日目录、10MB 滚动、7 天保留、stderr 镜像、frontend_log/cleanup_logs |
 | 关于页 | about.rs | `about.ts` | 外链白名单、日志目录、dev 模式（kv 持久化 + 启动恢复） |
 | GPU 开关 | gpu.rs | `gpu.ts` | `disableHardwareAcceleration()`（时序同为建窗前） |
-| 外观材质 | appearance.rs | `appearance.ts` | acrylic/mica → macOS vibrancy（sidebar/under-window）/ Windows backgroundMaterial |
+| 外观材质 | appearance.rs | `appearance.ts` | acrylic/mica → macOS vibrancy（sidebar/under-window）/ Windows backgroundMaterial；Win 主窗口不走 `transparent:true`（分层窗会同时失去 DWM 圆角/投影、backdrop 材质与 ClearType），实体窗创建由 DWM 负责圆角+阴影，材质开启时仅把背景色切透明透出 backdrop（restore 亦同步翻转） |
 | 窗口/托盘/菜单 | lib.rs/menu.rs/tray.rs | `window.ts`/`menu.ts`/`tray.ts` | 首帧显示 + 5s 兜底；macOS 菜单加「资源管理器」；Windows 关窗进托盘 |
 | 终端 PTY | pty.rs | `pty.ts` | node-pty；Channel 推 number[]、空数组 = 退出标记、channel 死 → 杀壳 |
 | Git 集成 | git.rs | `git.ts` | CLI 包装（`-C <cwd> --no-optional-locks`）、porcelain v2 / name-status -z 解析、影子 git-dir 检查点（fnv1a 目录名/FNV-1a 与 Rust 同算法、LRU 20、同树复用、反向 patch 存档 + apply -R 还原）、`git-changed` 事件；写命令按 cwd 异步串行 |
-| 面板浏览器 | browser.rs + browser_scripts.rs | `browser.ts` | WebContentsView 子视图、物理像素→DIP bounds、fill/fixed 视口、agent 七工具（navigate/snapshot/click/type/scroll/back/resize；JS 原语与 browser_scripts.rs 同源逐字）、导航重建重试与 busy 闸门、`browser:navigated/viewport` 事件；差异：ARIA 快照（Playwright 注入运行时）未移植，快照统一走文本快照 |
+| 面板浏览器 | browser.rs + browser_scripts.rs | `browser.ts` | **`<webview>` guest 绑定（DOM 嵌入渲染，对齐 ZCode 内置浏览器；替代原生 WebContentsView——层级/圆角/遮罩回归 DOM 合成，bounds 同步与浮层遮挡让位整链退役；guest 由渲染端 did-attach 上报 id、主进程校验 getType 后驱动）**、fill/fixed 视口（CSS 尺寸即视口）、agent 七工具（navigate/snapshot/click/type/scroll/back/resize；JS 原语与 browser_scripts.rs 同源逐字）、导航重试与 busy 闸门、`browser:viewport` 事件；差异：ARIA 快照（Playwright 注入运行时）未移植，快照统一走文本快照 |
 | 页面像素照 | browser_shot.rs | `browser-shot.ts` | 隐藏 BrowserWindow + capturePage + 同一压缩阶梯（无独立无头 Chrome，无孤儿清扫问题） |
 | 公网隧道 | tunnel.rs | `tunnel.ts` | 二进制解析（kv custom → PATH → 常见位置 → appData/bin）、`cloudflared tunnel --url … --no-autoupdate` 进程组监管、stderr/stdout 逐行抓 `.trycloudflare.com` 地址、stopped/starting/running/error 状态机 + 40×400 日志尾巴、世代号防旧线程回写、GitHub Releases 一键下载（sha256 digest 校验不过不落盘、tar 解包、chmod、--version 冒烟）、`tunnel:download` 进度事件 |
 | 备份与恢复 | backup.rs | `backup.ts` | PIABK 信封（`PIABK1\n` + camelCase header + tar.gz/AES-256-GCM 负载）、PBKDF2-SHA256×600000/32B/12B nonce/16B salt（与 Rust 同参数同布局，tag 尾接）、payloadSha256 对最终字节、逐文件快照-哈希-入包、解包逐文件校验 + JSONL 残行修剪、WAL checkpoint + VACUUM INTO 快照、手写 S3 SigV4（PUT/GET/DELETE/ListObjectsV2、path-style、重定向不跟随）、WebDAV（MKCOL 逐级/405 提示/PROPFIND 207/幂等 DELETE）、本地写入、staging + 待恢复标记 + 启动期原子换入（credentials 清空）、`backup:progress` 全阶段 |

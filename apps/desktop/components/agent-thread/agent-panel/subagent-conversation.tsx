@@ -99,7 +99,9 @@ const ThinkingBlockView: FC<{ block: TextishBlock }> = ({ block }) => {
         ) : (
           <LoaderCircleIcon className="size-3 animate-spin" />
         )}
-        <span>{seconds !== undefined ? `思考 · 持续 ${seconds} 秒` : "思考中…"}</span>
+        <span>
+          {seconds !== undefined ? `思考 · 持续 ${seconds} 秒` : "思考中…"}
+        </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
         <p className="text-muted-foreground mt-1 mb-2 text-xs leading-relaxed whitespace-pre-wrap">
@@ -110,9 +112,9 @@ const ThinkingBlockView: FC<{ block: TextishBlock }> = ({ block }) => {
   );
 };
 
-const ToolBlockView: FC<{ block: Extract<SubagentBlock, { toolCallId: string }> }> = ({
-  block,
-}) => {
+const ToolBlockView: FC<{
+  block: Extract<SubagentBlock, { toolCallId: string }>;
+}> = ({ block }) => {
   const meta = TOOL_META[block.toolName];
   const Icon = meta?.icon ?? WrenchIcon;
   return (
@@ -173,7 +175,9 @@ const BlockView: FC<{ block: SubagentBlock }> = ({ block }) => {
 };
 
 const unitKey = (u: SubagentContentUnit, i: number): string =>
-  u.kind === "tools" ? `tools-${u.tools[0]?.toolCallId ?? i}` : blockKey(u.block, i);
+  u.kind === "tools"
+    ? `tools-${u.tools[0]?.toolCallId ?? i}`
+    : blockKey(u.block, i);
 
 const ContentUnitView: FC<{ unit: SubagentContentUnit }> = ({ unit }) => {
   if (unit.kind === "block") return <BlockView block={unit.block} />;
@@ -182,7 +186,11 @@ const ContentUnitView: FC<{ unit: SubagentContentUnit }> = ({ unit }) => {
 };
 
 const blockKey = (b: SubagentBlock, i: number): string =>
-  b.kind === "tool" ? b.toolCallId : b.kind === "turn" ? `turn-${i}` : `${b.kind}-${b.id}`;
+  b.kind === "tool"
+    ? b.toolCallId
+    : b.kind === "turn"
+      ? `turn-${i}`
+      : `${b.kind}-${b.id}`;
 
 /** 消息时间戳：HH:MM（本地时区，等宽数字对齐） */
 const clock = (ms: number | undefined): string | undefined => {
@@ -197,7 +205,9 @@ const clock = (ms: number | undefined): string | undefined => {
  *  CodeMirror 等重依赖） */
 const BUBBLE_COLLAPSED_HEIGHT = 144;
 
-const CollapsibleBubbleContent: FC<{ children: ReactNode }> = ({ children }) => {
+const CollapsibleBubbleContent: FC<{ children: ReactNode }> = ({
+  children,
+}) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [contentHeight, setContentHeight] = useState(0);
@@ -282,7 +292,9 @@ function resultAnnouncesDelegation(result: unknown, shortId: string): boolean {
  * 否则回退按结果文本里的 "Delegation <8位> started" 认领（刷新/历史重建）。
  * 两者都取不到返回 undefined，由 user 气泡兜底占位。
  */
-function useSubagentTaskBrief(delegationId: string | undefined): string | undefined {
+function useSubagentTaskBrief(
+  delegationId: string | undefined,
+): string | undefined {
   const messages = useAuiState((s) => s.thread.messages);
   return useMemo(() => {
     if (!delegationId) return undefined;
@@ -296,7 +308,8 @@ function useSubagentTaskBrief(delegationId: string | undefined): string | undefi
         const task = readTaskArg(p.args);
         if (!task) continue;
         if (boundCallId && p.toolCallId === boundCallId) return task;
-        if (!fallback && resultAnnouncesDelegation(p.result, shortId)) fallback = task;
+        if (!fallback && resultAnnouncesDelegation(p.result, shortId))
+          fallback = task;
       }
     }
     return fallback;
@@ -322,12 +335,16 @@ const UserMessageView: FC<{
           {message.text ? (
             <MarkdownText text={message.text} />
           ) : (
-            <span className="text-muted-foreground/60">（未能取得任务说明）</span>
+            <span className="text-muted-foreground/60">
+              （未能取得任务说明）
+            </span>
           )}
         </CollapsibleBubbleContent>
       </div>
       {time ? (
-        <span className="text-muted-foreground/50 text-[11px] tabular-nums">{time}</span>
+        <span className="text-muted-foreground/50 text-[11px] tabular-nums">
+          {time}
+        </span>
       ) : null}
     </div>
   );
@@ -342,13 +359,17 @@ const AssistantMessageView: FC<{
     <div className="flex flex-col gap-2">
       {message.report ? (
         <>
-          <span className="text-muted-foreground/60 text-[11px]">报告</span>
-          <div className="text-foreground text-sm leading-relaxed wrap-break-word">
-            <MarkdownText text={message.text ?? ""} />
+          <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 p-4  border border-slate-200 dark:border-slate-800">
+            <span className="font-bold text-blue-400 text-xl block mb-3">
+              报告
+            </span>
+            <div className="text-foreground text-sm leading-relaxed break-words">
+              <MarkdownText text={message.text ?? ""} />
+            </div>
           </div>
         </>
       ) : (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col ">
           {groupSubagentContent(message.blocks ?? []).map((u, i) => (
             <ContentUnitView key={unitKey(u, i)} unit={u} />
           ))}
@@ -359,7 +380,9 @@ const AssistantMessageView: FC<{
 };
 
 /** 面板对话列表：派活说明（user）+ 各轮输出与报告（assistant） */
-export const SubagentConversation: FC<{ run: SubagentRunState }> = ({ run }) => {
+export const SubagentConversation: FC<{ run: SubagentRunState }> = ({
+  run,
+}) => {
   const brief = useSubagentTaskBrief(run.delegationId);
   const messages = useMemo(
     () => buildSubagentTranscript(run, brief),
@@ -369,10 +392,14 @@ export const SubagentConversation: FC<{ run: SubagentRunState }> = ({ run }) => 
 
   return (
     <ScrollingText className="flex-1 px-3 py-2">
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
         {messages.map((m, i) =>
           m.role === "user" ? (
-            <UserMessageView key={`u-${i}`} message={m} description={run.description} />
+            <UserMessageView
+              key={`u-${i}`}
+              message={m}
+              description={run.description}
+            />
           ) : (
             <AssistantMessageView key={`a-${i}`} message={m} />
           ),

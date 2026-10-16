@@ -39,7 +39,6 @@ import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import { setCurrentPanelThread } from "@/lib/panels/panel-tabs";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
-import { useOverlayPresent } from "@/lib/overlay-occlusion";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
 import { Thread, isNewChatView } from "./thread";
@@ -156,35 +155,9 @@ export const Base: FC = () => {
   useEffect(() => {
     if (onboardingActive) setView("chat");
   }, [onboardingActive]);
-  /**
-   * 主窗口当前是否被浮层接管 —— 唯一的遮蔽事实源。
-   *
-   * 浏览器子 webview 是独立的原生 NSView，合成在主 webview 的 DOM 之上，
-   * 任何 React z-index（向导是 z-[60]）都压不住它；浮层一出现就必须隐藏。
-   *
-   * 三个来源，或起来：
-   * 1. 设置页整页切换；
-   * 2. 新手引导的全屏向导——尤其容易漏，引导激活时 view 已被置回 "chat"，
-   *    只看 view 会误判成"无遮蔽"；
-   * 3. 任意 ui/ primitive 浮层（Dialog / Popover / Sheet / 菜单 / Select）挂载。
-   *    这一项是登记制而不是人工白名单：以前每个会遮挡的地方手动广播一次，
-   *    几十个调用点漏一个就复现一次 bug。浮层自己在 Portal 里登记，
-   *    这里只读总数。
-   */
-  const floatingOverlay = useOverlayPresent();
-  const mainViewOccluded =
-    view === "settings" || onboardingActive || floatingOverlay;
-  useEffect(() => {
-    window.dispatchEvent(
-      new CustomEvent("browser:occluded", {
-        detail: { occluded: mainViewOccluded },
-      }),
-    );
-  }, [mainViewOccluded]);
-  // 遮蔽态的 ref：面板开合动画的回调在闭包里读它，判断能否替对方解除遮蔽
-  // （设置页/向导/浮层打开时不能解除，恢复交给它们退出时的广播）
-  const occludedRef = useRef(mainViewOccluded);
-  occludedRef.current = mainViewOccluded;
+  // 浏览器面板已迁 `<webview>`（DOM 嵌入渲染）：浮层/设置页/向导弹窗天然盖在
+  // 它上面，面板开合动画它随 DOM 平移——旧的「主窗口遮蔽 → browser:occluded
+  // 广播 → 隐藏原生子视图」整条链随之退役（ZCode 同架构）。
   // view 的 ref：面板开合动画/exitPanelFullscreen 的守卫在闭包里读它
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -203,17 +176,6 @@ export const Base: FC = () => {
     window.addEventListener("kova:open-settings-section", onJump);
     return () => window.removeEventListener("kova:open-settings-section", onJump);
   }, []);
-  // 面板开合动画期间的 webview 遮蔽开关：动画期间面板内容宽被冻结，浏览器
-  // 占位容器不再随面板收窄（native 层不吃 CSS 裁剪，不隐藏会以冻结宽悬浮
-  // 盖到聊天列上），故借 browser:occluded 通道隐藏，动画结束由 bounds 状态
-  // 机恢复。解除时若主窗口正被全屏浮层接管则跳过（设置页/向导拥有遮蔽权）
-  const setPanelWebviewOccluded = (occluded: boolean) => {
-    if (occluded || !occludedRef.current) {
-      window.dispatchEvent(
-        new CustomEvent("browser:occluded", { detail: { occluded } }),
-      );
-    }
-  };
   // 侧边栏菜单选中项（受控给 CloneThreadShell）："automation" 时主区
   // 整页切到自动化管理视图；点会话行/新对话由 shell 的导航委托清空回到聊天
   const [activeMenu, setActiveMenu] = useState("");
@@ -437,7 +399,6 @@ export const Base: FC = () => {
       // 冻结内容宽为目标宽：面板从 0 展开时内容左缘随面板左缘左移入位，
       // 右侧被裁剪渐显——动画期间面板树零重排
       setPanelFrozenPx(Math.round(target));
-      setPanelWebviewOccluded(true);
       // 展开途中 Header 仍持有窗口控件（docked 延迟翻转）：面板顶栏控件要
       // 随面板滑入才可见，若 docked 在起步帧就翻 true，Header 控件立即卸载
       // 而顶栏控件还不可见——右上角出现一整段动画时长的控件空窗（闪）
@@ -449,7 +410,6 @@ export const Base: FC = () => {
           panelAnimRef.current = null;
           setPanelMinReleased(false);
           setPanelFrozenPx(null);
-          setPanelWebviewOccluded(false);
           setPanelExpanding(false);
         },
         onUpdate: (v) => p.resize(v),
@@ -459,7 +419,6 @@ export const Base: FC = () => {
       // 冻结内容宽为当前宽：面板左缘右移推挤聊天列，内容随左缘平移、
       // 右侧被裁剪滑出——与侧边栏折叠互为镜像
       setPanelFrozenPx(Math.round(from));
-      setPanelWebviewOccluded(true);
       setPanelExpanding(false);
       panelAnimRef.current = animate(from, 0, {
         duration: 0.26,
@@ -469,7 +428,6 @@ export const Base: FC = () => {
           p.collapse();
           setPanelMinReleased(false);
           setPanelFrozenPx(null);
-          setPanelWebviewOccluded(false);
         },
         onUpdate: (v) => p.resize(v),
       });
@@ -517,7 +475,6 @@ export const Base: FC = () => {
         }
         setChatMinReleased(false);
         setPanelFrozenPx(null);
-        setPanelWebviewOccluded(false);
         return;
       }
       if (p.isCollapsed()) {
@@ -527,7 +484,6 @@ export const Base: FC = () => {
       // 退出 = 面板从全宽缩回：内容冻结在当前全宽，随左缘平移、右侧被裁剪
       // 滑出（与面板收起动画同款）；结束时恢复，宽度即落位宽
       setPanelFrozenPx(agentW);
-      setPanelWebviewOccluded(true);
       chatAnimRef.current = animate(from, target, {
         duration: 0.3,
         ease: [0.32, 0.72, 0, 1],
@@ -535,7 +491,6 @@ export const Base: FC = () => {
           chatAnimRef.current = null;
           setChatMinReleased(false);
           setPanelFrozenPx(null);
-          setPanelWebviewOccluded(false);
         },
         onUpdate: (v) => p.resize(v),
       });
@@ -545,14 +500,12 @@ export const Base: FC = () => {
       p.collapse();
       setChatMinReleased(false);
       setPanelFrozenPx(null);
-      setPanelWebviewOccluded(false);
       return;
     }
     // 进入 = 面板长到全宽：内容冻结在目标全宽（面板当前宽 + 聊天列宽），
     // 左缘随聊天列让位左移、右侧裁剪渐显（与面板展开动画同款），
     // 结束时冻结宽恰等于落位宽，无重排跳变
     setPanelFrozenPx(agentW + from);
-    setPanelWebviewOccluded(true);
     chatAnimRef.current = animate(from, 0, {
       duration: 0.3,
       ease: [0.32, 0.72, 0, 1],
@@ -561,7 +514,6 @@ export const Base: FC = () => {
         p.collapse();
         setChatMinReleased(false);
         setPanelFrozenPx(null);
-        setPanelWebviewOccluded(false);
       },
       onUpdate: (v) => p.resize(v),
     });
@@ -634,9 +586,8 @@ export const Base: FC = () => {
     } else {
       panelAnimInterruptedRef.current = false;
     }
-    // 被拖拽接管：解除内容冻结与 webview 遮蔽，内容恢复 100% 跟手
+    // 被拖拽接管：解除内容冻结，内容恢复 100% 跟手
     setPanelFrozenPx(null);
-    setPanelWebviewOccluded(false);
   };
   // 把手交互结束（pointerup 任意位置都可能）后结算被拦停的动画，
   // 面板必须落到"全开/全收/交给开合效果续跑"三者之一，不许卡在半路
@@ -890,7 +841,7 @@ export const Base: FC = () => {
           <main
             data-drag-region={isDesktop() ? "true" : undefined}
             className={cn(
-              "bg-muted/40 relative flex-1 overflow-hidden p-2 pl-0",
+              "bg-muted/40 relative flex-1 overflow-hidden p-2",
               !compact && panelGone && "pr-0",
             )}
           >

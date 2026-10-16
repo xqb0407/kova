@@ -53,7 +53,7 @@ import {
   SquareTerminalIcon,
 } from "lucide-react";
 import type { FC, ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { randomLoadingPhrase } from "@/lib/panels/loading";
 import { requestOpenSession } from "@/lib/pi/open-session";
 import {
@@ -251,6 +251,14 @@ const TurnErrorCard: FC<{ data: unknown }> = ({ data }) => {
 
 const AssistantWorkingIndicator: FC = () => {
   const isEmpty = useAuiState((s) => s.message.content.length === 0);
+  // 随机加载文案：挂载时定一条、每 5 秒换一条。绝不能在 render 里现摇——
+  // 父组件 AssistantMessage 未 memo，工具进度/排队数变化都会让它重渲染，
+  // 现摇会让这行文案每帧跳字（与 shimmer 扫光的「刷白」叠加，观感即糊）。
+  const [phrase, setPhrase] = useState(randomLoadingPhrase);
+  useEffect(() => {
+    const t = setInterval(() => setPhrase(randomLoadingPhrase()), 5000);
+    return () => clearInterval(t);
+  }, []);
   // 重试进行中时不显示（RetryMarker 顶替这条状态行，参照示例 base.tsx）
   if (useRetryState()) return null;
   return (
@@ -260,8 +268,8 @@ const AssistantWorkingIndicator: FC = () => {
     >
       {/* 等待动画：内容为空=连接中；已有内容但模型/工具间隙=加载态点阵 */}
       <DotMatrix state={isEmpty ? "connecting" : "loading"} aria-hidden />
-      <span className="shimmer shimmer-speed-200 text-foreground/60 text-sm">
-        {isEmpty ? "连接中..." : "正在思考中..."}
+      <span className="shimmer-reverse text-foreground/60 text-sm">
+        {isEmpty ? "连接中..." : phrase}
       </span>
     </span>
   );

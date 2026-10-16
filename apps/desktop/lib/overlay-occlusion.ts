@@ -3,12 +3,16 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * 浮层遮挡登记表。
+ * 浮层遮挡登记表（**当前无消费者，保留待原生表面再出现**）。
  *
- * 为什么需要它：浏览器面板是独立的原生子 webview，合成在主 webview 的 DOM
- * 之上，任何 React z-index 都压不住它。全站有几十处 Dialog / Popover / Sheet
- * / 菜单 / Select 浮在主 webview 上，只要其中任意一个盖到面板区域，用户看到的
- * 就是"面板把弹窗吃掉了"。
+ * 历史用途：浏览器面板曾是原生 WebContentsView，合成在主 webview 的 DOM 之上，
+ * 任何 React z-index 都压不住它；浮层一出现就必须把整个浏览器隐藏，否则弹窗
+ * 被面板吃掉。2026-10 起浏览器改 `<webview>`（DOM 嵌入渲染，ZCode 同架构），
+ * 层级回归 DOM 合成，遮挡表与 `browser:occluded` 通道随之退役。保留本模块与
+ * OcclusionSlot（7 个 ui primitive 里的登记点仍在）：将来若再引入原生表面
+ * （子视图/独立窗口嵌入），登记制是现成的正确做法，删了下次还得重写。
+ *
+ * 以下为原始说明，仍然成立：
  *
  * 过去的做法是在每个会遮挡的地方手动广播一次 `browser:occluded`——那是个人工
  * 白名单，漏一处就复现一次 bug（新手引导那处就是这么漏的：引导激活时 view 已经

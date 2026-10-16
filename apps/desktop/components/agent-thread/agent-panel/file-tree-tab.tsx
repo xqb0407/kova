@@ -87,6 +87,8 @@ import { TabEmpty } from "./tab-empty";
  * 同源（Rust resolve_root 已放行任务工作区子树，fs_* 读写命令直接可用）。
  * 数据 = Rust fs_list_dir 单层懒加载（lib/file-tree store），只为
  * **已展开**的目录建树节点，未展开子树零渲染成本；展开/选中状态受控。
+ * FileTree 内部再做虚拟滚动（等高行、仅挂载视口 ±overscan），
+ * 大仓深展开时 DOM 行数与滚动/失效风暴的重渲染成本都与总行数解耦。
  * 点击文件 → focusPanelTab("file", { path })：复用「文件」标签渲染
  * 磁盘实时内容（CodeMirror，见 file-view 的磁盘模式）。
  * 右键 → VSCode 式上下文菜单（单例受控 ContextMenu，锚在右键落点）：
@@ -498,7 +500,7 @@ export const FileTreeTab: FC = () => {
   return (
     <>
       <div
-        className="h-full overflow-y-auto p-1.5"
+        className="h-full"
         onContextMenu={(event) => {
           // 行内右键已 stopPropagation，到这里即空白区 → 根目录菜单
           event.preventDefault();

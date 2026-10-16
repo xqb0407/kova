@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  createContext,
+  useContext,
   useRef,
   useState,
   useCallback,
@@ -181,6 +183,19 @@ export function pickNearest({
 
   return containingIndex ?? closestIndex;
 }
+
+/**
+ * 作用域暴露的 registerItem：`FluidHoverScope`（components/fluid-hover-scope）
+ * 把自身 useFluidHover 的 registerItem 提供在这里，行包装组件（FluidHoverRow、
+ * RowHoverContext 的组装点）就近取用——悬浮状态因此被关在 Scope 内部，
+ * 换行高亮只重渲染 Scope 自己，列表主体作为 children 保持元素引用不变、
+ * 整棵跳过（长列表悬浮不再逐行重渲染，见 fluid-hover-scope 注释）。
+ */
+export const FluidHoverRegisterContext = createContext<
+  ((index: number, element: HTMLElement | null) => void) | null
+>(null);
+export const useFluidHoverRegister = () =>
+  useContext(FluidHoverRegisterContext);
 
 /** Set on the highlighted item (boolean attribute). */
 export const ACTIVE_ATTR = "data-fluid-hover-active";

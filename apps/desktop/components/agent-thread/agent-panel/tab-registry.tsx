@@ -13,7 +13,6 @@ import {
   ListTodoIcon,
   Loader2Icon,
   LayoutPanelTopIcon,
-  IterationCcwIcon as IterationIcon,
   PackageIcon,
   SquareTerminalIcon,
   WaypointsIcon,
@@ -32,11 +31,9 @@ import { FilesSection } from "./files-section";
 import { GitReview } from "./git-files";
 import { GitView } from "./git-view";
 import { ShellTab } from "./shell-tab";
-import { BrowserView } from "./browser-view";
 import { FileTab } from "./file-view";
 import { FileTreeTab } from "./file-tree-tab";
 import { SubagentTab } from "./subagent-tab";
-import { TraceTab } from "./trace-tab";
 import { LoopTab } from "./loop-tab";
 import { ArtifactsTab } from "./artifacts-tab";
 import { PluginPanelHost } from "./plugin-panel-host";
@@ -131,15 +128,10 @@ export const TAB_META: Record<
     description: "Task 委派的运行过程",
     icon: BotIcon,
   },
-  trace: {
-    label: "链路追踪",
-    description: "agent 运行的 LLM / 工具 / 重试时间线",
-    icon: WaypointsIcon,
-  },
   loop: {
-    label: "循环",
+    label: "链路追踪",
     description: "按迭代看模型意图、工具调用与结果回喂",
-    icon: IterationIcon,
+    icon: WaypointsIcon,
   },
   plugin: {
     label: "插件面板",
@@ -241,15 +233,15 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
     case "git":
       return <GitTab />;
     case "browser":
-      return <BrowserView tab={tab} />;
+      // 浏览器不在本注册表渲染：面板层有常驻的浏览器 pane（agent-panel/index.tsx
+      // 直接挂 BrowserView，切标签只隐藏不卸载，保住 <webview> 的页面状态）。
+      // 这里留空不返回内容——从别的路径渲染会挂出第二个 webview 争抢 guest。
+      return null;
     case "subagent":
       // 一个委派一个 tab（delegationId 绑定 lib/subagent-runs store 条目）
       return <SubagentTab tab={tab} />;
-    case "trace":
-      // 链路追踪：tab.sessionId 绑定 sidecar 会话（header「更多」唤起）
-      return <TraceTab tab={tab} />;
     case "loop":
-      // 循环视图：与链路追踪同一份 traces，按迭代而非 span 类型切
+      // 链路追踪：迭代视图，tab.sessionId 绑定 sidecar 会话（header「更多」唤起）
       return <LoopTab tab={tab} />;
     case "plugin":
       // UI 插件面板：blob iframe + kova-ui-plugin/1 桥（tab.pluginId/panelId 定位）

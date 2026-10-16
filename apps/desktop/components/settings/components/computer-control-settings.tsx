@@ -1,7 +1,18 @@
 "use client";
 
-import type { FC } from "react";
+import { useState, type FC } from "react";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import { toast } from "@/components/ui/toast";
 import {
@@ -9,6 +20,8 @@ import {
   useBrowserConfig,
 } from "@/lib/settings/browser-config";
 import { isDesktop } from "@/lib/desktop-env";
+
+const desktopCore = () => import("@/desktop-bridge/core");
 
 /**
  * 电脑控制区块（设置 → 智能体 → 智能体配置）——AI 驱动本机能力的总闸。
@@ -25,6 +38,34 @@ import { isDesktop } from "@/lib/desktop-env";
  */
 export const ComputerControlSettings: FC = () => {
   const browserTools = useBrowserConfig();
+  /** 浏览器数据清理：进行中的操作（按钮置灰防重复点击）与"清除全部"二次确认 */
+  const [clearing, setClearing] = useState<"cache" | "all" | null>(null);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
+
+  /** 走主进程的 session 清理（browser_clear_cache / browser_clear_data）：
+   *  清渲染缓存保留登录态；清全部连 Cookie/站点数据一起清并重载面板。
+   *  直接用资源管理器删磁盘目录在应用运行时清不干净（session 占着句柄）。 */
+  const runClear = async (mode: "cache" | "all") => {
+    if (clearing) return;
+    setClearing(mode);
+    try {
+      const { invoke } = await desktopCore();
+      await invoke(mode === "cache" ? "browser_clear_cache" : "browser_clear_data");
+      toast.add({
+        title: mode === "cache" ? "浏览器缓存已清除" : "浏览器数据已清除",
+        description:
+          mode === "cache"
+            ? undefined
+            : "已退出所有网站登录，需要时重新登录即可。",
+        type: "success",
+      });
+    } catch {
+      toast.error("清除失败，请重试");
+    } finally {
+      setClearing(null);
+      setConfirmClearAll(false);
+    }
+  };
 
   return (
     <section className="flex flex-col gap-3">
@@ -69,6 +110,43 @@ export const ComputerControlSettings: FC = () => {
           </div>
         </div>
 
+        {/* 浏览器数据：与上面的能力开关不同，这组是数据管理（不涉及 AI 授权）。
+            清缓存保留登录态；清全部连 Cookie/站点数据一起清、所有网站退出登录 */}
+        <div className="flex flex-col gap-2">
+          <h3 className="text-sm font-semibold">浏览器数据</h3>
+          <p className="text-muted-foreground text-sm">
+            内置浏览器面板的缓存与登录状态。清除数据后需要重新登录网站。
+          </p>
+          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+            <SettingRow
+              label="清除内置浏览器缓存"
+              desc="清除 HTTP 缓存、Cache Storage 与 Service Worker，保留 Cookie 与站点登录状态。"
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={clearing !== null || !isDesktop()}
+                onClick={() => void runClear("cache")}
+              >
+                {clearing === "cache" ? "清除中…" : "清除缓存"}
+              </Button>
+            </SettingRow>
+            <SettingRow
+              label="清除全部浏览器数据"
+              desc="删除内置浏览器中的 Cookie、站点数据与缓存，所有网站都会退出登录。此操作不可撤销。"
+            >
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={clearing !== null || !isDesktop()}
+                onClick={() => setConfirmClearAll(true)}
+              >
+                {clearing === "all" ? "清除中…" : "清除全部"}
+              </Button>
+            </SettingRow>
+          </div>
+        </div>
+
         <div className="flex flex-col gap-2">
           <h3 className="text-sm font-semibold">屏幕</h3>
           <p className="text-muted-foreground text-sm">
@@ -97,6 +175,31 @@ export const ComputerControlSettings: FC = () => {
           当前为网页端：电脑控制能力依赖桌面宿主，设置仅作展示。
         </p>
       ) : null}
+
+      {/* 「清除全部」二次确认：不可撤销 + 会退出所有登录，值得一次停顿 */}
+      <AlertDialog open={confirmClearAll} onOpenChange={setConfirmClearAll}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>清除全部浏览器数据？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将删除内置浏览器的 Cookie、站点数据与缓存，所有网站都会退出登录。此操作不可撤销。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel size="default" disabled={clearing !== null}>
+              取消
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              size="default"
+              disabled={clearing !== null}
+              onClick={() => void runClear("all")}
+            >
+              {clearing === "all" ? "清除中…" : "清除全部"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 };

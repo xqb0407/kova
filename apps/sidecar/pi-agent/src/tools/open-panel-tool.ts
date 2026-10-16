@@ -12,6 +12,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
+import { sessionForThread } from "../sessions/pending-interactions";
 import { findEnabledPluginPanel, readPluginPanels, scanInstalledSync } from "../plugins/store";
 import { globMatch } from "../plugins/manifest";
 import { displayPath } from "./open-file-tool";
@@ -72,10 +73,11 @@ export function buildOpenPanelTool(cwd: string, threadId: string): AgentTool {
       }
       const raw = typeof p.path === "string" ? p.path.trim() : "";
       const shown = raw ? displayPath(cwd, raw) : undefined;
+      // 第三参带上属主 sessionId：缺它时前端按「当前显示会话」兜底落桶
       sendEventChunk(threadId, {
         type: "data-pluginOpen",
         data: { plugin: resolvedId, panel: panelId, ...(shown ? { path: shown, cwd } : {}) },
-      });
+      }, sessionForThread(threadId));
       return textResult(
         `已在右侧面板打开「${found.panel.title}」（${found.plugin.name}）${shown ? `，绑定文档 ${shown}` : ""}`,
       );
@@ -125,5 +127,5 @@ export function maybeAutoOpenPanel(cwd: string, threadId: string, filePath: stri
   sendEventChunk(threadId, {
     type: "data-pluginOpen",
     data: { plugin: hit.pluginId, panel: hit.panelId, path: rel, cwd },
-  });
+  }, sessionForThread(threadId));
 }
