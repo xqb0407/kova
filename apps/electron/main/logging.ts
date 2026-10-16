@@ -2,7 +2,7 @@
  * 磁盘日志（对齐 logging.rs）：<appLogDir>/<YYYY-MM-DD>/{app,pi-agent,web}.log，
  * 10MB 滚动单档、保留 7 天、缓冲 1s 强制 flush；所有行镜像 stderr。
  */
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { appDataDir, appLogDir } from "./paths";
 
@@ -28,10 +28,17 @@ function dayStamp(d: Date): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-/** stderr 写失败一律吞（GUI 启动 stderr 可能是死管道，对齐 eprint_lossy） */
+/** stderr 写失败一律吞（GUI 启动 stderr 可能是死管道，对齐 eprint_lossy）。
+ *  不用 writeSync(2)：Windows 控制台 QuickEdit 模式下用户一选中文字，
+ *  控制台进入暂停态，同步写 stderr 会**无限期阻塞主进程事件循环**——
+ *  所有 IPC 排队、整个 UI"哪里都点不了"，只有杀进程才恢复（Windows 偶发
+ *  卡死的候选根因之一）。process.stderr 在 Windows TTY 上是异步句柄：
+ *  暂停期写入只进 libuv 队列，事件循环照常跑；POSIX 行为与旧实现一致。 */
 function eprintLossy(line: string): void {
   try {
-    writeSync(2, line + "\n");
+    process.stderr.write(line + "\n", () => {
+      /* 错误一律吞：死管道/暂停都不能把进程带走 */
+    });
   } catch {
     /* 日志不能把进程带走 */
   }
