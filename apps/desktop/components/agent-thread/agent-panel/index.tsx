@@ -203,9 +203,11 @@ const PanelShell: FC<{
             )}
           </TooltipIconButton>
         ) : null}
-        {/* top=56：停靠态顶栏在窗口 Header（h-12）之下、主区 p-2 内，
-            浮层按钮簇对齐本槽位（right 默认 16 = 卡片边距 8 + pr-2 8） */}
-        {showWindowControls ? <WindowControls top={56} /> : null}
+        {/* top=8：TRAE 式两列布局下面板顶栏不再位于窗口 Header（h-12）
+            之下，而是与聊天顶栏同高——主区 p-2（8px）内卡片顶端的第一行；
+            旧值 56 会把三键甩到顶栏分割线下方的内容区。
+            right 默认 16 = 卡片边距 8 + pr-2 8 */}
+        {showWindowControls ? <WindowControls top={8} /> : null}
       </div>
     ) : null;
 

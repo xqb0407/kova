@@ -27,9 +27,11 @@ import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
  * IPC 方案，见 apps/electron/preload/index.ts，不依赖 app-region）。
  * 原调用点位置留同尺寸空占位，四个宿主顶栏的右缘布局零改动。
  *
- * top/right 对齐各宿主顶栏的实际槽位（聊天/设置：窗口顶缘 top=0、pr-4=16；
- * 停靠面板顶栏：header 之下 top=56、卡片边距+pr-2 也恰是 right=16），
- * 浮层按钮与占位槽像素级重合，宿主交接（停靠/收起）不跳位。
+ * top/right 对齐各宿主顶栏的实际槽位（TRAE 式两列布局：聊天顶栏与停靠
+ * 面板顶栏同高，都在主区 p-2 卡片顶端 top=8，right 分别为卡片边距 8 +
+ * pr-4 16 = 24 / 8 + pr-2 8 = 16；设置页是全窗浮层、顶栏贴窗口顶缘，
+ * 仍是 top=0、pr-4=16），浮层按钮与占位槽像素级重合，
+ * 宿主交接（停靠/收起）不跳位。
  */
 
 /** 按钮簇占宽：3 × size-8(32) + 2 × gap-0.5(2px) = 100px */
