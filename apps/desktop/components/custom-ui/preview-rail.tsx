@@ -198,7 +198,7 @@ export function PreviewRail({
               animate={{ scale, opacity }}
               transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
               className={cn(
-                "block h-1.5 w-1.5 rounded-full bg-current",
+                "block h-2 w-2 rounded-full bg-current",
                 highlighted ? "text-foreground" : undefined,
               )}
             />
