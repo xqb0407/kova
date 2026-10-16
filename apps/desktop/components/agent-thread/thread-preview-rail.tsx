@@ -35,7 +35,8 @@ const USER_SURFACE_SELECTOR = ".aui-user-message-content";
 // 距顶/距底小于该值时，直接把首/尾刻度视为激活项
 const ACTIVE_EDGE_THRESHOLD = 56;
 const MAX_ITEM_SIZE = 18;
-const MIN_ITEM_SIZE = 8;
+/** 最小行距要容得下 8px 圆点还留 2px 缝，否则轮次一多点就连成串了 */
+const MIN_ITEM_SIZE = 10;
 /** 消息列窄于此宽度（px）就不画刻度条：预览卡从左缘伸到 ~300px，列宽不够宽时
  *  卡片右侧剩下的正文比被它盖住的还少，悬停预览反而挡住正在读的那条消息。
  *  只在面板拖到很宽、把聊天列挤到接近其下限（CHAT_MIN_WIDTH = 380）时才命中 */
