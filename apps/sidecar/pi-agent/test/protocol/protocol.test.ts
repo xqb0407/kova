@@ -457,6 +457,54 @@ describe("dispatch: sessions", () => {
     }
   });
 
+  test("草稿闸：已有对话的旧会话不再被请求里的 cwd 收养（运行路径）", async () => {
+    const threadId = "th-adopt-guard";
+    await dispatch("ag1", { type: "new_session", threadId });
+    const sessionId = last().sessionId as string;
+    const run = running.get(threadId)!;
+    expect(run.persistedCwd).toBe("");
+    // 模拟"这个会话说过话"：任一用户消息即脱离草稿态。prompt 恒携带当前全局
+    // workspace，没有这道闸时它会被此刻打开的项目永久收养（索引行/header 改写）
+    (run.agent.state.messages as unknown as { role: string; content: string }[]).push({
+      role: "user",
+      content: "hello",
+    });
+
+    const workspace = path.join(tmp, "adopt-target");
+    await dispatch("ag2", { type: "context_info", threadId, sessionId, cwd: workspace });
+
+    expect(run.persistedCwd).toBe("");
+    expect(run.cwd).not.toBe(workspace);
+    expect((await sessionGet(sessionId))!.cwd).toBe("");
+  });
+
+  test("草稿闸：恢复路径（转录里已有用户消息）同样不被收养", async () => {
+    const seeded = "adopt-seeded";
+    const now = new Date().toISOString();
+    await sessionInsert(seeded, "");
+    writeFileSync(
+      sessionPath(seeded),
+      JSON.stringify({ type: "header", schema: 1, id: seeded, cwd: "", created_at: now }) +
+        "\n" +
+        JSON.stringify({ type: "message", seq: 0, ui: {}, agent: { role: "user", content: "old talk" } }) +
+        "\n",
+      "utf8",
+    );
+    await sessionTouch(seeded, "", "", 1);
+
+    const workspace = path.join(tmp, "adopt-target-2");
+    await dispatch("ag3", {
+      type: "context_info",
+      threadId: "th-adopt-seeded",
+      sessionId: seeded,
+      cwd: workspace,
+    });
+
+    expect((await sessionGet(seeded))!.cwd).toBe("");
+    const header = JSON.parse(readFileSync(sessionPath(seeded), "utf8").split("\n")[0]);
+    expect(header.cwd).toBe("");
+  });
+
   test("任务兜底目录不会被持久化成会话工作目录（一次「继续」就能毁掉归属）", async () => {
     const threadId = "th-fallback";
     const taskCwd = path.join(tmp, "task-fallback");
