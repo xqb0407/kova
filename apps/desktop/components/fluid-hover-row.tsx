@@ -1,7 +1,10 @@
 "use client";
 
-import { useRef, type FC, type ReactNode } from "react";
-import { useRegisterFluidHoverItem } from "@/hooks/use-fluid-hover";
+import { useRef, useContext, type FC, type ReactNode } from "react";
+import {
+  useRegisterFluidHoverItem,
+  FluidHoverRegisterContext,
+} from "@/hooks/use-fluid-hover";
 import { cn } from "@/lib/utils";
 
 /** 与 useFluidHover 的 registerItem 同签名。 */
@@ -18,13 +21,20 @@ export type FluidHoverRegisterItem = (
  * 自绘底色也因此盖过高亮），与列表行的层级约定一致。
  */
 export const FluidHoverRow: FC<{
-  registerItem: FluidHoverRegisterItem;
+  /** 显式传入优先；省略时读 FluidHoverScope 提供的 context——悬浮状态关在
+   *  Scope 内部，列表主体不因换行高亮重渲染（见 fluid-hover-scope.tsx） */
+  registerItem?: FluidHoverRegisterItem;
   index: number;
   className?: string;
   children: ReactNode;
-}> = ({ registerItem, index, className, children }) => {
+}> = ({ registerItem: registerItemProp, index, className, children }) => {
   const ref = useRef<HTMLDivElement>(null);
-  useRegisterFluidHoverItem(registerItem, index, ref);
+  const ctxRegisterItem = useContext(FluidHoverRegisterContext);
+  useRegisterFluidHoverItem(
+    registerItemProp ?? ctxRegisterItem ?? undefined,
+    index,
+    ref,
+  );
   return (
     <div ref={ref} className={cn("relative", className)}>
       {children}

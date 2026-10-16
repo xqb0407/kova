@@ -29,9 +29,26 @@ const listeners = new Set<() => void>();
 let version = 0;
 let wired = false;
 
-function notify() {
+/**
+ * bump 按帧合并：一次失效风暴（聚焦/git-changed 后 K 个可见目录并发补水，
+ * 每个目录入列 + 回包各 notify 一次）若逐个同步广播，订阅视图会做 ~2K 次
+ * 全树重建；合并到 rAF 回调后同一帧内的多次变更只触发一次版本 bump，
+ * 渲染压力从 O(K·N) 降到每帧 O(N)。
+ */
+let notifyScheduled = false;
+function flushNotify() {
+  notifyScheduled = false;
   version += 1;
   for (const l of listeners) l();
+}
+function notify() {
+  if (notifyScheduled) return;
+  notifyScheduled = true;
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(flushNotify);
+  } else {
+    setTimeout(flushNotify, 16);
+  }
 }
 
 function subscribe(cb: () => void) {

@@ -388,7 +388,7 @@ export function ThreadPreviewRail() {
               className="h-full min-h-0"
               previewContainerClassName="inset-y-0 left-9 right-3"
               previewClassName="ml-2 w-80 max-w-full [&_[data-slot=preview-rail-card]]:h-28 [&_[data-slot=preview-rail-card]]:overflow-hidden [&_[data-slot=preview-rail-card]]:p-4 [&_[data-slot=preview-rail-title]]:line-clamp-1 [&_[data-slot=preview-rail-title]]:text-sm [&_[data-slot=preview-rail-title]]:leading-5 [&_[data-slot=preview-rail-description]]:line-clamp-3 [&_[data-slot=preview-rail-description]]:text-sm [&_[data-slot=preview-rail-description]]:leading-5"
-              railClassName="absolute inset-y-3 left-2 w-6 content-center py-1 [&_[data-slot=preview-rail-item]]:pointer-events-auto [&_[data-slot=preview-rail-item]]:w-6 [&_[data-slot=preview-rail-item]]:justify-start [&_[data-slot=preview-rail-tick]]:w-3 [&_[data-slot=preview-rail-tick]]:origin-left"
+              railClassName="absolute inset-y-3 left-2 w-6 content-center py-1 [&_[data-slot=preview-rail-item]]:pointer-events-auto [&_[data-slot=preview-rail-item]]:w-6 [&_[data-slot=preview-rail-item]]:justify-center"
             />
           </motion.div>
         ) : null}

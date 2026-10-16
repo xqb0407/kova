@@ -14,7 +14,6 @@ import { initStore } from "./store";
 import { applyGpuFlag } from "./gpu";
 import { applyPendingRestore } from "./backup";
 import { createMainWindow, attachExternalLinkGuards, mainWindow } from "./window";
-import { destroyForReload as destroyBrowserForReload } from "./browser";
 import * as tray from "./tray";
 import * as menu from "./menu";
 import { startAttachmentPruneTimer } from "./fs-cmds";
@@ -128,11 +127,8 @@ if (!gotLock) {
     remote.stopOnExit; // 显式引用避免摇树掉模块图副作用
     const win = createMainWindow(DEV ? DEV_URL : null);
     attachExternalLinkGuards(win);
-    // 主页面（重）加载开始即移除浏览器子视图：原生层不随页面重载销毁，
-    // 否则刷新后旧页面悬浮盖住启动画面（对齐 lib.rs on_page_load Started）
-    win.webContents.on("did-start-navigation", (_e, _url, _inPlace, isMainFrame) => {
-      if (isMainFrame) destroyBrowserForReload();
-    });
+    // 浏览器面板是 <webview> DOM 元素：主页面（重）加载即随文档销毁，
+    // 不再需要"重载时移除原生子视图"的钩子（旧 WebContentsView 时代遗留）
     menu.install();
     if (process.platform === "win32") {
       try {

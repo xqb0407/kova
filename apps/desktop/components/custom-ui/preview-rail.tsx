@@ -174,36 +174,40 @@ export function PreviewRail({
           const highlighted = item.id === highlightedId;
           const distance =
             displayedIndex < 0 ? Number.POSITIVE_INFINITY : Math.abs(index - displayedIndex);
+          // 圆点刻度：远近只改大小与透明度（横向短线时代是改长度），
+          // 尺寸下限比旧条高一些，否则 0.25 缩到 1px 就看不见了
           const scale = highlighted
             ? 1
             : distance === 1
-              ? 0.68
+              ? 0.75
               : distance === 2
-                ? 0.44
-                : 0.25;
+                ? 0.6
+                : 0.5;
+          const opacity = highlighted
+            ? 1
+            : distance === 1
+              ? 0.7
+              : distance === 2
+                ? 0.5
+                : 0.35;
 
           const itemContent = (
-            <>
-              <motion.span
-                data-slot="preview-rail-tick"
-                aria-hidden="true"
-                animate={isHorizontal ? { scaleY: scale } : { scaleX: scale }}
-                transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
-                className={cn(
-                  "block bg-current",
-                  isHorizontal
-                    ? "h-12 w-0.5 origin-bottom"
-                    : "h-0.5 w-12 origin-left",
-                  highlighted ? "text-foreground" : undefined,
-                )}
-              />
-            </>
+            <motion.span
+              data-slot="preview-rail-tick"
+              aria-hidden="true"
+              animate={{ scale, opacity }}
+              transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+              className={cn(
+                "block h-1.5 w-1.5 rounded-full bg-current",
+                highlighted ? "text-foreground" : undefined,
+              )}
+            />
           );
 
           const sharedClassName = cn(
             "relative flex text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
             isHorizontal
-              ? "h-12 w-6 items-end justify-center"
+              ? "h-12 w-6 items-center justify-center"
               : "h-6 w-12 items-center",
           );
           const sharedStyle = isHorizontal

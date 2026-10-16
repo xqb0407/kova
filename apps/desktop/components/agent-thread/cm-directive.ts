@@ -16,6 +16,7 @@
  * （光标不进入、退格整块删），这是刻意的。
  */
 import { RangeSetBuilder, type RangeSet } from "@codemirror/state";
+import { OPEN_ELEMENT_REF_EVENT } from "@/lib/element-refs";
 import {
   Decoration,
   EditorView,
@@ -41,21 +42,52 @@ const BOT_SVG =
 const BOOK_OPEN_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>';
 
+/** lucide mouse-pointer-2 图标（页面元素引用芯片：与浏览器拾取器同一视觉语言） */
+const ELEMENT_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"/></svg>';
+
+/** lucide square-terminal 图标（浏览器控制台日志芯片） */
+const CONSOLE_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2"/></svg>';
+
+/** lucide x 图标（芯片悬浮删除按钮里的叉） */
+const X_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+
 /** 非 command 芯片的左侧图标：按指令类型取（未命中回退通用扳手） */
 const CHIP_ICONS: Record<string, string> = {
   skill: BOOK_OPEN_SVG,
+  element: ELEMENT_SVG,
+  console: CONSOLE_SVG,
 };
+
+/** 可交互芯片（自己处理点击：打开详情 / 悬浮删除）；其余类型交给编辑器 */
+const INTERACTIVE_TYPES = new Set(["element", "console"]);
 
 class ChipWidget extends WidgetType {
   constructor(
     readonly directiveType: string,
     readonly label: string,
     readonly id: string,
+    /** token 在文档里的范围（删除按钮直接按范围 dispatch）；-1 表示不可删 */
+    readonly from: number = -1,
+    readonly to: number = -1,
+    /** 所属编辑器（删除按钮要 dispatch 到它上面） */
+    readonly view: EditorView | null = null,
   ) {
     super();
   }
   override eq(other: ChipWidget) {
-    return other.directiveType === this.directiveType && other.label === this.label && other.id === this.id;
+    // 可交互芯片带范围与视图：范围变了必须重建 DOM（否则删除按钮指向旧位置）
+    if (
+      other.directiveType === this.directiveType &&
+      other.label === this.label &&
+      other.id === this.id
+    ) {
+      if (!INTERACTIVE_TYPES.has(this.directiveType)) return true;
+      return other.from === this.from && other.to === this.to;
+    }
+    return false;
   }
   override toDOM() {
     const wrap = document.createElement("span");
@@ -83,6 +115,53 @@ class ChipWidget extends WidgetType {
       icon.innerHTML = CHIP_ICONS[this.directiveType] ?? WRENCH_SVG;
       wrap.appendChild(icon);
     }
+    if (INTERACTIVE_TYPES.has(this.directiveType)) {
+      wrap.classList.add("aui-directive-chip-interactive");
+      wrap.style.cursor = "pointer";
+      // mousedown 阻止默认：不让编辑器抢走这次交互（芯片本体仍由 ignoreEvent 让位）
+      wrap.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      if (this.directiveType === "element") {
+        // 元素芯片：点击打开详情 Dialog（选择器即 id 槽，见 lib/element-refs）
+        wrap.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          window.dispatchEvent(
+            new CustomEvent(OPEN_ELEMENT_REF_EVENT, { detail: this.id }),
+          );
+        });
+      }
+      // 悬浮删除：**原地替换掉左侧类型图标**——hover 时图标隐、叉显，点击把
+      // token 整段删掉（标签页关闭按钮同款心智；样式见 globals.css 的
+      // .aui-directive-chip-interactive 族）。DOM 顺序在图标之后，
+      // 图标 display:none 后叉恰落在原位，芯片宽度不跳
+      const del = document.createElement("span");
+      del.className = "aui-directive-chip-delete";
+      del.title = "移除";
+      del.innerHTML = X_SVG;
+      del.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      del.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const view = this.view;
+        if (!view || this.from < 0 || this.to <= this.from) return;
+        view.dispatch({
+          changes: { from: this.from, to: this.to, insert: "" },
+          selection: { anchor: this.from },
+          scrollIntoView: false,
+        });
+        view.focus();
+      });
+      wrap.appendChild(del);
+    }
+    // 标签最后 append：可交互芯片的 DOM 顺序是 [图标][叉][文字]——hover 时
+    // 图标隐、叉显，叉恰好落在图标原位（若标签在叉之前 append，叉会跑到
+    // 芯片右端，与"替换前置图标"的语义相反——上一版就是这个错位）
     const label = document.createElement("span");
     label.className = "aui-directive-chip-label";
     label.textContent = this.label;
@@ -90,7 +169,8 @@ class ChipWidget extends WidgetType {
     return wrap;
   }
   override ignoreEvent() {
-    return false;
+    // 可交互芯片自己处理点击（打开详情/删除）；其余类型交给编辑器（选中/退格原子删除）
+    return INTERACTIVE_TYPES.has(this.directiveType);
   }
 }
 
@@ -103,7 +183,20 @@ function buildChipDecorations(view: EditorView): RangeSet<Decoration> {
   for (const match of text.matchAll(DIRECTIVE_RE)) {
     const from = match.index!;
     const to = from + match[0].length;
-    builder.add(from, to, Decoration.replace({ widget: new ChipWidget(match[1]!, match[2]!, match[3] ?? match[2]!) }));
+    builder.add(
+      from,
+      to,
+      Decoration.replace({
+        widget: new ChipWidget(
+          match[1]!,
+          match[2]!,
+          match[3] ?? match[2]!,
+          from,
+          to,
+          view,
+        ),
+      }),
+    );
   }
   return builder.finish();
 }

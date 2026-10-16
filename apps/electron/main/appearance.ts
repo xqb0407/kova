@@ -74,6 +74,10 @@ export function restore(win: BrowserWindow): void {
   if (!effect) return;
   try {
     apply(win, effect);
+    // Win 实体窗创建即不透明底：材质开启须同步把 webview 表面翻成透明
+    // 底色，否则 backdrop 被白底盖住，直到 splash 结束 sync_webview_surface
+    // 才透出来（mac 创建即透明底，此调用同值无害）
+    applyWebviewSurface(win, effect);
   } catch (e) {
     console.warn("[appearance]", e);
   }

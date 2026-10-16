@@ -49,14 +49,20 @@ import {
   piSessionRegistry,
 } from "@/lib/pi/pi-thread-adapter";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
-import { usePiSessionRunning } from "@/lib/pi/pi-running";
+import { isSessionRunning, usePiSessionRunning } from "@/lib/pi/pi-running";
 import {
+  getUnreadSessions,
   markSessionRead,
   markSessionUnread,
   toggleSessionUnread,
   useIsThreadUnread,
   useUnreadSessionIds,
 } from "@/lib/pi/pi-unread-sessions";
+import { getPinnedSessions } from "@/lib/pi/pi-pinned-sessions";
+import {
+  collectAutoArchiveCandidates,
+  useAutoArchivePrefs,
+} from "@/lib/pi/pi-auto-archive";
 import {
   setThreadBatchVisible,
   toggleThreadBatchSelect,
@@ -128,6 +134,7 @@ import {
 import {
   createContext,
   forwardRef,
+  memo,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -142,10 +149,12 @@ import {
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
 import {
   useFluidHover,
+  useFluidHoverRegister,
   useRegisterFluidHoverItem,
 } from "@/hooks/use-fluid-hover";
 import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
 import { FluidHoverRow } from "@/components/fluid-hover-row";
+import { FluidHoverScope } from "@/components/fluid-hover-scope";
 import { TooltipIconButton } from "./tooltip-icon-button";
 
 // ---------------------------------------------------------------------------
@@ -164,6 +173,27 @@ interface RowHoverSlot {
 }
 
 const RowHoverContext = createContext<RowHoverSlot | null>(null);
+
+/**
+ * 在 FluidHoverScope 的 children 内组装行槽位：registerItem 从作用域 context
+ * 读（悬浮状态关在 Scope 里，换行高亮不重渲染列表主体，见 fluid-hover-scope），
+ * index 由调用点按渲染序传入。脱离 Scope 渲染时 registerItem 落 noop——行
+ * 照常显示，只是不参与高亮滑动。
+ */
+const ScopeRowSlot: FC<{ index: number; children: ReactNode }> = ({
+  index,
+  children,
+}) => {
+  const registerItem = useFluidHoverRegister();
+  return (
+    <RowHoverContext.Provider
+      value={{ registerItem: registerItem ?? noopRegister, index }}
+    >
+      {children}
+    </RowHoverContext.Provider>
+  );
+};
+const noopRegister: RegisterItem = () => {};
 
 // ---------------------------------------------------------------------------
 // 会话树展开动画 —— 移植 components/custom-ui/file-tree.tsx 的动效配方：
@@ -410,6 +440,83 @@ const ThreadUnreadTracker: FC = () => {
 };
 
 /**
+ * 自动归档扫描器（挂 ThreadListRoot 内，仅桌面端生效）：启动后与每 24h
+ * 一轮，把「已完成（regular 且不在运行）、无未读、未置顶、超过保留期、
+ * 非当前打开」的会话静默归档（用户选定：不弹 toast）。归档走与行菜单同款
+ * primitive（→ sidecar archive_session），设置 → 归档页可恢复。
+ * - 判定读的全是本地 store（置顶/未读）+ 运行中投影，所以扫描必须在
+ *   渲染层做；配置见 lib/pi/pi-auto-archive.ts
+ * - 60s 心跳只为"列表加载完成后尽快补跑首轮"与到点触发，tick 本体是
+ *   一次时间比较，未到期近零成本；开关/保留期变化即重置到期时刻
+ *   （打开开关 → 下一分钟内先跑一轮）
+ */
+const AUTO_ARCHIVE_TICK_MS = 60 * 1000;
+const AUTO_ARCHIVE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+const ThreadAutoArchiver: FC = () => {
+  const aui = useAui();
+  const threadItems = useAuiState((s) => s.threads.threadItems);
+  const mainThreadId = useAuiState((s) => s.threads.mainThreadId);
+  const prefs = useAutoArchivePrefs();
+
+  const itemsRef = useRef(threadItems);
+  itemsRef.current = threadItems;
+  const mainRef = useRef(mainThreadId);
+  mainRef.current = mainThreadId;
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+
+  useEffect(() => {
+    if (!isDesktop() || !prefs.enabled) return;
+    // 0 = 待跑首轮（含开关/保留期变化后的重新对齐）
+    let nextRunAt = 0;
+    const tick = () => {
+      const now = Date.now();
+      if (now < nextRunAt) return;
+      const items = itemsRef.current;
+      if (items.length === 0) return; // 列表未就绪：下一心跳再试
+      nextRunAt = now + AUTO_ARCHIVE_INTERVAL_MS;
+      const keep = new Set<string>();
+      const current = mainRef.current;
+      if (current) {
+        keep.add(current);
+        const bound = piSessionRegistry.get(current);
+        if (bound) keep.add(bound);
+      }
+      const candidates = collectAutoArchiveCandidates({
+        items: items.map((item) => ({
+          id: item.id,
+          remoteId: item.remoteId,
+          status: item.status,
+          lastMessageAt: item.lastMessageAt,
+        })),
+        pinnedIds: new Set(getPinnedSessions()),
+        unreadIds: new Set(getUnreadSessions()),
+        isRunning: isSessionRunning,
+        keepIds: keep,
+        retentionDays: prefsRef.current.retentionDays,
+        nowMs: now,
+      });
+      for (const id of candidates) {
+        // 静默尽力而为：单条失败（会话恰好被另一端删了等）跳过等下一轮
+        try {
+          void Promise.resolve(aui.threads.item({ id }).archive()).catch(
+            () => {},
+          );
+        } catch {
+          // 行已不在列表：同样等下一轮
+        }
+      }
+    };
+    tick();
+    const timer = setInterval(tick, AUTO_ARCHIVE_TICK_MS);
+    return () => clearInterval(timer);
+  }, [aui, prefs.enabled, prefs.retentionDays]);
+
+  return null;
+};
+
+/**
  * 会话列表根容器：滚动时上下缘渐隐（与标题右渐隐同款内联 mask 方案，
  * 不走 shadcn scroll-fade 工具类——其 @property/animation-timeline 机制
  * 在 WKWebView 不可靠）。按实测位置施加：顶部滚过才淡出顶缘、底部还有
@@ -471,6 +578,7 @@ export const ThreadListRoot: FC<
       {...props}
     >
       <ThreadUnreadTracker />
+      <ThreadAutoArchiver />
       {children}
     </ThreadListPrimitive.Root>
   );
@@ -669,7 +777,7 @@ const ThreadListEmpty: FC<{ searching?: boolean; children: ReactNode }> = ({
   );
 };
 
-const ThreadListItemGroups: FC<{
+const ThreadListItemGroupsInner: FC<{
   searchQuery?: string;
   registerItem: RegisterItem;
 }> = ({ searchQuery = "", registerItem }) => {
@@ -776,6 +884,12 @@ const ThreadListItemGroups: FC<{
   );
 };
 
+/** memo：悬浮换行只动容器的 activeIndex。registerItem（hook 内稳定引用）与
+ *  searchQuery 不变 ⇒ 整棵行树跳过重渲染——每行挂着十几个订阅 hook 与菜单
+ *  定义，全量重渲染正是侧栏悬浮「卡卡的」的主因（项目 tab 侧的同类问题由
+ *  FluidHoverScope 把状态关进容器解决）。 */
+const ThreadListItemGroups = memo(ThreadListItemGroupsInner);
+
 /**
  * 项目 tab 内容：有工作目录的会话按文件夹分组，Collapsible 展开显示会话列表。
  * 必须渲染在 ThreadListPrimitive.Root 内部（会话项复用 ThreadListItem 的
@@ -854,9 +968,8 @@ export const ProjectListItems: FC<{
 
   // 任务列表同款 fluid hover 作用域：组头与组内行注册进同一容器，
   // 高亮在「文件夹行 ↔ 会话行」之间连续滑动（Base UI Panel 关闭时卸载，
-  // 收起组的行自动注销，不影响剩余行的 rect）。
-  const listRef = useRef<HTMLDivElement>(null);
-  const hover = useFluidHover(listRef);
+  // 收起组的行自动注销，不影响剩余行的 rect）。状态关在下面的 FluidHoverScope
+  // 里：换行高亮只重渲染容器，行树（每行十几个订阅 hook）整棵跳过。
 
   const setOpenDirs = (updater: (prev: Set<string>) => Set<string>) => {
     const next = updater(openDirs);
@@ -932,31 +1045,19 @@ export const ProjectListItems: FC<{
   const pinnedSlots = pinnedProjectIndices.map(() => nextSlot++);
 
   return (
-    <motion.div
-      ref={listRef}
-      layoutRoot
-      className="relative flex flex-col gap-0.5"
-      {...hover.handlers}
-    >
-      <FluidHoverHighlight hover={hover} className="rounded-md" />
+    <FluidHoverScope>
       {/* 置顶的项目会话跳出所属文件夹，进项目 tab 顶部的全局「已置顶」卡片 */}
       {pinnedProjectIndices.length > 0 && (
         <PinnedCard>
           {pinnedProjectIndices.map((index, i) => (
-            <RowHoverContext.Provider
-              key={threadIds[index]}
-              value={{
-                registerItem: hover.registerItem,
-                index: pinnedSlots[i],
-              }}
-            >
+            <ScopeRowSlot key={threadIds[index]} index={pinnedSlots[i]}>
               <TreeRow position={i} instant={pinReorder}>
                 <ThreadListPrimitive.ItemByIndex
                   index={index}
                   components={{ ThreadListItem }}
                 />
               </TreeRow>
-            </RowHoverContext.Provider>
+            </ScopeRowSlot>
           ))}
         </PinnedCard>
       )}
@@ -982,7 +1083,6 @@ export const ProjectListItems: FC<{
           >
             <TreeRow position={headerSlot}>
               <FluidHoverRow
-                registerItem={hover.registerItem}
                 index={headerSlot}
                 className="group/proj relative"
               >
@@ -1068,27 +1168,18 @@ export const ProjectListItems: FC<{
               {/* 展开时子树整体挂载：会话行级联淡入 */}
               <div className="flex flex-col gap-0.5 pl-0">
                 {visibleIndices.map((index, i) => (
-                  <RowHoverContext.Provider
-                    key={threadIds[index]}
-                    value={{
-                      registerItem: hover.registerItem,
-                      index: childSlots[i],
-                    }}
-                  >
+                  <ScopeRowSlot key={threadIds[index]} index={childSlots[i]}>
                     <TreeRow position={i} instant={pinReorder}>
                       <ThreadListPrimitive.ItemByIndex
                         index={index}
                         components={{ ThreadListItem }}
                       />
                     </TreeRow>
-                  </RowHoverContext.Provider>
+                  </ScopeRowSlot>
                 ))}
                 {hiddenCount > 0 && (
                   <TreeRow position={visibleIndices.length}>
-                    <FluidHoverRow
-                      registerItem={hover.registerItem}
-                      index={moreSlot}
-                    >
+                    <FluidHoverRow index={moreSlot}>
                       <Button
                         variant="ghost"
                         // 左缘与会话标题对齐：行 ps-2.5(10px) + 占位图标 size-3.5(14px) + me-1.5(6px) = 30px
@@ -1105,7 +1196,7 @@ export const ProjectListItems: FC<{
           </Collapsible>
         );
       })}
-    </motion.div>
+    </FluidHoverScope>
   );
 };
 
@@ -1403,7 +1494,9 @@ export const ThreadListItem: FC = () => {
             pendingBadge && "pe-14",
           )}
         >
-          {/* Loader DOM 常驻，永久占位；hover 时让位给置顶按钮（行首槽位同一位置） */}
+          {/* Loader DOM 常驻，永久占位；运行中（含 hover）恒显 spinner，不再让位
+              给置顶按钮——运行态是用户最关心的事实，行首槽位归它；置顶在
+              hover 期间改走「…」/右键菜单（useThreadRowMenu 的 pin 项） */}
           <Loader2Icon
             aria-hidden
             data-slot="aui_thread-list-item-running"
@@ -1412,7 +1505,6 @@ export const ThreadListItem: FC = () => {
               text-muted-foreground me-1.5 size-3.5 shrink-0 animate-spin
               invisible
               data-[running=true]:visible
-              group-hover:data-[running=true]:invisible
             "
           />
           {/* 未读点：占 loader 槽位（运行中让位 spinner、已置顶让位图钉）；
@@ -1477,10 +1569,11 @@ export const ThreadListItem: FC = () => {
       {/* 置顶按钮：绝对定位悬浮在 loader 槽位上（start-[5px] + size-6 grid 居中，
           图标落点 [10,24] 与常驻图钉完全一致）。不用 Button 组件——默认变体的
           bg-primary/h-8/px-3 与 size-6 冲突导致盒子尺寸漂移、图标错位，且其
-          active:translate-y-px 会让点击时图标下移。运行中 hover 同样出现并盖过
-          spinner；图标恒定不随状态切换（点击只切换置顶，状态由常驻图钉表达）。
+          active:translate-y-px 会让点击时图标下移。运行中不出现（行首归常驻
+          spinner，置顶走「…」/右键菜单），停跑后恢复 hover 置顶；图标恒定不随
+          状态切换（点击只切换置顶，状态由常驻图钉表达）。
           停止入口只在输入框（侧边栏 stop 按钮已按需求移除） */}
-      {remoteId && !batchActive ? (
+      {remoteId && !batchActive && !showRunning ? (
         <button
           data-slot="aui_thread-list-item-pin"
           title={pinned ? "取消置顶" : "置顶"}
@@ -1705,7 +1798,7 @@ const useThreadRowMenu = ({
   /** 调用轨迹面板：与顶栏「更多」同款（面板开合经事件请求展开） */
   const openTracePanel = () => {
     if (!remoteId) return;
-    openPanelTab("trace", { sessionId: remoteId });
+    openPanelTab("loop", { sessionId: remoteId });
     window.dispatchEvent(new Event("agent-panel:open"));
   };
 

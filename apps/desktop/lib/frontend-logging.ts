@@ -89,6 +89,19 @@ export function installFrontendLogging(): void {
     );
   });
   window.addEventListener("unhandledrejection", (event) => {
-    send("error", `unhandledrejection: ${String(event.reason)}`);
+    const text = String(event.reason);
+    // 已知的宿主机制噪声：Electron <webview> 管道层的拒绝。元素与
+    // GUEST_VIEW_MANAGER_CALL 通道都跑在主渲染器（应用自己的 JS 上下文）里，
+    // 导航被后续导航顶掉时内部 ipcRenderer.invoke 会以 ERR_ABORTED 拒绝；
+    // 页面本身是隔离的、这不是应用缺陷，但默认处理会把它打成控制台错误，
+    // Next dev 浮层随之弹出来。窄匹配这一种组合后 preventDefault()：
+    // 阻断默认的控制台输出（浮层因此看不到），仍以 warn 记进 web.log 备查；
+    // 其余任何 rejection 一律照旧裸露、照旧按 error 上报。
+    if (text.includes("GUEST_VIEW_MANAGER_CALL") && text.includes("ERR_ABORTED")) {
+      event.preventDefault();
+      send("warn", `webview 管道噪声（导航被顶掉，已折叠）: ${text}`);
+      return;
+    }
+    send("error", `unhandledrejection: ${text}`);
   });
 }

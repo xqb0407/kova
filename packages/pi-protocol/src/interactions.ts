@@ -100,7 +100,7 @@ export const pendingResponseFrameSchema = z.looseObject({
 export type ListPendingRequest = z.infer<typeof listPendingRequestSchema>;
 export type PendingResponseFrame = z.infer<typeof pendingResponseFrameSchema>;
 
-/* ---------------- get_history 分页窗（§6，ZCode rowsWindow 的对应物） ---------------- */
+/* ---------------- get_history 分页窗（§6 rowsWindow 的对应物） ---------------- */
 
 /** 应答窗口元数据：游标即消息行 seq；firstSeq/lastSeq 在空窗时为 null */
 export const historyWindowMetaSchema = z.looseObject({

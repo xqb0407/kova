@@ -7,12 +7,7 @@ import {
   Minimize2Icon,
   PanelRightCloseIcon,
 } from "lucide-react";
-import {
-  isPageReload,
-  openPanelTab,
-  useAllThreadTabs,
-  usePanelTabs,
-} from "@/lib/panels/panel-tabs";
+import { openPanelTab, usePanelTabs } from "@/lib/panels/panel-tabs";
 import { newTerminalTab } from "@/lib/shell";
 import { isDesktop } from "@/lib/desktop-env";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
@@ -20,6 +15,7 @@ import { WindowControls } from "@/components/window-controls";
 import { cn } from "@/lib/utils";
 import { NewTabMenu, TabBar } from "./tab-bar";
 import { TAB_META, TabContentView, tabTitle, useVisiblePanelTabTypes } from "./tab-registry";
+import { BrowserView } from "./browser-view";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 
 /**
@@ -137,35 +133,9 @@ const PanelShell: FC<{
   fullscreen = false,
   onToggleFullscreen,
 }) => {
-  const allThreadTabs = useAllThreadTabs();
-  const browserCount = allThreadTabs.reduce(
-    (n, bucket) => n + bucket.tabs.filter((t) => t.type === "browser").length,
-    0,
-  );
-  const prevCount = useRef(browserCount);
-  useEffect(() => {
-    if (prevCount.current > 0 && browserCount === 0 && isDesktop()) {
-      import("@/desktop-bridge/core")
-        .then(({ invoke }) => invoke("browser_detach", { destroy: true }))
-        .catch(() => {});
-    }
-    prevCount.current = browserCount;
-  }, [browserCount]);
-
-  // 启动兜底（仅首帧判定）：页面刷新不恢复浏览器 tab（panel-tabs 的 load 已
-  // 过滤，browserCount=0），但上次会话的原生子 webview 不随主 webview 重载
-  // 销毁，仍悬浮在旧 bounds 上——这里销毁。冷启动恢复路径 browserCount>0
-  // 不触发；本无 webview 时调用幂等无害。ref 防面板重挂载后重复执行
-  const bootChecked = useRef(false);
-  useEffect(() => {
-    if (bootChecked.current) return;
-    bootChecked.current = true;
-    if (browserCount > 0 || !isDesktop() || !isPageReload()) return;
-    import("@/desktop-bridge/core")
-      .then(({ invoke }) => invoke("browser_detach", { destroy: true }))
-      .catch(() => {});
-  }, [browserCount]);
-
+  // 浏览器面板已迁 `<webview>`：guest 随元素走，切标签/关标签/页面刷新都由
+  // DOM 生命周期接管，旧的「browser_detach {destroy}」兜底（防原生子视图
+  // 悬浮残留）整段退役。
   // 面板宽度感知：收起动画/拖窄时顶栏按钮会被移动的左缘硬裁"吃掉"，
   // 宽度不足以容纳按钮（含右缘留白）就整体淡出并禁点，消失干净利落。
   // 只在布尔翻转时 setState，动画逐帧 resize 不触发重渲染
@@ -233,9 +203,22 @@ const PanelShell: FC<{
             )}
           </TooltipIconButton>
         ) : null}
-        {showWindowControls ? <WindowControls /> : null}
+        {/* top=56：停靠态顶栏在窗口 Header（h-12）之下、主区 p-2 内，
+            浮层按钮簇对齐本槽位（right 默认 16 = 卡片边距 8 + pr-2 8） */}
+        {showWindowControls ? <WindowControls top={56} /> : null}
       </div>
     ) : null;
+
+  // 常驻浏览器 pane：活动标签是浏览器就用它；否则沿用**本会话**标签列表里的
+  // 首个浏览器 tab（`<webview>` guest 只有留在 DOM 里才保留页面，切标签不重载
+  // 靠这层）。**不跨会话回退**：以前为了保住"后台会话也能驱动浏览器"退到过
+  // 其他会话的浏览器标签，结果是别的会话开的浏览器会出现在本会话面板里
+  //（2026-10 用户实测）。会话隔离优先——本会话没有浏览器标签就不挂 pane，
+  // 后台会话的 browser_* 工具按"面板没开"报错（用户切到该会话即恢复）。
+  const browserPaneTab =
+    active?.type === "browser"
+      ? active
+      : (tabs.find((t) => t.type === "browser") ?? null);
 
   return (
     // 与聊天列同款卡片：描边 + 圆角，四周边距由 base.tsx 主区 padding 留出
@@ -264,16 +247,37 @@ const PanelShell: FC<{
           {barActions}
         </div>
       )}
-      <div className="min-h-0 flex-1">
-        {active ? (
-          // key=tab.id:切换标签即重挂载,组件内状态(浏览器历史等)标签私有。
-          // 边界接管同一个 key——某个标签崩了只坏那一个,切走再切回即恢复
+      <div className="relative min-h-0 flex-1">
+        {/* 活动标签非浏览器：照常渲染该标签内容（key=tab.id 重挂载，组件内
+            状态标签私有；边界接管同一个 key——某个标签崩了只坏那一个） */}
+        {active && active.type !== "browser" ? (
           <ErrorBoundary key={active.id} label={`面板标签「${tabTitle(active)}」`}>
             <TabContentView tab={active} />
           </ErrorBoundary>
-        ) : (
-          <EmptyTabsScreen />
-        )}
+        ) : null}
+        {/* 常驻浏览器 pane：非活动时绝对覆盖 + visibility 隐藏（不销毁元素，
+            guest 页面状态得以保留；切回即原样显示，无需重新加载） */}
+        {browserPaneTab ? (
+          <div
+            className={cn(
+              "h-full",
+              // 非活动态：绝对覆盖 + **pointer-events-none**——包装层本身是
+              // 透明的可命中元素，只藏内层（invisible）不够，整块会用默认
+              // pointer-events 吃掉上层标签内容区的全部点击（启动恢复浏览器
+              // 标签后点不动面板里的按钮，就是这个坑）
+              active?.type !== "browser" &&
+                "pointer-events-none absolute inset-0",
+            )}
+          >
+            <ErrorBoundary label="浏览器面板">
+              <BrowserView
+                tab={browserPaneTab}
+                hidden={active?.type !== "browser"}
+              />
+            </ErrorBoundary>
+          </div>
+        ) : null}
+        {!active ? <EmptyTabsScreen /> : null}
       </div>
     </div>
   );

@@ -1,11 +1,9 @@
 "use client";
 
 /**
- * Agent loop tab（header「更多」唤起，tab.sessionId 绑定 sidecar 会话）。
- *
- * 与「链路追踪」tab 的分工：那边是 span 瀑布（按 llm/tool/retry 类型看耗时），
- * 这边是迭代视图（一次迭代 = 模型意图 → N 个工具 → 结果回喂）。同一个会话
- * 同一份 traces 数据，两种切法。
+ * 「链路追踪」tab（header「更多」唤起，tab.sessionId 绑定 sidecar 会话）：
+ * 迭代视图，一次迭代 = 模型意图 → N 个工具 → 结果回喂。
+ * （曾用名「循环」；原 span 瀑布切法已下线，迭代视图是唯一入口。）
  *
  * 数据两条来源：
  * - 历史：trace_query 读 traces/<sessionId>.jsonl（完整 run）
@@ -144,7 +142,7 @@ export const LoopTab: FC<{ tab: PanelTab }> = ({ tab }) => {
         <>
           <WaypointsIcon className="text-muted-foreground size-3.5 shrink-0" />
           <span className="text-muted-foreground text-[11px]">
-            按迭代查看循环结构
+            按迭代查看运行轨迹
           </span>
           <button
             type="button"
