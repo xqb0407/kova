@@ -14,12 +14,23 @@
  * 用转录行 seq），跨会话可能撞号。
  */
 import { useSyncExternalStore } from "react";
+import { registerPerfProbeSource } from "@/lib/perf-probe";
 
 type Listener = () => void;
 
+/**
+ * 写入模型：**原地 set + 全量 notify**。旧实现每次 set 整表复制（O(n)），
+ * 长会话首开逐轮播种 N 轮 = N 次整表复制（O(n²) 条目搬运）+ N 轮订阅者
+ * 回调——「打开长会话卡一下」的贡献者之一。
+ * 消费方（useSyncExternalStore 的 getSnapshot）全部经 `.get(key)` 读活值、
+ * 不持有整表快照，原地改安全；对象值要触发重渲染仍由调用方换新对象。
+ */
 function makeMapStore<V>() {
-  let snapshot: ReadonlyMap<string, V> = new Map();
+  const data = new Map<string, V>();
   const listeners = new Set<Listener>();
+  const notify = () => {
+    for (const l of [...listeners]) l();
+  };
   return {
     subscribe(listener: Listener): () => void {
       listeners.add(listener);
@@ -27,17 +38,38 @@ function makeMapStore<V>() {
         listeners.delete(listener);
       };
     },
-    get: (key: string): V | undefined => snapshot.get(key),
-    has: (key: string): boolean => snapshot.has(key),
+    get: (key: string): V | undefined => data.get(key),
+    has: (key: string): boolean => data.has(key),
+    get size(): number {
+      return data.size;
+    },
     set(key: string, value: V): void {
-      const next = new Map(snapshot);
-      next.set(key, value);
-      snapshot = next;
-      for (const listener of listeners) listener();
+      data.set(key, value);
+      notify();
+    },
+    /** 批量写：一次 notify（逐轮播种这类同帧多写场景专用） */
+    setMany(entries: Iterable<[string, V]>): void {
+      let n = 0;
+      for (const [k, v] of entries) {
+        data.set(k, v);
+        n += 1;
+      }
+      if (n > 0) notify();
+    },
+    /** 按键前缀摘除（会话级台账清理：键一律 `threadId:…` 作用域） */
+    purgePrefix(prefix: string): void {
+      let n = 0;
+      for (const k of [...data.keys()]) {
+        if (k.startsWith(prefix)) {
+          data.delete(k);
+          n += 1;
+        }
+      }
+      if (n > 0) notify();
     },
     reset(): void {
-      snapshot = new Map();
-      for (const listener of listeners) listener();
+      data.clear();
+      notify();
     },
   };
 }
@@ -139,6 +171,22 @@ export function seedTurnTiming(scopedKey: string, timing: TurnTiming): void {
   turnTimings.set(scopedKey, timing);
 }
 
+/** 历史装载批量播种：一次 notify（长会话逐轮写曾是 O(n²) 整表复制源） */
+export function seedTurnTimings(entries: Iterable<[string, TurnTiming]>): void {
+  turnTimings.setMany(entries);
+}
+
+/**
+ * 会话级台账清理（控制器 LRU 淘汰 / 会话删除时调用）：两张表按 `threadId:`
+ * 前缀摘除。轮耗时不丢——下次打开该会话由快照重新播种；用户显式折叠覆盖
+ * 一并作废（会话都不在了，覆盖没有归属）。
+ */
+export function purgeThreadTurns(threadId: string): void {
+  const prefix = `${threadId}:`;
+  collapseOverrides.purgePrefix(prefix);
+  turnTimings.purgePrefix(prefix);
+}
+
 /** 台账读取（组件走 useTurnDurationMs；这里给测试与调试用） */
 export function getTurnTiming(scopedKey: string): TurnTiming | undefined {
   return turnTimings.get(scopedKey);
@@ -183,3 +231,8 @@ export function __resetTurnStoresForTests(): void {
   collapseOverrides.reset();
   turnTimings.reset();
 }
+
+registerPerfProbeSource("turn-collapse", () => ({
+  turnTimings: turnTimings.size,
+  collapseOverrides: collapseOverrides.size,
+}));
