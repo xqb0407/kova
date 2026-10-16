@@ -337,8 +337,10 @@ export const Header: FC<{
           </div>
         )}
       </div>
-      {/* 窗口控制固定在窗口右上角；停靠态右缘是面板，由面板顶栏接管渲染 */}
-      {docked ? null : <WindowControls />}
+      {/* 窗口控制钉在聊天顶栏行右缘；停靠态右缘是面板，由面板顶栏接管渲染。
+          顶栏在主区 p-2（8px）内的卡片里，不再贴窗口顶缘：top=8；
+          right=24 = 卡片边距 8 + pr-4 16（与占位槽像素级重合） */}
+      {docked ? null : <WindowControls top={8} right={24} />}
     </header>
   );
 };
