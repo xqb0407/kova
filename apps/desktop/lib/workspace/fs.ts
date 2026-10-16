@@ -126,7 +126,14 @@ export async function fsWriteFile(
 /* ---------------- 写命令（文件树右键菜单）：成功返回 null，失败返回错误码 ---------------- */
 
 async function fsWriteCommand(
-  cmd: "fs_mkdir" | "fs_touch" | "fs_rename" | "fs_delete" | "fs_reveal",
+  cmd:
+    | "fs_mkdir"
+    | "fs_touch"
+    | "fs_rename"
+    | "fs_delete"
+    | "fs_reveal"
+    /** 侧栏项目目录定位：只做绝对路径 + 目录存在校验（见 main 的 project_reveal） */
+    | "project_reveal",
   args: Record<string, string>,
 ): Promise<string | null> {
   if (!isDesktop()) return "not-desktop";
@@ -165,6 +172,13 @@ export function fsDelete(cwd: string, path: string): Promise<string | null> {
 /** 在系统文件管理器中显示；成功返回 null，失败返回错误码 */
 export function fsReveal(cwd: string, path: string): Promise<string | null> {
   return fsWriteCommand("fs_reveal", { cwd, path });
+}
+
+/** 在系统文件管理器中定位项目目录（macOS=Finder / Windows=资源管理器）。
+ *  项目目录未必是当前 workspace，所以走 project_reveal 而非 fs_reveal；
+ *  成功返回 null，失败返回错误码 */
+export function projectReveal(path: string): Promise<string | null> {
+  return fsWriteCommand("project_reveal", { path });
 }
 
 /** 错误码 → 提示文案（fs.rs 写命令统一返回短码） */

@@ -34,8 +34,9 @@ import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
  * 宿主交接（停靠/收起）不跳位。
  */
 
-/** 按钮簇占宽：3 × size-8(32) + 2 × gap-0.5(2px) = 100px */
-const CLUSTER_W = 100;
+/** 按钮簇占宽：3 × size-8(32) + 2 × gap-0.5(2px) = 100px
+ *  （导出供顶栏同层的其它固定元素换算右缘偏移，见 agent-thread/header） */
+export const CLUSTER_W = 100;
 
 /**
  * 唯一层认领：聊天顶栏 / 面板顶栏 / 设置顶栏随视图切换换挂载点，正常互斥；

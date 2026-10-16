@@ -100,9 +100,9 @@ export const ThinkingPicker: FC = () => {
             title={title}
             disabled={sendLocked}
             className={cn(
-              "inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 @max-2xl:px-2",
+              "inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-50 @max-2xl:px-2",
               on
-                ? "bg-primary/10 text-primary hover:bg-primary/15"
+                ? "bg-muted text-primary hover:bg-muted/30"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >

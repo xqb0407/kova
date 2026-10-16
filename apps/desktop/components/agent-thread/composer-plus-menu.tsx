@@ -200,7 +200,7 @@ export const ComposerPlusMenu: FC = () => {
               title="添加内容"
               className={cn(
                 "text-muted-foreground hover:text-foreground hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30",
-                "inline-flex size-7 items-center justify-center rounded-full",
+                "inline-flex size-7 items-center justify-center rounded-lg",
                 "transition-colors active:scale-[0.96] motion-reduce:transition-none",
                 "focus-visible:ring-ring/50 focus-visible:ring-[2px] focus-visible:outline-none",
               )}

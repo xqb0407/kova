@@ -73,6 +73,15 @@
    `kova://app/resource`（协议处理器按 精确→`path.html`→`path/index.html` 命中）；
    首版误写 `resource/index.html` 落到 404 页（表现为"资源管理器没加进来"）。已修，
    并补窗口 closed / render-process-gone / did-fail-load 日志便于日后定位。
+10. **权限档的落库与草稿显示**（与旧版有意不同的两处修正）：旧版新建会话不写
+    `mode`/`approval_level` 两列，首轮 run 按 kv「最近一次使用」装配，而两列留 NULL
+    在重建（LRU 驱逐/重启恢复）时被 `decodeApprovalLevel` 解码回 `ask`——同一条
+    对话会「驱逐后突然开始弹卡」；前端草稿期也没有真值可水合，一律显示写死的
+    `agent/ask` 占位，于是用户看到「变更前确认」以为改文件前会问，首轮实际按
+    最近使用档跑（AI 审查/完全访问这类档设计上就不弹卡），且「点已选项」是空操作
+    ——连 `set_mode` 都没发出去。现在：建会话时把生效档位当场写进偏好行
+    （`resolve.ts` 的新会话分支），前端草稿默认档改读 kv `pi.mode`
+    （`loadGlobalModeDefault`，非桌面/远程或 kv 不可用时仍回落占位）。
 
 ## 尚未接线（Phase C/D，注册了命令但返回可诊断错误）
 
@@ -95,6 +104,25 @@
 - 打包注意：bun 不执行 postinstall——electron 二进制与 node-pty 需手动补装（`electron/install.js`、
   `npx node-gyp rebuild`；node-pty 走 N-API，Node/Electron ABI 通用）。
 - 未做：dmg/nsis 安装包产物（配置就绪未构建）、代码签名/公证（与旧版同样未签）。
+
+#### 图标规范（macOS 应用图标，`scripts/icons.py`）
+
+Dock/Finder/Launchpad 渲染一张图标时，是把 **1024 画布**铺满用户设定的槽位，图标在画布里的
+占比直接决定看上去多大。Apple 自家图标（Finder / App Store / 终端 / 计算器 / 系统设置，五者实测
+一致）是：**实体方 824/1024 = 0.803**，背后两层烘焙投影（紧边层 + 宽广层）把整体占位撑到
+**854/1024 = 0.834**，圆角 0.226。规范就按这组数走，不按观感逐次微调：
+
+- 母图 `apps/electron/icons/icon-master.png`（1024 PNG，任意留白）→ `bun run icons` 生成
+  `icon.icns`（10 个成员齐全）+ `icon.png / 128x128.png / 128x128@2x.png / 64x64.png / 32x32.png`；
+  `bun run icons:check` 按上面三项指标校验（容差 0.005 / 圆角 0.015），不合规退出非零。
+- 早期两版踩过的坑记在这里，免得重犯：**只对齐实体方、不烘焙投影**（0.803 硬边）在 Dock 里会比
+  邻居小一圈——邻居的视觉体量都含投影；反过来**满画布出血**（0.988）在 Launchpad 里比 Apple 图标
+  大 23%。投影层必须铺在整块 1024 画布上再模糊，只模糊裁紧的瓦片图会让投影尾巴被源图边界切掉。
+- 已知差异：本仓图案沿用原始品牌图，圆角实测 0.217（比模板紧 4%）；重绘时按 0.226 画。
+- 改图标资产的三处同步点：`apps/electron/icons/`（源）→ 打包时由 electron-builder 装进 bundle；
+  本地已构建的 `.app` 与 `/Applications/Kova.app` 需替换 `Contents/Resources/icon.icns`
+  并 `codesign --force -s -`（identity: null，ad-hoc）后 `killall Dock` 刷新图标缓存。
+- Windows `icon.ico` 与本管线无关（保持原样）；托盘 `tray.png` 也不经此管线。
 
 ### Chromium 专属渲染坑（已在迁移版修掉，旧桌面壳/WKWebView 不出现）
 

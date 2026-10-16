@@ -119,7 +119,7 @@ function SelectionToolbarQuote({
       {children ?? (
         <>
           <QuoteIcon className="size-3.5" />
-          Quote
+          询问
         </>
       )}
     </SelectionToolbarPrimitive.Quote>

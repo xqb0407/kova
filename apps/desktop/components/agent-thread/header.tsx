@@ -4,7 +4,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
-import { WindowControls } from "@/components/window-controls";
+import { WindowControls, CLUSTER_W } from "@/components/window-controls";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
   MenuIcon,
@@ -34,7 +34,8 @@ import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { FolderOpenIcon, GitBranchIcon } from "lucide-react";
-import { useState, type FC } from "react";
+import { useEffect, useState, type FC } from "react";
+import { createPortal } from "react-dom";
 
 export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
   return (
@@ -118,9 +119,23 @@ const HeaderMoreMenu: FC<{
   );
 };
 
-/** Header 只在面板完全收没后提供展开按钮（展开态的收起入口在面板顶栏）；
- *  角标提示:有在途工具或未完成任务才亮。空会话（尚无消息）不渲染 */
-const PanelToggleButton: FC<{ onToggle: () => void }> = ({ onToggle }) => {
+/** 面板开关按钮的固定钉位：与 WindowControls 同款 portal + fixed，脱离
+ *  会随聊天列收窄而整体左移的 Header 流——用户要的"原地淡出/淡入、不移动"
+ *  本质上要求按钮不参与 Header 的重排。右侧偏移对齐它原本在 Header 右缘的
+ *  槽位：卡片右缘 8（main p-2）+ 把手 8（w-2）+ pr-4 16 = 24；Windows/Linux
+ *  下 Header 右缘还要挤出窗口三键占位（CLUSTER_W + gap-2 8），再左让一份 */
+const PANEL_TOGGLE_TOP = 8;
+const PANEL_TOGGLE_RIGHT = 24;
+const PANEL_TOGGLE_RIGHT_WITH_WINCONTROLS = PANEL_TOGGLE_RIGHT + 8 + CLUSTER_W;
+
+/** Header 面板开关按钮：空会话（尚无消息）不渲染；有在途活动才亮角标。
+ *  portal 到 body、fixed 钉在窗口右上角（见上），可见性交给 150ms
+ *  transition-opacity：展开时原地淡出（不再随聊天列收窄左移），收起落位时
+ *  原地渐显。z-40：盖住主区内容与面板卡片，但仍在 dialog/设置页（z-50）之下 */
+const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
+  onToggle,
+  shown,
+}) => {
   const { runningCount } = usePanelActivity();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const isEmptyThread = useAuiState((s) => s.thread.messages.length === 0);
@@ -129,26 +144,48 @@ const PanelToggleButton: FC<{ onToggle: () => void }> = ({ onToggle }) => {
     (t) => t.status !== "deleted" && t.status !== "completed",
   );
   const badge = runningCount > 0 || hasUnfinishedPlan;
+  // portal 只在 document 就绪后挂（首帧无按钮，本就要等判环境）
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
-  if (isEmptyThread) return null;
+  if (!mounted || isEmptyThread) return null;
 
-  return (
-    <TooltipIconButton
-      variant="ghost"
-      size="icon"
-      tooltip="展开 Agent 面板"
-      side="bottom"
-      onClick={onToggle}
-      className="relative size-8 shrink-0"
+  return createPortal(
+    <div
+      className="pointer-events-none fixed z-40 flex h-12 items-center"
+      style={{
+        top: PANEL_TOGGLE_TOP,
+        right:
+          isDesktop() && !isMacPlatform()
+            ? PANEL_TOGGLE_RIGHT_WITH_WINCONTROLS
+            : PANEL_TOGGLE_RIGHT,
+      }}
     >
-      <PanelRightOpenIcon className="size-4" />
-      {badge ? (
-        <span
-          aria-hidden="true"
-          className="bg-primary absolute top-1 right-1 size-1.5 animate-pulse rounded-full"
-        />
-      ) : null}
-    </TooltipIconButton>
+      <TooltipIconButton
+        variant="ghost"
+        size="icon"
+        tooltip="展开 Agent 面板"
+        side="bottom"
+        onClick={onToggle}
+        aria-hidden={!shown}
+        tabIndex={shown ? undefined : -1}
+        className={cn(
+          "relative size-8 shrink-0 transition-opacity duration-150",
+          shown ? "pointer-events-auto" : "pointer-events-none opacity-0",
+        )}
+      >
+        <PanelRightOpenIcon className="size-4" />
+        {badge ? (
+          <span
+            aria-hidden="true"
+            className="bg-primary absolute top-1 right-1 size-1.5 animate-pulse rounded-full"
+          />
+        ) : null}
+      </TooltipIconButton>
+    </div>,
+    document.body,
   );
 };
 
@@ -324,17 +361,13 @@ export const Header: FC<{
           />
         </>
       )}
-      {/* Agent 面板开关：面板完全收没才出现（展开时收起入口在面板顶栏），
-          有在途活动则亮角标。点击展开的瞬间 docked 同帧翻转（base.tsx
-          panelDocked = !compact && !panelGone）：窗口控件卸载、面板开始滑入、
-          聊天列开始收窄 —— 右上区域已有多重变化叠加，按钮再拖 150ms 淡出/
-          300ms 槽位收缩只会让位移感更重。直接消失（无过渡）才是最干净的
-          交接：一帧内完成全部状态切换，无中间态可闪；隐藏时 inert 防聚焦 */}
+      {/* Agent 面板开关锚点：按钮本体已 portal 到 body 的 fixed 层（见
+          PanelToggleButton），此处只留 ml-auto 把头部右侧内容顶到右缘。
+          按钮脱离 Header 流后才不会随聊天列收窄左移——这是"原地淡出/
+          淡入、不移动"的前提 */}
       <div className="ml-auto flex shrink-0 items-center">
-        {pageMode || !showPanelToggle ? null : (
-          <div className="w-8 shrink-0">
-            <PanelToggleButton onToggle={onTogglePanel} />
-          </div>
+        {pageMode ? null : (
+          <PanelToggleButton onToggle={onTogglePanel} shown={showPanelToggle} />
         )}
       </div>
       {/* 窗口控制钉在聊天顶栏行右缘；停靠态右缘是面板，由面板顶栏接管渲染。

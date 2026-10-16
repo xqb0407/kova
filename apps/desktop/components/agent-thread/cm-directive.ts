@@ -54,15 +54,49 @@ const CONSOLE_SVG =
 const X_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
 
+/** lucide file-code 图标（代码引用芯片：文件视图选区「引用到对话」） */
+const FILE_CODE_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m10 13-2 2 2 2"/><path d="m14 17 2-2-2-2"/></svg>';
+
 /** 非 command 芯片的左侧图标：按指令类型取（未命中回退通用扳手） */
 const CHIP_ICONS: Record<string, string> = {
   skill: BOOK_OPEN_SVG,
   element: ELEMENT_SVG,
   console: CONSOLE_SVG,
+  code: FILE_CODE_SVG,
 };
 
-/** 可交互芯片（自己处理点击：打开详情 / 悬浮删除）；其余类型交给编辑器 */
-const INTERACTIVE_TYPES = new Set(["element", "console"]);
+/** 可交互芯片（自己处理点击：打开详情 / 悬浮删除）；其余类型交给编辑器。
+ *  code（「引用到对话」的代码引用）虽渲染成高亮文本而非药丸，但同属可交互：
+ *  悬浮叉要按文档范围惰性删除 token，范围变了必须重建 DOM。 */
+const INTERACTIVE_TYPES = new Set(["element", "console", "code"]);
+
+/** 悬浮删除按钮：hover 时原地替换左侧类型图标，点击把 token 整段从文档删掉。
+ *  （图标/叉的显隐规则在 globals.css 的 .aui-directive-chip-interactive 族；
+ *  叉与图标同尺寸同位，hover 切换时宽度不跳。） */
+function createDeleteButton(widget: ChipWidget): HTMLElement {
+  const del = document.createElement("span");
+  del.className = "aui-directive-chip-delete";
+  del.title = "移除";
+  del.innerHTML = X_SVG;
+  del.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  del.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const view = widget.view;
+    if (!view || widget.from < 0 || widget.to <= widget.from) return;
+    view.dispatch({
+      changes: { from: widget.from, to: widget.to, insert: "" },
+      selection: { anchor: widget.from },
+      scrollIntoView: false,
+    });
+    view.focus();
+  });
+  return del;
+}
 
 class ChipWidget extends WidgetType {
   constructor(
@@ -106,6 +140,30 @@ class ChipWidget extends WidgetType {
       wrap.appendChild(label);
       return wrap;
     }
+    // 代码引用（「引用到对话」）：**高亮文本**而非药丸芯片——与智能体提及同一
+    // 视觉语言（图标 + 蓝色文字，无底色框）；悬浮时左侧图标原位换成 ✕，点击把
+    // 整段引用从输入框删掉（复用可交互芯片的 CSS 族，叉的显隐规则同款）
+    if (this.directiveType === "code") {
+      wrap.className =
+        "aui-directive-code aui-directive-chip-interactive inline-flex items-baseline gap-1 font-medium text-blue-400";
+      wrap.setAttribute("data-directive-type", this.directiveType);
+      wrap.setAttribute("data-directive-id", this.id);
+      wrap.style.cursor = "pointer";
+      wrap.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      const icon = document.createElement("span");
+      icon.className = "aui-directive-chip-icon inline-flex self-center";
+      icon.innerHTML = CHIP_ICONS[this.directiveType] ?? WRENCH_SVG;
+      wrap.appendChild(icon);
+      // DOM 顺序 [图标][叉][文字]：hover 时图标隐、叉显，恰落在图标原位
+      wrap.appendChild(createDeleteButton(this));
+      const label = document.createElement("span");
+      label.textContent = this.label;
+      wrap.appendChild(label);
+      return wrap;
+    }
     wrap.className = "aui-directive-chip";
     wrap.setAttribute("data-directive-type", this.directiveType);
     wrap.setAttribute("data-directive-id", this.id);
@@ -133,31 +191,9 @@ class ChipWidget extends WidgetType {
           );
         });
       }
-      // 悬浮删除：**原地替换掉左侧类型图标**——hover 时图标隐、叉显，点击把
-      // token 整段删掉（标签页关闭按钮同款心智；样式见 globals.css 的
-      // .aui-directive-chip-interactive 族）。DOM 顺序在图标之后，
-      // 图标 display:none 后叉恰落在原位，芯片宽度不跳
-      const del = document.createElement("span");
-      del.className = "aui-directive-chip-delete";
-      del.title = "移除";
-      del.innerHTML = X_SVG;
-      del.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      del.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const view = this.view;
-        if (!view || this.from < 0 || this.to <= this.from) return;
-        view.dispatch({
-          changes: { from: this.from, to: this.to, insert: "" },
-          selection: { anchor: this.from },
-          scrollIntoView: false,
-        });
-        view.focus();
-      });
-      wrap.appendChild(del);
+      // 悬浮删除：**原地替换掉左侧类型图标**（DOM 顺序在图标之后，图标
+      // display:none 后叉恰落在原位，芯片宽度不跳）
+      wrap.appendChild(createDeleteButton(this));
     }
     // 标签最后 append：可交互芯片的 DOM 顺序是 [图标][叉][文字]——hover 时
     // 图标隐、叉显，叉恰好落在图标原位（若标签在叉之前 append，叉会跑到

@@ -38,6 +38,10 @@ import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import { setCurrentPanelThread } from "@/lib/panels/panel-tabs";
+import {
+  readPanelOpenPref,
+  writePanelOpenPref,
+} from "@/lib/panels/panel-open-pref";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
@@ -119,8 +123,8 @@ const FilesView = dynamic(
 // 应用启动即接管外观偏好（预绘制脚本之后：系统主题监听、跟随实时更新）
 import "@/lib/settings/ui-prefs";
 
-/** 面板开合与宽度的本地持久化键（宽度存 px 整数） */
-const PANEL_OPEN_KEY = "agent-panel-open";
+/** 面板宽度的本地持久化键（px 整数）。面板**开合**已改为按会话分区记忆
+ *  （lib/panels/panel-open-pref）；宽度仍是全局偏好，不分区 */
 const PANEL_WIDTH_KEY = "agent-panel-width";
 const PANEL_MIN_WIDTH = 300;
 /** 无历史宽度时的默认面板宽（与 ResizablePanel defaultSize 一致） */
@@ -213,11 +217,14 @@ export const Base: FC = () => {
   // 稳定 id：本会话新建的线程在绑定 sessionId 前是 __LOCALID_ 草稿 id，
   // 经 piSessionRegistry 换出（未绑定的草稿落到草稿 id 自身的桶）
   const mainThreadId = useAuiState((s) => s.threads.mainThreadId);
+  /** 面板分区键：与面板标签桶同空间（sessionId；草稿期 __LOCALID_ 自身，
+   *  绑定 sessionId 后由 rekeyPanelOpenPref 迁移） */
+  const panelScopeKey = mainThreadId
+    ? (piSessionRegistry.get(mainThreadId) ?? mainThreadId)
+    : null;
   useEffect(() => {
-    setCurrentPanelThread(
-      mainThreadId ? (piSessionRegistry.get(mainThreadId) ?? mainThreadId) : null,
-    );
-  }, [mainThreadId]);
+    setCurrentPanelThread(panelScopeKey);
+  }, [panelScopeKey]);
   useEffect(
     () =>
       subscribeOpenSession((sessionId) => {
@@ -248,10 +255,35 @@ export const Base: FC = () => {
     });
     return () => setSessionsChangedSync(null);
   }, [aui]);
-  // Agent 面板：默认展开，挂载后从 localStorage 恢复开合/宽度
-  // （SSR 首帧恒为展开，避免 hydration 不一致）
+  // Agent 面板：SSR 首帧恒为展开（避免 hydration 不一致）；挂载/切会话后按
+  // **当前会话自己的记忆**恢复开合（下方分区效应），无记录默认收起
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelHydrated, setPanelHydrated] = useState(false);
+  /** 动画落位基线（null = 下一次落位走 snap、不播开合动画） */
+  const prevPanelOpenRef = useRef<boolean | null>(null);
+  /** 当前分区键的 ref：长生命周期闭包（事件监听/快捷键）不随分区切换重建 */
+  const panelScopeKeyRef = useRef<string | null>(panelScopeKey);
+  panelScopeKeyRef.current = panelScopeKey;
+  const panelOpenRef = useRef(panelOpen);
+  panelOpenRef.current = panelOpen;
+  /** 面板开合按会话分区恢复：挂载与切会话都读"当前会话自己的记忆"，无记录
+   *  默认收起——全局单键时代 A 会话展开面板、切到 B 也保持展开（2026-10 实报）。
+   *  分区切换是"跟随会话"而非用户意图：直接 setPanelOpen、不写记忆；同时把
+   *  prevPanelOpenRef 置 null 让宽度动画走 snap——切会话即时落位，不逐帧推挤。 */
+  useEffect(() => {
+    setPanelOpen(readPanelOpenPref(panelScopeKey));
+    prevPanelOpenRef.current = null;
+    setPanelHydrated(true);
+  }, [panelScopeKey]);
+  /** 用户手动开/收的写口（收起/展开按钮、快捷键、拖拽落位、显式展开事件）：
+   *  同步写当前会话的分区记忆——这是"用户意图"，与切会话的跟随恢复区分开 */
+  const applyUserPanelOpen = useCallback((open: boolean) => {
+    setPanelOpen(open);
+    writePanelOpenPref(panelScopeKeyRef.current, open);
+  }, []);
+  const toggleUserPanelOpen = useCallback(() => {
+    applyUserPanelOpen(!panelOpenRef.current);
+  }, [applyUserPanelOpen]);
   // 迭代1b（P6）：宽屏右列折叠（collapsedSize=0）时不再常驻渲染整棵面板树，
   // 首次展开才挂载、之后保持挂载（收起不再卸载，二次展开零重建）。
   // 活动数据在 panel-activity 模块级 store（迭代1），面板卸载/未挂载不丢。
@@ -321,14 +353,6 @@ export const Base: FC = () => {
   // 仅 macOS 有悬浮红绿灯，需在侧边栏顶栏让位
   const mac = isDesktop() && isMacPlatform();
 
-  // 恢复上次偏好
-  useEffect(() => {
-    try {
-      if (localStorage.getItem(PANEL_OPEN_KEY) === "0") setPanelOpen(false);
-    } catch {}
-    setPanelHydrated(true);
-  }, []);
-
   // 水合后（SSR 首帧恒为展开，不代表用户意图）一旦面板处于展开即置位
   useEffect(() => {
     if (panelHydrated && panelOpen) setPanelEverOpened(true);
@@ -339,12 +363,12 @@ export const Base: FC = () => {
   // panelOpen 会被 panelGate 按住不显示，点击看起来毫无反应。
   useEffect(() => {
     const open = () => {
-      setPanelOpen(true);
+      applyUserPanelOpen(true);
       setPanelRequestedEmpty(true);
     };
     window.addEventListener("agent-panel:open", open);
     return () => window.removeEventListener("agent-panel:open", open);
-  }, []);
+  }, [applyUserPanelOpen]);
 
   // 开合 → 驱动 collapsible Panel：用户开合（panelOpen 状态沿）时用
   // framer-motion 把面板宽度在 0↔目标值间逐帧 resize，聊天列随之被连续
@@ -354,7 +378,6 @@ export const Base: FC = () => {
   const panelAnimRef = useRef<AnimationPlaybackControls | null>(null);
   // 动画被把手 pointerdown 拦停后置位，pointerup 时据此结算中间态
   const panelAnimInterruptedRef = useRef(false);
-  const prevPanelOpenRef = useRef<boolean | null>(null);
   /** localStorage 里的目标面板宽（无有效记录回默认） */
   const panelTargetWidth = () => {
     const saved = Number(localStorage.getItem(PANEL_WIDTH_KEY));
@@ -568,16 +591,19 @@ export const Base: FC = () => {
 
   // 面板收起入口（AgentPanel memo 的稳定 prop）；全屏中收面板先退出全屏，
   // 聊天列回弹与面板收起动画并行，主区不闪空
-  const collapsePanel = useCallback(() => setPanelOpen(false), []);
+  const collapsePanel = useCallback(
+    () => applyUserPanelOpen(false),
+    [applyUserPanelOpen],
+  );
   const exitAndCollapsePanel = useCallback(() => {
     exitPanelFullscreen();
-    setPanelOpen(false);
-  }, [exitPanelFullscreen]);
+    applyUserPanelOpen(false);
+  }, [exitPanelFullscreen, applyUserPanelOpen]);
 
   // 把手 pointerdown 拦停在途动画（动画 resize 会和拖拽互相覆盖）。
   // 注意只挂把手——原来挂在 Group 的 onPointerDownCapture 上，面板内任何
   // 点击（包括收起按钮自己）都会掐停动画：连点收起按钮时第二次点击把动画
-  // 停在半路且 setPanelOpen(false) 已是 no-op，面板卡死"收不起来"
+  // 停在半路且 applyUserPanelOpen(false) 已是 no-op，面板卡死"收不起来"
   const interruptPanelAnim = () => {
     if (panelAnimRef.current) {
       panelAnimRef.current.stop();
@@ -615,21 +641,13 @@ export const Base: FC = () => {
       setPanelMinReleased(false);
     } else if (px >= PANEL_MIN_WIDTH) {
       // 收起途中停在了有效宽度 → 视为想展开，开合效果会续跑剩余动画
-      setPanelOpen(true);
+      applyUserPanelOpen(true);
     } else {
       // 半路 → 归零完成收起
       p.collapse();
       setPanelMinReleased(false);
     }
   };
-
-  // 记住开合
-  useEffect(() => {
-    if (!panelHydrated) return;
-    try {
-      localStorage.setItem(PANEL_OPEN_KEY, panelOpen ? "1" : "0");
-    } catch {}
-  }, [panelOpen, panelHydrated]);
 
   // 记住宽度（拖拽/布局变化结束后）。onLayoutChanged 每帧都会进来（侧边栏
   // 过渡、开合动画、拖拽、窗口缩放）：低于 minSize 的中间态（收起动画末段、
@@ -668,7 +686,7 @@ export const Base: FC = () => {
         setActiveMenu("automation");
       } else if (matchesShortcut(event, toggleAgentPanel)) {
         event.preventDefault();
-        setPanelOpen((open) => !open);
+        toggleUserPanelOpen();
       } else if (matchesShortcut(event, toggleTheme)) {
         event.preventDefault();
         toggleThemeMode();
@@ -720,6 +738,10 @@ export const Base: FC = () => {
   // 窗口右缘即面板，收起入口与 Windows 窗口控件上移到面板顶栏；
   // 窄屏浮层或面板收没时它们仍留在 Header
   const panelDocked = !compact && !panelGone;
+  // 右上角控件交接完成（展开动画落位那一帧，base 的 panelExpanding 翻假）：
+  // 面板顶栏的收起/全屏按钮此刻才从冻结裁剪区外进可视区，Header 侧窗口控件
+  // 也在此刻让位。两侧同帧翻转，两侧都据此铺过渡（Header docked / 面板 settled）
+  const panelDockSettled = panelDocked && !panelExpanding;
 
   // TRAE 式左右两列：Header 只挂在聊天列上方，分割线从窗口顶通到底；
   // 列本身是带描边圆角的卡片，四周留出窗口底色边距（顶缘仍可拖窗）。
@@ -749,8 +771,8 @@ export const Base: FC = () => {
           showPanelToggle={
             panelGate && (compact ? !panelShown : panelGone)
           }
-          onTogglePanel={() => setPanelOpen((o) => !o)}
-          docked={panelDocked && !panelExpanding}
+          onTogglePanel={toggleUserPanelOpen}
+          docked={panelDockSettled}
           variant={
             activeMenu === "automation" ||
             activeMenu === "usage" ||
@@ -778,7 +800,7 @@ export const Base: FC = () => {
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.18 }}
                   className="bg-black/30 absolute inset-0 z-30"
-                  onClick={() => setPanelOpen(false)}
+                  onClick={() => applyUserPanelOpen(false)}
                 />
                 <motion.div
                   key="panel"
@@ -842,7 +864,7 @@ export const Base: FC = () => {
             data-drag-region={isDesktop() ? "true" : undefined}
             className={cn(
               "bg-muted/40 relative flex-1 overflow-hidden p-2",
-              !compact && panelGone && "pr-0",
+              !compact && panelGone && "pr-0", !sidebarCollapsed && "pl-0"
             )}
           >
             {compact ? (
@@ -928,7 +950,7 @@ export const Base: FC = () => {
                           !panelAnimInterruptedRef.current &&
                           size.inPixels >= PANEL_MIN_WIDTH
                         ) {
-                          setPanelOpen(true);
+                          applyUserPanelOpen(true);
                         }
                         return;
                       }
@@ -940,7 +962,7 @@ export const Base: FC = () => {
                       // 两条路径）不改写用户开合偏好：动画在途或闸门关着时不回写，
                       // 只有用户拖拽/双击落位才同步 panelOpen
                       if (!panelAnimRef.current && panelGate)
-                        setPanelOpen(!collapsed);
+                        applyUserPanelOpen(!collapsed);
                     }}
                 >
                   {panelEverOpened ? (
@@ -959,6 +981,7 @@ export const Base: FC = () => {
                         <AgentPanel
                           onCollapse={exitAndCollapsePanel}
                           showWindowControls={panelDocked}
+                          settled={panelDockSettled}
                           fullscreen={panelFullscreen}
                           onToggleFullscreen={togglePanelFullscreen}
                         />
