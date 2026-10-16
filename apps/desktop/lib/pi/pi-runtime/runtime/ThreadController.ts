@@ -478,6 +478,14 @@ export class PiThreadController implements PiThreadControllerLike {
     this.disconnectFromEvents();
   }
 
+  /** 是否有消费者（挂载中的 runtime / 连接保留期）：控制器缓存 LRU 淘汰前
+   *  判用——正在被看的会话永不淘汰；后台跑 turn 的会话被摘除后，回合结果
+   *  仍由 sidecar 落库 + pi-running 全局事件提醒兜底，切回时新控制器从快照
+   *  重建（含在飞 partial 基底），不丢内容。 */
+  public isInUse(): boolean {
+    return this.hasConsumers();
+  }
+
   private ensureEventSubscription(options?: { includeSnapshot?: boolean }) {
     this.clearDisconnectTimer();
     if (this.unsubscribeFromEvents) return;

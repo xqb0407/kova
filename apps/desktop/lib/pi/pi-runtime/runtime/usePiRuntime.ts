@@ -63,6 +63,8 @@ import {
   purgeThreadPanelTabs,
   rekeyPanelThread,
 } from "@/lib/panels/panel-tabs";
+import { purgeThreadTurns } from "@/lib/panels/turn-collapse";
+import { registerPerfProbeSource } from "@/lib/perf-probe";
 
 const EMPTY_THREAD_STATE = createPiThreadState("__pending__");
 const EMPTY_PROJECTED_MESSAGES: readonly ThreadMessageLike[] = [];
@@ -81,10 +83,18 @@ type PiControllerRegistry = {
   dispose(): void;
 };
 
+/** 控制器缓存上限：当前会话 + 最近若干。StrictMode 重挂与快速切回必命中
+ *  （LRU 顺序保证）；超出上限的**空闲**控制器（无挂载消费者）被淘汰并
+ *  dispose——释放整段转录投影。旧行为是"只进不出"：一个应用会话翻过
+ *  几十家长对话，就有几十份完整转录常驻堆里（最大内存增长向量）。 */
+const MAX_CACHED_CONTROLLERS = 8;
+
+let lastRegistry: PiControllerRegistry | null = null;
+
 const createRegistry = (client: PiClient): PiControllerRegistry => {
   const controllers = new Map<string, PiThreadController>();
   let disposed = false;
-  return {
+  const registry: PiControllerRegistry = {
     client,
     controllers,
     get disposed() {
@@ -100,15 +110,39 @@ const createRegistry = (client: PiClient): PiControllerRegistry => {
       // a real unmount drops this whole registry.
     },
   };
+  lastRegistry = registry;
+  return registry;
 };
 
 const getController = (registry: PiControllerRegistry, threadId: string) => {
-  const existing = registry.controllers.get(threadId);
-  if (existing) return existing;
+  const { controllers } = registry;
+  const existing = controllers.get(threadId);
+  if (existing) {
+    // LRU touch：Map 迭代序=插入序，删了再插把它沉到尾（最近使用）
+    controllers.delete(threadId);
+    controllers.set(threadId, existing);
+    return existing;
+  }
   const controller = new PiThreadController(registry.client, threadId);
-  registry.controllers.set(threadId, controller);
+  controllers.set(threadId, controller);
+  if (controllers.size > MAX_CACHED_CONTROLLERS) {
+    for (const [id, cached] of controllers) {
+      if (controllers.size <= MAX_CACHED_CONTROLLERS) break;
+      if (id === threadId || cached.isInUse()) continue;
+      controllers.delete(id);
+      try {
+        cached.dispose();
+      } catch (error) {
+        console.error("[usePiRuntime] controller dispose failed", error);
+      }
+      // 会话级台账（轮耗时/折叠覆盖）一并清理：下次打开由快照重新播种
+      purgeThreadTurns(id);
+    }
+  }
   return controller;
 };
+
+registerPerfProbeSource("piControllers", () => lastRegistry?.controllers.size ?? 0);
 
 export const NOOP_CONTROLLER: PiThreadControllerLike = {
   getState: () => EMPTY_THREAD_STATE,

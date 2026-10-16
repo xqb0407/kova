@@ -100,6 +100,10 @@ const writeQueue: { line: string; resolve: () => void; reject: (e: any) => void 
 let writing = false;
 function queueWrite(line: string): Promise<void> {
   if (!child) return Promise.reject(new Error("pi-agent is not running"));
+  // 大行留痕：大附件（base64 图）会以一整条巨串走 stdin——渲染层 stringify、
+  // IPC 克隆、这里入队、侧车 JSON.parse 各吃几百 ms；超 1MB 告警便于日后
+  // 定位"发送后主线程空转"类问题（只记长度，不记内容——prompt 涉隐私）
+  if (line.length > 1_000_000) logWarn(`[worker] large stdin line: ${line.length} chars`);
   return new Promise<void>((resolve, reject) => {
     writeQueue.push({ line, resolve, reject });
     if (!writing) void drainWrites();

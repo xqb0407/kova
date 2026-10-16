@@ -18,6 +18,8 @@
  * URL 直到被 LRU 淘汰——已挂到 img 上的 URL 中途 revoke 会让图裂。
  */
 
+import { registerPerfProbeSource } from "@/lib/perf-probe";
+
 /** 最多缓存多少张：长会话里避免对象 URL 无限积累 */
 const MAX_ENTRIES = 300;
 
@@ -166,3 +168,8 @@ export const ensureThumb = (src: string): Promise<string | undefined> => {
   thumbJobs.set(key, job);
   return job;
 };
+
+registerPerfProbeSource("image-blobs", () => ({
+  blobUrls: cache.size,
+  thumbs: thumbs.size,
+}));

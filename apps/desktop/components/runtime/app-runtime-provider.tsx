@@ -7,6 +7,7 @@ import { isDesktop } from "@/lib/desktop-env";
 import { installFrontendLogging } from "@/lib/frontend-logging";
 import { primeAppMeta } from "@/lib/app-meta";
 import { installPerfWatch, uninstallPerfWatch } from "@/lib/perf-watch";
+import { installPerfProbe, registerPerfProbeSource } from "@/lib/perf-probe";
 import { toast } from "@/components/ui/toast";
 import { installUpdate, progressPct, type UpdateInfo } from "@/lib/update";
 import { initNotifyPipeline } from "@/lib/notify/notify";
@@ -216,6 +217,14 @@ function DesktopRuntimeProvider({ children }: { children: React.ReactNode }) {
   // 线程身份 = pi sessionId；旧 AI SDK 链路（PiTransport + createPiThreadListAdapter）
   // 保留未删，仅服务回滚（revert 本 commit 即整体还原）。
   const client = useMemo(() => new DesktopPiClient(), []);
+
+  // dev-only 台账探针（控制台敲 window.__kovaPerf()）：控制器注册表驻留、
+  // prompt 台账、Map store 增长这类问题的验证出口；生产构建不装
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    registerPerfProbeSource("piClient", () => client.debugLedgerSizes());
+    installPerfProbe();
+  }, [client]);
 
   // 运行时操作失败（重新生成/编辑重发/队列/abort 等）必须可见：
   // usePiRuntime 内部把 handler 异常统一收敛到 onError（core 对

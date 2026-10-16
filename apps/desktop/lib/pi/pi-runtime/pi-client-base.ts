@@ -42,7 +42,7 @@ import {
 import {
   getTurnTiming,
   scopedTurnKey,
-  seedTurnTiming,
+  seedTurnTimings,
 } from "@/lib/panels/turn-collapse";
 import { refreshFileTree } from "@/lib/workspace/file-tree";
 import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
@@ -215,8 +215,11 @@ export class PiClientBase implements PiClient {
   /** 在飞 prompt requestId → sessionId（收尾帧触发即时快照刷新：
    *  prompt 起跑前失败等不走 agent 事件的路径的兜底，阶段 5 随 chunk 流退役） */
   private readonly inflight = new Map<string, string>();
-  /** 每会话最近一次发送的 prompt（完成提醒正文用）；仅本实例发起的会话入表
-   *  ——automation/他窗发起的 turn 不在表内，不重复提醒（旧链路同语义） */
+  /** 每会话最近一次发送的 prompt **摘要**（完成提醒正文用，消费方只取前
+   *  120 字符，存 200 留余量——整段原文驻留是白花的内存）；仅本实例发起的
+   *  会话入表——automation/他窗发起的 turn 不在表内，不重复提醒（旧链路同
+   *  语义）。跨轮驻留（重试路径不再经 sendMessage 重登记），会话删除时摘除
+   *  （deleteThread）。 */
   private readonly lastPrompts = new Map<string, string>();
   /** prompt 起跑通知台账（sessionId → 监听者）：start 帧是「这条消息真的
    *  开跑了」的权威信号，控制器据此摘掉本地乐观队列条目（见 onPromptStart） */
@@ -294,6 +297,9 @@ export class PiClientBase implements PiClient {
     let anchorSeq: number | undefined;
     let anchorTs: number | undefined;
     let endTs: number | undefined;
+    // 逐轮写曾是「每写一次整表复制 + 全量 notify」，200 轮的会话首开就是
+    // O(n²)；先收集再 seedTurnTimings 一次落账、一次通知
+    const entries: Array<[string, { start: number; end: number }]> = [];
     const flush = () => {
       if (anchorSeq === undefined || anchorTs === undefined || endTs === undefined)
         return;
@@ -301,7 +307,7 @@ export class PiClientBase implements PiClient {
       const cur = getTurnTiming(scoped);
       if (cur?.live === true) return;
       if (cur?.start === anchorTs && cur?.end === endTs) return;
-      seedTurnTiming(scoped, { start: anchorTs, end: endTs });
+      entries.push([scoped, { start: anchorTs, end: endTs }]);
     };
     for (const line of snapshot.messages as unknown as SeedableLine[]) {
       if (line.role === "user") {
@@ -316,6 +322,7 @@ export class PiClientBase implements PiClient {
       }
     }
     flush();
+    if (entries.length > 0) seedTurnTimings(entries);
   }
 
   private dispatch(snapshot: PiThreadSnapshot) {
@@ -656,7 +663,11 @@ export class PiClientBase implements PiClient {
    *  不算完成不提醒；stopReason=error 走 agent.turn.error，与旧链路 finish
    *  分支的 sawAborted/sawError 语义一致。 */
   private notifyTurnSettled(sessionId: string, body: Record<string, unknown>) {
-    if (!this.lastPrompts.has(sessionId)) return;
+    // 台账跨轮驻留（不随结算摘除）：重试/重新生成等路径可能不经 sendMessage
+    // 重登记，摘了后续 turn 的提醒就哑了。内存口径靠「只存 200 字符摘要 +
+    // deleteThread 摘除」收口，见 lastPrompts 声明
+    const promptNote = this.lastPrompts.get(sessionId);
+    if (promptNote === undefined) return;
     const stopReason = typeof body.stopReason === "string" ? body.stopReason : undefined;
     if (stopReason === "aborted") return;
     if (stopReason === "error") {
@@ -673,7 +684,7 @@ export class PiClientBase implements PiClient {
     }
     emitAgentEvent("agent.turn.completed", {
       threadId: sessionId,
-      data: { prompt: this.lastPrompts.get(sessionId)?.slice(0, 120) },
+      data: { prompt: promptNote.slice(0, 120) },
     });
   }
 
@@ -824,8 +835,9 @@ export class PiClientBase implements PiClient {
       : null;
     // 运行中发送 = followUp（sidecar 自动排队）；steer 显式并入当前轮
     this.inflight.set(requestId, threadId);
-    // 完成提醒台账（缺口3）：排队项每条都经这里发出，agent_end 时取最新
-    this.lastPrompts.set(threadId, input.content);
+    // 完成提醒台账（缺口3）：排队项每条都经这里发出，agent_end 时取最新。
+    // 只存摘要：消费方（弹窗正文）用前 120 字符，留 200 的余量足够
+    this.lastPrompts.set(threadId, input.content.slice(0, 200));
     void this.ensureEventWatcher();
     const inlineImages =
       input.attachments?.map((a, i) => ({
@@ -994,6 +1006,27 @@ export class PiClientBase implements PiClient {
 
   async deleteThread(threadId: string): Promise<void> {
     await this.transport.request({ type: "delete_session", sessionId: threadId });
+    // 会话级台账终清：unsubscribe 已负责 listeners/streams/stamps/lastSeq，
+    // lastPrompts 与 inflight 不在其作用域——会话没了就一并摘
+    this.lastPrompts.delete(threadId);
+    for (const [reqId, sid] of this.inflight) {
+      if (sid === threadId) this.inflight.delete(reqId);
+    }
+  }
+
+  /** dev 探针（window.__kovaPerf 经 app-runtime-provider 注册）：各台账当前
+   *  规模。增长型泄漏验证口径：翻 N 个会话前后各读一次，条数应只跟「最近
+   *  活跃窗口」挂钩，而不是单调爬。 */
+  debugLedgerSizes(): Record<string, number> {
+    return {
+      listeners: this.listeners.size,
+      streams: this.streams.size,
+      stamps: this.stamps.size,
+      lastSeq: this.lastSeq.size,
+      inflight: this.inflight.size,
+      lastPrompts: this.lastPrompts.size,
+      promptStartListeners: this.promptStartListeners.size,
+    };
   }
 
   /** host-UI 契约应答（阶段 4b 决策：审批/提问走 pi-interactions 工具卡原路径
