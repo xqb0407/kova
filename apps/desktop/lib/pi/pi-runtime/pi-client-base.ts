@@ -215,6 +215,12 @@ export class PiClientBase implements PiClient {
   /** 在飞 prompt requestId → sessionId（收尾帧触发即时快照刷新：
    *  prompt 起跑前失败等不走 agent 事件的路径的兜底，阶段 5 随 chunk 流退役） */
   private readonly inflight = new Map<string, string>();
+  /** 每会话最近一次发起的 prompt requestId（sessionId → requestId）：检查点
+   *  条目所有权层的回合键（checkpoint_status 按它查，见 lib/pi/pi-edits.ts）。
+   *  跨轮驻留语义与 lastPrompts 相同——排队项在派发时才开轮，但 agent_start
+   *  一定晚于其 sendMessage 登记，取"最近发起"与"正在跑"在该路径同值；
+   *  steer 并入当前轮不改写（轮键保持首轮，卡片按首轮查）。会话删除时摘除。 */
+  private readonly sessionTurn = new Map<string, string>();
   /** 每会话最近一次发送的 prompt **摘要**（完成提醒正文用，消费方只取前
    *  120 字符，存 200 留余量——整段原文驻留是白花的内存）；仅本实例发起的
    *  会话入表——automation/他窗发起的 turn 不在表内，不重复提醒（旧链路同
@@ -497,7 +503,7 @@ export class PiClientBase implements PiClient {
         if (body.type === "agent_start" || body.type === "agent_end") {
           if (this.listeners.has(sid) || this.lastPrompts.has(sid)) {
             if (body.type === "agent_start") {
-              this.checkpoints.begin(sid);
+              this.checkpoints.begin(sid, this.sessionTurn.get(sid) ?? null);
               // 排队项派发即见：引擎派发在 agent.prompt 落转录之后，
               // agent_start 拉一次快照把排队 user 消息补进列表（否则要
               // 等本轮 finish 帧才可见）；顺带自愈运行起点前的转录漂移
@@ -835,6 +841,7 @@ export class PiClientBase implements PiClient {
       : null;
     // 运行中发送 = followUp（sidecar 自动排队）；steer 显式并入当前轮
     this.inflight.set(requestId, threadId);
+    this.sessionTurn.set(threadId, requestId);
     // 完成提醒台账（缺口3）：排队项每条都经这里发出，agent_end 时取最新。
     // 只存摘要：消费方（弹窗正文）用前 120 字符，留 200 的余量足够
     this.lastPrompts.set(threadId, input.content.slice(0, 200));
@@ -1009,6 +1016,7 @@ export class PiClientBase implements PiClient {
     // 会话级台账终清：unsubscribe 已负责 listeners/streams/stamps/lastSeq，
     // lastPrompts 与 inflight 不在其作用域——会话没了就一并摘
     this.lastPrompts.delete(threadId);
+    this.sessionTurn.delete(threadId);
     for (const [reqId, sid] of this.inflight) {
       if (sid === threadId) this.inflight.delete(reqId);
     }

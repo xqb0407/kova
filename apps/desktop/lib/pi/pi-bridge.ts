@@ -1099,6 +1099,40 @@ export type PiResponse =
     }
   | { type: "memory_trash_deleted"; scope: "global" | "workspace"; trashId: string }
   | { type: "memory_trash_emptied"; scope: "global" | "workspace"; removed: number }
+  | {
+      type: "checkpoint_status";
+      sessionId: string;
+      cwd: string;
+      turnId: string;
+      files: {
+        rel: string;
+        status: "added" | "modified";
+        additions: number;
+        deletions: number;
+        exact: boolean;
+        undoable: boolean;
+      }[];
+    }
+  | {
+      type: "checkpoint_diff";
+      sessionId: string;
+      turnId: string;
+      rel: string;
+      original?: string;
+      current?: string;
+      binary?: boolean;
+      tooLarge?: boolean;
+      exact?: boolean;
+      error?: string;
+    }
+  | {
+      type: "checkpoint_undone";
+      sessionId: string;
+      turnId: string;
+      rel: string;
+      ok: boolean;
+      error?: string;
+    }
   | PiSubagentsResponse
   | PiSkillsResponse
   | PiDesignThemesResponse

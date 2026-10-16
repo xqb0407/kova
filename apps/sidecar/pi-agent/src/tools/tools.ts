@@ -19,6 +19,9 @@ import path from "node:path";
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { hostToolCall } from "../storage/hostdb";
+// 直取 registry（叶子）：sessions.ts 门面会牵进 resolve.ts→tools.ts，绕开循环
+import { currentTurnOf } from "../sessions/registry";
+import { checkpointCapture, checkpointPrepare } from "../checkpoint/store";
 import { buildBrowserTools } from "./browser-tools";
 import { buildScreenshotTool } from "./screenshot-tool";
 import { buildImageGenTool } from "./imagegen-tool";
@@ -279,10 +282,27 @@ function hostTool(
         params as Record<string, unknown>,
         augment?.(params as Record<string, unknown>),
       );
+      // 编辑检查点（条目所有权层，checkpoint/store.ts）：结构化编辑成功前后各记
+      // 一道边界。轮归属取自 activeTurns（工具必然跑在活跃轮内；取不到就整体降级
+      // 为不记）。门面函数吃掉一切异常——检查点坏了绝不挡工具执行。
+      const cpPaths =
+        name === "write" || name === "edit"
+          ? [String((params as { file_path?: unknown }).file_path ?? "").trim()].filter(
+              Boolean,
+            )
+          : [];
+      const cpTurn = cpPaths.length ? currentTurnOf(threadId) : {};
+      if (cpPaths.length && cpTurn.sessionId && cpTurn.requestId) {
+        await checkpointPrepare(cpTurn.sessionId, cwd, cpTurn.requestId, cpPaths);
+      }
       // signal 透传给 hostToolCall：中断时向宿主发 host_cancel，bash 会被杀进程树。
       // owner 带线程 id：后台任务（runInBackground）跨回合存活于宿主全局表，
       // 归属校验靠它，task_output/task_stop 才不会跨线程串味
       const data = await hostToolCall(name, cwd, payload, signal ?? undefined, threadId);
+      // 失败在 hostToolCall 抛出、走不到这里——成功态才刷 after
+      if (cpPaths.length && cpTurn.sessionId && cpTurn.requestId) {
+        await checkpointCapture(cpTurn.sessionId, cwd, cpTurn.requestId, cpPaths);
+      }
       // 宿主信封承诺 output:string，但个别 Rust handler 的失败分支可能返回其他
       // 形状（如 {error}）——undefined 塞进 text 块会落成畸形转录，压缩统计等
       // 遍历点（block.text.length）直接崩掉 agent 回合。这里统一兜底为可读文本。

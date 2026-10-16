@@ -25,6 +25,9 @@ export type RunCheckpoint = {
   files: number;
   added: number;
   removed: number;
+  /** 触发本轮的 prompt requestId（条目所有权层按它查逐文件回滚资格，
+   *  见 lib/pi/pi-edits.ts）；老条目/桥缺失为 undefined——卡片退化为仅整轮撤销 */
+  turnId?: string | null;
 };
 
 export type CheckpointEntry = RunCheckpoint & {
@@ -177,6 +180,7 @@ export type PersistedRunHash = {
   cwd: string;
   hash: string;
   anchorIndex?: number | null;
+  turnId?: string | null;
 };
 
 export function saveRunHash(threadId: string, value: PersistedRunHash | null): void {
@@ -199,6 +203,7 @@ export function loadRunHash(threadId: string): PersistedRunHash | null {
         cwd: v.cwd,
         hash: v.hash,
         anchorIndex: Number.isFinite(v.anchorIndex) ? (v.anchorIndex as number) : null,
+        ...(typeof v.turnId === "string" ? { turnId: v.turnId } : {}),
       };
     }
   } catch {

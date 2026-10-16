@@ -136,6 +136,15 @@ export function noteActiveTurn(
   }
 }
 
+/** 当前活跃轮归属（编辑检查点用）：write/edit 工具跑起来时向它取
+ *  sessionId + turnId（= prompt 的 reqId，见 checkpoint/store.ts）。
+ *  轮外调用返回空对象——调用方据此降级为不记，绝不猜测。 */
+export function currentTurnOf(
+  threadId: string,
+): { sessionId?: string; requestId?: string } {
+  return activeTurns.get(threadId) ?? {};
+}
+
 /** 该线程当前轮次彻底收尾（dispatchPrompt finally 走过 noteActiveTurn(false)）
  *  时 resolve；已空闲立即 resolve。刷新改绑要等旧键轮次跑完才动 run.threadId，
  *  见 protocol.runPromptTurn。busyThreads 一并判：markTurnStart 早于
