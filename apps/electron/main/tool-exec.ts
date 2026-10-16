@@ -692,8 +692,67 @@ function buildLadder(maxDim: number, quality: number): [number, number][] {
   return ladder;
 }
 
-function queryDimsMac(path: string): { w: number; h: number } {
-  const r = spawnSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", path], { windowsHide: true });
+/**
+ * 异步子进程 + 硬超时（超时杀进程树后 reject）。
+ * 旧实现是 spawnSync：powershell 截屏在锁屏/RDP/AV 扫描下可无限挂起，
+ * 同步等待会把主进程事件循环冻死——整个应用所有点击都石沉大海
+ * （Windows 用户实测"页面哪里都点不了"的头号根因）。改异步后最坏情况
+ * 退化为一次可恢复的工具报错。
+ */
+function runCapture(
+  cmd: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<{ status: number | null; stdout: Buffer; stderr: Buffer }> {
+  return new Promise((resolve, reject) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cmd, args, { windowsHide: true });
+    } catch (e: any) {
+      reject(new Error(`failed to launch ${cmd}: ${e?.message ?? e}`));
+      return;
+    }
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        if (child.pid !== undefined) killTree(child.pid);
+        else child.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+    }, timeoutMs);
+    child.stdout?.on("data", (d: Buffer) => {
+      // 上限 64MB：超限部分丢弃（截图 base64 可达 ~2.4MB，正常远不到）
+      if (stdout.length < 64 * 1024 * 1024) stdout = Buffer.concat([stdout, d]);
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      if (stderr.length < 1024 * 1024) stderr = Buffer.concat([stderr, d]);
+    });
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(new Error(`failed to launch ${cmd}: ${e.message}`));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`${cmd} timed out after ${Math.round(timeoutMs / 1000)}s (killed)`));
+        return;
+      }
+      resolve({ status: code, stdout, stderr });
+    });
+  });
+}
+
+async function queryDimsMac(path: string): Promise<{ w: number; h: number }> {
+  let r: { status: number | null; stdout: Buffer };
+  try {
+    r = await runCapture("sips", ["-g", "pixelWidth", "-g", "pixelHeight", path], 5000);
+  } catch {
+    return { w: 0, h: 0 };
+  }
   if (r.status !== 0) return { w: 0, h: 0 };
   const s = r.stdout.toString();
   const grab = (key: string) => {
@@ -712,16 +771,16 @@ async function handleScreenshot(inner: any): Promise<any> {
     const pngS = join(dir, "shot.png");
     const jpgS = join(dir, "shot.jpg");
     try {
-      const cap = spawnSync("screencapture", ["-x", pngS], { windowsHide: true });
+      const cap = await runCapture("screencapture", ["-x", pngS], 15000);
       if (cap.status !== 0) {
         throw new Error(`screencapture failed: ${cap.stderr?.toString().trim() ?? ""}`);
       }
       let best: Buffer | null = null;
       for (const [dim, q] of buildLadder(maxDim, quality)) {
-        const conv = spawnSync(
+        const conv = await runCapture(
           "sips",
           ["-Z", String(dim), "-s", "format", "jpeg", "-s", "formatOptions", String(q), pngS, "--out", jpgS],
-          { windowsHide: true },
+          10000,
         );
         if (conv.status !== 0) continue;
         let bytes: Buffer;
@@ -734,7 +793,7 @@ async function handleScreenshot(inner: any): Promise<any> {
         if (best && best.length <= SCREENSHOT_INLINE_BUDGET_BYTES) break;
       }
       if (!best) throw new Error("screenshot produced no output (sips failed at every tier)");
-      const dims = queryDimsMac(jpgS);
+      const dims = await queryDimsMac(jpgS);
       const r: ScreenshotResult = {
         base64: best.toString("base64"),
         mimeType: "image/jpeg",
@@ -839,17 +898,18 @@ $full.Dispose()
 `;
 }
 
-function captureWindows(maxDim: number, quality: number): ScreenshotResult {
+async function captureWindows(maxDim: number, quality: number): Promise<ScreenshotResult> {
   const tiersJson = JSON.stringify(buildLadder(maxDim, quality).map(([d, q]) => ({ d, q })));
   const script = windowsCaptureScript(tiersJson, SCREENSHOT_INLINE_BUDGET_BYTES);
   // -EncodedCommand 收 Base64(UTF-16LE)：绕开引号转义，也绕开 ExecutionPolicy 限制
   const encoded = Buffer.from(script, "utf16le").toString("base64");
-  const out = spawnSync(
+  // 20s 硬超时：PowerShell 冷启动 + AV 扫描最慢也就十秒级；锁屏/RDP 会话下
+  // CopyFromScreen 可能永不返回——旧实现 spawnSync 会把主进程整个冻死
+  const out = await runCapture(
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
-    { windowsHide: true, maxBuffer: 64 * 1024 * 1024 }, // base64 结果可达 ~2.4MB
+    20000,
   );
-  if (out.error) throw new Error(`failed to launch powershell: ${out.error.message}`);
   if (out.status !== 0) {
     const err = (out.stderr ?? Buffer.alloc(0)).toString("utf8").trim();
     throw new Error(

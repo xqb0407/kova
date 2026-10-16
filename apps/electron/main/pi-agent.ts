@@ -105,6 +105,11 @@ function queueWrite(line: string): Promise<void> {
     if (!writing) void drainWrites();
   });
 }
+/** 单次 stdin 写入的等待上限。健康的侧车读循环节拍极快，30s 不吃一行 = 卡死；
+ * 旧实现无上限：write 回调永不触发时整个写队列挂住，后续 prompt/host_result
+ * 全部静默排队（"界面点什么都没反应"的根因之一），只有杀进程能解。 */
+const STDIN_WRITE_TIMEOUT_MS = 30000;
+
 async function drainWrites(): Promise<void> {
   writing = true;
   try {
@@ -117,13 +122,37 @@ async function drainWrites(): Promise<void> {
       }
       try {
         await new Promise<void>((res, rej) => {
-          const ok = proc.stdin.write(item.line + "\n", (err) => (err ? rej(err) : res()));
+          let settled = false;
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            rej(new Error("stdin-write-stalled"));
+          }, STDIN_WRITE_TIMEOUT_MS);
+          const ok = proc.stdin.write(item.line + "\n", (err) => {
+            if (settled) return; // 超时后才到的回调：队列已按卡死处理，忽略
+            settled = true;
+            clearTimeout(timer);
+            err ? rej(err) : res();
+          });
           if (!ok) {
-            /* 背压：等 drain 由 write 回调兜底（回调在 flush 完成时触发） */
+            /* 背压：等 drain 由 write 回调兜底（超时看门狗再兜一层） */
           }
         });
         item.resolve();
       } catch (e: any) {
+        if (e?.message === "stdin-write-stalled") {
+          // 侧车卡死不吃 stdin：杀掉它，让 close 事件走全套清场（冲刷 chunk、
+          // 取消工具、pi-exit 换代自愈）——不清 child 句柄，close 里自己清
+          logError(`[worker] stdin write stalled >${STDIN_WRITE_TIMEOUT_MS / 1000}s; killing wedged sidecar`);
+          item.reject(new Error("pi-agent stdin stalled (killed wedged worker)"));
+          while (writeQueue.length > 0) writeQueue.shift()!.reject(new Error("pi-agent stdin stalled"));
+          try {
+            proc.kill();
+          } catch {
+            /* ignore */
+          }
+          break;
+        }
         // 管道破裂 = 子进程已死：清句柄，剩余队列全部拒绝，下次 ensureSpawned 自动重启
         if (child === proc) child = null;
         item.reject(new Error(`failed to write to pi-agent stdin: ${e?.message ?? e}`));
@@ -317,6 +346,12 @@ export async function piReset(): Promise<null> {
   return null;
 }
 
+/** 配对等待上限。渲染层 pi-channel 只等 15s 就自报超时，但主进程这条 promise
+ * 与 pending 表项没人管：侧车对某个 id 永不回帧（丢帧/版本偏差）时条目挂到
+ * 侧车退出才清，长会话里缓慢泄漏，且 ipcMain.handle 的 promise 永久悬挂。
+ * 30s = 渲染层超时之后仍给侧车留一倍余量，超时按错误落定并摘除表项。 */
+const REQUEST_PAIR_TIMEOUT_MS = 30000;
+
 /** 管理类请求-响应：宿主注入 id，stdout 匹配行原样返回 */
 export async function piRequest(args: { payload: any }): Promise<string> {
   await ensureSpawned();
@@ -324,11 +359,25 @@ export async function piRequest(args: { payload: any }): Promise<string> {
   const msg = { ...(args.payload && typeof args.payload === "object" ? args.payload : {}) };
   if (args.payload && typeof args.payload === "object") msg.id = reqId;
   const line = new Promise<string>((resolve, reject) => {
-    pending.set(reqId, resolve);
-    queueWrite(JSON.stringify(msg)).catch((e) => {
+    let timer: NodeJS.Timeout | null = setTimeout(() => {
+      timer = null;
       pending.delete(reqId);
-      reject(e);
-    });
+      reject(new Error(`pi-agent request ${reqId} unanswered after ${REQUEST_PAIR_TIMEOUT_MS / 1000}s`));
+    }, REQUEST_PAIR_TIMEOUT_MS);
+    const settle = (fn: () => void) => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      fn();
+    };
+    pending.set(reqId, (l) => settle(() => resolve(l)));
+    queueWrite(JSON.stringify(msg)).catch((e) =>
+      settle(() => {
+        pending.delete(reqId);
+        reject(e);
+      }),
+    );
   });
   return line;
 }

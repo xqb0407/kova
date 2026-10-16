@@ -99,14 +99,14 @@ function invokeMain(cmd: string, args: Record<string, unknown> = {}): Promise<an
 }
 
 async function beginWindowDrag(e: MouseEvent): Promise<void> {
-  const pos = await invokeMain("win_get_position");
-  if (!pos?.ok) return;
-  const startWinX = Number(pos.value?.x ?? 0);
-  const startWinY = Number(pos.value?.y ?? 0);
   const startScreenX = e.screenX;
   const startScreenY = e.screenY;
+  let startWinX = 0;
+  let startWinY = 0;
+  let originReady = false; // 窗口起点未知前 onMove 不动作（防按未 await 的 0,0 跳窗）
   let pending: { x: number; y: number } | null = null;
   let raf = 0;
+  let ended = false;
   const flush = () => {
     raf = 0;
     if (pending) {
@@ -116,17 +116,37 @@ async function beginWindowDrag(e: MouseEvent): Promise<void> {
     }
   };
   const onMove = (ev: MouseEvent) => {
+    if (!originReady) return;
     pending = { x: startWinX + (ev.screenX - startScreenX), y: startWinY + (ev.screenY - startScreenY) };
     if (!raf) raf = requestAnimationFrame(flush);
   };
   const onUp = () => {
+    if (ended) return;
+    ended = true;
     window.removeEventListener("mousemove", onMove, true);
     window.removeEventListener("mouseup", onUp, true);
-    if (raf) cancelAnimationFrame(raf);
+    window.removeEventListener("blur", onUp, true);
+    if (raf) {
+      cancelAnimationFrame(raf);
+      raf = 0;
+    }
     pending = null;
   };
+  // 监听器必须先于 await 同步挂上：旧实现等 win_get_position 往返（IPC 繁忙时
+  // 可达秒级）才挂，抬手若发生在该窗口期内 mouseup 直接丢失，监听永不摘除——
+  // 之后每次 mousemove 都发 win_set_position，窗口跟着光标"鬼拖"
   window.addEventListener("mousemove", onMove, true);
   window.addEventListener("mouseup", onUp, true);
+  // Windows 上鼠标移出窗口/焦点被他窗抢占时 mouseup 不再投递：blur 兜底结束拖拽
+  window.addEventListener("blur", onUp, true);
+  const pos = await invokeMain("win_get_position");
+  if (!pos?.ok || ended) {
+    onUp();
+    return;
+  }
+  startWinX = Number(pos.value?.x ?? 0);
+  startWinY = Number(pos.value?.y ?? 0);
+  originReady = true;
 }
 
 function installDragRegionBridge(): void {

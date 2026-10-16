@@ -102,6 +102,23 @@ function registerStaticProtocol(): void {
   });
 }
 
+/**
+ * 主进程事件循环 lag 心跳：任何同步阻塞点（sqlite 长 BUSY 自旋、漏网的
+ * spawnSync 子进程…）冻住主循环时，全部 IPC 排队、UI"哪里都点不了"——
+ * 这条心跳是事后唯一能区分「主进程卡住」还是「渲染进程卡住」的证据。
+ * 每 1s 采样，单次漂移 >2s 记一行日志（含漂移时长），unref 不拖住退出。
+ */
+function startLagWatchdog(): void {
+  let last = Date.now();
+  const t = setInterval(() => {
+    const now = Date.now();
+    const drift = now - last - 1000;
+    if (drift > 2000) logWarn(`[lag] main loop stalled ~${drift}ms`);
+    last = now;
+  }, 1000);
+  t.unref?.();
+}
+
 /* ------------------------------ 生命周期 ------------------------------ */
 
 // 单实例（对齐 旧桌面壳_plugin_single_instance）：第二次启动只唤回已有窗口。
@@ -115,6 +132,7 @@ if (!gotLock) {
   app.on("second-instance", () => focusMainWindow());
 
   initLogging();
+  startLagWatchdog(); // 尽早开表：启动期同步阻塞（备份换入/存储打开）也要留痕
   applyPendingRestore(); // 待恢复备份换入：必须早于任何存储打开（当前为挂点）
   initStore();
   applyGpuFlag(); // 建窗前读开关（与 gpu.rs create_windows 时序同构）
