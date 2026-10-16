@@ -1,7 +1,7 @@
 {
   "name": "kova-electron",
   "private": true,
-  "version": "1.1.11-preview",
+  "version": "1.1.12-preview",
   "description": "Kova AI Assistant (Electron port of the 旧桌面壳 desktop app)",
   "workspaces": [
     "apps/*",
@@ -31,7 +31,9 @@
     "dev:mobile": "bun run --filter mobile start",
     "build:mobile:web": "bun run --filter mobile export:web",
     "typecheck:mobile": "bun run --filter mobile typecheck",
-    "test:mobile": "bun run --filter mobile test"
+    "test:mobile": "bun run --filter mobile test",
+    "icons": "python3 scripts/icons.py build",
+    "icons:check": "python3 scripts/icons.py check"
   },
   "patchedDependencies": {
     "@earendil-works/pi-ai@0.99.2": "patches/@earendil-works%2Fpi-ai@0.99.2.patch",
