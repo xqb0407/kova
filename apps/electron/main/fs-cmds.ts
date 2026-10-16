@@ -339,6 +339,23 @@ export function revealInFileManager(target: string, openDir: boolean): void {
   }
 }
 
+/**
+ * 在系统文件管理器中定位一个目录（侧栏项目的「在 Finder / 资源管理器中显示」）。
+ *
+ * 与 fs_reveal 的差别只在信任根：fs_reveal 的 cwd 必须命中当前 workspace（那是
+ * 文件树面板的作用域），而项目目录是用户自己选过的、且侧栏里可能不止一个——
+ * 未必是当前 workspace。这里不做 workspace 校验，只留"绝对路径 + 已存在的目录"
+ * 两道基本闸（同 bridge_fs_read_text 对"用户亲选路径"的授权口径）。
+ */
+export function projectReveal(args: { path: string }): unknown {
+  const dir = String(args.path ?? "").trim();
+  if (!/^([a-zA-Z]:[\\/]|[\\/])/.test(dir)) return fail("bad-path");
+  if (!existsSync(dir)) return fail("not-found");
+  if (!statSync(dir).isDirectory()) return fail("not-a-directory");
+  revealInFileManager(dir, false);
+  return { ok: true };
+}
+
 /* ------------------------------- 我的文件（task-workspace） ------------------------------- */
 
 function appTaskWorkspaceRoot(): string {
@@ -666,6 +683,7 @@ export function setupFsCommands(register: (name: string, fn: (args: any) => any)
   register("fs_rename", (a) => fsRename(a));
   register("fs_delete", (a) => fsDelete(a));
   register("fs_reveal", (a) => fsReveal(a));
+  register("project_reveal", (a) => projectReveal(a));
   register("app_file_list", (a) => appFileList(a));
   register("app_file_preview", (a) => appFilePreview(a));
   register("app_file_delete", (a) => appFileDelete(a));

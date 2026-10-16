@@ -452,12 +452,12 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           "bg-muted/55 relative hidden h-full shrink-0 flex-col overflow-hidden border-r md:flex",
           "transition-[width] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           railClassName,
-          sidebarCollapsed ? "w-0" : "w-[var(--rail-w,16.25rem)]",
+          sidebarCollapsed ? "w-0" : "w-[var(--rail-w,18.25rem)]",
         )}
       >
         <div
           className={cn(
-            "flex h-full w-[var(--rail-w,16.25rem)] shrink-0 flex-col",
+            "flex h-full w-[var(--rail-w,18.25rem)] shrink-0 flex-col",
             "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
             sidebarCollapsed ? "-translate-x-full" : "translate-x-0",
           )}
@@ -744,7 +744,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             >
               <Button
                 variant="ghost"
-                className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent"
+                className="h-8 w-full cursor-pointer justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent"
                 onClick={() => onOpenSettings?.()}
               >
                 <SettingsIcon className="size-4 shrink-0" />
@@ -864,17 +864,17 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           {/* 移动端 Tabs 胶囊分段器（左对齐）：批量模式下右侧换成操作栏 */}
           <div className="flex w-full shrink-0 items-center justify-between gap-2 px-4 pt-2">
             <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="group-data-horizontal/tabs:h-8 h-8 rounded-full p-[3px]">
+              <TabsList className="group-data-horizontal/tabs:h-8 h-8 rounded-lg">
                 <TabsTrigger
                   value="tasks"
-                  className="flex-none gap-1.5 rounded-full px-3 py-0 text-xs"
+                  className="flex-none gap-1.5 px-3 py-0 text-xs rounded-lg"
                 >
                   <ListTodoIcon className="size-3.5 shrink-0" />
                   任务
                 </TabsTrigger>
                 <TabsTrigger
                   value="projects"
-                  className="flex-none gap-1.5 rounded-full px-3 py-0 text-xs"
+                  className="flex-none gap-1.5 px-3 py-0 text-xs rounded-lg"
                 >
                   <FolderIcon className="size-3.5 shrink-0" />
                   项目

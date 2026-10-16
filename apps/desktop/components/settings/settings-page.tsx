@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type FC } from "react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { useFluidHover } from "@/hooks/use-fluid-hover";
 import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
@@ -110,11 +111,13 @@ export function isSettingsSection(raw: unknown): raw is SettingsSection {
   return typeof raw === "string" && ALL_SECTIONS.has(raw as SettingsSection);
 }
 
-// fluid hover 槽位：模块级常量保证注册序稳定。「返回应用」= 0，
-// 导航项按 GROUPS 顺序接在其后；分组标题不注册（高亮跳过，就近点亮条目）。
+// fluid hover 槽位：模块级常量保证注册序稳定，导航项按 GROUPS 顺序从 0 起；
+// 分组标题不注册（高亮跳过，就近点亮条目）。「返回应用」已移到侧边栏底部的
+// 固定页脚，不再占 0 号槽位——它脱离了滚动容器，也就脱离了这套按容器坐标
+// 测量 rect 的悬浮高亮（见下方页脚注释）
 const NAV_ITEM_INDEX = (() => {
   const map = new Map<SettingsSection, number>();
-  let next = 1;
+  let next = 0;
   for (const group of GROUPS) {
     for (const item of group.items) map.set(item.id, next++);
   }
@@ -151,17 +154,15 @@ export const SettingsPage: FC<{
         data-slot="settings-nav"
         className="bg-transparent flex w-65 shrink-0 flex-col border-r"
       >
-        {/* 顶栏仅作拖拽区：macOS 红绿灯悬浮于此行，"返回应用"单独成行在其下方 */}
+        {/* 顶栏仅作拖拽区：macOS 红绿灯悬浮于此行 */}
         <div
           data-drag-region={desktop ? "deep" : undefined}
           className="h-12 shrink-0"
-       />
-         
-
+        />
 
         <div
           ref={navRef}
-          className="relative flex flex-col gap-1 overflow-y-auto p-3 pt-1"
+          className="relative flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3 pt-1"
           {...navHover.handlers}
         >
           {/* 选中项常驻高亮：复用同一套 itemRects 测量，切换 section 时
@@ -181,16 +182,6 @@ export const SettingsPage: FC<{
             transition={{ type: "spring", stiffness: 170, damping: 30, mass: 1.2 }}
           />
           <FluidHoverHighlight hover={navHover} className="rounded-md" />
-          <FluidHoverRow registerItem={navHover.registerItem} index={0}>
-            <button
-              type="button"
-              onClick={onBack}
-              className="text-muted-foreground hover:text-foreground flex h-8 w-full shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm"
-            >
-              <ChevronLeftIcon className="size-4 shrink-0" />
-              返回应用
-            </button>
-          </FluidHoverRow>
           {GROUPS.map((group) => (
             <div key={group.label} className="flex flex-col gap-1">
               <div className="text-muted-foreground px-2 pt-3 pb-1 text-xs font-medium">
@@ -218,6 +209,20 @@ export const SettingsPage: FC<{
               ))}
             </div>
           ))}
+        </div>
+
+        {/* "返回应用"固定在侧边栏底部：脱离上面的滚动容器，导航滚到底它也不会
+            被滚走。代价是它不再参与 fluid hover（高亮按容器坐标测量，移出容器
+            后 rect 会对不上），因此这里用 Button ghost 自带的 hover 底色兜底 */}
+        <div className="shrink-0 px-3 pt-1 pb-3">
+          <Button
+            variant="ghost"
+            className="h-8 w-full justify-start gap-1.5 rounded-md px-2.5 text-sm font-normal text-muted-foreground"
+            onClick={onBack}
+          >
+            <ChevronLeftIcon className="size-4 shrink-0" />
+            返回应用
+          </Button>
         </div>
       </nav>
 

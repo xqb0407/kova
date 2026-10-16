@@ -68,6 +68,7 @@ import {
   ArrowUpIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronUpIcon,
   CopyIcon,
   FolderOpenIcon,
   GitBranchIcon,
@@ -328,7 +329,7 @@ export const Composer: FC = () => {
             data-slot="aui_composer-shell"
             data-optimizing={optimizing ? "true" : undefined}
             className={cn(
-              "relative flex w-full cursor-text flex-col rounded-(--composer-radius) transition-[border-color,background-color,box-shadow]",
+              "relative flex  w-full cursor-text flex-col rounded-(--composer-radius) transition-[border-color,background-color,box-shadow]",
               "shadow-[0_1px_8px_rgb(0_0_0/0.04),0_1px_2px_rgb(0_0_0/0.03)] dark:shadow-[0_1px_8px_rgb(0_0_0/0.16)]",
               "gap-2 border border-border/50 bg-(--composer-bg)/85 p-(--composer-padding) backdrop-blur-sm backdrop-saturate-110 focus-within:border-border/60 dark:focus-within:border-muted-foreground/25 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_25%,var(--color-background))]",
             )}
@@ -440,7 +441,7 @@ const WorkspacePill: FC = () => {
       <div
         data-slot="aui-composer-workspace"
         className={cn(
-          "group/pill inline-flex h-7 items-center rounded-full pr-1 text-sm transition-colors",
+          "group/pill inline-flex h-7 items-center rounded-lg pr-1 text-sm transition-colors",
           workspace ? "bg-muted/50" : "bg-transparent",
           "hover:bg-muted",
         )}
@@ -486,7 +487,7 @@ const WorkspacePill: FC = () => {
             aria-label="Clear workspace"
             title="取消选择当前目录"
             onClick={clear}
-            className="hover:text-destructive pointer-events-none flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full opacity-0 scale-90 transition-[opacity,scale] duration-150 ease-out group-hover/pill:pointer-events-auto group-hover/pill:opacity-100 group-hover/pill:scale-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:scale-100"
+            className="hover:text-destructive pointer-events-none flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-lg opacity-0 scale-90 transition-[opacity,scale] duration-150 ease-out group-hover/pill:pointer-events-auto group-hover/pill:opacity-100 group-hover/pill:scale-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:scale-100"
           >
             <XIcon className="size-3.5" />
           </button>
@@ -574,7 +575,7 @@ const WorkspaceSessionPill: FC = () => {
         className={cn(
           "bg-composer-inner hover:text-foreground text-muted-foreground",
           "inline-flex h-7 max-w-full cursor-pointer items-center gap-1",
-          "rounded-full border shadow-sm transition-colors pl-2.5 pr-2 text-sm",
+          "rounded-lg border shadow-sm transition-colors pl-2.5 pr-2 text-sm",
         )}
       >
         <FolderOpenIcon className="size-3.5 shrink-0" />
@@ -684,13 +685,13 @@ const WorkspaceBranchPill: FC = () => {
             title={`${workspace}\n${status.branch}${status.dirty > 0 ? ` · ${status.dirty} 个未提交变更` : ""}`}
             aria-label="Git 分支"
             className={cn(
-              "bg-muted/50 hover:bg-muted hover:text-foreground inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2.5 text-sm transition-colors",
+              "bg-muted/50 hover:bg-muted hover:text-foreground inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors",
             )}
           >
             <GitBranchIcon className="text-muted-foreground size-3.5 shrink-0" />
             <span className="max-w-[10rem] truncate">{status.branch}</span>
             {status.dirty > 0 ? (
-              <span className="bg-muted-foreground/15 shrink-0 rounded-full px-1.5 text-xs leading-4 tabular-nums">
+              <span className="bg-muted-foreground/15 shrink-0 rounded-lg px-1.5 text-xs leading-4 tabular-nums">
                 {status.dirty}
               </span>
             ) : null}
@@ -830,9 +831,9 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         <button
           type="button"
           disabled
-          className="aui-composer-send inline-flex size-7 items-center justify-center rounded-full bg-primary! opacity-50"
+          className="aui-composer-send inline-flex size-7 items-center justify-center rounded-lg bg-primary! opacity-50"
         >
-          <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+          <ChevronUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
         </button>
       </span>
     );
@@ -850,7 +851,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           type="button"
           variant="default"
           size="icon"
-          className="aui-composer-cancel size-7 bg-primary rounded-full hover:bg-primary/80"
+          className="aui-composer-cancel size-7 bg-primary rounded-lg hover:bg-primary/80"
           aria-label="Stop generating"
         >
           <div className="size-3 fill-current bg-white " />
@@ -866,7 +867,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         type="button"
         variant="default"
         size="icon"
-        className="aui-composer-send size-7 rounded-full bg-primary!"
+        className="aui-composer-send size-7 rounded-lg bg-primary!"
         aria-label="Send message"
         onClick={(e) => {
           // 显式车道（steer 选项）：store 暴露 queue adapter 后，不带选项的
@@ -883,7 +884,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           aui.composer.send({ steer: false });
         }}
       >
-        <ArrowUpIcon className="size-4 text-primary-foreground!" />
+        <ChevronUpIcon className="size-4 text-primary-foreground!" />
       </TooltipIconButton>
     );
   }
@@ -898,9 +899,9 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
               <button
                 type="button"
                 disabled
-                className="aui-composer-send inline-flex size-7 items-center justify-center rounded-full bg-primary! opacity-50"
+                className="aui-composer-send inline-flex size-7 items-center justify-center rounded-lg bg-primary! opacity-50"
               >
-                <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+                <ChevronUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
               </button>
             </span>
           }
@@ -919,10 +920,10 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         type="button"
         variant="default"
         size="icon"
-        className="aui-composer-send size-7 rounded-full bg-primary!"
+        className="aui-composer-send size-7 rounded-lg bg-primary!"
         aria-label="Send message"
       >
-        <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+        <ChevronUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
       </TooltipIconButton>
     </ComposerPrimitive.Send>
   );
@@ -974,7 +975,7 @@ const AskNeedsWorkCard: FC = () => {
             type="button"
             variant="ghost"
             size="sm"
-            className="h-8 rounded-full px-3.5"
+            className="h-8 rounded-lg px-3.5"
             onClick={dismiss}
           >
             <XIcon className="size-3.5" />
@@ -983,7 +984,7 @@ const AskNeedsWorkCard: FC = () => {
           <Button
             type="button"
             size="sm"
-            className="h-8 rounded-full px-3.5"
+            className="h-8 rounded-lg px-3.5"
             onClick={go}
           >
             <ArrowRightLeftIcon className="size-3.5" />
@@ -1030,7 +1031,7 @@ const ComposerAction: FC<{
           type="button"
           variant="ghost"
           size="icon"
-          className="aui-composer-optimize text-muted-foreground hover:text-foreground size-7 rounded-full"
+          className="aui-composer-optimize text-muted-foreground hover:text-foreground size-7 rounded-lg"
           aria-label="Optimize prompt"
           disabled={!canOptimize}
           onClick={() => void onOptimize()}
@@ -1050,7 +1051,7 @@ const ComposerAction: FC<{
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-7 rounded-full"
+                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-7 rounded-lg"
                 aria-label="Start voice input"
               >
                 <MicIcon className="aui-composer-dictate-icon size-4" />
@@ -1065,7 +1066,7 @@ const ComposerAction: FC<{
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="aui-composer-stop-dictation text-destructive size-7 rounded-full"
+                className="aui-composer-stop-dictation text-destructive size-7 rounded-lg"
                 aria-label="Stop voice input"
               >
                 <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
@@ -1096,14 +1097,14 @@ export const EditComposer: FC = () => {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-8 rounded-full px-3.5"
+                className="h-8 rounded-lg px-3.5"
               >
-                Cancel
+                取消
               </Button>
             </ComposerPrimitive.Cancel>
             <ComposerPrimitive.Send asChild>
-              <Button size="sm" className="h-8 rounded-full px-3.5">
-                Update
+              <Button size="sm" className="h-8 rounded-lg px-3.5">
+                修改
               </Button>
             </ComposerPrimitive.Send>
           </div>

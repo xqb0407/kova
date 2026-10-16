@@ -92,13 +92,17 @@ export function NumberTicker({
       className={cn("inline-flex items-center tabular-nums", className)}
     >
       <span className="sr-only">{readableText}</span>
-      <span aria-hidden="true" className="inline-flex items-center">
+      {/* 数字与单位走普通 inline 流，不套 flex：flex 的 items-center 会把「数字窗口」
+          和「. 万 亿」这些静态字形各自居中，两者的基线就对不上周围文字了。 */}
+      <span aria-hidden="true">
         {prefix ? <span>{prefix}</span> : null}
         {glyphs.map(({ char, id }, i) => {
           const isDigit = /\d/.test(char);
           if (!isDigit) {
             return (
-              <span key={id} className="inline-block">
+              // whitespace-pre：空白字符也常出现在格式串里（如「1.4 亿」的空格），
+              // 而纯空白的 inline-block 会被折成零宽，空格就直接消失了。
+              <span key={id} className="inline-block whitespace-pre">
                 {char}
               </span>
             );
@@ -160,10 +164,25 @@ function Digit({
   }, [blur, delay, digit, duration, reduce]);
 
   return (
+    // 窗口这条规则是基线对齐的关键：overflow 非 visible 的 inline-block，基线取「盒底边」，
+    // 而数字墨迹在 1.1em 窗口里是居中的，于是整段数字会浮到基线上方约 2px（小数点被抬到
+    // 字腰、看着像另一套更大的字体）。三件事一起修：
+    // 1. 裁剪改用 clip-path，overflow 保持 visible——窗口才能像普通文字一样由行盒定基线；
+    // 2. 在流内放一个隐形 0 撑出这行行盒（滚轮列是绝对定位，不参与基线计算）；
+    // 3. 行高压成 1，让窗口基线只由字号决定，不跟着调用方的 line-height 走
+    //    （数字单元格同样 leading-none，两边基线偏移一致才会重合）。
     <span
-      className={cn("relative inline-block overflow-hidden", className)}
-      style={{ height: `${DIGIT_HEIGHT_EM}em`, width: "1ch" }}
+      className={cn("relative inline-block", className)}
+      style={{
+        height: `${DIGIT_HEIGHT_EM}em`,
+        width: "1ch",
+        // 行高写进 style 而不是类名：调用方传 digitClassName 里的 leading-* 不会
+        // 用 tailwind-merge 顶掉它，而它一旦变了，窗口和单元格的基线就会错开。
+        lineHeight: 1,
+        clipPath: "inset(0)",
+      }}
     >
+      <span className="invisible">0</span>
       <motion.span
         ref={columnRef}
         initial={{ y: 0 }}
@@ -172,7 +191,9 @@ function Digit({
         className="absolute inset-x-0 top-0 flex flex-col items-center will-change-[transform,filter]"
       >
         {DIGITS.map((n) => (
-          <span key={n} className="flex h-[1.1em] items-center justify-center leading-none">
+          // 一格 = 一个行盒：先别用 items-center 居中——单元格 1.1em 比行盒 1em 高，
+          // 居中会把数字压低约半像素，和窗口的基线错开。leading-none 也要和窗口一致。
+          <span key={n} className="block h-[1.1em] text-center leading-none">
             {n}
           </span>
         ))}

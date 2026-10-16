@@ -239,6 +239,40 @@ const readToolResultContent = (
  *  （旧链路的剥前缀在历史重建侧，react-pi 新链曾以裸前缀上屏）。 */
 const STEER_PREFIX = "[[queued-steer]] ";
 
+/* ---------------------------- 引用（「询问」） ---------------------------- */
+
+/**
+ * 引用（SelectionToolbar「询问」）的持久化约定：发送时把引用文本以 Markdown
+ * 引用块（"> " 前缀）前置进正文（见 ThreadController 的 buildPiSendInput），
+ * 投影时再拆回 metadata.custom.quote，交给 MessageParts 的 Quote 渲染器出
+ * 引用块。选这个约定因为它三头兼顾：模型读到的是标准引用语义（知道"针对哪段
+ * 文字"作答）、转录持久化不需要 sidecar 改动、刷新/重发都不丢引用。
+ */
+export const quoteToMarkdownBlock = (text: string): string =>
+  text
+    .split("\n")
+    .map((line) => (line ? `> ${line}` : ">"))
+    .join("\n");
+
+/**
+ * 拆出前导引用块：返回引用文本与剩余正文（引用块后的空行一并吃掉）。
+ * 没有引用块返回 null——普通消息一字不动。
+ */
+export const splitLeadingQuoteBlock = (
+  text: string,
+): { quote: string; rest: string } | null => {
+  const lines = text.split("\n");
+  const quoted: string[] = [];
+  let i = 0;
+  while (i < (lines.length) && (lines[i] ?? "").startsWith(">")) {
+    quoted.push((lines[i] ?? "").replace(/^> ?/, ""));
+    i += 1;
+  }
+  if (quoted.length === 0) return null;
+  if (i < lines.length && (lines[i] ?? "").trim() === "") i += 1;
+  return { quote: quoted.join("\n"), rest: lines.slice(i).join("\n") };
+};
+
 /** 本地改动（UI 格式回归）：user 消息的 image 块投成 attachments——附件卡
  * 在气泡外渲染（UserMessageAttachments / MessagePrimitive.Attachments），与旧
  * AI SDK 链路（pi-thread-adapter 的 file part → attachments）同款形态。
@@ -250,7 +284,12 @@ const STEER_PREFIX = "[[queued-steer]] ";
 const projectUserContent = (
   content: PiUserMessage["content"],
   attachmentIdPrefix?: string,
-): { parts: ContentPart[]; attachments: ProjectedAttachment[] } => {
+): {
+  parts: ContentPart[];
+  attachments: ProjectedAttachment[];
+  /** 前导引用块还原出的引用文本（无引用时缺省） */
+  quote?: string;
+} => {
   const parts: ContentPart[] = [];
   const attachments: ProjectedAttachment[] = [];
   const blocks: readonly PiUserContent[] =
@@ -291,7 +330,23 @@ const projectUserContent = (
     else parts.shift();
     parts.unshift({ type: "data", name: "steeredNote", data: {} });
   }
-  return { parts, attachments };
+
+  // 引用块回投（放在 steer 前缀剥离之后，取第一段文本）：发送端把引用前置在
+  // 正文里（模型可见、转录持久），这里还原成 metadata.custom.quote 渲染成
+  // 引用块；只含引用的消息正文为空，气泡只剩引用块
+  let quote: string | undefined;
+  const headIndex = parts.findIndex((part) => part.type === "text");
+  const head = headIndex >= 0 ? parts[headIndex] : undefined;
+  if (head?.type === "text") {
+    const split = splitLeadingQuoteBlock(head.text);
+    if (split) {
+      quote = split.quote;
+      if (split.rest) parts[headIndex] = { ...head, text: split.rest };
+      else parts.splice(headIndex, 1);
+    }
+  }
+
+  return { parts, attachments, ...(quote !== undefined ? { quote } : {}) };
 };
 
 const dataPart = (
@@ -715,7 +770,7 @@ const projectFrom = (
         if (isAutoContinueMessage(message)) break;
         flush(false, index);
         const id = messageId(message as PiUserMessage, index);
-        const { parts, attachments } = projectUserContent(
+        const { parts, attachments, quote } = projectUserContent(
           (message as PiUserMessage).content,
           id,
         );
@@ -726,6 +781,11 @@ const projectFrom = (
             createdAt: createdAtOf(message as PiUserMessage),
             content: parts,
             ...(attachments.length ? { attachments } : {}),
+            // 引用块渲染的来源（MessageParts 的 Quote 组件读 metadata.custom.quote）；
+            // messageId 只在"引用来自某条消息"的跳转类功能里用得上，转录里无此信息
+            ...(quote !== undefined
+              ? { metadata: { custom: { quote: { text: quote, messageId: "" } } } }
+              : {}),
           },
           index,
         );

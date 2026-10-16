@@ -34,7 +34,7 @@ import {
   gitStage,
   type GitBranches,
 } from "@/lib/git/git";
-import { onGitChanged, refreshGitStatus, useGitStatus } from "@/lib/git/git-status";
+import { refreshGitStatus, useGitStatus } from "@/lib/git/git-status";
 import { cn } from "@/lib/utils";
 import { PanelSection } from "./section-shell";
 import { splitPath, StatusDot } from "./git-files";
@@ -174,12 +174,31 @@ export const GitView: FC<{ cwd: string }> = ({ cwd }) => {
       .catch(() => {});
   }, [cwd]);
 
+  // 挂载 / 手动刷新（tick）/ 切目录：拉分支列表
   useEffect(() => {
     load();
-    return onGitChanged((changed) => {
-      if (changed === cwd) load();
-    });
   }, [load, tick, cwd]);
+
+  // 分支列表只在**status 报的分支名发生迁移**时重拉（含 agent 在后台 checkout：
+  // status 由 git-status store 的 git-changed 全局刷新带回）。
+  // 不许写成"branches.current !== status.branch 就 load()"：两侧口径不一定相等
+  // （detached 时 status.branch 是短哈希、branches.current 是 null），不等的判据
+  // 会永久成立 → load → setBranches 新对象 → effect 再跑 → 无限 IPC 拉分支，
+  // 主进程被 for-each-ref 刷爆、界面假死。改为与"上一次 status 报的分支"比较，
+  // 任何口径差异都只影响首次对齐，不构成循环。
+  const prevStatusBranchRef = useRef<string | null>(null);
+  useEffect(() => {
+    const current = status?.branch ?? null;
+    const prev = prevStatusBranchRef.current;
+    if (prev === null) {
+      prevStatusBranchRef.current = current;
+      return; // 首次只登记基线（挂载 effect 已拉过一次列表）
+    }
+    if (current !== null && current !== prev) {
+      prevStatusBranchRef.current = current;
+      load();
+    }
+  }, [status?.branch, load]);
 
   const toggleStage = async (path: string, on: boolean) => {
     setBusy(true);

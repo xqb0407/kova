@@ -246,7 +246,7 @@ export const ModePicker: FC = () => {
             disabled={busy}
             title={current.description}
             className={cn(
-              "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
+              "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
               // 高危档选中时用警告色提醒；带 accent 的档位用各自的强调色
               // （值得注意但不是示警）。计划态的高亮不在这里——那描述的是能力
               // 模式，已经挪到右侧胶囊上
@@ -340,7 +340,7 @@ export const CapabilityModeChip: FC = () => {
         onClick={exit}
         title={`${cap.label}：${cap.description}（点击退出）`}
         className={cn(
-          "bg-muted text-foreground hover:bg-muted/70 inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
+          "bg-muted text-foreground hover:bg-muted/70 inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
         )}
       >
         {busy ? (

@@ -31,6 +31,8 @@ const span = <T,>(label: string, fn: () => T): T => {
 const VIEWPORT_SELECTOR = '[data-slot="aui_thread-viewport"]';
 const ANCHOR_SELECTOR =
   '[data-slot="aui_user-message-root"], [data-slot="aui_assistant-message-content"]';
+// sticky composer 页脚：刻度条底边要停在它上沿之外
+const FOOTER_SELECTOR = ".aui-thread-viewport-footer";
 const USER_SURFACE_SELECTOR = ".aui-user-message-content";
 // 距顶/距底小于该值时，直接把首/尾刻度视为激活项
 const ACTIVE_EDGE_THRESHOLD = 56;
@@ -85,6 +87,9 @@ export function ThreadPreviewRail() {
   const [overflowing, setOverflowing] = useState(false);
   const [railHeight, setRailHeight] = useState(0);
   const [messageWidth, setMessageWidth] = useState(0);
+  /** 覆盖层原本 inset-0 连 sticky composer 一起盖，轮次一多最末刻度直接压在
+   *  输入框上；量出页脚顶缘到覆盖层底边的距离，作为覆盖层的 bottom 内缩 */
+  const [railBottomInset, setRailBottomInset] = useState(0);
   // 进出场动画的宿主：淡出期间据此断掉刻度命中
   const railMotionRef = useRef<HTMLDivElement>(null);
 
@@ -95,6 +100,25 @@ export function ThreadPreviewRail() {
       ) ?? null;
     viewportRef.current = viewport;
     return viewport;
+  }, []);
+
+  /** 页脚顶缘 → 视口底边的距离（+4px 呼吸位）。composer 多行增高、窗口
+   *  resize 都会改这个值，由各自的 ResizeObserver 触发重测。基准必须是
+   *  视口而非覆盖层自身：覆盖层底边正是这个 inset 改出来的，拿它自测会
+   *  在「inset₀ → 0 → inset₀」之间来回振荡 */
+  const measureRailBottom = useCallback(() => {
+    const viewport = viewportRef.current;
+    const footer = viewport?.querySelector<HTMLElement>(FOOTER_SELECTOR) ?? null;
+    if (!viewport || !footer) return;
+    const inset = Math.max(
+      0,
+      Math.round(
+        viewport.getBoundingClientRect().bottom -
+          footer.getBoundingClientRect().top +
+          4,
+      ),
+    );
+    setRailBottomInset((current) => (current === inset ? current : inset));
   }, []);
 
   const updateActiveItem = useCallback(() => {
@@ -237,18 +261,34 @@ export function ThreadPreviewRail() {
           });
     resizeObserver?.observe(viewport);
 
+    // 页脚（sticky composer）增高/缩回时重测刻度条底边的让位量
+    measureRailBottom();
+    const footer = viewport.querySelector<HTMLElement>(FOOTER_SELECTOR);
+    const footerObserver =
+      typeof ResizeObserver === "undefined" || !footer
+        ? null
+        : new ResizeObserver(() => measureRailBottom());
+    if (footer && footerObserver) footerObserver.observe(footer);
+
     const handleScroll = () => scheduleActive();
     viewport.addEventListener("scroll", handleScroll, { passive: true });
 
     return () => {
       mutationObserver.disconnect();
       resizeObserver?.disconnect();
+      footerObserver?.disconnect();
       viewport.removeEventListener("scroll", handleScroll);
       if (syncFrameRef.current) cancelAnimationFrame(syncFrameRef.current);
       if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
       if (activeFrameRef.current) cancelAnimationFrame(activeFrameRef.current);
     };
-  }, [findViewport, scheduleSync, scheduleSyncDebounced, scheduleActive]);
+  }, [
+    findViewport,
+    scheduleSync,
+    scheduleSyncDebounced,
+    scheduleActive,
+    measureRailBottom,
+  ]);
 
   // 量测覆盖层高度，刻度过多时自动压缩间距（min 6px），避免被裁切；
   // 同一个观察顺带量宽度：面板拖宽把聊天列挤窄时用它整条隐藏刻度
@@ -262,10 +302,12 @@ export function ThreadPreviewRail() {
       setMessageWidth((current) =>
         current === rect.width ? current : rect.width,
       );
+      // 覆盖层自身高度变了（窗口 resize），页脚顶缘的让位量要跟着重算
+      measureRailBottom();
     });
     observer.observe(root);
     return () => observer.disconnect();
-  }, []);
+  }, [measureRailBottom]);
 
   const scrollToItem = useCallback(
     (item: PreviewRailItem) => {
@@ -344,6 +386,7 @@ export function ThreadPreviewRail() {
       ref={rootRef}
       data-slot="thread-preview-rail"
       className="pointer-events-none absolute inset-0 z-20 overflow-hidden"
+      style={{ bottom: railBottomInset }}
     >
       {/* AnimatePresence 必须待在条件渲染之外：挂在条件内部的这次
           showRail 翻 false 时它和子树一起卸载，exit 永不执行，刻度条

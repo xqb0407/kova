@@ -96,7 +96,7 @@ export const PiModelPicker: FC = () => {
       <ModelSelector.Trigger
         variant="ghost"
         size="sm"
-        className="h-7 max-w-48 rounded-full [&>span]:min-w-0 @max-2xl:px-2"
+        className="h-7 max-w-48 rounded-lg [&>span]:min-w-0 @max-2xl:px-2"
         disabled={modelLocked}
         title={modelLocked ? "消息发送完成前禁止切换模型" : selectedLabel}
       >

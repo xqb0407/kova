@@ -19,6 +19,12 @@ import {
   type FsFileContent,
 } from "@/lib/workspace/fs";
 import { CodeMirrorCode } from "@/components/code/cm-code";
+import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
+import {
+  buildCodeDirective,
+  toWorkspaceRelative,
+} from "@/lib/composer/code-reference";
+import { getWorkspace } from "@/lib/workspace/workspace-store";
 import { stripReadLineNumbers } from "@/lib/pi/read-result";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { Button } from "@/components/ui/button";
@@ -218,6 +224,12 @@ const FileBody: FC<{ part: FilePart; note?: string; edit?: FileEdit }> = ({
   const text = part.kind === "read" ? stripReadLineNumbers(part.text) : part.text;
   // 源码态看草稿，预览态看盘上内容（未保存的编辑不进预览）
   const source = edit ? edit.draft : text;
+  // 「引用到对话」只对真实文件开放：read/write 两种 kind 的 path 是真实路径
+  // （文件树标签给的是 cwd 相对路径——正是 agent cwd 里的形态，最理想；快照可能
+  // 是绝对路径，插入前经 toWorkspaceRelative 折算）；plan/memory 是拼出来的
+  // 虚拟名，引用它等于给 agent 一个不存在的文件
+  const referencePath =
+    part.kind === "read" || part.kind === "write" ? part.path : null;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <FileHeader
@@ -257,6 +269,30 @@ const FileBody: FC<{ part: FilePart; note?: string; edit?: FileEdit }> = ({
             path={part.path}
             editable={!!edit}
             onChange={edit?.onDraftChange}
+            selectionAction={
+              referencePath
+                ? {
+                    label: "引用到对话",
+                    onSelect: ({ startLine, endLine }) => {
+                      // 引用路线：只插入芯片（发送时展开成 @path (lines N-M)），
+                      // 内容不内联——agent 按行号用文件工具自己读（内容永远最新）
+                      const inserted = insertIntoComposer(
+                        buildCodeDirective({
+                          path: toWorkspaceRelative(
+                            referencePath,
+                            getWorkspace(),
+                          ),
+                          startLine,
+                          endLine,
+                        }),
+                      );
+                      if (!inserted) {
+                        toast.error("输入框未就绪，未能插入引用");
+                      }
+                    },
+                  }
+                : undefined
+            }
           />
         )}
       </div>

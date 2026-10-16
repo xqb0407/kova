@@ -1218,3 +1218,43 @@ describe("auto-continue 哨兵过滤与最终中止标记", () => {
     ).toBe(false);
   });
 });
+
+
+describe("引用块回投（「询问」）", () => {
+  const user = (content: string): PiAgentMessage =>
+    ({ role: "user", content, timestamp: 1 }) as PiAgentMessage;
+  const quoteOf = (m: { metadata?: unknown }) =>
+    (m.metadata as { custom?: { quote?: { text: string } } } | undefined)?.custom
+      ?.quote?.text;
+
+  it("前导引用块还原成 metadata.custom.quote，正文里剥掉", () => {
+    const [msg] = projectPiThreadMessages(
+      input([user("> 引用的原文\n\n问题是什么？")]),
+    );
+    expect(msg!.role).toBe("user");
+    expect(quoteOf(msg!)).toBe("引用的原文");
+    expect(contentParts(msg!)).toEqual([{ type: "text", text: "问题是什么？" }]);
+  });
+
+  it("纯引用消息：正文为空，只剩引用块", () => {
+    const [msg] = projectPiThreadMessages(input([user("> 引用的原文")]));
+    expect(quoteOf(msg!)).toBe("引用的原文");
+    expect(contentParts(msg!)).toEqual([]);
+  });
+
+  it("多行引用逐行还原（空行保留）", () => {
+    const [msg] = projectPiThreadMessages(
+      input([user("> 第一行\n>\n> 第三行\n\n正文")]),
+    );
+    expect(quoteOf(msg!)).toBe("第一行\n\n第三行");
+    expect(contentParts(msg!)).toEqual([{ type: "text", text: "正文" }]);
+  });
+
+  it("普通消息不带 quote（一字不动）", () => {
+    const [msg] = projectPiThreadMessages(input([user("你好\n> 这行不是引用块开头")]));
+    expect(quoteOf(msg!)).toBeUndefined();
+    expect(contentParts(msg!)).toEqual([
+      { type: "text", text: "你好\n> 这行不是引用块开头" },
+    ]);
+  });
+});

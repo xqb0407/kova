@@ -6,6 +6,17 @@ import { SidebarMenuButton } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
+  threadListSkeletonCondition,
+  useThreadItems,
+  useThreadListSkeleton,
+} from "@/lib/thread-list/thread-items";
+import {
+  clearPendingThreadSelection,
+  markPendingThreadSelection,
+  pendingThreadSelection,
+  usePendingThreadSelection,
+} from "@/lib/thread-list/pending-selection";
+import {
   AuiIf,
   ThreadListItemMorePrimitive,
   ThreadListItemPrimitive,
@@ -119,12 +130,12 @@ import {
   useWorkspace,
 } from "@/lib/workspace/workspace-store";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+  hasProjectAppearance,
+  projectAppearanceFor,
+  useProjectAppearancesVersion,
+} from "@/lib/projects/project-appearance";
+import { ProjectBadge } from "@/components/ui/project-badge";
+import { ProjectSettingsPopover } from "@/components/agent-thread/project-settings-popover";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -455,7 +466,7 @@ const AUTO_ARCHIVE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const ThreadAutoArchiver: FC = () => {
   const aui = useAui();
-  const threadItems = useAuiState((s) => s.threads.threadItems);
+  const threadItems = useThreadItems();
   const mainThreadId = useAuiState((s) => s.threads.mainThreadId);
   const prefs = useAutoArchivePrefs();
 
@@ -609,6 +620,14 @@ export const ThreadListItems: FC<ThreadListItemsProps> = ({
   // 本容器的行共用一块滑动高亮；行在 ThreadListItemGroups 里按槽位注册。
   const listRef = useRef<HTMLDivElement>(null);
   const hover = useFluidHover(listRef);
+  // 乐观选中的退场：store 把 mainThreadId 推进到点击的行即清（否则留给
+  // pending 自己的看门狗兜底）。挂在列表容器上只订阅一条 primitive 切片。
+  const mainThreadId = useAuiState((s) => s.threads.mainThreadId);
+  useEffect(() => {
+    if (mainThreadId && pendingThreadSelection() === mainThreadId) {
+      clearPendingThreadSelection();
+    }
+  }, [mainThreadId]);
 
   return (
     <motion.div
@@ -622,10 +641,12 @@ export const ThreadListItems: FC<ThreadListItemsProps> = ({
       {/* 行是 relative、晚于高亮渲染，压在其上：选中行（data-active:bg-selected）
           仍盖过高亮，与 ask-user 的选中优先级一致 */}
       <FluidHoverHighlight hover={hover} className="rounded-md" />
-      <AuiIf condition={(s) => s.threads.isLoading}>
+      {/* 骨架只在"还没有任何数据"时出：后台整表 reload（跨端同步/定时任务结算）
+          期间保留已渲染列表，否则每次 reload 都把列表整块换成骨架 */}
+      <AuiIf condition={threadListSkeletonCondition}>
         <ThreadListSkeleton />
       </AuiIf>
-      <AuiIf condition={(s) => !s.threads.isLoading}>
+      <AuiIf condition={(s) => !threadListSkeletonCondition(s)}>
         <ThreadListItemGroups
           searchQuery={searchQuery}
           registerItem={hover.registerItem}
@@ -666,7 +687,7 @@ export type ThreadListGroups = {
  */
 export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   const threadIds = useAuiState((s) => s.threads.threadIds);
-  const threadItems = useAuiState((s) => s.threads.threadItems);
+  const threadItems = useThreadItems();
   const pinnedIds = usePinnedSessionIds();
   const timeRange = useThreadTimeRange();
 
@@ -925,9 +946,12 @@ export const ProjectListItems: FC<{
   const reduce = useReducedMotion() ?? false;
   const { threadIds, pinnedProjectIndices, projectGroups } =
     useThreadListGroups();
-  const threadItems = useAuiState((s) => s.threads.threadItems);
+  // 项目外观版本号：变一次整表重渲（外观极少变）；逐行直接读值——
+  // 分组在 map 循环里渲染，hook 不能在循环里调，所以订阅收敛成这一条
+  useProjectAppearancesVersion();
+  const threadItems = useThreadItems();
   // 任务 tab 同款：threads 初始加载期间渲染骨架（groups 为空不能当「暂无」）
-  const isLoading = useAuiState((s) => s.threads.isLoading);
+  const showSkeleton = useThreadListSkeleton();
   // 组头未读蓝点：组内任一会话未读即点亮（与会话行蓝点同款式）
   const unreadIds = useUnreadSessionIds();
   // 批量模式「全选」的可见集注册：项目 tab 全部会话（置顶卡 + 各组全员，
@@ -1030,7 +1054,7 @@ export const ProjectListItems: FC<{
   };
 
   // 加载中先于空态判断：骨架行与任务 tab 同款（5 条 h-3.5 条带）
-  if (isLoading) return <ThreadListSkeleton />;
+  if (showSkeleton) return <ThreadListSkeleton />;
 
   if (projectGroups.length === 0 && pinnedProjectIndices.length === 0) {
     return (
@@ -1072,6 +1096,7 @@ export const ProjectListItems: FC<{
         const childSlots = visibleIndices.map(() => nextSlot++);
         const moreSlot = hiddenCount > 0 ? nextSlot++ : -1;
         const isOpen = openDirs.has(group.cwd);
+        const appearance = projectAppearanceFor(group.cwd);
         const hasUnread = group.indices.some((i) =>
           unreadIds.has(threadIds[i]),
         );
@@ -1094,7 +1119,7 @@ export const ProjectListItems: FC<{
                       title={group.cwd}
                       // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                       // 自带的 hover/aria-expanded 底色，避免与高亮叠加
-                      className="h-8 justify-start gap-2 px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent group-hover/proj:pe-14 aria-expanded:bg-transparent"
+                      className="h-8 justify-start gap-2 px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent group-hover/proj:pe-14 aria-expanded:bg-transparent active:not-aria-[haspopup]:translate-y-0"
                     >
                       {/* file-tree 同款箭头：开合时弹簧旋转 90° */}
                       {/* <motion.span
@@ -1105,8 +1130,25 @@ export const ProjectListItems: FC<{
                       >
                         <ChevronRightIcon className="size-3.5" />
                       </motion.span> */}
-                      {/* 文件夹图标开合弹簧交叉淡换 */}
-                      <FolderSwapIcon open={isOpen} />
+                      {/* 外观优先级：上传图/吉祥物 → 徽章；只选了颜色 → 颜色套在
+                          默认文件夹图标上（"颜色给图标上色"）；都没有 → 原样。
+                          收起时压暗保留开/合暗示，不额外加图标 */}
+                      {hasProjectAppearance(appearance) ? (
+                        <ProjectBadge
+                          appearance={appearance}
+                          className={cn(!isOpen && "opacity-60")}
+                        />
+                      ) : (
+                        <span
+                          className={cn("inline-flex", !isOpen && "opacity-60")}
+                          style={
+                            appearance?.color ? { color: appearance.color } : undefined
+                          }
+                        >
+                          {/* 文件夹图标开合弹簧交叉淡换 */}
+                          <FolderSwapIcon open={isOpen} />
+                        </span>
+                      )}
                       <span className="min-w-0 flex-1 truncate text-start">
                         {group.label}
                       </span>
@@ -1133,35 +1175,22 @@ export const ProjectListItems: FC<{
                 <PlusIcon className="size-3.5" />
                 <span className="sr-only">项目内新建对话</span>
               </TooltipIconButton>
-              {/* 项目操作菜单：归档整个项目（组内全部会话） */}
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  render={
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="absolute end-1 top-1/2 size-6 -translate-y-1/2 p-0 opacity-0 group-hover/proj:opacity-100 focus-visible:opacity-100 data-[popup-open]:opacity-100"
-                    >
-                      <MoreHorizontalIcon className="size-3.5" />
-                      <span className="sr-only">项目操作</span>
-                    </Button>
-                  }
-                />
-                <DropdownMenuContent
-                  side="right"
-                  align="start"
-                  sideOffset={6}
-                  className="w-44"
+              {/* 项目设置卡（紧贴行右侧的 Popover）：图标/颜色/吉祥物 + 项目操作
+                  收在同一个弹层里，选色/选吉祥物不关弹层，侧栏实时跟着变 */}
+              <ProjectSettingsPopover
+                cwd={group.cwd}
+                label={group.label}
+                onArchive={() => archiveProject(group)}
+              >
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute end-1 top-1/2 size-6 -translate-y-1/2 p-0 opacity-0 group-hover/proj:opacity-100 focus-visible:opacity-100 data-[popup-open]:opacity-100"
                 >
-                  <DropdownMenuItem
-                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
-                    onClick={() => archiveProject(group)}
-                  >
-                    <ArchiveIcon className="size-4" />
-                    归档项目
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                    <MoreHorizontalIcon className="size-3.5" />
+                    <span className="sr-only">项目操作</span>
+                  </Button>
+              </ProjectSettingsPopover>
               </FluidHoverRow>
             </TreeRow>
             <CollapsibleContent className="overflow-hidden">
@@ -1353,6 +1382,10 @@ export const ThreadListItem: FC = () => {
   // 没在跑的会话才不可见
   const isRunning = useAuiState((s) => s.threadListItem.isRunning);
   const remoteId = useAuiState((s) => s.threadListItem.remoteId);
+  // 乐观选中（点击即刻高亮）：切会话的真实 mainThreadId 要等新线程 runtime
+  // 启动完（含 sidecar 快照来回）才推进，此前先让点中的这一行自亮
+  const itemId = useAuiState((s) => s.threadListItem.id);
+  const pendingSelect = usePendingThreadSelection(itemId);
   // 必须无条件调用：写进 `isRunning || usePiSessionRunning(...)` 会被 ||
   // 短路，isRunning 为 true 的那次渲染整个跳过 hook ⇒ hook 顺序抖动
   const runningExternally = usePiSessionRunning(remoteId);
@@ -1431,9 +1464,11 @@ export const ThreadListItem: FC = () => {
       ref={rowRef}
       data-slot="aui_thread-list-item"
       // hover 反馈由列表容器的 FluidHoverHighlight 负责，行不再自画
-      // hover:bg-muted；focus/open/active 底色保留（盖在高亮之上）
-      className="group focus-visible:bg-selected data-active:bg-selected has-focus-visible:bg-selected has-data-[state=open]:bg-selected relative flex h-8 items-center rounded-md transition-colors focus-visible:outline-none data-[batch-selected]:bg-selected"
+      // hover:bg-muted；focus/open/active 底色保留（盖在高亮之上）；
+      // data-pending：乐观选中（点击到 store 追平之间的即时高亮）
+      className="group focus-visible:bg-selected data-active:bg-selected data-pending:bg-selected has-focus-visible:bg-selected has-data-[state=open]:bg-selected relative flex h-8 items-center rounded-md transition-colors focus-visible:outline-none data-[batch-selected]:bg-selected"
       data-batch-selected={batchActive && batchSelected ? "true" : undefined}
+      data-pending={pendingSelect ? "true" : undefined}
       onContextMenu={(e) => {
         // 批量模式不唤起（勾选流里右键语义未定义）；草稿行无可操作项。
         // 右键锚在鼠标落点（虚拟锚点单例，见下方 ContextMenu）
@@ -1486,6 +1521,9 @@ export const ThreadListItem: FC = () => {
       ) : (
         <ThreadListItemPrimitive.Trigger
           data-slot="aui_thread-list-item-trigger"
+          // 与库的切换动作合并执行（createActionButton 的 composeEventHandlers）：
+          // 点击瞬间高亮先动，真实切换随后按原路径进行
+          onClick={() => markPendingThreadSelection(itemId)}
           // 右侧槽位常驻宽度随该槽内容切换：more 按钮/用时是 pe-9(36px)，
           // 挂起徽标「等待审批」四个汉字 @text-xs 约 48px，放不下会压到标题
           // 右缘，故挂起时放宽到 pe-14(56px)，并撤掉标题自留的 me-3
@@ -1520,7 +1558,7 @@ export const ThreadListItem: FC = () => {
           {/* 档位图标：与 loader/未读点/置顶图钉同占行首槽位（trigger ps-2.5 后
               的 14px 位，标题左缘仍是 30px，与「显示更多」对齐），故三者互斥出图。
               hover 让位给置顶按钮，同未读点/图钉的规则 */}
-          {!showRunning && !pinned && !unread && (
+          {/* {!showRunning && !pinned && !unread && (
             <span
               data-slot="aui_thread-list-item-mode"
               title={`工作模式：${APP_MODE_META[sessionAppMode].label}`}
@@ -1528,7 +1566,7 @@ export const ThreadListItem: FC = () => {
             >
               <ModeIcon className="size-3.5" />
             </span>
-          )}
+          )} */}
           {/* {automationTaskId && (
             <ZapIcon
               aria-label="定时任务发起的会话"
