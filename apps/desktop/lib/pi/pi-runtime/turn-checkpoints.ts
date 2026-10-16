@@ -79,6 +79,8 @@ type RunCp = {
   /** 快照拉到后才回填；settle 在 promise 落定后读取，必已就绪 */
   cwd: string;
   anchor: number | null;
+  /** 触发本轮的 prompt requestId（条目所有权层查询键；可为 null——老调用方） */
+  turnId: string | null;
 };
 
 /** agent_start → 打快照 / agent_end → diff+落卡（全局观察者，缺口2） */
@@ -91,13 +93,18 @@ export class TurnCheckpointTracker {
   }
 
   /** turn 真正开始（旧链路 start chunk 同机）：影子仓库快照，失败绝不阻断对话 */
-  begin(sessionId: string): void {
+  begin(sessionId: string, turnId: string | null = null): void {
     // 同 run 重复 agent_start（重试重放/合帧）不重打——新快照会漏掉
     // 「首次 agent_start → 重复帧」之间的改动
     if (this.runs.has(sessionId)) return;
     // 两段赋值：promise 的 async 链内要回填 entry.cwd/anchor（链体只会在
     // 赋值完成后才真正执行，同步块内无观察窗口）
-    const entry: RunCp = { cwd: "", anchor: null, promise: Promise.resolve(null) };
+    const entry: RunCp = {
+      cwd: "",
+      anchor: null,
+      turnId,
+      promise: Promise.resolve(null),
+    };
     entry.promise = (async () => {
       const snapshot = await this.deps.fetchSnapshot(sessionId);
       if (!snapshot) return null;
@@ -119,6 +126,7 @@ export class TurnCheckpointTracker {
           cwd,
           hash,
           anchorIndex: entry.anchor,
+          ...(turnId ? { turnId } : {}),
         });
       }
       return hash;
@@ -145,14 +153,17 @@ export class TurnCheckpointTracker {
       let hash: string | null;
       let cwd: string;
       let anchor: number | null;
+      let turnId: string | null;
       if (run) {
         hash = await run.promise;
         cwd = run.cwd;
         anchor = run.anchor;
+        turnId = run.turnId;
       } else if (reuse) {
         hash = reuse.hash;
         cwd = reuse.cwd;
         anchor = reuse.anchorIndex ?? null;
+        turnId = reuse.turnId ?? null;
       } else {
         return;
       }
@@ -176,6 +187,7 @@ export class TurnCheckpointTracker {
         files: d.files.length,
         added,
         removed,
+        turnId,
       });
     })().catch(() => {});
   }

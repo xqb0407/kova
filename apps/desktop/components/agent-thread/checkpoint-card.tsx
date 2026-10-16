@@ -36,6 +36,13 @@ import {
   useRunCheckpoints,
   type CheckpointEntry,
 } from "@/lib/pi/pi-checkpoints";
+import {
+  fetchTurnEdits,
+  turnEditUndoError,
+  undoTurnEdit,
+  type TurnEdit,
+  type TurnEditMap,
+} from "@/lib/pi/pi-edits";
 import { DiffStats } from "@/components/agent-thread/agent-panel/section-shell";
 import { splitPath, StatusDot } from "@/components/agent-thread/agent-panel/git-files";
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
@@ -59,12 +66,17 @@ import { cn } from "@/lib/utils";
 const CP_ANIMATION_MS = 200;
 const CP_EASE = "ease-[cubic-bezier(0.32,0.72,0,1)]";
 
-/** 展开区的逐文件行：状态徽标 + 路径 + 行数统计 + 审查/打开 */
+/** 展开区的逐文件行：状态徽标 + 路径 + 行数统计 + 审查/打开（+ 单文件回滚） */
 const CheckpointFileRow: FC<{
   cwd: string;
   checkpoint: string;
   file: GitDiffFile;
-}> = ({ cwd, checkpoint, file }) => {
+  /** 条目所有权层该文件本轮记录（无 = 侧车没这条/非结构化编辑来源：不挂回滚钮） */
+  edit?: TurnEdit;
+  /** 该文件回滚请求在飞 */
+  undoing?: boolean;
+  onUndo?: (rel: string) => void;
+}> = ({ cwd, checkpoint, file, edit, undoing, onUndo }) => {
   const { dir, base } = splitPath(file.path);
   const review = () => {
     // 定向打开审查标签：diff = 本回合改动 vs 运行前快照
@@ -99,6 +111,28 @@ const CheckpointFileRow: FC<{
         />
       )}
       <span className="ml-1 flex shrink-0 items-center gap-1">
+        {edit?.undoable && onUndo ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-[13px]"
+            disabled={undoing}
+            onClick={() => onUndo(file.path)}
+            title={
+              edit.exact
+                ? "仅回滚此文件到本轮开始前的状态，其余改动保留"
+                : "本轮该文件还含非 agent 改动；回滚将一并退回"
+            }
+          >
+            {undoing ? (
+              <Loader2Icon className="size-3.5 animate-spin" />
+            ) : (
+              <Undo2Icon className="size-3.5" />
+            )}
+            回滚
+          </Button>
+        ) : null}
         <Button
           type="button"
           size="sm"
@@ -135,24 +169,55 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 条目所有权层（sidecar checkpoint store）：rel → 本轮编辑资格；
+   *  老条目无 turnId / sidecar 不可达时为空 Map——行不挂回滚钮，卡片照常 */
+  const [edits, setEdits] = useState<TurnEditMap>(new Map());
+  const [undoingRel, setUndoingRel] = useState<string | null>(null);
 
   // 逐文件统计按需加载：折叠态只展示聚合数字，不额外 invoke
-  const loadFiles = useCallback(async () => {
-    if (files || filesLoading) return;
-    setFilesLoading(true);
-    try {
-      const diff = await gitCheckpointDiff(cp.cwd, cp.hash);
-      setFiles(diff?.files ?? []);
-    } catch {
-      setFiles([]);
-    } finally {
-      setFilesLoading(false);
-    }
-  }, [cp, files, filesLoading]);
+  const loadAll = useCallback(
+    async (force = false) => {
+      if ((files || filesLoading) && !force) return;
+      setFilesLoading(true);
+      try {
+        const [diff, ed] = await Promise.all([
+          gitCheckpointDiff(cp.cwd, cp.hash),
+          fetchTurnEdits(threadId, cp.cwd, cp.turnId),
+        ]);
+        setFiles(diff?.files ?? []);
+        setEdits(ed);
+      } catch {
+        setFiles([]);
+        setEdits(new Map());
+      } finally {
+        setFilesLoading(false);
+      }
+    },
+    [cp, files, filesLoading, threadId],
+  );
 
   useEffect(() => {
-    if (expanded) void loadFiles();
-  }, [expanded, loadFiles]);
+    if (expanded) void loadAll();
+  }, [expanded, loadAll]);
+
+  /** 单文件回滚：回该轮首次编辑前的基线；成功即重载两份数据（行可能整行消失——
+   *  影子仓库 diff 里该文件不再有差异） */
+  const undoFile = useCallback(
+    async (rel: string) => {
+      if (!cp.turnId || undoingRel) return;
+      setUndoingRel(rel);
+      setError(null);
+      const res = await undoTurnEdit(threadId, cp.cwd, cp.turnId, rel);
+      setUndoingRel(null);
+      if (!res.ok) {
+        setError(turnEditUndoError(res.error));
+        return;
+      }
+      refreshGitStatus(cp.cwd);
+      await loadAll(true);
+    },
+    [cp, threadId, undoingRel, loadAll],
+  );
 
   // 高度动画期间钉住滚动位置（轮次折叠同款）：卡片在消息流中段，展开把下方
   // 内容整体推走时不钉住的话视口会跟着乱跳
@@ -335,6 +400,9 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
                         cwd={cp.cwd}
                         checkpoint={cp.hash}
                         file={f}
+                        edit={edits.get(f.path)}
+                        undoing={undoingRel === f.path}
+                        onUndo={(rel) => void undoFile(rel)}
                       />
                     ))}
                   </div>

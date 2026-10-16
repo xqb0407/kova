@@ -155,6 +155,11 @@
  *   { "type": "restore_memory_trash", "id", "scope", "cwd"?, "trashId" } → { id, type: "memory_trash_restored", scope, file, trashId }（同名占用即拒）
  *   { "type": "delete_memory_trash", "id", "scope", "cwd"?, "trashId" } → { id, type: "memory_trash_deleted", scope, trashId }（连同该文件的版本史）
  *   { "type": "empty_memory_trash", "id", "scope", "cwd"? } → { id, type: "memory_trash_emptied", scope, removed }
+ *   { "type": "checkpoint_status", "id", "sessionId", "cwd", "turnId" } → { id, type: "checkpoint_status", sessionId, cwd, turnId, files: [{ rel, status, additions, deletions, exact, undoable }] }
+ *       本轮结构化编辑（write/edit）的所有权清单（见 checkpoint/store.ts）：检查点卡按 rel 匹配影子仓库 diff 行，只给 undoable 的文件挂单文件回滚
+ *   { "type": "checkpoint_diff", "id", "sessionId", "cwd", "turnId", "rel" } → { id, type: "checkpoint_diff", ..., original, current, binary, tooLarge, exact } | { ..., error: "no-diff" }
+ *   { "type": "checkpoint_undo", "id", "sessionId", "cwd", "turnId", "rel" } → { id, type: "checkpoint_undone", sessionId, turnId, rel, ok, error? }
+ *       单文件回滚到该轮首次编辑前的基线；第三方动过/无边界/符号链接一律拒绝（error 原样给卡片显示）
  *   { "type": "list_subagents", "id", "cwd"? }                → { id, type: "subagents", agents, workspaceCwd, diagnostics }
  *   { "type": "save_subagent", "id", "scope", "cwd"?, ("definition"|"raw"), "name"? } → 校验后写 <app_data>/subagents 或 <cwd>/.kova/subagents 的 YAML + 热重载 → 同款 subagents 应答（name=编辑前原名，改名时清旧文件）
  *   { "type": "delete_subagent", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 subagents 应答（内置不可删）
@@ -377,6 +382,7 @@ import { handlers as mcpHandlers } from "./handlers/mcp";
 import { handlers as providerHandlers } from "./handlers/providers";
 import { handlers as interactiveHandlers } from "./handlers/interactive";
 import { handlers as gitHandlers } from "./handlers/git";
+import { handlers as checkpointHandlers } from "./handlers/checkpoint";
 import { handlers as optimizeHandlers } from "./handlers/optimize";
 import type { CommandHandler } from "./command";
 
@@ -407,6 +413,7 @@ const registry: Record<string, CommandHandler> = {
   ...providerHandlers,
   ...interactiveHandlers,
   ...gitHandlers,
+  ...checkpointHandlers,
 };
 
 export async function dispatch(reqId: string, msg: Record<string, unknown>) {

@@ -13,6 +13,7 @@ export {
   findRunBySession,
   dropRun,
   noteActiveTurn,
+  currentTurnOf,
   whenThreadIdle,
   listActiveTurnSessions,
   listActiveTurnDetails,
