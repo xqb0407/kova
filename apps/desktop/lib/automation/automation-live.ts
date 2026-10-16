@@ -127,7 +127,13 @@ export function startAutomationLiveWatch(): void {
   void (async () => {
     const teardown = await channel.subscribeAutomationEvents!(onFrame);
     void teardown; // 订阅与页面同生命周期，不退订
-  })();
+  })().catch(() => {
+    // 宿主不可用即静默降级：页面被在壳外打开（浏览器直开 dev 地址）时，
+    // getPiChannel 的兜底会惰性造桌面通道，订阅穿透到 window.kovaHost 才抛错；
+    // 本模块全链路的既有纪律是"能力缺失/通道不可用一律静默"（见上方注释），
+    // 这里补上同款语义——否则未处理拒绝会冒到 dev 终端/错误浮层。定时任务徽标
+    // 只是少一路推送，其余能力不受影响；watchStarted 保持 true（不逐次重试抛错）。
+  });
 }
 
 /** 行内视图 hook：该任务此刻是否在跑（管理页 ⚡ 转圈、会话列表徽标共用） */

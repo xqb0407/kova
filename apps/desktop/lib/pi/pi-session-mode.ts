@@ -3,6 +3,8 @@
 import { useSyncExternalStore } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { isApprovalLevel, type ApprovalLevel } from "pi-protocol";
+import { invoke } from "@/desktop-bridge/core";
+import { isDesktop } from "@/lib/desktop-env";
 import { piRequest } from "@/lib/pi/pi-bridge";
 import {
   piSessionIdForThread,
@@ -15,6 +17,8 @@ import {
  * - 事实源在 sidecar：prompt 流里的 data-planningState chunk 推送变更（见 pi-transport 的 tap）
  * - 管理操作（set_mode/get_planning_state）走 piRequest 请求-响应，响应即新状态
  * - 前端只是 per-thread 快照 store，切换线程时各自独立
+ * - 草稿（无 sessionId）的显示值 = 全局默认档 kv pi.mode：sidecar 建会话时读的
+ *   就是那一份（见 loadGlobalModeDefault），显示与首轮实跑同源
  * - plan_exit 的执行确认不在这里：它走逐工具审批通道（pi-tool-approval）
  */
 
@@ -58,6 +62,65 @@ const listeners = new Set<() => void>();
 
 function notify() {
   for (const l of listeners) l();
+}
+
+/* ---------------------- 全局默认档（草稿期的显示真值） ---------------------- */
+
+/** kv「最近一次使用」的键：sidecar 的 applyMode 写它，新会话物化时读它 */
+const MODE_KV_KEY = "pi.mode";
+
+/**
+ * 全局默认档（kv `pi.mode`「最近一次使用」）：**新会话在 sidecar 物化时读的就是它**
+ * （resolve.ts 的新会话分支），所以草稿期没有服务端快照可水合时，选择器显示的
+ * 必须是它，而不是写死的占位（agent/ask）。
+ *
+ * 为什么不能只靠占位——两个方向都会骗人：
+ * - 显示"变更前确认"而首轮实际按别的档跑（典型是 AI 审查/完全访问：设计上不弹卡），
+ *   改动静默发生、没有任何报错线索，用户的结论只会是"权限设置坏了"；
+ * - 点一个"已经选中"的项是空操作（pick 的 `o === current` 早退），于是"我设置了这个"
+ *   连一个请求都没发出去，而 UI 看上去已经选好。
+ * 显示与真值同源之后两件事都不会再发生：想换档就点（值不同 → 真的发 set_mode），
+ * 不换就是所见即所跑。
+ *
+ * 只读一次；此后每次 set_mode 成功都同步成新值（那正是 kv 被写掉的时刻）。
+ * 非桌面/远程模式（无本地 kv）或数据库不可用时保留占位——退回改动前的行为。
+ */
+let globalDefault: PlanningSnapshot | null = null;
+let globalDefaultLoad: Promise<void> | null = null;
+
+function fallbackSnapshot(): PlanningSnapshot {
+  return globalDefault ?? DEFAULT_PLANNING_SNAPSHOT;
+}
+
+/** 读取全局默认档并通知订阅者；选择器挂载时经 fetchPlanningState 触发 */
+export function loadGlobalModeDefault(): Promise<void> {
+  if (!globalDefaultLoad) {
+    globalDefaultLoad = (async () => {
+      try {
+        if (!isDesktop()) return;
+        const value = await invoke<string | null>("kv_get", { key: MODE_KV_KEY });
+        if (!value) return;
+        const last = JSON.parse(value) as { mode?: unknown; approvalLevel?: unknown };
+        const mode = normalizeSessionMode(last?.mode);
+        if (!mode) return;
+        globalDefault = {
+          mode,
+          approvalLevel: isApprovalLevel(last.approvalLevel) ? last.approvalLevel : "ask",
+          planning: mode === "plan" ? "planning" : "inactive",
+        };
+        notify();
+      } catch {
+        // kv 不可用/损坏：保留占位默认
+      }
+    })();
+  }
+  return globalDefaultLoad;
+}
+
+/** 测试缝：清掉已读的全局默认档（用例之间隔离） */
+export function resetGlobalModeDefaultForTest(): void {
+  globalDefault = null;
+  globalDefaultLoad = null;
 }
 
 /**
@@ -104,17 +167,17 @@ export function useSessionMode(threadId: string | undefined): PlanningSnapshot {
     },
     () =>
       threadId
-        ? (snapshots.get(storeKey(threadId, true)) ?? DEFAULT_PLANNING_SNAPSHOT)
-        : DEFAULT_PLANNING_SNAPSHOT,
-    () => DEFAULT_PLANNING_SNAPSHOT,
+        ? (snapshots.get(storeKey(threadId, true)) ?? fallbackSnapshot())
+        : fallbackSnapshot(),
+    () => fallbackSnapshot(),
   );
 }
 
 /** React 之外的读法（测试、非组件调用点）。形态对齐 app-mode 的 getAppMode() */
 export function sessionModeSnapshot(threadId: string | undefined): PlanningSnapshot {
   return threadId
-    ? (snapshots.get(storeKey(threadId, true)) ?? DEFAULT_PLANNING_SNAPSHOT)
-    : DEFAULT_PLANNING_SNAPSHOT;
+    ? (snapshots.get(storeKey(threadId, true)) ?? fallbackSnapshot())
+    : fallbackSnapshot();
 }
 
 /** 工具行、面板标签、composer 底栏共用同一个判据：别处各自判 mode 会漂 */
@@ -138,10 +201,12 @@ function snapshotFrom(res: ModeResponse): PlanningSnapshot {
   };
 }
 
-async function requestMode(threadId: string, payload: Record<string, unknown>): Promise<void> {
+async function requestMode(threadId: string, payload: Record<string, unknown>): Promise<PlanningSnapshot> {
   const sessionId = piSessionIdForThread(threadId);
   const res = await piRequest<ModeResponse>({ ...payload, threadId, ...(sessionId ? { sessionId } : {}) });
-  setSnapshot(threadId, snapshotFrom(res));
+  const snap = snapshotFrom(res);
+  setSnapshot(threadId, snap);
+  return snap;
 }
 
 /** 手动切换模式；agent 模式可携带审批级别（变更前确认/自动编辑/完全访问）。
@@ -156,7 +221,7 @@ async function requestMode(threadId: string, payload: Record<string, unknown>): 
  */
 const draftPicks = new Map<string, { mode: SessionMode; approvalLevel?: ApprovalLevel }>();
 
-export function setSessionMode(
+export async function setSessionMode(
   threadId: string,
   mode: SessionMode,
   approvalLevel?: ApprovalLevel,
@@ -181,15 +246,20 @@ export function setSessionMode(
       approvalLevel: nextLevel,
       planning: mode === "plan" ? "planning" : "inactive",
     });
-    return Promise.resolve();
+    return;
   }
   // 已绑定会话：落库成功即不再需要草稿记忆
   draftPicks.delete(threadId);
-  return requestMode(threadId, {
+  const snap = await requestMode(threadId, {
     type: "set_mode",
     mode,
     ...(approvalLevel ? { approvalLevel } : {}),
   });
+  // set_mode 成的这一档同时就是 kv「最近一次使用」（applyMode → persistModePrefs）：
+  // 草稿默认档得跟着它走，否则「在 A 会话选了 X、再开新对话」显示的仍是上一档，
+  // 而首轮实际按 X 跑——又回到"所见非所跑"
+  globalDefault = snap;
+  notify();
 }
 
 /**
@@ -208,12 +278,16 @@ export async function flushDraftModeSelection(threadId: string): Promise<void> {
   if (!pick) return;
   if (!piSessionIdForThread(threadId)) return;
   try {
-    await requestMode(threadId, {
+    const snap = await requestMode(threadId, {
       type: "set_mode",
       mode: pick.mode,
       ...(pick.approvalLevel ? { approvalLevel: pick.approvalLevel } : {}),
     });
     draftPicks.delete(threadId);
+    // 与 setSessionMode 同一条纪律：这条 set_mode 同样写了 kv「最近一次使用」，
+    // 草稿默认档跟着走（否则「在草稿里选了 ask → 发出 → 再开新对话」又显示旧档）
+    globalDefault = snap;
+    notify();
   } catch {
     // 保留草稿：下一次绑定（或用户再切一次档）会重试
   }
@@ -229,12 +303,13 @@ export function draftModePickForTest(threadId: string) {
  * 内存快照丢失，用请求-响应恢复（无运行中 turn 也有效）。
  * 先用会话列表带来的持久化偏好播种（sidecar 重启/Running 被驱逐也能恢复 UI，
  * live 状态随后覆盖），再向 sidecar 拉活动真值。
- * 没有任何已知 sessionId 的线程（未发送草稿）直接跳过请求：sidecar 不可能
- * 持有它的特殊模式，而请求会懒建会话（污染）。
+ * 没有 sessionId 的线程（未发送草稿）不发请求——sidecar 不可能持有它的特殊模式，
+ * threadId-only 的请求还会懒建空白会话（污染）——改为读全局默认档 kv pi.mode：
+ * 那正是这条会话建出来时会用的档，也是选择器唯一能诚实显示的值。
  */
-export function fetchPlanningState(threadId: string): Promise<void> {
+export async function fetchPlanningState(threadId: string): Promise<void> {
   const sessionId = piSessionIdForThread(threadId);
-  if (!sessionId) return Promise.resolve();
+  if (!sessionId) return loadGlobalModeDefault();
   const prefs = piSessionPrefsMap.get(sessionId);
   const prefsMode = normalizeSessionMode(prefs?.mode);
   if (prefs && prefsMode) {
@@ -244,5 +319,5 @@ export function fetchPlanningState(threadId: string): Promise<void> {
       planning: prefsMode === "plan" ? "planning" : "inactive",
     });
   }
-  return requestMode(threadId, { type: "get_planning_state" });
+  await requestMode(threadId, { type: "get_planning_state" });
 }

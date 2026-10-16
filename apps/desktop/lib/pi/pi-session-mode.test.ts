@@ -49,19 +49,34 @@ afterAll(() => {
   restoreAllMocks();
 });
 
+// 全局默认档（kv pi.mode）桩：本模块只经桌面桥读它一次。缺省无行（= 读不到），
+// 让既有用例的兜底行为与改动前完全一致；要用它的用例自己设 kvValue。
+let kvValue: string | null = null;
+let kvCalls: string[] = [];
+let desktopShell = true;
+mockModule("@/desktop-bridge/core", () => ({
+  invoke: (cmd: string) => {
+    kvCalls.push(cmd);
+    if (cmd !== "kv_get") return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
+    return Promise.resolve(kvValue);
+  },
+}));
+mockModule("@/lib/desktop-env", () => ({ isDesktop: () => desktopShell }));
+
 const {
   applyPlanningChunk,
   draftModePickForTest,
   fetchPlanningState,
   flushDraftModeSelection,
   normalizeSessionMode,
+  resetGlobalModeDefaultForTest,
   sessionModeSnapshot,
   setSessionMode,
 } = await import("@/lib/pi/pi-session-mode");
 
 const TID = "thread-1";
 
-/** 每用例重置：桩行为、请求记录、两张表、本线程快照 */
+/** 每用例重置：桩行为、请求记录、两张表、本线程快照、全局默认档 */
 function reset() {
   calls = [];
   responder = () => ({
@@ -72,6 +87,10 @@ function reset() {
   });
   registry.clear();
   prefs.clear();
+  kvValue = null;
+  kvCalls = [];
+  desktopShell = true;
+  resetGlobalModeDefaultForTest();
   applyPlanningChunk(TID, { mode: "agent", approvalLevel: "ask", planning: "inactive" });
 }
 
@@ -349,5 +368,63 @@ describe("草稿期档位补发（flushDraftModeSelection）", () => {
     await setSessionMode(TID, "plan");
     expect(calls.at(-1)).toMatchObject({ type: "set_mode", mode: "plan" });
     expect(draftModePickForTest(TID)).toBeUndefined();
+  });
+});
+
+/**
+ * 草稿期的显示默认档必须与 sidecar 建会话时读的那一份同源（kv pi.mode
+ * 「最近一次使用」）。显示成写死的 agent/ask 占位会两头骗人：用户看到
+ * 「变更前确认」以为改动前会问，而首轮 run 实际按那一档以外的档跑
+ * （典型是 AI 审查/完全访问：设计上就不弹卡），改动静默发生且没有报错线索；
+ * 反过来点一个"已经选中"的项还是空操作，于是"我设置了这个"连请求都没发出去。
+ */
+describe("草稿期默认档 = 全局默认档（kv pi.mode）", () => {
+  const draft = "__LOCALID_draft-global";
+
+  test("读到 kv 后草稿显示那一档，且不发协议请求（不懒建会话）", async () => {
+    reset();
+    kvValue = JSON.stringify({ mode: "agent", approvalLevel: "review" });
+    // 读之前是占位
+    expect(sessionModeSnapshot(draft)).toMatchObject({ mode: "agent", approvalLevel: "ask" });
+    // 选择器挂载/换线程走的正是这条
+    await fetchPlanningState(draft);
+    expect(calls).toHaveLength(0);
+    expect(kvCalls).toEqual(["kv_get"]);
+    expect(sessionModeSnapshot(draft)).toEqual({
+      mode: "agent",
+      approvalLevel: "review",
+      planning: "inactive",
+    });
+  });
+
+  test("set_mode 成功（kv 刚被写掉）后，草稿默认档跟着走", async () => {
+    reset();
+    registry.set(TID, "sess-bound"); // TID 是已绑定会话
+    responder = () => ({
+      type: "mode_changed",
+      mode: "agent",
+      approvalLevel: "auto",
+      planning: "inactive",
+    });
+    await setSessionMode(TID, "agent", "auto");
+    expect(sessionModeSnapshot(draft).approvalLevel).toBe("auto");
+  });
+
+  test("kv 无行 / 值非法 / 非桌面壳：保留 ask 占位（退回改动前的行为）", async () => {
+    reset();
+    await fetchPlanningState(draft);
+    expect(sessionModeSnapshot(draft).approvalLevel).toBe("ask");
+
+    reset();
+    kvValue = JSON.stringify({ mode: "agent", approvalLevel: "yolo" });
+    await fetchPlanningState(draft);
+    expect(sessionModeSnapshot(draft).approvalLevel).toBe("ask");
+
+    reset();
+    desktopShell = false;
+    kvValue = JSON.stringify({ mode: "agent", approvalLevel: "review" });
+    await fetchPlanningState(draft);
+    expect(kvCalls).toHaveLength(0);
+    expect(sessionModeSnapshot(draft).approvalLevel).toBe("ask");
   });
 });

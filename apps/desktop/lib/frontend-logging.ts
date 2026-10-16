@@ -18,7 +18,9 @@ function formatArgs(args: unknown[]): string {
   const parts = args.map((arg) => {
     if (typeof arg === "string") return arg;
     if (arg instanceof Error) {
-      const stack = arg.stack ? ` @ ${arg.stack.split("\n").slice(1, 4).join(" <- ").trim()}` : "";
+      // slice 上限放宽：React 的"Maximum update depth"类错误把组件归因帧
+      //（at XxxComponent）挂在 React 内部帧之后，只留 3 帧等于把唯一线索切掉
+      const stack = arg.stack ? ` @ ${arg.stack.split("\n").slice(1, 24).join(" <- ").trim()}` : "";
       // AggregateError（store 广播多订阅者抛错的聚合形态）内层展开，否则又只剩空壳
       const inner =
         arg instanceof AggregateError && Array.isArray(arg.errors)

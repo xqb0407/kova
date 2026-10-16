@@ -10,6 +10,9 @@
 //   旧行不等截断后快照回程、确认服务端截断后立即在内存移除，与重发压入的
 //   新气泡同一提交帧上新旧互换——否则带图会话快照回程慢，新气泡先上屏、
 //   旧行滞留，视觉顺序颠倒。
+// - 隐藏页面合并刷新改走定时器（2026-10-16 与 desktop 同源修复，见
+//   defaultScheduleNotify）：页面隐藏时 rAF 不跑，整段隐藏期的 message_update
+//   原本会憋到回前台第一帧一次性渲染（切走再切回来就是一次秒级长任务）。
 
 /**
  * Per-thread controller: bridges Pi client events into a snapshot-authoritative
@@ -134,6 +137,13 @@ export interface PiThreadControllerLike {
 }
 
 const defaultScheduleNotify: PiNotificationScheduler = (flush) => {
+  // 隐藏页面 rAF 不跑，继续挂在 rAF 上等于把整段隐藏期间的 message_update
+  // 攒到回前台第一帧一次性渲染（隐藏期可能长达分钟级），首帧因此被顶成秒级
+  // 长任务。退回定时器给合并窗口一个上限：总渲染量不变，只是不再全堆在同一帧。
+  if (typeof document !== "undefined" && document.hidden) {
+    setTimeout(flush, 16);
+    return;
+  }
   if (typeof globalThis.requestAnimationFrame === "function") {
     globalThis.requestAnimationFrame(() => flush());
     return;

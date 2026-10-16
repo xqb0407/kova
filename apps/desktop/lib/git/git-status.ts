@@ -17,6 +17,10 @@ import { whenWorkspacePersisted } from "@/lib/workspace/workspace-store";
  * - 失效时机（MVP 不做文件 watcher，见设计 §3）：
  *   "git-changed" 事件（Rust 写命令回推）、窗口聚焦、agent 运行结束
  *   （pi-transport 调 refreshGitStatus）
+ * - 刷新语义（对齐 VS Code SCM 的体感）：**stale-while-revalidate**——重拉期间
+ *   旧结果继续可见（不再清缓存换 loading 态），新结果回来原地替换；并发触发
+ *   合并不排队（在途撞上只记一次"还脏"，当前这次完成后补拉一次），保证最后一次
+ *   写命令的状态最终可见，且勾选一个文件不会引起列表清空重建。
  */
 
 let probe: GitProbe | null = null;
@@ -24,6 +28,8 @@ let probeInflight: Promise<GitProbe> | null = null;
 /** cwd → 状态；缺键 = 未加载，null 值 = 非 git 仓库（或 git 不可用） */
 const cache = new Map<string, GitStatusInfo | null>();
 const loading = new Set<string>();
+/** 在途期间又触发了刷新：当前完成后补拉一次（合并 N 次触发为 1 次尾随） */
+const pendingRefresh = new Set<string>();
 const listeners = new Set<() => void>();
 let version = 0;
 let wired = false;
@@ -55,9 +61,13 @@ export async function ensureGitProbe(): Promise<GitProbe> {
   return probeInflight;
 }
 
-/** 拉取/刷新某 cwd 的 git 状态（在途去重；结果无论新旧都触发订阅） */
+/** 拉取/刷新某 cwd 的 git 状态（在途合并 + 尾随补拉；结果无论新旧都触发订阅） */
 export function refreshGitStatus(cwd: string | null | undefined): void {
-  if (!cwd || !isDesktop() || loading.has(cwd)) return;
+  if (!cwd || !isDesktop()) return;
+  if (loading.has(cwd)) {
+    pendingRefresh.add(cwd);
+    return;
+  }
   loading.add(cwd);
   notify();
   // 先等 workspace 的 kv 写入落库再发查询：Rust 侧 resolve_workspace 用 kv
@@ -77,6 +87,8 @@ export function refreshGitStatus(cwd: string | null | undefined): void {
     .finally(() => {
       loading.delete(cwd);
       notify();
+      // 在途期间被顶掉的触发，完成后再来一次（最后一次写命令的状态最终可见）
+      if (pendingRefresh.delete(cwd)) refreshGitStatus(cwd);
     });
 }
 
@@ -90,6 +102,29 @@ export function onGitChanged(cb: (cwd: string) => void): () => void {
   return () => changedCallbacks.delete(cb);
 }
 
+/**
+ * 回焦时的整批重拉：排到空闲再跑。
+ *
+ * 回焦那一帧本来就要做合并触发的渲染与布局（见 pi-runtime 的合并刷新），
+ * 每个缓存 cwd 各发一次 git status（主进程 spawn + IPC + 结果回包各 bump 一次
+ * 订阅）挤进同一帧只会把首帧顶成一次长任务。语义不变——每个缓存 cwd 仍会
+ * 重拉一遍，只是晚一两帧到。
+ */
+function refreshAllCachedWhenIdle(): void {
+  const run = () => {
+    for (const cwd of [...cache.keys()]) {
+      // 不清缓存：旧结果继续可见（SWR），刷新完成原地替换
+      refreshGitStatus(cwd);
+      for (const cb of changedCallbacks) cb(cwd);
+    }
+  };
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(run, { timeout: 1500 });
+    return;
+  }
+  setTimeout(run, 200);
+}
+
 async function wireEvents(): Promise<void> {
   if (wired || typeof window === "undefined") return;
   wired = true;
@@ -97,7 +132,7 @@ async function wireEvents(): Promise<void> {
     try {
       await listen<{ cwd: string }>("git-changed", (event) => {
         const cwd = event.payload?.cwd;
-        cache.delete(cwd);
+        // 不清缓存：panel 勾选暂存这类自触发回声不再造成"列表清空重建"
         refreshGitStatus(cwd);
         for (const cb of changedCallbacks) cb(cwd);
       });
@@ -105,13 +140,7 @@ async function wireEvents(): Promise<void> {
       // 事件不可用不影响功能（聚焦刷新仍在）
     }
   }
-  window.addEventListener("focus", () => {
-    for (const cwd of [...cache.keys()]) {
-      cache.delete(cwd);
-      refreshGitStatus(cwd);
-      for (const cb of changedCallbacks) cb(cwd);
-    }
-  });
+  window.addEventListener("focus", refreshAllCachedWhenIdle);
 }
 
 export type GitView = {

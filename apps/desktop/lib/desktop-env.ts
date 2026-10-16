@@ -8,10 +8,9 @@
  * 检测当前是否在桌面壳（Electron）中运行
  */
 export const isDesktop = (): boolean => {
-  return (
-    typeof window !== "undefined" &&
-    ("__KOVA_DESKTOP__" in window || "__KOVA_DESKTOP__" in window)
-  );
+  // Electron 壳的 preload 注入 __KOVA_DESKTOP__ 标记（Tauri 版曾有两个标记，
+  // 移植时抄成了同一个导致重复判断——保留单次判定即可，语义不变）
+  return typeof window !== "undefined" && "__KOVA_DESKTOP__" in window;
 };
 
 /**
