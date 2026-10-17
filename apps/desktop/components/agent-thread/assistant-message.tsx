@@ -6,6 +6,7 @@ import { DotMatrix } from "@/components/ui/dot-matrix";
 import { MessageTiming } from "@/components/assistant-ui/elements/message-timing.aui";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
 import { QuestionToolRow } from "./question-tool-row";
+import { PlanExitToolRow } from "./plan-exit-tool-row";
 import { AGENT_TOOL_UI } from "@/components/assistant-ui/elements/tool-row.aui";
 import {
   ToolGroupContent,
@@ -577,8 +578,10 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
               case "reasoning":
                 return <Reasoning {...part} />;
               case "tool-call": {
-                // todo 不渲染；Question 已答以折叠条目留痕（提问中归 composer 卡片）
+                // todo 不渲染；Question 已答以折叠条目留痕（提问中归 composer 卡片）；
+                // plan_exit 结束后同样留痕：批准 / 拒绝理由 / 未填理由停止
                 if (part.toolName === "Question") return <QuestionToolRow {...part} />;
+                if (part.toolName === "plan_exit") return <PlanExitToolRow {...part} />;
                 if (HIDDEN_TOOL_NAMES.has(part.toolName)) return null;
                 // 内置四类工具走扁平行（点开面板）；其余保留注册 UI / 回退卡
                 const Row = AGENT_TOOL_UI[part.toolName];

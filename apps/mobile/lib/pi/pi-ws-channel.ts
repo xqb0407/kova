@@ -23,6 +23,10 @@ import type { PiResponse } from "@/lib/pi/pi-bridge";
  *
  * auth 完成前的消息先入队，authed 后统一发出（防 unauthorized 竞态）。
  *
+ * prompt 投递确认：prompt 帧进入 outbox 台账，收到任意同 id 回帧（网关
+ * accepted / start / queue 快照 / finish）即出账；断线重连后把未出账的
+ * prompt 原样重发。网关按 requestId 幂等去重，重发不会重复执行。
+ *
  * 重连策略（移动端与浏览器不同，必须假设网络会被随时打断）：后台指数退避
  * 重连（3s 起、倍增至 30s 封顶、带抖动），authed 即清零；App 回前台时
  * reconnectNow() 立即重试一次不等退避。网关侧没有应用层心跳、也没有 authed
@@ -44,6 +48,13 @@ const MAX_RECONNECT_ATTEMPTS = 8;
 const KEEPALIVE_MS = 25_000;
 /** 单轮 ping→pong 的等待上限：超时即判半开，杀掉这条连接走退避重连 */
 const PING_TIMEOUT_MS = 8_000;
+/** 未送达 prompt 台账上限：断线期间最多攒这么多条，超出按发送失败交给调用方 */
+const PROMPT_OUTBOX_LIMIT = 64;
+
+/** prompt outbox 条目：line 是原始出站帧（重发幂等依赖同一 requestId）；
+ *  delivered 区分「已进过 socket」与「断线期间还没发出去」——收尾清理只动
+ *  前者，离线攒下的消息必须留到重连补发。 */
+type PromptOutboxEntry = { line: string; threadId: string; delivered: boolean };
 
 export class WsPiChannel implements PiChannel {
   readonly kind = "ws" as const;
@@ -51,6 +62,8 @@ export class WsPiChannel implements PiChannel {
   private ws: WebSocket | null = null;
   private ready = false;
   private closedByUser = false;
+  /** 网关支持 accepted 幂等去重（authed 帧声明）；老网关不重发已投递项 */
+  private dedupSupported = false;
   /** 连续失败次数（authed 清零），驱动指数退避 */
   private attempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -59,6 +72,8 @@ export class WsPiChannel implements PiChannel {
   private seq = 0;
   /** auth 完成前的出站缓冲 */
   private queue: string[] = [];
+  /** 未确认送达的 prompt（requestId → 原始帧）。任何同 id 回帧即出账 */
+  private promptOutbox = new Map<string, PromptOutboxEntry>();
   private pending = new Map<
     string,
     {
@@ -164,7 +179,8 @@ export class WsPiChannel implements PiChannel {
    *  表现为「发送没反应」。ping 超时即杀链重连。 */
   reconnectNow() {
     this.attempt = 0;
-    if (this.closedByUser) return;
+    // 显式重试视作新意图：清掉 closedByUser（auth 失败/网关关闭后的手动重试）
+    this.closedByUser = false;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.probeAlive();
       return;
@@ -226,15 +242,23 @@ export class WsPiChannel implements PiChannel {
       return;
     }
     const type = v.type as string | undefined;
+    const id = typeof v.id === "string" ? v.id : undefined;
+    // 任意同 id 回帧 = prompt 已到达 sidecar（网关 accepted / 流式 chunk /
+    // 队列快照 / finish 都会带原 requestId）。出账后不再重发。
+    if (id) this.promptOutbox.delete(id);
 
     if (type === "authed") {
       this.ready = true;
+      // 老网关不带 accepted：只补发从未出站的 prompt，已投递的不重发（无去重）
+      this.dedupSupported = v.accepted === true;
       // 连通即视为网络恢复：退避计数归零，下次断开从 3s 重新起算
       this.attempt = 0;
       this.startKeepalive();
       const queue = this.queue;
       this.queue = [];
       for (const line of queue) this.ws?.send(line);
+      // 断线期间未确认的 prompt 重发；网关按 requestId 幂等去重，不会重复执行
+      this.flushOutbox();
       this.emitStatus({ connected: true });
       // 重连成功：运行投影经 (null,false) 清空并按 list_running 重新水合
       for (const cb of this.turnCbs) cb(null, false);
@@ -250,7 +274,17 @@ export class WsPiChannel implements PiChannel {
     if (type === "turn_changed") {
       const sessionId = typeof v.sessionId === "string" ? v.sessionId : null;
       if (sessionId) {
+        if (v.active === false) this.dropOutboxForThread(sessionId);
         for (const cb of this.turnCbs) cb(sessionId, v.active === true);
+      }
+      return;
+    }
+    // thread_event：会话收尾即清 outbox（该线程此前收到的 prompt 已进入处理
+    // 流程，未出账的重发没有意义）；其余事件交给原始行观察者
+    if (type === "thread_event") {
+      const event = v.event as { type?: unknown } | undefined;
+      if (event?.type === "agent_end" && typeof v.sessionId === "string") {
+        this.dropOutboxForThread(v.sessionId);
       }
       return;
     }
@@ -304,6 +338,7 @@ export class WsPiChannel implements PiChannel {
       if (!this.ready) {
         // 认证不通过，重连无意义
         this.closedByUser = true;
+        this.promptOutbox.clear();
         this.ws?.close();
       }
       return;
@@ -311,11 +346,10 @@ export class WsPiChannel implements PiChannel {
 
     if (type === "closed") {
       this.closedByUser = true;
+      this.promptOutbox.clear();
       this.ws?.close();
       return;
     }
-
-    const id = typeof v.id === "string" ? v.id : undefined;
 
     // 管理类响应：带 id 的一次性请求-响应。prompt chunk 帧（{id, chunk}）
     // 无 pending 配对，在此自然落空返回——实时流由 PiClientBase 经
@@ -343,6 +377,33 @@ export class WsPiChannel implements PiChannel {
     return false;
   }
 
+  /** 重连后补发台账里的 prompt；单条发送失败留在台账等下一轮。
+   *  已投递过的条目只在网关声明支持 accepted 幂等去重时重发——老网关没有
+   *  去重能力，重发会把同一条消息执行两遍。 */
+  private flushOutbox() {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    for (const [requestId, entry] of this.promptOutbox) {
+      if (entry.delivered && !this.dedupSupported) {
+        this.promptOutbox.delete(requestId);
+        continue;
+      }
+      try {
+        ws.send(entry.line);
+        entry.delivered = true;
+      } catch {
+        /* 留在台账，下一次重连再试 */
+      }
+    }
+  }
+
+  /** 收尾清理：只摘已投递过的条目；断线期间还没发出去的必须留到重连补发 */
+  private dropOutboxForThread(threadId: string) {
+    for (const [id, entry] of this.promptOutbox) {
+      if (entry.threadId === threadId && entry.delivered) this.promptOutbox.delete(id);
+    }
+  }
+
   request(
     payload: Record<string, unknown>,
     timeoutMs = 15000,
@@ -354,7 +415,12 @@ export class WsPiChannel implements PiChannel {
         reject(new Error("pi-agent request timed out"));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      this.sendRaw({ ...payload, id });
+      // 无连接时快速失败：此前只挂 15s 定时器再超时，界面操作白等一轮
+      if (!this.sendRaw({ ...payload, id })) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(new Error("not connected"));
+      }
     });
   }
 
@@ -423,6 +489,8 @@ export class WsPiChannel implements PiChannel {
     this.closedByUser = true;
     this.stopKeepalive();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.promptOutbox.clear();
     this.ws?.close();
     this.ws = null;
     this.emitStatus({ connected: false });
@@ -458,7 +526,8 @@ export class WsPiChannel implements PiChannel {
   }
 
   /** 发起 prompt（fire-and-forget，chunk 行按 id 回流）。
-   *  返回 false = 无连接且未入队（调用方按发送失败处理） */
+   *  返回 false = 通道已关闭/台账已满（调用方按发送失败处理）。
+   *  断线中返回 true：帧进 outbox，重连 authed 后自动补发。 */
   sendPromptFrame(args: {
     requestId: string;
     text: string;
@@ -467,7 +536,9 @@ export class WsPiChannel implements PiChannel {
     attachments: import("@/lib/pi/pi-channel").PiPromptAttachment[] | null;
     steer: boolean;
   }): boolean {
-    return this.sendRaw({
+    if (this.closedByUser) return false;
+    if (this.promptOutbox.size >= PROMPT_OUTBOX_LIMIT) return false;
+    const line = JSON.stringify({
       type: "prompt",
       id: args.requestId,
       text: args.text,
@@ -480,5 +551,24 @@ export class WsPiChannel implements PiChannel {
       // 并入当前轮（steer）：sidecar 忙线程注入活跃轮
       steer: args.steer === true,
     });
+    const entry: PromptOutboxEntry = {
+      line,
+      threadId: args.threadId,
+      delivered: false,
+    };
+    this.promptOutbox.set(args.requestId, entry);
+    if (this.ready && this.ws?.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(line);
+        entry.delivered = true;
+      } catch {
+        // 同步写失败（连接正在关）：撤回台账，按发送失败交给调用方，
+        // 避免 UI 已报错、重连后又把同一条消息补发出去
+        this.promptOutbox.delete(args.requestId);
+        return false;
+      }
+    }
+    // 未就绪时留在台账里：authed 后统一补发（含已发未确认的重发）
+    return true;
   }
 }

@@ -857,15 +857,16 @@ describe("approvalBeforeToolCall", () => {
     expect(run.pendingToolApprovals.size).toBe(0);
   });
 
-  test("拒绝后返回 block 结果", async () => {
+  test("拒绝后返回 block 结果；带理由时把理由带回模型", async () => {
     const run = makeRun("agent");
     const hook = approvalBeforeToolCall(run, ctx("bash"));
     await Bun.sleep(0);
     const [approvalId] = [...run.pendingToolApprovals.keys()];
-    resolveToolApproval(run, approvalId, false);
+    resolveToolApproval(run, approvalId, false, false, "先别动这个文件");
     const res = await hook;
     expect(res?.block).toBe(true);
     expect(res?.reason).toContain("rejected");
+    expect(res?.reason).toContain("先别动这个文件");
   });
 
   test("workspace-write：工作区内的 write/edit 免确认", async () => {
@@ -1093,7 +1094,7 @@ describe("plan_exit HITL", () => {
     }
   });
 
-  test("用户点拒绝（tool_confirm approved=false）：删计划文件 + abort 终止本轮，留在 plan", async () => {
+  test("用户拒绝并填写理由：留在 plan、不 abort、保留计划文件，理由回传给模型要求修订", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kova-plan-test-"));
     try {
       const run = makeRun("plan");
@@ -1111,17 +1112,53 @@ describe("plan_exit HITL", () => {
       const pending = exit.execute!("tc_e", { rationale: "r" } as never);
       await waitPending(run);
       const [approvalId] = [...run.pendingToolApprovals.keys()];
-      resolveToolApproval(run, approvalId!, false); // 审批卡上点「拒绝并停止」
+      const feedback = "第 2 步先补测试，暂时不要改 UI";
+      resolveToolApproval(run, approvalId!, false, false, feedback);
 
       const res = await pending;
       expect(run.mode).toBe("plan");
       expect((res as { details?: { approved?: boolean } }).details?.approved).toBe(false);
-      expect(toolResultText(res)).toContain("rejected");
+      // 拒绝理由原样回传，并要求修订后再次申请——本轮不停
+      expect(toolResultText(res)).toContain(feedback);
+      expect(toolResultText(res)).toContain("Revise the plan");
+      expect(aborted).toBe(false);
+      // 计划保留：路径不重置、磁盘文件还在（plan_write 后续覆盖同一文件）
+      expect(run.planFilePath).toBe(planPath);
+      expect(await readFile(planPath, "utf8")).toContain("M");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("用户拒绝但不填理由：按停止处理（abort），计划文件保留、路径不重置", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kova-plan-test-"));
+    try {
+      const run = makeRun("plan");
+      run.cwd = dir;
+      let aborted = false;
+      (run.agent as { abort?: () => void }).abort = () => {
+        aborted = true;
+      };
+      const tools = toolsForMode(run);
+      const write = tools.find((t) => t.name === PLAN_TOOL_NAMES.write)!;
+      await write.execute!("tc_w", { title: "T", markdown: "M" } as never);
+
+      const exit = tools.find((t) => t.name === PLAN_TOOL_NAMES.exit)!;
+      const planPath = run.planFilePath!;
+      const pending = exit.execute!("tc_e", { rationale: "r" } as never);
+      await waitPending(run);
+      const [approvalId] = [...run.pendingToolApprovals.keys()];
+      resolveToolApproval(run, approvalId!, false); // 直接拒绝（无理由）
+
+      const res = await pending;
+      expect(run.mode).toBe("plan");
+      expect((res as { details?: { approved?: boolean } }).details?.approved).toBe(false);
+      expect(toolResultText(res)).toContain("without feedback");
+      expect(toolResultText(res)).toContain("stopping");
       expect(aborted).toBe(true);
-      // 计划作废：磁盘文件删除、路径重置（后续 plan_write 重新定名）
-      expect(run.planFilePath).toBeUndefined();
-      expect(run.planTitle).toBeUndefined();
-      await expect(readFile(planPath, "utf8")).rejects.toThrow();
+      // 停止不是作废：计划文件与路径都保留，下一轮还能接着改
+      expect(run.planFilePath).toBe(planPath);
+      expect(await readFile(planPath, "utf8")).toContain("M");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

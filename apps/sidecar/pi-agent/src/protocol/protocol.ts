@@ -277,11 +277,14 @@
  *       mode = agent | plan；切换会热替换工具集与系统提示词
  *   { "type": "get_planning_state", "id", "threadId", "sessionId"? }     → { id, type: "planning_state", mode, planning }
  *       拉取当前模式快照（前端刷新/切线程后恢复模式选择器用）
- *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved", "remember"? }
+ *   { "type": "tool_confirm", "id", "threadId", "sessionId"?, "approvalId", "approved", "remember"?, "reason"? }
  *     → { id, type: "tool_confirmed", approvalId }
  *     remember = 用户点的是「允许并记住」：把这次要写的目录写进本机可写根清单
  *     （<cwd>/.kova/permissions.local.json），之后该目录不再询问。只对带可写根
  *     上下文的审批有意义（workspace-write 档的 write/edit），其余忽略。
+ *     reason = 拒绝时填写的修改意见（trim 后截断 4000 字符）。plan_exit 用它区分
+ *     两条拒绝路径：有意见 = 留在 plan 同轮修订后再次申请（不 abort）；
+ *     无意见 = 按停止处理（abort 本轮，计划文件保留）。
  *       结算逐工具审批（bash/write/edit 执行前）与 plan_exit 的模式退出确认
  *       （prompt 流内 data-toolApproval chunk 发起）
  *   { "type": "question_answer", "id", "threadId", "questionId", "answers": [{ questionId, selectedIds, otherText?, skipped? }] } → { id, type: "question_answered", questionId }

@@ -140,6 +140,62 @@ describe("历史回放与权威快照", () => {
     toolConfirmResolve?.();
     await p;
   });
+
+  test("tool_confirm 拒绝理由：仅在拒绝且非空时携带，批准/空理由保持旧线形", async () => {
+    piSessionRegistry.set(T, "sess-9");
+
+    // 拒绝 + 理由：trim 后作为加性字段下发
+    const withReason = store.confirmToolApproval(
+      T,
+      "a8",
+      false,
+      false,
+      "  第 2 步先补测试  ",
+    );
+    expect(seenRequests.at(-1)).toEqual({
+      type: "tool_confirm",
+      approvalId: "a8",
+      interactionId: "a8",
+      approved: false,
+      reason: "第 2 步先补测试",
+      threadId: T,
+      sessionId: "sess-9",
+    });
+    toolConfirmResolve?.();
+    await withReason;
+
+    // 拒绝但空理由：不带 reason 字段（sidecar 走停止分支）
+    const emptyReason = store.confirmToolApproval(T, "a9", false, false, "   ");
+    expect(seenRequests.at(-1)).toEqual({
+      type: "tool_confirm",
+      approvalId: "a9",
+      interactionId: "a9",
+      approved: false,
+      threadId: T,
+      sessionId: "sess-9",
+    });
+    toolConfirmResolve?.();
+    await emptyReason;
+
+    // 批准：即使调用方传了理由也不带（理由只属于拒绝路径）
+    const approvedWithReason = store.confirmToolApproval(
+      T,
+      "a10",
+      true,
+      false,
+      "不应发送",
+    );
+    expect(seenRequests.at(-1)).toEqual({
+      type: "tool_confirm",
+      approvalId: "a10",
+      interactionId: "a10",
+      approved: true,
+      threadId: T,
+      sessionId: "sess-9",
+    });
+    toolConfirmResolve?.();
+    await approvedWithReason;
+  });
 });
 
 describe("结算广播收口（data-interactionResolved 的重放防复活）", () => {

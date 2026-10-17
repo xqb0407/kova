@@ -318,8 +318,9 @@ export type PendingToolApproval = {
   toolCallId: string;
   toolName: string;
   input: unknown;
-  /** remember = 用户点的是「允许并记住」（只有带可写根上下文的审批才有意义） */
-  resolve: (outcome: { approved: boolean; remember: boolean }) => void;
+  /** remember = 用户点的是「允许并记住」（只有带可写根上下文的审批才有意义）；
+   *  reason = 拒绝时用户填写的修改意见（plan_exit 用它区分「修订」与「停止」） */
+  resolve: (outcome: { approved: boolean; remember: boolean; reason?: string }) => void;
   /** 结算来源：confirm = 用户点了批准/拒绝；clear = Stop/新 prompt 兜底清理 */
   settledBy?: "confirm" | "clear";
   /**

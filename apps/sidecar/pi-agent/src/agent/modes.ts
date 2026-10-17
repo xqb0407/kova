@@ -7,7 +7,8 @@
  * - plan_enter：agent → plan，热换 systemPrompt/tools，立即推 planningState 让 UI 跟随
  * - plan_write：把计划 Markdown 写进当前会话计划文件（首写定名，之后整体覆盖；可与其他工具并批）
  * - plan_exit：HITL 退出——execute 内挂起等待用户批准（批准=回 agent 模式同一轮直接实施；
- *   拒绝=留在 plan 修改后再次申请）。模式级门控：不受 approvalLevel 影响，"完全访问"也要确认
+ *   拒绝=留在 plan，有修改意见则同轮修订后再次申请，无意见则停止本轮）。模式级门控：
+ *   不受 approvalLevel 影响，"完全访问"也要确认
  *
  * 规则：
  * - plan_enter / plan_exit 必须独占 assistant 消息的 tool call 批次（beforeToolCall 拦截）
@@ -16,14 +17,16 @@
  *   beforeToolCall 捕获的活循环上下文（run.loopContext），轮中切换本轮立即生效
  * - plan 模式只读是代码保证：write/edit 在 beforeToolCall 一律拦截（不依赖工具表
  *   新鲜度），计划文件只能由 plan_write 写到系统定好的路径，无需逐工具审批
- * - plan_exit：批准 = 回 agent 同轮实施；用户显式拒绝 = 删除计划文件 + abort 终止
- *   本轮；Stop/新 prompt 清理（settledBy=clear）= 按拒绝结算，文件保留、不额外 abort
+ * - plan_exit：批准 = 回 agent 同轮实施；用户拒绝且带修改意见 = 留在 plan 修订后
+ *   再次申请（计划文件保留、本轮继续）；拒绝但不填意见 = 按停止处理（abort 本轮，
+ *   计划文件保留）；Stop/新 prompt 清理（settledBy=clear）= 按拒绝结算，文件保留、
+ *   不额外 abort
  *
  * 计划文件持久化：首写落盘 `<cwd>/.kova/plans/plan-<标题>-<sessionId>-<时间>.md`
  * （选中了工作区 → <工作区>/.kova/plans/；未选 → run.cwd 兜底为用户主目录）。
  * 下一轮 plan_enter 重开时路径重置（新文件）；批准后路径保留，实施阶段可回读。
  */
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
@@ -165,7 +168,7 @@ const ASK_MODE_MUTATING_TOOLS = new Set(["write", "edit", "bash"]);
 const PLAN_MODE_PROMPT = [
   "You are operating in Plan mode. The deliverable of this mode is the session plan file, not a chat answer: research with the read-only tools, then call plan_write with the complete implementation plan in Markdown (written in the user's language), then call plan_exit to request approval.",
   "Project files cannot be modified in Plan mode — write/edit are blocked by the system, and plan_write stores the plan at a system-chosen path (you never pass a file path).",
-  "If the user approves plan_exit, you are back in Agent mode — start implementing immediately. If rejected, this turn stops.",
+  "If the user approves plan_exit, you are back in Agent mode — start implementing immediately. If the user rejects it with written feedback, stay in Plan mode: revise the plan with plan_write to address that feedback, then call plan_exit again. Never call plan_exit again without revising the plan. If the user dismisses it without feedback, this turn stops; do not continue working.",
 ].join("\n");
 
 const AGENT_MODE_PROMPT =
@@ -464,7 +467,7 @@ function buildPlanTools(run: Running): AgentTool[] {
     name: PLAN_TOOL_NAMES.exit,
     label: "Exit Plan Mode",
     description:
-      "Request switching back to Agent mode to implement the plan: presents the plan for user approval (HITL) and waits inline. If approved, this session returns to Agent mode — start implementing immediately. If rejected, this turn stops (the session stays in Plan mode for a follow-up message). Must be the only tool call in your message and plan_write must have been called first.",
+      "Request switching back to Agent mode to implement the plan: presents the plan for user approval (HITL) and waits inline. If approved, this session returns to Agent mode — start implementing immediately. If the user rejects it with written feedback, stay in Plan mode and revise the plan with plan_write to address that feedback, then call plan_exit again — never re-request approval without revising the plan first. If the user dismisses it without feedback, this turn stops (the session stays in Plan mode for a follow-up message). Must be the only tool call in your message and plan_write must have been called first.",
     parameters: Type.Object({
       rationale: Type.String({
         description: "Why this plan is ready for approval (short summary shown to the user)",
@@ -511,7 +514,7 @@ function buildPlanTools(run: Running): AgentTool[] {
         run.sessionId,
       );
       // plan_exit 没有「记住」可言（计划审批不是路径授权），第三个按钮不出现在这张卡上
-      const approval = new Promise<{ approved: boolean }>((resolve) => {
+      const approval = new Promise<{ approved: boolean; reason?: string }>((resolve) => {
         run.pendingToolApprovals.set(approvalId, {
           toolCallId,
           toolName: PLAN_TOOL_NAMES.exit,
@@ -520,22 +523,30 @@ function buildPlanTools(run: Running): AgentTool[] {
         });
       });
       const entry = run.pendingToolApprovals.get(approvalId)!;
-      const { approved } = await approval;
+      const { approved, reason } = await approval;
       if (!approved) {
         const explicit = entry.settledBy === "confirm";
+        const feedback = typeof reason === "string" ? reason.trim() : "";
+        if (explicit && feedback) {
+          // 用户拒绝并留下修改意见：本轮不停止，计划保留，模型按意见修订后
+          // 再次 plan_exit。这里不能 abort——abort 会把「继续说」也一起掐掉
+          return textResult(
+            `User rejected the plan with this feedback:\n${feedback}\n\nRevise the plan file with plan_write to address the feedback, then call plan_exit again for approval. Stay in Plan mode; do not implement anything yet.`,
+            { approved: false },
+          );
+        }
         if (explicit) {
-          // 用户点「拒绝并停止」：计划作废——删掉计划文件并重置路径（后续
-          // plan_write 会重新定名），等同 Stop 终止本轮。
-          // Stop/新 prompt 的清理（clear）不删：只是打断，计划仍是半成品可续改。
-          await rm(run.planFilePath, { force: true }).catch(() => {});
-          run.planFilePath = undefined;
-          run.planTitle = undefined;
+          // 拒绝但没留意见：按停止处理（等价于 composer 的 Stop）。计划文件
+          // 保留——用户可能只是想先停下，下一轮还能接着改；只有 plan_enter
+          // 开新一轮时才重置路径
           run.agent.abort();
+          return textResult(
+            "User dismissed the plan approval without feedback. This turn is stopping; the session stays in Plan mode. The plan file is kept for revision. Do not continue working.",
+            { approved: false },
+          );
         }
         return textResult(
-          explicit
-            ? "User rejected the plan. The plan file was discarded. This turn is stopping; the session stays in Plan mode. Do not continue working."
-            : "Plan approval was cleared (user stopped or sent a new request). Stay in Plan mode; the plan file is kept for revision.",
+          "Plan approval was cleared (user stopped or sent a new request). Stay in Plan mode; the plan file is kept for revision.",
           { approved: false },
         );
       }
@@ -928,9 +939,10 @@ export async function gateToolCall(
     run.sessionId,
   );
   // 三个按钮：拒绝 / 允许 / 允许并记住。前两者只影响这一次，第三个才会落清单
-  const { approved, remember } = await new Promise<{
+  const { approved, remember, reason } = await new Promise<{
     approved: boolean;
     remember: boolean;
+    reason?: string;
   }>((resolve) => {
     run.pendingToolApprovals.set(approvalId, {
       toolCallId: context.toolCall.id,
@@ -943,9 +955,12 @@ export async function gateToolCall(
     });
   });
   if (!approved) {
+    const feedback = typeof reason === "string" ? reason.trim() : "";
     return {
       block: true,
-      reason: "User rejected this tool call. Ask how to proceed or adjust the approach.",
+      reason: feedback
+        ? `User rejected this tool call with feedback: ${feedback} Ask how to proceed or adjust the approach.`
+        : "User rejected this tool call. Ask how to proceed or adjust the approach.",
     };
   }
   // 记在「同意之后」：拒绝或单纯允许都不该在盘上留下任何东西。
@@ -963,20 +978,26 @@ export async function gateToolCall(
 
 /**
  * 结算一条挂起审批（protocol 的 tool_confirm 调用）；返回是否存在。
- * remember = 用户点的是「允许并记住」（只对带可写根上下文的审批有意义）。
+ * remember = 用户点的是「允许并记住」（只对带可写根上下文的审批有意义）；
+ * reason = 拒绝时填写的修改意见（plan_exit 用它区分「同轮修订」与「停止」）。
  */
 export function resolveToolApproval(
   run: Running,
   approvalId: string,
   approved: boolean,
   remember = false,
+  reason?: string,
 ): boolean {
   const pending = run.pendingToolApprovals.get(approvalId);
   if (!pending) return false;
   run.pendingToolApprovals.delete(approvalId);
   settleInteraction(approvalId, approved ? "approved" : "denied");
   pending.settledBy = "confirm";
-  pending.resolve({ approved, remember: approved && remember });
+  pending.resolve({
+    approved,
+    remember: approved && remember,
+    ...(typeof reason === "string" && reason.trim() ? { reason: reason.trim() } : {}),
+  });
   return true;
 }
 
