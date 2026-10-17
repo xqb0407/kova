@@ -109,7 +109,7 @@ import { Kbd, KbdGroup } from "../ui/kbd";
 /** 侧边栏宽度拖拽调节的持久化键（存 px 整数；无值 = 默认 16.25rem 栏宽，
  *  rem 基准跟随全局字号缩放，拖过之后按用户选定的 px 固定）与上下限 */
 const RAIL_WIDTH_KEY = "ui.sidebar-width";
-const RAIL_MIN_WIDTH = 180;
+const RAIL_MIN_WIDTH = 260;
 const RAIL_MAX_WIDTH = 420;
 
 type CloneThreadShellProps = {
@@ -302,6 +302,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   // 会话树重渲染一遍；逐帧重排与拖右侧 panel/缩放窗口同量级。宽度过渡临时
   // 置 0、悬停线加粗用 classList 直挂，松手一并交还类/状态。
   const asideRef = useRef<HTMLElement>(null);
+  // 内层内容列：拖拽期间冻结为起始宽度（只裁切外层 aside），避免每帧重排
+  // 内容——会话行里的 MarqueeTitle 挂着 ResizeObserver，逐帧宽度变化会触发
+  // 每行「读布局 + setState」，这是拖动卡顿的主因（参考 monocode 的轻侧栏）
+  const railInnerRef = useRef<HTMLDivElement>(null);
   const railLineRef = useRef<HTMLDivElement>(null);
   const [railW, setRailW] = useState<number | null>(null);
   const railDragRef = useRef<{
@@ -312,8 +316,12 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   } | null>(null);
   useEffect(() => {
     const n = Number(window.localStorage.getItem(RAIL_WIDTH_KEY));
-    if (Number.isFinite(n) && n >= RAIL_MIN_WIDTH && n <= RAIL_MAX_WIDTH)
-      setRailW(n);
+    // 旧版本允许拖到 180px：恢复时按新下限钳制，而不是丢弃用户偏好
+    if (Number.isFinite(n) && n > 0) {
+      setRailW(
+        Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(n))),
+      );
+    }
   }, []);
   const railClamp = (n: number) =>
     Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(n)));
@@ -322,10 +330,11 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     const aside = asideRef.current;
     if (!drag || !aside) return;
     drag.frame = null;
-    aside.style.setProperty(
-      "--rail-w",
-      `${railClamp(drag.startW + drag.lastX - drag.startX)}px`,
-    );
+    const px = railClamp(drag.startW + drag.lastX - drag.startX);
+    // 外层走变量（aside 是唯一消费者）；内容列直接写 px 实时跟手——
+    // 相比原来三处共享变量，避免了整棵侧栏子树的样式失效
+    aside.style.setProperty("--rail-w", `${px}px`);
+    railInnerRef.current?.style.setProperty("width", `${px}px`);
   };
   const onRailHandleDown = (event: PointerEvent<HTMLDivElement>) => {
     const aside = asideRef.current;
@@ -340,12 +349,14 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       frame: null,
     };
     aside.style.transitionDuration = "0s";
-    // 钉住当前渲染宽为内联变量起点（未拖过时类宽走 rem fallback，与测量
-    // 值一致），此后每帧只更新这一个变量，三处栏宽联动实时跟手
+    aside.style.willChange = "width";
+    // 钉住当前渲染宽为内联起点（未拖过时类宽走 rem fallback，与测量值一致）
     aside.style.setProperty("--rail-w", `${startW}px`);
+    const inner = railInnerRef.current;
+    if (inner) inner.style.width = `${inner.offsetWidth}px`;
+    // 拖动期间全站统一 col-resize、禁选中（monocodes 同款）
+    document.documentElement.classList.add("is-resizing");
     railLineRef.current?.classList.add("w-0.5", "opacity-100");
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
   };
   const onRailHandleMove = (event: PointerEvent<HTMLDivElement>) => {
     const drag = railDragRef.current;
@@ -366,10 +377,16 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     if (aside) {
       aside.style.setProperty("--rail-w", `${finalW}px`);
       aside.style.transitionDuration = "";
+      aside.style.willChange = "";
     }
+    // 一次落位：内容宽度切到最终值
+    railInnerRef.current?.style.setProperty("width", `${finalW}px`);
     railLineRef.current?.classList.remove("w-0.5", "opacity-100");
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
+    document.documentElement.classList.remove("is-resizing");
+    // 拖拽结束补测：行内 ResizeObserver 在拖拽期间被跳过，这里通知一次
+    requestAnimationFrame(() =>
+      window.dispatchEvent(new Event("rail-resize-end")),
+    );
     try {
       event.currentTarget.releasePointerCapture(event.pointerId);
     } catch {}
@@ -380,6 +397,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   };
   const onRailHandleDoubleClick = () => {
     asideRef.current?.style.removeProperty("--rail-w");
+    railInnerRef.current?.style.removeProperty("width");
     setRailW(null);
     try {
       window.localStorage.removeItem(RAIL_WIDTH_KEY);
@@ -456,6 +474,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         )}
       >
         <div
+          ref={railInnerRef}
           className={cn(
             "flex h-full w-[var(--rail-w,18.25rem)] shrink-0 flex-col",
             "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
@@ -713,7 +732,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
             // 整个 aside 列、把上方 tabs 行顶上去——溢出滚动必须锁在本容器内。
             // 恒为整栏宽：折叠动画期间列表不参与重排（外层整列 transform 出屏）
-            "relative min-h-0 w-[var(--rail-w,16.25rem)] flex-1 overflow-y-auto p-3",
+            // w-full 跟随内层（内层才是宽度所有者）：拖拽期间内层宽度被冻结，
+            // 列表就不会逐帧重排，行内 ResizeObserver 也不再每帧回调
+            "relative min-h-0 w-full flex-1 overflow-y-auto p-3",
           )}
         >
           {activeTab === "tasks" && hasThreads && (
