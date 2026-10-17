@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { initPaths, appDataDir } from "./paths";
 import { initLogging, logError, logInfo, logWarn } from "./logging";
+import { installCrashGuard } from "./crash";
 import { setupIpc, focusMainWindow } from "./ipc";
 import { registerAllCommands } from "./registry";
 import { initStore } from "./store";
@@ -132,6 +133,9 @@ if (!gotLock) {
   app.on("second-instance", () => focusMainWindow());
 
   initLogging();
+  // 接管 Electron 默认的英文崩溃窗：必须在 initStore/applyPendingRestore
+  // 等可能抛错的启动步骤之前装好（启动期异常在 ready 后走恢复对话框）
+  installCrashGuard();
   startLagWatchdog(); // 尽早开表：启动期同步阻塞（备份换入/存储打开）也要留痕
   applyPendingRestore(); // 待恢复备份换入：必须早于任何存储打开（当前为挂点）
   initStore();

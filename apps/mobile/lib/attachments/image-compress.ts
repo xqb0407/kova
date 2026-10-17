@@ -1,18 +1,19 @@
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import type { ImagePickerAsset } from "expo-image-picker";
-import { PROMPT_IMAGE_MAX_BYTES } from "./prompt-attachments";
+import { PROMPT_IMAGE_INLINE_MAX_BYTES } from "./prompt-attachments";
 
 /**
  * 图片压缩：相机/相册原图动辄 3–12MP、好几 MiB，直接内联进 prompt 会撞
- * 2MiB 单图闸门（协议侧 PROMPT_IMAGE_MAX_BYTES，与 sidecar 同源），手机流量
- * 也吃不消。这里统一「先按长边缩、再按质量压」：
+ * sidecar 的 2MiB 内联闸门（PROMPT_IMAGE_INLINE_MAX_BYTES），手机流量也
+ * 吃不消。这里统一「先按长边缩、再按质量压」：
  *
  *   长边 ≤ 1600、JPEG q0.8 → 还超预算就逐档退（1280/q0.7 → 1024/q0.6 → 800/q0.5）
  *
- * 1600 长边对「给模型看图」足够（模型侧还会再降采样），而 q0.8 的 JPEG 在
- * 手机屏上看不出差别。预算取闸门的 3/4（base64 比原字节大 1/3，留出余量）。
+ * 1600 长边对「给模型看图」足够（模型侧还会按 inputLimits.images.resize
+ * 再归一化），而 q0.8 的 JPEG 在手机屏上看不出差别。预算取闸门的 3/4
+ * （base64 比原字节大 1/3，留出余量）。
  */
-const TARGET_BYTES = Math.floor(PROMPT_IMAGE_MAX_BYTES * 0.75);
+const TARGET_BYTES = Math.floor(PROMPT_IMAGE_INLINE_MAX_BYTES * 0.75);
 const STEPS: readonly { maxEdge: number; quality: number }[] = [
   { maxEdge: 1600, quality: 0.8 },
   { maxEdge: 1280, quality: 0.7 },

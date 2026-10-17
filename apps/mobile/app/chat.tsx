@@ -72,6 +72,7 @@ import {
 } from "@/lib/pi/pi-thread-adapter";
 import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
 import { usePiHistory } from "@/lib/pi/pi-runtime";
+import { releaseGitStatus } from "@/lib/pi/pi-git";
 import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
 import { refreshSessionPrefs } from "@/lib/pi/pi-thread-adapter";
 import {
@@ -348,6 +349,17 @@ function useComposerMeta() {
       }
     });
     return () => setSessionsChangedSync(null);
+  }, [threadId]);
+
+  // 会话关闭（退回列表 / 换线程）时释放 git 快照：快照表是模块级 Map，
+  // 不释放的话访问过的每个会话都会在内存里留一份。
+  useEffect(() => {
+    if (!threadId) return;
+    return () => {
+      // 草稿线程在首条消息发出后才会登记 sessionId，所以到清理时再解析
+      const sessionId = piSessionIdForThread(threadId);
+      if (sessionId) releaseGitStatus(sessionId);
+    };
   }, [threadId]);
 
   const modelLabel = model?.modelId ?? "默认";

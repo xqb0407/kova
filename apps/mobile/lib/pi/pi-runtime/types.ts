@@ -123,6 +123,10 @@ export interface PiToolResultMessage {
    * `details` — `details` is tool-specific metadata (see `PiToolResultDetails`). */
   content: PiToolResultContent[];
   details?: unknown;
+  /** Usage from the tool execution itself (e.g. image generation tokens). */
+  usage?: PiUsage;
+  /** Milliseconds the tool's execute() took; absent for legacy results. */
+  durationMs?: number;
   isError: boolean;
   timestamp: number;
   /** 本地改动（稳定消息 id）：见 PiUserMessage.__seq */
@@ -372,7 +376,8 @@ export type PiThinkingLevel =
   | "low"
   | "medium"
   | "high"
-  | "xhigh";
+  | "xhigh"
+  | "max";
 
 export type PiModelInfo = {
   provider: string;
@@ -571,6 +576,8 @@ export type PiClientEventBody =
       toolCallId: string;
       result: unknown;
       isError: boolean;
+      /** Milliseconds the tool's execute() took (pi-agent-core 1.1+). */
+      durationMs?: number;
     }
   | {
       // 改动（4a）：条目形状从内容字符串升级为 PiQueueEntry（id + 文本），

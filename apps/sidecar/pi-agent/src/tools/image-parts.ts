@@ -8,20 +8,23 @@
  * 闸门也单点在这里：单图 ≤2MiB + 栅格 MIME 白名单。越界的图只得到一行占位文本，
  * 上不了线——护住前端渲染与 Rust 重放缓冲（16MiB/run，见 pi_agent.rs）。
  * 注意投影只加 UI 通道，不改 agent 消息本体（模型上下文语义不动）。
+ *
+ * 2026-10 起"超限即丢"已换成"处理到合规"：图片在 tool_execution_end 先经
+ * image-normalize.ts（Photon：EXIF 摆正 / 缩放 / 转码 / 压到闸门内），这里的
+ * 体积与 MIME 判定降级为最后一道防线——正常路径不会命中；命中只会出现在
+ * 处理器不可用或历史里残留的旧数据上。
  */
 import type { PiImagePartData } from "../types";
+import { normalizeInlineMime } from "./image-mime";
 
 /** part 名：chunk type `data-image`；前端 makeAssistantDataUI("image") 按名认领 */
 export const IMAGE_PART_NAME = "image";
 
 /**
  * 单图原始字节上限（≈2MiB，base64 后约 2.7MiB）。1080p PNG 截图常见 0.5–2MiB；
- * 更大的期望由工具侧出 JPEG/缩放图（文生图工具应按约定控制产出体量）。
+ * 超过这个数的图先由 image-normalize 缩放/转码，处理不了才落到占位行。
  */
 export const IMAGE_INLINE_MAX_BYTES = 2 * 1024 * 1024;
-
-/** 允许投影的栅格格式；svg 整体挡掉（可含外链与可欺骗绘制的 UI，不值得那个面） */
-const IMAGE_MIME_ALLOWED = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 /** 工具结果 content 块（形状按需放宽：只关心 text/image 两类，其余透传占位语义） */
 export type ProjectableContentBlock = {
@@ -43,13 +46,12 @@ export type ProjectedToolResult = {
   images: ProjectedImage[];
 };
 
-/** MIME 归一 + 白名单判定；不合法/不在白名单返回 null（prompt-attachments 共用） */
+/**
+ * MIME 归一 + 白名单判定；不合法/不在白名单返回 null。
+ * 保留旧名给 prompt-attachments/测试用；附件入口另用 processable 口径（含 BMP）。
+ */
 export function normalizeMime(mime: unknown): string | null {
-  if (typeof mime !== "string") return null;
-  const m = mime.trim().toLowerCase();
-  // 部分服务器发 image/jpg（非规范拼写），归一到 jpeg
-  const canon = m === "image/jpg" ? "image/jpeg" : m;
-  return IMAGE_MIME_ALLOWED.has(canon) ? canon : null;
+  return normalizeInlineMime(mime);
 }
 
 const fmtMiB = (bytes: number): string => `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;

@@ -6,7 +6,10 @@
  * 依赖原生能力的部分在 image-materialize.ts（本文件被它 re-export）。
  */
 
-/** 长边上限（pt@3x 的屏宽上限约 1300px，留一点余量） */
+/** 长边上限（pt@3x 的屏宽上限约 1300px，留一点余量）。
+ *  这是本端"展示内存"优化，不是模型输入分辨率：模型侧由 sidecar 的
+ *  image-normalize 按当前模型 inputLimits.images.resize（缺省 2000）处理，
+ *  本端不追模型分辨率以免手机解码位图吃内存。 */
 export const IMAGE_MAX_EDGE = 1600;
 /** base64 字符数上限（≈18MB 二进制）：再大也不值得为展示解码，直接放弃 */
 export const IMAGE_MAX_INPUT_CHARS = 24_000_000;

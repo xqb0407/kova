@@ -202,16 +202,35 @@ describe("threadState", () => {
       content: [{ type: "text", text: "file1\n" }],
     });
 
+    const usage = {
+      input: 10,
+      output: 20,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 30,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
     s = apply(
       s,
       ev({
         type: "tool_execution_end",
         toolCallId: "tc1",
-        result: { content: [{ type: "text", text: "file1\nfile2\n" }] },
+        result: {
+          content: [{ type: "text", text: "file1\nfile2\n" }],
+          usage,
+          structuredContent: { ok: true },
+        },
         isError: false,
+        durationMs: 1234,
       }),
     );
-    expect(s.toolExecutions["tc1"]?.status).toBe("complete");
+    expect(s.toolExecutions["tc1"]).toMatchObject({
+      status: "complete",
+      durationMs: 1234,
+      usage,
+      structuredContent: { ok: true },
+      completedAt: expect.any(Number),
+    });
   });
 
   it("interleaves parallel tool executions independently", () => {

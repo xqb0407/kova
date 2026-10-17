@@ -384,16 +384,21 @@ export function promoteEntry(reqId: string): QueueItem | null {
 /** 并入当前轮：注入回调成功才移除排队项（随后快照广播）；回调返回 false
  *  （无可并入的活跃轮等）项原位保留，返回 false。移除后该项的流由注入方
  *  以 steered 退化生命周期收尾，串行链轮到时队列为空自然让位。 */
-export function steerOutEntry(
+export async function steerOutEntry(
   reqId: string,
-  inject: (entry: QueueItem) => boolean,
-): boolean {
+  inject: (entry: QueueItem) => boolean | Promise<boolean>,
+): Promise<boolean> {
   for (const [threadId, q] of engines) {
     const idx = q.items.findIndex((t) => t.reqId === reqId);
     if (idx === -1) continue;
     const entry = q.items[idx];
-    if (!inject(entry)) return false;
-    q.items.splice(idx, 1);
+    // 注入可能要等图片归一化（Photon 解码/缩放），await 期间条目可能被取消/
+    // 派发；注入失败（无活跃轮/收尾中）返回 false，条目原位保留。
+    if (!(await inject(entry))) return false;
+    // 等待期间队列可能已变：按引用重新定位，找不到就说明该项已被别人处理
+    const current = q.items.indexOf(entry);
+    if (current === -1) return false;
+    q.items.splice(current, 1);
     // 先广播（含空快照）再清引擎，见 takeFrontEntry
     emitQueueState(threadId);
     dropEngineIfEmpty(threadId);

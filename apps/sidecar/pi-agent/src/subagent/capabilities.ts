@@ -11,7 +11,7 @@
  */
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { buildMcpTool } from "../mcp/mcp-tools";
-import { formatSkillsForSystemPrompt } from "@earendil-works/pi-agent-core";
+import { formatSkillsForSystemPrompt } from "../vendor/pi-harness/skills";
 import { loadMcpServers } from "../mcp/mcp-config";
 import { ensureSkillsLoaded, skillsSnapshot } from "../skills/discovery";
 import { buildKnowledgeTool } from "./knowledge";

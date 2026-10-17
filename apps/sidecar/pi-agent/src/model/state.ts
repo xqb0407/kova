@@ -4,6 +4,7 @@
  */
 import { kvGet } from "../storage/hostdb";
 import { logErr } from "../log";
+import { normalizeProviderId } from "./provider-id";
 
 /** 默认模型（启动时 initCurrentModelKey 从 kv 恢复；仅由无 sessionId 的 set_model
  *  ——设置页/启动恢复——维护。对话页的定靶选择不写这里：它是会话级真值
@@ -21,7 +22,9 @@ export function setCurrentModelKey(key: {
   provider: string;
   modelId: string;
 } | null): void {
-  currentModelKey = key;
+  currentModelKey = key
+    ? { provider: normalizeProviderId(key.provider), modelId: key.modelId }
+    : null;
 }
 
 /**
@@ -37,7 +40,10 @@ export async function initCurrentModelKey(): Promise<void> {
     if (!raw?.value) return;
     const saved = JSON.parse(raw.value) as { provider?: string; modelId?: string };
     if (saved?.provider && saved?.modelId) {
-      currentModelKey = { provider: saved.provider, modelId: saved.modelId };
+      currentModelKey = {
+        provider: normalizeProviderId(saved.provider),
+        modelId: saved.modelId,
+      };
     }
   } catch (err) {
     logErr("model key restore failed:", err);

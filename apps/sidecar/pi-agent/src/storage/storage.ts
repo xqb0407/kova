@@ -22,6 +22,7 @@ import {
   initHostTransport,
   initLocalStorage,
 } from "./hostdb";
+import { legacyProviderIds, normalizeProviderId } from "../model/provider-id";
 
 let sessionsDirPath = "";
 
@@ -74,11 +75,23 @@ export function initStorage(dbPath: string, sessionsDir: string): void {
 /** 凭据存储（喂给 pi-ai 的 CredentialStore 实现；底层 = hostdb 数据访问层） */
 export const credentialStore: CredentialStore = {
   async read(providerId: string): Promise<Credential | undefined> {
-    const row = await credentialGet(providerId);
+    const id = normalizeProviderId(providerId);
+    // 读时别名兜底：即使表迁移没跑到，旧 provider 行仍能认证。
+    // 候选包含：归一后的新 id、已知历史 id、调用方原始 id。
+    const candidates = [...new Set([id, ...legacyProviderIds(id), providerId])];
+    let row: { apiKey: string } | null = null;
+    for (const candidate of candidates) {
+      row = await credentialGet(candidate);
+      if (row) break;
+    }
     if (!row) return undefined;
     // 非密钥补充字段（Cloudflare 网关的 Account/Gateway ID 等）挂 kv：缺了它们
     // pi-ai 解析不出该 provider 的凭据，所有模型被标成未认证而从模型选择里消失
-    const env = await credentialEnvGet(providerId);
+    let env: Record<string, string> = {};
+    for (const candidate of candidates) {
+      env = await credentialEnvGet(candidate);
+      if (Object.keys(env).length > 0) break;
+    }
     return {
       type: "api_key",
       key: row.apiKey,
@@ -87,23 +100,32 @@ export const credentialStore: CredentialStore = {
   },
   async list(): Promise<readonly CredentialInfo[]> {
     const providers = await credentialList();
-    return providers.map((providerId) => ({
-      providerId,
-      type: "api_key" as const,
-    }));
+    const seen = new Set<string>();
+    const out: CredentialInfo[] = [];
+    for (const providerId of providers) {
+      const id = normalizeProviderId(providerId);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({ providerId: id, type: "api_key" as const });
+    }
+    return out;
   },
   async modify(
     providerId: string,
     fn: (current: Credential | undefined) => Promise<Credential | undefined>,
   ): Promise<Credential | undefined> {
-    const current = await this.read(providerId);
+    const id = normalizeProviderId(providerId);
+    const current = await this.read(id);
     const next = await fn(current);
     if (next?.type === "api_key" && next.key) {
-      await credentialSet(providerId, next.key);
+      await credentialSet(id, next.key);
     }
     return next;
   },
   async delete(providerId: string): Promise<void> {
-    await credentialDelete(providerId);
+    const id = normalizeProviderId(providerId);
+    for (const candidate of new Set([id, ...legacyProviderIds(id), providerId])) {
+      await credentialDelete(candidate);
+    }
   },
 };

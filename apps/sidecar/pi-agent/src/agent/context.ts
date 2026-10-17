@@ -13,14 +13,14 @@
  * 摘要以 user 角色 + core 官方前缀模板承载——裸 Agent 的默认 convertToLlm 会
  * 丢弃 compactionSummary 自定义角色，user 角色路径语义相同且零覆盖成本。
  */
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   COMPACTION_SUMMARY_PREFIX,
   COMPACTION_SUMMARY_SUFFIX,
   estimateContextTokens,
   estimateTokens,
   findCutPoint,
-  type AgentMessage,
-} from "@earendil-works/pi-agent-core";
+} from "../vendor/pi-harness/compaction";
 import {
   retryAssistantCall,
   type Api,
