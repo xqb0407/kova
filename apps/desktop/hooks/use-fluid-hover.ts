@@ -380,9 +380,12 @@ export function useFluidHover<T extends HTMLElement>(
   const itemRoRef = useRef<ResizeObserver | null>(null);
   const getItemRo = useCallback(() => {
     if (itemRoRef.current === null && typeof ResizeObserver !== "undefined") {
-      itemRoRef.current = new ResizeObserver(() =>
-        scheduleMeasurement(measurementAttempts)
-      );
+      itemRoRef.current = new ResizeObserver(() => {
+        // 侧边栏拖拽期间跳过测量：每帧宽度变化会让所有行 RO 回调
+        // 排队抢主线程（拖动卡顿的主因之一），松手后统一补测
+        if (document.documentElement.classList.contains("is-resizing")) return;
+        scheduleMeasurement(measurementAttempts);
+      });
     }
     return itemRoRef.current;
   }, [scheduleMeasurement]);
@@ -525,9 +528,18 @@ export function useFluidHover<T extends HTMLElement>(
   useEffect(() => {
     const container = containerRef.current;
     if (!container || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => scheduleMeasurement(measurementAttempts));
+    const ro = new ResizeObserver(() => {
+      if (document.documentElement.classList.contains("is-resizing")) return;
+      scheduleMeasurement(measurementAttempts);
+    });
     ro.observe(container);
-    return () => ro.disconnect();
+    // 拖拽结束补一次测量：RO 不会因移除 is-resizing 而触发
+    const onResizeEnd = () => scheduleMeasurement(measurementAttempts);
+    window.addEventListener("rail-resize-end", onResizeEnd);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("rail-resize-end", onResizeEnd);
+    };
   }, [containerRef, scheduleMeasurement]);
 
   // Clean up rAF and the item observer on unmount

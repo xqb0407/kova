@@ -296,6 +296,22 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
   const [splashDone, setSplashDone] = useState(false);
   const splashStartRef = useRef(Date.now());
 
+  // 顶层导航防护：点击 data: 链接（尤其超大 data URL）会把整个窗口替换成
+  // Chromium 的「Data payload too large」错误页，只能重载恢复。这里在捕获
+  // 阶段统一拦截，覆盖 Markdown 之外的裸锚点。
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      const target = event.target;
+      const anchor =
+        target instanceof Element ? target.closest("a[href]") : null;
+      if (!anchor) return;
+      const href = anchor.getAttribute("href") ?? "";
+      if (/^\s*data:/i.test(href)) event.preventDefault();
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, []);
+
   useEffect(() => {
     setDesktop(isDesktop());
     // 先取版本号：崩溃反馈要带 build 号，而这个值只能异步拿

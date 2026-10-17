@@ -79,6 +79,15 @@ const sharedComponents = {
   // 点击走系统浏览器（桌面 webview 里裸 <a> 无人接管 target=_blank，点了没反应）。
   // 非 http(s)（页内锚点/mailto/相对路径）维持原样。
   a: ({ children, href, ...props }) => {
+    // data: 链接绝不交由顶层导航：超大 data URL 会把整个窗口替换成
+    // Chromium 的「Data payload too large」错误页，只能重载恢复
+    if (href && /^\s*data:/i.test(href)) {
+      return (
+        <span title="内联数据链接（已阻止导航）" {...props}>
+          {children}
+        </span>
+      );
+    }
     if (!href || !/^https?:\/\//i.test(href))
       return (
         <a href={href} {...props}>
