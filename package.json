@@ -36,8 +36,7 @@
     "icons:check": "python3 scripts/icons.py check"
   },
   "patchedDependencies": {
-    "@earendil-works/pi-ai@0.99.2": "patches/@earendil-works%2Fpi-ai@0.99.2.patch",
-    "@earendil-works/pi-agent-core@0.99.2": "patches/@earendil-works%2Fpi-agent-core@0.99.2.patch",
+    "@earendil-works/pi-ai@1.3.0": "patches/@earendil-works%2Fpi-ai@1.3.0.patch",
     "@assistant-ui/core@0.3.22": "patches/@assistant-ui%2Fcore@0.3.22.patch"
   },
   "devDependencies": {

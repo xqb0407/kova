@@ -112,7 +112,7 @@ describe("onAgentEvent", () => {
     });
   });
 
-  test("tool events carry call id and output", () => {
+  test("tool events carry call id and output", async () => {
     onAgentEvent(
       ev({ type: "tool_execution_start", toolCallId: "call-1", toolName: "read", args: { file_path: "a" } }),
       run,
@@ -121,7 +121,8 @@ describe("onAgentEvent", () => {
       id: "r1",
       chunk: { type: "tool-input-available", toolCallId: "call-1", toolName: "read", input: { file_path: "a" } },
     });
-    onAgentEvent(
+    // 图片归一化是 async（解码/缩放），tool_execution_end 需要等 settle
+    await onAgentEvent(
       ev({ type: "tool_execution_end", toolCallId: "call-1", result: { content: [{ type: "text", text: "out" }] } }),
       run,
     );
@@ -131,8 +132,8 @@ describe("onAgentEvent", () => {
     });
   });
 
-  test("error tool results emit tool-output-error (isError 透传)", () => {
-    onAgentEvent(
+  test("error tool results emit tool-output-error (isError 透传)", async () => {
+    await onAgentEvent(
       ev({
         type: "tool_execution_end",
         toolCallId: "call-err",
@@ -152,8 +153,10 @@ describe("onAgentEvent", () => {
     });
   });
 
-  test("tool result image blocks emit data-image chunks after output", () => {
-    onAgentEvent(
+  test("tool result image blocks emit data-image chunks after output", async () => {
+    const png1x1 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    await onAgentEvent(
       ev({
         type: "tool_execution_end",
         toolCallId: "call-img",
@@ -161,7 +164,7 @@ describe("onAgentEvent", () => {
         result: {
           content: [
             { type: "text", text: "画好了" },
-            { type: "image", data: "aGk=", mimeType: "image/png" },
+            { type: "image", data: png1x1, mimeType: "image/png" },
           ],
         },
       }),
@@ -177,19 +180,47 @@ describe("onAgentEvent", () => {
     expect(img.chunk.type).toBe("data-image");
     expect(img.chunk.id).toBe("img-call-img-0");
     expect(img.chunk.data).toEqual({
-      src: "data:image/png;base64,aGk=",
+      src: `data:image/png;base64,${png1x1}`,
       mimeType: "image/png",
-      // base64 长度 4 ×3/4 ≈ 3（近似值，不精确解码，见 image-parts.ts）
-      bytes: 3,
+      bytes: Math.floor((png1x1.length * 3) / 4),
       toolCallId: "call-img",
       toolName: "generate_image",
       alt: "画好了",
     });
   });
 
-  test("oversized image blocks stay off the wire (placeholder appended to output)", () => {
-    const big = "A".repeat(4 * 1024 * 1024); // ≈3 MiB 原始
-    onAgentEvent(
+  test("tool result images follow the model inputLimits.images.resize before the wire", async () => {
+    const png4x4 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR4nGP4z8DwHxkzkC4AADxAH+HggXe0AAAAAElFTkSuQmCC";
+    const state = run.agent.state as unknown as Record<string, unknown>;
+    state.model = { inputLimits: { images: { resize: { maxWidth: 2, maxHeight: 2 } } } };
+    const before = lines.length;
+    try {
+      await onAgentEvent(
+        ev({
+          type: "tool_execution_end",
+          toolCallId: "call-resize",
+          toolName: "generate_image",
+          result: { content: [{ type: "image", data: png4x4, mimeType: "image/png" }] },
+        }),
+        run,
+      );
+    } finally {
+      delete state.model;
+    }
+    const emitted = lines.slice(before);
+    const out = JSON.parse(emitted[emitted.length - 2]!);
+    const img = JSON.parse(emitted[emitted.length - 1]!);
+    // 图被缩到 2x2（base64 变了），output 里带坐标映射说明
+    expect(img.chunk.type).toBe("data-image");
+    expect(img.chunk.data.src).not.toBe(`data:image/png;base64,${png4x4}`);
+    expect(out.chunk.output).toContain("缩放");
+  });
+
+  test("oversized image blocks are downscaled or downgraded before the wire", async () => {
+    const big = "A".repeat(4 * 1024 * 1024); // ≈3 MiB 原始，不是可解码图片
+    const before = lines.length;
+    await onAgentEvent(
       ev({
         type: "tool_execution_end",
         toolCallId: "call-big",
@@ -203,9 +234,12 @@ describe("onAgentEvent", () => {
       }),
       run,
     );
-    const linesNow = lines.slice(-2);
-    expect(JSON.parse(linesNow[1]).chunk.type).toBe("tool-output-available"); // 只有一条，无 data-image
-    expect(JSON.parse(linesNow[1]).chunk.output).toContain("图片未展示");
+    // 处理不了 → 降级成一行 text 说明；不会再上 data-image
+    const emitted = lines.slice(before);
+    const out = JSON.parse(emitted[emitted.length - 1]!);
+    expect(out.chunk.type).toBe("tool-output-available");
+    expect(out.chunk.output).toContain("图片未能展示");
+    expect(emitted.some((line) => line.includes("data-image"))).toBe(false);
   });
 
   test("no output when no active request", () => {

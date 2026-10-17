@@ -1,6 +1,11 @@
 /**
  * 图片块能否渲染（守卫纯逻辑，可单测）。
  *
+ * 注意：这里只守"值不值得/能不能安全渲染"，不再承担"超限就丢"的职责——
+ * sidecar 已把超限图按模型 inputLimits.images.resize 缩放、BMP 转 PNG，
+ * 送到前端的都是 inline 栅格格式。白名单仍保留：SVG 等可含外链/可欺骗
+ * 绘制的类型不值得开这个面。
+ *
  * 两道来源两种口径：
  * - **自己落盘的**（`materialized`，src 是 file:// 或以后隧道阶段的远端 URL）：
  *   信任，不再卡 scheme——uri 由 expo-image-manipulator 的 `saveAsync` 给出

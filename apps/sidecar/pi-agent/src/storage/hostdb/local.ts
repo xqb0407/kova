@@ -8,6 +8,7 @@ import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
 
 import { setTransport, rejectAllPending } from "./transport";
+import { logErr } from "../../log";
 
 let localDb: Database | null = null;
 /** 测试/冒烟入口：本地 SQLite（建表与迁移逻辑与 Rust data.rs 保持一致） */
@@ -148,6 +149,7 @@ export function initLocalStorage(dbPath: string): void {
   `);
   // 旧数据迁移：早期版本把未选工作目录的会话 cwd 存成主目录，统一清空
   localDb.query("UPDATE sessions SET cwd = '' WHERE cwd = ?").run(homedir());
+  migrateAzureProviderIdLocal();
   migrateCustomProviderModelsLocal();
   migrateProviderModelFiltersLocal();
   // 兜底：若旧 pi_* 表仍在（如新表先被别的版本建出、重命名没成功），把行并入新表后删壳
@@ -170,6 +172,133 @@ export const isLocalStorage = () => localDb !== null;
  * local 模式的旧数据迁移（与 Rust data.rs 的 migrate_custom_provider_models 镜像）：
  * custom_providers.models JSON 列 → models 行（enabled=1），搬完清空该列（幂等标记）。
  */
+const LEGACY_AZURE_PROVIDER = "azure-openai-responses";
+const AZURE_PROVIDER = "azure";
+
+/** local 模式镜像 electron/main/data.ts 的 Azure provider id 迁移（幂等）。 */
+function migrateAzureProviderIdLocal(): void {
+  const db = localDb;
+  if (!db) return;
+  const step = (label: string, fn: () => void): void => {
+    try {
+      fn();
+    } catch (e) {
+      logErr(`[hostdb/local] azure provider migration step "${label}" failed:`, e);
+    }
+  };
+
+  step("credentials", () => {
+    const old = db
+      .query("SELECT api_key FROM credentials WHERE provider = ?")
+      .get(LEGACY_AZURE_PROVIDER);
+    if (!old) return;
+    const existing = db
+      .query("SELECT provider FROM credentials WHERE provider = ?")
+      .get(AZURE_PROVIDER);
+    if (!existing) {
+      db.query("UPDATE credentials SET provider = ? WHERE provider = ?").run(
+        AZURE_PROVIDER,
+        LEGACY_AZURE_PROVIDER,
+      );
+    } else {
+      db.query("DELETE FROM credentials WHERE provider = ?").run(
+        LEGACY_AZURE_PROVIDER,
+      );
+    }
+  });
+
+  step("models", () => {
+    const rows = db
+      .query(
+        "SELECT model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled FROM models WHERE provider = ?",
+      )
+      .all(LEGACY_AZURE_PROVIDER) as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      const modelId = String(row.model_id ?? "");
+      if (!modelId) continue;
+      const existing = db
+        .query("SELECT provider FROM models WHERE provider = ? AND model_id = ?")
+        .get(AZURE_PROVIDER, modelId);
+      if (!existing) {
+        db.query(
+          "UPDATE models SET provider = ? WHERE provider = ? AND model_id = ?",
+        ).run(AZURE_PROVIDER, LEGACY_AZURE_PROVIDER, modelId);
+        continue;
+      }
+      const name = typeof row.name === "string" ? row.name : null;
+      const reasoning = typeof row.reasoning === "number" ? row.reasoning : null;
+      const contextWindow =
+        typeof row.context_window === "number" ? row.context_window : null;
+      const maxTokens =
+        typeof row.max_tokens === "number" ? row.max_tokens : null;
+      const inputJson =
+        typeof row.input_json === "string" ? row.input_json : null;
+      const costJson = typeof row.cost_json === "string" ? row.cost_json : null;
+      const enabled = typeof row.enabled === "number" ? row.enabled : 1;
+      db.query(
+        `UPDATE models SET
+           name = COALESCE(name, ?),
+           reasoning = COALESCE(reasoning, ?),
+           context_window = COALESCE(context_window, ?),
+           max_tokens = COALESCE(max_tokens, ?),
+           input_json = COALESCE(input_json, ?),
+           cost_json = COALESCE(cost_json, ?),
+           enabled = MAX(enabled, ?)
+         WHERE provider = ? AND model_id = ?`,
+      ).run(
+        name,
+        reasoning,
+        contextWindow,
+        maxTokens,
+        inputJson,
+        costJson,
+        enabled,
+        AZURE_PROVIDER,
+        modelId,
+      );
+      db.query("DELETE FROM models WHERE provider = ? AND model_id = ?").run(
+        LEGACY_AZURE_PROVIDER,
+        modelId,
+      );
+    }
+  });
+
+  step("sessions", () => {
+    db.query("UPDATE sessions SET model_provider = ? WHERE model_provider = ?").run(
+      AZURE_PROVIDER,
+      LEGACY_AZURE_PROVIDER,
+    );
+  });
+
+  step("kv", () => {
+    const row = db
+      .query("SELECT value FROM kv WHERE key = 'pi.model'")
+      .get() as { value?: string } | null;
+    if (row?.value) {
+      try {
+        const parsed = JSON.parse(row.value) as { provider?: string; modelId?: string };
+        if (parsed?.provider === LEGACY_AZURE_PROVIDER) {
+          db.query("UPDATE kv SET value = ? WHERE key = 'pi.model'").run(
+            JSON.stringify({ ...parsed, provider: AZURE_PROVIDER }),
+          );
+        }
+      } catch {
+        /* 坏 JSON：读时别名兜底 */
+      }
+    }
+    const oldKey = `credential.env.${LEGACY_AZURE_PROVIDER}`;
+    const newKey = `credential.env.${AZURE_PROVIDER}`;
+    const oldEnv = db.query("SELECT value FROM kv WHERE key = ?").get(oldKey);
+    if (!oldEnv) return;
+    const newEnv = db.query("SELECT value FROM kv WHERE key = ?").get(newKey);
+    if (!newEnv) {
+      db.query("UPDATE kv SET key = ? WHERE key = ?").run(newKey, oldKey);
+    } else {
+      db.query("DELETE FROM kv WHERE key = ?").run(oldKey);
+    }
+  });
+}
+
 function migrateCustomProviderModelsLocal(): void {
   const db = localDb;
   if (!db) return;

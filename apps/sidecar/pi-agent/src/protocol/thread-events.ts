@@ -198,6 +198,9 @@ export function wireSessionEvents(run: Running): void {
           toolCallId: event.toolCallId,
           result: event.result ?? null,
           isError: event.isError,
+          ...(typeof event.durationMs === "number"
+            ? { durationMs: event.durationMs }
+            : {}),
         });
         break;
     }

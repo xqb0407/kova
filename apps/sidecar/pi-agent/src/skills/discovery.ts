@@ -8,12 +8,10 @@ import { homedir } from "node:os";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
-  BACKGROUND_CONTEXT,
   formatSkillsForSystemPrompt,
   loadSkills,
   type Skill,
-} from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+} from "../vendor/pi-harness/skills";
 import { activePlugins, resolvePluginComponent } from "../plugins/plugins";
 import {
   initSkillsState,
@@ -116,16 +114,13 @@ function dirSignature(dir: string): string {
   return out.join("|");
 }
 
-/** loadSkills 共用执行环境：只用绝对路径，cwd 仅兜底 */
-const skillEnv = new NodeExecutionEnv({ cwd: homedir() });
-
 async function loadSkillLayer(
   dir: string,
   scope: SkillScope,
   cwd: string | undefined,
   pluginId?: string,
 ): Promise<{ layers: LoadedSkill[]; diagnostics: string[] }> {
-  const r = await loadSkills(skillEnv, dir, BACKGROUND_CONTEXT);
+  const r = await loadSkills(dir);
   const diagnostics = r.diagnostics.map(
     (d) => `${dir}: ${d.message} (${d.path})`,
   );

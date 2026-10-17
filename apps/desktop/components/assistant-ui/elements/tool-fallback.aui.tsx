@@ -46,8 +46,19 @@ export const ToolFallback: ToolCallMessagePartComponent = ({
   result,
   status,
   isError,
+  artifact,
 }) => {
-  const output = resultText(result);
+  const structured = (artifact as { structuredContent?: unknown } | undefined)
+    ?.structuredContent;
+  const text = resultText(result);
+  let output = text;
+  if (!output && structured !== undefined && structured !== null) {
+    try {
+      output = JSON.stringify(structured, null, 2);
+    } catch {
+      output = String(structured);
+    }
+  }
   const summary =
     argSummary(args as Record<string, unknown>) ||
     (argsText ? argsText.slice(0, 120) : "");

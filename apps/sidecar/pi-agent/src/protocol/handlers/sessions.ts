@@ -24,6 +24,7 @@ import { isApprovalLevel, isAutoContinueMessage, isGoalInternalMessage } from "p
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
 import { getQueueStateForThread, isTurnBusy } from "../../sessions/prompt-queue";
 import { sessionPath } from "../../storage/storage";
+import { normalizeProviderId } from "../../model/provider-id";
 import {
   sessionDelete,
   sessionInsert,
@@ -103,7 +104,9 @@ function sessionSummaryOf(r: SessionRow): SessionSummary {
     // 档位单源收口在 pi-protocol 的 isApprovalLevel：以前这里抄一份四档白名单，
     // 加档时漏改就是「偏好不落索引表、刷新回默认档」
     approvalLevel: isApprovalLevel(r.approvalLevel) ? r.approvalLevel : undefined,
-    modelProvider: r.modelProvider ?? undefined,
+    modelProvider: r.modelProvider
+      ? normalizeProviderId(r.modelProvider)
+      : undefined,
     modelId: r.modelId ?? undefined,
     thinkingLevel: r.thinkingLevel ?? undefined,
     // 会话级工作模式（宽松规整，同上）

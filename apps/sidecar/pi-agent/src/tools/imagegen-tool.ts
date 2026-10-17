@@ -497,6 +497,35 @@ export function buildImageGenTool(deps: ImageGenDeps = {}): AgentTool {
       }
       const totalBytes = generated.reduce((s, g) => s + g.bytes, 0);
       const multi = generated.length > 1;
+      // OpenAI Images（gpt-image-1）会在响应里带回 usage；部分兼容网关用
+      // prompt/completion 命名，一并兼容。工具行据此显示本次生图消耗的 token。
+      const rawUsage = (
+        json as {
+          usage?: {
+            input_tokens?: number;
+            output_tokens?: number;
+            total_tokens?: number;
+            prompt_tokens?: number;
+            completion_tokens?: number;
+          };
+        }
+      ).usage;
+      const inputTokens = rawUsage?.input_tokens ?? rawUsage?.prompt_tokens;
+      const outputTokens = rawUsage?.output_tokens ?? rawUsage?.completion_tokens;
+      const toolUsage =
+        rawUsage &&
+        (typeof inputTokens === "number" || typeof outputTokens === "number")
+          ? {
+              input: inputTokens ?? 0,
+              output: outputTokens ?? 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens:
+                rawUsage.total_tokens ??
+                (inputTokens ?? 0) + (outputTokens ?? 0),
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            }
+          : undefined;
       const verb = input ? "已基于底图生成" : "已生成";
       const headline = multi
         ? `${verb} ${generated.length} 张图片 ${cfg.modelId}（${sizeUsed}，合计约 ${fmtSize(totalBytes)}）`
@@ -536,6 +565,7 @@ export function buildImageGenTool(deps: ImageGenDeps = {}): AgentTool {
             ? { paths: generated.filter((g) => g.path).map((g) => g.path) }
             : {}),
         },
+        ...(toolUsage ? { usage: toolUsage } : {}),
       };
     },
   };

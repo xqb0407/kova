@@ -46,8 +46,9 @@ export async function pickImageAttachment(
   if (!asset) return null;
 
   const name = `${(asset.fileName ?? `image-${Date.now()}`).replace(/\.[^.]+$/, "")}.jpg`;
-  // 统一压缩（相机原图动辄好几 MiB，直传必撞 2MiB 单图闸门）：
-  // 长边 ≤1600、JPEG q0.8，超预算逐档退到 ≤1.5MiB
+  // 统一压缩（相机原图动辄好几 MiB，直传会挤爆手机流量/内存；sidecar 虽会
+  // 归一化，本端先压到 2MiB 内联闸门以下更省）：长边 ≤1600、JPEG q0.8，
+  // 超预算逐档退到 ≤1.5MiB
   const compressed = await compressImage(asset);
   const error = validatePromptFile({
     name,

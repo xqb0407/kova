@@ -26,6 +26,7 @@ import {
   type DefaultedAttr,
   type ThinkingLevel,
 } from "../../model/model-catalog";
+import { normalizeProviderId } from "../../model/provider-id";
 import type { CommandHandler } from "../command";
 import type { Running } from "../../types";
 
@@ -190,7 +191,7 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   set_model: async (reqId, msg) => {
-    const provider = String(msg.provider ?? "");
+    const provider = normalizeProviderId(String(msg.provider ?? ""));
     const modelId = String(msg.modelId ?? "");
     const sessionId = typeof msg.sessionId === "string" ? msg.sessionId.trim() : "";
     const model = getModels().getModel(provider, modelId);
@@ -239,7 +240,7 @@ export const handlers: Record<string, CommandHandler> = {
     send({
       id: reqId,
       type: "model",
-      provider: mk?.provider ?? "",
+      provider: mk ? normalizeProviderId(mk.provider) : "",
       modelId: mk?.modelId ?? "",
     });
   },

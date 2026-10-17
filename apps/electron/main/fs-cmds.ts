@@ -27,7 +27,12 @@ const MAX_LIST_ENTRIES = 5000;
 const MAX_READ_BYTES = 2 * 1024 * 1024;
 const BINARY_SNIFF_BYTES = 8192;
 const MAX_PREVIEW_BYTES = 20 * 1024 * 1024;
-const MAX_ATTACHMENT_IMAGE_BYTES = 2 * 1024 * 1024;
+/**
+ * 图片附件读盘上限：前端只做传输 sanity 上限，真正的 2MiB 内联闸门在
+ * sidecar（超限图由 Photon 缩放/转码后仍进模型上下文）。这里与
+ * attachment_stage 的 24MiB 对齐，避免"选择器能选、读盘先拒"。
+ */
+const MAX_ATTACHMENT_IMAGE_BYTES = 24 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules"]);
 const MAX_WRITE_BYTES = 32 * 1024 * 1024;
 const ATTACHMENT_STAGE_MAX_BYTES = 24 * 1024 * 1024;

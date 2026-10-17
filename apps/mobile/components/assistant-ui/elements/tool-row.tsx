@@ -30,6 +30,11 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { monoStyle } from "./surfaces";
 import { ToolFallback } from "./tool-fallback";
+import {
+  toolCallMetaFromPart,
+  toolCallMetaText,
+  toolCallMetaTitle,
+} from "@/lib/pi/tool-call-meta";
 
 /**
  * 移动端工具行：对齐桌面端 tool-row.aui.tsx 的扁平行语言。
@@ -463,6 +468,9 @@ function specFor(toolName: string, args: unknown): RowSpec | null {
 
 export const ToolCallRow: ToolCallMessagePartComponent = (props) => {
   const { toolName, args, status, result, isError } = props;
+  const meta = toolCallMetaFromPart(props);
+  const metaText = toolCallMetaText(meta);
+  const metaTitle = toolCallMetaTitle(meta);
 
   // hooks 一律走在早退之前：part 会从 requires-action（转交 ToolFallback）翻回
   // 完成态，早退之后再挂 hook 就是 React #310「渲染间 hook 数变了」。
@@ -540,6 +548,15 @@ export const ToolCallRow: ToolCallMessagePartComponent = (props) => {
             </Text>
           ) : null}
         </View>
+      ) : null}
+      {metaText ? (
+        <Text
+          accessibilityLabel={metaTitle}
+          className="text-muted-foreground/60 shrink-0 text-[11px]"
+          style={monoStyle}
+        >
+          {metaText}
+        </Text>
       ) : null}
       {failed ? (
         <View className="bg-destructive size-1.5 shrink-0 rounded-full" />

@@ -80,7 +80,7 @@ export const handlers: Record<string, CommandHandler> = {
     // 该项自己的流走 steered 退化生命周期收尾（前端在宿主轮流收尾时回填气泡）。
     // 无活跃轮/正在收尾则报错、项原位保留
     const requestId = String(msg.requestId ?? "");
-    const ok = steerOutEntry(requestId, (entry) => {
+    const ok = await steerOutEntry(requestId, async (entry) => {
       const run = running.get(entry.threadId);
       if (!run || run.stopRequested) return false;
       return steerIntoActiveRun(run, entry.reqId, entry.msg);
