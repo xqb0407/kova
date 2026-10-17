@@ -1,16 +1,20 @@
 "use client";
 
-import { useState, type FC } from "react";
+import { useId, useState, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import {
   BookmarkPlusIcon,
   CheckIcon,
+  ChevronDownIcon,
   ClipboardListIcon,
+  FileTextIcon,
   ShieldAlertIcon,
   SquareArrowOutUpRightIcon,
   XIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { cn } from "@/lib/utils";
 import { openToolCallPanel } from "@/lib/panels/tool-panel";
 import { useInteractionSessionId } from "@/lib/pi/pi-interaction-session";
@@ -19,14 +23,15 @@ import {
   usePendingToolApprovals,
   type PendingToolApprovalView,
 } from "@/lib/pi/pi-tool-approval";
+import { Label } from "../ui/label";
 
 /**
  * 逐工具审批卡片：显示在 composer 上方，两类挂起共用 tool_confirm 通道：
  * - bash/write/edit 执行前（approvalBeforeToolCall 挂起）：批准放行执行，拒绝回 blocked 结果；
  * - plan_exit 的模式退出确认（modes.ts plan_exit execute 内挂起，input 带计划快照）：
- *   计划正文由 sidecar 的 data-panelOpen 在右侧面板展示，卡片只留标题/rationale/操作，
- *   批准 = sidecar 回 agent 模式同轮实施；拒绝 = 计划作废（sidecar 删除计划文件）并
- *   abort 终止本轮，会话留在 plan 模式。
+ *   计划正文内嵌在卡片里（默认展开、可收起）；批准 = sidecar 回 agent 模式同轮实施；
+ *   拒绝并填写理由 = 留在 plan 同轮修订后再次申请；拒绝但不填理由 = 按停止处理
+ *   （sidecar abort 本轮），计划文件保留。
  */
 
 /** 工具参数的一行摘要（与 tool-fallback 卡片的风格一致） */
@@ -56,7 +61,38 @@ function planExitInfo(input: unknown) {
     rationale: typeof i.rationale === "string" ? i.rationale : "",
     title: typeof i.title === "string" ? i.title : "",
     filePath: typeof i.filePath === "string" ? i.filePath : "",
+    markdown: typeof i.markdown === "string" ? i.markdown : "",
   };
+}
+
+/** 计划文件首行是落盘时补的 `# <title>`；模型的 markdown 也常以同名 H1 开头。
+ *  卡片已经单独显示标题，正文开头连续去掉这两类标题，避免出现第二个大标题。 */
+function stripPlanTitle(markdown: string, title: string): string {
+  if (!markdown) return "";
+  const lines = markdown.split(/\r?\n/);
+  const norm = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+  const wanted = norm(title);
+  let i = 0;
+  let sawTitleHeading = false;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+    if (/^#\s+/.test(line)) {
+      const heading = norm(line.replace(/^#\s+/, ""));
+      // 第一条 H1 是落盘补的标题，无条件去掉；紧随其后的同名 H1 是模型
+      // 自己写的标题，同样去掉。不同名的 H1 保留（由正文样式缩放）
+      if (!sawTitleHeading || (wanted && heading === wanted)) {
+        sawTitleHeading = true;
+        i++;
+        continue;
+      }
+    }
+    break;
+  }
+  return lines.slice(i).join("\n").trimEnd();
 }
 
 /** 最近一次 plan_write 提交的 toolCallId（「在面板中打开」定位用；兼容旧转录 SubmitPlan） */
@@ -78,35 +114,54 @@ function useLastPlanWriteToolCallId(): string | null {
   });
 }
 
-/** plan_exit：计划审批卡（标题 + rationale + 批准/拒绝；计划正文在右侧面板） */
-const PlanExitRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> = ({
-  sessionId,
-  approval,
-}) => {
+/** plan_exit：计划审批卡（标题/rationale + 内嵌计划正文 + 拒绝理由/批准） */
+const PlanExitRow: FC<{
+  sessionId: string;
+  approval: PendingToolApprovalView;
+}> = ({ sessionId, approval }) => {
   const [busy, setBusy] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const [reason, setReason] = useState("");
+  const [contentOpen, setContentOpen] = useState(true);
+  const inputId = useId();
   const info = planExitInfo(approval.input);
   const lastPlanWrite = useLastPlanWriteToolCallId();
+  const planBody = stripPlanTitle(info?.markdown ?? "", info?.title ?? "");
+  const hasReason = reason.trim().length > 0;
 
-  const decide = (approved: boolean) => {
+  const decide = (approved: boolean, feedback?: string) => {
     setBusy(true);
-    confirmToolApproval(sessionId, approval.approvalId, approved).catch(
-      () => {},
-    );
+    confirmToolApproval(
+      sessionId,
+      approval.approvalId,
+      approved,
+      false,
+      feedback,
+    ).catch(() => {});
+  };
+
+  const submitReason = () => {
+    // 有理由 = 让模型修订后再次申请；空理由 = 直接拒绝并停止本轮
+    const feedback = reason.trim();
+    decide(false, feedback || undefined);
+  };
+
+  const cancelReason = () => {
+    setAsking(false);
+    setReason("");
   };
 
   return (
-    <div className="px-4 py-2.5">
-      <div className="flex items-center gap-2">
-        <ClipboardListIcon className="size-4 shrink-0" />
-        <span className="truncate text-sm font-medium">
-          {info?.title || "计划待批准"}
-        </span>
-        <span className="bg-muted text-muted-foreground ml-auto rounded-full px-2 py-0.5 text-xs whitespace-nowrap">
-          Plan
-        </span>
+    <div data-slot="aui-plan-approval" className="flex flex-col">
+      <div className=" px-4 flex justify-between pt-3.5 pb-3">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <ClipboardListIcon className="size-4 shrink-0 " />
+          <span className="font-medium shimmer  text-muted-foreground shimmer-duration-1500">计划内容</span>
+        </div>
         {lastPlanWrite && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="icon"
             aria-label="在面板中打开"
             title="在面板中打开"
             onClick={() =>
@@ -114,56 +169,177 @@ const PlanExitRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> 
                 title: info?.title || "计划",
               })
             }
-            className="text-muted-foreground hover:text-foreground shrink-0 rounded p-1 transition-colors"
+            className=" ml-auto shrink-0 transition-colors"
           >
-            <SquareArrowOutUpRightIcon className="size-3.5" />
-          </button>
+            <SquareArrowOutUpRightIcon className="size-4" />
+          </Button>
         )}
+        {/* <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground text-[11px] font-medium">
+              计划待批准
+            </span>
+            <span className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap">
+              Plan
+            </span>
+          
+          </div>
+          <h3 className="mt-0.5 truncate text-[15px] leading-6 font-semibold">
+            {info?.title || "实施计划"}
+          </h3>
+          {info?.rationale && (
+            <p className="text-muted-foreground mt-0.5 line-clamp-2 text-[13px] leading-relaxed">
+              {info.rationale}
+            </p>
+          )}
+        </div> */}
       </div>
-      {info?.rationale && (
-        <p className="text-muted-foreground mt-2 border-t pt-3 text-sm">
-          {info.rationale}
-        </p>
+
+      {planBody && (
+        <div className="border-t border-border/60">
+          {/* <button
+            type="button"
+            aria-expanded={contentOpen}
+            onClick={() => setContentOpen((v) => !v)}
+            className="text-muted-foreground hover:bg-muted/40 hover:text-foreground flex w-full items-center gap-2 px-4 py-2 text-xs transition-colors"
+          >
+            <FileTextIcon className="size-3.5 shrink-0" />
+            <span className="font-medium">计划内容</span>
+            <span className="ml-auto inline-flex items-center gap-1">
+              {contentOpen ? "收起" : "展开"}
+              <ChevronDownIcon
+                className={cn(
+                  "size-3.5 transition-transform",
+                  contentOpen && "rotate-180",
+                )}
+              />
+            </span>
+          </button> */}
+          {/* {contentOpen && ( */}
+          <div className="max-h-[min(45vh,20rem)] overflow-y-auto overscroll-contain px-4 pb-3 scroll-fade scroll-fade-30">
+            <div
+              className={cn(
+                " leading-relaxed my-2",
+                "[&_.aui-md]:text-[13px] [&_.aui-md]:leading-relaxed",
+                // // 正文里的标题按卡片层级缩小：计划正文是预览，不该用文档级
+                // // H1 字号把整张卡撑爆
+                // "[&_.aui-md_h1]:mt-2.5 [&_.aui-md_h1]:mb-1 [&_.aui-md_h1]:text-sm [&_.aui-md_h1]:leading-5 [&_.aui-md_h1]:font-semibold",
+                // "[&_.aui-md_h2]:mt-2.5 [&_.aui-md_h2]:mb-1 [&_.aui-md_h2]:text-[13px] [&_.aui-md_h2]:font-semibold",
+                // "[&_.aui-md_h3]:mt-2 [&_.aui-md_h3]:mb-0.5 [&_.aui-md_h3]:text-[13px] [&_.aui-md_h3]:font-semibold",
+                "[&_.aui-md_p]:my-1.5",
+                "[&_.aui-md_ul]:my-1.5 [&_.aui-md_ol]:my-1.5",
+                "[&_.aui-md_li]:my-0.5",
+              )}
+            >
+              <MarkdownText text={planBody} />
+            </div>
+          </div>
+          {/* )} */}
+        </div>
       )}
-      <div className="mt-3 flex justify-end gap-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          onClick={() => decide(false)}
-          className="h-8 rounded-full px-3.5"
-        >
-          <XIcon className="size-3.5" />
-          拒绝并停止
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          disabled={busy}
-          onClick={() => decide(true)}
-          className="h-8 rounded-full px-3.5"
-        >
-          <CheckIcon className="size-3.5" />
-          批准并开始实施
-        </Button>
-      </div>
+
+      {asking ? (
+        <div className="bg-muted/20 border-t border-border/60 px-4 py-3">
+          <Label
+            htmlFor={inputId}
+            className="flex items-center gap-2 text-xs font-medium"
+          >
+            希望怎么改？
+            <span className="text-muted-foreground/70 font-normal">选填</span>
+          </Label>
+          <Textarea
+            id={inputId}
+            autoFocus
+            value={reason}
+            disabled={busy}
+            maxLength={4000}
+            rows={3}
+            placeholder="例如：第 2 步先补测试，暂时不要改 UI"
+            onChange={(e) => setReason(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                cancelReason();
+              }
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                e.stopPropagation();
+                submitReason();
+              }
+            }}
+            className="bg-muted mt-1.5 min-h-20 resize-none text-sm"
+          />
+          <p className="text-muted-foreground mt-1.5 text-xs leading-relaxed">
+            填写理由后提交，Agent
+            会按意见修订计划并再次确认；留空提交则直接停止本轮（计划文件保留）。
+          </p>
+          <div className="mt-2.5 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              disabled={busy}
+              onClick={cancelReason}
+              className="px-3.5"
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant={hasReason ? "default" : "destructive"}
+              size="lg"
+              disabled={busy}
+              onClick={submitReason}
+              className=" px-3.5"
+            >
+              {hasReason ? "提交修改意见" : "直接拒绝并停止"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-muted/20 flex justify-end gap-2 border-t border-border/60 px-4 py-2.5">
+          <Button
+            type="button"
+            variant="outline"
+            size="lg"
+            disabled={busy}
+            onClick={() => setAsking(true)}
+            className="px-3.5"
+          >
+            拒绝并说明
+          </Button>
+          <Button
+            type="button"
+            size="lg"
+            disabled={busy}
+            onClick={() => decide(true)}
+            className=" px-3.5"
+          >
+            <CheckIcon className="size-3.5" />
+            批准并开始实施
+          </Button>
+        </div>
+      )}
     </div>
   );
 };
 
-const ApprovalRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> = ({
-  sessionId,
-  approval,
-}) => {
+const ApprovalRow: FC<{
+  sessionId: string;
+  approval: PendingToolApprovalView;
+}> = ({ sessionId, approval }) => {
   const [busy, setBusy] = useState(false);
   const summary = summarizeInput(approval.toolName, approval.input);
 
   const decide = (approved: boolean, remember = false) => {
     setBusy(true);
-    confirmToolApproval(sessionId, approval.approvalId, approved, remember).catch(
-      () => {},
-    );
+    confirmToolApproval(
+      sessionId,
+      approval.approvalId,
+      approved,
+      remember,
+    ).catch(() => {});
   };
 
   if (approval.toolName === "plan_exit") {
@@ -183,11 +359,15 @@ const ApprovalRow: FC<{ sessionId: string; approval: PendingToolApprovalView }> 
           请求执行 <span className="font-mono">{approval.toolName}</span>
         </p>
         {summary && (
-          <p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">{summary}</p>
+          <p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">
+            {summary}
+          </p>
         )}
         {/* 「同意意味着什么」：如可写根清单的授权。不显式写出就是静默扩大权限 */}
         {approval.note && (
-          <p className="text-muted-foreground mt-1 text-xs leading-relaxed">{approval.note}</p>
+          <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
+            {approval.note}
+          </p>
         )}
       </div>
       {/* ml-auto 让按钮组在换行后仍贴右；自身也能换行（极窄时按钮之间折行） */}

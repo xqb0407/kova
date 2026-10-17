@@ -33,6 +33,10 @@ export const handlers: Record<string, CommandHandler> = {
     const approved = Boolean(msg.approved);
     // 「允许并记住」：把这次要写的目录写进本机清单（sidecar 侧落盘，见 modes.ts）
     const remember = Boolean(msg.remember);
+    // 拒绝理由：plan_exit 用它区分「同轮修订」与「停止」；普通工具拒绝时
+    // 作为反馈拼进 blocked 结果。截断防止超长文本进模型上下文
+    const reason =
+      typeof msg.reason === "string" ? msg.reason.trim().slice(0, 4000) : "";
     // MCP 网关工具的审批挂起不在 run 内（模块级表，见 mcp-tools.ts）：先查它，
     // 命中即结算返回，不去 resolveSession（审批期间会话可能尚未落库）。
     // remember 一起带过去：「允许并记住这个工具」要落盘，记的是这次批准的范围
@@ -44,7 +48,7 @@ export const handlers: Record<string, CommandHandler> = {
       String(msg.threadId ?? "default"),
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
     );
-    if (!resolveToolApproval(run, approvalId, approved, remember)) {
+    if (!resolveToolApproval(run, approvalId, approved, remember, reason)) {
       // 重启后重放的陈旧条目（§4）：活 promise 已随旧进程消亡，结算只落行解禁
       // （台账里也没有 = 真不存在，维持原报错）
       if (!settleInteraction(approvalId, approved ? "approved" : "denied")) {

@@ -19,7 +19,7 @@
  */
 import type { PiResponse, PiSessionSummary } from "@/lib/pi/pi-bridge";
 import type { PiPromptAttachment } from "@/lib/pi/pi-channel";
-import { sessionModeSnapshot } from "@/lib/pi/pi-session-mode";
+import { sessionModeSnapshot, fetchPlanningState } from "@/lib/pi/pi-session-mode";
 import { goalTurnDraftForSend } from "@/lib/pi/pi-goal-limit-draft";
 import {
   applyHistoryPending,
@@ -32,8 +32,9 @@ import {
 } from "@/lib/pi/pi-tool-approval";
 import { applyAskNeedsWorkChunk } from "@/lib/pi/pi-ask-needs-work";
 import { applyPlanningChunk } from "@/lib/pi/pi-session-mode";
-import { applyTodoChunk } from "@/lib/pi/pi-todo";
-import { applyGoalChunk } from "@/lib/pi/pi-goal";
+import { applyTodoChunk, fetchTodoState } from "@/lib/pi/pi-todo";
+import { applyGoalChunk, fetchGoalState } from "@/lib/pi/pi-goal";
+import { refreshContextMirror } from "@/lib/pi/pi-context";
 import {
   focusPanelTabFor,
   focusPluginPanelFor,
@@ -88,6 +89,8 @@ type WireMsg = {
   sessionId?: string;
   eventSeq?: number;
   event?: Record<string, unknown>;
+  /** 顶层错误帧（网关转发失败/认证类）的说明文本 */
+  errorText?: string;
 };
 
 /** 每线程流式重建 accumulator：sidecar 只发 delta（O(n²) wire 治理），
@@ -215,6 +218,9 @@ export class PiClientBase implements PiClient {
   /** 在飞 prompt requestId → sessionId（收尾帧触发即时快照刷新：
    *  prompt 起跑前失败等不走 agent 事件的路径的兜底，阶段 5 随 chunk 流退役） */
   private readonly inflight = new Map<string, string>();
+  /** 最近快照里的排队请求 id：agent_end 收尾时区分「仍在队列」与「已结束/丢失」，
+   *  避免重连后重发命中去重的 prompt 永远占着 inflight 台账 */
+  private readonly queuedIds = new Map<string, Set<string>>();
   /** 每会话最近一次发起的 prompt requestId（sessionId → requestId）：检查点
    *  条目所有权层的回合键（checkpoint_status 按它查，见 lib/pi/pi-edits.ts）。
    *  跨轮驻留语义与 lastPrompts 相同——排队项在派发时才开轮，但 agent_start
@@ -336,6 +342,10 @@ export class PiClientBase implements PiClient {
     const prevSeq = this.lastSeq.get(id) ?? 0;
     const snapSeq = snapshot.seq ?? 0;
     this.lastSeq.set(id, Math.max(prevSeq, snapSeq));
+    this.queuedIds.set(
+      id,
+      new Set((snapshot.metadata.queuedMessages ?? []).map((m) => m.id)),
+    );
     // 流式 accumulator 对齐（3b/3c 合缝）：running 且末条是 assistant → 以
     // 快照里的在飞 partial 为重建基底（线程中途打开时没有 message_start 可
     // 依赖）；陈旧快照（seq 落后于已流式状态）不回退基底
@@ -368,17 +378,37 @@ export class PiClientBase implements PiClient {
   }
 
   /** 拉一次快照并派发（订阅首帧 / 收尾帧 / 事件源换代共用）；
-   *  force=true 绕过指纹去重（重订阅也要拿到初帧） */
-  private async refreshNow(sessionId: string, force = false) {
+   *  force=true 绕过指纹去重（重订阅也要拿到初帧）。
+   *  返回 false = 快照没取到（断线中/会话已删），换代水合据此跳过外围状态拉取，
+   *  避免在离线时打一串注定超时的请求。 */
+  private async refreshNow(sessionId: string, force = false): Promise<boolean> {
     try {
       const snapshot = await this.fetchSnapshot(sessionId);
       const stamp = PiClientBase.fingerprint(snapshot);
-      if (!force && this.stamps.get(sessionId) === stamp) return;
+      if (!force && this.stamps.get(sessionId) === stamp) return true;
       this.stamps.set(sessionId, stamp);
       this.dispatch(snapshot);
+      return true;
     } catch {
       // sidecar 不可用/会话已删：静默（重订阅/收尾帧会再触发）
+      return false;
     }
+  }
+
+  /**
+   * 换代后补外围状态：thread_snapshot 只覆盖消息/队列/审批，todo、goal、
+   * 模式、上下文读数不在里面。断线期间这些状态若发生变化，重连后必须重拉一次，
+   * 否则界面会一直停在断线前的旧值（直到用户切会话/刷新）。
+   */
+  private rehydrateSideState(threadId: string): void {
+    try {
+      fetchTodoState(threadId);
+    } catch {
+      /* 草稿/旧通道：跳过 */
+    }
+    void fetchGoalState(threadId).catch(() => {});
+    void fetchPlanningState(threadId).catch(() => {});
+    refreshContextMirror(threadId);
   }
 
   /** list_pending 权威拉取（4b 刷新恢复）：新链路 threadId 即 sessionId，必须
@@ -431,10 +461,18 @@ export class PiClientBase implements PiClient {
     this.unlistenLines = unlisten;
   }
 
-  /** 事件源换代：清重建台账，逐订阅线程拉快照自愈（空闲态 + 已落盘内容） */
+  /** 事件源换代：清重建台账，逐订阅线程拉快照自愈（空闲态 + 已落盘内容）。
+   *  快照取到后再补拉 pending/todo/goal/模式/上下文（断线期间独立变化的状态
+   *  不在这份快照里）；断线中的一次换代取快照必失败，自然跳过外围请求。 */
   private handleGenerationChange() {
     this.streams.clear();
-    for (const sessionId of this.listeners.keys()) void this.refreshNow(sessionId);
+    for (const sessionId of this.listeners.keys()) {
+      void this.refreshNow(sessionId).then((ok) => {
+        if (!ok) return;
+        void this.pullPendingInteractions(sessionId);
+        this.rehydrateSideState(sessionId);
+      });
+    }
   }
 
   /** session_info_changed 行 → 本地实时标题表（渲染侧优先于列表快照） */
@@ -660,6 +698,32 @@ export class PiClientBase implements PiClient {
       // 在这里会吞掉自愈（并入退化流等场景 live 的 agent_end 可能缺失，
       // 不强制刷新 runStatus 就永远停在 running，转圈/停止键永挂）
       void this.refreshNow(sessionId, true);
+      return;
+    }
+    // 顶层错误帧（网关转发失败等，无 chunk）：同样终结该 prompt。先拉快照
+    // 清掉乐观消息，再把失败原因写进线程错误位，避免消息无声消失。
+    if (!type && parsed.type === "error") {
+      const sessionId = this.inflight.get(requestId)!;
+      this.inflight.delete(requestId);
+      const errorText =
+        typeof parsed.errorText === "string" && parsed.errorText
+          ? parsed.errorText
+          : "消息发送失败";
+      void this.refreshNow(sessionId, true).then(() => {
+        const event = {
+          type: "error",
+          error: errorText,
+          threadId: sessionId,
+          seq: this.lastSeq.get(sessionId) ?? 0,
+        } as PiClientEvent;
+        for (const listener of this.listeners.get(sessionId) ?? []) {
+          try {
+            listener(event);
+          } catch (err) {
+            console.error("[PiClientBase] listener threw", err);
+          }
+        }
+      });
     }
   }
 
@@ -744,6 +808,15 @@ export class PiClientBase implements PiClient {
         // 文件树失效（旧链路 finish/error 同款）：非 git 工作区 agent 也在改
         // 盘上文件；跨工作区后台线程收尾时刷的是当前工作区树，视觉无害
         refreshFileTree(getWorkspace() ?? null);
+        // inflight 收口：不在最新快照队列里的请求已经跑完/失败（重连重发命中
+        // 网关去重时收尾帧不会回到本连接），摘掉防台账无限增长。仍在队列的
+        // 条目保留，等它们真正开跑时 start 帧还能唤醒 onPromptStart 对账。
+        const queued = this.queuedIds.get(sessionId);
+        for (const [requestId, sid] of this.inflight) {
+          if (sid === sessionId && !queued?.has(requestId)) {
+            this.inflight.delete(requestId);
+          }
+        }
       }
       event = { ...body, threadId: sessionId, seq } as unknown as PiClientEvent;
     }
@@ -1017,6 +1090,7 @@ export class PiClientBase implements PiClient {
     // lastPrompts 与 inflight 不在其作用域——会话没了就一并摘
     this.lastPrompts.delete(threadId);
     this.sessionTurn.delete(threadId);
+    this.queuedIds.delete(threadId);
     for (const [reqId, sid] of this.inflight) {
       if (sid === threadId) this.inflight.delete(reqId);
     }
@@ -1031,6 +1105,7 @@ export class PiClientBase implements PiClient {
       streams: this.streams.size,
       stamps: this.stamps.size,
       lastSeq: this.lastSeq.size,
+      queuedIds: this.queuedIds.size,
       inflight: this.inflight.size,
       lastPrompts: this.lastPrompts.size,
       promptStartListeners: this.promptStartListeners.size,
@@ -1091,6 +1166,7 @@ export class PiClientBase implements PiClient {
         this.streams.delete(threadId);
         this.stamps.delete(threadId);
         this.lastSeq.delete(threadId);
+        this.queuedIds.delete(threadId);
       }
     };
   }

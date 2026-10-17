@@ -91,7 +91,7 @@ export function RemoteRuntimeProvider({
             size="sm"
             variant="outline"
             className="h-7 bg-transparent text-inherit"
-            onClick={() => window.location.reload()}
+            onClick={() => channel.reconnectNow()}
           >
             重试
           </Button>

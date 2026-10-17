@@ -79,7 +79,7 @@ describe("WsPiChannel", () => {
     const res = ch.request({ type: "list_running" });
     expect(s.sent.length).toBe(1); // 未认证不发业务帧，防 unauthorized 竞态
 
-    s.emit({ type: "authed" });
+    s.emit({ type: "authed", accepted: true });
     expect(s.sent.length).toBe(2);
     const frame = JSON.parse(s.sent[1]) as { type: string; id: string };
     expect(frame.type).toBe("list_running");
@@ -94,7 +94,7 @@ describe("WsPiChannel", () => {
   it("断线按指数退避重连，连续失败到上限后交回 UI", async () => {
     const ch = newChannel();
     sockets[0].open();
-    sockets[0].emit({ type: "authed" });
+    sockets[0].emit({ type: "authed", accepted: true });
     sockets[0].die();
 
     // 首轮 3s、封顶 30s：每轮推进 31s 足够触发；共 8 次重连机会
@@ -124,7 +124,7 @@ describe("WsPiChannel", () => {
     expect(statuses.some((s) => s.error === "disconnected")).toBe(false);
 
     next.open();
-    next.emit({ type: "authed" });
+    next.emit({ type: "authed", accepted: true });
     const res = ch.request({ type: "get_app_mode" });
     const frame = JSON.parse(next.sent[1]) as { id: string };
     next.emit({ id: frame.id, type: "app_mode", mode: "work" });
@@ -149,7 +149,7 @@ describe("WsPiChannel", () => {
     const ch = newChannel();
     const s = sockets[0];
     s.open();
-    s.emit({ type: "authed" });
+    s.emit({ type: "authed", accepted: true });
 
     // 推进到一轮心跳：ping 已发出（auth 帧 + ping 帧）
     await vi.advanceTimersByTimeAsync(26_000);
@@ -170,7 +170,7 @@ describe("WsPiChannel", () => {
     const ch = newChannel();
     const s = sockets[0];
     s.open();
-    s.emit({ type: "authed" });
+    s.emit({ type: "authed", accepted: true });
 
     await vi.advanceTimersByTimeAsync(26_000);
     const ping = JSON.parse(s.sent.at(-1) ?? "{}") as { id: string };
@@ -179,6 +179,68 @@ describe("WsPiChannel", () => {
     await vi.advanceTimersByTimeAsync(30_000); // 越过 ping 超时窗
     expect(s.readyState).not.toBe(FakeSocket.CLOSED);
     expect(sockets.length).toBe(1);
+    ch.close();
+  });
+
+  // ---------- 断线投递语义（prompt outbox） ----------
+
+  const promptFrame = (requestId: string) => ({
+    requestId,
+    text: "hello",
+    threadId: "sess-1",
+    cwd: null,
+    attachments: null,
+    steer: false,
+  });
+  const promptIds = (s: FakeSocket) =>
+    s.sent
+      .map((line) => JSON.parse(line) as { type?: string; id?: string })
+      .filter((f) => f.type === "prompt")
+      .map((f) => f.id);
+
+  it("authed 前发送的 prompt 进 outbox，认证后补发", () => {
+    const ch = newChannel();
+    const s = sockets[0];
+    s.open();
+    expect(ch.sendPromptFrame(promptFrame("p1"))).toBe(true);
+    expect(promptIds(s)).toHaveLength(0); // 认证前只有 auth 帧
+
+    s.emit({ type: "authed", accepted: true });
+    expect(promptIds(s)).toEqual(["p1"]);
+    ch.close();
+  });
+
+  it("未确认的 prompt 在重连 authed 后重发；accepted 后不再重发", () => {
+    const ch = newChannel();
+    const first = sockets[0];
+    first.open();
+    first.emit({ type: "authed", accepted: true });
+    expect(ch.sendPromptFrame(promptFrame("p1"))).toBe(true);
+    expect(promptIds(first)).toEqual(["p1"]);
+
+    // 断开时还没收到同 id 回帧 → 换链后重发
+    first.die();
+    ch.reconnectNow();
+    const second = sockets[1];
+    second.open();
+    second.emit({ type: "authed", accepted: true });
+    expect(promptIds(second)).toEqual(["p1"]);
+
+    // 网关投递确认（或任意同 id 流帧）即出账：再断线不重发
+    second.emit({ id: "p1", type: "accepted" });
+    second.die();
+    ch.reconnectNow();
+    const third = sockets[2];
+    third.open();
+    third.emit({ type: "authed", accepted: true });
+    expect(promptIds(third)).toHaveLength(0);
+    ch.close();
+  });
+
+  it("无连接时管理请求立即失败，不空等 15s", async () => {
+    const ch = newChannel();
+    sockets[0].die();
+    await expect(ch.request({ type: "list_running" })).rejects.toThrow("not connected");
     ch.close();
   });
 });

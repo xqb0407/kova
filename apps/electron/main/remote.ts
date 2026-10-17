@@ -5,6 +5,8 @@
  *   未认证：{"type":"pair","code":"483920"} | {"type":"auth","token":".."}
  *   服务端：{"type":"paired","token":".."} | {"type":"authed"}
  *           | {"type":"error","errorText":".."} | {"type":"closed","reason":".."}
+ *           | {"id":"..","type":"accepted"}（prompt 投递确认：网关已写入 sidecar；
+ *             断线重发以同 requestId 幂等去重，客户端据此停止重发）
  *   authed 后全部为 sidecar 原样响应/chunk 行（id 已还原为客户端原始 id）。
  * 安全：配对码 6 位仅存内存；每连接失败 5 次断开；未认证 10s 超时；
  * token 持久化于 kv（明文落盘口径同 secret.rs）；REMOTE_DENIED_TYPES 拒绝
@@ -29,6 +31,8 @@ const AUTH_TIMEOUT_MS = 10_000;
 const TOKEN_KEY = "remote.token";
 const BIND_LAN_KEY = "remote.bind.lan";
 const OUTBOUND_QUEUE_LIMIT = 2048;
+/** prompt 幂等台账上限：记住最近转发过的 requestId，重连重发不重复执行 */
+const PROMPT_SEEN_LIMIT = 1024;
 
 /** authed 后禁止远程转发的消息类型（桌面专属管理面，见 remote.rs 同名单） */
 const REMOTE_DENIED_TYPES = new Set([
@@ -102,6 +106,26 @@ const routes = new Map<string, RouteEntry>();
 const conns = new Map<number, ConnHandle>();
 const authedTxs = new Map<number, (line: string) => void>();
 let nextConnId = 1;
+/**
+ * prompt 幂等台账：断线重连后客户端会用同一 requestId 重发未确认的 prompt，
+ * 网关只把第一次转给 sidecar。命中即回 accepted，客户端据此停止重发，
+ * 避免同一条消息被重复执行。sidecar 重启后清空（它已不记得这些请求）。
+ */
+const seenPrompts = new Map<string, true>();
+
+function rememberPrompt(id: string): void {
+  seenPrompts.set(id, true);
+  while (seenPrompts.size > PROMPT_SEEN_LIMIT) {
+    const oldest = seenPrompts.keys().next().value;
+    if (oldest === undefined) break;
+    seenPrompts.delete(oldest);
+  }
+}
+
+/** 投递确认帧：客户端 outbox 收到任意同 id 回帧即出账；内容不需要 chunk */
+function acceptedFrame(clientId: string): string {
+  return JSON.stringify({ id: clientId, type: "accepted" });
+}
 
 function kickConn(connId: number): void {
   for (const [sid, e] of [...routes]) if (e.connId === connId) routes.delete(sid);
@@ -141,6 +165,8 @@ export function broadcastNotification(parsed: any): void {
 export function notifyTerminated(): void {
   const line = JSON.stringify({ type: "error", errorText: "pi-agent terminated" });
   routes.clear();
+  // sidecar 换代：请求台账失效，重连后的重发必须重新转发
+  seenPrompts.clear();
   for (const h of conns.values()) h.send(line);
 }
 
@@ -405,7 +431,9 @@ async function handleConn(ws: WebSocket): Promise<void> {
           const stored = loadOrCreateToken();
           const supplied = typeof v?.token === "string" ? v.token : "";
           if (stored.length > 0 && supplied === stored) {
-            send(JSON.stringify({ type: "authed" }));
+            // accepted=true 声明网关支持 prompt 幂等去重：客户端据此才敢重发
+            // 「已发出但未确认」的帧；老网关不带该字段，客户端只补发从未出站的
+            send(JSON.stringify({ type: "authed", accepted: true }));
             authed = true;
             authedTxs.set(connId, send);
           } else {
@@ -460,12 +488,22 @@ async function forwardToAgent(connId: number, v: any, send: (line: string) => vo
     send(JSON.stringify({ type: "error", errorText: "missing id" }));
     return;
   }
+  // 断线重发：同一条 prompt 只转发一次；命中即投递确认，不重复执行
+  const isPrompt = v?.type === "prompt";
+  if (isPrompt && seenPrompts.has(id)) {
+    send(acceptedFrame(id));
+    return;
+  }
   const sid = `rem-${connId}-${id}`;
   const out = { ...v, id: sid };
   routes.set(sid, { connId, clientId: id, send });
   try {
     await pi.ensureSpawned();
     await pi.writeRawLine(JSON.stringify(out));
+    if (isPrompt) {
+      rememberPrompt(id);
+      send(acceptedFrame(id));
+    }
   } catch (e) {
     routes.delete(sid);
     throw e;

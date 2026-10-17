@@ -406,14 +406,19 @@ type ToolConfirmResponse = { type: "tool_confirmed"; approvalId: string };
 /** 结算审批：approved = 放行执行；false = 拦截（模型收到 blocked 工具结果）。
  *  remember = 点的是「允许并记住」：sidecar 会把这次要写的目录写进本机可写根清单，
  *  之后该目录不再询问。只对带可写根上下文的审批有效，其余审批忽略它。
+ *  reason = 拒绝时填写的修改意见（plan_exit 用它区分「同轮修订」与「停止」）：
+ *  有理由时模型留在 plan 模式按意见改计划；无理由时本轮停止。
  *  interactionId 寻址为 §4 新增位（现值恒 = approvalId，服务端旧形不破） */
 export async function confirmToolApproval(
   threadId: string,
   approvalId: string,
   approved: boolean,
   remember = false,
+  reason?: string,
 ): Promise<void> {
   const sessionId = piSessionIdForThread(threadId);
+  const feedback =
+    !approved && typeof reason === "string" ? reason.trim() : "";
   settlingLocally.add(approvalId);
   try {
     await piRequest<ToolConfirmResponse>({
@@ -422,6 +427,7 @@ export async function confirmToolApproval(
       interactionId: approvalId,
       approved,
       ...(approved && remember ? { remember: true } : {}),
+      ...(feedback ? { reason: feedback } : {}),
       threadId,
       ...(sessionId ? { sessionId } : {}),
     });
