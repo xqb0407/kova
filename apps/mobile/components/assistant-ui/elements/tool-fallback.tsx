@@ -9,6 +9,11 @@ import { WrenchIcon } from "lucide-react-native";
 import { Text, View } from "react-native";
 import { field, monoStyle } from "./surfaces";
 import { formatUnknownValue } from "../utils/task";
+import {
+  toolCallMetaFromPart,
+  toolCallMetaText,
+  toolCallStructuredContent,
+} from "@/lib/pi/tool-call-meta";
 
 /**
  * 未注册专属渲染的工具（Question、子代理、todo 等）的通用行，与桌面
@@ -105,6 +110,8 @@ export const ToolFallback: ToolCallMessagePartComponent = ({
   result,
   status,
   approval,
+  timing,
+  artifact,
 }) => {
   const isCancelled =
     status.type === "incomplete" && status.reason === "cancelled";
@@ -120,7 +127,18 @@ export const ToolFallback: ToolCallMessagePartComponent = ({
     status.type === "incomplete" && status.error != null
       ? formatUnknownValue(status.error)
       : "";
-  const output = resultText(result);
+  const structured = toolCallStructuredContent({ artifact });
+  const text = resultText(result);
+  let output = text;
+  if (!output && structured !== undefined && structured !== null) {
+    try {
+      output = JSON.stringify(structured, null, 2);
+    } catch {
+      output = String(structured);
+    }
+  }
+  const meta = toolCallMetaFromPart({ timing, artifact });
+  const metaText = toolCallMetaText(meta);
 
   return (
     <View className="aui-tool-fallback-root border-border bg-card my-1 gap-2 rounded-xl border px-3 py-2">
@@ -129,6 +147,14 @@ export const ToolFallback: ToolCallMessagePartComponent = ({
         <Text className="aui-tool-fallback-title text-muted-foreground text-sm">
           {label}
         </Text>
+        {metaText ? (
+          <Text
+            className="text-muted-foreground/60 ml-auto text-[11px]"
+            style={monoStyle}
+          >
+            {metaText}
+          </Text>
+        ) : null}
       </View>
       {argsText ? (
         <View className={cn("aui-tool-fallback-approval-args rounded-lg px-2.5 py-2", field)}>

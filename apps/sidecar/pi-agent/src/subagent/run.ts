@@ -31,6 +31,8 @@ import { createTraceRunRecorder, type TraceRunRecorder } from "../protocol/trace
 import { messageUsageTokens } from "../agent/context";
 import type { SubagentActivityItem, SubagentRunResult, SubagentRunStatus } from "../types";
 import { boundedReport, summarizeToolArgs } from "./delegation";
+import { normalizeToolResultImages } from "../tools/image-normalize";
+import type { ProjectableContentBlock } from "../tools/image-parts";
 
 /**
  * 组装 delegate 的 system prompt：框架说明在前，定义正文在后
@@ -273,7 +275,23 @@ export class SubagentRun {
 
   /** 消费计数与报告所需的事件，并把过程归一化成活动条目转发（onActivity）；
    * turn_end / agent_end 留在内部，delegate 结束绝不能终结父代理的 turn。 */
-  private handleEvent(event: AgentEvent): void {
+  private async handleEvent(event: AgentEvent): Promise<void> {
+    // 与主代理同一条图片口径：工具结果里的超限图先缩放/转码到子代理模型的
+    // inputLimits.images.resize 与内联闸门内，再让 agent-core 构造 toolResult
+    // 消息（订阅回调是 await 的，原地改 result.content 对模型生效）
+    if (event.type === "tool_execution_end") {
+      const result = event.result as { content?: ProjectableContentBlock[] } | undefined;
+      if (result?.content) {
+        const normalized = await normalizeToolResultImages(result.content, this.opts.model);
+        if (normalized) {
+          try {
+            result.content = normalized as ProjectableContentBlock[];
+          } catch (err) {
+            logErr("subagent tool result image normalize: content is not writable:", err);
+          }
+        }
+      }
+    }
     // 轨迹记账：全事件喂给记录器，agent_end 即结算（handle 先行保证 endMs 收在事件上）
     this.trace.handle(event);
     if (event.type === "agent_end") this.trace.settle();

@@ -11,7 +11,10 @@ import { isDesktopShell } from "@/lib/mobile/platform";
  * 白名单外附件在组装时跳过——sidecar 闸门（prompt-attachments.ts）是最终兜底。
  *
  * 附件分两类，传输通道不同：
- * - 图片：MIME 白名单 + 2MiB 单图上限，裸 base64 内联进 prompt（多模态上下文）；
+ * - 图片：MIME 白名单（png/jpeg/gif/webp/bmp），裸 base64 内联进 prompt；
+ *   前端只做 24MiB 的传输 sanity 上限——真正的 2MiB 内联闸门在 sidecar，
+ *   超限图由 Photon 缩放/转码到模型 inputLimits.images.resize 后仍进上下文
+ *   （不再"超限即丢"）。本端压缩（image-compress）仍保留，省流量/内存。
  * - 文档（PDF/Word/Excel/PPT/TXT/MD/CSV）：桌面端经 Rust attachment_stage 落盘
  *   到 app_data/attachments/，attachments 里只带绝对路径（prompt 帧不带字节，
  *   请求体不随文档膨胀；sidecar 复制进 <cwd>/.kova/attachments/ 交给 agent），
@@ -19,8 +22,12 @@ import { isDesktopShell } from "@/lib/mobile/platform";
  * 数量（图片 >4 / 文档 >2）与内联总体积由 sidecar 拒收说明，添加时不拦。
  */
 
-/** 与 sidecar prompt-attachments.ts 同源的单图字节上限（IMAGE_INLINE_MAX_BYTES） */
-export const PROMPT_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+/** 前端附着 sanity 上限：超过就根本不上传（base64 帧体积）。真正的单图内联
+ *  闸门（2MiB）在 sidecar，超限图会被缩放/转码，不再是拒收理由。 */
+export const PROMPT_IMAGE_MAX_BYTES = 24 * 1024 * 1024;
+
+/** sidecar 内联闸门（2MiB 原始字节）的前端镜像：本端压缩目标用它 */
+export const PROMPT_IMAGE_INLINE_MAX_BYTES = 2 * 1024 * 1024;
 
 /** 与 sidecar 同源的单条 prompt 图片上限（超出由 sidecar 拒收说明） */
 export const PROMPT_IMAGE_MAX_COUNT = 4;
@@ -37,6 +44,9 @@ const IMAGE_MIME_ALLOWED = new Set([
   "image/jpg",
   "image/gif",
   "image/webp",
+  // BMP 由 sidecar 转 PNG（pi 的图片处理口径）；前端放行，不直接渲染
+  "image/bmp",
+  "image/x-ms-bmp",
 ]);
 
 /** 文档扩展名 → mime（与 sidecar prompt-attachments.ts 的 DOC_TYPES 同源） */
@@ -76,6 +86,7 @@ const IMAGE_EXT_MIME: Readonly<Record<string, string>> = {
   jpeg: "image/jpeg",
   gif: "image/gif",
   webp: "image/webp",
+  bmp: "image/bmp",
 };
 
 export function imageMimeFromName(name: string | undefined): string | null {
@@ -159,7 +170,7 @@ export function validatePromptFile(file: {
     }
     return null;
   }
-  return `「${file.name || "文件"}」不是支持的附件（图片 PNG/JPEG/GIF/WebP，或文档 PDF/Word/Excel/PPT/TXT/MD/CSV）`;
+  return `「${file.name || "文件"}」不是支持的附件（图片 PNG/JPEG/GIF/WebP/BMP，或文档 PDF/Word/Excel/PPT/TXT/MD/CSV）`;
 }
 
 /** Uint8Array → base64（分段 btoa，避免大文件展开超调用栈） */

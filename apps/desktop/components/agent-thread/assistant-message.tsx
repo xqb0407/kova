@@ -9,6 +9,10 @@ import { QuestionToolRow } from "./question-tool-row";
 import { PlanExitToolRow } from "./plan-exit-tool-row";
 import { AGENT_TOOL_UI } from "@/components/assistant-ui/elements/tool-row.aui";
 import {
+  ToolCallMetaProvider,
+  toolCallMetaFromPart,
+} from "@/components/assistant-ui/elements/tool-call-meta";
+import {
   ToolGroupContent,
   ToolGroupRoot,
   ToolGroupTrigger,
@@ -585,10 +589,15 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
                 if (HIDDEN_TOOL_NAMES.has(part.toolName)) return null;
                 // 内置四类工具走扁平行（点开面板）；其余保留注册 UI / 回退卡
                 const Row = AGENT_TOOL_UI[part.toolName];
-                return Row ? (
+                const rendered = Row ? (
                   <Row {...part} />
                 ) : (
                   part.toolUI ?? <ToolFallback {...part} />
+                );
+                return (
+                  <ToolCallMetaProvider value={toolCallMetaFromPart(part)}>
+                    {rendered}
+                  </ToolCallMetaProvider>
                 );
               }
               case "indicator":

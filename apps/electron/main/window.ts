@@ -2,10 +2,11 @@
  * 主窗口创建（对齐 旧桌面壳配置 windows[0] + gpu.rs create_windows +
  * lib.rs on_page_load 首帧显窗 + 5s 兜底 show）。
  */
-import { app, BrowserWindow, shell } from "electron";
+import { BrowserWindow, shell } from "electron";
 import { onHiddenToTray } from "./tray";
 import { join } from "node:path";
 import { trackWindow } from "./ipc";
+import { applyDevDockIcon, watchWindow } from "./crash";
 import { restore as restoreAppearance } from "./appearance";
 import { restoreDevMode } from "./about";
 
@@ -64,15 +65,11 @@ export function createMainWindow(devUrl: string | null): BrowserWindow {
   });
   mainWindow = win;
   trackWindow("main", win);
+  // 卡死/渲染进程崩溃/生产环境加载失败：给用户「等待 / 重新加载 / 重启」而不是空白窗
+  watchWindow(win, "main");
   // macOS dev（未打包）时 Dock 显示 Electron 默认图标：手动换成应用图标；
-  // 打包版由 bundle 的 icon.icns 生效，无需干预
-  if (process.platform === "darwin" && !app.isPackaged) {
-    try {
-      app.dock?.setIcon(join(here, "..", "icons", "icon.png"));
-    } catch {
-      /* 图标失败不拦启动 */
-    }
-  }
+  // 打包版由 bundle 的 icon.icns 生效，无需干预（启动期崩溃路径也会调用）
+  applyDevDockIcon();
 
   // 首帧显示 + 5s 兜底（对齐 on_page_load Finished / setup 兜底线程）
   let shown = false;

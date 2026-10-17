@@ -30,6 +30,7 @@ import type {
   PiRuntimeReadiness,
   PiThreadMetadata,
   PiThreadSnapshot,
+  PiUsage,
 } from "../types";
 import { seqOf } from "./messageIdPins";
 export type PiRunStatus = "idle" | "running" | "failed";
@@ -45,6 +46,14 @@ export interface PiToolExecutionState {
    * `toolResult` message once it lands in the transcript. */
   partialResult?: unknown;
   status: "running" | "complete" | "error";
+  /** 工具 execute() 的权威耗时（pi-agent-core 1.1+，客户端 wall clock 无关）。 */
+  durationMs?: number;
+  /** 结束时刻（客户端收到 end 帧的 wall clock；用于 timing 的 completedAt）。 */
+  completedAt?: number;
+  /** 工具自身返回的 usage（如图片生成消耗的 token）。 */
+  usage?: PiUsage;
+  /** MCP/工具返回的结构化结果（仅直播态；历史消息不落此字段）。 */
+  structuredContent?: unknown;
 }
 
 export interface PiThreadState {
@@ -431,13 +440,26 @@ export const reducePiThreadState = (
         }),
       );
 
-    case "tool_execution_end":
+    case "tool_execution_end": {
+      const result = event.result as
+        | { usage?: PiUsage; structuredContent?: unknown }
+        | null
+        | undefined;
       return stamped(
         upsertToolExecution(state, event.toolCallId, {
           partialResult: event.result,
           status: event.isError ? "error" : "complete",
+          ...(typeof event.durationMs === "number"
+            ? { durationMs: event.durationMs }
+            : {}),
+          completedAt: Date.now(),
+          ...(result?.usage ? { usage: result.usage } : {}),
+          ...(result && result.structuredContent !== undefined
+            ? { structuredContent: result.structuredContent }
+            : {}),
         }),
       );
+    }
 
     case "queue_update":
       return stamped({

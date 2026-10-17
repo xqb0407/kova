@@ -57,6 +57,11 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import {
+  toolCallMetaText,
+  toolCallMetaTitle,
+  useToolCallMeta,
+} from "./tool-call-meta";
 
 /**
  * 消息里的工具调用扁平行（bash/read/edit/write/WebSearch/WebFetch/glob/grep/Submit*）：
@@ -190,6 +195,8 @@ export type ToolRowProps = {
   expandedHeader?: ReactNode;
   /** 打开右侧面板；有输出时是行尾悬浮小按钮，无输出时整行即此动作 */
   onOpenPanel?: () => void;
+  /** false = 不显示耗时/token 元信息（如 Task 行已有子智能体自己的计时） */
+  showMeta?: boolean;
 };
 
 export const ToolRow: FC<ToolRowProps> = ({
@@ -208,8 +215,13 @@ export const ToolRow: FC<ToolRowProps> = ({
   expandedContent,
   expandedHeader,
   onOpenPanel,
+  showMeta = true,
 }) => {
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  // 统一由 assistant-message 分发处注入；无 meta 时（独立复用 ToolRow）为 null
+  const meta = useToolCallMeta();
+  const metaText = toolCallMetaText(meta);
+  const metaTitle = toolCallMetaTitle(meta);
   // 两个档位 hook 必须各自无条件调用：写成 `useCurrentAppMode() === "work" || useIsAskMode()`
   // 会让 useIsAskMode 的 hook 数量随档位短路变化，切档（工作 ⇄ 代码/设计）即触发
   // React #310（Rendered more hooks than during the previous render，生产环境直接崩主区）
@@ -298,6 +310,14 @@ export const ToolRow: FC<ToolRowProps> = ({
               −{stats.removed}
             </span>
           ) : null}
+        </span>
+      ) : null}
+      {showMeta && metaText ? (
+        <span
+          title={metaTitle}
+          className="text-muted-foreground/60 ml-auto shrink-0 font-mono text-[11px] tabular-nums"
+        >
+          {metaText}
         </span>
       ) : null}
       {failed ? (
@@ -922,6 +942,7 @@ const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) 
       secondary={[description, statusSuffix].filter(Boolean).join(" · ") || undefined}
       running={running}
       failed={failed || startFailed}
+      showMeta={false}
       // 成功启动的行无展开输出：整行即面板入口（委派详情在专属 tab 流式呈现）；
       // 启动失败的行把 sidecar 返回的原因文本收进展开框，行尾红点
       output={startFailed ? startOutput : undefined}
