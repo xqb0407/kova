@@ -44,7 +44,8 @@ const EMPTY: GitStatusSnapshot = {
 
 const snapshots = new Map<string, GitStatusSnapshot>();
 const listeners = new Set<() => void>();
-let inflight: Promise<void> | null = null;
+/** 按会话在途去重：只按全局单例去重时，A 在飞会吞掉 B 的刷新，B 永远停在旧数据 */
+const inflight = new Map<string, Promise<void>>();
 
 function emit() {
   for (const listener of listeners) listener();
@@ -57,14 +58,17 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
-/** 拉取某会话的 git 状态（在途去重；失败落进快照的 error 字段，卡片里可见） */
+/** 拉取某会话的 git 状态（按会话在途去重；失败落进快照的 error 字段，卡片里可见） */
 export async function refreshGitStatus(sessionId: string): Promise<void> {
-  if (inflight) return inflight;
+  const pending = inflight.get(sessionId);
+  if (pending) return pending;
   const prev = snapshots.get(sessionId) ?? EMPTY;
   snapshots.set(sessionId, { ...prev, loading: true });
   emit();
-  inflight = piRequest<PiGitStatusResponse>({ type: "git_status", sessionId })
+  const promise = piRequest<PiGitStatusResponse>({ type: "git_status", sessionId })
     .then((res) => {
+      // 已 release（会话关闭）：别再把手里的结果写回快照表
+      if (inflight.get(sessionId) !== promise) return;
       snapshots.set(sessionId, {
         loading: false,
         repo: res.repo === true,
@@ -75,6 +79,7 @@ export async function refreshGitStatus(sessionId: string): Promise<void> {
       });
     })
     .catch((err) => {
+      if (inflight.get(sessionId) !== promise) return;
       snapshots.set(sessionId, {
         loading: false,
         repo: false,
@@ -85,10 +90,24 @@ export async function refreshGitStatus(sessionId: string): Promise<void> {
       });
     })
     .finally(() => {
-      inflight = null;
+      // 同一会话可能已被新一轮刷新（release 后重开）接管，只清自己那一份
+      if (inflight.get(sessionId) !== promise) return;
+      inflight.delete(sessionId);
       emit();
     });
-  return inflight;
+  inflight.set(sessionId, promise);
+  return promise;
+}
+
+/** 会话关闭时释放快照与在途请求：快照表按会话键常驻，不释放会随访问过的会话无限增长 */
+export function releaseGitStatus(sessionId: string): void {
+  inflight.delete(sessionId);
+  if (snapshots.delete(sessionId)) emit();
+}
+
+/** 读某会话的当前快照（无缓存时给稳定的空快照，供 useSyncExternalStore 使用） */
+export function getGitStatusSnapshot(sessionId: string | undefined): GitStatusSnapshot {
+  return sessionId ? (snapshots.get(sessionId) ?? EMPTY) : EMPTY;
 }
 
 /** 单文件 diff（按需拉取，不进 store：一次只看一个文件） */
@@ -116,7 +135,7 @@ export async function fetchGitDiff(
 export function useGitStatus(sessionId: string | undefined): GitStatusSnapshot {
   const snapshot = useSyncExternalStore(
     subscribe,
-    () => (sessionId ? (snapshots.get(sessionId) ?? EMPTY) : EMPTY),
+    () => getGitStatusSnapshot(sessionId),
     () => EMPTY,
   );
   useEffect(() => {

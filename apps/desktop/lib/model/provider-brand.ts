@@ -110,6 +110,7 @@ const PROVIDER_BRAND: Record<string, BrandKey> = {
   "cloudflare-ai-gateway": "Cloudflare",
   "cloudflare-workers-ai": "WorkersAI",
   "amazon-bedrock": "Bedrock",
+  azure: "AzureAI",
   "azure-openai-responses": "AzureAI",
   "github-copilot": "GithubCopilot",
   opencode: "OpenCode",

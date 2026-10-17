@@ -3,11 +3,13 @@
  *
  * 前端经 prompt 消息的 attachments 字段下发（[{ name, mimeType, data | path }]），
  * 这里单点裁决哪些附件进模型上下文 / 落盘：
- * - 图片：MIME 白名单（与工具结果图片投影 image-parts 同一张表，SVG 整体挡掉）、
- *   单图 ≤2MiB（同 IMAGE_INLINE_MAX_BYTES，base64 后 ~2.7MiB）、每条 ≤4 张；
- *   合法图片组装成 ImageContent 交 agent.prompt(text, images)——pi-agent-core 会
- *   把图片拼进 user 消息 content，随 agent 消息本体自动落转录（persist 存整条
- *   agent JSON）。
+ * - 图片：MIME 白名单（png/jpeg/gif/webp/bmp；SVG 整体挡掉）、每条 ≤4 张。
+ *   **超限不再丢**：图先交给 image-normalize.ts（Photon）解码 → EXIF 摆正 →
+ *   缩放到当前模型 inputLimits.images.resize（缺省 2000x2000）→ 逐档降质/降尺寸
+ *   直到 base64 ≤ 内联闸门（2MiB 原始字节）→ BMP 转 PNG，然后组装成
+ *   ImageContent 交 agent.prompt(text, images)——pi-agent-core 会把图片拼进
+ *   user 消息 content，随 agent 消息本体自动落转录（persist 存整条 agent JSON）。
+ *   解不开/处理不了才折算成一行说明。
  * - 文档（PDF/Word/Excel/PPT/文本类）：多模态 API 不吃文档内联，统一落盘到
  *   <cwd>/.kova/attachments/（时间戳前缀防撞名），路径折算成说明行追加到
  *   prompt 文本尾部——agent 用文件工具读取处理（docx/pdf 的解析交给 agent 的
@@ -15,8 +17,9 @@
  *   path（桌面端：前端经 Rust attachment_stage 落盘中转，这里校验后复制，
  *   帧不带字节，上限 20MiB）/ data（网页端回退：base64 内联，上限 8MiB 并计入
  *   总体积红线）。
- * - 体积红线：内联附件（图片+data 文档）裸字节合计 ≤ PROMPT_ATTACH_TOTAL_MAX_BYTES
- *   （base64 后 ~14.7MiB，低于 Rust 重放缓冲 16MiB），超出者拒收说明。
+ * - 体积红线：内联附件（图片经归一化后 + data 文档）裸字节合计 ≤
+ *   PROMPT_ATTACH_TOTAL_MAX_BYTES（base64 后 ~14.7MiB，低于 Rust 重放缓冲
+ *   16MiB），超出者拒收说明。path 模式不占帧体积，不计入。
  *
  * 拒收不抛错不静默：一律折算成一行中文说明追加到 prompt 文本尾部（模型可读、
  * 刷新后可见），与 image-parts 的降级占位哲学一致。
@@ -28,7 +31,18 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { QueueAttachment } from "pi-protocol";
-import { IMAGE_INLINE_MAX_BYTES, normalizeMime } from "../tools/image-parts";
+import { IMAGE_INLINE_MAX_BYTES } from "../tools/image-parts";
+import {
+  IMAGE_INPUT_MAX_BYTES,
+  getDefaultImageProcessor,
+  imageHints,
+  imageLimitsForModel,
+  prepareImageBase64,
+  type ImageLimitModel,
+} from "../tools/image-normalize";
+import { normalizeProcessableMime } from "../tools/image-mime";
+import type { ImageProcessor } from "../vendor/pi-images/processor";
+import { INLINE_IMAGE_TYPES } from "../vendor/pi-images/processor";
 
 /** 单条 prompt 允许携带的图片上限 */
 export const PROMPT_IMAGE_MAX_COUNT = 4;
@@ -45,6 +59,11 @@ export const PROMPT_DOC_MAX_COUNT = 2;
 /** 单条 prompt 内联附件（图片+data 文档）裸字节合计上限（base64 后 ~14.7MiB，
  *  低于 Rust 重放缓冲 16MiB；path 模式不占帧体积，不计入） */
 export const PROMPT_ATTACH_TOTAL_MAX_BYTES = 11 * 1024 * 1024;
+
+/** 单条 prompt 图片"输入侧"原始字节合计上限：归一化前先挡住并发解码/内存尖峰
+ *  （输出侧仍由 2MiB/张与 11MiB 红线约束）。24MiB/张 × 4 张的理论尖峰太大，
+ *  这里按 48MiB 合计收口；超出的图按顺序得到说明行。 */
+export const PROMPT_IMAGE_INPUT_TOTAL_MAX_BYTES = 48 * 1024 * 1024;
 
 /** 文档附件白名单：扩展名 → { mime, 展示标签 }（mime 反查种类的依据） */
 const DOC_TYPES: Readonly<Record<string, { mime: string; label: string }>> = {
@@ -99,6 +118,15 @@ export type PreparedPromptAttachments = {
   noticeLines: string[];
 };
 
+/** preparePromptAttachments 的可选项；processor 供测试注入（缺省懒加载 Photon） */
+export type PreparePromptAttachmentsOptions = {
+  cwd?: string;
+  /** 当前会话模型：只用于 inputLimits.images.resize，不做能力硬门 */
+  model?: ImageLimitModel;
+  /** undefined = 用默认 Photon；null = 禁用处理（降级回旧内联闸门） */
+  processor?: ImageProcessor | null;
+};
+
 /** 原始 prompt 文本 + 拒收说明行 → 模态文本（空行分隔，无说明时原样返回） */
 export function noticeAppendedText(text: string, noticeLines: string[]): string {
   return noticeLines.length ? `${text}\n${noticeLines.join("\n")}` : text;
@@ -136,20 +164,24 @@ const fmtBytes = (bytes: number): string =>
 
 /**
  * prompt 消息 → 可进模型的 ImageContent 列表 + 拒收/落盘说明行。
- * 图片按序收满 PROMPT_IMAGE_MAX_COUNT 张；文档按序收满 PROMPT_DOC_MAX_COUNT 个
- * （opts.cwd 提供时落盘并说明路径，缺省拒收）；其余与非法项各得一行说明。
+ * 图片按序收满 PROMPT_IMAGE_MAX_COUNT 张；超限图先归一化到模型/内联限制，
+ * 处理不了才降级说明；文档按序收满 PROMPT_DOC_MAX_COUNT 个（opts.cwd 提供时
+ * 落盘并说明路径，缺省拒收）；其余与非法项各得一行说明。
  */
-export function preparePromptAttachments(
+export async function preparePromptAttachments(
   msg: Record<string, unknown>,
-  opts?: { cwd?: string },
-): PreparedPromptAttachments {
+  opts?: PreparePromptAttachmentsOptions,
+): Promise<PreparedPromptAttachments> {
   const raw = Array.isArray(msg.attachments) ? msg.attachments : [];
   if (raw.length === 0) return { images: [], noticeLines: [] };
 
+  const processorOption = opts?.processor;
+  const limits = imageLimitsForModel(opts?.model);
   const noticeLines: string[] = [];
   const images: ImageContent[] = [];
   let docsSaved = 0;
   let totalBytes = 0;
+  let imageInputBytes = 0;
 
   for (let i = 0; i < raw.length; i++) {
     const item = (raw[i] ?? {}) as Record<string, unknown>;
@@ -161,20 +193,20 @@ export function preparePromptAttachments(
     let data = typeof item.data === "string" ? stripDataUrl(item.data.trim()) : "";
     const rawPath = typeof item.path === "string" && item.path.trim() ? item.path.trim() : "";
     let bytes = data ? Buffer.byteLength(data, "base64") : 0;
-    const imageMime = normalizeMime(mimeRaw);
+    const imageMime = normalizeProcessableMime(mimeRaw);
     const docType = imageMime ? null : docTypeOf(rawName, mimeRaw);
 
     // dialog 直选的图片（path 载荷、无 data）：读盘转 base64，与内联图片走
-    // 完全同一套闸门；读盘失败/超 2MiB 给专用说明行
+    // 完全同一套降采样/转码；读盘失败或超过处理上限给专用说明行
     if (!data && rawPath && imageMime) {
       try {
         const st = statSync(rawPath);
-        if (!st.isFile() || st.size > IMAGE_INLINE_MAX_BYTES) throw new Error("size");
+        if (!st.isFile() || st.size > IMAGE_INPUT_MAX_BYTES) throw new Error("size");
         data = readFileSync(rawPath).toString("base64");
         bytes = Buffer.byteLength(data, "base64");
       } catch {
         noticeLines.push(
-          `[${rawName || `图片${i + 1}`} 已省略：附件图片不可读或超过 ${(IMAGE_INLINE_MAX_BYTES / (1024 * 1024)).toFixed(0)}MiB 上限]`,
+          `[${rawName || `图片${i + 1}`} 已省略：附件图片不可读或超过 ${(IMAGE_INPUT_MAX_BYTES / (1024 * 1024)).toFixed(0)}MiB 处理上限]`,
         );
         continue;
       }
@@ -182,9 +214,13 @@ export function preparePromptAttachments(
 
     if (imageMime) {
       const name = rawName || `图片${i + 1}`;
-      if (bytes <= 0 || bytes > IMAGE_INLINE_MAX_BYTES) {
+      if (bytes <= 0) {
+        noticeLines.push(`[${name} 已省略：图片数据为空]`);
+        continue;
+      }
+      if (bytes > IMAGE_INPUT_MAX_BYTES) {
         noticeLines.push(
-          `[${name} 已省略：图片超过 ${(IMAGE_INLINE_MAX_BYTES / (1024 * 1024)).toFixed(0)}MiB 上限]`,
+          `[${name} 已省略：图片超过 ${(IMAGE_INPUT_MAX_BYTES / (1024 * 1024)).toFixed(0)}MiB 处理上限]`,
         );
         continue;
       }
@@ -192,12 +228,46 @@ export function preparePromptAttachments(
         noticeLines.push(`[${name} 已省略：单条消息最多 ${PROMPT_IMAGE_MAX_COUNT} 张图片]`);
         continue;
       }
-      if (totalBytes + bytes > PROMPT_ATTACH_TOTAL_MAX_BYTES) {
+      // 归一化前合计输入上限：防多张超大图把解码内存/CPU 叠加成尖峰
+      if (imageInputBytes + bytes > PROMPT_IMAGE_INPUT_TOTAL_MAX_BYTES) {
+        noticeLines.push(`[${name} 已省略：单条消息图片输入总体积超限]`);
+        continue;
+      }
+      imageInputBytes += bytes;
+      // 懒加载：只有真的处理图片时才初始化 Photon（文档-only 的 prompt 不碰 WASM）
+      const processor =
+        processorOption === undefined ? getDefaultImageProcessor() : processorOption;
+      // 处理到合规：模型限制（2000x2000 / 4.5MiB）+ 内联闸门（2MiB）取严
+      let prepared = await prepareImageBase64(data, imageMime, limits, processor);
+      if (!prepared) {
+        // 处理器不可用（wasm 加载失败）时维持旧闸门：本来合规的内联图放行
+        if (
+          processor === null &&
+          INLINE_IMAGE_TYPES.has(imageMime) &&
+          bytes <= IMAGE_INLINE_MAX_BYTES
+        ) {
+          prepared = { data, mimeType: imageMime };
+        } else {
+          noticeLines.push(`[${name} 已省略：图片无法解码或压缩到内联上限]`);
+          continue;
+        }
+      }
+      const outBytes = Buffer.byteLength(prepared.data, "base64");
+      // 处理器承诺"压到 limits.maxBytes 内"；这里再兜一道（处理器被替换/降级
+      // 时也不能把超闸门的 base64 塞进 prompt 帧）
+      if (outBytes > IMAGE_INLINE_MAX_BYTES) {
+        noticeLines.push(
+          `[${name} 已省略：图片无法压缩到 ${(IMAGE_INLINE_MAX_BYTES / (1024 * 1024)).toFixed(0)}MiB 内联上限]`,
+        );
+        continue;
+      }
+      if (totalBytes + outBytes > PROMPT_ATTACH_TOTAL_MAX_BYTES) {
         noticeLines.push(`[${name} 已省略：单条消息附件总体积超限]`);
         continue;
       }
-      totalBytes += bytes;
-      images.push({ type: "image", data, mimeType: imageMime });
+      totalBytes += outBytes;
+      images.push({ type: "image", data: prepared.data, mimeType: prepared.mimeType });
+      noticeLines.push(...imageHints(prepared, imageMime));
       continue;
     }
 
@@ -290,7 +360,8 @@ export function queueImageAttachments(msg: Record<string, unknown>): QueueAttach
   const out: QueueAttachment[] = [];
   for (const entry of raw) {
     const item = (entry ?? {}) as Record<string, unknown>;
-    if (!normalizeMime(item.mimeType ?? item.mediaType)) continue;
+    // 可处理口径（含 BMP）：真正的降采样/转码在出队派发时由 preparePromptAttachments 做
+    if (!normalizeProcessableMime(item.mimeType ?? item.mediaType)) continue;
     const data = typeof item.data === "string" && item.data.trim() ? item.data : undefined;
     const path = typeof item.path === "string" && item.path.trim() ? item.path.trim() : undefined;
     if (!data && !path) continue;
@@ -308,14 +379,15 @@ export function queueImageAttachments(msg: Record<string, unknown>): QueueAttach
   return out;
 }
 
-/** 出队/重发用：path-only 图片读出字节内联（同 2MiB 闸门）；读不了返回 null
- *  （调用方丢弃该项并留痕——重发链路要的是可直接进 prompt 的 data 载荷） */
+/** 出队/重发用：path-only 图片读出字节内联（超过处理上限才拒）；读不了返回 null
+ *  （调用方丢弃该项并留痕——重发链路要的是可直接进 prompt 的 data 载荷）。
+ *  2MiB 内联闸门不在这里：出队派发时 preparePromptAttachments 会先降采样/转码。 */
 export function inlineQueueAttachment(att: QueueAttachment): QueueAttachment | null {
   if (att.data) return att;
   if (!att.path) return null;
   try {
     const st = statSync(att.path);
-    if (!st.isFile() || st.size > IMAGE_INLINE_MAX_BYTES) return null;
+    if (!st.isFile() || st.size > IMAGE_INPUT_MAX_BYTES) return null;
     return { ...att, data: readFileSync(att.path).toString("base64") };
   } catch {
     return null;

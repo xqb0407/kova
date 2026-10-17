@@ -18,7 +18,7 @@ import {
   type SummarizeFn,
 } from "../../src/agent/context";
 import { makeMidTurnCompactionHook } from "../../src/protocol/prompt-pipeline";
-import { COMPACTION_SUMMARY_PREFIX } from "@earendil-works/pi-agent-core";
+import { COMPACTION_SUMMARY_PREFIX } from "../../src/vendor/pi-harness/compaction";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { Running } from "../../src/types";
 

@@ -13,15 +13,34 @@ import {
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { logErr } from "../log";
 import { credentialStore } from "../storage/storage";
+import { normalizeProviderId } from "./provider-id";
 
 /** 模型目录类型（含 provider 注册/删除、模型查询、凭据查询） */
 export type ModelCatalog = ReturnType<typeof builtinModels>;
 
 let catalog: ModelCatalog | undefined;
 
+/**
+ * 读时 provider 别名：旧存档里的 `azure-openai-responses/...` 仍能解析到
+ * `azure/...`。包在 Models 实例方法上，覆盖转录回放、子代理、自动化、
+ * imagegen、auto-review 等所有 getModel/getProvider 调用。
+ */
+function aliasProviderLookups(models: ModelCatalog): void {
+  const getModel = models.getModel.bind(models);
+  models.getModel = (provider, id) => getModel(normalizeProviderId(provider), id);
+  const getProvider = models.getProvider.bind(models);
+  models.getProvider = (id) => getProvider(normalizeProviderId(id));
+  const getModelsOfProvider = models.getModels.bind(models);
+  models.getModels = (provider?: string) =>
+    getModelsOfProvider(provider ? normalizeProviderId(provider) : provider);
+}
+
 /** 取模型目录单例（首次调用时基于已初始化的凭据存储构建） */
 export function getModels(): ModelCatalog {
-  if (!catalog) catalog = builtinModels({ credentials: credentialStore });
+  if (!catalog) {
+    catalog = builtinModels({ credentials: credentialStore });
+    aliasProviderLookups(catalog);
+  }
   return catalog;
 }
 

@@ -109,6 +109,9 @@ const createdAtOf = (message: { timestamp?: number }): Date =>
 // —— 工具结果图片闸门（镜像 sidecar image-parts.ts，唯一事实源在 sidecar）——
 // 投影只加 UI 通道：image 块按 sidecar 同款语义转 data part（快照 = 刷新后同构），
 // 越界/白名单外/空数据的图不进线，改为结果文本尾部一行占位提示，绝不静默吞图。
+// 正常路径不会命中体积闸：sidecar 在 tool_execution_end 已按模型
+// inputLimits.images.resize 缩放/转码（image-normalize.ts），这里只是旧会话
+// 残留数据与处理器降级时的最后防线。
 
 /** data part 名：UI 侧 makeAssistantDataUI("image") 按名认领渲染 */
 const IMAGE_PART_NAME = "image";
@@ -309,7 +312,15 @@ const dataPart = (
 const buildToolResultMap = (messages: readonly PiAgentMessage[]) => {
   const map = new Map<
     string,
-    { result?: string; images: ProjectedImage[]; isError: boolean; details: unknown }
+    {
+      result?: string;
+      images: ProjectedImage[];
+      isError: boolean;
+      details: unknown;
+      usage?: PiToolResultMessage["usage"];
+      durationMs?: number;
+      timestamp: number;
+    }
   >();
   for (const message of messages) {
     if (message.role !== "toolResult") continue;
@@ -320,6 +331,9 @@ const buildToolResultMap = (messages: readonly PiAgentMessage[]) => {
       }),
       isError: m.isError,
       details: m.details,
+      ...(m.usage !== undefined ? { usage: m.usage } : {}),
+      ...(m.durationMs !== undefined ? { durationMs: m.durationMs } : {}),
+      timestamp: m.timestamp,
     });
   }
   return map;
@@ -382,6 +396,33 @@ const projectAssistantInto = (
           toolCallId: part.id,
         });
       const isError = paired?.isError ?? live?.status === "error";
+      // 工具自身耗时/用量：最终 toolResult 消息是历史权威源；未落盘时用直播台账。
+      const usage = paired?.usage ?? live?.usage;
+      const pairedDetails = paired?.details as
+        | { durationMs?: number; structuredContent?: unknown }
+        | undefined;
+      const durationMs =
+        paired?.durationMs ?? live?.durationMs ?? pairedDetails?.durationMs;
+      const completedAt =
+        paired?.timestamp ?? live?.completedAt ?? Date.now();
+      const timing =
+        typeof durationMs === "number"
+          ? {
+              startedAt: Math.max(0, completedAt - durationMs),
+              completedAt,
+            }
+          : undefined;
+      // MCP 工具把 durationMs/structuredContent 也写进 details（历史可回放）；
+      // 直播态优先用事件里的结构化结果。
+      const structuredContent =
+        live?.structuredContent ?? pairedDetails?.structuredContent;
+      const artifact =
+        usage !== undefined || structuredContent !== undefined
+          ? {
+              ...(usage !== undefined ? { usage } : {}),
+              ...(structuredContent !== undefined ? { structuredContent } : {}),
+            }
+          : undefined;
 
       const hostUi = hostUiByToolCall.get(part.id);
       const approval = hostUi && approvalForRequest(hostUi);
@@ -397,6 +438,8 @@ const projectAssistantInto = (
         parentId,
         ...(output.result !== undefined ? { result: output.result } : {}),
         ...(isError ? { isError: true } : {}),
+        ...(timing ? { timing } : {}),
+        ...(artifact ? { artifact } : {}),
         ...(paired === undefined &&
         output.result !== undefined &&
         live?.status === "running"

@@ -10,6 +10,7 @@ import {
   PROMPT_DOC_INLINE_MAX_BYTES,
   PROMPT_DOC_MAX_BYTES,
   PROMPT_IMAGE_MAX_BYTES,
+  PROMPT_IMAGE_INLINE_MAX_BYTES,
 } from "@/lib/attachments/prompt-attachments";
 
 const png1x1 =
@@ -51,11 +52,20 @@ describe("promptFileKind / validatePromptFile", () => {
     expect(docMimeFromName(undefined)).toBeNull();
   });
 
-  test("校验：图片 2MiB / 文档上限随通道 / 白名单外", () => {
+  test("校验：图片只卡 24MiB 传输上限 / 文档上限随通道 / 白名单外", () => {
     expect(validatePromptFile({ name: "a.png", type: "image/png", size: 1024 })).toBeNull();
+    // 2MiB 不再是拒收理由：服务端会缩放/转码，前端只拦离谱的传输体积
+    expect(
+      validatePromptFile({
+        name: "a.png",
+        type: "image/png",
+        size: PROMPT_IMAGE_INLINE_MAX_BYTES + 1,
+      }),
+    ).toBeNull();
     expect(
       validatePromptFile({ name: "a.png", type: "image/png", size: PROMPT_IMAGE_MAX_BYTES + 1 }),
-    ).toContain("2MiB");
+    ).toContain("24MiB");
+    expect(promptFileKindFromName("shot.bmp")).toBe("image");
     // 测试环境非 桌面壳 → 网页端内联回退上限 8MiB；桌面端（isDesktop）走 20MiB 落盘
     expect(PROMPT_DOC_MAX_BYTES).toBe(20 * 1024 * 1024);
     expect(validatePromptFile({ name: "a.docx", size: PROMPT_DOC_INLINE_MAX_BYTES })).toBeNull();

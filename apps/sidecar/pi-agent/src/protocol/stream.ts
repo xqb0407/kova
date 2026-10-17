@@ -11,6 +11,7 @@ import { logAt, logErr } from "../log";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
 import { classifyAgentError, toWireError } from "../agent/agent-errors";
 import { projectToolResult, type ProjectableContentBlock } from "../tools/image-parts";
+import { normalizeToolResultImages } from "../tools/image-normalize";
 import { persist } from "../sessions/transcript";
 import { nextEventSeq } from "./event-seq";
 import { createTraceRunRecorder } from "./trace";
@@ -326,11 +327,32 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       break;
     }
     case "tool_execution_end": {
+      // 先"处理到合规"再投影/落盘：超限图按当前模型 inputLimits.images.resize
+      // 缩放/转码到内联闸门内，处理不了才折成 text 说明。必须放在 reqId 短路
+      // 之前——旁路/automation run 没有协议流，但模型上下文同样要拿到合规图。
+      // 时序保证：agent-core 在 await 本监听器之后才用 event.result.content
+      // 构造 toolResult 消息（agent-loop.js createToolResultMessage），原地改
+      // result.content 对模型与持久化同时生效。
+      const result = event.result as { content?: ProjectableContentBlock[] } | undefined;
+      if (result?.content) {
+        const normalized = await normalizeToolResultImages(
+          result.content,
+          run.agent.state.model,
+        );
+        if (normalized) {
+          try {
+            result.content = normalized as ProjectableContentBlock[];
+          } catch (err) {
+            // 扩展返回的 frozen 结果：改不动就退回投影闸门，别让事件处理崩掉
+            logErr("tool result image normalize: content is not writable:", err);
+          }
+        }
+      }
       if (!reqId) break;
       // 图片投影与历史侧共用 projectToolResult（image-parts.ts），保证直播=刷新同构；
       // 顺序契约：tool-output-available → data-image×n，part 落进对应 tool part 之后
       const { output, images } = projectToolResult(
-        (event.result as { content?: ProjectableContentBlock[] } | undefined)?.content,
+        result?.content,
         { toolCallId: event.toolCallId, toolName: event.toolName },
       );
       // 失败/被拒的结果走 AI SDK 标准 tool-output-error：前端据此把 part 的

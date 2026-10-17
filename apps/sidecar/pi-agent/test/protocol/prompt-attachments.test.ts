@@ -3,11 +3,19 @@ import {
   noticeAppendedText,
   preparePromptAttachments,
   PROMPT_IMAGE_MAX_COUNT,
+  type PreparePromptAttachmentsOptions,
 } from "../../src/protocol/prompt-attachments";
 import { IMAGE_INLINE_MAX_BYTES } from "../../src/tools/image-parts";
+import type { ImageProcessor } from "../../src/vendor/pi-images/processor";
 
 const png1x1 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+/** 4x4 纯色 PNG（真实处理器测试：缩到 2x2） */
+const png4x4 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR4nGP4z8DwHxkzkC4AADxAH+HggXe0AAAAAElFTkSuQmCC";
+/** 1x1 24bpp BMP（真实处理器测试：BMP → PNG） */
+const bmp1x1 =
+  "Qk06AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABABgAAAAAAAQAAAATCwAAEwsAAAAAAAAAAAAAAAD/AA==";
 
 const attach = (data: string, mimeType = "image/png", name = "shot.png") => ({
   name,
@@ -15,20 +23,34 @@ const attach = (data: string, mimeType = "image/png", name = "shot.png") => ({
   data,
 });
 
+/** 测试占位处理器：原样返回字节，不加载 WASM（体积/计数/文档路径用）。
+ *  真实缩放/转码行为由下面两条 no-inject 的用例覆盖。 */
+const passThrough: ImageProcessor = {
+  async prepare(bytes, mimeType) {
+    return { data: Buffer.from(bytes).toString("base64"), mimeType };
+  },
+};
+
+/** 默认注入占位处理器；需要真实处理器时直接调 preparePromptAttachments */
+const prep = (
+  msg: Record<string, unknown>,
+  opts: PreparePromptAttachmentsOptions = {},
+) => preparePromptAttachments(msg, { processor: passThrough, ...opts });
+
 describe("preparePromptAttachments", () => {
-  test("无 attachments 字段/空数组：零图片零说明", () => {
-    expect(preparePromptAttachments({})).toEqual({
+  test("无 attachments 字段/空数组：零图片零说明", async () => {
+    expect(await prep({})).toEqual({
       images: [],
       noticeLines: [],
     });
-    expect(preparePromptAttachments({ attachments: [] })).toEqual({
+    expect(await prep({ attachments: [] })).toEqual({
       images: [],
       noticeLines: [],
     });
   });
 
-  test("合法图片组装 ImageContent（data 归一为裸 base64）", () => {
-    const { images, noticeLines } = preparePromptAttachments({
+  test("合法图片组装 ImageContent（data 归一为裸 base64）", async () => {
+    const { images, noticeLines } = await prep({
       attachments: [attach(png1x1)],
     });
     expect(noticeLines).toEqual([]);
@@ -37,16 +59,16 @@ describe("preparePromptAttachments", () => {
     ]);
   });
 
-  test("data URL 前缀防御性剥离", () => {
-    const { images, noticeLines } = preparePromptAttachments({
+  test("data URL 前缀防御性剥离", async () => {
+    const { images, noticeLines } = await prep({
       attachments: [attach(`data:image/png;base64,${png1x1}`)],
     });
     expect(noticeLines).toEqual([]);
     expect(images[0]!.data).toBe(png1x1);
   });
 
-  test("坏 MIME（svg/非图片）拒收并说明，不抛错", () => {
-    const { images, noticeLines } = preparePromptAttachments({
+  test("坏 MIME（svg/非图片）拒收并说明，不抛错", async () => {
+    const { images, noticeLines } = await prep({
       attachments: [
         attach(png1x1, "image/svg+xml", "vector.svg"),
         attach(png1x1, "application/pdf", "doc.pdf"),
@@ -58,10 +80,10 @@ describe("preparePromptAttachments", () => {
     expect(noticeLines[0]).toContain("PNG/JPEG/GIF/WebP");
   });
 
-  test("超过 2MiB 上限拒收并说明", () => {
+  test("超过 2MiB 且处理器压不下去：拒收并说明（不再静默丢）", async () => {
     // base64 4 字符编码 3 字节：要解码后 >2MiB，字符串需 >2MiB×4/3
     const big = "A".repeat(Math.ceil(((IMAGE_INLINE_MAX_BYTES + 4096) * 4) / 3));
-    const { images, noticeLines } = preparePromptAttachments({
+    const { images, noticeLines } = await prep({
       attachments: [attach(big, "image/png", "huge.png")],
     });
     expect(images).toEqual([]);
@@ -69,11 +91,40 @@ describe("preparePromptAttachments", () => {
     expect(noticeLines[0]).toContain("2MiB");
   });
 
-  test("每条 prompt 最多 4 张：收满后其余拒收说明", () => {
+  test("真实处理器：按模型 inputLimits.images.resize 缩放并说明映射比例", async () => {
+    const { images, noticeLines } = await preparePromptAttachments(
+      { attachments: [attach(png4x4, "image/png", "grid.png")] },
+      {
+        model: {
+          inputLimits: { images: { resize: { maxWidth: 2, maxHeight: 2 } } },
+        },
+      },
+    );
+    expect(images).toHaveLength(1);
+    expect(images[0]!.mimeType).toBe("image/png");
+    expect(images[0]!.data).not.toBe(png4x4);
+    expect(noticeLines.some((line) => line.includes("缩放") && line.includes("4x4"))).toBe(true);
+    expect(noticeLines.some((line) => line.includes("2x2") && line.includes("坐标乘以"))).toBe(
+      true,
+    );
+  });
+
+  test("真实处理器：BMP 转 PNG 后仍进模型上下文", async () => {
+    const { images, noticeLines } = await preparePromptAttachments({
+      attachments: [attach(bmp1x1, "image/bmp", "pixel.bmp")],
+    });
+    expect(images).toHaveLength(1);
+    expect(images[0]!.mimeType).toBe("image/png");
+    expect(noticeLines.some((line) => line.includes("image/bmp") && line.includes("image/png"))).toBe(
+      true,
+    );
+  });
+
+  test("每条 prompt 最多 4 张：收满后其余拒收说明", async () => {
     const items = Array.from({ length: PROMPT_IMAGE_MAX_COUNT + 2 }, (_, i) =>
       attach(png1x1, "image/png", `p${i}.png`),
     );
-    const { images, noticeLines } = preparePromptAttachments({
+    const { images, noticeLines } = await prep({
       attachments: items,
     });
     expect(images).toHaveLength(PROMPT_IMAGE_MAX_COUNT);
@@ -82,12 +133,15 @@ describe("preparePromptAttachments", () => {
     expect(noticeLines[1]).toContain("p5.png");
   });
 
-  test("model 元数据不参与闸门：附件只看物理约束", () => {
+  test("model 元数据只提供 resize 参数，不是能力硬门", async () => {
     // 模型硬门已移除（input 元数据不可靠，实测误拦支持图像的模型）——
-    // preparePromptAttachments 不接收 model 参数，纯文本模型发图由 API 报错暴露
-    const { images, noticeLines } = preparePromptAttachments({
-      attachments: [attach(png1x1)],
-    });
+    // model 只用于 inputLimits.images.resize，纯文本模型发图仍由 API 报错暴露
+    const { images, noticeLines } = await prep(
+      {
+        attachments: [attach(png1x1)],
+      },
+      { model: { inputLimits: { images: { resize: { maxWidth: 1, maxHeight: 1 } } } } },
+    );
     expect(noticeLines).toEqual([]);
     expect(images).toHaveLength(1);
   });
@@ -113,9 +167,9 @@ const docxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml
 const tinyDocx = Buffer.from("PK\u0003\u0004 fake docx").toString("base64");
 
 describe("preparePromptAttachments 文档分支", () => {
-  test("docx + cwd：落盘到 .kova/attachments/，说明行带相对路径与类型", () => {
+  test("docx + cwd：落盘到 .kova/attachments/，说明行带相对路径与类型", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
-    const { images, noticeLines } = preparePromptAttachments(
+    const { images, noticeLines } = await prep(
       { attachments: [attach(tinyDocx, docxMime, "报告.docx")] },
       { cwd },
     );
@@ -133,9 +187,9 @@ describe("preparePromptAttachments 文档分支", () => {
     expect(noticeLines[0]).toContain(files[0]!);
   });
 
-  test("扩展名兜底：mime 为空/octet-stream 时按扩展名识别；mime 兜底反推类型", () => {
+  test("扩展名兜底：mime 为空/octet-stream 时按扩展名识别；mime 兜底反推类型", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
-    const { noticeLines } = preparePromptAttachments(
+    const { noticeLines } = await prep(
       {
         attachments: [
           attach(tinyDocx, "application/octet-stream", "a.docx"),
@@ -149,31 +203,31 @@ describe("preparePromptAttachments 文档分支", () => {
     expect(noticeLines[1]).toContain("Word 文档");
   });
 
-  test("pdf 识别为 PDF 文档", () => {
+  test("pdf 识别为 PDF 文档", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
-    const { noticeLines } = preparePromptAttachments(
+    const { noticeLines } = await prep(
       { attachments: [attach("JVBERi0=", "application/pdf", "doc.pdf")] },
       { cwd },
     );
     expect(noticeLines[0]).toContain("PDF 文档");
   });
 
-  test("单条最多 2 个文档：收满后其余拒收说明", () => {
+  test("单条最多 2 个文档：收满后其余拒收说明", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
     const items = Array.from({ length: PROMPT_DOC_MAX_COUNT + 1 }, (_, i) =>
       attach(tinyDocx, docxMime, `d${i}.docx`),
     );
-    const { noticeLines } = preparePromptAttachments({ attachments: items }, { cwd });
+    const { noticeLines } = await prep({ attachments: items }, { cwd });
     // 前两个成功落盘各得一条"已保存"说明，第三个被数量闸门拒收
     expect(noticeLines).toHaveLength(3);
     expect(noticeLines[2]).toContain("d2.docx");
     expect(noticeLines[2]).toContain("最多 2 个文档");
   });
 
-  test("超 8MiB 文档拒收说明", () => {
+  test("超 8MiB 文档拒收说明", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
     const big = "A".repeat(Math.ceil(((PROMPT_DOC_MAX_BYTES + 4096) * 4) / 3));
-    const { noticeLines } = preparePromptAttachments(
+    const { noticeLines } = await prep(
       { attachments: [attach(big, docxMime, "huge.docx")] },
       { cwd },
     );
@@ -181,11 +235,11 @@ describe("preparePromptAttachments 文档分支", () => {
     expect(noticeLines[0]).toContain("8MiB");
   });
 
-  test("图片+文档总体积红线：合计超 11MiB 时文档拒收说明", () => {
+  test("图片+文档总体积红线：合计超 11MiB 时文档拒收说明", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
     const img = "A".repeat(Math.ceil((2 * 1024 * 1024 * 4) / 3));
     const doc = "A".repeat(Math.ceil((7.5 * 1024 * 1024 * 4) / 3));
-    const { images, noticeLines } = preparePromptAttachments(
+    const { images, noticeLines } = await prep(
       {
         attachments: [
           attach(img, "image/png", "i1.png"),
@@ -202,8 +256,8 @@ describe("preparePromptAttachments 文档分支", () => {
     expect(PROMPT_ATTACH_TOTAL_MAX_BYTES).toBe(11 * 1024 * 1024);
   });
 
-  test("未提供 cwd：文档拒收说明（落盘目录不可用）", () => {
-    const { images, noticeLines } = preparePromptAttachments({
+  test("未提供 cwd：文档拒收说明（落盘目录不可用）", async () => {
+    const { images, noticeLines } = await prep({
       attachments: [attach(tinyDocx, docxMime, "a.docx")],
     });
     expect(images).toEqual([]);
@@ -211,9 +265,9 @@ describe("preparePromptAttachments 文档分支", () => {
     expect(noticeLines[0]).toContain("落盘目录不可用");
   });
 
-  test("文件名消毒：路径穿越名取 basename 落盘，不逃出附件目录", () => {
+  test("文件名消毒：路径穿越名取 basename 落盘，不逃出附件目录", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
-    const { noticeLines } = preparePromptAttachments(
+    const { noticeLines } = await prep(
       { attachments: [attach(tinyDocx, docxMime, "..\\..\\evil.docx")] },
       { cwd },
     );
@@ -222,9 +276,9 @@ describe("preparePromptAttachments 文档分支", () => {
     expect(noticeLines[0]).not.toContain("..");
   });
 
-  test("图片与文档混装：各自走各自闸门", () => {
+  test("图片与文档混装：各自走各自闸门", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
-    const { images, noticeLines } = preparePromptAttachments(
+    const { images, noticeLines } = await prep(
       {
         attachments: [attach(png1x1, "image/png", "shot.png"), attach(tinyDocx, docxMime, "报告.docx")],
       },
@@ -237,11 +291,11 @@ describe("preparePromptAttachments 文档分支", () => {
 });
 
 describe("preparePromptAttachments 文档 path 模式（桌面端）", () => {
-  test("path 模式原位引用：说明行带绝对路径，不往 cwd 复制", () => {
+  test("path 模式原位引用：说明行带绝对路径，不往 cwd 复制", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
     const staged = join(cwd, "staging-src.docx");
     writeFileSync(staged, "PK staged bytes");
-    const { images, noticeLines } = preparePromptAttachments(
+    const { images, noticeLines } = await prep(
       {
         attachments: [
           { name: "报告.docx", mimeType: docxMime, path: staged },
@@ -259,11 +313,11 @@ describe("preparePromptAttachments 文档 path 模式（桌面端）", () => {
     expect(existsSync(docSaveDir(cwd))).toBe(false);
   });
 
-  test("dialog 直选图片（path 无 data）：读盘内联进 ImageContent", () => {
+  test("dialog 直选图片（path 无 data）：读盘内联进 ImageContent", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
     const imgPath = join(cwd, "shot.png");
     writeFileSync(imgPath, Buffer.from(png1x1, "base64"));
-    const { images, noticeLines } = preparePromptAttachments(
+    const { images, noticeLines } = await prep(
       {
         attachments: [
           { name: "shot.png", mimeType: "image/png", path: imgPath },
@@ -277,9 +331,9 @@ describe("preparePromptAttachments 文档 path 模式（桌面端）", () => {
     ]);
   });
 
-  test("dialog 图片 path 不可读：专用说明行", () => {
+  test("dialog 图片 path 不可读：专用说明行", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
-    const { images, noticeLines } = preparePromptAttachments(
+    const { images, noticeLines } = await prep(
       {
         attachments: [
           { name: "gone.png", mimeType: "image/png", path: join(cwd, "nope.png") },
@@ -293,9 +347,9 @@ describe("preparePromptAttachments 文档 path 模式（桌面端）", () => {
     expect(noticeLines[0]).toContain("不可读");
   });
 
-  test("path 文件不存在：拒收说明，不落盘", () => {
+  test("path 文件不存在：拒收说明，不落盘", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
-    const { noticeLines } = preparePromptAttachments(
+    const { noticeLines } = await prep(
       { attachments: [{ name: "ghost.docx", mimeType: docxMime, path: join(cwd, "nope.docx") }] },
       { cwd },
     );
@@ -304,11 +358,11 @@ describe("preparePromptAttachments 文档 path 模式（桌面端）", () => {
     expect(existsSync(docSaveDir(cwd))).toBe(false);
   });
 
-  test("path 模式超 20MiB 拒收说明", () => {
+  test("path 模式超 20MiB 拒收说明", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
     const staged = join(cwd, "big.docx");
     writeFileSync(staged, Buffer.alloc(PROMPT_DOC_MAX_BYTES + 1, 7));
-    const { noticeLines } = preparePromptAttachments(
+    const { noticeLines } = await prep(
       { attachments: [{ name: "big.docx", mimeType: docxMime, path: staged }] },
       { cwd },
     );
@@ -316,12 +370,12 @@ describe("preparePromptAttachments 文档 path 模式（桌面端）", () => {
     expect(noticeLines[0]).toContain("20MiB");
   });
 
-  test("path 模式不计入内联总体积红线（帧只带路径）", () => {
+  test("path 模式不计入内联总体积红线（帧只带路径）", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-att-"));
     const img = "A".repeat(Math.ceil((2 * 1024 * 1024 * 4) / 3));
     const staged = join(cwd, "big.docx");
     writeFileSync(staged, Buffer.alloc(15 * 1024 * 1024, 7));
-    const { images, noticeLines } = preparePromptAttachments(
+    const { images, noticeLines } = await prep(
       {
         attachments: [
           attach(img, "image/png", "i1.png"),

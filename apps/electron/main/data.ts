@@ -109,6 +109,7 @@ export function initTables(db: Db): void {
     }
   }
 
+  migrateAzureProviderId(db);
   migrateCustomProviderModels(db);
   migrateProviderModelFilters(db);
   drainLegacyTable(db, "pi_sessions", "sessions", "id, title, first_message, cwd, created_at, updated_at");
@@ -138,6 +139,126 @@ function tableExists(db: Db, name: string): boolean {
     .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?1")
     .get(name) as { n: number } | undefined;
   return (row?.n ?? 0) > 0;
+}
+
+const LEGACY_AZURE_PROVIDER = "azure-openai-responses";
+const AZURE_PROVIDER = "azure";
+
+/**
+ * pi-ai 1.0.3 把 Azure provider id 从 `azure-openai-responses` 改为 `azure`。
+ * 迁移所有 provider-keyed 数据，保证升级后 Azure 凭据/模型过滤/会话选择不丢。
+ * 分步 try/catch：某一步失败不阻塞其它步骤；读时别名仍可兜底。
+ */
+function migrateAzureProviderId(db: Db): void {
+  const step = (label: string, fn: () => void): void => {
+    try {
+      fn();
+    } catch (e) {
+      logWarn(`[data] azure provider migration step "${label}" failed: ${e}`);
+    }
+  };
+
+  step("credentials", () => {
+    const old = db
+      .prepare("SELECT api_key, updated_at FROM credentials WHERE provider = ?1")
+      .get(LEGACY_AZURE_PROVIDER);
+    if (!old) return;
+    const existing = db
+      .prepare("SELECT provider FROM credentials WHERE provider = ?1")
+      .get(AZURE_PROVIDER);
+    if (!existing) {
+      db.prepare("UPDATE credentials SET provider = ?1 WHERE provider = ?2").run(
+        AZURE_PROVIDER,
+        LEGACY_AZURE_PROVIDER,
+      );
+    } else {
+      // 新行已存在：保留新行，旧行只补空字段后删除
+      db.prepare("DELETE FROM credentials WHERE provider = ?1").run(
+        LEGACY_AZURE_PROVIDER,
+      );
+    }
+  });
+
+  step("models", () => {
+    const rows = db
+      .prepare(
+        "SELECT model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled FROM models WHERE provider = ?1",
+      )
+      .all(LEGACY_AZURE_PROVIDER);
+    for (const row of rows) {
+      const modelId = String(row.model_id ?? "");
+      if (!modelId) continue;
+      const existing = db
+        .prepare("SELECT provider FROM models WHERE provider = ?1 AND model_id = ?2")
+        .get(AZURE_PROVIDER, modelId);
+      if (!existing) {
+        db.prepare(
+          "UPDATE models SET provider = ?1 WHERE provider = ?2 AND model_id = ?3",
+        ).run(AZURE_PROVIDER, LEGACY_AZURE_PROVIDER, modelId);
+        continue;
+      }
+      // 冲突安全合并：保留新行非空值，旧行只补空；enabled 取并集
+      db.prepare(
+        `UPDATE models SET
+           name = COALESCE(name, ?1),
+           reasoning = COALESCE(reasoning, ?2),
+           context_window = COALESCE(context_window, ?3),
+           max_tokens = COALESCE(max_tokens, ?4),
+           input_json = COALESCE(input_json, ?5),
+           cost_json = COALESCE(cost_json, ?6),
+           enabled = MAX(enabled, ?7)
+         WHERE provider = ?8 AND model_id = ?9`,
+      ).run(
+        row.name ?? null,
+        row.reasoning ?? null,
+        row.context_window ?? null,
+        row.max_tokens ?? null,
+        row.input_json ?? null,
+        row.cost_json ?? null,
+        row.enabled ?? 1,
+        AZURE_PROVIDER,
+        modelId,
+      );
+      db.prepare("DELETE FROM models WHERE provider = ?1 AND model_id = ?2").run(
+        LEGACY_AZURE_PROVIDER,
+        modelId,
+      );
+    }
+  });
+
+  step("sessions", () => {
+    db.prepare("UPDATE sessions SET model_provider = ?1 WHERE model_provider = ?2").run(
+      AZURE_PROVIDER,
+      LEGACY_AZURE_PROVIDER,
+    );
+  });
+
+  step("kv", () => {
+    const row = db.prepare("SELECT value FROM kv WHERE key = 'pi.model'").get();
+    const raw = typeof row?.value === "string" ? row.value : "";
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as { provider?: string; modelId?: string };
+        if (parsed?.provider === LEGACY_AZURE_PROVIDER) {
+          db.prepare("UPDATE kv SET value = ?1 WHERE key = 'pi.model'").run(
+            JSON.stringify({ ...parsed, provider: AZURE_PROVIDER }),
+          );
+        }
+      } catch {
+        /* 坏 JSON：保留原值，读时别名兜底 */
+      }
+    }
+    const oldKey = `credential.env.${LEGACY_AZURE_PROVIDER}`;
+    const newKey = `credential.env.${AZURE_PROVIDER}`;
+    const oldEnv = db.prepare("SELECT value FROM kv WHERE key = ?1").get(oldKey);
+    if (!oldEnv) return;
+    const newEnv = db.prepare("SELECT value FROM kv WHERE key = ?1").get(newKey);
+    if (!newEnv) {
+      db.prepare("UPDATE kv SET key = ?1 WHERE key = ?2").run(newKey, oldKey);
+    } else {
+      db.prepare("DELETE FROM kv WHERE key = ?1").run(oldKey);
+    }
+  });
 }
 
 function migrateCustomProviderModels(db: Db): void {

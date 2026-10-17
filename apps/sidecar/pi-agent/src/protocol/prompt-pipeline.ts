@@ -307,20 +307,28 @@ export type PromptTurnOutcome = { ok: boolean; errorText?: string };
  *  - 登记进 run.steerEntries：轮末若本轮始终没对注入给出回应（边界前被中止等），
  *    findUnansweredSteers + runTurnBody finally 把它回队重发，绝不静默丢消息。
  *  返回 false（无活跃 run / 正在收尾 / steer 抛错）由调用方落回普通排队。 */
-export function steerIntoActiveRun(
+export async function steerIntoActiveRun(
   run: Running,
   reqId: string,
   msg: Record<string, unknown>,
-): boolean {
+): Promise<boolean> {
   // turnEnding：收尾段（finally）已开跑，挂起 finish 的补发已执行过——此刻
   // 受理的并入其 finish 永远没人补发（前端「已并入」徽标滞留不消失）
   if (run.stopRequested || run.turnEnding) return false;
   try {
-    // 与普通 prompt 同一条附件链路：拒收项折算说明行、合法项进 user 消息 content。
-    // 哨兵前缀：注入即真实 user 消息落转录，投影层（直播与快照直出同一出口）
-    // 剥前缀并补「已并入当前回复」标记 part（刷新前后语义一致；模型侧前缀
-    // 自解释，auto-continue 同款先例）
-    const attachments = preparePromptAttachments(msg, { cwd: run.cwd });
+    // 与普通 prompt 同一条附件链路：超限图先归一化到当前模型的
+    // inputLimits.images.resize/内联闸门，拒收项折算说明行、合法项进 user
+    // 消息 content。哨兵前缀：注入即真实 user 消息落转录，投影层（直播与
+    // 快照直出同一出口）剥前缀并补「已并入当前回复」标记 part（刷新前后
+    // 语义一致；模型侧前缀自解释，auto-continue 同款先例）
+    const attachments = await preparePromptAttachments(msg, {
+      cwd: run.cwd,
+      model: run.agent.state.model,
+    });
+    // 图片归一化可能解码 1-2 秒；等完再看一眼轮状态——收尾已经开始的注入
+    // 不能再塞给 agent（finish 已补发、steer 会滞留到下一轮），返回 false
+    // 让调用方落回普通排队路径。
+    if (run.stopRequested || run.turnEnding) return false;
     // 并入当前轮与普通发送在「这条消息和目标什么关系」上必须是同一套判据：
     // 用户插话就是在接管，目标该让位。少了这一句，steer 是唯一能绕过
     // 「用户输入即接管」的入口，循环会在用户已经开口之后继续自己往下跑
@@ -472,7 +480,7 @@ export async function dispatchPrompt(
   // 并入当前轮（steer）：线程忙且显式标记时注入活跃轮，本请求退化流收尾；
   // 任何落空（空闲/收尾中/注入失败）落回下面的普通排队路径
   if (wasQueued && msg.steer === true && activeRun) {
-    if (steerIntoActiveRun(activeRun, reqId, msg)) return;
+    if (await steerIntoActiveRun(activeRun, reqId, msg)) return;
   }
   if (wasQueued) {
     // 诊断：排队的真实原因（busy 位 / 队列残留），排查「看起来结束了却排队」
@@ -796,13 +804,16 @@ async function runTurnBody(
     }),
   );
 
-  // 附件（用户图片）：闸门裁决见 prompt-attachments.ts；拒收项折算成说明行
-  // 追加到文本尾部（模型可读、刷新后可见），合法项组装 ImageContent 走
-  // agent.prompt(text, images) 进模型上下文并随 agent 消息本体自动落转录。
+  // 附件（用户图片）：超限图先经 image-normalize 缩放/转码；处理不了的拒收项
+  // 折算成说明行追加到文本尾部（模型可读、刷新后可见），合法项组装 ImageContent
+  // 走 agent.prompt(text, images) 进模型上下文并随 agent 消息本体自动落转录。
   // 溢出恢复/委派收敛的重跑段不携带图片（resume 为纯文本）。
   // 模型硬门已移除（input 元数据不可靠，实测误拦支持图像的模型）：附件过
   // 物理闸门（prompt-attachments.ts）后一律放行，端点不支持时 API 报错可见。
-  const promptAttachments = preparePromptAttachments(msg, { cwd: run.cwd });
+  const promptAttachments = await preparePromptAttachments(msg, {
+    cwd: run.cwd,
+    model: run.agent.state.model,
+  });
   const promptText = noticeAppendedText(String(msg.text ?? ""), promptAttachments.noticeLines);
   if (promptAttachments.images.length) {
     logAt(

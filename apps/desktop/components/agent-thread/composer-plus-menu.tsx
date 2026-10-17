@@ -288,11 +288,11 @@ function b64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
 }
 
 /** 附件添加。桌面端 系统对话框 拿绝对路径后分两类：
- *  - 图片：读盘成字节（Rust attachment_read_base64，2MiB 上限超限即 toast）
+ *  - 图片：读盘成字节（Rust attachment_read_base64，24MiB 传输 sanity 上限）
  *    合成 File 走与粘贴同一条 adapter 管线——草稿缩略图、发送 data URL 内联、
- *    转录 image 块与粘贴图片完全同构。早前用 file:// 路径对象添加的图片
- *    没有可渲染的预览（附件条拿不到 image part/File），超限图又只在发送后
- *    被 sidecar 静默省略成一行「[已省略]」，看起来就是「附件没进对话」；
+ *    转录 image 块与粘贴图片完全同构。超限图不再丢：sidecar 会按模型
+ *    inputLimits.images.resize 缩放/转码后仍送进上下文（2MiB 是服务端内联
+ *    闸门，不是添加门槛）；
  *  - 文档：仍走 file:// 路径的 file part——零落盘零复制，sidecar 原位引用。
  *  网页端退回 <input type=file>（File 直进 adapter），粘贴场景见
  *  cm-composer-input。图片沿用单条 4 张的添加时闸门；文档不拦添加
