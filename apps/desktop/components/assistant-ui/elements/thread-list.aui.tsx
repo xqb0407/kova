@@ -1311,6 +1311,9 @@ const MarqueeTitle: FC<
   const [overflows, setOverflows] = useState(false);
 
   const measure = () => {
+    // 侧边栏拖拽期间跳过：每帧宽度变化会让所有行的 RO 回调排队做布局读取，
+    // 是拖动卡顿的主因；松手后由 rail-resize-end 统一补测一次
+    if (document.documentElement.classList.contains("is-resizing")) return;
     const el = outerRef.current;
     if (el) setOverflows(el.scrollWidth - el.clientWidth > 1);
   };
@@ -1321,7 +1324,12 @@ const MarqueeTitle: FC<
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    const onResizeEnd = () => measure();
+    window.addEventListener("rail-resize-end", onResizeEnd);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("rail-resize-end", onResizeEnd);
+    };
     // children 变化（改名/标题生成）后重测
   }, [children]);
 

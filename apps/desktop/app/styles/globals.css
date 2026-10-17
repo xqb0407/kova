@@ -846,3 +846,11 @@ html.dark[data-window-effect] {
     animation: none;
   }
 }
+/* 侧边栏拖拽期间：全站统一 col-resize 光标并禁用文本选中
+   （参考 monocode 的 is-resizing 规则） */
+html.is-resizing,
+html.is-resizing * {
+  cursor: col-resize !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
