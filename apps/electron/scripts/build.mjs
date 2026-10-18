@@ -1,4 +1,4 @@
-// Electron 主进程与 preload 打包：TS 源 → dist/*.cjs（electron 38 ESM main 亦可，
+// Electron 主进程与 preload 打包：TS 源 → dist/*.cjs（electron 44 ESM main 亦可，
 // 但 CJS 单文件最稳：node-pty/ws 外部化，避免运行时 require 路径问题）。
 //
 // --watch：常驻增量重建（scripts/dev.mjs 用）。重建后**由 dev.mjs 负责重启 Electron**
