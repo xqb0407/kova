@@ -1793,3 +1793,71 @@ describe("dispatch: optimize_prompt 模型解析", () => {
     expect(lastSeen()).toBe("model-A");
   });
 });
+
+describe("thread_snapshot：模型切换分隔线重建", () => {
+  test("model_change 设定行按锚点插进消息流；初始选择（无消息前）不渲染", async () => {
+    const id = "snap-model-change";
+    await sessionInsert(id, tmp);
+    const message = (seq: number, agent: Record<string, unknown>) =>
+      JSON.stringify({ type: "message", seq, ui: null, agent });
+    writeFileSync(
+      sessionPath(id),
+      [
+        // 任何消息之前的初始选择：不产生分隔线
+        JSON.stringify({
+          type: "model_change",
+          provider: "p",
+          modelId: "m0",
+          timestamp: "2026-01-01T00:00:00.000Z",
+        }),
+        message(0, { role: "user", content: "hi", timestamp: 1 }),
+        message(1, {
+          role: "assistant",
+          content: [{ type: "text", text: "a" }],
+          api: "x",
+          provider: "p",
+          model: "m0",
+          stopReason: "stop",
+          timestamp: 2,
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 2,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+        }),
+        JSON.stringify({
+          type: "model_change",
+          provider: "p",
+          modelId: "m1",
+          timestamp: "2026-01-01T00:00:01.000Z",
+        }),
+        // 同模型重选折叠（不产生第二条分隔线）
+        JSON.stringify({
+          type: "model_change",
+          provider: "p",
+          modelId: "m1",
+          timestamp: "2026-01-01T00:00:02.000Z",
+        }),
+        message(2, { role: "user", content: "next", timestamp: 3 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    await dispatch("snap1", { type: "thread_snapshot", sessionId: id });
+    const snapshot = last().snapshot as { messages: Record<string, unknown>[] };
+    expect(snapshot.messages.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "modelChange",
+      "user",
+    ]);
+    expect(snapshot.messages[2]).toMatchObject({
+      provider: "p",
+      modelId: "m1",
+      timestamp: Date.parse("2026-01-01T00:00:01.000Z"),
+      __stableId: "pi-model-change:0", // 初始选择已被扫描过滤，可见事件从 0 计数
+    });
+  });
+});

@@ -32,6 +32,7 @@
 
 import { useAuiState } from "@assistant-ui/react";
 import { useEffect, useRef } from "react";
+import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import {
   noteCount,
   noteSpan,
@@ -197,7 +198,12 @@ export const ViewportScrollManager = () => {
       return !!reserve && reserve.style.height !== "0px";
     };
 
-    const settle = () => span("视口-节拍", settleInner);
+    const settle = () => {
+      // 拖拽调宽期间正文每帧 rewrap：逐帧 scrollHeight/scrollTop 读写会与
+      // 布局互相踩踏，拖动中跳过内容节拍，松手后 resize-settled 补一次
+      if (isResizing()) return;
+      span("视口-节拍", settleInner);
+    };
 
     const settleInner = () => {
       maxTop = viewport.scrollHeight - viewport.clientHeight;
@@ -265,9 +271,11 @@ export const ViewportScrollManager = () => {
     viewport.addEventListener("keydown", onKeyDown);
     const observer = new ResizeObserver(settle);
     observer.observe(group);
+    const offSettled = onResizeSettled(settle);
     settle();
     return () => {
       yielders.delete(yieldToUser);
+      offSettled();
       viewport.removeEventListener("scroll", onScroll);
       viewport.removeEventListener("wheel", onWheel);
       viewport.removeEventListener("touchstart", yieldToUser);

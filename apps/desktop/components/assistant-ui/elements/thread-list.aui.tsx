@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { DotMatrix } from "@/components/ui/dot-matrix";
 import { Input } from "@/components/ui/input";
 import { SidebarMenuButton } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -34,7 +35,6 @@ import {
   FolderOpenIcon,
   GitBranchIcon,
   HashIcon,
-  Loader2Icon,
   MailIcon,
   MailOpenIcon,
   MoreHorizontalIcon,
@@ -1543,12 +1543,13 @@ export const ThreadListItem: FC = () => {
           {/* Loader DOM 常驻，永久占位；运行中（含 hover）恒显 spinner，不再让位
               给置顶按钮——运行态是用户最关心的事实，行首槽位归它；置顶在
               hover 期间改走「…」/右键菜单（useThreadRowMenu 的 pin 项） */}
-          <Loader2Icon
+          <DotMatrix
             aria-hidden
+            state="loading"
             data-slot="aui_thread-list-item-running"
             data-running={showRunning}
             className="
-              text-muted-foreground me-1.5 size-3.5 shrink-0 animate-spin
+              text-muted-foreground me-1.5 size-3.5 shrink-0
               invisible
               data-[running=true]:visible
             "
@@ -1566,7 +1567,7 @@ export const ThreadListItem: FC = () => {
           {/* 档位图标：与 loader/未读点/置顶图钉同占行首槽位（trigger ps-2.5 后
               的 14px 位，标题左缘仍是 30px，与「显示更多」对齐），故三者互斥出图。
               hover 让位给置顶按钮，同未读点/图钉的规则 */}
-          {/* {!showRunning && !pinned && !unread && (
+          {!showRunning && !pinned && !unread && (
             <span
               data-slot="aui_thread-list-item-mode"
               title={`工作模式：${APP_MODE_META[sessionAppMode].label}`}
@@ -1574,7 +1575,7 @@ export const ThreadListItem: FC = () => {
             >
               <ModeIcon className="size-3.5" />
             </span>
-          )} */}
+          )}
           {/* {automationTaskId && (
             <ZapIcon
               aria-label="定时任务发起的会话"

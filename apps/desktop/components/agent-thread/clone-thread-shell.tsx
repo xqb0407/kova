@@ -599,17 +599,20 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             池），右侧换成批量操作栏 */}
         <div className="flex w-full shrink-0 items-center justify-between gap-2 px-3 pt-2">
             <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="group-data-horizontal/tabs:h-8 h-8 rounded-full p-[3px]">
+              <TabsList
+                variant="outline"
+                className="group-data-horizontal/tabs:h-8 h-8 rounded-sm! p-0.5!"
+              >
                 <TabsTrigger
                   value="tasks"
-                  className="flex-none gap-1.5 rounded-full px-3 py-0 text-xs"
+                  className="flex-none gap-1.5 rounded-sm! px-3 py-0 text-xs"
                 >
                   <FileCheckCornerIcon className="size-3.5 shrink-0" />
                   任务
                 </TabsTrigger>
                 <TabsTrigger
                   value="projects"
-                  className="flex-none gap-1.5 rounded-full px-3 py-0 text-xs"
+                  className="flex-none gap-1.5 rounded-sm! px-3 py-0 text-xs"
                 >
                   <FolderCode className="size-3.5 shrink-0" />
                   项目
@@ -623,7 +626,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   variant="ghost"
                   tooltip={batchAllSelected ? "取消全选" : "全选"}
                   disabled={batchVisibleIds.length === 0}
-                  className="text-muted-foreground hover:text-foreground size-7 rounded-full"
+                  className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
                   onClick={toggleBatchSelectAll}
                 >
                   <SquareCheckBigIcon className="size-3.5" />
@@ -634,7 +637,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     archivableCount > 0 ? `归档（${archivableCount}）` : "归档"
                   }
                   disabled={archivableCount === 0}
-                  className="text-muted-foreground hover:text-foreground size-7 rounded-full"
+                  className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
                   onClick={archiveBatchSelected}
                 >
                   <ArchiveIcon className="size-3.5" />
@@ -642,7 +645,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 <TooltipIconButton
                   variant="ghost"
                   tooltip="退出批量管理"
-                  className="text-muted-foreground hover:text-foreground size-7 rounded-full"
+                  className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
                   onClick={exitThreadBatch}
                 >
                   <XIcon className="size-3.5" />
@@ -656,7 +659,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   <TooltipIconButton
                     variant="ghost"
                     tooltip={allProjectsExpanded ? "收起全部" : "展开全部"}
-                    className="text-muted-foreground hover:text-foreground h-7 gap-1 rounded-full px-2.5 text-xs"
+                    className="text-muted-foreground hover:text-foreground h-7 gap-1 rounded-sm! px-2.5 text-xs"
                     onClick={toggleAllProjects}
                   >
                     {allProjectsExpanded ? (
@@ -680,7 +683,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                           // 筛选生效时给个常驻的底色：菜单关掉后也得看得出
                           // 「列表现在是被筛过的」
                           className={cn(
-                            "text-muted-foreground hover:text-foreground size-7 rounded-full",
+                            "text-muted-foreground hover:text-foreground size-7 rounded-sm!",
                             timeRange !== "all" &&
                               "text-foreground bg-muted hover:bg-muted",
                           )}
@@ -716,7 +719,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   <TooltipIconButton
                     variant="ghost"
                     tooltip="批量管理"
-                    className="text-muted-foreground hover:text-foreground size-7 rounded-full"
+                    className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
                     onClick={enterThreadBatch}
                   >
                     <ListChecksIcon className="size-3.5" />

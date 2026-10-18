@@ -13,6 +13,7 @@ import {
 import { getMessagePreview } from "@/components/custom-ui/message-scroller";
 import { EASE_OUT } from "@/lib/motion/ease";
 import { pickRoundAnchors } from "@/lib/panels/message-round-anchors";
+import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import { noteRender } from "@/components/debug/perf-store";
 import { yieldViewportScroll } from "./viewport-scroll-manager";
 
@@ -213,6 +214,9 @@ export function ThreadPreviewRail() {
   const scheduleSync = useCallback(() => {
     if (syncFrameRef.current) cancelAnimationFrame(syncFrameRef.current);
     syncFrameRef.current = requestAnimationFrame(() => {
+      // 拖拽调宽期间跳过：宽度每帧都变，重建刻度 + 全量几何测量是拖动卡顿
+      // 的主因；松手后由 resize-settled 统一补一次终态
+      if (isResizing()) return;
       // 锚点集合没变（纯流式文本）⇒ 跳过全量几何测量
       if (span("刻度条-重建", syncItems)) span("刻度条-测激活", updateActiveItem);
     });
@@ -228,9 +232,10 @@ export function ThreadPreviewRail() {
 
   const scheduleActive = useCallback(() => {
     if (activeFrameRef.current) cancelAnimationFrame(activeFrameRef.current);
-    activeFrameRef.current = requestAnimationFrame(() =>
-      span("刻度条-测激活", updateActiveItem),
-    );
+    activeFrameRef.current = requestAnimationFrame(() => {
+      if (isResizing()) return;
+      span("刻度条-测激活", updateActiveItem);
+    });
   }, [updateActiveItem]);
 
   // 视口监听：消息增删 → 重建刻度；滚动/尺寸变化 → 更新激活项。
@@ -256,10 +261,16 @@ export function ThreadPreviewRail() {
       typeof ResizeObserver === "undefined"
         ? null
         : new ResizeObserver(() => {
+            if (isResizing()) return;
             scheduleSync();
             scheduleActive();
           });
     resizeObserver?.observe(viewport);
+    // 拖拽期间被跳过的重建/激活测量，松手后补一拍
+    const offSettled = onResizeSettled(() => {
+      scheduleSync();
+      scheduleActive();
+    });
 
     // 页脚（sticky composer）增高/缩回时重测刻度条底边的让位量
     measureRailBottom();
@@ -267,7 +278,10 @@ export function ThreadPreviewRail() {
     const footerObserver =
       typeof ResizeObserver === "undefined" || !footer
         ? null
-        : new ResizeObserver(() => measureRailBottom());
+        : new ResizeObserver(() => {
+            if (isResizing()) return;
+            measureRailBottom();
+          });
     if (footer && footerObserver) footerObserver.observe(footer);
 
     const handleScroll = () => scheduleActive();
@@ -277,6 +291,7 @@ export function ThreadPreviewRail() {
       mutationObserver.disconnect();
       resizeObserver?.disconnect();
       footerObserver?.disconnect();
+      offSettled();
       viewport.removeEventListener("scroll", handleScroll);
       if (syncFrameRef.current) cancelAnimationFrame(syncFrameRef.current);
       if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
@@ -295,18 +310,27 @@ export function ThreadPreviewRail() {
   useEffect(() => {
     const root = rootRef.current;
     if (!root || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries.at(-1)?.contentRect;
-      if (!rect) return;
+    // 终态测量：拖拽结束后（以及正常尺寸变化时）读一次当前尺寸
+    const measure = () => {
+      const rect = root.getBoundingClientRect();
       setRailHeight((current) => (current === rect.height ? current : rect.height));
       setMessageWidth((current) =>
         current === rect.width ? current : rect.width,
       );
       // 覆盖层自身高度变了（窗口 resize），页脚顶缘的让位量要跟着重算
       measureRailBottom();
+    };
+    const observer = new ResizeObserver(() => {
+      // 拖拽调宽期间跳过逐帧 setState/测量，松手后 offSettled 补一次
+      if (isResizing()) return;
+      measure();
     });
     observer.observe(root);
-    return () => observer.disconnect();
+    const offSettled = onResizeSettled(measure);
+    return () => {
+      observer.disconnect();
+      offSettled();
+    };
   }, [measureRailBottom]);
 
   const scrollToItem = useCallback(

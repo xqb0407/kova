@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useState,
   type FC,
   type ReactNode,
@@ -13,12 +14,13 @@ import type { PanelTab } from "@/lib/panels/panel-tabs";
 import {
   fsErrorText,
   fsReadFile,
-  fsReadFileBase64,
   fsWriteFile,
   imageMimeFor,
   type FsFileContent,
 } from "@/lib/workspace/fs";
 import { CodeMirrorCode } from "@/components/code/cm-code";
+import { cn } from "@/lib/utils";
+import { ImageView, ZoomableImage } from "./image-viewer";
 import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
 import {
   buildCodeDirective,
@@ -45,11 +47,17 @@ import { TabEmpty } from "./tab-empty";
  * - plan_write（含历史 SubmitPlan/SubmitGoal）：tab.focus = 提交 part 的
  *   toolCallId，渲染 args 里的完整计划 Markdown（计划进右侧面板的入口）。
  * 快照类历史会话/刷新后同样可打开。
+ * 源码态编辑器撑满剩余高度（点正文外的空白也能定位光标），长文件由
+ * 编辑器内部滚动；预览态仍是内容自适应 + 外层滚动。
  * Markdown 文件（含计划）头部给「预览 | 源码」切换，预览即消息区同款渲染
  * （复用 MarkdownText：自带 .aui-markdown 包装层，代码块头部按钮/边框等
  * 样式都作用域在该层下，裸 Streamdown 会回退到默认定位导致按钮跑飞）。
- * 磁盘模式下扩展名命中图片（lib/fs IMAGE_MIME）走 ImageView：原始字节
- * base64 → data URL 直显，不再落"二进制无法预览"占位。
+ * SVG 同样是文本文件（fs_read_file 正常出内容），头部给同一组切换：
+ * 预览走 <img> + data URL（图片上下文不执行脚本、不加载外链，文件内的
+ * CSS/SMIL 动画仍会播放），源码走 CodeMirror 的 XML 高亮。
+ * 磁盘模式下扩展名命中图片（lib/fs IMAGE_MIME）走 image-viewer 的 ImageView：
+ * 原始字节 base64 → data URL 直显 + 缩放/平移（见 image-viewer.tsx），不再落
+ * "二进制无法预览"占位。
  */
 
 type FilePart = {
@@ -191,11 +199,43 @@ const NoteBar: FC<{ text: string }> = ({ text }) => (
   </p>
 );
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
+/**
+ * SVG 预览：文本 → base64 data URL 交给 <img>。
+ * 不用内联 dangerouslySetInnerHTML / object / iframe：<img> 的图片上下文
+ * 不执行脚本、不加载外部资源，但 SVG 自带的 CSS/SMIL 动画仍会播放。
+ * 预览内容跟随已保存文本（与 Markdown 一致，源码态的未保存草稿不进预览）。
+ */
+const SvgPreview: FC<{ text: string; path: string }> = ({ text, path }) => {
+  const src = useMemo(() => {
+    const bytes = new TextEncoder().encode(text);
+    let binary = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return `data:image/svg+xml;base64,${btoa(binary)}`;
+  }, [text]);
+  // 记录失败的 src 而非布尔值：内容一变（重新加载/保存）自动恢复尝试
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  if (failedSrc === src) {
+    return (
+      <TabEmpty
+        icon={ImageOffIcon}
+        text="SVG 渲染失败（文件可能不是有效的 SVG）"
+      />
+    );
+  }
+  // 与磁盘图片共用看图器：矢量图「适应」允许放大（贴满容器才是原观感），
+  // 拿不到固有尺寸（无 width/height 的 SVG）时它自动退回「撑满容器 + 无缩放条」
+  return (
+    <ZoomableImage
+      src={src}
+      alt={path}
+      upscaleToFit
+      onError={() => setFailedSrc(src)}
+    />
+  );
+};
 
 /**
  * 磁盘模式编辑上下文（快照模式不传 = 只读，行为不变）：
@@ -217,8 +257,10 @@ const FileBody: FC<{ part: FilePart; note?: string; edit?: FileEdit }> = ({
   edit,
 }) => {
   const isMd = /\.mdx?$/i.test(part.path);
+  const isSvg = /\.svg$/i.test(part.path);
+  const previewable = isMd || isSvg;
   const [mode, setMode] = useState<"preview" | "source">(
-    isMd ? "preview" : "source",
+    previewable ? "preview" : "source",
   );
   // 行号前缀只在 read 快照里有；计划/写入的正文是原文，别碰
   const text = part.kind === "read" ? stripReadLineNumbers(part.text) : part.text;
@@ -236,7 +278,7 @@ const FileBody: FC<{ part: FilePart; note?: string; edit?: FileEdit }> = ({
         path={part.path}
         extra={
           <>
-            {isMd ? <ModeToggle mode={mode} onChange={setMode} /> : null}
+            {previewable ? <ModeToggle mode={mode} onChange={setMode} /> : null}
             {edit?.dirty ? (
               <div className="ml-auto flex shrink-0 items-center gap-2">
                 <span className="text-muted-foreground text-xs">● 未保存</span>
@@ -254,21 +296,37 @@ const FileBody: FC<{ part: FilePart; note?: string; edit?: FileEdit }> = ({
         }
       />
       {note ? <NoteBar text={note} /> : null}
-      <div className="min-h-0 flex-1 overflow-auto">
-        {!source ? (
-          <p className="text-muted-foreground/60 px-3 py-2 text-xs">
-            （没有记录到内容）
-          </p>
-        ) : mode === "preview" ? (
-          <div className="px-4 py-3">
-            <MarkdownText text={text} />
-          </div>
-        ) : (
+      {!source ? (
+        <p className="text-muted-foreground/60 px-3 py-2 text-xs">
+          （没有记录到内容）
+        </p>
+      ) : mode === "preview" ? (
+        /* 预览：Markdown 长文外层滚动；SVG 交给看图器自己滚（两套滚动会打架） */
+        <div
+          className={cn("min-h-0 flex-1", isSvg ? "overflow-hidden" : "overflow-auto")}
+        >
+          {isSvg ? (
+            <SvgPreview text={text} path={part.path} />
+          ) : (
+            <div className="px-4 py-3">
+              <MarkdownText text={text} />
+            </div>
+          )}
+        </div>
+      ) : (
+        /* 源码：编辑器撑满剩余高度（height="100%" 需容器链逐层定高，
+           否则百分比落回 auto）——正文之外的空白也属于编辑器，点哪都能
+           定位光标/起选；长文件由编辑器内部滚动（行号跟随），外层不再
+           滚动，避免两套滚动容器打架 */
+        <div className="min-h-0 flex-1 overflow-hidden">
           <CodeMirrorCode
+            className="h-full"
+            height="100%"
             value={source}
             path={part.path}
             editable={!!edit}
             onChange={edit?.onDraftChange}
+            transparentBg
             selectionAction={
               referencePath
                 ? {
@@ -294,8 +352,8 @@ const FileBody: FC<{ part: FilePart; note?: string; edit?: FileEdit }> = ({
                 : undefined
             }
           />
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -401,78 +459,6 @@ const DiskFileView: FC<{ cwd: string; path: string }> = ({ cwd, path }) => {
           : undefined
       }
     />
-  );
-};
-
-/**
- * 图片预览（磁盘模式）：fs_read_file_base64 原始字节 → data URL（CSP 已放行）。
- * 与 DiskFileView 并列而非在其内分支——图片扩展名在挂载时即定，两条读取路径
- * 的 state 机也不同，拆成兄弟组件最干净（FileTab 分流，key 保证换文件重置）。
- */
-const ImageView: FC<{ cwd: string; path: string; mime: string }> = ({
-  cwd,
-  path,
-  mime,
-}) => {
-  const [state, setState] = useState<
-    | { status: "loading" }
-    | { status: "ready"; src: string; size: number }
-    | { status: "too-large" }
-    | { status: "error" }
-  >({ status: "loading" });
-  useEffect(() => {
-    let alive = true;
-    void fsReadFileBase64(cwd, path).then((r) => {
-      if (!alive) return;
-      if (r === "too-large") setState({ status: "too-large" });
-      else if (r)
-        setState({
-          status: "ready",
-          src: `data:${mime};base64,${r.base64}`,
-          size: r.size,
-        });
-      else setState({ status: "error" });
-    });
-    return () => {
-      alive = false;
-    };
-  }, [cwd, path, mime]);
-
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <FileHeader path={path} />
-      {state.status === "ready" ? (
-        <NoteBar
-          text={`${path.slice(path.lastIndexOf(".") + 1).toUpperCase()} · ${formatBytes(state.size)}`}
-        />
-      ) : null}
-      <div className="bg-muted/20 min-h-0 flex-1 overflow-auto p-4">
-        {state.status === "loading" ? (
-          <div className="text-muted-foreground flex h-full items-center justify-center gap-1.5 text-xs">
-            <Loader2Icon className="size-3.5 animate-spin" />
-            读取图片…
-          </div>
-        ) : state.status === "ready" ? (
-          <div className="grid h-full w-full place-items-center">
-            <img
-              src={state.src}
-              alt={path}
-              draggable={false}
-              className="max-h-full max-w-full rounded-md object-contain shadow-sm"
-            />
-          </div>
-        ) : (
-          <TabEmpty
-            icon={ImageOffIcon}
-            text={
-              state.status === "too-large"
-                ? "图片超过 20MB，暂不预览"
-                : "读取失败（文件可能已被删除，或无权限访问）"
-            }
-          />
-        )}
-      </div>
-    </div>
   );
 };
 

@@ -952,6 +952,90 @@ describe("上下文设定行落盘与回放（§6 M4）", () => {
     );
     // 事件溯源行不占 seq 号段（queue_state/pending_interaction 同款）
     expect(rows.every((r) => !("seq" in r))).toBe(true);
+    // 切换后还没有发过消息：不产生会话流分隔线（试模型不应留痕）
+    expect(scan.modelChanges).toEqual([]);
+  });
+
+  test("modelChanges 锚点 = 切换时已存在的最大 seq；连续重复选择折叠", async () => {
+    const id = "m4-modelchanges-anchor";
+    await sessionInsert(id, tmp);
+    const message = (seq: number) =>
+      JSON.stringify({
+        type: "message",
+        seq,
+        ui: null,
+        agent: { role: "user", content: `m${seq}` },
+      });
+    const change = (provider: string, modelId: string, at: string) =>
+      JSON.stringify({ type: "model_change", provider, modelId, timestamp: at });
+    writeFileSync(
+      sessionPath(id),
+      [
+        message(3),
+        change("anthropic", "claude-sonnet", "2026-01-01T00:00:01.000Z"),
+        message(4),
+        // 同模型重选不产生新分隔线
+        change("anthropic", "claude-sonnet", "2026-01-01T00:00:02.000Z"),
+        change("openai", "gpt-4o", "2026-01-01T00:00:03.000Z"),
+        message(5),
+        // 切完还没发消息：尾部切换不渲染
+        change("openai", "gpt-5", "2026-01-01T00:00:04.000Z"),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const scan = scanTranscript(id);
+    expect(scan.model).toEqual({ provider: "openai", modelId: "gpt-5" });
+    expect(scan.modelChanges).toEqual([
+      {
+        provider: "anthropic",
+        modelId: "claude-sonnet",
+        timestamp: Date.parse("2026-01-01T00:00:01.000Z"),
+        afterSeq: 3,
+      },
+      {
+        provider: "openai",
+        modelId: "gpt-4o",
+        timestamp: Date.parse("2026-01-01T00:00:03.000Z"),
+        afterSeq: 4,
+      },
+    ]);
+  });
+
+  test("同一消息边界前的多次切换只留最后一次", async () => {
+    const id = "m4-modelchanges-coalesce";
+    await sessionInsert(id, tmp);
+    const change = (provider: string, modelId: string, at: string) =>
+      JSON.stringify({ type: "model_change", provider, modelId, timestamp: at });
+    writeFileSync(
+      sessionPath(id),
+      [
+        JSON.stringify({
+          type: "message",
+          seq: 0,
+          ui: null,
+          agent: { role: "user", content: "hi" },
+        }),
+        change("anthropic", "claude", "2026-01-01T00:00:01.000Z"),
+        change("openai", "gpt-4o", "2026-01-01T00:00:02.000Z"),
+        change("google", "gemini", "2026-01-01T00:00:03.000Z"),
+        JSON.stringify({
+          type: "message",
+          seq: 1,
+          ui: null,
+          agent: { role: "user", content: "next" },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const scan = scanTranscript(id);
+    expect(scan.modelChanges).toEqual([
+      {
+        provider: "google",
+        modelId: "gemini",
+        timestamp: Date.parse("2026-01-01T00:00:03.000Z"),
+        afterSeq: 0,
+      },
+    ]);
   });
 
   test("无设定行 = 三值全 null：旧会话恢复回落偏好行/全局的路径不受影响", async () => {

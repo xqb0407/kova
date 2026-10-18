@@ -84,6 +84,13 @@ export const PiModelPicker: FC = () => {
           provider: v.slice(0, sep),
           modelId: v.slice(sep + 1),
         };
+        // 重选当前模型不算切换（不发新设定行，也不打分隔线）
+        if (
+          gate.selected?.provider === model.provider &&
+          gate.selected.modelId === model.modelId
+        ) {
+          return;
+        }
         if (threadId) {
           void setThreadModel(threadId, model);
         } else {
@@ -96,7 +103,10 @@ export const PiModelPicker: FC = () => {
       <ModelSelector.Trigger
         variant="ghost"
         size="sm"
-        className="h-7 max-w-48 rounded-lg [&>span]:min-w-0 @max-2xl:px-2"
+        // 字号/图标对齐底栏其余控件：Trigger 的 sm 变体默认 text-xs + 16px 箭头，
+        // 这里统一成 text-sm(14px) + 14px 图标，间距也与相邻按钮一致；
+        // 文本色随底栏统一弱化（悬停转前景色），不再比相邻胶囊更黑
+        className="text-muted-foreground hover:text-foreground h-7 max-w-48 gap-1.5 rounded-lg text-sm [&>span]:min-w-0 [&>svg]:size-3.5 @max-2xl:px-2"
         disabled={modelLocked}
         title={modelLocked ? "消息发送完成前禁止切换模型" : selectedLabel}
       >
@@ -118,7 +128,11 @@ export const PiModelPicker: FC = () => {
           )}
         </span>
       </ModelSelector.Trigger>
-      <ModelSelector.Content searchable className="w-80">
+      <ModelSelector.Content
+        searchable
+        // 外框与搜索栏分隔线同步收淡，避免内部线比外缘还重
+        className="w-80 border-border/70 [&_[data-slot=command-input-wrapper]]:border-border/70"
+      >
         <ModelSelector.Search placeholder="搜索模型..." />
         <ModelSelector.List>
           <ModelSelector.Empty>

@@ -65,7 +65,8 @@ import { dropEventSeq, peekEventSeq } from "../event-seq";
 import { peekPartial } from "../thread-events";
 import type { Running, SessionSummary } from "../../types";
 import type { CommandHandler } from "../command";
-import type { CompactionRow } from "../../sessions/transcript";
+import type { CompactionRow, ModelChangeRow } from "../../sessions/transcript";
+import { getModels } from "../../model/model-catalog";
 
 /** 检查点行 → 快照 compactionSummary 消息：generation/summarized 从 details
  *  推出，口径与 get_history 的 data-compaction part 载荷一致（transcript.ts
@@ -83,6 +84,29 @@ function compactionSnapMessage(c: CompactionRow) {
     timestamp: Date.parse(c.createdAt) || 0,
     // 转录行 seq 随消息透传：前端投影用它生成稳定消息 id（下标会因新行落盘漂移）
     __seq: c.seq,
+  };
+}
+
+/** 模型切换行 → 快照 modelChange 消息（消息流内分隔线）。
+ *  ordinal 是 scanTranscript 输出中可见切换事件的序号（连续同模型、切完未发
+ *  消息的尾部切换、同一消息边界前的多次切换都已收敛），跨快照稳定；
+ *  模型名取当前目录，模型已删/停用时退回裸 provider/modelId。 */
+function modelChangeSnapMessage(c: ModelChangeRow, ordinal: number) {
+  const name = (() => {
+    try {
+      return getModels().getModel(c.provider, c.modelId)?.name;
+    } catch {
+      return undefined;
+    }
+  })();
+  return {
+    role: "modelChange",
+    provider: c.provider,
+    modelId: c.modelId,
+    ...(name ? { name } : {}),
+    timestamp: c.timestamp,
+    // 设定行不占 seq：用文件序序号生成稳定消息 id（见 messageProjection.messageId）
+    __stableId: `pi-model-change:${ordinal}`,
   };
 }
 
@@ -545,14 +569,39 @@ export const handlers: Record<string, CommandHandler> = {
     });
     const winStart = msgWindow.length ? scan.messages.indexOf(msgWindow[0]) : 0;
     const winEnd = winStart + msgWindow.length - 1;
-    // 消息与压缩检查点按 seq 归并（两者共用号段，单遍双指针）
+    // 模型切换分隔线：只取落在本分页窗内的事件（afterSeq = 切换发生时已存在的
+    // 最大 seq；null = 初始选择，任何消息之前，不渲染）。ordinal 保留转录文件序，
+    // 供前端生成跨快照稳定的消息 id。
+    const firstWindowSeq = msgWindow[0]?.seq ?? null;
+    const modelChanges = scan.modelChanges
+      .map((c, ordinal) => ({ ...c, ordinal }))
+      .filter(
+        (c) =>
+          c.afterSeq !== null &&
+          (firstWindowSeq === null || c.afterSeq >= firstWindowSeq) &&
+          (beforeSeq === undefined || c.afterSeq < beforeSeq),
+      );
+    // 消息、压缩检查点、模型切换按 seq 归并（消息与检查点共用号段，单遍双指针）。
+    // 切换行不占 seq：锚点 seq 相同的事件排在锚点消息/检查点之后；锚点行被
+    // 哨兵过滤掉时，在下一条可见消息之前补出（仍在语义正确的位置）。
     type SnapMessage = Record<string, unknown> & { role?: string };
     const messages: SnapMessage[] = [];
     let ci = 0;
+    let mci = 0;
+    const pushModelChangesThrough = (seq: number) => {
+      while (mci < modelChanges.length && modelChanges[mci].afterSeq! <= seq) {
+        const change = modelChanges[mci++];
+        messages.push(modelChangeSnapMessage(change, change.ordinal));
+      }
+    };
     for (let mi = winStart; mi <= winEnd; mi++) {
       const m = scan.messages[mi];
+      // 锚点落在被隐藏行上的事件：在下一条可见消息前补出
+      pushModelChangesThrough(m.seq - 1);
       while (ci < scan.compactions.length && scan.compactions[ci].seq < m.seq) {
-        messages.push(compactionSnapMessage(scan.compactions[ci++]));
+        const c = scan.compactions[ci++];
+        messages.push(compactionSnapMessage(c));
+        pushModelChangesThrough(c.seq);
       }
       // seq = per-session 转录行水位（落盘后单调不变）；透传给前端做稳定消息 id。
       // 在飞 partial（peekPartial）没有 seq——未落盘，行号还不确定，前端按下标回退。
@@ -566,13 +615,18 @@ export const handlers: Record<string, CommandHandler> = {
         __seq: m.seq,
         ...(truncationStopped ? { __truncationStopped: true } : {}),
       });
+      pushModelChangesThrough(m.seq);
     }
     while (ci < scan.compactions.length) {
       // 翻旧页（beforeSeq）时游标之后的行不属于这一页：分隔线随页走，避免旧页
       // 被前置后把「未来」的压缩分隔线插到页尾
       if (beforeSeq !== undefined && scan.compactions[ci].seq >= beforeSeq) break;
-      messages.push(compactionSnapMessage(scan.compactions[ci++]));
+      const c = scan.compactions[ci++];
+      messages.push(compactionSnapMessage(c));
+      pushModelChangesThrough(c.seq);
     }
+    // 切换后尚无新消息：事件锚在窗口末条之后，统一补到尾部
+    pushModelChangesThrough(Number.POSITIVE_INFINITY);
     // 流式中的 partial 并入（react-pi 迁移阶段 3c）：转录只在 message_end 落盘，
     // 运行中刷新靠快照自愈——把事件桥台账里的在飞 assistant 消息接到尾部
     //（仅 running 会话有；空闲时台账已清）。在飞 partial 恒属于会话尾部，

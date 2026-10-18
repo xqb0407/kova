@@ -48,7 +48,7 @@ export function splitPath(path: string): { dir: string; base: string } {
 
 /**
  * git 状态 → 左缘彩色圆点（VS Code 文件装饰风格）：绿=新增/未跟踪、
- * 黄=修改、红=删除、紫=改名；checkpoint-card 与 git-view 共用。
+ * 黄=修改、红=删除、紫=改名；checkpoint-card 用（git-view 列表已改右缘字母）。
  */
 const STATUS_DOT: Record<string, string> = {
   A: "bg-emerald-500",
@@ -73,6 +73,37 @@ export const StatusDot: FC<{
     <span className={cn("size-1.5 rounded-full", STATUS_DOT[status] ?? "bg-muted-foreground")} />
   </span>
 );
+
+/**
+ * git 状态 → 右缘字母装饰（VS Code 源代码管理同款：字母跟在路径后右对齐，
+ * 颜色同 STATUS_DOT 口径）。未跟踪的 "?" 按 VS Code 惯例显示 U。
+ */
+const STATUS_LETTER: Record<string, { letter: string; className: string }> = {
+  A: { letter: "A", className: "text-emerald-600 dark:text-emerald-400" },
+  U: { letter: "U", className: "text-emerald-600 dark:text-emerald-400" },
+  "?": { letter: "U", className: "text-emerald-600 dark:text-emerald-400" },
+  M: { letter: "M", className: "text-amber-600 dark:text-amber-400" },
+  D: { letter: "D", className: "text-rose-600 dark:text-rose-400" },
+  R: { letter: "R", className: "text-violet-600 dark:text-violet-400" },
+  C: { letter: "C", className: "text-violet-600 dark:text-violet-400" },
+};
+
+export const StatusLetter: FC<{ status: string; title?: string }> = ({
+  status,
+  title,
+}) => {
+  const s =
+    STATUS_LETTER[status] ??
+    ({ letter: status, className: "text-muted-foreground" } as const);
+  return (
+    <span
+      title={title}
+      className={cn("shrink-0 text-xs font-semibold", s.className)}
+    >
+      {s.letter}
+    </span>
+  );
+};
 
 const GitFileCard: FC<{
   f: GitDiffFile;

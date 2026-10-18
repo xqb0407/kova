@@ -35,6 +35,22 @@
   padding: 0 10px 0 8px;
 }
 
+/* 面板文件视图：去掉代码主题的实色底，让所在容器（面板/主页面同款背景）
+   透出来，与已透明的 diff 视图口径一致；主题只保留语法前景色、选区与
+   当前行高亮。设置页主题预览不带此类，仍按主题实色底展示。 */
+.aui-cm-code.cm-code-transparent .cm-editor {
+  background-color: transparent;
+}
+
+/* 行号槽不能跟着透明：它 sticky 钉在左缘、z-index 200，横向滚动（关换行
+   时的长行）正文会从底下穿过——透明就是"行号与文字叠在一起"。改取所在
+   卡片底色 --background：观感与原"透出容器背景"一致，但挡得住穿过的正文
+   （面板 diff 行号列同款问题，那边用强制 wrap 消掉；这里保住用户的换行
+   设置，改为行号槽不透明）。 */
+.aui-cm-code.cm-code-transparent .cm-gutters {
+  background-color: var(--background);
+}
+
 /* 可编辑视图（Markdown 编辑器等）：只读容器隐藏光标，编辑场景恢复 */
 .aui-cm-edit .cm-content {
   caret-color: auto;

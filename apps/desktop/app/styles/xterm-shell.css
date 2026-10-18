@@ -1,0 +1,20 @@
+/**
+ * xterm 终端视口的宿主样式（右侧面板 terminal 标签与底部终端坞共用，
+ * 见 components/agent-thread/agent-panel/shell-viewport.tsx）。
+ *
+ * 只补 xterm 自带样式与本应用观感不一致的部分；终端配色本身在 lib/shell.ts
+ * 的 SHELL_THEMES（xterm 只认 hex，不吃主题的 oklch 变量）。
+ */
+
+/* xterm 的滚动容器自带纯黑底（xterm.css: `.xterm-viewport { background:#000 }`）。
+ * 字符列宽按整像素取整，终端右缘总会剩下一条没有被字符覆盖的槽——亮色
+ * 主题下就是一条黑边，看着像"多出来的一条怪滚动条"（实报）。让它跟随
+ * 终端主题底色（hex 与 SHELL_THEMES 同源）。
+ * 选择器带上 :root/.dark 提高优先级：xterm.css 由组件按需加载，注入顺序
+ * 可能晚于本文件。 */
+:root .xterm .xterm-viewport {
+  background-color: #ffffff;
+}
+.dark .xterm .xterm-viewport {
+  background-color: #18181b;
+}

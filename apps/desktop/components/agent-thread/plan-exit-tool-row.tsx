@@ -127,7 +127,7 @@ export const PlanExitToolRow: ToolCallMessagePartComponent = ({
   if (decision.kind === "rejected") {
     return (
       <ReasoningRoot variant="ghost" data-slot="plan-exit-tool-row">
-        <CollapsibleTrigger className="group/trigger text-muted-foreground hover:text-foreground flex w-full max-w-[85%] origin-left items-center gap-2 py-1.5 text-sm transition-[color,scale] active:scale-[0.98]">
+        <CollapsibleTrigger className="group/trigger text-muted-foreground hover:text-foreground flex w-full max-w-[85%] origin-left items-center gap-2 py-1.5 text-sm transition-[color,scale] ">
           <LogOutIcon className="size-4 shrink-0" />
           <span className="shrink-0">计划未批准</span>
           <span

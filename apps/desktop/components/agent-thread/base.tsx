@@ -3,8 +3,10 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FC,
 } from "react";
 import dynamic from "next/dynamic";
@@ -37,9 +39,13 @@ import { setAutomationFrameSync } from "@/lib/automation/automation-live";
 import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
-import { setCurrentPanelThread } from "@/lib/panels/panel-tabs";
+import { beginResizeSession, endResizeSession } from "@/lib/ui/resize-session";
+import { getPanelTabsFor, setCurrentPanelThread } from "@/lib/panels/panel-tabs";
+import { toggleTerminalDock } from "@/lib/terminal/dock";
+import { TerminalDock } from "./terminal-dock";
 import {
-  readPanelOpenPref,
+  panelResizeContradictsState,
+  resolvePanelOpenPref,
   writePanelOpenPref,
 } from "@/lib/panels/panel-open-pref";
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
@@ -126,11 +132,11 @@ import "@/lib/settings/ui-prefs";
 /** 面板宽度的本地持久化键（px 整数）。面板**开合**已改为按会话分区记忆
  *  （lib/panels/panel-open-pref）；宽度仍是全局偏好，不分区 */
 const PANEL_WIDTH_KEY = "agent-panel-width";
-const PANEL_MIN_WIDTH = 300;
+const PANEL_MIN_WIDTH = 500;
 /** 无历史宽度时的默认面板宽（与 ResizablePanel defaultSize 一致） */
-const PANEL_DEFAULT_WIDTH = 400;
+const PANEL_DEFAULT_WIDTH = 500;
 /** 聊天列最小宽（把聊天列做成可折叠以支撑面板全屏，折叠动画须释放 minSize） */
-const CHAT_MIN_WIDTH = 380;
+const CHAT_MIN_WIDTH = 500;
 
 export function BaseThread() {
   return <Thread />;
@@ -256,24 +262,44 @@ export const Base: FC = () => {
     return () => setSessionsChangedSync(null);
   }, [aui]);
   // Agent 面板：SSR 首帧恒为展开（避免 hydration 不一致）；挂载/切会话后按
-  // **当前会话自己的记忆**恢复开合（下方分区效应），无记录默认收起
+  // **当前会话自己的记忆**恢复开合（下方分区效应）：用户表态优先，从没表过
+  // 态的会话有标签就展开、没标签才收起
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelHydrated, setPanelHydrated] = useState(false);
   /** 动画落位基线（null = 下一次落位走 snap、不播开合动画） */
   const prevPanelOpenRef = useRef<boolean | null>(null);
+  /** 待播的开合动画（true = 展开方向）。minSize 释放是两段式：先置位、
+   *  等约束生效的下一轮再动画；第二轮不能再拿 isToggle 判断——状态沿在
+   *  上一轮就已经同步过，会被判成"非开合落位"直接 snap（收起方向尤其明显：
+   *  点收起变成瞬间消失，观感与展开对不上）。 */
+  const pendingPanelAnimRef = useRef<boolean | null>(null);
   /** 当前分区键的 ref：长生命周期闭包（事件监听/快捷键）不随分区切换重建 */
   const panelScopeKeyRef = useRef<string | null>(panelScopeKey);
   panelScopeKeyRef.current = panelScopeKey;
   const panelOpenRef = useRef(panelOpen);
   panelOpenRef.current = panelOpen;
-  /** 面板开合按会话分区恢复：挂载与切会话都读"当前会话自己的记忆"，无记录
-   *  默认收起——全局单键时代 A 会话展开面板、切到 B 也保持展开（2026-10 实报）。
-   *  分区切换是"跟随会话"而非用户意图：直接 setPanelOpen、不写记忆；同时把
-   *  prevPanelOpenRef 置 null 让宽度动画走 snap——切会话即时落位，不逐帧推挤。 */
+  /** 面板开合按会话分区恢复：挂载与切会话都读"当前会话自己的记忆"——全局单键
+   *  时代 A 会话展开面板、切到 B 也保持展开（2026-10 实报）。分区切换是"跟随
+   *  会话"而非用户意图：直接 setPanelOpen、不写记忆；同时把 prevPanelOpenRef
+   *  置 null 让宽度动画走 snap——切会话即时落位，不逐帧推挤。
+   *  从没表过态的会话（无记录）交给 resolvePanelOpenPref 兜底：有标签等着就
+   *  展开（后台会话里 agent 开的标签、切过去该看见的产物都在标签里），没有才
+   *  默认收起——否则每个没碰过的会话都要手点一次展开（2026-10 实报"每次切会话
+   *  都得重新打开"）。兜底不回写：没表态就一直是没表态。 */
   useEffect(() => {
-    setPanelOpen(readPanelOpenPref(panelScopeKey));
+    const hasTabs = panelScopeKey
+      ? getPanelTabsFor(panelScopeKey).tabs.length > 0
+      : false;
+    setPanelOpen(resolvePanelOpenPref(panelScopeKey, hasTabs));
     prevPanelOpenRef.current = null;
     setPanelHydrated(true);
+    // 收起态预排版的宽度：与开合偏好同源（localStorage），分区切换时一起刷新
+    const saved = Number(localStorage.getItem(PANEL_WIDTH_KEY));
+    setPanelContentW(
+      Number.isFinite(saved) && saved >= PANEL_MIN_WIDTH
+        ? saved
+        : PANEL_DEFAULT_WIDTH,
+    );
   }, [panelScopeKey]);
   /** 用户手动开/收的写口（收起/展开按钮、快捷键、拖拽落位、显式展开事件）：
    *  同步写当前会话的分区记忆——这是"用户意图"，与切会话的跟随恢复区分开 */
@@ -281,8 +307,19 @@ export const Base: FC = () => {
     setPanelOpen(open);
     writePanelOpenPref(panelScopeKeyRef.current, open);
   }, []);
+  // 会话分区切换/水合恢复走 snap：把待播标记清掉，别让上一分区的意图带过来
+  useEffect(() => {
+    pendingPanelAnimRef.current = null;
+  }, [panelScopeKey]);
+  // 会话是否有内容：声明在下方（useAuiState），这里用 ref 承接供稳定回调读
+  const threadHasContentRef = useRef(false);
   const toggleUserPanelOpen = useCallback(() => {
-    applyUserPanelOpen(!panelOpenRef.current);
+    const next = !panelOpenRef.current;
+    applyUserPanelOpen(next);
+    // 新对话（空会话）里 panelGate 关着，直接改 panelOpen 会被闸门按住
+    // 不显示（点开像没反应）；点开即经空会话旁路放行——与 composer 的
+    // 「Git 图谱」同一套机制。旁路在会话有内容或面板收起时自动清除
+    if (next && !threadHasContentRef.current) setPanelRequestedEmpty(true);
   }, [applyUserPanelOpen]);
   // 迭代1b（P6）：宽屏右列折叠（collapsedSize=0）时不再常驻渲染整棵面板树，
   // 首次展开才挂载、之后保持挂载（收起不再卸载，二次展开零重建）。
@@ -292,6 +329,9 @@ export const Base: FC = () => {
   // 按钮/窗口控件交接跟着它走而不是 panelOpen，否则收起动画一起步
   // 顶栏按钮就瞬间跳位（"闪一下"的来源）
   const [panelGone, setPanelGone] = useState(false);
+  // onResize 每帧都会进来；只在值真正翻转时才 setState。拖拽中反复调用
+  // setState（即使 React 会 bail out）仍可能让 Base 的渲染函数白跑一遍
+  const panelGoneRef = useRef(false);
   // 展开动画进行中：Header 窗口控件的卸载（docked 翻转）延迟到动画完成帧，
   // 与面板顶栏控件可见性同帧交接，消除右上角控件空窗（展开闪的来源）
   const [panelExpanding, setPanelExpanding] = useState(false);
@@ -303,6 +343,11 @@ export const Base: FC = () => {
   // 会话列表等重排大户不再每帧 relayout）。null = 未冻结（拖拽/静止态
   // 内容恒 100% 跟手）
   const [panelFrozenPx, setPanelFrozenPx] = useState<number | null>(null);
+  // 拖拽把手期间只冻结面板**内容区**（卡片与标签栏照常跟手）：xterm /
+  // webview / diff 等重排大户在拖拽中零 relayout，松手一次落位。与上面的
+  // 开合动画冻结分开——动画冻结整张卡片，拖拽只冻结内容区，观感不同。
+  const [panelDragFrozenPx, setPanelDragFrozenPx] = useState<number | null>(null);
+  const panelDragActiveRef = useRef(false);
   // ── 面板显示闸 ─────────────────────────────────────────────────────────────
   // 只有「真对话页且当前线程有内容」才允许显示 panel：自动化/插件/文件/使用
   // 统计等非对话页（activeMenu 非空）、设置页，以及新对话（空会话，含启动期
@@ -312,6 +357,7 @@ export const Base: FC = () => {
   // 加载历史）。例外：用户在空会话里显式点开面板（composer 分支菜单的
   // 「Git 图谱」只在新对话态可见），经 panelRequestedEmpty 旁路放行。
   const threadHasContent = useAuiState((s) => !isNewChatView(s));
+  threadHasContentRef.current = threadHasContent;
   const [panelRequestedEmpty, setPanelRequestedEmpty] = useState(false);
   // 旁路只在"空会话且面板保持打开"期间生效：会话有了内容（闸本来放行）或
   // 用户手动收起面板即清除，避免切页回来时空会话又被旁路撑开。
@@ -378,6 +424,64 @@ export const Base: FC = () => {
   const panelAnimRef = useRef<AnimationPlaybackControls | null>(null);
   // 动画被把手 pointerdown 拦停后置位，pointerup 时据此结算中间态
   const panelAnimInterruptedRef = useRef(false);
+  /** 开合动画期间的 is-resizing 拖拽会话（与把手拖拽同一套开关）：动画逐帧改宽，
+   *  重测量组件若照常逐帧读布局，读量是收放卡顿的主要来源；挂上会话它们跳过
+   *  中间帧，落位后由 endResizeSession 统一补一次终态测量。
+   *  自带 ref 守卫：与把手拖拽的会话交接时不会重复开/关。 */
+  const panelAnimSessionRef = useRef(false);
+  /** 量出"动画结束时正文该有多宽"并写进 --chat-width：同一帧完成折行，之后纯平移 */
+  const freezeChatText = (target: number) => {
+    const chat = chatRef.current;
+    const panel = panelRef.current;
+    const viewport = document.querySelector<HTMLElement>(
+      '[data-slot="aui_thread-viewport"]',
+    );
+    // 正文块 = 带 max-width 的那层（消息根）。data-slot 落在哪层各端不一，
+    // 从消息元素往上找第一个 max-width 是像素值的那层，别猜结构。
+    let block =
+      document.querySelector<HTMLElement>(
+        '[data-slot="aui_assistant-message-root"]',
+      ) ??
+      document.querySelector<HTMLElement>('[data-slot="aui_user-message-root"]') ??
+      document.querySelector<HTMLElement>(
+        '[data-slot="aui_assistant-message-content"]',
+      );
+    // 只认 px 值的 max-width：百分比（max-w-full 之类）也会被 parseFloat 读成数字，
+    // 拿它当上限会把正文挤成 100px
+    const pxOf = (v: string) =>
+      v.trim().endsWith("px") ? Number.parseFloat(v) : Number.NaN;
+    for (let i = 0; block && i < 4; i++) {
+      const mw = pxOf(getComputedStyle(block).maxWidth);
+      if (Number.isFinite(mw) && mw > 0) break;
+      block = block.parentElement;
+    }
+    if (!chat || !panel || !viewport || !block) {
+      setChatFreezeMax(null);
+      return;
+    }
+    // 组宽守恒（列 + 把手 + 面板 = 常量）：面板长多少，聊天列就窄多少
+    const finalChat =
+      chat.getSize().inPixels + (panel.getSize().inPixels - target);
+    const cs = getComputedStyle(viewport);
+    const pad =
+      (Number.parseFloat(cs.paddingLeft) || 0) +
+      (Number.parseFloat(cs.paddingRight) || 0);
+    // 上限取正文块自己的 max-width 计算值（= 对话宽度设置，px），不猜 60rem
+    const cap = pxOf(getComputedStyle(block).maxWidth) || 960;
+    const width = Math.max(200, Math.min(finalChat - pad, cap));
+    setChatFreezeMax(Math.round(width));
+  };
+  const unfreezeChatText = () => setChatFreezeMax(null);
+  const beginPanelAnimSession = () => {
+    if (panelAnimSessionRef.current) return;
+    panelAnimSessionRef.current = true;
+    beginResizeSession();
+  };
+  const endPanelAnimSession = () => {
+    if (!panelAnimSessionRef.current) return;
+    panelAnimSessionRef.current = false;
+    endResizeSession();
+  };
   /** localStorage 里的目标面板宽（无有效记录回默认） */
   const panelTargetWidth = () => {
     const saved = Number(localStorage.getItem(PANEL_WIDTH_KEY));
@@ -385,18 +489,35 @@ export const Base: FC = () => {
       ? saved
       : PANEL_DEFAULT_WIDTH;
   };
+  // 面板内容的排版权宽（px）：收起态也按"下次展开的目标宽"先把内容排好版。
+  // 不收窄成 0 的原因见下方冻结容器注释——展开方向原先比收起方向卡得多，
+  // 就差在这一下"首次布局"（整棵面板树 0→941px 的重排 + 内部一堆 RO 回调，
+  // CodeMirror/diff 这些一进来就要全量测量）。宽度随拖拽落位/记忆同步。
+  const [panelContentW, setPanelContentW] = useState<number | null>(null);
+  // 动画期间对话正文的排版宽（px，覆写 --chat-width；null = 不覆写）。
+  // 正文块是 min(列宽 - 内边距, --chat-width)，也就是说**列宽跨过 960 之后正文
+  // 才开始折行**。展开方向这笔折行原先落在动画尾段：列宽 1767 → 818，越过 960 时
+  // 面板已经走了 81% 的行程、动画只剩慢慢蹭的最后 160ms——观感就是"先平移、后折行"
+  // 两段。收起方向天然相反（列宽一涨就立刻越过阈值，折行发生在头几毫秒），所以一直
+  // 觉得顺。这里把折行统一挪到动画起点：正文按"结束时的宽度"排一次版，之后的动画
+  // 只剩纯平移；落位时覆写值与自然值相等，不会再有第二次变化。
+  const [chatFreezeMax, setChatFreezeMax] = useState<number | null>(null);
   useEffect(() => {
     if (!panelHydrated || compact) return;
     const p = panelRef.current;
     if (!p) return;
     const target = panelTargetWidth();
+    const pending = pendingPanelAnimRef.current;
     const isToggle =
-      prevPanelOpenRef.current !== null &&
-      prevPanelOpenRef.current !== panelShown;
+      pending !== null ||
+      (prevPanelOpenRef.current !== null &&
+        prevPanelOpenRef.current !== panelShown);
     prevPanelOpenRef.current = panelShown;
     panelAnimInterruptedRef.current = false;
     panelAnimRef.current?.stop();
     panelAnimRef.current = null;
+    endPanelAnimSession();
+    unfreezeChatText();
     if (!isToggle) {
       setPanelExpanding(false);
       if (panelShown) {
@@ -409,9 +530,11 @@ export const Base: FC = () => {
     }
     // minSize 未释放时先置位，等约束生效（本 effect 重跑）再动画
     if (!panelMinReleased) {
+      pendingPanelAnimRef.current = panelShown;
       setPanelMinReleased(true);
       return;
     }
+    pendingPanelAnimRef.current = null;
     if (panelShown) {
       // 从收起态起步才需要先归零；收起动画途中反向（面板尚未真正收起）
       // 直接从当前宽度续走，避免 resize(0) 造成瞬间跳变
@@ -422,6 +545,9 @@ export const Base: FC = () => {
       // 冻结内容宽为目标宽：面板从 0 展开时内容左缘随面板左缘左移入位，
       // 右侧被裁剪渐显——动画期间面板树零重排
       setPanelFrozenPx(Math.round(target));
+      setPanelContentW(Math.round(target));
+      freezeChatText(target);
+      beginPanelAnimSession();
       // 展开途中 Header 仍持有窗口控件（docked 延迟翻转）：面板顶栏控件要
       // 随面板滑入才可见，若 docked 在起步帧就翻 true，Header 控件立即卸载
       // 而顶栏控件还不可见——右上角出现一整段动画时长的控件空窗（闪）
@@ -434,6 +560,8 @@ export const Base: FC = () => {
           setPanelMinReleased(false);
           setPanelFrozenPx(null);
           setPanelExpanding(false);
+          endPanelAnimSession();
+          unfreezeChatText();
         },
         onUpdate: (v) => p.resize(v),
       });
@@ -442,7 +570,10 @@ export const Base: FC = () => {
       // 冻结内容宽为当前宽：面板左缘右移推挤聊天列，内容随左缘平移、
       // 右侧被裁剪滑出——与侧边栏折叠互为镜像
       setPanelFrozenPx(Math.round(from));
+      setPanelContentW(Math.round(from));
       setPanelExpanding(false);
+      freezeChatText(0);
+      beginPanelAnimSession();
       panelAnimRef.current = animate(from, 0, {
         duration: 0.26,
         ease: [0.32, 0.72, 0, 1],
@@ -451,6 +582,8 @@ export const Base: FC = () => {
           p.collapse();
           setPanelMinReleased(false);
           setPanelFrozenPx(null);
+          endPanelAnimSession();
+          unfreezeChatText();
         },
         onUpdate: (v) => p.resize(v),
       });
@@ -462,8 +595,15 @@ export const Base: FC = () => {
     panelMinReleased,
     panelRef,
   ]);
-  // 卸载时掐掉在途动画，避免回调打到已销毁的 Panel
-  useEffect(() => () => panelAnimRef.current?.stop(), []);
+  // 卸载时掐掉在途动画，避免回调打到已销毁的 Panel；顺带收掉动画会话
+  useEffect(
+    () => () => {
+      panelAnimRef.current?.stop();
+      endPanelAnimSession();
+      unfreezeChatText();
+    },
+    [],
+  );
   useEffect(() => () => chatAnimRef.current?.stop(), []);
   useEffect(
     () => () => {
@@ -600,24 +740,65 @@ export const Base: FC = () => {
     applyUserPanelOpen(false);
   }, [exitPanelFullscreen, applyUserPanelOpen]);
 
-  // 把手 pointerdown 拦停在途动画（动画 resize 会和拖拽互相覆盖）。
-  // 注意只挂把手——原来挂在 Group 的 onPointerDownCapture 上，面板内任何
-  // 点击（包括收起按钮自己）都会掐停动画：连点收起按钮时第二次点击把动画
-  // 停在半路且 applyUserPanelOpen(false) 已是 no-op，面板卡死"收不起来"
-  const interruptPanelAnim = () => {
+  // 把手 pointerdown：拦停在途动画（动画 resize 会和拖拽互相覆盖），并开启
+  // 一次拖拽会话。注意只挂把手——原来挂在 Group 的 onPointerDownCapture 上，
+  // 面板内任何点击（包括收起按钮自己）都会掐停动画：连点收起按钮时第二次
+  // 点击把动画停在半路且 applyUserPanelOpen(false) 已是 no-op，面板卡死
+  // "收不起来"。
+  const beginPanelHandleDrag = () => {
+    if (panelFullscreen || chatMinReleased || !panelGate) return;
     if (panelAnimRef.current) {
       panelAnimRef.current.stop();
       panelAnimRef.current = null;
       panelAnimInterruptedRef.current = true;
+      endPanelAnimSession();
+      unfreezeChatText();
     } else {
       panelAnimInterruptedRef.current = false;
     }
-    // 被拖拽接管：解除内容冻结，内容恢复 100% 跟手
+    // 被拖拽接管：解除开合动画的内容冻结
     setPanelFrozenPx(null);
+    // 拖拽期间挂全站 is-resizing（重测量组件据此跳过逐帧布局读取），
+    // 并把内容区宽定格在起始像素：面板外框照常跟手，内容一次都不重排
+    if (!panelDragActiveRef.current) {
+      panelDragActiveRef.current = true;
+      beginResizeSession();
+    }
+    const p = panelRef.current;
+    const px = p ? Math.round(p.getSize().inPixels) : 0;
+    // 从收起态拖开时内容区宽度还是 0，不能冻结（会把内容裁没）；
+    // 只有面板已经处于有效宽度才冻结，松手后统一落位
+    if (panelShown && !p?.isCollapsed() && px >= PANEL_MIN_WIDTH) {
+      setPanelDragFrozenPx(px);
+    }
   };
+  // 松手/取消：撤销拖拽会话，解冻内容区，两拍后通知各处补测终态
+  const endPanelHandleDrag = useCallback(() => {
+    if (!panelDragActiveRef.current) return;
+    panelDragActiveRef.current = false;
+    setPanelDragFrozenPx(null);
+    endResizeSession();
+  }, []);
+  // pointerup 理论上都会经过 Group 的 onPointerUpCapture；窗口失焦/指针取消
+  // 时可能收不到，这两个兜底防止 is-resizing 和内容冻结永久残留
+  useEffect(() => {
+    const stop = () => endPanelHandleDrag();
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    window.addEventListener("blur", stop);
+    return () => {
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      window.removeEventListener("blur", stop);
+      endPanelHandleDrag();
+    };
+  }, [endPanelHandleDrag]);
   // 把手交互结束（pointerup 任意位置都可能）后结算被拦停的动画，
   // 面板必须落到"全开/全收/交给开合效果续跑"三者之一，不许卡在半路
   const settlePanelHandle = () => {
+    // 先收拖拽会话：后续结算可能翻转 panelShown/启动动画，内容冻结的
+    // 归属要在此之前交还
+    endPanelHandleDrag();
     // 聊天列现在可折叠：被拖过最小宽自动折叠时，聊天列没有独立的恢复入口，
     // 松手必须弹回（非全屏、非全屏过渡中才处理）
     if (!panelFullscreen && !chatMinReleased) {
@@ -663,6 +844,8 @@ export const Base: FC = () => {
     if (px < PANEL_MIN_WIDTH) return;
     if (savePanelWidthTimer.current !== null)
       clearTimeout(savePanelWidthTimer.current);
+    // 收起态的排版宽跟着走：下次展开按新宽度预排版
+    setPanelContentW(px);
     savePanelWidthTimer.current = window.setTimeout(() => {
       savePanelWidthTimer.current = null;
       try {
@@ -671,8 +854,8 @@ export const Base: FC = () => {
     }, 200);
   };
 
-  // 全局快捷键：打开设置 / 直达自动化页 / 开合 Agent 面板 / 切换主题（绑定来自「设置 → 快捷键」，改动即时生效）
-  const { openSettings, openAutomations, toggleAgentPanel, toggleTheme } =
+  // 全局快捷键：打开设置 / 直达自动化页 / 开合 Agent 面板 / 开合底部终端 / 切换主题（绑定来自「设置 → 快捷键」，改动即时生效）
+  const { openSettings, openAutomations, toggleAgentPanel, toggleTerminal, toggleTheme } =
     useShortcuts();
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -687,6 +870,11 @@ export const Base: FC = () => {
       } else if (matchesShortcut(event, toggleAgentPanel)) {
         event.preventDefault();
         toggleUserPanelOpen();
+      } else if (matchesShortcut(event, toggleTerminal)) {
+        // 底部终端坞：开合状态在 lib/terminal/dock（全局一套，不分会话）；
+        // 首次展开时 dock 侧自理"空坞给一个终端"
+        event.preventDefault();
+        toggleTerminalDock();
       } else if (matchesShortcut(event, toggleTheme)) {
         event.preventDefault();
         toggleThemeMode();
@@ -694,7 +882,7 @@ export const Base: FC = () => {
     };
     document.addEventListener("keydown", down);
     return () => document.removeEventListener("keydown", down);
-  }, [openSettings, openAutomations, toggleAgentPanel, toggleTheme]);
+  }, [openSettings, openAutomations, toggleAgentPanel, toggleTerminal, toggleTheme]);
 
   // 进入设置页时清掉文档里的活动选区：选区还在时 SelectionToolbar 的 quote
   // 气泡（挂 body 的 fixed 浮层）不会自动收起，经快捷键等不经鼠标的入口切
@@ -717,6 +905,10 @@ export const Base: FC = () => {
     }
   }, [activeMenu, exitPanelFullscreen]);
 
+  // 元素身份固定：面板开合、侧栏收放都只改 Base 的本地状态，不该让消息流跟着
+  // 重渲染（实测一次开合里它占 12~50ms）。Thread 自己按 runtime 订阅更新，
+  // 与"由谁渲染它"无关——引用不变时 React 直接跳过这棵子树。
+  const threadNode = useMemo(() => <Thread />, []);
   const chat =
     activeMenu === "automation" ? (
       <AutomationsView
@@ -731,7 +923,7 @@ export const Base: FC = () => {
     ) : activeMenu === "files" ? (
       <FilesView />
     ) : (
-      <Thread />
+      threadNode
     );
 
   // 面板停靠为右列（宽屏且视觉上未完全收起，收起动画途中仍算停靠）：
@@ -746,10 +938,43 @@ export const Base: FC = () => {
   // TRAE 式左右两列：Header 只挂在聊天列上方，分割线从窗口顶通到底；
   // 列本身是带描边圆角的卡片，四周留出窗口底色边距（顶缘仍可拖窗）。
   // 窄屏（浮层模式）下浮层只盖聊天内容区，不遮 Header
+  // 回调一律稳定引用：Header 与壳在面板开合时只该因"面板相关 prop"（docked /
+  // showPanelToggle）重渲染，不该被内联箭头函数一起拖进来
+  const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
+  const openMobileSidebar = useCallback(() => setMobileSidebarOpen(true), []);
+  const hideSidebar = useCallback(() => setSidebarCollapsed(true), []);
+  const openSettingsView = useCallback(() => setView("settings"), []);
+  const sidebarHeaderContent = useMemo(
+    () => (
+      // 展开时显示在侧边栏顶栏；mac 的红绿灯避让（ml-18）由顶栏内组里
+      // 第一个元素（shell 渲染的搜索按钮）承接，此处在搜索右侧紧贴排列。
+      // 折叠时内容随侧边栏整列 transform 平移出屏，保持挂载不卸载
+      <TooltipIconButton
+        variant="ghost"
+        size="icon"
+        tooltip="Hide sidebar"
+        side="bottom"
+        onClick={hideSidebar}
+        className={cn("size-8", !mac && "ml-2")}
+      >
+        <PanelLeftIcon className="size-4" />
+      </TooltipIconButton>
+    ),
+    [hideSidebar, mac],
+  );
+  const sidebarSheetTitle = useMemo(() => <Logo />, []);
+
   const chatColumn = (
     <div
       data-chat-card
       className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden rounded-xl border"
+      // 覆写 --chat-width（thread.tsx 的 --thread-max-width 消费它）：动画期间
+      // 正文按结束宽排版，落位时与自然值相等
+      style={
+        chatFreezeMax !== null
+          ? ({ "--chat-width": `${chatFreezeMax}px` } as CSSProperties)
+          : undefined
+      }
     >
       {/* 自动化页环境光：挂在卡片内顶缘（header 之下、内容之上），
           光带从卡片顶垂下；固定不随内容滚 */}
@@ -763,16 +988,20 @@ export const Base: FC = () => {
       <div className="relative z-10 shrink-0">
         <Header
           sidebarCollapsed={sidebarCollapsed}
-          onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
-          onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
+          onToggleSidebar={toggleSidebar}
+          onOpenMobileSidebar={openMobileSidebar}
           // 折叠按钮跟视觉状态走：面板完全收没（收起动画播完）才在
           // Header 露出展开按钮，避免动画途中按钮提前跳出来闪一下；
-          // 显示闸关着（非对话页/新对话空会话）时根本没有可展开的面板，不露按钮
+          // 显示闸关着（非对话页）时根本没有可展开的面板，不露按钮。
+          // 新对话（空会话）例外：与终端按钮成对常驻（只留一个终端按钮
+          // 很突兀），点开走空会话旁路
           showPanelToggle={
-            panelGate && (compact ? !panelShown : panelGone)
+            (panelGate || !threadHasContent) &&
+            (compact ? !panelShown : panelGone)
           }
           onTogglePanel={toggleUserPanelOpen}
           docked={panelDockSettled}
+          panelDocked={panelDocked}
           variant={
             activeMenu === "automation" ||
             activeMenu === "usage" ||
@@ -817,6 +1046,10 @@ export const Base: FC = () => {
           </AnimatePresence>
         ) : null}
       </div>
+      {/* 底部终端坞：挂在聊天列卡片内的下缘（与 VSCode 集成终端同构——
+          终端属于编辑/对话区，不占 Agent 面板的高度）。坞收放只压缩聊天
+          正文的可视高度，右列面板始终占满全高 */}
+      <TerminalDock />
     </div>
   );
 
@@ -830,23 +1063,9 @@ export const Base: FC = () => {
         onMobileSidebarOpenChange={setMobileSidebarOpen}
         activeMenu={activeMenu}
         onActiveMenuChange={setActiveMenu}
-        onOpenSettings={() => setView("settings")}
-        headerContent={
-          // 展开时显示在侧边栏顶栏；mac 的红绿灯避让（ml-18）由顶栏内组里
-          // 第一个元素（shell 渲染的搜索按钮）承接，此处在搜索右侧紧贴排列。
-          // 折叠时内容随侧边栏整列 transform 平移出屏，保持挂载不卸载
-          <TooltipIconButton
-            variant="ghost"
-            size="icon"
-            tooltip="Hide sidebar"
-            side="bottom"
-            onClick={() => setSidebarCollapsed(true)}
-            className={cn("size-8", !mac && "ml-2")}
-          >
-            <PanelLeftIcon className="size-4" />
-          </TooltipIconButton>
-        }
-        sheetTitle={<Logo />}
+        onOpenSettings={openSettingsView}
+        headerContent={sidebarHeaderContent}
+        sheetTitle={sidebarSheetTitle}
       >
         {/* 右侧主内容区：窗口材质开启时透出磨砂（globals.css data-content-solid /
             data-chat-card 规则），关闭时保持不透明底色 */}
@@ -867,6 +1086,8 @@ export const Base: FC = () => {
               !compact && panelGone && "pr-0", !sidebarCollapsed && "pl-0"
             )}
           >
+            {/* 终端坞不在这层：它挂在聊天列卡片内（见 chatColumn），右列
+                面板保持贯通全高——坞收放只压缩对话正文，不顶起 Agent 面板 */}
             {compact ? (
               // 窄屏：单列聊天 + 面板右缘浮层（浮层只盖内容区，不遮 Header）
               chatColumn
@@ -879,7 +1100,7 @@ export const Base: FC = () => {
                 // 把手上按下的手势无论在哪松开都能落到终态，且不干扰
                 // 面板内按钮的正常点击（pointerup 只是结算，不掐动画）
                 onPointerUpCapture={settlePanelHandle}
-                className="gap-0"
+                className="min-h-0 flex-1 gap-0"
               >
                 <ResizablePanel
                   id="chat"
@@ -915,7 +1136,7 @@ export const Base: FC = () => {
                     panelFullscreen || chatMinReleased || !panelGate
                   }
                   // 只在把手上拦停动画（面板内按钮点击不受影响，见 settle 注释）
-                  onPointerDownCapture={interruptPanelAnim}
+                  onPointerDownCapture={beginPanelHandleDrag}
                 />
                 <ResizablePanel
                   id="agent-panel"
@@ -938,7 +1159,11 @@ export const Base: FC = () => {
                     // panelGone 跟踪视觉状态（≤1px 且非展开意图），驱动按钮/控件交接
                     onResize={(size) => {
                       const collapsed = size.inPixels <= 1;
-                      setPanelGone(!panelShown && collapsed);
+                      const nextGone = !panelShown && collapsed;
+                      if (nextGone !== panelGoneRef.current) {
+                        panelGoneRef.current = nextGone;
+                        setPanelGone(nextGone);
+                      }
                       if (collapsed === wasCollapsedRef.current) {
                         // 无收放边沿且无在途动画/待结算手势：尺寸仍在变即
                         // 用户在拖 —— 名义收起却拖到有效宽度（拦停后拖拽
@@ -958,24 +1183,39 @@ export const Base: FC = () => {
                       // 全屏中面板被收没（点面板顶栏收起/快捷键）：一并退出
                       // 全屏，聊天列弹回，主区不至于空掉
                       if (collapsed) exitPanelFullscreen();
-                      // 显示闸驱动的收/放（切页、切到空会话，含动画与挂载 snap
-                      // 两条路径）不改写用户开合偏好：动画在途或闸门关着时不回写，
-                      // 只有用户拖拽/双击落位才同步 panelOpen
-                      if (!panelAnimRef.current && panelGate)
+                      // 只有尺寸与 panelShown 相反才算"用户表态"（拖拽/双击把
+                      // 面板拉到了状态之外），才同步 panelOpen + 回写记忆；一致
+                      // 的是程序落位——切会话 snap、显示闸收放、动画收尾，尺寸
+                      // 只是状态在追赶。闸门关着时 panelShown 恒假，天然被这条
+                      // 规则排除（旧写法靠 panelGate 挡，三态记忆下必须按尺寸
+                      // 是否违背状态判定，否则切会话的收起会把目标会话写成
+                      // "明确关过"，兜底再也不生效）
+                      if (
+                        !panelAnimRef.current &&
+                        panelResizeContradictsState(collapsed, panelShown) &&
+                        // 展开方向跨过 minSize 才算数（拖出 2px 的沿不算，
+                        // 与上方无沿分支的"有效宽度"同一口径）
+                        (collapsed || size.inPixels >= PANEL_MIN_WIDTH)
+                      )
                         applyUserPanelOpen(!collapsed);
                     }}
                 >
                   {panelEverOpened ? (
                     // 冻结容器：开合动画期间内容宽定格（panelFrozenPx），随
                     // 面板收窄被裁剪滑出（与侧边栏折叠同款，零每帧重排）；
-                    // 拖拽/静止态不冻结，内容 100% 跟手
+                    // 拖拽/静止态不冻结，内容 100% 跟手。
+                    // 收起态改用 panelContentW 继续定格（目标宽）：内容不塌回
+                    // 0 宽，展开时就没有"首次布局"那一下——这正是展开比收起
+                    // 卡、观感发涩的来源（收起方向本来就排好版了，所以流畅）
                     <div className="h-full overflow-hidden">
                       <div
                         className="h-full"
                         style={
                           panelFrozenPx !== null
                             ? { width: panelFrozenPx }
-                            : undefined
+                            : panelGone && panelContentW !== null
+                              ? { width: panelContentW }
+                              : undefined
                         }
                       >
                         <AgentPanel
@@ -983,6 +1223,7 @@ export const Base: FC = () => {
                           showWindowControls={panelDocked}
                           settled={panelDockSettled}
                           fullscreen={panelFullscreen}
+                          contentFrozenPx={panelDragFrozenPx}
                           onToggleFullscreen={togglePanelFullscreen}
                         />
                       </div>

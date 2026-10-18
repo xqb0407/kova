@@ -104,10 +104,7 @@ export const DesignThemePicker: FC = () => {
             aria-label="Design theme"
             title="本会话的设计主题"
             className={cn(
-              "hover:bg-muted inline-flex h-7 max-w-44 items-center gap-1.5 rounded-lg px-2.5 text-sm transition-colors @max-2xl:px-2",
-              active
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:text-foreground",
+              "text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 max-w-44 items-center gap-1.5 rounded-lg px-2.5 text-sm transition-colors @max-2xl:px-2",
             )}
           >
             {busy ? (

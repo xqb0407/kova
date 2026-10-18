@@ -67,7 +67,11 @@ type PanelDiffOptions = NonNullable<
   ComponentProps<typeof PatchDiff>["options"]
 >;
 
-function useDiffOptions(loadFiles?: FileDiffContentsLoader) {
+function useDiffOptions(
+  loadFiles?: FileDiffContentsLoader,
+  /** 强制换行：窄预览框专用，见 PanelFileDiff.wrap 的注释 */
+  forceWrap?: boolean,
+) {
   const prefs = useUiPrefs();
   const dark = useHtmlDark();
   const pair = DIFF_SHIKI_THEME[resolveCodeThemeName(prefs, dark)];
@@ -78,7 +82,7 @@ function useDiffOptions(loadFiles?: FileDiffContentsLoader) {
       diffStyle: "unified",
       disableFileHeader: true,
       disableLineNumbers: !prefs.codeLineNumbers,
-      overflow: prefs.codeWrap ? "wrap" : "scroll",
+      overflow: forceWrap || prefs.codeWrap ? "wrap" : "scroll",
       // token 颜色走类名 + 一份共享样式表，而不是每个 span 内联 style：
       // 大 diff 展开时的样式重算量级下降（观感不变）。
       useCSSClasses: true,
@@ -92,6 +96,7 @@ function useDiffOptions(loadFiles?: FileDiffContentsLoader) {
       dark,
       prefs.codeLineNumbers,
       prefs.codeWrap,
+      forceWrap,
       loadFiles,
     ],
   );
@@ -143,14 +148,20 @@ export const PanelPatchDiff: FC<{
   );
 };
 
-/** 从新旧全文渲染（活动标签：edit/write 工具的入参对） */
+/** 从新旧全文渲染（活动标签：edit/write 工具的入参对）。
+ *  wrap：强制长行换行，无视全局 codeWrap 设置。消息流里的展开框是窄预览
+ *  （限高滚动），scroll 模式下长行会横向溢出，而行号列是 sticky 的、底色
+ *  取 --diffs-bg——我们把它覆成了 transparent（diff 融卡片），横向滚一点
+ *  文本就从行号底下穿出来，观感即"行号和文字重叠"。wrap 模式没有横向
+ *  溢出、行号列也不 sticky，从源头消掉；面板全高视图仍跟随用户设置。 */
 export const PanelFileDiff: FC<{
   name: string;
   oldText: string | null;
   newText: string;
   className?: string;
-}> = ({ name, oldText, newText, className }) => {
-  const { options, style, renderKey } = useDiffOptions();
+  wrap?: boolean;
+}> = ({ name, oldText, newText, className, wrap }) => {
+  const { options, style, renderKey } = useDiffOptions(undefined, wrap);
   return (
     <DiffPool>
       <MultiFileDiff

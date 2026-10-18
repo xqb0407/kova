@@ -100,10 +100,10 @@ export const ThinkingPicker: FC = () => {
             title={title}
             disabled={sendLocked}
             className={cn(
-              "inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-50 @max-2xl:px-2",
-              on
-                ? "bg-muted text-primary hover:bg-muted/30"
-                : "text-muted-foreground hover:text-foreground",
+              // 幽灵样式（与模型选择器/底栏胶囊一致）：底栏文本统一弱化色
+              // （text-muted-foreground，悬停才转前景色），开启态靠档位名
+              // （关闭态只留图标）表达，不靠颜色/底色
+              "text-muted-foreground hover:text-foreground inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 @max-2xl:px-2",
             )}
           >
             <BrainIcon className="size-3.5 shrink-0" />
@@ -112,7 +112,7 @@ export const ThinkingPicker: FC = () => {
           </button>
         }
       />
-      <DropdownMenuContent align="end" className="w-40 p-1">
+      <DropdownMenuContent align="end" className="w-40 p-1 ring-border/70">
         <DropdownMenuGroup>
           <DropdownMenuLabel>思考强度</DropdownMenuLabel>
           {/* 不支持的档位不置灰、直接不渲染；模型未知（目录未加载）时全档保留 */}
@@ -120,7 +120,10 @@ export const ThinkingPicker: FC = () => {
             <DropdownMenuItem
               key={o.value}
               onClick={() => pick(o.value)}
-              className="gap-2 py-1.5"
+              className={cn(
+                "gap-2 py-1.5",
+                o.value === level && "bg-muted/50",
+              )}
             >
               <span className="min-w-0 flex-1">{o.label}</span>
               {o.value === level && (

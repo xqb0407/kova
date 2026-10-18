@@ -186,6 +186,19 @@ export interface PiCompactionSummaryMessage {
   __seq?: number;
 }
 
+/** 本地改动（模型切换分隔线）：sidecar 把转录 model_change 设定行按 seq 锚点
+ *  重建进快照消息流。设定行本身不占 seq，用文件序 `__stableId` 做稳定消息 id；
+ *  provider/modelId 是切换后的模型，name 取目录（模型已删时缺省）。 */
+export interface PiModelChangeMessage {
+  role: "modelChange";
+  provider: string;
+  modelId: string;
+  name?: string;
+  timestamp: number;
+  /** 本地改动（稳定消息 id）：转录中切换事件的文件序 */
+  __stableId?: string;
+}
+
 export type PiKnownAgentMessage =
   | PiUserMessage
   | PiAssistantMessage
@@ -193,7 +206,8 @@ export type PiKnownAgentMessage =
   | PiBashExecutionMessage
   | PiCustomMessage
   | PiBranchSummaryMessage
-  | PiCompactionSummaryMessage;
+  | PiCompactionSummaryMessage
+  | PiModelChangeMessage;
 
 /** Forward-compat fallback for augmented/unknown roles. */
 export interface PiUnknownAgentMessage {

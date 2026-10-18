@@ -724,6 +724,35 @@ describe("messageProjection", () => {
     });
   });
 
+  // 模型切换分隔线：sidecar 快照重建的 modelChange 设定行 → 独立 data part。
+  // 设定行不占 seq，稳定 id 由 sidecar 的文件序 __stableId 提供（不能退回下标）
+  it("projects modelChange as a standalone divider with a stable id", () => {
+    const out = projectPiThreadMessages(
+      input([
+        { role: "user", content: "hi", timestamp: 1, __seq: 1 },
+        {
+          role: "modelChange",
+          provider: "anthropic",
+          modelId: "claude-sonnet",
+          name: "Claude Sonnet",
+          timestamp: 2,
+          __stableId: "pi-model-change:0",
+        },
+      ]),
+    );
+    expect(out).toHaveLength(2);
+    expect(out[1]!.id).toBe("pi-model-change:0");
+    expect(contentParts(out[1]!)[0]).toMatchObject({
+      type: "data",
+      name: "model-change",
+      data: {
+        provider: "anthropic",
+        modelId: "claude-sonnet",
+        name: "Claude Sonnet",
+      },
+    });
+  });
+
   it("renders display:true custom messages and hides display:false", () => {
     const out = projectPiThreadMessages(
       input([

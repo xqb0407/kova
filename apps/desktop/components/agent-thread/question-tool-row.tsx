@@ -56,7 +56,7 @@ export const QuestionToolRow: ToolCallMessagePartComponent = ({
     <ReasoningRoot variant="ghost" data-slot="question-tool-row">
       {/* 触发行与 reasoning-trigger 同款（chevron 随展开旋转） */}
       <CollapsibleTrigger
-        className="group/trigger text-muted-foreground hover:text-foreground flex max-w-[75%] origin-left items-center gap-2 py-1.5 text-sm transition-[color,scale] active:scale-[0.98]"
+        className="group/trigger text-muted-foreground hover:text-foreground flex max-w-[75%] origin-left items-center gap-2 py-1.5 text-sm transition-[color,scale] "
       >
         <CircleQuestionMark className="size-4 shrink-0" />
         <span className="inline-block leading-none">

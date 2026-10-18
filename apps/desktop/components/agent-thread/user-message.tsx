@@ -19,6 +19,7 @@ import {
 } from "@assistant-ui/react";
 import { CmComposerInput } from "./cm-composer-input";
 import { CheckIcon, ChevronDownIcon, PencilIcon } from "lucide-react";
+import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 
 /**
@@ -91,6 +92,9 @@ const CollapsibleUserMessageContent: FC<{ children: ReactNode }> = ({
     if (!element) return;
 
     const measure = () => {
+      // 拖拽调宽期间正文每帧 rewrap：逐帧 scrollHeight + setState 会让所有
+      // 长消息在拖动中反复重渲染；松手后 resize-settled 补一次终态
+      if (isResizing()) return;
       const height = element.scrollHeight;
       setContentHeight(height);
       setIsLong(height > USER_MESSAGE_COLLAPSED_HEIGHT);
@@ -99,7 +103,11 @@ const CollapsibleUserMessageContent: FC<{ children: ReactNode }> = ({
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
-    return () => observer.disconnect();
+    const offSettled = onResizeSettled(measure);
+    return () => {
+      observer.disconnect();
+      offSettled();
+    };
   }, [children]);
 
   const collapsed = isLong && !expanded;

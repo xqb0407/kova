@@ -1,17 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FC } from "react";
 import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FC,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
   CheckIcon,
-  CheckSquareIcon,
   ChevronDownIcon,
   GitBranchIcon,
   GitCommitHorizontalIcon,
   GitGraphIcon,
   Loader2Icon,
+  MinusIcon,
   PlusIcon,
   RefreshCwIcon,
-  SquareIcon,
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
@@ -33,19 +42,31 @@ import {
   gitCommit,
   gitStage,
   type GitBranches,
+  type GitFileEntry,
 } from "@/lib/git/git";
 import { refreshGitStatus, useGitStatus } from "@/lib/git/git-status";
+import { focusPanelTab } from "@/lib/panels/panel-tabs";
 import { cn } from "@/lib/utils";
-import { PanelSection } from "./section-shell";
-import { splitPath, StatusDot } from "./git-files";
+import { splitPath, StatusLetter } from "./git-files";
 import { FileTypeIcon } from "./file-type-icon";
 import { GitGraph } from "./git-graph";
 
 /**
- * Git 标签（git 集成 M3）：暂存勾选 → 提交 → IDEA 风格提交图谱 → 分支切换/新建。
- * 全部走 lib/git 的桌面端命令；Rust 写命令成功即回推 "git-changed"，
- * 状态缓存随之刷新（这里无需手动重拉 status）。
+ * Git 标签：VS Code 源代码管理同构布局。
+ * 顶部工具栏（分支/同步状态/刷新）→ 提交框 → 暂存的更改 / 更改 → 提交图形。
+ * 文件行点击打开「审查」标签定位到该文件的 diff；行尾悬停按钮做单文件
+ * 暂存/取消暂存，分组头做整组操作。写命令成功后主进程回推 "git-changed"，
+ * 状态缓存自动刷新（这里只维护 busy 与错误提示）。
  */
+
+/** 提交信息草稿按 cwd 缓存：点文件跳去审查标签再切回来不丢已输入的内容 */
+const commitDrafts = new Map<string, string>();
+
+/** 图形区高度（像素，localStorage 记忆）；未记忆时用 32% 面板高的默认值 */
+const GRAPH_HEIGHT_KEY = "git-graph-height";
+const GRAPH_MIN_HEIGHT = 140;
+/** 拖拽时给上方文件列表至少留出的高度（行高 28 × 3 + 余量） */
+const LIST_MIN_HEIGHT = 104;
 
 /** 顶栏紧凑分支切换器:下拉列分支 + 新建分支(内联输入跟在触发器右侧) */
 const BranchSwitcher: FC<{
@@ -79,7 +100,7 @@ const BranchSwitcher: FC<{
           render={
             <button
               type="button"
-              className="hover:bg-muted flex min-w-0 max-w-[10rem] items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-foreground/90 transition-colors"
+              className="hover:bg-muted flex min-w-0 max-w-[11rem] items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-foreground/90 transition-colors"
               title={current ?? "未知分支"}
             >
               <GitBranchIcon className="text-muted-foreground size-3.5 shrink-0" />
@@ -88,7 +109,7 @@ const BranchSwitcher: FC<{
             </button>
           }
         />
-        <DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuContent align="start" className="w-64">
           {/* Base UI：DropdownMenuLabel 必须处于 DropdownMenuGroup 内 */}
           <DropdownMenuGroup className="w-full">
             <DropdownMenuLabel>切换分支</DropdownMenuLabel>
@@ -104,8 +125,11 @@ const BranchSwitcher: FC<{
                     {b.upstream}
                   </span>
                 ) : null}
-                 <CheckIcon
-                  className={cn("size-3.5 shrink-0", b.current ? "opacity-100" : "opacity-0")}
+                <CheckIcon
+                  className={cn(
+                    "size-3.5 shrink-0",
+                    b.current ? "opacity-100" : "opacity-0",
+                  )}
                 />
               </DropdownMenuItem>
             ))}
@@ -128,7 +152,8 @@ const BranchSwitcher: FC<{
             placeholder="分支名"
             className="h-6 w-24 shrink-0 text-xs"
             onKeyDown={(e) => {
-              if (e.key === "Enter" && name.trim()) void checkout(name.trim(), true);
+              if (e.key === "Enter" && name.trim())
+                void checkout(name.trim(), true);
               if (e.key === "Escape") setCreating(false);
             }}
           />
@@ -158,15 +183,272 @@ const BranchSwitcher: FC<{
   );
 };
 
+/** 单文件行（VS Code SCM 同款）：整行点击看 diff，行尾悬停做暂存/取消暂存 */
+const ChangeRow: FC<{
+  f: GitFileEntry;
+  busy: boolean;
+  onToggle: (path: string, on: boolean) => void;
+  onOpen: (path: string) => void;
+}> = ({ f, busy, onToggle, onOpen }) => {
+  const { dir, base } = splitPath(f.path);
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      title={`${f.path}\n点击查看 diff`}
+      onClick={() => onOpen(f.path)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen(f.path);
+        }
+      }}
+      className="group hover:bg-muted/60 focus-visible:bg-muted/60 flex h-7 cursor-pointer items-center gap-1.5 rounded-[5px] pr-1.5 pl-4 outline-none transition-colors"
+    >
+      <FileTypeIcon path={f.path} />
+      <span className="max-w-[58%] min-w-0 shrink-0 truncate text-[13px] text-foreground/90">
+        {base}
+      </span>
+      {dir ? (
+        <span className="text-muted-foreground/55 min-w-0 flex-1 truncate text-[11px]">
+          {dir}
+        </span>
+      ) : (
+        <span className="flex-1" />
+      )}
+      <button
+        type="button"
+        disabled={busy}
+        title={f.staged ? "取消暂存" : "暂存更改"}
+        aria-label={f.staged ? `取消暂存 ${f.path}` : `暂存 ${f.path}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle(f.path, !f.staged);
+        }}
+        className="text-muted-foreground hover:text-foreground hover:bg-foreground/10 focus:bg-foreground/10 grid size-5 shrink-0 place-items-center rounded opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 disabled:pointer-events-none disabled:opacity-0"
+      >
+        {f.staged ? (
+          <MinusIcon className="size-3.5" />
+        ) : (
+          <PlusIcon className="size-3.5" />
+        )}
+      </button>
+      <StatusLetter
+        status={f.status}
+        title={f.staged ? "待提交（已暂存）" : "更改（未暂存）"}
+      />
+    </div>
+  );
+};
+
+/** 可折叠分组（暂存的更改 / 更改）：扁平头 + 计数 + 整组暂存动作 */
+const ChangeSection: FC<{
+  title: string;
+  files: GitFileEntry[];
+  staged: boolean;
+  open: boolean;
+  busy: boolean;
+  onToggleOpen: () => void;
+  onStageAll: (on: boolean) => void;
+  onToggleFile: (path: string, on: boolean) => void;
+  onOpenFile: (path: string) => void;
+}> = ({
+  title,
+  files,
+  staged,
+  open,
+  busy,
+  onToggleOpen,
+  onStageAll,
+  onToggleFile,
+  onOpenFile,
+}) => {
+  const GroupActionIcon = staged ? MinusIcon : PlusIcon;
+  const groupAction = staged ? "全部取消暂存" : "全部暂存";
+  return (
+    <section className="flex flex-col">
+      <div className="flex h-8 items-center">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={onToggleOpen}
+          className="hover:bg-muted/50 flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors"
+        >
+          <ChevronDownIcon
+            className={cn(
+              "text-muted-foreground size-3.5 shrink-0 transition-transform",
+              !open && "-rotate-90",
+            )}
+          />
+          <span className="min-w-0 truncate text-[13px] font-semibold text-foreground/85">
+            {title}
+          </span>
+          <span className="text-muted-foreground bg-muted/70 shrink-0 rounded-full px-1.5 text-[10px] leading-4 font-medium tabular-nums">
+            {files.length}
+          </span>
+        </button>
+        <button
+          type="button"
+          title={groupAction}
+          aria-label={groupAction}
+          disabled={busy || files.length === 0}
+          onClick={() => onStageAll(!staged)}
+          className="text-muted-foreground hover:text-foreground hover:bg-muted/70 grid size-6 shrink-0 place-items-center rounded-md transition-colors disabled:pointer-events-none disabled:opacity-40"
+        >
+          <GroupActionIcon className="size-3.5" />
+        </button>
+      </div>
+      {open ? (
+        files.length === 0 ? (
+          <div className="text-muted-foreground/50 px-2 pb-1 pl-7 text-xs">
+            没有更改
+          </div>
+        ) : (
+          <div className="flex flex-col">
+            {files.map((f) => (
+              <ChangeRow
+                key={f.path}
+                f={f}
+                busy={busy}
+                onToggle={onToggleFile}
+                onOpen={onOpenFile}
+              />
+            ))}
+          </div>
+        )
+      ) : null}
+    </section>
+  );
+};
+
 export const GitView: FC<{ cwd: string }> = ({ cwd }) => {
   const { status } = useGitStatus(cwd);
   const [branches, setBranches] = useState<GitBranches | null>(null);
-  const [message, setMessage] = useState("");
+  const [message, setMessageState] = useState(
+    () => commitDrafts.get(cwd) ?? "",
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0); // 本地刷新钮
-  // 滚动容器 ref：PanelSection 的吸顶判定以它为 IntersectionObserver root
-  const scrollerRef = useRef<HTMLDivElement>(null);
+  // 分组折叠状态：暂存组默认展开；更改组常显（空态给「没有更改」）
+  const [stagedOpen, setStagedOpen] = useState(true);
+  const [changesOpen, setChangesOpen] = useState(true);
+  const [graphOpen, setGraphOpen] = useState(true);
+  // 图形区高度拖拽：null = 默认 32% 面板高；拖动后落成像素并记忆
+  const [graphHeight, setGraphHeight] = useState<number | null>(null);
+  const [resizing, setResizing] = useState(false);
+  const graphHeightRef = useRef<number | null>(null);
+  const dragRef = useRef<{
+    startY: number;
+    startHeight: number;
+    maxHeight: number;
+  } | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const commitRef = useRef<HTMLDivElement>(null);
+  const graphRef = useRef<HTMLElement>(null);
+
+  const applyGraphHeight = useCallback((h: number | null) => {
+    graphHeightRef.current = h;
+    setGraphHeight(h);
+  }, []);
+
+  const persistGraphHeight = useCallback((h: number | null) => {
+    try {
+      if (h === null) localStorage.removeItem(GRAPH_HEIGHT_KEY);
+      else localStorage.setItem(GRAPH_HEIGHT_KEY, String(Math.round(h)));
+    } catch {
+      // localStorage 不可用：本次会话内仍可拖，只是不记忆
+    }
+  }, []);
+
+  // 恢复上次高度（首帧用默认高度，避免 SSR 水合不一致）
+  useEffect(() => {
+    try {
+      const saved = Number(localStorage.getItem(GRAPH_HEIGHT_KEY));
+      if (Number.isFinite(saved) && saved >= GRAPH_MIN_HEIGHT) {
+        applyGraphHeight(saved);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [applyGraphHeight]);
+
+  /** 图形区最大高度：不挤压提交区，并给文件列表留出至少 3 行 */
+  const maxGraphHeight = useCallback(() => {
+    const root = rootRef.current;
+    const rootRect = root?.getBoundingClientRect();
+    if (!rootRect) return 320;
+    const commitBottom = commitRef.current
+      ? commitRef.current.getBoundingClientRect().bottom - rootRect.top
+      : 220;
+    return Math.max(
+      GRAPH_MIN_HEIGHT,
+      Math.min(
+        rootRect.height * 0.68,
+        rootRect.height - commitBottom - LIST_MIN_HEIGHT,
+      ),
+    );
+  }, []);
+
+  const beginGraphResize = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!graphOpen || !graphRef.current) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = {
+      startY: e.clientY,
+      startHeight: graphRef.current.getBoundingClientRect().height,
+      maxHeight: maxGraphHeight(),
+    };
+    setResizing(true);
+  };
+
+  const moveGraphResize = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    // 往上拖 = 变高；夹在最小高度与上方列表的可用空间之间
+    applyGraphHeight(
+      Math.min(
+        drag.maxHeight,
+        Math.max(
+          GRAPH_MIN_HEIGHT,
+          drag.startHeight + (drag.startY - e.clientY),
+        ),
+      ),
+    );
+  };
+
+  const endGraphResize = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    setResizing(false);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* 指针已释放 */
+    }
+    persistGraphHeight(graphHeightRef.current);
+  };
+
+  const resetGraphHeight = () => {
+    applyGraphHeight(null);
+    persistGraphHeight(null);
+  };
+
+  const onGraphResizeKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    const current =
+      graphHeightRef.current ??
+      graphRef.current?.getBoundingClientRect().height ??
+      220;
+    const delta = e.key === "ArrowUp" ? 16 : -16;
+    const next = Math.min(
+      maxGraphHeight(),
+      Math.max(GRAPH_MIN_HEIGHT, current + delta),
+    );
+    applyGraphHeight(next);
+    persistGraphHeight(next);
+  };
 
   const load = useCallback(() => {
     gitBranches(cwd)
@@ -200,6 +482,19 @@ export const GitView: FC<{ cwd: string }> = ({ cwd }) => {
     }
   }, [status?.branch, load]);
 
+  // cwd 变化时恢复该目录的提交草稿
+  useEffect(() => {
+    setMessageState(commitDrafts.get(cwd) ?? "");
+  }, [cwd]);
+
+  const setMessage = useCallback(
+    (value: string) => {
+      setMessageState(value);
+      commitDrafts.set(cwd, value);
+    },
+    [cwd],
+  );
+
   const toggleStage = async (path: string, on: boolean) => {
     setBusy(true);
     setError(null);
@@ -224,180 +519,308 @@ export const GitView: FC<{ cwd: string }> = ({ cwd }) => {
     }
   };
 
-  const commit = async () => {
+  const files = status?.files ?? [];
+  const stagedFiles = files.filter((f) => f.staged);
+  const unstagedFiles = files.filter((f) => !f.staged);
+  const stagedCount = stagedFiles.length;
+
+  const commit = async (all = false) => {
     const msg = message.trim();
     if (!msg) return;
     setBusy(true);
     setError(null);
     try {
+      if (all) await gitStage(cwd, [], true);
       await gitCommit(cwd, msg);
-      setMessage("");
+      commitDrafts.delete(cwd);
+      setMessageState("");
       refreshGitStatus(cwd);
     } catch (err) {
       const s = String(err);
-      setError(s.includes("nothing to commit") ? "没有已暂存的变更可提交" : `提交失败：${s}`);
+      setError(
+        s.includes("nothing to commit")
+          ? "没有已暂存的变更可提交"
+          : `提交失败：${s}`,
+      );
     } finally {
       setBusy(false);
     }
   };
 
-  const files = status?.files ?? [];
-  const stagedCount = files.filter((f) => f.staged).length;
+  /** 点击文件：聚焦到「审查」标签并定位该文件（已有审查标签则复用） */
+  const openFileDiff = useCallback(
+    (path: string) => {
+      focusPanelTab("review", { cwd, focus: path, checkpoint: undefined });
+    },
+    [cwd],
+  );
+
+  // 没有已暂存内容时主按钮退化为「全部提交」（VS Code 对无暂存改动的
+  // 二次确认在这里变成显式文案：点了就是先全暂存再提交）
+  const commitAll = stagedCount === 0;
+  const canCommit = !busy && message.trim().length > 0 && files.length > 0;
+  const commitShortcut = "⌘/Ctrl+↵";
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="text-muted-foreground flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-2 text-xs">
-        <span className="min-w-0 truncate tabular-nums">
-          {files.length > 0 ? `${files.length} 个未提交变更` : "工作区干净"}
-        </span>
-        {/* 分支切换收进顶栏：贴在刷新钮左侧，滚动区不再放独立分支卡片 */}
-        <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1">
-          <BranchSwitcher
-            cwd={cwd}
-            current={status?.branch ?? branches?.current ?? null}
-            branches={branches}
-            onBusy={setBusy}
-            onError={setError}
-          />
-          <button
-            type="button"
-            aria-label="刷新"
-            title="刷新"
-            onClick={() => {
-              refreshGitStatus(cwd);
-              setTick((t) => t + 1);
-            }}
-            className="hover:bg-muted hover:text-foreground grid size-6 shrink-0 place-items-center rounded-md transition-colors"
+    <div
+      ref={rootRef}
+      className={cn(
+        "flex h-full min-h-0 flex-col",
+        resizing && "cursor-row-resize select-none",
+      )}
+    >
+      {/* 顶栏：分支 / 同步状态 / 变更计数 / 刷新 */}
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/60 px-2">
+        <BranchSwitcher
+          cwd={cwd}
+          current={status?.branch ?? branches?.current ?? null}
+          branches={branches}
+          onBusy={setBusy}
+          onError={setError}
+        />
+        {status?.ahead ? (
+          <span
+            title={`领先上游 ${status.ahead} 个提交`}
+            className="text-muted-foreground inline-flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums"
           >
-            <RefreshCwIcon className={cn("size-3.5", busy && "animate-spin")} />
-          </button>
-        </div>
+            <ArrowUpIcon className="size-3" />
+            {status.ahead}
+          </span>
+        ) : null}
+        {status?.behind ? (
+          <span
+            title={`落后上游 ${status.behind} 个提交`}
+            className="text-muted-foreground inline-flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums"
+          >
+            <ArrowDownIcon className="size-3" />
+            {status.behind}
+          </span>
+        ) : null}
+        <span className="text-muted-foreground/70 ml-auto min-w-0 truncate pl-2 text-[11px] tabular-nums">
+          {files.length > 0 ? `${files.length} 个更改` : "工作区干净"}
+        </span>
+        <button
+          type="button"
+          aria-label="刷新"
+          title="刷新"
+          onClick={() => {
+            refreshGitStatus(cwd);
+            setTick((t) => t + 1);
+          }}
+          className="hover:bg-muted hover:text-foreground grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors"
+        >
+          <RefreshCwIcon className={cn("size-3.5", busy && "animate-spin")} />
+        </button>
       </div>
 
-      {/* 滚动容器自身不带内边距：padding 放在随内容滚动的包裹层，
-          sticky 头才能贴到滚动口上沿（容器带 pt 时那 12px 会永远隔在中间）。
-          IO root / -mx-3 撑开宽度都以这层 px-3 = 12px 为约定。 */}
-      <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="flex flex-col gap-2 p-3">
-          {error ? (
-            <div className="text-destructive bg-destructive/5 flex items-start gap-1.5 rounded-xl border border-destructive/30 px-2.5 py-2 text-xs leading-relaxed">
-              <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
-              <span className="min-w-0 break-all">{error}</span>
-            </div>
-          ) : null}
+      {/* 提交区固定在顶部（VS Code 同款：长列表滚动时提交按钮不消失） */}
+      <div
+        ref={commitRef}
+        className="flex shrink-0 flex-col gap-2 px-2 pt-2.5 pb-2"
+      >
+        {error ? (
+          <div className="text-destructive bg-destructive/5 flex items-start gap-1.5 rounded-xl border border-destructive/30 px-2.5 py-2 text-xs leading-relaxed">
+            <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+            <span className="min-w-0 break-all">{error}</span>
+          </div>
+        ) : null}
 
-          <PanelSection
-            scrollRoot={scrollerRef}
-            icon={<CheckSquareIcon className="size-4" />}
-            title="变更"
-            trailing={
-              <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
-                {stagedCount}/{files.length} 已暂存
+        {/* 提交框：输入区 + 整宽提交钮 + 更多提交动作（对齐 VS Code 提交区） */}
+        <div className="bg-card/40 focus-within:border-ring/40 overflow-hidden rounded-xl border border-border/70 transition-colors">
+          <Textarea
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder={`提交信息（${commitShortcut} 在 "${
+              status?.branch || "HEAD"
+            }" 提交）`}
+            rows={3}
+            className="bg-transparent focus-visible:bg-transparent min-h-[68px] resize-none rounded-none border-0 px-3 py-2 text-[13px] shadow-none focus-visible:ring-0"
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                // ⇧ 强制全部提交；否则与主按钮同口径（已有暂存就只提暂存）
+                void commit(e.shiftKey || commitAll);
+              }
+            }}
+          />
+          <div className="flex items-stretch gap-1 border-t border-border/50 p-1.5">
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 min-w-0 flex-1 gap-1.5 text-xs"
+              disabled={!canCommit}
+              title={
+                !message.trim()
+                  ? "请输入提交信息"
+                  : commitAll
+                    ? `没有已暂存的更改，将暂存全部 ${files.length} 个文件并提交`
+                    : `${commitShortcut}（提交已暂存的 ${stagedCount} 个文件）`
+              }
+              onClick={() => void commit(commitAll)}
+            >
+              {busy ? (
+                <Loader2Icon className="size-3.5 animate-spin" />
+              ) : (
+                <CheckIcon className="size-3.5" />
+              )}
+              <span className="truncate">
+                {commitAll
+                  ? `全部提交${files.length > 0 ? ` (${files.length})` : ""}`
+                  : `提交 (${stagedCount})`}
               </span>
-            }
-          >
-            {files.length === 0 ? (
-              <div className="text-muted-foreground/60 px-1 py-3 text-center text-xs">
-                没有未提交的变更
-              </div>
-            ) : (
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-1.5 px-1 pb-0.5">
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void stageAll(true)}
-                    className="text-muted-foreground hover:text-foreground text-[11px] underline-offset-2 hover:underline disabled:opacity-50"
-                  >
-                    全部暂存
-                  </button>
-                  <span className="text-muted-foreground/40">·</span>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void stageAll(false)}
-                    className="text-muted-foreground hover:text-foreground text-[11px] underline-offset-2 hover:underline disabled:opacity-50"
-                  >
-                    全部取消暂存
-                  </button>
-                </div>
-                {files.map((f) => {
-                  const { dir, base } = splitPath(f.path);
-                  return (
-                    <button
-                      key={`${f.staged ? "s" : "u"}:${f.path}`}
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void toggleStage(f.path, !f.staged)}
-                      className="hover:bg-muted/40 group flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left"
-                      title={f.staged ? "点击取消暂存" : "点击暂存"}
-                    >
-                      {f.staged ? (
-                        <CheckSquareIcon className="text-foreground size-4 shrink-0" />
-                      ) : (
-                        <SquareIcon className="text-muted-foreground/60 group-hover:text-muted-foreground size-4 shrink-0" />
-                      )}
-                      <StatusDot status={f.status} title={f.staged ? "已暂存" : "未暂存"} />
-                      <FileTypeIcon path={f.path} />
-                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/90">
-                        {base}
-                        {dir ? (
-                          <span className="text-muted-foreground/70"> {dir}/</span>
-                        ) : null}
-                      </span>
-                    </button>
-                  );
-                })}
-                {/* 提交框紧跟变更清单：勾完即写即提 */}
-                <div className="border-border/60 mt-1 flex flex-col gap-1.5 border-t pt-2">
-                  <Textarea
-                    value={message}
-                    onChange={(e) => setMessage(e.target.value)}
-                    placeholder="提交信息（首个动词短语即可）"
-                    rows={2}
-                    className="min-h-0 resize-none text-xs"
-                    onKeyDown={(e) => {
-                      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                        e.preventDefault();
-                        void commit();
-                      }
-                    }}
-                  />
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
                   <Button
                     type="button"
-                    size="sm"
-                    className="h-7 self-end gap-1.5 px-3 text-xs"
-                    disabled={busy || !message.trim() || stagedCount === 0}
-                    title={stagedCount === 0 ? "先勾选要提交的文件" : "⌘/Ctrl+Enter"}
+                    size="icon-xs"
+                    variant="outline"
+                    className="h-7 w-6 shrink-0"
+                    aria-label="更多提交操作"
+                    title="更多提交操作"
+                  >
+                    <ChevronDownIcon className="size-3.5" />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>提交</DropdownMenuLabel>
+                  <DropdownMenuItem
+                    disabled={!canCommit || stagedCount === 0}
                     onClick={() => void commit()}
                   >
-                    {busy ? (
-                      <Loader2Icon className="size-3 animate-spin" />
-                    ) : (
-                      <GitCommitHorizontalIcon className="size-3" />
-                    )}
-                    提交 {stagedCount > 0 ? `(${stagedCount})` : ""}
-                  </Button>
-                </div>
-              </div>
-            )}
-          </PanelSection>
-
-          <PanelSection
-            scrollRoot={scrollerRef}
-            icon={<GitGraphIcon className="size-4" />}
-            title="Git 图谱"
-            trailing={
-              <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
-                {status?.branch ?? "HEAD"}
-              </span>
-            }
-          >
-            <GitGraph cwd={cwd} tick={tick} />
-          </PanelSection>
+                    <CheckIcon />
+                    提交已暂存的更改
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!canCommit}
+                    onClick={() => void commit(true)}
+                  >
+                    <GitCommitHorizontalIcon />
+                    暂存全部并提交
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  disabled={busy || unstagedFiles.length === 0}
+                  onClick={() => void stageAll(true)}
+                >
+                  <PlusIcon />
+                  全部暂存
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={busy || stagedFiles.length === 0}
+                  onClick={() => void stageAll(false)}
+                >
+                  <MinusIcon />
+                  全部取消暂存
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </div>
+
+      {/* 文件列表：只有暂存/更改分组滚动，提交区与图形常驻 */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        <div className="flex flex-col gap-0.5">
+          {stagedFiles.length > 0 ? (
+            <ChangeSection
+              title="暂存的更改"
+              files={stagedFiles}
+              staged
+              open={stagedOpen}
+              busy={busy}
+              onToggleOpen={() => setStagedOpen((o) => !o)}
+              onStageAll={stageAll}
+              onToggleFile={toggleStage}
+              onOpenFile={openFileDiff}
+            />
+          ) : null}
+          <ChangeSection
+            title="更改"
+            files={unstagedFiles}
+            staged={false}
+            open={changesOpen}
+            busy={busy}
+            onToggleOpen={() => setChangesOpen((o) => !o)}
+            onStageAll={stageAll}
+            onToggleFile={toggleStage}
+            onOpenFile={openFileDiff}
+          />
+        </div>
+      </div>
+
+      {/* 图形区上缘拖拽条：上下拖动调高（双击复位），聚焦后 ↑↓ 也能调 */}
+      {graphOpen ? (
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="调整图形高度"
+          tabIndex={0}
+          title="拖动调整图形高度（双击复位）"
+          onPointerDown={beginGraphResize}
+          onPointerMove={moveGraphResize}
+          onPointerUp={endGraphResize}
+          onPointerCancel={endGraphResize}
+          onLostPointerCapture={endGraphResize}
+          onDoubleClick={resetGraphHeight}
+          onKeyDown={onGraphResizeKeyDown}
+          className="group/handle relative flex h-2 shrink-0 cursor-row-resize touch-none items-center justify-center outline-none"
+        >
+          <div className="bg-border/60 pointer-events-none h-px w-full transition-colors group-hover/handle:bg-foreground/30 group-active/handle:bg-foreground/45 group-focus-visible/handle:bg-foreground/45" />
+        </div>
+      ) : null}
+
+      {/* 底部固定图形：高度可拖拽；内容在自身区域内滚动 */}
+      <section
+        ref={graphRef}
+        className={cn(
+          "flex shrink-0 flex-col overflow-hidden",
+          graphOpen
+            ? graphHeight === null && "h-[clamp(140px,32%,320px)]"
+            : "h-8 border-t border-border/60",
+        )}
+        style={
+          graphOpen && graphHeight !== null
+            ? {
+                height: graphHeight,
+                minHeight: GRAPH_MIN_HEIGHT,
+                maxHeight: "68%",
+              }
+            : undefined
+        }
+      >
+        <div className="flex h-8 shrink-0 items-center px-2">
+          <button
+            type="button"
+            aria-expanded={graphOpen}
+            onClick={() => setGraphOpen((o) => !o)}
+            className="hover:bg-muted/50 flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors"
+          >
+            <ChevronDownIcon
+              className={cn(
+                "text-muted-foreground size-3.5 shrink-0 transition-transform",
+                !graphOpen && "-rotate-90",
+              )}
+            />
+            <GitGraphIcon className="text-muted-foreground size-3.5 shrink-0" />
+            <span className="min-w-0 truncate text-[13px] font-semibold text-foreground/85">
+              图形
+            </span>
+          </button>
+          <span className="text-muted-foreground/70 max-w-[9rem] shrink-0 truncate px-1.5 text-[11px]">
+            {status?.branch ?? "HEAD"}
+          </span>
+        </div>
+        {graphOpen ? (
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+            <GitGraph cwd={cwd} tick={tick} />
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 };
-

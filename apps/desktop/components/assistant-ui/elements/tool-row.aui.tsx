@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
+import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import {
   BookOpenIcon,
   BotIcon,
@@ -132,6 +133,9 @@ export const ScrollingText: FC<{ className?: string; children: ReactNode }> = ({
       ) <= 1 || scrollEl.scrollHeight <= scrollEl.clientHeight;
 
     const pin = () => {
+      // 拖拽调宽期间正文每帧 rewrap：跳过逐帧 scrollHeight/scrollTop 写入，
+      // 松手后 resize-settled 补一次
+      if (isResizing()) return;
       if (!pinned) return;
       scrollEl.scrollTop = scrollEl.scrollHeight;
     };
@@ -155,9 +159,11 @@ export const ScrollingText: FC<{ className?: string; children: ReactNode }> = ({
     // 容器自身尺寸变化（展开动画期间视口从 0 长到 max-h）也要重新吸附：
     // 只盯内容的话，动画跑完这一刻视口会停在半途，等下一次内容增长才补上
     observer.observe(scrollEl);
+    const offSettled = onResizeSettled(pin);
     return () => {
       scrollEl.removeEventListener("scroll", onScroll);
       observer.disconnect();
+      offSettled();
     };
   }, []);
 
@@ -399,7 +405,7 @@ export const ToolRow: FC<ToolRowProps> = ({
       >
         <div className="group/row flex min-w-0 items-center">
           {/* 触发器样式对齐 reasoning 的 trigger：灰字 hover 变深、无背景色块、按压微缩放 */}
-          <CollapsibleTrigger className="group/trigger text-muted-foreground hover:text-foreground flex min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] active:scale-[0.98]">
+          <CollapsibleTrigger className="group/trigger text-muted-foreground hover:text-foreground flex min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] ">
             {content}
             <ChevronDownIcon className="mt-0.5 size-4 shrink-0 transition-transform duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none -rotate-90 group-data-open/trigger:rotate-0 group-data-panel-open/trigger:rotate-0" />
           </CollapsibleTrigger>
@@ -448,7 +454,7 @@ export const ToolRow: FC<ToolRowProps> = ({
         <button
           type="button"
           onClick={onOpenPanel}
-          className="group/trigger text-muted-foreground hover:text-foreground flex min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] active:scale-[0.98]"
+          className="group/trigger text-muted-foreground hover:text-foreground flex min-w-0 flex-1 origin-left cursor-pointer items-center gap-2 py-1.5 text-sm transition-[color,scale] "
         >
           {content}
         </button>
@@ -528,10 +534,12 @@ const fileToolUI =
     const expandedContent =
       !failed && result && pair ? (
         <div className="bg-white dark:bg-background max-h-96 overflow-auto rounded-md p-2 border">
+          {/* wrap：窄预览框强制换行，避免长行横向滚动时文本穿过透明 sticky 行号列（见 PanelFileDiff 注释） */}
           <PanelFileDiff
             name={base}
             oldText={pair.oldText}
             newText={pair.newText}
+            wrap
           />
         </div>
       ) : undefined;
