@@ -8,7 +8,7 @@
 | 能力 | Rust 源 | Electron 实现 | 备注 |
 |---|---|---|---|
 | 命令路由/事件广播 | lib.rs + panic_guard | `main/ipc.ts` + `registry.ts` | 未知命令错误串同形：`command X not found` |
-| KV 存储/建表/回填 | store.rs + data.rs | `store.ts` + `data.ts` + `db.ts` | SQLite 用 `node:sqlite`（Electron 38 内建 Node 22）；`better-sqlite3` 为回退驱动 |
+| KV 存储/建表/回填 | store.rs + data.rs | `store.ts` + `data.ts` + `db.ts` | SQLite 用 `node:sqlite`（Electron 44 内建 Node 24）；`better-sqlite3` 为回退驱动 |
 | host_query 31 种 kind | data.rs | `data.ts` | sessions/credentials/secrets/custom_providers/models/usage/kv 全量 |
 | 工具执行 | tool_exec.rs | `tool-exec.ts` | bash（进程组整树杀、16KB 截断、cancel/timeout 文案）、read/write/edit（stale 守卫、JSON 守门）、http、screenshot（macOS screencapture+sips 阶梯）、后台任务（owner 归属校验） |
 | 密钥注入/脱敏 | secret_env.rs + secret.rs | `secret-env.ts` + `secret.ts` | 明文直通 + `enc:v1:` 判缺失；`[REDACTED:NAME]` + base64 变体 |
