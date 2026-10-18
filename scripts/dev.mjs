@@ -387,6 +387,8 @@ for (const f of ["main.cjs", "preload.cjs"]) {
 }
 
 /* --------------------------- 4) 拉起 Electron --------------------------- */
+// Electron 44 起不再通过 postinstall 下载二进制，bun install 后首次启动前补齐
+execFileSync(process.execPath, [join(electronDir, "scripts", "ensure-electron.mjs")], { stdio: "inherit" });
 electron = launchElectron(envForElectron);
 
 baselineRebuilds = rebuilds; // 以拉起时刻的计数为基线：此前的构建（含初次）都不算改动
