@@ -30,6 +30,7 @@ const RESTORE_STAGING_DIR = "restore-staging";
 const PROGRESS_EVENT = "backup:progress";
 const SESSIONS_DIR = "sessions";
 const TASK_WORKSPACE_DIR = "task-workspace";
+const LIBRARY_DIR = "library";
 const DB_FILE = "state.db";
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -187,6 +188,7 @@ export function packBackup(
   dbSnapshot: string,
   dataDir: string,
   includeWorkspace: boolean,
+  includeLibrary: boolean,
   passphrase: string | null,
   device: string,
   appVersion: string,
@@ -196,6 +198,9 @@ export function packBackup(
   entries.push([dbSnapshot, DB_FILE]);
   collectDirFiles(join(dataDir, SESSIONS_DIR), SESSIONS_DIR, entries);
   if (includeWorkspace) collectDirFiles(join(dataDir, TASK_WORKSPACE_DIR), TASK_WORKSPACE_DIR, entries);
+  // 资料库只收缺省位置（<dataDir>/library）：包内条目按 dataDir 相对路径落位，
+  // 用户改到别处的那份由用户自己的同步工具负责（设置页有对应说明）
+  if (includeLibrary) collectDirFiles(join(dataDir, LIBRARY_DIR), LIBRARY_DIR, entries);
   entries.sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
 
   const tmp = join(tmpdir(), `piabk-pack-${randomUUID()}`);
@@ -345,6 +350,7 @@ export function unpackBackup(
 export interface BackupConfig {
   provider: string;
   includeWorkspace: boolean;
+  includeLibrary: boolean;
   deviceName: string;
   s3Endpoint: string;
   s3Region: string;
@@ -365,6 +371,7 @@ function defaultConfig(): BackupConfig {
   return {
     provider: "off",
     includeWorkspace: true,
+    includeLibrary: true,
     deviceName: "desktop",
     s3Endpoint: "",
     s3Region: "us-east-1",
@@ -400,6 +407,7 @@ function configView(c: BackupConfig): any {
   return {
     provider: c.provider,
     includeWorkspace: c.includeWorkspace,
+    includeLibrary: c.includeLibrary,
     deviceName: c.deviceName,
     s3Endpoint: c.s3Endpoint,
     s3Region: c.s3Region,
@@ -1091,6 +1099,7 @@ export function setupBackupCommands(register: (name: string, fn: (args: any) => 
       dbSnapshot,
       dataDir,
       cfg.includeWorkspace,
+      cfg.includeLibrary,
       pass,
       device,
       app.getVersion(),

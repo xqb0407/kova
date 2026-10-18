@@ -198,6 +198,8 @@ export function fsErrorText(code: string): string {
     "not-desktop": "仅桌面端可用",
     "bad-base64": "内容编码异常，写入被拒绝",
     "too-large": "内容超过 32MB 上限",
+    "home-not-allowed": "不能把家目录本身设为资料库位置（请选其中的一个文件夹）",
+    "app-data-not-allowed": "该目录存放应用私有数据，不能设为资料库位置",
   };
   return map[code] ?? "操作失败";
 }

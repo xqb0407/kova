@@ -15,6 +15,7 @@ export type BackupProvider = "off" | "s3" | "webdav";
 export interface BackupConfigView {
   provider: BackupProvider;
   includeWorkspace: boolean;
+  includeLibrary: boolean;
   deviceName: string;
   s3Endpoint: string;
   s3Region: string;
@@ -84,6 +85,7 @@ export const BACKUP_PROGRESS_EVENT = "backup:progress";
 export const DEFAULT_BACKUP_CONFIG: BackupConfigView = {
   provider: "off",
   includeWorkspace: true,
+  includeLibrary: true,
   deviceName: "desktop",
   s3Endpoint: "",
   s3Region: "us-east-1",

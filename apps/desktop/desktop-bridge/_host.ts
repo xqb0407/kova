@@ -13,6 +13,8 @@ type HostShape = {
   invoke(cmd: string, args: unknown): Promise<InvokeResult>;
   eventsOn(cb: (m: { event: string; payload: unknown }) => void): void;
   channelsOn(cb: (m: { id: string; data: unknown }) => void): void;
+  /** 拖拽 File → 磁盘绝对路径（preload 的 webUtils.getPathForFile；非磁盘文件为空串） */
+  pathForFile?(file: File): string;
 };
 
 declare global {
@@ -101,4 +103,18 @@ export async function invokeBridge<T>(cmd: string, args?: Record<string, unknown
   const res = await host().invoke(cmd, serializeArgs(args ?? {}));
   if (res.ok) return res.value as T;
   return Promise.reject(res.error ?? new Error(`command failed: ${cmd}`));
+}
+
+/**
+ * 拖拽落下的 File → 磁盘绝对路径（资料库拖入导入用）。
+ * 非桌面壳 / preload 版本缺 pathForFile / 虚拟文件（无磁盘路径）都返回 null，
+ * 调用方据此提示「这个来源不支持拖入」。
+ */
+export function filePathOf(file: File): string | null {
+  try {
+    const p = host().pathForFile?.(file);
+    return p && p.length > 0 ? p : null;
+  } catch {
+    return null;
+  }
 }

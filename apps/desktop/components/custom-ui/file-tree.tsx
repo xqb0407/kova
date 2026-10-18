@@ -31,7 +31,18 @@ type FileTreeItem = {
   disabled?: boolean;
   className?: string;
   onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  /** 行级拖放透传（资料库把外部文件拖到文件夹上导入：目标目录即该行） */
+  onDragOver?: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragLeave?: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDrop?: (event: React.DragEvent<HTMLButtonElement>) => void;
 };
+
+/** 行级拖放回调（三种一起给；不给则该行不参与拖放） */
+export interface FileTreeRowDragHandlers {
+  onDragOver: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragLeave: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDrop: (event: React.DragEvent<HTMLButtonElement>) => void;
+}
 
 export interface FileTreeFolderProps {
   value: string;
@@ -42,6 +53,8 @@ export interface FileTreeFolderProps {
   className?: string;
   /** 右键回调（行按钮上触发，不冒泡到树的空白区） */
   onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  /** 拖放回调（folder 行可作投放目标） */
+  dragHandlers?: FileTreeRowDragHandlers;
 }
 
 export interface FileTreeFileProps {
@@ -52,6 +65,8 @@ export interface FileTreeFileProps {
   className?: string;
   /** 右键回调（行按钮上触发，不冒泡到树的空白区） */
   onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  /** 拖放回调（一般只文件夹需要） */
+  dragHandlers?: FileTreeRowDragHandlers;
 }
 
 export type FileTreeClassNames = {
@@ -148,6 +163,7 @@ function itemsFromChildren(children: ReactNode): FileTreeItem[] {
         disabled: props.disabled,
         className: props.className,
         onContextMenu: props.onContextMenu,
+        ...props.dragHandlers,
         children: itemsFromChildren(props.children),
       });
       return;
@@ -163,6 +179,7 @@ function itemsFromChildren(children: ReactNode): FileTreeItem[] {
         disabled: props.disabled,
         className: props.className,
         onContextMenu: props.onContextMenu,
+        ...props.dragHandlers,
       });
     }
   });
@@ -352,6 +369,9 @@ export function FileTree({
                 if (row.item.disabled) return;
                 row.item.onContextMenu?.(event);
               }}
+              onDragOver={row.item.onDragOver}
+              onDragLeave={row.item.onDragLeave}
+              onDrop={row.item.onDrop}
               onClick={() => {
                 if (row.item.disabled) return;
                 selectItem(row.item);

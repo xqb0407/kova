@@ -6,7 +6,9 @@
 import { app, BrowserWindow, protocol, net } from "electron";
 import { existsSync } from "node:fs";
 import { join, normalize } from "node:path";
+import { pathToFileURL } from "node:url";
 import { initPaths, appDataDir } from "./paths";
+import { isTrustedFilePath } from "./fs-cmds";
 import { initLogging, logError, logInfo, logWarn } from "./logging";
 import { installCrashGuard } from "./crash";
 import { setupIpc, focusMainWindow } from "./ipc";
@@ -64,12 +66,31 @@ const MIME: Record<string, string> = {
 const CSP =
   "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data: blob: https: http:; font-src 'self' data:; connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https:; " +
-  "worker-src 'self' blob:; frame-src 'self' data: blob: https:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'";
+  "worker-src 'self' blob:; frame-src 'self' data: blob: https: kova:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'";
 
 function registerStaticProtocol(): void {
   protocol.handle("kova", async (request) => {
     try {
       const url = new URL(request.url);
+      // kova://file/<绝对路径>：受信根内的本地文件直出（HTML 预览 iframe 用——
+      // srcDoc 的 about:srcdoc 没有基址，相对路径的图片/CSS 一律解析不了）。
+      // 只放行「当前 workspace / task-workspace / 资料库根」子树内真实存在的文件。
+      if (url.hostname === "file") {
+        let p = decodeURIComponent(url.pathname);
+        if (process.platform === "win32") p = p.replace(/^\/+/, "");
+        if (!existsSync(p) || !isTrustedFilePath(p)) {
+          return new Response("forbidden", { status: 403 });
+        }
+        if (!require("node:fs").statSync(p).isFile()) {
+          return new Response("not-a-file", { status: 403 });
+        }
+        const resp = await net.fetch(pathToFileURL(p).toString());
+        const ext = p.slice(p.lastIndexOf("."));
+        const headers = new Headers(resp.headers);
+        headers.set("content-type", MIME[ext] ?? "application/octet-stream");
+        // 不套应用自身的 CSP：预览的是用户页面，iframe sandbox 已是它的边界
+        return new Response(resp.body, { status: resp.ok ? 200 : 404, headers });
+      }
       let rel = decodeURIComponent(url.pathname).replace(/^\/+/, "");
       const clean = normalize(rel).replace(/\\/g, "/");
       if (clean.includes("..")) return new Response("forbidden", { status: 403 });

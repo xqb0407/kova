@@ -2,10 +2,22 @@
  * preload：暴露 window.kovaHost（渲染层 desktop-bridge 的唯一宿主通道）。
  * contextBridge 不跨界传函数：事件/通道在此侧订阅，回调留在渲染侧本地分发。
  */
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 contextBridge.exposeInMainWorld("kovaHost", {
   invoke: (cmd: string, args: unknown) => ipcRenderer.invoke("kova-invoke", { cmd, args }),
+  /**
+   * 拖拽落下的 File → 磁盘绝对路径。Electron 32 起 File.path 已移除，官方
+   * 推荐在 preload 用 webUtils.getPathForFile 取（资料库「拖入导入」用）；
+   * 非真实磁盘文件（如从浏览器拖来的虚拟文件）返回空串。
+   */
+  pathForFile: (file: File) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return "";
+    }
+  },
   eventsOn: (cb: (m: { event: string; payload: unknown }) => void) => {
     ipcRenderer.on("kova-event", (_e, m) => {
       try {

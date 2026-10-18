@@ -70,9 +70,6 @@ const EmptyTabsScreen: FC = () => {
  * @param onCollapse 顶栏「收起面板」入口；省略则不渲染（面板不再需要自收起时）
  * @param showWindowControls 停靠为右列时窗口右缘即面板右缘，Windows/Linux
  *        自绘三键由面板顶栏接管（Header 同步让位，见 base.tsx panelDocked）
- * @param settled 展开滑入已落位（base 的 panelDocked && !panelExpanding）：
- *        顶栏动作此刻才从冻结裁剪区外进可视区，据此做一次淡入（见 barActions）。
- *        省略/默认 = 视为已落位（窄屏浮层整块滑入，没有交接过程，按钮直接可见）
  * @param fullscreen 面板全屏中（聊天列已收起，面板平铺主区；状态由 base.tsx 持有）
  * @param onToggleFullscreen 切换全屏；省略则不渲染按钮（窄屏浮层无全屏概念）
  * @param contentFrozenPx 把手拖拽中内容区的冻结宽度（px；null = 跟手）。
@@ -82,14 +79,12 @@ const EmptyTabsScreen: FC = () => {
 const AgentPanelImpl: FC<{
   onCollapse?: () => void;
   showWindowControls?: boolean;
-  settled?: boolean;
   fullscreen?: boolean;
   contentFrozenPx?: number | null;
   onToggleFullscreen?: () => void;
 }> = ({
   onCollapse,
   showWindowControls = false,
-  settled = true,
   fullscreen = false,
   contentFrozenPx = null,
   onToggleFullscreen,
@@ -105,7 +100,6 @@ const AgentPanelImpl: FC<{
       active={active}
       onCollapse={onCollapse}
       showWindowControls={showWindowControls}
-      settled={settled}
       fullscreen={fullscreen}
       contentFrozenPx={contentFrozenPx}
       onToggleFullscreen={onToggleFullscreen}
@@ -134,7 +128,6 @@ const PanelShell: FC<{
   active: ReturnType<typeof usePanelTabs>["tabs"][number] | null;
   onCollapse?: () => void;
   showWindowControls: boolean;
-  settled: boolean;
   fullscreen?: boolean;
   contentFrozenPx?: number | null;
   onToggleFullscreen?: () => void;
@@ -144,7 +137,6 @@ const PanelShell: FC<{
   active,
   onCollapse,
   showWindowControls,
-  settled,
   fullscreen = false,
   contentFrozenPx = null,
   onToggleFullscreen,
@@ -183,18 +175,15 @@ const PanelShell: FC<{
   // + 停靠态接管的 Windows 三键。空标签态也保留顶栏：拖拽区/收起/三键不能
   // 随标签栏一起消失
   const desktop = isDesktop();
-  // 停靠交接：展开滑入时面板内容随左缘一路左移，顶栏右端这组动作会在动画
-  // 中段就"飞"进可视区（观感是一闪而过到右缘），落位时早已静止。统一改为
-  // 落位信号 settled（= base 的 panelDocked && !panelExpanding）翻真那一帧起
-  // 150ms 淡入：滑入途中它仍被裁剪（隐去不产生额外观感），落位后干净淡入。
-  // 收起方向是被移动的左缘裁剪吃掉，不需要额外处理；窄屏浮层不传 settled
-  // （整块浮层连按钮一起滑入，没有交接问题）
+  // 顶栏动作不做位移动画：内容在开合动画期间右锚定（见 base.tsx 冻结容器），
+  // 这组按钮钉在面板右缘、随面板左缘扫过被自然裁切进出；只在面板窄到放不下
+  // 时（barHidden）整体淡出。不再按落位信号延迟淡入——那样动画期间整组按钮
+  // 都是隐形的，收起按钮会"凭空冒出来"（实报观感奇怪）
   const barActions: ReactNode =
     onCollapse || showWindowControls ? (
       <div
         className={cn(
           "flex items-center transition-opacity duration-150",
-          !settled && "pointer-events-none opacity-0",
           barHidden && "pointer-events-none opacity-0",
         )}
       >

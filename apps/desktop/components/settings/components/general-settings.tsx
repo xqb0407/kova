@@ -24,6 +24,14 @@ import { setGpuAccelEnabled, useGpuAccelEnabled } from "@/lib/settings/gpu-accel
 import { SOUND_PACKS } from "@/lib/notify/sounds";
 import { isDesktop, isWindowsPlatform } from "@/lib/desktop-env";
 import { setUiPref, useUiPrefs, type SoundPackName } from "@/lib/settings/ui-prefs";
+import { FolderSearchIcon } from "lucide-react";
+import { open as openDialog } from "@/desktop-bridge/plugin-dialog";
+import { toast } from "@/components/ui/toast";
+import {
+  changeLibraryRoot,
+  useLibraryRoot,
+} from "@/lib/workspace/library-root";
+import { fsErrorText, projectReveal } from "@/lib/workspace/fs";
 
 /**
  * 通用设置页：提醒提示音与弹窗通知。统一开关 + 两套内置音色整体切换，
@@ -40,6 +48,30 @@ export const GeneralSettings: FC = () => {
   const { ensure: ensureUiDesign, dialog: uiDesignGateDialog } =
     useEnsureUiDesignPlugin();
   const { reopen: reopenOnboarding } = useOnboardingGate();
+  const libraryRoot = useLibraryRoot();
+
+  /** 换资料库位置：选文件夹 → 落库；不搬移已有文件（文案已说明） */
+  const pickLibraryRoot = async () => {
+    const picked = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "选择资料库位置",
+      defaultPath: libraryRoot?.root,
+    });
+    if (typeof picked !== "string" || !picked) return;
+    const err = await changeLibraryRoot(picked);
+    if (err) {
+      toast.error(fsErrorText(err));
+      return;
+    }
+    toast.success("资料库位置已更新");
+  };
+
+  const openLibraryRoot = async () => {
+    if (!libraryRoot?.root) return;
+    const err = await projectReveal(libraryRoot.root);
+    if (err) toast.error(fsErrorText(err));
+  };
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
@@ -199,6 +231,53 @@ export const GeneralSettings: FC = () => {
                     ))}
                   </SelectContent>
                 </Select>
+              </SettingRow>
+            </div>
+          </section>
+        )}
+
+        {/* 资料库位置仅桌面端可调（本地磁盘目录）；网页端没有这条通道 */}
+        {isDesktop() && (
+          <section className="flex flex-col gap-3">
+            <h2 className="text-base font-semibold">资料库</h2>
+            <p className="text-muted-foreground text-sm">
+              侧边栏「资料库」页存放你自己文件的位置；笔记就是这里的 .md 文件，
+              可以随手整理、也能随时用系统文件管理器打开。
+            </p>
+            <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+              <SettingRow
+                label="资料库位置"
+                desc={
+                  libraryRoot?.isDefault
+                    ? "当前是缺省位置（应用数据目录内，跟随备份）。可改为任意文件夹，例如放进 iCloud / 网盘同步目录。"
+                    : "当前是自定义位置，不随应用云备份走（请自行同步）。切换位置不会搬移已有文件。"
+                }
+              >
+                <div className="flex min-w-0 max-w-md items-center gap-2">
+                  <span
+                    className="text-muted-foreground min-w-0 truncate font-mono text-xs"
+                    title={libraryRoot?.root ?? ""}
+                  >
+                    {libraryRoot?.root ?? "解析中…"}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 shrink-0"
+                    onClick={() => void pickLibraryRoot()}
+                  >
+                    更改…
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0"
+                    title="在系统中打开"
+                    onClick={() => void openLibraryRoot()}
+                  >
+                    <FolderSearchIcon className="size-3.5" />
+                  </Button>
+                </div>
               </SettingRow>
             </div>
           </section>
