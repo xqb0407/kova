@@ -132,6 +132,13 @@ export function MessageScroller({
   const scrollTimerRef = useRef<number | undefined>(undefined);
   const frameRef = useRef<number | undefined>(undefined);
   const railFrameRef = useRef<number | undefined>(undefined);
+  /** 流式期间 content 每帧都在长高：resize 驱动的贴底与 rail 重测都要节流，
+   *  否则每帧重启 smooth 滚动 / 重扫全部消息，既掉帧又会和 ResizeObserver
+   *  互相触发。 */
+  const resizeScrollAtRef = useRef(0);
+  const resizeScrollTimerRef = useRef<number | undefined>(undefined);
+  const railSyncAtRef = useRef(0);
+  const railSyncTimerRef = useRef<number | undefined>(undefined);
   const railIdRef = useRef(new WeakMap<HTMLElement, string>());
   const railIdCounterRef = useRef(0);
   const railTargetsRef = useRef(new Map<string, HTMLElement>());
@@ -216,6 +223,14 @@ export function MessageScroller({
     const messages = Array.from(
       content.querySelectorAll<HTMLElement>('[data-slot="message"]'),
     );
+    // 预计算每个下标之后的第一条 assistant：原实现对每条 user 都做
+    // slice().find()，长会话是 O(n²)，而本函数在流式期间会被反复触发。
+    const nextAssistant: (HTMLElement | undefined)[] = new Array(messages.length);
+    let following: HTMLElement | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      nextAssistant[i] = following;
+      if (messages[i]!.dataset.from === "assistant") following = messages[i];
+    }
     const targets = new Map<string, HTMLElement>();
     const nextItems = messages.map((message, index) => {
       let id = railIdRef.current.get(message);
@@ -226,12 +241,7 @@ export function MessageScroller({
       }
       targets.set(id, message);
       const sender = message.dataset.from ?? "conversation";
-      const assistantResponse =
-        sender === "user"
-          ? messages
-              .slice(index + 1)
-              .find((candidate) => candidate.dataset.from === "assistant")
-          : undefined;
+      const assistantResponse = sender === "user" ? nextAssistant[index] : undefined;
       const preview = getMessagePreview(message, assistantResponse);
 
       return {
@@ -262,11 +272,29 @@ export function MessageScroller({
 
   const scheduleRailSync = useCallback(() => {
     if (navigation !== "rail") return;
-    if (railFrameRef.current) cancelAnimationFrame(railFrameRef.current);
-    railFrameRef.current = requestAnimationFrame(() => {
+    // 最多 150ms 一次：syncRailItems 会 querySelectorAll + 逐条读 textContent，
+    // 长会话下每帧跑一次足够把流式帧预算吃光。尾部补一次保证最终状态。
+    if (railFrameRef.current || railSyncTimerRef.current) return;
+    const run = () => {
+      railSyncAtRef.current = performance.now();
       syncRailItems();
       updateActiveRailItem();
-    });
+    };
+    const onFrame = () => {
+      railFrameRef.current = requestAnimationFrame(() => {
+        railFrameRef.current = undefined;
+        run();
+      });
+    };
+    const wait = Math.max(0, 150 - (performance.now() - railSyncAtRef.current));
+    if (wait === 0) {
+      onFrame();
+      return;
+    }
+    railSyncTimerRef.current = window.setTimeout(() => {
+      railSyncTimerRef.current = undefined;
+      onFrame();
+    }, wait);
   }, [navigation, syncRailItems, updateActiveRailItem]);
 
   const scrollToEnd = useCallback((behavior: ScrollBehavior) => {
@@ -316,12 +344,33 @@ export function MessageScroller({
     const observer = new ResizeObserver(() => {
       scheduleRailSync();
       if (!followOutput || !followingRef.current) return;
-      scrollToEnd(reduce || !smooth ? "auto" : "smooth");
+      // resize 驱动一律 auto 并节流到 120ms：流式时 content 每帧长高，每帧
+      // 重启 smooth 滚动会持续打断滚动动画，并和 resize 观测互相触发。
+      // 用户主动跳转（rail 点击等）仍然保留 smooth。
+      const wait = 120 - (performance.now() - resizeScrollAtRef.current);
+      if (wait > 0) {
+        if (resizeScrollTimerRef.current !== undefined) return;
+        resizeScrollTimerRef.current = window.setTimeout(() => {
+          resizeScrollTimerRef.current = undefined;
+          if (!followingRef.current) return;
+          resizeScrollAtRef.current = performance.now();
+          scrollToEnd("auto");
+        }, wait);
+        return;
+      }
+      resizeScrollAtRef.current = performance.now();
+      scrollToEnd("auto");
     });
     observer.observe(content);
 
-    return () => observer.disconnect();
-  }, [followOutput, reduce, scheduleRailSync, scrollToEnd, smooth]);
+    return () => {
+      observer.disconnect();
+      if (resizeScrollTimerRef.current !== undefined) {
+        window.clearTimeout(resizeScrollTimerRef.current);
+        resizeScrollTimerRef.current = undefined;
+      }
+    };
+  }, [followOutput, scheduleRailSync, scrollToEnd]);
 
   useEffect(() => {
     if (navigation !== "rail") {
@@ -364,6 +413,10 @@ export function MessageScroller({
       if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
       if (railFrameRef.current) cancelAnimationFrame(railFrameRef.current);
+      if (resizeScrollTimerRef.current !== undefined)
+        window.clearTimeout(resizeScrollTimerRef.current);
+      if (railSyncTimerRef.current !== undefined)
+        window.clearTimeout(railSyncTimerRef.current);
     },
     [],
   );
@@ -435,7 +488,9 @@ export function MessageScroller({
           ? "[-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           : "[scrollbar-gutter:stable]",
         viewportClassName,
-        navigation === "rail" && railOverflowing && "pr-10",
+        // 从首帧就预留 rail 的右边距：等测出 railOverflowing 再补会让正文
+        // 横向重排一次（CLS），长会话加载完能看到明显"跳一下"。
+        navigation === "rail" && "pr-10",
       )}
     >
       <div

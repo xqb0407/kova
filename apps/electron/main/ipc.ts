@@ -5,7 +5,7 @@
  * 提供反向推送器，对齐 旧桌面壳的 IPC Channel。
  */
 import { BrowserWindow, ipcMain, type WebContents } from "electron";
-import { logError, logInfo } from "./logging";
+import { logDebug, logError, logInfo } from "./logging";
 
 export type CmdCtx = { sender: WebContents };
 export type CmdHandler = (args: Record<string, any>, ctx: CmdCtx) => unknown | Promise<unknown>;
@@ -48,7 +48,14 @@ export function setupIpc(): void {
       return { ok: true, value: value ?? null };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logError(`[ipc] ${cmd} failed: ${msg}`);
+      // 这些是用户状态而非系统故障（git 非仓库/未安装、目录不存在、workspace
+      // 不匹配、未选择目录），渲染层会自行降级；不再按 ERROR 每次 focus 刷屏。
+      const expected =
+        /^(not-repo|no-git|cwd-not-allowed|cwd-missing|workspace-missing)(?::|$)/.test(
+          msg,
+        );
+      if (expected) logDebug(`[ipc] ${cmd}: ${msg}`);
+      else logError(`[ipc] ${cmd} failed: ${msg}`);
       return { ok: false, error: msg };
     }
   });

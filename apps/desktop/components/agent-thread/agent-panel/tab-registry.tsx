@@ -191,7 +191,22 @@ const ReviewTab: FC<{ tab: PanelTab }> = ({ tab }) => {
 
 const GitTab: FC = () => {
   const workspace = useWorkspace();
-  const { status, loading } = useGitStatus(workspace);
+  const { status, loading, missing } = useGitStatus(workspace);
+  // 目录没了和"不是仓库"分开说：后者是正常选择，前者需要用户处理
+  if (missing === "cwd")
+    return (
+      <TabEmpty
+        icon={GitBranchIcon}
+        text="会话绑定的工作目录不存在（可能已被移动或删除）"
+      />
+    );
+  if (missing === "workspace")
+    return (
+      <TabEmpty
+        icon={GitBranchIcon}
+        text="当前 workspace 目录不存在，请重新选择目录"
+      />
+    );
   // 切换 workspace 后 B 的 status 首拉在途:先展示加载态,
   // 避免闪一句"不是 git 仓库"再切过来(观感像没跟随切换)
   if (workspace && loading && !status)

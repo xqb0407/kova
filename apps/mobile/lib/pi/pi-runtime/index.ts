@@ -22,10 +22,13 @@ export type {
 
 export {
   projectPiThreadMessages,
+  projectPiThreadMessagesIncremental,
   projectPiThreadRepository,
 } from "./runtime/messageProjection";
 export type {
+  PiProjectionCache,
   PiProjectionInput,
+  PiProjectionResult,
   PiProjectedContentPart,
 } from "./runtime/messageProjection";
 

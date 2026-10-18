@@ -59,6 +59,7 @@ import type {
   ThreadMessageLike,
 } from "@assistant-ui/react";
 import { isAutoContinueMessage } from "pi-protocol";
+import { imageSizeFromBase64 } from "@/lib/pi/image-size";
 import { approvalForRequest, splitHostUiRequests } from "./hostUi";
 import type { PiThreadState } from "./threadState";
 import type {
@@ -151,6 +152,9 @@ type PiImagePartData = {
   toolCallId: string | null;
   toolName?: string;
   alt?: string;
+  /** 原图尺寸：渲染前按比例占位（避免落图时顶开下方内容） */
+  width?: number;
+  height?: number;
 };
 
 export interface ProjectedImage {
@@ -199,6 +203,7 @@ const projectToolResult = (
       );
       continue;
     }
+    const size = imageSizeFromBase64(b64, mime);
     images.push({
       id: `img-${ctx.toolCallId ?? "direct"}-${index}`,
       data: {
@@ -207,6 +212,7 @@ const projectToolResult = (
         bytes,
         toolCallId: ctx.toolCallId,
         ...(alt ? { alt } : {}),
+        ...(size ? { width: size.width, height: size.height } : {}),
       },
     });
   }

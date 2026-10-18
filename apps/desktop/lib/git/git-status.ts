@@ -147,19 +147,30 @@ export type GitView = {
   probe: GitProbe | null;
   status: GitStatusInfo | null;
   loading: boolean;
+  /** 目录不可用的原因（会话目录/当前 workspace 被删或移走）。此时 status
+   *  同时为 null，避免胶囊等消费者把空状态当成"仓库、0 个改动"。 */
+  missing: "cwd" | "workspace" | null;
 };
 
-const NO_PROBE_VIEW: GitView = { probe: null, status: null, loading: false };
+const NO_PROBE_VIEW: GitView = {
+  probe: null,
+  status: null,
+  loading: false,
+  missing: null,
+};
 const memo = new Map<string, { version: number; value: GitView }>();
 
 function getView(cwd: string | null): GitView {
   if (!cwd) return NO_PROBE_VIEW;
   const hit = memo.get(cwd);
   if (hit && hit.version === version) return hit.value;
+  const raw = cache.get(cwd) ?? null;
+  const missing = raw?.missing ?? null;
   const value: GitView = {
     probe,
-    status: cache.get(cwd) ?? null,
+    status: missing ? null : raw,
     loading: loading.has(cwd) || probe === null,
+    missing,
   };
   memo.set(cwd, { version, value });
   return value;

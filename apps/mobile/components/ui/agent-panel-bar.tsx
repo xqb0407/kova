@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -50,6 +50,7 @@ import {
   useGitStatus,
   type GitFileStatus,
 } from "@/lib/pi/pi-git";
+import { useGitStatusInvalidation } from "@/lib/pi/pi-git-watch";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import {
   fetchTodoState,
@@ -311,6 +312,9 @@ function GitSection() {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const sessionId = threadId ? piSessionIdForThread(threadId) : undefined;
   const status = useGitStatus(sessionId);
+  // 移动端没有 git-changed 事件：回合结束/回前台各补一次失效。
+  // 非仓库且无错误时整节不渲染，也就不必再为它发 git_status（每回合一次）。
+  useGitStatusInvalidation(sessionId, status.repo || status.error !== null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [diff, setDiffResult] = useState<{
     path: string;
@@ -318,38 +322,80 @@ function GitSection() {
     untracked: boolean;
     truncated: boolean;
     loading: boolean;
+    error: string | null;
   } | null>(null);
+  /** diff 请求序号：慢响应落地时不能覆盖后点开的文件（A→B 竞态） */
+  const diffRequestRef = useRef(0);
+
+  // 切会话时作废旧会话的在途请求（组件可能不卸载，同名路径会被误认）
+  useEffect(() => {
+    diffRequestRef.current += 1;
+    setExpanded(null);
+    setDiffResult(null);
+  }, [sessionId]);
 
   if (!sessionId) return null;
 
+  const loadDiff = (file: GitFileStatus) => {
+    const request = ++diffRequestRef.current;
+    setDiffResult({
+      path: file.path,
+      text: "",
+      untracked: file.untracked,
+      truncated: false,
+      loading: true,
+      error: null,
+    });
+    void fetchGitDiff(sessionId, file.path).then((res) => {
+      if (request !== diffRequestRef.current) return;
+      setDiffResult(
+        res.ok
+          ? {
+              path: file.path,
+              text: res.diff,
+              untracked: res.untracked,
+              truncated: res.truncated,
+              loading: false,
+              error: null,
+            }
+          : {
+              path: file.path,
+              text: "",
+              untracked: false,
+              truncated: false,
+              loading: false,
+              error: res.error,
+            },
+      );
+    });
+  };
+
   const openDiff = (file: GitFileStatus) => {
     if (expanded === file.path) {
+      // 收起也作废在途请求：重新打开时应由新请求决定内容
+      diffRequestRef.current += 1;
       setExpanded(null);
       setDiffResult(null);
       return;
     }
     setExpanded(file.path);
-    setDiffResult({ path: file.path, text: "", untracked: file.untracked, truncated: false, loading: true });
-    void fetchGitDiff(sessionId, file.path).then((res) => {
-      setDiffResult(
-        res
-          ? { path: file.path, text: res.diff, untracked: res.untracked, truncated: res.truncated, loading: false }
-          : { path: file.path, text: "", untracked: false, truncated: false, loading: false },
-      );
-    });
+    loadDiff(file);
   };
 
-  // 不是仓库 / 读取失败：整节不出现（面板不因 git 缺失而多一块空壳）
-  if (!status.loading && !status.repo) return null;
+  // 不是仓库且没出错：整节不出现（面板不因 git 缺失而多一块空壳）。
+  // 出错时必须留下：否则一次网络抖动就把整节连同重试入口一起抹掉。
+  if (!status.loading && !status.repo && !status.error) return null;
 
   return (
     <Section
       icon={<GitBranchIcon size={15} strokeWidth={2} color={colors.mutedForeground} />}
       title="Git 变更"
       meta={
-        status.loading && status.files.length === 0
-          ? "读取中…"
-          : `${status.branch ?? "HEAD"} · ${status.files.length} 个文件${status.truncated ? "（截断）" : ""}`
+        status.error
+          ? "读取失败"
+          : status.loading && status.files.length === 0
+            ? "读取中…"
+            : `${status.branch ?? "HEAD"} · ${status.files.length} 个文件${status.truncated ? "（截断）" : ""}`
       }
       action={
         <Pressable
@@ -370,7 +416,7 @@ function GitSection() {
       {status.error ? (
         <Text style={[styles.empty, { color: colors.destructive }]}>{status.error}</Text>
       ) : null}
-      {status.files.length === 0 && !status.loading ? (
+      {status.files.length === 0 && !status.loading && !status.error ? (
         <Text style={[styles.empty, { color: colors.mutedForeground }]}>
           工作区干净，没有未提交的改动
         </Text>
@@ -470,6 +516,33 @@ function GitSection() {
               >
                 {diff.loading ? (
                   <ActivityIndicator size="small" />
+                ) : diff.error ? (
+                  <View style={{ gap: space(2) }}>
+                    <Text style={[styles.empty, { color: colors.destructive }]}>
+                      读取失败：{diff.error}
+                    </Text>
+                    <Pressable
+                      onPress={() => loadDiff(file)}
+                      hitSlop={8}
+                      accessibilityRole="button"
+                      accessibilityLabel={`重试读取 ${base} 的差异`}
+                      style={({ pressed }) => [
+                        { alignSelf: "flex-start" },
+                        pressed && { opacity: 0.6 },
+                      ]}
+                    >
+                      <Text
+                        style={{
+                          color: colors.foreground,
+                          fontSize: 12,
+                          fontWeight: fontWeight("500"),
+                          textDecorationLine: "underline",
+                        }}
+                      >
+                        重试
+                      </Text>
+                    </Pressable>
+                  </View>
                 ) : file.untracked && !diff.text ? (
                   <Text style={[styles.empty, { color: colors.mutedForeground }]}>
                     未跟踪文件（内容过大或为空）
