@@ -46,6 +46,8 @@ const snapshots = new Map<string, GitStatusSnapshot>();
 const listeners = new Set<() => void>();
 /** 按会话在途去重：只按全局单例去重时，A 在飞会吞掉 B 的刷新，B 永远停在旧数据 */
 const inflight = new Map<string, Promise<void>>();
+/** 在途期间又触发了刷新：当前完成后补拉一次（合并 N 次触发为 1 次尾随） */
+const pendingRefresh = new Set<string>();
 
 function emit() {
   for (const listener of listeners) listener();
@@ -58,34 +60,51 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
-/** 拉取某会话的 git 状态（按会话在途去重；失败落进快照的 error 字段，卡片里可见） */
+/**
+ * 拉取某会话的 git 状态。
+ *
+ * - 在途去重按会话分键；在途期间再次触发只记一次"还脏"，完成后补拉一次，
+ *   保证最后一次触发对应的状态最终可见（对齐桌面端 pendingRefresh）。
+ * - SWR：刷新期间保留旧列表，不清成空态。
+ * - 请求失败（网络/通道）保留上一次成功结果，只写 error：一次网络抖动不该
+ *   把已有列表和"是仓库"的判断抹掉；sidecar 明确报错（ok:false）则进入错误
+ *   态——旧列表可能已经失效，不能继续当现状展示。
+ */
 export async function refreshGitStatus(sessionId: string): Promise<void> {
   const pending = inflight.get(sessionId);
-  if (pending) return pending;
+  if (pending) {
+    pendingRefresh.add(sessionId);
+    return pending;
+  }
   const prev = snapshots.get(sessionId) ?? EMPTY;
-  snapshots.set(sessionId, { ...prev, loading: true });
+  snapshots.set(sessionId, { ...prev, loading: true, error: null });
   emit();
   const promise = piRequest<PiGitStatusResponse>({ type: "git_status", sessionId })
     .then((res) => {
       // 已 release（会话关闭）：别再把手里的结果写回快照表
       if (inflight.get(sessionId) !== promise) return;
+      if (!res.ok) {
+        // sidecar 明确报错：会话目录不可用之类的状态是权威的，旧列表不能留着
+        snapshots.set(sessionId, {
+          ...EMPTY,
+          error: res.errorText ?? "读取失败",
+        });
+        return;
+      }
       snapshots.set(sessionId, {
         loading: false,
         repo: res.repo === true,
         branch: res.branch ?? null,
         files: res.files ?? [],
         truncated: res.truncated === true,
-        error: res.ok ? null : (res.errorText ?? "读取失败"),
+        error: null,
       });
     })
     .catch((err) => {
       if (inflight.get(sessionId) !== promise) return;
       snapshots.set(sessionId, {
+        ...prev,
         loading: false,
-        repo: false,
-        branch: null,
-        files: [],
-        truncated: false,
         error: err instanceof Error ? err.message : String(err),
       });
     })
@@ -94,6 +113,8 @@ export async function refreshGitStatus(sessionId: string): Promise<void> {
       if (inflight.get(sessionId) !== promise) return;
       inflight.delete(sessionId);
       emit();
+      // 在途期间被顶掉的触发，完成后再来一次（最后一次触发最终可见）
+      if (pendingRefresh.delete(sessionId)) void refreshGitStatus(sessionId);
     });
   inflight.set(sessionId, promise);
   return promise;
@@ -102,6 +123,7 @@ export async function refreshGitStatus(sessionId: string): Promise<void> {
 /** 会话关闭时释放快照与在途请求：快照表按会话键常驻，不释放会随访问过的会话无限增长 */
 export function releaseGitStatus(sessionId: string): void {
   inflight.delete(sessionId);
+  pendingRefresh.delete(sessionId);
   if (snapshots.delete(sessionId)) emit();
 }
 
@@ -110,25 +132,36 @@ export function getGitStatusSnapshot(sessionId: string | undefined): GitStatusSn
   return sessionId ? (snapshots.get(sessionId) ?? EMPTY) : EMPTY;
 }
 
-/** 单文件 diff（按需拉取，不进 store：一次只看一个文件） */
+/** 单文件 diff（按需拉取，不进 store：一次只看一个文件）。
+ *  失败必须带判别字段：null 会和"diff 为空"渲染成同一个空态，用户看不出该重试。 */
+export type GitDiffResult =
+  | { ok: true; diff: string; untracked: boolean; truncated: boolean }
+  | { ok: false; error: string };
+
 export async function fetchGitDiff(
   sessionId: string,
   path: string,
-): Promise<{ diff: string; untracked: boolean; truncated: boolean } | null> {
+): Promise<GitDiffResult> {
   try {
     const res = await piRequest<PiGitDiffResponse>({
       type: "git_diff",
       sessionId,
       path,
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      return { ok: false, error: res.errorText ?? "读取失败" };
+    }
     return {
+      ok: true,
       diff: res.diff ?? "",
       untracked: res.untracked === true,
       truncated: res.truncated === true,
     };
-  } catch {
-    return null;
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 

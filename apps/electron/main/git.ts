@@ -103,10 +103,21 @@ async function resolveWorkspace(cwd: string): Promise<Resolved> {
   await ensureGit();
   const stored = kvGet("workspace");
   const want = stored && stored.length > 0 ? stored : null;
-  if (!want) throw new Error("cwd-not-allowed");
-  const a = tryRealpath(cwd);
+  if (!want) {
+    throw new Error(`cwd-not-allowed: ${cwd}（kv workspace 为空）`);
+  }
+
+  // 目录不存在（会话绑定的目录被删/移走）与"无权访问"分开报：读命令可以按
+  // 无仓库静默处理，写命令仍拿到明确原因；渲染层也据此显示"工作目录不存在"。
+  const exists = existsSync(cwd);
+  const a = exists ? tryRealpath(cwd) : null;
+  if (!a) {
+    throw new Error(`cwd-missing: ${cwd}${exists ? "（不可解析）" : ""}`);
+  }
   const b = tryRealpath(want);
-  if (!a || !b || a !== b) throw new Error("cwd-not-allowed");
+  if (!b) throw new Error(`workspace-missing: ${want}（不可解析）`);
+
+  if (a !== b) throw new Error(`cwd-not-allowed: ${cwd} != ${want}`);
   return { run: cwd, key: a };
 }
 
@@ -237,6 +248,23 @@ async function statusImpl(cwd: string): Promise<any> {
     files: p.files.map(statusFileJson),
     dirty: p.files.length,
     lastCommit: await lastCommitJson(cwd),
+  };
+}
+
+/** 目录缺失时的空状态：形状与正常 status 一致，额外带 missing 供 UI 区分
+ *  "不是仓库" 与 "目录不存在"。 */
+function missingStatus(missing: "cwd" | "workspace") {
+  return {
+    branch: "",
+    detached: false,
+    unborn: false,
+    upstream: null,
+    ahead: 0,
+    behind: 0,
+    files: [],
+    dirty: 0,
+    lastCommit: null,
+    missing,
   };
 }
 
@@ -849,8 +877,18 @@ export function setupGitCommands(register: (name: string, fn: (args: any) => any
   });
 
   register("git_status", async (a) => {
-    const r = await resolveWorkspace(String(a.cwd));
-    return statusImpl(r.run);
+    const cwd = String(a.cwd);
+    try {
+      const r = await resolveWorkspace(cwd);
+      return await statusImpl(r.run);
+    } catch (err) {
+      // 目录缺失是终端用户状态，不是系统错误：返回带 missing 的空状态，
+      // 渲染层据此显示"工作目录不存在"，也避免每次 focus 都记一条 ERROR。
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.startsWith("cwd-missing")) return missingStatus("cwd");
+      if (msg.startsWith("workspace-missing")) return missingStatus("workspace");
+      throw err;
+    }
   });
 
   register("git_diff", async (a) => {

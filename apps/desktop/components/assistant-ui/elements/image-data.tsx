@@ -106,6 +106,10 @@ export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = (
         {/* lazy：长会话多图的解码压力推入视口再说；大图放大态挂在 Dialog 里延迟加载 */}
         <img
           src={tileSrc}
+          // 原图尺寸（投影时从文件头解析）：加载前就按比例占位，避免图片落地
+          // 时把下方内容顶开（CLS）。缺失时保持原来的自由尺寸行为。
+          width={data.width}
+          height={data.height}
           // decoding="async"：把解码挪出主线程（WebKit 会照做）——这是 Chrome 在这类
           // 页面上比 WKWebView 快的核心差别之一，而不是什么 GPU 开关
           decoding="async"
@@ -114,6 +118,7 @@ export const ImagePartCard: FC<{ data: PiImagePartData; compact?: boolean }> = (
           className={cn(
             "block max-h-64 max-w-full object-cover",
             compact && "h-auto w-full",
+            data.width && data.height && !compact && "h-auto w-auto",
           )}
         />
         <span className="absolute right-1.5 bottom-1.5 inline-flex items-center gap-1 rounded-md bg-black/55 px-1.5 py-0.5 font-mono text-[10px] leading-4 text-white opacity-0 transition-opacity group-hover:opacity-100">

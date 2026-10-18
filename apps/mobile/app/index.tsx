@@ -119,6 +119,9 @@ export default function HomeScreen() {
   const isLoadingMore = useAuiState((st) => st.threads.isLoadingMore);
   const hasMoreThreads = useAuiState((st) => st.threads.hasMore);
   const mainThreadId = useAuiState((st) => st.threads.mainThreadId);
+  const newThreadId = useAuiState((st) => st.threads.newThreadId);
+  /** 新建对话时真正会发生 id 变化的「切换前 id」；当前已经停在草稿会话时为空。 */
+  const switchFrom = mainThreadId === newThreadId ? undefined : mainThreadId;
   const workspace = useWorkspace();
   const pinnedIds = usePinnedThreadIds();
 
@@ -239,13 +242,19 @@ export default function HomeScreen() {
   }, []);
 
   const openThread = (id: string) => {
-    aui.threads.switchToThread(id);
-    router.push("/chat");
+    // 先让目标会话的页面过去（聊天页用 thread 参数先渲染目标会话的壳），
+    // 切换/加载消息在后台继续；否则页面会先显示上一个会话，等切换完成才跳。
+    router.push({ pathname: "/chat", params: { thread: id } });
+    // 类型面声明是 void（底层实际返回 Promise）：包一层吃掉切换失败
+    void Promise.resolve(aui.threads.switchToThread(id)).catch(() => {});
   };
 
   const startNew = () => {
-    aui.threads.switchToNewThread();
-    router.push("/chat");
+    router.push({
+      pathname: "/chat",
+      params: { fresh: "1", ...(switchFrom !== undefined ? { from: switchFrom } : {}) },
+    });
+    void Promise.resolve(aui.threads.switchToNewThread()).catch(() => {});
   };
 
   /** 在指定工作区开新对话：落工作区 → 切到新线程 → 进聊天页。
@@ -253,8 +262,11 @@ export default function HomeScreen() {
    *  所以这里只要把工作区设对即可。 */
   const startNewInWorkspace = (dir: string) => {
     setWorkspace(dir);
-    aui.threads.switchToNewThread();
-    router.push("/chat");
+    router.push({
+      pathname: "/chat",
+      params: { fresh: "1", ...(switchFrom !== undefined ? { from: switchFrom } : {}) },
+    });
+    void Promise.resolve(aui.threads.switchToNewThread()).catch(() => {});
   };
 
   const closeSearch = () => {

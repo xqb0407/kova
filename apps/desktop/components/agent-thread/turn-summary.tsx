@@ -225,6 +225,40 @@ export const TurnSlot: FC<{
 };
 
 /** 一行工作摘要：耗时 · 工具 · 文件，兼作收起/展开开关 */
+/** 运行中的秒表：每秒只重渲染这一小段文字。
+ *  原先 tick 挂在 TurnWorkSummary 上，每秒会把整块摘要（连同 packTurnSummary
+ *  选区解析）一起重渲染；dev 实测长会话里每次 1Hz tick 触发约 90ms 的 React
+ *  任务，流式期间就是稳定掉帧。 */
+const LiveElapsed: FC<{ running: boolean; startedAt: number | undefined }> = ({
+  running,
+  startedAt,
+}) => {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!running || startedAt === undefined) return;
+    const timer = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [running, startedAt]);
+
+  const elapsedMs =
+    running && startedAt !== undefined ? Date.now() - startedAt : undefined;
+  // shimmer 的遮罩按当前文字形状栅格化：只罩"工作中"这几个不变的字，逐秒变化
+  // 的数字放在遮罩外，避免数字重影/半截（Chromium 的 -webkit-mask-clip 分支）。
+  if (elapsedMs === undefined || elapsedMs < 1000) {
+    return (
+      <span className="tabular-nums shimmer shimmer-speed-200 motion-reduce:animate-none">
+        工作中
+      </span>
+    );
+  }
+  return (
+    <span className="tabular-nums">
+      <span className="shimmer shimmer-speed-200 motion-reduce:animate-none">工作中</span>
+      {` ${formatDuration(elapsedMs)}`}
+    </span>
+  );
+};
+
 const TurnWorkSummary: FC<{
   slot: TurnSlotInfo;
   scopedKey: string;
@@ -239,32 +273,13 @@ const TurnWorkSummary: FC<{
 
   // 「还在进行」看轮内流状态 + 线程状态（见 TurnSlot 的注释：线程级标志有空窗）
   const running = slot.turnRunning || (slot.isLastTurn && threadRunning);
-  // 运行中的秒表：每秒 tick 一次，从台账里的开始时刻算起
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
   const startedAt = getTurnTiming(scopedKey)?.start;
-  const elapsedMs = running && startedAt !== undefined ? Date.now() - startedAt : undefined;
 
   // 行面只放耗时（对齐 Codex 的「已工作 4 分 8 秒 ›」）；工具/文件计数挪到
-  // 悬停提示，信息不丢又不堆在行上
-  // 运行中的实时耗时：数字每秒变化。shimmer（tw-shimmer）在 Chromium 上走
-  // `-webkit-mask-clip: text` 分支：遮罩按当前文字形状栅格化，**文字一变旧遮罩残留**
-  // → 数字重影/半截、看着"卡住不变"（WKWebView 无此问题，旧桌面壳看着正常）。
-  // 最终方案与「连接中…」「正在思考中…」等指示器一致：**闪光只罩不变的字**——
-  // "工作中"闪光（同款 shimmer-speed-200），逐秒变化的数字放在遮罩之外单独渲染。
-  // （试过"整行闪光 + 每秒重挂载"：字形对，但扫光每秒重新起步，视觉跳动，已否。）
-  const liveElapsedText =
-    running && elapsedMs !== undefined && elapsedMs >= 1000 ? formatDuration(elapsedMs) : null;
-
-  const label = running
-    ? elapsedMs !== undefined && elapsedMs >= 1000
-      ? `工作中 ${formatDuration(elapsedMs)}`
-      : "工作中"
-    : durationMs !== undefined
+  // 悬停提示，信息不丢又不堆在行上。运行中的实时数字由 LiveElapsed 单独订阅，
+  // 这里只算静态结束态文案。
+  const label =
+    durationMs !== undefined
       ? `已工作 ${formatDuration(durationMs)}`
       : summary.collapsedCount > 0
         ? `${summary.collapsedCount} 条较早消息`
@@ -287,14 +302,7 @@ const TurnWorkSummary: FC<{
         className="border-border/60 mx-auto -mt-3 w-full max-w-(--thread-max-width) border-b px-2 pb-3"
       >
         <div className="text-muted-foreground flex w-fit cursor-default items-center gap-1.5 rounded-md py-0.5 text-sm">
-          {liveElapsedText ? (
-            <span className="tabular-nums">
-              <span className="shimmer shimmer-speed-200 motion-reduce:animate-none">工作中</span>
-              {` ${liveElapsedText}`}
-            </span>
-          ) : (
-            <span className="tabular-nums shimmer shimmer-speed-200 motion-reduce:animate-none">{label}</span>
-          )}
+          <LiveElapsed running startedAt={startedAt} />
         </div>
       </div>
     );
@@ -322,15 +330,10 @@ const TurnWorkSummary: FC<{
           "focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
         )}
       >
-        {liveElapsedText ? (
-          <span className="tabular-nums">
-            <span className="shimmer shimmer-speed-200 motion-reduce:animate-none">工作中</span>
-            {` ${liveElapsedText}`}
-          </span>
+        {running ? (
+          <LiveElapsed running startedAt={startedAt} />
         ) : (
-          <span className={cn("tabular-nums", running && "shimmer shimmer-speed-200 motion-reduce:animate-none")}>
-            {label}
-          </span>
+          <span className="tabular-nums">{label}</span>
         )}
         {/* 收起时右指、展开时下指：与过程区的高度动画同一时长/缓动（reasoning 同款） */}
         <ChevronDownIcon

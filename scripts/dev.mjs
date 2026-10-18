@@ -70,10 +70,19 @@ function shutdown(code = 0) {
   }, 1500).unref();
 }
 
-async function reachable(url, timeoutMs = 800) {
+/**
+ * 渲染层健康检查：必须真的回一个非空 2xx，而不只是 TCP 连上。
+ *
+ * 僵尸 next-server（父会话消失、写日志抛 EPIPE 后陷入 uncaughtException 循环）
+ * 仍然占着端口、也接受连接，但请求永远不返回；只看 fetch 是否 resolve 会把
+ * 它误判成"可复用"，Electron 加载后就是白屏。
+ */
+async function healthy(url, timeoutMs = 800) {
   try {
-    await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-    return true;
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return false;
+    const body = await res.text();
+    return body.trim().length > 0;
   } catch {
     return false;
   }
@@ -143,11 +152,68 @@ function reclaimStaleRenderer() {
   return killed;
 }
 
+/**
+ * 现有渲染层"能回 HTTP 但不能复用"的判定。
+ *
+ * 典型场景：旧的 dev.mjs 被强杀/终端关闭后，next-server 的 stdout/stderr 管道
+ * 断开，之后每次写日志都抛 EPIPE；Next 把它当 uncaughtException 无限重试，
+ * 端口还在 listen 但请求永远不返回。另一个信号是 next dev 包装进程被 launchd
+ * 收养（ppid=1），说明所属 dev 会话已经不在了。
+ *
+ * 只认 next 系进程，其他服务绝不误伤。
+ */
+function devServerUnusable(port) {
+  let pids = [];
+  try {
+    pids = execFileSync(
+      "lsof",
+      ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"],
+      { encoding: "utf8" },
+    )
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(Number);
+  } catch {
+    return false;
+  }
+
+  const read = (pid, field) => {
+    try {
+      return execFileSync("ps", ["-p", String(pid), "-o", field], {
+        encoding: "utf8",
+      }).trim();
+    } catch {
+      return "";
+    }
+  };
+
+  for (const pid of pids) {
+    if (!/next-server|next dev/.test(read(pid, "command="))) continue;
+
+    // ① 输出管道已断（只剩 ->(none)）
+    try {
+      const fds = execFileSync("lsof", ["-p", String(pid), "-a", "-d", "1,2"], {
+        encoding: "utf8",
+      });
+      if (fds.includes("->(none)")) return true;
+    } catch {}
+
+    // ② 所属 dev 会话已退出：包装进程被 launchd 收养
+    const ppid = Number(read(pid, "ppid="));
+    if (ppid === 1) return true;
+    if (ppid > 1 && /next dev|next-server/.test(read(ppid, "command="))) {
+      if (Number(read(ppid, "ppid=")) === 1) return true;
+    }
+  }
+
+  return false;
+}
+
 async function waitForUrl(url, label, timeoutMs = 90_000) {
   const deadline = Date.now() + timeoutMs;
   let logged = false;
   while (Date.now() < deadline) {
-    if (await reachable(url)) return true;
+    if (await healthy(url)) return true;
     if (!logged) {
       log(`等待 ${label} ${url} 就绪…（首次编译较慢）`);
       logged = true;
@@ -216,6 +282,9 @@ async function restartElectron() {
 /* ------------------------------ 0) 前置 ------------------------------ */
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
+// 终端被直接关掉时也要收掉子进程，否则 next dev 会被 launchd 收养、
+// 输出管道断开后变成 EPIPE 僵尸，下一次 bun dev 会误复用它。
+process.on("SIGHUP", () => shutdown(0));
 
 if (!existsSync(join(electronDir, "dist", "main.cjs"))) {
   log("dist/main.cjs 尚未构建：先跑一次构建");
@@ -255,17 +324,21 @@ if (useBinary) {
 }
 
 /* ---------------------------- 2) 渲染层 next dev ---------------------------- */
-if (await reachable(devUrl)) {
+const rendererPort = new URL(devUrl).port || "80";
+// 探测不通 ≠ 没有服务在跑：先给一次长探测（另一端可能正在启动，800ms 探测
+// 会误判）；通了还要再排除"端口在听但进程已坏"的孤儿/断管僵尸，否则会复用
+// 一个永远不回包的服务，Electron 加载后就是白屏。
+const responds = (await healthy(devUrl)) || (await healthy(devUrl, 3_000));
+if (responds && !devServerUnusable(rendererPort)) {
   log(`渲染层：复用已在运行的 ${devUrl}`);
 } else {
-  // 探测不通 ≠ 没有服务在跑：先给一次长探测（另一端可能正在启动，800ms 探测
-  // 会误判），仍不通才按"僵死残留"回收（见 reclaimStaleRenderer）
-  if (!(await reachable(devUrl, 3_000))) {
-    const reclaimed = reclaimStaleRenderer();
-    if (reclaimed.length > 0) {
-      log(`渲染层：回收僵死进程 ${reclaimed.join("、")}，重新启动`);
-      await new Promise((r) => setTimeout(r, 500));
-    }
+  if (responds) {
+    log("渲染层：现有 next dev 已失去父会话/输出管道，回收后重启");
+  }
+  const reclaimed = reclaimStaleRenderer();
+  if (reclaimed.length > 0) {
+    log(`渲染层：回收僵死/孤儿进程 ${reclaimed.join("、")}，重新启动`);
+    await new Promise((r) => setTimeout(r, 500));
   }
   track(
     spawn("bun", ["run", "--filter", "desktop", "dev"], { cwd: root, stdio: "inherit" }),

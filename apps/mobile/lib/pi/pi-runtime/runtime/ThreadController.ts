@@ -53,7 +53,10 @@ import {
 } from "./threadState";
 import { errorText } from "../utils";
 import { isKnownPiClientEventType } from "../eventTypes";
-import { projectPiThreadMessagesShared } from "./messageProjection";
+import {
+  projectPiThreadMessagesIncremental,
+  type PiProjectionCache,
+} from "./messageProjection";
 import {
   responseForApproval,
   responseForInterrupt,
@@ -367,6 +370,8 @@ export class PiThreadController implements PiThreadControllerLike {
   private state: PiThreadState;
   private stateSnapshot: PiThreadState;
   private projectedMessages: readonly ThreadMessageLike[] = [];
+  /** 上一次投影的输入/输出快照：增量投影只重算变化的组。 */
+  private projectionCache: PiProjectionCache | null = null;
   private messageRepository = ExportedMessageRepository.fromArray([]);
   private version = 0;
   private readonly allListeners = new Set<() => void>();
@@ -477,6 +482,8 @@ export class PiThreadController implements PiThreadControllerLike {
   public dispose() {
     // React StrictMode can detach then resubscribe the same controller.
     this.clearDisconnectTimer();
+    // 断开期间输入可能变过；丢掉增量缓存，下次投影走全量以确保一致。
+    this.projectionCache = null;
     this.allListeners.clear();
     this.metadataListeners.clear();
     this.messageListeners.clear();
@@ -1205,18 +1212,27 @@ export class PiThreadController implements PiThreadControllerLike {
     this.optimisticUserMessages.push(...remaining);
   }
 
-  private projectMessages() {
-    return withIdPins(this.idPins, () =>
-      projectPiThreadMessagesShared(
+  private projectMessages(): readonly ThreadMessageLike[] {
+    // streamingMessageIndex 是 state.messages 的下标；投影输入前面还拼了
+    // olderMessages，这里换算成绝对下标。
+    const streamingMessageIndex =
+      this.state.streamingMessageIndex === undefined
+        ? undefined
+        : this.state.olderMessages.length + this.state.streamingMessageIndex;
+    const { output, cache } = withIdPins(this.idPins, () =>
+      projectPiThreadMessagesIncremental(
         {
           messages: this.projectedInputMessages(),
           toolExecutions: this.state.toolExecutions,
           runStatus: this.state.runStatus,
           hostUiRequests: this.state.hostUiRequests,
+          streamingMessageIndex,
         },
-        this.projectedMessages,
+        this.projectionCache,
       ),
     );
+    this.projectionCache = cache;
+    return output;
   }
 
   private recomputeProjectedMessagesAndNotify() {

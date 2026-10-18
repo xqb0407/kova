@@ -170,6 +170,32 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
     let compositionEndedAt = 0;
     let composingEnterSeen = false;
 
+    // 光标上报（触发 @ / 弹层检测）从输入事件里挪出去并每帧合并一次。
+    // 点击/拖选都会改选区，而插件 setCursorPosition 是 React state 更新：
+    // 同步跑会算进 pointer 事件的 INP processing（实测 composer 点击 116ms）。
+    // caret 由 CodeMirror 自己先画；弹层检测晚一帧无感，连续移动还能合并。
+    let cursorFrame: number | null = null;
+    let cursorTimer: ReturnType<typeof setTimeout> | null = null;
+    let cursorPending = -1;
+    const reportCursor = (pos: number) => {
+      cursorPending = pos;
+      if (cursorFrame !== null || cursorTimer !== null) return;
+      cursorFrame = requestAnimationFrame(() => {
+        cursorFrame = null;
+        // rAF 仍在绘制前：直接跑插件检测/React 更新会把 caret 与焦点反馈一起
+        // 推迟（trace 里点击后紧跟的 83ms React 任务就是它）。再让出一拍，
+        // 先让点击这一帧完成绘制，弹层检测晚一个任务执行。
+        cursorTimer = setTimeout(() => {
+          cursorTimer = null;
+          if (destroyed) return;
+          const reg = latestRef.current.registry;
+          if (!reg) return;
+          const pending = cursorPending;
+          for (const plugin of reg.getPlugins()) plugin.setCursorPosition(pending);
+        }, 0);
+      });
+    };
+
     const anyKeyHandler = (event: KeyboardEvent): boolean => {
       if (event.isComposing || event.keyCode === 229) {
         if (event.key === "Enter") composingEnterSeen = true;
@@ -292,9 +318,7 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
             }
             // 组合期间不上报光标（与 textarea 路径一致，避免弹层随拼音闪动）
             if (!update.view.composing) {
-              const reg = latestRef.current.registry;
-              const pos = update.state.selection.main.head;
-              if (reg) for (const plugin of reg.getPlugins()) plugin.setCursorPosition(pos);
+              reportCursor(update.state.selection.main.head);
             }
           }),
           EditorView.domEventHandlers({
@@ -379,6 +403,8 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
 
     return () => {
       destroyed = true;
+      if (cursorFrame !== null) cancelAnimationFrame(cursorFrame);
+      if (cursorTimer !== null) clearTimeout(cursorTimer);
       composerViews.delete(handle);
       view.destroy();
       viewRef.current = null;

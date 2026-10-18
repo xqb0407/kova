@@ -1228,6 +1228,10 @@ export type PiImagePartData = {
   toolName?: string;
   /** 可访问名：结果首个文本块首行（≤120 字符） */
   alt?: string;
+  /** 原图 intrinsic 尺寸（投影时从文件头解析）：渲染前按比例占位，避免
+   *  图片落图时把下方内容顶开（CLS）。解析失败时缺省。 */
+  width?: number;
+  height?: number;
 };
 
 export async function piRequest<T extends PiResponse>(

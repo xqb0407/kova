@@ -42,6 +42,9 @@ export type GitStatusInfo = {
   files: GitFileEntry[];
   dirty: number;
   lastCommit: GitLastCommit | null;
+  /** 目录不可用时由主进程返回的空状态：cwd = 会话目录不存在，workspace = 当前
+   *  workspace 目录不存在。UI 据此区分"不是 git 仓库"与"目录没了"。 */
+  missing?: "cwd" | "workspace";
 };
 
 export type GitDiffFile = GitFileEntry & {
@@ -86,6 +89,8 @@ export type GitErrorCode =
   | "no-git"
   | "not-repo"
   | "cwd-not-allowed"
+  | "cwd-missing"
+  | "workspace-missing"
   | "no-checkpoint"
   | "apply-conflict"
   | "web";
@@ -101,6 +106,8 @@ export function gitErrorCode(err: unknown): GitErrorCode | null {
     "no-git",
     "not-repo",
     "cwd-not-allowed",
+    "cwd-missing",
+    "workspace-missing",
     "no-checkpoint",
     "apply-conflict",
   ] as const) {
@@ -111,7 +118,13 @@ export function gitErrorCode(err: unknown): GitErrorCode | null {
 
 /** not-repo 归一为 null（UI 的"非仓库"态）；其余错误继续抛 */
 function swallowNotRepo(err: unknown): null {
-  if (gitErrorCode(err) === "not-repo" || gitErrorCode(err) === "no-git") {
+  const code = gitErrorCode(err);
+  if (
+    code === "not-repo" ||
+    code === "no-git" ||
+    code === "cwd-missing" ||
+    code === "workspace-missing"
+  ) {
     return null;
   }
   throw err;
@@ -219,7 +232,13 @@ export async function gitCheckpointCreate(
     return r.hash;
   } catch (err) {
     const code = gitErrorCode(err);
-    if (code === "not-repo" || code === "no-git" || code === "cwd-not-allowed") {
+    if (
+      code === "not-repo" ||
+      code === "no-git" ||
+      code === "cwd-not-allowed" ||
+      code === "cwd-missing" ||
+      code === "workspace-missing"
+    ) {
       return null;
     }
     throw err;

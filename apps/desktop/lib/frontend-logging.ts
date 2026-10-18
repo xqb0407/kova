@@ -84,7 +84,20 @@ export function installFrontendLogging(): void {
     send("error", formatArgs(args));
   };
 
+  let resizeObserverNoiseLogged = false;
   window.addEventListener("error", (event) => {
+    // ResizeObserver 的循环通知是浏览器规范行为：回调里改了布局导致同一帧
+    // 再次 resize，浏览器已截断循环，不是应用异常。默认会刷 ERROR 并触发
+    // Next dev 浮层；这里折叠掉，仅每个会话留一条 warn 备查。
+    if (event.message?.includes("ResizeObserver loop")) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!resizeObserverNoiseLogged) {
+        resizeObserverNoiseLogged = true;
+        send("warn", "ResizeObserver 布局循环（浏览器已截断，后续同类不再记录）");
+      }
+      return;
+    }
     send(
       "error",
       `uncaught: ${event.message} @ ${event.filename}:${event.lineno}:${event.colno}`,

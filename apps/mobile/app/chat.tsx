@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Animated,
   Platform,
   Pressable,
@@ -9,7 +10,7 @@ import {
   type LayoutChangeEvent,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router as appRouter, useRouter } from "expo-router";
+import { router as appRouter, useLocalSearchParams, useRouter } from "expo-router";
 import { useAui, useAuiState } from "@assistant-ui/react-native";
 import {
   BotIcon,
@@ -71,6 +72,7 @@ import {
   subscribeSessionPrefs,
 } from "@/lib/pi/pi-thread-adapter";
 import { refreshPiModels, usePiModels } from "@/lib/pi/pi-models";
+import { isThreadSwitchPending } from "@/lib/pi/thread-switch";
 import { usePiHistory } from "@/lib/pi/pi-runtime";
 import { releaseGitStatus } from "@/lib/pi/pi-git";
 import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
@@ -186,13 +188,39 @@ export default function ChatScreen() {
   const { scheme } = useTheme();
   const glass = glassControl(scheme);
   const meta = useComposerMeta();
-  const title = useChatTitle();
+
+  // 列表页 push 时带过来的目标会话：switchToThread 要等运行时挂载完才更新
+  // mainThreadId，这期间页面已经过来了、内容却还指着上一个会话。这里先按
+  // 目标 id 渲染目标会话的壳，切换完成后自然切到真正的 Thread。
+  const params = useLocalSearchParams<{
+    thread?: string;
+    fresh?: string;
+    from?: string;
+  }>();
+  const mainThreadId = useAuiState((st) => st.threads.mainThreadId);
+  const targetThreadId =
+    typeof params.thread === "string" ? params.thread : undefined;
+  const switching = isThreadSwitchPending(params, mainThreadId);
+  // 切换失败/卡住时兜底：超过 3s 不再拦着，让当前实际会话显示出来
+  const [switchTimedOut, setSwitchTimedOut] = useState(false);
+  useEffect(() => {
+    if (!switching) {
+      setSwitchTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setSwitchTimedOut(true), 3000);
+    return () => clearTimeout(timer);
+  }, [switching]);
+  const showSwitching = switching && !switchTimedOut;
+
+  const title = useChatTitle(showSwitching ? targetThreadId : mainThreadId);
   // 分页窗（§6）：列表上沿的「加载更多」——引用只在 hasMore/loading 翻转时变，
   // 不会把 Thread 元素的 memo 打散。
   const history = usePiHistory();
   // 用户发过言（线程里有消息）后顶栏中间就交还给标题：mode 分段只在「还没开口
   // 的新对话」占位——一旦聊起来，切档请走胶囊，导航栏该给身份感而不是开关。
   const hasMessages = useAuiState((st) => st.thread.messages.length > 0);
+  const showHasMessages = showSwitching ? false : hasMessages;
 
   // Thread 元素 memo 在 bar 上：ChatScreen 因开抽屉/水合通知重渲时，bar 没变
   // 就不给 Thread 新元素，整棵消息树跳过这次父驱动的重渲（树自己该收的 store
@@ -247,7 +275,7 @@ export default function ChatScreen() {
               标题/改名到了再跟随刷新。绝对定位铺满整行来居中——跟着返回键的
               宽度排的话，返回键一宽，内容就整体偏左。 */}
           <View style={styles.navCenter}>
-            {hasMessages || title ? (
+            {showHasMessages || title ? (
               <Text numberOfLines={1} style={s.navTitleText}>
                 {title || "新对话"}
               </Text>
@@ -264,7 +292,7 @@ export default function ChatScreen() {
             ="handled" 管点击（没被控件接住的空白 tap 由列表兜底收起键盘），
             keyboardDismissMode="interactive" 管拖动。外层那个包裹当初只是为了
             空态，而空态现在由 Welcome 自己收（它不在滚动容器里，见下）。 */}
-        {thread}
+        {showSwitching ? <SwitchingThread /> : thread}
       </SafeAreaView>
 
       {/* 抽屉挂在页面根上：absoluteFill 是相对定位，放进 footer 里就只剩输入条
@@ -276,13 +304,36 @@ export default function ChatScreen() {
 
 /** 顶栏标题：优先实时标题表（智能标题/改名即时生效），
  *  首次进会话还没有任何标题事件时回落列表快照。两边都空说明确实还没有标题，
- *  这时顶栏中间那格让给模式切换，所以这里直接返回空串而不是「新对话」。 */
-function useChatTitle() {
-  const threadId = useAuiState((st) => st.threads.mainThreadId);
+ *  这时顶栏中间那格让给模式切换，所以这里直接返回空串而不是「新对话」。
+ *  传入目标会话 id 时，切换中的顶栏也能提前显示目标标题。 */
+function useChatTitle(threadId: string | undefined) {
   const items = useAuiState((st) => st.threads.threadItems);
   const live = useThreadTitle(threadId);
-  const snapshot = items.find((item) => item.id === threadId)?.title;
+  const snapshot = threadId
+    ? items.find((item) => item.id === threadId)?.title
+    : undefined;
   return (live ?? snapshot ?? "").trim();
+}
+
+/** 会话切换中的壳：目标页面先到，消息等 switchToThread 完成、运行时挂载
+ *  后再渲染（历史加载本身还有 Thread 内的骨架态）。 */
+function SwitchingThread() {
+  const { colors, space } = useTheme();
+  return (
+    <View
+      style={{
+        flex: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        gap: space(3),
+      }}
+    >
+      <ActivityIndicator size="small" color={colors.mutedForeground} />
+      <Text style={{ color: colors.mutedForeground, fontSize: 13 }}>
+        正在打开会话…
+      </Text>
+    </View>
+  );
 }
 
 /** 底部那一排选择器：合并后的「模型 · 思考」与「权限」两枚。
