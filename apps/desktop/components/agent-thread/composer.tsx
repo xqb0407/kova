@@ -1023,21 +1023,6 @@ const ComposerAction: FC<{
         <DesignThemePicker />
       </div>
       <div className="flex items-center gap-1.5">
-        {/* 提示词优化：草稿交给会话模型 one-shot 改写后回填（技能/子智能体
-            芯片原文不动，保护在 sidecar）；空草稿/无模型/进行中禁用 */}
-        <TooltipIconButton
-          tooltip="优化提示词（保留技能/智能体芯片）"
-          side="bottom"
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="aui-composer-optimize text-muted-foreground hover:text-foreground size-7 rounded-lg"
-          aria-label="Optimize prompt"
-          disabled={!canOptimize}
-          onClick={() => void onOptimize()}
-        >
-          <SparklesIcon className="aui-composer-optimize-icon size-4" />
-        </TooltipIconButton>
         <ModelPicker />
         {/* 深度思考档位选择：模型右侧、发送按钮左侧，点开下拉选强度 */}
         {!inAskMode && <ThinkingPicker />}
@@ -1074,6 +1059,23 @@ const ComposerAction: FC<{
             </ComposerPrimitive.StopDictation>
           </AuiIf>
         </AuiIf>
+        {/* 提示词优化：草稿交给会话模型 one-shot 改写后回填（技能/子智能体
+            芯片原文不动，保护在 sidecar）；空草稿/无模型/进行中禁用。
+            位置紧邻发送键：右侧簇以「读数（模型/思考/占用）｜动作（优化/
+            发送）」分组，优化与发送同属动作，不再夹在读数之间 */}
+        <TooltipIconButton
+          tooltip="优化提示词（保留技能/智能体芯片）"
+          side="bottom"
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="aui-composer-optimize text-muted-foreground hover:text-foreground size-7 rounded-lg"
+          aria-label="Optimize prompt"
+          disabled={!canOptimize}
+          onClick={() => void onOptimize()}
+        >
+          <SparklesIcon className="aui-composer-optimize-icon size-4" />
+        </TooltipIconButton>
         <AdaptiveSendButton blocked={optimizing} />
       </div>
     </div>

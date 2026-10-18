@@ -34,6 +34,13 @@ import { Separator } from "../ui/separator";
  * 直更，首挂/切线程水合拉一次，常显占用与距自动压缩），popover 打开才
  * 拉完整 context_info（分项/命中率/压缩代数不在推送里）。
  * 附「立即压缩」按钮：走 compact 命令手动触发 compaction（运行中会被拒绝）。
+ *
+ * 版式约定（同一事实只陈述一次，阅读路径从上到下收窄）：
+ *   - 摘要区：模型名 + 占用百分比 + 占用条 + 图例行（绝对值 / 阈值与余量），
+ *     总占用、容量、阈值、余量只在这里出现；
+ *   - 构成表与缓存行共用同一条 Tokens/占比 右对齐数值轨道；
+ *   - 颜色只用于占用条的分区（行首圆点与条同色同序），缓存/状态保持灰阶；
+ *   - 页脚只留压缩状态与操作（阈值信息不再重复）。
  */
 
 /** 占用圆环：18px 描边环，弧长按 已用/容量 比例，颜色随占用升温 */
@@ -66,7 +73,11 @@ const UsageRing: FC<{ pct: number | null }> = ({ pct }) => {
         strokeLinecap="round"
         strokeDasharray={`${f * c} ${c}`}
         transform="rotate(-90 9 9)"
-        className={color}
+        // 弧长变化（每轮收尾镜像直更）平滑生长；系统降级动效时直接切换
+        className={cn(
+          color,
+          "transition-[stroke-dasharray] duration-500 ease-out motion-reduce:transition-none",
+        )}
       />
     </svg>
   );
@@ -74,6 +85,63 @@ const UsageRing: FC<{ pct: number | null }> = ({ pct }) => {
 
 const pctOf = (n: number, total: number): string =>
   total > 0 ? `${((n / total) * 100).toFixed(1)}%` : "—";
+
+/* ------------------------------ 滚动数字 ------------------------------ */
+
+/** 数字窗口的基线补偿（em）：数字位窗口是 overflow:hidden 的行内块，CSS 规定
+ *  这种盒的基线落在盒底；把盒底对齐正文基线，窗口内的数字才与相邻文字齐平。
+ *  补偿量由字体度量推出（盒顶到基线 = (1em − (A+D))/2 + A），canvas 量一次
+ *  当前界面字体即可，跨字号按 em 等比——不写死经验值，换字体/平台自然跟着变。 */
+function measureDigitBaselineShiftEm(): number {
+  const FALLBACK = 0.15; // 量不到（SSR / 无 canvas）时的保守值
+  if (typeof document === "undefined") return FALLBACK;
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (!ctx) return FALLBACK;
+  const family = getComputedStyle(document.body).fontFamily;
+  const size = 100;
+  ctx.font = `${size}px ${family || "sans-serif"}`;
+  const m = ctx.measureText("0");
+  const ascent = m.fontBoundingBoxAscent;
+  const descent = m.fontBoundingBoxDescent;
+  if (!Number.isFinite(ascent) || !Number.isFinite(descent)) return FALLBACK;
+  const baselineFromTop = (size - (ascent + descent)) / 2 + ascent;
+  return (size - baselineFromTop) / size;
+}
+
+const DIGIT_BASELINE_SHIFT_EM = measureDigitBaselineShiftEm();
+const DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+
+/** 逐位滚动数字：按字符拆开，数字位各占一个 1em 高的裁切窗口，窗口内 0-9
+ *  竖排，值变化时整列滚到目标数字（纯 CSS transform 过渡，无动画库依赖；
+ *  prefers-reduced-motion 下不动）。用在会跳变的读数上——弹层打开回填、
+ *  手动压缩后重算，滚动让"数据刷新"可感知而不是硬切；小数点/千分位/单位
+ *  等非数字字符原样静态渲染。 */
+const RollingDigits: FC<{ text: string }> = ({ text }) => (
+  <>
+    {Array.from(text).map((ch, i) =>
+      ch >= "0" && ch <= "9" ? (
+        <span
+          key={i}
+          className="inline-block h-[1em] overflow-hidden"
+          style={{ verticalAlign: `${-DIGIT_BASELINE_SHIFT_EM}em` }}
+        >
+          <span
+            className="block transition-transform duration-300 ease-out motion-reduce:transition-none"
+            style={{ transform: `translateY(-${Number(ch)}em)` }}
+          >
+            {DIGITS.map((d) => (
+              <span key={d} className="block h-[1em] text-center leading-[1em]">
+                {d}
+              </span>
+            ))}
+          </span>
+        </span>
+      ) : (
+        <span key={i}>{ch}</span>
+      ),
+    )}
+  </>
+);
 
 type MeterRow = { label: string; tokens: number; dotClass: string };
 
@@ -167,8 +235,13 @@ export const ContextButton: FC = () => {
   const needsCompact = info
     ? info.needsCompaction
     : threshold > 0 && used >= threshold;
-  const toCompactPct =
-    threshold > 0 ? Math.max(0, Math.round(((threshold - used) / threshold) * 100)) : null;
+  // 距阈值的余量直接用 token 表示：百分比容易被读成"阈值是 90%"
+  const remainingTokens =
+    threshold > 0 ? Math.max(0, threshold - used) : null;
+  const thresholdPct =
+    capacity > 0 && threshold > 0
+      ? Math.round((threshold / capacity) * 100)
+      : null;
   // 占用条/分项行按「请求总占用的分区」呈现（三段相加 = usedTokens，与占用环、
   // 压缩守卫、阈值竖线同一口径；直接相加会把系统提示词/工具重复计一遍）
   const parts = info ? contextTokenBreakdown(info) : null;
@@ -180,9 +253,9 @@ export const ContextButton: FC = () => {
     : false;
   const rows: MeterRow[] = parts
     ? [
-        { label: "消息占用", tokens: parts.message, dotClass: "bg-sky-500" },
-        { label: "系统提示词占用", tokens: parts.system, dotClass: "bg-violet-500" },
-        { label: "工具占用", tokens: parts.tool, dotClass: "bg-amber-500" },
+        { label: "消息", tokens: parts.message, dotClass: "bg-sky-500" },
+        { label: "系统提示词", tokens: parts.system, dotClass: "bg-violet-500" },
+        { label: "工具调用", tokens: parts.tool, dotClass: "bg-amber-500" },
       ]
     : [];
 
@@ -193,246 +266,310 @@ export const ContextButton: FC = () => {
           <button
             type="button"
             data-slot="aui-composer-context"
-            aria-label="Context usage"
+            aria-label={
+              usedPct === null
+                ? "Context usage"
+                : `Context usage ${(usedPct * 100).toFixed(1)}%`
+            }
             title={
               usedPct === null
                 ? "上下文占用"
-                : toCompactPct === null
-                  ? `上下文占用 ${(usedPct * 100).toFixed(1)}%`
-                  : `上下文占用 ${(usedPct * 100).toFixed(1)}% · ${
-                      toCompactPct > 0 ? `距自动压缩 ${toCompactPct}%` : "已越过自动压缩阈值"
-                    }`
+                : `上下文占用 ${(usedPct * 100).toFixed(1)}%${
+                    needsCompact
+                      ? " · 已越过自动压缩阈值"
+                      : remainingTokens !== null
+                        ? ` · 距阈值 ${fmtTokens(remainingTokens)}`
+                        : ""
+                  }`
             }
-            className={cn(
-              "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-full px-2 text-sm text-muted-foreground transition-colors hover:text-foreground @max-2xl:px-1.5",
-              needsCompact && "text-amber-600 dark:text-amber-400",
-            )}
+            className="hover:bg-muted inline-flex h-7 items-center rounded-full px-1.5 transition-colors"
           >
+            {/* 只留占用环：弧长/颜色已表意，精确读数在 title 与弹层里 */}
             <UsageRing pct={usedPct} />
-            {/* 窄栏只留占用环（弧长/颜色已表意）：百分比读数收进 title 与弹层 */}
-            {usedPct !== null && (
-              <span className="tabular-nums @max-2xl:hidden">{Math.round(usedPct * 100)}%</span>
-            )}
           </button>
         }
       />
-      <PopoverContent align="end" side="top" className="w-84">
-        <div className="flex flex-col gap-3 p-1">
-          {/* 头部：模型 + 容量 */}
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="truncate text-sm font-medium">
-              {info?.model?.name ?? "上下文"}
-            </span>
-            {info && (
-              <span className="text-muted-foreground shrink-0 text-xs">
-                容量 {fmtTokens(info.contextWindow)}
-              </span>
-            )}
-          </div>
-
+      <PopoverContent align="end" side="top" className="w-88 border-border/60">
+        <div className="flex flex-col gap-3">
           {info && parts ? (
             <>
-              {/* 占用条：三段堆叠（= 请求总占用的分区，总长恒等于占用环口径），
-                  竖线为压缩阈值位置 */}
-              <div className="bg-muted relative h-2 w-full overflow-hidden rounded-full">
-                <div className="absolute inset-0 flex">
-                  <div
-                    className="bg-sky-500"
-                    style={{ width: `${(parts.message / Math.max(1, info.contextWindow)) * 100}%` }}
-                  />
-                  <div
-                    className="bg-violet-500"
-                    style={{ width: `${(parts.system / Math.max(1, info.contextWindow)) * 100}%` }}
-                  />
-                  <div
-                    className="bg-amber-500"
-                    style={{ width: `${(parts.tool / Math.max(1, info.contextWindow)) * 100}%` }}
-                  />
-                </div>
-                {info.hardLimit > 0 && (
-                  <div
-                    className="bg-foreground/70 absolute top-0 h-full w-px"
-                    style={{ left: `${(info.hardLimit / Math.max(1, info.contextWindow)) * 100}%` }}
-                  />
-                )}
-              </div>
-
-              <div className="flex flex-col gap-2 text-sm">
-                {rows.map((r) => (
-                  <div key={r.label} className="flex items-center gap-2">
-                    <span className={cn("size-2 shrink-0 rounded-full", r.dotClass)} />
-                    <span className="text-muted-foreground flex-1">{r.label}</span>
-                    {/* <span className="tabular-nums">{fmtTokens(r.tokens)}</span> */}
-                    <span className="text-muted-foreground w-14 text-right tabular-nums">
-                      {pctOf(r.tokens, info.contextWindow)}
-                    </span>
-                  </div>
-                ))}
-                {/* 合计行：三段之和 = 请求总占用（占用环/守卫/阈值竖线同一口径），
-                    给占用条一个可对线读的读数，避免拿彩条长度当唯一依据 */}
-                <div className="flex items-center gap-2 border-t pt-2">
-                  <span className="size-2 shrink-0" />
-                  <span className="flex-1 font-medium">合计（请求总占用）</span>
-                  <span className="w-14 text-right tabular-nums">
-                    {pctOf(parts.used, info.contextWindow)}
+              {/* 摘要区：模型名 + 占用百分比 + 占用条 + 图例行。总占用/容量/
+                  阈值/余量只在这里出现一次，下方分项与页脚不再重复总量 */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-sm font-medium text-foreground">
+                    {info.model?.name ?? "上下文"}
+                  </span>
+                  {/* 容量是模型规格（不随会话变化），与模型名同行；用量读法在
+                      图例行——容量全panel只出现这一次 */}
+                  <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+                    容量 {fmtTokens(info.contextWindow)}
                   </span>
                 </div>
-                {/* cacheRead+cacheWrite 全零 = 该 provider 根本不报缓存字段（OpenAI 兼容
-                    端点常不回传 prompt_tokens_details.cached_tokens），与真实 0% 区分展示 */}
+                {/* 当前占用行：百分比为主读数，绝对值为辅（两者都只此一处） */}
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-lg leading-none font-semibold text-foreground tabular-nums">
+                    <RollingDigits text={pctOf(parts.used, info.contextWindow)} />
+                  </span>
+                  <span className="text-muted-foreground/70 text-xs tabular-nums">
+                    已用 <RollingDigits text={parts.used.toLocaleString()} /> tokens
+                  </span>
+                </div>
+                {/* 占用条：三段堆叠（= 请求总占用的分区），竖线为压缩阈值位置 */}
                 <div
-                  className="flex items-center gap-2"
-                  title={
-                    cacheReporting
-                      ? "cacheRead / (input + cacheRead + cacheWrite)，全历史累计"
-                      : "该端点不上报缓存字段（cacheRead/cacheWrite 恒 0），命中率无法计算"
-                  }
+                  className="bg-muted relative h-2 w-full overflow-hidden rounded-full"
+                  title={`请求总占用 ${pctOf(parts.used, info.contextWindow)} · 自动压缩阈值 ${fmtTokens(info.hardLimit)}`}
                 >
-                  <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
-                  <span className="text-muted-foreground flex-1">
-                    平均缓存命中率
-                    {/* 累计值被冷启动与重建轮稀释：短窗读数才看得到稳态。
-                        provider 根本不上报缓存字段时（主值显示 "-"）不附短窗，
-                        否则会出现"近 N 轮 0.0%"与"-"打架的读数 */}
-                    {info.cacheMisses?.recent?.hitRate != null &&
-                      cacheReporting && (
-                        <span className="text-muted-foreground/70">
-                          （近 {info.cacheMisses.recent.requests} 轮{" "}
-                          {(info.cacheMisses.recent.hitRate * 100).toFixed(1)}%）
-                        </span>
-                      )}
+                  {/* 段宽/阈值线随数据刷新平滑过渡（打开回填、压缩后重算），
+                      系统降级动效时直接切换 */}
+                  <div className="absolute inset-0 flex">
+                    <div
+                      className="bg-sky-500 transition-[width] duration-500 ease-out motion-reduce:transition-none"
+                      style={{ width: `${(parts.message / Math.max(1, info.contextWindow)) * 100}%` }}
+                    />
+                    <div
+                      className="bg-violet-500 transition-[width] duration-500 ease-out motion-reduce:transition-none"
+                      style={{ width: `${(parts.system / Math.max(1, info.contextWindow)) * 100}%` }}
+                    />
+                    <div
+                      className="bg-amber-500 transition-[width] duration-500 ease-out motion-reduce:transition-none"
+                      style={{ width: `${(parts.tool / Math.max(1, info.contextWindow)) * 100}%` }}
+                    />
+                  </div>
+                  {info.hardLimit > 0 && (
+                    <div
+                      className="bg-foreground/50 absolute top-0 h-full w-px"
+                      style={{ left: `${(info.hardLimit / Math.max(1, info.contextWindow)) * 100}%` }}
+                    />
+                  )}
+                </div>
+                {/* 图例行：阈值位置 | 余量（同一行分列在占用条两端下方） */}
+                <div className="text-muted-foreground/70 flex items-center justify-between gap-2 text-[11px] tabular-nums">
+                  <span title={`自动压缩阈值 ${fmtTokens(info.hardLimit)} tokens`}>
+                    {info.hardLimit <= 0
+                      ? "自动压缩阈值 —"
+                      : `自动压缩 ${
+                          thresholdPct !== null
+                            ? `${thresholdPct}%`
+                            : fmtTokens(info.hardLimit)
+                        }`}
                   </span>
                   <span
                     className={cn(
-                      "w-14 text-right text-xs tabular-nums",
-                      !cacheReporting && "text-muted-foreground",
+                      info.needsCompaction && "text-amber-600 dark:text-amber-400",
                     )}
                   >
-                    {info.cacheHitRate === null || !cacheReporting
-                      ? "-"
-                      : `${(info.cacheHitRate * 100).toFixed(1)}%`}
+                    {info.needsCompaction ? (
+                      "已越过自动压缩阈值"
+                    ) : remainingTokens !== null ? (
+                      <>
+                        距阈值 <RollingDigits text={fmtTokens(remainingTokens)} />
+                      </>
+                    ) : (
+                      ""
+                    )}
                   </span>
                 </div>
-                {/* 缓存重算（pi 口径）：上一轮 prompt 里没被缓存读到的 token 量——
-                    "input 大"分不清新增内容与重算，这个数才是真多付的账。
-                    端点不上报缓存字段（cacheRead/cacheWrite 恒 0）时显示 "-"：
-                    此时"重算 0"是假读数，我们根本没有数据可判。 */}
-                {info.cacheMisses?.missedTokens != null ? (
-                  cacheReporting ? (
+              </div>
+
+              {/* 构成表：三段与占用条同色同序；Tokens/占比两列右对齐，
+                  与下方缓存行数值同轨（总量已由摘要区承载，不再设合计行） */}
+              <div className="flex flex-col gap-1.5 text-sm">
+                <div className="text-muted-foreground/60 flex items-center gap-2 text-[11px] font-medium tracking-wide">
+                  <span className="size-1.5 shrink-0" />
+                  <span className="flex-1">占用构成</span>
+                  <span className="w-14 text-right">Tokens</span>
+                  <span className="w-12 text-right">占比</span>
+                </div>
+                {rows.map((r) => (
+                  <div key={r.label} className="flex items-center gap-2">
+                    <span className={cn("size-1.5 shrink-0 rounded-full", r.dotClass)} />
+                    <span className="text-muted-foreground flex-1 text-xs">{r.label}</span>
+                    <span className="text-foreground/80 w-14 text-right text-xs tabular-nums">
+                      <RollingDigits text={r.tokens.toLocaleString()} />
+                    </span>
+                    <span className="text-foreground/80 w-12 text-right text-xs tabular-nums">
+                      <RollingDigits text={pctOf(r.tokens, info.contextWindow)} />
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* 缓存：与上表数值同轨（百分比贴同一条右基准线）；行首留空点
+                  保持缩进对齐（不占条分区，因此不配色）。端点不上报缓存字段时
+                  整段不占位，只在页脚状态里带一句「缓存未上报」 */}
+              {cacheReporting ? (
+                <div className="border-border/40 flex flex-col gap-1.5 border-t pt-2.5 text-sm">
+                  <div
+                    className="flex items-center gap-2"
+                    title={`cacheRead / (input + cacheRead + cacheWrite)，全历史累计${
+                      info.cacheMisses?.recent?.hitRate != null
+                        ? `；近 ${info.cacheMisses.recent.requests} 轮 ${(
+                            info.cacheMisses.recent.hitRate * 100
+                          ).toFixed(1)}%`
+                        : ""
+                    }`}
+                  >
+                    <span className="size-1.5 shrink-0" />
+                    <span className="text-muted-foreground flex-1 text-xs">缓存命中率</span>
+                    <span className="text-foreground/80 w-12 text-right text-xs tabular-nums">
+                      {info.cacheHitRate === null ? (
+                        "-"
+                      ) : (
+                        <RollingDigits
+                          text={`${(info.cacheHitRate * 100).toFixed(1)}%`}
+                        />
+                      )}
+                    </span>
+                  </div>
+                  {/* 缓存重算（pi 口径）：上一轮 prompt 里没被缓存读到的 token 量 */}
+                  {info.cacheMisses?.missedTokens != null ? (
                     <div
                       className="flex items-center gap-2"
                       title={`重算量 = 上一轮 prompt 里未被缓存读到的部分（地板 1024 token）。最近一次：${
                         cacheMissCause(info.cacheMisses?.lastMiss) ?? "无"
                       }`}
                     >
-                      <span className="size-2 shrink-0 rounded-full bg-transparent" />
-                      <span className="text-muted-foreground flex-1">
+                      <span className="size-1.5 shrink-0" />
+                      <span className="text-muted-foreground flex-1 text-xs">
                         缓存重算
-                        <span className="text-muted-foreground/70">
+                        <span className="text-muted-foreground/60">
                           （{info.cacheMisses?.missCount ?? 0} 次）
                         </span>
                       </span>
-                      <span className="text-foreground w-14 text-right text-xs tabular-nums">
-                        {fmtTokens(info.cacheMisses?.missedTokens ?? 0)}
+                      <span className="text-foreground/80 shrink-0 text-right text-xs tabular-nums">
+                        <RollingDigits
+                          text={(info.cacheMisses?.missedTokens ?? 0).toLocaleString()}
+                        />
+                        <span className="text-muted-foreground/60 ml-0.5 text-[11px]">
+                          tokens
+                        </span>
                       </span>
                     </div>
-                  ) : (
+                  ) : (info.cacheMisses?.requests ?? 0) > 1 ? (
                     <div
                       className="flex items-center gap-2"
-                      title="该端点不上报缓存字段（cacheRead/cacheWrite 恒 0），无法判定重算量"
+                      title={`单请求重处理 ≥2000 token 且 ≥5% 记一次 miss；已排除 ${info.cacheMisses?.rebuilds ?? 0} 次预期重建`}
                     >
-                      <span className="size-2 shrink-0 rounded-full bg-transparent" />
-                      <span className="text-muted-foreground flex-1">缓存重算</span>
-                      <span className="text-muted-foreground w-14 text-right text-xs tabular-nums">
-                        -
+                      <span className="size-1.5 shrink-0" />
+                      <span className="text-muted-foreground flex-1">
+                        逐请求缓存 miss
+                      </span>
+                      <span className="text-foreground/80 w-14 text-right text-xs tabular-nums">
+                        {info.cacheMisses?.misses ?? 0}/
+                        {Math.max(
+                          0,
+                          (info.cacheMisses?.requests ?? 0) -
+                            1 -
+                            (info.cacheMisses?.rebuilds ?? 0),
+                        )}
                       </span>
                     </div>
-                  )
-                ) : (info.cacheMisses?.requests ?? 0) > 1 ? (
-                  <div
-                    className="flex items-center gap-2"
-                    title={`单请求重处理 ≥2000 token 且 ≥5% 记一次 miss；已排除 ${info.cacheMisses?.rebuilds ?? 0} 次预期重建`}
-                  >
-                    <span className="size-2 shrink-0 rounded-full bg-transparent" />
-                    <span className="text-muted-foreground flex-1">
-                      逐请求缓存 miss
-                    </span>
-                    <span className="text-foreground w-14 text-right text-xs tabular-nums">
-                      {info.cacheMisses?.misses ?? 0}/
-                      {Math.max(
-                        0,
-                        (info.cacheMisses?.requests ?? 0) -
-                          1 -
-                          (info.cacheMisses?.rebuilds ?? 0),
-                      )}
-                    </span>
-                  </div>
-                ) : null}
+                  ) : null}
+                </div>
+              ) : null}
+
+              <Separator className="bg-border/40" />
+
+              {/* 页脚：压缩状态 + 操作（阈值/余量已归图例行，这里不再重复） */}
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className="text-muted-foreground min-w-0 truncate text-xs"
+                  title={
+                    info.lastCompaction
+                      ? `最近一次压缩前 ${fmtTokens(info.lastCompaction.tokensBefore)} tokens${
+                          info.lastCompaction.summarized
+                            ? ""
+                            : "（摘要失败，保留最近对话）"
+                        }`
+                      : undefined
+                  }
+                >
+                  {info.needsCompaction
+                    ? "已越过压缩阈值 · 发送前自动压缩"
+                    : info.generation === 0
+                      ? `共 ${info.messageCount} 条消息 · 未压缩`
+                      : `已压缩 ${info.generation} 次`}
+                  {!cacheReporting ? " · 缓存未上报" : ""}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 shrink-0 px-2.5 text-xs border! border-border/40 cursor-pointer"
+                  disabled={compacting || loading || isRunning}
+                  title={
+                    isRunning
+                      ? "回复进行中，完成后可手动压缩"
+                      : "手动压缩上下文"
+                  }
+                  onClick={() => void compact()}
+                >
+                  {compacting ? (
+                    <>
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                      压缩中…
+                    </>
+                  ) : (
+                    "立即压缩"
+                  )}
+                </Button>
               </div>
-
-              <Separator />
-
-              {/* 压缩状态（未越线时附上距阈值的余量：与占用环 title 同一读数，
-                  说明彩条虽可能贴近竖线、守卫仍不会触发） */}
-              <div className="text-muted-foreground  text-xs">
-                {info.needsCompaction ? (
-                  <span className="text-amber-600 dark:text-amber-400">
-                    已越过压缩阈值（{fmtTokens(info.hardLimit)}），下次发送前自动压缩
-                  </span>
-                ) : info.generation === 0 ? (
-                  <span>
-                    共 {info.messageCount} 条消息 · 尚未压缩过
-                    {toCompactPct !== null && toCompactPct > 0
-                      ? ` · 距自动压缩 ${toCompactPct}%`
-                      : ""}
-                  </span>
-                ) : (
-                  <span>
-                    已压缩 {info.generation} 次 · 最近一次前{" "}
-                    {fmtTokens(info.lastCompaction?.tokensBefore ?? 0)} tokens
-                    {info.lastCompaction && !info.lastCompaction.summarized
-                      ? "（摘要失败，保留最近对话）"
-                      : ""}
-                    {toCompactPct !== null && toCompactPct > 0
-                      ? ` · 距自动压缩 ${toCompactPct}%`
-                      : ""}
-                  </span>
-                )}
-              </div>
-
-              <Button
-                variant="secondary"
-                disabled={compacting || loading || isRunning}
-                title={isRunning ? "回复进行中，完成后可手动压缩" : undefined}
-                onClick={() => void compact()}
-              >
-                {compacting ? (
-                  <>
-                    <Loader2Icon className="size-3.5 animate-spin" />
-                    压缩中…
-                  </>
-                ) : (
-                  "立即压缩"
-                )}
-              </Button>
             </>
           ) : loading ? (
-            <div className="text-muted-foreground flex items-center gap-2 py-4 text-sm">
-              <Loader2Icon className="size-4 animate-spin" />
+            <div className="text-muted-foreground flex items-center gap-2 py-3 text-xs">
+              <Loader2Icon className="size-3.5 animate-spin" />
               读取中…
             </div>
           ) : loadError ? (
-            <div className="text-destructive flex items-center justify-between gap-2 text-sm">
+            <div className="text-destructive flex items-center justify-between gap-2 text-xs">
               <span className="min-w-0 break-words">{loadError}</span>
-              <Button size="sm" variant="ghost" onClick={() => void load()}>
+              <Button
+                size="xs"
+                variant="ghost"
+                className="h-6 shrink-0 text-xs"
+                onClick={() => void load()}
+              >
                 重试
               </Button>
             </div>
           ) : mirror ? (
-            // 完整读数还没到位、但 §7 推送镜像已在：先呈现占用与压缩距离
-            <div className="text-muted-foreground py-2 text-sm">
-              占用 {usedPct === null ? "—" : `${(usedPct * 100).toFixed(1)}%`}
-              {toCompactPct !== null &&
-                ` · ${toCompactPct > 0 ? `距自动压缩 ${toCompactPct}%` : "已越过自动压缩阈值"}`}
+            // 完整读数还没到位、但 §7 推送镜像已在：摘要区的无分项版本
+            <div className="flex flex-col gap-2 py-0.5">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="truncate text-sm font-medium text-foreground">
+                  上下文
+                </span>
+                {capacity > 0 && (
+                  <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+                    容量 {fmtTokens(capacity)}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-lg leading-none font-semibold text-foreground tabular-nums">
+                  {usedPct === null ? (
+                    "—"
+                  ) : (
+                    <RollingDigits text={`${(usedPct * 100).toFixed(1)}%`} />
+                  )}
+                </span>
+                <span className="text-muted-foreground/70 text-xs tabular-nums">
+                  已用 <RollingDigits text={used.toLocaleString()} /> tokens
+                </span>
+              </div>
+              <div className="text-muted-foreground/70 flex justify-end text-[11px] tabular-nums">
+                <span
+                  className={cn(
+                    needsCompact && "text-amber-600 dark:text-amber-400",
+                  )}
+                >
+                  {needsCompact
+                    ? "已越过自动压缩阈值"
+                    : remainingTokens !== null
+                      ? `距阈值 ${fmtTokens(remainingTokens)}`
+                      : ""}
+                </span>
+              </div>
             </div>
           ) : null}
         </div>

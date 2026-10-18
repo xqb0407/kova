@@ -21,6 +21,7 @@ import { ThreadSuggestions } from "./thread-suggestions";
 import { Composer, EditComposer } from "./composer";
 import { AssistantMessage } from "./assistant-message";
 import { CompactionDataUI, ManualCompactionTailAfter } from "./compaction-banner";
+import { ModelChangeDataUI } from "./model-change-banner";
 import { ImageDataUI } from "@/components/assistant-ui/elements/image-data";
 import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
@@ -141,6 +142,8 @@ export const Thread = memo(function Thread() {
     >
         {/* 注册 data-compaction 渲染器（自身不可见），横幅随对应 assistant 消息出现 */}
         <CompactionDataUI />
+        {/* 注册 data-model-change 渲染器：快照重建的「已切换到 X」分隔线 */}
+        <ModelChangeDataUI />
         {/* 「已停止」分隔线不走 data UI 注册：part 只做标记，由
             AssistantMessage 检测后渲染在操作栏下方（见 stopped-marker.tsx） */}
       {/* 注册 data-image 渲染器（同法）：工具产出的图片随消息流内联展示 */}

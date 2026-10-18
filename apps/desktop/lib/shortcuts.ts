@@ -20,6 +20,7 @@ export type ShortcutActionId =
   | "openSettings"
   | "openAutomations"
   | "toggleAgentPanel"
+  | "toggleTerminal"
   | "toggleTheme"
   | "sendMessage"
   | "newline";
@@ -72,6 +73,14 @@ export const SHORTCUT_ACTIONS: {
     desc: "开合右侧 Agent 面板",
     scope: "global",
     default: { key: "j", mod: true, shift: false, alt: false },
+  },
+  {
+    // 底缘终端坞（VSCode 集成终端同款键位语义：⌘/Ctrl + `）
+    id: "toggleTerminal",
+    label: "显示 / 隐藏终端面板",
+    desc: "开合底部的终端面板",
+    scope: "global",
+    default: { key: "`", mod: true, shift: false, alt: false },
   },
   {
     id: "openSettings",

@@ -343,6 +343,22 @@ describe("DesktopPiClient 事件路由", () => {
           delta: ' -la"}',
         },
       }),
+    ]);
+
+    // 参数流式期间、end 帧之前：已完整的顶层字段先落到 message 上，UI 才能
+    // 在 toolcall_end 之前显示工具目标（这里 command 在第二段 delta 完整）。
+    // 注意 accumulator 是就地复用：必须在这一步断言，end 帧会把块整体换掉。
+    const partial = events.at(-1) as Extract<PiClientEvent, { type: "message_update" }>;
+    expect((partial.message as { content: unknown[] }).content).toEqual([
+      {
+        type: "toolCall",
+        id: "t1",
+        name: "bash",
+        arguments: { command: "ls -la" },
+      },
+    ]);
+
+    feed([
       threadEvent("s1", 19, {
         type: "message_update",
         assistantMessageEvent: {

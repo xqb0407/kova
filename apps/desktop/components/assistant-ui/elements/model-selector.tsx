@@ -580,6 +580,9 @@ function ModelSelectorItem({
       }}
       className={cn(
         "relative items-start gap-2 rounded-lg py-2 ps-3 pe-9 [&_svg:not([class*='size-'])]:size-3.5",
+        // 当前生效的模型给一层常驻底色：勾选之外再加一个不依赖颜色的标记，
+        // 与权限/思考档菜单的选中态保持同一套视觉
+        isSelected && "bg-muted/50",
         className,
       )}
       {...props}

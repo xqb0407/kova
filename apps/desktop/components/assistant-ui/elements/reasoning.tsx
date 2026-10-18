@@ -17,6 +17,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 
 export const ANIMATION_DURATION = 200;
 
@@ -183,7 +184,7 @@ function ReasoningTrigger({
     <CollapsibleTrigger
       data-slot="reasoning-trigger"
       className={cn(
-        "aui-reasoning-trigger group/trigger text-muted-foreground hover:text-foreground flex max-w-[75%] origin-left items-center gap-2 py-1.5 text-sm transition-[color,scale] active:scale-[0.98]",
+        "aui-reasoning-trigger group/trigger text-muted-foreground hover:text-foreground flex max-w-[75%] origin-left items-center gap-2 py-1.5 text-sm transition-[color,scale] ",
         className,
       )}
       {...props}
@@ -268,6 +269,9 @@ function ReasoningText({
       ) <= 1 || scrollEl.scrollHeight <= scrollEl.clientHeight;
 
     const pin = () => {
+      // 拖拽调宽期间正文每帧 rewrap：跳过逐帧 scrollHeight/scrollTop 写入，
+      // 松手后 resize-settled 补一次
+      if (isResizing()) return;
       if (!pinned) return;
       scrollEl.scrollTop = scrollEl.scrollHeight;
     };
@@ -291,9 +295,11 @@ function ReasoningText({
     scrollEl.addEventListener("scroll", onScroll);
     const observer = new ResizeObserver(pin);
     observer.observe(contentEl);
+    const offSettled = onResizeSettled(pin);
     return () => {
       scrollEl.removeEventListener("scroll", onScroll);
       observer.disconnect();
+      offSettled();
     };
   }, [isPreview]);
 

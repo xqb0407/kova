@@ -70,6 +70,7 @@ import type {
   PiCompactionSummaryMessage,
   PiCustomMessage,
   PiHostUiRequest,
+  PiModelChangeMessage,
   PiToolResultContent,
   PiToolResultMessage,
   PiUserContent,
@@ -90,16 +91,23 @@ export interface PiProjectionInput {
   hostUiRequests: readonly PiHostUiRequest[];
 }
 
-/** 稳定 id 锚点：sidecar 快照透传的转录行 __seq / 前端乐观消息的 __optimisticId */
-type StableIdAnchor = { __seq?: number; __optimisticId?: string };
+/** 稳定 id 锚点：sidecar 快照透传的转录行 __seq / 前端乐观消息的 __optimisticId /
+ *  不占 seq 的设定行（modelChange）用的 __stableId */
+type StableIdAnchor = {
+  __seq?: number;
+  __optimisticId?: string;
+  __stableId?: string;
+};
 
 const seqOf = (anchor: StableIdAnchor | undefined): number | undefined =>
   typeof anchor?.__seq === "number" ? anchor.__seq : undefined;
 
 // seq 空间（落盘后单调不变）优先；在飞消息没有 seq，退回**独立前缀**的下标——
 // 独立前缀保证回退 id 绝不与别处已落盘行的 seq id 撞号（seq 与下标号段重叠）。
+// 设定行（modelChange）不占 seq，用 sidecar 的文件序 __stableId 锚定。
 const messageId = (anchor: StableIdAnchor | undefined, index: number) =>
   anchor?.__optimisticId ??
+  anchor?.__stableId ??
   (seqOf(anchor) !== undefined
     ? `pi-msg:${seqOf(anchor)}`
     : `pi-msg-idx:${index}`);
@@ -908,6 +916,23 @@ const projectFrom = (
             // 摘要正文：活动面板「压缩摘要」一节按 data.summary 取用（缺失即整节跳过），
             // 分隔线横幅只认 phase，多带一个字段无副作用
             summary: m.summary,
+          }),
+          index,
+        );
+        break;
+      }
+
+      case "modelChange": {
+        // 本地改动（模型切换分隔线）：转录 model_change 设定行在快照里重建为
+        // 独立 data part，渲染端据此画「已切换到 X」分隔线。分隔线只标记切换点，
+        // 不参与助手消息分组（先 flush 收口当前轮）。
+        flush(false, index);
+        const m = message as PiModelChangeMessage;
+        emit(
+          standaloneData(index, m, "model-change", {
+            provider: m.provider,
+            modelId: m.modelId,
+            ...(m.name ? { name: m.name } : {}),
           }),
           index,
         );

@@ -19,6 +19,7 @@
  */
 import type { PiResponse, PiSessionSummary } from "@/lib/pi/pi-bridge";
 import type { PiPromptAttachment } from "@/lib/pi/pi-channel";
+import { parsePartialJsonObject } from "./partial-json";
 import { newRequestId } from "@/lib/mobile/request-id";
 import {
   applyHistoryPending,
@@ -98,6 +99,11 @@ type StreamAcc = {
   args: Map<number, string>;
 };
 
+/** 工具参数预览缓冲上限：只需要取出 file_path/command 这类前置字段；write
+ *  正文可达 MB 级，整段攒下来既浪费内存，字符串 += 还会退化成 O(n²)。
+ *  超限后停止缓冲——toolcall_end 带完整参数整体替换，预览缺失不影响正确性。 */
+const MAX_PARTIAL_ARGS_BYTES = 64 * 1024;
+
 /** delta → partial 重建（计划 §3b）：按 contentIndex 在 accumulator 上就地
  *  补丁——text/thinking 追加、toolcall 参数缓冲（end 帧整体替换）、done/error
  *  用终态消息整体替换。start 变体无内容可补。 */
@@ -154,9 +160,32 @@ function applyStreamDelta(
       });
       acc.args.set(i, "");
       break;
-    case "toolcall_delta":
-      acc.args.set(i, (acc.args.get(i) ?? "") + (e.delta ?? ""));
+    case "toolcall_delta": {
+      const block = blocks[i];
+      if (!block || block.type !== "toolCall") break;
+      const args = block.arguments;
+      const filled =
+        args != null &&
+        typeof args === "object" &&
+        !Array.isArray(args) &&
+        Object.keys(args).length > 0;
+      // 预览字段已拿到（或没有 toolcall_start 可补）：不再缓冲正文。
+      if (filled) break;
+      const prev = acc.args.get(i) ?? "";
+      if (prev.length >= MAX_PARTIAL_ARGS_BYTES) break;
+      const buffer = `${prev}${e.delta ?? ""}`;
+      // 只补第一次解析出的完整字段（通常是 file_path/command）；一旦拿到就
+      // 立即释放缓冲，后续长正文不再进内存。最终仍以 toolcall_end 的整体
+      // 替换为权威值。
+      const partial = parsePartialJsonObject(buffer);
+      if (partial) {
+        block.arguments = partial;
+        acc.args.delete(i);
+      } else {
+        acc.args.set(i, buffer);
+      }
       break;
+    }
     case "toolcall_end":
       if (e.toolCall) blocks[i] = e.toolCall;
       acc.args.delete(i);

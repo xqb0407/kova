@@ -218,7 +218,7 @@ const EMPTY_TEXT_PART = Object.freeze({
  * `tailBoundedRemend` 与 Streamdown 内置 `parseIncompleteMarkdown` 底层同
  * 为 remend，只闭合行内语法（粗体/行内码/链接/公式），不补块级结构；
  * 且 smooth 的揭示滞后于源文本，半成品前缀会在屏上驻留，流式全程裸
- * markdown。官方形态即默认 smooth=false + `animated` 词级入场动画 + caret；
+ * markdown。官方形态即默认 smooth=false + `animated` 入场动画（caret 本项目不挂，见下）；
  * 要逐字打字机又不裸显，需自建结构边界回退揭示，勿改回原状。
  */
 const StreamdownPart = () => {
@@ -248,13 +248,21 @@ const StreamdownPart = () => {
         // 要继续试的话，streamdown 还提供可合成的 fadeIn（只动 opacity）与
         // slideUp（opacity + transform），改这一个词即可。
         animated={{
+        // 试过 sep:"char"（中文确实按字推进，但动画节点数 = 新增字符数）：单次提交
+        // 变重 → useDeferredValue 会以最新文本重启渲染、把更多文本攒进下一批 →
+        // 观感反而更"整块出现"，已回退。word 分支按 \s 切词，中文长句会切成巨型
+        // token —— 但这不是主因，落地粒度（一次提交自带几十个 delta）才是。
+        // maxBacklogMs 的语义（dist `take`）：step = max(4, (now+maxBacklogMs-cursor)
+        // /(n-1))，n = 本批新增词数 —— 大批量落地时它把 stagger 压到形同失效。
         animation: "fadeIn",
-        duration: 220,
-        stagger: 30,
-        sep: "word",
-        maxBacklogMs: 320
+        duration: 150,
+        stagger: 20,
+        sep: "char",
+        maxBacklogMs: 450
       }}
-        caret="block"
+        // 光标（caret）刻意不传：streamdown 的实现是「caret 为真 且 isAnimating 时」
+        // 才写 `--streamdown-caret` 变量、并在末块上加 `after:content-[var(--streamdown-caret)]`；
+        // 只要这个 prop 缺省，变量与类名都不会挂上，光标自然不存在 —— 不需要额外 CSS 兜。
         plugins={sharedPlugins}
         shikiTheme={DEFAULT_SHIKI_THEME}
         components={sharedComponents}

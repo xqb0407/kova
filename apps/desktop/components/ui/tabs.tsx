@@ -30,8 +30,8 @@ const tabsListVariants = cva(
       variant: {
         default: "bg-muted",
         line: "gap-1 bg-transparent",
-        // 描边紧凑分段样式：透明底 + 细边框容器，选中块用 bg-muted
-        outline: "gap-0.5 border border-border/60 bg-transparent",
+        // 描边紧凑分段样式：透明底 + 细边框容器，选中块用 bg-active
+        outline: "gap-0.5 border border-border bg-transparent",
       },
     },
     defaultVariants: {
@@ -87,7 +87,7 @@ function TabsIndicator() {
         "pointer-events-none absolute left-(--active-tab-left) top-(--active-tab-top) h-(--active-tab-height) w-(--active-tab-width) rounded-[inherit] border border-transparent",
         "motion-safe:transition-all motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)]",
         "group-data-[variant=default]/tabs-list:bg-background group-data-[variant=default]/tabs-list:shadow-sm group-data-[variant=default]/tabs-list:dark:border-input group-data-[variant=default]/tabs-list:dark:bg-input/30",
-        "group-data-[variant=outline]/tabs-list:bg-muted",
+        "group-data-[variant=outline]/tabs-list:bg-active",
         // 下划线（line）：横向贴在活动 tab 底边下方 3~5px（同旧版
         // after: bottom-[-5px] h-0.5），纵向贴右边外 2~4px。变体规则
         // 排序在普通工具类之后，能稳定赢过基础几何。

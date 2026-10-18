@@ -144,6 +144,13 @@ export const isCompleteTranscriptMessage = (
         typeof value.tokensBefore === "number" &&
         typeof value.timestamp === "number"
       );
+    case "modelChange":
+      return (
+        typeof value.provider === "string" &&
+        typeof value.modelId === "string" &&
+        isOptionalString(value.name) &&
+        typeof value.timestamp === "number"
+      );
     default:
       return true;
   }
@@ -300,6 +307,10 @@ const isRenderableTranscriptMessage = (
     case "branchSummary":
     case "compactionSummary":
       return typeof value.summary === "string";
+    case "modelChange":
+      return (
+        typeof value.provider === "string" && typeof value.modelId === "string"
+      );
     default:
       return true;
   }

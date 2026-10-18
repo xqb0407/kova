@@ -162,15 +162,15 @@ export const GitGraph: FC<{ cwd: string; tick?: number }> = ({ cwd, tick }) => {
 
   const width = (Math.max(...rows.map((r) => r.lanes), 1) + 1) * GRAPH_LANE_W;
   return (
-    <div className="flex flex-col">
-      {/* 次级吸顶：贴在区块折叠头（h-11=44px → top-11）下沿，负边距吃满卡片内容宽 */}
-      <div className="bg-card/60 sticky top-11 z-10 relative -mx-2 mb-1 px-2.5  backdrop-blur-md">
-        <SearchIcon className="text-muted-foreground/60 pointer-events-none absolute top-1/2 left-5 size-3 -translate-y-1/2" />
+    // @container：面板很窄时按容器宽度收掉作者/时间列，提交信息优先占满
+    <div className="@container flex flex-col">
+      <div className="relative mb-1 px-0.5">
+        <SearchIcon className="text-muted-foreground/60 pointer-events-none absolute top-1/2 left-2.5 size-3 -translate-y-1/2" />
         <Input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="搜索提交信息 / 作者 / 哈希前缀"
-          className="pl-7 text-xs bg-background"
+          placeholder="搜索提交 / 作者 / 哈希"
+          className="bg-muted/60 h-7 pl-7 text-xs"
         />
       </div>
       {rows.length === 0 ? (
@@ -182,7 +182,7 @@ export const GitGraph: FC<{ cwd: string; tick?: number }> = ({ cwd, tick }) => {
             type="button"
             onClick={() => copy(row.entry.hash)}
             title={`${row.entry.subject}\n${row.entry.hash}\n点击复制哈希`}
-            className="hover:bg-muted/40 flex w-full items-center gap-2 rounded-md pr-1 text-left"
+            className="hover:bg-muted/50 flex w-full items-center gap-2 rounded-md pr-1 text-left transition-colors"
           >
             <RowGraph row={row} width={width} />
             <span className="min-w-0 flex-1 truncate text-xs text-foreground/90">
@@ -195,10 +195,10 @@ export const GitGraph: FC<{ cwd: string; tick?: number }> = ({ cwd, tick }) => {
                 ))}
               </span>
             ) : null}
-            <span className="text-muted-foreground w-16 shrink-0 truncate text-right text-xs">
+            <span className="text-muted-foreground hidden w-16 shrink-0 truncate text-right text-xs @sm:block">
               {row.entry.author}
             </span>
-            <span className="text-muted-foreground w-14 shrink-0 text-right text-xs tabular-nums">
+            <span className="text-muted-foreground hidden w-14 shrink-0 text-right text-xs tabular-nums @xl:block">
               {fmtWhen(row.entry.time)}
             </span>
           </button>

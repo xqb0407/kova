@@ -124,6 +124,10 @@ function Shell({
       style={{ "--cm-font-size": `${settings.fontSize + 2}px` } as CSSProperties}
     >
       <CodeMirror
+        // h-full：外层 .aui-cm-code 定高（h-full + height="100%"）时中间这层
+        // 也要定高，.cm-editor 的 100% 才有百分比基准；外层高度自适应时
+        // 100% 等价 auto，无副作用
+        className="h-full"
         value={value}
         editable={editable}
         readOnly={!editable}
@@ -170,6 +174,8 @@ export const CodeMirrorCode: FC<{
   onChange?: (value: string) => void;
   /** 传了才启用选区浮层（默认只读态选代码 → 引用到对话） */
   selectionAction?: CodeSelectionAction;
+  /** 去掉主题实色底（编辑器+行号槽），透出所在容器背景（右侧面板文件视图用） */
+  transparentBg?: boolean;
 }> = ({
   value,
   path,
@@ -179,6 +185,7 @@ export const CodeMirrorCode: FC<{
   editable,
   onChange,
   selectionAction,
+  transparentBg,
 }) => {
   const settings = useCodeSettings(forceDark);
   const lang = useLanguage(path);
@@ -315,7 +322,7 @@ export const CodeMirrorCode: FC<{
         value={value}
         extensions={extensions}
         settings={settings}
-        className={className}
+        className={cn(className, transparentBg && "cm-code-transparent")}
         height={height}
         editable={editable ?? false}
         onChange={onChange}

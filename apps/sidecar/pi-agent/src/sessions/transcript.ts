@@ -127,6 +127,19 @@ export function normalizeMessages<T>(messages: readonly T[]): T[] {
   return messages.map((m) => normalizeMessage(m));
 }
 
+/**
+ * 一次模型切换（转录 model_change 行，文件序）。
+ * `afterSeq` = 写入该行时已存在的最大转录 seq（消息行与检查点行共用号段）：
+ * 快照据此把「已切换到 X」分隔线插到切换发生位置；null = 切换发生在任何
+ * 消息之前（初始选择，不渲染分隔线）。
+ */
+export type ModelChangeRow = {
+  provider: string;
+  modelId: string;
+  timestamp: number;
+  afterSeq: number | null;
+};
+
 /** 转录文件一次遍历的结果（迭代 4：消息行与压缩检查点行同遍分流，
  * get_history 不再读两遍文件；M2：挂起交互行配对出未结算清单，§4） */
 export type TranscriptScan = {
@@ -140,6 +153,9 @@ export type TranscriptScan = {
   thinkingLevel: string | null;
   /** 最后一次 session_info 行的 name（"" = 显式清名）；null = 从未命名 */
   name: string | null;
+  /** 模型切换事件（文件序；连续重复选择已折叠，切完尚未发消息的尾部切换
+   *  与同一消息边界前的多次切换已收敛）；分隔线渲染用 */
+  modelChanges: ModelChangeRow[];
 };
 
 /** 单遍扫描 JSONL：撕裂尾行容忍；消息行按 seq 去重（保留最后一次出现）
@@ -149,13 +165,24 @@ export type TranscriptScan = {
 export function scanTranscript(sessionId: string): TranscriptScan {
   const file = sessionPath(sessionId);
   if (!existsSync(file))
-    return { messages: [], compactions: [], pending: [], model: null, thinkingLevel: null, name: null };
+    return {
+      messages: [],
+      compactions: [],
+      pending: [],
+      model: null,
+      thinkingLevel: null,
+      name: null,
+      modelChanges: [],
+    };
   const bySeq = new Map<number, { ui: UIMessage | null; agent: Message }>();
   const compactions: CompactionRow[] = [];
   const pendingById = new Map<string, PendingInteraction>();
+  const modelChanges: ModelChangeRow[] = [];
   let model: TranscriptScan["model"] = null;
   let thinkingLevel: string | null = null;
   let name: string | null = null;
+  /** 文件序上已出现过的最大转录 seq（设定行不占号段，锚点用） */
+  let lastSeq: number | null = null;
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -173,9 +200,22 @@ export function scanTranscript(sessionId: string): TranscriptScan {
         }
         continue;
       }
-      // 上下文设定行（§6 M4）：last-wins 回放；形状不符的旧行/坏行忽略
+      // 上下文设定行（§6 M4）：last-wins 回放；形状不符的旧行/坏行忽略。
+      // 同时按文件序留存切换事件：连续重复选择同一模型不重复出分隔线。
       if (row?.type === "model_change") {
         if (typeof row.provider === "string" && typeof row.modelId === "string") {
+          const changed =
+            model === null ||
+            model.provider !== row.provider ||
+            model.modelId !== row.modelId;
+          if (changed) {
+            modelChanges.push({
+              provider: row.provider,
+              modelId: row.modelId,
+              timestamp: Date.parse(row.timestamp) || 0,
+              afterSeq: lastSeq,
+            });
+          }
           model = { provider: row.provider, modelId: row.modelId };
         }
         continue;
@@ -189,6 +229,7 @@ export function scanTranscript(sessionId: string): TranscriptScan {
         continue;
       }
       if (typeof row?.seq !== "number") continue;
+      lastSeq = lastSeq === null ? row.seq : Math.max(lastSeq, row.seq);
       if (row.type === "message" && row.agent) {
         bySeq.set(row.seq, { ui: row.ui ?? null, agent: normalizeMessage(row.agent) });
       } else if (
@@ -205,7 +246,43 @@ export function scanTranscript(sessionId: string): TranscriptScan {
   const messages = [...bySeq.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([seq, row]) => ({ seq, ...row }));
-  return { messages, compactions, pending: [...pendingById.values()], model, thinkingLevel, name };
+  // 只有切换后真正发过消息，切换才算一次可见的分隔：切完还没发的尾部分切换
+  // 不渲染（用户可能只是在试模型）；同一「下一条消息」之前的连续切换只留最后
+  // 一次（A→B→C 后直接发送时，B 没有处理过任何消息）。
+  const messageSeqs = messages.map((m) => m.seq);
+  const nextMessageSeqAfter = (seq: number): number | null => {
+    let lo = 0;
+    let hi = messageSeqs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (messageSeqs[mid]! <= seq) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo < messageSeqs.length ? messageSeqs[lo]! : null;
+  };
+  const visibleModelChanges: ModelChangeRow[] = [];
+  let lastBoundary: number | null = null;
+  for (const change of modelChanges) {
+    // 初始选择（任何消息之前）不渲染
+    if (change.afterSeq === null) continue;
+    const boundary = nextMessageSeqAfter(change.afterSeq);
+    if (boundary === null) continue;
+    if (boundary === lastBoundary && visibleModelChanges.length > 0) {
+      visibleModelChanges[visibleModelChanges.length - 1] = change;
+    } else {
+      visibleModelChanges.push(change);
+      lastBoundary = boundary;
+    }
+  }
+  return {
+    messages,
+    compactions,
+    pending: [...pendingById.values()],
+    model,
+    thinkingLevel,
+    name,
+    modelChanges: visibleModelChanges,
+  };
 }
 
 /**

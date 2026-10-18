@@ -75,18 +75,23 @@ const EmptyTabsScreen: FC = () => {
  *        省略/默认 = 视为已落位（窄屏浮层整块滑入，没有交接过程，按钮直接可见）
  * @param fullscreen 面板全屏中（聊天列已收起，面板平铺主区；状态由 base.tsx 持有）
  * @param onToggleFullscreen 切换全屏；省略则不渲染按钮（窄屏浮层无全屏概念）
+ * @param contentFrozenPx 把手拖拽中内容区的冻结宽度（px；null = 跟手）。
+ *        只冻内容区、不冻卡片与标签栏：面板外框实时跟手，xterm/webview/diff
+ *        等重排大户在拖拽期间零 relayout，松手一次落位。
  */
 const AgentPanelImpl: FC<{
   onCollapse?: () => void;
   showWindowControls?: boolean;
   settled?: boolean;
   fullscreen?: boolean;
+  contentFrozenPx?: number | null;
   onToggleFullscreen?: () => void;
 }> = ({
   onCollapse,
   showWindowControls = false,
   settled = true,
   fullscreen = false,
+  contentFrozenPx = null,
   onToggleFullscreen,
 }) => {
   const { tabs, activeId } = usePanelTabs();
@@ -102,6 +107,7 @@ const AgentPanelImpl: FC<{
       showWindowControls={showWindowControls}
       settled={settled}
       fullscreen={fullscreen}
+      contentFrozenPx={contentFrozenPx}
       onToggleFullscreen={onToggleFullscreen}
     />
     </RenderProbe>
@@ -130,6 +136,7 @@ const PanelShell: FC<{
   showWindowControls: boolean;
   settled: boolean;
   fullscreen?: boolean;
+  contentFrozenPx?: number | null;
   onToggleFullscreen?: () => void;
 }> = ({
   tabs,
@@ -139,6 +146,7 @@ const PanelShell: FC<{
   showWindowControls,
   settled,
   fullscreen = false,
+  contentFrozenPx = null,
   onToggleFullscreen,
 }) => {
   // 浏览器面板已迁 `<webview>`：guest 随元素走，切标签/关标签/页面刷新都由
@@ -149,11 +157,17 @@ const PanelShell: FC<{
   // 只在布尔翻转时 setState，动画逐帧 resize 不触发重渲染
   const shellRef = useRef<HTMLDivElement>(null);
   const [barHidden, setBarHidden] = useState(false);
+  const barHiddenRef = useRef(false);
   useEffect(() => {
     const el = shellRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver((entries) => {
-      setBarHidden((entries[0]?.contentRect.width ?? 999) < 56);
+      // 拖拽调宽时 shell 每帧都在变：只在布尔翻转时 setState，
+      // 避免逐帧调用把面板子树白白重渲染一遍
+      const next = (entries[0]?.contentRect.width ?? 999) < 56;
+      if (next === barHiddenRef.current) return;
+      barHiddenRef.current = next;
+      setBarHidden(next);
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -184,6 +198,8 @@ const PanelShell: FC<{
           barHidden && "pointer-events-none opacity-0",
         )}
       >
+        {/* 终端开关不在这里：它始终贴在聊天列右上角（面板展开后即两列
+            分割线旁，见 agent-thread/header），不随面板顶栏走 */}
         {onCollapse ? (
           <TooltipIconButton
             variant="ghost"
@@ -264,37 +280,47 @@ const PanelShell: FC<{
           {barActions}
         </div>
       )}
-      <div className="relative min-h-0 flex-1">
-        {/* 活动标签非浏览器：照常渲染该标签内容（key=tab.id 重挂载，组件内
-            状态标签私有；边界接管同一个 key——某个标签崩了只坏那一个） */}
-        {active && active.type !== "browser" ? (
-          <ErrorBoundary key={active.id} label={`面板标签「${tabTitle(active)}」`}>
-            <TabContentView tab={active} />
-          </ErrorBoundary>
-        ) : null}
-        {/* 常驻浏览器 pane：非活动时绝对覆盖 + visibility 隐藏（不销毁元素，
-            guest 页面状态得以保留；切回即原样显示，无需重新加载） */}
-        {browserPaneTab ? (
-          <div
-            className={cn(
-              "h-full",
-              // 非活动态：绝对覆盖 + **pointer-events-none**——包装层本身是
-              // 透明的可命中元素，只藏内层（invisible）不够，整块会用默认
-              // pointer-events 吃掉上层标签内容区的全部点击（启动恢复浏览器
-              // 标签后点不动面板里的按钮，就是这个坑）
-              active?.type !== "browser" &&
-                "pointer-events-none absolute inset-0",
-            )}
-          >
-            <ErrorBoundary label="浏览器面板">
-              <BrowserView
-                tab={browserPaneTab}
-                hidden={active?.type !== "browser"}
-              />
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        {/* 拖拽期间内容区宽定格在起始像素（contentFrozenPx）：外框与标签栏
+            照常跟手，xterm/webview/diff 等内容在拖拽中零重排；松手后 base
+            清空冻结值，内容一次落位 */}
+        <div
+          className="relative h-full min-w-0"
+          style={
+            contentFrozenPx !== null ? { width: contentFrozenPx } : undefined
+          }
+        >
+          {/* 活动标签非浏览器：照常渲染该标签内容（key=tab.id 重挂载，组件内
+              状态标签私有；边界接管同一个 key——某个标签崩了只坏那一个） */}
+          {active && active.type !== "browser" ? (
+            <ErrorBoundary key={active.id} label={`面板标签「${tabTitle(active)}」`}>
+              <TabContentView tab={active} />
             </ErrorBoundary>
-          </div>
-        ) : null}
-        {!active ? <EmptyTabsScreen /> : null}
+          ) : null}
+          {/* 常驻浏览器 pane：非活动时绝对覆盖 + visibility 隐藏（不销毁元素，
+              guest 页面状态得以保留；切回即原样显示，无需重新加载） */}
+          {browserPaneTab ? (
+            <div
+              className={cn(
+                "h-full",
+                // 非活动态：绝对覆盖 + **pointer-events-none**——包装层本身是
+                // 透明的可命中元素，只藏内层（invisible）不够，整块会用默认
+                // pointer-events 吃掉上层标签内容区的全部点击（启动恢复浏览器
+                // 标签后点不动面板里的按钮，就是这个坑）
+                active?.type !== "browser" &&
+                  "pointer-events-none absolute inset-0",
+              )}
+            >
+              <ErrorBoundary label="浏览器面板">
+                <BrowserView
+                  tab={browserPaneTab}
+                  hidden={active?.type !== "browser"}
+                />
+              </ErrorBoundary>
+            </div>
+          ) : null}
+          {!active ? <EmptyTabsScreen /> : null}
+        </div>
       </div>
     </div>
   );

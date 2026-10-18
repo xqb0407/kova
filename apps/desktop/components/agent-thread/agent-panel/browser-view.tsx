@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { useAui } from "@assistant-ui/react";
 import { openExternal } from "@/lib/external-link";
+import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import { putElementRef } from "@/lib/element-refs";
 import { toast } from "@/components/ui/toast";
 import {
@@ -556,12 +557,28 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
   useEffect(() => {
     const el = stageRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
+    const measure = () =>
       setStage({ w: el.clientWidth, h: el.clientHeight });
-    });
+    // 宽度每帧变化时逐帧 setState 会重渲染整个浏览器面板（含 webview 包装
+    // 层）；去抖到 100ms。拖拽调宽期间内容区已冻结，直接跳过，松手补一次
+    let timer: number | undefined;
+    const schedule = () => {
+      if (isResizing()) return;
+      if (timer !== undefined) return;
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        measure();
+      }, 100);
+    };
+    const ro = new ResizeObserver(schedule);
     ro.observe(el);
-    setStage({ w: el.clientWidth, h: el.clientHeight });
-    return () => ro.disconnect();
+    measure();
+    const offSettled = onResizeSettled(measure);
+    return () => {
+      ro.disconnect();
+      offSettled();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, []);
   const fixed = vp.mode === "fixed" && !!vp.width && !!vp.height;
   const scale =

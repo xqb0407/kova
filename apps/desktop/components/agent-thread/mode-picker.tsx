@@ -20,6 +20,8 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
@@ -101,7 +103,7 @@ export const PERMISSION_OPTIONS: PermissionOption[] = [
   {
     key: "confirm",
     label: "变更前确认",
-    description: "改文件前先问我。",
+    description: "改文件、跑命令前先问我。",
     icon: HandIcon,
     approvalLevel: "ask",
   },
@@ -116,7 +118,7 @@ export const PERMISSION_OPTIONS: PermissionOption[] = [
   {
     key: "auto-edit",
     label: "自动编辑",
-    description: "自动编辑文件。",
+    description: "自动编辑文件；命令仍需确认。",
     icon: SquarePenIcon,
     approvalLevel: "auto-edit",
   },
@@ -131,7 +133,7 @@ export const PERMISSION_OPTIONS: PermissionOption[] = [
   {
     key: "auto",
     label: "完全访问",
-    description: "减少确认次数。",
+    description: "全部自动执行，不再询问。",
     icon: LockOpenIcon,
     approvalLevel: "auto",
     warning: true,
@@ -205,6 +207,18 @@ export const ModePicker: FC = () => {
 
   const current = permissionOption(snap);
   const CurrentIcon = current.icon;
+  // 底栏胶囊统一「无底色 + 弱化文本色（悬停转前景色）」（与模型选择器同款
+  // 幽灵样式：选中/生效不靠底色表达，hover 才给反馈底）。权限档的语义色只
+  // 留给图标（绿=工作区内自动、蓝=AI 审查、琥珀=完全访问），文字不再分色；
+  // 「完全访问」保留琥珀文字，风险提示优先于视觉统一。
+  const iconTone = current.warning
+    ? "text-amber-600 dark:text-amber-400"
+    : current.accent
+      ? ACCENT_CLASS[current.accent]
+      : "text-muted-foreground";
+  const textTone = current.warning
+    ? "text-amber-600 dark:text-amber-400"
+    : "text-muted-foreground hover:text-foreground";
 
   const pick = (o: PermissionOption) => {
     setOpen(false);
@@ -244,59 +258,78 @@ export const ModePicker: FC = () => {
             data-slot="aui-composer-mode"
             aria-label="Session mode"
             disabled={busy}
-            title={current.description}
+            title={`${current.label}：${current.description}`}
             className={cn(
               "hover:bg-muted inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
-              // 高危档选中时用警告色提醒；带 accent 的档位用各自的强调色
-              // （值得注意但不是示警）。计划态的高亮不在这里——那描述的是能力
-              // 模式，已经挪到右侧胶囊上
-              current.warning
-                ? "text-amber-600 dark:text-amber-400"
-                : current.accent
-                  ? ACCENT_CLASS[current.accent]
-                  : "text-muted-foreground hover:text-foreground",
+              textTone,
             )}
           >
             {busy ? (
-              <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
+              <Loader2Icon
+                className={cn("size-3.5 shrink-0 animate-spin", iconTone)}
+              />
             ) : (
-              <CurrentIcon className="size-3.5 shrink-0" />
+              <CurrentIcon className={cn("size-3.5 shrink-0", iconTone)} />
             )}
             {/* 窄栏只留图标：档位名收进 title（悬停可见），图标形状 + 警告色已能区分各档 */}
             <span className="@max-2xl:hidden">{current.label}</span>
           </button>
         }
       />
-      <DropdownMenuContent align="start" className="w-60">
+      <DropdownMenuContent
+        align="start"
+        // 默认 ring-foreground/10 叠上 shadow-xl 后边缘偏重；这里单独收淡
+        className="w-72 ring-border/70"
+      >
         <DropdownMenuGroup>
-          {PERMISSION_OPTIONS.map((o) => (
-            <DropdownMenuItem
-              key={o.key}
-              onClick={() => pick(o)}
-              className="gap-2.5 py-2"
-            >
-              <o.icon className="text-muted-foreground size-4 shrink-0" />
-              <div className="flex min-w-0 flex-col">
-                <span
+          <DropdownMenuLabel className="px-2 pb-1">确认方式</DropdownMenuLabel>
+          {PERMISSION_OPTIONS.map((o) => {
+            const selected = o === current;
+            // 选中项的颜色同时作用于标题/图标/勾选；警告档即使未选中也让
+            // 图标保持琥珀色——「完全访问」的风险提示应当先于点击出现
+            const selectedTone = selected
+              ? o.warning
+                ? "text-amber-600 dark:text-amber-400"
+                : o.accent
+                  ? ACCENT_CLASS[o.accent]
+                  : undefined
+              : undefined;
+            const iconTone =
+              selectedTone ??
+              (o.warning ? "text-amber-600/80 dark:text-amber-400/80" : undefined);
+            return (
+              <DropdownMenuItem
+                key={o.key}
+                onClick={() => pick(o)}
+                className={cn("gap-2.5 py-2", selected && "bg-muted/50")}
+              >
+                {/* 图标对齐标题行（两行内容时不再垂直居中到两行之间） */}
+                <o.icon
                   className={cn(
-                    "text-sm font-medium",
-                    // 选中态下颜色跟随触发器同一套规则（警告黄 / 各自的强调色）
-                    o.warning && o === current && "text-amber-600 dark:text-amber-400",
-                    o.accent && o === current && ACCENT_CLASS[o.accent],
+                    "text-muted-foreground mt-0.5 size-4 shrink-0 self-start",
+                    iconTone,
                   )}
-                >
-                  {o.label}
-                </span>
-                <span className="text-muted-foreground truncate text-xs">
-                  {o.description}
-                </span>
-              </div>
-              {o === current && (
-                <CheckIcon className="ml-auto size-4 shrink-0" />
-              )}
-            </DropdownMenuItem>
-          ))}
+                />
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <span className={cn("text-sm font-medium", selectedTone)}>
+                    {o.label}
+                  </span>
+                  {/* 宽度放开后不再截断：说明是这一档的核心差异，半句省略反而误导 */}
+                  <span className="text-muted-foreground text-xs leading-snug whitespace-normal">
+                    {o.description}
+                  </span>
+                </div>
+                {selected && (
+                  <CheckIcon className={cn("ml-auto size-4 shrink-0", selectedTone)} />
+                )}
+              </DropdownMenuItem>
+            );
+          })}
         </DropdownMenuGroup>
+        <DropdownMenuSeparator className="bg-foreground/[0.06]" />
+        <div className="text-muted-foreground/70 px-2 py-1.5 text-[11px]">
+          Shift+Tab 快速切换
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -340,7 +373,7 @@ export const CapabilityModeChip: FC = () => {
         onClick={exit}
         title={`${cap.label}：${cap.description}（点击退出）`}
         className={cn(
-          "bg-muted text-foreground hover:bg-muted/70 inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
+          "text-muted-foreground hover:text-foreground hover:bg-muted inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors disabled:opacity-50 @max-2xl:px-2",
         )}
       >
         {busy ? (
