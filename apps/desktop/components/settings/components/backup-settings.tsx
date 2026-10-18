@@ -300,6 +300,15 @@ export const BackupSettings: FC = () => {
                 onCheckedChange={(v) => update({ includeWorkspace: v })}
               />
             </SettingRow>
+            <SettingRow
+              label="包含资料库"
+              desc="资料库里的文件与笔记（library/）。资料库在设置 → 通用 → 资料库位置改到别处时，这里只收缺省位置的那份。"
+            >
+              <Switch
+                checked={config.includeLibrary}
+                onCheckedChange={(v) => update({ includeLibrary: v })}
+              />
+            </SettingRow>
             <SettingRow label="设备名" desc="标记备份来源，便于多设备区分。">
               <Input
                 value={config.deviceName}

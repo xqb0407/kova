@@ -453,12 +453,19 @@ function injectPanelScrollbars(wc: WebContents): void {
     });
 }
 
+/** Electron 在未打包构建里会给每个渲染进程打印安全提示；guest 是三方页面，
+ *  CSP 由站点自行决定、应用既无法也不该改，这类提示对页面调试纯属噪声。
+ *  只折叠 CSP 这一条（与 frontend-logging.ts 的「窄匹配宿主噪声」同款），
+ *  其余安全告警仍原样进控制台。 */
+const HOST_SECURITY_NOISE_RE =
+  /Electron Security Warning \(Insecure Content-Security-Policy\)/;
+
 function wireConsole(wc: WebContents): void {
   if (consoleWired.has(wc)) return;
   consoleWired.add(wc);
   wc.on("console-message", (details) => {
     const message = String(details?.message ?? "");
-    if (!message) return;
+    if (!message || HOST_SECURITY_NOISE_RE.test(message)) return;
     const level = (details?.level ?? "info") as ConsoleLevel;
     const entry: ConsoleEntry = {
       id: ++consoleSeq,

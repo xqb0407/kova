@@ -51,7 +51,7 @@ export function setupIpc(): void {
       // 这些是用户状态而非系统故障（git 非仓库/未安装、目录不存在、workspace
       // 不匹配、未选择目录），渲染层会自行降级；不再按 ERROR 每次 focus 刷屏。
       const expected =
-        /^(not-repo|no-git|cwd-not-allowed|cwd-missing|workspace-missing)(?::|$)/.test(
+        /^(not-repo|no-git|cwd-not-allowed|cwd-missing|workspace-missing|bad-path|home-not-allowed|app-data-not-allowed|too-many)(?::|$)/.test(
           msg,
         );
       if (expected) logDebug(`[ipc] ${cmd}: ${msg}`);

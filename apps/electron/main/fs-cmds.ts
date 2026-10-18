@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { join, basename, dirname, extname } from "node:path";
 import { appDataDir, sessionsDir } from "./paths";
+import { libraryRoot as libraryRootDir } from "./library";
 import { kvGet } from "./store";
 import { emitToWindows } from "./ipc";
 import { logInfo } from "./logging";
@@ -68,7 +69,7 @@ function realpathNearestExisting(p: string): string | null {
   }
 }
 
-/** 对齐 resolve_root：两个可信根之一（workspace 或 task-workspace 任意子树） */
+/** 对齐 resolve_root：可信根之一（workspace / task-workspace / 资料库根 任意子树） */
 function resolveRoot(cwd: string): string {
   const stored = kvGet("workspace");
   const want = stored && stored.length > 0 ? stored : null;
@@ -91,14 +92,22 @@ function resolveRoot(cwd: string): string {
     const t = tryRealpath(join(appDataDir(), "task-workspace"));
     if (t && within(probe, t)) trusted = true;
   }
+  if (!trusted) {
+    // 资料库根子树（设置 → 通用 → 资料库位置）：library.ts 的校验保证该根
+    // 不会是 appDataDir 本体/祖先/内部敏感目录，故这里可以放心放行子树。
+    // 根目录不存在时（用户把库指到被删掉的目录）不视为可信，页面以读取
+    // 失败 + 更改位置呈现。
+    const lib = tryRealpath(libraryRootDir());
+    if (lib && within(probe, lib)) trusted = true;
+  }
   if (!trusted) return fail("cwd-not-allowed");
   // 返回值必须是 cwd 本身（后续 joinRel 以它为基准拼接相对路径；
   // 返回祖先会把文件写错位置）。存在时给 canonical，不存在时用原样路径。
   return real ?? cwd;
 }
 
-/** 对齐 join_rel */
-function joinRel(root: string, rel: string): string {
+/** 对齐 join_rel（资料库命令库内定位同用） */
+export function joinRel(root: string, rel: string): string {
   if (rel.length > 0 && (rel.startsWith("/") || rel.startsWith("\\") || /^[a-zA-Z]:[\\/]/.test(rel))) {
     return fail("bad-path");
   }
@@ -284,6 +293,34 @@ function isBadName(name: string): boolean {
     name === ".." ||
     /[\/\\:*?"<>|]/.test(name)
   );
+}
+
+/**
+ * 绝对路径是否落在任一可信根子树内（与 resolveRoot 同一套根：当前 workspace、
+ * task-workspace、资料库根）。**读侧**校验，给 kova:// 文件通道用：让 HTML
+ * 预览的 iframe 有真实基址（srcDoc 的 about:srcdoc 解析不了相对图片/CSS），
+ * 同时不放行可信根之外的任何文件。
+ */
+export function isTrustedFilePath(abs: string): boolean {
+  const real = tryRealpath(abs);
+  if (!real) return false;
+  const within = (p: string, root: string) =>
+    p === root ||
+    p.startsWith(root + "/") ||
+    (process.platform === "win32" && p.startsWith(root + "\\"));
+  const roots: string[] = [];
+  try {
+    const ws = kvGet("workspace");
+    if (ws && ws.length > 0) roots.push(ws);
+  } catch {
+    /* store 未就绪：只走下面两个固定根 */
+  }
+  roots.push(join(appDataDir(), "task-workspace"), libraryRootDir());
+  for (const r of roots) {
+    const rr = tryRealpath(r);
+    if (rr && within(real, rr)) return true;
+  }
+  return false;
 }
 
 export function fsRename(args: { cwd: string; path: string; newName: string }): unknown {

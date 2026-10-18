@@ -4,7 +4,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
-import { WindowControls, CLUSTER_W } from "@/components/window-controls";
+import { WindowControls } from "@/components/window-controls";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import {
   MenuIcon,
@@ -35,8 +35,7 @@ import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { FolderOpenIcon, GitBranchIcon } from "lucide-react";
-import { useEffect, useState, type FC } from "react";
-import { createPortal } from "react-dom";
+import { useState, type FC } from "react";
 
 export const Logo: FC<{ collapsed?: boolean }> = ({ collapsed = false }) => {
   return (
@@ -120,28 +119,11 @@ const HeaderMoreMenu: FC<{
   );
 };
 
-/** 面板开关按钮的固定钉位：与 WindowControls 同款 portal + fixed，脱离
- *  会随聊天列收窄而整体左移的 Header 流——用户要的"原地淡出/淡入、不移动"
- *  本质上要求按钮不参与 Header 的重排。右侧偏移对齐它原本在 Header 右缘的
- *  槽位：卡片右缘 8（main p-2）+ 把手 8（w-2）+ pr-4 16 = 24；Windows/Linux
- *  下 Header 右缘还要挤出窗口三键占位（CLUSTER_W + gap-2 8），再左让一份 */
-const PANEL_TOGGLE_TOP = 8;
-const PANEL_TOGGLE_RIGHT = 24;
-const PANEL_TOGGLE_RIGHT_WITH_WINCONTROLS = PANEL_TOGGLE_RIGHT + 8 + CLUSTER_W;
-/** 终端开关收起态的钉位：面板开关**左侧**相邻槽位（按钮簇观感：
- *  … [终端] [面板]）。面板开关的展开/收起只是淡出淡入、槽位始终占着，
- *  终端按钮不跟着挪位——两个按钮各自固定偏移，谁也不做另一个的参照物。
- *  面板停靠为右列后不用这个槽位（改由 Header 流内贴聊天列右缘，见下方
- *  TerminalToggleSlot/Header 的 panelDocked 分支）。
- *  gap-2 = 与 Header 内相邻按钮的间距（size-8 + 8 = 36） */
-const TERMINAL_TOGGLE_RIGHT = PANEL_TOGGLE_RIGHT + 36;
-const TERMINAL_TOGGLE_RIGHT_WITH_WINCONTROLS =
-  PANEL_TOGGLE_RIGHT_WITH_WINCONTROLS + 36;
-
-/** Header 面板开关按钮：有在途活动才亮角标。portal 到 body、fixed 钉在
- *  窗口右上角（见上），可见性交给 150ms transition-opacity：展开时原地
- *  淡出（不再随聊天列收窄左移），收起落位时原地渐显。z-40：盖住主区内容
- *  与面板卡片，但仍在 dialog/设置页（z-50）之下。
+/** Header 面板开关按钮：有在途活动才亮角标。
+ *  形态对齐**侧边栏的折叠/展开按钮**（实报"不像侧边栏的折叠按钮"）：
+ *  按钮本体不做位移动画，只做 150ms 快速淡出/淡入；开合过程的"腾位/收位"
+ *  交给外层槽位的宽度过渡（300ms + 与面板开合同一条曲线），按钮被槽位
+ *  裁切——和 Header 左侧那个侧栏展开槽完全镜像。
  *  空会话也常驻：新对话页上「终端 + 面板」两个按钮成对出现（只留一个
  *  终端按钮观感很突兀），点开由 base 的空会话旁路放行。 */
 const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
@@ -155,81 +137,54 @@ const PanelToggleButton: FC<{ onToggle: () => void; shown: boolean }> = ({
     (t) => t.status !== "deleted" && t.status !== "completed",
   );
   const badge = runningCount > 0 || hasUnfinishedPlan;
-  // portal 只在 document 就绪后挂（首帧无按钮，本就要等判环境）
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
-  if (!mounted) return null;
-
-  return createPortal(
-    <div
-      className="pointer-events-none fixed z-40 flex h-12 items-center"
-      style={{
-        top: PANEL_TOGGLE_TOP,
-        right:
-          isDesktop() && !isMacPlatform()
-            ? PANEL_TOGGLE_RIGHT_WITH_WINCONTROLS
-            : PANEL_TOGGLE_RIGHT,
-      }}
-    >
-      <TooltipIconButton
-        variant="ghost"
-        size="icon"
-        tooltip="展开 Agent 面板"
-        side="bottom"
-        onClick={onToggle}
-        aria-hidden={!shown}
-        tabIndex={shown ? undefined : -1}
-        className={cn(
-          "relative size-8 shrink-0 transition-opacity duration-150",
-          shown ? "pointer-events-auto" : "pointer-events-none opacity-0",
-        )}
-      >
-        <PanelRightOpenIcon className="size-4" />
-        {badge ? (
-          <span
-            aria-hidden="true"
-            className="bg-primary absolute top-1 right-1 size-1.5 animate-pulse rounded-full"
-          />
-        ) : null}
-      </TooltipIconButton>
-    </div>,
-    document.body,
-  );
-};
-
-/** 终端开关的收起态钉位（面板未停靠 / 窄屏浮层）：portal + fixed 钉在面板
- *  开关左侧那一格，不随聊天列收窄移动。panelDocked 时淡出，改由 Header
- *  流内那枚贴在聊天列右缘（两种状态都在"聊天列右上角"，只是锚点不同）。
- *  空会话照常渲染：终端是全局工具，新对话里开壳看目录是常态 */
-const TerminalToggleSlot: FC<{ hidden: boolean }> = ({ hidden }) => {
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-  if (!mounted) return null;
-  return createPortal(
-    <div
-      inert={hidden}
+  return (
+    <TooltipIconButton
+      variant="ghost"
+      size="icon"
+      tooltip="展开 Agent 面板"
+      side="bottom"
+      onClick={onToggle}
+      aria-hidden={!shown}
+      tabIndex={shown ? undefined : -1}
       className={cn(
-        "pointer-events-none fixed z-40 flex h-12 items-center transition-opacity duration-150",
-        hidden && "opacity-0",
+        "relative size-8 shrink-0 transition-opacity duration-150",
+        shown ? "pointer-events-auto" : "pointer-events-none opacity-0",
       )}
-      style={{
-        top: PANEL_TOGGLE_TOP,
-        right:
-          isDesktop() && !isMacPlatform()
-            ? TERMINAL_TOGGLE_RIGHT_WITH_WINCONTROLS
-            : TERMINAL_TOGGLE_RIGHT,
-      }}
     >
-      <TerminalToggleButton className="pointer-events-auto" />
-    </div>,
-    document.body,
+      <PanelRightOpenIcon className="size-4" />
+      {badge ? (
+        <span
+          aria-hidden="true"
+          className="bg-primary absolute top-1 right-1 size-1.5 animate-pulse rounded-full"
+        />
+      ) : null}
+    </TooltipIconButton>
   );
 };
+
+/** 面板开关槽：与左侧「侧栏展开槽」完全镜像——面板开合时槽位宽度
+ *  0↔32 与面板动画同节拍（300ms + 同一条 cubic-bezier）收放，按钮本体
+ *  只做 150ms 快速淡出/淡入、不做位移；槽位收起时用负 margin 抵消 Header
+ *  的 gap，终端按钮随之滑到聊天列右缘（面板展开后它就在"原展开按钮"
+ *  那一格），和侧栏展开时标题被推开的观感一致。
+ *  @param contained 面板在显示（含动画途中）：槽位收成 0 */
+const PanelToggleSlot: FC<{
+  onToggle: () => void;
+  shown: boolean;
+  contained: boolean;
+}> = ({ onToggle, shown, contained }) => (
+  <div
+    inert={contained}
+    aria-hidden={contained}
+    className={cn(
+      "overflow-hidden transition-[width,margin] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
+      contained ? "-ml-1 w-0" : "w-8",
+    )}
+  >
+    <PanelToggleButton onToggle={onToggle} shown={shown} />
+  </div>
+);
 
 /** 标题旁的工作区/分支 tag 胶囊（样式对齐 composer 的 WorkspacePill）：
  *  未选择文件夹（workspace 为 null）时整体不渲染；
@@ -280,13 +235,16 @@ export const Header: FC<{
   /** 面板停靠为右列（宽屏且视觉上未收没）：此时窗口右缘是面板而非聊天列，
    *  Windows/Linux 自绘窗口控件改由面板顶栏承载，Header 不再渲染 */
   docked?: boolean;
-  /** 面板停靠态（含展开动画途中）：聊天列右缘此时是两列分割线，
-   *  终端开关从 fixed 槽位切到 Header 流内贴右缘（红框位置） */
-  panelDocked?: boolean;
+  /** 面板当前在显示（含开合动画途中）：右侧「面板开关槽」随之收没，
+   *  终端按钮停在聊天列右缘（原展开按钮那一格）——与左侧侧栏展开槽镜像 */
+  panelShown?: boolean;
   /** session = 聊天会话顶栏（默认）；page = 整页管理视图（自动化/计划等）的
    *  纯窗口边框条：隐藏会话专属元素（标题/徽章/重命名/面板开关）且无分隔线，
    *  页面身份由视图自身的大标题承载 */
   variant?: "session" | "page";
+  /** page 模式下要不要压一条下边框（资料库：注入的工具条与内容之间要分割线；
+   *  其余整页视图保持无边框） */
+  pageDivided?: boolean;
 }> = ({
   sidebarCollapsed,
   onToggleSidebar,
@@ -294,8 +252,9 @@ export const Header: FC<{
   showPanelToggle = false,
   onTogglePanel,
   docked = false,
-  panelDocked = false,
+  panelShown = false,
   variant = "session",
+  pageDivided = false,
 }) => {
   const pageMode = variant === "page";
   // 桌面端自绘 titlebar：拖拽区所有桌面端生效；红绿灯让位仅 macOS（Windows 隐藏系统
@@ -335,8 +294,11 @@ export const Header: FC<{
         // 中间出现"按钮凭空消失"的空窗
         "flex h-12 shrink-0 items-center gap-2 transition-[padding] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
         // 下边框只在「有会话内容」时画：新对话顶栏空着，一条横线反而把空页
-        // 劈成两截；有消息（标题已显示）时恢复，与正文分开
-        !pageMode && !isEmptyThread && "border-b-[0.5]",
+        // 劈成两截；有消息（标题已显示）时恢复，与正文分开。
+        // 整页视图缺省不画，由页面按需声明（资料库的注入式工具条要求一条分割线）
+        (!pageMode && !isEmptyThread) || (pageMode && pageDivided)
+          ? "border-b-[0.5]"
+          : undefined,
         "pr-4",
         sidebarCollapsed && mac ? "md:pl-24" : "pl-4",
       )}
@@ -379,6 +341,16 @@ export const Header: FC<{
         </TooltipIconButton>
       </div>
       
+      {/* 整页视图的页面工具条槽位：页面视图（资料库）经 portal 把自己的
+          工具条注入这里——应用的窗口边框条与页面自己的工具条并成一层，
+          不再出现两条 48px 叠着、上面那条全空的情况（page 模式下本行除了
+          折叠槽本来就没有内容）。槽位是 flex-1 空 div，没人注入时零影响 */}
+      {pageMode && (
+        <div
+          data-slot="page-header-actions"
+          className="flex min-w-0 flex-1 items-center gap-1"
+        />
+      )}
       {/* 整页视图不属于任何会话：标题/徽章/重命名/面板开关都让位给页面自身；
           空会话（新对话）同样不显示标题——顶栏留着干净，等有消息了再出现 */}
       {pageMode || isEmptyThread ? null : <ThreadTitle />}
@@ -407,32 +379,20 @@ export const Header: FC<{
           />
         </>
       )}
-      {/* Agent 面板开关锚点：按钮本体已 portal 到 body 的 fixed 层（见
-          PanelToggleButton），此处只留 ml-auto 把头部右侧内容顶到右缘。
-          按钮脱离 Header 流后才不会随聊天列收窄左移——这是"原地淡出/
-          淡入、不移动"的前提 */}
-      <div className="ml-auto flex shrink-0 items-center">
+      {/* 顶部右侧按钮簇（终端 + 面板开关）：全部走 Header 流内，和左侧
+          「侧栏展开槽」同一套开合手法——槽位宽度随面板动画收放，按钮本体
+          只淡出淡入、不做位移。面板展开后槽位收没，终端按钮就停在聊天列
+          右缘（分割线旁，即原「展开面板」按钮那一格）；面板收起时槽位
+          重新展开，按钮簇恢复 [终端] [面板]。 */}
+      <div className="ml-auto flex shrink-0 items-center gap-1">
         {pageMode ? null : (
           <>
-            {/* 终端开关：贴在聊天列右上角。
-                - 面板停靠为右列（panelDocked，含展开动画途中）：聊天列右缘
-                  就是两列分割线，按钮走 Header 流内贴右缘——即原来「打开
-                  面板」按钮站的那一格（实报位置）。
-                - 面板收起/窄屏浮层：聊天列右缘 = 窗口右缘，改由 fixed 槽位
-                  承接（与面板开关成对，且不随聊天列收窄移动）。
-                流内这枚常驻挂载、只切换可见性：面板一开一合不会造成另一块
-                重新挂载的闪动，两枚是同一时刻交叉淡入淡出 */}
-            <div
-              inert={!panelDocked}
-              className={cn(
-                "flex items-center transition-opacity duration-150",
-                !panelDocked && "pointer-events-none opacity-0",
-              )}
-            >
-              <TerminalToggleButton className="-mr-2" />
-            </div>
-            <TerminalToggleSlot hidden={panelDocked} />
-            <PanelToggleButton onToggle={onTogglePanel} shown={showPanelToggle} />
+            <TerminalToggleButton />
+            <PanelToggleSlot
+              onToggle={onTogglePanel}
+              shown={showPanelToggle}
+              contained={panelShown}
+            />
           </>
         )}
       </div>

@@ -113,10 +113,10 @@ const MarketplaceView = dynamic(
     ),
   },
 );
-// 我的文件页（本地 ~/.kova + 云端备份）：同款按需 chunk
-const FilesView = dynamic(
+// 资料库页（自有文件/笔记 + AI 产物）：同款按需 chunk
+const LibraryView = dynamic(
   () =>
-    import("@/components/files/files-view").then((m) => m.FilesView),
+    import("@/components/files/library-view").then((m) => m.LibraryView),
   {
     ssr: false,
     loading: () => (
@@ -921,7 +921,7 @@ export const Base: FC = () => {
     ) : activeMenu === "connector" ? (
       <MarketplaceView manageTab={connectorManageTab} />
     ) : activeMenu === "files" ? (
-      <FilesView />
+      <LibraryView />
     ) : (
       threadNode
     );
@@ -930,9 +930,9 @@ export const Base: FC = () => {
   // 窗口右缘即面板，收起入口与 Windows 窗口控件上移到面板顶栏；
   // 窄屏浮层或面板收没时它们仍留在 Header
   const panelDocked = !compact && !panelGone;
-  // 右上角控件交接完成（展开动画落位那一帧，base 的 panelExpanding 翻假）：
-  // 面板顶栏的收起/全屏按钮此刻才从冻结裁剪区外进可视区，Header 侧窗口控件
-  // 也在此刻让位。两侧同帧翻转，两侧都据此铺过渡（Header docked / 面板 settled）
+  // 右上角控件交接完成（展开动画落位那一帧，panelExpanding 翻假）：Header 侧
+  // Windows 窗口控件此刻让位给面板顶栏（面板顶栏的按钮已改为随动画从第一帧
+  // 起就在右缘，不再按落位信号延迟淡入）
   const panelDockSettled = panelDocked && !panelExpanding;
 
   // TRAE 式左右两列：Header 只挂在聊天列上方，分割线从窗口顶通到底；
@@ -990,18 +990,13 @@ export const Base: FC = () => {
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={toggleSidebar}
           onOpenMobileSidebar={openMobileSidebar}
-          // 折叠按钮跟视觉状态走：面板完全收没（收起动画播完）才在
-          // Header 露出展开按钮，避免动画途中按钮提前跳出来闪一下；
-          // 显示闸关着（非对话页）时根本没有可展开的面板，不露按钮。
-          // 新对话（空会话）例外：与终端按钮成对常驻（只留一个终端按钮
-          // 很突兀），点开走空会话旁路
-          showPanelToggle={
-            (panelGate || !threadHasContent) &&
-            (compact ? !panelShown : panelGone)
-          }
+          // 面板开关与左侧侧栏展开按钮同款：开合状态一翻就淡入/淡出
+          // （150ms），槽位宽度由 Header 自身按同一条 300ms 曲线收放——
+          // 不再等开合动画播完才出现/消失（那样会留一段空槽，观感发跳）
+          showPanelToggle={!panelShown}
           onTogglePanel={toggleUserPanelOpen}
           docked={panelDockSettled}
-          panelDocked={panelDocked}
+          panelShown={panelShown}
           variant={
             activeMenu === "automation" ||
             activeMenu === "usage" ||
@@ -1010,6 +1005,8 @@ export const Base: FC = () => {
               ? "page"
               : "session"
           }
+          // 资料库的工具条是注入进这条 Header 的，要在它与内容之间留一条分割线
+          pageDivided={activeMenu === "files"}
         />
       </div>
       <div className="relative z-10 flex-1 overflow-hidden">
@@ -1201,15 +1198,24 @@ export const Base: FC = () => {
                     }}
                 >
                   {panelEverOpened ? (
-                    // 冻结容器：开合动画期间内容宽定格（panelFrozenPx），随
-                    // 面板收窄被裁剪滑出（与侧边栏折叠同款，零每帧重排）；
-                    // 拖拽/静止态不冻结，内容 100% 跟手。
+                    // 冻结容器：开合动画期间内容宽定格（panelFrozenPx），零
+                    // 每帧重排；拖拽/静止态不冻结，内容 100% 跟手。
                     // 收起态改用 panelContentW 继续定格（目标宽）：内容不塌回
-                    // 0 宽，展开时就没有"首次布局"那一下——这正是展开比收起
-                    // 卡、观感发涩的来源（收起方向本来就排好版了，所以流畅）
-                    <div className="h-full overflow-hidden">
+                    // 0 宽，展开时就没有"首次布局"那一下。
+                    // 定格时**右锚定**：面板右缘（顶栏动作、窗口控件）钉在窗口
+                    // 右缘不动，左缘随面板收放扫过内容。原先左锚定会让内容随
+                    // 左缘平移、右半（含收起/全屏按钮）被裁在面板外——动画期间
+                    // 那组按钮整个不可见、落位后才淡入（实报"折叠按钮显示很
+                    // 奇怪"）；右锚定后它们从动画第一帧起就在位，自然被面板
+                    // 边缘裁切进出，和侧边栏折叠的观感一致
+                    <div className="relative h-full overflow-hidden">
                       <div
-                        className="h-full"
+                        className={cn(
+                          "h-full",
+                          (panelFrozenPx !== null ||
+                            (panelGone && panelContentW !== null)) &&
+                            "absolute inset-y-0 right-0",
+                        )}
                         style={
                           panelFrozenPx !== null
                             ? { width: panelFrozenPx }
@@ -1221,7 +1227,6 @@ export const Base: FC = () => {
                         <AgentPanel
                           onCollapse={exitAndCollapsePanel}
                           showWindowControls={panelDocked}
-                          settled={panelDockSettled}
                           fullscreen={panelFullscreen}
                           contentFrozenPx={panelDragFrozenPx}
                           onToggleFullscreen={togglePanelFullscreen}

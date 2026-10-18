@@ -4,3 +4,5 @@
  */
 export { ChannelBase as Channel, invokeBridge as invoke } from "./_host";
 export type { InvokeResult } from "./_host";
+/** 拖拽 File → 磁盘绝对路径（资料库拖入导入用；无路径返回 null） */
+export { filePathOf } from "./_host";

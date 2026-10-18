@@ -41,6 +41,9 @@ export function initPaths(): void {
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(join(dataDir, "sessions"), { recursive: true });
   mkdirSync(join(dataDir, "task-workspace"), { recursive: true });
+  // 资料库缺省根（用户改过位置时由 library.ts 的 ensureLibraryRoot 兜住；
+  // 此处先建缺省目录，页面首帧即有空树而不是读取失败）
+  mkdirSync(join(dataDir, "library"), { recursive: true });
 }
 
 /** app data 目录（= 旧桌面壳 app_data_dir） */

@@ -6,6 +6,8 @@ import { register, makeChannelPusher, isChannelArg, type CmdCtx } from "./ipc";
 import { setupStoreCommands } from "./store";
 import { setupLoggingCommands } from "./logging";
 import { setupFsCommands } from "./fs-cmds";
+import { setupLibraryCommands } from "./library-cmds";
+import { ensureLibraryRoot } from "./library";
 import { setupNotifyCommands } from "./notify";
 import { setupWebhookCommands } from "./webhook";
 import { setupAboutCommands } from "./about";
@@ -26,6 +28,10 @@ export function registerAllCommands(): void {
   setupStoreCommands(register);
   setupLoggingCommands(register);
   setupFsCommands(register);
+  // 资料库：注册命令前先确保根目录在位（用户改过位置也照样建；index.ts 里
+  // initStore 先于本函数，kv 可读）
+  ensureLibraryRoot();
+  setupLibraryCommands(register);
   setupNotifyCommands(register);
   setupWebhookCommands(register);
   setupAboutCommands(register);
