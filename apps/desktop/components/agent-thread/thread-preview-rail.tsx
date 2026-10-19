@@ -14,6 +14,7 @@ import { getMessagePreview } from "@/components/custom-ui/message-scroller";
 import { EASE_OUT } from "@/lib/motion/ease";
 import { pickRoundAnchors } from "@/lib/panels/message-round-anchors";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
+import { cn } from "@/lib/utils";
 import { noteRender } from "@/components/debug/perf-store";
 import { yieldViewportScroll } from "./viewport-scroll-manager";
 
@@ -38,8 +39,20 @@ const USER_SURFACE_SELECTOR = ".aui-user-message-content";
 // 距顶/距底小于该值时，直接把首/尾刻度视为激活项
 const ACTIVE_EDGE_THRESHOLD = 56;
 const MAX_ITEM_SIZE = 18;
-/** 最小行距要容得下 8px 圆点还留 2px 缝，否则轮次一多点就连成串了 */
-const MIN_ITEM_SIZE = 10;
+/** 行距下限（可读）：低于此值圆点会连成一条虚线。行距不够时**不再压缩**，
+ *  改为盒内滚动（见 MAX_RAIL_BOX_HEIGHT）——旧实现压缩到 10px，轮次一多就成了
+ *  一条穿满整列的虚线，看着像坏掉了 */
+const MIN_ITEM_PITCH = 16;
+/** 刻度总高之外留的上下呼吸位（py-1 + content-center 的余量） */
+const RAIL_VERTICAL_PADDING = 24;
+/** 盒高下限（px）：可用高度低于它整条隐藏——与宽度规则同款（消息列太窄不画）。
+ *  终端打开 / 窗口压矮后画出来只是一堆挤在角落的刻度，不如不画 */
+const MIN_RAIL_BOX_HEIGHT = 200;
+/** 盒高上限（px）：超过就定高，刻度在盒内滚动（不出现滚动条，靠 activeId 跟手）。
+ *  与 RAIL_AVAILABLE_CLASS 的 max-h 保持一致（Tailwind 无法吃动态值，改一处要改两处） */
+const MAX_RAIL_BOX_HEIGHT = 560;
+/** 可用高度的 class 化（含下/上限）：盒高由 CSS 决定，行距按同一套数值算 */
+const RAIL_AVAILABLE_CLASS = "max-h-[560px]";
 /** 消息列窄于此宽度（px）就不画刻度条：预览卡从左缘伸到 ~300px，列宽不够宽时
  *  卡片右侧剩下的正文比被它盖住的还少，悬停预览反而挡住正在读的那条消息。
  *  只在面板拖到很宽、把聊天列挤到接近其下限（CHAT_MIN_WIDTH = 380）时才命中 */
@@ -403,24 +416,54 @@ export function ThreadPreviewRail() {
     [items, reduce],
   );
 
+
   // 单轮对话只有一个刻度也显示：内容溢出时仍可悬停预览/点击跳底。
   // 宽度未量到（首帧 ResizeObserver 还没回调）时先不画，避免宽列也闪一下。
   // 正文左缘到刻度条右缘不足 RAIL_TEXT_GAP 时同样隐藏：消息列收窄后正文会
-  // 贴到视口左缘，硬画就是刻度压字（见上面 contentLeft 的注释）
+  // 贴到视口左缘，硬画就是刻度压字（见上面 contentLeft 的注释）。
+  // 高度同理（MIN_RAIL_BOX_HEIGHT）：终端打开/窗口压矮后可用高度不够，画出来
+  // 只是一堆挤在角落的刻度——与宽度规则同款，放不下就不画。
+  const railBoxHeight = Math.min(railHeight, MAX_RAIL_BOX_HEIGHT);
   const showRail =
     overflowing &&
     items.length > 0 &&
     messageWidth >= MIN_MESSAGE_WIDTH &&
-    contentLeft >= RAIL_LEFT + RAIL_WIDTH + RAIL_TEXT_GAP;
+    contentLeft >= RAIL_LEFT + RAIL_WIDTH + RAIL_TEXT_GAP &&
+    railBoxHeight >= MIN_RAIL_BOX_HEIGHT;
+  // 行距：盒内摊开、上限 18、下限 16（可读）；算不满就由盒内滚动承接（不再压缩成虚线）
   const itemSize = showRail
-    ? Math.max(
-        MIN_ITEM_SIZE,
-        Math.min(
-          MAX_ITEM_SIZE,
-          Math.floor((railHeight - 24) / Math.max(items.length, 1)),
+    ? Math.min(
+        MAX_ITEM_SIZE,
+        Math.max(
+          MIN_ITEM_PITCH,
+          Math.floor(
+            (railBoxHeight - RAIL_VERTICAL_PADDING) / Math.max(items.length, 1),
+          ),
         ),
       )
     : MAX_ITEM_SIZE;
+  /** 滚动内容高度：刻度总高 + 呼吸位；短于盒子时 min-h-full 拉伸、content-center 居中 */
+  const railContentHeight = items.length * itemSize + RAIL_VERTICAL_PADDING;
+  /** 盒内是否有可滚动的余量（激活刻度跟手只在此时动作，避免无谓写 scrollTop） */
+  const railScrollable = showRail && railContentHeight > railBoxHeight + 1;
+
+  // 盒内滚动时激活刻度必须跟手：滚动后高亮的那枚若被滚出盒子，接口就没意义了。
+  // 直接写 scrollTop（不用 scrollIntoView——它会连带滚动祖先，把消息列表也带跑）
+  useEffect(() => {
+    if (!railScrollable || !activeId) return;
+    const host = rootRef.current?.querySelector<HTMLElement>(
+      '[data-slot="preview-rail-scroll"]',
+    );
+    const tick = host?.querySelector<HTMLElement>(
+      `[data-item-id="${CSS.escape(activeId)}"]`,
+    );
+    if (!host || !tick) return;
+    // tick.offsetTop 相对绝对的 nav，而 nav 铺满内容盒 ⇒ 与宿主内容坐标同系
+    const target = tick.offsetTop + tick.offsetHeight / 2 - host.clientHeight / 2;
+    const max = Math.max(0, host.scrollHeight - host.clientHeight);
+    const next = Math.max(0, Math.min(target, max));
+    if (Math.abs(host.scrollTop - next) > 4) host.scrollTop = next;
+  }, [railScrollable, activeId, items.length, itemSize]);
 
   // 预览卡与 DefaultPreview 同结构（data-slot 对齐 previewClassName 的样式钩子），
   // 文本取自悬停当下的实时 DOM
@@ -502,8 +545,16 @@ export function ThreadPreviewRail() {
               itemSize={itemSize}
               className="h-full min-h-0"
               previewContainerClassName="inset-y-0 left-9 right-3"
+              // 盒高上限 + 内部滚动（滚动条隐藏：刻度条是装饰性导航，出现滚动条反而更吵）；
+              // overscroll-contain 让滚到头的滚轮不再传给消息列表
+              scrollContainerClassName={cn(
+                "h-full self-center overflow-y-auto overscroll-contain",
+                "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                RAIL_AVAILABLE_CLASS,
+              )}
+              contentStyle={{ height: railContentHeight }}
               previewClassName="ml-2 w-80 max-w-full [&_[data-slot=preview-rail-card]]:h-28 [&_[data-slot=preview-rail-card]]:overflow-hidden [&_[data-slot=preview-rail-card]]:p-4 [&_[data-slot=preview-rail-title]]:line-clamp-1 [&_[data-slot=preview-rail-title]]:text-sm [&_[data-slot=preview-rail-title]]:leading-5 [&_[data-slot=preview-rail-description]]:line-clamp-3 [&_[data-slot=preview-rail-description]]:text-sm [&_[data-slot=preview-rail-description]]:leading-5"
-              railClassName="absolute inset-y-3 left-2 w-6 content-center py-1 [&_[data-slot=preview-rail-item]]:pointer-events-auto [&_[data-slot=preview-rail-item]]:w-6 [&_[data-slot=preview-rail-item]]:justify-center"
+              railClassName="absolute inset-y-0 left-2 w-6 content-center py-1 [&_[data-slot=preview-rail-item]]:pointer-events-auto [&_[data-slot=preview-rail-item]]:w-6 [&_[data-slot=preview-rail-item]]:justify-center"
             />
           </motion.div>
         ) : null}
