@@ -54,10 +54,24 @@ const extOf = (name: string) =>
 /** 自动保存防抖（输入停顿多久落盘） */
 const AUTOSAVE_DELAY_MS = 800;
 
+/** SVG 源码 → data URL（用 <img> 渲染：外部资源与脚本都不执行，比 iframe 安全） */
+function svgDataUrl(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, CHUNK + i));
+  }
+  return `data:image/svg+xml;base64,${btoa(binary)}`;
+}
+
 /** 文件内容就绪后的分支类型 */
-type BodyKind = "image" | "html" | "markdown" | "code" | "text" | "unsupported";
+type BodyKind = "image" | "svg" | "html" | "markdown" | "code" | "text" | "unsupported";
 
 function bodyKindOf(name: string): BodyKind {
+  // svg 是文本：走"预览（<img> 渲染，脚本不执行）/ 编辑（源码）"双态，
+  // 不归图片（图片分支是 base64 二进制读，不给编辑）
+  if (/\.svg$/i.test(name)) return "svg";
   if (imageMimeFor(name)) return "image";
   if (/\.html?$/i.test(name)) return "html";
   if (MARKDOWN_RE.test(name)) return "markdown";
@@ -264,8 +278,8 @@ const TextBody: FC<{
   truncated: boolean;
   defaultEdit: boolean;
 }> = ({ cwd, rel, name, kind, initial, truncated, defaultEdit }) => {
-  /** 可切换预览的文件（md 渲染 / html 页面）；其余文本编辑态即预览 */
-  const hasPreview = kind === "markdown" || kind === "html";
+  /** 可切换预览的文件（md 渲染 / html 页面 / svg 图形）；其余文本编辑态即预览 */
+  const hasPreview = kind === "markdown" || kind === "html" || kind === "svg";
   const [mode, setMode] = useState<"preview" | "edit">(
     hasPreview && !defaultEdit ? "preview" : "edit",
   );
@@ -386,6 +400,25 @@ const TextBody: FC<{
             <div className="mx-auto w-full max-w-3xl">
               <MarkdownText text={draft} />
             </div>
+          </div>
+        ) : mode === "preview" && kind === "svg" ? (
+          /* SVG：<img> 渲染 data URL（脚本/外部资源不执行，比 iframe 安全）；
+           * 棋盘底便于看清透明区域 */
+          <div
+            className="flex h-full items-center justify-center overflow-auto p-4"
+            style={{
+              backgroundImage:
+                "repeating-conic-gradient(rgba(0,0,0,0.06) 0 25%, transparent 0 50%)",
+              backgroundSize: "16px 16px",
+            }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={svgDataUrl(draft)}
+              alt={name}
+              draggable={false}
+              className="max-h-full max-w-full object-contain"
+            />
           </div>
         ) : mode === "preview" && kind === "html" ? (
           /* HTML：iframe 渲染（sandbox 不给 allow-same-origin，脚本可跑但与宿主
