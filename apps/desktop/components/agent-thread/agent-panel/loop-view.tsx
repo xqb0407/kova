@@ -166,13 +166,13 @@ const StepRow: FC<{
       {/* token 列：只 llm step 有（工具不耗 token）。input = 该次请求带入的
           上下文总量，逐轮累积——扫一眼就知道循环贵在哪一轮 */}
       <span
-        className="text-muted-foreground/80 w-14 shrink-0 text-right text-[10px] tabular-nums"
+        className="text-muted-foreground/80 w-14 shrink-0 text-right text-[11px] tabular-nums"
         title={step.usage ? `入 ${step.usage.input} · 出 ${step.usage.output}` : undefined}
       >
         {step.usage ? `↑${fmtTok(step.usage.input)}` : ""}
       </span>
 
-      <span className="text-muted-foreground w-12 shrink-0 text-right text-[10px] tabular-nums">
+      <span className="text-muted-foreground w-12 shrink-0 text-right text-[11px] tabular-nums">
         {open ? "…" : step.durationMs != null ? fmtMs(step.durationMs) : ""}
       </span>
 
@@ -224,7 +224,7 @@ const IterationBand: FC<{
     >
       {/* 带头：序号 + 意图 + 本轮 token + 耗时 */}
       <div className="flex items-baseline gap-2 border-b px-2.5 py-1.5">
-        <span className="text-muted-foreground shrink-0 text-[10px] font-medium tracking-wide uppercase">
+        <span className="text-muted-foreground shrink-0 text-[11px] font-medium tracking-wide uppercase">
           迭代 {iteration.index}
         </span>
         <span className="text-foreground min-w-0 flex-1 truncate text-[12px] leading-[1.35]">
@@ -232,14 +232,14 @@ const IterationBand: FC<{
         </span>
         {ctx != null ? (
           <span
-            className="text-muted-foreground shrink-0 text-[10px] tabular-nums"
+            className="text-muted-foreground shrink-0 text-[11px] tabular-nums"
             title={`本轮结束时上下文 ${ctx} tok`}
           >
             上下文 {fmtTok(ctx)}
             {usage ? ` · 出 ${fmtTok(usage.output)}` : ""}
           </span>
         ) : null}
-        <span className="text-muted-foreground shrink-0 text-[10px] tabular-nums">
+        <span className="text-muted-foreground shrink-0 text-[11px] tabular-nums">
           {fmtMs(span)}
         </span>
       </div>
@@ -268,7 +268,7 @@ const FeedBackEdge: FC<{ label: string | undefined }> = ({ label }) => (
       <span className="bg-border h-2 w-px" />
       <ArrowDownIcon className="size-3 -translate-y-1" />
     </span>
-    <span className="text-muted-foreground/70 min-w-0 truncate text-[10px]">
+    <span className="text-muted-foreground/70 min-w-0 truncate text-[11px]">
       {label ? `结果回喂 · ${label}` : "结果回喂"}
     </span>
   </div>
@@ -285,7 +285,7 @@ const NestedRun: FC<{
   const total = runDuration(run, running) ?? 1;
   return (
     <div className="border-primary/40 ml-3 border-l-2 pl-2.5">
-      <div className="text-muted-foreground flex items-center gap-1.5 py-1 text-[10px]">
+      <div className="text-muted-foreground flex items-center gap-1.5 py-1 text-[11px]">
         <BotIcon className="text-primary size-3" />
         <span className="text-foreground font-medium">子代理</span>
         <span>{run.model}</span>
@@ -356,7 +356,7 @@ export const RunSpine: FC<{
             meta?.tone === "error" && "border-red-500/25 bg-red-500/[0.05]",
           )}
         >
-          <span className="text-muted-foreground shrink-0 text-[10px]">终止</span>
+          <span className="text-muted-foreground shrink-0 text-[11px]">终止</span>
           <span
             className={cn(
               "shrink-0 font-medium",
@@ -430,22 +430,22 @@ export const RunRail: FC<{
                   {fmtClock(run.startMs)}
                 </span>
                 {isLive ? (
-                  <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                  <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
                     进行中
                   </span>
                 ) : null}
-                <span className="text-muted-foreground ml-auto shrink-0 text-[10px] tabular-nums">
+                <span className="text-muted-foreground ml-auto shrink-0 text-[11px] tabular-nums">
                   {dur != null ? fmtMs(dur) : ""}
                 </span>
               </span>
-              <span className="text-muted-foreground flex items-center gap-1.5 pl-3 text-[11px]">
+              <span className="text-muted-foreground flex items-center gap-1.5 pl-3 text-[12px]">
                 <span className="min-w-0 truncate">{run.model}</span>
                 <span className="shrink-0">· {countIterations(run)} 迭代</span>
                 {countFailures(run) > 0 ? (
                   <span className="shrink-0 text-red-500">{countFailures(run)} 失败</span>
                 ) : null}
               </span>
-              <span className="text-muted-foreground/70 flex items-center gap-1.5 pl-3 text-[10px]">
+              <span className="text-muted-foreground/70 flex items-center gap-1.5 pl-3 text-[11px]">
                 <span>{sourceLabel[run.source]}</span>
                 {(() => {
                   const u = runUsage(run);
@@ -463,14 +463,14 @@ export const RunRail: FC<{
 
       {/* 会话汇总：跨 run 的模式，单个 run 的瀑布看不出来 */}
       <div className="border-t px-2.5 py-2">
-        <div className="text-muted-foreground mb-1.5 text-[10px]">会话汇总</div>
-        <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px]">
+        <div className="text-muted-foreground mb-1.5 text-[11px]">会话汇总</div>
+        <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[12px]">
           <Stat label="运行" value={runs.length} />
           <Stat label="迭代" value={total.iterations} />
           <Stat label="失败" value={total.failures} tone={total.failures > 0 ? "error" : undefined} />
           <Stat label="重试" value={total.retries} tone={total.retries > 0 ? "warn" : undefined} />
         </div>
-        <div className="text-muted-foreground mt-1.5 flex items-center gap-2 border-t pt-1.5 text-[10px]">
+        <div className="text-muted-foreground mt-1.5 flex items-center gap-2 border-t pt-1.5 text-[11px]">
           <span className="tabular-nums">
             ↑ {total.input.toLocaleString()}
           </span>
@@ -534,7 +534,7 @@ export const FilterBar: FC<{
         onClick={() => onChange({ ...filter, onlyProblems: !filter.onlyProblems })}
         data-active={filter.onlyProblems}
         className={cn(
-          "rounded border px-1.5 py-0.5 text-[11px]",
+          "rounded border px-1.5 py-0.5 text-[12px]",
           filter.onlyProblems
             ? "border-red-500/50 bg-red-500/10 text-red-600 dark:text-red-400"
             : "hover:bg-muted/60",
@@ -554,7 +554,7 @@ export const FilterBar: FC<{
             onClick={() => toggleTool(name)}
             data-active={on}
             className={cn(
-              "rounded border px-1.5 py-0.5 font-mono text-[11px]",
+              "rounded border px-1.5 py-0.5 font-mono text-[12px]",
               on
                 ? "border-primary/50 bg-primary/10 text-primary"
                 : "hover:bg-muted/60 text-muted-foreground",
@@ -565,14 +565,14 @@ export const FilterBar: FC<{
         );
       })}
 
-      <span className="text-muted-foreground ml-auto text-[10px] tabular-nums">
+      <span className="text-muted-foreground ml-auto text-[11px] tabular-nums">
         {matched}/{total} 步
       </span>
       {active ? (
         <button
           type="button"
           onClick={() => onChange({ onlyProblems: false, tools: [] })}
-          className="hover:bg-muted/60 text-muted-foreground rounded px-1.5 py-0.5 text-[11px]"
+          className="hover:bg-muted/60 text-muted-foreground rounded px-1.5 py-0.5 text-[12px]"
         >
           清除
         </button>
@@ -585,7 +585,7 @@ export const FilterBar: FC<{
 
 const Field: FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <div className="mb-2">
-    <div className="text-muted-foreground mb-0.5 text-[10px] font-medium">{label}</div>
+    <div className="text-muted-foreground mb-0.5 text-[11px] font-medium">{label}</div>
     {children}
   </div>
 );
@@ -593,7 +593,7 @@ const Field: FC<{ label: string; children: React.ReactNode }> = ({ label, childr
 const CodeBlock: FC<{ children: React.ReactNode; tone?: "error" }> = ({ children, tone }) => (
   <pre
     className={cn(
-      "max-h-56 overflow-auto rounded p-2 font-mono text-[11px] leading-[1.45] break-all whitespace-pre-wrap",
+      "max-h-56 overflow-auto rounded p-2 font-mono text-[12px] leading-[1.45] break-all whitespace-pre-wrap",
       tone === "error" ? "bg-red-500/8 text-red-600 dark:text-red-400" : "bg-muted/40",
     )}
   >
@@ -630,13 +630,13 @@ export const StepInspector: FC<{
       <div className="mb-2.5 flex items-center gap-2">
         <Icon className="text-muted-foreground size-3.5 shrink-0" />
         <span className="text-foreground min-w-0 truncate font-medium">{step.name}</span>
-        <span className="text-muted-foreground ml-auto shrink-0 text-[10px] tabular-nums">
+        <span className="text-muted-foreground ml-auto shrink-0 text-[11px] tabular-nums">
           迭代 {iteration.index}/{run.iterations.length}
         </span>
       </div>
 
       {/* 状态条 */}
-      <div className="mb-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+      <div className="mb-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
         <span className="text-muted-foreground flex items-center gap-1">
           <ClockIcon className="size-3" />
           {open ? "进行中" : step.durationMs != null ? fmtMs(step.durationMs) : "—"}
@@ -674,7 +674,7 @@ export const StepInspector: FC<{
       {/* token 明细：input 就是这次请求带入的上下文总量 */}
       {step.usage ? (
         <Field label="token 用量">
-          <div className="bg-muted/40 space-y-1 rounded p-2 text-[11px] leading-[1.5]">
+          <div className="bg-muted/40 space-y-1 rounded p-2 text-[12px] leading-[1.5]">
             <div className="flex gap-2">
               <span className="text-muted-foreground w-20 shrink-0">输入（上下文）</span>
               <span className="tabular-nums">{step.usage.input.toLocaleString()}</span>
@@ -732,7 +732,7 @@ export const StepInspector: FC<{
 
       {step.retry ? (
         <Field label="重试详情">
-          <div className="bg-amber-500/8 space-y-1 rounded p-2 text-[11px] leading-[1.5]">
+          <div className="bg-amber-500/8 space-y-1 rounded p-2 text-[12px] leading-[1.5]">
             <div className="flex gap-2">
               <span className="text-muted-foreground w-16 shrink-0">第几次</span>
               <span className="tabular-nums">第 {step.retry.attempt} 次</span>
@@ -828,7 +828,7 @@ export const LoopExplorer: FC<{
       {toolbar ? (
         <div className="flex h-9 shrink-0 items-center gap-2 border-b px-2.5">
           {toolbar}
-          <span className="text-muted-foreground ml-auto shrink-0 text-[11px] tabular-nums">
+          <span className="text-muted-foreground ml-auto shrink-0 text-[12px] tabular-nums">
             {runs.length} 条运行
           </span>
         </div>
@@ -854,7 +854,7 @@ export const LoopExplorer: FC<{
           <ResizablePanel id="loop-spine" minSize={320} className="min-w-0">
             <div className="flex h-full min-h-0 flex-col">
               {/* run 概要 */}
-              <div className="text-muted-foreground flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-2 text-[11px]">
+              <div className="text-muted-foreground flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-2 text-[12px]">
                 <span className="text-foreground font-medium">{selectedRun.model}</span>
                 <span className="tabular-nums">{fmtClock(selectedRun.startMs)}</span>
                 <span className="tabular-nums">{selectedRun.iterations.length} 次迭代</span>

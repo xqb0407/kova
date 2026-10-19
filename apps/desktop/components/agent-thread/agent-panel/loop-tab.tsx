@@ -141,7 +141,7 @@ export const LoopTab: FC<{ tab: PanelTab }> = ({ tab }) => {
       toolbar={
         <>
           <WaypointsIcon className="text-muted-foreground size-3.5 shrink-0" />
-          <span className="text-muted-foreground text-[11px]">
+          <span className="text-muted-foreground text-[12px]">
             按迭代查看运行轨迹
           </span>
           <button
