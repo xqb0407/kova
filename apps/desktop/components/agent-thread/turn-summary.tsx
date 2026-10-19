@@ -242,18 +242,18 @@ const LiveElapsed: FC<{ running: boolean; startedAt: number | undefined }> = ({
 
   const elapsedMs =
     running && startedAt !== undefined ? Date.now() - startedAt : undefined;
-  // shimmer 的遮罩按当前文字形状栅格化：只罩"工作中"这几个不变的字，逐秒变化
-  // 的数字放在遮罩外，避免数字重影/半截（Chromium 的 -webkit-mask-clip 分支）。
+  // 只让不变的「工作中」扫光，逐秒变化的数字放在外面：文字长度每帧变化
+  // 会打断扫光节奏，也让读秒显得闪烁。
   if (elapsedMs === undefined || elapsedMs < 1000) {
     return (
-      <span className="tabular-nums shimmer shimmer-speed-200 motion-reduce:animate-none">
+      <span className="tabular-nums shimmer">
         工作中
       </span>
     );
   }
   return (
     <span className="tabular-nums">
-      <span className="shimmer shimmer-speed-200 motion-reduce:animate-none">工作中</span>
+      <span className="shimmer">工作中</span>
       {` ${formatDuration(elapsedMs)}`}
     </span>
   );

@@ -3,7 +3,6 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "tw-glass";
-@import "tw-shimmer";
 @plugin "tailwind-scrollbar";
 /* @source "../../../packages/ui/src"; */
 /* Tailwind v4 的 @source 相对本 CSS 文件所在目录解析：app/styles 下要上跳两级才到 apps/desktop */
@@ -173,17 +172,6 @@
   --color-sidebar-ring: var(--sidebar-ring);
 
 
-  @keyframes shimmer-sweep {
-    from {
-      background-position: 150% 0;
-    }
-    to {
-      background-position: -100% 0;
-    }
-  }
-  --animate-shimmer: shimmer-sweep var(--shimmer-duration, 1000ms) linear
-  infinite both;
-
   /* 提示词优化进行中遮罩（prompt-optimize-overlay）：
      星标上下浮动 / 芯片外发光脉冲（透遮罩呼吸）；边框流光的 keyframes
      与 .aui-optimize-ring 在文件末尾（@property 需顶级注册） */
@@ -211,17 +199,61 @@
   --animate-optimize-glow: optimize-glow 1.6s ease-in-out infinite;
 }
 
-/* tw-shimmer 高亮带亮色模式修正：库默认把扫光带画成 20% 透明的 currentColor
-   （Chromium 走 ::before 白遮罩路径），是为深色背景设计的——白带在黑底上醒目。
-   亮色底上这条白带会把文字「刷没」：加载态文案（「正在思考中」随机文案、
-   「工作中」、压缩横幅、工具组等全部 shimmer 文本）扫到带心时几乎不可见，
-   观感像文字闪烁/缺半截，与字重无关。亮色下把带色改成满前景色（比正文更深，
-   扫过是「加深」而非「刷白」），暗色保持库默认（白/亮带）。.shimmer-bg 是
-   背景遮罩变体，不吃文字遮罩，排除在外。 */
-html:not(.dark) .shimmer:not(.shimmer-bg) {
-  /* 用 :root 的原始 --foreground 令牌；--color-foreground 只是 @theme inline
-     的间接名，inline 模式不把它落到 :root，var() 会解析为空回退成白色 */
-  --shimmer-color: var(--foreground);
+/* 统一扫光（消息列表状态文案、工具行标签、面板进行中文案共用一套）：
+   直接给文字做 background-clip:text 渐变（对齐 ZCode 的 animated-gradient-text）。
+   原 tw-shimmer 在 Chromium 下走 -webkit-mask-clip:text + 伪元素叠加：文字会被
+   压成独立图层，Windows 上丢次像素抗锯齿、高 DPI 下发虚；短标签（「终端」）
+   的扫光带还会大部分时间落在元素外。这里改成渐变直接填充文字，并主动提升
+   合成层，避免 background-position 动画期间反复重绘文字。
+
+   基色必须用 currentColor（调用点自己的 text-* 颜色，保持文本颜色不变），
+   高光带取同色 22% 透明度；不能设 color: transparent——那样 currentColor
+   也会变透明，基色就丢了。只让 -webkit-text-fill-color 透明，露出被裁剪的
+   背景渐变即可。 */
+.shimmer {
+  display: inline-block;
+  background-image: linear-gradient(
+    90deg,
+    currentColor 0%,
+    currentColor 34%,
+    color-mix(in srgb, currentColor 22%, transparent) 50%,
+    currentColor 66%,
+    currentColor 100%
+  );
+  background-size: 300% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: text-shimmer-flow 4s linear infinite;
+  will-change: background-position;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+@keyframes text-shimmer-flow {
+  0% {
+    background-position: 100% 0;
+  }
+  50%,
+  100% {
+    background-position: 0% 0;
+  }
+}
+
+/* 减弱动效：停在调用点自己的文字色（背景初始位置只露出 0–33% 的强色段），
+   文字仍可读，只是不再扫光 */
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+  }
+}
+
+/* 强制高对比度模式：渐变填充可能被系统配色覆盖，退回普通文字色 */
+@media (forced-colors: active) {
+  .shimmer {
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
 }
 
 :root {
@@ -288,6 +320,9 @@ html:not(.dark) .shimmer:not(.shimmer-bg) {
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+  /* 拖放落点提示色（文件树的文件夹行整圈描边）：主色压到 45% 透明，
+     浅色主题下才不会是一条黑杠 */
+  --drop-line: color-mix(in oklab, var(--primary) 45%, transparent);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);

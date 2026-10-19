@@ -258,7 +258,7 @@ const AssistantWorkingIndicator: FC = () => {
   const isEmpty = useAuiState((s) => s.message.content.length === 0);
   // 随机加载文案：挂载时定一条、每 5 秒换一条。绝不能在 render 里现摇——
   // 父组件 AssistantMessage 未 memo，工具进度/排队数变化都会让它重渲染，
-  // 现摇会让这行文案每帧跳字（与 shimmer 扫光的「刷白」叠加，观感即糊）。
+  // 现摇会让这行文案每帧跳字，扫光扫到一半换字观感更糊。
   const [phrase, setPhrase] = useState(randomLoadingPhrase);
   useEffect(() => {
     const t = setInterval(() => setPhrase(randomLoadingPhrase()), 5000);
@@ -273,7 +273,7 @@ const AssistantWorkingIndicator: FC = () => {
     >
       {/* 等待动画：内容为空=连接中；已有内容但模型/工具间隙=加载态点阵 */}
       <DotMatrix state={isEmpty ? "connecting" : "loading"} aria-hidden />
-      <span className="shimmer-reverse text-foreground/60 text-sm">
+      <span className="shimmer text-foreground/60 text-sm">
         {isEmpty ? "连接中..." : phrase}
       </span>
     </span>

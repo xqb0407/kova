@@ -64,8 +64,10 @@ import {
   FileTreeFile,
   FileTreeFolder,
   type FileTreeRowDragHandlers,
+  type FileTreeRowDragSource,
 } from "@/components/custom-ui/file-tree";
 import { filePathOf } from "@/desktop-bridge/core";
+import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -96,6 +98,13 @@ import {
 
 const joinRel = (parent: string, name: string) =>
   parent ? `${parent}/${name}` : name;
+
+/** 树内拖动载荷的 MIME：外部文件拖入（DataTransfer.files）与树内移动（本类型）
+ *  靠它区分——前者走导入，后者走移动 */
+const TREE_DRAG_MIME = "application/x-kova-tree-rel";
+
+/** 拖拽悬停在收起的文件夹行上多久自动展开（macOS 弹性文件夹的手感） */
+const DRAG_HOVER_EXPAND_MS = 700;
 
 /** 文件/文件夹命名中不允许的字符（与 fs.rs is_bad_name 同规则） */
 const BAD_NAME_RE = /[\\/:*?"<>|]/;
@@ -141,6 +150,9 @@ export interface FileExplorerProps {
   onImport?: (dir: string) => void;
   /** 提供后文件夹行成为投放目标：外部文件拖到该行即导入该目录 */
   onDropPaths?: (paths: string[], dir: string) => void;
+  /** 提供后行可拖动（树内移动）：拖到文件夹行 / 空白区落进该目录或根。
+   *  返回 true 表示确实移动了（组件据此失效缓存重拉）；失败/原位返回 false */
+  onMoveRow?: (srcRel: string, destDir: string) => boolean | Promise<boolean>;
   /** 展开/选中记忆槽（"panel" / "library" / "artifacts" 各一份） */
   stateKey: string;
   /** 受控选中（资料库用来高亮右栏正在看的文件）；不给则组件自管 */
@@ -184,6 +196,8 @@ function renderEntries(
   labelForName: FileExplorerProps["labelForName"],
   dragForFolder?: (dir: string) => FileTreeRowDragHandlers | undefined,
   dropDir?: string | null,
+  dragSourceFor?: (rel: string) => FileTreeRowDragSource | undefined,
+  draggingRel?: string | null,
 ): ReactNode[] {
   const listing = getDir(cwd, rel);
   if (!listing) {
@@ -209,11 +223,13 @@ function renderEntries(
             onRowContextMenu(event, "folder", child, e.name)
           }
           dragHandlers={dragForFolder?.(child)}
-          className={
-            dropDir === child
-              ? "ring-primary/40 bg-primary/[0.07] ring-1 ring-inset"
-              : undefined
-          }
+          dragSource={dragSourceFor?.(child)}
+          className={cn(
+            // 投放目标：整圈描边（颜色与根区落点线同一个 --drop-line token）；
+            // 基础行已预留 1px 透明边框，所以这里只换颜色、不产生位移
+            dropDir === child && "border-[var(--drop-line)]",
+            draggingRel === child && "opacity-40",
+          )}
         >
           {expanded.has(child)
             ? renderEntries(
@@ -224,6 +240,8 @@ function renderEntries(
                 labelForName,
                 dragForFolder,
                 dropDir,
+                dragSourceFor,
+                draggingRel,
               )
             : null}
         </FileTreeFolder>
@@ -236,6 +254,8 @@ function renderEntries(
         name={labelForName?.(e.name, child, false) ?? e.name}
         icon={<FileTypeIcon path={e.name} />}
         onContextMenu={(event) => onRowContextMenu(event, "file", child, e.name)}
+        dragSource={dragSourceFor?.(child)}
+        className={cn(draggingRel === child && "opacity-50")}
       />
     );
   });
@@ -315,6 +335,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   onNewNote,
   onImport,
   onDropPaths,
+  onMoveRow,
   stateKey,
   selected: selectedProp,
   onSelectedChange,
@@ -335,6 +356,18 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   /** 拖拽悬停中的投放目录（文件夹行高亮） */
   const [dropDir, setDropDir] = useState<string | null>(null);
+  /** 悬停自动展开的计时器（拖动经过收起的文件夹时，停够时长就展开它） */
+  const hoverExpandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverExpandDirRef = useRef<string | null>(null);
+  const cancelHoverExpand = useCallback(() => {
+    if (hoverExpandTimerRef.current) {
+      clearTimeout(hoverExpandTimerRef.current);
+      hoverExpandTimerRef.current = null;
+    }
+    hoverExpandDirRef.current = null;
+  }, []);
+  /** 正在被拖动的行（淡化标记） */
+  const [draggingRel, setDraggingRel] = useState<string | null>(null);
   const expandedSet = useMemo(() => new Set(expanded), [expanded]);
 
   /** 选中写入：受控交给父级，非受控落本地 state（并始终外播） */
@@ -424,27 +457,56 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   );
 
   /**
-   * 文件夹行的拖放目标：悬停高亮 + 落下即导入该目录。
-   * 行上 stopPropagation——不让外层（资料库页整区的「落库根」投放）重复处理。
+   * 文件夹行的拖放目标：
+   * - 外部文件（DataTransfer.files）→ 导入该目录（onDropPaths）；
+   * - 树内拖动（TREE_DRAG_MIME）→ 移动进该目录（onMoveRow）。
+   * 两类都在行上 stopPropagation：不让外层（资料库页整区的落库根投放）重复处理。
    */
   const dragForFolder = useCallback(
     (dir: string): FileTreeRowDragHandlers | undefined => {
-      if (!onDropPaths) return undefined;
+      if (!onDropPaths && !onMoveRow) return undefined;
+      const isInternal = (e: React.DragEvent) =>
+        Array.from(e.dataTransfer?.types ?? []).includes(TREE_DRAG_MIME);
       return {
         onDragOver: (event) => {
           event.preventDefault();
           event.stopPropagation();
-          event.dataTransfer.dropEffect = "copy";
+          event.dataTransfer.dropEffect = isInternal(event) ? "move" : "copy";
           setDropDir((d) => (d === dir ? d : dir));
+          // 弹性文件夹：停在收起的目录上够久就自动展开，好继续往里拖
+          // （已展开的目录不排计时）
+          if (expandedSet.has(dir)) {
+            cancelHoverExpand();
+          } else if (hoverExpandDirRef.current !== dir) {
+            cancelHoverExpand();
+            hoverExpandDirRef.current = dir;
+            hoverExpandTimerRef.current = setTimeout(() => {
+              hoverExpandTimerRef.current = null;
+              hoverExpandDirRef.current = null;
+              setExpanded((prev) => (prev.includes(dir) ? prev : [...prev, dir]));
+            }, DRAG_HOVER_EXPAND_MS);
+          }
         },
         onDragLeave: (event) => {
           event.stopPropagation();
           setDropDir((d) => (d === dir ? null : d));
+          cancelHoverExpand();
         },
         onDrop: (event) => {
           event.preventDefault();
           event.stopPropagation();
           setDropDir(null);
+          cancelHoverExpand();
+          if (isInternal(event)) {
+            const src = event.dataTransfer.getData(TREE_DRAG_MIME);
+            if (src) {
+              void Promise.resolve(onMoveRow?.(src, dir)).then((changed) => {
+                if (changed) refreshTree();
+              });
+            }
+            return;
+          }
+          if (!onDropPaths) return;
           const paths = Array.from(event.dataTransfer?.files ?? [])
             .map((f) => filePathOf(f))
             .filter((p): p is string => Boolean(p));
@@ -456,8 +518,55 @@ export const FileExplorer: FC<FileExplorerProps> = ({
         },
       };
     },
-    [onDropPaths],
+    [onDropPaths, onMoveRow, refreshTree, expandedSet, cancelHoverExpand],
   );
+
+  /** 行作为拖拽源（树内移动）；拖动期间给源行加个淡化标记 */
+  const dragSourceFor = useCallback(
+    (rel: string): FileTreeRowDragSource | undefined => {
+      if (!onMoveRow) return undefined;
+      return {
+        onDragStart: (event) => {
+          event.stopPropagation();
+          event.dataTransfer.setData(TREE_DRAG_MIME, rel);
+          event.dataTransfer.effectAllowed = "move";
+          setDraggingRel(rel);
+        },
+        onDragEnd: () => {
+          setDraggingRel(null);
+          cancelHoverExpand();
+        },
+      };
+    },
+    [onMoveRow, cancelHoverExpand],
+  );
+
+  /**
+   * 树的空白区：接住树内拖动 → 移到该树的根（外部文件仍冒泡给页面处理）。
+   * 刻意**不给任何视觉**：这里覆盖的是整棵树的空白，画线/描边都会像"给最外层
+   * 加了个框"（用户实测反馈）；落根是显式拖拽动作，落点由移动结果与选中反馈。
+   */
+  const onRootDragOver = (event: React.DragEvent) => {
+    if (!onMoveRow) return;
+    if (!Array.from(event.dataTransfer?.types ?? []).includes(TREE_DRAG_MIME)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+  };
+  const onRootDrop = (event: React.DragEvent) => {
+    if (!onMoveRow) return;
+    if (!Array.from(event.dataTransfer?.types ?? []).includes(TREE_DRAG_MIME)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDropDir(null);
+    cancelHoverExpand();
+    const src = event.dataTransfer.getData(TREE_DRAG_MIME);
+    if (src) {
+      void Promise.resolve(onMoveRow?.(src, "")).then((changed) => {
+        if (changed) refreshTree();
+      });
+    }
+  };
 
   const reveal = async (rel: string) => {
     if (!rootCwd) return;
@@ -552,8 +661,10 @@ export const FileExplorer: FC<FileExplorerProps> = ({
             expandedSet,
             handleRowContextMenu,
             labelForName,
-            onDropPaths ? dragForFolder : undefined,
+            onDropPaths || onMoveRow ? dragForFolder : undefined,
             dropDir,
+            dragSourceFor,
+            draggingRel,
           )
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -566,6 +677,9 @@ export const FileExplorer: FC<FileExplorerProps> = ({
       dragForFolder,
       onDropPaths,
       dropDir,
+      dragSourceFor,
+      draggingRel,
+      onMoveRow,
     ],
   );
 
@@ -603,6 +717,8 @@ export const FileExplorer: FC<FileExplorerProps> = ({
           event.preventDefault();
           setMenu({ kind: "root", x: event.clientX, y: event.clientY });
         }}
+        onDragOver={onRootDragOver}
+        onDrop={onRootDrop}
       >
         {isEmptyRoot ? (
           <TreeEmptyState

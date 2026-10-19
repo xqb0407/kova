@@ -39,13 +39,13 @@ export function useLibraryActions(opts: {
       if (paths.length === 0) return;
       try {
         const r = await libraryImport(rel, paths);
-        if (r.imported.length === 0 && r.failed.length > 0) {
-          toast.error(`导入失败：${r.failed[0]?.error ?? "未知错误"}`);
-        } else {
-          const parts = [`已导入 ${r.imported.length} 项`];
-          if (r.renamed.length > 0) parts.push(`重名已加序号 ${r.renamed.length} 项`);
-          if (r.failed.length > 0) parts.push(`失败 ${r.failed.length} 项`);
-          toast.success(parts.join("，"));
+        // 成功不弹提示（文件直接出现在树里）；只有全失败/部分失败才提示
+        if (r.failed.length > 0) {
+          toast.error(
+            r.imported.length === 0
+              ? `导入失败：${r.failed[0]?.error ?? "未知错误"}`
+              : `${r.failed.length} 项导入失败：${r.failed[0]?.error ?? ""}`,
+          );
         }
         onChanged();
       } catch (e) {
