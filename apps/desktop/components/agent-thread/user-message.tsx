@@ -21,6 +21,8 @@ import { CmComposerInput } from "./cm-composer-input";
 import { CheckIcon, ChevronDownIcon, PencilIcon } from "lucide-react";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
+import { splitPromptNotices } from "@/lib/pi/prompt-notices";
+import type { TextMessagePartComponent } from "@assistant-ui/react";
 
 /**
  * 「已并入当前回复」消息（data-steeredNote part 存在，仅历史重建路径产生）：
@@ -34,8 +36,40 @@ function isSteeredNoteState(s: AssistantState): boolean {
   );
 }
 
+/** 用户气泡的文本渲染：剥掉 sidecar 给模型看的注记行（见 lib/pi/prompt-notices） */
+const NoticeStrippedText: TextMessagePartComponent = (props) => (
+  <DirectiveText {...props} text={splitPromptNotices(props.text ?? "").text} />
+);
+
+/** 气泡下方要告知用户的告警（图片被省略等）；返回字符串，选择器比较稳定 */
+const selectOmittedNotices = (s: AssistantState): string =>
+  s.message.content
+    .filter((p) => p.type === "text")
+    .flatMap((p) => splitPromptNotices(p.text).warnings)
+    .join("\n");
+
+/** 剥掉注记后的正文；空串 = 这条消息没有可显示的文字（如"只发了一张图"） */
+const selectCleanText = (s: AssistantState): string =>
+  s.message.content
+    .filter((p) => p.type === "text")
+    .map((p) => splitPromptNotices(p.text).text)
+    .join("\n")
+    .trim();
+
+/** 引用块存在 metadata.custom.quote（不占 content），有引用时气泡仍要显示 */
+const selectHasQuote = (s: AssistantState): boolean =>
+  Boolean(
+    (s.message.metadata as { custom?: { quote?: unknown } } | undefined)?.custom
+      ?.quote,
+  );
+
 export const UserMessage: FC = () => {
   const steered = useAuiState(isSteeredNoteState);
+  const omittedNotices = useAuiState(selectOmittedNotices);
+  const cleanText = useAuiState(selectCleanText);
+  const hasQuote = useAuiState(selectHasQuote);
+  // 只发图片/附件时，正文被注记剥离后为空——此时不该留一个空气泡
+  const showBubble = cleanText.length > 0 || hasQuote;
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
@@ -53,25 +87,46 @@ export const UserMessage: FC = () => {
             </span>
           </div>
         )}
-        {/* directiveChipVariants：DirectiveText 渲染的芯片 Badge 默认色与
-            bg-muted 气泡几乎同色，需容器显式挂蓝色配色（与 composer 同款） */}
-        <div
-          className={cn(
-            // 大圆角 + 右下角收小 = 会话气泡的「尖」（iMessage 式：指向发送者）
-            "aui-user-message-content peer bg-muted text-foreground rounded-xl rounded-br-sm px-4 py-2 wrap-break-word empty:hidden",
-            directiveChipVariants,
-          )}
-        >
-          <CollapsibleUserMessageContent>
-            <MessagePrimitive.Quote>
-              {(quote) => <QuoteBlock {...quote} />}
-            </MessagePrimitive.Quote>
-            <MessagePrimitive.Parts components={{ Text: DirectiveText }} />
-          </CollapsibleUserMessageContent>
-        </div>
-        <div className="aui-user-action-bar-wrapper absolute top-1/2 left-0 -translate-x-full -translate-y-1/2 pr-2 peer-empty:hidden">
-          <UserActionBar />
-        </div>
+        {showBubble && (
+          <>
+            {/* directiveChipVariants：DirectiveText 渲染的芯片 Badge 默认色与
+                bg-muted 气泡几乎同色，需容器显式挂蓝色配色（与 composer 同款） */}
+            <div
+              className={cn(
+                // 大圆角 + 右下角收小 = 会话气泡的「尖」（iMessage 式：指向发送者）
+                "aui-user-message-content peer bg-muted text-foreground rounded-xl rounded-br-sm px-4 py-2 wrap-break-word",
+                directiveChipVariants,
+              )}
+            >
+              <CollapsibleUserMessageContent>
+                <MessagePrimitive.Quote>
+                  {(quote) => <QuoteBlock {...quote} />}
+                </MessagePrimitive.Quote>
+                <MessagePrimitive.Parts
+                  components={{ Text: NoticeStrippedText }}
+                />
+              </CollapsibleUserMessageContent>
+            </div>
+          </>
+        )}
+        {/* 注记里的"已省略"是必须让用户知道的：图片没发出去。气泡下方一行小字 */}
+        {omittedNotices ? (
+          <div className="mt-1 flex flex-col gap-0.5 pl-0.5">
+            {omittedNotices.split("\n").map((line, i) => (
+              <span
+                key={`${i}-${line}`}
+                className="text-[11px] leading-snug text-amber-600 dark:text-amber-400"
+              >
+                {line}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {showBubble && (
+          <div className="aui-user-action-bar-wrapper absolute top-1/2 left-0 -translate-x-full -translate-y-1/2 pr-2 peer-empty:hidden">
+            <UserActionBar />
+          </div>
+        )}
       </div>
     </MessagePrimitive.Root>
   );

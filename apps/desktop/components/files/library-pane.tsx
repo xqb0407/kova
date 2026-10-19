@@ -120,7 +120,7 @@ const SectionHeader: FC<{
       <ChevronRightIcon className="text-muted-foreground/70 size-3.5 shrink-0" />
     )}
     <SectionIcon className="text-muted-foreground size-3.5 shrink-0" />
-    <span className="min-w-0 flex-1 truncate">{title}</span>
+    <span className="min-w-0 flex-1 truncate ">{title}</span>
     {trailing && (
       <span className="text-muted-foreground/60 shrink-0 text-[10px] tabular-nums">
         {trailing}
@@ -342,6 +342,11 @@ export const LibraryPane: FC<{
       onDropPaths={(paths, dir) => void actions.importPaths(paths, dir)}
       onMoveRow={(src, dir) => (root ? handleMoveRow(root, src, dir) : false)}
       selected={selected && selected.cwd === root ? selected.rel : null}
+      // 树的清空信号（删除文件/文件夹、选中的父目录被删）要传回页面，
+      // 否则右栏会停在已删除文件的旧内容上
+      onSelectedChange={(rel) => {
+        if (rel === null) onSelect(null);
+      }}
       stateKey="library"
       refreshSignal={refreshSignal}
       ariaLabel="资料库文件"
@@ -358,6 +363,9 @@ export const LibraryPane: FC<{
         artifactsRoot ? handleMoveRow(artifactsRoot, src, dir) : false
       }
       selected={selected && selected.cwd === artifactsRoot ? selected.rel : null}
+      onSelectedChange={(rel) => {
+        if (rel === null) onSelect(null);
+      }}
       stateKey="artifacts"
       refreshSignal={refreshSignal}
       ariaLabel="AI 产物文件"
@@ -404,7 +412,7 @@ export const LibraryPane: FC<{
               <>
                 <SectionHeader
                   icon={LibraryIcon}
-                  title="资料库"
+                  title="笔记"
                   open
                   onToggle={toggleLib}
                 />
