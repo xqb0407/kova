@@ -95,6 +95,9 @@ plugins/ui-design/design.html
 # AOCI agent host integration (machine-bound; do not commit)
 .mcp.json
 .mcp.json.backup.*
+# 例外：插件自带的 .mcp.json 是随包分发的插件源码（清单 mcpServers 声明的就是它，
+# 内置包收集口径也含它），必须入库——裸模式曾把它一并忽略，CI 干净检出因而缺件
+!plugins/*/.mcp.json
 *.key
 .aoci/
 aoci.code.txt

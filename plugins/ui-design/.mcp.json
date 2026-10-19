@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ui-design": {
+      "type": "stdio",
+      "command": "${BUN}",
+      "args": ["run", "${PLUGIN_ROOT}/mcp/server.ts"],
+      "env": { "KOVA_WORKSPACE": "${WORKSPACE}" },
+      "description": "UI 设计画布控制面：读写 *.uidesign.json —— 节点增删改 / 对齐分布 / 堆叠排版 / 成组 / 页面管理（与面板同一套文档模型，改动即时上屏）"
+    }
+  }
+}

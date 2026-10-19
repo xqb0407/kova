@@ -22,6 +22,7 @@
  *   闭包裸导入的 npm 依赖 vendor 进包内 node_modules（递归 dependencies；pnpm 布局
  *   经 realpath 收真身）——打包时缺依赖即失败，不带病出包
  * 校验：parsePluginManifest 必须过（名字与目录一致等硬错误即打包失败）；
+ * 清单声明的组件（skills/mcpServers/hooks/subagents/panels）必须存在且已收进包；
  * panels 声明的 entry 文件必须存在且不超面板资产上限（与 store 的 32MB 同口径）。
  */
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -308,6 +309,27 @@ export function buildPluginPackPlan(pluginsRoot: string): PluginPackPlan {
     const files = pluginFiles(pluginDir);
     if (files.length === 0) fail(`插件 ${name} 没有任何可分发文件`);
     const fileSet = new Set(files.map((f) => f.zipRel));
+
+    // 清单声明的组件必须存在且已收进包。manifest 层的缺失只记软诊断（安装照常、
+    // 加载层自然为空，第三方插件容忍残缺），但内置包是随 app 分发的首方产物：
+    // 缺件会静默残废——真实事故是 plugins/*/.mcp.json 被 .gitignore 误伤，CI
+    // 干净检出缺件后照样出包，发行版里 ui-design 的 MCP server 永不注册，且
+    // 连带 mcp 运行时闭包与依赖 vendor 都不触发。打包阶段直接失败，别带病出包。
+    for (const [key, rel] of Object.entries(manifest.components)) {
+      const abs = join(pluginDir, rel);
+      // skills/subagents 是目录组件，其余是单文件
+      const isDirComponent = key === "skills" || key === "subagents";
+      if (
+        !existsSync(abs) ||
+        (isDirComponent ? !statSync(abs).isDirectory() : !statSync(abs).isFile())
+      ) {
+        fail(`${name}: 清单声明的组件 ${key}（${rel}）不存在或类型不符`);
+      }
+      const collected = isDirComponent
+        ? [...fileSet].some((f) => f.startsWith(`${rel}/`))
+        : fileSet.has(rel);
+      if (!collected) fail(`${name}: 清单声明的组件 ${key}（${rel}）未被收集进包`);
+    }
 
     // 面板入口存在性 + 资产上限
     const panelsRel = manifest.components.panels;
