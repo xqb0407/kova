@@ -75,6 +75,7 @@ import {
   refreshMcpServers,
   revokeMcpServerAuth,
   saveMcpServer,
+  setMcpAuthHandler,
   setMcpServerEnabled,
   testMcpServer,
   useMcpServers,
@@ -85,6 +86,7 @@ import {
   type McpServerEntry,
   type McpServerIcon,
 } from "@/lib/mcp/mcp";
+import { openExternal } from "@/lib/external-link";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
 import { Label } from "@/components/ui/label";
 import { toast } from "@/components/ui/toast";
@@ -1355,8 +1357,15 @@ export const McpSettings: FC = () => {
   const [testResults, setTestResults] = useState<
     Record<string, "ok" | "fail">
   >({});
-  // OAuth 授权进行中的服务器名（sidecar 已开浏览器，等用户批准回跳）
+  // OAuth 授权受理中（第一阶段：等 sidecar 生成授权链接）
   const [authorizingName, setAuthorizingName] = useState<string | null>(null);
+  // 授权第二阶段：用户浏览器里的批准可能几分钟，受理应答把授权链接先挂在这里
+  // （含「浏览器没自动打开」的手动入口），结果帧到达即收起
+  const [pendingAuth, setPendingAuth] = useState<{
+    name: string;
+    authUrl: string;
+    browserOpened: boolean;
+  } | null>(null);
   // 最近一次授权/取消授权失败的完整文案。与 snap.error 严格分离：
   // 后者只代表清单加载失败，动作失败不该错标成「清单加载失败」
   const [authorizeError, setAuthorizeError] = useState<string | null>(null);
@@ -1423,20 +1432,59 @@ export const McpSettings: FC = () => {
     }
   };
 
-  // OAuth 授权：sidecar 打开浏览器等用户批准，可能几分钟，清单在成功后整体刷新。
+  // OAuth 授权（两段式）：第一阶段只等 sidecar 生成授权链接（秒级），拿到就把
+// 链接挂在页面上；用户在浏览器里批准可能几分钟，结果经 mcp_auth_result 自发帧
+// 回流——不再让一个请求占着几分钟（旧实现正是这样把 mgmt 队列堵死、全应用假死）。
   const authorize = async (entry: McpServerEntry) => {
     if (authorizingName) return;
     setAuthorizingName(entry.name);
     setAuthorizeError(null);
     try {
-      await authorizeMcpServer(
+      const started = await authorizeMcpServer(
         entry.name,
         entry.layer === "workspace" ? viewingCwd : undefined,
       );
+      if (started.authUrl) {
+        setPendingAuth({
+          name: entry.name,
+          authUrl: started.authUrl,
+          browserOpened: started.browserOpened === true,
+        });
+      } else {
+        // 握手没走到需要授权那一步（存量凭据仍有效，已直接连上）
+        toast.success({
+          title: `${entry.name} 已连接`,
+          description: "现有凭据仍然有效，无需重新授权。",
+        });
+      }
     } catch (err) {
       setAuthorizeError(`授权失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setAuthorizingName(null);
+    }
+  };
+
+  // 授权结果帧（第二阶段）：收起「等待授权」卡片，成功刷清单、失败呈现原因。
+  // 帧自带清单：cwd 一致时镜像已并入，不一致（本页在看别的目录）按本页重拉一次。
+  useEffect(() => {
+    setMcpAuthHandler((frame) => {
+      setPendingAuth((cur) => (cur && cur.name === frame.name ? null : cur));
+      if (!frame.ok) {
+        setAuthorizeError(`授权失败：${frame.errorText ?? "未知原因"}`);
+        return;
+      }
+      if (frame.workspaceCwd !== viewingCwd) void refreshMcpServers(viewingCwd);
+      toast.success({ title: `${frame.name} 授权完成` });
+    });
+    return () => setMcpAuthHandler(null);
+  }, [viewingCwd]);
+
+  const copyAuthUrl = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success({ title: "授权链接已复制" });
+    } catch {
+      toast.error({ title: "复制失败", description: "请手动选中链接复制。" });
     }
   };
 
@@ -1598,6 +1646,55 @@ export const McpSettings: FC = () => {
             </div>
           ) : null}
 
+          {/* 等待浏览器授权（第二阶段）：链接始终可见可复制——浏览器没自动打开
+              或用户关掉了标签页时，这里就是唯一可靠的重入点，别让长链接只躺在
+              超时错误文案里 */}
+          {pendingAuth ? (
+            <div
+              className="flex flex-col gap-2 rounded-xl border border-amber-600/30 bg-amber-500/5 px-3 py-2.5 text-sm"
+              role="status"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <span className="min-w-0">
+                  <span className="font-medium">等待「{pendingAuth.name}」授权</span>
+                  <span className="text-muted-foreground">
+                    {pendingAuth.browserOpened
+                      ? " ——已在系统浏览器打开授权页，完成授权后本页会自动更新。"
+                      : " ——未能自动打开浏览器，请手动打开下面的链接完成授权。"}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground shrink-0 text-xs underline-offset-2 hover:underline"
+                  onClick={() => setPendingAuth(null)}
+                >
+                  收起
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <code className="bg-muted min-w-0 flex-1 truncate rounded-lg px-2 py-1 font-mono text-[11px]">
+                  {pendingAuth.authUrl}
+                </code>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs"
+                  onClick={() => openExternal(pendingAuth.authUrl)}
+                >
+                  打开授权页
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs"
+                  onClick={() => void copyAuthUrl(pendingAuth.authUrl)}
+                >
+                  复制链接
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
           {/* 服务器列表卡片（记忆文件列表同款容器） */}
           <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
             {snap.error ? (
@@ -1627,7 +1724,7 @@ export const McpSettings: FC = () => {
                   workspaceCwd={snap.workspaceCwd}
                   testing={testingName === entry.name}
                   testResult={testResults[entry.name] ?? null}
-                  authorizing={authorizingName === entry.name}
+                  authorizing={authorizingName === entry.name || pendingAuth?.name === entry.name}
                   confirmingDelete={confirmDelete === `${entry.layer}:${entry.name}`}
                   onToggle={(enabled) => toggle(entry, enabled)}
                   onTest={() => void test(entry)}

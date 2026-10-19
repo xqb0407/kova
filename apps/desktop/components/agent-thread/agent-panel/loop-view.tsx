@@ -701,6 +701,14 @@ export const StepInspector: FC<{
         </Field>
       ) : null}
 
+      {/* 请求上下文放最前：这是"这一轮到底发了什么提示词"的唯一现场
+          （系统提示词 + 逐条消息，sidecar 在 streamFn 处快照） */}
+      {step.requestContext ? (
+        <Field label="请求上下文（系统提示词 + 消息）">
+          <CodeBlock>{step.requestContext}</CodeBlock>
+        </Field>
+      ) : null}
+
       {step.args != null ? (
         <Field label="入参">
           <CodeBlock>{JSON.stringify(step.args, null, 2)}</CodeBlock>
@@ -708,7 +716,7 @@ export const StepInspector: FC<{
       ) : null}
 
       {step.result ? (
-        <Field label="出参">
+        <Field label={step.kind === "llm" ? "回复" : "出参"}>
           <CodeBlock>{step.result}</CodeBlock>
         </Field>
       ) : null}

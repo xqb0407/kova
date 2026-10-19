@@ -896,6 +896,18 @@ export type PiMcpServerTestResponse = {
   status: PiMcpServerStatus;
 };
 
+/** authorize_mcp_server 受理应答（两段式第一阶段）：只等授权链接生成就返回。
+ *  浏览器里批准可达数分钟，最终结果经 mcp_auth_result 自发帧回流（PiMcpAuthFrame）。
+ *  authUrl 缺省 = 握手没走到需要授权那一步（如存量凭据仍有效）。 */
+export type PiMcpAuthStarted = {
+  type: "mcp_auth_started";
+  name: string;
+  authUrl?: string;
+  /** 浏览器是否成功拉起；false 时请用户手动打开 authUrl（别让链接只躺在错误文案里） */
+  browserOpened?: boolean;
+  status: PiMcpServerStatus;
+};
+
 /** MCP 连接错误日志一行（sidecar 环形缓冲，时间升序） */
 export type PiMcpLogLine = { at: number; message: string };
 
@@ -1140,6 +1152,7 @@ export type PiResponse =
   | PiDesignThemeSavedResponse
   | PiDesignThemeSetResponse
   | PiMcpServersResponse
+  | PiMcpAuthStarted
   | PiMcpServerTestResponse
   | PiMcpServerLogResponse
   | PiMcpServerToolsResponse

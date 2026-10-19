@@ -20,6 +20,7 @@ import {
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-mcp-config-"));
 const systemPath = path.join(tmp, "system-mcp.json");
 const prevConfig = process.env.PI_MCP_CONFIG;
+const prevPluginsDir = process.env.PI_PLUGINS_DIR;
 const cwd = path.join(tmp, "repo");
 
 const stdioDraft = (name: string, overrides: Partial<McpDraft> = {}): McpDraft => ({
@@ -32,12 +33,17 @@ const stdioDraft = (name: string, overrides: Partial<McpDraft> = {}): McpDraft =
 
 beforeAll(() => {
   process.env.PI_MCP_CONFIG = systemPath;
+  // 插件层也钉到 tmp：本机真实 ~/.kova/plugins/cache/builtin/* 物化过内置插件
+  // （ui-design 自带 .mcp.json），不清干净这些"精确条数"断言会凭空多出一条
+  process.env.PI_PLUGINS_DIR = path.join(tmp, "plugins");
   mkdirSync(cwd, { recursive: true });
 });
 
 afterAll(() => {
   if (prevConfig === undefined) delete process.env.PI_MCP_CONFIG;
   else process.env.PI_MCP_CONFIG = prevConfig;
+  if (prevPluginsDir === undefined) delete process.env.PI_PLUGINS_DIR;
+  else process.env.PI_PLUGINS_DIR = prevPluginsDir;
 });
 
 beforeEach(() => {

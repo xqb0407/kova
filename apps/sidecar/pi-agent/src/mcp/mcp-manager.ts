@@ -42,6 +42,10 @@ import { logErr } from "../log";
 
 export const MCP_CONNECT_TIMEOUT_MS = 10_000;
 export const MCP_CALL_TIMEOUT_MS = 120_000;
+/** 生成授权链接的等待上限（beginAuthorize 第一阶段）。超时说明授权流根本没起来
+ *  （受保护资源元数据发现 / DCR 卡住）：放弃本次授权并按失败上报，绝不让它继续
+ *  占着 mgmt 串行队列空转——旧实现同步等满 180s，整条队列连带全应用假死数分钟。 */
+export const MCP_AUTH_URL_TIMEOUT_MS = 30_000;
 /** 指数退避：30s 起步，每次连败翻倍，封顶 5min（对齐 pi-mcp-adapter failure-backoff） */
 export const MCP_BACKOFF_BASE_MS = 30_000;
 export const MCP_BACKOFF_MAX_MS = 300_000;
@@ -78,6 +82,17 @@ export type McpServerStatus = {
   oauthAuthorized?: boolean;
   /** 服务器握手时自报的图标（该配置从未握手成功则无） */
   icons?: McpServerIcon[];
+};
+
+/** 两段式交互式授权的第一阶段交付物（第二阶段经 completed 结算） */
+export type McpAuthStarted = {
+  /** 授权链接（生成时已尝试拉起浏览器）；缺省 = 握手没走到需要授权那一步 */
+  authUrl?: string;
+  /** 浏览器是否成功拉起（false = 请用户手动打开 authUrl） */
+  browserOpened?: boolean;
+  status: McpServerStatus;
+  /** 第二阶段结算：ok=true 表示已带凭据入池；失败给原因（不抛，协议层推自发帧） */
+  completed: Promise<{ ok: true } | { ok: false; message: string }>;
 };
 
 /** 连接错误日志一行（设置页「日志」弹窗展示，环形缓冲取最近若干） */
@@ -222,11 +237,14 @@ export class McpManager {
   }
 
   /**
-   * 交互式 OAuth 授权（设置页「授权」按钮）：起 127.0.0.1 回调服务、
-   * 打开浏览器让用户批准、换 token 落盘，然后带着凭据重连入池。
+   * 交互式 OAuth 授权（设置页「授权」按钮）第一阶段：起 127.0.0.1 回调服务、
+   * 后台跑握手，等授权链接生成（浏览器拉起已尝试）后立即返回。用户在浏览器里
+   * 批准可能长达几分钟——那段时间不再挂在请求上，改由 completed 结算、协议层
+   * 推 mcp_auth_result 自发帧（旧实现在命令里同步等满 180s，把整条管理命令串行
+   * 队列堵死：期间所有会话/清单/设置请求排队等死，全应用假死数分钟）。
    * 只支持 http 传输；stdio 服务器没有 OAuth 概念。
    */
-  async authorize(def: McpServerDef): Promise<McpServerStatus> {
+  async beginAuthorize(def: McpServerDef): Promise<McpAuthStarted> {
     if (def.transport !== "http") {
       throw new Error(`MCP 服务器 "${def.name}" 不是 http 传输，无需 OAuth 授权`);
     }
@@ -241,14 +259,74 @@ export class McpManager {
       failStreak: 0,
     };
     this.entries.set(def.name, entry);
-    entry.connecting = this.handshake(entry, session);
+    const flow = this.handshake(entry, session);
+    entry.connecting = flow;
+    // 结算链自己吸收失败：协议层只订阅 completed，没人再接这个 reject
+    const completed: McpAuthStarted["completed"] = flow
+      .then(() => {
+        recordMcpAudit({
+          at: Date.now(),
+          server: def.name,
+          kind: "auth",
+          ok: true,
+          detail: "OAuth 授权完成",
+        });
+        return { ok: true as const };
+      })
+      .catch((err: unknown) => ({ ok: false as const, message: describeError(err) }))
+      .finally(() => {
+        if (entry.connecting === flow) entry.connecting = undefined;
+        void session.finish();
+      });
+
+    const first = await this.awaitAuthLink(session, flow);
+    return {
+      ...(first === "done" ? {} : { authUrl: first.url, browserOpened: first.browserOpened }),
+      status: this.statusFor(def),
+      completed,
+    };
+  }
+
+  /**
+   * 等授权链接生成（或握手在拿到链接前就结束）。超时视为授权流没起来：
+   * 放弃本次授权（关回调服务、让在飞等待立即以原因失败）并抛明确错误。
+   */
+  private async awaitAuthLink(
+    session: InteractiveOAuthSession,
+    flow: Promise<McpToolMeta[]>,
+  ): Promise<{ url: string; browserOpened: boolean } | "done"> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await entry.connecting;
-      recordMcpAudit({ at: Date.now(), server: def.name, kind: "auth", ok: true, detail: "OAuth 授权完成" });
+      return await Promise.race([
+        session.urlReady,
+        // 握手可能压根没走到授权（存量凭据仍有效即已连上）：此时无需链接
+        flow.then(() => "done" as const),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("mcp-oauth-url-timeout")),
+            MCP_AUTH_URL_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } catch (err) {
+      if (err instanceof Error && err.message === "mcp-oauth-url-timeout") {
+        session.abort("授权链接生成超时");
+        throw new Error(
+          `授权启动失败：${MCP_AUTH_URL_TIMEOUT_MS / 1000}s 内未生成授权链接` +
+            `（授权服务器元数据发现或客户端注册失败），请点「日志」查看握手细节`,
+        );
+      }
+      throw err;
     } finally {
-      entry.connecting = undefined;
-      await session.finish();
+      if (timer) clearTimeout(timer);
     }
+  }
+
+  /** 旧语义入口：等完整授权流结束才返回（测试/脚本用；UI 走两段式 beginAuthorize） */
+  async authorize(def: McpServerDef): Promise<McpServerStatus> {
+    const started = await this.beginAuthorize(def);
+    const result = await started.completed;
+    if (!result.ok) throw new Error(result.message || "OAuth 授权失败");
     return this.statusFor(def);
   }
 
@@ -622,6 +700,18 @@ export class McpManager {
         MCP_CONNECT_TIMEOUT_MS,
         `获取 MCP 服务器 "${def.name}" 工具列表超时`,
       );
+      // 发布前确认条目仍是连接池里的那一个：配置变更（applyConfig/删除）会摘除
+      // 条目，而握手可能正并发进行（后台预连 prewarm、派活式的测试/展开工具），
+      // 落点就成了已被顶替的旧条目——那样连接即使建好也无人可见（reaper 遍历池、
+      // statusFor 按池查），只会白白挂着。就地关掉，交给下次调用按新配置重连。
+      if (this.entries.get(def.name) !== entry) {
+        try {
+          conn.client.close();
+        } catch {
+          /* 关闭失败不影响语义 */
+        }
+        return tools;
+      }
       entry.client = conn.client;
       entry.state = "ready";
       entry.tools = tools;

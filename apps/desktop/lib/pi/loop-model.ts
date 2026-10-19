@@ -31,7 +31,15 @@ export type LoopStep = {
   durationMs: number | null;
   status: StepStatus;
   usage?: TokenUsage;
+  /**
+   * llm step：**真正发给 provider 的请求上下文**（`[system] 系统提示词` + 逐条消息，
+   * 由 sidecar 在 streamFn 处快照、按 64KB/次截断）。工具 step 的"请求"就是 args
+   * 入参，不带这一项。这是"这一轮到底发了什么提示词"的唯一现场——排查指令不生效、
+   * 上下文被压缩吃掉时先看它。
+   */
+  requestContext?: string;
   args?: unknown;
+  /** llm step = 模型回复正文；tool step = 工具出参（同名沿用，视图按 kind 换标签） */
   result?: string;
   error?: { message: string; exitCode?: number; stderr?: string };
   retry?: { attempt: number; delayMs: number; reason: string };

@@ -6,6 +6,7 @@
  */
 import { BrowserWindow, ipcMain, type WebContents } from "electron";
 import { logDebug, logError, logInfo } from "./logging";
+import { noteMainOp } from "./slow-ops";
 
 export type CmdCtx = { sender: WebContents };
 export type CmdHandler = (args: Record<string, any>, ctx: CmdCtx) => unknown | Promise<unknown>;
@@ -44,7 +45,11 @@ export function setupIpc(): void {
       return { ok: false, error: `command ${cmd} not found` };
     }
     try {
+      const t0 = Date.now();
       const value = await fn((args ?? {}) as Record<string, any>, { sender: event.sender });
+      // 慢命令自报：同步 fs / 同步 SQLite 会把事件循环按住（界面"哪里都点不了"），
+      // 留痕后生产日志能直接点名；lag 心跳也据此归因（见 slow-ops.ts）
+      noteMainOp(cmd, Date.now() - t0);
       return { ok: true, value: value ?? null };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

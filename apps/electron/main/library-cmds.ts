@@ -5,8 +5,9 @@
  * 这里只做资料库特有的四件事：根目录读/改、外部文件导入（拷贝进库）、
  * 库内清单扫描（笔记列表 / 名字搜索，一条实现两个用途）。
  */
-import { cpSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import type { Dirent } from "node:fs";
+import { cp, mkdir, readdir, stat } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 import { appDataDir } from "./paths";
 import {
@@ -15,7 +16,7 @@ import {
   libraryRoot,
   setLibraryRoot,
 } from "./library";
-import { joinRel } from "./fs-cmds";
+import { joinRel, uniqueTarget } from "./fs-cmds";
 
 /** 单次导入的源条目上限（拖一整个文件夹进来也只算一条源） */
 const MAX_IMPORT_SOURCES = 500;
@@ -39,19 +40,6 @@ function isInside(a: string, b: string): boolean {
   );
 }
 
-/** 目标名已被占用时按 Finder 习惯加「 (2)」「 (3)」… */
-function uniqueTarget(dir: string, base: string): string {
-  const first = join(dir, base);
-  if (!existsSync(first)) return first;
-  const ext = extname(base);
-  const stem = base.slice(0, base.length - ext.length);
-  for (let i = 2; i < 1000; i++) {
-    const cand = join(dir, `${stem} (${i})${ext}`);
-    if (!existsSync(cand)) return cand;
-  }
-  return join(dir, `${stem} (${Date.now()})${ext}`);
-}
-
 export function libraryGetRoot(): unknown {
   const root = libraryRoot();
   return {
@@ -71,13 +59,13 @@ export function librarySetRoot(args: { root: string }): unknown {
  * 加序号。源只被读、目标经 joinRel 锁在库根内；把目录拷进它自己（或子目录）
  * 会无限递归，直接拒绝。dereference 让「拖进来的符号链接」落成真实内容。
  */
-export function libraryImport(args: {
+export async function libraryImport(args: {
   rel?: string;
   paths?: string[];
-}): unknown {
+}): Promise<unknown> {
   const root = libraryRoot();
   const dir = joinRel(root, String(args.rel ?? ""));
-  mkdirSync(dir, { recursive: true });
+  await mkdir(dir, { recursive: true });
   const paths = Array.isArray(args.paths) ? args.paths.map(String) : [];
   const imported: string[] = [];
   const renamed: { from: string; to: string }[] = [];
@@ -99,7 +87,8 @@ export function libraryImport(args: {
       continue;
     }
     try {
-      cpSync(src, target, {
+      // 异步拷贝（递归目录可能上千文件）：走线程池，不按住主进程事件循环
+      await cp(src, target, {
         recursive: true,
         force: false,
         errorOnExist: true,
@@ -119,13 +108,14 @@ export function libraryImport(args: {
 /**
  * 库内/产物区清单扫描：notesOnly = 全库 md（笔记列表，按修改时间倒序）；
  * query = 名字包含匹配（搜索，命中未展开目录里的文件也找得到）。
- * 递归有深度、访问量、结果数三重上限，巨型目录不会卡住主进程。
+ * 递归有深度、访问量、结果数三重上限，且全程异步 fs（不占主进程事件循环）
+ * ——巨型目录也不会把界面卡死（同步版本见 slow-ops.ts 的由来）。
  */
-export function libraryScan(args: {
+export async function libraryScan(args: {
   scope?: string;
   notesOnly?: boolean;
   query?: string;
-}): unknown {
+}): Promise<unknown> {
   const root =
     args.scope === "artifacts"
       ? join(appDataDir(), "task-workspace")
@@ -137,12 +127,15 @@ export function libraryScan(args: {
   let visited = 0;
   let truncated = false;
 
-  const walk = (rel: string, depth: number): void => {
+  // 全异步递归：readdir/stat 都走 libuv 线程池。旧实现是同步递归 + 逐文件
+  // statSync，两万访问量上限下能把主进程事件循环按住一两秒（界面"哪里都点不了"，
+  // 且 crash.ts 的兜底弹窗也弹不出来——同步阻塞期间同进程内没有代码能跑）。
+  const walk = async (rel: string, depth: number): Promise<void> => {
     if (truncated) return;
     const abs = rel ? join(root, ...rel.split("/")) : root;
     let entries: Dirent[];
     try {
-      entries = readdirSync(abs, { withFileTypes: true });
+      entries = await readdir(abs, { withFileTypes: true });
     } catch {
       return;
     }
@@ -156,7 +149,7 @@ export function libraryScan(args: {
       if (e.isDirectory()) {
         if (SCAN_SKIP_DIRS.has(name) || depth >= SCAN_MAX_DEPTH) continue;
         visited += 1;
-        walk(rel ? `${rel}/${name}` : name, depth + 1);
+        await walk(rel ? `${rel}/${name}` : name, depth + 1);
         continue;
       }
       if (!e.isFile()) continue;
@@ -166,7 +159,7 @@ export function libraryScan(args: {
       let size = 0;
       let modified: string | null = null;
       try {
-        const st = statSync(join(abs, name));
+        const st = await stat(join(abs, name));
         size = Number(st.size);
         modified = st.mtime.toISOString();
       } catch {
@@ -175,7 +168,7 @@ export function libraryScan(args: {
       out.push({ rel: rel ? `${rel}/${name}` : name, name, size, modified });
     }
   };
-  walk("", 0);
+  await walk("", 0);
   out.sort((a, b) => (b.modified ?? "").localeCompare(a.modified ?? ""));
   if (out.length > SCAN_MAX_RESULTS) {
     out.length = SCAN_MAX_RESULTS;

@@ -202,12 +202,8 @@ function renderContent(content: unknown): string {
   return parts.join("\n");
 }
 
-function renderMessage(role: string, content: unknown): string {
-  const text = clip(renderContent(content), MSG_TEXT_MAX);
-  return text ? `[${role}] ${text}` : `[${role}]（空）`;
-}
-
-/** streamFn 拿到的请求上下文 → 逐条消息的截断渲染（system + 消息列表） */
+/** streamFn 拿到的请求上下文 → 逐条消息的截断渲染（system + 消息列表）。
+ *  这是"这一轮到底发了什么提示词"的唯一现场：面板的请求上下文就吃这段文本。 */
 function renderRequest(context: unknown): string {
   const ctx = (context ?? {}) as { systemPrompt?: unknown; messages?: unknown[] };
   const lines: string[] = [];
@@ -216,7 +212,12 @@ function renderRequest(context: unknown): string {
   for (const msg of Array.isArray(ctx.messages) ? ctx.messages : []) {
     const m = msg as { role?: string; content?: unknown };
     if (typeof m.role !== "string") continue;
-    lines.push(renderMessage(m.role, m.content));
+    const text = clip(renderContent(m.content), MSG_TEXT_MAX);
+    // 转录首条 system 是 systemPrompt 的镜像（见 agent/context.ts 的
+    // setLeadingSystemMessage）：内容为空时纯重复，跳过（否则每条记录都多一行
+    // "[system]（空）"）；热换过提示词、真有正文时照常渲染，别把头部丢掉
+    if (m.role === "system" && !text) continue;
+    lines.push(text ? `[${m.role}] ${text}` : `[${m.role}]（空）`);
   }
   const joined = lines.join("\n\n");
   return joined.length > REQUEST_MAX ? `${joined.slice(0, REQUEST_MAX)}\n…[已截断]` : joined;

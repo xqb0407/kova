@@ -19,8 +19,9 @@ type OptimizeResponse = Extract<
  * 前端只见最终文本，不掺和转义。
  */
 
-/** 等待优化结果的上限：慢端点整段改写也可能要一分多钟 */
-const OPTIMIZE_TIMEOUT_MS = 120_000;
+/** 取消在飞优化的等待上限：取消本身是本地 abort，给短的就够（协议表未登记该命令，
+ *  通道按默认侧车预算 5s 兜底，不会被抬） */
+const OPTIMIZE_CANCEL_TIMEOUT_MS = 5_000;
 
 /** 优化成功载荷 */
 export type PromptOptimizeResult = {
@@ -49,6 +50,8 @@ export async function optimizePrompt(params: {
   jobId: string;
   text: string;
 }): Promise<PromptOptimizeResult | "cancelled"> {
+  // 超时不传：预算由协议表给（pi-protocol/timeouts 的 optimize_prompt =
+  // 一次 provider 请求的 120s 级），通道会自动抬到表值，别在这里写死
   const res = await piRequest<OptimizeResponse>(
     {
       type: "optimize_prompt",
@@ -58,7 +61,6 @@ export async function optimizePrompt(params: {
       jobId: params.jobId,
       text: params.text,
     },
-    OPTIMIZE_TIMEOUT_MS,
   );
   if (res.type === "prompt_optimize_cancelled") return "cancelled";
   return { text: res.text, chipCount: res.chipCount, model: res.model };
@@ -67,7 +69,7 @@ export async function optimizePrompt(params: {
 /** 取消在飞优化（fire-and-forget 语义：失败不抛——任务多半已自然收尾） */
 export async function cancelOptimize(jobId: string): Promise<void> {
   try {
-    await piRequest({ type: "optimize_cancel", jobId }, 5_000);
+    await piRequest({ type: "optimize_cancel", jobId }, OPTIMIZE_CANCEL_TIMEOUT_MS);
   } catch {
     // 取消命令失败无所谓：调用方已按本地状态解锁
   }

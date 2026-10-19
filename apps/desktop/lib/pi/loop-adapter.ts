@@ -91,6 +91,10 @@ function toStep(span: PiTraceSpan, runStartMs: number, index: number): LoopStep 
     durationMs: span.endMs ? Math.max(0, span.endMs - startMs) : null,
     status: stepStatus(span),
     usage: usageOf(span),
+    // 请求上下文只对 llm 有意义：工具 step 的"请求"就是 attrs.args 的入参
+    ...(span.kind === "llm_call" && span.detail?.request
+      ? { requestContext: span.detail.request }
+      : {}),
     args: parseArgs(attrs.args),
     result: span.detail?.response,
     ...(span.status === "error"
