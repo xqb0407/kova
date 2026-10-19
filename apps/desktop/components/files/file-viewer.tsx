@@ -26,6 +26,7 @@ import { CodeMirrorCode } from "@/components/code/cm-code";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
 import { Button } from "@/components/ui/button";
+import { FileManagerIcon } from "./file-manager-icon";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -185,11 +186,11 @@ const ViewerBody: FC<{
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 shrink-0"
+          className="size-8 shrink-0"
           title="在系统中显示"
           onClick={() => void reveal()}
         >
-          <FolderSearchIcon className="size-3.5" />
+          <FileManagerIcon className="size-4.5" />
         </Button>
       </div>
 
@@ -208,6 +209,7 @@ const ViewerBody: FC<{
           <AlertCircleIcon className="size-6" />
           文件超过 20MB，不在应用内预览
           <Button variant="outline" size="sm" onClick={() => void reveal()}>
+            <FileManagerIcon className="size-4.5" />
             在系统中打开
           </Button>
         </div>
@@ -226,6 +228,7 @@ const ViewerBody: FC<{
           <AlertCircleIcon className="size-6" />
           该文件类型暂不支持预览
           <Button variant="outline" size="sm" onClick={() => void reveal()}>
+            <FileManagerIcon className="size-4.5" />
             在系统中打开
           </Button>
         </div>
