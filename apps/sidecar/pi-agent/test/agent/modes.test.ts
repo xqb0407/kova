@@ -671,6 +671,92 @@ describe("approvalBeforeToolCall：可写根清单", () => {
   });
 });
 
+describe("approvalBeforeToolCall：review 档拒绝跨目录写入时转人工审批", () => {
+  // 背景：审查器只认最近用户消息里的明确授权，口头授权进不了常驻清单；让模型
+  // 改用 Question 追问也没用——答案不产生授权效力。这组用例钉住「medium deny
+  // 的跨目录写入 → 审批卡（可允许并记住）」，而不是把球踢回给模型。
+  const clearConfig = () => {
+    rmSync(join(WS, ".kova", "permissions.json"), { force: true });
+    rmSync(join(WS, ".kova", "permissions.local.json"), { force: true });
+  };
+  beforeEach(() => {
+    resetAutoReviewForTest();
+    clearConfig();
+  });
+  afterEach(() => {
+    resetAutoReviewForTest();
+    clearConfig();
+  });
+
+  test("medium deny → 弹审批卡；允许并记住后同目录免审", async () => {
+    setAutoReviewerForTest(async () => ({
+      ok: true,
+      decision: { risk: "medium", decision: "deny", reason: "未找到明确授权" },
+    }));
+    const run = makeRun("agent");
+    run.approvalLevel = "review";
+    run.cwd = WS;
+    const hook = approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(OUTSIDE, "review.ts") }),
+    );
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    // 带可写根上下文 → 卡上有「允许并记住」
+    expect(run.pendingToolApprovals.get(id)?.rememberRoot).toBe(realpathSync(OUTSIDE));
+    resolveToolApproval(run, id, true, true);
+    await expect(hook).resolves.toBeUndefined();
+    const local = JSON.parse(
+      readFileSync(join(WS, ".kova", "permissions.local.json"), "utf8"),
+    ) as { writeRoots: string[] };
+    expect(local.writeRoots).toEqual(["../other"]);
+
+    // 记进本机清单后走常驻授权，不再进审查
+    let reviewed = 0;
+    setAutoReviewerForTest(async () => {
+      reviewed += 1;
+      return { ok: true, decision: { risk: "medium", decision: "deny" } };
+    });
+    await expect(
+      approvalBeforeToolCall(run, ctx("write", ["write"], { file_path: join(OUTSIDE, "next.ts") })),
+    ).resolves.toBeUndefined();
+    expect(reviewed).toBe(0);
+  });
+
+  test("high deny 仍是硬拦截：不转审批卡", async () => {
+    setAutoReviewerForTest(async () => ({
+      ok: true,
+      decision: { risk: "high", decision: "deny", reason: "敏感数据外发" },
+    }));
+    const run = makeRun("agent");
+    run.approvalLevel = "review";
+    run.cwd = WS;
+    const res = await approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(OUTSIDE, "secret.ts") }),
+    );
+    expect(res?.block).toBe(true);
+    expect(run.pendingToolApprovals.size).toBe(0);
+  });
+
+  test("工作区内写入被拒仍是直接拦截：转卡只针对跨目录", async () => {
+    setAutoReviewerForTest(async () => ({
+      ok: true,
+      decision: { risk: "medium", decision: "deny", reason: "未授权" },
+    }));
+    const run = makeRun("agent");
+    run.approvalLevel = "review";
+    run.cwd = WS;
+    const res = await approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(WS, "src", "inside.ts") }),
+    );
+    expect(res?.block).toBe(true);
+    expect(run.pendingToolApprovals.size).toBe(0);
+  });
+});
+
 describe("subagentToolGate：子代理的工具接回父会话审批链", () => {
   // 子代理此前整条链在审批之外（SubagentRun 的 Agent 只有 afterToolCall），
   // 而 Task 本身不在 APPROVAL_REQUIRED_TOOLS 里 —— 委派一次 Fixer 就等于

@@ -528,6 +528,8 @@ export const SYSTEM_PROMPT_CORE_SEGMENTS = {
     "Tool preference: inspect files with read/glob/grep instead of shell commands; use bash for anything dynamic (build, test, git, process control).",
     "Before a batch of tool calls, write one short sentence saying what you are about to do.",
     "",
+    "Permissions: never use Question to ask for permission to run a tool or modify a file. Call the tool directly - the app shows an approval card when approval is required, and the user can choose to remember the authorization. This applies especially to writes outside the workspace: attempt the write normally instead of asking in chat, and if it is rejected, report the rejection rather than retrying the same question.",
+    "",
     "Correctness: after making changes, run the relevant verification (build / test / lint). When something fails, find the root cause before fixing - never blind-patch or hide errors.",
   ].join("\n"),
   taskTracking: [

@@ -811,6 +811,9 @@ export async function gateToolCall(
   // **工作区内的写入不在此列**：review 档的承诺是「每次调用都判」——项目内的写
   // 同样能改构建脚本、CI 配置、包清单这些可执行面（loadWriteRoots 的 effective
   // 含工作区自身，那是 workspace-write 档"工作区内免确认"的语义，不能直接照搬）
+  //
+  // 工作区外的写入目标提前算一次：审查器拒绝时要用它转人工审批卡（见下方）。
+  let reviewOutsideWrite: { target: string; declared: string[] } | undefined;
   if (run.approvalLevel === "review") {
     if (
       isPathBearingWrite(context.toolCall.name) &&
@@ -820,6 +823,7 @@ export async function gateToolCall(
       if (target) {
         const roots = await loadWriteRoots(run.cwd);
         if (isWriteRootAllowed(target, roots.effective)) return undefined;
+        reviewOutsideWrite = { target, declared: roots.declared };
       }
     }
     if (
@@ -852,9 +856,14 @@ export async function gateToolCall(
   if (hookDecision?.decision === "approve") return undefined;
 
   // AI 审查：放在钩子之后——用户自己的确定性规则（含"直接放行"）优先，也省一次
-  // 模型调用。三种去向：allow → 放行；deny → 拦截（理由回给模型，可自我纠正）；
-  // 审查失败 → 落到下面的挂起审批，由用户裁决（fail to human：失败既不静默放行，
-  // 也不替用户拒绝）
+  // 模型调用。三种去向：allow → 放行；deny → 普通动作拦截（理由回给模型，可自我
+  // 纠正）；审查失败 → 落到下面的挂起审批，由用户裁决（fail to human：失败既不
+  // 静默放行，也不替用户拒绝）。
+  //
+  // 跨目录写入是 deny 的例外：审查器只认「最近用户消息里的明确授权」，而用户口头
+  // 授权无法进入常驻清单；让模型改用 Question 追问也没用——问题答案不产生授权
+  // 效力，下一轮同样的写入仍会被拒。真正能授权并记住目录的只有审批卡上的「允许
+  // 并记住」，所以这里把 medium deny 转成人工审批，而不是把球踢回给模型。
   let reviewFallbackNote: string | undefined;
   if (run.approvalLevel === "review") {
     const outcome = await runAutoReview(
@@ -872,13 +881,22 @@ export async function gateToolCall(
           `risk=${outcome.decision.risk}` +
           (outcome.decision.reason ? ` reason=${outcome.decision.reason}` : ""),
       );
-      return {
-        block: true,
-        reason: autoReviewDenyReason(context.toolCall.name, outcome.decision),
-      };
+      if (outcome.decision.risk === "medium" && reviewOutsideWrite) {
+        declaredRoot = matchingWriteRoot(reviewOutsideWrite.target, reviewOutsideWrite.declared);
+        rememberRoot = declaredRoot ?? dirname(reviewOutsideWrite.target);
+        reviewFallbackNote =
+          `AI 审查没有确认这次跨目录写入（${outcome.decision.reason ?? "未找到明确授权"}），` +
+          "改由你确认；点「允许并记住」会把这个目录写进本机可写清单，之后不再询问。";
+      } else {
+        return {
+          block: true,
+          reason: autoReviewDenyReason(context.toolCall.name, outcome.decision),
+        };
+      }
+    } else {
+      logErr("auto-review unavailable, falling back to the approval card:", outcome.error);
+      reviewFallbackNote = `AI 审查这次没跑起来（${outcome.error}），这一步改由你确认。`;
     }
-    logErr("auto-review unavailable, falling back to the approval card:", outcome.error);
-    reviewFallbackNote = `AI 审查这次没跑起来（${outcome.error}），这一步改由你确认。`;
   }
 
   const approvalId = randomUUID();
