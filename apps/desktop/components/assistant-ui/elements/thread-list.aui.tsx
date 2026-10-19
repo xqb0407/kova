@@ -185,6 +185,10 @@ interface RowHoverSlot {
 
 const RowHoverContext = createContext<RowHoverSlot | null>(null);
 
+/** 项目文件夹内的会话行：行首不画工作模式图标，标题与组头标题左缘对齐
+ *  （缩进一个文件夹徽章位），让「文件夹 → 会话」的层级可辨；任务 tab 保持原样 */
+const ProjectChildRowContext = createContext(false);
+
 /**
  * 在 FluidHoverScope 的 children 内组装行槽位：registerItem 从作用域 context
  * 读（悬浮状态关在 Scope 里，换行高亮不重渲染列表主体，见 fluid-hover-scope），
@@ -211,9 +215,11 @@ const noopRegister: RegisterItem = () => {};
 //   1. TreeRow：新行以 opacity 0 / y -6 级联淡入（组内行序 × 0.02s，封顶
 //      0.06s——延迟必须用组内相对序号，用全局槽位会让靠后的分组永远吃满
 //      延迟、展开显得慢半拍），行被增删挤动时靠 layout="position" 的
-//      SPRING_LAYOUT 平滑归位；
+//      SPRING_LAYOUT 平滑归位；项目卡内部例外（enter=false）——那里由面板
+//      整体高度 + 淡入淡出承担，对齐 侧边栏的文件夹开合；
 //   2. 箭头 90° 旋转、开合文件夹图标用 SPRING_SWAP 弹跳交叉淡换。
-// 收起时子树直接卸载、无退场动画，与 file-tree 的 flatten+挂载模型一致。
+// 收起时子树直接卸载、无退场动画，与 file-tree 的 flatten+挂载模型一致；
+// 项目卡面板会先用 300ms 高度关键帧收起到 0 再卸载。
 // 行高亮测量走 offsetTop（见 use-fluid-hover 注释），不受这里的 transform
 // 影响，fluid hover 与动画可共存。useReducedMotion 下全部短路为静态。
 // ---------------------------------------------------------------------------
@@ -224,23 +230,27 @@ const ROW_ENTER = { duration: 0.18, ease: EASE_OUT } as const;
  *  ——layout 的位移投影与 animate 的 y 共享同一运动值时，投影过渡会被入场
  *  过渡（0.18s ease + delay）接管，换位仍会滑一段。instant：本次提交换位瞬时
  *  完成（外层 transition 时长置 0），置顶切换不让按钮在指针下飘走 */
-const TreeRow: FC<{ position: number; instant?: boolean; children: ReactNode }> = ({
-  position,
-  instant,
-  children,
-}) => {
+const TreeRow: FC<{
+  position: number;
+  instant?: boolean;
+  /** false：挂载时不跑逐行级联淡入（项目卡内部改用面板整体淡入，
+   *  对齐 侧边栏的文件夹开合） */
+  enter?: boolean;
+  children: ReactNode;
+}> = ({ position, instant, enter = true, children }) => {
   const reduce = useReducedMotion() ?? false;
+  const skipEnter = reduce || !enter;
   return (
     <motion.div
       layout={reduce ? false : "position"}
       transition={reduce || instant ? { duration: 0 } : SPRING_LAYOUT}
     >
       <motion.div
-        initial={reduce ? false : { opacity: 0, y: -6 }}
+        initial={skipEnter ? false : { opacity: 0, y: -6 }}
         animate={{
           opacity: 1,
           y: 0,
-          transition: reduce
+          transition: skipEnter
             ? { duration: 0 }
             : { ...ROW_ENTER, delay: Math.min(position * 0.02, 0.06) },
         }}
@@ -937,6 +947,9 @@ const PinnedCard: FC<{ children: ReactNode }> = ({ children }) => (
 const PROJECT_VISIBLE_LIMIT = 5;
 /** 任务 tab 每页行数：尾部「显示更多」每点一次放出一页（不做滚动自动加载） */
 const TASK_VISIBLE_LIMIT = 10;
+/** 项目卡开合：对齐 侧边栏的折叠动效——面板高度 300ms ease-in-out，
+ *  内容作为整体同步淡入淡出（会话行不再逐行级联） */
+const PROJECT_PANEL_ANIMATION_MS = 300;
 
 export const ProjectListItems: FC<{
   openDirs?: Set<string>;
@@ -1025,6 +1038,19 @@ export const ProjectListItems: FC<{
     });
   }, [openDirs]);
 
+  // 面板开合/「显示更多」的结构变化提交里，行的位移由面板高度动画逐帧带动。
+  // 若同时让 TreeRow 跑 framer 的 layout 投影，两个位移会叠加——下方分组会
+  // 先盖在刚展开的会话行上再滑开（收起时反向），观感即「展开折叠动画很奇怪」。
+  // 因此只在这一帧把行位移置为瞬时，之后仍保留 layout 动画（置顶换位等）。
+  const prevStructureRef = useRef({ openDirs, visibleCounts });
+  const openDirsChanged = prevStructureRef.current.openDirs !== openDirs;
+  const structureChanged =
+    openDirsChanged ||
+    prevStructureRef.current.visibleCounts !== visibleCounts;
+  useEffect(() => {
+    prevStructureRef.current = { openDirs, visibleCounts };
+  }, [openDirs, visibleCounts]);
+
   /** 项目内"新对话"：先把 workspace 设为该组目录（与手动在胶囊选目录后
    *  点新对话同语义——首条消息落盘时会话带上此 cwd，即归入本组），再切新草稿。
    *  顺手展开该组，落盘后的新会话出现时不被折叠挡住 */
@@ -1075,7 +1101,7 @@ export const ProjectListItems: FC<{
         <PinnedCard>
           {pinnedProjectIndices.map((index, i) => (
             <ScopeRowSlot key={threadIds[index]} index={pinnedSlots[i]}>
-              <TreeRow position={i} instant={pinReorder}>
+              <TreeRow position={i} instant={pinReorder || structureChanged}>
                 <ThreadListPrimitive.ItemByIndex
                   index={index}
                   components={{ ThreadListItem }}
@@ -1105,8 +1131,11 @@ export const ProjectListItems: FC<{
             key={group.cwd}
             open={isOpen}
             onOpenChange={() => toggle(group.cwd)}
+            style={{
+              ["--animation-duration" as string]: `${PROJECT_PANEL_ANIMATION_MS}ms`,
+            }}
           >
-            <TreeRow position={headerSlot}>
+            <TreeRow position={headerSlot} instant={structureChanged}>
               <FluidHoverRow
                 index={headerSlot}
                 className="group/proj relative"
@@ -1193,34 +1222,69 @@ export const ProjectListItems: FC<{
               </ProjectSettingsPopover>
               </FluidHoverRow>
             </TreeRow>
-            <CollapsibleContent className="overflow-hidden">
-              {/* 展开时子树整体挂载：会话行级联淡入 */}
-              <div className="flex flex-col gap-0.5 pl-0">
-                {visibleIndices.map((index, i) => (
-                  <ScopeRowSlot key={threadIds[index]} index={childSlots[i]}>
-                    <TreeRow position={i} instant={pinReorder}>
-                      <ThreadListPrimitive.ItemByIndex
-                        index={index}
-                        components={{ ThreadListItem }}
-                      />
-                    </TreeRow>
-                  </ScopeRowSlot>
-                ))}
-                {hiddenCount > 0 && (
-                  <TreeRow position={visibleIndices.length}>
-                    <FluidHoverRow index={moreSlot}>
-                      <Button
-                        variant="ghost"
-                        // 左缘与会话标题对齐：行 ps-2.5(10px) + 占位图标 size-3.5(14px) + me-1.5(6px) = 30px
-                        className="h-7 w-full justify-start ps-[30px] text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
-                        onClick={() => expandMore(group.cwd)}
+            {/* 折叠动效对齐 侧边栏：面板高度关键帧 + 内容整体淡入淡出。
+                会话行不再逐行级联，避免「高度在长、行又在错峰冒出来」的双层动效 */}
+            <CollapsibleContent
+              className={cn(
+                "group/collapsible-content overflow-hidden outline-none",
+                "ease-in-out",
+                "motion-reduce:animate-none",
+                "data-closed:animate-collapsible-up",
+                "data-open:animate-collapsible-down",
+                "data-closed:fill-mode-forwards",
+                "data-closed:pointer-events-none",
+                "[--tw-duration:var(--animation-duration)]",
+              )}
+            >
+              <ProjectChildRowContext.Provider value>
+                <div
+                  className={cn(
+                    "flex flex-col gap-0.5 pl-0",
+                    "ease-in-out motion-reduce:animate-none",
+                    "group-data-open/collapsible-content:animate-in",
+                    "group-data-open/collapsible-content:fade-in-0",
+                    "group-data-closed/collapsible-content:animate-out",
+                    "group-data-closed/collapsible-content:fade-out-0",
+                    "group-data-closed/collapsible-content:fill-mode-forwards",
+                    "[--tw-duration:var(--animation-duration)]",
+                  )}
+                >
+                  {visibleIndices.map((index, i) => (
+                    <ScopeRowSlot key={threadIds[index]} index={childSlots[i]}>
+                      <TreeRow
+                        position={i}
+                        instant={pinReorder || structureChanged}
+                        // 开合由面板整体淡入承担；「显示更多」新增的行仍走级联
+                        enter={!openDirsChanged}
                       >
-                        {`显示更多（${Math.min(hiddenCount, PROJECT_VISIBLE_LIMIT)}）`}
-                      </Button>
-                    </FluidHoverRow>
-                  </TreeRow>
-                )}
-              </div>
+                        <ThreadListPrimitive.ItemByIndex
+                          index={index}
+                          components={{ ThreadListItem }}
+                        />
+                      </TreeRow>
+                    </ScopeRowSlot>
+                  ))}
+                  {hiddenCount > 0 && (
+                    <TreeRow
+                      position={visibleIndices.length}
+                      instant={structureChanged}
+                      enter={!openDirsChanged}
+                    >
+                      <FluidHoverRow index={moreSlot}>
+                        <Button
+                          variant="ghost"
+                          // 左缘与会话标题对齐：行 ps-4(16px) + 占位图标
+                          // size-3.5(14px) + me-1.5(6px) = 36px，与组头标题同缘
+                          className="h-7 w-full justify-start ps-9 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+                          onClick={() => expandMore(group.cwd)}
+                        >
+                          {`显示更多（${Math.min(hiddenCount, PROJECT_VISIBLE_LIMIT)}）`}
+                        </Button>
+                      </FluidHoverRow>
+                    </TreeRow>
+                  )}
+                </div>
+              </ProjectChildRowContext.Provider>
             </CollapsibleContent>
           </Collapsible>
         );
@@ -1447,6 +1511,8 @@ export const ThreadListItem: FC = () => {
   const rowRef = useRef<HTMLDivElement>(null);
   const slot = useContext(RowHoverContext);
   useRegisterFluidHoverItem(slot?.registerItem, slot?.index, rowRef);
+  // 项目文件夹内的行：去掉行首模式图标，标题与组头标题左缘对齐
+  const nestedInProject = useContext(ProjectChildRowContext);
 
   const confirmDelete = async () => {
     if (deleting) return;
@@ -1499,7 +1565,11 @@ export const ThreadListItem: FC = () => {
             e.stopPropagation();
             if (remoteId) toggleThreadBatchSelect(remoteId);
           }}
-          className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md ps-2.5 text-start text-sm outline-none"
+          className={cn(
+            "flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md ps-2.5 text-start text-sm outline-none",
+            // 与组头标题左缘对齐：ps-4(16px) + 占位图标 14px + me-1.5(6px) = 36px
+            nestedInProject && "ps-4",
+          )}
         >
           <span
             aria-hidden
@@ -1514,11 +1584,14 @@ export const ThreadListItem: FC = () => {
             {batchSelected && <CheckIcon className="size-3" />}
           </span>
           {/* 档位图标：批量模式行首被勾选框占了，图标改挂在勾选框右侧（此模式下
-              不与置顶/未读/运行态抢槽位，它们都让位给勾选流了） */}
-          <ModeIcon
-            aria-label={`工作模式：${APP_MODE_META[sessionAppMode].label}`}
-            className="text-muted-foreground me-1.5 size-3.5 shrink-0"
-          />
+              不与置顶/未读/运行态抢槽位，它们都让位给勾选流了）；项目子树里
+              不画，靠缩进表达层级 */}
+          {!nestedInProject && (
+            <ModeIcon
+              aria-label={`工作模式：${APP_MODE_META[sessionAppMode].label}`}
+              className="text-muted-foreground me-1.5 size-3.5 shrink-0"
+            />
+          )}
           <MarqueeTitle
             data-slot="aui_thread-list-item-title"
             className={cn("me-3", unread && "font-medium")}
@@ -1538,6 +1611,7 @@ export const ThreadListItem: FC = () => {
           className={cn(
             "group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md pe-9 ps-2.5 text-start text-sm outline-none focus-visible:ring-1",
             pendingBadge && "pe-14",
+            nestedInProject && "ps-4",
           )}
         >
           {/* Loader DOM 常驻，永久占位；运行中（含 hover）恒显 spinner，不再让位
@@ -1561,13 +1635,17 @@ export const ThreadListItem: FC = () => {
             <span
               aria-hidden
               data-slot="aui_thread-list-item-unread"
-              className="bg-blue-500 absolute start-[14px] top-1/2 size-1.5 -translate-y-1/2 rounded-full group-hover:opacity-0"
+              className={cn(
+                "bg-blue-500 absolute top-1/2 size-1.5 -translate-y-1/2 rounded-full group-hover:opacity-0",
+                // 项目子树里状态位跟着标题缩进：ps-4(16px) + 槽位中心 7px - 点半径 3px
+                nestedInProject ? "start-5" : "start-[14px]",
+              )}
             />
           )}
           {/* 档位图标：与 loader/未读点/置顶图钉同占行首槽位（trigger ps-2.5 后
               的 14px 位，标题左缘仍是 30px，与「显示更多」对齐），故三者互斥出图。
               hover 让位给置顶按钮，同未读点/图钉的规则 */}
-          {!showRunning && !pinned && !unread && (
+          {!showRunning && !pinned && !unread && !nestedInProject && (
             <span
               data-slot="aui_thread-list-item-mode"
               title={`工作模式：${APP_MODE_META[sessionAppMode].label}`}
@@ -1608,7 +1686,10 @@ export const ThreadListItem: FC = () => {
         <span
           aria-hidden
           data-slot="aui_thread-list-item-pinned"
-          className="text-muted-foreground cursor-pointer pointer-events-none absolute start-2.5 top-1/2 grid size-3.5 -translate-y-1/2 place-items-center group-hover:opacity-0"
+          className={cn(
+            "text-muted-foreground pointer-events-none absolute top-1/2 grid size-3.5 -translate-y-1/2 cursor-pointer place-items-center group-hover:opacity-0",
+            nestedInProject ? "start-4" : "start-2.5",
+          )}
         >
           <PinIcon className="size-3.5 fill-current" />
         </span>
@@ -1630,7 +1711,11 @@ export const ThreadListItem: FC = () => {
             e.stopPropagation();
             togglePinSession(remoteId);
           }}
-          className="text-muted-foreground hover:bg-muted hover:text-foreground absolute start-[5px] top-1/2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-has-focus-visible:opacity-100"
+          className={cn(
+            "text-muted-foreground hover:bg-muted hover:text-foreground absolute top-1/2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-has-focus-visible:opacity-100",
+            // 按钮中心与缩进后的槽位中心对齐：ps-4(16px) + 7px - size-6/2(12px)
+            nestedInProject ? "start-[11px]" : "start-[5px]",
+          )}
         >
           <PinIcon className="size-3.5" />
         </button>
@@ -1676,20 +1761,27 @@ export const ThreadListItem: FC = () => {
               getBoundingClientRect: () =>
                 new DOMRect(ctxMenu.x, ctxMenu.y, 0, 0),
             }}
-            className="min-w-44"
+            // 与「…」下拉同一版式：同宽（min-w-56）、同一套分隔线与行高
+            className="min-w-56"
           >
             {rowMenu.items.map((item) => {
               if (item.kind === "separator") {
-                return <ContextMenuSeparator key={item.key} />;
+                return <ContextMenuSeparator key={item.key} className="bg-border" />;
               }
               const node = (
                 <ContextMenuItem
                   disabled={item.disabled}
                   variant={item.destructive ? "destructive" : "default"}
                   onClick={item.onSelect}
+                  // 与「…」下拉同版式：无行内图标、行更高、右留快捷键位；
+                  // 危险项沿用 destructive 变体自带的红字/红底高亮
+                  className={
+                    item.destructive
+                      ? "justify-between gap-6 rounded-md px-3 py-2"
+                      : "focus:bg-accent justify-between gap-6 rounded-md px-3 py-2"
+                  }
                 >
-                  <item.icon />
-                  {item.label}
+                  <span className="min-w-0 truncate">{item.label}</span>
                 </ContextMenuItem>
               );
               if (item.action === "archive") {
@@ -2001,13 +2093,13 @@ const ThreadListItemMore: FC<{ items: ThreadRowMenuItem[] }> = ({ items }) => {
         align="start"
         sideOffset={6}
         data-slot="aui_thread-list-item-more-content"
-        className="bg-popover text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-32 overflow-hidden rounded-xl border p-1.5"
+        className="bg-popover text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-56 overflow-hidden rounded-xl border p-1 shadow-lg"
       >
         {items.map((item) =>
           item.kind === "separator" ? (
             <ThreadListItemMorePrimitive.Separator
               key={item.key}
-              className="bg-foreground/10 -mx-1.5 my-1 h-px"
+              className="bg-border -mx-1 my-1 h-px"
             />
           ) : item.action ? (
             item.action === "archive" ? (
@@ -2042,15 +2134,16 @@ const MoreItemShell: FC<{
   <ThreadListItemMorePrimitive.Item
     {...rest}
     data-slot="aui_thread-list-item-more-item"
+    // 系统菜单式排版（对齐 macOS / VSCode 右键菜单）：不带行内图标、行更高、
+    // 右侧预留快捷键位（justify-between；将来有真实绑定再填 <kbd>）
     className={
       item.destructive
-        ? "text-destructive hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
-        : "hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none disabled:cursor-not-allowed disabled:opacity-50"
+        ? "text-destructive hover:bg-destructive/10 focus:bg-destructive/10 flex cursor-pointer items-center justify-between gap-6 rounded-md px-3 py-2 text-sm outline-none select-none"
+        : "hover:bg-accent focus:bg-accent flex cursor-pointer items-center justify-between gap-6 rounded-md px-3 py-2 text-sm outline-none select-none disabled:cursor-not-allowed disabled:opacity-50"
     }
     disabled={item.disabled}
     onSelect={item.onSelect}
   >
-    <item.icon className="size-4" />
-    {item.label}
+    <span className="min-w-0 truncate">{item.label}</span>
   </ThreadListItemMorePrimitive.Item>
 );

@@ -397,7 +397,7 @@ const TextBody: FC<{
         {mode === "preview" && kind === "markdown" ? (
           /* 正文限宽居中：库里的 md 常常是长文，横跨两千像素无法阅读 */
           <div className="aui-markdown h-full overflow-y-auto p-5">
-            <div className="mx-auto w-full max-w-3xl">
+            <div className="mx-auto w-full max-w-5xl">
               <MarkdownText text={draft} />
             </div>
           </div>

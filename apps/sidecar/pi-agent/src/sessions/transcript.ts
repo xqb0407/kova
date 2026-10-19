@@ -286,7 +286,7 @@ export function scanTranscript(sessionId: string): TranscriptScan {
 }
 
 /**
- * 历史分页窗（§6，ZCode rowsWindow 的对应物；游标 = 消息行 seq）：
+ * 历史分页窗（§6 rowsWindow 的对应物；游标 = 消息行 seq）：
  * beforeSeq 取「严格早于游标」的尾部 tail 条；两者皆缺 = 全量（旧端不破）。
  * 单遍全扫后在输出上截尾——compaction/交互行本就要求全遍，行数远小于体量。
  * hasMore = 窗口之前还有消息行；空窗 first/last 为 null。

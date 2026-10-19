@@ -20,6 +20,12 @@ import {
   useBrowserConfig,
 } from "@/lib/settings/browser-config";
 import { isDesktop } from "@/lib/desktop-env";
+import {
+  DatabaseIcon,
+  GlobeIcon,
+  MonitorCogIcon,
+  MonitorIcon,
+} from "lucide-react";
 
 const desktopCore = () => import("@/desktop-bridge/core");
 
@@ -69,18 +75,19 @@ export const ComputerControlSettings: FC = () => {
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-base font-semibold">电脑控制</h2>
-      <p className="text-muted-foreground text-sm">
-        AI 驱动本机能力的总闸。三条授权各自独立，粒度由"会不会碰到用户本人"决定。
-      </p>
-
+      <h2 className="flex items-center gap-2 text-base font-semibold">
+        电脑控制
+      </h2>
       <div className="mt-1 flex flex-col gap-4">
         <div className="flex flex-col gap-2">
-          <h3 className="text-sm font-semibold">浏览器</h3>
+          <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
+            <GlobeIcon className="text-muted-foreground size-3.5" />
+            浏览器
+          </h3>
           <p className="text-muted-foreground text-sm">
             AI 通过内置浏览器面板操作网页，动作在面板中实时可见。
           </p>
-          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
             <SettingRow
               label="浏览器驱动"
               desc="允许 AI 驱动内置浏览器面板：导航、点击、输入与滚动。"
@@ -113,17 +120,21 @@ export const ComputerControlSettings: FC = () => {
         {/* 浏览器数据：与上面的能力开关不同，这组是数据管理（不涉及 AI 授权）。
             清缓存保留登录态；清全部连 Cookie/站点数据一起清、所有网站退出登录 */}
         <div className="flex flex-col gap-2">
-          <h3 className="text-sm font-semibold">浏览器数据</h3>
+          <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
+            <DatabaseIcon className="text-muted-foreground size-3.5" />
+            浏览器数据
+          </h3>
           <p className="text-muted-foreground text-sm">
             内置浏览器面板的缓存与登录状态。清除数据后需要重新登录网站。
           </p>
-          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
             <SettingRow
               label="清除内置浏览器缓存"
               desc="清除 HTTP 缓存、Cache Storage 与 Service Worker，保留 Cookie 与站点登录状态。"
             >
               <Button
                 variant="outline"
+                className={"bg-background "}
                 size="sm"
                 disabled={clearing !== null || !isDesktop()}
                 onClick={() => void runClear("cache")}
@@ -139,6 +150,7 @@ export const ComputerControlSettings: FC = () => {
                 variant="destructive"
                 size="sm"
                 disabled={clearing !== null || !isDesktop()}
+                // className="text-destructive hover:bg-destructive/10 hover:text-destructive "
                 onClick={() => setConfirmClearAll(true)}
               >
                 {clearing === "all" ? "清除中…" : "清除全部"}
@@ -148,11 +160,14 @@ export const ComputerControlSettings: FC = () => {
         </div>
 
         <div className="flex flex-col gap-2">
-          <h3 className="text-sm font-semibold">屏幕</h3>
+          <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
+            <MonitorIcon className="text-muted-foreground size-3.5" />
+            屏幕
+          </h3>
           <p className="text-muted-foreground text-sm">
             这项会读取你正在看的真实桌面画面，是三者中唯一越过应用边界的。
           </p>
-          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
             <SettingRow
               label="屏幕截图"
               desc="允许 AI 抓取整块屏幕。用于排查非浏览器窗口的问题、或页面在浏览器里看不到的视觉错误。关闭时 AI 完全看不到你的桌面。"

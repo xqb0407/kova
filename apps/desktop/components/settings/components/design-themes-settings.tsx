@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useState, type FC } from "react";
 import {
   EyeIcon,
-  PaletteIcon,
+  MoreHorizontalIcon,
   PencilIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -40,6 +40,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -86,11 +87,33 @@ function parseAccents(s: string): string[] {
 }
 
 const Swatches: FC<{ accents: string[]; className?: string }> = ({ accents, className }) => (
-  <span className={cn("flex items-center -space-x-1", className)}>
+  <span className={cn("flex items-center -space-x-1.5", className)}>
     {(accents.length ? accents : ["#94a3b8"]).slice(0, 4).map((c, i) => (
-      <span key={i} className="size-3 rounded-full ring-2 ring-background" style={{ backgroundColor: c }} />
+      <span key={i} className="size-3.5 rounded-full ring-2 ring-background" style={{ backgroundColor: c }} />
     ))}
   </span>
+);
+
+/** 卡片主操作：填充主色的「使用」；当前会话正在用时退成次要色的禁用态，
+ *  与卡片里次要操作（… 菜单）拉开层级 */
+const UseThemeButton: FC<{
+  current: boolean;
+  onUse: () => void;
+}> = ({ current, onUse }) => (
+  <Button
+    size="sm"
+    variant={current ? "secondary" : "default"}
+    className="h-7 text-xs"
+    disabled={current}
+    title={
+      current
+        ? "当前会话正在使用这套主题"
+        : "用于当前会话（与 composer 主题胶囊同一开关）"
+    }
+    onClick={onUse}
+  >
+    {current ? "使用中" : "使用"}
+  </Button>
 );
 
 export const DesignThemesSettings: FC = () => {
@@ -236,13 +259,23 @@ export const DesignThemesSettings: FC = () => {
               <TabsList className="h-auto rounded-full bg-muted/50 p-[3px]">
                 <TabsTrigger value="builtin" className="rounded-full px-3 py-1 text-sm">
                   内置主题包
+                  <span className="text-muted-foreground ml-1 text-xs tabular-nums">
+                    {snap.builtinCount}
+                  </span>
                 </TabsTrigger>
                 <TabsTrigger value="user" className="rounded-full px-3 py-1 text-sm">
                   我的主题
+                  <span className="text-muted-foreground ml-1 text-xs tabular-nums">
+                    {snap.userCount}
+                  </span>
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            <span className="text-muted-foreground text-sm">{visible.length} 套主题</span>
+            {query.trim() ? (
+              <span className="text-muted-foreground text-sm">
+                {visible.length} 个匹配
+              </span>
+            ) : null}
             <div className="ml-auto flex items-center gap-2">
               <Input
                 className="h-8 w-56 bg-muted/50"
@@ -294,9 +327,10 @@ export const DesignThemesSettings: FC = () => {
             </p>
           )}
 
-          <div className="flex flex-col gap-2">
+          {/* 卡片网格：色带是视觉主角，一屏能扫到更多主题（59 套单列太长） */}
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {visible.length === 0 && (
-              <div className="text-muted-foreground rounded-xl border border-dashed p-8 text-center text-sm">
+              <div className="text-muted-foreground rounded-xl border border-dashed p-8 text-center text-sm sm:col-span-2 xl:col-span-3">
                 {scopeTab === "user"
                   ? "还没有我的主题：内置主题「另存为自己的主题」，或从「新建」开始。"
                   : "内置主题包为空——若刚升级过应用，点右上角刷新重试。"}
@@ -306,17 +340,28 @@ export const DesignThemesSettings: FC = () => {
               <div
                 key={`${entry.scope}:${entry.id}`}
                 data-slot="design-theme-row"
-                className="bg-muted/50 flex items-center gap-3 rounded-xl border px-4 py-3"
+                className="bg-background hover:border-foreground/15 flex min-w-0 flex-col gap-2.5 rounded-xl border p-3 shadow-xs transition-colors"
               >
-                <span className="bg-background flex size-9 shrink-0 items-center justify-center rounded-lg border">
-                  <Swatches accents={entry.accents} />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
+                {/* 色带：accent 色横排（最多 4 段） */}
+                <div className="bg-background flex h-9 overflow-hidden rounded-lg border">
+                  {(entry.accents.length ? entry.accents : ["#94a3b8"])
+                    .slice(0, 4)
+                    .map((c, i) => (
+                      <span
+                        key={i}
+                        className="flex-1"
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                </div>
+
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
                     <span className="truncate text-sm font-medium">{entry.name}</span>
-                    {isCurrent(entry) && (
+                    {/* 使用中：有「使用」按钮时由按钮表达，这里只在无按钮时兜底 */}
+                    {isCurrent(entry) && !threadId && (
                       <Badge variant="secondary" className="shrink-0 text-[10px]">
-                        当前会话使用中
+                        使用中
                       </Badge>
                     )}
                     {entry.shadowed && (
@@ -324,93 +369,115 @@ export const DesignThemesSettings: FC = () => {
                         已被同名主题覆盖
                       </Badge>
                     )}
-                    {entry.scope === "user" && entry.sizeBytes !== undefined && (
-                      <span className="text-muted-foreground shrink-0 text-[10px]">
-                        {formatBytes(entry.sizeBytes)}
-                      </span>
-                    )}
                   </div>
-                  <p className="text-muted-foreground truncate text-xs">
+                  {/* 预留两行高度：描述长短不一，但不让不同行的卡片高度参差
+                      （不写死整卡高度——内容再变也不会溢出） */}
+                  <p className="text-muted-foreground line-clamp-2 min-h-8 text-xs">
                     {entry.desc || entry.id}
                   </p>
                 </div>
-                {entry.scope === "builtin" ? (
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    {threadId && (
+
+                <div className="mt-auto flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground min-w-0 truncate text-[10px]">
+                    {entry.scope === "user" && entry.sizeBytes !== undefined
+                      ? formatBytes(entry.sizeBytes)
+                      : ""}
+                  </span>
+                  {entry.scope === "builtin" ? (
+                    <div className="flex shrink-0 items-center gap-1">
+                      {threadId && (
+                        <UseThemeButton
+                          current={isCurrent(entry)}
+                          onUse={() => applyToCurrentThread(entry)}
+                        />
+                      )}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          render={
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7 shrink-0"
+                              aria-label="更多操作"
+                            />
+                          }
+                        >
+                          <MoreHorizontalIcon className="size-4" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="min-w-44">
+                          <DropdownMenuItem onClick={() => void openDoc(entry)}>
+                            <EyeIcon className="size-4" />
+                            预览
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => void openFork(entry)}>
+                            <CopyIcon className="size-4" />
+                            另存为我的主题
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  ) : confirmDelete === entry.id ? (
+                    <div className="flex shrink-0 items-center gap-1">
                       <Button
                         variant="outline"
                         size="sm"
-                        className="h-7 gap-1 text-xs"
-                        disabled={isCurrent(entry)}
-                        title="用于当前会话（与 composer 主题胶囊同一开关）"
-                        onClick={() => applyToCurrentThread(entry)}
+                        className="h-7 text-xs"
+                        onClick={() => setConfirmDelete(null)}
                       >
-                        <PaletteIcon className="size-3.5" />
-                        {isCurrent(entry) ? "使用中" : "使用"}
+                        取消
                       </Button>
-                    )}
-                    <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={() => void openDoc(entry)}>
-                      <EyeIcon className="size-3.5" />
-                      预览
-                    </Button>
-                    <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={() => void openFork(entry)}>
-                      <CopyIcon className="size-3.5" />
-                      另存为我的主题
-                    </Button>
-                  </div>
-                ) : confirmDelete === entry.id ? (
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setConfirmDelete(null)}>
-                      取消
-                    </Button>
-                    <Button variant="destructive" size="sm" className="h-7 text-xs" onClick={() => remove(entry)}>
-                      确认删除
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    {threadId && (
                       <Button
-                        variant="outline"
+                        variant="destructive"
                         size="sm"
-                        className="h-7 gap-1 text-xs"
-                        disabled={isCurrent(entry)}
-                        title="用于当前会话（与 composer 主题胶囊同一开关）"
-                        onClick={() => applyToCurrentThread(entry)}
+                        className="h-7 text-xs"
+                        onClick={() => remove(entry)}
                       >
-                        <PaletteIcon className="size-3.5" />
-                        {isCurrent(entry) ? "使用中" : "使用"}
+                        确认删除
                       </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-7 shrink-0"
-                      title="Markdown 编辑"
-                      onClick={() => void openMarkdownEdit(entry)}
-                    >
-                      <PencilIcon className="size-3.5" />
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 gap-1 text-xs"
-                      onClick={() => void openFormEdit(entry)}
-                    >
-                      <SquarePenIcon className="size-3.5" />
-                      编辑
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-7 shrink-0"
-                      title="删除"
-                      onClick={() => setConfirmDelete(entry.id)}
-                    >
-                      <Trash2Icon className="size-3.5 text-destructive" />
-                    </Button>
-                  </div>
-                )}
+                    </div>
+                  ) : (
+                    <div className="flex shrink-0 items-center gap-1">
+                      {threadId && (
+                        <UseThemeButton
+                          current={isCurrent(entry)}
+                          onUse={() => applyToCurrentThread(entry)}
+                        />
+                      )}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          render={
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-7 shrink-0"
+                              aria-label="更多操作"
+                            />
+                          }
+                        >
+                          <MoreHorizontalIcon className="size-4" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="min-w-44">
+                          <DropdownMenuItem onClick={() => void openFormEdit(entry)}>
+                            <SquarePenIcon className="size-4" />
+                            编辑
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => void openMarkdownEdit(entry)}>
+                            <PencilIcon className="size-4" />
+                            编辑 Markdown
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            variant="destructive"
+                            onClick={() => setConfirmDelete(entry.id)}
+                          >
+                            <Trash2Icon className="size-4" />
+                            删除
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
           </div>

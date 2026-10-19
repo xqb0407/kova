@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, type FC } from "react";
-import { EyeIcon } from "lucide-react";
 import {
   activatePanelTab,
   getPanelTabs,
@@ -68,6 +67,8 @@ export const FileTreeTab: FC = () => {
       if (!rootCwd || !PREVIEW_RE.test(name)) return null;
       return (
         <ContextMenuItem
+          // 与 FileExplorer 的菜单项同版式（无图标、36px 行、px-3）
+          className="justify-between gap-6 rounded-md px-3 py-2 focus:bg-accent"
           onClick={() =>
             openPanelTab("browser", {
               cwd: rootCwd,
@@ -76,7 +77,6 @@ export const FileTreeTab: FC = () => {
             })
           }
         >
-          <EyeIcon />
           浏览器预览
         </ContextMenuItem>
       );
