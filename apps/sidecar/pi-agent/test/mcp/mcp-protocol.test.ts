@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { join } from "node:path";
 import { initStorage } from "../../src/storage/storage";
-import { dispatch, setInitGate } from "../../src/protocol/protocol";
+import { dispatch, handleLine, setInitGate } from "../../src/protocol/protocol";
 import { mcpManager } from "../../src/mcp/mcp-manager";
 import { resetMcpConfigForTest } from "../../src/mcp/mcp-config";
 import { resetMcpCacheForTest } from "../../src/mcp/mcp-cache";
@@ -65,6 +65,23 @@ afterAll(() => {
 });
 
 const last = (): Record<string, unknown> => JSON.parse(lines[lines.length - 1]);
+
+/** 等某个 reqId 的应答落地：派活式命令（test/tools/授权）的应答晚于 dispatch 返回 */
+async function waitForLine(id: string, timeoutMs = 5000): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line) as { id?: unknown };
+        if (parsed?.id === id) return parsed as Record<string, unknown>;
+      } catch {
+        /* 非 JSON 行（日志等）忽略 */
+      }
+    }
+    if (Date.now() > deadline) throw new Error(`等待应答超时：${id}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 const writeSystemConfig = () => {
   writeFileSync(
@@ -143,12 +160,13 @@ describe("MCP 协议消息", () => {
   test("test_mcp_server 强制握手返回 ready + 工具数", async () => {
     writeSystemConfig();
     await dispatch("m5", { type: "test_mcp_server", layer: "system", name: "fake" });
-    const res = last();
+    // 派活式：握手结果晚点用同一 reqId 回帧
+    const res = await waitForLine("m5");
     expect(res.type).toBe("mcp_server_test");
     const status = res.status as Record<string, unknown>;
     expect(status.state).toBe("ready");
     expect(status.toolCount).toBe(6);
-    // 未知服务器报错
+    // 未知服务器报错（校验前置，仍在 dispatch 内同步抛）
     await expect(
       dispatch("m6", { type: "test_mcp_server", layer: "system", name: "ghost" }),
     ).rejects.toThrow("not found");
@@ -216,7 +234,7 @@ describe("MCP 协议消息", () => {
       resetMcpOAuthForTest();
       writeFileSync(systemConfig, JSON.stringify({ mcpServers: { authed: { type: "http", url } } }), "utf8");
       await dispatch("mr", { type: "test_mcp_server", layer: "system", name: "authed" });
-      const res = last();
+      const res = await waitForLine("mr");
       expect(res.type).toBe("mcp_server_test");
       const status = res.status as Record<string, unknown>;
       expect(status.state).toBe("ready");
@@ -235,7 +253,7 @@ describe("MCP 协议消息", () => {
   test("delete_mcp_server 删条目并断连", async () => {
     writeSystemConfig();
     await dispatch("m7", { type: "test_mcp_server", layer: "system", name: "fake" });
-    expect((last() as { status?: { state?: string } }).status?.state).toBe("ready");
+    expect((await waitForLine("m7")).status).toMatchObject({ state: "ready" });
     await dispatch("m8", { type: "delete_mcp_server", layer: "system", name: "fake" });
     const res = last();
     expect(res.type).toBe("mcp_servers");
@@ -260,5 +278,37 @@ describe("MCP 协议消息", () => {
         definition: { name: "w", transport: "stdio", command: "npx" },
       }),
     ).rejects.toThrow("cwd");
+  });
+
+  /**
+   * 回归点（"全应用假死"根因之一）：非 prompt 命令走 mgmt 串行队列，任何在 handler
+   * 里 await 十几秒的命令（握手 10s 起）都会把这段时间的所有请求一起堵死。test/tools
+   * 已改派活——这里用可控的 ensureConnected 模拟"握手迟迟不回"，验证：
+   *   1) 长命令不占队列（后到的短命令先回）
+   *   2) 长命令的结果仍按同一个 reqId 回帧
+   * 走 handleLine（而非直接 dispatch）才有队列语义。
+   */
+  test("派活：长握手不占 mgmt 队列，结果按同一 reqId 回帧", async () => {
+    writeSystemConfig();
+    const original = mcpManager.ensureConnected;
+    let release: () => void = () => {};
+    mcpManager.ensureConnected = () =>
+      new Promise<never[]>((resolve) => {
+        release = () => resolve([]);
+      });
+    try {
+      handleLine(JSON.stringify({ type: "test_mcp_server", id: "slow1", layer: "system", name: "fake" }));
+      handleLine(JSON.stringify({ type: "list_mcp_servers", id: "fast1" }));
+      // 后到的短命令先回 = 队列没被长命令占住
+      const fast = await waitForLine("fast1", 2000);
+      expect(fast.type).toBe("mcp_servers");
+      // 长命令还没结算，且不阻塞别人
+      expect(lines.some((l) => l.includes('"id":"slow1"'))).toBe(false);
+      release();
+      const slow = await waitForLine("slow1", 2000);
+      expect(slow.type).toBe("mcp_server_test");
+    } finally {
+      mcpManager.ensureConnected = original;
+    }
   });
 });

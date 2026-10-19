@@ -6,11 +6,13 @@ import type {
   PiChannelStatus,
   PiContextChangedFrame,
   PiDesignThemePush,
+  PiMcpAuthFrame,
   PiPluginOpFrame,
   PiRunningTurn,
   PiSessionsChangedFrame,
 } from "@/lib/pi/pi-channel";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
+import { channelTimeoutMs } from "pi-protocol";
 
 /**
  * 远程 WebSocket 通道：浏览器 ⇄ 桌面端 remote.rs WS 网关 ⇄ pi-agent sidecar。
@@ -84,6 +86,7 @@ export class WsPiChannel implements PiChannel {
   private automationCbs = new Set<(frame: PiAutomationFrame) => void>();
   private sessionsCbs = new Set<(frame: PiSessionsChangedFrame | null) => void>();
   private pluginOpCbs = new Set<(frame: PiPluginOpFrame) => void>();
+  private mcpAuthCbs = new Set<(frame: PiMcpAuthFrame) => void>();
   private contextCbs = new Set<(frame: PiContextChangedFrame) => void>();
   private designCbs = new Set<(frame: PiDesignThemePush) => void>();
   /** 原始行观察（迁移阶段 5c）：WsPiClient 的 thread_event/chunk 分流入口 */
@@ -296,6 +299,14 @@ export class WsPiChannel implements PiChannel {
       }
       return;
     }
+    // MCP OAuth 授权结果帧（remote.rs 白名单同款放行）
+    if (type === "mcp_auth_result") {
+      const frame = v as unknown as PiMcpAuthFrame;
+      if (typeof frame.name === "string") {
+        for (const cb of this.mcpAuthCbs) cb(frame);
+      }
+      return;
+    }
     // 上下文读数推送帧（§7，remote.rs 白名单同款放行）
     if (type === "context_changed") {
       const frame = v as unknown as PiContextChangedFrame;
@@ -398,14 +409,24 @@ export class WsPiChannel implements PiChannel {
 
   request(
     payload: Record<string, unknown>,
-    timeoutMs = 15000,
+    timeoutMs?: number,
   ): Promise<PiResponse> {
+    // 超时预算取自协议表（pi-protocol/timeouts），与桌面通道同款：慢命令的侧车侧
+    // 上限远大于默认 15s，写短了（或不写）一律抬到预算，别让这一层白报超时
+    const type = typeof payload?.type === "string" ? payload.type : "";
+    const budget = channelTimeoutMs(type);
+    const waitMs = Math.max(timeoutMs ?? 0, budget);
+    if (timeoutMs !== undefined && timeoutMs < budget) {
+      console.warn(
+        `[pi-ws-channel] ${type || "<no type>"} 的显式超时 ${timeoutMs}ms 低于预算 ${budget}ms，已抬到预算`,
+      );
+    }
     const id = `ws-${++this.seq}-${Date.now()}`;
     return new Promise<PiResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error("pi-agent request timed out"));
-      }, timeoutMs);
+      }, waitMs);
       this.pending.set(id, { resolve, reject, timer });
       // 无连接时快速失败：此前只挂 15s 定时器再超时，界面上的操作白等一轮
       if (!this.sendRaw({ ...payload, id })) {
@@ -436,6 +457,11 @@ export class WsPiChannel implements PiChannel {
   subscribePluginOps(cb: (frame: PiPluginOpFrame) => void): () => void {
     this.pluginOpCbs.add(cb);
     return () => this.pluginOpCbs.delete(cb);
+  }
+
+  subscribeMcpAuth(cb: (frame: PiMcpAuthFrame) => void): () => void {
+    this.mcpAuthCbs.add(cb);
+    return () => this.mcpAuthCbs.delete(cb);
   }
 
   subscribeContextChanges(cb: (frame: PiContextChangedFrame) => void): () => void {

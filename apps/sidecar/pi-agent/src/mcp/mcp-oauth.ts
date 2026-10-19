@@ -8,20 +8,27 @@
  *   文件 0600（内含 access/refresh token，策略与 ~/.kova/mcp.json 明文 headers 一致）
  * - 回调：http://127.0.0.1:<port>/callback 一次性本地服务，只在授权进行时存在；
  *   端口随 DCR 结果记录，重连时优先复用（否则注册的 redirect_uri 对不上要重新 DCR）
- * - 浏览器：darwin open / xdg-open / cmd start（测试可注入替换）
+ * - 浏览器：有宿主时经 host_query open_external（桌面 Electron shell.openExternal），
+ *   独立跑时退回本机打开器（darwin open / Windows rundll32 / xdg-open；测试可注入替换）。
+ *   **Windows 绝不经 cmd.exe**：URL 里的 & 会被 cmd 当命令分隔符切掉——旧实现
+ *   `cmd /c start "" <url>` 只把第一个 & 之前的部分交给浏览器（Atlassian 授权页
+ *   据此报「链接不完整」），且 stdio ignore 把 cmd 的报错全吞了，用户侧只看到
+ *   180s 超时。见 spawnOpener 注释。
  *
  * 两种模式：
  * - silent（握手懒连时）：仅在已有凭据时挂 provider——access_token 过期由 SDK
  *   用 refresh_token 静默续期；换不动则失败上抛，管理器按 401/UnauthorizedError
  *   置 needsAuth，等用户在设置页点「授权」。绝不静默弹浏览器。
  * - interactive（authorize_mcp_server 命令）：起回调服务、真开浏览器、等 code。
+ *   两段式交付：urlReady 在授权链接生成后立即兑现（命令据此马上应答、把链接
+ *   交给前端），等用户在浏览器批准的长时间等待走 completed，不占请求配对。
  */
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import type {
   OAuthClientProvider,
   OAuthDiscoveryState,
@@ -32,6 +39,8 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { logErr } from "../log";
+import { getTransport } from "../storage/hostdb/transport";
+import { isLocalStorage } from "../storage/hostdb/local";
 
 /** 等待用户在浏览器完成授权的上限（比握手超时宽得多） */
 export const MCP_OAUTH_CALLBACK_TIMEOUT_MS = 180_000;
@@ -82,11 +91,111 @@ export function resetMcpOAuthForTest(): void {
 
 /**
  * 浏览器拉起钩子：测试注入假 opener 避免真弹窗。
- * 返回 false 表示没拉起来（调用方把授权 URL 附进超时消息供手动打开）。
+ * 返回 false 表示没拉起来（调用方把授权 URL 交给用户手动打开）。
  */
 let browserOpener: ((url: string) => Promise<boolean>) | undefined;
 export function setBrowserOpenerForTest(fn: ((url: string) => Promise<boolean>) | undefined): void {
   browserOpener = fn;
+}
+
+/** 宿主代开 RPC 的等待上限（宿主侧只是 shell.openExternal，正常毫秒级） */
+const OPEN_VIA_HOST_TIMEOUT_MS = 10_000;
+/** 本机打开器的失败探测窗口：spawn 的成败是异步事件（ENOENT / 立即非零退出），
+ *  等一小会再下结论，别把「命令不存在」当成功——旧实现 spawn 成功即 return true，
+ *  浏览器根本没打开却一路静默到 180s 超时。 */
+const OPENER_PROBE_MS = 1500;
+
+type OpenerOutcome = { ok: boolean; detail?: string };
+
+/**
+ * 拉起一个分离的打开器进程并给出结论。**绝不经过 cmd.exe**：
+ * - URL 里没有空白字符时，Node/Bun 的 spawn 不会给参数加引号（libuv 只在含
+ *   空格/制表符/引号/反斜杠时才引），而 cmd.exe 会把裸 & 当命令分隔符——
+ *   `cmd /c start "" <url>` 交给浏览器的只有第一个 & 之前的部分。
+ * - cmd 的报错（'client_id' 不是内部或外部命令）在 stdio ignore 下全丢。
+ * 这里对 stderr 留尾（诊断用）并按需看退出码：explorer.exe 成功打开也会返回
+ * 非零码，所以它只按「能不能跑起来」判。
+ */
+function spawnOpener(cmd: string, args: string[], judgeExitCode: boolean): Promise<OpenerOutcome> {
+  return new Promise<OpenerOutcome>((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"], detached: true });
+    } catch (err) {
+      resolve({ ok: false, detail: `拉起 ${cmd} 失败：${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+    let stderrTail = "";
+    child.stderr?.on("data", (buf: Buffer) => {
+      if (stderrTail.length < 2000) stderrTail += buf.toString("utf8");
+    });
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (outcome: OpenerOutcome) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      child.stderr?.destroy();
+      child.unref();
+      resolve(outcome);
+    };
+    timer = setTimeout(() => finish({ ok: true }), OPENER_PROBE_MS);
+    child.once("error", (err) => finish({ ok: false, detail: `拉起 ${cmd} 失败：${err.message}` }));
+    child.once("exit", (code) => {
+      if (!judgeExitCode || code === 0) {
+        finish({ ok: true });
+        return;
+      }
+      finish({
+        ok: false,
+        detail: `${cmd} 以退出码 ${code} 结束${stderrTail.trim() ? `：${stderrTail.trim().slice(0, 500)}` : ""}`,
+      });
+    });
+  });
+}
+
+/** 无宿主时的本机打开器（Windows 刻意绕开 cmd，见 spawnOpener 注释） */
+async function openLocally(url: string): Promise<boolean> {
+  const candidates: { cmd: string; args: string[]; judgeExitCode: boolean }[] =
+    process.platform === "darwin"
+      ? [{ cmd: "open", args: [url], judgeExitCode: true }]
+      : process.platform === "win32"
+        ? [
+            // rundll32 的 FileProtocolHandler 即 ShellExecute 入口，参数直传不经 cmd
+            { cmd: "rundll32", args: ["url.dll,FileProtocolHandler", url], judgeExitCode: true },
+            { cmd: "explorer.exe", args: [url], judgeExitCode: false },
+          ]
+        : [{ cmd: "xdg-open", args: [url], judgeExitCode: true }];
+  let detail: string | undefined;
+  for (const candidate of candidates) {
+    const outcome = await spawnOpener(candidate.cmd, candidate.args, candidate.judgeExitCode);
+    if (outcome.ok) return true;
+    detail = outcome.detail ?? detail;
+  }
+  logErr(`mcp-oauth: 未能打开浏览器${detail ? `（${detail}）` : ""}；请手动访问授权链接`);
+  return false;
+}
+
+/**
+ * 宿主代开（桌面 Electron：shell.openExternal，不经 cmd、& 安全、且能拿到真实成败）。
+ * 返回 undefined = 没有宿主 / 宿主通道本身坏了 → 调用方退回本机打开器；
+ * 返回 false = 宿主明确拒绝了这次打开，不再重复尝试。
+ */
+async function openViaHost(url: string): Promise<boolean | undefined> {
+  if (isLocalStorage()) return undefined; // 冒烟/直跑：没有宿主
+  const transport = getTransport();
+  if (!transport) return undefined;
+  try {
+    const reply = (await transport("open_external", { url }, { timeoutMs: OPEN_VIA_HOST_TIMEOUT_MS })) as
+      | { ok?: unknown }
+      | null;
+    if (reply?.ok === true) return true;
+    logErr("mcp-oauth: 宿主拒绝打开授权链接");
+    return false;
+  } catch (err) {
+    logErr("mcp-oauth: 宿主打开授权链接失败，退回本机打开：", err);
+    return undefined;
+  }
 }
 
 async function openInBrowser(url: string): Promise<boolean> {
@@ -98,26 +207,17 @@ async function openInBrowser(url: string): Promise<boolean> {
       return false;
     }
   }
-  const [cmd, args]: [string, string[]] =
-    process.platform === "darwin"
-      ? ["open", [url]]
-      : process.platform === "win32"
-        ? ["cmd", ["/c", "start", "", url]]
-        : ["xdg-open", [url]];
-  try {
-    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
-    child.on("error", (err) => logErr("mcp-oauth: 打开浏览器失败:", err));
-    child.unref();
-    return true;
-  } catch (err) {
-    logErr("mcp-oauth: 打开浏览器失败:", err);
-    return false;
-  }
+  const viaHost = await openViaHost(url);
+  return viaHost ?? (await openLocally(url));
 }
 
 export class FileOAuthProvider implements OAuthClientProvider {
   /** 最近一次交给用户的授权 URL（opener 拉起失败时进超时消息） */
   lastAuthorizationUrl?: string;
+  /** 浏览器是否成功拉起（false = 授权链接要靠用户手动打开） */
+  browserOpened?: boolean;
+  /** 授权 URL 生成 + 拉起尝试完毕后的钩子（beginInteractiveOAuth 挂载，供两段式交付） */
+  onAuthorizationUrl?: (url: string, browserOpened: boolean) => void;
   private verifier?: string;
   private stateValue?: string;
 
@@ -189,7 +289,12 @@ export class FileOAuthProvider implements OAuthClientProvider {
     // 静默模式不开浏览器：auth() 随即返回 REDIRECT → 上层抛 UnauthorizedError，
     // 由 UI 引导用户点「授权」走交互模式
     if (!this.interactive) return;
-    await openInBrowser(url.toString());
+    this.browserOpened = await openInBrowser(this.lastAuthorizationUrl);
+    if (!this.browserOpened) {
+      logErr("mcp-oauth: 浏览器未能自动打开，需用户手动访问授权链接");
+    }
+    // 两段式：命令侧据此立刻把 authUrl（与拉起成败）交付前端，别等用户批准
+    this.onAuthorizationUrl?.(this.lastAuthorizationUrl, this.browserOpened);
   }
 
   invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery"): void {
@@ -230,10 +335,15 @@ export function clearOAuthForServer(serverUrl: string): boolean {
 
 export type InteractiveOAuthSession = {
   provider: FileOAuthProvider;
+  /** 授权 URL 生成（浏览器拉起已尝试）时兑现；握手在拿到 URL 之前就失败则 reject。
+   *  两段式的第一阶段交付点：命令等它拿 authUrl 立刻应答，不再等用户在浏览器批准。 */
+  urlReady: Promise<{ url: string; browserOpened: boolean }>;
   /** 等浏览器授权回跳拿到 code（用户拒绝/超时则抛，附手动打开的授权 URL） */
   waitForCode: () => Promise<string>;
   /** 关掉本地回调服务 */
   finish: () => Promise<void>;
+  /** 主动放弃本次授权：关回调服务，在飞的等待立即以 reason 失败（别留 180s 空转） */
+  abort: (reason: string) => void;
 };
 
 async function listenCallbackServer(preferredPort?: number): Promise<{ server: Server; port: number }> {
@@ -337,6 +447,17 @@ export async function beginInteractiveOAuth(serverUrl: string): Promise<Interact
   const { server, port } = await listenCallbackServer(entry.redirectPort);
   const provider = new FileOAuthProvider(entry, true, port);
 
+  // 两段式第一阶段：授权链接生成、浏览器拉起尝试完毕时兑现
+  let resolveUrl!: (v: { url: string; browserOpened: boolean }) => void;
+  let rejectUrl!: (e: Error) => void;
+  const urlReady = new Promise<{ url: string; browserOpened: boolean }>((res, rej) => {
+    resolveUrl = res;
+    rejectUrl = rej;
+  });
+  // 兜一个处理器：调用方可能只订阅后续阶段，别让早期的失败变成未处理拒绝
+  urlReady.catch(() => {});
+  provider.onAuthorizationUrl = (url, browserOpened) => resolveUrl({ url, browserOpened });
+
   let pending: { resolve: (code: string) => void; reject: (err: Error) => void } | undefined;
   // 回调可能先于 waitForCode() 到达（自动批准的 IdP / 测试桩）：先缓冲，后到即取
   let settled: { code: string } | { err: Error } | undefined;
@@ -395,6 +516,25 @@ export async function beginInteractiveOAuth(serverUrl: string): Promise<Interact
 
   return {
     provider,
+    urlReady,
+    abort: (reason: string) => {
+      const err = new Error(reason);
+      // 先失败 urlReady（命令侧若还在等链接，立刻拿到原因），再结清在飞等待
+      rejectUrl(err);
+      if (pending) {
+        const waiter = pending;
+        pending = undefined;
+        waiter.reject(err);
+      } else {
+        settled ??= { err };
+      }
+      try {
+        server.closeAllConnections?.();
+        server.close();
+      } catch {
+        /* 关闭失败不影响「放弃」语义 */
+      }
+    },
     waitForCode: () =>
       new Promise<string>((resolve, reject) => {
         if (settled) {
@@ -406,10 +546,15 @@ export async function beginInteractiveOAuth(serverUrl: string): Promise<Interact
         }
         const timer = setTimeout(() => {
           pending = undefined;
+          // 授权链接进日志（排查用）；用户侧文案不再背那 900 字符的 URL——
+          // 设置页的「等待授权」卡片始终带着可复制/可重开的链接，超时提示指过去即可
+          if (provider.lastAuthorizationUrl) {
+            logErr("mcp-oauth: 等待浏览器授权超时；授权链接：", provider.lastAuthorizationUrl);
+          }
           reject(
             new Error(
-              `等待浏览器授权超时（${MCP_OAUTH_CALLBACK_TIMEOUT_MS / 1000}s）` +
-                (provider.lastAuthorizationUrl ? `；若浏览器未打开，手动访问：${provider.lastAuthorizationUrl}` : ""),
+              `等待浏览器授权超时（${MCP_OAUTH_CALLBACK_TIMEOUT_MS / 1000}s）：` +
+                "请在设置页的「等待授权」卡片里重新打开授权链接，或重新点「授权」",
             ),
           );
         }, MCP_OAUTH_CALLBACK_TIMEOUT_MS);

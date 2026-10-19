@@ -150,6 +150,10 @@ describe("createTraceRunRecorder", () => {
     rec.noteRequest({
       systemPrompt: "你是测试助手",
       messages: [
+        // 转录首条 system 是 systemPrompt 的镜像（agent/context.ts）：空白镜像不渲染，
+        // 否则每条记录都多一行 "[system]（空）"；带正文的镜像（提示词热换后）照常渲染
+        { role: "system", content: "" },
+        { role: "system", content: "热换后的提示词" },
         { role: "user", content: "你好" },
         {
           role: "assistant",
@@ -174,6 +178,8 @@ describe("createTraceRunRecorder", () => {
     const run = readTraceRuns("sess-7")[0]!;
     const llm = (run.spans[0]!.children ?? []).find((s) => s.kind === "llm_call")!;
     expect(llm.detail?.request).toContain("[system] 你是测试助手");
+    expect(llm.detail?.request).toContain("[system] 热换后的提示词");
+    expect(llm.detail?.request).not.toContain("[system]（空）");
     expect(llm.detail?.request).toContain("[user] 你好");
     expect(llm.detail?.request).toContain("[tool_call] bash(");
     expect(llm.detail?.request).toContain("[图片]");

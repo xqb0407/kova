@@ -302,3 +302,50 @@ describe("toLoopRuns", () => {
   });
 });
 
+describe("请求上下文（llm step 的 requestContext）", () => {
+  test("llm span 的 detail.request 进 step.requestContext；工具 step 不带", () => {
+    const [run] = toLoopRuns([
+      makeRun({
+        spans: [
+          span({
+            kind: "turn",
+            spanId: "t1",
+            startMs: 1_000,
+            endMs: 3_000,
+            children: [
+              span({
+                kind: "llm_call",
+                spanId: "l1",
+                startMs: 1_000,
+                endMs: 2_000,
+                attrs: { model: "m/x" },
+                detail: { request: "[system] 你是…\n\n[user] 看下配置", response: "好" },
+              }),
+              span({
+                kind: "tool_call",
+                spanId: "c1",
+                name: "read",
+                startMs: 2_000,
+                endMs: 2_500,
+                attrs: { args: '{"p":1}' },
+                detail: { response: "ok" },
+              }),
+            ],
+          }),
+        ],
+      }),
+    ]);
+    const steps = run!.iterations[0]!.steps;
+    // 面板的「请求上下文」就吃这一项：系统提示词与用户消息都要在里面
+    expect(steps[0]!.requestContext).toContain("[system] 你是…");
+    expect(steps[0]!.requestContext).toContain("[user] 看下配置");
+    // 工具 step 的"请求"是入参，不重复挂请求上下文
+    expect(steps[1]!.requestContext).toBeUndefined();
+  });
+
+  test("旧记录没有 detail.request：字段缺省，不伪造空串", () => {
+    const [run] = toLoopRuns([makeRun()]);
+    expect(run!.iterations[0]!.steps[0]!.requestContext).toBeUndefined();
+  });
+});
+

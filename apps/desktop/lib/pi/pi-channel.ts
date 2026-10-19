@@ -37,12 +37,14 @@ import type {
   AutomationFiredFrame,
   AutomationRunDoneFrame,
   ContextChangedFrame,
+  McpAuthResultFrame,
   PluginOpResultFrame,
   RunningTurn,
   SessionsChangedFrame,
   SubagentActivityItem,
   SubagentRunStatus,
 } from "pi-protocol";
+import { channelTimeoutMs } from "pi-protocol";
 
 export type { SubagentRunStatus, SubagentActivityItem };
 
@@ -64,6 +66,19 @@ export type PiPluginOpFrame = PluginOpResultFrame & {
   plugins?: import("@/lib/pi/pi-bridge").PiPluginEntry[];
   marketplaces?: import("@/lib/pi/pi-bridge").PiMarketplaceEntry[];
   workspaceCwd?: string | null;
+};
+
+/**
+ * MCP OAuth 授权结果自发通知帧（sidecar handlers/mcp.ts 发出，无 id；
+ * 受理 → mcp_auth_started 应答，完成 → mcp_auth_result）。
+ * 成功时携带刷新后的 MCP 清单（servers/pluginServers/workspaceCwd/diagnostics），
+ * 设置页据此整包并入镜像，不必再拉一轮。
+ */
+export type PiMcpAuthFrame = McpAuthResultFrame & {
+  servers?: import("@/lib/pi/pi-bridge").PiMcpServerEntry[];
+  pluginServers?: import("@/lib/pi/pi-bridge").PiMcpServerEntry[];
+  workspaceCwd?: string | null;
+  diagnostics?: string[];
 };
 
 /** 上下文读数变化自发通知帧（sidecar 轮次收尾点现算推送，无 id，盖事件
@@ -157,6 +172,15 @@ export interface PiChannel {
   subscribeSessionsChanged?(
     cb: (frame: PiSessionsChangedFrame | null) => void,
   ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（同款无 id 自发通知通道）：订阅 MCP OAuth 授权结果帧
+   * （mcp_auth_result，见 PiMcpAuthFrame）：受理应答 mcp_auth_started 只交授权
+   * 链接，等用户在浏览器批准（可达数分钟）的结果经本帧回流；成功时携带刷新后的
+   * MCP 清单。WS 通道经网关白名单转发（remote.rs broadcast_notification）。
+   */
+  subscribeMcpAuth?(
+    cb: (frame: PiMcpAuthFrame) => void,
+  ): (() => void) | Promise<() => void>;
   /** 能力可选（与 subscribeTurns 成对）：当前正在跑 turn 的会话 id 种子清单 */
   listRunning?(): Promise<string[]>;
   /**
@@ -220,15 +244,28 @@ export class DesktopPiChannel implements PiChannel {
 
   async request(
     payload: Record<string, unknown>,
-    timeoutMs = 15000,
+    timeoutMs?: number,
   ): Promise<PiResponse> {
-    const invokePromise = invoke<string>("pi_request", { payload }).then(
+    // 超时预算取自协议表（pi-protocol/timeouts）：慢命令（MCP 握手/授权受理/优化）
+    // 的侧车侧上限远大于默认 15s，调用方写短的（或压根不写）都会被抬到预算——
+    // 压住它只会让这一层白报超时、侧车继续跑（"全应用假死"的观感来源）。
+    const type = typeof payload?.type === "string" ? payload.type : "";
+    const budget = channelTimeoutMs(type);
+    const waitMs = Math.max(timeoutMs ?? 0, budget);
+    if (timeoutMs !== undefined && timeoutMs < budget) {
+      console.warn(
+        `[pi-channel] ${type || "<no type>"} 的显式超时 ${timeoutMs}ms 低于预算 ${budget}ms，已抬到预算`,
+      );
+    }
+    // waitMs 一并透传主进程：配对等待在那一层，预算必须一致（主进程再 +slack
+    // 让渲染层先落定、拿到侧车的明确原因）
+    const invokePromise = invoke<string>("pi_request", { payload, timeoutMs: waitMs }).then(
       (line) => JSON.parse(line) as PiResponse,
     );
     return Promise.race([
       invokePromise,
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("pi-agent request timed out")), timeoutMs),
+        setTimeout(() => reject(new Error("pi-agent request timed out")), waitMs),
       ),
     ]);
   }
@@ -358,6 +395,28 @@ export class DesktopPiChannel implements PiChannel {
           continue;
         }
         if (parsed?.type === "plugin_op_result" && typeof parsed.opId === "string") {
+          cb(parsed);
+        }
+      }
+    });
+  }
+
+  /**
+   * mcp_auth_result 自发通知帧（无 id，宿主原样广播）：同款前缀预筛。
+   * MCP OAuth 授权在浏览器里批准可达数分钟，受理应答只给授权链接，
+   * 最终结果与刷新后的清单在此收敛。
+   */
+  async subscribeMcpAuth(cb: (frame: PiMcpAuthFrame) => void): Promise<() => void> {
+    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
+      for (const wire of event.payload) {
+        if (!wire.l.startsWith('{"type":"mcp_auth_result"')) continue;
+        let parsed: PiMcpAuthFrame;
+        try {
+          parsed = JSON.parse(wire.l);
+        } catch {
+          continue;
+        }
+        if (parsed?.type === "mcp_auth_result" && typeof parsed.name === "string") {
           cb(parsed);
         }
       }

@@ -131,6 +131,17 @@ export const pluginOpResultFrameSchema = z.looseObject({
   name: z.string().optional(),
 });
 
+/** MCP OAuth 授权的最终结果（受理走响应帧 mcp_auth_started，完成走本帧）。
+ *  浏览器里批准可达数分钟，绝不能占请求配对：受理只等授权链接生成。
+ *  同 plugin_op_result 的先例，刷新后的 MCP 清单载荷域内自有契约，此处透传不展开。 */
+export const mcpAuthResultFrameSchema = z.looseObject({
+  type: z.literal("mcp_auth_result"),
+  /** 目标 MCP 服务器名 */
+  name: z.string(),
+  ok: z.boolean(),
+  errorText: z.string().optional(),
+});
+
 export type TurnChangedFrame = z.infer<typeof turnChangedFrameSchema>;
 export type SessionsChangedFrame = z.infer<typeof sessionsChangedFrameSchema>;
 export type SubagentRunStatus = z.infer<typeof subagentRunStatusSchema>;
@@ -140,3 +151,4 @@ export type AutomationFiredFrame = z.infer<typeof automationFiredFrameSchema>;
 export type AutomationRunDoneFrame = z.infer<typeof automationRunDoneFrameSchema>;
 export type ContextChangedFrame = z.infer<typeof contextChangedFrameSchema>;
 export type PluginOpResultFrame = z.infer<typeof pluginOpResultFrameSchema>;
+export type McpAuthResultFrame = z.infer<typeof mcpAuthResultFrameSchema>;

@@ -4,6 +4,9 @@
  * 变更后的热重载（连接池 diff）经 payloads.reloadMcpConnections。
  */
 import { send } from "../stream";
+import { logErr } from "../../log";
+import { beginOp, endOp } from "../exit";
+import { classifyAgentError, toWireError } from "../../agent/agent-errors";
 import { mcpManager } from "../../mcp/mcp-manager";
 import { getValidTools } from "../../mcp/mcp-cache";
 import { clearOAuthForServer } from "../../mcp/mcp-oauth";
@@ -11,6 +14,16 @@ import { readMcpAudit } from "../../mcp/mcp-audit";
 import { deleteMcpServer, loadMcpServers, saveMcpServer, setMcpServerEnabled } from "../../mcp/mcp-config";
 import { mcpDraftFromMessage, mcpServersPayload, reloadMcpConnections } from "../payloads";
 import type { CommandHandler } from "../command";
+
+/** 派活式命令的失败回帧（同 optimize_prompt 的出口）：含糊串按运行时归因 */
+function sendFailure(reqId: string, errorText: string): void {
+  send({
+    id: reqId,
+    type: "error",
+    errorText,
+    error: toWireError(classifyAgentError(errorText, { opaqueFallback: "runtime" })),
+  });
+}
 
 export const handlers: Record<string, CommandHandler> = {
   list_mcp_servers: async (reqId, msg) => {
@@ -100,24 +113,41 @@ export const handlers: Record<string, CommandHandler> = {
     // 应答直接取 statusFor 的完整状态，不要手拼字段——前端测试后把该行状态
     // 整段覆盖写回快照，手拼漏掉的字段（如 oauthAuthorized：「取消授权」按钮
     // 判据，凭据按 URL 键控与刚是否握手无关）会凭空消失。
-    mcpManager.disconnect(name);
-    try {
-      await mcpManager.ensureConnected(def);
-      send({ id: reqId, type: "mcp_server_test", status: mcpManager.statusFor(def) });
-    } catch (err) {
-      // 握手失败的 needsAuth（401 需 OAuth）与协议图标一并透出，前端据 needsAuth 显示「授权」
-      const s = mcpManager.statusFor(def);
-      send({
-        id: reqId,
-        type: "mcp_server_test",
-        status: {
-          ...s,
-          state: "backoff",
-          toolCount: 0,
-          message: err instanceof Error ? err.message : String(err),
-        },
-      });
-    }
+    //
+    // **派活不占 mgmt 串行队列**：握手最长 ~20s（连接 10s + 列工具 10s），排在
+    // 队列里会把这段时间内所有会话/清单/设置请求一起卡到超时（"哪里都点不了"的
+    // 成因之一）。范式同 optimize_prompt：handler 只校验与派活就返回，结果晚点用
+    // **同一个 reqId** 发回，前端按长超时等。在飞计数另开一对 beginOp/endOp：
+    // handleLine 的 finally 会在 handler 返回时就 endOp，此刻若进程收到 shutdown
+    // 会直接退出、把结果丢掉。
+    beginOp();
+    void (async () => {
+      try {
+        mcpManager.disconnect(name);
+        try {
+          await mcpManager.ensureConnected(def);
+          send({ id: reqId, type: "mcp_server_test", status: mcpManager.statusFor(def) });
+        } catch (err) {
+          // 握手失败的 needsAuth（401 需 OAuth）与协议图标一并透出，前端据 needsAuth 显示「授权」
+          const s = mcpManager.statusFor(def);
+          send({
+            id: reqId,
+            type: "mcp_server_test",
+            status: {
+              ...s,
+              state: "backoff",
+              toolCount: 0,
+              message: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+      } catch (err) {
+        // 派活段自身的意外错误：必须回一帧，否则前端干等长超时才收场
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
   },
 
   authorize_mcp_server: async (reqId, msg) => {
@@ -127,9 +157,31 @@ export const handlers: Record<string, CommandHandler> = {
     const { defs } = await loadMcpServers(cwd);
     const def = defs.find((d) => d.name === name);
     if (!def) throw new Error(`mcp server not found: ${name}`);
-    // 交互式 OAuth：sidecar 开浏览器 + 本地回调等用户批准，可能长达几分钟
-    await mcpManager.authorize(def);
-    send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
+    // 两段式授权（浏览器流程可能长达几分钟，绝不能占着请求配对与 mgmt 串行队列）：
+    // 第一阶段只等「授权链接生成」，立刻应答把链接交给前端（前端据此呈现可复制的
+    // 链接 + 拉起失败提示）；等用户批准的第二阶段走自发帧，命令当场返回。
+    const started = await mcpManager.beginAuthorize(def);
+    send({
+      id: reqId,
+      type: "mcp_auth_started",
+      name,
+      ...(started.authUrl ? { authUrl: started.authUrl } : {}),
+      ...(started.browserOpened !== undefined ? { browserOpened: started.browserOpened } : {}),
+      status: started.status,
+    });
+    void started.completed.then(async (result) => {
+      try {
+        send({
+          type: "mcp_auth_result",
+          name,
+          ok: result.ok,
+          ...(result.ok ? {} : { errorText: result.message }),
+          ...(await mcpServersPayload(cwd)),
+        });
+      } catch (err) {
+        logErr("mcp_auth_result 推送失败:", err);
+      }
+    });
   },
 
   revoke_mcp_server_auth: async (reqId, msg) => {
@@ -150,17 +202,29 @@ export const handlers: Record<string, CommandHandler> = {
     const { defs } = await loadMcpServers(cwd);
     const def = defs.find((d) => d.name === name);
     if (!def) throw new Error(`mcp server not found: ${name}`);
-    // 元数据缓存优先（断开态也可读），缺失才握手——懒服务器首次展开会真连一次
-    const tools = getValidTools(def) ?? (await mcpManager.ensureConnected(def));
-    send({
-      id: reqId,
-      type: "mcp_server_tools",
-      name,
-      tools: tools.map((t) => ({
+    // 元数据缓存优先（断开态也可读，同步返回）；缺失才握手——懒服务器首次展开会
+    // 真连一次（最长 ~20s），同样派活不占 mgmt 串行队列（见 test_mcp_server 注释）
+    const toWire = (tools: ReadonlyArray<{ name: string; description?: string }>) =>
+      tools.map((t) => ({
         name: t.name,
         ...(t.description ? { description: t.description } : {}),
-      })),
-    });
+      }));
+    const cached = getValidTools(def);
+    if (cached) {
+      send({ id: reqId, type: "mcp_server_tools", name, tools: toWire(cached) });
+      return;
+    }
+    beginOp();
+    void (async () => {
+      try {
+        const tools = await mcpManager.ensureConnected(def);
+        send({ id: reqId, type: "mcp_server_tools", name, tools: toWire(tools) });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
   },
 
   get_mcp_server_log: async (reqId, msg) => {

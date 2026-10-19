@@ -4,17 +4,9 @@
  * 相对段拒绝绝对与 `..`；目标存在时两侧 realpath 防符号链接逃逸。
  */
 import { existsSync, lstatSync, openSync, readSync, closeSync, statSync, realpathSync } from "node:fs";
-import {
-  createReadStream,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  statSync as fstat,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import type { Dirent } from "node:fs";
+import { readdir, readFile, mkdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdirSync, readFileSync, renameSync, statSync as fstat } from "node:fs";
 import { join, basename, dirname, extname } from "node:path";
 import { appDataDir, sessionsDir } from "./paths";
 import { libraryRoot as libraryRootDir } from "./library";
@@ -106,6 +98,71 @@ function resolveRoot(cwd: string): string {
   return real ?? cwd;
 }
 
+/** 目标名已被占用时按 Finder 习惯加「 (2)」「 (3)」…（导入与移动同款） */
+export function uniqueTarget(dir: string, base: string): string {
+  const first = join(dir, base);
+  if (!existsSync(first)) return first;
+  const ext = extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  for (let i = 2; i < 1000; i++) {
+    const cand = join(dir, `${stem} (${i})${ext}`);
+    if (!existsSync(cand)) return cand;
+  }
+  return join(dir, `${stem} (${Date.now()})${ext}`);
+}
+
+/**
+ * 同根内移动（资料库树里把行拖到某个文件夹）：移动的是相对路径，目标目录必须
+ * 在同一个可信根内且已存在；重名自动加序号（与导入同款），返回落位后的名字。
+ * 目录不能移进自身或自己的后代（否则文件系统会给出未定义结果）。
+ */
+export function fsMove(args: {
+  cwd: string;
+  path: string;
+  destDir: string;
+}): unknown {
+  const root = resolveRoot(args.cwd ?? "");
+  const src = joinRel(root, args.path ?? "");
+  if (src === root || src === tryRealpath(root)) return fail("bad-path");
+  let st;
+  try {
+    st = lstatSync(src);
+  } catch {
+    return fail("not-found");
+  }
+  const destDir = joinRel(root, args.destDir ?? "");
+  let destStat;
+  try {
+    destStat = statSync(destDir);
+  } catch {
+    return fail("not-a-directory");
+  }
+  if (!destStat.isDirectory()) return fail("not-a-directory");
+
+  const base = basename(src);
+  if (dirname(src) === destDir) return { ok: true, name: base, moved: false };
+
+  if (st.isDirectory()) {
+    const realSrc = tryRealpath(src) ?? src;
+    const realDest = tryRealpath(destDir) ?? destDir;
+    if (
+      realDest === realSrc ||
+      realDest.startsWith(realSrc + "/") ||
+      (process.platform === "win32" && realDest.startsWith(realSrc + "\\"))
+    ) {
+      return fail("bad-path");
+    }
+  }
+
+  const dest = uniqueTarget(destDir, base);
+  try {
+    renameSync(src, dest);
+  } catch {
+    return fail("move-failed");
+  }
+  return { ok: true, name: basename(dest), moved: true };
+}
+
 /** 对齐 join_rel（资料库命令库内定位同用） */
 export function joinRel(root: string, rel: string): string {
   if (rel.length > 0 && (rel.startsWith("/") || rel.startsWith("\\") || /^[a-zA-Z]:[\\/]/.test(rel))) {
@@ -149,34 +206,31 @@ function readCapped(path: string, cap: number): { buf: Buffer; truncated: boolea
 
 /* ------------------------------- 命令实现 ------------------------------- */
 
-export function fsListDir(args: { cwd: string; dir: string }): unknown {
+export async function fsListDir(args: { cwd: string; dir: string }): Promise<unknown> {
   const root = resolveRoot(args.cwd ?? "");
   const target = joinRel(root, args.dir ?? "");
-  let names: string[];
+  let entries: Dirent[];
   try {
-    names = readdirSync(target, { withFileTypes: true }).map((d) => d.name);
-    if (!existsSync(join(target, names[0] ?? "."))) {
-      // readdirSync 对文件会抛；这里防御式二次检查目录
-    }
+    // 异步 readdir：单目录可能上千条，同步版本会把主进程事件循环按住
+    //（期间全部 IPC 排队、"哪里都点不了"，见 slow-ops.ts）
+    entries = await readdir(target, { withFileTypes: true });
   } catch {
     return fail("not-a-directory");
   }
   const dirs: string[] = [];
   const files: string[] = [];
   let truncated = false;
-  for (const name of names) {
+  for (const entry of entries) {
+    const name = entry.name;
     if (SKIP_DIRS.has(name)) continue;
     if (dirs.length + files.length >= MAX_LIST_ENTRIES) {
       truncated = true;
       break;
     }
-    try {
-      const st = lstatSync(join(target, name));
-      if (st.isDirectory()) dirs.push(name);
-      else files.push(name);
-    } catch {
-      /* 竞态删除：跳过 */
-    }
+    // 类型直接取 dirent（不再逐条 lstat 系统调用）：符号链接按非目录处理，
+    // 与旧 lstat 语义一致；竞态删除的条目照旧列出，点开时报 not-found
+    if (entry.isDirectory()) dirs.push(name);
+    else files.push(name);
   }
   const byName = (a: string, b: string) => {
     const la = a.toLowerCase();
@@ -217,26 +271,31 @@ export function fsReadFile(args: { cwd: string; path: string }): unknown {
   return { content: s, truncated: r.truncated, binary: false };
 }
 
-export function fsReadFileBase64(args: { cwd: string; path: string }): unknown {
+export async function fsReadFileBase64(args: { cwd: string; path: string }): Promise<unknown> {
   const root = resolveRoot(args.cwd ?? "");
   const target = joinRel(root, args.path ?? "");
   let size = 0;
   try {
-    size = statSync(target).size;
+    size = (await stat(target)).size;
   } catch {
     return fail("read-failed");
   }
   if (size > MAX_PREVIEW_BYTES) return fail("too-large");
   let bytes: Buffer;
   try {
-    bytes = readFileSync(target);
+    // 上限 20MiB：同步读 + base64 是主进程里最重的一类停顿之一，走线程池
+    bytes = await readFile(target);
   } catch {
     return fail("read-failed");
   }
   return { base64: bytes.toString("base64"), size: bytes.length };
 }
 
-export function fsWriteFile(args: { cwd: string; path: string; base64: string }): unknown {
+export async function fsWriteFile(args: {
+  cwd: string;
+  path: string;
+  base64: string;
+}): Promise<unknown> {
   const root = resolveRoot(args.cwd ?? "");
   const target = joinRel(root, args.path ?? "");
   let bytes: Buffer;
@@ -247,8 +306,9 @@ export function fsWriteFile(args: { cwd: string; path: string; base64: string })
   }
   if (bytes.length > MAX_WRITE_BYTES) return fail("too-large");
   try {
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, bytes);
+    // 上限 32MiB：同 readFileBase64，同步写会把事件循环按住
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, bytes);
   } catch {
     return fail("write-failed");
   }
@@ -344,7 +404,7 @@ export function fsRename(args: { cwd: string; path: string; newName: string }): 
   return { ok: true };
 }
 
-export function fsDelete(args: { cwd: string; path: string }): unknown {
+export async function fsDelete(args: { cwd: string; path: string }): Promise<unknown> {
   const root = resolveRoot(args.cwd ?? "");
   const target = joinRel(root, args.path ?? "");
   if (target === root || target === tryRealpath(root)) return fail("bad-path");
@@ -355,8 +415,9 @@ export function fsDelete(args: { cwd: string; path: string }): unknown {
     return fail("not-found");
   }
   try {
-    if (st.isDirectory()) rmSync(target, { recursive: true, force: true });
-    else unlinkSync(target);
+    // 目录可能整棵很大（合作仓库里的 node_modules 之类）：异步删，别按住事件循环
+    if (st.isDirectory()) await rm(target, { recursive: true, force: true });
+    else await unlink(target);
   } catch {
     return fail("delete-failed");
   }
@@ -404,32 +465,35 @@ function appTaskWorkspaceRoot(): string {
   return join(appDataDir(), "task-workspace");
 }
 
-export function appFileList(args: { rel: string }): unknown {
+export async function appFileList(args: { rel: string }): Promise<unknown> {
   const root = appTaskWorkspaceRoot();
   const target = joinRel(root, args.rel ?? "");
-  let entriesRaw: any[];
+  let entriesRaw: Dirent[];
   try {
-    entriesRaw = readdirSync(target, { withFileTypes: true });
+    entriesRaw = await readdir(target, { withFileTypes: true });
   } catch (e: any) {
     if (e?.code === "ENOENT") return { entries: [] }; // 从未跑过无目录任务 = 空清单
     throw new Error(`read_dir ${target}: ${e?.message ?? e}`);
   }
-  const out: any[] = [];
-  for (const e of entriesRaw) {
-    const name = e.name;
-    if (name.startsWith(".")) continue;
-    const isDir = e.isDirectory();
-    let size = 0;
-    let modified: string | null = null;
-    try {
-      const st = statSync(join(target, name));
-      size = isDir ? 0 : Number(st.size);
-      modified = st.mtime.toISOString(); // RFC3339 本地化差异可忽略（前端 new Date 解析）
-    } catch {
-      /* 竞态 */
-    }
-    out.push({ name, dir: isDir, size, modified });
-  }
+  // 每条一次异步 stat（大小/时间要展示）：系统调用走 libuv 线程池，不占主线程；
+  // 同步版本在千级条目目录上会把事件循环按住（见 slow-ops.ts）
+  const out = await Promise.all(
+    entriesRaw
+      .filter((e) => !e.name.startsWith("."))
+      .map(async (e) => {
+        const isDir = e.isDirectory();
+        let size = 0;
+        let modified: string | null = null;
+        try {
+          const st = await stat(join(target, e.name));
+          size = isDir ? 0 : Number(st.size);
+          modified = st.mtime.toISOString(); // RFC3339 本地化差异可忽略（前端 new Date 解析）
+        } catch {
+          /* 竞态 */
+        }
+        return { name: e.name, dir: isDir, size, modified };
+      }),
+  );
   out.sort((a, b) => {
     if (a.dir !== b.dir) return a.dir ? -1 : 1;
     const la = String(a.name).toLowerCase();
@@ -439,12 +503,12 @@ export function appFileList(args: { rel: string }): unknown {
   return { entries: out };
 }
 
-export function appFilePreview(args: { rel: string }): unknown {
+export async function appFilePreview(args: { rel: string }): Promise<unknown> {
   const root = appTaskWorkspaceRoot();
   const path = joinRel(root, args.rel ?? "");
   let st;
   try {
-    st = statSync(path);
+    st = await stat(path);
   } catch {
     return fail("not-a-file");
   }
@@ -461,7 +525,8 @@ export function appFilePreview(args: { rel: string }): unknown {
   };
   if (IMAGE_MIME[ext]) {
     if (st.size > 8 * 1024 * 1024) return { kind: "unsupported" };
-    return { kind: "image", mime: IMAGE_MIME[ext], data: readFileSync(path).toString("base64") };
+    // 预览图最大 8MiB：同步读 + base64 会按住主进程（走线程池）
+    return { kind: "image", mime: IMAGE_MIME[ext], data: (await readFile(path)).toString("base64") };
   }
   if (ext === "html" || ext === "htm") {
     if (st.size <= 1024 * 1024) return { kind: "html", text: readFileSync(path).toString("utf8") };
@@ -479,7 +544,7 @@ export function appFilePreview(args: { rel: string }): unknown {
   return { kind: "unsupported" };
 }
 
-export function appFileDelete(args: { rel: string }): unknown {
+export async function appFileDelete(args: { rel: string }): Promise<unknown> {
   const root = appTaskWorkspaceRoot();
   const path = joinRel(root, args.rel ?? "");
   if (path === root) return fail("bad-path");
@@ -490,9 +555,9 @@ export function appFileDelete(args: { rel: string }): unknown {
     throw new Error(`stat: ${e?.message ?? e}`);
   }
   try {
-    if (st.isSymbolicLink()) unlinkSync(path);
-    else if (st.isDirectory()) rmSync(path, { recursive: true, force: true });
-    else unlinkSync(path);
+    if (st.isSymbolicLink()) await unlink(path);
+    else if (st.isDirectory()) await rm(path, { recursive: true, force: true });
+    else await unlink(path);
   } catch (e: any) {
     throw new Error(`remove: ${e?.message ?? e}`);
   }
@@ -551,40 +616,43 @@ interface StageEntry {
   size: number;
 }
 
-function collectStageEntries(root: string): StageEntry[] {
+async function collectStageEntries(root: string): Promise<StageEntry[]> {
   const out: StageEntry[] = [];
   let dirs: string[];
   try {
-    dirs = readdirSync(root);
+    dirs = await readdir(root);
   } catch {
     return out;
   }
+  // 中转区可能累积上千文件：全程异步 fs（线程池），别把事件循环按住
   for (const name of dirs) {
     const p = join(root, name);
     let st;
     try {
-      st = statSync(p);
+      st = await stat(p);
     } catch {
       continue;
     }
     if (st.isDirectory()) {
       let sub: string[];
       try {
-        sub = readdirSync(p);
+        sub = await readdir(p);
       } catch {
         continue;
       }
-      for (const sn of sub) {
-        const sp = join(p, sn);
-        let sst;
-        try {
-          sst = statSync(sp);
-        } catch {
-          continue;
-        }
-        if (sst.isDirectory()) continue;
-        out.push({ path: sp, mtimeMs: sst.mtimeMs, size: sst.size });
-      }
+      const children = await Promise.all(
+        sub.map(async (sn) => {
+          const sp = join(p, sn);
+          try {
+            const sst = await stat(sp);
+            if (sst.isDirectory()) return null;
+            return { path: sp, mtimeMs: sst.mtimeMs, size: sst.size } satisfies StageEntry;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      for (const entry of children) if (entry) out.push(entry);
     } else {
       out.push({ path: p, mtimeMs: st.mtimeMs, size: st.size });
     }
@@ -592,14 +660,14 @@ function collectStageEntries(root: string): StageEntry[] {
   return out;
 }
 
-export function pruneStageDir(root: string, days: number | null): void {
+export async function pruneStageDir(root: string, days: number | null): Promise<void> {
   if (!days || days <= 0) return;
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   const keep: StageEntry[] = [];
-  for (const e of collectStageEntries(root)) {
+  for (const e of await collectStageEntries(root)) {
     if (e.mtimeMs < cutoff) {
       try {
-        unlinkSync(e.path);
+        await unlink(e.path);
       } catch {
         /* ignore */
       }
@@ -613,7 +681,7 @@ export function pruneStageDir(root: string, days: number | null): void {
     for (const e of keep) {
       if (total <= ATTACHMENT_STAGE_MAX_TOTAL) break;
       try {
-        unlinkSync(e.path);
+        await unlink(e.path);
         total -= e.size;
       } catch {
         /* ignore */
@@ -623,15 +691,15 @@ export function pruneStageDir(root: string, days: number | null): void {
   // 清掉已空的线程目录
   let names: string[];
   try {
-    names = readdirSync(root);
+    names = await readdir(root);
   } catch {
     return;
   }
   for (const name of names) {
     const p = join(root, name);
     try {
-      if (!statSync(p).isDirectory()) continue;
-      if (readdirSync(p).length === 0) rmSync(p, { recursive: true, force: true });
+      if (!(await stat(p)).isDirectory()) continue;
+      if ((await readdir(p)).length === 0) await rm(p, { recursive: true, force: true });
     } catch {
       /* ignore */
     }
@@ -639,19 +707,16 @@ export function pruneStageDir(root: string, days: number | null): void {
 }
 
 export function pruneAttachmentsScheduled(): void {
-  try {
-    pruneStageDir(attachmentRoot(), attachmentRetentionDays());
-  } catch {
-    /* 清理失败不影响宿主 */
-  }
+  // 定时清理：异步执行、失败只吞进 catch（不能向定时器抛，清理失败不影响宿主）
+  void pruneStageDir(attachmentRoot(), attachmentRetentionDays()).catch(() => {});
 }
 
-export function attachmentStage(args: {
+export async function attachmentStage(args: {
   name: string;
   dataBase64: string;
   threadId?: string | null;
   hash?: string | null;
-}): unknown {
+}): Promise<unknown> {
   const b64 = String(args.dataBase64 ?? "").trim();
   if (b64.length === 0) return fail("empty");
   let bytes: Buffer;
@@ -677,17 +742,18 @@ export function attachmentStage(args: {
       `-${Math.random().toString(16).slice(2, 14)}${ext}`;
   }
   const path = join(dir, fname);
-  if (!existsSync(path)) writeFileSync(path, bytes);
-  pruneStageDir(root, attachmentRetentionDays());
+  if (!existsSync(path)) await writeFile(path, bytes);
+  // 清理 fire-and-forget：不再让每次粘贴都等一轮中转区扫描（异步执行、失败不影响本次落盘）
+  pruneAttachmentsScheduled();
   return { path };
 }
 
-export function attachmentReadBase64(args: { path: string }): unknown {
+export async function attachmentReadBase64(args: { path: string }): Promise<unknown> {
   const p = String(args.path ?? "");
   if (!p || !/^([a-zA-Z]:[\\/]|[\/])/.test(p)) return fail("bad-path"); // 仅绝对路径
   let st;
   try {
-    st = statSync(p);
+    st = await stat(p);
   } catch {
     return fail("read-failed");
   }
@@ -695,7 +761,8 @@ export function attachmentReadBase64(args: { path: string }): unknown {
   if (st.size > MAX_ATTACHMENT_IMAGE_BYTES) return fail("too-large");
   let bytes: Buffer;
   try {
-    bytes = readFileSync(p);
+    // 上限 24MiB：同步读会按住主进程几百毫秒（还要再 base64 一份），必须异步
+    bytes = await readFile(p);
   } catch {
     return fail("read-failed");
   }
@@ -723,6 +790,7 @@ export function setupFsCommands(register: (name: string, fn: (args: any) => any)
   register("fs_mkdir", (a) => fsMkdir(a));
   register("fs_touch", (a) => fsTouch(a));
   register("fs_rename", (a) => fsRename(a));
+  register("fs_move", (a) => fsMove(a));
   register("fs_delete", (a) => fsDelete(a));
   register("fs_reveal", (a) => fsReveal(a));
   register("project_reveal", (a) => projectReveal(a));

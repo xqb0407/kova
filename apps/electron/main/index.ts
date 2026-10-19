@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import { initPaths, appDataDir } from "./paths";
 import { isTrustedFilePath } from "./fs-cmds";
 import { initLogging, logError, logInfo, logWarn } from "./logging";
+import { lastSlowMainOp, SLOW_OP_ATTRIBUTION_WINDOW_MS } from "./slow-ops";
 import { installCrashGuard } from "./crash";
 import { setupIpc, focusMainWindow } from "./ipc";
 import { registerAllCommands } from "./registry";
@@ -128,14 +129,22 @@ function registerStaticProtocol(): void {
  * 主进程事件循环 lag 心跳：任何同步阻塞点（sqlite 长 BUSY 自旋、漏网的
  * spawnSync 子进程…）冻住主循环时，全部 IPC 排队、UI"哪里都点不了"——
  * 这条心跳是事后唯一能区分「主进程卡住」还是「渲染进程卡住」的证据。
- * 每 1s 采样，单次漂移 >2s 记一行日志（含漂移时长），unref 不拖住退出。
+ * 每 1s 采样，单次漂移 >2s 记一行日志（含漂移时长与最近一条慢操作归因，
+ * 见 slow-ops.ts），unref 不拖住退出。
  */
 function startLagWatchdog(): void {
   let last = Date.now();
   const t = setInterval(() => {
     const now = Date.now();
     const drift = now - last - 1000;
-    if (drift > 2000) logWarn(`[lag] main loop stalled ~${drift}ms`);
+    if (drift > 2000) {
+      const slow = lastSlowMainOp();
+      const attribution =
+        slow && now - slow.at <= SLOW_OP_ATTRIBUTION_WINDOW_MS
+          ? `（最近慢操作：${slow.label} ${slow.ms}ms）`
+          : "（无慢操作留痕：可能是渲染进程卡住，或纯同步死循环）";
+      logWarn(`[lag] main loop stalled ~${drift}ms${attribution}`);
+    }
     last = now;
   }, 1000);
   t.unref?.();

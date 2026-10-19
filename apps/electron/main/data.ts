@@ -3,9 +3,11 @@
  * sessions / credentials / secrets / custom_providers / models / usage_daily /
  * usage_scan 的建表、迁移与 31 种 kind 的处理。SQL 与返回形状逐条对照源码。
  */
+import { shell } from "electron";
 import type { Db, Row } from "./db";
 import { decrypt, encrypt, isEncrypted } from "./secret";
 import { logWarn } from "./logging";
+import { measureSync } from "./slow-ops";
 
 /* ------------------------------- 建表与迁移 ------------------------------- */
 
@@ -414,7 +416,8 @@ function modelsQuery(db: Db, provider?: string): any[] {
 
 /**
  * 对齐 dispatch_host_query：kind="tool" 不进 db 串行（长 bash 不阻塞其他查询——
- * Node 侧由 toolExec 自行异步处理），其余 kind 同步走 handleHostQuery。
+ * Node 侧由 toolExec 自行异步处理），kind="open_external" 同为异步旁路
+ * （宿主 shell.openExternal 开外链），其余 kind 同步走 handleHostQuery。
  * 返回 JSON 字符串（宿主对 sidecar 的 host_result 行）。
  */
 export async function dispatchHostQuery(db: Db, msg: any): Promise<string> {
@@ -425,7 +428,16 @@ export async function dispatchHostQuery(db: Db, msg: any): Promise<string> {
     if (typeof kind !== "string") throw new Error("missing kind");
     const params = msg?.params ?? null;
     let data: unknown;
-    if (kind === "tool") {
+    if (kind === "open_external") {
+      // 侧车要宿主代开外链（MCP OAuth 授权页）：Electron shell.openExternal 不经
+      // cmd.exe——Windows 上 `cmd /c start "" <url>` 会把 URL 里的 & 当命令分隔符
+      // 切掉（授权页因此报「链接不完整」）。成败如实回包，侧车据此决定是否让用户
+      // 手动打开链接（不许再"spawn 成功即成功"）。
+      const url = typeof (params as { url?: unknown } | null)?.url === "string" ? String(params.url) : "";
+      if (!/^https?:\/\//i.test(url)) throw new Error("open_external: 仅允许 http(s) 链接");
+      await shell.openExternal(url);
+      data = { ok: true };
+    } else if (kind === "tool") {
       // 工具执行（阶段②）：不进 db 串行锁——长 bash 不阻塞其他 host_query
       const envelope = { ...(params ?? {}) };
       const { resolveIntoEnvelope } = await import("./secret-env");
@@ -433,7 +445,10 @@ export async function dispatchHostQuery(db: Db, msg: any): Promise<string> {
       const { handleTool } = await import("./tool-exec");
       data = await handleTool(id, envelope);
     } else {
-      data = handleHostQuery(db, kind, params);
+      // 同步 SQLite（node:sqlite DatabaseSync / better-sqlite3 都一样）——慢查询会
+      // 按住主进程事件循环（期间全部 IPC 排队、界面"哪里都点不了"）。计时留痕 +
+      // 供 lag 心跳归因（见 slow-ops.ts）；要治本得把大查询下推或限行数
+      data = measureSync(`host_query:${kind}`, () => handleHostQuery(db, kind, params));
     }
     reply = { type: "host_result", id, ok: true, data: data ?? null };
   } catch (err) {

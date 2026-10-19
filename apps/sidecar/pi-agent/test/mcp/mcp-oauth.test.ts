@@ -36,6 +36,8 @@ const fake = {
   refreshCount: 0,
   /** 最近一次回跳拿到的落地页 HTML（呈现质量是验收面之一） */
   lastCallbackPage: "",
+  /** 最近一次交给浏览器的授权 URL（两段式测试：先开浏览器、稍后才回跳批准） */
+  lastAuthorizeUrl: null as string | null,
 };
 
 function resetFake() {
@@ -46,6 +48,7 @@ function resetFake() {
   fake.dcrCount = 0;
   fake.refreshCount = 0;
   fake.lastCallbackPage = "";
+  fake.lastAuthorizeUrl = null;
 }
 
 /** 假浏览器：模拟用户秒批准——解析 authorize URL，立刻带 code 回跳 callback */
@@ -306,6 +309,37 @@ describe("MCP OAuth 2.1 授权流", () => {
     expect(fake.browserOpens).toBe(0);
     expect(fake.dcrCount).toBe(1);
     expect(authHeader()).toBe("Bearer at-1");
+  });
+
+  test("两段式授权：beginAuthorize 先交授权链接（不等用户批准），completed 再结算", async () => {
+    // 假浏览器只"打开"、暂不批准：记录 URL 与 PKCE challenge，模拟用户还停在登录页
+    setBrowserOpenerForTest(async (url) => {
+      fake.browserOpens += 1;
+      fake.lastAuthorizeUrl = url;
+      fake.challenge = new URL(url).searchParams.get("code_challenge");
+      return true;
+    });
+    const def = httpDef();
+    const started = await mcpManager.beginAuthorize(def);
+
+    // 第一阶段：命令只等到授权链接（浏览器拉起成败如实回报），不再等满 180s
+    expect(started.authUrl).toContain("/authorize");
+    expect(started.browserOpened).toBe(true);
+    expect(started.status.state).toBe("connecting");
+
+    // 用户在浏览器里批准：按授权 URL 里的 state 回跳本地回调
+    const u = new URL(fake.lastAuthorizeUrl!);
+    const cb = new URL(u.searchParams.get("redirect_uri")!);
+    cb.searchParams.set("code", AUTH_CODE);
+    cb.searchParams.set("state", u.searchParams.get("state")!);
+    const page = await (await fetch(cb.toString())).text();
+    expect(page).toContain("授权完成");
+
+    // 第二阶段：结算成功、凭据落盘、连接入池
+    const result = await started.completed;
+    if (!result.ok) throw new Error(`授权未完成：${result.message}`);
+    expect(authHeader()).toBe("Bearer at-1");
+    expect(mcpManager.statusFor(def).state).toBe("ready");
   });
 
   test("access_token 被服务端吊销：重连经 refresh_token 静默续期", async () => {

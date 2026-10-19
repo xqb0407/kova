@@ -5,12 +5,14 @@ import {
   piRequest,
   type PiMcpAuditEvent,
   type PiMcpAuditLogResponse,
+  type PiMcpAuthStarted,
   type PiMcpLogLine,
   type PiMcpServerEntry,
   type PiMcpServerIcon,
   type PiMcpServerStatus,
   type PiMcpServersResponse,
 } from "@/lib/pi/pi-bridge";
+import type { PiMcpAuthFrame } from "@/lib/pi/pi-channel";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 
 /**
@@ -102,10 +104,11 @@ export async function refreshMcpServers(cwd?: string | null): Promise<void> {
   }
 }
 
-/** 变更命令统一出口：应答即新清单 */
-async function mutate(payload: Record<string, unknown>, timeoutMs?: number): Promise<void> {
+/** 变更命令统一出口：应答即新清单。超时走协议表（pi-protocol/timeouts）：
+ *  这些命令都是本地配置写入 + 连接池 diff，用默认地板即可，别在这里写死数字 */
+async function mutate(payload: Record<string, unknown>): Promise<void> {
   try {
-    const res = await piRequest<PiMcpServersResponse>(payload, timeoutMs ?? 15000);
+    const res = await piRequest<PiMcpServersResponse>(payload);
     current = fromResponse(res);
     emit();
   } catch (err) {
@@ -165,7 +168,10 @@ export function setMcpServerEnabled(
   });
 }
 
-/** 测试连接：强制重新握手，返回单台状态（不改变清单，状态由调用方展示） */
+/** 测试连接：强制重新握手，返回单台状态（不改变清单，状态由调用方展示）。
+ *  sidecar 侧派活执行（不占其管理队列），应答最长 ~20s（连接 10s + 列工具 10s）。
+ *  超时不传：协议表（pi-protocol/timeouts 的 test_mcp_server）已给足，写短只会白报超时。
+ */
 export async function testMcpServer(
   layer: "system" | "workspace",
   name: string,
@@ -189,18 +195,30 @@ export async function testMcpServer(
   return res.status;
 }
 
-/** OAuth 授权（http 服务器「授权」按钮）：sidecar 起本地回调服务并打开浏览器，
- *  等用户在浏览器里批准——可能长达几分钟。超时上限刻意大于 sidecar 侧回调等待
- *  超时（180s），保证拿到的是 sidecar 的明确失败而非本地悬空。
- *  刻意不走 mutate：授权失败不是「清单加载失败」，不写共享快照的 error，
- *  只把异常抛给调用方，由设置页以「授权失败」单独呈现。 */
-export async function authorizeMcpServer(name: string, cwd?: string | null): Promise<void> {
-  const res = await piRequest<PiMcpServersResponse>(
-    { type: "authorize_mcp_server", name, ...(cwd ? { cwd } : {}) },
-    200_000,
-  );
-  current = fromResponse(res);
+/** OAuth 授权（http 服务器「授权」按钮）第一阶段：sidecar 起本地回调服务、
+ *  生成授权链接并尝试拉起浏览器，受理应答带回授权链接。
+ *  用户在浏览器里批准可能长达几分钟——那段时间不再占请求配对，结果经
+ *  mcp_auth_result 自发帧回流（见 setMcpAuthHandler / 本模块的常驻订阅）。
+ *  超时不传：协议表（pi-protocol/timeouts 的 authorize_mcp_server）只兜住
+ *  「授权链接生成」这一步（侧车侧上限 30s + 通道余量），主进程配对自动再多等
+ *  一层余量，让这里的错误是 sidecar 的明确原因而非本地悬空。
+ *  刻意不走 mutate：授权失败不是「清单加载失败」，不写共享快照的 error。 */
+export async function authorizeMcpServer(
+  name: string,
+  cwd?: string | null,
+): Promise<PiMcpAuthStarted> {
+  const started = await piRequest<PiMcpAuthStarted>({
+    type: "authorize_mcp_server",
+    name,
+    ...(cwd ? { cwd } : {}),
+  });
+  // 受理时先把该行状态并入镜像（connecting/backoff）；最终清单随结果帧整包并入
+  current = {
+    ...current,
+    servers: current.servers.map((s) => (s.name === name ? { ...s, status: started.status } : s)),
+  };
   emit();
+  return started;
 }
 
 /** MCP 观测审计事件（sidecar 落盘 JSONL，跨重启持久；只含元数据） */
@@ -249,8 +267,9 @@ export async function revokeMcpServerAuth(name: string, cwd?: string | null): Pr
 /** 单台服务器的工具清单条目（展开行时呈现） */
 export type McpToolInfo = { name: string; description?: string };
 
-/** 拉取某台服务器的工具清单：sidecar 优先元数据缓存（断开态也可读），
- *  缺失才握手——懒服务器首次展开可能要等几秒，超时给到 30s。 */
+/** 拉取某台服务器的工具清单：sidecar 优先元数据缓存（断开态也可读，同步返回），
+ *  缺失才握手——懒服务器首次展开要等几秒。超时不传：协议表（get_mcp_server_tools）
+ *  已按握手上限给足；sidecar 侧同样是派活执行，不占它的管理队列。 */
 export async function fetchMcpServerTools(
   name: string,
   cwd?: string | null,
@@ -259,7 +278,7 @@ export async function fetchMcpServerTools(
     type: "mcp_server_tools";
     name: string;
     tools: McpToolInfo[];
-  }>({ type: "get_mcp_server_tools", name, ...(cwd ? { cwd } : {}) }, 30000);
+  }>({ type: "get_mcp_server_tools", name, ...(cwd ? { cwd } : {}) });
   return res.tools;
 }
 
@@ -279,5 +298,51 @@ export function useMcpServers(cwd: string | null): McpSnapshot {
   return snapshot;
 }
 
-// client bundle 加载即按当前工作区水合（SSR 端返回空快照，不请求）
-if (typeof window !== "undefined") void refreshMcpServers(getWorkspace());
+// ---------------------------------------------------------------------------
+// OAuth 授权结果帧（两段式第二阶段）
+// ---------------------------------------------------------------------------
+
+/** 授权页可注册结果回调（清「等待授权中」卡片、呈现失败原因）；传 null 注销 */
+let authHandler: ((frame: PiMcpAuthFrame) => void) | null = null;
+export function setMcpAuthHandler(cb: ((frame: PiMcpAuthFrame) => void) | null): void {
+  authHandler = cb;
+}
+
+let authWatchStarted = false;
+
+/** 常驻订阅：帧自带刷新后的清单，cwd 对得上就整包并入镜像（省一轮往返）；
+ *  对不上（设置页正在看别的目录）只回调订阅方，由它按自己的 cwd 重拉。 */
+function startAuthWatch(): void {
+  if (authWatchStarted || typeof window === "undefined") return;
+  authWatchStarted = true;
+  void (async () => {
+    try {
+      const { getPiChannel } = await import("@/lib/pi/pi-channel");
+      const channel = getPiChannel();
+      if (!channel.subscribeMcpAuth) return;
+      await channel.subscribeMcpAuth((frame) => {
+        if (Array.isArray(frame.servers) && frame.workspaceCwd === current.workspaceCwd) {
+          current = {
+            loading: false,
+            error: null,
+            servers: frame.servers,
+            pluginServers: frame.pluginServers ?? [],
+            workspaceCwd: frame.workspaceCwd,
+            diagnostics: frame.diagnostics ?? [],
+          };
+          emit();
+        }
+        authHandler?.(frame);
+      });
+      // 通道切换/重连不做特殊处理：结果帧丢失时用户在设置页手动刷新即可
+    } catch {
+      /* 通道不可用（非桌面环境）：授权页仍有受理应答与手动刷新兜底 */
+    }
+  })();
+}
+
+// client bundle 加载即按当前工作区水合（SSR 端返回空快照，不请求）+ 挂授权结果订阅
+if (typeof window !== "undefined") {
+  void refreshMcpServers(getWorkspace());
+  startAuthWatch();
+}

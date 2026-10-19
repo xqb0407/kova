@@ -234,9 +234,12 @@
  *   { "type": "get_mcp_server_tools", "id", "name", "cwd"? } → { id, type: "mcp_server_tools", name, tools }
  *     （工具清单：优先元数据缓存，缺失才握手——展开懒服务器可能等几秒）
  *       强制重新握手（先断后连），设置页"测试连接"用
- *   { "type": "authorize_mcp_server", "id", "name", "cwd"? } → { id, type: "mcp_servers", ... }
- *       HTTP 服务器 OAuth 2.1 授权：开浏览器 + 本地回调等用户批准（可达数分钟，
- *       前端需长超时），完成后同款 mcp_servers 应答刷新全部行状态
+ *   { "type": "authorize_mcp_server", "id", "name", "cwd"? } → 受理
+ *       HTTP 服务器 OAuth 2.1 授权（两段式）：受理应答
+ *       { id, type: "mcp_auth_started", name, "authUrl"?, "browserOpened"?, status }——
+ *       只等授权链接生成即刻返回（浏览器拉起成败如实回报，browserOpened=false 时
+ *       前端把 authUrl 呈现给用户手动打开）；用户在浏览器批准可达数分钟，完成后
+ *       自发 { "type": "mcp_auth_result", name, ok, "errorText"?, servers, workspaceCwd, diagnostics } 帧
  *   { "type": "revoke_mcp_server_auth", "id", "name", "cwd"? } → { id, type: "mcp_servers", ... }
  *       取消 OAuth 授权：清掉该服务器 URL 的存量凭据并断开（下次握手回到 needsAuth）
  *   { "type": "get_mcp_audit_log", "id", "name"?, "limit"? } → { id, type: "mcp_audit_log", events }
@@ -434,6 +437,9 @@ export async function dispatch(reqId: string, msg: Record<string, unknown>) {
   await handler(reqId, msg);
 }
 
+/** 管理命令占用串行队列的告警阈值：超过即留痕（发现用，不拦截） */
+const MGMT_QUEUE_SLOW_WARN_MS = 2_000;
+
 export function handleLine(raw: string) {
   let msg: Record<string, unknown>;
   try {
@@ -451,7 +457,21 @@ export function handleLine(raw: string) {
     try {
       // 启动恢复命令等目录就绪再分发（set_model 否则会因目录未就绪被拒）
       await initGate;
-      await dispatch(reqId, msg);
+      const t0 = Date.now();
+      try {
+        await dispatch(reqId, msg);
+      } finally {
+        // 慢命令自报：在串行队列里 await 超过阈值就留痕——生产日志里能直接抓到
+        // 下一个"全应用假死"的候选（用户在等，别的命令在排队）。慢命令的正确
+        // 形态见 pi-protocol/timeouts 与 optimize_prompt / 授权两处范式（派活 或
+        // 受理+自发帧），本阈值只负责发现，不负责拦。
+        const heldMs = Date.now() - t0;
+        if (heldMs >= MGMT_QUEUE_SLOW_WARN_MS) {
+          logErr(
+            `[mgmt] ${String(msg.type ?? "?")} 占用串行队列 ${heldMs}ms（长任务请派活或改两段式）`,
+          );
+        }
+      }
     } catch (err) {
       const errorText = err instanceof Error ? err.message : String(err);
       // 编译产物里 Bun 的错误渲染以代码帧开头、多行输出；日志按行落盘时整条曾只剩

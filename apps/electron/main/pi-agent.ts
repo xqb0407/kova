@@ -284,6 +284,13 @@ async function handleLine(line: string): Promise<void> {
     pending.delete(reqId);
     return;
   }
+  // 宿主发起的管理请求（mgr-*）应答迟到了：配对表里已没有它 = 等待方早已超时
+  // 摘除表项，这条应答无人认领。旧行为会掉进下面的"自发通知"分支被广播并塞进
+  // chunk 流——前端收到一条谁也没等过的 mcp_servers/error 帧，纯噪声。只记日志。
+  if (reqId && reqId.startsWith("mgr-")) {
+    logWarn(`[worker] late reply dropped: ${reqId} type=${String(parsed?.type ?? "?")}`);
+    return;
+  }
   // 无 id 自发通知：远程广播；rem- 路由（远程响应回程）
   const remote = safeRemote();
   remote?.broadcastNotification(parsed);
@@ -350,24 +357,33 @@ export async function piReset(): Promise<null> {
   return null;
 }
 
-/** 配对等待上限。渲染层 pi-channel 只等 15s 就自报超时，但主进程这条 promise
- * 与 pending 表项没人管：侧车对某个 id 永不回帧（丢帧/版本偏差）时条目挂到
- * 侧车退出才清，长会话里缓慢泄漏，且 ipcMain.handle 的 promise 永久悬挂。
- * 30s = 渲染层超时之后仍给侧车留一倍余量，超时按错误落定并摘除表项。 */
-const REQUEST_PAIR_TIMEOUT_MS = 30000;
+/** 配对等待兜底：渲染层没传预算时才用（正常路径一律由渲染层按协议表传值）。
+ *  取值 = pi-protocol/timeouts 的「未登记命令通道预算 + PAIR_SLACK_MS」
+ *  （15s 地板 + 5s 渲染层余量 + 5s 本层余量），由 timeout-budget 测试钉住，
+ *  别在这里改数字——要调就调那张表。 */
+const DEFAULT_PAIR_TIMEOUT_MS = 20000;
+/** 渲染层传来预算时，本层多等的余量：让渲染层先落定，错误是侧车的明确原因
+ *  而非"主进程放弃"的含糊超时（外层必须比内层多等，见 pi-protocol/timeouts） */
+const REQUEST_PAIR_SLACK_MS = 5000;
+/** 单次请求的配对预算上限：授权流程最长也就几分钟，再多就是泄漏的表项 */
+const MAX_REQUEST_PAIR_TIMEOUT_MS = 300000;
 
 /** 管理类请求-响应：宿主注入 id，stdout 匹配行原样返回 */
-export async function piRequest(args: { payload: any }): Promise<string> {
+export async function piRequest(args: { payload: any; timeoutMs?: number }): Promise<string> {
   await ensureSpawned();
   const reqId = `mgr-${newRequestId()}`;
   const msg = { ...(args.payload && typeof args.payload === "object" ? args.payload : {}) };
   if (args.payload && typeof args.payload === "object") msg.id = reqId;
+  const waitMs =
+    typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs) && args.timeoutMs > 0
+      ? Math.min(Math.max(args.timeoutMs, 1000), MAX_REQUEST_PAIR_TIMEOUT_MS) + REQUEST_PAIR_SLACK_MS
+      : DEFAULT_PAIR_TIMEOUT_MS;
   const line = new Promise<string>((resolve, reject) => {
     let timer: NodeJS.Timeout | null = setTimeout(() => {
       timer = null;
       pending.delete(reqId);
-      reject(new Error(`pi-agent request ${reqId} unanswered after ${REQUEST_PAIR_TIMEOUT_MS / 1000}s`));
-    }, REQUEST_PAIR_TIMEOUT_MS);
+      reject(new Error(`pi-agent request ${reqId} unanswered after ${Math.round(waitMs / 1000)}s`));
+    }, waitMs);
     const settle = (fn: () => void) => {
       if (timer) {
         clearTimeout(timer);

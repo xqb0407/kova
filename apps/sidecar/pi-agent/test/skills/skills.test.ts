@@ -28,6 +28,7 @@ const compatHomeDir = path.join(tmp, "compat-home-skills");
 const ws = path.join(tmp, "ws");
 const prevSkillsDir = process.env.PI_SKILLS_DIR;
 const prevCompatDir = process.env.PI_COMPAT_SKILLS_DIR;
+const prevPluginsDir = process.env.PI_PLUGINS_DIR;
 
 const doc = (name: string, description: string, body = `Do ${name}.`) =>
   `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`;
@@ -37,6 +38,9 @@ beforeAll(async () => {
   // 目录钉到 tmp：技能发现实时读盘，绝不碰真实 ~/.kova / ~/.agents
   process.env.PI_SKILLS_DIR = systemDir;
   process.env.PI_COMPAT_SKILLS_DIR = compatHomeDir;
+  // 插件层同样钉到 tmp：本机真实 ~/.kova/plugins/cache/builtin/* 物化过内置插件，
+  // 它们自带技能（canvas/deck/ui-design…），不清干净"生效技能目录"类断言会多出一堆
+  process.env.PI_PLUGINS_DIR = path.join(tmp, "plugins");
   mkdirSync(systemDir, { recursive: true });
   mkdirSync(compatHomeDir, { recursive: true });
   // 系统：代码评审
@@ -74,6 +78,8 @@ afterAll(async () => {
   else process.env.PI_SKILLS_DIR = prevSkillsDir;
   if (prevCompatDir === undefined) delete process.env.PI_COMPAT_SKILLS_DIR;
   else process.env.PI_COMPAT_SKILLS_DIR = prevCompatDir;
+  if (prevPluginsDir === undefined) delete process.env.PI_PLUGINS_DIR;
+  else process.env.PI_PLUGINS_DIR = prevPluginsDir;
 });
 
 describe("parseSkillDoc / renderSkillDoc", () => {
