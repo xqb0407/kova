@@ -200,7 +200,7 @@
 }
 
 /* 统一扫光（消息列表状态文案、工具行标签、面板进行中文案共用一套）：
-   直接给文字做 background-clip:text 渐变（对齐 ZCode 的 animated-gradient-text）。
+   直接给文字做 background-clip:text 渐变（对齐 的 animated-gradient-text）。
    原 tw-shimmer 在 Chromium 下走 -webkit-mask-clip:text + 伪元素叠加：文字会被
    压成独立图层，Windows 上丢次像素抗锯齿、高 DPI 下发虚；短标签（「终端」）
    的扫光带还会大部分时间落在元素外。这里改成渐变直接填充文字，并主动提升

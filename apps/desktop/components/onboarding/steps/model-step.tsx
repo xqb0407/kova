@@ -285,7 +285,7 @@ export const ModelStep: FC = () => {
         </div>
       )}
 
-      {/* 次要入口：已在 opencode / Codex / ZCode 配过就别重填一遍。
+      {/* 次要入口：已在 opencode / Codex  配过就别重填一遍。
           只在选服务商这步露出来——那时才是"我该用哪家"的分叉点，
           后面的填 Key / 挑模型都已经定下服务了 */}
       {phase === "provider" && (

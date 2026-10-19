@@ -7,14 +7,7 @@ import {
   type FC,
   type ReactElement,
 } from "react";
-import {
-  ArchiveIcon,
-  CopyIcon,
-  FolderIcon,
-  FolderOpenIcon,
-  Trash2Icon,
-  UploadIcon,
-} from "lucide-react";
+import { FolderIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "@/components/ui/toast";
@@ -49,7 +42,8 @@ const CELL_ON = "scale-110 outline-1 outline-offset-1 cursor-pointer active:scal
 const GLYPH_CELL = cn(CELL, "grid place-items-center hover:bg-accent cursor-pointer");
 
 /** 卡片尾部的操作行：幽灵按钮铺满卡片宽、左对齐（与弹层其它条目同款观感） */
-const ACTION_ROW = "w-full justify-start font-normal";
+// 与侧栏「…」/右键菜单同一版式：36px 行、px-3、纯文字（不带行内图标）
+const ACTION_ROW = "h-9 w-full justify-start rounded-md px-3 text-sm font-normal";
 
 /** 「在文件管理器中显示」按平台叫法：macOS = Finder，Windows = 资源管理器 */
 function revealLabel(): string {
@@ -347,14 +341,13 @@ export const ProjectSettingsPopover: FC<{
             位置/复制只在桌面壳出现：都要落到系统文件管理器或剪贴板 */}
         {desktop ? (
           <>
-            <div className="-mx-3 border-t border-border/50" />
+            <div className="-mx-3 border-t border-border" />
             <div className="flex flex-col gap-0.5">
               <Button
                 variant="ghost"
                 className={ACTION_ROW}
                 onClick={() => void revealProject()}
               >
-                <FolderOpenIcon />
                 {revealLabel()}
               </Button>
               <Button
@@ -362,14 +355,13 @@ export const ProjectSettingsPopover: FC<{
                 className={ACTION_ROW}
                 onClick={() => void copyProjectPath()}
               >
-                <CopyIcon />
                 复制路径
               </Button>
             </div>
           </>
         ) : null}
 
-        <div className="-mx-3 border-t border-border/50" />
+        <div className="-mx-3 border-t border-border" />
         {/* 归档：破坏性动作用单独分隔收在卡片最末（与普通条目混排会误点） */}
         <Button
           variant="ghost"
@@ -379,7 +371,6 @@ export const ProjectSettingsPopover: FC<{
             onArchive();
           }}
         >
-          <ArchiveIcon />
           归档项目
         </Button>
       </PopoverContent>

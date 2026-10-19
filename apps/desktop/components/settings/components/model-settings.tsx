@@ -576,7 +576,7 @@ export const ModelSettings: FC = () => {
   const [newProvider, setNewProvider] = useState("");
   const [newKey, setNewKey] = useState("");
   const [busy, setBusy] = useState(false);
-  // 从 opencode / Codex / ZCode 导入模型服务的预览弹窗
+  // 从 opencode / Codex  导入模型服务的预览弹窗
   const [importOpen, setImportOpen] = useState(false);
 
   // 添加/编辑 AI 服务弹窗：svcProvider = ""（未选择）/ "custom"（自定义端点）/ 内置 providerId
@@ -773,6 +773,8 @@ export const ModelSettings: FC = () => {
           headers: input.headers,
         });
         load();
+        // 与 update_model 同理：模型能力（input/视觉等）变了，对话侧目录快照必须跟上
+        refreshPiModels();
       } catch (err) {
         // 双通道反馈：弹窗内常驻一行（可对照着改）+ toast 防止没注意到。
         // 不用页面级 error——那会把整页换成错误页、弹窗被卸载
@@ -1255,6 +1257,11 @@ export const ModelSettings: FC = () => {
         try {
           await piRequest(patch);
           load();
+          // 目录里的能力字段（input 视觉、上下文/输出上限等）直接影响对话侧：
+          // 发送闸门与"模型不支持图片"提示都读 getPiModelsSnapshot()。
+          // 只 load() 设置页自己的列表不够——不刷新的话刚勾上"图形识别"仍会
+          // 按旧元数据弹提示（实测 2026-10-19）。
+          refreshPiModels();
         } catch (err) {
           setError(err instanceof Error ? err.message : String(err));
         } finally {
@@ -2075,7 +2082,7 @@ export const ModelSettings: FC = () => {
               </div>
               <div className="mt-3 text-sm font-medium">还没有 AI 服务</div>
               <div className="text-muted-foreground mt-1 text-xs">
-                添加 AI 服务，或从 opencode / Codex / ZCode 导入已有配置。
+                添加 AI 服务，或从 opencode / Codex  导入已有配置。
               </div>
               <div className="mt-4 flex items-center gap-2">
                 <Button onClick={openNewService}>
@@ -2361,16 +2368,24 @@ export const ModelSettings: FC = () => {
             目录: 内置快照 · {visibleModelCount} 个模型 · 更新于{" "}
             {lastRefresh ?? "从未获取"}
           </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground h-8 shrink-0"
-            disabled={busy}
-            onClick={load}
-          >
-            <RefreshCwIcon className="size-4" />
-            更新模型目录
-          </Button>
+          {/* 目录是随 sidecar 分发的内置快照，不需要"更新"；增删改各路径都已
+              自动 load()。只在加载失败或目录为空时留一个重试入口，平时不常驻
+              （点了会连对话侧共用目录一起重读）。 */}
+          {(error !== null || (models !== null && models.length === 0)) && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground h-8 shrink-0"
+              disabled={busy}
+              onClick={() => {
+                load();
+                refreshPiModels();
+              }}
+            >
+              <RefreshCwIcon className="size-4" />
+              重试
+            </Button>
+          )}
         </div>
       </div>
 

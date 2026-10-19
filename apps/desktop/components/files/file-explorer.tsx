@@ -29,17 +29,11 @@ import {
   type ReactNode,
 } from "react";
 import {
-  CopyIcon,
   FilePlus2Icon,
-  FileTextIcon,
   FolderOpenIcon,
   FolderPlusIcon,
-  FolderSearchIcon,
   ImportIcon,
   NotebookPenIcon,
-  PenLineIcon,
-  RefreshCwIcon,
-  Trash2Icon,
 } from "lucide-react";
 import {
   ensureDir,
@@ -68,7 +62,6 @@ import {
 } from "@/components/custom-ui/file-tree";
 import { filePathOf } from "@/desktop-bridge/core";
 import { cn } from "@/lib/utils";
-import { FileManagerIcon } from "./file-manager-icon";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -109,6 +102,26 @@ const DRAG_HOVER_EXPAND_MS = 700;
 
 /** 文件/文件夹命名中不允许的字符（与 fs.rs is_bad_name 同规则） */
 const BAD_NAME_RE = /[\\/:*?"<>|]/;
+
+/** 菜单项统一版式（与侧栏会话菜单一致：不带行内图标、36px 行、px-3、右留快捷键位） */
+const MenuItem: FC<{
+  destructive?: boolean;
+  className?: string;
+  onClick?: () => void;
+  children?: ReactNode;
+}> = ({ destructive, className, onClick, children }) => (
+  <ContextMenuItem
+    variant={destructive ? "destructive" : "default"}
+    className={cn(
+      "justify-between gap-6 rounded-md px-3 py-2",
+      !destructive && "focus:bg-accent",
+      className,
+    )}
+    onClick={onClick}
+  >
+    {children}
+  </ContextMenuItem>
+);
 
 /** 树里的一个文件目标 */
 export interface ExplorerFileRef {
@@ -749,73 +762,62 @@ export const FileExplorer: FC<FileExplorerProps> = ({
         }}
       >
         {menu && menuAnchor ? (
-          <ContextMenuContent anchor={menuAnchor} className="min-w-44">
+          <ContextMenuContent anchor={menuAnchor} className="min-w-56">
             {menu.kind === "root" ? (
               <>
-                <ContextMenuItem onClick={() => startNew("new-file", "")}>
-                  <FilePlus2Icon />
+                <MenuItem onClick={() => startNew("new-file", "")}>
                   新建文件
-                </ContextMenuItem>
-                <ContextMenuItem onClick={() => startNew("new-folder", "")}>
-                  <FolderPlusIcon />
+                </MenuItem>
+                <MenuItem onClick={() => startNew("new-folder", "")}>
                   新建文件夹
-                </ContextMenuItem>
+                </MenuItem>
                 {onNewNote && (
-                  <ContextMenuItem onClick={() => onNewNote("")}>
-                    <NotebookPenIcon />
+                  <MenuItem onClick={() => onNewNote("")}>
                     新建笔记
-                  </ContextMenuItem>
+                  </MenuItem>
                 )}
                 {onImport && (
                   <>
-                    <ContextMenuSeparator />
-                    <ContextMenuItem onClick={() => onImport("")}>
-                      <ImportIcon />
+                    <ContextMenuSeparator className="bg-border" />
+                    <MenuItem onClick={() => onImport("")}>
                       导入到此处…
-                    </ContextMenuItem>
+                    </MenuItem>
                   </>
                 )}
-                <ContextMenuSeparator />
-                <ContextMenuItem onClick={() => void reveal("")}>
-                  <FileManagerIcon className="size-4.5" />
+                <ContextMenuSeparator className="bg-border" />
+                <MenuItem onClick={() => void reveal("")}>
                   在系统中打开
-                </ContextMenuItem>
-                <ContextMenuItem onClick={refreshTree}>
-                  <RefreshCwIcon />
+                </MenuItem>
+                <MenuItem onClick={refreshTree}>
                   刷新
-                </ContextMenuItem>
+                </MenuItem>
               </>
             ) : menu.kind === "file" ? (
               <>
-                <ContextMenuItem
+                <MenuItem
                   onClick={() =>
                     onOpenFile({ cwd: rootCwd, rel: menu.rel, name: menu.name })
                   }
                 >
-                  <FileTextIcon />
                   打开
-                </ContextMenuItem>
+                </MenuItem>
                 {fileMenuPrefix?.(menu.rel, menu.name)}
-                <ContextMenuSeparator />
-                <ContextMenuItem onClick={() => void reveal(menu.rel)}>
-                  <FileManagerIcon className="size-4.5" />
+                <ContextMenuSeparator className="bg-border" />
+                <MenuItem onClick={() => void reveal(menu.rel)}>
                   在文件资源管理器中显示
-                </ContextMenuItem>
-                <ContextMenuItem onClick={() => void copyPath(menu.rel, true)}>
-                  <CopyIcon />
+                </MenuItem>
+                <MenuItem onClick={() => void copyPath(menu.rel, true)}>
                   复制路径
-                </ContextMenuItem>
-                <ContextMenuItem onClick={() => void copyPath(menu.rel, false)}>
-                  <CopyIcon />
+                </MenuItem>
+                <MenuItem onClick={() => void copyPath(menu.rel, false)}>
                   复制相对路径
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem onClick={() => startRename(menu.rel, menu.name)}>
-                  <PenLineIcon />
+                </MenuItem>
+                <ContextMenuSeparator className="bg-border" />
+                <MenuItem onClick={() => startRename(menu.rel, menu.name)}>
                   重命名
-                </ContextMenuItem>
-                <ContextMenuItem
-                  variant="destructive"
+                </MenuItem>
+                <MenuItem
+                  destructive
                   onClick={() =>
                     setDeleteTarget({
                       rel: menu.rel,
@@ -824,54 +826,45 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                     })
                   }
                 >
-                  <Trash2Icon />
                   删除
-                </ContextMenuItem>
+                </MenuItem>
               </>
             ) : (
               <>
-                <ContextMenuItem onClick={() => startNew("new-file", menu.rel)}>
-                  <FilePlus2Icon />
+                <MenuItem onClick={() => startNew("new-file", menu.rel)}>
                   新建文件
-                </ContextMenuItem>
-                <ContextMenuItem
+                </MenuItem>
+                <MenuItem
                   onClick={() => startNew("new-folder", menu.rel)}
                 >
-                  <FolderPlusIcon />
                   新建文件夹
-                </ContextMenuItem>
+                </MenuItem>
                 {onNewNote && (
-                  <ContextMenuItem onClick={() => onNewNote(menu.rel)}>
-                    <NotebookPenIcon />
+                  <MenuItem onClick={() => onNewNote(menu.rel)}>
                     新建笔记
-                  </ContextMenuItem>
+                  </MenuItem>
                 )}
                 {onImport && (
-                  <ContextMenuItem onClick={() => onImport(menu.rel)}>
-                    <ImportIcon />
+                  <MenuItem onClick={() => onImport(menu.rel)}>
                     导入到此处…
-                  </ContextMenuItem>
+                  </MenuItem>
                 )}
-                <ContextMenuSeparator />
-                <ContextMenuItem onClick={() => void reveal(menu.rel)}>
-                  <FileManagerIcon className="size-4.5" />
+                <ContextMenuSeparator className="bg-border" />
+                <MenuItem onClick={() => void reveal(menu.rel)}>
                   在文件资源管理器中显示
-                </ContextMenuItem>
-                <ContextMenuItem onClick={() => void copyPath(menu.rel, true)}>
-                  <CopyIcon />
+                </MenuItem>
+                <MenuItem onClick={() => void copyPath(menu.rel, true)}>
                   复制路径
-                </ContextMenuItem>
-                <ContextMenuItem onClick={() => void copyPath(menu.rel, false)}>
-                  <CopyIcon />
+                </MenuItem>
+                <MenuItem onClick={() => void copyPath(menu.rel, false)}>
                   复制相对路径
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem onClick={() => startRename(menu.rel, menu.name)}>
-                  <PenLineIcon />
+                </MenuItem>
+                <ContextMenuSeparator className="bg-border" />
+                <MenuItem onClick={() => startRename(menu.rel, menu.name)}>
                   重命名
-                </ContextMenuItem>
-                <ContextMenuItem
-                  variant="destructive"
+                </MenuItem>
+                <MenuItem
+                  destructive
                   onClick={() =>
                     setDeleteTarget({
                       rel: menu.rel,
@@ -880,9 +873,8 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                     })
                   }
                 >
-                  <Trash2Icon />
                   删除
-                </ContextMenuItem>
+                </MenuItem>
               </>
             )}
           </ContextMenuContent>

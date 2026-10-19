@@ -16,6 +16,7 @@ import {
   splitModelOptionId,
 } from "@/lib/pi/pi-model-groups";
 import { toast } from "@/components/ui/toast";
+import { ShieldCheckIcon } from "lucide-react";
 import {
   AUTO_REVIEW_DEFAULT_TIMEOUT_MS,
   AUTO_REVIEW_MAX_TIMEOUT_MS,
@@ -96,22 +97,24 @@ export const AutoReviewSettings: FC = () => {
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-base font-semibold">AI 审查</h2>
+      <h2 className="flex items-center gap-2 text-base font-semibold">
+        AI 审查
+      </h2>
       <p className="text-muted-foreground text-sm">
         权限档选「AI 审查」时，每个要动手的工具调用先由模型判一次风险：低风险直接执行，
         高风险拦截。审查失败会退回审批卡由你确认，不会静默放行。
       </p>
 
-      <div className="bg-muted/50 mt-1 flex flex-col gap-1 rounded-2xl p-2">
+      <div className="bg-muted/50 divide-border/40 mt-1 flex flex-col divide-y rounded-2xl p-2">
         <SettingRow
           label="审查模型"
           desc="缺省跟随当前会话模型。每次都多一次模型请求——选个便宜的模型更省。"
         >
           <ModelSelector.Root models={options} value={value} onValueChange={pickModel}>
             <ModelSelector.Trigger
-              variant="ghost"
+              variant="outline"
               size="sm"
-              className="max-w-56 [&>span]:min-w-0"
+              className="max-w-56 [&>span]:min-w-0 bg-background border-none"
               title={selectedLabel}
             >
               {settings.model && (
@@ -141,7 +144,7 @@ export const AutoReviewSettings: FC = () => {
         </SettingRow>
 
         <SettingRow label="单次审查超时" desc="超时按审查失败处理（退回审批卡）。单位秒，5–120。">
-          <div className="flex items-center gap-2">
+          <div className="bg-background flex h-8 items-center gap-1 rounded-md  px-2">
             <Input
               value={timeoutText}
               inputMode="numeric"
@@ -150,14 +153,14 @@ export const AutoReviewSettings: FC = () => {
               onKeyDown={(e) => {
                 if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               }}
-              className="h-8 w-20 text-sm"
+              className="h-auto w-12 border-none bg-transparent p-0 text-right text-sm rounded-none shadow-none focus-visible:ring-0"
             />
-            <span className="text-muted-foreground text-sm">秒</span>
+            <span className="text-muted-foreground text-xs">秒</span>
           </div>
         </SettingRow>
       </div>
 
-      <p className="text-muted-foreground px-1 text-xs">
+      <p className="text-muted-foreground border-border/50 mt-1 border-t px-1 pt-2 text-[11px] leading-relaxed">
         审查范围：内置工具（bash / 写入 / 配置类）与 MCP 工具调用；你记过的可写根与命令前缀
         仍然直接放行，不再送审。无人值守的定时任务不走这一档。
       </p>

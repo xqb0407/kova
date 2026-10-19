@@ -78,6 +78,26 @@ const CONFLICT_ACTIONS = {
   replace: "覆盖已有的",
 } as const;
 
+/** 小号动作分段：两个互斥动作用一个容器装起来（全选/全不选、全带/全不带）。
+ *  之前是一排裸文字按钮，看着像零散链接、没有"这是一组控件"的观感。 */
+const ActionPair: FC<{
+  items: { label: string; disabled?: boolean; onClick: () => void }[];
+}> = ({ items }) => (
+  <div className="bg-muted flex shrink-0 items-center gap-0.5 rounded-md p-0.5">
+    {items.map((it) => (
+      <button
+        key={it.label}
+        type="button"
+        disabled={it.disabled}
+        onClick={it.onClick}
+        className="text-muted-foreground hover:bg-background hover:text-foreground rounded px-2 py-1 text-[11px] transition-colors disabled:pointer-events-none disabled:opacity-40"
+      >
+        {it.label}
+      </button>
+    ))}
+  </div>
+);
+
 const CONFLICT_ITEMS = (Object.entries(CONFLICT_ACTIONS) as [keyof typeof CONFLICT_ACTIONS, string][])
   .map(([value, label]) => ({ value, label }));
 
@@ -382,8 +402,10 @@ export const ModelImportDialog: FC<{
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            {/* 选中态工具条：默认是全选，用户第一反应往往是"取消大部分"，
-                把「全不选」摆在明面上，别指望他找到组头那个小方块 */}
+            {/* 工具条：过滤 + 「全选/全不选」分段 + 已选计数。
+                原来还另有一整行"已选…/清空选择"：既与全选重复，而且那个
+                「清空选择」的点击处理其实是把 picked 设成全部（标反了）——
+                一并收掉，计数收进右侧胶囊。 */}
             <div className="flex items-center gap-2">
               <Input
                 value={query}
@@ -391,41 +413,25 @@ export const ModelImportDialog: FC<{
                 placeholder="按名称或地址过滤"
                 className="h-8 flex-1 text-sm"
               />
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground h-8 shrink-0 text-xs"
-                disabled={visibleCount === 0 || visiblePicked === 0}
-                onClick={() => setAllVisible(false)}
-              >
-                全不选
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground h-8 shrink-0 text-xs"
-                disabled={visibleCount === 0 || visiblePicked === visibleCount}
-                onClick={() => setAllVisible(true)}
-              >
-                全选
-              </Button>
-            </div>
-            <div className="text-muted-foreground flex items-center justify-between text-[11px]">
-              <span>
-                已选 {picked.size} / {scan?.candidates.length ?? 0} 个
-                {hiddenCount > 0 && `（当前只显示 ${visibleCount} 个）`}
+              <ActionPair
+                items={[
+                  {
+                    label: "全不选",
+                    disabled: visibleCount === 0 || visiblePicked === 0,
+                    onClick: () => setAllVisible(false),
+                  },
+                  {
+                    label: "全选",
+                    disabled:
+                      visibleCount === 0 || visiblePicked === visibleCount,
+                    onClick: () => setAllVisible(true),
+                  },
+                ]}
+              />
+              <span className="text-muted-foreground bg-muted/60 shrink-0 rounded-md px-2 py-1 text-[11px] tabular-nums">
+                已选 {picked.size}/{scan?.candidates.length ?? 0}
+                {hiddenCount > 0 && ` · 显示 ${visibleCount}`}
               </span>
-              {picked.size > 0 && (
-                <button
-                  type="button"
-                  className="hover:text-foreground transition-colors"
-                  onClick={() =>
-                    setPicked(new Set(grouped.flatMap((g) => g.items.map(rowKey))))
-                  }
-                >
-                  清空选择
-                </button>
-              )}
             </div>
             {grouped.length === 0 ? (
               <p className="text-muted-foreground py-6 text-center text-xs">
@@ -434,38 +440,37 @@ export const ModelImportDialog: FC<{
             ) : keyCount > 0 ? (
               /* 密钥行：默认全带，但摆出确切数量与一键全不带，
                  免得"默认搬走二三十个密钥"变成看不见的既成事实 */
-              <div className="bg-muted/40 flex items-center gap-2 rounded-lg px-2 py-1.5">
+              <div className="bg-muted/40 flex items-center gap-2 rounded-lg px-2.5 py-1.5">
                 <KeyRoundIcon className="text-muted-foreground size-3.5 shrink-0" />
                 <span className="text-muted-foreground min-w-0 flex-1 truncate text-[11px]">
-                  将导入 <span className="text-foreground font-medium tabular-nums">{keyPicked}</span> /{" "}
-                  {keyCount} 个密钥到 Kova 钥匙串
+                  一并导入{" "}
+                  <span className="text-foreground font-medium tabular-nums">
+                    {keyPicked}
+                  </span>{" "}
+                  / {keyCount} 个密钥到 Kova 钥匙串
                   {keyPicked === 0 && "（不带密钥也能导入，之后在设置里补）"}
                 </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground h-6 shrink-0 text-[11px]"
-                  disabled={keyPicked === 0}
-                  onClick={() => setAllVisibleKeys(false)}
-                >
-                  全不带
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground h-6 shrink-0 text-[11px]"
-                  disabled={keyPicked === keyCount}
-                  onClick={() => setAllVisibleKeys(true)}
-                >
-                  全带
-                </Button>
+                <ActionPair
+                  items={[
+                    {
+                      label: "全不带",
+                      disabled: keyPicked === 0,
+                      onClick: () => setAllVisibleKeys(false),
+                    },
+                    {
+                      label: "全带",
+                      disabled: keyPicked === keyCount,
+                      onClick: () => setAllVisibleKeys(true),
+                    },
+                  ]}
+                />
               </div>
             ) : null}
             {grouped.length > 0 && (
               grouped.map((group) => (
                 <div key={group.id} className="flex flex-col gap-1">
                   {/* 组头兼全选：来源分组 + 一键勾/取消这一组 */}
-                  <div className="flex items-center gap-2 py-0.5">
+                  <div className="flex items-center gap-2 px-1 py-0.5">
                     {/* 部分勾选时叠一根短横：Base UI 的 Checkbox 只认 boolean，
                                 半选态得自己画，否则"勾了一半"和"没勾"长得一样 */}
                     <span className="relative flex size-4 shrink-0 items-center justify-center">
