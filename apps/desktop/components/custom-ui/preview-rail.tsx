@@ -2,6 +2,7 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
+  type CSSProperties,
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
@@ -44,6 +45,15 @@ export interface PreviewRailProps {
   railClassName?: string;
   previewContainerClassName?: string;
   previewClassName?: string;
+  /**
+   * 滚动宿主（可选）：刻度与预览卡是两套**平行网格**（同一个行模板 + content-center），
+   * 必须同处一个滚动内容盒里一起滚，否则滚动刻度会让卡片与刻度错位。
+   * 传了就按 className/style 自建盒子（调用方给 max-height/overflow），不传只是多一层静态包裹。
+   */
+  scrollContainerClassName?: string;
+  scrollContainerStyle?: CSSProperties;
+  /** 滚动内容盒的尺寸（高度=刻度总高+留白）；缺省按 items × itemSize 计算 */
+  contentStyle?: CSSProperties;
 }
 
 function DefaultPreview({ item }: { item: PreviewRailItem }) {
@@ -88,6 +98,9 @@ export function PreviewRail({
   railClassName,
   previewContainerClassName,
   previewClassName,
+  scrollContainerClassName,
+  scrollContainerStyle,
+  contentStyle,
 }: PreviewRailProps) {
   const uid = useId();
   const reduce = useReducedMotion();
@@ -149,243 +162,262 @@ export function PreviewRail({
         className,
       )}
     >
-      <nav
-        aria-label={label}
-        onPointerLeave={(event) => {
-          // A touch pointer leaves on lift, which would clear the tick the tap
-          // just chose — that one is cleared by the outside tap instead.
-          if (hover.leave(event)) setHoveredId(null);
-        }}
-        style={
-          isHorizontal
-            ? { gridTemplateColumns: rowTemplate }
-            : { gridTemplateRows: rowTemplate }
-        }
-        className={cn(
-          "relative z-10 grid shrink-0",
-          isHorizontal
-            ? "h-12 w-fit max-w-full self-center justify-center"
-            : "w-12 content-center",
-          railClassName,
-        )}
+      {/* 滚动宿主：刻度与预览卡两套平行网格必须同滚，否则卡片与刻度错位。
+          调用方给 max-height/overflow（自行隐藏滚动条）；不传时只是静态包裹。 */}
+      <div
+        data-slot="preview-rail-scroll"
+        className={cn("relative flex min-h-0 w-full", scrollContainerClassName)}
+        style={scrollContainerStyle}
       >
-        {items.map((item, index) => {
-          const selected = item.id === selectedId;
-          const highlighted = item.id === highlightedId;
-          const distance =
-            displayedIndex < 0 ? Number.POSITIVE_INFINITY : Math.abs(index - displayedIndex);
-          // 圆点刻度：远近只改大小与透明度（横向短线时代是改长度），
-          // 尺寸下限比旧条高一些，否则 0.25 缩到 1px 就看不见了
-          const scale = highlighted
-            ? 1
-            : distance === 1
-              ? 0.75
-              : distance === 2
-                ? 0.6
-                : 0.5;
-          const opacity = highlighted
-            ? 1
-            : distance === 1
-              ? 0.7
-              : distance === 2
-                ? 0.5
-                : 0.35;
-
-          const itemContent = (
-            <motion.span
-              data-slot="preview-rail-tick"
-              aria-hidden="true"
-              animate={{ scale, opacity }}
-              transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
-              className={cn(
-                "block h-2 w-2 rounded-full bg-current",
-                highlighted ? "text-foreground" : undefined,
-              )}
-            />
-          );
-
-          const sharedClassName = cn(
-            "relative flex text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-            isHorizontal
-              ? "h-12 w-6 items-center justify-center"
-              : "h-6 w-12 items-center",
-          );
-          const sharedStyle = isHorizontal
-            ? { width: itemSize }
-            : { height: itemSize };
-          const handlePointerEnter = (event: PointerEvent<HTMLElement>) => {
-            if (hover.enter(event)) setHoveredId(item.id);
-          };
-          const handlePointerDown = (event: PointerEvent<HTMLElement>) => {
-            tap.start(event, pinnedId === item.id);
-            setFocusedId(null);
-          };
-          // A gesture the platform takes away sends no click, and a key press
-          // starts an activation that never had a pointer behind it: either
-          // one leaves a record the next click would read as a tap of its own.
-          const dropGesture = () => tap.drop();
-          const handleFocus = (currentTarget: HTMLElement) => {
-            if (currentTarget.matches(":focus-visible")) {
-              setFocusedId(item.id);
-            }
-          };
-          const handleSelect = (event: MouseEvent<HTMLElement>) => {
-            const gesture = tap.take();
-            const tapped =
-              gesture !== null && gesture.pointerType !== "mouse";
-
-            if (tapped) {
-              // A link would otherwise show its preview and leave the page in
-              // the same tap, so the card is never read: the first tap lights
-              // the tick, the second follows the link.
-              if (item.href && !gesture.state) {
-                event.preventDefault();
-                setPinnedId(item.id);
-                return;
-              }
-              setPinnedId(item.id);
-            }
-
-            selectItem(item.id);
-            onItemSelect?.(item);
-          };
-
-          return item.href ? (
-            <a
-              key={item.id}
-              data-slot="preview-rail-item"
-              href={item.href}
-              target={item.target}
-              rel={
-                item.rel ??
-                (item.target === "_blank" ? "noreferrer noopener" : undefined)
-              }
-              aria-label={item.ariaLabel ?? item.label}
-              aria-current={selected ? "page" : undefined}
-              onPointerEnter={handlePointerEnter}
-              onPointerDown={handlePointerDown}
-              onPointerCancel={dropGesture}
-              onKeyDown={dropGesture}
-              onFocus={(event) => handleFocus(event.currentTarget)}
-              onClick={handleSelect}
-              style={sharedStyle}
-              className={sharedClassName}
-            >
-              {itemContent}
-            </a>
-          ) : (
-            <button
-              key={item.id}
-              data-slot="preview-rail-item"
-              type="button"
-              aria-label={item.ariaLabel ?? item.label}
-              aria-current={selected ? "location" : undefined}
-              onPointerEnter={handlePointerEnter}
-              onPointerDown={handlePointerDown}
-              onPointerCancel={dropGesture}
-              onKeyDown={dropGesture}
-              onFocus={(event) => handleFocus(event.currentTarget)}
-              onClick={handleSelect}
-              style={sharedStyle}
-              className={sharedClassName}
-            >
-              {itemContent}
-            </button>
-          );
-        })}
-      </nav>
-
-      {showPreview ? (
         <div
-          aria-hidden="true"
+          className="relative w-full min-h-full"
           style={
-            isHorizontal
-              ? { gridTemplateColumns: rowTemplate }
-              : { gridTemplateRows: rowTemplate }
+            contentStyle ??
+            (items.length ? { height: items.length * itemSize } : undefined)
           }
-          className={cn(
-            "pointer-events-none absolute z-50 grid",
-            isHorizontal
-              ? "top-1/2 left-1/2 h-5 w-fit max-w-full -translate-x-1/2 -translate-y-1/2 justify-center"
-              : previewSide === "before"
-                ? "inset-y-0 right-16 left-4 content-center"
-                : "inset-y-0 right-4 left-16 content-center",
-            previewContainerClassName,
-          )}
         >
-          {items.map((item) => (
+          <nav
+            aria-label={label}
+            onPointerLeave={(event) => {
+              // A touch pointer leaves on lift, which would clear the tick the tap
+              // just chose — that one is cleared by the outside tap instead.
+              if (hover.leave(event)) setHoveredId(null);
+            }}
+            style={
+              isHorizontal
+                ? { gridTemplateColumns: rowTemplate }
+                : { gridTemplateRows: rowTemplate }
+            }
+            className={cn(
+              "relative z-10 grid shrink-0",
+              isHorizontal
+                ? "h-12 w-fit max-w-full self-center justify-center"
+                : "w-12 content-center",
+              railClassName,
+            )}
+          >
+            {items.map((item, index) => {
+              const selected = item.id === selectedId;
+              const highlighted = item.id === highlightedId;
+              const distance =
+                displayedIndex < 0 ? Number.POSITIVE_INFINITY : Math.abs(index - displayedIndex);
+              // 圆点刻度：远近只改大小与透明度（横向短线时代是改长度），
+              // 尺寸下限比旧条高一些，否则 0.25 缩到 1px 就看不见了
+              const scale = highlighted
+                ? 1
+                : distance === 1
+                  ? 0.75
+                  : distance === 2
+                    ? 0.6
+                    : 0.5;
+              const opacity = highlighted
+                ? 1
+                : distance === 1
+                  ? 0.7
+                  : distance === 2
+                    ? 0.5
+                    : 0.35;
+
+              const itemContent = (
+                <motion.span
+                  data-slot="preview-rail-tick"
+                  aria-hidden="true"
+                  animate={{ scale, opacity }}
+                  transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+                  className={cn(
+                    "block h-2 w-2 rounded-full bg-current",
+                    highlighted ? "text-foreground" : undefined,
+                  )}
+                />
+              );
+
+              const sharedClassName = cn(
+                "relative flex text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                isHorizontal
+                  ? "h-12 w-6 items-center justify-center"
+                  : "h-6 w-12 items-center",
+              );
+              const sharedStyle = isHorizontal
+                ? { width: itemSize }
+                : { height: itemSize };
+              const handlePointerEnter = (event: PointerEvent<HTMLElement>) => {
+                if (hover.enter(event)) setHoveredId(item.id);
+              };
+              const handlePointerDown = (event: PointerEvent<HTMLElement>) => {
+                tap.start(event, pinnedId === item.id);
+                setFocusedId(null);
+              };
+              // A gesture the platform takes away sends no click, and a key press
+              // starts an activation that never had a pointer behind it: either
+              // one leaves a record the next click would read as a tap of its own.
+              const dropGesture = () => tap.drop();
+              const handleFocus = (currentTarget: HTMLElement) => {
+                if (currentTarget.matches(":focus-visible")) {
+                  setFocusedId(item.id);
+                }
+              };
+              const handleSelect = (event: MouseEvent<HTMLElement>) => {
+                const gesture = tap.take();
+                const tapped =
+                  gesture !== null && gesture.pointerType !== "mouse";
+
+                if (tapped) {
+                  // A link would otherwise show its preview and leave the page in
+                  // the same tap, so the card is never read: the first tap lights
+                  // the tick, the second follows the link.
+                  if (item.href && !gesture.state) {
+                    event.preventDefault();
+                    setPinnedId(item.id);
+                    return;
+                  }
+                  setPinnedId(item.id);
+                }
+
+                selectItem(item.id);
+                onItemSelect?.(item);
+              };
+
+              return item.href ? (
+                <a
+                  key={item.id}
+                  data-slot="preview-rail-item"
+                  data-item-id={item.id}
+                  href={item.href}
+                  target={item.target}
+                  rel={
+                    item.rel ??
+                    (item.target === "_blank" ? "noreferrer noopener" : undefined)
+                  }
+                  aria-label={item.ariaLabel ?? item.label}
+                  aria-current={selected ? "page" : undefined}
+                  onPointerEnter={handlePointerEnter}
+                  onPointerDown={handlePointerDown}
+                  onPointerCancel={dropGesture}
+                  onKeyDown={dropGesture}
+                  onFocus={(event) => handleFocus(event.currentTarget)}
+                  onClick={handleSelect}
+                  style={sharedStyle}
+                  className={sharedClassName}
+                >
+                  {itemContent}
+                </a>
+              ) : (
+                <button
+                  key={item.id}
+                  data-slot="preview-rail-item"
+                  data-item-id={item.id}
+                  type="button"
+                  aria-label={item.ariaLabel ?? item.label}
+                  aria-current={selected ? "location" : undefined}
+                  onPointerEnter={handlePointerEnter}
+                  onPointerDown={handlePointerDown}
+                  onPointerCancel={dropGesture}
+                  onKeyDown={dropGesture}
+                  onFocus={(event) => handleFocus(event.currentTarget)}
+                  onClick={handleSelect}
+                  style={sharedStyle}
+                  className={sharedClassName}
+                >
+                  {itemContent}
+                </button>
+              );
+            })}
+          </nav>
+
+          {showPreview ? (
             <div
-              key={item.id}
+              aria-hidden="true"
               style={
-                isHorizontal ? { width: itemSize } : { height: itemSize }
+                isHorizontal
+                  ? { gridTemplateColumns: rowTemplate }
+                  : { gridTemplateRows: rowTemplate }
               }
               className={cn(
-                "relative flex items-center",
-                isHorizontal ? "justify-center" : undefined,
+                "pointer-events-none absolute z-50 grid",
+                isHorizontal
+                  ? "top-1/2 left-1/2 h-5 w-fit max-w-full -translate-x-1/2 -translate-y-1/2 justify-center"
+                  : previewSide === "before"
+                    ? "inset-y-0 right-16 left-4 content-center"
+                    : "inset-y-0 right-4 left-16 content-center",
+                previewContainerClassName,
               )}
             >
-              {/* AnimatePresence must outlive the card: mounted inside the
-                  conditional, its exit never ran — the card vanished in one
-                  frame and its box-shadow band stayed painted as a ghost until
-                  an unrelated repaint covered it. */}
-              <AnimatePresence initial={false}>
-                {item.id === displayedId ? (
-                  <div
-                    key={item.id}
-                    className={cn(
-                      isHorizontal
-                        ? "absolute bottom-12 left-1/2 w-72 -translate-x-1/2"
-                        : cn(
-                            "w-full max-w-sm",
-                            previewSide === "before" && "ml-auto",
-                          ),
-                      previewClassName,
-                    )}
-                  >
-                    <motion.div
-                      layoutId={`preview-rail-card-${uid}`}
-                      layoutCrossfade={false}
-                      transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
-                    >
-                      {/* Opacity/y only: an animated filter keeps the card on
-                          its own compositor layer, and dropping that layer
-                          mid-stream is what leaves the shadow trails behind.
-                          initial={false} enters instantly — a fade-in over
-                          nothing reads as lag; only the exit matters. */}
-                      <motion.div
-                        initial={false}
-                        animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
-                        exit={
-                          reduce
-                            ? { opacity: 0 }
-                            : {
-                                opacity: 0,
-                                y: -2,
-                                transition: {
-                                  duration: 0.12,
-                                  ease: EASE_OUT,
-                                },
-                              }
-                        }
-                        transition={{
-                          duration: reduce ? 0 : 0.18,
-                          ease: EASE_OUT,
-                        }}
-                      >
-                        {renderPreview ? (
-                          renderPreview(item)
-                        ) : (
-                          <DefaultPreview item={item} />
+              {items.map((item) => (
+                <div
+                  key={item.id}
+                  style={
+                    isHorizontal ? { width: itemSize } : { height: itemSize }
+                  }
+                  className={cn(
+                    "relative flex items-center",
+                    isHorizontal ? "justify-center" : undefined,
+                  )}
+                >
+                  {/* AnimatePresence must outlive the card: mounted inside the
+                      conditional, its exit never ran — the card vanished in one
+                      frame and its box-shadow band stayed painted as a ghost until
+                      an unrelated repaint covered it. */}
+                  <AnimatePresence initial={false}>
+                    {item.id === displayedId ? (
+                      <div
+                        key={item.id}
+                        className={cn(
+                          isHorizontal
+                            ? "absolute bottom-12 left-1/2 w-72 -translate-x-1/2"
+                            : cn(
+                                "w-full max-w-sm",
+                                previewSide === "before" && "ml-auto",
+                              ),
+                          previewClassName,
                         )}
-                      </motion.div>
-                    </motion.div>
-                  </div>
-                ) : null}
-              </AnimatePresence>
+                      >
+                        <motion.div
+                          layoutId={`preview-rail-card-${uid}`}
+                          layoutCrossfade={false}
+                          transition={reduce ? { duration: 0 } : SPRING_LAYOUT}
+                        >
+                          {/* Opacity/y only: an animated filter keeps the card on
+                              its own compositor layer, and dropping that layer
+                              mid-stream is what leaves the shadow trails behind.
+                              initial={false} enters instantly — a fade-in over
+                              nothing reads as lag; only the exit matters. */}
+                          <motion.div
+                            initial={false}
+                            animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
+                            exit={
+                              reduce
+                                ? { opacity: 0 }
+                                : {
+                                    opacity: 0,
+                                    y: -2,
+                                    transition: {
+                                      duration: 0.12,
+                                      ease: EASE_OUT,
+                                    },
+                                  }
+                            }
+                            transition={{
+                              duration: reduce ? 0 : 0.18,
+                              ease: EASE_OUT,
+                            }}
+                          >
+                            {renderPreview ? (
+                              renderPreview(item)
+                            ) : (
+                              <DefaultPreview item={item} />
+                            )}
+                          </motion.div>
+                        </motion.div>
+                      </div>
+                    ) : null}
+                  </AnimatePresence>
+                </div>
+              ))}
             </div>
-          ))}
+          ) : null}
+
         </div>
-      ) : null}
+      </div>
 
       {children ? (
         <div className="min-h-0 min-w-0 flex-1">{children}</div>
