@@ -171,7 +171,9 @@ export function buildQuestionTool(threadId: string): AgentTool {
       "Ask the user structured questions to get clarification or a decision before continuing: " +
       "single-select, multi-select (multiSelect), or open-ended free text (freeText). " +
       "Execution pauses until the user answers; they may skip or cancel. " +
-      "Use only when their input genuinely blocks your next step — not for plain confirmations.",
+      "Use only when their input genuinely blocks your next step — not for plain confirmations, " +
+      "and never to ask permission to run a tool or write a file: call that tool directly, " +
+      "the app shows an approval card and records the authorization if the user chooses to.",
     parameters: QuestionToolParams,
     execute: async (toolCallId, raw) => {
       const { questions } = raw as { questions: unknown };
