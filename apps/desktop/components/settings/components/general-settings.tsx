@@ -32,6 +32,7 @@ import {
   useLibraryRoot,
 } from "@/lib/workspace/library-root";
 import { fsErrorText, projectReveal } from "@/lib/workspace/fs";
+import { FileManagerIcon } from "@/components/files/file-manager-icon";
 
 /**
  * 通用设置页：提醒提示音与弹窗通知。统一开关 + 两套内置音色整体切换，
@@ -275,7 +276,7 @@ export const GeneralSettings: FC = () => {
                     title="在系统中打开"
                     onClick={() => void openLibraryRoot()}
                   >
-                    <FolderSearchIcon className="size-3.5" />
+                    <FileManagerIcon className="size-4.5" />
                   </Button>
                 </div>
               </SettingRow>

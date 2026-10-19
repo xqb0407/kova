@@ -68,6 +68,7 @@ import {
 } from "@/components/custom-ui/file-tree";
 import { filePathOf } from "@/desktop-bridge/core";
 import { cn } from "@/lib/utils";
+import { FileManagerIcon } from "./file-manager-icon";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -776,7 +777,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                 )}
                 <ContextMenuSeparator />
                 <ContextMenuItem onClick={() => void reveal("")}>
-                  <FolderSearchIcon />
+                  <FileManagerIcon className="size-4.5" />
                   在系统中打开
                 </ContextMenuItem>
                 <ContextMenuItem onClick={refreshTree}>
@@ -797,7 +798,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                 {fileMenuPrefix?.(menu.rel, menu.name)}
                 <ContextMenuSeparator />
                 <ContextMenuItem onClick={() => void reveal(menu.rel)}>
-                  <FolderSearchIcon />
+                  <FileManagerIcon className="size-4.5" />
                   在文件资源管理器中显示
                 </ContextMenuItem>
                 <ContextMenuItem onClick={() => void copyPath(menu.rel, true)}>
@@ -853,7 +854,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                 )}
                 <ContextMenuSeparator />
                 <ContextMenuItem onClick={() => void reveal(menu.rel)}>
-                  <FolderSearchIcon />
+                  <FileManagerIcon className="size-4.5" />
                   在文件资源管理器中显示
                 </ContextMenuItem>
                 <ContextMenuItem onClick={() => void copyPath(menu.rel, true)}>
