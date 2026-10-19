@@ -169,6 +169,24 @@ export function fsDelete(cwd: string, path: string): Promise<string | null> {
   return fsWriteCommand("fs_delete", { cwd, path });
 }
 
+/** 同根内移动（树里把行拖到某个文件夹）；成功返回落位名（重名已加序号）与是否真的动了 */
+export async function fsMove(
+  cwd: string,
+  path: string,
+  destDir: string,
+): Promise<{ ok: true; name: string; moved: boolean } | { ok: false; error: string }> {
+  if (!isDesktop()) return { ok: false, error: "not-desktop" };
+  try {
+    const r = await invoke<{ ok: boolean; name: string; moved: boolean }>(
+      "fs_move",
+      { cwd, path, destDir },
+    );
+    return { ok: true, name: r.name, moved: r.moved };
+  } catch (err) {
+    return { ok: false, error: typeof err === "string" ? err : "unknown" };
+  }
+}
+
 /** 在系统文件管理器中显示；成功返回 null，失败返回错误码 */
 export function fsReveal(cwd: string, path: string): Promise<string | null> {
   return fsWriteCommand("fs_reveal", { cwd, path });
@@ -193,6 +211,7 @@ export function fsErrorText(code: string): string {
     "mkdir-failed": "新建文件夹失败",
     "write-failed": "新建文件失败",
     "rename-failed": "重命名失败",
+    "move-failed": "移动失败",
     "delete-failed": "删除失败",
     "reveal-failed": "打开系统文件管理器失败",
     "not-desktop": "仅桌面端可用",

@@ -43,6 +43,7 @@ import {
   useSessionPrefsVersion,
 } from "@/lib/pi/pi-thread-adapter";
 import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
+import { fsErrorText, fsMove } from "@/lib/workspace/fs";
 import {
   libraryScan,
   type LibraryScanEntry,
@@ -296,11 +297,9 @@ export const LibraryPane: FC<{
   }, [root, artifactsRoot, q, refreshSignal]);
 
   // ---- 拖放（上段整区落库根；文件夹行由树内部处理）----
-  const [dragOver, setDragOver] = useState(false);
   const onDropToRoot = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
       event.preventDefault();
-      setDragOver(false);
       const files = Array.from(event.dataTransfer?.files ?? []);
       const paths = files
         .map((f) => filePathOf(f))
@@ -314,6 +313,26 @@ export const LibraryPane: FC<{
     [actions],
   );
 
+  /**
+   * 树内移动（把 A.md 拖进某个文件夹）：destDir = "" 即该树的根。
+   * 返回 true 表示确实移动了——树的缓存由 FileExplorer 侧统一失效重拉。
+   */
+  const handleMoveRow = useCallback(
+    async (cwd: string, srcRel: string, destDir: string): Promise<boolean> => {
+      const r = await fsMove(cwd, srcRel, destDir);
+      if (!r.ok) {
+        toast.error(fsErrorText(r.error));
+        return false;
+      }
+      if (!r.moved) return false; // 已经在该目录
+      const rel = destDir ? `${destDir}/${r.name}` : r.name;
+      // 不弹成功提示：文件出现在新位置 + 选中/查看器跟随，本身就是反馈
+      onSelect({ value: rel, cwd, rel, name: r.name });
+      return true;
+    },
+    [onSelect],
+  );
+
   const libraryTree = (
     <FileExplorer
       rootCwd={root}
@@ -321,6 +340,7 @@ export const LibraryPane: FC<{
       onNewNote={(dir) => void actions.newNote(dir)}
       onImport={(dir) => void actions.pickImport(dir, false)}
       onDropPaths={(paths, dir) => void actions.importPaths(paths, dir)}
+      onMoveRow={(src, dir) => (root ? handleMoveRow(root, src, dir) : false)}
       selected={selected && selected.cwd === root ? selected.rel : null}
       stateKey="library"
       refreshSignal={refreshSignal}
@@ -334,6 +354,9 @@ export const LibraryPane: FC<{
       rootCwd={artifactsRoot}
       onOpenFile={(file) => onSelect({ ...file, value: file.rel })}
       labelForName={labelForName}
+      onMoveRow={(src, dir) =>
+        artifactsRoot ? handleMoveRow(artifactsRoot, src, dir) : false
+      }
       selected={selected && selected.cwd === artifactsRoot ? selected.rel : null}
       stateKey="artifacts"
       refreshSignal={refreshSignal}
@@ -387,15 +410,11 @@ export const LibraryPane: FC<{
                 />
                 <div
                   ref={topRef}
-                  className={cn(
-                    "min-h-0 overflow-hidden",
-                    dragOver && "bg-primary/[0.04] ring-primary/30 ring-1 ring-inset",
-                  )}
+                  className="min-h-0 overflow-hidden"
                   onDragOver={(e) => {
+                    // 只为放行 drop（外部文件落库根）；不再叠加任何区域样式
                     e.preventDefault();
-                    setDragOver(true);
                   }}
-                  onDragLeave={() => setDragOver(false)}
                   onDrop={onDropToRoot}
                   style={
                     bothOpen

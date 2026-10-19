@@ -64,7 +64,7 @@ export const GeneralSettings: FC = () => {
       toast.error(fsErrorText(err));
       return;
     }
-    toast.success("资料库位置已更新");
+    // 成功不弹提示：行里的路径即刻显示新位置
   };
 
   const openLibraryRoot = async () => {

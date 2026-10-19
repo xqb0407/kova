@@ -25,7 +25,6 @@ import {
   FileSearchCornerIcon,
   FileSearchIcon,
   GlobeIcon,
-  LoaderCircleIcon,
   LogOutIcon,
   NotebookPen,
   PencilLineIcon,
@@ -261,12 +260,12 @@ export const ToolRow: FC<ToolRowProps> = ({
 
   const content = (
     <>
-      {running ? (
-        <LoaderCircleIcon className="size-4 shrink-0 animate-spin" />
-      ) : (
-        icon
-      )}
-      <span className="shrink-0">{label}</span>
+      {icon}
+      {/* 运行中标签扫光（统一 .shimmer）；图标保持静态：大量工具行同时
+          running 时不额外堆动画 */}
+      <span className={cn("shrink-0", running && "shimmer")}>
+        {label}
+      </span>
       {fileIcon ? (
         <span className="inline-flex shrink-0 items-center">{fileIcon}</span>
       ) : null}

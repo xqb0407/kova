@@ -11,6 +11,7 @@ import {
   Children,
   Fragment,
   useCallback,
+  useEffect,
   isValidElement,
   useMemo,
   useRef,
@@ -35,6 +36,9 @@ type FileTreeItem = {
   onDragOver?: (event: React.DragEvent<HTMLButtonElement>) => void;
   onDragLeave?: (event: React.DragEvent<HTMLButtonElement>) => void;
   onDrop?: (event: React.DragEvent<HTMLButtonElement>) => void;
+  /** 行作为拖拽源（树内移动：把行拖进某个文件夹） */
+  onDragStart?: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragEnd?: (event: React.DragEvent<HTMLButtonElement>) => void;
 };
 
 /** 行级拖放回调（三种一起给；不给则该行不参与拖放） */
@@ -42,6 +46,12 @@ export interface FileTreeRowDragHandlers {
   onDragOver: (event: React.DragEvent<HTMLButtonElement>) => void;
   onDragLeave: (event: React.DragEvent<HTMLButtonElement>) => void;
   onDrop: (event: React.DragEvent<HTMLButtonElement>) => void;
+}
+
+/** 行作为拖拽**源**（树内移动：把行拖到某个文件夹） */
+export interface FileTreeRowDragSource {
+  onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragEnd?: (event: React.DragEvent<HTMLButtonElement>) => void;
 }
 
 export interface FileTreeFolderProps {
@@ -55,6 +65,8 @@ export interface FileTreeFolderProps {
   onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   /** 拖放回调（folder 行可作投放目标） */
   dragHandlers?: FileTreeRowDragHandlers;
+  /** 拖拽源回调（提供后可被拖动） */
+  dragSource?: FileTreeRowDragSource;
 }
 
 export interface FileTreeFileProps {
@@ -67,6 +79,8 @@ export interface FileTreeFileProps {
   onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   /** 拖放回调（一般只文件夹需要） */
   dragHandlers?: FileTreeRowDragHandlers;
+  /** 拖拽源回调（提供后可被拖动） */
+  dragSource?: FileTreeRowDragSource;
 }
 
 export type FileTreeClassNames = {
@@ -110,6 +124,10 @@ export function FileTreeFile(_props: FileTreeFileProps) {
 
 /** 行高（px），与行按钮固定高度一致；虚拟滚动的前提是等高行 */
 const ROW_HEIGHT = 36;
+
+/** 拖拽贴边自动滚动：进入上下边缘这个距离内开始滚，每帧滚多少像素 */
+const DRAG_SCROLL_EDGE_PX = 28;
+const DRAG_SCROLL_STEP_PX = 14;
 
 function flattenItems(
   items: FileTreeItem[],
@@ -164,6 +182,7 @@ function itemsFromChildren(children: ReactNode): FileTreeItem[] {
         className: props.className,
         onContextMenu: props.onContextMenu,
         ...props.dragHandlers,
+        ...props.dragSource,
         children: itemsFromChildren(props.children),
       });
       return;
@@ -180,6 +199,7 @@ function itemsFromChildren(children: ReactNode): FileTreeItem[] {
         className: props.className,
         onContextMenu: props.onContextMenu,
         ...props.dragHandlers,
+        ...props.dragSource,
       });
     }
   });
@@ -286,6 +306,63 @@ export function FileTree({
     [currentExpandedIds, setExpanded],
   );
 
+  /**
+   * 拖拽经过时贴边自动滚动（长列表要拖到视口外的目录）。
+   * capture 阶段挂：行的 onDragOver 里有 stopPropagation（落点高亮用），
+   * 冒泡阶段会被它拦掉；拖拽是全局状态，指针离开容器/落下/结束都要停。
+   */
+  const dragScrollDirRef = useRef(-1); // -1 = 停
+  const dragScrollRafRef = useRef(0);
+  const stopDragScroll = useCallback(() => {
+    dragScrollDirRef.current = -1;
+    if (dragScrollRafRef.current) {
+      cancelAnimationFrame(dragScrollRafRef.current);
+      dragScrollRafRef.current = 0;
+    }
+  }, []);
+  const stepDragScroll = useCallback(() => {
+    const el = scrollRef.current;
+    const dir = dragScrollDirRef.current;
+    if (!el || dir < 0) {
+      dragScrollRafRef.current = 0;
+      return;
+    }
+    el.scrollTop += dir === 0 ? 0 : (dir === 1 ? DRAG_SCROLL_STEP_PX : -DRAG_SCROLL_STEP_PX);
+    dragScrollRafRef.current = requestAnimationFrame(stepDragScroll);
+  }, []);
+  const onDragScrollOver = useCallback(
+    (event: React.DragEvent) => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const dir =
+        event.clientY < rect.top + DRAG_SCROLL_EDGE_PX
+          ? 0
+          : event.clientY > rect.bottom - DRAG_SCROLL_EDGE_PX
+            ? 1
+            : -1;
+      dragScrollDirRef.current = Math.max(0, dir);
+      if (dir === -1) {
+        stopDragScroll();
+        return;
+      }
+      if (!dragScrollRafRef.current) {
+        dragScrollRafRef.current = requestAnimationFrame(stepDragScroll);
+      }
+    },
+    [stepDragScroll, stopDragScroll],
+  );
+  // 拖拽结束（源被放下或取消）也要停：外部拖入时 dragend 发生在别的应用，
+  // 所以同时挂容器上的 dragleave/drop（capture）与 window 的 dragend
+  useEffect(() => {
+    const onEnd = () => stopDragScroll();
+    window.addEventListener("dragend", onEnd);
+    return () => {
+      window.removeEventListener("dragend", onEnd);
+      stopDragScroll();
+    };
+  }, [stopDragScroll]);
+
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLButtonElement>, row: FlatFileTreeItem) => {
       const index = rows.findIndex(({ item }) => item.value === row.item.value);
@@ -333,6 +410,9 @@ export function FileTree({
       role="tree"
       aria-label={ariaLabel}
       aria-multiselectable={false}
+      onDragOverCapture={onDragScrollOver}
+      onDragLeaveCapture={stopDragScroll}
+      onDropCapture={stopDragScroll}
       className={cn(
         "h-full min-w-0 overflow-y-auto p-1.5",
         className,
@@ -372,13 +452,18 @@ export function FileTree({
               onDragOver={row.item.onDragOver}
               onDragLeave={row.item.onDragLeave}
               onDrop={row.item.onDrop}
+              draggable={!!row.item.onDragStart && !row.item.disabled}
+              onDragStart={row.item.onDragStart}
+              onDragEnd={row.item.onDragEnd}
               onClick={() => {
                 if (row.item.disabled) return;
                 selectItem(row.item);
                 if (isFolder) toggleFolder(row.item.value);
               }}
               className={cn(
-                "group/file-tree absolute left-0 flex w-full items-center gap-2 overflow-hidden rounded-lg pr-2 text-left text-sm text-muted-foreground outline-none",
+                // border-transparent 预留 1px：拖放目标态换成实色整圈描边时，
+                // 盒模型不变 → 行内容不会跳（border-box 下行高由内联 height 固定）
+                "group/file-tree absolute left-0 flex w-full items-center gap-2 overflow-hidden rounded-lg border border-transparent pr-2 text-left text-sm text-muted-foreground outline-none",
                 "transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 "aria-disabled:cursor-not-allowed",
                 row.item.disabled && "opacity-[0.42]",

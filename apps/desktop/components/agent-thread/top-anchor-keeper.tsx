@@ -15,7 +15,8 @@
 // 消息位于视口顶部**下方**时补滚一次；一旦看到用户自己的滚动手势（滚轮/触摸/
 // 键盘翻页/拖拽内容）就整轮让位——与框架语义一致：钉住之后滚动权归用户。
 // 不往上看（锚点顶边高于视口顶部）时不动：那是用户在往下读正文，或是框架对
-// 超高用户消息的有意过滚（topAnchorMessageClamp），补滚会与它打架。
+// 超高用户消息的有意过滚（topAnchorMessageClamp，按视口可用高度动态配置，
+// 见 thread-viewport.tsx），补滚会与它打架。
 
 import { useAuiState } from "@assistant-ui/react";
 import { useEffect } from "react";

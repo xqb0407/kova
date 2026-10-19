@@ -9,7 +9,7 @@ import {
   type FC,
   type PropsWithChildren,
 } from "react";
-import { ChevronDownIcon, LoaderIcon } from "lucide-react";
+import { ChevronDownIcon } from "lucide-react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { useScrollLock } from "@/hooks/use-scroll-lock";
 import {
@@ -134,7 +134,7 @@ function ToolGroupTrigger({
   count?: number;
   /** 分组标题覆写（中文类别标签等）；缺省为 "N tool calls" */
   label?: React.ReactNode;
-  /** 类别图标（与组内单行工具图标同形）；运行中由 spinner 原位替换 */
+  /** 类别图标（与组内单行工具图标同形）；运行中保持原位，由标签扫光表达 */
   icon?: React.ReactNode;
   active?: boolean;
 }) {
@@ -153,14 +153,7 @@ function ToolGroupTrigger({
       )}
       {...props}
     >
-      {active ? (
-        <LoaderIcon
-          data-slot="tool-group-trigger-loader"
-          className="aui-tool-group-trigger-loader size-4 shrink-0 animate-spin [animation-duration:0.6s]"
-        />
-      ) : (
-        icon
-      )}
+      {icon}
       <span
         data-slot="tool-group-trigger-label"
         className={cn(
@@ -168,7 +161,7 @@ function ToolGroupTrigger({
           "group-data-[variant=ghost]/tool-group-root:font-normal",
           "group-data-[variant=outline]/tool-group-root:grow",
           "group-data-[variant=muted]/tool-group-root:grow",
-          active && "shimmer motion-reduce:animate-none",
+          active && "shimmer",
         )}
       >
         {label}

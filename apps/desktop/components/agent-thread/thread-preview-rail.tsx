@@ -44,6 +44,13 @@ const MIN_ITEM_SIZE = 10;
  *  卡片右侧剩下的正文比被它盖住的还少，悬停预览反而挡住正在读的那条消息。
  *  只在面板拖到很宽、把聊天列挤到接近其下限（CHAT_MIN_WIDTH = 380）时才命中 */
 const MIN_MESSAGE_WIDTH = 900;
+/** 刻度条几何（与 railClassName 保持一致）：容器左偏移 left-2、宽 w-6 */
+const RAIL_LEFT = 8;
+const RAIL_WIDTH = 24;
+/** 刻度条右缘到正文左缘的最小呼吸位；消息列收窄后不够就整条隐藏。
+ *  正文列本身有 px-2，锚点盒左缘比文字再靠左 8px，这里按锚点盒算
+ *  （偏保守，实际间距只会更大） */
+const RAIL_TEXT_GAP = 16;
 /** 消息增删的合并窗口：流式期间 markdown 新块落 DOM 会成串触发 childList，
  *  逐个重建刻度是纯浪费；预览文本已改为悬停现取，延迟重建不影响预览新鲜度 */
 const SYNC_DEBOUNCE_MS = 180;
@@ -88,6 +95,9 @@ export function ThreadPreviewRail() {
   const [overflowing, setOverflowing] = useState(false);
   const [railHeight, setRailHeight] = useState(0);
   const [messageWidth, setMessageWidth] = useState(0);
+  /** 正文列左缘相对覆盖层左缘的距离（px）：消息列是居中的 max-width 容器，
+   *  收窄后正文会贴到视口左缘，刻度条钉在 left-2 就会压字 */
+  const [contentLeft, setContentLeft] = useState(0);
   /** 覆盖层原本 inset-0 连 sticky composer 一起盖，轮次一多最末刻度直接压在
    *  输入框上；量出页脚顶缘到覆盖层底边的距离，作为覆盖层的 bottom 内缩 */
   const [railBottomInset, setRailBottomInset] = useState(0);
@@ -165,6 +175,24 @@ export function ThreadPreviewRail() {
     );
     // 一轮对话一个刻度，选取规则见 pickRoundAnchors
     const kept = pickRoundAnchors(anchors);
+    // 正文列左缘（相对覆盖层）：消息容器统一居中，所有锚点左缘一致；取最靠左
+    // 的一个即可。只按覆盖层宽度判断不够——消息列有 max-width，窄列时正文贴着
+    // 视口左缘，而刻度条仍钉在 left-2，会直接压在文字上
+    const root = rootRef.current;
+    if (root) {
+      const rootLeft = root.getBoundingClientRect().left;
+      let left = Number.POSITIVE_INFINITY;
+      for (const anchor of anchors) {
+        const rect = anchor.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) continue;
+        left = Math.min(left, rect.left - rootLeft);
+      }
+      if (Number.isFinite(left)) {
+        // 取整：亚像素抖动不该让这份几何状态反复触发重渲
+        const rounded = Math.round(left);
+        setContentLeft((current) => (current === rounded ? current : rounded));
+      }
+    }
     anchorsRef.current = anchors;
     const targets = new Map<string, HTMLElement>();
     const nextItems = kept.map((anchor, keptIndex) => {
@@ -305,6 +333,19 @@ export function ThreadPreviewRail() {
     measureRailBottom,
   ]);
 
+  // 外观设置切换对话宽度（html[data-chat-width]）只改消息列 max-width，视口
+  // 尺寸不变，ResizeObserver 收不到——不补这一下，正文左缘会沿用旧值，从窄
+  // 切到宽时刻度条仍按旧间距显示，又压回字上
+  useEffect(() => {
+    if (typeof MutationObserver === "undefined") return;
+    const observer = new MutationObserver(() => scheduleSync());
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-chat-width"],
+    });
+    return () => observer.disconnect();
+  }, [scheduleSync]);
+
   // 量测覆盖层高度，刻度过多时自动压缩间距（min 6px），避免被裁切；
   // 同一个观察顺带量宽度：面板拖宽把聊天列挤窄时用它整条隐藏刻度
   useEffect(() => {
@@ -363,8 +404,14 @@ export function ThreadPreviewRail() {
   );
 
   // 单轮对话只有一个刻度也显示：内容溢出时仍可悬停预览/点击跳底。
-  // 宽度未量到（首帧 ResizeObserver 还没回调）时先不画，避免宽列也闪一下
-  const showRail = overflowing && items.length > 0 && messageWidth >= MIN_MESSAGE_WIDTH;
+  // 宽度未量到（首帧 ResizeObserver 还没回调）时先不画，避免宽列也闪一下。
+  // 正文左缘到刻度条右缘不足 RAIL_TEXT_GAP 时同样隐藏：消息列收窄后正文会
+  // 贴到视口左缘，硬画就是刻度压字（见上面 contentLeft 的注释）
+  const showRail =
+    overflowing &&
+    items.length > 0 &&
+    messageWidth >= MIN_MESSAGE_WIDTH &&
+    contentLeft >= RAIL_LEFT + RAIL_WIDTH + RAIL_TEXT_GAP;
   const itemSize = showRail
     ? Math.max(
         MIN_ITEM_SIZE,

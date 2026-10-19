@@ -27,6 +27,7 @@ import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
 import { CheckpointTail } from "./checkpoint-card";
 import { ThreadPreviewRail } from "./thread-preview-rail";
+import { ThreadViewport } from "./thread-viewport";
 import { TurnSlot, TurnTimingRecorder } from "./turn-summary";
 import { ViewportScrollManager } from "./viewport-scroll-manager";
 import { prewarmShiki } from "@/lib/markdown/prewarm-shiki";
@@ -96,7 +97,7 @@ const ThreadWorkingIndicator: FC = () => {
       className="text-muted-foreground mx-auto flex w-full max-w-(--thread-max-width) items-center gap-2 px-6 py-2"
     >
       <DotMatrix state="loading" aria-hidden />
-      <span className="shimmer shimmer-speed-200 text-foreground/60 text-sm">
+      <span className="shimmer text-foreground/60 text-sm">
         思考中...
       </span>
     </div>
@@ -149,7 +150,7 @@ export const Thread = memo(function Thread() {
       {/* 注册 data-image 渲染器（同法）：工具产出的图片随消息流内联展示 */}
       <ImageDataUI />
 
-      <ThreadPrimitive.Viewport
+      <ThreadViewport
         // top 锚定（勿改回 "bottom"）：发送后新用户消息钉在视口顶部、更早的历史
         // 滚出上方，回复在其下方流式展开。框架侧连带口径（见
         // useThreadViewportAutoScroll）：autoScroll 随 "top" 默认变 false（不贴底
@@ -237,7 +238,7 @@ export const Thread = memo(function Thread() {
             </div>
           </AuiIf>
         </ThreadPrimitive.ViewportFooter>
-      </ThreadPrimitive.Viewport>
+      </ThreadViewport>
 
       {/* 会话锚点定位：左侧刻度条，一轮对话一个刻度，悬停预览、点击跳转（内容溢出时出现） */}
       <ThreadPreviewRail />

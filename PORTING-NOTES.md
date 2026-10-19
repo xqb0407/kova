@@ -126,18 +126,13 @@ Dock/Finder/Launchpad 渲染一张图标时，是把 **1024 画布**铺满用户
 
 ### Chromium 专属渲染坑（已在迁移版修掉，旧桌面壳/WKWebView 不出现）
 
-- **shimmer × 每秒变化的文本 = 旧字形重影**：轮次耗时片（「工作中 N 秒」）用 `shimmer`
-  （tw-shimmer：`background-clip:text` + `background-position` 扫光，动画提升合成层），
-  在 Chromium 下文本每秒更新时合成层不完整失效，数字会留下重影/半截字形，看着"数字卡住
-  不变"（第一秒无数字所以正常，任务结束去掉 shimmer 后也正常——与用户描述完全一致）。
-  最终修法（`components/agent-thread/turn-summary.tsx`）：**闪光只罩不变的字**——
-  与「连接中…」「正在思考中…」等同款原则：`工作中` 走 `shimmer shimmer-speed-200`
-  （静态文本，扫光正常），逐秒变化的数字放在遮罩之外单独渲染。
-  试过并否决的替代：「整行闪光 + 每秒 `key` 重挂载」字形也对，但扫光每秒重新起步、
-  视觉跳动明显（用户实测否掉）。
-  像素级复核：逐秒截元素，"工作中 2/3/4/5/6 秒" 字形清晰、逐秒变化；
-  `::before` 的 `tw-shimmer-translate`（2.05s 循环）持续运行在"工作中"上。
-  其余 shimmer 用法（连接中/思考中/进行中/正在压缩上下文）都是静态文本，无此问题。
+- **shimmer × 每秒变化的文本**：扫光统一走 `.shimmer`（`background-clip:text` +
+  `background-position`，ZCode 的 animated-gradient-text 同款；不再用 tw-shimmer 的
+  mask-clip / `::before` 路径，Windows 上不会丢次像素抗锯齿，短标签也看得见）。
+  轮次耗时片仍只让不变的「工作中」扫光，逐秒变化的数字放外面：文字宽度每帧变化
+  会让 300% 背景的扫光起点跟着跳，读秒显得闪烁（`components/agent-thread/turn-summary.tsx`）。
+  其余 shimmer 用法（连接中/思考中/进行中/正在压缩上下文）都是静态文本。
+  这样文字宽度稳定，扫光的 300% 背景不会跟着读秒一起变宽。
 
 ### 有意放宽的一处守卫（比 Rust 版更宽容，前端契约要求）
 
