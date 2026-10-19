@@ -766,8 +766,9 @@ const McpJsonImportDialog: FC<{
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* DialogContent 基类没有 max-h/overflow：长内容会把弹窗顶出视口，这里自限高度 */}
-      <DialogContent className="max-h-[calc(100dvh-3rem)] overflow-y-auto sm:max-w-2xl">
+      {/* 高度与滚动：同连接日志弹窗——弹窗限高后**只有中段滚动**，footer 永远可见；
+          旧写法在 DialogContent 上挂 overflow-y-auto，footer 会随内容滚出可视区 */}
+      <DialogContent className="flex max-h-[calc(100dvh-3rem)] flex-col gap-4 overflow-hidden sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>JSON 导入 MCP 服务器</DialogTitle>
           <DialogDescription>
@@ -776,7 +777,7 @@ const McpJsonImportDialog: FC<{
               : "导入到 ~/.kova/mcp.json，对本机所有工作区生效"}
           </DialogDescription>
         </DialogHeader>
-        <div className="flex min-w-0 flex-col gap-3">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
           <Label className="flex w-full min-w-0 flex-col items-start gap-1 text-sm">
             <span className="text-muted-foreground text-xs">
               mcpServers JSON（兼容 Claude Code / Cursor 导出格式，支持一次导入多台；语法错误在编辑器内画红波浪线）
@@ -1172,83 +1173,91 @@ const McpLogDialog: FC<{
 
   return (
     <Dialog open={name !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100dvh-3rem)] overflow-y-auto sm:max-w-xl">
+      {/* 高度与滚动：弹窗做成 flex 列 + overflow-hidden，只有中段滚动——
+          旧写法在 DialogContent 上挂 overflow-y-auto，footer 是滚动内容的一部分，
+          内容一长按钮就被顶出可视区（且 overflow-y-auto 会把 overflow-x 也算成 auto，
+          长 token 撑宽内容时整块横向滚动）。中段自带 min-w-0 让换行真正生效。 */}
+      <DialogContent className="flex max-h-[calc(100dvh-3rem)] flex-col gap-4 overflow-hidden sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>连接日志</DialogTitle>
           <DialogDescription>
             {name} · 连接错误（最近 100 条）与持久化审计事件，点「测试」可重新握手
           </DialogDescription>
         </DialogHeader>
-        {error ? (
-          <p className="text-destructive min-w-0 break-words text-sm">{error}</p>
-        ) : (
-          <div className="flex flex-col gap-4">
-            <section>
-              <h4 className="mb-1.5 text-xs font-medium">连接错误</h4>
-              {busy && lines.length === 0 ? (
-                <p className="text-muted-foreground py-4 text-center text-sm">读取中…</p>
-              ) : lines.length === 0 ? (
-                <p className="text-muted-foreground py-4 text-center text-sm">
-                  暂无连接错误
-                </p>
-              ) : (
-                <ul className="bg-muted/60 flex max-h-64 min-w-0 flex-col gap-1.5 overflow-y-auto rounded-lg border p-3">
-                  {lines.map((l, i) => (
-                    <li key={i} className="flex min-w-0 gap-2 text-xs">
-                      <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
-                        {new Date(l.at).toLocaleString()}
-                      </span>
-                      <span className="min-w-0 break-words">{l.message}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-            <section>
-              <h4 className="mb-1.5 text-xs font-medium">
-                连接事件
-                <span className="text-muted-foreground ml-1.5 font-normal">
-                  跨重启持久，只含事件与耗时，不含参数内容
-                </span>
-              </h4>
-              {busy && events.length === 0 ? (
-                <p className="text-muted-foreground py-4 text-center text-sm">读取中…</p>
-              ) : recentEvents.length === 0 ? (
-                <p className="text-muted-foreground py-4 text-center text-sm">暂无事件</p>
-              ) : (
-                <ul className="bg-muted/60 flex max-h-64 min-w-0 flex-col gap-1 overflow-y-auto rounded-lg border p-3">
-                  {recentEvents.map((e, i) => {
-                    const meta = AUDIT_KIND_META[e.kind] ?? AUDIT_KIND_META.disconnect;
-                    return (
-                      <li key={i} className="flex min-w-0 items-baseline gap-2 text-xs">
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {error ? (
+            <p className="text-destructive min-w-0 text-sm [overflow-wrap:anywhere]">{error}</p>
+          ) : (
+            <div className="flex min-w-0 flex-col gap-4">
+              <section className="min-w-0">
+                <h4 className="mb-1.5 text-xs font-medium">连接错误</h4>
+                {busy && lines.length === 0 ? (
+                  <p className="text-muted-foreground py-4 text-center text-sm">读取中…</p>
+                ) : lines.length === 0 ? (
+                  <p className="text-muted-foreground py-4 text-center text-sm">
+                    暂无连接错误
+                  </p>
+                ) : (
+                  <ul className="bg-muted/60 flex max-h-64 min-w-0 flex-col gap-1.5 overflow-y-auto rounded-lg border p-3">
+                    {lines.map((l, i) => (
+                      <li key={i} className="flex min-w-0 gap-2 text-xs">
                         <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
-                          {new Date(e.at).toLocaleString()}
+                          {new Date(l.at).toLocaleString()}
                         </span>
-                        <span
-                          className={cn(
-                            "inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-xs leading-4 font-medium",
-                            meta.className,
-                          )}
-                        >
-                          {meta.label}
-                          {e.ok === false && <XIcon className="size-3 shrink-0" />}
-                        </span>
-                        {e.detail ? (
-                          <span className="min-w-0 break-words">{e.detail}</span>
-                        ) : null}
-                        {typeof e.ms === "number" ? (
-                          <span className="text-muted-foreground ml-auto shrink-0 font-mono tabular-nums">
-                            {e.ms}ms
-                          </span>
-                        ) : null}
+                        {/* anywhere 而非 break-words：后者不降低固有宽度，长 token
+                          （URL / JSON 报错）会把内容撑宽出弹窗、尾部被裁掉 */}
+                        <span className="min-w-0 [overflow-wrap:anywhere]">{l.message}</span>
                       </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
-          </div>
-        )}
+                    ))}
+                  </ul>
+                )}
+              </section>
+              <section className="min-w-0">
+                <h4 className="mb-1.5 text-xs font-medium">
+                  连接事件
+                  <span className="text-muted-foreground ml-1.5 font-normal">
+                    跨重启持久，只含事件与耗时，不含参数内容
+                  </span>
+                </h4>
+                {busy && events.length === 0 ? (
+                  <p className="text-muted-foreground py-4 text-center text-sm">读取中…</p>
+                ) : recentEvents.length === 0 ? (
+                  <p className="text-muted-foreground py-4 text-center text-sm">暂无事件</p>
+                ) : (
+                  <ul className="bg-muted/60 flex max-h-64 min-w-0 flex-col gap-1 overflow-y-auto rounded-lg border p-3">
+                    {recentEvents.map((e, i) => {
+                      const meta = AUDIT_KIND_META[e.kind] ?? AUDIT_KIND_META.disconnect;
+                      return (
+                        <li key={i} className="flex min-w-0 items-baseline gap-2 text-xs">
+                          <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
+                            {new Date(e.at).toLocaleString()}
+                          </span>
+                          <span
+                            className={cn(
+                              "inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-xs leading-4 font-medium",
+                              meta.className,
+                            )}
+                          >
+                            {meta.label}
+                            {e.ok === false && <XIcon className="size-3 shrink-0" />}
+                          </span>
+                          {e.detail ? (
+                            <span className="min-w-0 [overflow-wrap:anywhere]">{e.detail}</span>
+                          ) : null}
+                          {typeof e.ms === "number" ? (
+                            <span className="text-muted-foreground ml-auto shrink-0 font-mono tabular-nums">
+                              {e.ms}ms
+                            </span>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+            </div>
+          )}
+        </div>
         <DialogFooter className="items-center sm:justify-end">
           <Button variant="outline" onClick={() => void load()} disabled={busy}>
             <RefreshCwIcon className={cn("size-3.5", busy && "animate-spin")} />
