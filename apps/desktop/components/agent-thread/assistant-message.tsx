@@ -254,6 +254,27 @@ const TurnErrorCard: FC<{ data: unknown }> = ({ data }) => {
   );
 };
 
+/**
+ * 等待行（连接中）：发送后回复尚未落地时的统一外观。
+ *
+ * 高度固定 30px（h-7.5），与思考触发行（py-1.5 + 16px 图标 + chevron 的
+ * mt-0.5）等高。这一行在首 token 前会被替换两次——线程级占位（还没有
+ * 回复消息）→ 消息级占位（消息已建、内容为空）→ 思考触发行。三者必须
+ * 同高、同左边界（都在 max-width 内缩进 8px），否则每次替换都会让下面的
+ * 内容上下跳一下（发送后「连接中 → 思考」的跳动即此）。
+ * 线程级占位与消息级占位共用本组件，连点阵状态和文案都一致，替换时
+ * 视觉上是原地切换而不是「一闪而过换了一行」。
+ */
+export const WaitingRow: FC = () => (
+  <span
+    data-slot="aui_waiting-row"
+    className="text-muted-foreground inline-flex h-7.5 items-center gap-2 align-middle"
+  >
+    <DotMatrix state="connecting" aria-hidden />
+    <span className="shimmer text-foreground/60 text-sm">连接中...</span>
+  </span>
+);
+
 const AssistantWorkingIndicator: FC = () => {
   const isEmpty = useAuiState((s) => s.message.content.length === 0);
   // 随机加载文案：挂载时定一条、每 5 秒换一条。绝不能在 render 里现摇——
@@ -266,16 +287,16 @@ const AssistantWorkingIndicator: FC = () => {
   }, []);
   // 重试进行中时不显示（RetryMarker 顶替这条状态行，参照示例 base.tsx）
   if (useRetryState()) return null;
+  // 内容为空走等待行（与线程级占位同款，见 WaitingRow 注释）
+  if (isEmpty) return <WaitingRow />;
   return (
     <span
       data-slot="aui_assistant-message-indicator"
-      className="text-muted-foreground inline-flex items-center gap-2 align-middle"
+      className="text-muted-foreground inline-flex h-7.5 items-center gap-2 align-middle"
     >
-      {/* 等待动画：内容为空=连接中；已有内容但模型/工具间隙=加载态点阵 */}
-      <DotMatrix state={isEmpty ? "connecting" : "loading"} aria-hidden />
-      <span className="shimmer text-foreground/60 text-sm">
-        {isEmpty ? "连接中..." : phrase}
-      </span>
+      {/* 已有内容但模型/工具间隙：加载态点阵 */}
+      <DotMatrix state="loading" aria-hidden />
+      <span className="shimmer text-foreground/60 text-sm">{phrase}</span>
     </span>
   );
 };
