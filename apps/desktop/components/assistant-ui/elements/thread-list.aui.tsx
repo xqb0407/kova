@@ -32,6 +32,7 @@ import {
   ChevronRightIcon,
   CopyIcon,
   FolderIcon,
+  FolderInputIcon,
   FolderOpenIcon,
   GitBranchIcon,
   HashIcon,
@@ -59,6 +60,7 @@ import {
   piSessionCwdMap,
   piSessionRegistry,
 } from "@/lib/pi/pi-thread-adapter";
+import { openMoveSessionDialog } from "@/components/agent-thread/move-session-dialog";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
 import { isSessionRunning, usePiSessionRunning } from "@/lib/pi/pi-running";
 import {
@@ -1503,6 +1505,8 @@ export const ThreadListItem: FC = () => {
   const rowMenu = useThreadRowMenu({
     onRename: () => setRenameOpen(true),
     onAskDelete: () => setDeleteOpen(true),
+    running: showRunning,
+    hasPending: pendingKind != null,
   });
   // 右键落点（虚拟锚点）：null = 菜单关闭。批量模式与草稿行不唤起
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
@@ -1860,15 +1864,21 @@ type ThreadRowMenuItem =
 
 /**
  * 行菜单定义与动作（行作用域：须在 ThreadListItemPrimitive.Root 内调用）。
- * 菜单顺序对齐参考稿：置顶 → 重命名 → 分支 → 归档 → 标记未读 ┃ Finder →
- * 复制路径 → 复制会话 ID → 调用轨迹 ┃ 删除。
+ * 菜单顺序对齐参考稿：置顶 → 重命名 → 分支 → 移动 → 归档 → 标记未读 ┃
+ * Finder → 复制路径 → 复制会话 ID → 调用轨迹 ┃ 删除。
  */
 const useThreadRowMenu = ({
   onRename,
   onAskDelete,
+  running,
+  hasPending,
 }: {
   onRename: () => void;
   onAskDelete: () => void;
+  /** 运行中：移动项禁用（行组件已订阅两路运行态，避免每行重复订阅） */
+  running: boolean;
+  /** 有挂起的审批/问题：移动会把按旧目录审阅的操作带到新目录，先结算 */
+  hasPending: boolean;
 }): { items: ThreadRowMenuItem[]; isNew: boolean } => {
   const aui = useAui();
   const status = useAuiState((s) => s.threadListItem.status);
@@ -1963,6 +1973,22 @@ const useThreadRowMenu = ({
     }
   };
 
+  /**
+   * 移动会话到已有项目：只换 cwd，sessionId/历史不变（pi-move 的等价语义）。
+   * 目标列表由全局对话框从"已有项目目录"里取，不弹系统任意文件夹。
+   * 运行中/有挂起交互时菜单项直接置灰——见 items 里的 disabled 与 label。
+   */
+  const askMove = () => {
+    if (!remoteId || running || hasPending) return;
+    openMoveSessionDialog(remoteId);
+  };
+
+  const moveBlockedReason = running
+    ? "运行中"
+    : hasPending
+      ? "先处理挂起"
+      : null;
+
   const desktop = isDesktop();
 
   const items: ThreadRowMenuItem[] = [
@@ -1994,6 +2020,20 @@ const useThreadRowMenu = ({
             onSelect: () => void branch(),
             disabled: branching,
           },
+          ...(desktop
+            ? ([
+                {
+                  kind: "item",
+                  key: "move",
+                  label: moveBlockedReason
+                    ? `移动到项目…（${moveBlockedReason}）`
+                    : "移动到项目…",
+                  icon: FolderInputIcon,
+                  onSelect: askMove,
+                  disabled: moveBlockedReason != null,
+                },
+              ] satisfies ThreadRowMenuItem[])
+            : []),
         ] satisfies ThreadRowMenuItem[])
       : []),
     archived

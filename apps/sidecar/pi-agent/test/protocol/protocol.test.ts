@@ -14,6 +14,11 @@ import {
 import { dispatch, dispatchPrompt, handleLine, setInitGate } from "../../src/protocol/protocol";
 import { rulesFilePath, soulFilePath } from "../../src/agent/personalization";
 import { dropRun, ensureTaskSessionDir, noteActiveTurn, resolveSession, running, trackSessionRun } from "../../src/sessions/sessions";
+import {
+  beginInteraction,
+  dropSessionInteractions,
+  rememberThreadSession,
+} from "../../src/sessions/pending-interactions";
 import { buildTools } from "../../src/tools/tools";
 import { setActiveReqId } from "../../src/protocol/stream";
 import { scanTranscript, AUTO_CONTINUE_PREFIX } from "../../src/sessions/transcript";
@@ -1630,6 +1635,15 @@ describe("set_session_cwd：对话中途换/清工作目录", () => {
       const sessionId = last().sessionId as string;
       const run = running.get("th-cwd-1")!;
 
+      // 先写入一条消息行：换目录改写 header 时必须逐字节保留 body
+      const messageLine = JSON.stringify({
+        type: "message",
+        seq: 0,
+        ui: null,
+        agent: { role: "user", content: "hello" },
+      });
+      appendFileSync(sessionPath(sessionId), messageLine + "\n");
+
       // 换绑到真实目录：内存 run、DB 索引行、JSONL header 三处一致
       const workspace = path.join(tmp, "workspace-switch");
       await dispatch("sc2", { type: "set_session_cwd", sessionId, cwd: workspace });
@@ -1638,9 +1652,11 @@ describe("set_session_cwd：对话中途换/清工作目录", () => {
       expect(run.persistedCwd).toBe(workspace);
       expect(run.agent.state.systemPrompt).toContain(workspace);
       expect((await sessionGet(sessionId))!.cwd).toBe(workspace);
-      expect(JSON.parse(readFileSync(sessionPath(sessionId), "utf8").split("\n")[0])).toMatchObject({
+      const movedLines = readFileSync(sessionPath(sessionId), "utf8").split("\n");
+      expect(JSON.parse(movedLines[0])).toMatchObject({
         cwd: workspace,
       });
+      expect(movedLines[1]).toBe(messageLine);
 
       // 解绑（cwd=""）：持久化清空、运行目录回落按会话隔离的任务子目录。
       // 回落目标此刻**不落盘**（建目录推迟到工具使用点，见 ensureTaskSessionDir），
@@ -1672,6 +1688,57 @@ describe("set_session_cwd：对话中途换/清工作目录", () => {
       setActiveReqId("th-cwd-2", null);
     }
     dropRun("th-cwd-2");
+  });
+
+  test("同目录重复设置是 no-op：header 不重写", async () => {
+    await dispatch("sc11", { type: "new_session", threadId: "th-cwd-5", cwd: tmp });
+    const sessionId = last().sessionId as string;
+    const before = readFileSync(sessionPath(sessionId), "utf8");
+    await dispatch("sc12", {
+      type: "set_session_cwd",
+      sessionId,
+      cwd: tmp,
+    });
+    expect(last()).toMatchObject({
+      id: "sc12",
+      type: "session_cwd_set",
+      sessionId,
+      cwd: tmp,
+    });
+    expect(readFileSync(sessionPath(sessionId), "utf8")).toBe(before);
+    dropRun("th-cwd-5");
+  });
+
+  test("有挂起审批/问题时拒绝移动，目录不动", async () => {
+    await dispatch("sc9", { type: "new_session", threadId: "th-cwd-4", cwd: tmp });
+    const sessionId = last().sessionId as string;
+    rememberThreadSession("th-cwd-4", sessionId);
+    beginInteraction("th-cwd-4", {
+      interactionId: "int-cwd-guard",
+      kind: "permission",
+      anchorToolCallId: "call-cwd-guard",
+      payload: {
+        approvalId: "approval-cwd-guard",
+        toolCallId: "call-cwd-guard",
+        toolName: "bash",
+        input: { command: "pwd" },
+      },
+      createdAt: new Date().toISOString(),
+    });
+    try {
+      await expect(
+        dispatch("sc10", {
+          type: "set_session_cwd",
+          sessionId,
+          cwd: path.join(tmp, "elsewhere-guarded"),
+        }),
+      ).rejects.toThrow("pending approvals");
+      expect((await sessionGet(sessionId))!.cwd).toBe(tmp);
+      expect(running.get("th-cwd-4")!.persistedCwd).toBe(tmp);
+    } finally {
+      dropSessionInteractions(sessionId);
+      dropRun("th-cwd-4");
+    }
   });
 
   test("不驻留会话只写索引行与 header，下次物化自然生效", async () => {

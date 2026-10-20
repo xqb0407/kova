@@ -132,3 +132,20 @@ export async function forkPiSession(
   if (cwd) piSessionCwdMap.set(res.sessionId, cwd);
   return res.sessionId;
 }
+
+/**
+ * 移动会话到另一个工作目录：sessionId 与历史都不变，走 sidecar 的
+ * set_session_cwd（驻留 run 重建工具/提示词，非驻留只落 DB + header）。
+ * cwd 镜像先更新，列表 reload 之前分组归属就已正确。
+ */
+export async function movePiSession(
+  remoteId: string,
+  cwd: string,
+): Promise<void> {
+  await piRequest<{ type: "session_cwd_set"; sessionId: string; cwd: string }>(
+    { type: "set_session_cwd", sessionId: remoteId, cwd },
+    30_000,
+  );
+  if (cwd) piSessionCwdMap.set(remoteId, cwd);
+  else piSessionCwdMap.delete(remoteId);
+}

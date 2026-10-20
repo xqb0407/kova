@@ -8,6 +8,7 @@ import {
   useThreadListGroups,
 } from "@/components/assistant-ui/elements/thread-list.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { MoveSessionDialogHost } from "@/components/agent-thread/move-session-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -173,6 +174,20 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         ? new Set()
         : new Set(projectGroups.map((g) => g.cwd)),
     );
+  // 会话移动成功：把目标目录的组展开。状态提升在 shell 层——即使当前在
+  // 任务 tab（ProjectListItems 未挂载），切回项目 tab 时也能看到移入的会话
+  useEffect(() => {
+    const onMoved = (event: Event) => {
+      const cwd = (event as CustomEvent<{ cwd?: string }>).detail?.cwd;
+      if (!cwd) return;
+      setProjOpenDirs((prev) =>
+        prev.has(cwd) ? prev : new Set(prev).add(cwd),
+      );
+    };
+    window.addEventListener("pi:session-moved", onMoved as EventListener);
+    return () =>
+      window.removeEventListener("pi:session-moved", onMoved as EventListener);
+  }, []);
   // 顶部固定菜单与「设置」按钮：与列表同款的 fluid hover。各自独立作用域
   // （与列表容器 padding 不同，高亮不跨容器滑动，进出时淡入淡出）。
   const menuListRef = useRef<HTMLDivElement>(null);
@@ -1069,6 +1084,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           </CommandList>
         </Command>
       </CommandDialog>
+
+      {/* 移动会话对话框全局挂载一次：行菜单把请求投进模块级 store */}
+      <MoveSessionDialogHost />
 
       <div className="min-w-0 flex-1 overflow-hidden">{children}</div>
     </div>

@@ -20,7 +20,23 @@
  *   过滤后下发，前端据此展示权威耗时；截断时随其后所有行一起丢弃。
  *   读端跳过撕裂尾行，append 中途崩溃不影响已有内容。
  */
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
 import type { HistoryWindowMeta, PendingInteraction } from "pi-protocol";
 import {
   AUTO_CONTINUE_PREFIX,
@@ -397,6 +413,135 @@ export function appendTurnTimingRow(
     sessionPath(sessionId),
     JSON.stringify({ type: "turn_timing", ...row }) + "\n",
   );
+}
+
+/* ---------------- header 原地改写（换工作目录） ----------------
+ * 只改首行 header 的 cwd，body 逐字节流式复制。走同目录 tmp + fsync + rename：
+ * 中途失败源文件保持原样，不会留下半截 JSONL。结果保证以换行结尾——后续
+ * appendFileSync 的每一行都必须从行首开始。
+ */
+
+/** header 扫描上限：超过这个长度还没换行就不是我们写的会话文件 */
+const HEADER_SCAN_MAX = 1024 * 1024;
+const HEADER_COPY_CHUNK = 64 * 1024;
+
+/**
+ * fs.writeSync 允许短写（返回实际写入字节数）。普通文件通常一次写完，但
+ * 不能假设；循环到整块落盘，返回 0 视为异常，避免死循环。
+ */
+function writeAll(fd: number, buf: Buffer): void {
+  let offset = 0;
+  while (offset < buf.length) {
+    const written = writeSync(fd, buf, offset, buf.length - offset);
+    if (written <= 0) throw new Error("short write while rewriting transcript header");
+    offset += written;
+  }
+}
+
+/** 文件缺失/空文件时补一行 header（与 resolveSession 建会话时同形）。 */
+function writeFreshHeader(file: string, sessionId: string, cwd: string): void {
+  appendFileSync(
+    file,
+    JSON.stringify({ type: "header", schema: 1, id: sessionId, cwd }) + "\n",
+  );
+}
+
+/**
+ * 原子改写转录 header 的 cwd（换工作目录用）。
+ * 只认首行是合法 header 的文件；损坏文件抛错，由调用方决定是否降级
+ * （DB 索引行才是 cwd 的事实源，header 仅展示/兜底）。
+ */
+export function rewriteTranscriptHeaderCwd(
+  sessionId: string,
+  cwd: string,
+): void {
+  const file = sessionPath(sessionId);
+  if (!existsSync(file) || statSync(file).size === 0) {
+    writeFreshHeader(file, sessionId, cwd);
+    return;
+  }
+
+  const tmp = `${file}.cwd-${randomUUID()}.tmp`;
+  let readFd: number | undefined;
+  let writeFd: number | undefined;
+  try {
+    readFd = openSync(file, "r");
+    const stat = fstatSync(readFd);
+    const head = Buffer.alloc(Math.min(HEADER_SCAN_MAX, stat.size));
+    const headLen = readSync(readFd, head, 0, head.length, 0);
+    const newlineAt = head.indexOf(0x0a, 0);
+    if (newlineAt === -1 || newlineAt >= headLen) {
+      throw new Error(`transcript has no newline-terminated header: ${sessionId}`);
+    }
+
+    let headRow: Record<string, unknown>;
+    try {
+      headRow = JSON.parse(head.subarray(0, newlineAt).toString("utf8"));
+    } catch {
+      throw new Error(`transcript header is not valid JSON: ${sessionId}`);
+    }
+    if (headRow?.type !== "header") {
+      throw new Error(`transcript first line is not a header: ${sessionId}`);
+    }
+
+    writeFd = openSync(tmp, "w");
+    // 会话文件可能含敏感内容：保留原权限（Windows 上 fchmod 无效，跳过）
+    const mode = stat.mode & 0o777;
+    if (process.platform !== "win32" && mode !== 0) {
+      try {
+        fchmodSync(writeFd, mode);
+      } catch {
+        /* 权限保留尽力而为，不影响内容 */
+      }
+    }
+
+    writeAll(
+      writeFd,
+      Buffer.from(JSON.stringify({ ...headRow, cwd }) + "\n", "utf8"),
+    );
+    const chunk = Buffer.alloc(HEADER_COPY_CHUNK);
+    let position = newlineAt + 1;
+    let lastByte = 0x0a;
+    for (;;) {
+      const read = readSync(readFd, chunk, 0, HEADER_COPY_CHUNK, position);
+      if (read === 0) break;
+      lastByte = chunk[read - 1] ?? lastByte;
+      writeAll(writeFd, chunk.subarray(0, read));
+      position += read;
+    }
+    // 撕裂尾行会原样保留；补一个换行，保证下次 append 从行首开始
+    if (lastByte !== 0x0a) writeAll(writeFd, Buffer.from("\n", "utf8"));
+
+    fsyncSync(writeFd);
+    closeSync(writeFd);
+    writeFd = undefined;
+    closeSync(readFd);
+    readFd = undefined;
+
+    renameSync(tmp, file);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* tmp 未创建或已清理 */
+    }
+    throw err;
+  } finally {
+    if (writeFd !== undefined) {
+      try {
+        closeSync(writeFd);
+      } catch {
+        /* already closed */
+      }
+    }
+    if (readFd !== undefined) {
+      try {
+        closeSync(readFd);
+      } catch {
+        /* already closed */
+      }
+    }
+  }
 }
 
 /* ---------------- 上下文设定行（§6 M4 上游对齐） ----------------
