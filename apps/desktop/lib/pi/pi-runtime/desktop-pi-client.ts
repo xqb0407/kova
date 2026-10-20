@@ -46,6 +46,15 @@ const desktopTransport: PiClientTransport = {
     }),
 
   watchGeneration: async (cb) => listen<string>("pi-exit", () => cb()),
+
+  // 观看集合上报：主进程只会把该集合内会话的逐 token 增量送到本窗口，
+  // 多会话并发时后台会话的 message_update 不再跨进程
+  watchSessions: (sessionIds) => {
+    // 裁剪是纯优化：命令失败时主进程沿用上一次的观看集合（不是退回全量），
+    // 本次新增订阅的会话在下次上报成功前收不到逐 token 增量；收尾帧不是
+    // heavy，最终内容仍由快照补齐。实际只在发送方窗口销毁时才会失败，故不重试。
+    invoke("pi_watch_sessions", { sessions: sessionIds }).catch(() => undefined);
+  },
 };
 
 export class DesktopPiClient extends PiClientBase {

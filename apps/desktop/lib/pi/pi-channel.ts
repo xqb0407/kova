@@ -2,6 +2,7 @@
 
 import { invoke } from "@/desktop-bridge/core";
 import { listen } from "@/desktop-bridge/event";
+import { subscribeWireFrames } from "@/lib/pi/wire-bus";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
 
 /**
@@ -236,9 +237,6 @@ export function getPiChannel(): PiChannel {
 
 // ---------- 桌面通道 ----------
 
-/** pi-chunk-batch 载荷的一行（见 pi_agent.rs ChunkLine）：l = sidecar 原始 NDJSON 行 */
-type ChunkWireLine = { l: string };
-
 export class DesktopPiChannel implements PiChannel {
   readonly kind = "desktop" as const;
 
@@ -303,21 +301,14 @@ export class DesktopPiChannel implements PiChannel {
     cb: (sessionId: string | null, active: boolean) => void,
   ): Promise<() => void> {
     const [unlistenBatch, unlistenExit] = await Promise.all([
-      listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
-        for (const wire of event.payload) {
-          // 前缀预筛：热路径全是 {id,chunk} 行，免去逐行 JSON.parse
-          if (!wire.l.startsWith('{"type":"turn_changed"')) continue;
-          let parsed: { sessionId?: string; active?: boolean };
-          try {
-            parsed = JSON.parse(wire.l);
-          } catch {
-            continue;
-          }
+      subscribeWireFrames<{ sessionId?: string; active?: boolean }>(
+        ["turn_changed"],
+        (parsed) => {
           if (typeof parsed.sessionId === "string") {
             cb(parsed.sessionId, parsed.active === true);
           }
-        }
-      }),
+        },
+      ),
       listen("pi-exit", () => cb(null, false)),
     ]);
     return () => {
@@ -333,20 +324,14 @@ export class DesktopPiChannel implements PiChannel {
   async subscribeSubagentActivity(
     cb: (delegationId: string, item: SubagentActivityItem) => void,
   ): Promise<() => void> {
-    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
-      for (const wire of event.payload) {
-        if (!wire.l.startsWith('{"type":"subagent_activity"')) continue;
-        let parsed: { delegationId?: string; item?: SubagentActivityItem };
-        try {
-          parsed = JSON.parse(wire.l);
-        } catch {
-          continue;
-        }
+    return subscribeWireFrames<{ delegationId?: string; item?: SubagentActivityItem }>(
+      ["subagent_activity"],
+      (parsed) => {
         if (typeof parsed.delegationId === "string" && parsed.item) {
           cb(parsed.delegationId, parsed.item);
         }
-      }
-    });
+      },
+    );
   }
 
   /**
@@ -356,28 +341,17 @@ export class DesktopPiChannel implements PiChannel {
   async subscribeAutomationEvents(
     cb: (frame: PiAutomationFrame) => void,
   ): Promise<() => void> {
-    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
-      for (const wire of event.payload) {
-        if (
-          !wire.l.startsWith('{"type":"automation_fired"') &&
-          !wire.l.startsWith('{"type":"automation_run_done"')
-        ) {
-          continue;
-        }
-        let parsed: PiAutomationFrame;
-        try {
-          parsed = JSON.parse(wire.l);
-        } catch {
-          continue;
-        }
+    return subscribeWireFrames<PiAutomationFrame>(
+      ["automation_fired", "automation_run_done"],
+      (parsed) => {
         if (
           (parsed?.type === "automation_fired" || parsed?.type === "automation_run_done") &&
           typeof parsed.taskId === "string"
         ) {
           cb(parsed);
         }
-      }
-    });
+      },
+    );
   }
 
   /**
@@ -385,18 +359,9 @@ export class DesktopPiChannel implements PiChannel {
    * 插件市场的添加/刷新/安装均为耗时操作，受理后据此收敛。
    */
   async subscribePluginOps(cb: (frame: PiPluginOpFrame) => void): Promise<() => void> {
-    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
-      for (const wire of event.payload) {
-        if (!wire.l.startsWith('{"type":"plugin_op_result"')) continue;
-        let parsed: PiPluginOpFrame;
-        try {
-          parsed = JSON.parse(wire.l);
-        } catch {
-          continue;
-        }
-        if (parsed?.type === "plugin_op_result" && typeof parsed.opId === "string") {
-          cb(parsed);
-        }
+    return subscribeWireFrames<PiPluginOpFrame>(["plugin_op_result"], (parsed) => {
+      if (parsed?.type === "plugin_op_result" && typeof parsed.opId === "string") {
+        cb(parsed);
       }
     });
   }
@@ -407,18 +372,9 @@ export class DesktopPiChannel implements PiChannel {
    * 最终结果与刷新后的清单在此收敛。
    */
   async subscribeMcpAuth(cb: (frame: PiMcpAuthFrame) => void): Promise<() => void> {
-    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
-      for (const wire of event.payload) {
-        if (!wire.l.startsWith('{"type":"mcp_auth_result"')) continue;
-        let parsed: PiMcpAuthFrame;
-        try {
-          parsed = JSON.parse(wire.l);
-        } catch {
-          continue;
-        }
-        if (parsed?.type === "mcp_auth_result" && typeof parsed.name === "string") {
-          cb(parsed);
-        }
+    return subscribeWireFrames<PiMcpAuthFrame>(["mcp_auth_result"], (parsed) => {
+      if (parsed?.type === "mcp_auth_result" && typeof parsed.name === "string") {
+        cb(parsed);
       }
     });
   }
@@ -430,18 +386,9 @@ export class DesktopPiChannel implements PiChannel {
   async subscribeContextChanges(
     cb: (frame: PiContextChangedFrame) => void,
   ): Promise<() => void> {
-    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
-      for (const wire of event.payload) {
-        if (!wire.l.startsWith('{"type":"context_changed"')) continue;
-        let parsed: PiContextChangedFrame;
-        try {
-          parsed = JSON.parse(wire.l);
-        } catch {
-          continue;
-        }
-        if (parsed?.type === "context_changed" && typeof parsed.sessionId === "string") {
-          cb(parsed);
-        }
+    return subscribeWireFrames<PiContextChangedFrame>(["context_changed"], (parsed) => {
+      if (parsed?.type === "context_changed" && typeof parsed.sessionId === "string") {
+        cb(parsed);
       }
     });
   }
@@ -451,20 +398,9 @@ export class DesktopPiChannel implements PiChannel {
    * 同款前缀预筛。带 id 的应答帧以 {"id": 开头，不会误入（前缀不同）。
    */
   async subscribeDesignThemes(cb: (frame: PiDesignThemePush) => void): Promise<() => void> {
-    return listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
-      for (const wire of event.payload) {
-        if (
-          !wire.l.startsWith('{"type":"design_themes"') &&
-          !wire.l.startsWith('{"type":"design_theme_set"')
-        ) {
-          continue;
-        }
-        let parsed: PiDesignThemePush;
-        try {
-          parsed = JSON.parse(wire.l);
-        } catch {
-          continue;
-        }
+    return subscribeWireFrames<PiDesignThemePush>(
+      ["design_themes", "design_theme_set"],
+      (parsed) => {
         if (
           parsed?.type === "design_themes"
             ? Array.isArray((parsed as { entries?: unknown }).entries)
@@ -472,8 +408,8 @@ export class DesktopPiChannel implements PiChannel {
         ) {
           cb(parsed);
         }
-      }
-    });
+      },
+    );
   }
 
   /**
@@ -485,18 +421,9 @@ export class DesktopPiChannel implements PiChannel {
     cb: (frame: PiSessionsChangedFrame | null) => void,
   ): Promise<() => void> {
     const [unlistenBatch, unlistenExit] = await Promise.all([
-      listen<ChunkWireLine[]>("pi-chunk-batch", (event) => {
-        for (const wire of event.payload) {
-          if (!wire.l.startsWith('{"type":"sessions_changed"')) continue;
-          let parsed: PiSessionsChangedFrame;
-          try {
-            parsed = JSON.parse(wire.l);
-          } catch {
-            continue;
-          }
-          if (parsed?.type === "sessions_changed" && typeof parsed.sessionId === "string") {
-            cb(parsed);
-          }
+      subscribeWireFrames<PiSessionsChangedFrame>(["sessions_changed"], (parsed) => {
+        if (parsed?.type === "sessions_changed" && typeof parsed.sessionId === "string") {
+          cb(parsed);
         }
       }),
       listen("pi-exit", () => cb(null)),

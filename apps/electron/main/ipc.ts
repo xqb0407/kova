@@ -7,6 +7,13 @@
 import { BrowserWindow, ipcMain, type WebContents } from "electron";
 import { logDebug, logError, logInfo } from "./logging";
 import { noteMainOp } from "./slow-ops";
+import {
+  normalizeWatchedIds,
+  routeChunkLines,
+  type ChunkBatchLine,
+} from "./chunk-routing";
+
+export type { ChunkBatchLine } from "./chunk-routing";
 
 export type CmdCtx = { sender: WebContents };
 export type CmdHandler = (args: Record<string, any>, ctx: CmdCtx) => unknown | Promise<unknown>;
@@ -70,6 +77,42 @@ export function setupIpc(): void {
 export function emitToWindows(name: string, payload: unknown): void {
   for (const w of BrowserWindow.getAllWindows()) {
     if (!w.isDestroyed()) w.webContents.send("kova-event", { event: name, payload });
+  }
+}
+
+/* --------------------------- chunk 增量按窗口裁剪 --------------------------- */
+
+/**
+ * 每个窗口在看的会话集合（渲染层 subscribe 的 thread 集合）。
+ * 用于 `pi-chunk-batch` 的逐 token 重行定向投递：多会话并发时，后台会话的
+ * message_update 不再跨进程送到完全不看它的窗口。未登记过的窗口保持全量
+ * 广播（e2e 探针、未来可能出现的只读消费者不受影响）。
+ *
+ * 约束：集合按 webContents 存，后一次上报覆盖前一次。当前每个窗口只有一个
+ * DesktopPiClient（app-runtime-provider 的 useMemo 单例），不会互相覆盖；
+ * 若将来同窗出现多个 client（分屏各自建 runtime），这里要改成按 client 合并。
+ */
+const watchedSessions = new Map<number, Set<string>>();
+const watchedCleanup = new Set<number>();
+
+export function setWatchedSessions(sender: WebContents, ids: unknown): void {
+  watchedSessions.set(sender.id, normalizeWatchedIds(ids));
+  if (!watchedCleanup.has(sender.id)) {
+    watchedCleanup.add(sender.id);
+    sender.once("destroyed", () => {
+      watchedSessions.delete(sender.id);
+      watchedCleanup.delete(sender.id);
+    });
+  }
+}
+
+export function emitChunkBatch(lines: ChunkBatchLine[]): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (w.isDestroyed()) continue;
+    const wc = w.webContents;
+    const payload = routeChunkLines(lines, watchedSessions.get(wc.id));
+    if (payload.length === 0) continue;
+    wc.send("kova-event", { event: "pi-chunk-batch", payload });
   }
 }
 

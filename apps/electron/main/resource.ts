@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, rmSync, statSync, statfsSync } from "node:fs";
 import { homedir, totalmem, freemem, cpus } from "node:os";
 import { join } from "node:path";
-import { trackWindow, getWindow } from "./ipc";
+import { trackWindow, getWindow, setWatchedSessions } from "./ipc";
 import { appDataDir, appLogDir, sessionsDir } from "./paths";
 import { logInfo, logWarn } from "./logging";
 import { piAgentChildPid } from "./pi-agent";
@@ -391,6 +391,8 @@ export async function resourceOpenWindow(): Promise<null> {
     },
   });
   trackWindow("resource", win);
+  // 资源窗口不订阅任何 pi 会话：声明空观看集合，主进程不再向它投递逐 token 增量
+  setWatchedSessions(win.webContents, []);
   // 诊断可观测性：窗口消失/渲染进程崩溃/加载失败都要留痕（此前静默，无法定位）
   win.on("closed", () => logInfo("[resource] window closed"));
   win.webContents.on("render-process-gone", (_e, details) => {

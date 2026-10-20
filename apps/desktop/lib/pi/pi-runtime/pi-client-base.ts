@@ -234,6 +234,9 @@ export type PiClientTransport = {
   /** 事件源换代（sidecar 退出 / WS 断开+重连 authed）：基座清流式台账并
    *  逐订阅线程拉快照自愈；同一 cb 可能被多次调用 */
   watchGeneration(cb: () => void): Promise<() => void>;
+  /** 声明本窗口在看的会话（桌面壳据此把后台会话的逐 token 增量挡在主进程，
+   *  不跨进程送过来）；可缺省——远程 WS 通道不做窗口级裁剪 */
+  watchSessions?(sessionIds: string[]): void;
 };
 
 export class PiClientBase implements PiClient {
@@ -274,6 +277,8 @@ export class PiClientBase implements PiClient {
   private unlistenLines: (() => void) | null = null;
   /** ensureEventWatcher 的在飞注册锁（防同 tick 双监听，见该方法注释） */
   private eventWatcher: Promise<void> | null = null;
+  /** 上次上报给桌面壳的观看集合指纹（只在集合真变时发命令） */
+  private watchedKey = "";
 
   constructor(
     private readonly transport: PiClientTransport,
@@ -1240,6 +1245,7 @@ export class PiClientBase implements PiClient {
       this.listeners.set(threadId, set);
     }
     set.add(listener);
+    this.publishWatchedSessions();
     void this.ensureEventWatcher();
     // 契约默认快照先行：冷读直接落定（force：重订阅同指纹也要拿到初帧），
     // 之后实时事件增量，收尾帧/换代兜底拉快照
@@ -1259,7 +1265,23 @@ export class PiClientBase implements PiClient {
         this.lastSeq.delete(threadId);
         this.queuedIds.delete(threadId);
       }
+      this.publishWatchedSessions();
     };
+  }
+
+  /**
+   * 把「本窗口正在看的会话」同步给桌面壳：主进程据此裁掉后台会话的逐 token
+   * 增量（多会话并发时不再逐帧跨进程送给完全不看它的窗口）。集合没变就不发，
+   * 订阅/退订本身是高频动作。
+   */
+  private publishWatchedSessions(): void {
+    const report = this.transport.watchSessions;
+    if (!report) return;
+    const ids = [...this.listeners.keys()].sort();
+    const key = ids.join("\n");
+    if (key === this.watchedKey) return;
+    this.watchedKey = key;
+    report(ids);
   }
 
   /** prompt 真的开跑（start 帧）的观察席：控制器用它把「本地乐观队列条目」与
