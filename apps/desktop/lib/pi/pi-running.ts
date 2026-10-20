@@ -3,6 +3,7 @@
 import { listen } from "@/desktop-bridge/event";
 import { useEffect, useSyncExternalStore } from "react";
 import { getPiChannel, type PiRunningTurn } from "@/lib/pi/pi-channel";
+import { subscribeWireFrames } from "@/lib/pi/wire-bus";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
 import { markThreadActivity } from "@/lib/pi/pi-last-activity";
 
@@ -21,8 +22,6 @@ import { markThreadActivity } from "@/lib/pi/pi-last-activity";
  * - sidecar 重启（pi-exit）：增量与快照作废，清空后重新种子水合
  */
 
-/** pi-chunk-batch 行最小形状（镜像 Rust ChunkLine，只关心行文本） */
-type RunWireLine = { l: string };
 /** thread_event 行的最小解析形状（只需事件种类与会话归属） */
 type RunWireMsg = {
   type?: string;
@@ -120,31 +119,24 @@ export function startPiRunningWatch(): void {
   watchStarted = true;
   void (async () => {
     // 增量源 = thread_event 的 agent_start/agent_end（迁移 4c）。监听与页面
-    // 同生命周期，不退订；pi-exit 作废全部已知状态并重新种子水合
-    await listen<RunWireLine[]>("pi-chunk-batch", (event) => {
-      for (const wire of event.payload) {
-        const line = wire.l;
-        if (!line.includes('"thread_event"')) continue;
-        if (
-          !line.includes('"agent_start"') &&
-          !line.includes('"agent_end"')
-        ) {
-          continue;
-        }
-        let parsed: RunWireMsg;
-        try {
-          parsed = JSON.parse(line) as RunWireMsg;
-        } catch {
-          continue;
-        }
-        if (parsed.type !== "thread_event") continue;
+    // 同生命周期，不退订；pi-exit 作废全部已知状态并重新种子水合。
+    // accept 在解析前挡掉同类型的流式 delta：thread_event 的热路径是
+    // message_update，不能为了挑出起止事件把每一帧都 JSON.parse
+    await subscribeWireFrames<RunWireMsg>(
+      ["thread_event"],
+      (parsed) => {
+        if (parsed.type !== "thread_event") return;
         const kind = parsed.event?.type;
         const sid = typeof parsed.sessionId === "string" ? parsed.sessionId : null;
-        if (!sid || !kind) continue;
+        if (!sid || !kind) return;
         if (kind === "agent_start") onTurnEvent(sid, true);
         else if (kind === "agent_end") onTurnEvent(sid, false);
-      }
-    });
+      },
+      {
+        accept: (raw) =>
+          raw.includes('"agent_start"') || raw.includes('"agent_end"'),
+      },
+    );
     await listen<string>("pi-exit", () => onTurnEvent(null, false));
     reseed();
   })();

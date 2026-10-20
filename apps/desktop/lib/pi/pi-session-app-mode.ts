@@ -67,10 +67,15 @@ export function useThreadAppMode(threadId: string | undefined): AppMode {
 export function useSessionAppMode(sessionId: string | undefined): AppMode {
   // 订阅偏好镜像：piSessionPrefsMap 是普通 Map，原地 set 不触发渲染
   useSessionPrefsVersion();
+  // 回落档必须无条件调用：写成 `own ?? useAppMode()` 会在 own 非空时跳过这个
+  // useSyncExternalStore，侧栏行的 hook 数量随会话偏好到达与否变化，钩子槽位
+  // 整体错位（表现为 ThreadListItem 的 hook 顺序告警，后续 useMemo 取到
+  // undefined 的 deps 而抛 reading 'length'）
+  const fallback = useAppMode();
   const own = sessionId
     ? asAppMode(piSessionPrefsMap.get(sessionId)?.appMode)
     : null;
-  return own ?? useAppMode();
+  return own ?? fallback;
 }
 
 /**

@@ -223,7 +223,8 @@ const EMPTY_TEXT_PART = Object.freeze({
 
 /**
  * 消息流分支：等价于 StreamdownTextPrimitive 的默认路径
- * （消息 part 上下文 → defer → 尾部 remend + Streamdown 内置修复），
+ * （消息 part 上下文 → defer → 尾部 remend；Streamdown 内置
+ *  `parseIncompleteMarkdown` 显式关闭，避免同段文本每 token 修复两遍），
  * 只是把 plugins 原样透传，让 renderers 生效（见上方注释）。
  *
  * 流式分支刻意不开 `useSmooth`（逐字打字机）：它的渲染快照永远是
@@ -244,6 +245,20 @@ const EMPTY_TEXT_PART = Object.freeze({
  */
 const ANIMATION_MAX_CHARS = 20_000;
 
+/** 流式动画配置：必须是模块级常量。Streamdown 的外层 memo 用引用比较
+ *  `animated`，每次渲染新建对象会让整棵 Streamdown 重新执行、分块 memo
+ *  的收益全部落空（每个 token 都会走两趟：紧急渲染 + deferred 渲染）。 */
+const STREAM_ANIMATION: Exclude<
+  ComponentProps<typeof Streamdown>["animated"],
+  boolean | undefined
+> = {
+  animation: "fadeIn",
+  duration: 150,
+  stagger: 20,
+  sep: "word",
+  maxBacklogMs: 450,
+};
+
 const StreamdownPart = () => {
   const part = useAuiState((s) =>
     s.part.type === "text" || s.part.type === "reasoning"
@@ -254,8 +269,11 @@ const StreamdownPart = () => {
   const running = status.type === "running";
   // 对齐 primitive 的 defer：解析降到低优先级，token 到达不阻塞输入/滚动
   const deferredText = useDeferredValue(text);
-  // 与 primitive 默认管线一致：tail remend 补行内尾部语法，
-  // Streamdown 自带 parseIncompleteMarkdown（默认开）在流式期间同步修复
+  // 与 primitive 默认管线一致：tail remend 补行内尾部语法。这里已经把
+  // 修复做完了，所以下面必须把 Streamdown 的 parseIncompleteMarkdown 关掉
+  // ——上游 StreamdownText 在启用 tailBoundedRemend 时同样把该项解析为
+  // false（`resolvedParseIncomplete`）。否则同一段文本每 token 会被 remend
+  // 全量扫描两遍，流式正文越长重复开销越大。
   const repairedText = useMemo(
     () => tailBoundedRemend(deferredText),
     [deferredText],
@@ -270,7 +288,8 @@ const StreamdownPart = () => {
     <div data-status={status.type}>
       <Streamdown
         mode={running ? "streaming" : "static"}
-        parseIncompleteMarkdown={running}
+        // 修复已由上方 tailBoundedRemend 完成，别再让 streamdown 全量跑一遍
+        parseIncompleteMarkdown={false}
         isAnimating={animate}
         // 逐词入场动画（仅短文本流式时，见上方 animate 的闸门）。sep 用
         // word 不用 char：char 的动画节点数 = 新增字符数，中文长句每帧都
@@ -279,17 +298,7 @@ const StreamdownPart = () => {
         // 观感差异远小于性能差。maxBacklogMs 的语义（dist `take`）：
         // step = max(4, (now+maxBacklogMs-cursor)/(n-1))，n = 本批新增词数
         // —— 大批量落地时它把 stagger 压到形同失效。
-        animated={
-          animate
-            ? {
-                animation: "fadeIn",
-                duration: 150,
-                stagger: 20,
-                sep: "word",
-                maxBacklogMs: 450,
-              }
-            : false
-        }
+        animated={animate ? STREAM_ANIMATION : false}
         // 光标（caret）刻意不传：streamdown 的实现是「caret 为真 且 isAnimating 时」
         // 才写 `--streamdown-caret` 变量、并在末块上加 `after:content-[var(--streamdown-caret)]`；
         // 只要这个 prop 缺省，变量与类名都不会挂上，光标自然不存在 —— 不需要额外 CSS 兜。

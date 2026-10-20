@@ -22,6 +22,8 @@ let chunkCbs: ListenFn[] = [];
 let snapshotReply: unknown = null;
 let snapshotCalls = 0;
 let promptArgs: Record<string, unknown> | null = null;
+/** pi_watch_sessions 的上报历史（主进程按窗口裁剪增量用） */
+let watchCalls: string[][] = [];
 
 mockModule("@/desktop-bridge/core", () => ({
   invoke: (cmd: string, args?: Record<string, unknown>) => {
@@ -40,6 +42,10 @@ mockModule("@/desktop-bridge/core", () => ({
       return Promise.resolve();
     }
     if (cmd === "pi_abort") return Promise.resolve();
+    if (cmd === "pi_watch_sessions") {
+      watchCalls.push(((args?.sessions ?? []) as string[]).slice());
+      return Promise.resolve(null);
+    }
     return Promise.reject(new Error(`unexpected invoke ${cmd}`));
   },
 }));
@@ -193,6 +199,30 @@ describe("DesktopPiClient 事件路由", () => {
     client.subscribe("s2", () => {});
     await tick();
     expect(chunkCbs.length).toBe(before + 1);
+  });
+
+  test("观看集合上报：订阅/退订同步给桌面壳，集合不变不重发", async () => {
+    watchCalls = [];
+    snapshotReply = { type: "thread_snapshot", snapshot: null };
+    const client = new DesktopPiClient();
+    const offA = client.subscribe("wa", () => {});
+    const offB = client.subscribe("wb", () => {});
+    expect(watchCalls.at(-1)).toEqual(["wa", "wb"]);
+    expect(watchCalls.length).toBe(2);
+    // 同一会话的第二个订阅者不改变集合，不应再发命令
+    const offA2 = client.subscribe("wa", () => {});
+    expect(watchCalls.at(-1)).toEqual(["wa", "wb"]);
+    expect(watchCalls.length).toBe(2);
+    offA();
+    expect(watchCalls.at(-1)).toEqual(["wa", "wb"]);
+    expect(watchCalls.length).toBe(2);
+    offA2();
+    expect(watchCalls.at(-1)).toEqual(["wb"]);
+    expect(watchCalls.length).toBe(3);
+    offB();
+    expect(watchCalls.at(-1)).toEqual([]);
+    expect(watchCalls.length).toBe(4);
+    await tick();
   });
 
   test("重复 delta 帧（同 seq 双投递）只应用一次", async () => {

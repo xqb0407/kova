@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { appDataDir, sessionsDir } from "./paths";
-import { emitToWindows } from "./ipc";
+import { emitChunkBatch, emitToWindows, type ChunkBatchLine } from "./ipc";
 import { logError, logInfo, logWarn, writeSidecarLine } from "./logging";
 import { getDb } from "./store";
 import { dispatchHostQuery } from "./data";
@@ -25,7 +25,7 @@ function newRequestId(): string {
 
 const CHUNK_BATCH_WINDOW_MS = 20;
 const CHUNK_BATCH_MAX = 64;
-let chunkBatch: { l: string }[] = [];
+let chunkBatch: ChunkBatchLine[] = [];
 let chunkWindowTimer: NodeJS.Timeout | null = null;
 
 function flushChunks(): void {
@@ -36,7 +36,7 @@ function flushChunks(): void {
     clearTimeout(chunkWindowTimer);
     chunkWindowTimer = null;
   }
-  emitToWindows("pi-chunk-batch", lines);
+  emitChunkBatch(lines);
 }
 
 /** 对齐 is_flush_line：finish/error chunk、非 chunk 行、裸行走立即冲刷；thread_event 走合帧 */
@@ -199,7 +199,7 @@ export async function ensureSpawned(): Promise<void> {
     proc.on("error", (e) => {
       logError(`[worker] ${e.message}`);
       flushChunks();
-      emitToWindows("pi-chunk-batch", [
+      emitChunkBatch([
         { l: `{"id":null,"chunk":{"type":"error","errorText":${JSON.stringify(String(e.message))}}}` },
       ]);
     });
@@ -303,7 +303,18 @@ async function handleLine(line: string): Promise<void> {
     chunkWindowTimer.unref?.();
   }
   const flushNow = isFlushLine(parsed) || chunkBatch.length + 1 >= CHUNK_BATCH_MAX;
-  chunkBatch.push({ l: line });
+  // 可裁剪的高频重行目前只有 message_update 这一种：带上会话键，供
+  // emitChunkBatch 按窗口订阅裁剪（后台会话的增量不再跨进程送给不看它的
+  // 窗口）。两个已知未覆盖项，别把这里当成"已覆盖全部热路径"：
+  // - subagent_activity 的 text/thinking delta 也是逐条 send，且行上没有
+  //   顶层 sessionId；消费端是全局 store（别的窗口启动的委派也要立条目），
+  //   不能简单按父会话裁——需要 delegation 级观看集合，或接受快照补水合；
+  // - legacy {id,chunk} token 行（text/reasoning start/delta/end）仍全量
+  //   广播，而渲染层只消费 finish/error/start，退役 chunk 流才是干净解法。
+  // 其余行（起止/收尾/data-* 旁路）都承载状态语义，必须保持全窗口可达。
+  const sid = typeof parsed?.sessionId === "string" ? parsed.sessionId : null;
+  const heavy = parsed?.type === "thread_event" && parsed?.event?.type === "message_update";
+  chunkBatch.push({ l: line, sid, heavy });
   if (flushNow) flushChunks();
 }
 

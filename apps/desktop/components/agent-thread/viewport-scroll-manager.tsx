@@ -191,7 +191,9 @@ export const ViewportScrollManager = () => {
 
     const onScroll = () => {
       const prevTop = lastSeenTop;
-      traceJump("滚动事件");
+      // 用户滚动的每一拍都只对齐跳变基准、不落日志（噪声太大）；留痕只管
+      // 程序写入（钉顶/贴尾）那两处
+      lastSeenTop = viewport.scrollTop;
       lastScrollAt = performance.now();
       // 只做接管不做让位：贴回底部就恢复跟随，让位由手势决定。这里读实时
       // 高度而不是缓存值——缓存落后于流式增长时会误判"还在底部"而回抢。

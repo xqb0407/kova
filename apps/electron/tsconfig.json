@@ -12,5 +12,5 @@
     "types": ["node"],
     "rootDir": "."
   },
-  "include": ["main/**/*.ts", "preload/**/*.ts", "scripts/**/*.mjs"]
+  "include": ["main/**/*.ts", "preload/**/*.ts", "scripts/**/*.mjs", "test/**/*.ts"]
 }

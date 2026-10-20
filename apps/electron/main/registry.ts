@@ -2,7 +2,7 @@
  * 命令注册总装：一个 ipcMain.handle 收全部渲染层 invoke（对齐旧桌面壳
  * generate_handler 清单）。命令名、参数名（camelCase）、错误字符串与 Rust 版一致。
  */
-import { register, makeChannelPusher, isChannelArg, type CmdCtx } from "./ipc";
+import { register, makeChannelPusher, isChannelArg, setWatchedSessions, type CmdCtx } from "./ipc";
 import { setupStoreCommands } from "./store";
 import { setupLoggingCommands } from "./logging";
 import { setupFsCommands } from "./fs-cmds";
@@ -51,6 +51,11 @@ export function registerAllCommands(): void {
   register("pi_abort", (a) => pi.piAbort(a as any));
   register("pi_reset", () => pi.piReset());
   register("pi_request", (a) => pi.piRequest(a as any));
+  // 渲染层声明本窗口正在看的会话：pi-chunk-batch 的逐 token 增量据此裁剪
+  register("pi_watch_sessions", (a, ctx) => {
+    setWatchedSessions(ctx.sender, a.sessions);
+    return null;
+  });
 
   /* PTY（对齐 pty.rs：on_data 为 Channel） */
   register("pty_open", (a: any, ctx: CmdCtx) => {
