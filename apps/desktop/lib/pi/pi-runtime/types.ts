@@ -452,6 +452,17 @@ export type PiClearedQueue = {
   items: PiQueueEntry[];
 };
 
+/** 每轮权威工时（sidecar 转录 turn_timing 行的快照投影）。
+ *  anchorSeq = 本轮首条 user 消息行的转录 seq：前端投影 id 为 `pi-msg:${seq}`，
+ *  与轮次键同值；endedAt 缺失 = 该轮仍在进行（当前实现只下发已收尾的轮）。 */
+export type PiTurnTiming = {
+  anchorSeq: number;
+  startedAt: number;
+  endedAt?: number;
+  /** Stop / 「立即发送」中止的轮 */
+  interrupted?: boolean;
+};
+
 export type PiThreadMetadata = {
   id: string;
   title?: string;
@@ -463,6 +474,8 @@ export type PiThreadMetadata = {
   retryAttempt?: number;
   runningRunId?: string;
   queuedMessages?: readonly PiQueuedMessage[];
+  /** 每轮权威工时（按分页窗过滤）：前端据此覆盖本地推导，缺失时回落到时间戳 */
+  turnTimings?: readonly PiTurnTiming[];
   config?: {
     provider?: string;
     modelId?: string;

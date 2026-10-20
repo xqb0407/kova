@@ -1363,7 +1363,7 @@ const TurnSummaryRow: FC<{
   hasProcess: boolean;
   toolCount: number;
   collapsedCount: number;
-}> = ({ scopedKey, running, hasProcess, toolCount, collapsedCount }) => {
+}> = ({ scopedKey, running, hasProcess, toolCount }) => {
   const [open, setOpen] = useState(false);
   const durationMs = useTurnDurationMs(scopedKey, null, running);
   // 运行中的秒表：每秒 tick 一次，从台账里的开始时刻算起
@@ -1376,17 +1376,15 @@ const TurnSummaryRow: FC<{
   const startedAt = getTurnTiming(scopedKey)?.start;
   const elapsedMs =
     running && startedAt !== undefined ? Date.now() - startedAt : undefined;
-  // 文案优先级对齐桌面 TurnWorkSummary：耗时算不出（台账缺数/亚秒轮）时
-  // 退回「N 条较早消息」，连过程块都没有才是「本轮过程」
+  // 文案优先级对齐桌面 TurnWorkSummary：耗时算不出（旧转录/亚秒轮）时统一
+  // 退回「本轮过程」，不再用容易被当成消息条数的计数文案
   const label = running
     ? elapsedMs !== undefined && elapsedMs >= 1000
       ? `工作中 ${formatDuration(elapsedMs)}`
       : "工作中"
     : durationMs !== undefined
       ? `已工作 ${formatDuration(durationMs)}`
-      : collapsedCount > 0
-        ? `${collapsedCount} 条较早消息`
-        : "本轮过程";
+      : "本轮过程";
   const subtitle = [
     running ? label : durationMs !== undefined ? `已工作 ${formatDuration(durationMs)}` : null,
     toolCount > 0 ? `${toolCount} 个工具` : null,

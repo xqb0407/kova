@@ -118,6 +118,25 @@ describe("truncate_session：顺序截止语义", () => {
     expect(await messageCountOf(id)).toBeUndefined();
   });
 
+  test("turn_timing 行不占 seq：截止点前的保留，截止点后的随消息一起丢弃", async () => {
+    const id = "tr-turn-timing";
+    const timing = (anchorSeq: number) =>
+      JSON.stringify({ type: "turn_timing", anchorSeq, startedAt: 1, endedAt: 2 });
+    await seed(
+      id,
+      [header(id), msgRow(0), timing(0), msgRow(1), timing(1), msgRow(2)],
+      3,
+    );
+    await dispatch("t-tt", { type: "truncate_session", sessionId: id, beforeSeq: 1 });
+    expect(last()).toMatchObject({ type: "truncated", removed: 2 });
+    const kept = readFileSync(sessionPath(id), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(kept.map((r) => r.type)).toEqual(["header", "message", "turn_timing"]);
+    expect(kept.at(-1).anchorSeq).toBe(0);
+  });
+
   test("未命中 ⇒ removed=0 且文件原样", async () => {
     const id = "tr-miss";
     const rows = [header(id), msgRow(0), msgRow(1)];

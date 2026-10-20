@@ -284,8 +284,9 @@ export class PiClientBase implements PiClient {
     return res.snapshot;
   }
 
-  /** 快照指纹：seq/状态/条数/末条时间戳/挂起审批数/排队数——任一变化才派发，
-   *  防每秒抖动（4a：排队条目入指纹，快照采纳恢复的队列能触发派发） */
+  /** 快照指纹：seq/状态/条数/末条时间戳/挂起审批数/排队数/权威工时——任一变化
+   *  才派发，防每秒抖动（4a：排队条目入指纹；turn_timing 行不占 seq，必须单独
+   *  入指纹，否则收尾快照可能被判为未变化） */
   private static fingerprint(s: PiThreadSnapshot): string {
     const last = s.messages.at(-1) as { timestamp?: number } | undefined;
     return [
@@ -297,6 +298,8 @@ export class PiClientBase implements PiClient {
       s.hostUiRequests?.[0]?.id ?? "",
       s.metadata.queuedMessages?.length ?? 0,
       s.metadata.queuedMessages?.[0]?.id ?? "",
+      s.metadata.turnTimings?.length ?? 0,
+      s.metadata.turnTimings?.at(-1)?.endedAt ?? "-",
     ].join("|");
   }
 
@@ -306,12 +309,18 @@ export class PiClientBase implements PiClient {
    * 调用点：fetchSnapshot（唯一快照汇聚点）——2026-10-02 从 dispatch 下沉，
    * 覆盖 controller.load() 的冷读（空闲线程从不 connect/派发，刷新与切会话
    * 正是这条路径，此前时长全缺失）。
-   * 用转录行自带时间戳：user 行做轮锚（轮次键 = 投影稳定 id `pi-msg:${seq}`，
-   * 与 message-turns 的 turnKey 同值），开始 = user 行 timestamp，结束 = 轮内
-   * 最后一条非 user 行的 timestamp。跳过：锚行无 seq（在飞未落盘，轮次键无从
-   * 预测）；台账已有 live:true 条目（本窗口盯着跑的轮由 Date.now 计时，更准
-   * 且归 noteTurnEnd/timing 管）；值相等（store.set 无条件 notify，快照反复
-   * 派发不能引发重渲风暴）。
+   *
+   * 两级来源：
+   *  1. 权威：sidecar 转录里的 turn_timing 行（快照 metadata.turnTimings）——
+   *     轮收尾时由后端写下的真实起止，覆盖本地推导值。
+   *  2. 兜底：旧转录没有 turn_timing 行时，用转录行时间戳推导：user 行做轮锚
+   *     （轮次键 = 投影稳定 id `pi-msg:${seq}`，与 message-turns 的 turnKey
+   *     同值），开始 = user 行 timestamp，结束 = 轮内最后一条非 user 行的
+   *     timestamp。刚开始、还没有助手行的最新轮只给开始（live），结束交给
+   *     轮收尾打点。
+   * 跳过：锚行无 seq（在飞未落盘，轮次键无从预测）；时间戳兜底遇到台账已有
+   * live:true 条目（本窗口盯着跑的轮由 Date.now 计时，更准）；值相等
+   * （store.set 无条件 notify，快照反复派发不能引发重渲风暴）。
    */
   private seedHistoryTurnTimings(snapshot: PiThreadSnapshot): void {
     type SeedableLine = { role?: string; __seq?: number; timestamp?: number };
@@ -320,22 +329,52 @@ export class PiClientBase implements PiClient {
     // 实测 7/7 轮全部读不到；此前按下标形式记账，分页窗下下标本身还会随窗漂移）。
     // 本会话内直播过的轮由 TurnTimingRecorder 以投影 id 记 live 条目，与这里无关。
     const threadId = snapshot.metadata.id;
+    const threadRunning = snapshot.metadata.status === "running";
     let anchorSeq: number | undefined;
     let anchorTs: number | undefined;
     let endTs: number | undefined;
-    const flush = () => {
-      if (anchorSeq === undefined || anchorTs === undefined || endTs === undefined)
+    const entries = new Map<
+      string,
+      { start: number; end?: number; live?: boolean; authoritative?: boolean }
+    >();
+    const sameTiming = (
+      a: { start?: number; end?: number; live?: boolean; authoritative?: boolean } | undefined,
+      b: { start: number; end?: number; live?: boolean; authoritative?: boolean },
+    ) =>
+      a?.start === b.start &&
+      a?.end === b.end &&
+      (a?.live === true) === (b.live === true) &&
+      (a?.authoritative === true) === (b.authoritative === true);
+    const put = (
+      scoped: string,
+      value: { start: number; end?: number; live?: boolean; authoritative?: boolean },
+    ) => {
+      if (sameTiming(getTurnTiming(scoped), value)) {
+        // 权威值已与台账一致：撤销本轮可能暂存的时间戳候选，别让它反向覆盖
+        entries.delete(scoped);
         return;
+      }
+      if (sameTiming(entries.get(scoped), value)) return;
+      entries.set(scoped, value);
+    };
+    const flush = (isLast: boolean) => {
+      if (anchorSeq === undefined || anchorTs === undefined) return;
       const scoped = scopedTurnKey(threadId, `pi-msg:${anchorSeq}`);
       const cur = getTurnTiming(scoped);
-      if (cur?.live === true) return;
-      if (cur?.start === anchorTs && cur?.end === endTs) return;
-      seedTurnTiming(scoped, { start: anchorTs, end: endTs });
+      // 权威条目与直播条目都不接受时间戳兜底（前者是后端事实，后者更准）
+      if (cur?.live === true || cur?.authoritative === true) return;
+      if (endTs !== undefined) {
+        put(scoped, { start: anchorTs, end: endTs });
+      } else if (isLast && threadRunning) {
+        // 刚开始的轮（只有 user 行）：结束时刻还不存在，先记开始，
+        // 由 TurnTimingRecorder 在轮收尾时补，权威行到达后再覆盖。
+        put(scoped, { start: anchorTs, live: true });
+      }
     };
     const lines = snapshot.messages as unknown as SeedableLine[];
     for (const line of lines) {
       if (line.role === "user") {
-        flush();
+        flush(false);
         anchorSeq = typeof line.__seq === "number" ? line.__seq : undefined;
         anchorTs = line.timestamp;
         endTs = undefined;
@@ -345,7 +384,32 @@ export class PiClientBase implements PiClient {
         endTs = line.timestamp;
       }
     }
-    flush();
+    flush(true);
+    // 权威工时覆盖本地推导：已收尾的轮两端都以后端记录为准并打上 authoritative
+    // （时间戳兜底从此让位）；运行中的轮（endedAt 缺失，前向兼容）只给开始，
+    // 本地已补记的结束保留。
+    for (const timing of snapshot.metadata.turnTimings ?? []) {
+      const scoped = scopedTurnKey(threadId, `pi-msg:${timing.anchorSeq}`);
+      if (typeof timing.endedAt === "number") {
+        put(scoped, {
+          start: timing.startedAt,
+          end: timing.endedAt,
+          authoritative: true,
+        });
+        continue;
+      }
+      const cur = getTurnTiming(scoped);
+      if (cur?.end === undefined) {
+        put(scoped, {
+          start: timing.startedAt,
+          live: true,
+          authoritative: true,
+        });
+      } else if (cur.live === true && cur.start !== timing.startedAt) {
+        put(scoped, { start: timing.startedAt, end: cur.end, live: true });
+      }
+    }
+    for (const [scoped, value] of entries) seedTurnTiming(scoped, value);
   }
 
   private dispatch(snapshot: PiThreadSnapshot) {

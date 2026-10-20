@@ -119,6 +119,9 @@ type TurnTiming = {
   /** 内部标记：这个开始是我们"亲眼看着"记下的（直播轮）——只有这种轮才允许
    *  由我们补记结束时刻。历史播种的轮绝不去编造 end（那会造出假时长） */
   live?: boolean;
+  /** 内部标记：两端来自 sidecar 的 turn_timing 权威记录。时间戳兜底播种
+   *  遇到它必须让位，否则旧快照（无 turnTimings）会把权威值改回推导值。 */
+  authoritative?: boolean;
   /** 补记结束那一刻，本轮「有实质内容的 assistant 消息」条数（纯 data 的
    *  压缩/模型切换分隔线不算，见 TurnTimingRecorder 的 selector）。用来区分
    *  "同一轮真的重跑"与"下一轮 agent_start 把线程拉回 running 的空窗"：

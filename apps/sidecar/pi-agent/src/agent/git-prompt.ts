@@ -4,6 +4,10 @@
  * 用户、`git status --short`、最近提交——让模型开场即知道仓库形状，省掉
  * 每轮开头的 git 勘察往返（对齐 ZCode 提示词的 gitStatus 段）。
  *
+ * 注入点：modes.ts composeModeSystemPrompt 的 instructions 段之后、environment
+ * 段之前调用 gitPromptBlock(cwd, appMode)；档位由 run.appMode 传入，不读模块
+ * 全局（会话之间互不牵连）。
+ *
  * 生效条件（任一不满足 → 空串，compose 过滤，默认提示词字节级不变）：
  * - 工作模式 = code（work/design 面向非工程人群，注入仓库状态只会添乱）
  * - cwd 解析到 git 仓库根（非 git 项目零注入）
@@ -17,8 +21,9 @@
  * 换取信息新鲜，可接受——段首文案已明示这是快照而非实况流）。
  */
 import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import { logErr } from "../log";
-import { getAppMode } from "./app-mode";
+import type { AppMode } from "./app-mode";
 
 export type GitFacts = {
   root: string;
@@ -43,6 +48,10 @@ const GIT_TIMEOUT_MS = 2000;
 /** 仓库根 → 快照事实。空表=未采过；null=确认非 git/采集炸（同样不重试，
  *  直到 new_session 清表）——避免非 git 工作区每轮白跑一次 rev-parse */
 const factCache = new Map<string, GitFacts | null>();
+
+/** cwd → 仓库根。null = 确认非 git：负缓存同样要到 new_session 才失效，否则
+ *  非 git 工作区会在每轮 compose 重复 spawn 一次 rev-parse */
+const rootCache = new Map<string, string | null>();
 
 function git(cwd: string, args: string[]): { ok: boolean; out: string } {
   try {
@@ -104,8 +113,17 @@ function collectFacts(root: string): GitFacts | null {
   };
 }
 
+/** cwd → 仓库根（带负缓存）。键用 resolve 归一，避免同一目录的两种写法各查一次 */
+function repoRoot(cwd: string): string | null {
+  const key = resolve(cwd);
+  if (rootCache.has(key)) return rootCache.get(key) ?? null;
+  const root = resolveRepoRoot(key);
+  rootCache.set(key, root);
+  return root;
+}
+
 function gitFacts(cwd: string): GitFacts | null {
-  const root = resolveRepoRoot(cwd);
+  const root = repoRoot(cwd);
   if (!root) return null;
   if (factCache.has(root)) return factCache.get(root) ?? null;
   let facts: GitFacts | null;
@@ -156,8 +174,19 @@ export function renderGitBlock(facts: GitFacts): string {
   return lines.join("\n");
 }
 
+/** 系统提示词 git 段：仅 code 档且 cwd 在 git 仓库内时非空；work/design 面向
+ *  非工程人群，注入仓库状态只会添乱。事实经 factCache 逐仓库缓存，同一会话内
+ *  每次 compose 渲染出字节相同的段（前缀缓存友好）。 */
+export function gitPromptBlock(cwd: string, appMode: AppMode): string {
+  // 空 cwd 不能 resolve（会落到 sidecar 进程自己的工作目录，误读成应用仓库）
+  if (appMode !== "code" || !cwd.trim()) return "";
+  const facts = gitFacts(cwd);
+  return facts ? renderGitBlock(facts) : "";
+}
+
 /** 新会话开建时调用：清空快照表，下一条会话开局重采（见头注缓存策略） */
 export function invalidateGitSnapshots(): void {
+  rootCache.clear();
   factCache.clear();
 }
 
@@ -167,5 +196,6 @@ export function setFactsForTest(root: string, facts: GitFacts | null): void {
 }
 
 export function resetGitPromptForTests(): void {
+  rootCache.clear();
   factCache.clear();
 }

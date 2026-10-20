@@ -10,6 +10,7 @@ import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
 import { checkpointForget } from "../../checkpoint/store";
 import { runCompaction, contextInfo } from "../../agent/context";
+import { invalidateGitSnapshots } from "../../agent/git-prompt";
 import { projectContextInfo } from "../../sessions/sessions";
 import { stripDirectiveTokens } from "../../sessions/session-title-summarize";
 import {
@@ -386,6 +387,9 @@ export const handlers: Record<string, CommandHandler> = {
   },
 
   new_session: async (reqId, msg) => {
+    // 新会话开局重采 git 快照：快照段文案承诺 "at the start of this conversation"，
+    // 缓存表不清就会沿用上一会话建会话时的旧分支/旧提交（见 agent/git-prompt.ts）
+    invalidateGitSnapshots();
     const threadId = String(msg.threadId ?? `thread-${Date.now()}`);
     const cwd = typeof msg.cwd === "string" ? msg.cwd : undefined;
     const run = await resolveSession(threadId, undefined, cwd);
@@ -400,8 +404,9 @@ export const handlers: Record<string, CommandHandler> = {
     const sourceFile = sessionPath(sourceId);
     if (!existsSync(sourceFile))
       throw new Error(`transcript not found: ${sourceId}`);
-    // 逐行复制转录（header 行不拷、撕裂尾行丢弃、未知行型不拷）；
-    // 数据行原样保留 seq——seq 是文件内编号空间，跨会话不冲突。
+    // 逐行复制转录（header 行不拷、撕裂尾行丢弃、未知行型不拷；turn_timing
+    // 行不占 seq，按锚点是否落在分叉点内单独带上，见下）；数据行原样保留
+    // seq——seq 是文件内编号空间，跨会话不冲突。
     // 位置分叉（可选 upToSeq，消息气泡「分叉会话」入口）：锚点行（气泡投影
     // 首行的转录 seq）及之前照常复制；之后只延展同一回合的收尾行——非用户
     // 行（悬空 toolResult / 续跑 assistant）与 [[auto-continue]] 注入行（投影
@@ -422,8 +427,20 @@ export const handlers: Record<string, CommandHandler> = {
       } catch {
         continue;
       }
-      if (!row || row.type === "header" || typeof row.seq !== "number")
+      if (!row || row.type === "header") continue;
+      // 轮工时行不占 seq：按锚点（轮首 user 行）是否落在分叉点内决定是否带走。
+      // 不带走的话分支会话的历史轮只能回落时间戳推导（中止轮还会缺结束时刻）。
+      if (row.type === "turn_timing") {
+        const anchor = (row as { anchorSeq?: unknown }).anchorSeq;
+        if (
+          typeof anchor === "number" &&
+          (upToSeq === undefined || anchor <= upToSeq)
+        ) {
+          dataLines.push(line);
+        }
         continue;
+      }
+      if (typeof row.seq !== "number") continue;
       if (upToSeq !== undefined && row.seq > upToSeq) {
         if (afterAnchor) continue;
         // 每条消息行都带 agent（模型面原文，user 行也不例外，见 persist），
@@ -676,6 +693,13 @@ export const handlers: Record<string, CommandHandler> = {
         ...(p.toolCallId ? { toolCallId: p.toolCallId } : {}),
       }];
     });
+    // 轮权威工时：按窗口过滤（分页窗外的轮不带），空时省略字段保持旧端兼容。
+    // 前端用它覆盖"消息 id + 时间戳"的本地推导；缺行时自动回落到旧逻辑。
+    const turnTimings = scan.turnTimings.filter(
+      (t) =>
+        (meta.firstSeq === null || t.anchorSeq >= meta.firstSeq) &&
+        (meta.lastSeq === null || t.anchorSeq <= meta.lastSeq),
+    );
     send({
       id: reqId,
       type: "thread_snapshot",
@@ -695,6 +719,7 @@ export const handlers: Record<string, CommandHandler> = {
           updatedAt: row?.updated_at,
           sessionFile: sessionPath(sessionId),
           ...(queuedMessages.length ? { queuedMessages } : {}),
+          ...(turnTimings.length ? { turnTimings } : {}),
         },
         messages,
         ...(hostUiRequests.length ? { hostUiRequests } : {}),
