@@ -42,7 +42,7 @@ import "@/app/styles/markdown.css";
  * 最新版仍如此），所以消息流分支改用下方 StreamdownPart 直连原生 Streamdown。
  */
 /**
- * 流式期间不高亮「还在长的」代码块。
+ * 流式期间不高亮代码块。
  *
  * 依据：streamdown 会把 isIncomplete 传给插件的 highlight()（其 dist 里是
  * `o.highlight({ code, isIncomplete, language, themes }, cb)`），但 @streamdown/code
@@ -51,9 +51,12 @@ import "@/app/styles/markdown.css";
  * 14 条消息、2 张图、解码共 2 百万像素的会话）渲染 173ms + 绘制 136ms、最长帧
  * 737ms，形状与之吻合；图片与消息数都已被排除。
  *
- * 做法：isIncomplete 时直接不返回结果 → streamdown 落回原始文本（纯等宽显示），
- * 围栏闭合时再高亮一次。半截代码的高亮本来就是白做的功——每个 chunk 都要重做。
- * 视觉差异：流式中的代码块暂时不高亮，闭合后一次性上色。
+ * 做法：流式期间 highlight 一律不返回结果 → streamdown 落回原始文本（纯等宽
+ * 显示），消息结束后用静态插件集一次性上色。只挡 isIncomplete 不够——长回答里
+ * 通常有多个**已闭合**的代码块，它们在流式期间同样要参与每帧重渲染，shiki 的
+ * token 缓存也救不了「整块 span 树跟着 reconcile」这部分。视觉差异：流式中的
+ * 代码块暂时不高亮，回答收尾后一次性上色（与 ZCode 的 enableSyntaxHighlighting=
+ * !streaming 同口径）。
  */
 const codeNotWhileStreaming: typeof code = {
   ...code,
@@ -61,6 +64,12 @@ const codeNotWhileStreaming: typeof code = {
     if ((options as { isIncomplete?: boolean }).isIncomplete) return null;
     return code.highlight(options, callback);
   },
+};
+
+/** 流式期间用：已闭合的代码块也不高亮（理由见 codeNotWhileStreaming 注释） */
+const codeNeverWhileStreaming: typeof code = {
+  ...code,
+  highlight: () => null,
 };
 
 const sharedPlugins: PluginConfig = {
@@ -72,6 +81,12 @@ const sharedPlugins: PluginConfig = {
     { language: "svg", component: SvgCodeBlock },
     { language: "mermaid", component: MermaidCodeBlock },
   ] satisfies CustomRenderer[],
+};
+
+/** 流式中的插件集：代码块完全不高亮；其余插件与静态集一致 */
+const streamingPlugins: PluginConfig = {
+  ...sharedPlugins,
+  code: codeNeverWhileStreaming,
 };
 
 const sharedComponents = {
@@ -221,6 +236,14 @@ const EMPTY_TEXT_PART = Object.freeze({
  * markdown。官方形态即默认 smooth=false + `animated` 入场动画（caret 本项目不挂，见下）；
  * 要逐字打字机又不裸显，需自建结构边界回退揭示，勿改回原状。
  */
+/**
+ * 逐字动画的长度闸门：动画节点数随正文线性涨（char 分词时每个字符一个
+ * span，word 分词中文也会切出巨型 token），且每帧都要重新过 rehype 管线。
+ * 短回答开着提升观感；正文一长就整段关掉（fadeIn 是纯装饰，关掉不改变
+ * 内容，只回到普通 markdown 渲染）。20k 大约是「一屏读不完」的量级。
+ */
+const ANIMATION_MAX_CHARS = 20_000;
+
 const StreamdownPart = () => {
   const part = useAuiState((s) =>
     s.part.type === "text" || s.part.type === "reasoning"
@@ -228,6 +251,7 @@ const StreamdownPart = () => {
       : EMPTY_TEXT_PART,
   );
   const { text, status } = part;
+  const running = status.type === "running";
   // 对齐 primitive 的 defer：解析降到低优先级，token 到达不阻塞输入/滚动
   const deferredText = useDeferredValue(text);
   // 与 primitive 默认管线一致：tail remend 补行内尾部语法，
@@ -236,34 +260,40 @@ const StreamdownPart = () => {
     () => tailBoundedRemend(deferredText),
     [deferredText],
   );
+  // 完成态一律 static：Streamdown 的 streaming 模式带 remend/block state
+  // 更新循环，历史消息挂在上面只会白付成本（对齐 react-pi 上游的
+  // resolveMessageStreamdownMode 语义）。动画同理：只在「还在跑且文本
+  // 足够短」时开，word 分词（char 的动画节点数 = 新增字符数，实测最坏帧
+  // 是 word 的 4 倍，见 git 历史 d9f24e1 的回退记录）。
+  const animate = running && deferredText.length <= ANIMATION_MAX_CHARS;
   return (
     <div data-status={status.type}>
       <Streamdown
-        mode="streaming"
-        isAnimating={status.type === "running"}
-        // 逐词入场动画。曾被怀疑是卡顿主因（blurIn 关键帧是
-        // `filter: blur(4px) → blur(0)`，而 filter 在 WebKit 里不可合成），但在
-        // WebKit 里实测过、**没有差别**：dev-preview/long-turn 追加式流式负载下
-        // blurIn 50.1fps / fadeIn 50.2fps、最长帧 98ms vs 104ms。故保留原样。
-        // 要继续试的话，streamdown 还提供可合成的 fadeIn（只动 opacity）与
-        // slideUp（opacity + transform），改这一个词即可。
-        animated={{
-        // 试过 sep:"char"（中文确实按字推进，但动画节点数 = 新增字符数）：单次提交
-        // 变重 → useDeferredValue 会以最新文本重启渲染、把更多文本攒进下一批 →
-        // 观感反而更"整块出现"，已回退。word 分支按 \s 切词，中文长句会切成巨型
-        // token —— 但这不是主因，落地粒度（一次提交自带几十个 delta）才是。
-        // maxBacklogMs 的语义（dist `take`）：step = max(4, (now+maxBacklogMs-cursor)
-        // /(n-1))，n = 本批新增词数 —— 大批量落地时它把 stagger 压到形同失效。
-        animation: "fadeIn",
-        duration: 150,
-        stagger: 20,
-        sep: "char",
-        maxBacklogMs: 450
-      }}
+        mode={running ? "streaming" : "static"}
+        parseIncompleteMarkdown={running}
+        isAnimating={animate}
+        // 逐词入场动画（仅短文本流式时，见上方 animate 的闸门）。sep 用
+        // word 不用 char：char 的动画节点数 = 新增字符数，中文长句每帧都
+        // 在重建几百个 span，实测最坏帧是 word 的 4 倍（git 历史 d9f24e1
+        // 的回退记录）；word 分支按 \s 切词，中文长句会切成巨型 token——
+        // 观感差异远小于性能差。maxBacklogMs 的语义（dist `take`）：
+        // step = max(4, (now+maxBacklogMs-cursor)/(n-1))，n = 本批新增词数
+        // —— 大批量落地时它把 stagger 压到形同失效。
+        animated={
+          animate
+            ? {
+                animation: "fadeIn",
+                duration: 150,
+                stagger: 20,
+                sep: "word",
+                maxBacklogMs: 450,
+              }
+            : false
+        }
         // 光标（caret）刻意不传：streamdown 的实现是「caret 为真 且 isAnimating 时」
         // 才写 `--streamdown-caret` 变量、并在末块上加 `after:content-[var(--streamdown-caret)]`；
         // 只要这个 prop 缺省，变量与类名都不会挂上，光标自然不存在 —— 不需要额外 CSS 兜。
-        plugins={sharedPlugins}
+        plugins={running ? streamingPlugins : sharedPlugins}
         shikiTheme={DEFAULT_SHIKI_THEME}
         components={sharedComponents}
         className="aui-md text-[0.9375rem] leading-[1.5]"

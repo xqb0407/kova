@@ -12,6 +12,7 @@ import {
   historyToUiMessages,
   isTruncationStoppedRow,
   appendCompactionRow,
+  appendTurnTimingRow,
   readCompaction,
   readAllCompactions,
   titleSummarizeHook,
@@ -724,6 +725,83 @@ describe("compaction rows", () => {
     expect(
       (context[1] as { content: string }).content,
     ).toBe("q2");
+  });
+});
+
+describe("turn timing rows", () => {
+  test("不占 seq、按 anchorSeq last-wins，坏形状跳过", async () => {
+    const id = "turn-timing-scan";
+    await sessionInsert(id, tmp);
+    writeFileSync(
+      sessionPath(id),
+      [
+        JSON.stringify({
+          type: "message",
+          seq: 0,
+          ui: null,
+          agent: { role: "user", content: "hi", timestamp: 100 },
+        }),
+        JSON.stringify({
+          type: "message",
+          seq: 1,
+          ui: null,
+          agent: {
+            role: "assistant",
+            content: [{ type: "text", text: "ok" }],
+            timestamp: 900,
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    appendTurnTimingRow(id, { anchorSeq: 0, startedAt: 1_000, endedAt: 5_000 });
+    // 同一轮重复写：last-wins（重跑前旧行未被截断的兜底）
+    appendTurnTimingRow(id, {
+      anchorSeq: 0,
+      startedAt: 1_000,
+      endedAt: 6_000,
+      interrupted: true,
+    });
+    appendTurnTimingRow(id, { anchorSeq: 2, startedAt: 7_000, endedAt: 8_000 });
+    // 坏形状（anchorSeq 非数字）忽略
+    appendTurnTimingRow(id, {
+      anchorSeq: "bad" as unknown as number,
+      startedAt: 1,
+      endedAt: 2,
+    });
+
+    const scan = scanTranscript(id);
+    // 工时行不占消息 seq 号段
+    expect(scan.messages.map((m) => m.seq)).toEqual([0, 1]);
+    expect(scan.turnTimings).toEqual([
+      { anchorSeq: 0, startedAt: 1_000, endedAt: 6_000, interrupted: true },
+      { anchorSeq: 2, startedAt: 7_000, endedAt: 8_000 },
+    ]);
+  });
+
+  test("persist 捕获本轮首条 user 行的 seq 作为锚点（assistant 行不抢锚）", async () => {
+    const id = "turn-timing-anchor";
+    await sessionInsert(id, tmp);
+    writeFileSync(sessionPath(id), "", "utf8");
+    const run = {
+      agent: {
+        state: {
+          messages: [
+            assistantMsg([{ type: "text", text: "prelude" }]),
+            userMsg("question"),
+            assistantMsg([{ type: "text", text: "answer" }]),
+          ],
+        },
+      },
+      sessionId: id,
+      cwd: tmp,
+      persistedSeq: 0,
+      jsonlSeq: 7,
+    } as unknown as Running;
+
+    await persist(run, { earlyUser: true });
+    // 首条 user 行分到的 seq = 8（7 被开场的 assistant 占用）
+    expect(run.turnAnchorSeq).toBe(8);
   });
 });
 

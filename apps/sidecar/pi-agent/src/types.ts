@@ -230,6 +230,13 @@ export type Running = {
   delegations: Map<string, DelegationRecord>;
   /** 用户 Stop 置位：中止后台子代理并退出收敛循环 */
   stopRequested: boolean;
+  /** 本轮派发时刻（链节真正接棒开跑时记一次）：轮收尾写 turn_timing 行的起点 */
+  turnStartedAt?: number;
+  /** 本轮首条 user 消息行的转录 seq（persist 时捕获）：turn_timing 的轮锚点。
+   *  没有锚点的轮（会话解析失败、无用户行的自动化轮）不写工时行。 */
+  turnAnchorSeq?: number;
+  /** turn_timing 行已写标记：收尾与崩溃兜底两条路径共用，保证每轮最多一行 */
+  turnTimingWritten?: boolean;
   /** runPromptTurn 收尾段（finally）置位：此刻起不再受理 steer——挂起 finish
    *  的补发已随收尾执行过，之后再受理的并入其 finish 永远没人补发（前端
    *  「已并入」徽标滞留不消失） */

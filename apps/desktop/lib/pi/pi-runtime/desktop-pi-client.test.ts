@@ -95,6 +95,7 @@ const { goalSnapshotForTest } = await import("@/lib/pi/pi-goal");
 const {
   __resetTurnStoresForTests,
   getTurnTiming,
+  noteTurnEnd,
   noteTurnStart,
   scopedTurnKey,
 } = await import("@/lib/panels/turn-collapse");
@@ -774,6 +775,90 @@ describe("DesktopPiClient 快照装载耗时播种（症状1）", () => {
     client.subscribe("s1", () => {});
     await tick();
     expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:3"))).toBe(first);
+  });
+
+  test("权威 turnTimings 覆盖时间戳推导（中止轮也能拿到耗时）", async () => {
+    const snap = historySnapshot();
+    Object.assign(snap.metadata, {
+      turnTimings: [
+        { anchorSeq: 3, startedAt: 500, endedAt: 9_000 },
+        { anchorSeq: 7, startedAt: 19_000, endedAt: 21_000, interrupted: true },
+      ],
+    });
+    snapshotReply = { type: "thread_snapshot", snapshot: snap };
+    subscribeAndSettle();
+    await tick();
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:3"))).toEqual({
+      start: 500,
+      end: 9_000,
+      authoritative: true,
+    });
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:7"))).toEqual({
+      start: 19_000,
+      end: 21_000,
+      authoritative: true,
+    });
+  });
+
+  test("旧形状快照（无 turnTimings）不把权威工时改回时间戳推导值", async () => {
+    const snap = historySnapshot();
+    Object.assign(snap.metadata, {
+      turnTimings: [{ anchorSeq: 3, startedAt: 500, endedAt: 9_000 }],
+    });
+    snapshotReply = { type: "thread_snapshot", snapshot: snap };
+    const { client } = subscribeAndSettle();
+    await tick();
+    const key = scopedTurnKey("s1", "pi-msg:3");
+    expect(getTurnTiming(key)).toEqual({
+      start: 500,
+      end: 9_000,
+      authoritative: true,
+    });
+
+    // 旧 sidecar/分页窗不带 turnTimings：时间戳兜底必须让位给权威值
+    snapshotReply = { type: "thread_snapshot", snapshot: historySnapshot() };
+    client.subscribe("s1", () => {});
+    await tick();
+    expect(getTurnTiming(key)).toEqual({
+      start: 500,
+      end: 9_000,
+      authoritative: true,
+    });
+  });
+
+  test("运行中的权威条目只校正开始，不清本地已补记的结束", async () => {
+    const key = scopedTurnKey("s1", "pi-msg:7");
+    noteTurnStart(key, 1_000);
+    noteTurnEnd(key, 6_000);
+    const snap = historySnapshot();
+    Object.assign(snap.metadata, {
+      status: "running",
+      turnTimings: [{ anchorSeq: 7, startedAt: 500 }],
+    });
+    snapshotReply = { type: "thread_snapshot", snapshot: snap };
+    subscribeAndSettle();
+    await tick();
+    expect(getTurnTiming(key)).toEqual({ start: 500, end: 6_000, live: true });
+  });
+
+  test("运行中且尚无助手行：权威开始优先于 user 行时间戳", async () => {
+    const snap = {
+      metadata: {
+        id: "s1",
+        status: "running",
+        turnTimings: [{ anchorSeq: 1, startedAt: 900 }],
+      },
+      messages: [{ role: "user", content: "hi", __seq: 1, timestamp: 1_000 }],
+      seq: 1,
+    };
+    snapshotReply = { type: "thread_snapshot", snapshot: snap };
+    const client = new DesktopPiClient();
+    await client.getThread("s1");
+    expect(getTurnTiming(scopedTurnKey("s1", "pi-msg:1"))).toEqual({
+      start: 900,
+      live: true,
+      authoritative: true,
+    });
   });
 });
 

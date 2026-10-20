@@ -276,14 +276,13 @@ const TurnWorkSummary: FC<{
   const startedAt = getTurnTiming(scopedKey)?.start;
 
   // 行面只放耗时（对齐 Codex 的「已工作 4 分 8 秒 ›」）；工具/文件计数挪到
-  // 悬停提示，信息不丢又不堆在行上。运行中的实时数字由 LiveElapsed 单独订阅，
-  // 这里只算静态结束态文案。
+  // 悬停提示，信息不丢又不堆在行上。耗时缺失时统一退回「本轮过程」：权威
+  // 工时由 sidecar 的 turn_timing 行提供，缺失只说明旧转录/尚未收尾，不再用
+  // 「N 条较早消息」这种容易被当成消息条数的计数文案。
   const label =
     durationMs !== undefined
       ? `已工作 ${formatDuration(durationMs)}`
-      : summary.collapsedCount > 0
-        ? `${summary.collapsedCount} 条较早消息`
-        : "本轮过程";
+      : "本轮过程";
   const details: string[] = [];
   if (summary.toolCount > 0) details.push(`${summary.toolCount} 工具`);
   if (summary.fileCount > 0) details.push(`${summary.fileCount} 文件`);

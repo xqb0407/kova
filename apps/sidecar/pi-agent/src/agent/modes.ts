@@ -66,6 +66,7 @@ import { logAt, logErr } from "../log";
 import { buildHookPayload, runHooks } from "./hooks";
 import { personalizationPromptBlock } from "./personalization";
 import { appModePromptBlock, type AppMode } from "./app-mode";
+import { gitPromptBlock } from "./git-prompt";
 import type { ThemeRef } from "../design-md/store";
 import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "../mcp/mcp-tools";
@@ -193,7 +194,7 @@ const ASK_CORE_SEGMENTS = ["identity", "discipline", "communication"] as const;
 export type PromptModelInfo = { provider: string; id: string; name?: string };
 
 /**
- * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + 工作模式段 + 记忆段 + MCP 段 + 技能目录段 + 指令段 + 环境事实块
+ * 各模式完整系统提示 = 静态核心 + 模式附加段 + 个性化段 + 工作模式段 + 记忆段 + MCP 段 + 技能目录段 + 指令段 + git 段 + 环境事实块
  * （日期/模型/OS/shell，末行是 cwd 行）。
  * 顺序保证缓存命中：静态核心在前（跨会话字节级一致），模式段夹中间（会话内
  * 切换时整段重排不可避免，但同一模式内前缀稳定），个性化/记忆段随设置变更热替换，
@@ -203,7 +204,9 @@ export type PromptModelInfo = { provider: string; id: string; name?: string };
  * MCP 段随服务器配置变更热替换（无启用服务器时为空串），技能目录段只列生效技能的
  * name/description/location 三行元数据（正文模型按需 use_skill 加载，开关/遮蔽在
  * 缓存合并时裁决，随 reloadSkills 热替换），指令段读 AGENTS.md（全局 ~/.kova/AGENTS.md +
- * 工作区仓库根，每次组装同步读盘，改动随下一次重组生效），环境事实块永远在最尾；
+ * 工作区仓库根；同层 AGENTS.md 缺失或为空时回退 CLAUDE.md，每次组装同步读盘，
+ * 改动随下一次重组生效），git 段仅在 code 档且 cwd 在 git 仓库内时非空（分支/
+ * 状态/最近提交，事实按仓库缓存、会话内字节稳定），环境事实块永远在最尾；
  * 个性化段全默认、记忆关闭、无 MCP 服务器、无生效技能、无指令文件时各块为空串
  * （默认提示词与旧版字节级一致）。
  */
@@ -243,6 +246,7 @@ export function composeModeSystemPrompt(
     mcpPromptBlock(cwd),
     skillsPromptBlock(cwd),
     instructionsPromptBlock(cwd),
+    gitPromptBlock(cwd, appMode),
     environmentPromptBlock(cwd, model),
   ]
     .filter(Boolean)

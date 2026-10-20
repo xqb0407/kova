@@ -50,7 +50,12 @@ import {
   running,
   whenThreadIdle,
 } from "../sessions/sessions";
-import { persist, removeTranscriptRow, STEER_PREFIX } from "../sessions/transcript";
+import {
+  appendTurnTimingRow,
+  persist,
+  removeTranscriptRow,
+  STEER_PREFIX,
+} from "../sessions/transcript";
 import { sessionTouch } from "../storage/hostdb";
 import { delegationResumeText, runningDelegations } from "../subagent/subagent";
 import { enqueueMgmt } from "./mgmt-queue";
@@ -506,6 +511,9 @@ export async function dispatchPrompt(
   const node = new Promise<void>((r) => (release = r));
   promptChains.set(threadId, node);
   await tail;
+  // 链节真正接棒开跑的时刻：排队项前面所有轮都收尾后才取，与用户看到的
+  // 「这一轮开始」一致；作为 turn_timing 行的 startedAt 下发。
+  const turnStartedAt = Date.now();
   markTurnStart(threadId);
   try {
     let turnReqId = reqId;
@@ -533,7 +541,13 @@ export async function dispatchPrompt(
     );
     // onOutcome 属于本次调用的链节；自动化线程每次运行新建（键唯一），
     // 不会与他人共用队列，闭包语义安全
-    await runPromptTurn(turnReqId, turnMsg, threadId, onOutcome);
+    await runPromptTurn(
+      turnReqId,
+      turnMsg,
+      threadId,
+      onOutcome,
+      turnStartedAt,
+    );
   } finally {
     noteActiveTurn(threadId, false);
     markTurnEnd(threadId);
@@ -552,6 +566,27 @@ export async function dispatchPrompt(
   }
 }
 
+/** 轮工时收尾：写一条 turn_timing 行（每轮最多一次）。
+ *  必须在 sendChunk(finish) 之前调用——finish 帧会触发前端强制拉快照，
+ *  晚写这一行的话快照里没有权威耗时，摘要行又会退回本地推导。
+ *  没有锚点（会话解析失败、无用户行的自动化轮）或已经写过时静默跳过。 */
+function finalizeTurnTiming(run: Running | undefined): void {
+  if (!run || run.turnTimingWritten) return;
+  if (run.turnStartedAt === undefined || run.turnAnchorSeq === undefined) return;
+  run.turnTimingWritten = true;
+  try {
+    appendTurnTimingRow(run.sessionId, {
+      anchorSeq: run.turnAnchorSeq,
+      startedAt: run.turnStartedAt,
+      endedAt: Date.now(),
+      ...(run.stopRequested ? { interrupted: true } : {}),
+    });
+  } catch (err) {
+    // 落盘失败不阻断收尾：前端仍可用本地时间戳推导，下一轮照常记录
+    logErr("turn timing persist failed:", err);
+  }
+}
+
 /** 单个 prompt turn 的完整执行（原 dispatchPrompt 主体）：会话准备段入管理队列
  *  串行执行，agent.prompt 长任务在队列外运行。
  *
@@ -566,10 +601,11 @@ async function runPromptTurn(
   reqId: string,
   msg: Record<string, unknown>,
   threadId: string,
-  onOutcome?: (outcome: PromptTurnOutcome) => void,
+  onOutcome: ((outcome: PromptTurnOutcome) => void) | undefined,
+  turnStartedAt: number,
 ) {
   try {
-    await runTurnBody(reqId, msg, threadId, onOutcome);
+    await runTurnBody(reqId, msg, threadId, onOutcome, turnStartedAt);
   } catch (err) {
     const errorText = err instanceof Error ? err.message : String(err);
     logErr("prompt turn crashed before teardown:", errorText);
@@ -585,6 +621,7 @@ async function runPromptTurn(
     }
     // 先清路由再发 chunk：activeReqByThread 还指着这条死流的话，finish 会落空
     setActiveReqId(threadId, null);
+    finalizeTurnTiming(run);
     sendErrorChunk(reqId, errorText, toWireError(classifyAgentError(err, { opaqueFallback: "runtime" })));
     sendChunk(reqId, { type: "finish" });
     onOutcome?.({ ok: false, errorText });
@@ -596,7 +633,8 @@ async function runTurnBody(
   reqId: string,
   msg: Record<string, unknown>,
   threadId: string,
-  onOutcome?: (outcome: PromptTurnOutcome) => void,
+  onOutcome: ((outcome: PromptTurnOutcome) => void) | undefined,
+  turnStartedAt: number,
 ) {
   // 本轮错误结算文本（与下发前端的 error chunk 同源）；finally 里经 onOutcome 回报
   let turnError: string | undefined;
@@ -632,6 +670,11 @@ async function runTurnBody(
     await whenThreadIdle(run.threadId);
     await rebindRunThread(run, run.threadId, threadId);
   }
+  // 本轮计时起点（链节接棒时已定）；锚点由 persist 在首条 user 行落盘时捕获。
+  // 放在改绑之后：旧键轮次可能仍在使用同一个 run，提前清空会毁掉它的收尾打点。
+  run.turnStartedAt = turnStartedAt;
+  run.turnAnchorSeq = undefined;
+  run.turnTimingWritten = false;
   // 一个凭据都没有的环境：resolveCurrentModel 补的是 unknown/unknown 占位对象
   // （恒 truthy），旧的 `!model` 判据在这里从不命中，请求会带着假模型打 provider
   // 报出无关错误。占位形状的判定见 isModelUnavailable。
@@ -860,6 +903,9 @@ async function runTurnBody(
       sendChunk(reqId, { type: "data-stopped", id: "stopped", data: {} });
       sendChunk(reqId, { type: "abort" });
     }
+    // 权威工时行必须在 finish 之前落盘：finish 帧触发前端强制拉快照，
+    // 快照扫描到这一行，历史轮耗时就不再依赖消息 id 推导。
+    finalizeTurnTiming(run);
     sendChunk(reqId, { type: "finish" });
     // 补发挂起的 steered 流 finish：宿主轮已真正收尾，此刻结束它们不会误触
     // 框架的 status 回落（线程本来就空闲了）

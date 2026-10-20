@@ -15,6 +15,9 @@
  *   真值（SQLite 偏好行与 title 列退为投影，旧会话无行时仍按旧路径回落）；
  *   字段名与上游 coding-agent session-format v3 逐字一致（线性子集，不取
  *   树位 id/parentId，§11 决策 4）。header 行加性 `parentSession`（fork 溯源）。
+ *   轮工时行 {"type":"turn_timing",anchorSeq,startedAt,endedAt,interrupted?}
+ *   （同样不占 seq，按 anchorSeq last-wins）：每轮收尾写一次，快照按分页窗
+ *   过滤后下发，前端据此展示权威耗时；截断时随其后所有行一起丢弃。
  *   读端跳过撕裂尾行，append 中途崩溃不影响已有内容。
  */
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -49,6 +52,17 @@ export type CompactionRow = {
   createdAt: string;
   /** 不透明扩展位：generation 计数器与 strategy 藏在这里（PI-Desktop 同设计） */
   details?: unknown;
+};
+
+/** 每轮权威工时行（不占 seq，与 queue_state 同款事件溯源）。
+ *  anchorSeq = 本轮首条 user 消息行的 seq（前端投影 id = `pi-msg:${anchorSeq}`，
+ *  与轮次键同值）。只记已完成/已中止的轮；运行中的轮由前端本地时钟显示。 */
+export type TurnTimingRow = {
+  anchorSeq: number;
+  startedAt: number;
+  endedAt: number;
+  /** Stop / 「立即发送」中止的轮 */
+  interrupted?: boolean;
 };
 
 /* --------------------- 内容块形状归一（畸形块的唯一闸口） ---------------------
@@ -156,6 +170,8 @@ export type TranscriptScan = {
   /** 模型切换事件（文件序；连续重复选择已折叠，切完尚未发消息的尾部切换
    *  与同一消息边界前的多次切换已收敛）；分隔线渲染用 */
   modelChanges: ModelChangeRow[];
+  /** 每轮权威工时（按 anchorSeq last-wins；分页快照按窗口过滤后下发） */
+  turnTimings: TurnTimingRow[];
 };
 
 /** 单遍扫描 JSONL：撕裂尾行容忍；消息行按 seq 去重（保留最后一次出现）
@@ -173,11 +189,13 @@ export function scanTranscript(sessionId: string): TranscriptScan {
       thinkingLevel: null,
       name: null,
       modelChanges: [],
+      turnTimings: [],
     };
   const bySeq = new Map<number, { ui: UIMessage | null; agent: Message }>();
   const compactions: CompactionRow[] = [];
   const pendingById = new Map<string, PendingInteraction>();
   const modelChanges: ModelChangeRow[] = [];
+  const turnTimingsByAnchor = new Map<number, TurnTimingRow>();
   let model: TranscriptScan["model"] = null;
   let thinkingLevel: string | null = null;
   let name: string | null = null;
@@ -226,6 +244,22 @@ export function scanTranscript(sessionId: string): TranscriptScan {
       }
       if (row?.type === "session_info") {
         if (typeof row.name === "string") name = row.name;
+        continue;
+      }
+      // 轮工时行（不占 seq）：按 anchorSeq last-wins；形状不符的坏行忽略。
+      if (row?.type === "turn_timing") {
+        if (
+          typeof row.anchorSeq === "number" &&
+          typeof row.startedAt === "number" &&
+          typeof row.endedAt === "number"
+        ) {
+          turnTimingsByAnchor.set(row.anchorSeq, {
+            anchorSeq: row.anchorSeq,
+            startedAt: row.startedAt,
+            endedAt: row.endedAt,
+            ...(row.interrupted === true ? { interrupted: true } : {}),
+          });
+        }
         continue;
       }
       if (typeof row?.seq !== "number") continue;
@@ -282,6 +316,9 @@ export function scanTranscript(sessionId: string): TranscriptScan {
     thinkingLevel,
     name,
     modelChanges: visibleModelChanges,
+    turnTimings: [...turnTimingsByAnchor.values()].sort(
+      (a, b) => a.anchorSeq - b.anchorSeq,
+    ),
   };
 }
 
@@ -346,6 +383,19 @@ export function appendCompactionRow(
   appendFileSync(
     sessionPath(sessionId),
     JSON.stringify({ type: "compaction", ...row }) + "\n",
+  );
+}
+
+/** 追加一条轮工时行（不占 seq）：轮收尾时由 prompt-pipeline 写一次。
+ *  行位置在该轮消息之后、截断点之后——truncate_session 的 cut 语义会连同它
+ *  一起丢弃，重跑后由新轮重新记录。 */
+export function appendTurnTimingRow(
+  sessionId: string,
+  row: TurnTimingRow,
+): void {
+  appendFileSync(
+    sessionPath(sessionId),
+    JSON.stringify({ type: "turn_timing", ...row }) + "\n",
   );
 }
 
@@ -947,6 +997,11 @@ export async function persist(
     // 每条 agent 消息都落盘（含纯工具调用与 toolResult）：恢复模型上下文需要完整
     // 的 toolCall/toolResult 对，前端历史重建也需要工具部件
     const seq = run.jsonlSeq++;
+    // 轮锚点：本轮首条 user 行（prompt 行）的 seq。steer 注入行晚于它落盘，
+    // 不会抢锚；锚点用于轮收尾时写 turn_timing 行（见 prompt-pipeline）。
+    if (run.turnAnchorSeq === undefined && (agent as { role?: string }).role === "user") {
+      run.turnAnchorSeq = seq;
+    }
     // 并入（steer）注入的行登记 seq：轮末「未获回应回收」要按它把这条行从
     // 转录与内存上下文里撤回（见 reconcileUnansweredSteers）——同一内容不能
     // 既留一条气泡又回队重发。身份比较（对象引用）与 findUnansweredSteers 同款

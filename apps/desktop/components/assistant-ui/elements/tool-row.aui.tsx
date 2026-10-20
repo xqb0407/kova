@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import {
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -13,6 +14,7 @@ import {
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
 import {
+  BookMarkedIcon,
   BookOpenIcon,
   BotIcon,
   BrainIcon,
@@ -69,7 +71,8 @@ import {
  * 输出底部吸附），运行结束自动收回；
  * 定向打开右侧 AgentPanel（lib/tool-panel）挂在行尾悬浮小按钮上，
  * 输出还没流出来时整行即开面板动作。分组/独立渲染同形。
- * read 是唯一不做展开的：整行/标题都是开面板「文件」标签的链接。
+ * read 是唯一不做展开的：整行/标题都是开面板「文件」标签的链接；AGENTS.md /
+ * CLAUDE.md 的 read 另走「读取指令」行（书本图标 + 蓝色文件名），与普通查看区分。
  */
 
 /** 彩色文件图标（material-file-icons ~1.5MB）按需加载，消息列表主 chunk 不背它 */
@@ -89,6 +92,13 @@ export function splitPath(path: string): { dir: string; base: string } {
   const idx = norm.lastIndexOf("/");
   if (idx < 0) return { dir: "", base: norm };
   return { dir: norm.slice(0, idx), base: norm.slice(idx + 1) };
+}
+
+/** 指令文件按 basename 识别：AGENTS.md / CLAUDE.md（含 .claude/CLAUDE.md、大小写变体） */
+const INSTRUCTION_FILE_BASENAMES = new Set(["agents.md", "claude.md"]);
+
+function isInstructionFile(path: string): boolean {
+  return INSTRUCTION_FILE_BASENAMES.has(splitPath(path).base.toLowerCase());
 }
 
 /** sidecar 失败标记：非零退出码 `[exit code: N]`、超时 `[timeout]`（同 ToolFallback/panel-activity） */
@@ -526,12 +536,29 @@ const fileToolUI =
     // edit/write 成功后的展开区用 @pierre/diffs 视图，old/new 取自
     // panel-activity 的 fileChangePair（与面板审查同一份语义）；
     // 失败保留错误输出文本。read 没有展开态——点行/点标题直接去面板「文件」标签看。
-    const pair =
-      toolName === "edit" || toolName === "write"
-        ? fileChangePair(toolName, args)
-        : null;
+    // pair/stats 按 args 引用 memo：流式期间每个 delta 都换新 args 对象，
+    // write 正文又可达 MB 级——不 memo 的话每次渲染都重新抽对、数 ± 行
+    // （stats 里还有一次行级 LCS）。args 稳定（收尾后）时整块跳过。
+    const pair = useMemo(
+      () =>
+        toolName === "edit" || toolName === "write"
+          ? fileChangePair(toolName, args)
+          : null,
+      [toolName, args],
+    );
+    const stats = useMemo(
+      () => (pair ? fileChangeStats(pair.oldText, pair.newText) : undefined),
+      [pair],
+    );
+    const running = status?.type === "running";
+    // 大文件运行中不自动展开 diff：ToolRow 的 autoOpen 会在 running 时挂载
+    // PanelFileDiff（懒加载 + worker 高亮 + 整棵 diff DOM），几百 KB 的
+    // write 展开就是一次秒级长任务；收尾后再按需展开（用户点开不受限）。
+    const HUGEDIFF_AUTO_OPEN_LIMIT = 100_000;
+    const hugeDiff =
+      running && (pair?.newText.length ?? 0) > HUGEDIFF_AUTO_OPEN_LIMIT;
     const expandedContent =
-      !failed && result && pair ? (
+      !failed && result && pair && !hugeDiff ? (
         <div className="bg-white dark:bg-background max-h-96 overflow-auto rounded-md p-2 border">
           {/* wrap：窄预览框强制换行，避免长行横向滚动时文本穿过透明 sticky 行号列（见 PanelFileDiff 注释） */}
           <PanelFileDiff
@@ -559,10 +586,8 @@ const fileToolUI =
         primary={base}
         secondary={dir}
         primaryAsLink
-        stats={
-          pair ? fileChangeStats(pair.oldText, pair.newText) : undefined
-        }
-        running={status?.type === "running"}
+        stats={stats}
+        running={running}
         failed={failed}
         // read 不传 output ⇒ 永远不可展开，整行/标题都是去面板「文件」标签的链接
         output={toolName === "read" ? undefined : output}
@@ -575,6 +600,51 @@ const fileToolUI =
       />
     );
   };
+
+/**
+ * AGENTS.md / CLAUDE.md：内容由 sidecar 自动注入系统提示词，读它们不是普通源码
+ * 勘察——书本图标 + 「读取指令」标签 + 蓝色文件名单独成行，和普通「查看」区分。
+ * 点行/标题仍开面板「文件」标签；与 read 一样不做行内展开。
+ */
+const InstructionReadToolUI: ToolCallMessagePartComponent = ({
+  toolCallId,
+  args,
+  status,
+  isError,
+}) => {
+  const path = strArg(args, "file_path") ?? "";
+  const { dir, base } = splitPath(path);
+  return (
+    <ToolRow
+      label="读取指令"
+      icon={<BookMarkedIcon className="size-4 shrink-0" />}
+      fileIcon={path ? <FileTypeIcon path={path} /> : undefined}
+      primary={<span className="font-medium text-blue-400">{base}</span>}
+      secondary={dir}
+      primaryAsLink
+      primaryTitle={`指令文件 · ${path}`}
+      running={status?.type === "running"}
+      failed={isError === true}
+      onOpenPanel={
+        path
+          ? () => openToolCallPanel("read", toolCallId, { file_path: path })
+          : undefined
+      }
+    />
+  );
+};
+
+const FileReadToolUI = fileToolUI("read", "查看");
+
+/** read 分发：指令文件走独立行，其余保持普通「查看」行 */
+const ReadToolUI: ToolCallMessagePartComponent = (props) => {
+  const path = strArg(props.args, "file_path") ?? "";
+  return isInstructionFile(path) ? (
+    <InstructionReadToolUI {...props} />
+  ) : (
+    <FileReadToolUI {...props} />
+  );
+};
 
 /** WebSearch 失败标记：API 错误以 `WebSearch API error …` 文本返回（不抛异常） */
 const WEB_SEARCH_ERR_RE = /^WebSearch API error/;
@@ -1058,7 +1128,7 @@ export const AGENT_TOOL_UI: Record<string, ToolCallMessagePartComponent> = {
   Task: TaskToolUI,
   use_skill: SkillToolUI,
   generate_image: GenerateImageToolUI,
-  read: fileToolUI("read", "查看"),
+  read: ReadToolUI,
   edit: fileToolUI("edit", "编辑"),
   write: fileToolUI("write", "写入"),
   WebSearch: WebSearchToolUI,

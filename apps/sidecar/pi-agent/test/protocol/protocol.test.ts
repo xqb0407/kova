@@ -410,6 +410,43 @@ describe("dispatch: sessions", () => {
     expect(row.message_count).toBe(7);
   });
 
+  test("fork_session 带上分叉点内的 turn_timing 行（锚点在分叉点后的不带）", async () => {
+    const srcId = "fork-timing-source";
+    const now = new Date().toISOString();
+    await sessionInsert(srcId, tmp);
+    writeFileSync(
+      sessionPath(srcId),
+      [
+        JSON.stringify({ type: "header", schema: 1, id: srcId, cwd: tmp, created_at: now }),
+        JSON.stringify({ type: "message", seq: 0, ui: {}, agent: { role: "user", content: "q1" } }),
+        JSON.stringify({ type: "message", seq: 1, ui: {}, agent: { role: "assistant", content: "a1" } }),
+        JSON.stringify({ type: "turn_timing", anchorSeq: 0, startedAt: 1, endedAt: 2 }),
+        JSON.stringify({ type: "message", seq: 2, ui: {}, agent: { role: "user", content: "q2" } }),
+        JSON.stringify({ type: "message", seq: 3, ui: {}, agent: { role: "assistant", content: "a2" } }),
+        JSON.stringify({ type: "turn_timing", anchorSeq: 2, startedAt: 3, endedAt: 4 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    await sessionTouch(srcId, "分叉工时源", "q1", 4);
+
+    await dispatch("fkt", { type: "fork_session", sessionId: srcId, upToSeq: 1 });
+    const newId = last().sessionId as string;
+    const rows = readFileSync(sessionPath(newId), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(rows.filter((r) => r.type === "turn_timing")).toEqual([
+      { type: "turn_timing", anchorSeq: 0, startedAt: 1, endedAt: 2 },
+    ]);
+    // 工时行不占消息计数
+    const row = getLocalDb()!
+      .query<{ message_count: number }, [string]>(
+        "SELECT message_count FROM sessions WHERE id = ?",
+      )
+      .get(newId)!;
+    expect(row.message_count).toBe(2);
+  });
+
   test("delete_session removes row and file", async () => {
     await dispatch("s5", { type: "delete_session", sessionId: "seeded-session" });
     expect(last()).toEqual({ id: "s5", type: "deleted" });
@@ -1859,5 +1896,65 @@ describe("thread_snapshot：模型切换分隔线重建", () => {
       timestamp: Date.parse("2026-01-01T00:00:01.000Z"),
       __stableId: "pi-model-change:0", // 初始选择已被扫描过滤，可见事件从 0 计数
     });
+  });
+});
+
+describe("thread_snapshot：轮权威工时", () => {
+  test("metadata.turnTimings 带窗口内的轮，窗口外与坏行不带", async () => {
+    const id = "snap-turn-timing";
+    await sessionInsert(id, tmp);
+    const message = (seq: number, agent: Record<string, unknown>) =>
+      JSON.stringify({ type: "message", seq, ui: null, agent });
+    writeFileSync(
+      sessionPath(id),
+      [
+        message(0, { role: "user", content: "a", timestamp: 1 }),
+        message(1, {
+          role: "assistant",
+          content: [{ type: "text", text: "a" }],
+          timestamp: 2,
+          stopReason: "stop",
+        }),
+        message(2, { role: "user", content: "b", timestamp: 3 }),
+        message(3, {
+          role: "assistant",
+          content: [{ type: "text", text: "b" }],
+          timestamp: 4,
+          stopReason: "stop",
+        }),
+        JSON.stringify({ type: "turn_timing", anchorSeq: 0, startedAt: 10, endedAt: 20 }),
+        JSON.stringify({
+          type: "turn_timing",
+          anchorSeq: 2,
+          startedAt: 30,
+          endedAt: 40,
+          interrupted: true,
+        }),
+        JSON.stringify({ type: "turn_timing", anchorSeq: "bad", startedAt: 1, endedAt: 2 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    await dispatch("snap-tt", { type: "thread_snapshot", sessionId: id });
+    const snapshot = last().snapshot as {
+      metadata: { turnTimings?: unknown[] };
+    };
+    expect(snapshot.metadata.turnTimings).toEqual([
+      { anchorSeq: 0, startedAt: 10, endedAt: 20 },
+      { anchorSeq: 2, startedAt: 30, endedAt: 40, interrupted: true },
+    ]);
+
+    // 分页窗：只带窗口内锚点的轮（beforeSeq=2 → 窗口为 seq 0..1）
+    await dispatch("snap-tt-page", {
+      type: "thread_snapshot",
+      sessionId: id,
+      beforeSeq: 2,
+    });
+    const paged = last().snapshot as {
+      metadata: { turnTimings?: unknown[] };
+    };
+    expect(paged.metadata.turnTimings).toEqual([
+      { anchorSeq: 0, startedAt: 10, endedAt: 20 },
+    ]);
   });
 });
