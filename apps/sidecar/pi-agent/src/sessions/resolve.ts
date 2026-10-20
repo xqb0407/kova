@@ -54,7 +54,12 @@ import {
   finishThemeMutation,
   selectAndBroadcastSessionTheme,
 } from "../design-md/apply";
-import { readCompaction, readTranscript, scanTranscript } from "./transcript";
+import {
+  readCompaction,
+  readTranscript,
+  scanTranscript,
+  transcriptSeqFloor,
+} from "./transcript";
 import type { PendingInteraction } from "pi-protocol";
 import { restoreUnsettled } from "./pending-interactions";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, setLeadingSystemMessage, type ContextInfoResult } from "../agent/context";
@@ -601,7 +606,10 @@ export async function resolveSession(
     // 带回来的 active 是谎报（见 docs/goal-mode-design.md「状态是 active ≠ 循环在跑」）
     restoreGoal(threadId, sessionId!);
     persistedSeq = restoredMessages.length;
-    jsonlSeq = maxSeq + 1;
+    // 截断过的会话用号段下限兜住：maxSeq 只看现存行，被删的尾部号段必须
+    // 跳过，否则重发会复用轮次 seq（前端 pi-msg:<seq> 键随之复用，时长
+    // 台账把重试认成同一轮继续累加）
+    jsonlSeq = Math.max(maxSeq + 1, transcriptSeqFloor(sessionId));
   } else {
     // 新会话：建索引行 + JSONL header
     sessionId = randomUUID();

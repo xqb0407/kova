@@ -269,7 +269,11 @@ const TurnWorkSummary: FC<{
   );
   const summary = useMemo(() => parseTurnSummary(packed), [packed]);
   const threadRunning = useAuiState((s) => s.thread.isRunning);
-  const durationMs = useTurnDurationMs(scopedKey, summary.timingEnd, threadRunning);
+  // 耗时只看**本轮自己**是否还在流：threadRunning 是线程级标志，下一轮一开始
+  // 它就为 true，拿它判会把所有历史轮的耗时一起判成"进行中"→ undefined，
+  // 行面文案从「已工作 X」集体退回「本轮过程」（实测：发新消息后上一轮的
+  // 大折叠时间变成本轮过程）。slot.turnRunning 只描述本轮。
+  const durationMs = useTurnDurationMs(scopedKey, summary.timingEnd, slot.turnRunning);
 
   // 「还在进行」看轮内流状态 + 线程状态（见 TurnSlot 的注释：线程级标志有空窗）
   const running = slot.turnRunning || (slot.isLastTurn && threadRunning);

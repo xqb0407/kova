@@ -15,6 +15,7 @@ import { projectContextInfo } from "../../sessions/sessions";
 import { stripDirectiveTokens } from "../../sessions/session-title-summarize";
 import {
   readTranscript,
+  raiseTranscriptSeqFloor,
   scanTranscript,
   historyToUiMessages,
   isTruncationStoppedRow,
@@ -520,6 +521,10 @@ export const handlers: Record<string, CommandHandler> = {
     const kept: string[] = [];
     let removedMessages = 0;
     let cut = false;
+    // 截断前文件里的最高 seq：被删号段不能交给下一个 run 复用——前端轮次键
+    // = 轮首消息 id = pi-msg:<seq>，复用会让重试和上一轮同键，时长台账把
+    // 「已工作」接着累加（实测 bug：重试后计时从上次继续）
+    let highestSeq = -1;
     for (const line of lines) {
       if (!line.trim()) continue;
       if (!cut) {
@@ -530,11 +535,19 @@ export const handlers: Record<string, CommandHandler> = {
           kept.push(line); // 坏行随保留段原样带走
           continue;
         }
+        if (typeof seq === "number") highestSeq = Math.max(highestSeq, seq);
         if (typeof seq === "number" && seq >= beforeSeq) cut = true;
       }
       if (cut) {
         try {
-          const row = JSON.parse(line) as { type?: string; agent?: unknown };
+          const row = JSON.parse(line) as {
+            type?: string;
+            agent?: unknown;
+            seq?: unknown;
+          };
+          if (typeof row?.seq === "number") {
+            highestSeq = Math.max(highestSeq, row.seq);
+          }
           if (row?.type === "message" && row.agent) removedMessages += 1;
         } catch {
           // 计不到就不计：removedMessages 只用于索引计数修正
@@ -548,6 +561,8 @@ export const handlers: Record<string, CommandHandler> = {
       return;
     }
     writeFileSync(file, kept.length ? kept.join("\n") + "\n" : "");
+    // 号段下限抬到历史最高 + 1：重发的新 user 行拿到全新 seq，轮次键不复用
+    if (highestSeq >= 0) raiseTranscriptSeqFloor(sessionId, highestSeq + 1);
     // 索引计数按被删消息行做负增量（title/first_message 传 "" 不改原值）
     if (removedMessages > 0) {
       await sessionTouch(sessionId, "", "", -removedMessages);

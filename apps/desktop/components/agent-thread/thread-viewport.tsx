@@ -11,6 +11,7 @@ import {
 } from "react";
 import { ThreadPrimitive, useThreadViewportStore } from "@assistant-ui/react";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
+import { registerTopAnchorReserveRecomputer } from "@/lib/ui/top-anchor-reserve";
 
 /** sticky composer 页脚（与 thread-preview-rail 同一选择器） */
 const FOOTER_SELECTOR = ".aui-thread-viewport-footer";
@@ -63,7 +64,10 @@ const TopAnchorClampSync: FC<{ usableHeight: number }> = ({ usableHeight }) => {
     };
 
     apply();
-    return store.subscribe((state) => {
+    // 折叠面板（思考/工具组/轮过程）的高度变化不在框架的观察范围内；
+    // useScrollLock 在动画结束后调这里，按新的 scrollHeight 重写垫片。
+    const offRecompute = registerTopAnchorReserveRecomputer(apply);
+    const unsubscribe = store.subscribe((state) => {
       const target = state.element.target;
       if (!target) return;
       if (
@@ -75,6 +79,10 @@ const TopAnchorClampSync: FC<{ usableHeight: number }> = ({ usableHeight }) => {
       // 框架在 target 挂载/重新激活时会用默认 10em/6em 再登记一次，这里抢回来
       state.registerAnchorTargetElement(target, config);
     });
+    return () => {
+      offRecompute();
+      unsubscribe();
+    };
   }, [store, config, usableHeight]);
 
   return null;

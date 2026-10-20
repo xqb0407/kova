@@ -2,7 +2,7 @@
  * Git 快照段（编程模式专属）：应用工作模式为 code（编程）且工作目录恰好受
  * git 管理时，向系统提示词追加一段会话级 git 快照——当前分支、主分支、git
  * 用户、`git status --short`、最近提交——让模型开场即知道仓库形状，省掉
- * 每轮开头的 git 勘察往返（对齐 ZCode 提示词的 gitStatus 段）。
+ * 每轮开头的 git 勘察往返（对齐参考实现的提示词 gitStatus 段）。
  *
  * 注入点：modes.ts composeModeSystemPrompt 的 instructions 段之后、environment
  * 段之前调用 gitPromptBlock(cwd, appMode)；档位由 run.appMode 传入，不读模块

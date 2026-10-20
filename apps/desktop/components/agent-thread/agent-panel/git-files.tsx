@@ -35,7 +35,7 @@ import { FileTypeIcon } from "./file-type-icon";
  * 审查标签的真 diff 视图（M1）：数据源从"agent 工具流水派生"换成
  * `git diff HEAD`（含工作区未暂存 + 已暂存 + 未跟踪合成），因此 bash/编辑器
  * 造成的改动同样可见。非 git 仓库时由 tab-registry 回退到派生视图。
- * 布局对齐 ZCode 审查面板：平铺文件行（无卡片间隙）、行头滚动吸顶、
+ * 布局对齐参考实现的审查面板：平铺文件行（无卡片间隙）、行头滚动吸顶、
  * diff 全高渲染随面板整体滚动。
  */
 

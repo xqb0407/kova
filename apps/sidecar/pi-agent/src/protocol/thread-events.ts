@@ -19,6 +19,7 @@ import { isContextOverflow } from "@earendil-works/pi-ai";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { send } from "./stream";
 import { nextEventSeq } from "./event-seq";
+import { TOOL_OUTPUT_HEAD_BYTES, TOOL_OUTPUT_TAIL_BYTES } from "../tools/image-parts";
 import type { Running } from "../types";
 
 /** 输出一帧 thread_event（确认写出才占号，与 sendEventChunk 同规） */
@@ -57,6 +58,31 @@ function notePartial(sessionId: string, message: unknown): void {
  *  才是权威终态，reducer 只把 partialResult 用作运行中预览） */
 const TOOL_UPDATE_MIN_INTERVAL_MS = 250;
 const TOOL_UPDATE_MAX_BYTES = 256 * 1024;
+
+/**
+ * 运行中预览的文本块截断（与 image-parts 的 projectToolResult 同口径）：
+ * partialResult 形状是 `{ content: [{ type: "text", text }] }`，只截 text 块，
+ * 其他形状原样放行（size gate 在调用点兜底）。
+ */
+function truncateTextBlocks(partialResult: unknown): unknown {
+  const r = partialResult as
+    | { content?: { type?: string; text?: string }[] }
+    | null
+    | undefined;
+  if (!r || !Array.isArray(r.content)) return partialResult;
+  let changed = false;
+  const content = r.content.map((block) => {
+    if (block?.type !== "text" || typeof block.text !== "string") return block;
+    const t = block.text;
+    if (t.length <= TOOL_OUTPUT_HEAD_BYTES + TOOL_OUTPUT_TAIL_BYTES) return block;
+    changed = true;
+    return {
+      ...block,
+      text: `${t.slice(0, TOOL_OUTPUT_HEAD_BYTES)}\n[… 流式预览过长，已省略；终态与全文以工具收尾为准 …]\n${t.slice(-TOOL_OUTPUT_TAIL_BYTES)}`,
+    };
+  });
+  return changed ? { ...r, content } : partialResult;
+}
 
 /** 剥离 assistantMessageEvent 的 partial（重负字段）；toolcall_start 抽取
  *  toolCall 的 id/name（provider 在 start 时已填好，客户端没有就等 end 修正） */
@@ -184,10 +210,13 @@ export function wireSessionEvents(run: Running): void {
         const text = JSON.stringify(event.partialResult ?? null);
         if (text.length > TOOL_UPDATE_MAX_BYTES) break;
         toolUpdateAt.set(event.toolCallId, now);
+        // 运行中预览同样只带头尾（与终态 projectToolResult 的截断闸同口径）：
+        // 流式工具的 partialResult 会反复整段重发，不截的话客户端每次更新都
+        // 要 JSON.parse 整段、投影侧再整段进快照基底
         emitThreadEvent(sessionId, {
           type: "tool_execution_update",
           toolCallId: event.toolCallId,
-          partialResult: event.partialResult ?? null,
+          partialResult: truncateTextBlocks(event.partialResult) ?? null,
         });
         break;
       }

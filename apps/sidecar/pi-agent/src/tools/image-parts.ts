@@ -26,6 +26,21 @@ export const IMAGE_PART_NAME = "image";
  */
 export const IMAGE_INLINE_MAX_BYTES = 2 * 1024 * 1024;
 
+/**
+ * 工具结果 output 文本的头/尾截断上限（UI 通道，2026-10-20 卡顿治理）。
+ *
+ * 为什么要截：read/bash 一类工具的输出没有自己的上限，几百 KB～MB 级的结果
+ * 会原样走过「转录行 → thread_snapshot → NDJSON → JSON.parse → 投影 → React
+ * → DOM」整条链，四个环节同时变重（实测出现单行 1MB 的 stdin 告警）；而 UI
+ * 侧早已有更完整的查看面——工具行展开框限高滚动、右侧面板「文件/终端」标签
+ * 看全文。UI 通道只留头尾各一段，中间以省略行衔接，全文语义交给面板。
+ *
+ * 只截 UI 投影：agent 消息本体（模型上下文）不经这里，语义不动。直播 chunk
+ * 与历史重建共用本函数，截断点天然同构（"直播 = 刷新后"不被破坏）。
+ */
+export const TOOL_OUTPUT_HEAD_BYTES = 32 * 1024;
+export const TOOL_OUTPUT_TAIL_BYTES = 32 * 1024;
+
 /** 工具结果 content 块（形状按需放宽：只关心 text/image 两类，其余透传占位语义） */
 export type ProjectableContentBlock = {
   type?: string;
@@ -57,6 +72,18 @@ export function normalizeMime(mime: unknown): string | null {
 const fmtMiB = (bytes: number): string => `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 
 /**
+ * output 文本头尾截断（UI 通道）：超限时保留头尾各一段，中间一行省略号
+ * 标明丢弃的体量。按 UTF-16 code unit 截（JS 字符串原生长度），字符数足够
+ * 近似字节数——闸门目的是压 DOM/IPC 量级，不需要精确字节语义。
+ */
+function truncateOutputMiddle(text: string): string {
+  if (text.length <= TOOL_OUTPUT_HEAD_BYTES + TOOL_OUTPUT_TAIL_BYTES) return text;
+  const omitted = text.length - TOOL_OUTPUT_HEAD_BYTES - TOOL_OUTPUT_TAIL_BYTES;
+  const fmtKb = (n: number) => (n >= 1024 ? `${(n / 1024).toFixed(1)}K` : `${n}`);
+  return `${text.slice(0, TOOL_OUTPUT_HEAD_BYTES)}\n[… 输出过长，已省略约 ${fmtKb(omitted)} 字符，全文可在右侧面板查看 …]\n${text.slice(-TOOL_OUTPUT_TAIL_BYTES)}`;
+}
+
+/**
  * 工具结果 → UI 通道投影：output 文本 + data-image part 清单。
  * 超限/白名单外/数据为空的 image 块不进线，改为在 output 尾部追加一行提示
  * （降级可见，与 MCP 输出防护的占位哲学一致），绝不静默吞图。
@@ -66,10 +93,11 @@ export function projectToolResult(
   ctx: { toolCallId: string | null; toolName?: string },
 ): ProjectedToolResult {
   const blocks = Array.isArray(content) ? content : [];
-  // 保留既有拼装语义：非文本块贡献空段（join 出空行），历史侧逐字一致的前提
-  let output = blocks
-    .map((c) => (c?.type === "text" ? (c.text ?? "") : ""))
-    .join("\n");
+  // 保留既有拼装语义：非文本块贡献空段（join 出空行），历史侧逐字一致的前提；
+  // 头尾截断（TOOL_OUTPUT_*_BYTES）在拼装后统一做——直播与历史同过这一道闸
+  let output = truncateOutputMiddle(
+    blocks.map((c) => (c?.type === "text" ? (c.text ?? "") : "")).join("\n"),
+  );
   const notices: string[] = [];
   const images: ProjectedImage[] = [];
   // alt 取第一个非空文本块首行（工具侧约定的 headline，如 "GET … -> 200 image/png"）
