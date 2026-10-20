@@ -54,7 +54,7 @@ import {
   getTurnTiming,
   noteTurnEnd,
   noteTurnStart,
-  resolveTurnTimingWrite,
+  resolveObservedTurnTimingWrite,
   restartTurnTiming,
   scopedTurnKey,
   useTurnDurationMs,
@@ -1618,7 +1618,11 @@ const AssistantMessage: FC = () => {
  * PiClientBase.seedHistoryTurnTimings 从转录行时间戳播种。
  */
 export const TurnTimingRecorder: FC = () => {
-  // 打包成原始值：末轮键 + 是否"还在进行"
+  // 打包成原始值：末轮键 + 是否"还在进行" + 本轮实质内容条数。条数是判定
+  // "真的重跑"的基线：排队项接棒（含「立即发送」）时线程会被下一轮 agent_start
+  // 拉回 running，而末轮还是上一条——但内容条数没涨，不能据此重开计时
+  // （见 resolveObservedTurnTimingWrite）。只数非纯 data 的 assistant 消息：
+  // 压缩/模型切换分隔线会在轮末追加，不算重跑。
   const lastTurnInfo = useAuiState((s) => {
     const messages = s.thread.messages;
     let start = -1;
@@ -1630,36 +1634,49 @@ export const TurnTimingRecorder: FC = () => {
     }
     if (start === -1) return "";
     let running = false;
+    let contentCount = 0;
     for (let i = start + 1; i < messages.length; i++) {
-      if (messages[i].status?.type === "running") {
-        running = true;
-        break;
+      const message = messages[i];
+      if (message.status?.type === "running") running = true;
+      if (
+        message.role === "assistant" &&
+        message.content.some((part) => part.type !== "data")
+      ) {
+        contentCount += 1;
       }
     }
-    if (!running && s.thread.isRunning) running = true;
-    return `${String(messages[start].id ?? "")}${TURN_FIELD_SEP}${running ? "1" : "0"}`;
+    const live = running || s.thread.isRunning;
+    return [
+      String(messages[start].id ?? ""),
+      live ? "1" : "0",
+      String(contentCount),
+    ].join(TURN_FIELD_SEP);
   });
   const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const prevKeyRef = useRef("");
+  const prevRef = useRef({ key: "", contentCount: 0 });
   useEffect(() => {
-    const [key, live] = lastTurnInfo.split(TURN_FIELD_SEP);
+    const [key, liveFlag = "0", countText = "0"] =
+      lastTurnInfo.split(TURN_FIELD_SEP);
     if (!key) return;
+    const contentCount = Number(countText) || 0;
     const scoped = scopedTurnKey(threadId, key);
     // 换轮了：上一轮若还在进行中就被换下（steer / 排队项插入），给它补记结束
-    if (prevKeyRef.current && prevKeyRef.current !== key) {
-      noteTurnEnd(scopedTurnKey(threadId, prevKeyRef.current), Date.now());
+    if (prevRef.current.key && prevRef.current.key !== key) {
+      noteTurnEnd(
+        scopedTurnKey(threadId, prevRef.current.key),
+        Date.now(),
+        prevRef.current.contentCount,
+      );
     }
-    prevKeyRef.current = key;
-    const current = getTurnTiming(scoped);
-    const action = resolveTurnTimingWrite(current, live === "1");
-    // 历史播种的条目（live !== true）在轮内是权威：乐观 id 落盘换成
-    // `pi-msg:${seq}` 时同一轮会以新键再出现，播种条目已带两端（start = user
-    // 行时间戳、end = 本轮最新行时间戳），不能因"两端齐了"就 restart——
-    // 那会把开始时刻重置成此刻，收尾后的时长直接毁掉
-    if (action === "restart" && current?.live !== true) return;
+    prevRef.current = { key, contentCount };
+    const action = resolveObservedTurnTimingWrite(
+      getTurnTiming(scoped),
+      liveFlag === "1",
+      contentCount,
+    );
     if (action === "restart") restartTurnTiming(scoped, Date.now());
     else if (action === "start") noteTurnStart(scoped, Date.now());
-    else noteTurnEnd(scoped, Date.now());
+    else if (action === "end") noteTurnEnd(scoped, Date.now(), contentCount);
   }, [lastTurnInfo, threadId]);
   return null;
 };

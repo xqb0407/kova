@@ -87,6 +87,10 @@ type TurnTiming = {
   /** 内部标记：这个开始是我们"亲眼看着"记下的（直播轮）——只有这种轮才允许
    *  由我们补记结束时刻。历史播种的轮绝不去编造 end（那会造出假时长） */
   live?: boolean;
+  /** 补记结束那一刻，本轮「有实质内容的 assistant 消息」条数（见
+   *  TurnTimingRecorder 的 selector）。用来区分"同一轮真的重跑"与"下一轮
+   *  agent_start 把线程拉回 running 的空窗"：条数没涨就没重跑。 */
+  endContentCount?: number;
 };
 
 const turnTimings = makeMapStore<TurnTiming>();
@@ -102,11 +106,28 @@ export function noteTurnStart(scopedKey: string, at: number): void {
  * 需要它是因为框架的流式计时在**取消/中断**路径上不 finalize（manual stop 后
  * metadata.timing 缺失），光靠 timing 拿不到结束时刻——那样停止的轮只能显示
  * 「本轮过程」而不是耗时。只对 live 条目生效：历史播种的轮不补，避免造出假时长。
+ *
+ * contentCount 是补记时的内容条数：结束时刻只写一次，但条数允许在后续提交里
+ * 更新（消息 id 重锚、快照晚到一行都会让同一轮晚一步定型），它是判定"重跑"
+ * 的基线，宁可跟着最新状态走。
  */
-export function noteTurnEnd(scopedKey: string, at: number): void {
+export function noteTurnEnd(
+  scopedKey: string,
+  at: number,
+  contentCount?: number,
+): void {
   const current = turnTimings.get(scopedKey);
-  if (!current || current.live !== true || current.end !== undefined) return;
-  turnTimings.set(scopedKey, { ...current, end: at });
+  if (!current || current.live !== true) return;
+  if (current.end === undefined) {
+    turnTimings.set(scopedKey, {
+      ...current,
+      end: at,
+      ...(contentCount !== undefined ? { endContentCount: contentCount } : {}),
+    });
+    return;
+  }
+  if (contentCount === undefined || current.endContentCount === contentCount) return;
+  turnTimings.set(scopedKey, { ...current, endContentCount: contentCount });
 }
 
 /**
@@ -123,6 +144,38 @@ export function resolveTurnTimingWrite(
   if (!live) return "end";
   if (current?.start !== undefined && current.end !== undefined) return "restart";
   return "start";
+}
+
+/**
+ * 直播打点实际执行的动作：在 {@link resolveTurnTimingWrite} 之上过滤掉两类
+ * 假 restart（都不该动已有台账）。
+ *
+ *  - 线程级 running 不代表末轮又在跑：排队项被接棒（含「立即发送」中止当前轮）
+ *    时，上一轮 agent_end 刚补记结束，下一轮 agent_start 紧接着把线程拉回
+ *    running，而末轮还是刚结束的那一条。此时若重开计时，会清掉刚记下的结束、
+ *    把开始重置成此刻；下一轮用户消息一落位给上一轮补结束，时长只剩几毫秒，
+ *    亚秒级不显示——摘要行直接退回「N 条较早消息」。判据用本轮**实质内容的
+ *    条数**：没有新内容就不是重跑（不能看消息 status——下一轮 agent_start 会
+ *    把上一轮末条 assistant 也标成 running）。
+ *  - 历史播种的条目（live !== true）在轮内是权威：乐观 id 落盘换成
+ *    `pi-msg:${seq}` 时同一轮会以新键再出现，播种条目已带两端（start = user
+ *    行时间戳、end = 本轮最新行时间戳），不能因"两端齐了"就 restart。
+ */
+export function resolveObservedTurnTimingWrite(
+  current: TurnTiming | undefined,
+  live: boolean,
+  contentCount: number,
+): "start" | "restart" | "end" | "none" {
+  const action = resolveTurnTimingWrite(current, live);
+  if (action !== "restart") return action;
+  if (current?.live !== true) return "none";
+  if (
+    current.endContentCount !== undefined &&
+    contentCount <= current.endContentCount
+  ) {
+    return "none";
+  }
+  return "restart";
 }
 
 /**

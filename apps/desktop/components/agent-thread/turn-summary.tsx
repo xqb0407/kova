@@ -28,7 +28,7 @@ import {
   getTurnTiming,
   noteTurnEnd,
   noteTurnStart,
-  resolveTurnTimingWrite,
+  resolveObservedTurnTimingWrite,
   restartTurnTiming,
   scopedTurnKey,
   setTurnCollapsed,
@@ -357,28 +357,47 @@ const TurnWorkSummary: FC<{
  */
 export const TurnTimingRecorder: FC = () => {
   // 打包成原始值：末轮键 + 是否"还在进行"（轮内有消息在流，或最新轮且线程在跑）
+  // + 本轮实质内容条数。条数是判定"真的重跑"的基线：排队项接棒（含「立即
+  // 发送」）时线程会被下一轮 agent_start 拉回 running，而末轮还是上一条——
+  // 但内容条数没涨，不能据此重开计时（见 resolveObservedTurnTimingWrite）。
+  // 只数非纯 data 的 assistant 消息：压缩/模型切换分隔线会在轮末追加，不算重跑。
   const lastTurnInfo = useAuiState((s) => {
-    const index = getTurnIndex(s.thread.messages);
-    const last = index.turns.at(-1);
+    const messages = s.thread.messages;
+    const last = getTurnIndex(messages).turns.at(-1);
     if (!last) return "";
     const live = last.running || s.thread.isRunning;
-    return `${last.key}|${live ? 1 : 0}`;
+    let contentCount = 0;
+    for (let i = last.start; i < last.end; i++) {
+      const message = messages[i];
+      if (message.role !== "assistant") continue;
+      if (message.content.some((part) => part.type !== "data")) contentCount += 1;
+    }
+    return `${last.key}|${live ? 1 : 0}|${contentCount}`;
   });
   const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const prevKeyRef = useRef("");
+  const prevRef = useRef({ key: "", contentCount: 0 });
   useEffect(() => {
-    const [key, live] = lastTurnInfo.split("|");
+    const [key, liveFlag = "0", countText = "0"] = lastTurnInfo.split("|");
     if (!key) return;
+    const contentCount = Number(countText) || 0;
     const scoped = scopedTurnKey(threadId, key);
     // 换轮了：上一轮若还在进行中就被换下（steer / 排队项插入），给它补记结束
-    if (prevKeyRef.current && prevKeyRef.current !== key) {
-      noteTurnEnd(scopedTurnKey(threadId, prevKeyRef.current), Date.now());
+    if (prevRef.current.key && prevRef.current.key !== key) {
+      noteTurnEnd(
+        scopedTurnKey(threadId, prevRef.current.key),
+        Date.now(),
+        prevRef.current.contentCount,
+      );
     }
-    prevKeyRef.current = key;
-    const action = resolveTurnTimingWrite(getTurnTiming(scoped), live === "1");
+    prevRef.current = { key, contentCount };
+    const action = resolveObservedTurnTimingWrite(
+      getTurnTiming(scoped),
+      liveFlag === "1",
+      contentCount,
+    );
     if (action === "start") noteTurnStart(scoped, Date.now());
     else if (action === "restart") restartTurnTiming(scoped, Date.now());
-    else noteTurnEnd(scoped, Date.now());
+    else if (action === "end") noteTurnEnd(scoped, Date.now(), contentCount);
   }, [lastTurnInfo, threadId]);
   return null;
 };
