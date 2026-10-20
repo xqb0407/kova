@@ -488,6 +488,26 @@ export function appendSessionInfoRow(sessionId: string, name: string): void {
 }
 
 /**
+ * 截断后的转录 seq 下限（会话级，进程内）。
+ *
+ * truncate_session 删掉 transcript 尾部（重发/编辑）后，若下一个 run 仍按
+ * 「文件里最后一行 seq + 1」续号，会**复用刚被删掉的轮次 seq**。前端消息 id
+ * 是 `pi-msg:<seq>`、轮次键取轮首消息 id——复用会让新一轮与旧一轮同键，
+ * 时长台账/折叠态把重试当成同一轮继续累加（实测：重试后「已工作」从上次
+ * 的时长接着走）。截断时把下限抬到历史最高 seq + 1，后续 run 整段跳过被删
+ * 号段。进程重启丢失可接受：正常路径是截断后立刻重发，同一进程内完成。
+ */
+const seqFloors = new Map<string, number>();
+
+export function raiseTranscriptSeqFloor(sessionId: string, floor: number): void {
+  seqFloors.set(sessionId, Math.max(seqFloors.get(sessionId) ?? 0, floor));
+}
+
+export function transcriptSeqFloor(sessionId: string): number {
+  return seqFloors.get(sessionId) ?? 0;
+}
+
+/**
  * 撤回单条已落盘的转录行（按 seq，幂等；只删第一处命中）。
  *
  * 使用面很窄：**只服务「并入（steer）未获回应回收」**——注入即真实 user 行

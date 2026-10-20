@@ -14,6 +14,7 @@ import { sessionInsert, sessionTouch } from "../../src/storage/hostdb";
 import { dispatch } from "../../src/protocol/protocol";
 import { setActiveReqId } from "../../src/protocol/stream";
 import { resolveSession, running } from "../../src/sessions/sessions";
+import { transcriptSeqFloor } from "../../src/sessions/transcript";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-agent-truncate-"));
 const prevIdentityDir = process.env.PI_IDENTITY_DIR;
@@ -154,6 +155,16 @@ describe("truncate_session：顺序截止语义", () => {
     expect(last()).toMatchObject({ type: "truncated", removed: 1 });
     const kept = readFileSync(sessionPath(id), "utf8").trim().split("\n");
     expect(kept).toEqual([header(id), "{ 坏行", msgRow(0)]);
+  });
+
+  test("截断后 seq 下限抬到历史最高 + 1：重发不复用轮次 seq（时长不累加）", async () => {
+    const id = "tr-seq-floor";
+    await seed(id, [header(id), msgRow(0), msgRow(1), msgRow(2)], 3);
+    await dispatch("sf1", { type: "truncate_session", sessionId: id, beforeSeq: 1 });
+    expect(last()).toMatchObject({ type: "truncated", removed: 2 });
+    // 现存最高 0、被删最高 2 ⇒ 下一 run 从 3 起号；否则 pi-msg:<seq> 轮次键
+    // 与上一轮相同，前端时长台账会把重试当成同一轮继续累加
+    expect(transcriptSeqFloor(id)).toBe(3);
   });
 });
 

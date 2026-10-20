@@ -669,6 +669,8 @@ export class PiThreadController implements PiThreadControllerLike {
     baseMessageCount: number,
     optimisticMirror = false,
     bypassQueueLane = false,
+    /** 重发/编辑：与乐观气泡同一提交丢掉 seq >= beforeSeq 的旧行（见调用点） */
+    truncateBeforeSeq?: number,
   ) {
     if (message.role !== "user") {
       throw new Error("Pi only supports sending user messages");
@@ -721,7 +723,17 @@ export class PiThreadController implements PiThreadControllerLike {
       message: optimistic,
       baseMessageCount,
     });
-    this.setState(markStateRunning(this.state));
+    // 截断与镜像必须同一提交：先截断再压镜像会有一帧内容高度塌陷（旧回复
+    // 消失了、新气泡/锚点垫片还没上），浏览器把 scrollTop 夹到新 max，下一帧
+    // 垫片补回高度再滚回去——重发时那一下「上下一跳」就是这两帧造成的。
+    const messages =
+      truncateBeforeSeq === undefined
+        ? this.state.messages
+        : this.state.messages.filter((m) => {
+            const seq = (m as { __seq?: unknown }).__seq;
+            return !(typeof seq === "number" && seq >= truncateBeforeSeq);
+          });
+    this.setState(markStateRunning({ ...this.state, messages }));
     this.recomputeProjectedMessagesAndNotify();
 
     try {
@@ -797,28 +809,15 @@ export class PiThreadController implements PiThreadControllerLike {
       throw new Error("message is not persisted yet; cannot resend");
     }
     await this.client.truncateToSeq(this.threadId, Number(match[1]));
-    // 乐观本地截断先于重发压镜像：旧行与新气泡同一提交帧上新旧互换（旧的
-    // 立即消失、新的立即出现）——等截断后快照回程才移除的话，带图会话快照
-    // 是 MB 级大帧，新气泡会先上屏、旧行滞留到回程，视觉顺序颠倒
-    this.truncateLocally(Number(match[1]));
-    this.refreshInBackground();
     // 下界传 0（全文匹配）：见 sendUserAppend 头注——截断快照收缩在飞数组后，
-    // 回显落点低于按下标取的界，重生成/编辑重发的乐观镜像会永久滞留成重复气泡
-    await this.sendUserAppend(message, undefined, 0, true);
-  }
-
-  /** 乐观本地截断：truncate_session 确认后立即在内存丢掉 seq >= beforeSeq 的
-   *  转录行（消息与压缩检查点共用号段，一并移除），不等截断后快照回程。
-   *  快照随后整体替换，内容与本截断一致，自愈；lastSeq 不动——降低它会放行
-   *  已消费水位的陈旧事件重放。 */
-  private truncateLocally(beforeSeq: number) {
-    const kept = this.state.messages.filter((message) => {
-      const seq = (message as { __seq?: unknown }).__seq;
-      return !(typeof seq === "number" && seq >= beforeSeq);
-    });
-    if (kept.length === this.state.messages.length) return;
-    this.setState({ ...this.state, messages: kept });
-    this.recomputeProjectedMessagesAndNotify();
+    // 回显落点低于按下标取的界，重生成/编辑重发的乐观镜像会永久滞留成重复气泡。
+    // 本地截断交给 sendUserAppend 与镜像同一次提交（避免中间一帧高度塌陷）。
+    try {
+      await this.sendUserAppend(message, undefined, 0, true, false, Number(match[1]));
+    } finally {
+      // 快照在镜像落位之后才拉：避免它在截断与气泡之间插入一次高度塌陷
+      this.refreshInBackground();
+    }
   }
 
   /** Mid-run sends land in Pi's queue, not the transcript (Pi appends the user

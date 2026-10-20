@@ -24,6 +24,8 @@ import {
   ManualCompactionTailAfter,
 } from "@/components/agent-thread/compaction-banner";
 import { TurnSlot, TurnTimingRecorder } from "@/components/agent-thread/turn-summary";
+import { ViewportScrollManager } from "@/components/agent-thread/viewport-scroll-manager";
+import { ThreadViewport } from "@/components/agent-thread/thread-viewport";
 import { getTurnIndex, packTurnSlot } from "@/lib/panels/message-turns";
 
 const text = (t: string) => ({ type: "text" as const, text: t });
@@ -269,6 +271,22 @@ const liveChatModel: ChatModelAdapter = {
   },
 };
 
+/** ?thinkonly=1：只流 reasoning（真实思考阶段的原貌）——验证流式中思考块
+ *  默认收起且触发行有单行滚动摘要。livedemo 的模型每帧同时带正文，reasoning
+ *  组永远不是最后一段，streaming 折算为 false，测不到摘要路径。 */
+const thinkingOnlyModel: ChatModelAdapter = {
+  async *run() {
+    let acc = "";
+    for (let i = 0; i < 24; i++) {
+      await new Promise((r) => setTimeout(r, 120));
+      acc += `想一下第${i}步：先确认参数，再看现场，然后动手。`;
+      yield {
+        content: [{ type: "reasoning" as const, text: acc }],
+      };
+    }
+  },
+};
+
 /** 挂载后测量真实布局，把结果写进 DOM 供无头浏览器抓取：
  *  默认（上一轮收起）→ 点击摘要行展开 → 动画中途 / 完成各采一次。 */
 function Diagnostics() {
@@ -387,18 +405,25 @@ function LiveDemoDriver({ enabled }: { enabled: boolean }) {
   useEffect(() => {
     if (!enabled) return;
     const send = setTimeout(() => {
+      // ?longmsg=1：超长用户消息（> top-anchor clamp 的 10em）——触发垫片与
+      // 钉顶阶段，复现新轮开始时框架 smooth 置顶与滚动管理器的写入冲突
+      const longMsg =
+        new URLSearchParams(window.location.search).get("longmsg") === "1";
+      const text = longMsg
+        ? `跑一轮然后我手动停掉\n${"补充上下文，这一段只是占位。\n".repeat(60)}`
+        : "跑一轮然后我手动停掉";
       void aui.thread.append({
         role: "user",
-        content: [{ type: "text", text: "跑一轮然后我手动停掉" }],
+        content: [{ type: "text", text }],
         parentId: null,
         sourceId: null,
         runConfig: undefined,
         startRun: true,
       } as never);
     }, 400);
-    // livedemo=2：不中断，让它自然跑完——验证"正常结束"路径的收起
-    const noCancel =
-      new URLSearchParams(window.location.search).get("livedemo") === "2";
+    // livedemo=2 / thinkonly=1：不中断，让它自然跑完——验证"正常结束"路径的收起
+    const q = new URLSearchParams(window.location.search);
+    const noCancel = q.get("livedemo") === "2" || q.get("thinkonly") === "1";
     const stop = setTimeout(() => {
       if (!noCancel) aui.thread.cancelRun();
     }, 2000);
@@ -443,9 +468,17 @@ export default function TurnsPreviewPage() {
         new URLSearchParams(window.location.search).get("livedemo") ?? "",
       ),
   );
-  const runtime = useLocalRuntime(liveDemo ? liveChatModel : noopChatModel, {
-    initialMessages: liveDemo ? [] : messages,
-  });
+  const [thinkOnly] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("thinkonly") === "1",
+  );
+  const runtime = useLocalRuntime(
+    thinkOnly ? thinkingOnlyModel : liveDemo ? liveChatModel : noopChatModel,
+    {
+      initialMessages: liveDemo || thinkOnly ? [] : messages,
+    },
+  );
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -453,12 +486,12 @@ export default function TurnsPreviewPage() {
         {/* 与 thread.tsx 同款注册：不注册的话 data-compaction part 渲染为 null，
             分隔线的收起/展开行为在这里就量不到 */}
         <CompactionDataUI />
-        <LiveDemoDriver enabled={liveDemo} />
+        <LiveDemoDriver enabled={liveDemo || thinkOnly} />
         <div className="text-muted-foreground px-3 py-1 text-xs">
           turns harness · 轮数={getTurnIndex(runtime.thread.getState().messages).turns.length}
         </div>
         <ThreadPrimitive.Root className="relative flex min-h-0 flex-1 flex-col">
-          <ThreadPrimitive.Viewport
+          <ThreadViewport
             turnAnchor="top"
             data-slot="aui_thread-viewport"
             className="relative flex flex-1 flex-col overflow-x-clip overflow-y-scroll px-4 pt-4"
@@ -486,8 +519,10 @@ export default function TurnsPreviewPage() {
                 }}
               </ThreadPrimitive.Messages>
               <TurnTimingRecorder />
+              {/* 与生产 thread.tsx 同款：验证新轮开始时滚动锚定是否上下跳 */}
+              <ViewportScrollManager />
             </div>
-          </ThreadPrimitive.Viewport>
+          </ThreadViewport>
         </ThreadPrimitive.Root>
         <Diagnostics />
       </div>

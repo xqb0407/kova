@@ -141,4 +141,36 @@ describe("projectToolResult", () => {
     expect(r.images[0].data.toolCallId).toBeNull();
     expect(r.images[0].data.toolName).toBeUndefined();
   });
+
+  test("短输出原样通过（截断闸不咬）", () => {
+    const text = "a".repeat(1000);
+    const r = projectToolResult([{ type: "text", text }], { toolCallId: "c" });
+    expect(r.output).toBe(text);
+  });
+
+  test("超长输出只留头尾，中间省略行标注体量", () => {
+    const head = "H".repeat(32 * 1024);
+    const tail = "T".repeat(32 * 1024);
+    const r = projectToolResult([{ type: "text", text: `${head}${"x".repeat(300_000)}${tail}` }], {
+      toolCallId: "c",
+    });
+    expect(r.output.startsWith(head)).toBe(true);
+    expect(r.output.endsWith(tail)).toBe(true);
+    expect(r.output).toContain("已省略约");
+    // 总量被压到头尾 + 省略行量级，而不是全量
+    expect(r.output.length).toBeLessThan(70 * 1024);
+  });
+
+  test("截断只在拼装后的总 output 上判（多块合计超限同样截）", () => {
+    const r = projectToolResult(
+      [
+        { type: "text", text: "a".repeat(40 * 1024) },
+        { type: "text", text: "b".repeat(40 * 1024) },
+      ],
+      { toolCallId: "c" },
+    );
+    expect(r.output.startsWith("a".repeat(1024))).toBe(true);
+    expect(r.output.endsWith("b".repeat(1024))).toBe(true);
+    expect(r.output).toContain("已省略约");
+  });
 });

@@ -33,6 +33,7 @@
 import { useAuiState } from "@assistant-ui/react";
 import { useEffect, useRef } from "react";
 import { isResizing, onResizeSettled } from "@/lib/ui/resize-session";
+import { reportFrontendWarning } from "@/lib/frontend-logging";
 import {
   noteCount,
   noteSpan,
@@ -45,6 +46,10 @@ const GROUP_SELECTOR = '[data-slot="aui_message-group"]';
 const TOL_PX = 1;
 /** 目标消息"长高了"的最小幅度：小于它当作噪声（不会一路攒差，差值按累计算） */
 const GROW_TOL_PX = 2;
+/** 钉顶写入的滚动静默期（ms）：框架在新轮 anchor 上跑 smooth scroll，动画期间
+ *  每拍都有滚动事件；这期间再写 scrollTop 会与动画互相拉扯（表现为聊天区上下
+ *  跳一下）。等滚动停稳后再校正，把「两个写入者」收敛成一次。 */
+const PIN_SCROLL_IDLE_MS = 160;
 /** 用户滚动键（文本输入键不在此列；编辑框内的翻页键另按目标元素过滤） */
 const SCROLL_KEYS = new Set([
   "ArrowUp",
@@ -125,6 +130,10 @@ export const ViewportScrollManager = () => {
   useEffect(() => {
     targetIdRef.current = targetId;
   }, [targetId]);
+  /** 收缩夹取后的钉顶暂停截止时刻：内容塌陷（重发截断/折叠）会让浏览器把
+   *  scrollTop 夹到新 max；若紧接着再钉顶，会把视口重新拽回去，观感是
+   *  「上下一跳」。暂停期内交给贴尾跟随，等新一轮内容长起来自然复位。 */
+  const pinSuppressedUntilRef = useRef(0);
 
   useEffect(() => {
     if (!anchorId) return;
@@ -144,6 +153,33 @@ export const ViewportScrollManager = () => {
      *  廉价属性读，不触发布局；查不到返回 -1，此时不认为有流式增长 */
     let target: HTMLElement | null = null;
     let lastTargetHeight = 0;
+    /** 最近一次滚动事件（框架 smooth 置顶、浏览器 scroll anchoring、用户手势
+     *  都算）：钉顶写入只在它静默后做，避免与框架动画互相拉扯。 */
+    let lastScrollAt = performance.now();
+    let idleSettleTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
+    /** 跳变留痕（仅 dev）：单次滚动事件位移 ≥24px 说明有一次性跳，记下前后值
+     *  与内容高度，排查「回复开始时聊天区上下跳」用 */
+    let lastSeenTop = viewport.scrollTop;
+    const traceJump = (why: string) => {
+      if (process.env.NODE_ENV === "production") return;
+      const top = viewport.scrollTop;
+      const delta = top - lastSeenTop;
+      if (Math.abs(delta) >= 24) {
+        reportFrontendWarning(
+          `[scroll] ${why} ${Math.round(lastSeenTop)}→${Math.round(top)} (Δ${Math.round(delta)}, h=${viewport.scrollHeight}, ch=${viewport.clientHeight})`,
+        );
+      }
+      lastSeenTop = top;
+    };
+    const scheduleIdleSettle = () => {
+      if (disposed) return;
+      if (idleSettleTimer) clearTimeout(idleSettleTimer);
+      idleSettleTimer = setTimeout(() => {
+        idleSettleTimer = null;
+        if (!disposed) settle();
+      }, PIN_SCROLL_IDLE_MS);
+    };
     const measureTargetHeight = (): number => {
       if (!target?.isConnected) {
         target = viewport.querySelector<HTMLElement>(
@@ -154,9 +190,21 @@ export const ViewportScrollManager = () => {
     };
 
     const onScroll = () => {
+      const prevTop = lastSeenTop;
+      traceJump("滚动事件");
+      lastScrollAt = performance.now();
       // 只做接管不做让位：贴回底部就恢复跟随，让位由手势决定。这里读实时
       // 高度而不是缓存值——缓存落后于流式增长时会误判"还在底部"而回抢。
       maxTop = viewport.scrollHeight - viewport.clientHeight;
+      // 内容变矮导致 scrollTop 被夹到新 max：这是重发截断/折叠的收缩信号。
+      // 立刻钉顶会把视口再拽一次（上一下、下一下），暂停钉顶让跟随接管。
+      if (
+        viewport.scrollTop < prevTop - 2 &&
+        Math.abs(viewport.scrollTop - maxTop) <= TOL_PX
+      ) {
+        pinSuppressedUntilRef.current = performance.now() + 1500;
+        noteCount("视口-收缩夹取-暂停钉顶");
+      }
       if (viewport.scrollTop >= maxTop - TOL_PX) {
         if (!followed) noteCount("视口-接管");
         followed = true;
@@ -221,7 +269,18 @@ export const ViewportScrollManager = () => {
       // 门只认「用户有没有自己滚过」，不认位置：用户正停在底部（followed）时
       // 恰恰最需要这次补钉——框架那次一次性置顶被空窗吃掉就没人再来补，
       // 表现就是"有时顶上去、有时不"（贴尾先接管会让它整轮顶不上去）。
-      if (liveRef.current && !yielded && inPinPhase()) {
+      if (
+        liveRef.current &&
+        !yielded &&
+        performance.now() >= pinSuppressedUntilRef.current &&
+        inPinPhase()
+      ) {
+        // 框架新轮的 smooth 置顶/浏览器 scroll anchoring 正在动：这一拍只
+        // 安排静默后补判，不写 scrollTop（两个写入者会互相拉扯 = 上下跳）
+        if (performance.now() - lastScrollAt < PIN_SCROLL_IDLE_MS) {
+          scheduleIdleSettle();
+          return;
+        }
         span("视口-钉顶写", () => {
           const anchor = viewport.querySelector<HTMLElement>(
             `[data-message-id="${CSS.escape(anchorId)}"][data-aui-top-anchor-user]`,
@@ -232,6 +291,7 @@ export const ViewportScrollManager = () => {
             viewport.getBoundingClientRect().top;
           if (delta <= TOL_PX) return; // 负值 = 已在上方（用户在往下读），不抢
           viewport.scrollTop += delta;
+          traceJump("钉顶写");
           noteCount("视口-钉顶真滚");
         });
         return;
@@ -254,6 +314,7 @@ export const ViewportScrollManager = () => {
           }
           span("视口-贴尾写", () => {
             viewport.scrollTop += slack;
+            traceJump("贴尾写");
           });
         }
         return;
@@ -274,6 +335,8 @@ export const ViewportScrollManager = () => {
     const offSettled = onResizeSettled(settle);
     settle();
     return () => {
+      disposed = true;
+      if (idleSettleTimer) clearTimeout(idleSettleTimer);
       yielders.delete(yieldToUser);
       offSettled();
       viewport.removeEventListener("scroll", onScroll);

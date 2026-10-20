@@ -167,7 +167,7 @@ export const Base: FC = () => {
   }, [onboardingActive]);
   // 浏览器面板已迁 `<webview>`（DOM 嵌入渲染）：浮层/设置页/向导弹窗天然盖在
   // 它上面，面板开合动画它随 DOM 平移——旧的「主窗口遮蔽 → browser:occluded
-  // 广播 → 隐藏原生子视图」整条链随之退役（ZCode 同架构）。
+  // 广播 → 隐藏原生子视图」整条链随之退役（参考实现同架构）。
   // view 的 ref：面板开合动画/exitPanelFullscreen 的守卫在闭包里读它
   const viewRef = useRef(view);
   viewRef.current = view;

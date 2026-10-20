@@ -1,7 +1,7 @@
 /**
  * Electron `<webview>` 的 JSX 类型声明（主窗口 webPreferences.webviewTag=true）。
  *
- * 面板内置浏览器走 `<webview>`（DOM 嵌入渲染，对齐 ZCode 内置浏览器）：
+ * 面板内置浏览器走 `<webview>`（DOM 嵌入渲染，对齐参考实现的内置浏览器）：
  * guest 的 webContents 由主进程经 did-attach 上报的 id 绑定驱动
  * （apps/electron/main/browser.ts 的 browser_bind_guest），渲染端只用到下面
  * 这些属性与方法。只声明用得到的部分——Electron 的完整 webview API 面很大，

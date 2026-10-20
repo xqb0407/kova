@@ -149,7 +149,7 @@ function pickChipLabel(r: PickResult): string {
 }
 
 /**
- * 浏览器标签：地址栏 + `<webview>`（DOM 嵌入渲染，对齐 ZCode 内置浏览器）。
+ * 浏览器标签：地址栏 + `<webview>`（DOM 嵌入渲染，对齐参考实现的内置浏览器）。
  *
  * 为什么不是原生 WebContentsView：原生子视图合成在主 webview 之上，任何
  * React z-index 都压不住——历史上要靠「浮层出现即隐藏整个浏览器」补位，
