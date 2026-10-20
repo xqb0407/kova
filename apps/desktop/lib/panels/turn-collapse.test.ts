@@ -4,6 +4,7 @@ import {
   __resetTurnStoresForTests,
   computeTurnDurationMs,
   noteTurnEnd,
+  resolveObservedTurnTimingWrite,
   resolveTurnTimingWrite,
   restartTurnTiming,
   getTurnCollapseOverride,
@@ -96,6 +97,71 @@ describe("重新生成（Reload）后的计时", () => {
     // 这一次 60s → 63s ⇒ 3s（而不是把 1s→63s 的 62s 全算上）
     noteTurnEnd(key, 63_000);
     expect(computeTurnDurationMs(getTurnTiming(key), null, false)).toBe(3_000);
+  });
+});
+
+describe("直播打点动作过滤（排队接棒 / 播种条目）", () => {
+  beforeEach(() => __resetTurnStoresForTests());
+
+  test("排队项接棒不重开上一轮：内容条数没涨就不是重跑", () => {
+    const ended = { start: 1_000, end: 6_000, live: true, endContentCount: 2 };
+    // 上一轮中止/结束后队列立刻派发下一轮：agent_end 已补记结束，agent_start
+    // 又把线程拉回 running，而末轮还是上一条——这里必须是 none，不能 restart
+    expect(resolveObservedTurnTimingWrite(ended, true, 2)).toBe("none");
+    // 末轮真的长出新内容（重试/续跑）才是重开
+    expect(resolveObservedTurnTimingWrite(ended, true, 3)).toBe("restart");
+  });
+
+  test("排队接棒窗口不毁掉上一轮耗时（端到端回放）", () => {
+    const key = scopedTurnKey("t1", "u1");
+    noteTurnStart(key, 1_000);
+    // 中止 → agent_end → 线程空闲：补记结束（此时本轮有 2 条实质 assistant）
+    expect(resolveObservedTurnTimingWrite(getTurnTiming(key), false, 2)).toBe("end");
+    noteTurnEnd(key, 6_000, 2);
+    // 立即发送：下一轮 agent_start 把线程拉回 running，末轮仍是上一条
+    expect(resolveObservedTurnTimingWrite(getTurnTiming(key), true, 2)).toBe("none");
+    // 下一轮用户消息落位，录制器给上一轮补结束（已有 end 不再覆盖）
+    noteTurnEnd(key, 6_000 + 30, 2);
+    expect(computeTurnDurationMs(getTurnTiming(key), null, false)).toBe(5_000);
+  });
+
+  test("纯 data 分隔线在轮末追加不算重跑", () => {
+    // 手动压缩/模型切换会在轮末追加分隔线消息：内容条数不变
+    const ended = { start: 1_000, end: 6_000, live: true, endContentCount: 2 };
+    expect(resolveObservedTurnTimingWrite(ended, true, 2)).toBe("none");
+  });
+
+  test("补记结束只写一次结束时刻，内容条数可跟随最新提交", () => {
+    const key = scopedTurnKey("t1", "u1");
+    noteTurnStart(key, 1_000);
+    noteTurnEnd(key, 6_000, 1);
+    noteTurnEnd(key, 9_999, 2);
+    expect(getTurnTiming(key)).toEqual({
+      start: 1_000,
+      end: 6_000,
+      live: true,
+      endContentCount: 2,
+    });
+  });
+
+  test("历史播种条目在轮内是权威：两端齐了也不 restart", () => {
+    // 乐观 id 落盘换 pi-msg:seq 时同一轮以新键重见；播种条目没有 live 标记
+    const seeded = { start: 1_000, end: 6_000 };
+    expect(resolveObservedTurnTimingWrite(seeded, true, 9)).toBe("none");
+    // 直播打点的条目仍按原语义重开
+    expect(
+      resolveObservedTurnTimingWrite(
+        { start: 1_000, end: 6_000, live: true, endContentCount: 1 },
+        true,
+        2,
+      ),
+    ).toBe("restart");
+  });
+
+  test("其余动作原样透传", () => {
+    expect(resolveObservedTurnTimingWrite(undefined, true, 0)).toBe("start");
+    expect(resolveObservedTurnTimingWrite({ start: 1_000 }, true, 1)).toBe("start");
+    expect(resolveObservedTurnTimingWrite({ start: 1_000, live: true }, false, 1)).toBe("end");
   });
 });
 
