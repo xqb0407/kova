@@ -1,5 +1,13 @@
 import { describe, test, expect, beforeAll } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initStorage, sessionPath } from "../../src/storage/storage";
@@ -22,6 +30,7 @@ import {
   appendThinkingLevelChangeRow,
   appendSessionInfoRow,
   setSessionName,
+  rewriteTranscriptHeaderCwd,
   STEER_PREFIX,
 } from "../../src/sessions/transcript";
 import { makeSummaryMessage, projectRestoreContext } from "../../src/agent/context";
@@ -1336,5 +1345,108 @@ describe("连续截断预算耗尽的最终中止标记", () => {
         m.parts.some((p) => (p as { type?: string }).type === "data-truncation-stopped"),
       ),
     ).toBe(false);
+  });
+});
+
+describe("rewriteTranscriptHeaderCwd：换工作目录的原子 header 改写", () => {
+  const headerOf = (id: string): Record<string, unknown> =>
+    JSON.parse(readFileSync(sessionPath(id), "utf8").split("\n")[0]!) as Record<
+      string,
+      unknown
+    >;
+
+  test("只改 cwd：body 逐字节保留、parentSession 保留、末尾补换行", () => {
+    const id = "hdr-rewrite";
+    const body =
+      '{"type":"message","seq":0,"agent":{"role":"user","content":"hi"}}';
+    writeFileSync(
+      sessionPath(id),
+      JSON.stringify({
+        type: "header",
+        schema: 1,
+        id,
+        cwd: "/old",
+        created_at: "2026-01-01T00:00:00.000Z",
+        parentSession: "parent-id",
+      }) +
+        "\n" +
+        body,
+    );
+
+    rewriteTranscriptHeaderCwd(id, "/new/repo");
+
+    const text = readFileSync(sessionPath(id), "utf8");
+    const lines = text.split("\n");
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      type: "header",
+      schema: 1,
+      id,
+      cwd: "/new/repo",
+      created_at: "2026-01-01T00:00:00.000Z",
+      parentSession: "parent-id",
+    });
+    expect(lines[1]).toBe(body);
+    // 撕裂尾行原样保留，但要补换行，保证下次 append 从行首开始
+    expect(text.endsWith("\n")).toBe(true);
+  });
+
+  test("缺失/空文件补一行 header", () => {
+    const missing = "hdr-missing";
+    rewriteTranscriptHeaderCwd(missing, "/fresh");
+    expect(headerOf(missing)).toMatchObject({
+      type: "header",
+      id: missing,
+      cwd: "/fresh",
+    });
+
+    const empty = "hdr-empty";
+    writeFileSync(sessionPath(empty), "");
+    rewriteTranscriptHeaderCwd(empty, "/empty-cwd");
+    expect(headerOf(empty)).toMatchObject({
+      type: "header",
+      id: empty,
+      cwd: "/empty-cwd",
+    });
+  });
+
+  test("损坏 header 抛错且源文件不动", () => {
+    const notHeader = "hdr-not-header";
+    const notHeaderText =
+      '{"type":"message","seq":0}\n{"type":"message","seq":1}\n';
+    writeFileSync(sessionPath(notHeader), notHeaderText);
+    expect(() => rewriteTranscriptHeaderCwd(notHeader, "/x")).toThrow(
+      /not a header/,
+    );
+    expect(readFileSync(sessionPath(notHeader), "utf8")).toBe(notHeaderText);
+
+    const badJson = "hdr-bad-json";
+    const badJsonText = "not-json\n";
+    writeFileSync(sessionPath(badJson), badJsonText);
+    expect(() => rewriteTranscriptHeaderCwd(badJson, "/x")).toThrow(
+      /not valid JSON/,
+    );
+    expect(readFileSync(sessionPath(badJson), "utf8")).toBe(badJsonText);
+  });
+
+  test("写入失败不留 tmp 文件", () => {
+    // Windows 的 chmod 不阻止创建文件，跳过只读目录模拟
+    if (process.platform === "win32") return;
+    const id = "hdr-readonly";
+    writeFileSync(
+      sessionPath(id),
+      JSON.stringify({ type: "header", schema: 1, id, cwd: "/old" }) + "\n",
+    );
+    const sessionsDir = path.dirname(sessionPath(id));
+    chmodSync(sessionsDir, 0o555);
+    try {
+      expect(() => rewriteTranscriptHeaderCwd(id, "/new")).toThrow();
+    } finally {
+      chmodSync(sessionsDir, 0o755);
+    }
+    expect(
+      readdirSync(sessionsDir).filter(
+        (f) => f.includes(".cwd-") && f.endsWith(".tmp"),
+      ),
+    ).toEqual([]);
   });
 });

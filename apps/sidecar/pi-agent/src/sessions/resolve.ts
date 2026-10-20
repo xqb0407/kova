@@ -7,13 +7,7 @@ import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import {
-  appendFileSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { isApprovalLevel } from "pi-protocol";
 import { reviewFactsOf } from "../permissions/auto-review";
 import {
@@ -43,6 +37,7 @@ import {
 } from "../model/provider-retry";
 import { loadSubagentDefinitions, type SubagentDefinition } from "../subagent/subagent-definitions";
 import { ensureSkillsLoaded } from "../skills/skills";
+import { clearLoadedSkills } from "../secrets/secrets";
 import { buildSubagentTools } from "../subagent/subagent";
 import { buildSkillMgmtTools } from "../skills/skill-mgmt-tools";
 import { buildPluginMgmtTools } from "../plugins/plugin-mgmt-tools";
@@ -57,11 +52,15 @@ import {
 import {
   readCompaction,
   readTranscript,
+  rewriteTranscriptHeaderCwd,
   scanTranscript,
   transcriptSeqFloor,
 } from "./transcript";
 import type { PendingInteraction } from "pi-protocol";
-import { restoreUnsettled } from "./pending-interactions";
+import {
+  hasPendingInteractions,
+  restoreUnsettled,
+} from "./pending-interactions";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, setLeadingSystemMessage, type ContextInfoResult } from "../agent/context";
 import { isPromptActive, onAgentEvent, send, sendSessionsChanged } from "../protocol/stream";
 import { wireSessionEvents } from "../protocol/thread-events";
@@ -153,17 +152,16 @@ function buildAgentExtensions(
 async function persistSessionCwd(sessionId: string, cwd: string): Promise<void> {
   await sessionUpdateCwd(sessionId, cwd);
   try {
-    const file = sessionPath(sessionId);
-    const lines = readFileSync(file, "utf8").split("\n");
-    const head = lines[0] ? JSON.parse(lines[0]) : null;
-    if (head?.type === "header") {
-      lines[0] = JSON.stringify({ ...head, cwd });
-      writeFileSync(file, lines.join("\n"));
-    } else {
-      appendFileSync(file, JSON.stringify({ type: "header", schema: 1, id: sessionId, cwd }) + "\n");
-    }
-  } catch {
-    // 见上
+    // 原子改写（tmp + fsync + rename）：换目录时不能把中间态留在会话文件里。
+    // header 仅展示/兜底用，DB 索引行始终是事实源。
+    rewriteTranscriptHeaderCwd(sessionId, cwd);
+  } catch (err) {
+    // 见上：损坏/只读不阻断移动，但留一行日志便于排查
+    logErr(
+      "persist-session-cwd: header rewrite skipped",
+      sessionId,
+      err instanceof Error ? err.message : err,
+    );
   }
 }
 
@@ -175,13 +173,30 @@ async function persistSessionCwd(sessionId: string, cwd: string): Promise<void> 
  * 只改 cwd 相关物，不动 mode/approval 状态。
  */
 async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promise<void> {
+  const nextCwd = cwd || taskSessionCwd(run.sessionId);
+  // 先把可能失败的异步加载做完（subagent 定义 / 技能扫描都要读盘和 DB）：
+  // 失败时 run 仍是旧目录，不会出现"界面提示移动失败、下一轮却已经在新目录
+  // 里执行"的半绑定状态。
+  const { definitions } = await loadSubagentDefinitions({ cwd: nextCwd });
+  // 换了工作区：技能目录随 cwd 变，先预热新缓存
+  await ensureSkillsLoaded(nextCwd);
+
+  // DB 索引行 + header 先落盘（可能失败）。失败时 run 原样不动；成功后的
+  // 内存提交全是同步构造，不会留下"界面已换、运行态还是旧目录"的半绑定。
+  await persistSessionCwd(run.sessionId, cwd);
+
+  // 移动已提交：清掉本线程的已加载技能台账（密钥注入判定按线程累积，
+  // 旧目录的技能不应继续生效）
+  clearLoadedSkills(threadId);
+
+  // 提交内存状态：以下均为同步构造，不再有可失败点
   run.persistedCwd = cwd;
-  run.cwd = cwd || taskSessionCwd(run.sessionId);
+  run.cwd = nextCwd;
   // 解绑（清空工作目录）回落到任务工作区时同样不在此落盘：目录推迟到
   // agent 真用时才建（bash 派发前 / 写文件时自带 mkdir），见 ensureTaskSessionDir。
   // 重建工具须沿用原 threadId：todo/question 工具按 threadId 归属，误传 sessionId 会挂错 key
   run.baseTools = buildTools(
-    run.cwd,
+    nextCwd,
     threadId,
     () => run.designTheme ?? null,
     () => run.designThemeLoads,
@@ -189,22 +204,18 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
     () => run.approvalLevel,
     () => reviewFactsOf(run),
   );
-  const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
-  // 换了工作区：技能目录随 cwd 变，先预热新缓存再重组提示词
-  await ensureSkillsLoaded(run.cwd);
   setLeadingSystemMessage(
     run.agent.state.messages,
     composeModeSystemPrompt(
       run.mode,
-      run.cwd,
+      nextCwd,
       run.appMode,
       run.agent.state.model,
       run.designTheme,
     ),
   );
-  await persistSessionCwd(run.sessionId, cwd);
 }
 
 /**
@@ -222,11 +233,29 @@ export async function setSessionCwd(sessionId: string, cwd: string): Promise<voi
     if (isPromptActive(owner.run.threadId)) {
       throw new Error("session is busy: wait for the current response to finish");
     }
+    // 同目录 no-op：不重建工具/不重排提示词/不广播（前端也会先挡一层）
+    if (owner.run.persistedCwd === cwd) return;
+    // 挂起的审批/问题带着旧目录的工具参数：先结算再换目录，避免批准后
+    // 在新工作区执行一个按旧目录审阅过的操作。驻留 run 的台账在物化时
+    // 已由 restoreUnsettled 回放，直接查内存即可，不扫整份转录
+    if (hasPendingInteractions(sessionId)) {
+      throw new Error(
+        "session has pending approvals/questions; resolve them before moving",
+      );
+    }
     await rebindRunCwd(owner.run, cwd, owner.run.threadId);
     return;
   }
-  if (!(await sessionGet(sessionId))) {
+  const row = await sessionGet(sessionId);
+  if (!row) {
     throw new Error(`session not found: ${sessionId}`);
+  }
+  if (row.cwd === cwd) return;
+  // 非驻留会话的挂起行只在转录里：扫一遍，别让重建后的审批落到新目录
+  if (scanTranscript(sessionId).pending.length > 0) {
+    throw new Error(
+      "session has pending approvals/questions; resolve them before moving",
+    );
   }
   await persistSessionCwd(sessionId, cwd);
 }

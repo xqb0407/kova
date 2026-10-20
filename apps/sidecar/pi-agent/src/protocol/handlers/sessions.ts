@@ -831,11 +831,10 @@ export const handlers: Record<string, CommandHandler> = {
     const sessionId = String(msg.sessionId ?? "");
     const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
     await setSessionCwd(sessionId, cwd);
-    // 换目录 = 侧边栏项目分组归属变化，其它端需重取清单
+    // 换目录 = 侧边栏项目分组归属变化，其它端需重取清单。跨端同步帧发在
+    // 响应之前，响应恒为最后一行
     sendSessionsChanged("updated", sessionId);
-    // 跨端同步：换目录改的是会话级偏好（清单/项目分组都看它）；发在响应之前，
-    // 响应恒为最后一行
-    sendSessionsChanged("updated", sessionId);
+    logErr("session-cwd:", sessionId, "->", cwd || "(unbound)");
     send({ id: reqId, type: "session_cwd_set", sessionId, cwd });
   },
 };
