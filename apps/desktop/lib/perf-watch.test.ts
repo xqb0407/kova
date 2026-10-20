@@ -7,24 +7,29 @@ import { describe, expect, it } from "bun:test";
 import { isMeasureableGap } from "./perf-watch";
 
 describe("isMeasureableGap（漂移法可判定条件）", () => {
-  it("时钟一直可信且页面可见：可判定", () => {
-    expect(isMeasureableGap(1000, 0, false)).toBe(true);
+  it("时钟一直可信且页面可见有焦点：可判定", () => {
+    expect(isMeasureableGap(1000, 0, false, true)).toBe(true);
   });
 
   it("此刻页面不可见：不可判定", () => {
-    expect(isMeasureableGap(1000, 0, true)).toBe(false);
+    expect(isMeasureableGap(1000, 0, true, true)).toBe(false);
+  });
+
+  it("页面无焦点（被遮挡/切走但宿主仍报 visible）：不可判定", () => {
+    // 这类窗口的定时器会被钳到分钟级，报出来正好是 60000 - 500 的「冻结」
+    expect(isMeasureableGap(1000, 0, false, false)).toBe(false);
   });
 
   it("上一拍之后发生过可见性变化：不可判定（回焦首拍，降频时间不属于主线程）", () => {
     // prevTick=1000 是隐藏期间最后一次对齐，5000 时页面已回可见
-    expect(isMeasureableGap(1000, 5000, false)).toBe(false);
+    expect(isMeasureableGap(1000, 5000, false, true)).toBe(false);
   });
 
   it("同一毫秒的可见性变化也按不可判定处理（保守）", () => {
-    expect(isMeasureableGap(5000, 5000, false)).toBe(false);
+    expect(isMeasureableGap(5000, 5000, false, true)).toBe(false);
   });
 
   it("可见性变化发生在上一拍之前：不影响判定", () => {
-    expect(isMeasureableGap(5000, 1000, false)).toBe(true);
+    expect(isMeasureableGap(5000, 1000, false, true)).toBe(true);
   });
 });

@@ -170,10 +170,13 @@ function markClockUnstable(): void {
 }
 
 /**
- * 这一拍能不能用来判定卡顿。两个否定条件：
+ * 这一拍能不能用来判定卡顿。三个否定条件：
  * - 此刻页面不可见：定时器正被降频，间隔不代表主线程被占用；
  * - 上一拍之后发生过可见性变化：这一格里夹着被挂起/降频的时间，无法归因于
- *   主线程（`prevTick > lastClockUnstableAt` 即「自上次采样以来时钟一直可信」）。
+ *   主线程（`prevTick > lastClockUnstableAt` 即「自上次采样以来时钟一直可信」）；
+ * - 页面没有焦点：窗口被别的应用遮挡 / 切走 / 在内嵌预览的后台时，宿主可能
+ *   仍报 visible 却把定时器钳到分钟级（实测定格 60s，正好报出 60000-TICK_MS
+ *   的「冻结」），这种间隔同样不能归因于主线程。
  *
  * 只看 hidden 是不够的：降频期间的下一拍可能落在「已经可见」之后，届时
  * `document.hidden` 已是 false，测到的却是整段隐藏时长——这正是「切到别的
@@ -183,8 +186,9 @@ export function isMeasureableGap(
   prevTick: number,
   clockUnstableAt: number,
   hidden: boolean,
+  focused: boolean,
 ): boolean {
-  if (hidden) return false;
+  if (hidden || !focused) return false;
   return prevTick > clockUnstableAt;
 }
 
@@ -195,10 +199,12 @@ function tick(): void {
     lastTick = t;
     return;
   }
-  // 不可判定（页面隐藏 / 间隔里发生过可见性变化）时只对齐基准：
+  // 不可判定（页面隐藏 / 无焦点 / 间隔里发生过可见性变化）时只对齐基准：
   // 后台标签页的 setInterval 会被浏览器降频到分钟级，测出来的全是假卡顿
-  const hidden = typeof document !== "undefined" && document.hidden;
-  if (!isMeasureableGap(lastTick, lastClockUnstableAt, hidden)) {
+  const hasDoc = typeof document !== "undefined";
+  const hidden = hasDoc && document.hidden;
+  const focused = !hasDoc || document.hasFocus();
+  if (!isMeasureableGap(lastTick, lastClockUnstableAt, hidden, focused)) {
     lastTick = t;
     return;
   }
