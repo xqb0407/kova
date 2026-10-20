@@ -438,7 +438,7 @@ export const ThreadFind: FC = () => {
         </div>
 
         {hits.length > 0 ? (
-          <div className="max-h-72 overflow-y-auto overscroll-contain border-t border-border/60 p-1">
+          <div className="max-h-72 overflow-x-hidden overflow-y-auto overscroll-contain border-t border-border/60 p-1">
             {hits.map((hit, index) => (
               <Button
                 key={hit.messageId}
@@ -449,7 +449,8 @@ export const ThreadFind: FC = () => {
                   inputRef.current?.focus();
                 }}
                 className={cn(
-                  "flex h-auto w-full flex-col items-start gap-1 rounded-lg px-2.5 py-2 text-left",
+                  // whitespace-normal：Button 基类是 whitespace-nowrap，结果行要折行
+                  "flex h-auto w-full flex-col items-start gap-1 rounded-lg px-2.5 py-2 text-left whitespace-normal",
                   index === activeIndex && "bg-accent",
                 )}
               >
@@ -457,7 +458,9 @@ export const ThreadFind: FC = () => {
                   第 {hit.turn} 轮 · {hit.role === "user" ? "你" : "AI"}
                   {hit.count > 1 ? ` · ${hit.count} 处` : ""}
                 </span>
-                <span className="line-clamp-2 text-xs leading-snug text-foreground/80 wrap-break-word">
+                {/* wrap-anywhere 而非 break-words：后者不降低固有宽度，长 token
+                    （路径、包名）会把整行顶出面板，flex 子项也压不回来 */}
+                <span className="line-clamp-2 w-full min-w-0 text-xs leading-snug text-foreground/80 wrap-anywhere">
                   <Snippet text={hit.snippet} query={deferredQuery} />
                 </span>
               </Button>
