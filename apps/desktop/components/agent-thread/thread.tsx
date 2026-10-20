@@ -26,6 +26,7 @@ import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
 import { CheckpointTail } from "./checkpoint-card";
 import { ThreadPreviewRail } from "./thread-preview-rail";
+import { ThreadFind } from "./thread-find";
 import { ThreadViewport } from "./thread-viewport";
 import { TurnSlot, TurnTimingRecorder } from "./turn-summary";
 import { ViewportScrollManager } from "./viewport-scroll-manager";
@@ -240,6 +241,9 @@ export const Thread = memo(function Thread() {
 
       {/* 会话锚点定位：左侧刻度条，一轮对话一个刻度，悬停预览、点击跳转（内容溢出时出现） */}
       <ThreadPreviewRail />
+
+      {/* Ctrl/Cmd+F：当前会话正文搜索 + 结果目录，跳转时高亮命中词 */}
+      <ThreadFind />
 
       <SelectionToolbar />
     </ThreadPrimitive.Root>
