@@ -1,7 +1,6 @@
 "use client";
 
 import { Skeleton } from "@/components/ui/skeleton";
-import { DotMatrix } from "@/components/ui/dot-matrix";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { SelectionToolbar } from "@/components/assistant-ui/elements/quote.aui";
 import { cn } from "@/lib/utils";
@@ -19,7 +18,7 @@ import { memo, useEffect, type FC } from "react";
 import { ThreadWelcome } from "./thread-welcome";
 import { ThreadSuggestions } from "./thread-suggestions";
 import { Composer, EditComposer } from "./composer";
-import { AssistantMessage } from "./assistant-message";
+import { AssistantMessage, WaitingRow } from "./assistant-message";
 import { CompactionDataUI, ManualCompactionTailAfter } from "./compaction-banner";
 import { ModelChangeDataUI } from "./model-change-banner";
 import { ImageDataUI } from "@/components/assistant-ui/elements/image-data";
@@ -94,12 +93,11 @@ const ThreadWorkingIndicator: FC = () => {
   return (
     <div
       data-slot="aui-thread-working-indicator"
-      className="text-muted-foreground mx-auto flex w-full max-w-(--thread-max-width) items-center gap-2 px-6 py-2"
+      // 与回复消息内的等待行/思考触发行同高同左边界（见 WaitingRow 注释）：
+      // 这行会被消息级占位原地替换，任何尺寸差都表现为「连接中」上下跳一下
+      className="mx-auto flex w-full max-w-(--thread-max-width) items-center px-2"
     >
-      <DotMatrix state="loading" aria-hidden />
-      <span className="shimmer text-foreground/60 text-sm">
-        思考中...
-      </span>
+      <WaitingRow />
     </div>
   );
 };

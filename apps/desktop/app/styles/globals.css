@@ -664,6 +664,18 @@ html.dark[data-window-effect] {
   content-visibility: visible;
 }
 
+/* 正在流的那条回复（顶部锚点 target）：同样不做屏外跳过。
+   新回复刚落地时它还在视口下方（top 锚定要等 target 挂上才开始平滑置顶），
+   这一帧按 320px 占位参与布局；等它进入视口按真实值（等待行 30px）收回来，
+   scrollHeight 一帧内少掉约 290px。第二轮起视口本来停在底部、锚点置顶的
+   平滑滚动正在飞，这次收缩会把 maxScrollTop 拉低并夹住 scrollTop——置顶动画
+   被打断后再被管理器补回，观感就是「连接中 → 思考」之间上下跳一下。
+   它整轮都在视口里，跳过没有任何收益。 */
+[data-aui-top-anchor-target] [data-slot="aui_assistant-message-content"] {
+  content-visibility: visible;
+}
+
+
 /* 工具行的自定义展开内容（编辑/写入的 diff、记忆正文、检索命中）：展开高度用
    grid 行轨道折叠，不用面板的一次性高度 keyframes。diff 是懒加载的（dynamic
    组件 + worker 高亮），点开那一刻框里还是空的，一次性量出的目标（空框）会把
