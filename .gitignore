@@ -113,3 +113,5 @@ apps/electron/release/
 apps/electron/release-dev/
 apps/desktop/out/
 *.piabk
+
+docs/e2e/goal-mode-v2/
