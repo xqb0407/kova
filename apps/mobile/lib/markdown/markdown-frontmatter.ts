@@ -10,9 +10,9 @@
  * 共用同一份「只认常见子集、解析不了就整体当没有」的规则，免得同一篇文档
  * 在桌面端显示元信息卡片、在手机端显示成巨型标题。
  *
- * 只支持技能/文档文件里常见的子集：`key: value` 标量（含引号/内联数组）、
- * `- item` 块列表、`|`/`>` 块标量、`#` 注释与空行。出现任何解析不了的行
- * 整体返回 null（按无 frontmatter 处理，走原样渲染，不猜）。
+ * 只支持技能/文档文件里常见的子集：`key: value` 标量（含引号/内联数组/
+ * 缩进续行）、`- item` 块列表、`|`/`>` 块标量、`#` 注释与空行。出现任何
+ * 解析不了的行整体返回 null（按无 frontmatter 处理，走原样渲染，不猜）。
  */
 
 export type FrontmatterValue = string | string[];
@@ -31,6 +31,24 @@ const FRONTMATTER_RE = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const KEY_RE = /^[\p{L}\p{N}_][\p{L}\p{N}_\-. ]{0,63}$/u;
 
 const BLOCK_SCALAR_RE = /^[|>][+-]?$/;
+
+/**
+ * CJK 文字/全角标点边界：普通标量折行时，两侧都是它就不补空格。
+ * 中文 description 常在任意位置折行，补空格会在句子中间留下空隙；
+ * 英文折行则必须补空格，否则相邻单词会粘在一起。
+ */
+const CJK_EDGE_RE =
+  /[\u2E80-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFFEF]/;
+
+/** 按 YAML 普通标量的折行语义拼接续行（空行/分段不在支持范围内） */
+function foldLine(prev: string, next: string): string {
+  if (!prev) return next;
+  const last = prev[prev.length - 1];
+  const first = next[0];
+  if (last && first && CJK_EDGE_RE.test(last) && CJK_EDGE_RE.test(first))
+    return prev + next;
+  return `${prev} ${next}`;
+}
 
 function stripQuotes(raw: string): string {
   if (raw.length >= 2) {
@@ -100,8 +118,16 @@ export function splitFrontmatter(text: string): Frontmatter | null {
       value = items.length > 0 ? items : "";
       i = j;
     } else {
-      value = parseScalar(rest);
-      i += 1;
+      // 普通标量：后续缩进行是 YAML 折行续行（技能 description 常写成
+      // 多行，旧行为会把它当成非法行、整块 frontmatter 丢弃）
+      let folded = rest;
+      let j = i + 1;
+      while (j < lines.length && /^[ \t]+\S/.test(lines[j] ?? "")) {
+        folded = foldLine(folded, (lines[j] ?? "").trim());
+        j += 1;
+      }
+      value = parseScalar(folded);
+      i = j;
     }
 
     if (!seen.has(key)) {
