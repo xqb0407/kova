@@ -2,14 +2,29 @@
 
 import { useEffect, useState, type FC, type ReactNode } from "react";
 import { useAuiState } from "@assistant-ui/react";
-import { Loader2Icon, PlayIcon, TargetIcon, XIcon } from "lucide-react";
+import {
+  ActivityIcon,
+  ListChecksIcon,
+  Loader2Icon,
+  PlayIcon,
+  Settings2Icon,
+  ShieldAlertIcon,
+  TargetIcon,
+  XIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { useSessionMode } from "@/lib/pi/pi-session-mode";
+import { setSessionMode, useSessionMode } from "@/lib/pi/pi-session-mode";
 import {
+  GOAL_DURATION_DRAFT_MAX,
   GOAL_TURN_DRAFT_MAX,
+  setGoalAcceptanceMode,
+  setGoalDurationDraft,
   setGoalTurnDraft,
+  useGoalAcceptanceMode,
+  useGoalDurationDraft,
   useGoalTurnDraft,
+  type GoalAcceptanceMode,
 } from "@/lib/pi/pi-goal-limit-draft";
 import {
   Popover,
@@ -24,7 +39,10 @@ import {
 import {
   clearGoalNow,
   confirmGoalCriteriaNow,
+  editGoalCriteriaNow,
   fetchGoalState,
+  formatGoalDuration,
+  goalElapsedSeconds,
   isGoalAwaitingConfirmation,
   isGoalNegotiating,
   rejectGoalCriteriaNow,
@@ -34,6 +52,7 @@ import {
   skipGoalCriteriaNow,
   useGoalState,
   type GoalSnapshot,
+  type GoalTurnSummary,
 } from "@/lib/pi/pi-goal";
 
 /**
@@ -255,6 +274,441 @@ const TurnLimitDraftPicker: FC<{ threadId: string }> = ({ threadId }) => {
             onCancel={() => setOpen(false)}
           />
         )}
+      </PopoverContent>
+    </Popover>
+  );
+};
+
+/** 时长编辑器（分钟；0 = 不限）。与轮数编辑器同构，只是单位不同。 */
+const DurationEditor: FC<{
+  initial: string;
+  hint: ReactNode;
+  onCommit: (minutes: number) => void;
+  onCancel: () => void;
+}> = ({ initial, hint, onCommit, onCancel }) => {
+  const [text, setText] = useState(initial);
+  const parsed = Number.parseInt(text, 10);
+  const valid = !Number.isNaN(parsed) && parsed >= 0 && parsed <= GOAL_DURATION_DRAFT_MAX;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <InputGroup className="bg-background">
+        <InputGroupInput
+          autoFocus
+          type="number"
+          min={0}
+          max={GOAL_DURATION_DRAFT_MAX}
+          className="text-right tabular-nums [&::-moz-appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && valid) onCommit(parsed);
+          }}
+        />
+        <InputGroupAddon align="inline-end">分钟</InputGroupAddon>
+      </InputGroup>
+      <p className="text-muted-foreground text-[11px] leading-relaxed">{hint}</p>
+      <div className="flex items-center justify-end gap-1.5">
+        <Button variant="ghost" size="sm" className="h-7 px-2.5" onClick={onCancel}>
+          取消
+        </Button>
+        <Button
+          size="sm"
+          className="h-7 px-3"
+          disabled={!valid}
+          onClick={() => onCommit(parsed)}
+        >
+          确定
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+/** 建目标前的验收模式/时长预设（随第一条消息生效） */
+const GoalSetupPopover: FC<{ threadId: string }> = ({ threadId }) => {
+  const mode = useGoalAcceptanceMode(threadId);
+  const duration = useGoalDurationDraft(threadId);
+  const [open, setOpen] = useState(false);
+  const modes: Array<{ value: GoalAcceptanceMode; label: string; hint: string }> = [
+    { value: "auto", label: "自动定标准", hint: "模型提完标准直接开始执行（推荐）" },
+    { value: "manual", label: "手动确认", hint: "提完标准停下来等你确认" },
+    { value: "skip", label: "不要标准", hint: "直接执行，完成时不做逐条对账" },
+  ];
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            title="目标设置：验收标准模式与时长上限"
+            className="hover:text-foreground focus-visible:ring-ring shrink-0 rounded transition-colors focus-visible:ring-1 focus-visible:outline-none"
+          >
+            <Settings2Icon className="size-3.5" />
+          </button>
+        }
+      />
+      <PopoverContent align="end" className="w-72 p-3">
+        <div className="mb-2 text-xs font-medium">验收标准</div>
+        <div className="grid grid-cols-3 gap-1">
+          {modes.map((m) => (
+            <button
+              key={m.value}
+              type="button"
+              title={m.hint}
+              onClick={() => setGoalAcceptanceMode(m.value, threadId)}
+              className={cn(
+                "rounded border px-1.5 py-1 text-[11px] transition-colors",
+                mode === m.value
+                  ? "border-foreground/30 bg-foreground/5 font-medium"
+                  : "border-border/60 text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-muted-foreground mt-1 text-[11px] leading-relaxed">
+          {modes.find((m) => m.value === mode)?.hint}
+        </p>
+        <div className="mt-3 mb-2 text-xs font-medium">活跃时长上限</div>
+        {open && (
+          <DurationEditor
+            initial={String(duration)}
+            hint="按任务估。到点会暂停，可再调大继续；0 表示不限。默认 2 小时。"
+            onCommit={(minutes) => {
+              setOpen(false);
+              setGoalDurationDraft(minutes, threadId);
+            }}
+            onCancel={() => setOpen(false)}
+          />
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+};
+
+/** 活跃时长读数 + 就地修改 */
+const TimeReadout: FC<{
+  threadId: string;
+  goal: GoalSnapshot;
+  disabled?: boolean;
+}> = ({ threadId, goal, disabled }) => {
+  const [open, setOpen] = useState(false);
+  const elapsed = goalElapsedSeconds(goal);
+  const max = goal.maxDurationSeconds;
+  const stoppedByTime =
+    goal.status === "paused" && (goal.pauseReason ?? "").startsWith("time budget reached");
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            disabled={disabled}
+            title="点这里改活跃时长上限（0 = 不限）"
+            className="hover:text-foreground focus-visible:ring-ring shrink-0 rounded tabular-nums transition-colors focus-visible:ring-1 focus-visible:outline-none disabled:opacity-50"
+          >
+            {formatGoalDuration(elapsed)}
+            {max === null ? " · 不限" : ` / ${formatGoalDuration(max)}`}
+          </button>
+        }
+      />
+      <PopoverContent align="end" className="w-60 p-3">
+        <div className="mb-2 text-xs font-medium">活跃时长上限</div>
+        {open && (
+          <DurationEditor
+            initial={max === null ? "0" : String(Math.round(max / 60))}
+            hint={
+              stoppedByTime
+                ? "这条目标已到时长上限停住。改成更大的值（或 0 = 不限）后会自动继续。"
+                : "只计目标真正在跑的时间，暂停期间不计。0 表示不限。"
+            }
+            onCommit={(minutes) => {
+              setOpen(false);
+              void setGoalLimitNow(threadId, { maxDurationMinutes: minutes }).then(() => {
+                if (stoppedByTime) return resumeGoalNow(threadId);
+                return undefined;
+              });
+            }}
+            onCancel={() => setOpen(false)}
+          />
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+};
+
+function formatProgressLine(entry: GoalTurnSummary): string {
+  const parts = [`第 ${entry.turn} 轮`];
+  if (entry.summary) parts.push(entry.summary);
+  const facts = [`工具 ${entry.toolCalls}`, `命令 ${entry.commands}`];
+  if (entry.errors) facts.push(`失败 ${entry.errors}`);
+  parts.push(`（${facts.join("，")}）`);
+  return parts.join("：");
+}
+
+/** 最近几轮进度：只读展示，不参与任何判定 */
+const ProgressPopover: FC<{ progress: GoalTurnSummary[] }> = ({ progress }) => {
+  const [open, setOpen] = useState(false);
+  const last = progress.at(-1);
+  if (!last) return null;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            title={formatProgressLine(last)}
+            className="hover:text-foreground focus-visible:ring-ring flex shrink-0 items-center gap-1 rounded transition-colors focus-visible:ring-1 focus-visible:outline-none"
+          >
+            <ActivityIcon className="size-3" />
+            <span className="hidden sm:inline">进度</span>
+          </button>
+        }
+      />
+      <PopoverContent align="end" className="w-80 p-3">
+        <div className="mb-2 text-xs font-medium">最近 {Math.min(5, progress.length)} 轮</div>
+        <div className="flex flex-col gap-2">
+          {progress
+            .slice(-5)
+            .reverse()
+            .map((entry) => (
+              <div key={`${entry.turn}-${entry.at}`} className="text-[11px] leading-relaxed">
+                <div className="font-medium">第 {entry.turn} 轮</div>
+                <div className="text-muted-foreground">{entry.summary || "无文字输出"}</div>
+                <div className="text-muted-foreground/80 tabular-nums">
+                  工具 {entry.toolCalls} · 命令 {entry.commands} · 失败 {entry.errors}
+                  {entry.files.length ? ` · 文件 ${entry.files.join(", ")}` : ""}
+                </div>
+              </div>
+            ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+};
+
+/** 已确认标准的查看/编辑（自动确认后最重要的「可调整」入口） */
+const CriteriaPopover: FC<{ threadId: string; goal: GoalSnapshot }> = ({
+  threadId,
+  goal,
+}) => {
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState("");
+  const items = goal.acceptance?.status === "confirmed" ? goal.acceptance.items : [];
+  if (items.length === 0) return null;
+  const auto = goal.acceptance?.confirmedBy === "auto";
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setEditing(false);
+      }}
+    >
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            title={auto ? "标准已自动确认，点此查看或调整" : "查看验收标准"}
+            className="hover:text-foreground focus-visible:ring-ring flex shrink-0 items-center gap-1 rounded transition-colors focus-visible:ring-1 focus-visible:outline-none"
+          >
+            <ListChecksIcon className="size-3" />
+            <span className="hidden md:inline">标准 {items.length} 条</span>
+          </button>
+        }
+      />
+      <PopoverContent align="end" className="w-80 p-3">
+        <div className="mb-2 flex items-center justify-between text-xs font-medium">
+          <span>验收标准{auto ? "（自动确认）" : ""}</span>
+          {!editing && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => {
+                setText(items.map((c) => c.text).join("\n"));
+                setEditing(true);
+              }}
+            >
+              调整
+            </Button>
+          )}
+        </div>
+        {editing ? (
+          <div className="flex flex-col gap-2">
+            <textarea
+              autoFocus
+              rows={6}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              className="border-border/60 bg-background w-full resize-none rounded border p-2 text-[11px] leading-relaxed outline-none"
+              placeholder="每行一条验收标准"
+            />
+            <p className="text-muted-foreground text-[11px] leading-relaxed">
+              保存后以你的版本为准；完成时必须逐条给出可核验证据。
+            </p>
+            <div className="flex items-center justify-end gap-1.5">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2.5"
+                onClick={() => setEditing(false)}
+              >
+                取消
+              </Button>
+              <Button
+                size="sm"
+                className="h-7 px-3"
+                onClick={() => {
+                  const criteria = text
+                    .split(/\r?\n/u)
+                    .map((line) => line.trim())
+                    .filter(Boolean);
+                  if (criteria.length === 0) return;
+                  setOpen(false);
+                  setEditing(false);
+                  void editGoalCriteriaNow(threadId, criteria);
+                }}
+              >
+                保存并继续
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <ol className="flex flex-col gap-1">
+            {items.map((c) => (
+              <li key={c.id} className="flex gap-1.5 text-[11px] leading-relaxed">
+                <span className="text-muted-foreground shrink-0 tabular-nums">{c.id}</span>
+                <span className="min-w-0">{c.text}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+};
+
+/** 审批档提示 + 一键放手跑（不静默提权，必须用户点） */
+const AutonomyPopover: FC<{ threadId: string; goal: GoalSnapshot }> = ({
+  threadId,
+  goal,
+}) => {
+  const [open, setOpen] = useState(false);
+  const apply = (level: "auto-edit" | "auto") => {
+    setOpen(false);
+    void setSessionMode(threadId, "goal", level).then(() => {
+      if (goal.status !== "active") return resumeGoalNow(threadId);
+      return undefined;
+    });
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            title="当前每条命令都会确认；点这里选择放手跑的权限档"
+            className="text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 focus-visible:ring-ring flex shrink-0 items-center gap-1 rounded transition-colors focus-visible:ring-1 focus-visible:outline-none"
+          >
+            <ShieldAlertIcon className="size-3" />
+            <span className="hidden lg:inline">每条命令都会确认</span>
+          </button>
+        }
+      />
+      <PopoverContent align="end" className="w-72 p-3">
+        <div className="mb-1 text-xs font-medium">放开权限，让目标自己跑</div>
+        <p className="text-muted-foreground mb-2 text-[11px] leading-relaxed">
+          当前是「变更前确认」档，每条 write/bash 都会弹卡。目标要跑很多轮时，建议在这里选一档。
+        </p>
+        <div className="flex flex-col gap-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 justify-start text-[11px]"
+            onClick={() => apply("auto-edit")}
+          >
+            编辑免确认（推荐）
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 justify-start text-[11px] text-amber-600 dark:text-amber-400"
+            onClick={() => apply("auto")}
+          >
+            完全访问（命令也不再问，谨慎）
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+};
+
+function formatEvidenceRef(ref: Record<string, unknown>): string {
+  if (ref.kind === "command") return `命令 ${String(ref.command ?? "")}`;
+  if (ref.kind === "file") return `文件 ${String(ref.path ?? "")}`;
+  if (ref.kind === "tool") return `工具 ${String(ref.tool ?? "")}`;
+  if (ref.kind === "manual") return `人工确认：${String(ref.note ?? "")}`;
+  return String(ref.kind ?? "证据");
+}
+
+/** 完成后的逐条核验结果（已核验 / 需人工确认） */
+const CompletionAuditPopover: FC<{ goal: GoalSnapshot }> = ({ goal }) => {
+  const [open, setOpen] = useState(false);
+  const audit = goal.completionAudit ?? [];
+  if (audit.length === 0) return null;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            title="查看完成时的逐条核验结果"
+            className="hover:text-foreground focus-visible:ring-ring flex shrink-0 items-center gap-1 rounded transition-colors focus-visible:ring-1 focus-visible:outline-none"
+          >
+            <ListChecksIcon className="size-3" />
+            <span className="hidden lg:inline">核验 {audit.length} 条</span>
+          </button>
+        }
+      />
+      <PopoverContent align="end" className="w-96 p-3">
+        <div className="mb-2 text-xs font-medium">完成核验</div>
+        <div className="flex flex-col gap-2">
+          {audit.map((row) => (
+            <div key={row.id} className="text-[11px] leading-relaxed">
+              <div className="flex items-center gap-1.5">
+                <span>{row.met ? "✅" : "❌"}</span>
+                <span className="font-medium">
+                  {row.id} {row.text}
+                </span>
+                <span
+                  className={cn(
+                    "rounded px-1 py-0.5 text-[10px]",
+                    row.verified
+                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                      : row.manualOnly
+                        ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                        : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {row.verified ? "已核验" : row.manualOnly ? "需人工确认" : "未核验"}
+                </span>
+              </div>
+              <div className="text-muted-foreground">{row.evidence}</div>
+              {(row.refs ?? []).map((ref, i) => (
+                <div key={i} className="text-muted-foreground/80">
+                  · {formatEvidenceRef(ref)}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
       </PopoverContent>
     </Popover>
   );
@@ -553,7 +1007,7 @@ const CriteriaConfirmCard: FC<{
 
 export const GoalStrip: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const { mode } = useSessionMode(threadId);
+  const { mode, approvalLevel } = useSessionMode(threadId);
   const { goal } = useGoalState(threadId);
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const [busy, setBusy] = useState(false);
@@ -588,8 +1042,9 @@ export const GoalStrip: FC = () => {
           描述你要完成的目标，我跨轮把它做完；撞上轮次上限或原地打转会自己停下。
         </span>
         {/* 目标还没建立时也要能定上限：第一句话即将成为目标，这个数就跟着它定下来 */}
-        <span className="text-muted-foreground shrink-0">
+        <span className="text-muted-foreground flex shrink-0 items-center gap-2">
           <TurnLimitDraftPicker threadId={threadId} />
+          <GoalSetupPopover threadId={threadId} />
         </span>
       </div>
     );
@@ -638,6 +1093,9 @@ export const GoalStrip: FC = () => {
             }
           />
         </span>
+        <span className="hidden shrink-0 sm:inline">
+          <TimeReadout threadId={threadId} goal={goal} disabled={busy} />
+        </span>
         <span
           className="text-muted-foreground/70 hidden shrink-0 tabular-nums md:inline"
           title="本目标消耗的 token，含子代理与工具往返（仅供参考，不参与停机判定）"
@@ -645,6 +1103,12 @@ export const GoalStrip: FC = () => {
           {formatTokens(goal.tokensUsed)} token
         </span>
       </span>
+      {goal.progress.length > 0 && <ProgressPopover progress={goal.progress} />}
+      <CriteriaPopover threadId={threadId} goal={goal} />
+      {goal.status === "complete" && <CompletionAuditPopover goal={goal} />}
+      {mode === "goal" && approvalLevel === "ask" && goal.status !== "complete" && (
+        <AutonomyPopover threadId={threadId} goal={goal} />
+      )}
       {/* 待确认标准：这是整条目标的契约，不能只给个图标——清单与三个决定
           （确认/驳回/跳过）都在这张卡里，条上那个按钮只是它的入口 */}
       {awaiting && (

@@ -11,6 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   decideContinuation,
+  goalContinueText,
   makeGoalContinueMessage,
   makeGoalNegotiationMessage,
 } from "../../src/goal/goal-continuation";
@@ -314,5 +315,61 @@ describe("契约阶段：协商中 / 等确认", () => {
   test("协商注入也重述目标原文", () => {
     const text = textOf(makeGoalNegotiationMessage(negotiatingGoal()));
     expect(text).toContain("把 README 补全");
+  });
+});
+
+describe("v2：时间预算与进度", () => {
+  test("活跃时长到限：暂停并给出 time budget 原因", () => {
+    const now = 1_000_000;
+    const g = goal({
+      maxDurationSeconds: 60,
+      timeUsedSeconds: 0,
+      activeRunStartedAtMs: now - 61_000,
+    });
+    const d = decideContinuation(g, msg("继续"), 0, {
+      ...LIMITS,
+      maxDurationSeconds: 60,
+      now,
+    });
+    expect(d.action).toBe("stop");
+    expect(d.goal.status).toBe("paused");
+    expect(d.goal.pauseReason).toBe("time budget reached");
+  });
+
+  test("未到限继续；暂停期间的时间不计入（窗口由 transitionGoal 结算）", () => {
+    const now = 1_000_000;
+    const g = goal({
+      maxDurationSeconds: 60,
+      timeUsedSeconds: 30,
+      activeRunStartedAtMs: now - 10_000,
+    });
+    const d = decideContinuation(g, msg("继续", ["read"]), 0, {
+      ...LIMITS,
+      maxDurationSeconds: 60,
+      now,
+    });
+    expect(d.action).toBe("continue");
+  });
+
+  test("进度随判定结果保留，续跑消息带上上一轮摘要", () => {
+    const progress = [
+      {
+        turn: 1,
+        at: 1,
+        toolCalls: 2,
+        tools: ["read", "bash"],
+        files: ["a.ts"],
+        commands: 1,
+        errors: 0,
+        summary: "读完了鉴权模块",
+      },
+    ];
+    const g = goal({ turnCount: 1, progress });
+    const d = decideContinuation(g, msg("继续", ["read"]), 0, LIMITS);
+    expect(d.action).toBe("continue");
+    expect(d.goal.progress).toHaveLength(1);
+    const text = goalContinueText(d.goal, { maxAutoTurns: 5 });
+    expect(text).toContain("Last turn:");
+    expect(text).toContain("读完了鉴权模块");
   });
 });

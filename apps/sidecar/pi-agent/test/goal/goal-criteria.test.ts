@@ -22,13 +22,15 @@ import {
   goalStatePayload,
   markGoalWorkSeen,
   rejectGoalCriteria,
+  setGoalCriteria,
   startGoal,
 } from "../../src/goal/goal";
 import { sanitizeFileName } from "../../src/agent/artifact-naming";
 import { flushGoalArtifactsForTest } from "../../src/goal/goal-artifact";
+import { recordGoalToolResult } from "../../src/goal/goal-evidence";
 import { GOAL_TOOL_NAMES, MAX_CRITERIA, proposeCriteria, type Goal } from "../../src/goal/goal-state";
 import type { Running } from "../../src/types";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AfterToolCallContext, AgentTool } from "@earendil-works/pi-agent-core";
 
 let seq = 0;
 /** 本文件所有 run 的 cwd 落点：产物是 fire-and-forget 写的，指到真实工作区
@@ -66,6 +68,9 @@ function confirmedRun(items = ["pnpm test 全绿", "README 有 API 章节"]) {
   const goal = startGoal(run, "把 README 补全");
   commitGoal(run, proposeCriteria(goal, items)!);
   const confirmed = confirmGoalCriteria(run)!;
+  // 这一组测的是对账集合的形状/语义，不是结构化证据；显式回落 legacy，
+  // 避免每个用例都要先造一份工具台账。refs 强校验在 goal-evidence.test.ts 覆盖。
+  commitGoal(run, { ...confirmed, evidencePolicy: "legacy" });
   const tools = buildGoalTools(run);
   const complete = tools.find((t) => t.name === GOAL_TOOL_NAMES.complete) as AgentTool;
   return { run, goal: confirmed, complete };
@@ -380,5 +385,153 @@ describe("完成对账：完成声明背后必须有动作", () => {
     const tool = tools.find((t) => t.name === GOAL_TOOL_NAMES.complete) as AgentTool;
     const text = await complete(tool, goal.id, {});
     expect(text).toContain("Goal complete");
+  });
+});
+
+describe("v2：验收标准启动模式", () => {
+  test("auto：propose 后直接确认，工具表切到执行组", async () => {
+    const run = makeRun();
+    const goal = startGoal(run, "auto 目标", undefined, "auto");
+    const propose = buildGoalTools(run).find(
+      (t) => t.name === GOAL_TOOL_NAMES.propose,
+    ) as AgentTool;
+    const result = (await propose.execute("c1", { criteria: ["测试全绿"] })) as {
+      content: Array<{ type: string; text?: string }>;
+      terminate?: boolean;
+    };
+    const text = result.content
+      .filter((part) => part.type === "text")
+      .map((part) => part.text ?? "")
+      .join("\n");
+    // auto 模式不能终止本轮：契约刚生效，模型要在同一轮继续干活
+    expect(result.terminate).toBeUndefined();
+    const current = getGoal(run.threadId)!;
+    expect(current.acceptance?.status).toBe("confirmed");
+    if (current.acceptance?.status !== "confirmed") return;
+    expect(current.acceptance.confirmedBy).toBe("auto");
+    expect(text).toContain("auto-confirmed");
+    const names = buildGoalTools(run).map((t) => t.name);
+    expect(names).toContain(GOAL_TOOL_NAMES.complete);
+    expect(names).not.toContain(GOAL_TOOL_NAMES.propose);
+    expect(goal.id).toBe(current.id);
+  });
+
+  test("skip：建目标即跳过，直接给执行工具", () => {
+    const run = makeRun();
+    const goal = startGoal(run, "skip 目标", undefined, "skip");
+    expect(goal.acceptance?.status).toBe("skipped");
+    const names = buildGoalTools(run).map((t) => t.name);
+    expect(names).toContain(GOAL_TOOL_NAMES.complete);
+    expect(names).not.toContain(GOAL_TOOL_NAMES.propose);
+  });
+
+  test("manual：提议后终止本轮，等用户确认", async () => {
+    const run = makeRun();
+    startGoal(run, "manual 目标", undefined, "manual");
+    const propose = buildGoalTools(run).find(
+      (t) => t.name === GOAL_TOOL_NAMES.propose,
+    ) as AgentTool;
+    const result = (await propose.execute("c1", { criteria: ["测试全绿"] })) as {
+      terminate?: boolean;
+    };
+    expect(result.terminate).toBe(true);
+  });
+
+  test("用户编辑标准：替换清单、以 user 确认、升级 refs", () => {
+    const run = makeRun();
+    const goal = startGoal(run, "编辑目标", undefined, "manual");
+    commitGoal(run, proposeCriteria(goal, ["旧标准"])!);
+    const next = setGoalCriteria(run, ["新标准一", "新标准二"])!;
+    expect(next.acceptance?.status).toBe("confirmed");
+    if (next.acceptance?.status !== "confirmed") return;
+    expect(next.acceptance.confirmedBy).toBe("user");
+    expect(next.acceptance.items.map((c) => c.text)).toEqual(["新标准一", "新标准二"]);
+    expect(next.evidencePolicy).toBe("refs");
+  });
+});
+
+describe("v2：结构化证据在 goal_complete 的接线", () => {
+  function bashContext(command: string): AfterToolCallContext {
+    return {
+      toolCall: { type: "toolCall", id: "call-bash", name: "bash", arguments: { command } },
+      args: { command },
+      result: { content: [], details: { exitCode: 0 } },
+      isError: false,
+    } as unknown as AfterToolCallContext;
+  }
+
+  async function autoRun(items = ["pnpm test 全绿"]) {
+    const run = makeRun();
+    startGoal(run, "证据目标", undefined, "auto");
+    const propose = buildGoalTools(run).find(
+      (t) => t.name === GOAL_TOOL_NAMES.propose,
+    ) as AgentTool;
+    await propose.execute("c1", { criteria: items });
+    markGoalWorkSeen(run);
+    const tools = buildGoalTools(run);
+    const tool = tools.find((t) => t.name === GOAL_TOOL_NAMES.complete) as AgentTool;
+    return { run, goal: getGoal(run.threadId)!, complete: tool };
+  }
+
+  test("合法 command ref 通过并写入核验标记", async () => {
+    const { run, goal, complete: tool } = await autoRun();
+    await recordGoalToolResult(run, bashContext("pnpm test"));
+    const text = await complete(tool, goal.id, {
+      summary: "测试通过",
+      results: [
+        {
+          id: "c1",
+          met: true,
+          evidence: "pnpm test 退出码 0",
+          refs: [{ kind: "command", command: "pnpm test" }],
+        },
+      ],
+    });
+    expect(text).toContain("Goal complete");
+    expect(getGoal(run.threadId)?.completionAudit?.[0]?.verified).toBe(true);
+  });
+
+  test("成功完成的结果带 terminate=true（否则模型会在同一轮继续撞已完成工具）", async () => {
+    const { run, goal, complete: tool } = await autoRun();
+    await recordGoalToolResult(run, bashContext("pnpm test"));
+    const result = (await tool.execute("c1", {
+      goal_id: goal.id,
+      summary: "测试通过",
+      results: [
+        {
+          id: "c1",
+          met: true,
+          evidence: "pnpm test 退出码 0",
+          refs: [{ kind: "command", command: "pnpm test" }],
+        },
+      ],
+    })) as { terminate?: boolean };
+    expect(result.terminate).toBe(true);
+    expect(getGoal(run.threadId)?.status).toBe("complete");
+  });
+
+  test("缺 refs 或引用假命令都被拒", async () => {
+    const first = await autoRun();
+    const noRefs = await complete(first.complete, first.goal.id, {
+      summary: "做完了",
+      results: [{ id: "c1", met: true, evidence: "测试通过" }],
+    });
+    expect(noRefs).toContain("have no machine-verifiable refs");
+
+    const second = await autoRun();
+    await recordGoalToolResult(second.run, bashContext("pnpm test"));
+    const fake = await complete(second.complete, second.goal.id, {
+      summary: "做完了",
+      results: [
+        {
+          id: "c1",
+          met: true,
+          evidence: "跑过了",
+          refs: [{ kind: "command", command: "pnpm build" }],
+        },
+      ],
+    });
+    expect(fake).toContain("could not be verified");
+    expect(fake).toContain("pnpm test");
   });
 });

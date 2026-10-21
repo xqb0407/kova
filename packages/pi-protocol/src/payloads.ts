@@ -137,6 +137,10 @@ export const sessionSummarySchema = z.looseObject({
    *  "0" = 不限。为什么是字符串：列里 NULL 已经被「从未设置」占用，而「不限」也是一个
    *  要记住的选择，两者必须分得开——与 designTheme 用 "" 表达「显式不使用主题」同型） */
   goalMaxTurns: z.string().optional(),
+  /** 会话级验收标准启动模式（undefined = 从未定过，新目标默认 auto） */
+  goalAcceptanceMode: z.enum(["auto", "manual", "skip"]).optional(),
+  /** 会话级目标时长上限（分钟字符串；"0" = 不限；undefined = 从未定过） */
+  goalMaxDuration: z.string().optional(),
 });
 
 /* --------------------------------- goal --------------------------------- */
@@ -158,11 +162,35 @@ export const goalStateSchema = z.looseObject({
       turnCount: z.number(),
       /** null = 未设上限 */
       maxAutoTurns: z.number().nullable(),
+      /** 活跃时长上限（秒），null = 不限 */
+      maxDurationSeconds: z.number().nullable().optional(),
+      /** 已结算的活跃秒数 */
+      timeUsedSeconds: z.number().optional(),
+      /** 当前活跃窗口开始时间；非 active 时缺省 */
+      activeRunStartedAtMs: z.number().optional(),
+      /** 验收标准启动模式 */
+      acceptanceMode: z.enum(["auto", "manual", "skip"]).optional(),
+      /** 完成证据策略：refs 强校验 / legacy 自由文本 */
+      evidencePolicy: z.enum(["legacy", "refs"]).optional(),
       tokensUsed: z.number(),
       startedAt: z.number(),
       updatedAt: z.number(),
       pauseReason: z.string().optional(),
       completionSummary: z.string().optional(),
+      /** 完成时的逐条对账（含证据引用与核验标记）；只在 complete 后有值 */
+      completionAudit: z
+        .array(
+          z.looseObject({
+            id: z.string(),
+            text: z.string(),
+            met: z.boolean(),
+            evidence: z.string(),
+            refs: z.array(z.looseObject({ kind: z.string() })).optional(),
+            verified: z.boolean().optional(),
+            manualOnly: z.boolean().optional(),
+          }),
+        )
+        .optional(),
       /**
        * 验收标准契约：pending 协商中 / proposed 待用户确认 / confirmed 已生效 /
        * skipped 用户跳过（含老目标回放）。UI 据它决定待确认卡片出不出来。
@@ -173,7 +201,24 @@ export const goalStateSchema = z.looseObject({
           status: z.enum(["pending", "proposed", "confirmed", "skipped"]),
           items: z.array(z.looseObject({ id: z.string(), text: z.string() })).optional(),
           feedback: z.string().optional(),
+          /** auto = 模型提议后自动确认；user = 用户确认/编辑 */
+          confirmedBy: z.enum(["user", "auto"]).optional(),
         })
+        .optional(),
+      /** 每轮进度摘要（最多 12 条）；只用于展示，不参与判定 */
+      progress: z
+        .array(
+          z.looseObject({
+            turn: z.number(),
+            at: z.number(),
+            toolCalls: z.number(),
+            tools: z.array(z.string()),
+            files: z.array(z.string()),
+            commands: z.number(),
+            errors: z.number(),
+            summary: z.string(),
+          }),
+        )
         .optional(),
     })
     .nullable(),

@@ -35,6 +35,8 @@ const desktopTransport: PiClientTransport = {
       attachments: args.attachments,
       steer: args.steer,
       goalMaxAutoTurns: args.goalMaxAutoTurns ?? null,
+      goalAcceptanceMode: args.goalAcceptanceMode ?? null,
+      goalMaxDurationMinutes: args.goalMaxDurationMinutes ?? null,
     });
   },
 

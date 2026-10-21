@@ -93,6 +93,8 @@ export function initTables(db: Db): void {
     "ALTER TABLE sessions ADD COLUMN design_theme TEXT;",
     "ALTER TABLE sessions ADD COLUMN app_mode TEXT;",
     "ALTER TABLE sessions ADD COLUMN goal_max_turns TEXT;",
+    "ALTER TABLE sessions ADD COLUMN goal_acceptance_mode TEXT;",
+    "ALTER TABLE sessions ADD COLUMN goal_max_duration TEXT;",
   ]) {
     try {
       db.exec(sql);
@@ -464,7 +466,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       const id = strParam(p, "sessionId");
       const row = db
         .prepare(
-          "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns FROM sessions WHERE id = ?1",
+          "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration FROM sessions WHERE id = ?1",
         )
         .get(id) as Row | undefined;
       if (!row) return null;
@@ -479,6 +481,8 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         designTheme: row.design_theme ?? null,
         appMode: row.app_mode ?? null,
         goalMaxTurns: row.goal_max_turns ?? null,
+        goalAcceptanceMode: row.goal_acceptance_mode ?? null,
+        goalMaxDuration: row.goal_max_duration ?? null,
       };
     }
     case "session_insert": {
@@ -493,7 +497,7 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
     case "session_list": {
       const rows = db
         .prepare(
-          "SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns FROM sessions ORDER BY updated_at DESC",
+          "SELECT id, title, first_message, cwd, archived, updated_at, message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration FROM sessions ORDER BY updated_at DESC",
         )
         .all() as Row[];
       return rows.map((r) => ({
@@ -512,6 +516,8 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         designTheme: r.design_theme ?? null,
         appMode: r.app_mode ?? null,
         goalMaxTurns: r.goal_max_turns ?? null,
+        goalAcceptanceMode: r.goal_acceptance_mode ?? null,
+        goalMaxDuration: r.goal_max_duration ?? null,
       }));
     }
     case "session_delete": {
@@ -557,7 +563,9 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
          thinking_level = COALESCE(?6, thinking_level),
          design_theme = COALESCE(?7, design_theme),
          app_mode = COALESCE(?8, app_mode),
-         goal_max_turns = COALESCE(?9, goal_max_turns)
+         goal_max_turns = COALESCE(?9, goal_max_turns),
+         goal_acceptance_mode = COALESCE(?10, goal_acceptance_mode),
+         goal_max_duration = COALESCE(?11, goal_max_duration)
          WHERE id = ?1`,
       ).run(
         id,
@@ -569,6 +577,8 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
         strOrNull(p?.designTheme),
         strOrNull(p?.appMode),
         strOrNull(p?.goalMaxTurns),
+        strOrNull(p?.goalAcceptanceMode),
+        strOrNull(p?.goalMaxDuration),
       );
       return {};
     }

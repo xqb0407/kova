@@ -554,6 +554,8 @@ export class WsPiChannel implements PiChannel {
     attachments: import("@/lib/pi/pi-channel").PiPromptAttachment[] | null;
     steer: boolean;
     goalMaxAutoTurns?: number;
+    goalAcceptanceMode?: "auto" | "manual" | "skip";
+    goalMaxDurationMinutes?: number;
   }): boolean {
     if (this.closedByUser) return false;
     if (this.promptOutbox.size >= PROMPT_OUTBOX_LIMIT) return false;
@@ -570,6 +572,8 @@ export class WsPiChannel implements PiChannel {
       // 并入当前轮（steer）：sidecar 忙线程注入活跃轮
       steer: args.steer === true,
       goalMaxAutoTurns: args.goalMaxAutoTurns,
+      goalAcceptanceMode: args.goalAcceptanceMode,
+      goalMaxDurationMinutes: args.goalMaxDurationMinutes,
     });
     const entry: PromptOutboxEntry = {
       line,

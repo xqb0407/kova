@@ -7,6 +7,7 @@ import {
   Agent,
   type AgentEvent,
   type AgentTool,
+  type AfterToolCallContext,
   type BeforeToolCallContext,
   type BeforeToolCallResult,
 } from "@earendil-works/pi-agent-core";
@@ -89,6 +90,11 @@ type SubagentRunOptions = {
    * 漏接会编译不过，而不是静默放行。
    */
   toolGate: (context: BeforeToolCallContext) => Promise<BeforeToolCallResult | undefined>;
+  /**
+   * 工具结果回调：父会话用它把子代理的调用记进目标证据台账。
+   * 可选——非 goal 场景没有台账可记。
+   */
+  onToolResult?: (context: AfterToolCallContext) => void | Promise<void>;
   signal?: AbortSignal;
   /** 归一化活动条目回调（进缓冲 + 广播；见 pushActivity） */
   onActivity?: (item: SubagentActivityItem) => void;
@@ -177,7 +183,14 @@ export class SubagentRun {
           },
         );
       },
-      afterToolCall: async () => {
+      afterToolCall: async (context) => {
+        // 目标证据：子代理的 write/bash 也要能证明父目标（否则把活全交给子代理
+        // 的目标永远交不出可核验证据）。账记失败不阻断工具结果。
+        try {
+          await this.opts.onToolResult?.(context);
+        } catch (err) {
+          logErr("subagent goal evidence:", err);
+        }
         // sidecar 工具直接执行、没有父级簿记，这里只负责定义的轮次上限
         const capped =
           this.opts.definition.maxTurns !== undefined &&

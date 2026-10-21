@@ -695,7 +695,13 @@ async function runTurnBody(
   // 重排会把目标块写进系统提示词，晚一步这一轮的模型就看不到自己要做的是什么。
   // 取 msg.text 原话而非拼了附件提示行的 promptText：目标原文是用户亲手打的那段，
   // 不该把被拒附件的说明行算进目标。
-  syncGoalOnUserPrompt(run, String(msg.text ?? ""), msg.goalMaxAutoTurns);
+  syncGoalOnUserPrompt(
+    run,
+    String(msg.text ?? ""),
+    msg.goalMaxAutoTurns,
+    msg.goalAcceptanceMode,
+    msg.goalMaxDurationMinutes,
+  );
   // 目标刚建起来时工具表要跟着换：这一条路径是在 dispatch 过程里建目标的，而
   // state.tools 只在会话物化 / 切模式 / 几个设置项 reload 时重建——不补这一次，
   // 协商轮拿到的仍是上一阶段的表，goal_propose_criteria 不在里面（模型只能空转

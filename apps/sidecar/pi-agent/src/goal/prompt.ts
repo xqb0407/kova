@@ -121,6 +121,8 @@ function confirmedBlock(goal: Goal): string {
     ...items.map((c) => `${c.id}. ${c.text}`),
     "",
     "When you call goal_complete you must pass a `results` entry for EVERY criterion id above, each with the evidence you actually observed. The call is rejected outright if any criterion is missing from `results`.",
+    'Every met criterion also needs machine-verifiable `refs`: {kind:"command", command:"pnpm test"} for a command you actually ran successfully, or {kind:"file", path:"src/x.ts", expect:"modified"} for a file you actually wrote. ' +
+      '`{kind:"manual", note}` is allowed for criteria that cannot be machine-checked, but at least one machine-verifiable ref is required overall. A free-text evidence field alone is rejected.',
     "A criterion you have not verified is not a criterion you have met. If some are still unmet, do not call goal_complete — keep working on them.",
     "",
     GOAL_RULES,
