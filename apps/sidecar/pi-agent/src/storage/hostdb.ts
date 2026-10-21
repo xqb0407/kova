@@ -221,6 +221,31 @@ export const secretSet = (name: string, scope: string, value: string) =>
 export const secretDelete = (name: string, scope: string) =>
   query("secret_delete", { name, scope });
 
+export type SecretCipherBackend =
+  | "system-keychain"
+  | "local-key-file"
+  | "unavailable";
+
+/** 主密钥保护方式（Electron 主进程返回；旧宿主/测试环境可能回 unavailable） */
+export const secretCipherStatus = () =>
+  query<{ backend: SecretCipherBackend }>("secret_cipher_status");
+
+/** MCP 子进程的密钥注入请求：envName 是子进程里的变量名，name 是密钥库里的名字。
+ *  只允许 global 作用域（连接池跨工作区共享，工作区值会有归属歧义）。 */
+export type McpSecretEnvRequest = {
+  envName: string;
+  name: string;
+  scope: "global";
+};
+
+/**
+ * 宿主解密一组 MCP 密钥并回 env 映射。**这是唯一把明文送回 sidecar 的路径**：
+ * stdio MCP 子进程由 sidecar 拉起，宿主无法像 bash 那样直接注入，只能把值
+ * 交给它；sidecar 只在内存里保留到连接断开，用于子进程环境与输出脱敏。
+ */
+export const secretEnvResolve = (server: string, requests: McpSecretEnvRequest[]) =>
+  query<{ env: Record<string, string> }>("secret_env_resolve", { server, requests });
+
 
 export const customProvidersList = () => query<CustomProviderRow[]>("custom_providers_list");
 

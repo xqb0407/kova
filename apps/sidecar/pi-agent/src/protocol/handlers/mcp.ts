@@ -12,6 +12,8 @@ import { getValidTools } from "../../mcp/mcp-cache";
 import { clearOAuthForServer } from "../../mcp/mcp-oauth";
 import { readMcpAudit } from "../../mcp/mcp-audit";
 import { deleteMcpServer, loadMcpServers, saveMcpServer, setMcpServerEnabled } from "../../mcp/mcp-config";
+import { computeConfigHash } from "../../mcp/mcp-cache";
+import { deleteMcpSecretBinding, saveMcpSecretBindings } from "../../mcp/mcp-secrets";
 import { mcpDraftFromMessage, mcpServersPayload, reloadMcpConnections } from "../payloads";
 import type { CommandHandler } from "../command";
 
@@ -44,6 +46,38 @@ export const handlers: Record<string, CommandHandler> = {
     const replaceName =
       typeof msg.name === "string" && msg.name.trim() ? msg.name.trim() : undefined;
     await saveMcpServer(layer, draft, { cwd, replaceName });
+    const { defs } = await loadMcpServers(cwd);
+    const saved = defs.find((d) => d.name === draft.name);
+    if (replaceName && replaceName !== draft.name) {
+      await deleteMcpSecretBinding(replaceName);
+    }
+    if (saved) {
+      if (saved.transport !== "stdio") {
+        // 切成 HTTP 后旧的 env 绑定没有意义；显式带密钥来则拒绝，避免 UI 以为存上了
+        if (Array.isArray(msg.secretEnv) && msg.secretEnv.length > 0) {
+          throw new Error("HTTP 传输不支持环境变量密钥注入");
+        }
+        await deleteMcpSecretBinding(saved.name);
+      } else if (Array.isArray(msg.secretEnv)) {
+        const submitted = msg.secretEnv;
+        const editedHash =
+          typeof msg.secretBindingHash === "string" ? msg.secretBindingHash : "";
+        const hashChanged = editedHash.length > 0 && editedHash !== computeConfigHash(saved);
+        // 配置（命令/参数/env/url/headers）变了而用户只改了服务器字段：
+        // 不把旧绑定自动续到新配置上，先解除；要保留必须由 UI 显式重新提交。
+        if (hashChanged && submitted.length > 0) {
+          await saveMcpSecretBindings(saved, []);
+          logErr(
+            `mcp: dropped stale secret binding for "${saved.name}" (config changed)`,
+          );
+        } else {
+          await saveMcpSecretBindings(saved, submitted);
+        }
+        // 绑定变了但配置没变时 reloadMcpConnections 不会断连：显式踢掉旧子进程，
+        // 下次调用/预连用新的 env 重新 spawn。
+        mcpManager.disconnect(saved.name, "secret_binding");
+      }
+    }
     await reloadMcpConnections(cwd);
     send({ id: reqId, type: "mcp_servers", ...(await mcpServersPayload(cwd)) });
   },
@@ -62,12 +96,15 @@ export const handlers: Record<string, CommandHandler> = {
     const { defs: beforeDefs } = await loadMcpServers(cwd);
     const gone = beforeDefs.find((d) => d.name === name && d.layer === layer);
     await deleteMcpServer(layer, name, { cwd });
+    const { defs: afterDefs } = await loadMcpServers(cwd);
+    // 只在同名服务器彻底不存在时清绑定；下层还有同名定义就保留，让哈希决定
+    // 它是继续生效还是变成 stale（用户仍可在设置页看到并重新确认）。
+    if (!afterDefs.some((d) => d.name === name)) await deleteMcpSecretBinding(name);
     await reloadMcpConnections(cwd);
     // 删掉最后一台共用该 URL 的 http 服务器时顺带清 OAuth 凭据：
     // 凭据按 URL 键控，不清的话删除重加仍拿存量 token 静默连，用户无从重置授权
     if (gone?.transport === "http" && gone.url) {
       const url = String(gone.url);
-      const { defs: afterDefs } = await loadMcpServers(cwd);
       const stillUsed = afterDefs.some(
         (d) => d.transport === "http" && String(d.url ?? "") === url,
       );

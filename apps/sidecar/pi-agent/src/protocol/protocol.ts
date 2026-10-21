@@ -124,7 +124,7 @@
  *   { "type": "set_mirror", "id", "settings" }                → { id, type: "mirror", settings }（落 SQLite kv 即生效，WebFetch 与 bash 的 git 注入每次调用实时读）
  *   { "type": "get_imagegen", "id" }                           → { id, type: "imagegen", settings }（文生图：总开关/默认生图模型 provider+modelId/默认尺寸）
  *   { "type": "set_imagegen", "id", "settings" }               → { id, type: "imagegen", settings }（落 SQLite kv 即生效，generate_image execute 实时门控）
- *   { "type": "list_secrets", "id" }                          → { id, type: "secrets", entries, enabled, bindings }（密钥清单**只回名字与掩码**，明文落 Rust 侧密文存储，无 RPC 出口）
+ *   { "type": "list_secrets", "id" }                          → { id, type: "secrets", entries, enabled, bindings, cipher }（密钥清单**只回名字与掩码**；cipher = 主密钥保护方式 system-keychain / local-key-file / unavailable）
  *   { "type": "save_secret", "id", "name", "scope", "value"?, "skills"?, "cwd"? } → 刷新后的密钥清单
  *       value 留空 = 只改绑定不改值（编辑弹窗不回填明文）；skills 给出即整条替换该名字的技能白名单；scope = "global"|"workspace"（workspace 需 cwd）
  *   { "type": "delete_secret", "id", "name", "scope", "cwd"? } → 刷新后的密钥清单（连带摘掉该名字的绑定）
@@ -226,8 +226,12 @@
  *   { "type": "list_mcp_servers", "id", "cwd"? }             → { id, type: "mcp_servers", servers, workspaceCwd, diagnostics }
  *       MCP 服务器清单（系统 ~/.kova/mcp.json + 工作区 .mcp.json/.kova/mcp.json 合并，
  *       含每台连接状态）；设置 → MCP 页渲染用
- *   { "type": "save_mcp_server", "id", "layer", "cwd"?, ("definition"), "name"? } → 校验后写系统/工作区覆盖文件
- *       + 断连重载 → 同款 mcp_servers 应答（name=编辑前原名，改名时清旧条目）
+ *   { "type": "save_mcp_server", "id", "layer", "cwd"?, ("definition"), "name"?,
+ *     "secretEnv"?: [{envName,name,scope:"global"}], "secretBindingHash"? }
+ *       → 校验后写系统/工作区覆盖文件 + 断连重载 → 同款 mcp_servers 应答
+ *       （name=编辑前原名，改名时清旧条目；secretEnv 空数组=解除绑定；
+ *        secretBindingHash 是打开编辑器时的 configHash，配置变了且未重新提交时
+ *        旧绑定会被丢弃而不是续到新命令上）
  *   { "type": "delete_mcp_server", "id", "layer", "name", "cwd"? } → 删条目 + 断连 → 同款应答
  *   { "type": "set_mcp_server_enabled", "id", "layer", "name", "cwd"?, "enabled" } → 开关落 kv + 断连重载 → 同款应答
  *   { "type": "test_mcp_server", "id", "layer", "name", "cwd"? } → { id, type: "mcp_server_test", status }

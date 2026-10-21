@@ -46,6 +46,7 @@ import { initSubagentState } from "./subagent/subagent-definitions";
 import { pruneActivityFiles } from "./subagent/activity-store";
 import { initSkillsState } from "./skills/skills";
 import { initMcpEnabledState } from "./mcp/mcp-config";
+import { initMcpSecretBindings } from "./mcp/mcp-secrets";
 import { initPluginsState, syncBuiltinPlugins } from "./plugins/plugins";
 import { initSecretsConfig } from "./secrets/secrets";
 import { syncBuiltinThemes } from "./design-md/builtin-sync";
@@ -130,6 +131,8 @@ async function main() {
     await initSkillsState();
     // MCP 启用开关同走 kv（服务器定义文件按需带签名加载）；就绪后启动空闲连接回收
     await initMcpEnabledState();
+    // MCP 密钥绑定同走 kv（用户级；工作区配置文件不能自我授权）
+    await initMcpSecretBindings();
     mcpManager.startReaper();
     // 生命周期钩子配置同走 kv（PreToolUse/PermissionRequest 在工具路径同步读取，
     // 必须在闸门放行前就位，保证首批会话即生效）

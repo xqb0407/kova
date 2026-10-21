@@ -18,7 +18,7 @@ import { appDataDir, dbPath } from "./paths";
 import { kvGet, kvSet } from "./store";
 import { emitToWindows } from "./ipc";
 import { logInfo } from "./logging";
-import { decrypt, encrypt, PREFIX as SECRET_PREFIX } from "./secret";
+import { decrypt, encrypt, isEncrypted } from "./secret";
 import { openDb } from "./db";
 
 const MAGIC = Buffer.from("PIABK1\n", "utf8");
@@ -425,10 +425,10 @@ function configView(c: BackupConfig): any {
   };
 }
 
-/** 新值空串 = 保留旧值；enc:v1: 前缀 = 原样；否则加密落库 */
+/** 新值空串 = 保留旧值；已是密文（aes:v1:/enc:v1:）= 原样；否则加密落库 */
 function mergeSecret(oldV: string, newV: string): string {
   if (!newV || newV.length === 0) return oldV;
-  if (newV.startsWith(SECRET_PREFIX)) return newV;
+  if (isEncrypted(newV)) return newV;
   return encrypt(newV);
 }
 

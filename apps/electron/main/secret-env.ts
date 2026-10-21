@@ -1,31 +1,21 @@
 /**
  * 密钥执行时解析/注入/脱敏（对齐 secret_env.rs 全函数）。
- * 明文只在工具调用的进程内存活一次，绝不跨 RPC 边界。
+ *
+ * bash 的明文只在宿主内活一次，不跨 RPC；MCP stdio 子进程由 sidecar 拉起，
+ * 宿主无法直接注入，因此 `secret_env_resolve` 会把命中的值交给 sidecar。
+ * 该路径只接受用户级 MCP 绑定产生的 global 请求，且返回值仅用于子进程 env
+ * 与输出脱敏。
  */
 import { createHash } from "node:crypto";
 import type { Db } from "./db";
 import { decrypt } from "./secret";
-import { isValidSecretName } from "./data";
+import { redactSecrets, type SecretValue } from "./secret-crypto";
+import { parseSecretRequests, type McpSecretEnvRequest } from "./secret-requests";
 import { logInfo, logWarn } from "./logging";
 
-export type SecretPair = { name: string; value: string };
+export type SecretPair = SecretValue;
 
-const REDACT_MIN_LEN = 8;
 const MAX_RESOLVED = 32;
-
-/** 信封上的请求清单：secretEnv=[{name, scope}]；非法条目静默丢弃 */
-export function parseRequests(envelope: any): { name: string; scope: string }[] {
-  const list = envelope?.secretEnv;
-  if (!Array.isArray(list)) return [];
-  const out: { name: string; scope: string }[] = [];
-  for (const item of list.slice(0, MAX_RESOLVED)) {
-    const name = typeof item?.name === "string" ? item.name : "";
-    if (!name || !isValidSecretName(name)) continue;
-    const scope = typeof item?.scope === "string" ? item.scope : "global";
-    out.push({ name, scope });
-  }
-  return out;
-}
 
 /** 名字 → 明文：请求 scope 命中即用，否则回落 global；查不到/解不开静默跳过 */
 export function resolveNames(db: Db, requests: { name: string; scope: string }[]): SecretPair[] {
@@ -57,7 +47,9 @@ export function resolveNames(db: Db, requests: { name: string; scope: string }[]
 
 /** 工具调用前解析（dispatch 的 tool 分支）：失败只记日志，工具照常执行 */
 export function resolveIntoEnvelope(db: Db, envelope: any): void {
-  const requests = parseRequests(envelope);
+  // 宿主信封有两种形状：旧 Rust 直挂 secretEnv；Electron 的 hostToolCall 把
+  // 工具参数嵌在 envelope.params 下。两种都要认，否则密钥名单永远解析不到。
+  const requests = parseSecretRequests(envelope);
   if (requests.length === 0) return;
   let resolved: SecretPair[];
   try {
@@ -87,22 +79,51 @@ export function takeResolved(envelope: any): SecretPair[] {
 
 /** 注入为派生进程的环境变量增量（父环境照常继承） */
 export function envFromResolved(resolved: SecretPair[]): Record<string, string> {
-  const out: Record<string, string> = {};
+  const out = Object.create(null) as Record<string, string>;
   for (const { name, value } of resolved) out[name] = value;
   return out;
 }
 
 /** 输出脱敏：原值 + base64 变体 → [REDACTED:<NAME>]；短值（<8）跳过 */
 export function redact(text: string, resolved: SecretPair[]): string {
-  let out = text;
-  for (const { name, value } of resolved) {
-    if (Array.from(value).length < REDACT_MIN_LEN) continue;
-    const marker = `[REDACTED:${name}]`;
-    if (out.includes(value)) out = out.split(value).join(marker);
-    const b64 = Buffer.from(value, "utf8").toString("base64");
-    if (b64 !== value && out.includes(b64)) out = out.split(b64).join(marker);
+  return redactSecrets(text, resolved);
+}
+
+/* ------------------------------ MCP stdio 注入 ------------------------------ */
+
+/**
+ * 名字 → 明文 env 映射。查不到/解不开的条目跳过（MCP 服务器自己报缺凭据），
+ * 绝不回退到同名但作用域不同的另一条密钥。日志只出现名字，不出现值。
+ */
+export function resolveMcpSecretEnv(
+  db: Db,
+  requests: McpSecretEnvRequest[],
+  server: string,
+): Record<string, string> {
+  if (requests.length === 0) return {};
+  // 无原型：envName 来自用户绑定，`__proto__` 不能变成原型赋值
+  const env = Object.create(null) as Record<string, string>;
+  const unresolved: string[] = [];
+  for (const request of requests) {
+    const resolved = resolveNames(db, [{ name: request.name, scope: request.scope }]);
+    const pair = resolved[0];
+    if (!pair) {
+      unresolved.push(`${request.envName}(${request.name})`);
+      continue;
+    }
+    env[request.envName] = pair.value;
   }
-  return out;
+  const injected = Object.keys(env);
+  if (injected.length > 0) {
+    logInfo(
+      `[secret_env] MCP server "${server}" injecting ${injected.length} secret(s): ${injected.join(", ")}`,
+    );
+  }
+  if (unresolved.length > 0) {
+    logWarn(`[secret_env] MCP server "${server}" unresolved: ${unresolved.join(", ")}`);
+  }
+  return env;
 }
 
 export { createHash };
+

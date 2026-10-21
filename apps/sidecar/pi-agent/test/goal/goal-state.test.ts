@@ -416,11 +416,11 @@ describe("目标文本校验", () => {
 describe("v2：验收模式、时间预算与进度", () => {
   test("acceptanceMode：默认 auto；manual/skip 按显式值", () => {
     expect(createGoal("x").acceptanceMode).toBe("auto");
-    expect(createGoal("x").acceptance.status).toBe("pending");
+    expect(createGoal("x").acceptance?.status).toBe("pending");
     expect(createGoal("x", 300, { acceptanceMode: "manual" }).acceptanceMode).toBe("manual");
     const skipped = createGoal("x", 300, { acceptanceMode: "skip" });
     expect(skipped.acceptanceMode).toBe("skip");
-    expect(skipped.acceptance.status).toBe("skipped");
+    expect(skipped.acceptance?.status).toBe("skipped");
     // null 是「明确不限」，不能被 ?? 换成默认 2 小时
     expect(createGoal("x", 300, { maxDurationSeconds: null }).maxDurationSeconds).toBeNull();
   });
@@ -429,10 +429,11 @@ describe("v2：验收模式、时间预算与进度", () => {
     const pending = createGoal("x", 300, { acceptanceMode: "auto" });
     const proposed = proposeCriteria(pending, ["测试全绿"])!;
     const confirmed = autoConfirmCriteria(proposed)!;
-    expect(confirmed.acceptance.status).toBe("confirmed");
-    if (confirmed.acceptance.status !== "confirmed") return;
-    expect(confirmed.acceptance.confirmedBy).toBe("auto");
-    expect(confirmed.acceptance.items[0]?.text).toBe("测试全绿");
+    const acceptance = confirmed.acceptance;
+    expect(acceptance?.status).toBe("confirmed");
+    if (acceptance?.status !== "confirmed") return;
+    expect(acceptance.confirmedBy).toBe("auto");
+    expect(acceptance.items[0]?.text).toBe("测试全绿");
   });
 
   test("replaceCriteria：用户编辑后以 user 确认并把 legacy 升级为 refs", () => {
@@ -447,10 +448,11 @@ describe("v2：验收模式、时间预算与进度", () => {
       evidencePolicy: "legacy" as const,
     };
     const next = replaceCriteria(legacy, ["新标准一", "新标准二"])!;
-    expect(next.acceptance.status).toBe("confirmed");
-    if (next.acceptance.status !== "confirmed") return;
-    expect(next.acceptance.confirmedBy).toBe("user");
-    expect(next.acceptance.items.map((c) => c.text)).toEqual(["新标准一", "新标准二"]);
+    const acceptance = next.acceptance;
+    expect(acceptance?.status).toBe("confirmed");
+    if (acceptance?.status !== "confirmed") return;
+    expect(acceptance.confirmedBy).toBe("user");
+    expect(acceptance.items.map((c) => c.text)).toEqual(["新标准一", "新标准二"]);
     expect(next.evidencePolicy).toBe("refs");
   });
 

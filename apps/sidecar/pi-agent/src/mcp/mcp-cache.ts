@@ -43,13 +43,21 @@ export function cachePath(): string {
  * 工具清单，参与哈希反而会让无意义的重连抖动缓存）。
  */
 export function computeConfigHash(def: McpServerDef): string {
+  // env/headers 的键序不影响子进程语义，先规范化再哈希：否则在设置页调整
+  // 环境变量行的顺序会平白改变哈希，导致密钥绑定失效/连接重连。
+  const canonicalMap = (map: Record<string, string> | undefined) => {
+    if (!map) return null;
+    const keys = Object.keys(map).sort();
+    if (keys.length === 0) return null;
+    return Object.fromEntries(keys.map((k) => [k, map[k]]));
+  };
   const material = JSON.stringify({
     transport: def.transport,
     command: def.command ?? null,
     args: def.args ?? null,
-    env: def.env ?? null,
+    env: canonicalMap(def.env),
     url: def.url ?? null,
-    headers: def.headers ?? null,
+    headers: canonicalMap(def.headers),
   });
   return createHash("sha256").update(material).digest("hex").slice(0, 32);
 }

@@ -16,6 +16,7 @@ import {
   CheckIcon,
   ChevronDownIcon,
   FolderOpenIcon,
+  KeyRoundIcon,
   PencilIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -81,11 +82,13 @@ import {
   useMcpServers,
   type McpAuditEvent,
   type McpLogLine,
+  type McpSecretEnvBinding,
   type McpServerDraft,
   type McpToolInfo,
   type McpServerEntry,
   type McpServerIcon,
 } from "@/lib/mcp/mcp";
+import { refreshSecrets, useSecrets } from "@/lib/secrets/secrets-store";
 import { openExternal } from "@/lib/external-link";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
 import { Label } from "@/components/ui/label";
@@ -143,6 +146,8 @@ type FormDraft = {
   idleTimeoutText: string;
   callTimeoutText: string;
   approveToolsText: string;
+  /** MCP stdio 的密钥注入（仅全局作用域；值不在这里，只有名字） */
+  secretEnv: McpSecretEnvBinding[];
 };
 
 const EMPTY_FORM: FormDraft = {
@@ -158,7 +163,11 @@ const EMPTY_FORM: FormDraft = {
   idleTimeoutText: "",
   callTimeoutText: "",
   approveToolsText: "",
+  secretEnv: [],
 };
+
+/** 密钥环境变量名规则（与 sidecar / 密钥库同款） */
+const SECRET_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** "A=1\nB=2" → Record（忽略空行与无 = 的行） */
 function parseKeyValueLines(text: string): Record<string, string> {
@@ -180,6 +189,29 @@ function keyValuesToText(map: Record<string, string> | undefined): string {
     .join("\n");
 }
 
+/** 与 sidecar computeConfigHash 对齐的语义签名（排序 env/headers 键序）。 */
+function formConfigSignature(form: FormDraft): string {
+  const stdio = form.transport === "stdio";
+  const args = stdio
+    ? form.argsText
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+  const mapEntries = (text: string) =>
+    Object.entries(parseKeyValueLines(text)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const env = stdio ? mapEntries(form.envText) : [];
+  const headers = stdio ? [] : mapEntries(form.headersText);
+  return JSON.stringify({
+    transport: form.transport,
+    command: stdio ? form.command.trim() : null,
+    args: stdio && args.length > 0 ? args : null,
+    env: stdio && env.length > 0 ? env : null,
+    url: stdio ? null : form.url.trim(),
+    headers: headers.length > 0 ? headers : null,
+  });
+}
+
 function entryToForm(entry: McpServerEntry): FormDraft {
   return {
     name: entry.name,
@@ -194,6 +226,11 @@ function entryToForm(entry: McpServerEntry): FormDraft {
     idleTimeoutText: entry.idleTimeout !== undefined ? String(entry.idleTimeout) : "",
     callTimeoutText: entry.callTimeout !== undefined ? String(entry.callTimeout) : "",
     approveToolsText: (entry.approveTools ?? []).join(", "),
+    secretEnv: (entry.secretEnv ?? []).map((b) => ({
+      envName: b.envName,
+      name: b.name,
+      scope: "global" as const,
+    })),
   };
 }
 
@@ -207,6 +244,18 @@ function parseTimeoutText(text: string, label: string): number | string | undefi
 }
 
 function formToDraft(form: FormDraft): McpServerDraft | string {
+  if (form.transport === "stdio") {
+    const seen = new Set<string>();
+    for (const row of form.secretEnv) {
+      const envName = row.envName.trim();
+      if (!SECRET_ENV_NAME_RE.test(envName)) {
+        return "密钥环境变量名需匹配 [A-Za-z_][A-Za-z0-9_]*";
+      }
+      if (!row.name) return `环境变量 ${envName} 还没有选择密钥`;
+      if (seen.has(envName)) return `环境变量 ${envName} 重复绑定`;
+      seen.add(envName);
+    }
+  }
   const idleTimeout = parseTimeoutText(form.idleTimeoutText, "空闲断开时间");
   if (typeof idleTimeout === "string") return idleTimeout;
   const callTimeout = parseTimeoutText(form.callTimeoutText, "工具调用超时");
@@ -258,25 +307,69 @@ const McpEditorDialog: FC<{
   workspaceCwd: string | null;
 }> = ({ open, onOpenChange, target, workspaceCwd }) => {
   const isEdit = target?.mode === "edit";
+  const secrets = useSecrets();
   const [form, setForm] = useState<FormDraft>(EMPTY_FORM);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 配置变更时保留原绑定的显式勾选；动密钥行会自动勾上（= 对新配置重新授权） */
+  const [keepBindingsOnConfigChange, setKeepBindingsOnConfigChange] = useState(false);
 
   useEffect(() => {
     if (!open || !target) return;
     setForm(target.mode === "edit" ? entryToForm(target.entry) : EMPTY_FORM);
     setError(null);
     setBusy(false);
+    setKeepBindingsOnConfigChange(false);
   }, [open, target]);
+
+  useEffect(() => {
+    if (open) void refreshSecrets();
+  }, [open]);
+
+  const globalSecrets = useMemo(
+    () => secrets.entries.filter((e) => e.scope === "global" && e.readable),
+    [secrets.entries],
+  );
 
   if (!target || target.mode === "json") return null;
   const layer = writableLayer(target.mode === "create" ? target.layer : target.entry.layer);
   const layerNeedsCwd = layer === "workspace" && !workspaceCwd;
   const insecureHttp =
     form.transport === "http" && isNonLoopbackHttpUrl(form.url);
+  const configChanged =
+    isEdit && target.mode === "edit"
+      ? formConfigSignature(form) !== formConfigSignature(entryToForm(target.entry))
+      : false;
 
   const setField = <K extends keyof FormDraft>(key: K, value: FormDraft[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
+
+  const updateSecretRow = (
+    index: number,
+    patch: Partial<McpSecretEnvBinding>,
+  ) => {
+    setKeepBindingsOnConfigChange(true);
+    setForm((f) => ({
+      ...f,
+      secretEnv: f.secretEnv.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    }));
+  };
+
+  const addSecretRow = () => {
+    setKeepBindingsOnConfigChange(true);
+    setForm((f) => ({
+      ...f,
+      secretEnv: [
+        ...f.secretEnv,
+        { envName: "", name: globalSecrets[0]?.name ?? "", scope: "global" },
+      ],
+    }));
+  };
+
+  const removeSecretRow = (index: number) => {
+    setKeepBindingsOnConfigChange(true);
+    setForm((f) => ({ ...f, secretEnv: f.secretEnv.filter((_, i) => i !== index) }));
+  };
 
   const save = async () => {
     if (busy) return;
@@ -285,6 +378,25 @@ const McpEditorDialog: FC<{
       setError(draft);
       return;
     }
+    // 配置字段变了但用户没动密钥行：默认解除旧绑定（不把旧密钥续到新命令）。
+    // 勾选“保留”或实际改过密钥行（会自动勾上）= 对新配置的显式授权。
+    const keepBindings = !configChanged || keepBindingsOnConfigChange;
+    const submitted =
+      form.transport === "stdio"
+        ? form.secretEnv.map((row) => ({
+            envName: row.envName.trim(),
+            name: row.name,
+            scope: "global" as const,
+          }))
+        : [];
+    const secretEnv = keepBindings ? submitted : [];
+    const secretBindingHash =
+      isEdit && target.mode === "edit" && !(configChanged && keepBindings)
+        ? target.entry.configHash
+        : undefined;
+    // 新建且没填密钥时不发 secretEnv：避免“新建同名工作区覆盖”顺手把
+    // 系统层已有的绑定清掉；编辑总是发送（空数组 = 用户明确解除）。
+    const sendSecretEnv = isEdit || secretEnv.length > 0;
     setBusy(true);
     setError(null);
     try {
@@ -293,6 +405,8 @@ const McpEditorDialog: FC<{
         cwd: layer === "workspace" ? workspaceCwd ?? undefined : undefined,
         ...(isEdit && target.mode === "edit" ? { name: target.entry.name } : {}),
         definition: draft,
+        ...(sendSecretEnv ? { secretEnv } : {}),
+        ...(secretBindingHash ? { secretBindingHash } : {}),
       });
       onOpenChange(false);
     } catch (err) {
@@ -304,7 +418,7 @@ const McpEditorDialog: FC<{
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="flex max-h-[calc(100dvh-3rem)] flex-col gap-4 overflow-hidden sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
             {target.mode === "create"
@@ -319,7 +433,7 @@ const McpEditorDialog: FC<{
               : "保存到 ~/.kova/mcp.json，对本机所有工作区生效"}
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-3">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
           <div className="flex gap-3">
             <Label className="flex min-w-0 flex-1 flex-col items-start gap-1 text-sm">
               <span className="text-muted-foreground text-xs">名称</span>
@@ -405,6 +519,116 @@ const McpEditorDialog: FC<{
                 spellCheck={false}
               />
             </Label>
+          )}
+
+          {form.transport === "stdio" && (
+            <div className="bg-muted/30 flex flex-col gap-2 rounded-xl border p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <span className="flex items-center gap-1.5 text-xs font-medium">
+                    <KeyRoundIcon className="size-3.5" />
+                    密钥注入
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    从密钥库选择全局密钥，握手时注入子进程；同名时覆盖上面的字面值。
+                    密钥值不写入 mcp.json，绑定只保存在本机。
+                  </span>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs"
+                  onClick={addSecretRow}
+                  disabled={globalSecrets.length === 0}
+                  title={
+                    globalSecrets.length === 0
+                      ? "先在 设置 → 智能体 → 密钥 创建全局密钥"
+                      : "添加一条密钥绑定"
+                  }
+                >
+                  <PlusIcon className="size-3.5" />
+                  添加
+                </Button>
+              </div>
+
+              {form.secretEnv.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  {form.secretEnv.map((row, index) => (
+                    <div key={index} className="flex min-w-0 items-center gap-2">
+                      <Input
+                        value={row.envName}
+                        onChange={(e) => updateSecretRow(index, { envName: e.target.value })}
+                        placeholder="ENV_NAME"
+                        className="h-8 min-w-0 flex-1 font-mono text-xs"
+                        spellCheck={false}
+                      />
+                      <span className="text-muted-foreground shrink-0 text-xs">←</span>
+                      <Select
+                        value={row.name || undefined}
+                        onValueChange={(value) => {
+                          if (value) updateSecretRow(index, { name: value });
+                        }}
+                      >
+                        <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 border font-mono text-xs">
+                          <SelectValue placeholder="选择密钥" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {globalSecrets.map((secret) => (
+                            <SelectItem key={secret.name} value={secret.name}>
+                              {secret.name} · {secret.masked}
+                            </SelectItem>
+                          ))}
+                          {row.name && !globalSecrets.some((s) => s.name === row.name) && (
+                            <SelectItem value={row.name}>{row.name}（不可用）</SelectItem>
+                          )}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="text-muted-foreground hover:text-destructive size-7 shrink-0"
+                        onClick={() => removeSecretRow(index)}
+                        title="移除这条密钥绑定"
+                      >
+                        <XIcon className="size-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {configChanged && form.secretEnv.length > 0 && (
+                <label className="text-muted-foreground flex cursor-pointer items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-xs">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 size-3.5 shrink-0 accent-amber-600"
+                    checked={keepBindingsOnConfigChange}
+                    onChange={(e) => setKeepBindingsOnConfigChange(e.target.checked)}
+                  />
+                  <span>
+                    启动配置已变更：勾选后保存会把下面这些密钥注入修改后的配置；
+                    不勾选则保存时自动解除绑定。
+                  </span>
+                </label>
+              )}
+
+              {isEdit && target.mode === "edit" && target.entry.secretBindingStale && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-xs">
+                  <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+                  <span>
+                    原密钥绑定因启动配置变化已失效，当前不会注入。重新选择密钥并保存即可恢复。
+                  </span>
+                </div>
+              )}
+
+              {globalSecrets.length === 0 && (
+                <p className="text-muted-foreground text-xs">
+                  密钥库里还没有可用的全局密钥；先到“设置 → 智能体 → 密钥”创建。
+                </p>
+              )}
+            </div>
           )}
 
           {insecureHttp && (
@@ -959,6 +1183,26 @@ const McpRow: FC<{
           <Badge variant="outline" className="shrink-0 font-mono text-xs">
             {entry.transport}
           </Badge>
+          {entry.transport === "stdio" && entry.secretEnv && entry.secretEnv.length > 0 && (
+            <Badge
+              variant="outline"
+              className="shrink-0 gap-1 border-emerald-600/40 text-xs text-emerald-700 dark:text-emerald-400"
+              title={`握手时注入 ${entry.secretEnv.length} 个密钥（值不写入配置）`}
+            >
+              <KeyRoundIcon className="size-3" />
+              {entry.secretEnv.length} 密钥
+            </Badge>
+          )}
+          {entry.transport === "stdio" && entry.secretBindingStale && (
+            <Badge
+              variant="outline"
+              className="shrink-0 gap-1 border-amber-600/40 text-xs text-amber-700 dark:text-amber-400"
+              title="启动配置已变，原密钥绑定不会注入；编辑服务器重新确认"
+            >
+              <TriangleAlertIcon className="size-3" />
+              密钥绑定失效
+            </Badge>
+          )}
           {status.state === "ready" ? (
             <button
               type="button"
@@ -1347,7 +1591,7 @@ const WorkspaceCwdMenu: FC<{
   </DropdownMenu>
 );
 
-export const McpSettings: FC = () => {
+export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const workspace = useWorkspace();
   const recents = useWorkspaceRecents();
   const [overrideCwd, setOverrideCwd] = useState<string | null>(null);
@@ -1551,18 +1795,25 @@ export const McpSettings: FC = () => {
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      <div className="flex w-full max-w-7xl flex-col gap-8 self-center px-8 py-8">
-        {/* 标题行：状态文字在右（记忆页同款） */}
-        <div className="flex items-baseline justify-between gap-4">
-          <h1 className="text-2xl font-bold tracking-tight">MCP 服务器</h1>
-          <span
-            className={cn("text-xs", snap.error ? "text-destructive" : "text-muted-foreground")}
-          >
-            {snap.error
-              ? "清单加载失败，可刷新重试"
-              : `${snap.servers.length} 个服务器（${snap.servers.filter((s) => s.enabled).length} 个启用）`}
-          </span>
-        </div>
+      <div
+        className={cn(
+          "flex w-full flex-col",
+          embedded ? "gap-5 px-0 py-0" : "max-w-7xl gap-8 self-center px-8 py-8",
+        )}
+      >
+        {/* 标题行：嵌入管理页时身份在应用顶栏，这里不再重复大标题（资料库同款） */}
+        {!embedded && (
+          <div className="flex items-baseline justify-between gap-4">
+            <h1 className="text-2xl font-bold tracking-tight">MCP 服务器</h1>
+            <span
+              className={cn("text-xs", snap.error ? "text-destructive" : "text-muted-foreground")}
+            >
+              {snap.error
+                ? "清单加载失败，可刷新重试"
+                : `${snap.servers.length} 个服务器（${snap.servers.filter((s) => s.enabled).length} 个启用）`}
+            </span>
+          </div>
+        )}
 
         <section className="flex flex-col gap-3">
           {/* 工具行：作用域页签 + 工作区切换 + 搜索/刷新/新建 */}

@@ -14,7 +14,9 @@ import { lastSlowMainOp, SLOW_OP_ATTRIBUTION_WINDOW_MS } from "./slow-ops";
 import { installCrashGuard } from "./crash";
 import { setupIpc, focusMainWindow } from "./ipc";
 import { registerAllCommands } from "./registry";
-import { initStore } from "./store";
+import { getDb, initStore } from "./store";
+import { encrypt, initSecretCipher, isSecretCipherReady } from "./secret";
+import { migrateSecretsToEncrypted } from "./secret-migration";
 import { applyGpuFlag } from "./gpu";
 import { applyPendingRestore } from "./backup";
 import { createMainWindow, attachExternalLinkGuards, mainWindow } from "./window";
@@ -172,6 +174,19 @@ if (!gotLock) {
   applyGpuFlag(); // 建窗前读开关（与 gpu.rs create_windows 时序同构）
 
   void app.whenReady().then(async () => {
+    // 主密钥必须在 ready 之后初始化（Linux safeStorage 依赖 ready），且要早于
+    // 任何会 encrypt/decrypt 的 IPC/命令注册。迁移把历史明文行原地加密。
+    initSecretCipher();
+    if (isSecretCipherReady()) {
+      try {
+        const migrated = migrateSecretsToEncrypted(getDb(), encrypt);
+        logInfo(
+          `[secret] migration: migrated=${migrated.migrated} legacy=${migrated.legacy} failed=${migrated.failed}`,
+        );
+      } catch (e) {
+        logError(`[secret] migration failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
     registerStaticProtocol();
     setupIpc();
     registerAllCommands();

@@ -640,6 +640,30 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
       case "credential_delete":
         db.query("DELETE FROM credentials WHERE provider = ?").run(s("provider"));
         return {};
+      // MCP stdio 子进程的密钥注入：local 模式（测试/冒烟）直接读明文表。
+      // 生产路径由宿主 secret_env_resolve 解密，作用域只接受 global。
+      case "secret_env_resolve": {
+        const requests = Array.isArray(p.requests) ? p.requests.slice(0, 32) : [];
+        const env = Object.create(null) as Record<string, string>;
+        const stmt = db.query<{ value: string }, [string]>(
+          "SELECT value FROM secrets WHERE name = ? AND scope = 'global'",
+        );
+        const nameRe = /^[A-Za-z_][A-Za-z0-9_]*$/;
+        const seen = new Set<string>();
+        for (const item of requests) {
+          if (!item || typeof item !== "object") continue;
+          const r = item as Record<string, unknown>;
+          const envName = typeof r.envName === "string" ? r.envName.trim() : "";
+          const name = typeof r.name === "string" ? r.name.trim() : "";
+          const scope = r.scope === undefined ? "global" : r.scope;
+          if (scope !== "global" || !nameRe.test(envName) || !nameRe.test(name)) continue;
+          if (seen.has(envName)) continue;
+          seen.add(envName);
+          const row = stmt.get(name);
+          if (row) env[envName] = row.value;
+        }
+        return { env };
+      }
       // 密钥库：local 模式无 Rust secret.rs，**明文存表**（仅测试/冒烟，
       // 生产路径永远是 Rust 侧的 enc:v1: 密文 + OS keychain 主密钥）。
       // 掩码规则与 Rust data.rs mask_secret 对齐：**** + 后四位。
@@ -668,6 +692,9 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
           str(p.scope) || "global",
         );
         return {};
+      case "secret_cipher_status":
+        // local 模式（测试/冒烟）没有 Electron 主密钥，密钥表是明文
+        return { backend: "unavailable" };
       case "custom_providers_list":
         return db
           .query<

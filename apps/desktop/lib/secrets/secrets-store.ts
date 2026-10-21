@@ -4,6 +4,7 @@ import { useSyncExternalStore } from "react";
 import {
   piRequest,
   type PiSecretBinding,
+  type PiSecretCipherBackend,
   type PiSecretEntry,
   type PiSecretsResponse,
 } from "@/lib/pi/pi-bridge";
@@ -29,6 +30,8 @@ export type SecretsSnapshot = {
   /** 总开关：关闭时任何 bash 调用都不注入（紧急刹车） */
   enabled: boolean;
   bindings: SecretBinding[];
+  /** 主密钥保护方式；旧 sidecar 不回该字段时按 system-keychain 兼容 */
+  cipher: { backend: PiSecretCipherBackend };
 };
 
 const EMPTY: SecretsSnapshot = {
@@ -37,6 +40,7 @@ const EMPTY: SecretsSnapshot = {
   entries: [],
   enabled: true,
   bindings: [],
+  cipher: { backend: "system-keychain" },
 };
 
 let current: SecretsSnapshot = EMPTY;
@@ -58,6 +62,7 @@ function fromResponse(res: PiSecretsResponse): SecretsSnapshot {
     entries: res.entries,
     enabled: res.enabled,
     bindings: res.bindings,
+    cipher: res.cipher ?? { backend: "system-keychain" },
   };
 }
 

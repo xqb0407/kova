@@ -331,6 +331,13 @@ export const SecretsSettings: FC = () => {
     }
   };
 
+  const cipherCopy =
+    secrets.cipher.backend === "system-keychain"
+      ? "值以 AES-256-GCM 加密存本地库，主密钥由系统钥匙串保护（macOS Keychain / Windows 凭据管理器 / Linux Secret Service）；明文不回传界面，也不进入对话记录。"
+      : secrets.cipher.backend === "local-key-file"
+        ? "值以 AES-256-GCM 加密存本地库；系统钥匙串不可用，主密钥以 0600 权限保存在本机数据目录，明文不回传界面。"
+        : "本机加密不可用，已有密钥无法解密，也无法保存新密钥。";
+
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="flex w-full max-w-5xl flex-col gap-6 self-center px-8 py-8">
@@ -361,13 +368,33 @@ export const SecretsSettings: FC = () => {
               <RefreshCwIcon className="size-4" />
             </Button>
             {!editingTarget && (
-              <Button onClick={() => setEditingTarget({ mode: "create" })}>
+              <Button
+                disabled={secrets.cipher.backend === "unavailable"}
+                title={
+                  secrets.cipher.backend === "unavailable"
+                    ? "本机加密不可用，无法保存新密钥"
+                    : undefined
+                }
+                onClick={() => setEditingTarget({ mode: "create" })}
+              >
                 <PlusIcon className="size-4" />
                 新建密钥
               </Button>
             )}
           </div>
         </div>
+
+        {secrets.cipher.backend === "local-key-file" && (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300">
+            系统钥匙串不可用：主密钥以 0600 权限保存在本机数据目录。密钥仍是 AES-256-GCM
+            密文，但无法像系统钥匙串那样防止本机同用户进程读取。
+          </div>
+        )}
+        {secrets.cipher.backend === "unavailable" && (
+          <div className="border-destructive/30 bg-destructive/10 text-destructive rounded-xl border px-3 py-2 text-xs leading-relaxed">
+            本机加密不可用：无法解密已有密钥，也无法保存新密钥。请检查系统钥匙串/凭据管理器后重启应用。
+          </div>
+        )}
 
         {editingTarget && (
           <SecretEditorCard
@@ -413,10 +440,7 @@ export const SecretsSettings: FC = () => {
         )}
 
         <div className="text-muted-foreground flex flex-col gap-1 text-xs">
-          <p>
-            值以 AES-256-GCM 加密存本地库，主密钥在系统钥匙串（macOS Keychain / Windows 凭据管理器 /
-            Linux Secret Service）；明文不回传界面，也不进入对话记录。
-          </p>
+          <p>{cipherCopy}</p>
           <p>
             注入只影响那一次 bash 命令的子进程；输出里的密钥值会被替换成
             <span className="font-mono"> [REDACTED:名字]</span>。脱敏是兜底，真正的防线是"只授权给该用的技能"。

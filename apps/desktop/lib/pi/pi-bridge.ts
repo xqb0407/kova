@@ -717,12 +717,18 @@ export type PiSecretBinding = {
   skills: string[];
 };
 
-/** 密钥页整包（清单 + 绑定策略 + 总开关） */
+export type PiSecretCipherBackend =
+  | "system-keychain"
+  | "local-key-file"
+  | "unavailable";
+
+/** 密钥页整包（清单 + 绑定策略 + 总开关 + 主密钥保护方式） */
 export type PiSecretsResponse = {
   type: "secrets";
   entries: PiSecretEntry[];
   enabled: boolean;
   bindings: PiSecretBinding[];
+  cipher?: { backend: PiSecretCipherBackend };
 };
 
 /** 可观测性导出配置整包（设置 → 系统 → 追踪；sidecar 持久化于 SQLite kv） */
@@ -851,6 +857,14 @@ export type PiMcpServerStatus = {
   icons?: PiMcpServerIcon[];
 };
 
+/** MCP stdio 的密钥注入绑定：envName 是子进程变量名，name 是密钥库名字。
+ *  值不在清单里，只回绑定关系；明文只在 sidecar 握手时经宿主解密注入。 */
+export type PiMcpSecretEnvBinding = {
+  envName: string;
+  name: string;
+  scope: "global";
+};
+
 /** MCP 服务器条目（设置 → MCP；list/save/delete/开关的应答共用清单形状）。
  *  env/headers 明文返回仅供编辑弹窗回填（存本地配置文件，同 custom providers 的 key 策略） */
 export type PiMcpServerEntry = {
@@ -864,6 +878,8 @@ export type PiMcpServerEntry = {
   /** layer = "plugin" 时来源插件身份 */
   pluginId?: string;
   transport: "stdio" | "http";
+  /** effective def 的配置哈希：编辑弹窗用它判断密钥绑定是否还对应当前配置 */
+  configHash: string;
   command?: string;
   args?: string[];
   env?: Record<string, string>;
@@ -876,6 +892,10 @@ export type PiMcpServerEntry = {
   callTimeout?: number;
   /** 工具名 glob 免审批 */
   approveTools?: string[];
+  /** 当前生效的密钥注入（仅在 configHash 匹配时返回） */
+  secretEnv?: PiMcpSecretEnvBinding[];
+  /** 曾绑定过密钥，但当前配置哈希已变：绑定不会注入，需重新确认 */
+  secretBindingStale?: boolean;
   enabled: boolean;
   status: PiMcpServerStatus;
 };

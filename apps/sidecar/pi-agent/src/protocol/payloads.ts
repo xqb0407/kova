@@ -5,6 +5,8 @@
 import { logErr } from "../log";
 import { listInstalledPlugins, resolvePluginComponent, resolvePluginIconDataUrl, readPluginPanels, resolvePanelIconDataUrl, getMarketplaceCatalog, listMarketplaces, localMarketplaceEntry, builtinMarketplaceEntry } from "../plugins/plugins";
 import { listPluginMcpEntries, loadMcpServers, activeMcpServers, type McpDraft } from "../mcp/mcp-config";
+import { computeConfigHash } from "../mcp/mcp-cache";
+import { mcpSecretBindingFor, mcpSecretBindingStale } from "../mcp/mcp-secrets";
 import { mcpManager } from "../mcp/mcp-manager";
 import { ensureSkillsLoaded, skillsSnapshot, listPluginSkillEntries } from "../skills/skills";
 import {
@@ -88,29 +90,45 @@ export async function skillsPayload(cwd?: string) {
 export async function mcpServersPayload(cwd?: string) {
   const r = await loadMcpServers(cwd);
   const statuses = new Map(mcpManager.listStatuses(r.defs).map((s) => [s.name, s]));
-  const toEntry = (def: (typeof r.defs)[number]) => ({
-    name: def.name,
-    layer: def.layer,
-    source: def.source,
-    ...(def.fromStandard ? { fromStandard: true } : {}),
-    ...(def.pluginId ? { pluginId: def.pluginId } : {}),
-    transport: def.transport,
-    ...(def.command ? { command: def.command } : {}),
-    ...(def.args?.length ? { args: def.args } : {}),
-    ...(def.env && Object.keys(def.env).length > 0 ? { env: def.env } : {}),
-    ...(def.url ? { url: def.url } : {}),
-    ...(def.headers && Object.keys(def.headers).length > 0 ? { headers: def.headers } : {}),
-    ...(def.description ? { description: def.description } : {}),
-    ...(def.lifecycle ? { lifecycle: def.lifecycle } : {}),
-    ...(def.idleTimeout !== undefined ? { idleTimeout: def.idleTimeout } : {}),
-    ...(def.callTimeout !== undefined ? { callTimeout: def.callTimeout } : {}),
-    ...(def.approveTools?.length ? { approveTools: def.approveTools } : {}),
-    enabled: r.enabledBy.get(def.name) === true,
-    status: statuses.get(def.name) ?? { name: def.name, state: "idle", toolCount: 0 },
-  });
+  const toEntry = async (def: (typeof r.defs)[number]) => {
+    // configHash 供设置页判断「编辑配置后原密钥绑定是否还适用于新配置」；
+    // secretEnv 只在哈希匹配时返回——stale 绑定留在 kv 里等用户重新确认，
+    // 但绝不会被管理器使用。
+    const secretEnv =
+      def.transport === "stdio" ? (await mcpSecretBindingFor(def))?.env : undefined;
+    const secretBindingStale =
+      def.transport === "stdio" && !secretEnv ? await mcpSecretBindingStale(def) : false;
+    return {
+      name: def.name,
+      layer: def.layer,
+      source: def.source,
+      ...(def.fromStandard ? { fromStandard: true } : {}),
+      ...(def.pluginId ? { pluginId: def.pluginId } : {}),
+      transport: def.transport,
+      configHash: computeConfigHash(def),
+      ...(def.command ? { command: def.command } : {}),
+      ...(def.args?.length ? { args: def.args } : {}),
+      ...(def.env && Object.keys(def.env).length > 0 ? { env: def.env } : {}),
+      ...(def.url ? { url: def.url } : {}),
+      ...(def.headers && Object.keys(def.headers).length > 0 ? { headers: def.headers } : {}),
+      ...(def.description ? { description: def.description } : {}),
+      ...(def.lifecycle ? { lifecycle: def.lifecycle } : {}),
+      ...(def.idleTimeout !== undefined ? { idleTimeout: def.idleTimeout } : {}),
+      ...(def.callTimeout !== undefined ? { callTimeout: def.callTimeout } : {}),
+      ...(def.approveTools?.length ? { approveTools: def.approveTools } : {}),
+      ...(secretEnv?.length ? { secretEnv } : {}),
+      ...(secretBindingStale ? { secretBindingStale: true } : {}),
+      enabled: r.enabledBy.get(def.name) === true,
+      status: statuses.get(def.name) ?? { name: def.name, state: "idle", toolCount: 0 },
+    };
+  };
+  const [servers, pluginServers] = await Promise.all([
+    Promise.all(r.defs.filter((def) => def.layer !== "plugin").map(toEntry)),
+    Promise.all(r.defs.filter((def) => def.layer === "plugin").map(toEntry)),
+  ]);
   return {
-    servers: r.defs.filter((def) => def.layer !== "plugin").map(toEntry),
-    pluginServers: r.defs.filter((def) => def.layer === "plugin").map(toEntry),
+    servers,
+    pluginServers,
     workspaceCwd: cwd ?? null,
     diagnostics: r.diagnostics,
   };
