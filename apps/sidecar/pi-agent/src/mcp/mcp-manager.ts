@@ -38,6 +38,12 @@ import {
   type InteractiveOAuthSession,
 } from "./mcp-oauth";
 import { recordMcpAudit } from "./mcp-audit";
+import {
+  redactMcpSecretText,
+  redactMcpSecretValue,
+  resolveMcpSecretEnvForSpawn,
+  type McpResolvedSecret,
+} from "./mcp-secrets";
 import { logErr } from "../log";
 
 export const MCP_CONNECT_TIMEOUT_MS = 10_000;
@@ -118,6 +124,10 @@ type Entry = {
   /** 最近一次握手因 OAuth 未授权失败（401） */
   needsAuth?: boolean;
   connecting?: Promise<McpToolMeta[]>;
+  /** 本次握手解析出的密钥 env（仅 stdio；断开即随 entry 丢弃） */
+  secretEnv?: Record<string, string>;
+  /** 本次握手解析出的密钥值，仅用于工具输出/stderr 脱敏 */
+  secretValues?: McpResolvedSecret[];
 };
 
 /**
@@ -148,8 +158,13 @@ export function normalizeServerIcons(raw: unknown): McpServerIcon[] | undefined 
  * 变量）与这里给出的 env 合并——sidecar 全量环境（可能经 hostdb 摸到 provider
  * 密钥）从不越过这道闸。
  */
-export function mcpChildEnv(declared: Record<string, string> | undefined): Record<string, string> {
-  return { ...(declared ?? {}) };
+export function mcpChildEnv(
+  declared: Record<string, string> | undefined,
+  secretEnv?: Record<string, string>,
+): Record<string, string> {
+  // 密钥绑定显式覆盖同名 literal：用户选择注入密钥后，配置里的旧占位符
+  // 不应把真正的值挡住。值只在这里短暂经过，随后交给子进程。
+  return { ...(declared ?? {}), ...(secretEnv ?? {}) };
 }
 
 /** 日志正文（去掉「握手失败：」等前缀），用于跨来源去重比较 */
@@ -396,11 +411,21 @@ export class McpManager {
       entry.state = "idle";
       entry.backoffUntil = undefined;
     }
-    entry.connecting ??= this.handshake(entry);
+    const target = entry;
+    target.connecting ??= (async () => {
+      if (def.transport === "stdio") {
+        // 绑定解析放在 spawn 前：哈希不一致/没有绑定都返回 null，
+        // 子进程只拿到配置里声明的 literal env。
+        const resolved = await resolveMcpSecretEnvForSpawn(def);
+        target.secretEnv = resolved?.env;
+        target.secretValues = resolved?.values;
+      }
+      return this.handshake(target);
+    })();
     try {
-      return await entry.connecting;
+      return await target.connecting;
     } finally {
-      entry.connecting = undefined;
+      target.connecting = undefined;
     }
   }
 
@@ -439,19 +464,24 @@ export class McpManager {
         ms: Date.now() - t0,
         detail: toolName,
       });
-      return result;
+      // 服务器可能把注入的 token 回显在结果里：先脱敏再交给输出防护/上下文
+      return redactMcpSecretValue(result, entry.secretValues ?? []);
     } catch (err) {
       // 传输层死亡（服务器退出/会话失效）时 onclose 已置 idle，下次调用自动重连；
       // 业务错误（isError / 服务器返回错误）不清连接
+      const message = redactMcpSecretText(describeError(err), entry.secretValues ?? []);
+      const code = (err as { code?: unknown } | null)?.code;
       recordMcpAudit({
         at: Date.now(),
         server: def.name,
         kind: "call",
         ok: false,
         ms: Date.now() - t0,
-        detail: `${toolName}：${describeError(err)}`,
+        detail: `${toolName}：${message}`,
       });
-      throw err;
+      const safe = new Error(message);
+      if (code !== undefined) (safe as Error & { code?: unknown }).code = code;
+      throw safe;
     }
   }
 
@@ -572,6 +602,22 @@ export class McpManager {
     }
   }
 
+  /**
+   * 密钥值变更/删除后踢掉受影响连接：已有子进程的环境变量是 spawn 时快照，
+   * 不主动断开就会一直拿旧值。下次调用会按当前绑定重新解析。
+   */
+  invalidateSecretValues(names: readonly string[]): number {
+    const wanted = new Set(names);
+    if (wanted.size === 0) return 0;
+    let n = 0;
+    for (const [name, entry] of [...this.entries]) {
+      if (!entry.secretValues?.some((v) => wanted.has(v.name))) continue;
+      this.disconnect(name, "secret_rotated");
+      n += 1;
+    }
+    return n;
+  }
+
   /** 断开并移除条目（连接池权威出口）；reason 进审计日志 */
   disconnect(name: string, reason = "manual"): void {
     const entry = this.entries.get(name);
@@ -619,18 +665,23 @@ export class McpManager {
       }
     };
     client.onerror = (err) => {
-      const text = err instanceof Error ? err.message : String(err);
+      const text = redactMcpSecretText(
+        err instanceof Error ? err.message : String(err),
+        entry.secretValues ?? [],
+      );
       logErr(`mcp[${def.name}]:`, text);
       this.pushLog(def.name, `传输错误：${text}`);
     };
     let transport: Transport;
+    let stdioTransport: StdioClientTransport | undefined;
     if (def.transport === "stdio") {
-      transport = new StdioClientTransport({
+      stdioTransport = new StdioClientTransport({
         command: String(def.command ?? ""),
         args: def.args ?? [],
-        env: mcpChildEnv(def.env),
+        env: mcpChildEnv(def.env, entry.secretEnv),
         stderr: "pipe",
       });
+      transport = stdioTransport;
     } else {
       // OAuth 凭据挂载策略：交互会话的 provider（授权流进行中）优先；
       // 否则仅在已存过凭据时挂静默 provider（过期自动刷新）。全新未授权的
@@ -652,6 +703,14 @@ export class McpManager {
         ...(provider ? { authProvider: provider } : {}),
       });
     }
+    // stderr 必须被消费：SDK 的 PassThrough 只 pipe 不读，写得多的服务器会把
+    // 子进程 stderr 缓冲写满并卡住。日志先脱敏（密钥可能被服务器回显）。
+    stdioTransport?.stderr?.on("data", (chunk: Buffer | string) => {
+      const text = redactMcpSecretText(String(chunk), entry.secretValues ?? [])
+        .trim()
+        .slice(0, 4000);
+      if (text) logErr(`mcp[${def.name}] stderr:`, text);
+    });
     return { client, transport };
   }
 

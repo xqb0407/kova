@@ -5,7 +5,7 @@
  */
 import { shell } from "electron";
 import type { Db, Row } from "./db";
-import { decrypt, encrypt, isEncrypted } from "./secret";
+import { decrypt, encrypt, getSecretCipherBackend, isEncrypted } from "./secret";
 import { logWarn } from "./logging";
 import { measureSync } from "./slow-ops";
 
@@ -446,6 +446,21 @@ export async function dispatchHostQuery(db: Db, msg: any): Promise<string> {
       resolveIntoEnvelope(db, envelope);
       const { handleTool } = await import("./tool-exec");
       data = await handleTool(id, envelope);
+    } else if (kind === "secret_env_resolve") {
+      // MCP stdio 子进程由 sidecar 拉起，宿主只能把已解密的 env 交给它。
+      // 请求在 secret-requests 里做了名字/作用域收口；日志只记名字。
+      const [{ resolveMcpSecretEnv }, { parseMcpSecretEnvRequests }] = await Promise.all([
+        import("./secret-env"),
+        import("./secret-requests"),
+      ]);
+      const server =
+        typeof (params as { server?: unknown } | null)?.server === "string"
+          ? String((params as { server: string }).server).slice(0, 64)
+          : "";
+      const requests = parseMcpSecretEnvRequests(
+        (params as { requests?: unknown } | null)?.requests,
+      );
+      data = { env: resolveMcpSecretEnv(db, requests, server) };
     } else {
       // 同步 SQLite（node:sqlite DatabaseSync / better-sqlite3 都一样）——慢查询会
       // 按住主进程事件循环（期间全部 IPC 排队、界面"哪里都点不了"）。计时留痕 +
@@ -647,6 +662,8 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       db.prepare("DELETE FROM secrets WHERE name = ?1 AND scope = ?2").run(name, scope);
       return {};
     }
+    case "secret_cipher_status":
+      return { backend: getSecretCipherBackend() };
     /* ------------------------------- custom providers ------------------------------- */
     case "custom_providers_list": {
       const rows = db

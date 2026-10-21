@@ -52,7 +52,9 @@ import {
   isValidSecretName,
   workspaceScope,
 } from "../../secrets/secrets";
+import { mcpManager } from "../../mcp/mcp-manager";
 import {
+  secretCipherStatus,
   secretDelete,
   secretList,
   secretSet,
@@ -93,6 +95,8 @@ async function secretsPayload() {
     entries: await secretList(),
     enabled: config.enabled,
     bindings: config.bindings,
+    // 主密钥保护方式：Electron 主进程决定（系统钥匙串 / 0600 文件 / 不可用）
+    cipher: await secretCipherStatus(),
   };
 }
 
@@ -303,6 +307,9 @@ export const handlers: Record<string, CommandHandler> = {
     const value = typeof msg.value === "string" ? msg.value : "";
     if (value) {
       await secretSet(name, scope, value);
+      // MCP stdio 子进程的环境变量是 spawn 时快照：密钥值变了就踢掉旧连接，
+      // 下次调用按当前绑定重新解析（工作区密钥不会进全局 MCP 连接池）。
+      if (scope === "global") mcpManager.invalidateSecretValues([name]);
     } else {
       // 值留空 = 不改值（编辑弹窗不回填明文，同 provider key 的处理）。
       // 但新建时必须给值，否则会出现一条指向空密钥的绑定。
@@ -334,6 +341,7 @@ export const handlers: Record<string, CommandHandler> = {
     const scope = expandSecretScope(msg.scope, msg.cwd);
     if (!scope) throw new Error("delete_secret: workspace scope requires cwd");
     await secretDelete(name, scope);
+    if (scope === "global") mcpManager.invalidateSecretValues([name]);
     // 值没了就把绑定一并摘掉，避免留下指向空密钥的授权
     const config = getSecretsConfig();
     if (config.bindings.some((b) => b.name === name)) {

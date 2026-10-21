@@ -8,6 +8,7 @@ import { initStorage } from "../../src/storage/storage";
 import { dispatch, handleLine, setInitGate } from "../../src/protocol/protocol";
 import { mcpManager } from "../../src/mcp/mcp-manager";
 import { resetMcpConfigForTest } from "../../src/mcp/mcp-config";
+import { resetMcpSecretBindingsForTest } from "../../src/mcp/mcp-secrets";
 import { resetMcpCacheForTest } from "../../src/mcp/mcp-cache";
 import { resetMcpOAuthForTest } from "../../src/mcp/mcp-oauth";
 
@@ -46,6 +47,7 @@ beforeEach(() => {
   }
   mcpManager.disposeAll();
   resetMcpConfigForTest();
+  resetMcpSecretBindingsForTest();
   resetMcpCacheForTest();
 });
 
@@ -123,6 +125,50 @@ describe("MCP 协议消息", () => {
     expect(servers[0].transport).toBe("stdio");
     expect(servers[0].command).toBe(process.execPath);
     expect((servers[0].status as Record<string, unknown>).state).toBe("idle");
+  });
+
+  test("save 携带 secretEnv：回读绑定；配置变更且未重新授权时丢弃旧绑定", async () => {
+    const base = {
+      name: "fake-secret",
+      transport: "stdio" as const,
+      command: process.execPath,
+      args: [FAKE_SERVER],
+    };
+    const binding = [{ envName: "TOKEN", name: "TOKEN", scope: "global" as const }];
+    await dispatch("s1", {
+      type: "save_mcp_server",
+      layer: "system",
+      definition: base,
+      secretEnv: binding,
+    });
+    let entry = (last().servers as Array<Record<string, unknown>>)[0];
+    expect(entry.secretEnv).toEqual(binding);
+    expect(entry.configHash).toEqual(expect.any(String));
+    const originalHash = entry.configHash as string;
+
+    // 改启动参数，但只带了旧的 secretEnv（模拟用户没动密钥行）→ 绑定被解除
+    await dispatch("s2", {
+      type: "save_mcp_server",
+      layer: "system",
+      name: "fake-secret",
+      definition: { ...base, args: [FAKE_SERVER, "--changed"] },
+      secretEnv: binding,
+      secretBindingHash: originalHash,
+    });
+    entry = (last().servers as Array<Record<string, unknown>>)[0];
+    expect(entry.secretEnv).toBeUndefined();
+    expect(entry.secretBindingStale).toBeUndefined();
+
+    // 显式重新提交（不带旧哈希）→ 绑定按新配置生效
+    await dispatch("s3", {
+      type: "save_mcp_server",
+      layer: "system",
+      name: "fake-secret",
+      definition: { ...base, args: [FAKE_SERVER, "--changed"] },
+      secretEnv: binding,
+    });
+    entry = (last().servers as Array<Record<string, unknown>>)[0];
+    expect(entry.secretEnv).toEqual(binding);
   });
 
   test("保存校验失败：dispatch 抛错（handleLine 统一转 error 应答）", async () => {

@@ -140,7 +140,9 @@ function stringMap(
     errors.push(`${label}: 必须是键值对象`);
     return undefined;
   }
-  const out: Record<string, string> = {};
+  // 无原型：工作区 .mcp.json 可写任意合法 env 名，`__proto__` 不能变成
+  // 对对象原型的赋值（否则该条 env 会静默丢失，还可能污染后续读取）。
+  const out: Record<string, string> = Object.create(null);
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
     if (typeof v !== "string") {
       errors.push(`${label}.${k}: 值必须是字符串`);

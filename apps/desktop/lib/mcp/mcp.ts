@@ -11,6 +11,7 @@ import {
   type PiMcpServerIcon,
   type PiMcpServerStatus,
   type PiMcpServersResponse,
+  type PiMcpSecretEnvBinding,
 } from "@/lib/pi/pi-bridge";
 import type { PiMcpAuthFrame } from "@/lib/pi/pi-channel";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
@@ -26,6 +27,7 @@ export type McpServerEntry = PiMcpServerEntry;
 export type McpServerStatus = PiMcpServerStatus;
 export type McpServerIcon = PiMcpServerIcon;
 export type McpLogLine = PiMcpLogLine;
+export type McpSecretEnvBinding = PiMcpSecretEnvBinding;
 
 /** 编辑器表单载荷（字段与 sidecar mcp-config 的 McpDraft 对齐） */
 export type McpServerDraft = {
@@ -122,12 +124,18 @@ async function mutate(payload: Record<string, unknown>): Promise<void> {
   }
 }
 
-/** 保存（新建/编辑）。name 传编辑前的原名（改名时 sidecar 清旧条目） */
+/** 保存（新建/编辑）。name 传编辑前的原名（改名时 sidecar 清旧条目）。
+ *
+ *  secretEnv 只在编辑弹窗提交：空数组 = 解除绑定；服务端会把它和
+ *  secretBindingHash（打开弹窗时的 configHash）比对，配置变了且没重新确认时
+ *  不会把旧密钥续到新命令上。 */
 export function saveMcpServer(args: {
   layer: "system" | "workspace";
   cwd?: string | null;
   name?: string;
   definition: McpServerDraft;
+  secretEnv?: McpSecretEnvBinding[];
+  secretBindingHash?: string;
 }): Promise<void> {
   return mutate({
     type: "save_mcp_server",
@@ -135,6 +143,8 @@ export function saveMcpServer(args: {
     ...(args.cwd ? { cwd: args.cwd } : {}),
     ...(args.name ? { name: args.name } : {}),
     definition: args.definition,
+    ...(args.secretEnv !== undefined ? { secretEnv: args.secretEnv } : {}),
+    ...(args.secretBindingHash ? { secretBindingHash: args.secretBindingHash } : {}),
   });
 }
 

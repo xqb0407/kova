@@ -8,8 +8,38 @@
 declare module "bun:test" {
   export function describe(name: string, fn: () => void): void;
   export function test(name: string, fn: () => void | Promise<void>): void;
+  export function beforeAll(fn: () => void | Promise<void>): void;
+  export function afterAll(fn: () => void | Promise<void>): void;
+  export function afterEach(fn: () => void | Promise<void>): void;
+  export const mock: {
+    module(name: string, factory: () => unknown): void;
+  };
   export function expect(value: unknown): {
     toEqual(expected: unknown): void;
     toBe(expected: unknown): void;
+    toThrow(expected?: unknown): void;
+    toHaveLength(expected: number): void;
+    toBeNull(): void;
+    toBeUndefined(): void;
+    toBeTruthy(): void;
+    toBeGreaterThanOrEqual(expected: number): void;
+    toContain(expected: unknown): void;
+    toMatch(expected: RegExp | string): void;
   };
+}
+
+declare module "bun:sqlite" {
+  export class Database {
+    constructor(filename?: string);
+    prepare(sql: string): {
+      all(...params: unknown[]): unknown[];
+      get(...params: unknown[]): unknown;
+      run(...params: unknown[]): {
+        changes: number | bigint;
+        lastInsertRowid: number | bigint;
+      };
+    };
+    exec(sql: string): void;
+    close(): void;
+  }
 }

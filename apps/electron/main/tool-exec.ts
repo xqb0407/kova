@@ -9,6 +9,11 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { envFromResolved, redact, takeResolved, type SecretPair } from "./secret-env";
+import {
+  activeThreadSecrets,
+  redactToolResult,
+  rememberThreadSecrets,
+} from "./secret-redaction";
 import { logWarn } from "./logging";
 
 const MAX_TOOL_OUTPUT = 16 * 1024;
@@ -953,11 +958,15 @@ export async function handleTool(id: string, p: any): Promise<any> {
     const inner = p?.params && typeof p.params === "object" ? { ...p.params } : {};
     if (inner.cwd === undefined || inner.cwd === null) inner.cwd = p?.cwd ?? null;
     const envelopeOwner = typeof p?.owner === "string" ? p.owner : "";
+    const result = await (async () => {
     switch (name) {
       case "bash": {
         const cwd = typeof p?.cwd === "string" ? p.cwd : ".";
         const command = strParam(inner, "command");
         const secrets = takeResolved(p);
+        // 线程级登记：之后 read/browser/http/task_output 的输出也要脱敏，
+        // 防止模型把密钥写进文件再读回来绕过 bash 输出脱敏。
+        rememberThreadSecrets(envelopeOwner, secrets);
         const accel = accelEnv(inner);
         if (inner?.runInBackground === true) return runBashBackground(cwd, command, secrets, accel, envelopeOwner);
         const timeoutMs =
@@ -999,6 +1008,8 @@ export async function handleTool(id: string, p: any): Promise<any> {
       default:
         throw new Error(`unknown host tool: ${name}`);
     }
+    })();
+    return redactToolResult(result, activeThreadSecrets(envelopeOwner));
   } finally {
     guard.release();
   }
