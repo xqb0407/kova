@@ -228,7 +228,8 @@ export function truncateMiddle(text: string, maxChars: number): string {
 const MEMORY_GUIDELINES = [
   "Durable memory files are loaded below; treat them as standing context that always applies.",
   "- Persist important user preferences, decisions and durable facts with memory_write so they survive new sessions.",
-  "- Lessons: when a task reveals a durable lesson — you made a mistake and were corrected, the user rejected an approach, or you found a non-obvious root cause — summarize it in one concise line (what happened → root cause → what to do differently next time) and persist it with memory_write, one entry per lesson, tagged #lesson, to workspace/lessons.md. Lessons are workspace-scoped by design: never write them to global memory; if workspace memory is off, skip persisting.",
+  "- Preserve Markdown exactly as written: a heading is `# Title` (hash + space). Never rewrite `# Title` as `#Title` or turn a heading into a tag. Tags are optional end-of-line labels (`... #decision`), not line prefixes.",
+  "- Lessons: when a task reveals a durable lesson — you made a mistake and were corrected, the user rejected an approach, or you found a non-obvious root cause — summarize it in one concise line (what happened → root cause → what to do differently next time) and persist it with memory_write, one entry per lesson, tagged with #lesson at the end of the line, to workspace/lessons.md. Lessons are workspace-scoped by design: never write them to global memory; if workspace memory is off, skip persisting.",
   "- Use memory_search to recall past context across all memory files (keyword search).",
   "- Do not edit memory files with write/edit; use memory_write so stamps and validation stay intact.",
 ].join("\n");
@@ -767,7 +768,7 @@ export function buildMemoryTools(cwd: string): AgentTool[] {
       "(what happened → root cause → what to do differently).",
     parameters: Type.Object({
       scope: Type.String({ description: SCOPE_DESC }),
-      content: Type.String({ description: "Memory content in Markdown (one fact per line; prefix #tags like #decision / #preference to improve searchability)" }),
+      content: Type.String({ description: "Memory content in Markdown (one fact per line; append #tags like #decision / #preference at the end of a line). Preserve the text verbatim: a heading keeps the space after the hash (`# Title`, never `#Title`)." }),
       file: Type.Optional(Type.String({ description: "Target .md file name in the memory directory (default MEMORY.md)" })),
       mode: Type.Optional(
         Type.String({ description: "'append' (default) or 'overwrite'" }),
