@@ -18,6 +18,7 @@
 
 import { useEffect, useMemo, useState, type FC } from "react";
 import {
+  CalendarClockIcon,
   CheckIcon,
   FolderOpenIcon,
   HandIcon,
@@ -34,8 +35,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -645,21 +644,27 @@ const ScheduleForm: FC<{
 
   return (
     <>
-      <DialogHeader>
-        <DialogTitle>
-          {task
-            ? "编辑自动化任务"
-            : template
-              ? `从模板新建${template.name ? `：${template.name}` : ""}`
-              : "新建自动化任务"}
-        </DialogTitle>
-        <DialogDescription>
-          {template?.description ||
-            "到点后 Agent 会在独立会话中自动执行这条指令；也可以在对话里直接让它帮你建。"}
-        </DialogDescription>
-      </DialogHeader>
+      {/* 页头：与技能/MCP 编辑弹窗同款（图标 + 标题 + 说明），无分隔线 */}
+      <div className="flex shrink-0 items-start gap-4 px-6 py-5 pr-14">
+        <div className="bg-violet-500/10 text-violet-600 dark:text-violet-400 grid size-12 shrink-0 place-items-center rounded-2xl">
+          <CalendarClockIcon className="size-6" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <DialogTitle className="truncate text-xl font-semibold tracking-tight">
+            {task
+              ? "编辑自动化任务"
+              : template
+                ? `从模板新建${template.name ? `：${template.name}` : ""}`
+                : "新建自动化任务"}
+          </DialogTitle>
+          <DialogDescription className="mt-1 line-clamp-2 text-sm">
+            {template?.description ||
+              "到点后 Agent 会在独立会话中自动执行这条指令；也可以在对话里直接让它帮你建。"}
+          </DialogDescription>
+        </div>
+      </div>
 
-      <div className="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto py-1">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 py-5">
         <div className="grid gap-1.5">
           <Label htmlFor="auto-name">任务名称（可选）</Label>
           <Input
@@ -852,18 +857,21 @@ const ScheduleForm: FC<{
           <Switch checked={enabled} onCheckedChange={setEnabled} aria-label="启用任务" />
         </div>
 
-        {formError && <p className="text-red-500 text-xs">{formError}</p>}
       </div>
 
-      <DialogFooter>
-        <Button variant="ghost" onClick={onCancel} disabled={saving}>
-          取消
-        </Button>
-        <Button onClick={() => void submit()} disabled={saving}>
-          {saving && <Loader2Icon className="size-4 animate-spin" />}
-          {task ? "保存" : "创建任务"}
-        </Button>
-      </DialogFooter>
+      {/* 页脚固定：错误就近显示，创建/保存键不随长表单滚走 */}
+      <div className="shrink-0 px-6 py-4">
+        {formError && <p className="text-red-500 mb-2 text-xs">{formError}</p>}
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="ghost" onClick={onCancel} disabled={saving}>
+            取消
+          </Button>
+          <Button onClick={() => void submit()} disabled={saving}>
+            {saving && <Loader2Icon className="size-4 animate-spin" />}
+            {task ? "保存" : "创建任务"}
+          </Button>
+        </div>
+      </div>
     </>
   );
 };
@@ -883,7 +891,7 @@ export const AutomationEditorDialog: FC<{
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="flex max-h-[calc(100dvh-3rem)] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
         {open && (
           <ScheduleForm
             // 每次打开按目标任务/模板重建表单态（取消后重开不残留半途编辑）
