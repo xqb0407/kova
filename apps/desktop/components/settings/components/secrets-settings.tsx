@@ -31,14 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Field, FieldLabel } from "@/components/ui/field";
 import { toast } from "@/components/ui/toast";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { useSkills } from "@/lib/skills/skills";
@@ -63,33 +56,26 @@ type EditorTarget = { mode: "create" } | { mode: "edit"; entry: SecretEntry };
 
 const ANY_SKILL = "*";
 
-const SecretEditorDialog: FC<{
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  target: EditorTarget | null;
+const SecretEditorCard: FC<{
+  target: EditorTarget;
   /** 可授权的技能名（生效技能清单；不含被遮蔽/停用的） */
   skillNames: string[];
   /** 已有密钥名（新建时查重） */
   existingNames: string[];
   /** 该密钥当前的授权（编辑时回填） */
   currentSkills: string[];
-}> = ({ open, onOpenChange, target, skillNames, existingNames, currentSkills }) => {
-  const isEdit = target?.mode === "edit";
-  const [name, setName] = useState("");
+  onDone: () => void;
+  onCancel: () => void;
+}> = ({ target, skillNames, existingNames, currentSkills, onDone, onCancel }) => {
+  const initial = target.mode === "edit" ? target.entry : null;
+  const isEdit = initial !== null;
+  const [name, setName] = useState(initial?.name ?? "");
   const [value, setValue] = useState("");
-  const [anySkill, setAnySkill] = useState(false);
-  const [skills, setSkills] = useState<string[]>([]);
+  const [anySkill, setAnySkill] = useState(currentSkills.includes(ANY_SKILL));
+  const [skills, setSkills] = useState<string[]>(
+    currentSkills.filter((s) => s !== ANY_SKILL),
+  );
   const [saving, setSaving] = useState(false);
-
-  // 每次打开按目标重置（编辑不带值——明文不回填）
-  useEffect(() => {
-    if (!open) return;
-    setName(isEdit && target?.mode === "edit" ? target.entry.name : "");
-    setValue("");
-    setAnySkill(currentSkills.includes(ANY_SKILL));
-    setSkills(currentSkills.filter((s) => s !== ANY_SKILL));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, target]);
 
   const trimmed = name.trim();
   const nameTaken =
@@ -116,7 +102,7 @@ const SecretEditorDialog: FC<{
         skills: anySkill ? [ANY_SKILL, ...skills] : skills,
       });
       toast.success(isEdit ? "密钥已更新" : "密钥已保存");
-      onOpenChange(false);
+      onDone();
     } catch (err) {
       toast.add({
         title: "保存失败",
@@ -129,106 +115,123 @@ const SecretEditorDialog: FC<{
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-xl min-w-0 overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{isEdit ? "编辑密钥" : "新建密钥"}</DialogTitle>
-          <DialogDescription>
-            密钥加密后存在本地（主密钥在系统钥匙串），只在技能脚本执行时注入为环境变量，
-            不会进入模型上下文。
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="flex min-w-0 flex-col gap-5">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="secret-name">名称（用作环境变量名）</Label>
-            <Input
-              id="secret-name"
-              value={name}
-              disabled={isEdit}
-              placeholder="例如 GITHUB_TOKEN"
-              onChange={(e) => setName(e.target.value)}
-            />
-            {nameInvalid && (
-              <p className="text-destructive text-xs">
-                只能是字母、数字、下划线，且不以数字开头（它将作为环境变量名）
-              </p>
-            )}
-            {nameTaken && <p className="text-destructive text-xs">同名密钥已存在</p>}
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="secret-value">值</Label>
-            {/* field-sizing-content 会按内容撑宽：密钥是不可断词的超长串，
-                会把 dialog 的 grid 列顶出视口。固定尺寸 + break-all 让它内部换行。 */}
-            <Textarea
-              id="secret-value"
-              value={value}
-              placeholder={isEdit ? "留空保持不变（不回显已保存的值）" : "粘贴密钥内容"}
-              className="field-sizing-fixed min-h-20 min-w-0 max-w-full font-mono text-xs break-all"
-              onChange={(e) => setValue(e.target.value)}
-            />
-            {valueTooBig && <p className="text-destructive text-xs">值过长（上限 8 KB）</p>}
-            <p className="text-muted-foreground text-xs">
-              值保存后不再回显；这是唯一一次明文出现在此页面上。
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+      className="bg-muted/30 flex flex-col gap-5 rounded-2xl border p-5"
+    >
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <Field>
+          <FieldLabel htmlFor="secret-name">
+            名称<span className="text-destructive">*</span>
+          </FieldLabel>
+          <Input
+            id="secret-name"
+            value={name}
+            disabled={isEdit}
+            placeholder="例如 GITHUB_TOKEN"
+            className="font-mono"
+            onChange={(e) => setName(e.target.value)}
+          />
+          {nameInvalid && (
+            <p className="text-destructive text-xs">
+              只能是字母、数字、下划线，且不以数字开头（它将作为环境变量名）
             </p>
-          </div>
+          )}
+          {nameTaken && <p className="text-destructive text-xs">同名密钥已存在</p>}
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="secret-scope">作用域</FieldLabel>
+          <Input id="secret-scope" value="全局（所有项目）" disabled />
+          <p className="text-muted-foreground text-xs">
+            密钥按名字全局生效；能读到它的技能在下方勾选。
+          </p>
+        </Field>
+      </div>
 
-          <div className="flex flex-col gap-2">
-            <Label>授权给哪些技能</Label>
-            <p className="text-muted-foreground text-xs">
-              只有在这里勾选的技能，其 bash 脚本才能读到这个密钥（默认不授权给任何技能）。
-            </p>
-            <div className="flex items-center gap-2 pt-1">
-              <Checkbox
-                id="secret-any-skill"
-                checked={anySkill}
-                onCheckedChange={(c) => setAnySkill(c === true)}
-              />
-              <Label htmlFor="secret-any-skill" className="text-sm font-normal">
-                任意助手调用（不限定技能）
-              </Label>
-            </div>
-            {skillNames.length === 0 ? (
-              <p className="text-muted-foreground pt-1 text-xs">
-                还没有可用技能——先在技能页创建一个，或直接选「任意助手调用」。
-              </p>
-            ) : (
-              <div className="mt-1 flex max-h-48 flex-col gap-1 overflow-y-auto rounded-xl border p-2">
-                {skillNames.map((skill) => (
-                  <div key={skill} className="flex items-center gap-2 px-1 py-1">
-                    <Checkbox
-                      id={`secret-skill-${skill}`}
-                      checked={skills.includes(skill)}
-                      onCheckedChange={(c) =>
-                        setSkills((prev) =>
-                          c === true ? [...new Set([...prev, skill])] : prev.filter((s) => s !== skill),
-                        )
-                      }
-                    />
-                    <Label
-                      htmlFor={`secret-skill-${skill}`}
-                      className="truncate text-sm font-normal"
-                    >
-                      {skill}
-                    </Label>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+      <Field>
+        <FieldLabel htmlFor="secret-value">
+          值<span className="text-destructive">*</span>
+        </FieldLabel>
+        {/* field-sizing-content 会按内容撑宽：密钥是不可断词的超长串，
+            会把表单撑出容器。固定尺寸 + break-all 让它内部换行。 */}
+        <Textarea
+          id="secret-value"
+          value={value}
+          placeholder={isEdit ? "留空保持不变（不回显已保存的值）" : "粘贴密钥内容"}
+          className="field-sizing-fixed min-h-24 min-w-0 max-w-full font-mono text-xs break-all"
+          onChange={(e) => setValue(e.target.value)}
+        />
+        {valueTooBig && <p className="text-destructive text-xs">值过长（上限 8 KB）</p>}
+        <p className="text-muted-foreground text-xs">
+          值保存后不再回显；这是唯一一次明文出现在此页面上。
+        </p>
+      </Field>
+
+      <Field>
+        <FieldLabel>授权给哪些技能</FieldLabel>
+        <p className="text-muted-foreground text-xs">
+          只有在这里勾选的技能，其 bash 脚本才能读到这个密钥（默认不授权给任何技能）。
+        </p>
+        <div className="flex items-center gap-2 pt-1">
+          <Checkbox
+            id="secret-any-skill"
+            checked={anySkill}
+            onCheckedChange={(c) => setAnySkill(c === true)}
+          />
+          <Label htmlFor="secret-any-skill" className="text-sm font-normal">
+            任意助手调用（不限定技能）
+          </Label>
         </div>
+        {skillNames.length === 0 ? (
+          <p className="text-muted-foreground pt-1 text-xs">
+            还没有可用技能——先在技能页创建一个，或直接选「任意助手调用」。
+          </p>
+        ) : (
+          <div className="mt-1 flex max-h-48 flex-col gap-1 overflow-y-auto rounded-xl border p-2">
+            {skillNames.map((skill) => (
+              <div key={skill} className="flex items-center gap-2 px-1 py-1">
+                <Checkbox
+                  id={`secret-skill-${skill}`}
+                  checked={skills.includes(skill)}
+                  onCheckedChange={(c) =>
+                    setSkills((prev) =>
+                      c === true
+                        ? [...new Set([...prev, skill])]
+                        : prev.filter((s) => s !== skill),
+                    )
+                  }
+                />
+                <Label
+                  htmlFor={`secret-skill-${skill}`}
+                  className="min-w-0 truncate text-sm font-normal"
+                >
+                  {skill}
+                </Label>
+              </div>
+            ))}
+          </div>
+        )}
+      </Field>
 
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+        <p className="text-muted-foreground text-xs">
+          {isEdit
+            ? "名称不可修改；值留空表示保持原密钥。"
+            : "保存后密钥会加密写入本地库，明文不会再回显。"}
+        </p>
+        <div className="flex shrink-0 gap-2">
+          <Button type="button" variant="ghost" onClick={onCancel}>
             取消
           </Button>
-          <Button disabled={!canSubmit} onClick={() => void submit()}>
+          <Button type="submit" disabled={!canSubmit}>
             {saving ? "保存中…" : "保存"}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+      </div>
+    </form>
   );
 };
 
@@ -280,8 +283,8 @@ export const SecretsSettings: FC = () => {
   const secrets = useSecrets();
   const workspace = useWorkspace();
   const skills = useSkills(workspace);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [editorTarget, setEditorTarget] = useState<EditorTarget | null>(null);
+  /** null = 不在编辑；创建/编辑共用一个内联卡片（参考钩子页） */
+  const [editingTarget, setEditingTarget] = useState<EditorTarget | null>(null);
 
   useEffect(() => {
     void refreshSecrets();
@@ -297,8 +300,11 @@ export const SecretsSettings: FC = () => {
     [skills.skills],
   );
 
-  const editing = editorTarget?.mode === "edit" ? editorTarget.entry : null;
-  const editingBinding = editing ? bindingFor(secrets.bindings, editing.name) : undefined;
+  const editingEntry =
+    editingTarget?.mode === "edit" ? editingTarget.entry : null;
+  const editingBinding = editingEntry
+    ? bindingFor(secrets.bindings, editingEntry.name)
+    : undefined;
 
   const remove = async (entry: SecretEntry) => {
     try {
@@ -354,17 +360,30 @@ export const SecretsSettings: FC = () => {
             >
               <RefreshCwIcon className="size-4" />
             </Button>
-            <Button
-              onClick={() => {
-                setEditorTarget({ mode: "create" });
-                setEditorOpen(true);
-              }}
-            >
-              <PlusIcon className="size-4" />
-              新建密钥
-            </Button>
+            {!editingTarget && (
+              <Button onClick={() => setEditingTarget({ mode: "create" })}>
+                <PlusIcon className="size-4" />
+                新建密钥
+              </Button>
+            )}
           </div>
         </div>
+
+        {editingTarget && (
+          <SecretEditorCard
+            key={
+              editingTarget.mode === "edit"
+                ? editingTarget.entry.name
+                : "new"
+            }
+            target={editingTarget}
+            skillNames={skillNames}
+            existingNames={secrets.entries.map((e) => e.name)}
+            currentSkills={editingBinding?.skills ?? []}
+            onDone={() => setEditingTarget(null)}
+            onCancel={() => setEditingTarget(null)}
+          />
+        )}
 
         {secrets.error && (
           <p className="text-destructive text-sm">读取失败：{secrets.error}</p>
@@ -386,10 +405,7 @@ export const SecretsSettings: FC = () => {
                 key={`${entry.name}::${entry.scope}`}
                 entry={entry}
                 grantedSkills={bindingFor(secrets.bindings, entry.name)?.skills ?? []}
-                onEdit={() => {
-                  setEditorTarget({ mode: "edit", entry });
-                  setEditorOpen(true);
-                }}
+                onEdit={() => setEditingTarget({ mode: "edit", entry })}
                 onDelete={() => void remove(entry)}
               />
             ))}
@@ -407,15 +423,6 @@ export const SecretsSettings: FC = () => {
           </p>
         </div>
       </div>
-
-      <SecretEditorDialog
-        open={editorOpen}
-        onOpenChange={setEditorOpen}
-        target={editorTarget}
-        skillNames={skillNames}
-        existingNames={secrets.entries.map((e) => e.name)}
-        currentSkills={editingBinding?.skills ?? []}
-      />
     </div>
   );
 };
