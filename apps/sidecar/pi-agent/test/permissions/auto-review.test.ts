@@ -273,11 +273,14 @@ describe("配置规整与持久化", () => {
 });
 
 describe("autoReviewDenyReason", () => {
-  test("medium 与 high 给出不同下一步（high 不许重试、medium 请用户确认范围）", () => {
+  test("medium 与 high 给出不同下一步（high 不许重试、medium 不引导 Question）", () => {
     const medium = autoReviewDenyReason("write", { risk: "medium", decision: "deny", reason: "无授权" });
     expect(medium).toContain("review");
     expect(medium).toContain("无授权");
-    expect(medium).toContain("ask the user");
+    // Question 的答案不产生授权效力：文案不能反过来让模型去问用户
+    expect(medium).toContain("Question");
+    expect(medium).toContain("not an authorization");
+    expect(medium).not.toContain("ask the user");
     const high = autoReviewDenyReason("bash", { risk: "high", decision: "deny" });
     expect(high).toContain("never allowed");
     expect(high).toContain("Do not retry");

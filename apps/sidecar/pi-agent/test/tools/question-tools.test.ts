@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildQuestionTool,
+  cancelPendingQuestions,
   cancelQuestionAnswer,
   formatAnswersForLLM,
+  isPermissionSeekingQuestion,
   resolveQuestionAnswer,
   validateQuestions,
   type QuestionDef,
@@ -70,6 +73,74 @@ describe("validateQuestions", () => {
     expect(() =>
       validateQuestions([{ title: "t", options: [{ title: "a" }] }]),
     ).not.toThrow();
+  });
+});
+
+describe("isPermissionSeekingQuestion", () => {
+  test("破坏性动作 + 确认语义 → 命中", () => {
+    expect(
+      isPermissionSeekingQuestion([
+        { title: "确认删除以下临时文件？", options: [{ title: "确认" }, { title: "取消" }] },
+      ]),
+    ).toBe(true);
+    expect(
+      isPermissionSeekingQuestion([
+        { title: "Delete these files?", options: [{ title: "Yes" }, { title: "No" }] },
+      ]),
+    ).toBe(true);
+    expect(
+      isPermissionSeekingQuestion([{ title: "rm -rf dist 可以吗", freeText: true }]),
+    ).toBe(true);
+  });
+
+  test("破坏性动作 + 确认/取消选项对 → 命中（即使题面没有授权词）", () => {
+    expect(
+      isPermissionSeekingQuestion([
+        { title: "清理 dist", options: [{ title: "继续" }, { title: "停止" }] },
+      ]),
+    ).toBe(true);
+  });
+
+  test("真正的范围澄清不命中", () => {
+    expect(
+      isPermissionSeekingQuestion([
+        { title: "先删哪几个？", options: [{ title: "diag.py" }, { title: "diag2.py" }] },
+      ]),
+    ).toBe(false);
+    expect(
+      isPermissionSeekingQuestion([
+        { title: "选哪种存储？", options: [{ title: "SQLite" }, { title: "Postgres" }] },
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe("buildQuestionTool 权限类提问拦截", () => {
+  test("执行档：权限类提问不挂起，返回纠正文案", async () => {
+    const tool = buildQuestionTool("t-permission-question", () => "agent");
+    const result = await tool.execute("call-perm", {
+      questions: [
+        { title: "确认删除这些文件？", options: [{ title: "确认" }, { title: "取消" }] },
+      ],
+    });
+    const text = (result.content as Array<{ type: string; text?: string }>)[0]?.text ?? "";
+    expect(text).toContain("not an authorization");
+    expect(text).toContain("Call the tool");
+    expect((result.details as { rejected?: boolean }).rejected).toBe(true);
+  });
+
+  test("plan 档：同样的提问照常挂起（只读档的澄清不承担审批语义）", async () => {
+    const tool = buildQuestionTool("t-plan-question", () => "plan");
+    const pending = tool.execute("call-plan", {
+      questions: [
+        { title: "确认删除这些文件？", options: [{ title: "确认" }, { title: "取消" }] },
+      ],
+    });
+    cancelPendingQuestions("t-plan-question");
+    const result = await pending;
+    const text = (result.content as Array<{ type: string; text?: string }>)[0]?.text ?? "";
+    expect(text).toContain("取消");
+    expect((result.details as { rejected?: boolean }).rejected).toBeUndefined();
   });
 });
 

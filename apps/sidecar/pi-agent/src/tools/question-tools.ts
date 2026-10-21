@@ -4,6 +4,10 @@
  * execute 挂起 Promise → sendEventChunk 推 data-question chunk → composer 上方
  * AskUserQuestions 卡片作答 → protocol question_answer 结算挂起 → 答案格式化回模型。
  *
+ * 边界：Question 只负责「我拿不到的信息」，审批只负责「能不能做」。问答案不是
+ * 授权——审批链只认审批卡。模型把两者混在一起（"要删这些文件吗？确认/取消"）时
+ * 执行档下由 isPermissionSeekingQuestion 拦下，并指引它直接调用真正执行动作的工具。
+ *
  * 问题/选项的 id 约定：schema 不带 id，两侧统一按数组下标回落 q-<i> / o-<i>
  * （与 components/ui/ask-user-questions 的 questionKey/optionKey 回落完全一致），
  * formatAnswersForLLM 据此把 selectedIds 映射回选项文案。
@@ -12,6 +16,8 @@ import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { sendEventChunk } from "../protocol/stream";
 import { getAutomationPolicy } from "../automation/policy";
+import { logAt } from "../log";
+import type { SessionMode } from "../types";
 import {
   beginInteraction,
   sessionForThread,
@@ -134,6 +140,157 @@ export function validateQuestions(questions: unknown): asserts questions is Ques
   }
 }
 
+/* ------------------------------ 权限类提问拦截 ------------------------------ */
+
+/** 破坏性动作词干。提问里出现这些词，才可能是在替审批卡要授权。 */
+const DESTRUCTIVE_ACTION_WORDS = [
+  "删除",
+  "删掉",
+  "清理",
+  "清除",
+  "移除",
+  "抹掉",
+  "清空",
+  "覆盖",
+  "重写",
+  "重置",
+  "回滚",
+  "delete",
+  "remove",
+  "clean",
+  "cleanup",
+  "purge",
+  "erase",
+  "clear",
+  "overwrite",
+  "reset",
+  "revert",
+  "drop",
+  "truncate",
+  "wipe",
+  "rm",
+  "rmdir",
+  "unlink",
+  "shred",
+] as const;
+
+/** 确认/授权语义。删东西本身是任务；同时问「要不要/准不准」才是替审批卡要授权。 */
+const AUTHORIZATION_WORDS = [
+  "确认",
+  "授权",
+  "允许",
+  "同意",
+  "批准",
+  "准许",
+  "许可",
+  "是否执行",
+  "是否删除",
+  "继续执行",
+  "可以执行",
+  "可以吗",
+  "行吗",
+  "吗",
+  "要不要",
+  "confirm",
+  "approve",
+  "approval",
+  "authorize",
+  "authorization",
+  "permission",
+  "allow",
+  "proceed",
+  "okay to",
+  "ok to",
+  "shall i",
+  "should i",
+  "may i",
+  "do you want me to",
+  "would you like me to",
+] as const;
+
+/** 选项里的肯定确认项（与否定项成对出现时，才认定为「要不要执行」）。 */
+const AFFIRMATIVE_OPTION_PREFIXES = [
+  "确认",
+  "确定",
+  "同意",
+  "允许",
+  "批准",
+  "继续",
+  "执行",
+  "删除",
+  "好的",
+  "yes",
+  "ok",
+  "okay",
+  "confirm",
+  "approve",
+  "allow",
+  "proceed",
+  "delete",
+  "go ahead",
+] as const;
+
+/** 选项里的否定确认项。 */
+const NEGATIVE_OPTION_PREFIXES = [
+  "取消",
+  "拒绝",
+  "停止",
+  "不要",
+  "暂不",
+  "no",
+  "cancel",
+  "reject",
+  "stop",
+  "abort",
+  "don't",
+  "do not",
+] as const;
+
+/** 中文按子串匹配；拉丁词按词边界匹配（否则 `rm` 会命中 confirm/form 里的字母）。 */
+function containsWord(text: string, word: string): boolean {
+  if (/[\u4e00-\u9fff]/.test(word)) return text.includes(word);
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`, "i").test(text);
+}
+
+function containsAny(text: string, words: readonly string[]): boolean {
+  return words.some((word) => containsWord(text, word));
+}
+
+/**
+ * 这条提问是不是在替审批卡要授权。
+ *
+ * 只认两种高置信形状，避免误伤真正的范围澄清（"先删哪几个？" 这种没有确认/取消
+ * 配对的题面）：
+ * 1. 题面同时出现破坏性动作 + 确认/授权语义；
+ * 2. 题面有破坏性动作，且选项里同时有肯定与否定确认项（确认/取消 这类配对）。
+ */
+export function isPermissionSeekingQuestion(questions: QuestionDef[]): boolean {
+  for (const question of questions) {
+    const title = question.title.trim().toLowerCase();
+    if (!title || !containsAny(title, DESTRUCTIVE_ACTION_WORDS)) continue;
+    if (containsAny(title, AUTHORIZATION_WORDS)) return true;
+    const options = (question.options ?? []).map((option) => option.title.trim().toLowerCase());
+    const hasAffirmative = options.some((option) =>
+      AFFIRMATIVE_OPTION_PREFIXES.some((word) => option.startsWith(word)),
+    );
+    const hasNegative = options.some((option) =>
+      NEGATIVE_OPTION_PREFIXES.some((word) => option.startsWith(word)),
+    );
+    if (hasAffirmative && hasNegative) return true;
+  }
+  return false;
+}
+
+/** 拦截后回给模型的纠正文案：不是错误，而是把下一步指回审批卡。 */
+const PERMISSION_QUESTION_REJECTION =
+  "This Question was not shown to the user: it asks for permission/confirmation of an action, " +
+  "and a Question answer is not an authorization. Do not ask again. Call the tool that performs " +
+  "the action directly — for shell commands, deletions and other destructive work use bash; for " +
+  "file changes use write/edit. The app shows an approval card when the current approval level " +
+  "requires one, and only that card authorizes execution. If you need the user to choose between " +
+  "targets, ask a scope question that does not request permission.";
+
 const QuestionToolParams = Type.Object({
   questions: Type.Array(
     Type.Object({
@@ -163,7 +320,12 @@ const QuestionToolParams = Type.Object({
   ),
 });
 
-export function buildQuestionTool(threadId: string): AgentTool {
+export function buildQuestionTool(
+  threadId: string,
+  /** 当前会话模式（闭包，运行期解引用）：plan/ask 是只读勘察档，提问本身就是
+   *  计划或回答的一部分；执行档（agent/goal）才拦「替审批卡要授权」的提问。 */
+  getMode?: () => SessionMode,
+): AgentTool {
   return {
     name: "Question",
     label: "Question",
@@ -172,8 +334,10 @@ export function buildQuestionTool(threadId: string): AgentTool {
       "single-select, multi-select (multiSelect), or open-ended free text (freeText). " +
       "Execution pauses until the user answers; they may skip or cancel. " +
       "Use only when their input genuinely blocks your next step — not for plain confirmations, " +
-      "and never to ask permission to run a tool or write a file: call that tool directly, " +
-      "the app shows an approval card and records the authorization if the user chooses to.",
+      "and never to ask permission to run a tool, confirm a deletion or other destructive action, " +
+      "or get an action approved: call that tool directly, the app shows an approval card and " +
+      "records the authorization if the user chooses to. A question answer does not authorize " +
+      "any tool call.",
     parameters: QuestionToolParams,
     execute: async (toolCallId, raw) => {
       const { questions } = raw as { questions: unknown };
@@ -191,6 +355,20 @@ export function buildQuestionTool(threadId: string): AgentTool {
             },
           ],
           details: { cancelled: true },
+        };
+      }
+      // 执行档把「批准/确认」类提问拦在卡片之前：答案不产生授权效力，放行只会
+      // 让用户先答一次、随后仍要过审批卡。plan/ask 只读，提问不承担审批语义。
+      const mode = getMode?.();
+      const canExecute = mode === undefined || mode === "agent" || mode === "goal";
+      if (canExecute && isPermissionSeekingQuestion(questions)) {
+        logAt(
+          "event",
+          `Question rejected as a permission request: thread=${threadId} questions=${questions.length}`,
+        );
+        return {
+          content: [{ type: "text" as const, text: PERMISSION_QUESTION_REJECTION }],
+          details: { rejected: true, reason: "permission-question" },
         };
       }
       // 挂起交互登记落行（§4）：interactionId = questionId（=toolCallId）；

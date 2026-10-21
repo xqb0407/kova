@@ -35,7 +35,7 @@ import { buildMemoryTools, getMemoryConfig } from "../agent/memory";
 import { buildSkillUseTool } from "../skills/skill-use-tool";
 import { buildUseDesignThemeTool } from "../design-md/use-design-theme-tool";
 import type { ThemeRef } from "../design-md/store";
-import type { ApprovalLevel } from "../types";
+import type { ApprovalLevel, SessionMode } from "../types";
 import type { ReviewSessionFacts } from "../permissions/auto-review";
 import { buildMcpTool } from "../mcp/mcp-tools";
 import { buildEchoImageTool } from "./echo-image-tool";
@@ -361,6 +361,9 @@ export function buildTools(
    *  execute 运行期才解引用 run，档位可在会话中途改。缺省 = 审查拿不到模型，
    *  落到审批卡（fail to human）。 */
   getReviewFacts?: () => ReviewSessionFacts,
+  /** 当前会话模式（闭包，运行期才解引用 run）：Question 只在执行档拦
+   *  「替审批卡要授权」的提问，plan/ask 的澄清提问不受影响。 */
+  getMode?: () => SessionMode,
 ): AgentTool[] {
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
@@ -480,8 +483,9 @@ export function buildTools(
     // 面板唤起插件 UI：只发 data-pluginOpen chunk（通用原语，插件无关，
     // 面板存在性经插件 store 校验；见 open-panel-tool.ts）
     buildOpenPanelTool(cwd, threadId),
-    // Question 不触盘不触网（挂起等 UI 作答），但要 threadId 做挂起归属
-    buildQuestionTool(threadId),
+    // Question 不触盘不触网（挂起等 UI 作答），但要 threadId 做挂起归属；
+    // getMode 让执行档把「替审批卡要授权」的提问拦下来
+    buildQuestionTool(threadId, getMode),
     // todo：不触盘不触网，只维护会话内任务清单（per-thread 槽见 todo.ts）
     buildTodoTool(threadId),
     // 记忆三件套（write/read/search）：按总开关**条件注册**——关闭时整组不下发，
@@ -528,7 +532,7 @@ export const SYSTEM_PROMPT_CORE_SEGMENTS = {
     "Tool preference: inspect files with read/glob/grep instead of shell commands; use bash for anything dynamic (build, test, git, process control).",
     "Before a batch of tool calls, write one short sentence saying what you are about to do.",
     "",
-    "Permissions: never use Question to ask for permission to run a tool or modify a file. Call the tool directly - the app shows an approval card when approval is required, and the user can choose to remember the authorization. This applies especially to writes outside the workspace: attempt the write normally instead of asking in chat, and if it is rejected, report the rejection rather than retrying the same question.",
+    "Permissions: never use Question to ask for permission, to confirm an action, or to get a deletion or other destructive action approved. Call the tool directly - the app shows an approval card when approval is required, and the user can choose to remember the authorization. A Question answer is not an authorization; only the approval card is. This applies especially to destructive actions and writes outside the workspace: attempt the work normally instead of asking in chat, and if it is rejected, report the rejection rather than retrying the same question.",
     "",
     "Correctness: after making changes, run the relevant verification (build / test / lint). When something fails, find the root cause before fixing - never blind-patch or hide errors.",
   ].join("\n"),
