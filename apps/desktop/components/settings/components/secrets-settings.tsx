@@ -130,7 +130,7 @@ const SecretEditorDialog: FC<{
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-xl min-w-0 overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{isEdit ? "编辑密钥" : "新建密钥"}</DialogTitle>
           <DialogDescription>
@@ -139,7 +139,7 @@ const SecretEditorDialog: FC<{
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-5">
+        <div className="flex min-w-0 flex-col gap-5">
           <div className="flex flex-col gap-2">
             <Label htmlFor="secret-name">名称（用作环境变量名）</Label>
             <Input
@@ -159,11 +159,13 @@ const SecretEditorDialog: FC<{
 
           <div className="flex flex-col gap-2">
             <Label htmlFor="secret-value">值</Label>
+            {/* field-sizing-content 会按内容撑宽：密钥是不可断词的超长串，
+                会把 dialog 的 grid 列顶出视口。固定尺寸 + break-all 让它内部换行。 */}
             <Textarea
               id="secret-value"
               value={value}
               placeholder={isEdit ? "留空保持不变（不回显已保存的值）" : "粘贴密钥内容"}
-              className="min-h-20 font-mono text-xs"
+              className="field-sizing-fixed min-h-20 min-w-0 max-w-full font-mono text-xs break-all"
               onChange={(e) => setValue(e.target.value)}
             />
             {valueTooBig && <p className="text-destructive text-xs">值过长（上限 8 KB）</p>}
