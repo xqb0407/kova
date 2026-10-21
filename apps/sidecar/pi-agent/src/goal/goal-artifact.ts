@@ -14,7 +14,20 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { logErr } from "../log";
 import { fileTimestamp, sanitizeFileName } from "../agent/artifact-naming";
-import type { Goal } from "./goal-state";
+import { goalElapsedSeconds, type Goal, type GoalEvidenceRef } from "./goal-state";
+
+function formatEvidenceRef(ref: GoalEvidenceRef): string {
+  switch (ref.kind) {
+    case "command":
+      return `命令 \`${ref.command}\``;
+    case "file":
+      return `文件 \`${ref.path}\`（${ref.expect ?? "exists"}）`;
+    case "tool":
+      return `工具 \`${ref.tool}\`${ref.path ? `，路径 \`${ref.path}\`` : ""}`;
+    case "manual":
+      return `人工确认：${ref.note}`;
+  }
+}
 
 /** 目标当前阶段的验收标准段落 */
 function criteriaSection(goal: Goal): string {
@@ -45,7 +58,9 @@ function renderGoal(goal: Goal): string {
     `- 建立于: ${new Date(goal.startedAt).toISOString()}`,
     `- 最后更新: ${new Date(goal.updatedAt).toISOString()}`,
     `- 轮次上限: ${goal.maxAutoTurns === null ? "不限" : goal.maxAutoTurns}`,
+    `- 时长上限: ${goal.maxDurationSeconds === null ? "不限" : `${Math.round(goal.maxDurationSeconds / 60)} 分钟`}`,
     `- 已跑轮次: ${goal.turnCount}`,
+    `- 已用活跃时长: ${Math.round(goalElapsedSeconds(goal) / 60)} 分钟`,
     "",
     "## 目标",
     "",
@@ -54,6 +69,17 @@ function renderGoal(goal: Goal): string {
     "## 验收标准",
     "",
     criteriaSection(goal),
+    ...(goal.progress.length
+      ? [
+          "",
+          "## 进度",
+          "",
+          ...goal.progress.map(
+            (p) =>
+              `- 第 ${p.turn} 轮：${p.summary || "无文本"}（工具 ${p.toolCalls} 次，命令 ${p.commands} 条，失败 ${p.errors} 次）`,
+          ),
+        ]
+      : []),
     ...(goal.completionSummary
       ? ["", "## 完成说明", "", goal.completionSummary]
       : []),
@@ -62,9 +88,11 @@ function renderGoal(goal: Goal): string {
           "",
           "## 完成时的逐条对账",
           "",
-          ...goal.completionAudit.map(
-            (r) => `- ${r.met ? "✅" : "❌"} ${r.id} — ${r.text}：${r.evidence}`,
-          ),
+          ...goal.completionAudit.flatMap((r) => [
+            `- ${r.met ? "✅" : "❌"} ${r.id} — ${r.text}：${r.evidence}` +
+              (r.verified ? "（已核验）" : r.manualOnly ? "（需人工确认）" : ""),
+            ...(r.refs ?? []).map((ref) => `  - 证据：${formatEvidenceRef(ref)}`),
+          ]),
         ]
       : []),
     "",

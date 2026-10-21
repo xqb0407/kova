@@ -21,7 +21,11 @@ import type { PiResponse, PiSessionSummary } from "@/lib/pi/pi-bridge";
 import type { PiPromptAttachment } from "@/lib/pi/pi-channel";
 import { parsePartialJsonObject } from "./partial-json";
 import { sessionModeSnapshot, fetchPlanningState } from "@/lib/pi/pi-session-mode";
-import { goalTurnDraftForSend } from "@/lib/pi/pi-goal-limit-draft";
+import {
+  goalAcceptanceModeForSend,
+  goalDurationDraftForSend,
+  goalTurnDraftForSend,
+} from "@/lib/pi/pi-goal-limit-draft";
 import {
   applyHistoryPending,
   removeResolvedInteraction,
@@ -204,10 +208,20 @@ function applyStreamDelta(
 }
 
 /** 传输依赖（构造注入）：桌面 = 桌面壳 invoke/event，远程 = WebSocket 通道。 */
-/** 显式改过才带这个字段（见 pi-goal-limit-draft 的分层说明） */
-function sendGoalMaxAutoTurns(threadId: string): { goalMaxAutoTurns?: number } {
-  const value = goalTurnDraftForSend(threadId);
-  return value === undefined ? {} : { goalMaxAutoTurns: value };
+/** 显式改过才带这些字段（见 pi-goal-limit-draft 的分层说明） */
+function sendGoalCreationPrefs(threadId: string): {
+  goalMaxAutoTurns?: number;
+  goalAcceptanceMode?: "auto" | "manual" | "skip";
+  goalMaxDurationMinutes?: number;
+} {
+  const turns = goalTurnDraftForSend(threadId);
+  const mode = goalAcceptanceModeForSend(threadId);
+  const duration = goalDurationDraftForSend(threadId);
+  return {
+    ...(turns === undefined ? {} : { goalMaxAutoTurns: turns }),
+    ...(mode === undefined ? {} : { goalAcceptanceMode: mode }),
+    ...(duration === undefined ? {} : { goalMaxDurationMinutes: duration }),
+  };
 }
 
 export type PiClientTransport = {
@@ -226,6 +240,10 @@ export type PiClientTransport = {
     steer: boolean;
     /** goal 档建目标时随首条消息带过去的轮次上限（0 = 不限；非 goal 档不发） */
     goalMaxAutoTurns?: number;
+    /** goal 档建目标时的验收标准启动模式（显式改过才带） */
+    goalAcceptanceMode?: "auto" | "manual" | "skip";
+    /** goal 档建目标时的时长上限（分钟；0 = 不限；显式改过才带） */
+    goalMaxDurationMinutes?: number;
   }): Promise<void>;
   /** 中断线程的运行轮 */
   abort(threadId: string): Promise<void>;
@@ -1034,7 +1052,7 @@ export class PiClientBase implements PiClient {
         // 目标轮数上限只在 goal 档、且用户本次运行显式改过时才发。没改过就不带字段：
         // sidecar 按「会话偏好 → 默认」自己裁决，前端补默认值只会冲掉会话记忆
         ...(sessionModeSnapshot(threadId).mode === "goal"
-          ? sendGoalMaxAutoTurns(threadId)
+          ? sendGoalCreationPrefs(threadId)
           : {}),
       });
     } catch (err) {

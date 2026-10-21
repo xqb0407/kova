@@ -85,6 +85,10 @@ export type SessionSummary = {
   appMode?: "work" | "code" | "design";
   /** 会话级目标轮数上限偏好（数字字符串："0" = 不限；undefined = 从未定过） */
   goalMaxTurns?: string;
+  /** 会话级验收标准启动模式（undefined = 从未定过，新目标默认 auto） */
+  goalAcceptanceMode?: "auto" | "manual" | "skip";
+  /** 会话级目标时长上限（分钟字符串；"0" = 不限；undefined = 从未定过） */
+  goalMaxDuration?: string;
 };
 
 /** 子代理一次执行的最终状态 */
@@ -283,6 +287,17 @@ export type Running = {
    * 用户改上限时回写该列（见 goal.ts 的 syncGoalOnUserPrompt / setGoalMaxTurns）。
    */
   goalMaxTurns?: number | null;
+  /**
+   * 本会话的验收标准启动模式预设。undefined = 从未定过（新目标默认 auto）。
+   * 事实源：sessions.goal_acceptance_mode 偏好列。
+   */
+  goalAcceptanceMode?: "auto" | "manual" | "skip";
+  /**
+   * 本会话的目标活跃时长上限预设（秒）。三态同 goalMaxTurns：
+   * undefined = 从未定过（新目标默认 2 小时）；null = 明确不限；number = 具体秒数。
+   * 事实源：sessions.goal_max_duration 偏好列（分钟文本）。
+   */
+  goalMaxDurationSeconds?: number | null;
   /**
    * 本次 run 已消耗、但还没结算进目标账的 token（message_end 与子代理结算时累加，
    * 目标轮边界取走后清零）。

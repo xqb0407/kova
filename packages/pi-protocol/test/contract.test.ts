@@ -24,6 +24,7 @@ import {
   modelChangeRowSchema,
   thinkingLevelChangeRowSchema,
   sessionInfoRowSchema,
+  goalStateSchema,
 } from "../src/index";
 
 describe("queueSnapshotSchema", () => {
@@ -484,5 +485,79 @@ describe("转录上下文设定行（§6 M4 上游对齐）", () => {
       }).success,
     ).toBe(true);
     expect(sessionInfoRowSchema.safeParse({ type: "session_info" }).success).toBe(false);
+  });
+});
+
+describe("goalStateSchema（v2 可选字段）", () => {
+  const base = {
+    goal: {
+      id: "g1",
+      objective: "补全 README",
+      status: "active",
+      statusLine: "进行中",
+      turnCount: 1,
+      maxAutoTurns: 300,
+      tokensUsed: 10,
+      startedAt: 1,
+      updatedAt: 2,
+    },
+  };
+
+  test("旧载荷（无 v2 字段）仍然可解析", () => {
+    expect(goalStateSchema.safeParse(base).success).toBe(true);
+  });
+
+  test("接受 v2 字段与进度/核验明细", () => {
+    const parsed = goalStateSchema.safeParse({
+      goal: {
+        ...base.goal,
+        maxDurationSeconds: 7200,
+        timeUsedSeconds: 60,
+        activeRunStartedAtMs: 100,
+        acceptanceMode: "auto",
+        evidencePolicy: "refs",
+        acceptance: {
+          status: "confirmed",
+          items: [{ id: "c1", text: "测试全绿" }],
+          confirmedBy: "auto",
+        },
+        progress: [
+          {
+            turn: 1,
+            at: 2,
+            toolCalls: 2,
+            tools: ["bash"],
+            files: ["a.ts"],
+            commands: 1,
+            errors: 0,
+            summary: "跑了测试",
+          },
+        ],
+        completionAudit: [
+          {
+            id: "c1",
+            text: "测试全绿",
+            met: true,
+            evidence: "pnpm test",
+            refs: [{ kind: "command", command: "pnpm test" }],
+            verified: true,
+          },
+        ],
+      },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  test("拒绝非法枚举", () => {
+    expect(
+      goalStateSchema.safeParse({
+        goal: { ...base.goal, acceptanceMode: "weird" },
+      }).success,
+    ).toBe(false);
+    expect(
+      goalStateSchema.safeParse({
+        goal: { ...base.goal, evidencePolicy: "weird" },
+      }).success,
+    ).toBe(false);
   });
 });

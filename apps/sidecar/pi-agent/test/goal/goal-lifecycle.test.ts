@@ -31,6 +31,7 @@ import {
   limitsFor,
   MAX_GOAL_OBJECTIVE_LENGTH,
   proposeCriteria,
+  skipCriteria,
   type Goal,
 } from "../../src/goal/goal-state";
 import { parseGoalMaxTurnsPref } from "../../src/goal/goal";
@@ -503,5 +504,58 @@ describe("重启恢复", () => {
     restoreGoal(run.threadId, run.sessionId);
     expect(goalTokensUsed(run)).toBe(123_456);
     expect(goalTokensUsed(saveRunWithPending(run, 1_000))).toBe(124_456);
+  });
+});
+
+describe("v2：turn_end 接线（进度 + 时间预算）", () => {
+  test("continueGoalTurn 记录进度并把上一轮摘要注入续跑消息", () => {
+    const run = makeRun();
+    const injected: unknown[] = [];
+    (run.agent as unknown as { followUp: (m: unknown) => void }).followUp = (m) =>
+      injected.push(m);
+    const base = startGoal(run, "把 README 补全");
+    commitGoal(run, skipCriteria(base)!);
+
+    const message = {
+      role: "assistant",
+      content: [
+        { type: "text", text: "先看 README 现有结构" },
+        { type: "toolCall", id: "c1", name: "read", arguments: { file_path: "README.md" } },
+      ],
+    };
+    continueGoalTurn(run, message, [{ isError: false }]);
+
+    const goal = getGoal(run.threadId)!;
+    expect(goal.progress).toHaveLength(1);
+    expect(goal.progress[0]).toMatchObject({
+      turn: 1,
+      toolCalls: 1,
+      files: ["README.md"],
+      summary: "先看 README 现有结构",
+    });
+    expect(injected).toHaveLength(1);
+    const text = (injected[0] as { content: Array<{ text?: string }> }).content
+      .map((part) => part.text ?? "")
+      .join("\n");
+    expect(text).toContain("Last turn:");
+    expect(text).toContain("先看 README 现有结构");
+  });
+
+  test("到时长上限时 turn_end 直接暂停，不再注入续跑", () => {
+    const run = makeRun();
+    const injected: unknown[] = [];
+    (run.agent as unknown as { followUp: (m: unknown) => void }).followUp = (m) =>
+      injected.push(m);
+    const base = skipCriteria(startGoal(run, "x"))!;
+    commitGoal(run, {
+      ...base,
+      maxDurationSeconds: 60,
+      activeRunStartedAtMs: Date.now() - 61_000,
+    });
+    continueGoalTurn(run, { role: "assistant", content: [{ type: "text", text: "继续" }] });
+    const goal = getGoal(run.threadId)!;
+    expect(goal.status).toBe("paused");
+    expect(goal.pauseReason).toBe("time budget reached");
+    expect(injected).toHaveLength(0);
   });
 });

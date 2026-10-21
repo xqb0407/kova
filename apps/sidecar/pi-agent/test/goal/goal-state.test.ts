@@ -1,11 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_MAX_AUTO_TURNS,
+  DEFAULT_MAX_DURATION_SECONDS,
   DEFAULT_MAX_STALL_TURNS,
   GOAL_TOOL_NAMES,
+  MAX_GOAL_PROGRESS_ENTRIES,
+  appendGoalProgress,
+  autoConfirmCriteria,
+  buildGoalTurnSummary,
   createGoal,
   fingerprintAssistantOutput,
+  formatDurationSeconds,
   formatGoalStatus,
+  goalElapsedSeconds,
+  proposeCriteria,
+  replaceCriteria,
+  resumeGoalClock,
+  suspendGoalClock,
   hasGoalToolCall,
   hasToolCall,
   isResumableStatus,
@@ -342,8 +353,16 @@ describe("per-goal 轮次上限", () => {
   });
 
   test("limitsFor 用目标自己的上限，停滞阈值走全局常量", () => {
-    expect(limitsFor(createGoal("x", 7))).toEqual({ maxAutoTurns: 7, maxStallTurns: DEFAULT_MAX_STALL_TURNS });
-    expect(limitsFor(createGoal("x", null))).toEqual({ maxAutoTurns: null, maxStallTurns: 3 });
+    expect(limitsFor(createGoal("x", 7))).toEqual({
+      maxAutoTurns: 7,
+      maxStallTurns: DEFAULT_MAX_STALL_TURNS,
+      maxDurationSeconds: DEFAULT_MAX_DURATION_SECONDS,
+    });
+    expect(limitsFor(createGoal("x", null))).toEqual({
+      maxAutoTurns: null,
+      maxStallTurns: 3,
+      maxDurationSeconds: DEFAULT_MAX_DURATION_SECONDS,
+    });
   });
 });
 
@@ -391,5 +410,147 @@ describe("目标文本校验", () => {
   test("正常目标通过并被 trim", () => {
     expect(validateObjective("  重构鉴权模块  ")).toBeUndefined();
     expect(createGoal("  重构鉴权模块  ").objective).toBe("重构鉴权模块");
+  });
+});
+
+describe("v2：验收模式、时间预算与进度", () => {
+  test("acceptanceMode：默认 auto；manual/skip 按显式值", () => {
+    expect(createGoal("x").acceptanceMode).toBe("auto");
+    expect(createGoal("x").acceptance.status).toBe("pending");
+    expect(createGoal("x", 300, { acceptanceMode: "manual" }).acceptanceMode).toBe("manual");
+    const skipped = createGoal("x", 300, { acceptanceMode: "skip" });
+    expect(skipped.acceptanceMode).toBe("skip");
+    expect(skipped.acceptance.status).toBe("skipped");
+    // null 是「明确不限」，不能被 ?? 换成默认 2 小时
+    expect(createGoal("x", 300, { maxDurationSeconds: null }).maxDurationSeconds).toBeNull();
+  });
+
+  test("autoConfirmCriteria：proposed → confirmed，confirmedBy=auto", () => {
+    const pending = createGoal("x", 300, { acceptanceMode: "auto" });
+    const proposed = proposeCriteria(pending, ["测试全绿"])!;
+    const confirmed = autoConfirmCriteria(proposed)!;
+    expect(confirmed.acceptance.status).toBe("confirmed");
+    if (confirmed.acceptance.status !== "confirmed") return;
+    expect(confirmed.acceptance.confirmedBy).toBe("auto");
+    expect(confirmed.acceptance.items[0]?.text).toBe("测试全绿");
+  });
+
+  test("replaceCriteria：用户编辑后以 user 确认并把 legacy 升级为 refs", () => {
+    const base = skipCriteria(createGoal("x"))!;
+    const legacy = {
+      ...base,
+      acceptance: {
+        status: "confirmed" as const,
+        items: [{ id: "c1", text: "旧标准" }],
+        confirmedAt: 1,
+      },
+      evidencePolicy: "legacy" as const,
+    };
+    const next = replaceCriteria(legacy, ["新标准一", "新标准二"])!;
+    expect(next.acceptance.status).toBe("confirmed");
+    if (next.acceptance.status !== "confirmed") return;
+    expect(next.acceptance.confirmedBy).toBe("user");
+    expect(next.acceptance.items.map((c) => c.text)).toEqual(["新标准一", "新标准二"]);
+    expect(next.evidencePolicy).toBe("refs");
+  });
+
+  test("时间结算：活跃窗口计入，暂停后不计，resume 重开窗口", () => {
+    const now = 1_000_000;
+    const goal = {
+      ...skipCriteria(createGoal("x"))!,
+      activeRunStartedAtMs: now - 60_000,
+      timeUsedSeconds: 0,
+    };
+    expect(goalElapsedSeconds(goal, now)).toBe(60);
+
+    // transitionGoal 用真实时钟；用「距现在 60 秒」构造成本再断言区间
+    const live = { ...goal, activeRunStartedAtMs: Date.now() - 60_000 };
+    const paused = transitionGoal(live, "paused", {
+      expectedGoalId: live.id,
+      reason: "test",
+    })!;
+    expect(paused.timeUsedSeconds).toBeGreaterThanOrEqual(59);
+    expect(paused.activeRunStartedAtMs).toBeUndefined();
+    expect(goalElapsedSeconds(paused, Date.now() + 600_000)).toBe(paused.timeUsedSeconds);
+
+    const resumed = transitionGoal(paused, "active", { expectedGoalId: paused.id })!;
+    expect(resumed.activeRunStartedAtMs).toBeDefined();
+    expect(goalElapsedSeconds(resumed, resumed.activeRunStartedAtMs! + 30_000)).toBe(
+      paused.timeUsedSeconds + 30,
+    );
+  });
+
+  test("proposed 阶段停表：用户考虑的时间不算进预算", () => {
+    const now = 2_000_000;
+    const goal = {
+      ...skipCriteria(createGoal("x"))!,
+      activeRunStartedAtMs: now - 600_000,
+    };
+    const suspended = suspendGoalClock(goal, now);
+    expect(suspended.activeRunStartedAtMs).toBeUndefined();
+    expect(suspended.timeUsedSeconds).toBe(600);
+    // 再等 10 分钟，elapsed 不涨
+    expect(goalElapsedSeconds(suspended, now + 600_000)).toBe(600);
+    const resumed = resumeGoalClock(suspended, now + 600_000);
+    expect(resumed.activeRunStartedAtMs).toBe(now + 600_000);
+    expect(goalElapsedSeconds(resumed, now + 630_000)).toBe(630);
+  });
+
+  test("formatGoalStatus 带时长读数，且不产生 NaN", () => {
+    const goal = {
+      ...skipCriteria(createGoal("x"))!,
+      timeUsedSeconds: 120,
+      maxDurationSeconds: 2 * 60 * 60,
+    };
+    const line = formatGoalStatus(goal);
+    expect(line).toContain("已用 2 分 / 2 小时");
+    expect(line).not.toContain("NaN");
+    expect(formatDurationSeconds(59)).toBe("59 秒");
+    expect(formatDurationSeconds(3_600)).toBe("1 小时");
+    expect(formatDurationSeconds(3_900)).toBe("1 小时 5 分");
+  });
+
+  test("buildGoalTurnSummary 汇总工具/文件/命令/失败；append 保留上限条数", () => {
+    const goal = { ...skipCriteria(createGoal("x"))!, turnCount: 2 };
+    const message = {
+      role: "assistant",
+      content: [
+        { type: "text", text: "我先读一下现有实现" },
+        { type: "toolCall", id: "t1", name: "bash", arguments: { command: "pnpm test" } },
+        { type: "toolCall", id: "t2", name: "write", arguments: { file_path: "a.ts" } },
+      ],
+    };
+    const summary = buildGoalTurnSummary(goal, message, [{ isError: true }], 123);
+    expect(summary).toMatchObject({
+      turn: 3,
+      at: 123,
+      toolCalls: 2,
+      commands: 1,
+      errors: 1,
+      files: ["a.ts"],
+    });
+    expect(summary.tools.sort()).toEqual(["bash", "write"]);
+    expect(summary.summary).toContain("读一下");
+
+    let withProgress = goal;
+    for (let i = 0; i < MAX_GOAL_PROGRESS_ENTRIES + 3; i += 1) {
+      withProgress = appendGoalProgress(withProgress, { ...summary, turn: i });
+    }
+    expect(withProgress.progress).toHaveLength(MAX_GOAL_PROGRESS_ENTRIES);
+    expect(withProgress.progress.at(-1)?.turn).toBe(MAX_GOAL_PROGRESS_ENTRIES + 2);
+  });
+
+  test("旧目标回放：manual / legacy / 时长不限 / progress 空", () => {
+    const legacy = { ...createGoal("x") } as Record<string, unknown>;
+    delete legacy.acceptanceMode;
+    delete legacy.evidencePolicy;
+    delete legacy.maxDurationSeconds;
+    delete legacy.progress;
+    delete legacy.timeUsedSeconds;
+    const restored = normalizeLoadedGoal(legacy, 0)!;
+    expect(restored.acceptanceMode).toBe("manual");
+    expect(restored.evidencePolicy).toBe("legacy");
+    expect(restored.maxDurationSeconds).toBeNull();
+    expect(restored.progress).toEqual([]);
   });
 });

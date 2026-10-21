@@ -23,12 +23,14 @@
 import {
   DEFAULT_MAX_NEGOTIATION_TURNS,
   countNegotiationTurn,
+  goalElapsedSeconds,
   hasSubstantiveToolCall,
   isNegotiating,
   nextStallState,
   resetNegotiationProgress,
   resetSafetyEpoch,
   settleGoalTurn,
+  suspendGoalClock,
   transitionGoal,
   type Goal,
 } from "./goal-state";
@@ -48,6 +50,10 @@ export type ContinuationLimits = {
   maxAutoTurns: number | null;
   maxStallTurns: number | null;
   maxNegotiationTurns?: number;
+  /** 活跃时长上限（秒）；缺省/undefined 视为不限 */
+  maxDurationSeconds?: number | null;
+  /** 注入时钟，测试用；缺省 Date.now() */
+  now?: number;
 };
 
 /**
@@ -75,10 +81,11 @@ export function decideContinuation(
   // 走到这里的一轮，与「只有 turn_end 才 +1」的既有口径一致。
   if (goal.acceptance?.status === "proposed") {
     // 等用户确认：轮次与用量照常入账，但不注入任何续跑消息。
-    // 这是唯一的「active 却停着」的合法态——条上会写明「待你确认验收标准」
+    // 这是唯一的「active 却停着」的合法态——条上会写明「待你确认验收标准」。
+    // 同时停表：用户考虑十分钟再确认，这十分钟不该算进目标时长预算。
     return {
       action: "stop",
-      goal: settleGoalTurn(goal, tokensUsed),
+      goal: suspendGoalClock(settleGoalTurn(goal, tokensUsed)),
       reason: "acceptance criteria awaiting user confirmation",
     };
   }
@@ -86,6 +93,19 @@ export function decideContinuation(
   // 必须走执行块保持原有行为，不能被拉进协商循环
   if (isNegotiating(goal.acceptance)) {
     const settled = settleGoalTurn(goal, tokensUsed);
+    const negotiationNow = limits.now ?? Date.now();
+    const negotiationMaxDuration = limits.maxDurationSeconds;
+    if (
+      negotiationMaxDuration !== null &&
+      negotiationMaxDuration !== undefined &&
+      goalElapsedSeconds(settled, negotiationNow) >= negotiationMaxDuration
+    ) {
+      const paused = transitionGoal(settled, "paused", {
+        expectedGoalId: settled.id,
+        reason: "time budget reached",
+      });
+      return { action: "stop", goal: paused ?? settled, reason: "time budget" };
+    }
     // 只有空转轮计入协商预算：勘察轮（读文件、跑只读命令）是提出可验证标准的前提，
     // 大仓库跑十几轮很正常——这条阀要抓的是「只说不做」的原地打转，不是刨得深。
     // 判据与停滞检测同源（hasSubstantiveToolCall），两处的「做了事」含义必须一致
@@ -118,6 +138,21 @@ export function decideContinuation(
 
   // 轮次 + 用量结算一次：停滞判定要落在本轮的输出上
   const settled = settleGoalTurn(goal, tokensUsed);
+
+  // 1) 活跃时长上限：墙钟比轮次更贴近用户直觉（一轮可能跑几十秒）
+  const now = limits.now ?? Date.now();
+  const maxDuration = limits.maxDurationSeconds;
+  if (
+    maxDuration !== null &&
+    maxDuration !== undefined &&
+    goalElapsedSeconds(settled, now) >= maxDuration
+  ) {
+    const paused = transitionGoal(settled, "paused", {
+      expectedGoalId: settled.id,
+      reason: "time budget reached",
+    });
+    return { action: "stop", goal: paused ?? settled, reason: "time budget" };
+  }
 
   // 2) 轮次上限
   if (limits.maxAutoTurns !== null && settled.turnCount >= limits.maxAutoTurns) {
@@ -215,6 +250,7 @@ export function goalContinueText(
     limits.maxAutoTurns === null
       ? `turn ${goal.turnCount}`
       : `turn ${goal.turnCount} of ${limits.maxAutoTurns}`;
+  const last = goal.progress.at(-1);
   return GOAL_CONTINUE_PREFIX + [
     `Continuing the active goal (${turnLabel}).`,
     "",
@@ -223,6 +259,15 @@ export function goalContinueText(
     "<goal_objective>",
     goal.objective,
     "</goal_objective>",
+    ...(last
+      ? [
+          "",
+          "Last turn:",
+          `- ${last.summary || "no assistant text"}`,
+          `- tool calls: ${last.toolCalls}; commands: ${last.commands}; failures: ${last.errors}`,
+          ...(last.files.length ? [`- files: ${last.files.join(", ")}`] : []),
+        ]
+      : []),
     "",
     "If the goal is fully done and verified, call goal_complete. If you are truly stuck,",
     "call goal_blocked with the evidence. Otherwise keep going — do not summarize and stop.",

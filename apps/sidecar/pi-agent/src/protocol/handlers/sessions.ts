@@ -49,9 +49,12 @@ import { getTodoState, replayTodoFromMessages } from "../../todo/todo";
 import {
   getGoal,
   goalStatePayload,
+  prepareGoalForContinuation,
   restoreGoal,
   resume,
+  setGoalMaxDuration,
   setGoalMaxTurns,
+  setGoalCriteria,
   commitGoal,
   confirmGoalCriteria,
   rejectGoalCriteria,
@@ -140,6 +143,17 @@ function sessionSummaryOf(r: SessionRow): SessionSummary {
       r.appMode === "work" || r.appMode === "code" || r.appMode === "design"
         ? r.appMode
         : undefined,
+    // 目标偏好：轮次/验收模式/时长。轮次原先漏投影，桌面端会话记忆读不到；
+    // 这次与新增字段一起补齐（宽松规整，脏值按从未定过处理）
+    ...(typeof r.goalMaxTurns === "string" ? { goalMaxTurns: r.goalMaxTurns } : {}),
+    ...(r.goalAcceptanceMode === "auto" ||
+    r.goalAcceptanceMode === "manual" ||
+    r.goalAcceptanceMode === "skip"
+      ? { goalAcceptanceMode: r.goalAcceptanceMode }
+      : {}),
+    ...(typeof r.goalMaxDuration === "string"
+      ? { goalMaxDuration: r.goalMaxDuration }
+      : {}),
   };
 }
 
@@ -215,7 +229,7 @@ export const handlers: Record<string, CommandHandler> = {
     const goal = resume(run);
     if (!goal) throw new Error(`no goal to resume: ${threadId}`);
     // 先回快照：UI 立刻看到「进行中」，不用等这一轮的第一个 chunk
-    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(run.threadId) });
     kickGoalLoop(run);
   },
 
@@ -228,7 +242,7 @@ export const handlers: Record<string, CommandHandler> = {
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
     );
     commitGoal(run, undefined);
-    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(run.threadId) });
   },
 
   // 改这条目标的轮次上限（常驻条上点分母改的就是它）。上限挂在目标上而不是全局
@@ -239,9 +253,17 @@ export const handlers: Record<string, CommandHandler> = {
       threadId,
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
     );
-    const goal = setGoalMaxTurns(run, msg.maxAutoTurns);
+    // 两个字段可单独出现：轮次（maxAutoTurns）与时长（maxDurationMinutes，0=不限）。
+    // 都改时各提交一次；目标状态最终以最后一条 goal_state 快照为准
+    let goal = getGoal(run.threadId);
     if (!goal) throw new Error(`no goal to set limit on: ${threadId}`);
-    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    if (msg.maxAutoTurns !== undefined) {
+      goal = setGoalMaxTurns(run, msg.maxAutoTurns) ?? goal;
+    }
+    if (msg.maxDurationMinutes !== undefined) {
+      goal = setGoalMaxDuration(run, msg.maxDurationMinutes) ?? goal;
+    }
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(run.threadId) });
   },
 
   // 改目标原文（常驻条上点目标文字改的就是它）。存在的理由是「协商阶段那条补充
@@ -255,7 +277,7 @@ export const handlers: Record<string, CommandHandler> = {
     );
     const goal = setGoalObjective(run, typeof msg.objective === "string" ? msg.objective : "");
     if (!goal) throw new Error(`no goal to set the objective on: ${threadId}`);
-    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(run.threadId) });
     // 换了目标就要按新目标跑：空闲时补起一轮（协商或执行，按契约阶段选文本）。
     // 正忙时什么也不做——那一轮的 turn_end 自然会按新盘面续
     kickGoalLoop(run);
@@ -280,7 +302,7 @@ export const handlers: Record<string, CommandHandler> = {
     }
     const goal = confirmGoalCriteria(run);
     if (!goal) throw new Error(`no proposed criteria to confirm: ${threadId}`);
-    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(run.threadId) });
     kickGoalLoop(run);
   },
 
@@ -293,7 +315,7 @@ export const handlers: Record<string, CommandHandler> = {
     const feedback = typeof msg.feedback === "string" ? msg.feedback : undefined;
     const goal = rejectGoalCriteria(run, feedback);
     if (!goal) throw new Error(`no proposed criteria to reject: ${threadId}`);
-    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(run.threadId) });
     // 驳回后立刻起新一轮协商：用户在卡片上写了意见，等的就是模型据此重提，
     // 还要再点一次「继续」才算数的话，这个按钮就白点了
     kickGoalLoop(run);
@@ -307,7 +329,26 @@ export const handlers: Record<string, CommandHandler> = {
     );
     const goal = skipGoalCriteria(run);
     if (!goal) throw new Error(`no criteria to skip: ${threadId}`);
-    send({ id: reqId, type: "goal_state", ...goalStatePayload(threadId) });
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(run.threadId) });
+    kickGoalLoop(run);
+  },
+
+  // 用户编辑已确认的标准（自动确认后的「调整标准」）：替换清单并以 user 身份
+  // 直接确认，不走「驳回 → 重谈」一轮。老目标在这里升级为 refs 证据策略。
+  goal_edit_criteria: async (reqId, msg) => {
+    const threadId = String(msg.threadId ?? "default");
+    const run = await resolveSession(
+      threadId,
+      typeof msg.sessionId === "string" ? msg.sessionId : undefined,
+    );
+    const criteria = Array.isArray(msg.criteria)
+      ? msg.criteria
+      : Array.isArray(msg.items)
+        ? msg.items
+        : [];
+    const goal = setGoalCriteria(run, criteria);
+    if (!goal) throw new Error(`no criteria to edit: ${threadId}`);
+    send({ id: reqId, type: "goal_state", ...goalStatePayload(run.threadId) });
     kickGoalLoop(run);
   },
 
@@ -857,12 +898,16 @@ export const handlers: Record<string, CommandHandler> = {
  */
 function kickGoalLoop(run: Running): void {
   if (isTurnBusy(run.threadId)) return;
-  const goal = getGoal(run.threadId);
-  if (!goal || goal.status !== "active") return;
+  const current = getGoal(run.threadId);
+  if (!current || current.status !== "active") return;
   // 等用户确认契约时没有活可干：起一轮只会让模型读着「等用户决定」的系统提示词
   // 收到一条「继续推进目标」的注入，两边打架（而且这个阶段它手里一个目标工具
   // 都没有，收到 execution 指令只会去调不存在的 goal_complete）
-  if (goal.acceptance?.status === "proposed") return;
+  if (current.acceptance?.status === "proposed") return;
+  // 确认/编辑/跳过之后：如果时钟停在 proposed 阶段，重新开表；已经超时长预算
+  // 则在这里暂停，不再起新一轮。
+  const goal = prepareGoalForContinuation(run);
+  if (!goal || goal.status !== "active") return;
   // 目标只在 goal 档跑：这里的入口都是「继续这条目标」的明确动作，档位不对就先
   // 扶正（理由见 ensureGoalMode）。不对端补一条会话变更帧的话，前端胶囊会停在
   // 旧档位，看起来像"档位自己变了"

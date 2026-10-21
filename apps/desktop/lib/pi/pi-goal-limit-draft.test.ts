@@ -6,12 +6,23 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  DEFAULT_GOAL_ACCEPTANCE_MODE,
+  DEFAULT_GOAL_DURATION_DRAFT,
   DEFAULT_GOAL_TURN_DRAFT,
+  getGoalAcceptanceMode,
+  getGoalDurationDraft,
   getGoalTurnDraft,
+  goalAcceptanceModeForSend,
+  goalDurationDraftForSend,
   goalTurnDraftForSend,
+  normalizeGoalAcceptanceMode,
+  normalizeGoalDurationDraft,
   normalizeGoalTurnDraft,
+  parseSessionGoalDurationPref,
   parseSessionGoalTurnsPref,
   resetGoalTurnDraftForTest,
+  setGoalAcceptanceMode,
+  setGoalDurationDraft,
   setGoalTurnDraft,
 } from "@/lib/pi/pi-goal-limit-draft";
 
@@ -84,5 +95,49 @@ describe("显示值与发送值", () => {
     setGoalTurnDraft(120, T);
     setGoalTurnDraft(Number.NaN, T);
     expect(getGoalTurnDraft(T)).toBe(DEFAULT_GOAL_TURN_DRAFT);
+  });
+});
+
+describe("v2：验收模式与时长预算", () => {
+  test("默认值与脏值规整", () => {
+    expect(getGoalAcceptanceMode(T)).toBe(DEFAULT_GOAL_ACCEPTANCE_MODE);
+    expect(getGoalDurationDraft(T)).toBe(DEFAULT_GOAL_DURATION_DRAFT);
+    expect(normalizeGoalAcceptanceMode("manual")).toBe("manual");
+    expect(normalizeGoalAcceptanceMode("weird")).toBe("auto");
+    expect(normalizeGoalDurationDraft(0)).toBe(0);
+    expect(normalizeGoalDurationDraft(90)).toBe(90);
+    expect(normalizeGoalDurationDraft(Number.NaN)).toBe(DEFAULT_GOAL_DURATION_DRAFT);
+  });
+
+  test("显式改过才发送；模式与时长互相独立", () => {
+    expect(goalAcceptanceModeForSend(T)).toBeUndefined();
+    expect(goalDurationDraftForSend(T)).toBeUndefined();
+
+    setGoalAcceptanceMode("manual", T);
+    expect(getGoalAcceptanceMode(T)).toBe("manual");
+    expect(goalAcceptanceModeForSend(T)).toBe("manual");
+    expect(goalDurationDraftForSend(T)).toBeUndefined();
+
+    setGoalDurationDraft(0, T);
+    expect(getGoalDurationDraft(T)).toBe(0);
+    expect(goalDurationDraftForSend(T)).toBe(0);
+    expect(goalAcceptanceModeForSend(T)).toBe("manual");
+  });
+
+  test("会话偏好列的时长解析：0 = 不限，空/脏值 = 从未定过", () => {
+    expect(parseSessionGoalDurationPref("0")).toBeNull();
+    expect(parseSessionGoalDurationPref("90")).toBe(90);
+    expect(parseSessionGoalDurationPref(null)).toBeUndefined();
+    expect(parseSessionGoalDurationPref("nope")).toBeUndefined();
+  });
+
+  test("reset 清空所有覆盖层", () => {
+    setGoalAcceptanceMode("skip", T);
+    setGoalDurationDraft(30, T);
+    setGoalTurnDraft(10, T);
+    resetGoalTurnDraftForTest();
+    expect(goalAcceptanceModeForSend(T)).toBeUndefined();
+    expect(goalDurationDraftForSend(T)).toBeUndefined();
+    expect(goalTurnDraftForSend(T)).toBeUndefined();
   });
 });

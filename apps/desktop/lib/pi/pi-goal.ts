@@ -30,11 +30,37 @@ export type Criterion = { id: string; text: string };
  */
 export type AcceptanceStatus = "pending" | "proposed" | "confirmed" | "skipped";
 
+export type GoalAcceptanceMode = "auto" | "manual" | "skip";
+export type GoalEvidencePolicy = "legacy" | "refs";
+
 export type GoalAcceptance = {
   status: AcceptanceStatus;
   items: Criterion[];
   /** 用户驳回意见（status = pending 时有意义） */
   feedback?: string;
+  /** auto = 模型提议后自动确认；user = 用户确认/编辑 */
+  confirmedBy?: "user" | "auto";
+};
+
+export type GoalTurnSummary = {
+  turn: number;
+  at: number;
+  toolCalls: number;
+  tools: string[];
+  files: string[];
+  commands: number;
+  errors: number;
+  summary: string;
+};
+
+export type GoalCompletionAuditRow = {
+  id: string;
+  text: string;
+  met: boolean;
+  evidence: string;
+  refs?: Array<Record<string, unknown>>;
+  verified?: boolean;
+  manualOnly?: boolean;
 };
 
 export type GoalSnapshot = {
@@ -47,11 +73,21 @@ export type GoalSnapshot = {
   turnCount: number;
   /** null = 未设轮次上限 */
   maxAutoTurns: number | null;
+  /** null = 未设时长上限 */
+  maxDurationSeconds: number | null;
+  /** 已结算的活跃秒数 */
+  timeUsedSeconds: number;
+  /** 当前活跃窗口开始时间（仅 active） */
+  activeRunStartedAtMs?: number;
+  acceptanceMode: GoalAcceptanceMode;
+  evidencePolicy: GoalEvidencePolicy;
+  progress: GoalTurnSummary[];
   tokensUsed: number;
   startedAt: number;
   updatedAt: number;
   pauseReason?: string;
   completionSummary?: string;
+  completionAudit?: GoalCompletionAuditRow[];
   acceptance?: GoalAcceptance;
 };
 
@@ -75,7 +111,12 @@ export function confirmedCriteria(goal: GoalSnapshot): Criterion[] {
 
 function normalizeAcceptance(raw: unknown): GoalAcceptance | undefined {
   if (!raw || typeof raw !== "object") return undefined;
-  const a = raw as { status?: unknown; items?: unknown; feedback?: unknown };
+  const a = raw as {
+    status?: unknown;
+    items?: unknown;
+    feedback?: unknown;
+    confirmedBy?: unknown;
+  };
   const status = a.status;
   if (
     status !== "pending" &&
@@ -98,7 +139,65 @@ function normalizeAcceptance(raw: unknown): GoalAcceptance | undefined {
     status,
     items,
     ...(typeof a.feedback === "string" ? { feedback: a.feedback } : {}),
+    ...(a.confirmedBy === "auto" || a.confirmedBy === "user"
+      ? { confirmedBy: a.confirmedBy }
+      : {}),
   };
+}
+
+function normalizeProgress(raw: unknown): GoalTurnSummary[] {
+  if (!Array.isArray(raw)) return [];
+  const out: GoalTurnSummary[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const p = entry as Partial<GoalTurnSummary>;
+    if (typeof p.turn !== "number" || typeof p.at !== "number") continue;
+    out.push({
+      turn: p.turn,
+      at: p.at,
+      toolCalls: typeof p.toolCalls === "number" ? p.toolCalls : 0,
+      tools: Array.isArray(p.tools) ? p.tools.filter((t): t is string => typeof t === "string") : [],
+      files: Array.isArray(p.files) ? p.files.filter((f): f is string => typeof f === "string") : [],
+      commands: typeof p.commands === "number" ? p.commands : 0,
+      errors: typeof p.errors === "number" ? p.errors : 0,
+      summary: typeof p.summary === "string" ? p.summary : "",
+    });
+  }
+  return out;
+}
+
+function normalizeCompletionAudit(raw: unknown): GoalCompletionAuditRow[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const rows: GoalCompletionAuditRow[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const r = entry as Partial<GoalCompletionAuditRow>;
+    if (
+      typeof r.id !== "string" ||
+      typeof r.text !== "string" ||
+      typeof r.met !== "boolean" ||
+      typeof r.evidence !== "string"
+    ) {
+      continue;
+    }
+    rows.push({
+      id: r.id,
+      text: r.text,
+      met: r.met,
+      evidence: r.evidence,
+      ...(Array.isArray(r.refs)
+        ? {
+            refs: r.refs.filter(
+              (ref): ref is Record<string, unknown> =>
+                Boolean(ref) && typeof ref === "object",
+            ),
+          }
+        : {}),
+      ...(typeof r.verified === "boolean" ? { verified: r.verified } : {}),
+      ...(typeof r.manualOnly === "boolean" ? { manualOnly: r.manualOnly } : {}),
+    });
+  }
+  return rows;
 }
 
 /** chunk / 响应里的 goal 是否形状完整（loose 协议：未知字段透传，脏数据一律当无目标） */
@@ -117,6 +216,7 @@ function normalizeGoal(raw: unknown): GoalSnapshot | null {
   }
   if (typeof g.statusLine !== "string" || typeof g.turnCount !== "number") return null;
   const acceptance = normalizeAcceptance(g.acceptance);
+  const completionAudit = normalizeCompletionAudit(g.completionAudit);
   return {
     id: g.id,
     objective: g.objective,
@@ -124,6 +224,17 @@ function normalizeGoal(raw: unknown): GoalSnapshot | null {
     statusLine: g.statusLine,
     turnCount: g.turnCount,
     maxAutoTurns: typeof g.maxAutoTurns === "number" ? g.maxAutoTurns : null,
+    maxDurationSeconds: typeof g.maxDurationSeconds === "number" ? g.maxDurationSeconds : null,
+    timeUsedSeconds: typeof g.timeUsedSeconds === "number" ? g.timeUsedSeconds : 0,
+    ...(typeof g.activeRunStartedAtMs === "number"
+      ? { activeRunStartedAtMs: g.activeRunStartedAtMs }
+      : {}),
+    acceptanceMode:
+      g.acceptanceMode === "manual" || g.acceptanceMode === "skip"
+        ? g.acceptanceMode
+        : "auto",
+    evidencePolicy: g.evidencePolicy === "refs" ? "refs" : "legacy",
+    progress: normalizeProgress(g.progress),
     tokensUsed: typeof g.tokensUsed === "number" ? g.tokensUsed : 0,
     startedAt: typeof g.startedAt === "number" ? g.startedAt : 0,
     updatedAt: typeof g.updatedAt === "number" ? g.updatedAt : 0,
@@ -131,6 +242,7 @@ function normalizeGoal(raw: unknown): GoalSnapshot | null {
     ...(typeof g.completionSummary === "string"
       ? { completionSummary: g.completionSummary }
       : {}),
+    ...(completionAudit ? { completionAudit } : {}),
     ...(acceptance ? { acceptance } : {}),
   };
 }
@@ -237,13 +349,43 @@ export const goalSnapshotForTest = (threadId: string): GoalStoreState =>
  * sidecar 同时把这次的值写进会话偏好列（这个会话的下一条目标就从它开始），
  * 所以回包后顺手刷一次偏好镜像，条上显示的预设才不会落后一格。
  */
+export type GoalLimitUpdate = {
+  maxAutoTurns?: number | null;
+  /** 分钟；0 = 不限 */
+  maxDurationMinutes?: number;
+};
+
 export function setGoalLimitNow(
   threadId: string,
-  maxAutoTurns: number | null,
+  update: GoalLimitUpdate | number | null,
 ): Promise<void> {
-  return requestGoal(threadId, { type: "goal_set_limit", maxAutoTurns }).then(() =>
+  const payload =
+    typeof update === "number" || update === null
+      ? { maxAutoTurns: update }
+      : update;
+  return requestGoal(threadId, { type: "goal_set_limit", ...payload }).then(() =>
     refreshSessionPrefs(),
   );
+}
+
+/** 已用活跃时长（秒）；active 时把当前窗口算进去 */
+export function goalElapsedSeconds(goal: GoalSnapshot, now = Date.now()): number {
+  const settled = Math.max(0, Math.floor(goal.timeUsedSeconds));
+  if (goal.status !== "active" || goal.activeRunStartedAtMs === undefined) {
+    return settled;
+  }
+  return settled + Math.max(0, Math.floor((now - goal.activeRunStartedAtMs) / 1000));
+}
+
+/** 秒 → 条上的中文读数 */
+export function formatGoalDuration(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds));
+  if (safe < 60) return `${safe} 秒`;
+  const minutes = Math.floor(safe / 60);
+  if (minutes < 60) return `${minutes} 分`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest > 0 ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
 }
 
 /* ------------------------ 验收标准契约的三个决定 ------------------------ */
@@ -288,4 +430,12 @@ export function rejectGoalCriteriaNow(
 /** 用户不想要这道门：直接进执行阶段，完成时不做对账 */
 export function skipGoalCriteriaNow(threadId: string): Promise<void> {
   return requestGoal(threadId, { type: "goal_skip_criteria" });
+}
+
+/** 编辑已确认的标准（自动确认后的「调整标准」）：替换清单并以 user 身份确认 */
+export function editGoalCriteriaNow(
+  threadId: string,
+  criteria: string[],
+): Promise<void> {
+  return requestGoal(threadId, { type: "goal_edit_criteria", criteria });
 }

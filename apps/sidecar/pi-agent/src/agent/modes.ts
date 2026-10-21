@@ -80,7 +80,13 @@ import {
   isGoalToolName,
   type Goal,
 } from "../goal/goal-state";
-import { buildGoalTools, getGoal, markGoalWorkSeen, pauseGoalOnModeExit } from "../goal/goal";
+import {
+  buildGoalTools,
+  getGoal,
+  markGoalWorkSeen,
+  pauseGoalOnModeExit,
+  setGoalContextRefresher,
+} from "../goal/goal";
 import { GOAL_MODE_PROMPT, goalPromptBlock } from "../goal/prompt";
 import type {
   ApprovalLevel,
@@ -358,6 +364,34 @@ export function refreshGoalToolset(run: Running): void {
   run.agent.state.tools = tools;
   if (run.loopContext) run.loopContext.tools = tools;
 }
+
+/**
+ * 目标契约阶段变化后的即时刷新：工具表 + leading system prompt 一起换。
+ *
+ * 自动确认发生在**同一轮的工具结果之后**，而每轮提示词重排只发生在用户 turn
+ * 开头（prompt-pipeline 的 runPromptTurn）。只换工具表的话，模型下一个请求仍会
+ * 读到「本轮只读、等用户确认」，然后拿着 write 工具却不敢用/反复撞门。
+ * loopContext 也要一起改：轮中请求从它读 prompt 与 tools。
+ */
+export function refreshGoalContext(run: Running): void {
+  if (run.mode !== "goal") return;
+  // 测试/只读投影的占位 run 可能没有物化 agent 或工具表；真实 run 一定有。
+  // 这里宁可跳过刷新，也不要让一个 fake run 在 confirm 时把整个状态机打崩。
+  if (!run.agent?.state) return;
+  if (!Array.isArray(run.baseTools) || !Array.isArray(run.subagentTools)) return;
+  const prompt = composeRunPrompt(run, run.agent.state.model);
+  const tools = toolsForMode(run);
+  run.agent.state.tools = tools;
+  setLeadingSystemMessage(run.agent.state.messages, prompt);
+  if (run.loopContext) {
+    setLeadingSystemMessage(run.loopContext.messages, prompt);
+    run.loopContext.tools = tools;
+  }
+}
+
+// goal.ts 不能反向 import modes.ts（会成环）：由这里注册刷新钩子，
+// 自动确认/编辑标准后 goal.ts 通过钩子即时刷新上下文。
+setGoalContextRefresher(refreshGoalContext);
 
 function textResult(text: string, details?: unknown) {
   return { content: [{ type: "text" as const, text }], details };

@@ -126,6 +126,9 @@ export function initLocalStorage(dbPath: string): void {
     // 会话级目标轮数上限（文本存数字）：NULL = 从未定过（建目标回落默认 300）；
     // "0" = 不限。两态必须分得开——「不限」也是一个要记住的选择，不能被当成没设过
     "goal_max_turns TEXT",
+    // 验收标准启动模式与目标活跃时长上限（分钟文本）：NULL = 从未定过
+    "goal_acceptance_mode TEXT",
+    "goal_max_duration TEXT",
   ]) {
     try {
       localDb.exec(`ALTER TABLE sessions ADD COLUMN ${col}`);
@@ -491,10 +494,12 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               design_theme: string | null;
               app_mode: string | null;
               goal_max_turns: string | null;
+              goal_acceptance_mode: string | null;
+              goal_max_duration: string | null;
             },
             [string]
           >(
-            "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns FROM sessions WHERE id = ?",
+            "SELECT cwd, title, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration FROM sessions WHERE id = ?",
           )
           .get(s("sessionId"));
         return row
@@ -509,6 +514,8 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               designTheme: row.design_theme,
               appMode: row.app_mode,
               goalMaxTurns: row.goal_max_turns,
+              goalAcceptanceMode: row.goal_acceptance_mode,
+              goalMaxDuration: row.goal_max_duration,
             }
           : null;
       }
@@ -540,10 +547,12 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               design_theme: string | null;
               app_mode: string | null;
               goal_max_turns: string | null;
+              goal_acceptance_mode: string | null;
+              goal_max_duration: string | null;
             },
             []
           >(
-            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns FROM sessions ORDER BY updated_at DESC",
+            "SELECT id, title, first_message, cwd, archived, updated_at, COALESCE(message_count, 0) AS message_count, mode, approval_level, model_provider, model_id, thinking_level, design_theme, app_mode, goal_max_turns, goal_acceptance_mode, goal_max_duration FROM sessions ORDER BY updated_at DESC",
           )
           .all()
           .map((r) => ({
@@ -556,6 +565,8 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
             designTheme: r.design_theme ?? null,
             appMode: r.app_mode ?? null,
             goalMaxTurns: r.goal_max_turns ?? null,
+            goalAcceptanceMode: r.goal_acceptance_mode ?? null,
+            goalMaxDuration: r.goal_max_duration ?? null,
           }));
       case "session_prefs_set":
         db.query(
@@ -567,7 +578,9 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
            thinking_level = COALESCE(?6, thinking_level), \
            design_theme = COALESCE(?7, design_theme), \
            app_mode = COALESCE(?8, app_mode), \
-           goal_max_turns = COALESCE(?9, goal_max_turns) \
+           goal_max_turns = COALESCE(?9, goal_max_turns), \
+           goal_acceptance_mode = COALESCE(?10, goal_acceptance_mode), \
+           goal_max_duration = COALESCE(?11, goal_max_duration) \
            WHERE id = ?1",
         ).run(
           s("sessionId"),
@@ -579,6 +592,8 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
           typeof p.designTheme === "string" ? p.designTheme : null,
           typeof p.appMode === "string" ? p.appMode : null,
           typeof p.goalMaxTurns === "string" ? p.goalMaxTurns : null,
+          typeof p.goalAcceptanceMode === "string" ? p.goalAcceptanceMode : null,
+          typeof p.goalMaxDuration === "string" ? p.goalMaxDuration : null,
         );
         return {};
       case "session_delete":

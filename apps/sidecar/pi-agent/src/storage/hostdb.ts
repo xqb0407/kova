@@ -64,6 +64,10 @@ export type SessionRow = {
   /** 目标轮数上限偏好（文本存数字）：NULL = 本会话从未定过（建目标回落默认 300）；
    *  "0" = 不限。两态必须分得开——「不限」也是一个要记住的选择 */
   goalMaxTurns: string | null;
+  /** 验收标准启动模式偏好（auto|manual|skip）：NULL = 从未定过（新目标默认 auto） */
+  goalAcceptanceMode: string | null;
+  /** 目标活跃时长上限偏好（文本存分钟）：NULL = 从未定过；"0" = 不限 */
+  goalMaxDuration: string | null;
 };
 
 export type CustomProviderRow = {
@@ -94,6 +98,10 @@ export type SessionPrefsRow = {
   appMode: string | null;
   /** 目标轮数上限：NULL = 本会话从未定过（建目标回落默认 300）；"0" = 不限 */
   goalMaxTurns: string | null;
+  /** 验收标准启动模式：NULL = 从未定过（新目标默认 auto） */
+  goalAcceptanceMode: string | null;
+  /** 目标活跃时长上限：NULL = 从未定过；"0" = 不限（分钟字符串） */
+  goalMaxDuration: string | null;
 };
 
 export const sessionGet = (sessionId: string) =>
@@ -114,6 +122,10 @@ export const sessionPrefsSet = (
     appMode?: string;
     /** 会话级目标轮数上限（数字字符串；"0" = 不限）：定靶写入只动本会话 */
     goalMaxTurns?: string;
+    /** 会话级验收标准启动模式（auto|manual|skip） */
+    goalAcceptanceMode?: string;
+    /** 会话级目标活跃时长上限（分钟字符串；"0" = 不限） */
+    goalMaxDuration?: string;
   },
 ) => query("session_prefs_set", { sessionId, ...prefs });
 

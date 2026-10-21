@@ -80,6 +80,60 @@ export function criterionId(index: number): string {
 }
 
 /**
+ * 验收标准的启动模式。
+ *
+ * - auto：模型提议后由 sidecar 直接确认，同一轮继续执行（默认，省掉一次点击）
+ * - manual：提议后停下等用户确认（原有行为）
+ * - skip：建目标即跳过，完成时不做逐条对账
+ *
+ * 老目标回放为 manual：升级不能把历史目标突然改成自动确认。
+ */
+export type AcceptanceMode = "auto" | "manual" | "skip";
+
+/**
+ * 完成证据策略。
+ *
+ * - refs：新目标。确认过标准的目标必须交结构化 refs，由系统核对。
+ * - legacy：引入 refs 之前落盘的老目标。保留自由文本 evidence 的原行为。
+ *
+ * 用户显式编辑老目标的标准时升级为 refs（见 setCriteria）。
+ */
+export type EvidencePolicy = "legacy" | "refs";
+
+/** 一轮目标的进度摘要（只进 UI/产物与续跑消息，绝不进 system prompt） */
+export type GoalTurnSummary = {
+  turn: number;
+  at: number;
+  toolCalls: number;
+  tools: string[];
+  files: string[];
+  commands: number;
+  errors: number;
+  /** 本轮 assistant 可见文本的前若干字（截断后落盘） */
+  summary: string;
+};
+
+/**
+ * 完成证据引用（模型在 goal_complete 里交的结构化引用）。
+ *
+ * 服务端只匹配本次目标内**真实发生过**的调用，不执行模型给的命令：
+ * - command：必须匹配一条成功 bash 调用（含 exitCode 校验）
+ * - file：必须存在（modified 还要求有本次目标的成功写入，内容哈希一致）
+ * - tool：必须匹配同名成功工具调用
+ * - manual：允许，但该条会被标记「需人工确认」
+ */
+export type GoalEvidenceRef =
+  | { kind: "command"; command: string; expect?: "success" }
+  | { kind: "file"; path: string; expect?: "exists" | "modified" }
+  | { kind: "tool"; tool: string; path?: string }
+  | { kind: "manual"; note: string };
+
+/** 进度台账上限：再多就不是进度而是转录了，且每轮落一行会撑大 goal_state */
+export const MAX_GOAL_PROGRESS_ENTRIES = 12;
+export const MAX_PROGRESS_SUMMARY_CHARS = 240;
+export const MAX_PROGRESS_FILES = 8;
+
+/**
  * 验收标准契约的四态。
  *
  * 为什么不用「字段缺失 = 未协商」：那会让「用户跳过标准」与「还没开始协商」
@@ -101,7 +155,13 @@ export type Acceptance =
    */
   | { status: "proposed"; items: Criterion[]; feedback?: string }
   /** 已确认，成为完成判定的契约（意见到此已经解决，不再携带） */
-  | { status: "confirmed"; items: Criterion[]; confirmedAt: number }
+  | {
+      status: "confirmed";
+      items: Criterion[];
+      confirmedAt: number;
+      /** auto = 模型提议后由 sidecar 自动确认；user = 用户显式确认/编辑 */
+      confirmedBy?: "user" | "auto";
+    }
   /** 用户跳过 / 老目标回放：不做对账，行为与引入本机制之前一致 */
   | { status: "skipped" };
 
@@ -155,6 +215,15 @@ export type Goal = {
    */
   acceptance?: Acceptance;
   /**
+   * 新建目标时选择的验收标准启动模式；老目标回放为 manual。
+   * 只影响「提议后是否自动确认」，不改变标准本身的内容。
+   */
+  acceptanceMode: AcceptanceMode;
+  /**
+   * 完成证据策略。新目标 refs（结构化证据强校验），老目标 legacy（自由文本）。
+   */
+  evidencePolicy: EvidencePolicy;
+  /**
    * 连续「什么也没做」的协商轮数。只在协商轮跑完、模型既没提议标准、这一轮也
    * 没调用任何实质工具时 +1；勘察轮（读文件、跑只读命令）一律清零重来。
    * 数到上限就暂停目标——否则模型可以永远「只说不做」地空转到撞轮次上限。
@@ -182,6 +251,21 @@ export type Goal = {
    * 落盘、随目标回放，用户在常驻条上按当前这条任务调。
    */
   maxAutoTurns: number | null;
+  /**
+   * 这条目标的活跃时长上限（秒，null = 不限）。
+   *
+   * 与轮次上限并列：轮次可预期但不知道一轮多长，时间预算更贴近用户直觉。
+   * 只计活跃窗口（activeRunStartedAtMs 到暂停/完成），暂停期间不计。
+   */
+  maxDurationSeconds: number | null;
+  /** 已结算的活跃秒数（暂停/完成时把当前窗口折进来） */
+  timeUsedSeconds: number;
+  /** 当前活跃窗口开始时间；非 active 时为 undefined */
+  activeRunStartedAtMs?: number;
+  /** 目标创建时的转录 seq：重启回放证据台账时从这里开始扫描 */
+  startedSeq?: number;
+  /** 最近若干轮的进度摘要（最多 MAX_GOAL_PROGRESS_ENTRIES 条） */
+  progress: GoalTurnSummary[];
   /** paused / blocked 的说明，进 composer 常驻条 */
   pauseReason?: string;
   /** complete 时模型的完成说明 */
@@ -190,7 +274,17 @@ export type Goal = {
    * 完成时的逐条对账明细（契约生效的目标才有）。存下来是为了让产物文件与
    * 「已完成」的目标能回答「它到底拿什么证明做到了」。
    */
-  completionAudit?: Array<{ id: string; text: string; met: boolean; evidence: string }>;
+  completionAudit?: Array<{
+    id: string;
+    text: string;
+    met: boolean;
+    evidence: string;
+    refs?: GoalEvidenceRef[];
+    /** refs 全部通过系统核验 */
+    verified?: boolean;
+    /** 该条只交了 manual 证据 */
+    manualOnly?: boolean;
+  }>;
   /**
    * 这条目标是否真的动过手（调过任何非目标工具）。
    *
@@ -207,6 +301,8 @@ export type GoalLimits = {
   maxAutoTurns: number | null;
   /** 连续无进展轮数上限，null = 不检测 */
   maxStallTurns: number | null;
+  /** 活跃时长上限（秒），null = 不限；缺省按不限处理 */
+  maxDurationSeconds?: number | null;
 };
 
 /**
@@ -228,12 +324,23 @@ export const GOAL_TURN_LIMIT_MAX = 5_000;
 /** 停滞阈值：不开放给用户调（理由见 goal-continuation.ts 顶部） */
 export const DEFAULT_MAX_STALL_TURNS = 3;
 
+/** 新建目标的默认活跃时长上限：2 小时。null = 不限 */
+export const DEFAULT_MAX_DURATION_SECONDS = 2 * 60 * 60;
+
+/** 用户可填的时长区间（分钟；0 单独表示不限） */
+export const GOAL_DURATION_MIN_MINUTES = 1;
+export const GOAL_DURATION_MAX_MINUTES = 24 * 60;
+
 /** 从目标盘面 + 全局常量组装一次判定用的安全阀参数 */
 export function limitsFor(
-  goal: Pick<Goal, "maxAutoTurns">,
+  goal: Pick<Goal, "maxAutoTurns" | "maxDurationSeconds">,
   maxStallTurns: number | null = DEFAULT_MAX_STALL_TURNS,
 ): GoalLimits {
-  return { maxAutoTurns: goal.maxAutoTurns, maxStallTurns };
+  return {
+    maxAutoTurns: goal.maxAutoTurns,
+    maxStallTurns,
+    maxDurationSeconds: goal.maxDurationSeconds,
+  };
 }
 
 /** 把一个来路不明的轮次上限规整成合法值；undefined/null/0 → 不限，脏值回落默认 */
@@ -244,6 +351,61 @@ export function normalizeTurnLimitValue(raw: unknown): number | null {
   const n = Math.round(raw);
   if (n < 0) return DEFAULT_MAX_AUTO_TURNS;
   return Math.min(GOAL_TURN_LIMIT_MAX, Math.max(GOAL_TURN_LIMIT_MIN, n));
+}
+
+/**
+ * 时长上限的规整：输入是**分钟**，0 → null（不限），undefined → 默认 2 小时，
+ * 脏值回落默认，越界钳位。与轮次上限的三态口径保持一致。
+ */
+export function normalizeDurationLimitValue(raw: unknown): number | null {
+  if (raw === null || raw === 0) return null;
+  if (raw === undefined) return DEFAULT_MAX_DURATION_SECONDS;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_MAX_DURATION_SECONDS;
+  const minutes = Math.round(raw);
+  if (minutes < 0) return DEFAULT_MAX_DURATION_SECONDS;
+  const clamped = Math.min(
+    GOAL_DURATION_MAX_MINUTES,
+    Math.max(GOAL_DURATION_MIN_MINUTES, minutes),
+  );
+  return clamped * 60;
+}
+
+/** 活跃秒数：已结算 + 当前窗口（仅 active 且窗口存在） */
+export function goalElapsedSeconds(goal: Goal, now: number = Date.now()): number {
+  const settled = Number.isFinite(goal.timeUsedSeconds)
+    ? Math.max(0, Math.floor(goal.timeUsedSeconds))
+    : 0;
+  if (goal.status !== "active" || goal.activeRunStartedAtMs === undefined) {
+    return settled;
+  }
+  const live = Math.max(0, Math.floor((now - goal.activeRunStartedAtMs) / 1000));
+  return settled + live;
+}
+
+/** 当前活跃窗口是否已超时（maxDurationSeconds=null 时永不超时） */
+export function isGoalTimeBudgetExceeded(goal: Goal, now: number = Date.now()): boolean {
+  if (goal.maxDurationSeconds === null) return false;
+  return goalElapsedSeconds(goal, now) >= goal.maxDurationSeconds;
+}
+
+/**
+ * 停止计时但不改变状态：用于「active 但循环没在跑」的合法态（proposed 等用户确认）。
+ * 不结算的话，用户考虑十分钟再点确认，这十分钟会被算进目标时长预算。
+ */
+export function suspendGoalClock(goal: Goal, now: number = Date.now()): Goal {
+  if (goal.status !== "active" || goal.activeRunStartedAtMs === undefined) return goal;
+  return {
+    ...goal,
+    timeUsedSeconds: goalElapsedSeconds(goal, now),
+    activeRunStartedAtMs: undefined,
+    updatedAt: now,
+  };
+}
+
+/** 重新开始计时：active 且当前没有活跃窗口时。已在计时则原样返回。 */
+export function resumeGoalClock(goal: Goal, now: number = Date.now()): Goal {
+  if (goal.status !== "active" || goal.activeRunStartedAtMs !== undefined) return goal;
+  return { ...goal, activeRunStartedAtMs: now, updatedAt: now };
 }
 
 export const MAX_GOAL_OBJECTIVE_LENGTH = 4_000;
@@ -294,16 +456,29 @@ export function isResumableStatus(status: GoalStatus): boolean {
  * 用户在建目标时已经能选「跳过标准」（走 skipCriteria），那条路径由 UI 在确认
  * 卡片上给，不在这里分支——目标本身不知道用户打算怎么回。
  */
+export type CreateGoalOptions = {
+  /** 验收标准启动模式；默认 auto */
+  acceptanceMode?: AcceptanceMode;
+  /** 活跃时长上限（秒）；默认 2 小时，null = 不限 */
+  maxDurationSeconds?: number | null;
+  /** 目标创建时的转录 seq（重启回放证据台账用） */
+  startedSeq?: number;
+};
+
 export function createGoal(
   objective: string,
   maxAutoTurns: number | null = DEFAULT_MAX_AUTO_TURNS,
+  options: CreateGoalOptions = {},
 ): Goal {
   const now = Date.now();
+  const acceptanceMode = options.acceptanceMode ?? "auto";
   return {
     id: randomUUID(),
     objective: objective.trim(),
     status: "active",
-    acceptance: { status: "pending" },
+    acceptance: acceptanceMode === "skip" ? { status: "skipped" } : { status: "pending" },
+    acceptanceMode,
+    evidencePolicy: "refs",
     negotiationTurns: 0,
     startedAt: now,
     updatedAt: now,
@@ -311,12 +486,30 @@ export function createGoal(
     tokensUsed: 0,
     stallTurns: 0,
     maxAutoTurns,
+    // 不能用 ??：null 是「明确不限」，会被 ?? 当成缺省换成 2 小时
+    maxDurationSeconds:
+      options.maxDurationSeconds === undefined
+        ? DEFAULT_MAX_DURATION_SECONDS
+        : options.maxDurationSeconds,
+    timeUsedSeconds: 0,
+    activeRunStartedAtMs: now,
+    ...(options.startedSeq !== undefined ? { startedSeq: options.startedSeq } : {}),
+    progress: [],
   };
 }
 
 /** 改这条目标的轮次上限（不动状态；调低到已跑轮数以下由调用方处理） */
 export function setTurnLimit(goal: Goal, raw: unknown): Goal {
   return { ...goal, maxAutoTurns: normalizeTurnLimitValue(raw), updatedAt: Date.now() };
+}
+
+/** 改这条目标的时长上限（输入分钟；不动状态） */
+export function setDurationLimit(goal: Goal, raw: unknown): Goal {
+  return {
+    ...goal,
+    maxDurationSeconds: normalizeDurationLimitValue(raw),
+    updatedAt: Date.now(),
+  };
 }
 
 /* ---------------------------- 验收标准的迁移 ---------------------------- */
@@ -364,7 +557,10 @@ export function proposeCriteria(goal: Goal, raw: unknown): Goal | undefined {
 }
 
 /** 用户确认：proposed → confirmed（契约就此定型，之后的完成判定按它对账） */
-export function confirmCriteria(goal: Goal): Goal | undefined {
+export function confirmCriteria(
+  goal: Goal,
+  confirmedBy: "user" | "auto" = "user",
+): Goal | undefined {
   if (goal.acceptance?.status !== "proposed") return undefined;
   return {
     ...goal,
@@ -372,7 +568,42 @@ export function confirmCriteria(goal: Goal): Goal | undefined {
       status: "confirmed",
       items: goal.acceptance.items,
       confirmedAt: Date.now(),
+      confirmedBy,
     },
+    updatedAt: Date.now(),
+  };
+}
+
+/**
+ * auto 模式：提议即确认。
+ *
+ * 与 confirmCriteria 分开是为了让调用点显式表达「这是自动确认」，回放与 UI
+ * 才能把它和用户亲手点的确认区分开（后者要显示可调整入口）。
+ */
+export function autoConfirmCriteria(goal: Goal): Goal | undefined {
+  return confirmCriteria(goal, "auto");
+}
+
+/**
+ * 用户替换已确认/待确认的标准（常驻条上的「调整标准」）。
+ *
+ * 编辑是显式动作，直接以 user 身份确认新清单；老目标的 legacy 证据策略也在这里
+ * 升级为 refs——用户既然重新定了验收契约，完成时就该按新契约核对。
+ */
+export function replaceCriteria(goal: Goal, raw: unknown): Goal | undefined {
+  if (goal.status === "complete") return undefined;
+  if (goal.acceptance?.status === "skipped") return undefined;
+  const items = normalizeCriteria(raw);
+  if (items.length === 0) return undefined;
+  return {
+    ...goal,
+    acceptance: {
+      status: "confirmed",
+      items,
+      confirmedAt: Date.now(),
+      confirmedBy: "user",
+    },
+    evidencePolicy: "refs",
     updatedAt: Date.now(),
   };
 }
@@ -488,10 +719,21 @@ export function transitionGoal(
   }
   if (!isTransitionValid(goal.status, to)) return undefined;
   const now = Date.now();
+  // 离开 active：把当前活跃窗口折进累计值；进入 active：开一个新的窗口。
+  // 只结算一次，靠在同一次迁移里完成，避免 pause 路径各写一遍漏掉某条。
+  const leavingActive = goal.status === "active" && to !== "active";
+  const timeUsedSeconds = leavingActive ? goalElapsedSeconds(goal, now) : goal.timeUsedSeconds;
   return {
     ...goal,
     status: to,
     updatedAt: now,
+    timeUsedSeconds,
+    activeRunStartedAtMs:
+      to === "active"
+        ? goal.status === "active" && goal.activeRunStartedAtMs !== undefined
+          ? goal.activeRunStartedAtMs
+          : now
+        : undefined,
     // 离开 active 时清掉指纹：resume 后第一轮不与暂停前的那轮比较
     ...(to === "active" ? {} : { lastOutputFingerprint: undefined }),
     ...(to === "complete"
@@ -605,6 +847,79 @@ export function hasGoalToolCall(message: unknown, names: readonly string[]): boo
   });
 }
 
+function toolCallArgs(block: unknown): Record<string, unknown> | undefined {
+  const b = block as { arguments?: unknown; args?: unknown } | null;
+  const raw = b?.arguments ?? b?.args;
+  return raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : undefined;
+}
+
+function pathArg(args: Record<string, unknown> | undefined): string | undefined {
+  if (!args) return undefined;
+  const raw = args.file_path ?? args.path;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+}
+
+/**
+ * 从一轮 assistant 消息 + 工具结果生成进度摘要。
+ *
+ * 纯函数、零 I/O，便于单测。摘要只进 UI / 产物 / 续跑消息，**绝不进 system
+ * prompt**——那里的每一个字节都必须是跨轮稳定的，否则前缀缓存整段失效。
+ */
+export function buildGoalTurnSummary(
+  goal: Pick<Goal, "turnCount">,
+  message: unknown,
+  toolResults: readonly unknown[] | undefined,
+  now: number = Date.now(),
+): GoalTurnSummary {
+  const content = (message as { content?: unknown } | undefined)?.content;
+  const blocks = Array.isArray(content) ? content : [];
+  const tools = new Set<string>();
+  const files = new Set<string>();
+  let toolCalls = 0;
+  let commands = 0;
+  for (const block of blocks) {
+    const b = block as { type?: string; name?: string } | null;
+    if (b?.type !== "toolCall" || typeof b.name !== "string" || !b.name) continue;
+    toolCalls += 1;
+    tools.add(b.name);
+    if (b.name === "bash") commands += 1;
+    const path = pathArg(toolCallArgs(block));
+    if (path && files.size < MAX_PROGRESS_FILES) files.add(path);
+  }
+  let errors = 0;
+  for (const result of toolResults ?? []) {
+    if ((result as { isError?: unknown } | null)?.isError === true) errors += 1;
+  }
+  const summary = visibleAssistantText(message)
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, MAX_PROGRESS_SUMMARY_CHARS);
+  return {
+    turn: goal.turnCount + 1,
+    at: now,
+    toolCalls,
+    tools: [...tools],
+    files: [...files],
+    commands,
+    errors,
+    summary,
+  };
+}
+
+/** 追加一条进度并保留最近 MAX_GOAL_PROGRESS_ENTRIES 条 */
+export function appendGoalProgress(goal: Goal, summary: GoalTurnSummary): Goal {
+  const progress = [...goal.progress, summary];
+  return {
+    ...goal,
+    progress:
+      progress.length > MAX_GOAL_PROGRESS_ENTRIES
+        ? progress.slice(progress.length - MAX_GOAL_PROGRESS_ENTRIES)
+        : progress,
+  };
+}
+
 /**
  * 推进停滞计数：本轮调过工具 = 一定在推进，直接清零；
  * 否则只有输出指纹与上轮**完全相同**才算又一轮原地打转。
@@ -645,8 +960,32 @@ export function formatTokenCount(value: number): string {
   return `${Number.isInteger(m) ? m : m.toFixed(1)}m`;
 }
 
+/** 时长展示：秒级读数对目标模式没有意义，向上取整到分/小时 */
+export function formatDurationSeconds(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds));
+  if (safe < 60) return `${safe} 秒`;
+  const minutes = Math.floor(safe / 60);
+  if (minutes < 60) return `${minutes} 分`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest > 0 ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
+}
+
+function elapsedPart(goal: Goal, limits: GoalLimits, now: number): string {
+  const elapsed = goalElapsedSeconds(goal, now);
+  if (elapsed <= 0) return "";
+  const max = limits.maxDurationSeconds;
+  return max === null || max === undefined
+    ? `已用 ${formatDurationSeconds(elapsed)}`
+    : `已用 ${formatDurationSeconds(elapsed)} / ${formatDurationSeconds(max)}`;
+}
+
 /** composer 常驻条的一行摘要（模式行/提示文案按 status 挑） */
-export function formatGoalStatus(goal: Goal, limits: GoalLimits = limitsFor(goal)): string {
+export function formatGoalStatus(
+  goal: Goal,
+  limits: GoalLimits = limitsFor(goal),
+  now: number = Date.now(),
+): string {
   const turnPart =
     limits.maxAutoTurns === null
       ? `第 ${goal.turnCount + 1} 轮`
@@ -658,18 +997,20 @@ export function formatGoalStatus(goal: Goal, limits: GoalLimits = limitsFor(goal
   if (goal.status !== "complete" && goal.acceptance?.status === "proposed") {
     return `待你确认验收标准 · ${tokenPart}`;
   }
+  const elapsed = elapsedPart(goal, limits, now);
+  const timeSuffix = elapsed ? ` · ${elapsed}` : "";
   switch (goal.status) {
     case "complete":
       return "已完成";
     case "paused":
-      return `已暂停 · ${turnPart} · ${tokenPart}`;
+      return `已暂停 · ${turnPart} · ${tokenPart}${timeSuffix}`;
     case "blocked":
-      return `受阻 · ${turnPart} · ${tokenPart}`;
+      return `受阻 · ${turnPart} · ${tokenPart}${timeSuffix}`;
     default:
       if (goal.acceptance?.status === "pending") {
         return `正在拟定验收标准 · ${tokenPart}`;
       }
-      return `进行中 · ${turnPart} · ${tokenPart}`;
+      return `进行中 · ${turnPart} · ${tokenPart}${timeSuffix}`;
   }
 }
 
@@ -682,7 +1023,13 @@ export function formatGoalStatus(goal: Goal, limits: GoalLimits = limitsFor(goal
  */
 function normalizeAcceptance(raw: unknown): Acceptance {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { status: "skipped" };
-  const a = raw as { status?: unknown; items?: unknown; feedback?: unknown; confirmedAt?: unknown };
+  const a = raw as {
+    status?: unknown;
+    items?: unknown;
+    feedback?: unknown;
+    confirmedAt?: unknown;
+    confirmedBy?: unknown;
+  };
   const feedback =
     typeof a.feedback === "string" && a.feedback.trim()
       ? a.feedback.slice(0, MAX_GOAL_FEEDBACK_LENGTH)
@@ -704,6 +1051,9 @@ function normalizeAcceptance(raw: unknown): Acceptance {
       status: "confirmed",
       items,
       confirmedAt: finite(a.confirmedAt, Date.now()),
+      ...(a.confirmedBy === "auto" || a.confirmedBy === "user"
+        ? { confirmedBy: a.confirmedBy }
+        : {}),
     };
   }
   return { status: "skipped" };
@@ -749,11 +1099,19 @@ export function normalizeLoadedGoal(raw: unknown, now: number): Goal | undefined
     /^[a-f0-9]{64}$/u.test(g.lastOutputFingerprint)
       ? g.lastOutputFingerprint
       : undefined;
+  const completionAudit = normalizeCompletionAudit(g.completionAudit);
   return {
     id: g.id,
     objective: g.objective,
     status: g.status,
     acceptance: normalizeAcceptance(g.acceptance),
+    // 老目标没有 acceptanceMode：回放为 manual，不能把历史目标改成自动确认
+    acceptanceMode:
+      g.acceptanceMode === "auto" || g.acceptanceMode === "skip"
+        ? g.acceptanceMode
+        : "manual",
+    // 老目标没有 evidencePolicy：保持自由文本行为，不能突然要求 refs
+    evidencePolicy: g.evidencePolicy === "refs" ? "refs" : "legacy",
     negotiationTurns: counter(g.negotiationTurns),
     startedAt: finite(g.startedAt, now),
     updatedAt: finite(g.updatedAt, now),
@@ -762,13 +1120,103 @@ export function normalizeLoadedGoal(raw: unknown, now: number): Goal | undefined
     // 老行（这个字段进目标之前落的）没有 maxAutoTurns：按默认值补，不能补成
     // null——那会让一条历史目标突然变成「不限轮次」，反向放宽了安全阀
     maxAutoTurns: normalizeTurnLimitValue(g.maxAutoTurns),
+    // 老目标没有时长上限：补 null（不限），保持升级前的行为；新目标才默认 2 小时
+    maxDurationSeconds:
+      g.maxDurationSeconds === null
+        ? null
+        : typeof g.maxDurationSeconds === "number" &&
+            Number.isFinite(g.maxDurationSeconds) &&
+            g.maxDurationSeconds > 0
+          ? Math.floor(g.maxDurationSeconds)
+          : null,
+    timeUsedSeconds: finite(g.timeUsedSeconds, 0),
+    ...(g.status === "active" &&
+    typeof g.activeRunStartedAtMs === "number" &&
+    Number.isFinite(g.activeRunStartedAtMs) &&
+    g.activeRunStartedAtMs > 0
+      ? { activeRunStartedAtMs: g.activeRunStartedAtMs }
+      : {}),
+    ...(typeof g.startedSeq === "number" &&
+    Number.isSafeInteger(g.startedSeq) &&
+    g.startedSeq >= 0
+      ? { startedSeq: g.startedSeq }
+      : {}),
+    progress: normalizeProgress(g.progress),
     ...(fingerprint ? { lastOutputFingerprint: fingerprint } : {}),
     stallTurns: counter(g.stallTurns),
     ...(typeof g.pauseReason === "string" ? { pauseReason: g.pauseReason } : {}),
     ...(typeof g.completionSummary === "string"
       ? { completionSummary: g.completionSummary }
       : {}),
+    ...(completionAudit ? { completionAudit } : {}),
   };
+}
+
+function normalizeCompletionAudit(raw: unknown): Goal["completionAudit"] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const rows: NonNullable<Goal["completionAudit"]> = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    if (
+      typeof e.id !== "string" ||
+      typeof e.text !== "string" ||
+      typeof e.met !== "boolean" ||
+      typeof e.evidence !== "string"
+    ) {
+      continue;
+    }
+    rows.push({
+      id: e.id,
+      text: e.text,
+      met: e.met,
+      evidence: e.evidence,
+      ...(Array.isArray(e.refs)
+        ? {
+            refs: e.refs.filter(
+              (ref): ref is GoalEvidenceRef =>
+                Boolean(ref) &&
+                typeof ref === "object" &&
+                typeof (ref as { kind?: unknown }).kind === "string",
+            ),
+          }
+        : {}),
+      ...(typeof e.verified === "boolean" ? { verified: e.verified } : {}),
+      ...(typeof e.manualOnly === "boolean" ? { manualOnly: e.manualOnly } : {}),
+    });
+  }
+  return rows;
+}
+
+/** 回放进度台账：逐条收窄，丢弃畸形项，最多保留上限条数 */
+function normalizeProgress(raw: unknown): GoalTurnSummary[] {
+  if (!Array.isArray(raw)) return [];
+  const out: GoalTurnSummary[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Partial<GoalTurnSummary>;
+    if (
+      typeof e.turn !== "number" ||
+      !Number.isSafeInteger(e.turn) ||
+      e.turn < 0 ||
+      typeof e.at !== "number" ||
+      !Number.isFinite(e.at)
+    ) {
+      continue;
+    }
+    out.push({
+      turn: e.turn,
+      at: e.at,
+      toolCalls: counter(e.toolCalls),
+      tools: Array.isArray(e.tools) ? e.tools.filter((t): t is string => typeof t === "string") : [],
+      files: Array.isArray(e.files) ? e.files.filter((f): f is string => typeof f === "string") : [],
+      commands: counter(e.commands),
+      errors: counter(e.errors),
+      summary: typeof e.summary === "string" ? e.summary.slice(0, MAX_PROGRESS_SUMMARY_CHARS) : "",
+    });
+    if (out.length >= MAX_GOAL_PROGRESS_ENTRIES) break;
+  }
+  return out;
 }
 
 function finite(value: unknown, fallback: number): number {

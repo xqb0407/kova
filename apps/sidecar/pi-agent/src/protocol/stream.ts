@@ -225,7 +225,7 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
           reason: "completed",
           detail: "goal 档：目标续跑中",
         });
-        continueGoalTurn(run, event.message);
+        continueGoalTurn(run, event.message, event.toolResults);
         break;
       }
       // 两种中断都走这条注入路径：

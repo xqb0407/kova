@@ -73,7 +73,14 @@ import {
   trackSessionRun,
 } from "./registry";
 import { migrateTodoState, replayTodoFromMessages } from "../todo/todo";
-import { migrateGoal, parseGoalMaxTurnsPref, restoreGoal } from "../goal/goal";
+import {
+  migrateGoal,
+  parseGoalAcceptanceModePref,
+  parseGoalDurationPref,
+  parseGoalMaxTurnsPref,
+  restoreGoal,
+} from "../goal/goal";
+import { recordGoalToolResult } from "../goal/goal-evidence";
 import { logErr } from "../log";
 import { sessionPath } from "../storage/storage";
 import {
@@ -723,6 +730,9 @@ export async function resolveSession(
   // 建目标时用它（用户在条上填的值优先于这里），用户改上限时回写本列——
   // 下一个目标就从上次的数开始，不用每次重新估
   const initialGoalMaxTurns = parseGoalMaxTurnsPref(restoredRow?.goalMaxTurns);
+  // 验收标准启动模式与活跃时长上限：同样定靶列优先，NULL 跟随默认
+  const initialGoalAcceptanceMode = parseGoalAcceptanceModePref(restoredRow?.goalAcceptanceMode);
+  const initialGoalMaxDurationSeconds = parseGoalDurationPref(restoredRow?.goalMaxDuration);
 
   // 会话级模型：恢复的会话上次用哪个模型就继续用哪个（目录中已删除则回落全局）；
   // 新会话/自动化 turn 用全局当前选择（自动化的 per-task 模型由 runner 在 resolve 后覆盖）。
@@ -800,6 +810,8 @@ export async function resolveSession(
     appMode: initialAppMode,
     // 本会话的目标轮数上限偏好（null = 从未定过）：建目标时作为兜底预设
     goalMaxTurns: initialGoalMaxTurns,
+    goalAcceptanceMode: initialGoalAcceptanceMode,
+    goalMaxDurationSeconds: initialGoalMaxDurationSeconds,
     // 目标 token 账的现累器（message_end / 子代理结算累加，目标轮边界取走清零）
     usagePending: 0,
     // 全文加载台账：每次新建 run 都是空表（恢复/压缩后宁可重贴不谎报已加载）
@@ -901,6 +913,11 @@ export async function resolveSession(
     },
     // PostToolUse / PostToolUseFailure（isError 分流）：通知式，不改写工具结果
     afterToolCall: async (context) => {
+      // 目标证据台账：在钩子通知之前记，保证本轮工具结果落定即可被 goal_complete
+      // 引用。失败也记（isError=true），避免模型拿失败调用冒充成功。
+      await recordGoalToolResult(run, context).catch((err) =>
+        logErr("goal-evidence: record failed:", err),
+      );
       const summary = context.result.content
         .filter((part): part is { type: "text"; text: string } => part.type === "text")
         .map((part) => part.text)

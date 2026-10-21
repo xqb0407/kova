@@ -33,6 +33,7 @@ import {
 import { SubagentRun } from "./run";
 import { resolveSubagentCapabilities } from "./capabilities";
 import { clearApprovalsForDelegation, subagentToolGate } from "../agent/modes";
+import { recordGoalToolResult } from "../goal/goal-evidence";
 import { logErr } from "../log";
 
 const TASKWAIT_DEFAULT_TIMEOUT_SECONDS = 300;
@@ -227,6 +228,7 @@ export function buildSubagentTools(
         // 子代理的 write/edit/bash 走**父会话**的审批链：档位、工作区边界、
         // 写根清单、无人值守策略与主代理同一套判定（见 modes.subagentToolGate）
         toolGate: subagentToolGate(run, delegationId),
+        onToolResult: (context) => recordGoalToolResult(run, context),
         signal: controller.signal,
         onActivity: (item) => pushActivity(record, item),
       })

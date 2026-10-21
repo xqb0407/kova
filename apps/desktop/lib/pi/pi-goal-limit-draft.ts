@@ -107,7 +107,128 @@ export function useGoalTurnDraft(threadId: string | undefined): GoalTurnDraft {
   );
 }
 
+/* ---------------------- 验收标准模式与时长预算 ---------------------- */
+
+export type GoalAcceptanceMode = "auto" | "manual" | "skip";
+
+export const DEFAULT_GOAL_ACCEPTANCE_MODE: GoalAcceptanceMode = "auto";
+/** 与 sidecar DEFAULT_MAX_DURATION_SECONDS 同值（分钟）；0 = 不限 */
+export const DEFAULT_GOAL_DURATION_DRAFT = 120;
+export const GOAL_DURATION_DRAFT_MIN = 1;
+export const GOAL_DURATION_DRAFT_MAX = 24 * 60;
+
+const modeOverrides = new Map<string, GoalAcceptanceMode>();
+/** 本次运行里显式改过的时长（分钟；0 = 不限） */
+const durationOverrides = new Map<string, number>();
+
+export function normalizeGoalAcceptanceMode(raw: unknown): GoalAcceptanceMode {
+  return raw === "manual" || raw === "skip" || raw === "auto"
+    ? raw
+    : DEFAULT_GOAL_ACCEPTANCE_MODE;
+}
+
+export function normalizeGoalDurationDraft(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return DEFAULT_GOAL_DURATION_DRAFT;
+  }
+  const n = Math.round(raw);
+  if (n === 0) return 0;
+  if (n < 0) return DEFAULT_GOAL_DURATION_DRAFT;
+  return Math.min(GOAL_DURATION_DRAFT_MAX, Math.max(GOAL_DURATION_DRAFT_MIN, n));
+}
+
+/** 会话偏好列 → 模式；NULL/脏值 = 从未定过 */
+export function parseSessionGoalAcceptanceModePref(
+  raw: string | null | undefined,
+): GoalAcceptanceMode | undefined {
+  return raw === "auto" || raw === "manual" || raw === "skip" ? raw : undefined;
+}
+
+/**
+ * 会话偏好列（分钟文本）→ 时长。三态与轮次一致：
+ * null = 本会话定过「不限」（显示 0）；undefined = 从未定过；number = 具体分钟。
+ */
+export function parseSessionGoalDurationPref(
+  raw: string | null | undefined,
+): number | null | undefined {
+  if (raw === null || raw === undefined || raw.trim() === "") return undefined;
+  const n = Number.parseInt(raw, 10);
+  if (Number.isNaN(n) || n < 0) return undefined;
+  return n === 0 ? null : normalizeGoalDurationDraft(n);
+}
+
+export function getGoalAcceptanceMode(threadId: string): GoalAcceptanceMode {
+  const explicit = modeOverrides.get(threadId);
+  if (explicit !== undefined) return explicit;
+  const sessionId = piSessionIdForThread(threadId);
+  if (sessionId) {
+    const pref = parseSessionGoalAcceptanceModePref(
+      piSessionPrefsMap.get(sessionId)?.goalAcceptanceMode,
+    );
+    if (pref !== undefined) return pref;
+  }
+  return DEFAULT_GOAL_ACCEPTANCE_MODE;
+}
+
+export function getGoalDurationDraft(threadId: string): number {
+  const explicit = durationOverrides.get(threadId);
+  if (explicit !== undefined) return explicit;
+  const sessionId = piSessionIdForThread(threadId);
+  if (sessionId) {
+    const pref = parseSessionGoalDurationPref(
+      piSessionPrefsMap.get(sessionId)?.goalMaxDuration,
+    );
+    if (pref === null) return 0;
+    if (pref !== undefined) return pref;
+  }
+  return DEFAULT_GOAL_DURATION_DRAFT;
+}
+
+/** 没显式改过就返回 undefined，让 sidecar 走会话偏好/默认 */
+export function goalAcceptanceModeForSend(
+  threadId: string,
+): GoalAcceptanceMode | undefined {
+  return modeOverrides.get(threadId);
+}
+
+/** 没显式改过就返回 undefined；0 = 不限 */
+export function goalDurationDraftForSend(threadId: string): number | undefined {
+  return durationOverrides.get(threadId);
+}
+
+export function setGoalAcceptanceMode(raw: unknown, threadId: string): void {
+  const next = normalizeGoalAcceptanceMode(raw);
+  if (modeOverrides.get(threadId) === next) return;
+  modeOverrides.set(threadId, next);
+  emit();
+}
+
+export function setGoalDurationDraft(raw: unknown, threadId: string): void {
+  const next = normalizeGoalDurationDraft(raw);
+  if (durationOverrides.get(threadId) === next) return;
+  durationOverrides.set(threadId, next);
+  emit();
+}
+
+export function useGoalAcceptanceMode(threadId: string | undefined): GoalAcceptanceMode {
+  return useSyncExternalStore(
+    subscribe,
+    () => (threadId ? getGoalAcceptanceMode(threadId) : DEFAULT_GOAL_ACCEPTANCE_MODE),
+    () => DEFAULT_GOAL_ACCEPTANCE_MODE,
+  );
+}
+
+export function useGoalDurationDraft(threadId: string | undefined): number {
+  return useSyncExternalStore(
+    subscribe,
+    () => (threadId ? getGoalDurationDraft(threadId) : DEFAULT_GOAL_DURATION_DRAFT),
+    () => DEFAULT_GOAL_DURATION_DRAFT,
+  );
+}
+
 /** 测试缝 */
 export function resetGoalTurnDraftForTest(): void {
   overrides.clear();
+  modeOverrides.clear();
+  durationOverrides.clear();
 }

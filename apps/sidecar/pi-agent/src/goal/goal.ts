@@ -19,6 +19,7 @@ import { GOAL_CONTINUE_PREFIX, isGoalContinueText, type GoalState } from "pi-pro
 import type { Running } from "../types";
 import {
   DEFAULT_MAX_AUTO_TURNS,
+  DEFAULT_MAX_DURATION_SECONDS,
   GOAL_TOOL_NAMES,
   GOAL_TURN_LIMIT_MAX,
   GOAL_TURN_LIMIT_MIN,
@@ -28,28 +29,62 @@ import {
   MAX_GOAL_REASON_LENGTH,
   MAX_GOAL_SUMMARY_LENGTH,
   acceptanceFeedback,
+  appendGoalProgress,
+  autoConfirmCriteria,
+  buildGoalTurnSummary,
   confirmCriteria,
   confirmedCriteria,
   createGoal,
   formatGoalStatus,
+  goalElapsedSeconds,
+  isGoalTimeBudgetExceeded,
   limitsFor,
   normalizeCriteria,
+  normalizeDurationLimitValue,
   normalizeTurnLimitValue,
   proposeCriteria,
   rejectCriteria,
+  replaceCriteria,
   resetSafetyEpoch,
+  resumeGoalClock,
+  setDurationLimit,
   setObjective,
   setTurnLimit,
   skipCriteria,
   transitionGoal,
   validateObjective,
+  type AcceptanceMode,
   type Goal,
+  type GoalEvidenceRef,
 } from "./goal-state";
 import { resumeGoal, pauseForUserInput, decideContinuation } from "./goal-continuation";
+import {
+  clearGoalEvidence,
+  dropGoalEvidence,
+  migrateGoalEvidence,
+  normalizeEvidenceRefs,
+  restoreGoalEvidence,
+  verifyEvidenceRefs,
+} from "./goal-evidence";
 import { writeGoalArtifactAsync } from "./goal-artifact";
 
 /** threadId -> 当前目标（per-thread 槽，对应 todo 的 todoStates） */
 const goals = new Map<string, Goal>();
+
+/**
+ * 契约阶段变化后的上下文刷新钩子。由 agent/modes.ts 注册（它拥有 prompt/tools
+ * 的组装权）。goal.ts 反向 import 会形成模块环，所以这里只留一个回调。
+ */
+type GoalContextRefresher = (run: Running) => void;
+let goalContextRefresher: GoalContextRefresher | undefined;
+
+export function setGoalContextRefresher(fn: GoalContextRefresher): void {
+  goalContextRefresher = fn;
+}
+
+function refreshGoalContext(run: Running): void {
+  goalContextRefresher?.(run);
+}
 
 export function getGoal(threadId: string): Goal | undefined {
   return goals.get(threadId);
@@ -77,6 +112,7 @@ function drainUsagePending(run: Running, goal: Goal): number {
 /** 会话销毁 / 线程销毁时回收槽位 */
 export function clearGoal(threadId: string): void {
   goals.delete(threadId);
+  dropGoalEvidence(threadId);
 }
 
 /**
@@ -96,6 +132,7 @@ export function migrateGoal(oldThreadId: string, newThreadId: string): void {
   const goal = goals.get(oldThreadId);
   if (goal) goals.set(newThreadId, goal);
   goals.delete(oldThreadId);
+  migrateGoalEvidence(oldThreadId, newThreadId);
 }
 
 /**
@@ -108,16 +145,19 @@ export function restoreGoal(threadId: string, sessionId: string): void {
   // 回放出来的 active 是个谎报：驱动循环的 run 随进程一起没了，重启后没有任何
   // 东西会调 continueGoalTurn。降级成 paused 并落一行，让「条上说在跑」不再出现
   //（也不自动续跑——重启后没人看着就自动开始烧钱不是好默认，交给用户点「继续」）
+  // 用 transitionGoal 而不是手写 spread：它会把重启前那段活跃窗口结算进
+  // timeUsedSeconds，否则重启会把最后一次运行时长丢掉。
   const goal: Goal =
     restored.status === "active"
-      ? {
-          ...restored,
-          status: "paused",
-          pauseReason: "sidecar restarted while the goal was running",
-          updatedAt: Date.now(),
-        }
+      ? (transitionGoal(restored, "paused", {
+          expectedGoalId: restored.id,
+          reason: "sidecar restarted while the goal was running",
+        }) ?? restored)
       : restored;
   goals.set(threadId, goal);
+  // 证据台账从同一份 JSONL 回放：重启后模型不必重新跑一遍已经验证过的命令。
+  // 回放失败时 restoreGoalEvidence 会留下空台账，完成校验会要求重新验证。
+  restoreGoalEvidence(threadId, sessionId, goal);
   if (goal !== restored) {
     try {
       appendGoalStateRow(sessionId, goal);
@@ -136,6 +176,9 @@ export function commitGoal(run: Running, goal: Goal | undefined): void {
     goals.set(threadId, goal);
   } else {
     goals.delete(threadId);
+    // 没有目标就没有可核验的证据：清除路径（goal_clear）不经过 clearGoal，
+    // 在这里统一回收，避免台账跟着线程一直留在内存里。
+    dropGoalEvidence(threadId);
   }
   if (run.sessionId) {
     try {
@@ -184,6 +227,14 @@ export function goalStatePayload(threadId: string): GoalState {
       statusLine: formatGoalStatus(goal, limits),
       turnCount: goal.turnCount,
       maxAutoTurns: limits.maxAutoTurns,
+      maxDurationSeconds: limits.maxDurationSeconds ?? null,
+      timeUsedSeconds: goalElapsedSeconds(goal),
+      ...(goal.status === "active" && goal.activeRunStartedAtMs !== undefined
+        ? { activeRunStartedAtMs: goal.activeRunStartedAtMs }
+        : {}),
+      acceptanceMode: goal.acceptanceMode,
+      evidencePolicy: goal.evidencePolicy,
+      progress: goal.progress,
       tokensUsed: goal.tokensUsed,
       startedAt: goal.startedAt,
       updatedAt: goal.updatedAt,
@@ -191,6 +242,9 @@ export function goalStatePayload(threadId: string): GoalState {
       ...(goal.completionSummary === undefined
         ? {}
         : { completionSummary: goal.completionSummary }),
+      ...(goal.completionAudit === undefined
+        ? {}
+        : { completionAudit: goal.completionAudit }),
       // 契约阶段必须投影：常驻条靠它决定待确认卡片出不出来、状态行写什么。
       // 漏了它整个验收标准特性在 UI 上就是不可见的（条上只会显示「进行中」，
       // 没有任何确认入口——而循环正停着等确认）
@@ -201,6 +255,9 @@ export function goalStatePayload(threadId: string): GoalState {
               status: acceptance.status,
               ...(acceptance.status === "proposed" || acceptance.status === "confirmed"
                 ? { items: acceptance.items }
+                : {}),
+              ...(acceptance.status === "confirmed" && acceptance.confirmedBy
+                ? { confirmedBy: acceptance.confirmedBy }
                 : {}),
               ...(feedback ? { feedback } : {}),
             },
@@ -219,6 +276,8 @@ export function startGoal(
   run: Running,
   objective: string,
   rawMaxAutoTurns?: unknown,
+  rawAcceptanceMode?: unknown,
+  rawMaxDurationMinutes?: unknown,
 ): Goal {
   const invalid = validateObjective(objective);
   if (invalid) throw new Error(invalid);
@@ -229,7 +288,18 @@ export function startGoal(
     : run.goalMaxTurns === undefined
       ? DEFAULT_MAX_AUTO_TURNS
       : run.goalMaxTurns;
-  const goal = createGoal(objective, preset);
+  const { acceptanceMode, maxDurationSeconds } = resolveGoalCreationPrefs(
+    run,
+    rawAcceptanceMode,
+    rawMaxDurationMinutes,
+  );
+  const goal = createGoal(objective, preset, {
+    startedSeq: run.jsonlSeq,
+    acceptanceMode,
+    maxDurationSeconds,
+  });
+  // 新目标的证据台账从零开始：旧目标的命令不能拿来证明新目标
+  clearGoalEvidence(run.threadId);
   // 建目标之前同一 run 里已经花掉的（比如用户先聊了两句才切到目标档）：不算这条目标的
   run.usagePending = 0;
   // 换目标就换一份新产物：路径重置，commitGoal 会按新标题重新定名
@@ -251,6 +321,7 @@ export function resume(run: Running): Goal | undefined {
   if (!goal) return undefined;
   const next = resumeGoal(goal);
   commitGoal(run, next);
+  refreshGoalContext(run);
   return next;
 }
 
@@ -272,8 +343,11 @@ export function setGoalObjective(run: Running, raw: string): Goal | undefined {
   // 文本一字未变：原样返回，连落盘都省掉（一次无意义的 goal_state 行）
   if (next === goal) return goal;
   run.goalFilePath = undefined;
+  // 换了目标原文，旧目标上攒的证据不再对应新要求
+  clearGoalEvidence(run.threadId);
   const settled = resetSafetyEpoch(next);
   commitGoal(run, settled);
+  refreshGoalContext(run);
   return settled;
 }
 
@@ -289,6 +363,21 @@ export function confirmGoalCriteria(run: Running): Goal | undefined {
   const next = confirmCriteria(goal);
   if (!next) return undefined;
   commitGoal(run, next);
+  refreshGoalContext(run);
+  return next;
+}
+
+/**
+ * 用户替换验收标准（常驻条上的「调整标准」）：直接以 user 身份确认新清单。
+ * 自动确认的标准常常需要微调，不能逼用户先驳回再重谈一轮。
+ */
+export function setGoalCriteria(run: Running, raw: unknown): Goal | undefined {
+  const goal = goals.get(run.threadId);
+  if (!goal) return undefined;
+  const next = replaceCriteria(goal, raw);
+  if (!next) return undefined;
+  commitGoal(run, next);
+  refreshGoalContext(run);
   return next;
 }
 
@@ -299,6 +388,7 @@ export function rejectGoalCriteria(run: Running, feedback?: string): Goal | unde
   const next = rejectCriteria(goal, feedback);
   if (!next) return undefined;
   commitGoal(run, next);
+  refreshGoalContext(run);
   return next;
 }
 
@@ -309,6 +399,7 @@ export function skipGoalCriteria(run: Running): Goal | undefined {
   const next = skipCriteria(goal);
   if (!next) return undefined;
   commitGoal(run, next);
+  refreshGoalContext(run);
   return next;
 }
 
@@ -342,6 +433,77 @@ function rememberGoalMaxTurns(run: Running, value: number | null): void {
   const encoded = encodeGoalMaxTurnsPref(value);
   if (encoded === undefined || !run.sessionId) return;
   void sessionPrefsSet(run.sessionId, { goalMaxTurns: encoded }).catch(() => {});
+}
+
+/** 会话偏好列 → 验收标准启动模式；NULL/脏值 = 从未定过 */
+export function parseGoalAcceptanceModePref(
+  raw: string | null | undefined,
+): AcceptanceMode | undefined {
+  return raw === "auto" || raw === "manual" || raw === "skip" ? raw : undefined;
+}
+
+/**
+ * 会话偏好列（分钟文本）→ 这条会话的时长预设。三态同轮次：
+ * NULL/脏值 = 从未定过（undefined），"0" = 不限（null），其余 = 具体秒数。
+ */
+export function parseGoalDurationPref(
+  raw: string | null | undefined,
+): number | null | undefined {
+  if (raw === null || raw === undefined || raw.trim() === "") return undefined;
+  const n = Number.parseInt(raw, 10);
+  if (Number.isNaN(n) || n < 0) return undefined;
+  return normalizeDurationLimitValue(n);
+}
+
+function encodeGoalDurationPref(value: number | null | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return value === null ? "0" : String(Math.max(1, Math.round(value / 60)));
+}
+
+function rememberGoalAcceptanceMode(run: Running, value: AcceptanceMode): void {
+  run.goalAcceptanceMode = value;
+  if (!run.sessionId) return;
+  void sessionPrefsSet(run.sessionId, { goalAcceptanceMode: value }).catch(() => {});
+}
+
+function rememberGoalMaxDuration(run: Running, value: number | null): void {
+  run.goalMaxDurationSeconds = value;
+  const encoded = encodeGoalDurationPref(value);
+  if (encoded === undefined || !run.sessionId) return;
+  void sessionPrefsSet(run.sessionId, { goalMaxDuration: encoded }).catch(() => {});
+}
+
+/**
+ * 建目标时的三组预设解析（显式请求 > 会话偏好 > 默认）。
+ *
+ * 协议里 null 一律当「没带」：旧桌面壳的 Option 缺失会序列化成 null；
+ * 真正的「不限」在请求链路上表现为数字 0（与轮次上限同口径）。
+ */
+function resolveGoalCreationPrefs(
+  run: Running,
+  rawAcceptanceMode: unknown,
+  rawMaxDurationMinutes: unknown,
+): { acceptanceMode: AcceptanceMode; maxDurationSeconds: number | null } {
+  const explicitMode = parseGoalAcceptanceModePref(
+    typeof rawAcceptanceMode === "string" ? rawAcceptanceMode : undefined,
+  );
+  const acceptanceMode = explicitMode ?? run.goalAcceptanceMode ?? "auto";
+  if (explicitMode !== undefined) rememberGoalAcceptanceMode(run, explicitMode);
+
+  const explicitDuration =
+    rawMaxDurationMinutes === undefined || rawMaxDurationMinutes === null
+      ? undefined
+      : normalizeDurationLimitValue(
+          typeof rawMaxDurationMinutes === "number" ? rawMaxDurationMinutes : Number.NaN,
+        );
+  const maxDurationSeconds =
+    explicitDuration !== undefined
+      ? explicitDuration
+      : run.goalMaxDurationSeconds === undefined
+        ? DEFAULT_MAX_DURATION_SECONDS
+        : run.goalMaxDurationSeconds;
+  if (explicitDuration !== undefined) rememberGoalMaxDuration(run, explicitDuration);
+  return { acceptanceMode, maxDurationSeconds };
 }
 
 /**
@@ -389,6 +551,62 @@ export function setGoalMaxTurns(run: Running, raw: unknown): Goal | undefined {
 }
 
 /**
+ * 改这条目标的活跃时长上限（输入分钟；0 = 不限）。
+ *
+ * 与轮次上限同理：调低到已经用过的时长以下时顺手暂停，避免出现
+ * 「上限 10 分钟、已经跑了 40 分钟还在跑」的自相矛盾状态。
+ */
+export function setGoalMaxDuration(run: Running, raw: unknown): Goal | undefined {
+  const goal = goals.get(run.threadId);
+  if (!goal) return undefined;
+  let next = setDurationLimit(goal, raw);
+  rememberGoalMaxDuration(run, next.maxDurationSeconds);
+  if (
+    next.maxDurationSeconds !== null &&
+    next.status === "active" &&
+    goalElapsedSeconds(next) >= next.maxDurationSeconds
+  ) {
+    next =
+      transitionGoal(next, "paused", {
+        expectedGoalId: next.id,
+        reason: "time budget reached",
+      }) ?? next;
+  }
+  commitGoal(run, next);
+  return next;
+}
+
+/**
+ * 让目标进入「可以起一轮」的状态：
+ * - active 但没有活跃时钟（proposed 等用户确认后）→ 重新开表
+ * - 已经超时长预算 → 暂停，不启动新一轮
+ *
+ * kickGoalLoop 的所有入口（继续/确认/驳回/跳过/编辑）都走这里，避免各写一套。
+ */
+export function prepareGoalForContinuation(run: Running): Goal | undefined {
+  const goal = goals.get(run.threadId);
+  if (!goal) return undefined;
+  let next = goal;
+  const resumed = resumeGoalClock(goal);
+  if (resumed !== goal) {
+    next = resumed;
+    commitGoal(run, next);
+  }
+  if (next.status !== "active") return next;
+  if (isGoalTimeBudgetExceeded(next)) {
+    const paused = transitionGoal(next, "paused", {
+      expectedGoalId: next.id,
+      reason: "time budget reached",
+    });
+    if (paused) {
+      commitGoal(run, paused);
+      return paused;
+    }
+  }
+  return next;
+}
+
+/**
  * 一个 turn 收尾时的目标续跑（stream.ts 的 turn_end 分支调用，goal 档专用）。
  *
  * 判定全部委托给纯函数 decideContinuation，这里只负责把它算出的新盘面落盘 +
@@ -399,9 +617,19 @@ export function setGoalMaxTurns(run: Running, raw: unknown): Goal | undefined {
  * 上下文溢出时 dispatchPrompt 会用同一条文本重跑那一轮，若注入时就计数，
  * 重跑会让轮次凭空多算一格。
  */
-export function continueGoalTurn(run: Running, assistantMessage: unknown): void {
-  const goal = goals.get(run.threadId);
-  if (!goal) return;
+export function continueGoalTurn(
+  run: Running,
+  assistantMessage: unknown,
+  toolResults?: readonly unknown[],
+): void {
+  const current = goals.get(run.threadId);
+  if (!current) return;
+  // 进度先入账：完成/暂停的最后一轮也要留下「这轮做了什么」，否则条上永远
+  // 停在上一轮。append 后再判定，decision 里 spread 的 goal 会带着这条进度。
+  const goal = appendGoalProgress(
+    current,
+    buildGoalTurnSummary(current, assistantMessage, toolResults),
+  );
   const limits = limitsFor(goal);
   const decision = decideContinuation(
     goal,
@@ -441,6 +669,8 @@ export function syncGoalOnUserPrompt(
   run: Running,
   rawText: string,
   rawMaxAutoTurns?: unknown,
+  rawAcceptanceMode?: unknown,
+  rawMaxDurationMinutes?: unknown,
 ): void {
   if (run.mode !== "goal") return;
   // 我们自己注入的续跑消息也是 user 角色、也走这条路（见 goal-continue 的起轮）。
@@ -465,10 +695,23 @@ export function syncGoalOnUserPrompt(
         : run.goalMaxTurns;
     // 用户在这次建目标时明确填过 → 记进会话偏好，这个会话的下一条目标就不用再填
     if (explicit) rememberGoalMaxTurns(run, preset);
+    const { acceptanceMode, maxDurationSeconds } = resolveGoalCreationPrefs(
+      run,
+      rawAcceptanceMode,
+      rawMaxDurationMinutes,
+    );
     // 同一 run 里建目标之前已花的不算这条目标的（见 startGoal 同款说明）
     run.usagePending = 0;
     run.goalFilePath = undefined;
-    commitGoal(run, createGoal(objective, preset));
+    clearGoalEvidence(run.threadId);
+    commitGoal(
+      run,
+      createGoal(objective, preset, {
+        startedSeq: run.jsonlSeq,
+        acceptanceMode,
+        maxDurationSeconds,
+      }),
+    );
     return;
   }
   // 目标标准还没定下来时，用户这条消息是**对标准的意见**，不是接管目标。
@@ -495,8 +738,12 @@ export function syncGoalOnUserPrompt(
 
 /* -------------------------------- 工具 -------------------------------- */
 
-function textResult(text: string, details?: unknown) {
-  return { content: [{ type: "text" as const, text }], details };
+function textResult(text: string, details?: unknown, terminate = false) {
+  return {
+    content: [{ type: "text" as const, text }],
+    details,
+    ...(terminate ? { terminate: true } : {}),
+  };
 }
 
 /** 过期护栏的统一文案（回给模型的，不是给用户看的） */
@@ -526,19 +773,37 @@ const INCOMPLETE_CLAIM_PATTERNS: readonly RegExp[] = [
  * 把模型交的对账表收窄成安全形状。id 必须是服务端发的 c<N>，evidence 必填。
  * 这里只做形状校验，集合是否完整由 auditAgainstCriteria 判。
  */
-function normalizeAudit(
-  raw: unknown,
-): Array<{ id: string; met: boolean; evidence: string }> | undefined {
+type AuditRow = {
+  id: string;
+  met: boolean;
+  evidence: string;
+  refs?: GoalEvidenceRef[];
+  refErrors?: string[];
+};
+
+function normalizeAudit(raw: unknown): AuditRow[] | undefined {
   if (!Array.isArray(raw)) return undefined;
-  const rows: Array<{ id: string; met: boolean; evidence: string }> = [];
+  const rows: AuditRow[] = [];
   for (const entry of raw) {
     if (!entry || typeof entry !== "object") return undefined;
-    const r = entry as { id?: unknown; met?: unknown; evidence?: unknown };
+    const r = entry as {
+      id?: unknown;
+      met?: unknown;
+      evidence?: unknown;
+      refs?: unknown;
+    };
     if (typeof r.id !== "string") return undefined;
     if (typeof r.met !== "boolean") return undefined;
     const evidence = typeof r.evidence === "string" ? r.evidence.trim() : "";
     if (!evidence) return undefined;
-    rows.push({ id: r.id.trim(), met: r.met, evidence: evidence.slice(0, MAX_GOAL_SUMMARY_LENGTH) });
+    const refs = normalizeEvidenceRefs(r.refs);
+    rows.push({
+      id: r.id.trim(),
+      met: r.met,
+      evidence: evidence.slice(0, MAX_GOAL_SUMMARY_LENGTH),
+      ...(r.refs !== undefined ? { refs: refs.refs } : {}),
+      ...(refs.errors.length ? { refErrors: refs.errors } : {}),
+    });
   }
   return rows;
 }
@@ -553,8 +818,8 @@ function normalizeAudit(
  */
 function auditAgainstCriteria(
   criteria: readonly { id: string; text: string }[],
-  rows: Array<{ id: string; met: boolean; evidence: string }> | undefined,
-): { ok: true; rows: Array<{ id: string; text: string; met: boolean; evidence: string }> } | { ok: false; reason: string } {
+  rows: AuditRow[] | undefined,
+): { ok: true; rows: Array<AuditRow & { text: string }> } | { ok: false; reason: string } {
   const want = new Set(criteria.map((c) => c.id));
   if (!rows) {
     return {
@@ -595,6 +860,8 @@ function auditAgainstCriteria(
       text: c.text,
       met: byId.get(c.id)!.met,
       evidence: byId.get(c.id)!.evidence,
+      ...(byId.get(c.id)!.refs ? { refs: byId.get(c.id)!.refs } : {}),
+      ...(byId.get(c.id)!.refErrors ? { refErrors: byId.get(c.id)!.refErrors } : {}),
     })),
   };
 }
@@ -664,16 +931,28 @@ function buildProposeTool(run: Running): AgentTool {
           "goal_propose_criteria rejected: the acceptance criteria are already settled for this goal.",
         );
       }
-      commitGoal(run, proposed);
-      const a = proposed.acceptance as { items: { id: string; text: string }[] };
+      // auto 模式：提议即确认，同一轮继续执行。manual 模式保持原有「停下等用户」。
+      const autoConfirmed =
+        current.acceptanceMode === "auto" ? autoConfirmCriteria(proposed) : undefined;
+      const next = autoConfirmed ?? proposed;
+      commitGoal(run, next);
+      if (autoConfirmed) refreshGoalContext(run);
+      const a = next.acceptance as { items: { id: string; text: string }[] };
       return textResult(
         [
-          `${a.items.length} acceptance criteria submitted for user confirmation.`,
+          autoConfirmed
+            ? `${a.items.length} acceptance criteria auto-confirmed (auto mode).`
+            : `${a.items.length} acceptance criteria submitted for user confirmation.`,
           ...a.items.map((c) => `- ${c.id}: ${c.text}`),
           "",
-          "Stop here. Do not start implementing — the user has to confirm the contract first.",
+          autoConfirmed
+            ? "The contract is now in effect. Continue working on the goal in this same turn; " +
+              "when every criterion is verified, call goal_complete with one result per criterion."
+            : "Stop here. Do not start implementing — the user has to confirm the contract first.",
         ].join("\n"),
-        { criteria: a.items },
+        { criteria: a.items, autoConfirmed: Boolean(autoConfirmed) },
+        // manual：提议即本轮终点（等用户确认）；auto：契约已生效，同一轮继续干活
+        !autoConfirmed,
       );
     },
   } as unknown as AgentTool;
@@ -716,6 +995,52 @@ function buildCompleteTool(run: Running): AgentTool {
                 "The concrete evidence you observed: command output, file state, observed behaviour.",
               maxLength: MAX_GOAL_SUMMARY_LENGTH,
             }),
+            refs: Type.Optional(
+              Type.Array(
+                Type.Object({
+                  kind: Type.String({
+                    description:
+                      'Evidence kind: "command" (a bash command you ran successfully), ' +
+                      '"file" (a workspace file), "tool" (a successful tool call), or "manual".',
+                  }),
+                  command: Type.Optional(
+                    Type.String({
+                      description:
+                        'For kind="command": the exact command, e.g. "pnpm test".',
+                      maxLength: MAX_GOAL_SUMMARY_LENGTH,
+                    }),
+                  ),
+                  path: Type.Optional(
+                    Type.String({
+                      description:
+                        'For kind="file" or "tool": workspace-relative path.',
+                      maxLength: MAX_GOAL_SUMMARY_LENGTH,
+                    }),
+                  ),
+                  expect: Type.Optional(
+                    Type.String({
+                      description: 'For kind="file": "exists" or "modified".',
+                    }),
+                  ),
+                  tool: Type.Optional(
+                    Type.String({
+                      description: 'For kind="tool": tool name, e.g. "write".',
+                    }),
+                  ),
+                  note: Type.Optional(
+                    Type.String({
+                      description: 'For kind="manual": why this cannot be machine-verified.',
+                      maxLength: MAX_GOAL_SUMMARY_LENGTH,
+                    }),
+                  ),
+                }),
+                {
+                  maxItems: 8,
+                  description:
+                    "Machine-verifiable evidence refs. Required for every met criterion when the goal uses refs policy.",
+                },
+              ),
+            ),
           }),
           {
             description:
@@ -739,7 +1064,15 @@ function buildCompleteTool(run: Running): AgentTool {
 
       // 契约对账：目标带已确认标准时，完成声明必须逐条被验证过
       const criteria = confirmedCriteria(current!.acceptance);
-      let audit: Array<{ id: string; text: string; met: boolean; evidence: string }> | undefined;
+      let audit:
+        | Array<
+            AuditRow & {
+              text: string;
+              verified?: boolean;
+              manualOnly?: boolean;
+            }
+          >
+        | undefined;
       if (criteria.length > 0) {
         // 先校形状/完整性再校「有没有干活」：残缺的对账表是更具体的诊断，
         // 先回给模型它就知道该补哪几条，而不是笼统地被告知去干活
@@ -759,8 +1092,9 @@ function buildCompleteTool(run: Running): AgentTool {
             { goal_id: requestedId },
           );
         }
-        audit = checked.rows;
-        const unmet = audit.filter((r) => !r.met);
+        const auditRows = checked.rows;
+        audit = auditRows;
+        const unmet = auditRows.filter((r) => !r.met);
         if (unmet.length > 0) {
           // 不转 complete：还有标准没达到，目标就该继续跑。把缺口原样回给模型，
           // 它接着这条继续干——这正是自治循环该有的反应
@@ -773,6 +1107,92 @@ function buildCompleteTool(run: Running): AgentTool {
             ].join("\n"),
             { goal_id: requestedId, unmet: unmet.map((r) => r.id) },
           );
+        }
+
+        const refErrors = auditRows.flatMap((r) =>
+          (r.refErrors ?? []).map((error) => `${r.id}: ${error}`),
+        );
+        if (refErrors.length > 0) {
+          return textResult(
+            [
+              "goal_complete rejected: invalid evidence refs.",
+              ...refErrors.map((error) => `- ${error}`),
+            ].join("\n"),
+            { goal_id: requestedId, evidenceErrors: refErrors },
+          );
+        }
+
+        if (current!.evidencePolicy === "refs") {
+          const missing = auditRows.filter(
+            (r) => r.met && (!r.refs || r.refs.length === 0),
+          );
+          if (missing.length > 0) {
+            return textResult(
+              [
+                `goal_complete rejected: ${missing.length} of ${criteria.length} met criteria have no machine-verifiable refs.`,
+                ...missing.map((r) => `- ${r.id} (${r.text})`),
+                "",
+                'Add refs such as {kind:"command", command:"pnpm test"} or ' +
+                  '{kind:"file", path:"src/x.ts", expect:"modified"}. Manual refs are allowed, ' +
+                  "but at least one machine-verifiable ref is required overall.",
+              ].join("\n"),
+              { goal_id: requestedId, missingRefs: missing.map((r) => r.id) },
+            );
+          }
+          const verification = verifyEvidenceRefs(
+            run.threadId,
+            run.cwd,
+            auditRows.flatMap((r) => r.refs ?? []),
+          );
+          if (!verification.ok) {
+            return textResult(
+              [
+                "goal_complete rejected: evidence could not be verified against this goal's recorded tool calls.",
+                ...verification.errors.map((error) => `- ${error}`),
+                "",
+                "Fix the refs (or re-run the command / rewrite the file), then call goal_complete again.",
+              ].join("\n"),
+              { goal_id: requestedId, evidenceErrors: verification.errors },
+            );
+          }
+          if (verification.verifiedCount === 0) {
+            return textResult(
+              "goal_complete rejected: every ref is manual; at least one machine-verifiable ref " +
+                "(command, file, or tool) is required for a goal with confirmed criteria.",
+              { goal_id: requestedId },
+            );
+          }
+          audit = auditRows.map((row) => {
+            const rowVerification = verifyEvidenceRefs(
+              run.threadId,
+              run.cwd,
+              row.refs ?? [],
+            );
+            return {
+              ...row,
+              verified: rowVerification.ok && rowVerification.verifiedCount > 0,
+              manualOnly:
+                rowVerification.manualCount > 0 && rowVerification.verifiedCount === 0,
+            };
+          });
+        } else if (auditRows.some((r) => (r.refs?.length ?? 0) > 0)) {
+          // legacy 目标不强制 refs；模型主动交了照样核验并标徽标，但不阻断完成
+          audit = auditRows.map((row) => {
+            const rowVerification = verifyEvidenceRefs(
+              run.threadId,
+              run.cwd,
+              row.refs ?? [],
+            );
+            return {
+              ...row,
+              ...(rowVerification.ok && rowVerification.verifiedCount > 0
+                ? { verified: true }
+                : {}),
+              ...(rowVerification.manualCount > 0 && rowVerification.verifiedCount === 0
+                ? { manualOnly: true }
+                : {}),
+            };
+          });
         }
       }
 
@@ -789,11 +1209,17 @@ function buildCompleteTool(run: Running): AgentTool {
       });
       if (!done) return textResult(staleRejection(requestedId, current), { goal_id: requestedId });
       commitGoal(run, audit ? { ...done, completionAudit: audit } : done);
-      return textResult(`Goal complete: ${summary}`, {
-        goal: done.objective,
-        summary,
-        ...(audit ? { audit } : {}),
-      });
+      // 完成是终态：必须终止当前 turn。否则模型会在同一轮里继续请求，
+      // 此时 complete 工具已从工具表移除，它只会反复撞「工具不存在」。
+      return textResult(
+        `Goal complete: ${summary}`,
+        {
+          goal: done.objective,
+          summary,
+          ...(audit ? { audit } : {}),
+        },
+        true,
+      );
     },
   } as unknown as AgentTool;
 }
@@ -848,11 +1274,16 @@ function buildBlockedTool(run: Running): AgentTool {
       });
       if (!blocked) return textResult(staleRejection(requestedId, current), { goal_id: requestedId });
       commitGoal(run, blocked);
-      return textResult(`Goal blocked: ${reason}`, {
-        goal: blocked.objective,
-        reason,
-        evidence,
-      });
+      // 受阻同样是这一轮工作的终态：终止当前 turn，等人处理
+      return textResult(
+        `Goal blocked: ${reason}`,
+        {
+          goal: blocked.objective,
+          reason,
+          evidence,
+        },
+        true,
+      );
     },
   } as unknown as AgentTool;
 }
