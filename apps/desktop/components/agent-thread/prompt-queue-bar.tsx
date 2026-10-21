@@ -8,8 +8,15 @@ import {
   removeSteeredBadge,
   useSteeredBadges,
 } from "@/lib/pi/pi-steer-intent";
-import { CheckIcon, ImageIcon, MergeIcon, XIcon, ZapIcon } from "lucide-react";
-import { useEffect, useRef, useState, type FC } from "react";
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  ImageIcon,
+  MergeIcon,
+  XIcon,
+  ZapIcon,
+} from "lucide-react";
+import { useEffect, useId, useRef, useState, type FC } from "react";
 import { cn } from "cn";
 
 /**
@@ -38,6 +45,18 @@ export const PromptQueueBar: FC = () => {
   const { queue, cancel, promote, steer, pop, resend } = usePiQueue();
   const steered = useSteeredBadges(threadId ?? "");
   const [busy, setBusy] = useState(false);
+  // 「已并入」折叠条展开态：多条并入才提供展开（单条行内已直接显示内容）。
+  // 条目被回收回队或本轮收尾清空时自动收起，下次出现不残留展开态
+  const [steeredOpen, setSteeredOpen] = useState(false);
+  const steeredPanelId = useId();
+  const canExpandSteered = steered.length > 1;
+  useEffect(() => {
+    if (!canExpandSteered) setSteeredOpen(false);
+  }, [canExpandSteered]);
+  // 线程切换后展开态不跨会话延续（徽标本就按线程隔离）
+  useEffect(() => {
+    setSteeredOpen(false);
+  }, [threadId]);
 
   // 接力泵（见头注）：pumpingRef 防重入（内含 await 链）。queue_pop 的
   // sidecar 双保险让误弹不可能——链节仍在/轮在跑时 popped 恒为 null。
@@ -110,6 +129,31 @@ export const PromptQueueBar: FC = () => {
   const hasContent = items.length > 0 || steered.length > 0;
   if (!threadId) return null;
 
+  const steeredHeader = (
+    <>
+      <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
+      <span
+        className="text-foreground/70 min-w-0 flex-1 truncate text-sm"
+        title={steered.join("\n")}
+      >
+        {steered.length === 1
+          ? steered[0]
+          : `${steered[0]} 等 ${steered.length} 条`}
+      </span>
+      <span className="text-muted-foreground/70 shrink-0 text-[11px] leading-none">
+        已并入当前回复
+      </span>
+      {canExpandSteered && (
+        <ChevronDownIcon
+          className={cn(
+            "text-muted-foreground/60 size-3.5 shrink-0 transition-transform duration-200",
+            steeredOpen && "rotate-180",
+          )}
+        />
+      )}
+    </>
+  );
+
   return (
     <div
       className="grid transition-[grid-template-rows] duration-200 ease-out"
@@ -123,25 +167,82 @@ export const PromptQueueBar: FC = () => {
             "flex flex-col gap-1.5",
             hasContent && "mb-2",
           )}
+          // ComposerRoot 对非交互区域的 mousedown 会 preventDefault 抢焦点
+          // （「点击输入区空白聚焦」），队列条正文因此选不中。这里阻断冒泡，
+          // 保留原生选区行为（库文档给后代留的逃生口）；点击图标按钮不受影响
+          onMouseDown={(event) => event.stopPropagation()}
         >
-      {/* 已并入当前回复：折叠为一条（多条并入不越堆越长），宿主轮流收尾后消失 */}
+      {/* 已并入当前回复：折叠为一条（多条并入不越堆越长），宿主轮流收尾后消失。
+          多条时可点击整行展开逐条查看，展开面板高度过渡与外层容器同款
+          （grid rows 0fr↔1fr），超高滚动，避免把输入框挤出视口 */}
       {steered.length > 0 && steered[0] && (
         <div
-          className="border-border/50 dark:border-muted-foreground/10 flex items-center gap-2 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-3.5 pl-3.5 backdrop-blur-md"
+          className="border-border/50 dark:border-muted-foreground/10 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-3.5 pl-3.5 backdrop-blur-md select-text"
           data-slot="aui-queue-steered"
         >
-          <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
-          <span
-            className="text-foreground/70 min-w-0 flex-1 truncate text-sm"
-            title={steered.join("\n")}
-          >
-            {steered.length === 1
-              ? steered[0]
-              : `${steered[0]} 等 ${steered.length} 条`}
-          </span>
-          <span className="text-muted-foreground/70 shrink-0 text-[11px] leading-none">
-            已并入当前回复
-          </span>
+          {canExpandSteered ? (
+            <div
+              role="button"
+              tabIndex={0}
+              className="focus-visible:ring-ring/40 flex w-full cursor-pointer items-center gap-2 rounded-sm text-left focus-visible:ring-2 focus-visible:outline-none"
+              aria-expanded={steeredOpen}
+              aria-controls={steeredPanelId}
+              onClick={(event) => {
+                // 拖选摘要文本（含双击选词）收尾时也会派发 click：选区仍在
+                // 头部内就不切换，保证鼠标能正常选中/复制并入内容
+                const selection = window.getSelection();
+                const header = event.currentTarget;
+                if (
+                  selection &&
+                  !selection.isCollapsed &&
+                  (header.contains(selection.anchorNode) ||
+                    header.contains(selection.focusNode))
+                ) {
+                  return;
+                }
+                setSteeredOpen((value) => !value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setSteeredOpen((value) => !value);
+                }
+              }}
+            >
+              {steeredHeader}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">{steeredHeader}</div>
+          )}
+          {canExpandSteered && (
+            <div
+              id={steeredPanelId}
+              className="grid transition-[grid-template-rows] duration-200 ease-out"
+              style={{ gridTemplateRows: steeredOpen ? "1fr" : "0fr" }}
+              aria-hidden={!steeredOpen}
+            >
+              <div className="min-h-0 overflow-hidden">
+                <ol className="border-border/40 mt-2 max-h-48 space-y-1.5 overflow-y-auto overscroll-contain border-t pt-2">
+                  {steered.map((text, index) => (
+                    <li
+                      key={`${index}:${text}`}
+                      className="flex items-start gap-2"
+                    >
+                      <span
+                        className="text-muted-foreground/50 w-3 shrink-0 text-center text-[11px] leading-5 tabular-nums"
+                        aria-hidden
+                      >
+                        {index + 1}
+                      </span>
+                      <span className="text-foreground/70 min-w-0 flex-1 text-sm leading-5 break-words whitespace-pre-wrap">
+                        {text}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </div>
+          )}
         </div>
       )}
       {items.length > 0 && (
