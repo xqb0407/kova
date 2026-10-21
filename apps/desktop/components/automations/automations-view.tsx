@@ -867,7 +867,7 @@ export const AutomationsView: FC<{
       {/* 版式对齐插件市场页：居中限宽、标题+右侧主操作、页签、检索条。
           环境光层抬到 base.tsx 主内容区根（透明 header 条也能被照到），
           这里不再叠一份，避免双层光带 */}
-      <div className="mx-auto flex w-full max-w-5xl shrink-0 flex-col gap-4 px-8 pt-8 pb-2">
+      <div className="mx-auto flex w-full max-w-7xl shrink-0 flex-col gap-4 px-8 pt-8 pb-2">
         {/* 页头：标题/副标题在左，主操作在右 —— 主操作不再和搜索框挤同一行 */}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
@@ -900,9 +900,9 @@ export const AutomationsView: FC<{
           </DropdownMenu>
         </div>
 
-        {/* tab：定时任务 | 运行记录。分段器与设置页各分区同款；计数并入文案。
-            清单总数也在右侧：切到运行记录页时它是这页唯一的全局读数 */}
-        <div className="flex items-center justify-between gap-4">
+        {/* 页签 + 检索/批量收在同一条工具行（参考插件市场页）：窄屏自动换行，
+            既保留「列表读什么」和「怎么筛」的邻近关系，也少一层竖向堆叠 */}
+        <div className="flex flex-wrap items-center gap-2">
           <Segmented<"tasks" | "history">
             value={tab}
             className="w-fit"
@@ -935,77 +935,73 @@ export const AutomationsView: FC<{
                 ? `${snap.tasks.length} 个任务 · ${enabledCount} 个启用`
                 : ""}
           </span>
-        </div>
 
-        {/* 检索条：搜索 + 筛选在左，刷新/批量在右（都贴着清单，
-            模板入口已下沉到清单下方的模板区，这里不再重复给一个按钮） */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* 搜索框固定紧凑宽度（设置页同款 w-56），不再 flex-1 撑满整行 */}
-          <div className="relative w-56 max-w-full shrink-0">
-            <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={tab === "tasks" ? "搜索任务名称/指令" : "搜索运行记录（任务名/状态）"}
-              className="h-8 pl-8 text-sm"
-              aria-label="搜索"
-            />
-          </div>
-          {tab === "tasks" && (
-            <Select
-              value={statusFilter}
-              onValueChange={(v) => v && setStatusFilter(v as TaskFilter)}
-            >
-              <SelectTrigger size="sm" className="w-28 ">
-                <SelectValue>{TASK_FILTER_LABEL[statusFilter]}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {(Object.keys(TASK_FILTER_LABEL) as TaskFilter[]).map((k) => (
-                  <SelectItem key={k} value={k}>
-                    {TASK_FILTER_LABEL[k]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-          {/* 动作组靠右（ml-auto），左侧只剩搜索+筛选两个紧凑控件 */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="ml-auto size-8 shrink-0"
-            aria-label="刷新"
-            title="刷新"
-            onClick={() => void refreshAutomations()}
-          >
-            <RefreshCwIcon className="size-4" />
-          </Button>
-          {(() => {
-            // 批量管理按当前 tab 接管对应模式（任务卡 / 运行记录各一套状态）
-            const isTasks = tab === "tasks";
-            const active = isTasks ? batchMode : historyBatch;
-            const disabled = isTasks ? snap.tasks.length === 0 : totalHistoryCount === 0;
-            return (
-              <Button
-                variant={active ? "secondary" : "outline"}
-                className="h-8 shrink-0 gap-1.5"
-                disabled={disabled}
-                onClick={() => {
-                  if (isTasks) {
-                    batchMode ? exitBatch() : setBatchMode(true);
-                  } else {
-                    historyBatch ? exitHistoryBatch() : setHistoryBatch(true);
-                  }
-                }}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <div className="relative w-56 max-w-full shrink-0">
+              <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={tab === "tasks" ? "搜索任务名称/指令" : "搜索运行记录（任务名/状态）"}
+                className="h-8 pl-8 text-sm"
+                aria-label="搜索"
+              />
+            </div>
+            {tab === "tasks" && (
+              <Select
+                value={statusFilter}
+                onValueChange={(v) => v && setStatusFilter(v as TaskFilter)}
               >
-                <ListChecksIcon className="size-4" />
-                批量管理
-              </Button>
-            );
-          })()}
+                <SelectTrigger size="sm" className="w-28 ">
+                  <SelectValue>{TASK_FILTER_LABEL[statusFilter]}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(TASK_FILTER_LABEL) as TaskFilter[]).map((k) => (
+                    <SelectItem key={k} value={k}>
+                      {TASK_FILTER_LABEL[k]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0"
+              aria-label="刷新"
+              title="刷新"
+              onClick={() => void refreshAutomations()}
+            >
+              <RefreshCwIcon className="size-4" />
+            </Button>
+            {(() => {
+              // 批量管理按当前 tab 接管对应模式（任务卡 / 运行记录各一套状态）
+              const isTasks = tab === "tasks";
+              const active = isTasks ? batchMode : historyBatch;
+              const disabled = isTasks ? snap.tasks.length === 0 : totalHistoryCount === 0;
+              return (
+                <Button
+                  variant={active ? "secondary" : "outline"}
+                  className="h-8 shrink-0 gap-1.5"
+                  disabled={disabled}
+                  onClick={() => {
+                    if (isTasks) {
+                      batchMode ? exitBatch() : setBatchMode(true);
+                    } else {
+                      historyBatch ? exitHistoryBatch() : setHistoryBatch(true);
+                    }
+                  }}
+                >
+                  <ListChecksIcon className="size-4" />
+                  批量管理
+                </Button>
+              );
+            })()}
+          </div>
         </div>
       </div>
 
-      <div className="mx-auto w-full max-w-5xl flex-1 px-8 pb-8">
+      <div className="mx-auto w-full max-w-7xl flex-1 px-8 pb-8">
         {snap.error && (
           <div className="text-red-500 bg-red-500/5 border-red-500/20 mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs">
             <AlertCircleIcon className="size-4 shrink-0" />
@@ -1103,7 +1099,7 @@ export const AutomationsView: FC<{
             {statusFilter !== "all" && `（${TASK_FILTER_LABEL[statusFilter]}）`}
           </p>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3">
             {visibleTasks.map((t) => (
               <TaskCard
                 key={t.id}

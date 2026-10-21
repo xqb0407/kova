@@ -15,6 +15,9 @@ import {
   BracesIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
+  FileTextIcon,
+  FlaskConicalIcon,
   FolderOpenIcon,
   KeyRoundIcon,
   PencilIcon,
@@ -54,14 +57,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { JsonCodeEditor } from "@/components/code/cm-json-editor";
@@ -418,22 +418,40 @@ const McpEditorDialog: FC<{
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100dvh-3rem)] flex-col gap-4 overflow-hidden sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>
-            {target.mode === "create"
-              ? layer === "workspace"
-                ? "新建工作区 MCP 服务器"
-                : "新建系统 MCP 服务器"
-              : `编辑 ${target.entry.name}`}
-          </DialogTitle>
-          <DialogDescription>
-            {layer === "workspace"
-              ? `保存到 ${workspaceCwd ?? ""}/.kova/mcp.json（随仓库共享；不改写 .mcp.json）`
-              : "保存到 ~/.kova/mcp.json，对本机所有工作区生效"}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
+      <DialogContent className="flex h-[calc(100dvh-6rem)] max-h-[860px] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+        {/* 页头：协议图标 + 标题 + 保存位置（与技能编辑弹窗同款） */}
+        <div className="flex shrink-0 items-start gap-4 px-6 py-5 pr-14">
+          <div
+            className={cn(
+              "grid size-12 shrink-0 place-items-center rounded-2xl",
+              form.transport === "http"
+                ? "bg-sky-500/10 text-sky-600 dark:text-sky-400"
+                : "bg-violet-500/10 text-violet-600 dark:text-violet-400",
+            )}
+          >
+            {form.transport === "http" ? (
+              <ServerIcon className="size-6" />
+            ) : (
+              <SquareTerminalIcon className="size-6" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <DialogTitle className="truncate text-xl font-semibold tracking-tight">
+              {target.mode === "create"
+                ? layer === "workspace"
+                  ? "新建工作区 MCP 服务器"
+                  : "新建系统 MCP 服务器"
+                : `编辑 ${target.entry.name}`}
+            </DialogTitle>
+            <DialogDescription className="mt-1 truncate text-sm">
+              {layer === "workspace"
+                ? `保存到 ${workspaceCwd ?? ""}/.kova/mcp.json · 随仓库共享`
+                : "保存到 ~/.kova/mcp.json · 对本机所有工作区生效"}
+            </DialogDescription>
+          </div>
+        </div>
+        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-5">
+          <div className="flex min-w-0 flex-col gap-4">
           <div className="flex gap-3">
             <Label className="flex min-w-0 flex-1 flex-col items-start gap-1 text-sm">
               <span className="text-muted-foreground text-xs">名称</span>
@@ -729,26 +747,41 @@ const McpEditorDialog: FC<{
               </div>
             </CollapsibleContent>
           </Collapsible>
+          </div>
         </div>
 
-        {error && (
-          <p className="text-destructive text-xs" role="alert">
-            {error}
-          </p>
-        )}
-        {layerNeedsCwd && (
-          <p className="text-muted-foreground text-xs">
-            未选择工作区：先在主界面选好工作目录，或切换到"系统级"页签。
-          </p>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button onClick={save} disabled={busy || layerNeedsCwd}>
-            {busy ? "保存中…" : "保存"}
-          </Button>
-        </DialogFooter>
+        {/* 页脚固定：错误与作用域提示就近显示，保存键不随长表单滚走 */}
+        <div className="shrink-0 px-6 py-4">
+          {error && (
+            <p className="text-destructive mb-2 text-xs" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span
+              className={cn(
+                "text-xs",
+                layerNeedsCwd
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-muted-foreground",
+              )}
+            >
+              {layerNeedsCwd
+                ? "未选择工作区：先在主界面选好工作目录，或改用系统级"
+                : layer === "workspace"
+                  ? "工作区级 · 保存后随仓库共享"
+                  : "系统级 · 保存后本机全局生效"}
+            </span>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                取消
+              </Button>
+              <Button onClick={save} disabled={busy || layerNeedsCwd}>
+                {busy ? "保存中…" : "保存"}
+              </Button>
+            </div>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -992,16 +1025,25 @@ const McpJsonImportDialog: FC<{
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* 高度与滚动：同连接日志弹窗——弹窗限高后**只有中段滚动**，footer 永远可见；
           旧写法在 DialogContent 上挂 overflow-y-auto，footer 会随内容滚出可视区 */}
-      <DialogContent className="flex max-h-[calc(100dvh-3rem)] flex-col gap-4 overflow-hidden sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>JSON 导入 MCP 服务器</DialogTitle>
-          <DialogDescription>
-            {layer === "workspace"
-              ? `导入到 ${workspaceCwd ?? ""}/.kova/mcp.json（随仓库共享；不改写 .mcp.json）`
-              : "导入到 ~/.kova/mcp.json，对本机所有工作区生效"}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
+      <DialogContent className="flex h-[calc(100dvh-6rem)] max-h-[860px] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+        {/* 页头：与编辑弹窗同款（图标 + 标题 + 导入位置） */}
+        <div className="flex shrink-0 items-start gap-4 px-6 py-5 pr-14">
+          <div className="grid size-12 shrink-0 place-items-center rounded-2xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+            <BracesIcon className="size-6" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <DialogTitle className="truncate text-xl font-semibold tracking-tight">
+              JSON 导入 MCP 服务器
+            </DialogTitle>
+            <DialogDescription className="mt-1 truncate text-sm">
+              {layer === "workspace"
+                ? `导入到 ${workspaceCwd ?? ""}/.kova/mcp.json · 随仓库共享`
+                : "导入到 ~/.kova/mcp.json · 对本机所有工作区生效"}
+            </DialogDescription>
+          </div>
+        </div>
+        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-5">
+          <div className="flex min-w-0 flex-col gap-4">
           <Label className="flex w-full min-w-0 flex-col items-start gap-1 text-sm">
             <span className="text-muted-foreground text-xs">
               mcpServers JSON（兼容 Claude Code / Cursor 导出格式，支持一次导入多台；语法错误在编辑器内画红波浪线）
@@ -1043,24 +1085,36 @@ const McpJsonImportDialog: FC<{
               ))}
             </ul>
           )}
+          </div>
+        </div>
+
+        {/* 页脚固定：导入错误/范围提示与按钮不随 JSON 滚走 */}
+        <div className="shrink-0 px-6 py-4">
           {error && (
-            <p className="text-destructive text-xs" role="alert">
+            <p className="text-destructive mb-2 text-xs" role="alert">
               {error}
             </p>
           )}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="text-muted-foreground text-xs">
+              {layer === "workspace"
+                ? "工作区级 · 导入到 .kova/mcp.json"
+                : "系统级 · 导入到 ~/.kova/mcp.json"}
+            </span>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                取消
+              </Button>
+              <Button onClick={() => void importAll()} disabled={busy || !canImport}>
+                {busy
+                  ? "导入中…"
+                  : hasInput && drafts.length > 0 && errors.length === 0
+                    ? `导入 ${drafts.length} 台`
+                    : "导入"}
+              </Button>
+            </div>
+          </div>
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button onClick={() => void importAll()} disabled={busy || !canImport}>
-            {busy
-              ? "导入中…"
-              : hasInput && drafts.length > 0 && errors.length === 0
-                ? `导入 ${drafts.length} 台`
-                : "导入"}
-          </Button>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -1155,188 +1209,204 @@ const McpRow: FC<{
     }
   };
   return (
-    <div className="flex flex-col">
-    <div className="hover:bg-muted/70 flex items-center gap-3 rounded-xl px-3 py-2 transition-colors">
-      {/* 图标盒 + 连接状态点（记忆文件行同款 size-9 边框盒） */}
-      <div className="bg-background text-muted-foreground relative flex size-9 shrink-0 items-center justify-center rounded-lg border">
-        <McpProtocolIcon
-          icons={status.icons}
-          fallback={
-            entry.transport === "http" ? (
-              <ServerIcon className="size-4" />
-            ) : (
-              <SquareTerminalIcon className="size-4" />
-            )
-          }
-        />
-        <span
+    <div className="group bg-background hover:border-foreground/20 hover:bg-muted/20 flex flex-col rounded-xl border transition-colors">
+      <div className="relative flex items-start gap-4 px-3 py-4">
+        {/* 图标盒 + 连接状态点：transport 决定底色，扫一眼区分 HTTP / stdio */}
+        <div
           className={cn(
-            "absolute -right-1 -bottom-1 size-2.5 rounded-full ring-2 ring-background",
-            STATE_DOT[status.state],
+            "relative flex size-10 shrink-0 items-center justify-center rounded-xl",
+            entry.transport === "http"
+              ? "bg-sky-500/10 text-sky-600 dark:text-sky-400"
+              : "bg-violet-500/10 text-violet-600 dark:text-violet-400",
           )}
-          title={STATE_LABEL[status.state]}
-        />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm font-medium">{entry.name}</span>
-          <Badge variant="outline" className="shrink-0 font-mono text-xs">
-            {entry.transport}
-          </Badge>
-          {entry.transport === "stdio" && entry.secretEnv && entry.secretEnv.length > 0 && (
-            <Badge
-              variant="outline"
-              className="shrink-0 gap-1 border-emerald-600/40 text-xs text-emerald-700 dark:text-emerald-400"
-              title={`握手时注入 ${entry.secretEnv.length} 个密钥（值不写入配置）`}
-            >
-              <KeyRoundIcon className="size-3" />
-              {entry.secretEnv.length} 密钥
-            </Badge>
-          )}
-          {entry.transport === "stdio" && entry.secretBindingStale && (
-            <Badge
-              variant="outline"
-              className="shrink-0 gap-1 border-amber-600/40 text-xs text-amber-700 dark:text-amber-400"
-              title="启动配置已变，原密钥绑定不会注入；编辑服务器重新确认"
-            >
-              <TriangleAlertIcon className="size-3" />
-              密钥绑定失效
-            </Badge>
-          )}
-          {status.state === "ready" ? (
-            <button
-              type="button"
-              onClick={toggleTools}
-              className="text-emerald-600 dark:text-emerald-400 hover:underline shrink-0 cursor-pointer text-xs"
-              title={toolsOpen ? "收起工具列表" : "展开查看全部工具"}
-            >
-              {status.toolCount} 个工具
-              <ChevronDownIcon
-                className={cn(
-                  "mb-[2px] inline size-3 transition-transform",
-                  toolsOpen && "rotate-180",
-                )}
-              />
-            </button>
-          ) : status.needsAuth ? (
-            <span className="text-amber-600 dark:text-amber-400 shrink-0 text-xs">
-              需要授权
-            </span>
-          ) : status.state !== "idle" ? (
-            <span className="text-muted-foreground truncate text-xs">
-              {STATE_LABEL[status.state]}
-            </span>
-          ) : null}
-        </div>
-        <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
-          <span className="truncate">{entry.description || target || "未配置目标"}</span>
-          {entry.source && (
-            <span className="hidden truncate font-mono text-xs lg:block">
-              {entry.layer === "workspace" &&
-              workspaceCwd &&
-              entry.source.startsWith(workspaceCwd + "/")
-                ? entry.source.slice(workspaceCwd.length + 1)
-                : entry.source}
-            </span>
-          )}
-        </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-1">
-        {entry.transport === "http" && (status.needsAuth || authorizing) && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-amber-600 dark:text-amber-400 h-7 border-amber-600/40 px-2 text-xs"
-            onClick={onAuthorize}
-            disabled={authorizing}
-            title="打开浏览器完成该服务器的 OAuth 授权"
-          >
-            {authorizing ? "等待浏览器授权…" : "授权"}
-          </Button>
-        )}
-        {entry.transport === "http" && status.oauthAuthorized && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground hover:text-destructive h-7 px-2 text-xs"
-            onClick={onRevoke}
-            disabled={revoking}
-            title="清除已存储的 OAuth 凭据并断开；下次连接需重新授权（不删除服务器配置）"
-          >
-            {revoking ? "取消中…" : "取消授权"}
-          </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={onTest}
-          disabled={testing}
-          title="强制重新握手并统计工具"
         >
-          测试
-        </Button>
-        {/* 测试状态徽标：进行中 loading，结束后成功/失败 */}
-        {(testing || testResult) && (
-          <AnimatedBadge
-            size="sm"
-            status={
-              testing ? "loading" : testResult === "ok" ? "success" : "danger"
+          <McpProtocolIcon
+            icons={status.icons}
+            fallback={
+              entry.transport === "http" ? (
+                <ServerIcon className="size-5" />
+              ) : (
+                <SquareTerminalIcon className="size-5" />
+              )
             }
-          >
-            {testing ? "测试中" : testResult === "ok" ? "成功" : "失败"}
-          </AnimatedBadge>
-        )}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={onLog}
-          title="查看连接日志与事件"
-        >
-          日志
-        </Button>
-        <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title="编辑">
-          <PencilIcon className="size-3.5" />
-        </Button>
-        {!entry.fromStandard &&
-          (confirmingDelete ? (
-            <Button
-              variant="destructive"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={onConfirmDelete}
-            >
-              <CheckIcon className="size-3.5" />
-              确认删除
-            </Button>
-          ) : (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="text-muted-foreground hover:text-destructive size-7"
-              onClick={onDelete}
-              title="删除"
-            >
-              <Trash2Icon className="size-3.5" />
-            </Button>
-          ))}
+          />
+          <span
+            className={cn(
+              "absolute -right-1 -bottom-1 size-2.5 rounded-full ring-2 ring-background",
+              STATE_DOT[status.state],
+            )}
+            title={STATE_LABEL[status.state]}
+          />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="pr-10">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="min-w-0 truncate text-base font-medium">{entry.name}</span>
+            <Badge variant="outline" className="shrink-0 font-mono text-xs">
+              {entry.transport}
+            </Badge>
+            {entry.transport === "stdio" && entry.secretEnv && entry.secretEnv.length > 0 && (
+              <Badge
+                variant="outline"
+                className="shrink-0 gap-1 border-emerald-600/40 text-xs text-emerald-700 dark:text-emerald-400"
+                title={`握手时注入 ${entry.secretEnv.length} 个密钥（值不写入配置）`}
+              >
+                <KeyRoundIcon className="size-3" />
+                {entry.secretEnv.length} 密钥
+              </Badge>
+            )}
+            {entry.transport === "stdio" && entry.secretBindingStale && (
+              <Badge
+                variant="outline"
+                className="shrink-0 gap-1 border-amber-600/40 text-xs text-amber-700 dark:text-amber-400"
+                title="启动配置已变，原密钥绑定不会注入；编辑服务器重新确认"
+              >
+                <TriangleAlertIcon className="size-3" />
+                密钥绑定失效
+              </Badge>
+            )}
+            {status.state === "ready" ? (
+              <button
+                type="button"
+                onClick={toggleTools}
+                className="text-emerald-600 dark:text-emerald-400 hover:underline shrink-0 cursor-pointer text-xs"
+                title={toolsOpen ? "收起工具列表" : "展开查看全部工具"}
+              >
+                {status.toolCount} 个工具
+                <ChevronDownIcon
+                  className={cn(
+                    "mb-[2px] inline size-3 transition-transform",
+                    toolsOpen && "rotate-180",
+                  )}
+                />
+              </button>
+            ) : status.needsAuth ? (
+              <span className="text-amber-600 dark:text-amber-400 shrink-0 text-xs">
+                需要授权
+              </span>
+            ) : status.state !== "idle" ? (
+              <span className="text-muted-foreground shrink-0 text-xs">
+                {STATE_LABEL[status.state]}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="text-muted-foreground mt-1 line-clamp-2 text-[13px] leading-5">
+            {entry.description || target || "未配置目标"}
+          </div>
+          </div>
+
+          <div className="mt-2 flex min-w-0 items-center gap-1.5">
+            {entry.transport === "http" && (status.needsAuth || authorizing) && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-amber-600 dark:text-amber-400 h-7 shrink-0 border-amber-600/40 px-2 text-xs"
+                onClick={onAuthorize}
+                disabled={authorizing}
+                title="打开浏览器完成该服务器的 OAuth 授权"
+              >
+                {authorizing ? "等待浏览器授权…" : "授权"}
+              </Button>
+            )}
+            {(testing || testResult) && (
+              <AnimatedBadge
+                size="sm"
+                status={testing ? "loading" : testResult === "ok" ? "success" : "danger"}
+              >
+                {testing ? "测试中" : testResult === "ok" ? "成功" : "失败"}
+              </AnimatedBadge>
+            )}
+            {entry.source && (
+              <span
+                className="text-muted-foreground/60 min-w-0 flex-1 truncate font-mono text-[10px]"
+                title={entry.source}
+              >
+                {entry.layer === "workspace" &&
+                workspaceCwd &&
+                entry.source.startsWith(workspaceCwd + "/")
+                  ? entry.source.slice(workspaceCwd.length + 1)
+                  : entry.source}
+              </span>
+            )}
+            <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+              {entry.transport === "http" && status.oauthAuthorized && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground hover:text-destructive h-7 px-2 text-xs"
+                  onClick={onRevoke}
+                  disabled={revoking}
+                  title="清除已存储的 OAuth 凭据并断开；下次连接需重新授权（不删除服务器配置）"
+                >
+                  {revoking ? "取消中…" : "取消授权"}
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                onClick={onTest}
+                disabled={testing}
+                title="测试连接（强制重新握手并统计工具）"
+              >
+                <FlaskConicalIcon className="size-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                onClick={onLog}
+                title="连接日志与事件"
+              >
+                <FileTextIcon className="size-3.5" />
+              </Button>
+              <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title="编辑">
+                <PencilIcon className="size-3.5" />
+              </Button>
+              {!entry.fromStandard &&
+                (confirmingDelete ? (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={onConfirmDelete}
+                  >
+                    <CheckIcon className="size-3.5" />
+                    确认删除
+                  </Button>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="text-muted-foreground hover:text-destructive size-7"
+                    onClick={onDelete}
+                    title="删除"
+                  >
+                    <Trash2Icon className="size-3.5" />
+                  </Button>
+                ))}
+            </div>
+          </div>
+        </div>
+
         <Switch
-          size="sm"
+          className="absolute top-4 right-3"
           checked={entry.enabled}
           onCheckedChange={onToggle}
           aria-label={`${entry.name} 启用`}
         />
       </div>
-      </div>
+
       {toolsOpen && (
-        <div className="bg-muted/40 mx-3 mb-2 rounded-xl border px-3 py-1.5">
+        <div className="bg-muted/40 mx-3 mb-3 rounded-xl border px-3 py-1.5">
           {toolsBusy ? (
             <p className="text-muted-foreground py-2 text-xs">加载工具列表…</p>
           ) : toolsError ? (
             <p className="text-destructive py-2 text-xs">工具列表加载失败：{toolsError}</p>
           ) : tools && tools.length > 0 ? (
-            <ul className="flex flex-col divide-y divide-border/50">
+            <ul className="divide-border/50 flex flex-col divide-y">
               {tools.map((t) => (
                 <li key={t.name} className="flex flex-col gap-0.5 py-1.5">
                   <span className="font-mono text-xs font-medium">{t.name}</span>
@@ -1353,6 +1423,7 @@ const McpRow: FC<{
           )}
         </div>
       )}
+
     </div>
   );
 };
@@ -1421,14 +1492,22 @@ const McpLogDialog: FC<{
           旧写法在 DialogContent 上挂 overflow-y-auto，footer 是滚动内容的一部分，
           内容一长按钮就被顶出可视区（且 overflow-y-auto 会把 overflow-x 也算成 auto，
           长 token 撑宽内容时整块横向滚动）。中段自带 min-w-0 让换行真正生效。 */}
-      <DialogContent className="flex max-h-[calc(100dvh-3rem)] flex-col gap-4 overflow-hidden sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>连接日志</DialogTitle>
-          <DialogDescription>
-            {name} · 连接错误（最近 100 条）与持久化审计事件，点「测试」可重新握手
-          </DialogDescription>
-        </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto">
+      <DialogContent className="flex h-[calc(100dvh-6rem)] max-h-[860px] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+        {/* 页头：与编辑弹窗同款（图标 + 标题 + 说明） */}
+        <div className="flex shrink-0 items-start gap-4 px-6 py-5 pr-14">
+          <div className="grid size-12 shrink-0 place-items-center rounded-2xl bg-slate-500/10 text-slate-600 dark:text-slate-300">
+            <FileTextIcon className="size-6" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <DialogTitle className="truncate text-xl font-semibold tracking-tight">
+              连接日志
+            </DialogTitle>
+            <DialogDescription className="mt-1 truncate text-sm">
+              {name} · 连接错误（最近 100 条）与持久化审计事件，点「测试」可重新握手
+            </DialogDescription>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           {error ? (
             <p className="text-destructive min-w-0 text-sm [overflow-wrap:anywhere]">{error}</p>
           ) : (
@@ -1502,13 +1581,18 @@ const McpLogDialog: FC<{
             </div>
           )}
         </div>
-        <DialogFooter className="items-center sm:justify-end">
-          <Button variant="outline" onClick={() => void load()} disabled={busy}>
-            <RefreshCwIcon className={cn("size-3.5", busy && "animate-spin")} />
-            刷新
-          </Button>
-          <Button onClick={() => onOpenChange(false)}>关闭</Button>
-        </DialogFooter>
+        <div className="flex shrink-0 items-center justify-between gap-3 px-6 py-4">
+          <span className="text-muted-foreground text-xs">
+            最近 100 条连接错误 · 审计事件跨重启保留
+          </span>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => void load()} disabled={busy}>
+              <RefreshCwIcon className={cn("size-3.5", busy && "animate-spin")} />
+              刷新
+            </Button>
+            <Button onClick={() => onOpenChange(false)}>关闭</Button>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -1818,16 +1902,14 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
         <section className="flex flex-col gap-3">
           {/* 工具行：作用域页签 + 工作区切换 + 搜索/刷新/新建 */}
           <div className="flex flex-wrap items-center gap-3">
-            <Tabs value={scopeTab} onValueChange={(v) => setScopeTab(v as ScopeTab)}>
-              <TabsList className="h-auto rounded-full bg-muted/50 p-[3px]">
-                <TabsTrigger value="system" className="rounded-full px-3 py-1 text-sm">
-                  系统级
-                </TabsTrigger>
-                <TabsTrigger value="workspace" className="rounded-full px-3 py-1 text-sm">
-                  工作区级
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
+            <Segmented
+              value={scopeTab}
+              onChange={setScopeTab}
+              options={[
+                { value: "system", label: "系统级" },
+                { value: "workspace", label: "工作区级" },
+              ]}
+            />
             {scopeTab === "workspace" && (
               <WorkspaceCwdMenu
                 value={viewingCwd}
@@ -1955,26 +2037,25 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
             </div>
           ) : null}
 
-          {/* 服务器列表卡片（记忆文件列表同款容器） */}
-          <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+          {/* 服务器列表：两列自适应卡片行（无外框，行间细分隔线） */}
+          <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(520px,1fr))] gap-3">
             {snap.error ? (
-              <div className="text-muted-foreground px-3 py-3 text-sm">
+              <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
                 清单加载失败：{snap.error}
               </div>
             ) : workspaceUnavailable ? (
-              <div className="text-muted-foreground px-3 py-3 text-sm">
+              <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
                 未选择工作区。选择工作区后，这里会合并显示该仓库 .mcp.json（共享）与
                 .kova/mcp.json（覆盖层）的服务器；也可以点上方目录切换器「浏览其他目录…」。
               </div>
             ) : visible.length === 0 ? (
-              <div className="text-muted-foreground flex flex-col gap-1 px-3 py-3 text-sm">
-                <span>
-                  {query.trim()
-                    ? `没有匹配「${query.trim()}」的服务器。`
-                    : scopeTab === "workspace"
-                      ? "该工作区还没有 MCP 服务器。点右上角「创建」添加（支持 JSON 批量导入），或让团队成员把 .mcp.json 提交进仓库。"
-                      : "还没有系统级 MCP 服务器。点右上角「创建」添加（支持 JSON 批量导入）。"}
-                </span>
+              <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
+                {query.trim()
+                  ? `没有匹配「${query.trim()}」的服务器。`
+                  : scopeTab === "workspace"
+                    ? "该工作区还没有 MCP 服务器。点右上角「创建」添加（支持 JSON 批量导入），或让团队成员把 .mcp.json 提交进仓库。"
+                    : "还没有系统级 MCP 服务器。点右上角「创建」添加（支持 JSON 批量导入）。"}
               </div>
             ) : (
               visible.map((entry) => (
@@ -1998,9 +2079,10 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                 />
               ))
             )}
+            </div>
             {/* 兼容性脚注（记忆页 dailyHint 行同款位置） */}
             {scopeTab === "workspace" && !workspaceUnavailable && visible.length > 0 && (
-              <div className="text-muted-foreground px-3 py-1.5 text-xs">
+              <div className="text-muted-foreground px-1 text-xs">
                 .mcp.json 为生态共享格式（Claude Code / Cursor 等可直接复用）；设置页只写
                 .kova/mcp.json 覆盖层，从不改写共享文件。
               </div>
@@ -2008,14 +2090,26 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
           </div>
 
           {snap.diagnostics.length > 0 && (
-            <details className="text-xs">
-              <summary className="text-muted-foreground cursor-pointer px-1">
-                加载诊断（{snap.diagnostics.length}）
+            <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-xs">
+              <summary className="hover:bg-amber-500/10 flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 transition-colors [&::-webkit-details-marker]:hidden">
+                <TriangleAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <span className="text-foreground font-medium">加载诊断</span>
+                <Badge
+                  variant="secondary"
+                  className="bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1.5 py-0 text-[10px] font-medium"
+                >
+                  {snap.diagnostics.length}
+                </Badge>
+                <ChevronRightIcon className="text-muted-foreground/70 ml-auto size-3.5 shrink-0 transition-transform group-open:rotate-90" />
               </summary>
-              <ul className="text-muted-foreground mt-1 list-disc pl-6">
+              <ul className="border-amber-500/15 flex flex-col gap-1.5 border-t px-3.5 py-3">
                 {snap.diagnostics.map((d, i) => (
-                  <li key={i} className="font-mono text-[11px]">
-                    {d}
+                  <li
+                    key={i}
+                    className="bg-background/70 border-amber-500/10 flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2"
+                  >
+                    <span className="mt-1.5 size-1 shrink-0 rounded-full bg-amber-500/70" />
+                    <span className="min-w-0 font-mono text-[11px] leading-5 break-all">{d}</span>
                   </li>
                 ))}
               </ul>

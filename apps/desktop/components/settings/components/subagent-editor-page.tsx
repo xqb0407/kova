@@ -73,9 +73,21 @@ export const SubagentEditorPage: FC<{
   grantableTools?: string[];
   /** 返回列表 */
   onBack: () => void;
+  /** 父级已把返回键提到应用顶栏时，页内不再重复一个 */
+  hideBack?: boolean;
+  /** 保存中状态上抛：顶栏返回键据此禁用 */
+  onBusyChange?: (busy: boolean) => void;
   /** 模型选择器由父组件注入（与列表行共用同一个控件） */
   renderModelControl: (value: string | undefined, onChange: (v: string) => void) => React.ReactNode;
-}> = ({ target, workspaceCwd, grantableTools, onBack, renderModelControl }) => {
+}> = ({
+  target,
+  workspaceCwd,
+  grantableTools,
+  onBack,
+  hideBack = false,
+  onBusyChange,
+  renderModelControl,
+}) => {
   const isEdit = target.mode === "edit";
   const scope = editorScope(target);
   const scopeNeedsCwd = scope === "workspace" && !workspaceCwd;
@@ -90,6 +102,12 @@ export const SubagentEditorPage: FC<{
 
   const skillsSnapshot = useSkills(workspaceCwd);
   const mcpSnapshot = useMcpServers(workspaceCwd);
+
+  // 保存中状态上抛：顶栏返回键与页内返回同一时刻禁用
+  useEffect(() => {
+    onBusyChange?.(busy);
+  }, [busy, onBusyChange]);
+  useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
 
   // 打开时回填（切换目标不随外部清单刷新重置）
   useEffect(() => {
@@ -247,18 +265,20 @@ export const SubagentEditorPage: FC<{
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* 页头：与 MarketplaceView 顶栏同款，返回 + 标题 + 作用域 */}
+      {/* 页头：返回键默认在页内；父级接管顶栏时只留标题与作用域 */}
       <div className="flex shrink-0 items-center gap-3 pb-4">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-muted-foreground -ml-2 gap-1"
-          onClick={onBack}
-          disabled={busy}
-        >
-          <ChevronLeftIcon className="size-4" />
-          返回
-        </Button>
+        {!hideBack && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground -ml-2 gap-1"
+            onClick={onBack}
+            disabled={busy}
+          >
+            <ChevronLeftIcon className="size-4" />
+            返回
+          </Button>
+        )}
         <h1 className="truncate text-base font-semibold">{title}</h1>
         <Badge variant="secondary" className="shrink-0">
           {scope === "workspace" ? "工作区级" : "系统级"}

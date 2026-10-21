@@ -94,7 +94,7 @@ const PluginListSkeleton = () => (
       <div className="flex-1" />
       <Skeleton className="h-8 w-18 rounded-lg" />
     </div>
-    <div className="grid grid-cols-1 content-start gap-3 md:grid-cols-2 xl:grid-cols-3">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] content-start gap-3">
       {Array.from({ length: 6 }, (_, i) => (
         <PluginCardSkeleton key={i} />
       ))}
@@ -285,7 +285,9 @@ export const InstalledPlugins: FC = () => {
       <div
         className={cn(
           "min-h-0 flex-1 overflow-y-auto pb-4",
-          viewMode === "cards" ? "grid grid-cols-1 content-start gap-3 md:grid-cols-2 xl:grid-cols-3" : "space-y-2",
+          viewMode === "cards"
+            ? "grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] content-start gap-3"
+            : "space-y-2",
         )}
       >
         {plugins.map((p) => {

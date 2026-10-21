@@ -10,11 +10,14 @@
  * 能力边界与 sidecar 对齐：内置只读（可查看/开关/复制为系统级）；系统/工作区
  * 可编辑可删除，工作区层随所选目录呈现。
  */
-import { useEffect, useMemo, useState, type FC, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type FC, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   CopyIcon,
   EyeIcon,
   FolderOpenIcon,
@@ -22,8 +25,10 @@ import {
   PlusIcon,
   RefreshCwIcon,
   Trash2Icon,
+  TriangleAlertIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { hueFromName } from "@/lib/ui/name-hue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -288,86 +293,99 @@ const SubagentRow: FC<{
       : entry.path
     : null;
   return (
-  <div className="hover:bg-muted/70 flex items-center gap-3 rounded-xl px-3 py-2 transition-colors">
-    {/* 作用域图标盒（技能/MCP 行同款 size-9 边框盒） */}
-    <div className="bg-background text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-lg border">
-      <BotIcon className="size-4" />
-    </div>
-    <div className="min-w-0 flex-1">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="truncate text-sm font-medium">{entry.name}</span>
-        <Badge variant="outline" className="shrink-0">
-          {SCOPE_LABEL[entry.scope]}
-        </Badge>
+    <div className="group bg-background hover:border-foreground/20 hover:bg-muted/20 flex flex-col rounded-xl border transition-colors">
+      <div className="relative flex items-start gap-4 px-3 py-4">
+        {/* 图标底色按名称散列：同一子智能体恒定同色，内置条目也能彼此区分 */}
+        <div
+          style={{ "--av-h": String(hueFromName(entry.name)) } as CSSProperties}
+          className="grid size-10 shrink-0 place-items-center rounded-xl bg-[hsl(var(--av-h)_72%_92%)] text-[hsl(var(--av-h)_58%_30%)] dark:bg-[hsl(var(--av-h)_42%_22%)] dark:text-[hsl(var(--av-h)_62%_84%)]"
+          title={SCOPE_LABEL[entry.scope]}
+        >
+          <BotIcon className="size-5" />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="pr-10">
+            <div className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-base font-medium">{entry.name}</span>
+            {entry.enabled && (
+              <span
+                className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                title="生效中"
+                aria-label="生效中"
+              />
+            )}
+          </div>
+          <p className="text-muted-foreground mt-1 line-clamp-2 text-[13px] leading-5">
+            {entry.description || "未填写描述"}
+          </p>
+          </div>
+          <div className="mt-2 flex min-w-0 items-center gap-2">
+            {entry.editable ? (
+              <span className="text-muted-foreground/80 min-w-0 max-w-56 truncate text-[11px]">
+                模型：{entry.model ?? "跟随会话模型"}
+              </span>
+            ) : (
+              <SubagentModelControl value={entry.model} onChange={onModelChange} />
+            )}
+            {relPath && (
+              <span
+                className="text-muted-foreground/60 hidden min-w-0 flex-1 truncate font-mono text-[10px] sm:block"
+                title={entry.path ?? undefined}
+              >
+                {relPath}
+              </span>
+            )}
+            <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+              {!entry.editable && (
+                <Button variant="ghost" size="icon" className="size-7" onClick={onView} title="查看定义">
+                  <EyeIcon className="size-3.5" />
+                </Button>
+              )}
+              {entry.editable ? (
+                <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title="编辑">
+                  <PencilIcon className="size-3.5" />
+                </Button>
+              ) : (
+                <Button variant="ghost" size="icon" className="size-7" onClick={onCopy} title="复制为系统级">
+                  <CopyIcon className="size-3.5" />
+                </Button>
+              )}
+              {entry.editable &&
+                (confirmingDelete ? (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={onConfirmDelete}
+                  >
+                    <CheckIcon className="size-3.5" />
+                    确认删除
+                  </Button>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="text-muted-foreground hover:text-destructive size-7"
+                    onClick={onDelete}
+                    title="删除"
+                  >
+                    <Trash2Icon className="size-3.5" />
+                  </Button>
+                ))}
+            </div>
+          </div>
+        </div>
+
+        <Switch
+          className="absolute top-4 right-3"
+          checked={entry.enabled}
+          onCheckedChange={onToggle}
+          aria-label={`${entry.name} 启用`}
+        />
       </div>
-      <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
-        <span className="truncate">{entry.description}</span>
-        {relPath && (
-          <span
-            className="hidden max-w-64 shrink-0 truncate font-mono lg:block"
-            title={entry.path ?? undefined}
-          >
-            {relPath}
-          </span>
-        )}
-      </div>
+
     </div>
-    <Switch
-      size="sm"
-      checked={entry.enabled}
-      onCheckedChange={onToggle}
-      aria-label={`${entry.name} 启用`}
-    />
-    {/* 只读层直接在这里改模型（改即存）；可编辑层的模型归编辑弹窗管，行内只读展示 */}
-    {entry.editable ? (
-      <span
-        className="text-muted-foreground hidden w-56 shrink-0 truncate text-right text-xs lg:block"
-        title={entry.model ?? "跟随会话模型"}
-      >
-        {entry.model ?? "跟随会话模型"}
-      </span>
-    ) : (
-      <SubagentModelControl value={entry.model} onChange={onModelChange} />
-    )}
-    <div className="flex shrink-0 items-center gap-1">
-      {!entry.editable && (
-        <Button variant="ghost" size="icon" className="size-7" onClick={onView} title="查看定义">
-          <EyeIcon className="size-3.5" />
-        </Button>
-      )}
-      {entry.editable ? (
-        <Button variant="ghost" size="icon" className="size-7" onClick={onEdit} title="编辑">
-          <PencilIcon className="size-3.5" />
-        </Button>
-      ) : (
-        <Button variant="ghost" size="icon" className="size-7" onClick={onCopy} title="复制为系统级">
-          <CopyIcon className="size-3.5" />
-        </Button>
-      )}
-      {entry.editable &&
-        (confirmingDelete ? (
-          <Button
-            variant="destructive"
-            size="sm"
-            className="h-7 px-2 text-xs"
-            onClick={onConfirmDelete}
-          >
-            <CheckIcon className="size-3.5" />
-            确认删除
-          </Button>
-        ) : (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="text-muted-foreground hover:text-destructive size-7"
-            onClick={onDelete}
-            title="删除"
-          >
-            <Trash2Icon className="size-3.5" />
-          </Button>
-        ))}
-    </div>
-  </div>
   );
 };
 
@@ -456,7 +474,9 @@ export const SubagentsSettings: FC<{
    *  不收会撞出两个「返回」——外层那个退出整个管理页，内层这个只返回列表，
    *  语义不同却长一样，用户点哪个全凭运气。 */
   onEditingChange?: (editing: boolean) => void;
-}> = ({ onEditingChange }) => {
+  /** 嵌入管理页（应用顶栏承载页面身份）：不再重复大标题/外层留白 */
+  embedded?: boolean;
+}> = ({ onEditingChange, embedded = false }) => {
   const workspace = useWorkspace();
   const recents = useWorkspaceRecents();
   // 工作区级区块允许浏览任意目录：overrideCwd 为 null 时跟随主界面当前工作区，
@@ -468,6 +488,15 @@ export const SubagentsSettings: FC<{
   const [editorTarget, setEditorTarget] = useState<EditorTarget | null>(null);
   const [viewing, setViewing] = useState<SubagentEntry | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  /** 应用顶栏槽位：编辑器打开时把「返回」提到左上角（与 MCP/技能管理页同款） */
+  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
+  /** 编辑器保存中：顶栏返回键同步禁用，避免保存途中退出 */
+  const [editorBusy, setEditorBusy] = useState(false);
+  useEffect(() => {
+    setHeaderSlot(
+      document.querySelector<HTMLElement>('[data-slot="page-header-actions"]'),
+    );
+  }, []);
 
   // 编辑态同步给父级（卸载时也上报一次 false，避免切走页面后顶栏一直藏著）
   useEffect(() => {
@@ -526,7 +555,15 @@ export const SubagentsSettings: FC<{
     }
   };
 
-  const openEditor = (target: EditorTarget) => setEditorTarget(target);
+  // 同步上报编辑态：父级同一帧收掉管理页顶栏，避免与顶栏返回键短暂并存
+  const openEditor = (target: EditorTarget) => {
+    setEditorTarget(target);
+    onEditingChange?.(true);
+  };
+  const closeEditor = () => {
+    setEditorTarget(null);
+    onEditingChange?.(false);
+  };
 
   const renderSection = (
     title: string,
@@ -539,16 +576,16 @@ export const SubagentsSettings: FC<{
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-baseline gap-2">
           <h2 className="shrink-0 text-sm font-semibold">{title}</h2>
-          <span className="text-muted-foreground truncate text-xs">{desc}</span>
+          <span className="text-muted-foreground/80 min-w-0 text-xs">{desc}</span>
         </div>
         {actions}
       </div>
-      {/* 列表卡片（技能/MCP 列表同款容器） */}
-      <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+      {/* 列表：两列自适应行式（无外框，行间细分隔线） */}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(480px,1fr))] gap-3">
         {entries.length === 0 ? (
-          empty ?? (
-            <div className="text-muted-foreground px-3 py-3 text-sm">暂无</div>
-          )
+          <div className="text-muted-foreground col-span-full rounded-2xl border border-dashed px-4 py-6 text-sm">
+            {empty ?? "暂无"}
+          </div>
         ) : (
           entries.map((entry) => (
             <SubagentRow
@@ -573,34 +610,60 @@ export const SubagentsSettings: FC<{
   // 编辑态：整页换成编辑器（与列表同一容器，返回即回到原处）
   if (editorTarget) {
     return (
-      <div className="h-full min-h-0 py-4">
-        <SubagentEditorPage
-          target={editorTarget}
-          workspaceCwd={viewingCwd}
-          grantableTools={snap.grantableTools}
-          onBack={() => setEditorTarget(null)}
-          renderModelControl={(value, onChange) => (
-            <SubagentModelControl value={value} onChange={onChange} />
-          )}
-        />
-      </div>
+      <>
+        {headerSlot
+          ? createPortal(
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground shrink-0 gap-1"
+                onClick={closeEditor}
+                disabled={editorBusy}
+              >
+                <ChevronLeftIcon className="size-4" />
+                返回
+              </Button>,
+              headerSlot,
+            )
+          : null}
+        <div className={cn("h-full min-h-0", !embedded && "py-4")}>
+          <SubagentEditorPage
+            target={editorTarget}
+            workspaceCwd={viewingCwd}
+            grantableTools={snap.grantableTools}
+            onBack={closeEditor}
+            hideBack={headerSlot !== null}
+            onBusyChange={setEditorBusy}
+            renderModelControl={(value, onChange) => (
+              <SubagentModelControl value={value} onChange={onChange} />
+            )}
+          />
+        </div>
+      </>
     );
   }
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-0 py-8">
-        {/* 标题行：状态文字在右（MCP/技能页同款） */}
-        <div className="flex items-baseline justify-between gap-4">
-          <h1 className="text-2xl font-bold tracking-tight">子智能体</h1>
-          <span
-            className={cn("text-xs", snap.error ? "text-destructive" : "text-muted-foreground")}
-          >
-            {snap.error
-              ? "清单加载失败，可刷新重试"
-              : `${snap.agents.length} 个子智能体（${snap.agents.filter((e) => e.enabled).length} 个启用）`}
-          </span>
-        </div>
+      <div
+        className={cn(
+          "flex w-full flex-col",
+          embedded ? "gap-5 py-0" : "max-w-5xl gap-8 self-center px-0 py-8",
+        )}
+      >
+        {/* 标题行：嵌入管理页时身份在应用顶栏，这里不再重复大标题（资料库同款） */}
+        {!embedded && (
+          <div className="flex items-baseline justify-between gap-4">
+            <h1 className="text-2xl font-bold tracking-tight">子智能体</h1>
+            <span
+              className={cn("text-xs", snap.error ? "text-destructive" : "text-muted-foreground")}
+            >
+              {snap.error
+                ? "清单加载失败，可刷新重试"
+                : `${snap.agents.length} 个子智能体（${snap.agents.filter((e) => e.enabled).length} 个启用）`}
+            </span>
+          </div>
+        )}
 
         {/* 工具行：说明文字 + 刷新/新建（技能/MCP 工具行同款位置） */}
         <div className="flex flex-wrap items-center gap-3">
@@ -618,26 +681,29 @@ export const SubagentsSettings: FC<{
             >
               <RefreshCwIcon className="size-4" />
             </Button>
-            <Button
-              variant="outline"
-              className="h-8 shrink-0 gap-1.5"
-              onClick={() => openEditor({ mode: "create", scope: "system" })}
-            >
-              <PlusIcon className="size-4" />
-              新建系统级
-            </Button>
-            <Button
-              className="h-8 shrink-0 gap-1.5"
-              onClick={() => openEditor({ mode: "create", scope: "workspace" })}
-              disabled={!viewingCwd}
-              title={
-                viewingCwd ??
-                "先在主界面选择工作区，或在下方「工作区」区块选择目录浏览"
-              }
-            >
-              <PlusIcon className="size-4" />
-              新建工作区级
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={<Button className="h-8 shrink-0 gap-1.5" />}
+              >
+                <PlusIcon className="size-4" />
+                新建
+                <ChevronDownIcon className="size-3.5 opacity-60" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-40">
+                <DropdownMenuItem
+                  onClick={() => openEditor({ mode: "create", scope: "system" })}
+                >
+                  系统级
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={!viewingCwd}
+                  onClick={() => openEditor({ mode: "create", scope: "workspace" })}
+                  title={viewingCwd ? undefined : "先在工作区区块选择目录"}
+                >
+                  工作区级
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
@@ -681,23 +747,33 @@ export const SubagentsSettings: FC<{
             onFollowCurrent={() => setOverrideCwd(null)}
             onBrowse={() => void pickBrowseDir()}
           />,
-          viewingCwd ? undefined : (
-            <div className="text-muted-foreground px-3 py-3 text-sm">
-              选择目录后，这里会显示该仓库 .kova/subagents/ 下的子智能体。
-            </div>
-          ),
+          viewingCwd
+            ? undefined
+            : "选择目录后，这里会显示该仓库 .kova/subagents/ 下的子智能体。",
         )}
 
-        {/* 加载诊断：折叠放置，不与清单争视觉（坏文件警告不致命） */}
+        {/* 加载诊断：琥珀色告警面板，折叠放置，不与清单争视觉（坏文件警告不致命） */}
         {snap.diagnostics.length > 0 && (
-          <details className="text-xs">
-            <summary className="text-muted-foreground cursor-pointer px-3">
-              加载诊断（{snap.diagnostics.length}）
+          <details className="group border-amber-500/20 bg-amber-500/5 overflow-hidden rounded-xl border text-xs">
+            <summary className="hover:bg-amber-500/10 flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 transition-colors [&::-webkit-details-marker]:hidden">
+              <TriangleAlertIcon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <span className="text-foreground font-medium">加载诊断</span>
+              <Badge
+                variant="secondary"
+                className="bg-amber-500/10 text-amber-700 dark:text-amber-300 px-1.5 py-0 text-[10px] font-medium"
+              >
+                {snap.diagnostics.length}
+              </Badge>
+              <ChevronRightIcon className="text-muted-foreground/70 ml-auto size-3.5 shrink-0 transition-transform group-open:rotate-90" />
             </summary>
-            <ul className="text-muted-foreground mt-1 list-disc pl-8">
+            <ul className="border-amber-500/15 flex flex-col gap-1.5 border-t px-3.5 py-3">
               {snap.diagnostics.map((d) => (
-                <li key={d} className="font-mono text-[11px]">
-                  {d}
+                <li
+                  key={d}
+                  className="bg-background/70 border-amber-500/10 flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2"
+                >
+                  <span className="mt-1.5 size-1 shrink-0 rounded-full bg-amber-500/70" />
+                  <span className="min-w-0 font-mono text-[11px] leading-5 break-all">{d}</span>
                 </li>
               ))}
             </ul>
