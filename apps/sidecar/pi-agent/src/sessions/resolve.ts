@@ -210,6 +210,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
     () => ensureTaskSessionDir(run),
     () => run.approvalLevel,
     () => reviewFactsOf(run),
+    () => run.mode,
   );
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -296,6 +297,7 @@ export async function rebindRunThread(
     () => ensureTaskSessionDir(run),
     () => run.approvalLevel,
     () => reviewFactsOf(run),
+    () => run.mode,
   );
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -783,6 +785,7 @@ export async function resolveSession(
     () => ensureTaskSessionDir(run),
     () => run.approvalLevel,
     () => reviewFactsOf(run),
+    () => run.mode,
   );
   // run 先占位再回填 agent：beforeToolCall 闭包按引用捕获 run，模式校验在运行期才解引用
   const run: Running = {
@@ -1022,6 +1025,8 @@ export async function projectContextInfo(
     // 投影下 MCP 审批闭包不会被调用，仍按行里的真实档位投影：万一这个前提
     // 哪天不成立，一个 `auto` 会话也不该因为投影缺省而退化成逐次询问
     () => decodeApprovalLevel(row.approvalLevel),
+    undefined,
+    () => projectedMode,
   );
   const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包

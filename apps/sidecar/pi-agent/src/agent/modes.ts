@@ -850,8 +850,11 @@ export async function gateToolCall(
   // 同样能改构建脚本、CI 配置、包清单这些可执行面（loadWriteRoots 的 effective
   // 含工作区自身，那是 workspace-write 档"工作区内免确认"的语义，不能直接照搬）
   //
-  // 工作区外的写入目标提前算一次：审查器拒绝时要用它转人工审批卡（见下方）。
+  // 工作区外的写入目标、以及未被常驻规则放行的 bash 命令提前记一次：审查器拒绝
+  // 时要用它们转人工审批卡（见下方）。bash 覆盖删除/清理这类不可逆动作——那是
+  // 用户最该亲自拍板的一类，不能退化成让模型去问一次 Question。
   let reviewOutsideWrite: { target: string; declared: string[] } | undefined;
+  let reviewBash = false;
   if (run.approvalLevel === "review") {
     if (
       isPathBearingWrite(context.toolCall.name) &&
@@ -872,6 +875,7 @@ export async function gateToolCall(
       if (command) {
         const { commands } = await loadWriteRoots(run.cwd);
         if (commandMatchesRules(command, commands)) return undefined;
+        reviewBash = true;
       }
     }
   }
@@ -898,10 +902,12 @@ export async function gateToolCall(
   // 纠正）；审查失败 → 落到下面的挂起审批，由用户裁决（fail to human：失败既不
   // 静默放行，也不替用户拒绝）。
   //
-  // 跨目录写入是 deny 的例外：审查器只认「最近用户消息里的明确授权」，而用户口头
-  // 授权无法进入常驻清单；让模型改用 Question 追问也没用——问题答案不产生授权
-  // 效力，下一轮同样的写入仍会被拒。真正能授权并记住目录的只有审批卡上的「允许
-  // 并记住」，所以这里把 medium deny 转成人工审批，而不是把球踢回给模型。
+  // medium deny 不把球踢回给模型：审查器只认「最近用户消息里的明确授权」，而
+  // Question 的答案不产生授权效力——放模型去追问，用户只会先答一次、随后仍被拒。
+  // 真正能授权的只有审批卡，所以两类可逆性风险转人工：
+  // - 跨目录写入：只有「允许并记住」能把它记进本机可写清单；
+  // - bash：删除/清理/force push 这类命令，让用户看着原命令拍板一次。
+  // high deny 仍是硬拦截（敏感数据外发不接受人工覆盖）。
   let reviewFallbackNote: string | undefined;
   if (run.approvalLevel === "review") {
     const outcome = await runAutoReview(
@@ -925,6 +931,10 @@ export async function gateToolCall(
         reviewFallbackNote =
           `AI 审查没有确认这次跨目录写入（${outcome.decision.reason ?? "未找到明确授权"}），` +
           "改由你确认；点「允许并记住」会把这个目录写进本机可写清单，之后不再询问。";
+      } else if (outcome.decision.risk === "medium" && reviewBash) {
+        reviewFallbackNote =
+          `AI 审查没有确认这条命令（${outcome.decision.reason ?? "未找到明确授权"}），` +
+          "改由你确认这一次执行；批准只对这一次有效。";
       } else {
         return {
           block: true,

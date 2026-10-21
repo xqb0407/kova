@@ -1605,6 +1605,32 @@ describe("approvalBeforeToolCall：AI 审查档", () => {
     expect(run.pendingToolApprovals.size).toBe(0);
   });
 
+  test("medium deny 的 bash 转人工审批卡：用户批准后执行，且不提供「记住」", async () => {
+    const run = reviewRun();
+    // 台账行要求 thread→session 绑定（真实链路里由 resolveSession 回填）
+    rememberThreadSession(run.threadId, run.sessionId);
+    setAutoReviewerForTest(async () => ({
+      ok: true,
+      decision: { risk: "medium", decision: "deny", reason: "未找到明确授权" },
+    }));
+    const pending = approvalBeforeToolCall(
+      run,
+      ctx("bash", ["bash"], { command: "rm -f diag.py diag2.py diag3.py" }),
+    );
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    // 删除是用户一次性拍板：不写可写根，也不记命令前缀
+    expect(run.pendingToolApprovals.get(id)?.rememberRoot).toBeUndefined();
+    expect(run.pendingToolApprovals.get(id)?.rememberCommand).toBeUndefined();
+    const notes = ledgerSnapshotForTest().map(
+      (i) => (i.payload as { note?: string })?.note ?? "",
+    );
+    expect(notes.some((n) => n.includes("AI 审查没有确认这条命令"))).toBe(true);
+    resolveToolApproval(run, id, true);
+    await expect(pending).resolves.toBeUndefined();
+  });
+
   test("审查不可用（没有模型）→ 退回弹卡，卡上说明审查为何没跑起来", async () => {
     const run = reviewRun(); // fake state 没有 model → reviewerModelFor 返回 undefined
     // 台账行要求 thread→session 绑定（真实链路里由 resolveSession 回填）

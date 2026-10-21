@@ -445,6 +445,10 @@ export async function runAutoReview(
 /**
  * 拒绝时给模型的统一文案。形态对齐 automationDenyReason：说清"谁拒的、为什么、
  * 下一步怎么办"，让模型能自我纠正而不是原样重试。
+ *
+ * medium 文案刻意不引导模型「去问用户」：Question 的答案不产生授权效力（审批链只认
+ * 审批卡），模型照做只会让用户先答一次、随后仍被拒。需要用户授权的路径由调用方
+ * 转审批卡（跨目录写入、review 档的 bash），不靠模型追问。
  */
 export function autoReviewDenyReason(
   toolName: string,
@@ -461,6 +465,7 @@ export function autoReviewDenyReason(
   return (
     `AI review (approval level "review") rejected "${toolName}" as a medium-risk action: ` +
     `it is not authorized by the current user instructions (exact action, target and scope must be explicit).${reason} ` +
-    "Do not retry it unchanged; ask the user to confirm the exact action and scope, or choose a less invasive approach."
+    "Do not retry it unchanged and do not use the Question tool to ask for permission — a question answer is not an authorization. " +
+    "If the user's latest message does not explicitly authorize this exact action and scope, stop and report what is missing; otherwise choose a less invasive approach."
   );
 }
