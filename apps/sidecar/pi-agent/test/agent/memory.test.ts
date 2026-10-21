@@ -437,6 +437,16 @@ describe("buildMemoryTools", () => {
     expect(hits).toContain("workspace/MEMORY.md:");
   });
 
+  test("Markdown 标题空格不被当成标签：指引要求保留 `# Title`", async () => {
+    await enableAll();
+    // 模型曾把「# 123」改写成「#123」——标题退化成普通文本。指引与参数说明
+    // 都必须明确「标题保留空格、标签只放行尾」，否则弱模型会按 #tag 约定改写。
+    expect(memoryPromptBlock(ws)).toContain("Never rewrite `# Title` as `#Title`");
+    expect(JSON.stringify(tools().memory_write!.parameters)).toContain(
+      "a heading keeps the space after the hash",
+    );
+  });
+
   test("fileSearch 关闭时 search 婉拒，write/read 不受影响", async () => {
     await applyMemoryConfig({ ...getMemoryConfig(), fileSearch: false });
     expect(await run("memory_search", { query: "pnpm" })).toContain("switched off");

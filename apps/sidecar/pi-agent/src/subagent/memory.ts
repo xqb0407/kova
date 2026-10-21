@@ -151,6 +151,7 @@ function listDailyFiles(dir: string): string[] {
 const MEMORY_GUIDELINES = [
   "These are your own durable notes, carried across the tasks you are given.",
   "- When a task teaches you something that will still be true next time — a policy detail, a recurring customer issue, a mistake you should not repeat — persist it with memory_write so the next task starts where this one ended.",
+  "- Preserve Markdown exactly as written: a heading is `# Title` (hash + space). Never rewrite `# Title` as `#Title`. Tags are optional end-of-line labels (`... #policy`), not line prefixes.",
   "- Use memory_search to recall past context before asking the user to repeat themselves.",
   "- Do not edit memory files with write/edit; use memory_write.",
 ].join("\n");
@@ -248,7 +249,7 @@ export function buildSubagentMemoryTools(dir: string, agentName: string): AgentT
       "Notes are visible only to you, not to the user or the main agent.",
     parameters: Type.Object({
       content: Type.String({
-        description: "Markdown body (one fact per line; #tags like #policy / #lesson improve searchability)",
+        description: "Markdown body (one fact per line; append #tags like #policy / #lesson at the end of a line). Preserve the text verbatim: a heading keeps the space after the hash (`# Title`, never `#Title`).",
       }),
       file: Type.Optional(
         Type.String({ description: "Target .md file name (default MEMORY.md)" }),
