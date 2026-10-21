@@ -677,35 +677,47 @@ const CompletionAuditPopover: FC<{ goal: GoalSnapshot }> = ({ goal }) => {
           </button>
         }
       />
-      <PopoverContent align="end" className="w-96 p-3">
+      <PopoverContent
+        align="end"
+        className="max-h-[70vh] w-[36rem] max-w-[calc(100vw-2rem)] overflow-y-auto p-3"
+      >
         <div className="mb-2 text-xs font-medium">完成核验</div>
         <div className="flex flex-col gap-2">
           {audit.map((row) => (
-            <div key={row.id} className="text-[11px] leading-relaxed">
-              <div className="flex items-center gap-1.5">
-                <span>{row.met ? "✅" : "❌"}</span>
-                <span className="font-medium">
-                  {row.id} {row.text}
-                </span>
-                <span
-                  className={cn(
-                    "rounded px-1 py-0.5 text-[10px]",
-                    row.verified
-                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                      : row.manualOnly
-                        ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
-                        : "bg-muted text-muted-foreground",
-                  )}
-                >
-                  {row.verified ? "已核验" : row.manualOnly ? "需人工确认" : "未核验"}
-                </span>
-              </div>
-              <div className="text-muted-foreground">{row.evidence}</div>
-              {(row.refs ?? []).map((ref, i) => (
-                <div key={i} className="text-muted-foreground/80">
-                  · {formatEvidenceRef(ref)}
+            <div
+              key={row.id}
+              className="border-border/60 rounded-md border p-2 text-[11px] leading-relaxed"
+            >
+              <div className="flex items-start gap-1.5">
+                <span className="shrink-0">{row.met ? "✅" : "❌"}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="min-w-0 font-medium break-words">
+                      {row.id} {row.text}
+                    </span>
+                    <span
+                      className={cn(
+                        "shrink-0 rounded px-1 py-0.5 text-[10px] whitespace-nowrap",
+                        row.verified
+                          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                          : row.manualOnly
+                            ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                            : "bg-muted text-muted-foreground",
+                      )}
+                    >
+                      {row.verified ? "已核验" : row.manualOnly ? "需人工确认" : "未核验"}
+                    </span>
+                  </div>
+                  <div className="text-muted-foreground mt-1 break-words whitespace-pre-wrap">
+                    {row.evidence}
+                  </div>
+                  {(row.refs ?? []).map((ref, i) => (
+                    <div key={i} className="text-muted-foreground/80 mt-0.5 break-words">
+                      · {formatEvidenceRef(ref)}
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </div>
             </div>
           ))}
         </div>
