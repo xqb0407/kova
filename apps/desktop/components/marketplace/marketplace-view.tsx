@@ -15,8 +15,13 @@
  *
  * 事实源在 sidecar plugins.ts；耗时操作（添加/刷新/安装）受理即返回，
  * 完成经 plugin_op_result 帧回流（lib/plugins.ts 整包并入镜像）。
+ *
+ * 版式（参考插件市场页）：内容区居中定宽（max-w-7xl），页头 = 大标题 +
+ * 副标题 + 右侧管理入口；管理页把「返回」注入应用顶栏左上角，内容区页头只留
+ * 标题/说明 + 分段器，子页只渲染工具行与列表，不重复大标题。
  */
 import { useEffect, useMemo, useState, type FC } from "react";
+import { createPortal } from "react-dom";
 import dynamic from "next/dynamic";
 import {
   BotIcon,
@@ -180,6 +185,14 @@ const SECTION_META: { value: Section; label: string; desc: string }[] = [
   },
 ];
 
+/** 管理页各分段的标题/说明：页头身份与下方内容解耦（子页不再重复大标题） */
+const MANAGE_META: Record<ManageTab, { label: string; desc: string }> = {
+  subagents: { label: "子智能体", desc: "主代理可委派的专家：新建、编辑、启停" },
+  plugins: { label: "MCP 服务器", desc: "连接器与工具服务器：作用域、鉴权、启停" },
+  skills: { label: "技能", desc: "按来源管理已安装技能：系统级 / 工作区级 / 生态兼容" },
+  apps: { label: "应用授权", desc: "第三方应用与 Agent 能力的授权范围" },
+};
+
 /** 市场类型图标 */
 function MarketplaceIcon({ market }: { market: MarketplaceEntry }) {
   return market.type === "git" ? (
@@ -225,6 +238,14 @@ export const MarketplaceView: FC<{
   const [mktMenuOpen, setMktMenuOpen] = useState(false);
   const [confirmRemoveMkt, setConfirmRemoveMkt] =
     useState<MarketplaceEntry | null>(null);
+  /** 应用 Header 的页面槽位：管理页把「返回」放到顶栏左上角
+   *  （与资料库同一入口，但只承载导航键，内容仍是本页自己的居中页头） */
+  const [headerSlot, setHeaderSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setHeaderSlot(
+      document.querySelector<HTMLElement>('[data-slot="page-header-actions"]'),
+    );
+  }, []);
 
   const marketplaces = marketplacesSnap.marketplaces;
   const activeMarket = useMemo(
@@ -355,20 +376,45 @@ export const MarketplaceView: FC<{
   if (manageOpen) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        {/* 顶部条：与下方设置内容同宽同轴，返回 + 分段器（带计数）。
-            子智能体编辑器打开时整条让位——它自带返回与标题，
-            留着会出现两个语义不同的「返回」叠在一起。 */}
+        {/* 返回键注入应用顶栏左上角（页面本身的标题/说明仍在下方居中页头里）；
+            子智能体编辑器自带返回与标题，此时让位，避免两个「返回」叠在一起。 */}
+        {headerSlot && !subagentEditing
+          ? createPortal(
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground shrink-0 gap-1"
+                onClick={() => setManageOpen(false)}
+              >
+                <ChevronLeftIcon className="size-4" />
+                返回
+              </Button>,
+              headerSlot,
+            )
+          : null}
+        {/* 页头：与内容同宽同轴（参考图：标题/说明在左、分段器在右） */}
         {!subagentEditing && (
-          <div className="mx-auto flex w-full max-w-6xl shrink-0 items-center justify-between px-8 pt-6">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground -ml-2 gap-1"
-              onClick={() => setManageOpen(false)}
-            >
-              <ChevronLeftIcon className="size-4" />
-              返回
-            </Button>
+          <div className="mx-auto flex w-full max-w-7xl shrink-0 flex-wrap items-end justify-between gap-4 px-8 pt-8">
+            <div className="min-w-0">
+              {/* 顶栏槽位不可用（非桌面壳/预览）时的兜底返回，避免管理页没有出口 */}
+              {!headerSlot && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground -ml-2 mb-1 shrink-0 gap-1"
+                  onClick={() => setManageOpen(false)}
+                >
+                  <ChevronLeftIcon className="size-4" />
+                  返回
+                </Button>
+              )}
+              <h1 className="truncate text-2xl font-bold tracking-tight">
+                {MANAGE_META[manageTab].label}
+              </h1>
+              <p className="text-muted-foreground mt-1 truncate text-sm">
+                {MANAGE_META[manageTab].desc}
+              </p>
+            </div>
             <Segmented
               value={manageTab}
               onChange={setManageTab}
@@ -385,10 +431,12 @@ export const MarketplaceView: FC<{
           </div>
         )}
         <div className="min-h-0 flex-1">
-          <div className="mx-auto h-full max-w-6xl px-8">
-            {manageTab === "subagents" && <SubagentsSettings onEditingChange={setSubagentEditing} />}
-            {manageTab === "plugins" && <McpSettings />}
-            {manageTab === "skills" && <SkillsSettings />}
+          <div className="mx-auto h-full w-full max-w-7xl px-8 pt-6 pb-8">
+            {manageTab === "subagents" && (
+              <SubagentsSettings embedded onEditingChange={setSubagentEditing} />
+            )}
+            {manageTab === "plugins" && <McpSettings embedded />}
+            {manageTab === "skills" && <SkillsSettings embedded />}
             {manageTab === "apps" && (
               <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
                 暂无应用授权
@@ -409,11 +457,11 @@ export const MarketplaceView: FC<{
 
   return (
     <div className="h-full">
-      <div className="mx-auto flex h-full w-full max-w-6xl flex-col px-8 py-8 lg:px-12">
-        {/* 页头：标题即页签（插件 / 专家 / 技能），右上角「管理」进本段管理页 */}
+      <div className="mx-auto flex h-full w-full max-w-7xl flex-col px-8 py-8">
+        {/* 页头：标题即页签（插件 / 专家 / 技能），右侧「管理」进本段管理页 */}
         <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="flex items-baseline gap-2 text-2xl font-semibold tracking-tight">
+          <div className="min-w-0">
+            <h1 className="flex items-baseline gap-2 text-2xl font-bold tracking-tight">
               {SECTION_META.map((s, i) => (
                 <span key={s.value} className="flex items-baseline gap-2">
                   {i > 0 && (
@@ -470,7 +518,7 @@ export const MarketplaceView: FC<{
               {section === "experts" ? "专家市场即将上线" : "技能市场即将上线"}
             </p>
             <p className="text-muted-foreground text-sm">
-              先点右上角「管理」新建或调整；带这类能力的扩展，在插件段的市场目录里安装。
+              先点顶栏右侧「管理」新建或调整；带这类能力的扩展，在插件段的市场目录里安装。
             </p>
           </div>
         ) : (
@@ -623,7 +671,7 @@ export const MarketplaceView: FC<{
                       该市场暂无插件。
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3">
                       {marketEntries.map((entry) => {
                         const state = installStateOf(activeMarket!, entry.name);
                         // 已装插件在市场页即可卸载：图标钮保持卡片版式不挤，确认弹窗与已装页共用；
