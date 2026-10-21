@@ -43,6 +43,8 @@ export type SubagentBlock =
       toolCallId: string;
       toolName: string;
       argsSummary?: string;
+      /** write/edit 的结构化路径（新 sidecar 提供；老记录回退 argsSummary） */
+      filePath?: string;
       resultSummary?: string;
       failed?: boolean;
       done: boolean;
@@ -75,9 +77,53 @@ const runs = new Map<string, SubagentRunState>();
 const bindings = new Map<string, string>();
 const listeners = new Set<() => void>();
 const hydrating = new Set<string>();
+/**
+ * 产物卡只关心“有没有新的 write/edit 完成”，不关心思考/正文逐 token 增量。
+ * 因此单独维护 artifactVersion：tool end 与结算时 +1，增量不 +1。
+ * notify 仍然逐条广播，但 useSyncExternalStore 发现快照没变就不会重渲。
+ */
+let artifactVersion = 0;
 
 function notify() {
   for (const l of listeners) l();
+}
+
+/** 外部（产物卡）订阅子代理活动；返回退订函数 */
+export function subscribeSubagentRuns(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function getSubagentArtifactVersion(): number {
+  return artifactVersion;
+}
+
+/** 子代理产物版本（useSyncExternalStore）；后台委派晚完成时产物卡能补上。 */
+export function useSubagentArtifactVersion(): number {
+  return useSyncExternalStore(
+    subscribeSubagentRuns,
+    getSubagentArtifactVersion,
+    () => 0,
+  );
+}
+
+/**
+ * 子代理写出的交付路径：只取已完成的 write/edit 工具块。
+ * 优先用 sidecar 的结构化 filePath（新记录）；老记录回退从 argsSummary 提取
+ * （write/edit 的首个参数就是 file_path）。是否交付物、是否存在由产物派生层再校验。
+ */
+export function getSubagentArtifactPaths(toolCallId: string): string[] {
+  const run = getSubagentRun(bindings.get(toolCallId));
+  if (!run) return [];
+  const paths: string[] = [];
+  for (const block of run.blocks) {
+    if (block.kind !== "tool") continue;
+    if (!block.done || block.failed) continue;
+    if (block.toolName !== "write" && block.toolName !== "edit") continue;
+    const path = block.filePath?.trim() || block.argsSummary?.trim();
+    if (path) paths.push(path);
+  }
+  return [...new Set(paths)];
 }
 
 function defaultState(delegationId: string): SubagentRunState {
@@ -164,6 +210,7 @@ function applyItemTo(draft: SubagentRunState, item: SubagentActivityItem): void 
           toolCallId: item.toolCallId,
           toolName: item.toolName,
           argsSummary: item.argsSummary,
+          ...(item.filePath ? { filePath: item.filePath } : {}),
           done: false,
           at: item.at,
         });
@@ -180,6 +227,8 @@ function applyItemTo(draft: SubagentRunState, item: SubagentActivityItem): void 
             break;
           }
         }
+        // 只有工具结束才可能新增可交付路径（write/edit 的 argsSummary）。
+        artifactVersion += 1;
       }
       break;
     }
@@ -189,6 +238,7 @@ function applyItemTo(draft: SubagentRunState, item: SubagentActivityItem): void 
       draft.toolCalls = item.toolCalls;
       draft.completedAt = item.at;
       if (item.report) draft.report = item.report;
+      artifactVersion += 1;
       break;
     }
   }

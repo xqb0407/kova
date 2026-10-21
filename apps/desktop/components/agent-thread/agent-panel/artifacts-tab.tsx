@@ -1,18 +1,25 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, type FC } from "react";
-import { FileCodeIcon, FileIcon, GlobeIcon, PackageIcon } from "lucide-react";
-import { usePanelActivity } from "@/lib/panels/panel-activity";
+import { type FC } from "react";
+import { useAuiState } from "@assistant-ui/react";
+import {
+  FileCodeIcon,
+  FileIcon,
+  GlobeIcon,
+  PackageIcon,
+  SquareArrowOutUpRightIcon,
+} from "lucide-react";
 import {
   formatBytes,
-  isBrowserPreviewable,
-  threadArtifacts,
+  openModeFor,
   toFileUrl,
   type MessageArtifact,
 } from "@/lib/panels/artifacts";
+import { useThreadArtifacts } from "@/lib/panels/use-artifacts";
 import { focusPanelTab } from "@/lib/panels/panel-tabs";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
+import { fsOpen, fsReveal } from "@/lib/workspace/fs";
 import { isDesktop } from "@/lib/desktop-env";
 import { cn } from "@/lib/utils";
 import { TabEmpty } from "./tab-empty";
@@ -30,17 +37,16 @@ const iconBtn =
   "text-muted-foreground hover:bg-muted hover:text-foreground size-8 shrink-0 grid place-items-center rounded-lg transition-colors";
 
 /**
- * 「产物」标签页：当前会话写出的交付文件汇总（write 白名单判定、大小口径与
- * 消息尾部产物卡同源，路径去重取最后一次成功 write，最新产出在最上）。
- * 定位是常驻的回收入口：浏览器预览标签被关掉/刷新丢弃后，从这里随时重新
- * 打开——行点击或地球按钮进浏览器，代码按钮进「文件」标签看内容快照。
+ * 「产物」标签页：当前会话的交付文件汇总。
+ * 与消息尾部产物卡同源：write/edit/子代理 write/edit/正文引用 → Host stat →
+ * 路径去重（最新轮胜出）。定位是常驻的回收入口：浏览器/文件标签被关掉后，
+ * 从这里随时重新打开。
  */
 export const ArtifactsTab: FC = () => {
-  const { files } = usePanelActivity();
-  // 产物路径锚点（与产物卡同一解析链：标签目录 → 工作区 → 会话任务子目录）；
-  // 钩子必须挂在空列表早退之前
+  const messages = useAuiState((s) => s.thread.messages);
   const cwd = usePanelCwd();
-  const artifacts = useMemo(() => threadArtifacts(files), [files]);
+  const { artifacts, settled } = useThreadArtifacts(messages, cwd);
+  if (!settled) return null;
   if (artifacts.length === 0) {
     return (
       <TabEmpty
@@ -49,44 +55,77 @@ export const ArtifactsTab: FC = () => {
       />
     );
   }
-  // 滚动容器自身不带内边距，p-3 放进随内容滚动的内层（review/git 视图同款）
   return (
     <div className="h-full overflow-y-auto">
       <div className="flex flex-col gap-2 p-3">
-        {artifacts.map((a) => (
-          <ArtifactRow key={a.toolCallId} artifact={a} cwd={cwd} />
+        {artifacts.map((artifact) => (
+          <ArtifactRow
+            key={artifact.toolCallId}
+            artifact={artifact}
+            cwd={cwd}
+          />
         ))}
       </div>
     </div>
   );
 };
 
-const ArtifactRow: FC<{ artifact: MessageArtifact; cwd: string | null }> = ({
-  artifact,
-  cwd,
-}) => {
-  // 预览仅 桌面壳（file:// 喂原生 webview）；网页类才进浏览器，其余走「代码」
-  const canPreview = isDesktop() && isBrowserPreviewable(artifact.path);
+const ArtifactRow: FC<{
+  artifact: MessageArtifact;
+  cwd: string | null;
+}> = ({ artifact, cwd }) => {
+  const openMode = artifact.openMode ?? openModeFor(artifact.path);
+  // 预览仅桌面壳（file:// 喂原生 webview）；网页类才进浏览器
+  const canPreview = isDesktop() && openMode === "browser";
+  const isSystemOpen = openMode === "system";
+  // write 的 toolCallId 才有内容快照；edit 只有替换片段，不能当全文渲染。
+  const hasSnapshot =
+    artifact.source === "write" && !artifact.toolCallId.startsWith("artifact:");
+  const relPath = artifact.relPath ?? artifact.path;
+
+  const openSystem = () => {
+    void (async () => {
+      const error = await fsOpen(cwd ?? "", artifact.path);
+      if (error && cwd) await fsReveal(cwd, relPath);
+    })();
+  };
   const openCode = () => {
-    focusPanelTab("file", { focus: artifact.toolCallId, title: artifact.base });
+    if (isSystemOpen) {
+      openSystem();
+      return;
+    }
+    if (cwd && artifact.relPath != null) {
+      focusPanelTab("file", {
+        cwd,
+        path: artifact.relPath,
+        title: artifact.base,
+        focus: undefined,
+      });
+    } else if (hasSnapshot) {
+      focusPanelTab("file", { focus: artifact.toolCallId, title: artifact.base });
+    } else {
+      openSystem();
+      return;
+    }
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   const openPreview = () => {
-    // 项目会话基于 workspace 拼绝对路径；无目录任务（无 workspace）用
-    // 本会话的任务子目录 task-workspace/<sessionId>（与 sidecar taskSessionCwd
-    // 同源）——全局任务的产物同样可预览
     if (!cwd) return;
     focusPanelTab("browser", {
-      url: toFileUrl(cwd, artifact.path),
+      url: toFileUrl(cwd, artifact.relPath ?? artifact.path),
       title: artifact.base,
     });
     window.dispatchEvent(new Event("agent-panel:open"));
   };
+  const primary = canPreview ? openPreview : isSystemOpen ? openSystem : openCode;
+  const CodeIcon = isSystemOpen ? SquareArrowOutUpRightIcon : FileCodeIcon;
+  const codeLabel = isSystemOpen ? "打开文件" : "查看代码";
+
   return (
     <div
       data-slot="aui_artifact-row"
       className="bg-muted/40 hover:bg-muted border-border/60 hover:border-border/80 flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors"
-      onClick={canPreview ? openPreview : openCode}
+      onClick={primary}
     >
       <FileTypeIcon path={artifact.path} className="size-8 shrink-0" />
       <div className="min-w-0 flex-1">
@@ -102,21 +141,21 @@ const ArtifactRow: FC<{ artifact: MessageArtifact; cwd: string | null }> = ({
       </div>
       <button
         type="button"
-        onClick={(e) => {
-          e.stopPropagation();
+        onClick={(event) => {
+          event.stopPropagation();
           openCode();
         }}
-        aria-label="查看代码"
-        title="查看代码"
+        aria-label={codeLabel}
+        title={codeLabel}
         className={cn(iconBtn)}
       >
-        <FileCodeIcon className="size-4" />
+        <CodeIcon className="size-4" />
       </button>
       {canPreview ? (
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
+          onClick={(event) => {
+            event.stopPropagation();
             openPreview();
           }}
           aria-label="浏览器预览"

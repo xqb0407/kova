@@ -57,6 +57,8 @@ export const subagentActivityItemSchema = z.discriminatedUnion("kind", [
     toolCallId: z.string(),
     toolName: z.string(),
     argsSummary: z.string().optional(),
+    /** write/edit 的结构化文件路径（产物卡用；旧 sidecar 缺省，回退 argsSummary） */
+    filePath: z.string().optional(),
     resultSummary: z.string().optional(),
     failed: z.boolean().optional(),
     at: z.number(),

@@ -16,18 +16,28 @@ import {
   GlobeIcon,
   LayoutPanelTopIcon,
   PackageIcon,
+  SquareArrowOutUpRightIcon,
 } from "lucide-react";
 import {
+  ARTIFACT_CANDIDATE_LIMIT,
+  collectTurnArtifactCandidates,
   formatBytes,
-  isBrowserPreviewable,
-  messageArtifacts,
+  mergeArtifactCandidates,
+  openModeFor,
+  resolveTurnStartMs,
   toFileUrl,
   type MessageArtifact,
 } from "@/lib/panels/artifacts";
+import { useCheckpointArtifactCandidates } from "@/lib/panels/use-checkpoint-artifacts";
+import { useResolvedArtifacts } from "@/lib/panels/use-artifacts";
+import { useRunCheckpoints } from "@/lib/pi/pi-checkpoints";
 import { getTurnParts, packTurnSlot, parseTurnSlot } from "@/lib/panels/message-turns";
 import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
 import { findPanelForFile, usePluginPanels } from "@/lib/plugins/plugin-panels";
+import { getSubagentArtifactPaths, useSubagentArtifactVersion } from "@/lib/subagent/subagent-runs";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
+import { fsOpen, fsReveal } from "@/lib/workspace/fs";
+import { isDesktop } from "@/lib/desktop-env";
 import { useScrollLock } from "@/hooks/use-scroll-lock";
 import {
   Collapsible,
@@ -73,13 +83,17 @@ function shortDir(dir: string): string {
 
 /**
  * 产物卡与折叠行共用的动作集：
- * - 代码：开右侧「文件」标签，用 CodeMirror 看这次 write 的内容快照（源码；md 默认给渲染预览）
- * - 预览：仅网页/PDF 类才有——开内置浏览器（原生 webview）加载这个文件；md/csv/json 走「代码」查看
- * - primary：行/卡主体的默认出口，能预览就预览，否则看代码
+ * - 代码：文本类开右侧「文件」标签，优先磁盘实时内容（append/后续 edit 也完整）；
+ *   没有相对路径/没有磁盘桥时退回 write 快照；
+ * - 预览：仅网页/PDF 类才有——开内置浏览器（原生 webview）加载这个文件；
+ * - 系统打开：Office/压缩包/音视频等没有内置查看器的类型走默认应用；
+ * - primary：能预览就预览，否则按打开模式分流。
  */
 type ArtifactActions = {
   canPreview: boolean;
   panelTitle: string | null;
+  codeLabel: string;
+  codeTitle: string;
   openCode: () => void;
   openPreview: () => void;
   openInPanel: () => void;
@@ -90,24 +104,57 @@ const useArtifactActions = (artifact: MessageArtifact): ArtifactActions => {
   // 有效工作目录：当前工作区 → 任务工作区兜底（异步补齐后自动重渲染）。
   // 没有它就没有任何相对路径可谈：预览/在画布中打开都以它为锚。
   const cwd = usePanelCwd();
-  // 地球按钮只对能在浏览器里渲染的类型出现（md 等交给「代码」的文件标签预览）
-  const canPreview = !!cwd && isBrowserPreviewable(artifact.path);
+  const openMode = artifact.openMode ?? openModeFor(artifact.path);
+  // 地球按钮只对能在浏览器里渲染的类型出现（md 等交给「文件」标签预览）
+  const canPreview = !!cwd && openMode === "browser";
   // 产物命中已装面板的 opens glob（如 *.canvas.json）→ 追加「在画布中打开」
   const relPath =
-    cwd && artifact.path.startsWith(`${cwd}/`)
+    artifact.relPath ??
+    (cwd && artifact.path.startsWith(`${cwd}/`)
       ? artifact.path.slice(cwd.length + 1)
-      : artifact.path;
+      : artifact.path);
   const { panels } = usePluginPanels();
   const panelForFile = cwd ? findPanelForFile(panels, relPath) : undefined;
+  const isSystemOpen = openMode === "system";
+  // write 的 toolCallId 才有内容快照；edit 只有替换片段，不能当全文渲染。
+  const hasSnapshot =
+    artifact.source === "write" && !artifact.toolCallId.startsWith("artifact:");
 
+  const openSystem = () => {
+    void (async () => {
+      const error = await fsOpen(cwd ?? "", artifact.path);
+      if (error && cwd) await fsReveal(cwd, relPath);
+    })();
+  };
   const openCode = () => {
-    focusPanelTab("file", { focus: artifact.toolCallId, title: artifact.base });
+    if (isSystemOpen) {
+      openSystem();
+      return;
+    }
+    // 相对路径优先磁盘实时模式：append 大文件/后续 edit 都能看到最终内容。
+    if (cwd && artifact.relPath != null) {
+      focusPanelTab("file", {
+        cwd,
+        path: artifact.relPath,
+        title: artifact.base,
+        focus: undefined,
+      });
+    } else if (hasSnapshot) {
+      focusPanelTab("file", {
+        focus: artifact.toolCallId,
+        title: artifact.base,
+      });
+    } else {
+      // 正文/子代理发现、无 write 快照、又是绝对路径：交给系统默认应用。
+      openSystem();
+      return;
+    }
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   const openPreview = () => {
     if (!cwd) return;
     focusPanelTab("browser", {
-      url: toFileUrl(cwd, artifact.path),
+      url: toFileUrl(cwd, artifact.relPath ?? artifact.path),
       title: artifact.base,
     });
     window.dispatchEvent(new Event("agent-panel:open"));
@@ -124,10 +171,12 @@ const useArtifactActions = (artifact: MessageArtifact): ArtifactActions => {
   return {
     canPreview,
     panelTitle: panelForFile?.panel.title ?? null,
+    codeLabel: isSystemOpen ? "打开文件" : "查看代码",
+    codeTitle: isSystemOpen ? "用系统默认应用打开" : "查看代码",
     openCode,
     openPreview,
     openInPanel,
-    primary: canPreview ? openPreview : openCode,
+    primary: canPreview ? openPreview : isSystemOpen ? openSystem : openCode,
   };
 };
 
@@ -135,17 +184,20 @@ const useArtifactActions = (artifact: MessageArtifact): ArtifactActions => {
  * 行的操作按钮组：与行的主按钮并列，不是它的后代——按钮里套按钮既不合 ARIA，
  * 读屏也会把「查看代码/浏览器预览」并进行的可访问名。
  */
-const RowActions: FC<{ actions: ArtifactActions }> = ({ actions }) => (
-  <span className="flex shrink-0 items-center gap-0.5">
-    <button
-      type="button"
-      onClick={actions.openCode}
-      aria-label="查看代码"
-      title="查看代码"
-      className={cn(rowIconBtn)}
-    >
-      <FileCodeIcon className="size-3.5" />
-    </button>
+const RowActions: FC<{ actions: ArtifactActions }> = ({ actions }) => {
+  const ActionIcon =
+    actions.codeLabel === "打开文件" ? SquareArrowOutUpRightIcon : FileCodeIcon;
+  return (
+    <span className="flex shrink-0 items-center gap-0.5">
+      <button
+        type="button"
+        onClick={actions.openCode}
+        aria-label={actions.codeLabel}
+        title={actions.codeTitle}
+        className={cn(rowIconBtn)}
+      >
+        <ActionIcon className="size-3.5" />
+      </button>
     {actions.canPreview ? (
       <button
         type="button"
@@ -168,8 +220,9 @@ const RowActions: FC<{ actions: ArtifactActions }> = ({ actions }) => (
         <LayoutPanelTopIcon className="size-3.5" />
       </button>
     ) : null}
-  </span>
-);
+    </span>
+  );
+};
 
 /**
  * 单张产物卡（对齐参考图：图标 + 文件名 + 大小 + 操作）。
@@ -180,6 +233,8 @@ export const ArtifactCard: FC<{ artifact: MessageArtifact }> = ({
   artifact,
 }) => {
   const actions = useArtifactActions(artifact);
+  const ActionIcon =
+    actions.codeLabel === "打开文件" ? SquareArrowOutUpRightIcon : FileCodeIcon;
 
   return (
     <div
@@ -201,11 +256,11 @@ export const ArtifactCard: FC<{ artifact: MessageArtifact }> = ({
       <button
         type="button"
         onClick={actions.openCode}
-        aria-label="查看代码"
-        title="查看代码"
+        aria-label={actions.codeLabel}
+        title={actions.codeTitle}
         className={cn(iconBtn)}
       >
-        <FileCodeIcon className="size-4" />
+        <ActionIcon className="size-4" />
       </button>
       {actions.canPreview ? (
         <button
@@ -384,30 +439,115 @@ const ArtifactFold: FC<{ artifacts: MessageArtifact[] }> = ({ artifacts }) => {
 
 /**
  * 一轮对话尾部的产物清单。
- * 只在回合结束后计算一次：流式期间逐 token 重扫 parts、重算大文件字节数代价高，
- * 且半截内容出卡也不合理——运行中直接返回空。
- * 挂在本轮末条 assistant 消息上、扫本轮全部 assistant 消息的 parts：
- * 折叠轮（Codex 风格）里轮中过程消息整体不挂载，产物是交付物，必须保留可见。
- * 单个产物 = 一张卡（交付物本身值得分量）；多个 = 一个折叠组（摘要一行，
- * 展开是紧凑清单），避免每个产物各占一张通栏卡。
+ *
+ * 挂载点从“轮末消息”放宽到“轮末或 answer tail”：空闲/手动压缩会在轮末留下
+ * 一条纯分隔线消息，轮末身份归它，但产物属于答案面，不能被折叠过程区带走。
+ * 数据仍取本轮全部 assistant parts（折叠轮里轮中消息不挂载，交付物必须保留）。
+ *
+ * 单个产物 = 一张卡；多个 = 一个折叠组（摘要一行，展开是紧凑清单）。
  */
 export const MessageArtifacts: FC = () => {
-  const running = useAuiState((s) => s.message.status?.type === "running");
+  const cwd = usePanelCwd();
+  const subagentVersion = useSubagentArtifactVersion();
+  // 选择器只回稳定字符串：packed slot + turnStartMs。对象/数组会破坏
+  // useSyncExternalStore 的身份比较，流式期间反复重渲。
+  const gate = useAuiState((s) => {
+    if (s.message.role !== "assistant") return "";
+    const packed = packTurnSlot(s.thread.messages, String(s.message.id));
+    const slot = parseTurnSlot(packed);
+    if (
+      !slot ||
+      slot.dividerOnly ||
+      (!slot.isTurnEnd && !slot.isAnswerTail) ||
+      slot.turnRunning
+    ) {
+      return "";
+    }
+    const createdAt = (s.message as { createdAt?: Date | string }).createdAt;
+    // 选择器必须返回稳定值：没有 createdAt 时用 0 兜底，不能在这里调
+    // Date.now()（每次 getSnapshot 都变会让 useSyncExternalStore 反复重渲）。
+    const fallbackMs =
+      createdAt instanceof Date
+        ? createdAt.getTime()
+        : typeof createdAt === "string"
+          ? Date.parse(createdAt)
+          : 0;
+    const startMs = resolveTurnStartMs(
+      s.thread.messages,
+      slot.anchorUserIndex,
+      Number.isFinite(fallbackMs) ? fallbackMs : 0,
+    );
+    return `${packed}\u0001${startMs}`;
+  });
+  const { slot, turnStartMs } = useMemo(() => {
+    const [packed = "", rawStart = ""] = gate.split("\u0001");
+    return {
+      slot: packed ? parseTurnSlot(packed) : null,
+      turnStartMs: Number(rawStart) || Date.now(),
+    };
+  }, [gate]);
   // 选择器回的是缓存过的 parts 数组（按 messages 数组身份 + 轮次键缓存，
   // 同一批消息下引用稳定），不是新数组——不会因新身份反复重渲
-  const parts = useAuiState((s) => {
-    if (s.message.role !== "assistant") return null;
-    const slot = parseTurnSlot(
-      packTurnSlot(s.thread.messages, String(s.message.id)),
-    );
-    if (!slot?.isTurnEnd) return null;
-    return getTurnParts(s.thread.messages, slot.turnKey);
-  });
-  const artifacts = useMemo(
-    () => (running || !parts ? [] : messageArtifacts(parts)),
-    [running, parts],
+  const parts = useAuiState((s) =>
+    slot ? getTurnParts(s.thread.messages, slot.turnKey) : null,
   );
-  if (artifacts.length === 0) return null;
+  const subagentPaths = useMemo(() => {
+    const pathsByTask = new Map<string, string[]>();
+    for (const part of parts ?? []) {
+      if (part.type !== "tool-call" || part.toolName !== "Task") continue;
+      const paths = getSubagentArtifactPaths(part.toolCallId);
+      if (paths.length > 0) pathsByTask.set(part.toolCallId, paths);
+    }
+    return pathsByTask;
+  }, [parts, subagentVersion]);
+  const threadId = useAuiState((s) => s.threads.mainThreadId);
+  const checkpoints = useRunCheckpoints(threadId ?? undefined);
+  const checkpointEntry = useMemo(() => {
+    const anchor = slot?.anchorUserIndex ?? -1;
+    if (anchor < 0) return null;
+    // 同一 anchor 有多条（重试等）时取最新一条。
+    for (let index = checkpoints.length - 1; index >= 0; index -= 1) {
+      if (checkpoints[index]?.anchorIndex === anchor) return checkpoints[index]!;
+    }
+    return null;
+  }, [checkpoints, slot?.anchorUserIndex]);
+  const checkpointRequests = useMemo(
+    () =>
+      checkpointEntry && cwd
+        ? [
+            {
+              hash: checkpointEntry.hash,
+              turnStartMs,
+              // 与会话级（turnIndex*1e6+999999）同语义：排在全部同步候选之后。
+              orderBase: (parts?.length ?? 0) + 999_999,
+            },
+          ]
+        : [],
+    [checkpointEntry, cwd, turnStartMs, parts?.length],
+  );
+  const checkpointCandidates = useCheckpointArtifactCandidates(
+    cwd,
+    checkpointRequests,
+  );
+  const candidates = useMemo(() => {
+    if (!parts || !cwd) return [];
+    return mergeArtifactCandidates(
+      [
+        ...collectTurnArtifactCandidates({
+          parts,
+          cwd,
+          turnStartMs,
+          subagentPaths,
+          includeTextReferences: isDesktop(),
+        }),
+        // checkpoint diff 兜底：bash/脚本/插件写出、正文没提到的文件。
+        ...checkpointCandidates,
+      ],
+      ARTIFACT_CANDIDATE_LIMIT,
+    );
+  }, [parts, cwd, turnStartMs, subagentPaths, checkpointCandidates]);
+  const { artifacts, settled } = useResolvedArtifacts(candidates, cwd);
+  if (!settled || artifacts.length === 0) return null;
   const single = artifacts.length === 1 ? artifacts[0] : undefined;
   return (
     <div data-slot="aui_message-artifacts" className="mt-2">

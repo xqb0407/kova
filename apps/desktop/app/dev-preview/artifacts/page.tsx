@@ -35,6 +35,22 @@ const write = (id: string, path: string, content: string) => ({
   argsText: JSON.stringify({ file_path: `${WS}/${path}`, content }),
   result: `Wrote ${content.length} bytes`,
 });
+const edit = (id: string, path: string) => ({
+  type: "tool-call" as const,
+  toolCallId: id,
+  toolName: "edit",
+  args: { file_path: `${WS}/${path}`, old_string: "a", new_string: "b" },
+  argsText: JSON.stringify({ file_path: `${WS}/${path}` }),
+  result: "Edited 1 line",
+});
+const task = (id: string) => ({
+  type: "tool-call" as const,
+  toolCallId: id,
+  toolName: "Task",
+  args: { agent: "Explore", description: "整理调研笔记" },
+  argsText: JSON.stringify({ agent: "Explore" }),
+  result: "Delegation deadbeef started",
+});
 
 /** 让大小接近截图里的量级：3.9 KB / 1.0 KB / 3.3 KB / 3.7 KB */
 const kb = (n: number) => "x".repeat(Math.round(n * 1024));
@@ -109,6 +125,51 @@ const MESSAGES: readonly ThreadMessageLike[] = [
     content: [write("w11", "README.md", kb(3.9)), text("一份就够。")],
     status: { type: "complete", reason: "stop" },
   },
+  // 轮 5：edit-only（deck/表格逐页续写的主路径——旧实现完全漏掉）
+  {
+    id: "u5",
+    role: "user",
+    content: [text("继续完善 roadmap，把第三页补上")],
+    createdAt: new Date(Date.now() - 4_000),
+  },
+  {
+    id: "a5",
+    role: "assistant",
+    content: [
+      edit("e1", "roadmap-q3.deck.canvas.json"),
+      text("第三页补好了。"),
+    ],
+    status: { type: "complete", reason: "stop" },
+  },
+  // 轮 6：子代理写文件（Task 内 write 不进父转录）
+  {
+    id: "u6",
+    role: "user",
+    content: [text("让子代理整理调研笔记")],
+    createdAt: new Date(Date.now() - 3_000),
+  },
+  {
+    id: "a6",
+    role: "assistant",
+    content: [
+      task("t1"),
+      text("子代理把笔记写好了。"),
+    ],
+    status: { type: "complete", reason: "stop" },
+  },
+  // 轮 7：纯讨论旧文件，本轮没有任何工具调用——不能误报出卡
+  {
+    id: "u7",
+    role: "user",
+    content: [text("README.md 里写了什么？")],
+    createdAt: new Date(Date.now() - 2_000),
+  },
+  {
+    id: "a7",
+    role: "assistant",
+    content: [text("README.md 是仓库说明文件。")],
+    status: { type: "complete", reason: "stop" },
+  },
 ];
 
 const noopChatModel: ChatModelAdapter = {
@@ -139,7 +200,40 @@ function Diagnostics() {
             `  head="${trigger?.textContent?.trim()}" aria=${trigger?.getAttribute("aria-expanded")} headH=${h(trigger)} panelH=${h(panel)} rows=${rows.length} rowH=${h(rows[0] as HTMLElement | null)} foldH=${h(fold)}`,
           );
         }
-        setReport(lines.join("\n"));
+        // 轮 5-7 的验收事实：edit-only / 子代理出卡、纯讨论不出卡。
+        // 走派生层直接算（浏览器无 Host stat → write/edit/task 候选保留），
+        // 比从 DOM 反推可靠：不出卡的场景本来就没有 DOM 节点。
+        void (async () => {
+          const { collectTurnArtifactCandidates, finalizeArtifactCandidates } =
+            await import("@/lib/panels/artifacts");
+          const { clearArtifactStatCache } = await import(
+            "@/lib/panels/artifact-stats"
+          );
+          clearArtifactStatCache();
+          const turn = (index: number) =>
+            MESSAGES.filter(
+              (m) => m.role === "assistant",
+            )[index]?.content ?? [];
+          const label = (name: string, parts: unknown) => {
+            const candidates = collectTurnArtifactCandidates({
+              parts: parts as never,
+              cwd: WS,
+              turnStartMs: Date.now(),
+              subagentPaths: new Map([["t1", [`${WS}/notes.md`]]]),
+              includeTextReferences: true,
+            });
+            const finalized = finalizeArtifactCandidates(candidates, null, {
+              turnStartMs: Date.now(),
+            });
+            lines.push(
+              `${name}: 候选=${candidates.length} 渲染=${finalized.length} [${finalized.map((a) => a.base).join(", ")}]`,
+            );
+          };
+          label("轮5 edit-only", turn(4));
+          label("轮6 子代理", turn(5));
+          label("轮7 纯讨论", turn(6));
+          setReport(lines.join("\n"));
+        })();
       }, 900),
     );
     return () => timers.forEach(clearTimeout);
