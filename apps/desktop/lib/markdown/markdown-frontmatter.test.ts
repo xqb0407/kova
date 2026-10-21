@@ -36,6 +36,49 @@ describe("splitFrontmatter", () => {
     expect(fm?.body).toBe("正文");
   });
 
+  test("普通标量缩进续行按折行语义并入（技能 description 多行写法）", () => {
+    const src = [
+      "---",
+      "name: employee-weekly-report",
+      "description: 基于 Jira worklog 生成符合公司规范的员工周报 Word",
+      "  文档。当用户说「写/生成周报」、或在本周结束时要求出周报时使用。",
+      "  按规范总结 → 确认后输出 docx。",
+      "---",
+      "正文",
+    ].join("\n");
+    const fm = splitFrontmatter(src);
+    expect(fm?.entries).toEqual([
+      ["name", "employee-weekly-report"],
+      [
+        "description",
+        "基于 Jira worklog 生成符合公司规范的员工周报 Word 文档。当用户说「写/生成周报」、或在本周结束时要求出周报时使用。按规范总结 → 确认后输出 docx。",
+      ],
+    ]);
+    expect(fm?.body).toBe("正文");
+  });
+
+  test("英文续行补空格，CJK 相邻不补空格", () => {
+    const fm = splitFrontmatter("---\ndesc: hello\n  world\n中文: 第一行\n  第二行\n---\nB");
+    expect(fm?.entries).toEqual([
+      ["desc", "hello world"],
+      ["中文", "第一行第二行"],
+    ]);
+  });
+
+  test("续行在下一条顶格键前停止", () => {
+    const fm = splitFrontmatter("---\ndescription: a\n  b\nnext: 1\n---\nB");
+    expect(fm?.entries).toEqual([
+      ["description", "a b"],
+      ["next", "1"],
+    ]);
+  });
+
+  test("CRLF 下的标量续行", () => {
+    const fm = splitFrontmatter("---\r\ndescription: 第一行\r\n  第二行\r\n---\r\n正文");
+    expect(fm?.entries).toEqual([["description", "第一行第二行"]]);
+    expect(fm?.body).toBe("正文");
+  });
+
   test("块列表（- item 缩进/顶格两种写法）", () => {
     const indented = splitFrontmatter("---\ntags:\n  - deck\n  - enterprise\n---\nB");
     expect(indented?.entries).toEqual([["tags", ["deck", "enterprise"]]]);
