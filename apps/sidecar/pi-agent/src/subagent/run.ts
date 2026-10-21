@@ -31,7 +31,7 @@ import { makeAutoContinueMessage, MAX_LENGTH_CONTINUES, needsLengthContinuation 
 import { createTraceRunRecorder, type TraceRunRecorder } from "../protocol/trace";
 import { messageUsageTokens } from "../agent/context";
 import type { SubagentActivityItem, SubagentRunResult, SubagentRunStatus } from "../types";
-import { boundedReport, summarizeToolArgs } from "./delegation";
+import { boundedReport, summarizeToolArgs, toolFilePath } from "./delegation";
 import { normalizeToolResultImages } from "../tools/image-normalize";
 import type { ProjectableContentBlock } from "../tools/image-parts";
 
@@ -393,6 +393,7 @@ export class SubagentRun {
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           argsSummary: summarizeToolArgs(event.args),
+          filePath: toolFilePath(event.toolName, event.args),
           at: Date.now(),
         });
         break;

@@ -86,6 +86,23 @@ export function summarizeToolArgs(args: unknown): string | undefined {
 }
 
 /**
+ * write/edit 的结构化文件路径：产物卡只认路径，不要从 100 字符截断的
+ * argsSummary 里再解析。其他工具（bash/MCP/插件）不返回。
+ */
+export function toolFilePath(
+  toolName: string,
+  args: unknown,
+): string | undefined {
+  if (toolName !== "write" && toolName !== "edit") return undefined;
+  if (!args || typeof args !== "object") return undefined;
+  const a = args as Record<string, unknown>;
+  const value = a.file_path ?? a.path;
+  return typeof value === "string" && value.trim()
+    ? value.trim()
+    : undefined;
+}
+
+/**
  * 从磁盘活动文件重建一个委派记录（内存未命中时调用）。
  * 无终态记录的委派由 readDelegationActivity 判为 interrupted——进程没了、没跑完。
  * 重建项只服务回放：completion 立即 resolve、abort 为 no-op，不参与执行链。

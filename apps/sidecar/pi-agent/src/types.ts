@@ -139,6 +139,8 @@ export type SubagentActivityItem =
       toolCallId: string;
       toolName: string;
       argsSummary?: string;
+      /** write/edit 的文件路径（结构化，产物卡用；老记录缺席时回退 argsSummary） */
+      filePath?: string;
       resultSummary?: string;
       failed?: boolean;
       at: number;

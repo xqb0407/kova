@@ -252,6 +252,42 @@ export async function gitCheckpointDiff(
   return gitDiff(cwd, { checkpoint: hash });
 }
 
+/** 检查点改动文件清单（不含 patch）：产物发现用，避免一次读多个大 diff */
+export type GitCheckpointFile = {
+  path: string;
+  oldPath: string | null;
+  status: GitFileStatus;
+};
+
+export async function gitCheckpointFiles(
+  cwd: string,
+  hash: string,
+): Promise<GitCheckpointFile[] | null> {
+  if (!isDesktop()) return null;
+  try {
+    const result = await invoke<{ files?: GitCheckpointFile[] }>(
+      "git_checkpoint_files",
+      { cwd, hash },
+    );
+    return Array.isArray(result?.files) ? result.files : null;
+  } catch (err) {
+    // not-repo/no-checkpoint 是常态（无 git / 检查点被清理）；
+    // cwd-not-allowed 不在列表里，但同样不该把产物卡打崩。
+    const code = gitErrorCode(err);
+    if (
+      code === "not-repo" ||
+      code === "no-git" ||
+      code === "no-checkpoint" ||
+      code === "cwd-missing" ||
+      code === "workspace-missing" ||
+      code === "cwd-not-allowed"
+    ) {
+      return null;
+    }
+    throw err;
+  }
+}
+
 /** 撤销回快照；冲突（用户手改导致 patch 对不上）reject，前缀 apply-conflict */
 export async function gitCheckpointRestore(
   cwd: string,

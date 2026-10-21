@@ -758,6 +758,36 @@ async function checkpointFilesImpl(dir: string, work: string, hash: string): Pro
   return { files, truncated };
 }
 
+/**
+ * 产物发现专用：只回本轮改动文件名/状态，不算 patch。
+ * 产物页签会一次看多个检查点，走完整 checkpointFilesImpl 会把每个 diff 的
+ * 补丁都读一遍（还被 3 行上下文放大），这里只做 name-status。
+ */
+async function checkpointNameStatusImpl(
+  dir: string,
+  work: string,
+  hash: string,
+): Promise<{
+  files: { path: string; oldPath: string | null; status: string }[];
+}> {
+  try {
+    await shadowAdd(dir, work);
+  } catch (e: any) {
+    throw new Error(`snapshot-stage-failed: ${e?.message ?? e}`);
+  }
+  const ns = await gitRun(
+    shadowGit(dir, work, ["diff", hash, "--name-status", "-z"]),
+  );
+  if (!ns.ok) throw new Error(`snapshot-diff-failed: ${ns.stderr}`);
+  return {
+    files: parseNameStatusZ(ns.stdout).map(([status, oldPath, path]) => ({
+      path,
+      oldPath,
+      status,
+    })),
+  };
+}
+
 async function restoreImpl(dir: string, work: string, hash: string): Promise<void> {
   const pf = patchFilePath(dir, hash);
   let patch: Buffer;
@@ -902,6 +932,18 @@ export function setupGitCommands(register: (name: string, fn: (args: any) => any
     const e = await gitRun(["--git-dir", sd, "cat-file", "-e", `${checkpoint}^{commit}`]);
     if (!e.ok) throw new Error("no-checkpoint");
     return checkpointFilesImpl(sd, r.run, checkpoint);
+  });
+
+  // 产物发现：只回本轮改动文件清单，不传 patch。
+  register("git_checkpoint_files", async (a) => {
+    const r = await resolveWorkspace(String(a.cwd));
+    const hash = String(a.hash ?? "");
+    checkHash(hash);
+    const sd = shadowDirFor(r.key);
+    if (!existsSync(join(sd, "HEAD"))) throw new Error("no-checkpoint");
+    const e = await gitRun(["--git-dir", sd, "cat-file", "-e", `${hash}^{commit}`]);
+    if (!e.ok) throw new Error("no-checkpoint");
+    return checkpointNameStatusImpl(sd, r.run, hash);
   });
 
   register("git_show", async (a) => {

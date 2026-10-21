@@ -8,6 +8,7 @@ import type { Dirent } from "node:fs";
 import { readdir, readFile, mkdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { mkdirSync, readFileSync, renameSync, statSync as fstat } from "node:fs";
 import { join, basename, dirname, extname } from "node:path";
+import { homedir } from "node:os";
 import { appDataDir, sessionsDir } from "./paths";
 import { libraryRoot as libraryRootDir } from "./library";
 import { kvGet } from "./store";
@@ -179,6 +180,153 @@ export function joinRel(root: string, rel: string): string {
     }
   }
   return joined;
+}
+
+/* -------------------------- 产物卡：只读元数据与打开 -------------------------- */
+
+const MAX_STAT_PATHS = 20;
+/**
+ * 允许交给系统默认应用打开的交付物扩展名。刻意不含 exe/app/sh/bat 等可执行
+ * 类型：打开动作由用户点击触发，但仍不能把任意可执行文件变成一键入口。
+ */
+const OPENABLE_ARTIFACT_EXT = new Set([
+  "docx",
+  "xlsx",
+  "pptx",
+  "pdf",
+  "html",
+  "htm",
+  "xhtml",
+  "svg",
+  "md",
+  "markdown",
+  "mdx",
+  "txt",
+  "rtf",
+  "csv",
+  "tsv",
+  "json",
+  "jsonl",
+  "xml",
+  "yaml",
+  "yml",
+  "log",
+  "ics",
+  "vtt",
+  "srt",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+  "avif",
+  "ico",
+  "tiff",
+  "heic",
+  "heif",
+  "zip",
+  "mp3",
+  "wav",
+  "m4a",
+  "ogg",
+  "opus",
+  "flac",
+  "mp4",
+  "mov",
+  "webm",
+  "m4v",
+]);
+
+function isAbsoluteLikePath(path: string): boolean {
+  return (
+    path.startsWith("/") ||
+    path.startsWith("\\\\") ||
+    /^[a-zA-Z]:[\\/]/.test(path)
+  );
+}
+
+function normalizePathForCompare(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
+}
+
+function isUnderPath(path: string, root: string): boolean {
+  const p = normalizePathForCompare(path);
+  const r = normalizePathForCompare(root);
+  return p === r || p.startsWith(`${r}/`);
+}
+
+/**
+ * 产物路径解析：
+ * - 相对路径仍走 workspace 信任根（resolveRoot + joinRel），保持写权限边界；
+ * - 绝对路径只做词法等价比对，允许 stat/open（只读元数据 / 用户点击打开）。
+ *   `..` 一律拒绝，避免把绝对路径变成目录穿越入口。
+ */
+function resolveArtifactTarget(cwd: string, path: string): string {
+  const raw = String(path ?? "");
+  if (!raw || raw.includes("\0")) return fail("bad-path");
+  if (raw.replace(/\\/g, "/").split("/").some((segment) => segment === "..")) {
+    return fail("bad-path");
+  }
+  if (isAbsoluteLikePath(raw)) return raw;
+  return joinRel(resolveRoot(cwd ?? ""), raw);
+}
+
+export async function fsStatMany(args: {
+  cwd: string;
+  paths: string[];
+}): Promise<unknown> {
+  const paths = Array.isArray(args.paths)
+    ? args.paths.slice(0, MAX_STAT_PATHS)
+    : [];
+  const results = await Promise.all(
+    paths.map(async (requestedPath) => {
+      let target: string;
+      try {
+        target = resolveArtifactTarget(args.cwd ?? "", requestedPath);
+      } catch {
+        return { path: requestedPath, exists: false };
+      }
+      try {
+        const entryStat = await stat(target);
+        return {
+          path: requestedPath,
+          exists: true,
+          isFile: entryStat.isFile(),
+          isDirectory: entryStat.isDirectory(),
+          size: entryStat.size,
+          mtimeMs: entryStat.mtimeMs,
+        };
+      } catch {
+        return { path: requestedPath, exists: false };
+      }
+    }),
+  );
+  return { results };
+}
+
+export async function fsOpen(args: {
+  cwd: string;
+  path: string;
+}): Promise<unknown> {
+  const target = resolveArtifactTarget(args.cwd ?? "", args.path ?? "");
+  const extension = extname(target).replace(/^\./, "").toLowerCase();
+  if (!OPENABLE_ARTIFACT_EXT.has(extension)) return fail("bad-path");
+
+  const root = args.cwd ? resolveRoot(args.cwd) : null;
+  // 绝对路径也要收在用户家目录或当前工作区内；相对路径已由 joinRel 收口。
+  if (isAbsoluteLikePath(args.path ?? "")) {
+    const real = tryRealpath(target) ?? target;
+    if (!isUnderPath(real, homedir()) && !(root && isUnderPath(real, root))) {
+      return fail("cwd-not-allowed");
+    }
+  }
+
+  const entryStat = await stat(target).catch(() => null);
+  if (!entryStat || !entryStat.isFile()) return fail("not-found");
+  const error = await shell.openPath(target);
+  if (error) return fail("open-failed");
+  return { ok: true };
 }
 
 function readCapped(path: string, cap: number): { buf: Buffer; truncated: boolean } {
@@ -784,6 +932,8 @@ export function stopAttachmentPruneTimer(): void {
 
 export function setupFsCommands(register: (name: string, fn: (args: any) => any) => void): void {
   register("fs_list_dir", (a) => fsListDir(a));
+  register("fs_stat_many", (a) => fsStatMany(a));
+  register("fs_open", (a) => fsOpen(a));
   register("fs_read_file", (a) => fsReadFile(a));
   register("fs_read_file_base64", (a) => fsReadFileBase64(a));
   register("fs_write_file", (a) => fsWriteFile(a));

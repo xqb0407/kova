@@ -20,6 +20,16 @@ export type FsFileContent = {
   binary: boolean;
 };
 
+/** 产物卡批量 stat 的单条结果（不读内容，只取存在性/大小/mtime） */
+export type FsStatEntry = {
+  path: string;
+  exists: boolean;
+  isFile?: boolean;
+  isDirectory?: boolean;
+  size?: number;
+  mtimeMs?: number;
+};
+
 /** 单层列目录（dir = workspace 相对路径，"" 为根）；失败/网页端返回 null */
 export async function fsListDir(
   cwd: string,
@@ -44,6 +54,41 @@ export async function fsReadFile(
     return await invoke<FsFileContent>("fs_read_file", { cwd, path });
   } catch {
     return null;
+  }
+}
+
+/**
+ * 产物卡批量 stat：一条 IPC 拿回存在性/大小/mtime，不读内容。
+ * 相对路径由 Host 收在 workspace 信任根内；绝对路径只做只读元数据。
+ * 非桌面端/失败返回 null，调用方降级为不校验。
+ */
+export async function fsStatMany(
+  cwd: string,
+  paths: readonly string[],
+): Promise<FsStatEntry[] | null> {
+  if (!isDesktop() || paths.length === 0) return null;
+  try {
+    const result = await invoke<{ results?: FsStatEntry[] }>("fs_stat_many", {
+      cwd,
+      paths: [...paths],
+    });
+    return Array.isArray(result?.results) ? result.results : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 用系统默认应用打开交付物；成功返回 null，失败返回错误码 */
+export async function fsOpen(
+  cwd: string,
+  path: string,
+): Promise<string | null> {
+  if (!isDesktop()) return "not-desktop";
+  try {
+    await invoke("fs_open", { cwd, path });
+    return null;
+  } catch (err) {
+    return typeof err === "string" ? err : "open-failed";
   }
 }
 
@@ -213,6 +258,7 @@ export function fsErrorText(code: string): string {
     "rename-failed": "重命名失败",
     "move-failed": "移动失败",
     "delete-failed": "删除失败",
+    "open-failed": "打开文件失败",
     "reveal-failed": "打开系统文件管理器失败",
     "not-desktop": "仅桌面端可用",
     "bad-base64": "内容编码异常，写入被拒绝",
