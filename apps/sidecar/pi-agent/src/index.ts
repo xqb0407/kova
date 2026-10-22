@@ -45,6 +45,7 @@ import { initAutoReview } from "./permissions/auto-review";
 import { initSandboxConfig } from "./permissions/sandbox-config";
 import { initSubagentState } from "./subagent/subagent-definitions";
 import { pruneActivityFiles } from "./subagent/activity-store";
+import { sweepOrphanTaskDirs } from "./sessions/sessions";
 import { initSkillsState } from "./skills/skills";
 import { initProjectDirs } from "./agent/project-dirs";
 import { initMcpEnabledState } from "./mcp/mcp-config";
@@ -83,6 +84,11 @@ async function main() {
   // 子代理活动文件：启动扫盘清理超限的旧文件（重启后内存注册表为空，只能靠扫盘；
   // 此刻没有任何委派在跑，剔除谓词恒 false）
   pruneActivityFiles(() => false);
+  // 任务工作区孤儿目录清扫（历史 EBUSY 删除失败/清扫放弃的残留）：异步执行
+  // 不阻塞启动；失败只记日志（sweepOrphanTaskDirs 内部已有防护）
+  void sweepOrphanTaskDirs().catch((err) => {
+    logErr("orphan task dir sweep failed:", err);
+  });
   // 自动化调度器：store/锁放 <sessionsDir>/automation/，随进程存亡。
   // 失败不阻断主流程（任务系统坏掉不该拖垮聊天），错误进 stderr 日志。
   const automationReady = initAutomation(sessionsDir, automationRunner).catch((err) => {

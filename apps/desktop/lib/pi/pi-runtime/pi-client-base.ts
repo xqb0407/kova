@@ -40,6 +40,8 @@ import { applyPlanningChunk } from "@/lib/pi/pi-session-mode";
 import { applyTodoChunk, fetchTodoState } from "@/lib/pi/pi-todo";
 import { applyGoalChunk, fetchGoalState } from "@/lib/pi/pi-goal";
 import { refreshContextMirror } from "@/lib/pi/pi-context";
+import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
+import { readLastThread, syncClearLastThread } from "@/lib/pi/pi-last-thread";
 import {
   focusPanelTabFor,
   focusPluginPanelFor,
@@ -1200,6 +1202,12 @@ export class PiClientBase implements PiClient {
 
   async deleteThread(threadId: string): Promise<void> {
     await this.transport.request({ type: "delete_session", sessionId: threadId });
+    // 启动回切指针清扫：残留指针（在飞登记/最近会话）会让下次启动的回切把
+    // 已删会话当目标——switchToThread 对不在列表的 id 走 adapter.fetch，
+    // 空快照被 RemoteThreadList 收编成列表项，就是侧边栏那行幽灵「新对话」
+    //（2026-10-22 用户报：任务运行中删对话，重启后多出一行）。删除即作废。
+    piResumableStorage.clear(threadId);
+    if (readLastThread() === threadId) syncClearLastThread();
     // 会话级台账终清：unsubscribe 已负责 listeners/streams/stamps/lastSeq，
     // lastPrompts 与 inflight 不在其作用域——会话没了就一并摘
     this.lastPrompts.delete(threadId);

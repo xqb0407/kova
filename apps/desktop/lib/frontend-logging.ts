@@ -69,6 +69,24 @@ export function reportFrontendWarning(message: string): void {
   send("warn", message);
 }
 
+/**
+ * webview 管道噪声：Electron <webview> 的元素与 GUEST_VIEW_MANAGER_CALL
+ * 通道跑在主渲染器里，导航被后续导航顶掉时该通道以 ERR_ABORTED 拒绝。
+ * 两条冒出处都要认：unhandledrejection 拒绝，与 Chromium 内部经
+ * console.error 中继的「Unexpected error while loading URL」。后者还有个
+ * 不带 ERR_ABORTED 字样的变体（只有 "Error: (-3) loading"，Windows 实测）。
+ * 页面本身是隔离的、这不是应用缺陷，折叠成 warn 落日志即可。
+ *
+ * unhandledrejection 的拦截主力在 app/layout.tsx 的 head 内联
+ * WEBVIEW_ABORT_GUARD（先于 Next dev 浮层注册 + stopImmediatePropagation，
+ * 浮层弹不出来；本模块在 useEffect 期才装，preventDefault 只能压控制台
+ * 裸错，这里保留作兜底）。签名口径两处必须同步。
+ */
+function isWebviewAbortNoise(text: string): boolean {
+  if (!text.includes("GUEST_VIEW_MANAGER_CALL")) return false;
+  return text.includes("ERR_ABORTED") || text.includes("(-3)");
+}
+
 export function installFrontendLogging(): void {
   if (installed || !isDesktop()) return;
   installed = true;
@@ -81,7 +99,14 @@ export function installFrontendLogging(): void {
   };
   console.error = (...args: unknown[]) => {
     origError(...args);
-    send("error", formatArgs(args));
+    const text = formatArgs(args);
+    // 同签名噪声经 console.error 中继时无法 preventDefault（控制台仍会显示），
+    // 但落日志按 warn 记，web.log 不再被刷屏 ERROR
+    if (isWebviewAbortNoise(text)) {
+      send("warn", `webview 管道噪声（导航被顶掉，已折叠）: ${text}`);
+      return;
+    }
+    send("error", text);
   };
 
   let resizeObserverNoiseLogged = false;
@@ -105,14 +130,10 @@ export function installFrontendLogging(): void {
   });
   window.addEventListener("unhandledrejection", (event) => {
     const text = String(event.reason);
-    // 已知的宿主机制噪声：Electron <webview> 管道层的拒绝。元素与
-    // GUEST_VIEW_MANAGER_CALL 通道都跑在主渲染器（应用自己的 JS 上下文）里，
-    // 导航被后续导航顶掉时内部 ipcRenderer.invoke 会以 ERR_ABORTED 拒绝；
-    // 页面本身是隔离的、这不是应用缺陷，但默认处理会把它打成控制台错误，
-    // Next dev 浮层随之弹出来。窄匹配这一种组合后 preventDefault()：
+    // 已知的宿主机制噪声：见 isWebviewAbortNoise。窄匹配后 preventDefault()：
     // 阻断默认的控制台输出（浮层因此看不到），仍以 warn 记进 web.log 备查；
     // 其余任何 rejection 一律照旧裸露、照旧按 error 上报。
-    if (text.includes("GUEST_VIEW_MANAGER_CALL") && text.includes("ERR_ABORTED")) {
+    if (isWebviewAbortNoise(text)) {
       event.preventDefault();
       send("warn", `webview 管道噪声（导航被顶掉，已折叠）: ${text}`);
       return;

@@ -7,7 +7,7 @@ import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isApprovalLevel } from "pi-protocol";
 import { reviewFactsOf } from "../permissions/auto-review";
 import { sandboxPlanForRun } from "../permissions/sandbox-plan";
@@ -89,6 +89,7 @@ import {
   kvGet,
   sessionGet,
   sessionInsert,
+  sessionList,
   sessionPrefsSet,
   sessionUpdateCwd,
 } from "../storage/hostdb";
@@ -541,11 +542,85 @@ export function ensureTaskSessionDir(run: { cwd: string; sessionId: string }): v
  * 删除无目录会话的产物目录（删会话时调用）：递归删；force 容忍目录不存在
  * （从未跑过的会话、或早已改绑工作目录、以及项目会话都是空操作）。
  * 非法会话名直接拒绝——这里是删除路径，宁可空操作也不越界。
+ *
+ * Windows 上目录可能仍被句柄占用（工具子进程的 cwd、预览 webview 开着的
+ * 文件、杀毒扫描），rm 会 EBUSY——这里绝不能抛：删会话是同步链，抛错等于
+ * 整条 delete_session 失败（前端报「删除失败」，会话行却已删掉，只剩孤儿
+ * 目录）。占用是暂态的，退化为后台延迟清扫，见 sweepLockedDirLater。
  */
 export function removeTaskSessionDir(sessionId: string): void {
   const seg = taskSessionSeg(sessionId);
   if (!seg) return;
-  rmSync(join(taskWorkspaceBase(), seg), { recursive: true, force: true });
+  const dir = join(taskWorkspaceBase(), seg);
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    sweepLockedDirLater(dir);
+  }
+}
+
+/** 被占用目录的延迟清扫：dir -> 已安排的重试次数 */
+const sweepPending = new Map<string, number>();
+/** 指数退避：占用方（子进程退出、webview 关闭、扫描完成）通常几秒内释放 */
+const SWEEP_RETRY_DELAYS_MS = [5_000, 30_000, 120_000, 300_000];
+
+function sweepLockedDirLater(dir: string): void {
+  const attempt = sweepPending.get(dir) ?? 0;
+  if (attempt >= SWEEP_RETRY_DELAYS_MS.length) {
+    sweepPending.delete(dir);
+    logErr(`[sessions] task dir still locked after retries, left in place: ${dir}`);
+    return;
+  }
+  sweepPending.set(dir, attempt + 1);
+  setTimeout(() => {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      sweepPending.delete(dir);
+    } catch {
+      sweepLockedDirLater(dir);
+    }
+  }, SWEEP_RETRY_DELAYS_MS[attempt]);
+}
+
+/**
+ * 启动清扫：task-workspace 下不属于任何存活会话的孤儿目录。来源有两类——
+ * 历史版本 EBUSY 删除失败留下的（会话行已删、目录永挂「我的文件」）、以及
+ * removeTaskSessionDir 延迟清扫彻底放弃的残留。清单以 DB 索引为准
+ * （sessionList），目录段名校验复用 taskSessionSeg（非会话名一律不碰）。
+ *
+ * mtime 新于 10 分钟的目录不碰：行插入（resolveSession 建 DB 行）与首用
+ * 建目录（ensureTaskSessionDir）之间有窗口，刚建的目录可能还"查无此会话"，
+ * mtime 门槛把这个竞态挡掉。单次失败（占用/权限）只记日志，留待下次启动，
+ * 绝不阻断启动流程。
+ */
+export async function sweepOrphanTaskDirs(): Promise<void> {
+  const base = taskWorkspaceBase();
+  let names: string[];
+  try {
+    names = readdirSync(base);
+  } catch {
+    return; // 根目录不存在 = 从未有过任务会话
+  }
+  let known: Set<string>;
+  try {
+    known = new Set((await sessionList()).map((row) => row.id));
+  } catch (err) {
+    logErr("[sessions] orphan task dir sweep skipped, session list unavailable:", err);
+    return;
+  }
+  const freshCutoffMs = Date.now() - 10 * 60_000;
+  for (const name of names) {
+    if (known.has(name)) continue;
+    if (!taskSessionSeg(name)) continue;
+    const dir = join(base, name);
+    try {
+      const st = statSync(dir);
+      if (!st.isDirectory() || st.mtimeMs > freshCutoffMs) continue;
+      rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      logErr(`[sessions] orphan task dir sweep failed for ${name}:`, err);
+    }
+  }
 }
 
 /**

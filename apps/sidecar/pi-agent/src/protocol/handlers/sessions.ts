@@ -8,6 +8,7 @@ import { send, sendSessionsChanged } from "../stream";
 import { logErr } from "../../log";
 import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
+import { abortRun } from "../prompt-pipeline";
 import { checkpointForget } from "../../checkpoint/store";
 import { runCompaction, contextInfo } from "../../agent/context";
 import { invalidateGitSnapshots } from "../../agent/git-prompt";
@@ -24,7 +25,7 @@ import {
 } from "../../sessions/transcript";
 import { isApprovalLevel, isAutoContinueMessage, isGoalInternalMessage } from "pi-protocol";
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
-import { getQueueStateForThread, isTurnBusy } from "../../sessions/prompt-queue";
+import { getQueueStateForThread, isTurnBusy, cancelAllEntriesForSession } from "../../sessions/prompt-queue";
 import { sessionPath } from "../../storage/storage";
 import { normalizeProviderId } from "../../model/provider-id";
 import {
@@ -670,9 +671,16 @@ export const handlers: Record<string, CommandHandler> = {
     // seq = per-session 事件水位现读（未盖章过不带 = 冷读）。
     const sessionId = String(msg.sessionId ?? "");
     if (!sessionId) throw new Error("sessionId required");
+    // 索引行先查：已删/从未存在的会话在扫盘之前快速失败。绝不能返回空快照
+    // ——成功应答会被 RemoteThreadList 收编成列表项，启动回切的残留指针
+    // （已删会话）每重启一次就造出一行幽灵「新对话」（2026-10-22 用户报：
+    // 运行中删对话，重启后侧边栏多一行）。索引行是清单事实源：缺行即
+    // not found，让上层 switchToThread 抛错、回切逻辑跳过（前端同时清掉
+    // 坏指针自愈）。resolveSession 对显式 sessionId 缺行同样抛错，口径一致。
+    const row = (await sessionList()).find((r) => r.id === sessionId);
+    if (!row) throw new Error(`session not found: ${sessionId}`);
     const scan = scanTranscript(sessionId);
     const running = listActiveTurnSessions().includes(sessionId);
-    const row = (await sessionList()).find((r) => r.id === sessionId);
     // §6 分页窗（移动端无限上翻）：tail/beforeSeq 缺省 = 全量（旧端不破）；
     // 游标 = 消息行 seq，与 get_history 同语义。窗口只从头部裁，
     // 末行之后的行仍在 scan.messages 里（截断判定要它）。
@@ -868,11 +876,38 @@ export const handlers: Record<string, CommandHandler> = {
 
   delete_session: async (reqId, msg) => {
     const sessionId = String(msg.sessionId ?? "");
-    for (const [tid, run] of running) {
-      if (run.sessionId === sessionId) {
-        dropRun(tid);
-        forgetThreadStates(tid); // 迭代2：删会话同样清 per-thread 旁路态（todo）
-      }
+    const owners = [...running].filter(([, run]) => run.sessionId === sessionId);
+    for (const [tid, run] of owners) {
+      // 先中止在跑轮次再摘注册表：run 的工具子进程（bash cwd、预览
+      // webview）正握着产物目录的句柄，不先 abort 它们不会退——Windows
+      // 上紧接着的 removeTaskSessionDir 必然 EBUSY
+      abortRun(run, tid);
+      dropRun(tid);
+      forgetThreadStates(tid); // 迭代2：删会话同样清 per-thread 旁路态（todo）
+    }
+    // 排队 prompt 同清：会话已删，残留队列项没有合法去处——接力泵弹出后前端
+    // 重发的 prompt 只会以 session not found 失败（显式 sessionId 的
+    // resolveSession 不懒建），白白制造错误气泡；无 sessionId 的恢复项更会
+    // 另建一个新会话。删除即连队列一起取消。
+    cancelAllEntriesForSession(sessionId);
+    if (owners.length > 0) {
+      // 等中止的轮次结算完再删行/删文件（waitForIdle 在 agent_end 监听器
+      // settle 之后才 resolve，即结算持久化已完成——同 shutdown 的机制）：
+      // 1) abort 的 partial 消息先落进转录，不会在 unlink 之后 appendFileSync
+      //    重建孤儿 JSONL；2) 工具子进程有时间退出，Windows 句柄释放，
+      //    removeTaskSessionDir 首发即可成功。
+      // 1.5s 封顶（同 shutdown 思路）：这里在 mgmt 串行队列上，异常轮次
+      // 不能久拖；超时就落到 removeTaskSessionDir 的延迟清扫兜底。
+      // 单条 reject 就地吞掉：等待只是提高首发成功率，绝不能反过来让删除
+      // 整个失败（agent 状态异常时 waitForIdle 可能抛）。
+      await Promise.race([
+        Promise.all(
+          owners.map(([, run]) =>
+            run.agent.waitForIdle().catch(() => undefined),
+          ),
+        ),
+        new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+      ]);
     }
     await sessionDelete(sessionId);
     dropEventSeq(sessionId); // 水印计数器随会话删除（防 per-session Map 泄漏）

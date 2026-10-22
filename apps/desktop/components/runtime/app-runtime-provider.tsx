@@ -13,6 +13,7 @@ import { installUpdate, progressPct, type UpdateInfo } from "@/lib/update";
 import { initNotifyPipeline } from "@/lib/notify/notify";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
 import { hydrateRunningRegistrations } from "@/lib/pi/pi-running";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import {
   readLastThread,
   readNewThreadActionCount,
@@ -201,6 +202,15 @@ function ResumeRunningThread() {
           `[resume] switch failed target=${resumeTarget ?? "null"}`,
           String(err),
         );
+        // 目标已被删除（早年版本删除时不作废指针留下的残留）：not found 是
+        // 确定性失效，清掉指针自愈——否则每次启动都重复失败并多出幽灵行。
+        // 其它错误（宿主未就绪等瞬时故障）不动指针，下次启动照常重试。
+        const msg = String(err instanceof Error ? err.message : err);
+        if (resumeTarget && /not found/i.test(msg)) {
+          piResumableStorage.clear(resumeTarget);
+          if (readLastThread() === resumeTarget) syncClearLastThread();
+          console.warn(`[resume] stale target cleared: ${resumeTarget}`);
+        }
       }
     })();
   }, [aui, loadSnapshot]);
@@ -242,8 +252,16 @@ function DesktopRuntimeProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <WorkspaceThreadSync />
-      <ResumeRunningThread />
+      {/* 下面两个助手组件渲染恒为 null，但它们调 useAui/useAuiState
+          （assistant-ui store 桥接），一崩会带着整个 provider 子树穿透到
+          整页 error.tsx。各自静默兜底：崩溃照常落 web.log
+          （componentDidCatch 上报带 componentStack），页面照常可用。 */}
+      <ErrorBoundary label="会话同步" fallback={() => null}>
+        <WorkspaceThreadSync />
+      </ErrorBoundary>
+      <ErrorBoundary label="会话续跑" fallback={() => null}>
+        <ResumeRunningThread />
+      </ErrorBoundary>
       {children}
     </AssistantRuntimeProvider>
   );

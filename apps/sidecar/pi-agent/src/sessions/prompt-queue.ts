@@ -431,6 +431,40 @@ export function cancelAllEntries(threadId?: string): number {
   return cancelled;
 }
 
+/**
+ * 删会话用：按 sessionId 取消排队项。队列是「前端接力泵」模型——泵弹出
+ * 队首后由**前端重发** prompt；被删会话若还挂着排队项，重发只会以
+ * session not found 失败（显式 sessionId 的 resolveSession 不懒建）或对
+ * 无 sessionId 的恢复项另建一个新会话，白白制造孤儿会话/错误气泡。
+ * item.msg.sessionId 命中即取消，引擎的 lastSessionId 兜底（队首被弹掉后
+ * items 里可能已无该会话的项，但整条引擎都是它的）。
+ */
+export function cancelAllEntriesForSession(sessionId: string): number {
+  const targets = [...engines].filter(
+    ([, q]) =>
+      q.lastSessionId === sessionId ||
+      q.items.some((entry) => entry.msg.sessionId === sessionId),
+  );
+  let cancelled = 0;
+  for (const [tid, q] of targets) {
+    // lastSessionId 命中 = 整条引擎都是该会话的（threadId↔sessionId 近似
+    // 1:1，混入的散项一并取消）；否则只按项摘（理论兜底，常态走不到）
+    const wholeEngine = q.lastSessionId === sessionId;
+    const entries = wholeEngine
+      ? [...q.items]
+      : q.items.filter((entry) => entry.msg.sessionId === sessionId);
+    const ids = new Set(entries.map((entry) => entry.id));
+    q.items = q.items.filter((entry) => !ids.has(entry.id));
+    emitQueueState(tid);
+    dropEngineIfEmpty(tid);
+    for (const entry of entries) {
+      sendChunkAbortFinish(entry.reqId);
+    }
+    cancelled += entries.length;
+  }
+  return cancelled;
+}
+
 /** 排队快照（调试/测试用；threadId 提供时仅该线程） */
 export function queueSnapshot(threadId?: string): { reqId: string; threadId: string; text: string; position: number }[] {
   const out: { reqId: string; threadId: string; text: string; position: number }[] = [];
