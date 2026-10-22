@@ -150,8 +150,9 @@ describe("createTraceRunRecorder", () => {
     rec.noteRequest({
       systemPrompt: "你是测试助手",
       messages: [
-        // 转录首条 system 是 systemPrompt 的镜像（agent/context.ts）：空白镜像不渲染，
-        // 否则每条记录都多一行 "[system]（空）"；带正文的镜像（提示词热换后）照常渲染
+        // system 消息是提示词本体（agent-core 把 systemPrompt 折叠进首条 system
+        // 消息，streamFn 的 context 只有 messages）：空白不渲染（空镜像跳过），
+        // 带正文的（提示词热换后）照常渲染，且截断上限是 32k 不是普通消息的 2k
         { role: "system", content: "" },
         { role: "system", content: "热换后的提示词" },
         { role: "user", content: "你好" },
@@ -184,6 +185,34 @@ describe("createTraceRunRecorder", () => {
     expect(llm.detail?.request).toContain("[tool_call] bash(");
     expect(llm.detail?.request).toContain("[图片]");
     expect(llm.detail?.response).toBe("这是回复正文");
+  });
+
+  test("system 消息用 32k 上限（提示词本体），普通消息仍 2k", () => {
+    const rec = createTraceRunRecorder("sess-sys-cap", "ui");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("turn_start"));
+    rec.noteRequest({
+      messages: [
+        // 40KB 的系统提示词：保留 32k，截断处带可见标记
+        { role: "system", content: "S".repeat(40_000) },
+        { role: "user", content: "u".repeat(40_000) },
+      ],
+    });
+    rec.handle(ev("message_start", { message: assistantMsg() }));
+    rec.handle(ev("message_end", { message: assistantMsg({ stopReason: "endTurn" }) }));
+    rec.handle(ev("turn_end", { message: {}, toolResults: [] }));
+    rec.handle(ev("agent_end", { messages: [] }));
+    rec.settle();
+
+    const run = readTraceRuns("sess-sys-cap")[0]!;
+    const llm = (run.spans[0]!.children ?? []).find((s) => s.kind === "llm_call")!;
+    const request = llm.detail!.request!;
+    const sysLine = request.split("\n\n").find((l) => l.startsWith("[system]"))!;
+    const userLine = request.split("\n\n").find((l) => l.startsWith("[user]"))!;
+    expect(sysLine.length).toBeGreaterThan(32_000); // "[system] " + 32000 + 尾标
+    expect(sysLine).toContain("…[本条已截断]");
+    expect(userLine.length).toBeLessThan(2_100); // "[user] " + 2000 + 尾标
+    expect(userLine).toContain("…[本条已截断]");
   });
 
   test("残留 run：新 agent_start 顶替时按 error 暂存，settle 一并落盘", () => {
@@ -456,15 +485,16 @@ describe("detail 内存预算", () => {
   test("超预算时从最旧摘正文，结构完整保留", () => {
     const rec = createTraceRunRecorder("sess-budget", "ui");
     rec.handle(ev("agent_start"));
-    // 每轮 llm 写 60KB 请求上下文，40 轮 = 2.4MB，远超 512KB 预算
+    // 每轮 llm 请求上下文：原始 160KB（40 条 × 4000），逐条截断后约 80KB，
+    // 40 轮约 3.2MB，远超 1MB 预算
     for (let i = 0; i < 40; i++) {
-      // renderRequest 对每条消息 clip 到 2000 字符，单条 systemPrompt 拉不高总量；
-      // 凑到 REQUEST_MAX(64KB) 要靠多条消息
+      // renderRequest 对普通消息 clip 到 2000 字符、system 32k（SYSTEM_TEXT_MAX），
+      // 单条 systemPrompt 拉不高总量；凑到 REQUEST_MAX(128KB) 要靠多条消息
       rec.noteRequest({
         systemPrompt: "s",
         messages: Array.from({ length: 40 }, () => ({
           role: "user",
-          content: "m".repeat(2_000),
+          content: "m".repeat(4_000),
         })),
       });
       for (const e of oneTurn(i, 2)) rec.handle(e);
@@ -478,8 +508,8 @@ describe("detail 内存预算", () => {
       (n, sp) => n + (sp.detail?.request?.length ?? 0) + (sp.detail?.response?.length ?? 0),
       0,
     );
-    // 正文总量受预算约束
-    expect(retained).toBeLessThanOrEqual(512 * 1024 + 64_000 + 8_000);
+    // 正文总量受预算约束（余量 = 单个 span 最多可超预算的部分：请求 128KB + 回复 8KB）
+    expect(retained).toBeLessThanOrEqual(1024 * 1024 + 128_000 + 8_000);
     // 但结构一个不少：40 轮、每轮 1 llm + 2 工具
     expect(run.spans).toHaveLength(40);
     for (const turn of run.spans) {
@@ -537,9 +567,12 @@ describe("detail 内存预算", () => {
     const kids = readTraceRuns("sess-caps", 1)[0]!.spans[0]!.children!;
     const ok = kids.find((s) => s.name === "read")!;
     const bad = kids.find((s) => s.name === "bash")!;
-    expect(ok.detail!.response!.length).toBe(1_500);
-    expect(bad.detail!.response!.length).toBe(8_000);
-    // 面板红字那行另有 2KB 上限，短于正文
+    const mark = "…[本条已截断]".length;
+    expect(ok.detail!.response!.length).toBe(1_500 + mark);
+    expect(ok.detail!.response!).toContain("…[本条已截断]");
+    expect(bad.detail!.response!.length).toBe(8_000 + mark);
+    expect(bad.detail!.response!).toContain("…[本条已截断]");
+    // 面板红字那行另有 2KB 上限且走无标记 clip，短于正文
     expect(String(bad.attrs!.errorMessage).length).toBe(2_000);
   });
 });
