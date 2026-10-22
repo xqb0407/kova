@@ -748,6 +748,22 @@ html.dark[data-window-effect] {
 .aui-directive-agent-icon {
   flex: none;
 }
+/* composer 芯片的悬浮提示（cm-directive.ts 自建 DOM）：fixed 浮层，不参与布局；
+   长标签换行，贴边时由脚本夹取位置 */
+.aui-directive-tooltip {
+  position: fixed;
+  z-index: 80;
+  max-width: min(24rem, calc(100vw - 16px));
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--foreground);
+  color: var(--background);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+}
 
 /* 可交互指令芯片（skill 技能 / agent 智能体提及 / element 元素引用 /
    console 控制台日志 / library 资料库引用 / code 代码引用）：鼠标悬浮时左侧
