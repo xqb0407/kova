@@ -34,6 +34,7 @@ import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
 import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
+import { enterShareMode } from "@/lib/share/share-store";
 import { FolderOpenIcon, GitBranchIcon } from "lucide-react";
 import { useState, type FC } from "react";
 
@@ -113,6 +114,10 @@ const HeaderMoreMenu: FC<{
         <DropdownMenuItem disabled={!canOpenTrace} onClick={onOpenTrace}>
           <WaypointsIcon className="size-4" />
           链路追踪
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => enterShareMode()}>
+          <ShareIcon className="size-4" />
+          分享对话…
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

@@ -914,3 +914,13 @@ html.is-resizing * {
   -webkit-user-select: none !important;
   user-select: none !important;
 }
+
+/* ---- 分享选择模式（body.share-selecting 由 share-selection-bar 挂载）----
+   每条消息根让出左侧勾选框栏位；用户消息的悬浮操作条与勾选框同位，隐藏 */
+body.share-selecting .aui-user-message-root,
+body.share-selecting .aui-assistant-message-root {
+  padding-left: 2.5rem;
+}
+body.share-selecting .aui-user-action-bar-wrapper {
+  display: none;
+}

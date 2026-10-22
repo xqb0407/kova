@@ -44,8 +44,10 @@ import {
 import { collectProcessTexts, messageIndexById } from "@/lib/panels/message-turns";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
 import { MessageCheckpoint } from "./checkpoint-card";
+import { MessageSelectToggle } from "./share/message-select-toggle";
 import { cn } from "cn";
 import type { PiImagePartData } from "@/lib/pi/pi-bridge";
+import { enterShareMode } from "@/lib/share/share-store";
 import {
   CheckIcon,
   CopyIcon,
@@ -55,6 +57,7 @@ import {
   PencilLineIcon,
   RefreshCwIcon,
   SearchIcon,
+  Share2Icon,
   SquareTerminalIcon,
 } from "lucide-react";
 import type { FC, ReactNode } from "react";
@@ -651,7 +654,7 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   // 顶锚点），也不带操作栏——它就是折叠轮里那块被收起的内容
   if (onlyProcess) {
     return (
-      <div className="mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 pl-0">
+      <div className="aui-assistant-message-root mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 pl-0">
         {content}
       </div>
     );
@@ -660,8 +663,9 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
   return (
     <MessagePrimitive.Root
       data-slot="aui_edit-composer-wrapper"
-      className="mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 pl-0"
+      className="aui-assistant-message-root mx-auto flex w-full max-w-(--thread-max-width) flex-col px-2 pl-0 relative"
     >
+      <MessageSelectToggle />
       {content}
 
       <div
@@ -695,6 +699,21 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
 /** 「···」菜单项共用的样式（导出/分叉同款） */
 const MORE_ITEM_CLASS =
   "aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none";
+
+/** 「分享此条」：以当前消息为唯一选中项进入分享选择模式 */
+const ShareMessageItem: FC = () => {
+  const messageId = useAuiState((s) => s.message.id);
+  if (!messageId) return null;
+  return (
+    <ActionBarMorePrimitive.Item
+      className={MORE_ITEM_CLASS}
+      onClick={() => enterShareMode([messageId])}
+    >
+      <Share2Icon size="1em" className="size-4" />
+      分享此条
+    </ActionBarMorePrimitive.Item>
+  );
+};
 
 /**
  * 「分叉会话」（··· 更多操作菜单）：以本条消息为锚点把会话一分为二——新
@@ -805,6 +824,7 @@ const AssistantActionBar: FC = () => {
           className="aui-action-bar-more-content bg-popover text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-xl border p-1.5"
         >
           <ForkSessionItem />
+          <ShareMessageItem />
           <ActionBarPrimitive.ExportMarkdown asChild>
             <ActionBarMorePrimitive.Item className={MORE_ITEM_CLASS}>
               <DownloadIcon size="1em" className="size-4" />
