@@ -4,6 +4,7 @@
  * （pi-bridge 镜像类型改 import），单源定形。loose：加性演进。
  */
 import { z } from "zod";
+import { externalDirSchema } from "./transcript";
 
 /**
  * 审批级别（「改之前问不问」）的唯一字面量清单。
@@ -141,6 +142,9 @@ export const sessionSummarySchema = z.looseObject({
   goalAcceptanceMode: z.enum(["auto", "manual", "skip"]).optional(),
   /** 会话级目标时长上限（分钟字符串；"0" = 不限；undefined = 从未定过） */
   goalMaxDuration: z.string().optional(),
+  /** 会话归属的虚拟项目主目录（cwd 是项目附加根目录时，这里回主目录）。
+   *  侧栏分组优先用它；缺省 = 按 cwd 分组（旧端行为） */
+  projectCwd: z.string().optional(),
 });
 
 /* --------------------------------- goal --------------------------------- */
@@ -231,6 +235,26 @@ export const runningTurnSchema = z.looseObject({
   sessionId: z.string(),
   requestId: z.string(),
 });
+
+/**
+ * 项目虚拟目录应答（get/add/remove_project_dir 共用）。
+ * main = 项目主目录（会话 cwd 落在这里）；roots = main + 附加根（主目录在前）；
+ * dirs = 针对请求 cwd 的生效附加目录（若请求 cwd 是某个附加根，会排除它自己）。
+ */
+export const projectDirsSchema = z.looseObject({
+  type: z.literal("project_dirs"),
+  cwd: z.string(),
+  main: z.string(),
+  roots: z.array(externalDirSchema),
+  dirs: z.array(externalDirSchema),
+  /** 当前不存在的根（配置保留；提示词标注不可用、检索跳过） */
+  missing: z.array(z.string()).optional(),
+  projects: z
+    .array(z.looseObject({ cwd: z.string(), dirs: z.array(externalDirSchema) }))
+    .optional(),
+});
+
+export type ProjectDirs = z.infer<typeof projectDirsSchema>;
 
 export type UsageTotals = z.infer<typeof usageTotalsSchema>;
 export type ContextInfo = z.infer<typeof contextInfoSchema>;

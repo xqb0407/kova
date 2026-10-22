@@ -70,6 +70,7 @@ const SCOPE_ZH_STORED = { system: "系统级", workspace: "项目级" } as const
 const SCOPE_ZH = {
   workspace: "项目",
   "compat-workspace": "生态·项目",
+  external: "外部目录",
   system: "系统",
   compat: "生态·用户",
   plugin: "插件",

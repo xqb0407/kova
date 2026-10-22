@@ -103,6 +103,7 @@ function makeRun(
     threadId: "t-modes",
     sessionId: "s",
     cwd: ".",
+    externalDirs: [],
     persistedSeq: 0,
     jsonlSeq: 0,
     compactionGeneration: 0,
@@ -1713,5 +1714,111 @@ describe("approvalBeforeToolCall：AI 审查档", () => {
     const [id] = [...run.pendingToolApprovals.keys()];
     resolveToolApproval(run, id, false, false);
     expect((await pending)?.block).toBe(true);
+  });
+});
+
+/**
+ * 项目虚拟目录（多代码工程合并）：workspace-write / review 档按「工作区内」
+ * 对待，ask 档仍逐次询问。目录由项目设置管理，普通任务会话恒为空。
+ */
+describe("approvalBeforeToolCall：项目虚拟目录", () => {
+  const EXT = join(WS_ROOT, "shared-lib");
+  mkdirSync(join(EXT, "src"), { recursive: true });
+  writeFileSync(join(EXT, "src", "lib.ts"), "x");
+
+  test("workspace-write：外部目录内的写免确认", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    run.externalDirs = [{ path: EXT, label: "shared-lib" }];
+    await expect(
+      approvalBeforeToolCall(
+        run,
+        ctx("write", ["write"], { file_path: join(EXT, "src", "lib.ts") }),
+      ),
+    ).resolves.toBeUndefined();
+    expect(run.pendingToolApprovals.size).toBe(0);
+  });
+
+  test("workspace-write：没挂载的外部目录仍然弹卡", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    const pending = approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(EXT, "src", "lib.ts") }),
+    );
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, id, false, false);
+    expect((await pending)?.block).toBe(true);
+  });
+
+  test("workspace-write：目录不存在的附加根不授权写入", async () => {
+    const missingRoot = join(WS_ROOT, "missing-project-root");
+    const run = makeRun("agent");
+    run.approvalLevel = "workspace-write";
+    run.cwd = WS;
+    run.externalDirs = [{ path: missingRoot, label: "missing-project-root" }];
+    const pending = approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(missingRoot, "x.ts") }),
+    );
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, id, false, false);
+    expect((await pending)?.block).toBe(true);
+  });
+
+  test("ask 档：外部目录内仍逐次询问", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "ask";
+    run.cwd = WS;
+    run.externalDirs = [{ path: EXT, label: "shared-lib" }];
+    const pending = approvalBeforeToolCall(
+      run,
+      ctx("write", ["write"], { file_path: join(EXT, "src", "lib.ts") }),
+    );
+    await Bun.sleep(0);
+    expect(run.pendingToolApprovals.size).toBe(1);
+    const [id] = [...run.pendingToolApprovals.keys()];
+    resolveToolApproval(run, id, true, false);
+    await expect(pending).resolves.toBeUndefined();
+  });
+});
+
+describe("composeModeSystemPrompt：会话外部目录段", () => {
+  const PROMPT_WS = join(WS_ROOT, "prompt-ws");
+  const EXT = join(WS_ROOT, "ext-prompt");
+  mkdirSync(PROMPT_WS, { recursive: true });
+  mkdirSync(EXT, { recursive: true });
+  writeFileSync(join(PROMPT_WS, "AGENTS.md"), "WORKSPACE_RULES");
+  writeFileSync(join(EXT, "AGENTS.md"), "EXTERNAL_RULES");
+
+  test("外部目录块在 instructions 段之后，并带指令正文", () => {
+    const prompt = composeModeSystemPrompt(
+      "agent",
+      PROMPT_WS,
+      "code",
+      undefined,
+      undefined,
+      undefined,
+      [{ path: EXT, label: "ext-prompt" }],
+    );
+    const instructionsAt = prompt.indexOf("WORKSPACE_RULES");
+    const externalAt = prompt.indexOf("## Project Folders (additional code repositories)");
+    expect(instructionsAt).toBeGreaterThanOrEqual(0);
+    expect(externalAt).toBeGreaterThan(instructionsAt);
+    expect(prompt).toContain("EXTERNAL_RULES");
+    // cwd 行仍是系统提示词最后一行（尾部不变式不破）
+    expect(prompt.trimEnd().endsWith(`The workspace directory is \`${PROMPT_WS}\`. Relative paths resolve there.`)).toBe(true);
+  });
+
+  test("无外部目录时与传入空数组字节一致（默认提示词不变）", () => {
+    expect(composeModeSystemPrompt("agent", PROMPT_WS, "code")).toBe(
+      composeModeSystemPrompt("agent", PROMPT_WS, "code", undefined, undefined, undefined, []),
+    );
   });
 });

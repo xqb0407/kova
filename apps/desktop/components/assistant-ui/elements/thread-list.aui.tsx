@@ -58,7 +58,9 @@ import {
 import {
   forkPiSession,
   piSessionCwdMap,
+  piSessionProjectMap,
   piSessionRegistry,
+  useSessionPrefsVersion,
 } from "@/lib/pi/pi-thread-adapter";
 import { openMoveSessionDialog } from "@/components/agent-thread/move-session-dialog";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
@@ -702,6 +704,10 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   const threadItems = useThreadItems();
   const pinnedIds = usePinnedSessionIds();
   const timeRange = useThreadTimeRange();
+  // 项目归属（projectCwd）不在 thread item 元数据里：项目目录变更时清单对象
+  // 可能逐字段相同，只靠 threadItems 依赖不会重算分组。摘要落库即自增的版本号
+  // 是这里唯一的稳定信号（applySessionSummaries 每次都会 bump）。
+  const summariesVersion = useSessionPrefsVersion();
 
   const query = searchQuery.trim().toLowerCase();
 
@@ -734,11 +740,16 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
             return at == null || at.getTime() >= rangeStart;
           });
 
-    // cwd 归属只看会话自己记录的 cwd：空（含新建未落盘）= 任务，非空 = 项目分组。
-    // 不用当前 workspace 兜底——那会让"默认选中的目录"污染会话归属
+    // 分组键：项目虚拟目录优先（附加根里的会话回主目录，多代码工程合并成一张卡）；
+    // 没有项目归属时回落会话自己的 cwd。空 cwd = 任务
     const cwdOf = (id: string) => {
       const remoteId = itemsById.get(id)?.remoteId;
-      return (remoteId && piSessionCwdMap.get(remoteId)) || "";
+      if (!remoteId) return "";
+      return (
+        piSessionProjectMap.get(remoteId) ||
+        piSessionCwdMap.get(remoteId) ||
+        ""
+      );
     };
 
     // 置顶分两类：任务会话（无 cwd）进任务 tab 顶部的全局置顶组；项目会话
@@ -779,7 +790,7 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       taskIndices,
       projectGroups,
     };
-  }, [threadIds, threadItems, query, pinnedIds, timeRange]);
+  }, [threadIds, threadItems, query, pinnedIds, timeRange, summariesVersion]);
 };
 
 /** 列表空态。时间筛选开着时换一套文案并给「清除筛选」——否则一句「暂无任务

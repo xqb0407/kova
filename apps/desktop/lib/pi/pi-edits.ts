@@ -21,6 +21,11 @@ export type TurnEditMap = Map<string, TurnEdit>;
 
 const EMPTY_MAP: TurnEditMap = new Map();
 
+/** 检查点记录的查找键：主根按 rel（与影子仓库 diff 行同键），附加根按 root+NUL+rel */
+export function turnEditKey(root: string | undefined, rel: string): string {
+  return root ? `${root}\u0000${rel}` : rel;
+}
+
 export async function fetchTurnEdits(
   sessionId: string,
   cwd: string,
@@ -33,7 +38,9 @@ export async function fetchTurnEdits(
       8000,
     );
     const list = Array.isArray(res.files) ? res.files : [];
-    return new Map(list.map((f) => [f.rel, f]));
+    const map: TurnEditMap = new Map();
+    for (const f of list) map.set(turnEditKey(f.root, f.rel), f);
+    return map;
   } catch {
     return EMPTY_MAP;
   }
@@ -44,10 +51,18 @@ export async function undoTurnEdit(
   cwd: string,
   turnId: string,
   rel: string,
+  root?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await piRequest<UndoneRes>(
-      { type: "checkpoint_undo", sessionId, cwd, turnId, rel },
+      {
+        type: "checkpoint_undo",
+        sessionId,
+        cwd,
+        turnId,
+        rel,
+        ...(root ? { root } : {}),
+      },
       15000,
     );
     return {

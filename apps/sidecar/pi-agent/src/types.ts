@@ -1,7 +1,7 @@
 /** 跨模块共享类型 */
 import type { Agent, AgentContext, AgentTool } from "@earendil-works/pi-agent-core";
 import type * as ai from "ai";
-import type { ApprovalLevel } from "pi-protocol";
+import type { ApprovalLevel, ExternalDir } from "pi-protocol";
 import type { RetryBudget } from "./model/provider-retry";
 import type { TraceRunRecorder } from "./protocol/trace";
 import type { ThemeRef } from "./design-md/store";
@@ -210,6 +210,12 @@ export type Running = {
   cwd: string;
   /** 持久化 cwd（会话绑定的工作目录；空串 = 建会话时未选目录，允许后续补绑） */
   persistedCwd?: string;
+  /**
+   * 项目虚拟目录（本项目的附加代码工程根目录）：只按绝对路径访问，
+   * 提供指令文件、技能与可检索文件。事实源 kv pi.projectDirs；
+   * 普通任务会话（无 cwd）恒为空。
+   */
+  externalDirs: ExternalDir[];
   persistedSeq: number; // state.messages 中已入账（落盘或压缩合成）的前缀长度
   /** JSONL 行 seq 分配器：消息行与 compaction 行共用，文件内单调（压缩后不撞号） */
   jsonlSeq: number;

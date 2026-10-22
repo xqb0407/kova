@@ -72,6 +72,8 @@ import { memoryPromptBlock } from "./memory";
 import { mcpPromptBlock } from "../mcp/mcp-tools";
 import { skillsPromptBlock } from "../skills/skills";
 import { instructionsPromptBlock } from "./instructions";
+import { activeExternalDirs, externalDirsPromptBlock } from "./external-dirs";
+import type { ExternalDir } from "pi-protocol";
 import { sendEventChunk, isPromptActive } from "../protocol/stream";
 import { displayPath } from "../tools/open-file-tool";
 import {
@@ -223,6 +225,7 @@ export function composeModeSystemPrompt(
   model?: PromptModelInfo | null,
   designTheme?: ThemeRef | null,
   goal?: Goal | null,
+  externalDirs: readonly ExternalDir[] = [],
 ): string {
   // 问答档换掉静态核心的取段（剔任务追踪与子代理），其余模式沿用全量核心——
   // 全量拼接与拆分前逐字节相同，缓存不变式不受影响
@@ -250,8 +253,12 @@ export function composeModeSystemPrompt(
     appModePromptBlock(appMode, designTheme),
     memoryPromptBlock(cwd),
     mcpPromptBlock(cwd),
-    skillsPromptBlock(cwd),
+    skillsPromptBlock(
+      cwd,
+      externalDirs.map((dir) => dir.path),
+    ),
     instructionsPromptBlock(cwd),
+    externalDirsPromptBlock(externalDirs),
     gitPromptBlock(cwd, appMode),
     environmentPromptBlock(cwd, model),
   ]
@@ -277,6 +284,7 @@ export function composeRunPrompt(run: Running, model?: PromptModelInfo | null): 
     model,
     run.designTheme,
     run.mode === "goal" ? getGoal(run.threadId) : undefined,
+    run.externalDirs,
   );
 }
 
@@ -624,6 +632,27 @@ export const APPROVAL_REQUIRED_TOOLS = new Set([
 /** plan 模式下结构性拦截的副作用工具（计划文件由 plan_write 自己落盘，不走这里、无需审批） */
 const PLAN_MODE_MUTATING_TOOLS = new Set(["write", "edit"]);
 
+/**
+ * 本会话口径的「写目标在工作区内」：cwd + 项目虚拟目录。
+ * 项目虚拟目录是用户在项目设置里显式挂载的（多代码工程合并），
+ * workspace-write 与 review 档据此免确认；ask 档仍逐次询问。
+ *
+ * 只算**当前存在**的附加根：目录被删（或路径写错）时配置保留但不授权写入，
+ * 否则 agent 可以顺着一个不存在的路径把文件建到任意位置。
+ */
+function writeInsideSession(
+  run: Running,
+  toolName: string,
+  args: unknown,
+): boolean {
+  return writeTargetInsideWorkspace(
+    toolName,
+    args,
+    run.cwd,
+    activeExternalDirs(run.externalDirs ?? []).map((dir) => dir.path),
+  );
+}
+
 /** 模式切换工具的批次独占与可用性校验（与参考实现一致） */
 export function modeBeforeToolCall(
   run: Running,
@@ -781,7 +810,7 @@ export async function gateToolCall(
       }
     }
     if (autoPolicy === "workspace-write" && isPathBearingWrite(context.toolCall.name)) {
-      if (writeTargetInsideWorkspace(context.toolCall.name, context.args, run.cwd)) {
+      if (writeInsideSession(run, context.toolCall.name, context.args)) {
         return undefined;
       }
       const target = writeTargetPath(context.toolCall.name, context.args, run.cwd);
@@ -807,7 +836,7 @@ export async function gateToolCall(
   // workspace-write：工作区内 + 清单内的 write/edit 免确认。
   // 判不了就是不放行——bash 与配置类工具在这里一律落到下面的挂起审批
   if (run.approvalLevel === "workspace-write" && isPathBearingWrite(context.toolCall.name)) {
-    if (writeTargetInsideWorkspace(context.toolCall.name, context.args, run.cwd)) {
+    if (writeInsideSession(run, context.toolCall.name, context.args)) {
       return undefined;
     }
     const target = writeTargetPath(context.toolCall.name, context.args, run.cwd);
@@ -858,7 +887,7 @@ export async function gateToolCall(
   if (run.approvalLevel === "review") {
     if (
       isPathBearingWrite(context.toolCall.name) &&
-      !writeTargetInsideWorkspace(context.toolCall.name, context.args, run.cwd)
+      !writeInsideSession(run, context.toolCall.name, context.args)
     ) {
       const target = writeTargetPath(context.toolCall.name, context.args, run.cwd);
       if (target) {

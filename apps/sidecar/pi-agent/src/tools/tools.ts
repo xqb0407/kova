@@ -39,6 +39,8 @@ import type { ApprovalLevel, SessionMode } from "../types";
 import type { ReviewSessionFacts } from "../permissions/auto-review";
 import { buildMcpTool } from "../mcp/mcp-tools";
 import { buildEchoImageTool } from "./echo-image-tool";
+import { buildSearchExternalFilesTool } from "./external-dir-tools";
+import type { ExternalDir } from "pi-protocol";
 import { resolveSecretEnv } from "../secrets/secrets";
 
 /** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
@@ -261,6 +263,8 @@ function hostTool(
   description: string,
   parameters: AgentTool["parameters"],
   augment?: (params: Record<string, unknown>) => Record<string, unknown>,
+  /** 项目虚拟目录：write/edit 检查点把附加根也视为合法落点 */
+  getExtraRoots?: () => readonly string[],
 ): AgentTool {
   return {
     name,
@@ -292,8 +296,15 @@ function hostTool(
             )
           : [];
       const cpTurn = cpPaths.length ? currentTurnOf(threadId) : {};
+      const cpRoots = cpPaths.length ? getExtraRoots?.() ?? [] : [];
       if (cpPaths.length && cpTurn.sessionId && cpTurn.requestId) {
-        await checkpointPrepare(cpTurn.sessionId, cwd, cpTurn.requestId, cpPaths);
+        await checkpointPrepare(
+          cpTurn.sessionId,
+          cwd,
+          cpTurn.requestId,
+          cpPaths,
+          cpRoots,
+        );
       }
       // signal 透传给 hostToolCall：中断时向宿主发 host_cancel，bash 会被杀进程树。
       // owner 带线程 id：后台任务（runInBackground）跨回合存活于宿主全局表，
@@ -301,7 +312,13 @@ function hostTool(
       const data = await hostToolCall(name, cwd, payload, signal ?? undefined, threadId);
       // 失败在 hostToolCall 抛出、走不到这里——成功态才刷 after
       if (cpPaths.length && cpTurn.sessionId && cpTurn.requestId) {
-        await checkpointCapture(cpTurn.sessionId, cwd, cpTurn.requestId, cpPaths);
+        await checkpointCapture(
+          cpTurn.sessionId,
+          cwd,
+          cpTurn.requestId,
+          cpPaths,
+          cpRoots,
+        );
       }
       // 宿主信封承诺 output:string，但个别 Rust handler 的失败分支可能返回其他
       // 形状（如 {error}）——undefined 塞进 text 块会落成畸形转录，压缩统计等
@@ -364,6 +381,9 @@ export function buildTools(
   /** 当前会话模式（闭包，运行期才解引用 run）：Question 只在执行档拦
    *  「替审批卡要授权」的提问，plan/ask 的澄清提问不受影响。 */
   getMode?: () => SessionMode,
+  /** 项目虚拟目录（多代码工程合并）：运行期实时读 run.externalDirs。
+   *  缺省时检索工具不下发（普通任务/未配置项目的会话保持原工具面）。 */
+  getExternalDirs?: () => readonly ExternalDir[],
 ): AgentTool[] {
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
@@ -452,6 +472,8 @@ export function buildTools(
           }),
         ),
       }),
+      undefined,
+      () => (getExternalDirs?.() ?? []).map((dir) => dir.path),
     ),
     hostTool("edit", cwd, threadId,
       "Replace an exact string in a file. old_string must match exactly and appear exactly once, " +
@@ -464,6 +486,8 @@ export function buildTools(
           Type.Boolean({ description: "Replace every occurrence (default false)" }),
         ),
       }),
+      undefined,
+      () => (getExternalDirs?.() ?? []).map((dir) => dir.path),
     ),
     buildGlobTool(cwd),
     buildGrepTool(cwd),
@@ -496,7 +520,7 @@ export function buildTools(
     ...(getMemoryConfig().enabled ? buildMemoryTools(cwd) : []),
     // 技能调用：按名加载生效技能正文（只读动作，不进审批；见 skill-use-tool.ts）；
     // threadId 供"已加载技能"台账登记（密钥注入的判定条件之一）
-    buildSkillUseTool(cwd, threadId),
+    buildSkillUseTool(cwd, threadId, getExternalDirs),
     // 设计主题加载：按名（或会话缺省主题）取 DESIGN.md 全文（只读动作，不进审批；
     // 见 design-md/use-design-theme-tool.ts）。缺省目标经 getDesignTheme 闭包按引用
     // 读 run.designTheme，会话内切主题即时生效；未注入闭包时工具回落最近使用 kv；
@@ -507,6 +531,9 @@ export function buildTools(
     // 审批档位决定 call 动作要不要逐次弹审批（「完全访问」档不弹；
     // 「AI 审查」档先让审查器判，见 permissions/auto-review.ts）
     buildMcpTool(cwd, threadId, undefined, getApprovalLevel, getReviewFacts),
+    // 项目虚拟目录检索：只读，跨项目所有附加根搜索文件（目录由项目设置管理，
+    // 模型不能自行增删）。未注入闭包时不下发。
+    ...(getExternalDirs ? [buildSearchExternalFilesTool({ getExternalDirs })] : []),
     // 【临时】图片投影链路验收工具（docs/image-part-design.md §10 PR4）：
     // 验收通过后连同 echo-image-tool.ts 一并删除并摘除此注册
     buildEchoImageTool(),

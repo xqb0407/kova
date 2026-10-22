@@ -1,7 +1,8 @@
 /**
  * 文件树/我的文件/附件中转（对齐 fs.rs 全部 15 命令与错误码字符串）。
- * 路径守卫同款：cwd 必须命中 kv workspace 或 task-workspace 子树；
- * 相对段拒绝绝对与 `..`；目标存在时两侧 realpath 防符号链接逃逸。
+ * 路径守卫同款：cwd 必须命中 kv workspace、task-workspace 子树、资料库根，
+ * 或当前项目的虚拟目录根（pi.projectDirs）；相对段拒绝绝对与 `..`；
+ * 目标存在时两侧 realpath 防符号链接逃逸。
  */
 import { existsSync, lstatSync, openSync, readSync, closeSync, statSync, realpathSync } from "node:fs";
 import type { Dirent } from "node:fs";
@@ -12,6 +13,7 @@ import { homedir } from "node:os";
 import { appDataDir, sessionsDir } from "./paths";
 import { libraryRoot as libraryRootDir } from "./library";
 import { kvGet } from "./store";
+import { trustedProjectRoots } from "./project-roots";
 import { emitToWindows } from "./ipc";
 import { logInfo } from "./logging";
 import { shell, BrowserWindow } from "electron";
@@ -92,6 +94,12 @@ function resolveRoot(cwd: string): string {
     // 失败 + 更改位置呈现。
     const lib = tryRealpath(libraryRootDir());
     if (lib && within(probe, lib)) trusted = true;
+  }
+  if (!trusted) {
+    // 项目虚拟目录（多代码工程合并）：主目录与附加根都由用户在本机配置，
+    // 文件树切根后需要能读写。只认已存在的根（trustedProjectRoots 已 realpath）。
+    const projectRoots = trustedProjectRoots(kvGet("pi.projectDirs"));
+    if (projectRoots.some((root) => probe === root)) trusted = true;
   }
   if (!trusted) return fail("cwd-not-allowed");
   // 返回值必须是 cwd 本身（后续 joinRel 以它为基准拼接相对路径；

@@ -113,6 +113,36 @@ describe("isInside / realResolve", () => {
   });
 });
 
+describe("writeTargetInsideWorkspace：会话外部目录（extraRoots）", () => {
+  const shared = join(root, "shared-lib");
+  mkdirSync(join(shared, "src"), { recursive: true });
+  writeFileSync(join(shared, "src", "lib.ts"), "x");
+
+  test("列进 extraRoots 的外部目录按工作区内放行", () => {
+    expect(
+      writeTargetInsideWorkspace("write", { file_path: join(shared, "src", "lib.ts") }, ws, [shared]),
+    ).toBe(true);
+    expect(
+      writeTargetInsideWorkspace("write", { file_path: join(shared, "new.ts") }, ws, [shared]),
+    ).toBe(true);
+  });
+
+  test("未列进 extraRoots 的外部目录仍然拦下", () => {
+    expect(
+      writeTargetInsideWorkspace("write", { file_path: join(shared, "src", "lib.ts") }, ws),
+    ).toBe(false);
+    expect(
+      writeTargetInsideWorkspace("write", { file_path: join(shared, "src", "lib.ts") }, ws, [other]),
+    ).toBe(false);
+  });
+
+  test("extraRoots 不改变 bash 的判定（参数里看不出写目标）", () => {
+    expect(
+      writeTargetInsideWorkspace("bash", { command: "touch shared/x" }, ws, [shared]),
+    ).toBe(false);
+  });
+});
+
 // 清理（测试进程退出前）
 process.on("exit", () => {
   try {

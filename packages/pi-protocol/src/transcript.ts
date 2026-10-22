@@ -48,6 +48,16 @@ export const sessionInfoRowSchema = z.looseObject({
   timestamp: z.string().optional(),
 });
 
+/**
+ * 项目虚拟目录条目：项目主目录之外的附加根目录（多个代码工程合并成一个项目）。
+ * 注意它是**项目级**配置（用户本机 kv），不是会话级状态。
+ */
+export const externalDirSchema = z.looseObject({
+  path: z.string(),
+  label: z.string(),
+});
+export type ExternalDir = z.infer<typeof externalDirSchema>;
+
 export type TranscriptHeader = z.infer<typeof transcriptHeaderSchema>;
 export type ModelChangeRow = z.infer<typeof modelChangeRowSchema>;
 export type ThinkingLevelChangeRow = z.infer<typeof thinkingLevelChangeRowSchema>;

@@ -45,6 +45,7 @@ import { initAutoReview } from "./permissions/auto-review";
 import { initSubagentState } from "./subagent/subagent-definitions";
 import { pruneActivityFiles } from "./subagent/activity-store";
 import { initSkillsState } from "./skills/skills";
+import { initProjectDirs } from "./agent/project-dirs";
 import { initMcpEnabledState } from "./mcp/mcp-config";
 import { initMcpSecretBindings } from "./mcp/mcp-secrets";
 import { initPluginsState, syncBuiltinPlugins } from "./plugins/plugins";
@@ -129,6 +130,9 @@ async function main() {
     await initSubagentState();
     // 技能启用开关同走 kv（技能目录本身按需带签名加载，resolveSession 预热）
     await initSkillsState();
+    // 项目虚拟目录（多代码工程合并）：会话解析前必须就位——它决定
+    // run.externalDirs、提示词附加段与侧栏分组归属
+    await initProjectDirs();
     // MCP 启用开关同走 kv（服务器定义文件按需带签名加载）；就绪后启动空闲连接回收
     await initMcpEnabledState();
     // MCP 密钥绑定同走 kv（用户级；工作区配置文件不能自我授权）
