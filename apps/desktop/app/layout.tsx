@@ -46,6 +46,20 @@ const UI_PREFS_BOOTSTRAP = `(function(){try{var p=JSON.parse(localStorage.getIte
  */
 const UUID_POLYFILL = `(function(){try{if(typeof crypto==="undefined"||typeof crypto.getRandomValues!=="function")return;if(typeof crypto.randomUUID==="function")return;crypto.randomUUID=function(){var b=new Uint8Array(16);crypto.getRandomValues(b);b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;var s="";for(var i=0;i<16;i++)s+=(b[i]+256).toString(16).slice(1);return s.slice(0,8)+"-"+s.slice(8,12)+"-"+s.slice(12,16)+"-"+s.slice(16,20)+"-"+s.slice(20);};}catch(e){}})();`;
 
+/**
+ * webview 管道噪声首道闸：Electron <webview> 的 src 加载被后续导航顶掉时，
+ * 元素内部的 GUEST_VIEW_MANAGER_CALL invoke 以 ERR_ABORTED (-3) 拒绝且无人
+ * 接住 → 渲染进程 unhandledrejection。Next dev 深色浮层的全局监听在模块求值
+ * 期（client/app-globals → app-dev-overlay-setup）就已注册，且**不检查
+ * defaultPrevented**——installFrontendLogging（useEffect 期才装）里的
+ * preventDefault() 拦不住它，浮层照弹。要挡住只有「先注册 +
+ * stopImmediatePropagation()」一条路，而 head 内联脚本保证先于 Next 的所有
+ * chunk 执行。命中签名：阻断浮层与控制台裸错，折叠成 console.warn（日志管道
+ * 装好后照旧以 warn 落 web.log）。签名口径与 lib/frontend-logging.ts 的
+ * isWebviewAbortNoise 一致，两处改动须同步。
+ */
+const WEBVIEW_ABORT_GUARD = `(function(){try{window.addEventListener("unhandledrejection",function(e){var r=e&&e.reason,t=String((r&&r.message)||r||"");if(t.indexOf("GUEST_VIEW_MANAGER_CALL")===-1)return;if(t.indexOf("ERR_ABORTED")===-1&&t.indexOf("(-3)")===-1)return;e.preventDefault();e.stopImmediatePropagation();console.warn("[webview] 导航被顶掉（已折叠）: "+t);});}catch(e){}})();`;
+
 export default function RootLayout({
   children,
 }: {
@@ -56,6 +70,7 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: UUID_POLYFILL }} />
         <script dangerouslySetInnerHTML={{ __html: UI_PREFS_BOOTSTRAP }} />
+        <script dangerouslySetInnerHTML={{ __html: WEBVIEW_ABORT_GUARD }} />
       </head>
       <body>
         {/* PerfHud：性能采样/上报的挂载点，平时渲染 null（屏上那行已去掉，
