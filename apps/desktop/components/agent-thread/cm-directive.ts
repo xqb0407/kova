@@ -102,6 +102,7 @@ function attachChipTooltip(wrap: HTMLElement, text: string): void {
     }
     window.removeEventListener("scroll", hide, true);
     window.removeEventListener("resize", hide);
+    window.removeEventListener("blur", hide);
   }
   function hide(): void {
     cleanup();
@@ -129,6 +130,8 @@ function attachChipTooltip(wrap: HTMLElement, text: string): void {
     }, 200);
     window.addEventListener("scroll", hide, true);
     window.addEventListener("resize", hide);
+    // 窗口失焦（切到别的应用）时也收起，避免回来时浮层还挂在旧位置
+    window.addEventListener("blur", hide);
   }
 
   wrap.addEventListener("mouseenter", show);
