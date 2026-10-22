@@ -227,11 +227,18 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
   );
 
   /**
-   * 导航到 u：只走 src 属性通道（见 navSrc 注释）。两处防呆：
+   * 导航到 u：只走 src 属性通道（见 navSrc 注释）。三处防呆：
    * - 与实际页比对（agent 直接驱动 guest 后，navSrc 可能停留在旧值）：已在
    *   目标页则不动，否则会被 React 的"同值不写属性"吃掉这一次导航——后退
    *   按钮跳回一个恰与旧 navSrc 相同的 URL 时表现为"点了没反应"；
    * - 属性值恰好相同时先清空再写回（下一拍），强制产生一次属性变更。
+   * - 但「清空再写回」仅限已 attach 的元素（getURL 拿到非空值）：未 attach
+   *   时 src 通道里排队的正是同一 URL 的首次加载，清空重写会再发起一次导航
+   *   把它顶掉——被顶掉的那次以 GUEST_VIEW_MANAGER_CALL + ERR_ABORTED (-3)
+   *   拒绝且无人接住（挂载期 tab.url 效应必然走到这条路），是每次带 URL 开
+   *   标签必报一条的 unhandledrejection（签名折叠见 layout.tsx
+   *   WEBVIEW_ABORT_GUARD / frontend-logging isWebviewAbortNoise），故此时
+   *   直接不动，排队中的加载自会完成。
    */
   const navigateTo = useCallback(
     (u: string) => {
@@ -247,6 +254,7 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
       const norm = (s: string) => s.trim().replace(/\/+$/, "");
       if (current && norm(current) === norm(u)) return;
       if (navSrc === u) {
+        if (!current) return;
         setNavSrc(null);
         setTimeout(() => setNavSrc(u), 0);
         return;
