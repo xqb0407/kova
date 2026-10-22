@@ -85,6 +85,38 @@ const INTERACTIVE_TYPES = new Set([
   "library",
 ]);
 
+/**
+ * 芯片悬浮提示：原生 title 在 contenteditable/Electron 里常不弹或延迟很久，
+ * 这里用 fixed 定位的 DOM 浮层（样式见 globals.css 的 .aui-directive-tooltip）。
+ * 只负责展示被 max-width 截断的完整 label；mousedown/移除时收起，避免残留。
+ */
+function attachChipTooltip(wrap: HTMLElement, text: string): void {
+  if (!text) return;
+  let tip: HTMLDivElement | null = null;
+  const hide = () => {
+    if (!tip) return;
+    tip.remove();
+    tip = null;
+  };
+  const show = () => {
+    if (tip || !wrap.isConnected) return;
+    const rect = wrap.getBoundingClientRect();
+    tip = document.createElement("div");
+    tip.className = "aui-directive-tooltip";
+    tip.textContent = text;
+    document.body.appendChild(tip);
+    const tipRect = tip.getBoundingClientRect();
+    const above = rect.top > tipRect.height + 12;
+    const top = above ? rect.top - tipRect.height - 8 : rect.bottom + 8;
+    const maxLeft = Math.max(8, window.innerWidth - tipRect.width - 8);
+    tip.style.top = `${Math.max(8, top)}px`;
+    tip.style.left = `${Math.min(maxLeft, Math.max(8, rect.left))}px`;
+  };
+  wrap.addEventListener("mouseenter", show);
+  wrap.addEventListener("mouseleave", hide);
+  wrap.addEventListener("mousedown", hide);
+}
+
 /** 悬浮删除按钮：hover 时原地替换左侧类型图标，点击把 token 整段从文档删掉。
  *  （图标/叉的显隐规则在 globals.css 的 .aui-directive-chip-interactive 族；
  *  叉与图标同尺寸同位，hover 切换时宽度不跳。） */
@@ -139,8 +171,8 @@ class ChipWidget extends WidgetType {
   }
   override toDOM() {
     const wrap = document.createElement("span");
-    // 悬浮显示完整标签：统一截断后（globals.css 的 max-width）靠 title 看全文
-    wrap.title = this.label;
+    // 悬浮显示完整标签：统一截断（globals.css 的 max-width）后靠自绘 tooltip 看全文
+    attachChipTooltip(wrap, this.label);
     // 智能体提及不用药丸底：改成「机器人图标 + 高亮文本」，与消息行里的 agent
     // 名同一视觉语言；悬浮时图标原位换成 ✕，点击整段删除（同可交互芯片）
     if (this.directiveType === "agent") {
