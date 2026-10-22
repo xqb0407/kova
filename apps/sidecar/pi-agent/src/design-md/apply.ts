@@ -26,7 +26,15 @@ import type { Running } from "../types";
  *  会话的主题句（名称/描述/被删后的消失）都要跟上 */
 export function recomposeAllRuns(): void {
   for (const run of running.values()) {
-    const prompt = composeModeSystemPrompt(run.mode, run.cwd, run.appMode, run.agent.state.model, run.designTheme);
+    const prompt = composeModeSystemPrompt(
+      run.mode,
+      run.cwd,
+      run.appMode,
+      run.agent.state.model,
+      run.designTheme,
+      undefined,
+      run.externalDirs,
+    );
     setLeadingSystemMessage(run.agent.state.messages, prompt);
     if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
   }
@@ -36,7 +44,15 @@ export function recomposeAllRuns(): void {
  *  （fire-and-forget，与 persistModePrefs 同款容错） */
 export function applySessionTheme(run: Running, ref: ThemeRef | null): void {
   run.designTheme = ref;
-  const prompt = composeModeSystemPrompt(run.mode, run.cwd, run.appMode, run.agent.state.model, run.designTheme);
+  const prompt = composeModeSystemPrompt(
+    run.mode,
+    run.cwd,
+    run.appMode,
+    run.agent.state.model,
+    run.designTheme,
+    undefined,
+    run.externalDirs,
+  );
   setLeadingSystemMessage(run.agent.state.messages, prompt);
   if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
   void sessionPrefsSet(run.sessionId, { designTheme: encodeThemeColumn(ref) }).catch(() => {});

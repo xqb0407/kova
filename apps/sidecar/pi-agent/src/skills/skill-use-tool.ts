@@ -23,6 +23,7 @@ import {
   skillsSnapshot,
 } from "./skills";
 import { noteSkillLoaded } from "../secrets/secrets";
+import type { ExternalDir } from "pi-protocol";
 
 export const SKILL_USE_TOOL_NAME = "use_skill";
 
@@ -30,6 +31,7 @@ export const SKILL_USE_TOOL_NAME = "use_skill";
 const SCOPE_ZH = {
   workspace: "项目",
   "compat-workspace": "生态·项目",
+  external: "外部目录",
   system: "系统",
   compat: "生态·用户",
   plugin: "插件",
@@ -46,7 +48,12 @@ function errorResult(text: string) {
   };
 }
 
-export function buildSkillUseTool(cwd: string, threadId: string): AgentTool {
+export function buildSkillUseTool(
+  cwd: string,
+  threadId: string,
+  /** 会话外部目录（运行期读 run）：外部技能也出现在目录里，必须能按名加载 */
+  getExternalDirs?: () => readonly ExternalDir[],
+): AgentTool {
   return {
     name: SKILL_USE_TOOL_NAME,
     label: "调用技能",
@@ -63,11 +70,17 @@ export function buildSkillUseTool(cwd: string, threadId: string): AgentTool {
       if (!name) return errorResult("name 不能为空");
       try {
         // 签名缓存下无变化零 IO；外部（设置页/手工）改动后此处拿到的是磁盘现值
-        await ensureSkillsLoaded(cwd);
+        await ensureSkillsLoaded(
+          cwd,
+          getExternalDirs?.()?.map((dir) => dir.path),
+        );
       } catch {
         // 加载失败退化为读旧缓存快照，错误在下面的查找/读盘路径里体现
       }
-      const { entries } = skillsSnapshot(cwd);
+      const { entries } = skillsSnapshot(
+        cwd,
+        getExternalDirs?.()?.map((dir) => dir.path),
+      );
       const norm = normalizeSkillName(name);
       const hit = entries.find((e) => normalizeSkillName(e.name) === norm);
       if (!hit) {

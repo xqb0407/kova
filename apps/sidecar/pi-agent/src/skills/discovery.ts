@@ -13,6 +13,7 @@ import {
   type Skill,
 } from "../vendor/pi-harness/skills";
 import { activePlugins, resolvePluginComponent } from "../plugins/plugins";
+import { externalSkillDirs } from "../agent/external-dirs";
 import {
   initSkillsState,
   isSkillDisabled,
@@ -153,6 +154,11 @@ const pluginCache = new Map<
   string,
   { sig: string; entry: { layers: LoadedSkill[]; diagnostics: string[] } }
 >();
+/** 会话外部目录层按目录缓存（`.kova/skills` / `.agents/skills` / `.claude/skills` 合并） */
+const externalCache = new Map<
+  string,
+  { sig: string; entry: { layers: LoadedSkill[]; diagnostics: string[] } }
+>();
 
 export type SkillsSnapshot = {
   /** 生效技能（去重遮蔽 + 开关过滤；disableModelInvocation 由提示词格式化器再滤） */
@@ -162,21 +168,27 @@ export type SkillsSnapshot = {
   diagnostics: string[];
 };
 
-/** 从缓存合并（无 IO）：同名遮蔽 [工作区, 生态·工作区, 系统, 生态·用户, 插件] 先见者胜 */
-function mergeLayers(cwd?: string): SkillsSnapshot {
+/** 从缓存合并（无 IO）：同名遮蔽 [工作区, 外部目录, 系统, 生态·用户, 插件] 先见者胜。
+ *  externalDirs 缺省 = 不并入外部层（设置页清单不应被某个会话的临时目录污染）。 */
+function mergeLayers(cwd?: string, externalDirs?: readonly string[]): SkillsSnapshot {
   const globalEntry = globalCache.entry ?? { layers: [], diagnostics: [] };
   const wsEntry = (cwd ? workspaceCache.get(cwd)?.entry : undefined) ?? {
     layers: [],
     diagnostics: [],
   };
+  const externalEntries = (externalDirs ?? [])
+    .map((dir) => externalCache.get(dir)?.entry)
+    .filter((entry): entry is { layers: LoadedSkill[]; diagnostics: string[] } => Boolean(entry));
   const pluginEntries = [...pluginCache.values()].map((c) => c.entry);
   const ordered = [
     ...wsEntry.layers,
+    ...externalEntries.flatMap((e) => e.layers),
     ...globalEntry.layers,
     ...pluginEntries.flatMap((e) => e.layers),
   ];
   const diagnostics = [
     ...wsEntry.diagnostics,
+    ...externalEntries.flatMap((e) => e.diagnostics),
     ...globalEntry.diagnostics,
     ...pluginEntries.flatMap((e) => e.diagnostics),
   ];
@@ -240,10 +252,17 @@ function fileTimeOf(path: string): string {
 }
 
 /**
- * 刷新缓存（幂等）：全局两层按签名、工作区两层按 cwd+签名。
+ * 刷新缓存（幂等）：全局两层按签名、工作区两层按 cwd+签名、外部目录按目录签名。
  * resolveSession 组装提示词前必须 await 本函数预热，skillsPromptBlock 才有数可读。
+ *
+ * externalDirs 的 undefined 与 [] 语义不同：
+ * - undefined = 本次调用不涉及外部目录（设置页清单等），不加载也不修剪外部缓存；
+ * - [] / 具体清单 = 该会话的外部目录全集，按它加载并清掉不再引用的缓存。
  */
-export async function ensureSkillsLoaded(cwd?: string): Promise<void> {
+export async function ensureSkillsLoaded(
+  cwd?: string,
+  externalDirs?: readonly string[],
+): Promise<void> {
   await initSkillsState();
   const systemDir = systemSkillsDir();
   const compatDir = compatHomeSkillsDir();
@@ -278,6 +297,35 @@ export async function ensureSkillsLoaded(cwd?: string): Promise<void> {
       });
     }
   }
+  if (externalDirs !== undefined) {
+    const seen = new Set<string>();
+    for (const rawDir of externalDirs) {
+      const dir = rawDir.trim();
+      if (!dir || seen.has(dir)) continue;
+      seen.add(dir);
+      const sig = externalSkillDirs(dir)
+        .map((skillsDir) => `${skillsDir}|${dirSignature(skillsDir)}`)
+        .join("|");
+      const cached = externalCache.get(dir);
+      if (cached && cached.sig === sig) continue;
+      const layers = await Promise.all(
+        externalSkillDirs(dir).map((skillsDir) =>
+          loadSkillLayer(skillsDir, "external", dir),
+        ),
+      );
+      externalCache.set(dir, {
+        sig,
+        entry: {
+          layers: layers.flatMap((layer) => layer.layers),
+          diagnostics: layers.flatMap((layer) => layer.diagnostics),
+        },
+      });
+    }
+    // 刻意不按本次清单修剪：externalCache 是进程级共享的，而每个 run 的清单
+    // 不同（多个会话各自挂载不同目录）。按单次调用修剪会删掉别的会话仍需要的
+    // 条目，表现为「切换一轮后外部技能从提示词里消失」。条目按目录去重，
+    // 数量受每会话上限约束，留热缓存的代价远小于这个 bug。
+  }
   // 插件层（全局，垫底）：逐启用插件加载其技能目录；签名含插件清单以感知安装/卸载/更新
   const pluginLayers = activePlugins().filter((p) => {
     const dir = resolvePluginComponent(p.manifest, "skills");
@@ -298,8 +346,14 @@ export async function ensureSkillsLoaded(cwd?: string): Promise<void> {
 }
 
 /** 同步读缓存快照（供 skillsPromptBlock / settings 清单；未预热时返回空档） */
-export function skillsSnapshot(cwd?: string): SkillsSnapshot {
-  return mergeLayers(cwd && cwd.trim() ? cwd.trim() : undefined);
+export function skillsSnapshot(
+  cwd?: string,
+  externalDirs?: readonly string[],
+): SkillsSnapshot {
+  return mergeLayers(
+    cwd && cwd.trim() ? cwd.trim() : undefined,
+    externalDirs,
+  );
 }
 
 /** 库目录段的"读文件加载"指引 → 改指 use_skill 工具（专属回执带技能目录锚点，
@@ -310,8 +364,13 @@ const SKILL_USE_LINE =
   "When the task matches a skill's description, call the use_skill tool with that skill's <name> to load its full instructions; do not read the skill file with the read tool.";
 
 /** 系统提示词的技能目录段：无生效技能返回空串（默认提示词字节级不变） */
-export function skillsPromptBlock(cwd: string): string {
-  const block = formatSkillsForSystemPrompt(skillsSnapshot(cwd).activeSkills);
+export function skillsPromptBlock(
+  cwd: string,
+  externalDirs?: readonly string[],
+): string {
+  const block = formatSkillsForSystemPrompt(
+    skillsSnapshot(cwd, externalDirs).activeSkills,
+  );
   if (!block) return "";
   return block.split(SKILL_READ_LINE).join(SKILL_USE_LINE);
 }
@@ -340,4 +399,5 @@ export function clearSkillCaches(): void {
   globalCache.entry = undefined;
   workspaceCache.clear();
   pluginCache.clear();
+  externalCache.clear();
 }

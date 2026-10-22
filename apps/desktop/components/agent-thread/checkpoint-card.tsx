@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type FC,
@@ -38,6 +39,7 @@ import {
 } from "@/lib/pi/pi-checkpoints";
 import {
   fetchTurnEdits,
+  turnEditKey,
   turnEditUndoError,
   undoTurnEdit,
   type TurnEdit,
@@ -65,6 +67,13 @@ import { cn } from "@/lib/utils";
  *  内层 fade/slide/blur 同拍，动画期间钉住滚动位置 */
 const CP_ANIMATION_MS = 200;
 const CP_EASE = "ease-[cubic-bezier(0.32,0.72,0,1)]";
+
+/** 旧 sidecar 没有 primary/root 字段：按「无 root 或 root=cwd」回退为主根 */
+function isPrimaryEdit(edit: TurnEdit, cwd: string): boolean {
+  if (edit.primary === true) return true;
+  if (edit.primary === false) return false;
+  return !edit.root || edit.root === cwd;
+}
 
 /** 展开区的逐文件行：状态徽标 + 路径 + 行数统计 + 审查/打开（+ 单文件回滚） */
 const CheckpointFileRow: FC<{
@@ -158,6 +167,86 @@ const CheckpointFileRow: FC<{
   );
 };
 
+/**
+ * 项目附加根的逐文件行：影子仓库整轮 diff 只覆盖会话 cwd，附加根的文件
+ * 来自条目所有权层（root + rel），因此这里只提供「打开」与「回滚」，
+ * 不提供依赖影子仓库的「审查」。
+ */
+const ExternalCheckpointRow: FC<{
+  edit: TurnEdit;
+  undoing?: boolean;
+  onUndo: (root: string, rel: string) => void;
+}> = ({ edit, undoing, onUndo }) => {
+  const { dir, base } = splitPath(edit.rel);
+  const rootLabel =
+    edit.root.split(/[\\/]/).filter(Boolean).at(-1) ?? edit.root;
+  const openFile = () => {
+    focusPanelTab("file", {
+      cwd: edit.root,
+      path: edit.rel,
+      title: base,
+      focus: undefined,
+    });
+    window.dispatchEvent(new Event("agent-panel:open"));
+  };
+  return (
+    <div className="group/row hover:bg-muted/60 flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors">
+      <StatusDot status={edit.status} title={edit.status} />
+      <FileTypeIcon path={edit.rel} />
+      <span className="min-w-0 shrink-0 text-sm font-medium text-foreground/90">
+        {base}
+      </span>
+      <span className="text-muted-foreground min-w-0 flex-1 truncate">
+        <span className="bg-muted mr-1 rounded px-1 text-[10px] leading-4">
+          {rootLabel}
+        </span>
+        {dir}
+      </span>
+      {edit.additions >= 0 ? (
+        <DiffStats
+          added={edit.additions}
+          removed={edit.deletions}
+          className="text-[13px]"
+        />
+      ) : null}
+      <span className="ml-1 flex shrink-0 items-center gap-1">
+        {edit.undoable ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-[13px]"
+            disabled={undoing}
+            onClick={() => onUndo(edit.root, edit.rel)}
+            title={
+              edit.exact
+                ? "仅回滚此文件到本轮开始前的状态，其余改动保留"
+                : "本轮该文件还含非 agent 改动；回滚将一并退回"
+            }
+          >
+            {undoing ? (
+              <Loader2Icon className="size-3.5 animate-spin" />
+            ) : (
+              <Undo2Icon className="size-3.5" />
+            )}
+            回滚
+          </Button>
+        ) : null}
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="text-muted-foreground hover:text-foreground h-6 gap-1 px-2 text-[13px]"
+          onClick={openFile}
+        >
+          <SquareArrowOutUpRightIcon className="size-3.5" />
+          打开
+        </Button>
+      </span>
+    </div>
+  );
+};
+
 /** 单张检查点卡：一条结算条目对应一轮，产物卡同款外观 */
 const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
   entry: cp,
@@ -169,10 +258,48 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 整轮撤销后仍有附加根改动：卡片保留，提示逐文件回滚 */
+  const [revertNote, setRevertNote] = useState<string | null>(null);
   /** 条目所有权层（sidecar checkpoint store）：rel → 本轮编辑资格；
    *  老条目无 turnId / sidecar 不可达时为空 Map——行不挂回滚钮，卡片照常 */
   const [edits, setEdits] = useState<TurnEditMap>(new Map());
   const [undoingRel, setUndoingRel] = useState<string | null>(null);
+
+  /** 主根记录按 rel 索引（影子仓库 diff 行用 rel 匹配） */
+  const primaryEdits = useMemo(() => {
+    const map = new Map<string, TurnEdit>();
+    for (const edit of edits.values()) {
+      if (isPrimaryEdit(edit, cp.cwd)) map.set(edit.rel, edit);
+    }
+    return map;
+  }, [edits, cp.cwd]);
+
+  /** 影子仓库 diff 覆盖不到的主根文件（gitignored / 主目录不是 git 仓库）：
+   *  逐文件检查点仍有效，单独列出以便回滚。 */
+  const detachedPrimaryEdits = useMemo(() => {
+    const shadowPaths = new Set((files ?? []).map((f) => f.path));
+    const out: TurnEdit[] = [];
+    for (const edit of primaryEdits.values()) {
+      if (!shadowPaths.has(edit.rel)) out.push(edit);
+    }
+    return out.sort((a, b) => a.rel.localeCompare(b.rel));
+  }, [primaryEdits, files]);
+
+  /** 附加根的逐文件记录（主根行仍与影子仓库 diff 按 rel 合并） */
+  const externalEdits = useMemo(() => {
+    const out: TurnEdit[] = [];
+    const seen = new Set<string>();
+    for (const edit of edits.values()) {
+      if (isPrimaryEdit(edit, cp.cwd)) continue;
+      const key = turnEditKey(edit.root, edit.rel);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(edit);
+    }
+    return out.sort(
+      (a, b) => a.root.localeCompare(b.root) || a.rel.localeCompare(b.rel),
+    );
+  }, [edits, cp.cwd]);
 
   // 逐文件统计按需加载：折叠态只展示聚合数字，不额外 invoke
   const loadAll = useCallback(
@@ -180,8 +307,12 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
       if ((files || filesLoading) && !force) return;
       setFilesLoading(true);
       try {
+        // hash 为空（主目录不是 git 仓库）时不去调影子仓库；附加根记录照常拉，
+        // 不能因为整轮 diff 失败把逐文件回滚入口一起吞掉。
         const [diff, ed] = await Promise.all([
-          gitCheckpointDiff(cp.cwd, cp.hash),
+          cp.hash
+            ? gitCheckpointDiff(cp.cwd, cp.hash).catch(() => null)
+            : Promise.resolve(null),
           fetchTurnEdits(threadId, cp.cwd, cp.turnId),
         ]);
         setFiles(diff?.files ?? []);
@@ -203,20 +334,33 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
   /** 单文件回滚：回该轮首次编辑前的基线；成功即重载两份数据（行可能整行消失——
    *  影子仓库 diff 里该文件不再有差异） */
   const undoFile = useCallback(
-    async (rel: string) => {
+    async (rel: string, root?: string) => {
       if (!cp.turnId || undoingRel) return;
-      setUndoingRel(rel);
+      const key = turnEditKey(root, rel);
+      setUndoingRel(key);
       setError(null);
-      const res = await undoTurnEdit(threadId, cp.cwd, cp.turnId, rel);
+      const res = await undoTurnEdit(threadId, cp.cwd, cp.turnId, rel, root);
       setUndoingRel(null);
       if (!res.ok) {
         setError(turnEditUndoError(res.error));
         return;
       }
-      refreshGitStatus(cp.cwd);
-      await loadAll(true);
+      // 主根有 git 状态面板；附加根不在影子仓库里，不需要刷
+      if (!root || root === cp.cwd) refreshGitStatus(cp.cwd);
+      const [diff, ed] = await Promise.all([
+        cp.hash
+          ? gitCheckpointDiff(cp.cwd, cp.hash).catch(() => null)
+          : Promise.resolve(null),
+        fetchTurnEdits(threadId, cp.cwd, cp.turnId),
+      ]);
+      setFiles(diff?.files ?? []);
+      setEdits(ed);
+      // 本轮已无任何可撤销改动：卡片完成使命，直接收掉
+      if ((diff?.files.length ?? 0) === 0 && ed.size === 0) {
+        clearRunCheckpoint(threadId, cp.hash);
+      }
     },
-    [cp, threadId, undoingRel, loadAll],
+    [cp, threadId, undoingRel],
   );
 
   // 高度动画期间钉住滚动位置（轮次折叠同款）：卡片在消息流中段，展开把下方
@@ -233,11 +377,26 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
   const revert = async () => {
     setBusy(true);
     setError(null);
+    setRevertNote(null);
     try {
       await gitCheckpointRestore(cp.cwd, cp.hash);
+      refreshGitStatus(cp.cwd);
+      // 整轮撤销只覆盖会话 cwd 的影子仓库；影子仓库没收录的文件（gitignored、
+      // 主目录非 git、项目附加根）改动仍在时必须保留卡片，否则会连同逐文件
+      // 回滚入口一起消失。
+      const remaining = await fetchTurnEdits(threadId, cp.cwd, cp.turnId);
+      if (remaining.size > 0) {
+        setFiles([]);
+        setEdits(remaining);
+        setExpanded(true);
+        setRevertNote(
+          "整轮撤销只覆盖工作区仓库；未进入整轮快照的文件（gitignored / 附加根）改动仍在，请在下方逐文件回滚。",
+        );
+        setConfirming(false);
+        return;
+      }
       clearRunCheckpoint(threadId, cp.hash);
       // 撤销成功即消失；状态/审查视图经 git-changed 事件与这里的显式刷新收敛
-      refreshGitStatus(cp.cwd);
     } catch (err) {
       const code = gitErrorCode(err);
       setError(
@@ -299,47 +458,49 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
           >
-            {confirming ? (
-              <>
-                <span className="text-muted-foreground">丢弃全部改动？</span>
+            {cp.hash ? (
+              confirming ? (
+                <>
+                  <span className="text-muted-foreground">丢弃全部改动？</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    className="h-7 px-2 text-[13px]"
+                    disabled={busy}
+                    onClick={revert}
+                  >
+                    {busy ? (
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                    ) : (
+                      <Undo2Icon className="size-3.5" />
+                    )}
+                    确认撤销
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-[13px]"
+                    disabled={busy}
+                    onClick={() => setConfirming(false)}
+                  >
+                    取消
+                  </Button>
+                </>
+              ) : (
                 <Button
                   type="button"
                   size="sm"
-                  variant="destructive"
-                  className="h-7 px-2 text-[13px]"
-                  disabled={busy}
-                  onClick={revert}
+                  variant="outline"
+                  className="h-7 gap-1 px-2 text-[13px]"
+                  onClick={() => setConfirming(true)}
                 >
-                  {busy ? (
-                    <Loader2Icon className="size-3.5 animate-spin" />
-                  ) : (
-                    <Undo2Icon className="size-3.5" />
-                  )}
-                  确认撤销
+                  <Undo2Icon className="size-3.5" />
+                  撤销
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 px-2 text-[13px]"
-                  disabled={busy}
-                  onClick={() => setConfirming(false)}
-                >
-                  取消
-                </Button>
-              </>
-            ) : (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-7 gap-1 px-2 text-[13px]"
-                onClick={() => setConfirming(true)}
-              >
-                <Undo2Icon className="size-3.5" />
-                撤销
-              </Button>
-            )}
+              )
+            ) : null}
           </span>
         </div>
 
@@ -388,7 +549,9 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
                     <Loader2Icon className="size-3.5 animate-spin" />
                     读取文件变更…
                   </div>
-                ) : (files ?? []).length === 0 ? (
+                ) : (files ?? []).length === 0 &&
+                  detachedPrimaryEdits.length === 0 &&
+                  externalEdits.length === 0 ? (
                   <div className="text-muted-foreground px-2 py-1.5">
                     读取不到逐文件变更（快照可能已过期）
                   </div>
@@ -400,13 +563,64 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
                         cwd={cp.cwd}
                         checkpoint={cp.hash}
                         file={f}
-                        edit={edits.get(f.path)}
+                        edit={primaryEdits.get(f.path)}
                         undoing={undoingRel === f.path}
                         onUndo={(rel) => void undoFile(rel)}
                       />
                     ))}
+                    {detachedPrimaryEdits.length > 0 ? (
+                      <div
+                        className={cn(
+                          "flex flex-col gap-0.5",
+                          (files ?? []).length > 0 &&
+                            "border-border/60 mt-1 border-t pt-1.5",
+                        )}
+                      >
+                        <div className="text-muted-foreground px-2 text-[11px]">
+                          主目录（未进入整轮快照，可逐文件回滚）
+                        </div>
+                        {detachedPrimaryEdits.map((edit) => (
+                          <ExternalCheckpointRow
+                            key={edit.rel}
+                            edit={edit}
+                            undoing={undoingRel === edit.rel}
+                            onUndo={(_root, rel) => void undoFile(rel)}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                    {externalEdits.length > 0 ? (
+                      <div
+                        className={cn(
+                          "flex flex-col gap-0.5",
+                          (files ?? []).length > 0 &&
+                            "border-border/60 mt-1 border-t pt-1.5",
+                        )}
+                      >
+                        <div className="text-muted-foreground px-2 text-[11px]">
+                          项目附加根（整轮撤销不覆盖，可逐文件回滚）
+                        </div>
+                        {externalEdits.map((edit) => {
+                          const key = turnEditKey(edit.root, edit.rel);
+                          return (
+                            <ExternalCheckpointRow
+                              key={key}
+                              edit={edit}
+                              undoing={undoingRel === key}
+                              onUndo={(root, rel) => void undoFile(rel, root)}
+                            />
+                          );
+                        })}
+                      </div>
+                    ) : null}
                   </div>
                 )}
+                {revertNote ? (
+                  <div className="text-muted-foreground flex items-start gap-1.5 border-t border-border/60 px-2 pt-1.5 text-[12px] leading-relaxed">
+                    <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                    {revertNote}
+                  </div>
+                ) : null}
                 {error ? (
                   <div className="text-destructive flex items-start gap-1.5 border-t border-border/60 px-2 pt-1.5 leading-relaxed">
                     <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />

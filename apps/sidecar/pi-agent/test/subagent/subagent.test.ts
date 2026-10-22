@@ -73,6 +73,7 @@ function makeRun(records: DelegationRecord[] = []): Running {
     appMode: "code",
     sessionId: "s",
     cwd: ".",
+    externalDirs: [],
     persistedSeq: 0,
     jsonlSeq: 0,
     compactionGeneration: 0,

@@ -316,3 +316,51 @@ async function wrapSave(draft: { name: string; description: string; content: str
     return [err instanceof Error ? err.message : String(err)];
   }
 }
+
+describe("会话外部目录的技能层", () => {
+  const ext = path.join(tmp, "external");
+  const externalSkill = (dir: string, name: string) => {
+    mkdirSync(path.join(ext, dir, name), { recursive: true });
+    writeFileSync(
+      path.join(ext, dir, name, "SKILL.md"),
+      doc(name, `External ${name} skill.`),
+    );
+  };
+
+  beforeAll(() => {
+    externalSkill(".agents/skills", "ext-only");
+    // 与工作区 deploy 同名：工作区层优先，外部层被遮蔽
+    externalSkill(".claude/skills", "deploy");
+  });
+
+  test("未传 externalDirs：外部技能不进快照（设置页/全局清单不受会话影响）", async () => {
+    await ensureSkillsLoaded(ws, [ext]);
+    const snap = skillsSnapshot(ws);
+    expect(snap.entries.some((e) => e.name === "ext-only")).toBe(false);
+  });
+
+  test("传 externalDirs：外部技能进入快照与提示词目录段", async () => {
+    await ensureSkillsLoaded(ws, [ext]);
+    const snap = skillsSnapshot(ws, [ext]);
+    const entry = snap.entries.find((e) => e.name === "ext-only");
+    expect(entry?.scope).toBe("external");
+    expect(entry?.editable).toBe(false);
+    expect(snap.activeSkills.some((s) => s.name === "ext-only")).toBe(true);
+    expect(skillsPromptBlock(ws, [ext])).toContain("ext-only");
+  });
+
+  test("遮蔽顺序：工作区 deploy 优先于外部目录 deploy", async () => {
+    await ensureSkillsLoaded(ws, [ext]);
+    const snap = skillsSnapshot(ws, [ext]);
+    const deploy = snap.entries.filter((e) => e.name === "deploy");
+    expect(deploy.length).toBeGreaterThanOrEqual(2);
+    expect(deploy.find((e) => e.scope === "external")?.shadowed).toBe(true);
+    expect(deploy.find((e) => e.scope === "compat-workspace")?.shadowed).toBe(false);
+  });
+
+  test("externalDirs=[]：外部层不并入快照（缓存可留热，但提示词段不出现）", async () => {
+    await ensureSkillsLoaded(ws, []);
+    expect(skillsSnapshot(ws, []).entries.some((e) => e.name === "ext-only")).toBe(false);
+    expect(skillsPromptBlock(ws, [])).not.toContain("ext-only");
+  });
+});

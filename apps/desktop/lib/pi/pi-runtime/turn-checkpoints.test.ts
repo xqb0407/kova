@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  editsSummaryOf,
   renderedIndexOfLastUser,
   TurnCheckpointTracker,
   type TurnCheckpointDeps,
@@ -50,6 +51,7 @@ function makeTracker(
   patch: {
     create?: (cwd: string, tag: string) => Promise<string | null>;
     diffFiles?: { added: number; removed: number }[] | null;
+    edits?: { files: number; added: number; removed: number } | null;
     persisted?: { cwd: string; hash: string; anchorIndex?: number | null } | null;
   } = {},
 ) {
@@ -84,6 +86,10 @@ function makeTracker(
     },
     push: (tid, anchor, cp) =>
       log.push(`push:${tid}:${anchor}:${cp.files}:${cp.added}:${cp.removed}`),
+    editsSummary: async () => {
+      log.push("edits");
+      return patch.edits ?? null;
+    },
   };
   return { tracker: new TurnCheckpointTracker(deps), log };
 }
@@ -153,8 +159,46 @@ describe("TurnCheckpointTracker", () => {
     ]);
   });
 
-  test("无 cwd（非 git/未定工作区）：静默跳过，无 create 无 diff", async () => {
-    const { tracker, log } = makeTracker(snapshotAt([user("hi")], null));
+  test("影子快照失败但附加根有编辑：仍落空 hash 卡（只保留逐文件回滚）", async () => {
+    const { tracker, log } = makeTracker(snapshotAt([user("hi"), assistant()]), {
+      create: async () => null,
+      edits: { files: 1, added: 2, removed: 0 },
+    });
+    tracker.begin("s1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    await tick();
+    expect(log.at(-1)).toBe("push:s1:0:1:2:0");
+  });
+
+  test("cwd 无改动但附加根有编辑：仍落卡，聚合来自所有权层", async () => {
+    const { tracker, log } = makeTracker(snapshotAt([user("hi"), assistant()]), {
+      diffFiles: [],
+      edits: { files: 2, added: 5, removed: 1 },
+    });
+    tracker.begin("s1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    expect(log).toContain("edits");
+    expect(log.at(-1)).toBe("push:s1:0:2:5:1");
+  });
+
+  test("cwd 无改动且无附加根编辑：不出空卡", async () => {
+    const { tracker, log } = makeTracker(snapshotAt([user("hi"), assistant()]), {
+      diffFiles: [],
+      edits: null,
+    });
+    tracker.begin("s1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    expect(log.at(-1)).toBe("edits");
+    expect(log.some((l) => l.startsWith("push:"))).toBe(false);
+  });
+
+  test("无 cwd（非 git/未定工作区）：静默跳过，无 create 无 diff", async () => {    const { tracker, log } = makeTracker(snapshotAt([user("hi")], null));
     tracker.begin("s1");
     await tick();
     expect(log).toEqual(["fetch:s1"]);
@@ -234,5 +278,29 @@ describe("TurnCheckpointTracker", () => {
     await tick();
     expect(log.some((l) => l.startsWith("push:"))).toBe(false);
     expect(log.some((l) => l.startsWith("diff:"))).toBe(true);
+  });
+});
+
+describe("editsSummaryOf", () => {
+  const edit = (over: Record<string, unknown>) =>
+    ({ rel: "a.ts", status: "modified", additions: 1, deletions: 0, exact: true, undoable: true, ...over }) as never;
+
+  test("主根与附加根都计入（gitignored 主根文件也能出卡）", () => {
+    const edits = new Map<string, never>([
+      ["p", edit({ root: "/w", primary: true, rel: "p.ts", additions: 9 })],
+      ["e1", edit({ root: "/ext", primary: false, rel: "a.ts", additions: 3, deletions: 1 })],
+      ["e2", edit({ root: "/ext", primary: false, rel: "b.ts", additions: 2, deletions: 4 })],
+    ]);
+    expect(editsSummaryOf(edits)).toEqual({
+      files: 3,
+      added: 14,
+      removed: 5,
+    });
+  });
+
+  test("旧载荷（无 primary/root）同样计入；空表返回 null", () => {
+    const edits = new Map<string, never>([["a", edit({ rel: "a.ts" })]]);
+    expect(editsSummaryOf(edits)).toEqual({ files: 1, added: 1, removed: 0 });
+    expect(editsSummaryOf(new Map())).toBeNull();
   });
 });

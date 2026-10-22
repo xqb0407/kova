@@ -16,8 +16,16 @@
  *
  * 目录：PI_CHECKPOINT_DIR || ~/.kova/checkpoints/<sessionId>/
  *   manifest.json（原子写：旁写 tmp + rename）
- *   blobs/<turnKey>/<rel>         该轮 before 基线
- *   blobs/<turnKey>/a/<rel>       该轮 after 结果
+ *   blobs/<turnKey>/<rel>         主根（会话 cwd）的 before 基线（v1 布局兼容）
+ *   blobs/<turnKey>/a/<rel>       主根 after 结果
+ *   blobs/<turnKey>/<rootHash>/<rel>      附加根 before（项目虚拟目录）
+ *   blobs/<turnKey>/a/<rootHash>/<rel>    附加根 after
+ *
+ * 多根（项目虚拟目录）：
+ * - 主根仍是会话 cwd；附加根由调用方传入（run.externalDirs）。
+ * - 每条记录带 root + rel；主根沿用旧 blob 布局，v1 清单可无损升级。
+ * - 跨根同名文件不会串：清单键 = root + NUL + rel。
+ * - 附加根只做**逐文件**检查点；整轮影子仓库 diff/撤销仍只覆盖会话 cwd。
  *
  * 纪律：
  * - 辅助设施不挡主路：门面函数吃掉一切异常（logErr），工具执行结果不受影响。
@@ -53,6 +61,10 @@ export type TurnFileStatus = "added" | "modified";
 
 /** 单文件该轮所有权记录；after=null = 本轮 prepare 了还没成功 capture */
 type FileRecord = {
+  /** 文件所属根（会话 cwd 或项目附加根，绝对路径） */
+  root: string;
+  /** 相对该根的正斜杠路径 */
+  rel: string;
   /** 该轮首次 prepare 的基线；null = 没抓到边界（只有 capture 的遗留）→ 永不可回滚 */
   before: SnapshotKind | null;
   after: SnapshotKind | null;
@@ -61,14 +73,16 @@ type FileRecord = {
 };
 
 type TurnRecord = {
+  /** key = fileKey(root, rel)：跨根同名文件不串 */
   files: Record<string, FileRecord>;
+  /** key 同上 */
   stats: Record<string, { additions: number; deletions: number }>;
   createdAt: number;
 };
 
 type Manifest = {
-  version: 1;
-  /** 建立时的规范化工作区根；不一致即整套作废 */
+  version: 2;
+  /** 建立时的规范化工作区根（会话 cwd）；不一致即整套作废 */
   cwd: string;
   turns: Record<string, TurnRecord>;
   turnOrder: string[];
@@ -76,7 +90,11 @@ type Manifest = {
 
 /** 对外单文件行（checkpoint_status 应答） */
 export type TurnEditFile = {
+  /** 所属根（绝对路径；主根 = 会话 cwd） */
+  root: string;
   rel: string;
+  /** true = 主根（会话 cwd）；false = 项目附加根 */
+  primary: boolean;
   status: TurnFileStatus;
   additions: number;
   deletions: number;
@@ -87,6 +105,7 @@ export type TurnEditFile = {
 };
 
 export type TurnFileDiff = {
+  root: string;
   rel: string;
   original: string;
   current: string;
@@ -134,10 +153,66 @@ function toRelKey(root: string, absPath: string): string | null {
   return key;
 }
 
-/** blob 落盘路径（清单键逐段拼接；before 直挂、after 在 a/ 子树下） */
-function blobPath(dir: string, turnId: string, rel: string, after: boolean): string {
+/** 归一化根：主根恒在首位，去重 */
+function normalizeRoots(cwd: string, roots?: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const root of [cwd, ...(roots ?? [])]) {
+    const raw = root?.trim();
+    if (!raw) continue;
+    const normalized = normalizeCwd(raw);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+/** 清单键：根 + NUL + rel（跨根同名文件不串） */
+function fileKey(root: string, rel: string): string {
+  return `${normalizeCwd(root)}\u0000${rel}`;
+}
+
+/** 附加根的 blob 目录名（主根沿用 v1 布局，保证旧检查点可撤销） */
+function rootHash(root: string): string {
+  return createHash("sha1").update(normalizeCwd(root)).digest("hex").slice(0, 16);
+}
+
+/** blob 落盘路径（主根 = 旧布局；附加根 = rootHash 子目录） */
+function blobPath(
+  dir: string,
+  turnId: string,
+  root: string,
+  rel: string,
+  after: boolean,
+  primaryCwd: string,
+): string {
   const segs = rel.split("/");
-  return join(dir, "blobs", turnKey(turnId), ...(after ? ["a"] : []), ...segs);
+  const base = [
+    dir,
+    "blobs",
+    turnKey(turnId),
+    ...(after ? ["a"] : []),
+  ];
+  return normalizeCwd(root) === normalizeCwd(primaryCwd)
+    ? join(...base, ...segs)
+    : join(...base, rootHash(root), ...segs);
+}
+
+/** 在允许的根里定位一个路径；多根重叠时取最深根（历史脏配置的兜底） */
+function locateInRoots(
+  cwd: string,
+  roots: readonly string[],
+  p: string,
+): { root: string; rel: string } | null {
+  const abs = resolveAsHost(cwd, p);
+  let best: { root: string; rel: string } | null = null;
+  for (const root of normalizeRoots(cwd, roots)) {
+    const rel = toRelKey(root, abs);
+    if (!rel) continue;
+    if (!best || root.length > best.root.length) best = { root, rel };
+  }
+  return best;
 }
 
 /** 路径分量里是否出现符号链接（回滚写安全门）；分量不存在 = 无链接可言 */
@@ -157,7 +232,7 @@ function containsSymlink(root: string, rel: string): boolean {
 const normalizeCwd = (cwd: string): string => resolve(cwd);
 const sessionDir = (sessionId: string): string => join(checkpointRoot(), sessionId);
 const emptyManifest = (cwd: string): Manifest => ({
-  version: 1,
+  version: 2,
   cwd: normalizeCwd(cwd),
   turns: {},
   turnOrder: [],
@@ -186,12 +261,14 @@ async function readState(abs: string): Promise<FileState> {
 async function storeSnapshot(
   dir: string,
   turnId: string,
+  root: string,
   rel: string,
   after: boolean,
   state: FileState,
+  primaryCwd: string,
 ): Promise<SnapshotKind> {
   if (state.kind !== "contents") return state.kind;
-  const target = blobPath(dir, turnId, rel, after);
+  const target = blobPath(dir, turnId, root, rel, after, primaryCwd);
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, state.bytes);
   return "contents";
@@ -201,13 +278,15 @@ async function storeSnapshot(
 async function loadBlob(
   dir: string,
   turnId: string,
+  root: string,
   rel: string,
   after: boolean,
   kind: SnapshotKind,
+  primaryCwd: string,
 ): Promise<Buffer | null> {
   if (kind !== "contents") return null;
   try {
-    return await readFile(blobPath(dir, turnId, rel, after));
+    return await readFile(blobPath(dir, turnId, root, rel, after, primaryCwd));
   } catch {
     return null;
   }
@@ -216,12 +295,14 @@ async function loadBlob(
 async function dropBlob(
   dir: string,
   turnId: string,
+  root: string,
   rel: string,
   after: boolean,
   kind: SnapshotKind | null,
+  primaryCwd: string,
 ): Promise<void> {
   if (kind !== "contents") return;
-  await unlink(blobPath(dir, turnId, rel, after)).catch(() => {});
+  await unlink(blobPath(dir, turnId, root, rel, after, primaryCwd)).catch(() => {});
 }
 
 /** 磁盘现内容是否与记录的 after 一致（undoable 的核心判据） */
@@ -231,12 +312,13 @@ async function afterMatchesWorktree(
   turnId: string,
   rel: string,
   after: SnapshotKind,
+  primaryCwd: string,
 ): Promise<boolean> {
   const current = await readState(resolveAsHost(root, rel));
   if (after === "skipped" || current.kind === "skipped") return current.kind === after;
   if (after !== current.kind) return false;
   if (after === "missing") return true;
-  const blob = await loadBlob(dir, turnId, rel, true, "contents");
+  const blob = await loadBlob(dir, turnId, root, rel, true, "contents", primaryCwd);
   const now = current.kind === "contents" ? current.bytes : null;
   return blob !== null && now !== null && blob.equals(now);
 }
@@ -306,16 +388,102 @@ function lcsLength(a: readonly string[], b: readonly string[]): number {
 
 const MANIFEST = "manifest.json";
 
+/** 相对路径键的合法性（拒绝绝对路径与 `..` 段；与 toRelKey 同口径） */
+function isRelKey(value: string): boolean {
+  if (!value || value.startsWith("/")) return false;
+  return value.split("/").every((seg) => seg !== "" && seg !== "." && seg !== "..");
+}
+
+function normalizeRecord(
+  raw: unknown,
+  fallback?: { root: string; rel: string },
+): FileRecord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Partial<FileRecord>;
+  const ok = (k: unknown): k is SnapshotKind | null =>
+    k === null || k === "contents" || k === "missing" || k === "skipped";
+  if (!ok(r.before) || !ok(r.after)) return null;
+  const root =
+    typeof r.root === "string" && r.root.trim()
+      ? normalizeCwd(r.root)
+      : fallback?.root;
+  const rel = typeof r.rel === "string" && r.rel ? r.rel : fallback?.rel;
+  if (!root || !rel || !isRelKey(rel)) return null;
+  return { root, rel, before: r.before, after: r.after, ext: r.ext === true };
+}
+
+function normalizeStats(raw: unknown): { additions: number; deletions: number } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const s = raw as { additions?: unknown; deletions?: unknown };
+  if (typeof s.additions !== "number" || typeof s.deletions !== "number") return null;
+  return { additions: s.additions, deletions: s.deletions };
+}
+
+/**
+ * 读取清单。v1（单根、files 键 = rel）在内存里无损升级为 v2：
+ * root = cwd，键改为 root+NUL+rel；blob 布局不变，旧检查点仍可查询/撤销。
+ */
 async function readManifest(dir: string): Promise<Manifest | null> {
   try {
-    const parsed = JSON.parse(await readFile(join(dir, MANIFEST), "utf8")) as Manifest;
-    if (parsed?.version !== 1 || typeof parsed.cwd !== "string") return null;
-    return {
-      version: 1,
-      cwd: parsed.cwd,
-      turns: parsed.turns && typeof parsed.turns === "object" ? parsed.turns : {},
-      turnOrder: Array.isArray(parsed.turnOrder) ? parsed.turnOrder : [],
-    };
+    const parsed = JSON.parse(
+      await readFile(join(dir, MANIFEST), "utf8"),
+    ) as Record<string, unknown>;
+    const version = parsed?.version;
+    if (version !== 1 && version !== 2) return null;
+    if (typeof parsed.cwd !== "string" || !parsed.cwd) return null;
+    const cwd = normalizeCwd(parsed.cwd);
+    const turnsRaw =
+      parsed.turns && typeof parsed.turns === "object"
+        ? (parsed.turns as Record<string, unknown>)
+        : {};
+    const turns: Record<string, TurnRecord> = {};
+    for (const [key, value] of Object.entries(turnsRaw)) {
+      if (!value || typeof value !== "object") continue;
+      const turn = value as { files?: unknown; stats?: unknown; createdAt?: unknown };
+      const files: Record<string, FileRecord> = {};
+      const stats: Record<string, { additions: number; deletions: number }> = {};
+      const rawFiles =
+        turn.files && typeof turn.files === "object"
+          ? (turn.files as Record<string, unknown>)
+          : {};
+      const rawStats =
+        turn.stats && typeof turn.stats === "object"
+          ? (turn.stats as Record<string, unknown>)
+          : {};
+      if (version === 1) {
+        for (const [rel, raw] of Object.entries(rawFiles)) {
+          const rec = normalizeRecord(raw, { root: cwd, rel });
+          if (rec) files[fileKey(rec.root, rec.rel)] = rec;
+        }
+        for (const [rel, raw] of Object.entries(rawStats)) {
+          const stat = normalizeStats(raw);
+          const rec = normalizeRecord(rawFiles[rel], { root: cwd, rel });
+          if (stat && rec) stats[fileKey(rec.root, rec.rel)] = stat;
+        }
+      } else {
+        for (const [key, raw] of Object.entries(rawFiles)) {
+          const rec = normalizeRecord(raw);
+          if (!rec || fileKey(rec.root, rec.rel) !== key) continue;
+          files[key] = rec;
+        }
+        for (const [key, raw] of Object.entries(rawStats)) {
+          const stat = normalizeStats(raw);
+          if (stat && files[key]) stats[key] = stat;
+        }
+      }
+      turns[key] = {
+        files,
+        stats,
+        createdAt:
+          typeof turn.createdAt === "number" ? turn.createdAt : Date.now(),
+      };
+    }
+    const order = Array.isArray(parsed.turnOrder)
+      ? parsed.turnOrder.filter(
+          (k): k is string => typeof k === "string" && Boolean(turns[k]),
+        )
+      : Object.keys(turns);
+    return { version: 2, cwd, turns, turnOrder: order };
   } catch {
     return null;
   }
@@ -401,16 +569,18 @@ async function opPrepare(
   cwd: string,
   turnId: string,
   paths: readonly string[],
+  roots: readonly string[],
 ): Promise<void> {
   const dir = sessionDir(sessionId);
   const manifest = await ensureTurn(dir, await readManifest(dir), cwd, turnId);
-  const root = normalizeCwd(cwd);
   const turn = manifest.turns[turnKey(turnId)];
   let dirty = true;
   for (const p of paths) {
-    const rel = toRelKey(root, resolveAsHost(root, p));
-    if (!rel) continue;
-    const rec = turn.files[rel];
+    const located = locateInRoots(cwd, roots, p);
+    if (!located) continue;
+    const { root, rel } = located;
+    const key = fileKey(root, rel);
+    const rec = turn.files[key];
     if (rec && rec.before !== null) {
       // 本轮再次编辑同一文件：动手前磁盘必须还停在我们上次录的 after 上，
       // 否则两次 agent 编辑之间第三方写过——行数归属掺外力（diverged→ext）。
@@ -418,15 +588,29 @@ async function opPrepare(
       // 第二次写入误判为第三方改动。
       if (
         rec.after !== null &&
-        !(await afterMatchesWorktree(dir, root, turnId, rel, rec.after))
+        !(await afterMatchesWorktree(dir, root, turnId, rel, rec.after, manifest.cwd))
       ) {
         rec.ext = true;
       }
       continue;
     }
     const state = await readState(resolveAsHost(root, rel));
-    const kind = await storeSnapshot(dir, turnId, rel, false, state);
-    turn.files[rel] = { before: kind, after: rec?.after ?? null, ext: rec?.ext ?? false };
+    const kind = await storeSnapshot(
+      dir,
+      turnId,
+      root,
+      rel,
+      false,
+      state,
+      manifest.cwd,
+    );
+    turn.files[key] = {
+      root,
+      rel,
+      before: kind,
+      after: rec?.after ?? null,
+      ext: rec?.ext ?? false,
+    };
   }
   if (dirty) await writeManifest(dir, manifest);
 }
@@ -442,34 +626,51 @@ async function opCapture(
   cwd: string,
   turnId: string,
   paths: readonly string[],
+  roots: readonly string[],
 ): Promise<void> {
   const dir = sessionDir(sessionId);
   const manifest = await ensureTurn(dir, await readManifest(dir), cwd, turnId);
-  const root = normalizeCwd(cwd);
   const turn = manifest.turns[turnKey(turnId)];
   for (const p of paths) {
-    const rel = toRelKey(root, resolveAsHost(root, p));
-    if (!rel) continue;
-    let rec = turn.files[rel];
+    const located = locateInRoots(cwd, roots, p);
+    if (!located) continue;
+    const { root, rel } = located;
+    const key = fileKey(root, rel);
+    let rec = turn.files[key];
     if (!rec) {
       // capture 没有配对的 prepare（旧数据/异常路径）：为 review 保留记录，
       // before 记当前态但标 null 边界？——保守不录 before，
       // 该文件永不可 undoable。after 正常记。
-      rec = { before: null, after: null, ext: false };
-      turn.files[rel] = rec;
+      rec = { root, rel, before: null, after: null, ext: false };
+      turn.files[key] = rec;
     }
     const state = await readState(resolveAsHost(root, rel));
-    rec.after = await storeSnapshot(dir, turnId, rel, true, state);
+    rec.after = await storeSnapshot(
+      dir,
+      turnId,
+      root,
+      rel,
+      true,
+      state,
+      manifest.cwd,
+    );
     const beforeBlob =
-      rec.before === "contents" ? await loadBlob(dir, turnId, rel, false, "contents") : null;
+      rec.before === "contents"
+        ? await loadBlob(dir, turnId, root, rel, false, "contents", manifest.cwd)
+        : null;
     const afterBlob =
-      rec.after === "contents" ? await loadBlob(dir, turnId, rel, true, "contents") : null;
+      rec.after === "contents"
+        ? await loadBlob(dir, turnId, root, rel, true, "contents", manifest.cwd)
+        : null;
     if (beforeBlob && afterBlob) {
-      turn.stats[rel] = lineStats(beforeBlob, afterBlob);
+      turn.stats[key] = lineStats(beforeBlob, afterBlob);
     } else if (rec.before === "missing" && afterBlob) {
-      turn.stats[rel] = { additions: textLines(afterBlob)?.length ?? -1, deletions: 0 };
+      turn.stats[key] = {
+        additions: textLines(afterBlob)?.length ?? -1,
+        deletions: 0,
+      };
     } else {
-      delete turn.stats[rel];
+      delete turn.stats[key];
     }
   }
   await writeManifest(dir, manifest);
@@ -487,18 +688,39 @@ async function opStatus(
   const turn = loaded.manifest.turns[turnKey(turnId)];
   if (!turn) return [];
   const out: TurnEditFile[] = [];
-  for (const rel of Object.keys(turn.files).sort()) {
-    const rec = turn.files[rel];
-    if (rec.after === null) continue; // prepare 了但编辑没成功：不算改动
+  const records = Object.values(turn.files)
+    .filter(
+      (rec): rec is FileRecord & { after: SnapshotKind } =>
+        Boolean(rec) && rec.after !== null,
+    )
+    .sort((a, b) => {
+      const primary = (r: FileRecord) => (normalizeCwd(r.root) === loaded.root ? 0 : 1);
+      return (
+        primary(a) - primary(b) ||
+        a.root.localeCompare(b.root) ||
+        a.rel.localeCompare(b.rel)
+      );
+    });
+  for (const rec of records) {
+    const key = fileKey(rec.root, rec.rel);
     const undoable =
       rec.before !== null &&
       rec.before !== "skipped" &&
       rec.after !== "skipped" &&
-      !containsSymlink(loaded.root, rel) &&
-      (await afterMatchesWorktree(dir, loaded.root, turnId, rel, rec.after));
-    const stats = turn.stats[rel];
+      !containsSymlink(rec.root, rec.rel) &&
+      (await afterMatchesWorktree(
+        dir,
+        rec.root,
+        turnId,
+        rec.rel,
+        rec.after,
+        loaded.manifest.cwd,
+      ));
+    const stats = turn.stats[key];
     out.push({
-      rel,
+      root: rec.root,
+      rel: rec.rel,
+      primary: normalizeCwd(rec.root) === loaded.root,
       status: rec.before === "missing" ? "added" : "modified",
       additions: stats?.additions ?? -1,
       deletions: stats?.deletions ?? -1,
@@ -515,30 +737,51 @@ async function opDiff(
   cwd: string,
   turnId: string,
   path: string,
+  root?: string,
 ): Promise<TurnFileDiff | null> {
   const dir = sessionDir(sessionId);
   const loaded = await loadMatching(dir, cwd);
   if (!loaded) return null;
-  const rel = toRelKey(loaded.root, resolveAsHost(loaded.root, path));
+  const targetRoot = normalizeCwd(root?.trim() || loaded.root);
+  const rel = toRelKey(targetRoot, resolveAsHost(targetRoot, path));
   if (!rel) return null;
   const turn = loaded.manifest.turns[turnKey(turnId)];
-  const rec = turn?.files[rel];
+  const rec = turn?.files[fileKey(targetRoot, rel)];
   if (!rec || rec.before === null || rec.before === "skipped") return null;
   const beforeBlob =
-    rec.before === "contents" ? await loadBlob(dir, turnId, rel, false, "contents") : null;
+    rec.before === "contents"
+      ? await loadBlob(
+          dir,
+          turnId,
+          rec.root,
+          rec.rel,
+          false,
+          "contents",
+          loaded.manifest.cwd,
+        )
+      : null;
   if (rec.before === "contents" && beforeBlob === null) return null;
-  const current = await readState(resolveAsHost(loaded.root, rel));
+  const current = await readState(resolveAsHost(rec.root, rec.rel));
   const currentBlob =
     current.kind === "contents" ? current.bytes : current.kind === "missing" ? Buffer.alloc(0) : null;
   if (currentBlob === null) {
-    return { rel, original: "(过大或不可读)", current: "", binary: false, tooLarge: true, exact: !rec.ext };
+    return {
+      root: rec.root,
+      rel: rec.rel,
+      original: "(过大或不可读)",
+      current: "",
+      binary: false,
+      tooLarge: true,
+      exact: !rec.ext,
+    };
   }
   const original = beforeBlob ?? Buffer.alloc(0);
   const binary = looksBinary(original) || looksBinary(currentBlob);
   const tooLarge =
     original.length > DIFF_TEXT_MAX_BYTES || currentBlob.length > DIFF_TEXT_MAX_BYTES;
   return {
-    rel,
+    root: rec.root,
+    rel: rec.rel,
     original: decodeCapped(original),
     current: decodeCapped(currentBlob),
     binary,
@@ -568,22 +811,34 @@ async function opUndo(
   cwd: string,
   turnId: string,
   path: string,
-): Promise<{ rel: string } | { error: string }> {
+  root?: string,
+): Promise<{ root: string; rel: string } | { error: string }> {
   const dir = sessionDir(sessionId);
   const loaded = await loadMatching(dir, cwd);
   if (!loaded) return { error: "no-checkpoint" };
-  const rel = toRelKey(loaded.root, resolveAsHost(loaded.root, path));
+  const targetRoot = normalizeCwd(root?.trim() || loaded.root);
+  const rel = toRelKey(targetRoot, resolveAsHost(targetRoot, path));
   if (!rel) return { error: "bad-path" };
   const turnKeyNow = turnKey(turnId);
   const turn = loaded.manifest.turns[turnKeyNow];
-  const rec = turn?.files[rel];
+  const key = fileKey(targetRoot, rel);
+  const rec = turn?.files[key];
   if (!rec || rec.before === null) return { error: "no-boundary" };
   if (rec.before === "skipped" || rec.after === "skipped" || rec.after === null) {
     return { error: "skipped" };
   }
-  if (containsSymlink(loaded.root, rel)) return { error: "symlink" };
-  const abs = resolveAsHost(loaded.root, rel);
-  if (!(await afterMatchesWorktree(dir, loaded.root, turnId, rel, rec.after))) {
+  if (containsSymlink(rec.root, rec.rel)) return { error: "symlink" };
+  const abs = resolveAsHost(rec.root, rec.rel);
+  if (
+    !(await afterMatchesWorktree(
+      dir,
+      rec.root,
+      turnId,
+      rec.rel,
+      rec.after,
+      loaded.manifest.cwd,
+    ))
+  ) {
     return { error: "changed-after" }; // 第三方动过：宁可不给回滚
   }
   if (rec.before === "missing") {
@@ -594,7 +849,15 @@ async function opUndo(
       /* 已不存在：目标态已达成 */
     }
   } else {
-    const blob = await loadBlob(dir, turnId, rel, false, "contents");
+    const blob = await loadBlob(
+      dir,
+      turnId,
+      rec.root,
+      rec.rel,
+      false,
+      "contents",
+      loaded.manifest.cwd,
+    );
     if (blob === null) return { error: "snapshot-lost" };
     let mode: number | undefined;
     try {
@@ -606,12 +869,12 @@ async function opUndo(
     await writeFile(abs, blob);
     if (mode !== undefined) await chmodQuiet(abs, mode);
   }
-  delete turn.files[rel];
-  delete turn.stats[rel];
-  await dropBlob(dir, turnId, rel, false, rec.before);
-  await dropBlob(dir, turnId, rel, true, rec.after);
+  delete turn.files[key];
+  delete turn.stats[key];
+  await dropBlob(dir, turnId, rec.root, rec.rel, false, rec.before, loaded.manifest.cwd);
+  await dropBlob(dir, turnId, rec.root, rec.rel, true, rec.after, loaded.manifest.cwd);
   await writeManifest(dir, loaded.manifest);
-  return { rel };
+  return { root: rec.root, rel: rec.rel };
 }
 
 async function chmodQuiet(path: string, mode: number): Promise<void> {
@@ -637,11 +900,12 @@ export function checkpointPrepare(
   cwd: string,
   turnId: string,
   paths: readonly string[],
+  roots: readonly string[] = [],
 ): Promise<void> {
   if (!sessionId || !validId(sessionId) || !turnId || paths.length === 0) {
     return Promise.resolve();
   }
-  return enqueue(sessionId, () => opPrepare(sessionId, cwd, turnId, paths)).catch((err) => {
+  return enqueue(sessionId, () => opPrepare(sessionId, cwd, turnId, paths, roots)).catch((err) => {
     logErr("checkpoint: prepare failed:", err);
   });
 }
@@ -651,11 +915,12 @@ export function checkpointCapture(
   cwd: string,
   turnId: string,
   paths: readonly string[],
+  roots: readonly string[] = [],
 ): Promise<void> {
   if (!sessionId || !validId(sessionId) || !turnId || paths.length === 0) {
     return Promise.resolve();
   }
-  return enqueue(sessionId, () => opCapture(sessionId, cwd, turnId, paths)).catch((err) => {
+  return enqueue(sessionId, () => opCapture(sessionId, cwd, turnId, paths, roots)).catch((err) => {
     logErr("checkpoint: capture failed:", err);
   });
 }
@@ -677,9 +942,10 @@ export function checkpointDiff(
   cwd: string,
   turnId: string,
   path: string,
+  root?: string,
 ): Promise<TurnFileDiff | null> {
   if (!sessionId || !validId(sessionId)) return Promise.resolve(null);
-  return enqueue(sessionId, () => opDiff(sessionId, cwd, turnId, path)).catch((err) => {
+  return enqueue(sessionId, () => opDiff(sessionId, cwd, turnId, path, root)).catch((err) => {
     logErr("checkpoint: diff failed:", err);
     return null;
   });
@@ -690,9 +956,10 @@ export function checkpointUndo(
   cwd: string,
   turnId: string,
   path: string,
-): Promise<{ rel: string } | { error: string }> {
+  root?: string,
+): Promise<{ root: string; rel: string } | { error: string }> {
   if (!sessionId || !validId(sessionId)) return Promise.resolve({ error: "no-checkpoint" });
-  return enqueue(sessionId, () => opUndo(sessionId, cwd, turnId, path)).catch((err) => {
+  return enqueue(sessionId, () => opUndo(sessionId, cwd, turnId, path, root)).catch((err) => {
     logErr("checkpoint: undo failed:", err);
     return { error: String(err) };
   });

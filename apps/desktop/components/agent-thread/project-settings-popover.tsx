@@ -7,13 +7,32 @@ import {
   type FC,
   type ReactElement,
 } from "react";
-import { FolderIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import {
+  AlertTriangleIcon,
+  FolderIcon,
+  FolderOpenIcon,
+  Loader2Icon,
+  PlusIcon,
+  Trash2Icon,
+  UploadIcon,
+  XIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { isDesktop, isMacPlatform, isWindowsPlatform } from "@/lib/desktop-env";
+import { isRemoteMode } from "@/lib/remote";
 import { fsErrorText, projectReveal } from "@/lib/workspace/fs";
+import { pathBasename } from "@/lib/workspace/workspace-store";
+import {
+  addProjectDir,
+  confirmRemoveProjectDir,
+  fetchProjectDirs,
+  pickProjectDir,
+  removeProjectDir,
+  type ProjectDirsInfo,
+} from "@/lib/pi/pi-project-dirs";
 import { ProjectBadge, PROJECT_GLYPH_ICONS } from "@/components/ui/project-badge";
 import {
   PROJECT_MASCOT_COLORS,
@@ -96,6 +115,63 @@ export const ProjectSettingsPopover: FC<{
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [open, setOpen] = useState(false);
+  // 项目虚拟目录：打开弹层时现拉（事实源在 sidecar，别的窗口/端改过也能看到）
+  const [dirs, setDirs] = useState<ProjectDirsInfo | null>(null);
+  const [dirsBusy, setDirsBusy] = useState(false);
+  const [dirsError, setDirsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    // 换项目复用同一组件时先清空，避免短暂显示上一个项目的根
+    setDirs(null);
+    setDirsError(null);
+    void fetchProjectDirs(cwd)
+      .then((info) => {
+        if (alive) setDirs(info);
+      })
+      .catch((err) => {
+        if (alive) {
+          setDirsError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open, cwd]);
+
+  const addDir = async () => {
+    const path = await pickProjectDir();
+    if (!path) return;
+    setDirsBusy(true);
+    setDirsError(null);
+    try {
+      setDirs(await addProjectDir(cwd, path));
+      toast.success(`已添加项目目录：${pathBasename(path)}`);
+    } catch (err) {
+      toast.error(
+        `添加失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setDirsBusy(false);
+    }
+  };
+
+  const removeDir = async (path: string) => {
+    if (!(await confirmRemoveProjectDir(path))) return;
+    setDirsBusy(true);
+    setDirsError(null);
+    try {
+      setDirs(await removeProjectDir(cwd, path));
+      toast.info("已从项目移除该目录");
+    } catch (err) {
+      toast.error(
+        `移除失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setDirsBusy(false);
+    }
+  };
 
   // 关卡片时重置隐藏文件框：同一张图连着传两次也要能触发 change
   useEffect(() => {
@@ -141,6 +217,9 @@ export const ProjectSettingsPopover: FC<{
   const iconTint = appearance?.color ? { color: appearance.color } : undefined;
 
   const desktop = isDesktop();
+  // 项目目录是本机配置：网关侧拒绝远程写，UI 同步隐藏写入口（只读展示仍可用）
+  const canManageDirs = desktop && !isRemoteMode();
+  const missingDirs = new Set(dirs?.missing ?? []);
 
   /** 在系统文件管理器中定位项目目录（macOS=Finder / Windows=资源管理器）。
    *  项目目录未必是当前 workspace，因此走 project_reveal 而不是 fs_reveal */
@@ -335,6 +414,92 @@ export const ProjectSettingsPopover: FC<{
               </button>
             ))}
           </div>
+        </div>
+
+        {/* 项目虚拟目录：主目录 + 附加代码工程根。附加根会进入项目内所有对话的
+            系统提示词/技能发现/文件检索与 workspace-write 写权限 */}
+        <div className="-mx-3 border-t border-border" />
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-muted-foreground text-xs font-medium">
+              项目目录（多个代码工程）
+            </span>
+            {canManageDirs ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-1.5 text-xs"
+                disabled={dirsBusy}
+                onClick={() => void addDir()}
+              >
+                {dirsBusy ? (
+                  <Loader2Icon className="size-3.5 animate-spin" />
+                ) : (
+                  <PlusIcon className="size-3.5" />
+                )}
+                添加
+              </Button>
+            ) : null}
+          </div>
+          <div className="flex flex-col gap-1">
+            {(dirs?.roots ?? [{ path: cwd, label }]).map((root, index) => {
+              const isMain = index === 0;
+              const isMissing = missingDirs.has(root.path);
+              return (
+                <div
+                  key={root.path}
+                  className="group/dir flex items-start gap-2 rounded-md px-1 py-1 hover:bg-muted/60"
+                >
+                  {isMissing ? (
+                    <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                  ) : (
+                    <FolderOpenIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate text-sm">
+                        {isMain ? label : root.label}
+                      </span>
+                      {isMain ? (
+                        <span className="rounded bg-muted px-1 text-[10px] leading-4 text-muted-foreground">
+                          主目录
+                        </span>
+                      ) : null}
+                    </div>
+                    <div
+                      className="truncate text-[11px] leading-4 text-muted-foreground"
+                      title={root.path}
+                    >
+                      {root.path}
+                    </div>
+                    {isMissing ? (
+                      <div className="text-[11px] leading-4 text-amber-600 dark:text-amber-400">
+                        目录不存在（配置保留，已跳过）
+                      </div>
+                    ) : null}
+                  </div>
+                  {!isMain && canManageDirs ? (
+                    <button
+                      type="button"
+                      aria-label={`移除 ${root.label}`}
+                      title="从项目移除这个目录"
+                      disabled={dirsBusy}
+                      onClick={() => void removeDir(root.path)}
+                      className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/dir:opacity-100 focus-visible:opacity-100 disabled:opacity-50"
+                    >
+                      <XIcon className="size-3.5" />
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[11px] leading-4 text-muted-foreground">
+            附加目录会作为外部上下文提供给该项目所有对话（AGENTS.md、技能、文件检索）。
+          </p>
+          {dirsError ? (
+            <p className="text-[11px] leading-4 text-destructive">{dirsError}</p>
+          ) : null}
         </div>
 
         {/* 项目操作：与设置同卡（参考项目同款——操作就是这张卡的尾巴）。

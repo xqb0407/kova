@@ -413,6 +413,25 @@ export type PiSkillsResponse = {
   diagnostics: string[];
 };
 
+/** 项目虚拟目录条目（主目录之外的附加根） */
+export type PiExternalDir = {
+  path: string;
+  label: string;
+};
+
+/** 项目虚拟目录应答（get/add/remove_project_dir 共用）。
+ * main = 项目主目录；roots = main + 附加根（main 在前）；
+ * dirs = 针对请求 cwd 的生效附加目录（cwd 是某个根时排除自己）。 */
+export type PiProjectDirsResponse = {
+  type: "project_dirs";
+  cwd: string;
+  main: string;
+  roots: PiExternalDir[];
+  dirs: PiExternalDir[];
+  missing?: string[];
+  projects?: Array<{ cwd: string; dirs: PiExternalDir[] }>;
+};
+
 // ---------------------------------------------------------------------------
 // 设计主题（设置 → 智能体 → 设计主题；composer 主题胶囊）。事实源在 sidecar
 // design-md/：内置层 = 主题包 zip（只读，首启解压/版本化升级），用户层 =
@@ -1137,7 +1156,11 @@ export type PiResponse =
       cwd: string;
       turnId: string;
       files: {
+        /** 所属根（主根 = 会话 cwd；项目附加根为绝对路径） */
+        root: string;
         rel: string;
+        /** true = 主根（会话 cwd）；false = 项目附加根 */
+        primary: boolean;
         status: "added" | "modified";
         additions: number;
         deletions: number;
@@ -1150,6 +1173,7 @@ export type PiResponse =
       sessionId: string;
       turnId: string;
       rel: string;
+      root?: string;
       original?: string;
       current?: string;
       binary?: boolean;
@@ -1162,11 +1186,13 @@ export type PiResponse =
       sessionId: string;
       turnId: string;
       rel: string;
+      root?: string;
       ok: boolean;
       error?: string;
     }
   | PiSubagentsResponse
   | PiSkillsResponse
+  | PiProjectDirsResponse
   | PiDesignThemesResponse
   | PiDesignThemeDocResponse
   | PiDesignThemeSavedResponse

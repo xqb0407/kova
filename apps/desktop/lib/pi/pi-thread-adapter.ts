@@ -17,6 +17,10 @@ export const piSessionRegistry = new Map<string, string>();
 /** remoteId(pi session 文件路径) -> cwd。会话列表按 workspace 分组用 */
 export const piSessionCwdMap = new Map<string, string>();
 
+/** remoteId -> 所属虚拟项目主目录（cwd 是项目附加根时由 sidecar 回主目录）。
+ *  侧栏分组优先读它：多个代码工程因此合并到同一张项目卡下。 */
+export const piSessionProjectMap = new Map<string, string>();
+
 /** sessionId -> 最近一次列表快照（含会话级偏好 mode/approvalLevel/model）。
  *  mode/model picker 切回会话时据此水合，不依赖 sidecar 内存里的 Running 实例存活 */
 export const piSessionPrefsMap = new Map<string, PiSessionSummary>();
@@ -28,6 +32,8 @@ export function applySessionSummaries(sessions: PiSessionSummary[]): void {
     // WorkspaceThreadSync 会拿着镜像里的旧目录在切回会话时写回胶囊（幽灵写回）
     if (s.cwd) piSessionCwdMap.set(s.sessionId, s.cwd);
     else piSessionCwdMap.delete(s.sessionId);
+    if (s.projectCwd) piSessionProjectMap.set(s.sessionId, s.projectCwd);
+    else piSessionProjectMap.delete(s.sessionId);
     piSessionPrefsMap.set(s.sessionId, s);
   }
   bumpSessionPrefsVersion();

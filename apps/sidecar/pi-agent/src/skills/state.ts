@@ -11,7 +11,13 @@ export function normalizeSkillName(value: string): string {
   return value.trim().toLowerCase();
 }
 
-export type SkillScope = "workspace" | "compat-workspace" | "system" | "compat" | "plugin";
+export type SkillScope =
+  | "workspace"
+  | "compat-workspace"
+  | "external"
+  | "system"
+  | "compat"
+  | "plugin";
 
 /** 开关状态键：生态·用户/系统按 scope:name；工作区两层按 cwd 隔离；插件层按 pluginId 命名空间 */
 export function skillStateKey(
@@ -22,7 +28,7 @@ export function skillStateKey(
 ): string {
   const norm = normalizeSkillName(name);
   if (scope === "plugin") return `plugin:${pluginId ?? ""}::${norm}`;
-  return scope === "workspace" || scope === "compat-workspace"
+  return scope === "workspace" || scope === "compat-workspace" || scope === "external"
     ? `${scope}:${cwd ?? ""}::${norm}`
     : `${scope}:${norm}`;
 }

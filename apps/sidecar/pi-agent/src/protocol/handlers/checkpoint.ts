@@ -33,9 +33,10 @@ export const handlers: Record<string, CommandHandler> = {
     const cwd = String(msg.cwd ?? "");
     const turnId = String(msg.turnId ?? "");
     const rel = String(msg.rel ?? "");
+    const root = typeof msg.root === "string" ? msg.root : undefined;
     const diff =
       sessionId && cwd && turnId && rel
-        ? await checkpointDiff(sessionId, cwd, turnId, rel)
+        ? await checkpointDiff(sessionId, cwd, turnId, rel, root)
         : null;
     send({
       id: reqId,
@@ -43,6 +44,7 @@ export const handlers: Record<string, CommandHandler> = {
       sessionId,
       turnId,
       rel,
+      ...(root ? { root } : {}),
       ...(diff
         ? {
             original: diff.original,
@@ -60,14 +62,32 @@ export const handlers: Record<string, CommandHandler> = {
     const cwd = String(msg.cwd ?? "");
     const turnId = String(msg.turnId ?? "");
     const rel = String(msg.rel ?? "");
+    const root = typeof msg.root === "string" ? msg.root : undefined;
     const result =
       sessionId && cwd && turnId && rel
-        ? await checkpointUndo(sessionId, cwd, turnId, rel)
+        ? await checkpointUndo(sessionId, cwd, turnId, rel, root)
         : { error: "no-checkpoint" };
     if ("error" in result) {
-      send({ id: reqId, type: "checkpoint_undone", sessionId, turnId, rel, ok: false, error: result.error });
+      send({
+        id: reqId,
+        type: "checkpoint_undone",
+        sessionId,
+        turnId,
+        rel,
+        ...(root ? { root } : {}),
+        ok: false,
+        error: result.error,
+      });
     } else {
-      send({ id: reqId, type: "checkpoint_undone", sessionId, turnId, rel, ok: true });
+      send({
+        id: reqId,
+        type: "checkpoint_undone",
+        sessionId,
+        turnId,
+        rel: result.rel,
+        root: result.root,
+        ok: true,
+      });
     }
   },
 };

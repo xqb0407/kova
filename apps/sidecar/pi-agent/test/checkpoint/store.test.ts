@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   checkpointCapture,
   checkpointDiff,
@@ -262,8 +262,7 @@ describe("checkpoint store", () => {
     expect(existsSync(join(ckDir, S))).toBe(false);
   });
 
-  test("broken checkpoint root degrades silently and never rejects", async () => {
-    const blocker = join(tmpdir(), `kova-ck-blocker-${Date.now()}`);
+  test("broken checkpoint root degrades silently and never rejects", async () => {    const blocker = join(tmpdir(), `kova-ck-blocker-${Date.now()}`);
     writeFileSync(blocker, "not a directory");
     roots.push(blocker);
     process.env.PI_CHECKPOINT_DIR = join(blocker, "sub");
@@ -273,5 +272,142 @@ describe("checkpoint store", () => {
     await checkpointCapture(S, ws, "t1", ["d.ts"]);
     expect(await checkpointStatus(S, ws, "t1")).toEqual([]);
     rmSync(blocker, { force: true });
+  });
+});
+
+/**
+ * 项目附加根（虚拟工作区）：检查点从单根扩展为「主根 + 附加根」。
+ * 下面覆盖同轮双根、回滚隔离、越界拒绝、v1 清单升级。
+ */
+describe("checkpoint store：项目附加根", () => {
+  function makeExt(): string {
+    const ext = mkdtempSync(join(tmpdir(), "kova-ext-"));
+    roots.push(ext);
+    return ext;
+  }
+
+  test("同轮双根：root/primary 正确，回滚附加根不影响主根", async () => {
+    const ext = makeExt();
+    const extFile = join(ext, "src", "a.ts");
+    mkdirSync(dirname(extFile), { recursive: true });
+    writeFileSync(extFile, "ext one\n");
+    put("src/a.ts", "main one\n");
+
+    await checkpointPrepare(S, ws, "t-multi", ["src/a.ts", extFile], [ext]);
+    writeFileSync(join(ws, "src/a.ts"), "main two\n");
+    writeFileSync(extFile, "ext two\n");
+    await checkpointCapture(S, ws, "t-multi", ["src/a.ts", extFile], [ext]);
+
+    const files = await checkpointStatus(S, ws, "t-multi");
+    expect(files).toHaveLength(2);
+    const primary = files.find((f) => f.primary)!;
+    const external = files.find((f) => !f.primary)!;
+    expect(primary).toMatchObject({
+      root: resolve(ws),
+      rel: "src/a.ts",
+      status: "modified",
+      undoable: true,
+    });
+    expect(external).toMatchObject({
+      root: resolve(ext),
+      rel: "src/a.ts",
+      status: "modified",
+      undoable: true,
+    });
+
+    const diff = await checkpointDiff(S, ws, "t-multi", "src/a.ts", ext);
+    expect(diff?.root).toBe(resolve(ext));
+    expect(diff?.original).toContain("ext one");
+
+    const res = await checkpointUndo(S, ws, "t-multi", "src/a.ts", ext);
+    expect("root" in res && res.root).toBe(resolve(ext));
+    expect(readFileSync(extFile, "utf8")).toBe("ext one\n");
+    expect(readFileSync(join(ws, "src/a.ts"), "utf8")).toBe("main two\n");
+
+    const after = await checkpointStatus(S, ws, "t-multi");
+    expect(after).toHaveLength(1);
+    expect(after[0].primary).toBe(true);
+  });
+
+  test("相对路径按主根解析；不在任何根内的路径跳过", async () => {
+    const ext = makeExt();
+    const outside = mkdtempSync(join(tmpdir(), "kova-out-"));
+    roots.push(outside);
+    put("src/r.ts", "x\n");
+    await checkpointPrepare(S, ws, "t-rel", ["src/r.ts", join(outside, "no.ts")], [ext]);
+    put("src/r.ts", "y\n");
+    writeFileSync(join(outside, "no.ts"), "z\n");
+    await checkpointCapture(S, ws, "t-rel", ["src/r.ts", join(outside, "no.ts")], [ext]);
+
+    const files = await checkpointStatus(S, ws, "t-rel");
+    expect(files).toHaveLength(1);
+    expect(files[0].root).toBe(resolve(ws));
+    expect(files[0].rel).toBe("src/r.ts");
+  });
+
+  test("越界 rel 拒绝；非记录根不能借 undo 写任意路径", async () => {
+    const ext = makeExt();
+    const extFile = join(ext, "a.ts");
+    writeFileSync(extFile, "one\n");
+    await checkpointPrepare(S, ws, "t-sec", [extFile], [ext]);
+    writeFileSync(extFile, "two\n");
+    await checkpointCapture(S, ws, "t-sec", [extFile], [ext]);
+
+    expect(await checkpointUndo(S, ws, "t-sec", "../escape.ts", ext)).toEqual({
+      error: "bad-path",
+    });
+    // 记录在 ext 根下，用主根同 rel 查询找不到记录 → 不会写主根同名文件
+    expect(await checkpointUndo(S, ws, "t-sec", "a.ts", ws)).toEqual({
+      error: "no-boundary",
+    });
+  });
+
+  test("v1 单根清单无损升级：status/diff/undo 仍可用", async () => {
+    put("legacy.ts", "one\n");
+    await checkpointPrepare(S, ws, "t-v1", ["legacy.ts"]);
+    put("legacy.ts", "two\n");
+    await checkpointCapture(S, ws, "t-v1", ["legacy.ts"]);
+
+    // 把 manifest 改写成 v1 形态（files/stats 键退回 rel，去掉 root/rel 字段）
+    const manifestPath = join(ckDir, S, "manifest.json");
+    const raw = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      cwd: string;
+      turns: Record<string, any>;
+    };
+    const turn = raw.turns["t-v1"];
+    const filesV1: Record<string, unknown> = {};
+    const statsV1: Record<string, unknown> = {};
+    for (const rec of Object.values<any>(turn.files)) {
+      filesV1[rec.rel] = { before: rec.before, after: rec.after, ext: rec.ext };
+      const key = Object.keys(turn.stats).find((k) => k.endsWith(`\u0000${rec.rel}`));
+      if (key) statsV1[rec.rel] = turn.stats[key];
+    }
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        version: 1,
+        cwd: raw.cwd,
+        turns: { "t-v1": { files: filesV1, stats: statsV1, createdAt: turn.createdAt } },
+        turnOrder: ["t-v1"],
+      }),
+    );
+
+    const files = await checkpointStatus(S, ws, "t-v1");
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatchObject({
+      root: resolve(ws),
+      rel: "legacy.ts",
+      primary: true,
+      undoable: true,
+    });
+
+    const diff = await checkpointDiff(S, ws, "t-v1", "legacy.ts");
+    expect(diff?.original).toContain("one");
+    const res = await checkpointUndo(S, ws, "t-v1", "legacy.ts");
+    expect("rel" in res && res.rel).toBe("legacy.ts");
+    expect(readFileSync(join(ws, "legacy.ts"), "utf8")).toBe("one\n");
+    // undo 写回 v2 清单
+    const upgraded = JSON.parse(readFileSync(manifestPath, "utf8")) as { version: number };
+    expect(upgraded.version).toBe(2);
   });
 });

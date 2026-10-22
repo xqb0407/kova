@@ -59,15 +59,20 @@ export function isInside(parent: string, child: string): boolean {
  * - bash：参数看不出会写到哪（见文件头）；
  * - 子代理/技能/主题/插件管理：写的是应用配置目录，本来就在工作区之外；
  * - 参数缺失或不是字符串：判不了就是不放行——安全判据的方向永远是「不确定就拦」。
+ *
+ * extraRoots = 项目虚拟目录（用户在项目设置里添加的其它代码工程根）：
+ * 按「工作区内」对待，但仍然只认 write/edit 的结构化路径参数（bash 不受影响）。
  */
 export function writeTargetInsideWorkspace(
   toolName: string,
   args: unknown,
   cwd: string,
+  extraRoots: readonly string[] = [],
 ): boolean {
   const target = writeTargetPath(toolName, args, cwd);
   if (!target) return false;
-  return isInside(realResolve(cwd), target);
+  const roots = [cwd, ...extraRoots];
+  return roots.some((root) => isInside(realResolve(root), target));
 }
 
 /**

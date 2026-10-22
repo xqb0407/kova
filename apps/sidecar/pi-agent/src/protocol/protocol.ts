@@ -94,6 +94,12 @@
  *       中途换/清会话工作目录（""=解绑，执行目录回落任务工作区会话子目录）：
  *       驻留 run 走完整换绑（重建工具/技能/提示词 + 回写索引行与 header），
  *       不驻留只写索引行与 header（下次物化自然生效）；本轮在跑时报 busy 拒绝
+ *   { "type": "get_project_dirs", "id", "cwd"? }            → { id, type: "project_dirs", cwd, main, roots, dirs, projects? }
+ *   { "type": "add_project_dir", "id", "cwd", "path" }      → 同款应答
+ *   { "type": "remove_project_dir", "id", "cwd", "path" }   → 同款应答
+ *       项目虚拟目录（多个代码工程合并成一个项目）：配置存用户本机 kv
+ *       pi.projectDirs，不随仓库走；变更后驻留 run 立即重算目录/技能/提示词，
+ *       并按新的分组归属广播 sessions_changed。普通任务会话（无 cwd）不适用
  *   { "type": "list_models", "id", "authedOnly"?: bool }      → { id, type: "models", models: [...], providers: [...] }
  *       models 项含 enabled 与 maxTokens/input/cost 属性（enabled=false = 已被过滤隐藏，前端自行过滤）
  *       authedOnly=true 只回已配置凭据的厂商（移动端用：全目录单帧数百 KB，iOS WS 扛不住）
@@ -155,11 +161,12 @@
  *   { "type": "restore_memory_trash", "id", "scope", "cwd"?, "trashId" } → { id, type: "memory_trash_restored", scope, file, trashId }（同名占用即拒）
  *   { "type": "delete_memory_trash", "id", "scope", "cwd"?, "trashId" } → { id, type: "memory_trash_deleted", scope, trashId }（连同该文件的版本史）
  *   { "type": "empty_memory_trash", "id", "scope", "cwd"? } → { id, type: "memory_trash_emptied", scope, removed }
- *   { "type": "checkpoint_status", "id", "sessionId", "cwd", "turnId" } → { id, type: "checkpoint_status", sessionId, cwd, turnId, files: [{ rel, status, additions, deletions, exact, undoable }] }
- *       本轮结构化编辑（write/edit）的所有权清单（见 checkpoint/store.ts）：检查点卡按 rel 匹配影子仓库 diff 行，只给 undoable 的文件挂单文件回滚
- *   { "type": "checkpoint_diff", "id", "sessionId", "cwd", "turnId", "rel" } → { id, type: "checkpoint_diff", ..., original, current, binary, tooLarge, exact } | { ..., error: "no-diff" }
- *   { "type": "checkpoint_undo", "id", "sessionId", "cwd", "turnId", "rel" } → { id, type: "checkpoint_undone", sessionId, turnId, rel, ok, error? }
- *       单文件回滚到该轮首次编辑前的基线；第三方动过/无边界/符号链接一律拒绝（error 原样给卡片显示）
+ *   { "type": "checkpoint_status", "id", "sessionId", "cwd", "turnId" } → { id, type: "checkpoint_status", sessionId, cwd, turnId, files: [{ root, rel, primary, status, additions, deletions, exact, undoable }] }
+ *       本轮结构化编辑（write/edit）的所有权清单（见 checkpoint/store.ts）：主根文件按 rel 匹配影子仓库 diff 行，
+ *       项目附加根文件（primary=false）单列；只给 undoable 的文件挂单文件回滚
+ *   { "type": "checkpoint_diff", "id", "sessionId", "cwd", "turnId", "rel", "root"? } → { id, type: "checkpoint_diff", ..., original, current, binary, tooLarge, exact } | { ..., error: "no-diff" }
+ *   { "type": "checkpoint_undo", "id", "sessionId", "cwd", "turnId", "rel", "root"? } → { id, type: "checkpoint_undone", sessionId, turnId, root?, rel, ok, error? }
+ *       单文件回滚到该轮首次编辑前的基线；root 省略 = 会话 cwd（兼容旧端）。第三方动过/无边界/符号链接一律拒绝
  *   { "type": "list_subagents", "id", "cwd"? }                → { id, type: "subagents", agents, workspaceCwd, diagnostics }
  *   { "type": "save_subagent", "id", "scope", "cwd"?, ("definition"|"raw"), "name"? } → 校验后写 <app_data>/subagents 或 <cwd>/.kova/subagents 的 YAML + 热重载 → 同款 subagents 应答（name=编辑前原名，改名时清旧文件）
  *   { "type": "delete_subagent", "id", "scope", "name", "cwd"? } → 删文件 + 热重载 → 同款 subagents 应答（内置不可删）

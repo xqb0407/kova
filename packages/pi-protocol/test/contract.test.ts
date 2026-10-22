@@ -24,6 +24,8 @@ import {
   modelChangeRowSchema,
   thinkingLevelChangeRowSchema,
   sessionInfoRowSchema,
+  sessionSummarySchema,
+  projectDirsSchema,
   goalStateSchema,
 } from "../src/index";
 
@@ -559,5 +561,51 @@ describe("goalStateSchema（v2 可选字段）", () => {
         goal: { ...base.goal, evidencePolicy: "weird" },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("project_dirs 契约（项目虚拟目录）", () => {
+  test("接受主目录 + 根清单 + 生效目录，未知字段透传（loose）", () => {
+    const parsed = projectDirsSchema.safeParse({
+      type: "project_dirs",
+      cwd: "/abs/frontend",
+      main: "/abs/frontend",
+      roots: [
+        { path: "/abs/frontend", label: "frontend" },
+        { path: "/abs/backend", label: "backend" },
+      ],
+      dirs: [{ path: "/abs/backend", label: "backend" }],
+      projects: [{ cwd: "/abs/frontend", dirs: [{ path: "/abs/backend", label: "backend" }] }],
+      future: true,
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect((parsed.data as Record<string, unknown>).future).toBe(true);
+    }
+  });
+
+  test("拒绝缺 path 的根目录项", () => {
+    expect(
+      projectDirsSchema.safeParse({
+        type: "project_dirs",
+        cwd: "/a",
+        main: "/a",
+        roots: [{ label: "missing-path" }],
+        dirs: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("会话摘要可带 projectCwd（附加根里的会话归并到主目录）", () => {
+    expect(
+      sessionSummarySchema.safeParse({
+        sessionId: "s1",
+        firstMessage: "hi",
+        messageCount: 1,
+        modified: "2026-10-22T00:00:00Z",
+        cwd: "/abs/backend",
+        projectCwd: "/abs/frontend",
+      }).success,
+    ).toBe(true);
   });
 });

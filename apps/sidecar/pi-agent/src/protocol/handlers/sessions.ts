@@ -29,6 +29,7 @@ import { sessionPath } from "../../storage/storage";
 import { normalizeProviderId } from "../../model/provider-id";
 import {
   sessionDelete,
+  sessionGet,
   sessionInsert,
   sessionList,
   sessionSetArchived,
@@ -66,6 +67,18 @@ import { isNegotiating, limitsFor } from "../../goal/goal-state";
 import { ensureGoalMode, persistModePrefs } from "../../agent/modes";
 import { dispatchPrompt } from "../prompt-pipeline";
 import { getDelegationSnapshot } from "../../subagent/subagent";
+import {
+  recomputeRunsForProject,
+} from "../../sessions/external-dirs";
+import {
+  addProjectDir,
+  allProjectDirs,
+  canonicalProjectCwd,
+  projectRootsFor,
+  removeProjectDir,
+} from "../../agent/project-dirs";
+import { externalDirExists, resolveExternalPath } from "../../agent/external-dirs";
+import { effectiveProjectDirs } from "../../agent/project-dirs";
 import { dropEventSeq, peekEventSeq } from "../event-seq";
 import { peekPartial } from "../thread-events";
 import type { Running, SessionSummary } from "../../types";
@@ -119,6 +132,7 @@ function modelChangeSnapMessage(c: ModelChangeRow, ordinal: number) {
  *  偏好的宽松规整在这里统一：列里只认合法字面量，脏值按「从未变更」处理，
  *  前端据此回落全局默认，不会显示出一个非法档位。 */
 function sessionSummaryOf(r: SessionRow): SessionSummary {
+  const projectCwd = r.cwd ? canonicalProjectCwd(r.cwd) : undefined;
   return {
     sessionId: r.id,
     name: r.title || undefined,
@@ -126,6 +140,7 @@ function sessionSummaryOf(r: SessionRow): SessionSummary {
     messageCount: r.message_count,
     modified: r.updated_at,
     cwd: r.cwd,
+    ...(projectCwd ? { projectCwd } : {}),
     archived: r.archived === 1,
     // 会话级偏好（undefined = 从未变更过）：切回会话时前端据此恢复 mode/model
     mode: r.mode === "agent" || r.mode === "plan" || r.mode === "ask" ? r.mode : undefined,
@@ -154,6 +169,32 @@ function sessionSummaryOf(r: SessionRow): SessionSummary {
     ...(typeof r.goalMaxDuration === "string"
       ? { goalMaxDuration: r.goalMaxDuration }
       : {}),
+  };
+}
+
+/**
+ * 项目虚拟目录应答：main/roots 供管理弹层，dirs 是「请求 cwd 的生效附加目录」
+ * （cwd 若是某个附加根，会排除它自己）。未配置的项目也返回主目录 + 空根。
+ */
+function projectDirsPayload(cwd: string) {
+  const roots = projectRootsFor(cwd);
+  if (!roots) throw new Error(`project directory not found: ${cwd}`);
+  const isMissing = (path: string): boolean => {
+    try {
+      return !externalDirExists(path);
+    } catch {
+      // 权限不足等异常按「不可用」处理：宁可提示缺失，也不要让整个弹层报错
+      return true;
+    }
+  };
+  const missing = roots.roots.filter((root) => isMissing(root.path)).map((root) => root.path);
+  return {
+    type: "project_dirs" as const,
+    cwd: roots.main,
+    main: roots.main,
+    roots: roots.roots,
+    dirs: effectiveProjectDirs(cwd),
+    ...(missing.length ? { missing } : {}),
   };
 }
 
@@ -878,7 +919,93 @@ export const handlers: Record<string, CommandHandler> = {
     logErr("session-cwd:", sessionId, "->", cwd || "(unbound)");
     send({ id: reqId, type: "session_cwd_set", sessionId, cwd });
   },
+
+  get_project_dirs: async (reqId, msg) => {
+    const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
+    if (!cwd.trim()) {
+      send({
+        id: reqId,
+        type: "project_dirs",
+        cwd: "",
+        main: "",
+        roots: [],
+        dirs: [],
+        projects: allProjectDirs(),
+      });
+      return;
+    }
+    send({ id: reqId, ...projectDirsPayload(cwd) });
+  },
+
+  add_project_dir: async (reqId, msg) => {
+    const cwd = String(msg.cwd ?? "");
+    const path = typeof msg.path === "string" ? msg.path : "";
+    if (!cwd.trim()) {
+      throw new Error("cwd required: project directories belong to a project");
+    }
+    const main = projectRootsFor(cwd)?.main ?? cwd;
+    const before = projectRootsFor(cwd)?.roots.map((root) => root.path) ?? [];
+    await addProjectDir(cwd, path);
+    // 配置已经落盘：后续热更新/广播失败只记日志，不能让命令回 error
+    // （否则前端以为没加成功，重试还会命中 "already added"）。
+    try {
+      await recomputeRunsForProject(main, before);
+    } catch (err) {
+      logErr("project-dirs: recompute after add failed:", err);
+    }
+    try {
+      await broadcastProjectMembership(main, before);
+    } catch (err) {
+      logErr("project-dirs: broadcast after add failed:", err);
+    }
+    send({ id: reqId, ...projectDirsPayload(cwd) });
+  },
+
+  remove_project_dir: async (reqId, msg) => {
+    const cwd = String(msg.cwd ?? "");
+    const path = typeof msg.path === "string" ? msg.path : "";
+    if (!cwd.trim()) {
+      throw new Error("cwd required: project directories belong to a project");
+    }
+    const main = projectRootsFor(cwd)?.main ?? cwd;
+    const before = projectRootsFor(cwd)?.roots.map((root) => root.path) ?? [];
+    await removeProjectDir(cwd, path);
+    try {
+      await recomputeRunsForProject(main, before);
+    } catch (err) {
+      logErr("project-dirs: recompute after remove failed:", err);
+    }
+    try {
+      await broadcastProjectMembership(main, before);
+    } catch (err) {
+      logErr("project-dirs: broadcast after remove failed:", err);
+    }
+    send({ id: reqId, ...projectDirsPayload(cwd) });
+  },
 };
+
+/** 项目边界变化 = 部分会话的分组归属变了：广播 updated 让各端重取清单。
+ *  previousRoots 里的会话也要带上——移除某个根后它们从项目退回独立分组。 */
+async function broadcastProjectMembership(
+  main: string,
+  previousRoots: readonly string[] = [],
+): Promise<void> {
+  if (!main) return;
+  const previous = new Set(previousRoots.map((root) => realOr(root)));
+  for (const row of await sessionList()) {
+    if (canonicalProjectCwd(row.cwd) === main || previous.has(realOr(row.cwd))) {
+      sendSessionsChanged("updated", row.id);
+    }
+  }
+}
+
+function realOr(path: string): string {
+  try {
+    return resolveExternalPath(path, path);
+  } catch {
+    return path;
+  }
+}
 
 /**
  * 「点继续」之后真正把循环点着。

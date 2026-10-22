@@ -41,6 +41,9 @@ export const SIDECAR_BUDGET_MS: Record<string, number> = {
   authorize_mcp_server: 32_000,
   /** 提示词优化：一次独立 provider 请求（侧车内部无上限，按历史前端预算 120s） */
   optimize_prompt: 122_000,
+  /** 项目虚拟目录变更：需重扫附加根技能/指令并对所有驻留会话重排提示词 */
+  add_project_dir: 30_000,
+  remove_project_dir: 30_000,
 };
 
 /** 该命令在侧车侧可能的最长耗时 */

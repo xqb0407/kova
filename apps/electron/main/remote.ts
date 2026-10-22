@@ -64,6 +64,8 @@ const REMOTE_DENIED_TYPES = new Set([
   "write_memory_file",
   "set_memory",
   "set_personalization",
+  "add_project_dir",
+  "remove_project_dir",
   "update_model",
   "set_provider_filter",
   "set_thinking_maps",

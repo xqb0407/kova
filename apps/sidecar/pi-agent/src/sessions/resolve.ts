@@ -21,6 +21,7 @@ import {
   type ThinkingLevel,
 } from "../model/model-catalog";
 import { buildTools } from "../tools/tools";
+import { effectiveProjectDirs } from "../agent/project-dirs";
 import {
   approvalBeforeToolCall,
   composeModeSystemPrompt,
@@ -98,6 +99,15 @@ import type { ApprovalLevel, Running, SessionMode } from "../types";
 
 /** kv pi.mode 的载重（applyMode 写入的「最近一次使用的模式偏好」） */
 type PlanningModePrefs = { mode: SessionMode; approvalLevel: ApprovalLevel };
+
+/**
+ * buildTools 的项目虚拟目录参数（运行期读 run）。
+ * 入参是 getter 而不是 run 本体：resolveSession 里 run 的声明在 buildTools
+ * 调用之后，直接传 run 会踩 TDZ。
+ */
+function externalDirToolArgs(getRun: () => Running) {
+  return [() => getRun().externalDirs ?? []] as const;
+}
 
 /** 会话行/偏好里的审批档 → 合法枚举；非法或缺省一律回落最严的 `ask`。
  *  合法清单的单源在 pi-protocol（APPROVAL_LEVELS），扩容时这里不用改。 */
@@ -181,12 +191,18 @@ async function persistSessionCwd(sessionId: string, cwd: string): Promise<void> 
  */
 async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promise<void> {
   const nextCwd = cwd || taskSessionCwd(run.sessionId);
+  // 换 cwd 也会换项目：项目虚拟目录随 cwd 重新求值，后续工具/技能/提示词
+  // 都按新清单重建。
+  const effectiveDirs = effectiveProjectDirs(nextCwd);
   // 先把可能失败的异步加载做完（subagent 定义 / 技能扫描都要读盘和 DB）：
   // 失败时 run 仍是旧目录，不会出现"界面提示移动失败、下一轮却已经在新目录
   // 里执行"的半绑定状态。
   const { definitions } = await loadSubagentDefinitions({ cwd: nextCwd });
-  // 换了工作区：技能目录随 cwd 变，先预热新缓存
-  await ensureSkillsLoaded(nextCwd);
+  // 换了工作区：技能目录随 cwd 变，先预热新缓存（项目目录一并联入）
+  await ensureSkillsLoaded(
+    nextCwd,
+    effectiveDirs.map((dir) => dir.path),
+  );
 
   // DB 索引行 + header 先落盘（可能失败）。失败时 run 原样不动；成功后的
   // 内存提交全是同步构造，不会留下"界面已换、运行态还是旧目录"的半绑定。
@@ -199,6 +215,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
   // 提交内存状态：以下均为同步构造，不再有可失败点
   run.persistedCwd = cwd;
   run.cwd = nextCwd;
+  run.externalDirs = effectiveDirs;
   // 解绑（清空工作目录）回落到任务工作区时同样不在此落盘：目录推迟到
   // agent 真用时才建（bash 派发前 / 写文件时自带 mkdir），见 ensureTaskSessionDir。
   // 重建工具须沿用原 threadId：todo/question 工具按 threadId 归属，误传 sessionId 会挂错 key
@@ -211,6 +228,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
     () => run.approvalLevel,
     () => reviewFactsOf(run),
     () => run.mode,
+    ...externalDirToolArgs(() => run),
   );
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -222,10 +240,11 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
       run.appMode,
       run.agent.state.model,
       run.designTheme,
+      undefined,
+      run.externalDirs,
     ),
   );
 }
-
 /**
  * 中途换/清会话工作目录（set_session_cwd 命令的服务端内核；cwd=""=解绑）。
  * 经 handleLine 的 mgmt 串行队列与 prompt 的会话准备段互斥，这里的检查与写入
@@ -298,6 +317,7 @@ export async function rebindRunThread(
     () => run.approvalLevel,
     () => reviewFactsOf(run),
     () => run.mode,
+    ...externalDirToolArgs(() => run),
   );
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -337,6 +357,8 @@ export async function reloadMemoryTools(): Promise<void> {
       () => ensureTaskSessionDir(run),
       () => run.approvalLevel,
       () => reviewFactsOf(run),
+      () => run.mode,
+      ...externalDirToolArgs(() => run),
     );
     const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
     run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -352,16 +374,19 @@ export async function reloadMemoryTools(): Promise<void> {
  * 目录签名没变时 ensureSkillsLoaded 零 IO；开关状态在 merge 时生效，无需失效目录。
  */
 export async function reloadSkills(): Promise<void> {
-  const cwds = new Set<string>();
-  for (const run of running.values()) cwds.add(run.cwd);
-  await Promise.all([...cwds].map((c) => ensureSkillsLoaded(c || undefined)));
   for (const run of running.values()) {
+    await ensureSkillsLoaded(
+      run.cwd || undefined,
+      (run.externalDirs ?? []).map((dir) => dir.path),
+    );
     const prompt = composeModeSystemPrompt(
       run.mode,
       run.cwd,
       run.appMode,
       run.agent.state.model,
       run.designTheme,
+      undefined,
+      run.externalDirs,
     );
     setLeadingSystemMessage(run.agent.state.messages, prompt);
     if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
@@ -772,8 +797,13 @@ export async function resolveSession(
     void sessionPrefsSet(sessionId!, { thinkingLevel: scanThinking }).catch(() => {});
   }
 
-  // 技能目录预热（签名缓存，命中零 IO）：系统提示词的技能段从这里取数
-  await ensureSkillsLoaded(resolvedCwd);
+  // 技能目录预热（签名缓存，命中零 IO）：系统提示词的技能段从这里取数。
+  // 项目虚拟目录（多代码工程合并）随 cwd 求值；普通任务会话为空
+  const effectiveDirs = effectiveProjectDirs(resolvedCwd);
+  await ensureSkillsLoaded(
+    resolvedCwd,
+    effectiveDirs.map((dir) => dir.path),
+  );
 
   // use_design_theme 按引用读 run.designTheme（会话内切主题即时换缺省目标；
   // run 此刻尚未回填字段，闭包运行期才解引用，与 beforeToolCall 同款手法）
@@ -786,6 +816,7 @@ export async function resolveSession(
     () => run.approvalLevel,
     () => reviewFactsOf(run),
     () => run.mode,
+    ...externalDirToolArgs(() => run),
   );
   // run 先占位再回填 agent：beforeToolCall 闭包按引用捕获 run，模式校验在运行期才解引用
   const run: Running = {
@@ -794,6 +825,7 @@ export async function resolveSession(
     sessionId: sessionId!,
     cwd: resolvedCwd,
     persistedCwd,
+    externalDirs: effectiveDirs,
     persistedSeq,
     jsonlSeq,
     compactionGeneration,
@@ -887,6 +919,8 @@ export async function resolveSession(
         initialAppMode,
         model,
         initialDesignTheme,
+        undefined,
+        effectiveDirs,
       ),
       model,
       // 深度思考档位：转录行回放，无行跟随全局（set_thinking 维护；off = 不发送 reasoning 参数）
@@ -1008,8 +1042,13 @@ export async function projectContextInfo(
   const model = await sessionModelFor(scan.model, row);
 
   const resolvedCwd = row.cwd || taskSessionCwd(sessionId);
+  // 项目虚拟目录与 resolveSession 同口径（普通任务会话为空）
+  const projectedExternalDirs = effectiveProjectDirs(resolvedCwd);
   // 技能段预热：投影读数与随后真正打开该会话时逐字段一致（同款 ensureSkillsLoaded）
-  await ensureSkillsLoaded(resolvedCwd);
+  await ensureSkillsLoaded(
+    resolvedCwd,
+    projectedExternalDirs.map((dir) => dir.path),
+  );
   // 主题读数同恢复链口径（偏好列先行，NULL 回落最近使用），投影读数逐字段一致
   const projectedFromColumn = decodeThemeColumn(row.designTheme);
   const projectedTheme =
@@ -1027,6 +1066,8 @@ export async function projectContextInfo(
     () => decodeApprovalLevel(row.approvalLevel),
     undefined,
     () => projectedMode,
+    // 投影也要把外部目录检索工具算进工具面（读数与实际物化后的工具表一致）
+    () => projectedExternalDirs,
   );
   const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包
@@ -1053,6 +1094,8 @@ export async function projectContextInfo(
       projectedAppMode,
       model,
       projectedTheme,
+      undefined,
+      projectedExternalDirs,
     ),
     tools: toolsForMode(stub),
     sessionId,

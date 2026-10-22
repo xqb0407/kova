@@ -20,6 +20,7 @@ import {
   pushRunCheckpoint,
   saveRunHash,
 } from "@/lib/pi/pi-checkpoints";
+import { fetchTurnEdits, type TurnEditMap } from "@/lib/pi/pi-edits";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import { projectPiThreadMessages } from "./runtime/messageProjection";
 import type { PiAgentMessage, PiThreadSnapshot } from "./types";
@@ -38,6 +39,32 @@ export interface TurnCheckpointDeps {
   saveHash: typeof saveRunHash;
   loadHash: typeof loadRunHash;
   push: typeof pushRunCheckpoint;
+  /** 影子仓库没有改动（或快照失败）时，从条目所有权层取本轮全部编辑聚合；
+   *  主根/附加根都算——gitignored 文件的编辑只在所有权层里可见。 */
+  editsSummary(
+    sessionId: string,
+    cwd: string,
+    turnId: string | null,
+  ): Promise<{ files: number; added: number; removed: number } | null>;
+}
+
+/** 一轮全部逐文件编辑的聚合（主根 + 附加根，按 root+rel 去重） */
+export function editsSummaryOf(
+  edits: TurnEditMap,
+): { files: number; added: number; removed: number } | null {
+  let files = 0;
+  let added = 0;
+  let removed = 0;
+  const seen = new Set<string>();
+  for (const edit of edits.values()) {
+    const key = `${edit.root ?? ""}\u0000${edit.rel}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    files += 1;
+    if (edit.additions > 0) added += edit.additions;
+    if (edit.deletions > 0) removed += edit.deletions;
+  }
+  return files > 0 ? { files, added, removed } : null;
 }
 
 export const defaultTurnCheckpointDeps = (): TurnCheckpointDeps => ({
@@ -50,6 +77,8 @@ export const defaultTurnCheckpointDeps = (): TurnCheckpointDeps => ({
   saveHash: saveRunHash,
   loadHash: loadRunHash,
   push: pushRunCheckpoint,
+  editsSummary: async (sessionId, cwd, turnId) =>
+    editsSummaryOf(await fetchTurnEdits(sessionId, cwd, turnId)),
 });
 
 /**
@@ -132,9 +161,12 @@ export class TurnCheckpointTracker {
       return hash;
     })();
     this.runs.set(sessionId, entry);
-    // 打不出快照/无 git 的 run 从台账摘除，别挡下一轮（settle 也会摘，双保险）
+    // 打不出快照（无 cwd）的 run 从台账摘除；有 cwd 但影子快照失败
+    // （非 git 主目录）要留到 settle——附加根可能仍有逐文件检查点。
     void entry.promise.then((hash) => {
-      if (!hash && this.runs.get(sessionId) === entry) this.runs.delete(sessionId);
+      if (!hash && !entry.cwd && this.runs.get(sessionId) === entry) {
+        this.runs.delete(sessionId);
+      }
     });
   }
 
@@ -167,24 +199,53 @@ export class TurnCheckpointTracker {
       } else {
         return;
       }
-      if (!hash) return;
+      // 影子快照失败（非 git 主目录等）时，附加根的逐文件检查点仍可能有效：
+      // 用空 hash 落卡，卡片隐藏整轮撤销，只保留逐文件回滚入口。
+      if (!hash) {
+        const ext = await this.deps
+          .editsSummary(sessionId, cwd, turnId)
+          .catch(() => null);
+        if (!ext) return;
+        this.deps.push(sessionId, anchor, {
+          cwd,
+          hash: "",
+          files: ext.files,
+          added: ext.added,
+          removed: ext.removed,
+          turnId,
+        });
+        return;
+      }
       this.deps.refreshStatus(cwd);
       const d = await this.deps.diff(cwd, hash).catch((err) => {
         // 结算失败不弹窗打断对话，但必须留痕：静默吞错会让"卡去哪了"无从排查
         console.warn("[checkpoint] settle diff failed", String(err));
         return null;
       });
-      if (!d || d.files.length === 0) return;
+      // cwd 没有任何改动时，仍可能只改了项目附加根：向条目所有权层取一次
+      // 外部编辑聚合。没有外部编辑才真正跳过（避免每轮都出空卡）。
+      let files = 0;
       let added = 0;
       let removed = 0;
-      for (const f of d.files) {
-        added += f.added;
-        removed += f.removed;
+      if (d && d.files.length > 0) {
+        files = d.files.length;
+        for (const f of d.files) {
+          added += f.added;
+          removed += f.removed;
+        }
+      } else {
+        const ext = await this.deps
+          .editsSummary(sessionId, cwd, turnId)
+          .catch(() => null);
+        if (!ext) return;
+        files = ext.files;
+        added = ext.added;
+        removed = ext.removed;
       }
       this.deps.push(sessionId, anchor, {
         cwd,
         hash,
-        files: d.files.length,
+        files,
         added,
         removed,
         turnId,
