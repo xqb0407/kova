@@ -138,10 +138,16 @@ type LiveLine = LiveRunHeader | LiveTurnLine;
 const MAX_TRACE_FILE_BYTES = 5 * 1024 * 1024;
 const TRACE_TAIL_BYTES = 1024 * 1024;
 const ATTR_TEXT_MAX = 200;
-/** 内容捕获的截断阈值：单条消息 2k、整个请求上下文 64k、回复 8k（traces 是元数据
- * 视图的补充而非转录复制品，护栏防止大上下文把 5MB 文件护栏打穿） */
+/** 内容捕获的截断阈值：单条消息 2k、系统提示词 32k、整个请求上下文 128k、回复 8k
+ *  （traces 是元数据视图的补充而非转录复制品，护栏防止大上下文把 5MB 文件护栏打穿）。
+ *  系统消息单独 32k：它不是普通历史消息，而是 composeModeSystemPrompt 拼出的提示词
+ *  本体（agent-core 把 systemPrompt 折叠进首条 system 消息，streamFn 拿到的 context
+ *  只有 messages），跟着 2k 走面板只能看到开头几个字，答不了"这轮带了什么指令"。
+ *  REQUEST_MAX 相应放宽：总闸砍的是尾部（最近的轮次恰是诊断核心），不能反过来被
+ *  大系统提示词吃掉。 */
 const MSG_TEXT_MAX = 2_000;
-const REQUEST_MAX = 64_000;
+const SYSTEM_TEXT_MAX = 32_000;
+const REQUEST_MAX = 128_000;
 const RESPONSE_MAX = 8_000;
 /** 成功工具出参的独立上限：比 RESPONSE_MAX 小得多，理由见 DETAIL_BUDGET_BYTES。
  *  失败出参不砍——stderr 是诊断核心，用 TOOL_RESULT_ERR_MAX */
@@ -152,15 +158,16 @@ const TOOL_ERR_LINE_MAX = 2_000;
 /**
  * detail 正文的 per-run 内存预算。
  *
- * 没有它，recorder 的常驻内存随 run 长度线性涨：detail.request ≤64KB/llm 调用、
+ * 没有它，recorder 的常驻内存随 run 长度线性涨：detail.request ≤128KB/llm 调用、
  * detail.response ≤8KB/llm、工具出参 ≤8KB/个。100 轮 × 3 工具 ≈ 9.6MB 一直挂到
  * settle()。文件侧早有 5MB 护栏（MAX_TRACE_FILE_BYTES），内存侧此前零护栏。
  *
  * 超预算时从**最旧的 span** 起摘掉 detail 正文（只摘正文，kind/时间/status/attrs
  * 一律保留——视图的骨架不能缺）。最旧优先的理由：最新的那次请求才是要看的那次。
- * 摘下后 100 轮 run ≈ 结构 400KB + 预算 512KB ≈ 1MB 封顶。
+ * 预算 1MB 的量级：最坏（请求上下文顶满 128KB）保最近 ~8 次调用；摘下后 100 轮
+ * run ≈ 结构 400KB + 预算 1MB ≈ 1.5MB 封顶。
  */
-const DETAIL_BUDGET_BYTES = 512 * 1024;
+const DETAIL_BUDGET_BYTES = 1024 * 1024;
 
 const detailBytes = (span: TraceSpan): number =>
   (span.detail?.request?.length ?? 0) + (span.detail?.response?.length ?? 0);
@@ -170,6 +177,16 @@ const clip = (value: unknown, max = ATTR_TEXT_MAX): string | undefined => {
   const s = typeof value === "string" ? value : JSON.stringify(value);
   if (s === undefined) return undefined;
   return s.length > max ? s.slice(0, max) : s;
+};
+
+/** clip 的带标记版：面板可见正文的截断必须可见——"看起来完整"其实被剪过，
+ *  比明示截断更误导。消费方：请求上下文（system/消息）、回复正文、工具出参。
+ *  attrs 类短字段（入参、errorMessage、retry message）仍用无标记 clip。 */
+const clipMarked = (value: unknown, max: number): string | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const s = typeof value === "string" ? value : JSON.stringify(value);
+  if (s === undefined) return undefined;
+  return s.length > max ? `${s.slice(0, max)}…[本条已截断]` : s;
 };
 
 const num = (value: unknown): number | undefined =>
@@ -202,30 +219,32 @@ function renderContent(content: unknown): string {
   return parts.join("\n");
 }
 
-/** streamFn 拿到的请求上下文 → 逐条消息的截断渲染（system + 消息列表）。
- *  这是"这一轮到底发了什么提示词"的唯一现场：面板的请求上下文就吃这段文本。 */
+/** streamFn 拿到的请求上下文 → 逐条消息的截断渲染。system 消息是提示词本体
+ *  （见 SYSTEM_TEXT_MAX 注释），用 32k 上限；其余消息 2k。 */
 function renderRequest(context: unknown): string {
   const ctx = (context ?? {}) as { systemPrompt?: unknown; messages?: unknown[] };
   const lines: string[] = [];
-  const system = clip(ctx.systemPrompt, MSG_TEXT_MAX);
+  const system = clipMarked(ctx.systemPrompt, SYSTEM_TEXT_MAX);
   if (system) lines.push(`[system] ${system}`);
   for (const msg of Array.isArray(ctx.messages) ? ctx.messages : []) {
     const m = msg as { role?: string; content?: unknown };
     if (typeof m.role !== "string") continue;
-    const text = clip(renderContent(m.content), MSG_TEXT_MAX);
-    // 转录首条 system 是 systemPrompt 的镜像（见 agent/context.ts 的
-    // setLeadingSystemMessage）：内容为空时纯重复，跳过（否则每条记录都多一行
-    // "[system]（空）"）；热换过提示词、真有正文时照常渲染，别把头部丢掉
+    const text =
+      m.role === "system"
+        ? clipMarked(renderContent(m.content), SYSTEM_TEXT_MAX)
+        : clipMarked(renderContent(m.content), MSG_TEXT_MAX);
+    // agent-core 会在工具集变更时插入 content 为空的 system 消息（agent-loop.js
+    // 的 withToolChanges），渲染为空就跳过：否则每条记录都多一行 "[system]（空）"
     if (m.role === "system" && !text) continue;
     lines.push(text ? `[${m.role}] ${text}` : `[${m.role}]（空）`);
   }
   const joined = lines.join("\n\n");
-  return joined.length > REQUEST_MAX ? `${joined.slice(0, REQUEST_MAX)}\n…[已截断]` : joined;
+  return joined.length > REQUEST_MAX ? `${joined.slice(0, REQUEST_MAX)}\n…[请求上下文已截断]` : joined;
 }
 
 /** assistant 回复正文（text/toolCall 块渲染，thinking 跳过） */
 function renderResponse(content: unknown): string {
-  return clip(renderContent(content), RESPONSE_MAX) ?? "";
+  return clipMarked(renderContent(content), RESPONSE_MAX) ?? "";
 }
 
 type UsageAcc = { input: number; output: number; cacheRead: number; cacheWrite: number };
@@ -587,7 +606,7 @@ export function createTraceRunRecorder(
         const text = renderContent(res?.content);
         if (text) {
           // 失败出参不砍（stderr 是诊断核心），成功出参用小上限——见常量注释
-          const clipped = clip(
+          const clipped = clipMarked(
             text,
             event.isError ? TOOL_RESULT_ERR_MAX : TOOL_RESULT_OK_MAX,
           );
