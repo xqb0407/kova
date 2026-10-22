@@ -5,7 +5,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync, appendFileSync, readdirSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync, appendFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { unavailableMessage, type SandboxPlan } from "pi-sandbox";
@@ -29,6 +29,7 @@ import {
   rememberThreadSecrets,
 } from "./secret-redaction";
 import { logWarn } from "./logging";
+import { resolveShellCommand } from "./shell-resolve";
 
 const MAX_TOOL_OUTPUT = 16 * 1024;
 const MAX_READ_BYTES = 64 * 1024;
@@ -172,19 +173,6 @@ export function killTree(pid: number): void {
 }
 
 /* ------------------------------ shell / env 解析 ------------------------------ */
-
-function resolveShellCommand(): { file: string; prefixArgs: string[] } {
-  if (process.platform !== "win32") return { file: "/bin/bash", prefixArgs: ["-c"] };
-  const dirs = (process.env.PATH ?? "").split(";").filter(Boolean);
-  const candidates = dirs.map((d) => join(d, "bash.exe"));
-  const gitDir = dirs.find((d) => existsSync(join(d, "git.exe")));
-  if (gitDir) candidates.push(join(gitDir, "..", "bin", "bash.exe"));
-  candidates.push("C:\\Program Files\\Git\\bin\\bash.exe");
-  candidates.push("C:\\Program Files (x86)\\Git\\bin\\bash.exe");
-  if (process.env.LOCALAPPDATA) candidates.push(join(process.env.LOCALAPPDATA, "Programs", "Git", "bin", "bash.exe"));
-  for (const f of candidates) if (existsSync(f)) return { file: f, prefixArgs: ["-c"] };
-  return { file: "cmd.exe", prefixArgs: ["/d", "/s", "/c"] };
-}
 
 /** git insteadOf 加速 env：白名单键名，非字符串值丢弃（对齐 accel_env） */
 function accelEnv(inner: any): Record<string, string> {
