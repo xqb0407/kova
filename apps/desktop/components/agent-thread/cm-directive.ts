@@ -139,6 +139,8 @@ class ChipWidget extends WidgetType {
   }
   override toDOM() {
     const wrap = document.createElement("span");
+    // 悬浮显示完整标签：统一截断后（globals.css 的 max-width）靠 title 看全文
+    wrap.title = this.label;
     // 智能体提及不用药丸底：改成「机器人图标 + 高亮文本」，与消息行里的 agent
     // 名同一视觉语言；悬浮时图标原位换成 ✕，点击整段删除（同可交互芯片）
     if (this.directiveType === "agent") {
@@ -159,6 +161,7 @@ class ChipWidget extends WidgetType {
       // DOM 顺序 [图标][叉][文字]：hover 时图标隐、叉显，恰落在图标原位
       wrap.appendChild(createDeleteButton(this));
       const label = document.createElement("span");
+      label.className = "aui-directive-chip-label";
       label.textContent = this.label;
       wrap.appendChild(label);
       return wrap;
@@ -183,6 +186,7 @@ class ChipWidget extends WidgetType {
       // DOM 顺序 [图标][叉][文字]：hover 时图标隐、叉显，恰落在图标原位
       wrap.appendChild(createDeleteButton(this));
       const label = document.createElement("span");
+      label.className = "aui-directive-chip-label";
       label.textContent = this.label;
       wrap.appendChild(label);
       return wrap;

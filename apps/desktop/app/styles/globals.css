@@ -726,6 +726,29 @@ html.dark[data-window-effect] {
   animation: optimize-glow 1.6s ease-in-out infinite;
 }
 
+/* 芯片宽度上限：长文件名/技能名不能把输入框或气泡撑爆。统一截断 + 省略号，
+ * 完整标签挂在 title 上（cm-directive.ts / directive-text.tsx），悬浮可看全文。
+ * 短标签仍按内容自适应，不会被强行拉宽。 */
+.aui-directive-chip,
+.aui-directive-code,
+.aui-directive-agent {
+  max-width: 16rem;
+  min-width: 0;
+}
+.aui-directive-chip {
+  overflow: hidden;
+}
+.aui-directive-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aui-directive-chip-icon,
+.aui-directive-agent-icon {
+  flex: none;
+}
+
 /* 可交互指令芯片（skill 技能 / agent 智能体提及 / element 元素引用 /
    console 控制台日志 / library 资料库引用 / code 代码引用）：鼠标悬浮时左侧
    类型图标**原地换成 ✕**（标签页关闭按钮同款心智），点击把整段 token 从文档
