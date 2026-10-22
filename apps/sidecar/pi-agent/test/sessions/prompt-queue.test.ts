@@ -6,6 +6,7 @@ import type { Agent } from "@earendil-works/pi-agent-core";
 import { initStorage, sessionPath } from "../../src/storage/storage";
 import {
   cancelAllEntries,
+  cancelAllEntriesForSession,
   cancelEntry,
   enqueueTurn,
   getQueueStateForThread,
@@ -864,6 +865,34 @@ describe("空队列快照必须落盘（复活 bug 回归）", () => {
     // 重启/快照刷新语义：内存清空 → 回放采纳 → 不复活
     resetQueueForTests();
     expect(getQueueStateForThread("th-all", "s-all")?.items ?? []).toEqual([]);
+    resetQueueForTests();
+  });
+});
+
+describe("cancelAllEntriesForSession（删会话清排队）", () => {
+  test("按 sessionId 取消：整引擎命中连引擎收，混合引擎只摘本会话项", () => {
+    resetQueueForTests();
+    // 整条引擎都是 s-del 的（threadId↔sessionId 1:1 的常态）
+    enqueueTurn("qd1", "th-del", { text: "a", sessionId: "s-del" });
+    enqueueTurn("qd2", "th-del", { text: "b", sessionId: "s-del" });
+    // 另一会话的引擎不受影响
+    enqueueTurn("qk1", "th-keep", { text: "c", sessionId: "s-keep" });
+
+    expect(cancelAllEntriesForSession("s-del")).toBe(2);
+    expect(queueSnapshot("th-del")).toEqual([]);
+    expect(queueSnapshot("th-keep").map((q) => q.reqId)).toEqual(["qk1"]);
+    resetQueueForTests();
+  });
+
+  test("lastSessionId 命中整引擎：被删会话的散项连同其它残留一并取消", () => {
+    resetQueueForTests();
+    // lastSessionId 恒等于最新入队项的会话（enqueueTurn 播种），
+    // 故 lastSessionId 命中 = 引擎最新归属是被删会话 → 整引擎取消
+    enqueueTurn("qm1", "th-mix", { text: "a", sessionId: "s-keep" });
+    enqueueTurn("qm2", "th-mix", { text: "b", sessionId: "s-del" });
+
+    expect(cancelAllEntriesForSession("s-del")).toBe(2);
+    expect(queueSnapshot("th-mix")).toEqual([]);
     resetQueueForTests();
   });
 });

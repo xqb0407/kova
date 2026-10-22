@@ -933,3 +933,17 @@ describe("DesktopPiClient 会话标题实时回流（session_info_changed）", (
     expect(getThreadTitle("sid-auto")).toBe("夜间巡检");
   });
 });
+
+describe("DesktopPiClient deleteThread 启动回切指针清扫", () => {
+  test("删除即作废该会话的在飞登记（防重启回切复活幽灵「新对话」）", async () => {
+    const { piResumableStorage } = await import("@/lib/pi/pi-resume-storage");
+    piResumableStorage.setStreamId("req-del", "__LOCALID_draft", "sess-del");
+    expect(piResumableStorage.getStreamId("sess-del")).toBe("req-del");
+
+    const client = new DesktopPiClient();
+    await client.deleteThread("sess-del");
+
+    expect(piResumableStorage.getStreamId("sess-del")).toBeNull();
+    expect(piResumableStorage.peekEntries()).toEqual([]);
+  });
+});

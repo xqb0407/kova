@@ -206,9 +206,12 @@ export const BrowserView: FC<{ tab: PanelTab; hidden?: boolean }> = ({
   const stackRef = useRef(stack);
   stackRef.current = stack;
 
-  /** 记录一次（导航事件 → 地址栏/栈/标签记录），同址去重 */
+  /** 记录一次（导航事件 → 地址栏/栈/标签记录），同址去重。
+   *  trim：guest 页自导航偶发带前导空格的 URL（Windows 实测 Jira 页），
+   *  存进栈/标签后回放成 src 会再次 ERR_ABORTED——入口规整掉。 */
   const record = useCallback(
     (u: string) => {
+      u = u.trim();
       if (!/^(https?|file):\/\//.test(u)) return;
       setUrl(u);
       setInput(u);

@@ -2025,3 +2025,22 @@ describe("thread_snapshot：轮权威工时", () => {
     ]);
   });
 });
+
+describe("thread_snapshot：已删/不存在会话拒绝空快照", () => {
+  test("无索引行 → not found（防启动回切把已删会话收编成幽灵「新对话」）", async () => {
+    await expect(
+      dispatch("snap-gone", {
+        type: "thread_snapshot",
+        sessionId: "00000000-0000-4000-8000-000000000000",
+      }),
+    ).rejects.toThrow("session not found");
+  });
+
+  test("有索引行、无消息（刚建会话）仍返回空快照", async () => {
+    const id = "snap-fresh-row";
+    await sessionInsert(id, tmp);
+    await dispatch("snap-fresh", { type: "thread_snapshot", sessionId: id });
+    const snapshot = last().snapshot as { messages: unknown[] };
+    expect(snapshot.messages).toEqual([]);
+  });
+});
