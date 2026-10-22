@@ -35,6 +35,12 @@ export function useLibraryRoot(): LibraryRootInfo | null {
   );
 }
 
+/** 同步读取当前根信息（不发请求）：模块级镜像在 bundle 加载即解析一次。
+ *  搜索/引用构造这类非 hook 场景用；未就绪返回 null，调用方自行降级。 */
+export function getLibraryRootInfo(): LibraryRootInfo | null {
+  return info;
+}
+
 /** 拉取/刷新根信息（并发调用共用同一在途请求） */
 export function refreshLibraryRoot(): Promise<LibraryRootInfo | null> {
   if (!isDesktop()) return Promise.resolve(null);

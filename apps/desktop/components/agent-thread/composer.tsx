@@ -3,9 +3,10 @@
 import { ComposerAttachments } from "@/components/assistant-ui/elements/attachment.aui";
 import { ComposerQuotePreview } from "@/components/assistant-ui/elements/quote.aui";
 import { GroupedTriggerPopover } from "@/components/agent-thread/composer-grouped-popover";
+import { MissingReferencesBar } from "@/components/agent-thread/missing-references-bar";
 import {
   useComposerSlashMenu,
-  useSubagentMention,
+  useComposerMention,
 } from "@/components/agent-thread/composer-commands";
 import {
   CmComposerInput,
@@ -45,6 +46,10 @@ import { usePiQueue } from "@/lib/pi/pi-runtime";
 import { addSteeredBadge } from "@/lib/pi/pi-steer-intent";
 import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { cancelOptimize, optimizePrompt } from "@/lib/pi/pi-prompt-optimize";
+import {
+  useLibraryRefGuard,
+  useMissingLibraryRefs,
+} from "@/lib/workspace/library-ref-guard";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
 import { usePendingQuestions } from "@/lib/pi/pi-question";
@@ -134,9 +139,19 @@ const ImeEnterGuard: FC<{
   interceptSend: boolean;
   noModel: boolean;
   noModelHint: string | null;
+  /** 当前线程草稿里有失效的资料库引用：任何发送路径都拦下 */
+  hasMissingRefs: boolean;
   /** 优化进行中：Enter/Escape 全吞，自定义发送组合只拦键不发送 */
   blocked?: boolean;
-}> = ({ children, send, interceptSend, noModel, noModelHint, blocked = false }) => {
+}> = ({
+  children,
+  send,
+  interceptSend,
+  noModel,
+  noModelHint,
+  hasMissingRefs,
+  blocked = false,
+}) => {
   const ref = useRef<HTMLDivElement>(null);
   const aui = useAui();
   useEffect(() => {
@@ -189,6 +204,11 @@ const ImeEnterGuard: FC<{
           notifyNoModelSelected(noModelHint);
           return;
         }
+        // 资料库引用失效守卫：有失效引用就不发（与 Enter / 发送按钮同一口径）
+        if (aui.composer.getState().canSend && hasMissingRefs) {
+          toast.error("有引用已失效，请先移除");
+          return;
+        }
         // 显式排队车道：store 暴露 queue adapter 后，运行中不带 steer 选项的
         // 发送会被 core 默认路由成并入当前轮（append 里 message.steer ??
         // isRunning），自定义绑定语义（普通发送）必须显式声明 followUp
@@ -203,7 +223,7 @@ const ImeEnterGuard: FC<{
       el.removeEventListener("compositionstart", onCompositionStart, true);
       el.removeEventListener("compositionend", onCompositionEnd, true);
     };
-  }, [aui, interceptSend, noModel, noModelHint, send, blocked]);
+  }, [aui, interceptSend, noModel, noModelHint, hasMissingRefs, send, blocked]);
   return (
     <div ref={ref} style={{ display: "contents" }}>
       {children}
@@ -212,12 +232,19 @@ const ImeEnterGuard: FC<{
 };
 
 export const Composer: FC = () => {
-  // / 指令菜单（命令/技能/MCP 工具三分类）与 @ 子智能体提及，数据聚合见 composer-commands.ts
-  const mention = useSubagentMention();
+  // / 指令菜单（命令/技能/MCP 工具三分类）与 @ 提及（子智能体 + 资料库），
+  // 数据聚合见 composer-commands.ts
+  const mention = useComposerMention();
   const slash = useComposerSlashMenu();
   // 提问卡片与输入框互斥：Question 工具挂起期间整条 composer 让位给卡片
   // （作答/跳过 → question_answer 结算 → finish chunk 清空，composer 复原）
   const threadId = useAuiState((s) => s.threads.mainThreadId);
+  // 资料库引用失效守卫：草稿变化/聚焦/watcher 变更时校验，缺失引用会在
+  // 输入框上方出琥珀条并拦截发送（见 library-ref-guard / MissingReferencesBar）
+  const draftText = useAuiState((s) => s.composer.text);
+  useLibraryRefGuard(threadId, draftText);
+  // 发送拦截只看当前线程：旧线程残留的失效状态不阻塞当前对话
+  const missingRefs = useMissingLibraryRefs(threadId).length > 0;
   // 查询键必须是 sessionId：本会话新建的线程 mainThreadId 是 __LOCALID_ 草稿
   // id，拿它查挂起台账永远 miss（卡片不上屏），见 pi-interaction-session
   const interactionSessionId = useInteractionSessionId();
@@ -312,6 +339,7 @@ export const Composer: FC = () => {
             靠 grid-template-rows 0fr↔1fr 折叠的容器，父级 gap 会在它折叠时留下
             幽灵间距。新加悬浮条请沿用 mb-2，别再引出第三种间距 */}
         <PromptQueueBar />
+        <MissingReferencesBar />
         <ToolApprovalCard />
         {/* 问答档的切档提议（模型调 ask_needs_work）：与审批卡同一族——都是
             「模型在等你拍板」，所以放在同一层、用同一套卡壳与按钮样式 */}
@@ -353,12 +381,19 @@ export const Composer: FC = () => {
               )}
               <ComposerQuotePreview />
               <ComposerAttachments />
-              <ImeEnterGuard send={sendMessage} interceptSend={interceptSend} noModel={noModel} noModelHint={gate.hint} blocked={optimizing}>
+              <ImeEnterGuard
+                send={sendMessage}
+                interceptSend={interceptSend}
+                noModel={noModel}
+                noModelHint={gate.hint}
+                hasMissingRefs={missingRefs}
+                blocked={optimizing}
+              >
               <CmComposerInput
                 submitMode={submitMode}
                 blocked={optimizing}
                 placeholder={
-                  gate.hint ?? "输入任务指令 @选择智能体，/打开指令菜单"
+                  gate.hint ?? "输入任务指令 @引用智能体或资料库文件，/打开指令菜单"
                 }
                 className={`aui-composer-input relative min-h-10 w-full px-2.5 py-1 text-base leading-6 [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-editor]:max-h-48 [&_.cm-scroller]:overscroll-contain [&_.cm-scroller]:overflow-y-auto [&_.cm-placeholder]:text-sm [&_.cm-placeholder]:text-muted-foreground/60 [&_.cm-placeholder]:pointer-events-none [&_.cm-placeholder]:truncate ${directiveChipVariants}`}
               />
@@ -388,7 +423,7 @@ export const Composer: FC = () => {
         <GroupedTriggerPopover
           char="@"
           {...mention}
-          emptyLabel="暂无子智能体"
+          emptyLabel="没有匹配的智能体或资料库文件"
         />
 
         <GroupedTriggerPopover
@@ -820,6 +855,9 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
   const gate = useModelGate();
   const noModel = !gate.usable;
   const gateHint = gate.hint;
+  // 资料库引用失效守卫：有失效引用（上方琥珀条）就拦下点击，bar 里一键移除
+  const missingRefs = useMissingLibraryRefs(threadId);
+  const hasMissingRefs = missingRefs.length > 0;
   // 改动（4a）：队列数据源换 react-pi state.queue（条目 id = 真实 reqId）
   const { queue } = usePiQueue();
   const queueItems = queue.followUp;
@@ -870,6 +908,11 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         className="aui-composer-send size-7 rounded-lg bg-primary!"
         aria-label="Send message"
         onClick={(e) => {
+          // 资料库引用失效守卫：有失效引用就不发（与 Enter 路径同一口径）
+          if (hasMissingRefs) {
+            toast.error("有引用已失效，请先移除");
+            return;
+          }
           // 显式车道（steer 选项）：store 暴露 queue adapter 后，不带选项的
           // 运行中发送会被 core 默认并入当前轮（message.steer ?? isRunning），
           // 排队语义必须显式声明 followUp 才能进队列、出排队条
@@ -915,11 +958,12 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
   return (
     <ComposerPrimitive.Send asChild>
       <TooltipIconButton
-        tooltip="发送消息"
+        tooltip={hasMissingRefs ? "有引用已失效，请先移除" : "发送消息"}
         side="bottom"
         type="button"
         variant="default"
         size="icon"
+        disabled={hasMissingRefs}
         className="aui-composer-send size-7 rounded-lg bg-primary!"
         aria-label="Send message"
       >

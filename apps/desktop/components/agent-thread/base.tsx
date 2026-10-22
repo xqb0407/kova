@@ -909,6 +909,8 @@ export const Base: FC = () => {
   // 重渲染（实测一次开合里它占 12~50ms）。Thread 自己按 runtime 订阅更新，
   // 与"由谁渲染它"无关——引用不变时 React 直接跳过这棵子树。
   const threadNode = useMemo(() => <Thread />, []);
+  // 资料库页「引用到对话」toast 的「去对话」直达路：清空 activeMenu 即回聊天
+  const backToChat = useCallback(() => setActiveMenu(""), []);
   const chat =
     activeMenu === "automation" ? (
       <AutomationsView
@@ -921,7 +923,7 @@ export const Base: FC = () => {
     ) : activeMenu === "connector" ? (
       <MarketplaceView manageTab={connectorManageTab} />
     ) : activeMenu === "files" ? (
-      <LibraryView />
+      <LibraryView onBackToChat={backToChat} />
     ) : (
       threadNode
     );

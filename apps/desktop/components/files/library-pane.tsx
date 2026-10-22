@@ -48,6 +48,15 @@ import {
   libraryScan,
   type LibraryScanEntry,
 } from "@/lib/workspace/library-files";
+import {
+  libraryFileMetaDelete,
+  libraryFileMetaMove,
+} from "@/lib/workspace/library-note-meta";
+import { searchLibrary } from "@/lib/workspace/library-index";
+import {
+  joinFsPath,
+  type LibraryReference,
+} from "@/lib/composer/library-reference";
 import type { LibraryActions } from "./use-library-actions";
 
 /** 树里选中的目标 */
@@ -137,7 +146,23 @@ export const LibraryPane: FC<{
   onSelect: (sel: LibrarySelection | null) => void;
   refreshSignal: number;
   actions: LibraryActions;
-}> = ({ root, query, selected, onSelect, refreshSignal, actions }) => {
+  /** 「引用到对话」：只对资料库根下的文件提供（AI 产物树不传） */
+  onReference: (ref: LibraryReference) => void;
+  /** 当前草稿是否引用了该文件/目录（删除确认框警示行用） */
+  isReferenced?: (rel: string, isDir: boolean) => boolean;
+  /** 资料库内容变化（应用内删除等）：页面 bump 刷新信号 */
+  onLibraryChanged?: () => void;
+}> = ({
+  root,
+  query,
+  selected,
+  onSelect,
+  refreshSignal,
+  actions,
+  onReference,
+  isReferenced,
+  onLibraryChanged,
+}) => {
   const q = query.trim();
   /** AI 产物根（task-workspace）：异步解析 */
   const [artifactsRoot, setArtifactsRoot] = useState<string | null>(null);
@@ -273,19 +298,43 @@ export const LibraryPane: FC<{
     }
     let stale = false;
     setSearch((s) => ({ ...s, loading: true }));
-    const scopes: ("library" | "artifacts")[] = artifactsRoot
-      ? ["library", "artifacts"]
-      : ["library"];
-    Promise.all(scopes.map((scope) => libraryScan({ scope, query: q })))
-      .then((results) => {
+    // 资料库根：带标题/标签的渲染层检索（library_scan 只按文件名匹配，
+    // 直接传 query 会把「只命中 tag/标题」的文件滤掉）；AI 产物维持文件名搜索。
+    const libraryHits = searchLibrary(q).then((r) => ({
+      entries: r.entries.map((e) => ({
+        rel: e.rel,
+        name: e.name,
+        size: e.size,
+        modified: e.modified,
+        origin: "library" as const,
+      })),
+      truncated: r.truncated,
+    }));
+    const artifactHits = artifactsRoot
+      ? libraryScan({ scope: "artifacts", query: q }).then((r) => ({
+          entries: r.entries.map((e) => ({
+            ...e,
+            origin: "artifacts" as const,
+          })),
+          truncated: r.truncated,
+        }))
+      : Promise.resolve({
+          entries: [] as {
+            rel: string;
+            name: string;
+            size: number;
+            modified: string | null;
+            origin: "artifacts";
+          }[],
+          truncated: false,
+        });
+    Promise.all([libraryHits, artifactHits])
+      .then(([libs, arts]) => {
         if (stale) return;
-        const entries = results.flatMap((r, i) =>
-          r.entries.map((e) => ({ ...e, origin: scopes[i] })),
-        );
         setSearch({
           loading: false,
-          entries,
-          truncated: results.some((r) => r.truncated),
+          entries: [...libs.entries, ...arts.entries],
+          truncated: libs.truncated || arts.truncated,
         });
       })
       .catch(() => {
@@ -333,6 +382,54 @@ export const LibraryPane: FC<{
     [onSelect],
   );
 
+  /** 资料库引用构造：rel + 固化的绝对路径（插入时定格，根改位置不影响旧引用） */
+  const referenceOf = useCallback(
+    (
+      rel: string,
+      name: string,
+      range?: { startLine: number; endLine: number },
+    ): LibraryReference | null => {
+      if (!root) return null;
+      return {
+        rel,
+        name,
+        absPath: joinFsPath(root, rel),
+        ...(range ?? {}),
+      };
+    },
+    [root],
+  );
+
+  const handleDeleted = useCallback(
+    (rel: string, isDir: boolean) => {
+      if (root) {
+        // 应用内删除是永久删除：元数据行一并清理（外部删除只标 missing 不删行）
+        void libraryFileMetaDelete(root, [rel], isDir).catch(() => {});
+      }
+      onLibraryChanged?.();
+    },
+    [root, onLibraryChanged],
+  );
+
+  /** 改名（树内对话框或查看器点文件名）：迁移标签元数据 + 选中项跟到新路径。
+   *  目录按 rel/ 前缀批量迁移，子文件的标签不会变 orphan。 */
+  const handleFileRenamed = useCallback(
+    (
+      oldRel: string,
+      newRel: string,
+      newName: string,
+      cwd: string,
+      isDir = false,
+    ) => {
+      if (root && cwd === root) {
+        void libraryFileMetaMove(root, oldRel, newRel, isDir).catch(() => {});
+      }
+      onSelect({ value: newRel, cwd, rel: newRel, name: newName });
+      onLibraryChanged?.();
+    },
+    [root, onSelect, onLibraryChanged],
+  );
+
   const libraryTree = (
     <FileExplorer
       rootCwd={root}
@@ -341,6 +438,15 @@ export const LibraryPane: FC<{
       onImport={(dir) => void actions.pickImport(dir, false)}
       onDropPaths={(paths, dir) => void actions.importPaths(paths, dir)}
       onMoveRow={(src, dir) => (root ? handleMoveRow(root, src, dir) : false)}
+      onReferenceFile={(rel, name) => {
+        const ref = referenceOf(rel, name);
+        if (ref) onReference(ref);
+      }}
+      onDeleted={handleDeleted}
+      onRenamed={(oldRel, newRel, newName, isDir) => {
+        if (root) handleFileRenamed(oldRel, newRel, newName, root, isDir);
+      }}
+      isReferenced={isReferenced}
       selected={selected && selected.cwd === root ? selected.rel : null}
       // 树的清空信号（删除文件/文件夹、选中的父目录被删）要传回页面，
       // 否则右栏会停在已删除文件的旧内容上
@@ -501,6 +607,27 @@ export const LibraryPane: FC<{
         rel={selected?.rel ?? null}
         name={selected?.name ?? ""}
         reloadSignal={refreshSignal}
+        onReference={
+          selected && root && selected.cwd === root
+            ? (range) => {
+                const ref = referenceOf(selected.rel, selected.name, range);
+                if (ref) onReference(ref);
+              }
+            : undefined
+        }
+        metaEnabled={Boolean(selected && root && selected.cwd === root)}
+        onRenamed={
+          selected
+            ? (newRel, newName) => {
+                handleFileRenamed(
+                  selected.rel,
+                  newRel,
+                  newName,
+                  selected.cwd,
+                );
+              }
+            : undefined
+        }
         emptyActions={
           <>
             <Button

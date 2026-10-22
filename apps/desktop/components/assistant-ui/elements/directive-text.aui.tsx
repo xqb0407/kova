@@ -4,6 +4,7 @@ import { memo } from "react";
 import type { TextMessagePartComponent } from "@assistant-ui/react";
 import type { Unstable_DirectiveFormatter } from "@assistant-ui/react";
 import { unstable_defaultDirectiveFormatter } from "@assistant-ui/react";
+import { LibraryIcon } from "lucide-react";
 import {
   createDirectiveText as createDirectiveTextBase,
   type CreateDirectiveTextOptions,
@@ -21,7 +22,7 @@ export type {
  * 几乎同色、视觉隐身——chip 样式必须显式挂容器，composer 输入与消息气泡共用这份。
  */
 export const directiveChipVariants =
-  "[&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-md [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:px-1.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center";
+  "[&_.aui-directive-chip]:mx-1.5 [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-[4px] [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:pl-1.5 [&_.aui-directive-chip]:pr-2.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center";
 
 /** Creates a `Text` message part component that parses directive syntax and renders inline chips. */
 export function createDirectiveText(
@@ -31,7 +32,11 @@ export function createDirectiveText(
   return createDirectiveTextBase(formatter, options);
 }
 
-/** `Text` message part component that renders directive syntax as inline chips. */
+/** `Text` message part component that renders directive syntax as inline chips.
+ *  资料库引用芯片在消息里也要有图标（图标集目前只有 library；其它指令沿用
+ *  无图标样式，与历史行为一致）。 */
 export const DirectiveText: TextMessagePartComponent = memo(
-  createDirectiveTextBase(unstable_defaultDirectiveFormatter),
+  createDirectiveTextBase(unstable_defaultDirectiveFormatter, {
+    iconMap: { library: LibraryIcon },
+  }),
 );

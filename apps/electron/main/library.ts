@@ -19,6 +19,32 @@ import { kvGet, kvSet } from "./store";
 
 export const LIBRARY_DIR = "library";
 export const LIBRARY_ROOT_KEY = "library.root";
+/** 历史根（最多 10 个）：引用校验的允许根白名单，根改位置后旧引用仍可 stat */
+export const LIBRARY_ROOTS_HISTORY_KEY = "library.roots.history";
+
+/** 读历史根（坏 JSON/未初始化都返回空数组） */
+export function libraryRootHistory(): string[] {
+  try {
+    const raw = kvGet(LIBRARY_ROOTS_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((p): p is string => typeof p === "string" && p.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 记录一个根（当前根切换前调用），去重、截断到 10 个 */
+function rememberLibraryRoot(dir: string): void {
+  const list = [dir, ...libraryRootHistory().filter((p) => p !== dir)].slice(0, 10);
+  try {
+    kvSet(LIBRARY_ROOTS_HISTORY_KEY, JSON.stringify(list));
+  } catch {
+    /* db 未就绪：忽略，当前根仍在白名单里 */
+  }
+}
 
 /** 缺省资料库根：<appData>/library */
 export function defaultLibraryRoot(): string {
@@ -83,7 +109,10 @@ export function setLibraryRoot(dir: string): string {
   const code = validateLibraryRoot(dir);
   if (code) throw new Error(code);
   const root = dir.trim().replace(/[\\/]+$/, "");
+  const previous = libraryRoot();
   mkdirSync(root, { recursive: true });
+  // 旧根进历史：旧引用（id 里固化绝对路径）仍能通过 library_refs_check
+  if (previous !== root) rememberLibraryRoot(previous);
   kvSet(LIBRARY_ROOT_KEY, root);
   return root;
 }

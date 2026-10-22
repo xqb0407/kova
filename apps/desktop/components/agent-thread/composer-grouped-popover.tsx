@@ -1,12 +1,20 @@
 "use client";
 
-import { useEffect, useRef, type ComponentPropsWithoutRef, type FC } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentPropsWithoutRef,
+  type FC,
+} from "react";
 import {
   ComposerPrimitive,
   unstable_useTriggerPopoverScopeContext,
 } from "@assistant-ui/react";
 import type { Unstable_TriggerAdapter } from "@assistant-ui/core";
 import { SparklesIcon } from "lucide-react";
+import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
 import { cn } from "@/lib/utils";
 
 type IconComponent = FC<{ className?: string }>;
@@ -17,6 +25,7 @@ const GROUP_DEFS: readonly { type: string; label: string }[] = [
   { type: "skill", label: "技能" },
   { type: "tool", label: "MCP 工具" },
   { type: "agent", label: "子智能体" },
+  { type: "library", label: "资料库" },
 ];
 
 function resolveIcon(
@@ -36,6 +45,15 @@ type GroupedTriggerPopoverProps = {
   fallbackIcon?: IconComponent;
   /** 无匹配条目时的空态文案 */
   emptyLabel: string;
+  /** adapter 异步取数中（资料库索引首次加载）：空态显示「加载中…」 */
+  isLoading?: boolean;
+  /**
+   * 展开方向：
+   * - "auto"（默认）：按输入框上/下可用空间自动选——小窗/居中时向下，避免被
+   *   header 遮住；弹层高度变化（搜索过滤）会自动重算；
+   * - "up"/"down"：固定方向（弹窗内等明确场景用）。
+   */
+  placement?: "auto" | "up" | "down";
   className?: string;
 } & (
   | {
@@ -103,7 +121,16 @@ const GroupedItems: FC<{
                         data-item-option={item.id}
                         className="hover:bg-accent focus:bg-accent data-[highlighted]:bg-accent mx-1 flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-start transition-colors outline-none"
                       >
-                        <Icon className="text-muted-foreground size-3.5 shrink-0" />
+                        {/* 资料库条目用与文件树一致的彩色类型图标（label 即文件名）；
+                            其余条目按 iconMap 取 lucide 图标 */}
+                        {item.type === "library" ? (
+                          <FileTypeIcon
+                            path={item.label}
+                            className="size-3.5 shrink-0"
+                          />
+                        ) : (
+                          <Icon className="text-muted-foreground size-3.5 shrink-0" />
+                        )}
                         <span className="max-w-[50%] shrink-0 truncate text-sm font-medium">
                           {item.label}
                         </span>
@@ -133,11 +160,54 @@ const GroupedItems: FC<{
   );
 };
 
+/** 开合探针：弹层外框只在 open 时渲染，但探针在关闭态也会挂载（父级原样
+ *  渲染 children），把 open 变化报给外层做方向测量 */
+const PopoverOpenProbe: FC<{ onChange: (open: boolean) => void }> = ({
+  onChange,
+}) => {
+  const { open } = unstable_useTriggerPopoverScopeContext();
+  useEffect(() => {
+    onChange(open);
+  }, [open, onChange]);
+  return null;
+};
+
+/** 弹层最大高度估值的上限（条目区 max-h-72 + 组头/内边距，留点余量） */
+const MAX_POPOVER_HEIGHT = 360;
+/** 与输入框之间保留的呼吸间距 */
+const POPOVER_GAP = 8;
+
+/**
+ * 可见裁剪区：从锚点往上找第一个 overflow 不是 visible 的祖先。
+ * 会话区是「header 之下的 flex-1 overflow-hidden」——直接用视口会把 header
+ * 那 64px 也当成可用空间，弹层向上展开时照样被 header 盖住半截。
+ */
+function clippingViewport(from: HTMLElement | null): {
+  top: number;
+  bottom: number;
+} {
+  let node = from;
+  while (node && node !== document.body) {
+    const style = getComputedStyle(node);
+    if (/(hidden|auto|scroll|clip)/.test(style.overflowY)) {
+      const rect = node.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom };
+    }
+    node = node.parentElement;
+  }
+  return { top: 0, bottom: window.innerHeight };
+}
+
 /**
  * 平铺分组的触发弹层（替代预制 ComposerTriggerPopover 的分类钻取形态）：
- * 组头 + 条目一屏展示，超过 max-h-72 内部滚动，组头吸顶。
+ * 组头 + 一屏条目，超过 max-h-72 内部滚动，组头吸顶。
  * adapter 需为平铺形态（categories() 返回空数组 → 弹层恒为搜索模式，
  * 条目由 search(query) 供给，空 query 时返回全量即完整分组视图）。
+ *
+ * 方向：默认 auto——按输入框上/下可用空间选，小窗/居中时向下展开（此前固定
+ * 向上，资料库分组把弹层撑高后会被窗口 header 遮住半截）。弹层自身高度随
+ * 搜索过滤变化，用 ResizeObserver 重算；测量落定前先 invisible，避免向上
+ * 闪一帧。
  */
 const GroupedTriggerPopoverImpl: FC<GroupedTriggerPopoverProps> = ({
   char,
@@ -145,20 +215,87 @@ const GroupedTriggerPopoverImpl: FC<GroupedTriggerPopoverProps> = ({
   iconMap,
   fallbackIcon = SparklesIcon,
   emptyLabel,
+  isLoading,
+  placement = "auto",
   className,
   directive,
   action,
 }) => {
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  /** auto 模式下的测量结果；null = 尚未测量（先隐藏避免方向闪动） */
+  const [autoDir, setAutoDir] = useState<"up" | "down" | null>(null);
+
+  const measure = useCallback(() => {
+    const el = popoverRef.current;
+    // 弹层是 ComposerPrimitive.Root（relative）的直接子元素
+    const anchor = el?.parentElement;
+    if (!el || !anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const height = Math.min(
+      el.scrollHeight || el.getBoundingClientRect().height,
+      MAX_POPOVER_HEIGHT,
+    );
+    const viewport = clippingViewport(anchor);
+    const spaceAbove = rect.top - viewport.top - POPOVER_GAP;
+    const spaceBelow = viewport.bottom - rect.bottom - POPOVER_GAP;
+    const fitsUp = spaceAbove >= height;
+    const fitsDown = spaceBelow >= height;
+    // 优先放得下的一侧；都放不下选空间大的一侧；相等时向下（小窗/居中更常见）
+    const down = fitsDown
+      ? fitsUp
+        ? spaceBelow > spaceAbove
+        : true
+      : fitsUp
+        ? false
+        : spaceBelow >= spaceAbove;
+    setAutoDir(down ? "down" : "up");
+  }, []);
+
+  useEffect(() => {
+    if (!open) {
+      setAutoDir(null);
+      return;
+    }
+    if (placement !== "auto") {
+      setAutoDir(placement);
+      return;
+    }
+    // 首帧布局落定后再量一次；列表搜索过滤导致高度变化时由 ResizeObserver 重算
+    measure();
+    const raf = requestAnimationFrame(measure);
+    const el = popoverRef.current;
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined" && el
+        ? new ResizeObserver(measure)
+        : null;
+    if (el) resizeObserver?.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [open, placement, measure]);
+
+  const dir = placement === "auto" ? autoDir : placement;
+
   return (
     <ComposerPrimitive.Unstable_TriggerPopover
+      ref={popoverRef}
       data-slot="composer-grouped-popover"
       char={char}
       adapter={adapter}
+      isLoading={isLoading}
       className={cn(
-        "aui-composer-trigger-popover bg-popover text-popover-foreground absolute start-0 bottom-full z-50 mb-2 w-80 overflow-hidden rounded-xl border shadow-2xl",
+        "aui-composer-trigger-popover bg-popover text-popover-foreground absolute start-0 z-50 w-80 overflow-hidden rounded-xl border shadow-2xl",
+        dir === "down" ? "top-full mt-2" : "bottom-full mb-2",
+        // auto 尚未测量：先占位但不可见，避免向上闪一帧被 header 切
+        placement === "auto" && dir === null && "invisible",
         className,
       )}
     >
+      <PopoverOpenProbe onChange={setOpen} />
       {directive ? (
         <ComposerPrimitive.Unstable_TriggerPopover.Directive {...directive} />
       ) : action ? (

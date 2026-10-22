@@ -29,8 +29,15 @@ const TITLE_MAX = 80;
  * 正则与桌面端 cm-composer-input.tsx 的 DIRECTIVE_RE 保持一致。
  */
 const DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/gu;
+/** 资料库上下文隐藏块（发送端追加、给模型看的路径/正文）：标题路径不该带
+ *  绝对路径或整篇笔记 */
+const LIBRARY_CONTEXT_BLOCK_RE =
+  /\[\[library-(?:refs|notes)(?::[^\]]+)?\]\][\s\S]*?\[\[\/library-(?:refs|notes)(?::[^\]]+)?\]\]/g;
 export function stripDirectiveTokens(text: string): string {
-  return text.replace(DIRECTIVE_RE, (_m, _type, label: string) => label).replace(/[ \t]{2,}/g, " ");
+  return text
+    .replace(LIBRARY_CONTEXT_BLOCK_RE, "")
+    .replace(DIRECTIVE_RE, (_m, _type, label: string) => label)
+    .replace(/[ \t]{2,}/g, " ");
 }
 
 /** 组装标题总结请求上下文（user 消息 = 截断的 prompt + 可选回复摘要） */

@@ -23,6 +23,7 @@ import {
   BookOpenIcon,
   BotIcon,
   ChevronRightIcon,
+  LibraryIcon,
   Link2Icon,
   MessageSquareIcon,
   PaperclipIcon,
@@ -33,6 +34,7 @@ import {
   SlidersHorizontalIcon,
   type LucideIcon,
 } from "lucide-react";
+import { LibraryReferencePicker } from "@/components/files/library-reference-picker";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -179,6 +181,7 @@ export const ComposerPlusMenu: FC = () => {
   const { pick, fileInput } = useAddAttachments();
   // 菜单开关上提到这里：搜索面板选中条目后要能反手把整个菜单关掉
   const [menuOpen, setMenuOpen] = useState(false);
+  const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   // 分类面板的互斥登记（见 PanelGroupContext）
   const panelGroup = useMemo(createPanelGroup, []);
@@ -190,6 +193,10 @@ export const ComposerPlusMenu: FC = () => {
   return (
     <>
       {fileInput}
+      <LibraryReferencePicker
+        open={libraryPickerOpen}
+        onOpenChange={setLibraryPickerOpen}
+      />
       <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
         <DropdownMenuTrigger
           render={
@@ -223,6 +230,18 @@ export const ComposerPlusMenu: FC = () => {
                   <PaperclipIcon className="text-muted-foreground size-3.5 shrink-0" />
                   添加文件
                 </DropdownMenuItem>
+                {isDesktop() && (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      closeMenu();
+                      // 同「添加文件」：等菜单退场动画走完再开（避免浮层压住）
+                      setTimeout(() => setLibraryPickerOpen(true), 120);
+                    }}
+                  >
+                    <LibraryIcon className="text-muted-foreground size-3.5 shrink-0" />
+                    引用资料库文件…
+                  </DropdownMenuItem>
+                )}
                 {/* 分隔线把「直选动作」和「下钻分类」分成两段：添加文件点下去就执行，
                     其余四行都要再展开一层。线的样式跟面板页脚一致（浅色 + 两侧内收），
                     免得在五行短菜单里读成硬边框 */}

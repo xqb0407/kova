@@ -58,18 +58,32 @@ const X_SVG =
 const FILE_CODE_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m10 13-2 2 2 2"/><path d="m14 17 2-2-2-2"/></svg>';
 
+/** lucide library 图标（资料库引用芯片：「引用到对话」） */
+const LIBRARY_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></svg>';
+
 /** 非 command 芯片的左侧图标：按指令类型取（未命中回退通用扳手） */
 const CHIP_ICONS: Record<string, string> = {
   skill: BOOK_OPEN_SVG,
   element: ELEMENT_SVG,
   console: CONSOLE_SVG,
   code: FILE_CODE_SVG,
+  library: LIBRARY_SVG,
 };
 
 /** 可交互芯片（自己处理点击：打开详情 / 悬浮删除）；其余类型交给编辑器。
+ *  skill 与 agent 提及也走这套：悬浮时左侧图标原位换成 ✕，点击整段删除
+ *  ——用户对所有内联指令的预期一致（此前它们在悬浮时毫无反馈，像坏掉了）。
  *  code（「引用到对话」的代码引用）虽渲染成高亮文本而非药丸，但同属可交互：
  *  悬浮叉要按文档范围惰性删除 token，范围变了必须重建 DOM。 */
-const INTERACTIVE_TYPES = new Set(["element", "console", "code"]);
+const INTERACTIVE_TYPES = new Set([
+  "skill",
+  "agent",
+  "element",
+  "console",
+  "code",
+  "library",
+]);
 
 /** 悬浮删除按钮：hover 时原地替换左侧类型图标，点击把 token 整段从文档删掉。
  *  （图标/叉的显隐规则在 globals.css 的 .aui-directive-chip-interactive 族；
@@ -125,16 +139,25 @@ class ChipWidget extends WidgetType {
   }
   override toDOM() {
     const wrap = document.createElement("span");
-    // 智能体提及不用芯片：改成「机器人图标 + 高亮文本」，与消息行里的 agent 名同一视觉语言
+    // 智能体提及不用药丸底：改成「机器人图标 + 高亮文本」，与消息行里的 agent
+    // 名同一视觉语言；悬浮时图标原位换成 ✕，点击整段删除（同可交互芯片）
     if (this.directiveType === "agent") {
       wrap.className =
-        "aui-directive-agent inline-flex items-baseline gap-1 text-blue-400 font-medium";
+        "aui-directive-agent aui-directive-chip-interactive inline-flex items-baseline gap-1 text-blue-400 font-medium";
       wrap.setAttribute("data-directive-type", this.directiveType);
       wrap.setAttribute("data-directive-id", this.id);
+      wrap.style.cursor = "pointer";
+      wrap.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
       const icon = document.createElement("span");
-      icon.className = "aui-directive-agent-icon inline-flex self-center";
+      icon.className =
+        "aui-directive-agent-icon aui-directive-chip-icon inline-flex self-center";
       icon.innerHTML = BOT_SVG;
       wrap.appendChild(icon);
+      // DOM 顺序 [图标][叉][文字]：hover 时图标隐、叉显，恰落在图标原位
+      wrap.appendChild(createDeleteButton(this));
       const label = document.createElement("span");
       label.textContent = this.label;
       wrap.appendChild(label);

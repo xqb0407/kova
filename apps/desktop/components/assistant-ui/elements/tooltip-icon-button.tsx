@@ -18,10 +18,17 @@ type TooltipIconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export function TooltipIconButton({
   tooltip,
+  side,
+  // 这两个是历史调用点的视觉参数；本组件只有一种图标按钮外观，解构掉避免
+  // 作为非法 DOM 属性 spread 到 <button>（React 会告警）
+  variant: _variant,
+  size: _size,
   className,
   children,
   ...props
 }: TooltipIconButtonProps) {
+  void _variant;
+  void _size;
   return (
     <Tooltip>
       <TooltipTrigger
@@ -39,7 +46,7 @@ export function TooltipIconButton({
           </button>
         }
       />
-      <TooltipContent>
+      <TooltipContent side={side}>
         <p>{tooltip}</p>
       </TooltipContent>
     </Tooltip>

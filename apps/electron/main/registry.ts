@@ -8,6 +8,7 @@ import { setupLoggingCommands } from "./logging";
 import { setupFsCommands } from "./fs-cmds";
 import { setupLibraryCommands } from "./library-cmds";
 import { ensureLibraryRoot } from "./library";
+import { startLibraryWatch } from "./library-watch";
 import { setupNotifyCommands } from "./notify";
 import { setupWebhookCommands } from "./webhook";
 import { setupAboutCommands } from "./about";
@@ -30,9 +31,11 @@ export function registerAllCommands(): void {
   setupLoggingCommands(register);
   setupFsCommands(register);
   // 资料库：注册命令前先确保根目录在位（用户改过位置也照样建；index.ts 里
-  // initStore 先于本函数，kv 可读）
+  // initStore 先于本函数，kv 可读）。根就位后挂上变更监听（系统删除/同步盘
+  // 感知，见 library-watch.ts）
   ensureLibraryRoot();
   setupLibraryCommands(register);
+  startLibraryWatch();
   setupNotifyCommands(register);
   setupWebhookCommands(register);
   setupAboutCommands(register);

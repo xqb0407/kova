@@ -76,6 +76,14 @@ export function initTables(db: Db): void {
         mtime REAL NOT NULL,
         first_ts INTEGER NOT NULL DEFAULT 0,
         last_ts INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS library_file_meta (
+        root TEXT NOT NULL,
+        rel TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (root, rel)
     );`);
 
   // 旧库补列（已存在则忽略）
