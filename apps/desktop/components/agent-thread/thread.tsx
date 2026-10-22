@@ -25,6 +25,7 @@ import { ImageDataUI } from "@/components/assistant-ui/elements/image-data";
 import { UserMessage } from "./user-message";
 import { BranchPicker } from "./branch-picker";
 import { CheckpointTail } from "./checkpoint-card";
+import { ShareSelectionToolbar } from "./share/share-selection-bar";
 import { ThreadPreviewRail } from "./thread-preview-rail";
 import { ThreadFind } from "./thread-find";
 import { ThreadViewport } from "./thread-viewport";
@@ -33,6 +34,7 @@ import { ViewportScrollManager } from "./viewport-scroll-manager";
 import { prewarmShiki } from "@/lib/markdown/prewarm-shiki";
 import { RenderProbe } from "@/components/debug/render-probe";
 import { noteFact } from "@/components/debug/perf-store";
+import { useShareState } from "@/lib/share/share-store";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -84,8 +86,7 @@ const ThreadScrollToBottom: FC = () => {
 
 /** turn 间隙等待动画：thread 在跑、末条是 user 消息、但 AI 回复消息尚未
  *  创建（新回复首 token 前的空窗）时，消息级 indicator 无处挂载——AI 回复
- *  消息要等首个内容块才创建——这里在列表末尾补点阵动画。 */
-const ThreadWorkingIndicator: FC = () => {
+ *  消息要等首个内容块才创建——这里在列表末尾补点阵动画。 */const ThreadWorkingIndicator: FC = () => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const lastRole = useAuiState((s) => s.thread.messages.at(-1)?.role);
   if (lastRole !== "user" || !isRunning) {
@@ -114,6 +115,17 @@ const ThreadSizeProbe: FC = () => {
   const count = useAuiState((s) => s.thread.messages.length);
   noteFact("消息条数", count);
   return null;
+};
+
+/**
+ * 分享选择模式下隐藏输入框（豆包同款：底栏是唯一操作条）。订阅放在这个
+ * 槽位组件里，不把整棵 Thread 拖进分享状态的重渲染；卸载即隐藏，草稿在
+ * runtime 里，退出选择模式后原样回来。
+ */
+const ComposerSlot: FC = () => {
+  const selecting = useShareState().mode === "selecting";
+  if (selecting) return null;
+  return <Composer />;
 };
 
 export const Thread = memo(function Thread() {
@@ -226,7 +238,9 @@ export const Thread = memo(function Thread() {
           )}
         >
           <ThreadScrollToBottom />
-          <Composer />
+          {/* 分享选择模式：composer 上方的全选/生成分享条（空闲时渲染 null） */}
+          <ShareSelectionToolbar />
+          <ComposerSlot />
           <AuiIf condition={isNewChatView}>
             {/* 推荐常驻（不随 composer 为空/非空起落）：它是"接下来还能做什么"的
                 入口，填入提示词后仍要能换个案例；离开新对话页时整块让位 */}

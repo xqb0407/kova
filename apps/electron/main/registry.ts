@@ -21,6 +21,7 @@ import { setupRemoteCommands } from "./remote";
 import { setupTunnelCommands } from "./tunnel";
 import { setupBackupCommands } from "./backup";
 import { setupUpdateCommands } from "./update";
+import { setupShareCommands } from "./share";
 import * as pty from "./pty";
 import * as pi from "./pi-agent";
 
@@ -45,6 +46,7 @@ export function registerAllCommands(): void {
   setupTunnelCommands(register);
   setupBackupCommands(register);
   setupUpdateCommands(register);
+  setupShareCommands(register);
 
   /* pi-agent 桥（对齐 pi_agent.rs commands） */
   register("pi_prompt", (a) => pi.piPrompt(a as any));
