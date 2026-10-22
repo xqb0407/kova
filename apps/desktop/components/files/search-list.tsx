@@ -23,8 +23,10 @@ export const SearchList: FC<{
   truncated: boolean;
   query: string;
   selected: string | null;
+  /** 无关键词且没有条目时的空态文案（如 picker 的「资料库里还没有文件」） */
+  emptyText?: string;
   onSelect: (entry: LibraryScanEntry & { origin?: "library" | "artifacts" }) => void;
-}> = ({ entries, loading, truncated, query, selected, onSelect }) => {
+}> = ({ entries, loading, truncated, query, selected, emptyText, onSelect }) => {
   if (loading) {
     return (
       <div className="text-muted-foreground flex items-center justify-center gap-2 py-8 text-xs">
@@ -34,10 +36,15 @@ export const SearchList: FC<{
     );
   }
   if (entries.length === 0) {
+    const noQuery = query.trim().length === 0;
     return (
       <div className="text-muted-foreground/60 flex flex-col items-center gap-2 px-4 py-10 text-center text-xs">
         <SearchXIcon className="size-5" />
-        没有匹配「{query}」的文件
+        {noQuery && emptyText ? emptyText : (
+          <>
+            没有匹配「{query}」的文件
+          </>
+        )}
       </div>
     );
   }
@@ -49,7 +56,7 @@ export const SearchList: FC<{
           : "";
         return (
           <button
-            key={e.rel}
+            key={`${e.origin ?? ""}:${e.rel}`}
             onClick={() => onSelect(e)}
             title={e.rel}
             className={cn(

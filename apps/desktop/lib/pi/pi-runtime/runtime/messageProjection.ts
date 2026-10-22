@@ -60,6 +60,7 @@ import type {
 } from "@assistant-ui/react";
 import { isAutoContinueMessage } from "pi-protocol";
 import { imageSizeFromBase64 } from "@/lib/pi/image-size";
+import { stripLibraryContextBlocks } from "@/lib/pi/prompt-notices";
 import { approvalForRequest, splitHostUiRequests } from "./hostUi";
 import type { PiThreadState } from "./threadState";
 import type {
@@ -337,7 +338,11 @@ const projectUserContent = (
         });
       }
     } else if (part.type === "text") {
-      parts.push({ type: "text", text: part.text });
+      // 资料库上下文隐藏块（[[library-refs]] / [[library-notes]]）：给模型的
+      // 路径与正文，投影时剥掉——编辑重发拿到的就是芯片 + 干净正文，不会把
+      // 绝对路径或整篇笔记灌回输入框
+      const text = stripLibraryContextBlocks(part.text);
+      if (text) parts.push({ type: "text", text });
     }
   }
   const first = parts[0];

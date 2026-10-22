@@ -7,6 +7,10 @@ import { describe, expect, it } from "bun:test";
 import { buildPiSendInput, PiThreadController } from "./ThreadController";
 import type { AppendMessage } from "@assistant-ui/react";
 import type { PiClient, PiClientEvent, PiThreadSnapshot } from "../types";
+import {
+  buildLibraryDirective,
+  rememberLibraryNoteBody,
+} from "@/lib/composer/library-reference";
 
 type Recorded =
   | { kind: "truncate"; beforeSeq: number }
@@ -500,5 +504,70 @@ describe("buildPiSendInput 代码引用芯片", () => {
 
   it("无芯片的普通消息不改动", () => {
     expect(buildPiSendInput(withChip("你好"), undefined).content).toBe("你好");
+  });
+});
+
+// —— 资料库引用芯片（资料库页 / @ 资料库分组「引用到对话」）——
+// 芯片以 :library[...] 序列化文本活在输入框里；发送时必须展开成
+// `[资料库笔记/文件] rel → \`/abs\``（模型看到引用，内容由 agent 用文件工具
+// 按行号自己读）。缺失安全网由 guard 维护的集合驱动，这里只测展开本身。
+describe("buildPiSendInput 资料库引用芯片", () => {
+  const withChip = (text: string): AppendMessage =>
+    ({
+      role: "user",
+      content: [{ type: "text", text }],
+      createdAt: new Date(0),
+      metadata: {},
+    }) as unknown as AppendMessage;
+
+  it("纯芯片消息：芯片保留上屏，路径进隐藏 refs 块（随机边界）", () => {
+    const chip = buildLibraryDirective({
+      rel: "notes/周报.md",
+      name: "周报",
+      absPath: "/Users/me/library/notes/周报.md",
+    });
+    const built = buildPiSendInput(withChip(chip), undefined);
+    expect(built.content.startsWith(`${chip}\n\n[[library-refs:`)).toBe(true);
+    expect(built.content).toContain(
+      "[资料库笔记] notes/周报.md → `/Users/me/library/notes/周报.md`",
+    );
+    expect(built.content).toMatch(/\[\[\/library-refs:[a-z0-9]+\]\]$/);
+  });
+
+  it("正文与芯片混排：芯片保留、正文保留、路径进隐藏块", () => {
+    const chip = buildLibraryDirective({
+      rel: "assets/spec.pdf",
+      name: "spec",
+      absPath: "/Users/me/library/assets/spec.pdf",
+      startLine: 3,
+      endLine: 4,
+    });
+    const built = buildPiSendInput(withChip(`看下 ${chip} 这段`), undefined);
+    expect(built.content.startsWith(`看下 ${chip} 这段\n\n[[library-refs:`)).toBe(
+      true,
+    );
+    expect(built.content).toContain(
+      "[资料库文件] assets/spec.pdf → `/Users/me/library/assets/spec.pdf` (lines 3-4)",
+    );
+    expect(built.content).toMatch(/\[\[\/library-refs:[a-z0-9]+\]\]$/);
+  });
+
+  it("正文缓存命中：笔记正文内联进隐藏块，不再重复 refs 行", () => {
+    const ref = {
+      rel: "notes/inline-send.md",
+      name: "Inline send",
+      absPath: "/Users/me/library/notes/inline-send.md",
+    };
+    const chip = buildLibraryDirective(ref);
+    rememberLibraryNoteBody(ref.absPath, "Inline send note", "这是笔记正文。");
+    const built = buildPiSendInput(withChip(`${chip} 总结一下`), undefined);
+    // 用户气泡：芯片仍在正文里
+    expect(built.content).toContain(chip);
+    // 模型上下文：只有 notes 块（来源路径已含在块内），没有 refs 块
+    expect(built.content).not.toContain("[[library-refs");
+    expect(built.content).toContain("[[library-notes:");
+    expect(built.content).toContain('Referenced note "Inline send note"');
+    expect(built.content).toContain("这是笔记正文。");
+    expect(built.content).toMatch(/\[\[\/library-notes:[a-z0-9]+\]\]$/);
   });
 });

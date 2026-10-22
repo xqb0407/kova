@@ -10,6 +10,7 @@ import { toast } from "@/components/ui/toast";
 import { extractDataUriImageFiles, validatePromptFile } from "@/lib/attachments/prompt-attachments";
 import { addSteeredBadge } from "@/lib/pi/pi-steer-intent";
 import { notifyNoModelSelected, useModelGate } from "@/lib/pi/pi-model-gate";
+import { hasMissingLibraryRefs } from "@/lib/workspace/library-ref-guard";
 import {
   buildTriggerInsert,
   detectTriggerLocal,
@@ -98,6 +99,40 @@ export function insertIntoComposer(text: string): boolean {
   });
   view.focus();
   return true;
+}
+
+/** composer 状态 API 的最小形状（资料库页等 Composer 未挂载的场景写入草稿） */
+type ComposerApi = {
+  composer: {
+    getState(): { text?: string };
+    setText(text: string): void;
+  };
+};
+
+/** 直接写入 runtime 草稿（追加在文末）：资料库页没有挂载 composer 输入框，
+ *  CM 插入桥不可用；runtime 的 composer state 仍在线程作用域里活着，切回
+ *  对话页时 CmComposerInput 挂载会把 value reconcile 进编辑器。 */
+export function appendDirectiveToComposer(
+  aui: ComposerApi,
+  directive: string,
+): boolean {
+  try {
+    const current = aui.composer.getState().text ?? "";
+    aui.composer.setText(
+      current.trim() ? `${current.trimEnd()} ${directive}` : directive,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 插入引用的统一入口：输入框在场落光标处，不在场退回草稿追加 */
+export function insertOrAppendDirective(
+  aui: ComposerApi,
+  directive: string,
+): boolean {
+  return insertIntoComposer(directive) || appendDirectiveToComposer(aui, directive);
 }
 
 
@@ -245,6 +280,12 @@ export const CmComposerInput: FC<CmComposerInputProps> = ({
         const plainShiftEnter = event.shiftKey && !event.ctrlKey && !event.metaKey;
         if (s.noModel && s.noModelHint && s.canSend && !plainShiftEnter) {
           notifyNoModelSelected(s.noModelHint);
+          return true;
+        }
+        // 资料库引用失效守卫：有失效引用（bar 在输入框上方列着）就不发，
+        // 用户点 bar 上的「移除失效引用」后再发
+        if (s.canSend && !plainShiftEnter && hasMissingLibraryRefs(s.threadId)) {
+          toast.error("有引用已失效，请先移除");
           return true;
         }
         // 运行中 Shift+⌘/Ctrl+Enter = 并入当前轮（steer 车道）：

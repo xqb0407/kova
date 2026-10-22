@@ -106,13 +106,15 @@ export const AutomationPromptField: FC<{
             char="@"
             {...mention}
             emptyLabel="暂无子智能体"
-            className="bottom-auto top-full mb-0 mt-2"
+            placement="down"
+            className="mb-0"
           />
           <GroupedTriggerPopover
             char="/"
             {...slash}
             emptyLabel="无匹配项"
-            className="bottom-auto top-full mb-0 mt-2"
+            placement="down"
+            className="mb-0"
           />
         </ComposerPrimitive.Root>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>

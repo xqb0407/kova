@@ -136,7 +136,7 @@ type TreeMenuTarget =
 
 type NameDialogState =
   | { mode: "new-file" | "new-folder"; dir: string }
-  | { mode: "rename"; rel: string; name: string };
+  | { mode: "rename"; rel: string; name: string; isDir: boolean };
 
 type DeleteTarget = { rel: string; name: string; isDir: boolean };
 
@@ -156,6 +156,19 @@ export interface FileExplorerProps {
   labelForName?: (name: string, rel: string, isDir: boolean) => string | undefined;
   /** 文件菜单「打开」之后的追加项（面板的浏览器预览） */
   fileMenuPrefix?: (rel: string, name: string) => ReactNode;
+  /** 文件菜单「引用到对话」（资料库根才提供；AI 产物树不传） */
+  onReferenceFile?: (rel: string, name: string) => void;
+  /** 应用内删除成功后的回调（资料库清理元数据行 + 引用守卫重校验） */
+  onDeleted?: (rel: string, isDir: boolean) => void;
+  /** 应用内改名成功后的回调（页面更新选中项 + 迁移标签元数据；目录按前缀迁移） */
+  onRenamed?: (
+    oldRel: string,
+    newRel: string,
+    newName: string,
+    isDir: boolean,
+  ) => void;
+  /** 删除确认前查询：该文件/目录是否被当前草稿引用（命中时确认框加警示行） */
+  isReferenced?: (rel: string, isDir: boolean) => boolean;
   /** 根目录空态文案（缺省「此目录暂无文件」） */
   emptyText?: string;
   /** 提供后菜单/空态出现「新建笔记」，在 dir 下建一条 Markdown */
@@ -345,6 +358,10 @@ export const FileExplorer: FC<FileExplorerProps> = ({
   onOpenFile,
   labelForName,
   fileMenuPrefix,
+  onReferenceFile,
+  onDeleted,
+  onRenamed,
+  isReferenced,
   emptyText,
   onNewNote,
   onImport,
@@ -609,9 +626,9 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     setNameDialog({ mode, dir });
   };
 
-  const startRename = (rel: string, name: string) => {
+  const startRename = (rel: string, name: string, isDir: boolean) => {
     setNameValue(name);
-    setNameDialog({ mode: "rename", rel, name });
+    setNameDialog({ mode: "rename", rel, name, isDir });
   };
 
   const submitNameDialog = async () => {
@@ -631,7 +648,9 @@ export const FileExplorer: FC<FileExplorerProps> = ({
       if (!err) {
         const idx = nameDialog.rel.lastIndexOf("/");
         const parent = idx < 0 ? "" : nameDialog.rel.slice(0, idx);
-        setSelected(parent ? `${parent}/${name}` : name);
+        const newRel = parent ? `${parent}/${name}` : name;
+        setSelected(newRel);
+        onRenamed?.(nameDialog.rel, newRel, name, nameDialog.isDir);
       }
     } else {
       const target = nameDialog.dir ? `${nameDialog.dir}/${name}` : name;
@@ -662,6 +681,8 @@ export const FileExplorer: FC<FileExplorerProps> = ({
     );
     setDeleteTarget(null);
     refreshTree();
+    // 资料库侧回调：清理该文件的元数据（标题/标签），并让引用守卫重校验
+    onDeleted?.(deleteTarget.rel, deleteTarget.isDir);
   };
 
   // 整棵树在 (rootCwd, expanded, 版本) 三个依赖上 memo：
@@ -801,6 +822,11 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                 >
                   打开
                 </MenuItem>
+                {onReferenceFile && (
+                  <MenuItem onClick={() => onReferenceFile(menu.rel, menu.name)}>
+                    引用
+                  </MenuItem>
+                )}
                 {fileMenuPrefix?.(menu.rel, menu.name)}
                 <ContextMenuSeparator className="bg-border" />
                 <MenuItem onClick={() => void reveal(menu.rel)}>
@@ -813,7 +839,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                   复制相对路径
                 </MenuItem>
                 <ContextMenuSeparator className="bg-border" />
-                <MenuItem onClick={() => startRename(menu.rel, menu.name)}>
+                <MenuItem onClick={() => startRename(menu.rel, menu.name, false)}>
                   重命名
                 </MenuItem>
                 <MenuItem
@@ -860,7 +886,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
                   复制相对路径
                 </MenuItem>
                 <ContextMenuSeparator className="bg-border" />
-                <MenuItem onClick={() => startRename(menu.rel, menu.name)}>
+                <MenuItem onClick={() => startRename(menu.rel, menu.name, true)}>
                   重命名
                 </MenuItem>
                 <MenuItem
@@ -938,6 +964,9 @@ export const FileExplorer: FC<FileExplorerProps> = ({
               {deleteTarget?.isDir
                 ? "该文件夹及其中的全部内容将被永久删除，此操作不可撤销。"
                 : "该文件将被永久删除，此操作不可撤销。"}
+              {deleteTarget && isReferenced?.(deleteTarget.rel, deleteTarget.isDir)
+                ? "该文件正被当前对话引用，删除后引用会失效。"
+                : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

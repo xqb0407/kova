@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import {
   AlertCircleIcon,
+  AtSignIcon,
   EyeIcon,
   FolderSearchIcon,
   Loader2Icon,
@@ -26,6 +27,7 @@ import { CodeMirrorCode } from "@/components/code/cm-code";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
 import { Button } from "@/components/ui/button";
+import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { FileManagerIcon } from "./file-manager-icon";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
@@ -33,11 +35,18 @@ import {
   fsErrorText,
   fsReadFile,
   fsReadFileBase64,
+  fsRename,
   fsReveal,
   fsWriteFile,
   imageMimeFor,
 } from "@/lib/workspace/fs";
 import { canUseLocalFileUrl, localFileUrl } from "@/lib/workspace/local-file-url";
+import {
+  deriveNoteTitle,
+  libraryFileMetaGet,
+  libraryFileMetaSet,
+} from "@/lib/workspace/library-note-meta";
+import { NoteTagsEditor } from "./note-tags-editor";
 
 /** 走 Markdown 渲染的文件（其余文本按代码/纯文本编辑） */
 const MARKDOWN_RE = /\.(md|markdown)$/i;
@@ -60,9 +69,24 @@ function svgDataUrl(text: string): string {
   let binary = "";
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, CHUNK + i));
+    binary += String.fromCharCode(...bytes.subarray(i, CHUNK));
   }
   return `data:image/svg+xml;base64,${btoa(binary)}`;
+}
+
+/** 笔记标题惰性写入元数据（@ 选择器按标题搜索）：标题变了才写，失败不影响查看 */
+async function syncNoteTitle(
+  cwd: string,
+  rel: string,
+  title: string,
+): Promise<void> {
+  try {
+    const meta = await libraryFileMetaGet(cwd, rel);
+    if (meta?.title === title) return;
+    await libraryFileMetaSet(cwd, rel, { title });
+  } catch {
+    /* 元数据失败不影响查看 */
+  }
 }
 
 /** 文件内容就绪后的分支类型 */
@@ -93,8 +117,25 @@ export const FileViewer: FC<{
   emptyActions?: ReactNode;
   /** 数值变化即重读盘上内容（页面工具条的刷新与文件树刷新同源；查看器不再单独放一枚"重新加载"） */
   reloadSignal?: number;
+  /** 「引用到对话」：带行号 = 选区引用，不带 = 整文件。只由资料库根传入（AI 产物不参与引用） */
+  onReference?: (range?: { startLine: number; endLine: number }) => void;
+  /** 元数据（标题/标签）行：同样只对资料库根启用 */
+  metaEnabled?: boolean;
+  /** 点击文件名改名：成功后把新 rel/name 交回页面（更新选中/树/元数据） */
+  onRenamed?: (newRel: string, newName: string) => void;
   className?: string;
-}> = ({ cwd, rel, name, defaultEdit, emptyActions, reloadSignal, className }) => {
+}> = ({
+  cwd,
+  rel,
+  name,
+  defaultEdit,
+  emptyActions,
+  reloadSignal,
+  onReference,
+  metaEnabled,
+  onRenamed,
+  className,
+}) => {
   if (!cwd || rel === null) {
     return (
       <div
@@ -121,6 +162,9 @@ export const FileViewer: FC<{
       name={name}
       defaultEdit={Boolean(defaultEdit)}
       reloadSignal={reloadSignal}
+      onReference={onReference}
+      metaEnabled={metaEnabled}
+      onRenamed={onRenamed}
       className={className}
     />
   );
@@ -132,8 +176,21 @@ const ViewerBody: FC<{
   name: string;
   defaultEdit: boolean;
   reloadSignal?: number;
+  onReference?: (range?: { startLine: number; endLine: number }) => void;
+  metaEnabled?: boolean;
+  onRenamed?: (newRel: string, newName: string) => void;
   className?: string;
-}> = ({ cwd, rel, name, defaultEdit, reloadSignal, className }) => {
+}> = ({
+  cwd,
+  rel,
+  name,
+  defaultEdit,
+  reloadSignal,
+  onReference,
+  metaEnabled,
+  onRenamed,
+  className,
+}) => {
   const kind = bodyKindOf(name);
   const [load, setLoad] = useState<
     | { status: "loading" }
@@ -142,10 +199,15 @@ const ViewerBody: FC<{
     | { status: "ready"; text: string; truncated: boolean; binary: boolean }
     | { status: "image"; url: string }
   >({ status: "loading" });
+  /** 换文件才进 loading；reloadSignal（watcher/手动刷新）静默重读，不卸载编辑器 */
+  const fileKey = `${cwd}\u0000${rel}\u0000${kind}`;
+  const lastFileKeyRef = useRef(fileKey);
 
   useEffect(() => {
     let alive = true;
-    setLoad({ status: "loading" });
+    const isNewFile = lastFileKeyRef.current !== fileKey;
+    lastFileKeyRef.current = fileKey;
+    if (isNewFile) setLoad({ status: "loading" });
     if (kind === "image") {
       void fsReadFileBase64(cwd, rel).then((r) => {
         if (!alive) return;
@@ -170,22 +232,100 @@ const ViewerBody: FC<{
     void fsReadFile(cwd, rel).then((r) => {
       if (!alive) return;
       if (!r) setLoad({ status: "error" });
-      else
+      else {
         setLoad({
           status: "ready",
           text: r.content,
           truncated: r.truncated,
           binary: r.binary,
         });
+        // 笔记标题惰性写入元数据（@ 选择器按标题搜索用）；非 markdown 不派生
+        if (metaEnabled && MARKDOWN_RE.test(name)) {
+          void syncNoteTitle(cwd, rel, deriveNoteTitle(r.content, name));
+        }
+      }
     });
     return () => {
       alive = false;
     };
-  }, [cwd, rel, name, kind, reloadSignal]);
+  }, [cwd, rel, name, kind, reloadSignal, metaEnabled]);
+
+  // 整文件引用前先落盘草稿（选区引用同样）：行号与内容必须对应磁盘上的文件。
+  // TextBody 挂载时把 flush 交上来；图片/二进制/加载中没有草稿，直接引用。
+  const flushTextRef = useRef<(() => Promise<boolean>) | null>(null);
+  const registerFlush = useCallback(
+    (fn: (() => Promise<boolean>) | null) => {
+      flushTextRef.current = fn;
+    },
+    [],
+  );
+  const referenceWhole = async () => {
+    if (load.status === "error") return;
+    const ok = flushTextRef.current ? await flushTextRef.current() : true;
+    if (ok) onReference?.();
+  };
 
   const reveal = async () => {
     const err = await fsReveal(cwd, rel);
     if (err) toast.error(fsErrorText(err));
+  };
+
+  // 点击文件名改名：Enter/失焦提交，Esc 取消；成功后把新 rel/name 交回页面
+  // （页面更新选中项、刷新树、迁移标签元数据）。
+  const [renaming, setRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(name);
+  const renameCancelledRef = useRef(false);
+  /** Enter 提交后失焦可能再触发一次 blur：防重复 fs_rename */
+  const renameCommittingRef = useRef(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  const startRename = () => {
+    if (!onRenamed) return;
+    renameCancelledRef.current = false;
+    renameCommittingRef.current = false;
+    setDraftName(name);
+    setRenaming(true);
+  };
+
+  useEffect(() => {
+    if (!renaming) return;
+    const input = nameInputRef.current;
+    if (!input) return;
+    input.focus();
+    // 默认只选中主文件名，保留扩展名（`.env` 这类隐藏文件则全选）
+    const dot = name.lastIndexOf(".");
+    input.setSelectionRange(0, dot > 0 ? dot : name.length);
+  }, [renaming, name]);
+
+  const commitRename = async () => {
+    if (!renaming || renameCommittingRef.current) return;
+    renameCommittingRef.current = true;
+    const next = draftName.trim();
+    setRenaming(false);
+    try {
+      if (renameCancelledRef.current) {
+        renameCancelledRef.current = false;
+        return;
+      }
+      if (!next || next === name) return;
+      if (/[\\/:*?"<>|]/.test(next)) {
+        toast.error('文件名不能包含 \\ / : * ? " < > |');
+        return;
+      }
+      // 改名后组件按新 rel 重挂载并读盘：先把未保存草稿落下，避免丢最后一段输入
+      const flushed = flushTextRef.current ? await flushTextRef.current() : true;
+      if (!flushed) return;
+      const err = await fsRename(cwd, rel, next);
+      if (err) {
+        toast.error(fsErrorText(err));
+        return;
+      }
+      const slash = rel.lastIndexOf("/");
+      const parent = slash < 0 ? "" : rel.slice(0, slash);
+      onRenamed?.(parent ? `${parent}/${next}` : next, next);
+    } finally {
+      renameCommittingRef.current = false;
+    }
   };
 
   return (
@@ -193,19 +333,74 @@ const ViewerBody: FC<{
       {/* 顶栏：文件名 + 相对路径；右侧动作 */}
       <div className="border-border/60 flex shrink-0 items-center gap-2 border-b px-3 py-2">
         <FileTypeIcon path={name} className="size-4 shrink-0" />
-        <span className="truncate text-sm font-medium">{name}</span>
-        <span className="text-muted-foreground/70 min-w-0 flex-1 truncate font-mono text-[11px]">
-          {rel}
-        </span>
-        <Button
+        {renaming ? (
+          <input
+            ref={nameInputRef}
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void commitRename();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                renameCancelledRef.current = true;
+                setRenaming(false);
+              }
+            }}
+            onBlur={() => void commitRename()}
+            aria-label="重命名文件"
+            spellCheck={false}
+            className="border-border/70 bg-background focus:border-ring h-6 w-56 min-w-0 rounded-md border px-1.5 text-sm font-medium outline-none"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={startRename}
+            disabled={!onRenamed}
+            title={onRenamed ? "点击重命名" : name}
+            className={cn(
+              "min-w-0 truncate text-left text-sm font-medium",
+              onRenamed &&
+                "hover:decoration-muted-foreground/50 cursor-text hover:underline hover:decoration-dotted hover:underline-offset-4",
+            )}
+          >
+            {name}
+          </button>
+        )}
+        {/* 根目录文件的 rel 与 name 相同，重复显示没有信息量 */}
+        {rel !== name ? (
+          <span className="text-muted-foreground/70 min-w-0 flex-1 truncate font-mono text-[11px]">
+            {rel}
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1" />
+        )}
+        {onReference && (
+          <TooltipIconButton
+            tooltip="引用"
+            side="bottom"
+            variant="ghost"
+            size="icon"
+            className="size-8 shrink-0"
+            aria-label="引用"
+            disabled={load.status === "error"}
+            onClick={() => void referenceWhole()}
+          >
+            <AtSignIcon className="size-4" />
+          </TooltipIconButton>
+        )}
+        <TooltipIconButton
+          tooltip="在系统中显示"
+          side="bottom"
           variant="ghost"
           size="icon"
           className="size-8 shrink-0"
-          title="在系统中显示"
+          aria-label="在系统中显示"
           onClick={() => void reveal()}
         >
           <FileManagerIcon className="size-4.5" />
-        </Button>
+        </TooltipIconButton>
       </div>
 
       {load.status === "loading" ? (
@@ -247,10 +442,11 @@ const ViewerBody: FC<{
           </Button>
         </div>
       ) : (
-        // reloadSignal 变化 = 用户按了刷新：重挂载文本体（卸载时先 flush 草稿），
-        // 重新以盘上内容为基线
+        // reloadSignal 变化（watcher/手动刷新）不再重挂载文本体：外壳静默重读，
+        // TextBody 在「未聚焦且不脏」时把新内容换进来——自动保存触发的 watcher
+        // 事件不会打断输入/丢光标。换文件才靠 key 重挂载。
         <TextBody
-          key={`${rel}\u0000${reloadSignal ?? 0}`}
+          key={`${rel}\u0000${kind}`}
           cwd={cwd}
           rel={rel}
           name={name}
@@ -258,6 +454,9 @@ const ViewerBody: FC<{
           initial={load.text}
           truncated={load.truncated}
           defaultEdit={defaultEdit}
+          onReference={onReference}
+          registerFlush={registerFlush}
+          metaEnabled={metaEnabled}
         />
       )}
     </div>
@@ -277,7 +476,21 @@ const TextBody: FC<{
   initial: string;
   truncated: boolean;
   defaultEdit: boolean;
-}> = ({ cwd, rel, name, kind, initial, truncated, defaultEdit }) => {
+  onReference?: (range?: { startLine: number; endLine: number }) => void;
+  registerFlush?: (fn: (() => Promise<boolean>) | null) => void;
+  metaEnabled?: boolean;
+}> = ({
+  cwd,
+  rel,
+  name,
+  kind,
+  initial,
+  truncated,
+  defaultEdit,
+  onReference,
+  registerFlush,
+  metaEnabled,
+}) => {
   /** 可切换预览的文件（md 渲染 / html 页面 / svg 图形）；其余文本编辑态即预览 */
   const hasPreview = kind === "markdown" || kind === "html" || kind === "svg";
   const [mode, setMode] = useState<"preview" | "edit">(
@@ -293,23 +506,47 @@ const TextBody: FC<{
   draftRef.current = draft;
   const baselineRef = useRef(baseline);
   baselineRef.current = baseline;
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const lastInitialRef = useRef(initial);
 
-  const flush = useCallback(async () => {
+  // 外壳静默重读（watcher/手动刷新）后的新内容：只有「未聚焦且没有未保存
+  // 草稿」才替换。这样自动保存触发的 watcher 事件不会打断输入、也不会用
+  // 盘上内容覆盖正在写的草稿。
+  useEffect(() => {
+    if (initial === lastInitialRef.current) return;
+    lastInitialRef.current = initial;
+    const focused =
+      bodyRef.current?.contains(document.activeElement) ?? false;
+    if (focused || draftRef.current !== baselineRef.current) return;
+    setDraft(initial);
+    setBaseline(initial);
+    setPreviewRev((r) => r + 1);
+  }, [initial]);
+
+  const flush = useCallback(async (): Promise<boolean> => {
     const text = draftRef.current;
-    if (text === baselineRef.current) return;
+    if (text === baselineRef.current) return true;
     setStatus("saving");
     const err = await fsWriteFile(cwd, rel, text);
     if (err) {
       setStatus("idle");
       toast.error(fsErrorText(err));
-      return;
+      return false;
     }
     setBaseline(text);
     setStatus("saved");
+    return true;
   }, [cwd, rel]);
 
   const flushRef = useRef(flush);
   flushRef.current = flush;
+
+  // 「引用到对话」前先 flush（顶部按钮 / 选区浮层都要）：行号与内容必须对应
+  // 磁盘上的文件，半路草稿会让引用错位。把 flush 交给查看器外壳统一调用。
+  useEffect(() => {
+    registerFlush?.(flush);
+    return () => registerFlush?.(null);
+  }, [flush, registerFlush]);
 
   // 防抖自动保存：草稿离开基线即排队，继续输入则重排
   useEffect(() => {
@@ -349,16 +586,20 @@ const TextBody: FC<{
   const switchMode = (next: "preview" | "edit") => {
     setMode(next);
     if (next === "preview") {
-      void flush().then(() => setPreviewRev((r) => r + 1));
+      void flush().then((ok) => {
+        if (ok) setPreviewRev((r) => r + 1);
+      });
     }
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {/* 状态行：模式切换（可预览的文件）+ 保存状态 + 截断提示 */}
-      <div className="border-border/40 flex shrink-0 items-center gap-2 border-b px-3 py-1.5">
+    <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col">
+      {/* 状态行：模式切换（可预览的文件）+ 保存状态 + 右侧标签编辑。
+          三个控件统一 28px 高（h-7），标签靠右对齐——之前标签贴着模式切换、
+          且比它高一点，看起来像两套尺寸。 */}
+      <div className="border-border/40 flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5">
         {hasPreview && (
-          <div className="bg-muted/60 flex items-center gap-0.5 rounded-lg p-0.5">
+          <div className="bg-muted/60 flex h-7 items-center gap-0.5 rounded-lg p-0.5">
             {(
               [
                 { value: "preview", label: "预览", icon: EyeIcon },
@@ -369,7 +610,7 @@ const TextBody: FC<{
                 key={v.value}
                 onClick={() => switchMode(v.value)}
                 className={cn(
-                  "flex items-center gap-1 rounded-md px-2 py-0.5 text-xs transition-colors",
+                  "flex h-6 items-center gap-1 rounded-md px-2 text-xs transition-colors",
                   mode === v.value
                     ? "bg-background text-foreground shadow-xs"
                     : "text-muted-foreground hover:text-foreground",
@@ -381,7 +622,12 @@ const TextBody: FC<{
             ))}
           </div>
         )}
-        <span className="text-muted-foreground flex-1 text-xs">
+        <span
+          className={cn(
+            "text-muted-foreground min-w-0 truncate text-xs",
+            metaEnabled ? "shrink" : "flex-1",
+          )}
+        >
           {truncated && "内容超过 2MB 已截断，仅编辑可见部分；"}
           {status === "saving"
             ? "保存中…"
@@ -391,6 +637,13 @@ const TextBody: FC<{
                 ? "已保存"
                 : ""}
         </span>
+        {metaEnabled && (
+          <NoteTagsEditor
+            cwd={cwd}
+            rel={rel}
+            className="ml-auto min-w-0 justify-end"
+          />
+        )}
       </div>
 
       <div className="min-h-0 flex-1">
@@ -442,6 +695,19 @@ const TextBody: FC<{
             editable={!truncated}
             onChange={truncated ? undefined : setDraft}
             transparentBg
+            selectionAction={
+              onReference && !truncated
+                ? {
+                    label: "引用",
+                    onSelect: ({ startLine, endLine }) => {
+                      // 选区引用：先落盘草稿，行号对应磁盘内容再插入芯片
+                      void flush().then((ok) => {
+                        if (ok) onReference({ startLine, endLine });
+                      });
+                    },
+                  }
+                : undefined
+            }
           />
         )}
       </div>

@@ -8,6 +8,14 @@ import {
   type Unstable_TriggerItem,
 } from "@assistant-ui/react";
 import type { Unstable_TriggerAdapter } from "@assistant-ui/core";
+import { unstable_defaultDirectiveFormatter } from "@assistant-ui/core";
+import {
+  buildLibraryDirectiveId,
+  joinFsPath,
+  sanitizeDirectiveLabel,
+} from "@/lib/composer/library-reference";
+import { useRecentLibraryEntries } from "@/lib/workspace/library-index";
+import { getLibraryRootInfo } from "@/lib/workspace/library-root";
 import { fetchMcpServerTools, useMcpServers, type McpToolInfo } from "@/lib/mcp/mcp";
 import { useSkills, type SkillEntry } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
@@ -23,9 +31,11 @@ import {
   FolderTreeIcon,
   GitGraphIcon,
   GlobeIcon,
+  LibraryIcon,
   ListTodoIcon,
   PlugIcon,
   SlashIcon,
+  StickyNoteIcon,
   ClipboardListIcon,
   MessageCircleQuestionIcon,
   SquareTerminalIcon,
@@ -57,6 +67,8 @@ const ICON_MAP: Record<string, FC<{ className?: string }>> = {
   tools: PlugIcon,
   Bot: BotIcon,
   BookOpen: BookOpenIcon,
+  Library: LibraryIcon,
+  StickyNote: StickyNoteIcon,
   Plug: PlugIcon,
   GitGraph: GitGraphIcon,
   SquareTerminal: SquareTerminalIcon,
@@ -329,11 +341,13 @@ export function useComposerSlashMenu(
   };
 }
 
-/** `@` 提及：子智能体清单（启用项，含插件子智能体），插芯片随消息发给模型 */
-export function useSubagentMention() {
+/** `@` 提及的子智能体条目（启用项，含插件子智能体）。
+ *  useSubagentMention（自动化弹窗沿用）与 useComposerMention（会话内，带资料库
+ *  分组）共用同一份清单。 */
+function useSubagentMentions(): readonly Unstable_Mention[] {
   const workspace = useWorkspace();
   const subagents = useSubagents(workspace);
-  const items = useMemo<readonly Unstable_Mention[]>(
+  return useMemo<readonly Unstable_Mention[]>(
     () =>
       [...subagents.agents, ...subagents.pluginAgents]
         .filter((a) => a.enabled)
@@ -346,10 +360,133 @@ export function useSubagentMention() {
         })),
     [subagents.agents, subagents.pluginAgents],
   );
+}
+
+/** `@` 提及：子智能体清单（启用项，含插件子智能体），插芯片随消息发给模型 */
+export function useSubagentMention() {
+  const items = useSubagentMentions();
   return unstable_useMentionAdapter({
     items,
     includeModelContextTools: false,
     iconMap: { Bot: BotIcon },
     fallbackIcon: BotIcon,
   });
+}
+
+/** `@` 提及的资料库条目：笔记优先 + #tag，普通文件随后。
+ *  数据来自 library-index（library_scan + 文件元数据合并打分）；条目 id 即
+ *  引用芯片 id（固化的绝对路径），选择后由库的 Directive 行为序列化成芯片。
+ *
+ *  展示名一律用**文件名**（与树/查看器一致）：元数据里的派生标题（首标题/
+ *  首行/去扩展名）只用于搜索——之前拿它当 label，会出现「新笔记 4」对不上
+ *  「新笔记 4.md」、「1. OpenHands…」对不上实际文件名的问题。标题放在
+ *  metadata.title 里参与过滤，不上屏。 */
+function useLibraryMentionItems(): {
+  items: Unstable_TriggerItem[];
+  loading: boolean;
+} {
+  const { entries, loading } = useRecentLibraryEntries();
+  const root = getLibraryRootInfo()?.root ?? null;
+  const items = useMemo<Unstable_TriggerItem[]>(() => {
+    if (!root) return [];
+    const out: Unstable_TriggerItem[] = [];
+    for (const entry of entries) {
+      const absPath = joinFsPath(root, entry.rel);
+      const isNote = /\.md$/iu.test(entry.rel);
+      out.push({
+        id: buildLibraryDirectiveId({
+          rel: entry.rel,
+          name: entry.name,
+          absPath,
+        }),
+        type: "library",
+        label: sanitizeDirectiveLabel(entry.name),
+        description: entry.tags.length
+          ? entry.tags.map((tag) => `#${tag}`).join(" ")
+          : dirOfRel(entry.rel),
+        metadata: {
+          icon: isNote ? "StickyNote" : "Library",
+          // 派生标题仅参与选择器过滤，不上屏（与文件名不一致会造成误解）
+          ...(entry.title ? { title: entry.title } : {}),
+        },
+      });
+    }
+    return out;
+  }, [entries, root]);
+  return { items, loading };
+}
+
+/** rel 的目录部分（根目录文件返回「资料库根」） */
+function dirOfRel(rel: string): string {
+  const slash = rel.lastIndexOf("/");
+  return slash === -1 ? "资料库根" : rel.slice(0, slash);
+}
+
+/**
+ * `@` 提及（会话内 composer）：子智能体 + 资料库 两组。
+ *
+ * 与 useSubagentMention 的差别只在数据源多一组资料库条目——那组来自本地索引
+ * （异步首拉），所以 adapter 用平铺自定义 search 而不是 mention adapter 的
+ * 全量池：空 query 返回「全部子智能体 + 最近 12 条资料库」（菜单不肿），
+ * 有关键词在并集里过滤（子智能体在先，资料库条目保持打分后的顺序）。
+ */
+export function useComposerMention(): {
+  adapter: Unstable_TriggerAdapter;
+  directive: { formatter: typeof unstable_defaultDirectiveFormatter };
+  iconMap: Record<string, FC<{ className?: string }>>;
+  fallbackIcon: FC<{ className?: string }>;
+  isLoading: boolean;
+} {
+  const agentMentions = useSubagentMentions();
+  const { items: libraryItems, loading } = useLibraryMentionItems();
+
+  const agentItems = useMemo<Unstable_TriggerItem[]>(
+    () =>
+      agentMentions.map((m) => ({
+        id: m.id,
+        type: m.type,
+        label: m.label,
+        description: m.description,
+        metadata: { icon: m.icon ?? "Bot" },
+      })),
+    [agentMentions],
+  );
+
+  const adapter = useMemo<Unstable_TriggerAdapter>(() => {
+    const all = [...agentItems, ...libraryItems];
+    return {
+      categories: () => [],
+      categoryItems: () => [],
+      search: (query) => {
+        const q = query.trim().toLowerCase();
+        if (!q) return [...agentItems, ...libraryItems.slice(0, 12)];
+        return all.filter((item) => {
+          if (
+            item.label.toLowerCase().includes(q) ||
+            (item.description ?? "").toLowerCase().includes(q)
+          ) {
+            return true;
+          }
+          // 派生标题不上屏，但仍可被搜索命中（metadata.title）
+          const title =
+            typeof item.metadata?.title === "string"
+              ? item.metadata.title.toLowerCase()
+              : "";
+          return title.includes(q);
+        });
+      },
+    };
+  }, [agentItems, libraryItems]);
+
+  return {
+    adapter,
+    directive: { formatter: unstable_defaultDirectiveFormatter },
+    iconMap: {
+      Bot: BotIcon,
+      Library: LibraryIcon,
+      StickyNote: StickyNoteIcon,
+    },
+    fallbackIcon: BotIcon,
+    isLoading: loading,
+  };
 }

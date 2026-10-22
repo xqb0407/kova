@@ -722,14 +722,56 @@ html.dark[data-window-effect] {
 /* 提示词优化进行中：composer 卡片上的芯片透遮罩呼吸发光——视觉上直接说明
    「芯片我不动」。data-optimizing 在 composer.tsx 的 shell 上。 */
 [data-optimizing="true"] .aui-directive-chip {
-  border-radius: 0.5rem;
+  border-radius: 0.25rem;
   animation: optimize-glow 1.6s ease-in-out infinite;
 }
 
-/* 可交互指令芯片（element 元素引用 / console 控制台日志）：鼠标悬浮时左侧类型
-   图标**原地换成 ✕**（标签页关闭按钮同款心智），点击把整段 token 从文档删掉
-   （cm-directive.ts 里挂事件）。芯片 DOM 是 CodeMirror widget 手建的，
-   类名而非 Tailwind 工具类在此集中维护；叉与图标同尺寸同位，hover 时宽度不跳。 */
+/* 可交互指令芯片（skill 技能 / agent 智能体提及 / element 元素引用 /
+   console 控制台日志 / library 资料库引用 / code 代码引用）：鼠标悬浮时左侧
+   类型图标**原地换成 ✕**（标签页关闭按钮同款心智），点击把整段 token 从文档
+   删掉（cm-directive.ts 里挂事件）。芯片 DOM 是 CodeMirror widget 手建的，
+   类名而非 Tailwind 工具类在此集中维护；叉与图标同尺寸同位，hover 时宽度不跳。
+   悬浮反馈只做淡蓝叠加（不加描边），无底色的 agent / code 也有同款反馈；
+   ✕ 单独再叠一层圆角底色，指针移到叉上有即时反馈。 */
+.aui-directive-chip-interactive,
+.aui-directive-code,
+.aui-directive-agent {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.aui-directive-chip-interactive:hover,
+.aui-directive-code:hover,
+.aui-directive-agent:hover {
+  background-image: linear-gradient(
+    rgb(37 99 235 / 0.12),
+    rgb(37 99 235 / 0.12)
+  );
+}
+.dark .aui-directive-chip-interactive:hover,
+.dark .aui-directive-code:hover,
+.dark .aui-directive-agent:hover {
+  background-image: linear-gradient(
+    rgb(147 197 253 / 0.12),
+    rgb(147 197 253 / 0.12)
+  );
+}
+/* agent 提及与 code 高亮文本没有药丸底色：给悬浮底色留出内边距（负 margin
+   抵消布局宽度，悬浮前后文字位置零位移） */
+.aui-directive-code,
+.aui-directive-agent {
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.aui-directive-code {
+  margin: 0 -4px;
+}
+/* agent 提及是「高亮文本」而非药丸：左右各留 6px 外部间距（同药丸芯片的
+   mx-1.5），4px 内边距只给悬浮底色留呼吸，两者叠加时背景边到邻接文本仍
+   是 6px，与芯片节奏一致 */
+.aui-directive-agent {
+  margin: 0 6px;
+}
+
 .aui-directive-chip-interactive .aui-directive-chip-delete {
   display: none;
   align-items: center;
@@ -738,6 +780,8 @@ html.dark[data-window-effect] {
   /* 与类型图标同位同尺寸（16px）：hover 切换时芯片宽度零跳动 */
   width: 16px;
   height: 16px;
+  flex: none;
+  border-radius: 4px;
   cursor: pointer;
   opacity: 0.75;
 }
@@ -747,6 +791,12 @@ html.dark[data-window-effect] {
 .aui-directive-chip-interactive:hover .aui-directive-chip-delete {
   display: inline-flex;
   opacity: 1;
+}
+.aui-directive-chip-interactive .aui-directive-chip-delete:hover {
+  background-color: rgb(37 99 235 / 0.18);
+}
+.dark .aui-directive-chip-interactive .aui-directive-chip-delete:hover {
+  background-color: rgb(147 197 253 / 0.2);
 }
 
 /* 优化进行中：底栏按钮压暗让位——遮罩不铺色，若按钮保持全亮，居中的状态行

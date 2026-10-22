@@ -50,6 +50,8 @@ import {
   quoteToMarkdownBlock,
 } from "./messageProjection";
 import { expandCodeDirectives } from "@/lib/composer/code-reference";
+import { buildLibraryContext } from "@/lib/composer/library-reference";
+import { prefetchLibraryNoteBodies } from "@/lib/composer/library-note-inline";
 import { noteSpan } from "@/components/debug/perf-store";
 import {
   responseForApproval,
@@ -276,21 +278,49 @@ export const buildPiSendInput = (
     }
   }
 
-  // 引用（「询问」）：把引用文本以 Markdown 引用块前置进正文——模型因此看到
-  // "针对哪段文字"的完整上下文；只要引用没有正文也照样发出（纯询问"这段是
-  // 什么意思"）。投影侧按同一条约定还原成引用块渲染（splitLeadingQuoteBlock）
-  const quote = appendMessageQuote(message);
-  // 代码引用芯片（`:code[...]`，文件视图选区「引用到对话」插入）：展开成
-  // `@path (lines N-M)` 引用形式——模型看到标准引用，代码内容由 agent 用
-  // 文件工具按行号自己读（见 lib/composer/code-reference 的设计说明）
-  const userText = textChunks
-    .map((chunk) => expandCodeDirectives(chunk))
-    .join("\n\n");
-  const content = quote
-    ? userText
-      ? `${quoteToMarkdownBlock(quote.text)}\n\n${userText}`
-      : quoteToMarkdownBlock(quote.text)
-    : userText;
+    // 引用（「询问」）：把引用文本以 Markdown 引用块前置进正文——模型因此看到
+    // "针对哪段文字"的完整上下文；只要引用没有正文也照样发出（纯询问"这段是
+    // 什么意思"）。投影侧按同一条约定还原成引用块渲染（splitLeadingQuoteBlock）
+    const quote = appendMessageQuote(message);
+    // 引用芯片发送处理：
+    // - `:code[...]`（文件视图选区「引用到对话」）→ 展开成 `@path (lines N-M)`；
+    // - `:library[...]`（资料库「引用到对话」）→ **芯片原样保留**（用户气泡渲染
+    //   成芯片，而不是展开后的绝对路径）；路径/正文放进正文末尾的隐藏块：
+    //   - `[[library-refs]]`：每条引用的 rel + 绝对路径（+ 行号），缺失的标
+    //     「已删除」——模型按此用文件工具读取，绝不发死路径；
+    //   - `[[library-notes]]`：小笔记（≤16KB）正文内联，模型无需再 read。
+    //   两个隐藏块展示层剥离（splitPromptNotices / messageProjection），编辑
+    //   重发拿到的仍是芯片。小笔记正文在发送汇聚点前已由
+    //   prefetchLibraryNoteBodies 预取进缓存。
+    const inlineNoteBlocks: string[] = [];
+    const userText = textChunks
+      .map((chunk) => expandCodeDirectives(chunk))
+      .join("\n\n");
+    const refsLines = buildLibraryContext(userText, (block) =>
+      inlineNoteBlocks.push(block),
+    );
+    // 隐藏块用随机边界：笔记正文里写了 `[[/library-notes]]` 也不会提前截断
+    const boundary = Math.random().toString(36).slice(2, 10);
+    const contextBlocks: string[] = [];
+    if (refsLines) {
+      contextBlocks.push(
+        `[[library-refs:${boundary}]]\n${refsLines}\n[[/library-refs:${boundary}]]`,
+      );
+    }
+    if (inlineNoteBlocks.length > 0) {
+      contextBlocks.push(
+        `[[library-notes:${boundary}]]\n${inlineNoteBlocks.join("\n")}\n[[/library-notes:${boundary}]]`,
+      );
+    }
+    const userTextWithNotes =
+      contextBlocks.length > 0
+        ? `${userText}\n\n${contextBlocks.join("\n\n")}`
+        : userText;
+    const content = quote
+      ? userTextWithNotes
+        ? `${quoteToMarkdownBlock(quote.text)}\n\n${userTextWithNotes}`
+        : quoteToMarkdownBlock(quote.text)
+      : userTextWithNotes;
 
   return {
     content,
@@ -686,6 +716,9 @@ export class PiThreadController implements PiThreadControllerLike {
       readSteeringIntent(message) ??
       (isQueuedSend ? "followUp" : undefined);
 
+    // 资料库小笔记正文预取（≤16KB，发送汇聚点覆盖普通/排队/重发全路径）：
+    // 命中的笔记随 prompt 内联，模型免一次 read；读取失败/超限保持路径引用
+    await prefetchLibraryNoteBodies(appendMessageParts(message));
     const built = buildPiSendInput(message, behavior);
     // 预生成 id（队列/重发路径）：乐观队列条目 id 与协议 reqId 必须同值，
     // 逐项操作才能在任意时刻按 id 命中服务端条目（见 sendQueued）

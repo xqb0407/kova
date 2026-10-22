@@ -29,7 +29,27 @@ const HIDDEN_LINE_RES = [
 ];
 const WARNING_LINE_RE = /^\[.+已省略：.+\]$/;
 
+/** 资料库上下文隐藏块（发送端 buildPiSendInput 追加，带随机边界；兼容旧的无
+ *  边界格式）。块内是给模型的引用路径/笔记正文，用户气泡只该看到芯片。 */
+const LIBRARY_CONTEXT_BLOCK_RE =
+  /\[\[library-(?:refs|notes)(?::[^\]]+)?\]\][\s\S]*?\[\[\/library-(?:refs|notes)(?::[^\]]+)?\]\]/g;
+const LIBRARY_CONTEXT_START_RE =
+  /\[\[library-(?:refs|notes)(?::[^\]]+)?\]\]/;
+
+/** 剥掉资料库上下文隐藏块（refs / notes，可能多条）：气泡渲染、编辑回填、
+ *  标题摘要共用这一份 */
+export function stripLibraryContextBlocks(input: string): string {
+  if (!input.includes("[[library-")) return input;
+  let out = input.replace(LIBRARY_CONTEXT_BLOCK_RE, "");
+  // 未闭合块（异常转录）：从第一个起始标记剥到末尾
+  const start = out.search(LIBRARY_CONTEXT_START_RE);
+  if (start >= 0) out = out.slice(0, start);
+  return out.replace(/[ \t]+$/gm, "").trimEnd();
+}
+
 export function splitPromptNotices(input: string): PromptNotices {
+  // 先剥资料库上下文隐藏块（多行块，行扫描剥不了），再做逐行注记剥离
+  input = stripLibraryContextBlocks(input);
   // 绝大多数消息没有注记：快速返回，不做行扫描
   if (!input.includes("[")) return { text: input, hidden: [], warnings: [] };
   const kept: string[] = [];
