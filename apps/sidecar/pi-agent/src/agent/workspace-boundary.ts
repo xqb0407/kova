@@ -6,51 +6,16 @@
  * 被单测逐条钉住，而不是混在审批流程里靠人肉推演。
  *
  * ⚠️ 这一层管不住 bash：一条 `bash -c` 能写到任何地方，参数里看不出目标路径。
- * 所以 bash 一律返回 false（照常弹审批）。真正的等价做法是 OS 级沙箱
- *（seatbelt / landlock），那是另一件事，见 docs/permission-modes.md。
+ * 所以 bash 一律返回 false（照常弹审批）；真正的 OS 隔离由
+ * permissions/sandbox-plan.ts 生成计划、宿主执行。
  */
-import { existsSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { resolve } from "node:path";
+import { isInside, realResolve } from "pi-sandbox";
+
+export { isInside, realResolve };
 
 /** 参数里带目标路径的写类工具（其余工具没有可判的路径，一律不放行） */
 const PATH_BEARING_WRITE_TOOLS = new Set(["write", "edit"]);
-
-/**
- * 解析符号链接后再规范化一个可能**尚不存在**的路径。
- *
- * 为什么要逐个祖先 realpath：直接对目标 realpath 时文件还不存在（新建文件，
- * write 的常见情形）会抛错；只做字符串 resolve 又会被软链接绕过——工作区内一个
- * 指向 `/etc` 的软链接，字符串前缀比较看起来完全合法。所以从目标往上找到第一个
- * 真实存在的祖先做 realpath，再把剩下的段拼回去。
- *
- * macOS 上这步也是必需的：`/tmp` → `/private/tmp`、`/Users` 某些情形同样是软链接，
- * 不 realpath 会让「同一个目录」在两个名字下被判成一内一外。
- */
-export function realResolve(target: string): string {
-  const abs = resolve(target);
-  let head = abs;
-  const tail: string[] = [];
-  // 祖先链有限，最多到根；existsSync 命中即停
-  while (!existsSync(head)) {
-    const parent = dirname(head);
-    if (parent === head) return abs; // 到根还不存在（不可能）：退回字符串结果
-    tail.unshift(head.slice(parent.length + 1));
-    head = parent;
-  }
-  let real: string;
-  try {
-    real = realpathSync(head);
-  } catch {
-    return abs;
-  }
-  return tail.length ? join(real, ...tail) : real;
-}
-
-/** path.relative 口径的内外判定：不看字符串前缀，`..` 与绝对路径都被正确归位 */
-export function isInside(parent: string, child: string): boolean {
-  const rel = relative(parent, child);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
 
 /**
  * 这次工具调用是不是「只在工作区内写」。

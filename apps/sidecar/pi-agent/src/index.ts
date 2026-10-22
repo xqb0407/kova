@@ -42,6 +42,7 @@ import { initMirrorConfig } from "./tools/mirror-config";
 import { initObservability } from "./observability/observability";
 import { initHooks } from "./agent/hooks";
 import { initAutoReview } from "./permissions/auto-review";
+import { initSandboxConfig } from "./permissions/sandbox-config";
 import { initSubagentState } from "./subagent/subagent-definitions";
 import { pruneActivityFiles } from "./subagent/activity-store";
 import { initSkillsState } from "./skills/skills";
@@ -144,6 +145,8 @@ async function main() {
     // AI 审查（approvalLevel = review）的配置同走 kv：审查发生在工具调用路径上，
     // 模型覆盖与超时必须在闸门放行前就位（同 initHooks 的理由）
     await initAutoReview();
+    // 沙箱配置同走 kv：工具调用路径每次实时读内存档位，必须在闸门放行前就位
+    await initSandboxConfig();
     // 插件启用开关同走 kv（插件清单本身带签名扫描；四条合并链的插件层读取它）
     await initPluginsState();
     // 内置插件包（随 app 分发的首方插件）按包内容版本做「物化/升级/剪旧」同步，

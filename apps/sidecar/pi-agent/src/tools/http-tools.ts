@@ -7,6 +7,7 @@
  */
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { SandboxPlan } from "pi-sandbox";
 import { hostHttpCall, type HostHttpData } from "../storage/hostdb";
 import { activeMirrorPolicy } from "./mirror-config";
 import { mirrorUrl, type MirrorMatch } from "./url-mirror";
@@ -150,7 +151,9 @@ const FetchParams = Type.Object({
   ),
 });
 
-function buildWebFetchTool(cwd: string): AgentTool {
+type SandboxProvider = () => Promise<SandboxPlan | null> | SandboxPlan | null;
+
+function buildWebFetchTool(cwd: string, getSandbox?: SandboxProvider): AgentTool {
   return {
     name: "WebFetch",
     label: "Web Fetch",
@@ -188,6 +191,7 @@ function buildWebFetchTool(cwd: string): AgentTool {
           maxResponseBytes: p.maxResponseBytes,
         },
         signal ?? undefined,
+        (await getSandbox?.()) ?? undefined,
       );
       const details: Record<string, unknown> = {
         status: data.status,
@@ -195,6 +199,7 @@ function buildWebFetchTool(cwd: string): AgentTool {
         totalBytes: data.totalBytes,
         truncated: data.truncated,
       };
+      if (data.sandbox) details.sandbox = data.sandbox;
       if (accel.match) details.accel = { from: requested, to: accel.match.url };
       const headline =
         `${(p.method ?? "GET").toUpperCase()} ${requested} -> ${fetchHeadline(data)}` +
@@ -221,7 +226,7 @@ function buildWebFetchTool(cwd: string): AgentTool {
   };
 }
 
-function buildWebSearchTool(cwd: string): AgentTool {
+function buildWebSearchTool(cwd: string, getSandbox?: SandboxProvider): AgentTool {
   return {
     name: "WebSearch",
     label: "Web Search",
@@ -244,6 +249,7 @@ function buildWebSearchTool(cwd: string): AgentTool {
           body: { query },
         },
         signal ?? undefined,
+        (await getSandbox?.()) ?? undefined,
       );
       if (!data.ok) {
         return textResult(
@@ -271,12 +277,20 @@ function buildWebSearchTool(cwd: string): AgentTool {
         : resultText;
       if (!results || results.length === 0) results = parseSearchResults(trimmed);
       const text = results?.length ? renderSearchResults(query, results) : trimmed;
-      return textResult(text, { query, results, truncated });
+      return textResult(text, {
+        query,
+        results,
+        truncated,
+        ...(data.sandbox ? { sandbox: data.sandbox } : {}),
+      });
     },
   };
 }
 
 /** 联网工具组：由 buildTools 注册进基础工具集 */
-export function buildWebTools(cwd: string): AgentTool[] {
-  return [buildWebFetchTool(cwd), buildWebSearchTool(cwd)];
+export function buildWebTools(
+  cwd: string,
+  getSandbox?: SandboxProvider,
+): AgentTool[] {
+  return [buildWebFetchTool(cwd, getSandbox), buildWebSearchTool(cwd, getSandbox)];
 }

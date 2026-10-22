@@ -10,7 +10,7 @@
     },
     "apps/desktop": {
       "name": "desktop",
-      "version": "1.1.14-preview",
+      "version": "1.1.16-preview",
       "dependencies": {
         "@assistant-ui/core": "^0.3.21",
         "@assistant-ui/react": "^0.15.22",
@@ -95,9 +95,10 @@
     },
     "apps/electron": {
       "name": "kova-electron-main",
-      "version": "1.1.14-preview",
+      "version": "1.1.16-preview",
       "dependencies": {
         "node-pty": "^1.0.0",
+        "pi-sandbox": "workspace:*",
         "ws": "^8.18.0",
       },
       "devDependencies": {
@@ -186,6 +187,7 @@
         "fflate": "^0.8.3",
         "ignore": "^7.0.8",
         "pi-protocol": "workspace:*",
+        "pi-sandbox": "workspace:*",
         "typebox": "1.3.27",
         "yaml": "^2.9.1",
         "zod": "^4.6.4",
@@ -202,6 +204,15 @@
       "dependencies": {
         "zod": "^4.6.4",
       },
+      "devDependencies": {
+        "@types/bun": "^1.4.2",
+        "@types/node": "^22.10.2",
+        "typescript": "^5.9.3",
+      },
+    },
+    "packages/pi-sandbox": {
+      "name": "pi-sandbox",
+      "version": "0.0.1",
       "devDependencies": {
         "@types/bun": "^1.4.2",
         "@types/node": "^22.10.2",
@@ -3442,6 +3453,8 @@
 
     "pi-protocol": ["pi-protocol@workspace:packages/pi-protocol"],
 
+    "pi-sandbox": ["pi-sandbox@workspace:packages/pi-sandbox"],
+
     "picocolors": ["picocolors@1.1.1", "https://registry.npmmirror.com/picocolors/-/picocolors-1.1.1.tgz", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
 
     "picomatch": ["picomatch@4.0.7", "https://registry.npmmirror.com/picomatch/-/picomatch-4.0.7.tgz", {}, "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA=="],
@@ -4738,6 +4751,10 @@
 
     "pi-protocol/typescript": ["typescript@5.9.3", "https://registry.npmmirror.com/typescript/-/typescript-5.9.3.tgz", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
+    "pi-sandbox/@types/node": ["@types/node@22.20.5", "https://registry.npmmirror.com/@types/node/-/node-22.20.5.tgz", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-U2+DNr+wSjpsTS/wZGYHq7GcwfuSmKiKvoPvK22zwTlRhU91yOniN4qRR5KhIjvif7ysw/dz/hKmfDH0Ris4aA=="],
+
+    "pi-sandbox/typescript": ["typescript@5.9.3", "https://registry.npmmirror.com/typescript/-/typescript-5.9.3.tgz", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
     "pkijs/@noble/hashes": ["@noble/hashes@1.8.0", "https://registry.npmmirror.com/@noble/hashes/-/hashes-1.8.0.tgz", {}, "sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A=="],
 
     "plist/@xmldom/xmldom": ["@xmldom/xmldom@0.8.15", "https://registry.npmmirror.com/@xmldom/xmldom/-/xmldom-0.8.15.tgz", {}, "sha512-/5NV/vDALVFDXgLmfsy9TRCBlKwO2LNBFzpzvb9iIj+jR+eSc6DLYYvVOdivT/jm7MtU6TebYuRmzEOI7w40UA=="],
@@ -5159,6 +5176,8 @@
     "npm-package-arg/hosted-git-info/lru-cache": ["lru-cache@10.4.3", "https://registry.npmmirror.com/lru-cache/-/lru-cache-10.4.3.tgz", {}, "sha512-JNAzZcXrCt42VGLuYz0zfAzDfAvJWW6AfYlDBQyDV5DClI2m5sAmK+OIO7s59XfsRsWHp02jAJrRadPRGTt6SQ=="],
 
     "pi-protocol/@types/node/undici-types": ["undici-types@6.21.0", "https://registry.npmmirror.com/undici-types/-/undici-types-6.21.0.tgz", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
+
+    "pi-sandbox/@types/node/undici-types": ["undici-types@6.21.0", "https://registry.npmmirror.com/undici-types/-/undici-types-6.21.0.tgz", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
 
     "pptxgenjs/@types/node/undici-types": ["undici-types@6.21.0", "https://registry.npmmirror.com/undici-types/-/undici-types-6.21.0.tgz", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
 

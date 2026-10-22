@@ -1,7 +1,7 @@
 "use client";
 
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { ToolRow } from "./tool-row.aui";
+import { SandboxBadge, ToolRow } from "./tool-row.aui";
 
 /** 从 args 里挑第一个有值的字符串做摘要（检索的 pattern、子代理名…） */
 function argSummary(args: Record<string, unknown> | undefined): string {
@@ -66,6 +66,7 @@ export const ToolFallback: ToolCallMessagePartComponent = ({
   return (
     <ToolRow
       label={toolName}
+      badge={<SandboxBadge artifact={artifact} result={result} isError={isError} />}
       primary={summary}
       mono
       running={status?.type === "running"}

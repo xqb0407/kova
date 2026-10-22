@@ -793,6 +793,14 @@ export type PiAutoReviewSettings = {
   timeoutMs?: number;
 };
 
+/** 沙箱配置（事实源在 sidecar kv pi.sandbox；V1 只有 off/workspace 两档） */
+export type PiSandboxConfig = {
+  tier: "off" | "workspace";
+  network: "allow" | "deny";
+  allowPackageCaches: boolean;
+  onUnavailable: "deny" | "allow";
+};
+
 /** 单条生命周期钩子配置（事实源在 sidecar kv，经 set_hooks/get_hooks 推拉） */
 export type PiHookConfig = {
   id: string;
@@ -1113,6 +1121,7 @@ export type PiResponse =
   | { type: "hooks_saved" }
   | { type: "hooks"; hooks: PiHookConfig[] }
   | { type: "auto_review"; settings: PiAutoReviewSettings }
+  | { type: "sandbox"; settings: PiSandboxConfig }
   | PiMemoryFilesResponse
   | { type: "memory_file"; file: string; content: string }
   | {

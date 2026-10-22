@@ -507,8 +507,12 @@ const projectAssistantInto = (
       // structuredContent（UI-only，不进模型上下文）。
       const usage = paired?.usage ?? live?.usage;
       const pairedDetails = paired?.details as
-        | { durationMs?: number; structuredContent?: unknown }
+        | { durationMs?: number; structuredContent?: unknown; sandbox?: unknown }
         | undefined;
+      const liveSandbox = (
+        live?.partialResult as { details?: { sandbox?: unknown } } | undefined
+      )?.details?.sandbox;
+      const sandbox = pairedDetails?.sandbox ?? liveSandbox;
       const durationMs =
         paired?.durationMs ?? live?.durationMs ?? pairedDetails?.durationMs;
       const completedAt =
@@ -525,10 +529,11 @@ const projectAssistantInto = (
       const structuredContent =
         live?.structuredContent ?? pairedDetails?.structuredContent;
       const artifact =
-        usage !== undefined || structuredContent !== undefined
+        usage !== undefined || structuredContent !== undefined || sandbox !== undefined
           ? {
               ...(usage !== undefined ? { usage } : {}),
               ...(structuredContent !== undefined ? { structuredContent } : {}),
+              ...(sandbox !== undefined ? { sandbox } : {}),
             }
           : undefined;
       // 结果行还没落盘时，这一行 part 的内容完全来自直播台账（partialResult /

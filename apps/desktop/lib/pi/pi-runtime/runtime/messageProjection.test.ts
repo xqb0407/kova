@@ -286,6 +286,39 @@ describe("messageProjection", () => {
     expect(contentParts(out[0]!)).toHaveLength(1);
   });
 
+  it("carries sandbox details into artifact for the tool row badge", () => {
+    const out = projectPiThreadMessages(
+      input([
+        assistant([toolCall("tc-sb", "bash", { command: "ls" })]),
+        {
+          role: "toolResult",
+          toolCallId: "tc-sb",
+          toolName: "bash",
+          content: [{ type: "text", text: "ok" }],
+          isError: false,
+          timestamp: 2,
+          details: {
+            sandbox: {
+              tier: "workspace",
+              backend: "seatbelt",
+              network: "allow",
+            },
+          },
+        },
+      ]),
+    );
+    expect(contentParts(out[0]!)[0]).toMatchObject({
+      type: "tool-call",
+      artifact: {
+        sandbox: {
+          tier: "workspace",
+          backend: "seatbelt",
+          network: "allow",
+        },
+      },
+    });
+  });
+
   it("dedupes a repeated toolCallId within one merged assistant group", () => {
     // 上游快照/直播合并漏出同一在飞 assistant 的两份相邻拷贝（历史缺陷：
     // @assistant-ui part 查找表按 toolCallId 键控，重复即 Duplicate key 崩溃）。

@@ -468,6 +468,12 @@ const ModeSub: FC = () => {
       .finally(() => setBusy(false));
   };
 
+  const pickPermission = (o: (typeof PERMISSION_OPTIONS)[number]) => {
+    // 权限项不带 mode（见 mode-picker 的类型说明）：切成「当前档位 + 新权限」，
+    // 不能顺手把会话踢出问答/计划/目标档
+    apply(o.key, snap.mode, o.approvalLevel);
+  };
+
   return (
     <CategorySub
       icon={SlidersHorizontalIcon}
@@ -486,9 +492,7 @@ const ModeSub: FC = () => {
               value={perm.key}
               onValueChange={(key) => {
                 const o = PERMISSION_OPTIONS.find((x) => x.key === key);
-                // 权限项不带 mode（见 mode-picker 的类型说明）：切成「当前档位 + 新权限」，
-                // 不能顺手把会话踢出问答/计划/目标档
-                if (o) apply(o.key, snap.mode, o.approvalLevel);
+                if (o) pickPermission(o);
               }}
             >
               {PERMISSION_OPTIONS.map((o) => (
