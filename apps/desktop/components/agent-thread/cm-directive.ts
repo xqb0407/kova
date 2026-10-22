@@ -93,12 +93,23 @@ const INTERACTIVE_TYPES = new Set([
 function attachChipTooltip(wrap: HTMLElement, text: string): void {
   if (!text) return;
   let tip: HTMLDivElement | null = null;
-  const hide = () => {
+  let watchTimer: ReturnType<typeof setInterval> | null = null;
+
+  function cleanup(): void {
+    if (watchTimer !== null) {
+      clearInterval(watchTimer);
+      watchTimer = null;
+    }
+    window.removeEventListener("scroll", hide, true);
+    window.removeEventListener("resize", hide);
+  }
+  function hide(): void {
+    cleanup();
     if (!tip) return;
     tip.remove();
     tip = null;
-  };
-  const show = () => {
+  }
+  function show(): void {
     if (tip || !wrap.isConnected) return;
     const rect = wrap.getBoundingClientRect();
     tip = document.createElement("div");
@@ -111,10 +122,19 @@ function attachChipTooltip(wrap: HTMLElement, text: string): void {
     const maxLeft = Math.max(8, window.innerWidth - tipRect.width - 8);
     tip.style.top = `${Math.max(8, top)}px`;
     tip.style.left = `${Math.min(maxLeft, Math.max(8, rect.left))}px`;
-  };
+    // 芯片被删除（退格/发送清空/编辑器重渲染）时不一定有 mouseleave：
+    // 可见期间轮询连接状态，脱离文档立即收起
+    watchTimer = setInterval(() => {
+      if (!wrap.isConnected) hide();
+    }, 200);
+    window.addEventListener("scroll", hide, true);
+    window.addEventListener("resize", hide);
+  }
+
   wrap.addEventListener("mouseenter", show);
   wrap.addEventListener("mouseleave", hide);
-  wrap.addEventListener("mousedown", hide);
+  // 捕获阶段：删除按钮的 mousedown 会 stopPropagation，冒泡阶段收不到
+  wrap.addEventListener("mousedown", hide, true);
 }
 
 /** 悬浮删除按钮：hover 时原地替换左侧类型图标，点击把 token 整段从文档删掉。
