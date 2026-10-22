@@ -61,6 +61,8 @@ import {
   rememberWriteRoot,
 } from "../permissions/write-roots";
 import { autoReviewDenyReason, reviewFactsOf, runAutoReview } from "../permissions/auto-review";
+import { getSandboxConfig } from "../permissions/sandbox-config";
+import { invalidateSandboxPlans } from "../permissions/sandbox-plan";
 import { setLeadingSystemMessage } from "./context";
 import { logAt, logErr } from "../log";
 import { buildHookPayload, runHooks } from "./hooks";
@@ -998,11 +1000,22 @@ export async function gateToolCall(
         ? "命令写到哪判不出来，所以这一档下每条命令都要确认；这条命令压不出安全的前缀规则（解释器类命令如 node/npx/bash、循环/条件体、引号不闭合或含 `$'…'`），只能这一次放行。"
         : "命令写到哪判不出来，所以这一档下每条命令都要确认。点「允许并记住这类命令」记下命令词前缀（如 pnpm add *），换参数也命中；带重定向或命令替换的仍会问。"
       : undefined;
+  // 沙箱开着时，工作区外的写入只靠「允许并记住」扩根；只点「允许」这一次
+  // 仍会被宿主拒绝。把这句话放在卡上，避免用户批准后看到莫名其妙的失败。
+  const sandboxEnabled =
+    process.env.KOVA_SANDBOX === "workspace" ||
+    (process.env.KOVA_SANDBOX !== "off" && getSandboxConfig().tier !== "off");
+  const sandboxOutsideWrite =
+    sandboxEnabled &&
+    isPathBearingWrite(context.toolCall.name) &&
+    !writeInsideSession(run, context.toolCall.name, context.args);
+  const sandboxNote = sandboxOutsideWrite
+    ? "沙箱已开启：越界写入需要先加入工作区/项目外部目录/本机 write roots。点「允许」这一次不会绕过沙箱；请用「允许并记住」或在设置里添加目录。"
+    : undefined;
   // AI 审查失败退回时，把"为什么这次要问你"顶在前面——否则用户只看到一张
   // 莫名其妙的卡，会以为档位没生效
-  const note = reviewFallbackNote
-    ? [reviewFallbackNote, baseNote].filter(Boolean).join("\n")
-    : baseNote;
+  const note =
+    [reviewFallbackNote, baseNote, sandboxNote].filter(Boolean).join("\n") || undefined;
   // 挂起交互登记落行 + 发起帧水印（同 plan_exit 审批，§3/§4）
   beginInteraction(run.threadId, {
     interactionId: approvalId,
@@ -1065,6 +1078,7 @@ export async function gateToolCall(
   try {
     if (remember && rememberRoot) await rememberWriteRoot(run.cwd, rememberRoot);
     if (remember && rememberCmd) await rememberCommand(run.cwd, rememberCmd);
+    if (remember && (rememberRoot || rememberCmd)) invalidateSandboxPlans(run);
   } catch (err) {
     logErr("permissions: failed to remember the approved rule:", err);
   }

@@ -18,6 +18,12 @@ import {
 import path from "node:path";
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import {
+  planAllowsWrite,
+  resolveToolPath,
+  writeDeniedMessage,
+  type SandboxPlan,
+} from "pi-sandbox";
 import { hostToolCall } from "../storage/hostdb";
 // 直取 registry（叶子）：sessions.ts 门面会牵进 resolve.ts→tools.ts，绕开循环
 import { currentTurnOf } from "../sessions/registry";
@@ -249,6 +255,8 @@ export function buildHostToolPayload(
   delete base.secretEnv;
   delete base.secretEnvResolved;
   delete base.accelEnv;
+  // 沙箱计划只能由本侧闭包生成；模型伪造同名键不得影响宿主的裁决。
+  delete base.sandbox;
   return extra && Object.keys(extra).length ? { ...base, ...extra } : base;
 }
 
@@ -265,6 +273,8 @@ function hostTool(
   augment?: (params: Record<string, unknown>) => Record<string, unknown>,
   /** 项目虚拟目录：write/edit 检查点把附加根也视为合法落点 */
   getExtraRoots?: () => readonly string[],
+  /** 沙箱计划：执行前由宿主按同一份根/网络策略裁决。 */
+  getSandbox?: () => Promise<SandboxPlan | null> | SandboxPlan | null,
 ): AgentTool {
   return {
     name,
@@ -286,6 +296,18 @@ function hostTool(
         params as Record<string, unknown>,
         augment?.(params as Record<string, unknown>),
       );
+      const sandbox = await getSandbox?.();
+      // 写类工具先在 sidecar 判一次：越界写入不必等宿主拒绝，也就不会先落
+      // 一个没有对应 capture 的检查点基线。宿主侧仍会再判一次（纵深防御）。
+      if (sandbox && (name === "write" || name === "edit")) {
+        const filePath = (params as { file_path?: unknown }).file_path;
+        if (typeof filePath === "string" && filePath.trim()) {
+          const target = resolveToolPath(cwd, filePath);
+          if (!planAllowsWrite(sandbox, target)) {
+            throw new Error(writeDeniedMessage(sandbox, target));
+          }
+        }
+      }
       // 编辑检查点（条目所有权层，checkpoint/store.ts）：结构化编辑成功前后各记
       // 一道边界。轮归属取自 activeTurns（工具必然跑在活跃轮内；取不到就整体降级
       // 为不记）。门面函数吃掉一切异常——检查点坏了绝不挡工具执行。
@@ -309,7 +331,14 @@ function hostTool(
       // signal 透传给 hostToolCall：中断时向宿主发 host_cancel，bash 会被杀进程树。
       // owner 带线程 id：后台任务（runInBackground）跨回合存活于宿主全局表，
       // 归属校验靠它，task_output/task_stop 才不会跨线程串味
-      const data = await hostToolCall(name, cwd, payload, signal ?? undefined, threadId);
+      const data = await hostToolCall(
+        name,
+        cwd,
+        payload,
+        signal ?? undefined,
+        threadId,
+        sandbox ?? undefined,
+      );
       // 失败在 hostToolCall 抛出、走不到这里——成功态才刷 after
       if (cpPaths.length && cpTurn.sessionId && cpTurn.requestId) {
         await checkpointCapture(
@@ -354,6 +383,7 @@ function hostTool(
         }
       }
       const details: Record<string, unknown> = {};
+      if (data.sandbox) details.sandbox = data.sandbox;
       if (data.truncated !== undefined) details.truncated = data.truncated;
       if (data.exitCode !== undefined) details.exitCode = data.exitCode;
       if (data.totalLines !== undefined) details.totalLines = data.totalLines;
@@ -384,6 +414,8 @@ export function buildTools(
   /** 项目虚拟目录（多代码工程合并）：运行期实时读 run.externalDirs。
    *  缺省时检索工具不下发（普通任务/未配置项目的会话保持原工具面）。 */
   getExternalDirs?: () => readonly ExternalDir[],
+  /** 沙箱计划（闭包）：bash 走 OS 沙箱，read/write/edit/http 走宿主路径/网络裁决。 */
+  getSandboxPlan?: () => Promise<SandboxPlan | null> | SandboxPlan | null,
 ): AgentTool[] {
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
@@ -420,6 +452,8 @@ export function buildTools(
         if (accelEnv) extra.accelEnv = accelEnv;
         return extra;
       },
+      undefined,
+      getSandboxPlan,
     ),
     hostTool(
       "task_output",
@@ -452,6 +486,9 @@ export function buildTools(
         offset: Type.Optional(Type.Number({ description: "1-based start line" })),
         limit: Type.Optional(Type.Number({ description: "Max lines to return" })),
       }),
+      undefined,
+      undefined,
+      getSandboxPlan,
     ),
     hostTool("write", cwd, threadId,
       // 常驻拆分指引：write 的执行在 Rust 宿主（tool_exec.rs），整份内容是一次往返，
@@ -474,6 +511,7 @@ export function buildTools(
       }),
       undefined,
       () => (getExternalDirs?.() ?? []).map((dir) => dir.path),
+      getSandboxPlan,
     ),
     hostTool("edit", cwd, threadId,
       "Replace an exact string in a file. old_string must match exactly and appear exactly once, " +
@@ -488,10 +526,11 @@ export function buildTools(
       }),
       undefined,
       () => (getExternalDirs?.() ?? []).map((dir) => dir.path),
+      getSandboxPlan,
     ),
     buildGlobTool(cwd),
     buildGrepTool(cwd),
-    ...buildWebTools(cwd),
+    ...buildWebTools(cwd, getSandboxPlan),
     // 浏览器驱动：执行转发 Rust 宿主（browser.rs）驱动面板子 webview，
     // threadId 用于 data-panelOpen 面板唤起（见 browser-tools.ts）
     ...buildBrowserTools(threadId),
@@ -500,7 +539,7 @@ export function buildTools(
     buildScreenshotTool(cwd),
     // 文生图（OpenAI 兼容 images 协议，见 imagegen-tool.ts）：sidecar 直连出网，
     // 结果 image 块走正规投影链路上屏；常驻注册，开关/模型在 execute 实时门控
-    buildImageGenTool({ cwd }),
+    buildImageGenTool({ cwd, getSandbox: getSandboxPlan }),
     // 面板打开文件：只发 data-panelOpen chunk（文件标签磁盘实时模式），
     // 无 IO 无副作用（见 open-file-tool.ts）
     buildOpenFileTool(cwd, threadId),

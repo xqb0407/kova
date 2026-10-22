@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { isApprovalLevel } from "pi-protocol";
 import { reviewFactsOf } from "../permissions/auto-review";
+import { sandboxPlanForRun } from "../permissions/sandbox-plan";
 import {
   defaultModel,
   getCurrentModelKey,
@@ -229,6 +230,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
     () => reviewFactsOf(run),
     () => run.mode,
     ...externalDirToolArgs(() => run),
+    () => sandboxPlanForRun(run),
   );
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -318,6 +320,7 @@ export async function rebindRunThread(
     () => reviewFactsOf(run),
     () => run.mode,
     ...externalDirToolArgs(() => run),
+    () => sandboxPlanForRun(run),
   );
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -359,6 +362,7 @@ export async function reloadMemoryTools(): Promise<void> {
       () => reviewFactsOf(run),
       () => run.mode,
       ...externalDirToolArgs(() => run),
+      () => sandboxPlanForRun(run),
     );
     const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
     run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -817,6 +821,7 @@ export async function resolveSession(
     () => reviewFactsOf(run),
     () => run.mode,
     ...externalDirToolArgs(() => run),
+    () => sandboxPlanForRun(run),
   );
   // run 先占位再回填 agent：beforeToolCall 闭包按引用捕获 run，模式校验在运行期才解引用
   const run: Running = {
@@ -1068,6 +1073,8 @@ export async function projectContextInfo(
     () => projectedMode,
     // 投影也要把外部目录检索工具算进工具面（读数与实际物化后的工具表一致）
     () => projectedExternalDirs,
+    // 投影只读；沙箱闭包不会被调用。
+    () => null,
   );
   const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
   // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包

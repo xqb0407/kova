@@ -43,6 +43,11 @@ import {
   getAutoReviewConfig,
   setAutoReviewConfig,
 } from "../../permissions/auto-review";
+import {
+  getSandboxConfig,
+  setSandboxConfig,
+} from "../../permissions/sandbox-config";
+import { invalidateSandboxPlans } from "../../permissions/sandbox-plan";
 import { applyBrowserConfig, getBrowserConfig } from "../../tools/browser-config";
 import { applyMirrorConfig, getMirrorConfig } from "../../tools/mirror-config";
 import { applyImageGenConfig, getImageGenConfig } from "../../tools/imagegen-config";
@@ -241,6 +246,16 @@ export const handlers: Record<string, CommandHandler> = {
 
   get_auto_review: async (reqId) => {
     send({ id: reqId, type: "auto_review", settings: getAutoReviewConfig() });
+  },
+
+  set_sandbox: async (reqId, msg) => {
+    await setSandboxConfig(msg.settings);
+    invalidateSandboxPlans();
+    send({ id: reqId, type: "sandbox", settings: getSandboxConfig() });
+  },
+
+  get_sandbox: async (reqId) => {
+    send({ id: reqId, type: "sandbox", settings: getSandboxConfig() });
   },
 
   set_memory: async (reqId, msg) => {

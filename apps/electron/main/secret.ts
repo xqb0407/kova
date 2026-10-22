@@ -19,7 +19,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { safeStorage } from "electron";
 import { appDataDir } from "./paths";
 import { logInfo, logWarn } from "./logging";
 import {
@@ -57,28 +56,51 @@ function keyFromBase64(text: string): Buffer | null {
   }
 }
 
+/**
+ * Electron safeStorage 惰性解引用：与 paths.ts 的 `app` 同理——tool-exec 的
+ * 依赖链（secret-env → secret）会在沙箱 e2e / bun test 下被加载，那时没有
+ * Electron 运行时，顶层 `import { safeStorage }` 直接炸掉整个模块图。
+ */
+type SafeStorageLike = {
+  isEncryptionAvailable: () => boolean;
+  encryptString: (text: string) => Buffer;
+  decryptString: (buf: Buffer) => string;
+  getSelectedStorageBackend?: () => string;
+};
+
+function safeStorage(): SafeStorageLike | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require("electron");
+    return (mod?.safeStorage ?? null) as SafeStorageLike | null;
+  } catch {
+    return null;
+  }
+}
+
 /** Linux 的 basic_text 后端只是可逆混淆，不当作系统钥匙串 */
 function safeStorageUsable(): boolean {
-  if (!safeStorage.isEncryptionAvailable()) return false;
+  const ss = safeStorage();
+  if (!ss || !ss.isEncryptionAvailable()) return false;
   if (process.platform === "linux") {
-    const selected = (
-      safeStorage as unknown as { getSelectedStorageBackend?: () => string }
-    ).getSelectedStorageBackend;
-    if (typeof selected === "function" && selected() === "basic_text") return false;
+    if (typeof ss.getSelectedStorageBackend === "function" && ss.getSelectedStorageBackend() === "basic_text") {
+      return false;
+    }
   }
   return true;
 }
 
 function readSafeKey(path: string): Buffer | null {
+  const ss = safeStorage();
   if (!existsSync(path)) return null;
-  if (!safeStorage.isEncryptionAvailable()) {
+  if (!ss || !ss.isEncryptionAvailable()) {
     logWarn("[secret] master.key.safe exists but system keychain is unavailable");
     return null;
   }
   try {
     const raw = readFileSync(path, "utf8").trim();
     const payload = raw.startsWith(SAFE_PREFIX) ? raw.slice(SAFE_PREFIX.length) : raw;
-    const keyText = safeStorage.decryptString(Buffer.from(payload, "base64"));
+    const keyText = ss.decryptString(Buffer.from(payload, "base64"));
     return keyFromBase64(keyText);
   } catch (e) {
     logWarn(`[secret] cannot unwrap master.key.safe: ${e instanceof Error ? e.message : e}`);
@@ -106,7 +128,12 @@ function writeAtomic(path: string, content: string, mode: number): void {
 }
 
 function writeSafeKey(path: string, key: Buffer): void {
-  const wrapped = safeStorage.encryptString(key.toString("base64"));
+  const ss = safeStorage();
+  if (!ss || !ss.isEncryptionAvailable()) {
+    logWarn("[secret] cannot wrap master key: system keychain is unavailable");
+    return;
+  }
+  const wrapped = ss.encryptString(key.toString("base64"));
   writeAtomic(path, `${SAFE_PREFIX}${wrapped.toString("base64")}`, 0o600);
 }
 

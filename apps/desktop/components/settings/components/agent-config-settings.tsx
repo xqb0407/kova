@@ -3,6 +3,7 @@
 import type { FC } from "react";
 import { ComputerControlSettings } from "./computer-control-settings";
 import { AutoReviewSettings } from "./auto-review-settings";
+import { SandboxSettingsPanel } from "./sandbox-settings";
 
 /**
  * 智能体配置页（设置 → 智能体 → 智能体配置）。
@@ -28,6 +29,7 @@ export const AgentConfigSettings: FC = () => {
 
         <ComputerControlSettings />
         <AutoReviewSettings />
+        <SandboxSettingsPanel />
       </div>
     </div>
   );

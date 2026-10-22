@@ -18,6 +18,7 @@ import {
   toolRpcTimeoutMs,
   type RpcOptions,
 } from "./hostdb/transport";
+import type { SandboxPlan } from "pi-sandbox";
 
 export { initHostTransport, resolveHostResult, type RpcOptions } from "./hostdb/transport";
 export {
@@ -380,20 +381,29 @@ export const usageDailyCleanup = () =>
  *  打归属标记，task_output / task_stop 只认本线程的任务——否则宿主那张全局
  *  任务表就是所有线程共用的，任意线程凭猜测的 id 就能读别人命令的输出或杀掉
  *  别人的进程。 */
+export type HostSandboxInfo = {
+  tier: "workspace";
+  backend: "seatbelt" | "host" | "none";
+  network: "allow" | "deny";
+  denied?: "write" | "read" | "network" | "unavailable";
+};
+
 export const hostToolCall = (
   name: string,
   cwd: string,
   params: Record<string, unknown>,
   signal?: AbortSignal,
   owner?: string,
+  sandbox?: SandboxPlan,
 ) =>
   query<{ output: string; truncated?: boolean; exitCode?: number | null; totalLines?: number;
+    sandbox?: HostSandboxInfo;
     /** read 命中图片时 Rust 附加（≤2MiB）：sidecar 转成 image 内容块 */
     base64?: string; mimeType?: string; bytes?: number;
     /** browser_shot 成功信封附加（browser_shot.rs）：像素照尺寸 */
     width?: number; height?: number }>(
     "tool",
-    { name, cwd, owner, params },
+    { name, cwd, owner, params, sandbox },
     { signal, timeoutMs: toolRpcTimeoutMs(name, params) },
   );
 
@@ -411,6 +421,7 @@ export type HostHttpData = {
   totalBytes: number;
   truncated: boolean;
   encoding: "utf-8" | "base64";
+  sandbox?: HostSandboxInfo;
 };
 
 /** WebFetch/WebSearch 的网络执行出口（仅 host 模式；超时/截断/编码在 Rust 侧完成） */
@@ -418,8 +429,9 @@ export const hostHttpCall = (
   cwd: string,
   params: Record<string, unknown>,
   signal?: AbortSignal,
+  sandbox?: SandboxPlan,
 ) =>
-  query<HostHttpData>("tool", { name: "http", cwd, params }, {
+  query<HostHttpData>("tool", { name: "http", cwd, params, sandbox }, {
     signal,
     timeoutMs: toolRpcTimeoutMs("http", params),
   });

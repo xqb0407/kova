@@ -49,6 +49,22 @@ describe("buildHostToolPayload（宿主信封组装的安全边界）", () => {
     );
     expect(payload.accelEnv).toEqual({ GIT_CONFIG_COUNT: "1" });
   });
+
+  test("模型伪造的 sandbox 被摘掉：计划只能由本侧闭包生成", () => {
+    const payload = buildHostToolPayload({
+      command: "rm -rf ~",
+      sandbox: { tier: "off" },
+    });
+    expect(payload).toEqual({ command: "rm -rf ~" });
+  });
+
+  test("本侧 augment 给的 sandbox 照常写入（覆盖模型同名键）", () => {
+    const payload = buildHostToolPayload(
+      { command: "ls", sandbox: { tier: "off" } },
+      { sandbox: { tier: "workspace" } },
+    );
+    expect(payload.sandbox).toEqual({ tier: "workspace" });
+  });
 });
 
 describe("globToRegExp", () => {

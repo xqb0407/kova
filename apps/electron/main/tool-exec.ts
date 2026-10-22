@@ -8,7 +8,21 @@ import { randomUUID, createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync, appendFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { unavailableMessage, type SandboxPlan } from "pi-sandbox";
 import { envFromResolved, redact, takeResolved, type SecretPair } from "./secret-env";
+import {
+  isUnavailableBlocking,
+  parseSandboxPlan,
+  sandboxEnvOverrides,
+  wrapSandboxCommand,
+  type SandboxBackend,
+} from "./sandbox";
+import {
+  assertNetworkAllowed,
+  assertReadAllowed,
+  assertWriteAllowed,
+  sandboxInfo,
+} from "./sandbox/path-guard";
 import {
   activeThreadSecrets,
   redactToolResult,
@@ -216,11 +230,27 @@ async function runBash(
   guard: CancelGuard,
   secrets: SecretPair[],
   accel: Record<string, string>,
+  sandbox?: SandboxPlan,
 ): Promise<any> {
-  const { file, prefixArgs } = resolveShellCommand();
-  const child = spawn(file, [...prefixArgs, command], {
+  const shell = resolveShellCommand();
+  const wrapped = sandbox ? wrapSandboxCommand(command, sandbox) : null;
+  if (sandbox && !wrapped && isUnavailableBlocking(sandbox)) {
+    throw new Error(unavailableMessage("seatbelt"));
+  }
+  const backend: SandboxBackend = wrapped?.backend ?? "none";
+  const file = wrapped?.file ?? shell.file;
+  const args = wrapped?.args ?? [...shell.prefixArgs, command];
+  const sandboxEnv = sandboxEnvOverrides(sandbox, backend);
+  if (sandboxEnv.TMPDIR) {
+    try {
+      mkdirSync(sandboxEnv.TMPDIR, { recursive: true });
+    } catch {
+      /* 目录创建失败交给命令自身报错 */
+    }
+  }
+  const child = spawn(file, args, {
     cwd: cwd || undefined,
-    env: { ...process.env, ...envFromResolved(secrets), ...accel },
+    env: { ...process.env, ...envFromResolved(secrets), ...accel, ...sandboxEnv },
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
     windowsHide: true,
@@ -294,9 +324,26 @@ async function runBash(
         ? `\n[timeout after ${Math.floor(timeoutMs / 1000)}s — output above is what was collected before the kill. For long-running commands pass runInBackground:true and poll with task_output, or split the work into shorter steps.]`
         : `\n[exit code: ${exitCode}]`;
   const suffix = truncated ? "\n…[output truncated]" : "";
+  const sandboxHint =
+    backend === "seatbelt" && exitCode !== null && exitCode !== 0
+      ? "\n[sandbox] write isolation is active; 'Operation not permitted' means the path is outside the allowed write roots."
+      : "";
   out = redact(out, secrets);
+  // Seatbelt 的拒绝通常以 EPERM 文案出现；只在这类失败上标 denied，
+  // 避免把 grep 无匹配之类的普通非零退出误标成沙箱拒绝。
+  const sandboxDenied =
+    backend === "seatbelt" &&
+    exitCode !== null &&
+    exitCode !== 0 &&
+    /Operation not permitted|Permission denied/i.test(out);
   guard.release();
-  return { output: `${out}${status}${suffix}`, truncated, exitCode, cancelled };
+  return {
+    output: `${out}${status}${suffix}${sandboxHint}`,
+    truncated,
+    exitCode,
+    cancelled,
+    sandbox: sandboxInfo(sandbox, backend, sandboxDenied ? "write" : undefined),
+  };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -328,11 +375,27 @@ async function runBashBackground(
   secrets: SecretPair[],
   accel: Record<string, string>,
   owner: string,
+  sandbox?: SandboxPlan,
 ): Promise<any> {
-  const { file, prefixArgs } = resolveShellCommand();
-  const child = spawn(file, [...prefixArgs, command], {
+  const shell = resolveShellCommand();
+  const wrapped = sandbox ? wrapSandboxCommand(command, sandbox) : null;
+  if (sandbox && !wrapped && isUnavailableBlocking(sandbox)) {
+    throw new Error(unavailableMessage("seatbelt"));
+  }
+  const backend: SandboxBackend = wrapped?.backend ?? "none";
+  const file = wrapped?.file ?? shell.file;
+  const args = wrapped?.args ?? [...shell.prefixArgs, command];
+  const sandboxEnv = sandboxEnvOverrides(sandbox, backend);
+  if (sandboxEnv.TMPDIR) {
+    try {
+      mkdirSync(sandboxEnv.TMPDIR, { recursive: true });
+    } catch {
+      /* 目录创建失败交给命令自身报错 */
+    }
+  }
+  const child = spawn(file, args, {
     cwd: cwd || undefined,
-    env: { ...process.env, ...envFromResolved(secrets), ...accel },
+    env: { ...process.env, ...envFromResolved(secrets), ...accel, ...sandboxEnv },
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
     windowsHide: true,
@@ -377,6 +440,7 @@ async function runBashBackground(
     output:
       `Started in background (task ${id}). The process keeps running across turns and is NOT killed when this turn is cancelled. Use task_output with taskId=${id} to read collected output and check status; use task_stop with taskId=${id} to kill it. Do not poll in a tight loop — do other work first, then check again.`,
     taskId: id,
+    sandbox: sandboxInfo(sandbox, backend),
   };
 }
 
@@ -433,9 +497,11 @@ function readTextFile(cwd: string, filePath: string): { raw: Buffer; full: strin
   return { raw, full };
 }
 
-function handleRead(inner: any): any {
+function handleRead(inner: any, sandbox?: SandboxPlan): any {
   const filePath = strParam(inner, "file_path");
   const cwd = typeof inner?.cwd === "string" ? inner.cwd : "";
+  assertReadAllowed(sandbox, cwd, filePath);
+  const sandboxMeta = sandboxInfo(sandbox, "host");
   const { raw, full } = readTextFile(cwd, filePath);
   const mime = imageMime(filePath);
   if (mime) {
@@ -445,6 +511,7 @@ function handleRead(inner: any): any {
         output:
           `${filePath} is an image (${Math.floor(raw.length / 1024)} KB) too large to attach inline (>2MiB). ` +
           `Downscale it first, e.g. \`sips -Z 1600 "${filePath}" --out small.png\`, then read the downscaled copy.`,
+        sandbox: sandboxMeta,
       };
     }
     recordContent(full, raw);
@@ -453,6 +520,7 @@ function handleRead(inner: any): any {
       base64: raw.toString("base64"),
       mimeType: mime,
       bytes: raw.length,
+      sandbox: sandboxMeta,
     };
   }
   if (raw.subarray(0, Math.min(raw.length, 64 * 1024)).includes(0)) {
@@ -476,7 +544,7 @@ function handleRead(inner: any): any {
   }
   const more =
     end < allLines.length ? `\n…[${allLines.length - end} more lines, total ${allLines.length}]` : "";
-  return { output: `${slice}${more}`, totalLines: allLines.length };
+  return { output: `${slice}${more}`, totalLines: allLines.length, sandbox: sandboxMeta };
 }
 
 function guardJson(filePath: string, content: string): void {
@@ -490,11 +558,13 @@ function guardJson(filePath: string, content: string): void {
   }
 }
 
-function handleWrite(inner: any): any {
+function handleWrite(inner: any, sandbox?: SandboxPlan): any {
   const filePath = strParam(inner, "file_path");
   const content = strParam(inner, "content");
-  guardJson(filePath, content);
   const cwd = typeof inner?.cwd === "string" ? inner.cwd : "";
+  assertWriteAllowed(sandbox, cwd, filePath);
+  const sandboxMeta = sandboxInfo(sandbox, "host");
+  guardJson(filePath, content);
   const full = resolvePath(cwd, filePath);
   const append = inner?.mode === "append";
   let isFile = false;
@@ -524,7 +594,10 @@ function handleWrite(inner: any): any {
     } catch {
       /* ignore */
     }
-    return { output: `Appended ${contentBytes} bytes to ${filePath}` };
+    return {
+      output: `Appended ${contentBytes} bytes to ${filePath}`,
+      sandbox: sandboxMeta,
+    };
   }
   try {
     writeFileSync(full, content, "utf8");
@@ -532,15 +605,20 @@ function handleWrite(inner: any): any {
     throw new Error(`failed to write ${filePath}: ${e?.message ?? e}`);
   }
   recordContent(full, Buffer.from(content, "utf8"));
-  return { output: `Wrote ${contentBytes} bytes to ${filePath}` };
+  return {
+    output: `Wrote ${contentBytes} bytes to ${filePath}`,
+    sandbox: sandboxMeta,
+  };
 }
 
-function handleEdit(inner: any): any {
+function handleEdit(inner: any, sandbox?: SandboxPlan): any {
   const filePath = strParam(inner, "file_path");
   const oldString = strParam(inner, "old_string");
   const newString = strParam(inner, "new_string");
   const replaceAll = inner?.replace_all === true;
   const cwd = typeof inner?.cwd === "string" ? inner.cwd : "";
+  assertWriteAllowed(sandbox, cwd, filePath);
+  const sandboxMeta = sandboxInfo(sandbox, "host");
   const { raw, full } = readTextFile(cwd, filePath);
   if (raw.subarray(0, Math.min(raw.length, 64 * 1024)).includes(0)) {
     throw new Error(`${filePath} is a binary file and cannot be edited as text`);
@@ -563,7 +641,10 @@ function handleEdit(inner: any): any {
   }
   recordContent(full, Buffer.from(updated, "utf8"));
   const count = replaceAll && occurrences > 1 ? occurrences : 1;
-  return { output: `Replaced ${count} occurrence(s) in ${filePath}` };
+  return {
+    output: `Replaced ${count} occurrence(s) in ${filePath}`,
+    sandbox: sandboxMeta,
+  };
 }
 
 /* ------------------------------ http ------------------------------ */
@@ -575,7 +656,9 @@ function isTextualContentType(ct: string): boolean {
   return prefixes.some((p) => c.startsWith(p)) || suffixes.some((s) => c.includes(s));
 }
 
-async function handleHttp(inner: any): Promise<any> {
+async function handleHttp(inner: any, sandbox?: SandboxPlan): Promise<any> {
+  assertNetworkAllowed(sandbox);
+  const sandboxMeta = sandboxInfo(sandbox, "host");
   const urlS = strParam(inner, "url");
   let url: URL;
   try {
@@ -667,6 +750,7 @@ async function handleHttp(inner: any): Promise<any> {
     totalBytes: Number.isFinite(declared) ? declared : bodyBuf.length,
     truncated,
     encoding: textual ? "utf-8" : "base64",
+    sandbox: sandboxMeta,
   };
 }
 
@@ -955,6 +1039,7 @@ export async function handleTool(id: string, p: any): Promise<any> {
   const guard = new CancelGuard(id, envelopeOwner0);
   try {
     const name = strParam(p, "name");
+    const sandbox = parseSandboxPlan(p?.sandbox);
     const inner = p?.params && typeof p.params === "object" ? { ...p.params } : {};
     if (inner.cwd === undefined || inner.cwd === null) inner.cwd = p?.cwd ?? null;
     const envelopeOwner = typeof p?.owner === "string" ? p.owner : "";
@@ -968,25 +1053,27 @@ export async function handleTool(id: string, p: any): Promise<any> {
         // 防止模型把密钥写进文件再读回来绕过 bash 输出脱敏。
         rememberThreadSecrets(envelopeOwner, secrets);
         const accel = accelEnv(inner);
-        if (inner?.runInBackground === true) return runBashBackground(cwd, command, secrets, accel, envelopeOwner);
+        if (inner?.runInBackground === true) {
+          return runBashBackground(cwd, command, secrets, accel, envelopeOwner, sandbox);
+        }
         const timeoutMs =
           typeof inner?.timeout === "number" && Number.isFinite(inner.timeout)
             ? Math.max(1_000, Math.min(Math.trunc(inner.timeout), MAX_BASH_TIMEOUT_MS))
             : DEFAULT_BASH_TIMEOUT_MS;
-        return runBash(cwd, command, timeoutMs, guard, secrets, accel);
+        return runBash(cwd, command, timeoutMs, guard, secrets, accel, sandbox);
       }
       case "task_output":
         return handleTaskOutput(inner, envelopeOwner);
       case "task_stop":
         return handleTaskStop(inner, envelopeOwner);
       case "read":
-        return handleRead(inner);
+        return handleRead(inner, sandbox);
       case "write":
-        return handleWrite(inner);
+        return handleWrite(inner, sandbox);
       case "edit":
-        return handleEdit(inner);
+        return handleEdit(inner, sandbox);
       case "http":
-        return handleHttp(inner);
+        return handleHttp(inner, sandbox);
       case "screenshot":
         return handleScreenshot(inner);
       case "browser_navigate":

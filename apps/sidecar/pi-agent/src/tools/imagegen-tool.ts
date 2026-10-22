@@ -23,6 +23,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import {
+  networkDeniedMessage,
+  planAllowsNetwork,
+  planAllowsRead,
+  readDeniedMessage,
+  resolveToolPath,
+  type SandboxPlan,
+} from "pi-sandbox";
 import { credentialGet } from "../storage/hostdb";
 import { getModels } from "../model/catalog";
 import { normalizeMime } from "./image-parts";
@@ -277,6 +285,8 @@ const fmtSize = (bytes: number): string =>
 export type ImageGenDeps = {
   resolveEndpoint?: (cfg: ImageGenConfig) => string;
   cwd?: string;
+  /** 沙箱计划：network=deny 时拒绝出网；底图路径按 read 策略校验。 */
+  getSandbox?: () => Promise<SandboxPlan | null> | SandboxPlan | null;
 };
 
 const defaultResolveEndpoint = (cfg: ImageGenConfig): string => {
@@ -340,6 +350,10 @@ export function buildImageGenTool(deps: ImageGenDeps = {}): AgentTool {
       const p = raw as ImageGenParams;
       const prompt = (p.prompt ?? "").trim();
       if (!prompt) throw new Error("prompt is required");
+      const sandbox = await deps.getSandbox?.();
+      if (sandbox && !planAllowsNetwork(sandbox)) {
+        throw new Error(networkDeniedMessage());
+      }
       const cfg = getImageGenConfig();
       if (!cfg.enabled) {
         return textResult(
@@ -372,6 +386,17 @@ export function buildImageGenTool(deps: ImageGenDeps = {}): AgentTool {
       }
       // 底图（图生图）：密钥门后再解析，来源无效就不费一次出图请求
       const imageRaw = typeof p.image === "string" ? p.image.trim() : "";
+      if (
+        sandbox &&
+        imageRaw &&
+        !/^data:/i.test(imageRaw) &&
+        !/^https?:\/\//i.test(imageRaw)
+      ) {
+        const target = resolveToolPath(cwd, imageRaw);
+        if (!planAllowsRead(sandbox, target)) {
+          throw new Error(readDeniedMessage(target));
+        }
+      }
       let input: ResolvedInputImage | null = null;
       if (imageRaw) {
         const r = await resolveInputImage(imageRaw, cwd, signal ?? new AbortController().signal);

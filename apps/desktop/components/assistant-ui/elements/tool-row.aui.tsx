@@ -116,6 +116,53 @@ function resultText(result: unknown): string {
   return JSON.stringify(result, null, 2);
 }
 
+type SandboxInfo = {
+  tier?: "workspace";
+  backend?: "seatbelt" | "host" | "none";
+  network?: "allow" | "deny";
+  denied?: "write" | "read" | "network" | "unavailable";
+};
+
+/** 工具行沙箱 badge：成功态来自 artifact.sandbox；宿主拒绝时没有 artifact，
+ *  由错误文案里的 `sandbox:` 前缀兜底标记。 */
+export function SandboxBadge({
+  artifact,
+  result,
+  isError,
+}: {
+  artifact?: unknown;
+  result?: unknown;
+  isError?: boolean;
+}) {
+  const info = (artifact as { sandbox?: SandboxInfo } | undefined)?.sandbox;
+  const text = resultText(result);
+  const denied =
+    info?.denied !== undefined ||
+    (isError === true && /\bsandbox:\s/.test(text));
+  if (!info && !denied) return null;
+  const label = denied
+    ? "sandbox denied"
+    : info?.backend === "none"
+      ? "no OS sandbox"
+      : "sandboxed";
+  const tone = denied
+    ? "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400"
+    : info?.backend === "none"
+      ? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+  return (
+    <span
+      title={`tier=${info?.tier ?? "workspace"} backend=${info?.backend ?? "none"} network=${info?.network ?? "allow"}`}
+      className={cn(
+        "inline-flex items-center rounded-full border px-1.5 py-0.5 font-mono text-[10px] leading-none",
+        tone,
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
 /**
  * 底部吸附的滚动文本视口（同 ReasoningText 的流式预览逻辑）：
  * 内容增长时自动滚到底；读者往上翻（滚动高度未变时的上移）即解除吸附，
@@ -187,6 +234,8 @@ export type ToolRowProps = {
   label: ReactNode;
   /** 行首类别图标（与折叠组头同形：写=铅笔、查看/检索=放大镜…） */
   icon?: ReactNode;
+  /** 行内状态 badge（沙箱等） */
+  badge?: ReactNode;
   /** 文件类型图标：渲染在 label 文字右侧（写/读行「类别图标+文字+文件类型图标」的排布） */
   fileIcon?: ReactNode;
   /** 主文本：文件名或命令 */
@@ -217,6 +266,7 @@ export type ToolRowProps = {
 export const ToolRow: FC<ToolRowProps> = ({
   label,
   icon,
+  badge,
   fileIcon,
   primary,
   secondary,
@@ -276,6 +326,7 @@ export const ToolRow: FC<ToolRowProps> = ({
       <span className={cn("shrink-0", running && "shimmer")}>
         {label}
       </span>
+      {badge ? <span className="shrink-0">{badge}</span> : null}
       {fileIcon ? (
         <span className="inline-flex shrink-0 items-center">{fileIcon}</span>
       ) : null}
@@ -491,6 +542,7 @@ const BashToolUI: ToolCallMessagePartComponent = ({
   result,
   status,
   isError,
+  artifact,
 }) => {
   const command =
     typeof (args as { command?: unknown })?.command === "string"
@@ -502,6 +554,9 @@ const BashToolUI: ToolCallMessagePartComponent = ({
   return (
     <ToolRow
       label="终端"
+      badge={
+        <SandboxBadge artifact={artifact} result={result} isError={isError} />
+      }
       icon={<SquareTerminalIcon className="size-4 shrink-0" />}
       primary={lines[0]}
       secondary={lines.length > 1 ? `…+${lines.length - 1}` : undefined}
@@ -528,7 +583,7 @@ function strArg(args: unknown, key: string): string | null {
 
 const fileToolUI =
   (toolName: "read" | "edit" | "write", label: string): ToolCallMessagePartComponent =>
-  ({ toolCallId, args, result, status, isError }) => {
+  ({ toolCallId, args, result, status, isError, artifact }) => {
     const path = strArg(args, "file_path") ?? "";
     const { dir, base } = splitPath(path);
     const output = resultText(result);
@@ -572,6 +627,9 @@ const fileToolUI =
     return (
       <ToolRow
         label={label}
+        badge={
+          <SandboxBadge artifact={artifact} result={result} isError={isError} />
+        }
         // 行首类别图标与折叠组头同形：写类=铅笔、查看=放大镜；文件类型图标
         // 挪到「写入/查看」文字右侧。args 中断/取消可能为 {}（历史 jsonl
         // 写盘工具留空参数），无路径时不渲染文件类型图标。
@@ -692,6 +750,7 @@ const WebSearchToolUI: ToolCallMessagePartComponent = ({
   result,
   status,
   isError,
+  artifact,
 }) => {
   const query = strArg(args, "query") ?? "";
   const output = resultText(result);
@@ -702,6 +761,9 @@ const WebSearchToolUI: ToolCallMessagePartComponent = ({
   return (
     <ToolRow
       label="网络搜索"
+      badge={
+        <SandboxBadge artifact={artifact} result={result} isError={isError} />
+      }
       icon={<SearchIcon className="size-4 shrink-0" />}
       primary={query}
       secondary={items ? `${items.length} 条结果` : undefined}
@@ -719,12 +781,16 @@ const WebFetchToolUI: ToolCallMessagePartComponent = ({
   result,
   status,
   isError,
+  artifact,
 }) => {
   const url = strArg(args, "url") ?? "";
   const output = resultText(result);
   return (
     <ToolRow
       label="抓取网页"
+      badge={
+        <SandboxBadge artifact={artifact} result={result} isError={isError} />
+      }
       icon={<GlobeIcon className="size-4 shrink-0" />}
       primary={url}
       mono
