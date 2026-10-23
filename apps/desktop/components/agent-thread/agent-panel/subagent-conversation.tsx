@@ -339,16 +339,14 @@ const AssistantMessageView: FC<{
   return (
     <div className="flex flex-col gap-2">
       {message.report ? (
-        <>
-          <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 p-4  border border-slate-200 dark:border-slate-800">
-            <span className="font-bold text-blue-400 text-xl block mb-3">
-              报告
-            </span>
-            <div className="text-foreground text-sm leading-relaxed break-words">
-              <MarkdownText text={message.text ?? ""} />
-            </div>
+        <div className="border-t border-border/60 pt-3">
+          <span className="text-muted-foreground text-xs font-medium block mb-2">
+            报告
+          </span>
+          <div className="text-foreground text-sm leading-relaxed break-words">
+            <MarkdownText text={message.text ?? ""} />
           </div>
-        </>
+        </div>
       ) : (
         <div className="flex flex-col ">
           {groupSubagentContent(message.blocks ?? []).map((u, i) => (

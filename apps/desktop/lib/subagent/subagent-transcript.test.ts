@@ -88,6 +88,80 @@ describe("buildSubagentTranscript", () => {
     );
     const last = out[out.length - 1]!;
     expect(last).toMatchObject({ role: "assistant", report: true, text: "结论：无异常", at: 5000 });
+    // 过程正文与报告不同，保留在轮次里
+    expect(out[1]!.blocks!.some((b) => b.kind === "text" && b.text === "过程")).toBe(true);
+  });
+
+  test("最后一轮正文就是报告：去掉回声，只保留报告卡片", () => {
+    const out = buildSubagentTranscript(
+      baseRun({
+        status: "completed",
+        completedAt: 5000,
+        report: "结论：无异常",
+        blocks: [turn(1, 1100), text("t1", "结论：无异常", 1110)],
+      }),
+    );
+    expect(out.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(out[1]).toMatchObject({ role: "assistant", report: true, text: "结论：无异常" });
+  });
+
+  test("末尾有空 text 块时仍回找到真正的报告正文", () => {
+    const out = buildSubagentTranscript(
+      baseRun({
+        status: "completed",
+        completedAt: 5000,
+        report: "结论：无异常",
+        blocks: [
+          turn(1, 1100),
+          text("t1", "结论：无异常", 1110),
+          text("t2", "", 1120),
+        ],
+      }),
+    );
+    expect(out.filter((m) => m.report)).toHaveLength(1);
+    expect(
+      out.some(
+        (m) =>
+          !m.report &&
+          m.blocks?.some((b) => b.kind === "text" && b.text === "结论：无异常"),
+      ),
+    ).toBe(false);
+  });
+
+  test("报告正文在更早的轮次、后面只有工具轮：仍跨段去重", () => {
+    const out = buildSubagentTranscript(
+      baseRun({
+        status: "completed",
+        completedAt: 5000,
+        report: "结论：无异常",
+        blocks: [
+          turn(1, 1100),
+          text("t1", "结论：无异常", 1110),
+          turn(2, 1200),
+          tool("c1", 1210),
+        ],
+      }),
+    );
+    // 第一轮的文本被抽走后整段过滤；工具轮与报告卡片保留
+    expect(out.map((m) => m.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(out[1]!.turn).toBe(2);
+    expect(out[1]!.blocks!.map((b) => b.kind)).toEqual(["tool"]);
+    expect(out[2]).toMatchObject({ report: true, text: "结论：无异常" });
+  });
+
+  test("超长报告被头尾截断时仍能识别活动流里的全文", () => {
+    const body = `${"头".repeat(100)}${"尾".repeat(100)}`;
+    const report = `${"头".repeat(50)}\n\n[subagent report truncated]\n\n${"尾".repeat(50)}`;
+    const out = buildSubagentTranscript(
+      baseRun({
+        status: "completed",
+        completedAt: 5000,
+        report,
+        blocks: [turn(1, 1100), text("t1", body, 1110)],
+      }),
+    );
+    expect(out.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(out[1]).toMatchObject({ report: true, text: report });
   });
 
   test("运行中：不追加报告段（即使 report 字段已有值）", () => {
