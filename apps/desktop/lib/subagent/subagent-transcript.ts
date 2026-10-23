@@ -27,6 +27,70 @@ export type SubagentTranscriptMessage = {
   followUp?: boolean;
 };
 
+/** sidecar boundedReport 的截断标记（同字面量；报告过长时卡片是头+尾） */
+const REPORT_TRUNCATION_MARKER = "\n\n[subagent report truncated]\n\n";
+
+/** 活动流的最后一条正文是否就是结算报告本身。精确相等覆盖常规报告；
+ *  超长报告在卡片里是 head + marker + tail，用头尾匹配识别同一份内容。 */
+function isReportEcho(text: string, report: string): boolean {
+  const body = text.trim();
+  const bounded = report.trim();
+  if (!body || !bounded) return false;
+  if (body === bounded) return true;
+  const at = bounded.indexOf(REPORT_TRUNCATION_MARKER);
+  if (at < 0) return false;
+  const head = bounded.slice(0, at);
+  const tail = bounded.slice(at + REPORT_TRUNCATION_MARKER.length);
+  return (
+    head.length > 0 &&
+    tail.length > 0 &&
+    body.startsWith(head) &&
+    body.endsWith(tail)
+  );
+}
+
+/** 从活动段里去掉报告回声。
+ *
+ *  找到全文最后一个 text 块（可能是多个连续 text 块拼成的同一条消息正文）；
+ *  `lastReportText` 取的是最后一条**有文本**的 assistant 消息，所以报告正文
+ *  前面可能还隔着只跑工具的轮次，必须跨段回找，不能只砍最后一段。 */
+function dropReportEcho(
+  out: SubagentTranscriptMessage[],
+  report: string,
+): void {
+  if (!report.trim()) return;
+  for (let i = out.length - 1; i >= 0; i--) {
+    const message = out[i]!;
+    if (message.role !== "assistant" || !message.blocks?.length) continue;
+    let lastText = -1;
+    for (let j = message.blocks.length - 1; j >= 0; j--) {
+      const block = message.blocks[j]!;
+      // 空的 text 块不更新 sidecar 的 lastReportText；跳过它继续回找
+      if (block.kind === "text" && block.text.trim()) {
+        lastText = j;
+        break;
+      }
+    }
+    if (lastText < 0) continue;
+    const tailBlock = message.blocks[lastText]!;
+    if (tailBlock.kind !== "text") continue;
+    let start = lastText;
+    let text = tailBlock.text;
+    // 同一条 assistant 消息可以有多个连续 text 块，报告是它们的拼接
+    while (start > 0) {
+      const prev = message.blocks[start - 1]!;
+      if (prev.kind !== "text") break;
+      text = prev.text + text;
+      start -= 1;
+    }
+    if (isReportEcho(text, report)) {
+      message.blocks.splice(start, lastText - start + 1);
+    }
+    // 只看全文最后一个 text 块：更早的重复不是本次结算的报告来源
+    return;
+  }
+}
+
 export function buildSubagentTranscript(
   run: SubagentRunState,
   brief?: string,
@@ -58,6 +122,10 @@ export function buildSubagentTranscript(
   }
 
   if (run.status !== "running" && run.report) {
+    // 报告正文本身就是最后一条有文本的 assistant 消息：运行期它作为普通
+    // text 块流式展示，结算后 run.report 又取同一条消息。先去掉这段回声，
+    // 再由底部“报告”卡片单独渲染，避免同一段内容出现两遍。
+    dropReportEcho(out, run.report);
     out.push({ role: "assistant", at: run.completedAt, text: run.report, report: true });
   }
 
