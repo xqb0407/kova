@@ -793,6 +793,12 @@ export type PiAutoReviewSettings = {
   timeoutMs?: number;
 };
 
+/** 子智能体并发设置（事实源在 sidecar kv pi.subagentMaxConcurrency） */
+export type PiSubagentSettings = {
+  /** 单会话同时运行的子智能体上限（sidecar 钳制 [1, 16]，默认 8） */
+  maxConcurrency: number;
+};
+
 /** 沙箱配置（事实源在 sidecar kv pi.sandbox；V1 只有 off/workspace 两档） */
 export type PiSandboxConfig = {
   tier: "off" | "workspace";
@@ -1121,6 +1127,7 @@ export type PiResponse =
   | { type: "hooks_saved" }
   | { type: "hooks"; hooks: PiHookConfig[] }
   | { type: "auto_review"; settings: PiAutoReviewSettings }
+  | { type: "subagent_settings"; settings: PiSubagentSettings }
   | { type: "sandbox"; settings: PiSandboxConfig }
   | PiMemoryFilesResponse
   | { type: "memory_file"; file: string; content: string }

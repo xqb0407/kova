@@ -29,7 +29,6 @@ import {
   settleDelegation,
   waitForDelegations,
   findDelegationRecord,
-  MAX_SUBAGENT_CONCURRENCY,
   SUBAGENT_LIST_TOOL_NAME,
   SUBAGENT_STOP_TOOL_NAME,
   SUBAGENT_TOOL_NAME,
@@ -42,10 +41,22 @@ import { recordGoalToolResult } from "../goal/goal-evidence";
 import { logErr } from "../log";
 import { SUBAGENT_MESSAGE_TOOL_NAME } from "./delegation";
 import { openDelegationActivity, writeDelegationHistory } from "./activity-store";
+import { getSubagentMaxConcurrency } from "./settings";
 import type { SubagentHistoryMessage } from "../types";
 
 const TASKWAIT_DEFAULT_TIMEOUT_SECONDS = 180;
 const TASKWAIT_MAX_TIMEOUT_SECONDS = 3600;
+
+/** 当前会话的并发占用：Task 与 resume 共用；导出便于单测运行时设置是否生效 */
+export function subagentConcurrencyState(run: Running): {
+  running: number;
+  limit: number;
+  reached: boolean;
+} {
+  const limit = getSubagentMaxConcurrency();
+  const running = runningDelegations(run).length;
+  return { running, limit, reached: running >= limit };
+}
 
 /**
  * 解析 delegate 用的模型：Task 的 model 覆盖 > 定义固定 > 继承会话当前模型。
@@ -267,12 +278,14 @@ async function resumeDelegationOnce(
     threadId: run.threadId,
     cwd: run.cwd,
   };
+  // 先看并发占用，超限时不必再加载定义/模型/能力
+  const capacity = subagentConcurrencyState(run);
+  if (capacity.reached) {
+    return `Cannot resume: ${capacity.running} subagent(s) are running (limit ${capacity.limit}). Wait with TaskWait or stop some with TaskStop first.`;
+  }
   const definition = await findDefinitionForResume(run, record);
   if (!definition) {
     return `Cannot resume ${record.agentName} (${record.delegationId.slice(0, 8)}): its definition is no longer available in this session.`;
-  }
-  if (runningDelegations(run).length >= MAX_SUBAGENT_CONCURRENCY) {
-    return `Cannot resume: ${MAX_SUBAGENT_CONCURRENCY} subagents are already running. Wait with TaskWait or stop some with TaskStop first.`;
   }
   const resolved = await resolveDelegateModel(run, definition, "");
   const model = resolved.model;
@@ -286,6 +299,12 @@ async function resumeDelegationOnce(
   );
   if (caps.tools.length === 0) {
     return `Cannot resume: the ${definition.name} subagent declares no tool available in this session.`;
+  }
+  // 初检之后还有模型/能力解析的 await；并发 resume 可能同时通过初检。
+  // 这里到 record.status="running" 全同步，作为权威名额闸门。
+  const finalCapacity = subagentConcurrencyState(run);
+  if (finalCapacity.reached) {
+    return `Cannot resume: ${finalCapacity.running} subagent(s) are running (limit ${finalCapacity.limit}). Wait with TaskWait or stop some with TaskStop first.`;
   }
   const history = record.history ?? [];
   // 跨轮累加的基数：resume 轮的对外轮次/工具计数 = 本轮实例计数 + 基数
@@ -407,6 +426,7 @@ export function buildSubagentTools(
       "`task` is the delegate's only initial instruction. It cannot see this conversation, so state the goal, the paths and facts it cannot infer, and exactly what to report back. If it goes off track, use SendMessage with its delegationId to inject a correction at its next step (running) or continue the same conversation after it finishes.",
       "Pass `model` (\"provider/modelId\") only to pick a cheaper or faster model for a simple job; omit it to inherit this session's model.",
       "To run delegates concurrently, emit several Task calls in one assistant message. A message that mixes Task with any other tool runs one call at a time. You may keep working or talk to the user while they run; the runtime delivers their reports when they finish. Call TaskStop only to cancel.",
+      "Concurrent delegates are capped by the app's subagent concurrency setting; when the cap is reached, Task returns an error instead of queueing.",
       `Available subagents:\n${definitions
         .map((d) => `- ${d.name} (tools: ${d.tools.join(", ")}): ${d.description}`)
         .join("\n")}`,
@@ -450,9 +470,10 @@ export function buildSubagentTools(
           `Delegating to ${definition.name} needs a non-empty \`task\` brief.`,
         );
       }
-      if (runningDelegations(run).length >= MAX_SUBAGENT_CONCURRENCY) {
+      const capacity = subagentConcurrencyState(run);
+      if (capacity.reached) {
         return subagentToolError(
-          `${MAX_SUBAGENT_CONCURRENCY} subagents are already running for this session. Wait for some with TaskWait or stop them with TaskStop before delegating more.`,
+          `${capacity.running} subagent(s) are running (limit ${capacity.limit}). Wait for some with TaskWait or stop them with TaskStop before delegating more.`,
         );
       }
       const resolved = await resolveDelegateModel(run, definition, String(p.model ?? "").trim());
@@ -471,6 +492,14 @@ export function buildSubagentTools(
       if (tools.length === 0) {
         return subagentToolError(
           `The ${definition.name} subagent declares no tool available in this session.`,
+        );
+      }
+      // 初检之后还有模型/能力解析的 await；同一条消息里的多个 Task 会同时通过
+      // 初检。这里到写入 run.delegations 之间没有 await，才是权威名额闸门。
+      const finalCapacity = subagentConcurrencyState(run);
+      if (finalCapacity.reached) {
+        return subagentToolError(
+          `${finalCapacity.running} subagent(s) are running (limit ${finalCapacity.limit}). Wait for some with TaskWait or stop them with TaskStop before delegating more.`,
         );
       }
       const delegationId = randomUUID();

@@ -44,6 +44,7 @@ import { initHooks } from "./agent/hooks";
 import { initAutoReview } from "./permissions/auto-review";
 import { initSandboxConfig } from "./permissions/sandbox-config";
 import { initSubagentState } from "./subagent/subagent-definitions";
+import { initSubagentSettings } from "./subagent/settings";
 import { pruneActivityFiles } from "./subagent/activity-store";
 import { sweepOrphanTaskDirs } from "./sessions/sessions";
 import { initSkillsState } from "./skills/skills";
@@ -135,6 +136,8 @@ async function main() {
     await initObservability();
     // 子智能体开关/工作区信任同走 kv，理由同上（定义文件本身按需带签名加载）
     await initSubagentState();
+    // 子智能体并发上限同走 kv（Task/resume 执行时实时读，必须在闸门放行前恢复）
+    await initSubagentSettings();
     // 技能启用开关同走 kv（技能目录本身按需带签名加载，resolveSession 预热）
     await initSkillsState();
     // 项目虚拟目录（多代码工程合并）：会话解析前必须就位——它决定

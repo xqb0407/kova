@@ -1,6 +1,6 @@
 # 子代理对话（SendMessage + resume）审查与限制说明
 
-状态：实现已完成并经过一轮代码审查；**改动尚未提交**。
+状态：实现已完成并提交（`fed1f0a` 及后续「子智能体并发」设置提交）。
 配套设计文档：`docs/agents/subagent-conversation.md`。
 
 本文记录这一轮审查发现的问题、修复方式、当前语义、已知限制与处置决定，供后续维护和提交说明使用。
@@ -9,7 +9,7 @@
 
 - resume 主链路有 3 个会直接破坏真实使用的缺陷，已修复：历史序列化丢工具配对键、恢复记录未注册进父会话、resume 状态未落盘。
 - 另有一批稳定性与 UI 收敛问题（并发 resume、快照回放旧状态、重复气泡、旧报告串轮、崩溃残留）已一并处理。
-- 全量回归绿：sidecar 1858、desktop 949、electron 56、pi-protocol 30；三端 typecheck 通过；sidecar 单文件构建冒烟通过。
+- 全量回归绿：sidecar 1869、desktop 955、electron 60、pi-protocol 30；三端 typecheck 通过；sidecar 单文件构建冒烟通过。
 - 剩余限制均不阻塞当前提交；其中“Task 显式 `model` 覆盖未持久化”最值得在下一轮处理。
 
 ## 审查发现与修复
@@ -199,6 +199,10 @@
   - 悬空 toolCall 补 interrupted 结果；已有配对不改；挂起锚点跳过；中途缺结果插入位置正确。
 - `apps/desktop/lib/subagent/subagent-runs.test.ts`
   - 应答先到/广播后到的同文本去重；resume 轮 `activeSince` 计时。
+- `apps/sidecar/pi-agent/test/subagent/settings.test.ts`
+  - 并发设置 normalize/set/init；Task/resume 共用运行时上限，用实际运行数判定。
+- `apps/desktop/lib/pi/subagent-concurrency-input.test.ts`
+  - 设置页空输入回退当前值；合法值取整并钳到共享范围。
 
 验证命令与结果：
 
@@ -206,18 +210,18 @@
 # sidecar
 cd apps/sidecar/pi-agent
 bun run typecheck          # 通过
-bun test                   # 1858 pass / 0 fail
+bun test                   # 1869 pass / 0 fail
 bun run build              # 单文件构建 + smoke check 通过
 
 # desktop
 cd apps/desktop
 bun run typecheck          # 通过
-bun test lib               # 949 pass / 0 fail
+bun test lib               # 955 pass / 0 fail
 
 # electron
 cd apps/electron
 bun run typecheck          # 通过
-bun test                   # 56 pass / 0 fail
+bun test                   # 60 pass / 0 fail
 
 # protocol
 cd packages/pi-protocol
