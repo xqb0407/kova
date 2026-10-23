@@ -21,6 +21,7 @@ describe("augmentTruncatedToolCallErrors", () => {
     const text = (msgs[0] as { content: { text: string }[] }).content[0].text;
     expect(text.startsWith(CORE_TRUNCATION_TEXT)).toBe(true);
     expect(text).toContain("split the file into parts");
+    expect(text).toContain('mode "append"');
     expect(text).toContain("do NOT simply re-issue");
   });
 

@@ -1,5 +1,41 @@
 import { describe, expect, test } from "bun:test";
-import { buildHostToolPayload, globToRegExp } from "../../src/tools/tools";
+import {
+  BASH_TOOL_DESCRIPTION,
+  READ_TOOL_DESCRIPTION,
+  WRITE_TOOL_DESCRIPTION,
+  buildHostToolPayload,
+  buildTools,
+  globToRegExp,
+} from "../../src/tools/tools";
+
+describe("工具描述（引导模型用专用文件工具）", () => {
+  test("bash：不再推荐 grep/tail/head，保留 formatter/codegen，并禁止用 shell 文本工具读项目文件", () => {
+    expect(BASH_TOOL_DESCRIPTION).not.toContain("grep/tail/head");
+    expect(BASH_TOOL_DESCRIPTION).toContain("formatters, codegen");
+    expect(BASH_TOOL_DESCRIPTION).toContain("not cat/head/tail/sed/awk");
+    expect(BASH_TOOL_DESCRIPTION).toContain("bypass the read state");
+  });
+
+  test("read：明确用 read + offset/limit 代替 cat/head/tail/sed -n", () => {
+    expect(READ_TOOL_DESCRIPTION).toContain("instead of cat/head/tail/sed -n");
+    expect(READ_TOOL_DESCRIPTION).toContain("offset/limit");
+    expect(READ_TOOL_DESCRIPTION).toContain("read state");
+  });
+
+  test("write：说明 read-state 与输出预算分段，不再声称宿主超时", () => {
+    expect(WRITE_TOOL_DESCRIPTION).not.toContain("times out");
+    expect(WRITE_TOOL_DESCRIPTION).toContain("needs a current read state");
+    expect(WRITE_TOOL_DESCRIPTION).toContain("write it in parts");
+    expect(WRITE_TOOL_DESCRIPTION).toContain("response budget");
+  });
+
+  test("buildTools 实际使用这些描述（防止常量与工具对象脱钩）", () => {
+    const tools = buildTools("/tmp/ws", "t");
+    expect(tools.find((t) => t.name === "bash")?.description).toBe(BASH_TOOL_DESCRIPTION);
+    expect(tools.find((t) => t.name === "read")?.description).toBe(READ_TOOL_DESCRIPTION);
+    expect(tools.find((t) => t.name === "write")?.description).toBe(WRITE_TOOL_DESCRIPTION);
+  });
+});
 
 describe("buildHostToolPayload（宿主信封组装的安全边界）", () => {
   test("模型伪造的 secretEnv 被摘掉：注入名单只能由本侧 augment 决定", () => {

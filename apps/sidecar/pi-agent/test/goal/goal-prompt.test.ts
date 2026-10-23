@@ -173,4 +173,9 @@ describe("静态模式段的性质（这几点是动态块必须存在的理由�
     expect(GOAL_MODE_PROMPT).toContain("automatically starts the next turn");
     expect(GOAL_MODE_PROMPT).toContain("Do not wrap up, hand back, or ask whether to continue");
   });
+
+  test("验收标准协商期间的只读边界覆盖 bash", () => {
+    expect(GOAL_MODE_PROMPT).toContain("do not modify files with any tool");
+    expect(GOAL_MODE_PROMPT).toContain("including bash");
+  });
 });

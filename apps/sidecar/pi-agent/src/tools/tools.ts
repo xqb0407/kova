@@ -392,6 +392,39 @@ function hostTool(
   };
 }
 
+/** bash 的职责边界：命令归 bash，文件内容/修改归 read/write/edit。
+ *  写明 cat/sed 读与改都不更新宿主 read-state 的后果——模型用 cat/sed -n 读、
+ *  再 edit 会被「read it first」挡住，于是退回 sed -i；把这条因果放在调用点
+ *  最省提示词。formatter/codegen 明确留在 bash 侧：它们本来就是“命令改文件”。 */
+export const BASH_TOOL_DESCRIPTION = [
+  "Run a shell command in the workspace and return combined stdout/stderr.",
+  "Use bash for commands (builds, tests, git, formatters, codegen, process control). For project files use read/glob/grep, not cat/head/tail/sed/awk; sed/awk are only for processing command output in a pipeline. File contents and hand edits belong to read/write/edit; cat and sed bypass the read state the host checks before write/edit.",
+  "Output is capped — run a narrower command instead of dumping large files.",
+  "Default timeout 120s — pass a larger timeout (up to 600000ms) for slow commands, or prefer runInBackground:true for long-running processes (dev servers, builds, watchers): it returns immediately with a taskId and the process keeps running across turns (not killed when a turn is cancelled); read output later with task_output, kill with task_stop.",
+  "Never discard output with >/dev/null — invisible progress looks like a hang.",
+  "Windows runs Git Bash when available (cmd.exe fallback) — do not use PowerShell-only syntax like backtick escapes.",
+].join(" ");
+
+/** read 的描述：offset/limit 就是 sed -n 的替代；读文件必须走 read 才能记录
+ *  宿主 write/edit 需要的 read-state，shell 文本工具不会更新它。 */
+export const READ_TOOL_DESCRIPTION = [
+  "Read a text file. Returns up to 64KB with line numbers.",
+  "Use read instead of cat/head/tail/sed -n to inspect project files; offset/limit replaces line-range printing, and reading records the read state write/edit require.",
+  "Use offset/limit to paginate large files.",
+  "Image files (png/jpg/jpeg/gif/webp, up to 2MiB) are returned as an image you can see directly; larger images fail — downscale first (e.g. sips -Z 1600).",
+].join(" ");
+
+/** write 的描述以宿主真实行为为准：tool-exec 的 handleWrite 一次 writeFileSync 写整份
+ *  内容，宿主没有输入大小上限（16KB 只是 bash 的输出上限，read 是 64KB）；但工具参数
+ *  要由模型生成，输出预算（自定义端点默认 8192 tokens）才是必须分段的原因。
+ *  旧描述把分段归因于“host 超时”是错的，但整段删掉会让大文件写入撞输出截断。 */
+export const WRITE_TOOL_DESCRIPTION = [
+  "Write (or create) a file with the given content; parent directories are created automatically.",
+  "Use it to create a new file or replace a file completely — for targeted changes use edit.",
+  "An existing file needs a current read state: read it first, or it is already current because you wrote or edited it in this session.",
+  "If the content is larger than roughly 300 lines / 16KB, write it in parts — mode \"overwrite\" first, then \"append\". The limit here is the model's response budget, not the host's ability to write the file.",
+].join(" ");
+
 export function buildTools(
   cwd: string,
   threadId: string,
@@ -419,14 +452,7 @@ export function buildTools(
 ): AgentTool[] {
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
-      "Run a shell command in the workspace and return combined stdout/stderr. " +
-        "Output is capped; use narrower commands (grep/tail/head) instead of dumping large files. " +
-        "Default timeout 120s — pass a larger timeout (up to 600000ms) for slow commands, or " +
-        "prefer runInBackground:true for long-running processes (dev servers, builds, watchers): " +
-        "it returns immediately with a taskId and the process keeps running across turns " +
-        "(not killed when a turn is cancelled); read output later with task_output, kill with task_stop. " +
-        "Never discard output with >/dev/null — invisible progress looks like a hang. " +
-        "Windows runs Git Bash when available (cmd.exe fallback) — do not use PowerShell-only syntax like backtick escapes.",
+      BASH_TOOL_DESCRIPTION,
       Type.Object({
         command: Type.String({ description: "The shell command to run" }),
         timeout: Type.Optional(
@@ -477,10 +503,7 @@ export function buildTools(
       }),
     ),
     hostTool("read", cwd, threadId,
-      "Read a text file. Returns up to 64KB with line numbers. " +
-        "Use offset/limit to paginate large files. " +
-        "Image files (png/jpg/jpeg/gif/webp, up to 2MiB) are returned as an image " +
-        "you can see directly; larger images fail — downscale first (e.g. sips -Z 1600).",
+      READ_TOOL_DESCRIPTION,
       Type.Object({
         file_path: Type.String({ description: "Path (relative to workspace or absolute)" }),
         offset: Type.Optional(Type.Number({ description: "1-based start line" })),
@@ -491,14 +514,7 @@ export function buildTools(
       getSandboxPlan,
     ),
     hostTool("write", cwd, threadId,
-      // 常驻拆分指引：write 的执行在 Rust 宿主（tool_exec.rs），整份内容是一次往返，
-      // 大文件必超时。以前只有失败后的自愈提示，模型在「还没失败」时没有任何约束，
-      // 这里把阈值与做法写进工具描述，让它一开始就分段写。
-      "Write (or create) a file with the given content. Parent directories are created automatically. " +
-        "For large files (roughly over 200 lines or 16KB), do NOT send the whole thing in one call — " +
-        "content goes to the host in a single round trip and an oversized write times out. " +
-        "Write the first part with mode \"overwrite\", then extend the file with " +
-        "mode \"append\" (or edit calls matching the file's current tail).",
+      WRITE_TOOL_DESCRIPTION,
       Type.Object({
         file_path: Type.String({ description: "Path (relative to workspace or absolute)" }),
         content: Type.String({ description: "Full file content" }),
