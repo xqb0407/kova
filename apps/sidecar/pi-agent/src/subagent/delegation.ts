@@ -17,6 +17,7 @@ import type {
 } from "../types";
 import {
   appendDelegationActivity,
+  appendDelegationTranscript,
   findActivityFileId,
   openDelegationActivity,
   pruneActivityFiles,
@@ -30,6 +31,8 @@ export const SUBAGENT_WAIT_TOOL_NAME = "TaskWait";
 export const SUBAGENT_LIST_TOOL_NAME = "TaskList";
 /** 停止运行中的委派 */
 export const SUBAGENT_STOP_TOOL_NAME = "TaskStop";
+/** 给委派发消息（running=插话下轮消费；finished=resume 续聊） */
+export const SUBAGENT_MESSAGE_TOOL_NAME = "SendMessage";
 
 /** 报告是唯一进入父代理上下文的内容，别让它变成委派本想避免的上下文问题 */
 export const MAX_SUBAGENT_REPORT_CHARS = 12_000;
@@ -138,12 +141,27 @@ function restoreDelegation(idOrPrefix: string): DelegationRecord | undefined {
         }
       : {}),
     reportedToParent: true,
+    ...(restored.history?.length ? { history: restored.history } : {}),
+    ...(restored.record.ownerSession ? { ownerSession: restored.record.ownerSession } : {}),
     completion: Promise.resolve(),
     resolveCompletion: () => {},
     abort: () => {},
   };
   delegationIndex.set(record.delegationId, record);
   return record;
+}
+
+/**
+ * 全局查一条委派记录（协议 handler 用；工具走会话内的 findDelegation）。
+ * 完整 id 或 ≥4 位前缀；内存未命中回读磁盘（重启/裁剪后仍可寻址，回放的
+ * 记录 completion 立即 resolve、abort no-op——只服务 resume/回放，不参与执行链）。
+ */
+export function findDelegationRecord(idOrPrefix: string): DelegationRecord | undefined {
+  if (idOrPrefix.length < 4) return undefined;
+  for (const r of delegationIndex.values()) {
+    if (r.delegationId.startsWith(idOrPrefix)) return r;
+  }
+  return restoreDelegation(idOrPrefix);
 }
 
 /** 快照应答载荷（protocol.ts get_subagent_activity 用） */
@@ -160,6 +178,10 @@ export function getDelegationSnapshot(delegationId: string):
         turns: number;
         toolCalls: number;
         report?: string;
+        /** 终态且留有存档历史 = 可以 resume 续聊 */
+        canResume: boolean;
+        /** 本轮运行起点（resume 标记时间）；缺省 = 初次 Task 的 startedAt */
+        activeSince?: number;
       };
       items: SubagentActivityItem[];
     }
@@ -177,6 +199,17 @@ export function getDelegationSnapshot(delegationId: string):
   // 内存未命中 → 回读磁盘（sidecar 重启/记录被裁后仍能回放；无文件则保持 undefined）
   if (!record) record = restoreDelegation(delegationId);
   if (!record) return undefined;
+  // resume 后的本轮起点：面板用时按本轮算，不把上一轮/上几天的时长算进来。
+  // 只在最后一条 status 是 running（resume 标记）时给出；初次 Task 没有标记。
+  let activeSince: number | undefined;
+  if (record.status === "running") {
+    for (let i = record.activity.length - 1; i >= 0; i--) {
+      const item = record.activity[i]!;
+      if (item.kind !== "status") continue;
+      if (item.status === "running") activeSince = item.at;
+      break;
+    }
+  }
   return {
     record: {
       delegationId: record.delegationId,
@@ -188,8 +221,18 @@ export function getDelegationSnapshot(delegationId: string):
       turns: record.turns,
       toolCalls: record.toolCalls,
       report: record.result?.report,
+      // 面板只能按记录里的 ownerSession 物化父会话：老记录即使有历史，
+      // 缺这个字段也无法从面板续聊，输入行应直接禁用而不是发送后才报错。
+      canResume:
+        record.status !== "running" &&
+        (record.history?.length ?? 0) > 0 &&
+        record.ownerSession !== undefined,
+      ...(activeSince !== undefined ? { activeSince } : {}),
     },
-    items: [...record.activity],
+    // 状态条目不回放进 items：快照 record 的 status/report/turns/toolCalls
+    // 才是权威值。回放旧 status 会把磁盘上已判 interrupted 的记录重新翻成
+    // completed（上一轮的终态）或 running（本轮 resume 标记），盖掉真实状态。
+    items: record.activity.filter((item) => item.kind !== "status"),
   };
 }
 
@@ -231,12 +274,24 @@ export function settleDelegation(
   record.turns = result.turns;
   record.toolCalls = result.toolCalls;
   record.completedAt = Date.now();
+  // 会话历史存档（resume 的初始上下文）：先写 transcript 再发 status——
+  // 反向顺序下进程若在两次刷盘之间被杀，会留下"已完成但没有历史"的记录。
+  // archive 自身同步刷盘，保证 resume 数据绝不因节流丢失。
+  if (record.archiveHistory) {
+    const history = record.archiveHistory();
+    if (history.length) {
+      record.history = history;
+      appendDelegationTranscript(record.delegationId, history);
+    }
+  }
   pushActivity(record, {
     kind: "status",
     status: record.status,
     turns: record.turns,
     toolCalls: record.toolCalls,
     report: result.report,
+    canResume:
+      (record.history?.length ?? 0) > 0 && record.ownerSession !== undefined,
     at: record.completedAt,
   });
   record.resolveCompletion();

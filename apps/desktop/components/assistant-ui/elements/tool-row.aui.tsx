@@ -1039,7 +1039,8 @@ const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) 
   const agentName = strArg(args, "agent") ?? "";
   const description = strArg(args, "description") ?? "";
   const { run, delegationId } = useDelegationView(toolCallId, result);
-  const running = run?.status === "running";
+  // 快照查无记录时 status 仍是 defaultState 的 running，不能当成在跑
+  const running = run?.status === "running" && !run.expired;
   // 运行中每秒一拍刷新用时（条目结算后自动停）
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -1049,20 +1050,24 @@ const TaskToolUI: ToolCallMessagePartComponent = ({ toolCallId, args, result }) 
   }, [running]);
   const elapsed = subagentElapsedSeconds(run);
   const statusSuffix = run
-    ? running
-      ? elapsed
-        ? `${elapsed}s`
-        : undefined
-      : [
-          DELEGATION_STATUS_LABEL[run.status] ?? run.status,
-          run.completedAt && run.startedAt
-            ? `${Math.max(0, Math.round((run.completedAt - run.startedAt) / 1000))}s`
-            : undefined,
-        ]
-          .filter(Boolean)
-          .join(" ")
+    ? run.expired
+      ? "记录不可用"
+      : running
+        ? elapsed
+          ? `${elapsed}s`
+          : undefined
+        : [
+            DELEGATION_STATUS_LABEL[run.status] ?? run.status,
+            run.completedAt && run.startedAt
+              ? `${Math.max(0, Math.round((run.completedAt - run.startedAt) / 1000))}s`
+              : undefined,
+          ]
+            .filter(Boolean)
+            .join(" ")
     : undefined;
-  const failed = !!run && run.status !== "running" && run.status !== "completed";
+  const failed =
+    !!run &&
+    (run.expired || (run.status !== "running" && run.status !== "completed"));
   // 委派没起来（模型无凭据、未知子智能体、并发超限等）：sidecar 以普通文本
   // 返回原因（isError 不置真），永远不会有 delegationId——此时整行既无面板
   // 入口也无输出可看，点/悬浮都毫无反应，看起来像坏了。把失败原因作为行内

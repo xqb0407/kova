@@ -71,9 +71,11 @@ const {
   getSubagentRun,
   getSubagentRunByToolCall,
   hydrateSubagentSnapshot,
+  isPendingSentMessage,
   openSubagentTab,
   parseDelegationIdFromResult,
   resolveDelegationId,
+  sendSubagentMessage,
   startSubagentRunsWatch,
   subagentElapsedSeconds,
 } = await import("@/lib/subagent/subagent-runs");
@@ -97,6 +99,14 @@ const channel: PiChannel = {
       }
       if (!res) throw new Error(`delegation not found: ${id}`);
       return res as PiResponse;
+    }
+    if (payload.type === "send_subagent_message") {
+      return {
+        type: "subagent_message_sent",
+        delegationId: String(payload.delegationId),
+        ok: true,
+        resumed: false,
+      } as PiResponse;
     }
     return { type: "sessions", sessions: [] } as unknown as PiResponse;
   },
@@ -216,10 +226,33 @@ describe("活动流合并", () => {
     expect(run.completedAt).toBe(at(10));
   });
 
-  test("用时：running 取当下、结算取 completedAt", () => {
+  test("应答先到、广播后到：同文本两次发送不重复插气泡", async () => {
+    const id = "dedupe-1111-2222";
+    applyDelegationChunk({ toolCallId: "tc-dedupe", delegationId: id, agentName: "E" });
+    const messageCount = () =>
+      getSubagentRun(id)!.blocks.filter((b) => b.kind === "message").length;
+
+    await sendSubagentMessage(id, "same text");
+    await sendSubagentMessage(id, "same text");
+    expect(messageCount()).toBe(2);
+
+    // 两条广播各认领一个占位（应答后占位仍在），不再追加气泡
+    emitActivity!(id, { kind: "message", text: "same text", at: 1 });
+    emitActivity!(id, { kind: "message", text: "same text", at: 2 });
+    expect(messageCount()).toBe(2);
+    expect(isPendingSentMessage(id, "same text")).toBe(false);
+  });
+
+  test("用时：running 取当下、结算取 completedAt；resume 轮从 activeSince 起算", () => {
     const run = getSubagentRun(ID)!;
     expect(subagentElapsedSeconds(run, at(30))).toBe(10); // 结算后不再随 now 增长
     expect(subagentElapsedSeconds(undefined)).toBe(0);
+    expect(
+      subagentElapsedSeconds(
+        { ...run, status: "running", activeSince: at(20) },
+        at(30),
+      ),
+    ).toBe(10); // 不把上一轮的 10 秒再算进来
   });
 });
 

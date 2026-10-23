@@ -152,7 +152,34 @@ export type SubagentActivityItem =
       turns: number;
       toolCalls: number;
       report?: string;
+      /** 是否留有可 resume 的存档历史（面板据此启用/禁用续聊输入行） */
+      canResume?: boolean;
       at: number;
+    }
+  /** 已受理的插入消息（SendMessage / 对话页输入；子代理下个模型调用边界消费） */
+  | { kind: "message"; text: string; at: number };
+
+/**
+ * 一条委派的历史消息存档（resume 用；每轮随 activity 落盘）。
+ * toolResult 必须带 toolCallId/toolName：只存 role+content 会让续聊时的
+ * provider 请求出现"没有 id 的 tool 消息"，OpenAI 兼容端点直接拒绝。
+ */
+export type SubagentHistoryMessage =
+  | { role: "user"; content: unknown; timestamp?: number }
+  | {
+      role: "assistant";
+      content: unknown;
+      timestamp?: number;
+      stopReason?: string;
+      errorMessage?: string;
+    }
+  | {
+      role: "toolResult";
+      content: unknown;
+      toolCallId: string;
+      toolName: string;
+      isError?: boolean;
+      timestamp?: number;
     };
 
 /** 一次 Task 委派的登记项（会话级注册表，后台运行、TaskWait 收敛） */
@@ -174,6 +201,14 @@ export type DelegationRecord = {
   result?: SubagentRunResult;
   /** 报告已通过 TaskWait 或恢复 prompt 交给父代理，避免重复投递 */
   reportedToParent: boolean;
+  /** delegate 会话历史（每轮结束存档；resume 时作为初始上下文） */
+  history?: SubagentHistoryMessage[];
+  /** SubagentRun 注入的历史提取闭包（settle 时调用一次存档） */
+  archiveHistory?: () => SubagentHistoryMessage[];
+  /** SubagentRun 注入的插话闭包（running 时给 SendMessage/对话页用） */
+  sendMessage?: (text: string) => boolean;
+  /** 父会话三要素（resume 时按需物化父会话；Task 启动时回填，活动文件 meta 携带重启后仍可续聊） */
+  ownerSession?: { sessionId: string; threadId: string; cwd: string };
   /** 结算信号：TaskWait 等它，SubagentRun 完成时 resolve */
   completion: Promise<void>;
   resolveCompletion: () => void;

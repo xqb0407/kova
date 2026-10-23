@@ -63,7 +63,7 @@ import {
   hasPendingInteractions,
   restoreUnsettled,
 } from "./pending-interactions";
-import { checkpointGeneration, contextInfoFrom, projectRestoreContext, setLeadingSystemMessage, type ContextInfoResult } from "../agent/context";
+import { checkpointGeneration, contextInfoFrom, projectRestoreContext, repairDanglingToolCalls, setLeadingSystemMessage, type ContextInfoResult } from "../agent/context";
 import { isPromptActive, onAgentEvent, send, sendSessionsChanged } from "../protocol/stream";
 import { wireSessionEvents } from "../protocol/thread-events";
 import {
@@ -737,7 +737,16 @@ export async function resolveSession(
       maxSeq = Math.max(maxSeq, checkpoint.seq);
       compactionGeneration = checkpointGeneration(checkpoint.details);
     }
-    restoredMessages = projectRestoreContext(transcript, checkpoint);
+    // 崩溃恢复：工具执行中被杀会留下无结果的 toolCall，补 interrupted 结果
+    // 保持上下文可继续；挂起交互的锚点跳过（那些卡还在等用户回答）。
+    restoredMessages = repairDanglingToolCalls(
+      projectRestoreContext(transcript, checkpoint),
+      new Set(
+        scan.pending
+          .map((item) => item.anchorToolCallId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      ),
+    );
     restoredPending = scan.pending;
     scanModel = scan.model;
     scanThinking = scan.thinkingLevel;

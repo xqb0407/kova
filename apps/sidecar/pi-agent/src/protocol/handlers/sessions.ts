@@ -67,7 +67,12 @@ import { goalContinueText, goalNegotiationText } from "../../goal/goal-continuat
 import { isNegotiating, limitsFor } from "../../goal/goal-state";
 import { ensureGoalMode, persistModePrefs } from "../../agent/modes";
 import { dispatchPrompt } from "../prompt-pipeline";
-import { getDelegationSnapshot } from "../../subagent/subagent";
+import {
+  findDelegationRecord,
+  getDelegationSnapshot,
+  pushActivity,
+  resumeDelegation,
+} from "../../subagent/subagent";
 import {
   recomputeRunsForProject,
 } from "../../sessions/external-dirs";
@@ -468,6 +473,46 @@ export const handlers: Record<string, CommandHandler> = {
     const snapshot = getDelegationSnapshot(delegationId);
     if (!snapshot) throw new Error(`delegation not found: ${delegationId}`);
     send({ id: reqId, type: "subagent_activity_snapshot", ...snapshot });
+  },
+
+  send_subagent_message: async (reqId, msg) => {
+    // 面板对话页给委派发消息：running=插话（下个模型边界消费）、
+    // finished+存档=resume 续聊。与父代理的 SendMessage 工具同一条链。
+    const delegationId = String(msg.delegationId ?? "");
+    const text = String(msg.text ?? "").trim();
+    if (!text) throw new Error("send_subagent_message: text is required");
+    const record = findDelegationRecord(delegationId);
+    if (!record) throw new Error(`delegation not found: ${delegationId}`);
+    if (record.status === "running") {
+      const accepted = record.sendMessage?.(text) ?? false;
+      if (!accepted) {
+        // steer 失败：settle 已把状态翻成终态 → 落到下面的 resume；
+        // 状态仍是 running（run 刚 return、settle 尚未执行）→ 让用户重试一次，
+        // 避免在这里抢跑拉起第二个 SubagentRun。
+        if (record.status === "running") {
+          throw new Error("delegation just finished; retry to send the message");
+        }
+      } else {
+        pushActivity(record, { kind: "message", text, at: Date.now() });
+        send({
+          id: reqId,
+          type: "subagent_message_sent",
+          delegationId: record.delegationId,
+          ok: true,
+          resumed: false,
+        });
+        return;
+      }
+    }
+    const error = await resumeDelegation(record, text);
+    if (error) throw new Error(error);
+    send({
+      id: reqId,
+      type: "subagent_message_sent",
+      delegationId: record.delegationId,
+      ok: true,
+      resumed: true,
+    });
   },
 
   new_session: async (reqId, msg) => {

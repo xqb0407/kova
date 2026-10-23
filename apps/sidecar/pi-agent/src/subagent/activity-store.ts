@@ -16,6 +16,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -26,8 +27,10 @@ import { subagentPath, subagentsDirPath } from "../storage/storage";
 import type {
   DelegationRecord,
   SubagentActivityItem,
+  SubagentHistoryMessage,
   SubagentRunStatus,
 } from "../types";
+import { normalizeSubagentHistory } from "./history";
 
 /** 刷盘节流：距上次刷盘超过此值即写 */
 const FLUSH_INTERVAL_MS = 250;
@@ -41,7 +44,10 @@ const TRIM_KEEP_BYTES = 1024 * 1024;
 /** 活动文件保留上限（对齐 delegation.ts 的 MAX_RETAINED_DELEGATIONS） */
 const MAX_ACTIVITY_FILES = 50;
 
-/** 文件里的一行：首行 meta + 之后的 item */
+/** 每轮历史快照的独立文件后缀（与活动流分家：活动流截尾会连 meta 一起裁掉） */
+const HISTORY_SUFFIX = ".history.json";
+
+/** 文件里的一行：首行 meta + 之后的 item；终态附一条 transcript（resume 用） */
 type ActivityFileLine =
   | {
       t: "meta";
@@ -50,8 +56,11 @@ type ActivityFileLine =
       modelId: string;
       description?: string;
       startedAt: number;
+      /** 父会话三要素（resume 按需物化父会话；重启后回读仍可续聊） */
+      ownerSession?: { sessionId: string; threadId: string; cwd: string };
     }
-  | { t: "item"; item: SubagentActivityItem };
+  | { t: "item"; item: SubagentActivityItem }
+  | { t: "transcript"; messages: SubagentHistoryMessage[] };
 
 type DelegationWriter = {
   /** 已合并、待刷盘的行 */
@@ -68,14 +77,20 @@ const isDelta = (
 ): item is Extract<SubagentActivityItem, { kind: "thinking" | "text" }> =>
   (item.kind === "thinking" || item.kind === "text") && item.op === "delta";
 
-/** 超限时截尾保留末尾 1MB（从其后第一个换行起，丢掉可能撕裂的半行） */
+/** 超限时截尾保留末尾 1MB（从其后第一个换行起，丢掉可能撕裂的半行）。
+ *  首行 meta 必须保留：裁掉它等于让整个委派从磁盘上消失（回读按 meta 认身份）。 */
 function trimIfOversize(file: string): void {
   const st = statSync(file);
   if (st.size <= MAX_FILE_BYTES) return;
   const buf = readFileSync(file);
-  const tail = buf.subarray(buf.length - TRIM_KEEP_BYTES);
+  const firstNl = buf.indexOf(0x0a);
+  const head =
+    firstNl >= 0 && buf.subarray(0, firstNl).includes('"t":"meta"')
+      ? buf.subarray(0, firstNl + 1)
+      : Buffer.alloc(0);
+  const tail = buf.subarray(Math.max(0, buf.length - TRIM_KEEP_BYTES));
   const nl = tail.indexOf(0x0a);
-  writeFileSync(file, nl >= 0 ? tail.subarray(nl + 1) : tail);
+  writeFileSync(file, Buffer.concat([head, nl >= 0 ? tail.subarray(nl + 1) : tail]));
 }
 
 /** 落盘一批待写行（同步）；失败只记日志，绝不抛回调用方 */
@@ -132,6 +147,7 @@ export function openDelegationActivity(record: DelegationRecord): void {
     agentName: record.agentName,
     modelId: record.modelId,
     ...(record.description ? { description: record.description } : {}),
+    ...(record.ownerSession ? { ownerSession: record.ownerSession } : {}),
     startedAt: record.startedAt,
   };
   w.pending.push(meta);
@@ -167,10 +183,11 @@ export function appendDelegationActivity(
     w.bytes += JSON.stringify(item).length;
   }
 
-  // 终态：同步刷盘后收摊（该委派不会再有活动）
+  // status 一律同步刷盘：running 是 resume 开始的标记（必须抢在进程再次
+  // 被杀前落盘），终态则刷完收摊（该委派不会再有活动）。
   if (item.kind === "status") {
     flush(delegationId);
-    writers.delete(delegationId);
+    if (item.status !== "running") writers.delete(delegationId);
     return;
   }
   if (w.pending.length >= FLUSH_MAX_LINES || w.bytes >= FLUSH_MAX_BYTES) {
@@ -183,6 +200,70 @@ export function appendDelegationActivity(
 /** 强制刷盘（测试/收尾用） */
 export function flushDelegationActivity(delegationId: string): void {
   flush(delegationId);
+}
+
+/**
+ * 把终态会话历史存档进活动文件（resume 的初始上下文）。
+ * settleDelegation 在 status 之前调用；同步刷盘——resume 依赖它，绝不延迟。
+ * 没登记 writer（存储未就绪/已收摊）时临时补开一个只写不登记的通道。
+ */
+export function appendDelegationTranscript(
+  delegationId: string,
+  messages: SubagentHistoryMessage[],
+): void {
+  let w = writers.get(delegationId);
+  const detached = !w;
+  if (!w) {
+    try {
+      subagentsDirPath();
+    } catch {
+      return;
+    }
+    w = { pending: [], timer: null, bytes: 0 };
+    writers.set(delegationId, w);
+  }
+  const line: ActivityFileLine = { t: "transcript", messages };
+  let bytes: number;
+  try {
+    bytes = JSON.stringify(line).length;
+  } catch (err) {
+    // 非 JSON 安全的工具结果：不写入历史，但不能让结算链崩掉
+    logErr("activity-store: transcript serialize failed:", err);
+    if (detached) writers.delete(delegationId);
+    return;
+  }
+  w.pending.push(line);
+  w.bytes += bytes;
+  flush(delegationId);
+  if (detached) writers.delete(delegationId);
+}
+
+/** 每轮历史快照的路径（独立文件，整份覆盖写） */
+function historyPath(delegationId: string): string {
+  return join(subagentsDirPath(), `${delegationId}${HISTORY_SUFFIX}`);
+}
+
+/**
+ * 每轮结束覆盖写历史快照：进程被重启/崩溃打断时，resume 至少能拿到
+ * 最后一个完整轮次的上下文（settle 的 transcript 行仍是终态权威存档）。
+ * 独立文件而不是追加进活动流——活动流 5MB 截尾只能保留末尾 1MB，
+ * 每轮追加一份全量历史会加速触发截尾。
+ */
+export function writeDelegationHistory(
+  delegationId: string,
+  messages: SubagentHistoryMessage[],
+): void {
+  if (!messages.length) return;
+  try {
+    const file = historyPath(delegationId);
+    mkdirSync(dirname(file), { recursive: true });
+    // 先写临时文件再 rename：回读永远不会看到半份 JSON
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, JSON.stringify(messages));
+    renameSync(tmp, file);
+  } catch (err) {
+    logErr("activity-store: history write failed:", err);
+  }
 }
 
 /** 短 id 前缀在活动文件里的唯一匹配（同 sidecar findDelegation 语义）；
@@ -227,8 +308,11 @@ export function readDelegationActivity(delegationId: string):
         turns: number;
         toolCalls: number;
         report?: string;
+        ownerSession?: { sessionId: string; threadId: string; cwd: string };
       };
       items: SubagentActivityItem[];
+      /** 最后一次 transcript 存档（resume 初始上下文；无则不可续聊） */
+      history?: SubagentHistoryMessage[];
     }
   | undefined {
   let raw: string;
@@ -239,6 +323,7 @@ export function readDelegationActivity(delegationId: string):
   }
   let meta: Extract<ActivityFileLine, { t: "meta" }> | undefined;
   const items: SubagentActivityItem[] = [];
+  let history: SubagentHistoryMessage[] | undefined;
   for (const line of raw.split("\n")) {
     const t = line.trim();
     if (!t) continue;
@@ -251,8 +336,22 @@ export function readDelegationActivity(delegationId: string):
     }
     if (row.t === "meta") meta = row;
     else if (row.t === "item") items.push(row.item);
+    else if (row.t === "transcript" && Array.isArray(row.messages)) {
+      history = normalizeSubagentHistory(row.messages);
+    }
   }
   if (!meta) return undefined;
+  // 终态 transcript 行缺失（运行被中断）→ 取最后一轮的中途快照
+  if (!history?.length) {
+    try {
+      const parsed = JSON.parse(readFileSync(historyPath(delegationId), "utf8")) as unknown;
+      if (Array.isArray(parsed) && parsed.length) {
+        history = normalizeSubagentHistory(parsed as SubagentHistoryMessage[]);
+      }
+    } catch {
+      // 没有中途存档（中断太早/旧版本）：保持不可续聊
+    }
+  }
 
   let status: SubagentRunStatus = "interrupted";
   let completedAt: number | undefined;
@@ -260,14 +359,17 @@ export function readDelegationActivity(delegationId: string):
   let toolCalls = 0;
   let report: string | undefined;
   for (const it of items) {
+    if (!it || typeof it !== "object") continue;
     if (it.kind === "turn") turns = Math.max(turns, it.n);
     else if (it.kind === "tool" && it.op === "start") toolCalls += 1;
     else if (it.kind === "status") {
-      status = it.status;
-      completedAt = it.at;
+      // 文件里的 running = 当时正在跑、进程随后没了（resume 开始标记或
+      // 首次启动未结算）→ 回读判 interrupted；旧报告不能当成当前结果。
+      status = it.status === "running" ? "interrupted" : it.status;
+      completedAt = it.status === "running" ? undefined : it.at;
       turns = it.turns;
       toolCalls = it.toolCalls;
-      report = it.report;
+      report = it.status === "running" ? undefined : it.report;
     }
   }
   return {
@@ -282,8 +384,10 @@ export function readDelegationActivity(delegationId: string):
       turns,
       toolCalls,
       report,
+      ...(meta.ownerSession ? { ownerSession: meta.ownerSession } : {}),
     },
     items,
+    ...(history?.length ? { history } : {}),
   };
 }
 
@@ -301,6 +405,15 @@ export function pruneActivityFiles(isRunning: (delegationId: string) => boolean)
   }
   const entries: { id: string; full: string; mtime: number }[] = [];
   for (const name of names) {
+    // 写到一半被杀留下的临时历史文件：没有 rename 成功就不是权威数据
+    if (name.endsWith(`${HISTORY_SUFFIX}.tmp`)) {
+      try {
+        unlinkSync(join(dir, name));
+      } catch {
+        // 下轮再清
+      }
+      continue;
+    }
     if (!name.endsWith(".jsonl")) continue;
     const full = join(dir, name);
     let mtime = 0;
@@ -320,6 +433,11 @@ export function pruneActivityFiles(isRunning: (delegationId: string) => boolean)
     if (isRunning(e.id)) continue;
     try {
       unlinkSync(e.full);
+      try {
+        unlinkSync(historyPath(e.id));
+      } catch {
+        // 没有中途快照是常态
+      }
       removed += 1;
     } catch {
       // 删不掉就跳过（下轮再试）

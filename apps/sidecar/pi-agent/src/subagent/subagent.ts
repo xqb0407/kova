@@ -20,6 +20,7 @@ export {
   SUBAGENT_WAIT_TOOL_NAME,
   SUBAGENT_LIST_TOOL_NAME,
   SUBAGENT_STOP_TOOL_NAME,
+  SUBAGENT_MESSAGE_TOOL_NAME,
   MAX_SUBAGENT_REPORT_CHARS,
   MAX_SUBAGENT_CONCURRENCY,
   MAX_ACTIVITY_ITEMS,
@@ -28,6 +29,7 @@ export {
   pushActivity,
   summarizeToolArgs,
   getDelegationSnapshot,
+  findDelegationRecord,
   // 报告与收敛原语
   boundedReport,
   parseModelKey,
@@ -40,7 +42,7 @@ export {
 
 export { composeSubagentSystemPrompt } from "./run";
 
-export { buildSubagentTools } from "./tools";
+export { buildSubagentTools, resumeDelegation } from "./tools";
 
 /** 定义名归一（身份匹配用，事实源在 subagent-definitions） */
 export { normalizeSubagentName } from "./subagent-definitions";

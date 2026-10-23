@@ -5,12 +5,14 @@ import path from "node:path";
 import type { DelegationRecord, SubagentActivityItem } from "../../src/types";
 import {
   appendDelegationActivity,
+  appendDelegationTranscript,
   findActivityFileId,
   flushDelegationActivity,
   openDelegationActivity,
   pruneActivityFiles,
   readDelegationActivity,
   resetActivityStoreForTest,
+  writeDelegationHistory,
 } from "../../src/subagent/activity-store";
 import { initStorage, subagentPath, subagentsDirPath } from "../../src/storage/storage";
 import { resetStorageForTest } from "../../src/storage/hostdb";
@@ -140,6 +142,79 @@ describe("activity-store 写盘与回读", () => {
     const orphan = rec("ffffffff-6666");
     appendFileSync(subagentPath(orphan.delegationId), "{torn only\n");
     expect(readDelegationActivity(orphan.delegationId)).toBeUndefined();
+  });
+
+  test("中途历史快照：无终态 transcript 行（被重启打断）也能回读", () => {
+    const r = rec("hhhhhhhh-7777");
+    openDelegationActivity(r);
+    appendDelegationActivity(r.delegationId, turn(1, 1100));
+    flushDelegationActivity(r.delegationId);
+    writeDelegationHistory(r.delegationId, [
+      { role: "user", content: "brief" },
+      { role: "assistant", content: "did stuff" },
+    ]);
+
+    const back = readDelegationActivity(r.delegationId)!;
+    expect(back.record.status).toBe("interrupted");
+    expect(back.history?.length).toBe(2);
+  });
+
+  test("resume 的 running 标记：回读判 interrupted，旧报告丢弃，后续活动继续落盘", () => {
+    const r = rec("kkkkkkkk-0000");
+    openDelegationActivity(r);
+    appendDelegationActivity(r.delegationId, statusItem("completed", "old report", 10));
+    // 模拟进程重启：writer 随旧进程消失，resume 重新 open
+    resetActivityStoreForTest();
+    openDelegationActivity(r);
+    appendDelegationActivity(r.delegationId, {
+      kind: "status",
+      status: "running",
+      turns: 1,
+      toolCalls: 2,
+      canResume: false,
+      at: 20,
+    });
+    appendDelegationActivity(r.delegationId, turn(2, 30));
+    flushDelegationActivity(r.delegationId);
+
+    const back = readDelegationActivity(r.delegationId)!;
+    expect(back.record.status).toBe("interrupted");
+    expect(back.record.completedAt).toBeUndefined();
+    expect(back.record.report).toBeUndefined();
+    // running 不是终态：writer 没被收摊，turn 2 落盘可见
+    expect(back.items.some((i) => i.kind === "turn" && i.n === 2)).toBe(true);
+  });
+
+  test("旧 transcript 行（toolResult 无 id）回读时归一为纯文本", () => {
+    const r = rec("jjjjjjjj-9999");
+    openDelegationActivity(r);
+    appendDelegationTranscript(r.delegationId, [
+      { role: "user", content: "brief" },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "answer" },
+          { type: "toolCall", id: "c1", name: "bash", arguments: {} },
+        ],
+      },
+      { role: "toolResult", content: [{ type: "text", text: "ok" }] },
+    ] as never);
+
+    const back = readDelegationActivity(r.delegationId)!;
+    expect(back.history?.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect((back.history?.[1] as { content: unknown }).content).toEqual([
+      { type: "text", text: "answer" },
+    ]);
+  });
+
+  test("终态 transcript 行优先于中途快照", () => {
+    const r = rec("iiiiiiii-8888");
+    openDelegationActivity(r);
+    writeDelegationHistory(r.delegationId, [{ role: "user", content: "partial" }]);
+    appendDelegationTranscript(r.delegationId, [{ role: "user", content: "final" }]);
+
+    const back = readDelegationActivity(r.delegationId)!;
+    expect((back.history?.[0] as { content: string }).content).toBe("final");
   });
 
   test("findActivityFileId：全量 id 与前缀唯一命中；歧义不猜", () => {

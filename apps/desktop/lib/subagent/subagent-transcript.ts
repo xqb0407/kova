@@ -23,6 +23,8 @@ export type SubagentTranscriptMessage = {
   turn?: number;
   /** 末条报告段标记 */
   report?: boolean;
+  /** 插入消息（SendMessage/对话页输入）：派活说明之后的 user 气泡 */
+  followUp?: boolean;
 };
 
 export function buildSubagentTranscript(
@@ -38,6 +40,13 @@ export function buildSubagentTranscript(
     if (block.kind === "turn") {
       current = { role: "assistant", at: block.at, blocks: [], turn: block.n };
       out.push(current);
+      continue;
+    }
+    // 插入消息 = user 气泡（对话的另一半）：关闭当前 assistant 段，
+    // 后续 delegate 输出开新段
+    if (block.kind === "message") {
+      current = null;
+      out.push({ role: "user", at: block.at, text: block.text, followUp: true });
       continue;
     }
     // 异常事件序（turn_start 丢失）：按首块时间补一个无轮号的隐式段

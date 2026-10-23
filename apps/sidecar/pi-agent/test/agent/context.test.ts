@@ -13,6 +13,7 @@ import {
   makeSummaryMessage,
   needsCompaction,
   projectRestoreContext,
+  repairDanglingToolCalls,
   runCompaction,
   sessionCacheMissStats,
   type SummarizeFn,
@@ -386,6 +387,52 @@ describe("projectRestoreContext", () => {
       .content[0].text;
     expect(text).toContain("CHECKPOINT SUMMARY");
     expect(messages[1]).toBe(rows[2].agent);
+  });
+});
+
+describe("repairDanglingToolCalls", () => {
+  const toolCallAssistant = (id: string): Message =>
+    ({
+      role: "assistant",
+      content: [
+        { type: "text", text: "waiting" },
+        { type: "toolCall", id, name: "TaskWait", arguments: {} },
+      ],
+      timestamp: 2,
+    }) as unknown as Message;
+  const toolResult = (id: string): Message =>
+    ({
+      role: "toolResult",
+      toolCallId: id,
+      toolName: "TaskWait",
+      content: [{ type: "text", text: "ok" }],
+      isError: false,
+      timestamp: 3,
+    }) as unknown as Message;
+
+  test("尾部无结果的 toolCall 补 interrupted 结果", () => {
+    const repaired = repairDanglingToolCalls([userMsg("go"), toolCallAssistant("call-1")]);
+    expect(repaired.map((m) => m.role)).toEqual(["user", "assistant", "toolResult"]);
+    const result = repaired[2] as Extract<Message, { role: "toolResult" }>;
+    expect(result.toolCallId).toBe("call-1");
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toContain("Interrupted");
+  });
+
+  test("已有配对的调用原样返回（同一数组，无额外拷贝）", () => {
+    const messages = [userMsg("go"), toolCallAssistant("call-1"), toolResult("call-1")];
+    expect(repairDanglingToolCalls(messages)).toBe(messages);
+  });
+
+  test("挂起交互的锚点跳过：审批卡还在等用户回答", () => {
+    const messages = [userMsg("go"), toolCallAssistant("call-1")];
+    expect(repairDanglingToolCalls(messages, new Set(["call-1"]))).toBe(messages);
+  });
+
+  test("中途缺结果：结果插在该 assistant 之后，保持 provider 合法序列", () => {
+    const repaired = repairDanglingToolCalls([toolCallAssistant("call-1"), userMsg("next")]);
+    expect(repaired.map((m) => m.role)).toEqual(["assistant", "toolResult", "user"]);
+    expect((repaired[1] as { toolCallId: string }).toolCallId).toBe("call-1");
   });
 });
 
