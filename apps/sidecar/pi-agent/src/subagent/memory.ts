@@ -12,7 +12,7 @@
  * 只有"写"另起一套——它要落自己的目录，且不做版本史/回收站
  * （子代理记忆是 agent 自产的中间产物，不是用户资产）。
  *
- * 并发：MAX_SUBAGENT_CONCURRENCY 为 8 且 Task 是 parallel 模式，
+ * 并发：子智能体并发上限可配置（默认 8）且 Task 是 parallel 模式，
  * 同一子代理的并发委派会竞争同一份文件。sidecar 是单进程，
  * 按 cwd+name 建 promise 队列串行 append 即可；overwrite 取最后写入
  * 胜出（与"最后写入者赢"的常规语义一致，不额外仲裁）。

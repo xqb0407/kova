@@ -48,6 +48,10 @@ import {
   setSandboxConfig,
 } from "../../permissions/sandbox-config";
 import { invalidateSandboxPlans } from "../../permissions/sandbox-plan";
+import {
+  getSubagentMaxConcurrency,
+  setSubagentMaxConcurrency,
+} from "../../subagent/settings";
 import { applyBrowserConfig, getBrowserConfig } from "../../tools/browser-config";
 import { applyMirrorConfig, getMirrorConfig } from "../../tools/mirror-config";
 import { applyImageGenConfig, getImageGenConfig } from "../../tools/imagegen-config";
@@ -246,6 +250,20 @@ export const handlers: Record<string, CommandHandler> = {
 
   get_auto_review: async (reqId) => {
     send({ id: reqId, type: "auto_review", settings: getAutoReviewConfig() });
+  },
+
+  set_subagent_settings: async (reqId, msg) => {
+    const settings = (msg.settings ?? {}) as { maxConcurrency?: unknown };
+    const maxConcurrency = await setSubagentMaxConcurrency(settings.maxConcurrency);
+    send({ id: reqId, type: "subagent_settings", settings: { maxConcurrency } });
+  },
+
+  get_subagent_settings: async (reqId) => {
+    send({
+      id: reqId,
+      type: "subagent_settings",
+      settings: { maxConcurrency: getSubagentMaxConcurrency() },
+    });
   },
 
   set_sandbox: async (reqId, msg) => {

@@ -4,6 +4,7 @@ import type { FC } from "react";
 import { ComputerControlSettings } from "./computer-control-settings";
 import { AutoReviewSettings } from "./auto-review-settings";
 import { SandboxSettingsPanel } from "./sandbox-settings";
+import { SubagentConcurrencySettings } from "./subagent-concurrency-settings";
 
 /**
  * 智能体配置页（设置 → 智能体 → 智能体配置）。
@@ -13,8 +14,9 @@ import { SandboxSettingsPanel } from "./sandbox-settings";
  * 拆成两页时，用户要拼两次才看得全"我到底放开了多少"；合成一页后"能碰什么"
  * 和"谁放行"在同一屏里对照。
  *
- * 两个区块仍各自成文件：computer-control-settings（浏览器/屏幕三条授权）、
- * auto-review-settings（审查模型与超时）。这里只出页面骨架与先后顺序。
+ * 各区块仍各自成文件：subagent-concurrency-settings（子智能体并发）、
+ * computer-control-settings（浏览器/屏幕三条授权）、auto-review-settings
+ * （审查模型与超时）、sandbox-settings（沙箱档位）。这里只出页面骨架与顺序。
  */
 export const AgentConfigSettings: FC = () => {
   return (
@@ -23,10 +25,11 @@ export const AgentConfigSettings: FC = () => {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">智能体配置</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            智能体能碰本机的哪些能力，以及它自动动手时由谁判风险。
+            智能体的能力授权、子智能体并发，以及它自动动手时由谁判风险。
           </p>
         </div>
 
+        <SubagentConcurrencySettings />
         <ComputerControlSettings />
         <AutoReviewSettings />
         <SandboxSettingsPanel />

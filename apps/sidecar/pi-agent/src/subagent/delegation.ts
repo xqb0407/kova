@@ -8,6 +8,7 @@
  * Task 工具组见 tools.ts，delegate 执行循环见 run.ts。
  */
 import { send } from "../protocol/stream";
+import { SUBAGENT_MAX_CONCURRENCY_DEFAULT } from "pi-protocol";
 import type {
   DelegationRecord,
   Running,
@@ -36,8 +37,10 @@ export const SUBAGENT_MESSAGE_TOOL_NAME = "SendMessage";
 
 /** 报告是唯一进入父代理上下文的内容，别让它变成委派本想避免的上下文问题 */
 export const MAX_SUBAGENT_REPORT_CHARS = 12_000;
-/** 单会话并发委派上限 */
-export const MAX_SUBAGENT_CONCURRENCY = 8;
+/** 默认单会话并发委派上限；运行期以设置页为准（见 subagent/settings.ts） */
+export const DEFAULT_SUBAGENT_CONCURRENCY = SUBAGENT_MAX_CONCURRENCY_DEFAULT;
+/** @deprecated 运行时上限改用 getSubagentMaxConcurrency()；保留别名兼容旧引用 */
+export const MAX_SUBAGENT_CONCURRENCY = DEFAULT_SUBAGENT_CONCURRENCY;
 /** 已完成委派记录的保留上限（最旧的先丢弃，running 永不丢弃） */
 const MAX_RETAINED_DELEGATIONS = 50;
 /** 活动缓冲上限：满时优先丢最旧的 thinking/text 增量（结构事件永不主动丢） */

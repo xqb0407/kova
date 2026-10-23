@@ -143,6 +143,8 @@
  *   { "type": "set_hooks", "id", "hooks": [...] }             → { id, type: "hooks_saved" }（全量覆盖，落 SQLite kv；PreToolUse/PermissionRequest 在工具调用/审批路径同步生效）
  *   { "type": "get_auto_review", "id" }                       → { id, type: "auto_review", settings }（AI 审查档的配置：审查模型覆盖与超时，见 permissions/auto-review.ts）
  *   { "type": "set_auto_review", "id", "settings" }           → { id, type: "auto_review", settings }（全量覆盖，落 SQLite kv；非法字段剔除，超时钳制 [5s, 120s]）
+ *   { "type": "get_subagent_settings", "id" }                 → { id, type: "subagent_settings", settings: { maxConcurrency } }（子智能体并发上限，见 subagent/settings.ts）
+ *   { "type": "set_subagent_settings", "id", "settings" }     → { id, type: "subagent_settings", settings }（全量覆盖，落 SQLite kv；钳制 [1, 16]）
  *   { "type": "list_memory_files", "id", "cwd"? }             → { id, type: "memory_files", scopes: { global, workspace } }
  *       两作用域记忆目录路径与文件清单（工作区未选时 workspace 为 null）；设置 → 记忆页渲染用
  *   { "type": "read_memory_file", "id", "scope", "cwd"?, "file" } → { id, type: "memory_file", file, content }

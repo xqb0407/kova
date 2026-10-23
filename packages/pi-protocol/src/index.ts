@@ -8,6 +8,7 @@ export * from "./queue";
 export * from "./stamp";
 export * from "./transcript";
 export * from "./notifications";
+export * from "./subagent-settings";
 export * from "./interactions";
 export * from "./errors";
 export * from "./payloads";
