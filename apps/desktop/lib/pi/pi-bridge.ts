@@ -1275,8 +1275,19 @@ export type PiResponse =
         turns: number;
         toolCalls: number;
         report?: string;
+        /** 终态且留有存档历史 = 可 resume 续聊（旧 sidecar 缺省 = 不可） */
+        canResume?: boolean;
+        /** resume 后的本轮运行起点（旧 sidecar 缺省 = 用 startedAt） */
+        activeSince?: number;
       };
       items: unknown[];
+    }
+  | {
+      type: "subagent_message_sent";
+      delegationId: string;
+      ok: boolean;
+      /** true = 委派已结束，本次消息触发了 resume 续聊 */
+      resumed: boolean;
     };
 
 /**

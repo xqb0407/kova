@@ -30,6 +30,8 @@ export type { SubagentActivityItem, SubagentRunStatus };
 /** 归并后的活动块：thinking/text 增量在 store 内就地合并（数组不随 token 增长） */
 export type SubagentBlock =
   | { kind: "turn"; n: number; at: number }
+  /** 已发送的插入消息（SendMessage / 对话页输入；渲染成 user 气泡） */
+  | { kind: "message"; text: string; at: number }
   | {
       kind: "thinking" | "text";
       id: string;
@@ -67,6 +69,10 @@ export type SubagentRunState = {
   hydrated: boolean;
   /** 快照查无此委派（重启/记录被清）：面板显示过期空态 */
   expired: boolean;
+  /** 终态且留有存档历史：面板输入行可 resume（running 时无关） */
+  canResume: boolean;
+  /** 本轮运行起点（resume 标记时间）；running 时缺省回落 startedAt */
+  activeSince?: number;
 };
 
 /** 本地活动块上限（sidecar 缓冲 400；实时流再高一个量级封顶，防长任务撑爆） */
@@ -137,6 +143,7 @@ function defaultState(delegationId: string): SubagentRunState {
     blocks: [],
     hydrated: false,
     expired: false,
+    canResume: false,
   };
 }
 
@@ -154,6 +161,8 @@ function updateRun(
 
 /** 把一条归一化活动条目并进 blocks（live 通知与快照回放共用同一 reducer） */
 function applyItemTo(draft: SubagentRunState, item: SubagentActivityItem): void {
+  // 有活动 = 记录真实存在：快照瞬时失败（sidecar 离线）后靠直播自愈
+  draft.expired = false;
   switch (item.kind) {
     case "turn": {
       draft.turns = Math.max(draft.turns, item.n);
@@ -236,9 +245,30 @@ function applyItemTo(draft: SubagentRunState, item: SubagentActivityItem): void 
       draft.status = item.status;
       draft.turns = item.turns;
       draft.toolCalls = item.toolCalls;
-      draft.completedAt = item.at;
-      if (item.report) draft.report = item.report;
+      if (item.status === "running") {
+        // resume 开始标记：本轮计时从此刻起，上一轮的终态报告必须清掉，
+        // 否则中断后 buildSubagentTranscript 会把旧报告当成这一轮的结果。
+        draft.completedAt = undefined;
+        draft.activeSince = item.at;
+        draft.canResume = false;
+        draft.report = undefined;
+      } else {
+        draft.completedAt = item.at;
+        draft.activeSince = undefined;
+        // 旧 sidecar 没有这个字段：不覆盖快照记录给出的 canResume（快照是
+        // 权威值）；缺失时保持原值，避免把有历史的老记录误标成不可续聊。
+        if (item.canResume !== undefined) draft.canResume = item.canResume;
+        // 终态报告以本条为准（失败/中止轮没有报告，不能留上一轮的）
+        draft.report = item.report;
+      }
       artifactVersion += 1;
+      break;
+    }
+    case "message": {
+      // 本地发送的乐观插入由 sendSubagentMessage 的 pending 集合去重：
+      // 广播先到则跳过（乐观插入已在），本地后发则插入。
+      if (isPendingSentMessage(draft.delegationId, item.text)) break;
+      draft.blocks.push({ kind: "message", text: item.text, at: item.at });
       break;
     }
   }
@@ -338,6 +368,8 @@ export async function hydrateSubagentSnapshot(idOrPrefix: string): Promise<void>
           report: cur?.report ?? alias.report,
           hydrated: false, // 快照载荷随即写入正式条目
           expired: false,
+          canResume: cur?.canResume ?? alias.canResume,
+          activeSince: cur?.activeSince ?? alias.activeSince,
         });
       }
     }
@@ -349,7 +381,12 @@ export async function hydrateSubagentSnapshot(idOrPrefix: string): Promise<void>
       draft.completedAt = res.record.completedAt;
       draft.turns = res.record.turns;
       draft.toolCalls = res.record.toolCalls;
-      draft.report = res.record.report ?? draft.report;
+      // 快照记录是权威：报告缺失（中断/失败）时必须清掉内存里的旧报告
+      draft.report = res.record.report;
+      draft.canResume =
+        res.record.status !== "running" && res.record.canResume === true;
+      draft.activeSince =
+        res.record.status === "running" ? res.record.activeSince : undefined;
       if (draft.blocks.length === 0) {
         for (const item of res.items as SubagentActivityItem[]) {
           applyItemTo(draft, item);
@@ -403,14 +440,104 @@ export function openSubagentTab(idOrPrefix: string, title?: string): void {
   window.dispatchEvent(new Event("agent-panel:open"));
 }
 
+/**
+ * 对话页给委派发消息：running=插话（下个模型边界消费）、finished=resume 续聊。
+ * 发送前先乐观插 message 块（保证时间线顺序）；sidecar 的 activity 广播到达时
+ * 跳过同一条。去重窗口必须覆盖到广播晚于响应的情形：应答先到不能立刻清占位，
+ * 否则随后到达的广播会再插一条（重复气泡）。占位由广播消费或 TTL 清理。
+ */
+type PendingSent = { text: string };
+const PENDING_SENT_TTL_MS = 15_000;
+const pendingSent = new Map<string, PendingSent[]>();
+
+function addPendingSent(id: string, text: string): PendingSent {
+  const entry: PendingSent = { text };
+  const queue = pendingSent.get(id) ?? [];
+  queue.push(entry);
+  pendingSent.set(id, queue);
+  const timer = setTimeout(() => removePendingSent(id, entry), PENDING_SENT_TTL_MS);
+  (timer as { unref?: () => void }).unref?.();
+  return entry;
+}
+
+function removePendingSent(id: string, entry: PendingSent): void {
+  const queue = pendingSent.get(id);
+  if (!queue) return;
+  const index = queue.indexOf(entry);
+  if (index >= 0) queue.splice(index, 1);
+  if (queue.length === 0) pendingSent.delete(id);
+}
+
+export async function sendSubagentMessage(
+  idOrPrefix: string,
+  text: string,
+): Promise<{ ok: boolean; resumed: boolean }> {
+  const id = resolveDelegationId(idOrPrefix) ?? idOrPrefix;
+  const body = text.trim();
+  if (!body) return { ok: false, resumed: false };
+  // 气泡在发请求前就插入：广播先到时不能被"跳过"到响应之后才上屏，
+  // 否则它会被排进子智能体已经开始的输出后面（时间线倒序）。
+  const at = Date.now();
+  updateRun(id, (draft) => {
+    draft.blocks.push({ kind: "message", text: body, at });
+  });
+  const entry = addPendingSent(id, body);
+  try {
+    const res = await piRequest<
+      Extract<PiResponse, { type: "subagent_message_sent" }>
+    >({ type: "send_subagent_message", delegationId: id, text: body });
+    const target = res.delegationId || id;
+    if (res.resumed) {
+      updateRun(target, (draft) => {
+        draft.status = "running";
+        // 上一轮的终态不能带进新一轮：header 计时/输入行都按 running 走
+        draft.completedAt = undefined;
+        draft.canResume = false;
+        draft.activeSince = at;
+        draft.report = undefined;
+      });
+    }
+    return { ok: res.ok, resumed: res.resumed };
+  } catch (err) {
+    // 请求失败：撤回乐观气泡与占位，错误交给输入行展示
+    removePendingSent(id, entry);
+    updateRun(id, (draft) => {
+      for (let i = draft.blocks.length - 1; i >= 0; i--) {
+        const block = draft.blocks[i]!;
+        if (block.kind === "message" && block.text === body && block.at === at) {
+          draft.blocks.splice(i, 1);
+          break;
+        }
+      }
+    });
+    throw err;
+  }
+}
+
+/**
+ * 广播到的 message 条目是否是本地刚发的（乐观期去重）。
+ * 队列语义：命中即消费一条——同文本连发两次时两条广播各认领各的占位。
+ */
+export function isPendingSentMessage(delegationId: string, text: string): boolean {
+  const queue = pendingSent.get(delegationId);
+  if (!queue?.length) return false;
+  const index = queue.findIndex((entry) => entry.text === text);
+  if (index < 0) return false;
+  queue.splice(index, 1);
+  if (queue.length === 0) pendingSent.delete(delegationId);
+  return true;
+}
+
 /** 运行秒数（running 取当下，结算取 completedAt）；无 startedAt 返回 0 */
 export function subagentElapsedSeconds(
   run: SubagentRunState | undefined,
   now: number = Date.now(),
 ): number {
   if (!run?.startedAt) return 0;
+  // resume 轮从本轮标记起算；终态仍用原始 startedAt 算总时长
+  const start = run.status === "running" ? (run.activeSince ?? run.startedAt) : run.startedAt;
   const end = run.status === "running" ? now : (run.completedAt ?? now);
-  return Math.max(0, Math.round((end - run.startedAt) / 1000));
+  return Math.max(0, Math.round((end - start) / 1000));
 }
 
 function subscribeRuns(cb: () => void): () => void {

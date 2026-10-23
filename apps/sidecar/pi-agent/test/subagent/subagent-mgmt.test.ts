@@ -214,6 +214,7 @@ describe("挂载与审批门", () => {
       "TaskWait",
       "TaskList",
       "TaskStop",
+      "SendMessage",
       SUBAGENT_MGMT_TOOL_NAMES.list,
       SUBAGENT_MGMT_TOOL_NAMES.save,
       SUBAGENT_MGMT_TOOL_NAMES.delete,

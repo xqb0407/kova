@@ -69,6 +69,14 @@ export const subagentActivityItemSchema = z.discriminatedUnion("kind", [
     turns: z.number(),
     toolCalls: z.number(),
     report: z.string().optional(),
+    /** 终态且留有存档历史 = 面板可启用续聊（旧 sidecar 缺省 = 不可续聊） */
+    canResume: z.boolean().optional(),
+    at: z.number(),
+  }),
+  /** 已受理的插入消息（SendMessage / 对话页输入；子代理下个边界消费） */
+  z.looseObject({
+    kind: z.literal("message"),
+    text: z.string(),
     at: z.number(),
   }),
 ]);

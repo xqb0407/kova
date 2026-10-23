@@ -59,7 +59,7 @@ function makeRecord(
     turns: 0,
     toolCalls: 0,
     reportedToParent: false,
-    completion,
+      completion,
     resolveCompletion,
     abort: () => {},
     ...overrides,
@@ -375,6 +375,34 @@ describe("getDelegationSnapshot", () => {
     // 过短前缀（<4）不匹配
     expect(getDelegationSnapshot("1a2")).toBeUndefined();
     expect(getDelegationSnapshot("nope-nope")).toBeUndefined();
+  });
+
+  test("状态条目不回放进 items（快照 record 才是权威）", () => {
+    const record = makeRecord("snap-status-marker", { status: "interrupted" });
+    // 上一轮终态 + 本轮 resume 的 running 标记都在活动缓冲里
+    record.activity.push({
+      kind: "status",
+      status: "completed",
+      turns: 20,
+      toolCalls: 72,
+      report: "old report",
+      canResume: true,
+      at: 1,
+    });
+    record.activity.push({
+      kind: "status",
+      status: "running",
+      turns: 20,
+      toolCalls: 72,
+      canResume: false,
+      at: 2,
+    });
+    record.activity.push({ kind: "turn", n: 21, at: 3 });
+    registerDelegation(record);
+
+    const snap = getDelegationSnapshot("snap-status-marker")!;
+    expect(snap.record.status).toBe("interrupted");
+    expect(snap.items).toEqual([{ kind: "turn", n: 21, at: 3 }]);
   });
 
   test("items 是副本，改不动缓冲", () => {

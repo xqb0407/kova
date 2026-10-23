@@ -6,6 +6,7 @@
 import {
   Agent,
   type AgentEvent,
+  type AgentMessage,
   type AgentTool,
   type AfterToolCallContext,
   type BeforeToolCallContext,
@@ -27,11 +28,19 @@ import {
   providerRetryMaxRetries,
 } from "../model/provider-retry";
 import type { SubagentDefinition } from "./subagent-definitions";
-import { makeAutoContinueMessage, MAX_LENGTH_CONTINUES, needsLengthContinuation } from "../agent/context";
+import type { SubagentHistoryMessage } from "../types";
+import {
+  makeAutoContinueMessage,
+  MAX_LENGTH_CONTINUES,
+  needsLengthContinuation,
+  repairDanglingToolCalls,
+} from "../agent/context";
 import { createTraceRunRecorder, type TraceRunRecorder } from "../protocol/trace";
 import { messageUsageTokens } from "../agent/context";
 import type { SubagentActivityItem, SubagentRunResult, SubagentRunStatus } from "../types";
+import { normalizeSubagentHistory, toSubagentHistory } from "./history";
 import { boundedReport, summarizeToolArgs, toolFilePath } from "./delegation";
+import type { Message } from "@earendil-works/pi-ai";
 import { normalizeToolResultImages } from "../tools/image-normalize";
 import type { ProjectableContentBlock } from "../tools/image-parts";
 
@@ -69,7 +78,14 @@ export function composeSubagentSystemPrompt(options: {
 
 type SubagentRunOptions = {
   definition: SubagentDefinition;
-  task: string;
+  /** 初次启动的任务 brief；resume 轮省略——上下文由 initialMessages 承载，
+   *  执行走 agent.continue()（尾部已是真实 follow-up 用户消息）。 */
+  task?: string;
+  /** resume 轮的会话历史（上一轮 transcript 存档），作为初始上下文整体注入 */
+  initialMessages?: SubagentHistoryMessage[];
+  /** resume 轮的轮次/工具计数基数：对外报告 = 本实例计数 + 基数（跨轮累加） */
+  turnBase?: number;
+  toolCallBase?: number;
   model: Model<Api>;
   cwd: string;
   tools: AgentTool[];
@@ -98,6 +114,8 @@ type SubagentRunOptions = {
   signal?: AbortSignal;
   /** 归一化活动条目回调（进缓冲 + 广播；见 pushActivity） */
   onActivity?: (item: SubagentActivityItem) => void;
+  /** 每轮结束的历史快照回调（覆盖写中途存档；进程被打断后 resume 用） */
+  onHistory?: (messages: SubagentHistoryMessage[]) => void;
 };
 
 /** 长缓存开关（与 sessions.ts 主代理一致）：PI_CACHE_RETENTION=long 时启用，compat 守门自动降级 */
@@ -109,6 +127,7 @@ export class SubagentRun {
   private readonly agent: Agent;
   private readonly opts: SubagentRunOptions;
   private lastReportText = "";
+  /** 本实例的轮次/工具计数（resume 轮从 turnBase/toolCallBase 起算） */
   private turns = 0;
   private toolCalls = 0;
   /** 本次委派的 token 累计（四项相加，错误/中止轮不计），随结果回传父 run */
@@ -208,7 +227,15 @@ export class SubagentRun {
         }),
         model: this.opts.model,
         tools: this.opts.tools,
-        messages: [],
+        // 保留历史消息的全部顶层字段（toolResult 的 toolCallId/toolName、
+        // assistant 的 stopReason 等）：只留 role+content 会让 provider 拒绝。
+        // 旧存档先归一（剥掉无法配对的工具对），再补齐悬空调用，保证序列合法。
+        messages: repairDanglingToolCalls(
+          normalizeSubagentHistory(this.opts.initialMessages ?? []).map((m) => ({
+            ...m,
+            timestamp: m.timestamp ?? Date.now(),
+          })) as unknown as Message[],
+        ) as unknown as AgentMessage[],
       },
       // delegate 是干活的，不是扇出点：自己的工具串行执行，也没有 Task 工具可以继续嵌套
       toolExecution: "sequential",
@@ -216,16 +243,79 @@ export class SubagentRun {
     this.agent.subscribe((event) => this.handleEvent(event));
   }
 
+  /** 是否已结束（run() 返回后置位）：结束后 steer 不再受理 */
+  private settled = false;
+
+  /**
+   * 给运行中的 delegate 插入一条消息（SendMessage / 对话页输入）。
+   * 走 pi-core 的 steering 队列：不中止、不排队重跑，下个模型调用边界被消费。
+   * 返回 false = 委派已结束（调用方应转 resume 路径或明确报错）。
+   */
+  steer(text: string): boolean {
+    const body = text.trim();
+    if (!body || this.settled) return false;
+    const msg: AgentMessage = {
+      role: "user",
+      content: `[user follow-up] ${body}`,
+      timestamp: Date.now(),
+    };
+    try {
+      this.agent.steer(msg);
+      return true;
+    } catch (err) {
+      logErr(`subagent ${this.opts.definition.name}: steer failed:`, err);
+      return false;
+    }
+  }
+
+  /** 结束时的会话历史存档（resume 的初始上下文）；条数 + 字节双上限防膨胀 */
+  historySnapshot(): SubagentHistoryMessage[] {
+    const messages = (this.agent.state.messages ?? []) as AgentMessage[];
+    const MAX_HISTORY = 100;
+    // 每轮都会覆盖写一份中途快照；单个工具结果可能很大，只按条数限会让
+    // 每轮同步写数 MB。从最新往回取到字节预算为止（最新一条超预算也保留）。
+    const MAX_HISTORY_BYTES = 2_000_000;
+    const kept: AgentMessage[] = [];
+    let bytes = 0;
+    for (let i = messages.length - 1; i >= 0 && kept.length < MAX_HISTORY; i--) {
+      const message = messages[i]!;
+      let size = 0;
+      try {
+        size = Buffer.byteLength(JSON.stringify(message) ?? "", "utf8");
+      } catch {
+        size = 0; // 非 JSON 安全的消息后面序列化也会失败，按 0 计
+      }
+      if (kept.length > 0 && bytes + size > MAX_HISTORY_BYTES) break;
+      kept.unshift(message);
+      bytes += size;
+    }
+    // 截断点可能落在轮中：开头的 toolResult 没有对应的 assistant toolCall，
+    // 直接喂给 provider 是非法序列（"tool message without preceding call"）。
+    while (kept.length > 0 && kept[0]?.role === "toolResult") {
+      kept.shift();
+    }
+    return toSubagentHistory(kept);
+  }
+
   async run(): Promise<SubagentRunResult> {
     const signal = this.opts.signal;
     if (signal?.aborted) {
+      this.settled = true;
       return this.result("aborted", "The delegated task was aborted before it started.");
     }
     const onAbort = () => this.agent.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
     let caught: unknown;
     try {
-      await this.agent.prompt(this.opts.task);
+      // 初次启动：task 是 brief；resume 轮：不 prompt——initialMessages 尾部已是
+      // 真实用户消息（follow-up），用 continue() 从当前 transcript 续跑（pi-core
+      // 原生契约：最后一条须为 user/toolResult）。prompt("") 会注入一条空 user
+      // 消息且顺序错位，绝不可用。
+      if (this.opts.task) {
+        await this.agent.prompt(this.opts.task);
+      } else {
+        await this.agent.continue();
+      }
       await this.agent.waitForIdle();
     } catch (err) {
       caught = err;
@@ -234,15 +324,21 @@ export class SubagentRun {
     }
 
     if (signal?.aborted) {
+      this.settled = true;
       return this.result("aborted", "The delegated task was aborted.");
     }
-    if (this.streamError) return this.result("failed", "", this.streamError);
+    if (this.streamError) {
+      this.settled = true;
+      return this.result("failed", "", this.streamError);
+    }
     if (caught) {
+      this.settled = true;
       return this.result("failed", "", {
         code: "SUBAGENT_ERROR",
         message: caught instanceof Error ? caught.message : String(caught),
       });
     }
+    this.settled = true;
     if (this.cappedTurns) return this.result("truncated", this.lastReportText);
     if (!this.lastReportText.trim()) {
       return this.result("failed", "", {
@@ -279,8 +375,9 @@ export class SubagentRun {
       modelId: this.opts.model.id,
       status,
       report: boundedReport(text),
-      turns: this.turns,
-      toolCalls: this.toolCalls,
+      // 对外报告带 resume 基数：父记录的轮次/工具计数跨轮累加，不被本轮覆盖
+      turns: this.turns + (this.opts.turnBase ?? 0),
+      toolCalls: this.toolCalls + (this.opts.toolCallBase ?? 0),
       tokens: this.tokens,
       ...(error ? { error } : {}),
     };
@@ -315,7 +412,12 @@ export class SubagentRun {
     switch (event.type) {
       case "turn_start":
         this.turns += 1;
-        this.opts.onActivity?.({ kind: "turn", n: this.turns, at: Date.now() });
+        // 轮次号带 resume 基数：面板时间线的轮次跨轮单调递增
+        this.opts.onActivity?.({
+          kind: "turn",
+          n: this.turns + (this.opts.turnBase ?? 0),
+          at: Date.now(),
+        });
         break;
       case "message_update": {
         const onActivity = this.opts.onActivity;
@@ -374,6 +476,9 @@ export class SubagentRun {
         break;
       }
       case "turn_end": {
+        // 每轮收尾覆盖写中途历史：sidecar 被重启时至少保住最后一个完整轮次
+        // （settle 时的 transcript 行是终态权威存档，二者不冲突）
+        this.opts.onHistory?.(this.historySnapshot());
         // 主代理同款：length 截断且零 toolCall 会被 vendor 循环当自然收尾，
         // 子代理任务同样会"到一半停下"。注入续跑消息（预算按一次委派计）。
         if (!needsLengthContinuation(event.message)) break;

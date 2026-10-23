@@ -12,6 +12,7 @@ const baseRun = (over: Partial<SubagentRunState> = {}): SubagentRunState => ({
   blocks: [],
   hydrated: true,
   expired: false,
+  canResume: false,
   ...over,
 });
 

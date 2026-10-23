@@ -137,7 +137,7 @@ const ToolGroupView: FC<{ tools: SubagentToolBlock[] }> = ({ tools }) => {
   );
 };
 
-/** 段内块渲染（turn 块已被 transcript 吸收为段边界，tool 块走分组单元） */
+/** 段内块渲染（turn/message 块已被 transcript 吸收为段边界/user 气泡，tool 块走分组单元） */
 const BlockView: FC<{ block: SubagentBlock }> = ({ block }) => {
   switch (block.kind) {
     case "thinking":
@@ -169,7 +169,9 @@ const blockKey = (b: SubagentBlock, i: number): string =>
     ? b.toolCallId
     : b.kind === "turn"
       ? `turn-${i}`
-      : `${b.kind}-${b.id}`;
+      : b.kind === "message"
+        ? `message-${b.at}`
+        : `${b.kind}-${b.id}`;
 
 /** 消息时间戳：HH:MM（本地时区，等宽数字对齐） */
 const clock = (ms: number | undefined): string | undefined => {
@@ -377,7 +379,8 @@ export const SubagentConversation: FC<{ run: SubagentRunState }> = ({
             <UserMessageView
               key={`u-${i}`}
               message={m}
-              description={run.description}
+              // 派活说明上标 agent 描述；后续追问是对话气泡，不再重复
+              description={m.followUp ? undefined : run.description}
             />
           ) : (
             <AssistantMessageView key={`a-${i}`} message={m} />

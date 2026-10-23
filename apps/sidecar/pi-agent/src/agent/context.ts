@@ -333,6 +333,58 @@ export function projectRestoreContext(
   ];
 }
 
+/**
+ * 崩溃恢复：补齐没有结果的工具调用。sidecar 在工具执行中被杀（开发热重启、
+ * 进程崩溃）时，转录停在 assistant(toolCall) 而没有对应 toolResult；下一次
+ * prompt 会把这条残缺序列发给 provider，OpenAI 兼容端点通常直接拒绝
+ * （"tool_calls must be followed by tool messages"）。这里补一条明确的
+ * interrupted 结果——不伪造成功，模型能知道该调用没有落地。
+ *
+ * `skipToolCallIds` 传挂起交互的锚点：那些卡还在等用户回答，补结果会让它们
+ * 永远无法结算（见 sessions/pending-interactions）。
+ */
+export function repairDanglingToolCalls(
+  messages: readonly Message[],
+  skipToolCallIds: ReadonlySet<string> = new Set(),
+): Message[] {
+  const answered = new Set<string>();
+  for (const message of messages) {
+    if (message.role === "toolResult") answered.add(message.toolCallId);
+  }
+  const out: Message[] = [];
+  let repaired = false;
+  for (const message of messages) {
+    out.push(message);
+    if (message.role !== "assistant") continue;
+    const calls = (
+      Array.isArray(message.content)
+        ? message.content.filter(
+            (part) => (part as { type?: string }).type === "toolCall",
+          )
+        : []
+    ) as { type: "toolCall"; id: string; name: string }[];
+    for (const call of calls) {
+      if (answered.has(call.id) || skipToolCallIds.has(call.id)) continue;
+      repaired = true;
+      answered.add(call.id);
+      out.push({
+        role: "toolResult",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: [
+          {
+            type: "text",
+            text: "Interrupted: the app restarted before this tool returned. Its outcome is unknown; do not assume it succeeded.",
+          },
+        ],
+        isError: true,
+        timestamp: Date.now(),
+      });
+    }
+  }
+  return repaired ? out : (messages as Message[]);
+}
+
 function summaryTextOf(message: AgentMessage): string {
   const content = (message as { content?: unknown }).content as {
     type: string;
