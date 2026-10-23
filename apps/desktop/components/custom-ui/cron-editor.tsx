@@ -53,11 +53,13 @@ import {
 import { EASE_OUT } from "@/lib/motion/ease";
 import { cn } from "@/lib/utils";
 
-/** chip 网格列数：分钟 60 颗按 12 列排 5 行，星期/月份一行一个词 */
+/** chip 网格列数：分钟 60 颗窄窗 6 列排 10 行、sm 起 12 列排 5 行，星期/月份一行一个词。
+ *  列数带断点是因为弹窗窄于 ~430px 时 12 列的 chip 会被压到 20px 以下（数字放不下），
+ *  而头部 Segmented 本身有 ~250px 最小宽度，窄窗必然存在 */
 const FIELD_UI: Record<CronFieldKey, { pad: boolean; cols: string }> = {
-  minute: { pad: true, cols: "grid-cols-12" },
-  hour: { pad: true, cols: "grid-cols-12" },
-  dom: { pad: false, cols: "grid-cols-8" },
+  minute: { pad: true, cols: "grid-cols-6 sm:grid-cols-12" },
+  hour: { pad: true, cols: "grid-cols-6 sm:grid-cols-12" },
+  dom: { pad: false, cols: "grid-cols-4 sm:grid-cols-8" },
   month: { pad: false, cols: "grid-cols-6" },
   dow: { pad: false, cols: "grid-cols-7" },
 };
@@ -108,10 +110,14 @@ const ROLL_VARIANTS: Variants = {
   },
 };
 
-const RollText: FC<{ text: string; className?: string }> = ({ text, className }) => {
+const RollText: FC<{ text: string; className?: string; title?: string }> = ({
+  text,
+  className,
+  title,
+}) => {
   const reduce = useReducedMotion();
   return (
-    <span className={cn("relative inline-flex min-w-0 overflow-hidden", className)}>
+    <span title={title} className={cn("relative inline-flex min-w-0 overflow-hidden", className)}>
       <AnimatePresence mode="popLayout" initial={false}>
         <motion.span
           key={text}
@@ -188,7 +194,9 @@ const FieldPanel: FC<{
 
   return (
     <div role="group" aria-label={`${spec.label}字段编辑`} className="flex flex-col gap-2.5">
-      <div className="flex items-center justify-between gap-2">
+      {/* 头部允许换行：Segmented 不可收缩（选项 whitespace-nowrap），窄窗里
+          「标签 + 五段选择器」一行放不下，硬排会把整张表单撑出横向滚动 */}
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
         <span className="text-muted-foreground shrink-0 text-[11px]">
           「{spec.label}」怎么触发
         </span>
@@ -439,9 +447,11 @@ export function CronEditor({ value, onChange, className, id }: CronEditorProps) 
         })}
       </div>
 
-      {/* 人话摘要：与自动化卡片同一套 describeCron，认不出的写法回退原始表达式 */}
+      {/* 人话摘要：与自动化卡片同一套 describeCron，认不出的写法回退原始表达式。
+          长表达式（多选分钟后是 "Cron: 0,1,2,…"）单行放不下，title 悬浮看全文 */}
       <RollText
         text={summary}
+        title={summary}
         className={cn(
           "px-1 text-xs transition-colors",
           expr === null ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",

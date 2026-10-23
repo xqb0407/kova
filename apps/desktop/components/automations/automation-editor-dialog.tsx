@@ -664,7 +664,9 @@ const ScheduleForm: FC<{
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 py-5">
+      {/* overflow-x-hidden：表单组件各自负责自己的横向空间（cron 编辑器窄窗换列），
+          绝不让整张表单长出横向滚动条 */}
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden px-6 py-5">
         <div className="grid gap-1.5">
           <Label htmlFor="auto-name">任务名称（可选）</Label>
           <Input

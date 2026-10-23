@@ -1081,7 +1081,7 @@ export const Base: FC = () => {
           <main
             data-drag-region={isDesktop() ? "true" : undefined}
             className={cn(
-              "bg-muted/40 relative flex-1 overflow-hidden p-2",
+              "bg-muted/40 relative flex-1 overflow-hidden p-1",
               !compact && panelGone && "pr-0", !sidebarCollapsed && "pl-0"
             )}
           >

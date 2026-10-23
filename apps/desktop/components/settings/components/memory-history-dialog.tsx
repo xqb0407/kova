@@ -131,8 +131,11 @@ export const MemoryHistoryDialog: FC<{
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl">
-        <DialogHeader>
+      {/* 撑满外壳（技能/MCP 编辑弹窗同款）：版本对比看的是长文，固定 h-96 太局促，
+          列表与预览随视口高度伸展；预览走 aui-md-panel 紧凑排版（弹窗小容器里
+          消息流的 30px 级标题头重脚轻） */}
+      <DialogContent className="flex h-[calc(100dvh-6rem)] max-h-[860px] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <DialogHeader className="shrink-0 px-6 pt-5">
           <DialogTitle>版本历史 · {file}</DialogTitle>
           <DialogDescription>
             每次改动自动记一版（页面保存 / AI 写入 / 外部改动 / 恢复 / 删除前），保留最近 50 版；
@@ -140,18 +143,19 @@ export const MemoryHistoryDialog: FC<{
           </DialogDescription>
         </DialogHeader>
 
+        <div className="flex min-h-0 flex-1 flex-col px-6 pt-4 pb-5">
         {versions === null ? (
-          <div className="text-muted-foreground flex h-64 items-center justify-center text-sm">
+          <div className="text-muted-foreground flex flex-1 items-center justify-center text-sm">
             <Loader2Icon className="mr-2 size-4 animate-spin" />
             读取版本…
           </div>
         ) : versions.length === 0 ? (
-          <div className="text-muted-foreground flex h-64 flex-col items-center justify-center gap-1 text-sm">
+          <div className="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-1 text-sm">
             <span>还没有历史版本。</span>
             <span className="text-xs">这个文件被保存、被 AI 写入或外部改动后，会在这里留下记录。</span>
           </div>
         ) : (
-          <div className="flex h-96 gap-3">
+          <div className="flex min-h-0 flex-1 gap-3">
             {/* 版本列表 */}
             <div className="flex w-64 shrink-0 flex-col gap-1 overflow-y-auto pr-1">
               {versions.map((v) => (
@@ -161,7 +165,7 @@ export const MemoryHistoryDialog: FC<{
                   data-selected={v.id === selectedId}
                   onClick={() => setSelectedId(v.id)}
                   className={cn(
-                    "hover:bg-muted flex flex-col gap-0.5 rounded-lg px-2.5 py-2 text-start transition-colors",
+                    "hover:bg-muted flex flex-col gap-1 rounded-lg px-2.5 py-2.5 text-start transition-colors",
                     "data-selected:bg-muted",
                   )}
                 >
@@ -180,14 +184,14 @@ export const MemoryHistoryDialog: FC<{
 
             {/* 选中版预览 */}
             <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <div className="bg-muted/60 min-h-0 flex-1 overflow-y-auto rounded-lg border p-3">
+              <div className="bg-muted/60 min-h-0 flex-1 overflow-y-auto rounded-lg border p-4">
                 {content === null ? (
                   <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
                     <Loader2Icon className="mr-2 size-4 animate-spin" />
                     读取内容…
                   </div>
                 ) : content.trim() ? (
-                  <MarkdownText text={content} />
+                  <MarkdownText text={content} className="aui-md-panel" />
                 ) : (
                   <p className="text-muted-foreground text-sm">这一版是空内容</p>
                 )}
@@ -220,6 +224,7 @@ export const MemoryHistoryDialog: FC<{
             </div>
           </div>
         )}
+        </div>
       </DialogContent>
     </Dialog>
   );

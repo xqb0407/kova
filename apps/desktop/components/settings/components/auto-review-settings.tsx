@@ -105,7 +105,7 @@ export const AutoReviewSettings: FC = () => {
         高风险拦截。审查失败会退回审批卡由你确认，不会静默放行。
       </p>
 
-      <div className="bg-muted/50 divide-border/40 mt-1 flex flex-col divide-y rounded-2xl p-2">
+      <div className="bg-muted/50 divide-none mt-1 flex flex-col rounded-2xl p-2">
         <SettingRow
           label="审查模型"
           desc="缺省跟随当前会话模型。每次都多一次模型请求——选个便宜的模型更省。"
