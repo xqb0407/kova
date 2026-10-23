@@ -5,6 +5,7 @@
 import { app, BrowserWindow, dialog } from "electron";
 import { join } from "node:path";
 import type { CmdCtx } from "./ipc";
+import { restoreMaximizedWindowAt } from "./window-drag";
 
 export function setupBridgeCommands(register: (name: string, fn: (args: any, ctx: CmdCtx) => any) => void): void {
   const winOf = (ctx: CmdCtx) => {
@@ -27,6 +28,8 @@ export function setupBridgeCommands(register: (name: string, fn: (args: any, ctx
   });
   register("win_toggle_maximize", (_a, ctx) => {
     const w = winOf(ctx);
+    // 全屏没有标题栏/窗口按钮可点；双击拖拽区也不该改变全屏态
+    if (w.isFullScreen()) return null;
     if (w.isMaximized()) w.unmaximize();
     else w.maximize();
     return null;
@@ -46,6 +49,19 @@ export function setupBridgeCommands(register: (name: string, fn: (args: any, ctx
     return null;
   });
   register("win_is_maximized", (_a, ctx) => winOf(ctx).isMaximized());
+  /** 拖拽起点快照：位置与窗口态一次取全，避免多次 IPC 之间状态变化 */
+  register("win_get_drag_state", (_a, ctx) => {
+    const w = winOf(ctx);
+    const b = w.getBounds();
+    return {
+      x: b.x,
+      y: b.y,
+      width: b.width,
+      height: b.height,
+      maximized: w.isMaximized(),
+      fullscreen: w.isFullScreen(),
+    };
+  });
   register("win_set_focus", (_a, ctx) => {
     winOf(ctx).focus();
     return null;
@@ -57,10 +73,18 @@ export function setupBridgeCommands(register: (name: string, fn: (args: any, ctx
   });
   register("win_set_position", (a, ctx) => {
     const w = winOf(ctx);
+    // 全屏没有标题栏可拖，也不该把窗口挪出屏幕（标准应用同样不响应）
+    if (w.isFullScreen()) return null;
     const b = w.getBounds();
     w.setPosition(Math.round(Number(a.x ?? b.x)), Math.round(Number(a.y ?? b.y)));
     return null;
   });
+  /**
+   * 最大化窗口的拖拽还原（Windows 原生 drag-to-restore）：按光标位置先还原到
+   * 普通尺寸再一步落位。cursorX/cursorY 是当前光标屏幕坐标，grabOffsetY 是
+   * 按下时光标距窗口顶缘的距离。具体判定见 window-drag.ts（可单测）。
+   */
+  register("win_unmaximize_at", (a, ctx) => restoreMaximizedWindowAt(winOf(ctx), a));
   register("win_set_always_on_top", (a, ctx) => {
     winOf(ctx).setAlwaysOnTop(Boolean(a.flag));
     return null;
