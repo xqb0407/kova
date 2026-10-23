@@ -61,7 +61,8 @@ contextBridge.exposeInMainWorld("__KOVA_DESKTOP__", internals);
  *   - "deep" ：子树内（交互元素除外）可拖
  *   - "true" ：仅该元素自身可拖（含其 padding，不深入子树）
  * 拖拽本体走 IPC：取窗口当前位置 → 按屏幕坐标增量 setPosition（rAF 节流），
- * 双击拖拽区 = 切换最大化（macOS 顶栏惯例）。
+ * 双击拖拽区 = 切换最大化（macOS 顶栏惯例）。Windows 上最大化窗口按原生
+ * drag-to-restore：越过拖拽阈值后先还原再跟手；全屏（没有标题栏）不响应。
  */
 const INTERACTIVE_SELECTOR = [
   "button",
@@ -110,27 +111,92 @@ function invokeMain(cmd: string, args: Record<string, unknown> = {}): Promise<an
   return ipcRenderer.invoke("kova-invoke", { cmd, args });
 }
 
+/** Windows 原生拖拽阈值（SM_CXDRAG 默认 4px）：阈值内单击标题栏保持最大化 */
+const DRAG_RESTORE_THRESHOLD = 4;
+/** 只有 Windows 有"拖最大化标题栏先还原"的原生语义；macOS 缩放窗口可直接移动 */
+const IS_WIN32 = process.platform === "win32";
+
+type DragBounds = { x: number; y: number; width: number; height: number };
+
 async function beginWindowDrag(e: MouseEvent): Promise<void> {
-  const startScreenX = e.screenX;
-  const startScreenY = e.screenY;
+  let startScreenX = e.screenX;
+  let startScreenY = e.screenY;
+  let lastScreenX = e.screenX;
+  let lastScreenY = e.screenY;
   let startWinX = 0;
   let startWinY = 0;
-  let originReady = false; // 窗口起点未知前 onMove 不动作（防按未 await 的 0,0 跳窗）
+  let originReady = false; // 窗口起点未知前不做位移（防按未 await 的 0,0 跳窗）
   let pending: { x: number; y: number } | null = null;
   let raf = 0;
   let ended = false;
+  // 最大化窗口的还原态：非 null 表示还没跨过阈值，第一次有效拖动要先还原
+  let maximizedBounds: DragBounds | null = null;
+  let restoring = false;
   const flush = () => {
     raf = 0;
     if (pending) {
       const p = pending;
       pending = null;
-      void invokeMain("win_set_position", p);
+      void invokeMain("win_set_position", p).catch(() => {});
     }
   };
-  const onMove = (ev: MouseEvent) => {
-    if (!originReady) return;
-    pending = { x: startWinX + (ev.screenX - startScreenX), y: startWinY + (ev.screenY - startScreenY) };
+  const applyMove = (screenX: number, screenY: number) => {
+    if (!originReady || restoring) return;
+    if (maximizedBounds) {
+      if (
+        Math.abs(screenX - startScreenX) < DRAG_RESTORE_THRESHOLD &&
+        Math.abs(screenY - startScreenY) < DRAG_RESTORE_THRESHOLD
+      ) {
+        return;
+      }
+      const bounds = maximizedBounds;
+      maximizedBounds = null;
+      restoring = true;
+      pending = null;
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+      const cursorX = screenX;
+      const cursorY = screenY;
+      // 主进程原子完成「取普通尺寸 → unmaximize → 落位」，避免两次 IPC 之间
+      // 闪一帧还原窗；grabOffsetY 保持按下时光标在标题栏内的相对位置
+      void invokeMain("win_unmaximize_at", {
+        cursorX,
+        cursorY,
+        grabOffsetY: startScreenY - bounds.y,
+      })
+        .then((r) => {
+          if (ended) return;
+          restoring = false;
+          if (!r?.ok || !r.value) {
+            originReady = false; // 还原失败就结束本次拖拽，不再挪最大化窗口
+            return;
+          }
+          startWinX = Number(r.value.x ?? startWinX);
+          startWinY = Number(r.value.y ?? startWinY);
+          startScreenX = cursorX;
+          startScreenY = cursorY;
+          // 还原 IPC 往返期间的光标位移：按最后一次位置补上，松手前也能跟手
+          if (lastScreenX !== cursorX || lastScreenY !== cursorY) {
+            applyMove(lastScreenX, lastScreenY);
+          }
+        })
+        .catch(() => {
+          // IPC 通道异常（窗口销毁等）：别让 restoring 卡死后续拖拽
+          if (ended) return;
+          restoring = false;
+          originReady = false;
+        });
+      return;
+    }
+    pending = { x: startWinX + (screenX - startScreenX), y: startWinY + (screenY - startScreenY) };
     if (!raf) raf = requestAnimationFrame(flush);
+  };
+  const onMove = (ev: MouseEvent) => {
+    lastScreenX = ev.screenX;
+    lastScreenY = ev.screenY;
+    applyMove(ev.screenX, ev.screenY);
   };
   const onUp = () => {
     if (ended) return;
@@ -151,14 +217,38 @@ async function beginWindowDrag(e: MouseEvent): Promise<void> {
   window.addEventListener("mouseup", onUp, true);
   // Windows 上鼠标移出窗口/焦点被他窗抢占时 mouseup 不再投递：blur 兜底结束拖拽
   window.addEventListener("blur", onUp, true);
-  const pos = await invokeMain("win_get_position");
-  if (!pos?.ok || ended) {
+  let state: any;
+  try {
+    state = await invokeMain("win_get_drag_state");
+  } catch {
+    onUp(); // IPC 异常也要摘监听，否则后续 mousemove 会继续拖窗
+    return;
+  }
+  if (!state?.ok || !state.value || ended) {
     onUp();
     return;
   }
-  startWinX = Number(pos.value?.x ?? 0);
-  startWinY = Number(pos.value?.y ?? 0);
+  const v = state.value;
+  // 全屏没有标题栏可拖：标准应用同样不响应（也避免把全屏窗口挪出屏幕）
+  if (v.fullscreen) {
+    onUp();
+    return;
+  }
+  startWinX = Number(v.x ?? 0);
+  startWinY = Number(v.y ?? 0);
+  if (IS_WIN32 && v.maximized) {
+    maximizedBounds = {
+      x: Number(v.x ?? 0),
+      y: Number(v.y ?? 0),
+      width: Number(v.width ?? 0),
+      height: Number(v.height ?? 0),
+    };
+  }
   originReady = true;
+  // 起点查询期间光标已经移动：补一次，避免用户停住时要再动一下才跟手
+  if (lastScreenX !== startScreenX || lastScreenY !== startScreenY) {
+    applyMove(lastScreenX, lastScreenY);
+  }
 }
 
 function installDragRegionBridge(): void {
