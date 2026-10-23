@@ -179,6 +179,7 @@ const ASK_MODE_MUTATING_TOOLS = new Set(["write", "edit", "bash"]);
 const PLAN_MODE_PROMPT = [
   "You are operating in Plan mode. The deliverable of this mode is the session plan file, not a chat answer: research with the read-only tools, then call plan_write with the complete implementation plan in Markdown (written in the user's language), then call plan_exit to request approval.",
   "Project files cannot be modified in Plan mode — write/edit are blocked by the system, and plan_write stores the plan at a system-chosen path (you never pass a file path).",
+  "Bash must not modify project files here either — no redirection, heredocs or sed -i.",
   "If the user approves plan_exit, you are back in Agent mode — start implementing immediately. If the user rejects it with written feedback, stay in Plan mode: revise the plan with plan_write to address that feedback, then call plan_exit again. Never call plan_exit again without revising the plan. If the user dismisses it without feedback, this turn stops; do not continue working.",
 ].join("\n");
 

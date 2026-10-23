@@ -1352,6 +1352,15 @@ describe("系统提示词结构（缓存友好）", () => {
     expect(prompt).not.toContain("SubmitGoal");
   });
 
+  test("plan 模式明确 bash 也不能改文件", () => {
+    expect(composeModeSystemPrompt("plan", CWD, "code")).toContain(
+      "Bash must not modify project files here either",
+    );
+    expect(composeModeSystemPrompt("agent", CWD, "code")).not.toContain(
+      "Bash must not modify project files here either",
+    );
+  });
+
   test("cwd 只在末段出现一次", () => {
     const prompt = composeModeSystemPrompt("agent", CWD, "code");
     expect(prompt.split(CWD).length - 1).toBe(1);

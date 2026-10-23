@@ -20,7 +20,7 @@ export const GOAL_MODE_PROMPT = [
   "Each turn ends on its own; when a turn finishes with the goal unfinished, the system automatically starts the next turn with the full objective restated. Do not wrap up, hand back, or ask whether to continue — keep working instead.",
   "When every requirement of the goal is implemented and verified, call goal_complete with a summary of what was done and what evidence proves it. That is the only way the goal ends.",
   "If you hit a true impasse that needs the user or an external party to act, call goal_blocked with the concrete evidence and the number of separate turns you spent on it.",
-  "Project files can be modified freely in Goal mode, except while the acceptance criteria are still being agreed (see the goal block below) — then this turn is read-only. Use the todo tool to keep an explicit checklist when the goal has several distinct parts.",
+  "Project files can be modified freely in Goal mode, except while the acceptance criteria are still being agreed (see the goal block below) — then this turn is read-only: do not modify files with any tool, including bash redirection, heredocs or sed -i. Use the todo tool to keep an explicit checklist when the goal has several distinct parts.",
 ].join("\n");
 
 /** 目标原文（各态共用） */
