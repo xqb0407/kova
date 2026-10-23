@@ -13,7 +13,13 @@ import { join } from "node:path";
  * 所以 Git Bash 候选前置，PATH 扫描跳过 System32 stub。
  */
 export function resolveShellCommand(): { file: string; prefixArgs: string[] } {
-  return resolveShell(process.platform, process.env, existsSync);
+  // 只取用到的两项：ProcessEnv 是索引签名类型，直接传给弱类型参数
+  // （全可选属性）会触发 TS2559「no properties in common」。
+  return resolveShell(
+    process.platform,
+    { PATH: process.env.PATH, LOCALAPPDATA: process.env.LOCALAPPDATA },
+    existsSync,
+  );
 }
 
 export function resolveShell(
