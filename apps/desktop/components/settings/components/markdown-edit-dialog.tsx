@@ -14,7 +14,6 @@ import {
   Dialog,
   DialogContent,
   DialogFooter,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -61,17 +60,20 @@ const MarkdownEditDialog: FC<{
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
+      {/* 技能/MCP 编辑弹窗同款撑满外壳：高度跟随视口（记忆文件动辄几百行，
+          固定 h-80 的编辑区太局促），编辑/预览区吃掉剩余高度；预览页签走
+          aui-md-panel 紧凑排版（弹窗小容器里消息流的 30px 级标题头重脚轻） */}
+      <DialogContent className="flex h-[calc(100dvh-6rem)] max-h-[860px] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <div className="flex shrink-0 flex-col gap-1 px-6 pt-5">
           <DialogTitle>{title}</DialogTitle>
-        </DialogHeader>
-        {extraContent}
+          {extraContent}
+        </div>
         <Tabs
           value={tab}
           onValueChange={(v) => setTab(String(v))}
-          className="min-w-0"
+          className="min-h-0 min-w-0 flex-1 px-6 pt-4"
         >
-          <TabsList className="h-8 rounded-full p-[3px]">
+          <TabsList className="h-8 w-fit rounded-full p-[3px]">
             <TabsTrigger
               value="edit"
               className="rounded-full px-3 py-0 text-xs"
@@ -85,8 +87,8 @@ const MarkdownEditDialog: FC<{
               预览
             </TabsTrigger>
           </TabsList>
-          <TabsContent value="edit">
-            <div className="bg-muted/60 h-80 overflow-hidden rounded-lg border">
+          <TabsContent value="edit" className="min-h-0">
+            <div className="bg-muted/60 h-full overflow-hidden rounded-lg border">
               <MarkdownEditor
                 className="h-full"
                 value={text}
@@ -96,17 +98,17 @@ const MarkdownEditDialog: FC<{
               />
             </div>
           </TabsContent>
-          <TabsContent value="preview">
-            <div className="bg-muted/60 h-80 overflow-y-auto rounded-lg border p-3">
+          <TabsContent value="preview" className="min-h-0">
+            <div className="bg-muted/60 h-full overflow-y-auto rounded-lg border p-4">
               {text.trim() ? (
-                <MarkdownText text={text} />
+                <MarkdownText text={text} className="aui-md-panel" />
               ) : (
                 <p className="text-muted-foreground text-sm">暂无内容</p>
               )}
             </div>
           </TabsContent>
         </Tabs>
-        <DialogFooter className="items-center sm:justify-between">
+        <DialogFooter className="shrink-0 items-center gap-3 px-6 pt-4 pb-5 sm:justify-between">
           <div className="order-first flex items-center gap-3">
             {onRestore && (
               <Button

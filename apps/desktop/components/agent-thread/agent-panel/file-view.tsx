@@ -18,6 +18,9 @@ import {
   imageMimeFor,
   type FsFileContent,
 } from "@/lib/workspace/fs";
+import { blobUrlFor } from "@/lib/pi/image-blob-url";
+import type { PiImagePartData } from "@/lib/pi/pi-bridge";
+import { formatBytes } from "@/lib/panels/artifacts";
 import { CodeMirrorCode } from "@/components/code/cm-code";
 import { cn } from "@/lib/utils";
 import { ImageView, ZoomableImage } from "./image-viewer";
@@ -141,6 +144,33 @@ function useFilePart(focus: string | undefined): FilePart | null {
           ? "memory"
           : "read";
   return { kind: parsed, path, text: rest.join("\0") };
+}
+
+/**
+ * read 快照命中的配对成图：图片字节在转录里的事实源是 data part（name
+ * "image"，按 toolCallId 与工具行认亲，与消息流图廊同一机制）；工具文本
+ * 结果里只有宿主的占位行（"Image attached: …"）。selector 必须打包成
+ * 字符串返回——getSnapshot 里新建数组会破坏引用稳定（useFilePart 同款约定）。
+ */
+function useImagePartsPacked(focus: string | undefined): string | null {
+  return useAuiState((s) => {
+    if (!focus) return null;
+    let packed: string | null = null;
+    for (const m of s.thread.messages) {
+      for (const p of m.content) {
+        if (p.type !== "data" || p.name !== "image") continue;
+        const d = p.data as Partial<PiImagePartData> | undefined;
+        if (d?.toolCallId !== focus) continue;
+        const piece = [
+          typeof d.src === "string" ? d.src : "",
+          typeof d.mimeType === "string" ? d.mimeType : "",
+          typeof d.bytes === "number" ? String(d.bytes) : "0",
+        ].join("\u0000");
+        packed = packed === null ? piece : `${packed}\u0001${piece}`;
+      }
+    }
+    return packed;
+  });
 }
 
 const ModeToggle: FC<{
@@ -465,6 +495,20 @@ const DiskFileView: FC<{ cwd: string; path: string }> = ({ cwd, path }) => {
 /** 快照模式：数据来自消息里的工具 part（read/write/plan/memory 回放） */
 const SnapshotFileTab: FC<{ tab: PanelTab }> = ({ tab }) => {
   const part = useFilePart(tab.focus);
+  const imgPacked = useImagePartsPacked(tab.focus);
+  const images = useMemo(
+    () =>
+      imgPacked === null
+        ? []
+        : imgPacked
+            .split("\u0001")
+            .map((piece) => {
+              const [src = "", mimeType = "", bytes = "0"] = piece.split("\0");
+              return { src, mimeType, bytes: Number(bytes) || 0 };
+            })
+            .filter((im) => im.src.startsWith("data:")),
+    [imgPacked],
+  );
   if (!part)
     return (
       <TabEmpty
@@ -472,7 +516,82 @@ const SnapshotFileTab: FC<{ tab: PanelTab }> = ({ tab }) => {
         text="找不到对应的记录（会话已更新或已切换）"
       />
     );
+  // read 快照命中图片：正文文本只是宿主占位行，真图在配对的 data-image
+  // part。拿不到配对（早于投影链路的旧会话 / 图被 2MiB 闸门拦下）时：
+  // 闸门拦截的结果文本自带「图片未展示：…」说明行，继续走文本渲染最诚实；
+  // 其余退磁盘实时读（ImageView 自带加载/超限/失败态，绝对路径读不到就
+  // 落它的错误空态）。
+  if (part.kind === "read" && imageMimeFor(part.path)) {
+    if (images.length > 0) {
+      const first = images[0]!;
+      return (
+        <SnapshotImageView
+          key={tab.focus ?? part.path}
+          path={part.path}
+          src={first.src}
+          bytes={first.bytes}
+          extra={images.length > 1 ? `共 ${images.length} 张` : undefined}
+        />
+      );
+    }
+    if (part.text.includes("图片未展示"))
+      return <FileBody key={tab.focus ?? part.path} part={part} />;
+    const mime = imageMimeFor(part.path);
+    if (mime)
+      return (
+        <ImageView
+          key={part.path}
+          cwd={getWorkspace() ?? ""}
+          path={part.path}
+          mime={mime}
+        />
+      );
+  }
   return <FileBody key={tab.focus ?? part.path} part={part} />;
+};
+
+/** read 快照的成图渲染：data URL 先转 Blob URL（DOM 不驻留大段 base64，
+ *  同消息流 ImagePartCard 的性能口径），交给看图器缩放/平移 */
+const SnapshotImageView: FC<{
+  path: string;
+  src: string;
+  bytes: number;
+  extra?: string;
+}> = ({ path, src, bytes, extra }) => {
+  const blobSrc = useMemo(() => blobUrlFor(src), [src]);
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  if (!blobSrc)
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <FileHeader path={path} />
+        <TabEmpty icon={ImageOffIcon} text="图片数据缺失（该记录未带有效快照）" />
+      </div>
+    );
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <FileHeader path={path} />
+      <NoteBar
+        text={
+          [
+            path.slice(path.lastIndexOf(".") + 1).toUpperCase(),
+            formatBytes(bytes),
+            natural ? `${natural.w} × ${natural.h}` : null,
+            extra,
+            "读取时快照",
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        }
+      />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <ZoomableImage
+          src={blobSrc}
+          alt={path}
+          onNatural={(size) => setNatural({ w: size.w, h: size.h })}
+        />
+      </div>
+    </div>
+  );
 };
 
 /**

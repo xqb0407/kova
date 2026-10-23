@@ -44,7 +44,7 @@ export const SandboxSettingsPanel: FC = () => {
         和包缓存；读取除高危凭据目录外放行。
       </p>
 
-      <div className="bg-muted/50 divide-border/40 mt-1 flex flex-col divide-y rounded-2xl p-2">
+      <div className="bg-muted/50 divide-none mt-1 flex flex-col divide-y rounded-2xl p-2">
         <SettingRow
           label="档位"
           desc="关闭 = 不校验；工作区 = 写隔离（推荐）。"

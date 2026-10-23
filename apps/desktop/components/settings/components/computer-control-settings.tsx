@@ -87,7 +87,7 @@ export const ComputerControlSettings: FC = () => {
           <p className="text-muted-foreground text-sm">
             AI 通过内置浏览器面板操作网页，动作在面板中实时可见。
           </p>
-          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
+          <div className="bg-muted/50 divide-none flex flex-col rounded-2xl p-2">
             <SettingRow
               label="浏览器驱动"
               desc="允许 AI 驱动内置浏览器面板：导航、点击、输入与滚动。"
@@ -127,7 +127,7 @@ export const ComputerControlSettings: FC = () => {
           <p className="text-muted-foreground text-sm">
             内置浏览器面板的缓存与登录状态。清除数据后需要重新登录网站。
           </p>
-          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
+          <div className="bg-muted/50 divide-none flex flex-col rounded-2xl p-2">
             <SettingRow
               label="清除内置浏览器缓存"
               desc="清除 HTTP 缓存、Cache Storage 与 Service Worker，保留 Cookie 与站点登录状态。"
@@ -167,7 +167,7 @@ export const ComputerControlSettings: FC = () => {
           <p className="text-muted-foreground text-sm">
             这项会读取你正在看的真实桌面画面，是三者中唯一越过应用边界的。
           </p>
-          <div className="bg-muted/50 divide-border/40 flex flex-col divide-y rounded-2xl p-2">
+          <div className="bg-muted/50 divide-none flex flex-col rounded-2xl p-2">
             <SettingRow
               label="屏幕截图"
               desc="允许 AI 抓取整块屏幕。用于排查非浏览器窗口的问题、或页面在浏览器里看不到的视觉错误。关闭时 AI 完全看不到你的桌面。"

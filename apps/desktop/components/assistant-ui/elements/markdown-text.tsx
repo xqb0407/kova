@@ -313,7 +313,7 @@ const StreamdownPart = () => {
   );
 };
 
-const MarkdownTextImpl = ({ text }: { text?: string }) => {
+const MarkdownTextImpl = ({ text, className }: { text?: string; className?: string }) => {
   // frontmatter 只在整篇现成文本里拆（流式分支取的是消息 part 上下文，没有整篇 text）
   const fm = useMemo(() => (text ? splitFrontmatter(text) : null), [text]);
   return (
@@ -322,6 +322,7 @@ const MarkdownTextImpl = ({ text }: { text?: string }) => {
         "aui-markdown",
         "overflow-hidden wrap-break-word",
         "[&_li>p]:inline [&_li>p]:mb-0",
+        className,
       )}
     >
       {text === undefined ? (
