@@ -971,7 +971,7 @@ export const FileExplorer: FC<FileExplorerProps> = ({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void confirmDeleteEntry()}>
+            <AlertDialogAction variant="destructive" onClick={() => void confirmDeleteEntry()}>
               删除
             </AlertDialogAction>
           </AlertDialogFooter>

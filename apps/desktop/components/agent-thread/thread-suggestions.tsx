@@ -33,6 +33,7 @@ import { AnimatePresence, motion, useReducedMotion, type Variants } from "framer
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useFluidHover, useRegisterFluidHoverItem } from "@/hooks/use-fluid-hover";
+import { insertIntoComposer } from "@/components/agent-thread/cm-composer-input";
 import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
 import { FluidHoverRow } from "@/components/fluid-hover-row";
 import { EASE_OUT, SPRING_LAYOUT } from "@/lib/motion/ease";
@@ -518,9 +519,12 @@ export const ThreadSuggestions: FC = () => {
       ? (chipHover.itemRects[selectedIndex] ?? null)
       : null;
 
-  /** 填入输入框而不直发：用户可改完再发（与排队条回填/自动化页同款 setText） */
+  /** 填入输入框而不直发：优先**插入到光标处**（保留用户已写内容，与资料库
+   *  引用芯片同一条 CM 插入桥）；输入框未挂载时才退回整段 setText。
+   *  点击条目时焦点在按钮上，插入桥回退到最近使用的输入框并沿用其光标位置。 */
   const fillComposer = (prompt: string) => {
     if (aui.thread.getState().isRunning) return;
+    if (insertIntoComposer(prompt)) return;
     aui.composer.setText(prompt);
   };
 

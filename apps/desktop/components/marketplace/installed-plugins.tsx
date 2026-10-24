@@ -575,7 +575,6 @@ export const InstalledPlugins: FC = () => {
                 <>
                   <Button
                     variant="outline"
-                    size="sm"
                     disabled={busy}
                     onClick={() =>
                       void installPlugin(preview.marketplaceId, preview.name)
@@ -594,7 +593,6 @@ export const InstalledPlugins: FC = () => {
                   </Button>
                   <Button
                     variant="destructive"
-                    size="sm"
                     disabled={busy}
                     onClick={() => {
                       setConfirmUninstall([preview]);

@@ -305,7 +305,7 @@ const SkillEditorDialog: FC<{
             <LetterAvatar name={headerName} className="text-xl" />
           </div>
           <div className="min-w-0 flex-1">
-            <DialogTitle className="truncate text-xl font-semibold tracking-tight">
+            <DialogTitle className="truncate text-md font-semibold tracking-tight">
               {target.mode === "create"
                 ? "新建技能"
                 : target.mode === "import"

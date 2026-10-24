@@ -319,7 +319,7 @@ export const PluginPreviewDialog: FC<{
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <DialogTitle className="text-xl leading-6 font-semibold">
+                  <DialogTitle className="text-md leading-6 font-semibold">
                     {preview?.name ?? ""}
                   </DialogTitle>
                   {preview?.version && (

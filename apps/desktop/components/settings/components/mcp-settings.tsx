@@ -436,7 +436,7 @@ const McpEditorDialog: FC<{
             )}
           </div>
           <div className="min-w-0 flex-1">
-            <DialogTitle className="truncate text-xl font-semibold tracking-tight">
+            <DialogTitle className="truncate text-md font-semibold tracking-tight">
               {target.mode === "create"
                 ? layer === "workspace"
                   ? "新建工作区 MCP 服务器"
@@ -1028,11 +1028,8 @@ const McpJsonImportDialog: FC<{
       <DialogContent className="flex h-[calc(100dvh-6rem)] max-h-[860px] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
         {/* 页头：与编辑弹窗同款（图标 + 标题 + 导入位置） */}
         <div className="flex shrink-0 items-start gap-4 px-6 py-5 pr-14">
-          <div className="grid size-12 shrink-0 place-items-center rounded-2xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
-            <BracesIcon className="size-6" />
-          </div>
           <div className="min-w-0 flex-1">
-            <DialogTitle className="truncate text-xl font-semibold tracking-tight">
+            <DialogTitle className="truncate text-md font-semibold tracking-tight">
               JSON 导入 MCP 服务器
             </DialogTitle>
             <DialogDescription className="mt-1 truncate text-sm">
