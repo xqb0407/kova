@@ -34,6 +34,17 @@ const state: { viewport: ViewportMode } = { viewport: { mode: "fill" } };
 let guest: WebContents | null = null;
 let actionBusy = false;
 
+/**
+ * guest 主框架导航在途追踪：did-start-loading/stop 记在途，did-start-navigation
+ * （仅主框架）记目标。browser_navigate 靠它识别「渲染端 src 通道已在加载同一
+ * URL」：data-panelOpen 帧与工具调用同轮前后脚，渲染端 `<webview src>` 的加载
+ * 未提交时 pageState 只看得到 about:blank，此时再 loadURL 同一地址会把 src 那
+ * 次顶掉——被顶掉的加载以 GUEST_VIEW_MANAGER_CALL + ERR_ABORTED (-3) 拒绝且
+ * 无人接住，成为渲染进程 unhandledrejection（dev 浮层误报的另一个确定性来源；
+ * https 页面提交慢，此赛跑近乎必现）。跳过让 src 那次自己落地。
+ */
+let guestNav: { loading: boolean; url: string } = { loading: false, url: "" };
+
 /* ------------------------------ JS 原语（与 browser_scripts.rs 同源） ------------------------------ */
 
 const STATE_JS = `(() => {
@@ -510,9 +521,22 @@ export function browserConsoleClear(): null {
 function holdGuest(wc: WebContents): WebContents {
   if (guest !== wc) {
     guest = wc;
+    guestNav = { loading: false, url: "" };
+    // 导航在途追踪（见 guestNav 注释）：browser_navigate 判定「已在加载同
+    // 一 URL」的依据。换 guest（面板重挂载）时整体复位
+    wc.on("did-start-loading", () => {
+      guestNav.loading = true;
+    });
+    wc.on("did-stop-loading", () => {
+      guestNav.loading = false;
+    });
+    wc.on("did-start-navigation", (_e, url, _isInPlace, isMainFrame) => {
+      if (isMainFrame) guestNav.url = String(url ?? "");
+    });
     // 元素卸载/主文档刷新 → guest 随 DOM 销毁：清引用与日志，工具侧回到「面板没开」口径
     wc.once("destroyed", () => {
       if (guest === wc) guest = null;
+      guestNav = { loading: false, url: "" };
       clearConsole();
     });
     // 面板内 window.open 一律拒绝（旧原生视图同策；外链跳转走用户手势）
@@ -843,10 +867,16 @@ export async function runTool(name: string, p: any): Promise<any> {
           .then((v) => String(v?.url ?? ""))
           .catch(() => "");
         if (before !== url) {
-          try {
-            await wc.loadURL(url);
-          } catch (e: any) {
-            throw new Error(`browser_navigate: navigate failed: ${e?.message ?? e}`);
+          // 渲染端 src 通道已在加载同一 URL 时不要再 loadURL（见 guestNav 注释）：
+          // 跳过让 src 那次自己落地。若 src 加载失败，waitStable 报「did not
+          // load」走下面的重试——届时 loading 已复位，这里照常 loadURL
+          const srcInFlight = guestNav.loading && samePage(guestNav.url, url);
+          if (!srcInFlight) {
+            try {
+              await wc.loadURL(url);
+            } catch (e: any) {
+              throw new Error(`browser_navigate: navigate failed: ${e?.message ?? e}`);
+            }
           }
         }
         try {
