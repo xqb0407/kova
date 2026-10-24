@@ -27,7 +27,13 @@ import { BranchPicker } from "./branch-picker";
 import { CheckpointTail } from "./checkpoint-card";
 import { ShareSelectionToolbar } from "./share/share-selection-bar";
 import { ThreadPreviewRail } from "./thread-preview-rail";
-import { ThreadFind } from "./thread-find";
+import { ThreadFind, highlightMessageBySeq } from "./thread-find";
+import {
+  isIntentFresh,
+  peekThreadNavigateIntent,
+  takeThreadNavigateIntent,
+} from "@/lib/pi/pi-thread-navigate";
+import { piSessionIdForThread } from "@/lib/pi/pi-thread-adapter";
 import { ThreadViewport } from "./thread-viewport";
 import { TurnSlot, TurnTimingRecorder } from "./turn-summary";
 import { ViewportScrollManager } from "./viewport-scroll-manager";
@@ -128,6 +134,39 @@ const ComposerSlot: FC = () => {
   return <Composer />;
 };
 
+/**
+ * 全局搜索定位意图的消费端（pi-thread-navigate store → thread 层）：
+ * 目标消息不在已加载窗时（分页裁掉/历史仍在到达），消息数每变一次就重试
+ * 一次；立即命中则滚动+高亮并消费掉意图。订阅收在槽位组件里，不牵动
+ * 整棵 Thread。切换会话时 base 已写入意图，这里随新会话挂载接管。
+ */
+const NavigateIntentSlot: FC = () => {
+  const messageCount = useAuiState((s) => s.thread.messages.length);
+  const mainThreadId = useAuiState((s) => s.threads.mainThreadId);
+  useEffect(() => {
+    const intent = peekThreadNavigateIntent();
+    if (!intent) return;
+    // 会话键归一后比对：mainThreadId 对本会话新建的线程恒为 __LOCALID_ 草稿
+    // id（见 pi-thread-adapter 命名空间注释），不经 registry 换算会和意图里
+    // 的 pi sessionId 永远对不上
+    const threadKey = piSessionIdForThread(mainThreadId) ?? mainThreadId;
+    // 会话不匹配不消费：意图属于别的目标会话（用户已切走/还没切到）
+    if (intent.sessionKey !== threadKey) return;
+    // TTL 过期即废弃：目标消息永远到不了（压缩/截断/加载失败）时自愈，
+    // 不残留到用户下一次任意切换
+    if (!isIntentFresh(intent)) {
+      takeThreadNavigateIntent();
+      return;
+    }
+    if (highlightMessageBySeq(intent.seq, intent.query ?? "")) {
+      takeThreadNavigateIntent();
+      return;
+    }
+    // 目标消息不在当前投影里：等历史继续到达（消息数变化驱动下一次 effect）
+  }, [messageCount, mainThreadId]);
+  return null;
+};
+
 export const Thread = memo(function Thread() {
   const isEmpty = useAuiState(isNewChatView);
   // 空闲时预建热点语言的 Shiki 缓存，消掉流式中首个代码块的高亮停顿
@@ -154,6 +193,8 @@ export const Thread = memo(function Thread() {
     >
         {/* 注册 data-compaction 渲染器（自身不可见），横幅随对应 assistant 消息出现 */}
         <CompactionDataUI />
+        {/* 全局搜索内容命中的定位+高亮消费端（自身不可见） */}
+        <NavigateIntentSlot />
         {/* 注册 data-model-change 渲染器：快照重建的「已切换到 X」分隔线 */}
         <ModelChangeDataUI />
         {/* 「已停止」分隔线不走 data UI 注册：part 只做标记，由

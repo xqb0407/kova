@@ -379,6 +379,141 @@ export const usageDailyQuery = () => query<UsageDailyRow[]>("usage_daily_query")
 export const usageDailyCleanup = () =>
   query<{ removed: number }>("usage_daily_cleanup");
 
+/* ---------------------- search（会话内容搜索索引） ----------------------
+ * 正文真值在 JSONL 转录；session_blocks 是索引器派生的可弃投影，search_scan
+ * 是 mtime 水位（语义与 usage_scan 同族）。needle 由索引器转义/小写化。 */
+
+/** 单条消息命中（session_search 返回行） */
+export type SessionSearchMessageHit = {
+  sessionId: string;
+  seq: number;
+  role: string;
+  preview: string;
+  title: string;
+  cwd: string;
+  archived: boolean;
+  updatedAt: string;
+};
+
+/** 会话标题/首条消息命中（session_search 返回行） */
+export type SessionSearchSessionHit = {
+  sessionId: string;
+  title: string;
+  firstMessage: string;
+  cwd: string;
+  archived: boolean;
+  updatedAt: string;
+};
+
+export type SessionSearchResult = {
+  sessions: SessionSearchSessionHit[];
+  messages: SessionSearchMessageHit[];
+  artifacts: SessionSearchArtifactHit[];
+  truncated: boolean;
+};
+
+/** 产物/资料库文件命中（session_search.artifacts 行） */
+export type SessionSearchArtifactHit = {
+  /** 归属键：sessionId（任务产物）或 __library__（资料库根） */
+  sessionId: string;
+  /** 相对归属根的 POSIX 路径 */
+  rel: string;
+  name: string;
+  preview: string;
+  /** 归属会话标题（资料库行为 null） */
+  title: string | null;
+  cwd: string;
+  archived: boolean;
+};
+
+/** 全量替换一个会话的索引块行（调用方先整扫转录再一次性送入） */
+export const searchBlocksUpsert = (
+  sessionId: string,
+  rows: Array<{ seq: number; role: string; preview: string; searchText: string }>,
+) =>
+  query("search_blocks_upsert", {
+    sessionId,
+    rows: JSON.stringify(rows),
+  });
+
+/** 清除会话的索引块行与扫描水位（会话删除时调用） */
+export const searchBlocksDelete = (sessionId: string) =>
+  query("search_blocks_delete", { sessionId });
+
+export type SearchScanRow = { sessionId: string; mtime: number };
+
+export const searchBlocksScanList = () =>
+  query<SearchScanRow[]>("search_blocks_scan_list");
+
+export const searchBlocksScanSet = (sessionId: string, mtime: number) =>
+  query("search_blocks_scan_set", { sessionId, mtime });
+
+/**
+ * 搜索入口：needle 传**原始**查询词（原样小写化即可）。
+ * 宿主侧两条路径需要不同形态——LIKE 要转义后的（配合 SQL 的 ESCAPE '\'），
+ * instr 要原始的（转义后的 `100\%` 在正文里永远匹配不到）。转义在这里做，
+ * 调用方不必关心 SQL 细节。
+ */
+export const sessionSearch = (needle: string, limit = 200) =>
+  query<SessionSearchResult>("session_search", {
+    needle,
+    likeNeedle: LIKE_ESCAPE_RE.test(needle)
+      ? needle.replace(LIKE_ESCAPE_RE, (ch) => `\\${ch}`)
+      : needle,
+    limit,
+  });
+
+/** LIKE 通配/转义字符（test 有状态时用 lastIndex 复位，这里只用于 replace/判断） */
+const LIKE_ESCAPE_RE = /[\\%_]/g;
+
+/* -------------------- 产物/资料库文件索引（artifact_blocks） --------------------
+ * 与 session_blocks 同一套水位模式；ownerKey = sessionId（任务产物，根 =
+ * <task-workspace>/<sessionId>）或 __library__（资料库根）。文件级一行，
+ * search_text 是该文件全文抽取（截断）投影；文件删除由索引器对账处理。 */
+
+/** 资料库行的归属哨兵（不是合法 UUID，永不与会话撞键） */
+export const ARTIFACT_OWNER_LIBRARY = "__library__";
+
+export type ArtifactIndexRow = {
+  rel: string;
+  name: string;
+  preview: string;
+  searchText: string;
+};
+
+export type ArtifactScanRow = { ownerKey: string; mtime: number };
+
+/** 全量替换一个归属键下的文件索引行（调用方先整扫目录再一次性送入） */
+export const searchArtifactsUpsert = (ownerKey: string, rows: ArtifactIndexRow[]) =>
+  query("search_artifacts_upsert", { ownerKey, rows: JSON.stringify(rows) });
+
+/** 清除归属键下的文件索引行与水位（会话删除/资料库换根时调用） */
+export const searchArtifactsDelete = (ownerKey: string) =>
+  query("search_artifacts_delete", { ownerKey });
+
+export const searchArtifactsScanList = () =>
+  query<ArtifactScanRow[]>("search_artifacts_scan_list");
+
+export const searchArtifactsScanSet = (ownerKey: string, mtime: number) =>
+  query("search_artifacts_scan_set", { ownerKey, mtime });
+
+/** 默认页最近文件：artifact_blocks 按插入序（rowid）取头部，带会话上下文 */
+export const searchArtifactsRecent = (limit = 10) =>
+  query<SessionSearchArtifactHit[]>("search_artifacts_recent", { limit });
+
+/* ------------------------------ 搜索历史 ------------------------------ */
+
+export type SearchHistoryRow = { query: string; createdAt: string };
+
+export const searchHistoryList = (limit = 12) =>
+  query<SearchHistoryRow[]>("search_history_list", { limit });
+
+/** 同查询去重（保留最新），整表保 100 条 */
+export const searchHistoryAdd = (text: string) =>
+  query("search_history_add", { query: text, now: new Date().toISOString() });
+
+export const searchHistoryClear = () => query("search_history_clear");
+
 /** 主机工具调用（仅 host 模式可用；bash/read/write/edit/http 由 Rust 执行）；
  *  signal 中断时向宿主发 host_cancel（bash 会立即杀进程树）。
  *  owner = 发起线程 id：宿主用它给跨回合存活的后台任务（bash runInBackground）

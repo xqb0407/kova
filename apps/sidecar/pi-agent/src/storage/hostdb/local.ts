@@ -81,6 +81,41 @@ export function initLocalStorage(dbPath: string): void {
       first_ts INTEGER NOT NULL DEFAULT 0,
       last_ts INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS session_blocks (
+      session_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      preview TEXT NOT NULL DEFAULT '',
+      search_text TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (session_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS session_blocks_session
+      ON session_blocks (session_id, seq);
+    CREATE TABLE IF NOT EXISTS search_scan (
+      session_id TEXT PRIMARY KEY,
+      mtime REAL NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS artifact_blocks (
+      session_id TEXT NOT NULL,
+      rel TEXT NOT NULL,
+      name TEXT NOT NULL,
+      preview TEXT NOT NULL DEFAULT '',
+      search_text TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (session_id, rel)
+    );
+    CREATE INDEX IF NOT EXISTS artifact_blocks_session
+      ON artifact_blocks (session_id);
+    CREATE TABLE IF NOT EXISTS artifact_scan (
+      session_id TEXT PRIMARY KEY,
+      mtime REAL NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS search_history (
+      id TEXT PRIMARY KEY,
+      query TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS search_history_created
+      ON search_history (created_at DESC);
   `);
   // 旧库迁移：补 api / enabled 列（已存在则忽略）
   try {
@@ -924,6 +959,232 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
         ).run();
         return { removed };
       }
+      case "search_blocks_upsert": {
+        const sessionId = s("sessionId");
+        let items: Record<string, unknown>[] = [];
+        try {
+          items = JSON.parse(s("rows"));
+        } catch {
+          throw new Error("parse rows: invalid JSON");
+        }
+        const tx = db.transaction(() => {
+          db.query("DELETE FROM session_blocks WHERE session_id = ?").run(sessionId);
+          for (const item of items) {
+            const seq = item.seq;
+            if (!Number.isInteger(seq) || (seq as number) < 0) continue;
+            const str = (v: unknown) => (typeof v === "string" ? v : "");
+            db.query(
+              "INSERT OR REPLACE INTO session_blocks \
+               (session_id, seq, role, preview, search_text) VALUES (?, ?, ?, ?, ?)",
+            ).run(sessionId, seq as number, str(item.role), str(item.preview), str(item.searchText));
+          }
+        });
+        tx();
+        return {};
+      }
+      case "search_blocks_delete": {
+        const sessionId = s("sessionId");
+        const tx = db.transaction(() => {
+          db.query("DELETE FROM session_blocks WHERE session_id = ?").run(sessionId);
+          db.query("DELETE FROM search_scan WHERE session_id = ?").run(sessionId);
+        });
+        tx();
+        return {};
+      }
+      case "search_blocks_scan_list":
+        return db
+          .query<{ sessionId: string; mtime: number }, []>(
+            "SELECT session_id AS sessionId, mtime FROM search_scan",
+          )
+          .all();
+      case "search_blocks_scan_set": {
+        const mtime = typeof p.mtime === "number" ? p.mtime : 0;
+        db.query(
+          "INSERT INTO search_scan (session_id, mtime) VALUES (?, ?) \
+           ON CONFLICT(session_id) DO UPDATE SET mtime = excluded.mtime",
+        ).run(s("sessionId"), mtime);
+        return {};
+      }
+      case "session_search": {
+        const needle = s("needle").toLowerCase();
+        if (!needle) return { sessions: [], messages: [], artifacts: [], truncated: false };
+        // LIKE 的 %/_ 是通配符：调用方转义后的 likeNeedle 必须配 ESCAPE 才生效。
+        // instr 路径要原始 needle（转义后的 100\% 在正文里搜不到）。
+        const likeNeedle = s("likeNeedle").toLowerCase() || needle;
+        const limit = Math.min(Math.max(typeof p.limit === "number" ? Math.trunc(p.limit) : 200, 1), 500);
+        const sessions = db
+          .query(
+            `SELECT id, title, first_message AS firstMessage, cwd, archived, updated_at AS updatedAt FROM sessions
+             WHERE LOWER(title) LIKE '%' || ?2 || '%' ESCAPE '\\'
+                OR LOWER(first_message) LIKE '%' || ?2 || '%' ESCAPE '\\'
+             ORDER BY updated_at DESC LIMIT ?3`,
+          )
+          .all(needle, likeNeedle, limit + 1);
+        const messages = db
+          .query(
+            `SELECT sb.session_id AS sessionId, sb.seq, sb.role, sb.preview,
+                    s.title, s.cwd, s.archived, s.updated_at AS updatedAt
+             FROM session_blocks sb JOIN sessions s ON s.id = sb.session_id
+             WHERE instr(sb.search_text, ?1) > 0
+             ORDER BY s.updated_at DESC, sb.session_id, sb.seq LIMIT ?3`,
+          )
+          .all(needle, likeNeedle, limit + 1);
+        const artifacts = db
+          .query(
+            `SELECT ab.session_id AS ownerKey, ab.rel, ab.name, ab.preview,
+                    s.title, s.cwd, s.archived
+             FROM artifact_blocks ab
+             LEFT JOIN sessions s ON s.id = ab.session_id
+             WHERE instr(ab.search_text, ?1) > 0
+                OR LOWER(ab.name) LIKE '%' || ?2 || '%' ESCAPE '\\'
+             ORDER BY s.updated_at DESC, ab.session_id, ab.rel LIMIT ?3`,
+          )
+          .all(needle, likeNeedle, limit + 1);
+        const truncated =
+          sessions.length > limit || messages.length > limit || artifacts.length > limit;
+        const normSession = (r: Record<string, unknown>) => ({
+          sessionId: r.id,
+          title: r.title,
+          firstMessage: r.firstMessage,
+          cwd: r.cwd,
+          archived: Number(r.archived) === 1,
+          updatedAt: r.updatedAt,
+        });
+        return {
+          sessions: sessions.slice(0, limit).map((r) => normSession(r as Record<string, unknown>)),
+          messages: (messages as Record<string, unknown>[]).slice(0, limit).map((r) => ({
+            sessionId: r.sessionId,
+            seq: Number(r.seq),
+            role: r.role,
+            preview: r.preview,
+            title: r.title,
+            cwd: r.cwd,
+            archived: Number(r.archived) === 1,
+            updatedAt: r.updatedAt,
+          })),
+          artifacts: (artifacts as Record<string, unknown>[]).slice(0, limit).map((r) => ({
+            sessionId: (r.sessionId ?? r.ownerKey) as string,
+            rel: r.rel,
+            name: r.name,
+            preview: r.preview,
+            title: (r.title ?? null) as string | null,
+            cwd: (r.cwd ?? "") as string,
+            archived: Number(r.archived ?? 0) === 1,
+          })),
+          truncated,
+        };
+      }
+      case "search_artifacts_upsert": {
+        const ownerKey = s("ownerKey");
+        let items: Record<string, unknown>[] = [];
+        try {
+          items = JSON.parse(s("rows"));
+        } catch {
+          throw new Error("parse rows: invalid JSON");
+        }
+        const tx = db.transaction(() => {
+          db.query("DELETE FROM artifact_blocks WHERE session_id = ?").run(ownerKey);
+          for (const item of items) {
+            const rel = typeof item.rel === "string" ? item.rel : "";
+            if (!rel) continue;
+            const str = (v: unknown, fallback = "") =>
+              typeof v === "string" ? v : fallback;
+            db.query(
+              "INSERT OR REPLACE INTO artifact_blocks \
+               (session_id, rel, name, preview, search_text) VALUES (?, ?, ?, ?, ?)",
+            ).run(ownerKey, rel, str(item.name, rel), str(item.preview), str(item.searchText));
+          }
+        });
+        tx();
+        return {};
+      }
+      case "search_artifacts_delete": {
+        const ownerKey = s("ownerKey");
+        const tx = db.transaction(() => {
+          db.query("DELETE FROM artifact_blocks WHERE session_id = ?").run(ownerKey);
+          db.query("DELETE FROM artifact_scan WHERE session_id = ?").run(ownerKey);
+        });
+        tx();
+        return {};
+      }
+      case "search_artifacts_scan_list":
+        return db
+          .query<{ ownerKey: string; mtime: number }, []>(
+            "SELECT session_id AS ownerKey, mtime FROM artifact_scan",
+          )
+          .all();
+      case "search_artifacts_scan_set": {
+        const mtime = typeof p.mtime === "number" ? p.mtime : 0;
+        db.query(
+          "INSERT INTO artifact_scan (session_id, mtime) VALUES (?, ?) \
+           ON CONFLICT(session_id) DO UPDATE SET mtime = excluded.mtime",
+        ).run(s("ownerKey"), mtime);
+        return {};
+      }
+      case "search_artifacts_recent": {
+        const limitN = Math.min(
+          Math.max(typeof p.limit === "number" ? Math.trunc(p.limit) : 10, 1),
+          50,
+        );
+        const rows = db
+          .query(
+            `SELECT ab.session_id AS ownerKey, ab.rel, ab.name, ab.preview,
+                    s.title, s.cwd, s.archived
+             FROM artifact_blocks ab
+             LEFT JOIN sessions s ON s.id = ab.session_id
+             ORDER BY ab.rowid LIMIT ?`,
+          )
+          .all(limitN);
+        return (rows as Record<string, unknown>[]).map((r) => ({
+          sessionId: (r.sessionId ?? r.ownerKey) as string,
+          rel: r.rel,
+          name: r.name,
+          preview: r.preview,
+          title: (r.title ?? null) as string | null,
+          cwd: (r.cwd ?? "") as string,
+          archived: Number(r.archived ?? 0) === 1,
+        }));
+      }
+      case "search_history_list": {
+        const limitN = Math.min(
+          Math.max(typeof p.limit === "number" ? Math.trunc(p.limit) : 12, 1),
+          50,
+        );
+        // SQL 里 LIMIT 用占位符，但 GROUP BY 形态下 bun 类型层对 .all(参数)
+        // 报 arity（运行时正常）——断言绕过类型侧误报
+        return (db.query(
+          `SELECT query, MAX(created_at) AS createdAt FROM search_history
+           GROUP BY query ORDER BY createdAt DESC LIMIT ?`,
+        ) as { all: (...args: unknown[]) => { query: string; createdAt: string }[] }).all(limitN);
+      }
+      case "search_history_add": {
+        const query = s("query").trim().slice(0, 200);
+        if (!query) return {};
+        // s() 对缺失 key 抛错（不是返回空串）：可选参数必须宽松读
+        const id = typeof p.id === "string" && p.id
+          ? p.id
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const now = typeof p.now === "string" && p.now
+          ? p.now
+          : new Date().toISOString();
+        const tx = db.transaction(() => {
+          db.query("DELETE FROM search_history WHERE query = ?").run(query);
+          db.query("INSERT INTO search_history (id, query, created_at) VALUES (?, ?, ?)").run(
+            id,
+            query,
+            now,
+          );
+          db.query(
+            `DELETE FROM search_history WHERE id NOT IN (
+               SELECT id FROM search_history ORDER BY created_at DESC LIMIT 100)`,
+          ).run();
+        });
+        tx();
+        return {};
+      }
+      case "search_history_clear":
+        db.query("DELETE FROM search_history").run();
+        return {};
       default:
         throw new Error(`unknown host_query kind: ${kind}`);
     }

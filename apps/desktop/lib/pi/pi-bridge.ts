@@ -1085,6 +1085,25 @@ export type PiAutomationTemplatesResponse = {
 export type PiResponse =
   | { type: "sessions"; sessions: PiSessionSummary[] }
   | { type: "trace_live_query"; runs: PiTraceRun[] }
+  // 全局会话搜索应答（sidecar search 命令；§search）：标题/首条命中 +
+  // 内容命中 + 产物/资料库文件命中 + 项目域（带 projectCwd 时）
+  | {
+      type: "search_result";
+      sessions: PiSearchSessionHit[];
+      messages: PiSearchMessageHit[];
+      artifacts: PiSearchArtifactHit[];
+      project: PiProjectSearchResult;
+      truncated: boolean;
+    }
+  // 搜索默认页（monocode 式：空查询即有内容可点）
+  | {
+      type: "search_default";
+      sessions: PiSearchSessionHit[];
+      artifacts: PiSearchArtifactHit[];
+      history: { query: string; createdAt: string }[];
+    }
+  | { type: "search_history_cleared" }
+  | { type: "search_history_added" }
   | { type: "running"; sessionIds: string[] }
   | { type: "session"; sessionId: string; threadId: string }
   | { type: "forked"; sessionId: string }
@@ -1325,6 +1344,109 @@ export type PiImagePartData = {
   width?: number;
   height?: number;
 };
+
+/* ------------------------------ 全局会话搜索 ------------------------------ */
+
+/** 会话标题/首条消息命中（search_result.sessions 行） */
+export type PiSearchSessionHit = {
+  sessionId: string;
+  title: string;
+  firstMessage: string;
+  cwd: string;
+  archived: boolean;
+  updatedAt: string;
+};
+
+/** 消息内容命中（search_result.messages 行；preview 已在 sidecar 截好） */
+export type PiSearchMessageHit = {
+  sessionId: string;
+  seq: number;
+  role: string;
+  preview: string;
+  title: string;
+  cwd: string;
+  archived: boolean;
+  updatedAt: string;
+};
+
+/** 产物/资料库文件命中（search_result.artifacts 行） */
+export type PiSearchArtifactHit = {
+  /** 归属键：sessionId（任务产物）或 __library__（资料库根） */
+  sessionId: string;
+  rel: string;
+  name: string;
+  preview: string;
+  title: string | null;
+  cwd: string;
+  archived: boolean;
+};
+
+/** 项目域命中（git grep 优先；文件名 + 内容两组） */
+export type PiProjectSearchResult = {
+  files: { rel: string; name: string }[];
+  contents: { rel: string; name: string; line: number; preview: string }[];
+  truncated: boolean;
+};
+
+/**
+ * 全局搜索会话（含归档/产物/资料库/项目）：标题 LIKE + 内容索引 instr +
+ * 文件索引 + 项目域（git grep 优先）。带 projectCwd 时并行跑项目域。
+ * sidecar 先增量对账索引水位再查询——首次调用可能带一次全量回填的延迟。
+ */
+export async function searchPiSessions(
+  query: string,
+  options: { limit?: number; projectCwd?: string; timeoutMs?: number } = {},
+): Promise<{
+  sessions: PiSearchSessionHit[];
+  messages: PiSearchMessageHit[];
+  artifacts: PiSearchArtifactHit[];
+  project: PiProjectSearchResult;
+  truncated: boolean;
+}> {
+  const { limit = 200, projectCwd, timeoutMs = 30000 } = options;
+  const res = await piRequest<{
+    type: "search_result";
+    sessions: PiSearchSessionHit[];
+    messages: PiSearchMessageHit[];
+    artifacts: PiSearchArtifactHit[];
+    project: PiProjectSearchResult;
+    truncated: boolean;
+  }>({ type: "search", query, limit, ...(projectCwd ? { projectCwd } : {}) }, timeoutMs);
+  return {
+    sessions: res.sessions,
+    messages: res.messages,
+    artifacts: res.artifacts ?? [],
+    project: res.project ?? { files: [], contents: [], truncated: false },
+    truncated: res.truncated,
+  };
+}
+
+/** 搜索默认页数据：最近会话 + 最近产物（已建索引时）+ 搜索历史 */
+export async function fetchSearchDefault(limit = 10): Promise<{
+  sessions: PiSearchSessionHit[];
+  artifacts: PiSearchArtifactHit[];
+  history: { query: string; createdAt: string }[];
+}> {
+  const res = await piRequest<{
+    type: "search_default";
+    sessions: PiSearchSessionHit[];
+    artifacts: PiSearchArtifactHit[];
+    history: { query: string; createdAt: string }[];
+  }>({ type: "search_default", limit });
+  return { sessions: res.sessions, artifacts: res.artifacts ?? [], history: res.history ?? [] };
+}
+
+/** 记录一次真实检索（打开结果时调用；防抖查询不记，避免前缀污染） */
+export async function recordSearchHistory(query: string): Promise<void> {
+  const trimmed = query.trim();
+  if (!trimmed) return;
+  await piRequest<{ type: "search_history_added" }>({ type: "search_history_add", query: trimmed });
+}
+
+/** 清空搜索历史 */
+export async function clearSearchHistory(): Promise<void> {
+  await piRequest<{ type: "search_history_cleared" }>({ type: "search_history_clear" });
+}
 
 export async function piRequest<T extends PiResponse>(
   payload: Record<string, unknown>,

@@ -484,9 +484,10 @@ export function isModelUnavailable(
 /**
  * 任务工作区根：应用数据目录下的 task-workspace（Rust 拉起时经 PI_TASK_CWD
  * 注入），测试/裸跑兜底 ~/.kova/task-workspace。本身不建目录——惰性建的是
- * 各会话的子目录（见 taskSessionCwd）。
+ * 各会话的子目录（见 taskSessionCwd）。搜索索引器（search-index.ts）用同一
+ * 根枚举各会话的产物目录。
  */
-function taskWorkspaceBase(): string {
+export function taskWorkspaceBase(): string {
   return process.env.PI_TASK_CWD
     ? resolve(process.env.PI_TASK_CWD)
     : join(homedir(), ".kova", "task-workspace");
@@ -497,7 +498,7 @@ function taskWorkspaceBase(): string {
  * 必须限为单个安全路径段才能拼进 join（真值恒为 randomUUID 的 UUID）。
  * 返回 null = 不是合法会话名（含分隔符/`..`/点开头序列等）。
  */
-function taskSessionSeg(sessionId: string): string | null {
+export function taskSessionSeg(sessionId: string): string | null {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(sessionId) || sessionId === "..") return null;
   return sessionId;
 }

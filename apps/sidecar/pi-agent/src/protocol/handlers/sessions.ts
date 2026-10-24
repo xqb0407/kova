@@ -5,6 +5,8 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { send, sendSessionsChanged } from "../stream";
+import { beginOp, endOp } from "../exit";
+import { classifyAgentError, toWireError } from "../../agent/agent-errors";
 import { logErr } from "../../log";
 import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
@@ -48,6 +50,13 @@ import {
   setSessionCwd,
 } from "../../sessions/sessions";
 import { getTodoState, replayTodoFromMessages } from "../../todo/todo";
+import {
+  recentArtifacts,
+  refreshArtifactsIndex,
+  searchSessions,
+} from "../../search/search-index";
+import { searchProjectDir } from "../../search/project-search";
+import { searchHistoryAdd, searchHistoryClear, searchHistoryList } from "../../storage/hostdb";
 import {
   getGoal,
   goalStatePayload,
@@ -455,6 +464,97 @@ export const handlers: Record<string, CommandHandler> = {
     send({ id: reqId, type: "session_summary", ...(row ? { summary: sessionSummaryOf(row) } : {}) });
   },
 
+  // 全局会话搜索：标题/首条 + 内容 + 产物/资料库文件 + 项目（§search）。
+  // 先增量对账两个域的水位，再走宿主有界 LIKE/instr 扫描；归档会话照常返回
+  //（archived=true 由前端标徽标）。带 projectCwd 时并行跑项目域（git grep
+  // 优先）。查询写入搜索历史（去重保最新）。
+  // **派活不占 mgmt 串行队列**（范式同 test_mcp_server）：首次查询带全量回填
+  //（秒级），排在队列里会把切会话/改名/归档一起卡住——"哪里都点不了"的成因。
+  // handler 只校验与派活就返回，结果用**同一个 reqId** 晚点发回，前端按长超时
+  // 等；beginOp/endOp 另开一对在飞计数，防止 handler 返回后 shutdown 丢结果。
+  search: async (reqId, msg) => {
+    const query = String(msg.query ?? "");
+    const limit = Number.isInteger(msg?.limit) && (msg!.limit as number) > 0
+      ? Math.min(msg!.limit as number, 500)
+      : 200;
+    const projectCwd = typeof msg.projectCwd === "string" ? msg.projectCwd : "";
+    beginOp();
+    void (async () => {
+      try {
+        const [result, project] = await Promise.all([
+          searchSessions(query, limit),
+          // 项目域同步 spawnSync（git-prompt 同款量级），包 Promise 并行
+          projectCwd
+            ? Promise.resolve(searchProjectDir(projectCwd, query)).catch(() => ({
+                files: [], contents: [], truncated: false,
+              }))
+            : Promise.resolve({ files: [], contents: [], truncated: false }),
+        ]);
+        send({ id: reqId, type: "search_result", ...result, project });
+      } catch (err) {
+        // 派活段自身的意外错误：必须回一帧，否则前端干等长超时才收场
+        const errorText = err instanceof Error ? err.message : String(err);
+        send({
+          id: reqId,
+          type: "error",
+          errorText,
+          error: toWireError(classifyAgentError(errorText, { opaqueFallback: "runtime" })),
+        });
+      } finally {
+        endOp();
+      }
+    })();
+  },
+
+  // 搜索默认页数据（monocode 式：空查询即有内容可点）：最近会话（索引表
+  // updated_at 序）+ 最近产物文件（artifact_blocks，有索引就走索引，无索引
+  // 返回空数组不阻塞）+ 搜索历史。全部有界，一次往返。
+  search_default: async (reqId, msg) => {
+    const limit = Number.isInteger(msg?.limit) && (msg!.limit as number) > 0
+      ? Math.min(msg!.limit as number, 50)
+      : 10;
+    const [recent, history] = await Promise.all([
+      sessionList().then((rows) =>
+        rows
+          .filter((r) => (r.message_count ?? 0) > 0)
+          .slice(0, limit)
+          .map((r) => ({
+            sessionId: r.id,
+            title: r.title,
+            firstMessage: r.first_message,
+            cwd: r.cwd,
+            archived: r.archived === 1,
+            updatedAt: r.updated_at,
+          })),
+      ),
+      searchHistoryList(limit).catch(() => []),
+    ]);
+    // 最近产物只读已建好的索引（不阻塞默认页：全量回填是秒级目录扫描）。
+    // 索引为空/过期时后台预热一次，下次打开即有数据——不 await。
+    const artifacts = await recentArtifacts(limit).catch(() => []);
+    void refreshArtifactsIndex().catch(() => {});
+    send({
+      id: reqId,
+      type: "search_default",
+      sessions: recent,
+      artifacts,
+      history,
+    });
+  },
+
+  search_history_clear: async (reqId) => {
+    await searchHistoryClear();
+    send({ id: reqId, type: "search_history_cleared" });
+  },
+
+  // 记录一次真实检索（渲染层在"打开某条结果"时调用）——防抖查询不记，
+  // 否则逐字符前缀（跑/跑起/跑起来）会污染历史
+  search_history_add: async (reqId, msg) => {
+    const query = String(msg.query ?? "").trim();
+    if (query) await searchHistoryAdd(query.slice(0, 200)).catch(() => {});
+    send({ id: reqId, type: "search_history_added" });
+  },
+
   list_running: async (reqId) => {
     // 纯内存快照且同步发出（不 await mgmtQueue）：响应行必然写在其后
     // 发生的 turn_changed 之前，前端"先订阅后种子"的合并无空窗
@@ -699,6 +799,10 @@ export const handlers: Record<string, CommandHandler> = {
     }
     // 挂起交互台账随行消失（截断窗口内的发起/结算行已不在转录里）
     dropSessionInteractions(sessionId);
+    // 内容搜索索引对账：文件 mtime 已变，下一次查询的水位刷新会整扫重灌
+    void import("../../search/search-index")
+      .then((m) => m.refreshSearchIndex())
+      .catch(() => {});
     // 驻留 run 的内存上下文与磁盘脱节：驱逐，下一 prompt 走截断后转录重建
     for (const [tid, run] of running) {
       if (run.sessionId === sessionId) {
@@ -895,6 +999,9 @@ export const handlers: Record<string, CommandHandler> = {
     const { window, meta } = windowTranscriptMessages(scan.messages, {
       tail: typeof msg.tail === "number" ? msg.tail : undefined,
       beforeSeq: typeof msg.beforeSeq === "number" ? msg.beforeSeq : undefined,
+      // 全局搜索定位：命中 seq 居中窗（与 tail 同用；beforeSeq 优先级更高，
+      // 两者同传时 around 被忽略——现无调用方这么传）
+      aroundSeq: typeof msg.aroundSeq === "number" ? msg.aroundSeq : undefined,
     });
     // 窗口是否触及会话末行：截断中止标记的「下一行非续跑」判定在窗口末行处
     // 只能由这个前提背书（防分页窗恰好切在截断行与哨兵续跑行之间造成误标）
@@ -957,6 +1064,15 @@ export const handlers: Record<string, CommandHandler> = {
     await sessionDelete(sessionId);
     dropEventSeq(sessionId); // 水印计数器随会话删除（防 per-session Map 泄漏）
     dropSessionInteractions(sessionId); // 挂起交互台账同清（§4，行随文件消失）
+    // 内容搜索索引随会话走（块行 + mtime 水位）：失败静默，残留由
+    // refreshSearchIndex 的对账分支兜底清理
+    void import("../../search/search-index")
+      .then((m) =>
+        m
+          .dropSessionSearchIndex(sessionId)
+          .catch(() => m.refreshSearchIndex().catch(() => {})),
+      )
+      .catch(() => {});
     const file = sessionPath(sessionId);
     if (existsSync(file)) unlinkSync(file);
     // 无目录会话的产物随会话走（<任务工作区>/<sessionId> 递归删；

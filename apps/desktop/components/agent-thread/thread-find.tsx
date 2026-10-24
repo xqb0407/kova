@@ -262,6 +262,32 @@ function highlightMatches(root: HTMLElement, rawQuery: string) {
   registry.set(HIGHLIGHT_NAME, new Highlight(...ranges));
 }
 
+/**
+ * 供全局搜索定位用：把消息滚动进视口并高亮 query（复用本文件的
+ * TreeWalker + Custom Highlight 管线，注册名与 Ctrl+F 共享——后到者覆盖）。
+ * seq 转消息 id 走投影的稳定锚点 `pi-msg:<seq>`（messageProjection.ts）；
+ * 消息不在已加载窗（分页裁掉）时静默返回 false，调用方可回落仅滚动。
+ */
+export function highlightMessageBySeq(seq: number, query: string): boolean {
+  const viewport = document.querySelector<HTMLElement>(VIEWPORT_SELECTOR);
+  if (!viewport) return false;
+  const target = viewport.querySelector<HTMLElement>(
+    `[data-message-id="${CSS.escape(`pi-msg:${seq}`)}"]`,
+  );
+  if (!target) return false;
+  yieldViewportScroll();
+  const viewportRect = viewport.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  viewport.scrollTo({
+    top: Math.max(0, viewport.scrollTop + targetRect.top - viewportRect.top - 16),
+    behavior: "smooth",
+  });
+  highlightMatches(target, query);
+  return true;
+}
+
+export { clearHighlight as clearThreadFindHighlight };
+
 export const ThreadFind: FC = () => {
   const messages = useAuiState((state) => state.thread.messages);
   const threadRunning = useAuiState((state) => state.thread.isRunning);
