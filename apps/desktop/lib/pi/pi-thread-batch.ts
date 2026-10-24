@@ -6,10 +6,10 @@ import { useSyncExternalStore } from "react";
  * 侧边栏批量管理模式（ephemeral，不持久化）：
  * - active：批量模式开关。开启后列表行渲染勾选框、点击行 = 切换选中
  *   （不激活会话）；关闭即清空选择
- * - selected：跨 tab 统一的选中集合（任务/项目两个 tab 勾的是同一池，
- *   切 tab 不清）——批量归档一次可覆盖两个 tab 里勾中的会话
- * - visibleIds：各 tab 当前渲染的会话 id 集，由列表组件注册（搜索过滤、
- *   项目组「显示更多」分页后同步更新），「全选」只选当前 tab 的可见项
+ * - selected：跨分区统一的选中集合（任务/项目两个分区勾的是同一池）——
+ *   批量归档一次可覆盖两个分区里勾中的会话
+ * - visibleIds：各分区当前渲染的会话 id 集，由列表组件注册（搜索过滤、
+ *   项目组「查看更多」分页后同步更新），分区头「全选」只选本分区的可见项
  */
 
 export type ThreadBatchTab = "tasks" | "projects";
@@ -71,13 +71,13 @@ export function toggleThreadBatchSelect(id: string): void {
   );
 }
 
-/** 全选（当前 tab 可见项）/ 清空选择（按钮复用：全选后即「取消全选」） */
+/** 分区头「全选」（本分区可见项）/ 清空选择（按钮复用：全选后即「取消全选」） */
 export function setThreadBatchSelection(ids: readonly string[]): void {
   if (!state.active) return;
   setState({ ...state, selected: [...ids] });
 }
 
-/** 列表组件注册/注销当前 tab 的可见 id 集（搜索/分页/空列表同步跟进）。
+/** 列表组件注册/注销当前分区的可见 id 集（搜索/分页/空列表同步跟进）。
  *
  *  按内容比对，不是引用比对：可见集是列表组件里 useMemo 出来的数组，上游
  *  （threadIds / 分组 / 置顶）只要换个新引用身份就变，而注册发生在 effect 里

@@ -1,6 +1,6 @@
 /**
- * 侧栏时间筛选 store 测试：区间起点的自然日口径（今天 / 近 7 天 / 近 10 天）
- * 与切换写入。ephemeral store，无持久化。
+ * 侧栏时间筛选 store 测试：区间起点的自然日口径（今天 / 近 7 天 / 近 10 天）、
+ * 分区独立的切换写入。ephemeral store，无持久化。
  */
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
@@ -10,13 +10,23 @@ import {
   threadTimeRangeLabel,
 } from "./pi-thread-filter";
 
-beforeEach(() => setThreadTimeRange("all"));
+beforeEach(() => {
+  setThreadTimeRange("all", "tasks");
+  setThreadTimeRange("all", "projects");
+});
 
 describe("pi-thread-filter", () => {
   test("切换写入与同值短路", () => {
-    expect(getThreadTimeRange()).toBe("all");
-    setThreadTimeRange("7d");
-    expect(getThreadTimeRange()).toBe("7d");
+    expect(getThreadTimeRange("tasks")).toBe("all");
+    setThreadTimeRange("7d", "tasks");
+    expect(getThreadTimeRange("tasks")).toBe("7d");
+  });
+
+  test("任务 / 项目两份区间互不影响", () => {
+    setThreadTimeRange("today", "tasks");
+    setThreadTimeRange("10d", "projects");
+    expect(getThreadTimeRange("tasks")).toBe("today");
+    expect(getThreadTimeRange("projects")).toBe("10d");
   });
 
   test("全部时间不过滤（起点为 null）", () => {

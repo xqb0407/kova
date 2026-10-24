@@ -5,10 +5,11 @@ import { useSyncExternalStore } from "react";
 /**
  * 侧边栏会话列表的时间筛选（ephemeral，不持久化）。
  *
- * 只保留「最近活跃时间」落在所选区间内的会话；值由列表侧
- * （useThreadListGroups）读取，切换入口在 tabs 行右侧的筛选按钮。
- * 做成模块 store 而不是逐层传参：消费点有三处（任务列表、项目列表、
- * 壳里的「展开全部」判定），传参要把 props 穿过 ThreadListRoot 那一层。
+ * 只保留「最近活跃时间」落在所选区间内的会话。筛选按分区各自独立：
+ * 任务会话与项目会话各持一份区间（值由 useThreadListGroups 读取），
+ * 切换入口在各分区头的悬浮操作区。做成模块 store 而不是逐层传参：
+ * 消费点分散在分组 hook、分区头与空态里，传参要把 props 穿过
+ * ThreadListRoot 那一层。
  *
  * 区间按自然日切：今天 = 今天 0 点起；近 N 天 = 今天 0 点往前数 N-1 天
  * （含今天正好 N 个自然日）。用自然日而不是 now - N×24h，
@@ -17,6 +18,9 @@ import { useSyncExternalStore } from "react";
  */
 
 export type ThreadTimeRange = "all" | "today" | "3d" | "7d" | "10d";
+
+/** 筛选作用域：任务分区 / 项目分区，两份区间互不影响 */
+export type ThreadFilterScope = "tasks" | "projects";
 
 /** 选项顺序即菜单顺序；label 同时用于按钮 tooltip 与空态文案 */
 export const THREAD_TIME_RANGES: readonly {
@@ -37,7 +41,10 @@ const RANGE_DAYS: Record<Exclude<ThreadTimeRange, "all" | "today">, number> = {
   "10d": 10,
 };
 
-let range: ThreadTimeRange = "all";
+const ranges: Record<ThreadFilterScope, ThreadTimeRange> = {
+  tasks: "all",
+  projects: "all",
+};
 
 const listeners = new Set<() => void>();
 
@@ -48,22 +55,27 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
-function getSnapshot(): ThreadTimeRange {
-  return range;
+export function getThreadTimeRange(scope: ThreadFilterScope): ThreadTimeRange {
+  return ranges[scope];
 }
 
-export function getThreadTimeRange(): ThreadTimeRange {
-  return range;
-}
-
-export function setThreadTimeRange(next: ThreadTimeRange): void {
-  if (range === next) return;
-  range = next;
+export function setThreadTimeRange(
+  next: ThreadTimeRange,
+  scope: ThreadFilterScope,
+): void {
+  if (ranges[scope] === next) return;
+  ranges[scope] = next;
   for (const listener of listeners) listener();
 }
 
-export function useThreadTimeRange(): ThreadTimeRange {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+export function useThreadTimeRange(
+  scope: ThreadFilterScope,
+): ThreadTimeRange {
+  return useSyncExternalStore(
+    subscribe,
+    () => ranges[scope],
+    () => ranges[scope],
+  );
 }
 
 /** 区间起点（毫秒时间戳）；"all" 返回 null = 不过滤 */

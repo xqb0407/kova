@@ -35,6 +35,9 @@ export const FluidHoverScope: React.FC<{
     <motion.div
       ref={listRef}
       layoutRoot
+      // 让位标记：嵌在外层列表里时，外层不对本区域做最近邻兜底（见
+      // use-fluid-hover 的 DEFER_SELECTOR），高亮归本作用域自己管
+      data-fluid-hover-defer=""
       className={cn("relative flex flex-col gap-0.5", className)}
       {...hover.handlers}
     >
