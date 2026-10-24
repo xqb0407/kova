@@ -1138,7 +1138,7 @@ const SectionHeaderTrigger: FC<{
         type="button"
         data-slot="aui_thread-list-section-header"
         className={cn(
-          "flex w-full cursor-pointer items-center rounded-md px-2.5 pb-1 pt-2 text-start text-xs font-medium text-muted-foreground select-none hover:text-foreground",
+          "flex w-full cursor-pointer items-center rounded-md px-2.5 pb-1 pt-2 text-start text-sm font-medium text-muted-foreground select-none hover:text-foreground",
           className,
         )}
       >
@@ -1357,7 +1357,7 @@ const PinnedCard: FC<{
     style={{
       ["--animation-duration" as string]: `${PANEL_ANIMATION_MS}ms`,
     }}
-    className="my-1 rounded-xl bg-muted/50 p-1"
+    className="my-1 mb-0 rounded-xl bg-muted/10 p-1 px-0"
   >
     <div className="group/header relative" data-fluid-hover-defer="">
       <SectionHeaderTrigger

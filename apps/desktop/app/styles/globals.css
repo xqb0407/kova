@@ -622,6 +622,16 @@ html[data-window-effect] [data-chat-card] {
   background: color-mix(in oklab, var(--background) 72%, transparent);
 }
 
+/* AI 免责声明条：底色跟随聊天卡片（材质开启时同为 72% 半透明）。页脚是
+   sticky 的，消息从它下方滚过——没有这层底，滚动内容会透过声明行与文字
+   叠在一起；用不透明 bg-background 又会在磨砂卡片上切出一条亮色带。 */
+[data-slot="ai-disclaimer"] {
+  background-color: var(--background);
+}
+html[data-window-effect] [data-slot="ai-disclaimer"] {
+  background-color: color-mix(in oklab, var(--background) 72%, transparent);
+}
+
 /* 窗口材质开启时选中底色改为半透明叠加（浅色黑、深色白），与 --hover/--active
    同款合成方式：不透明实色块压在透出桌面的 bg-muted/55 侧栏上，明暗对比会随桌面
    内容漂移（浅色壁纸下几乎不可见、深色壁纸下刺眼）。覆写须与 :root/.dark 令牌块

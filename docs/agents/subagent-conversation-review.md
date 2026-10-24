@@ -9,7 +9,7 @@
 
 - resume 主链路有 3 个会直接破坏真实使用的缺陷，已修复：历史序列化丢工具配对键、恢复记录未注册进父会话、resume 状态未落盘。
 - 另有一批稳定性与 UI 收敛问题（并发 resume、快照回放旧状态、重复气泡、旧报告串轮、崩溃残留）已一并处理。
-- 全量回归绿：sidecar 1869、desktop 955、electron 60、pi-protocol 30；三端 typecheck 通过；sidecar 单文件构建冒烟通过。
+- 全量回归绿：sidecar 1908、desktop 955、electron 60、pi-protocol 30；三端 typecheck 通过；sidecar 单文件构建冒烟通过。
 - 剩余限制均不阻塞当前提交；其中“Task 显式 `model` 覆盖未持久化”最值得在下一轮处理。
 
 ## 审查发现与修复
@@ -210,7 +210,7 @@
 # sidecar
 cd apps/sidecar/pi-agent
 bun run typecheck          # 通过
-bun test                   # 1869 pass / 0 fail
+bun test                   # 1908 pass / 0 fail
 bun run build              # 单文件构建 + smoke check 通过
 
 # desktop
