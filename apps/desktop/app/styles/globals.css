@@ -731,7 +731,8 @@ html.dark[data-window-effect] {
 
 /* 提示词优化进行中：composer 卡片上的芯片透遮罩呼吸发光——视觉上直接说明
    「芯片我不动」。data-optimizing 在 composer.tsx 的 shell 上。 */
-[data-optimizing="true"] .aui-directive-chip {
+[data-optimizing="true"] .aui-directive-chip,
+[data-optimizing="true"] .aui-directive-chip-mention {
   border-radius: 0.25rem;
   animation: optimize-glow 1.6s ease-in-out infinite;
 }
@@ -846,6 +847,54 @@ html.dark[data-window-effect] {
 }
 .dark .aui-directive-chip-interactive .aui-directive-chip-delete:hover {
   background-color: rgb(147 197 253 / 0.2);
+}
+
+/* 智能体提及：纯内联排版——芯片混排在正文行内，行高与选中高亮必须跟正文一致
+   （inline-flex 会自建行盒，实测比正文矮一截）。图标/标签都挂在文字流里，
+   标签用 inline-block 才能保留省略号截断（overflow 对纯 inline 不生效）。
+   三者统一 vertical-align: middle：标签盒高 = 继承行高，与正文行等高中线对齐
+   （overflow:hidden 的 inline-block 基线是底边，不能用 baseline 对齐）。 */
+/* 可交互指令芯片（agent / skill / library / console / element / code）统一形态：
+   图标 + 蓝色标题，**无药丸底**；hover 时叉顶替前置图标（二选一，不放尾部），
+   2026-10 用户给定参考样式。盒模型用 inline-block 而非纯 inline：纯 inline 的
+   背景按字体 em 盒绘制、与内部 24px 行盒错位（实测悬停底上下留白 5.5px/3px）；
+   inline-block 的背景 = 行高盒、内容纵向居中，垂直 padding 保持 0 不撑大行高
+   （= 与正文等高）。标签保持 inline-block 才有省略号截断；overflow:hidden 的
+   inline-block 基线是底边，因此图标/标签/叉统一 vertical-align: middle 对齐。 */
+.aui-directive-chip-mention {
+  display: inline-block;
+  /* 横向收紧：token 序列化本身带两侧空格，芯片再叠 6px 外边距 + 6px 内边距
+     会离前后文本太远（2026-10 反馈「左右间隙太大」）。2px 外边距给 hover
+     底色留一点呼吸，4px 内边距保住图标/文字的贴边感。 */
+  padding: 0 4px;
+  margin: 0 2px;
+  /* hover 底色（.aui-directive-chip-interactive:hover 的渐变）需要圆角；
+     6px 比原 4px 更圆一档（2026-10 用户反馈「整体圆角再大一些」） */
+  border-radius: 6px;
+}
+.aui-directive-chip-mention .aui-directive-chip-icon {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+.aui-directive-chip-mention .aui-directive-chip-label {
+  display: inline-block;
+  vertical-align: middle;
+  max-width: 14rem;
+}
+/* 删除叉：与前置图标**二选一**（hover 时叉顶替图标的位置，不放尾部）。
+   两者都是 16px、同 margin，切换时宽度零跳动；叉的位置由 DOM 顺序
+   [图标][叉][标题] 保证，这里只补内联环境下的中线对齐与右间距。
+   显隐沿用通用规则（默认 display:none，hover 时 display:inline-flex）。 */
+.aui-directive-chip-mention .aui-directive-chip-delete {
+  display: none;
+  vertical-align: middle;
+  margin-right: 4px;
+  /* 与芯片同族的圆角：悬停到叉上时的圆角底色不再比芯片更方 */
+  border-radius: 6px;
+}
+.aui-directive-chip-interactive.aui-directive-chip-mention:hover .aui-directive-chip-delete {
+  display: inline-flex;
 }
 
 /* 优化进行中：底栏按钮压暗让位——遮罩不铺色，若按钮保持全亮，居中的状态行

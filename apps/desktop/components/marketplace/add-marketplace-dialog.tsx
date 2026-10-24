@@ -70,8 +70,8 @@ export const AddMarketplaceDialog: FC<{
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="gap-5 p-6 sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle className="text-lg">添加插件市场</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-md">添加插件市场</DialogTitle>
+          <DialogDescription className="truncate text-sm">
             市场根目录需包含 marketplace.json 清单（插件目录里的插件以相对路径声明）。
           </DialogDescription>
         </DialogHeader>

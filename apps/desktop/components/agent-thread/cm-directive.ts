@@ -15,7 +15,7 @@
  * 必须换成自造 DOM 才能不让用户看到 `:agent[X]{name=agent:X}`。代价是原子化
  * （光标不进入、退格整块删），这是刻意的。
  */
-import { RangeSetBuilder, type RangeSet } from "@codemirror/state";
+import { RangeSetBuilder, Transaction, type RangeSet } from "@codemirror/state";
 import { OPEN_ELEMENT_REF_EVENT } from "@/lib/element-refs";
 import {
   Decoration,
@@ -167,6 +167,173 @@ function createDeleteButton(widget: ChipWidget): HTMLElement {
   return del;
 }
 
+/**
+ * 芯片拖拽换位：按住芯片拖到文本里任意位置松手，整段 token 移到落点。
+ *
+ * 不用 HTML5 `draggable`：CodeMirror 在 contentDOM 上自行处理 mousedown（选区
+ * 与拖选），原生 dragstart 起不来；可交互芯片的 mousedown 也已被拦截（自身
+ * 交互语义），所以这里在拦下的手势上手写指针拖拽：
+ * - 超过 4px 位移才算拖动（否则按单击处理，不误吞点击）；
+ * - 拖动中源芯片半透明，落点插入光标跟随指针（不用克隆体拖影：离开容器会
+ *   丢掉芯片样式，只剩一张裸文字快照）；
+ * - 落点用 `posAtCoords` 换算；落在自身范围/编辑区外 = 取消，原样不动；
+ * - 与 `insertIntoComposer` 同一条空格规则：紧贴非空白字符时补空格，否则
+ *   指令 token 会与相邻文本粘连解析不出来；
+ * - 移走时把源位置紧贴的空白一并收掉（每侧最多一个空格/制表符），否则反复
+ *   拖动会把补上的空格留在原地累积。
+ * 单击（未拖动）把光标放到芯片左/右边界并聚焦——可交互芯片原本吞掉了这次
+ * 点击，光标进不了文本（2026-10 用户反馈）；element 芯片的单击另有打开详情的
+ * 语义，不抢。
+ */
+function attachChipDrag(wrap: HTMLElement, widget: ChipWidget): void {
+  const view = widget.view;
+  const from = widget.from;
+  const to = widget.to;
+  if (!view || from < 0 || to <= from) return;
+  const DRAG_THRESHOLD_PX = 4;
+
+  // 彻底掐掉原生拖拽：contenteditable 里 contenteditable=false 的芯片在
+  // Chromium 下会被当成可拖内容——原生 dragstart 一旦起来会吞掉 mousemove/
+  // mouseup（页面收不到落点事件，换位不生效、自制拖影也不清理），还会叠出
+  // 一张系统拖影。mousedown 的 preventDefault 不足以阻止它。
+  wrap.setAttribute("draggable", "false");
+  wrap.addEventListener("dragstart", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+
+  wrap.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let dragging = false;
+    /** 落点插入光标：跟随指针实时显示芯片将落到文本的哪个位置 */
+    let caret: HTMLElement | null = null;
+
+    const cleanup = (): void => {
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
+      window.removeEventListener("blur", onCancel, true);
+      caret?.remove();
+      caret = null;
+      wrap.style.opacity = "";
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    const onCancel = (): void => cleanup();
+
+    const onMove = (ev: MouseEvent): void => {
+      if (!dragging) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD_PX) {
+          return;
+        }
+        dragging = true;
+        // 不复制克隆体：拖影一旦挂在 body 下就丢掉容器的芯片样式，只剩一张
+        // 裸文字快照（2026-10 用户反馈「不要这个样式」）。拖动反馈只留两件：
+        // 源芯片半透明 + 落点插入光标。
+        wrap.style.opacity = "0.35";
+        document.body.style.cursor = "grabbing";
+        document.body.style.userSelect = "none";
+      }
+      ev.preventDefault();
+      // 落点光标：落在自身范围/编辑区外时隐藏
+      const pos = view.posAtCoords({ x: ev.clientX, y: ev.clientY });
+      const eligible = pos != null && !(pos >= from && pos <= to);
+      if (!eligible) {
+        if (caret) caret.style.display = "none";
+        return;
+      }
+      const coords = view.coordsAtPos(pos);
+      if (!coords) {
+        if (caret) caret.style.display = "none";
+        return;
+      }
+      if (!caret) {
+        caret = document.createElement("div");
+        caret.className = "aui-directive-drop-caret";
+        caret.style.position = "fixed";
+        caret.style.width = "2px";
+        caret.style.borderRadius = "1px";
+        caret.style.background = "rgb(37 99 235)";
+        caret.style.zIndex = "9999";
+        caret.style.pointerEvents = "none";
+        document.body.appendChild(caret);
+      }
+      caret.style.display = "";
+      caret.style.left = `${coords.left - 1}px`;
+      caret.style.top = `${coords.top}px`;
+      caret.style.height = `${Math.max(12, coords.bottom - coords.top)}px`;
+      // 编辑器自身的插入光标也挪到落点：否则旧光标停在拖动前的位置，
+      // 用户看到的是「光标没跟着走」。仅改选区不改文档，不触发草稿同步。
+      const sel = view.state.selection.main;
+      if (sel.head !== pos || !sel.empty) {
+        view.dispatch({ selection: { anchor: pos }, scrollIntoView: false });
+      }
+    };
+
+    const onUp = (ev: MouseEvent): void => {
+      const wasDragging = dragging;
+      cleanup();
+      if (!wasDragging) {
+        // 单击：光标落到芯片左/右半边对应的边界（element 芯片有自己的点击语义）
+        if (widget.directiveType !== "element") {
+          const rect = wrap.getBoundingClientRect();
+          const anchor = ev.clientX < rect.left + rect.width / 2 ? from : to;
+          view.dispatch({ selection: { anchor }, scrollIntoView: false });
+          view.focus();
+        }
+        return;
+      }
+      const pos = view.posAtCoords({ x: ev.clientX, y: ev.clientY });
+      if (pos == null) return;
+      const doc = view.state.doc;
+      // 删除源 token 时把紧贴的空白一并收掉（每侧最多一个空格/制表符）：
+      // 拖到文本中间会在两侧补空格，再拖走时若只删 token，那对空格就留在
+      // 原地越攒越多（2026-10 用户反馈「文本中间出现了空格」）。换行不并
+      // ——那是用户的分段结构。
+      const SPACE_ONLY = /^[ \t]$/;
+      const wsBefore = from > 0 && SPACE_ONLY.test(doc.sliceString(from - 1, from));
+      const wsAfter = to < doc.length && SPACE_ONLY.test(doc.sliceString(to, to + 1));
+      const delFrom = wsBefore ? from - 1 : from;
+      const delTo = wsAfter ? to + 1 : to;
+      // 落在空出来的槽位（含边界）或编辑区外 = 取消
+      if (pos >= delFrom && pos <= delTo) return;
+      const token = doc.sliceString(from, to);
+      const before = pos > 0 ? doc.sliceString(pos - 1, pos) : "";
+      const after = pos < doc.length ? doc.sliceString(pos, pos + 1) : "";
+      const prefix = before && !WHITESPACE_RE.test(before) ? " " : "";
+      const suffix = after && !WHITESPACE_RE.test(after) ? " " : "";
+      const insert = `${prefix}${token}${suffix}`;
+      if (pos < delFrom) {
+        view.dispatch({
+          changes: [
+            { from: pos, insert },
+            { from: delFrom, to: delTo, insert: "" },
+          ],
+          selection: { anchor: pos + insert.length },
+          scrollIntoView: true,
+          annotations: Transaction.userEvent.of("input.complete"),
+        });
+      } else {
+        view.dispatch({
+          changes: [
+            { from: delFrom, to: delTo, insert: "" },
+            { from: pos, insert },
+          ],
+          selection: { anchor: pos - (delTo - delFrom) + insert.length },
+          scrollIntoView: true,
+          annotations: Transaction.userEvent.of("input.complete"),
+        });
+      }
+      view.focus();
+    };
+
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", onUp, true);
+    window.addEventListener("blur", onCancel, true);
+  });
+}
+
 class ChipWidget extends WidgetType {
   constructor(
     readonly directiveType: string,
@@ -196,73 +363,36 @@ class ChipWidget extends WidgetType {
     const wrap = document.createElement("span");
     // 悬浮显示完整标签：统一截断（globals.css 的 max-width）后靠自绘 tooltip 看全文
     attachChipTooltip(wrap, this.label);
-    // 智能体提及不用药丸底：改成「机器人图标 + 高亮文本」，与消息行里的 agent
-    // 名同一视觉语言；悬浮时图标原位换成 ✕，点击整段删除（同可交互芯片）
-    if (this.directiveType === "agent") {
-      wrap.className =
-        "aui-directive-agent aui-directive-chip-interactive inline-flex items-baseline gap-1 text-blue-400 font-medium";
-      wrap.setAttribute("data-directive-type", this.directiveType);
-      wrap.setAttribute("data-directive-id", this.id);
-      wrap.style.cursor = "pointer";
-      wrap.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      const icon = document.createElement("span");
-      icon.className =
-        "aui-directive-agent-icon aui-directive-chip-icon inline-flex self-center";
-      icon.innerHTML = BOT_SVG;
-      wrap.appendChild(icon);
-      // DOM 顺序 [图标][叉][文字]：hover 时图标隐、叉显，恰落在图标原位
-      wrap.appendChild(createDeleteButton(this));
-      const label = document.createElement("span");
-      label.className = "aui-directive-chip-label";
-      label.textContent = this.label;
-      wrap.appendChild(label);
-      return wrap;
-    }
-    // 代码引用（「引用到对话」）：**高亮文本**而非药丸芯片——与智能体提及同一
-    // 视觉语言（图标 + 蓝色文字，无底色框）；悬浮时左侧图标原位换成 ✕，点击把
-    // 整段引用从输入框删掉（复用可交互芯片的 CSS 族，叉的显隐规则同款）
-    if (this.directiveType === "code") {
-      wrap.className =
-        "aui-directive-code aui-directive-chip-interactive inline-flex items-baseline gap-1 font-medium text-blue-400";
-      wrap.setAttribute("data-directive-type", this.directiveType);
-      wrap.setAttribute("data-directive-id", this.id);
-      wrap.style.cursor = "pointer";
-      wrap.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      const icon = document.createElement("span");
-      icon.className = "aui-directive-chip-icon inline-flex self-center";
-      icon.innerHTML = CHIP_ICONS[this.directiveType] ?? WRENCH_SVG;
-      wrap.appendChild(icon);
-      // DOM 顺序 [图标][叉][文字]：hover 时图标隐、叉显，恰落在图标原位
-      wrap.appendChild(createDeleteButton(this));
-      const label = document.createElement("span");
-      label.className = "aui-directive-chip-label";
-      label.textContent = this.label;
-      wrap.appendChild(label);
-      return wrap;
-    }
-    wrap.className = "aui-directive-chip";
-    wrap.setAttribute("data-directive-type", this.directiveType);
-    wrap.setAttribute("data-directive-id", this.id);
-    if (this.directiveType !== "command") {
-      const icon = document.createElement("span");
-      icon.className = "aui-directive-chip-icon";
-      icon.innerHTML = CHIP_ICONS[this.directiveType] ?? WRENCH_SVG;
-      wrap.appendChild(icon);
-    }
+    // 可交互芯片（智能体 / 技能 / 资料库 / 控制台 / 元素）统一成「图标 + 蓝色
+    // 标题 + 标题后的 hover 叉」文字提及形态（2026-10 用户指定参考样式）：
+    // 布局为纯内联 / inline-block，行高与选中高亮跟正文一致；不再用药丸底。
+    // 智能体（agent）走同一套，只多一个 aui-directive-agent 类做 hover 兼容。
     if (INTERACTIVE_TYPES.has(this.directiveType)) {
-      wrap.classList.add("aui-directive-chip-interactive");
+      wrap.className =
+        "aui-directive-chip-mention aui-directive-chip-interactive text-blue-500 dark:text-blue-400 font-medium" +
+        (this.directiveType === "agent" ? " aui-directive-agent" : "");
+      wrap.setAttribute("data-directive-type", this.directiveType);
+      wrap.setAttribute("data-directive-id", this.id);
       wrap.style.cursor = "pointer";
       // mousedown 阻止默认：不让编辑器抢走这次交互（芯片本体仍由 ignoreEvent 让位）
       wrap.addEventListener("mousedown", (e) => {
         e.preventDefault();
         e.stopPropagation();
       });
+      const icon = document.createElement("span");
+      icon.className = "aui-directive-chip-icon";
+      icon.innerHTML =
+        this.directiveType === "agent"
+          ? BOT_SVG
+          : (CHIP_ICONS[this.directiveType] ?? WRENCH_SVG);
+      wrap.appendChild(icon);
+      // DOM 顺序 [图标][叉][标题]：hover 时叉**顶替前置图标**（二选一，
+      // 不放尾部），两者同尺寸同位置，切换时芯片宽度零跳动
+      wrap.appendChild(createDeleteButton(this));
+      const label = document.createElement("span");
+      label.className = "aui-directive-chip-label";
+      label.textContent = this.label;
+      wrap.appendChild(label);
       if (this.directiveType === "element") {
         // 元素芯片：点击打开详情 Dialog（选择器即 id 槽，见 lib/element-refs）
         wrap.addEventListener("click", (e) => {
@@ -273,13 +403,20 @@ class ChipWidget extends WidgetType {
           );
         });
       }
-      // 悬浮删除：**原地替换掉左侧类型图标**（DOM 顺序在图标之后，图标
-      // display:none 后叉恰落在原位，芯片宽度不跳）
-      wrap.appendChild(createDeleteButton(this));
+      // 按住拖到文本里任意位置换位（松手落点即目标位）；未拖动时按单击处理
+      attachChipDrag(wrap, this);
+      return wrap;
     }
-    // 标签最后 append：可交互芯片的 DOM 顺序是 [图标][叉][文字]——hover 时
-    // 图标隐、叉显，叉恰好落在图标原位（若标签在叉之前 append，叉会跑到
-    // 芯片右端，与"替换前置图标"的语义相反——上一版就是这个错位）
+    // 非交互（command / 未知类型）：保留药丸外观，无删除叉、无拖拽
+    wrap.className = "aui-directive-chip";
+    wrap.setAttribute("data-directive-type", this.directiveType);
+    wrap.setAttribute("data-directive-id", this.id);
+    if (this.directiveType !== "command") {
+      const icon = document.createElement("span");
+      icon.className = "aui-directive-chip-icon";
+      icon.innerHTML = CHIP_ICONS[this.directiveType] ?? WRENCH_SVG;
+      wrap.appendChild(icon);
+    }
     const label = document.createElement("span");
     label.className = "aui-directive-chip-label";
     label.textContent = this.label;

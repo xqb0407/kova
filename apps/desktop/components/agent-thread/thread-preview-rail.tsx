@@ -486,7 +486,7 @@ export function ThreadPreviewRail() {
         {preview.description ? (
           <div
             data-slot="preview-rail-description"
-            className="mt-1 text-sm leading-6 text-muted-foreground"
+            className="mt-1 text-xs leading-6 text-muted-foreground"
           >
             {preview.description}
           </div>

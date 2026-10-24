@@ -20,9 +20,11 @@ export type {
  * 芯片配色的 Tailwind 任意变体集合，加在包含芯片文本的容器元素上。
  * Badge 默认 variant=secondary 的 bg-secondary 与气泡 bg-muted / composer 底色
  * 几乎同色、视觉隐身——chip 样式必须显式挂容器，composer 输入与消息气泡共用这份。
+ * align-middle：药丸比正文多 2px 上下内边距，按基线排会整体下沉 2–3px（实测
+ * 芯片标签比相邻文字低），改成中线对齐让药丸与文字处在同一视觉中线。
  */
 export const directiveChipVariants =
-  "[&_.aui-directive-chip]:mx-1.5 [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-[4px] [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:pl-1.5 [&_.aui-directive-chip]:pr-2.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center";
+  "[&_.aui-directive-chip]:mx-1.5 [&_.aui-directive-chip]:inline-flex [&_.aui-directive-chip]:align-middle [&_.aui-directive-chip]:items-baseline [&_.aui-directive-chip]:gap-1 [&_.aui-directive-chip]:rounded-[4px] [&_.aui-directive-chip]:bg-blue-100 [&_.aui-directive-chip]:pl-1.5 [&_.aui-directive-chip]:pr-2.5 [&_.aui-directive-chip]:py-0.5 [&_.aui-directive-chip]:text-[13px] [&_.aui-directive-chip]:leading-none [&_.aui-directive-chip]:font-medium [&_.aui-directive-chip]:text-blue-700 dark:[&_.aui-directive-chip]:bg-blue-900/50 dark:[&_.aui-directive-chip]:text-blue-300 [&_.aui-directive-chip-icon]:self-center";
 
 /** Creates a `Text` message part component that parses directive syntax and renders inline chips. */
 export function createDirectiveText(
