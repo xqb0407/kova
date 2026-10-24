@@ -363,6 +363,30 @@ const AttrEditor: FC<{
           className="h-8 text-[13px] tabular-nums"
         />
       </Field>
+      <Field label="缓存 TTL·短">
+        <Input
+          type="number"
+          step="any"
+          min={0}
+          placeholder="未声明"
+          title="prompt cache 短档 TTL（秒），如 Anthropic 300 / OpenAI 300：填写后该模型才会参与缓存保活（cache warmer）"
+          value={draft.pcShort}
+          onChange={(e) => onChange({ pcShort: e.target.value })}
+          className="h-8 text-[13px] tabular-nums"
+        />
+      </Field>
+      <Field label="缓存 TTL·长">
+        <Input
+          type="number"
+          step="any"
+          min={0}
+          placeholder="未声明"
+          title="prompt cache 长档 TTL（秒），如 Anthropic 3600 / OpenAI 86400：仅当端点支持长保留时填写"
+          value={draft.pcLong}
+          onChange={(e) => onChange({ pcLong: e.target.value })}
+          className="h-8 text-[13px] tabular-nums"
+        />
+      </Field>
     </div>
     {/* 容量/输出/模态/单价一键回"继承"：清空后按目录种子（或缺省）重新推导，
         行里不再留显式值——目录更新/归一化命中的真值才能继续生效 */}
@@ -507,6 +531,9 @@ type AttrDraft = {
   cOut: string;
   cRead: string;
   cWrite: string;
+  /** prompt cache TTL（秒）：cache warmer 只对声明过的模型工作；空 = 未声明 */
+  pcShort: string;
+  pcLong: string;
 };
 
 /** 档位复选框的渲染表：level = thinkingLevelMap 键（勾选时透传同名下发值） */
@@ -1087,6 +1114,7 @@ export const ModelSettings: FC = () => {
               maxTokens: m.maxTokens,
               input: m.input,
               cost: m.cost,
+              promptCache: m.promptCache,
             }
           : {};
       }
@@ -1101,6 +1129,7 @@ export const ModelSettings: FC = () => {
             maxTokens: m.maxTokens,
             input: m.input,
             cost: m.cost,
+            promptCache: m.promptCache,
           }
         : {};
     },
@@ -1131,6 +1160,8 @@ export const ModelSettings: FC = () => {
         text: (src.input ?? ["text"]).includes("text"),
         image: (src.input ?? []).includes("image"),
         reasoning: src.reasoning ?? false,
+        pcShort: src.promptCache?.short != null ? String(src.promptCache.short) : "",
+        pcLong: src.promptCache?.long != null ? String(src.promptCache.long) : "",
         // 生图标记现值：provider 明确时从 list_models 行取（新服务的模型无归属，false）
         t2i: tKey
           ? ((models ?? []).find((x) => x.provider === tKey && x.id === id)?.t2i ??
@@ -1231,6 +1262,19 @@ export const ModelSettings: FC = () => {
         cacheRead: num(attrDraft.cRead) ?? 0,
         cacheWrite: num(attrDraft.cWrite) ?? 0,
       },
+      // 两端都空 = 未声明（undefined）；任一非空才带上
+      ...(attrDraft.pcShort.trim() !== "" || attrDraft.pcLong.trim() !== ""
+        ? {
+            promptCache: {
+              ...(num(attrDraft.pcShort) !== undefined
+                ? { short: num(attrDraft.pcShort) }
+                : {}),
+              ...(num(attrDraft.pcLong) !== undefined
+                ? { long: num(attrDraft.pcLong) }
+                : {}),
+            },
+          }
+        : {}),
     };
     if (svcProvider === "custom") {
       setSvcModelAttrs((prev) => ({ ...prev, [attrEditId]: parsed }));
@@ -1252,6 +1296,8 @@ export const ModelSettings: FC = () => {
         patch.input = parsed.input;
       if (JSON.stringify(parsed.cost) !== JSON.stringify(src.cost))
         patch.cost = parsed.cost;
+      if (JSON.stringify(parsed.promptCache ?? null) !== JSON.stringify(src.promptCache ?? null))
+        patch.promptCache = parsed.promptCache ?? null;
       if (Object.keys(patch).length > 3) {
         setBusy(true);
         try {
@@ -1371,6 +1417,8 @@ export const ModelSettings: FC = () => {
             cOut: "",
             cRead: "",
             cWrite: "",
+            pcShort: "",
+            pcLong: "",
           }
         : prev,
     );

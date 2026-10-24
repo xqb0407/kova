@@ -56,6 +56,7 @@ export function initTables(db: Db): void {
         max_tokens INTEGER,
         input_json TEXT,
         cost_json TEXT,
+        prompt_cache_json TEXT,
         enabled INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY (provider, model_id)
     );
@@ -91,6 +92,7 @@ export function initTables(db: Db): void {
     "ALTER TABLE custom_providers ADD COLUMN api TEXT NOT NULL DEFAULT 'openai-chat';",
     "ALTER TABLE custom_providers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;",
     "ALTER TABLE custom_providers ADD COLUMN headers TEXT NOT NULL DEFAULT '{}';",
+    "ALTER TABLE models ADD COLUMN prompt_cache_json TEXT;",
     "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;",
     "ALTER TABLE sessions ADD COLUMN message_count INTEGER;",
     "ALTER TABLE sessions ADD COLUMN mode TEXT;",
@@ -390,12 +392,13 @@ function numOrNull(v: unknown): number | null {
 
 function modelsQuery(db: Db, provider?: string): any[] {
   const sql = provider
-    ? "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled FROM models WHERE provider = ?1 ORDER BY model_id"
-    : "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled FROM models ORDER BY provider, model_id";
+    ? "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, prompt_cache_json, enabled FROM models WHERE provider = ?1 ORDER BY model_id"
+    : "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, prompt_cache_json, enabled FROM models ORDER BY provider, model_id";
   const rows = (provider ? db.prepare(sql).all(provider) : db.prepare(sql).all()) as Row[];
   return rows.map((r) => {
     let input: unknown = null;
     let cost: unknown = null;
+    let promptCache: unknown = null;
     try {
       const parsed = JSON.parse(String(r.input_json));
       if (Array.isArray(parsed)) input = parsed;
@@ -408,6 +411,12 @@ function modelsQuery(db: Db, provider?: string): any[] {
     } catch {
       /* 同上 */
     }
+    try {
+      const parsed = JSON.parse(String(r.prompt_cache_json));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) promptCache = parsed;
+    } catch {
+      /* 同上 */
+    }
     return {
       provider: r.provider,
       modelId: r.model_id,
@@ -417,6 +426,7 @@ function modelsQuery(db: Db, provider?: string): any[] {
       maxTokens: r.max_tokens ?? null,
       input,
       cost,
+      promptCache,
       enabled: Number(r.enabled) === 1,
     };
   });
@@ -729,8 +739,8 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
           if (!modelId || !modelId.trim()) continue;
           db.prepare(
             `INSERT OR REPLACE INTO models
-             (provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, prompt_cache_json, enabled)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(
             provider,
             modelId,
@@ -740,6 +750,9 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
             numOrNull(item?.maxTokens),
             Array.isArray(item?.input) ? JSON.stringify(item.input) : null,
             item?.cost && typeof item.cost === "object" && !Array.isArray(item.cost) ? JSON.stringify(item.cost) : null,
+            item?.promptCache && typeof item.promptCache === "object" && !Array.isArray(item.promptCache)
+              ? JSON.stringify(item.promptCache)
+              : null,
             item?.enabled === undefined ? 1 : item.enabled ? 1 : 0,
           );
         }

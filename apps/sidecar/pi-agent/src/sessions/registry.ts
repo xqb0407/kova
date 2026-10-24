@@ -77,6 +77,8 @@ export function dropRun(threadId: string): void {
   if (run && runningBySession.get(run.sessionId) === threadId) {
     runningBySession.delete(run.sessionId);
   }
+  // 缓存保活随会话驱逐终止：被驱逐会话的前缀由下次 resolve 重建，旧条目无意义
+  run?.cacheWarmer?.cancel();
 }
 
 /* ----------------------- 会话驻留治理（迭代2 / P2） -----------------------

@@ -64,6 +64,7 @@ import {
   restoreUnsettled,
 } from "./pending-interactions";
 import { checkpointGeneration, contextInfoFrom, projectRestoreContext, repairDanglingToolCalls, setLeadingSystemMessage, type ContextInfoResult } from "../agent/context";
+import { CacheWarmer, resolveCacheWarmingMode } from "../agent/cache-warmer";
 import { isPromptActive, onAgentEvent, send, sendSessionsChanged } from "../protocol/stream";
 import { wireSessionEvents } from "../protocol/thread-events";
 import {
@@ -947,6 +948,14 @@ export async function resolveSession(
     lastSeenAt: Date.now(),
   };
 
+  // prompt cache 保活器：streamFn 每次会话请求喂 start，轮收尾喂 onAgentSettled，
+  // 会话驱逐经 dropRun cancel（见 agent/cache-warmer.ts）
+  run.cacheWarmer = new CacheWarmer({
+    streamSimple: (model, context, warmOptions) =>
+      getModels().streamSimple(model, context, warmOptions),
+    getMode: resolveCacheWarmingMode,
+  });
+
   const agent = new Agent({
     // sessionId 透传：OpenAI prompt_cache_key / Anthropic session-affinity（缓存路由）
     sessionId,
@@ -975,28 +984,48 @@ export async function resolveSession(
       );
       run.retryCapture.status = undefined;
       run.retryCapture.headers = undefined;
+      const requestOptions = {
+        ...options,
+        // 无条件补发会话亲和头（参考 opencode），让兼容端点把同会话请求
+        // 路由到同一缓存分片；端点若已按 compat 下发同名头则同值覆盖
+        headers: {
+          ...options?.headers,
+          ...makeSessionAffinityHeaders(sessionId),
+        },
+        // 可选长缓存（Anthropic 1h TTL / OpenAI 24h retention），compat 守门自动降级
+        ...(process.env.PI_CACHE_RETENTION === "long"
+          ? { cacheRetention: "long" as const }
+          : {}),
+        // 捕获失败响应的 status/头（pi-ai 的 onResponse 不暴露失败 429），
+        // 供分类与 Retry-After 退避使用
+        fetch: captureProviderResponse(options?.fetch, (response) => {
+          run.retryCapture.status = response?.status;
+          run.retryCapture.headers = carriesRetryDelayHeaders(response?.status)
+            ? response?.headers
+            : undefined;
+        }),
+      };
+      // 缓存保活：只认本会话的请求（compaction/summary 走独立通道不经这里），
+      // 记住"这次请求"供 TTL 到期前原样重放；isCurrent = 模型未换且本次请求的
+      // 消息仍是当前转录的前缀（pi 同款，防重放已失效的旧前缀）
+      if ((options as { sessionId?: string } | undefined)?.sessionId === sessionId) {
+        run.cacheWarmer?.start(
+          { model: m, context, options: requestOptions },
+          () => {
+            const state = run.agent.state;
+            return (
+              state.model?.provider === m.provider &&
+              state.model?.id === m.id &&
+              state.messages.length >= context.messages.length &&
+              context.messages.every((msg, index) => state.messages[index] === msg)
+            );
+          },
+        );
+      }
       return createProviderRetryStream(
         m,
         context,
-        {
-          ...options,
-          // 无条件补发会话亲和头（参考 opencode），让兼容端点把同会话请求
-          // 路由到同一缓存分片；端点若已按 compat 下发同名头则同值覆盖
-          headers: {
-            ...options?.headers,
-            ...makeSessionAffinityHeaders(sessionId),
-          },
-          // 可选长缓存（Anthropic 1h TTL / OpenAI 24h retention），compat 守门自动降级
-          ...(process.env.PI_CACHE_RETENTION === "long" ? { cacheRetention: "long" } : {}),
-          // 捕获失败响应的 status/头（pi-ai 的 onResponse 不暴露失败 429），
-          // 供分类与 Retry-After 退避使用
-          fetch: captureProviderResponse(options?.fetch, (response) => {
-            run.retryCapture.status = response?.status;
-            run.retryCapture.headers = carriesRetryDelayHeaders(response?.status)
-              ? response?.headers
-              : undefined;
-          }),
-        },
+        requestOptions,
         (retryOptions) => getModels().streamSimple(m, context, retryOptions),
         makeUiRetryController(run),
       );

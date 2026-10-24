@@ -53,6 +53,8 @@ export const handlers: Record<string, CommandHandler> = {
       defaultedAttrs: DefaultedAttr[];
       input: string[];
       cost: Record<string, unknown>;
+      /** prompt cache TTL（秒）：模型属性弹窗回显用（undefined = 未声明，不参与缓存保活） */
+      promptCache?: { short?: number; long?: number };
       enabled: boolean;
       authed: boolean;
       /** 用户标记"可生成图片"（设置 → 模型属性勾选）：文生图默认模型下拉据此过滤 */
@@ -96,6 +98,7 @@ export const handlers: Record<string, CommandHandler> = {
           defaultedAttrs: getModelDefaultedAttrs(p.id, m.id),
           input: m.input,
           cost: m.cost as unknown as Record<string, unknown>,
+          promptCache: m.promptCache ?? undefined,
           enabled: hasRows.has(p.id)
             ? (enabledMap.get(`${p.id}/${m.id}`) ?? false)
             : true,

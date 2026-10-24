@@ -551,6 +551,8 @@ export async function dispatchPrompt(
     );
   } finally {
     noteActiveTurn(threadId, false);
+    // 缓存保活换相：streaming 模式就此停止，idle 模式继续暖到 30 分钟上限
+    running.get(threadId)?.cacheWarmer?.onAgentSettled();
     markTurnEnd(threadId);
     // §7 上下文读数推送：轮收尾即现算下发（桌面占用环镜像直更，免拉取）。
     // 只认该线程仍驻留的 run——resolveSession 失败的轮没有 run，天然不推；

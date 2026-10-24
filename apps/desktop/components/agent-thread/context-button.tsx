@@ -400,29 +400,36 @@ export const ContextButton: FC = () => {
                   整段不占位，只在页脚状态里带一句「缓存未上报」 */}
               {cacheReporting ? (
                 <div className="border-border/40 flex flex-col gap-1.5 border-t pt-2.5 text-sm">
+                  {/* 主数字用最近 10 轮：冷启动与偶发整段重算会长期压低累计值，
+                      最近窗口才反映当前稳态（累计口径移入 tooltip 供对账） */}
                   <div
                     className="flex items-center gap-2"
-                    title={`cacheRead / (input + cacheRead + cacheWrite)，全历史累计${
-                      info.cacheMisses?.recent?.hitRate != null
-                        ? `；近 ${info.cacheMisses.recent.requests} 轮 ${(
-                            info.cacheMisses.recent.hitRate * 100
-                          ).toFixed(1)}%`
+                    title={`最近 ${info.cacheMisses?.recent?.requests ?? 0} 轮命中率${
+                      info.cacheHitRate != null
+                        ? `；全历史累计 ${(info.cacheHitRate * 100).toFixed(1)}%`
                         : ""
                     }`}
                   >
                     <span className="size-1.5 shrink-0" />
                     <span className="text-muted-foreground flex-1 text-xs">缓存命中率</span>
                     <span className="text-foreground/80 w-12 text-right text-xs tabular-nums">
-                      {info.cacheHitRate === null ? (
-                        "-"
+                      {info.cacheMisses?.recent?.hitRate == null ? (
+                        info.cacheHitRate === null ? (
+                          "-"
+                        ) : (
+                          <RollingDigits
+                            text={`${(info.cacheHitRate * 100).toFixed(1)}%`}
+                          />
+                        )
                       ) : (
                         <RollingDigits
-                          text={`${(info.cacheHitRate * 100).toFixed(1)}%`}
+                          text={`${(info.cacheMisses.recent.hitRate * 100).toFixed(1)}%`}
                         />
                       )}
                     </span>
                   </div>
-                  {/* 缓存重算（pi 口径）：上一轮 prompt 里没被缓存读到的 token 量 */}
+                  {/* 缓存重算（pi 口径）：上一轮 prompt 里没被缓存读到的 token 量；
+                      归因直接展示在行上（空闲超 TTL / 模型切换 / 前端失配） */}
                   {info.cacheMisses?.missedTokens != null ? (
                     <div
                       className="flex items-center gap-2"
@@ -434,7 +441,11 @@ export const ContextButton: FC = () => {
                       <span className="text-muted-foreground flex-1 text-xs">
                         缓存重算
                         <span className="text-muted-foreground/60">
-                          （{info.cacheMisses?.missCount ?? 0} 次）
+                          （{info.cacheMisses?.missCount ?? 0} 次
+                          {info.cacheMisses.lastMiss
+                            ? `，最近：${cacheMissCause(info.cacheMisses.lastMiss)}`
+                            : ""}
+                          ）
                         </span>
                       </span>
                       <span className="text-foreground/80 shrink-0 text-right text-xs tabular-nums">
