@@ -61,10 +61,21 @@ export const handlers: Record<string, CommandHandler> = {
         ...(d.disableModelInvocation === true ? { disableModelInvocation: true } : {}),
       };
     }
+    // 可选附属文件（市场多文件技能）：非空时按目录式技能落盘，校验在 docs 层
+    const auxFiles = Array.isArray(msg.files)
+      ? msg.files.map((item) => {
+          const f = (item ?? {}) as Record<string, unknown>;
+          return { path: String(f.path ?? ""), content: String(f.content ?? "") };
+        })
+      : undefined;
     // name = 编辑前的原名（改名时据此清掉旧文件；新建省略）
     const replaceName =
       typeof msg.name === "string" && msg.name.trim() ? msg.name.trim() : undefined;
-    await saveSkillDoc(scope, draft, { cwd, ...(replaceName ? { replaceName } : {}) });
+    await saveSkillDoc(scope, draft, {
+      cwd,
+      ...(replaceName ? { replaceName } : {}),
+      ...(auxFiles ? { files: auxFiles } : {}),
+    });
     await reloadSkills();
     send({ id: reqId, type: "skills", ...(await skillsPayload(cwd)) });
   },

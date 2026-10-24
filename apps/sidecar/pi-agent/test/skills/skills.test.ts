@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -307,6 +307,122 @@ describe("CRUD", () => {
     expect(snap.activeSkills.some((s) => s.name === "ws-only")).toBe(true);
   });
 });
+
+describe("多文件（目录式）技能", () => {
+  test("带 files 保存 → <slug>/SKILL.md + 附属文件，清单可发现", async () => {
+    await saveSkillDoc(
+      "system",
+      { name: "bundle-skill", description: "Bundled skill.", content: "Run scripts/recalc.py." },
+      {
+        files: [
+          { path: "scripts/recalc.py", content: "print('recalc')\n" },
+          { path: "data.tsv", content: "a\tb\n" },
+        ],
+      },
+    );
+    const skillDir = path.join(systemSkillsDir(), "bundle-skill");
+    expect(readFileSync(path.join(skillDir, "SKILL.md"), "utf8")).toContain("Bundled skill.");
+    expect(readFileSync(path.join(skillDir, "scripts", "recalc.py"), "utf8")).toContain("recalc");
+    expect(readFileSync(path.join(skillDir, "data.tsv"), "utf8")).toContain("a\tb");
+    await ensureSkillsLoaded();
+    const entry = skillsSnapshot().entries.find((e) => e.name === "bundle-skill");
+    expect(entry?.path).toBe(path.join(skillDir, "SKILL.md"));
+  });
+
+  test("整目录替换：旧附属文件不残留；平铺与目录两形态同名互替", async () => {
+    // 先写目录式，再不带 files 覆盖同名 → 目录清掉、回落平铺
+    await saveSkillDoc(
+      "system",
+      { name: "bundle-skill", description: "Bundled skill.", content: "Run scripts/recalc.py." },
+      { files: [{ path: "scripts/recalc.py", content: "old\n" }] },
+    );
+    await saveSkillDoc(
+      "system",
+      { name: "bundle-skill", description: "Now flat.", content: "Flat body." },
+      {},
+    );
+    expect(existsSync(path.join(systemSkillsDir(), "bundle-skill"))).toBe(false);
+    expect(readFileSync(path.join(systemSkillsDir(), "bundle-skill.md"), "utf8")).toContain(
+      "Now flat.",
+    );
+    // 再带 files 覆盖同名 → 平铺文件清掉、目录重建且旧文件不残留
+    await saveSkillDoc(
+      "system",
+      { name: "bundle-skill", description: "Bundled again.", content: "Use data/new.tsv." },
+      { files: [{ path: "data/new.tsv", content: "x\n" }] },
+    );
+    expect(existsSync(path.join(systemSkillsDir(), "bundle-skill.md"))).toBe(false);
+    expect(existsSync(path.join(systemSkillsDir(), "bundle-skill", "data", "new.tsv"))).toBe(true);
+  });
+
+  test("deleteSkillDoc 删除目录式技能", async () => {
+    expect(existsSync(path.join(systemSkillsDir(), "bundle-skill"))).toBe(true);
+    await deleteSkillDoc("system", "bundle-skill", {});
+    expect(existsSync(path.join(systemSkillsDir(), "bundle-skill"))).toBe(false);
+  });
+
+  test("校验拒绝：路径逃逸 / 绝对路径 / SKILL.md 本位 / 超限", async () => {
+    const base = { name: "unsafe", description: "d", content: "b" };
+    expect(
+      (await wrapSaveWithFiles(base, [{ path: "../escape.txt", content: "x" }])).length,
+    ).toBeGreaterThan(0);
+    expect(
+      (await wrapSaveWithFiles(base, [{ path: "/abs.txt", content: "x" }])).length,
+    ).toBeGreaterThan(0);
+    expect(
+      (await wrapSaveWithFiles(base, [{ path: "a\\b.txt", content: "x" }])).length,
+    ).toBeGreaterThan(0);
+    expect(
+      (await wrapSaveWithFiles(base, [{ path: "SKILL.md", content: "x" }])).length,
+    ).toBeGreaterThan(0);
+    expect(
+      (await wrapSaveWithFiles(base, [{ path: "big.bin", content: "x".repeat(300 * 1024) }]))
+        .length,
+    ).toBeGreaterThan(0);
+    // 全部合法则通过
+    expect(await wrapSaveWithFiles(base, [{ path: "ok.txt", content: "x" }])).toEqual([]);
+  });
+
+  test("目录被不同名技能占用：目录式报错不动原目录；平铺写入两者共存", async () => {
+    // 手工搭一个「目录名 pdf、SKILL.md 名字 pdf-tools」的占用现场（saveSkillDoc
+    // 的目录名永远跟名字走，搭不出这种错位，只能直写文件）
+    const occupantDir = path.join(systemSkillsDir(), "pdf");
+    mkdirSync(occupantDir, { recursive: true });
+    writeFileSync(path.join(occupantDir, "SKILL.md"), doc("pdf-tools", "Existing occupant."));
+
+    const errors = await wrapSaveWithFiles(
+      { name: "pdf", description: "d", content: "b" },
+      [{ path: "a.txt", content: "x" }],
+    );
+    expect(errors.join()).toContain("占用");
+    expect(existsSync(path.join(occupantDir, "SKILL.md"))).toBe(true); // 原目录分毫未动
+
+    // 平铺写入不冲突：pdf.md 与 pdf/（pdf-tools）共存
+    await saveSkillDoc("system", { name: "pdf", description: "Flat pdf.", content: "b" }, {});
+    expect(existsSync(path.join(systemSkillsDir(), "pdf.md"))).toBe(true);
+    expect(existsSync(path.join(occupantDir, "SKILL.md"))).toBe(true);
+
+    // 删除按名字精确匹配：删 "pdf" 只清平铺文件，不碰 pdf-tools 的目录
+    await deleteSkillDoc("system", "pdf", {});
+    expect(existsSync(path.join(systemSkillsDir(), "pdf.md"))).toBe(false);
+    expect(existsSync(path.join(occupantDir, "SKILL.md"))).toBe(true);
+    // 删 "pdf-tools" 才清掉目录
+    await deleteSkillDoc("system", "pdf-tools", {});
+    expect(existsSync(occupantDir)).toBe(false);
+  });
+});
+
+async function wrapSaveWithFiles(
+  draft: { name: string; description: string; content: string },
+  files: Array<{ path: string; content: string }>,
+) {
+  try {
+    await saveSkillDoc("system", draft, { files });
+    return [];
+  } catch (err) {
+    return [err instanceof Error ? err.message : String(err)];
+  }
+}
 
 async function wrapSave(draft: { name: string; description: string; content: string }) {
   try {
