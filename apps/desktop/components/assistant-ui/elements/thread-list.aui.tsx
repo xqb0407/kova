@@ -2,14 +2,12 @@
 
 import { Button } from "@/components/ui/button";
 import { DotMatrix } from "@/components/ui/dot-matrix";
-import { Input } from "@/components/ui/input";
 import { SidebarMenuButton } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
   threadListSkeletonCondition,
   useThreadItems,
-  useThreadListSkeleton,
 } from "@/lib/thread-list/thread-items";
 import {
   clearPendingThreadSelection,
@@ -36,16 +34,21 @@ import {
   FolderOpenIcon,
   GitBranchIcon,
   HashIcon,
+  ListChecksIcon,
+  ListFilterIcon,
   MailIcon,
   MailOpenIcon,
+  Maximize2Icon,
+  Minimize2Icon,
   MoreHorizontalIcon,
   PencilIcon,
   PinIcon,
   PinOffIcon,
   PlusIcon,
-  SearchIcon,
+  SquareCheckBigIcon,
   TrashIcon,
   WaypointsIcon,
+  XIcon,
   ZapIcon,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
@@ -88,10 +91,15 @@ import {
   useAutoArchivePrefs,
 } from "@/lib/pi/pi-auto-archive";
 import {
+  enterThreadBatch,
+  exitThreadBatch,
+  setThreadBatchSelection,
   setThreadBatchVisible,
   toggleThreadBatchSelect,
   useIsThreadBatchSelected,
   useThreadBatchActive,
+  useThreadBatchState,
+  type ThreadBatchTab,
 } from "@/lib/pi/pi-thread-batch";
 import { subscribeAgentEvents } from "@/lib/pi/agent-events";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
@@ -109,11 +117,21 @@ import {
 import { useThreadActivity } from "@/lib/pi/pi-last-activity";
 import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
 import {
+  THREAD_TIME_RANGES,
   setThreadTimeRange,
   threadRangeStart,
   threadTimeRangeLabel,
   useThreadTimeRange,
+  type ThreadFilterScope,
+  type ThreadTimeRange,
 } from "@/lib/pi/pi-thread-filter";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   usePendingInteractionKind,
   type PendingInteractionKind,
@@ -136,13 +154,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  clearWorkspace,
   openWorkspacePicker,
   pathBasename,
   setWorkspace,
   useWorkspace,
-} from "@/lib/workspace/workspace-store";
-import {
+} from "@/lib/workspace/workspace-store";import {
   hasProjectAppearance,
   projectAppearanceFor,
   useProjectAppearancesVersion,
@@ -157,7 +173,6 @@ import {
 } from "@/components/ui/context-menu";
 import {
   createContext,
-  forwardRef,
   memo,
   useContext,
   useEffect,
@@ -198,8 +213,8 @@ interface RowHoverSlot {
 
 const RowHoverContext = createContext<RowHoverSlot | null>(null);
 
-/** 项目文件夹内的会话行：行首不画工作模式图标，标题与组头标题左缘对齐
- *  （缩进一个文件夹徽章位），让「文件夹 → 会话」的层级可辨；任务 tab 保持原样 */
+/** 项目文件夹内的会话行：标题相对组头缩进一个文件夹徽章位，让
+ *  「文件夹 → 会话」的层级可辨（统一列表的行首一律不画档位图标） */
 const ProjectChildRowContext = createContext(false);
 
 /**
@@ -307,19 +322,27 @@ const FolderSwapIcon: FC<{ open: boolean }> = ({ open }) => {
 };
 
 // ---------------------------------------------------------------------------
-// 会话行右侧「距最后一条消息多久」的粗粒度显示（刚刚 / 5分钟 / 3小时 / 2天），
-// Codex 风格，不带秒。渲染时算一次的固定值，不做心跳——秒表式跳动不是预期
-// 交互；数值随后续列表/状态更新自然刷新。
+// 会话行右侧「距最后一条消息多久」的粗粒度显示：近 7 天用相对时间
+// （刚刚 / N分钟前 / N小时前 / N天前），更早显示日期（同年 M月D日，跨年
+// 用 YYYY/M/D——CJK 全格式对 7 字以上日期太宽，会压进标题的渐隐带）。
+// 渲染时算一次的固定值，不做心跳——秒表式跳动不是预期交互；数值随后续
+// 列表/状态更新自然刷新。
 // ---------------------------------------------------------------------------
 
-const formatElapsed = (ms: number): string => {
-  const total = Math.floor(ms / 1000);
+const formatElapsed = (at: number, now: number): string => {
+  const total = Math.floor((now - at) / 1000);
   if (total < 60) return "刚刚";
   const min = Math.floor(total / 60);
-  if (min < 60) return `${min}分钟`;
+  if (min < 60) return `${min}分钟前`;
   const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}小时`;
-  return `${Math.floor(hr / 24)}天`;
+  if (hr < 24) return `${hr}小时前`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}天前`;
+  const date = new Date(at);
+  if (date.getFullYear() !== new Date(now).getFullYear()) {
+    return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
+  }
+  return `${date.getMonth() + 1}月${date.getDate()}日`;
 };
 
 // ---------------------------------------------------------------------------
@@ -336,21 +359,44 @@ const PENDING_BADGE: Record<
   question: { label: "等待回答", title: "Agent 提问等待你作答" },
 };
 
-export const ThreadList: FC = () => {
-  const [search, setSearch] = useState("");
-  const hasThreads = useAuiState((s) => s.threads.threadIds.length > 0);
+// ---------------------------------------------------------------------------
+// 分区折叠状态：统一分区列表（置顶 / 任务 / 项目）的开合，localStorage
+// 持久化（ui.thread-section-collapsed，JSON 数组）。桌面 / 移动两份宿主
+// 各自实例化，折叠选择经存储共享
+// ---------------------------------------------------------------------------
 
-  return (
-    <ThreadListRoot>
-      <WorkspacePicker />
-      <ThreadListNew />
-      {hasThreads && (
-        <ThreadListSearch value={search} onValueChange={setSearch} />
-      )}
-      <ThreadListItems searchQuery={hasThreads ? search : ""} />
-    </ThreadListRoot>
-  );
+type ThreadSectionKey = "pinned" | "tasks" | "projects";
+const SECTION_COLLAPSED_KEY = "ui.thread-section-collapsed";
+
+const readCollapsedSections = (): Set<ThreadSectionKey> => {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(SECTION_COLLAPSED_KEY);
+    if (!raw) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed.filter(
+        (value): value is ThreadSectionKey =>
+          value === "pinned" || value === "tasks" || value === "projects",
+      ),
+    );
+  } catch {
+    return new Set();
+  }
 };
+
+/** 移动端抽屉的列表入口：目录选择 + 统一分区列表（置顶 / 任务 / 项目）。
+ *  新对话入口在抽屉菜单里，这里不再重复 */
+export const ThreadList: FC<{
+  openDirs?: Set<string>;
+  onOpenDirsChange?: (next: Set<string>) => void;
+}> = ({ openDirs, onOpenDirsChange }) => (
+  <ThreadListRoot>
+    <WorkspacePicker />
+    <ThreadListItems openDirs={openDirs} onOpenDirsChange={onOpenDirsChange} />
+  </ThreadListRoot>
+);
 
 /** 当前 workspace 选择器：点击弹出系统目录选择框，选中后作为新会话的 cwd */
 const WorkspacePicker: FC = () => {
@@ -388,45 +434,6 @@ const WorkspacePicker: FC = () => {
     </Button>
   );
 };
-
-export const ThreadListSearch = forwardRef<
-  HTMLInputElement,
-  Omit<ComponentPropsWithoutRef<typeof Input>, "value" | "onChange"> & {
-    value: string;
-    onValueChange: (value: string) => void;
-  }
->(({ className, value, onValueChange, ...props }, ref) => {
-  return (
-    <div data-slot="aui_thread-list-search" className=" px-0.5 py-1">
-      {/* <Button  variant="ghost" className={"block w-full"}> */}
-      {/* <SearchIcon
-        data-slot="aui_thread-list-search-icon"
-        // className="text-muted-foreground pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2"
-      /> */}
-      <Button variant="ghost" className={"flex w-full  items-center justify-start px-1"}>
-         <SearchIcon
-          data-slot="aui_thread-list-search-icon"
-          // className="text-muted-foreground pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2"
-        />
-      搜索
-        
-      </Button>
-      
-      {/* <Input
-        ref={ref}
-        type="search"
-        value={value}
-        onChange={(event) => onValueChange(event.target.value)}
-        aria-label="Search threads"
-        placeholder="Search threads"
-        className={cn("h-8 ps-8 text-sm", className)}
-        {...props}
-      /> */}
-    </div>
-  );
-});
-
-ThreadListSearch.displayName = "ThreadListSearch";
 
 /** 列表上下缘渐隐带宽（px） */
 const EDGE_FADE = 16;
@@ -633,11 +640,18 @@ type ThreadListItemsProps = Omit<
   | "onDragOver"
   | "onDragStart"
   | "onDrop"
-> & { searchQuery?: string };
+> & {
+  searchQuery?: string;
+  /** 项目分组展开状态（受控，供「展开全部」与移动会话后自动展开共用） */
+  openDirs?: Set<string>;
+  onOpenDirsChange?: (next: Set<string>) => void;
+};
 
 export const ThreadListItems: FC<ThreadListItemsProps> = ({
   className,
   searchQuery = "",
+  openDirs,
+  onOpenDirsChange,
   ...props
 }) => {
   // 本容器的行共用一块滑动高亮；行在 ThreadListItemGroups 里按槽位注册。
@@ -673,6 +687,8 @@ export const ThreadListItems: FC<ThreadListItemsProps> = ({
         <ThreadListItemGroups
           searchQuery={searchQuery}
           registerItem={hover.registerItem}
+          openDirs={openDirs}
+          onOpenDirsChange={onOpenDirsChange}
         />
       </AuiIf>
     </motion.div>
@@ -690,11 +706,12 @@ export type ThreadListProjectGroup = {
 export type ThreadListGroups = {
   threadIds: readonly string[];
   filteredIndices: number[];
-  /** 置顶（任务 tab）：任务会话（无 cwd）命中置顶集合的，最近活动倒序 */
+  /** 置顶：任务会话（无 cwd）命中置顶集合的，最近活动倒序 */
   pinnedIndices: number[];
-  /** 置顶（项目 tab）：项目会话置顶后跳出所属文件夹，进项目 tab 顶部全局
-   *  置顶组，最近活动倒序 */
+  /** 置顶：项目会话置顶后跳出所属文件夹，最近活动倒序 */
   pinnedProjectIndices: number[];
+  /** 置顶（统一展示）：上面两组合并为一组，最近活动倒序 */
+  mergedPinnedIndices: number[];
   /** 任务：未置顶的公共会话，最近活动倒序 */
   taskIndices: number[];
   /** 项目：有工作目录的会话按目录分组（不含置顶），组内最近活动倒序，
@@ -706,13 +723,16 @@ export type ThreadListGroups = {
  * Filters the thread list by title and buckets the matches.
  * 会话分两类：任务（未选工作目录的公共对话）与项目（选定文件夹下的对话，
  * 按文件夹分组、可展开）。归属只由会话自身记录的 cwd 决定；
- * 组内按最近活动倒序。
+ * 组内按最近活动倒序。统一分区列表的展示顺序：置顶（任务+项目合并）→
+ * 项目 → 任务。
  */
 export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   const threadIds = useAuiState((s) => s.threads.threadIds);
   const threadItems = useThreadItems();
   const pinnedIds = usePinnedSessionIds();
-  const timeRange = useThreadTimeRange();
+  // 时间筛选分区独立：任务会话按任务区间卡，项目会话按项目区间卡
+  const tasksRange = useThreadTimeRange("tasks");
+  const projectsRange = useThreadTimeRange("projects");
   // 项目归属（projectCwd）不在 thread item 元数据里：项目目录变更时清单对象
   // 可能逐字段相同，只靠 threadItems 依赖不会重算分组。摘要落库即自增的版本号
   // 是这里唯一的稳定信号（applySessionSummaries 每次都会 bump）。
@@ -737,17 +757,8 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
     const time = (index: number) =>
       dates[index]?.getTime() ?? Number.MAX_SAFE_INTEGER;
 
-    // 时间筛选（侧栏 tabs 行右侧的按钮）：按最近活跃时间卡自然日区间。
-    // 没有时间戳的（刚建还没聊过）当"新"处理——它们不是旧会话，任何区间
-    // 都留着，否则新建一个空会话就会被筛选吃掉。
-    const rangeStart = threadRangeStart(timeRange);
-    const filteredIndices =
-      rangeStart == null
-        ? searchedIndices
-        : searchedIndices.filter((index) => {
-            const at = dates[index];
-            return at == null || at.getTime() >= rangeStart;
-          });
+    const taskStart = threadRangeStart(tasksRange);
+    const projectStart = threadRangeStart(projectsRange);
 
     // 分组键：项目虚拟目录优先（附加根里的会话回主目录，多代码工程合并成一张卡）；
     // 没有项目归属时回落会话自己的 cwd。空 cwd = 任务
@@ -761,18 +772,26 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       );
     };
 
-    // 置顶分两类：任务会话（无 cwd）进任务 tab 顶部的全局置顶组；项目会话
-    // 跳出所属文件夹，进项目 tab 顶部的全局置顶组——分组内不保留置顶行
+    // 置顶分两类记账：任务会话（无 cwd）与项目会话（跳出所属文件夹）——
+    // 展示时合并为统一列表顶部的置顶分区
     const pinnedSet = new Set(pinnedIds);
 
+    // 单趟完成时间筛选与分桶：会话按自己所属分区的区间卡（置顶跟随归属），
+    // 没有时间戳的（刚建还没聊过）当"新"处理——它们不是旧会话，任何区间
+    // 都留着，否则新建一个空会话就会被筛选吃掉。
+    const filteredIndices: number[] = [];
     const pinnedIndices: number[] = [];
     const pinnedProjectIndices: number[] = [];
     const taskIndices: number[] = [];
     const byCwd = new Map<string, number[]>();
-    for (const index of [...filteredIndices].sort((a, b) => time(b) - time(a))) {
+    for (const index of [...searchedIndices].sort((a, b) => time(b) - time(a))) {
+      const at = dates[index];
       const remoteId = itemsById.get(threadIds[index])?.remoteId;
       const pinned = remoteId !== undefined && pinnedSet.has(remoteId);
       const cwd = cwdOf(threadIds[index]);
+      const rangeStart = cwd ? projectStart : taskStart;
+      if (at && rangeStart != null && at.getTime() < rangeStart) continue;
+      filteredIndices.push(index);
       if (!cwd) {
         if (pinned) pinnedIndices.push(index);
         else taskIndices.push(index);
@@ -791,37 +810,59 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       ([cwd, indices]) => ({ cwd, label: pathBasename(cwd), indices }),
     );
 
+    const mergedPinnedIndices = [
+      ...pinnedIndices,
+      ...pinnedProjectIndices,
+    ].sort((a, b) => time(b) - time(a));
+
     return {
       threadIds,
       filteredIndices,
       pinnedIndices,
       pinnedProjectIndices,
+      mergedPinnedIndices,
       taskIndices,
       projectGroups,
     };
-  }, [threadIds, threadItems, query, pinnedIds, timeRange, summariesVersion]);
+  }, [
+    threadIds,
+    threadItems,
+    query,
+    pinnedIds,
+    tasksRange,
+    projectsRange,
+    summariesVersion,
+  ]);
 };
 
-/** 列表空态。时间筛选开着时换一套文案并给「清除筛选」——否则一句「暂无任务
- *  对话」会让人以为会话没了，其实只是被区间挡在外面 */
+/** 列表空态。任一分区的时间筛选开着时换一套文案并给「清除筛选」（同时清
+ *  两个分区）——否则一句「暂无对话」会让人以为会话没了，其实只是被区间
+ *  挡在外面 */
 const ThreadListEmpty: FC<{ searching?: boolean; children: ReactNode }> = ({
   searching,
   children,
 }) => {
-  const range = useThreadTimeRange();
+  const tasksRange = useThreadTimeRange("tasks");
+  const projectsRange = useThreadTimeRange("projects");
+  const activeLabels = [tasksRange, projectsRange]
+    .filter((range) => range !== "all")
+    .map((range) => threadTimeRangeLabel(range));
   return (
     <div
       data-slot="aui_thread-list-empty"
       className="text-muted-foreground px-2.5 py-4 text-sm"
     >
-      {range === "all"
+      {activeLabels.length === 0
         ? children
-        : `「${threadTimeRangeLabel(range)}」内没有${searching ? "匹配的" : ""}会话`}
-      {range !== "all" && (
+        : `「${activeLabels.join("、")}」内没有${searching ? "匹配的" : ""}会话`}
+      {activeLabels.length > 0 && (
         <Button
           variant="ghost"
           className="mt-1.5 -ms-2 h-6 gap-1 px-2 text-xs font-normal"
-          onClick={() => setThreadTimeRange("all")}
+          onClick={() => {
+            setThreadTimeRange("all", "tasks");
+            setThreadTimeRange("all", "projects");
+          }}
         >
           清除筛选
         </Button>
@@ -833,12 +874,19 @@ const ThreadListEmpty: FC<{ searching?: boolean; children: ReactNode }> = ({
 const ThreadListItemGroupsInner: FC<{
   searchQuery?: string;
   registerItem: RegisterItem;
-}> = ({ searchQuery = "", registerItem }) => {
-  const { threadIds, filteredIndices, taskIndices, pinnedIndices } =
-    useThreadListGroups(searchQuery);
+  openDirs?: Set<string>;
+  onOpenDirsChange?: (next: Set<string>) => void;
+}> = ({ searchQuery = "", registerItem, openDirs, onOpenDirsChange }) => {
+  const {
+    threadIds,
+    filteredIndices,
+    taskIndices,
+    mergedPinnedIndices,
+    projectGroups,
+  } = useThreadListGroups(searchQuery);
   const query = searchQuery.trim();
 
-  // 任务 tab 分页：默认渲染最近 10 条，尾部的「显示更多」每点一次放出一页。
+  // 任务区分页：默认渲染最近 10 条，尾部的「查看更多」每点一次放出一页。
   // 不做滚动自动加载——会话多时侧栏会变成无限流，想定位旧会话反而更难；
   // 搜索时全量展示（结果已经过滤过，截断会让人误以为漏了条目），query 变化即重置页数。
   const [taskVisibleCount, setTaskVisibleCount] = useState(TASK_VISIBLE_LIMIT);
@@ -850,16 +898,27 @@ const ThreadListItemGroupsInner: FC<{
     : taskIndices.slice(0, taskVisibleCount);
   const hiddenTaskCount = taskIndices.length - visibleTaskIndices.length;
 
-  // 批量模式「全选」的可见集注册：任务 tab 当前渲染的会话（含置顶组，
-  // 搜索过滤后口径一致）。跨 tab 统一选择池的一侧，见 pi-thread-batch.ts
+  // 批量模式「全选」的可见集注册：置顶组（含项目置顶）+ 任务区当前渲染的
+  // 会话是一池，项目区各分组行是另一池（搜索过滤后口径一致）。「全选」在
+  // shell 里取两池并集，见 pi-thread-batch.ts
   const visibleTaskIds = useMemo(
     () =>
-      [...pinnedIndices, ...visibleTaskIndices].map((index) => threadIds[index]),
-    [threadIds, pinnedIndices, visibleTaskIndices],
+      [...mergedPinnedIndices, ...visibleTaskIndices].map(
+        (index) => threadIds[index],
+      ),
+    [threadIds, mergedPinnedIndices, visibleTaskIndices],
   );
   useEffect(() => {
     setThreadBatchVisible("tasks", visibleTaskIds);
   }, [visibleTaskIds]);
+  const visibleProjectIds = useMemo(
+    () =>
+      projectGroups.flatMap((g) => g.indices.map((index) => threadIds[index])),
+    [threadIds, projectGroups],
+  );
+  useEffect(() => {
+    setThreadBatchVisible("projects", visibleProjectIds);
+  }, [visibleProjectIds]);
 
   // 置顶切换检测：pinnedIds 快照身份仅在 pin/unpin 时变化。这一次提交传
   // instant 给 TreeRow，行瞬时换位不走滑移（新消息挤动等其他重排不受影响）
@@ -871,22 +930,73 @@ const ThreadListItemGroupsInner: FC<{
     prevPinnedRef.current = pinnedIds;
   });
 
-  if (query && filteredIndices.length === 0) {
-    return <ThreadListEmpty searching>No threads found</ThreadListEmpty>;
-  }
+  // 分区折叠：置顶 / 任务 / 项目各自开合，localStorage 持久化（读写见
+  // readCollapsedSections 与下方落盘 effect）
+  const [collapsedSections, setCollapsedSections] = useState<Set<ThreadSectionKey>>(
+    readCollapsedSections,
+  );
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        SECTION_COLLAPSED_KEY,
+        JSON.stringify([...collapsedSections]),
+      );
+    } catch {}
+  }, [collapsedSections]);
+  const toggleSection = (key: ThreadSectionKey) =>
+    setCollapsedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  const pinnedOpen = !collapsedSections.has("pinned");
+  const tasksOpen = !collapsedSections.has("tasks");
+  const projectsOpen = !collapsedSections.has("projects");
+
+  // 批量模式开关只随进入/退出变化（勾选切换走 SectionBatchBar 的窄订阅，
+  // 不牵连这里的行树重渲染）；筛选区间只用于动作区的常驻判断
+  const batchActive = useThreadBatchActive();
+  const tasksRange = useThreadTimeRange("tasks");
+  const projectsRange = useThreadTimeRange("projects");
+
+  // 「展开全部 / 收起全部」：受控的 openDirs 才能整表开合（桌面与移动端
+  // shell 都传入；未受控时不出现该按钮）
+  const allProjectsExpanded =
+    projectGroups.length > 0 &&
+    projectGroups.every((g) => openDirs?.has(g.cwd) ?? false);
+  const toggleAllProjects = () => {
+    if (!onOpenDirsChange) return;
+    onOpenDirsChange(
+      allProjectsExpanded
+        ? new Set()
+        : new Set(projectGroups.map((g) => g.cwd)),
+    );
+  };
 
   // 已归档会话不在侧栏展示，统一到「设置 → 归档」查看与恢复
-  if (pinnedIndices.length === 0 && taskIndices.length === 0) {
-    return <ThreadListEmpty>暂无任务对话</ThreadListEmpty>;
+  if (query && filteredIndices.length === 0) {
+    return <ThreadListEmpty searching>没有匹配的会话</ThreadListEmpty>;
   }
+  if (filteredIndices.length === 0) {
+    return <ThreadListEmpty>暂无对话</ThreadListEmpty>;
+  }
+
+  // 置顶行在置顶卡里占最前槽位，任务区行与「查看更多」连续跟上
+  //（置顶分区收起时任务区从 0 号槽位起）
+  const taskSlotBase = pinnedOpen ? mergedPinnedIndices.length : 0;
 
   return (
     <>
-      {/* 置顶组：独立灰底卡片与普通对话分开；行仍注册进 fluid hover 槽位
-          （置顶在前、任务在后，序号连续） */}
-      {pinnedIndices.length > 0 && (
-        <PinnedCard>
-          {pinnedIndices.map((index, slot) => (
+      {/* 置顶分区：任务置顶与项目置顶合并，独立灰底卡片展示；行注册进
+          fluid hover 槽位（置顶在前、任务在后，序号连续） */}
+      {mergedPinnedIndices.length > 0 && (
+        <PinnedCard
+          count={mergedPinnedIndices.length}
+          open={pinnedOpen}
+          onToggle={() => toggleSection("pinned")}
+        >
+          {mergedPinnedIndices.map((index, slot) => (
             <RowHoverContext.Provider
               key={threadIds[index]}
               value={{ registerItem, index: slot }}
@@ -901,37 +1011,108 @@ const ThreadListItemGroupsInner: FC<{
           ))}
         </PinnedCard>
       )}
-      {visibleTaskIndices.map((index, i) => (
-        <RowHoverContext.Provider
-          key={threadIds[index]}
-          value={{ registerItem, index: pinnedIndices.length + i }}
+      {projectGroups.length > 0 && (
+        <CollapsibleSection
+          label="项目"
+          count={projectGroups.length}
+          open={projectsOpen}
+          onToggle={() => toggleSection("projects")}
+          sticky={batchActive || projectsRange !== "all"}
+          actions={
+            batchActive ? (
+              <SectionBatchBar scope="projects" />
+            ) : (
+              <>
+                {onOpenDirsChange && (
+                  <TooltipIconButton
+                    variant="ghost"
+                    tooltip={allProjectsExpanded ? "收起全部" : "展开全部"}
+                    className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
+                    onClick={toggleAllProjects}
+                  >
+                    {allProjectsExpanded ? (
+                      <Minimize2Icon className="size-3.5" />
+                    ) : (
+                      <Maximize2Icon className="size-3.5" />
+                    )}
+                  </TooltipIconButton>
+                )}
+                <SectionFilterButton scope="projects" />
+                <TooltipIconButton
+                  variant="ghost"
+                  tooltip="批量管理"
+                  className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
+                  onClick={enterThreadBatch}
+                >
+                  <ListChecksIcon className="size-3.5" />
+                </TooltipIconButton>
+              </>
+            )
+          }
         >
-          <TreeRow position={i} instant={pinReorder}>
-            <ThreadListPrimitive.ItemByIndex
-              index={index}
-              components={{ ThreadListItem }}
-            />
-          </TreeRow>
-        </RowHoverContext.Provider>
-      ))}
-      {/* 分页尾巴：与项目组的「显示更多」同一套（会话标题的左缘对齐位 +
-          hover 槽位），只是页大小是任务 tab 自己的 */}
-      {hiddenTaskCount > 0 && (
-        <TreeRow position={visibleTaskIndices.length}>
-          <FluidHoverRow
-            registerItem={registerItem}
-            index={pinnedIndices.length + visibleTaskIndices.length}
-          >
-            <Button
-              variant="ghost"
-              // 左缘与会话标题对齐：行 ps-2.5(10px) + 占位图标 size-3.5(14px) + me-1.5(6px) = 30px
-              className="h-7 w-full justify-start ps-[30px] text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
-              onClick={() => setTaskVisibleCount((c) => c + TASK_VISIBLE_LIMIT)}
+          <ProjectGroupsSection
+            searchQuery={searchQuery}
+            openDirs={openDirs}
+            onOpenDirsChange={onOpenDirsChange}
+          />
+        </CollapsibleSection>
+      )}
+      {taskIndices.length > 0 && (
+        <CollapsibleSection
+          label="任务"
+          count={taskIndices.length}
+          open={tasksOpen}
+          onToggle={() => toggleSection("tasks")}
+          sticky={batchActive || tasksRange !== "all"}
+          actions={
+            batchActive ? (
+              <SectionBatchBar scope="tasks" />
+            ) : (
+              <>
+                <SectionFilterButton scope="tasks" />
+                <TooltipIconButton
+                  variant="ghost"
+                  tooltip="批量管理"
+                  className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
+                  onClick={enterThreadBatch}
+                >
+                  <ListChecksIcon className="size-3.5" />
+                </TooltipIconButton>
+              </>
+            )
+          }
+        >
+          {visibleTaskIndices.map((index, i) => (
+            <RowHoverContext.Provider
+              key={threadIds[index]}
+              value={{ registerItem, index: taskSlotBase + i }}
             >
-              {`显示更多（${Math.min(hiddenTaskCount, TASK_VISIBLE_LIMIT)}）`}
-            </Button>
-          </FluidHoverRow>
-        </TreeRow>
+              <TreeRow position={i} instant={pinReorder}>
+                <ThreadListPrimitive.ItemByIndex
+                  index={index}
+                  components={{ ThreadListItem }}
+                />
+              </TreeRow>
+            </RowHoverContext.Provider>
+          ))}
+          {hiddenTaskCount > 0 && (
+            <TreeRow position={visibleTaskIndices.length}>
+              <FluidHoverRow
+                registerItem={registerItem}
+                index={taskSlotBase + visibleTaskIndices.length}
+              >
+                <Button
+                  variant="ghost"
+                  // 左缘与分区头、会话标题同缘（ps-2.5）
+                  className="h-7 w-full justify-start ps-2.5 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+                  onClick={() => setTaskVisibleCount((c) => c + TASK_VISIBLE_LIMIT)}
+                >
+                  {`查看更多 (${Math.min(hiddenTaskCount, TASK_VISIBLE_LIMIT)})`}
+                </Button>
+              </FluidHoverRow>
+            </TreeRow>
+          )}
+        </CollapsibleSection>
       )}
     </>
   );
@@ -943,77 +1124,299 @@ const ThreadListItemGroupsInner: FC<{
  *  FluidHoverScope 把状态关进容器解决）。 */
 const ThreadListItemGroups = memo(ThreadListItemGroupsInner);
 
-/**
- * 项目 tab 内容：有工作目录的会话按文件夹分组，Collapsible 展开显示会话列表。
- * 必须渲染在 ThreadListPrimitive.Root 内部（会话项复用 ThreadListItem 的
- * 激活/重命名/删除能力）。
- * 展开目录集合可由外部受控（openDirs/onOpenDirsChange，供「展开全部」按钮用），
- * 不传则组件内部自管。
- */
-/** 置顶分组卡片（ChatGPT 侧栏同形）：圆角灰底 + 「已置顶」标签，与普通对话行
- *  分开渲染；任务 tab 与项目组内复用。标签 px-2.5 + 卡片 p-1 使文字左缘与
- *  行首图钉对齐；行的 fluid hover 槽位由调用方按渲染序分配 */
-const PinnedCard: FC<{ children: ReactNode }> = ({ children }) => (
-  <div className="my-1 rounded-xl bg-muted/50 p-1">
-    <div
-      aria-hidden
-      className="text-muted-foreground px-2.5 pb-1 pt-1.5 text-xs font-medium select-none"
-    >
-      已置顶
-    </div>
-    {children}
-  </div>
+/** 分区头触发器：文字左缘（px-2.5）与行内标题（trigger ps-2.5）同缘；
+ *  折叠箭头常隐、悬浮分区头时在标题后方浮现（悬浮折叠），点击开合 */
+const SectionHeaderTrigger: FC<{
+  label: string;
+  count: number;
+  open: boolean;
+  className?: string;
+}> = ({ label, count, open, className }) => (
+  <CollapsibleTrigger
+    render={
+      <button
+        type="button"
+        data-slot="aui_thread-list-section-header"
+        className={cn(
+          "flex w-full cursor-pointer items-center rounded-md px-2.5 pb-1 pt-2 text-start text-xs font-medium text-muted-foreground select-none hover:text-foreground",
+          className,
+        )}
+      >
+        <span className="min-w-0 truncate">{`${label} (${count})`}</span>
+        <span
+          aria-hidden
+          className="w-0 shrink-0 overflow-hidden opacity-0 transition-all duration-150 group-hover/header:w-3.5 group-hover/header:opacity-100 max-md:w-3.5 max-md:opacity-100"
+        >
+          <ChevronRightIcon
+            className={cn(
+              "size-3 transition-transform duration-200",
+              open && "rotate-90",
+            )}
+          />
+        </span>
+      </button>
+    }
+  />
 );
 
-/** 项目展开后默认可见的会话行数，超出折叠进「显示更多」 */
-const PROJECT_VISIBLE_LIMIT = 5;
-/** 任务 tab 每页行数：尾部「显示更多」每点一次放出一页（不做滚动自动加载） */
-const TASK_VISIBLE_LIMIT = 10;
-/** 项目卡开合：对齐 侧边栏的折叠动效——面板高度 300ms ease-in-out，
- *  内容作为整体同步淡入淡出（会话行不再逐行级联） */
-const PROJECT_PANEL_ANIMATION_MS = 300;
+/** 可折叠分区（统一分区列表的 置顶 / 任务 / 项目 共用）：分区头点击开合，
+ *  右侧悬浮操作区承载分区各自的动作（筛选 / 批量 / 项目「展开全部」）；
+ *  sticky = 动作常驻显示（批量模式、筛选生效中）。开合动画与项目组面板
+ *  同款：面板高度关键帧 + 内容整体淡入淡出 */
+const CollapsibleSection: FC<{
+  label: string;
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  actions?: ReactNode;
+  sticky?: boolean;
+  children: ReactNode;
+}> = ({ label, count, open, onToggle, actions, sticky, children }) => (
+  <Collapsible
+    open={open}
+    onOpenChange={(next) => {
+      if (next !== open) onToggle();
+    }}
+    style={{
+      ["--animation-duration" as string]: `${PANEL_ANIMATION_MS}ms`,
+    }}
+  >
+    <div className="group/header relative" data-fluid-hover-defer="">
+      <SectionHeaderTrigger label={label} count={count} open={open} />
+      {actions && (
+        <div
+          className={cn(
+            "absolute end-0.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5 transition-opacity duration-150",
+            sticky
+              ? "opacity-100"
+              : "pointer-events-none opacity-0 group-focus-within/header:pointer-events-auto group-focus-within/header:opacity-100 group-hover/header:pointer-events-auto group-hover/header:opacity-100",
+            // 下拉菜单（筛选）开着时指针在 portal 里，group-hover 已丢失：
+            // 触发按钮的 data-state=open 让操作区保持可见
+            "has-data-[state=open]:pointer-events-auto has-data-[state=open]:opacity-100",
+            // 移动端抽屉（md 以下）没有 hover：动作常驻，否则触摸无法触达
+            "max-md:pointer-events-auto max-md:opacity-100",
+          )}
+        >
+          {actions}
+        </div>
+      )}
+    </div>
+    <CollapsibleContent
+      className={cn(
+        "overflow-hidden outline-none ease-in-out",
+        "motion-reduce:animate-none",
+        "data-closed:animate-collapsible-up",
+        "data-open:animate-collapsible-down",
+        "data-closed:fill-mode-forwards",
+        "data-closed:pointer-events-none",
+        "[--tw-duration:var(--animation-duration)]",
+      )}
+    >
+      {children}
+    </CollapsibleContent>
+  </Collapsible>
+);
 
-export const ProjectListItems: FC<{
+/** 分区筛选按钮：时间区间按分区独立（pi-thread-filter 的 tasks / projects
+ *  两份），区间生效时常驻显示（配合 CollapsibleSection 的 sticky） */
+const SectionFilterButton: FC<{ scope: ThreadFilterScope }> = ({ scope }) => {
+  const range = useThreadTimeRange(scope);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <TooltipIconButton
+            variant="ghost"
+            tooltip={
+              range === "all"
+                ? "筛选会话"
+                : `筛选：${threadTimeRangeLabel(range)}`
+            }
+            className={cn(
+              "text-muted-foreground hover:text-foreground size-7 rounded-sm!",
+              range !== "all" && "text-foreground bg-muted hover:bg-muted",
+            )}
+          >
+            <ListFilterIcon className="size-3.5" />
+          </TooltipIconButton>
+        }
+      />
+      <DropdownMenuContent align="end" className="w-36">
+        <DropdownMenuRadioGroup
+          value={range}
+          onValueChange={(value) =>
+            setThreadTimeRange(value as ThreadTimeRange, scope)
+          }
+        >
+          {THREAD_TIME_RANGES.map((option) => (
+            <DropdownMenuRadioItem
+              key={option.value}
+              value={option.value}
+              // base-ui 的 RadioItem 默认选中不关菜单（与 Item 相反）。
+              // 筛选是"选完就走"的动作，这里显式关掉
+              closeOnClick
+              className="text-xs"
+            >
+              {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};
+
+/** 批量模式的分区操作栏（挂在分区头右侧，常驻）：全选只覆盖本分区的
+ *  可见池（pi-thread-batch 的注册集），归档 / 退出是全局动作——两个分区
+ *  的头各挂一份、动作相同，勾选集合共享 */
+const SectionBatchBar: FC<{ scope: ThreadBatchTab }> = ({ scope }) => {
+  const aui = useAui();
+  const batch = useThreadBatchState();
+  const threadItems = useThreadItems();
+  const visibleIds = batch.visible[scope] ?? [];
+  const allSelected =
+    visibleIds.length > 0 &&
+    visibleIds.every((id) => batch.selected.includes(id));
+  const archivableCount = useMemo(() => {
+    const byKey = new Map<string, (typeof threadItems)[number]>();
+    for (const item of threadItems) {
+      byKey.set(item.id, item);
+      if (item.remoteId) byKey.set(item.remoteId, item);
+    }
+    return batch.selected.filter((id) => byKey.get(id)?.status === "regular")
+      .length;
+  }, [batch.selected, threadItems]);
+
+  const archiveSelected = () => {
+    if (archivableCount === 0) {
+      exitThreadBatch();
+      return;
+    }
+    const byKey = new Map<string, (typeof threadItems)[number]>();
+    for (const item of threadItems) {
+      byKey.set(item.id, item);
+      if (item.remoteId) byKey.set(item.remoteId, item);
+    }
+    for (const selected of batch.selected) {
+      const item = byKey.get(selected);
+      // 新建未落盘的会话（status "new"）不可归档，跳过；当前打开中的
+      // 会话由 core 先切走再归档（同右键归档语义）
+      if (item?.status !== "regular") continue;
+      aui.threads.item({ id: item.id }).archive();
+    }
+    toast.add({ title: `已归档 ${archivableCount} 个会话`, type: "success" });
+    exitThreadBatch();
+  };
+
+  return (
+    <div className="flex items-center gap-0.5">
+      <TooltipIconButton
+        variant="ghost"
+        tooltip={allSelected ? "取消全选" : "全选"}
+        disabled={visibleIds.length === 0}
+        className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
+        onClick={() => setThreadBatchSelection(allSelected ? [] : visibleIds)}
+      >
+        <SquareCheckBigIcon className="size-3.5" />
+      </TooltipIconButton>
+      <TooltipIconButton
+        variant="ghost"
+        tooltip={archivableCount > 0 ? `归档（${archivableCount}）` : "归档"}
+        disabled={archivableCount === 0}
+        className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
+        onClick={archiveSelected}
+      >
+        <ArchiveIcon className="size-3.5" />
+      </TooltipIconButton>
+      <TooltipIconButton
+        variant="ghost"
+        tooltip="退出批量管理"
+        className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
+        onClick={exitThreadBatch}
+      >
+        <XIcon className="size-3.5" />
+      </TooltipIconButton>
+    </div>
+  );
+};
+
+/** 置顶分区卡片（ChatGPT 侧栏同形）：圆角灰底 + 可折叠的「置顶 (N)」头，
+ *  任务置顶与项目置顶合并展示。头 px-2.5 + 卡片 p-1 使文字左缘与行内标题
+ *  对齐；行的 fluid hover 槽位由调用方按渲染序分配 */
+const PinnedCard: FC<{
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}> = ({ count, open, onToggle, children }) => (
+  <Collapsible
+    open={open}
+    onOpenChange={(next) => {
+      if (next !== open) onToggle();
+    }}
+    style={{
+      ["--animation-duration" as string]: `${PANEL_ANIMATION_MS}ms`,
+    }}
+    className="my-1 rounded-xl bg-muted/50 p-1"
+  >
+    <div className="group/header relative" data-fluid-hover-defer="">
+      <SectionHeaderTrigger
+        label="置顶"
+        count={count}
+        open={open}
+        className="pb-1 pt-1.5"
+      />
+    </div>
+    <CollapsibleContent
+      className={cn(
+        "overflow-hidden outline-none ease-in-out",
+        "motion-reduce:animate-none",
+        "data-closed:animate-collapsible-up",
+        "data-open:animate-collapsible-down",
+        "data-closed:fill-mode-forwards",
+        "data-closed:pointer-events-none",
+        "[--tw-duration:var(--animation-duration)]",
+      )}
+    >
+      {children}
+    </CollapsibleContent>
+  </Collapsible>
+);
+
+/** 项目展开后默认可见的会话行数，超出折叠进「查看更多」 */
+const PROJECT_VISIBLE_LIMIT = 5;
+/** 任务区每页行数：尾部「查看更多」每点一次放出一页（不做滚动自动加载） */
+const TASK_VISIBLE_LIMIT = 10;
+/** 折叠面板开合（分区与项目组共用）：面板高度 300ms ease-in-out，
+ *  内容作为整体同步淡入淡出（会话行不再逐行级联） */
+const PANEL_ANIMATION_MS = 300;
+
+/** 项目分区内容：有工作目录的会话按文件夹分组，Collapsible 展开显示会话列表。
+ *  作为统一列表的「项目」分区渲染在 ThreadListPrimitive.Root 内部（会话项
+ *  复用 ThreadListItem 的激活/重命名/删除能力）。骨架与空态由分区分组层
+ *  统一处理，置顶的项目会话合并进顶部置顶卡、不在这里重复出现。
+ *  展开目录集合可由外部受控（openDirs/onOpenDirsChange，供「展开全部」按钮用），
+ *  不传则组件内部自管。
+ */
+const ProjectGroupsSection: FC<{
+  searchQuery?: string;
   openDirs?: Set<string>;
   onOpenDirsChange?: (next: Set<string>) => void;
-}> = ({ openDirs: controlledOpen, onOpenDirsChange }) => {
+}> = ({ searchQuery = "", openDirs: controlledOpen, onOpenDirsChange }) => {
   const aui = useAui();
   const reduce = useReducedMotion() ?? false;
-  const { threadIds, pinnedProjectIndices, projectGroups } =
-    useThreadListGroups();
+  const { threadIds, projectGroups } = useThreadListGroups(searchQuery);
   // 项目外观版本号：变一次整表重渲（外观极少变）；逐行直接读值——
   // 分组在 map 循环里渲染，hook 不能在循环里调，所以订阅收敛成这一条
   useProjectAppearancesVersion();
   const threadItems = useThreadItems();
-  // 任务 tab 同款：threads 初始加载期间渲染骨架（groups 为空不能当「暂无」）
-  const showSkeleton = useThreadListSkeleton();
   // 组头未读蓝点：组内任一会话未读即点亮（与会话行蓝点同款式）
   const unreadIds = useUnreadSessionIds();
-  // 批量模式「全选」的可见集注册：项目 tab 全部会话（置顶卡 + 各组全员，
-  // 含「显示更多」未放出的行——它们是真实会话，全选应覆盖）
-  const visibleProjectIds = useMemo(
-    () =>
-      [...pinnedProjectIndices, ...projectGroups.flatMap((g) => g.indices)].map(
-        (index) => threadIds[index],
-      ),
-    [threadIds, pinnedProjectIndices, projectGroups],
-  );
-  useEffect(() => {
-    setThreadBatchVisible("projects", visibleProjectIds);
-  }, [visibleProjectIds]);
-  // 置顶切换检测：同任务列表——组内置顶换位瞬时完成，不走滑移
-  const pinnedIds = usePinnedSessionIds();
-  const prevPinnedRef = useRef<readonly string[] | null>(null);
-  const pinReorder =
-    prevPinnedRef.current !== null && prevPinnedRef.current !== pinnedIds;
-  useEffect(() => {
-    prevPinnedRef.current = pinnedIds;
-  });
   const [internalOpen, setInternalOpen] = useState<Set<string>>(
     () => new Set(),
   );
   const openDirs = controlledOpen ?? internalOpen;
-  // 项目分组内当前可见行数（「显示更多」每点一次 +5 分页放出，不一次全开）；
+  // 项目分组内当前可见行数（「查看更多」每点一次 +5 分页放出，不一次全开）；
   // 不设「收起」按钮：项目折叠再展开即回默认 5 条（清理见 openDirs 效应）
   const [visibleCounts, setVisibleCounts] = useState<Map<string, number>>(
     () => new Map(),
@@ -1060,7 +1463,7 @@ export const ProjectListItems: FC<{
     });
   }, [openDirs]);
 
-  // 面板开合/「显示更多」的结构变化提交里，行的位移由面板高度动画逐帧带动。
+  // 面板开合/「查看更多」的结构变化提交里，行的位移由面板高度动画逐帧带动。
   // 若同时让 TreeRow 跑 framer 的 layout 投影，两个位移会叠加——下方分组会
   // 先盖在刚展开的会话行上再滑开（收起时反向），观感即「展开折叠动画很奇怪」。
   // 因此只在这一帧把行位移置为瞬时，之后仍保留 layout 动画（置顶换位等）。
@@ -1154,41 +1557,15 @@ export const ProjectListItems: FC<{
     );
   };
 
-  // 加载中先于空态判断：骨架行与任务 tab 同款（5 条 h-3.5 条带）
-  if (showSkeleton) return <ThreadListSkeleton />;
-
-  if (projectGroups.length === 0 && pinnedProjectIndices.length === 0) {
-    return (
-      <ThreadListEmpty>
-        暂无项目对话，选择工作目录后新建的对话会出现在这里
-      </ThreadListEmpty>
-    );
-  }
-
-  // 渲染序即注册序：置顶卡片行占最前槽位，组头与其子行连续跟上
+  // 渲染序即注册序：组头与其子行连续跟上（置顶的项目会话在分区分组层的
+  // 置顶卡里，不在这里渲染）
   let nextSlot = 0;
-  const pinnedSlots = pinnedProjectIndices.map(() => nextSlot++);
 
   return (
     <SessionDragContext.Provider value={dragApi}>
     <FluidHoverScope>
-      {/* 置顶的项目会话跳出所属文件夹，进项目 tab 顶部的全局「已置顶」卡片 */}
-      {pinnedProjectIndices.length > 0 && (
-        <PinnedCard>
-          {pinnedProjectIndices.map((index, i) => (
-            <ScopeRowSlot key={threadIds[index]} index={pinnedSlots[i]}>
-              <TreeRow position={i} instant={pinReorder || structureChanged}>
-                <ThreadListPrimitive.ItemByIndex
-                  index={index}
-                  components={{ ThreadListItem }}
-                />
-              </TreeRow>
-            </ScopeRowSlot>
-          ))}
-        </PinnedCard>
-      )}
       {projectGroups.map((group) => {
-        // 组内行数超过上限时默认截断 5 条，尾部「显示更多」每点放出 5 条，
+        // 组内行数超过上限时默认截断 5 条，尾部「查看更多」每点放出 5 条，
         // 放完即无按钮（项目折叠再展开回默认）；截断后的行与按钮占连续 hover 槽位
         const visibleLimit =
           visibleCounts.get(group.cwd) ?? PROJECT_VISIBLE_LIMIT;
@@ -1208,7 +1585,7 @@ export const ProjectListItems: FC<{
             open={isOpen}
             onOpenChange={() => toggle(group.cwd)}
             style={{
-              ["--animation-duration" as string]: `${PROJECT_PANEL_ANIMATION_MS}ms`,
+              ["--animation-duration" as string]: `${PANEL_ANIMATION_MS}ms`,
             }}
           >
             <TreeRow position={headerSlot} instant={structureChanged}>
@@ -1339,8 +1716,8 @@ export const ProjectListItems: FC<{
                     <ScopeRowSlot key={threadIds[index]} index={childSlots[i]}>
                       <TreeRow
                         position={i}
-                        instant={pinReorder || structureChanged}
-                        // 开合由面板整体淡入承担；「显示更多」新增的行仍走级联
+                        instant={structureChanged}
+                        // 开合由面板整体淡入承担；「查看更多」新增的行仍走级联
                         enter={!openDirsChanged}
                       >
                         <ThreadListPrimitive.ItemByIndex
@@ -1359,12 +1736,11 @@ export const ProjectListItems: FC<{
                       <FluidHoverRow index={moreSlot}>
                         <Button
                           variant="ghost"
-                          // 左缘与会话标题对齐：行 ps-4(16px) + 占位图标
-                          // size-3.5(14px) + me-1.5(6px) = 36px，与组头标题同缘
-                          className="h-7 w-full justify-start ps-9 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+                          // 左缘与组内会话标题同缘（行 trigger ps-4）
+                          className="h-7 w-full justify-start ps-4 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
                           onClick={() => expandMore(group.cwd)}
                         >
-                          {`显示更多（${Math.min(hiddenCount, PROJECT_VISIBLE_LIMIT)}）`}
+                          {`查看更多 (${Math.min(hiddenCount, PROJECT_VISIBLE_LIMIT)})`}
                         </Button>
                       </FluidHoverRow>
                     </TreeRow>
@@ -1406,52 +1782,6 @@ export const ProjectListItems: FC<{
     </SessionDragContext.Provider>
   );
 };
-
-export const ThreadListNew = forwardRef<
-  HTMLButtonElement,
-  ComponentPropsWithoutRef<typeof Button> & { labelClassName?: string }
->(({ className, labelClassName, children, onClick, ...props }, ref) => {
-  return (
-    <ThreadListPrimitive.New asChild>
-      <Button
-        ref={ref}
-        variant="ghost"
-        data-slot="aui_thread-list-new"
-        className={cn(
-          "hover:bg-selected data-active:bg-selected h-8 justify-start gap-2 rounded-md px-2.5 text-sm font-normal",
-          className,
-        )}
-        onClick={(e) => {
-          // 动作驱动清"最近打开的会话"指针（与外层 New 的框架切换合成执行），
-          // 刷新后不再回旧会话（2026-09-22 修复）。
-          // 同时清 workspace：新对话一律从"未选择目录"开始，杜绝静默继承上一个
-          // 会话的目录（曾致"没选目录却总在某目录执行"）；旧目录靠 recents 一键可达。
-          clearLastThread();
-          clearWorkspace();
-          onClick?.(e);
-        }}
-        {...props}
-      >
-        {children ?? (
-          <>
-            <PlusIcon
-              data-slot="aui_thread-list-new-icon"
-              className="size-4 shrink-0"
-            />
-            <span
-              data-slot="aui_thread-list-new-label"
-              className={cn("whitespace-nowrap", labelClassName)}
-            >
-              新对话
-            </span>
-          </>
-        )}
-      </Button>
-    </ThreadListPrimitive.New>
-  );
-});
-
-ThreadListNew.displayName = "ThreadListNew";
 
 const ThreadListSkeleton: FC = () => {
   return (
@@ -1594,7 +1924,7 @@ export const ThreadListItem: FC = () => {
   const elapsed = showRunning
     ? "刚刚"
     : lastMs
-      ? formatElapsed(Date.now() - lastMs)
+      ? formatElapsed(lastMs, Date.now())
       : null;
   // 挂起交互徽标：台账键 = sessionId = 本行 remoteId，后台会话卡在审批上时
   // 侧边栏同样点亮（行不必被打开）。徽标比用时优先，两者互斥。
@@ -1704,7 +2034,7 @@ export const ThreadListItem: FC = () => {
           }}
           className={cn(
             "flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md ps-2.5 text-start text-sm outline-none",
-            // 与组头标题左缘对齐：ps-4(16px) + 占位图标 14px + me-1.5(6px) = 36px
+            // 项目子树里与普通会话行同缩进（ps-4）
             nestedInProject && "ps-4",
           )}
         >
@@ -1742,54 +2072,30 @@ export const ThreadListItem: FC = () => {
           // 与库的切换动作合并执行（createActionButton 的 composeEventHandlers）：
           // 点击瞬间高亮先动，真实切换随后按原路径进行
           onClick={() => markPendingThreadSelection(itemId)}
-          // 右侧槽位常驻宽度随该槽内容切换：more 按钮/用时是 pe-9(36px)，
-          // 挂起徽标「等待审批」四个汉字 @text-xs 约 48px，放不下会压到标题
-          // 右缘，故挂起时放宽到 pe-14(56px)，并撤掉标题自留的 me-3
+          // 右侧槽位常驻 pe-14(56px)：容纳用时（如「10月17日」）、挂起徽标
+          // 与 hover 时右侧并排的置顶+更多两枚按钮，标题截断在任何状态下不跳动
           className={cn(
-            "group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md pe-9 ps-2.5 text-start text-sm outline-none focus-visible:ring-1",
-            pendingBadge && "pe-14",
+            "group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md pe-14 ps-2.5 text-start text-sm outline-none focus-visible:ring-1",
             nestedInProject && "ps-4",
           )}
         >
-          {/* Loader DOM 常驻，永久占位；运行中（含 hover）恒显 spinner，不再让位
-              给置顶按钮——运行态是用户最关心的事实，行首槽位归它；置顶在
-              hover 期间改走「…」/右键菜单（useThreadRowMenu 的 pin 项） */}
-          <DotMatrix
-            aria-hidden
-            state="loading"
-            data-slot="aui_thread-list-item-running"
-            data-running={showRunning}
-            className="
-              text-muted-foreground me-1.5 size-3.5 shrink-0
-              invisible
-              data-[running=true]:visible
-            "
-          />
-          {/* 未读点：占 loader 槽位（运行中让位 spinner、已置顶让位图钉）；
-              标题同时加粗，双通道提示（点被盖住时仍有字重可辨）。蓝色区分
-              于主题前景色，ChatGPT/Codex 同款未读语义 */}
-          {unread && !showRunning && !pinned && (
+          {/* 运行指示与未读点按条件内联占位：闲置行行首无图标，标题与分区头
+              文字同缘；指示出现时行内让位、标题右移。置顶不再画行首图钉，
+              归属由置顶分区表达；未读点保留标题加粗双通道提示 */}
+          {showRunning && (
+            <DotMatrix
+              aria-hidden
+              state="loading"
+              data-slot="aui_thread-list-item-running"
+              className="text-muted-foreground me-1.5 size-3.5 shrink-0"
+            />
+          )}
+          {unread && !showRunning && (
             <span
               aria-hidden
               data-slot="aui_thread-list-item-unread"
-              className={cn(
-                "bg-blue-500 absolute top-1/2 size-1.5 -translate-y-1/2 rounded-full group-hover:opacity-0",
-                // 项目子树里状态位跟着标题缩进：ps-4(16px) + 槽位中心 7px - 点半径 3px
-                nestedInProject ? "start-5" : "start-[14px]",
-              )}
+              className="bg-blue-500 me-1.5 size-1.5 shrink-0 rounded-full"
             />
-          )}
-          {/* 档位图标：与 loader/未读点/置顶图钉同占行首槽位（trigger ps-2.5 后
-              的 14px 位，标题左缘仍是 30px，与「显示更多」对齐），故三者互斥出图。
-              hover 让位给置顶按钮，同未读点/图钉的规则 */}
-          {!showRunning && !pinned && !unread && !nestedInProject && (
-            <span
-              data-slot="aui_thread-list-item-mode"
-              title={`工作模式：${APP_MODE_META[sessionAppMode].label}`}
-              className="text-muted-foreground absolute start-2.5 top-1/2 grid size-3.5 -translate-y-1/2 place-items-center group-hover:opacity-0"
-            >
-              <ModeIcon className="size-3.5" />
-            </span>
           )}
           {/* {automationTaskId && (
             <ZapIcon
@@ -1803,42 +2109,22 @@ export const ThreadListItem: FC = () => {
               className="text-muted-foreground hover:text-foreground me-1.5 size-3 shrink-0 cursor-pointer"
             />
           )} */}
-          {/* me-3：用时标签是 end-1.5 绝对定位，"12小时"这类长文本会比
-              pe-9(36px) 槽位宽、伸进标题右缘；让标题盒提前 12px 收尾，
-              渐隐带（16px）与用时不再重叠。挂起徽标占了更宽的槽位，
-              宽度已由 trigger 的 pe 让出，这里不再额外收尾 */}
           <MarqueeTitle
             data-slot="aui_thread-list-item-title"
-            className={cn(!pendingBadge && "me-3", unread && "font-medium")}
+            className={cn(unread && "font-medium")}
           >
             {liveTitle ?? <ThreadListItemPrimitive.Title fallback="新对话" />}
           </MarqueeTitle>
           {showRunning && <span className="sr-only">Running</span>}
         </ThreadListItemPrimitive.Trigger>
       )}
-      {/* 置顶常驻图钉：已置顶且非运行中时占据 loader 槽位（trigger ps-2.5 后的
-          14px 位），hover 时淡出让位给下方按钮。运行中仍显示 spinner（临时态
-          优先），停跑后图钉回归 */}
-      {pinned && !showRunning && !batchActive && (
-        <span
-          aria-hidden
-          data-slot="aui_thread-list-item-pinned"
-          className={cn(
-            "text-muted-foreground pointer-events-none absolute top-1/2 grid size-3.5 -translate-y-1/2 cursor-pointer place-items-center group-hover:opacity-0",
-            nestedInProject ? "start-4" : "start-2.5",
-          )}
-        >
-          <PinIcon className="size-3.5 fill-current" />
-        </span>
-      )}
-      {/* 置顶按钮：绝对定位悬浮在 loader 槽位上（start-[5px] + size-6 grid 居中，
-          图标落点 [10,24] 与常驻图钉完全一致）。不用 Button 组件——默认变体的
-          bg-primary/h-8/px-3 与 size-6 冲突导致盒子尺寸漂移、图标错位，且其
-          active:translate-y-px 会让点击时图标下移。运行中不出现（行首归常驻
-          spinner，置顶走「…」/右键菜单），停跑后恢复 hover 置顶；图标恒定不随
-          状态切换（点击只切换置顶，状态由常驻图钉表达）。
-          停止入口只在输入框（侧边栏 stop 按钮已按需求移除） */}
-      {remoteId && !batchActive && !showRunning ? (
+      {/* 置顶快捷按钮：hover 时出现在右侧槽位（end-8 的 size-6，与靠边的
+          「更多」按钮并排）。不用 Button 组件——默认变体的 bg-primary/h-8/px-3
+          与 size-6 冲突导致盒子尺寸漂移、图标错位，且其 active:translate-y-px
+          会让点击时图标下移。运行中同样出现（按钮在行尾，与行首 spinner
+          不同槽，旧版隐藏是行首同槽时代的遗留限制）；置顶状态由所在分区
+          表达；停止入口只在输入框（侧边栏 stop 按钮已按需求移除） */}
+      {remoteId && !batchActive ? (
         <button
           data-slot="aui_thread-list-item-pin"
           title={pinned ? "取消置顶" : "置顶"}
@@ -1848,20 +2134,16 @@ export const ThreadListItem: FC = () => {
             e.stopPropagation();
             togglePinSession(remoteId);
           }}
-          className={cn(
-            "text-muted-foreground hover:bg-muted hover:text-foreground absolute top-1/2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-has-focus-visible:opacity-100",
-            // 按钮中心与缩进后的槽位中心对齐：ps-4(16px) + 7px - size-6/2(12px)
-            nestedInProject ? "start-[11px]" : "start-[5px]",
-          )}
+          className="text-muted-foreground hover:bg-muted hover:text-foreground absolute end-8 top-1/2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-has-focus-visible:opacity-100"
         >
           <PinIcon className="size-3.5" />
         </button>
       ) : null}
-      {/* 用时与 more 按钮同位（end-1.5 的绝对槽位），选中行也显示；显隐条件
-          与 more 严格互补（hover / 键盘焦点 / 菜单展开时 more 出现，此处隐藏）。
-          双方都瞬时切换、不带透明度过渡，避免交叉淡出期间两个同时可见。
-          trigger 常驻 pe-9 为该槽位留宽，标题截断在任何状态下不跳动。
-          批量模式下 pin/用时/菜单全部让位勾选流 */}
+      {/* 用时与挂起徽标/置顶/更多共用右侧槽位（end-1.5 绝对定位），选中行也
+          显示用时；显隐条件与右侧按钮严格互补（hover / 键盘焦点 / 菜单展开时
+          按钮出现，此处隐藏）。双方都瞬时切换、不带透明度过渡，避免交叉淡出
+          期间两个同时可见。trigger 常驻 pe-14 为该槽位留宽，标题截断在任何
+          状态下不跳动。批量模式下 pin/用时/菜单全部让位勾选流 */}
       {!batchActive && !pendingBadge && elapsed && (
         <span
           data-slot="aui_thread-list-item-elapsed"

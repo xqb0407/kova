@@ -2,6 +2,7 @@
 
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { PiModelPicker } from "@/components/agent-thread/model-picker";
+import { ThreadNavButtons } from "@/components/agent-thread/thread-nav-buttons";
 import { cn } from "@/lib/utils";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { WindowControls } from "@/components/window-controls";
@@ -317,33 +318,38 @@ export const Header: FC<{
         <MenuIcon className="size-4" />
         <span className="sr-only">Toggle menu</span>
       </Button>
-      {/* 折叠按钮槽：常驻挂载（展开时 inert 防聚焦），宽度 0↔32 与侧栏
+      {/* 折叠按钮槽：常驻挂载（展开时 inert 防聚焦），宽度 0↔104 与侧栏
           width 收拢同节拍（300ms + 同曲线）把标题等内容往右挤开；w-0 时负
           margin 抵消 header 的 gap-2，<md display:none 完全不占位。
           按钮本体不做位移动画——展开时按钮会被侧栏推着右移再裁掉，观感
           像闪到右边；只做 150ms 快速淡出（感知即"直接消失"），槽位空收
-          由宽度过渡承担排版平滑 */}
+          由宽度过渡承担排版平滑。折叠态槽内是 [后退][前进][Show sidebar]：
+          侧边栏收起后导航按钮在主区 Header 顶栏顶上（mac 红绿灯让位由
+          md:pl-24 承接），展开后随槽位收没（侧边栏 header 里有同一对） */}
       <div
         inert={!sidebarCollapsed}
         aria-hidden={!sidebarCollapsed}
         className={cn(
           "overflow-hidden transition-[width,margin] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] max-md:hidden",
-          sidebarCollapsed ? "w-8" : "-ml-2 w-0",
+          sidebarCollapsed ? "w-26" : "-ml-2 w-0",
         )}
       >
-        <TooltipIconButton
-          variant="ghost"
-          size="icon"
-          tooltip="Show sidebar"
-          side="bottom"
-          onClick={onToggleSidebar}
-          className={cn(
-            "size-8 transition-opacity duration-150",
-            !sidebarCollapsed && "pointer-events-none opacity-0",
-          )}
-        >
-          <PanelLeftIcon className="size-4" />
-        </TooltipIconButton>
+        <div className="flex items-center gap-1">
+          <ThreadNavButtons />
+          <TooltipIconButton
+            variant="ghost"
+            size="icon"
+            tooltip="Show sidebar"
+            side="bottom"
+            onClick={onToggleSidebar}
+            className={cn(
+              "size-8 transition-opacity duration-150",
+              !sidebarCollapsed && "pointer-events-none opacity-0",
+            )}
+          >
+            <PanelLeftIcon className="size-4" />
+          </TooltipIconButton>
+        </div>
       </div>
       
       {/* 整页视图的页面工具条槽位：页面视图（资料库）经 portal 把自己的

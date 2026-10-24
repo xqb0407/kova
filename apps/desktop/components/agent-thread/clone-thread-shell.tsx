@@ -4,10 +4,9 @@ import {
   ThreadList,
   ThreadListItems,
   ThreadListRoot,
-  ProjectListItems,
-  useThreadListGroups,
 } from "@/components/assistant-ui/elements/thread-list.aui";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { ThreadNavButtons } from "@/components/agent-thread/thread-nav-buttons";
 import { MoveSessionDialogHost } from "@/components/agent-thread/move-session-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,46 +18,22 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   Sheet,
   SheetContent,
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { isRemoteMode } from "@/lib/remote";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
 import { clearWorkspace } from "@/lib/workspace/workspace-store";
 import {
-  enterThreadBatch,
-  exitThreadBatch,
-  setThreadBatchSelection,
-  useThreadBatchState,
-  type ThreadBatchTab,
-} from "@/lib/pi/pi-thread-batch";
-import {
-  THREAD_TIME_RANGES,
-  setThreadTimeRange,
-  threadTimeRangeLabel,
-  useThreadTimeRange,
-  type ThreadTimeRange,
-} from "@/lib/pi/pi-thread-filter";
-import { toast } from "@/components/ui/toast";
+  finishNavApply,
+  syncNavCurrent,
+  useThreadNavState,
+} from "@/lib/pi/pi-thread-nav-history";
 import {
   formatShortcutParts,
   matchesShortcut,
@@ -70,33 +45,19 @@ import { FluidHoverRow } from "@/components/fluid-hover-row";
 import { Logo } from "./header";
 import { ThreadListPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import {
-  ArchiveIcon,
   ChartColumnIcon,
-  ChevronsDownUpIcon,
-  ChevronsUpDownIcon,
-  FolderIcon,
   LibraryIcon,
-  ListChecksIcon,
-  ListFilterIcon,
-  ListTodoIcon,
   MenuIcon,
   MessageSquareIcon,
   PanelLeftIcon,
   SearchIcon,
-  SquareCheckBigIcon,
-  XIcon,
   ZapIcon,
   PlugIcon,
   PlusIcon,
   SettingsIcon,
-  FolderCode,
-  FileCheckCornerIcon,
-  Maximize2Icon,
-  Minimize2Icon,
 } from "lucide-react";
 import {
   useEffect,
-  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -152,30 +113,17 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     if (!menuControlled) setInternalActiveMenu(value);
     onActiveMenuChange?.(value);
   };
-  const [activeTab, setActiveTab] = useState<string>("tasks");
   // 红绿灯避让只在 macOS 桌面端（Electron）成立：isMacPlatform() 只看 UA，
   // 网页在 mac 浏览器里打开时同样为 true，但无窗口 chrome，必须走 Logo 分支
   // （与 base.tsx 的 mac 同口径）
   const macDesktop = isDesktop() && isMacPlatform();
-  // 项目分组的展开状态提升到 shell：「展开全部/收起全部」按钮与列表共用
+  // 项目分组的展开状态提升到 shell：分区头的「展开全部/收起全部」按钮与
+  // 列表共用；移动会话成功后据此自动展开目标组
   const [projOpenDirs, setProjOpenDirs] = useState<Set<string>>(
     () => new Set(),
   );
-  const { projectGroups } = useThreadListGroups();
-  // 时间筛选（tabs 行右侧按钮；值由 pi-thread-filter store 持有，
-  // useThreadListGroups 侧读取，这里只为按钮的当前值/高亮）
-  const timeRange = useThreadTimeRange();
-  const allProjectsExpanded =
-    projectGroups.length > 0 &&
-    projectGroups.every((g) => projOpenDirs.has(g.cwd));
-  const toggleAllProjects = () =>
-    setProjOpenDirs(
-      allProjectsExpanded
-        ? new Set()
-        : new Set(projectGroups.map((g) => g.cwd)),
-    );
-  // 会话移动成功：把目标目录的组展开。状态提升在 shell 层——即使当前在
-  // 任务 tab（ProjectListItems 未挂载），切回项目 tab 时也能看到移入的会话
+  // 会话移动成功：把目标目录的组展开。展开状态提升在 shell 层，与
+  // 「展开全部」按钮共用
   useEffect(() => {
     const onMoved = (event: Event) => {
       const cwd = (event as CustomEvent<{ cwd?: string }>).detail?.cwd;
@@ -208,46 +156,38 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const threadItems = useAuiState((s) => s.threads.threadItems);
   const aui = useAui();
 
-  // 批量管理模式：跨 tab 统一勾选 → 批量归档（pi-thread-batch store）。
-  // 选中键 = remoteId（= item id，新链路同值）；归档动作把键映射回
-  // thread item id（旧数据兜底），跳过未落盘（status "new"）与已归档项
-  const batch = useThreadBatchState();
-  const batchTab: ThreadBatchTab = activeTab === "projects" ? "projects" : "tasks";
-  const batchVisibleIds = batch.visible[batchTab] ?? [];
-  const batchAllSelected =
-    batchVisibleIds.length > 0 &&
-    batchVisibleIds.every((id) => batch.selected.includes(id));
-  const archivableCount = useMemo(() => {
-    const byKey = new Map<string, (typeof threadItems)[number]>();
-    for (const item of threadItems) {
-      byKey.set(item.id, item);
-      if (item.remoteId) byKey.set(item.remoteId, item);
-    }
-    return batch.selected.filter((id) => byKey.get(id)?.status === "regular")
-      .length;
-  }, [batch.selected, threadItems]);
-  const toggleBatchSelectAll = () =>
-    setThreadBatchSelection(batchAllSelected ? [] : batchVisibleIds);
-  const archiveBatchSelected = () => {
-    if (archivableCount === 0) {
-      exitThreadBatch();
+  // 导航历史（浏览器式前进/后退，见 pi-thread-nav-history）：记录与执行都
+  // 收在本组件——它是唯一同时持有 useAui 与受控 currentMenu 的单例宿主
+  // （桌面 aside 与移动抽屉共用一次挂载，tracker 不会双份入栈）
+  const navThreadId = useAuiState((s) => s.threads.mainThreadId);
+  const navState = useThreadNavState();
+  useEffect(() => {
+    if (!navThreadId) return;
+    syncNavCurrent({ threadId: navThreadId, menu: currentMenu });
+  }, [navThreadId, currentMenu]);
+  useEffect(() => {
+    const pending = navState.pending;
+    if (!navState.applying || !pending) return;
+    // menu 同步先落；会话异步后落，成功由 tracker 的 id 追平上报解除
+    // applying，失败（会话已删等）就地复位——目标条目放弃，栈不回滚
+    setActiveMenu(pending.menu);
+    if (pending.threadId === navThreadId) return;
+    if (!threadIds.includes(pending.threadId)) {
+      // 已删会话：switchToThread 对不在列表的 id 不抛错，而是拉空快照、
+      // 被 RemoteThreadList 收编成幽灵「新对话」行（见 pi-client-base
+      // deleteThread 注释）——直接放弃该条目，不切换
+      finishNavApply();
       return;
     }
-    const byKey = new Map<string, (typeof threadItems)[number]>();
-    for (const item of threadItems) {
-      byKey.set(item.id, item);
-      if (item.remoteId) byKey.set(item.remoteId, item);
+    try {
+      Promise.resolve(aui.threads.switchToThread(pending.threadId)).catch(() =>
+        finishNavApply(),
+      );
+    } catch {
+      finishNavApply();
     }
-    for (const selected of batch.selected) {
-      const item = byKey.get(selected);
-      // 新建未落盘的会话（status "new"）不可归档，跳过；当前打开中的
-      // 会话由 core 先切走再归档（同右键归档语义）
-      if (item?.status !== "regular") continue;
-      aui.threads.item({ id: item.id }).archive();
-    }
-    toast.add({ title: `已归档 ${archivableCount} 个会话`, type: "success" });
-    exitThreadBatch();
-  };
+    // 只随导航请求触发；setActiveMenu/aui/navThreadId 取当次渲染闭包值
+  }, [navState.applySeq]);
 
   // 全局快捷键：绑定来自「设置 → 快捷键」，改动即时生效
   const { toggleSearch, newThread } = useShortcuts();
@@ -518,9 +458,12 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </TooltipIconButton>
           )}
           {(() => {
-            // 搜索入口紧挨折叠按钮左侧（折叠按钮经 headerContent 传入）。
-            // 折叠时内容随整列平移出屏，无需卸载；mac 桌面端的红绿灯避让
-            // （ml-18）由组内第一个元素（搜索）承接
+            // 导航（后退/前进）与搜索入口在折叠按钮左侧（折叠按钮经
+            // headerContent 传入）。折叠时内容随整列平移出屏，无需卸载；
+            // mac 桌面端的红绿灯避让（ml-18）由组内第一个元素（后退）承接
+            const navButtons = (
+              <ThreadNavButtons className={cn(macDesktop && "ml-18")} />
+            );
             const searchButton = (
               <TooltipIconButton
                 variant="ghost"
@@ -528,7 +471,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                 tooltip="搜索对话"
                 side="bottom"
                 onClick={() => setSearchOpen(true)}
-                className={cn("size-8", macDesktop && "ml-18")}
+                className="size-8"
               >
                 <SearchIcon className="size-4" />
               </TooltipIconButton>
@@ -544,15 +487,17 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             if (macDesktop)
               return (
                 <>
+                  {navButtons}
                   {searchButton}
                   {inner}
                 </>
               );
-            // Windows/网页：Logo 靠左，搜索与折叠按钮靠右（窗口控制在主 Header 右上角）
+            // Windows/网页：Logo 靠左，导航与搜索、折叠按钮靠右（窗口控制在主 Header 右上角）
             return (
               <>
                 {!sidebarCollapsed && <Logo />}
                 <div className="ml-auto flex items-center gap-1">
+                  {navButtons}
                   {searchButton}
                   {inner}
                 </div>
@@ -610,162 +555,24 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
           </div>
         </div>
 
-        {/* Tabs 胶囊分段器（左对齐）：批量模式下保留切换（两个 tab 勾选同一
-            池），右侧换成批量操作栏 */}
-        <div className="flex w-full shrink-0 items-center justify-between gap-2 px-3 pt-2">
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList
-                variant="outline"
-                className="group-data-horizontal/tabs:h-8 h-8 rounded-sm! p-0.5!"
-              >
-                <TabsTrigger
-                  value="tasks"
-                  className="flex-none gap-1.5 rounded-sm! px-3 py-0 text-xs"
-                >
-                  <FileCheckCornerIcon className="size-3.5 shrink-0" />
-                  任务
-                </TabsTrigger>
-                <TabsTrigger
-                  value="projects"
-                  className="flex-none gap-1.5 rounded-sm! px-3 py-0 text-xs"
-                >
-                  <FolderCode className="size-3.5 shrink-0" />
-                  项目
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-            {batch.active ? (
-              /* 纯图标操作栏：tabs 行宽度有限，文字按钮放不下（计数进 tooltip） */
-              <div className="flex items-center gap-0.5">
-                <TooltipIconButton
-                  variant="ghost"
-                  tooltip={batchAllSelected ? "取消全选" : "全选"}
-                  disabled={batchVisibleIds.length === 0}
-                  className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
-                  onClick={toggleBatchSelectAll}
-                >
-                  <SquareCheckBigIcon className="size-3.5" />
-                </TooltipIconButton>
-                <TooltipIconButton
-                  variant="ghost"
-                  tooltip={
-                    archivableCount > 0 ? `归档（${archivableCount}）` : "归档"
-                  }
-                  disabled={archivableCount === 0}
-                  className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
-                  onClick={archiveBatchSelected}
-                >
-                  <ArchiveIcon className="size-3.5" />
-                </TooltipIconButton>
-                <TooltipIconButton
-                  variant="ghost"
-                  tooltip="退出批量管理"
-                  className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
-                  onClick={exitThreadBatch}
-                >
-                  <XIcon className="size-3.5" />
-                </TooltipIconButton>
-              </div>
-            ) : (
-              /* 必须包成单个 flex 子项：否则 justify-between 会把两枚按钮
-                 各自摊开，中间出现大空隙 */
-              <div className="flex items-center gap-0.5">
-                {activeTab === "projects" && projectGroups.length > 0 && (
-                  <TooltipIconButton
-                    variant="ghost"
-                    tooltip={allProjectsExpanded ? "收起全部" : "展开全部"}
-                    className="text-muted-foreground hover:text-foreground h-7 gap-1 rounded-sm! px-2.5 text-xs"
-                    onClick={toggleAllProjects}
-                  >
-                    {allProjectsExpanded ? (
-                      <Minimize2Icon className="size-3.5" />
-                    ) : (
-                      <Maximize2Icon className="size-3.5" />
-                    )}
-                  </TooltipIconButton>
-                )}
-                {hasThreads && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger
-                      render={
-                        <TooltipIconButton
-                          variant="ghost"
-                          tooltip={
-                            timeRange === "all"
-                              ? "筛选会话"
-                              : `筛选：${threadTimeRangeLabel(timeRange)}`
-                          }
-                          // 筛选生效时给个常驻的底色：菜单关掉后也得看得出
-                          // 「列表现在是被筛过的」
-                          className={cn(
-                            "text-muted-foreground hover:text-foreground size-7 rounded-sm!",
-                            timeRange !== "all" &&
-                              "text-foreground bg-muted hover:bg-muted",
-                          )}
-                        >
-                          <ListFilterIcon className="size-3.5" />
-                        </TooltipIconButton>
-                      }
-                    />
-                    <DropdownMenuContent align="end" className="w-36">
-                      <DropdownMenuRadioGroup
-                        value={timeRange}
-                        onValueChange={(value) =>
-                          setThreadTimeRange(value as ThreadTimeRange)
-                        }
-                      >
-                        {THREAD_TIME_RANGES.map((option) => (
-                          <DropdownMenuRadioItem
-                            key={option.value}
-                            value={option.value}
-                            // base-ui 的 RadioItem 默认选中不关菜单（与 Item
-                            // 相反）。筛选是"选完就走"的动作，这里显式关掉
-                            closeOnClick
-                            className="text-xs"
-                          >
-                            {option.label}
-                          </DropdownMenuRadioItem>
-                        ))}
-                      </DropdownMenuRadioGroup>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
-                {hasThreads && (
-                  <TooltipIconButton
-                    variant="ghost"
-                    tooltip="批量管理"
-                    className="text-muted-foreground hover:text-foreground size-7 rounded-sm!"
-                    onClick={enterThreadBatch}
-                  >
-                    <ListChecksIcon className="size-3.5" />
-                  </TooltipIconButton>
-                )}
-              </div>
-            )}
-        </div>
-
         <ThreadListRoot
           onClick={clearMenuAfterNavigation}
           className={cn(
             // min-h-0：flex-1 子项默认 min-height:auto，列表内容长时会撑高
-            // 整个 aside 列、把上方 tabs 行顶上去——溢出滚动必须锁在本容器内。
+            // 整个 aside 列、把上方菜单顶出去——溢出滚动必须锁在本容器内。
             // 恒为整栏宽：折叠动画期间列表不参与重排（外层整列 transform 出屏）
             // w-full 跟随内层（内层才是宽度所有者）：拖拽期间内层宽度被冻结，
             // 列表就不会逐帧重排，行内 ResizeObserver 也不再每帧回调
             "relative min-h-0 w-full flex-1 overflow-y-auto p-3",
           )}
         >
-          {activeTab === "tasks" && hasThreads && (
-            <ThreadListItems aria-hidden={sidebarCollapsed} inert={sidebarCollapsed} />
-          )}
-          {activeTab === "projects" && (
-            <ProjectListItems
-              openDirs={projOpenDirs}
-              onOpenDirsChange={setProjOpenDirs}
-            />
-          )}
+          <ThreadListItems
+            aria-hidden={sidebarCollapsed}
+            inert={sidebarCollapsed}
+            openDirs={projOpenDirs}
+            onOpenDirsChange={setProjOpenDirs}
+          />
         </ThreadListRoot>
-
         {/* 底部固定的设置按钮（远程模式下隐藏：模型/技能/远程配置均为桌面专属）。
             使用统计入口在设置按钮旁：activeMenu 驱动主区视图切换（与自动化页
             同机制），再次点击返回聊天，fluid hover 注册为 index 1 */}
@@ -900,101 +707,14 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             </div>
           </div>
 
-          {/* 移动端 Tabs 胶囊分段器（左对齐）：批量模式下右侧换成操作栏 */}
-          <div className="flex w-full shrink-0 items-center justify-between gap-2 px-4 pt-2">
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="group-data-horizontal/tabs:h-8 h-8 rounded-lg">
-                <TabsTrigger
-                  value="tasks"
-                  className="flex-none gap-1.5 px-3 py-0 text-xs rounded-lg"
-                >
-                  <ListTodoIcon className="size-3.5 shrink-0" />
-                  任务
-                </TabsTrigger>
-                <TabsTrigger
-                  value="projects"
-                  className="flex-none gap-1.5 px-3 py-0 text-xs rounded-lg"
-                >
-                  <FolderIcon className="size-3.5 shrink-0" />
-                  项目
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-            {batch.active ? (
-              /* 纯图标操作栏（移动端无 tooltip，用 title） */
-              <div className="flex items-center gap-0.5">
-                <Button
-                  variant="ghost"
-                  title={batchAllSelected ? "取消全选" : "全选"}
-                  disabled={batchVisibleIds.length === 0}
-                  className="text-muted-foreground hover:text-foreground size-7 rounded-full p-0"
-                  onClick={toggleBatchSelectAll}
-                >
-                  <SquareCheckBigIcon className="size-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  title={
-                    archivableCount > 0 ? `归档（${archivableCount}）` : "归档"
-                  }
-                  disabled={archivableCount === 0}
-                  className="text-muted-foreground hover:text-foreground size-7 rounded-full p-0"
-                  onClick={archiveBatchSelected}
-                >
-                  <ArchiveIcon className="size-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  title="退出批量管理"
-                  className="text-muted-foreground hover:text-foreground size-7 rounded-full p-0"
-                  onClick={exitThreadBatch}
-                >
-                  <XIcon className="size-3.5" />
-                </Button>
-              </div>
-            ) : (
-              /* 同桌面端：包成单个 flex 子项，避免 justify-between 摊开按钮 */
-              <div className="flex items-center gap-1">
-                {activeTab === "projects" && projectGroups.length > 0 && (
-                  <Button
-                    variant="ghost"
-                    className="text-muted-foreground hover:text-foreground h-7 gap-1 rounded-full px-2.5 text-xs"
-                    onClick={toggleAllProjects}
-                  >
-                    {allProjectsExpanded ? (
-                      <ChevronsDownUpIcon className="size-3.5" />
-                    ) : (
-                      <ChevronsUpDownIcon className="size-3.5" />
-                    )}
-                    {allProjectsExpanded ? "收起全部" : "展开全部"}
-                  </Button>
-                )}
-                {hasThreads && (
-                  <Button
-                    variant="ghost"
-                    className="text-muted-foreground hover:text-foreground size-7 rounded-full p-0"
-                    onClick={enterThreadBatch}
-                  >
-                    <ListChecksIcon className="size-3.5" />
-                  </Button>
-                )}
-              </div>
-            )}
-          </div>
-
           <div
             className="relative flex-1 overflow-y-auto p-3"
             onClick={closeMobileSidebarAfterNavigation}
           >
-            {activeTab === "tasks" && <ThreadList />}
-            {activeTab === "projects" && (
-              <ThreadListRoot className="relative flex-1 overflow-y-auto p-3">
-                <ProjectListItems
-                  openDirs={projOpenDirs}
-                  onOpenDirsChange={setProjOpenDirs}
-                />
-              </ThreadListRoot>
-            )}
+            <ThreadList
+              openDirs={projOpenDirs}
+              onOpenDirsChange={setProjOpenDirs}
+            />
           </div>
 
           {/* 移动端底部固定的设置按钮（远程模式下隐藏） */}

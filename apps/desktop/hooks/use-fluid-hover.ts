@@ -202,6 +202,14 @@ export const ACTIVE_ATTR = "data-fluid-hover-active";
 /** Set on the container: the highlighted index, or absent. */
 export const ACTIVE_INDEX_ATTR = "data-fluid-hover-active-index";
 
+/**
+ * 指针「让位」区标记：嵌套的 FluidHoverScope（自带一套行与高亮）与分区头
+ * （有自己的悬浮反馈）内部，外层列表不该按「最近邻」兜底点亮自己的行——
+ * 这些区域的行不注册在外层，指针会被当成缝隙，高亮落在八竿子打不着的
+ * 行上（如悬浮项目分组头时点亮置顶行）。
+ */
+export const DEFER_SELECTOR = "[data-fluid-hover-defer]";
+
 const ACTIVATOR_SELECTOR =
   "a[href], button, [role='menuitem'], [role='menuitemradio'], [role='menuitemcheckbox'], [role='option'], [role='radio'], [role='checkbox'], [role='tab'], [role='link'], [role='button']";
 
@@ -432,6 +440,19 @@ export function useFluidHover<T extends HTMLElement>(
       // the right of a sidebar list). The DOM target of a portaled event is
       // never inside the container — that is the tell.
       if (!container || !container.contains(e.target as Node)) return;
+      // 让位区（嵌套作用域 / 分区头）：高亮归它们自己管，外层清空且不参与
+      // 最近邻兜底。挂起的 rAF 必须一并取消，否则上一帧在普通行上排下的
+      // 拾取会把刚清掉的高亮重新点亮。
+      const deferRegion =
+        e.target instanceof Element ? e.target.closest(DEFER_SELECTOR) : null;
+      if (deferRegion && deferRegion !== container) {
+        if (rafIdRef.current !== null) {
+          cancelAnimationFrame(rafIdRef.current);
+          rafIdRef.current = null;
+        }
+        setActiveIndex(null);
+        return;
+      }
       const mouseX = e.clientX;
       const mouseY = e.clientY;
 
@@ -486,6 +507,11 @@ export function useFluidHover<T extends HTMLElement>(
       // item would also click the highlighted row behind it (switch thread /
       // toggle a group) right as the popup's own action runs.
       if (!container || !container.contains(e.target as Node)) return;
+      // 让位区内的点击（嵌套作用域的行间缝、分区头）不是外层的缝隙点击，
+      // 不路由到外层高亮行——否则点项目分组区域可能误触置顶行
+      const deferClickRegion =
+        e.target instanceof Element ? e.target.closest(DEFER_SELECTOR) : null;
+      if (deferClickRegion && deferClickRegion !== container) return;
       const target = e.target as Node | null;
       if (!target) return;
       // Inside an item: the item owns the click.
