@@ -398,7 +398,7 @@ function hostTool(
  *  最省提示词。formatter/codegen 明确留在 bash 侧：它们本来就是“命令改文件”。 */
 export const BASH_TOOL_DESCRIPTION = [
   "Run a shell command in the workspace and return combined stdout/stderr.",
-  "Use bash for commands (builds, tests, git, formatters, codegen, process control). For project files use read/glob/grep, not cat/head/tail/sed/awk; sed/awk are only for processing command output in a pipeline. File contents and hand edits belong to read/write/edit; cat and sed bypass the read state the host checks before write/edit.",
+  "Use bash for commands (builds, tests, git, formatters, codegen, process control). For project files use read/glob/grep, not cat/head/tail/sed/awk; sed/awk are only for processing command output in a pipeline. Hand-editing project files with sed -i, redirection, heredoc or tee is blocked — use edit/write; redirect logs to a temp dir (e.g. /tmp), never into the workspace. File contents and hand edits belong to read/write/edit; cat and sed bypass the read state the host checks before write/edit.",
   "Output is capped — run a narrower command instead of dumping large files.",
   "Default timeout 120s — pass a larger timeout (up to 600000ms) for slow commands, or prefer runInBackground:true for long-running processes (dev servers, builds, watchers): it returns immediately with a taskId and the process keeps running across turns (not killed when a turn is cancelled); read output later with task_output, kill with task_stop.",
   "Never discard output with >/dev/null — invisible progress looks like a hang.",
@@ -423,6 +423,7 @@ export const WRITE_TOOL_DESCRIPTION = [
   "Use it to create a new file or replace a file completely — for targeted changes use edit.",
   "An existing file needs a current read state: read it first, or it is already current because you wrote or edited it in this session.",
   "If the content is larger than roughly 300 lines / 16KB, write it in parts — mode \"overwrite\" first, then \"append\". The limit here is the model's response budget, not the host's ability to write the file.",
+  "For .json files every write must leave the file valid JSON: write a valid skeleton first, then extend it with edit — append only works for plain text.",
 ].join(" ");
 
 export function buildTools(

@@ -43,6 +43,7 @@ import {
   resetAutoReviewForTest,
   setAutoReviewerForTest,
 } from "../../src/permissions/auto-review";
+import { initShellPolicy } from "../../src/permissions/shell-policy";
 import {
   resetHooksForTest,
   setHookConfigs,
@@ -75,8 +76,9 @@ mkdirSync(join(WS, "src"), { recursive: true });
 mkdirSync(OUTSIDE, { recursive: true });
 
 const prevIdentityDir = process.env.PI_IDENTITY_DIR;
-beforeAll(() => {
+beforeAll(async () => {
   process.env.PI_IDENTITY_DIR = join(tmpdir(), "pi-agent-modes-identity");
+  await initShellPolicy();
 });
 afterAll(() => {
   if (prevIdentityDir === undefined) delete process.env.PI_IDENTITY_DIR;
@@ -359,7 +361,12 @@ describe("goal 模式门控", () => {
     commitGoal(run, confirmGoalCriteria(run)!);
     expect(modeBeforeToolCall(run, ctx("write"))).toBeUndefined();
     expect(modeBeforeToolCall(run, ctx("edit"))).toBeUndefined();
-    expect(modeBeforeToolCall(run, ctx("bash"))).toBeUndefined();
+    expect(
+      modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "pnpm test" })),
+    ).toBeUndefined();
+    expect(
+      modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "sed -i s/a/b/ f" }))?.block,
+    ).toBe(true);
 
     // 协商阶段：这一轮的产出是契约不是代码。只拦 write/edit——bash 要留着，
     // 「测试跑不跑得起来」正是拟定可验证标准的前提（与 plan 档同一取舍）
@@ -369,7 +376,12 @@ describe("goal 模式门控", () => {
     expect(writeBlocked?.block).toBe(true);
     expect(writeBlocked?.reason).toContain("acceptance criteria");
     expect(modeBeforeToolCall(negotiating, ctx("edit"))?.block).toBe(true);
-    expect(modeBeforeToolCall(negotiating, ctx("bash"))).toBeUndefined();
+    expect(
+      modeBeforeToolCall(negotiating, ctx("bash", ["bash"], { command: "pnpm test" })),
+    ).toBeUndefined();
+    expect(
+      modeBeforeToolCall(negotiating, ctx("bash", ["bash"], { command: "sed -i s/a/b/ f" }))?.block,
+    ).toBe(true);
   });
 
   test("等用户确认期间（proposed）同样只读：模型能在同一轮里先提交标准再动手", () => {
@@ -381,8 +393,13 @@ describe("goal 模式门控", () => {
     commitGoal(run, proposeCriteria(goal, ["测试全绿"])!);
     expect(modeBeforeToolCall(run, ctx("write"))?.block).toBe(true);
     expect(modeBeforeToolCall(run, ctx("edit"))?.block).toBe(true);
-    // bash 仍放行（与协商阶段同一取舍）
-    expect(modeBeforeToolCall(run, ctx("bash"))).toBeUndefined();
+    // 只读检查仍放行；shell 手写同样不能从协商期绕过
+    expect(
+      modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "pnpm test" })),
+    ).toBeUndefined();
+    expect(
+      modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "sed -i s/a/b/ f" }))?.block,
+    ).toBe(true);
   });
 
   test("goal 档还没有目标时不拦写（空白消息那一轮按普通请求跑）", () => {
@@ -1252,14 +1269,70 @@ describe("plan_exit HITL", () => {
   });
 });
 
+describe("shell 手写拦截", () => {
+  const bash = (command: string) => ctx("bash", ["bash"], { command });
+
+  test("agent 正常轮拦截 inline-edit，即使完全访问", () => {
+    const run = makeRun("agent");
+    expect(modeBeforeToolCall(run, bash("sed -i s/a/b/ f"))?.block).toBe(true);
+    expect(modeBeforeToolCall(run, bash("echo x > f"))?.block).toBe(true);
+    expect(modeBeforeToolCall(run, bash("cat <<EOF > f\nx\nEOF"))?.block).toBe(true);
+    run.approvalLevel = "auto";
+    expect(modeBeforeToolCall(run, bash("sed -i s/a/b/ f"))?.block).toBe(true);
+  });
+
+  test("inspect / verify / command-write 不被 mode gate 拦", () => {
+    const run = makeRun("agent");
+    expect(modeBeforeToolCall(run, bash("sed -n '1,5p' f"))).toBeUndefined();
+    expect(modeBeforeToolCall(run, bash("pnpm test"))).toBeUndefined();
+    expect(modeBeforeToolCall(run, bash("prettier --write a.ts"))).toBeUndefined();
+    expect(modeBeforeToolCall(run, bash("git status"))).toBeUndefined();
+    expect(modeBeforeToolCall(run, bash("echo ok >/dev/null"))).toBeUndefined();
+  });
+
+  test("拦截发生在审批之前，不产生挂起项", async () => {
+    const run = makeRun("agent");
+    const res = await approvalBeforeToolCall(run, bash("sed -i s/a/b/ f"));
+    expect(res?.block).toBe(true);
+    expect(run.pendingToolApprovals.size).toBe(0);
+  });
+
+  test("子代理 gate 复用同一拦截", async () => {
+    const run = makeRun("agent");
+    run.approvalLevel = "auto";
+    const gate = subagentToolGate(run, "delegation-1");
+    expect((await gate(bash("sed -i s/a/b/ f")))?.block).toBe(true);
+    expect(await gate(bash("pnpm test"))).toBeUndefined();
+  });
+});
+
 describe("plan 模式结构性只读与轮中热换", () => {
   test("write/edit 在 plan 模式一律拦截（不依赖工具表新鲜度）", () => {
     const run = makeRun("plan");
     expect(modeBeforeToolCall(run, ctx("write"))?.block).toBe(true);
     expect(modeBeforeToolCall(run, ctx("edit"))?.block).toBe(true);
-    // 勘察工具不受影响
+    // 勘察工具不受影响：read 和只读 shell 都允许
     expect(modeBeforeToolCall(run, ctx("read"))).toBeUndefined();
-    expect(modeBeforeToolCall(run, ctx("bash"))).toBeUndefined();
+    expect(
+      modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "sed -n '1,5p' f" })),
+    ).toBeUndefined();
+    expect(
+      modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "pnpm test" })),
+    ).toBeUndefined();
+    // bash 手写/重定向也必须被 plan 档拦住
+    expect(
+      modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "sed -i s/a/b/ f" }))?.block,
+    ).toBe(true);
+    // 脚本文件内容不可见，Plan 档不能当只读放行
+    expect(
+      modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "perl script.pl" }))?.block,
+    ).toBe(true);
+    expect(
+      modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "sed -f s.sed f" }))?.block,
+    ).toBe(true);
+    expect(
+      modeBeforeToolCall(run, ctx("bash", ["bash"], { command: "echo x > f" }))?.block,
+    ).toBe(true);
     // agent 模式下 write 不走这条门（由审批级别决定）
     expect(modeBeforeToolCall(makeRun("agent"), ctx("write"))).toBeUndefined();
   });

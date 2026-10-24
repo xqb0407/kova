@@ -123,6 +123,9 @@ async function smokeCheck(binary: string): Promise<void> {
       PI_SESSIONS_DIR: undefined,
       PI_DB_PATH: resolve(sandbox, "smoke.db"),
       PI_TASK_CWD: resolve(sandbox, "task-workspace"),
+      // 编译产物必须真的能加载 shell 解析器的 WASM；失败则启动期直接崩，
+      // 让 build smoke 拦住，而不是等线上第一条命令才降级。
+      PI_SHELL_POLICY_SELFTEST: "1",
     },
   });
   let stderr = "";

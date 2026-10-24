@@ -134,6 +134,7 @@ const TRUNCATED_TOOL_CALL_HINT =
   "\n\nHint: do NOT simply re-issue the same oversized call — it will fail the same way. " +
   "For write, split the file into parts: write the first part with mode \"overwrite\", then " +
   "append the rest with mode \"append\" (or edit calls matching the file's current tail). " +
+  "For .json files write a valid skeleton first, then extend it with edit — append cannot keep JSON valid. " +
   "Keep each response small.";
 
 /** 超大调用自愈增强：输出撞限（core 标记）或宿主 RPC 往返失败（超时/中止）的
