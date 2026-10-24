@@ -40,13 +40,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Segmented } from "@/components/custom-ui/segmented";
 import {
   DropdownMenu,
@@ -914,7 +916,6 @@ export const MarketplaceView: FC<{
             ) : (
               <div className="flex items-center gap-2">
                 <Button
-                  size="sm"
                   disabled={previewState.busy || pending.length > 0}
                   onClick={() =>
                     void installPlugin(previewMarket.id, previewSel.name)
@@ -929,7 +930,6 @@ export const MarketplaceView: FC<{
                   !isPseudoMarket(previewMarket.id) &&
                   !previewState.update && (
                     <Button
-                      size="sm"
                       variant="outline"
                       disabled={previewState.busy || pending.length > 0}
                       title="cache 条目链接到源目录：改插件源码后重建即生效（仅开发用）"
@@ -952,31 +952,30 @@ export const MarketplaceView: FC<{
 
       {/* 移除市场确认：只撤登记不卸插件；移除后市场目录消失，
           从它装过的插件保留并标记「市场已移除」 */}
-      <Dialog
+      <AlertDialog
         open={confirmRemoveMkt !== null}
         onOpenChange={(open) => !open && setConfirmRemoveMkt(null)}
       >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>移除市场</DialogTitle>
-            <DialogDescription>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>移除市场</AlertDialogTitle>
+            <AlertDialogDescription>
               将移除「
               <span className="text-foreground font-medium">
                 {confirmRemoveMkt?.name}
               </span>
               」的登记，市场目录不再显示。已安装的插件不受影响
               （会标记「市场已移除」并保留可用），之后重新添加同一市场即可恢复更新通道。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
               size="sm"
               onClick={() => setConfirmRemoveMkt(null)}
             >
               取消
-            </Button>
-            <Button
+            </AlertDialogCancel>
+            <AlertDialogAction
               variant="destructive"
               size="sm"
               disabled={confirmRemoveMkt === null}
@@ -1001,10 +1000,10 @@ export const MarketplaceView: FC<{
             >
               <Trash2Icon className="size-3.5" />
               移除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 市场页卸载确认：与已装页同款（点名插件与后果） */}
       <UninstallDialog

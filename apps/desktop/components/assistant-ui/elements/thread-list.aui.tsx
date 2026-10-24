@@ -217,6 +217,9 @@ const RowHoverContext = createContext<RowHoverSlot | null>(null);
  *  「文件夹 → 会话」的层级可辨（统一列表的行首一律不画档位图标） */
 const ProjectChildRowContext = createContext(false);
 
+/** 任务区的会话行：只做轻缩进（ps-6）与分区头拉开层级，不隐藏行首模式图标 */
+const IndentedRowContext = createContext(false);
+
 /**
  * 在 FluidHoverScope 的 children 内组装行槽位：registerItem 从作用域 context
  * 读（悬浮状态关在 Scope 里，换行高亮不重渲染列表主体，见 fluid-hover-scope），
@@ -1082,36 +1085,38 @@ const ThreadListItemGroupsInner: FC<{
             )
           }
         >
-          {visibleTaskIndices.map((index, i) => (
-            <RowHoverContext.Provider
-              key={threadIds[index]}
-              value={{ registerItem, index: taskSlotBase + i }}
-            >
-              <TreeRow position={i} instant={pinReorder}>
-                <ThreadListPrimitive.ItemByIndex
-                  index={index}
-                  components={{ ThreadListItem }}
-                />
-              </TreeRow>
-            </RowHoverContext.Provider>
-          ))}
-          {hiddenTaskCount > 0 && (
-            <TreeRow position={visibleTaskIndices.length}>
-              <FluidHoverRow
-                registerItem={registerItem}
-                index={taskSlotBase + visibleTaskIndices.length}
+          <IndentedRowContext.Provider value>
+            {visibleTaskIndices.map((index, i) => (
+              <RowHoverContext.Provider
+                key={threadIds[index]}
+                value={{ registerItem, index: taskSlotBase + i }}
               >
-                <Button
-                  variant="ghost"
-                  // 左缘与分区头、会话标题同缘（ps-2.5）
-                  className="h-7 w-full justify-start ps-2.5 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
-                  onClick={() => setTaskVisibleCount((c) => c + TASK_VISIBLE_LIMIT)}
+                <TreeRow position={i} instant={pinReorder}>
+                  <ThreadListPrimitive.ItemByIndex
+                    index={index}
+                    components={{ ThreadListItem }}
+                  />
+                </TreeRow>
+              </RowHoverContext.Provider>
+            ))}
+            {hiddenTaskCount > 0 && (
+              <TreeRow position={visibleTaskIndices.length}>
+                <FluidHoverRow
+                  registerItem={registerItem}
+                  index={taskSlotBase + visibleTaskIndices.length}
                 >
-                  {`查看更多 (${Math.min(hiddenTaskCount, TASK_VISIBLE_LIMIT)})`}
-                </Button>
-              </FluidHoverRow>
-            </TreeRow>
-          )}
+                  <Button
+                    variant="ghost"
+                    // 左缘与任务区会话标题同缘（ps-6）
+                    className="h-7 w-full justify-start ps-6 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+                    onClick={() => setTaskVisibleCount((c) => c + TASK_VISIBLE_LIMIT)}
+                  >
+                    {`查看更多 (${Math.min(hiddenTaskCount, TASK_VISIBLE_LIMIT)})`}
+                  </Button>
+                </FluidHoverRow>
+              </TreeRow>
+            )}
+          </IndentedRowContext.Provider>
         </CollapsibleSection>
       )}
     </>
@@ -1702,7 +1707,7 @@ const ProjectGroupsSection: FC<{
               <ProjectChildRowContext.Provider value>
                 <div
                   className={cn(
-                    "flex flex-col gap-0.5 pl-0",
+                    "relative flex flex-col gap-0.5 pl-0",
                     "ease-in-out motion-reduce:animate-none",
                     "group-data-open/collapsible-content:animate-in",
                     "group-data-open/collapsible-content:fade-in-0",
@@ -1736,8 +1741,8 @@ const ProjectGroupsSection: FC<{
                       <FluidHoverRow index={moreSlot}>
                         <Button
                           variant="ghost"
-                          // 左缘与组内会话标题同缘（行 trigger ps-4）
-                          className="h-7 w-full justify-start ps-4 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
+                          // 左缘与组内会话标题同缘（行 trigger ps-9）
+                          className="h-7 w-full justify-start ps-9 text-sm font-normal text-muted-foreground hover:bg-transparent dark:hover:bg-transparent"
                           onClick={() => expandMore(group.cwd)}
                         >
                           {`查看更多 (${Math.min(hiddenCount, PROJECT_VISIBLE_LIMIT)})`}
@@ -1745,6 +1750,13 @@ const ProjectGroupsSection: FC<{
                       </FluidHoverRow>
                     </TreeRow>
                   )}
+                  {/* 层级引导线：从项目行下方垂下，串起组内会话与「查看更多」。
+                      放在最后一位，保证悬停高亮/选中底色之上仍可见。
+                      start-5 对齐项目徽章中心，行文字 ps-9 对齐项目标题左缘 */}
+                  <span
+                    aria-hidden
+                    className="bg-border/30 pointer-events-none absolute inset-y-0 start-5 w-px"
+                  />
                 </div>
               </ProjectChildRowContext.Provider>
             </CollapsibleContent>
@@ -1957,8 +1969,10 @@ export const ThreadListItem: FC = () => {
   const rowRef = useRef<HTMLDivElement>(null);
   const slot = useContext(RowHoverContext);
   useRegisterFluidHoverItem(slot?.registerItem, slot?.index, rowRef);
-  // 项目文件夹内的行：去掉行首模式图标，标题与组头标题左缘对齐
+  // 项目文件夹内的行：去掉行首模式图标，标题与项目标题左缘对齐（ps-9）
   const nestedInProject = useContext(ProjectChildRowContext);
+  // 任务区行：轻缩进一档区分层级即可（ps-6），行首模式图标保留
+  const taskIndented = useContext(IndentedRowContext);
   // 拖拽移动到项目：仅项目 tab 提供控制器（任务 tab 无可见落点，不可拖）；
   // 与「移动到项目…」菜单项同口径，桌面端专属
   const dragApi = useContext(SessionDragContext);
@@ -2034,8 +2048,9 @@ export const ThreadListItem: FC = () => {
           }}
           className={cn(
             "flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md ps-2.5 text-start text-sm outline-none",
-            // 项目子树里与普通会话行同缩进（ps-4）
-            nestedInProject && "ps-4",
+            // 项目子树 ps-9 对齐项目标题、竖线留在外侧；任务区只轻缩进一档
+            nestedInProject && "ps-9",
+            taskIndented && "ps-6",
           )}
         >
           <span
@@ -2076,11 +2091,13 @@ export const ThreadListItem: FC = () => {
           // 与 hover 时右侧并排的置顶+更多两枚按钮，标题截断在任何状态下不跳动
           className={cn(
             "group focus-visible:ring-ring/50 flex h-full min-w-0 flex-1 items-center rounded-md pe-14 ps-2.5 text-start text-sm outline-none focus-visible:ring-1",
-            nestedInProject && "ps-4",
+            nestedInProject && "ps-9",
+            taskIndented && "ps-6",
           )}
         >
-          {/* 运行指示与未读点按条件内联占位：闲置行行首无图标，标题与分区头
-              文字同缘；指示出现时行内让位、标题右移。置顶不再画行首图钉，
+          {/* 运行指示与未读点按条件内联占位：平铺行行首无图标，标题与分区头
+              文字同缘；项目子树 ps-9、任务区 ps-6 各自让出层级位。
+              指示出现时行内让位、标题右移。置顶不再画行首图钉，
               归属由置顶分区表达；未读点保留标题加粗双通道提示 */}
           {showRunning && (
             <DotMatrix
