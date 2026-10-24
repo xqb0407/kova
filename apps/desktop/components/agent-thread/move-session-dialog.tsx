@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useSyncExternalStore, type FC } from "react";
-import { useAui, useAuiState } from "@assistant-ui/react";
+import { useAui } from "@assistant-ui/react";
 import { CheckIcon, FolderIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -91,7 +91,6 @@ export const MoveSessionDialogHost: FC = () => {
 
 const MoveSessionDialog: FC<{ sessionId: string }> = ({ sessionId }) => {
   const aui = useAui();
-  const mainThreadId = useAuiState((s) => s.threads.mainThreadId);
   const threadItems = useThreadItems();
   // 项目清单来自会话镜像；列表刷新（sessions_changed）时重算
   const prefsVersion = useSessionPrefsVersion();
@@ -119,7 +118,6 @@ const MoveSessionDialog: FC<{ sessionId: string }> = ({ sessionId }) => {
     );
   }, [prefsVersion, threadItems, currentCwd]);
 
-  const isCurrent = piSessionIdForThread(mainThreadId) === sessionId;
   const blocked = running || pendingKind != null;
   const selectionValid = selected != null && projects.includes(selected);
 
@@ -142,8 +140,13 @@ const MoveSessionDialog: FC<{ sessionId: string }> = ({ sessionId }) => {
         closeMoveSessionDialog();
         return;
       }
-      // 当前打开的会话：Git/工作目录胶囊与面板立即跟随新项目
-      if (isCurrent) setWorkspace(result.cwd, "session");
+      // 当前打开的会话：Git/工作目录胶囊与面板立即跟随新项目。await 期间
+      // 用户可能已切走：以**结算时**的当前会话为准——渲染期捕获的
+      // mainThreadId 是唤起瞬间值，切走后会把旧会话的 cwd 套给新当前会话
+      if (
+        piSessionIdForThread(aui.threads.getState().mainThreadId) === sessionId
+      )
+        setWorkspace(result.cwd, "session");
       try {
         await aui.threads.reload();
       } catch (err) {
