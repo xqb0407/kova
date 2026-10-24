@@ -58,11 +58,20 @@ import {
 import {
   forkPiSession,
   piSessionCwdMap,
+  piSessionIdForThread,
   piSessionProjectMap,
   piSessionRegistry,
   useSessionPrefsVersion,
 } from "@/lib/pi/pi-thread-adapter";
 import { openMoveSessionDialog } from "@/components/agent-thread/move-session-dialog";
+import { moveSessionToDirectory } from "@/lib/pi/pi-session-move";
+import {
+  SessionDragContext,
+  SessionDragGhost,
+  useIsSessionDragged,
+  useSessionDragController,
+  useSessionDragOverCwd,
+} from "./session-drag";
 import { clearLastThread } from "@/lib/pi/pi-last-thread";
 import { isSessionRunning, usePiSessionRunning } from "@/lib/pi/pi-running";
 import {
@@ -1092,6 +1101,59 @@ export const ProjectListItems: FC<{
     }
   };
 
+  // 拖拽落组：先弹确认框，确认后走与「移动到项目…」对话框同一条链路——
+  // 换绑 cwd、刷新列表，当前打开的会话同步工作目录胶囊；目标组由
+  // pi:session-moved 事件自动展开
+  const [pendingDrop, setPendingDrop] = useState<{
+    sessionId: string;
+    title: string;
+    targetCwd: string;
+  } | null>(null);
+  const [movingDrop, setMovingDrop] = useState(false);
+  const moveByDrop = async (sessionId: string, targetCwd: string) => {
+    try {
+      const result = await moveSessionToDirectory(sessionId, targetCwd);
+      if (result.kind === "same-dir") return;
+      // await 期间用户可能已切走：以**结算时**的当前会话决定胶囊跟随——
+      // 渲染期捕获的 mainThreadId 是唤起瞬间值，切走后会把旧会话的 cwd
+      // 套给新当前会话
+      if (
+        piSessionIdForThread(aui.threads.getState().mainThreadId) === sessionId
+      )
+        setWorkspace(result.cwd, "session");
+      try {
+        await aui.threads.reload();
+      } catch (err) {
+        // 移动已经生效；列表刷新失败由 sessions_changed 兜底，不报成移动失败
+        console.error("threads.reload after move failed:", err);
+      }
+      toast.add({
+        title: `已移动到「${pathBasename(result.cwd)}」`,
+        type: "success",
+      });
+    } catch (err) {
+      toast.add({
+        title: "移动失败",
+        description: err instanceof Error ? err.message : String(err),
+        type: "error",
+      });
+    }
+  };
+  const dragApi = useSessionDragController((sessionId, targetCwd, title) => {
+    setPendingDrop({ sessionId, title, targetCwd });
+  });
+  const dragOverCwd = useSessionDragOverCwd();
+  const confirmDrop = () => {
+    if (!pendingDrop || movingDrop) return;
+    setMovingDrop(true);
+    void moveByDrop(pendingDrop.sessionId, pendingDrop.targetCwd).finally(
+      () => {
+        setMovingDrop(false);
+        setPendingDrop(null);
+      },
+    );
+  };
+
   // 加载中先于空态判断：骨架行与任务 tab 同款（5 条 h-3.5 条带）
   if (showSkeleton) return <ThreadListSkeleton />;
 
@@ -1108,6 +1170,7 @@ export const ProjectListItems: FC<{
   const pinnedSlots = pinnedProjectIndices.map(() => nextSlot++);
 
   return (
+    <SessionDragContext.Provider value={dragApi}>
     <FluidHoverScope>
       {/* 置顶的项目会话跳出所属文件夹，进项目 tab 顶部的全局「已置顶」卡片 */}
       {pinnedProjectIndices.length > 0 && (
@@ -1159,9 +1222,19 @@ export const ProjectListItems: FC<{
                     <Button
                       variant="ghost"
                       title={group.cwd}
+                      // 拖拽落点：会话行拖到组头松开即移动到该项目
+                      //（命中检测 elementFromPoint + closest，见 session-drag.tsx）
+                      data-project-drop={group.cwd}
+                      data-drag-over={
+                        dragOverCwd === group.cwd ? "true" : undefined
+                      }
                       // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                       // 自带的 hover/aria-expanded 底色，避免与高亮叠加
-                      className="h-8 justify-start gap-2 px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent group-hover/proj:pe-14 aria-expanded:bg-transparent active:not-aria-[haspopup]:translate-y-0"
+                      className={cn(
+                        "h-8 justify-start gap-2 px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent group-hover/proj:pe-14 aria-expanded:bg-transparent active:not-aria-[haspopup]:translate-y-0",
+                        // 拖拽悬停高亮：属性选择器特异性高于 hover:bg-transparent
+                        "data-[drag-over=true]:bg-accent data-[drag-over=true]:ring-2 data-[drag-over=true]:ring-primary/50",
+                      )}
                     >
                       {/* file-tree 同款箭头：开合时弹簧旋转 90° */}
                       {/* <motion.span
@@ -1303,6 +1376,34 @@ export const ProjectListItems: FC<{
         );
       })}
     </FluidHoverScope>
+    {/* 拖拽悬浮牌：与拖拽源/落点同生命周期，拖完即卸 */}
+    <SessionDragGhost />
+    {/* 拖拽落组的二次确认：松手不直接移动，确认后才换绑（防误拖） */}
+    <AlertDialog
+      open={pendingDrop != null}
+      onOpenChange={(open) => {
+        if (!open) setPendingDrop(null);
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>移动会话到项目？</AlertDialogTitle>
+          <AlertDialogDescription>
+            {pendingDrop &&
+              `将把「${
+                pendingDrop.title || "新对话"
+              }」移动到项目「${pathBasename(pendingDrop.targetCwd)}」。会话 ID 与历史保持不变；历史消息中的绝对路径与旧检查点仍指向原项目。`}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel size="default">取消</AlertDialogCancel>
+          <AlertDialogAction size="default" disabled={movingDrop} onClick={confirmDrop}>
+            {movingDrop ? "移动中…" : "移动"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </SessionDragContext.Provider>
   );
 };
 
@@ -1528,6 +1629,11 @@ export const ThreadListItem: FC = () => {
   useRegisterFluidHoverItem(slot?.registerItem, slot?.index, rowRef);
   // 项目文件夹内的行：去掉行首模式图标，标题与组头标题左缘对齐
   const nestedInProject = useContext(ProjectChildRowContext);
+  // 拖拽移动到项目：仅项目 tab 提供控制器（任务 tab 无可见落点，不可拖）；
+  // 与「移动到项目…」菜单项同口径，桌面端专属
+  const dragApi = useContext(SessionDragContext);
+  const dragged = useIsSessionDragged(remoteId);
+  const desktop = isDesktop();
 
   const confirmDelete = async () => {
     if (deleting) return;
@@ -1555,7 +1661,23 @@ export const ThreadListItem: FC = () => {
       // hover 反馈由列表容器的 FluidHoverHighlight 负责，行不再自画
       // hover:bg-muted；focus/open/active 底色保留（盖在高亮之上）；
       // data-pending：乐观选中（点击到 store 追平之间的即时高亮）
-      className="group focus-visible:bg-selected data-active:bg-selected data-pending:bg-selected has-focus-visible:bg-selected has-data-[state=open]:bg-selected relative flex h-8 items-center rounded-md transition-colors focus-visible:outline-none data-[batch-selected]:bg-selected"
+      // 拖拽源：按下即登记（位移过阈值才真正进入拖拽），运行中/挂起/批量
+      // 模式不进入拖拽，行保持原点击行为
+      onPointerDown={
+        dragApi && desktop && remoteId && !batchActive
+          ? (event) =>
+              dragApi.onRowPointerDown(event, {
+                sessionId: remoteId,
+                title: title || "新对话",
+                blocked: showRunning || pendingKind != null,
+              })
+          : undefined
+      }
+      className={cn(
+        "group focus-visible:bg-selected data-active:bg-selected data-pending:bg-selected has-focus-visible:bg-selected has-data-[state=open]:bg-selected relative flex h-8 items-center rounded-md transition-colors focus-visible:outline-none data-[batch-selected]:bg-selected",
+        // 正被拖拽的行置灰，落点由悬浮牌与目标组头高亮表达
+        dragged && "opacity-40",
+      )}
       data-batch-selected={batchActive && batchSelected ? "true" : undefined}
       data-pending={pendingSelect ? "true" : undefined}
       onContextMenu={(e) => {

@@ -3,6 +3,7 @@ import type { ThreadMessage } from "@assistant-ui/react";
 import {
   createPanelActivityStore,
   diffLines,
+  webFetchTitle,
   type PanelActivity,
 } from "@/lib/panels/panel-activity";
 
@@ -60,6 +61,7 @@ function naiveDerive(
   const order: string[] = [];
   const groups = new Map<string, PanelActivity["files"][number]["entries"]>();
   const citations: PanelActivity["citations"] = [];
+  const citationsAll: PanelActivity["citations"] = [];
   const seenCitation = new Set<string>();
   let runningCount = 0;
 
@@ -152,11 +154,30 @@ function naiveDerive(
             url: it.url ?? null,
             snippet: it.snippet ?? null,
           };
+          citationsAll.push(entry);
           const key = it.url ? `u:${it.url}` : `n:${query}\u0000${it.title}`;
           if (seenCitation.has(key)) continue;
           seenCitation.add(key);
           citations.push(entry);
         }
+      }
+
+      if (part.toolName === "WebFetch") {
+        if (result === null || err) continue;
+        const url = args.url;
+        if (typeof url !== "string" || !url) continue;
+        const entry = {
+          toolCallId: part.toolCallId,
+          query: url,
+          title: webFetchTitle(result, url),
+          url,
+          snippet: null,
+        };
+        citationsAll.push(entry);
+        const key = `u:${url}`;
+        if (seenCitation.has(key)) continue;
+        seenCitation.add(key);
+        citations.push(entry);
       }
     }
   }
@@ -164,6 +185,7 @@ function naiveDerive(
   return {
     terminal,
     citations,
+    citationsAll,
     files: order.map((path) => {
       const entries = groups.get(path)!;
       return {
@@ -244,6 +266,7 @@ describe("createPanelActivityStore：与朴素全量扫描等价", () => {
       terminal: [],
       files: [],
       citations: [],
+      citationsAll: [],
       runningCount: 0,
     });
   });
@@ -262,6 +285,98 @@ describe("createPanelActivityStore：与朴素全量扫描等价", () => {
     // 在途 t17 不计入 runningCount（查询类不进在途角标）；
     // t3(edit 无 result)/t6(bash 无 result) 挂在非末条消息 a1 上 ⇒ 中断态，不计
     expect(a.runningCount).toBe(0);
+  });
+});
+
+describe("createPanelActivityStore：WebFetch 引用", () => {
+  /** 首行 markdown 标题 → 剥 # 取正文 */
+  const FETCHED_HEADING = "# Kova 桌面端\n\n正文第一段\n\n更多内容";
+  /** 首个非空行是地址（跳过）→ 取下一个文本行当标题 */
+  const FETCHED_URL_FIRST = "https://example.org/plain\nActual Title Here\nbody";
+  const messages = [
+    msg("u1", "user", [text("查一下")]),
+    msg("a1", "assistant", [
+      tool("t1", "WebFetch", { url: "https://example.com/kova" }, FETCHED_HEADING),
+      // 与 t1 同 url 的搜索命中：首条（WebFetch）保留，搜索条目按 url 去重
+      tool("t2", "WebSearch", { query: "kova" }, 'Web search results for "kova":\n\n- Kova\n  https://example.com/kova\n  snippet'),
+      tool("t3", "WebFetch", { url: "https://example.org/plain" }, FETCHED_URL_FIRST),
+      tool("t4", "WebFetch", { url: "https://example.net/fail" }, "boom", true),
+      tool("t5", "WebFetch", { url: "https://example.net/empty" }, ""),
+      tool("t6", "WebFetch", { url: "https://example.net/running" }), // 在途：忽略
+      tool("t7", "WebFetch", {}), // args 未成形：忽略
+      tool("t8", "WebFetch", { url: "https://example.com/long" }, "A".repeat(100)),
+    ]),
+  ];
+
+  test("与朴素全量扫描等价（含 WebFetch）", () => {
+    const store = createPanelActivityStore();
+    expect(store.derive(messages)).toEqual(naiveDerive(messages));
+  });
+
+  test("标题提取：markdown 标题 / 跳过链接行 / 空正文回退 hostname / 超长截断", () => {
+    const store = createPanelActivityStore();
+    const a = store.derive(messages);
+    expect(a.citations.map((c) => [c.url, c.title, c.snippet])).toEqual([
+      ["https://example.com/kova", "Kova 桌面端", null],
+      ["https://example.org/plain", "Actual Title Here", null],
+      // 空结果取不出可读行：回退 hostname；query 记目标 url
+      ["https://example.net/empty", "example.net", null],
+      ["https://example.com/long", `${"A".repeat(80)}…`, null],
+    ]);
+    expect(a.citations.every((c) => c.query === c.url)).toBe(true);
+  });
+
+  test("失败 / 在途 / args 未成形不收录；同 url 与 WebSearch 去重保留首条", () => {
+    const store = createPanelActivityStore();
+    const a = store.derive(messages);
+    // t2 的搜索命中（example.com/kova）被 t1 首现去重；t4/t6/t7 均无条目
+    expect(a.citations.length).toBe(4);
+    expect(a.citations[0].toolCallId).toBe("t1");
+    expect(a.runningCount).toBe(0);
+  });
+  test("标题提取：markdown 链接行取链接文字，空链接文字落到下一行", () => {
+    const store = createPanelActivityStore();
+    const a = store.derive([
+      msg("a1", "assistant", [
+        tool(
+          "t1",
+          "WebFetch",
+          { url: "https://example.com/link" },
+          "[Kova 主页](https://example.com/link)\n正文",
+        ),
+        tool(
+          "t2",
+          "WebFetch",
+          { url: "https://example.com/empty-link" },
+          "[](https://example.com/empty-link)\n正文第二行",
+        ),
+      ]),
+    ]);
+    expect(a.citations.map((c) => [c.url, c.title])).toEqual([
+      ["https://example.com/link", "Kova 主页"],
+      ["https://example.com/empty-link", "正文第二行"],
+    ]);
+  });
+});
+
+describe("createPanelActivityStore：跨轮 url 去重的归因", () => {
+  test("citations 全局去重记首现；citationsAll 保留每轮条目（来源条归因用）", () => {
+    const store = createPanelActivityStore();
+    const messages = [
+      msg("a1", "assistant", [
+        tool("t1", "WebSearch", { query: "bun" }, SEARCH_1),
+      ]),
+      msg("a2", "assistant", [
+        // 轮 2 重抓轮 1 已列过的 url：面板列表不再收录，若全量列表也丢，
+        // 轮 2 来源条按 toolCallId 过滤即为空——答案引了页却没有来源
+        tool("t2", "WebFetch", { url: "https://bun.com/docs/test" }, "# Bun test\n正文"),
+      ]),
+    ];
+    const a = store.derive(messages);
+    // SEARCH_1 有两条命中：面板列表两双都记在 t1 名下，t2 重抓的 url 被去重
+    expect(a.citations.map((c) => c.toolCallId)).toEqual(["t1", "t1"]);
+    // 全量列表多出 t2 条目：轮 2 来源条按 toolCallId 过滤不再空手而归
+    expect(a.citationsAll.map((c) => c.toolCallId)).toEqual(["t1", "t1", "t2"]);
   });
 });
 
