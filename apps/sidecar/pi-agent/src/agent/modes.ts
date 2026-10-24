@@ -61,6 +61,10 @@ import {
   rememberWriteRoot,
 } from "../permissions/write-roots";
 import { autoReviewDenyReason, reviewFactsOf, runAutoReview } from "../permissions/auto-review";
+import {
+  classifyShellCommand,
+  type ShellOperationClass,
+} from "../permissions/shell-policy";
 import { getSandboxConfig } from "../permissions/sandbox-config";
 import { invalidateSandboxPlans } from "../permissions/sandbox-plan";
 import { setLeadingSystemMessage } from "./context";
@@ -656,6 +660,27 @@ function writeInsideSession(
   );
 }
 
+/** bash 操作分类（只有 bash 有值）；解析器不可用时分类器内部退回保守扫描。 */
+function bashOperationFor(
+  run: Running,
+  context: BeforeToolCallContext,
+): ShellOperationClass | undefined {
+  if (context.toolCall.name !== "bash") return undefined;
+  const raw = (context.args as { command?: unknown } | undefined)?.command;
+  if (typeof raw !== "string" || !raw.trim()) return "dynamic";
+  return classifyShellCommand(raw, {
+    cwd: run.cwd,
+    roots: [
+      run.cwd,
+      ...activeExternalDirs(run.externalDirs ?? []).map((dir) => dir.path),
+    ],
+  });
+}
+
+function isSafeBashOperation(op: ShellOperationClass | undefined): boolean {
+  return op === "inspect" || op === "verify";
+}
+
 /** 模式切换工具的批次独占与可用性校验（与参考实现一致） */
 export function modeBeforeToolCall(
   run: Running,
@@ -664,6 +689,7 @@ export function modeBeforeToolCall(
   const toolCalls = (context.assistantMessage.content as Array<{ type?: string; name?: string }>)
     .filter((b) => b.type === "toolCall");
   const name = context.toolCall.name;
+  const shellOp = bashOperationFor(run, context);
   const isPlanTool =
     MODE_EXCLUSIVE_TOOL_NAMES.has(name) || PLAN_ONLY_TOOL_NAMES.has(name);
   const isGoalTool = GOAL_ONLY_TOOL_NAMES.has(name);
@@ -683,6 +709,15 @@ export function modeBeforeToolCall(
       block: true,
       reason:
         "Plan mode cannot modify project files. Save the plan with plan_write (the path is chosen by the system), and implement after plan_exit is approved.",
+    };
+  }
+  // plan 档的 bash 也必须是只读的：看得懂 inspect/verify，写文件/动态结构一律拒绝。
+  // 不依赖工具表新鲜度，轮中切档前模型还带着旧 bash schema 也拦得住。
+  if (run.mode === "plan" && shellOp && !isSafeBashOperation(shellOp)) {
+    return {
+      block: true,
+      reason:
+        "Plan mode cannot verify this shell command as read-only. Shell writes, in-place editors and redirects are blocked; use read/glob/grep for inspection, run read-only checks, and save the plan with plan_write.",
     };
   }
   // 问答档只读同样是结构性的：工具表里本就不含写类工具，这里是轮中切换前的兜底
@@ -709,6 +744,16 @@ export function modeBeforeToolCall(
         "Implementation starts only after the user confirms them.",
     };
   }
+  // 与 plan 档同一取舍：协商期的 bash 只准 inspect/verify，write/edit 被拦之外，
+  // sed -i/重定向/heredoc 也不能从 bash 绕过去。
+  if (goal && isContractUnsettled(goal.acceptance) && shellOp && !isSafeBashOperation(shellOp)) {
+    return {
+      block: true,
+      reason:
+        "The acceptance criteria for this goal are not settled yet, so this turn is read-only. " +
+        "Shell writes and in-place editors are blocked; run read-only checks, then call goal_propose_criteria.",
+    };
+  }
   if (name === ASK_NEEDS_WORK_TOOL_NAME && run.mode !== "ask") {
     return {
       block: true,
@@ -721,6 +766,20 @@ export function modeBeforeToolCall(
     return {
       block: true,
       reason: `${name} is available only in Goal mode.`,
+    };
+  }
+  // 正常 Agent/Goal 轮：允许 shell 跑命令，但不允许用手写命令改项目文件。
+  // 这样所有手工编辑都必须走 write/edit，逐文件 diff/checkpoint 才不会被绕过。
+  // 无人值守自动化保持原有策略（不在这一层额外收紧）。
+  if (
+    !getAutomationPolicy(run.threadId) &&
+    (run.mode === "agent" || run.mode === "goal") &&
+    shellOp === "inline-edit"
+  ) {
+    return {
+      block: true,
+      reason:
+        "Shell hand-edits are blocked: this command would modify project files outside write/edit, bypassing the per-file diff and checkpoint. Use edit for partial changes or write for new/full files.",
     };
   }
   if (!isPlanTool && !isGoalTool) return undefined;

@@ -86,3 +86,34 @@ describe("tool-exec write/read 的读前写约束", () => {
     expect(result.output).toContain("Wrote 4 bytes");
   });
 });
+
+describe("tool-exec write append 的 JSON 校验", () => {
+  test("append 校验的是“已有内容 + 追加”的最终结果", async () => {
+    const dir = tempDir();
+    await writeCall("w1", dir, "ok.json", '{"a":1}');
+    const result = (await handleTool("w2", {
+      name: "write",
+      cwd: dir,
+      params: { file_path: "ok.json", content: "\n", mode: "append" },
+    })) as { output: string };
+    expect(result.output).toContain("Appended 1 bytes");
+    expect(JSON.parse(readFileSync(join(dir, "ok.json"), "utf8"))).toEqual({ a: 1 });
+  });
+
+  test("append 后不是合法 JSON：拒绝且不改动文件", async () => {
+    const dir = tempDir();
+    await writeCall("w1", dir, "bad.json", '{"a":1}');
+    let message = "";
+    try {
+      await handleTool("w2", {
+        name: "write",
+        cwd: dir,
+        params: { file_path: "bad.json", content: ",", mode: "append" },
+      });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain("not be valid JSON");
+    expect(readFileSync(join(dir, "bad.json"), "utf8")).toBe('{"a":1}');
+  });
+});

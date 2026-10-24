@@ -552,7 +552,6 @@ function handleWrite(inner: any, sandbox?: SandboxPlan): any {
   const cwd = typeof inner?.cwd === "string" ? inner.cwd : "";
   assertWriteAllowed(sandbox, cwd, filePath);
   const sandboxMeta = sandboxInfo(sandbox, "host");
-  guardJson(filePath, content);
   const full = resolvePath(cwd, filePath);
   const append = inner?.mode === "append";
   let isFile = false;
@@ -562,6 +561,18 @@ function handleWrite(inner: any, sandbox?: SandboxPlan): any {
     isFile = false;
   }
   if (isFile) ensureFreshRead(full, filePath, append ? "append to" : "overwrite");
+  if (append && isFile) {
+    // append 的片段单独 parse 必然失败（如 JSON 中段），要校验“已有内容 + 本次追加”
+    let existing = "";
+    try {
+      existing = readFileSync(full, "utf8");
+    } catch {
+      existing = "";
+    }
+    guardJson(filePath, existing + content);
+  } else {
+    guardJson(filePath, content);
+  }
   const parent = dirname(full);
   if (parent) {
     try {

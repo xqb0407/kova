@@ -43,6 +43,7 @@ import { initObservability } from "./observability/observability";
 import { initHooks } from "./agent/hooks";
 import { initAutoReview } from "./permissions/auto-review";
 import { initSandboxConfig } from "./permissions/sandbox-config";
+import { initShellPolicy } from "./permissions/shell-policy";
 import { initSubagentState } from "./subagent/subagent-definitions";
 import { initSubagentSettings } from "./subagent/settings";
 import { pruneActivityFiles } from "./subagent/activity-store";
@@ -145,6 +146,9 @@ async function main() {
     await initSubagentState();
     // 子智能体并发上限同走 kv（Task/resume 执行时实时读，必须在闸门放行前恢复）
     await initSubagentSettings();
+    // shell 操作分类解析器：Plan/Goal 只读门控与 Agent 手写拦截都依赖它。
+    // 失败只降级到保守扫描，不阻断启动。
+    await initShellPolicy();
     // 技能启用开关同走 kv（技能目录本身按需带签名加载，resolveSession 预热）
     await initSkillsState();
     // 项目虚拟目录（多代码工程合并）：会话解析前必须就位——它决定
