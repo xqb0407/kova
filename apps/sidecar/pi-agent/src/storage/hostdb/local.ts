@@ -99,6 +99,12 @@ export function initLocalStorage(dbPath: string): void {
   } catch {
     /* 列已存在 */
   }
+  // 模型 prompt cache TTL（JSON 对象字符串 {short?,long?}，秒）：cache warmer 依据
+  try {
+    localDb.exec("ALTER TABLE models ADD COLUMN prompt_cache_json TEXT");
+  } catch {
+    /* 列已存在 */
+  }
   // 旧库迁移：sessions 补 archived 列（已存在则忽略）
   try {
     localDb.exec("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
@@ -146,6 +152,7 @@ export function initLocalStorage(dbPath: string): void {
       max_tokens INTEGER,
       input_json TEXT,
       cost_json TEXT,
+      prompt_cache_json TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (provider, model_id)
     );
@@ -410,6 +417,7 @@ function modelsQueryLocal(provider?: string): unknown {
     max_tokens: number | null;
     input_json: string | null;
     cost_json: string | null;
+    prompt_cache_json: string | null;
     enabled: number;
   };
   const parse = (s: string | null) => {
@@ -435,19 +443,25 @@ function modelsQueryLocal(provider?: string): unknown {
       const v = parse(r.cost_json);
       return v && typeof v === "object" && !Array.isArray(v) ? v : null;
     })(),
+    promptCache: (() => {
+      const v = parse(r.prompt_cache_json);
+      return v && typeof v === "object" && !Array.isArray(v)
+        ? (v as { short?: number; long?: number })
+        : null;
+    })(),
     enabled: r.enabled === 1,
   });
   if (provider !== undefined)
     return db
       .query<Row, [string]>(
-        "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled \
+        "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, prompt_cache_json, enabled \
          FROM models WHERE provider = ? ORDER BY model_id",
       )
       .all(provider)
       .map(toRow);
   return db
     .query<Row, []>(
-      "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled \
+      "SELECT provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, prompt_cache_json, enabled \
        FROM models ORDER BY provider, model_id",
     )
     .all()
@@ -789,10 +803,14 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
             const input = Array.isArray(item.input) ? JSON.stringify(item.input) : null;
             const cost =
               item.cost && typeof item.cost === "object" ? JSON.stringify(item.cost) : null;
+            const promptCache =
+              item.promptCache && typeof item.promptCache === "object"
+                ? JSON.stringify(item.promptCache)
+                : null;
             db.query(
               "INSERT OR REPLACE INTO models \
-               (provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, enabled) \
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+               (provider, model_id, name, reasoning, context_window, max_tokens, input_json, cost_json, prompt_cache_json, enabled) \
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ).run(
               provider,
               modelId,
@@ -802,6 +820,7 @@ function localDispatch(kind: string, p: Record<string, unknown>): Promise<unknow
               typeof item.maxTokens === "number" ? Math.trunc(item.maxTokens) : null,
               input,
               cost,
+              promptCache,
               item.enabled === false ? 0 : 1,
             );
           }

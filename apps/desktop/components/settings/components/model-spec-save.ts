@@ -70,6 +70,15 @@ export function mergeModelSpecForSave({
     : current?.cost;
   if (cost) out.cost = cost;
 
+  // promptCache：两级 TTL（秒）。用户显式清空（改过且为空）= 不发 = 行置 null
+  // 回继承态；未改时回填行里显式值（行里没有就不发）
+  const promptCache = untouched(samePromptCache(current?.promptCache, loaded?.promptCache))
+    ? (stored?.promptCache ?? undefined)
+    : current?.promptCache;
+  if (promptCache && (promptCache.short !== undefined || promptCache.long !== undefined)) {
+    out.promptCache = promptCache;
+  }
+
   return out;
 }
 
@@ -84,4 +93,12 @@ function sameCost(a?: Partial<PiModelCost>, b?: Partial<PiModelCost>): boolean {
   if (a === undefined || b === undefined) return a === b;
   const fields = ["input", "output", "cacheRead", "cacheWrite"] as const;
   return fields.every((f) => (a[f] ?? 0) === (b[f] ?? 0));
+}
+
+/** 两级 TTL 比较：undefined 与缺键等价（都是"没声明"） */
+function samePromptCache(
+  a?: { short?: number; long?: number },
+  b?: { short?: number; long?: number },
+): boolean {
+  return (a?.short ?? 0) === (b?.short ?? 0) && (a?.long ?? 0) === (b?.long ?? 0);
 }

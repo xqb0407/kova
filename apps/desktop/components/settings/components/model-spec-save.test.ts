@@ -8,6 +8,7 @@ const blankStored = {
   maxTokens: null,
   input: null,
   cost: null,
+  promptCache: null,
 };
 
 describe("mergeModelSpecForSave（保存服务时只回写用户改过的字段）", () => {
@@ -106,5 +107,42 @@ describe("mergeModelSpecForSave（保存服务时只回写用户改过的字段�
     expect(mergeModelSpecForSave({ id: "brand-new" })).toEqual({
       id: "brand-new",
     });
+  });
+
+  test("promptCache：新加模型用户填 TTL → 首次保存就发（无种子预填，不存在歧义）", () => {
+    const spec = mergeModelSpecForSave({
+      id: "brand-new",
+      current: { id: "brand-new", promptCache: { short: 300 } },
+    });
+    expect(spec.promptCache).toEqual({ short: 300 });
+  });
+
+  test("promptCache：既有模型用户首填 → 发（行里 null 不拦）", () => {
+    const spec = mergeModelSpecForSave({
+      id: "m",
+      current: { id: "m", promptCache: { short: 300 } },
+      loaded: { id: "m" },
+      stored: { ...blankStored },
+    });
+    expect(spec.promptCache).toEqual({ short: 300 });
+  });
+
+  test("promptCache：用户清空 → 不发（行置 null 回继承态）", () => {
+    const spec = mergeModelSpecForSave({
+      id: "m",
+      current: { id: "m" },
+      loaded: { id: "m", promptCache: { short: 300 } },
+      stored: { ...blankStored, promptCache: { short: 300 } },
+    });
+    expect("promptCache" in spec).toBe(false);
+  });
+
+  test("promptCache：没改 → 回填行里显式值", () => {
+    const spec = mergeModelSpecForSave({
+      id: "m",
+      loaded: { id: "m", promptCache: { short: 300 } },
+      stored: { ...blankStored, promptCache: { short: 300 } },
+    });
+    expect(spec.promptCache).toEqual({ short: 300 });
   });
 });

@@ -167,6 +167,15 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       // 目标 token 账：现累而不是事后从转录重算（理由见 Running.usagePending）。
       // 放在这里是因为 message_end 是 usage 唯一的到达点，且早于 turn_end 的结算
       run.usagePending += messageUsageTokens(event.message);
+      // 缓存保活的健康门控数据源：最近几次真实请求的命中率。错误/中止轮的
+      // usage 是虚账，不喂（与 usage 统计同口径，见 agent/cache-warmer.ts）
+      const endedMessage = event.message as {
+        stopReason?: string;
+        usage?: { input?: number; cacheRead?: number; cacheWrite?: number };
+      };
+      if (endedMessage.stopReason !== "error" && endedMessage.stopReason !== "aborted") {
+        run.cacheWarmer?.observeUsage(endedMessage.usage);
+      }
       // assistant/toolResult 落定即持久化：agent_end 不再是唯一提交点，进程异常退出
       // （崩溃/dev 热重载进程组被杀）最多丢正在流式的那一条，不再丢整轮已完成消息。
       // 放在 reqId 短路之前：不带协议 reqId 的旁路/automation run 同样要落盘。

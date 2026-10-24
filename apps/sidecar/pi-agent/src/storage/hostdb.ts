@@ -282,6 +282,9 @@ export type ModelRow = {
   input: unknown[] | null;
   /** 结构化 JSON（对象），NULL = 未覆盖 */
   cost: Record<string, unknown> | null;
+  /** 结构化 JSON（对象），NULL = 未覆盖：prompt cache TTL（秒）。
+   *  cache warmer 只对声明过的模型工作（pi 同款），未声明 = 不暖。 */
+  promptCache: { short?: number; long?: number } | null;
   enabled: boolean;
 };
 
@@ -300,6 +303,7 @@ export type ModelReplaceItem = {
   maxTokens?: number | null;
   input?: unknown[] | null;
   cost?: Record<string, unknown> | null;
+  promptCache?: { short?: number; long?: number } | null;
 };
 
 export const modelsReplace = (provider: string, items: ModelReplaceItem[]) =>

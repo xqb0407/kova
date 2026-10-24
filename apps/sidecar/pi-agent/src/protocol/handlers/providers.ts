@@ -220,6 +220,8 @@ export const handlers: Record<string, CommandHandler> = {
         maxTokens: typeof m.maxTokens === "number" ? m.maxTokens : null,
         input: Array.isArray(m.input) ? m.input : null,
         cost: m.cost && typeof m.cost === "object" && !Array.isArray(m.cost) ? m.cost : null,
+        promptCache:
+          m.promptCache && typeof m.promptCache === "object" ? m.promptCache : null,
       })),
     );
     // apiKey 留空表示保留原有凭据
@@ -276,6 +278,7 @@ export const handlers: Record<string, CommandHandler> = {
                   seed?.cost ??
                   CUSTOM_MODEL_DEFAULTS.cost),
               },
+              promptCache: row.promptCache ?? undefined,
               // 行里显式存过的值（null = 仍是继承态，生效值来自目录种子或缺省）。
               // 编辑弹窗靠它区分"用户填过"与"算出来的"，保存时才不会把生效值
               // 反写成显式值——那会把目录/归一化命中的真值永久冻住
@@ -286,6 +289,7 @@ export const handlers: Record<string, CommandHandler> = {
                 maxTokens: row.maxTokens,
                 input: parseModelInput(row.input),
                 cost: parseModelCost(row.cost),
+                promptCache: row.promptCache,
               },
               // 种子来源：exact = 完整 id 同名；normalized = 剥掉一层命名空间前缀
               // 后同名。属性弹窗据此把"目录推测"与"目录真值"分开标注
@@ -347,6 +351,19 @@ export const handlers: Record<string, CommandHandler> = {
     const base = (await modelsList(provider)).find((r) => r.modelId === modelId);
     const pick = (key: string, fallback: unknown): unknown =>
       key in msg ? (msg[key] ?? null) : fallback;
+    // promptCache 形状校验：{short?,long?} 秒（正数）；非法整体按 null（重置）
+    const rawPromptCache = pick("promptCache", base?.promptCache ?? null) as
+      | { short?: unknown; long?: unknown }
+      | null;
+    const ttlOf = (v: unknown): number | undefined =>
+      typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.trunc(v) : undefined;
+    const promptCache =
+      rawPromptCache && typeof rawPromptCache === "object"
+        ? {
+            ...(ttlOf(rawPromptCache.short) !== undefined ? { short: ttlOf(rawPromptCache.short) } : {}),
+            ...(ttlOf(rawPromptCache.long) !== undefined ? { long: ttlOf(rawPromptCache.long) } : {}),
+          }
+        : null;
     const item: ModelReplaceItem = {
       modelId,
       enabled: base?.enabled ?? true,
@@ -356,6 +373,7 @@ export const handlers: Record<string, CommandHandler> = {
       maxTokens: pick("maxTokens", base?.maxTokens ?? null) as number | null,
       input: pick("input", base?.input ?? null) as unknown[] | null,
       cost: pick("cost", base?.cost ?? null) as Record<string, unknown> | null,
+      promptCache,
     };
     await modelsReplace(provider, [item]);
     applyRowToCatalogModel({
@@ -367,6 +385,7 @@ export const handlers: Record<string, CommandHandler> = {
       maxTokens: item.maxTokens ?? null,
       input: item.input ?? null,
       cost: item.cost ?? null,
+      promptCache: item.promptCache ?? null,
     });
     send({ id: reqId, type: "model_updated", provider, modelId });
   },

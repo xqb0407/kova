@@ -49,6 +49,8 @@ export type PiModelSummary = {
   input?: string[];
   /** 每 token 单价 */
   cost?: PiModelCost;
+  /** prompt cache TTL（秒）：undefined = 未声明（不参与缓存保活） */
+  promptCache?: { short?: number; long?: number };
   /** 目录可见性（false = 被模型过滤隐藏）；缺省视为可见 */
   enabled?: boolean;
   authed: boolean;
@@ -106,6 +108,8 @@ export type PiStoredModelAttrs = {
   maxTokens: number | null;
   input: string[] | null;
   cost: Partial<PiModelCost> | null;
+  /** prompt cache TTL（秒）：cache warmer 只对声明过的模型工作 */
+  promptCache: { short?: number; long?: number } | null;
 };
 
 /** 自定义 OpenAI 兼容提供商里的模型定义 */
@@ -119,6 +123,8 @@ export type PiCustomModelSpec = {
   input?: string[];
   /** 每 token 单价 */
   cost?: Partial<PiModelCost>;
+  /** prompt cache TTL（秒）：cache warmer 只对声明过的模型工作 */
+  promptCache?: { short?: number; long?: number };
   /** 行里显式存过的值（仅 sidecar 下发的摘要带；提交时忽略） */
   stored?: PiStoredModelAttrs | null;
   /** 目录种子命中方式（同上，仅下发摘要带） */

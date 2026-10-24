@@ -187,13 +187,19 @@ export async function registerCustomProvider(row: {
         m.contextWindow ?? seed?.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
       maxTokens:
         m.maxTokens ?? seed?.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+      promptCache: parseRowPromptCache(m.promptCache),
       ...(seed?.thinkingLevelMap
         ? { thinkingLevelMap: seed.thinkingLevelMap }
         : {}),
       // 未知自定义端点保守禁用 OpenAI 新版 "developer" 系统角色：很多国产兼容
       // 网关不认（实测 sensenova 对 developer 角色一律 400 invalid request），
       // 一律走传统 "system" 角色；reasoning_effort 等思考参数不受影响
-      compat: { supportsDeveloperRole: false },
+      // 同理禁用长缓存保留：`prompt_cache_retention: "24h"` 只有 OpenAI 官方与
+      // 少数端点认，未知网关轻则忽略、重则 400——要开就在模型 compat 里显式声明
+      compat: {
+        supportsDeveloperRole: false,
+        supportsLongCacheRetention: false,
+      },
     };
   });
   // 重建出的模型对象以种子 map 为基线（同名模型种子变化随重建生效），
@@ -266,6 +272,7 @@ export function attachExtraCatalogModel(
     maxTokens: number | null;
     input: unknown[] | null;
     cost: Record<string, unknown> | null;
+    promptCache?: { short?: number; long?: number } | null;
   },
 ): Model<Api> | undefined {
   const models = getModels();
@@ -297,6 +304,7 @@ export function attachExtraCatalogModel(
       attrs.contextWindow ?? seed?.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow,
     maxTokens:
       attrs.maxTokens ?? seed?.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens,
+    promptCache: parseRowPromptCache(attrs.promptCache) ?? sibling.promptCache,
     ...(seed?.thinkingLevelMap
       ? { thinkingLevelMap: seed.thinkingLevelMap }
       : {}),
@@ -327,7 +335,7 @@ export function attachExtraCatalogModel(
 /** 目录模型可覆盖属性的原始快照（首次修改前留底，null 覆盖/重置时恢复） */
 type ModelAttrSnapshot = Pick<
   Model<Api>,
-  "name" | "reasoning" | "contextWindow" | "maxTokens" | "input" | "cost"
+  "name" | "reasoning" | "contextWindow" | "maxTokens" | "input" | "cost" | "promptCache"
 >;
 const attrSnapshots = new Map<string, ModelAttrSnapshot>();
 
@@ -340,7 +348,21 @@ function snapshotModelAttrs(key: string, model: Model<Api>): void {
     maxTokens: model.maxTokens,
     input: [...model.input],
     cost: { ...model.cost },
+    ...(model.promptCache ? { promptCache: { ...model.promptCache } } : {}),
   });
+}
+
+/** 行值 → promptCache（{short?,long?} 秒；非法/空对象 = undefined，恢复继承值） */
+function parseRowPromptCache(
+  value: { short?: number; long?: number } | null | undefined,
+): Model<Api>["promptCache"] {
+  if (!value || typeof value !== "object") return undefined;
+  const out: { short?: number; long?: number } = {};
+  for (const tier of ["short", "long"] as const) {
+    const v = value[tier];
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) out[tier] = Math.trunc(v);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** 把 models 表一行覆盖应用到目录模型对象；null 字段恢复原始值（继承内置/注册默认）。
@@ -354,6 +376,7 @@ export function applyRowToCatalogModel(row: {
   maxTokens: number | null;
   input: unknown[] | null;
   cost: Record<string, unknown> | null;
+  promptCache?: { short?: number; long?: number } | null;
 }): void {
   const key = `${row.provider}/${row.modelId}`;
   let model = getModels().getModel(row.provider, row.modelId);
@@ -369,6 +392,7 @@ export function applyRowToCatalogModel(row: {
   model.maxTokens = row.maxTokens ?? snap.maxTokens;
   model.input = parseModelInput(row.input) ?? snap.input;
   model.cost = parseModelCost(row.cost) ?? snap.cost;
+  model.promptCache = parseRowPromptCache(row.promptCache) ?? snap.promptCache;
   // 缺省归因同步：自定义端点行 null = 属性又回到猜测值；内置（含目录外新增）
   // 行 null = 恢复目录真值/保留挂载时归因，非 null = 用户确认过，清除标记
   if (isCustomProvider(row.provider)) {

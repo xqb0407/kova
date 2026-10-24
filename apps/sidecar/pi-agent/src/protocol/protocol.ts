@@ -266,9 +266,10 @@
  *   { "type": "set_provider_filter", "id", "provider", "models": string[] } → { id, type: "provider_filter", provider, models }
  *       写 models 表行（enabled 位切换，属性覆盖保留）；空数组 = 清除该 provider 的全部行；
  *       目录外的 modelId（内置厂商手动新增）按行挂进目录
- *   { "type": "update_model", "id", "provider", "modelId", name?, reasoning?, contextWindow?, maxTokens?, input?, cost? }
+ *   { "type": "update_model", "id", "provider", "modelId", name?, reasoning?, contextWindow?, maxTokens?, input?, cost?, promptCache? }
  *                                                             → { id, type: "model_updated", provider, modelId }
  *       消息里携带的字段写入 models 表（null = 重置为继承内置值；未携带 = 保留现值）并原地应用到目录；
+ *       promptCache = {short?,long?} 秒（缓存保活的 TTL 声明；非法形状整体按 null 重置）；
  *       目录外的 modelId 同样会挂载为新增模型
  *   { "type": "set_credential", "id", "provider", "apiKey", "env"? }  → { id, type: "credential", provider }
  *       env = 非密钥补充字段（如 Cloudflare 网关的 Account/Gateway ID，pi-ai 解析凭据必需）；

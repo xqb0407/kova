@@ -957,6 +957,7 @@ describe("dispatch: 自定义服务摘要带行值来源", () => {
       maxTokens: null,
       input: null,
       cost: null,
+      promptCache: null,
     });
     // 带命名空间前缀的 id 靠尾段归一化命中目录（改动前这里是 null）
     expect(gatedRow.seedSource).toBe("normalized");

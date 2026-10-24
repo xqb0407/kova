@@ -6,6 +6,7 @@ import type { RetryBudget } from "./model/provider-retry";
 import type { TraceRunRecorder } from "./protocol/trace";
 import type { ThemeRef } from "./design-md/store";
 import type { AppMode } from "./agent/app-mode";
+import type { CacheWarmer } from "./agent/cache-warmer";
 
 /** AI SDK UI 消息类型（协议流与 JSONL 持久化都用它） */
 export type UIMessage = ai.UIMessage;
@@ -40,6 +41,8 @@ export type CustomModelSpec = {
   input?: unknown[];
   /** 单价（每 token），如 { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } */
   cost?: Record<string, unknown>;
+  /** prompt cache TTL（秒）：cache warmer 只对声明过的模型工作 */
+  promptCache?: { short?: number; long?: number };
 };
 
 /** 模型行里**显式存过**的属性（null = 该属性仍是继承态，生效值来自目录种子或缺省猜测）。
@@ -57,6 +60,7 @@ export type StoredModelAttrs = {
     cacheRead?: number;
     cacheWrite?: number;
   } | null;
+  promptCache: { short?: number; long?: number } | null;
 };
 
 /** 自定义提供商支持的接口格式 */
@@ -284,6 +288,9 @@ export type Running = {
   turnAnchorSeq?: number;
   /** turn_timing 行已写标记：收尾与崩溃兜底两条路径共用，保证每轮最多一行 */
   turnTimingWritten?: boolean;
+  /** prompt cache 保活器：每次会话请求 start，轮收尾 onAgentSettled，
+   *  会话驱逐 cancel（见 agent/cache-warmer.ts） */
+  cacheWarmer?: CacheWarmer;
   /** runPromptTurn 收尾段（finally）置位：此刻起不再受理 steer——挂起 finish
    *  的补发已随收尾执行过，之后再受理的并入其 finish 永远没人补发（前端
    *  「已并入」徽标滞留不消失） */
