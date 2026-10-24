@@ -90,6 +90,9 @@ const BROADCAST_TYPES = new Set([
   "design_themes",
   "design_theme_set",
   "thread_event",
+  // sidecar 换代广播：远程窗口据此对在跑线程拉快照归位（进程句柄未换，
+  // 宿主 notifyTerminated 不响；不发这条会让远程端永远停在 running）
+  "pi_restarted",
 ]);
 
 /* ------------------------------ 连接与路由表 ------------------------------ */

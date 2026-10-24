@@ -152,6 +152,15 @@ export const mcpAuthResultFrameSchema = z.looseObject({
   errorText: z.string().optional(),
 });
 
+/** sidecar 换代广播（每次 main() 启动发一条，无载荷）：dev bun --watch 热重启
+ *  与崩溃重启共用——进程句柄没换，宿主看不到 close。旧实例的 running 表随模块
+ *  状态清零，在跑轮次没有 agent_end 收尾；前端收到即对所有「自认为在跑」的
+ *  线程拉快照对账归位（快照权威：新实例的 running 表必然为空）。冷启动无在跑
+ *  轮次，帧是无害 no-op。 */
+export const piRestartedFrameSchema = z.looseObject({
+  type: z.literal("pi_restarted"),
+});
+
 export type TurnChangedFrame = z.infer<typeof turnChangedFrameSchema>;
 export type SessionsChangedFrame = z.infer<typeof sessionsChangedFrameSchema>;
 export type SubagentRunStatus = z.infer<typeof subagentRunStatusSchema>;
@@ -162,3 +171,4 @@ export type AutomationRunDoneFrame = z.infer<typeof automationRunDoneFrameSchema
 export type ContextChangedFrame = z.infer<typeof contextChangedFrameSchema>;
 export type PluginOpResultFrame = z.infer<typeof pluginOpResultFrameSchema>;
 export type McpAuthResultFrame = z.infer<typeof mcpAuthResultFrameSchema>;
+export type PiRestartedFrame = z.infer<typeof piRestartedFrameSchema>;

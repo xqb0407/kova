@@ -146,6 +146,14 @@ export interface PiThreadControllerLike {
   dispose(): void;
 }
 
+/** 停止对账看门狗的节奏：abort→agent_end 正常一两秒内完成，4 秒已是余量；
+ *  快照仍报 running（abort 在串行队列排队/收尾中）则按此节奏有限次重排。 */
+const STOP_RECONCILE_DELAY_MS = 4_000;
+/** 看门狗重排上限：5 轮 × 4s = 20s，覆盖串行队列被慢命令占满的最坏情形；
+ *  超过即放弃（后续 agent_end 或 pi_restarted 广播仍会兜底归位），避免病态
+ *  场景下无限轮询 getThread。 */
+const STOP_RECONCILE_MAX_CYCLES = 5;
+
 export const defaultScheduleNotify: PiNotificationScheduler = (flush) => {
   // 隐藏页面 rAF 不跑，继续挂在 rAF 上等于把整段隐藏期间的 message_update
   // 攒到回焦第一帧一次性渲染——隐藏期可能长达分钟级（流式期间跳过高亮的代码
@@ -477,6 +485,10 @@ export class PiThreadController implements PiThreadControllerLike {
   private unsubscribeFromPromptStart: (() => void) | null = null;
   private eventSubscriptionGeneration = 0;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 停止对账看门狗（armStopReconcile）：abort 后 runStatus 迟迟不翻 idle 时
+   *  拉快照对账——sidecar 换代后 agent_end 永远不会来，这是唯一归位出口 */
+  private stopReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopReconcileCycles = 0;
   private loadPromise: Promise<void> | null = null;
   private messageFlushScheduled = false;
   /** 改动（稳定消息 id）：乐观用户消息的自生成 id 序号（`pi-optimistic:${n}`）。 */
@@ -488,6 +500,9 @@ export class PiThreadController implements PiThreadControllerLike {
   private readonly threadId: string;
   private readonly options: {
     scheduleNotify?: PiNotificationScheduler;
+    /** 停止对账看门狗的节奏/轮数（测试注入用；缺省走模块常量） */
+    stopReconcileDelayMs?: number;
+    stopReconcileMaxCycles?: number;
   };
 
   constructor(
@@ -495,6 +510,8 @@ export class PiThreadController implements PiThreadControllerLike {
     threadId: string,
     options: {
       scheduleNotify?: PiNotificationScheduler;
+      stopReconcileDelayMs?: number;
+      stopReconcileMaxCycles?: number;
     } = {},
   ) {
     this.client = client;
@@ -562,6 +579,10 @@ export class PiThreadController implements PiThreadControllerLike {
   public dispose() {
     // React StrictMode can detach then resubscribe the same controller.
     this.clearDisconnectTimer();
+    if (this.stopReconcileTimer) {
+      clearTimeout(this.stopReconcileTimer);
+      this.stopReconcileTimer = null;
+    }
     this.allListeners.clear();
     this.metadataListeners.clear();
     this.messageListeners.clear();
@@ -1090,12 +1111,55 @@ export class PiThreadController implements PiThreadControllerLike {
   }
 
   public async cancel() {
+    // 新一次停止从 0 计轮：上一轮看门狗走满放弃路径时计数停在 max，且那次
+    // 运行之后多半由 agent_end 收尾（无回调可清零）——不清会让下一次停止
+    // 带着满值计数，看门狗第一轮就不再重试
+    this.stopReconcileCycles = 0;
     try {
       await this.client.cancelRun(this.threadId);
     } catch (error) {
       this.setState({ ...this.state, lastError: errorText(error) });
+      // abort 没送达（传输层异常 = sidecar 已死/卡死）更要兜：run 大概率
+      // 永远不会结算，看门狗快照对账是唯一归位出口
+      this.armStopReconcile();
       throw error;
     }
+    this.armStopReconcile();
+  }
+
+  /** 停止对账看门狗：正常情况下 abort 后 agent_end 一两秒内就到；但 sidecar
+   *  换代（dev --watch 热重启/崩溃重启）后 running 表已空，agent_end 永远
+   *  不会来——UI 卡在 running，再点停止也是对空表 abort。超时未结算就拉
+   *  快照对账（快照权威）；快照仍报 running（abort 在串行队列里排队/收尾
+   *  中）则有限次重排，超过即放弃——后续 agent_end 或 pi_restarted 广播
+   *  仍会兜底归位。 */
+  private armStopReconcile() {
+    if (this.stopReconcileTimer) clearTimeout(this.stopReconcileTimer);
+    const delayMs =
+      this.options.stopReconcileDelayMs ?? STOP_RECONCILE_DELAY_MS;
+    const maxCycles =
+      this.options.stopReconcileMaxCycles ?? STOP_RECONCILE_MAX_CYCLES;
+    this.stopReconcileTimer = setTimeout(() => {
+      this.stopReconcileTimer = null;
+      if (this.state.runStatus !== "running") {
+        this.stopReconcileCycles = 0;
+        return;
+      }
+      this.stopReconcileCycles += 1;
+      void this.refresh()
+        .catch(() => {
+          // load() 已把错误记进 state.lastError
+        })
+        .finally(() => {
+          if (this.state.runStatus !== "running") {
+            this.stopReconcileCycles = 0;
+            return;
+          }
+          if (this.stopReconcileCycles < maxCycles) {
+            this.armStopReconcile();
+          }
+        });
+    }, delayMs);
   }
 
   public async setModel(input: { provider: string; modelId: string }) {

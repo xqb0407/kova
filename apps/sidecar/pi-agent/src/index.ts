@@ -59,6 +59,7 @@ import { initDesignThemeState } from "./design-md/state";
 import { refreshThemes } from "./design-md/store";
 import { mcpManager } from "./mcp/mcp-manager";
 import { handleLine, markStdinClosed, setInitGate } from "./protocol/protocol";
+import { send } from "./protocol/stream";
 import { initAutomation, stopAutomation } from "./automation/runtime";
 import { automationRunner } from "./automation/runner";
 
@@ -109,6 +110,12 @@ async function main() {
     markStdinClosed();
     void automationReady.then(() => stopAutomation());
   });
+  // 换代广播（dev bun --watch 热重启与崩溃重启共用同一条路径；宿主 close 事件
+  // 都看不到）：running 表等模块状态已随旧实例清零，在跑轮次没有 agent_end
+  // 收尾，前端会永远停在 running——点停止也是对空表 abort。广播让前端立刻
+  // 拉快照对账归位（快照权威：新实例的 running 表必然为空）。冷启动无在跑
+  // 轮次，帧是无害 no-op。
+  send({ type: "pi_restarted" });
 
   // 模型目录初始化作为命令分发闸门：目录就绪前到达的命令（含启动恢复的 set_model）
   // 在 handleLine 里缓冲，避免自定义提供商模型被 "model not found" 拒绝后回落默认模型。

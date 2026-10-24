@@ -8,6 +8,7 @@ import { WsPiChannel } from "@/lib/pi/pi-ws-channel";
 import { WsPiClient } from "@/lib/pi/pi-runtime/ws-pi-client";
 import { piRuntimeAdapters } from "@/lib/attachments/pi-attachment-adapter";
 import { usePiRuntime } from "@/lib/pi/pi-runtime";
+import { reconcileAfterSidecarRestart } from "@/lib/pi/pi-runtime/runtime/sidecar-restart-reconcile";
 import { reportPiRuntimeError } from "@/lib/pi/pi-runtime-errors";
 import { peekPiChannel, setPiChannel, type PiChannelStatus } from "@/lib/pi/pi-channel";
 import {
@@ -64,6 +65,12 @@ export function RemoteRuntimeProvider({
   const [status, setStatus] = useState<PiChannelStatus>({ connected: false });
   useEffect(() => {
     return channel.onStatusChange?.(setStatus);
+  }, [channel]);
+
+  // sidecar 换代广播（pi_restarted，网关白名单转发）：与桌面端同源对账——
+  // 旧实例 running 表已清零、agent_end 不会再来，收到即对在跑线程拉快照归位
+  useEffect(() => {
+    return channel.subscribeSidecarRestart(() => reconcileAfterSidecarRestart());
   }, [channel]);
 
   // 新链路（迁移阶段 5c）：channel 变化即换客户端（旧连接已 close，controller

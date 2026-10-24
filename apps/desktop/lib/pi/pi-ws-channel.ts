@@ -89,6 +89,8 @@ export class WsPiChannel implements PiChannel {
   private mcpAuthCbs = new Set<(frame: PiMcpAuthFrame) => void>();
   private contextCbs = new Set<(frame: PiContextChangedFrame) => void>();
   private designCbs = new Set<(frame: PiDesignThemePush) => void>();
+  /** sidecar 换代广播（pi_restarted）：在跑线程快照归位 */
+  private restartCbs = new Set<() => void>();
   /** 原始行观察（迁移阶段 5c）：WsPiClient 的 thread_event/chunk 分流入口 */
   private rawCbs = new Set<(raw: string) => void>();
   private closeCbs = new Set<() => void>();
@@ -266,6 +268,12 @@ export class WsPiChannel implements PiChannel {
     }
 
     // sidecar 无 id 自发通知行（网关只把白名单类型广播给已认证连接）
+    // sidecar 换代广播：与桌面同源（remote.ts 白名单放行）。远程窗口据此
+    // 对在跑线程拉快照归位——旧实例的 running 表已清零，agent_end 不会再来
+    if (type === "pi_restarted") {
+      for (const cb of this.restartCbs) cb();
+      return;
+    }
     if (type === "turn_changed") {
       const sessionId = typeof v.sessionId === "string" ? v.sessionId : null;
       if (sessionId) {
@@ -472,6 +480,12 @@ export class WsPiChannel implements PiChannel {
   subscribeDesignThemes(cb: (frame: PiDesignThemePush) => void): () => void {
     this.designCbs.add(cb);
     return () => this.designCbs.delete(cb);
+  }
+
+  /** 与桌面通道同款语义：登记同步返回（ws onmessage 即事件源），退订即摘除 */
+  subscribeSidecarRestart(cb: () => void): () => void {
+    this.restartCbs.add(cb);
+    return () => this.restartCbs.delete(cb);
   }
 
   subscribeSessionsChanged(

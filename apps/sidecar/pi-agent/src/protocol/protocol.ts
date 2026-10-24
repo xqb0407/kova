@@ -362,6 +362,11 @@
  *     "sessionId"?, "error"?, "finishedAt" }
  *       该次运行结算（成功/失败）；sessionId 为本次新建的真实 agent 会话
  *       （onTaskFailed 的调度错误路径可能缺省）
+ *   { "type": "pi_restarted" }
+ *       换代广播（每次 main() 启动发一条）：dev bun --watch 热重启与崩溃重启
+ *       共用（进程句柄没换，宿主 close 事件都看不到）。旧实例的 running 表随
+ *       模块状态清零，在跑轮次没有 agent_end 收尾，前端收到即对所有「自认为
+ *       在跑」的线程拉快照对账归位（快照权威）；冷启动无在跑轮次，无害 no-op
  *
  * 物理布局（本文件只保留分发装配；领域逻辑各归其位）：
  *   prompt-pipeline.ts  prompt 入口/单 turn 生命周期/steer/abort（dispatchPrompt 等）

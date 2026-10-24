@@ -41,6 +41,11 @@ export const SIDECAR_BUDGET_MS: Record<string, number> = {
   authorize_mcp_server: 32_000,
   /** 提示词优化：一次独立 provider 请求（侧车内部无上限，按历史前端预算 120s） */
   optimize_prompt: 122_000,
+  /** 连通性测试：两段式（受理即返回），迟到结果帧最晚 = fetch 20s 超时 + 余量。
+   *  此前未登记：渲染层 15s 地板先超时、侧车 fetch 20s 还在跑，层级倒挂 */
+  test_provider: 22_000,
+  /** 端点模型列表拉取：两段式，迟到结果帧最晚 = fetch 15s 超时 + 余量 */
+  fetch_models: 17_000,
   /** 项目虚拟目录变更：需重扫附加根技能/指令并对所有驻留会话重排提示词 */
   add_project_dir: 30_000,
   remove_project_dir: 30_000,
