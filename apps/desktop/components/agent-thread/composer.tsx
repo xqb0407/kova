@@ -73,8 +73,8 @@ import {
   ArrowUpIcon,
   CheckIcon,
   ChevronDownIcon,
-  ChevronUpIcon,
   CopyIcon,
+  FolderClosedIcon,
   FolderOpenIcon,
   GitBranchIcon,
   GitGraphIcon,
@@ -265,6 +265,9 @@ export const Composer: FC = () => {
   const jobIdRef = useRef<string | null>(null);
   const prevTextRef = useRef<string | null>(null);
   const draftHasText = useAuiState((s) => s.composer.text.trim().length > 0);
+  // 新对话页的 @// 弹层固定向上：下方是推荐入口，向下弹会把它整块盖住；
+  // 对话页保持 auto（输入框贴底时本来就只会向上翻，小窗也还有向下兜底）
+  const isNewChat = useAuiState((s) => s.thread.messages.length === 0);
 
   const handleOptimize = async () => {
     const draft = aui.composer.getState().text;
@@ -357,7 +360,9 @@ export const Composer: FC = () => {
             data-slot="aui_composer-shell"
             data-optimizing={optimizing ? "true" : undefined}
             className={cn(
-              "relative flex  w-full cursor-text flex-col rounded-(--composer-radius) transition-[border-color,background-color,box-shadow]",
+              // z-10：底栏灰带向上垫到卡片圆角后面（见下方 footer 的 -mt），
+              // 卡片必须盖在灰带上，圆角缺口里透出的才是灰而不是被灰盖住
+              "relative z-10 flex w-full cursor-text flex-col rounded-(--composer-radius) transition-[border-color,background-color,box-shadow]",
               "shadow-[0_1px_8px_rgb(0_0_0/0.04),0_1px_2px_rgb(0_0_0/0.03)] dark:shadow-[0_1px_8px_rgb(0_0_0/0.16)]",
               "gap-2 border border-border/50 bg-(--composer-bg)/85 p-(--composer-padding) backdrop-blur-sm backdrop-saturate-110 focus-within:border-border/60 dark:focus-within:border-muted-foreground/25 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_25%,var(--color-background))]",
             )}
@@ -407,29 +412,44 @@ export const Composer: FC = () => {
             </div>
           </div>
         </ComposerPrimitive.AttachmentDropzone>
-        {/* 工作目录 / 分支胶囊：挂在卡片**外面**、正下方一行——谁在哪个目录里跑
-            是这一轮的运行上下文，不是输入内容，不包进输入卡。左缘与卡片对齐
-            （不加水平内边距），mt-1.5 与卡片拉开呼吸。empty:hidden：两个胶囊都
-            让位时（已有消息）整行不占位，不给 composer 留一条幽灵空隙。
-            workspace 选择仅开始对话前显示；右侧为所选目录的 git 分支胶囊
-            （非仓库静默隐藏）；有消息后让位给只读工作目录胶囊
-            （WorkspaceSessionPill，点击滑盖展开完整路径） */}
-        <div className="mt-1.5 flex w-full items-center gap-1 empty:hidden">
+        {/* 工作目录 / 分支底栏：卡片正下方的一条同宽浅灰带，下缘跟卡片同圆角
+            （参考设计：白输入卡 + 灰底「选择文件夹」条）。谁在哪个目录里跑是
+            这一轮的运行上下文、不是输入内容，所以仍挂在卡片外面，只是视觉上
+            贴成一张卡的下沿。-mt-6 把灰带顶端垫进卡片底部 24px（= 卡片圆角），
+            卡片 z-10 盖在上面，圆角缺口里透出灰带而不是白底；pt-8 里除这 24px
+            外还留 8px 的空隙，目录行不贴着卡片底边。empty:hidden：两个胶囊都
+            让位时（已有消息 / 网页端）整条灰带连高度一起消失，不给 composer
+            留幽灵空隙。目录与分支都只在开聊前的空会话显示；对话页整条不出现 */}
+        <div
+          data-slot="aui-composer-footer"
+          className={cn(
+            "empty:hidden relative -mt-6 flex w-full items-center gap-1",
+            "rounded-b-(--composer-radius) bg-muted/55 px-3 pt-8 pb-2.5",
+            "transition-colors",
+          )}
+        >
           <WorkspacePill />
           <WorkspaceBranchPill />
+          {/* 开聊后底栏整条让位（WorkspaceSessionPill 只作备用实现保留） */}
           {/* <WorkspaceSessionPill /> */}
         </div>
 
+        {/* 触发弹层与输入卡同宽：它挂在整张卡下沿，窄于卡片会像飘出来的
+            悬浮块，而不是输入框的延伸 */}
         <GroupedTriggerPopover
           char="@"
           {...mention}
           emptyLabel="没有匹配的智能体或资料库文件"
+          placement={isNewChat ? "up" : "auto"}
+          className="w-full"
         />
 
         <GroupedTriggerPopover
           char="/"
           {...slash}
           emptyLabel="无匹配项"
+          placement={isNewChat ? "up" : "auto"}
+          className="w-full"
         />
       </ComposerPrimitive.Root>
     </ComposerPrimitive.Unstable_TriggerPopoverRoot>
@@ -472,13 +492,17 @@ const WorkspacePill: FC = () => {
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
-      {/* 胶囊视觉在外层容器；主按钮（弹最近列表）与 ×（清除）为同级按钮 */}
+      {/* 胶囊视觉在外层容器；主按钮（弹最近列表）与 ×（清除）为同级按钮。
+          hover 时 × 直接顶到文件夹图标的位置（图标让位、文字不动），不把叉
+          吊在名字后面：目录名长短不一时叉会跟着名字飘，还容易被读成名字的
+          一部分；钉在图标格上位置恒定，也顺手把「这是可清除的目录」落在同一处 */}
       <div
         data-slot="aui-composer-workspace"
         className={cn(
-          "group/pill inline-flex h-7 items-center rounded-lg pr-1 text-sm transition-colors",
-          workspace ? "bg-muted/50" : "bg-transparent",
-          "hover:bg-muted",
+          // 灰底栏里不再套自己的胶囊底：整条 footer 就是底，这里只是一行
+          // 「图标 + 目录名」的点击区，hover 用极淡的前景叠加
+          "group/pill relative inline-flex h-7 items-center rounded-lg pl-1.5 pr-1 text-sm text-foreground/90 transition-colors",
+          "hover:bg-foreground/[0.04]",
         )}
       >
         <DropdownMenuTrigger
@@ -493,12 +517,22 @@ const WorkspacePill: FC = () => {
                   : "选择工作目录"
               }
               aria-label="Select workspace directory"
-              className="inline-flex h-full items-center gap-1 rounded-l-full pl-2.5 hover:text-foreground"
+              className="inline-flex h-full items-center gap-2 rounded-l-lg pl-0 hover:text-foreground"
             >
               {busy ? (
-                <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
+                <Loader2Icon
+                  className={cn(
+                    "size-3.5 shrink-0 animate-spin",
+                    workspace && "group-hover/pill:invisible",
+                  )}
+                />
               ) : (
-                <FolderOpenIcon className="size-3.5 shrink-0" />
+                <FolderClosedIcon
+                  className={cn(
+                    "size-3.5 shrink-0",
+                    workspace && "group-hover/pill:invisible",
+                  )}
+                />
               )}
               <span className="truncate">
                 {workspace ? pathBasename(workspace) : "选择目录"}
@@ -514,17 +548,18 @@ const WorkspacePill: FC = () => {
             </button>
           }
         />
-        {/* × 常驻占位（display 切换会在 hover 瞬间撑宽胶囊、且无过渡）：
-            平时透明缩着且不接指针，hover/键盘聚焦时淡入放大回位 */}
+        {/* × 占住文件夹图标那一格（参考设计：浅灰圆形徽标 + 灰叉）：绝对定位
+            在图标中心，图标只做 visibility 隐藏，行内宽度不变，悬停时文字不跳。
+            平时不接指针，免得看不见的叉吃掉「点图标打开最近目录」的那一下 */}
         {workspace && (
           <button
             type="button"
             aria-label="Clear workspace"
             title="取消选择当前目录"
             onClick={clear}
-            className="hover:text-destructive pointer-events-none flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-lg opacity-0 scale-90 transition-[opacity,scale] duration-150 ease-out group-hover/pill:pointer-events-auto group-hover/pill:opacity-100 group-hover/pill:scale-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:scale-100"
+            className="bg-muted-foreground/15 text-muted-foreground/70 hover:bg-muted-foreground/25 hover:text-foreground pointer-events-none absolute left-1 top-1/2 z-10 flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full opacity-0 transition-[opacity,background-color,color] duration-150 ease-out group-hover/pill:pointer-events-auto group-hover/pill:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
           >
-            <XIcon className="size-3.5" />
+            <XIcon className="size-3" />
           </button>
         )}
       </div>
@@ -584,8 +619,8 @@ const WorkspacePill: FC = () => {
 /**
  * 有消息对话的只读工作目录胶囊（产品决策 2026-09-27）：对话开始后不提供
  * 换/清目录入口（见上方 WorkspacePill 注释），但仍需看到"这个对话在哪个
- * 目录跑"。样式贴 composer 主题：白底圆角胶囊浮在输入框下方灰条上（与
- * 截图里 ai-teamspace 胶囊同形态），点击像滑盖一样向下展开完整路径
+ * 目录跑"。视觉与 WorkspacePill 同一套：灰底栏里一行「图标 + 目录名」，
+ * 不再套自己的白底/描边胶囊；点击像滑盖一样向下展开完整路径
  * （monospace 代码块质感小盒），再点收起。纯展示，无其他操作；
  * 未选目录（会话跑在任务工作区）时不显示。
  */
@@ -608,9 +643,9 @@ const WorkspaceSessionPill: FC = () => {
         aria-expanded={expanded}
         onClick={() => setExpanded((v) => !v)}
         className={cn(
-          "bg-composer-inner hover:text-foreground text-muted-foreground",
-          "inline-flex h-7 max-w-full cursor-pointer items-center gap-1",
-          "rounded-lg border shadow-sm transition-colors pl-2.5 pr-2 text-sm",
+          "text-foreground/90 hover:bg-foreground/5 hover:text-foreground",
+          "inline-flex h-7 max-w-full cursor-pointer items-center gap-1.5",
+          "rounded-lg pl-0 pr-1 text-sm transition-colors",
         )}
       >
         <FolderOpenIcon className="size-3.5 shrink-0" />
@@ -635,7 +670,7 @@ const WorkspaceSessionPill: FC = () => {
         )}
       >
         <div className="overflow-hidden">
-          <div className="bg-composer-inner text-muted-foreground mt-1 break-all rounded-md border px-2.5 py-1.5 font-mono text-xs">
+          <div className="bg-background/70 text-muted-foreground border-border/40 mt-1 break-all rounded-md border px-2.5 py-1.5 font-mono text-xs">
             {workspace}
           </div>
         </div>
@@ -648,8 +683,10 @@ const WorkspaceSessionPill: FC = () => {
  * 所选工作目录的 git 分支胶囊（目录选择后自动读取该目录的仓库/分支）：
  * 点开为分支菜单——搜索、分支列表（当前分支带勾选与"未提交的更改：N 个文件"）、
  * 切换/创建检出、Git 图谱（展开右侧面板的 Git 标签）。
- * 非 桌面壳 / 非 git 仓库 / 已开始对话 / 本会话工作模式为工作时静默不渲染（与
- * WorkspacePill 同步让位；工作模式下 Git 管理整体隐藏，见顶栏模式切换器）。
+ * 非 桌面壳 / 非 git 仓库 / 已开始对话 / 非编码模式时静默不渲染：Git 管理
+ * 其他入口（面板 Git 标签、检查点卡、标题栏分支徽章）都只在编码档开放，
+ * 这里跟着同一口径，避免设计/工作模式下点开一个进不去的分支菜单。
+ * 底栏本身只在开聊前的空会话显示，对话页不占位。
  */
 const WorkspaceBranchPill: FC = () => {
   const workspace = useWorkspace();
@@ -720,6 +757,8 @@ const WorkspaceBranchPill: FC = () => {
             title={`${workspace}\n${status.branch}${status.dirty > 0 ? ` · ${status.dirty} 个未提交变更` : ""}`}
             aria-label="Git 分支"
             className={cn(
+              // 紧跟在目录胶囊右边（不要 ml-auto：分支是目录的属性，不是
+              // 底栏另一端的信息；一左一右会让人以为两者没关系）
               "bg-muted/50 hover:bg-muted hover:text-foreground inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors",
             )}
           >
@@ -871,7 +910,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           disabled
           className="aui-composer-send inline-flex size-7 items-center justify-center rounded-lg bg-primary! opacity-50"
         >
-          <ChevronUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+          <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
         </button>
       </span>
     );
@@ -927,7 +966,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
           aui.composer.send({ steer: false });
         }}
       >
-        <ChevronUpIcon className="size-4 text-primary-foreground!" />
+        <ArrowUpIcon className="size-4 text-primary-foreground!" />
       </TooltipIconButton>
     );
   }
@@ -944,7 +983,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
                 disabled
                 className="aui-composer-send inline-flex size-7 items-center justify-center rounded-lg bg-primary! opacity-50"
               >
-                <ChevronUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+                <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
               </button>
             </span>
           }
@@ -967,7 +1006,7 @@ const AdaptiveSendButton: FC<{ blocked?: boolean }> = ({ blocked = false }) => {
         className="aui-composer-send size-7 rounded-lg bg-primary!"
         aria-label="Send message"
       >
-        <ChevronUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
+        <ArrowUpIcon className="aui-composer-send-icon size-4 text-primary-foreground!" />
       </TooltipIconButton>
     </ComposerPrimitive.Send>
   );

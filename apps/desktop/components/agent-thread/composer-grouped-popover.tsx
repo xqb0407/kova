@@ -95,7 +95,10 @@ const GroupedItems: FC<{
   // gap 会在输入框底部撑出一段死间隙，必须整个不渲染
   if (!open) return null;
   return (
-    <div ref={scrollRef} className="max-h-72 overflow-y-auto overscroll-contain">
+    <div
+      ref={scrollRef}
+      className="max-h-72 min-h-0 flex-1 overflow-y-auto overscroll-contain"
+    >
       <ComposerPrimitive.Unstable_TriggerPopoverItems>
         {(flat) => (
           <div className="flex flex-col py-1">
@@ -176,6 +179,8 @@ const PopoverOpenProbe: FC<{ onChange: (open: boolean) => void }> = ({
 const MAX_POPOVER_HEIGHT = 360;
 /** 与输入框之间保留的呼吸间距 */
 const POPOVER_GAP = 8;
+/** 上方连这么点高度都没有时，固定向上会让弹层缩成一条：回退 auto 换边 */
+const MIN_UP_SPACE = 120;
 
 /**
  * 可见裁剪区：从锚点往上找第一个 overflow 不是 visible 的祖先。
@@ -225,6 +230,12 @@ const GroupedTriggerPopoverImpl: FC<GroupedTriggerPopoverProps> = ({
   const [open, setOpen] = useState(false);
   /** auto 模式下的测量结果；null = 尚未测量（先隐藏避免方向闪动） */
   const [autoDir, setAutoDir] = useState<"up" | "down" | null>(null);
+  /** 向上展开时锚点上方还剩多少高度：固定向上时按它限高，超出部分在内部
+   *  滚动——否则弹层会被会话视口/header 裁掉半截（固定向上要付的代价） */
+  const [upMaxHeight, setUpMaxHeight] = useState<number | null>(null);
+  /** 向下展开时锚点下方可用高度：小窗里两侧都放不下时，向下也必须限高，
+   *  否则弹层会越过窗口底缘（auto 换边只能选一侧，不能保证放得下） */
+  const [downMaxHeight, setDownMaxHeight] = useState<number | null>(null);
 
   const measure = useCallback(() => {
     const el = popoverRef.current;
@@ -239,6 +250,8 @@ const GroupedTriggerPopoverImpl: FC<GroupedTriggerPopoverProps> = ({
     const viewport = clippingViewport(anchor);
     const spaceAbove = rect.top - viewport.top - POPOVER_GAP;
     const spaceBelow = viewport.bottom - rect.bottom - POPOVER_GAP;
+    setUpMaxHeight(Math.max(0, Math.floor(spaceAbove)));
+    setDownMaxHeight(Math.max(0, Math.floor(spaceBelow)));
     const fitsUp = spaceAbove >= height;
     const fitsDown = spaceBelow >= height;
     // 优先放得下的一侧；都放不下选空间大的一侧；相等时向下（小窗/居中更常见）
@@ -255,12 +268,12 @@ const GroupedTriggerPopoverImpl: FC<GroupedTriggerPopoverProps> = ({
   useEffect(() => {
     if (!open) {
       setAutoDir(null);
+      setUpMaxHeight(null);
+      setDownMaxHeight(null);
       return;
     }
-    if (placement !== "auto") {
-      setAutoDir(placement);
-      return;
-    }
+    if (placement !== "auto") setAutoDir(placement);
+    // 两个方向都量：auto 用来选方向；固定向上时用上方可用高度给弹层限高
     // 首帧布局落定后再量一次；列表搜索过滤导致高度变化时由 ResizeObserver 重算
     measure();
     const raf = requestAnimationFrame(measure);
@@ -278,7 +291,17 @@ const GroupedTriggerPopoverImpl: FC<GroupedTriggerPopoverProps> = ({
     };
   }, [open, placement, measure]);
 
-  const dir = placement === "auto" ? autoDir : placement;
+  const dir =
+    placement === "auto"
+      ? autoDir
+      : placement === "up" &&
+          upMaxHeight != null &&
+          upMaxHeight < MIN_UP_SPACE
+        ? (autoDir ?? "down")
+        : placement;
+  /** 已量出该方向的可用空间：把弹层高度钉在里面，超出部分内部滚动 */
+  const capHeight =
+    dir === "up" ? upMaxHeight : dir === "down" ? downMaxHeight : null;
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopover
@@ -287,11 +310,14 @@ const GroupedTriggerPopoverImpl: FC<GroupedTriggerPopoverProps> = ({
       char={char}
       adapter={adapter}
       isLoading={isLoading}
+      style={capHeight != null ? { maxHeight: `${capHeight}px` } : undefined}
       className={cn(
-        "aui-composer-trigger-popover bg-popover text-popover-foreground absolute start-0 z-50 w-80 overflow-hidden rounded-xl border shadow-2xl",
+        "aui-composer-trigger-popover bg-popover text-popover-foreground absolute start-0 z-50 flex w-80 flex-col overflow-hidden rounded-xl border shadow-2xl",
         dir === "down" ? "top-full mt-2" : "bottom-full mb-2",
-        // auto 尚未测量：先占位但不可见，避免向上闪一帧被 header 切
-        placement === "auto" && dir === null && "invisible",
+        // 尚未测量：先占位但不可见，避免向上闪一帧被 header 切
+        ((placement === "auto" && dir === null) ||
+          (dir === "up" && upMaxHeight === null)) &&
+          "invisible",
         className,
       )}
     >
