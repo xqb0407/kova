@@ -9,7 +9,10 @@ import { parseWebSearchResults } from "@/lib/pi/web-search";
  * Codex 风格右侧面板（components/agent-thread/agent-panel）需要的三路数据：
  * - terminal：bash 命令流水（命令 / 输出 / 运行中 / 失败）
  * - files：edit/write 按文件聚合的变更（逐次 diff 条目 + 累计 ±行数）
- * - citations：WebSearch 结果的引用资料流水（解析成条目，按 url 全线程去重）
+ * - citations：WebSearch 结果条目 + WebFetch 抓取页的引用资料流水
+ *   （WebSearch 解析成多条目；WebFetch 每页一条，标题从结果正文提取；
+ *    均按 url 全线程去重）。另有 citationsAll（不去重全量）供消息来源条
+ *   按轮归因，见 PanelActivity 注释
  *
  * 数据源就是 runtime 消息本身：实时流（stream.ts 的 tool-input/output chunk）
  * 与历史重建（transcript.ts 回填 args/result）形状一致，刷新/切线程零成本恢复，
@@ -66,7 +69,7 @@ export type FileChangeGroup = {
 /** 一条网络搜索引用：来自某次 WebSearch 结果解析出的资料条目 */
 export type CitationEntry = {
   toolCallId: string;
-  /** 产出该条引用的搜索词（面板悬浮/分组用） */
+  /** 产出该条引用的搜索词（面板悬浮/分组用）；WebFetch 为目标 url */
   query: string;
   title: string;
   /** 部分代理结果可能没有链接，保留纯文字条目 */
@@ -77,7 +80,15 @@ export type CitationEntry = {
 export type PanelActivity = {
   terminal: TerminalEntry[];
   files: FileChangeGroup[];
+  /** 面板「引用资料」列表：全线程按 url 去重（首现保留） */
   citations: CitationEntry[];
+  /**
+   * 同上但**不做跨 url 去重**（消息序 × 条目序，条目引用与 citations 共享
+   * 缓存、身份稳定）：消息来源条按轮归因用——全局去重把重复 url 记在首现
+   * toolCallId 名下，后轮重抓早先轮已列过的 url 时按 toolCallId 过滤会空手
+   * 而归，来源条消费这份全量列表、自行做轮内去重
+   */
+  citationsAll: CitationEntry[];
   /** 面板关闭时 Header 角标用：在途未完成的收录工具数 */
   runningCount: number;
 };
@@ -86,6 +97,7 @@ const EMPTY_ACTIVITY: PanelActivity = {
   terminal: [],
   files: [],
   citations: [],
+  citationsAll: [],
   runningCount: 0,
 };
 
@@ -148,6 +160,38 @@ export function resultText(result: unknown): string | null {
     if (typeof err === "string") return err;
   }
   return JSON.stringify(result, null, 2);
+}
+
+/** WebFetch 引用标题的截断长度：面板/悬浮一行能读完整信息即可 */
+const WEB_FETCH_TITLE_MAX = 80;
+
+/**
+ * WebFetch result（整页 markdown/纯文本）→ 展示标题：首个 markdown 标题行
+ * 或首个非空文本行；跳过纯链接行（抓取结果常以地址行开头，没有信息量）。
+ * 正文里取不出任何可读行时回退 hostname。
+ * （导出供 panel-activity.test.ts 的 oracle 复用——与 diffLines/
+ *  parseWebSearchResults 同口径：两侧共用的既有导出纯函数。）
+ */
+export function webFetchTitle(result: string, url: string): string {
+  let host = url;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    // 非法 url（不该发生，args 侧已过滤）：原样兜底
+  }
+  for (const line of result.split("\n")) {
+    const t = line.replace(/^#+\s*/, "").trim();
+    if (!t || /^https?:\/\//i.test(t)) continue;
+    // 纯 markdown 链接行取链接文字（[标题](url) → 标题），别把原始语法当标题；
+    // 空链接文字（[](url)）取不出可读内容，落到下一行
+    const md = /^\[([^\]]*)\]\([^)]*\)$/.exec(t);
+    const title = md ? md[1].trim() : t;
+    if (!title) continue;
+    return title.length > WEB_FETCH_TITLE_MAX
+      ? `${title.slice(0, WEB_FETCH_TITLE_MAX)}…`
+      : title;
+  }
+  return host;
 }
 
 /* ------------------------------ 行级 diff ------------------------------ */
@@ -276,8 +320,8 @@ export function createPanelActivityStore(): PanelActivityStore {
       entry: TerminalEntry | FileChangeEntry;
     }
   >();
-  /** WebSearch 专用：toolCallId →（query+result 指纹，解析出的引用条目数组）。
-   * 一次搜索产多条条目，与 byToolCall 的单 entry 形状不同，分表存。 */
+  /** 引用专用（WebSearch/WebFetch）：toolCallId →（query/url+result 指纹，条目数组）。
+   * WebSearch 一次产多条、WebFetch 恒一条，与 byToolCall 的单 entry 形状不同，分表存。 */
   const citeByToolCall = new Map<
     string,
     { q: string; c: string; entries: CitationEntry[] }
@@ -412,6 +456,34 @@ export function createPanelActivityStore(): PanelActivityStore {
   }
 
   /**
+   * WebFetch result → 单条引用（每次抓取一页一条；标题提取只在
+   * url+result 指纹变化时重跑，整页正文只在缓存未命中时扫一遍）。
+   */
+  function cachedWebFetchCitation(
+    toolCallId: string,
+    url: string,
+    result: string,
+  ): CitationEntry {
+    const hit = citeByToolCall.get(toolCallId);
+    if (hit && hit.q === url && hit.c === result) return hit.entries[0]!;
+    const entry: CitationEntry = {
+      toolCallId,
+      query: url,
+      title: webFetchTitle(result, url),
+      url,
+      snippet: null,
+    };
+    if (hit) {
+      hit.q = url;
+      hit.c = result;
+      hit.entries = [entry];
+    } else {
+      citeByToolCall.set(toolCallId, { q: url, c: result, entries: [entry] });
+    }
+    return entry;
+  }
+
+  /**
    * live = 末条消息且线程运行中：只有这种消息里的无结果工具调用才是在途
    * （转圈）。历史重建的中止残留、以及任何非末条消息里的无结果调用，
    * 结果永远不会再到达 ⇒ 一律按「已中断」展示（红点、不计在途角标）。
@@ -474,6 +546,16 @@ export function createPanelActivityStore(): PanelActivityStore {
           citations.push(c);
         toolCallIds.push(id);
       }
+
+      if (part.toolName === "WebFetch") {
+        // 同 WebSearch 口径：成功完成的抓取每页一条引用（标题从结果正文提取）；
+        // 无 url（args 未成形）不收录
+        if (!done || err) continue;
+        const url = asString(args.url);
+        if (!url) continue;
+        citations.push(cachedWebFetchCitation(id, url, result!));
+        toolCallIds.push(id);
+      }
     }
     return { ref: message, live, terminal, files, citations, running, toolCallIds };
   }
@@ -510,6 +592,8 @@ export function createPanelActivityStore(): PanelActivityStore {
     const groupOrder: string[] = [];
     const groupEntries = new Map<string, FileChangeEntry[]>();
     const citations: CitationEntry[] = [];
+    /** 来源条用：去重前的全量序列（见 PanelActivity.citationsAll 注释） */
+    const citationsAll: CitationEntry[] = [];
     /** 同一链接常被多次搜索命中：全线程按 url 去重，保留首次出现的条目 */
     const seenCitation = new Set<string>();
     let runningCount = 0;
@@ -524,6 +608,7 @@ export function createPanelActivityStore(): PanelActivityStore {
       for (const t of c.terminal) terminal.push(t);
       runningCount += c.running;
       for (const ci of c.citations) {
+        citationsAll.push(ci);
         const key = ci.url
           ? `u:${ci.url}`
           : `n:${ci.query}\u0000${ci.title}`;
@@ -578,10 +663,12 @@ export function createPanelActivityStore(): PanelActivityStore {
       lastActivity.terminal.length === terminal.length &&
       lastActivity.terminal.every((e, i) => e === terminal[i]) &&
       lastActivity.citations.length === citations.length &&
-      lastActivity.citations.every((e, i) => e === citations[i]);
+      lastActivity.citations.every((e, i) => e === citations[i]) &&
+      lastActivity.citationsAll.length === citationsAll.length &&
+      lastActivity.citationsAll.every((e, i) => e === citationsAll[i]);
     if (same) return lastActivity;
 
-    lastActivity = { terminal, files, citations, runningCount };
+    lastActivity = { terminal, files, citations, citationsAll, runningCount };
     return lastActivity;
   }
 

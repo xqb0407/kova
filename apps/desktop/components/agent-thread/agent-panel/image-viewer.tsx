@@ -118,7 +118,11 @@ export const ZoomableImage: FC<{
 
   /** 读一次固有尺寸。不能只靠 <img onLoad>：SSR/已缓存的图在 React 挂上
    *  监听之前就把 load 烧掉了（本地 data URL 尤其快），事件不再来，缩放条
-   *  与像素定尺就永远不出现——挂载后补一次 complete 检查兜住这种情况。 */
+   *  与像素定尺就永远不出现——挂载后补一次 complete 检查兜住这种情况。
+   *  onNatural 走 ref：调用方传内联箭头时若进依赖链（syncNatural → effect），
+   *  每次渲染的新引用会把 effect 带进无限重渲染（setState 回调又触发渲染）。 */
+  const onNaturalRef = useRef(onNatural);
+  onNaturalRef.current = onNatural;
   const syncNatural = useCallback(() => {
     const img = imgRef.current;
     if (!img) return;
@@ -127,8 +131,8 @@ export const ZoomableImage: FC<{
     setNatural((cur) =>
       cur && cur.w === size.w && cur.h === size.h ? cur : size,
     );
-    onNatural?.(size);
-  }, [onNatural]);
+    onNaturalRef.current?.(size);
+  }, []);
 
   useEffect(() => {
     syncNatural();

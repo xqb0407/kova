@@ -560,6 +560,16 @@ const SnapshotImageView: FC<{
 }> = ({ path, src, bytes, extra }) => {
   const blobSrc = useMemo(() => blobUrlFor(src), [src]);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  // 回调必须引用稳定 + 值不变即返回 cur：ZoomableImage 的 syncNatural →
+  // effect 链依赖本回调的引用，内联箭头 + 每次新对象会把它带进无限重渲染
+  const handleNatural = useCallback(
+    (s: { w: number; h: number }) => {
+      setNatural((cur) =>
+        cur?.w === s.w && cur?.h === s.h ? cur : { w: s.w, h: s.h },
+      );
+    },
+    [],
+  );
   if (!blobSrc)
     return (
       <div className="flex h-full min-h-0 flex-col">
@@ -587,7 +597,7 @@ const SnapshotImageView: FC<{
         <ZoomableImage
           src={blobSrc}
           alt={path}
-          onNatural={(size) => setNatural({ w: size.w, h: size.h })}
+          onNatural={handleNatural}
         />
       </div>
     </div>

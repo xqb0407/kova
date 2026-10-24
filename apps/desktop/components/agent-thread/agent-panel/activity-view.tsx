@@ -15,9 +15,9 @@ import { useThreadAttachments } from "@/lib/attachments/thread-attachments";
 
 /**
  * "活动"标签:纵向汇总当前线程的 agent 工作——计划(todo 快照)/
- * 文件变更(edit/write 行级 diff)/ 终端(bash 流水)/ 引用资料(WebSearch 汇总)/
- * 引用文件(用户上传的附件汇总)/ 压缩摘要(上下文压缩的 summary 汇总,
- * 消息流里只留分隔线 marker)。
+ * 文件变更(edit/write 行级 diff)/ 终端(bash 流水)/ 引用资料(WebSearch/
+ * WebFetch 汇总)/ 引用文件(用户上传的附件汇总)/ 压缩摘要(上下文压缩的
+ * summary 汇总,消息流里只留分隔线 marker)。
  * 数据全部派生自 runtime 消息(usePanelActivity)+ pi-todo store,
  * 实时流与历史重建同形,无 sidecar 改动。
  * focusToolCallId:bash 工具行点击定位（展开并滚到那条命令）——
@@ -32,6 +32,18 @@ export const ActivityView: FC<{ focusToolCallId?: string }> = ({
   const attachments = useThreadAttachments();
   const compactions = useThreadCompactionSummaries();
   const feedRef = useRef<HTMLDivElement>(null);
+
+  // 引用定位（消息来源条点击唤起）：focus 编码 "citations" 或 "citations@<nonce>"
+  // （滚到引用资料区；nonce 每次点击换新值——activity 标签已停在引用区时重复
+  // 点击也要重滚，靠值变化让 reveal 效应重跑）或 "cite:<url>"/"cite@<nonce>:<url>"
+  // （该条引用高亮居中；暂无生产方，消费侧已就绪，预留给行级定位入口。nonce
+  // 放前段：url 本身可能含 @，拼在尾部分不清是不是 nonce）；其余值原样给终端
+  // 小节（bash toolCallId，严格相等匹配，不会撞上以上编码）
+  const focus = focusToolCallId ?? "";
+  const citeRevealKey =
+    focus === "citations" || focus.startsWith("citations@") ? focus : undefined;
+  const citeMatch = /^cite(?:@\d+)?:(.+)$/.exec(focus);
+  const citeUrl = citeMatch ? citeMatch[1] : undefined;
 
   const hasPlan = snap.tasks.some((t) => t.status !== "deleted");
   const isEmpty =
@@ -69,7 +81,12 @@ export const ActivityView: FC<{ focusToolCallId?: string }> = ({
           focusToolCallId={focusToolCallId}
           scrollRoot={feedRef}
         />
-        <ReferencesSection items={activity.citations} scrollRoot={feedRef} />
+        <ReferencesSection
+          items={activity.citations}
+          scrollRoot={feedRef}
+          focusUrl={citeUrl}
+          revealKey={citeRevealKey}
+        />
         <AttachmentsSection scrollRoot={feedRef} />
         <CompactionSection scrollRoot={feedRef} />
         {isEmpty ? (

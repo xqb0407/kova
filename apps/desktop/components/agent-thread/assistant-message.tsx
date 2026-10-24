@@ -43,6 +43,7 @@ import {
 } from "./truncation-marker";
 import { collectProcessTexts, messageIndexById } from "@/lib/panels/message-turns";
 import { MessageArtifacts } from "./agent-panel/artifact-card";
+import { MessageSources } from "./message-sources";
 import { MessageCheckpoint } from "./checkpoint-card";
 import { MessageSelectToggle } from "./share/message-select-toggle";
 import { cn } from "cn";
@@ -636,9 +637,11 @@ export const AssistantMessage: FC<{ variant?: AssistantMessageVariant }> = ({
             }
           }}
         </MessagePrimitive.GroupedParts>
-        {/* 产物卡/检查点/错误/重试只归 answer 面（过程面重复渲染会出两套卡片） */}
+        {/* 来源条/产物卡/检查点/错误/重试只归 answer 面（过程面重复渲染会出两套卡片） */}
         {!onlyProcess && (
           <>
+            {/* 来源条：本轮 WebSearch/WebFetch 引用的 favicon 堆叠（贴正文，产物卡之前） */}
+            <MessageSources />
             {/* 消息尾部产物卡：agent 用 write 产出的交付文件（HTML 报告/文档等） */}
             <MessageArtifacts />
             {/* 检查点卡：本轮 git 改动的汇总与撤销入口，隶属消息本体（操作栏之上） */}
