@@ -743,26 +743,32 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
       {/* 移动会话对话框全局挂载一次：行菜单把请求投进模块级 store */}
       <MoveSessionDialogHost />
 
-      {/* 全局搜索（⌘K / 侧边栏搜索按钮）：搜索开启时占据右侧主区，
-          左侧栏保持可见可点——是"右侧全屏侧边栏"，不是整页遮罩 */}
-      {searchOpen ? (
-        <div className="flex min-w-0 flex-1 overflow-hidden">
-          <GlobalSearchView
-            open={searchOpen}
-            onOpenChange={setSearchOpen}
-            onNewThread={() => {
-              setSearchOpen(false);
-              setActiveMenu("");
-              // 同左栏菜单入口：动作驱动清指针；新对话从"未选择目录"开始
-              clearLastThread();
-              clearWorkspace();
-              void aui.threads.switchToNewThread();
-            }}
-          />
-        </div>
-      ) : (
-        <div className="min-w-0 flex-1 overflow-hidden">{children}</div>
-      )}
+      {/* 全局搜索（⌘K / 侧边栏搜索按钮）：右侧主区**覆盖层**。
+          children 必须保持挂载——早先实现是"用搜索视图替换 children"，
+          替换会让主区里的 ResizablePanelGroup 卸载重挂；重挂时的初始尺寸
+          会被 onResize 的"拖拽兜底"（!collapsed && !panelShown &&
+          size>=MIN ⇒ 想展开）误判成用户手势，把用户关掉的面板重新打开
+          （自动化页按 Esc 关搜索即复现）。覆盖层方案零卸载、零 resize 事件，
+          侧栏仍在覆盖区之外保持可点。 */}
+      <div className="relative min-w-0 flex-1 overflow-hidden">
+        {children}
+        {searchOpen ? (
+          <div className="absolute inset-0 z-40 flex bg-background">
+            <GlobalSearchView
+              open={searchOpen}
+              onOpenChange={setSearchOpen}
+              onNewThread={() => {
+                setSearchOpen(false);
+                setActiveMenu("");
+                // 同左栏菜单入口：动作驱动清指针；新对话从"未选择目录"开始
+                clearLastThread();
+                clearWorkspace();
+                void aui.threads.switchToNewThread();
+              }}
+            />
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 };
