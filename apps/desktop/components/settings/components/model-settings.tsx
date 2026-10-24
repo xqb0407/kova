@@ -34,6 +34,7 @@ import {
 } from "@/lib/model/provider-headers";
 import { ProviderIcon } from "@/components/custom-ui/provider-icon";
 import { cn } from "@/lib/utils";
+import { channelTimeoutMs } from "pi-protocol";
 import {
   piRequest,
   type PiCredentialSummary,
@@ -956,16 +957,21 @@ export const ModelSettings: FC = () => {
     setSvcFetchState("fetching");
     setSvcFetchError(null);
     try {
-      const res = await piRequest<{ type: "fetched_models"; models: string[] }>({
-        type: "fetch_models",
-        baseUrl,
-        apiKey: svcApiKey.trim(),
-        // 编辑态且留空：sidecar 按 providerId 取已存凭据兜底
-        ...(svcEditing ? { providerId: svcEditing } : {}),
-        api: svcApi,
-        // 表单当前的自定义请求头（网关鉴权类端点靠它才能拉到列表）
-        headers: headerRowsToRecord(svcHeaders),
-      });
+      const res = await piRequest<{ type: "fetched_models"; models: string[] }>(
+        {
+          type: "fetch_models",
+          baseUrl,
+          apiKey: svcApiKey.trim(),
+          // 编辑态且留空：sidecar 按 providerId 取已存凭据兜底
+          ...(svcEditing ? { providerId: svcEditing } : {}),
+          api: svcApi,
+          // 表单当前的自定义请求头（网关鉴权类端点靠它才能拉到列表）
+          headers: headerRowsToRecord(svcHeaders),
+        },
+        // 两段式：结果帧最晚 fetch 15s 超时后到，显式按预算等（缺省会传 15s
+        // 触发通道的抬升告警）
+        channelTimeoutMs("fetch_models"),
+      );
       if (seq !== svcFetchSeq.current) return;
       setSvcAvail(res.models);
       setSvcFetchState("done");
@@ -1015,17 +1021,21 @@ export const ModelSettings: FC = () => {
     setSvcTestError(null);
     setSvcError(null);
     try {
-      await piRequest({
-        type: "test_provider",
-        baseUrl,
-        apiKey: svcApiKey.trim(),
-        // 编辑态且留空：sidecar 按 providerId 取已存凭据兜底（明文 key 不出渲染进程）
-        ...(svcEditing ? { providerId: svcEditing } : {}),
-        api: svcApi,
-        model,
-        // 表单当前的自定义请求头（保存前也要能测通）
-        headers: headerRowsToRecord(svcHeaders),
-      });
+      await piRequest(
+        {
+          type: "test_provider",
+          baseUrl,
+          apiKey: svcApiKey.trim(),
+          // 编辑态且留空：sidecar 按 providerId 取已存凭据兜底（明文 key 不出渲染进程）
+          ...(svcEditing ? { providerId: svcEditing } : {}),
+          api: svcApi,
+          model,
+          // 表单当前的自定义请求头（保存前也要能测通）
+          headers: headerRowsToRecord(svcHeaders),
+        },
+        // 两段式：结果帧最晚 fetch 20s 超时后到，显式按预算等
+        channelTimeoutMs("test_provider"),
+      );
       setSvcTestState("ok");
     } catch (err) {
       setSvcTestState("error");
@@ -1064,15 +1074,18 @@ export const ModelSettings: FC = () => {
       setError(null);
       setBusy(true);
       try {
-        await piRequest({
-          type: "test_provider",
-          baseUrl: cp.baseUrl,
-          // 不回传明文：providerId 让 sidecar 端取已存凭据
-          apiKey: "",
-          providerId: cp.providerId,
-          api: cp.api,
-          model,
-        });
+        await piRequest(
+          {
+            type: "test_provider",
+            baseUrl: cp.baseUrl,
+            // 不回传明文：providerId 让 sidecar 端取已存凭据
+            apiKey: "",
+            providerId: cp.providerId,
+            api: cp.api,
+            model,
+          },
+          channelTimeoutMs("test_provider"),
+        );
         setTestOkId(cp.providerId);
         setTimeout(
           () => setTestOkId((v) => (v === cp.providerId ? null : v)),

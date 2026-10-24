@@ -43,6 +43,8 @@ import {
   validateHeaderInput,
   type CatalogModelSeed,
 } from "../../model/model-catalog";
+import { classifyAgentError, toWireError } from "../../agent/agent-errors";
+import { beginOp, endOp } from "../exit";
 import { maskApiKey } from "../payloads";
 import { scanProviderImports } from "../../model/import";
 import { logAt } from "../../log";
@@ -92,6 +94,17 @@ const parseCredentialEnv = (value: unknown): Record<string, string> | undefined 
   }
   return out;
 };
+
+/** 异步失败的应答：与 handleLine 的 catch 同形（前端 piRequest 见 error 即抛）。
+ *  供两段式 handler 的迟到失败用（optimize 同款，本地副本避免跨域循环依赖）。 */
+function sendFailure(reqId: string, errorText: string): void {
+  send({
+    id: reqId,
+    type: "error",
+    errorText,
+    error: toWireError(classifyAgentError(errorText, { opaqueFallback: "runtime" })),
+  });
+}
 
 export const handlers: Record<string, CommandHandler> = {
   set_credential: async (reqId, msg) => {
@@ -165,17 +178,31 @@ export const handlers: Record<string, CommandHandler> = {
         : {};
     // 自定义头最后合并（用户显式填的覆盖默认 Authorization 等）
     applyCustomHeaders(requestHeaders, customHeaders);
-    const res = await fetch(url, {
-      headers: Object.keys(requestHeaders).length ? requestHeaders : undefined,
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) throw new Error(`获取模型列表失败: HTTP ${res.status}`);
-    const json = (await res.json()) as { data?: unknown };
-    const raw = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
-    const ids = raw
-      .map((m) => (typeof m === "string" ? m : (m as { id?: unknown })?.id))
-      .filter((s): s is string => typeof s === "string" && !!s.trim());
-    send({ id: reqId, type: "fetched_models", models: [...new Set(ids)] });
+    // 两段式（受理+迟到帧，optimize_prompt 同款）：网络等待绝不留在 mgmt
+    // 串行队列里——否则端点不通时 abort/queue_clear 等「停止类」命令要在
+    // 它身后干等满 15s（2026-10-24 test_provider 20s 占队阻塞停止的同类根因）。
+    // 前置校验（URL/api 归一/头校验）已在上面同步完成，抛错走 handleLine
+    // 的同步 error 帧，不产生迟到帧
+    beginOp();
+    void (async () => {
+      try {
+        const res = await fetch(url, {
+          headers: Object.keys(requestHeaders).length ? requestHeaders : undefined,
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!res.ok) throw new Error(`获取模型列表失败: HTTP ${res.status}`);
+        const json = (await res.json()) as { data?: unknown };
+        const raw = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
+        const ids = raw
+          .map((m) => (typeof m === "string" ? m : (m as { id?: unknown })?.id))
+          .filter((s): s is string => typeof s === "string" && !!s.trim());
+        send({ id: reqId, type: "fetched_models", models: [...new Set(ids)] });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
   },
 
   add_custom_provider: async (reqId, msg) => {
@@ -447,16 +474,29 @@ export const handlers: Record<string, CommandHandler> = {
     }
     // 自定义头最后合并：用户显式填的覆盖默认 Authorization 等内容（大小写不敏感）
     applyCustomHeaders(headers, customHeaders);
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!res.ok) {
-      const text = (await res.text()).slice(0, 300);
-      throw new Error(`连接失败: HTTP ${res.status}${text ? ` · ${text}` : ""}`);
-    }
-    send({ id: reqId, type: "tested", ok: true });
+    // 两段式（受理+迟到帧，optimize_prompt 同款）：端点不通时 fetch 要等满
+    // 20s 超时——同步等在 mgmt 串行队列里会挡住 abort/queue_clear 等一切
+    // 「停止类」命令（2026-10-24 实测 test_provider 占队 20s，用户点停止干等）。
+    // 前置校验已同步完成，抛错走 handleLine 的同步 error 帧，不产生迟到帧
+    beginOp();
+    void (async () => {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(20_000),
+        });
+        if (!res.ok) {
+          const text = (await res.text()).slice(0, 300);
+          throw new Error(`连接失败: HTTP ${res.status}${text ? ` · ${text}` : ""}`);
+        }
+        send({ id: reqId, type: "tested", ok: true });
+      } catch (err) {
+        sendFailure(reqId, err instanceof Error ? err.message : String(err));
+      } finally {
+        endOp();
+      }
+    })();
   },
 };

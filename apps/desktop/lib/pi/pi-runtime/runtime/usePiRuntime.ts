@@ -66,6 +66,7 @@ import {
 import { rekeyPanelOpenPref } from "@/lib/panels/panel-open-pref";
 import { purgeThreadTurns } from "@/lib/panels/turn-collapse";
 import { registerPerfProbeSource } from "@/lib/perf-probe";
+import { installRestartReconcile, isPiStateBusy } from "./sidecar-restart-reconcile";
 
 const EMPTY_THREAD_STATE = createPiThreadState("__pending__");
 const EMPTY_PROJECTED_MESSAGES: readonly ThreadMessageLike[] = [];
@@ -317,10 +318,14 @@ export const usePiControllerStateSelector = <T>(
   );
 };
 
-const isPiStateRunning = (state: PiThreadState): boolean =>
-  state.runStatus === "running" ||
-  state.compaction.active ||
-  state.retry.active;
+/** 「自认为在跑」判据与换代对账共用一份（sidecar-restart-reconcile）：
+ *  runStatus 之外还看压缩/重试——它们卡死同样表现为不可交互 */
+const isPiStateRunning = isPiStateBusy;
+
+// sidecar 换代对账的实现在 sidecar-restart-reconcile.ts（可测的独立模块）：
+// pi_restarted 广播 → 在跑线程快照归位。registry 供给用 getter 而非闭包值，
+// 回调触发时读到的总是当前活跃 registry（重挂会整体换新）。
+installRestartReconcile(() => lastRegistry);
 
 /** 停止生成回填：被 queue_clear 取回的排队条目落回输入框（文本进草稿、图片
  *  还原成 composer 附件）。文本合并成一段（多条排队消息按原顺序、空行分隔）；

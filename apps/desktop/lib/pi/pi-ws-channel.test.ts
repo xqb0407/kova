@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { WsPiChannel } from "./pi-ws-channel";
 import type { PiChannelStatus } from "./pi-channel";
 
@@ -149,5 +151,51 @@ describe("WsPiChannel 断线语义", () => {
     ch.onStatusChange((s) => seen.push(s));
     expect(seen[0]).toEqual({ connected: false });
     ch.close();
+  });
+
+  test("sidecar 换代广播只投递给订阅者，退订后不再投递", () => {
+    const ch = newChannel();
+    const s = sockets[0];
+    s.open();
+    s.emit({ type: "authed" });
+
+    const hits: number[] = [];
+    const off = ch.subscribeSidecarRestart(() => hits.push(1));
+    s.emit({ type: "pi_restarted" });
+    expect(hits).toHaveLength(1);
+
+    // 无关自发帧不误触
+    s.emit({ type: "sessions_changed", op: "updated", sessionId: "x" });
+    expect(hits).toHaveLength(1);
+
+    off();
+    s.emit({ type: "pi_restarted" });
+    expect(hits).toHaveLength(1);
+    ch.close();
+  });
+
+  test("换代广播在未订阅/未连接时无害", () => {
+    const ch = newChannel();
+    const s = sockets[0];
+    // 未 open、未 authed：网关不会下发，即便下发也不能炸
+    s.emit({ type: "pi_restarted" });
+    s.open();
+    s.emit({ type: "authed" });
+    s.emit({ type: "pi_restarted" });
+    ch.close();
+  });
+});
+
+describe("跨进程契约：网关白名单 ↔ 通道分发能力", () => {
+  test("remote.ts 的 BROADCAST_TYPES 放行 pi_restarted", () => {
+    // 这条是远程端换代对账的命门：白名单一旦漏掉，通道分支永远收不到帧，
+    // 而两侧各自的单测都不会红（通道桩直接 emit，白名单无人消费）。源码钉住。
+    const src = readFileSync(
+      join(import.meta.dir, "..", "..", "..", "electron", "main", "remote.ts"),
+      "utf8",
+    );
+    const block = /BROADCAST_TYPES[\s\S]*?\]\);/.exec(src);
+    expect(block, "remote.ts 的 BROADCAST_TYPES 结构变化，同步本测试").not.toBeNull();
+    expect(block![0]).toContain('"pi_restarted"');
   });
 });

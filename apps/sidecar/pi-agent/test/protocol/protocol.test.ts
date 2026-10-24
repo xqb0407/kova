@@ -888,6 +888,19 @@ describe("dispatch: provider key masking", () => {
     });
     try {
       const base = `http://127.0.0.1:${srv.port}/v1`;
+      // test_provider/fetch_models 是两段式（受理即返回）：应答是同 reqId
+      // 迟到帧，轮询等它
+      const waitForFrame = async (id: string): Promise<Record<string, unknown>> => {
+        const deadline = Date.now() + 5000;
+        for (;;) {
+          const found = lines
+            .map((l) => JSON.parse(l) as Record<string, unknown>)
+            .find((f) => f.id === id);
+          if (found) return found;
+          if (Date.now() > deadline) throw new Error(`frame ${id} not observed`);
+          await new Promise((r) => setTimeout(r, 10));
+        }
+      };
       await dispatch("k7", {
         type: "test_provider",
         baseUrl: base,
@@ -896,7 +909,7 @@ describe("dispatch: provider key masking", () => {
         api: "openai-chat",
         model: "m1",
       });
-      expect(last()).toEqual({ id: "k7", type: "tested", ok: true });
+      expect(await waitForFrame("k7")).toEqual({ id: "k7", type: "tested", ok: true });
       expect(authHeader).toBe(`Bearer ${KEY}`);
 
       await dispatch("k8", {
@@ -906,7 +919,7 @@ describe("dispatch: provider key masking", () => {
         providerId: "custom-mask",
         api: "openai-chat",
       });
-      expect(last()).toEqual({ id: "k8", type: "fetched_models", models: ["m1"] });
+      expect(await waitForFrame("k8")).toEqual({ id: "k8", type: "fetched_models", models: ["m1"] });
       expect(authHeader).toBe(`Bearer ${KEY}`);
     } finally {
       srv.stop(true);

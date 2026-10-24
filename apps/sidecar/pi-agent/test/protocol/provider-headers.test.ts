@@ -33,6 +33,19 @@ afterAll(() => {
 
 const last = (): Record<string, unknown> => JSON.parse(lines[lines.length - 1]);
 
+/** 两段式命令（fetch_models/test_provider）的应答是同 reqId 迟到帧：轮询等它 */
+const waitForFrame = async (id: string): Promise<Record<string, unknown>> => {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    const found = lines
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((f) => f.id === id);
+    if (found) return found;
+    if (Date.now() > deadline) throw new Error(`frame ${id} not observed; got ${lines.length} lines`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+};
+
 const PID = "custom-headers";
 const BASE = "http://127.0.0.1:9/v1";
 
@@ -126,7 +139,7 @@ describe("自定义端点的请求头", () => {
         api: "openai-chat",
         headers,
       });
-      expect(last()).toEqual({ id: "h8", type: "fetched_models", models: ["m1"] });
+      expect(await waitForFrame("h8")).toEqual({ id: "h8", type: "fetched_models", models: ["m1"] });
       expect(seen.org).toBe("team");
       expect(seen.version).toBe("2026-01");
       expect(seen.auth).toBe("Custom tok"); // 自定义头覆盖 key 派生的 Bearer
@@ -139,7 +152,7 @@ describe("自定义端点的请求头", () => {
         model: "m1",
         headers: { Authorization: "Custom tok" },
       });
-      expect(last()).toEqual({ id: "h9", type: "tested", ok: true });
+      expect(await waitForFrame("h9")).toEqual({ id: "h9", type: "tested", ok: true });
       expect(seen.auth).toBe("Custom tok");
 
       // 不带 headers 的调用（列表行快速测试）：回落到已存行的头
@@ -151,7 +164,7 @@ describe("自定义端点的请求头", () => {
         api: "openai-chat",
         model: "m1",
       });
-      expect(last()).toEqual({ id: "h10", type: "tested", ok: true });
+      expect(await waitForFrame("h10")).toEqual({ id: "h10", type: "tested", ok: true });
       expect(seen.auth).toBe("Custom tok");
       expect(seen.org).toBe("team");
     } finally {

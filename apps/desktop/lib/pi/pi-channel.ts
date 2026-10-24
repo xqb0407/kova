@@ -182,7 +182,17 @@ export interface PiChannel {
   subscribeMcpAuth?(
     cb: (frame: PiMcpAuthFrame) => void,
   ): (() => void) | Promise<() => void>;
-  /** 能力可选（与 subscribeTurns 成对）：当前正在跑 turn 的会话 id 种子清单 */
+  /**
+   * 能力可选（同款无 id 自发通知通道）：订阅 sidecar 换代广播
+   * （pi_restarted，见 pi-protocol notifications.ts）。dev 热重启/崩溃重启后
+   * 旧实例的 running 表清零、在跑轮次没有 agent_end 收尾，订阅方收到即对在跑
+   * 线程拉快照对账归位。WS 通道经网关白名单转发（remote.rs broadcast_notification）。
+   */
+  subscribeSidecarRestart?(
+    cb: () => void,
+  ): (() => void) | Promise<() => void>;
+  /**
+   * 能力可选（与 subscribeTurns 成对）：当前正在跑 turn 的会话 id 种子清单 */
   listRunning?(): Promise<string[]>;
   /**
    * 能力可选（随 listRunning）：在跑轮次的 {sessionId, requestId} 明细。

@@ -86,11 +86,15 @@ plugins/ui-design/design.html
 # 源码；测试用 cwd "." 跑时也会在这里落盘，所以整目录忽略
 .kova/
 
-# 目标模式测试的转录落盘残留：goal 测试用固定 sessionId + cwd "." 跑，
-# commitGoal 会把 goal_state 行写进包根。真正的修法是那些用例改指临时目录，
-# 在那之前先用窄模式挡住——刻意不写成 s-*.jsonl：s-restore-*.jsonl 是**入库的**
-# 夹具文件，宽模式会让「为什么这几个没被忽略」变成新的困惑
+# sidecar 测试的转录落盘残留：goal/mcp 用例用固定 sessionId + cwd "." 跑，
+# 持久化会把 <sessionId>.jsonl 写进包根。真正的修法是那些用例改指临时目录，
+# 在那之前先用窄模式挡住——刻意不写成 s-*.jsonl：其余 s- 前缀 id 多为内存态，
+# 宽模式会把「为什么这几个没被忽略」变成新的困惑。
+# s-restore-*.jsonl 在 4d2e845 前是入库夹具，该提交删除后同样走残留路径；
+# 包根没有任何入库文件，窄规则不会误伤。
 /apps/sidecar/pi-agent/s-goal-*.jsonl
+/apps/sidecar/pi-agent/s-restore-*.jsonl
+/apps/sidecar/pi-agent/sess-level.jsonl
 
 # AOCI agent host integration (machine-bound; do not commit)
 .mcp.json
