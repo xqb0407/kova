@@ -35,7 +35,6 @@ import {
   PackageOpenIcon,
   RefreshCwIcon,
   SlidersHorizontalIcon,
-  SparklesIcon,
   Trash2Icon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -123,6 +122,13 @@ const InstalledPlugins = dynamic(
     })),
   { ssr: false, loading: () => <ViewSpinner /> },
 );
+const SkillMarket = dynamic(
+  () =>
+    import("@/components/marketplace/skill-market").then((m) => ({
+      default: m.SkillMarket,
+    })),
+  { ssr: false, loading: () => <ViewSpinner /> },
+);
 const AddMarketplaceDialog = dynamic(
   () =>
     import("@/components/marketplace/add-marketplace-dialog").then((m) => ({
@@ -181,7 +187,7 @@ const SECTION_META: { value: Section; label: string; desc: string }[] = [
   {
     value: "skills",
     label: "技能",
-    desc: "技能：新建、编辑、启停技能，也可以从插件市场安装带技能的扩展。",
+    desc: "技能：从技能市场搜索安装，也可新建、编辑、启停本地技能。",
   },
 ];
 
@@ -503,20 +509,20 @@ export const MarketplaceView: FC<{
           </Button>
         </div>
 
-        {section !== "plugins" ? (
-          /* 专家段 / 技能段：市场与已装是插件独有的概念，先占位；真正的
-             子智能体 / 技能管理在页头右上角「管理」里 */
+        {section === "skills" ? (
+          /* 技能段：技能市场（目录/分类/搜索走 KovaHub 接口，安装落地为本地技能）；
+             本地技能管理仍在页头右上角「管理」里 */
+          <div className="mt-5 flex min-h-0 flex-1 flex-col">
+            <SkillMarket />
+          </div>
+        ) : section !== "plugins" ? (
+          /* 专家段：市场与已装是插件独有的概念，先占位；真正的
+             子智能体管理在页头右上角「管理」里 */
           <div className="text-muted-foreground flex min-h-0 flex-1 flex-col items-center justify-center gap-2 pb-16">
             <div className="bg-muted/50 text-muted-foreground grid size-12 place-items-center rounded-2xl border">
-              {section === "experts" ? (
-                <BotIcon className="size-6" />
-              ) : (
-                <SparklesIcon className="size-6" />
-              )}
+              <BotIcon className="size-6" />
             </div>
-            <p className="text-sm font-medium">
-              {section === "experts" ? "专家市场即将上线" : "技能市场即将上线"}
-            </p>
+            <p className="text-sm font-medium">专家市场即将上线</p>
             <p className="text-muted-foreground text-sm">
               先点顶栏右侧「管理」新建或调整；带这类能力的扩展，在插件段的市场目录里安装。
             </p>

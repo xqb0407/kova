@@ -98,9 +98,13 @@ async function mutate(payload: Record<string, unknown>): Promise<void> {
   }
 }
 
+/** 附属文件（市场多文件技能）：相对技能目录的安全相对路径 + 文本内容 */
+export type SkillAuxFile = { path: string; content: string };
+
 /**
  * 保存（新建/编辑）。raw 为 SKILL.md 原文模式（导入路径，frontmatter 以 sidecar
  * 解析为准，fallbackName 用文件名 stem 兜底）；name 传编辑前的原名（改名时 sidecar 清旧文件）。
+ * files 非空时按目录式技能落盘（<slug>/SKILL.md + files），附属文件与正文同目录。
  */
 export function saveSkill(args: {
   scope: "system" | "workspace";
@@ -109,6 +113,7 @@ export function saveSkill(args: {
   draft?: SkillDraft;
   raw?: string;
   fallbackName?: string;
+  files?: SkillAuxFile[];
 }): Promise<void> {
   return mutate({
     type: "save_skill",
@@ -116,6 +121,7 @@ export function saveSkill(args: {
     ...(args.cwd ? { cwd: args.cwd } : {}),
     ...(args.name ? { name: args.name } : {}),
     ...(args.fallbackName ? { fallbackName: args.fallbackName } : {}),
+    ...(args.files?.length ? { files: args.files } : {}),
     ...(args.raw !== undefined ? { raw: args.raw } : { definition: args.draft }),
   });
 }
