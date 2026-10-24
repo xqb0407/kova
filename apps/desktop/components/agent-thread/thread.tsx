@@ -250,6 +250,18 @@ export const Thread = memo(function Thread() {
               <ThreadSuggestions />
             </div>
           </AuiIf>
+          {/* AI 生成内容免责声明：仅对话页显示（贴 composer 正下方；新对话页
+              还没有生成内容，不出现）。负边距抵消 footer 的 gap-4 保持贴紧；
+              sticky footer 上内容会从下方滚过，底色由 globals.css 的
+              [data-slot="ai-disclaimer"] 规则跟随聊天卡片（含材质半透明） */}
+          {!isEmpty && (
+            <p
+              data-slot="ai-disclaimer"
+              className="-mt-1 pb-1 text-center text-xs text-muted-foreground/80"
+            >
+              内容由AI生成，重要信息请务必核查
+            </p>
+          )}
         </ThreadPrimitive.ViewportFooter>
       </ThreadViewport>
 

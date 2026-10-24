@@ -1081,7 +1081,7 @@ export const Base: FC = () => {
           <main
             data-drag-region={isDesktop() ? "true" : undefined}
             className={cn(
-              "bg-muted/40 relative flex-1 overflow-hidden p-1",
+              "bg-muted/40 relative flex-1 overflow-hidden ",
               !compact && panelGone && "pr-0", !sidebarCollapsed && "pl-0"
             )}
           >
@@ -1122,7 +1122,8 @@ export const Base: FC = () => {
                     这里连同拖拽一起禁用，避免误触把面板带进来 */}
                 <ResizableHandle
                   className={cn(
-                    "w-2",
+                    panelGone ? "w-0" : "w-2",
+
                     (panelGone || panelFullscreen) && "[&>div]:hidden",
                     // 全屏中把手整体失效：聊天列已收没，拖拽没有意义还可能
                     // 把它拖回来

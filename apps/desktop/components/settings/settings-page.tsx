@@ -152,7 +152,7 @@ export const SettingsPage: FC<{
       {/* 二级侧边栏 */}
       <nav
         data-slot="settings-nav"
-        className="bg-transparent flex w-65 shrink-0 flex-col border-r"
+        className="bg-transparent flex w-65 shrink-0  flex-col "
       >
         {/* 顶栏仅作拖拽区：macOS 红绿灯悬浮于此行 */}
         <div
@@ -198,7 +198,7 @@ export const SettingsPage: FC<{
                     onClick={() => setSection(id)}
                     data-active={section === id}
                     className={cn(
-                      "flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-sm",
+                      "flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-sm font-normal",
                       "data-active:text-foreground text-muted-foreground",
                     )}
                   >

@@ -522,7 +522,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   className={cn(
                     // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                     // 自带的 hover 底色，避免与高亮叠加
-                    "h-8 w-full text-sm justify-between gap-2 rounded-md px-2.5  font-normal hover:bg-transparent dark:hover:bg-transparent",
+                    "h-8 w-full text-sm justify-between gap-2 rounded-md px-2.5  font-medium hover:bg-transparent dark:hover:bg-transparent group",
                     !item.isNew && currentMenu === item.id && "bg-selected",
                   )}
                   onClick={() => handleMenuClick(item)}
@@ -532,7 +532,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     <Icon className="size-4 shrink-0" />
                     <span className="whitespace-nowrap">{item.label}</span>
                   </div>
-                  {item.kbd}
+                 <div className="hidden group-hover:block">
+                   {item.kbd}
+                 </div>
                 </Button>
               );
 
