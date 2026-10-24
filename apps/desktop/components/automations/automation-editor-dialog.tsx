@@ -39,6 +39,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { CronEditor } from "@/components/custom-ui/cron-editor";
+import { DateTimePicker } from "@/components/custom-ui/date-time-picker";
+import { TimePicker } from "@/components/custom-ui/time-picker";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -650,7 +652,7 @@ const ScheduleForm: FC<{
           <CalendarClockIcon className="size-6" />
         </div>
         <div className="min-w-0 flex-1">
-          <DialogTitle className="truncate text-xl font-semibold tracking-tight">
+          <DialogTitle className="truncate text-md font-semibold tracking-tight">
             {task
               ? "编辑自动化任务"
               : template
@@ -722,11 +724,9 @@ const ScheduleForm: FC<{
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
             {(mode === "daily" || mode === "weekly" || mode === "monthly") && (
-              <Input
-                type="time"
+              <TimePicker
                 value={time}
-                onChange={(e) => setTime(e.target.value)}
-                className="w-32"
+                onChange={setTime}
                 aria-label="运行时刻"
               />
             )}
@@ -795,11 +795,9 @@ const ScheduleForm: FC<{
             )}
             {mode === "once" && (
               <>
-                <Input
-                  type="datetime-local"
+                <DateTimePicker
                   value={onceValue}
-                  onChange={(e) => setOnceValue(e.target.value)}
-                  className="w-52"
+                  onChange={setOnceValue}
                   aria-label="一次性运行时间"
                 />
                 <div className="flex gap-1">
