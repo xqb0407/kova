@@ -9,15 +9,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { ThreadNavButtons } from "@/components/agent-thread/thread-nav-buttons";
 import { MoveSessionDialogHost } from "@/components/agent-thread/move-session-dialog";
 import { Button } from "@/components/ui/button";
-import {
-  Command,
-  CommandDialog,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
+import { GlobalSearchView } from "@/components/search/global-search-view";
 import {
   Sheet,
   SheetContent,
@@ -48,7 +40,6 @@ import {
   ChartColumnIcon,
   LibraryIcon,
   MenuIcon,
-  MessageSquareIcon,
   PanelLeftIcon,
   SearchIcon,
   ZapIcon,
@@ -151,9 +142,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   const mobileSettingsHover = useFluidHover(mobileSettingsRef);
 
   const [searchOpen, setSearchOpen] = useState(false);
-  const hasThreads = useAuiState((s) => s.threads.threadIds.length > 0);
   const threadIds = useAuiState((s) => s.threads.threadIds);
-  const threadItems = useAuiState((s) => s.threads.threadItems);
   const aui = useAui();
 
   // 导航历史（浏览器式前进/后退，见 pi-thread-nav-history）：记录与执行都
@@ -751,66 +740,29 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         </SheetContent>
       </Sheet>
 
-      <CommandDialog
-        open={searchOpen}
-        onOpenChange={setSearchOpen}
-        className="max-w-[30dvw]!"
-      >
-        <Command className="w-full">
-          <CommandInput placeholder="搜索对话..." />
-          <CommandList>
-            <CommandEmpty>没有找到结果</CommandEmpty>
-            <CommandGroup heading="操作">
-              <ThreadListPrimitive.New asChild>
-                <CommandItem
-                  value="action:new-thread"
-                  keywords={["新对话"]}
-                  onSelect={() => {
-                    setSearchOpen(false);
-                    setActiveMenu("");
-                    // 同左栏菜单入口：动作驱动清指针（外层 New 负责开新会话）
-                    clearLastThread();
-                    clearWorkspace();
-                  }}
-                >
-                  <PlusIcon className="size-4" />
-                  <span>新对话</span>
-                </CommandItem>
-              </ThreadListPrimitive.New>
-            </CommandGroup>
-            {hasThreads && (
-              <CommandGroup heading="对话">
-                {threadIds.map((id) => {
-                  const item = threadItems.find((t) => t.id === id);
-                  const title = item?.title ?? "新对话";
-                  return (
-                    <CommandItem
-                      key={id}
-                      // cmdk 用 value 做选中/去重定位；不显式传会从文字（标题）推导，
-                      // 标题重复时两条高亮同一个。id 唯一，标题放 keywords 保搜索命中
-                      value={id}
-                      keywords={[title]}
-                      onSelect={() => {
-                        aui.threads.switchToThread(id);
-                        setSearchOpen(false);
-                        setActiveMenu("");
-                      }}
-                    >
-                      <MessageSquareIcon className="size-4 shrink-0" />
-                      <span className="truncate">{title}</span>
-                    </CommandItem>
-                  );
-                })}
-              </CommandGroup>
-            )}
-          </CommandList>
-        </Command>
-      </CommandDialog>
-
       {/* 移动会话对话框全局挂载一次：行菜单把请求投进模块级 store */}
       <MoveSessionDialogHost />
 
-      <div className="min-w-0 flex-1 overflow-hidden">{children}</div>
+      {/* 全局搜索（⌘K / 侧边栏搜索按钮）：搜索开启时占据右侧主区，
+          左侧栏保持可见可点——是"右侧全屏侧边栏"，不是整页遮罩 */}
+      {searchOpen ? (
+        <div className="flex min-w-0 flex-1 overflow-hidden">
+          <GlobalSearchView
+            open={searchOpen}
+            onOpenChange={setSearchOpen}
+            onNewThread={() => {
+              setSearchOpen(false);
+              setActiveMenu("");
+              // 同左栏菜单入口：动作驱动清指针；新对话从"未选择目录"开始
+              clearLastThread();
+              clearWorkspace();
+              void aui.threads.switchToNewThread();
+            }}
+          />
+        </div>
+      ) : (
+        <div className="min-w-0 flex-1 overflow-hidden">{children}</div>
+      )}
     </div>
   );
 };

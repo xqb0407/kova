@@ -78,6 +78,41 @@ export function initTables(db: Db): void {
         first_ts INTEGER NOT NULL DEFAULT 0,
         last_ts INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS session_blocks (
+        session_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        preview TEXT NOT NULL DEFAULT '',
+        search_text TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (session_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS session_blocks_session
+        ON session_blocks (session_id, seq);
+    CREATE TABLE IF NOT EXISTS search_scan (
+        session_id TEXT PRIMARY KEY,
+        mtime REAL NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS artifact_blocks (
+        session_id TEXT NOT NULL,
+        rel TEXT NOT NULL,
+        name TEXT NOT NULL,
+        preview TEXT NOT NULL DEFAULT '',
+        search_text TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (session_id, rel)
+    );
+    CREATE INDEX IF NOT EXISTS artifact_blocks_session
+        ON artifact_blocks (session_id);
+    CREATE TABLE IF NOT EXISTS artifact_scan (
+        session_id TEXT PRIMARY KEY,
+        mtime REAL NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS search_history (
+        id TEXT PRIMARY KEY,
+        query TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS search_history_created
+        ON search_history (created_at DESC);
     CREATE TABLE IF NOT EXISTS library_file_meta (
         root TEXT NOT NULL,
         rel TEXT NOT NULL,
@@ -848,6 +883,232 @@ export function handleHostQuery(db: Db, kind: string, p: any): unknown {
       const del = db.prepare("DELETE FROM usage_daily WHERE session_id NOT IN (SELECT id FROM sessions)").run();
       db.prepare("DELETE FROM usage_scan WHERE session_id NOT IN (SELECT id FROM sessions)").run();
       return { removed: del.changes };
+    }
+    /* ------------------------------- search ------------------------------- */
+    // 会话内容搜索索引（sidecar 派生写入）：search_text 由索引器拼好并小写化，
+    // 正则/转义都在调用方——这里只做有界的 instr 匹配。正文真值在 JSONL 转录，
+    // 本表是可弃重建的投影（弃表后下一次全量回填即恢复）。
+    case "search_blocks_upsert": {
+      const sessionId = strParam(p, "sessionId");
+      let items: any[];
+      try {
+        items = JSON.parse(strParam(p, "rows"));
+      } catch (e) {
+        throw new Error(`parse rows: ${e}`);
+      }
+      db.transaction(() => {
+        db.prepare("DELETE FROM session_blocks WHERE session_id = ?1").run(sessionId);
+        for (const item of items) {
+          const seq = item?.seq;
+          if (!Number.isInteger(seq) || seq < 0) continue;
+          db.prepare(
+            "INSERT OR REPLACE INTO session_blocks (session_id, seq, role, preview, search_text) VALUES (?1, ?2, ?3, ?4, ?5)",
+          ).run(sessionId, seq, strOrNull(item?.role) ?? "", strOrNull(item?.preview) ?? "", strOrNull(item?.searchText) ?? "");
+        }
+      });
+      return {};
+    }
+    case "search_blocks_delete": {
+      const sessionId = strParam(p, "sessionId");
+      db.transaction(() => {
+        db.prepare("DELETE FROM session_blocks WHERE session_id = ?1").run(sessionId);
+        db.prepare("DELETE FROM search_scan WHERE session_id = ?1").run(sessionId);
+      });
+      return {};
+    }
+    case "search_blocks_scan_list": {
+      const rows = db.prepare("SELECT session_id, mtime FROM search_scan").all() as Row[];
+      return rows.map((r) => ({ sessionId: r.session_id, mtime: Number(r.mtime) }));
+    }
+    case "search_blocks_scan_set": {
+      const sessionId = strParam(p, "sessionId");
+      const mtime = p?.mtime;
+      if (typeof mtime !== "number") throw new Error("missing mtime");
+      db.prepare(
+        "INSERT INTO search_scan (session_id, mtime) VALUES (?1, ?2) ON CONFLICT(session_id) DO UPDATE SET mtime = excluded.mtime",
+      ).run(sessionId, mtime);
+      return {};
+    }
+    case "session_search": {
+      // needle 由调用方转义（LIKE 不用，instr 不需要）；LOWER 用 SQL 内建保持与
+      // 索引器 toLowerCase 同一折叠语义。LIMIT 界定全扫量级，超界 truncated=true。
+      const needle = strParam(p, "needle").toLowerCase();
+      if (!needle) return { sessions: [], messages: [], artifacts: [], truncated: false };
+      // LIKE 模式里的 %/_ 是通配符、\ 是转义符：调用方已把 needle 转义成
+      // likeNeedle（见 hostdb.sessionSearch），SQL 必须声明 ESCAPE 才生效。
+      // instr 路径要**原始** needle——转义后的 100\% 在正文里搜不到。
+      const likeNeedle = strParam(p, "likeNeedle").toLowerCase() || needle;
+      const limit = Math.min(Math.max(intOr(p?.limit, 200), 1), 500);
+      const sessions = db
+        .prepare(
+          `SELECT id, title, first_message, cwd, archived, updated_at FROM sessions
+           WHERE LOWER(title) LIKE '%' || ?2 || '%' ESCAPE '\\'
+              OR LOWER(first_message) LIKE '%' || ?2 || '%' ESCAPE '\\'
+           ORDER BY updated_at DESC LIMIT ?3`,
+        )
+        .all(needle, likeNeedle, limit + 1) as Row[];
+      const messages = db
+        .prepare(
+          `SELECT sb.session_id AS sessionId, sb.seq, sb.role, sb.preview,
+                  s.title, s.cwd, s.archived, s.updated_at
+           FROM session_blocks sb JOIN sessions s ON s.id = sb.session_id
+           WHERE instr(sb.search_text, ?1) > 0
+           ORDER BY s.updated_at DESC, sb.session_id, sb.seq LIMIT ?3`,
+        )
+        .all(needle, likeNeedle, limit + 1) as Row[];
+      // 产物/资料库文件命中：归属键 JOIN sessions 拿会话上下文（产物行），
+      // 资料库行（__library__）没有会话对应，LEFT JOIN 后靠 rel 直接展示。
+      // 文件级一行 = 一个文件（search_text 是该文件全文的抽取投影）。
+      const artifacts = db
+        .prepare(
+          `SELECT ab.session_id AS ownerKey, ab.rel, ab.name, ab.preview,
+                  s.title, s.cwd, s.archived
+           FROM artifact_blocks ab
+           LEFT JOIN sessions s ON s.id = ab.session_id
+           WHERE instr(ab.search_text, ?1) > 0
+              OR LOWER(ab.name) LIKE '%' || ?2 || '%' ESCAPE '\\'
+           ORDER BY s.updated_at DESC, ab.session_id, ab.rel LIMIT ?3`,
+        )
+        .all(needle, likeNeedle, limit + 1) as Row[];
+      const truncated =
+        sessions.length > limit || messages.length > limit || artifacts.length > limit;
+      return {
+        sessions: sessions.slice(0, limit).map((r) => ({
+          sessionId: r.id,
+          title: r.title,
+          firstMessage: r.first_message,
+          cwd: r.cwd,
+          archived: Number(r.archived) === 1,
+          updatedAt: r.updated_at,
+        })),
+        messages: messages.slice(0, limit).map((r) => ({
+          sessionId: r.sessionId,
+          seq: Number(r.seq),
+          role: r.role,
+          preview: r.preview,
+          title: r.title,
+          cwd: r.cwd,
+          archived: Number(r.archived) === 1,
+          updatedAt: r.updated_at,
+        })),
+        artifacts: artifacts.slice(0, limit).map((r) => ({
+          // ownerKey = sessionId（产物）或 __library__（资料库）；null 会话 =
+          // 资料库行（LEFT JOIN 未命中）
+          sessionId: r.sessionId ?? r.ownerKey,
+          rel: r.rel,
+          name: r.name,
+          preview: r.preview,
+          title: r.title ?? null,
+          cwd: r.cwd ?? "",
+          archived: Number(r.archived ?? 0) === 1,
+        })),
+        truncated,
+      };
+    }
+    /* ----------------------- 产物/资料库文件索引 ----------------------- */
+    // 与 session_blocks 同一套水位模式；ownerKey = sessionId 或 __library__。
+    // 文件删除由索引器对账（scan_list 与现存清单差集）处理，这里不做级联。
+    case "search_artifacts_upsert": {
+      const ownerKey = strParam(p, "ownerKey");
+      let items: any[];
+      try {
+        items = JSON.parse(strParam(p, "rows"));
+      } catch (e) {
+        throw new Error(`parse rows: ${e}`);
+      }
+      db.transaction(() => {
+        db.prepare("DELETE FROM artifact_blocks WHERE session_id = ?1").run(ownerKey);
+        for (const item of items) {
+          const rel = strOrNull(item?.rel);
+          if (!rel) continue;
+          db.prepare(
+            "INSERT OR REPLACE INTO artifact_blocks (session_id, rel, name, preview, search_text) VALUES (?1, ?2, ?3, ?4, ?5)",
+          ).run(ownerKey, rel, strOrNull(item?.name) ?? rel, strOrNull(item?.preview) ?? "", strOrNull(item?.searchText) ?? "");
+        }
+      });
+      return {};
+    }
+    case "search_artifacts_delete": {
+      const ownerKey = strParam(p, "ownerKey");
+      db.transaction(() => {
+        db.prepare("DELETE FROM artifact_blocks WHERE session_id = ?1").run(ownerKey);
+        db.prepare("DELETE FROM artifact_scan WHERE session_id = ?1").run(ownerKey);
+      });
+      return {};
+    }
+    case "search_artifacts_scan_list": {
+      const rows = db.prepare("SELECT session_id, mtime FROM artifact_scan").all() as Row[];
+      return rows.map((r) => ({ ownerKey: r.session_id, mtime: Number(r.mtime) }));
+    }
+    case "search_artifacts_scan_set": {
+      const ownerKey = strParam(p, "ownerKey");
+      const mtime = p?.mtime;
+      if (typeof mtime !== "number") throw new Error("missing mtime");
+      db.prepare(
+        "INSERT INTO artifact_scan (session_id, mtime) VALUES (?1, ?2) ON CONFLICT(session_id) DO UPDATE SET mtime = excluded.mtime",
+      ).run(ownerKey, mtime);
+      return {};
+    }
+    case "search_artifacts_recent": {
+      // 默认页最近文件：插入序（upsert 按目录遍历序写入，rowid 序 ≈ 目录序）
+      const limitN = Math.min(Math.max(intOr(p?.limit, 10), 1), 50);
+      const rows = db
+        .prepare(
+          `SELECT ab.session_id AS ownerKey, ab.rel, ab.name, ab.preview,
+                  s.title, s.cwd, s.archived
+           FROM artifact_blocks ab
+           LEFT JOIN sessions s ON s.id = ab.session_id
+           ORDER BY ab.rowid LIMIT ?1`,
+        )
+        .all(limitN) as Row[];
+      return rows.map((r) => ({
+        sessionId: r.sessionId ?? r.ownerKey,
+        rel: r.rel,
+        name: r.name,
+        preview: r.preview,
+        title: r.title ?? null,
+        cwd: r.cwd ?? "",
+        archived: Number(r.archived ?? 0) === 1,
+      }));
+    }
+    /* ------------------------------ 搜索历史 ------------------------------ */
+    case "search_history_list": {
+      const limitN = Math.min(Math.max(intOr(p?.limit, 12), 1), 50);
+      const rows = db
+        .prepare(
+          `SELECT query, MAX(created_at) AS last_at FROM search_history
+           GROUP BY query ORDER BY last_at DESC LIMIT ?1`,
+        )
+        .all(limitN) as Row[];
+      return rows.map((r) => ({ query: r.query, createdAt: r.last_at }));
+    }
+    case "search_history_add": {
+      const query = strParam(p, "query").trim().slice(0, 200);
+      if (!query) return {};
+      // id/now 是可选参数：strParam 对缺失 key 会抛（不是返回空串），这里必须
+      // 用宽松读——客户端只传 query，id 与时间戳由宿主生成
+      const id = typeof p?.id === "string" && p.id
+        ? p.id
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const now = typeof p?.now === "string" && p.now ? p.now : new Date().toISOString();
+      // 同查询去重（保留最新时间），整体保 100 条：超界按最旧清除
+      db.transaction(() => {
+        db.prepare("DELETE FROM search_history WHERE query = ?1").run(query);
+        db.prepare("INSERT INTO search_history (id, query, created_at) VALUES (?1, ?2, ?3)").run(
+          id,
+          query,
+          now,
+        );
+        db.prepare(
+          `DELETE FROM search_history WHERE id NOT IN (
+             SELECT id FROM search_history ORDER BY created_at DESC LIMIT 100)`,
+        ).run();
+      });
+      return {};
+    }
+    case "search_history_clear": {
+      db.prepare("DELETE FROM search_history").run();
+      return {};
     }
     default:
       throw new Error(`unknown host_query kind: ${kind}`);

@@ -340,17 +340,19 @@ export function scanTranscript(sessionId: string): TranscriptScan {
 
 /**
  * 历史分页窗（§6 rowsWindow 的对应物；游标 = 消息行 seq）：
- * beforeSeq 取「严格早于游标」的尾部 tail 条；两者皆缺 = 全量（旧端不破）。
+ * beforeSeq 取「严格早于游标」的尾部 tail 条；aroundSeq 取以该 seq 为中心的
+ * tail 条（全局搜索定位：命中消息居中）；两者皆缺 = 全量（旧端不破）。
  * 单遍全扫后在输出上截尾——compaction/交互行本就要求全遍，行数远小于体量。
  * hasMore = 窗口之前还有消息行；空窗 first/last 为 null。
  */
 export function windowTranscriptMessages<T extends { seq: number }>(
   messages: T[],
-  opts: { tail?: number; beforeSeq?: number },
+  opts: { tail?: number; beforeSeq?: number; aroundSeq?: number },
 ): { window: T[]; meta: HistoryWindowMeta } {
   const tail = Number.isInteger(opts.tail) ? Math.max(0, opts.tail as number) : undefined;
   const beforeSeq = Number.isInteger(opts.beforeSeq) ? (opts.beforeSeq as number) : undefined;
-  if (tail === undefined && beforeSeq === undefined) {
+  const aroundSeq = Number.isInteger(opts.aroundSeq) ? (opts.aroundSeq as number) : undefined;
+  if (tail === undefined && beforeSeq === undefined && aroundSeq === undefined) {
     const first = messages[0];
     const last = messages[messages.length - 1];
     return {
@@ -360,7 +362,23 @@ export function windowTranscriptMessages<T extends { seq: number }>(
   }
   const eligible =
     beforeSeq === undefined ? messages : messages.filter((m) => m.seq < beforeSeq);
-  const window = tail === undefined ? eligible : eligible.slice(Math.max(0, eligible.length - tail));
+  // aroundSeq：命中 seq 所在（或其前最近一条）消息居中——seq 可能落在无消息
+  // 行的号段（设定行不占 seq），用「最后一个 < aroundSeq 的消息」做锚。
+  let window = eligible;
+  if (aroundSeq !== undefined && tail !== undefined) {
+    let anchor = -1;
+    for (let i = eligible.length - 1; i >= 0; i--) {
+      if (eligible[i]!.seq <= aroundSeq) {
+        anchor = i;
+        break;
+      }
+    }
+    const half = Math.floor(tail / 2);
+    const start = anchor < 0 ? 0 : Math.max(0, anchor - half);
+    window = eligible.slice(start, start + tail);
+  } else if (tail !== undefined) {
+    window = eligible.slice(Math.max(0, eligible.length - tail));
+  }
   const first = window[0];
   const last = window[window.length - 1];
   return {
@@ -1215,4 +1233,11 @@ export async function persist(
   void maybeSummarizeSessionTitle(run).catch((err) => {
     logErr("session title summarize trigger failed:", err);
   });
+
+  // 内容搜索索引增量（fire-and-forget）：动态 import 打破与本模块的环
+  // （search-index 读转录依赖本文件）。内部互斥合并连发触发，水位表保证只
+  // 重扫 mtime 变化的会话；失败静默——搜索不可用不应拖垮会话写入
+  void import("../search/search-index")
+    .then((m) => m.refreshSearchIndex())
+    .catch(() => {});
 }

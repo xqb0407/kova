@@ -38,6 +38,7 @@ import {
 import { setAutomationFrameSync } from "@/lib/automation/automation-live";
 import { setSessionsChangedSync } from "@/lib/pi/pi-sessions-sync";
 import { subscribeOpenSession } from "@/lib/pi/open-session";
+import { setThreadNavigateIntent } from "@/lib/pi/pi-thread-navigate";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import { beginResizeSession, endResizeSession } from "@/lib/ui/resize-session";
 import { getPanelTabsFor, setCurrentPanelThread } from "@/lib/panels/panel-tabs";
@@ -233,7 +234,14 @@ export const Base: FC = () => {
   }, [panelScopeKey]);
   useEffect(
     () =>
-      subscribeOpenSession((sessionId) => {
+      subscribeOpenSession(({ sessionId, seq, query }) => {
+        // seq/query = 搜索内容命中的定位意图：走模块级 store 交给 thread 层
+        //（<Thread> 被刻意 memo 成零 props，props 通道会破坏消息流子树优化）。
+        // 意图绑定目标会话 + TTL：switchToThread 失败或目标消息永远到不了时，
+        // 旧意图不得在用户之后打开的别的会话里突然生效（短会话 seq 号段易撞）。
+        setThreadNavigateIntent(
+          seq !== undefined ? { seq, query, sessionKey: sessionId, createdAt: Date.now() } : null,
+        );
         void (async () => {
           try {
             await aui.threads.reload();

@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { appDataDir, sessionsDir } from "./paths";
+import { libraryRoot } from "./library";
 import { emitChunkBatch, emitToWindows, type ChunkBatchLine } from "./ipc";
 import { logError, logInfo, logWarn, writeSidecarLine } from "./logging";
 import { getDb } from "./store";
@@ -181,6 +182,9 @@ export async function ensureSpawned(): Promise<void> {
         PI_DB_PATH: join(dataDir, "state.db"),
         PI_SESSIONS_DIR: sessionsDir(),
         PI_TASK_CWD: join(dataDir, "task-workspace"),
+        // 全局搜索的资料库文件索引用（与 library.ts libraryRoot 同源；
+        // 它在 db 未就绪时回退缺省值，两者一致）
+        PI_LIBRARY_ROOT: libraryRoot(),
       },
       stdio: ["pipe", "pipe", "pipe"],
     });

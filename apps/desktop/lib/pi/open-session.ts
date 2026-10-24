@@ -9,15 +9,40 @@
 
 export const OPEN_SESSION_EVENT = "app:open-session";
 
-export function requestOpenSession(sessionId: string): void {
+/** 打开会话时可携带的定位意图（内容命中跳到该消息并高亮） */
+export type OpenSessionDetail = {
+  sessionId: string;
+  /** 内容命中的转录 seq：历史到达后定位到 pi-msg:<seq> */
+  seq?: number;
+  /** 命中查询词：定位后短暂高亮该词 */
+  query?: string;
+};
+
+export function requestOpenSession(
+  sessionId: string,
+  intent?: { seq?: number; query?: string },
+): void {
   if (typeof window === "undefined" || !sessionId) return;
-  window.dispatchEvent(new CustomEvent(OPEN_SESSION_EVENT, { detail: { sessionId } }));
+  window.dispatchEvent(
+    new CustomEvent<OpenSessionDetail>(OPEN_SESSION_EVENT, {
+      detail: {
+        sessionId,
+        ...(intent?.seq !== undefined ? { seq: intent.seq } : {}),
+        ...(intent?.query ? { query: intent.query } : {}),
+      },
+    }),
+  );
 }
 
-export function subscribeOpenSession(cb: (sessionId: string) => void): () => void {
+export function subscribeOpenSession(cb: (detail: OpenSessionDetail) => void): () => void {
   const handler = (event: Event) => {
-    const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
-    if (typeof detail?.sessionId === "string") cb(detail.sessionId);
+    const detail = (event as CustomEvent<Partial<OpenSessionDetail>>).detail;
+    if (typeof detail?.sessionId === "string")
+      cb({
+        sessionId: detail.sessionId,
+        seq: typeof detail.seq === "number" ? detail.seq : undefined,
+        query: typeof detail.query === "string" ? detail.query : undefined,
+      });
   };
   window.addEventListener(OPEN_SESSION_EVENT, handler);
   return () => window.removeEventListener(OPEN_SESSION_EVENT, handler);
