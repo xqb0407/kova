@@ -26,6 +26,14 @@ import { legacyProviderIds, normalizeProviderId } from "../model/provider-id";
 
 let sessionsDirPath = "";
 
+/**
+ * 会话根目录（初始化时传入的事实源）。未初始化时返回空串，调用方自行兜底。
+ * artifact-store 等旁路落盘点用它取根，避免各自再读环境变量造成目录分叉。
+ */
+export function sessionsDirRoot(): string {
+  return sessionsDirPath;
+}
+
 /** 会话 JSONL 文件路径 */
 export function sessionPath(id: string): string {
   return path.join(sessionsDirPath, `${id}.jsonl`);

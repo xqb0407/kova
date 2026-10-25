@@ -9,6 +9,7 @@ import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai"
 import type { ErrorPayload } from "pi-protocol";
 import { logAt, logErr } from "../log";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
+import { runTurnEndHooks } from "../agent/assembly";
 import { classifyAgentError, toWireError } from "../agent/agent-errors";
 import { projectToolResult, type ProjectableContentBlock } from "../tools/image-parts";
 import { normalizeToolResultImages } from "../tools/image-normalize";
@@ -209,6 +210,26 @@ export async function onAgentEvent(event: AgentEvent, run: Running): Promise<voi
       break;
     }
     case "turn_end": {
+      // 能力收尾钩子：只观察/至多注入一条提醒，失败由 helper 吞掉；
+      // 必须在 goal 续跑判定与 Stop 钩子之前，保证本轮工具结果已经可见。
+      if (run.turnCapabilities && run.turnCapabilities.hooks.turnEnd.length > 0) {
+        await runTurnEndHooks(run.turnCapabilities, {
+          stopRequested: run.stopRequested,
+          toolResults: (event.toolResults ?? []).map((result) => ({
+            toolName: result.toolName,
+            isError: result.isError,
+            text: result.content
+              .filter((part): part is { type: "text"; text: string } => part.type === "text")
+              .map((part) => part.text)
+              .join("\n"),
+          })),
+          queueReminder: (text) => {
+            // 只排队，不直接 steer：最终轮的提醒不能留到下一次用户 prompt
+            // （pi 的 steeringQueue 在 run 结束后不会被清空）。
+            (run.capabilityReminders ??= []).push(text);
+          },
+        });
+      }
       // Claude Code 式 Stop 钩子：每回合收尾触发；不依赖 reqId（后台跑/刷新空窗
       // 同样触发）。放在长度续跑判定之前——续跑注入的额外 turn 各自收尾也会触发
       fireHookEvent(

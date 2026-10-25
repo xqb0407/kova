@@ -11,7 +11,7 @@
  */
 import { logAt, logErr } from "../log";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { Agent } from "@earendil-works/pi-agent-core";
+import type { Agent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ErrorPayload } from "pi-protocol";
 import { classifyAgentError, toWireError } from "../agent/agent-errors";
 import {
@@ -22,6 +22,13 @@ import {
   type CompactionOutcome,
 } from "../agent/context";
 import { buildHookPayload, fireHookEvent } from "../agent/hooks";
+import {
+  emptyTurnPlan,
+  getCapabilityRegistry,
+  reminderMessages,
+  renderReminders,
+  type TurnSnapshot,
+} from "../agent/assembly";
 import { clearPendingToolApprovals, composeRunPrompt, refreshGoalToolset } from "../agent/modes";
 import { syncGoalOnUserPrompt } from "../goal/goal";
 import { emitPlanningState } from "../agent/modes";
@@ -73,6 +80,14 @@ function compactionChunkData(outcome: {
     tokensBefore: outcome.tokensBefore,
     summarized: outcome.summarized,
   };
+}
+
+/**
+ * 取走本轮能力排队的提醒，转成下一次模型请求前的 user 消息。
+ * 只在 prepareNextTurnWithContext 里调用——最终轮不会走到这里，提醒随轮末丢弃。
+ */
+function takeCapabilityReminders(run: Running): AgentMessage[] {
+  return reminderMessages(run.capabilityReminders?.splice(0) ?? []);
 }
 
 /** §7 context_changed 推送：轮收尾与轮间压缩后共用（桌面占用环镜像直更）。
@@ -712,6 +727,26 @@ async function runTurnBody(
   // 到协商计数耗尽）。必须在下面那次提示词重排之前：重排会按新的契约阶段写目标块，
   // 表与块要同源地描述同一轮能做什么
   refreshGoalToolset(run);
+  // 回合级能力装配：工具与系统段已在会话级定稿，这里只处理用户提示词前缀、
+  // 提醒与钩子快照。装配失败退化为空计划，不阻断本轮。
+  const capabilitySnapshot: TurnSnapshot = {
+    sessionId: run.sessionId,
+    threadId,
+    cwd: run.cwd,
+    mode: run.mode,
+    appMode: run.appMode,
+    model: run.agent.state.model ?? null,
+    turnId: reqId,
+    messages: run.agent.state.messages.slice(),
+    userText: String(msg.text ?? ""),
+    approvalLevel: run.approvalLevel,
+  };
+  let turnCapabilities = emptyTurnPlan(capabilitySnapshot);
+  try {
+    turnCapabilities = await getCapabilityRegistry().assembleTurn(capabilitySnapshot);
+  } catch (error) {
+    logErr("capabilities: turn assembly failed:", error);
+  }
   // 每轮把模式盘面推一次：run 可能被驱逐后按「会话偏好行 ?? 全局 kv」重新物化，
   // 而这两处一旦与前端上次看到的不一致（写入失败/滞后），前端就会一直显示另一档
   // 而没有任何东西来纠正它——「档位自己变了」这类症状就是这么来的。推一次的成本
@@ -756,7 +791,7 @@ async function runTurnBody(
   // 轮间压缩挂钩：闭包持有本 turn 的 reqId 流，收尾必须拆除（跨轮残留会把
   // chunk 发错流）。同一次压缩的 start/complete/failed 复用一个 part id 原地更新
   let midTurnCid: string | null = null;
-  run.agent.prepareNextTurnWithContext = makeMidTurnCompactionHook(
+  const compactionHook = makeMidTurnCompactionHook(
     run,
     (phase, outcome) => {
       if (phase === "start") {
@@ -774,6 +809,17 @@ async function runTurnBody(
       midTurnCid = null;
     },
   );
+  // 能力收尾提醒的注入点：prepareNextTurnWithContext 只在循环确认继续时调用，
+  // 因此最终轮排队的提醒不会残留到下一次用户 prompt（见 stream.ts 的 queueReminder）。
+  run.agent.prepareNextTurnWithContext = async (context, signal) => {
+    const update = await compactionHook(context, signal);
+    const reminders = takeCapabilityReminders(run);
+    if (reminders.length === 0) return update;
+    return {
+      ...(update ?? {}),
+      messages: [...(update?.messages ?? []), ...reminders],
+    };
+  };
   const runStep = async (text: string, images: ImageContent[]) => {
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     sendChunk(reqId, { type: "start-step" });
@@ -867,7 +913,15 @@ async function runTurnBody(
     cwd: run.cwd,
     model: run.agent.state.model,
   });
-  const promptText = noticeAppendedText(String(msg.text ?? ""), promptAttachments.noticeLines);
+  // 能力前缀与提醒只进用户消息尾部（系统头必须跨轮字节稳定）；默认无能力时
+  // 两个字符串都为空，拼接结果与改造前逐字节相同。
+  const promptText = [
+    turnCapabilities.userPrefix,
+    noticeAppendedText(String(msg.text ?? ""), promptAttachments.noticeLines),
+    renderReminders(turnCapabilities.reminders),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   if (promptAttachments.images.length) {
     logAt(
       "event",
@@ -875,6 +929,10 @@ async function runTurnBody(
     );
   }
 
+  // 从这里才挂到 run 上：之前任何提前抛错（附件处理/提示词重排）都不会留下
+  // 上一轮的计划；内层 finally 负责清理。
+  run.turnCapabilities = turnCapabilities;
+  run.capabilityReminders = [];
   try {
     await runStepWithRecovery(promptText, promptAttachments.images);
     // 后台委派收敛循环（ADR 0089）：turn 结束时若还有运行中的子代理，等它们完成，
@@ -905,6 +963,9 @@ async function runTurnBody(
     run.turnEnding = true;
     // 拆除轮间压缩挂钩：钩子闭包的 emitCompaction 绑定本 turn 的 reqId
     run.agent.prepareNextTurnWithContext = undefined;
+    // 回合级能力快照只服务当前轮；清掉避免下一轮复用旧钩子与旧提醒。
+    run.turnCapabilities = undefined;
+    run.capabilityReminders = undefined;
     if (stepStarted) sendChunk(reqId, { type: "finish-step" });
     // Stop/promote 中止的 turn：finish 前发 abort 标记——前端据此把残缺回复
     // 结算为「被结束」而非「正常完成」（不弹完成通知）；AI SDK 保留 partial 内容

@@ -22,10 +22,18 @@ import {
   type ThinkingLevel,
 } from "../model/model-catalog";
 import { buildTools } from "../tools/tools";
+import {
+  assembleSessionOrFallback,
+  getCapabilityRegistry,
+  runToolAfterHooks,
+  runToolBeforeHooks,
+  type SessionSnapshot,
+} from "../agent/assembly";
 import { effectiveProjectDirs } from "../agent/project-dirs";
 import {
   approvalBeforeToolCall,
   composeModeSystemPrompt,
+  composeRunPrompt,
   toolsForMode,
 } from "../agent/modes";
 import { effectiveAppMode } from "../agent/app-mode";
@@ -110,6 +118,32 @@ type PlanningModePrefs = { mode: SessionMode; approvalLevel: ApprovalLevel };
  */
 function externalDirToolArgs(getRun: () => Running) {
   return [() => getRun().externalDirs ?? []] as const;
+}
+
+/** 会话级能力装配快照：只读事实，能力不接触 run/agent。 */
+function capabilitySessionSnapshot(run: Running): SessionSnapshot {
+  return {
+    sessionId: run.sessionId,
+    threadId: run.threadId,
+    cwd: run.cwd,
+    mode: run.mode,
+    appMode: run.appMode,
+    model: run.agent?.state?.model ?? null,
+  };
+}
+
+/** 用能力装配包装种子工具；同时刷新 run.capabilitySystemSuffix。 */
+async function withCapabilityTools(
+  run: Running,
+  seedTools: AgentTool[],
+): Promise<AgentTool[]> {
+  const plan = await assembleSessionOrFallback(
+    getCapabilityRegistry(),
+    capabilitySessionSnapshot(run),
+    seedTools,
+  );
+  run.capabilitySystemSuffix = plan.systemSuffix;
+  return plan.tools;
 }
 
 /** 会话行/偏好里的审批档 → 合法枚举；非法或缺省一律回落最严的 `ask`。
@@ -222,7 +256,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
   // 解绑（清空工作目录）回落到任务工作区时同样不在此落盘：目录推迟到
   // agent 真用时才建（bash 派发前 / 写文件时自带 mkdir），见 ensureTaskSessionDir。
   // 重建工具须沿用原 threadId：todo/question 工具按 threadId 归属，误传 sessionId 会挂错 key
-  run.baseTools = buildTools(
+  run.baseTools = await withCapabilityTools(run, buildTools(
     nextCwd,
     threadId,
     () => run.designTheme ?? null,
@@ -233,7 +267,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
     () => run.mode,
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
-  );
+  ));
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
   setLeadingSystemMessage(
@@ -246,6 +280,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
       run.designTheme,
       undefined,
       run.externalDirs,
+      run.capabilitySystemSuffix,
     ),
   );
 }
@@ -312,7 +347,7 @@ export async function rebindRunThread(
   migrateGoal(oldThreadId, newThreadId);
   // 工具整组重建：browser/question/todo/mcp 的闭包烘着 threadId，
   // 事件推送与挂起归属（cancelPending* 按 threadId 过滤）都靠它
-  run.baseTools = buildTools(
+  run.baseTools = await withCapabilityTools(run, buildTools(
     run.cwd,
     newThreadId,
     () => run.designTheme ?? null,
@@ -323,7 +358,7 @@ export async function rebindRunThread(
     () => run.mode,
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
-  );
+  ));
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -347,31 +382,80 @@ export async function reloadSubagents(): Promise<void> {
 }
 
 /**
+ * 整组重建一个驻留 run 的工具表与系统提示词。
+ * 工具表只在"拨开关 / 切模式 / 换目录"时重建，装配层不按轮增删工具。
+ */
+async function rebuildRunTools(run: Running): Promise<void> {
+  run.baseTools = await withCapabilityTools(run, buildTools(
+    run.cwd,
+    run.threadId,
+    () => run.designTheme ?? null,
+    () => run.designThemeLoads,
+    () => ensureTaskSessionDir(run),
+    () => run.approvalLevel,
+    () => reviewFactsOf(run),
+    () => run.mode,
+    ...externalDirToolArgs(() => run),
+    () => sandboxPlanForRun(run),
+  ));
+  const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
+  run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
+  const tools = toolsForMode(run);
+  const prompt = composeRunPrompt(run, run.agent.state.model);
+  run.agent.state.tools = tools;
+  setLeadingSystemMessage(run.agent.state.messages, prompt);
+  if (run.loopContext) {
+    run.loopContext.tools = tools;
+    setLeadingSystemMessage(run.loopContext.messages, prompt);
+  }
+}
+
+/** 整组重建的失败项（逐 run 隔离后汇总；设置已持久化时靠它回报半生效范围） */
+export type RunToolsReloadFailure = {
+  readonly threadId: string;
+  readonly sessionId: string;
+  readonly message: string;
+};
+
+/**
+ * 所有驻留 run 的整组重建（工具开关/能力开关共用一条路径）。
+ * 逐 run 隔离：单个 run 重建失败只记入 failures，不阻断其余 run——设置此刻
+ * 已持久化，调用方（set_capabilities）需要把失败面回报给前端，而不是整个
+ * 命令报错留下「重启才自愈」的半生效状态。
+ */
+export async function reloadRunTools(): Promise<readonly RunToolsReloadFailure[]> {
+  const failures: RunToolsReloadFailure[] = [];
+  for (const run of running.values()) {
+    try {
+      await rebuildRunTools(run);
+    } catch (error) {
+      failures.push({
+        threadId: run.threadId,
+        sessionId: run.sessionId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      logErr(
+        `reloadRunTools: rebuild failed for ${run.threadId} (${run.sessionId}):`,
+        error,
+      );
+    }
+  }
+  return failures;
+}
+
+/**
  * 记忆总开关翻转后的工具表热重建：记忆三件套在 buildTools 里按开关条件注册，
  * 翻转后活会话必须整组重建 baseTools（Task 组从 baseTools 按名取工具，一并重建），
- * 否则开关等于没拨——关不掉也开不出。轮中翻转同改 loopContext.tools（与 applyMode
+ * 否则开关等于没拨——关不掉也开不出。轮中翻转同改 loopContext（与 applyMode
  * 同款手法）：本轮下一次请求即按新表走，不必等下一次 prompt。
  */
 export async function reloadMemoryTools(): Promise<void> {
-  for (const run of running.values()) {
-    run.baseTools = buildTools(
-      run.cwd,
-      run.threadId,
-      () => run.designTheme ?? null,
-      () => run.designThemeLoads,
-      () => ensureTaskSessionDir(run),
-      () => run.approvalLevel,
-      () => reviewFactsOf(run),
-      () => run.mode,
-      ...externalDirToolArgs(() => run),
-      () => sandboxPlanForRun(run),
-    );
-    const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
-    run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
-    const tools = toolsForMode(run);
-    run.agent.state.tools = tools;
-    if (run.loopContext) run.loopContext.tools = tools;
-  }
+  await reloadRunTools();
+}
+
+/** 能力开关/参数变更后的整组重建：失败面随返回值上报（下一轮生效）。 */
+export async function reloadCapabilityTools(): Promise<readonly RunToolsReloadFailure[]> {
+  return reloadRunTools();
 }
 
 /**
@@ -393,6 +477,7 @@ export async function reloadSkills(): Promise<void> {
       run.designTheme,
       undefined,
       run.externalDirs,
+      run.capabilitySystemSuffix,
     );
     setLeadingSystemMessage(run.agent.state.messages, prompt);
     if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
@@ -897,7 +982,7 @@ export async function resolveSession(
 
   // use_design_theme 按引用读 run.designTheme（会话内切主题即时换缺省目标；
   // run 此刻尚未回填字段，闭包运行期才解引用，与 beforeToolCall 同款手法）
-  const baseTools = buildTools(
+  const seedTools = buildTools(
     resolvedCwd,
     threadId,
     () => run.designTheme ?? null,
@@ -909,6 +994,20 @@ export async function resolveSession(
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
   );
+  // 会话级能力装配：默认无能力时 tools 与 seedTools 逐项相同、后缀为空串。
+  const initialCapabilityPlan = await assembleSessionOrFallback(
+    getCapabilityRegistry(),
+    {
+      sessionId: sessionId!,
+      threadId,
+      cwd: resolvedCwd,
+      mode: initialMode,
+      appMode: initialAppMode,
+      model,
+    },
+    seedTools,
+  );
+  const baseTools = initialCapabilityPlan.tools;
   // run 先占位再回填 agent：beforeToolCall 闭包按引用捕获 run，模式校验在运行期才解引用
   const run: Running = {
     agent: undefined as unknown as Agent,
@@ -944,6 +1043,7 @@ export async function resolveSession(
     designThemeLoads: new Map<string, string>(),
     planning: initialMode === "plan" ? "planning" : "inactive",
     baseTools,
+    capabilitySystemSuffix: initialCapabilityPlan.systemSuffix,
     subagentTools: [],
     pendingToolApprovals: new Map(),
     lastSeenAt: Date.now(),
@@ -1040,6 +1140,7 @@ export async function resolveSession(
         initialDesignTheme,
         undefined,
         effectiveDirs,
+        initialCapabilityPlan.systemSuffix,
       ),
       model,
       // 深度思考档位：转录行回放，无行跟随全局（set_thinking 维护；off = 不发送 reasoning 参数）
@@ -1047,9 +1148,10 @@ export async function resolveSession(
       tools: baseTools,
       messages: restoredMessages,
     },
-    // Claude Code 式 PreToolUse 钩子：block/approve 决策优先于审批链；
-    // 无决策时落回既有审批管线（modes.approvalBeforeToolCall）
+    // Claude Code 式 PreToolUse 钩子：能力策略 → block/approve 决策 → 审批链
     beforeToolCall: async (context) => {
+      const capabilityDecision = await runToolBeforeHooks(run.turnCapabilities, context);
+      if (capabilityDecision?.block) return capabilityDecision;
       const decision = await runHooks(
         "PreToolUse",
         buildHookPayload({
@@ -1067,30 +1169,47 @@ export async function resolveSession(
       if (decision?.decision === "approve") return undefined;
       return approvalBeforeToolCall(run, context);
     },
-    // PostToolUse / PostToolUseFailure（isError 分流）：通知式，不改写工具结果
+    // PostToolUse / PostToolUseFailure（isError 分流）：能力先收敛结果，
+    // 目标证据与用户钩子看到的是收敛后的最终值。
     afterToolCall: async (context) => {
+      const capabilityOverride = await runToolAfterHooks(run.turnCapabilities, context);
+      const effectiveContext = capabilityOverride
+        ? {
+            ...context,
+            result: {
+              ...context.result,
+              ...(capabilityOverride.content !== undefined
+                ? { content: capabilityOverride.content }
+                : {}),
+              ...(capabilityOverride.details !== undefined
+                ? { details: capabilityOverride.details }
+                : {}),
+            },
+            isError: capabilityOverride.isError ?? context.isError,
+          }
+        : context;
       // 目标证据台账：在钩子通知之前记，保证本轮工具结果落定即可被 goal_complete
       // 引用。失败也记（isError=true），避免模型拿失败调用冒充成功。
-      await recordGoalToolResult(run, context).catch((err) =>
+      await recordGoalToolResult(run, effectiveContext).catch((err) =>
         logErr("goal-evidence: record failed:", err),
       );
-      const summary = context.result.content
+      const summary = effectiveContext.result.content
         .filter((part): part is { type: "text"; text: string } => part.type === "text")
         .map((part) => part.text)
         .join("\n");
       fireHookEvent(
-        context.isError ? "PostToolUseFailure" : "PostToolUse",
+        effectiveContext.isError ? "PostToolUseFailure" : "PostToolUse",
         buildHookPayload({
-          event: context.isError ? "PostToolUseFailure" : "PostToolUse",
+          event: effectiveContext.isError ? "PostToolUseFailure" : "PostToolUse",
           sessionId: sessionId!,
           threadId,
           toolName: context.toolCall.name,
           toolArgs: context.args,
-          isError: context.isError,
+          isError: effectiveContext.isError,
           resultSummary: summary,
         }),
       );
-      return undefined;
+      return capabilityOverride;
     },
   });
   run.agent = agent;
@@ -1174,29 +1293,43 @@ export async function projectContextInfo(
     projectedFromColumn === undefined ? getLastUsedDesignTheme() : projectedFromColumn;
   // 工作模式读数同恢复链口径（偏好列合法值 ?? 全局默认），投影读数逐字段一致
   const projectedAppMode = effectiveAppMode(row.appMode);
-  const baseTools = buildTools(
-    resolvedCwd,
-    threadId,
-    () => projectedTheme,
-    undefined,
-    undefined,
-    // 投影下 MCP 审批闭包不会被调用，仍按行里的真实档位投影：万一这个前提
-    // 哪天不成立，一个 `auto` 会话也不该因为投影缺省而退化成逐次询问
-    () => decodeApprovalLevel(row.approvalLevel),
-    undefined,
-    () => projectedMode,
-    // 投影也要把外部目录检索工具算进工具面（读数与实际物化后的工具表一致）
-    () => projectedExternalDirs,
-    // 投影只读；沙箱闭包不会被调用。
-    () => null,
-  );
-  const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
-  // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包
-  // 运行期才解引用 run，投影下这些闭包永远不会被调用。
   // 模式取会话偏好行（与 resolveSession 的恢复口径一致；自动化 turn 的守卫
   // 不在此做——投影只读，且策略注册窗口与打开面板的时机本就不同步）
   const projectedMode: SessionMode =
     row.mode === "plan" || row.mode === "ask" ? row.mode : "agent";
+  // 投影也要走能力装配：否则一旦能力贡献了工具/系统段，未驻留会话的用量
+  // 读数会与真正物化后的工具表漂移（读数偏低）
+  const projectedPlan = await assembleSessionOrFallback(
+    getCapabilityRegistry(),
+    {
+      sessionId,
+      threadId,
+      cwd: resolvedCwd,
+      mode: projectedMode,
+      appMode: projectedAppMode,
+      model,
+    },
+    buildTools(
+      resolvedCwd,
+      threadId,
+      () => projectedTheme,
+      undefined,
+      undefined,
+      // 投影下 MCP 审批闭包不会被调用，仍按行里的真实档位投影：万一这个前提
+      // 哪天不成立，一个 `auto` 会话也不该因为投影缺省而退化成逐次询问
+      () => decodeApprovalLevel(row.approvalLevel),
+      undefined,
+      () => projectedMode,
+      // 投影也要把外部目录检索工具算进工具面（读数与实际物化后的工具表一致）
+      () => projectedExternalDirs,
+      // 投影只读；沙箱闭包不会被调用。
+      () => null,
+    ),
+  );
+  const baseTools = projectedPlan.tools;
+  const { definitions } = await loadSubagentDefinitions({ cwd: resolvedCwd });
+  // 只借 toolsForMode/buildSubagentTools 的组装逻辑：它们的 execute 闭包
+  // 运行期才解引用 run，投影下这些闭包永远不会被调用。
   const stub = {
     mode: projectedMode,
     planning: projectedMode === "plan" ? "planning" : "inactive",
@@ -1217,6 +1350,7 @@ export async function projectContextInfo(
       projectedTheme,
       undefined,
       projectedExternalDirs,
+      projectedPlan.systemSuffix,
     ),
     tools: toolsForMode(stub),
     sessionId,

@@ -7,6 +7,7 @@ import type { TraceRunRecorder } from "./protocol/trace";
 import type { ThemeRef } from "./design-md/store";
 import type { AppMode } from "./agent/app-mode";
 import type { CacheWarmer } from "./agent/cache-warmer";
+import type { TurnPlan } from "./agent/assembly/contracts";
 
 /** AI SDK UI 消息类型（协议流与 JSONL 持久化都用它） */
 export type UIMessage = ai.UIMessage;
@@ -369,6 +370,12 @@ export type Running = {
   planTitle?: string;
   /** 未过滤的基础工具目录（重建模式工具集时用） */
   baseTools: AgentTool[];
+  /** 会话级能力贡献的系统提示词后缀（空串 = 无贡献；随工具表一起重建） */
+  capabilitySystemSuffix?: string;
+  /** 本轮能力装配结果（钩子快照与提醒）：dispatchPrompt 开头写入，轮末清理 */
+  turnCapabilities?: TurnPlan;
+  /** 能力收尾时排入的提醒：只在循环继续时注入，轮末丢弃（见 prepareNextTurn） */
+  capabilityReminders?: string[];
   /** Task 委派工具组（仅 agent 模式挂载） */
   subagentTools: AgentTool[];
   /** 逐工具审批：approvalId -> 挂起等待项（beforeToolCall 内 await，tool_confirm 结算） */

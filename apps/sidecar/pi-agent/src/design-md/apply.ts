@@ -34,6 +34,7 @@ export function recomposeAllRuns(): void {
       run.designTheme,
       undefined,
       run.externalDirs,
+      run.capabilitySystemSuffix,
     );
     setLeadingSystemMessage(run.agent.state.messages, prompt);
     if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);
@@ -52,6 +53,7 @@ export function applySessionTheme(run: Running, ref: ThemeRef | null): void {
     run.designTheme,
     undefined,
     run.externalDirs,
+    run.capabilitySystemSuffix,
   );
   setLeadingSystemMessage(run.agent.state.messages, prompt);
   if (run.loopContext) setLeadingSystemMessage(run.loopContext.messages, prompt);

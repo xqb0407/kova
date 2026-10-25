@@ -14,6 +14,7 @@ import {
 import { clearTodoState } from "../todo/todo";
 import { clearGoal } from "../goal/goal";
 import { clearLoadedSkills } from "../secrets/secrets";
+import { getCapabilityRegistry } from "../agent/assembly";
 import type { Running } from "../types";
 
 /**
@@ -77,6 +78,8 @@ export function dropRun(threadId: string): void {
   if (run && runningBySession.get(run.sessionId) === threadId) {
     runningBySession.delete(run.sessionId);
   }
+  // 会话级能力开关随 run 一起消失：下次 resolve 按全局设置重新物化。
+  if (run) getCapabilityRegistry().disposeSession(run.sessionId);
   // 缓存保活随会话驱逐终止：被驱逐会话的前缀由下次 resolve 重建，旧条目无意义
   run?.cacheWarmer?.cancel();
 }
