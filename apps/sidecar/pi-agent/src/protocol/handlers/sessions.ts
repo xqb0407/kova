@@ -26,7 +26,12 @@ import {
   setSessionName,
   windowTranscriptMessages,
 } from "../../sessions/transcript";
-import { isApprovalLevel, isAutoContinueMessage, isGoalInternalMessage } from "pi-protocol";
+import {
+  isApprovalLevel,
+  isAutoContinueMessage,
+  isCapabilityReminderMessage,
+  isGoalInternalMessage,
+} from "pi-protocol";
 import { dropSessionInteractions } from "../../sessions/pending-interactions";
 import { getQueueStateForThread, isTurnBusy, cancelAllEntriesForSession } from "../../sessions/prompt-queue";
 import { sessionPath } from "../../storage/storage";
@@ -683,7 +688,8 @@ export const handlers: Record<string, CommandHandler> = {
           !!payload &&
           (payload.role !== "user" ||
             isAutoContinueMessage(payload) ||
-            isGoalInternalMessage(payload));
+            isGoalInternalMessage(payload) ||
+            isCapabilityReminderMessage(payload));
         if (!sameRunTail) {
           afterAnchor = true;
           continue;
@@ -881,7 +887,12 @@ export const handlers: Record<string, CommandHandler> = {
       // 哨兵 user 行必须与 toUiMessage 同口径按前缀隐藏——快照直出原生行，
       // 此前不滤曾把裸前缀当用户提问上屏（桌面气泡泄漏）。
       const truncationStopped = isTruncationStoppedRow(m, scan.messages[mi + 1]);
-      if (isAutoContinueMessage(m.agent) || isGoalInternalMessage(m.agent)) continue;
+      if (
+        isAutoContinueMessage(m.agent) ||
+        isGoalInternalMessage(m.agent) ||
+        isCapabilityReminderMessage(m.agent)
+      )
+        continue;
       messages.push({
         ...(m.agent as unknown as SnapMessage),
         __seq: m.seq,

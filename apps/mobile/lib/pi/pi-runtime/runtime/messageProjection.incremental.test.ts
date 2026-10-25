@@ -14,7 +14,19 @@ import { expect, test, vi } from "vitest";
 vi.mock("@assistant-ui/react-native", () => ({
   ExportedMessageRepository: { fromArray: (x: unknown) => x },
 }));
-vi.mock("pi-protocol", () => ({ isAutoContinueMessage: () => false }));
+vi.mock("pi-protocol", () => ({
+  isAutoContinueMessage: () => false,
+  // 真实哨兵语义：正向用例（提醒行不进气泡）要靠它判定
+  isCapabilityReminderMessage: (message: any) => {
+    const first = message?.content?.[0];
+    return (
+      message?.role === "user" &&
+      first?.type === "text" &&
+      typeof first.text === "string" &&
+      first.text.startsWith("[[capability-reminder]] ")
+    );
+  },
+}));
 
 import {
   projectPiThreadMessages,
@@ -79,6 +91,29 @@ const inputOf = (
   }) as PiProjectionInput;
 
 const full = (input: PiProjectionInput) => projectPiThreadMessages(input);
+
+test("能力收尾提醒哨兵不产生用户气泡，增量与全量等价", () => {
+  const messages: AnyMessage[] = [
+    user(1, "继续修"),
+    assistant(2, [textPart("改到一半")]),
+    user(
+      3,
+      "[[capability-reminder]] <system-reminder>\nstop repeating\n</system-reminder>",
+    ),
+    assistant(4, [textPart("换了个思路")]),
+  ];
+
+  const fullOut = full(inputOf(messages));
+  // 唯一的 user 气泡是真实输入；提醒行整行隐藏
+  const users = fullOut.filter((m: any) => m.role === "user");
+  expect(users).toHaveLength(1);
+  expect(JSON.stringify(fullOut)).not.toContain("[[capability-reminder]]");
+
+  // 同一份输入走增量：与全量逐字等价（提醒行跳过不破坏组边界/前缀复用；
+  // 两侧 createdAt 同源相等，无需抹除）
+  const inc = incremental(inputOf(messages), null);
+  expect(inc.output).toEqual(fullOut);
+});
 
 const incremental = (
   input: PiProjectionInput,

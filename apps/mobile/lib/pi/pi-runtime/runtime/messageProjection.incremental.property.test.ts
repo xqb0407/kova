@@ -21,6 +21,16 @@ vi.mock("pi-protocol", () => ({
       first.text.startsWith("[[auto-continue]] ")
     );
   },
+  // 能力收尾提醒哨兵同款（messageProjection 已按同口径过滤）
+  isCapabilityReminderMessage: (message: any) => {
+    const first = message?.content?.[0];
+    return (
+      message?.role === "user" &&
+      first?.type === "text" &&
+      typeof first.text === "string" &&
+      first.text.startsWith("[[capability-reminder]] ")
+    );
+  },
 }));
 
 import {

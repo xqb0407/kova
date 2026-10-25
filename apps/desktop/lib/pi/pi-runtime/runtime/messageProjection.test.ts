@@ -86,6 +86,31 @@ describe("messageProjection", () => {
     ]);
   });
 
+  // 能力收尾提醒哨兵（[[capability-reminder]]）：系统注入、非用户发言——
+  // 与 sidecar toUiMessage/thread_snapshot 同口径隐藏，绝不出用户气泡；
+  // 跳过不 flush，前后 assistant 并入同组（与 auto-continue 同款语义）
+  it("hides capability-reminder sentinel rows entirely (no user bubble)", () => {
+    const out = projectPiThreadMessages(
+      input([
+        { role: "user", content: "继续修", timestamp: 1 },
+        assistant([{ type: "text", text: "改到一半" }], { timestamp: 2 }),
+        {
+          role: "user",
+          content:
+            "[[capability-reminder]] <system-reminder>\nstop repeating the failing call\n</system-reminder>",
+          timestamp: 3,
+        },
+        assistant([{ type: "text", text: "换了个思路" }], { timestamp: 4 }),
+      ]),
+    );
+    const users = out.filter((m) => m.role === "user");
+    expect(users).toHaveLength(1);
+    expect(users[0]!.content).toEqual([{ type: "text", text: "继续修" }]);
+    // 哨兵文本不泄漏到任何 parts / 附件
+    expect(JSON.stringify(out)).not.toContain("[[capability-reminder]]");
+    expect(JSON.stringify(out)).not.toContain("system-reminder");
+  });
+
   it("strips the steer sentinel on array content, keeping following images", () => {
     const out = projectPiThreadMessages(
       input([

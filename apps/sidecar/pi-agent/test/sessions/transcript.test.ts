@@ -1267,6 +1267,14 @@ describe("steer 哨兵前缀（并入当前轮的注入消息）", () => {
     ]);
     expect(messages).toEqual([]);
   });
+
+  test("capability-reminder 注入行同口径隐藏（toUiMessage 与历史重建）", () => {
+    const reminder = userMsg(
+      "[[capability-reminder]] <system-reminder>\n别再重复同一个失败调用\n</system-reminder>",
+    );
+    expect(toUiMessage(reminder, 12)).toBeNull();
+    expect(historyToUiMessages([{ agent: reminder, seq: 12 }])).toEqual([]);
+  });
 });
 
 describe("连续截断预算耗尽的最终中止标记", () => {
@@ -1285,6 +1293,18 @@ describe("连续截断预算耗尽的最终中止标记", () => {
         isTruncationStoppedRow(
           { agent: truncatedAssistant() },
           { agent: sentinelUser() },
+        ),
+      ).toBe(false);
+    });
+    test("下一行是能力收尾提醒哨兵 → 同口径视为循环继续，非中止", () => {
+      expect(
+        isTruncationStoppedRow(
+          { agent: truncatedAssistant() },
+          {
+            agent: userMsg(
+              "[[capability-reminder]] <system-reminder>\nstop repeating\n</system-reminder>",
+            ),
+          },
         ),
       ).toBe(false);
     });
