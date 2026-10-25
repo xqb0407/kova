@@ -12,7 +12,12 @@ import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
 import { abortRun } from "../prompt-pipeline";
 import { checkpointForget } from "../../checkpoint/store";
-import { removeSessionArtifacts } from "../../sessions/artifact-store";
+import {
+  adoptSessionArtifacts,
+  collectArtifactReferences,
+  removeSessionArtifacts,
+  rewriteArtifactReferences,
+} from "../../sessions/artifact-store";
 import { runCompaction, contextInfo } from "../../agent/context";
 import { invalidateGitSnapshots } from "../../agent/git-prompt";
 import { projectContextInfo } from "../../sessions/sessions";
@@ -654,6 +659,9 @@ export const handlers: Record<string, CommandHandler> = {
     const dataLines: string[] = [];
     let messageCount = 0;
     let afterAnchor = false;
+    // 先定新 id：artifact 收养要在写转录前完成（回执路径要改写成新目录）
+    const newId = randomUUID();
+    const artifactRefs = new Set<string>();
     for (const line of readFileSync(sourceFile, "utf8").split("\n")) {
       if (!line.trim()) continue;
       let row: { type?: string; seq?: number; agent?: unknown };
@@ -694,32 +702,49 @@ export const handlers: Record<string, CommandHandler> = {
           afterAnchor = true;
           continue;
         }
+        if (row.type === "message") {
+          collectArtifactReferences(row.agent, artifactRefs);
+        }
         messageCount += 1;
         dataLines.push(line);
         continue;
       }
       if (row.type === "message") {
         if (!row.agent) continue;
+        collectArtifactReferences(row.agent, artifactRefs);
         messageCount += 1;
       } else if (row.type !== "compaction") {
         continue;
       }
       dataLines.push(line);
     }
-    const newId = randomUUID();
+    // artifact 收养：硬链被引用的文件到新会话目录，并把复制行里的回执路径
+    // 改写过去（父会话删除/淘汰后分叉仍可读）。文件已不存在时保留原路径。
+    const artifactMapping = await adoptSessionArtifacts({
+      sourceSessionId: sourceId,
+      targetSessionId: newId,
+      references: artifactRefs,
+    });
+    const forkedLines = rewriteArtifactReferences(dataLines, artifactMapping);
     // parentSession = fork 溯源（§6 M4，上游 header 同名可选字段；
     // 本项目取源会话 id 而非路径——我们的会话身份是 id）
-    writeFileSync(
-      sessionPath(newId),
-      JSON.stringify({
-        type: "header",
-        schema: 1,
-        id: newId,
-        cwd: src.cwd,
-        created_at: new Date().toISOString(),
-        parentSession: sourceId,
-      }) + "\n" + (dataLines.length ? dataLines.join("\n") + "\n" : ""),
-    );
+    try {
+      writeFileSync(
+        sessionPath(newId),
+        JSON.stringify({
+          type: "header",
+          schema: 1,
+          id: newId,
+          cwd: src.cwd,
+          created_at: new Date().toISOString(),
+          parentSession: sourceId,
+        }) + "\n" + (forkedLines.length ? forkedLines.join("\n") + "\n" : ""),
+      );
+    } catch (error) {
+      // 收养已把文件链进新会话目录；写转录失败时清掉，避免留下无主目录
+      await removeSessionArtifacts(newId).catch(() => undefined);
+      throw error;
+    }
     await sessionInsert(newId, src.cwd);
     // 索引行补写：标题加「（分支）」后缀（无名会话用首轮消息行兜底，与
     // list_sessions 的标题回退一致）；first_message 拷贝源值；计数按实拷行数
