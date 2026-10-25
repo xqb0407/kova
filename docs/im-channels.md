@@ -76,10 +76,18 @@ owner 门：每通道首个私聊者自动成为 owner（`im_owner` 表），陌
 
 ### 自愈与错误反馈
 
-- sidecar 的 chunk 错误帧按 requestId 归因到对应消息：立刻回错误到 IM 并清聚合，
-  不再空等 10 分钟结算超时；
+- **按 requestId 精确结算**：chunk 流的 `finish`/`error` 帧带本轮 requestId，聚合据此
+  结算——thread_event 的 `agent_end` 无 id，只能按队首猜归属，同会话排队两条消息时
+  会错结下一条（曾导致回复丢失）。聚合在 `message_end` 只发正文、不摘除，统一等
+  `finish` 结算；
+- **线程隔离**：IM prompt 统一带 `threadId = im:<sessionId>`。不传会被侧车归入
+  `"default"` 线程——所有聊天共用一条串行链（互相排队、`/stop` 失效）；
+- sidecar 的错误帧立刻回错误到 IM 并清聚合（`message_end` 与 error 帧同一错误
+  只发一次）；
 - 错误若指向「会话不存在/失效」（桌面端把 IM 会话删了），自动解绑——下一条消息
-  重建会话，通道不会永久卡死。
+  重建会话，通道不会永久卡死；
+- 聚合登记在 prompt 写入成功之后：登记顺序与 sidecar 实际执行顺序一致，
+  钉住同一会话的多个聊天并发投递时队首归属不会错位。
 
 ## 微信 iLink 协议事实（已对照腾讯官方 npm 包源码 + 可用接入实现核对）
 

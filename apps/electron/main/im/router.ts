@@ -278,8 +278,12 @@ interface ReplyAggregate {
   /** live 档：思考增量缓冲 + 上次进度推送时间（节流用） */
   liveThinking: string[];
   lastLiveSentAt: number;
-  /** prompt requestId：chunk 流错误帧按 id 归属（无 sessionId 可依赖） */
+  /** prompt requestId：chunk 流错误/收尾帧按 id 精确归属（thread_event 无此字段） */
   requestId: string;
+  /** 本轮是否已经发过正文/错误（finish 兜底时避免重复发送） */
+  sentAny: boolean;
+  /** 错误文案是否已经发过（message_end 与 error chunk 可能同时携带） */
+  errorSent: boolean;
   /** 出站串行链：多条 assistant 消息的正文/思考必须按序发出 */
   sendChain: Promise<void>;
 }
@@ -316,11 +320,37 @@ function clearPendingReplies(sessionId: string): void {
 
 /** pi-agent 无 id 帧旁路：thread_event 文本累积 + 按颗粒度选点回传 */
 export function handleAgentFrame(parsed: Record<string, unknown>): void {
+  const chunk = parsed.chunk as Record<string, unknown> | undefined;
+  const chunkId = typeof parsed.id === "string" ? parsed.id : null;
+
+  // chunk 收尾帧（{id: requestId, chunk:{type:"finish"}}）：本轮**精确结算**。
+  // thread_event 的 agent_end 不带 requestId，只能按队首猜归属——同会话排队
+  // 两条消息时，第一条的 agent_end 会把第二条的聚合错结（回复丢失）。
+  if (chunk?.type === "finish" && chunkId) {
+    const entry = pendingByRequest.get(chunkId);
+    if (!entry) return;
+    const { sessionId, agg } = entry;
+    removeAggregate(sessionId, agg);
+    if (agg.replyDetail === "live") {
+      // live 正文已逐条发出：收尾只冲刷残余思考并取消 typing
+      enqueueSend(agg, async () => {
+        await flushLiveThinking(agg);
+        await setTypingSafe(agg, false);
+      });
+      return;
+    }
+    // digest 需要整轮总结（错误话已发过就不总结失败轮）；
+    // standard/full 若本轮一个字都没发过（纯工具轮）才用历史兜底，已发过不重复
+    if (agg.replyDetail === "digest" ? !agg.errorSent : !agg.sentAny) {
+      void deliverAggregate(agg, null);
+    }
+    return;
+  }
+
   // chunk 流错误帧（{id: requestId, chunk:{type:"error"}}）：按 requestId 归因，
   // 立刻给 IM 回错误并清聚合——否则要空等 10 分钟结算超时。
-  const chunk = parsed.chunk as Record<string, unknown> | undefined;
-  if (chunk?.type === "error" && typeof parsed.id === "string") {
-    const entry = pendingByRequest.get(parsed.id);
+  if (chunk?.type === "error" && chunkId) {
+    const entry = pendingByRequest.get(chunkId);
     if (!entry) return;
     const { sessionId, agg } = entry;
     removeAggregate(sessionId, agg);
@@ -332,7 +362,10 @@ export function handleAgentFrame(parsed: Record<string, unknown>): void {
     if (/not found|session[^\n]*(not|invalid|missing)|unknown session/i.test(errText)) {
       deleteBinding(agg.platform, agg.channelId, agg.target.chatId);
     }
-    void sendViaChannel(agg.channelId, agg.target, `处理出错：${errText}`);
+    // message_end 的错误分支可能已经发过同一错误，避免重复
+    if (!agg.errorSent) {
+      void sendViaChannel(agg.channelId, agg.target, `处理出错：${errText}`);
+    }
     return;
   }
 
@@ -387,86 +420,59 @@ export function handleAgentFrame(parsed: Record<string, unknown>): void {
   if (event.type === "message_end") {
     // 注意：message_end 对 user（初始消息回放）与 toolResult 消息同样触发
     // （pi-agent-core agent-loop），它们无 stopReason 且无 assistant 文本——
-    // 必须先按 role 过滤，否则工具一执行完就把队首摘掉，回复被吞。
+    // 必须先按 role 过滤，否则工具一执行完就会误处理。
     const message = event.message as Record<string, unknown> | undefined;
     if (message?.role !== "assistant") return;
     const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
     if (stopReason === "aborted") return;
     const text = assistantTextOfMessage(message);
-    if (head.replyDetail === "digest") return; // 等最终 agent_end 一并总结
     const errorMessage =
       stopReason === "error" && typeof message.errorMessage === "string"
         ? message.errorMessage
         : null;
-    const isIntermediate = stopReason === "toolUse";
 
-    if (head.replyDetail === "live") {
-      // live 档：正文逐条即时回传，但**保留聚合**直到 agent_end ——
-      // 工具轮（toolUse）之后还有后续轮次，早摘队首会让思考/工具进度
-      // 全部失去归属、typing 也再没人取消。
-      // 思考只在「最终一条」或错误时冲刷：工具轮的思考并进下一轮，
-      // 一个用户回合只发一条 💭（避免思考被拆成多段）。
-      enqueueSend(head, async () => {
-        if (!isIntermediate || errorMessage) {
+    // 关键：聚合**不在 message_end 摘除**，统一由 finish 帧精确结算。
+    // 提前摘除会让同一会话排队中的下一条消息被本轮 agent_end 错结。
+    // 错误先于档位分支：digest 也要把错误带回 IM（否则错误被静默吞掉）
+    if (errorMessage) {
+      head.sentAny = true;
+      head.errorSent = true;
+      if (head.replyDetail === "live") {
+        enqueueSend(head, async () => {
           await flushLiveThinking(head);
-        }
-        if (errorMessage) {
-          removeAggregate(sessionId, head);
-          await setTypingSafe(head, false);
           await deliverText(head, text, errorMessage, false);
-        } else {
-          await deliverText(head, text, null, isIntermediate);
-        }
-      });
+        });
+      } else {
+        void deliverText(head, text, errorMessage, false);
+      }
       return;
     }
-
-    removeAggregate(sessionId, head);
-    void deliverText(head, text, errorMessage, isIntermediate);
+    if (head.replyDetail === "digest") return; // 等 finish 帧整轮总结
+    if (!text) return;
+    head.sentAny = true;
+    const isIntermediate = stopReason === "toolUse";
+    if (head.replyDetail === "live") {
+      // 思考只在最终一条冲刷：工具轮的思考并进下一轮，一个回合一条 💭
+      enqueueSend(head, async () => {
+        if (!isIntermediate) await flushLiveThinking(head);
+        await deliverText(head, text, null, isIntermediate);
+      });
+    } else {
+      void deliverText(head, text, null, isIntermediate);
+    }
     return;
   }
 
   if (event.type === "agent_end") {
     const stopReason = typeof event.stopReason === "string" ? event.stopReason : undefined;
     if (stopReason === "aborted") {
-      if (head.replyDetail === "live") void setTypingSafe(head, false);
+      // 用户停止（桌面端 /stop 或 IM /stop）：取消 typing 并清空该会话队列；
+      // 正常收尾一律走 chunk finish（带 requestId，能精确归属到某一轮）
+      const queue = pendingReplies.get(sessionId) ?? [];
+      for (const agg of queue) {
+        if (agg.replyDetail === "live") void setTypingSafe(agg, false);
+      }
       clearPendingReplies(sessionId);
-      return; // 用户主动停止：不回复
-    }
-    const errorText =
-      typeof event.errorMessage === "string" && event.errorMessage
-        ? event.errorMessage
-        : null;
-    if (head.replyDetail === "live") {
-      // live 档收尾：先把残余思考发完，再清聚合与 typing；
-      // 错误若未在 message_end 结算过（无文本错误轮），补发一次
-      enqueueSend(head, async () => {
-        await flushLiveThinking(head);
-        const queue = pendingReplies.get(sessionId);
-        const stillPending = queue?.includes(head) ?? false;
-        if (stillPending) removeAggregate(sessionId, head);
-        await setTypingSafe(head, false);
-        if (errorText && stillPending) {
-          await sendViaChannel(head.channelId, head.target, `处理出错：${errorText}`);
-        }
-      });
-      return;
-    }
-    if (head.replyDetail === "digest") {
-      // 摘要档：整轮只在最终结算一次（get_history 兜底覆盖多段正文）
-      removeAggregate(sessionId, head);
-      void deliverAggregate(head, errorText);
-      return;
-    }
-    // standard/full：turn 已收尾。若队列里还有本条（message_end 未触发过，
-    // 如纯工具轮无 assistant 文本），走完整结算（含 full 的工具摘要）；
-    // 若 message_end 已发过（已摘除），仅在错误时补发错误文案
-    const queue = pendingReplies.get(sessionId);
-    if (queue?.includes(head)) {
-      removeAggregate(sessionId, head);
-      void deliverAggregate(head, errorText);
-    } else if (errorText) {
-      void sendViaChannel(head.channelId, head.target, `处理出错：${errorText}`);
     }
   }
 }
@@ -802,7 +808,9 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
   }
 
   const sessionId = binding.sessionId;
-  const requestId = `im-${msg.messageId ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
+  // requestId 是 finish/error 帧精确归属的键，必须全局唯一：
+  // 平台 message_id 可能按会话递增（不同聊天可能撞号），加随机后缀兜底
+  const requestId = `im-${msg.messageId ?? Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   // 新绑定：把通道配置的思考档位落到该会话（IM 会话不走桌面端默认档）
   if (justBound) {
     await applyThinkingLevel(sessionId, cfg.thinkingLevel);
@@ -836,32 +844,40 @@ async function handleInboundInner(msg: ImInboundMessage): Promise<void> {
         });
         return;
       }
-      void deliverAggregate(agg, null);
+      // digest 超时仍给整轮总结；standard/full 只在从未发过内容时兜底
+      if (cfg.replyDetail === "digest" || !agg.sentAny) {
+        void deliverAggregate(agg, null);
+      }
     }, REPLY_SETTLE_TIMEOUT_MS),
     replyDetail: cfg.replyDetail,
     liveThinking: [],
     lastLiveSentAt: 0,
     requestId,
+    sentAny: false,
+    errorSent: false,
     sendChain: Promise.resolve(),
   };
   agg.timer.unref?.();
-  const queue = pendingReplies.get(sessionId) ?? [];
-  queue.push(agg);
-  pendingReplies.set(sessionId, queue);
-  pendingByRequest.set(requestId, { sessionId, agg });
-  // live 档：投递成功即刻点亮「正在输入」
-  if (cfg.replyDetail === "live") {
-    void setTypingSafe(agg, true);
-  }
   try {
+    // 先写入 sidecar，成功后再登记聚合：登记顺序与 sidecar 的实际执行顺序
+    // 严格一致（钉住同一会话的多个聊天并发投递时，队首归属不会错位）。
+    // 响应帧是 stdout 宏任务，晚于本次同步登记，不存在"帧到了还没登记"。
     await pi.piPrompt({
       requestId,
       text: msg.text,
       sessionId,
       threadId: imThreadId(sessionId),
     });
+    const queue = pendingReplies.get(sessionId) ?? [];
+    queue.push(agg);
+    pendingReplies.set(sessionId, queue);
+    pendingByRequest.set(requestId, { sessionId, agg });
+    // live 档：投递成功即刻点亮「正在输入」
+    if (cfg.replyDetail === "live") {
+      void setTypingSafe(agg, true);
+    }
   } catch (e: unknown) {
-    removeAggregate(sessionId, agg);
+    clearTimeout(agg.timer);
     logWarn(`[im/router] prompt failed: ${e instanceof Error ? e.message : e}`);
     await sendViaChannel(msg.channelId, { chatId: msg.chatId, replyContext: msg.replyContext },
       "消息投递失败，请稍后重试。");

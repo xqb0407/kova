@@ -239,6 +239,8 @@ export function setupImCommands(register: Register): void {
   register("im_wechat_unbind", async (a) => {
     const channelId = String(a?.channelId ?? "");
     kvDelete(`im.wechat.token.${channelId}`);
+    // 游标是账号作用域的：换号后旧游标会让新账号的增量漏读
+    kvDelete(`im.wechat.cursor.${channelId}`);
     dropChannelLocalState(channelId);
     resetImOwner(channelId);
     await reconcileChannel(channelId);
