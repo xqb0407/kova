@@ -757,6 +757,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
             <GlobalSearchView
               open={searchOpen}
               onOpenChange={setSearchOpen}
+              collapsed={sidebarCollapsed}
               onNewThread={() => {
                 setSearchOpen(false);
                 setActiveMenu("");

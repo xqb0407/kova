@@ -59,6 +59,7 @@ import {
 } from "@/lib/pi/pi-bridge";
 import { requestOpenSession } from "@/lib/pi/open-session";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
+import { isDesktop, isMacPlatform } from "@/lib/desktop-env";
 import { fsOpen } from "@/lib/workspace/fs";
 import { focusPanelTab } from "@/lib/panels/panel-tabs";
 import { taskWorkspaceDir } from "@/lib/workspace/task-workspace";
@@ -185,7 +186,9 @@ export const GlobalSearchView: FC<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onNewThread: () => void;
-}> = ({ open, onOpenChange, onNewThread }) => {
+  /** 侧栏折叠态：macOS 折叠时红绿灯浮在窗口左上，顶栏要让位（同主 Header 口径） */
+  collapsed?: boolean;
+}> = ({ open, onOpenChange, onNewThread, collapsed = false }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const requestSeq = useRef(0);
@@ -510,7 +513,19 @@ export const GlobalSearchView: FC<{
       {/* 顶栏：输入行 + scope 行（monocode 同构）——平铺、紧凑、各带一条
           分割线；占位符保持短句（"搜索一切…"），具体覆盖哪些域由空态说明，
           长占位符会把整行读成工具栏而不是搜索框。 */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/30 px-3">
+      <div
+        className="flex h-10 shrink-0 items-center gap-2 border-b border-border/30 px-3"
+        style={{
+          // macOS 桌面 + 侧栏折叠：红绿灯（x=20..80）浮在窗口左上，覆盖层贴着
+          // 窗口左缘，让位宽度对齐主 Header 的 md:pl-24
+          ...(isDesktop() && isMacPlatform() && collapsed
+            ? { paddingLeft: 96 }
+            : null),
+          // Windows/Linux：frame:false 自绘三键簇（CLUSTER_W=100）钉在
+          // right=24，覆盖层同样贴窗口右缘——右让位 24+100+8 呼吸位
+          ...(isDesktop() && !isMacPlatform() ? { paddingRight: 132 } : null),
+        }}
+      >
         <SearchIcon
           className="size-4 shrink-0 text-muted-foreground"
           strokeWidth={1.75}
