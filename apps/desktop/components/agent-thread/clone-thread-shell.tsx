@@ -209,6 +209,9 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
   }, [aui, newThread]);
 
   const handleMenuClick = (item: (typeof menuItems)[number]) => {
+    // 搜索是覆盖在主区之上的独立一页：任何侧栏导航都先退出搜索，否则覆盖层
+    // 会一直盖住目标页（点了「自动化」看着还停在搜索页）
+    setSearchOpen(false);
     // 「新对话」是常驻入口：点击即取消其他菜单项的选中态。本 onClick 与外层
     // ThreadListPrimitive.New 的框架切换是合成关系、两者都会跑；这里动作驱动
     // 清"最近打开的会话"指针，刷新后不再回旧会话（2026-09-22 修复）
@@ -224,6 +227,13 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     // 菜单项切换的是主区页面：移动端抽屉里点完收起，让视图可见
     setMobileOpen(false);
   };
+
+  // 侧栏点会话 / 外部通知回焦 / 分叉打开等都会推移 mainThreadId：搜索页随
+  // 会话切换一起退场（搜索自己点结果时 openHit 已先关，重复关闭无副作用）
+  useEffect(() => {
+    if (!searchOpen) return;
+    setSearchOpen(false);
+  }, [currentMenu, navThreadId]);
 
   // A controlled value means the caller renders the chrome that drives it, so
   // the shell omits its own toggle / trigger and forwards changes instead.
@@ -512,7 +522,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     // hover 反馈交给 FluidHoverHighlight：压掉 ghost 变体
                     // 自带的 hover 底色，避免与高亮叠加
                     "h-8 w-full text-sm justify-between gap-2 rounded-md px-2.5  font-medium hover:bg-transparent dark:hover:bg-transparent group",
-                    !item.isNew && currentMenu === item.id && "bg-selected",
+                    !item.isNew && !searchOpen && currentMenu === item.id && "bg-selected",
                   )}
                   onClick={() => handleMenuClick(item)}
                   aria-label={item.label}
@@ -582,7 +592,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
               <Button
                 variant="ghost"
                 className="h-8 w-full cursor-pointer justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent"
-                onClick={() => onOpenSettings?.()}
+                onClick={() => {
+                  setSearchOpen(false);
+                  onOpenSettings?.();
+                }}
               >
                 <SettingsIcon className="size-4 shrink-0" />
                 <span className="whitespace-nowrap">设置</span>
@@ -669,7 +682,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                     variant="ghost"
                     className={cn(
                       "h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent",
-                      !item.isNew && currentMenu === item.id && "bg-selected",
+                      !item.isNew && !searchOpen && currentMenu === item.id && "bg-selected",
                     )}
                     onClick={() => handleMenuClick(item)}
                     aria-label={item.label}
@@ -727,6 +740,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
                   variant="ghost"
                   className="h-8 w-full justify-start gap-2 rounded-md px-2.5 text-sm font-normal hover:bg-transparent dark:hover:bg-transparent"
                   onClick={() => {
+                    setSearchOpen(false);
                     setMobileOpen(false);
                     onOpenSettings?.();
                   }}
