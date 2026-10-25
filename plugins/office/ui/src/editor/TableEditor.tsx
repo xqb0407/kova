@@ -57,7 +57,7 @@ export const TableEditor: FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const btn = "flex h-5 items-center gap-0.5 rounded border border-foreground/15 bg-background px-1.5 text-[11px] text-foreground/80 hover:bg-foreground/5 disabled:opacity-40";
+  const btn = "flex h-5 items-center gap-0.5 rounded border border-foreground/15 bg-background px-1.5 text-xs text-foreground/80 hover:bg-foreground/5 disabled:opacity-40";
 
   return (
     <>

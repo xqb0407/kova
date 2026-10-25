@@ -129,7 +129,7 @@
 @theme inline {
   --font-sans: var(--app-font-sans);
   --font-display: var(--app-font-sans);
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
+  --font-mono: var(--app-font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace);
   --container-7xl: var(--page-width);
 
   --radius-sm: calc(var(--radius) - 4px);
@@ -297,6 +297,9 @@
     "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif,
     "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  /* 代码字体栈：外观设置-代码字体写进本变量，CodeMirror / diff / 终端共用 */
+  --app-font-mono: "Cascadia Mono", Consolas, Menlo, "JetBrains Mono",
+    "PingFang SC", "Microsoft YaHei", monospace;
   /* Content slabs (code blocks) carry a fill instead of a border, so the tint
      has to stay slight. Resolved per theme: it lifts on dark, recedes on light. */
   --code-surface: color-mix(in oklab, var(--foreground) 4%, var(--background));
@@ -387,76 +390,12 @@
   --overlay: 255 255 255;
 }
 
-/* 强调色：仅覆写 primary/ring（浅色用中档亮度+亮前景，深色用高档亮度+暗前景），
-   无 data-accent 时保持单色默认值。由 lib/ui-prefs.ts 打标。 */
-:root[data-accent="blue"] {
-  --primary: oklch(0.55 0.22 257);
-  --primary-foreground: oklch(0.98 0.01 257);
-  --ring: oklch(0.62 0.19 257);
-}
-.dark[data-accent="blue"] {
-  --primary: oklch(0.65 0.19 257);
-  --primary-foreground: oklch(0.16 0.03 257);
-  --ring: oklch(0.55 0.16 257);
-}
-:root[data-accent="violet"] {
-  --primary: oklch(0.55 0.21 292);
-  --primary-foreground: oklch(0.98 0.01 292);
-  --ring: oklch(0.62 0.18 292);
-}
-.dark[data-accent="violet"] {
-  --primary: oklch(0.66 0.18 292);
-  --primary-foreground: oklch(0.16 0.03 292);
-  --ring: oklch(0.55 0.16 292);
-}
-:root[data-accent="green"] {
-  --primary: oklch(0.55 0.16 155);
-  --primary-foreground: oklch(0.98 0.02 155);
-  --ring: oklch(0.6 0.14 155);
-}
-.dark[data-accent="green"] {
-  --primary: oklch(0.65 0.16 155);
-  --primary-foreground: oklch(0.16 0.03 155);
-  --ring: oklch(0.55 0.14 155);
-}
-:root[data-accent="orange"] {
-  --primary: oklch(0.62 0.18 55);
-  --primary-foreground: oklch(0.98 0.02 55);
-  --ring: oklch(0.68 0.15 55);
-}
-.dark[data-accent="orange"] {
-  --primary: oklch(0.7 0.16 55);
-  --primary-foreground: oklch(0.18 0.03 55);
-  --ring: oklch(0.6 0.14 55);
-}
-:root[data-accent="rose"] {
-  --primary: oklch(0.58 0.21 350);
-  --primary-foreground: oklch(0.98 0.01 350);
-  --ring: oklch(0.64 0.18 350);
-}
-.dark[data-accent="rose"] {
-  --primary: oklch(0.66 0.19 350);
-  --primary-foreground: oklch(0.16 0.03 350);
-  --ring: oklch(0.56 0.16 350);
-}
-:root[data-accent="periwinkle"] {
-  --primary: oklch(0.606 0.136 269);
-  --primary-foreground: oklch(0.98 0.01 269);
-  --ring: oklch(0.67 0.12 269);
-}
-.dark[data-accent="periwinkle"] {
-  --primary: oklch(0.7 0.13 269);
-  --primary-foreground: oklch(0.16 0.03 269);
-  --ring: oklch(0.6 0.12 269);
-}
+/* 强调色不再通过 data-accent 属性切换：主题变量表（lib/theme/palette.ts）
+   统一以 --primary/--ring 内联写入，这里的属性选择器不再需要。 */
 
-/* 对话区最大宽度：thread.tsx 的 --thread-max-width 回退值消费；默认档（md）60rem 不打标 */
-:root[data-chat-width="narrow"] {
-  --chat-width: 50rem;
-}
-:root[data-chat-width="wide"] {
-  --chat-width: 70rem;
-}
+/* 对话区宽度由 ui-prefs 直接内联 --chat-width（百分比，100% = 平铺）；
+   thread.tsx 的 var(--chat-width, 52%) 是首帧缓存缺失时的兜底，
+   不再维护 data-chat-width 属性。 */
 
 /* 字体档位（外观设置-字体选择，lib/ui-prefs.ts 落 html[data-font]）：
    覆盖默认界面字体栈；各档均为「西文优先 + 中文回退」组合。
@@ -622,15 +561,7 @@ html[data-window-effect] [data-chat-card] {
   background: color-mix(in oklab, var(--background) 72%, transparent);
 }
 
-/* AI 免责声明条：底色跟随聊天卡片（材质开启时同为 72% 半透明）。页脚是
-   sticky 的，消息从它下方滚过——没有这层底，滚动内容会透过声明行与文字
-   叠在一起；用不透明 bg-background 又会在磨砂卡片上切出一条亮色带。 */
-[data-slot="ai-disclaimer"] {
-  background-color: var(--background);
-}
-html[data-window-effect] [data-slot="ai-disclaimer"] {
-  background-color: color-mix(in oklab, var(--background) 72%, transparent);
-}
+/* AI 免责声明：纯文字，不铺底色（避免在圆角聊天卡/壁纸里切出灰色横带）。 */
 
 /* 窗口材质开启时选中底色改为半透明叠加（浅色黑、深色白），与 --hover/--active
    同款合成方式：不透明实色块压在透出桌面的 bg-muted/55 侧栏上，明暗对比会随桌面
@@ -641,6 +572,43 @@ html[data-window-effect] {
 }
 html.dark[data-window-effect] {
   --selected: rgb(255 255 255 / 0.12);
+}
+
+/* 聊天窗口壁纸（外观设置-壁纸）：只作用于会话卡片本身，设置页/侧栏不受影响。
+   卡片有 overflow-hidden + rounded-xl，伪元素自然被裁成圆角；isolation 让
+   z-index:-1 的图片层落在卡片底色之上、内容之下。
+   变量由 ui-prefs 内联在 html 上，这里只消费。 */
+[data-chat-card] {
+  isolation: isolate;
+}
+html[data-wallpaper] [data-chat-card]::before {
+  content: "";
+  position: absolute;
+  inset: calc(-1 * var(--wallpaper-blur, 0px) - 2px);
+  z-index: -1;
+  background-image: var(--wallpaper-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  filter: blur(var(--wallpaper-blur, 0px));
+  opacity: var(--wallpaper-opacity, 1);
+  pointer-events: none;
+}
+/* 染色层必须叠在图片之上：负 z-index 的 ::before 绘制在卡片自身背景之上，
+   所以卡片底色压不住壁纸；这里用「遮罩 + 主题底色」二次合成，保证正文可读。
+   --wallpaper-veil 由强度滑杆反比给出（强度越高越薄），base 值兜底 68%。 */
+html[data-wallpaper] [data-chat-card]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(
+      rgb(0 0 0 / var(--wallpaper-dim, 0)),
+      rgb(0 0 0 / var(--wallpaper-dim, 0))
+    ),
+    color-mix(in oklab, var(--background) var(--wallpaper-veil, 68%), transparent);
+  pointer-events: none;
 }
   html.transitioning *, html.transitioning *::before, html.transitioning *::after {
     transition: border-radius 180ms ease-in-out, background-color 180ms ease-in-out, color 180ms ease-in-out, border-color 180ms ease-in-out, fill 180ms ease-in-out, stroke 180ms ease-in-out !important;}

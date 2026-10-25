@@ -21,7 +21,7 @@ export const field = "bg-foreground/5 dark:bg-foreground/10";
 
 export const inkButton = "bg-foreground active:opacity-90";
 
-export const mono = "text-[11px] tracking-tight";
+export const mono = "text-xs tracking-tight";
 
 export const textButtonHitSlop = { top: 12, bottom: 12 };
 

@@ -154,11 +154,11 @@ const FillRow: FC<{
         {fill.type === "solid" ? (
           <VarColorCell value={fill.color ?? "#000000"} onChange={(c) => onChange({ ...fill, color: c })} doc={doc} onCreateVariable={onCreateVar} />
         ) : fill.type === "image" ? (
-          <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: fill.src ? "var(--muted-foreground)" : "var(--destructive)" }}>
+          <span className="min-w-0 flex-1 truncate text-xs" style={{ color: fill.src ? "var(--muted-foreground)" : "var(--destructive)" }}>
             {fill.src || "未设置图片路径"}
           </span>
         ) : (
-          <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+          <span className="min-w-0 flex-1 truncate text-xs" style={{ color: "var(--muted-foreground)" }}>
             {stops.length} 色标
           </span>
         )}
@@ -196,7 +196,7 @@ const FillRow: FC<{
             <button
               type="button"
               onClick={() => setStops([...stops, { at: 1, color: "#000000" }].sort((a, b) => a.at - b.at))}
-              className="flex h-6 items-center gap-1 rounded-md px-1 text-[11px] font-medium transition-colors hover:bg-[var(--background)]"
+              className="flex h-6 items-center gap-1 rounded-md px-1 text-xs font-medium transition-colors hover:bg-[var(--background)]"
               style={{ color: "var(--foreground)" }}
             >
               <Plus size={11} /> 添加色标
@@ -220,7 +220,7 @@ const FillRow: FC<{
             value={fill.src ?? ""}
             onChange={(e) => onChange({ ...fill, src: e.target.value })}
             placeholder="workspace 相对路径（如 my-design-assets/pic.png）"
-            className="h-7 w-full rounded-md px-2 text-[11px] outline-none"
+            className="h-7 w-full rounded-md px-2 text-xs outline-none"
             style={{ background: "var(--popover)", color: "var(--foreground)" }}
           />
         </div>
@@ -325,10 +325,10 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
       <div className="px-4 pt-4 text-[12px] font-semibold" style={{ color: "var(--foreground)" }}>
         {page.name}
       </div>
-        <div className="px-4 pt-1 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+        <div className="px-4 pt-1 text-xs" style={{ color: "var(--muted-foreground)" }}>
           {page.nodes.length} 个顶层元素 · 未选中任何图层
         </div>
-        <div className="mx-3 mt-3 rounded-lg p-3 text-[11px] leading-5" style={{ background: "var(--secondary)", color: "var(--muted-foreground)" }}>
+        <div className="mx-3 mt-3 rounded-lg p-3 text-xs leading-5" style={{ background: "var(--secondary)", color: "var(--muted-foreground)" }}>
           选中画布或左侧图层树中的元素后，这里会显示它的全部属性：位置尺寸、圆角、填充、描边、阴影、文字与导出。
         </div>
       </div>
@@ -361,7 +361,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
             </IconBtn>
           </div>
         </Section>
-        <div className="px-4 pt-2 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+        <div className="px-4 pt-2 text-xs" style={{ color: "var(--muted-foreground)" }}>
           提示：按住 ⌘ 点击图层可加选/减选；成组后按 ⌘⇧G 解组。
         </div>
       </div>
@@ -418,7 +418,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
 
       {/* 实例内部选中：回实例根 + 提示编辑会存为覆盖 */}
       {selIds[0]!.includes("/") && (
-        <div className="flex items-center gap-1.5 px-3 pb-1 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+        <div className="flex items-center gap-1.5 px-3 pb-1 text-xs" style={{ color: "var(--muted-foreground)" }}>
           <span className="min-w-0 flex-1 truncate">实例内部 · 编辑将保存为覆盖</span>
           <button
             type="button"
@@ -440,7 +440,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
             const ovCount = Object.keys(inst.overrides ?? {}).length;
             return (
               <div className="space-y-1.5">
-                <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+                <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
                   主档：
                   {comp ? (
                     <span style={{ color: "var(--foreground)" }}>{comp.name}</span>
@@ -448,13 +448,13 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
                     <span style={{ color: "var(--destructive)" }}>组件缺失（占位显示）</span>
                   )}
                 </div>
-                <div className="text-[11px]" style={{ color: ovCount ? "var(--foreground)" : "var(--muted-foreground)" }}>
+                <div className="text-xs" style={{ color: ovCount ? "var(--foreground)" : "var(--muted-foreground)" }}>
                   {ovCount ? `已覆盖 ${ovCount} 处` : "与主档完全一致"}
                 </div>
                 <div className="flex gap-1.5">
                   <button
                     type="button"
-                    className="rounded px-2 py-1 text-[11px] hover:opacity-80"
+                    className="rounded px-2 py-1 text-xs hover:opacity-80"
                     style={{ background: "var(--secondary)", color: "var(--foreground)" }}
                     title="把实例烘焙成可自由编辑的普通图层（断开与主档的联动）"
                     onClick={() => detachInstance(n.id)}
@@ -464,7 +464,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
                   {ovCount > 0 && (
                     <button
                       type="button"
-                      className="rounded px-2 py-1 text-[11px] hover:opacity-80"
+                      className="rounded px-2 py-1 text-xs hover:opacity-80"
                       style={{ background: "var(--secondary)", color: "var(--foreground)" }}
                       title="清除全部覆盖，回到主档原样"
                       onClick={() => resetInstanceOverrides(n.id)}
@@ -676,7 +676,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
               <button
                 type="button"
                 onClick={() => reflow(n.id)}
-                className="h-7 w-full rounded-md text-[11px] font-medium transition-colors hover:brightness-95"
+                className="h-7 w-full rounded-md text-xs font-medium transition-colors hover:brightness-95"
                 style={{ background: "var(--secondary)", color: "var(--foreground)" }}
               >
                 重新排列（手动挪动过子项后）
@@ -700,7 +700,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
             }}
             title="0 = 固定尺寸；>0 按权重瓜分主轴剩余空间"
           />
-          <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+          <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
             父画板「{loc.parent.name}」开了自动布局；手动挪位不会自动重排，可让父画板重新排列
           </div>
         </Section>
@@ -773,7 +773,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
             title="蒙版：自身不再绘制，用几何裁剪同容器中位于其上方的图层（和 Figma 一致）"
           />
           {n.mask && (
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+            <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
               已作为蒙版：画布上只见其裁剪作用，导出同样生效
             </div>
           )}
@@ -796,7 +796,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
           <button
             type="button"
             onClick={() => void copyText(nodeToCode(n, codeLang, doc)).then(() => setCopied(true))}
-            className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md text-[11px] font-medium transition-colors hover:brightness-95"
+            className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md text-xs font-medium transition-colors hover:brightness-95"
             style={{ background: "var(--secondary)", color: "var(--foreground)" }}
           >
             {copied ? "已复制 ✓" : "复制代码"}
@@ -832,7 +832,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
                 onToggle={() => updateNode(n.id, (m) => (hasFills(m) ? ({ ...m, fills: m.fills.map((x, j) => (j === i ? { ...x, visible: x.visible === false } : x)) } as DesignNode) : m))}
               />
             ))}
-            {n.fills.length === 0 && <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>无填充</div>}
+            {n.fills.length === 0 && <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>无填充</div>}
           </div>
         </Section>
       )}
@@ -859,7 +859,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
                 onToggle={() => updateNode(n.id, (m) => (hasStrokes(m) ? ({ ...m, strokes: m.strokes.map((x, j) => (j === i ? { ...x, visible: x.visible === false } : x)) } as DesignNode) : m))}
               />
             ))}
-            {(n.strokes ?? []).length === 0 && <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>无描边</div>}
+            {(n.strokes ?? []).length === 0 && <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>无描边</div>}
           </div>
         </Section>
       )}
@@ -892,7 +892,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
               onToggle={() => updateNode(n.id, (m) => ({ ...m, effects: (m.effects ?? []).map((x, j) => (j === i ? { ...x, visible: x.visible === false } : x)) } as DesignNode))}
             />
           ))}
-          {(n.effects ?? []).length === 0 && <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>无投影 / 模糊</div>}
+          {(n.effects ?? []).length === 0 && <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>无投影 / 模糊</div>}
         </div>
       </Section>
 
@@ -952,13 +952,13 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
                 <NumField label="行高" min={0.5} max={5} step={0.1} value={tstyle.lineHeight ?? 1.4} onCommit={(v) => patchStyle({ lineHeight: v })} />
                 <NumField label="字距" min={-5} max={50} step={0.5} value={tstyle.letterSpacing ?? 0} onCommit={(v) => patchStyle({ letterSpacing: v })} />
               </div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
                 {n.type === "text" ? "双击画布上的文字可直接改内容" : "双击形状可直接改这段标签文字"}
               </div>
               {n.type !== "text" && (
                 <button
                   type="button"
-                  className="w-full rounded border px-2 py-1 text-[11px]"
+                  className="w-full rounded border px-2 py-1 text-xs"
                   style={{ borderColor: "var(--border)", color: "var(--muted-foreground)" }}
                   onClick={() => patchRuns(() => [{ text: "" }])}
                   title="摘掉内嵌标签，回到纯色块"
@@ -970,7 +970,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
           ) : (
             <button
               type="button"
-              className="w-full rounded border px-2 py-1 text-[11px]"
+              className="w-full rounded border px-2 py-1 text-xs"
               style={{ borderColor: "var(--border)", color: "var(--muted-foreground)" }}
               onClick={() => patchRuns(() => [{ text: "文字", size: 14 }])}
               title="给这个形状加一段内嵌文字（等同于双击形状打字）"
@@ -993,7 +993,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
             onChange={(v) => updateNode(n.id, { fit: v as "cover" | "contain" | "stretch" } as Partial<DesignNode>)}
             title="图片适配方式"
           />
-          <div className="mt-1.5 truncate text-[11px]" style={{ color: "var(--muted-foreground)" }} title={n.src}>
+          <div className="mt-1.5 truncate text-xs" style={{ color: "var(--muted-foreground)" }} title={n.src}>
             {n.src}
           </div>
         </Section>
@@ -1015,7 +1015,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
             />
           </div>
           {!resolveIconName(n.icon) && (
-            <div className="mt-1 text-[11px]" style={{ color: "var(--destructive)" }}>
+            <div className="mt-1 text-xs" style={{ color: "var(--destructive)" }}>
               图标名无效，画布上是占位：点上方重新选择
             </div>
           )}
@@ -1031,7 +1031,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
           <button
             type="button"
             onClick={() => store.toggleFlag(n.id, "visible")}
-            className="flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md text-[11px] transition-all hover:brightness-95"
+            className="flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md text-xs transition-all hover:brightness-95"
             style={{ background: "var(--secondary)", color: n.visible === false ? "var(--muted-foreground)" : "var(--foreground)" }}
           >
             {n.visible === false ? <EyeOff size={12} /> : <Eye size={12} />}
@@ -1040,7 +1040,7 @@ export const Inspector: FC<{ store: DesignStore; onPreview?: () => void }> = ({ 
           <button
             type="button"
             onClick={() => store.toggleFlag(n.id, "locked")}
-            className="flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md text-[11px] transition-all hover:brightness-95"
+            className="flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md text-xs transition-all hover:brightness-95"
             style={{ background: "var(--secondary)", color: n.locked ? "var(--foreground)" : "var(--muted-foreground)" }}
           >
             {n.locked ? <Lock size={12} /> : <LockOpen size={12} />}

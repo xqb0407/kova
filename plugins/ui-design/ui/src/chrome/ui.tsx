@@ -57,7 +57,7 @@ export const IconBtn: FC<{
       {tip && (
         <span
           data-tip=""
-          className={`pointer-events-none absolute z-50 hidden whitespace-nowrap rounded px-1.5 py-1 text-[11px] shadow-md group-hover:block ${pos}`}
+          className={`pointer-events-none absolute z-50 hidden whitespace-nowrap rounded px-1.5 py-1 text-xs shadow-md group-hover:block ${pos}`}
           style={{ background: "var(--foreground)", color: "var(--background)" }}
         >
           {tip}
@@ -159,7 +159,7 @@ export const NumField: FC<{
         {...(suffix ? {} : {})}
       />
       {suffix && (
-        <span className="shrink-0 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+        <span className="shrink-0 text-xs" style={{ color: "var(--muted-foreground)" }}>
           {suffix}
         </span>
       )}

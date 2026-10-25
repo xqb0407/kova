@@ -20,10 +20,11 @@ describe("normalizeHex / readableTextOn", () => {
     expect(normalizeHex("red")).toBeNull();
   });
 
-  test("亮度选文字色：浅底深字、深底白字", () => {
+  test("亮度选文字色：黑白对比交点 0.179 分界", () => {
     expect(readableTextOn("#EFDF00")).toBe("#111");
     expect(readableTextOn("#000000")).toBe("#fff");
-    expect(readableTextOn("#7c5cff")).toBe("#fff");
+    // #7c5cff 亮度 ≈0.19：黑字对比更高，不应再落白字
+    expect(readableTextOn("#7c5cff")).toBe("#111");
   });
 });
 

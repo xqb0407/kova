@@ -2011,7 +2011,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                 </button>
               </div>
               <div className="flex items-center gap-2">
-                <code className="bg-muted min-w-0 flex-1 truncate rounded-lg px-2 py-1 font-mono text-[11px]">
+                <code className="bg-muted min-w-0 flex-1 truncate rounded-lg px-2 py-1 font-mono text-xs">
                   {pendingAuth.authUrl}
                 </code>
                 <Button
@@ -2106,7 +2106,7 @@ export const McpSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) =>
                     className="bg-background/70 border-amber-500/10 flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2"
                   >
                     <span className="mt-1.5 size-1 shrink-0 rounded-full bg-amber-500/70" />
-                    <span className="min-w-0 font-mono text-[11px] leading-5 break-all">{d}</span>
+                    <span className="min-w-0 font-mono text-xs leading-5 break-all">{d}</span>
                   </li>
                 ))}
               </ul>

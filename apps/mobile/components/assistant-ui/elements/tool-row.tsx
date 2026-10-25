@@ -552,7 +552,7 @@ export const ToolCallRow: ToolCallMessagePartComponent = (props) => {
       {metaText ? (
         <Text
           accessibilityLabel={metaTitle}
-          className="text-muted-foreground/60 shrink-0 text-[11px]"
+          className="text-muted-foreground/60 shrink-0 text-xs"
           style={monoStyle}
         >
           {metaText}

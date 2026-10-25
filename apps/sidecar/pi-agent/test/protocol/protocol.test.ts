@@ -415,6 +415,54 @@ describe("dispatch: sessions", () => {
     expect(readFileSync(newPath, "utf8")).toBe("FULL OUTPUT");
   });
 
+  test("fork_session 也收养压缩摘要里的 artifact 回执", async () => {
+    const srcId = "fork-artifact-compaction";
+    const now = new Date().toISOString();
+    await sessionInsert(srcId, tmp);
+    const artifactDir = path.join(tmp, "sessions", "artifacts", srcId);
+    mkdirSync(artifactDir, { recursive: true });
+    const artifactPath = path.join(artifactDir, "req-c-summary.txt");
+    writeFileSync(artifactPath, "SUMMARY OUTPUT", "utf8");
+
+    writeFileSync(
+      sessionPath(srcId),
+      JSON.stringify({ type: "header", schema: 1, id: srcId, cwd: tmp, created_at: now }) +
+        "\n" +
+        JSON.stringify({
+          type: "message",
+          seq: 0,
+          ui: {},
+          agent: { role: "user", content: [{ type: "text", text: "hello" }] },
+        }) +
+        "\n" +
+        JSON.stringify({
+          type: "compaction",
+          seq: 1,
+          summary: `Earlier tool output:\nArtifact: ${artifactPath}`,
+          throughSeq: 0,
+        }) +
+        "\n",
+      "utf8",
+    );
+    await sessionTouch(srcId, "", "", 1);
+
+    await dispatch("fc1", { type: "fork_session", sessionId: srcId });
+    const res = last();
+    expect(res.type).toBe("forked");
+    const newId = res.sessionId as string;
+
+    const realNewDir = realpathSync(path.join(tmp, "sessions", "artifacts", newId));
+    const newPath = path.join(realNewDir, "req-c-summary.txt");
+    const forkRows = readFileSync(sessionPath(newId), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type?: string; summary?: string });
+    const compaction = forkRows.find((row) => row.type === "compaction");
+    expect(compaction?.summary).toContain(`Artifact: ${newPath}`);
+    expect(compaction?.summary).not.toContain(artifactPath);
+    expect(existsSync(newPath)).toBe(true);
+  });
+
   test("fork_session 只收养分叉点之内的回执（跨用户轮的尾部不复制）", async () => {
     const srcId = "fork-artifact-range";
     const now = new Date().toISOString();

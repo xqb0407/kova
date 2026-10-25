@@ -71,7 +71,7 @@ export const SubagentConcurrencySettings: FC = () => {
         </SettingRow>
       </div>
 
-      <p className="text-muted-foreground border-border/50 mt-1 border-t px-1 pt-2 text-[11px] leading-relaxed">
+      <p className="text-muted-foreground border-border/50 mt-1  px-1 pt-2 text-xs leading-relaxed">
         调低不会中断已经在运行的子智能体，只限制后续 Task/resume；调高立即生效。
       </p>
     </section>

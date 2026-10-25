@@ -370,7 +370,7 @@ const ViewerBody: FC<{
         )}
         {/* 根目录文件的 rel 与 name 相同，重复显示没有信息量 */}
         {rel !== name ? (
-          <span className="text-muted-foreground/70 min-w-0 flex-1 truncate font-mono text-[11px]">
+          <span className="text-muted-foreground/70 min-w-0 flex-1 truncate font-mono text-xs">
             {rel}
           </span>
         ) : (

@@ -111,6 +111,9 @@ export function isSettingsSection(raw: unknown): raw is SettingsSection {
   return typeof raw === "string" && ALL_SECTIONS.has(raw as SettingsSection);
 }
 
+/** 无跳转目标时落在菜单第一项（当前是「通用」），不要再硬编码 models */
+const FIRST_SECTION: SettingsSection = GROUPS[0]?.items[0]?.id ?? "general";
+
 // fluid hover 槽位：模块级常量保证注册序稳定，导航项按 GROUPS 顺序从 0 起；
 // 分组标题不注册（高亮跳过，就近点亮条目）。「返回应用」已移到侧边栏底部的
 // 固定页脚，不再占 0 号槽位——它脱离了滚动容器，也就脱离了这套按容器坐标
@@ -133,7 +136,7 @@ export const SettingsPage: FC<{
   jumpSeq?: number;
 }> = ({ onBack, jumpSection, jumpSeq }) => {
   const [section, setSection] = useState<SettingsSection>(() =>
-    isSettingsSection(jumpSection) ? jumpSection : "models",
+    isSettingsSection(jumpSection) ? jumpSection : FIRST_SECTION,
   );
   useEffect(() => {
     if (jumpSeq && isSettingsSection(jumpSection)) setSection(jumpSection);

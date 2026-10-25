@@ -239,7 +239,7 @@ function WeatherToolUI(
         <View className="border-border mt-3 flex-row justify-between border-t pt-3">
           {forecast.map((day, i) => (
             <View key={i} className="flex-1 items-center gap-1">
-              <Text className="text-muted-foreground text-[11px] font-medium">
+              <Text className="text-muted-foreground text-xs font-medium">
                 {day.label}
               </Text>
               <Text className="text-lg">{mapWeatherEmoji(day.code)}</Text>

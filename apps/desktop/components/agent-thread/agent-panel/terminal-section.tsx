@@ -69,7 +69,7 @@ const TerminalCard: FC<{ entry: TerminalEntry; focused?: boolean }> = ({
       {expanded ? (
         <pre
           className={cn(
-            "max-h-64 overflow-auto border-t border-border/60 px-2.5 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap",
+            "max-h-64 overflow-auto border-t border-border/60 px-2.5 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap",
             entry.failed ? "bg-destructive/5 text-destructive" : "text-muted-foreground",
           )}
         >

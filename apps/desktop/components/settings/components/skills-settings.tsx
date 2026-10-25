@@ -519,7 +519,7 @@ const SkillViewDialog: FC<{
                   {entry.editable ? "" : " · 只读"}
                 </span>
                 <span
-                  className="text-muted-foreground/60 min-w-0 truncate font-mono text-[11px]"
+                  className="text-muted-foreground/60 min-w-0 truncate font-mono text-xs"
                   title={entry.path}
                 >
                   {entry.path}
@@ -836,7 +836,7 @@ const SectionBatchMenu: FC<{
         <ChevronDownIcon className="size-3 opacity-60" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-44">
-        <div className="text-muted-foreground px-2 py-1.5 text-[11px] font-normal">
+        <div className="text-muted-foreground px-2 py-1.5 text-xs font-normal">
           {label} · {entries.length} 个
         </div>
         <DropdownMenuItem onClick={() => apply(false)} disabled={enabledCount === 0}>
@@ -1282,7 +1282,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                 >
                   {snap.diagnostics.length}
                 </Badge>
-                <span className="text-muted-foreground/70 hidden text-[11px] sm:inline">
+                <span className="text-muted-foreground/70 hidden text-xs sm:inline">
                   部分技能文件未通过校验，已跳过
                 </span>
                 <ChevronRightIcon className="text-muted-foreground/70 ml-auto size-3.5 shrink-0 transition-transform group-open:rotate-90" />
@@ -1297,7 +1297,7 @@ export const SkillsSettings: FC<{ embedded?: boolean }> = ({ embedded = false })
                     >
                       <span className="mt-1.5 size-1 shrink-0 rounded-full bg-amber-500/70" />
                       <span className="min-w-0">
-                        <span className="block text-[11px] leading-5 break-all">{message}</span>
+                        <span className="block text-xs leading-5 break-all">{message}</span>
                         {path && (
                           <span className="text-muted-foreground/70 mt-0.5 block font-mono text-[10px] leading-4 break-all">
                             {path}

@@ -392,7 +392,7 @@ const AttrEditor: FC<{
     {/* 容量/输出/模态/单价一键回"继承"：清空后按目录种子（或缺省）重新推导，
         行里不再留显式值——目录更新/归一化命中的真值才能继续生效 */}
     <div className="flex items-center gap-2 border-t pt-2.5 text-sm">
-      <span className="min-w-0 truncate text-muted-foreground text-[11px]">
+      <span className="min-w-0 truncate text-muted-foreground text-xs">
         填写即作为该模型的覆盖保存；清空可回到目录/缺省推导
       </span>
       <Button
@@ -1974,7 +1974,7 @@ export const ModelSettings: FC = () => {
                                 {m.name || m.id}
                               </span>
                               {m.reasoning && (
-                                <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[11px]">
+                                <span className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-xs">
                                   推理
                                 </span>
                               )}
@@ -2184,12 +2184,12 @@ export const ModelSettings: FC = () => {
                         {cp.name}
                       </span>
                       {selected?.provider === cp.providerId && (
-                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-[11px] font-medium text-lime-600">
+                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-xs font-medium text-lime-600">
                           默认
                         </span>
                       )}
                       {!cp.enabled && (
-                        <span className="text-muted-foreground text-[11px]">
+                        <span className="text-muted-foreground text-xs">
                           已停用
                         </span>
                       )}
@@ -2276,11 +2276,11 @@ export const ModelSettings: FC = () => {
                         {svc.name}
                       </span>
                       {selected?.provider === svc.providerId && (
-                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-[11px] font-medium text-lime-600">
+                        <span className="rounded bg-lime-500/15 px-1.5 py-0.5 text-xs font-medium text-lime-600">
                           默认
                         </span>
                       )}
-                      <span className="text-muted-foreground text-[11px]">
+                      <span className="text-muted-foreground text-xs">
                         内置服务
                       </span>
                     </div>
@@ -2693,7 +2693,7 @@ export const ModelSettings: FC = () => {
                       if (e.key === "Enter") void submitService();
                     }}
                   />
-                  <span className="text-muted-foreground text-[11px]">
+                  <span className="text-muted-foreground text-xs">
                     在下方勾选该服务要启用的模型；全部勾选表示不筛选。
                   </span>
                 </Field>
@@ -2724,7 +2724,7 @@ export const ModelSettings: FC = () => {
                         }}
                       />
                       {f.hint && (
-                        <span className="text-muted-foreground text-[11px]">
+                        <span className="text-muted-foreground text-xs">
                           {f.hint}
                         </span>
                       )}
@@ -2809,7 +2809,7 @@ export const ModelSettings: FC = () => {
                               <span className="min-w-0 flex-1 truncate text-xs">
                                 {m.name || m.id}
                               </span>
-                              <span className="text-muted-foreground shrink-0 text-[11px] tabular-nums">
+                              <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
                                 {fmtContextWindow(m.contextWindow)}
                               </span>
                             </button>
@@ -2874,7 +2874,7 @@ export const ModelSettings: FC = () => {
               <div className="bg-muted/50 flex h-full min-h-60 flex-col rounded-2xl p-3">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">模型设置</span>
-                  <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[11px] tabular-nums">
+                  <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-xs tabular-nums">
                     {svcSelected.length}
                   </span>
                 </div>
@@ -2947,7 +2947,7 @@ export const ModelSettings: FC = () => {
                       添加自定义模型
                     </Button>
                   </div>
-                  <p className="text-muted-foreground mt-1.5 text-[11px]">
+                  <p className="text-muted-foreground mt-1.5 text-xs">
                     添加目录尚未发布的模型 ID。
                   </p>
                 </div>

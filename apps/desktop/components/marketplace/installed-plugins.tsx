@@ -302,7 +302,7 @@ export const InstalledPlugins: FC = () => {
 
           // 版本徽标跟在名称后（同市场目录卡的 v 徽标）
           const versionBadge = (
-            <Badge variant="outline" className="shrink-0 px-1.5 font-mono text-[11px] font-normal">
+            <Badge variant="outline" className="shrink-0 px-1.5 font-mono text-xs font-normal">
               v{p.version}
             </Badge>
           );

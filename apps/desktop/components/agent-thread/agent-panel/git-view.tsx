@@ -210,7 +210,7 @@ const ChangeRow: FC<{
         {base}
       </span>
       {dir ? (
-        <span className="text-muted-foreground/55 min-w-0 flex-1 truncate text-[11px]">
+        <span className="text-muted-foreground/55 min-w-0 flex-1 truncate text-xs">
           {dir}
         </span>
       ) : (
@@ -581,7 +581,7 @@ export const GitView: FC<{ cwd: string }> = ({ cwd }) => {
         {status?.ahead ? (
           <span
             title={`领先上游 ${status.ahead} 个提交`}
-            className="text-muted-foreground inline-flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums"
+            className="text-muted-foreground inline-flex shrink-0 items-center gap-0.5 text-xs tabular-nums"
           >
             <ArrowUpIcon className="size-3" />
             {status.ahead}
@@ -590,13 +590,13 @@ export const GitView: FC<{ cwd: string }> = ({ cwd }) => {
         {status?.behind ? (
           <span
             title={`落后上游 ${status.behind} 个提交`}
-            className="text-muted-foreground inline-flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums"
+            className="text-muted-foreground inline-flex shrink-0 items-center gap-0.5 text-xs tabular-nums"
           >
             <ArrowDownIcon className="size-3" />
             {status.behind}
           </span>
         ) : null}
-        <span className="text-muted-foreground/70 ml-auto min-w-0 truncate pl-2 text-[11px] tabular-nums">
+        <span className="text-muted-foreground/70 ml-auto min-w-0 truncate pl-2 text-xs tabular-nums">
           {files.length > 0 ? `${files.length} 个更改` : "工作区干净"}
         </span>
         <button
@@ -811,7 +811,7 @@ export const GitView: FC<{ cwd: string }> = ({ cwd }) => {
               图形
             </span>
           </button>
-          <span className="text-muted-foreground/70 max-w-[9rem] shrink-0 truncate px-1.5 text-[11px]">
+          <span className="text-muted-foreground/70 max-w-[9rem] shrink-0 truncate px-1.5 text-xs">
             {status?.branch ?? "HEAD"}
           </span>
         </div>

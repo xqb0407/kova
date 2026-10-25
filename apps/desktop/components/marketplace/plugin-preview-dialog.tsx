@@ -325,7 +325,7 @@ export const PluginPreviewDialog: FC<{
                   {preview?.version && (
                     <Badge
                       variant="outline"
-                      className="px-2 font-mono text-[11px] font-normal"
+                      className="px-2 font-mono text-xs font-normal"
                     >
                       v{preview.version}
                     </Badge>
@@ -420,7 +420,7 @@ export const PluginPreviewDialog: FC<{
                   c.transport ? (
                     <Badge
                       variant="outline"
-                      className="px-1.5 font-mono text-[11px] font-normal"
+                      className="px-1.5 font-mono text-xs font-normal"
                     >
                       {c.transport}
                     </Badge>

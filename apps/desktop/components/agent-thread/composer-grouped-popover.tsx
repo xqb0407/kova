@@ -107,7 +107,7 @@ const GroupedItems: FC<{
               if (groupItems.length === 0) return null;
               return (
                 <div key={type} className="flex flex-col">
-                  <div className="text-muted-foreground sticky top-0 z-10 bg-popover px-3 pb-1 pt-2 text-[11px] leading-4 font-medium tracking-wide">
+                  <div className="text-muted-foreground sticky top-0 z-10 bg-popover px-3 pb-1 pt-2 text-xs leading-4 font-medium tracking-wide">
                     {label}
                   </div>
                   {groupItems.map((item) => {

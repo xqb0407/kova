@@ -160,7 +160,7 @@ export const AutoReviewSettings: FC = () => {
         </SettingRow>
       </div>
 
-      <p className="text-muted-foreground border-border/50 mt-1 border-t px-1 pt-2 text-[11px] leading-relaxed">
+      <p className="text-muted-foreground border-border/50 mt-1 border-t px-1 pt-2 text-xs leading-relaxed">
         审查范围：内置工具（bash / 写入 / 配置类）与 MCP 工具调用；你记过的可写根与命令前缀
         仍然直接放行，不再送审。无人值守的定时任务不走这一档。
       </p>

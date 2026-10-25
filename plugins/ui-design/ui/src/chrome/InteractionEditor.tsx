@@ -118,7 +118,7 @@ export const InteractionEditor: FC<{ store: DesignStore; node: DesignNode; onPre
     >
       <div className="space-y-2">
         {list.length === 0 && (
-          <div className="text-[11px] leading-5" style={{ color: "var(--muted-foreground)" }}>
+          <div className="text-xs leading-5" style={{ color: "var(--muted-foreground)" }}>
             还没有交互。加一条「单击 → 跳转画板」就能把它接进流程；浮层做法：另做一块画板，用
             <span style={{ color: "var(--foreground)" }}> 打开浮层 </span>+ 停靠位。
           </div>
@@ -190,7 +190,7 @@ export const InteractionEditor: FC<{ store: DesignStore; node: DesignNode; onPre
           <button
             type="button"
             onClick={onPreview}
-            className="flex h-7 w-full items-center justify-center gap-1.5 rounded-md text-[11px] font-medium transition-all hover:brightness-95"
+            className="flex h-7 w-full items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-all hover:brightness-95"
             style={{ background: "var(--secondary)", color: "var(--foreground)" }}
           >
             <Play size={12} /> 预览原型（P）

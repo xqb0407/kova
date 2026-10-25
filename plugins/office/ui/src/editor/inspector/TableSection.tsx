@@ -17,8 +17,8 @@ export const TableSection: FC<{ el: TableEl; patch: (p: Partial<TableEl>, coales
           ariaLabel="首行表头"
           onChange={(v) => patch({ header: v === "on" } as Partial<TableEl>, true)}
           options={[
-            { v: "on", node: <span className="text-[11px] font-semibold">表头</span>, title: "首行表头样式" },
-            { v: "off", node: <span className="text-[11px]">无表头</span>, title: "全部数据行" },
+            { v: "on", node: <span className="text-xs font-semibold">表头</span>, title: "首行表头样式" },
+            { v: "off", node: <span className="text-xs">无表头</span>, title: "全部数据行" },
           ]}
         />
         <NumField label="字号" min={8} max={96} value={el.size ?? 18} onChange={(v) => patch({ size: v } as Partial<TableEl>, true)} />

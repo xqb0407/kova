@@ -216,7 +216,7 @@ export const NoteTagsEditor: FC<{
               {load.tags.map((tag) => (
                 <span
                   key={tag}
-                  className="text-background inline-flex items-center gap-1 text-[11px] font-medium"
+                  className="text-background inline-flex items-center gap-1 text-xs font-medium"
                 >
                   <span
                     aria-hidden

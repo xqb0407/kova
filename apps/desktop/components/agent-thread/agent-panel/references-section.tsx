@@ -35,7 +35,7 @@ const CitationRow: FC<{ item: CitationEntry; focused?: boolean }> = ({
         </span>
       </div>
       {url ? (
-        <div className="text-muted-foreground/70 mt-0.5 truncate pl-5 font-mono text-[11px]">
+        <div className="text-muted-foreground/70 mt-0.5 truncate pl-5 font-mono text-xs">
           {url}
         </div>
       ) : null}

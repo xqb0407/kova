@@ -155,7 +155,7 @@ export const Home: FC<{ store: CanvasStore; currentPath: string | null; onEnter:
                 if (e.key === "Enter") create();
               }}
             />
-            <p className="text-muted-foreground text-[11px] leading-relaxed">
+            <p className="text-muted-foreground text-xs leading-relaxed">
               会在工作区创建 <code className="bg-secondary rounded px-1">.canvas.json</code> 并绑定到本面板，agent 之后可直接读写。
             </p>
           </div>
@@ -178,7 +178,7 @@ export const Home: FC<{ store: CanvasStore; currentPath: string | null; onEnter:
       <div className="min-h-0 flex-1 overflow-auto">
         {/* Hero */}
         <div className="mx-auto flex w-full max-w-[860px] flex-col items-center px-6 pt-20 pb-12 text-center">
-          <span className="glass glass-sm mb-6 flex items-center gap-1.5 rounded-full! px-3.5 py-1.5 text-[11px] text-muted-foreground">
+          <span className="glass glass-sm mb-6 flex items-center gap-1.5 rounded-full! px-3.5 py-1.5 text-xs text-muted-foreground">
             <SparklesIcon className="size-3" /> 无限画布 · 一份 JSON 文档，agent 可直接读写
           </span>
           <h1 className="text-[40px] leading-[1.05] font-black tracking-[-0.02em]">把想法画出来</h1>
@@ -203,9 +203,9 @@ export const Home: FC<{ store: CanvasStore; currentPath: string | null; onEnter:
         <div className="mx-auto w-full max-w-[1100px] px-6 pb-12">
           <div className="mb-4 flex items-center gap-2">
             <span className="text-[13px] font-semibold">最近画布</span>
-            {items && <span className="text-muted-foreground text-[11px] tabular-nums">{items.length}</span>}
+            {items && <span className="text-muted-foreground text-xs tabular-nums">{items.length}</span>}
             <div className="flex-1" />
-            <button type="button" onClick={refresh} className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-[11px]">
+            <button type="button" onClick={refresh} className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs">
               <RefreshCwIcon className="size-3" /> 刷新
             </button>
           </div>
@@ -224,7 +224,7 @@ export const Home: FC<{ store: CanvasStore; currentPath: string | null; onEnter:
           {items !== null && items.length === 0 && (
             <div className="glass flex flex-col items-center gap-2 rounded-[30px] px-6 py-12 text-center">
               <p className="text-[13px]">{unsupported ? "当前宿主不支持列文档，直接新建一个开始吧。" : "工作区里还没有画布文档。"}</p>
-              <p className="text-muted-foreground text-[11px]">用上面的按钮新建，或把 .canvas.json 放进工作区后点刷新。</p>
+              <p className="text-muted-foreground text-xs">用上面的按钮新建，或把 .canvas.json 放进工作区后点刷新。</p>
             </div>
           )}
           {items !== null && items.length > 0 && (

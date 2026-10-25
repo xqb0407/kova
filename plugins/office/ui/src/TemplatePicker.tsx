@@ -91,7 +91,7 @@ export const TemplatePicker: FC<{
 
         {/* 主题：4 列卡片，调色板预览 + 名称/提示；选中 ink 描边 */}
         <div>
-          <div className="text-muted-foreground mb-2 text-[11px] font-medium tracking-wide">主题</div>
+          <div className="text-muted-foreground mb-2 text-xs font-medium tracking-wide">主题</div>
           <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))" }}>
             {TEMPLATE_THEMES.map((t) => {
               const selected = t.id === themeId;
@@ -113,7 +113,7 @@ export const TemplatePicker: FC<{
                       <span className="truncate text-[13px] leading-tight font-semibold">{t.label}</span>
                       {selected ? <CheckIcon className="text-ink size-3.5 shrink-0" /> : null}
                     </span>
-                    <span className="text-muted-foreground block truncate text-[11px] leading-tight">{t.hint}</span>
+                    <span className="text-muted-foreground block truncate text-xs leading-tight">{t.hint}</span>
                   </span>
                 </button>
               );
@@ -123,7 +123,7 @@ export const TemplatePicker: FC<{
 
         {/* 版式：5 列真实渲染缩略图，卡片悬浮抬升，选中 ink 描边 + 角标 */}
         <div className="min-w-0">
-          <div className="text-muted-foreground mb-2 flex items-center gap-2 text-[11px] font-medium tracking-wide">
+          <div className="text-muted-foreground mb-2 flex items-center gap-2 text-xs font-medium tracking-wide">
             版式
             <span className="text-muted-foreground/60">{LAYOUT_META.length} 款 · 按当前页尺寸预览</span>
           </div>

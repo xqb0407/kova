@@ -84,7 +84,7 @@ const PluginCard = () => (
       </div>
       <div className="flex min-w-0 flex-1 items-center gap-1.5">
         <span className="truncate text-sm font-medium">hello-pack</span>
-        <Badge variant="outline" className="shrink-0 px-1.5 font-mono text-[11px] font-normal">
+        <Badge variant="outline" className="shrink-0 px-1.5 font-mono text-xs font-normal">
           v1.0.0
         </Badge>
         <span className="text-muted-foreground min-w-0 truncate text-xs">演示</span>

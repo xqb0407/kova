@@ -344,7 +344,7 @@ export const ContextButton: FC = () => {
                   )}
                 </div>
                 {/* 图例行：阈值位置 | 余量（同一行分列在占用条两端下方） */}
-                <div className="text-muted-foreground/70 flex items-center justify-between gap-2 text-[11px] tabular-nums">
+                <div className="text-muted-foreground/70 flex items-center justify-between gap-2 text-xs tabular-nums">
                   <span title={`自动压缩阈值 ${fmtTokens(info.hardLimit)} tokens`}>
                     {info.hardLimit <= 0
                       ? "自动压缩阈值 —"
@@ -375,7 +375,7 @@ export const ContextButton: FC = () => {
               {/* 构成表：三段与占用条同色同序；Tokens/占比两列右对齐，
                   与下方缓存行数值同轨（总量已由摘要区承载，不再设合计行） */}
               <div className="flex flex-col gap-1.5 text-sm">
-                <div className="text-muted-foreground/60 flex items-center gap-2 text-[11px] font-medium tracking-wide">
+                <div className="text-muted-foreground/60 flex items-center gap-2 text-xs font-medium tracking-wide">
                   <span className="size-1.5 shrink-0" />
                   <span className="flex-1">占用构成</span>
                   <span className="w-14 text-right">Tokens</span>
@@ -452,7 +452,7 @@ export const ContextButton: FC = () => {
                         <RollingDigits
                           text={(info.cacheMisses?.missedTokens ?? 0).toLocaleString()}
                         />
-                        <span className="text-muted-foreground/60 ml-0.5 text-[11px]">
+                        <span className="text-muted-foreground/60 ml-0.5 text-xs">
                           tokens
                         </span>
                       </span>
@@ -568,7 +568,7 @@ export const ContextButton: FC = () => {
                   已用 <RollingDigits text={used.toLocaleString()} /> tokens
                 </span>
               </div>
-              <div className="text-muted-foreground/70 flex justify-end text-[11px] tabular-nums">
+              <div className="text-muted-foreground/70 flex justify-end text-xs tabular-nums">
                 <span
                   className={cn(
                     needsCompact && "text-amber-600 dark:text-amber-400",

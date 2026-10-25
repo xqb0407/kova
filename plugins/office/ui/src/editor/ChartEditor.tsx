@@ -64,7 +64,7 @@ export const ChartEditor: FC<{
   };
 
   const cell = "h-6 min-w-0 rounded border border-foreground/15 bg-background px-1.5 text-[12px] outline-none focus:border-foreground/40";
-  const btn = "flex h-5 items-center gap-0.5 rounded border border-foreground/15 bg-background px-1.5 text-[11px] text-foreground/80 hover:bg-foreground/5 disabled:opacity-40";
+  const btn = "flex h-5 items-center gap-0.5 rounded border border-foreground/15 bg-background px-1.5 text-xs text-foreground/80 hover:bg-foreground/5 disabled:opacity-40";
   const xBtn = "flex size-5 shrink-0 items-center justify-center rounded text-foreground/40 hover:bg-foreground/5 hover:text-foreground";
   const width = Math.max(320, el.w * view.s);
   // .sc-overlay 整层 pointer-events:none，交互层必须显式 auto（同 .sc-textedit）
@@ -139,7 +139,7 @@ export const ChartEditor: FC<{
             <button type="button" className={btn} onClick={rowOps.add}>
               <PlusIcon className="size-3" /> 类目
             </button>
-            <span className="text-muted-foreground text-[11px]">饼/环图只取第一个系列</span>
+            <span className="text-muted-foreground text-xs">饼/环图只取第一个系列</span>
             <button type="button" className={`${btn} ml-auto`} onClick={finish}>
               完成
             </button>

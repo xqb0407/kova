@@ -105,7 +105,7 @@ export const ShapeSection: FC<{ el: ShapeEl; patch: (p: Partial<ShapeEl>, coales
               onValueChange={([v]) => patch({ curve: v ?? 0 } as Partial<ShapeEl>, true)}
               className="min-w-0 flex-1"
             />
-            <span className="w-10 shrink-0 text-right font-mono text-[11px] text-foreground/60">
+            <span className="w-10 shrink-0 text-right font-mono text-xs text-foreground/60">
               {(el.curve ?? 0).toFixed(2)}
             </span>
           </div>

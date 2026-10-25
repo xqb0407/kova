@@ -406,7 +406,7 @@ const OfficeHome: FC<{
                       )}
                     </div>
                     <div
-                      className="truncate text-[11px] text-[#777169]"
+                      className="truncate text-xs text-[#777169]"
                       title={item.corrupt ? "JSON 解析失败，可修复后再开" : item.path}
                     >
                       {item.corrupt ? "文件损坏 · 打开不会覆盖原文件" : item.path}

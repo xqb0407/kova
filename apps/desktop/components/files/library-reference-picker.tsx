@@ -232,10 +232,10 @@ export const LibraryReferencePicker: FC<{
                         ? entry.tags.map((tag) => `#${tag}`).join(" ")
                         : "—"}
                     </span>
-                    <span className="text-muted-foreground/70 min-w-0 truncate font-mono text-[11px]">
+                    <span className="text-muted-foreground/70 min-w-0 truncate font-mono text-xs">
                       {dirOf(entry.rel)}
                     </span>
-                    <span className="text-muted-foreground truncate text-right text-[11px] whitespace-nowrap tabular-nums">
+                    <span className="text-muted-foreground truncate text-right text-xs whitespace-nowrap tabular-nums">
                       {entry.modified ? formatBackupTime(entry.modified) : ""}
                     </span>
                   </button>

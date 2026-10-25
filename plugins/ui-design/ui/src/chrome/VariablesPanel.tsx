@@ -59,7 +59,7 @@ export const VariablesManager: FC<{ store: DesignStore }> = ({ store }) => {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
         {vars.length === 0 && (
-          <div className="px-3 py-6 text-center text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+          <div className="px-3 py-6 text-center text-xs" style={{ color: "var(--muted-foreground)" }}>
             还没有共享变量。
             <br />
             新建后把颜色字段写成 var:引用，改一处全稿联动；
@@ -74,7 +74,7 @@ export const VariablesManager: FC<{ store: DesignStore }> = ({ store }) => {
       <button
         type="button"
         onClick={() => store.upsertVariable({ name: `颜色 ${vars.length + 1}`, value: "#0d99ff" })}
-        className="mx-2 mb-2 flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] font-medium transition-colors hover:bg-[var(--secondary)]"
+        className="mx-2 mb-2 flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors hover:bg-[var(--secondary)]"
         style={{ color: "var(--foreground)" }}
       >
         <Plus size={12} /> 新建变量

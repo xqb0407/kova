@@ -381,7 +381,7 @@ export const ToolRow: FC<ToolRowProps> = ({
       {showMeta && metaText ? (
         <span
           title={metaTitle}
-          className="text-muted-foreground/60 ml-auto shrink-0 font-mono text-[11px] tabular-nums"
+          className="text-muted-foreground/60 ml-auto shrink-0 font-mono text-xs tabular-nums"
         >
           {metaText}
         </span>
@@ -976,7 +976,7 @@ const MemoryHits: FC<{ hits: { loc: string; text: string }[] }> = ({
   <div className="bg-background border max-h-96 overflow-auto rounded-md px-3 py-2.5">
     {hits.map((h, i) => (
       <div key={i} className="min-w-0">
-        <div className="text-muted-foreground line-clamp-1 font-mono text-[11px]">
+        <div className="text-muted-foreground line-clamp-1 font-mono text-xs">
           {h.loc}
         </div>
         <div className="text-foreground line-clamp-2 text-sm leading-snug">

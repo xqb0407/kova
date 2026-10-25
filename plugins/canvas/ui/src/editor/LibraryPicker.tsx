@@ -36,7 +36,7 @@ export const LibraryPicker: FC<{
           <Tabs value={cat} onValueChange={setCat} className="min-w-0 flex-1">
             <TabsList className="flex w-full flex-wrap">
               {LIBRARY.map((c) => (
-                <TabsTrigger key={c.id} value={c.id} className="text-[11px]">
+                <TabsTrigger key={c.id} value={c.id} className="text-xs">
                   {c.name}
                 </TabsTrigger>
               ))}

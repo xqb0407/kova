@@ -149,7 +149,7 @@ export const ToolFallback: ToolCallMessagePartComponent = ({
         </Text>
         {metaText ? (
           <Text
-            className="text-muted-foreground/60 ml-auto text-[11px]"
+            className="text-muted-foreground/60 ml-auto text-xs"
             style={monoStyle}
           >
             {metaText}

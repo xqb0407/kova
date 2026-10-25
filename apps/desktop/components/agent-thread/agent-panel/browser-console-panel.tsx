@@ -310,7 +310,7 @@ export const BrowserConsolePanel: FC<{ pageUrl: string }> = ({ pageUrl }) => {
                   <Icon className={cn("mt-0.5 size-3.5 shrink-0", meta.className)} />
                   <span
                     className={cn(
-                      "text-foreground/85 min-w-0 flex-1 font-mono text-[11px] leading-5 break-all",
+                      "text-foreground/85 min-w-0 flex-1 font-mono text-xs leading-5 break-all",
                       !expanded && "line-clamp-2",
                     )}
                   >

@@ -467,13 +467,13 @@ export const ProjectSettingsPopover: FC<{
                       ) : null}
                     </div>
                     <div
-                      className="truncate text-[11px] leading-4 text-muted-foreground"
+                      className="truncate text-xs leading-4 text-muted-foreground"
                       title={root.path}
                     >
                       {root.path}
                     </div>
                     {isMissing ? (
-                      <div className="text-[11px] leading-4 text-amber-600 dark:text-amber-400">
+                      <div className="text-xs leading-4 text-amber-600 dark:text-amber-400">
                         目录不存在（配置保留，已跳过）
                       </div>
                     ) : null}
@@ -494,11 +494,11 @@ export const ProjectSettingsPopover: FC<{
               );
             })}
           </div>
-          <p className="text-[11px] leading-4 text-muted-foreground">
+          <p className="text-xs leading-4 text-muted-foreground">
             附加目录会作为外部上下文提供给该项目所有对话（AGENTS.md、技能、文件检索）。
           </p>
           {dirsError ? (
-            <p className="text-[11px] leading-4 text-destructive">{dirsError}</p>
+            <p className="text-xs leading-4 text-destructive">{dirsError}</p>
           ) : null}
         </div>
 

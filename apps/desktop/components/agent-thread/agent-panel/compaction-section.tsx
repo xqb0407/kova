@@ -71,7 +71,7 @@ const SummaryRow: FC<{ entry: CompactionSummaryEntry }> = ({ entry }) => {
     .join(" · ");
   return (
     <div className="px-2.5 py-1.5 my-2">
-      <div className="text-muted-foreground mb-1 flex items-center gap-1.5 text-[11px]">
+      <div className="text-muted-foreground mb-1 flex items-center gap-1.5 text-xs">
         <ArchiveRestoreIcon className="size-3 shrink-0" />
         <span>上下文已压缩{details && `（${details}）`}</span>
       </div>

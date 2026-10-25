@@ -15,7 +15,7 @@ export const SvgSection: FC<{ el: SvgEl; patch: (p: Partial<SvgEl>, coalesce?: b
           spellCheck={false}
           onChange={(e) => patch({ code: e.target.value }, true)}
           onKeyDown={(e) => e.stopPropagation()}
-          className="h-40 w-full resize-y rounded-lg border border-transparent bg-secondary/60 p-2 font-mono text-[11px] leading-relaxed outline-none focus-visible:border-ink"
+          className="h-40 w-full resize-y rounded-lg border border-transparent bg-secondary/60 p-2 font-mono text-xs leading-relaxed outline-none focus-visible:border-ink"
         />
         <p className="text-muted-foreground text-[10.5px] leading-relaxed">
           完整 &lt;svg&gt;…&lt;/svg&gt; 源码；经 &lt;img&gt; 沙箱渲染，脚本不执行。含 foreignObject

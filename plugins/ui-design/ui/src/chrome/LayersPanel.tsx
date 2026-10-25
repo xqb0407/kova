@@ -344,12 +344,12 @@ export const LayersPanel: FC<{ store: DesignStore }> = ({ store }) => {
           <button
             type="button"
             onClick={() => store.groupSelected()}
-            className="h-7 rounded-full px-3 text-[11px] font-medium transition-transform hover:-translate-y-px"
+            className="h-7 rounded-full px-3 text-xs font-medium transition-transform hover:-translate-y-px"
             style={{ background: "var(--accent)", color: "var(--accent-foreground)", boxShadow: "var(--sh-elev)" }}
           >
             成组（⌘G）
           </button>
-          <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+          <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
             已选 {selIds.length} 项
           </span>
         </div>

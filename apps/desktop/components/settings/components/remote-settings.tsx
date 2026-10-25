@@ -480,7 +480,7 @@ export const RemoteSettings: FC = () => {
               </div>
             ) : null}
             {tunnel?.state === "error" && tunnel.logTail.length ? (
-              <pre className="text-muted-foreground max-h-24 overflow-y-auto rounded-lg bg-background/60 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+              <pre className="text-muted-foreground max-h-24 overflow-y-auto rounded-lg bg-background/60 px-2.5 py-1.5 font-mono text-xs leading-relaxed whitespace-pre-wrap">
                 {tunnel.logTail.slice(-6).join("\n")}
               </pre>
             ) : null}

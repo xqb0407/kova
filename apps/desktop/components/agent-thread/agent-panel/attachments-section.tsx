@@ -52,7 +52,7 @@ const AttachmentRow: FC<{ item: ThreadAttachment }> = ({ item }) => {
         <div className="text-foreground/90 truncate text-sm leading-snug">
           {item.name}
         </div>
-        <div className="text-muted-foreground/70 mt-0.5 text-[11px]">
+        <div className="text-muted-foreground/70 mt-0.5 text-xs">
           {typeLabel(item)}
           {isDataImage ? " · 点击放大" : isLocal ? " · 点击预览" : ""}
         </div>

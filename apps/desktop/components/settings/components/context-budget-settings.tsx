@@ -37,10 +37,24 @@ const THRESHOLD_MAX = 10;
  * 高级设置（默认折叠）暴露两个最常调的阈值；留空 = 清除自定义、回落 sidecar 默认，
  * 其余参数（perTool 等）仍走协议层，避免把内部细节全摊给用户。
  */
+/** sidecar 注册表生命周期 → 展示文案/状态点（未知值原样显示） */
+const LIFECYCLE_META: Record<string, { label: string; dot: string }> = {
+  new: { label: "未初始化", dot: "bg-muted-foreground/50" },
+  installing: { label: "加载中", dot: "bg-amber-500" },
+  ready: { label: "已就绪", dot: "bg-emerald-500" },
+  failed: { label: "安装失败", dot: "bg-destructive" },
+};
+
 export const ContextBudgetSettings: FC = () => {
   const capabilities = useCapabilitiesSnapshot();
   const toolBudget = capabilities.enabled[TOOL_BUDGET_ID] === true;
   const loopGuard = capabilities.enabled[LOOP_GUARD_ID] === true;
+  const lifecycle = capabilities.lifecycle
+    ? (LIFECYCLE_META[capabilities.lifecycle] ?? {
+        label: capabilities.lifecycle,
+        dot: "bg-muted-foreground/50",
+      })
+    : null;
 
   // 模块加载那次水合可能早于 sidecar 就绪（失败不 latch）：挂载时补一次。
   // 拔开关时镜像仍会先 GET 真值，所以这里失败只是显示层晚一拍。
@@ -142,6 +156,28 @@ export const ContextBudgetSettings: FC = () => {
       <p className="text-muted-foreground text-sm">
         控制对话上下文里放什么、放多少。两道闸都即时生效，会话进行中也可以切换。
       </p>
+      {lifecycle && (
+        <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
+          <span className={`size-1.5 rounded-full ${lifecycle.dot}`} />
+          装配状态：{lifecycle.label}
+        </div>
+      )}
+      {capabilities.failures.length > 0 && (
+        <div className="border-destructive/30 bg-destructive/5 flex flex-col gap-1 rounded-xl border p-3">
+          <div className="text-destructive text-xs font-medium">
+            有 {capabilities.failures.length} 个能力加载失败（已隔离，不影响其余能力）
+          </div>
+          {capabilities.failures.map((failure) => (
+            <div
+              key={failure.id}
+              className="text-muted-foreground text-xs break-words"
+            >
+              <span className="text-foreground font-mono">{failure.id}</span>：
+              {failure.message}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="bg-muted/50 mt-1 flex flex-col rounded-2xl p-2">
         <SettingRow
           label="大输出外置"
