@@ -71,7 +71,8 @@ kv 键 `pi.capabilities`：
 - `loop-guard.mode`：`shadow`（默认，只记录）或 `steer`（排入一条提醒，经
   `prepareNextTurnWithContext` 在循环继续时注入；最终轮不会泄漏到下一次用户 prompt）。
 - `tool-budget` 默认阈值 32KB，超限文本外置到 `<sessionsDir>/artifacts/`；写失败
-  降级为头尾预览。
+  降级为头尾预览。阈值与 loop-guard 触发次数可在设置页「上下文预算 → 高级设置」
+  调整（留空/清除回落默认）；`perTool` 等其余参数仍走协议层。
 - 协议：`get_capabilities` 返回 `{ lifecycle, settings, items, failures }`（failures
   是安装期被隔离的能力及原因）；`set_capabilities` 全量覆盖 `settings`、全局生效
   （不接受 sessionId），个别驻留 run 重建失败时响应额外带 `reloadFailures`，失败的
