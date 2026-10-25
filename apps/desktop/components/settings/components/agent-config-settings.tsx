@@ -3,6 +3,7 @@
 import type { FC } from "react";
 import { ComputerControlSettings } from "./computer-control-settings";
 import { AutoReviewSettings } from "./auto-review-settings";
+import { ContextBudgetSettings } from "./context-budget-settings";
 import { SandboxSettingsPanel } from "./sandbox-settings";
 import { SubagentConcurrencySettings } from "./subagent-concurrency-settings";
 
@@ -16,7 +17,8 @@ import { SubagentConcurrencySettings } from "./subagent-concurrency-settings";
  *
  * 各区块仍各自成文件：subagent-concurrency-settings（子智能体并发）、
  * computer-control-settings（浏览器/屏幕三条授权）、auto-review-settings
- * （审查模型与超时）、sandbox-settings（沙箱档位）。这里只出页面骨架与顺序。
+ * （审查模型与超时）、context-budget-settings（大输出外置/重复失败提醒）、
+ * sandbox-settings（沙箱档位）。这里只出页面骨架与顺序。
  */
 export const AgentConfigSettings: FC = () => {
   return (
@@ -25,13 +27,14 @@ export const AgentConfigSettings: FC = () => {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">智能体配置</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            智能体的能力授权、子智能体并发，以及它自动动手时由谁判风险。
+            智能体的能力授权、上下文预算、子智能体并发，以及它自动动手时由谁判风险。
           </p>
         </div>
 
         <SubagentConcurrencySettings />
         <ComputerControlSettings />
         <AutoReviewSettings />
+        <ContextBudgetSettings />
         <SandboxSettingsPanel />
       </div>
     </div>
