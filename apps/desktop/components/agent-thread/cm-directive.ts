@@ -7,7 +7,8 @@
  *
  * 视觉分流（与消息行同一语言）：
  * - `agent`  → 机器人图标 + 高亮文本（不是芯片）；
- * - `skill`  → book-open 图标的芯片；
+ * - `skill`/`tool`/`library` → 图标与触发弹层里该条目的图标一致
+ *   （资料库按文件名取彩色类型图标）；
  * - 其它类型  → 芯片，未命中图标回退通用扳手；
  * - `command` → 无图标芯片。
  *
@@ -16,6 +17,7 @@
  * （光标不进入、退格整块删），这是刻意的。
  */
 import { RangeSetBuilder, Transaction, type RangeSet } from "@codemirror/state";
+import { getIcon } from "material-file-icons";
 import { OPEN_ELEMENT_REF_EVENT } from "@/lib/element-refs";
 import {
   Decoration,
@@ -42,6 +44,10 @@ const BOT_SVG =
 const BOOK_OPEN_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>';
 
+/** lucide plug 图标（MCP 工具芯片：与 `/` 弹层里该条目的 Plug 图标一致） */
+const PLUG_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg>';
+
 /** lucide mouse-pointer-2 图标（页面元素引用芯片：与浏览器拾取器同一视觉语言） */
 const ELEMENT_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"/></svg>';
@@ -58,18 +64,46 @@ const X_SVG =
 const FILE_CODE_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m10 13-2 2 2 2"/><path d="m14 17 2-2-2-2"/></svg>';
 
-/** lucide library 图标（资料库引用芯片：「引用到对话」） */
+/** lucide library 图标（资料库引用芯片的兜底：文件名解析不到类型时） */
 const LIBRARY_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></svg>';
 
-/** 非 command 芯片的左侧图标：按指令类型取（未命中回退通用扳手） */
+/** 资料库芯片的文件类型图标：与 @ 提及弹层、文件树同一套彩色图标
+ *  （material-file-icons 的静态数据集，按文件名解析扩展名）。
+ *  lib 引用插入时弹层显示什么图标，芯片就显示什么图标。
+ *  SVG 按图标名去重缓存：getIcon 每次可能返回新字符串，缓存后同图标共享
+ *  同一份标记，芯片重建时不必反复生成。 */
+const fileIconSvgByName = new Map<string, string>();
+function libraryFileIconSvg(label: string): string {
+  try {
+    const hit = getIcon(label);
+    let svg = fileIconSvgByName.get(hit.name);
+    if (!svg) {
+      svg = hit.svg;
+      fileIconSvgByName.set(hit.name, svg);
+    }
+    return svg;
+  } catch {
+    return LIBRARY_SVG;
+  }
+}
+
+/** 非 command 芯片的左侧图标：与触发弹层里对应的条目图标保持同一套
+ *  （skill=BookOpen、tool=Plug、agent=Bot；资料库按文件名取彩色类型图标）。
+ *  其余类型（element/console/code）不来自弹层，沿用各自语义图标；
+ *  未命中回退通用扳手。 */
 const CHIP_ICONS: Record<string, string> = {
   skill: BOOK_OPEN_SVG,
+  tool: PLUG_SVG,
   element: ELEMENT_SVG,
   console: CONSOLE_SVG,
   code: FILE_CODE_SVG,
-  library: LIBRARY_SVG,
 };
+
+function chipIconHtml(type: string, label: string): string {
+  if (type === "library") return libraryFileIconSvg(label);
+  return CHIP_ICONS[type] ?? WRENCH_SVG;
+}
 
 /** 可交互芯片（自己处理点击：打开详情 / 悬浮删除）；其余类型交给编辑器。
  *  skill 与 agent 提及也走这套：悬浮时左侧图标原位换成 ✕，点击整段删除
@@ -369,7 +403,7 @@ class ChipWidget extends WidgetType {
     // 智能体（agent）走同一套，只多一个 aui-directive-agent 类做 hover 兼容。
     if (INTERACTIVE_TYPES.has(this.directiveType)) {
       wrap.className =
-        "aui-directive-chip-mention aui-directive-chip-interactive text-blue-500 dark:text-blue-400 font-medium" +
+        "aui-directive-chip-mention aui-directive-chip-interactive aui-directive-chip-editor text-blue-500 dark:text-blue-400 font-medium" +
         (this.directiveType === "agent" ? " aui-directive-agent" : "");
       wrap.setAttribute("data-directive-type", this.directiveType);
       wrap.setAttribute("data-directive-id", this.id);
@@ -384,7 +418,14 @@ class ChipWidget extends WidgetType {
       icon.innerHTML =
         this.directiveType === "agent"
           ? BOT_SVG
-          : (CHIP_ICONS[this.directiveType] ?? WRENCH_SVG);
+          : chipIconHtml(this.directiveType, this.label);
+      // 彩色文件图标是 100% 尺寸的内联 SVG，容器必须给固定盒子；
+      // lucide 图标自带 16px，无需额外尺寸。
+      if (this.directiveType === "library") {
+        icon.style.width = "16px";
+        icon.style.height = "16px";
+        icon.style.lineHeight = "0";
+      }
       wrap.appendChild(icon);
       // DOM 顺序 [图标][叉][标题]：hover 时叉**顶替前置图标**（二选一，
       // 不放尾部），两者同尺寸同位置，切换时芯片宽度零跳动
@@ -408,13 +449,13 @@ class ChipWidget extends WidgetType {
       return wrap;
     }
     // 非交互（command / 未知类型）：保留药丸外观，无删除叉、无拖拽
-    wrap.className = "aui-directive-chip";
+    wrap.className = "aui-directive-chip aui-directive-chip-editor";
     wrap.setAttribute("data-directive-type", this.directiveType);
     wrap.setAttribute("data-directive-id", this.id);
     if (this.directiveType !== "command") {
       const icon = document.createElement("span");
       icon.className = "aui-directive-chip-icon";
-      icon.innerHTML = CHIP_ICONS[this.directiveType] ?? WRENCH_SVG;
+      icon.innerHTML = chipIconHtml(this.directiveType, this.label);
       wrap.appendChild(icon);
     }
     const label = document.createElement("span");
