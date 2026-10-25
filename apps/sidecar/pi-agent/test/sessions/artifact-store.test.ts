@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
+  adoptSessionArtifacts,
+  collectArtifactReferences,
   removeSessionArtifacts,
+  rewriteArtifactReferences,
   sliceUtf8,
   writeToolArtifact,
 } from "../../src/sessions/artifact-store";
@@ -122,5 +126,174 @@ describe("artifact-store", () => {
     await removeSessionArtifacts("s1", { root });
     const entries = await readdir(join(root, "artifacts")).catch(() => []);
     expect(entries).not.toContain("s1");
+  });
+});
+
+describe("artifact 收养（fork）", () => {
+  test("collectArtifactReferences 提取回执路径（含空格）并去重", () => {
+    const reference = "/tmp/a b/artifacts/s1/out.txt";
+    const refs = collectArtifactReferences({
+      role: "toolResult",
+      content: [
+        {
+          type: "text",
+          text: `[Tool output externalized]\nArtifact: ${reference}\nOriginal bytes: 1`,
+        },
+      ],
+      details: { tool_output_budget: { reference } },
+    });
+    expect([...refs]).toEqual([reference]);
+    expect(collectArtifactReferences("普通文本没有回执")).toEqual(new Set());
+  });
+
+  test("adoptSessionArtifacts 硬链收养：源目录删除后新文件仍可读", async () => {
+    const root = await tempRoot();
+    const artifact = await writeToolArtifact(
+      input({ sessionId: "src", text: "FULL OUTPUT" }),
+      { root },
+    );
+    const mapping = await adoptSessionArtifacts({
+      sourceSessionId: "src",
+      targetSessionId: "dst",
+      references: [artifact.reference],
+      options: { root },
+    });
+    const adopted = mapping.get(artifact.reference);
+    expect(adopted).toBeTruthy();
+    const realDst = await realpath(join(root, "artifacts", "dst"));
+    expect(dirname(adopted!)).toBe(realDst);
+    expect(await readFile(adopted!, "utf8")).toBe("FULL OUTPUT");
+
+    // 父会话清理后硬链文件仍可读（inode 还在）
+    await removeSessionArtifacts("src", { root });
+    expect(await readFile(adopted!, "utf8")).toBe("FULL OUTPUT");
+  });
+
+  test("引用不存在 / 指向其它会话目录时不收养", async () => {
+    const root = await tempRoot();
+    // 让源目录存在，同时造一个别会话的文件
+    await writeToolArtifact(input({ sessionId: "src" }), { root });
+    const other = await writeToolArtifact(input({ sessionId: "other" }), { root });
+
+    const missing = await adoptSessionArtifacts({
+      sourceSessionId: "src",
+      targetSessionId: "dst",
+      references: [join(root, "artifacts", "src", "missing.txt")],
+      options: { root },
+    });
+    expect(missing.size).toBe(0);
+
+    const crossSession = await adoptSessionArtifacts({
+      sourceSessionId: "src",
+      targetSessionId: "dst",
+      references: [other.reference],
+      options: { root },
+    });
+    expect(crossSession.size).toBe(0);
+    // 惰性建目录：全部引用无效时不留空的目标目录
+    expect(existsSync(join(root, "artifacts", "dst"))).toBe(false);
+  });
+
+  test("硬链不可用时回退复制，并保持 0600", async () => {
+    const root = await tempRoot();
+    const artifact = await writeToolArtifact(
+      input({ sessionId: "src" }),
+      { root },
+    );
+    const mapping = await adoptSessionArtifacts({
+      sourceSessionId: "src",
+      targetSessionId: "dst",
+      references: [artifact.reference],
+      options: {
+        root,
+        linkFile: async () => {
+          throw new Error("EXDEV: cross-device link");
+        },
+      },
+    });
+    const adopted = mapping.get(artifact.reference);
+    expect(adopted).toBeTruthy();
+    expect(await readFile(adopted!, "utf8")).toBe("hello");
+    if (process.platform !== "win32") {
+      expect((await stat(adopted!)).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test("混合引用：只收养存在的文件，缺失项保留原路径", async () => {
+    const root = await tempRoot();
+    const existing = await writeToolArtifact(
+      input({ sessionId: "src", text: "present" }),
+      { root },
+    );
+    const missingRef = join(root, "artifacts", "src", "gone.txt");
+    const mapping = await adoptSessionArtifacts({
+      sourceSessionId: "src",
+      targetSessionId: "dst",
+      references: [existing.reference, missingRef],
+      options: { root },
+    });
+    expect(mapping.size).toBe(1);
+    expect(mapping.has(existing.reference)).toBe(true);
+    expect(mapping.has(missingRef)).toBe(false);
+  });
+
+  test("源会话目录被替换成指向根外的符号链接时拒绝收养", async () => {
+    const root = await tempRoot();
+    const outside = await tempRoot();
+    await mkdir(join(root, "artifacts"), { recursive: true });
+    const outsideFile = join(outside, "secret.txt");
+    await writeFile(outsideFile, "secret", "utf8");
+    try {
+      await symlink(outside, join(root, "artifacts", "src"), "dir");
+    } catch {
+      // Windows 上无符号链接权限：跳过该用例。
+      return;
+    }
+    const mapping = await adoptSessionArtifacts({
+      sourceSessionId: "src",
+      targetSessionId: "dst",
+      references: [outsideFile],
+      options: { root },
+    });
+    expect(mapping.size).toBe(0);
+  });
+
+  test("rewriteArtifactReferences 长路径优先：前缀冲突不互相污染", () => {
+    const shortFrom = "/tmp/artifacts/src/a.txt";
+    const longFrom = "/tmp/artifacts/src/a.txt.txt";
+    const shortTo = "/tmp/artifacts/dst/SHORT.txt";
+    const longTo = "/tmp/artifacts/dst/LONG.txt";
+    const line = JSON.stringify({
+      agent: {
+        content: [
+          { type: "text", text: `Artifact: ${shortFrom}\nArtifact: ${longFrom}` },
+        ],
+      },
+    });
+    const [out] = rewriteArtifactReferences(
+      [line],
+      new Map([
+        [shortFrom, shortTo],
+        [longFrom, longTo],
+      ]),
+    );
+    expect(JSON.parse(out!).agent.content[0].text).toBe(
+      `Artifact: ${shortTo}\nArtifact: ${longTo}`,
+    );
+  });
+
+  test("rewriteArtifactReferences 按 JSON 转义形态改写；未命中的行不变", () => {
+    const from = "/tmp/artifacts/src/a b.txt";
+    const to = "/tmp/artifacts/dst/a b.txt";
+    const hit = JSON.stringify({
+      agent: { content: [{ type: "text", text: `Artifact: ${from}` }] },
+    });
+    const miss = JSON.stringify({ agent: { content: [{ type: "text", text: "no ref" }] } });
+    const [outHit, outMiss] = rewriteArtifactReferences(
+      [hit, miss],
+      new Map([[from, to]]),
+    );
+    expect(JSON.parse(outHit!).agent.content[0].text).toBe(`Artifact: ${to}`);
+    expect(outMiss).toBe(miss);
   });
 });

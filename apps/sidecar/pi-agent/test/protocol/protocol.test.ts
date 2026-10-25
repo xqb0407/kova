@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initStorage, sessionPath } from "../../src/storage/storage";
@@ -351,6 +351,137 @@ describe("dispatch: sessions", () => {
       .get(newId)!;
     expect(row.title).toBe("原始标题（分支）");
     expect(row.message_count).toBe(2);
+  });
+
+  test("fork_session 收养 artifact 并改写回执路径", async () => {
+    const srcId = "fork-artifact-source";
+    const now = new Date().toISOString();
+    await sessionInsert(srcId, tmp);
+    const artifactDir = path.join(tmp, "sessions", "artifacts", srcId);
+    mkdirSync(artifactDir, { recursive: true });
+    const artifactPath = path.join(artifactDir, "req-1-call-1-grep.txt");
+    writeFileSync(artifactPath, "FULL OUTPUT", "utf8");
+    const receipt =
+      "[Tool output externalized]\n" +
+      "Tool: grep\n" +
+      `Artifact: ${artifactPath}\n` +
+      "Original bytes: 11";
+    writeFileSync(
+      sessionPath(srcId),
+      JSON.stringify({ type: "header", schema: 1, id: srcId, cwd: tmp, created_at: now }) +
+        "\n" +
+        JSON.stringify({
+          type: "message",
+          seq: 0,
+          ui: {},
+          agent: {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "grep",
+            content: [{ type: "text", text: receipt }],
+            details: {
+              tool_output_budget: { externalized: true, reference: artifactPath },
+            },
+            isError: false,
+            timestamp: 1,
+          },
+        }) +
+        "\n",
+      "utf8",
+    );
+    await sessionTouch(srcId, "", "", 1);
+
+    await dispatch("fa1", { type: "fork_session", sessionId: srcId });
+    const res = last();
+    expect(res.type).toBe("forked");
+    const newId = res.sessionId as string;
+
+    const realNewDir = realpathSync(path.join(tmp, "sessions", "artifacts", newId));
+    const newPath = path.join(realNewDir, "req-1-call-1-grep.txt");
+    const forkLines = readFileSync(sessionPath(newId), "utf8").trim().split("\n");
+    const row = JSON.parse(forkLines[1]!) as {
+      agent: {
+        content: { text: string }[];
+        details: { tool_output_budget: { reference: string } };
+      };
+    };
+    expect(row.agent.content[0]!.text).toContain(`Artifact: ${newPath}`);
+    expect(row.agent.content[0]!.text).not.toContain(artifactPath);
+    expect(row.agent.details.tool_output_budget.reference).toBe(newPath);
+    expect(existsSync(newPath)).toBe(true);
+
+    // 删父会话 artifact 目录：硬链让分叉里的文件继续可读
+    rmSync(artifactDir, { recursive: true, force: true });
+    expect(readFileSync(newPath, "utf8")).toBe("FULL OUTPUT");
+  });
+
+  test("fork_session 只收养分叉点之内的回执（跨用户轮的尾部不复制）", async () => {
+    const srcId = "fork-artifact-range";
+    const now = new Date().toISOString();
+    await sessionInsert(srcId, tmp);
+    const artifactDir = path.join(tmp, "sessions", "artifacts", srcId);
+    mkdirSync(artifactDir, { recursive: true });
+    const inRange = path.join(artifactDir, "req-1-call-1-grep.txt");
+    const outOfRange = path.join(artifactDir, "req-9-call-9-grep.txt");
+    writeFileSync(inRange, "IN RANGE", "utf8");
+    writeFileSync(outOfRange, "LATER TURN", "utf8");
+    const receipt = (path: string) =>
+      `[Tool output externalized]\nTool: grep\nArtifact: ${path}\nOriginal bytes: 10`;
+    const toolResult = (seq: number, callId: string, path: string) =>
+      JSON.stringify({
+        type: "message",
+        seq,
+        ui: {},
+        agent: {
+          role: "toolResult",
+          toolCallId: callId,
+          toolName: "grep",
+          content: [{ type: "text", text: receipt(path) }],
+          details: { tool_output_budget: { externalized: true, reference: path } },
+          isError: false,
+          timestamp: seq,
+        },
+      });
+    const userRow = (seq: number, text: string) =>
+      JSON.stringify({
+        type: "message",
+        seq,
+        ui: {},
+        agent: { role: "user", content: [{ type: "text", text }], timestamp: seq },
+      });
+    writeFileSync(
+      sessionPath(srcId),
+      JSON.stringify({ type: "header", schema: 1, id: srcId, cwd: tmp, created_at: now }) +
+        "\n" +
+        userRow(0, "先聊一句") +
+        "\n" +
+        toolResult(1, "call-1", inRange) +
+        "\n" +
+        userRow(2, "第二轮") +
+        "\n" +
+        toolResult(3, "call-9", outOfRange) +
+        "\n",
+      "utf8",
+    );
+    await sessionTouch(srcId, "", "", 4);
+
+    await dispatch("fr1", { type: "fork_session", sessionId: srcId, upToSeq: 1 });
+    const res = last();
+    expect(res.type).toBe("forked");
+    const newId = res.sessionId as string;
+
+    // 分叉点所在回合的收尾行（seq1 toolResult）照常复制并收养；
+    // 下一用户轮（seq2 及之后）不复制，其回执不收养。
+    const forkLines = readFileSync(sessionPath(newId), "utf8").trim().split("\n");
+    expect(forkLines).toHaveLength(3);
+    expect(JSON.parse(forkLines[1]!)).toMatchObject({ type: "message", seq: 0 });
+    expect(JSON.parse(forkLines[2]!)).toMatchObject({ type: "message", seq: 1 });
+
+    const realNewDir = realpathSync(path.join(tmp, "sessions", "artifacts", newId));
+    expect(existsSync(path.join(realNewDir, "req-1-call-1-grep.txt"))).toBe(true);
+    expect(existsSync(path.join(realNewDir, "req-9-call-9-grep.txt"))).toBe(false);
+    const forked = readFileSync(sessionPath(newId), "utf8");
+    expect(forked).not.toContain(outOfRange);
   });
 
   test("fork_session 源会话不存在时报错", async () => {

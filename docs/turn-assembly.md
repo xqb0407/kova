@@ -64,7 +64,10 @@ kv 键 `pi.capabilities`：
 }
 ```
 
-- 未出现在 `enabled` 里的能力跟随 `defaultEnabled`（当前两个内置能力都默认关闭）。
+- 未出现在 `enabled` 里的能力跟随 `defaultEnabled`：**tool-budget 默认开启**（超限
+  输出外置对长会话是净收益，关闭入口在设置页「上下文预算」或协议层），
+  loop-guard 默认关闭（实验性，UI 开启时联动 `mode:"steer"`）。显式存的值永远
+  压过默认。
 - `loop-guard.mode`：`shadow`（默认，只记录）或 `steer`（排入一条提醒，经
   `prepareNextTurnWithContext` 在循环继续时注入；最终轮不会泄漏到下一次用户 prompt）。
 - `tool-budget` 默认阈值 32KB，超限文本外置到 `<sessionsDir>/artifacts/`；写失败
@@ -91,11 +94,15 @@ kv 键 `pi.capabilities`：
 - `prepareNextTurnWithContext` 仍由压缩独占；能力提醒通过同一个组合函数追加
   `messages`，不覆盖压缩返回的 `context`。
 - `set_capabilities` 是全量覆盖：新设置里删掉的 key 会回落到能力的 `defaultEnabled`。
-- 协议层提醒：`capabilities` / `reloadFailures` 目前只在 sidecar handler 里定义，
-  pi-protocol 尚无对应帧类型，桌面/移动也未接 get/set_capabilities——将来做设置页
-  UI 时记得把它补进协议类型（本文件记录，防丢）。
+- 协议层提醒：`capabilities` / `reloadFailures` 的帧类型目前只在 sidecar handler 与
+  桌面 `pi-bridge.ts` 本地类型里定义（照 `PiBrowserConfig` 先例）；pi-protocol 包级
+  schema 仍未补，移动端也未接。将来移动端接入或统一协议时记得补进 pi-protocol
+  （本文件记录，防丢）。桌面设置页入口：智能体 → 智能体配置 →「上下文预算」。
 - 单个能力安装失败只隔离该能力（`get_capabilities.failures` 可见），不再拖垮全部能力。
 - 能力贡献的工具仍受 `toolsForMode` 白名单过滤：ask/plan 等只读模式默认看不到，
   新增能力工具时需要同步维护模式白名单。
-- artifact 写入是"同目录临时文件 + rename"，并校验目录仍在 artifacts 根内；每会话
-  按 200 个文件 / 200MB 淘汰最旧，会话删除时整目录清理。
+- artifact 保留：每会话 200 文件 / 200MB 淘汰最旧；删除会话清整目录。
+- 分叉（fork）会把被复制消息里引用的 artifact **硬链**到新会话目录，并把回执
+  路径改写为新会话（父会话删除/淘汰后分叉仍可读）；文件在 fork 时已被淘汰的
+  那条保留原路径，属尽力而为。`truncate_session` 不产生悬空引用，只留孤儿文件，
+  随保留策略或删会话回收。
