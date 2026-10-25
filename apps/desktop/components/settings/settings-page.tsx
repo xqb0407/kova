@@ -14,7 +14,6 @@ import {
   BoxesIcon,
   BrainIcon,
   ChevronLeftIcon,
-  GlobeIcon,
   HardDriveDownloadIcon,
   InfoIcon,
   KeyRoundIcon,
@@ -33,7 +32,6 @@ import { AccessAccelSettings } from "./components/access-accel-settings";
 import { HooksSettings } from "./components/hooks-settings";
 import { WebhooksSettings } from "./components/webhooks-settings";
 import { ModelSettings } from "./components/model-settings";
-import { RemoteSettings } from "./components/remote-settings";
 import { AppearanceSettings } from "./components/appearance-settings";
 import { AboutSettings } from "./components/about-settings";
 import { ArchiveSettings } from "./components/archive-settings";
@@ -46,7 +44,6 @@ import { DesignThemesSettings } from "./components/design-themes-settings";
 
 export type SettingsSection =
   | "models"
-  | "remote"
   | "appearance"
   | "about"
   | "general"
@@ -94,7 +91,6 @@ const GROUPS: {
   {
     label: "系统",
     items: [
-      { id: "remote", label: "远程访问", icon: GlobeIcon },
       // 访问加速：AI 联网时把 GitHub 等地址改走镜像站。归「系统」而不是
       // 「智能体」——改的是这台机器的出网路径，与授予 agent 什么能力无关
       { id: "access-accel", label: "访问加速", icon: RocketIcon },
@@ -240,7 +236,6 @@ export const SettingsPage: FC<{
         </div>
         <div className="min-w-0 flex-1 overflow-y-auto">
           {section === "models" && <ModelSettings />}
-          {section === "remote" && <RemoteSettings />}
           {section === "appearance" && <AppearanceSettings />}
           {section === "personalization" && <PersonalizationSettings />}
           {section === "memory" && <MemorySettings />}

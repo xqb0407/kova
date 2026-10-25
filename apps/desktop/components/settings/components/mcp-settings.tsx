@@ -794,7 +794,19 @@ const McpEditorDialog: FC<{
 const ENTRY_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 const LIFECYCLE_VALUES = ["lazy", "eager", "keep-alive"] as const;
 
-const JSON_IMPORT_PLACEHOLDER = `{ "mcpServers": { "名称": { "command": "…", "args": ["…"] } } }`;
+const JSON_IMPORT_PLACEHOLDER = `{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/Documents"],
+      "env": { "LOG_LEVEL": "info" }
+    },
+    "sentry": {
+      "url": "https://mcp.sentry.dev/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}`;
 
 /** env/headers 键值映射校验（与 sidecar stringMap 同口径：全部值必须是字符串） */
 function jsonParseStringMap(

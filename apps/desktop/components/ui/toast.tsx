@@ -453,7 +453,15 @@ const ToastItem = memo(
             </AnimatePresence>
           </motion.span>
 
-          <div className="min-w-0 flex-1">
+          {/* 拖拽关闭会让 framer-motion 给 li 内联写 user-select: none（可继承，
+              整条 toast 都选不中）。文本区显式恢复可选，并在 capture 阶段拦掉
+              pointerdown——motion 的 drag 监听挂在 li 上，React 的合成 capture
+              事件在根容器先于它触发，stopPropagation 后拖拽不会启动，选字才不会
+              被横向拖动打断。 */}
+          <div
+            className="min-w-0 flex-1 select-text"
+            onPointerDownCapture={(event) => event.stopPropagation()}
+          >
             <AnimatePresence mode="popLayout" initial={false}>
               <motion.div
                 key={`${toastData.id}:${status}`}

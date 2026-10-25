@@ -2258,7 +2258,7 @@ export const ThreadListItem: FC = () => {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel size="default">取消</AlertDialogCancel>
+            <AlertDialogCancel size="default" onClick={() => setDeleteOpen(false)}>取消</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               size="default"
