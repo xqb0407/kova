@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, type FC } from "react";
+import { useMemo, useRef, type FC } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import {
   ActivityIcon,
@@ -10,6 +10,7 @@ import {
   FolderTreeIcon,
   GitBranchIcon,
   GlobeIcon,
+  ImageIcon,
   ListTodoIcon,
   Loader2Icon,
   LayoutPanelTopIcon,
@@ -37,7 +38,9 @@ import { SubagentTab } from "./subagent-tab";
 import { LoopTab } from "./loop-tab";
 import { ArtifactsTab } from "./artifacts-tab";
 import { PluginPanelHost } from "./plugin-panel-host";
+import { ZoomableImage } from "./image-viewer";
 import { TabEmpty } from "./tab-empty";
+import { blobUrlFor } from "@/lib/pi/image-blob-url";
 
 /**
  * 标签类型注册表:标题/图标/视图组件的单一事实源,
@@ -102,6 +105,11 @@ export const TAB_META: Record<
     label: "文件",
     description: "读取结果回看",
     icon: FileTextIcon,
+  },
+  image: {
+    label: "图片",
+    description: "用户消息里的图片预览（点击消息图片唤起）",
+    icon: ImageIcon,
   },
   explorer: {
     label: "文件树",
@@ -226,6 +234,15 @@ const GitTab: FC = () => {
   return <GitView cwd={workspace} />;
 };
 
+/** 图片标签：用户消息里的图片在本面板内预览（与文件标签共用同一看图器）。
+ *  data URL 先转 Blob URL 再挂到 img 上：base64 不驻留 DOM（同消息流口径） */
+const ImageTab: FC<{ tab: PanelTab }> = ({ tab }) => {
+  const src = useMemo(() => (tab.url ? blobUrlFor(tab.url) : null), [tab.url]);
+  if (!src)
+    return <TabEmpty icon={ImageIcon} text="图片不可用（会话中未保留该图片）" />;
+  return <ZoomableImage src={src} alt={tab.title ?? "图片"} />;
+};
+
 /** 按标签类型路由到视图;外层以 tab.id 作 key 重挂载,组件内状态即标签私有 */
 export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
   switch (tab.type) {
@@ -240,6 +257,9 @@ export const TabContentView: FC<{ tab: PanelTab }> = ({ tab }) => {
       return <ArtifactsTab />;
     case "file":
       return <FileTab tab={tab} />;
+    case "image":
+      // 消息图片点击唤起（同类型复用，不改动标签集合）
+      return <ImageTab tab={tab} />;
     case "explorer":
       return <FileTreeTab />;
     case "shell":

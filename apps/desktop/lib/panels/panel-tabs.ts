@@ -31,6 +31,8 @@ export type PanelTabType =
   | "artifacts"
   /** 文件内容预览：消息 read 工具行唤起（快照），或文件树标签唤起（tab.path=磁盘实时） */
   | "file"
+  /** 图片预览：用户消息里的图片点击唤起（不进 + 菜单；data URL 不持久化） */
+  | "image"
   /** 工作区文件树浏览（仅 桌面端,见 tab-registry 的可见性过滤） */
   | "explorer"
   /** 子智能体运行过程：消息里 Task 委派行唤起（不进 + 菜单,只能从行进入） */
@@ -95,6 +97,7 @@ const VALID_TYPES = new Set<PanelTabType>([
   "git",
   "artifacts",
   "file",
+  "image",
   "explorer",
   "subagent",
   "loop",
@@ -203,7 +206,14 @@ function persist(): void {
     for (const id of order) {
       const bucket = byThread[id];
       if (!bucket || bucket.tabs.length === 0) continue;
-      out.byThread[id] = bucket;
+      // image 标签承载内联 data URL（单张可达数 MB），全量落盘会瞬间撑爆
+      // localStorage 配额；图片预览是临时态，重启后重新点击消息图片即可
+      const tabs = bucket.tabs.filter((t) => t.type !== "image");
+      if (tabs.length === 0) continue;
+      const activeId = tabs.some((t) => t.id === bucket.activeId)
+        ? bucket.activeId
+        : (tabs[0]?.id ?? null);
+      out.byThread[id] = { tabs, activeId };
       out.order.push(id);
       if (out.order.length >= MAX_THREADS) break;
     }

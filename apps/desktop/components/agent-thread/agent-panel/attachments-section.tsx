@@ -1,12 +1,13 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { type FC, type RefObject } from "react";
+import { useState, type FC, type ReactNode, type RefObject } from "react";
 import { FileIcon, PaperclipIcon } from "lucide-react";
 import { extOf } from "@/lib/panels/artifacts";
 import { useThreadAttachments, type ThreadAttachment } from "@/lib/attachments/thread-attachments";
 import { focusPanelTab } from "@/lib/panels/panel-tabs";
-import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogTrigger } from "@/components/ui/dialog";
+import { ImageQuickLook } from "@/components/assistant-ui/elements/image-quick-look";
 import { CountPill, PanelSection } from "./section-shell";
 
 /** 彩色文件图标（material-file-icons ~1.5MB）按需加载，别拉进面板主 chunk */
@@ -24,6 +25,38 @@ function typeLabel(item: ThreadAttachment): string {
   if (ext) return ext.toUpperCase();
   return item.mediaType.split("/")[1]?.toUpperCase() || "FILE";
 }
+
+/** data: 图片行：点击走与消息附件/工具产图一致的「快速查看」（缩放/旋转/存本地），
+ *  不再用面板里那个只有 <img> 的简易 Dialog */
+const DataImageRow: FC<{ item: ThreadAttachment; children: ReactNode }> = ({
+  item,
+  children,
+}) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger
+        nativeButton={false}
+        render={
+          <button
+            type="button"
+            className="hover:bg-muted/40 block w-full rounded-lg px-2.5 py-1.5 text-left transition-colors"
+            title={item.name}
+          >
+            {children}
+          </button>
+        }
+      />
+      <ImageQuickLook
+        open={open}
+        onOpenChange={setOpen}
+        src={item.url}
+        alt={item.name}
+        downloadName={item.name}
+      />
+    </Dialog>
+  );
+};
 
 /**
  * 引用文件行：文件图标/图片缩略图 + 名称 + 类型小字。
@@ -61,29 +94,7 @@ const AttachmentRow: FC<{ item: ThreadAttachment }> = ({ item }) => {
   );
 
   if (isDataImage) {
-    return (
-      <Dialog>
-        <DialogTrigger
-          render={
-            <button
-              type="button"
-              className="hover:bg-muted/40 block w-full rounded-lg px-2.5 py-1.5 text-left transition-colors"
-              title={item.name}
-            >
-              {body}
-            </button>
-          }
-        />
-        <DialogContent className="w-auto max-w-[90vw] p-2 sm:max-w-3xl">
-          <DialogTitle className="sr-only">{item.name}</DialogTitle>
-          <img
-            src={item.url}
-            alt={item.name}
-            className="max-h-[80vh] max-w-full rounded-md object-contain"
-          />
-        </DialogContent>
-      </Dialog>
-    );
+    return <DataImageRow item={item}>{body}</DataImageRow>;
   }
 
   if (isLocal) {

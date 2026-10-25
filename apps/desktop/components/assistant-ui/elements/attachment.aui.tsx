@@ -1,11 +1,6 @@
 "use client";
 
-import {
-  type PropsWithChildren,
-  useState,
-  type FC,
-  isValidElement,
-} from "react";
+import { type FC } from "react";
 import dynamic from "next/dynamic";
 import {
   XIcon,
@@ -27,11 +22,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Dialog, DialogTrigger } from "@/components/ui/dialog";
-import { ImageQuickLook } from "@/components/assistant-ui/elements/image-quick-look";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useAttachmentSrc } from "@/hooks/use-attachment-src";
+import { focusPanelTab } from "@/lib/panels/panel-tabs";
 import { formatBytes } from "@/lib/panels/artifacts";
 import { cn } from "@/lib/utils";
 
@@ -48,37 +42,11 @@ const FileTypeIcon = dynamic(
   },
 );
 
-/** 附件预览与工具产图预览共用同一套「快速查看」查看器（缩放/平移/旋转/存本地） */
-const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
-  const src = useAttachmentSrc();
-  const name = useAuiState((s) => s.attachment.name);
-  const [open, setOpen] = useState(false);
-
-  if (!src) return children;
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger
-        nativeButton={false}
-        className="aui-attachment-preview-trigger cursor-zoom-in"
-        render={
-          isValidElement(children) ? (
-            children
-          ) : (
-            <button type="button">{children}</button>
-          )
-        }
-      />
-      <ImageQuickLook
-        open={open}
-        onOpenChange={setOpen}
-        src={src}
-        alt={name || "Image Attachment Preview"}
-        downloadName={name}
-      />
-    </Dialog>
-  );
-};
+/** 消息图片点击：在右侧面板的「图片」标签里预览（同类型复用，不堆标签） */
+function openImageInPanel(src: string, title: string): void {
+  focusPanelTab("image", { url: src, title: title || "图片" });
+  window.dispatchEvent(new Event("agent-panel:open"));
+}
 
 const AttachmentThumb: FC = () => {
   const src = useAttachmentSrc();
@@ -99,6 +67,7 @@ const AttachmentThumb: FC = () => {
 
 const AttachmentUI: FC = () => {
   const aui = useAui();
+  const src = useAttachmentSrc();
   const isComposer = aui.attachment.source !== "message";
 
   const isImage = useAuiState((s) => s.attachment.type === "image");
@@ -146,6 +115,11 @@ const AttachmentUI: FC = () => {
     const base = ext || (isImage ? "图片" : typeLabel === "Image" ? "文件" : typeLabel);
     return fileSize != null ? `${base} · ${formatBytes(fileSize)}` : base;
   })();
+
+  /** 缩略图点击：右侧面板预览（不再弹全屏 QuickLook） */
+  const openPreview = () => {
+    if (src) openImageInPanel(src, attName);
+  };
 
   // 图片保留方形缩略图（预览即内容）；文档/其他文件改参考稿的矩形卡：
   // 彩色图标 + 名称（超宽省略号）+ 下方「类型 · 大小」小字
@@ -227,46 +201,51 @@ const AttachmentUI: FC = () => {
               "aui-attachment-root-message only:*:first:size-24",
           )}
         >
-          <AttachmentPreviewDialog>
-            <TooltipTrigger
-              render={
-                <div
-                  className={cn(
-                    "aui-attachment-tile bg-muted hover:after:bg-foreground/10 focus-visible:ring-ring/50 relative size-14 cursor-pointer overflow-hidden rounded-[calc(var(--composer-radius,1.5rem)-var(--composer-padding,8px))] transition-transform outline-none after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:ring-1 after:ring-black/10 after:transition-colors after:ring-inset focus-visible:ring-1 active:scale-[0.96] motion-reduce:transition-none dark:after:ring-white/10",
-                    isError &&
-                      "after:ring-destructive/60 dark:after:ring-destructive/60",
-                  )}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`${typeLabel} attachment${
-                    isError
-                      ? ", upload failed"
-                      : isUploading
-                        ? ", uploading"
-                        : ""
-                  }`}
-                />
-              }
-            >
-              <AttachmentThumb />
-              {isUploading && (
-                <div
-                  aria-hidden="true"
-                  className="aui-attachment-tile-uploading bg-background/60 animate-in fade-in-0 absolute inset-0 flex items-center justify-center backdrop-blur-[2px] motion-reduce:animate-none"
-                >
-                  <Loader2Icon className="text-muted-foreground size-4 animate-spin" />
-                </div>
-              )}
-              {isError && (
-                <div
-                  aria-hidden="true"
-                  className="aui-attachment-tile-error bg-background/70 animate-in fade-in-0 absolute inset-0 flex items-center justify-center backdrop-blur-[2px] motion-reduce:animate-none"
-                >
-                  <AlertCircleIcon className="text-destructive size-4" />
-                </div>
-              )}
-            </TooltipTrigger>
-          </AttachmentPreviewDialog>
+          <TooltipTrigger
+            render={
+              <div
+                className={cn(
+                  "aui-attachment-tile bg-muted hover:after:bg-foreground/10 focus-visible:ring-ring/50 relative size-14 cursor-pointer overflow-hidden rounded-[calc(var(--composer-radius,1.5rem)-var(--composer-padding,8px))] transition-transform outline-none after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:ring-1 after:ring-black/10 after:transition-colors after:ring-inset focus-visible:ring-1 active:scale-[0.96] motion-reduce:transition-none dark:after:ring-white/10",
+                  isError &&
+                    "after:ring-destructive/60 dark:after:ring-destructive/60",
+                )}
+                role="button"
+                tabIndex={0}
+                onClick={src ? openPreview : undefined}
+                onKeyDown={(event) => {
+                  if (!src) return;
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  openPreview();
+                }}
+                aria-label={`${typeLabel} attachment${
+                  isError
+                    ? ", upload failed"
+                    : isUploading
+                      ? ", uploading"
+                      : ""
+                }`}
+              />
+            }
+          >
+            <AttachmentThumb />
+            {isUploading && (
+              <div
+                aria-hidden="true"
+                className="aui-attachment-tile-uploading bg-background/60 animate-in fade-in-0 absolute inset-0 flex items-center justify-center backdrop-blur-[2px] motion-reduce:animate-none"
+              >
+                <Loader2Icon className="text-muted-foreground size-4 animate-spin" />
+              </div>
+            )}
+            {isError && (
+              <div
+                aria-hidden="true"
+                className="aui-attachment-tile-error bg-background/70 animate-in fade-in-0 absolute inset-0 flex items-center justify-center backdrop-blur-[2px] motion-reduce:animate-none"
+              >
+                <AlertCircleIcon className="text-destructive size-4" />
+              </div>
+            )}
+          </TooltipTrigger>
           {isComposer && <AttachmentRemove />}
         </AttachmentPrimitive.Root>
         <TooltipContent side="top">
