@@ -7,7 +7,21 @@
 /**
  * 检测当前是否在桌面壳（Electron）中运行
  */
+/**
+ * dev-preview 平台覆盖（仅非生产构建）：`?platform=windows|mac` 强制桌面 + 平台
+ * 判定，用来在浏览器里模拟 Windows/Linux 的自绘窗口三键，检查各页顶栏右缘
+ * 让位（生产构建与 Electron 内恒返回 null，行为不变）。
+ */
+function devPlatformOverride(): "windows" | "mac" | null {
+  if (process.env.NODE_ENV === "production" || typeof window === "undefined") {
+    return null;
+  }
+  const value = new URLSearchParams(window.location.search).get("platform");
+  return value === "windows" || value === "mac" ? value : null;
+}
+
 export const isDesktop = (): boolean => {
+  if (devPlatformOverride()) return true;
   // Electron 壳的 preload 注入 __KOVA_DESKTOP__ 标记（Tauri 版曾有两个标记，
   // 移植时抄成了同一个导致重复判断——保留单次判定即可，语义不变）
   return typeof window !== "undefined" && "__KOVA_DESKTOP__" in window;
@@ -18,6 +32,8 @@ export const isDesktop = (): boolean => {
  * 仅在 isDesktop() 为 true 时有意义：macOS 保留系统红绿灯，Windows/Linux 需自绘窗口控制。
  */
 export const isMacPlatform = (): boolean => {
+  const override = devPlatformOverride();
+  if (override) return override === "mac";
   return (
     typeof navigator !== "undefined" &&
     /Macintosh|Mac OS X/i.test(navigator.userAgent)
@@ -29,6 +45,8 @@ export const isMacPlatform = (): boolean => {
  * 仅桌面端有意义：WebView2（Chromium）启动参数类设置只在 Windows 生效。
  */
 export const isWindowsPlatform = (): boolean => {
+  const override = devPlatformOverride();
+  if (override) return override === "windows";
   return typeof navigator !== "undefined" && /Windows NT/i.test(navigator.userAgent);
 };
 
