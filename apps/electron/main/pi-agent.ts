@@ -247,6 +247,14 @@ export function setRemoteModule(m: typeof import("./remote")): void {
   remoteMod = m;
 }
 
+/** IM 回程 tap：无 id 自发帧的旁路消费者（im/router 按 sessionId 聚合回复）。
+ *  与 setRemoteModule 同款装配模式——im 模块就绪后注册，未注册时零开销。 */
+export type ImRouterTap = (parsed: Record<string, unknown>) => void;
+let imRouterTap: ImRouterTap | null = null;
+export function setImRouterTap(tap: ImRouterTap | null): void {
+  imRouterTap = tap;
+}
+
 async function handleLine(line: string): Promise<void> {
   let parsed: any = null;
   try {
@@ -295,10 +303,11 @@ async function handleLine(line: string): Promise<void> {
     logWarn(`[worker] late reply dropped: ${reqId} type=${String(parsed?.type ?? "?")}`);
     return;
   }
-  // 无 id 自发通知：远程广播；rem- 路由（远程响应回程）
+  // 无 id 自发通知：远程广播；rem- 路由（远程响应回程）；IM 回程聚合
   const remote = safeRemote();
   remote?.broadcastNotification(parsed);
   if (remote?.tryRoute(parsed)) return;
+  imRouterTap?.(parsed);
 
   if (chunkBatch.length === 0) {
     chunkWindowTimer = setTimeout(() => {

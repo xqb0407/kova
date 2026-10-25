@@ -23,6 +23,9 @@ import { setupTunnelCommands } from "./tunnel";
 import { setupBackupCommands } from "./backup";
 import { setupUpdateCommands } from "./update";
 import { setupShareCommands } from "./share";
+import { setupImCommands } from "./im/im-commands";
+import { setImRouterTap } from "./pi-agent";
+import { handleAgentFrame } from "./im/router";
 import * as pty from "./pty";
 import * as pi from "./pi-agent";
 
@@ -50,6 +53,16 @@ export function registerAllCommands(): void {
   setupBackupCommands(register);
   setupUpdateCommands(register);
   setupShareCommands(register);
+  setupImCommands(register);
+
+  /* IM 回程 tap：sidecar 无 id 帧旁路给 im/router 聚合回复 */
+  setImRouterTap((parsed) => {
+    try {
+      handleAgentFrame(parsed);
+    } catch {
+      // 回程聚合失败不影响主 chunk 流
+    }
+  });
 
   /* pi-agent 桥（对齐 pi_agent.rs commands） */
   register("pi_prompt", (a) => pi.piPrompt(a as any));

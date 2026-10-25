@@ -128,6 +128,19 @@ const LibraryView = dynamic(
     ),
   },
 );
+// 远程与 IM 管理页（远程控制 / 接入 IM 双 Tab）：同款按需 chunk，
+// 侧边栏「远程」菜单激活才拉取
+const RemoteView = dynamic(
+  () => import("@/components/agent-thread/remote-view").then((m) => m.RemoteView),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <Loader2Icon className="text-muted-foreground size-5 animate-spin" />
+      </div>
+    ),
+  },
+);
 // 应用启动即接管外观偏好（预绘制脚本之后：系统主题监听、跟随实时更新）
 import "@/lib/settings/ui-prefs";
 
@@ -916,7 +929,8 @@ export const Base: FC = () => {
       activeMenu === "automation" ||
       activeMenu === "usage" ||
       activeMenu === "connector" ||
-      activeMenu === "files"
+      activeMenu === "files" ||
+      activeMenu === "remote"
     ) {
       exitPanelFullscreen();
     }
@@ -941,6 +955,8 @@ export const Base: FC = () => {
       <MarketplaceView manageTab={connectorManageTab} />
     ) : activeMenu === "files" ? (
       <LibraryView onBackToChat={backToChat} />
+    ) : activeMenu === "remote" ? (
+      <RemoteView onBackToChat={backToChat} />
     ) : (
       threadNode
     );
@@ -1021,7 +1037,8 @@ export const Base: FC = () => {
             activeMenu === "automation" ||
             activeMenu === "usage" ||
             activeMenu === "connector" ||
-            activeMenu === "files"
+            activeMenu === "files" ||
+            activeMenu === "remote"
               ? "page"
               : "session"
           }

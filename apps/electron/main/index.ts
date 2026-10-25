@@ -26,6 +26,7 @@ import { startAttachmentPruneTimer } from "./fs-cmds";
 import * as pi from "./pi-agent";
 import * as remote from "./remote";
 import * as tunnel from "./tunnel";
+import { startImSubsystem, stopImSubsystem } from "./im/im-commands";
 import { cancelAllTools } from "./tool-exec";
 import { killAllPty } from "./pty";
 
@@ -207,6 +208,8 @@ if (!gotLock) {
     startAttachmentPruneTimer();
     // 预热拉起 sidecar：自动化调度器必须早于用户首条消息存活
     void pi.ensureSpawned().catch((e) => logError(`[worker] warm start failed: ${e?.message ?? e}`));
+    // IM 通道启动恢复（微信等 enabled 通道续长轮询；失败不阻断启动）
+    void startImSubsystem().catch((e) => logError(`[im] restore failed: ${e?.message ?? e}`));
     logInfo(`[kova] electron shell ready (data: ${appDataDir()}, dev=${DEV})`);
   });
 
@@ -236,6 +239,11 @@ if (!gotLock) {
       }
       try {
         tunnel.stopNow();
+      } catch {
+        /* ignore */
+      }
+      try {
+        await stopImSubsystem();
       } catch {
         /* ignore */
       }

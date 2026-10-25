@@ -40,6 +40,7 @@ import {
   ChartColumnIcon,
   LibraryIcon,
   MenuIcon,
+  MonitorSmartphoneIcon,
   PanelLeftIcon,
   SearchIcon,
   ZapIcon,
@@ -415,6 +416,10 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     },
     { id: "connector", label: "插件 / 专家 / 技能", icon: PlugIcon },
     { id: "files", label: "资料库", icon: LibraryIcon },
+    // 远程网页端不显示本入口：它自己就是远程会话，管理远程/IM 是桌面端的事
+    ...(isRemoteMode()
+      ? []
+      : [{ id: "remote", label: "远程", icon: MonitorSmartphoneIcon }]),
   ];
 
   return (

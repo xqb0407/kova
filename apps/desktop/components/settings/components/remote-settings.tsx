@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FC } from "react";
+import { useCallback, useEffect, useMemo, useState, type FC, type ReactNode } from "react";
 import { invoke } from "@/desktop-bridge/core";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -58,8 +58,46 @@ const DOWNLOAD_PHASE_LABEL: Record<string, string> = {
   install: "安装",
 };
 
-/** 远程访问页：启停 WS 网关、扫码/配对码、局域网地址 */
-export const RemoteSettings: FC = () => {
+/** 卡片统一两层结构：灰底外壳 + 白色内嵌面板，和设置页其余卡片保持同一套层次 */
+const Card: FC<{ className?: string; children: ReactNode }> = ({
+  className,
+  children,
+}) => (
+  <div className="rounded-2xl bg-muted/40 p-1.5">
+    <div className={cn("rounded-xl bg-background", className)}>{children}</div>
+  </div>
+);
+
+type StatusTone = "on" | "off" | "warn" | "error";
+
+/** 状态胶囊：圆点 + 文案，替代裸圆点和散落的颜色判断 */
+const StatusChip: FC<{ tone: StatusTone; label: string }> = ({ tone, label }) => (
+  <span
+    className={cn(
+      "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
+      tone === "on" && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+      tone === "off" && "bg-muted-foreground/10 text-muted-foreground",
+      tone === "warn" && "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+      tone === "error" && "bg-destructive/10 text-destructive",
+    )}
+  >
+    <span
+      className={cn(
+        "size-1.5 rounded-full",
+        tone === "on" && "bg-emerald-500",
+        tone === "off" && "bg-muted-foreground/40",
+        tone === "warn" && "bg-amber-500",
+        tone === "error" && "bg-destructive",
+      )}
+    />
+    {label}
+  </span>
+);
+
+/** 远程访问页：启停 WS 网关、扫码/配对码、局域网地址。
+ *  embedded=true（「远程」主区页签复用）：去掉自带标题与外层留白/限宽，
+ *  版式交给宿主容器，避免双标题与大块空白。 */
+export const RemoteSettings: FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const [status, setStatus] = useState<RemoteStatus | null>(null);
   const [tunnel, setTunnel] = useState<TunnelStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -313,9 +351,15 @@ export const RemoteSettings: FC = () => {
       : null;
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
-      <div className="flex w-full max-w-5xl flex-col gap-8 self-center px-8 py-8">
-        <h1 className="text-2xl font-bold tracking-tight">远程访问</h1>
+    <div className={cn("flex flex-col gap-8", !embedded && "h-full overflow-y-auto")}>
+      <div
+        className={cn(
+          "flex w-full flex-col gap-8",
+          // 独立页（设置页）自管限宽与留白；嵌入模式交给宿主
+          !embedded && "max-w-5xl self-center px-8 py-8",
+        )}
+      >
+        {!embedded && <h1 className="text-2xl font-bold tracking-tight">远程访问</h1>}
 
         {/* 远程网关 */}
         <section className="flex flex-col gap-3">
@@ -330,7 +374,7 @@ export const RemoteSettings: FC = () => {
               {running ? "关闭" : "开启"}
             </Button>
           </div>
-          <div className="bg-muted/50 flex items-center justify-between gap-4 rounded-2xl px-5 py-4">
+          <Card className="flex items-center justify-between gap-4 px-4 py-3.5">
             <div className="min-w-0">
               <div className="text-sm font-medium">网关状态</div>
               <div className="text-muted-foreground truncate text-sm">
@@ -339,21 +383,11 @@ export const RemoteSettings: FC = () => {
                   : "未开启，开启后手机扫码或访问地址即可使用"}
               </div>
             </div>
-            <span
-              className={cn(
-                "flex shrink-0 items-center gap-1.5 text-xs",
-                running ? "text-primary" : "text-muted-foreground",
-              )}
-            >
-              <span
-                className={cn(
-                  "size-1.5 rounded-full",
-                  running ? "bg-lime-500" : "bg-muted-foreground/40",
-                )}
-              />
-              {running ? "运行中" : "已关闭"}
-            </span>
-          </div>
+            <StatusChip
+              tone={running ? "on" : "off"}
+              label={running ? "运行中" : "已关闭"}
+            />
+          </Card>
         </section>
 
         {/* 公网访问：内置 Cloudflare 快速隧道（免费、无需账号；地址每次启动会变） */}
@@ -373,7 +407,7 @@ export const RemoteSettings: FC = () => {
                   : "开启"}
             </Button>
           </div>
-          <div className="bg-muted/50 flex flex-col gap-2.5 rounded-2xl px-5 py-4">
+          <Card className="flex flex-col gap-2.5 px-4 py-3.5">
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0">
                 <div className="text-sm font-medium">Cloudflare 快速隧道</div>
@@ -381,36 +415,32 @@ export const RemoteSettings: FC = () => {
                   {tunnelSummary}
                 </div>
               </div>
-              <span
-                className={cn(
-                  "flex shrink-0 items-center gap-1.5 text-xs",
+              <StatusChip
+                tone={
                   tunnel?.state === "running"
-                    ? "text-primary"
-                    : "text-muted-foreground",
-                )}
-              >
-                <span
-                  className={cn(
-                    "size-1.5 rounded-full",
-                    tunnel?.state === "running"
-                      ? "bg-lime-500"
-                      : "bg-muted-foreground/40",
-                  )}
-                />
-                {tunnel?.state === "running"
-                  ? "在线"
-                  : tunnel?.state === "starting"
-                    ? "连接中"
+                    ? "on"
                     : tunnel?.state === "error"
-                      ? "已断开"
-                      : "未开启"}
-              </span>
+                      ? "error"
+                      : tunnel?.state === "starting"
+                        ? "warn"
+                        : "off"
+                }
+                label={
+                  tunnel?.state === "running"
+                    ? "在线"
+                    : tunnel?.state === "starting"
+                      ? "连接中"
+                      : tunnel?.state === "error"
+                        ? "已断开"
+                        : "未开启"
+                }
+              />
             </div>
 
             {tunnelUrl ? (
               <InputCopy
                 value={tunnelUrl}
-                className="text-muted-foreground rounded-lg bg-background/60 border px-2.5 py-1.5 font-mono break-all"
+                className="text-muted-foreground rounded-lg bg-muted/40 px-2.5 py-1.5 font-mono break-all"
               />
             ) : null}
 
@@ -427,7 +457,7 @@ export const RemoteSettings: FC = () => {
                       {downloadPct !== null ? `${downloadPct}%` : ""}
                     </span>
                   </div>
-                  <div className="bg-background h-1.5 overflow-hidden rounded-full">
+                  <div className="bg-muted h-1.5 overflow-hidden rounded-full">
                     <div
                       className="bg-foreground h-full rounded-full transition-all duration-200"
                       style={{ width: `${downloadPct ?? 0}%` }}
@@ -480,11 +510,11 @@ export const RemoteSettings: FC = () => {
               </div>
             ) : null}
             {tunnel?.state === "error" && tunnel.logTail.length ? (
-              <pre className="text-muted-foreground max-h-24 overflow-y-auto rounded-lg bg-background/60 px-2.5 py-1.5 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+              <pre className="text-muted-foreground max-h-24 overflow-y-auto rounded-lg bg-muted/40 px-2.5 py-1.5 font-mono text-xs leading-relaxed whitespace-pre-wrap">
                 {tunnel.logTail.slice(-6).join("\n")}
               </pre>
             ) : null}
-          </div>
+          </Card>
           <p className="text-muted-foreground text-xs leading-relaxed">
             免费、无需 Cloudflare 账号：应用自动拉起 cloudflared，给出一个临时公网地址（HTTPS/WSS），手机不在同一网络也能扫码使用。地址每次启动都会变化，需要固定域名请用命名隧道（见
             docs/remote-access.md）。鉴权仍是配对码 + 长效 token，公网地址请勿外泄。
@@ -499,8 +529,8 @@ export const RemoteSettings: FC = () => {
               <section className="flex flex-col gap-3">
                 <h2 className="text-base font-semibold">扫码连接</h2>
                 {status?.lan || tunnelUrl ? (
-                  <div className="bg-muted/50 flex items-start gap-5 rounded-2xl p-5">
-                    <div className="shrink-0 rounded-lg border bg-white p-2">
+                  <Card className="flex items-start gap-5 p-4">
+                    <div className="shrink-0 rounded-lg bg-white p-2 ring-1 ring-black/5">
                       <QRCodeSVG value={qr.value} size={124} />
                     </div>
                     <div className="flex min-w-0 flex-1 flex-col gap-1.5">
@@ -512,7 +542,7 @@ export const RemoteSettings: FC = () => {
                               : "手机扫码将直接打开应用网页（本机提供，无需另外部署），地址与配对码已自动填入。"
                           }
                           value={qr.value}
-                          className="text-muted-foreground rounded-lg bg-background/60 mr-1 border px-2.5 py-1.5 font-mono break-all "
+                          className="text-muted-foreground rounded-lg bg-muted/40 mr-1 px-2.5 py-1.5 font-mono break-all "
                         />
                       ) : (
                         <p className="text-muted-foreground text-xs">
@@ -521,12 +551,12 @@ export const RemoteSettings: FC = () => {
                         </p>
                       )}
                     </div>
-                  </div>
+                  </Card>
                 ) : (
-                  <div className="text-muted-foreground rounded-2xl bg-muted/50 px-5 py-4 text-sm">
+                  <Card className="text-muted-foreground px-4 py-3.5 text-sm">
                     网关当前仅本机可达，手机扫码需要先在下方「安全与设备」里打开
                     局域网访问，或开启上方「公网访问」的快速隧道。
-                  </div>
+                  </Card>
                 )}
               </section>
             ) : null}
@@ -534,7 +564,7 @@ export const RemoteSettings: FC = () => {
             {/* 浏览器访问 */}
             <section className="flex flex-col gap-3">
               <h2 className="text-base font-semibold">浏览器访问</h2>
-              <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+              <Card className="flex flex-col gap-0.5 p-1">
                 {httpAddrs.length ? (
                   httpAddrs.map((addr) => (
                     <AddressRow
@@ -547,7 +577,7 @@ export const RemoteSettings: FC = () => {
                     未检测到局域网 IP，可开启上方「公网访问」的快速隧道。
                   </div>
                 )}
-              </div>
+              </Card>
               <p className="text-muted-foreground text-xs">
                 {tunnelUrl
                   ? "第一行是公网地址（快速隧道），任意网络可访问。"
@@ -560,7 +590,7 @@ export const RemoteSettings: FC = () => {
             {/* WS 连接地址 */}
             <section className="flex flex-col gap-3">
               <h2 className="text-base font-semibold">WS 连接地址</h2>
-              <div className="bg-muted/50 flex flex-col gap-1 rounded-2xl p-2">
+              <Card className="flex flex-col gap-0.5 p-1">
                 {wsAddrs.length ? (
                   wsAddrs.map((addr) => (
                     <AddressRow
@@ -573,7 +603,7 @@ export const RemoteSettings: FC = () => {
                     未检测到局域网 IP。
                   </div>
                 )}
-              </div>
+              </Card>
               <p className="text-muted-foreground text-xs">
                 供其他客户端 / 隧道使用。
               </p>
@@ -582,8 +612,8 @@ export const RemoteSettings: FC = () => {
             {/* 配对码 */}
             <section className="flex flex-col gap-3">
               <h2 className="text-base font-semibold">配对码</h2>
-              <div className="bg-muted/50 flex items-center gap-3 rounded-2xl px-5 py-4">
-                <span className="rounded-lg border bg-background/60 px-4 py-2 font-mono text-2xl tracking-[0.4em] tabular-nums">
+              <Card className="flex items-center gap-3 px-4 py-3.5">
+                <span className="rounded-xl bg-muted/50 px-4 py-2 font-mono text-2xl tracking-[0.4em] tabular-nums">
                   {status?.code ?? "------"}
                 </span>
                 <Button
@@ -609,7 +639,7 @@ export const RemoteSettings: FC = () => {
                     复制
                   </Button>
                 )}
-              </div>
+              </Card>
               <p className="text-muted-foreground text-xs">
                 每连接 5 次输错即锁定。
               </p>
@@ -618,8 +648,8 @@ export const RemoteSettings: FC = () => {
             {/* 安全与设备 */}
             <section className="flex flex-col gap-3">
               <h2 className="text-base font-semibold">安全与设备</h2>
-              <div className="bg-muted/50 flex flex-col divide-y rounded-2xl">
-                <div className="flex items-center justify-between gap-4 px-5 py-4">
+              <Card className="flex flex-col divide-y divide-border/60">
+                <div className="flex items-center justify-between gap-4 px-4 py-3.5">
                   <div className="min-w-0">
                     <div className="text-sm font-medium">局域网访问</div>
                     <div className="text-muted-foreground text-sm">
@@ -639,7 +669,7 @@ export const RemoteSettings: FC = () => {
                     onCheckedChange={(v) => void applyLan(v)}
                   />
                 </div>
-                <div className="flex items-center justify-between gap-4 px-5 py-4">
+                <div className="flex items-center justify-between gap-4 px-4 py-3.5">
                   <div className="min-w-0">
                     <div className="text-sm font-medium">已连接设备</div>
                     <div className="text-muted-foreground text-sm">
@@ -655,10 +685,10 @@ export const RemoteSettings: FC = () => {
                     撤销所有设备
                   </Button>
                 </div>
-              </div>
+              </Card>
             </section>
 
-            <div className="text-muted-foreground rounded-2xl bg-muted/50 px-5 py-4 text-xs leading-relaxed">
+            <div className="text-muted-foreground rounded-2xl bg-muted/40 px-5 py-4 text-xs leading-relaxed">
               {REMOTE_HINT}
             </div>
           </>
@@ -674,7 +704,7 @@ export const RemoteSettings: FC = () => {
 const AddressRow: FC<{
   addr: string;
 }> = ({ addr }) => (
-  <div className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2">
+  <div className="w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2 transition-colors hover:bg-muted/40">
     <InputCopy value={addr} className="shrink-0" />
   </div>
 );
