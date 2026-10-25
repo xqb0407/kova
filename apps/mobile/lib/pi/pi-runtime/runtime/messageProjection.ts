@@ -69,7 +69,7 @@ import {
 import type {
   ThreadMessageLike,
 } from "@assistant-ui/react-native";
-import { isAutoContinueMessage } from "pi-protocol";
+import { isAutoContinueMessage, isCapabilityReminderMessage } from "pi-protocol";
 import { approvalForRequest, splitHostUiRequests } from "./hostUi";
 import type { PiThreadState } from "./threadState";
 import type {
@@ -657,7 +657,7 @@ const projectRangeInto = ({
         // sidecar toUiMessage/historyToUiMessages 同口径隐藏，此前经
         // thread_snapshot 直出漏成用户提问气泡。跳过但不 flush——直播上连续
         // assistant 轮（截断轮→续跑轮）本就并入同组，保持「刷新=直播」同构。
-        if (isAutoContinueMessage(message)) {
+        if (isAutoContinueMessage(message) || isCapabilityReminderMessage(message)) {
           if (group) groupEnd = index + 1;
           break;
         }
@@ -908,8 +908,11 @@ const trailingGroupStartForToolIds = (
       }
     } else if (message.role === "toolResult") {
       // 组内
-    } else if (message.role === "user" && isAutoContinueMessage(message)) {
-      // 组内：自动续跑行不 flush
+    } else if (
+      message.role === "user" &&
+      (isAutoContinueMessage(message) || isCapabilityReminderMessage(message))
+    ) {
+      // 组内：自动续跑/能力提醒行不 flush
     } else {
       break;
     }
@@ -1074,7 +1077,8 @@ export const projectPiThreadMessagesIncremental = (
   const continuesGroup = (message: PiAgentMessage): boolean =>
     message.role === "assistant" ||
     message.role === "toolResult" ||
-    (message.role === "user" && isAutoContinueMessage(message));
+    (message.role === "user" &&
+      (isAutoContinueMessage(message) || isCapabilityReminderMessage(message)));
   while (
     start > 0 &&
     continuesGroup(messages[start]!) &&

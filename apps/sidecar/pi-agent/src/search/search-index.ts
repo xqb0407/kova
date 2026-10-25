@@ -21,6 +21,7 @@ import { extname, join, basename, resolve } from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import {
   isAutoContinueText,
+  isCapabilityReminderText,
   isGoalInternalText,
 } from "pi-protocol";
 import { readTranscript } from "../sessions/transcript";
@@ -90,8 +91,14 @@ function toolArgsSummary(args: unknown): string {
 export function extractSearchText(msg: Message): string {
   if (msg.role === "user") {
     const text = userText(msg);
-    // 与 toUiMessage 同款隐藏：注入行不是用户说的话
-    if (!text.trim() || isAutoContinueText(text) || isGoalInternalText(text)) return "";
+    // 与 toUiMessage 同款隐藏：注入行不是用户说的话（含能力收尾提醒哨兵）
+    if (
+      !text.trim() ||
+      isAutoContinueText(text) ||
+      isGoalInternalText(text) ||
+      isCapabilityReminderText(text)
+    )
+      return "";
     return text.slice(0, MAX_SEARCH_TEXT);
   }
   if (msg.role === "assistant") {

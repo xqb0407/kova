@@ -42,6 +42,8 @@ import {
   AUTO_CONTINUE_PREFIX,
   isAutoContinueMessage,
   isAutoContinueText,
+  isCapabilityReminderMessage,
+  isCapabilityReminderText,
   isGoalInternalMessage,
   isGoalInternalText,
 } from "pi-protocol";
@@ -750,7 +752,14 @@ export function isTruncationStoppedRow(
   }
   if (next) {
     const n = next.agent as { role?: string } | undefined;
-    if (n?.role === "user" && (isAutoContinueMessage(n) || isGoalInternalMessage(n)))
+    // 三种内部注入（auto-continue / goal / 能力提醒）同口径：它们紧跟截断行
+    // 说明循环仍在继续，本轮不算"预算耗尽的最终中止"
+    if (
+      n?.role === "user" &&
+      (isAutoContinueMessage(n) ||
+        isGoalInternalMessage(n) ||
+        isCapabilityReminderMessage(n))
+    )
       return false;
   }
   return true;
@@ -876,6 +885,8 @@ export function toUiMessage(msg: Message, seq: number): UIMessage | null {
     // 目标模式的内部注入（自动续跑 / 预算收尾）同款隐藏：它们是系统给模型的
     // 指令，不是用户说过的话，渲染出来会让对话流里全是用户没发过的文本
     if (isGoalInternalText(up.text)) return null;
+    // 能力装配的收尾提醒同口径隐藏（[[capability-reminder]] 哨兵）
+    if (isCapabilityReminderText(up.text)) return null;
     return { id: `msg-${seq}`, role: "user", parts: up.parts };
   }
   if (msg.role === "assistant") {
@@ -962,6 +973,8 @@ export function historyToUiMessages(
       if (isAutoContinueText(up.text)) continue;
       // 目标模式内部注入（自动续跑 / 预算收尾）同口径隐藏
       if (isGoalInternalText(up.text)) continue;
+      // 能力装配收尾提醒同口径隐藏（[[capability-reminder]] 哨兵）
+      if (isCapabilityReminderText(up.text)) continue;
       messages.push({ id: `msg-${seq}`, role: "user", parts: up.parts, metadata });
       srcSeqs.push(seq);
       continue;

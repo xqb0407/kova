@@ -58,7 +58,7 @@ import { ExportedMessageRepository } from "@assistant-ui/react";
 import type {
   ThreadMessageLike,
 } from "@assistant-ui/react";
-import { isAutoContinueMessage } from "pi-protocol";
+import { isAutoContinueMessage, isCapabilityReminderMessage } from "pi-protocol";
 import { imageSizeFromBase64 } from "@/lib/pi/image-size";
 import { stripLibraryContextBlocks } from "@/lib/pi/prompt-notices";
 import { approvalForRequest, splitHostUiRequests } from "./hostUi";
@@ -834,7 +834,9 @@ const projectFrom = (
         // sidecar toUiMessage/historyToUiMessages 同口径隐藏，此前经
         // thread_snapshot 直出漏成用户提问气泡。跳过但不 flush——直播上连续
         // assistant 轮（截断轮→续跑轮）本就并入同组，保持「刷新=直播」同构。
-        if (isAutoContinueMessage(message)) break;
+        // 能力装配收尾提醒（[[capability-reminder]]）同口径：sidecar 快照侧已
+        // 过滤，这里兜住直播路径，防止系统提醒漏成用户气泡。
+        if (isAutoContinueMessage(message) || isCapabilityReminderMessage(message)) break;
         flush(false, index);
         const id = messageId(message as PiUserMessage, index);
         const { parts, attachments, quote } = projectUserContent(
