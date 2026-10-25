@@ -8,6 +8,7 @@
 import type { AfterToolCallContext, AfterToolCallResult } from "@earendil-works/pi-agent-core";
 import { logErr } from "../../../log";
 import {
+  ARTIFACT_RECEIPT_LINE_PREFIX,
   sliceUtf8,
   writeToolArtifact,
   type ToolArtifact,
@@ -77,7 +78,7 @@ function buildReceipt(input: {
   return [
     "[Tool output externalized]",
     `Tool: ${input.toolName}`,
-    `Artifact: ${input.artifact.reference}`,
+    `${ARTIFACT_RECEIPT_LINE_PREFIX}${input.artifact.reference}`,
     `Original bytes: ${input.originalBytes} (inline limit ${input.limit})`,
     input.artifact.truncated ? "Note: the artifact itself was truncated at the storage cap." : "",
     readStrategy,
@@ -97,7 +98,9 @@ export function toolBudgetCapability(options: ToolBudgetOptions = {}): Capabilit
   return {
     id: "tool-budget",
     title: "Externalize oversized tool output",
-    defaultEnabled: false,
+    // 默认开启：超限输出外置对长会话是净收益（省上下文、延缓压缩），
+    // 关闭入口在设置页「上下文预算」/协议层 enabled:false（显式值永远压过默认）。
+    defaultEnabled: true,
     install(host) {
       host.onToolAfter(async (context, snapshot) => {
         const params = readCapabilityParams("tool-budget");
