@@ -24,6 +24,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { isDesktop, isMacPlatform } from "@/lib/desktop-env";
+import { CLUSTER_W } from "@/components/window-controls";
 
 export type ImageQuickLookProps = {
   open: boolean;
@@ -213,7 +215,13 @@ export const ImageQuickLook: FC<ImageQuickLookProps> = ({
             type="button"
             onClick={() => onOpenChange(false)}
             title="关闭预览"
-            className="bg-black/55 hover:bg-black/75 fixed top-4 right-4 z-10 flex size-9 items-center justify-center rounded-full text-white transition-colors"
+            className="bg-black/55 hover:bg-black/75 fixed top-4 z-10 flex size-9 items-center justify-center rounded-full text-white transition-colors"
+            // Windows/Linux 的窗口三键浮在右上（right=24 + CLUSTER_W）：关闭钮
+            // 右移让位，否则全屏看图时点不到关闭、反而点到窗口关闭
+            style={{
+              right:
+                isDesktop() && !isMacPlatform() ? 24 + CLUSTER_W + 8 : 16,
+            }}
           >
             <XIcon className="size-4" />
           </button>

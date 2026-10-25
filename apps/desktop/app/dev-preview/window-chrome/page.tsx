@@ -163,6 +163,33 @@ export default function WindowChromePreview() {
       </Specimen>
 
       <Specimen
+        title="引导向导顶栏（全窗口接管）"
+        note="onboarding-flow：h-11 + paddingRight 132（24+100+8）—— 本次补齐"
+      >
+        <div className="flex h-11 items-center justify-end gap-2 pl-4" style={{ paddingRight: 132 }}>
+          <span className="mr-1 text-xs text-muted-foreground tabular-nums">第 2 步，共 4 步</span>
+          <span className="rounded-md px-2 py-1 text-xs text-muted-foreground">跳过</span>
+        </div>
+        <FakeWindowsControls top={0} right={24} />
+      </Specimen>
+
+      <Specimen
+        title="图片查看器关闭钮（全窗口浮层）"
+        note="image-quick-look：关闭钮改 right=132（24+100+8）—— 本次补齐"
+      >
+        <div className="relative grid h-32 place-items-center bg-neutral-900">
+          <span className="text-xs text-white/50">图片区域</span>
+          <span
+            className="absolute top-4 flex size-9 items-center justify-center rounded-full bg-black/55 text-white"
+            style={{ right: 132 }}
+          >
+            <XIcon className="size-4" />
+          </span>
+        </div>
+        <FakeWindowsControls top={0} right={24} />
+      </Specimen>
+
+      <Specimen
         title="全局搜索顶栏（本次改动）"
         note="输入行 paddingRight=132（24+100+8）—— 已让位；对照下方输入框右缘与三键"
       >
