@@ -510,8 +510,11 @@ export const GlobalSearchView: FC<{
       {/* 顶栏：输入行 + scope 行（monocode 同构）——平铺、紧凑、各带一条
           分割线；占位符保持短句（"搜索一切…"），具体覆盖哪些域由空态说明，
           长占位符会把整行读成工具栏而不是搜索框。 */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
-        <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/30 px-3">
+        <SearchIcon
+          className="size-4 shrink-0 text-muted-foreground"
+          strokeWidth={1.75}
+        />
         <input
           ref={inputRef}
           type="text"
@@ -523,7 +526,7 @@ export const GlobalSearchView: FC<{
           spellCheck={false}
           autoComplete="off"
           enterKeyHint="go"
-          className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground/60"
+          className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground/60 selection:bg-primary/25 selection:text-foreground"
         />
         {query ? (
           <button
@@ -540,11 +543,10 @@ export const GlobalSearchView: FC<{
         ) : showSpinner ? (
           <Loader2Icon className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
         ) : null}
-        <Kbd>Esc</Kbd>
       </div>
 
       {/* scope 页签：左对齐小胶囊（选中态带底色），与结果区同一 px 基线 */}
-      <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-3">
+      <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border/30 px-3">
         {SCOPES.map((item) => {
           const selected = scope === item.id;
           return (
@@ -732,12 +734,6 @@ function selectableIndexOf(rows: SearchRow[], rowIndex: number): number {
   for (let i = 0; i < rowIndex; i++) if (rows[i]!.type === "label") labels += 1;
   return rowIndex - labels;
 }
-
-const Kbd: FC<{ children: React.ReactNode }> = ({ children }) => (
-  <kbd className="pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-    {children}
-  </kbd>
-);
 
 
 /* monocode EmptyState 同款缺省视觉：装饰性点阵（径向渐隐 mask）上叠一个
