@@ -111,17 +111,22 @@ export function initCapabilitiesConfig(): Promise<void> {
   return refreshCapabilities().then(() => undefined);
 }
 
+type CapabilityCommit = {
+  readonly enabled?: boolean;
+  /** null = 删除该参数（回落 sidecar 默认）；未出现的 key 保持原值 */
+  readonly paramsPatch?: Readonly<Record<string, unknown | null>>;
+};
+
 /**
- * 保存能力开关：乐观更新本地镜像；sidecar 落库并重建驻留会话后用应答帧
+ * 能力设置提交：乐观更新本地镜像；sidecar 落库并重建驻留会话后用应答帧
  * 回填（避免二次漂移），失败时回滚并抛出（设置页据此提示）。
  *
  * 未水合时先补一次真值再合并：set_capabilities 是全量覆盖，拿空镜像写入
  * 会清掉工具阈值等既有配置——取不到真值时必须拒绝写入，而不是"尽力而为"。
  */
-async function saveCapabilityToggle(
+async function commitCapabilitySettings(
   capabilityId: string,
-  enabled: boolean,
-  paramsPatch?: Record<string, unknown>,
+  commit: CapabilityCommit,
 ): Promise<CapabilitiesSaveResult> {
   if (!hydrated) {
     const ok = await refreshCapabilities();
@@ -129,20 +134,36 @@ async function saveCapabilityToggle(
   }
 
   const previous = current;
-  // 全量合并：只动本能力的 enabled key 与 params key，其余原样保留
+  // 全量合并：只动本能力的 enabled / params key，其余原样保留
+  const nextParams = (() => {
+    if (!commit.paramsPatch) return previous.settings.params;
+    const merged: Record<string, unknown> = {
+      ...(previous.settings.params[capabilityId] ?? {}),
+    };
+    for (const [key, value] of Object.entries(commit.paramsPatch)) {
+      if (value === null) delete merged[key];
+      else merged[key] = value;
+    }
+    const params = { ...previous.settings.params };
+    if (Object.keys(merged).length === 0) delete params[capabilityId];
+    else params[capabilityId] = merged;
+    return params;
+  })();
   const nextSettings: PiCapabilitySettings = {
-    enabled: { ...previous.settings.enabled, [capabilityId]: enabled },
-    params: paramsPatch
-      ? {
-          ...previous.settings.params,
-          [capabilityId]: {
-            ...(previous.settings.params[capabilityId] ?? {}),
-            ...paramsPatch,
-          },
-        }
-      : previous.settings.params,
+    enabled:
+      commit.enabled === undefined
+        ? previous.settings.enabled
+        : { ...previous.settings.enabled, [capabilityId]: commit.enabled },
+    params: nextParams,
   };
-  current = { enabled: { ...previous.enabled, [capabilityId]: enabled }, settings: nextSettings };
+  current = {
+    ...previous,
+    enabled:
+      commit.enabled === undefined
+        ? previous.enabled
+        : { ...previous.enabled, [capabilityId]: commit.enabled },
+    settings: nextSettings,
+  };
   emit();
   try {
     const res = await piRequest<CapabilitiesResponse>({
@@ -161,12 +182,33 @@ async function saveCapabilityToggle(
 }
 
 export function setToolBudgetEnabled(enabled: boolean): Promise<CapabilitiesSaveResult> {
-  return saveCapabilityToggle(TOOL_BUDGET_ID, enabled);
+  return commitCapabilitySettings(TOOL_BUDGET_ID, { enabled });
 }
 
 /** loop-guard 开即 steer（shadow 只写日志，对用户不可感知）；关只动开关、保留参数 */
 export function setLoopGuardEnabled(enabled: boolean): Promise<CapabilitiesSaveResult> {
-  return saveCapabilityToggle(LOOP_GUARD_ID, enabled, enabled ? { mode: "steer" } : undefined);
+  return commitCapabilitySettings(LOOP_GUARD_ID, {
+    enabled,
+    ...(enabled ? { paramsPatch: { mode: "steer" } } : {}),
+  });
+}
+
+/** 外置阈值按字节存；null = 清除自定义，回落 sidecar 默认（32KB） */
+export function setToolBudgetMaxInlineBytes(
+  bytes: number | null,
+): Promise<CapabilitiesSaveResult> {
+  return commitCapabilitySettings(TOOL_BUDGET_ID, {
+    paramsPatch: { maxInlineBytes: bytes },
+  });
+}
+
+/** 连续失败提醒阈值；null = 清除自定义，回落 sidecar 默认（3 次） */
+export function setLoopGuardThreshold(
+  threshold: number | null,
+): Promise<CapabilitiesSaveResult> {
+  return commitCapabilitySettings(LOOP_GUARD_ID, {
+    paramsPatch: { threshold },
+  });
 }
 
 // client bundle 加载即水合（SSR 端不请求，getServerSnapshot 返回默认值）
