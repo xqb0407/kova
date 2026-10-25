@@ -346,7 +346,7 @@ export function ThreadPreviewRail() {
     measureRailBottom,
   ]);
 
-  // 外观设置切换对话宽度：--chat-width 现在内联在 html 上（百分比），
+  // 外观设置切换对话宽度：--chat-width 内联在 html 上（rem 上限，100% = 平铺），
   // 消息列 max-width 变了但视口尺寸不变，ResizeObserver 收不到——监听
   // style 属性里这个变量的变化补一次同步。值没变时跳过，避免字号/配色
   // 之类的其它 style 变更也触发。

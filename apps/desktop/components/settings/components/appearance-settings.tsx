@@ -18,6 +18,7 @@ import {
   type WindowEffectName,
 } from "@/lib/settings/appearance";
 import {
+  FONT_SIZE_PX,
   isDarkMode,
   patchUiPrefs,
   selectThemePreset,
@@ -274,17 +275,19 @@ export const AppearanceSettings: FC = () => {
             </SettingRow>
             <SettingRow
               label="对话宽度"
-              desc="控制聊天内容与输入框的列宽，100% 为平铺"
+              desc="宽屏下的最大列宽；窗口变窄到不足该宽度时自动铺满，100 为始终平铺"
             >
               <SliderField
                 min={40}
                 max={100}
                 value={prefs.chatWidth}
                 onChange={(value) => setUiPref("chatWidth", value)}
-                minLabel="标准"
+                minLabel="窄"
                 maxLabel="平铺"
                 formatValue={(value) =>
-                  value >= 100 ? "平铺" : `${value}%`
+                  value >= 100
+                    ? "平铺"
+                    : `${Math.round(value * FONT_SIZE_PX[prefs.fontSize])}px`
                 }
               />
             </SettingRow>

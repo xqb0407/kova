@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  BOOT_CACHE_VERSION,
   buildBootCache,
   resolveBaseColors,
   resolveFonts,
@@ -161,14 +162,23 @@ describe("buildBootCache", () => {
         mode: "light",
       },
     });
-    expect(cache.v).toBe(1);
+    expect(cache.v).toBe(BOOT_CACHE_VERSION);
     expect(cache.light["--background"]).toBe("#ffffff");
     expect(cache.dark["--background"]).toBe("#0a0a0a");
     expect(cache.fontSize).toBe("17px");
-    expect(cache.chatWidth).toBe("64%");
+    expect(cache.chatWidth).toBe("64rem");
     expect(cache.wallpaper?.mode).toBe("light");
     expect(cache.wallpaper?.vars["--wallpaper-blur"]).toBe("12px");
     expect(cache.wallpaper?.vars["--wallpaper-dim"]).toBe("0.3");
     expect(cache.wallpaper?.vars["--wallpaper-veil"]).toBe("57.6%");
+  });
+
+  test("对话宽度：100 输出平铺，其余输出 rem 上限", () => {
+    const at = (chatWidth: number) =>
+      buildBootCache({ ...base, fontSize: null, chatWidth }).chatWidth;
+    expect(at(100)).toBe("100%");
+    expect(at(60)).toBe("60rem");
+    expect(at(999)).toBe("100%");
+    expect(at(10)).toBe("40rem");
   });
 });

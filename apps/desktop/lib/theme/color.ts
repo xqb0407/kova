@@ -117,7 +117,3 @@ export function readableTextOn(hex: string): string {
     0.2126 * lin(rgb.r) + 0.7152 * lin(rgb.g) + 0.0722 * lin(rgb.b);
   return luminance > 0.179 ? "#111" : "#fff";
 }
-
-export function isHexColor(raw: unknown): raw is string {
-  return typeof raw === "string" && normalizeHex(raw) !== null;
-}

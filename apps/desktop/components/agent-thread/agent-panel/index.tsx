@@ -246,7 +246,7 @@ const PanelShell: FC<{
     // 与聊天列同款卡片：描边 + 圆角，四周边距由 base.tsx 主区 padding 留出
     <div
       ref={shellRef}
-      className="bg-background border-border/60 flex h-full min-w-0 flex-col overflow-hidden rounded-xl border"
+      className="bg-background border-border/60 flex h-full min-w-0 flex-col overflow-hidden rounded-lg border"
     >
       {tabs.length > 0 ? (
         <TabBar tabs={tabs} activeId={activeId} actions={barActions} />

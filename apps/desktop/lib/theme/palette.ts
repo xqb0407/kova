@@ -224,9 +224,12 @@ export function resolveTheme(
   };
 }
 
+/** 首帧缓存口径版本：字段语义变更时递增，预绘制脚本据此决定是否套用对应字段 */
+export const BOOT_CACHE_VERSION = 2;
+
 /** 首帧缓存：两套模式各一份令牌 + 非令牌字段，供 layout 预绘制脚本直接套用 */
 export type BootThemeCache = {
-  v: 1;
+  v: typeof BOOT_CACHE_VERSION;
   light: ThemeTokens;
   dark: ThemeTokens;
   /** 根字号（rem 基准）；null = 浏览器默认 16px */
@@ -239,6 +242,12 @@ export type BootThemeCache = {
     vars: Record<string, string>;
   };
 };
+
+/** 对话宽度设置（rem 上限，40–100）→ CSS 值：100 表示始终平铺 */
+export function formatChatWidth(rem: number): string {
+  const cap = clamp(rem, 40, 100);
+  return cap >= 100 ? "100%" : `${cap}rem`;
+}
 
 /** 壁纸强度 → 卡片染色层的底色比例：强度越高，压在图上的底色越薄 */
 export function wallpaperVeil(opacity: number): string {
@@ -262,12 +271,12 @@ export function buildBootCache(
       }
     : null;
   return {
-    v: 1,
+    v: BOOT_CACHE_VERSION,
     light: resolveTheme(input, "light"),
     dark: resolveTheme(input, "dark"),
     fontSize: input.fontSize,
     fontWeight: fonts.weight === null ? null : String(fonts.weight),
-    chatWidth: `${clamp(input.chatWidth, 40, 100)}%`,
+    chatWidth: formatChatWidth(input.chatWidth),
     wallpaper: wallpaper?.enabled
       ? { mode: wallpaper.mode, vars: wallpaperVars ?? {} }
       : null,

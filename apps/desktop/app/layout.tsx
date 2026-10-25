@@ -24,6 +24,7 @@ import "./styles/globals.css";
 import { Toaster } from "@/components/ui/toast";
 import { PerfHud } from "@/components/debug/perf-hud";
 import { ThemeRuntime } from "@/components/runtime/theme-runtime";
+import { BOOT_CACHE_VERSION } from "@/lib/theme/palette";
 
 export const metadata: Metadata = {
   title: "Kova Harness Agent",
@@ -34,9 +35,10 @@ export const metadata: Metadata = {
  * 外观偏好预绘制脚本：在首帧前把 localStorage 里的 ui.prefs 与其派生缓存
  * （ui.theme.cache）落到 html 根元素，避免闪烁。缓存由 lib/settings/ui-prefs.ts
  * 在每次偏好变更时写入；派生算法只存在于 lib/theme/palette.ts，这里只做套用。
- * 字段/键名须与 ui-prefs 的 writeBootCache 保持一致。
+ * 字段/键名须与 ui-prefs 的 writeBootCache 保持一致；口径变更（如对话宽度从百分比
+ * 改为 rem 上限）时递增 BOOT_CACHE_VERSION，旧缓存的对应字段直接跳过、由客户端重算。
  */
-const UI_PREFS_BOOTSTRAP = `(function(){try{var d=document.documentElement,m=window.matchMedia("(prefers-color-scheme: dark)"),p=JSON.parse(localStorage.getItem("ui.prefs")||"{}"),dark=p.theme==="dark"||(p.theme!=="light"&&m.matches);d.classList.toggle("dark",dark);d.style.colorScheme=dark?"dark":"light";var c=JSON.parse(localStorage.getItem("ui.theme.cache")||"null");if(c){var t=dark?c.dark:c.light;if(t){for(var k in t)d.style.setProperty(k,t[k]);}if(c.fontSize)d.style.fontSize=c.fontSize;if(c.fontWeight)d.style.fontWeight=c.fontWeight;if(c.chatWidth)d.style.setProperty("--chat-width",c.chatWidth);var w=c.wallpaper;if(w&&(w.mode==="both"||w.mode===(dark?"dark":"light"))){var img=localStorage.getItem("ui.wallpaper.image");if(img&&/^data:image\\/(?:png|jpe?g|webp);base64,/i.test(img)){d.setAttribute("data-wallpaper","");d.style.setProperty("--wallpaper-image",'url("'+img+'")');for(var v in w.vars)d.style.setProperty(v,w.vars[v]);}}}}catch(e){}})();`;
+const UI_PREFS_BOOTSTRAP = `(function(){try{var d=document.documentElement,m=window.matchMedia("(prefers-color-scheme: dark)"),p=JSON.parse(localStorage.getItem("ui.prefs")||"{}"),dark=p.theme==="dark"||(p.theme!=="light"&&m.matches);d.classList.toggle("dark",dark);d.style.colorScheme=dark?"dark":"light";var c=JSON.parse(localStorage.getItem("ui.theme.cache")||"null");if(c){var t=dark?c.dark:c.light;if(t){for(var k in t)d.style.setProperty(k,t[k]);}if(c.fontSize)d.style.fontSize=c.fontSize;if(c.fontWeight)d.style.fontWeight=c.fontWeight;if(c.v===${BOOT_CACHE_VERSION}&&c.chatWidth)d.style.setProperty("--chat-width",c.chatWidth);var w=c.wallpaper;if(w&&(w.mode==="both"||w.mode===(dark?"dark":"light"))){var img=localStorage.getItem("ui.wallpaper.image");if(img&&/^data:image\\/(?:png|jpe?g|webp);base64,/i.test(img)){d.setAttribute("data-wallpaper","");d.style.setProperty("--wallpaper-image",'url("'+img+'")');for(var v in w.vars)d.style.setProperty(v,w.vars[v]);}}}}catch(e){}})();`;
 
 /**
  * crypto.randomUUID 是 Secure Context 专属 API：远程模式经 http://LAN-IP 访问时

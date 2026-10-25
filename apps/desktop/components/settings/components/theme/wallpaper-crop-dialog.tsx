@@ -268,7 +268,7 @@ export const WallpaperCropDialog: FC<{
         </div>
 
         {error && <p className="text-destructive text-xs">{error}</p>}
-          
+
         <DialogFooter className="border-border/60 flex w-full flex-wrap items-center justify-between gap-3  pt-4">
           <span className="text-muted-foreground text-xs">
             原图 {bitmap.width} × {bitmap.height} 像素
@@ -282,7 +282,6 @@ export const WallpaperCropDialog: FC<{
             </Button>
           </div>
         </DialogFooter>
-       
       </DialogContent>
     </Dialog>
   );

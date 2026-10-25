@@ -10,6 +10,7 @@ import {
 } from "../theme/fonts";
 import {
   buildBootCache,
+  formatChatWidth,
   resolveFonts,
   resolveTheme,
   wallpaperVeil,
@@ -55,7 +56,7 @@ export type {
  */
 export type ThemeMode = "system" | "light" | "dark";
 export type FontSizeName = "sm" | "md" | "lg";
-/** 兼容旧值的对话宽度档位；现在存百分比数字 */
+/** 兼容旧值的对话宽度档位；现在存 rem 上限（40–100，100 = 平铺） */
 export type ChatWidthName = "narrow" | "md" | "wide";
 /** 提示音音色包（lib/sounds.ts TONE_PACKS 的索引） */
 export type SoundPackName = "crisp" | "calm";
@@ -75,7 +76,7 @@ export type UiPrefs = {
   /** 圆角 px；null = 跟随主题预设 */
   radius: number | null;
   fontSize: FontSizeName;
-  /** 对话内容区宽度：百分比（40–100），100 = 平铺 */
+  /** 对话内容区最大列宽（rem，40–100）：窗口变窄到不足该宽度时自动铺满；100 = 始终平铺 */
   chatWidth: number;
   fontFamily: FontFamilyName;
   codeFontFamily: CodeFontFamilyName;
@@ -111,7 +112,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   contrast: 50,
   radius: null,
   fontSize: "md",
-  chatWidth: 52,
+  chatWidth: 60,
   fontFamily: "default",
   codeFontFamily: "theme",
   codeThemeLight: "default",
@@ -127,17 +128,18 @@ export const DEFAULT_PREFS: UiPrefs = {
   popupEnabled: false,
 };
 
-/** 字号档位 → 根元素 font-size（rem 体系下等比缩放整体界面）；md 为浏览器默认 16px */
-const FONT_SIZE_PX: Record<Exclude<FontSizeName, "md">, string> = {
-  sm: "15px",
-  lg: "17px",
+/** 字号档位 → 根元素 font-size（px）；md 为浏览器默认 16px，rem 体系据此等比缩放整体界面 */
+export const FONT_SIZE_PX: Record<FontSizeName, number> = {
+  sm: 15,
+  md: 16,
+  lg: 17,
 };
 
-/** 旧版三档宽度 → 百分比（升级时一次性迁移） */
+/** 旧版三档宽度（rem）→ 当前 rem 上限（升级时一次性迁移） */
 const LEGACY_CHAT_WIDTH: Record<ChatWidthName, number> = {
-  narrow: 44,
-  md: 52,
-  wide: 66,
+  narrow: 50,
+  md: 60,
+  wide: 70,
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -182,7 +184,8 @@ export function migratePrefs(raw: unknown): UiPrefs {
   const source = isRecord(raw) ? raw : {};
   const legacyWidth =
     typeof source.chatWidth === "string"
-      ? (LEGACY_CHAT_WIDTH[source.chatWidth as ChatWidthName] ?? 52)
+      ? (LEGACY_CHAT_WIDTH[source.chatWidth as ChatWidthName] ??
+        DEFAULT_PREFS.chatWidth)
       : undefined;
   const chatWidth =
     typeof source.chatWidth === "number"
@@ -311,7 +314,7 @@ function writeBootCache(p: UiPrefs): void {
     const cache = buildBootCache({
       ...themeInput(p),
       wallpaper: hasWallpaper ? p.wallpaper : null,
-      fontSize: p.fontSize === "md" ? null : FONT_SIZE_PX[p.fontSize],
+      fontSize: p.fontSize === "md" ? null : `${FONT_SIZE_PX[p.fontSize]}px`,
       chatWidth: p.chatWidth,
     });
     window.localStorage.setItem(UI_THEME_CACHE_KEY, JSON.stringify(cache));
@@ -344,9 +347,11 @@ export function applyPrefs(p: UiPrefs) {
   else root.style.fontWeight = String(fonts.weight);
 
   if (p.fontSize === "md") root.style.removeProperty("font-size");
-  else root.style.fontSize = FONT_SIZE_PX[p.fontSize];
+  else root.style.fontSize = `${FONT_SIZE_PX[p.fontSize]}px`;
 
-  const chatWidth = `${clamp(p.chatWidth, 40, 100)}%`;
+  // 固定上限（rem）：列宽不足上限时自然铺满，只有更宽的窗口才出现两侧留白；
+  // 100 直接写 100% 表示始终平铺
+  const chatWidth = formatChatWidth(p.chatWidth);
   if (root.style.getPropertyValue("--chat-width") !== chatWidth) {
     root.style.setProperty("--chat-width", chatWidth);
   }
@@ -544,13 +549,6 @@ export function setThemeOverride(
   patchUiPrefs({
     themeOverrides: { ...prefs.themeOverrides, [mode]: next },
   });
-}
-
-/** 壁纸图片变更（裁剪/导入/清除）后调用：重读图片并重新应用 */
-export function reloadWallpaper() {
-  wallpaperImage = getWallpaperImage();
-  applyPrefs(prefs);
-  emit();
 }
 
 /** 只刷新壁纸图片缓存，不触发应用；随后 patchUiPrefs 会带上新图 */
