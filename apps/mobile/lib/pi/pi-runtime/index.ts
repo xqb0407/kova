@@ -6,8 +6,8 @@
 // 由 WsPiClient 直接实现 PiClient 契约替代），对应导出移除。
 
 export * from "./types";
-export { piQueueItemId, isPiSteerQueueItemId } from "./queueIds";
-export type { PiQueueMode } from "./queueIds";
+export { piQueueItemId, isPiSteerQueueItemId } from "pi-runtime";
+export type { PiQueueMode } from "pi-runtime";
 
 export {
   createPiThreadState,

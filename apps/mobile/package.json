@@ -46,6 +46,7 @@
     "expo-system-ui": "~57.0.4",
     "lucide-react-native": "^1.50.0",
     "pi-protocol": "workspace:*",
+    "pi-runtime": "workspace:*",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",

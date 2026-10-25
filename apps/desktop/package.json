@@ -65,6 +65,7 @@
     "motion": "^13.4.4",
     "next": "^16.3.4",
     "pi-protocol": "workspace:*",
+    "pi-runtime": "workspace:*",
     "qrcode.react": "^4.2.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

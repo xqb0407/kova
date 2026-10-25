@@ -19,7 +19,7 @@
  */
 import type { PiResponse, PiSessionSummary } from "@/lib/pi/pi-bridge";
 import type { PiPromptAttachment } from "@/lib/pi/pi-channel";
-import { parsePartialJsonObject } from "./partial-json";
+import { parsePartialJsonObject } from "pi-runtime";
 import { newRequestId } from "@/lib/mobile/request-id";
 import {
   applyHistoryPending,
@@ -64,6 +64,7 @@ import type { PendingInteraction } from "pi-protocol";
 import type {
   PiAgentMessage,
   PiAssistantMessageDelta,
+  PiClearedQueue,
   PiClient,
   PiClientEvent,
   PiHostUiResponse,
@@ -1052,11 +1053,13 @@ export class PiClientBase implements PiClient {
   }
 
   /** 整队清空（4a 实装）：queue_clear 命令，返回被清文本供 UI 回填 composer。 */
-  async clearQueue(threadId: string): Promise<{ steering: string[]; followUp: string[] }> {
+  async clearQueue(threadId: string): Promise<PiClearedQueue> {
     const res = await this.transport.request<{
       cleared?: string[];
     } & PiResponse>({ type: "queue_clear", threadId });
-    return { steering: [], followUp: res.cleared ?? [] };
+    // 移动端 v1 不做「停止生成回填队列条目」（无 drainQueueForStop 路径），
+    // items 恒为空；文本回填仍走 steering/followUp。
+    return { steering: [], followUp: res.cleared ?? [], items: [] };
   }
 
   /** 逐项队列操作（4a）：id = 真实 reqId，直通 sidecar 队列引擎。

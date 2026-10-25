@@ -1,7 +1,7 @@
 /**
  * 从未完成的 JSON 对象里提取已经完整的顶层字段。
  *
- * 工具参数是流式 JSON（`{"file_path":"...","content":"...`）：在 toolcall_end
+ * 工具参数是流式 JSON（`{"file_path":"...","content":"..."`）：在 toolcall_end
  * 之前整段不是合法 JSON，但前面的 `file_path`/`command` 往往已经完整。这里只
  * 解析到最后一个完整的顶层键值对，供 UI 在运行中先显示工具目标（文件路径、
  * 命令等），避免写入/编辑工具整行只剩一个工具名。
