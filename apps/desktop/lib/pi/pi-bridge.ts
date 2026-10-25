@@ -690,6 +690,42 @@ export type PiBrowserConfig = {
   screenShot: boolean;
 };
 
+/** 能力装配层开关整包（设置 → 智能体 → 智能体配置 → 上下文预算；sidecar 持久化于
+ *  SQLite kv pi.capabilities）。set_capabilities 是全量覆盖——写入前必须从
+ *  get_capabilities 拿到整包再合并改动的 key，否则会清掉其它能力与参数。 */
+export type PiCapabilitySettings = {
+  /** 能力 id → 显式开关；缺省条目回落 sidecar 的 defaultEnabled */
+  enabled: Record<string, boolean>;
+  /** 能力 id → 参数（如 tool-budget.maxInlineBytes、loop-guard.mode） */
+  params: Record<string, Record<string, unknown>>;
+};
+
+/** 能力清单条目（get_capabilities 的 items；enabled 是解析默认值后的生效态） */
+export type PiCapabilityItem = {
+  id: string;
+  title?: string;
+  enabled: boolean;
+  contributions: {
+    tools: number;
+    systemTexts: number;
+    userTexts: number;
+    reminders: number;
+    toolBefore: number;
+    toolAfter: number;
+    turnEnd: number;
+  };
+};
+
+/** 能力安装失败项（诊断用；单能力失败只隔离自身，不影响其余能力） */
+export type PiCapabilityFailure = { id: string; message: string };
+
+/** set_capabilities 在个别驻留会话重建失败时附带（失败会话保留旧工具表，下次 resolve 自愈） */
+export type PiCapabilityReloadFailure = {
+  threadId: string;
+  sessionId: string;
+  message: string;
+};
+
 /** 访问加速配置整包（设置 → 系统 → 访问加速；sidecar 持久化于 SQLite kv）。
  *  改写规则与边界见 sidecar tools/url-mirror.ts：只改写 GitHub 的
  *  raw/发行包/源码包地址，带凭据的链接与 git push 一律不动。 */
@@ -1144,6 +1180,14 @@ export type PiResponse =
   | { type: "app_mode"; mode: PiAppMode }
   | { type: "memory"; settings: PiMemoryConfig }
   | { type: "browser"; settings: PiBrowserConfig }
+  | {
+      type: "capabilities";
+      lifecycle: string;
+      settings: PiCapabilitySettings;
+      items: PiCapabilityItem[];
+      failures: PiCapabilityFailure[];
+      reloadFailures?: PiCapabilityReloadFailure[];
+    }
   | { type: "mirror"; settings: PiMirrorConfig }
   | { type: "imagegen"; settings: PiImageGenConfig }
   | PiSecretsResponse
