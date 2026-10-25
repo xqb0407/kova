@@ -423,8 +423,8 @@ export const Composer: FC = () => {
         <div
           data-slot="aui-composer-footer"
           className={cn(
-            "empty:hidden relative -mt-6 flex w-full items-center gap-1",
-            "rounded-b-(--composer-radius) bg-muted/55 px-3 pt-8 pb-2.5",
+            "empty:hidden relative -mt-4 flex w-full items-center gap-1",
+            "rounded-b-(--composer-radius) bg-muted/55 px-3 pt-6 pb-2.5",
             "transition-colors",
           )}
         >
@@ -501,7 +501,7 @@ const WorkspacePill: FC = () => {
         className={cn(
           // 灰底栏里不再套自己的胶囊底：整条 footer 就是底，这里只是一行
           // 「图标 + 目录名」的点击区，hover 用极淡的前景叠加
-          "group/pill relative inline-flex h-7 items-center rounded-lg pl-1.5 pr-1 text-sm text-foreground/90 transition-colors",
+          "group/pill relative inline-flex h-6 items-center rounded-lg pl-1.5 pr-1 text-sm text-foreground/90 transition-colors",
           "hover:bg-foreground/[0.04]",
         )}
       >
@@ -759,7 +759,7 @@ const WorkspaceBranchPill: FC = () => {
             className={cn(
               // 紧跟在目录胶囊右边（不要 ml-auto：分支是目录的属性，不是
               // 底栏另一端的信息；一左一右会让人以为两者没关系）
-              "bg-muted/50 hover:bg-muted hover:text-foreground inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors",
+              "bg-muted/50 hover:bg-foreground/[0.04] hover:text-foreground inline-flex h-6 shrink-0 items-center gap-1 rounded-lg px-2.5 text-sm transition-colors",
             )}
           >
             <GitBranchIcon className="text-muted-foreground size-3.5 shrink-0" />
