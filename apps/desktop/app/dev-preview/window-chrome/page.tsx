@@ -115,7 +115,7 @@ export default function WindowChromePreview() {
         title="聊天顶栏（session）"
         note="header.tsx：pr-4 内容 + WindowControls top=8 right=24 —— 已让位"
       >
-        <div className="pt-2">
+        <div className="pt-2 pr-2">
           <div className="flex h-12 items-center gap-2 pl-4 pr-4">
             <span className="text-sm font-medium">会话标题</span>
             <RightActions />
@@ -128,7 +128,7 @@ export default function WindowChromePreview() {
         title="整页视图顶栏（page：自动化 / 资料库等）"
         note="header.tsx variant=page：pr-4 + WindowControls top=8 right=24 —— 已让位"
       >
-        <div className="pt-2">
+        <div className="pt-2 pr-2">
           <div className="flex h-12 items-center gap-2 pl-4 pr-4">
             <span className="text-sm font-medium text-muted-foreground">
               整页视图（无标题）
@@ -143,7 +143,7 @@ export default function WindowChromePreview() {
         title="Agent 面板顶栏"
         note="agent-panel：pr-2 + WindowControls top=8（right 16）—— 已让位"
       >
-        <div className="pt-2">
+        <div className="pt-2 pr-2">
           <div className="flex h-12 items-center gap-2 pl-4 pr-2">
             <span className="text-sm font-medium">面板标签</span>
             <RightActions />
@@ -160,6 +160,33 @@ export default function WindowChromePreview() {
           <RightActions />
         </div>
         <FakeWindowsControls top={0} right={16} />
+      </Specimen>
+
+      <Specimen
+        title="资料库顶栏（页面工具条注入 Header）"
+        note="library-view portal 到 page-header-actions 槽位；槽位之后就是 WindowControls 的 100px 占位 —— 自动让位"
+      >
+        <div className="pt-2 pr-2">
+          {/* 与真实 Header 同序：折叠槽 → 页面槽位(flex-1, 注入工具条) →
+              gap-2 → WindowControls 占位(100px) → pr-4 */}
+          <div className="flex h-12 items-center gap-2 pl-4 pr-4">
+            <span className="shrink-0 text-sm font-semibold whitespace-nowrap">资料库</span>
+            <span className="shrink-0 rounded-md px-1.5 py-1 text-xs">新建笔记</span>
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground/60">
+              也可以把文件直接拖进来；AI 产物也在同一棵树里
+            </span>
+            <span className="h-8 w-40 shrink-0 rounded-md bg-muted/60 px-2 text-xs leading-8 text-muted-foreground">
+              搜索笔记与文件…
+            </span>
+            <span className="shrink-0 rounded-md px-1.5 py-1 text-xs">导入</span>
+            <span className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground">
+              <SearchIcon className="size-3.5" />
+            </span>
+            {/* WindowControls 的原位占位（真实组件渲染同尺寸空 div） */}
+            <div aria-hidden className="h-12 shrink-0" style={{ width: CLUSTER_W }} />
+          </div>
+        </div>
+        <FakeWindowsControls top={8} right={24} />
       </Specimen>
 
       <Specimen
