@@ -182,9 +182,9 @@ export const Thread = memo(function Thread() {
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root bg-transparent relative @container flex h-full flex-col"
       style={{
-        // 外观设置「对话宽度」由 ui-prefs 内联 --chat-width（百分比，100% = 平铺）；
-        // 回退值是设置页的默认档 52%，改这里即改默认宽度
-        ["--thread-max-width" as string]: "var(--chat-width, 52%)",
+        // 外观设置「对话宽度」由 ui-prefs 内联 --chat-width（rem 上限，100% = 平铺）；
+        // 回退值是设置页的默认档 60rem，改这里即改默认宽度
+        ["--thread-max-width" as string]: "var(--chat-width, 60rem)",
         ["--composer-bg" as string]:
           "color-mix(in oklab, var(--color-background) 85%, transparent)",
         ["--composer-radius" as string]: "1.5rem",

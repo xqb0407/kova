@@ -183,8 +183,3 @@ export async function dataUrlToBitmap(dataUrl: string): Promise<ImageBitmap> {
   const res = await fetch(dataUrl);
   return createImageBitmap(await res.blob());
 }
-
-/** 读取用户选择的文本文件（主题 JSON 导入） */
-export async function readTextFile(file: File): Promise<string> {
-  return file.text();
-}

@@ -459,26 +459,7 @@ export const Base: FC = () => {
     const viewport = document.querySelector<HTMLElement>(
       '[data-slot="aui_thread-viewport"]',
     );
-    // 正文块 = 带 max-width 的那层（消息根）。data-slot 落在哪层各端不一，
-    // 从消息元素往上找第一个 max-width 是像素值的那层，别猜结构。
-    let block =
-      document.querySelector<HTMLElement>(
-        '[data-slot="aui_assistant-message-root"]',
-      ) ??
-      document.querySelector<HTMLElement>('[data-slot="aui_user-message-root"]') ??
-      document.querySelector<HTMLElement>(
-        '[data-slot="aui_assistant-message-content"]',
-      );
-    // 只认 px 值的 max-width：百分比（max-w-full 之类）也会被 parseFloat 读成数字，
-    // 拿它当上限会把正文挤成 100px
-    const pxOf = (v: string) =>
-      v.trim().endsWith("px") ? Number.parseFloat(v) : Number.NaN;
-    for (let i = 0; block && i < 4; i++) {
-      const mw = pxOf(getComputedStyle(block).maxWidth);
-      if (Number.isFinite(mw) && mw > 0) break;
-      block = block.parentElement;
-    }
-    if (!chat || !panel || !viewport || !block) {
+    if (!chat || !panel || !viewport) {
       setChatFreezeMax(null);
       return;
     }
@@ -489,9 +470,22 @@ export const Base: FC = () => {
     const pad =
       (Number.parseFloat(cs.paddingLeft) || 0) +
       (Number.parseFloat(cs.paddingRight) || 0);
-    // 上限取正文块自己的 max-width 计算值（= 对话宽度设置，px），不猜 60rem
-    const cap = pxOf(getComputedStyle(block).maxWidth) || 960;
-    const width = Math.max(200, Math.min(finalChat - pad, cap));
+    const available = Math.max(0, finalChat - pad);
+    // 对话宽度设置（--chat-width）写在 <html> 上：rem 上限直接按根字号换算，100% 表示
+    // 平铺。必须读 documentElement——动画期间聊天列自身可能已被上一次冻结覆写成 px，
+    // 从列内读会拿到过期值。
+    const rootStyle = getComputedStyle(document.documentElement);
+    const raw = rootStyle.getPropertyValue("--chat-width").trim();
+    const num = Number.parseFloat(raw);
+    const rootFont = Number.parseFloat(rootStyle.fontSize) || 16;
+    const cap = raw.endsWith("%")
+      ? (available * (Number.isFinite(num) ? num : 100)) / 100
+      : raw.endsWith("rem")
+        ? (Number.isFinite(num) ? num : 60) * rootFont
+        : Number.isFinite(num)
+          ? num
+          : 60 * rootFont;
+    const width = Math.max(200, Math.min(available, cap));
     setChatFreezeMax(Math.round(width));
   };
   const unfreezeChatText = () => setChatFreezeMax(null);
@@ -518,12 +512,12 @@ export const Base: FC = () => {
   // CodeMirror/diff 这些一进来就要全量测量）。宽度随拖拽落位/记忆同步。
   const [panelContentW, setPanelContentW] = useState<number | null>(null);
   // 动画期间对话正文的排版宽（px，覆写 --chat-width；null = 不覆写）。
-  // 正文块是 min(列宽 - 内边距, --chat-width)，也就是说**列宽跨过 960 之后正文
-  // 才开始折行**。展开方向这笔折行原先落在动画尾段：列宽 1767 → 818，越过 960 时
-  // 面板已经走了 81% 的行程、动画只剩慢慢蹭的最后 160ms——观感就是"先平移、后折行"
-  // 两段。收起方向天然相反（列宽一涨就立刻越过阈值，折行发生在头几毫秒），所以一直
-  // 觉得顺。这里把折行统一挪到动画起点：正文按"结束时的宽度"排一次版，之后的动画
-  // 只剩纯平移；落位时覆写值与自然值相等，不会再有第二次变化。
+  // 正文块是 min(列宽 - 内边距, 对话宽度上限)，上限是 rem 固定值（默认 60rem），
+  // 也就是**列宽跨过上限后正文才随之折行**。展开方向这笔折行原先落在动画尾段：
+  // 列宽 1767 → 818，越过上限时面板已经走了大半行程、动画只剩最后一段——观感就是
+  // "先平移、后折行"两段。收起方向天然相反（列宽一涨就立刻越过阈值，折行发生在头
+  // 几毫秒），所以一直觉得顺。这里把折行统一挪到动画起点：按"结束时的宽度"排一次
+  // 版，之后的动画只剩纯平移；落位时覆写值与自然值相等，不会再有第二次变化。
   const [chatFreezeMax, setChatFreezeMax] = useState<number | null>(null);
   useEffect(() => {
     if (!panelHydrated || compact) return;
@@ -993,7 +987,7 @@ export const Base: FC = () => {
     <div
       ref={attachChatCard}
       data-chat-card
-      className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden rounded-xl border"
+      className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden rounded-lg border"
       // 覆写 --chat-width（thread.tsx 的 --thread-max-width 消费它）：动画期间
       // 正文按结束宽排版，落位时与自然值相等
       style={
@@ -1060,7 +1054,7 @@ export const Base: FC = () => {
                   animate={{ x: 0 }}
                   exit={{ x: "100%" }}
                   transition={{ type: "spring", stiffness: 380, damping: 36 }}
-                  className="border-border bg-background absolute inset-y-0 right-0 z-40 flex w-[min(92vw,420px)] rounded-l-xl border-l"
+                  className="border-border bg-background absolute inset-y-0 right-0 z-40 flex w-[min(92vw,420px)] rounded-l-lg border-l"
                 >
                   <AgentPanel onCollapse={collapsePanel} />
                 </motion.div>

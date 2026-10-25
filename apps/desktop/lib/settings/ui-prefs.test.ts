@@ -8,11 +8,11 @@ describe("migratePrefs", () => {
     expect(migratePrefs({})).toEqual(DEFAULT_PREFS);
   });
 
-  test("旧版三档对话宽度迁移为百分比", () => {
-    expect(migratePrefs({ chatWidth: "narrow" }).chatWidth).toBe(44);
-    expect(migratePrefs({ chatWidth: "md" }).chatWidth).toBe(52);
-    expect(migratePrefs({ chatWidth: "wide" }).chatWidth).toBe(66);
-    expect(migratePrefs({ chatWidth: "nope" }).chatWidth).toBe(52);
+  test("旧版三档对话宽度迁移为 rem 上限", () => {
+    expect(migratePrefs({ chatWidth: "narrow" }).chatWidth).toBe(50);
+    expect(migratePrefs({ chatWidth: "md" }).chatWidth).toBe(60);
+    expect(migratePrefs({ chatWidth: "wide" }).chatWidth).toBe(70);
+    expect(migratePrefs({ chatWidth: "nope" }).chatWidth).toBe(60);
     expect(migratePrefs({ chatWidth: 999 }).chatWidth).toBe(100);
     expect(migratePrefs({ chatWidth: 10 }).chatWidth).toBe(40);
   });

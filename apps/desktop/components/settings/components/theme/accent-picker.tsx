@@ -34,10 +34,7 @@ export const AccentPicker: FC<{
             title={accent.label}
             aria-label={accent.label}
             aria-pressed={active}
-            onClick={() => {
-              onCustom(null);
-              onSelect(accent.value);
-            }}
+            onClick={() => onSelect(accent.value)}
             className={cn(
               "size-5 rounded-full border border-black/10 transition-transform active:scale-90",
               active && "scale-110 outline-2 outline-offset-2 outline-primary",
@@ -75,12 +72,12 @@ export const AccentPicker: FC<{
           <p className="text-muted-foreground mt-1 text-xs">
             任意 hex 颜色，浅色/深色模式会自动适配亮度。
           </p>
-            <ColorField
-              value={custom ?? "#3b82f6"}
-              overridden={customActive}
-              onChange={(hex) => onCustom(hex)}
-              onReset={() => onCustom(null)}
-            />
+          <ColorField
+            value={custom ?? "#3b82f6"}
+            overridden={customActive}
+            onChange={(hex) => onCustom(hex)}
+            onReset={() => onCustom(null)}
+          />
         </PopoverContent>
       </Popover>
     </div>
