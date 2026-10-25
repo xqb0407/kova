@@ -233,6 +233,8 @@ export function composeModeSystemPrompt(
   designTheme?: ThemeRef | null,
   goal?: Goal | null,
   externalDirs: readonly ExternalDir[] = [],
+  /** 能力贡献的稳定段（只随能力设置变化；空串/缺省不产生任何字节）。 */
+  capabilitySuffix?: string,
 ): string {
   // 问答档换掉静态核心的取段（剔任务追踪与子代理），其余模式沿用全量核心——
   // 全量拼接与拆分前逐字节相同，缓存不变式不受影响
@@ -266,6 +268,9 @@ export function composeModeSystemPrompt(
     ),
     instructionsPromptBlock(cwd),
     externalDirsPromptBlock(externalDirs),
+    // 能力段固定在外部目录之后、git 段之前：git/环境事实必须留在尾部，
+    // 能力段只允许稳定内容（每轮变化的事实走回合级提醒）。
+    capabilitySuffix ?? "",
     gitPromptBlock(cwd, appMode),
     environmentPromptBlock(cwd, model),
   ]
@@ -292,6 +297,7 @@ export function composeRunPrompt(run: Running, model?: PromptModelInfo | null): 
     run.designTheme,
     run.mode === "goal" ? getGoal(run.threadId) : undefined,
     run.externalDirs,
+    run.capabilitySystemSuffix,
   );
 }
 

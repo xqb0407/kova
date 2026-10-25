@@ -141,6 +141,8 @@
  *   { "type": "test_observability", "id", "settings"? }       → { id, type: "observability_tested", result }（探针 span 试发：settings 缺省用当前配置，10s 超时）
  *   { "type": "get_hooks", "id" }                             → { id, type: "hooks", hooks: [...] }（Claude Code 式生命周期钩子配置，见 hooks.ts）
  *   { "type": "set_hooks", "id", "hooks": [...] }             → { id, type: "hooks_saved" }（全量覆盖，落 SQLite kv；PreToolUse/PermissionRequest 在工具调用/审批路径同步生效）
+ *   { "type": "get_capabilities", "id", "sessionId"? }        → { id, type: "capabilities", lifecycle, settings, items: [...], failures: [...] }（能力装配层诊断：开关、参数、贡献统计与安装失败原因，见 agent/assembly）
+ *   { "type": "set_capabilities", "id", "settings" }          → { id, type: "capabilities", ... }（全量覆盖 { enabled, params }，落 SQLite kv，全局生效不接受 sessionId；活跃会话下一轮生效，个别 run 重建失败时响应带 reloadFailures）
  *   { "type": "get_auto_review", "id" }                       → { id, type: "auto_review", settings }（AI 审查档的配置：审查模型覆盖与超时，见 permissions/auto-review.ts）
  *   { "type": "set_auto_review", "id", "settings" }           → { id, type: "auto_review", settings }（全量覆盖，落 SQLite kv；非法字段剔除，超时钳制 [5s, 120s]）
  *   { "type": "get_subagent_settings", "id" }                 → { id, type: "subagent_settings", settings: { maxConcurrency } }（子智能体并发上限，见 subagent/settings.ts）
@@ -409,6 +411,7 @@ import { handlers as interactiveHandlers } from "./handlers/interactive";
 import { handlers as gitHandlers } from "./handlers/git";
 import { handlers as checkpointHandlers } from "./handlers/checkpoint";
 import { handlers as optimizeHandlers } from "./handlers/optimize";
+import { handlers as capabilitiesHandlers } from "./handlers/capabilities";
 import type { CommandHandler } from "./command";
 
 /** 启动初始化闸门：模型目录就绪（自定义提供商注册/覆盖合并）之前到达的命令先缓冲，
@@ -421,7 +424,7 @@ export function setInitGate(gate: Promise<void>): void {
   initGate = gate;
 }
 
-/** 命令注册表：全部非 prompt 命令按域登记（99 个命令，见 handlers/ 各域模块） */
+/** 命令注册表：全部非 prompt 命令按域登记（见 handlers/ 各域模块） */
 const registry: Record<string, CommandHandler> = {
   ...lifecycleHandlers,
   ...queueHandlers,
@@ -439,6 +442,7 @@ const registry: Record<string, CommandHandler> = {
   ...interactiveHandlers,
   ...gitHandlers,
   ...checkpointHandlers,
+  ...capabilitiesHandlers,
 };
 
 export async function dispatch(reqId: string, msg: Record<string, unknown>) {

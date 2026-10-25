@@ -41,6 +41,7 @@ import { initImageGenConfig } from "./tools/imagegen-config";
 import { initMirrorConfig } from "./tools/mirror-config";
 import { initObservability } from "./observability/observability";
 import { initHooks } from "./agent/hooks";
+import { initCapabilities } from "./agent/assembly";
 import { initAutoReview } from "./permissions/auto-review";
 import { initSandboxConfig } from "./permissions/sandbox-config";
 import { initShellPolicy } from "./permissions/shell-policy";
@@ -162,6 +163,9 @@ async function main() {
     // 生命周期钩子配置同走 kv（PreToolUse/PermissionRequest 在工具路径同步读取，
     // 必须在闸门放行前就位，保证首批会话即生效）
     await initHooks();
+    // 能力装配层：读开关/参数并安装内置能力；失败只记日志、装配退化为无能力，
+    // 不阻断启动（同 hooks 的失败策略）
+    await initCapabilities();
     // AI 审查（approvalLevel = review）的配置同走 kv：审查发生在工具调用路径上，
     // 模型覆盖与超时必须在闸门放行前就位（同 initHooks 的理由）
     await initAutoReview();

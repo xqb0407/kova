@@ -12,6 +12,7 @@ import { isPromptActive } from "../stream";
 import { emitThreadEvent } from "../thread-events";
 import { abortRun } from "../prompt-pipeline";
 import { checkpointForget } from "../../checkpoint/store";
+import { removeSessionArtifacts } from "../../sessions/artifact-store";
 import { runCompaction, contextInfo } from "../../agent/context";
 import { invalidateGitSnapshots } from "../../agent/git-prompt";
 import { projectContextInfo } from "../../sessions/sessions";
@@ -1078,6 +1079,10 @@ export const handlers: Record<string, CommandHandler> = {
     // 无目录会话的产物随会话走（<任务工作区>/<sessionId> 递归删；
     // 从未落过盘/项目会话是空操作），否则「我的文件」里只剩无名孤儿目录
     removeTaskSessionDir(sessionId);
+    // 外置的工具输出随会话删除；失败只记日志（目录残留有保留策略兜底）
+    await removeSessionArtifacts(sessionId).catch((err) =>
+      logErr("delete_session: artifact cleanup failed:", err),
+    );
     checkpointForget(sessionId); // 编辑检查点随会话走（影子仓库归 Electron 侧 LRU）
     sendSessionsChanged("deleted", sessionId);
     send({ id: reqId, type: "deleted" });

@@ -136,3 +136,35 @@ export function isGoalInternalMessage(msg: unknown): boolean {
         : "";
   return isGoalInternalText(text);
 }
+
+/* ---------------------- 能力装配收尾提醒哨兵 ---------------------- */
+
+/**
+ * 能力装配层（sidecar agent/assembly）经 prepareNextTurn 注入的收尾提醒
+ * 哨兵前缀（reminderMessages 构造，user 角色落转录，正文为 <system-reminder>
+ * 块）。与 AUTO_CONTINUE_PREFIX 同款处理：模型上下文里保留作指令，UI 各路径
+ * 按前缀隐藏。放契约层单源的理由同上——sidecar 投影 / thread_snapshot 直出
+ * 与桌面/移动投影层过滤必须同口径，两端各写一份判定就会漏。
+ */
+export const CAPABILITY_REMINDER_PREFIX = "[[capability-reminder]] ";
+
+/** 消息文本是否为能力收尾提醒注入（按前缀识别） */
+export function isCapabilityReminderText(text: string): boolean {
+  return text.startsWith(CAPABILITY_REMINDER_PREFIX);
+}
+
+/** user 消息是否为能力收尾提醒注入——判定口径同 isAutoContinueMessage */
+export function isCapabilityReminderMessage(msg: unknown): boolean {
+  const m = msg as { role?: string; content?: unknown } | undefined;
+  if (!m || m.role !== "user") return false;
+  const text =
+    typeof m.content === "string"
+      ? m.content
+      : Array.isArray(m.content)
+        ? (m.content as { type?: string; text?: string }[])
+            .filter((c) => c?.type === "text")
+            .map((c) => c.text ?? "")
+            .join("")
+        : "";
+  return isCapabilityReminderText(text);
+}
