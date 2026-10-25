@@ -734,7 +734,7 @@ export const MarketplaceView: FC<{
                                 {entry.version && (
                                   <Badge
                                     variant="outline"
-                                    className="shrink-0 px-1.5 font-mono text-[11px] font-normal"
+                                    className="shrink-0 px-1.5 font-mono text-xs font-normal"
                                   >
                                     v{entry.version}
                                   </Badge>

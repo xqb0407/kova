@@ -7,16 +7,12 @@
  * 字体 = Font Family 小节内 角色→字体名 对（至多 4 个），全库没有小节则空。
  */
 
-const HEX_RE = /#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g;
+import { normalizeHex, readableTextOn } from "../theme/color";
 
-/** 归一 hex（三位展开、统一小写）；非法返回 null */
-export function normalizeHex(raw: string): string | null {
-  const m = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(raw.trim());
-  if (!m) return null;
-  const body = m[1];
-  const full = body.length === 3 ? body.split("").map((c) => c + c).join("") : body;
-  return `#${full.toLowerCase()}`;
-}
+/** 归一 hex 与可读文字色的实现统一放在 lib/theme/color（主题系统共用） */
+export { normalizeHex, readableTextOn };
+
+const HEX_RE = /#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g;
 
 /** 正文里出现的 hex 色（首次出现序、大小写去重）；accents 在前且不重复计 */
 export function extractThemePalette(accents: string[], doc: string, limit = 6): string[] {
@@ -95,15 +91,4 @@ export function extractThemeFonts(doc: string): ThemeFontSample[] {
     if (out.length >= 4) break;
   }
   return out;
-}
-
-/** 色块上用什么文字色可读（W3C 相对亮度，深浅二值） */
-export function readableTextOn(hex: string): string {
-  const h = normalizeHex(hex)?.slice(1);
-  if (!h) return "#000";
-  const r = parseInt(h.slice(0, 2), 16) / 255;
-  const g = parseInt(h.slice(2, 4), 16) / 255;
-  const b = parseInt(h.slice(4, 6), 16) / 255;
-  const lin = (c: number) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
-  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b) > 0.42 ? "#111" : "#fff";
 }

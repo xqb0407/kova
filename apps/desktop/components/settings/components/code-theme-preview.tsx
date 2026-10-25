@@ -1,13 +1,16 @@
 "use client";
 
-import { type FC } from "react";
+import { memo, type FC } from "react";
 import { CodeMirrorCode } from "@/components/code/cm-code";
 import {
   CODE_THEME_DARK_OPTIONS,
   CODE_THEME_LIGHT_OPTIONS,
 } from "@/lib/markdown/code-theme";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
-import { useUiPrefs, type CodeThemeName } from "@/lib/settings/ui-prefs";
+import {
+  useUiPrefsSelector,
+  type CodeThemeName,
+} from "@/lib/settings/ui-prefs";
 import { cn } from "@/lib/utils";
 
 /** 预览示例：一小段带类型/字符串/数字的 TS，覆盖常见高亮元素 */
@@ -56,24 +59,26 @@ const PreviewCard: FC<{
 /**
  * 代码预览：同时渲染浅色与深色两套主题（forceDark 固定各自配色，
  * 不跟随界面），当前界面实际生效的一侧标记"当前生效"。
+ * memo + 逐字段订阅：外观页拖动滑杆时不重渲染两棵 CodeMirror。
  */
-export const CodeThemePreview: FC = () => {
-  const prefs = useUiPrefs();
+export const CodeThemePreview = memo(function CodeThemePreview() {
+  const codeThemeLight = useUiPrefsSelector((p) => p.codeThemeLight);
+  const codeThemeDark = useUiPrefsSelector((p) => p.codeThemeDark);
   const dark = useHtmlDark();
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
       <PreviewCard
         title="浅色预览"
-        themeName={themeLabel(CODE_THEME_LIGHT_OPTIONS, prefs.codeThemeLight)}
+        themeName={themeLabel(CODE_THEME_LIGHT_OPTIONS, codeThemeLight)}
         active={!dark}
         forceDark={false}
       />
       <PreviewCard
         title="深色预览"
-        themeName={themeLabel(CODE_THEME_DARK_OPTIONS, prefs.codeThemeDark)}
+        themeName={themeLabel(CODE_THEME_DARK_OPTIONS, codeThemeDark)}
         active={dark}
         forceDark
       />
     </div>
   );
-};
+});

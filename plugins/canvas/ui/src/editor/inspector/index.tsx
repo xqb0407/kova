@@ -173,7 +173,7 @@ export const Inspector: FC<{ store: CanvasStore; selectedEl: El | null; askAI: (
                     onValueChange={([v]) => patch({ opacity: (v ?? 100) / 100 } as Partial<TextEl>, true)}
                     className="flex-1"
                   />
-                  <span className="text-muted-foreground w-9 shrink-0 text-right text-[11px] tabular-nums">{Math.round((el.opacity ?? 1) * 100)}%</span>
+                  <span className="text-muted-foreground w-9 shrink-0 text-right text-xs tabular-nums">{Math.round((el.opacity ?? 1) * 100)}%</span>
                 </div>
               </GroupCard>
               {/* 层序/解组：元素顶部不再有浮动工具条，图层操作全部收进属性面板 */}

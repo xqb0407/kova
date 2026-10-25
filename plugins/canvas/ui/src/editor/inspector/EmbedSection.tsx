@@ -16,7 +16,7 @@ export const EmbedSection: FC<{ el: EmbedEl; patch: (p: Partial<EmbedEl>, coales
           onChange={(e) => patch({ url: e.target.value }, true)}
           onKeyDown={(e) => e.stopPropagation()}
           placeholder="https://…"
-          className="w-full rounded-lg border border-transparent bg-secondary/60 px-2 py-1.5 font-mono text-[11px] outline-none focus-visible:border-ink"
+          className="w-full rounded-lg border border-transparent bg-secondary/60 px-2 py-1.5 font-mono text-xs outline-none focus-visible:border-ink"
         />
         <div className="text-muted-foreground truncate text-[10.5px]" title={el.title ?? ""}>
           {el.title ? `显示名：${el.title}` : "角标显示 provider 名"}

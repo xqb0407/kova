@@ -165,7 +165,7 @@ export const FileTreeTab: FC = () => {
                       ) : null}
                     </div>
                     <div
-                      className="text-muted-foreground truncate text-[11px]"
+                      className="text-muted-foreground truncate text-xs"
                       title={root.path}
                     >
                       {root.path}

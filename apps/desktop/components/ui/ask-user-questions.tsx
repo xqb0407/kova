@@ -1115,7 +1115,7 @@ const AskUserQuestions = forwardRef<HTMLDivElement, AskUserQuestionsProps>(
                   {opt.description && (
                     <span
                       className={cn(
-                        compact ? "text-[11px]" : "text-[12px]",
+                        compact ? "text-xs" : "text-[12px]",
                         "text-muted-foreground leading-snug"
                       )}
                     >
@@ -1276,7 +1276,7 @@ const AskUserQuestions = forwardRef<HTMLDivElement, AskUserQuestionsProps>(
             // floor: the option rows bleed by -mx-3, so anything tighter puts
             // their hover background flush against the card edge.
             compact
-              ? "px-3.5 sm:px-4 pt-2.5 sm:pt-3 pb-1.5 text-[11px]"
+              ? "px-3.5 sm:px-4 pt-2.5 sm:pt-3 pb-1.5 text-xs"
               : "px-4 sm:px-5 pt-3.5 sm:pt-4 pb-2 text-[12px]"
           )}
         >
@@ -1661,7 +1661,7 @@ function ShortcutChip({
       aria-hidden
       suppressHydrationWarning
       className={cn(
-        "inline-flex items-center justify-center gap-0.5 px-1 min-w-[18px] h-[18px] text-[11px] leading-none font-sans tracking-wide",
+        "inline-flex items-center justify-center gap-0.5 px-1 min-w-[18px] h-[18px] text-xs leading-none font-sans tracking-wide",
         tone === "inverted"
           ? "bg-background/15 text-background"
           : "bg-foreground/10 text-muted-foreground",
@@ -1806,7 +1806,7 @@ function Row({
       <span
         aria-hidden
         className={cn(
-          "absolute inline-flex items-center justify-center text-[11px] transition-[opacity,font-variation-settings] duration-80",
+          "absolute inline-flex items-center justify-center text-xs transition-[opacity,font-variation-settings] duration-80",
           compact ? "w-[18px] h-[18px]" : "w-5 h-5",
           isMulti && shape.bg,
           isMulti

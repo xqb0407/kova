@@ -144,7 +144,7 @@ const Chip: FC<{ selected: boolean; onToggle: () => void; children: ReactNode }>
     aria-pressed={selected}
     onClick={onToggle}
     className={cn(
-      "h-6 rounded-md border text-[11px] tabular-nums",
+      "h-6 rounded-md border text-xs tabular-nums",
       "motion-safe:transition-[color,background-color,border-color,transform] motion-safe:duration-150",
       "motion-safe:active:scale-90",
       selected
@@ -197,7 +197,7 @@ const FieldPanel: FC<{
       {/* 头部允许换行：Segmented 不可收缩（选项 whitespace-nowrap），窄窗里
           「标签 + 五段选择器」一行放不下，硬排会把整张表单撑出横向滚动 */}
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
-        <span className="text-muted-foreground shrink-0 text-[11px]">
+        <span className="text-muted-foreground shrink-0 text-xs">
           「{spec.label}」怎么触发
         </span>
         <Segmented

@@ -20,7 +20,7 @@ import {
   resolveCodeThemeName,
 } from "@/lib/markdown/code-theme";
 import { useHtmlDark } from "@/lib/settings/use-html-dark";
-import { useUiPrefs } from "@/lib/settings/ui-prefs";
+import { useUiPrefsSelector } from "@/lib/settings/ui-prefs";
 import "@/app/styles/codemirror.css";
 
 /**
@@ -35,11 +35,15 @@ import "@/app/styles/codemirror.css";
  * forceDark 供设置页"浅色/深色预览"双卡片强制指定配色，不跟随界面。
  */
 function useCodeSettings(forceDark?: boolean) {
-  const prefs = useUiPrefs();
+  // 逐字段订阅：外观页拖动滑杆（对话宽度/对比度等）时，CodeMirror 不跟着重渲染
   const htmlDark = useHtmlDark();
   const dark = forceDark ?? htmlDark;
-  const themeName = resolveCodeThemeName(prefs, dark);
-  const { codeLineNumbers, codeWrap, codeFontSize } = prefs;
+  const codeThemeLight = useUiPrefsSelector((p) => p.codeThemeLight);
+  const codeThemeDark = useUiPrefsSelector((p) => p.codeThemeDark);
+  const codeLineNumbers = useUiPrefsSelector((p) => p.codeLineNumbers);
+  const codeWrap = useUiPrefsSelector((p) => p.codeWrap);
+  const codeFontSize = useUiPrefsSelector((p) => p.codeFontSize);
+  const themeName = resolveCodeThemeName({ codeThemeLight, codeThemeDark }, dark);
   // memo：选区状态变化会触发本组件重渲染，返回值每次新对象会连带
   // Shell/CodeMirror 逐次重渲染（basicSetup 等 props 变了还会重配置编辑器）
   return useMemo(

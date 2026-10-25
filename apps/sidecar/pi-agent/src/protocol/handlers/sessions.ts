@@ -713,7 +713,14 @@ export const handlers: Record<string, CommandHandler> = {
         if (!row.agent) continue;
         collectArtifactReferences(row.agent, artifactRefs);
         messageCount += 1;
-      } else if (row.type !== "compaction") {
+      } else if (row.type === "compaction") {
+        // 压缩摘要也会随分叉复制：摘要里的回执路径同样要收养/改写，
+        // 否则父会话淘汰后，分叉里摘要引用的 artifact 就不可读了。
+        const summary = (row as { summary?: unknown }).summary;
+        if (typeof summary === "string") {
+          collectArtifactReferences(summary, artifactRefs);
+        }
+      } else {
         continue;
       }
       dataLines.push(line);

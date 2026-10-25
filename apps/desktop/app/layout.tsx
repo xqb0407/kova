@@ -23,6 +23,7 @@ import "@fontsource/jetbrains-mono/700.css";
 import "./styles/globals.css";
 import { Toaster } from "@/components/ui/toast";
 import { PerfHud } from "@/components/debug/perf-hud";
+import { ThemeRuntime } from "@/components/runtime/theme-runtime";
 
 export const metadata: Metadata = {
   title: "Kova Harness Agent",
@@ -30,12 +31,12 @@ export const metadata: Metadata = {
 };
 
 /**
- * 外观偏好预绘制脚本：在首帧前把 localStorage 里的 ui.prefs 落到 html 根元素
- * （.dark 类 / data-accent / 根字号 / data-chat-width / data-font），避免闪烁。
- * 字段与选择器须与 lib/ui-prefs.ts 的 applyPrefs 保持一致；
- * 后续响应式更新与系统主题监听由该模块接管。
+ * 外观偏好预绘制脚本：在首帧前把 localStorage 里的 ui.prefs 与其派生缓存
+ * （ui.theme.cache）落到 html 根元素，避免闪烁。缓存由 lib/settings/ui-prefs.ts
+ * 在每次偏好变更时写入；派生算法只存在于 lib/theme/palette.ts，这里只做套用。
+ * 字段/键名须与 ui-prefs 的 writeBootCache 保持一致。
  */
-const UI_PREFS_BOOTSTRAP = `(function(){try{var p=JSON.parse(localStorage.getItem("ui.prefs")||"{}"),d=document.documentElement,m=window.matchMedia("(prefers-color-scheme: dark)");d.classList.toggle("dark",p.theme==="dark"||(p.theme!=="light"&&m.matches));if(p.accent&&p.accent!=="default")d.setAttribute("data-accent",p.accent);if(p.fontSize==="sm")d.style.fontSize="15px";else if(p.fontSize==="lg")d.style.fontSize="17px";if(p.chatWidth==="narrow"||p.chatWidth==="wide")d.setAttribute("data-chat-width",p.chatWidth);if(p.fontFamily&&p.fontFamily!=="default")d.setAttribute("data-font",p.fontFamily);}catch(e){}})();`;
+const UI_PREFS_BOOTSTRAP = `(function(){try{var d=document.documentElement,m=window.matchMedia("(prefers-color-scheme: dark)"),p=JSON.parse(localStorage.getItem("ui.prefs")||"{}"),dark=p.theme==="dark"||(p.theme!=="light"&&m.matches);d.classList.toggle("dark",dark);d.style.colorScheme=dark?"dark":"light";var c=JSON.parse(localStorage.getItem("ui.theme.cache")||"null");if(c){var t=dark?c.dark:c.light;if(t){for(var k in t)d.style.setProperty(k,t[k]);}if(c.fontSize)d.style.fontSize=c.fontSize;if(c.fontWeight)d.style.fontWeight=c.fontWeight;if(c.chatWidth)d.style.setProperty("--chat-width",c.chatWidth);var w=c.wallpaper;if(w&&(w.mode==="both"||w.mode===(dark?"dark":"light"))){var img=localStorage.getItem("ui.wallpaper.image");if(img&&/^data:image\\/(?:png|jpe?g|webp);base64,/i.test(img)){d.setAttribute("data-wallpaper","");d.style.setProperty("--wallpaper-image",'url("'+img+'")');for(var v in w.vars)d.style.setProperty(v,w.vars[v]);}}}}catch(e){}})();`;
 
 /**
  * crypto.randomUUID 是 Secure Context 专属 API：远程模式经 http://LAN-IP 访问时
@@ -73,6 +74,8 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: WEBVIEW_ABORT_GUARD }} />
       </head>
       <body>
+        {/* 水合后重放一次主题 token（见组件注释） */}
+        <ThemeRuntime />
         {/* PerfHud：性能采样/上报的挂载点，平时渲染 null（屏上那行已去掉，
             上报默认关——见 components/debug/perf-store.ts 的 PERF_LOG） */}
         {children} <Toaster /> <PerfHud />

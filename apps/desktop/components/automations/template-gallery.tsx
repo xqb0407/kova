@@ -161,7 +161,7 @@ export const TemplateCard: FC<{
             {template.name}
           </span>
           {/* 排期胶囊常驻标题行右端：模板之间的差别主要就在"什么时候跑" */}
-          <span className="text-muted-foreground bg-muted shrink-0 rounded-full px-2 py-0.5 text-[11px] tabular-nums">
+          <span className="text-muted-foreground bg-muted shrink-0 rounded-full px-2 py-0.5 text-xs tabular-nums">
             {describeTemplateSchedule(template)}
           </span>
           {/* 定宽占位 + 只动 transform/opacity：进场不推挤标题行 */}

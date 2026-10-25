@@ -346,16 +346,21 @@ export function ThreadPreviewRail() {
     measureRailBottom,
   ]);
 
-  // 外观设置切换对话宽度（html[data-chat-width]）只改消息列 max-width，视口
-  // 尺寸不变，ResizeObserver 收不到——不补这一下，正文左缘会沿用旧值，从窄
-  // 切到宽时刻度条仍按旧间距显示，又压回字上
+  // 外观设置切换对话宽度：--chat-width 现在内联在 html 上（百分比），
+  // 消息列 max-width 变了但视口尺寸不变，ResizeObserver 收不到——监听
+  // style 属性里这个变量的变化补一次同步。值没变时跳过，避免字号/配色
+  // 之类的其它 style 变更也触发。
   useEffect(() => {
     if (typeof MutationObserver === "undefined") return;
-    const observer = new MutationObserver(() => scheduleSync());
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["data-chat-width"],
+    const root = document.documentElement;
+    let lastWidth = root.style.getPropertyValue("--chat-width");
+    const observer = new MutationObserver(() => {
+      const nextWidth = root.style.getPropertyValue("--chat-width");
+      if (nextWidth === lastWidth) return;
+      lastWidth = nextWidth;
+      scheduleSync();
     });
+    observer.observe(root, { attributes: true, attributeFilter: ["style"] });
     return () => observer.disconnect();
   }, [scheduleSync]);
 

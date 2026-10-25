@@ -1136,7 +1136,7 @@ const ConnectorSub: FC = () => {
               active={active}
               title={item.description}
               trailing={
-                <span className="text-muted-foreground shrink-0 whitespace-nowrap font-mono text-[11px] tracking-wider">
+                <span className="text-muted-foreground shrink-0 whitespace-nowrap font-mono text-xs tracking-wider">
                   {!entry.enabled
                     ? "未启用"
                     : ready
@@ -1208,7 +1208,7 @@ const ToolFlyout: FC<{
           <PanelRow active={active} title={title} chevron>
             <ServerIcon entry={entry} />
             <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-            <span className="text-muted-foreground me-1 shrink-0 font-mono text-[11px] tracking-wider whitespace-nowrap">
+            <span className="text-muted-foreground me-1 shrink-0 font-mono text-xs tracking-wider whitespace-nowrap">
               {tools.length}
             </span>
           </PanelRow>

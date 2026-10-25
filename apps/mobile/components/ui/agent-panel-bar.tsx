@@ -820,7 +820,7 @@ function ArtifactViewer({
               </Text>
               <Text
                 numberOfLines={1}
-                className="text-muted-foreground min-w-0 flex-1 text-[11px] opacity-70"
+                className="text-muted-foreground min-w-0 flex-1 text-xs opacity-70"
               >
                 {`${formatBytes(artifact.size)} · 会话内快照`}
               </Text>

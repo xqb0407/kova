@@ -64,7 +64,7 @@ const RunHeader: FC<{ run: SubagentRunState }> = ({ run }) => {
         ) : null}
         <span className="text-muted-foreground ml-auto shrink-0 text-xs">{statusSuffix}</span>
       </div>
-      <p className="text-muted-foreground/70 mt-1 text-[11px] tabular-nums">
+      <p className="text-muted-foreground/70 mt-1 text-xs tabular-nums">
         {run.turns} 轮 · {run.toolCalls} 工具调用
       </p>
     </div>

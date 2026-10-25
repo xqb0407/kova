@@ -322,7 +322,7 @@ const SubagentRow: FC<{
           </div>
           <div className="mt-2 flex min-w-0 items-center gap-2">
             {entry.editable ? (
-              <span className="text-muted-foreground/80 min-w-0 max-w-56 truncate text-[11px]">
+              <span className="text-muted-foreground/80 min-w-0 max-w-56 truncate text-xs">
                 模型：{entry.model ?? "跟随会话模型"}
               </span>
             ) : (
@@ -773,7 +773,7 @@ export const SubagentsSettings: FC<{
                   className="bg-background/70 border-amber-500/10 flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2"
                 >
                   <span className="mt-1.5 size-1 shrink-0 rounded-full bg-amber-500/70" />
-                  <span className="min-w-0 font-mono text-[11px] leading-5 break-all">{d}</span>
+                  <span className="min-w-0 font-mono text-xs leading-5 break-all">{d}</span>
                 </li>
               ))}
             </ul>

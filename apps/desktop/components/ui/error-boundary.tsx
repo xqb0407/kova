@@ -124,7 +124,7 @@ export function CrashFallback({
         ) : null}
       </div>
       {copy === "failed" ? (
-        <p className="text-destructive/80 max-w-sm text-[11px]">
+        <p className="text-destructive/80 max-w-sm text-xs">
           浏览器拒绝了剪贴板访问，详情请改看日志。
         </p>
       ) : null}

@@ -143,7 +143,7 @@ export const ElementRefDialogHost: FC = () => {
                   复制
                 </button>
               </div>
-              <pre className="bg-muted/50 max-h-64 overflow-auto rounded-md px-2 py-1 font-mono text-[11px] leading-4 whitespace-pre-wrap break-all">
+              <pre className="bg-muted/50 max-h-64 overflow-auto rounded-md px-2 py-1 font-mono text-xs leading-4 whitespace-pre-wrap break-all">
                 {payload.html || "(空)"}
               </pre>
             </div>

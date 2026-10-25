@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 /** 面板小节标签：11px 中灰标题（macOS System Settings 语言：小灰字 + 分组卡说话） */
 export const SectionTitle: FC<{ children: ReactNode }> = ({ children }) => (
   <div className="mt-5 mb-1.5 flex items-center">
-    <span className="text-muted-foreground text-[11px] font-medium tracking-wide">{children}</span>
+    <span className="text-muted-foreground text-xs font-medium tracking-wide">{children}</span>
   </div>
 );
 
@@ -44,7 +44,7 @@ export const NumField: FC<{
   };
   return (
     <label className="flex min-w-0 flex-1 items-center gap-1.5">
-      <span className="text-muted-foreground w-8 shrink-0 truncate text-[11px] font-medium">{label}</span>
+      <span className="text-muted-foreground w-8 shrink-0 truncate text-xs font-medium">{label}</span>
       <Input
         type="number"
         className="h-7 w-full min-w-0 px-2 text-xs"
@@ -72,9 +72,9 @@ export const ColorField: FC<{
   const isGradient = !!value && value.includes("gradient");
   return (
     <label className="flex w-full min-w-0 items-center gap-1.5">
-      <span className="text-muted-foreground w-11 shrink-0 text-[11px] font-medium tracking-wide uppercase">{label}</span>
+      <span className="text-muted-foreground w-11 shrink-0 text-xs font-medium tracking-wide uppercase">{label}</span>
       <ColorPicker color={value} onChange={onChange} aria-label={`${label}颜色`} />
-      <span className="text-muted-foreground min-w-0 flex-1 truncate text-[11px]" title={isGradient ? value : undefined}>
+      <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs" title={isGradient ? value : undefined}>
         {value === "none" ? "无" : isGradient ? "渐变" : (value ?? "—")}
       </span>
       {onClear && (
@@ -82,7 +82,7 @@ export const ColorField: FC<{
           type="button"
           title="清除颜色"
           onClick={onClear}
-          className="text-muted-foreground hover:text-foreground ml-auto shrink-0 text-[11px] underline-offset-2 hover:underline"
+          className="text-muted-foreground hover:text-foreground ml-auto shrink-0 text-xs underline-offset-2 hover:underline"
         >
           清除
         </button>

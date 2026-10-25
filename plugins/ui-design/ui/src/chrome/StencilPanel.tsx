@@ -69,7 +69,7 @@ export const StencilPanel: FC<{ store: DesignStore }> = ({ store }) => {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜素材（按钮 / 饼图 / 判定…）"
-            className="min-w-0 flex-1 bg-transparent text-[11px] outline-none"
+            className="min-w-0 flex-1 bg-transparent text-xs outline-none"
             style={{ color: "var(--foreground)" }}
           />
           {query && (
@@ -120,7 +120,7 @@ export const StencilPanel: FC<{ store: DesignStore }> = ({ store }) => {
           ))}
         </div>
         {list.length === 0 && (
-          <div className="px-2 py-6 text-center text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+          <div className="px-2 py-6 text-center text-xs" style={{ color: "var(--muted-foreground)" }}>
             没有匹配的素材
           </div>
         )}

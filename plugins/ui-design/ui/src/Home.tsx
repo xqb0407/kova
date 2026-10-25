@@ -271,12 +271,12 @@ export const Home: FC<{ store: DesignStore; currentPath: string | null; onEnter:
             <span className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>
               最近设计
             </span>
-            {items && <span className="text-[11px] tabular-nums" style={{ color: "var(--muted-foreground)" }}>{items.length}</span>}
+            {items && <span className="text-xs tabular-nums" style={{ color: "var(--muted-foreground)" }}>{items.length}</span>}
             <div className="flex-1" />
             <button
               type="button"
               onClick={refresh}
-              className="flex items-center gap-1 text-[11px]"
+              className="flex items-center gap-1 text-xs"
               style={{ color: "var(--muted-foreground)" }}
             >
               <RefreshCwIcon className="size-3" /> 刷新
@@ -301,7 +301,7 @@ export const Home: FC<{ store: DesignStore; currentPath: string | null; onEnter:
               <p className="text-[12.5px]" style={{ color: "var(--foreground)" }}>
                 {unsupported ? "当前宿主不支持列出历史文档，直接新建一个开始吧。" : "工作区里还没有设计文档。"}
               </p>
-              <p className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
                 用上面的按钮新建，或把 <code>*.uidesign.json</code> 放进工作区后点刷新。
               </p>
             </div>
@@ -403,7 +403,7 @@ export const Home: FC<{ store: DesignStore; currentPath: string | null; onEnter:
               />
               <PresetPicker value={preset} onChange={setPreset} />
             </div>
-            <p className="mt-3 text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+            <p className="mt-3 text-xs leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
               起始文档包含一块 <b>{DEVICE_PRESETS[preset]?.label}</b> 画板
               {aiMode ? "；创建后会向 AI 预填生成指令，逐画板产出界面稿。" : "，进去即可继续画。"}
             </p>

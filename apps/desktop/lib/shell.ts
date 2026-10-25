@@ -5,6 +5,8 @@ import { Channel, invoke } from "@/desktop-bridge/core";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { isDesktop } from "@/lib/desktop-env";
+import { getUiPrefs, subscribeUiPrefs } from "@/lib/settings/ui-prefs";
+import { resolveFonts } from "@/lib/theme/palette";
 import { getWorkspace, pathBasename } from "@/lib/workspace/workspace-store";
 import {
   closePanelTabFor,
@@ -129,6 +131,33 @@ let list: ShellSession[] = [];
 let snapshot: { list: ShellSession[] } = { list };
 const listeners = new Set<() => void>();
 
+/** 终端字体跟随外观设置：代码字体 + 代码字号（终端略大 1px 保持可读） */
+function terminalFont(): { fontFamily: string; fontSize: number } {
+  const prefs = getUiPrefs();
+  const { codeStack } = resolveFonts(prefs);
+  return {
+    fontFamily: codeStack,
+    fontSize: Math.min(24, Math.max(10, prefs.codeFontSize + 1)),
+  };
+}
+
+// 字体变化时更新存活终端（xterm 会自己重排）；模块加载即订阅，无需视图参与
+{
+  let applied = "";
+  subscribeUiPrefs(() => {
+    const font = terminalFont();
+    const key = `${font.fontFamily}|${font.fontSize}`;
+    if (key === applied) return;
+    applied = key;
+    for (const session of list) {
+      if (session.disposed) continue;
+      session.terminal.options.fontFamily = font.fontFamily;
+      session.terminal.options.fontSize = font.fontSize;
+      fitShell(session);
+    }
+  });
+}
+
 function commit(): void {
   snapshot = { list };
   for (const l of listeners) l();
@@ -249,9 +278,10 @@ async function spawnShell(
     import("@xterm/addon-fit"),
   ]);
   const cwd = getWorkspace();
+  const font = terminalFont();
   const terminal = new Terminal({
-    fontFamily: '"Cascadia Mono", Consolas, Menlo, "JetBrains Mono", monospace',
-    fontSize: 13,
+    fontFamily: font.fontFamily,
+    fontSize: font.fontSize,
     lineHeight: 1.15,
     cursorBlink: true,
     scrollback: 5000,

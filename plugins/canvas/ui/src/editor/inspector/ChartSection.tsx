@@ -53,8 +53,8 @@ export const ChartSection: FC<{ el: ChartEl; patch: (p: Partial<ChartEl>, coales
           ariaLabel="底部图例"
           onChange={(v) => patch({ showLegend: v === "on" } as Partial<ChartEl>, true)}
           options={[
-            { v: "on", node: <span className="text-[11px] font-semibold">图例</span>, title: "显示底部图例" },
-            { v: "off", node: <span className="text-[11px]">无图例</span>, title: "隐藏图例" },
+            { v: "on", node: <span className="text-xs font-semibold">图例</span>, title: "显示底部图例" },
+            { v: "off", node: <span className="text-xs">无图例</span>, title: "隐藏图例" },
           ]}
         />
         <NumField label="字号" min={6} max={48} value={el.size ?? 12} onChange={(v) => patch({ size: v } as Partial<ChartEl>, true)} />

@@ -365,10 +365,10 @@ export const App: FC = () => {
             的内容无法解析（多半是写坏了 JSON）。编辑器保持空档，<b className="font-medium">不会自动覆盖原文件</b>；
             可修复文件后回首页重开，或直接在画布上作画并保存来重建。
           </span>
-          <Button size="sm" variant="secondary" className="h-7 shrink-0 text-[11px]" onClick={() => setHomeOpen(true)}>
+          <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" onClick={() => setHomeOpen(true)}>
             回首页
           </Button>
-          <Button size="sm" variant="ghost" className="h-7 shrink-0 text-[11px]" onClick={() => store.dismissDocCorrupt()}>
+          <Button size="sm" variant="ghost" className="h-7 shrink-0 text-xs" onClick={() => store.dismissDocCorrupt()}>
             知道了
           </Button>
         </div>

@@ -84,7 +84,7 @@ export const UserMessage: FC = () => {
         {steered && (
           <div className="mb-1 flex items-center gap-1.5 pl-0.5">
             <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
-            <span className="text-muted-foreground/70 text-[11px] leading-none">
+            <span className="text-muted-foreground/70 text-xs leading-none">
               已并入当前回复
             </span>
           </div>
@@ -117,7 +117,7 @@ export const UserMessage: FC = () => {
             {omittedNotices.split("\n").map((line, i) => (
               <span
                 key={`${i}-${line}`}
-                className="text-[11px] leading-snug text-amber-600 dark:text-amber-400"
+                className="text-xs leading-snug text-amber-600 dark:text-amber-400"
               >
                 {line}
               </span>

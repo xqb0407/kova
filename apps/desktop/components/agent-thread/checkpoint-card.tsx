@@ -576,7 +576,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
                             "border-border/60 mt-1 border-t pt-1.5",
                         )}
                       >
-                        <div className="text-muted-foreground px-2 text-[11px]">
+                        <div className="text-muted-foreground px-2 text-xs">
                           主目录（未进入整轮快照，可逐文件回滚）
                         </div>
                         {detachedPrimaryEdits.map((edit) => (
@@ -597,7 +597,7 @@ const CheckpointCardEntry: FC<{ entry: CheckpointEntry; threadId: string }> = ({
                             "border-border/60 mt-1 border-t pt-1.5",
                         )}
                       >
-                        <div className="text-muted-foreground px-2 text-[11px]">
+                        <div className="text-muted-foreground px-2 text-xs">
                           项目附加根（整轮撤销不覆盖，可逐文件回滚）
                         </div>
                         {externalEdits.map((edit) => {

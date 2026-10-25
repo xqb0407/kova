@@ -327,7 +327,7 @@ export const ModePicker: FC = () => {
           })}
         </DropdownMenuGroup>
         <DropdownMenuSeparator className="bg-foreground/[0.06]" />
-        <div className="text-muted-foreground/70 px-2 py-1.5 text-[11px]">
+        <div className="text-muted-foreground/70 px-2 py-1.5 text-xs">
           Shift+Tab 快速切换
         </div>
       </DropdownMenuContent>

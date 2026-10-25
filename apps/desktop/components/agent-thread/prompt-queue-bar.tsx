@@ -140,7 +140,7 @@ export const PromptQueueBar: FC = () => {
           ? steered[0]
           : `${steered[0]} 等 ${steered.length} 条`}
       </span>
-      <span className="text-muted-foreground/70 shrink-0 text-[11px] leading-none">
+      <span className="text-muted-foreground/70 shrink-0 text-xs leading-none">
         已并入当前回复
       </span>
       {canExpandSteered && (
@@ -229,7 +229,7 @@ export const PromptQueueBar: FC = () => {
                       className="flex items-start gap-2"
                     >
                       <span
-                        className="text-muted-foreground/50 w-3 shrink-0 text-center text-[11px] leading-5 tabular-nums"
+                        className="text-muted-foreground/50 w-3 shrink-0 text-center text-xs leading-5 tabular-nums"
                         aria-hidden
                       >
                         {index + 1}
@@ -246,7 +246,7 @@ export const PromptQueueBar: FC = () => {
         </div>
       )}
       {items.length > 0 && (
-        <div className="text-muted-foreground/70 pl-3.5 text-[11px] leading-none tabular-nums">
+        <div className="text-muted-foreground/70 pl-3.5 text-xs leading-none tabular-nums">
           {items.length} 条排队
         </div>
       )}
@@ -267,7 +267,7 @@ export const PromptQueueBar: FC = () => {
             className="group border-border/50 dark:border-muted-foreground/10 flex items-center gap-2 rounded-(--composer-radius) border bg-(--composer-bg) py-2 pr-1.5 pl-3.5 backdrop-blur-md animate-in fade-in slide-in-from-bottom-1 duration-200"
           >
             <span
-              className="w-3 shrink-0 text-center text-[11px] leading-none text-muted-foreground/50 tabular-nums"
+              className="w-3 shrink-0 text-center text-xs leading-none text-muted-foreground/50 tabular-nums"
               aria-label={`排队第 ${index + 1} 位`}
             >
               {index + 1}

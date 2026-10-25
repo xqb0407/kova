@@ -480,7 +480,7 @@ export const ThreadFind: FC = () => {
                   index === activeIndex && "bg-accent",
                 )}
               >
-                <span className="text-muted-foreground text-[11px] leading-none">
+                <span className="text-muted-foreground text-xs leading-none">
                   第 {hit.turn} 轮 · {hit.role === "user" ? "你" : "AI"}
                   {hit.count > 1 ? ` · ${hit.count} 处` : ""}
                 </span>
@@ -494,7 +494,7 @@ export const ThreadFind: FC = () => {
           </div>
         ) : null}
 
-        <div className="text-muted-foreground flex items-center gap-1.5 border-t border-border/60 px-3 py-1.5 text-[11px]">
+        <div className="text-muted-foreground flex items-center gap-1.5 border-t border-border/60 px-3 py-1.5 text-xs">
           <Kbd>Enter</Kbd> 下一个
           <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> 上一个
           <Kbd>Esc</Kbd> 关闭

@@ -182,9 +182,9 @@ export const Thread = memo(function Thread() {
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root bg-transparent relative @container flex h-full flex-col"
       style={{
-        // 外观设置「对话宽度」经 html[data-chat-width] 覆写 --chat-width（globals.css）；
-        // 回退值 = 默认档（md），改这里即改默认宽度
-        ["--thread-max-width" as string]: "var(--chat-width, 60rem)",
+        // 外观设置「对话宽度」由 ui-prefs 内联 --chat-width（百分比，100% = 平铺）；
+        // 回退值是设置页的默认档 52%，改这里即改默认宽度
+        ["--thread-max-width" as string]: "var(--chat-width, 52%)",
         ["--composer-bg" as string]:
           "color-mix(in oklab, var(--color-background) 85%, transparent)",
         ["--composer-radius" as string]: "1.5rem",
@@ -292,13 +292,12 @@ export const Thread = memo(function Thread() {
             </div>
           </AuiIf>
           {/* AI 生成内容免责声明：仅对话页显示（贴 composer 正下方；新对话页
-              还没有生成内容，不出现）。负边距抵消 footer 的 gap-4 保持贴紧；
-              sticky footer 上内容会从下方滚过，底色由 globals.css 的
-              [data-slot="ai-disclaimer"] 规则跟随聊天卡片（含材质半透明） */}
+              还没有生成内容，不出现）。纯文字、不铺底色——整条实色底会在圆角
+              聊天卡/壁纸里切出灰色横带；负边距抵消 footer 的 gap-4 保持贴紧 */}
           {!isEmpty && (
             <p
               data-slot="ai-disclaimer"
-              className="-mt-1 pb-1 text-center text-xs text-muted-foreground/80"
+              className="-mt-1 pb-1 text-center text-xs text-muted-foreground/70"
             >
               内容由AI生成，重要信息请务必核查
             </p>

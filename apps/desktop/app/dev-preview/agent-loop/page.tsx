@@ -133,7 +133,7 @@ export default function AgentLoopDevPreview() {
                   onClick={() => setSource(id)}
                   data-active={source === id}
                   className={cn(
-                    "hover:bg-muted rounded px-1.5 py-0.5 text-[11px]",
+                    "hover:bg-muted rounded px-1.5 py-0.5 text-xs",
                     source === id && "bg-muted font-medium",
                   )}
                 >
@@ -147,7 +147,7 @@ export default function AgentLoopDevPreview() {
                 <select
                   value={sessionId ?? ""}
                   onChange={(e) => onPickSession(e.target.value)}
-                  className="border-border bg-background max-w-[260px] rounded border px-1.5 py-0.5 text-[11px]"
+                  className="border-border bg-background max-w-[260px] rounded border px-1.5 py-0.5 text-xs"
                 >
                   {sessions.length === 0 ? <option value="">（无会话）</option> : null}
                   {sessions.map((s) => (
@@ -166,7 +166,7 @@ export default function AgentLoopDevPreview() {
                 </button>
               </>
             ) : (
-              <label className="flex cursor-pointer items-center gap-1 text-[11px]">
+              <label className="flex cursor-pointer items-center gap-1 text-xs">
                 <input
                   type="checkbox"
                   checked={simulateLive}
@@ -180,7 +180,7 @@ export default function AgentLoopDevPreview() {
             )}
 
             {err ? (
-              <span className="truncate text-[11px] text-red-500" title={err}>
+              <span className="truncate text-xs text-red-500" title={err}>
                 {err}
               </span>
             ) : null}

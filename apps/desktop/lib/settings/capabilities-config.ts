@@ -26,6 +26,10 @@ export type CapabilitiesSnapshot = {
   readonly enabled: Record<string, boolean>;
   /** sidecar 侧的完整设置（写入的合并基底） */
   readonly settings: PiCapabilitySettings;
+  /** 装配生命周期：new / installing / ready / failed（诊断用） */
+  readonly lifecycle: string | null;
+  /** 单能力安装失败（隔离自身，不影响其余能力） */
+  readonly failures: readonly PiCapabilityFailure[];
 };
 
 export const TOOL_BUDGET_ID = "tool-budget";
@@ -34,6 +38,8 @@ export const LOOP_GUARD_ID = "loop-guard";
 const DEFAULT_SNAPSHOT: CapabilitiesSnapshot = {
   enabled: {},
   settings: { enabled: {}, params: {} },
+  lifecycle: null,
+  failures: [],
 };
 
 /** 保存结果：reloadFailures 非空表示个别会话保留旧工具表、下次 resolve 自愈 */
@@ -78,7 +84,12 @@ type CapabilitiesResponse = {
 function fromResponse(res: CapabilitiesResponse): CapabilitiesSnapshot {
   const enabled: Record<string, boolean> = {};
   for (const item of res.items ?? []) enabled[item.id] = item.enabled;
-  return { enabled, settings: res.settings };
+  return {
+    enabled,
+    settings: res.settings,
+    lifecycle: res.lifecycle ?? null,
+    failures: res.failures ?? [],
+  };
 }
 
 /** 单飞刷新：成功返回 true 并更新镜像；失败保持原状，调用方决定是否拒绝写入。 */

@@ -155,7 +155,7 @@ const TurnLimitEditor: FC<{
         />
         <InputGroupAddon align="inline-end">轮</InputGroupAddon>
       </InputGroup>
-      <p className="text-muted-foreground text-[11px] leading-relaxed">
+      <p className="text-muted-foreground text-xs leading-relaxed">
         {hint}
       </p>
       <div className="flex items-center justify-end gap-1.5">
@@ -307,7 +307,7 @@ const DurationEditor: FC<{
         />
         <InputGroupAddon align="inline-end">分钟</InputGroupAddon>
       </InputGroup>
-      <p className="text-muted-foreground text-[11px] leading-relaxed">{hint}</p>
+      <p className="text-muted-foreground text-xs leading-relaxed">{hint}</p>
       <div className="flex items-center justify-end gap-1.5">
         <Button variant="ghost" size="sm" className="h-7 px-2.5" onClick={onCancel}>
           取消
@@ -359,7 +359,7 @@ const GoalSetupPopover: FC<{ threadId: string }> = ({ threadId }) => {
               title={m.hint}
               onClick={() => setGoalAcceptanceMode(m.value, threadId)}
               className={cn(
-                "rounded border px-1.5 py-1 text-[11px] transition-colors",
+                "rounded border px-1.5 py-1 text-xs transition-colors",
                 mode === m.value
                   ? "border-foreground/30 bg-foreground/5 font-medium"
                   : "border-border/60 text-muted-foreground hover:text-foreground",
@@ -369,7 +369,7 @@ const GoalSetupPopover: FC<{ threadId: string }> = ({ threadId }) => {
             </button>
           ))}
         </div>
-        <p className="text-muted-foreground mt-1 text-[11px] leading-relaxed">
+        <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
           {modes.find((m) => m.value === mode)?.hint}
         </p>
         <div className="mt-3 mb-2 text-xs font-medium">活跃时长上限</div>
@@ -476,7 +476,7 @@ const ProgressPopover: FC<{ progress: GoalTurnSummary[] }> = ({ progress }) => {
             .slice(-5)
             .reverse()
             .map((entry) => (
-              <div key={`${entry.turn}-${entry.at}`} className="text-[11px] leading-relaxed">
+              <div key={`${entry.turn}-${entry.at}`} className="text-xs leading-relaxed">
                 <div className="font-medium">第 {entry.turn} 轮</div>
                 <div className="text-muted-foreground">{entry.summary || "无文字输出"}</div>
                 <div className="text-muted-foreground/80 tabular-nums">
@@ -530,7 +530,7 @@ const CriteriaPopover: FC<{ threadId: string; goal: GoalSnapshot }> = ({
             <Button
               variant="ghost"
               size="sm"
-              className="h-6 px-2 text-[11px]"
+              className="h-6 px-2 text-xs"
               onClick={() => {
                 setText(items.map((c) => c.text).join("\n"));
                 setEditing(true);
@@ -547,10 +547,10 @@ const CriteriaPopover: FC<{ threadId: string; goal: GoalSnapshot }> = ({
               rows={6}
               value={text}
               onChange={(e) => setText(e.target.value)}
-              className="border-border/60 bg-background w-full resize-none rounded border p-2 text-[11px] leading-relaxed outline-none"
+              className="border-border/60 bg-background w-full resize-none rounded border p-2 text-xs leading-relaxed outline-none"
               placeholder="每行一条验收标准"
             />
-            <p className="text-muted-foreground text-[11px] leading-relaxed">
+            <p className="text-muted-foreground text-xs leading-relaxed">
               保存后以你的版本为准；完成时必须逐条给出可核验证据。
             </p>
             <div className="flex items-center justify-end gap-1.5">
@@ -583,7 +583,7 @@ const CriteriaPopover: FC<{ threadId: string; goal: GoalSnapshot }> = ({
         ) : (
           <ol className="flex flex-col gap-1">
             {items.map((c) => (
-              <li key={c.id} className="flex gap-1.5 text-[11px] leading-relaxed">
+              <li key={c.id} className="flex gap-1.5 text-xs leading-relaxed">
                 <span className="text-muted-foreground shrink-0 tabular-nums">{c.id}</span>
                 <span className="min-w-0">{c.text}</span>
               </li>
@@ -624,14 +624,14 @@ const AutonomyPopover: FC<{ threadId: string; goal: GoalSnapshot }> = ({
       />
       <PopoverContent align="end" className="w-72 p-3">
         <div className="mb-1 text-xs font-medium">放开权限，让目标自己跑</div>
-        <p className="text-muted-foreground mb-2 text-[11px] leading-relaxed">
+        <p className="text-muted-foreground mb-2 text-xs leading-relaxed">
           当前是「变更前确认」档，每条 write/bash 都会弹卡。目标要跑很多轮时，建议在这里选一档。
         </p>
         <div className="flex flex-col gap-1.5">
           <Button
             variant="outline"
             size="sm"
-            className="h-8 justify-start text-[11px]"
+            className="h-8 justify-start text-xs"
             onClick={() => apply("auto-edit")}
           >
             编辑免确认（推荐）
@@ -639,7 +639,7 @@ const AutonomyPopover: FC<{ threadId: string; goal: GoalSnapshot }> = ({
           <Button
             variant="outline"
             size="sm"
-            className="h-8 justify-start text-[11px] text-amber-600 dark:text-amber-400"
+            className="h-8 justify-start text-xs text-amber-600 dark:text-amber-400"
             onClick={() => apply("auto")}
           >
             完全访问（命令也不再问，谨慎）
@@ -686,7 +686,7 @@ const CompletionAuditPopover: FC<{ goal: GoalSnapshot }> = ({ goal }) => {
           {audit.map((row) => (
             <div
               key={row.id}
-              className="border-border/60 rounded-md border p-2 text-[11px] leading-relaxed"
+              className="border-border/60 rounded-md border p-2 text-xs leading-relaxed"
             >
               <div className="flex items-start gap-1.5">
                 <span className="shrink-0">{row.met ? "✅" : "❌"}</span>
@@ -806,9 +806,9 @@ const ObjectiveEditor: FC<{
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && valid) onCommit(trimmed);
           if (e.key === "Escape") onCancel();
         }}
-        className="border-border/60 bg-background w-full resize-none rounded border p-2 text-[11px] leading-relaxed outline-none"
+        className="border-border/60 bg-background w-full resize-none rounded border p-2 text-xs leading-relaxed outline-none"
       />
-      <p className="text-muted-foreground text-[11px] leading-relaxed">
+      <p className="text-muted-foreground text-xs leading-relaxed">
         {willVoidCriteria
           ? "验收标准是按原目标提的，改动后它们会作废、重新协商一轮。"
           : "改动后轮次与停滞计数重新起算，产物另存一份。"}
@@ -912,13 +912,13 @@ const CriteriaConfirmCard: FC<{
     <div className="flex flex-col gap-2">
       <div className="text-xs font-medium">验收标准（确认后开始执行）</div>
       {previousFeedback && (
-        <div className="border-border/60 text-muted-foreground rounded border border-dashed p-2 text-[11px] leading-relaxed">
+        <div className="border-border/60 text-muted-foreground rounded border border-dashed p-2 text-xs leading-relaxed">
           上一版为什么被退回：{previousFeedback}
         </div>
       )}
       <ol className="flex flex-col gap-1">
         {items.map((c) => (
-          <li key={c.id} className="flex gap-1.5 text-[11px] leading-relaxed">
+          <li key={c.id} className="flex gap-1.5 text-xs leading-relaxed">
             <span className="text-muted-foreground shrink-0 tabular-nums">{c.id}</span>
             <span className="min-w-0">{c.text}</span>
           </li>
@@ -927,7 +927,7 @@ const CriteriaConfirmCard: FC<{
 
       {!rejecting && (
         <>
-          <div className="text-muted-foreground mt-1 text-[11px]">
+          <div className="text-muted-foreground mt-1 text-xs">
             这条目标跑在这些操作上的确认档
           </div>
           <div className="grid grid-cols-2 gap-1">
@@ -938,7 +938,7 @@ const CriteriaConfirmCard: FC<{
                 title={l.hint}
                 onClick={() => setApprovalLevel(l.value)}
                 className={cn(
-                  "rounded border px-1.5 py-1 text-[11px] transition-colors",
+                  "rounded border px-1.5 py-1 text-xs transition-colors",
                   approvalLevel === l.value
                     ? "border-foreground/30 bg-foreground/5 font-medium"
                     : "border-border/60 text-muted-foreground hover:text-foreground",
@@ -948,7 +948,7 @@ const CriteriaConfirmCard: FC<{
               </button>
             ))}
           </div>
-          <p className="text-muted-foreground text-[11px] leading-relaxed">
+          <p className="text-muted-foreground text-xs leading-relaxed">
             按这个标准完成时，模型必须逐条给出证据；有标准没达标就不算完成。
           </p>
           <div className="flex items-center justify-end gap-1.5">
@@ -991,7 +991,7 @@ const CriteriaConfirmCard: FC<{
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             placeholder="哪里不对？模型下一轮会按这段意见重提（留空也能提交，但它只能靠猜）"
-            className="border-border/60 bg-background w-full resize-none rounded border p-2 text-[11px] leading-relaxed outline-none"
+            className="border-border/60 bg-background w-full resize-none rounded border p-2 text-xs leading-relaxed outline-none"
           />
           <div className="flex items-center justify-end gap-1.5">
             <Button
@@ -1129,7 +1129,7 @@ export const GoalStrip: FC = () => {
             render={
               <Button
                 size="sm"
-                className="h-6 shrink-0 px-2 text-[11px]"
+                className="h-6 shrink-0 px-2 text-xs"
                 disabled={busy}
                 title="查看并确认验收标准"
               >

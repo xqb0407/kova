@@ -9,6 +9,7 @@ import {
   type AccentName,
   type ThemeMode,
 } from "@/lib/settings/ui-prefs";
+import { ACCENT_PRESETS } from "@/lib/theme/presets";
 import { useOnboarding } from "../onboarding-flow";
 import { StepFooter, StepHeading } from "./step-parts";
 import { CheckIcon, MonitorIcon, MoonIcon, SunIcon } from "lucide-react";
@@ -24,24 +25,14 @@ const THEMES: { value: ThemeMode; label: string; icon: FC<{ className?: string }
   { value: "dark", label: "深色", icon: MoonIcon },
 ];
 
-/** 强调色预设：色值与 globals.css 的 :root[data-accent] --primary 保持一致 */
-const ACCENTS: { value: AccentName; label: string; color: string | null }[] = [
-  { value: "default", label: "默认（单色）", color: null },
-  { value: "blue", label: "蓝色", color: "oklch(0.55 0.22 257)" },
-  { value: "violet", label: "紫色", color: "oklch(0.55 0.21 292)" },
-  { value: "green", label: "绿色", color: "oklch(0.55 0.16 155)" },
-  { value: "orange", label: "橙色", color: "oklch(0.62 0.18 55)" },
-  { value: "rose", label: "玫红", color: "oklch(0.58 0.21 350)" },
-  { value: "periwinkle", label: "长春花蓝", color: "oklch(0.606 0.136 269)" },
-];
-
 export const AppearanceStep: FC = () => {
   const { next, back, patch } = useOnboarding();
   const prefs = useUiPrefs();
 
   // 主题与强调色都有默认值，走完这一步就算配过了；完成清单要显示成什么样
   const themeLabel = THEMES.find((t) => t.value === prefs.theme)?.label ?? "跟随系统";
-  const accentLabel = ACCENTS.find((a) => a.value === prefs.accent)?.label ?? "默认（单色）";
+  const accentLabel =
+    ACCENT_PRESETS.find((a) => a.value === prefs.accent)?.label ?? "默认（跟随主题）";
   useEffect(() => {
     patch("appearance", { done: true, summary: `${themeLabel} · ${accentLabel}` });
   }, [patch, themeLabel, accentLabel]);
@@ -51,7 +42,9 @@ export const AppearanceStep: FC = () => {
   }, []);
 
   const chooseAccent = useCallback((accent: AccentName) => {
+    // 选了命名色就清掉自定义色，否则自定义色仍优先、点了没反应
     setUiPref("accent", accent);
+    setUiPref("accentCustom", null);
   }, []);
 
   return (
@@ -88,7 +81,7 @@ export const AppearanceStep: FC = () => {
         <div>
           <div className="text-muted-foreground mb-2 text-xs">强调色</div>
           <div className="flex flex-wrap items-center gap-3">
-            {ACCENTS.map((accent) => {
+            {ACCENT_PRESETS.map((accent) => {
               const active = prefs.accent === accent.value;
               return (
                 <button

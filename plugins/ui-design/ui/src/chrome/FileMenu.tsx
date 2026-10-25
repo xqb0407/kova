@@ -251,7 +251,7 @@ export const FileMenu: FC<{ store: DesignStore; onGoHome: () => void; onPreview?
             {doc.meta.name}
           </button>
         )}
-        <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+        <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
           {connected ? (dirty ? "未保存…" : "已保存") : "本地草稿"}
         </span>
       </div>

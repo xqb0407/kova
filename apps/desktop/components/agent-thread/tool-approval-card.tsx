@@ -176,7 +176,7 @@ const PlanExitRow: FC<{
         )}
         {/* <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-muted-foreground text-[11px] font-medium">
+            <span className="text-muted-foreground text-xs font-medium">
               计划待批准
             </span>
             <span className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap">

@@ -27,7 +27,7 @@ export const PageSection: FC<{ store: DeckStore; doc: CanvasDoc; slide: Frame | 
     <TabsContent value="page" className="mt-0">
       {slide ? (
         <>
-          <p className="text-muted-foreground pt-2.5 text-[11px] leading-relaxed">
+          <p className="text-muted-foreground pt-2.5 text-xs leading-relaxed">
             第 {doc.frames.findIndex((f) => f.id === slide.id) + 1} / {slideFrames(doc).length} 页 · {slide.w}×{slide.h}
             （放映/导出只含页框，画布级元素不入档）
           </p>
@@ -72,7 +72,7 @@ export const PageSection: FC<{ store: DeckStore; doc: CanvasDoc; slide: Frame | 
           <GroupCard>
             <PresetSelect value={doc.meta.pagePreset} onChange={store.setPreset} className="h-7 w-full" />
           </GroupCard>
-          <p className="text-muted-foreground mt-5 px-0.5 text-[11px] leading-relaxed">
+          <p className="text-muted-foreground mt-5 px-0.5 text-xs leading-relaxed">
             提示：拖拽元素边缘有吸附线；拖入/粘贴图片自动落盘资产目录；选中元素后可「问 AI」。
           </p>
         </>

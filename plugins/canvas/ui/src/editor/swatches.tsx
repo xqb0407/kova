@@ -67,7 +67,7 @@ export const SwatchRow: FC<{
             onClick={onNone}
             aria-pressed={none}
             className={cn(
-              "border-border text-muted-foreground hover:text-foreground flex h-7 items-center gap-1.5 rounded-lg border px-2 text-[11px] transition-colors",
+              "border-border text-muted-foreground hover:text-foreground flex h-7 items-center gap-1.5 rounded-lg border px-2 text-xs transition-colors",
               none && "border-ink text-foreground",
             )}
           >
