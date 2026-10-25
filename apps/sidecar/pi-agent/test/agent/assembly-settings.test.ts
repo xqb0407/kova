@@ -39,7 +39,7 @@ describe("capability 设置规整", () => {
 });
 
 describe("initCapabilities", () => {
-  test("无存储环境下也能安装内置能力，默认全部关闭", async () => {
+  test("无存储环境下也能安装内置能力：tool-budget 默认开、loop-guard 默认关", async () => {
     await initCapabilities();
     const registry = getCapabilityRegistry();
     expect(registry.lifecycleState()).toBe("ready");
@@ -47,32 +47,45 @@ describe("initCapabilities", () => {
       "loop-guard",
       "tool-budget",
     ]);
-    expect(registry.isEnabled("tool-budget")).toBe(false);
+    expect(registry.isEnabled("tool-budget")).toBe(true);
     expect(registry.isEnabled("loop-guard")).toBe(false);
   });
 
   test("开关应用后诊断快照可见", async () => {
     await initCapabilities();
     const settings = setCapabilitySettingsForTest({
-      enabled: { "tool-budget": true },
+      enabled: { "tool-budget": false },
       params: {},
     });
     applyCapabilityEnablement(settings);
 
     const payload = getCapabilitiesPayload();
     expect(payload.lifecycle).toBe("ready");
-    expect(payload.items.find((item) => item.id === "tool-budget")?.enabled).toBe(true);
+    expect(payload.items.find((item) => item.id === "tool-budget")?.enabled).toBe(false);
     expect(payload.items.find((item) => item.id === "loop-guard")?.enabled).toBe(false);
   });
 
-  test("全量设置删除 key 后，能力回落默认（关闭）", async () => {
+  test("显式值压过默认：关掉默认开的 tool-budget 后保持关", async () => {
     await initCapabilities();
     applyCapabilityEnablement(
-      setCapabilitySettingsForTest({ enabled: { "tool-budget": true }, params: {} }),
+      setCapabilitySettingsForTest({ enabled: { "tool-budget": false }, params: {} }),
     );
-    expect(getCapabilityRegistry().isEnabled("tool-budget")).toBe(true);
+    expect(getCapabilityRegistry().isEnabled("tool-budget")).toBe(false);
+  });
+
+  test("全量设置删除 key 后回落各自默认：tool-budget 回开、loop-guard 回关", async () => {
+    await initCapabilities();
+    applyCapabilityEnablement(
+      setCapabilitySettingsForTest({
+        enabled: { "tool-budget": false, "loop-guard": true },
+        params: {},
+      }),
+    );
+    expect(getCapabilityRegistry().isEnabled("tool-budget")).toBe(false);
+    expect(getCapabilityRegistry().isEnabled("loop-guard")).toBe(true);
 
     applyCapabilityEnablement(setCapabilitySettingsForTest({ enabled: {}, params: {} }));
-    expect(getCapabilityRegistry().isEnabled("tool-budget")).toBe(false);
+    expect(getCapabilityRegistry().isEnabled("tool-budget")).toBe(true);
+    expect(getCapabilityRegistry().isEnabled("loop-guard")).toBe(false);
   });
 });
