@@ -9,7 +9,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { ThreadNavButtons } from "@/components/agent-thread/thread-nav-buttons";
 import { MoveSessionDialogHost } from "@/components/agent-thread/move-session-dialog";
 import { Button } from "@/components/ui/button";
-import { GlobalSearchView } from "@/components/search/global-search-view";
+import dynamicImport from "next/dynamic";
 import {
   Sheet,
   SheetContent,
@@ -58,6 +58,16 @@ import {
   type ReactNode,
 } from "react";
 import { Kbd, KbdGroup } from "../ui/kbd";
+
+// 搜索视图懒加载：它带行组件全家桶 + 一批 lucide 图标，不该进首屏 chunk
+//（仓库既有范式同 SettingsPage）。首次 ⌘K 会多一次 chunk 拉取。
+const GlobalSearchView = dynamicImport(
+  () =>
+    import("@/components/search/global-search-view").then(
+      (m) => m.GlobalSearchView,
+    ),
+  { ssr: false },
+);
 
 /** 侧边栏宽度拖拽调节的持久化键（存 px 整数；无值 = 默认 16.25rem 栏宽，
  *  rem 基准跟随全局字号缩放，拖过之后按用户选定的 px 固定）与上下限 */
@@ -769,7 +779,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
         {searchOpen ? (
           <div className="absolute inset-0 z-40 flex bg-background">
             <GlobalSearchView
-              open={searchOpen}
+              open
               onOpenChange={setSearchOpen}
               collapsed={sidebarCollapsed}
               onNewThread={() => {
