@@ -51,7 +51,7 @@ import {
   removeHostUiRequest,
   type PiThreadState,
 } from "./threadState";
-import { errorText } from "../utils";
+import { errorText } from "pi-runtime";
 import { isKnownPiClientEventType } from "../eventTypes";
 import {
   projectPiThreadMessagesIncremental,

@@ -46,8 +46,7 @@ import {
 } from "./hostUi";
 import { piExtras } from "./piExtras";
 import type { PiRuntimeExtrasInternal, PiRuntimeOptions } from "./runtimeTypes";
-import { PI_SDK } from "../sdkIdentity";
-import { disposeControllers } from "./disposeControllers";
+import { PI_SDK, disposeControllers } from "pi-runtime";
 // 桌面扩展（迁移 4c/5）：本地线程 id -> pi sessionId 绑定登记。新链路的
 // threadListItem.id 在本会话内保持 __LOCALID_ 原值（core reconcileInitializedThread
 // 保留原 mapping id），只有刷新后才等于 sessionId——消费侧请求（context_info/

@@ -1,0 +1,30 @@
+{
+  "name": "pi-runtime",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./types": "./src/types.ts",
+    "./eventTypes": "./src/eventTypes.ts",
+    "./runtime/hostUi": "./src/runtime/hostUi.ts",
+    "./runtime/threadState": "./src/runtime/threadState.ts",
+    "./runtime/messageIdPins": "./src/runtime/messageIdPins.ts",
+    "./client/validation": "./src/client/validation.ts",
+    "./runtime/useReplaySafeEffect": "./src/runtime/useReplaySafeEffect.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pi-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@assistant-ui/core": "^0.3.22",
+    "@types/bun": "^1.4.2",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.3.0",
+    "typescript": "^5.9.3"
+  }
+}

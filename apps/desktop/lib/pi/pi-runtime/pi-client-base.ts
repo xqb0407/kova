@@ -19,7 +19,7 @@
  */
 import type { PiResponse, PiSessionSummary } from "@/lib/pi/pi-bridge";
 import type { PiPromptAttachment } from "@/lib/pi/pi-channel";
-import { parsePartialJsonObject } from "./partial-json";
+import { parsePartialJsonObject } from "pi-runtime";
 import { sessionModeSnapshot, fetchPlanningState } from "@/lib/pi/pi-session-mode";
 import {
   goalAcceptanceModeForSend,
@@ -43,22 +43,22 @@ import { refreshContextMirror } from "@/lib/pi/pi-context";
 import { piResumableStorage } from "@/lib/pi/pi-resume-storage";
 import { readLastThread, syncClearLastThread } from "@/lib/pi/pi-last-thread";
 import {
+  applyDelegationChunk,
+  emitAgentEvent,
   focusPanelTabFor,
   focusPluginPanelFor,
   getCurrentPanelThreadId,
-} from "@/lib/panels/panel-tabs";
+  refreshFileTree,
+  resyncPiRunning,
+} from "@/lib/host-effects";
 import {
   getTurnTiming,
   scopedTurnKey,
   seedTurnTimings,
 } from "@/lib/panels/turn-collapse";
-import { refreshFileTree } from "@/lib/workspace/file-tree";
 import { consumeSteerIntent } from "@/lib/pi/pi-steer-intent";
 import { extractPromptAttachments } from "@/lib/attachments/prompt-attachments";
-import { resyncPiRunning } from "@/lib/pi/pi-running";
 import { setThreadTitle } from "@/lib/pi/pi-thread-titles";
-import { emitAgentEvent } from "@/lib/pi/agent-events";
-import { applyDelegationChunk } from "@/lib/subagent/subagent-runs";
 import { getWorkspace } from "@/lib/workspace/workspace-store";
 import {
   applySessionSummaries,
