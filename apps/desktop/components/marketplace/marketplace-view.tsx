@@ -38,6 +38,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
@@ -446,7 +447,14 @@ export const MarketplaceView: FC<{
             {manageTab === "plugins" && <McpSettings embedded />}
             {manageTab === "skills" && <SkillsSettings embedded />}
             {manageTab === "apps" && (
-              <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
+              <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-sm">
+                {/* 缺省页与搜索/资料库同一套点阵云 */}
+                <div className="relative mb-1 grid place-items-center">
+                  <DotCloud />
+                  <div className="absolute grid size-14 place-items-center rounded-2xl backdrop-blur-sm">
+                    <Link2Icon className="text-muted-foreground/70 size-6" strokeWidth={1.75} />
+                  </div>
+                </div>
                 暂无应用授权
               </div>
             )}

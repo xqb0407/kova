@@ -15,6 +15,7 @@
 
 import type { FC, ReactNode } from "react";
 import { CalendarClockIcon, HistoryIcon } from "lucide-react";
+import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { cn } from "@/lib/utils";
 
 /** 与模板卡那枚 40px 瓷片同一配方（淡底 + ring-inset 内描边），只是放大一档。
@@ -35,9 +36,13 @@ const EmptyTile: FC<{ className?: string; children: ReactNode }> = ({ className,
  *  两条路一次说完，行动点由调用方传（本组件不碰编辑器状态） */
 export const AutomationEmptyState: FC<{ action?: ReactNode }> = ({ action }) => (
   <div className="text-muted-foreground mt-4 flex flex-col items-center gap-3 py-8 text-center">
-    <EmptyTile className="size-14">
-      <CalendarClockIcon className="size-6" />
-    </EmptyTile>
+    {/* 与搜索页同一套「点阵云」：大块空区的缺省页不留一整片白 */}
+    <div className="relative grid place-items-center">
+      <DotCloud />
+      <EmptyTile className="absolute size-14">
+        <CalendarClockIcon className="size-6" />
+      </EmptyTile>
+    </div>
     <p className="text-foreground text-base font-semibold tracking-[-0.011em]">
       还没有自动化任务
     </p>

@@ -3,27 +3,11 @@
 /**
  * 空态视觉：monocode 同款「点阵云 + 毛玻璃图标」。
  *
- * 点阵用**单个元素**的 radial-gradient 平铺实现，而不是 513 个 span——
- * 视觉等价（10px 步距 / 3px 圆点 / 径向渐隐 mask），但 DOM 节点从 513 个
- * 降到 1 个，打开搜索页时的首帧挂载成本基本归零。
+ * 点阵本体抽到 custom-ui/dot-cloud（资料库空态复用同一套视觉）。
  */
 import { memo, type FC } from "react";
 import { SearchIcon, SearchXIcon } from "lucide-react";
-
-const DotCloud: FC = memo(function DotCloud() {
-  return (
-    <div
-      aria-hidden
-      className="h-48 w-72 text-foreground opacity-[0.14] [mask-image:radial-gradient(ellipse_72%_68%_at_50%_50%,#000_18%,transparent_76%)]"
-      style={{
-        backgroundImage:
-          "radial-gradient(circle, currentColor 1.5px, transparent 1.5px)",
-        backgroundSize: "10px 10px",
-        backgroundPosition: "5px 5px",
-      }}
-    />
-  );
-});
+import { DotCloud } from "@/components/custom-ui/dot-cloud";
 
 /** 默认页缺省（空查询且无最近内容） */
 export const SearchEmptyState: FC = memo(function SearchEmptyState() {

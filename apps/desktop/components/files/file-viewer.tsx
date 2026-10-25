@@ -24,6 +24,7 @@ import {
   PencilIcon,
 } from "lucide-react";
 import { CodeMirrorCode } from "@/components/code/cm-code";
+import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import { FileTypeIcon } from "@/components/agent-thread/agent-panel/file-type-icon";
 import { Button } from "@/components/ui/button";
@@ -144,7 +145,13 @@ export const FileViewer: FC<{
           className,
         )}
       >
-        <EyeIcon className="text-muted-foreground/50 size-6" />
+        {/* 与搜索页空态同一套「点阵云 + 毛玻璃图标」：资料库缺省页不再是一枚孤零零的小图标 */}
+        <div className="relative -mb-1 grid place-items-center">
+          <DotCloud />
+          <div className="absolute grid size-14 place-items-center rounded-2xl backdrop-blur-sm">
+            <EyeIcon className="text-muted-foreground/70 size-6" strokeWidth={1.75} />
+          </div>
+        </div>
         <p className="text-muted-foreground/60 text-xs select-none">
           在左侧选择一个文件，这里显示内容并可编辑
         </p>

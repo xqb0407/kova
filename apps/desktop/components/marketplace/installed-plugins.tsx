@@ -37,6 +37,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { Badge } from "@/components/ui/badge";
 import { BadgeOverflow } from "@/components/ui/badge-overflow";
 import { Button } from "@/components/ui/button";
@@ -198,8 +199,12 @@ export const InstalledPlugins: FC = () => {
   if (snap.plugins.length === 0) {
     return (
       <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2">
-        <div className="bg-muted/50 grid size-12 place-items-center rounded-2xl border">
-          <PuzzleIcon className="text-muted-foreground size-6" />
+        {/* 缺省页与搜索/资料库同一套点阵云 + 图标瓷片 */}
+        <div className="relative mb-1 grid place-items-center">
+          <DotCloud />
+          <div className="bg-muted/50 absolute grid size-14 place-items-center rounded-2xl border backdrop-blur-sm">
+            <PuzzleIcon className="text-muted-foreground size-6" />
+          </div>
         </div>
         <p className="text-sm font-medium">还没有已安装的插件</p>
         <p className="text-sm">切到「市场」页签添加插件市场并安装。</p>

@@ -42,6 +42,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { DotCloud } from "@/components/custom-ui/dot-cloud";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { saveSkill, useSkills } from "@/lib/skills/skills";
 import { PluginIcon } from "@/components/marketplace/plugin-icon";
@@ -742,7 +743,13 @@ export const SkillMarket: FC = () => {
           </div>
         ) : items.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-20 text-sm">
-            <PackageOpenIcon className="size-8" />
+            {/* 无结果/空分类与搜索页同一套点阵云 */}
+            <div className="relative mb-1 grid place-items-center">
+              <DotCloud />
+              <div className="absolute grid size-14 place-items-center rounded-2xl backdrop-blur-sm">
+                <PackageOpenIcon className="text-muted-foreground/70 size-6" strokeWidth={1.75} />
+              </div>
+            </div>
             {query ? `没有匹配「${query}」的技能。` : "该分类下暂无技能。"}
           </div>
         ) : (
