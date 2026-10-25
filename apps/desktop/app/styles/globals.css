@@ -877,6 +877,14 @@ html.dark[data-window-effect] {
   vertical-align: middle;
   margin-right: 4px;
 }
+/* 输入框内芯片的字号比正文小一档：composer 正文是 text-base（16px），芯片
+   与正文同字号显得偏大（2026-10 用户反馈「字体调小一些」）。用 em 随宿主
+   字号缩放（composer 与自动化弹窗同为 16px → 14px）；消息气泡里的芯片
+   （directive-text 的 13px）不受影响。图标/删除叉仍按 16px 定尺，hover
+   切换时宽度零跳动。 */
+.aui-directive-chip-editor {
+  font-size: 0.875em;
+}
 .aui-directive-chip-mention .aui-directive-chip-label {
   display: inline-block;
   vertical-align: middle;

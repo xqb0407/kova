@@ -285,7 +285,7 @@ const AttachmentRemove: FC = () => {
     <AttachmentPrimitive.Remove
       render={
         <TooltipIconButton
-          tooltip="Remove file"
+          tooltip="删除文件"
           className="aui-attachment-tile-remove absolute end-1 top-1 size-5 rounded-full bg-black/50! text-white after:absolute after:-inset-1.5 hover:bg-black/70! hover:text-white! active:scale-[0.96] motion-reduce:transition-none"
           side="top"
         />
@@ -302,7 +302,7 @@ const AttachmentRemoveInline: FC = () => {
     <AttachmentPrimitive.Remove
       render={
         <TooltipIconButton
-          tooltip="Remove file"
+          tooltip="删除文件"
           className="text-muted-foreground hover:text-foreground hover:bg-muted size-6 shrink-0 rounded-full active:scale-[0.96] motion-reduce:transition-none"
           side="top"
         />
