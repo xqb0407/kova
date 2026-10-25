@@ -507,8 +507,10 @@ export const GlobalSearchView: FC<{
       aria-label="全局搜索"
       className="flex min-w-0 flex-1 flex-col bg-background"
     >
-      {/* 顶栏：输入 + 状态 */}
-      <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-border/30 px-4">
+      {/* 顶栏：输入行 + scope 行（monocode 同构）——平铺、紧凑、各带一条
+          分割线；占位符保持短句（"搜索一切…"），具体覆盖哪些域由空态说明，
+          长占位符会把整行读成工具栏而不是搜索框。 */}
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
         <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
         <input
           ref={inputRef}
@@ -516,12 +518,12 @@ export const GlobalSearchView: FC<{
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onInputKeyDown}
-          placeholder="搜索会话、消息、产物、资料库与项目…（> 执行操作）"
+          placeholder="搜索一切…"
           aria-label="全局搜索"
           spellCheck={false}
           autoComplete="off"
           enterKeyHint="go"
-          className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+          className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground/60"
         />
         {query ? (
           <button
@@ -541,8 +543,8 @@ export const GlobalSearchView: FC<{
         <Kbd>Esc</Kbd>
       </div>
 
-      {/* scope 页签 */}
-      <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border/30 px-3">
+      {/* scope 页签：左对齐小胶囊（选中态带底色），与结果区同一 px 基线 */}
+      <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-3">
         {SCOPES.map((item) => {
           const selected = scope === item.id;
           return (
@@ -744,7 +746,8 @@ const EMPTY_DOT_COLS = 27;
 const EMPTY_DOT_ROWS = 19;
 
 const SearchEmptyState: FC = () => (
-  <div className="flex flex-col items-center justify-center px-6 pb-24 pt-16">
+  // min-h-full：在滚动容器里撑满剩余高度，点阵云垂直居中（monocode 同款构图）
+  <div className="flex min-h-full flex-col items-center justify-center px-6 pb-24">
     <div className="relative mb-2 grid h-48 w-72 place-items-center">
       <div
         aria-hidden
