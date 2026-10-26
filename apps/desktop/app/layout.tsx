@@ -9,6 +9,7 @@ import { Toaster } from "@/components/ui/toast";
 import { PerfHud } from "@/components/debug/perf-hud";
 import { ThemeRuntime } from "@/components/runtime/theme-runtime";
 import { FontCssLoader } from "@/components/runtime/font-css-loader";
+import { MarkdownWarmup } from "@/components/runtime/markdown-warmup";
 import { BOOT_CACHE_VERSION } from "@/lib/theme/palette";
 
 export const metadata: Metadata = {
@@ -65,6 +66,8 @@ export default function RootLayout({
         <ThemeRuntime />
         {/* 非默认字体 CSS 仅在选中时注入；首屏只加载 Geist */}
         <FontCssLoader />
+        {/* 应用壳落定后空闲预取 Markdown 重插件/Shiki，避免首次切会话时集中付费 */}
+        <MarkdownWarmup />
         {/* PerfHud：性能采样/上报的挂载点，平时渲染 null（屏上那行已去掉，
             上报默认关——见 components/debug/perf-store.ts 的 PERF_LOG） */}
         {children} <Toaster /> <PerfHud />

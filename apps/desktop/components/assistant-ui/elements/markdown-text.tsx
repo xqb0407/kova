@@ -114,6 +114,11 @@ function useMarkdownPlugins(): LazyPlugins | null {
   return plugins;
 }
 
+/** 应用壳落定后由 MarkdownWarmup 调用的空闲预热：只拉插件 chunk，不阻塞渲染 */
+export function prewarmMarkdownPlugins(): void {
+  void loadPlugins().catch(() => {});
+}
+
 const sharedComponents = {
   // 正文外链：短站点图标 + 链接文字，悬浮 title 显示完整 href，
   // 点击走系统浏览器（桌面 webview 里裸 <a> 无人接管 target=_blank，点了没反应）。

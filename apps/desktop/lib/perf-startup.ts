@@ -32,6 +32,15 @@ function elementLabel(el: Element | null | undefined): string | undefined {
   return `${el.tagName.toLowerCase()}${text ? ` "${text.slice(0, 60)}"` : ""}`;
 }
 
+/** 错误消息可能比启动画面大，成为 LCP；启动指标不应把它当首屏内容 */
+function isErrorLcp(el: Element | null | undefined): boolean {
+  if (!el) return false;
+  if (el.classList?.contains("aui-message-error-message")) return true;
+  return /no_healthy_account|pi-agent request timed out|401 Authoriz/i.test(
+    String(el.textContent ?? ""),
+  );
+}
+
 function readPaint(): PaintSnapshot[] {
   try {
     return performance
@@ -83,6 +92,7 @@ export function installStartupMetrics(): void {
             size?: number;
             element?: Element | null;
           };
+          if (isErrorLcp(e.element)) continue;
           lcp = {
             t: Math.round(entry.startTime),
             size: Math.round(e.size ?? 0),
@@ -112,7 +122,10 @@ export function installStartupMetrics(): void {
 export function markAppShell(): void {
   if (appShellAt !== null) return;
   try {
-    appShellAt = performance.now();
+    const at = performance.now();
+    // dev HMR / 长时间保活的页面会留下 10 分钟级的旧时间点；生产启动不会到这个量级
+    if (at > 120_000) return;
+    appShellAt = at;
     performance.mark("kova:app-shell");
     console.warn(`[perf] app-shell ${Math.round(appShellAt)}ms`);
   } catch {
