@@ -23,6 +23,9 @@ export type RestartReconcilableController = {
     retry: { active: boolean };
   };
   refresh: () => Promise<void>;
+  /** sidecar 换代：旧实例的在飞 prompt 不会再收到 finish，撤掉起跑上屏但
+   *  未回显的乐观消息（见 ThreadController.discardLostPrompts）。 */
+  discardLostPrompts?: () => void;
 };
 
 type RestartReconcilableRegistry = {
@@ -40,17 +43,38 @@ export const isPiStateBusy = (state: {
   state.compaction.active ||
   state.retry.active;
 
-/** 对一轮快照对账：让每个在跑控制器各拉一次快照，返回受影响的线程数 */
+/** 清理失败不能反过来打断换代对账：单项异常记日志后继续。 */
+const discardLostPromptsSafely = (
+  controller: RestartReconcilableController,
+): void => {
+  try {
+    controller.discardLostPrompts?.();
+  } catch (error) {
+    console.error("[react-pi] discardLostPrompts failed", error);
+  }
+};
+
+/** 对一轮快照对账：让每个在跑控制器各拉一次快照，返回受影响的线程数。
+ *  换代同时清理起跑上屏的乐观消息：在跑的控制器等快照落定后再清（已落盘的
+ *  消息先由快照确认，避免删了又加的一帧闪动）；空闲控制器直接清（正常无
+ *  可清项，只是把丢失的 pending 台账收口）。 */
 export const reconcileRunningControllers = (
   controllers: Iterable<RestartReconcilableController>,
 ): number => {
   let interrupted = 0;
   for (const controller of controllers) {
-    if (!isPiStateBusy(controller.getState())) continue;
+    // 必须按方法调用保留 this（controller 是类实例；裸取函数引用会丢 this）
+    if (!isPiStateBusy(controller.getState())) {
+      discardLostPromptsSafely(controller);
+      continue;
+    }
     interrupted += 1;
-    void controller.refresh().catch(() => {
-      // load() 已把错误记进 state.lastError
-    });
+    void controller
+      .refresh()
+      .catch(() => {
+        // load() 已把错误记进 state.lastError
+      })
+      .finally(() => discardLostPromptsSafely(controller));
   }
   return interrupted;
 };

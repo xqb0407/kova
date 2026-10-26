@@ -788,4 +788,12 @@ export interface PiClient {
     threadId: string,
     listener: (requestId: string) => void,
   ): () => void;
+
+  /** prompt 终结（该 reqId 的 finish/error 帧）时回调：控制器用它撤掉
+   *  「起跑时上屏、但始终没等到回显」的乐观用户消息（起跑后失败/被停止）。
+   *  同一 id 只会通知一次。可选面——旧客户端缺失时跳过该清理。 */
+  onPromptEnd?(
+    threadId: string,
+    listener: (requestId: string) => void,
+  ): () => void;
 }

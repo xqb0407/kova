@@ -32,6 +32,37 @@ const appendUserWithImage = (text: string): AppendMessage =>
     metadata: {},
   }) as unknown as AppendMessage;
 
+const appendUser = (text: string): AppendMessage =>
+  ({
+    role: "user",
+    content: [{ type: "text", text }],
+    createdAt: new Date(0),
+    metadata: {},
+  }) as unknown as AppendMessage;
+
+const appendImageOnly = (): AppendMessage =>
+  ({
+    role: "user",
+    content: [{ type: "image", image: IMAGE_DATA_URL }],
+    createdAt: new Date(0),
+    metadata: {},
+  }) as unknown as AppendMessage;
+
+const appendDocOnly = (): AppendMessage =>
+  ({
+    role: "user",
+    content: [
+      {
+        type: "file",
+        data: "JVBERi0=",
+        mimeType: "application/pdf",
+        filename: "a.pdf",
+      },
+    ],
+    createdAt: new Date(0),
+    metadata: {},
+  }) as unknown as AppendMessage;
+
 const makeQueueFixture = (options?: {
   clearedItems?: { id: string; content: string; attachments?: unknown[] }[];
 }) => {
@@ -42,6 +73,7 @@ const makeQueueFixture = (options?: {
   const cleared: string[] = [];
   const listeners = new Set<(event: PiClientEvent) => void>();
   const startListeners = new Set<(requestId: string) => void>();
+  const endListeners = new Set<(requestId: string) => void>();
 
   const client = {
     getThread: async () =>
@@ -57,6 +89,10 @@ const makeQueueFixture = (options?: {
     onPromptStart: (_threadId: string, cb: (requestId: string) => void) => {
       startListeners.add(cb);
       return () => startListeners.delete(cb);
+    },
+    onPromptEnd: (_threadId: string, cb: (requestId: string) => void) => {
+      endListeners.add(cb);
+      return () => endListeners.delete(cb);
     },
     sendMessage: async (_threadId: string, input: SentInput) => {
       sent.push(input);
@@ -93,6 +129,9 @@ const makeQueueFixture = (options?: {
     },
     startPrompt: (requestId: string) => {
       for (const listener of startListeners) listener(requestId);
+    },
+    endPrompt: (requestId: string) => {
+      for (const listener of endListeners) listener(requestId);
     },
   };
 };
@@ -272,5 +311,282 @@ describe("停止生成：取回排队条目载荷（文本 + 图片）", () => {
     ]);
     expect(fixture.cleared).toEqual(["clear"]);
     expect(fixture.controller.getState().queue).toEqual({ steering: [], followUp: [] });
+  });
+});
+
+describe("起跑上屏：压缩期间发出的消息不再等到回显", () => {
+  const userMessages = (controller: PiThreadController) =>
+    controller.getProjectedMessages().filter((m) => m.role === "user");
+
+  it("直发：send 时不上屏，start 帧到就上屏，回显后去重只剩一条", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+
+    await fixture.controller.sendMessage(appendUser("压缩前的消息"));
+    const requestId = fixture.sent.at(-1)?.requestId!;
+    // 发送瞬间不压气泡（服务端可能仍排队，见 sendUserAppend 注释）
+    expect(userMessages(fixture.controller)).toHaveLength(0);
+
+    fixture.startPrompt(requestId);
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+
+    // agent.prompt 的 user 行回显：镜像被确认摘除，只留真实消息
+    fixture.emit({
+      type: "message_start",
+      seq: 1,
+      message: { role: "user", content: "压缩前的消息", timestamp: 0 },
+    });
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+  });
+
+  it("压缩空窗：start 后 compaction_start/end（无回显）气泡保持一条", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+
+    await fixture.controller.sendMessage(appendUser("压缩期间可见"));
+    fixture.startPrompt(fixture.sent.at(-1)?.requestId!);
+
+    fixture.emit({ type: "compaction_start", seq: 1, reason: "threshold" });
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+    fixture.emit({ type: "compaction_end", seq: 2, aborted: false, willRetry: false });
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+
+    fixture.emit({
+      type: "message_start",
+      seq: 3,
+      message: { role: "user", content: "压缩期间可见", timestamp: 0 },
+    });
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+  });
+
+  it("start 后 prompt 失败/被停止（无回显）：终结帧撤掉气泡", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+
+    await fixture.controller.sendMessage(appendUser("没跑起来"));
+    const requestId = fixture.sent.at(-1)?.requestId!;
+    fixture.startPrompt(requestId);
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+
+    fixture.endPrompt(requestId);
+    expect(userMessages(fixture.controller)).toHaveLength(0);
+  });
+
+  it("排队派发：队列条清空与气泡上屏同一次通知", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    fixture.emit({ type: "agent_start", seq: 1 });
+
+    await fixture.controller.sendMessage(appendUser("排队后再上屏"));
+    const requestId = fixture.sent.at(-1)?.requestId!;
+    expect(fixture.controller.getState().queue.followUp).toHaveLength(1);
+    expect(userMessages(fixture.controller)).toHaveLength(0);
+
+    fixture.startPrompt(requestId);
+    expect(fixture.controller.getState().queue.followUp).toEqual([]);
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+
+    fixture.emit({
+      type: "message_start",
+      seq: 2,
+      message: { role: "user", content: "排队后再上屏", timestamp: 0 },
+    });
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+  });
+
+  it("steer 并入保持无感：start 帧不压独立气泡", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    fixture.emit({ type: "agent_start", seq: 1 });
+
+    await fixture.controller.sendMessage(appendUser("并入当前轮"), {
+      streamingBehavior: "steer",
+    });
+    fixture.startPrompt(fixture.sent.at(-1)?.requestId!);
+    expect(userMessages(fixture.controller)).toHaveLength(0);
+  });
+
+  it("sidecar 换代：撤掉起跑上屏但未回显的镜像", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    await fixture.controller.sendMessage(appendUser("换代前发送"));
+    fixture.startPrompt(fixture.sent.at(-1)?.requestId!);
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+
+    fixture.controller.discardLostPrompts();
+    expect(userMessages(fixture.controller)).toHaveLength(0);
+  });
+
+  it("sidecar 换代：已回显的消息不受清理影响", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    await fixture.controller.sendMessage(appendUser("已落盘"));
+    fixture.startPrompt(fixture.sent.at(-1)?.requestId!);
+    fixture.emit({
+      type: "message_start",
+      seq: 1,
+      message: { role: "user", content: "已落盘", timestamp: 0 },
+    });
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+
+    fixture.controller.discardLostPrompts();
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+  });
+
+  it("sidecar 换代：尚未起跑的登记保留（恢复排队后仍能上屏）", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    fixture.emit({ type: "agent_start", seq: 1 });
+    await fixture.controller.sendMessage(appendUser("换代后派发"));
+    const requestId = fixture.sent.at(-1)?.requestId!;
+    // 排队中：只登记未上屏
+    expect(userMessages(fixture.controller)).toHaveLength(0);
+
+    fixture.controller.discardLostPrompts();
+    // 恢复后的队列项带原 reqId 重新派发：起跑帧仍能唤起上屏
+    fixture.startPrompt(requestId);
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+  });
+
+  it("快照先带回回显、start 后到：不再压重复镜像", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+
+    await fixture.controller.sendMessage(appendUser("你好"));
+    const requestId = fixture.sent.at(-1)?.requestId!;
+    expect(userMessages(fixture.controller)).toHaveLength(0);
+
+    // 快照应答与 start 帧无顺序保证：回显行可能先随快照落地
+    fixture.emit({
+      type: "snapshot",
+      seq: 1,
+      snapshot: {
+        metadata: { id: "thread-1", status: "idle" },
+        messages: [{ role: "user", content: "你好", timestamp: 0 }],
+        seq: 1,
+      },
+    });
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+
+    fixture.startPrompt(requestId);
+    // 真实气泡已在屏上：不得再追加一条镜像（否则会出现在列表末尾）
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+  });
+
+  it("历史里有同文消息：起跑仍上屏本次镜像，回显后摘除", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    // 更早一轮也说过「你好」——不能拿它当本次回显
+    fixture.emit({
+      type: "snapshot",
+      seq: 1,
+      snapshot: {
+        metadata: { id: "thread-1", status: "idle" },
+        messages: [{ role: "user", content: "你好", timestamp: 0 }],
+        seq: 1,
+      },
+    });
+
+    await fixture.controller.sendMessage(appendUser("你好"));
+    fixture.startPrompt(fixture.sent.at(-1)?.requestId!);
+    const optimistic = () =>
+      userMessages(fixture.controller).filter((m) =>
+        m.id?.startsWith("pi-optimistic:"),
+      );
+    expect(optimistic()).toHaveLength(1);
+
+    // 本次回显到达：新增一条 user 行，镜像被摘除
+    fixture.emit({
+      type: "message_start",
+      seq: 2,
+      message: { role: "user", content: "你好", timestamp: 0 },
+    });
+    expect(optimistic()).toHaveLength(0);
+  });
+
+  it("纯图消息：auto-continue 等无关 user 行不算回显", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    await fixture.controller.sendMessage(appendImageOnly());
+    fixture.startPrompt(fixture.sent.at(-1)?.requestId!);
+    const optimistic = () =>
+      userMessages(fixture.controller).filter((m) =>
+        m.id?.startsWith("pi-optimistic:"),
+      );
+    expect(optimistic()).toHaveLength(1);
+
+    // 自动续跑行也占 user 行，但文本键非空——不能当成本次回显
+    fixture.emit({
+      type: "message_start",
+      seq: 1,
+      message: {
+        role: "user",
+        content: "[[auto-continue]] 请继续",
+        timestamp: 0,
+      },
+    });
+    expect(optimistic()).toHaveLength(1);
+
+    // 真实回显：纯图，文本键为空
+    fixture.emit({
+      type: "message_start",
+      seq: 2,
+      message: {
+        role: "user",
+        content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+        timestamp: 0,
+      },
+    });
+    expect(optimistic()).toHaveLength(0);
+  });
+
+  it("纯图消息：图片处理说明行（非空文本）也能确认镜像", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    await fixture.controller.sendMessage(appendImageOnly());
+    fixture.startPrompt(fixture.sent.at(-1)?.requestId!);
+    const optimistic = () =>
+      userMessages(fixture.controller).filter((m) =>
+        m.id?.startsWith("pi-optimistic:"),
+      );
+    expect(optimistic()).toHaveLength(1);
+
+    // 图片被压缩/降采样时 sidecar 会在正文追加 [图片…] 说明行：文本键非空，
+    // 但仍是本条回显（空键的纯图镜像要认这种单方括号说明）
+    fixture.emit({
+      type: "message_start",
+      seq: 1,
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "\n[图片已压缩至 1MB 内联上限]" },
+          { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+        ],
+        timestamp: 0,
+      },
+    });
+    expect(optimistic()).toHaveLength(0);
+  });
+
+  it("纯文档消息：不压空气泡，等回显的附件说明行", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    await fixture.controller.sendMessage(appendDocOnly());
+    fixture.startPrompt(fixture.sent.at(-1)?.requestId!);
+    // 文档不在乐观投影里（附件卡只认 image part）：不登记上屏，避免空气泡
+    expect(userMessages(fixture.controller)).toHaveLength(0);
+
+    // 回显 = 空正文 + 附件说明行
+    fixture.emit({
+      type: "message_start",
+      seq: 1,
+      message: {
+        role: "user",
+        content:
+          "\n[用户附件：a.pdf（PDF，1KB）位于 /tmp/a.pdf，请用文件工具读取处理]",
+        timestamp: 0,
+      },
+    });
+    expect(userMessages(fixture.controller)).toHaveLength(1);
   });
 });

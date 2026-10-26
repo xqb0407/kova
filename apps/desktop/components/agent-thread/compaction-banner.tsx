@@ -8,6 +8,11 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import { fmtTokens } from "@/lib/model/model-format";
+import { usePiThreadState } from "@/lib/pi/pi-runtime";
+import {
+  liveCompactionBannerData,
+  type CompactionBannerData,
+} from "@/lib/pi/pi-live-compaction";
 import {
   clearManualCompactionMarker,
   compactionTakenOver,
@@ -17,10 +22,9 @@ import { Marker, MarkerContent, MarkerIcon } from "../ui/marker";
 
 /**
  * 上下文压缩分隔线（会话流中部）。三条呈现路径共用这里的渲染：
- * - 自动压缩（阈值/溢出）：sidecar 在同一条消息流里按同一 part id 发
- *   data-compaction 生命周期 chunk（start → complete/failed，见 sidecar
- *   protocol.ts），AI SDK 按 id 原地更新 data part，一个位置从「正在压缩
- *   上下文…」转成「上下文已压缩」。
+ * - 自动压缩（阈值/溢出）：进行中由 LiveCompactionMarker 直接读
+ *   state.compaction（sidecar 的 compaction_start/end 线程事件）渲染在流尾；
+ *   完成态由检查点行在快照/历史重建时分隔线接管。
  * - 刷新/重进会话：get_history 从 compaction 检查点行把「已压缩」分隔线重建
  *   进历史消息流（sidecar transcript.ts）。
  * - 手动压缩（context 弹层）：不走消息流，用 ManualCompactionTail 即时渲染
@@ -30,14 +34,7 @@ import { Marker, MarkerContent, MarkerIcon } from "../ui/marker";
  * 标签的「压缩摘要」小节汇总展示（agent-panel/compaction-section.tsx）。
  */
 
-type CompactionData = {
-  phase?: "start" | "complete" | "failed";
-  generation?: number;
-  tokensBefore?: number;
-  summarized?: boolean;
-  /** 压缩摘要文本（checkpoint 行 / compact 响应携带） */
-  summary?: string;
-};
+type CompactionData = CompactionBannerData;
 
 
 
@@ -100,6 +97,25 @@ export const CompactionDataUI = makeAssistantDataUI<CompactionData>({
   name: "compaction",
   render: CompactionBanner,
 });
+
+/**
+ * 自动压缩进行中的实时分隔线（消息流尾部）。状态载荷与判定见
+ * lib/pi/pi-live-compaction.ts；这里只负责挂载渲染。
+ * 手动压缩有自己的锚点 marker（ManualCompactionTailAfter），判定侧已按
+ * reason 排除，避免同一次压缩渲染两次。
+ */
+export const LiveCompactionMarker: FC = () => {
+  const compaction = usePiThreadState((s) => s.compaction);
+  const data = liveCompactionBannerData(compaction);
+  if (!data) return null;
+  return (
+    // -mt-3 抵消消息组 gap-y-6 的一部分：实时 marker 是 Messages 之后的独立
+    // flex 子项，不像手动 marker 嵌在消息体内；不抵消会比手动线多出 24px 空档
+    <div className="mx-auto w-full max-w-(--thread-max-width) px-2 -mt-3 mb-2">
+      <CompactionBanner data={data} />
+    </div>
+  );
+};
 
 /**
  * 手动压缩的即时分隔线：marker 按 anchorIndex 钉在压缩发生时那条消息之后

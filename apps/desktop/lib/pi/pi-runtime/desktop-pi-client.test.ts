@@ -447,6 +447,88 @@ describe("DesktopPiClient 事件路由", () => {
     // 首帧快照(1) + 收尾帧兜底快照(2)
     expect(snapshotCalls).toBe(2);
   });
+
+  test("onPromptEnd：finish/error 按 reqId 通知一次（乐观镜像兜底清理）", async () => {
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const { client, feed } = subscribeAndSettle();
+    await tick();
+    const ended: string[] = [];
+    const unsubscribe = client.onPromptEnd("s1", (id) => ended.push(id));
+
+    await client.sendMessage("s1", { content: "hi" });
+    const requestId = String((promptArgs as { requestId: string }).requestId);
+    feed([{ i: null, l: JSON.stringify({ id: requestId, chunk: { type: "finish" } }) }]);
+    expect(ended).toEqual([requestId]);
+
+    // inflight 已摘：同一 reqId 的后续帧不再重复通知
+    feed([{ i: null, l: JSON.stringify({ id: requestId, chunk: { type: "error" } }) }]);
+    expect(ended).toEqual([requestId]);
+    unsubscribe();
+  });
+
+  test("agent_end 收口 inflight 时补发 onPromptEnd（正常轮也走兜底）", async () => {
+    snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
+    const { client, feed } = subscribeAndSettle();
+    await tick();
+    const ended: string[] = [];
+    const unsubscribe = client.onPromptEnd("s1", (id) => ended.push(id));
+
+    await client.sendMessage("s1", { content: "hi" });
+    const requestId = String((promptArgs as { requestId: string }).requestId);
+    // agent_end 先把 inflight 收口掉；随后的 finish 帧不会再通知
+    feed([threadEvent("s1", 10, { type: "agent_end" })]);
+    expect(ended).toEqual([requestId]);
+
+    feed([{ i: null, l: JSON.stringify({ id: requestId, chunk: { type: "finish" } }) }]);
+    expect(ended).toEqual([requestId]);
+    unsubscribe();
+  });
+
+  test("排队项派发：上一轮 agent_end 不误删在飞登记，start 仍能唤醒 onPromptStart", async () => {
+    // 回归：queuedIds 若只从快照更新，轮中入队的 B 不在台账里 → 上一轮
+    // agent_end 的 inflight 收口把 B 一起删掉 → B 派发时的 start 帧被忽略，
+    // 排队消息起跑不上屏（压缩期间只有 marker、没有气泡）。
+    snapshotReply = {
+      type: "thread_snapshot",
+      snapshot: {
+        metadata: { id: "s1", status: "running", queuedMessages: [] },
+        messages: [],
+        seq: 5,
+      },
+    };
+    const { client, feed } = subscribeAndSettle();
+    await tick();
+    const started: string[] = [];
+    const unsubscribe = client.onPromptStart("s1", (id) => started.push(id));
+
+    await client.sendMessage("s1", { content: "A" });
+    const idA = String((promptArgs as { requestId: string }).requestId);
+    await client.sendMessage("s1", { content: "B" });
+    const idB = String((promptArgs as { requestId: string }).requestId);
+    expect(idA).not.toBe(idB);
+
+    // B 在 A 轮中入队：服务端只广播 queue_update，不发快照
+    feed([
+      threadEvent("s1", 10, {
+        type: "queue_update",
+        steering: [],
+        followUp: [{ id: idB, content: "B" }],
+      }),
+    ]);
+    // A 轮收尾：B 仍在队列，不得连它在飞登记一起收掉
+    feed([threadEvent("s1", 11, { type: "agent_end" })]);
+    // B 派发：队列清空快照在前、start 在后（与 sidecar 顺序一致）
+    feed([
+      threadEvent("s1", 12, {
+        type: "queue_update",
+        steering: [],
+        followUp: [],
+      }),
+    ]);
+    feed([{ i: null, l: JSON.stringify({ id: idB, chunk: { type: "start" } }) }]);
+    expect(started).toEqual([idB]);
+    unsubscribe();
+  });
 });
 
 describe("DesktopPiClient 交互卡旁路（4b）", () => {

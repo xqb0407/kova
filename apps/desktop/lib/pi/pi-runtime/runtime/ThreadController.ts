@@ -431,9 +431,55 @@ const userContentKey = (message: PiAgentMessage): string | null => {
     .join("\n");
 };
 
+/** 当前状态里的 user 行数。起跑上屏的回显确认以「发送时的条数」为基线，
+ *  而不是数组下标——快照应答可能先到并替换消息数组，下标会漂移。 */
+const countUserMessages = (messages: readonly PiAgentMessage[]): number =>
+  messages.reduce(
+    (count, message) => count + (message.role === "user" ? 1 : 0),
+    0,
+  );
+
+/** 基线之后新增的 user 行里是否有本条的落盘回显。前缀匹配保留：附件被拒收
+ *  时落盘文本会多出说明行（与 reconcile 原口径一致）。纯图/纯文档消息的
+ *  文本键为空：纯图回显无文本；纯文档（或被拒收的附件）回显是 sidecar 追加
+ *  的「[用户附件：…]」说明行。`[[auto-continue]]` 等系统 user 行用双括号
+ *  哨兵，必须排除——它们也占 user 行，但不是本条回显。 */
+const hasNewUserEcho = (
+  messages: readonly PiAgentMessage[],
+  baseUserMessages: number,
+  optimistic: PiAgentMessage,
+): boolean => {
+  const key = userContentKey(optimistic);
+  if (key === null) return false;
+  let seen = 0;
+  for (const message of messages) {
+    if (message.role !== "user") continue;
+    seen += 1;
+    if (seen <= baseUserMessages) continue;
+    if (key.length === 0) {
+      const echoed = (userContentKey(message) ?? "").trimStart();
+      if (
+        echoed === "" ||
+        (echoed.startsWith("[") && !echoed.startsWith("[["))
+      ) {
+        return true;
+      }
+      continue;
+    }
+    const echoed = userContentKey(message);
+    if (echoed === key || echoed?.startsWith(key) === true) return true;
+  }
+  return false;
+};
+
 type OptimisticUserMessage = {
   message: PiAgentMessage;
   baseMessageCount: number;
+  /** 起跑上屏的镜像：发送时状态里的 user 行数（回显确认基线，见 hasNewUserEcho） */
+  baseUserMessages?: number;
+  /** 起跑上屏的镜像对应的 prompt reqId（onPromptEnd 兜底清理用）；重发路径
+   *  的即时镜像没有 reqId，仍只靠回显确认。 */
+  requestId?: string;
 };
 
 const markStateRunning = (state: PiThreadState): PiThreadState => {
@@ -480,9 +526,24 @@ export class PiThreadController implements PiThreadControllerLike {
   private readonly messageListeners = new Set<() => void>();
   private connectionRetainers = 0;
   private readonly optimisticUserMessages: OptimisticUserMessage[] = [];
+  /** 已发出、尚未起跑的 prompt：reqId → 该条的用户消息。起跑帧（start）到
+   *  才推入 optimisticUserMessages 上屏——压缩/会话准备期间先把消息画出来，
+   *  不用等 agent.prompt 的回显（轮前压缩可能几十秒）。同一 reqId 的终结帧
+   *  （finish/error）负责把从未回显的镜像撤掉。 */
+  private readonly pendingPromptMessages = new Map<
+    string,
+    {
+      message: PiAgentMessage;
+      revealed: boolean;
+      /** 发送时状态里的 user 行数：起跑前快照若已带回回显，据此避免重复上屏 */
+      baseUserMessages: number;
+    }
+  >();
   private unsubscribeFromEvents: (() => void) | null = null;
   /** prompt 起跑通知退订（见 ensureEventSubscription / dropLocalQueueEntry） */
   private unsubscribeFromPromptStart: (() => void) | null = null;
+  /** prompt 终结通知退订（见 ensureEventSubscription / finishPendingPrompt） */
+  private unsubscribeFromPromptEnd: (() => void) | null = null;
   private eventSubscriptionGeneration = 0;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** 停止对账看门狗（armStopReconcile）：abort 后 runStatus 迟迟不翻 idle 时
@@ -586,6 +647,7 @@ export class PiThreadController implements PiThreadControllerLike {
     this.allListeners.clear();
     this.metadataListeners.clear();
     this.messageListeners.clear();
+    this.pendingPromptMessages.clear();
     this.disconnectFromEvents();
   }
 
@@ -615,14 +677,31 @@ export class PiThreadController implements PiThreadControllerLike {
       this.client.onPromptStart?.(this.threadId, (requestId) => {
         if (generation !== this.eventSubscriptionGeneration) return;
         this.dropLocalQueueEntry(requestId);
+        // 起跑即上屏：轮前压缩发生在 agent.prompt 之前，回显要等压缩结束，
+        // 期间消息流里既没有气泡也没有等待行（见 revealPendingUserMessage）
+        this.revealPendingUserMessage(requestId);
+      }) ?? null;
+    // prompt 终结（finish/error）：撤掉起跑后始终没等到回显的镜像
+    this.unsubscribeFromPromptEnd =
+      this.client.onPromptEnd?.(this.threadId, (requestId) => {
+        if (generation !== this.eventSubscriptionGeneration) return;
+        this.finishPendingPrompt(requestId);
       }) ?? null;
   }
 
   private disconnectFromEvents() {
-    if (!this.unsubscribeFromEvents && !this.unsubscribeFromPromptStart) return;
+    if (
+      !this.unsubscribeFromEvents &&
+      !this.unsubscribeFromPromptStart &&
+      !this.unsubscribeFromPromptEnd
+    ) {
+      return;
+    }
     this.unsubscribeFromEvents = null;
     this.unsubscribeFromPromptStart?.();
     this.unsubscribeFromPromptStart = null;
+    this.unsubscribeFromPromptEnd?.();
+    this.unsubscribeFromPromptEnd = null;
     this.eventSubscriptionGeneration += 1;
   }
 
@@ -741,28 +820,48 @@ export class PiThreadController implements PiThreadControllerLike {
     // 命中的笔记随 prompt 内联，模型免一次 read；读取失败/超限保持路径引用
     await prefetchLibraryNoteBodies(appendMessageParts(message));
     const built = buildPiSendInput(message, behavior);
-    // 预生成 id（队列/重发路径）：乐观队列条目 id 与协议 reqId 必须同值，
-    // 逐项操作才能在任意时刻按 id 命中服务端条目（见 sendQueued）
-    const input: PiSendMessageInput = options?.requestId
-      ? { ...built, requestId: options.requestId }
-      : built;
+    // 所有发送都带预生成 id：排队条目 id 与协议 reqId 同值（逐项操作按它命
+    // 中服务端），起跑/终结通知也按它找回本条消息（见 pendingPromptMessages）
+    const requestId = options?.requestId ?? this.newQueueRequestId();
+    const input: PiSendMessageInput = { ...built, requestId };
     // 改动（发图能力提示）：当前模型目录元数据标为纯文本输入而本次发送含图时
     // toast 提醒——不拦截（sidecar 因元数据不可靠已移除硬门，见
     // lib/pi/pi-vision-warning.ts 头注）。排队/steer/重生重发同经此汇聚点。
     maybeWarnUnsupportedImages(this.threadId, (input.attachments?.length ?? 0) > 0);
     this.ensureEventSubscription({ includeSnapshot: false });
 
-    if (isQueuedSend) return this.sendQueued(input, behavior ?? "followUp");
+    // 起跑上屏的登记口径：steer 并入语义本就「无感」（有并入徽标/回显承担
+    // 反馈），截断重发已有即时镜像——两者都不再压第二份。其余（普通直发、
+    // followUp 排队、接力泵重发）登记，等 start 帧到再上屏。
+    // 纯文档消息（无文本、无图片）不登记：文档不在乐观消息的投影里（附件卡
+    // 只认 image part），压出来会是一个空气泡；等回显的「[用户附件：…]」
+    // 说明行更合适。
+    const hasVisibleDraft =
+      input.content.trim().length > 0 || (input.attachments?.length ?? 0) > 0;
+    if (behavior !== "steer" && !optimisticMirror && hasVisibleDraft) {
+      this.rememberPendingPrompt(requestId, input);
+    }
 
-    // 普通发送不压乐观气泡：回显（sidecar message_start 的 user 行）是用户
-    // 气泡唯一来源。盲区竞态里压出的镜像永远等不到回显去重（消息在 sidecar
-    // 排队未派发，转录里没有这条），气泡与队列条并存。仅截断重发
-    // （reloadMessage/editMessage → resendAfterTruncate）沿用本地镜像——
-    // 它先截断转录再发，等待回显期间旧气泡已被截掉，需要镜像占位。
+    if (isQueuedSend) {
+      try {
+        return await this.sendQueued(input, behavior ?? "followUp");
+      } catch (error) {
+        // 入队失败（上限/传输异常）：本条不会起跑，撤掉待上屏登记
+        this.pendingPromptMessages.delete(requestId);
+        throw error;
+      }
+    }
+
+    // 普通发送不在发送瞬间压气泡（服务端可能仍排队，气泡与队列条会并存）；
+    // 但也不能只等回显——轮前压缩发生在 agent.prompt 之前，回显可能被压缩
+    // 推迟几十秒，期间消息流里什么都没有。起跑帧（start）是「这条真开跑了」
+    // 的权威信号，由 revealPendingUserMessage 在该帧上屏；回显到达后由
+    // reconcileOptimisticUserMessages 去重，终结帧再由 finishPendingPrompt 兜底。
     if (!optimisticMirror) {
       try {
         await this.client.sendMessage(this.threadId, input);
       } catch (error) {
+        this.pendingPromptMessages.delete(requestId);
         this.setState({ ...this.state, lastError: errorText(error) });
         throw error;
       }
@@ -993,6 +1092,88 @@ export class PiThreadController implements PiThreadControllerLike {
       return;
     }
     this.setState({ ...this.state, queue: { steering, followUp } });
+  }
+
+  /** 登记「已发出、等起跑」的用户消息。上限兜底：start/end 通知若因传输
+   *  异常丢失，台账也不会随发送次数无限增长。 */
+  private rememberPendingPrompt(
+    requestId: string,
+    input: PiSendMessageInput,
+  ) {
+    this.pendingPromptMessages.set(requestId, {
+      message: optimisticUserMessageFromInput(
+        input,
+        `pi-optimistic:${++this.optimisticUserSeq}`,
+      ),
+      revealed: false,
+      baseUserMessages: countUserMessages(this.state.messages),
+    });
+    while (this.pendingPromptMessages.size > 20) {
+      const oldest = this.pendingPromptMessages.keys().next().value;
+      if (oldest === undefined) break;
+      this.pendingPromptMessages.delete(oldest);
+    }
+  }
+
+  /** 起跑即上屏：把该 reqId 的消息推入乐观镜像。轮前压缩发生在 agent.prompt
+   *  之前，此时转录里还没有这条 user 行，靠它撑过压缩期间的空窗。同一 id 只
+   *  上屏一次（start 每流一帧）；回显到达后由 reconcile 摘除。
+   *
+   *  起跑帧与快照应答没有顺序保证：快照可能已经把这条 user 行带进来了（真实
+   *  气泡已在屏上）。此时不能再压镜像——镜像按投影规则恒排在消息列表末尾，
+   *  会变成「助手回复下面又冒出一条用户消息」的重复。 */
+  private revealPendingUserMessage(requestId: string) {
+    const pending = this.pendingPromptMessages.get(requestId);
+    if (!pending || pending.revealed) return;
+    pending.revealed = true;
+    if (
+      hasNewUserEcho(
+        this.state.messages,
+        pending.baseUserMessages,
+        pending.message,
+      )
+    ) {
+      return;
+    }
+    this.optimisticUserMessages.push({
+      message: pending.message,
+      baseMessageCount: this.state.messages.length,
+      baseUserMessages: pending.baseUserMessages,
+      requestId,
+    });
+    this.recomputeProjectedMessagesAndNotify();
+  }
+
+  /** 终结兜底：该 reqId 的 finish/error 已到，若镜像还没被回显确认（起跑后
+   *  失败/被停止，消息从未落到转录），撤掉它，避免幽灵气泡留到下次刷新。 */
+  private finishPendingPrompt(requestId: string) {
+    const pending = this.pendingPromptMessages.get(requestId);
+    if (!pending) return;
+    this.pendingPromptMessages.delete(requestId);
+    if (!pending.revealed) return;
+    const index = this.optimisticUserMessages.findIndex(
+      (entry) => entry.requestId === requestId,
+    );
+    if (index === -1) return;
+    this.optimisticUserMessages.splice(index, 1);
+    this.recomputeProjectedMessagesAndNotify();
+  }
+
+  /** sidecar 换代（pi_restarted）：旧实例的在飞 prompt 不会再收到 finish，
+   *  起跑时上屏、始终没等到回显的镜像因此没有清理出口，会一直挂到控制器被
+   *  淘汰。这里撤掉这些已上屏的镜像；尚未起跑的登记保留（排队项可能随
+   *  queue_state 恢复后重新派发，起跑帧还要用它上屏）。
+   *  确实已落盘的消息由紧随的对账快照带回；重发路径的即时镜像没有
+   *  requestId，同样保留——它同时承担截断后空位的占位。 */
+  public discardLostPrompts(): void {
+    for (const [requestId, pending] of this.pendingPromptMessages) {
+      if (pending.revealed) this.pendingPromptMessages.delete(requestId);
+    }
+    const kept = this.optimisticUserMessages.filter((entry) => !entry.requestId);
+    if (kept.length === this.optimisticUserMessages.length) return;
+    this.optimisticUserMessages.length = 0;
+    this.optimisticUserMessages.push(...kept);
+    this.recomputeProjectedMessagesAndNotify();
   }
 
   public async clearQueue(): Promise<PiClearedQueue> {
@@ -1301,19 +1482,32 @@ export class PiThreadController implements PiThreadControllerLike {
 
     const remaining: OptimisticUserMessage[] = [];
     for (const entry of this.optimisticUserMessages) {
-      const key = userContentKey(entry.message);
-      const confirmed = this.state.messages
-        .slice(entry.baseMessageCount)
-        .some((message) => {
-          const echoed = userContentKey(message);
-          // 前缀匹配：附件被 sidecar 拒收时，落盘文本是 noticeAppendedText
-          // 原文 + 拒收/落盘说明行（prompt-attachments），全文相等会让镜像
-          // 永远摘不掉 → 气泡与回显行重复并存
-          return (
-            echoed === key ||
-            (key !== null && key.length > 0 && echoed?.startsWith(key) === true)
-          );
-        });
+      // 起跑上屏的镜像按「发送时的 user 行数」确认（快照可替换数组，下标不可靠）；
+      // 重发路径的即时镜像沿用原来的下标下界
+      const confirmed =
+        entry.baseUserMessages !== undefined
+          ? hasNewUserEcho(
+              this.state.messages,
+              entry.baseUserMessages,
+              entry.message,
+            )
+          : (() => {
+              const key = userContentKey(entry.message);
+              return this.state.messages
+                .slice(entry.baseMessageCount)
+                .some((message) => {
+                  const echoed = userContentKey(message);
+                  // 前缀匹配：附件被 sidecar 拒收时，落盘文本是 noticeAppendedText
+                  // 原文 + 拒收/落盘说明行（prompt-attachments），全文相等会让镜像
+                  // 永远摘不掉 → 气泡与回显行重复并存
+                  return (
+                    echoed === key ||
+                    (key !== null &&
+                      key.length > 0 &&
+                      echoed?.startsWith(key) === true)
+                  );
+                });
+            })();
       if (!confirmed) remaining.push(entry);
     }
 

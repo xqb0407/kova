@@ -259,6 +259,21 @@ export type PiClientTransport = {
   watchSessions?(sessionIds: string[]): void;
 };
 
+/** queue_update 事件里的排队 reqId 集合（两条车道都算；条目 id = 真实 reqId，
+ *  与 inflight 台账同键）。 */
+const queuedRequestIdsOf = (body: Record<string, unknown>): Set<string> => {
+  const ids = new Set<string>();
+  for (const lane of ["steering", "followUp"] as const) {
+    const entries = body[lane];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const id = (entry as { id?: unknown } | null)?.id;
+      if (typeof id === "string") ids.add(id);
+    }
+  }
+  return ids;
+};
+
 export class PiClientBase implements PiClient {
   private readonly listeners = new Map<string, Set<(e: PiClientEvent) => void>>();
   /** 每线程上次派发 seq（快照/事件共用 per-session 号段） */
@@ -288,6 +303,13 @@ export class PiClientBase implements PiClient {
   /** prompt 起跑通知台账（sessionId → 监听者）：start 帧是「这条消息真的
    *  开跑了」的权威信号，控制器据此摘掉本地乐观队列条目（见 onPromptStart） */
   private readonly promptStartListeners = new Map<
+    string,
+    Set<(requestId: string) => void>
+  >();
+  /** prompt 终结通知台账（sessionId → 监听者）：finish/error 帧是「这条
+   *  prompt 不会再回显了」的权威信号，控制器据此撤掉起跑时上屏的乐观消息
+   *  （见 onPromptEnd） */
+  private readonly promptEndListeners = new Map<
     string,
     Set<(requestId: string) => void>
   >();
@@ -810,6 +832,7 @@ export class PiClientBase implements PiClient {
     if (type === "finish" || type === "error") {
       const sessionId = this.inflight.get(requestId)!;
       this.inflight.delete(requestId);
+      this.notifyPromptEnd(sessionId, requestId);
       // force：收尾帧是「本轮已结束」的权威信号，快照必须派发——指纹去重
       // 在这里会吞掉自愈（并入退化流等场景 live 的 agent_end 可能缺失，
       // 不强制刷新 runStatus 就永远停在 running，转圈/停止键永挂）
@@ -821,6 +844,7 @@ export class PiClientBase implements PiClient {
     if (!type && parsed.type === "error") {
       const sessionId = this.inflight.get(requestId)!;
       this.inflight.delete(requestId);
+      this.notifyPromptEnd(sessionId, requestId);
       const errorText =
         typeof parsed.errorText === "string" && parsed.errorText
           ? parsed.errorText
@@ -882,6 +906,12 @@ export class PiClientBase implements PiClient {
   ) {
     const set = this.listeners.get(sessionId);
     if (!set) return;
+    // 排队台账随 queue_update 实时维护（不能只靠快照）：轮中入队的消息还没进过
+    // 快照，台账停在旧值时上一轮 agent_end 的 inflight 收口会把它误删，派发时
+    // 的 start 帧就再也唤不醒 onPromptStart（排队消息起跑时不上屏）。
+    if (body.type === "queue_update") {
+      this.queuedIds.set(sessionId, queuedRequestIdsOf(body));
+    }
     const prevSeq = this.lastSeq.get(sessionId) ?? 0;
     // delta 帧幂等兑底：文本增量是台账上唯一非幂等的操作（+= 追加），
     // seq 不大于已见水位 = 重复帧（传输层双投递）或快照水位已涵盖的在飞帧
@@ -927,10 +957,13 @@ export class PiClientBase implements PiClient {
         // inflight 收口：不在最新快照队列里的请求已经跑完/失败（重连重发命中
         // 网关去重时收尾帧不会回到本连接），摘掉防台账无限增长。仍在队列的
         // 条目保留，等它们真正开跑时 start 帧还能唤醒 onPromptStart 对账。
+        // 被摘掉的请求不会再等到 finish（下一次收尾帧进来时 inflight 已空），
+        // 这里补一次终结通知：控制器据此撤掉起跑上屏但始终没回显的乐观消息。
         const queued = this.queuedIds.get(sessionId);
         for (const [requestId, sid] of this.inflight) {
           if (sid === sessionId && !queued?.has(requestId)) {
             this.inflight.delete(requestId);
+            this.notifyPromptEnd(sessionId, requestId);
           }
         }
       }
@@ -1231,6 +1264,7 @@ export class PiClientBase implements PiClient {
       inflight: this.inflight.size,
       lastPrompts: this.lastPrompts.size,
       promptStartListeners: this.promptStartListeners.size,
+      promptEndListeners: this.promptEndListeners.size,
     };
   }
 
@@ -1310,6 +1344,18 @@ export class PiClientBase implements PiClient {
     report(ids);
   }
 
+  /** prompt 终结（finish/error 帧）：通知观察席一次。调用点已先删 inflight，
+   *  同一 reqId 的后续帧不会再进来，天然只通知一次。 */
+  private notifyPromptEnd(sessionId: string, requestId: string) {
+    for (const listener of this.promptEndListeners.get(sessionId) ?? []) {
+      try {
+        listener(requestId);
+      } catch (err) {
+        console.error("[PiClientBase] promptEnd listener threw", err);
+      }
+    }
+  }
+
   /** prompt 真的开跑（start 帧）的观察席：控制器用它把「本地乐观队列条目」与
    *  「服务端实际没排队、已直接执行」的对账收敛（见 ThreadController 的
    *  dropLocalQueueEntry）。同一 id 只会通知一次（start 每流一帧）。 */
@@ -1328,6 +1374,27 @@ export class PiClientBase implements PiClient {
       if (!current) return;
       current.delete(listener);
       if (current.size === 0) this.promptStartListeners.delete(threadId);
+    };
+  }
+
+  /** prompt 终结（finish/error 帧）的观察席：控制器用它撤掉起跑时上屏、
+   *  却始终没等到回显的乐观用户消息（见 ThreadController 的
+   *  finishPendingPrompt）。与 onPromptStart 同款登退订。 */
+  onPromptEnd(
+    threadId: string,
+    listener: (requestId: string) => void,
+  ): () => void {
+    let set = this.promptEndListeners.get(threadId);
+    if (!set) {
+      set = new Set();
+      this.promptEndListeners.set(threadId, set);
+    }
+    set.add(listener);
+    return () => {
+      const current = this.promptEndListeners.get(threadId);
+      if (!current) return;
+      current.delete(listener);
+      if (current.size === 0) this.promptEndListeners.delete(threadId);
     };
   }
 }

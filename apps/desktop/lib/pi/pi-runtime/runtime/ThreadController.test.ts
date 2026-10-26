@@ -14,7 +14,10 @@ import {
 
 type Recorded =
   | { kind: "truncate"; beforeSeq: number }
-  | { kind: "send"; input: { content?: string; attachments?: unknown[] } };
+  | {
+      kind: "send";
+      input: { content?: string; attachments?: unknown[]; requestId?: string };
+    };
 
 const makeClient = (messages: unknown[], recorded: Recorded[]) =>
   ({
@@ -138,7 +141,7 @@ describe("reloadMessage（重新生成 = 截断 + 重发）", () => {
     await controller.reloadMessage(null);
     expect(recorded).toEqual([
       { kind: "truncate", beforeSeq: 0 },
-      { kind: "send", input: { content: "first" } },
+      { kind: "send", input: { content: "first", requestId: expect.any(String) } },
     ]);
   });
 
@@ -148,7 +151,7 @@ describe("reloadMessage（重新生成 = 截断 + 重发）", () => {
     await controller.reloadMessage("pi-msg:2");
     expect(recorded).toEqual([
       { kind: "truncate", beforeSeq: 2 },
-      { kind: "send", input: { content: "second" } },
+      { kind: "send", input: { content: "second", requestId: expect.any(String) } },
     ]);
   });
 
@@ -158,7 +161,7 @@ describe("reloadMessage（重新生成 = 截断 + 重发）", () => {
     await controller.reloadMessage("pi-msg:0");
     expect(recorded).toEqual([
       { kind: "truncate", beforeSeq: 0 },
-      { kind: "send", input: { content: "first" } },
+      { kind: "send", input: { content: "first", requestId: expect.any(String) } },
     ]);
   });
 
@@ -168,7 +171,7 @@ describe("reloadMessage（重新生成 = 截断 + 重发）", () => {
     await controller.reloadMessage("pi-msg:1");
     expect(recorded).toEqual([
       { kind: "truncate", beforeSeq: 0 },
-      { kind: "send", input: { content: "first" } },
+      { kind: "send", input: { content: "first", requestId: expect.any(String) } },
     ]);
   });
 
@@ -181,7 +184,7 @@ describe("reloadMessage（重新生成 = 截断 + 重发）", () => {
     await controller.reloadMessage("pi-msg:0");
     expect(recorded).toEqual([
       { kind: "truncate", beforeSeq: 0 },
-      { kind: "send", input: { content: "only" } },
+      { kind: "send", input: { content: "only", requestId: expect.any(String) } },
     ]);
   });
 
@@ -211,8 +214,9 @@ describe("reloadMessage（重新生成 = 截断 + 重发）", () => {
   it("乐观镜像未落盘（pi-optimistic id）不可截断，抛错", async () => {
     const recorded: Recorded[] = [];
     const controller = await loadedController(transcripts, recorded);
-    // 镜像只来自重发路径（普通发送不压镜像，回显是气泡唯一来源）：编辑重发
-    // 产生 pi-optimistic 镜像——编辑后文本不在陈旧快照里，reconcile 摘不掉
+    // 重发路径在发送瞬间就压镜像（不必等 start 帧；普通发送则要等起跑帧
+    // 才上屏）。编辑重发产生 pi-optimistic 镜像——编辑后文本不在陈旧快照里，
+    // reconcile 摘不掉
     await controller.editMessage(
       appendUser("second, edited", { sourceId: "pi-msg:2" }),
     );
@@ -239,7 +243,7 @@ describe("editMessage（编辑重发 = 以 sourceId 截断 + 发送编辑内容�
     expect(recorded[0]).toEqual({ kind: "truncate", beforeSeq: 2 });
     expect(recorded[1]).toEqual({
       kind: "send",
-      input: { content: "second, edited" },
+      input: { content: "second, edited", requestId: expect.any(String) },
     });
   });
 
@@ -342,6 +346,7 @@ describe("reloadMessage 乐观镜像去重（截断后数组收缩的时序）",
     expect(send?.kind).toBe("send");
     expect(send?.kind === "send" && send.input).toEqual({
       content: "second",
+      requestId: expect.any(String),
       attachments: [{ type: "image", mimeType: "image/png", data: "aGVsbG8=" }],
     });
   });
