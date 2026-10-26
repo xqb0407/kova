@@ -7,6 +7,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { app } from "electron";
 import { appDataDir, sessionsDir } from "./paths";
 import { libraryRoot } from "./library";
 import { emitChunkBatch, emitToWindows, type ChunkBatchLine } from "./ipc";
@@ -211,6 +212,9 @@ export async function ensureSpawned(): Promise<void> {
     rlErr.on("line", (line) => {
       const text = redactSecrets(line);
       writeSidecarLine(text);
+      // dev 下 sidecar 的启动错误（缺插件包、端口/DB 初始化失败等）默认只进
+      // kova-worker.log；镜像一份到控制台，避免表现成无声的 request timeout
+      if (!app.isPackaged) console.error(`[worker:stderr] ${text}`);
     });
 
     proc.on("error", (e) => {
