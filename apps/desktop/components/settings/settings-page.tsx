@@ -145,6 +145,9 @@ export const SettingsPage: FC<{
   // Windows 隐藏系统标题栏后由 WindowControls 接管，网页端无窗口 chrome
   const desktop = isDesktop();
   const winControls = desktop && !isMacPlatform();
+  // macOS 桌面端的红绿灯悬浮在侧栏顶栏左缘；其他平台这一行没有系统 chrome，
+  // 放「设置」标题，避免 Windows 上出现一整条空白
+  const macDesktop = desktop && isMacPlatform();
 
   return (
     <div className="bg-muted/55 flex h-full w-full">
@@ -153,11 +156,16 @@ export const SettingsPage: FC<{
         data-slot="settings-nav"
         className="bg-transparent flex w-65 shrink-0  flex-col "
       >
-        {/* 顶栏仅作拖拽区：macOS 红绿灯悬浮于此行 */}
+        {/* 顶栏拖拽区：macOS 红绿灯悬浮于此行；Windows/Linux/网页放「设置」
+            标题，避免左侧一整条空白 */}
         <div
           data-drag-region={desktop ? "deep" : undefined}
-          className="h-12 shrink-0"
-        />
+          className="flex h-12 shrink-0 items-center pl-5"
+        >
+          {macDesktop ? null : (
+            <span className="text-foreground/90 text-sm font-medium">设置</span>
+          )}
+        </div>
 
         <div
           ref={navRef}
