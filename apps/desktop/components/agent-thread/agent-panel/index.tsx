@@ -68,8 +68,9 @@ const EmptyTabsScreen: FC = () => {
 
 /**
  * @param onCollapse 顶栏「收起面板」入口；省略则不渲染（面板不再需要自收起时）
- * @param showWindowControls 停靠为右列时窗口右缘即面板右缘，Windows/Linux
- *        自绘三键由面板顶栏接管（Header 同步让位，见 base.tsx panelDocked）
+ * @param showWindowControls 停靠为右列时面板顶栏右缘与窗口右缘重合：
+ *        渲染窗口控件占位，与 Header 的常驻浮层同槽对齐（浮层仍由
+ *        Header 的实例绘制，本实例只留占位）
  * @param fullscreen 面板全屏中（聊天列已收起，面板平铺主区；状态由 base.tsx 持有）
  * @param onToggleFullscreen 切换全屏；省略则不渲染按钮（窄屏浮层无全屏概念）
  * @param contentFrozenPx 把手拖拽中内容区的冻结宽度（px；null = 跟手）。
@@ -172,8 +173,8 @@ const PanelShell: FC<{
   // ShellTab 检测到 sessionId 悬空即出"重新启动"卡片重建
 
   // 顶栏右缘动作：收起按钮（TRAE 式，面板展开时收起入口从 Header 移到这里）
-  // + 停靠态接管的 Windows 三键。空标签态也保留顶栏：拖拽区/收起/三键不能
-  // 随标签栏一起消失
+  // + 停靠态窗口控件占位（浮层由 Header 常驻实例绘制，这里只留同槽 100px）。
+  // 空标签态也保留顶栏：拖拽区/收起/占位不能随标签栏一起消失
   const desktop = isDesktop();
   // 顶栏动作不做位移动画：内容在开合动画期间右锚定（见 base.tsx 冻结容器），
   // 这组按钮钉在面板右缘、随面板左缘扫过被自然裁切进出；只在面板窄到放不下
@@ -223,11 +224,8 @@ const PanelShell: FC<{
             )}
           </TooltipIconButton>
         ) : null}
-        {/* top=8：TRAE 式两列布局下面板顶栏不再位于窗口 Header（h-12）
-            之下，而是与聊天顶栏同高——主区 p-2（8px）内卡片顶端的第一行；
-            旧值 56 会把三键甩到顶栏分割线下方的内容区。
-            right 默认 16 = 卡片边距 8 + pr-2 8 */}
-        {showWindowControls ? <WindowControls top={8} /> : null}
+        {/* 面板顶栏 pr-4 → 16，与 Header 常驻浮层同槽；本实例只留占位 */}
+        {showWindowControls ? <WindowControls right={16} /> : null}
       </div>
     ) : null;
 
@@ -256,7 +254,7 @@ const PanelShell: FC<{
         // 零标签也能直接开标签/插件面板,不必先靠下方卡片网格
         <div
           data-drag-region={desktop ? "deep" : undefined}
-          className="border-border/80 flex h-12 shrink-0 items-center justify-end gap-1 border-b-[0.5] pr-2"
+          className="border-border/80 flex h-12 shrink-0 items-center justify-end gap-1 border-b-[0.5] pr-4"
         >
           <div
             className={cn(

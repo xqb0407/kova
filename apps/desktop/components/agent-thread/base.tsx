@@ -362,15 +362,12 @@ export const Base: FC = () => {
   // 活动数据在 panel-activity 模块级 store（迭代1），面板卸载/未挂载不丢。
   const [panelEverOpened, setPanelEverOpened] = useState(false);
   // 面板视觉状态：像素 ≤1 视为完全收起（收起动画播完才置真）。
-  // 按钮/窗口控件交接跟着它走而不是 panelOpen，否则收起动画一起步
-  // 顶栏按钮就瞬间跳位（"闪一下"的来源）
+  // 面板顶栏占位/收起入口的显隐跟着它走而不是 panelOpen，否则收起动画
+  // 一起步顶栏就瞬间跳位（"闪一下"的来源）
   const [panelGone, setPanelGone] = useState(false);
   // onResize 每帧都会进来；只在值真正翻转时才 setState。拖拽中反复调用
   // setState（即使 React 会 bail out）仍可能让 Base 的渲染函数白跑一遍
   const panelGoneRef = useRef(false);
-  // 展开动画进行中：Header 窗口控件的卸载（docked 翻转）延迟到动画完成帧，
-  // 与面板顶栏控件可见性同帧交接，消除右上角控件空窗（展开闪的来源）
-  const [panelExpanding, setPanelExpanding] = useState(false);
   // 动画期间把 minSize 释放为 0：库对可折叠面板会把 minSize 以下的 resize
   // 钳回 minSize/0（中段瞬间消失），动画期间必须解除钳制，结束后恢复
   const [panelMinReleased, setPanelMinReleased] = useState(false);
@@ -549,7 +546,6 @@ export const Base: FC = () => {
     endPanelAnimSession();
     unfreezeChatText();
     if (!isToggle) {
-      setPanelExpanding(false);
       if (panelShown) {
         p.expand();
         p.resize(target);
@@ -578,10 +574,6 @@ export const Base: FC = () => {
       setPanelContentW(Math.round(target));
       freezeChatText(target);
       beginPanelAnimSession();
-      // 展开途中 Header 仍持有窗口控件（docked 延迟翻转）：面板顶栏控件要
-      // 随面板滑入才可见，若 docked 在起步帧就翻 true，Header 控件立即卸载
-      // 而顶栏控件还不可见——右上角出现一整段动画时长的控件空窗（闪）
-      setPanelExpanding(true);
       panelAnimRef.current = animate(p.getSize().inPixels, target, {
         duration: 0.3,
         ease: [0.32, 0.72, 0, 1],
@@ -589,7 +581,6 @@ export const Base: FC = () => {
           panelAnimRef.current = null;
           setPanelMinReleased(false);
           setPanelFrozenPx(null);
-          setPanelExpanding(false);
           endPanelAnimSession();
           unfreezeChatText();
         },
@@ -601,7 +592,6 @@ export const Base: FC = () => {
       // 右侧被裁剪滑出——与侧边栏折叠互为镜像
       setPanelFrozenPx(Math.round(from));
       setPanelContentW(Math.round(from));
-      setPanelExpanding(false);
       freezeChatText(0);
       beginPanelAnimSession();
       panelAnimRef.current = animate(from, 0, {
@@ -962,19 +952,16 @@ export const Base: FC = () => {
     );
 
   // 面板停靠为右列（宽屏且视觉上未完全收起，收起动画途中仍算停靠）：
-  // 窗口右缘即面板，收起入口与 Windows 窗口控件上移到面板顶栏；
-  // 窄屏浮层或面板收没时它们仍留在 Header
+  // 面板顶栏接管收起入口，并为常驻的 Windows 窗口控件留出同槽占位；
+  // 窄屏浮层或面板收没时不渲染该占位。
   const panelDocked = !compact && !panelGone;
-  // 右上角控件交接完成（展开动画落位那一帧，panelExpanding 翻假）：Header 侧
-  // Windows 窗口控件此刻让位给面板顶栏（面板顶栏的按钮已改为随动画从第一帧
-  // 起就在右缘，不再按落位信号延迟淡入）
-  const panelDockSettled = panelDocked && !panelExpanding;
 
   // TRAE 式左右两列：Header 只挂在聊天列上方，分割线从窗口顶通到底；
   // 列本身是带描边圆角的卡片，四周留出窗口底色边距（顶缘仍可拖窗）。
   // 窄屏（浮层模式）下浮层只盖聊天内容区，不遮 Header
-  // 回调一律稳定引用：Header 与壳在面板开合时只该因"面板相关 prop"（docked /
-  // showPanelToggle）重渲染，不该被内联箭头函数一起拖进来
+  // 回调一律稳定引用：Header 与壳在面板开合时只该因"面板相关 prop"
+  // （windowControlsCollapsed / showPanelToggle）重渲染，不该被内联
+  // 箭头函数一起拖进来
   const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
   const openMobileSidebar = useCallback(() => setMobileSidebarOpen(true), []);
   const hideSidebar = useCallback(() => setSidebarCollapsed(true), []);
@@ -1031,7 +1018,7 @@ export const Base: FC = () => {
           // 不再等开合动画播完才出现/消失（那样会留一段空槽，观感发跳）
           showPanelToggle={!panelShown}
           onTogglePanel={toggleUserPanelOpen}
-          docked={panelDockSettled}
+          windowControlsCollapsed={!compact && panelShown}
           panelShown={panelShown}
           variant={
             activeMenu === "automation" ||

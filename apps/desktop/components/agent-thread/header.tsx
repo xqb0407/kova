@@ -238,9 +238,9 @@ export const Header: FC<{
    *  （收起动画播完），窄屏浮层 = 面板关闭；由 base 计算好传入 */
   showPanelToggle?: boolean;
   onTogglePanel: () => void;
-  /** 面板停靠为右列（宽屏且视觉上未收没）：此时窗口右缘是面板而非聊天列，
-   *  Windows/Linux 自绘窗口控件改由面板顶栏承载，Header 不再渲染 */
-  docked?: boolean;
+  /** 面板作为右列（含开合动画）：窗口控件浮层常驻在 Header，占位收没，
+   *  让终端按钮随面板动画滑到聊天列右缘 */
+  windowControlsCollapsed?: boolean;
   /** 面板当前在显示（含开合动画途中）：右侧「面板开关槽」随之收没，
    *  终端按钮停在聊天列右缘（原展开按钮那一格）——与左侧侧栏展开槽镜像 */
   panelShown?: boolean;
@@ -257,7 +257,7 @@ export const Header: FC<{
   onOpenMobileSidebar,
   showPanelToggle = false,
   onTogglePanel,
-  docked = false,
+  windowControlsCollapsed = false,
   panelShown = false,
   variant = "session",
   pageDivided = false,
@@ -407,10 +407,10 @@ export const Header: FC<{
           </>
         )}
       </div>
-      {/* 窗口控制钉在聊天顶栏行右缘；停靠态右缘是面板，由面板顶栏接管渲染。
-          顶栏在主区 p-2（8px）内的卡片里，不再贴窗口顶缘：top=8；
-          right=24 = 卡片边距 8 + pr-4 16（与占位槽像素级重合） */}
-      {docked ? null : <WindowControls top={8} right={24} />}
+      {/* 窗口控制浮层常驻（面板顶栏只留同槽占位）；面板作为右列时占位
+          100px 与 gap 一起 300ms 收没，终端按钮随面板动画滑到聊天列右缘。
+          right=16 = 卡片 pr-4（浮层固定 top 0） */}
+      <WindowControls right={16} collapsed={windowControlsCollapsed} />
     </header>
   );
 };

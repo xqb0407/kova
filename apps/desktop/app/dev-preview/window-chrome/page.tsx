@@ -13,11 +13,11 @@
  * 平台覆盖，见 lib/desktop-env.ts）。不加参数时三键不画，作为基线对照。
  *
  * 已确认让位的宿主（改动史）：
- * - 聊天/整页顶栏 header.tsx：WindowControls top=8 right=24
- * - Agent 面板顶栏：WindowControls top=8（right 默认 16）
- * - 设置页顶栏：WindowControls 默认 top=0 right=16
- * - 全局搜索顶栏（覆盖层贴窗口边缘）：input 行 paddingRight=132
- *   （24 + CLUSTER_W 100 + 8 呼吸）；macOS 折叠侧栏另 paddingLeft=96 让红绿灯
+ * - 聊天/整页顶栏 header.tsx：WindowControls right=16（浮层固定 top 0）
+ * - Agent 面板顶栏：WindowControls right=16（只留占位，浮层由 Header 绘制）
+ * - 设置页顶栏：WindowControls 默认 right=16
+ * - 全局搜索顶栏（覆盖层贴窗口边缘）：input 行 paddingRight=124
+ *   （16 + CLUSTER_W 100 + 8 呼吸）；macOS 折叠侧栏另 paddingLeft=96 让红绿灯
  */
 
 import { useState } from "react";
@@ -28,12 +28,12 @@ import { GlobalSearchView } from "@/components/search/global-search-view";
 /** 与 window-controls.tsx 的 CLUSTER_W 对齐（3×size-8 + 2×gap-0.5） */
 const CLUSTER_W = 100;
 
-/** 三键簇的视觉复刻（只画样子，不接窗口 API） */
-const FakeWindowsControls = ({ top = 0, right = 16 }: { top?: number; right?: number }) => (
+/** 三键簇的视觉复刻（只画样子，不接窗口 API）；浮层固定 top 0 */
+const FakeWindowsControls = ({ right = 16 }: { right?: number }) => (
   <div
     aria-hidden
     className="pointer-events-none absolute z-50 flex h-12 items-center gap-0.5"
-    style={{ top, right, width: CLUSTER_W }}
+    style={{ top: 0, right, width: CLUSTER_W }}
   >
     <button className="pointer-events-auto grid size-8 place-items-center rounded-md text-foreground/80 hover:bg-muted">
       <MinusIcon className="size-3.5" />
@@ -93,7 +93,7 @@ export default function WindowChromePreview() {
       <header className="mb-6">
         <h1 className="text-lg font-semibold">窗口三键让位对照（Windows/Linux）</h1>
         <p className="mt-1 text-xs text-muted-foreground">
-          三键簇 = 100px 宽，钉在窗口右上（top 8 / right 24 或 16，按宿主不同）。
+          三键簇 = 100px 宽，浮层固定 top 0，right 统一 16。
           每块右缘叠的就是真实位置；输入框或按钮被压在下面即为未适配。
         </p>
         <div className="mt-3 flex items-center gap-2 text-xs">
@@ -113,112 +113,104 @@ export default function WindowChromePreview() {
 
       <Specimen
         title="聊天顶栏（session）"
-        note="header.tsx：pr-4 内容 + WindowControls top=8 right=24 —— 已让位"
+        note="header.tsx：pr-4 内容 + WindowControls right=16（top 固定 0）—— 已让位"
       >
-        <div className="pt-2 pr-2">
-          <div className="flex h-12 items-center gap-2 pl-4 pr-4">
-            <span className="text-sm font-medium">会话标题</span>
-            <RightActions />
-          </div>
+        <div className="flex h-12 items-center gap-2 pl-4 pr-4">
+          <span className="text-sm font-medium">会话标题</span>
+          <RightActions />
         </div>
-        <FakeWindowsControls top={8} right={24} />
+        <FakeWindowsControls right={16} />
       </Specimen>
 
       <Specimen
         title="整页视图顶栏（page：自动化 / 资料库等）"
-        note="header.tsx variant=page：pr-4 + WindowControls top=8 right=24 —— 已让位"
+        note="header.tsx variant=page：pr-4 + WindowControls right=16（top 固定 0）—— 已让位"
       >
-        <div className="pt-2 pr-2">
-          <div className="flex h-12 items-center gap-2 pl-4 pr-4">
-            <span className="text-sm font-medium text-muted-foreground">
-              整页视图（无标题）
-            </span>
-            <RightActions />
-          </div>
+        <div className="flex h-12 items-center gap-2 pl-4 pr-4">
+          <span className="text-sm font-medium text-muted-foreground">
+            整页视图（无标题）
+          </span>
+          <RightActions />
         </div>
-        <FakeWindowsControls top={8} right={24} />
+        <FakeWindowsControls right={16} />
       </Specimen>
 
       <Specimen
         title="Agent 面板顶栏"
-        note="agent-panel：pr-2 + WindowControls top=8（right 16）—— 已让位"
+        note="agent-panel：pr-4 + WindowControls right=16（只留占位）—— 已让位"
       >
-        <div className="pt-2 pr-2">
-          <div className="flex h-12 items-center gap-2 pl-4 pr-2">
-            <span className="text-sm font-medium">面板标签</span>
-            <RightActions />
-          </div>
+        <div className="flex h-12 items-center gap-2 pl-4 pr-4">
+          <span className="text-sm font-medium">面板标签</span>
+          <RightActions />
         </div>
-        <FakeWindowsControls top={8} right={16} />
+        <FakeWindowsControls right={16} />
       </Specimen>
 
       <Specimen
         title="设置页顶栏"
-        note="settings-page：h-12 justify-end pr-4 + WindowControls top=0 right=16 —— 已让位"
+        note="settings-page：h-12 justify-end pr-4 + WindowControls right=16（top 固定 0）—— 已让位"
       >
         <div className="flex h-12 items-center justify-end pr-4">
           <RightActions />
         </div>
-        <FakeWindowsControls top={0} right={16} />
+        <FakeWindowsControls right={16} />
       </Specimen>
 
       <Specimen
         title="资料库顶栏（页面工具条注入 Header）"
         note="library-view portal 到 page-header-actions 槽位；槽位之后就是 WindowControls 的 100px 占位 —— 自动让位"
       >
-        <div className="pt-2 pr-2">
-          {/* 与真实 Header 同序：折叠槽 → 页面槽位(flex-1, 注入工具条) →
-              gap-2 → WindowControls 占位(100px) → pr-4 */}
-          <div className="flex h-12 items-center gap-2 pl-4 pr-4">
-            <span className="shrink-0 text-sm font-semibold whitespace-nowrap">资料库</span>
-            <span className="shrink-0 rounded-md px-1.5 py-1 text-xs">新建笔记</span>
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground/60">
-              也可以把文件直接拖进来；AI 产物也在同一棵树里
-            </span>
-            <span className="h-8 w-40 shrink-0 rounded-md bg-muted/60 px-2 text-xs leading-8 text-muted-foreground">
-              搜索笔记与文件…
-            </span>
-            <span className="shrink-0 rounded-md px-1.5 py-1 text-xs">导入</span>
-            <span className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground">
-              <SearchIcon className="size-3.5" />
-            </span>
-            {/* WindowControls 的原位占位（真实组件渲染同尺寸空 div） */}
-            <div aria-hidden className="h-12 shrink-0" style={{ width: CLUSTER_W }} />
-          </div>
+        {/* 与真实 Header 同序：折叠槽 → 页面槽位(flex-1, 注入工具条) →
+            gap-2 → WindowControls 占位(100px) → pr-4 */}
+        <div className="flex h-12 items-center gap-2 pl-4 pr-4">
+          <span className="shrink-0 text-sm font-semibold whitespace-nowrap">资料库</span>
+          <span className="shrink-0 rounded-md px-1.5 py-1 text-xs">新建笔记</span>
+          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground/60">
+            也可以把文件直接拖进来；AI 产物也在同一棵树里
+          </span>
+          <span className="h-8 w-40 shrink-0 rounded-md bg-muted/60 px-2 text-xs leading-8 text-muted-foreground">
+            搜索笔记与文件…
+          </span>
+          <span className="shrink-0 rounded-md px-1.5 py-1 text-xs">导入</span>
+          <span className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground">
+            <SearchIcon className="size-3.5" />
+          </span>
+          {/* WindowControls 的原位占位（真实组件渲染同尺寸空 div） */}
+          <div aria-hidden className="h-12 shrink-0" style={{ width: CLUSTER_W }} />
         </div>
-        <FakeWindowsControls top={8} right={24} />
+        <FakeWindowsControls right={16} />
       </Specimen>
 
       <Specimen
         title="引导向导顶栏（全窗口接管）"
-        note="onboarding-flow：h-11 + paddingRight 132（24+100+8）—— 本次补齐"
+        note="onboarding-flow：h-11 + paddingRight 124（16+100+8）—— 已让位"
       >
-        <div className="flex h-11 items-center justify-end gap-2 pl-4" style={{ paddingRight: 132 }}>
+        <div className="flex h-11 items-center justify-end gap-2 pl-4" style={{ paddingRight: 124 }}>
           <span className="mr-1 text-xs text-muted-foreground tabular-nums">第 2 步，共 4 步</span>
           <span className="rounded-md px-2 py-1 text-xs text-muted-foreground">跳过</span>
         </div>
-        <FakeWindowsControls top={0} right={24} />
+        <FakeWindowsControls right={16} />
       </Specimen>
 
       <Specimen
         title="图片查看器关闭钮（全窗口浮层）"
-        note="image-quick-look：关闭钮改 right=132（24+100+8）—— 本次补齐"
+        note="image-quick-look：关闭钮改 right=124（16+100+8）—— 已让位"
       >
         <div className="relative grid h-32 place-items-center bg-neutral-900">
           <span className="text-xs text-white/50">图片区域</span>
           <span
             className="absolute top-4 flex size-9 items-center justify-center rounded-full bg-black/55 text-white"
-            style={{ right: 132 }}
+            style={{ right: 124 }}
           >
             <XIcon className="size-4" />
           </span>
         </div>
-        <FakeWindowsControls top={0} right={24} />
+        <FakeWindowsControls right={16} />
       </Specimen>
 
       <Specimen
         title="全局搜索顶栏（本次改动）"
-        note="输入行 paddingRight=132（24+100+8）—— 已让位；对照下方输入框右缘与三键"
+        note="输入行 paddingRight=124（16+100+8）—— 已让位；对照下方输入框右缘与三键"
       >
         <div className="h-72">
           <GlobalSearchView
@@ -228,7 +220,7 @@ export default function WindowChromePreview() {
             collapsed={collapsed}
           />
         </div>
-        <FakeWindowsControls top={0} right={24} />
+        <FakeWindowsControls right={16} />
       </Specimen>
 
       <div className="mb-6 flex items-center gap-2 text-xs">

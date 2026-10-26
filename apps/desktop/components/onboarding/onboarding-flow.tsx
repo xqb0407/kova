@@ -132,10 +132,10 @@ export const OnboardingFlow: FC = () => {
           data-drag-region={desktop ? "deep" : undefined}
           className="flex h-11 shrink-0 items-center justify-end gap-2 pl-4"
           style={{
-            // Windows/Linux 自绘三键浮在窗口右上（right=24 + CLUSTER_W）：向导
+            // Windows/Linux 自绘三键浮在窗口右上（right=16 + CLUSTER_W）：向导
             // 是全窗口接管，顶栏右缘的「跳过」必须让位，否则被压在关闭按钮下
             paddingRight:
-              desktop && !isMacPlatform() ? 24 + CLUSTER_W + 8 : 16,
+              desktop && !isMacPlatform() ? 16 + CLUSTER_W + 8 : 16,
           }}
         >
           {isWelcome ? null : (

@@ -5,7 +5,7 @@
  *
  * 输入行负责窗口 chrome 让位（这是它唯一与非搜索页面耦合的地方）：
  * - Windows/Linux：`frame:false` 自绘三键簇（100px 宽）钉在窗口右上，
- *   覆盖层贴窗口右缘，右让位 24 + 100 + 8；
+ *   覆盖层贴窗口右缘，右让位 16 + 100 + 8；
  * - macOS 桌面 + 侧栏折叠：红绿灯探进主区左缘，左让位对齐主 Header 的 md:pl-24。
  *
  * 输入框是受控组件，键盘交互（↑↓/Enter/Esc 的语义）由 controller 决定，
@@ -43,7 +43,7 @@ export const SearchInputRow: FC<{
           ? { paddingLeft: 96 }
           : null),
         ...(isDesktop() && !isMacPlatform()
-          ? { paddingRight: 24 + CLUSTER_W + 8 }
+          ? { paddingRight: 16 + CLUSTER_W + 8 }
           : null),
       }}
     >
