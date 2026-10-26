@@ -275,7 +275,9 @@ Kova Dev.app）一切正常，数据完好（本仓只读过它，未写入）�
 可执行文件与进程显示名从 `pi-agent` 改为 **`kova-worker`**（活动监视器/任务管理器里看到的就是它）：
 - 构建产出 `kova-worker-<triple>` + 稳定别名 `kova-worker(.exe)`（`build-sidecar.ts`），
   构建时顺带清掉同目录旧名 `pi-agent*` 产物，避免新旧并存；
-- 宿主解析名与 `PI_AGENT_BIN` → `KOVA_WORKER_BIN`（`main/pi-agent.ts`），dev.mjs 的临时包装同名；
+- 宿主解析名与 `PI_AGENT_BIN` → `KOVA_WORKER_BIN`（`main/pi-agent.ts`）；dev 源码模式直接把
+  当前 Bun 本体作为 `KOVA_WORKER_BIN`，用 `KOVA_WORKER_ARGS`/`KOVA_WORKER_CWD` 跑
+  `--watch src/index.ts`（不再生成临时 bash 包装，Windows 也能直接 spawn）；
 - 侧车入口设 `process.title = "Kova Worker"` 作为显示名兜底；
 - 侧车日志文件 `pi-agent.log` → `kova-worker.log`；宿主日志标签 `[pi_agent]` → `[worker]`。
 

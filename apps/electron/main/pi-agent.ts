@@ -95,6 +95,18 @@ function dirnameOf(p: string): string {
   return p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")));
 }
 
+/** dev 源码模式：KOVA_WORKER_BIN 是 Bun 本体，参数/工作目录由 dev.mjs 透传 */
+function devWorkerArgs(): string[] {
+  const raw = process.env.KOVA_WORKER_ARGS;
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
 /** 行序写入队列：stdin 写完整行并按序 flush，杜绝并发交织
  *（对齐 Rust child Mutex 行原子性） */
 const writeQueue: { line: string; resolve: () => void; reject: (e: any) => void }[] = [];
@@ -176,7 +188,8 @@ export async function ensureSpawned(): Promise<void> {
   spawning = (async () => {
     const bin = sidecarBinaryPath();
     const dataDir = appDataDir();
-    const proc = spawn(bin, [], {
+    const proc = spawn(bin, devWorkerArgs(), {
+      cwd: process.env.KOVA_WORKER_CWD || undefined,
       env: {
         ...process.env,
         PI_DB_PATH: join(dataDir, "state.db"),

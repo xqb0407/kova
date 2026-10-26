@@ -13,14 +13,13 @@
  * 开发期跑源码等价（同一条 bun 运行时、同一套 env），只有分发才需要编译。
  *
  * 开关：
- *   KOVA_DEV_BINARY=1  用编译好的侧车二进制（apps/electron/binaries/kova-worker）（先确保已构建；验产物行为时用）
+ *   KOVA_DEV_BINARY=1  用编译好的侧车二进制（apps/electron/binaries/kova-worker(.exe)）（先确保已构建；验产物行为时用）
  *   KOVA_DEV_URL=…     渲染层地址（默认 http://localhost:3000）
  *   KOVA_DATA_DIR=…    数据目录（默认 dev 渠道库；换沙箱可避免与常开实例抢单实例锁）
  */
 import { execFileSync, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -293,8 +292,14 @@ if (!existsSync(join(electronDir, "dist", "main.cjs"))) {
 /* --------------------------- 1) 侧车（源码模式） --------------------------- */
 let envForElectron = {};
 if (useBinary) {
-  const bin = join(electronDir, "binaries", "pi-agent");
-  if (!existsSync(bin)) {
+  const binNames =
+    process.platform === "win32"
+      ? ["kova-worker.exe", "kova-worker"]
+      : ["kova-worker"];
+  const bin = binNames
+    .map((n) => join(electronDir, "binaries", n))
+    .find((p) => existsSync(p));
+  if (!bin) {
     log("KOVA_DEV_BINARY=1 但二进制不存在：先 `bun run build:sidecar`");
     process.exit(1);
   }
@@ -309,17 +314,12 @@ if (useBinary) {
   );
   await new Promise((r) => plugins.on("exit", r));
 
-  const wrapperDir = join(tmpdir(), `kova-dev-${process.pid}`);
-  mkdirSync(wrapperDir, { recursive: true });
-  const wrapper = join(wrapperDir, "kova-worker");
-  writeFileSync(
-    wrapper,
-    `#!/bin/bash\n# dev.mjs 生成的临时包装：宿主经 KOVA_WORKER_BIN 拉起它，改源码即原地重启\ncd ${JSON.stringify(sidecarDir)} || exit 1\nexec bun --watch src/index.ts\n`,
-  );
-  chmodSync(wrapper, 0o755);
-  const cleanupWrapper = () => rmSync(wrapperDir, { recursive: true, force: true });
-  process.on("exit", cleanupWrapper);
-  envForElectron.KOVA_WORKER_BIN = wrapper;
+  // 源码模式不再生成 bash 包装脚本：Windows 上无扩展名的 bash 文件不能被
+  // spawn 执行（ENOENT）。直接把 Bun 本体、参数和工作目录交给宿主
+  // （main/pi-agent.ts 读取 KOVA_WORKER_ARGS / KOVA_WORKER_CWD）。
+  envForElectron.KOVA_WORKER_BIN = process.execPath;
+  envForElectron.KOVA_WORKER_ARGS = JSON.stringify(["--watch", "src/index.ts"]);
+  envForElectron.KOVA_WORKER_CWD = sidecarDir;
   log("侧车：源码模式（bun --watch，改 apps/sidecar 源码即时重启）");
 }
 
