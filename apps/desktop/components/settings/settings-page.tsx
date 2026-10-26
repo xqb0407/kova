@@ -163,7 +163,7 @@ export const SettingsPage: FC<{
           className="flex h-12 shrink-0 items-center pl-5"
         >
           {macDesktop ? null : (
-            <span className="text-foreground/90 text-sm font-medium">设置</span>
+            <span className="text-foreground/90 text-md pt-4 font-bold">设置</span>
           )}
         </div>
 
