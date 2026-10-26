@@ -8,7 +8,9 @@ import {
   useSubagentRun,
   type SubagentRunState,
 } from "@/lib/subagent/subagent-runs";
+import { DotMatrix } from "@/components/ui/dot-matrix";
 import type { PanelTab } from "@/lib/panels/panel-tabs";
+import { cn } from "@/lib/utils";
 import { SubagentConversation } from "./subagent-conversation";
 import { TabEmpty } from "./tab-empty";
 
@@ -58,9 +60,23 @@ const RunHeader: FC<{ run: SubagentRunState }> = ({ run }) => {
     <div className="px-4 py-2">
       <div className="flex min-w-0 items-center gap-2">
         <BotIcon className="size-4 shrink-0" />
-        <span className="truncate font-mono text-sm">{run.agentName || "子智能体"}</span>
+        {/* 运行中的名字走消息区同款扫光：与工具行/状态文案一套动效语言，
+            静态名字不挂动画，避免已结束的委派在面板里持续闪 */}
+        <span
+          className={cn(
+            "truncate font-mono text-sm",
+            running && "shimmer",
+          )}
+        >
+          {run.agentName || "子智能体"}
+        </span>
+        {/* 运行指示与侧栏会话行同源（DotMatrix loading），不再用转圈图标 */}
         {running ? (
-          <LoaderCircleIcon className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
+          <DotMatrix
+            aria-hidden
+            state="loading"
+            className="text-muted-foreground size-3.5 shrink-0"
+          />
         ) : null}
         <span className="text-muted-foreground ml-auto shrink-0 text-xs">{statusSuffix}</span>
       </div>
