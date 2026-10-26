@@ -427,6 +427,7 @@ export const CloneThreadShell: FC<CloneThreadShellProps> = ({
     <div className="relative flex h-full w-full overflow-hidden">
       <aside
         ref={asideRef}
+        data-wallpaper-surface="rail"
         style={
           railW === null ? undefined : ({ "--rail-w": `${railW}px` } as CSSProperties)
         }

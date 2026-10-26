@@ -131,43 +131,16 @@ function ReasoningRoot({
   );
 }
 
-function ReasoningFade({
-  side = "bottom",
-  className,
-  ...props
-}: React.ComponentProps<"div"> & { side?: "top" | "bottom" }) {
-  if (side === "top") {
-    return (
-      <div
-        data-slot="reasoning-fade"
-        className={cn(
-          "aui-reasoning-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-8",
-          "bg-[linear-gradient(to_bottom,var(--background),transparent)]",
-          "group-data-[variant=muted]/reasoning-root:bg-[linear-gradient(to_bottom,color-mix(in_oklab,var(--color-muted)_50%,var(--color-background)),transparent)]",
-          "fade-in-0 animate-in",
-          "animation-duration-(--animation-duration)",
-          className,
-        )}
-        {...props}
-      />
-    );
-  }
-
-  return (
-    <div
-      data-slot="reasoning-fade"
-      className={cn(
-        "aui-reasoning-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8",
-        "bg-[linear-gradient(to_top,var(--background),transparent)]",
-        "group-data-[variant=muted]/reasoning-root:bg-[linear-gradient(to_top,color-mix(in_oklab,var(--color-muted)_50%,var(--color-background)),transparent)]",
-        "fade-in-0 animate-in",
-        "animation-duration-(--animation-duration)",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
+/**
+ * 思考正文的上下渐隐改用遮罩：以前是在正文上盖一层 `--background` 实色渐变，
+ * 实色底只在卡片自身不透明时成立。壁纸/窗口材质下卡片底是「壁纸 + 薄纱」，
+ * 覆盖层会显出一块不透明的白条（流式预览时第一行几乎被糊掉）。遮罩让文字
+ * 本身淡出，底下无论铺的是什么都会自然透出。
+ */
+const FADE_MASK_TOP =
+  "linear-gradient(to bottom, transparent 0, #000 2rem)";
+const FADE_MASK_BOTH =
+  "linear-gradient(to bottom, transparent 0, #000 2rem, #000 calc(100% - 2rem), transparent 100%)";
 
 function ReasoningTrigger({
   active,
@@ -219,9 +192,11 @@ function ReasoningTrigger({
 function ReasoningContent({
   className,
   children,
+  style,
   ...props
 }: React.ComponentProps<typeof CollapsibleContent>) {
   const isPreview = useContext(ReasoningPreviewContext);
+  const maskImage = isPreview ? FADE_MASK_BOTH : FADE_MASK_TOP;
 
   return (
     <CollapsibleContent
@@ -236,11 +211,16 @@ function ReasoningContent({
         "[--tw-duration:var(--animation-duration)]",
         className,
       )}
+      style={{
+        ...style,
+        WebkitMaskImage: maskImage,
+        WebkitMaskRepeat: "no-repeat",
+        maskImage,
+        maskRepeat: "no-repeat",
+      }}
       {...props}
     >
-      <ReasoningFade side="top" />
       {children}
-      {isPreview ? <ReasoningFade /> : null}
     </CollapsibleContent>
   );
 }
@@ -337,6 +317,5 @@ export {
   ReasoningTrigger,
   ReasoningContent,
   ReasoningText,
-  ReasoningFade,
   reasoningVariants,
 };

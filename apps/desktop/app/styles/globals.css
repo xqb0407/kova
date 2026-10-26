@@ -574,14 +574,15 @@ html.dark[data-window-effect] {
   --selected: rgb(255 255 255 / 0.12);
 }
 
-/* 聊天窗口壁纸（外观设置-壁纸）：只作用于会话卡片本身，设置页/侧栏不受影响。
-   卡片有 overflow-hidden + rounded-xl，伪元素自然被裁成圆角；isolation 让
-   z-index:-1 的图片层落在卡片底色之上、内容之下。
-   变量由 ui-prefs 内联在 html 上，这里只消费。 */
-[data-chat-card] {
+/* 窗口壁纸（外观设置-壁纸）：铺在会话卡片与左侧栏两块窗格上，设置页不受影响。
+   图片用 background-attachment:fixed 挂到视口——两块窗格取同一套屏幕坐标，
+   隔缝处图案连续，而不是各自按窗格比例裁一遍。窗格本身 overflow-hidden，
+   伪元素自然被裁成圆角/直角；isolation 让 z-index:-1 的图片层落在窗格底色
+   之上、内容之下。变量由 ui-prefs 内联在 html 上，这里只消费。 */
+[data-wallpaper-surface] {
   isolation: isolate;
 }
-html[data-wallpaper] [data-chat-card]::before {
+html[data-wallpaper] [data-wallpaper-surface]::before {
   content: "";
   position: absolute;
   inset: calc(-1 * var(--wallpaper-blur, 0px) - 2px);
@@ -590,14 +591,15 @@ html[data-wallpaper] [data-chat-card]::before {
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
+  background-attachment: fixed;
   filter: blur(var(--wallpaper-blur, 0px));
   opacity: var(--wallpaper-opacity, 1);
   pointer-events: none;
 }
-/* 染色层必须叠在图片之上：负 z-index 的 ::before 绘制在卡片自身背景之上，
-   所以卡片底色压不住壁纸；这里用「遮罩 + 主题底色」二次合成，保证正文可读。
+/* 染色层必须叠在图片之上：负 z-index 的 ::before 绘制在窗格自身背景之上，
+   所以窗格底色压不住壁纸；这里用「遮罩 + 主题底色」二次合成，保证正文可读。
    --wallpaper-veil 由强度滑杆反比给出（强度越高越薄），base 值兜底 68%。 */
-html[data-wallpaper] [data-chat-card]::after {
+html[data-wallpaper] [data-wallpaper-surface]::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -609,6 +611,20 @@ html[data-wallpaper] [data-chat-card]::after {
     ),
     color-mix(in oklab, var(--background) var(--wallpaper-veil, 68%), transparent);
   pointer-events: none;
+}
+/* 壁纸铺满后侧栏与会话区只剩内容上的区别，补一条和 Header 同档的淡竖线。
+   画在 veil 的 border 上：位于壁纸层之上、内容之下，不会被底图盖掉，也不会
+   像卡片自身描边那样在白底上被稀释成一道白缝。 */
+html[data-wallpaper] [data-wallpaper-surface="rail"]::after {
+  border-right: 1px solid var(--border);
+}
+/* 壁纸模式下侧栏与会话窗格是同一张底图：卡片左缘的描边与左圆角会在接缝处
+   切出一道 1px 亮线和两个白角。内缘统一成直角并与侧栏齐平（外缘保留卡片
+   原有圆角），两块窗格才连成一整块壁纸。 */
+html[data-wallpaper] [data-chat-card] {
+  border-left-width: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
   html.transitioning *, html.transitioning *::before, html.transitioning *::after {
     transition: border-radius 180ms ease-in-out, background-color 180ms ease-in-out, color 180ms ease-in-out, border-color 180ms ease-in-out, fill 180ms ease-in-out, stroke 180ms ease-in-out !important;}

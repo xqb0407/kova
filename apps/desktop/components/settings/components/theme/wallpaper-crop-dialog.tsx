@@ -23,28 +23,23 @@ import {
   cropViewSize,
   sourceRect,
 } from "@/lib/theme/crop";
-import { getChatSurfaceSize } from "@/lib/theme/chat-surface";
+import { windowSurfaceSize } from "@/lib/theme/window-surface";
 import { bitmapToDataUrl, bitmapToSource } from "@/lib/theme/wallpaper";
 import { RotateCcwIcon } from "lucide-react";
 
 export type WallpaperCropResult = { display: string; source: string };
 
-/** 预览框按聊天卡片比例；设置页里卡片已卸载时回落到窗口比例 */
+/** 预览框按应用窗口比例：壁纸 fixed 铺满窗口，裁剪结果与窗口里的构图一致 */
 function measureView() {
   if (typeof window === "undefined") return cropViewSize(1440, 900, 780);
-  const surface = getChatSurfaceSize();
+  const surface = windowSurfaceSize();
   // 扣掉标题、缩放行、底部按钮与内边距，短窗口时预览自动收高，footer 始终可见
   const maxHeight = Math.max(200, Math.round(window.innerHeight * 0.92) - 250);
-  return cropViewSize(
-    surface?.width ?? window.innerWidth,
-    surface?.height ?? window.innerHeight,
-    780,
-    maxHeight,
-  );
+  return cropViewSize(surface.width, surface.height, 780, maxHeight);
 }
 
 /**
- * 壁纸裁剪编辑器：预览框按聊天窗口比例，拖动平移 + 滚轮/滑杆缩放，
+ * 壁纸裁剪编辑器：预览框按应用窗口比例，拖动平移 + 滚轮/滑杆缩放，
  * 应用时把预览中看到的区域绘制成压缩后的图片。
  */
 export const WallpaperCropDialog: FC<{

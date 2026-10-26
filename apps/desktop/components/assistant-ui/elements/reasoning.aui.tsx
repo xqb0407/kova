@@ -10,7 +10,6 @@ import {
   ReasoningTrigger,
   ReasoningContent,
   ReasoningText,
-  ReasoningFade,
   reasoningVariants,
   type ReasoningRootProps,
 } from "./reasoning";
@@ -61,7 +60,6 @@ const Reasoning = memo(
   Trigger: typeof ReasoningTrigger;
   Content: typeof ReasoningContent;
   Text: typeof ReasoningText;
-  Fade: typeof ReasoningFade;
 };
 
 Reasoning.displayName = "Reasoning";
@@ -69,7 +67,6 @@ Reasoning.Root = ReasoningRoot;
 Reasoning.Trigger = ReasoningTrigger;
 Reasoning.Content = ReasoningContent;
 Reasoning.Text = ReasoningText;
-Reasoning.Fade = ReasoningFade;
 
 export {
   Reasoning,
@@ -77,6 +74,5 @@ export {
   ReasoningTrigger,
   ReasoningContent,
   ReasoningText,
-  ReasoningFade,
   reasoningVariants,
 };

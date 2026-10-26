@@ -7,6 +7,7 @@ import { SettingRow } from "@/components/custom-ui/setting-row";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "@/components/ui/toast";
 import {
+  isDarkMode,
   patchUiPrefs,
   syncWallpaperImage,
   useUiPrefs,
@@ -23,7 +24,9 @@ import {
   useWallpaperImage,
 } from "@/lib/theme/wallpaper";
 import { ImageIcon } from "lucide-react";
-import { chatSurfaceAspect } from "@/lib/theme/chat-surface";
+import { windowSurfaceAspect } from "@/lib/theme/window-surface";
+import { wallpaperVeil } from "@/lib/theme/palette";
+import { cn } from "@/lib/utils";
 import { SliderField } from "./slider-field";
 import {
   WallpaperCropDialog,
@@ -44,9 +47,150 @@ const MODE_OPTIONS: { value: WallpaperMode; label: string }[] = [
   { value: "dark", label: "仅深色" },
 ];
 
+/** 预览块宽度；高度按窗口比例算，再夹在一个可用区间里 */
+const PREVIEW_WIDTH = 224;
+const PREVIEW_MIN_HEIGHT = 112;
+const PREVIEW_MAX_HEIGHT = 168;
+
+type WallpaperPreviewProps = {
+  image: string | null;
+  config: WallpaperConfig;
+  isDark: boolean;
+  aspect: number;
+};
+
 /**
- * 壁纸区：上传 → 裁剪构图 → 存本地；随后可调模糊/遮罩/透明度/生效模式。
- * 图片放 localStorage（见 lib/theme/wallpaper），这里只负责交互与写 prefs。
+ * 壁纸效果预览：按真实叠层（窗格底色 → 底图 → 遮罩 → 薄纱）缩进一块小窗，
+ * 左边示意侧栏、右边示意会话区，方便看文字压在壁纸上的可读性。
+ *
+ * 模糊按「预览宽度 / 窗口宽度」等比缩放——40px 的真实模糊直接套在 224px 的
+ * 预览里会糊成一团，不再代表实际观感。
+ */
+function WallpaperPreview({
+  image,
+  config,
+  isDark,
+  aspect,
+}: WallpaperPreviewProps) {
+  const modeActive =
+    config.mode === "both" || config.mode === (isDark ? "dark" : "light");
+  const active = !!image && config.enabled && modeActive;
+  const height = Math.min(
+    PREVIEW_MAX_HEIGHT,
+    Math.max(PREVIEW_MIN_HEIGHT, Math.round(PREVIEW_WIDTH / aspect)),
+  );
+  const viewportWidth =
+    typeof window === "undefined" ? 1440 : window.innerWidth;
+  const previewBlur =
+    config.blur * (PREVIEW_WIDTH / Math.max(1, viewportWidth));
+  const veil = wallpaperVeil(config.opacity);
+  const inactiveLabel = !image
+    ? null
+    : !config.enabled
+      ? "已关闭"
+      : !modeActive
+        ? "当前模式不生效"
+        : null;
+
+  return (
+    <div
+      role="img"
+      aria-label="壁纸效果预览"
+      className={cn(
+        "bg-background border-border/60 relative shrink-0 overflow-hidden rounded-lg border shadow-sm",
+        !image && "border-dashed",
+      )}
+      style={{ width: PREVIEW_WIDTH, height }}
+    >
+      {/* 壁纸关闭/低强度时透出的窗格底色：侧栏比会话卡略沉一档 */}
+      <div className="absolute inset-0 flex">
+        <div className="bg-muted/55 w-[24%]" />
+        <div className="bg-background flex-1" />
+      </div>
+      {active && image ? (
+        <>
+          <img
+            src={image}
+            alt=""
+            aria-hidden
+            draggable={false}
+            className="absolute inset-0 size-full scale-105 object-cover"
+            style={{
+              opacity: config.opacity / 100,
+              filter: `blur(${previewBlur.toFixed(1)}px)`,
+            }}
+          />
+          {/* 与 globals.css 的 ::after 同序：薄纱在下，压暗层在上 */}
+          <div
+            className="absolute inset-0"
+            style={{
+              background: `color-mix(in oklab, var(--background) ${veil}, transparent)`,
+            }}
+          />
+          <div
+            className="absolute inset-0"
+            style={{ background: `rgb(0 0 0 / ${config.dim / 100})` }}
+          />
+        </>
+      ) : null}
+      {image ? (
+        <WallpaperPreviewMock />
+      ) : (
+        <div className="text-muted-foreground absolute inset-0 grid place-items-center">
+          <ImageIcon className="size-5" />
+        </div>
+      )}
+      {inactiveLabel ? (
+        <span className="bg-background/80 text-muted-foreground border-border/60 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap backdrop-blur-sm">
+          {inactiveLabel}
+        </span>
+      ) : image ? (
+        <span className="bg-background/55 text-muted-foreground absolute top-1.5 right-1.5 rounded px-1.5 py-0.5 text-[9px] font-medium backdrop-blur-sm">
+          预览
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** 预览里的示意界面：左侧栏 + 会话区，只画线条和气泡，不承载真实内容 */
+function WallpaperPreviewMock() {
+  return (
+    <div aria-hidden className="absolute inset-0 flex">
+      <div className="border-foreground/10 flex w-[24%] flex-col gap-1 border-r p-1.5">
+        <div className="bg-foreground/40 mb-0.5 size-1.5 rounded-full" />
+        <div className="bg-foreground/30 h-1 w-3/4 rounded-full" />
+        <div className="bg-foreground/20 h-1 w-2/3 rounded-full" />
+        <div className="bg-foreground/20 h-1 w-4/5 rounded-full" />
+        <div className="bg-foreground/20 h-1 w-3/5 rounded-full" />
+        <div className="bg-foreground/20 h-1 w-2/3 rounded-full" />
+        <div className="mt-auto flex flex-col gap-1">
+          <div className="bg-foreground/20 h-1 w-1/2 rounded-full" />
+          <div className="bg-foreground/20 h-1 w-1/3 rounded-full" />
+        </div>
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* 会话顶栏：和真实 Header 一样用一道很淡的 border-b 与正文分开 */}
+        <div className="border-foreground/10 flex h-5 shrink-0 items-center border-b px-2">
+          <div className="bg-foreground/40 h-1.5 w-2/5 rounded-full" />
+        </div>
+        <div className="flex flex-1 flex-col gap-1.5 p-2">
+          <div className="bg-foreground/15 mt-0.5 ml-auto h-3.5 w-1/2 rounded-md" />
+          <div className="bg-foreground/25 h-1 w-4/5 rounded-full" />
+          <div className="bg-foreground/25 h-1 w-3/5 rounded-full" />
+          <div className="bg-foreground/10 h-5 w-full rounded-md" />
+          <div className="bg-foreground/25 h-1 w-3/4 rounded-full" />
+          <div className="border-foreground/10 bg-background/50 mt-auto h-4 w-full rounded-md border" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 壁纸区：上传 → 按窗口比例裁剪构图 → 存本地；随后可调模糊/遮罩/透明度/
+ * 生效模式。图片放 localStorage（见 lib/theme/wallpaper），这里只负责交互
+ * 与写 prefs。
  */
 export const WallpaperSection: FC = () => {
   const prefs = useUiPrefs();
@@ -57,7 +201,8 @@ export const WallpaperSection: FC = () => {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const image = mounted ? storedImage : null;
-  const aspect = chatSurfaceAspect();
+  const aspect = windowSurfaceAspect();
+  const isDark = isDarkMode(prefs);
   const [crop, setCrop] = useState<{ bitmap: ImageBitmap; url: string } | null>(
     null,
   );
@@ -125,26 +270,18 @@ export const WallpaperSection: FC = () => {
       <h2 className="text-base font-semibold">壁纸</h2>
       <div className="bg-muted/50 rounded-2xl p-3">
         <div className="flex items-center gap-4">
-          <div
-            className="bg-muted border-border/60 relative grid h-16 shrink-0 place-items-center overflow-hidden rounded-lg border border-dashed"
-            style={{ width: Math.round(80 * aspect) }}
-          >
-            {image ? (
-              <img
-                src={image}
-                alt="当前壁纸"
-                className="size-full object-cover "
-              />
-            ) : (
-              <ImageIcon className="text-muted-foreground size-5" />
-            )}
-          </div>
+          <WallpaperPreview
+            image={image}
+            config={config}
+            isDark={isDark}
+            aspect={aspect}
+          />
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium">
-              {image ? "已设置聊天壁纸" : "添加一张聊天壁纸"}
+              {image ? "已设置窗口壁纸" : "添加一张窗口壁纸"}
             </div>
             <div className="text-muted-foreground mt-0.5 text-xs leading-relaxed">
-              作为聊天窗口的背景；按聊天窗口比例裁切构图。
+              作为整个应用窗口的背景（会话区与侧栏共用）；按窗口比例裁切构图。
               壁纸只保存在本机，各客户端可分别设置。
             </div>
           </div>

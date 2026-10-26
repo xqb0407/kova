@@ -30,7 +30,6 @@ import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { isMacPlatform, isDesktop } from "@/lib/desktop-env";
 import { matchesShortcut, useShortcuts } from "@/lib/shortcuts";
 import { toggleThemeMode } from "@/lib/settings/ui-prefs";
-import { recordChatSurfaceSize } from "@/lib/theme/chat-surface";
 import { subscribeAutomationFocus } from "@/lib/automation/automations";
 import {
   subscribeConnectorManage,
@@ -186,20 +185,6 @@ export const Base: FC = () => {
   // view 的 ref：面板开合动画/exitPanelFullscreen 的守卫在闭包里读它
   const viewRef = useRef(view);
   viewRef.current = view;
-  // 聊天卡片尺寸：壁纸裁剪按它的比例构图（设置页打开时卡片卸载，模块里保留最后值）
-  const chatCardObserver = useRef<ResizeObserver | null>(null);
-  const attachChatCard = useCallback((el: HTMLDivElement | null) => {
-    chatCardObserver.current?.disconnect();
-    chatCardObserver.current = null;
-    if (!el) return;
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect;
-      if (rect) recordChatSurfaceSize(rect.width, rect.height);
-    });
-    observer.observe(el);
-    chatCardObserver.current = observer;
-  }, []);
-  useEffect(() => () => chatCardObserver.current?.disconnect(), []);
   // 「跳到设置页某分区」的 window 事件（composer 主题胶囊的「管理设计主题…」
   // 深在壳树里，不向上透传回调）：seq 单调递增，让「已在设置页再跳同一分区」
   // 也能触发 SettingsPage 的同步 effect；id 校验在 settings-page 模块内做
@@ -988,8 +973,8 @@ export const Base: FC = () => {
 
   const chatColumn = (
     <div
-      ref={attachChatCard}
       data-chat-card
+      data-wallpaper-surface="chat"
       className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden rounded-lg border"
       // 覆写 --chat-width（thread.tsx 的 --thread-max-width 消费它）：动画期间
       // 正文按结束宽排版，落位时与自然值相等
