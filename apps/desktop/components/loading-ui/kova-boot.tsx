@@ -8,9 +8,11 @@ type KovaBootProps = React.ComponentProps<"div"> & {
 };
 
 /** 整组进场的静默：窗口出现先稳一拍，品牌再从中缝展开 */
-const PART_DELAY_MS = 100;
-/** 展开时长：中央一团失焦字 → 图标左移、字标右移，边走边聚焦 */
-const TRAVEL_MS = 900;
+const PART_DELAY_MS = 0;
+/** 展开时长：中央一团失焦字 → 图标左移、字标右移，边走边聚焦。
+ *  与 AppRuntimeProvider 的 SPLASH_MIN_MS(350ms) 对齐：动画在交棒前落定，
+ *  不再出现“动画播到一半 splash 被卸掉”的截断。 */
+const TRAVEL_MS = 320;
 
 /**
  * 开屏品牌动画（替换原 WanderingEyes 眼睛）：logo 与「扣瓦」字标整组

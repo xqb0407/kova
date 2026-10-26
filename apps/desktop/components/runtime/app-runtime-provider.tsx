@@ -7,6 +7,7 @@ import { isDesktop } from "@/lib/desktop-env";
 import { installFrontendLogging } from "@/lib/frontend-logging";
 import { primeAppMeta } from "@/lib/app-meta";
 import { installPerfWatch, uninstallPerfWatch } from "@/lib/perf-watch";
+import { installStartupMetrics, markAppShell } from "@/lib/perf-startup";
 import { installPerfProbe, registerPerfProbeSource } from "@/lib/perf-probe";
 import { toast } from "@/components/ui/toast";
 import { installUpdate, progressPct, type UpdateInfo } from "@/lib/update";
@@ -39,10 +40,10 @@ import {
 } from "@/lib/remote";
 import { KovaBoot } from "@/components/loading-ui/kova-boot";
 /** splash 最小展示时长：保证启动动画至少播一会儿，不被快速水合直接闪没。
- *  迭代1b（P6）：3000 → 800——固定 3s 开屏把分块/按需加载的全部启动收益
- *  掩盖在动画里。换 KovaBoot 品牌开屏后定在 1800：逐字聚焦约 1.5s 播完，
- *  掐在半模糊状态不可接受，1800ms 留出落定帧的停留。 */
-const SPLASH_MIN_MS = 900;
+ *  桌面端 LCP 的主要地板就是这段等待：900ms 会把首屏内容硬推到 1s 之后。
+ *  现改为短版品牌入场（KovaBoot 同步缩到～320ms），水合完成即可交棒；
+ *  水合慢于该值时自然等水合，不会闪空白。 */
+const SPLASH_MIN_MS = 350;
 
 /**
  * 启动占位屏：随静态导出的预渲染 HTML 直接输出，webview 导航后立即可见，
@@ -344,6 +345,8 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
         });
       },
     });
+    // 启动性能：FCP/LCP/app-shell 一次性落 web.log；水合后安装，buffered 条目照常拿到
+    installStartupMetrics();
     // 通知管线：事件总线 → 提示音 + webhook 派发（幂等，桌面/远程网页都装配）
     initNotifyPipeline();
     // 窗口材质透明标记恢复：appearance.ts 的模块级自执行只在设置页 chunk
@@ -371,8 +374,7 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
   // 升级检查：桌面端启动约 10s 后静默查一次（Rust 侧有 12h 节流、自动检查开关、
   // 失败静默——这里只管"有新版本且未忽略"时弹一条可一键升级的 toast）。
   useEffect(() => {
-    if (!desktop) return;
-    const timer = setTimeout(() => {
+    if (!desktop) return;    const timer = setTimeout(() => {
       void (async () => {
         try {
           const info = await invoke<UpdateInfo>("update_check", { force: false });
@@ -423,6 +425,12 @@ export function AppRuntimeProvider({ children }: { children: React.ReactNode }) 
     }, 10_000);
     return () => clearTimeout(timer);
   }, [desktop]);
+
+  // 应用壳提交后的第一帧：给启动埋点一个明确的交棒时间
+  useEffect(() => {
+    if (desktop === null || !splashMinDone || !splashDone) return;
+    markAppShell();
+  }, [desktop, splashMinDone, splashDone]);
 
   // 首帧（含静态导出的预渲染 HTML）恒为 BootSplash，与水合后 effect 翻转前的
   // 客户端首帧一致，避免 hydration mismatch；桌面端水合前窗口由此获得实体内容。
