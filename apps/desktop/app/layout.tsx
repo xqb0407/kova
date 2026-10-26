@@ -1,29 +1,14 @@
 import type { Metadata } from "next";
-// 内置字体（外观设置-字体选择可切换）：Geist（默认西文，字体栈首位）
-// / Inter / Roboto / Open Sans / 思源黑体 / 思源宋体 / 霞鹜文楷 / JetBrains Mono。
-// 各包均为 woff2 按 unicode-range 分片，
-// 仅实际用到的字形分片会被下载（西文引入 400/500/700；CJK 字体只引入
-// 400/700 两个字重控制体积——500 由浏览器以最近字重替代）
+// 首屏字体只保留 Geist（默认西文 + 系统中文回退）。Inter / Roboto /
+// Open Sans / 思源黑体 / 思源宋体 / JetBrains Mono 由
+// scripts/build-fonts.mjs 复制到 public/fonts，FontCssLoader 在选中对应
+// 字体时才注入 <link>——避免 300KB font-face CSS 压首屏。
 import "@fontsource-variable/geist";
-import "@fontsource/inter/400.css";
-import "@fontsource/inter/500.css";
-import "@fontsource/inter/700.css";
-import "@fontsource/roboto/400.css";
-import "@fontsource/roboto/500.css";
-import "@fontsource/roboto/700.css";
-import "@fontsource/open-sans/400.css";
-import "@fontsource/open-sans/500.css";
-import "@fontsource/open-sans/700.css";
-import "@fontsource/noto-sans-sc/400.css";
-import "@fontsource/noto-sans-sc/700.css";
-import "@fontsource/noto-serif-sc/400.css";
-import "@fontsource/noto-serif-sc/700.css";
-import "@fontsource/jetbrains-mono/400.css";
-import "@fontsource/jetbrains-mono/700.css";
 import "./styles/globals.css";
 import { Toaster } from "@/components/ui/toast";
 import { PerfHud } from "@/components/debug/perf-hud";
 import { ThemeRuntime } from "@/components/runtime/theme-runtime";
+import { FontCssLoader } from "@/components/runtime/font-css-loader";
 import { BOOT_CACHE_VERSION } from "@/lib/theme/palette";
 
 export const metadata: Metadata = {
@@ -78,6 +63,8 @@ export default function RootLayout({
       <body>
         {/* 水合后重放一次主题 token（见组件注释） */}
         <ThemeRuntime />
+        {/* 非默认字体 CSS 仅在选中时注入；首屏只加载 Geist */}
+        <FontCssLoader />
         {/* PerfHud：性能采样/上报的挂载点，平时渲染 null（屏上那行已去掉，
             上报默认关——见 components/debug/perf-store.ts 的 PERF_LOG） */}
         {children} <Toaster /> <PerfHud />

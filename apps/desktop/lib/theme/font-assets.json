@@ -1,0 +1,26 @@
+{
+  "inter": {
+    "package": "@fontsource/inter",
+    "weights": ["400", "500", "700"]
+  },
+  "roboto": {
+    "package": "@fontsource/roboto",
+    "weights": ["400", "500", "700"]
+  },
+  "open-sans": {
+    "package": "@fontsource/open-sans",
+    "weights": ["400", "500", "700"]
+  },
+  "noto-sans-sc": {
+    "package": "@fontsource/noto-sans-sc",
+    "weights": ["400", "700"]
+  },
+  "noto-serif-sc": {
+    "package": "@fontsource/noto-serif-sc",
+    "weights": ["400", "700"]
+  },
+  "jetbrains-mono": {
+    "package": "@fontsource/jetbrains-mono",
+    "weights": ["400", "700"]
+  }
+}

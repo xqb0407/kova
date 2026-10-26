@@ -19,7 +19,7 @@
   },
   "scripts": {
     "dev": "bun run scripts/dev.mjs",
-    "build:renderer": "bun run --filter desktop build && node scripts/sync-renderer.mjs",
+    "build:renderer": "node scripts/build-fonts.mjs && bun run --filter desktop build && node scripts/sync-renderer.mjs",
     "build:plugins": "node scripts/build-plugins.mjs",
     "build:sidecar": "bun run build:plugins && bun run --filter pi-agent-sidecar build",
     "build:main": "bun run --filter kova-electron-main build",

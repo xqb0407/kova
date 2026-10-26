@@ -80,6 +80,8 @@ plugins/canvas/canvas.html
 plugins/ui-design/design.html
 # 内置插件包 zip：plugins:pack / build:sidecar 幂等重打，缺失时 ensure:bundle 自愈
 /apps/sidecar/pi-agent/src/plugins/bundle/kova-plugins.zip
+# 非默认字体按需产物（scripts/build-fonts.mjs 生成，dev/build 前自动补齐）
+/apps/desktop/public/fonts/
 
 # .kova/：宿主在**工作目录**里写的运行期数据（plan_write 的计划文件、
 # 目标模式的契约产物 .kova/goals/*.md）。它是被操作项目的运行产物而不是本仓

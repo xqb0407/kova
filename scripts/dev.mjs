@@ -338,6 +338,18 @@ if (useBinary) {
   log("侧车：源码模式（bun --watch，改 apps/sidecar 源码即时重启）");
 }
 
+/* ------------------------- 1.5) 非默认字体资源 ------------------------- */
+// 首屏只加载 Geist；其余字体 CSS/woff2 由 build-fonts 复制到 public/fonts，
+// FontCssLoader 在选中时才注入。失败只影响字体切换，不阻断 dev。
+const fonts = track(
+  spawn("node", [join(root, "scripts", "build-fonts.mjs")], {
+    cwd: root,
+    stdio: "inherit",
+  }),
+);
+const fontsExit = await new Promise((r) => fonts.on("exit", r));
+if (fontsExit !== 0) log("非默认字体资源生成失败：字体切换可能回退系统字体");
+
 /* ---------------------------- 2) 渲染层 next dev ---------------------------- */
 const rendererPort = new URL(devUrl).port || "80";
 // 探测不通 ≠ 没有服务在跑：先给一次长探测（另一端可能正在启动，800ms 探测
