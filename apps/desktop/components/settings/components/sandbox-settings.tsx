@@ -36,7 +36,6 @@ export const SandboxSettingsPanel: FC = () => {
   return (
     <section className="flex flex-col gap-3">
       <h2 className="flex items-center gap-2 text-base font-semibold">
-        <ShieldIcon className="size-4" />
         沙箱
       </h2>
       <p className="text-muted-foreground text-sm">

@@ -134,7 +134,7 @@ export const MemoryHistoryDialog: FC<{
       {/* 撑满外壳（技能/MCP 编辑弹窗同款）：版本对比看的是长文，固定 h-96 太局促，
           列表与预览随视口高度伸展；预览走 aui-md-panel 紧凑排版（弹窗小容器里
           消息流的 30px 级标题头重脚轻） */}
-      <DialogContent className="flex h-[calc(100dvh-6rem)] max-h-[860px] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+      <DialogContent className="flex h-[calc(100dvh-6rem)] max-h-[860px] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
         <DialogHeader className="shrink-0 px-6 pt-5">
           <DialogTitle>版本历史 · {file}</DialogTitle>
           <DialogDescription>

@@ -81,7 +81,6 @@ export const ComputerControlSettings: FC = () => {
       <div className="mt-1 flex flex-col gap-4">
         <div className="flex flex-col gap-2">
           <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
-            <GlobeIcon className="text-muted-foreground size-3.5" />
             浏览器
           </h3>
           <p className="text-muted-foreground text-sm">
@@ -121,7 +120,6 @@ export const ComputerControlSettings: FC = () => {
             清缓存保留登录态；清全部连 Cookie/站点数据一起清、所有网站退出登录 */}
         <div className="flex flex-col gap-2">
           <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
-            <DatabaseIcon className="text-muted-foreground size-3.5" />
             浏览器数据
           </h3>
           <p className="text-muted-foreground text-sm">
@@ -161,7 +159,6 @@ export const ComputerControlSettings: FC = () => {
 
         <div className="flex flex-col gap-2">
           <h3 className="flex items-center gap-1.5 pt-1 text-[13px] font-semibold">
-            <MonitorIcon className="text-muted-foreground size-3.5" />
             屏幕
           </h3>
           <p className="text-muted-foreground text-sm">
