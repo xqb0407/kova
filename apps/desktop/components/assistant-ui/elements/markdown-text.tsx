@@ -3,10 +3,12 @@
 import {
   type ComponentProps,
   useDeferredValue,
+  useEffect,
   Fragment,
   type FC,
   memo,
   useMemo,
+  useState,
 } from "react";
 import { cn } from "@/lib/utils";
 import {
@@ -23,14 +25,9 @@ import {
   type CustomRenderer,
   type PluginConfig,
 } from "streamdown";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
-import { cjk } from "@streamdown/cjk";
+import type { CodeHighlighterPlugin } from "@streamdown/code";
 import { openExternal } from "@/lib/external-link";
 import { SiteIcon } from "@/components/custom-ui/site-icon";
-import { SvgCodeBlock } from "@/components/assistant-ui/elements/svg-code-block";
-import { MermaidCodeBlock } from "@/components/assistant-ui/elements/mermaid-code-block";
 // animated 词级入场动画的 keyframes（streamdown 包根自带的纯 CSS，不走 Tailwind）
 import "streamdown/styles.css";
 import "@/app/styles/markdown.css";
@@ -41,53 +38,81 @@ import "@/app/styles/markdown.css";
  * plugins 时只认 code/math/cjk/mermaid 四个键、会丢弃 renderers（0.3.13 为
  * 最新版仍如此），所以消息流分支改用下方 StreamdownPart 直连原生 Streamdown。
  */
+type LazyPlugins = {
+  shared: PluginConfig;
+  streaming: PluginConfig;
+};
+
+let pluginsPromise: Promise<LazyPlugins> | null = null;
+
 /**
- * 流式期间不高亮代码块。
+ * 重插件按需加载：Shiki/Mermaid/KaTeX/CJK 插件与 svg/mermaid 代码块 renderer
+ * 只在第一条 Markdown 真正上屏后才拉取。首帧消息文字走 Streamdown 核心
+ * （代码块先以纯文本呈现），插件 chunk 到达后原地升级为高亮/图表。
  *
- * 依据：streamdown 会把 isIncomplete 传给插件的 highlight()（其 dist 里是
- * `o.highlight({ code, isIncomplete, language, themes }, cb)`），但 @streamdown/code
- * 忽略这个参数，而它的缓存键只由代码文本决定——于是流式期间每个 chunk 都是一段
- * 新文本 = 每次 cache miss = **整块重新高亮 + 重建几百个 span**。真机实测（只有
- * 14 条消息、2 张图、解码共 2 百万像素的会话）渲染 173ms + 绘制 136ms、最长帧
- * 737ms，形状与之吻合；图片与消息数都已被排除。
- *
- * 做法：流式期间 highlight 一律不返回结果 → streamdown 落回原始文本（纯等宽
- * 显示），消息结束后用静态插件集一次性上色。只挡 isIncomplete 不够——长回答里
- * 通常有多个**已闭合**的代码块，它们在流式期间同样要参与每帧重渲染，shiki 的
- * token 缓存也救不了「整块 span 树跟着 reconcile」这部分。视觉差异：流式中的
- * 代码块暂时不高亮，回答收尾后一次性上色（与 ZCode 的 enableSyntaxHighlighting=
- * !streaming 同口径）。
+ * 流式期间不高亮（原策略保留）：isIncomplete 时 highlight 返回 null，避免
+ * 每个 token 整块重建 span；缓存键只由代码文本决定，流式中每 chunk 都是
+ * cache miss。完成态仍一次性上色。
  */
-const codeNotWhileStreaming: typeof code = {
-  ...code,
-  highlight: (options, callback) => {
-    if ((options as { isIncomplete?: boolean }).isIncomplete) return null;
-    return code.highlight(options, callback);
-  },
-};
+function loadPlugins(): Promise<LazyPlugins> {
+  if (pluginsPromise) return pluginsPromise;
+  pluginsPromise = Promise.all([
+    import("@streamdown/code"),
+    import("@streamdown/math"),
+    import("@streamdown/mermaid"),
+    import("@streamdown/cjk"),
+    import("./svg-code-block"),
+    import("./mermaid-code-block"),
+  ]).then(
+    ([codeMod, mathMod, mermaidMod, cjkMod, svgMod, mermaidBlockMod]) => {
+      const code = codeMod.code;
+      const codeNotWhileStreaming: CodeHighlighterPlugin = {
+        ...code,
+        highlight: (options, callback) => {
+          if ((options as { isIncomplete?: boolean }).isIncomplete) return null;
+          return code.highlight(options, callback);
+        },
+      };
+      const codeNeverWhileStreaming: CodeHighlighterPlugin = {
+        ...code,
+        highlight: () => null,
+      };
+      const shared: PluginConfig = {
+        code: codeNotWhileStreaming,
+        math: mathMod.math,
+        mermaid: mermaidMod.mermaid,
+        cjk: cjkMod.cjk,
+        renderers: [
+          { language: "svg", component: svgMod.SvgCodeBlock },
+          { language: "mermaid", component: mermaidBlockMod.MermaidCodeBlock },
+        ] satisfies CustomRenderer[],
+      };
+      return {
+        shared,
+        streaming: { ...shared, code: codeNeverWhileStreaming },
+      };
+    },
+  );
+  return pluginsPromise;
+}
 
-/** 流式期间用：已闭合的代码块也不高亮（理由见 codeNotWhileStreaming 注释） */
-const codeNeverWhileStreaming: typeof code = {
-  ...code,
-  highlight: () => null,
-};
-
-const sharedPlugins: PluginConfig = {
-  code: codeNotWhileStreaming,
-  math,
-  mermaid,
-  cjk,
-  renderers: [
-    { language: "svg", component: SvgCodeBlock },
-    { language: "mermaid", component: MermaidCodeBlock },
-  ] satisfies CustomRenderer[],
-};
-
-/** 流式中的插件集：代码块完全不高亮；其余插件与静态集一致 */
-const streamingPlugins: PluginConfig = {
-  ...sharedPlugins,
-  code: codeNeverWhileStreaming,
-};
+function useMarkdownPlugins(): LazyPlugins | null {
+  const [plugins, setPlugins] = useState<LazyPlugins | null>(null);
+  useEffect(() => {
+    let alive = true;
+    loadPlugins()
+      .then((next) => {
+        if (alive) setPlugins(next);
+      })
+      .catch(() => {
+        /* 插件加载失败：保持纯文本代码块，不影响正文 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return plugins;
+}
 
 const sharedComponents = {
   // 正文外链：短站点图标 + 链接文字，悬浮 title 显示完整 href，
@@ -259,7 +284,7 @@ const STREAM_ANIMATION: Exclude<
   maxBacklogMs: 450,
 };
 
-const StreamdownPart = () => {
+const StreamdownPart = ({ plugins }: { plugins: LazyPlugins | null }) => {
   const part = useAuiState((s) =>
     s.part.type === "text" || s.part.type === "reasoning"
       ? s.part
@@ -302,7 +327,7 @@ const StreamdownPart = () => {
         // 光标（caret）刻意不传：streamdown 的实现是「caret 为真 且 isAnimating 时」
         // 才写 `--streamdown-caret` 变量、并在末块上加 `after:content-[var(--streamdown-caret)]`；
         // 只要这个 prop 缺省，变量与类名都不会挂上，光标自然不存在 —— 不需要额外 CSS 兜。
-        plugins={running ? streamingPlugins : sharedPlugins}
+        plugins={running ? plugins?.streaming : plugins?.shared}
         shikiTheme={DEFAULT_SHIKI_THEME}
         components={sharedComponents}
         className="aui-md text-[0.9375rem] leading-[1.5]"
@@ -314,6 +339,7 @@ const StreamdownPart = () => {
 };
 
 const MarkdownTextImpl = ({ text, className }: { text?: string; className?: string }) => {
+  const plugins = useMarkdownPlugins();
   // frontmatter 只在整篇现成文本里拆（流式分支取的是消息 part 上下文，没有整篇 text）
   const fm = useMemo(() => (text ? splitFrontmatter(text) : null), [text]);
   return (
@@ -326,13 +352,13 @@ const MarkdownTextImpl = ({ text, className }: { text?: string; className?: stri
       )}
     >
       {text === undefined ? (
-        <StreamdownPart />
+        <StreamdownPart plugins={plugins} />
       ) : (
         // 现成的完整文本（非消息流，如压缩摘要）：不走 part 上下文，直接渲染
         <>
           {fm ? <FrontmatterCard entries={fm.entries} /> : null}
           <Streamdown
-            plugins={sharedPlugins}
+            plugins={plugins?.shared}
             className="aui-md text-[0.9375rem] leading-[1.5]"
             components={sharedComponents}
             parseIncompleteMarkdown={false}

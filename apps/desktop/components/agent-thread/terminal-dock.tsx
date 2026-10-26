@@ -25,9 +25,7 @@ import {
   restartDockTerminal,
   setActiveDockTab,
   setTerminalDockHeight,
-  toggleTerminalDock,
   useTerminalDock,
-  useTerminalDockOpen,
   type DockTab,
 } from "@/lib/terminal/dock";
 import {
@@ -37,11 +35,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { findShell } from "@/lib/shell";
 import { beginResizeSession, endResizeSession } from "@/lib/ui/resize-session";
 import { isDesktop } from "@/lib/desktop-env";
-import { useIsAskMode } from "@/lib/pi/pi-session-mode";
 import { cn } from "@/lib/utils";
 import { ShellViewport } from "./agent-panel/shell-viewport";
 
@@ -104,36 +100,9 @@ const DockTabChip: FC<{ tab: DockTab; active: boolean }> = ({ tab, active }) => 
 );
 
 /**
- * 终端坞开关按钮（Header 右上角按钮簇 / 面板顶栏两处共用，随面板停靠
- * 交接——与窗口控件的交接规则一致）：只订阅开合位，拖高时不会逐帧重渲染。
- * 坞展开时按钮点亮（aria-pressed + 底色，VSCode 同款，一眼看出终端在开着——
- * 收起态坞不会露出任何痕迹）。
- * 显隐与面板终端标签同源：仅桌面端、且问答档不露（那一档不碰工程）。
+ * 终端坞开关按钮已拆到 ./terminal-toggle-button：Header 只引按钮，
+ * 避免把整个坞与 ShellViewport 拖进首屏 chunk。
  */
-export const TerminalToggleButton: FC<{ className?: string }> = ({
-  className,
-}) => {
-  const open = useTerminalDockOpen();
-  const ask = useIsAskMode();
-  if (!isDesktop() || ask) return null;
-  return (
-    <TooltipIconButton
-      variant="ghost"
-      size="icon"
-      tooltip={open ? "收起终端面板" : "打开终端面板"}
-      side="bottom"
-      aria-pressed={open}
-      onClick={() => toggleTerminalDock()}
-      className={cn(
-        "size-8 shrink-0",
-        open && "bg-muted text-foreground",
-        className,
-      )}
-    >
-      <SquareTerminalIcon className="size-4" />
-    </TooltipIconButton>
-  );
-};
 
 /** 聊天正文至少保留的高度（坞最大只能顶到这里；之上还有 48px 的 Header） */
 const CHAT_KEEP_PX = 48;

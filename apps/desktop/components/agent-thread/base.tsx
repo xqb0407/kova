@@ -42,8 +42,7 @@ import { setThreadNavigateIntent } from "@/lib/pi/pi-thread-navigate";
 import { piSessionRegistry } from "@/lib/pi/pi-thread-adapter";
 import { beginResizeSession, endResizeSession } from "@/lib/ui/resize-session";
 import { getPanelTabsFor, setCurrentPanelThread } from "@/lib/panels/panel-tabs";
-import { toggleTerminalDock } from "@/lib/terminal/dock";
-import { TerminalDock } from "./terminal-dock";
+import { toggleTerminalDock, useTerminalDock } from "@/lib/terminal/dock";
 import {
   panelResizeContradictsState,
   resolvePanelOpenPref,
@@ -53,7 +52,6 @@ import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
 import { Thread, isNewChatView } from "./thread";
-import { AgentPanel } from "./agent-panel";
 // 迭代1b（P6）：设置页整棵模块图（CodeMirror + 语言文法包、cmdk、input-otp、
 // qrcode.react）挪出首屏 chunk；外层 fixed inset-0 bg-background 容器保证
 // 加载期间是应用底色而非白屏。
@@ -142,6 +140,35 @@ const RemoteView = dynamic(
 );
 // 应用启动即接管外观偏好（预绘制脚本之后：系统主题监听、跟随实时更新）
 import "@/lib/settings/ui-prefs";
+
+// 右侧 Agent 面板：首开才加载 panel/tab-registry/xterm/webview 整棵模块图。
+// 面板打开动画期间用同尺寸卡片骨架顶位，避免布局跳动。
+const AgentPanel = dynamic(
+  () => import("./agent-panel").then((m) => m.AgentPanel),
+  { ssr: false, loading: () => <PanelLoading /> },
+);
+// 底部终端坞：有恢复标签或展开时才加载；Header 的开关按钮已拆成轻量模块。
+const TerminalDockImpl = dynamic(
+  () => import("./terminal-dock").then((m) => m.TerminalDock),
+  { ssr: false, loading: () => null },
+);
+
+function PanelLoading() {
+  return (
+    <div className="bg-background border-border/60 flex h-full min-w-0 flex-col overflow-hidden rounded-lg border">
+      <div className="border-border/80 h-12 shrink-0 border-b-[0.5]" />
+      <div className="flex flex-1 items-center justify-center">
+        <Loader2Icon className="text-muted-foreground size-5 animate-spin" />
+      </div>
+    </div>
+  );
+}
+
+function TerminalDockGate() {
+  const { open, tabs } = useTerminalDock();
+  if (!open && tabs.length === 0) return null;
+  return <TerminalDockImpl />;
+}
 
 /** 面板宽度的本地持久化键（px 整数）。面板**开合**已改为按会话分区记忆
  *  （lib/panels/panel-open-pref）；宽度仍是全局偏好，不分区 */
@@ -1055,7 +1082,7 @@ export const Base: FC = () => {
       {/* 底部终端坞：挂在聊天列卡片内的下缘（与 VSCode 集成终端同构——
           终端属于编辑/对话区，不占 Agent 面板的高度）。坞收放只压缩聊天
           正文的可视高度，右列面板始终占满全高 */}
-      <TerminalDock />
+      <TerminalDockGate />
     </div>
   );
 

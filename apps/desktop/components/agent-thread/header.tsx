@@ -26,7 +26,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
-import { TerminalToggleButton } from "@/components/agent-thread/terminal-dock";
+import { TerminalToggleButton } from "@/components/agent-thread/terminal-toggle-button";
 import { usePanelActivity } from "@/lib/panels/panel-activity";
 import { useThreadTodos } from "@/lib/pi/pi-todo";
 import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
