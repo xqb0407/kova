@@ -29,6 +29,7 @@ export {
   reloadMemoryTools,
   reloadSkills,
   resolveSession,
+  sanitizeRemoteTargetInput,
   setSessionCwd,
   projectContextInfo,
   removeTaskSessionDir,

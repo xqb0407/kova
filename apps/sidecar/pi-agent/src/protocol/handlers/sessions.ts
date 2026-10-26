@@ -59,6 +59,7 @@ import {
   removeTaskSessionDir,
   resolveSession,
   running,
+  sanitizeRemoteTargetInput,
   setSessionCwd,
 } from "../../sessions/sessions";
 import { getTodoState, replayTodoFromMessages } from "../../todo/todo";
@@ -651,31 +652,7 @@ export const handlers: Record<string, CommandHandler> = {
     const cwd = typeof msg.cwd === "string" ? msg.cwd : undefined;
     // 远程项目绑定：随请求携带（前端按 workspace 反查远程项目拼装，无秘密字段），
     // 写进转录 header；工具执行据此分流到 SSH（见 sessions/resolve.ts 与 tools/remote/）
-    const remoteRaw = (msg as { remote?: unknown }).remote;
-    const remoteHost =
-      remoteRaw && typeof remoteRaw === "object"
-        ? String((remoteRaw as { host?: unknown }).host ?? "").trim()
-        : "";
-    // port 必须 1..65535：NaN 也是 number，不挡会拼出 `-p NaN` 让 ssh 直接报错
-    const rawPort = (remoteRaw as { port?: unknown } | undefined)?.port;
-    const remotePort =
-      typeof rawPort === "number" && Number.isInteger(rawPort) && rawPort >= 1 && rawPort <= 65535
-        ? rawPort
-        : undefined;
-    const remote = remoteHost
-      ? {
-          host: remoteHost,
-          ...(remotePort ? { port: remotePort } : {}),
-          ...(typeof (remoteRaw as { username?: unknown }).username === "string" &&
-            (remoteRaw as { username: string }).username.trim()
-            ? { username: (remoteRaw as { username: string }).username.trim() }
-            : {}),
-          ...(typeof (remoteRaw as { privateKeyPath?: unknown }).privateKeyPath === "string" &&
-            (remoteRaw as { privateKeyPath: string }).privateKeyPath.trim()
-            ? { privateKeyPath: (remoteRaw as { privateKeyPath: string }).privateKeyPath.trim() }
-            : {}),
-        }
-      : undefined;
+    const remote = sanitizeRemoteTargetInput((msg as { remote?: unknown }).remote);
     const run = await resolveSession(threadId, undefined, cwd, remote);
     send({ id: reqId, type: "session", sessionId: run.sessionId, threadId });
   },

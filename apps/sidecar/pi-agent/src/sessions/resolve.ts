@@ -227,7 +227,14 @@ async function persistSessionCwd(sessionId: string, cwd: string, remote?: Remote
  * （与"建会话时就未选目录"的形态完全一致）。
  * 只改 cwd 相关物，不动 mode/approval 状态。
  */
-async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promise<void> {
+async function rebindRunCwd(
+  run: Running,
+  cwd: string,
+  threadId: string,
+  /** 请求携带的远程绑定：draft 补绑 cwd 时一并附加（prompt/new_session）；
+   *  undefined = 显式换目录/本地会话 → 清除绑定。已是远程的 run 不被覆盖。 */
+  remote?: RemoteTarget,
+): Promise<void> {
   const nextCwd = cwd || taskSessionCwd(run.sessionId);
   // 换 cwd 也会换项目：项目虚拟目录随 cwd 重新求值，后续工具/技能/提示词
   // 都按新清单重建。
@@ -244,8 +251,8 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
 
   // DB 索引行 + header 先落盘（可能失败）。失败时 run 原样不动；成功后的
   // 内存提交全是同步构造，不会留下"界面已换、运行态还是旧目录"的半绑定。
-  // 远程绑定随换绑清除：换绑意味着回到本地目录语义（远程项目重建走新对话）
-  await persistSessionCwd(run.sessionId, cwd, null);
+  // 远程绑定：请求携带时附加（draft 补绑远程项目），否则清除（换绑 = 本地语义）
+  await persistSessionCwd(run.sessionId, cwd, remote ?? null);
 
   // 移动已提交：清掉本线程的已加载技能台账（密钥注入判定按线程累积，
   // 旧目录的技能不应继续生效）
@@ -254,7 +261,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
   // 提交内存状态：以下均为同步构造，不再有可失败点
   run.persistedCwd = cwd;
   run.cwd = nextCwd;
-  run.remoteTarget = null;
+  run.remoteTarget = remote ?? null;
   run.externalDirs = effectiveDirs;
   // 解绑（清空工作目录）回落到任务工作区时同样不在此落盘：目录推迟到
   // agent 真用时才建（bash 派发前 / 写文件时自带 mkdir），见 ensureTaskSessionDir。
@@ -754,11 +761,57 @@ function persistableCwd(cwd: string | undefined): string | undefined {
 const hasNoUserTurn = (messages: readonly { role?: string }[]): boolean =>
   !messages.some((m) => m.role === "user");
 
+/**
+ * 远程绑定载ports清洗（new_session / prompt 共用）：只收白名单字段，
+ * port 必须 1..65535（NaN 也是 number，不挡会拼出 `-p NaN`）。
+ * 返回 undefined = 请求未携带远程绑定（本地会话语义）。
+ */
+export function sanitizeRemoteTargetInput(raw: unknown): RemoteTarget | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as { host?: unknown; port?: unknown; username?: unknown; privateKeyPath?: unknown };
+  const host = String(r.host ?? "").trim();
+  if (!host) return undefined;
+  const port =
+    typeof r.port === "number" && Number.isInteger(r.port) && r.port >= 1 && r.port <= 65535
+      ? r.port
+      : undefined;
+  return {
+    host,
+    ...(port ? { port } : {}),
+    ...(typeof r.username === "string" && r.username.trim() ? { username: r.username.trim() } : {}),
+    ...(typeof r.privateKeyPath === "string" && r.privateKeyPath.trim()
+      ? { privateKeyPath: r.privateKeyPath.trim() }
+      : {}),
+  };
+}
+
+/**
+ * 同目录远程绑定补挂：「会话已按该 cwd 物化（persistedCwd 已定）但尚无远程
+ * 绑定」而请求携带 remote 的时序兜底——先物化（set_mode/上下文面板）、后选
+ * 远程项目的草稿不会走 rebind 分支（persistedCwd 已非空），没有这里就会
+ * 永远本地执行。条件从严：目录精确匹配 + 该 run 从未绑过远程（绝不翻转
+ * 已有绑定）。工具闭包运行期读 run.remoteTarget，无需重建工具表。
+ */
+async function attachRemoteIfMatched(
+  run: Running,
+  safeCwd: string | undefined,
+  remote: RemoteTarget | undefined,
+): Promise<void> {
+  if (!remote || run.remoteTarget || !safeCwd) return;
+  if ((run.persistedCwd ?? "") !== safeCwd) return;
+  run.remoteTarget = remote;
+  try {
+    await persistSessionCwd(run.sessionId, safeCwd, remote);
+  } catch (err) {
+    logErr("attach-remote: header rewrite failed:", err);
+  }
+}
+
 export async function resolveSession(
   threadId: string,
   sessionId?: string,
   cwd?: string,
-  /** 远程执行目标（新建会话时随请求携带；恢复会话时从转录 header 读回） */
+  /** 远程执行目标：新建会话写入 header；已有草稿会话补绑 cwd 时一并附加 */
   remote?: RemoteTarget,
 ): Promise<Running> {
   const safeCwd = persistableCwd(cwd);
@@ -768,7 +821,10 @@ export async function resolveSession(
     // cwd —— 典型场景是先开了对话/先点了上下文面板，之后才选工作目录。
     // 闸：仅草稿会话（hasNoUserTurn）——有过对话的旧会话不再被消息里的 cwd 收养
     if (safeCwd && !existing.persistedCwd && hasNoUserTurn(existing.agent.state.messages)) {
-      await rebindRunCwd(existing, safeCwd, threadId);
+      await rebindRunCwd(existing, safeCwd, threadId, remote);
+    } else {
+      // cwd 已定但没绑过远程：请求带 remote 且目录精确匹配时补挂
+      await attachRemoteIfMatched(existing, safeCwd, remote);
     }
     touchSession(threadId);
     return existing;
@@ -792,7 +848,9 @@ export async function resolveSession(
       ) {
         // 用 run 的当前驻留键（改绑后即新键；未改绑仍是旧键）重建工具，
         // 保证工具闭包与 run.threadId 永远同键
-        await rebindRunCwd(owner.run, safeCwd, owner.run.threadId);
+        await rebindRunCwd(owner.run, safeCwd, owner.run.threadId, remote);
+      } else {
+        await attachRemoteIfMatched(owner.run, safeCwd, remote);
       }
       // 按 run 的当前驻留键续龄（未改绑时新键不在 running 表里）
       touchSession(owner.run.threadId);

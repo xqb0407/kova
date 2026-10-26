@@ -55,6 +55,7 @@ import {
   rebindRunThread,
   resolveSession,
   running,
+  sanitizeRemoteTargetInput,
   whenThreadIdle,
 } from "../sessions/sessions";
 import {
@@ -662,6 +663,10 @@ async function runTurnBody(
       threadId,
       typeof msg.sessionId === "string" ? msg.sessionId : undefined,
       typeof msg.cwd === "string" ? msg.cwd : undefined,
+      // 远程项目绑定：cwd 命中远程项目时前端随 prompt 携带——草稿会话
+      // （先开对话、后选远程项目）在这里补绑，避免被 rebind 成假本地会话；
+      // 已是远程的 run 有 persistedCwd 守卫，不会被这里覆盖
+      sanitizeRemoteTargetInput(msg.remote),
     ),
   );
 

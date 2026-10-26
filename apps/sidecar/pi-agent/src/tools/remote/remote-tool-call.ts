@@ -231,9 +231,10 @@ async function remoteRead(
   }
 
   // 文本：行数先探（截断标志用），sed 窗口只取 offset/limit 段——任意大小的
-  // 文件都能分页读（对齐本地 Rust read 语义；窗口超长行由输出上限截断兜底）
-  const offset = Math.max(1, Number(params.offset) || 1);
-  const limit = Math.max(1, Math.min(Number(params.limit) || 2000, 2000));
+  // 文件都能分页读（对齐本地 Rust read 语义；窗口超长行由输出上限截断兜底）。
+  // offset/limit 取整：模型传 2.5 这类小数会让 sed '2.5,10p' 直接语法报错
+  const offset = Math.max(1, Math.floor(Number(params.offset) || 1));
+  const limit = Math.max(1, Math.min(Math.floor(Number(params.limit) || 2000), 2000));
   const stat = await runSshRemote(target, `wc -l < ${quotePosixShellArg(abs)}`, {
     cwd,
     signal,

@@ -12,6 +12,7 @@ import {
   resolveRemotePath,
 } from "../../src/tools/remote/remote-tool-call";
 import { quotePosixShellArg, remoteBashScript } from "../../src/tools/remote/ssh-exec";
+import { sanitizeRemoteTargetInput } from "../../src/sessions/resolve";
 import type { Running, RemoteTarget } from "../../src/types";
 import {
   readTranscriptHeaderRemote,
@@ -115,6 +116,30 @@ describe("remoteBashScript（bash 工具的远端包装）", () => {
     expect(ok.out.startsWith("/")).toBe(true);
     const bad = run("echo hi", "/definitely/not/exist");
     expect(bad.exit).not.toBe(0);
+  });
+});
+
+describe("sanitizeRemoteTargetInput（new_session/prompt 共用清洗）", () => {
+  test("合法目标保留白名单字段", () => {
+    expect(
+      sanitizeRemoteTargetInput({ host: " h ", port: 2222, username: " u ", extra: "x" }),
+    ).toEqual({ host: "h", port: 2222, username: "u" });
+  });
+
+  test("无 host / 非对象 / null 一律 undefined（本地语义）", () => {
+    expect(sanitizeRemoteTargetInput(undefined)).toBeUndefined();
+    expect(sanitizeRemoteTargetInput(null)).toBeUndefined();
+    expect(sanitizeRemoteTargetInput("ssh")).toBeUndefined();
+    expect(sanitizeRemoteTargetInput({ port: 22 })).toBeUndefined();
+    expect(sanitizeRemoteTargetInput({ host: "" })).toBeUndefined();
+  });
+
+  test("port 挡 NaN/越界/小数", () => {
+    expect(sanitizeRemoteTargetInput({ host: "h", port: Number.NaN })?.port).toBeUndefined();
+    expect(sanitizeRemoteTargetInput({ host: "h", port: 0 })?.port).toBeUndefined();
+    expect(sanitizeRemoteTargetInput({ host: "h", port: 70000 })?.port).toBeUndefined();
+    expect(sanitizeRemoteTargetInput({ host: "h", port: 22.5 })?.port).toBeUndefined();
+    expect(sanitizeRemoteTargetInput({ host: "h", port: 2222 })?.port).toBe(2222);
   });
 });
 

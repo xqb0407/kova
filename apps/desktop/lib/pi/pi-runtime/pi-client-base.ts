@@ -243,6 +243,8 @@ export type PiClientTransport = {
     text: string;
     threadId: string;
     cwd: string | null;
+    /** 远程项目绑定：cwd 命中远程项目时携带（草稿会话在 sidecar 侧补绑） */
+    remote?: RemoteTargetPayload | null;
     attachments: PiPromptAttachment[] | null;
     steer: boolean;
     /** goal 档建目标时随首条消息带过去的轮次上限（0 = 不限；非 goal 档不发） */
@@ -1092,13 +1094,23 @@ export class PiClientBase implements PiClient {
         data: a.data,
       })) ?? [];
     const attachments: PiPromptAttachment[] = [...inlineImages, ...(fileAttachments ?? [])];
+    // 远程项目绑定：与 createThread 同一反查逻辑（按当前 workspace 路径）。
+    // prompt 恒携带全局 workspace，这里同步携带 remote——「先开对话、后选
+    // 远程项目」的草稿会话才能在 sidecar 侧补绑（createThread 已错过了）
+    const promptWorkspace = getWorkspace() ?? null;
+    let promptRemote: RemoteTargetPayload | null = null;
+    if (promptWorkspace) {
+      const project = findRemoteProjectByPath(promptWorkspace);
+      if (project) promptRemote = await resolveRemoteTargetPayload(project);
+    }
     try {
       await this.transport.sendPrompt({
         requestId,
         text: input.content,
         // running 键统一用 sessionId：abort/steer/队列按同键命中
         threadId,
-        cwd: getWorkspace() ?? null,
+        cwd: promptWorkspace,
+        remote: promptRemote,
         attachments: attachments.length ? attachments : null,
         steer,
         // 目标轮数上限只在 goal 档、且用户本次运行显式改过时才发。没改过就不带字段：

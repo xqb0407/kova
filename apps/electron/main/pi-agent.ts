@@ -361,9 +361,13 @@ export async function piPrompt(args: {
   threadId?: string | null;
   sessionId?: string | null;
   cwd?: string | null;
+  /** 远程项目绑定（SSH 目标，无秘密字段）：透传 sidecar，工具执行据此分流 */
+  remote?: unknown;
   attachments?: unknown;
   steer?: boolean | null;
   goalMaxAutoTurns?: number | null;
+  goalAcceptanceMode?: string | null;
+  goalMaxDurationMinutes?: number | null;
 }): Promise<null> {
   await ensureSpawned();
   const payload = {
@@ -373,9 +377,13 @@ export async function piPrompt(args: {
     threadId: args.threadId ?? null,
     sessionId: args.sessionId ?? null,
     cwd: args.cwd ?? null,
+    remote: args.remote ?? null,
     attachments: args.attachments ?? null,
     steer: args.steer ?? null,
     goalMaxAutoTurns: args.goalMaxAutoTurns ?? null,
+    // 此前 renderer 传了但这里没转发，sidecar 读不到（goal 建目标偏好静默丢失）
+    goalAcceptanceMode: args.goalAcceptanceMode ?? null,
+    goalMaxDurationMinutes: args.goalMaxDurationMinutes ?? null,
   };
   await writeLine(JSON.stringify(payload));
   return null;

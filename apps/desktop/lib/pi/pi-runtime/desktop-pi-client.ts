@@ -32,6 +32,7 @@ const desktopTransport: PiClientTransport = {
       threadId: args.threadId,
       sessionId: args.threadId,
       cwd: args.cwd,
+      remote: args.remote ?? null,
       attachments: args.attachments,
       steer: args.steer,
       goalMaxAutoTurns: args.goalMaxAutoTurns ?? null,
