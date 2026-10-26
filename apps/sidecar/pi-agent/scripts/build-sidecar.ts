@@ -14,7 +14,7 @@
  * 旧二进制被照单全收、编出来启动即崩。没有这一步，这些都要等到用户发出第一
  * 条消息才以"助手没反应"的形式暴露出来，而那时人已经在查模型/网络了。
  */
-import { mkdirSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const rustc = Bun.spawnSync(["rustc", "-vV"]);
@@ -53,12 +53,25 @@ if (pack.exitCode !== 0) process.exit(pack.exitCode ?? 1);
 const outfileDir = resolve(pkgRoot, "../../electron/binaries");
 mkdirSync(outfileDir, { recursive: true });
 const outfile = `../../electron/binaries/kova-worker-${host}`;
+// 清掉上一次编译的两种命名，避免 Bun 是否补 .exe 的差异留下陈旧产物
+rmSync(resolve(pkgRoot, outfile), { force: true });
+rmSync(resolve(pkgRoot, `${outfile}.exe`), { force: true });
 const build = Bun.spawnSync(["bun", "build", "src/index.ts", "--compile", "--outfile", outfile], {
   cwd: pkgRoot,
   stdout: "inherit",
   stderr: "inherit",
 });
 if (build.exitCode !== 0) process.exit(build.exitCode ?? 1);
+
+// Bun 在 Windows 上可能自动补 .exe；两种都探一下，后面复制/冒烟用同一路径
+const compiledPath = [
+  resolve(pkgRoot, outfile),
+  resolve(pkgRoot, `${outfile}.exe`),
+].find((p) => existsSync(p));
+if (!compiledPath) {
+  console.error(`✗ 找不到编译产物：${resolve(pkgRoot, outfile)}(.exe)`);
+  process.exit(1);
+}
 
 // 改名卫生：清掉旧名（pi-agent*）产物，免得打包目录里新旧两套并存、
 // 任务管理器里也看不出到底在跑哪个
@@ -74,13 +87,12 @@ for (const stale of readdirSync(outfileDir)) {
 // 稳定别名：宿主按不带三元组的 kova-worker(.exe) 拉起，免去运行时解析 host triple
 const aliasExt = process.platform === "win32" ? ".exe" : "";
 const aliasPath = join(outfileDir, `kova-worker${aliasExt}`);
-const copy = Bun.spawnSync(["cp", "-f", resolve(pkgRoot, outfile), aliasPath], {
-  stdout: "inherit",
-  stderr: "inherit",
-});
-if (copy.exitCode !== 0) {
+try {
+  copyFileSync(compiledPath, aliasPath);
+} catch (err) {
   console.error(`✗ 复制稳定别名失败：${aliasPath}`);
-  process.exit(copy.exitCode ?? 1);
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
 }
 
 // macOS：必须重新 ad-hoc 签名，不能留 bun 的 linker-signed 状态。
@@ -170,12 +182,12 @@ async function smokeCheck(binary: string): Promise<void> {
 }
 
 try {
-  await smokeCheck(resolve(pkgRoot, outfile));
+  await smokeCheck(compiledPath);
 } catch (err) {
   const stderr = (err as { stderr?: string }).stderr ?? "";
   console.error(
     `\nsidecar 冒烟失败：${err instanceof Error ? err.message : String(err)}\n` +
-      `产物：${outfile}\n` +
+      `产物：${compiledPath}\n` +
       `宿主三元组：${host}\n` +
       (stderr ? `产物 stderr：\n${stderr.slice(0, 2000)}\n` : "") +
       `若产物根本不在该路径，先删掉 原 Rust 宿主/binaries/ 下别的三元组产物再重编。`,
