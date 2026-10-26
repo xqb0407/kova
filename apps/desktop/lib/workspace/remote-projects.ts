@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { invoke } from "@/desktop-bridge/core";
 import { isDesktop } from "@/lib/desktop-env";
 
@@ -65,7 +65,12 @@ function subscribe(listener: () => void) {
 }
 
 export async function listRemoteProjects(): Promise<RemoteProject[]> {
-  if (!isDesktop()) return [];
+  // 非桌面壳没有 kv：标记 loaded 终态，避免 useRemoteProjects 每次渲染都空转重试
+  if (!isDesktop()) {
+    cache = [];
+    loaded = true;
+    return [];
+  }
   try {
     const raw = await invoke<string | null>("kv_get", { key: PROJECTS_KEY });
     if (typeof raw === "string" && raw) {
@@ -80,7 +85,7 @@ export async function listRemoteProjects(): Promise<RemoteProject[]> {
       cache = [];
     }
   } catch {
-    // 非桌面壳 / kv 不可用：保持上次缓存
+    // kv 不可用：保持上次缓存
   }
   loaded = true;
   return cache ?? [];
@@ -169,21 +174,18 @@ function getVersion(): number {
 
 /**
  * React 订阅：远程项目清单（对话框主机下拉、列表页、门控判定共用）。
- * 首次挂载时若尚未加载会触发一次异步刷新。
+ * 首次挂载时若尚未加载会触发一次异步刷新（effect 内，不在渲染期派发）。
  */
 export function useRemoteProjects(): { projects: RemoteProject[]; loaded: boolean } {
-  const snap = useSyncExternalStore(
-    subscribe,
-    getVersion,
-    () => 0,
-  );
-  // 快照版本变化即订阅者重渲染；loaded/projects 直接读模块缓存
-  if (!loaded && typeof window !== "undefined") {
-    void listRemoteProjects().then(() => {
-      version += 1;
-      emit();
-    });
-  }
+  useSyncExternalStore(subscribe, getVersion, () => 0);
+  useEffect(() => {
+    if (!loaded) {
+      void listRemoteProjects().then(() => {
+        version += 1;
+        emit();
+      });
+    }
+  }, []);
   return { projects: cache ?? [], loaded };
 }
 

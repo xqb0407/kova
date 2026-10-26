@@ -69,10 +69,44 @@ export function targetOptions(target: RemoteTarget): string[] {
   return opts;
 }
 
+/** 无复用直连参数：mux 竞态/陈旧 socket 的一次性回退（见 runSshRemote 尾部重试） */
+function directOptions(target: RemoteTarget): string[] {
+  const opts = [
+    "-o", `ConnectTimeout=${CONNECT_TIMEOUT_S}`,
+    "-o", `ServerAliveInterval=${KEEPALIVE_INTERVAL_S}`,
+    "-o", `ServerAliveCountMax=${KEEPALIVE_COUNT_MAX}`,
+    "-o", "StrictHostKeyChecking=accept-new",
+    "-o", "BatchMode=yes",
+  ];
+  if (target.port && target.port !== 22) opts.push("-p", String(target.port));
+  if (target.privateKeyPath?.trim()) {
+    opts.push("-i", target.privateKeyPath.trim(), "-o", "IdentitiesOnly=yes");
+  }
+  return opts;
+}
+
+/** mux 层错误（竞态抢 socket / 陈旧 socket / master 崩了）——值得直连重试一次 */
+function isMuxError(message: string): boolean {
+  return /mux|control socket|controlsocket|already exists/i.test(message);
+}
+
 /** 远端脚本：cd 到工作目录（可选）后执行，统一 POSIX 语义 */
 export function remoteScript(command: string, cwd?: string): string {
   const body = cwd?.trim() ? `cd ${quotePosixShellArg(cwd.trim())} && ${command}` : command;
   return `/bin/sh -c ${quotePosixShellArg(body)}`;
+}
+
+/**
+ * bash 工具专用脚本：cd（可选）→ 合并 stderr → 原样执行命令。
+ * 不用 `{ cmd; } 2>&1` 包装——命令以 `&` 结尾或含独立 `}` token 会触发
+ * sh 语法错误（实测）；`exec 2>&1` 对整个脚本生效且零包装风险。
+ */
+export function remoteBashScript(command: string, cwd?: string): string {
+  const lines: string[] = [];
+  if (cwd?.trim()) lines.push(`cd ${quotePosixShellArg(cwd.trim())} || exit 127`);
+  lines.push("exec 2>&1");
+  lines.push(command);
+  return `/bin/sh -c ${quotePosixShellArg(lines.join("\n"))}`;
 }
 
 export type RemoteRunResult = {
@@ -91,6 +125,8 @@ export type RemoteRunOptions = {
   signal?: AbortSignal;
   /** 输出上限（默认 REMOTE_OUTPUT_CAP_BYTES，超出截断并标记） */
   maxOutputBytes?: number;
+  /** true = 非零退出也 resolve（bash 语义：命令失败是结果不是异常），stderr 单独返回 */
+  resolveOnNonZeroExit?: boolean;
 };
 
 export class RemoteSshError extends Error {
@@ -120,27 +156,14 @@ function normalizeSshError(stderr: string, exitCode: number | null): RemoteSshEr
   return new RemoteSshError(`远程命令失败（exit ${exitCode ?? "?"}）: ${tail}`, exitCode, tail);
 }
 
-/**
- * 在远端执行一条命令并等待结束。非零退出码抛 RemoteSshError（调用方可拿
- * exitCode/stderr 组装信封——bash 工具要展示失败输出，read/write 要直接抛）。
- */
-export function runSshRemote(
-  target: RemoteTarget,
+function sshRunOnce(
+  args: string[],
+  options: RemoteRunOptions | undefined,
+  cap: number,
+  timeoutMs: number,
   command: string,
-  options?: RemoteRunOptions,
 ): Promise<RemoteRunResult> {
-  const timeoutMs = Math.min(
-    Math.max(options?.timeoutMs ?? REMOTE_DEFAULT_TIMEOUT_MS, 1_000),
-    REMOTE_MAX_TIMEOUT_MS,
-  );
-  const cap = options?.maxOutputBytes ?? REMOTE_OUTPUT_CAP_BYTES;
   return new Promise((resolve, reject) => {
-    const args = [
-      ...targetOptions(target),
-      remoteTargetArg(target),
-      "--",
-      remoteScript(command, options?.cwd),
-    ];
     const child = spawn("ssh", args, {
       stdio: ["pipe", "pipe", "pipe"],
       // 复用 ControlMaster 时 ssh 可能 prompt pass短语——BatchMode 已禁；
@@ -211,7 +234,7 @@ export function runSshRemote(
         reject(new RemoteSshError("远程命令已取消", null, ""));
         return;
       }
-      if (code !== 0) {
+      if (code !== 0 && !options?.resolveOnNonZeroExit) {
         reject(normalizeSshError(stderrText, code));
         return;
       }
@@ -229,17 +252,31 @@ export function runSshRemote(
   });
 }
 
-/** 探测远端目录是否可达（不存在/无权限时 mkdir -p 语义由调用方决定） */
-export async function remotePathExists(
+/**
+ * 在远端执行一条命令并等待结束。非零退出码抛 RemoteSshError（调用方可拿
+ * exitCode/stderr 组装信封——bash 工具要展示失败输出，read/write 要直接抛）。
+ * mux 竞态（并行首连抢同一 ControlPath / 陈旧 socket）自动直连重试一次。
+ */
+export function runSshRemote(
   target: RemoteTarget,
-  remotePath: string,
-): Promise<boolean> {
-  try {
-    await runSshRemote(target, `test -d ${quotePosixShellArg(remotePath)}`, {
-      timeoutMs: 15_000,
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  command: string,
+  options?: RemoteRunOptions,
+): Promise<RemoteRunResult> {
+  const timeoutMs = Math.min(
+    Math.max(options?.timeoutMs ?? REMOTE_DEFAULT_TIMEOUT_MS, 1_000),
+    REMOTE_MAX_TIMEOUT_MS,
+  );
+  const cap = options?.maxOutputBytes ?? REMOTE_OUTPUT_CAP_BYTES;
+  const buildArgs = (useMux: boolean): string[] => [
+    ...(useMux ? targetOptions(target) : directOptions(target)),
+    remoteTargetArg(target),
+    "--",
+    remoteScript(command, options?.cwd),
+  ];
+  return sshRunOnce(buildArgs(true), options, cap, timeoutMs, command).catch((error) => {
+    if (error instanceof RemoteSshError && isMuxError(error.message)) {
+      return sshRunOnce(buildArgs(false), options, cap, timeoutMs, command);
+    }
+    throw error;
+  });
 }

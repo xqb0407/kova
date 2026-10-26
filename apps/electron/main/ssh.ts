@@ -13,11 +13,11 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { kvGet, kvSet, kvDelete } from "./store";
+import { readdirSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { kvGet, kvSet } from "./store";
 import { logInfo, logWarn } from "./logging";
-import { decrypt, encrypt } from "./secret";
+import { encrypt } from "./secret";
 
 const HOSTS_KEY = "ssh.hosts";
 const TEST_TIMEOUT_MS = 10_000;
@@ -151,12 +151,31 @@ function testConnection(host: SshHost): Promise<{ ok: boolean; message: string; 
   });
 }
 
+/** Include 条目 → 绝对路径候选：带 `*` 的按同目录展开（ssh 只认基础 glob） */
+function expandIncludeGlob(inc: string): string[] {
+  const expanded = inc.startsWith("/") ? inc : join(homedir(), ".ssh", inc);
+  if (!expanded.includes("*")) return [expanded];
+  const dir = dirname(expanded);
+  const pattern = basename(expanded);
+  // glob 元字符转正则（只处理 * 与 ?，ssh Include 本身也只支持这些）
+  const re = new RegExp(
+    `^${pattern.replaceAll(/[.*?]/g, (c) => (c === "*" ? "(.*)" : c === "?" ? "(.)" : "\\."))}$`,
+  );
+  try {
+    return readdirSync(dir)
+      .filter((name) => re.test(name))
+      .map((name) => join(dir, name));
+  } catch {
+    // 目录不可读/不存在：按空集合处理，不阻塞整体扫描
+    return [];
+  }
+}
+
 /**
  * 扫描 ~/.ssh/config 的 Host 别名（含 Include 一层展开），供添加主机时下拉。
  * 不做 ssh -G 精化（Match 块/通配场景可能失真）——别名只作为「连接目标」保存，
  * 解析永远发生在 ssh 自身，失真不影响连通性。
- */
-function scanConfigAliases(): { alias: string }[] {
+ */function scanConfigAliases(): { alias: string }[] {
   const out = new Set<string>();
   const seen = new Set<string>();
   const visit = (path: string, depth: number): void => {
@@ -169,14 +188,18 @@ function scanConfigAliases(): { alias: string }[] {
     } catch {
       return;
     }
-    let pendingIncludes: string[] = [];
     for (const rawLine of content.split(/\r?\n/)) {
       const line = rawLine.split("#")[0].trim();
       if (!line) continue;
       const m = /^(Host|Include)\s+(.+)$/i.exec(line);
       if (!m) continue;
       if (m[1].toLowerCase() === "include") {
-        pendingIncludes = m[2].trim().split(/\s+/);
+        // Include 即遇即展开：放 pending 缓冲会漏掉「文件末尾的 Include」
+        // 与连续 Include（ssh 语义里它在出现处生效）。带 glob 的 Include
+        // （config.d/*.conf 常见）按目录展开，展开失败按空集合处理
+        for (const inc of m[2].trim().split(/\s+/)) {
+          for (const target of expandIncludeGlob(inc)) visit(target, depth + 1);
+        }
         continue;
       }
       for (const pattern of m[2].trim().split(/\s+/)) {
@@ -184,12 +207,6 @@ function scanConfigAliases(): { alias: string }[] {
         if (pattern === "*" || pattern.startsWith("!") || /[*?]/.test(pattern)) continue;
         out.add(pattern);
       }
-      // Include 常跟在 Host 段内/外，展开一次即可（相对路径按 ~/.ssh/ 解）
-      for (const inc of pendingIncludes) {
-        const incPath = /^\.\//.test(inc) ? join(normalized, "..", inc) : join(homedir(), ".ssh", inc);
-        visit(incPath, depth + 1);
-      }
-      pendingIncludes = [];
     }
   };
   visit(join(homedir(), ".ssh", "config"), 0);

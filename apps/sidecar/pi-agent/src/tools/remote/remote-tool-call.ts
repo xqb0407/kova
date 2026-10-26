@@ -16,12 +16,11 @@ import { extname, isAbsolute, posix } from "node:path";
 import type { RemoteTarget } from "../../types";
 import {
   quotePosixShellArg,
-  remoteScript,
+  remoteBashScript,
   remoteTargetArg,
   runSshRemote,
   targetOptions,
   REMOTE_OUTPUT_CAP_BYTES,
-  RemoteSshError,
 } from "./ssh-exec";
 
 /** 与 Rust 信封对齐的结果形状（见 hostdb.ts hostToolCall 泛型） */
@@ -104,93 +103,18 @@ async function remoteBash(
 
   if (params.runInBackground !== true) {
     const timeoutMs = Math.min(Math.max(Number(params.timeout) || 120_000, 1_000), 600_000);
-    // bash 走合并流：2>&1 让 stdout/stderr 按真实先后交错（排查构建日志必需）
-    let child: ChildProcess;
-    try {
-      child = spawn(
-        "ssh",
-        [
-          ...targetOptions(target),
-          remoteTargetArg(target),
-          "--",
-          remoteScript(`{ ${command}\n; } 2>&1`, cwd),
-        ],
-        { stdio: ["ignore", "pipe", "pipe"] },
-      );
-    } catch (error) {
-      throw new RemoteSshError(
-        `ssh 启动失败: ${error instanceof Error ? error.message : String(error)}`,
-        null,
-        "",
-      );
-    }
-    return await new Promise((resolve, reject) => {
-      let settled = false;
-      let bytes = 0;
-      let truncated = false;
-      const chunks: Buffer[] = [];
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        child.kill("SIGTERM");
-        reject(
-          new RemoteSshError(
-            `远程命令超时（${Math.round(timeoutMs / 1000)}s）：${command.slice(0, 120)}`,
-            null,
-            "",
-          ),
-        );
-      }, timeoutMs);
-      timer.unref?.();
-      const abort = () => {
-        if (!settled) child.kill("SIGTERM");
-      };
-      signal?.addEventListener("abort", abort, { once: true });
-      child.stdout?.on("data", (chunk: Buffer) => {
-        if (bytes >= REMOTE_OUTPUT_CAP_BYTES) {
-          truncated = true;
-          return;
-        }
-        bytes += chunk.length;
-        chunks.push(
-          bytes > REMOTE_OUTPUT_CAP_BYTES
-            ? chunk.subarray(0, chunk.length - (bytes - REMOTE_OUTPUT_CAP_BYTES))
-            : chunk,
-        );
-        if (bytes >= REMOTE_OUTPUT_CAP_BYTES) truncated = true;
-      });
-      child.stderr?.on("data", (chunk: Buffer) => {
-        // 2>&1 已并入 stdout；这里只兜通道级诊断
-        if (bytes >= REMOTE_OUTPUT_CAP_BYTES) return;
-        bytes += chunk.length;
-        chunks.push(chunk);
-      });
-      child.on("error", (error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", abort);
-        reject(new RemoteSshError(`ssh 启动失败: ${error.message}`, null, ""));
-      });
-      child.on("close", (code) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", abort);
-        const output = Buffer.concat(chunks).toString("utf8");
-        if (signal?.aborted) {
-          reject(new RemoteSshError("远程命令已取消", null, ""));
-          return;
-        }
-        resolve({
-          output: truncated
-            ? `${output}\n…[output truncated at ${Math.round(REMOTE_OUTPUT_CAP_BYTES / 1024)}KB]`
-            : output,
-          exitCode: code ?? 0,
-          truncated: truncated || undefined,
-        });
-      });
+    // stderr 经脚本的 exec 2>&1 并入 stdout（按真实先后交错，排查构建日志必需）；
+    // bash 语义：命令失败（含 cd 失败）是结果不是异常——exitCode 进信封
+    const result = await runSshRemote(target, command, {
+      cwd,
+      timeoutMs,
+      signal,
+      resolveOnNonZeroExit: true,
     });
+    const output = result.truncated
+      ? `${result.stdout}\n…[output truncated at ${Math.round(REMOTE_OUTPUT_CAP_BYTES / 1024)}KB]`
+      : result.stdout;
+    return { output, exitCode: result.exitCode, truncated: result.truncated || undefined };
   }
 
   // 后台：本地 ssh 进程即任务句柄，输出进内存（tail 256KB 语义对齐 Rust）
@@ -198,12 +122,7 @@ async function remoteBash(
   const id = nextBgTaskId++;
   const child = spawn(
     "ssh",
-    [
-      ...targetOptions(target),
-      remoteTargetArg(target),
-      "--",
-      remoteScript(`{ ${command}\n; } 2>&1`, cwd),
-    ],
+    [...targetOptions(target), remoteTargetArg(target), "--", remoteBashScript(command, cwd)],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   const task: RemoteBgTask = {
@@ -311,20 +230,16 @@ async function remoteRead(
     return { output: `[image: ${abs}]`, base64: b64, mimeType: mime, bytes };
   }
 
-  // 文本：行数/字节数先探（大文件拒绝整读），再按 offset/limit 取窗口
+  // 文本：行数先探（截断标志用），sed 窗口只取 offset/limit 段——任意大小的
+  // 文件都能分页读（对齐本地 Rust read 语义；窗口超长行由输出上限截断兜底）
   const offset = Math.max(1, Number(params.offset) || 1);
   const limit = Math.max(1, Math.min(Number(params.limit) || 2000, 2000));
-  const stat = await runSshRemote(
-    target,
-    `wc -l < ${quotePosixShellArg(abs)}; printf ' '; wc -c < ${quotePosixShellArg(abs)}`,
-    { cwd, signal, timeoutMs: 30_000 },
-  );
-  const [totalLines, totalBytes] = stat.stdout.trim().split(/\s+/).map((n) => Number(n) || 0);
-  if (totalBytes > READ_MAX_BYTES) {
-    throw new Error(
-      `file too large (${Math.round(totalBytes / 1024)}KB > 2MiB); use offset/limit pagination or grep instead`,
-    );
-  }
+  const stat = await runSshRemote(target, `wc -l < ${quotePosixShellArg(abs)}`, {
+    cwd,
+    signal,
+    timeoutMs: 30_000,
+  });
+  const totalLines = Number(stat.stdout.trim().split(/\s+/).pop()) || 0;
   const endLine = offset + limit - 1;
   const { stdout } = await runSshRemote(
     target,
@@ -392,8 +307,24 @@ async function remoteEdit(
   if (!oldString) throw new Error("old_string is required");
   const abs = resolveRemotePath(cwd, filePath);
   assertWriteInRoot(cwd, abs);
-  // 读全文 → 本侧替换 → 写回（语义与本地 edit 一致：精确匹配 + 唯一性）
-  const { stdout } = await runSshRemote(target, `cat ${quotePosixShellArg(abs)}`, { cwd, signal });
+  // 读全文 → 本侧替换 → 写回（语义与本地 edit 一致：精确匹配 + 唯一性）。
+  // 上限内必须整读整写：默认 512KB 输出上限会把中等文件截断，写回即丢数据
+  const stat = await runSshRemote(target, `wc -c < ${quotePosixShellArg(abs)}`, {
+    cwd,
+    signal,
+    timeoutMs: 30_000,
+  });
+  const totalBytes = Number(stat.stdout.trim().split(/\s+/).pop()) || 0;
+  if (totalBytes > READ_MAX_BYTES) {
+    throw new Error(
+      `file too large for edit (${Math.round(totalBytes / 1024)}KB > 2MiB); split the change or use bash + sed`,
+    );
+  }
+  const { stdout } = await runSshRemote(target, `cat ${quotePosixShellArg(abs)}`, {
+    cwd,
+    signal,
+    maxOutputBytes: READ_MAX_BYTES,
+  });
   const content = stdout;
   const count = content.split(oldString).length - 1;
   if (count === 0) {
@@ -456,8 +387,10 @@ export async function remoteListFiles(
 ): Promise<string[]> {
   const result = await runSshRemote(
     target,
+    // 排除 node_modules/.git 与「隐藏目录之下」的文件；隐藏文件本身保留
+    //（与本地 walkFiles 语义一致：跳隐藏目录、不跳隐藏文件）
     `find ${quotePosixShellArg(base)} -type f ` +
-      `-not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.*' ` +
+      `-not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.*/*' ` +
       `2>/dev/null | head -c ${4 * 1024 * 1024}`,
     { cwd, signal, timeoutMs: 60_000 },
   );

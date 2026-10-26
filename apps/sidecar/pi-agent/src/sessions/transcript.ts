@@ -565,9 +565,15 @@ export function rewriteTranscriptHeaderCwd(
       }
     }
 
+    // remote 三态：undefined = 保留现值（展开自然携带）；null = 删除字段
+    //（本地换绑不能给所有 header 留 remote:null 脏数据）；对象 = 覆盖
+    const nextHeader: Record<string, unknown> = { ...headRow, cwd };
+    if (remote === null) delete nextHeader.remote;
+    else if (remote !== undefined) nextHeader.remote = remote;
+
     writeAll(
       writeFd,
-      Buffer.from(JSON.stringify({ ...headRow, cwd, ...(remote !== undefined ? { remote } : {}) }) + "\n", "utf8"),
+      Buffer.from(JSON.stringify(nextHeader) + "\n", "utf8"),
     );
     const chunk = Buffer.alloc(HEADER_COPY_CHUNK);
     let position = newlineAt + 1;

@@ -327,7 +327,8 @@ export async function setSessionCwd(sessionId: string, cwd: string): Promise<voi
       "session has pending approvals/questions; resolve them before moving",
     );
   }
-  await persistSessionCwd(sessionId, cwd);
+  // 显式换目录 = 回到本地语义，远程绑定一并清除（与 rebindRunCwd 同规）
+  await persistSessionCwd(sessionId, cwd, null);
 }
 /**
  * 把驻留 run 改绑到新的前端 threadId（刷新后键漂移的唯一正确落点）。
@@ -1014,6 +1015,7 @@ export async function resolveSession(
     () => run.mode,
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
+    () => run.remoteTarget ?? null,
   );
   // 会话级能力装配：默认无能力时 tools 与 seedTools 逐项相同、后缀为空串。
   const initialCapabilityPlan = await assembleSessionOrFallback(

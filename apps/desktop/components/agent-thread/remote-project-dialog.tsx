@@ -41,8 +41,9 @@ export const RemoteProjectDialog: FC<{
   /** 保存成功后回调（已把 workspace 设为远端路径） */
   onSaved?: (project: RemoteProject) => void;
 }> = ({ open, onClose, onSaved }) => {
-  const { projects, loaded } = useRemoteProjects();
+  const { projects } = useRemoteProjects();
   const [hosts, setHosts] = useState<SshHost[]>([]);
+  const [hostsLoaded, setHostsLoaded] = useState(false);
   const [name, setName] = useState("");
   const [hostId, setHostId] = useState("");
   const [remotePath, setRemotePath] = useState("");
@@ -52,11 +53,14 @@ export const RemoteProjectDialog: FC<{
   useEffect(() => {
     if (!open) return;
     setError(null);
+    setHostsLoaded(false);
     void (async () => {
       try {
         setHosts(((await invoke("ssh_host_list", {})) as SshHost[]) ?? []);
       } catch {
         setHosts([]);
+      } finally {
+        setHostsLoaded(true);
       }
     })();
   }, [open]);
@@ -64,21 +68,20 @@ export const RemoteProjectDialog: FC<{
   if (!open) return null;
 
   const enabledHosts = hosts.filter((h) => h.enabled);
-  const canSubmit =
-    !busy && remotePath.trim().startsWith("/") && (hostId || enabledHosts.length > 0);
+  // 必须显式选主机：静默回退第一台会让人在多主机时绑错目标
+  const canSubmit = !busy && Boolean(hostId) && remotePath.trim().startsWith("/");
 
   const submit = async () => {
     setBusy(true);
     setError(null);
     try {
-      const target = hostId || enabledHosts[0]?.id;
-      if (!target) {
+      if (!hostId) {
         setError("请先选择 SSH 主机");
         return;
       }
       // 远端路径必须存在：保存前校验一次（避免会话里才炸）
       const check = (await invoke("ssh_host_check_dir", {
-        hostId: target,
+        hostId,
         path: remotePath.trim(),
       })) as { exists: boolean; message: string };
       if (!check.exists) {
@@ -87,7 +90,7 @@ export const RemoteProjectDialog: FC<{
       }
       const saved = await saveRemoteProject({
         name: name.trim(),
-        hostId: target,
+        hostId,
         remotePath: remotePath.trim(),
       });
       const { setWorkspace } = await import("@/lib/workspace/workspace-store");
@@ -158,7 +161,7 @@ export const RemoteProjectDialog: FC<{
             )}
           </div>
 
-          {loaded && enabledHosts.length === 0 && (
+          {hostsLoaded && enabledHosts.length === 0 && (
             <div className="text-muted-foreground bg-muted/40 flex flex-col items-center gap-2 rounded-xl px-4 py-8 text-sm">
               <CloudOffIcon className="text-muted-foreground/60 size-8" />
               请先在 设置 → 系统 → SSH 主机 中添加并启用一个主机。

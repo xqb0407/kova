@@ -25,6 +25,7 @@ import { stripDirectiveTokens } from "../../sessions/session-title-summarize";
 import {
   readTranscript,
   raiseTranscriptSeqFloor,
+  readTranscriptHeaderRemote,
   scanTranscript,
   historyToUiMessages,
   isTruncationStoppedRow,
@@ -655,12 +656,16 @@ export const handlers: Record<string, CommandHandler> = {
       remoteRaw && typeof remoteRaw === "object"
         ? String((remoteRaw as { host?: unknown }).host ?? "").trim()
         : "";
+    // port 必须 1..65535：NaN 也是 number，不挡会拼出 `-p NaN` 让 ssh 直接报错
+    const rawPort = (remoteRaw as { port?: unknown } | undefined)?.port;
+    const remotePort =
+      typeof rawPort === "number" && Number.isInteger(rawPort) && rawPort >= 1 && rawPort <= 65535
+        ? rawPort
+        : undefined;
     const remote = remoteHost
       ? {
           host: remoteHost,
-          ...(typeof (remoteRaw as { port?: unknown }).port === "number"
-            ? { port: (remoteRaw as { port: number }).port }
-            : {}),
+          ...(remotePort ? { port: remotePort } : {}),
           ...(typeof (remoteRaw as { username?: unknown }).username === "string" &&
             (remoteRaw as { username: string }).username.trim()
             ? { username: (remoteRaw as { username: string }).username.trim() }
@@ -772,6 +777,9 @@ export const handlers: Record<string, CommandHandler> = {
       references: artifactRefs,
     });
     const forkedLines = rewriteArtifactReferences(dataLines, artifactMapping);
+    // 远程绑定随源会话继承：分叉头手写、不含 remote，丢了会让分叉变成
+    // 「本地 cwd 指向远端路径」的假会话（bash 报目录不存在）
+    const forkRemote = readTranscriptHeaderRemote(sourceId);
     // parentSession = fork 溯源（§6 M4，上游 header 同名可选字段；
     // 本项目取源会话 id 而非路径——我们的会话身份是 id）
     try {
@@ -784,6 +792,7 @@ export const handlers: Record<string, CommandHandler> = {
           cwd: src.cwd,
           created_at: new Date().toISOString(),
           parentSession: sourceId,
+          ...(forkRemote ? { remote: forkRemote } : {}),
         }) + "\n" + (forkedLines.length ? forkedLines.join("\n") + "\n" : ""),
       );
     } catch (error) {

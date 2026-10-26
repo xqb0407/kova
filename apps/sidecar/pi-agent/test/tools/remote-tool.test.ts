@@ -11,7 +11,7 @@ import {
   remoteToolCall,
   resolveRemotePath,
 } from "../../src/tools/remote/remote-tool-call";
-import { quotePosixShellArg } from "../../src/tools/remote/ssh-exec";
+import { quotePosixShellArg, remoteBashScript } from "../../src/tools/remote/ssh-exec";
 import type { Running, RemoteTarget } from "../../src/types";
 import {
   readTranscriptHeaderRemote,
@@ -85,6 +85,36 @@ describe("remote task registry ownership", () => {
     await expect(
       remoteToolCall("task_output", "/tmp", { taskId: 999 }, undefined, "thread-a", target),
     ).rejects.toThrow("task not found: 999");
+  });
+});
+
+describe("remoteBashScript（bash 工具的远端包装）", () => {
+  const run = (command: string, cwd?: string) => {
+    const res = Bun.spawnSync(["/bin/sh", "-c", remoteBashScript(command, cwd)]);
+    return { out: res.stdout.toString(), exit: res.exitCode };
+  };
+
+  test("以 & 结尾的命令不触发语法错误（旧 { } 包装的实锤回归）", () => {
+    const r = run("echo started &");
+    expect(r.exit).toBe(0);
+  });
+
+  test("含独立 } token 的命令不破坏包装", () => {
+    const r = run("echo 'a } b'");
+    expect(r.out).toContain("a } b");
+  });
+
+  test("stderr 并入 stdout（exec 2>&1）", () => {
+    const r = run("echo out; echo err 1>&2");
+    expect(r.out).toContain("out");
+    expect(r.out).toContain("err");
+  });
+
+  test("cd 工作目录 + 失败退出码透传", () => {
+    const ok = run("pwd", "/tmp");
+    expect(ok.out.startsWith("/")).toBe(true);
+    const bad = run("echo hi", "/definitely/not/exist");
+    expect(bad.exit).not.toBe(0);
   });
 });
 

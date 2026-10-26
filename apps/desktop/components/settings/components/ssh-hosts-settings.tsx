@@ -245,7 +245,10 @@ export const SshHostsSettings: FC = () => {
       </Card>
 
       {editing && (
+        // key 按编辑对象分档：useState 只吃初始 draft，不换 key 会把上一个
+        // 主机的表单值带到下一个（点编辑 B 显示 A 的内容）
         <SshHostEditor
+          key={editing.id ?? "new"}
           draft={editing}
           aliases={aliases}
           busy={busyId === "editor"}
