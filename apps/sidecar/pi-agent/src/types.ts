@@ -241,6 +241,16 @@ export type SteerEntry = {
   seq?: number;
 };
 
+/** 远程执行目标（SSH）：会话绑定后工具调用经 SSH 在远端执行（v1 仅密钥/agent 认证） */
+export type RemoteTarget = {
+  /** 主机名/IP 或 ~/.ssh/config 别名（别名时 port/username 交由 ssh config 解析） */
+  host: string;
+  port?: number;
+  username?: string;
+  /** 私钥路径（可选；缺省走 agent / 默认密钥） */
+  privateKeyPath?: string;
+};
+
 /** threadId 对应的活动会话（每个前端线程一个 Agent 实例） */
 export type Running = {
   agent: Agent;
@@ -248,6 +258,12 @@ export type Running = {
   threadId: string;
   sessionId: string;
   cwd: string;
+  /**
+   * 远程执行目标（SSH）：会话绑定后 bash/read/write/edit 等工具调用改经 SSH
+   * 在远端执行（见 tools/remote/）。null/缺省 = 本地会话（走 Rust 宿主）。
+   * 事实源：转录 header 的 remote 字段（新建时写入、恢复时读回；DB 无此列）。
+   */
+  remoteTarget?: RemoteTarget | null;
   /** 持久化 cwd（会话绑定的工作目录；空串 = 建会话时未选目录，允许后续补绑） */
   persistedCwd?: string;
   /**

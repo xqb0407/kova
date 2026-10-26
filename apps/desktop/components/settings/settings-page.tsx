@@ -21,6 +21,7 @@ import {
   PaletteIcon,
   PaintbrushIcon,
   RocketIcon,
+  ServerIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
   WebhookIcon,
@@ -41,6 +42,7 @@ import { PersonalizationSettings } from "./components/personalization-settings";
 import { ShortcutSettings } from "./components/shortcut-settings";
 import { SecretsSettings } from "./components/secrets-settings";
 import { DesignThemesSettings } from "./components/design-themes-settings";
+import { SshHostsSettings } from "./components/ssh-hosts-settings";
 
 export type SettingsSection =
   | "models"
@@ -57,7 +59,8 @@ export type SettingsSection =
   | "agent-config"
   | "secrets"
   | "design-themes"
-  | "access-accel";
+  | "access-accel"
+  | "ssh-hosts";
 
 const GROUPS: {
   label: string;
@@ -94,6 +97,8 @@ const GROUPS: {
       // 访问加速：AI 联网时把 GitHub 等地址改走镜像站。归「系统」而不是
       // 「智能体」——改的是这台机器的出网路径，与授予 agent 什么能力无关
       { id: "access-accel", label: "访问加速", icon: RocketIcon },
+      // SSH 主机：远程项目的连接目标，改的是本机出站连接配置，同归「系统」
+      { id: "ssh-hosts", label: "SSH 主机", icon: ServerIcon },
       { id: "webhooks", label: "Webhooks", icon: WebhookIcon },
       { id: "about", label: "关于", icon: InfoIcon },
     ],
@@ -258,6 +263,7 @@ export const SettingsPage: FC<{
           {section === "about" && <AboutSettings />}
           {section === "general" && <GeneralSettings />}
           {section === "access-accel" && <AccessAccelSettings />}
+          {section === "ssh-hosts" && <SshHostsSettings />}
         </div>
       </div>
     </div>

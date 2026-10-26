@@ -41,13 +41,15 @@ import { buildMemoryTools, getMemoryConfig } from "../agent/memory";
 import { buildSkillUseTool } from "../skills/skill-use-tool";
 import { buildUseDesignThemeTool } from "../design-md/use-design-theme-tool";
 import type { ThemeRef } from "../design-md/store";
-import type { ApprovalLevel, SessionMode } from "../types";
+import type { ApprovalLevel, RemoteTarget, SessionMode } from "../types";
 import type { ReviewSessionFacts } from "../permissions/auto-review";
 import { buildMcpTool } from "../mcp/mcp-tools";
 import { buildEchoImageTool } from "./echo-image-tool";
 import { buildSearchExternalFilesTool } from "./external-dir-tools";
 import type { ExternalDir } from "pi-protocol";
 import { resolveSecretEnv } from "../secrets/secrets";
+import { remoteListFiles, remoteToolCall } from "./remote/remote-tool-call";
+import { runSshRemote } from "./remote/ssh-exec";
 
 /** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
 const MAX_WALKED_FILES = 5000;
@@ -119,8 +121,11 @@ function walkFiles(
   }
 }
 
-/** glob 工具：按模式匹配工作区内文件路径 */
-function buildGlobTool(cwd: string): AgentTool {
+/** glob 工具：按模式匹配工作区内文件路径；远程会话经 SSH find + 本侧正则过滤 */
+function buildGlobTool(
+  cwd: string,
+  getRemoteTarget?: () => RemoteTarget | null,
+): AgentTool {
   return {
     name: "glob",
     label: "Glob",
@@ -137,19 +142,36 @@ function buildGlobTool(cwd: string): AgentTool {
       const { pattern, path: sub } = params as { pattern: string; path?: string };
       if (!pattern.trim()) throw new Error("pattern is required");
       const base = resolveInWorkspace(cwd, sub ?? "");
-      if (!existsSync(base)) throw new Error(`not found: ${sub ?? "."}`);
       const re = globToRegExp(pattern.trim());
       const matches: string[] = [];
       let truncated = false;
-      walkFiles(base, (_abs, rel) => {
-        if (re.test(rel) || re.test(path.posix.basename(rel))) {
+
+      const remoteTarget = getRemoteTarget?.() ?? null;
+      if (remoteTarget) {
+        // 远程：find 列文件（相对化），正则过滤同款语义；不存在时报目录不可达
+        const relBase = path.posix.normalize(base.replaceAll("\\", "/").replace(/\/+$/, ""));
+        const files = await remoteListFiles(remoteTarget, cwd, relBase).catch(() => {
+          throw new Error(`remote directory not found: ${sub ?? "."}`);
+        });
+        for (const rel of files) {
           if (matches.length >= MAX_MATCH_ENTRIES) {
             truncated = true;
-            return false;
+            break;
           }
-          matches.push(rel);
+          if (re.test(rel) || re.test(path.posix.basename(rel))) matches.push(rel);
         }
-      });
+      } else {
+        if (!existsSync(base)) throw new Error(`not found: ${sub ?? "."}`);
+        walkFiles(base, (_abs, rel) => {
+          if (re.test(rel) || re.test(path.posix.basename(rel))) {
+            if (matches.length >= MAX_MATCH_ENTRIES) {
+              truncated = true;
+              return false;
+            }
+            matches.push(rel);
+          }
+        });
+      }
       matches.sort();
       const body = matches.join("\n");
       const suffix = truncated ? "\n…[more files truncated]" : "";
@@ -162,7 +184,11 @@ function buildGlobTool(cwd: string): AgentTool {
 }
 
 /** grep 工具：在工作区文本文件里按正则逐行搜索 */
-function buildGrepTool(cwd: string): AgentTool {
+/** grep 工具：正则搜文件内容；远程会话走 ssh grep（ERE 方言，lookahead 不支持） */
+function buildGrepTool(
+  cwd: string,
+  getRemoteTarget?: () => RemoteTarget | null,
+): AgentTool {
   return {
     name: "grep",
     label: "Grep",
@@ -194,6 +220,39 @@ function buildGrepTool(cwd: string): AgentTool {
       }
       const includeRe = include?.trim() ? globToRegExp(include.trim()) : undefined;
       const target = resolveInWorkspace(cwd, sub ?? "");
+
+      const remoteTarget = getRemoteTarget?.() ?? null;
+      if (remoteTarget) {
+        // 远程：ssh grep（ERE 方言，JS lookahead 类语法会失败——错误信息指引改 bash）。
+        // -I 跳二进制；--include 走 grep 的 glob 语义；单文件路径直接搜。
+        const relTarget = target.replaceAll("\\", "/");
+        const quoted = `'${relTarget.replaceAll("'", `'\\''`)}'`;
+        const includeOpt = include?.trim() ? ` --include='${include.trim().replaceAll("'", `'\\''`)}'` : "";
+        const cmd = `grep -rnIE${includeOpt} --exclude-dir=node_modules --exclude-dir=.git -e '${pattern.replaceAll("'", `'\\''`)}' ${quoted} 2>/dev/null | head -c ${256 * 1024}`;
+        let out: string;
+        try {
+          const result = await runSshRemote(remoteTarget, cmd, { cwd, timeoutMs: 60_000 });
+          out = result.stdout;
+        } catch (error) {
+          throw new Error(
+            `remote grep failed: ${error instanceof Error ? error.message : error}。` +
+              `注意远程 grep 使用 ERE 语法（不支持 JS lookahead），可改用 bash + grep。`,
+          );
+        }
+        const lines = out.replace(/\n$/, "").split("\n").filter(Boolean);
+        const relPrefix = cwd.replaceAll("\\", "/").replace(/\/+$/, "") + "/";
+        const matches = lines.map((line) =>
+          line.startsWith(relPrefix) ? line.slice(relPrefix.length) : line,
+        );
+        const truncatedFlag = lines.length >= 200 || out.length >= 256 * 1024 - 1024;
+        const body = matches.join("\n");
+        const suffix = truncatedFlag ? "\n…[more matches truncated]" : "";
+        return textResult(body ? body + suffix : "No matches.", {
+          count: matches.length,
+          truncated: truncatedFlag,
+        });
+      }
+
       if (!existsSync(target)) throw new Error(`not found: ${sub ?? "."}`);
       if (statSync(target).isFile()) {
         // 单文件直接搜，不做遍历与过滤
@@ -263,7 +322,9 @@ export function buildHostToolPayload(
 /** bash/read/write/edit：schema 留本侧，执行转发给 Rust 宿主（tool_exec.rs）；
  *  threadId 供 write/edit 落盘成功后的"面板认领文件自动开板"回路（open-panel-tool）；
  *  augment 在 execute 内追加宿主信封字段（bash 用它挂密钥注入名单与访问加速环境——
- *  **不进工具 schema**，模型无从要求密钥，也无从指定加速前缀）。 */
+ *  **不进工具 schema**，模型无从要求密钥，也无从指定加速前缀）。
+ *  getRemoteTarget 存在且返回目标时（远程项目会话）：执行改走 SSH
+ *  （tools/remote/remote-tool-call.ts），沙箱/检查点/密钥注入全部跳过。 */
 function hostTool(
   name: string,
   cwd: string,
@@ -275,6 +336,8 @@ function hostTool(
   getExtraRoots?: () => readonly string[],
   /** 沙箱计划：执行前由宿主按同一份根/网络策略裁决。 */
   getSandbox?: () => Promise<SandboxPlan | null> | SandboxPlan | null,
+  /** 远程执行目标闭包：返回 null = 本地会话（默认路径） */
+  getRemoteTarget?: () => RemoteTarget | null,
 ): AgentTool {
   return {
     name,
@@ -290,6 +353,37 @@ function hostTool(
     description,
     parameters,
     execute: async (_id, params, signal) => {
+      // 远程会话分支：模型参数原样透传（远端信封同形），沙箱/检查点/密钥注入
+      // 均为本地宿主概念——越界写由 remote 侧 write-roots 校验，越界命令仍走审批门
+      const remoteTarget = getRemoteTarget?.() ?? null;
+      if (remoteTarget) {
+        const data = await remoteToolCall(
+          name,
+          cwd,
+          params as Record<string, unknown>,
+          signal ?? undefined,
+          threadId,
+          remoteTarget,
+        );
+        const output =
+          typeof data.output === "string"
+            ? data.output
+            : `remote tool "${name}" returned no output`;
+        if (data.base64 && data.mimeType) {
+          return {
+            content: [
+              { type: "text" as const, text: output },
+              { type: "image" as const, data: data.base64, mimeType: data.mimeType },
+            ],
+            details: { bytes: data.bytes },
+          };
+        }
+        const details: Record<string, unknown> = {};
+        if (data.truncated !== undefined) details.truncated = data.truncated;
+        if (data.exitCode !== undefined) details.exitCode = data.exitCode;
+        if (data.totalLines !== undefined) details.totalLines = data.totalLines;
+        return textResult(output, Object.keys(details).length ? details : undefined);
+      }
       // 宿主信封 = 模型给的参数（剔除保留字段）+ 本侧追加字段
       // （augment 只给名字，值在 Rust 侧查出，见 docs/secrets-env-design.md）
       const payload = buildHostToolPayload(
@@ -450,6 +544,9 @@ export function buildTools(
   getExternalDirs?: () => readonly ExternalDir[],
   /** 沙箱计划（闭包）：bash 走 OS 沙箱，read/write/edit/http 走宿主路径/网络裁决。 */
   getSandboxPlan?: () => Promise<SandboxPlan | null> | SandboxPlan | null,
+  /** 远程执行目标（闭包）：非 null 时 bash/read/write/edit/glob/grep/task_* 改走 SSH
+   *  （远程项目会话，见 tools/remote/ 与 docs/remote-ssh-projects.md）。 */
+  getRemoteTarget?: () => RemoteTarget | null,
 ): AgentTool[] {
   const tools: AgentTool[] = [
     hostTool("bash", cwd, threadId,
@@ -481,6 +578,7 @@ export function buildTools(
       },
       undefined,
       getSandboxPlan,
+      getRemoteTarget,
     ),
     hostTool(
       "task_output",
@@ -492,6 +590,10 @@ export function buildTools(
       Type.Object({
         taskId: Type.Number({ description: "The taskId returned when the background task started" }),
       }),
+      undefined,
+      undefined,
+      undefined,
+      getRemoteTarget,
     ),
     hostTool(
       "task_stop",
@@ -502,6 +604,10 @@ export function buildTools(
       Type.Object({
         taskId: Type.Number({ description: "The taskId of the background task to kill" }),
       }),
+      undefined,
+      undefined,
+      undefined,
+      getRemoteTarget,
     ),
     hostTool("read", cwd, threadId,
       READ_TOOL_DESCRIPTION,
@@ -513,6 +619,7 @@ export function buildTools(
       undefined,
       undefined,
       getSandboxPlan,
+      getRemoteTarget,
     ),
     hostTool("write", cwd, threadId,
       WRITE_TOOL_DESCRIPTION,
@@ -529,6 +636,7 @@ export function buildTools(
       undefined,
       () => (getExternalDirs?.() ?? []).map((dir) => dir.path),
       getSandboxPlan,
+      getRemoteTarget,
     ),
     hostTool("edit", cwd, threadId,
       "Replace an exact string in a file. old_string must match exactly and appear exactly once, " +
@@ -544,9 +652,10 @@ export function buildTools(
       undefined,
       () => (getExternalDirs?.() ?? []).map((dir) => dir.path),
       getSandboxPlan,
+      getRemoteTarget,
     ),
-    buildGlobTool(cwd),
-    buildGrepTool(cwd),
+    buildGlobTool(cwd, getRemoteTarget),
+    buildGrepTool(cwd, getRemoteTarget),
     ...buildWebTools(cwd, getSandboxPlan),
     // 浏览器驱动：执行转发 Rust 宿主（browser.rs）驱动面板子 webview，
     // threadId 用于 data-panelOpen 面板唤起（见 browser-tools.ts）

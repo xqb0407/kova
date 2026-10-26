@@ -57,7 +57,7 @@ import { sendSessionsChanged } from "../protocol/stream";
 import { getModels } from "../model/model-catalog";
 import { stripDirectiveTokens, summarizeSessionTitle } from "./session-title-summarize";
 import { logErr } from "../log";
-import type { Running, UIMessage } from "../types";
+import type { Running, RemoteTarget, UIMessage } from "../types";
 
 /** 压缩检查点行（与模型上下文的投射解耦：恢复端只需要最后一条） */
 export type CompactionRow = {
@@ -467,13 +467,63 @@ function writeFreshHeader(file: string, sessionId: string, cwd: string): void {
 }
 
 /**
+ * 读取转录 header 里的远程执行目标（远程项目会话；新建时写入，见 resolve.ts）。
+ * 无 header / 无 remote 字段 / 解析失败一律返回 null（本地会话语义）。
+ */
+export function readTranscriptHeaderRemote(
+  sessionId: string,
+): RemoteTarget | null {
+  const file = sessionPath(sessionId);
+  if (!existsSync(file)) return null;
+  try {
+    const readFd = openSync(file, "r");
+    try {
+      const stat = fstatSync(readFd);
+      const head = Buffer.alloc(Math.min(HEADER_SCAN_MAX, stat.size));
+      const headLen = readSync(readFd, head, 0, head.length, 0);
+      const newlineAt = head.indexOf(0x0a, 0);
+      if (newlineAt === -1) return null;
+      const headRow = JSON.parse(head.subarray(0, newlineAt).toString("utf8")) as {
+        remote?: unknown;
+      };
+      const remote = headRow?.remote;
+      if (
+        remote &&
+        typeof remote === "object" &&
+        typeof (remote as { host?: unknown }).host === "string" &&
+        (remote as { host: string }).host.trim()
+      ) {
+        const r = remote as { host: string; port?: unknown; username?: unknown; privateKeyPath?: unknown };
+        return {
+          host: r.host,
+          ...(typeof r.port === "number" ? { port: r.port } : {}),
+          ...(typeof r.username === "string" && r.username.trim()
+            ? { username: r.username.trim() }
+            : {}),
+          ...(typeof r.privateKeyPath === "string" && r.privateKeyPath.trim()
+            ? { privateKeyPath: r.privateKeyPath.trim() }
+            : {}),
+        };
+      }
+      return null;
+    } finally {
+      closeSync(readFd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 原子改写转录 header 的 cwd（换工作目录用）。
+ * remote 可选：undefined = 保留现值（默认，展开自然携带）；null = 清除（换绑本地目录）。
  * 只认首行是合法 header 的文件；损坏文件抛错，由调用方决定是否降级
  * （DB 索引行才是 cwd 的事实源，header 仅展示/兜底）。
  */
 export function rewriteTranscriptHeaderCwd(
   sessionId: string,
   cwd: string,
+  remote?: RemoteTarget | null,
 ): void {
   const file = sessionPath(sessionId);
   if (!existsSync(file) || statSync(file).size === 0) {
@@ -517,7 +567,7 @@ export function rewriteTranscriptHeaderCwd(
 
     writeAll(
       writeFd,
-      Buffer.from(JSON.stringify({ ...headRow, cwd }) + "\n", "utf8"),
+      Buffer.from(JSON.stringify({ ...headRow, cwd, ...(remote !== undefined ? { remote } : {}) }) + "\n", "utf8"),
     );
     const chunk = Buffer.alloc(HEADER_COPY_CHUNK);
     let position = newlineAt + 1;

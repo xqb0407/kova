@@ -19,6 +19,7 @@ import { setupResourceCommands } from "./resource";
 import { setupGitCommands } from "./git";
 import { setupBrowserCommands } from "./browser";
 import { setupRemoteCommands } from "./remote";
+import { setupSshCommands } from "./ssh";
 import { setupTunnelCommands } from "./tunnel";
 import { setupBackupCommands } from "./backup";
 import { setupUpdateCommands } from "./update";
@@ -49,6 +50,7 @@ export function registerAllCommands(): void {
   setupGitCommands(register);
   setupBrowserCommands(register);
   setupRemoteCommands(register);
+  setupSshCommands(register);
   setupTunnelCommands(register);
   setupBackupCommands(register);
   setupUpdateCommands(register);

@@ -12,6 +12,9 @@
 import { spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { join, sep } from "node:path";
+import type { RemoteTarget } from "../types";
+import { quotePosixShellArg, runSshRemote } from "../tools/remote/ssh-exec";
+import { remoteListFiles } from "../tools/remote/remote-tool-call";
 
 /** 单次 git grep 输出字节上限（monocode 同量级：4MiB） */
 const GREP_MAX_BYTES = 4 * 1024 * 1024;
@@ -175,4 +178,97 @@ export function searchProjectDir(cwd: string, query: string): ProjectSearchResul
 /** rel → 绝对路径（渲染层打开文件用） */
 export function joinProjectPath(cwd: string, rel: string): string {
   return `${cwd.replaceAll(sep, "/").replace(/\/+$/, "")}/${rel.replace(/^\//, "")}`;
+}
+
+/* ------------------------------ 远程项目变体 ------------------------------ */
+
+/**
+ * 远程项目搜索：git grep / 文件列举走 SSH（同 -z -n -F 协议），解析与本地一致。
+ * 非法查询/远端不可达返回空结果（与本地「目录不存在返回空」同语义）；
+ * 调用方（search handler）本就异步派活，这里的 async 不占 mgmt 串行队列。
+ */
+export async function searchProjectDirRemote(
+  target: RemoteTarget,
+  cwd: string,
+  query: string,
+): Promise<ProjectSearchResult> {
+  const trimmed = query.trim();
+  if (!trimmed) return EMPTY;
+  const base = cwd.replaceAll(sep, "/").replace(/\/+$/, "") || "/";
+  let out = "";
+  try {
+    // 与本地同参：-z 路径 NUL 分隔、-n 行号、-F 固定串；head -c 截断防失控
+    const result = await runSshRemote(
+      target,
+      `cd ${quotePosixShellArg(base)} && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && ` +
+        `git grep -z -n -F -e ${quotePosixShellArg(trimmed)} -- 2>/dev/null | head -c ${GREP_MAX_BYTES}`,
+      { cwd: base, timeoutMs: 20_000, maxOutputBytes: GREP_MAX_BYTES },
+    );
+    out = result.stdout;
+  } catch {
+    out = "";
+  }
+
+  if (out) {
+    // 与本地 gitGrep 同构解析（远端已按字节截断，尾部残行按 truncated 处理）
+    const bytes = Buffer.from(out, "utf8");
+    const hits: ProjectContentHit[] = [];
+    let truncated = bytes.length >= GREP_MAX_BYTES;
+    let offset = 0;
+    while (offset < bytes.length && hits.length < GREP_MAX_MATCHES) {
+      const pathEnd = bytes.indexOf(0, offset);
+      if (pathEnd < 0) { truncated = true; break; }
+      const lineEnd = bytes.indexOf(0, pathEnd + 1);
+      if (lineEnd < 0) { truncated = true; break; }
+      const nl = bytes.indexOf(0x0a, lineEnd + 1);
+      const previewEnd = nl < 0 ? bytes.length : nl;
+      const rel = bytes.subarray(offset, pathEnd).toString("utf8").replaceAll("\\", "/");
+      const line = Number.parseInt(bytes.subarray(pathEnd + 1, lineEnd).toString("utf8"), 10);
+      const preview = bytes.subarray(lineEnd + 1, previewEnd).toString("utf8");
+      offset = nl < 0 ? bytes.length : nl + 1;
+      if (!rel || !Number.isFinite(line)) continue;
+      hits.push({ rel, name: rel.split("/").pop() ?? rel, line, preview: preview.trimEnd() });
+      if (hits.length >= GREP_MAX_MATCHES) { truncated = true; break; }
+    }
+    const seen = new Set<string>();
+    const files: ProjectFileHit[] = [];
+    for (const hit of hits) {
+      if (seen.has(hit.rel)) continue;
+      seen.add(hit.rel);
+      files.push({ rel: hit.rel, name: hit.name });
+      if (files.length >= GREP_MAX_MATCHES) break;
+    }
+    // 内容命中不足时补一轮远端文件名扫描（find 列举 + 本侧子串过滤）
+    if (files.length < 40) {
+      try {
+        const rels = await remoteListFiles(target, cwd, base);
+        const needle = trimmed.toLowerCase();
+        for (const rel of rels) {
+          if (seen.has(rel)) continue;
+          if (!rel.toLowerCase().includes(needle)) continue;
+          files.push({ rel, name: rel.split("/").pop() ?? rel });
+          if (files.length >= GREP_MAX_MATCHES) { truncated = true; break; }
+        }
+      } catch {
+        // 列举失败不影响已有命中
+      }
+    }
+    return { files, contents: hits, truncated };
+  }
+
+  // 无 git / grep 无命中：退文件名扫描（远端 find + 本侧过滤）
+  try {
+    const rels = await remoteListFiles(target, cwd, base);
+    const needle = trimmed.toLowerCase();
+    const files: ProjectFileHit[] = [];
+    let truncated = false;
+    for (const rel of rels) {
+      if (!rel.toLowerCase().includes(needle)) continue;
+      files.push({ rel, name: rel.split("/").pop() ?? rel });
+      if (files.length >= GREP_MAX_MATCHES) { truncated = true; break; }
+    }
+    return { files, contents: [], truncated };
+  } catch {
+    return EMPTY;
+  }
 }

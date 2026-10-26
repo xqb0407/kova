@@ -20,6 +20,11 @@
 import type { PiResponse, PiSessionSummary } from "@/lib/pi/pi-bridge";
 import type { PiPromptAttachment } from "@/lib/pi/pi-channel";
 import { parsePartialJsonObject } from "pi-runtime";
+import {
+  findRemoteProjectByPath,
+  resolveRemoteTargetPayload,
+  type RemoteTargetPayload,
+} from "@/lib/workspace/remote-projects";
 import { sessionModeSnapshot, fetchPlanningState } from "@/lib/pi/pi-session-mode";
 import {
   goalAcceptanceModeForSend,
@@ -1012,12 +1017,24 @@ export class PiClientBase implements PiClient {
   async createThread(input?: { workspacePath?: string }): Promise<PiThreadSnapshot> {
     // threadId 形参只是 running 键：真正身份由 sidecar 生成的 sessionId 承担
     const cwd = input?.workspacePath ?? getWorkspace() ?? undefined;
+    // 远程项目绑定：按 workspace 路径反查远程项目（不依赖临时选中态），
+    // 命中即随 new_session 携带 remote 载荷——sidecar 据此把工具执行分流到 SSH。
+    // 主机已删除/停用时回落本地语义（target 为 null，远端命令自然报错暴露）
+    let remote: RemoteTargetPayload | undefined;
+    if (cwd) {
+      const project = findRemoteProjectByPath(cwd);
+      if (project) {
+        const target = await resolveRemoteTargetPayload(project);
+        if (target) remote = target;
+      }
+    }
     const res = await this.transport.request<
       Extract<PiResponse, { type: "session" }>
     >({
       type: "new_session",
       threadId: `pi-${crypto.randomUUID()}`,
       cwd,
+      ...(remote ? { remote } : {}),
     });
     // 镜像先登记再返回（对齐阶段 5b 前 piEnsureThreadSession 的语义）：
     // 列表回程（~一次刷新）前新会话的分组归属就已正确；广播一声让

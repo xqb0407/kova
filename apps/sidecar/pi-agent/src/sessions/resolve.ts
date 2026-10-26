@@ -62,6 +62,7 @@ import {
 import {
   readCompaction,
   readTranscript,
+  readTranscriptHeaderRemote,
   rewriteTranscriptHeaderCwd,
   scanTranscript,
   transcriptSeqFloor,
@@ -106,7 +107,7 @@ import { buildHookPayload, fireHookEvent, runHooks } from "../agent/hooks";
 import { getAutomationPolicy } from "../automation/policy";
 import { decodeThemeColumn, getLastUsedDesignTheme } from "../design-md/state";
 import type { ThemeRef } from "../design-md/store";
-import type { ApprovalLevel, Running, SessionMode } from "../types";
+import type { ApprovalLevel, RemoteTarget, Running, SessionMode } from "../types";
 
 /** kv pi.mode 的载重（applyMode 写入的「最近一次使用的模式偏好」） */
 type PlanningModePrefs = { mode: SessionMode; approvalLevel: ApprovalLevel };
@@ -203,12 +204,12 @@ function buildAgentExtensions(
  * 回写 cwd 到索引行与 JSONL header（不依赖驻留 run）。
  * header 仅展示用，读端取首个 header 行，重写安全；转录文件异常不阻断（DB 已是事实源）。
  */
-async function persistSessionCwd(sessionId: string, cwd: string): Promise<void> {
+async function persistSessionCwd(sessionId: string, cwd: string, remote?: RemoteTarget | null): Promise<void> {
   await sessionUpdateCwd(sessionId, cwd);
   try {
     // 原子改写（tmp + fsync + rename）：换目录时不能把中间态留在会话文件里。
     // header 仅展示/兜底用，DB 索引行始终是事实源。
-    rewriteTranscriptHeaderCwd(sessionId, cwd);
+    rewriteTranscriptHeaderCwd(sessionId, cwd, remote);
   } catch (err) {
     // 见上：损坏/只读不阻断移动，但留一行日志便于排查
     logErr(
@@ -243,7 +244,8 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
 
   // DB 索引行 + header 先落盘（可能失败）。失败时 run 原样不动；成功后的
   // 内存提交全是同步构造，不会留下"界面已换、运行态还是旧目录"的半绑定。
-  await persistSessionCwd(run.sessionId, cwd);
+  // 远程绑定随换绑清除：换绑意味着回到本地目录语义（远程项目重建走新对话）
+  await persistSessionCwd(run.sessionId, cwd, null);
 
   // 移动已提交：清掉本线程的已加载技能台账（密钥注入判定按线程累积，
   // 旧目录的技能不应继续生效）
@@ -252,6 +254,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
   // 提交内存状态：以下均为同步构造，不再有可失败点
   run.persistedCwd = cwd;
   run.cwd = nextCwd;
+  run.remoteTarget = null;
   run.externalDirs = effectiveDirs;
   // 解绑（清空工作目录）回落到任务工作区时同样不在此落盘：目录推迟到
   // agent 真用时才建（bash 派发前 / 写文件时自带 mkdir），见 ensureTaskSessionDir。
@@ -267,6 +270,7 @@ async function rebindRunCwd(run: Running, cwd: string, threadId: string): Promis
     () => run.mode,
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
+    () => run.remoteTarget ?? null,
   ));
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
   run.agent.state.tools = toolsForMode(run);
@@ -358,6 +362,7 @@ export async function rebindRunThread(
     () => run.mode,
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
+    () => run.remoteTarget ?? null,
   ));
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -397,6 +402,7 @@ async function rebuildRunTools(run: Running): Promise<void> {
     () => run.mode,
     ...externalDirToolArgs(() => run),
     () => sandboxPlanForRun(run),
+    () => run.remoteTarget ?? null,
   ));
   const { definitions } = await loadSubagentDefinitions({ cwd: run.cwd });
   run.subagentTools = buildAgentExtensions(run, run.baseTools, definitions);
@@ -751,6 +757,8 @@ export async function resolveSession(
   threadId: string,
   sessionId?: string,
   cwd?: string,
+  /** 远程执行目标（新建会话时随请求携带；恢复会话时从转录 header 读回） */
+  remote?: RemoteTarget,
 ): Promise<Running> {
   const safeCwd = persistableCwd(cwd);
   const existing = running.get(threadId);
@@ -797,6 +805,8 @@ export async function resolveSession(
   //「用户选了目录」（理由见 persistableCwd），否则新建出来的会话一出生就是
   //「项目」形态——组名是上一个会话的 UUID
   let persistedCwd = safeCwd ?? "";
+  /** 远程执行目标：恢复会话从转录 header 读回；新建会话随请求携带 */
+  let resolvedRemote: RemoteTarget | null = null;
   let restoredMessages: import("@earendil-works/pi-ai").Message[] = [];
   /** 未结算挂起交互行（§4）：物化后重放进台账，挂起卡跨重启不丢 */
   let restoredPending: PendingInteraction[] = [];
@@ -814,6 +824,8 @@ export async function resolveSession(
     if (!row) throw new Error(`session not found: ${sessionId}`);
     restoredRow = row;
     persistedCwd = row.cwd;
+    // 远程绑定不存在 DB（Rust 宿主表无此列），事实源是转录 header（新建时写入）
+    resolvedRemote = readTranscriptHeaderRemote(sessionId);
     // M2：单遍扫描同取消息行/检查点/未结算交互（替代 readTranscript+readCompaction 两读文件）
     const scan = scanTranscript(sessionId);
     const transcript = scan.messages;
@@ -856,8 +868,17 @@ export async function resolveSession(
     sendSessionsChanged("created", sessionId);
     writeFileSync(
       sessionPath(sessionId),
-      JSON.stringify({ type: "header", schema: 1, id: sessionId, cwd: persistedCwd, created_at: now }) + "\n",
+      JSON.stringify({
+        type: "header",
+        schema: 1,
+        id: sessionId,
+        cwd: persistedCwd,
+        created_at: now,
+        // 远程项目会话：绑定随请求写入 header（恢复时读回，DB 无此列）
+        ...(remote ? { remote } : {}),
+      }) + "\n",
     );
+    resolvedRemote = remote ?? null;
   }
 
   // 运行 cwd = 用户目录，或（未选目录时）按会话隔离的任务子目录；均不回写持久化
@@ -1015,6 +1036,7 @@ export async function resolveSession(
     sessionId: sessionId!,
     cwd: resolvedCwd,
     persistedCwd,
+    remoteTarget: resolvedRemote,
     externalDirs: effectiveDirs,
     persistedSeq,
     jsonlSeq,
@@ -1323,6 +1345,8 @@ export async function projectContextInfo(
       // 投影也要把外部目录检索工具算进工具面（读数与实际物化后的工具表一致）
       () => projectedExternalDirs,
       // 投影只读；沙箱闭包不会被调用。
+      () => null,
+      // 投影不含远程分流信息（只影响读数场景的工具列表体积）
       () => null,
     ),
   );

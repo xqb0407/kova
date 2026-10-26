@@ -1,0 +1,470 @@
+/**
+ * 远程项目工具实现：bash/read/write/edit/task_output/task_stop 的 SSH 版。
+ *
+ * 返回信封与 Rust 宿主 tool_exec.rs 同形（hostToolCall 消费方零改动）：
+ * `{ output, truncated?, exitCode?, totalLines?, base64?, mimeType?, bytes? }`。
+ * bash 永远不因非零退出码抛错（退出码进信封，命令失败是结果不是异常）；
+ * 连接/认证失败抛 RemoteSshError（对模型呈现为工具错误）。
+ *
+ * 与本地 Rust 宿主的有意差异（v1 降级，见 docs/remote-ssh-projects.md）：
+ * - 不维护 read-state 台账（edit 前必须先 read 的强制不生效，靠提示词约束）；
+ * - 检查点由调用方（hostTool 分流处）跳过；
+ * - 密钥注入/访问加速环境不生效（那些是 Rust 侧注入的本地派生 env）。
+ */
+import { spawn, type ChildProcess } from "node:child_process";
+import { extname, isAbsolute, posix } from "node:path";
+import type { RemoteTarget } from "../../types";
+import {
+  quotePosixShellArg,
+  remoteScript,
+  remoteTargetArg,
+  runSshRemote,
+  targetOptions,
+  REMOTE_OUTPUT_CAP_BYTES,
+  RemoteSshError,
+} from "./ssh-exec";
+
+/** 与 Rust 信封对齐的结果形状（见 hostdb.ts hostToolCall 泛型） */
+export type RemoteToolResult = {
+  output: string;
+  truncated?: boolean;
+  exitCode?: number | null;
+  totalLines?: number;
+  base64?: string;
+  mimeType?: string;
+  bytes?: number;
+};
+
+const IMAGE_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+const READ_MAX_BYTES = 2 * 1024 * 1024;
+
+/** 相对路径按会话远端 cwd 解析（对齐本地 resolveToolPath 语义；~ 交给远端 shell） */
+export function resolveRemotePath(cwd: string, filePath: string): string {
+  const p = filePath.trim();
+  if (!p) throw new Error("file_path is required");
+  if (isAbsolute(p) || p.startsWith("~")) return p;
+  return posix.normalize(posix.join(cwd.replaceAll("\\", "/"), p));
+}
+
+/** 写入根收敛：远端只允许写会话工作目录内（bash 的越界由审批门管） */
+export function assertWriteInRoot(cwd: string, absPath: string): void {
+  const root = cwd.replaceAll("\\", "/").replace(/\/+$/, "");
+  const target = absPath.replaceAll("\\", "/").replace(/\/+$/, "");
+  if (target === root) return;
+  if (!target.startsWith(`${root}/`)) {
+    throw new Error(
+      `写入被拒绝：远程会话只允许写工作目录（${root}）内的文件，目标 ${absPath} 越界`,
+    );
+  }
+}
+
+/* ------------------------------ 后台任务表 ------------------------------ */
+
+type RemoteBgTask = {
+  id: number;
+  owner: string;
+  proc: ChildProcess;
+  chunks: string[];
+  bytes: number;
+  truncated: boolean;
+  done: boolean;
+  exitCode: number | null;
+};
+
+/** 全局任务表（对齐 Rust 宿主的 owner 语义：task_output/task_stop 只认本线程） */
+const bgTasks = new Map<number, RemoteBgTask>();
+let nextBgTaskId = 1;
+const BG_OUTPUT_CAP = 256 * 1024;
+
+function evictDoneBgTasks(): void {
+  if (bgTasks.size <= 32) return;
+  for (const [id, task] of bgTasks) {
+    if (task.done && bgTasks.size > 32) bgTasks.delete(id);
+  }
+}
+
+/* ------------------------------ 各工具实现 ------------------------------ */
+
+async function remoteBash(
+  target: RemoteTarget,
+  cwd: string,
+  params: Record<string, unknown>,
+  signal: AbortSignal | undefined,
+  owner: string,
+): Promise<RemoteToolResult> {
+  const command = String(params.command ?? "").trim();
+  if (!command) throw new Error("command is required");
+
+  if (params.runInBackground !== true) {
+    const timeoutMs = Math.min(Math.max(Number(params.timeout) || 120_000, 1_000), 600_000);
+    // bash 走合并流：2>&1 让 stdout/stderr 按真实先后交错（排查构建日志必需）
+    let child: ChildProcess;
+    try {
+      child = spawn(
+        "ssh",
+        [
+          ...targetOptions(target),
+          remoteTargetArg(target),
+          "--",
+          remoteScript(`{ ${command}\n; } 2>&1`, cwd),
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (error) {
+      throw new RemoteSshError(
+        `ssh 启动失败: ${error instanceof Error ? error.message : String(error)}`,
+        null,
+        "",
+      );
+    }
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      let bytes = 0;
+      let truncated = false;
+      const chunks: Buffer[] = [];
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill("SIGTERM");
+        reject(
+          new RemoteSshError(
+            `远程命令超时（${Math.round(timeoutMs / 1000)}s）：${command.slice(0, 120)}`,
+            null,
+            "",
+          ),
+        );
+      }, timeoutMs);
+      timer.unref?.();
+      const abort = () => {
+        if (!settled) child.kill("SIGTERM");
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      child.stdout?.on("data", (chunk: Buffer) => {
+        if (bytes >= REMOTE_OUTPUT_CAP_BYTES) {
+          truncated = true;
+          return;
+        }
+        bytes += chunk.length;
+        chunks.push(
+          bytes > REMOTE_OUTPUT_CAP_BYTES
+            ? chunk.subarray(0, chunk.length - (bytes - REMOTE_OUTPUT_CAP_BYTES))
+            : chunk,
+        );
+        if (bytes >= REMOTE_OUTPUT_CAP_BYTES) truncated = true;
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        // 2>&1 已并入 stdout；这里只兜通道级诊断
+        if (bytes >= REMOTE_OUTPUT_CAP_BYTES) return;
+        bytes += chunk.length;
+        chunks.push(chunk);
+      });
+      child.on("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        reject(new RemoteSshError(`ssh 启动失败: ${error.message}`, null, ""));
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        const output = Buffer.concat(chunks).toString("utf8");
+        if (signal?.aborted) {
+          reject(new RemoteSshError("远程命令已取消", null, ""));
+          return;
+        }
+        resolve({
+          output: truncated
+            ? `${output}\n…[output truncated at ${Math.round(REMOTE_OUTPUT_CAP_BYTES / 1024)}KB]`
+            : output,
+          exitCode: code ?? 0,
+          truncated: truncated || undefined,
+        });
+      });
+    });
+  }
+
+  // 后台：本地 ssh 进程即任务句柄，输出进内存（tail 256KB 语义对齐 Rust）
+  evictDoneBgTasks();
+  const id = nextBgTaskId++;
+  const child = spawn(
+    "ssh",
+    [
+      ...targetOptions(target),
+      remoteTargetArg(target),
+      "--",
+      remoteScript(`{ ${command}\n; } 2>&1`, cwd),
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const task: RemoteBgTask = {
+    id,
+    owner,
+    proc: child,
+    chunks: [],
+    bytes: 0,
+    truncated: false,
+    done: false,
+    exitCode: null,
+  };
+  bgTasks.set(id, task);
+  child.stdout?.on("data", (chunk: Buffer) => {
+    if (task.bytes >= BG_OUTPUT_CAP) {
+      task.truncated = true;
+      return;
+    }
+    task.bytes += chunk.length;
+    task.chunks.push(
+      task.bytes > BG_OUTPUT_CAP
+        ? chunk.subarray(0, chunk.length - (task.bytes - BG_OUTPUT_CAP)).toString("utf8")
+        : chunk.toString("utf8"),
+    );
+    if (task.bytes >= BG_OUTPUT_CAP) task.truncated = true;
+  });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    if (task.bytes >= BG_OUTPUT_CAP) return;
+    task.bytes += chunk.length;
+    task.chunks.push(chunk.toString("utf8"));
+  });
+  child.on("close", (code) => {
+    task.done = true;
+    task.exitCode = code ?? 0;
+  });
+  child.on("error", () => {
+    task.done = true;
+    task.exitCode = -1;
+  });
+  return {
+    output: `Background task started (taskId: ${id}). Use task_output to read collected output; task_stop to kill.`,
+    exitCode: null,
+  };
+}
+
+function remoteTaskOutput(params: Record<string, unknown>, owner: string): RemoteToolResult {
+  const taskId = Number(params.taskId);
+  const task = bgTasks.get(taskId);
+  if (!task || task.owner !== owner) {
+    throw new Error(`task not found: ${taskId}`);
+  }
+  const body = task.chunks.join("");
+  const tail = body.length > BG_OUTPUT_CAP ? body.slice(body.length - BG_OUTPUT_CAP) : body;
+  return {
+    output:
+      (task.truncated ? "…[earlier output truncated]\n" : "") +
+      (tail || (task.done ? "(no output)" : "(no output yet)")) +
+      (task.done
+        ? `\n[task finished with exit code ${task.exitCode}]`
+        : "\n[task still running]"),
+    truncated: task.truncated || undefined,
+    exitCode: task.done ? task.exitCode : null,
+  };
+}
+
+function remoteTaskStop(params: Record<string, unknown>, owner: string): RemoteToolResult {
+  const taskId = Number(params.taskId);
+  const task = bgTasks.get(taskId);
+  if (!task || task.owner !== owner) {
+    throw new Error(`task not found: ${taskId}`);
+  }
+  if (!task.done) {
+    // 杀本地 ssh：通道关闭 → 远端命令树收 SIGHUP。2s 后强杀兜忽略 TERM 的进程
+    task.proc.kill("SIGTERM");
+    setTimeout(() => task.proc.kill("SIGKILL"), 2_000).unref?.();
+    return { output: `Task ${taskId} kill signal sent (process tree terminating).` };
+  }
+  return { output: `Task ${taskId} already finished (exit ${task.exitCode}).` };
+}
+
+async function remoteRead(
+  target: RemoteTarget,
+  cwd: string,
+  params: Record<string, unknown>,
+  signal: AbortSignal | undefined,
+): Promise<RemoteToolResult> {
+  const filePath = String(params.file_path ?? "").trim();
+  if (!filePath) throw new Error("file_path is required");
+  const abs = resolveRemotePath(cwd, filePath);
+  const mime = IMAGE_MIME[extname(abs).toLowerCase()];
+  if (mime) {
+    // 图片：base64 直读（≤2MiB），信封形状与 Rust read 一致
+    // base64 -w 0 是 GNU；busybox/macOS 用 openssl base64 -A 兜底
+    const { stdout } = await runSshRemote(
+      target,
+      `base64 -w 0 ${quotePosixShellArg(abs)} 2>/dev/null || openssl base64 -A -in ${quotePosixShellArg(abs)}`,
+      { cwd, signal, maxOutputBytes: Math.ceil((IMAGE_MAX_BYTES * 4) / 3) + 64 },
+    );
+    const b64 = stdout.replace(/\s+/g, "");
+    if (!b64) throw new Error(`cannot read image: ${abs}`);
+    const bytes = Math.floor((b64.length * 3) / 4);
+    if (bytes > IMAGE_MAX_BYTES) {
+      throw new Error(`image too large (${Math.round(bytes / 1024)}KB > 2MiB); downscale first`);
+    }
+    return { output: `[image: ${abs}]`, base64: b64, mimeType: mime, bytes };
+  }
+
+  // 文本：行数/字节数先探（大文件拒绝整读），再按 offset/limit 取窗口
+  const offset = Math.max(1, Number(params.offset) || 1);
+  const limit = Math.max(1, Math.min(Number(params.limit) || 2000, 2000));
+  const stat = await runSshRemote(
+    target,
+    `wc -l < ${quotePosixShellArg(abs)}; printf ' '; wc -c < ${quotePosixShellArg(abs)}`,
+    { cwd, signal, timeoutMs: 30_000 },
+  );
+  const [totalLines, totalBytes] = stat.stdout.trim().split(/\s+/).map((n) => Number(n) || 0);
+  if (totalBytes > READ_MAX_BYTES) {
+    throw new Error(
+      `file too large (${Math.round(totalBytes / 1024)}KB > 2MiB); use offset/limit pagination or grep instead`,
+    );
+  }
+  const endLine = offset + limit - 1;
+  const { stdout } = await runSshRemote(
+    target,
+    `sed -n '${offset},${endLine}p' ${quotePosixShellArg(abs)} | cat -n`,
+    { cwd, signal },
+  );
+  // sed -n X,Yp | cat -n 的行号从 1 重数：改回绝对行号（cat -n 风格宽列）
+  const width = Math.max(6, String(Math.max(totalLines, endLine)).length);
+  const body = stdout
+    .replace(/\n$/, "")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => {
+      const m = /^\s*(\d+)\t(.*)$/.exec(line);
+      if (!m) return line;
+      return `${String(Number(m[1]) + offset - 1).padStart(width, " ")}\t${m[2]}`;
+    })
+    .join("\n");
+  return {
+    output: body || "(empty file)",
+    totalLines,
+    truncated: offset + limit - 1 < totalLines || undefined,
+  };
+}
+
+async function remoteWrite(
+  target: RemoteTarget,
+  cwd: string,
+  params: Record<string, unknown>,
+  signal: AbortSignal | undefined,
+): Promise<RemoteToolResult> {
+  const filePath = String(params.file_path ?? "").trim();
+  const content = String(params.content ?? "");
+  if (!filePath) throw new Error("file_path is required");
+  const abs = resolveRemotePath(cwd, filePath);
+  assertWriteInRoot(cwd, abs);
+  const append = params.mode === "append";
+  const dir = posix.dirname(abs.replaceAll("\\", "/"));
+  await runSshRemote(target, `mkdir -p ${quotePosixShellArg(dir)}`, {
+    cwd,
+    signal,
+    timeoutMs: 30_000,
+  });
+  await runSshRemote(
+    target,
+    `cat ${append ? ">>" : ">"} ${quotePosixShellArg(abs)}`,
+    { cwd, signal, stdin: content, timeoutMs: 60_000 },
+  );
+  return {
+    output: `File ${append ? "appended" : "written"}: ${abs} (${Buffer.byteLength(content, "utf8")} bytes)`,
+  };
+}
+
+async function remoteEdit(
+  target: RemoteTarget,
+  cwd: string,
+  params: Record<string, unknown>,
+  signal: AbortSignal | undefined,
+): Promise<RemoteToolResult> {
+  const filePath = String(params.file_path ?? "").trim();
+  const oldString = String(params.old_string ?? "");
+  const newString = String(params.new_string ?? "");
+  const replaceAll = params.replace_all === true;
+  if (!filePath) throw new Error("file_path is required");
+  if (!oldString) throw new Error("old_string is required");
+  const abs = resolveRemotePath(cwd, filePath);
+  assertWriteInRoot(cwd, abs);
+  // 读全文 → 本侧替换 → 写回（语义与本地 edit 一致：精确匹配 + 唯一性）
+  const { stdout } = await runSshRemote(target, `cat ${quotePosixShellArg(abs)}`, { cwd, signal });
+  const content = stdout;
+  const count = content.split(oldString).length - 1;
+  if (count === 0) {
+    throw new Error(
+      `String to replace not found in file: ${abs}\n\nOld string: ${oldString.slice(0, 200)}`,
+    );
+  }
+  if (count > 1 && !replaceAll) {
+    throw new Error(
+      `Found ${count} occurrences of the string in ${abs}. The old_string must match exactly once — add surrounding context or set replace_all=true.`,
+    );
+  }
+  const updated = replaceAll
+    ? content.replaceAll(oldString, newString)
+    : content.replace(oldString, newString);
+  await runSshRemote(target, `cat > ${quotePosixShellArg(abs)}`, {
+    cwd,
+    signal,
+    stdin: updated,
+    timeoutMs: 60_000,
+  });
+  return { output: `File edited: ${abs} (${count} replacement${count > 1 ? "s" : ""})` };
+}
+
+/* ------------------------------ 分发入口 ------------------------------ */
+
+/** hostTool.execute 的远程分支：与 hostToolCall 同签名（name/cwd/params/signal/owner） */
+export async function remoteToolCall(
+  name: string,
+  cwd: string,
+  params: Record<string, unknown>,
+  signal: AbortSignal | undefined,
+  owner: string,
+  target: RemoteTarget,
+): Promise<RemoteToolResult> {
+  switch (name) {
+    case "bash":
+      return remoteBash(target, cwd, params, signal, owner);
+    case "read":
+      return remoteRead(target, cwd, params, signal);
+    case "write":
+      return remoteWrite(target, cwd, params, signal);
+    case "edit":
+      return remoteEdit(target, cwd, params, signal);
+    case "task_output":
+      return remoteTaskOutput(params, owner);
+    case "task_stop":
+      return remoteTaskStop(params, owner);
+    default:
+      throw new Error(`remote execution not supported for tool: ${name}`);
+  }
+}
+
+/** 远程 glob/grep 共用的文件列举（M3 搜索改道用；返回相对 cwd 的 posix 路径） */
+export async function remoteListFiles(
+  target: RemoteTarget,
+  cwd: string,
+  base: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const result = await runSshRemote(
+    target,
+    `find ${quotePosixShellArg(base)} -type f ` +
+      `-not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.*' ` +
+      `2>/dev/null | head -c ${4 * 1024 * 1024}`,
+    { cwd, signal, timeoutMs: 60_000 },
+  );
+  const prefix = cwd.replaceAll("\\", "/").replace(/\/+$/, "") + "/";
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((abs) => (abs.startsWith(prefix) ? abs.slice(prefix.length) : abs));
+}

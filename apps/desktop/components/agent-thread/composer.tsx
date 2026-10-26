@@ -50,6 +50,7 @@ import {
   useLibraryRefGuard,
   useMissingLibraryRefs,
 } from "@/lib/workspace/library-ref-guard";
+import { isRemoteWorkspace } from "@/lib/workspace/remote-projects";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
 import { usePendingQuestions } from "@/lib/pi/pi-question";
@@ -81,10 +82,12 @@ import {
   Loader2Icon,
   MicIcon,
   PlusIcon,
+  ServerIcon,
   SparklesIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
+import { RemoteProjectDialog } from "@/components/agent-thread/remote-project-dialog";
 import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 import { isDesktop } from "@/lib/desktop-env";
 import {
@@ -472,6 +475,7 @@ const WorkspacePill: FC = () => {
   const recents = useWorkspaceRecents();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [remoteDialogOpen, setRemoteDialogOpen] = useState(false);
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
 
   if (!isDesktop() || hasMessages) return null;
@@ -537,6 +541,14 @@ const WorkspacePill: FC = () => {
               <span className="truncate">
                 {workspace ? pathBasename(workspace) : "选择目录"}
               </span>
+              {workspace && isRemoteWorkspace(workspace) && (
+                <span
+                  data-slot="aui-composer-workspace-remote"
+                  className="rounded bg-emerald-500/10 px-1 text-[10px] leading-4 text-emerald-600 dark:text-emerald-400"
+                >
+                  远程
+                </span>
+              )}
               {workspace && workspaceSource === "session" && (
                 <span
                   data-slot="aui-composer-workspace-following"
@@ -610,8 +622,16 @@ const WorkspacePill: FC = () => {
           )}
           添加目录…
         </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => setRemoteDialogOpen(true)}>
+          <ServerIcon className="text-muted-foreground size-3.5 shrink-0" />
+          新建远程项目…
+        </DropdownMenuItem>
        </div>
       </DropdownMenuContent>
+      <RemoteProjectDialog
+        open={remoteDialogOpen}
+        onClose={() => setRemoteDialogOpen(false)}
+      />
     </DropdownMenu>
   );
 };
@@ -650,6 +670,11 @@ const WorkspaceSessionPill: FC = () => {
       >
         <FolderOpenIcon className="size-3.5 shrink-0" />
         <span className="truncate">{pathBasename(workspace)}</span>
+        {isRemoteWorkspace(workspace) && (
+          <span className="rounded bg-emerald-500/10 px-1 text-[10px] leading-4 text-emerald-600 dark:text-emerald-400">
+            远程
+          </span>
+        )}
         {workspaceSource === "session" && (
           <span className="rounded bg-muted px-1 text-[10px] leading-4 text-muted-foreground">
             跟随

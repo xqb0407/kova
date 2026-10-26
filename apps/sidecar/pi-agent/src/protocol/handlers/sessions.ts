@@ -66,7 +66,8 @@ import {
   refreshArtifactsIndex,
   searchSessions,
 } from "../../search/search-index";
-import { searchProjectDir } from "../../search/project-search";
+import { searchProjectDir, searchProjectDirRemote } from "../../search/project-search";
+import type { RemoteTarget } from "../../types";
 import { searchHistoryAdd, searchHistoryClear, searchHistoryList } from "../../storage/hostdb";
 import {
   getGoal,
@@ -489,16 +490,31 @@ export const handlers: Record<string, CommandHandler> = {
       ? Math.min(msg!.limit as number, 500)
       : 200;
     const projectCwd = typeof msg.projectCwd === "string" ? msg.projectCwd : "";
+    // 远程项目判定：按 cwd 反查驻留 run 的远程绑定（远程项目搜索走 SSH，
+    // 本地 spawnSync 对不存在的目录只会返回空结果）
+    let remoteTarget: RemoteTarget | null = null;
+    if (projectCwd) {
+      for (const run of running.values()) {
+        if (run.cwd === projectCwd && run.remoteTarget) {
+          remoteTarget = run.remoteTarget;
+          break;
+        }
+      }
+    }
     beginOp();
     void (async () => {
       try {
         const [result, project] = await Promise.all([
           searchSessions(query, limit),
-          // 项目域同步 spawnSync（git-prompt 同款量级），包 Promise 并行
           projectCwd
-            ? Promise.resolve(searchProjectDir(projectCwd, query)).catch(() => ({
-                files: [], contents: [], truncated: false,
-              }))
+            ? remoteTarget
+              ? searchProjectDirRemote(remoteTarget, projectCwd, query).catch(() => ({
+                  files: [], contents: [], truncated: false,
+                }))
+              : // 项目域同步 spawnSync（git-prompt 同款量级），包 Promise 并行
+              Promise.resolve(searchProjectDir(projectCwd, query)).catch(() => ({
+                  files: [], contents: [], truncated: false,
+                }))
             : Promise.resolve({ files: [], contents: [], truncated: false }),
         ]);
         send({ id: reqId, type: "search_result", ...result, project });
@@ -632,7 +648,30 @@ export const handlers: Record<string, CommandHandler> = {
     invalidateGitSnapshots();
     const threadId = String(msg.threadId ?? `thread-${Date.now()}`);
     const cwd = typeof msg.cwd === "string" ? msg.cwd : undefined;
-    const run = await resolveSession(threadId, undefined, cwd);
+    // 远程项目绑定：随请求携带（前端按 workspace 反查远程项目拼装，无秘密字段），
+    // 写进转录 header；工具执行据此分流到 SSH（见 sessions/resolve.ts 与 tools/remote/）
+    const remoteRaw = (msg as { remote?: unknown }).remote;
+    const remoteHost =
+      remoteRaw && typeof remoteRaw === "object"
+        ? String((remoteRaw as { host?: unknown }).host ?? "").trim()
+        : "";
+    const remote = remoteHost
+      ? {
+          host: remoteHost,
+          ...(typeof (remoteRaw as { port?: unknown }).port === "number"
+            ? { port: (remoteRaw as { port: number }).port }
+            : {}),
+          ...(typeof (remoteRaw as { username?: unknown }).username === "string" &&
+            (remoteRaw as { username: string }).username.trim()
+            ? { username: (remoteRaw as { username: string }).username.trim() }
+            : {}),
+          ...(typeof (remoteRaw as { privateKeyPath?: unknown }).privateKeyPath === "string" &&
+            (remoteRaw as { privateKeyPath: string }).privateKeyPath.trim()
+            ? { privateKeyPath: (remoteRaw as { privateKeyPath: string }).privateKeyPath.trim() }
+            : {}),
+        }
+      : undefined;
+    const run = await resolveSession(threadId, undefined, cwd, remote);
     send({ id: reqId, type: "session", sessionId: run.sessionId, threadId });
   },
 
