@@ -69,9 +69,8 @@ export const RemoteProjectDialog: FC<{
     void loadHosts();
   }, [open]);
 
-  if (!open) return null;
-
-  const enabledHosts = hosts.filter((h) => h.enabled);
+  // 所有 hook 必须在任何提前 return 之前：关闭态 return null 后 hook 数不能变
+  const enabledHosts = useMemo(() => hosts.filter((h) => h.enabled), [hosts]);
   // base-ui 需要 items 映射才能在触发器上显示选中项 label（否则回填成 placeholder）
   const hostItems = useMemo(
     () => [
@@ -82,6 +81,8 @@ export const RemoteProjectDialog: FC<{
   );
   // 必须显式选主机：静默回退第一台会让人在多主机时绑错目标
   const canSubmit = !busy && Boolean(hostId) && remotePath.trim().startsWith("/");
+
+  if (!open) return null;
 
   const submit = async () => {
     setBusy(true);
