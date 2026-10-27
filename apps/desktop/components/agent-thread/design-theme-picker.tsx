@@ -126,7 +126,7 @@ export const DesignThemePicker: FC = () => {
           </button>
         }
       />
-      <DropdownMenuContent align="start" className="max-h-96 w-64 overflow-y-auto">
+      <DropdownMenuContent align="start" className="max-h-96 w-72 overflow-y-auto">
         {/* Base UI：DropdownMenuLabel 必须处于 DropdownMenuGroup 内（同 git-view 菜单） */}
         <DropdownMenuGroup>
           <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
