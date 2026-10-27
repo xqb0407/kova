@@ -7,6 +7,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, isAbsolute, normalize } from "node:path";
+import { guardStreamErrors } from "./child-stream";
 import { appDataDir } from "./paths";
 import { kvGet } from "./store";
 import { emitToWindows } from "./ipc";
@@ -39,6 +40,12 @@ function gitRun(args: string[], opts: { stdin?: Buffer; env?: Record<string, str
     });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
+    // git 可能在读完 stdin 前退出（apply --check 冲突、非仓库、hook 失败等），
+    // 随后写 stdin 会异步失败；没有 'error' 监听就升级成主进程 uncaughtException
+    //（win32 上即 "write EOF"）。成败以 close 的退出码/stderr 为准。
+    guardStreamErrors(child.stdin);
+    guardStreamErrors(child.stdout);
+    guardStreamErrors(child.stderr);
     child.stdout.on("data", (b: Buffer) => out.push(b));
     child.stderr.on("data", (b: Buffer) => err.push(b));
     child.on("error", (e) => reject(new Error(`failed to run git: ${e.message}`)));

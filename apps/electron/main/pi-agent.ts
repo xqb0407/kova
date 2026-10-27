@@ -4,6 +4,7 @@
  * stderr 脱敏落盘、退出清场、shutdown 宽限。
  */
 import { enrichRemotePayload } from "./ssh";
+import { guardStreamErrors, isBenignStreamClose } from "./child-stream";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -110,19 +111,35 @@ function devWorkerArgs(): string[] {
 }
 
 /** 行序写入队列：stdin 写完整行并按序 flush，杜绝并发交织
- *（对齐 Rust child Mutex 行原子性） */
-const writeQueue: { line: string; resolve: () => void; reject: (e: any) => void }[] = [];
+ *（对齐 Rust child Mutex 行原子性）。target 记录入队时的句柄：
+ *  侧车换代后旧消息不再写进新进程，失败时也只清同一代的排队项。 */
+const writeQueue: {
+  line: string;
+  target: ChildProcessWithoutNullStreams;
+  resolve: () => void;
+  reject: (e: any) => void;
+}[] = [];
 let writing = false;
 function queueWrite(line: string): Promise<void> {
-  if (!child) return Promise.reject(new Error("pi-agent is not running"));
+  const target = child;
+  if (!target) return Promise.reject(new Error("pi-agent is not running"));
   // 大行留痕：大附件（base64 图）会以一整条巨串走 stdin——渲染层 stringify、
   // IPC 克隆、这里入队、侧车 JSON.parse 各吃几百 ms；超 1MB 告警便于日后
   // 定位"发送后主线程空转"类问题（只记长度，不记内容——prompt 涉隐私）
   if (line.length > 1_000_000) logWarn(`[worker] large stdin line: ${line.length} chars`);
   return new Promise<void>((resolve, reject) => {
-    writeQueue.push({ line, resolve, reject });
+    writeQueue.push({ line, target, resolve, reject });
     if (!writing) void drainWrites();
   });
+}
+
+/** 只清掉属于同一句柄的排队消息：换代后新侧车的消息必须保留。 */
+function rejectQueuedFor(target: ChildProcessWithoutNullStreams, message: string): void {
+  for (let i = writeQueue.length - 1; i >= 0; i--) {
+    if (writeQueue[i].target !== target) continue;
+    writeQueue[i].reject(new Error(message));
+    writeQueue.splice(i, 1);
+  }
 }
 /** 单次 stdin 写入的等待上限。健康的侧车读循环节拍极快，30s 不吃一行 = 卡死；
  * 旧实现无上限：write 回调永不触发时整个写队列挂住，后续 prompt/host_result
@@ -134,8 +151,10 @@ async function drainWrites(): Promise<void> {
   try {
     while (writeQueue.length > 0) {
       const item = writeQueue.shift()!;
-      const proc = child;
-      if (!proc) {
+      const proc = item.target;
+      // 侧车换代（旧句柄 close 后又 spawn）：旧消息不再写进新进程——
+      // 对应请求的 pending 已随 close 清空，写过去也只会错配。
+      if (proc !== child) {
         item.reject(new Error("pi-agent is not running"));
         continue;
       }
@@ -164,19 +183,25 @@ async function drainWrites(): Promise<void> {
           // 取消工具、pi-exit 换代自愈）——不清 child 句柄，close 里自己清
           logError(`[worker] stdin write stalled >${STDIN_WRITE_TIMEOUT_MS / 1000}s; killing wedged sidecar`);
           item.reject(new Error("pi-agent stdin stalled (killed wedged worker)"));
-          while (writeQueue.length > 0) writeQueue.shift()!.reject(new Error("pi-agent stdin stalled"));
+          rejectQueuedFor(proc, "pi-agent stdin stalled");
           try {
             proc.kill();
           } catch {
             /* ignore */
           }
-          break;
+          continue;
         }
-        // 管道破裂 = 子进程已死：清句柄，剩余队列全部拒绝，下次 ensureSpawned 自动重启
-        if (child === proc) child = null;
+        // 管道破裂 = 子进程已死或已关闭 stdin：杀掉让 close 事件走完整清场。
+        // 这里不能 child = null：close 里的 `child !== proc` 检查会跳过
+        // pi-exit 通知、pending 拒绝与 cancelAllTools，界面收不到退出信号。
+        try {
+          proc.kill();
+        } catch {
+          /* ignore */
+        }
         item.reject(new Error(`failed to write to pi-agent stdin: ${e?.message ?? e}`));
-        while (writeQueue.length > 0) writeQueue.shift()!.reject(new Error("pi-agent is not running"));
-        break;
+        rejectQueuedFor(proc, "pi-agent is not running");
+        continue;
       }
     }
   } finally {
@@ -205,6 +230,23 @@ export async function ensureSpawned(): Promise<void> {
     });
     child = proc as ChildProcessWithoutNullStreams;
     logInfo("[worker] sidecar spawned");
+
+    // sidecar 退出时 stdin 管道先断：写失败除了回调外还会向流 emit('error')，
+    // 没有监听就是主进程 uncaughtException（win32 上即 "write EOF"）。
+    guardStreamErrors(proc.stdin, (e) => {
+      // end 之后仍写属于队列逻辑问题，单独 warn 便于暴露；其余断管是预期噪音
+      if (e.code === "ERR_STREAM_WRITE_AFTER_END") {
+        logWarn(`[worker] stdin write after end`);
+        return;
+      }
+      if (isBenignStreamClose(e)) {
+        logInfo(`[worker] stdin closed (${e.code})`);
+        return;
+      }
+      logError(`[worker] stdin error: ${e.message}`);
+    });
+    guardStreamErrors(proc.stdout, (e) => logWarn(`[worker] stdout error: ${e.message}`));
+    guardStreamErrors(proc.stderr, (e) => logWarn(`[worker] stderr error: ${e.message}`));
 
     const rl = createInterface({ input: proc.stdout });
     rl.on("line", (line) => void handleLine(line));

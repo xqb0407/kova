@@ -159,7 +159,7 @@ export const SettingsPage: FC<{
       {/* 二级侧边栏 */}
       <nav
         data-slot="settings-nav"
-        className="bg-transparent flex w-65 shrink-0  flex-col "
+        className="bg-transparent flex w-65 shrink-0  flex-col border-r border-border/50"
       >
         {/* 顶栏拖拽区：macOS 红绿灯悬浮于此行；Windows/Linux/网页放「设置」
             标题，避免左侧一整条空白 */}

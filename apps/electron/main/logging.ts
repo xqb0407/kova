@@ -4,12 +4,15 @@
  */
 import { appendFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { guardStreamErrors } from "./child-stream";
 import { appDataDir, appLogDir } from "./paths";
 
 const KEEP_DAYS = 7;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const FRONTEND_MSG_MAX = 8000;
 const FLUSH_AFTER_MS = 1000;
+/** 建流失败后的重试间隔：磁盘持续满/无权限时，不能每条日志都重开一次 */
+const OPEN_RETRY_MS = 5000;
 
 function levelEnabled(): (l: number) => boolean {
   const raw = (process.env.KOVA_LOG_LEVEL ?? "info").trim().toLowerCase();
@@ -37,7 +40,7 @@ function dayStamp(d: Date): string {
 function eprintLossy(line: string): void {
   try {
     process.stderr.write(line + "\n", () => {
-      /* 错误一律吞：死管道/暂停都不能把进程带走 */
+      /* 回调里的错误忽略；流的 'error' 由 initLogging 统一挂监听兜住 */
     });
   } catch {
     /* 日志不能把进程带走 */
@@ -50,6 +53,7 @@ class SourceFile {
   private bytes = 0;
   private lastFlush = Date.now();
   private root = "";
+  private retryAfter = 0;
 
   initRoot(root: string): void {
     this.root = root;
@@ -59,6 +63,8 @@ class SourceFile {
     if (!this.root) return;
     const today = dayStamp(new Date());
     if (!this.stream || this.date !== today) {
+      if (Date.now() < this.retryAfter) return; // 上次建流失败：退避期内直接丢弃
+      this.close(); // 日切时先收掉昨天的句柄，避免 fd 泄漏
       this.date = today;
       this.open(today);
     }
@@ -83,12 +89,20 @@ class SourceFile {
     try {
       const dir = join(this.root, day);
       mkdirSync(dir, { recursive: true });
-      this.stream = createWriteStream(join(dir, this.name), { flags: "a" });
+      const stream = createWriteStream(join(dir, this.name), { flags: "a" });
+      guardStreamErrors(stream, () => {
+        // 磁盘满/权限/文件被占用：丢弃句柄并退避，下一条日志到点再重开
+        if (this.stream !== stream) return; // 已被新句柄顶替
+        this.stream = null;
+        this.retryAfter = Date.now() + OPEN_RETRY_MS;
+      });
+      this.stream = stream;
       const st = existsSync(join(dir, this.name)) ? statSync(join(dir, this.name)) : null;
       this.bytes = st?.size ?? 0;
       this.lastFlush = Date.now();
     } catch {
       this.stream = null;
+      this.retryAfter = Date.now() + OPEN_RETRY_MS;
     }
   }
 
@@ -129,6 +143,9 @@ let initialized = false;
 export function initLogging(): void {
   if (initialized) return;
   initialized = true;
+  // GUI 启动时 stderr 可能是已断开的管道：writable 写失败会 emit('error')，
+  // 只靠 write 回调拦不住，必须有人监听，否则是主进程 uncaughtException。
+  process.stderr.on("error", () => {});
   const root = appLogDir();
   try {
     mkdirSync(root, { recursive: true });
