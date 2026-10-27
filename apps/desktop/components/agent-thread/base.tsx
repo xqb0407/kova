@@ -51,6 +51,7 @@ import {
 import { useOnboardingGate } from "@/components/onboarding/onboarding-provider";
 import { CloneThreadShell } from "./clone-thread-shell";
 import { Header, Logo } from "./header";
+import QuickViewCard from "./quick-view-popover";
 import { Thread, isNewChatView } from "./thread";
 import { AgentPanelSlot, TerminalDockGate } from "./lazy-surfaces";
 // 迭代1b（P6）：设置页整棵模块图（CodeMirror + 语言文法包、cmdk、input-otp、
@@ -1022,6 +1023,11 @@ export const Base: FC = () => {
         <ErrorBoundary key={activeMenu} label="主区">
           {chat}
         </ErrorBoundary>
+        {/* 快速查看浮层：只挂聊天会话（管理页无会话语境）；卡片按 threadId
+            记录开合（lib/quick-view），收起即整卡卸载，不订阅数据源 */}
+        {activeMenu === "" ? (
+          <QuickViewCard threadId={mainThreadId} />
+        ) : null}
         {compact ? (
           <AnimatePresence>
             {panelShown ? (

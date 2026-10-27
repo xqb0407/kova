@@ -91,6 +91,8 @@ const hydrating = new Set<string>();
 let artifactVersion = 0;
 
 function notify() {
+  // 多行快照按"最近一次广播"缓存：广播后全部失效，下一次 getSnapshot 重建
+  multiSnapshots.clear();
   for (const l of listeners) l();
 }
 
@@ -110,6 +112,36 @@ export function useSubagentArtifactVersion(): number {
     subscribeSubagentRuns,
     getSubagentArtifactVersion,
     () => 0,
+  );
+}
+
+/**
+ * 一次订阅取多个绑定条目（快速查看的委派列表等多行消费方）。
+ * 快照按键集缓存保证引用稳定（useSyncExternalStore 的要求）：两次广播之间
+ * 返回同一 Map，广播后整体失效重建（notify 里 clear）。键序即身份，键集
+ * 由调用方 memo；缓存上限兜底防长会话累积（超限全清，下次按需重建）。
+ */
+const multiSnapshots = new Map<string, Map<string, SubagentRunState | undefined>>();
+const MULTI_SNAPSHOT_CACHE_LIMIT = 32;
+const EMPTY_MULTI_SNAPSHOT: ReadonlyMap<string, SubagentRunState | undefined> =
+  new Map();
+
+export function useSubagentRunsByToolCalls(
+  toolCallIds: readonly string[],
+): ReadonlyMap<string, SubagentRunState | undefined> {
+  const key = toolCallIds.join("\u0000");
+  return useSyncExternalStore(
+    subscribeSubagentRuns,
+    () => {
+      const hit = multiSnapshots.get(key);
+      if (hit) return hit;
+      const map = new Map<string, SubagentRunState | undefined>();
+      for (const id of toolCallIds) map.set(id, getSubagentRunByToolCall(id));
+      if (multiSnapshots.size >= MULTI_SNAPSHOT_CACHE_LIMIT) multiSnapshots.clear();
+      multiSnapshots.set(key, map);
+      return map;
+    },
+    () => EMPTY_MULTI_SNAPSHOT,
   );
 }
 

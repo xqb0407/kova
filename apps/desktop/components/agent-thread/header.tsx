@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { RenameTaskDialog } from "@/components/agent-thread/rename-task-dialog";
 import { TerminalToggleButton } from "@/components/agent-thread/terminal-toggle-button";
+import { QuickViewToggleButton } from "@/components/agent-thread/quick-view-popover";
 import { usePanelActivity } from "@/lib/panels/panel-activity";
 import { useThreadTodos } from "@/lib/pi/pi-todo";
 import { useThreadTitle } from "@/lib/pi/pi-thread-titles";
@@ -390,15 +391,16 @@ export const Header: FC<{
           />
         </>
       )}
-      {/* 顶部右侧按钮簇（终端 + 面板开关）：全部走 Header 流内，和左侧
+      {/* 顶部右侧按钮簇（终端 + 快速查看 + 面板开关）：全部走 Header 流内，和左侧
           「侧栏展开槽」同一套开合手法——槽位宽度随面板动画收放，按钮本体
           只淡出淡入、不做位移。面板展开后槽位收没，终端按钮就停在聊天列
           右缘（分割线旁，即原「展开面板」按钮那一格）；面板收起时槽位
-          重新展开，按钮簇恢复 [终端] [面板]。 */}
+          重新展开，按钮簇恢复 [终端] [快速查看] [面板]。 */}
       <div className="ml-auto flex shrink-0 items-center gap-1">
         {pageMode ? null : (
           <>
             <TerminalToggleButton />
+            <QuickViewToggleButton />
             <PanelToggleSlot
               onToggle={onTogglePanel}
               shown={showPanelToggle}
