@@ -669,18 +669,9 @@ html[data-wallpaper] [data-chat-card] {
   content-visibility: visible;
 }
 
-/* 会话内搜索（Ctrl/Cmd+F）的正文命中高亮：Custom Highlight API 上色，
-   节点由 thread-find 现算 Range，不侵入 markdown 渲染树。
-   用琥珀色而不是 primary——浅色主题下 primary 是近黑，混出来的底色几乎看不见。 */
-::highlight(thread-find) {
-  background-color: color-mix(in oklab, oklch(0.86 0.17 90) 55%, transparent);
-  color: inherit;
-}
-
-.dark ::highlight(thread-find) {
-  background-color: color-mix(in oklab, oklch(0.75 0.16 85) 38%, transparent);
-  color: inherit;
-}
+/* 会话内搜索（Ctrl/Cmd+F）的正文命中高亮：规则在 thread-find.tsx 里运行时注入。
+   Lightning CSS 尚不认识 ::highlight()，写在 CSS 文件里会让 next build 报
+   "not recognized as a valid pseudo-element"。 */
 
 
 /* 工具行的自定义展开内容（编辑/写入的 diff、记忆正文、检索命中）：展开高度用

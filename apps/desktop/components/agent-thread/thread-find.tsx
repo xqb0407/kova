@@ -196,6 +196,41 @@ const getRegistry = (): HighlightRegistryLike | undefined =>
 const getHighlightCtor = (): HighlightCtor | undefined =>
   (globalThis as unknown as { Highlight?: HighlightCtor }).Highlight;
 
+/** ::highlight() 目前不在 Lightning CSS 的已知伪元素表里，写进 .css 会让
+ *  `next build` 报 "not recognized as a valid pseudo-element"（构建仍成功，
+ *  但打包日志像错误）。高亮只有在本模块注册 Highlight 后才存在，规则随
+ *  注册按需注入，绕开 CSS 构建管线。
+ *  用琥珀色而不是 primary——浅色主题下 primary 是近黑，混出来的底色几乎看不见。 */
+const HIGHLIGHT_CSS = `
+::highlight(${HIGHLIGHT_NAME}) {
+  background-color: color-mix(in oklab, oklch(0.86 0.17 90) 55%, transparent);
+  color: inherit;
+}
+.dark ::highlight(${HIGHLIGHT_NAME}) {
+  background-color: color-mix(in oklab, oklch(0.75 0.16 85) 38%, transparent);
+  color: inherit;
+}
+`;
+
+let highlightStyleInstalled = false;
+
+function ensureHighlightStyle(): void {
+  if (highlightStyleInstalled || typeof document === "undefined") return;
+  highlightStyleInstalled = true;
+  // dev HMR 会重新求值模块、模块级 flag 归零：复用已有 style 并刷新内容
+  const existing = document.querySelector<HTMLStyleElement>(
+    'style[data-slot="thread-find-highlight"]',
+  );
+  if (existing) {
+    existing.textContent = HIGHLIGHT_CSS;
+    return;
+  }
+  const style = document.createElement("style");
+  style.dataset.slot = "thread-find-highlight";
+  style.textContent = HIGHLIGHT_CSS;
+  document.head.appendChild(style);
+}
+
 function clearHighlight() {
   getRegistry()?.delete(HIGHLIGHT_NAME);
 }
@@ -259,6 +294,7 @@ function highlightMatches(root: HTMLElement, rawQuery: string) {
     clearHighlight();
     return;
   }
+  ensureHighlightStyle();
   registry.set(HIGHLIGHT_NAME, new Highlight(...ranges));
 }
 
