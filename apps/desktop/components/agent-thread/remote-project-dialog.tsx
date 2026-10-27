@@ -7,7 +7,7 @@
  * lib/workspace/remote-projects.ts 与 pi-client-base）。
  */
 
-import { useEffect, useState, type FC } from "react";
+import { useEffect, useMemo, useState, type FC } from "react";
 import { invoke } from "@/desktop-bridge/core";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -72,6 +72,14 @@ export const RemoteProjectDialog: FC<{
   if (!open) return null;
 
   const enabledHosts = hosts.filter((h) => h.enabled);
+  // base-ui 需要 items 映射才能在触发器上显示选中项 label（否则回填成 placeholder）
+  const hostItems = useMemo(
+    () => [
+      ...enabledHosts.map((h) => ({ value: h.id, label: h.name })),
+      { value: "__add__", label: "添加远程" },
+    ],
+    [enabledHosts],
+  );
   // 必须显式选主机：静默回退第一台会让人在多主机时绑错目标
   const canSubmit = !busy && Boolean(hostId) && remotePath.trim().startsWith("/");
 
@@ -137,6 +145,7 @@ export const RemoteProjectDialog: FC<{
             <Label>远程主机</Label>
             <Select
               value={hostId || undefined}
+              items={hostItems}
               onValueChange={(v) => {
                 if (!v) return;
                 if (v === "__add__") {
@@ -146,7 +155,7 @@ export const RemoteProjectDialog: FC<{
                 setHostId(v);
               }}
             >
-              <SelectTrigger>
+              <SelectTrigger className="w-full">
                 <SelectValue placeholder="选择 SSH 主机" />
               </SelectTrigger>
               <SelectContent>
