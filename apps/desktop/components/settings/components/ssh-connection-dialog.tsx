@@ -45,6 +45,7 @@ export const SshConnectionDialog: FC<{
 }> = ({ open, onClose, initial, onSaved }) => {
   const [step, setStep] = useState<"scan" | "manual">("scan");
   const [aliases, setAliases] = useState<string[]>([]);
+  const [savedHosts, setSavedHosts] = useState<SshHost[]>([]);
   const [savedAliases, setSavedAliases] = useState<Set<string>>(new Set());
   const [aliasesLoaded, setAliasesLoaded] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -71,6 +72,7 @@ export const SshConnectionDialog: FC<{
       ]);
       const existing = new Set((hosts ?? []).map((h) => h.alias).filter(Boolean) as string[]);
       setSavedAliases(existing);
+      setSavedHosts(hosts ?? []);
       setAliases((scanned ?? []).map((s) => s.alias));
       setSelected(new Set());
     } catch (e) {
@@ -198,16 +200,28 @@ export const SshConnectionDialog: FC<{
     }
     setBusy(true);
     try {
+      const draftHost = {
+        ...(initial?.id ? { id: initial.id } : {}),
+        name: name.trim() || host,
+        hostname: host,
+        ...(portNum ? { port: portNum } : {}),
+        ...(user ? { username: user } : {}),
+        authType,
+        ...(authType === "key" ? { privateKeyPath: privateKeyPath.trim() } : {}),
+        // 测试用本次输入的密码（未勾选记住也要先验证能连上）
+        ...(authType === "password" && password ? { password } : {}),
+      };
+      // 保存前先测试连接：未落库配置直接探（密码主机走 sidecar ssh2 探针）
+      const probe = (await invoke("ssh_host_test_draft", {
+        draft: draftHost,
+      })) as { ok: boolean; message: string; ms: number };
+      if (!probe.ok) {
+        setError(`连接测试未通过，未保存：${probe.message}`);
+        return;
+      }
       const saved = (await invoke("ssh_host_save", {
         host: {
-          ...(initial?.id ? { id: initial.id } : {}),
-          name: name.trim() || host,
-          hostname: host,
-          ...(portNum ? { port: portNum } : {}),
-          ...(user ? { username: user } : {}),
-          authType,
-          ...(authType === "key" ? { privateKeyPath: privateKeyPath.trim() } : {}),
-          // 空串 = 保留已存密码（main 侧语义）；勾选记住才落盘
+          ...draftHost,
           ...(authType === "password" && rememberPassword ? { password } : {}),
           enabled: true,
         },
@@ -236,13 +250,29 @@ export const SshConnectionDialog: FC<{
                   <Loader2Icon className="mr-2 size-4 animate-spin" />
                   正在扫描 ~/.ssh/config…
                 </div>
-              ) : addable.length === 0 ? (
+              ) : addable.length === 0 && savedHosts.length === 0 ? (
                 <div className="text-muted-foreground flex h-full min-h-[180px] flex-col items-center justify-center gap-3 px-6 text-center text-sm">
                   <MonitorCheckIcon className="text-muted-foreground/50 size-9" />
                   没有发现可添加的主机，请先在 ~/.ssh/config 中配置具体的 Host。
                 </div>
               ) : (
                 <div className="flex flex-col p-1">
+                  {/* 已配置的主机（应用内已添加）：给个可见的去处，避免误以为丢了配置 */}
+                  {savedHosts.map((host) => (
+                    <div
+                      key={host.id}
+                      className="text-muted-foreground flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm"
+                    >
+                      <Checkbox checked disabled aria-label={host.name} />
+                      <span className="truncate">{host.name}</span>
+                      {host.alias && (
+                        <span className="truncate font-mono text-xs">{host.alias}</span>
+                      )}
+                      <span className="ml-auto rounded-md bg-background px-1.5 py-0.5 text-xs">
+                        已添加
+                      </span>
+                    </div>
+                  ))}
                   {addable.map((alias) => (
                     <label
                       key={alias}
@@ -255,6 +285,11 @@ export const SshConnectionDialog: FC<{
                       <span className="truncate font-mono">{alias}</span>
                     </label>
                   ))}
+                  {addable.length === 0 && savedHosts.length > 0 ? (
+                    <div className="text-muted-foreground px-3 py-2 text-xs">
+                      ~/.ssh/config 中没有新的 Host 别名；已添加的主机可在上方下拉直接选择。
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>
@@ -392,7 +427,8 @@ export const SshConnectionDialog: FC<{
               {error && <div className="text-destructive text-xs">{error}</div>}
             </div>
 
-            <DialogFooter>
+            <DialogFooter className="items-center">
+              <span className="text-muted-foreground mr-auto text-xs">保存前会先测试连接</span>
               <Button variant="ghost" onClick={onClose} disabled={busy}>
                 取消
               </Button>

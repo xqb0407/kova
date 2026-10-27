@@ -27,7 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { CloudOffIcon, Loader2Icon, PlusIcon } from "lucide-react";
+import { CloudOffIcon, FolderOpenIcon, Loader2Icon, PlusIcon } from "lucide-react";
 import { SshConnectionDialog } from "@/components/settings/components/ssh-connection-dialog";
 import {
   saveRemoteProject,
@@ -51,6 +51,12 @@ export const RemoteProjectDialog: FC<{
   const [remotePath, setRemotePath] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 源文件夹浏览（SSH 远端目录）
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [browsePath, setBrowsePath] = useState("/");
+  const [browseDirs, setBrowseDirs] = useState<string[]>([]);
+  const [browseBusy, setBrowseBusy] = useState(false);
+  const [browseError, setBrowseError] = useState<string | null>(null);
 
   const loadHosts = async () => {
     try {
@@ -66,8 +72,46 @@ export const RemoteProjectDialog: FC<{
     if (!open) return;
     setError(null);
     setHostsLoaded(false);
+    setBrowseOpen(false);
     void loadHosts();
   }, [open]);
+
+  /** 列远端目录（cd 后 pwd + ls -1p；密码主机走 ssh2 探针） */
+  const loadRemoteDirs = async (path: string) => {
+    if (!hostId) return;
+    setBrowseBusy(true);
+    setBrowseError(null);
+    try {
+      const res = (await invoke("ssh_host_list_dirs", {
+        hostId,
+        path,
+      })) as { ok: boolean; path?: string; dirs?: string[]; message?: string };
+      if (!res.ok) {
+        setBrowseError(res.message || "目录不可访问");
+        setBrowseDirs([]);
+        return;
+      }
+      setBrowsePath(res.path ?? path);
+      setBrowseDirs(res.dirs ?? []);
+    } catch (e) {
+      setBrowseError(String(e));
+      setBrowseDirs([]);
+    } finally {
+      setBrowseBusy(false);
+    }
+  };
+
+  const openBrowse = () => {
+    if (!hostId) {
+      setError("请先选择 SSH 主机");
+      return;
+    }
+    const start = remotePath.trim().startsWith("/") ? remotePath.trim() : "/";
+    setBrowseOpen(true);
+    setBrowsePath(start);
+    setBrowseDirs([]);
+    void loadRemoteDirs(start);
+  };
 
   // 所有 hook 必须在任何提前 return 之前：关闭态 return null 后 hook 数不能变
   const enabledHosts = useMemo(() => hosts.filter((h) => h.enabled), [hosts]);
@@ -177,13 +221,99 @@ export const RemoteProjectDialog: FC<{
 
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="remote-project-path">源文件夹</Label>
-            <Input
-              id="remote-project-path"
-              value={remotePath}
-              placeholder="/home/user/project"
-              className="font-mono"
-              onChange={(e) => setRemotePath(e.target.value)}
-            />
+            <div className="flex gap-2">
+              <Input
+                id="remote-project-path"
+                value={remotePath}
+                placeholder="/home/user/project"
+                className="flex-1 font-mono"
+                onChange={(e) => setRemotePath(e.target.value)}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!hostId}
+                onClick={openBrowse}
+                title={hostId ? "浏览远端目录" : "请先选择 SSH 主机"}
+              >
+                浏览…
+              </Button>
+            </div>
+            {browseOpen && (
+              <div className="mt-1 flex flex-col rounded-xl border">
+                <div className="text-muted-foreground flex items-center justify-between border-b px-3 py-2 font-mono text-xs">
+                  <span className="truncate" title={browsePath}>
+                    {browsePath}
+                  </span>
+                  {browseBusy ? <Loader2Icon className="size-3.5 animate-spin" /> : null}
+                </div>
+                <div className="flex max-h-52 min-h-[120px] flex-col overflow-y-auto p-1">
+                  {browseError ? (
+                    <div className="text-destructive px-2 py-3 text-xs">{browseError}</div>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="hover:bg-muted/60 flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm"
+                        onClick={() => {
+                          const parent =
+                            browsePath.replace(/\/+$/, "").replace(/\/[^/]+$/, "") || "/";
+                          void loadRemoteDirs(parent);
+                        }}
+                      >
+                        <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+                        ..
+                      </button>
+                      {browseDirs.map((name) => (
+                        <button
+                          key={name}
+                          type="button"
+                          className="hover:bg-muted/60 flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm"
+                          onClick={() => {
+                            const next = `${browsePath.replace(/\/+$/, "")}/${name}`;
+                            void loadRemoteDirs(next);
+                          }}
+                        >
+                          <FolderOpenIcon className="text-muted-foreground size-3.5 shrink-0" />
+                          <span className="truncate">{name}</span>
+                        </button>
+                      ))}
+                      {!browseBusy && browseDirs.length === 0 ? (
+                        <div className="text-muted-foreground px-2 py-3 text-xs">
+                          没有子目录
+                        </div>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+                <div className="flex items-center justify-between border-t px-3 py-2">
+                  <span className="text-muted-foreground max-w-[60%] truncate font-mono text-xs">
+                    {browsePath}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setBrowseOpen(false)}
+                    >
+                      收起
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={browseBusy || Boolean(browseError)}
+                      onClick={() => {
+                        setRemotePath(browsePath);
+                        setBrowseOpen(false);
+                      }}
+                    >
+                      选择此目录
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
             {projects.length > 0 && (
               <div className="text-muted-foreground text-xs">
                 已有项目：{projects.map((p) => p.name).join("、")}

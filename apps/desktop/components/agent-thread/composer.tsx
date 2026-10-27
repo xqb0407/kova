@@ -50,7 +50,7 @@ import {
   useLibraryRefGuard,
   useMissingLibraryRefs,
 } from "@/lib/workspace/library-ref-guard";
-import { isRemoteWorkspace } from "@/lib/workspace/remote-projects";
+import { isRemoteWorkspace, useRemoteProjects } from "@/lib/workspace/remote-projects";
 import { ToolApprovalCard } from "@/components/agent-thread/tool-approval-card";
 import { QuestionCard } from "@/components/agent-thread/question-card";
 import { usePendingQuestions } from "@/lib/pi/pi-question";
@@ -476,6 +476,8 @@ const WorkspacePill: FC = () => {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [remoteDialogOpen, setRemoteDialogOpen] = useState(false);
+  // 远程项目显式入口：最近目录只有路径且会被 5 条上限挤掉，远程项目按名单列
+  const { projects: remoteProjects } = useRemoteProjects();
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
 
   if (!isDesktop() || hasMessages) return null;
@@ -576,6 +578,31 @@ const WorkspacePill: FC = () => {
         )}
       </div>
       <DropdownMenuContent align="start" sideOffset={0} className="w-64 p-0">
+        {remoteProjects.length > 0 && (
+          <>
+            <div className="text-muted-foreground px-3 pb-1 pt-2 text-xs">远程项目</div>
+            <div className="px-1">
+              {remoteProjects.map((project) => (
+                <DropdownMenuCheckboxItem
+                  key={project.id}
+                  checked={workspace === project.remotePath}
+                  onCheckedChange={(checked) => {
+                    if (checked) setWorkspace(project.remotePath);
+                  }}
+                  closeOnClick={false}
+                  title={project.remotePath}
+                >
+                  <ServerIcon className="size-3.5 shrink-0 text-emerald-600" />
+                  <span className="truncate">{project.name}</span>
+                  <span className="text-muted-foreground ml-auto max-w-24 truncate font-mono text-[10px]">
+                    {project.remotePath}
+                  </span>
+                </DropdownMenuCheckboxItem>
+              ))}
+            </div>
+            <DropdownMenuSeparator />
+          </>
+        )}
         <DropdownMenuGroup className={"p-0"}>
           {/* <DropdownMenuItem>最近使用</DropdownMenuItem> */}
           <Input className="border-0 ring-0 bg-transparent focus-visible:outline-none focus-visible:ring-0 " placeholder="搜索" />

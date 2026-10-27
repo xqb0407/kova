@@ -352,6 +352,156 @@ export function setupSshCommands(register: (name: string, fn: (args: any) => any
 
   register("ssh_host_scan_config", () => scanConfigAliases());
 
+  /**
+   * 保存前测试（未落库的草稿配置）：设置页/添加对话框点「保存」前先探通。
+   * 密码主机经 sidecar ssh2 探针（密码取草稿明文，或按 id 复用已存密码）；
+   * 密钥/agent 及别名主机走 CLI 探针。测试不写任何状态。
+   */
+  register("ssh_host_test_draft", async (a) => {
+    const d = (a?.draft ?? {}) as {
+      id?: unknown;
+      alias?: unknown;
+      hostname?: unknown;
+      port?: unknown;
+      username?: unknown;
+      authType?: unknown;
+      privateKeyPath?: unknown;
+      password?: unknown;
+    };
+    const authType =
+      d.authType === "key" || d.authType === "password" ? d.authType : "agent";
+    const alias = typeof d.alias === "string" && d.alias.trim() ? d.alias.trim() : undefined;
+    const hostname = typeof d.hostname === "string" ? d.hostname.trim() : "";
+    if (!alias && !hostname) return { ok: false, message: "请填写主机地址", ms: 0 };
+    const existing =
+      typeof d.id === "string" && d.id ? readHosts().find((h) => h.id === d.id) : undefined;
+    const draftHost: SshHost = {
+      id: typeof d.id === "string" && d.id ? d.id : "__draft__",
+      name: "",
+      alias,
+      hostname,
+      port:
+        typeof d.port === "number" && Number.isInteger(d.port) && d.port >= 1 && d.port <= 65535
+          ? d.port
+          : undefined,
+      username: typeof d.username === "string" && d.username.trim() ? d.username.trim() : undefined,
+      authType,
+      privateKeyPath:
+        typeof d.privateKeyPath === "string" && d.privateKeyPath.trim()
+          ? d.privateKeyPath.trim()
+          : undefined,
+      passwordEnc:
+        authType === "password"
+          ? typeof d.password === "string" && d.password
+            ? encrypt(d.password)
+            : existing?.passwordEnc
+          : undefined,
+      enabled: true,
+      createdAt: "",
+    };
+    if (authType === "password") {
+      if (!draftHost.hostname) {
+        return { ok: false, message: "密码认证需要填写显式主机地址", ms: 0 };
+      }
+      const target = authTarget(draftHost, true);
+      if (!target.password) {
+        return { ok: false, message: "请填写 SSH 密码", ms: 0 };
+      }
+      return probeViaSidecar(target, undefined);
+    }
+    return testConnection(draftHost);
+  });
+
+  /** 远端目录浏览（新建远程项目选源文件夹）：列指定目录下的子目录 */
+  register("ssh_host_list_dirs", async (a) => {
+    const id = String(a?.hostId ?? "");
+    const dir = String(a?.path ?? "/").trim() || "/";
+    if (!dir.startsWith("/")) throw new Error("path must be absolute");
+    const host = readHosts().find((h) => h.id === id);
+    if (!host) throw new Error(`host not found: ${id}`);
+    if (host.authType === "password") {
+      const target = authTarget(host, true);
+      if (!target.password) {
+        return { ok: false, message: "未保存密码：请勾选「记住密码」后重试", dirs: [] };
+      }
+      const { piRequest } = await import("./pi-agent");
+      const line = await piRequest({
+        payload: { type: "ssh_list_dirs", target, path: dir },
+        timeoutMs: 20_000,
+      });
+      const res = JSON.parse(line) as {
+        ok?: boolean;
+        path?: string;
+        dirs?: string[];
+        message?: string;
+      };
+      return {
+        ok: res.ok === true,
+        path: res.path ?? dir,
+        dirs: Array.isArray(res.dirs) ? res.dirs : [],
+        message: res.message ?? "",
+      };
+    }
+    // 密钥/agent/别名：CLI 直接列（cd 后 pwd + ls -1p）
+    const script =
+      `cd '${dir.replaceAll("'", `'\\''`)}' 2>/dev/null && pwd && ls -1p`;
+    const args = [
+      ...sshBaseOptions(),
+      ...portOptions(host),
+      ...authOptions(host),
+      targetOf(host),
+      "--",
+      `/bin/sh -c '${script.replaceAll("'", `'\\''`)}'`,
+    ];
+    return await new Promise((resolve) => {
+      const child = spawn("ssh", args, { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill("SIGKILL");
+        resolve({ ok: false, dirs: [], message: "目录读取超时" });
+      }, 15_000);
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.on("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ ok: false, dirs: [], message: `ssh 启动失败: ${error.message}` });
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (code !== 0) {
+          resolve({
+            ok: false,
+            dirs: [],
+            message: stderr.trim().slice(0, 200) || "目录不可访问",
+          });
+          return;
+        }
+        const lines = stdout.split(/\r?\n/);
+        const resolved = (lines[0] ?? dir).trim() || dir;
+        const dirs = lines
+          .slice(1)
+          .map((line) => line.trim())
+          .filter((line) => line.endsWith("/") && !line.startsWith("."))
+          .map((line) => line.replace(/\/+$/, ""))
+          .filter(Boolean)
+          .sort((x, y) => x.localeCompare(y));
+        resolve({ ok: true, path: resolved, dirs, message: "" });
+      });
+    });
+  });
+
   /** 远端目录存在性校验（新建远程项目时保存前确认，避免会话里才炸） */
   register("ssh_host_check_dir", async (a) => {
     const id = String(a?.hostId ?? "");

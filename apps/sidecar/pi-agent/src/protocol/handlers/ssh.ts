@@ -35,6 +35,50 @@ function parseTarget(raw: unknown): RemoteTarget {
 
 export const handlers: Record<string, CommandHandler> = {
   /**
+   * { type: "ssh_list_dirs", target, path } →
+   *   { id, type: "ssh_list_dirs_result", ok, path?, dirs?, message }
+   * 远端目录浏览（新建远程项目选源文件夹）：cd 后 pwd + ls -1p，只回目录名。
+   */
+  ssh_list_dirs: async (reqId, msg) => {
+    try {
+      const target = parseTarget(msg.target);
+      const path = String(msg.path ?? "").trim();
+      if (!path.startsWith("/")) throw new Error("path must be absolute");
+      const command = `cd ${quotePosixShellArg(path)} && pwd && ls -1p`;
+      const result = await remoteExec(target, command, {
+        timeoutMs: 15_000,
+        resolveOnNonZeroExit: true,
+      });
+      if (result.exitCode !== 0) {
+        send({
+          id: reqId,
+          type: "ssh_list_dirs_result",
+          ok: false,
+          message: result.stderr.trim().slice(0, 200) || "目录不可访问",
+        });
+        return;
+      }
+      const lines = result.stdout.split(/\r?\n/);
+      const resolved = (lines[0] ?? path).trim() || path;
+      const dirs = lines
+        .slice(1)
+        .map((line) => line.trim())
+        .filter((line) => line.endsWith("/") && !line.startsWith("."))
+        .map((line) => line.replace(/\/+$/, ""))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+      send({ id: reqId, type: "ssh_list_dirs_result", ok: true, path: resolved, dirs });
+    } catch (error) {
+      send({
+        id: reqId,
+        type: "ssh_list_dirs_result",
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+
+  /**
    * { type: "ssh_probe", target, path? } →
    *   { id, type: "ssh_probe_result", ok, message, ms }
    * path 提供时探 test -d（目录存在性），否则只验证连通+认证。
