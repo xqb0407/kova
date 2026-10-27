@@ -37,6 +37,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
@@ -676,15 +677,18 @@ export const SkillMarket: FC = () => {
               {SORT_LABEL[sort]}
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-32">
-              <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
-                排序
-              </DropdownMenuLabel>
-              {SORT_OPTIONS.map((option) => (
-                <DropdownMenuItem key={option.value} onClick={() => setSort(option.value)}>
-                  {option.label}
-                  {sort === option.value && <span className="ml-auto text-xs">✓</span>}
-                </DropdownMenuItem>
-              ))}
+              {/* Base UI：MenuGroupLabel 必须在 Menu.Group 内，否则渲染即抛 error #31 */}
+              <DropdownMenuGroup>
+                <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
+                  排序
+                </DropdownMenuLabel>
+                {SORT_OPTIONS.map((option) => (
+                  <DropdownMenuItem key={option.value} onClick={() => setSort(option.value)}>
+                    {option.label}
+                    {sort === option.value && <span className="ml-auto text-xs">✓</span>}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
           <Button

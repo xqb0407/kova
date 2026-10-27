@@ -51,6 +51,8 @@ function ContextMenuGroup({ ...props }: ContextMenuPrimitive.Group.Props) {
   return <ContextMenuPrimitive.Group data-slot="context-menu-group" {...props} />;
 }
 
+// Base UI：与 DropdownMenuLabel 同源（MenuGroupLabel），必须在 ContextMenuGroup
+// 内使用，否则渲染即抛 error #31。
 function ContextMenuLabel({
   className,
   inset,

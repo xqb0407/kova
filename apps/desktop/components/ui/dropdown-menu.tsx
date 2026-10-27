@@ -64,6 +64,9 @@ function DropdownMenuGroup({ ...props }: MenuPrimitive.Group.Props) {
   return <MenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />;
 }
 
+// Base UI：MenuGroupLabel 依赖 Menu.Group / Menu.RadioGroup 提供的上下文，
+// 裸放在 Content 里渲染即抛 error #31。调用方必须处于 DropdownMenuGroup 或
+// DropdownMenuRadioGroup 内。
 function DropdownMenuLabel({
   className,
   inset,

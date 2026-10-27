@@ -12,6 +12,7 @@ import type { PiExternalDir } from "@/lib/pi/pi-bridge";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
@@ -148,34 +149,38 @@ export const FileTreeTab: FC = () => {
               }
             />
             <DropdownMenuContent align="start" className="w-72">
-              <DropdownMenuLabel>项目目录</DropdownMenuLabel>
-              {switcher.map((root, index) => (
-                <DropdownMenuItem
-                  key={root.path}
-                  onClick={() => setSelectedRoot(root.path)}
-                >
-                  <FolderOpenIcon className="size-3.5 shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="truncate text-sm">{root.label}</span>
-                      {index === 0 ? (
-                        <span className="bg-muted text-muted-foreground rounded px-1 text-[10px] leading-4">
-                          主目录
-                        </span>
-                      ) : null}
+              {/* Base UI：MenuGroupLabel 必须有 Menu.Group 上下文，否则渲染即抛
+                  error #31（多项目根时切换器才出现，单根不会触发） */}
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>项目目录</DropdownMenuLabel>
+                {switcher.map((root, index) => (
+                  <DropdownMenuItem
+                    key={root.path}
+                    onClick={() => setSelectedRoot(root.path)}
+                  >
+                    <FolderOpenIcon className="size-3.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-sm">{root.label}</span>
+                        {index === 0 ? (
+                          <span className="bg-muted text-muted-foreground rounded px-1 text-[10px] leading-4">
+                            主目录
+                          </span>
+                        ) : null}
+                      </div>
+                      <div
+                        className="text-muted-foreground truncate text-xs"
+                        title={root.path}
+                      >
+                        {root.path}
+                      </div>
                     </div>
-                    <div
-                      className="text-muted-foreground truncate text-xs"
-                      title={root.path}
-                    >
-                      {root.path}
-                    </div>
-                  </div>
-                  {treeRoot === root.path ? (
-                    <CheckIcon className="size-3.5 shrink-0" />
-                  ) : null}
-                </DropdownMenuItem>
-              ))}
+                    {treeRoot === root.path ? (
+                      <CheckIcon className="size-3.5 shrink-0" />
+                    ) : null}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
