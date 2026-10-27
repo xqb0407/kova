@@ -33,6 +33,12 @@ export type RunCheckpoint = {
 export type CheckpointEntry = RunCheckpoint & {
   /** 触发该轮的 user 消息在列表中的下标；null = 锚点未知（列表末尾兜底） */
   anchorIndex: number | null;
+  /**
+   * 触发 user 行的稳定投影 id（pi-msg:<seq>）。渲染端优先按它匹配：下标会随
+   * compaction/model-change 分隔线插入、截断漂移，id 跨列表结构变化稳定。
+   * 老条目/老调用方没有它，回落 anchorIndex。
+   */
+  anchorMessageId?: string;
 };
 
 const MAX_ENTRIES = 20;
@@ -104,23 +110,55 @@ function getList(threadId: string): CheckpointEntry[] {
 
 const EMPTY: CheckpointEntry[] = [];
 
+/** 结算锚点：下标 + 稳定消息 id（可选）。id 优先去重/匹配，见 CheckpointEntry。 */
+export type CheckpointAnchor = {
+  anchorIndex: number | null;
+  anchorMessageId?: string | null;
+};
+
 /**
  * 结算一条检查点：同锚点（重跑/重试同一轮）替换旧条目；
  * 新条目锚点未知时清掉旧的未知锚点条目，避免末尾兜底堆叠。
  */
 export function pushRunCheckpoint(
   threadId: string,
-  anchorIndex: number | null,
+  anchor: CheckpointAnchor,
   cp: RunCheckpoint,
 ): void {
-  const kept = getList(threadId).filter((e) =>
-    anchorIndex === null ? e.anchorIndex !== null : e.anchorIndex !== anchorIndex,
-  );
-  const next = [...kept, { ...cp, anchorIndex }].slice(-MAX_ENTRIES);
+  const anchorMessageId =
+    typeof anchor.anchorMessageId === "string" && anchor.anchorMessageId
+      ? anchor.anchorMessageId
+      : null;
+  const kept = getList(threadId).filter((e) => {
+    if (anchorMessageId) {
+      // 同一轮重结算（同轮多段 run）替换旧条目；老条目没有 id，按旧规则
+      // index 去重，防同轮新老并存出两张卡
+      if (e.anchorMessageId) return e.anchorMessageId !== anchorMessageId;
+      return e.anchorIndex !== anchor.anchorIndex;
+    }
+    return anchor.anchorIndex === null
+      ? e.anchorIndex !== null
+      : e.anchorIndex !== anchor.anchorIndex;
+  });
+  const next = [
+    ...kept,
+    {
+      ...cp,
+      anchorIndex: anchor.anchorIndex,
+      ...(anchorMessageId ? { anchorMessageId } : {}),
+    },
+  ].slice(-MAX_ENTRIES);
   slots.set(threadId, next);
   writeStored(threadId, next);
   // 排查卡不出现时的对账线：结算是否发生、锚在第几条消息（console 可搜 "[checkpoint]"）
-  console.debug("[checkpoint] settle", threadId, "anchorIndex:", anchorIndex, cp.files, "files");
+  console.debug(
+    "[checkpoint] settle",
+    threadId,
+    "anchor:",
+    anchorMessageId ?? anchor.anchorIndex,
+    cp.files,
+    "files",
+  );
   notify();
 }
 
@@ -167,6 +205,10 @@ export function useRunCheckpoints(
   );
 }
 
+/** 测试钩子：直读某线程当前条目（与 useRunCheckpoints 同源数据，绕开 React） */
+export const runCheckpointsForTest = (threadId: string): CheckpointEntry[] =>
+  getList(threadId);
+
 /**
  * 进行中 turn 的检查点 hash 持久化（sessionStorage）：打快照与结算分属
  * 流的两端，页面刷新会丢掉原页面里的 Promise——把 {cwd, hash, 锚点} 落盘，
@@ -180,6 +222,8 @@ export type PersistedRunHash = {
   cwd: string;
   hash: string;
   anchorIndex?: number | null;
+  /** 触发 user 行的稳定投影 id（pi-msg:<seq>）：渲染端优先按它匹配 */
+  anchorMessageId?: string | null;
   turnId?: string | null;
 };
 
@@ -203,6 +247,9 @@ export function loadRunHash(threadId: string): PersistedRunHash | null {
         cwd: v.cwd,
         hash: v.hash,
         anchorIndex: Number.isFinite(v.anchorIndex) ? (v.anchorIndex as number) : null,
+        ...(typeof v.anchorMessageId === "string" && v.anchorMessageId
+          ? { anchorMessageId: v.anchorMessageId }
+          : {}),
         ...(typeof v.turnId === "string" ? { turnId: v.turnId } : {}),
       };
     }

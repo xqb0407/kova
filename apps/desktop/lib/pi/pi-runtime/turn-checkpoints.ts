@@ -6,12 +6,16 @@
 // 锚点语义（与旧链路 messages.indexOf(lastUser) 对齐）：anchorIndex = 触发本轮
 // 的 user 消息在渲染列表中的下标。渲染列表 = 转录的投影（assistant+toolResult
 // 会合并成一条、隐藏 custom 不占位），不是转录下标——所以用与 UI 同一个投影
-// 函数对「转录前缀（截至触发 user 消息）」投影一次，末项下标即锚点。快照在
-// agent_start 时必已含触发消息（直发先落转录、排队项在引擎派发时落转录），
-// 前缀计数不受后续流式合并影响，卡片渲染时两端口径一致。
+// 函数对「转录前缀（截至触发 user 消息）」投影一次，末项下标即锚点。
+// ⚠ agent_start 早于本轮 user 行落盘（core 先 emit agent_start 再 message_end
+// →persist），begin 快照可能缺触发行、锚到上一轮。因此锚点在 settle 重算：
+// begin 只记 baselineLastSeq（快照内最大 seq）与 triggerSeq（快照末条恰为
+// 本轮 user 行时的 seq），settle 按它们在最新转录里重定位（见 resolveTurnAnchor），
+// 并产出稳定 anchorMessageId（pi-msg:<seq>）——渲染端优先按 id 匹配，
+// compaction/model-change 分隔线插入、截断导致的下标漂移不再影响锚点。
 //
 // 刷新重挂桥（saveRunHash/loadRunHash，sessionStorage）：begin 打完快照即把
-// {cwd, hash, anchor} 落盘；页面刷新后新实例错过 agent_start，settle 时台账
+// {cwd, hash, 锚点} 落盘；页面刷新后新实例错过 agent_start，settle 时台账
 // 无条目则从桥上恢复补结算。begin 会先作废桥上残留（新 run 不能复用上轮基线）。
 import { gitCheckpointCreate, gitCheckpointDiff } from "@/lib/git/git";
 import { refreshGitStatus } from "@/lib/git/git-status";
@@ -92,14 +96,90 @@ export const renderedIndexOfLastUser = (
   for (let i = 0; i < messages.length; i++) {
     if (messages[i]?.role === "user") last = i;
   }
-  if (last < 0) return null;
+  return renderedIndexOfUserAt(messages, last);
+};
+
+/**
+ * 渲染列表里第 targetIndex 条消息的下标（投影前缀口径，与 UI 同一投影函数）。
+ * targetIndex 非法或不是 user 行返回 null。检查点 anchor 的唯一换算出口：
+ * begin（旧行为）与 settle（重算）共用，保证两端口径一致。
+ */
+export const renderedIndexOfUserAt = (
+  messages: readonly PiAgentMessage[],
+  targetIndex: number,
+): number | null => {
+  if (targetIndex < 0 || targetIndex >= messages.length) return null;
+  if (messages[targetIndex]?.role !== "user") return null;
   const projected = projectPiThreadMessages({
-    messages: messages.slice(0, last + 1),
+    messages: messages.slice(0, targetIndex + 1),
     toolExecutions: {},
     runStatus: "idle",
     hostUiRequests: [],
   });
   return projected.length - 1;
+};
+
+/** 转录行 __seq（sidecar 快照透传；在飞行没有） */
+const seqOfMessage = (message: PiAgentMessage): number | undefined => {
+  const seq = (message as { __seq?: unknown }).__seq;
+  return typeof seq === "number" ? seq : undefined;
+};
+
+const maxTranscriptSeq = (messages: readonly PiAgentMessage[]): number | null => {
+  let max: number | null = null;
+  for (const message of messages) {
+    const seq = seqOfMessage(message);
+    if (seq !== undefined && (max === null || seq > max)) max = seq;
+  }
+  return max;
+};
+
+/**
+ * settle 时重算本轮触发 user 行的锚点。begin 的 anchor 在 agent_start 算，而
+ * agent_start 早于本轮 user 行落盘（core 先 emit agent_start 再 message_end→
+ * persist），begin 快照可能缺触发行、锚到上一轮。settle 时转录必已含触发行：
+ *  1. begin 快照末条就是本轮 user 行（已落盘带 seq）→ 按 seq 精确重定位，
+ *     compaction/model-change 分隔线插入导致的下标漂移也一并修正；
+ *  2. 否则触发行在 begin 之后才落盘 → 取 baseline 之后**第一条** user 行
+ *     （steer/并入注入行晚于触发行落盘，不会抢锚）；
+ *  3. 兜底：触发行是隐藏行（goal 续跑的内部注入，快照按前缀过滤）时 1/2 都
+ *     找不到——整段 goal 在渲染列表里同属一个轮，锚 = 最后一条可见 user 行。
+ * 定位不到（快照里没有任何 user 行）返回 null，调用方回落 begin 值。
+ */
+const resolveTurnAnchor = (
+  messages: readonly PiAgentMessage[],
+  run: { triggerSeq: number | null; baselineLastSeq: number | null },
+): { anchorIndex: number; anchorMessageId: string | undefined } | null => {
+  let target = -1;
+  if (run.triggerSeq !== null) {
+    target = messages.findIndex(
+      (message) => message.role === "user" && seqOfMessage(message) === run.triggerSeq,
+    );
+  }
+  const baseline = run.baselineLastSeq;
+  if (target < 0 && baseline !== null) {
+    target = messages.findIndex((message) => {
+      if (message.role !== "user") return false;
+      const seq = seqOfMessage(message);
+      return seq !== undefined && seq > baseline;
+    });
+  }
+  if (target < 0) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === "user") {
+        target = i;
+        break;
+      }
+    }
+  }
+  if (target < 0) return null;
+  const anchorIndex = renderedIndexOfUserAt(messages, target);
+  if (anchorIndex === null) return null;
+  const seq = seqOfMessage(messages[target]);
+  return {
+    anchorIndex,
+    anchorMessageId: seq !== undefined ? `pi-msg:${seq}` : undefined,
+  };
 };
 
 /** 一轮的检查点在飞台账：promise 由 begin 同步登记（去重与 settle 等待都靠它） */
@@ -108,13 +188,40 @@ type RunCp = {
   /** 快照拉到后才回填；settle 在 promise 落定后读取，必已就绪 */
   cwd: string;
   anchor: number | null;
+  /**
+   * begin 快照末条是本轮 user 行时记录的转录 seq：该行就是触发行（user 行落盘
+   * 后、assistant 响应前不会有别的行），settle 可按它精确重定位。
+   */
+  triggerSeq: number | null;
+  /** begin 快照里已落盘的最大转录 seq：触发行晚于 begin 落盘时，settle 取
+   *  baseline 之后第一条 user 行定位触发行。 */
+  baselineLastSeq: number | null;
   /** 触发本轮的 prompt requestId（条目所有权层查询键；可为 null——老调用方） */
   turnId: string | null;
+};
+
+/**
+ * 当前渲染轮的检查点基线：同一渲染轮的续段（goal 续跑等触发行被隐藏的形态）
+ * 复用首段基线做 diff，卡片内容相对本轮起点累计；新渲染轮（可见 user 行开轮）
+ * 覆写基线。
+ *
+ * 为什么在 settle 比对而不是 begin：agent_start 时"goal 续跑"与"委派 resume"
+ * 的快照形态完全一致（两者的触发 user 行都还没落盘），begin 无法区分；settle
+ * 时转录已完备——锚点解析落在本轮触发行上，与上一段锚 id 相同即同渲染轮。
+ */
+type TurnBase = {
+  /** 首段 run 的影子仓库快照 hash：同轮续段 diff 的基线（累计口径） */
+  hash: string;
+  cwd: string;
+  /** 渲染轮触发 user 行的稳定 id（pi-msg:<seq>）；settle 解析后回写 */
+  anchorMessageId?: string;
 };
 
 /** agent_start → 打快照 / agent_end → diff+落卡（全局观察者，缺口2） */
 export class TurnCheckpointTracker {
   private readonly runs = new Map<string, RunCp>();
+  /** 当前渲染轮基线（见 TurnBase）：同轮续段累计 diff，新轮覆写 */
+  private readonly turnBase = new Map<string, TurnBase>();
   private readonly deps: TurnCheckpointDeps;
 
   constructor(depsOverride?: Partial<TurnCheckpointDeps>) {
@@ -131,6 +238,8 @@ export class TurnCheckpointTracker {
     const entry: RunCp = {
       cwd: "",
       anchor: null,
+      triggerSeq: null,
+      baselineLastSeq: null,
       turnId,
       promise: Promise.resolve(null),
     };
@@ -141,6 +250,12 @@ export class TurnCheckpointTracker {
       if (!cwd) return null;
       entry.cwd = cwd;
       entry.anchor = renderedIndexOfLastUser(snapshot.messages);
+      // 触发行识别 + baseline：agent_start 时本轮 user 行要么已落盘（=快照
+      // 末条，带 seq），要么还没落盘（baseline 之后才出现）。settle 据此重算。
+      const last = snapshot.messages.at(-1);
+      const lastSeq = last && last.role === "user" ? seqOfMessage(last) : undefined;
+      entry.triggerSeq = typeof lastSeq === "number" ? lastSeq : null;
+      entry.baselineLastSeq = maxTranscriptSeq(snapshot.messages);
       // 桥上残留（上次刷新未结算）作废：agent_start 是新 run，复用会把
       // 上轮基线算进本轮 diff
       this.deps.saveHash(sessionId, null);
@@ -155,6 +270,9 @@ export class TurnCheckpointTracker {
           cwd,
           hash,
           anchorIndex: entry.anchor,
+          ...(entry.triggerSeq !== null
+            ? { anchorMessageId: `pi-msg:${entry.triggerSeq}` }
+            : {}),
           ...(turnId ? { turnId } : {}),
         });
       }
@@ -185,16 +303,52 @@ export class TurnCheckpointTracker {
       let hash: string | null;
       let cwd: string;
       let anchor: number | null;
+      let anchorMessageId: string | undefined;
       let turnId: string | null;
       if (run) {
         hash = await run.promise;
         cwd = run.cwd;
         anchor = run.anchor;
         turnId = run.turnId;
+        // 锚点重算：begin 的 anchor 在 agent_start 算，可能早于本轮 user 行
+        // 落盘而锚到上一轮。settle 时转录必已含触发行，按 begin 记录的
+        // triggerSeq / baseline 重定位；定位不到（快照失败等）回落 begin 值。
+        if (cwd) {
+          const fresh = await this.deps
+            .fetchSnapshot(sessionId)
+            .catch(() => undefined);
+          const resolved = fresh ? resolveTurnAnchor(fresh.messages, run) : null;
+          if (resolved) {
+            anchor = resolved.anchorIndex;
+            anchorMessageId = resolved.anchorMessageId;
+          } else if (run.triggerSeq !== null) {
+            anchorMessageId = `pi-msg:${run.triggerSeq}`;
+          }
+          // 同渲染轮续段（goal 续跑等触发行隐藏的形态）：解析出的锚 id 与
+          // 上一段相同 → diff 复用上一段基线，卡片内容相对本轮起点累计，
+          // 不再"后段覆盖前段、内容丢失"；新渲染轮（委派 resume / 溢出恢复
+          // 以可见 user 行开轮）→ 覆写基线，各轮各卡。
+          const base = this.turnBase.get(sessionId);
+          const sameTurn =
+            resolved?.anchorMessageId !== undefined &&
+            base !== undefined &&
+            base.cwd === cwd &&
+            base.anchorMessageId === resolved.anchorMessageId;
+          if (sameTurn && base) {
+            hash = base.hash;
+          } else if (resolved && hash) {
+            this.turnBase.set(sessionId, {
+              hash,
+              cwd,
+              ...(anchorMessageId ? { anchorMessageId } : {}),
+            });
+          }
+        }
       } else if (reuse) {
         hash = reuse.hash;
         cwd = reuse.cwd;
         anchor = reuse.anchorIndex ?? null;
+        anchorMessageId = reuse.anchorMessageId ?? undefined;
         turnId = reuse.turnId ?? null;
       } else {
         return;
@@ -206,14 +360,18 @@ export class TurnCheckpointTracker {
           .editsSummary(sessionId, cwd, turnId)
           .catch(() => null);
         if (!ext) return;
-        this.deps.push(sessionId, anchor, {
-          cwd,
-          hash: "",
-          files: ext.files,
-          added: ext.added,
-          removed: ext.removed,
-          turnId,
-        });
+        this.deps.push(
+          sessionId,
+          { anchorIndex: anchor, anchorMessageId },
+          {
+            cwd,
+            hash: "",
+            files: ext.files,
+            added: ext.added,
+            removed: ext.removed,
+            turnId,
+          },
+        );
         return;
       }
       this.deps.refreshStatus(cwd);
@@ -242,17 +400,32 @@ export class TurnCheckpointTracker {
         added = ext.added;
         removed = ext.removed;
       }
-      this.deps.push(sessionId, anchor, {
-        cwd,
-        hash,
-        files,
-        added,
-        removed,
-        turnId,
-      });
+      this.deps.push(
+        sessionId,
+        { anchorIndex: anchor, anchorMessageId },
+        {
+          cwd,
+          hash,
+          files,
+          added,
+          removed,
+          turnId,
+        },
+      );
     })().catch(() => {});
+  }
+
+  /**
+   * 会话删除/换代清理：丢掉渲染轮基线（其引用的影子快照随会话作废）。
+   * 可选观察面——测试假件只实现 begin/settle 时不受影响。
+   */
+  forgetSession(sessionId: string): void {
+    this.turnBase.delete(sessionId);
   }
 }
 
 /** DesktopPiClient 构造注入面（测试换记录型假件） */
-export type TurnCheckpointObserver = Pick<TurnCheckpointTracker, "begin" | "settle">;
+export type TurnCheckpointObserver = Pick<
+  TurnCheckpointTracker,
+  "begin" | "settle"
+> & { forgetSession?(sessionId: string): void };

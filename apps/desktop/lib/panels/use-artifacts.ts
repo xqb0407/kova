@@ -50,9 +50,15 @@ export function useResolvedArtifacts(
     signature: string;
     artifacts: MessageArtifact[];
   } | null>(null);
-
+  // 候选数组的**身份**在父组件每次渲染都会换（依赖链上游是流式消息），effect
+  // 若把它放进依赖，就会与 tap store 的 forceStoreRerender 泵叠成嵌套更新
+  //（Maximum update depth，2026-10-27 主区崩溃）。effect 只认内容 key：
+  // 身份变化不重跑；key 变化 = 内容真变了，此时 ref 里的就是最新候选。
+  const candidatesRef = useRef(candidates);
+  candidatesRef.current = candidates;
   useEffect(() => {
     let cancelled = false;
+    const candidates = candidatesRef.current;
     const publish = (artifacts: MessageArtifact[]) => {
       // 其他轮流式时 messages 数组换身份会让已完成轮重跑本 effect；最终列表
       // 没变化时用相同 state 引用 bailout，避免每个 token 重渲一次产物卡。
@@ -65,7 +71,7 @@ export function useResolvedArtifacts(
         ]),
       );
       setState((previous) =>
-        previous?.key === key && previous.signature === signature
+        previous?.key === key && previous?.signature === signature
           ? previous
           : { key, signature, artifacts },
       );
@@ -94,7 +100,9 @@ export function useResolvedArtifacts(
     return () => {
       cancelled = true;
     };
-  }, [candidates, cwd, key, visibleLimit]);
+    // candidates 走 ref（见上）：key 已编码全部内容，身份变化不重跑是有意为之
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cwd, key, visibleLimit]);
 
   if (!state || state.key !== key) return { artifacts: [], settled: false };
   return { artifacts: state.artifacts, settled: true };
@@ -123,15 +131,21 @@ export function useThreadArtifacts(
   const checkpointRequests = useMemo<CheckpointArtifactRequest[]>(() => {
     if (!cwd || checkpoints.length === 0) return [];
     const index = getTurnIndex(scanMessages);
+    // 稳定 id（pi-msg:<seq>）优先匹配，跨 compaction/截断等列表变化不漂移；
+    // 老条目没有 id，回落渲染下标
+    const byId = new Map<string, (typeof checkpoints)[number]>();
     const byAnchor = new Map<number, (typeof checkpoints)[number]>();
     for (const entry of checkpoints) {
-      if (entry.anchorIndex == null) continue;
-      // 同一 anchor 多条时后写的覆盖前一条（最新 run）。
-      byAnchor.set(entry.anchorIndex, entry);
+      if (entry.anchorMessageId) byId.set(entry.anchorMessageId, entry);
+      else if (entry.anchorIndex != null) byAnchor.set(entry.anchorIndex, entry);
     }
     const requests: CheckpointArtifactRequest[] = [];
     index.turns.forEach((turn, turnIndex) => {
-      const entry = byAnchor.get(turn.start);
+      const startMessage = scanMessages[turn.start];
+      const entry =
+        (startMessage?.role === "user"
+          ? byId.get(String(startMessage.id))
+          : undefined) ?? byAnchor.get(turn.start);
       if (!entry) return;
       requests.push({
         hash: entry.hash,

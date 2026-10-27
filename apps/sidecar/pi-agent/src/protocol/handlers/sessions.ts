@@ -893,7 +893,21 @@ export const handlers: Record<string, CommandHandler> = {
     const row = (await sessionList()).find((r) => r.id === sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
     const scan = scanTranscript(sessionId);
-    const running = listActiveTurnSessions().includes(sessionId);
+    // 改名避免遮蔽模块级 running map（本 handler 内还要读它取压缩标志）
+    const isRunning = listActiveTurnSessions().includes(sessionId);
+    // 压缩进行中标志：快照权威值，前端 running 态下事件丢失（切走/换代）时
+    // 据此收掉压缩横幅，不再粘住。registry 按线程键控，desktop 新链路
+    // threadId === sessionId；老链路兜底按 sessionId 线性扫（早退循环，
+    // 快照调用频繁，不在这里做数组分配）。
+    let activeRun = running.get(sessionId);
+    if (!activeRun) {
+      for (const r of running.values()) {
+        if (r.sessionId === sessionId) {
+          activeRun = r;
+          break;
+        }
+      }
+    }
     // §6 分页窗（移动端无限上翻）：tail/beforeSeq 缺省 = 全量（旧端不破）；
     // 游标 = 消息行 seq，与 get_history 同语义。窗口只从头部裁，
     // 末行之后的行仍在 scan.messages 里（截断判定要它）。
@@ -1032,7 +1046,10 @@ export const handlers: Record<string, CommandHandler> = {
           title: scan.name || row?.title || undefined,
           workspacePath: row?.cwd || undefined,
           archived: row?.archived === 1,
-          status: running ? ("running" as const) : ("idle" as const),
+          status: isRunning ? ("running" as const) : ("idle" as const),
+          // 压缩进行中权威值：必须无条件携带——running 且未压缩时若省略 false，
+          // 前端会回落到粘住的 state.compaction.active，恰好漏掉要修的主场景
+          compactionActive: activeRun?.compactionActive === true,
           config: {
             provider: scan.model?.provider ?? row?.modelProvider ?? undefined,
             modelId: scan.model?.modelId ?? row?.modelId ?? undefined,

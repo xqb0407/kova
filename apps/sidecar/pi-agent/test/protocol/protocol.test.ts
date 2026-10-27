@@ -2219,6 +2219,51 @@ describe("thread_snapshot：轮权威工时", () => {
   });
 });
 
+describe("thread_snapshot：compactionActive 权威值", () => {
+  /** 最小驻留 run：handler 只读 sessionId/compactionActive */
+  const residentRun = (sid: string, tmpDir: string): Running =>
+    ({
+      sessionId: sid,
+      mode: "agent",
+      cwd: tmpDir,
+      agent: { state: { messages: [] } },
+    }) as unknown as Running;
+
+  test("驻留 run 未压缩 = false（无条件携带）；压缩中 = true；收尾回 false", async () => {
+    const sid = "snap-compaction-flag";
+    await sessionInsert(sid, tmp);
+    running.set(sid, residentRun(sid, tmp));
+    trackSessionRun(sid, sid);
+    try {
+      // 未压缩：必须显式 false——running 态下省略会让前端回落到粘住的
+      // state.compaction.active，恰好漏掉要修的主场景
+      await dispatch("snap-ca-1", { type: "thread_snapshot", sessionId: sid });
+      expect(
+        (last().snapshot as { metadata: { compactionActive?: boolean } }).metadata
+          .compactionActive,
+      ).toBe(false);
+
+      // 压缩中（runCompaction 置位后）：true
+      running.get(sid)!.compactionActive = true;
+      await dispatch("snap-ca-2", { type: "thread_snapshot", sessionId: sid });
+      expect(
+        (last().snapshot as { metadata: { compactionActive?: boolean } }).metadata
+          .compactionActive,
+      ).toBe(true);
+
+      // 收尾（endCompaction 置 false）：回到 false
+      running.get(sid)!.compactionActive = false;
+      await dispatch("snap-ca-3", { type: "thread_snapshot", sessionId: sid });
+      expect(
+        (last().snapshot as { metadata: { compactionActive?: boolean } }).metadata
+          .compactionActive,
+      ).toBe(false);
+    } finally {
+      dropRun(sid);
+    }
+  });
+});
+
 describe("thread_snapshot：已删/不存在会话拒绝空快照", () => {
   test("无索引行 → not found（防启动回切把已删会话收编成幽灵「新对话」）", async () => {
     await expect(

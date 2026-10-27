@@ -35,6 +35,11 @@ function head(frames: string | null | undefined, n: number): string {
  * 带上应用指纹是必须的：同一份堆栈在 0.4.0 和 0.5.0 上含义完全不同，
  * 只收到堆栈却不知道对应哪个 build 是没法排查的。崩溃前的卡顿记录也一并
  * 附上——不少「白屏」实际是主线程先卡死几秒才崩的。
+ *
+ * 组件栈排在 JS 栈之前、且两者都取 20 帧：Maximum update depth 这类嵌套
+ * 更新崩溃的 JS 栈全是 React 内部帧（前 6 帧等于白日志），真正的归因
+ * （哪个组件在循环）在组件栈里，React 19 还会把组件帧追加在 error.stack
+ * 尾部——截短了就把唯一线索切掉了（2026-10-27 排查主区崩溃时实测）。
  */
 export function formatCrashDetail(
   error: Error,
@@ -45,8 +50,8 @@ export function formatCrashDetail(
     `[崩溃] ${label}`,
     appMetaLine(),
     `${error.name}: ${error.message}`,
-    head(error.stack, 6),
-    head(componentStack, 6),
+    head(componentStack, 20),
+    head(error.stack, 20),
     recentJankReport(),
   ]
     .filter(Boolean)

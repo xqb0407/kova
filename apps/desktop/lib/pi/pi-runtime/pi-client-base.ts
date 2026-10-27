@@ -1270,6 +1270,8 @@ export class PiClientBase implements PiClient {
     //（2026-10-22 用户报：任务运行中删对话，重启后多出一行）。删除即作废。
     piResumableStorage.clear(threadId);
     if (readLastThread() === threadId) syncClearLastThread();
+    // 检查点渲染轮基线随会话作废（引用的影子快照 hash 已无意义）
+    this.checkpoints.forgetSession?.(threadId);
     // 会话级台账终清：unsubscribe 已负责 listeners/streams/stamps/lastSeq，
     // lastPrompts 与 inflight 不在其作用域——会话没了就一并摘
     this.lastPrompts.delete(threadId);

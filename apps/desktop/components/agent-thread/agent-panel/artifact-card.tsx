@@ -31,7 +31,12 @@ import {
 import { useCheckpointArtifactCandidates } from "@/lib/panels/use-checkpoint-artifacts";
 import { useResolvedArtifacts } from "@/lib/panels/use-artifacts";
 import { useRunCheckpoints } from "@/lib/pi/pi-checkpoints";
-import { getTurnParts, packTurnSlot, parseTurnSlot } from "@/lib/panels/message-turns";
+import {
+  getTurnParts,
+  packTurnSlot,
+  parseTurnSlot,
+  turnAnchorUserId,
+} from "@/lib/panels/message-turns";
 import { focusPanelTab, focusPluginPanel } from "@/lib/panels/panel-tabs";
 import { findPanelForFile, usePluginPanels } from "@/lib/plugins/plugin-panels";
 import { getSubagentArtifactPaths, useSubagentArtifactVersion } from "@/lib/subagent/subagent-runs";
@@ -451,16 +456,13 @@ export const MessageArtifacts: FC = () => {
   const subagentVersion = useSubagentArtifactVersion();
   // 选择器只回稳定字符串：packed slot + turnStartMs。对象/数组会破坏
   // useSyncExternalStore 的身份比较，流式期间反复重渲。
+  // running 不在 selector 拦——running 轮是否渲染由下方「本轮是否已有
+  // 检查点条目（稳定 id 命中）」判定（同 MessageCheckpoint）。
   const gate = useAuiState((s) => {
     if (s.message.role !== "assistant") return "";
     const packed = packTurnSlot(s.thread.messages, String(s.message.id));
     const slot = parseTurnSlot(packed);
-    if (
-      !slot ||
-      slot.dividerOnly ||
-      (!slot.isTurnEnd && !slot.isAnswerTail) ||
-      slot.turnRunning
-    ) {
+    if (!slot || slot.dividerOnly || (!slot.isTurnEnd && !slot.isAnswerTail)) {
       return "";
     }
     const createdAt = (s.message as { createdAt?: Date | string }).createdAt;
@@ -477,13 +479,21 @@ export const MessageArtifacts: FC = () => {
       slot.anchorUserIndex,
       Number.isFinite(fallbackMs) ? fallbackMs : 0,
     );
-    return `${packed}\u0001${startMs}`;
+    // 第三段 = 触发 user 消息的稳定 id（pi-msg:<seq>）：检查点条目匹配优先按
+    // 它，跨 compaction/截断等列表变化不漂移
+    return `${packed}\u0001${startMs}\u0001${turnAnchorUserId(s.thread.messages, slot)}`;
   });
-  const { slot, turnStartMs } = useMemo(() => {
-    const [packed = "", rawStart = ""] = gate.split("\u0001");
+  const { slot, turnStartMs, anchorUserId } = useMemo(() => {
+    const [packed = "", rawStart = "", anchorId = ""] = gate.split("\u0001");
     return {
       slot: packed ? parseTurnSlot(packed) : null,
-      turnStartMs: Number(rawStart) || Date.now(),
+      // 禁止 Date.now() 兜底：useMemo 随 gate 变化重跑，Date.now() 会让
+      // turnStartMs 每次渲染都不同 → checkpoint 请求内容逐帧变化 → 候选/
+      // stat/publish 全链路逐帧 setState（不稳定快照泵的燃料）。
+      // 0 兜底与会话级 resolveTurnStartMs(…, 0) 同口径；生产数据里
+      // 触发 user 行恒带真实时间戳，此分支不可达。
+      turnStartMs: Number(rawStart) || 0,
+      anchorUserId: anchorId,
     };
   }, [gate]);
   // 选择器回的是缓存过的 parts 数组（按 messages 数组身份 + 轮次键缓存，
@@ -505,12 +515,18 @@ export const MessageArtifacts: FC = () => {
   const checkpointEntry = useMemo(() => {
     const anchor = slot?.anchorUserIndex ?? -1;
     if (anchor < 0) return null;
-    // 同一 anchor 有多条（重试等）时取最新一条。
+    // 同一 anchor 多条（重试等）时取最新一条；稳定 id（pi-msg:<seq>）优先，
+    // 老条目没有 id 回落下标
     for (let index = checkpoints.length - 1; index >= 0; index -= 1) {
-      if (checkpoints[index]?.anchorIndex === anchor) return checkpoints[index]!;
+      const entry = checkpoints[index]!;
+      if (anchorUserId && entry.anchorMessageId) {
+        if (entry.anchorMessageId === anchorUserId) return entry;
+        continue;
+      }
+      if (entry.anchorIndex === anchor) return entry;
     }
     return null;
-  }, [checkpoints, slot?.anchorUserIndex]);
+  }, [checkpoints, slot?.anchorUserIndex, anchorUserId]);
   const checkpointRequests = useMemo(
     () =>
       checkpointEntry && cwd
@@ -519,11 +535,15 @@ export const MessageArtifacts: FC = () => {
               hash: checkpointEntry.hash,
               turnStartMs,
               // 与会话级（turnIndex*1e6+999999）同语义：排在全部同步候选之后。
-              orderBase: (parts?.length ?? 0) + 999_999,
+              // 必须是常量而非 parts.length——流式期间 parts 逐个落地，带长度
+              // 会让请求内容逐 part 变化，级联穿过 checkpoint 候选/候选 key/
+              // stat 重取/publish 四层 setState，叠成嵌套更新（2026-10-27 主区
+              // 崩溃）。同步候选 order ≤ partIndex+1 ≪ 1e6，常量语义等价。
+              orderBase: 1_000_000,
             },
           ]
         : [],
-    [checkpointEntry, cwd, turnStartMs, parts?.length],
+    [checkpointEntry, cwd, turnStartMs],
   );
   const checkpointCandidates = useCheckpointArtifactCandidates(
     cwd,
@@ -547,6 +567,17 @@ export const MessageArtifacts: FC = () => {
     );
   }, [parts, cwd, turnStartMs, subagentPaths, checkpointCandidates]);
   const { artifacts, settled } = useResolvedArtifacts(candidates, cwd);
+  if (!slot) return null;
+  // 轮在跑时只认稳定 id 命中的检查点条目（= 本轮已结算过至少一段 run）：
+  // goal 续跑的新轮末消息直接接住卡片，不再收卡/重现（闪现）；Question 挂起、
+  // 委派收敛这类从未结算的轮没有条目，仍不渲染。legacy 下标条目在 running 轮
+  // 上不可信，等轮结束再显示。
+  if (
+    slot.turnRunning &&
+    !(anchorUserId && checkpointEntry?.anchorMessageId === anchorUserId)
+  ) {
+    return null;
+  }
   if (!settled || artifacts.length === 0) return null;
   const single = artifacts.length === 1 ? artifacts[0] : undefined;
   return (

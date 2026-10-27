@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   editsSummaryOf,
   renderedIndexOfLastUser,
+  renderedIndexOfUserAt,
   TurnCheckpointTracker,
   type TurnCheckpointDeps,
 } from "./turn-checkpoints";
@@ -9,7 +10,8 @@ import type { PiAgentMessage, PiThreadSnapshot } from "./types";
 
 /**
  * 检查点卡观察者（缺口2）单测：全依赖注入，不碰桌面桥/git——
- * 锚点换算（投影前缀口径）、begin/settle 台账生命周期、刷新重挂桥复用。
+ * 锚点换算（投影前缀口径）、begin/settle 台账生命周期、刷新重挂桥复用、
+ * settle 锚点重算（agent_start 早于 user 行落盘的错锚修复）。
  */
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -52,18 +54,25 @@ function makeTracker(
     create?: (cwd: string, tag: string) => Promise<string | null>;
     diffFiles?: { added: number; removed: number }[] | null;
     edits?: { files: number; added: number; removed: number } | null;
-    persisted?: { cwd: string; hash: string; anchorIndex?: number | null } | null;
+    persisted?: {
+      cwd: string;
+      hash: string;
+      anchorIndex?: number | null;
+      anchorMessageId?: string | null;
+    } | null;
+    /** 逐次 fetch 的快照队列：begin 取第 0 个、settle 取第 1 个；缺省恒返回 snapshot */
+    snapshots?: readonly (PiThreadSnapshot | undefined)[];
   } = {},
 ) {
   const log: string[] = [];
+  let fetchIndex = 0;
   const deps: TurnCheckpointDeps = {
     now: () => 42,
-    create:
-      patch.create ??
-      (async (cwd, tag) => {
-        log.push(`create:${cwd}:${tag}`);
-        return "hash-1";
-      }),
+    create: async (cwd, tag) => {
+      // 日志在包装层记（patch.create 只决定返回值），供 create 次数断言
+      log.push(`create:${cwd}:${tag}`);
+      return patch.create ? patch.create(cwd, tag) : "hash-1";
+    },
     diff: async (cwd, hash) => {
       log.push(`diff:${cwd}:${hash}`);
       return patch.diffFiles === undefined
@@ -76,6 +85,11 @@ function makeTracker(
     resolveCwd: (s) => s.metadata.workspacePath ?? null,
     fetchSnapshot: async (sid) => {
       log.push(`fetch:${sid}`);
+      if (patch.snapshots) {
+        const next = patch.snapshots[fetchIndex];
+        fetchIndex += 1;
+        return next;
+      }
       return snapshot;
     },
     saveHash: (tid, v) =>
@@ -85,7 +99,9 @@ function makeTracker(
       return patch.persisted ?? null;
     },
     push: (tid, anchor, cp) =>
-      log.push(`push:${tid}:${anchor}:${cp.files}:${cp.added}:${cp.removed}`),
+      log.push(
+        `push:${tid}:${anchor.anchorMessageId ?? anchor.anchorIndex}:${cp.files}:${cp.added}:${cp.removed}`,
+      ),
     editsSummary: async () => {
       log.push("edits");
       return patch.edits ?? null;
@@ -138,6 +154,27 @@ describe("renderedIndexOfLastUser", () => {
   });
 });
 
+describe("renderedIndexOfUserAt", () => {
+  test("目标非 user 行/越界返回 null", () => {
+    expect(renderedIndexOfUserAt([user("q1"), assistant()], 1)).toBe(null);
+    expect(renderedIndexOfUserAt([user("q1")], 5)).toBe(null);
+    expect(renderedIndexOfUserAt([user("q1"), assistant()], -1)).toBe(null);
+  });
+
+  test("前缀投影口径与 renderedIndexOfLastUser 一致", () => {
+    const messages = [
+      user("q1"),
+      assistant(),
+      toolResult("t1"),
+      assistant(),
+      user("q2"),
+    ];
+    expect(renderedIndexOfUserAt(messages, 4)).toBe(
+      renderedIndexOfLastUser(messages),
+    );
+  });
+});
+
 describe("TurnCheckpointTracker", () => {
   test("begin→settle 主路径：打快照→落桥→diff→按锚点落卡", async () => {
     const { tracker, log } = makeTracker(snapshotAt([user("hi"), assistant()]));
@@ -152,7 +189,8 @@ describe("TurnCheckpointTracker", () => {
     tracker.settle("s1");
     await tick();
     expect(log.slice(4)).toEqual([
-      "save:s1:null", // 结算清桥
+      "save:s1:null", // 结算清桥（settle 同步先做）
+      "fetch:s1", // settle 重算锚点：再拉一次最新快照
       "refresh:/w",
       "diff:/w:hash-1",
       "push:s1:0:1:3:1",
@@ -278,6 +316,187 @@ describe("TurnCheckpointTracker", () => {
     await tick();
     expect(log.some((l) => l.startsWith("push:"))).toBe(false);
     expect(log.some((l) => l.startsWith("diff:"))).toBe(true);
+  });
+});
+
+describe("settle 锚点重算（agent_start 早于 user 行落盘）", () => {
+  /** 带转录 seq 的行（sidecar 快照透传形状） */
+  const userAt = (text: string, seq: number): PiAgentMessage =>
+    ({ role: "user", content: text, timestamp: 1, __seq: seq }) as PiAgentMessage;
+  const assistantAt = (seq: number): PiAgentMessage =>
+    ({
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      stopReason: "stop",
+      timestamp: 2,
+      __seq: seq,
+    }) as PiAgentMessage;
+  const compactionAt = (seq: number): PiAgentMessage =>
+    ({
+      role: "compactionSummary",
+      summary: "s",
+      tokensBefore: 1,
+      timestamp: 0,
+      __seq: seq,
+    }) as PiAgentMessage;
+
+  test("begin 快照缺触发行：settle 取 baseline 后第一条 user，steer 不抢锚", async () => {
+    // begin（agent_start）：本轮 user 行（q2）还没落盘——旧实现这里会锚到 q1
+    const beginSnap = snapshotAt([userAt("q1", 3), assistantAt(4)]);
+    // settle：q2（seq 7）已落盘；steer 注入行（seq 9）晚于触发行
+    const settleSnap = snapshotAt([
+      userAt("q1", 3),
+      assistantAt(4),
+      userAt("q2", 7),
+      userAt("steer", 9),
+    ]);
+    const { tracker, log } = makeTracker(beginSnap, {
+      snapshots: [beginSnap, settleSnap],
+      diffFiles: [{ added: 1, removed: 0 }],
+    });
+    tracker.begin("s1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    // 重算锚到 q2（渲染下标 2），并带稳定 id；旧行为会错误地推 anchorIndex 0
+    expect(log.at(-1)).toBe("push:s1:pi-msg:7:1:1:0");
+  });
+
+  test("begin 快照末条就是触发行：settle 按 seq 重定位，分隔线插入不漂移", async () => {
+    // begin：触发行 q2 已落盘且是快照末条（快照晚于 persist 的常见时序）
+    const beginSnap = snapshotAt([userAt("q1", 3), userAt("q2", 7)]);
+    // settle：q2 之前插入了 compaction 分隔线——纯下标匹配会漂移，按 seq 重定位
+    const settleSnap = snapshotAt([userAt("q1", 3), compactionAt(5), userAt("q2", 7)]);
+    const { tracker, log } = makeTracker(beginSnap, {
+      snapshots: [beginSnap, settleSnap],
+      diffFiles: [{ added: 1, removed: 0 }],
+    });
+    tracker.begin("s1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    expect(log.at(-1)).toBe("push:s1:pi-msg:7:1:1:0");
+  });
+
+  test("settle 快照拉不到：回落 begin 锚点（行为不回归）", async () => {
+    const beginSnap = snapshotAt([userAt("q1", 3), assistantAt(4)]);
+    const { tracker, log } = makeTracker(beginSnap, {
+      snapshots: [beginSnap, undefined],
+      diffFiles: [{ added: 1, removed: 0 }],
+    });
+    tracker.begin("s1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    expect(log.at(-1)).toBe("push:s1:0:1:1:0");
+  });
+});
+
+describe("turnBase：同渲染轮续段累计 diff", () => {
+  const userAt = (text: string, seq: number): PiAgentMessage =>
+    ({ role: "user", content: text, timestamp: 1, __seq: seq }) as PiAgentMessage;
+  const assistantAt = (seq: number): PiAgentMessage =>
+    ({
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      stopReason: "stop",
+      timestamp: 2,
+      __seq: seq,
+    }) as PiAgentMessage;
+  const compactionAt = (seq: number): PiAgentMessage =>
+    ({
+      role: "compactionSummary",
+      summary: "s",
+      tokensBefore: 1,
+      timestamp: 0,
+      __seq: seq,
+    }) as PiAgentMessage;
+
+  test("goal 续跑：同锚续段复用首段基线（累计），分隔线插入按 id 重定位", async () => {
+    let creates = 0;
+    const begin1 = snapshotAt([userAt("目标P", 10), assistantAt(11)]);
+    const settle1 = snapshotAt([userAt("目标P", 10), assistantAt(11), assistantAt(12)]);
+    // 段间插入了 compaction 分隔线（seq 5 < 10）——纯下标匹配会把锚漂到错误位置
+    const begin2 = snapshotAt([
+      compactionAt(5),
+      userAt("目标P", 10),
+      assistantAt(11),
+      assistantAt(12),
+    ]);
+    const settle2 = snapshotAt([
+      compactionAt(5),
+      userAt("目标P", 10),
+      assistantAt(11),
+      assistantAt(12),
+      assistantAt(13),
+    ]);
+    const { tracker, log } = makeTracker(begin1, {
+      snapshots: [begin1, settle1, begin2, settle2],
+      diffFiles: [{ added: 1, removed: 0 }],
+      create: async () => `hash-${++creates}`,
+    });
+    // 段 1：begin → settle
+    tracker.begin("s1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    // 段 2（同渲染轮续段）：begin → settle
+    tracker.begin("s1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+
+    // 每段 begin 各打一次影子快照（begin 时无法区分续段与委派 resume，
+    // 基线复用在 settle 按锚 id 比对时决策）
+    expect(log.filter((l) => l.startsWith("create:"))).toHaveLength(2);
+    // 两次 diff 都用段 1 的基线 hash → 卡片内容相对本轮起点累计，不丢失
+    expect(log.filter((l) => l.startsWith("diff:"))).toEqual([
+      "diff:/w:hash-1",
+      "diff:/w:hash-1",
+    ]);
+    // 两次落卡同锚 id（pi-msg:10 → 同 id 替换）；段 2 的下标按 id 重定位修正
+    // 分隔线插入的漂移（P 从 0 漂到 1）
+    expect(log.filter((l) => l.startsWith("push:"))).toEqual([
+      "push:s1:pi-msg:10:1:1:0",
+      "push:s1:pi-msg:10:1:1:0",
+    ]);
+  });
+
+  test("委派 resume：可见 user 行开新渲染轮 → 覆写基线，各轮各卡", async () => {
+    let creates = 0;
+    const begin1 = snapshotAt([userAt("q1", 10), assistantAt(11)]);
+    const settle1 = snapshotAt([userAt("q1", 10), assistantAt(11)]);
+    const begin2 = snapshotAt([userAt("q1", 10), assistantAt(11), assistantAt(12)]);
+    const settle2 = snapshotAt([
+      userAt("q1", 10),
+      assistantAt(11),
+      assistantAt(12),
+      userAt("resume", 20),
+      assistantAt(21),
+    ]);
+    const { tracker, log } = makeTracker(begin1, {
+      snapshots: [begin1, settle1, begin2, settle2],
+      diffFiles: [{ added: 1, removed: 0 }],
+      create: async () => `hash-${++creates}`,
+    });
+    tracker.begin("s1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+    tracker.begin("s1");
+    await tick();
+    tracker.settle("s1");
+    await tick();
+
+    // 段 1 卡锚 q1；resume 行开新渲染轮 → 段 2 卡锚 resume 行、diff 用自己的基线
+    expect(log.filter((l) => l.startsWith("diff:"))).toEqual([
+      "diff:/w:hash-1",
+      "diff:/w:hash-2",
+    ]);
+    expect(log.filter((l) => l.startsWith("push:"))).toEqual([
+      "push:s1:pi-msg:10:1:1:0",
+      "push:s1:pi-msg:20:1:1:0",
+    ]);
   });
 });
 

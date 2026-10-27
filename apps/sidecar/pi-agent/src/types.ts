@@ -290,6 +290,13 @@ export type Running = {
   compactionGeneration: number;
   /** 压缩摘要请求的中止句柄（用户 Stop 时 abort） */
   compactionAbort?: AbortController;
+  /**
+   * 压缩进行中标志：thread_snapshot 的 metadata.compactionActive 数据源。
+   * 与 compaction_start/end 线程事件同生命周期（runCompaction 进出时置位/清零），
+   * 快照直出它做权威值——前端在 running 态下的事件丢失（切走/换代）不再粘住
+   * 压缩横幅（事件是增量，快照是权威）。
+   */
+  compactionActive?: boolean;
   /** stream.ts 检测到上下文溢出错误后置位，dispatchPrompt 结算恢复 */
   pendingOverflowRecovery: boolean;
   /** 本轮 provider 请求的重试预算（429/瞬时各自封顶，每个 prompt 轮重置） */

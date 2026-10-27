@@ -241,6 +241,19 @@ export function parseTurnSlot(packed: string): TurnSlotInfo | null {
 }
 
 /**
+ * 本轮触发 user 消息的稳定投影 id（pi-msg:<seq>）；开场段/越界返回 ""。
+ * 检查点卡/产物卡的锚点匹配用：数组下标会随 compaction/model-change 分隔线
+ * 插入、截断漂移，id 跨列表结构变化稳定。
+ */
+export function turnAnchorUserId(
+  messages: readonly ThreadMessage[],
+  slot: Pick<TurnSlotInfo, "anchorUserIndex">,
+): string {
+  if (slot.anchorUserIndex < 0) return "";
+  return String(messages[slot.anchorUserIndex]?.id ?? "");
+}
+
+/**
  * 槽位 +「轮中交付物豁免收起」标记的打包/解析：两者必须成对改。
  * 之前打包写成 `keep\u0000slot` 而解析按 `slot\u0000keep` 解，结果每条消息
  * 都解析成空槽位（全默认收起）——轮中消息全被隐藏，只有带压缩分隔线的侥幸

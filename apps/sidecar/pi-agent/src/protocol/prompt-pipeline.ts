@@ -966,6 +966,11 @@ async function runTurnBody(
   } finally {
     // 收尾开始即关闭 steer 受理窗口（见 Running.turnEnding）
     run.turnEnding = true;
+    // 压缩标志轮界兜底：runCompaction 的 reshape 段（readTranscript/
+    // appendCompactionRow 同步 fs）抛异常时 5 个 endCompaction 出口都到不了，
+    // 标志会粘在驻留 run 上——快照权威值跟着粘，横幅跨 idle 快照不消失。
+    // 压缩只发生在轮内（pre-turn/溢出恢复/轮间），轮界清零恒安全。
+    run.compactionActive = false;
     // 拆除轮间压缩挂钩：钩子闭包的 emitCompaction 绑定本 turn 的 reqId
     run.agent.prepareNextTurnWithContext = undefined;
     // 回合级能力快照只服务当前轮；清掉避免下一轮复用旧钩子与旧提醒。

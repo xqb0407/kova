@@ -30,7 +30,11 @@ import {
 } from "@/lib/git/git";
 import { refreshGitStatus } from "@/lib/git/git-status";
 import { useThreadAppMode } from "@/lib/pi/pi-session-app-mode";
-import { packTurnSlot, parseTurnSlot } from "@/lib/panels/message-turns";
+import {
+  packTurnSlot,
+  parseTurnSlot,
+  turnAnchorUserId,
+} from "@/lib/panels/message-turns";
 import { focusPanelTab, openPanelTab } from "@/lib/panels/panel-tabs";
 import {
   clearRunCheckpoint,
@@ -656,16 +660,46 @@ export const MessageCheckpoint: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const appMode = useThreadAppMode(threadId);
   const entries = useRunCheckpoints(threadId ?? undefined);
-  // 选择器只回 number（引用稳定）：本轮触发的 user 消息下标，非轮末/开场段为 -1
-  const anchorUserIndex = useAuiState((s) => {
-    if (s.message.role !== "assistant") return -1;
-    const slot = parseTurnSlot(packTurnSlot(s.thread.messages, String(s.message.id)));
-    return slot && slot.isTurnEnd ? slot.anchorUserIndex : -1;
+  // 选择器只回 "packed\u0000anchorUserId"（引用稳定）。非轮末/非 assistant 为
+  // 空串；running 不在 selector 拦——running 轮是否渲染由下方「本轮是否已有
+  // 检查点条目」判定。
+  const anchorGate = useAuiState((s) => {
+    if (s.message.role !== "assistant") return "";
+    const packed = packTurnSlot(s.thread.messages, String(s.message.id));
+    const slot = parseTurnSlot(packed);
+    if (!slot || !slot.isTurnEnd) return "";
+    return `${packed}\u0000${turnAnchorUserId(s.thread.messages, slot)}`;
   });
+  const { slot, anchorUserId } = useMemo(() => {
+    if (!anchorGate) return { slot: null, anchorUserId: "" };
+    const sep = anchorGate.lastIndexOf("\u0000");
+    // packed 不含 \u0000（id 是 pi-msg:N / flags），lastIndexOf 切分安全
+    return {
+      slot: parseTurnSlot(anchorGate.slice(0, sep)),
+      anchorUserId: anchorGate.slice(sep + 1),
+    };
+  }, [anchorGate]);
+  const anchorUserIndex = slot?.anchorUserIndex ?? -1;
   if (appMode !== "code") return null;
-  if (!threadId || anchorUserIndex < 0) return null;
-  const mine = entries.filter((e) => e.anchorIndex === anchorUserIndex);
+  if (!threadId || !slot || anchorUserIndex < 0) return null;
+  // 锚点匹配：稳定 id（pi-msg:<seq>）优先，跨 compaction/截断等列表变化不漂移；
+  // 任一侧没有 id（老条目/未落盘行）回落渲染下标
+  const mine = entries.filter((e) =>
+    anchorUserId && e.anchorMessageId
+      ? e.anchorMessageId === anchorUserId
+      : e.anchorIndex === anchorUserIndex,
+  );
   if (mine.length === 0) return null;
+  // 轮在跑时只认稳定 id 命中（= 本轮确实结算过至少一段 run）。这样 goal
+  // 续跑等下一条 assistant 成为新轮末时卡片直接跟过去，不再收卡/重现（闪现）；
+  // Question 挂起、委派收敛这类从未结算的轮没有条目，仍不渲染。legacy 下标
+  // 条目在 running 轮上不可信（可能漂移命中），等轮结束再显示。
+  if (
+    slot.turnRunning &&
+    !(anchorUserId && mine.some((e) => e.anchorMessageId === anchorUserId))
+  ) {
+    return null;
+  }
   return (
     <div className="mt-2 flex flex-col gap-2 my-3">
       {mine.map((e) => (
@@ -680,8 +714,11 @@ export const CheckpointTail: FC = () => {
   const threadId = useAuiState((s) => s.threads.mainThreadId);
   const appMode = useThreadAppMode(threadId);
   const entries = useRunCheckpoints(threadId ?? undefined);
+  // 轮次仍在跑（Question 挂起/委派收敛）时不渲染：与 MessageCheckpoint 同口径，
+  // 防止运行中把兜底卡顶到流尾
+  const isRunning = useAuiState((s) => s.thread.isRunning);
   if (appMode !== "code") return null;
-  if (!threadId) return null;
+  if (!threadId || isRunning) return null;
   const orphans = entries.filter((e) => e.anchorIndex === null);
   if (orphans.length === 0) return null;
   return (

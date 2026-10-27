@@ -655,6 +655,17 @@ export function defaultSummarize(
 }
 
 /**
+ * 压缩收尾唯一出口：清 Running.compactionActive 再发 compaction_end。
+ * 标志是 thread_snapshot 的 metadata.compactionActive 权威数据源——先清再发，
+ * 保证「标志翻 false」与「前端收到 end 事件」之间不存在快照看到 true 的窗口
+ * 之外的错序（快照晚到也只会读到 false，横幅不粘住）。
+ */
+function endCompaction(run: Running, aborted: boolean, willRetry: boolean): void {
+  run.compactionActive = false;
+  emitThreadEvent(run.sessionId, { type: "compaction_end", aborted, willRetry });
+}
+
+/**
  * 执行一次压缩：摘要当前上下文 → 落 checkpoint 行 → 用摘要消息替换 Agent 状态。
  * 只在回合边界（prompt 之前 / 溢出错误结算之后）调用；running 中途绝不调用。
  */
@@ -692,8 +703,13 @@ export async function runCompaction(
   let summary = "";
   let summarized = true;
   // 原生事件通道（react-pi 迁移阶段 3）：压缩生命周期进 reducer
-  //（metadata.compactionActive → 压缩横幅），与 data-compaction chunk 并行
+  //（metadata.compactionActive → 压缩横幅），与 data-compaction chunk 并行。
+  // compactionActive 同步置位：thread_snapshot 直出它做权威值，事件丢失
+  //（前端切走/sidecar 换代）时快照仍能正确收掉横幅。仅自动压缩置位——
+  // 手动压缩走前端自己的锚点 marker（reason=manual 已被实时横幅排除），
+  // 快照若落在手动压缩中途会把 auto 横幅叠上去（双横幅）。
   emitThreadEvent(run.sessionId, { type: "compaction_start", reason });
+  run.compactionActive = reason !== "manual";
   const controller = new AbortController();
   run.compactionAbort = controller;
   try {
@@ -711,11 +727,11 @@ export async function runCompaction(
   } catch (err) {
     // 用户 Stop 期间失败：不装填兜底 checkpoint，让外层循环退出
     if (run.stopRequested || controller.signal.aborted) {
-      emitThreadEvent(run.sessionId, { type: "compaction_end", aborted: true, willRetry: false });
+      endCompaction(run, true, false);
       return { ok: false, message: "Compaction aborted" };
     }
     if (reason === "manual") {
-      emitThreadEvent(run.sessionId, { type: "compaction_end", aborted: false, willRetry: false });
+      endCompaction(run, false, false);
       return {
         ok: false,
         message: err instanceof Error ? err.message : String(err),
@@ -739,11 +755,11 @@ export async function runCompaction(
   if (!summary.trim() || outcome?.truncated === true) {
     const truncated = outcome?.truncated === true && summary.trim().length > 0;
     if (run.stopRequested || controller.signal.aborted) {
-      emitThreadEvent(run.sessionId, { type: "compaction_end", aborted: true, willRetry: false });
+      endCompaction(run, true, false);
       return { ok: false, message: "Compaction aborted" };
     }
     if (reason === "manual") {
-      emitThreadEvent(run.sessionId, { type: "compaction_end", aborted: false, willRetry: false });
+      endCompaction(run, false, false);
       return {
         ok: false,
         message: truncated
@@ -850,7 +866,7 @@ export async function runCompaction(
   // persistedSeq 指向 state 末尾，下一轮 persist 只写新增消息
   run.persistedSeq = run.agent.state.messages.length;
   run.compactionGeneration = generation;
-  emitThreadEvent(run.sessionId, { type: "compaction_end", aborted: false, willRetry: false });
+  endCompaction(run, false, false);
   return {
     ok: true,
     generation,
