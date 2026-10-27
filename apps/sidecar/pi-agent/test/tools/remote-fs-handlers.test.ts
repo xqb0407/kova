@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { Server, utils } from "ssh2";
 import { handlers } from "../../src/protocol/handlers/remote-fs";
+import { handlers as sshHandlers } from "../../src/protocol/handlers/ssh";
 import { closeAllSsh2 } from "../../src/tools/remote/ssh2-client";
 import type { RemoteTarget } from "../../src/types";
 
@@ -67,7 +68,12 @@ afterAll(() => {
 type LooseWrite = (chunk: unknown, ...rest: unknown[]) => boolean;
 
 /** 短暂拦截 stdout，捕获 send() 写出的协议帧 */
-async function call(name: string, reqId: string, msg: Record<string, unknown>) {
+async function call(
+  name: string,
+  reqId: string,
+  msg: Record<string, unknown>,
+  registry: Record<string, (reqId: string, msg: Record<string, unknown>) => Promise<void>> = handlers,
+) {
   const frames: Array<Record<string, unknown>> = [];
   const out = process.stdout as unknown as { write: LooseWrite };
   const orig = out.write.bind(process.stdout) as unknown as LooseWrite;
@@ -80,7 +86,10 @@ async function call(name: string, reqId: string, msg: Record<string, unknown>) {
     return true;
   };
   try {
-    await handlers[name](reqId, { remote, ...msg } as never);
+    const target = registry[name];
+    const payload =
+      registry === sshHandlers ? { target: remote, ...msg } : { remote, ...msg };
+    await target(reqId, payload as never);
   } finally {
     out.write = orig;
   }
@@ -192,6 +201,38 @@ describe("remote_fs_* handlers（真实 SSH 服务端）", () => {
       newName: "x.txt",
     });
     expect(String(rn.errorText ?? "")).toContain("already-exists");
+  }, 30_000);
+
+  test("ssh_probe 目录三态：可写 / 只读 / 不存在", async () => {
+    await call("remote_fs_mkdir", "probe-m1", { cwd: ROOT, path: "probe/dir" });
+    const okDir = await call("ssh_probe", "probe-1", { path: `${ROOT}/probe/dir` }, sshHandlers);
+    expect(okDir.ok).toBe(true);
+    expect(okDir.writable).toBe(true);
+
+    // 只读目录：存在但不可写
+    spawn("/bin/sh", ["-c", `chmod 555 ${ROOT}/probe/dir`]);
+    await new Promise((r) => setTimeout(r, 50));
+    const roDir = await call("ssh_probe", "probe-2", { path: `${ROOT}/probe/dir` }, sshHandlers);
+    expect(roDir.ok).toBe(true);
+    expect(roDir.writable).toBe(false);
+
+    const missing = await call("ssh_probe", "probe-3", { path: `${ROOT}/probe/nope` }, sshHandlers);
+    expect(missing.ok).toBe(false);
+    expect(missing.exists).toBe(false);
+
+    spawn("/bin/sh", ["-c", `chmod 755 ${ROOT}/probe/dir`]);
+  }, 30_000);
+
+  test("只读目录写入：错误信息含权限提示（不是原始 stderr）", async () => {
+    spawn("/bin/sh", ["-c", `mkdir -p ${ROOT}/ro && chmod 555 ${ROOT}/ro`]);
+    await new Promise((r) => setTimeout(r, 50));
+    const res = await call("remote_fs_write", "ro-w", {
+      cwd: ROOT,
+      path: "ro/x.txt",
+      base64: Buffer.from("x").toString("base64"),
+    });
+    expect(String(res.errorText ?? "")).toContain("权限不足");
+    spawn("/bin/sh", ["-c", `chmod 755 ${ROOT}/ro`]);
   }, 30_000);
 
   test("删除工作区根被拒绝", async () => {

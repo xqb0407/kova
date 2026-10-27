@@ -57,6 +57,8 @@ export const RemoteProjectDialog: FC<{
   const [browseDirs, setBrowseDirs] = useState<string[]>([]);
   const [browseBusy, setBrowseBusy] = useState(false);
   const [browseError, setBrowseError] = useState<string | null>(null);
+  /** 目录存在但不可写：警告但允许继续（环境问题不应拦住建项目） */
+  const [pathWarning, setPathWarning] = useState<string | null>(null);
 
   const loadHosts = async () => {
     try {
@@ -71,6 +73,7 @@ export const RemoteProjectDialog: FC<{
   useEffect(() => {
     if (!open) return;
     setError(null);
+    setPathWarning(null);
     setHostsLoaded(false);
     setBrowseOpen(false);
     void loadHosts();
@@ -136,15 +139,17 @@ export const RemoteProjectDialog: FC<{
         setError("请先选择 SSH 主机");
         return;
       }
-      // 远端路径必须存在：保存前校验一次（避免会话里才炸）
+      // 远端路径必须存在：保存前校验一次（避免会话里才炸）；
+      // 存在但不可写 → 警告后继续（agent 写文件会报权限错误）
       const check = (await invoke("ssh_host_check_dir", {
         hostId,
         path: remotePath.trim(),
-      })) as { exists: boolean; message: string };
+      })) as { exists: boolean; writable?: boolean; message: string };
       if (!check.exists) {
         setError(`远端目录不可用：${check.message}`);
         return;
       }
+      setPathWarning(check.writable === false ? check.message : null);
       const saved = await saveRemoteProject({
         name: name.trim(),
         hostId,
@@ -325,6 +330,12 @@ export const RemoteProjectDialog: FC<{
             <div className="text-muted-foreground bg-muted/40 flex flex-col items-center gap-2 rounded-xl px-4 py-8 text-sm">
               <CloudOffIcon className="text-muted-foreground/60 size-8" />
               请先在 设置 → 系统 → SSH 主机 中添加并启用一个主机。
+            </div>
+          )}
+          {pathWarning && (
+            <div className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-600">
+              ⚠ {pathWarning}：agent 将无法写入文件。请先在服务器上调整属主/权限
+              （例如 chown -R 用户名 {remotePath.trim() || "目标目录"}）。
             </div>
           )}
           {error && <div className="text-destructive text-xs">{error}</div>}

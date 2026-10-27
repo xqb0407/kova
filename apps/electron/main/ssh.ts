@@ -242,15 +242,23 @@ function expandIncludeGlob(inc: string): string[] {
 async function probeViaSidecar(
   target: Record<string, unknown>,
   path: string | undefined,
-): Promise<{ ok: boolean; message: string; ms: number }> {
+): Promise<{ ok: boolean; exists?: boolean; writable?: boolean; message: string; ms: number }> {
   const { piRequest } = await import("./pi-agent");
   const line = await piRequest({
     payload: { type: "ssh_probe", target, ...(path ? { path } : {}) },
     timeoutMs: 15_000,
   });
-  const res = JSON.parse(line) as { ok?: boolean; message?: string; ms?: number };
+  const res = JSON.parse(line) as {
+    ok?: boolean;
+    exists?: boolean;
+    writable?: boolean;
+    message?: string;
+    ms?: number;
+  };
   return {
     ok: res.ok === true,
+    ...(typeof res.exists === "boolean" ? { exists: res.exists } : {}),
+    ...(typeof res.writable === "boolean" ? { writable: res.writable } : {}),
     message: typeof res.message === "string" ? res.message : "",
     ms: typeof res.ms === "number" ? res.ms : 0,
   };
@@ -536,27 +544,47 @@ export function setupSshCommands(register: (name: string, fn: (args: any) => any
         return { exists: false, message: "未保存密码：请勾选「记住密码」后重试", ms: 0 };
       }
       const probe = await probeViaSidecar(target, dir);
-      return { exists: probe.ok, message: probe.message, ms: probe.ms };
+      return {
+        exists: probe.exists ?? probe.ok,
+        writable: probe.writable ?? false,
+        message: probe.message,
+        ms: probe.ms,
+      };
     }
     const started = Date.now();
+    const q = `'${dir.replaceAll("'", `'\\''`)}'`;
+    // 一次探清三态：missing / readonly / ok（只读目录仍算存在，
+    // 但建项目对话框要给「agent 无法写入」的警告）
+    const script =
+      `if [ -d ${q} ]; then if [ -w ${q} ]; then printf 'ok'; else printf 'readonly'; fi; ` +
+      `else printf 'missing'; fi`;
     const args = [
       ...sshBaseOptions(),
       ...portOptions(host),
       ...authOptions(host),
       targetOf(host),
       "--",
-      `test -d '${dir.replaceAll("'", `'\\''`)}'`,
+      `/bin/sh -c '${script.replaceAll("'", `'\\''`)}'`,
     ];
-    return await new Promise<{ exists: boolean; message: string; ms: number }>((resolve) => {
-      const child = spawn("ssh", args, { stdio: ["ignore", "ignore", "pipe"] });
+    return await new Promise<{
+      exists: boolean;
+      writable: boolean;
+      message: string;
+      ms: number;
+    }>((resolve) => {
+      const child = spawn("ssh", args, { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
       let stderr = "";
       let settled = false;
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
         child.kill("SIGKILL");
-        resolve({ exists: false, message: "校验超时", ms: Date.now() - started });
+        resolve({ exists: false, writable: false, message: "校验超时", ms: Date.now() - started });
       }, TEST_TIMEOUT_MS);
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8");
+      });
       child.stderr.on("data", (chunk: Buffer) => {
         stderr += chunk.toString("utf8");
       });
@@ -564,15 +592,36 @@ export function setupSshCommands(register: (name: string, fn: (args: any) => any
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ exists: false, message: `ssh 启动失败: ${error.message}`, ms: Date.now() - started });
+        resolve({
+          exists: false,
+          writable: false,
+          message: `ssh 启动失败: ${error.message}`,
+          ms: Date.now() - started,
+        });
       });
       child.on("close", (code) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (code !== 0) {
+          resolve({
+            exists: false,
+            writable: false,
+            message: `目录不存在或不可访问: ${stderr.trim().slice(0, 200)}`,
+            ms: Date.now() - started,
+          });
+          return;
+        }
+        const state = stdout.trim();
         resolve({
-          exists: code === 0,
-          message: code === 0 ? "目录存在" : `目录不存在或不可访问: ${stderr.trim().slice(0, 200)}`,
+          exists: state !== "missing",
+          writable: state === "ok",
+          message:
+            state === "missing"
+              ? "目录不存在或不可访问"
+              : state === "ok"
+                ? "目录存在且可写"
+                : "目录存在但当前 SSH 用户无写权限",
           ms: Date.now() - started,
         });
       });

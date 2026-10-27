@@ -80,28 +80,42 @@ export const handlers: Record<string, CommandHandler> = {
 
   /**
    * { type: "ssh_probe", target, path? } →
-   *   { id, type: "ssh_probe_result", ok, message, ms }
-   * path 提供时探 test -d（目录存在性），否则只验证连通+认证。
+   *   { id, type: "ssh_probe_result", ok, exists?, writable?, message, ms }
+   * path 提供时探目录状态（存在/可写）；否则只验证连通+认证。
+   * 目录存在但不可写时 ok=true + writable=false——建项目要提示权限，
+   * 而不是等 agent 写到一半才报 Permission denied。
    */
   ssh_probe: async (reqId, msg) => {
     const started = Date.now();
     let ok = false;
     let message = "";
+    let exists: boolean | undefined;
+    let writable: boolean | undefined;
     try {
       const target = parseTarget(msg.target);
       const dir = typeof msg.path === "string" ? msg.path.trim() : "";
       if (dir && !dir.startsWith("/")) throw new Error("path must be absolute");
-      const command = dir
-        ? `test -d ${quotePosixShellArg(dir)}`
-        : "printf __kova_probe_ok__";
-      const result = await remoteExec(target, command, {
-        timeoutMs: 10_000,
-        resolveOnNonZeroExit: true,
-      });
       if (dir) {
-        ok = result.exitCode === 0;
-        message = ok ? "目录存在" : "目录不存在或不可访问";
+        const q = quotePosixShellArg(dir);
+        const result = await remoteExec(
+          target,
+          `if [ -d ${q} ]; then if [ -w ${q} ]; then printf 'ok'; else printf 'readonly'; fi; else printf 'missing'; fi`,
+          { timeoutMs: 10_000, resolveOnNonZeroExit: true },
+        );
+        const state = result.stdout.trim();
+        exists = state !== "missing";
+        writable = state === "ok";
+        ok = exists;
+        message = !exists
+          ? "目录不存在或不可访问"
+          : writable
+            ? "目录存在且可写"
+            : "目录存在但当前 SSH 用户无写权限";
       } else {
+        const result = await remoteExec(target, "printf __kova_probe_ok__", {
+          timeoutMs: 10_000,
+          resolveOnNonZeroExit: true,
+        });
         ok = result.stdout.includes("__kova_probe_ok__");
         message = ok ? "连接成功" : `连接失败: ${result.stderr.trim().slice(0, 200) || "无诊断输出"}`;
       }
@@ -109,6 +123,14 @@ export const handlers: Record<string, CommandHandler> = {
       ok = false;
       message = error instanceof Error ? error.message : String(error);
     }
-    send({ id: reqId, type: "ssh_probe_result", ok, message, ms: Date.now() - started });
+    send({
+      id: reqId,
+      type: "ssh_probe_result",
+      ok,
+      ...(exists !== undefined ? { exists } : {}),
+      ...(writable !== undefined ? { writable } : {}),
+      message,
+      ms: Date.now() - started,
+    });
   },
 };

@@ -153,6 +153,15 @@ function normalizeSshError(stderr: string, exitCode: number | null): RemoteSshEr
   if (/connection (refused|timed out)|could not resolve hostname/i.test(stderr)) {
     return new RemoteSshError(`SSH 连接失败：${tail || "无法建立连接"}`, exitCode, tail);
   }
+  // 远端文件系统权限：给出可操作的提示，别让模型只看到原始 stderr
+  if (/permission denied|operation not permitted|read-only file system/i.test(stderr)) {
+    return new RemoteSshError(
+      `远端权限不足（Permission denied）：当前 SSH 用户对目标路径没有写权限。` +
+        `可在服务器上调整属主/权限（如 chown -R <user> <dir>）后重试。${tail ? ` 诊断：${tail}` : ""}`,
+      exitCode,
+      tail,
+    );
+  }
   return new RemoteSshError(`远程命令失败（exit ${exitCode ?? "?"}）: ${tail}`, exitCode, tail);
 }
 

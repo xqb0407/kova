@@ -277,8 +277,15 @@ export function runSsh2Remote(
               return;
             }
             if (code !== 0 && code !== null && !options?.resolveOnNonZeroExit) {
+              const tail = stderrText.trim().split("\n").slice(-4).join(" ").slice(0, 600);
+              const permissionDenied = /permission denied|operation not permitted|read-only file system/i.test(
+                stderrText,
+              );
               finish(code, new RemoteSshError(
-                `远程命令失败（exit ${code}）: ${stderrText.trim().split("\n").slice(-4).join(" ").slice(0, 600)}`,
+                permissionDenied
+                  ? `远端权限不足（Permission denied）：当前 SSH 用户对目标路径没有写权限。` +
+                    `可在服务器上调整属主/权限（如 chown -R <user> <dir>）后重试。${tail ? ` 诊断：${tail}` : ""}`
+                  : `远程命令失败（exit ${code}）: ${tail}`,
                 code,
                 stderrText,
               ));
