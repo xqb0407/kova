@@ -146,6 +146,30 @@ describe("ssh2 密码认证（真实服务端）", () => {
     });
   }, 20_000);
 
+  test("大内容 stdin 写入：200KB 不丢字节（hash 一致性）", async () => {
+    const file = `/tmp/kova-ssh2-big-${Date.now()}.bin`;
+    // 构造 200KB 可校验内容（含换行/中文/重复模式）
+    const line = "abcdefghij-中文内容-0123456789\n";
+    const content = line.repeat(Math.ceil((200 * 1024) / Buffer.byteLength(line)));
+    const hash = (await import("node:crypto"))
+      .createHash("sha256")
+      .update(content)
+      .digest("hex");
+    await remoteExec(target(PASSWORD), `cat > ${quotePosixShellArg(file)}`, {
+      stdin: content,
+      timeoutMs: 20_000,
+    });
+    const back = await remoteExec(
+      target(PASSWORD),
+      `sha256sum ${quotePosixShellArg(file)} 2>/dev/null || shasum -a 256 ${quotePosixShellArg(file)}`,
+      { timeoutMs: 10_000 },
+    );
+    expect(back.stdout.trim().split(/\s+/)[0]).toBe(hash);
+    await remoteExec(target(PASSWORD), `rm -f ${quotePosixShellArg(file)}`, {
+      timeoutMs: 10_000,
+    });
+  }, 30_000);
+
   test("后台任务（execSsh2Stream）：echo 正常收尾，不因 stdin 未关挂住", async () => {
     const { execSsh2Stream } = await import("../../src/tools/remote/ssh2-client");
     const chunks: string[] = [];
