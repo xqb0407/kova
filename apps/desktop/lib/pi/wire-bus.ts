@@ -99,8 +99,12 @@ async function ensureTransport(): Promise<void> {
         stopListening = off;
       },
       (error) => {
+        // 传输装不上（网页端无桌面桥：listen 抛 kovaHost missing）：降级为
+        // 「无传输」——订阅照常登记、只是收不到帧；错误不再外抛成 unhandled
+        // rejection（与 git-status 的 wireEvents 同一护栏）。桌面端 listen
+        // 不失败，这条分支实际只在纯浏览器 harness 里出现。
         if (starting === pending) starting = null;
-        throw error;
+        console.warn("[wire-bus] 传输安装失败，帧订阅保持静默", error);
       },
     );
     starting = pending;
