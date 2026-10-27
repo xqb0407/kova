@@ -5,6 +5,7 @@ import { DotMatrix } from "@/components/ui/dot-matrix";
 import { SidebarMenuButton } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { useRemoteProjects } from "@/lib/workspace/remote-projects";
 import {
   threadListSkeletonCondition,
   useThreadItems,
@@ -703,6 +704,8 @@ export type ThreadListProjectGroup = {
   cwd: string;
   /** 目录 basename，作显示名 */
   label: string;
+  /** 该目录命中远程项目时带上项目名（组头显示「远程」徽标） */
+  remoteName?: string;
   indices: number[];
 };
 
@@ -740,6 +743,11 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
   // 可能逐字段相同，只靠 threadItems 依赖不会重算分组。摘要落库即自增的版本号
   // 是这里唯一的稳定信号（applySessionSummaries 每次都会 bump）。
   const summariesVersion = useSessionPrefsVersion();
+  // 远程项目清单：组头「远程」徽标的事实源；清单变化要重算分组
+  const { projects: remoteProjects } = useRemoteProjects();
+  const remoteSignature = remoteProjects
+    .map((p) => `${p.id}\0${p.remotePath}\0${p.name}`)
+    .join("\x01");
 
   const query = searchQuery.trim().toLowerCase();
 
@@ -809,8 +817,19 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
       else byCwd.set(cwd, [index]);
     }
 
+    const remoteByPath = new Map(
+      remoteProjects.map((p) => [p.remotePath.replace(/\/+$/, ""), p]),
+    );
     const projectGroups: ThreadListProjectGroup[] = [...byCwd].map(
-      ([cwd, indices]) => ({ cwd, label: pathBasename(cwd), indices }),
+      ([cwd, indices]) => {
+        const project = remoteByPath.get(cwd.replace(/\/+$/, ""));
+        return {
+          cwd,
+          label: pathBasename(cwd),
+          ...(project ? { remoteName: project.name } : {}),
+          indices,
+        };
+      },
     );
 
     const mergedPinnedIndices = [
@@ -833,6 +852,7 @@ export const useThreadListGroups = (searchQuery = ""): ThreadListGroups => {
     query,
     pinnedIds,
     tasksRange,
+    remoteSignature,
     projectsRange,
     summariesVersion,
   ]);
@@ -1649,6 +1669,15 @@ const ProjectGroupsSection: FC<{
                       <span className="min-w-0 flex-1 truncate text-start">
                         {group.label}
                       </span>
+                      {group.remoteName && (
+                        <span
+                          data-slot="aui_thread-list-group-remote"
+                          title={`远程项目：${group.remoteName}`}
+                          className="shrink-0 rounded bg-emerald-500/10 px-1 text-[10px] leading-4 text-emerald-600 dark:text-emerald-400"
+                        >
+                          远程
+                        </span>
+                      )}
                       {/* 组内任一对话未读 → 蓝点（与会话行同款；hover 让位给
                           右侧「项目操作」按钮，同会话行 hover 让位规则） */}
                       {hasUnread && (
