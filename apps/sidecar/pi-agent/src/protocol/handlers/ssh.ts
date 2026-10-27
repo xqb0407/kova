@@ -12,7 +12,7 @@ import type { RemoteTarget } from "../../types";
 import { remoteExec } from "../../tools/remote/exec";
 import { quotePosixShellArg } from "../../tools/remote/ssh-exec";
 
-function parseTarget(raw: unknown): RemoteTarget {
+export function parseTarget(raw: unknown): RemoteTarget {
   const r = raw as
     | { host?: unknown; port?: unknown; username?: unknown; privateKeyPath?: unknown; password?: unknown }
     | undefined;

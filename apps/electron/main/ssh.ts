@@ -85,6 +85,21 @@ function authTarget(host: SshHost, withPassword: boolean): Record<string, unknow
   return target;
 }
 
+/** 需要注入远程凭据的载荷类型（其余类型原样透传） */
+const REMOTE_ENRICH_TYPES = new Set([
+  "new_session",
+  "prompt",
+  "remote_fs_list",
+  "remote_fs_read",
+  "remote_fs_read_base64",
+  "remote_fs_write",
+  "remote_fs_mkdir",
+  "remote_fs_touch",
+  "remote_fs_rename",
+  "remote_fs_delete",
+  "remote_fs_move",
+]);
+
 /**
  * 远程绑定载荷的密码注入（pi-agent 的 piRequest 转发前调用）：
  * 渲染层只携带 hostId 引用，密码在这里解密注入——密码永不进入
@@ -94,7 +109,9 @@ function authTarget(host: SshHost, withPassword: boolean): Record<string, unknow
 export function enrichRemotePayload(payload: unknown): unknown {
   if (!payload || typeof payload !== "object") return payload;
   const p = payload as { type?: unknown; remote?: unknown };
-  if (p.type !== "new_session" && p.type !== "prompt") return payload;
+  // 只有携带 remote 绑定语义的载荷需要注入（会话创建/每轮 prompt +
+  // 右侧面板的 remote_fs_* 文件通道）
+  if (!REMOTE_ENRICH_TYPES.has(String(p.type ?? ""))) return payload;
   const remote = p.remote;
   if (!remote || typeof remote !== "object") return payload;
   const r = remote as Record<string, unknown> & { hostId?: unknown };

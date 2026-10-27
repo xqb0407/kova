@@ -2,6 +2,39 @@
 
 import { invoke } from "@/desktop-bridge/core";
 import { isDesktop } from "@/lib/desktop-env";
+import { piRequest } from "@/lib/pi/pi-bridge";
+import {
+  ensureRemoteProjectsLoaded,
+  findRemoteProjectByPath,
+  isKnownRemotePath,
+} from "@/lib/workspace/remote-projects";
+
+/* ---------------- 远程项目分流 ----------------
+ * 远程项目的 cwd 是远端路径。若本机恰好存在同名目录（如 /home），按本地
+ * fs_* 读会读到本机文件、写会改本机文件——必须按远程项目清单分流：
+ * 命中则走 sidecar 的 remote_fs_*（SSH 通道，主进程注入凭据），绝不下落本地。 */
+
+async function remoteProjectFor(cwd: string): Promise<boolean> {
+  if (!isDesktop()) return false;
+  await ensureRemoteProjectsLoaded();
+  // 当前登记命中 OR 曾经登记过（项目被删、旧会话仍在）——后者也绝不能
+  // 回落到本地守卫：宁可报错（无 hostId 时 sidecar 会拒绝）也不读本地盘
+  return findRemoteProjectByPath(cwd) !== null || isKnownRemotePath(cwd);
+}
+
+/** 远程 fs 调用：remote 只带 hostId，凭据由主进程在转发前注入 */
+async function remoteFsCall<T>(
+  type: string,
+  cwd: string,
+  extra: Record<string, unknown>,
+): Promise<T> {
+  return (await piRequest({
+    type,
+    cwd,
+    remote: { hostId: findRemoteProjectByPath(cwd)?.hostId ?? "" },
+    ...extra,
+  })) as T;
+}
 
 /**
  * Rust 侧文件树命令（原 Rust 宿主的 fs.rs）的 invoke 封装 + 桌面壳门控。
@@ -37,6 +70,14 @@ export async function fsListDir(
 ): Promise<FsDirListing | null> {
   if (!isDesktop()) return null;
   try {
+    if (await remoteProjectFor(cwd)) {
+      const res = await remoteFsCall<{ entries?: FsDirEntry[]; truncated?: boolean }>(
+        "remote_fs_list",
+        cwd,
+        { dir },
+      );
+      return { entries: res.entries ?? [], truncated: res.truncated === true };
+    }
     return await invoke<FsDirListing>("fs_list_dir", { cwd, dir });
   } catch {
     // cwd-not-allowed / bad-path / not-a-directory：UI 按"空目录"处理
@@ -51,6 +92,14 @@ export async function fsReadFile(
 ): Promise<FsFileContent | null> {
   if (!isDesktop()) return null;
   try {
+    if (await remoteProjectFor(cwd)) {
+      const res = await remoteFsCall<FsFileContent>("remote_fs_read", cwd, { path });
+      return {
+        content: res.content ?? "",
+        truncated: res.truncated === true,
+        binary: res.binary === true,
+      };
+    }
     return await invoke<FsFileContent>("fs_read_file", { cwd, path });
   } catch {
     return null;
@@ -67,6 +116,9 @@ export async function fsStatMany(
   paths: readonly string[],
 ): Promise<FsStatEntry[] | null> {
   if (!isDesktop() || paths.length === 0) return null;
+  // 远程项目：产物卡批量 stat 降级为不校验（逐文件 SSH 往返成本高，且仅
+  // 影响"文件是否还在"的提示，不阻塞打开）
+  if (await remoteProjectFor(cwd)) return null;
   try {
     const result = await invoke<{ results?: FsStatEntry[] }>("fs_stat_many", {
       cwd,
@@ -84,6 +136,8 @@ export async function fsOpen(
   path: string,
 ): Promise<string | null> {
   if (!isDesktop()) return "not-desktop";
+  // 远程文件在本机不存在：用系统应用打开无意义，返回明确错误
+  if (await remoteProjectFor(cwd)) return "not-supported";
   try {
     await invoke("fs_open", { cwd, path });
     return null;
@@ -127,6 +181,18 @@ export async function fsReadFileBase64(
 ): Promise<FsBinaryContent | "too-large" | null> {
   if (!isDesktop()) return null;
   try {
+    if (await remoteProjectFor(cwd)) {
+      const res = await remoteFsCall<{ base64?: string; size?: number; tooLarge?: boolean }>(
+        "remote_fs_read_base64",
+        cwd,
+        { path },
+      );
+      if (res.tooLarge) return "too-large";
+      if (typeof res.base64 === "string") {
+        return { base64: res.base64, size: res.size ?? 0 };
+      }
+      return null;
+    }
     return await invoke<FsBinaryContent>("fs_read_file_base64", { cwd, path });
   } catch (err) {
     return err === "too-large" ? "too-large" : null;
@@ -145,6 +211,10 @@ export async function fsWriteFileBase64(
 ): Promise<string | null> {
   if (!isDesktop()) return "not-desktop";
   try {
+    if (await remoteProjectFor(cwd)) {
+      await remoteFsCall("remote_fs_write", cwd, { path, base64 });
+      return null;
+    }
     await invoke("fs_write_file", { cwd, path, base64 });
     return null;
   } catch (err) {
@@ -170,6 +240,14 @@ export async function fsWriteFile(
 
 /* ---------------- 写命令（文件树右键菜单）：成功返回 null，失败返回错误码 ---------------- */
 
+/** 本地写命令 → 远程命令映射（fs_reveal/project_reveal 远程无意义） */
+const REMOTE_WRITE_CMD: Partial<Record<string, string>> = {
+  fs_mkdir: "remote_fs_mkdir",
+  fs_touch: "remote_fs_touch",
+  fs_rename: "remote_fs_rename",
+  fs_delete: "remote_fs_delete",
+};
+
 async function fsWriteCommand(
   cmd:
     | "fs_mkdir"
@@ -182,6 +260,23 @@ async function fsWriteCommand(
   args: Record<string, string>,
 ): Promise<string | null> {
   if (!isDesktop()) return "not-desktop";
+  // 远程项目：写操作走 SSH（路径收敛在远端工作区内）；reveal 类明确不支持
+  const cwd = args.cwd ?? "";
+  const revealOnly = cmd === "fs_reveal" || cmd === "project_reveal";
+  if (revealOnly) {
+    const probePath = cmd === "project_reveal" ? args.path ?? "" : cwd;
+    if (probePath && (await remoteProjectFor(probePath))) return "not-supported";
+  } else if (cwd && (await remoteProjectFor(cwd))) {
+    const type = REMOTE_WRITE_CMD[cmd];
+    if (!type) return "not-supported";
+    try {
+      const { cwd: _cwd, ...rest } = args;
+      await remoteFsCall(type, cwd, rest);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : typeof err === "string" ? err : "unknown";
+    }
+  }
   try {
     await invoke(cmd, args);
     return null;
@@ -222,6 +317,14 @@ export async function fsMove(
 ): Promise<{ ok: true; name: string; moved: boolean } | { ok: false; error: string }> {
   if (!isDesktop()) return { ok: false, error: "not-desktop" };
   try {
+    if (await remoteProjectFor(cwd)) {
+      const res = await remoteFsCall<{ ok?: boolean; name?: string; moved?: boolean }>(
+        "remote_fs_move",
+        cwd,
+        { path, destDir },
+      );
+      return { ok: true, name: res.name ?? "", moved: res.moved !== false };
+    }
     const r = await invoke<{ ok: boolean; name: string; moved: boolean }>(
       "fs_move",
       { cwd, path, destDir },

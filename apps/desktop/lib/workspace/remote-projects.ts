@@ -58,6 +58,18 @@ export type SshHost = {
 };
 
 const PROJECTS_KEY = "remote.projects";
+/** 曾登记为远程项目的路径（会话存活期内永久记忆）：项目被删除后，
+ *  旧会话的 panel 也不能回落到本地同名目录（如 /home）去读写 */
+const everRemotePaths = new Set<string>();
+
+function markRemotePath(path: string): void {
+  everRemotePaths.add(path.replace(/\/+$/, ""));
+}
+
+export function isKnownRemotePath(path: string | null | undefined): boolean {
+  if (!path) return false;
+  return everRemotePaths.has(path.replace(/\/+$/, ""));
+}
 
 const listeners = new Set<() => void>();
 let cache: RemoteProject[] | null = null;
@@ -88,6 +100,7 @@ export async function listRemoteProjects(): Promise<RemoteProject[]> {
           (p): p is RemoteProject =>
             p && typeof p === "object" && typeof p.id === "string" && typeof p.remotePath === "string",
         );
+        for (const project of cache) markRemotePath(project.remotePath);
       }
     } else {
       cache = [];
@@ -99,7 +112,14 @@ export async function listRemoteProjects(): Promise<RemoteProject[]> {
   return cache ?? [];
 }
 
+/** 确保清单已加载（首次调用读一次 kv，之后纯内存；面板 fs 高频调用用） */
+export async function ensureRemoteProjectsLoaded(): Promise<void> {
+  if (loaded) return;
+  await listRemoteProjects();
+}
+
 async function persist(projects: RemoteProject[]): Promise<void> {
+  for (const project of projects) markRemotePath(project.remotePath);
   cache = projects;
   loaded = true;
   version += 1;
