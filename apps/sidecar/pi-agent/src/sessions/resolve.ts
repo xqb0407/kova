@@ -808,16 +808,12 @@ async function attachRemoteIfMatched(
 ): Promise<void> {
   if (!remote || !safeCwd) return;
   if (run.remoteTarget) {
-    // 已绑定：只补缺失的密码（转录 header 不落密码；恢复的会话靠这里、
-    // 在每次请求携带的密码上回填）。目标身份必须一致才补，防止配错主机
-    if (
-      !run.remoteTarget.password &&
-      remote.password &&
-      run.remoteTarget.host === remote.host &&
-      (run.remoteTarget.port ?? 22) === (remote.port ?? 22) &&
-      (run.remoteTarget.username ?? "") === (remote.username ?? "")
-    ) {
-      run.remoteTarget = { ...run.remoteTarget, password: remote.password };
+    // 已绑定：补缺失的密码（转录 header 不落密码；恢复的会话靠这里在每次
+    // 请求携带的密码上回填）。请求载荷经主进程按主机记录重新解析注入，
+    // 是权威事实源——主机端口/用户名被编辑过也以它为准；已带密码的 run
+    // 不被覆盖（绝不翻转已有绑定）
+    if (!run.remoteTarget.password && remote.password) {
+      run.remoteTarget = { ...remote };
     }
     return;
   }

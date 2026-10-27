@@ -68,14 +68,23 @@ export function startRemoteBash(
 ): RemoteBashHandle {
   const script = remoteBashScript(command, cwd);
   if (hasPassword(target)) {
-    // ssh2：通道生命周期由连接池管理；whenClose 即任务退出
+    // ssh2：通道生命周期由连接池管理；whenClose 即任务退出。
+    // 启动失败（连接/认证错误）也要收敛为退出码，不能让 whenDone reject
+    // 出去变成未处理 rejection；stop 早于句柄就绪时补一刀。
     let handle: { stop(): void; whenClose: Promise<number | null> } | null = null;
-    const done = execSsh2Stream(target, script, onData).then((h) => {
-      handle = h;
-      return h.whenClose;
-    });
+    let stoppedEarly = false;
+    const done = execSsh2Stream(target, script, onData)
+      .then((h) => {
+        handle = h;
+        if (stoppedEarly) h.stop();
+        return h.whenClose;
+      })
+      .catch(() => -1);
     return {
-      stop: () => handle?.stop(),
+      stop: () => {
+        stoppedEarly = true;
+        handle?.stop();
+      },
       whenDone: done,
     };
   }

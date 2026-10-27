@@ -129,6 +129,14 @@ export const SshHostsSettings: FC = () => {
     }
     setBusyId("editor");
     try {
+      // 保存前先测试连接：未落库配置直接探（密码主机走 sidecar ssh2 探针）
+      const probe = (await invoke("ssh_host_test_draft", {
+        draft,
+      })) as TestResult;
+      if (!probe.ok) {
+        fail(`连接测试未通过，未保存：${probe.message}`);
+        return;
+      }
       const { password: _password, ...rest } = draft;
       await invoke("ssh_host_save", {
         host: {
@@ -503,6 +511,7 @@ const SshHostEditor: FC<{
               {result.message}
             </span>
           )}
+          <span className="text-muted-foreground text-xs">保存前会先测试连接</span>
           <Button variant="ghost" onClick={onCancel}>
             取消
           </Button>

@@ -10,6 +10,7 @@
  * - 密码只存在于本进程内存与连接配置；不落盘、不进日志。
  */
 import { Client as SSH2Client, type ClientChannel, type ConnectConfig } from "ssh2";
+import { createHash } from "node:crypto";
 import type { RemoteTarget } from "../../types";
 import { RemoteSshError } from "./ssh-exec";
 
@@ -63,7 +64,10 @@ function normalizeAuthError(message: string): string {
 
 function poolKey(target: PasswordTarget): string {
   const user = target.username?.trim() || "";
-  return `${user}@${target.host.trim()}:${target.port ?? 22}`;
+  // 密码指纹参与 key：同一地址换密码（改密/改错后重试）不能复用旧凭据
+  // 建立的连接——否则认证错误会被池里的健康连接掩盖
+  const fingerprint = createHash("sha256").update(target.password).digest("hex").slice(0, 16);
+  return `${user}@${target.host.trim()}:${target.port ?? 22}\0${fingerprint}`;
 }
 
 function buildConfig(target: PasswordTarget): ConnectConfig {
