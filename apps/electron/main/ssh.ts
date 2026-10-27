@@ -66,19 +66,23 @@ function toPublic(host: SshHost): SshHostPublic {
 
 /** 连接目标（含解密后的密码）：只在本进程与 sidecar 之间流转，绝不回渲染层 */
 function authTarget(host: SshHost, withPassword: boolean): Record<string, unknown> {
-  // 密码认证走 ssh2：它不解析 ~/.ssh/config，alias 不能作为连接目标——
-  // 必须用显式 hostname（保存时 UI 强制要求）
+  // 目标选择必须按 authType 而非调用方意图：
+  // - 密码认证走 ssh2（不解析 ~/.ssh/config），只能显式 hostname；
+  // - 其余（agent/私钥）保留 alias 直连，端口/用户名/密钥交给 ssh config。
+  // 之前按 withPassword 分支，给别名主机（hostname 为空）注入出空 host，
+  // 侧车直接拒绝——所有别名方式的远程会话都会挂。
+  const passwordAuth = host.authType === "password";
   const target: Record<string, unknown> = {
-    host: withPassword ? host.hostname.trim() : host.alias?.trim() || host.hostname.trim(),
+    host: passwordAuth ? host.hostname.trim() : host.alias?.trim() || host.hostname.trim(),
   };
-  if (!host.alias?.trim()) {
+  if (!host.alias?.trim() || passwordAuth) {
     if (host.port && host.port !== 22) target.port = host.port;
     if (host.username?.trim()) target.username = host.username.trim();
     if (host.authType === "key" && host.privateKeyPath?.trim()) {
       target.privateKeyPath = host.privateKeyPath.trim();
     }
   }
-  if (withPassword && host.passwordEnc) {
+  if (withPassword && passwordAuth && host.passwordEnc) {
     const dec = decrypt(host.passwordEnc);
     if (dec.ok && dec.value) target.password = dec.value;
   }

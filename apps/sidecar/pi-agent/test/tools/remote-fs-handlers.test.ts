@@ -153,6 +153,38 @@ describe("remote_fs_* handlers（真实 SSH 服务端）", () => {
     expect(String(del.errorText ?? "")).toContain("outside workspace");
   }, 30_000);
 
+  test("move 重名不覆盖（自动加序号）；rename 重名拒绝", async () => {
+    const contentA = Buffer.from("A").toString("base64");
+    const contentB = Buffer.from("B").toString("base64");
+    await call("remote_fs_mkdir", "mv-m1", { cwd: ROOT, path: "m/a" });
+    await call("remote_fs_mkdir", "mv-m2", { cwd: ROOT, path: "m/b" });
+    await call("remote_fs_write", "mv-w1", { cwd: ROOT, path: "m/a/x.txt", base64: contentA });
+    await call("remote_fs_write", "mv-w2", { cwd: ROOT, path: "m/b/x.txt", base64: contentB });
+    const mv = await call("remote_fs_move", "mv-1", {
+      cwd: ROOT,
+      path: "m/a/x.txt",
+      destDir: "m/b",
+    });
+    expect(mv.type).toBe("remote_fs_move_result");
+    expect(mv.name).toBe("x-2.txt");
+    const b = await call("remote_fs_read", "mv-r1", { cwd: ROOT, path: "m/b/x.txt" });
+    expect(b.content).toBe("B"); // 目标内容未被覆盖
+    const moved = await call("remote_fs_read", "mv-r2", { cwd: ROOT, path: "m/b/x-2.txt" });
+    expect(moved.content).toBe("A");
+    // rename 到已存在名字：拒绝
+    const rn = await call("remote_fs_rename", "mv-rn", {
+      cwd: ROOT,
+      path: "m/b/x-2.txt",
+      newName: "x.txt",
+    });
+    expect(String(rn.errorText ?? "")).toContain("already-exists");
+  }, 30_000);
+
+  test("删除工作区根被拒绝", async () => {
+    const res = await call("remote_fs_delete", "del-root", { cwd: ROOT, path: "." });
+    expect(String(res.errorText ?? "")).not.toBe("");
+  }, 30_000);
+
   test("mkdir / touch 语义", async () => {
     const mk = await call("remote_fs_mkdir", "m1", { cwd: ROOT, path: "new/nested" });
     expect(mk.type).toBe("remote_fs_ok");

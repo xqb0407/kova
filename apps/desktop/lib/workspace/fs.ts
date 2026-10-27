@@ -366,6 +366,9 @@ export function fsErrorText(code: string): string {
     "not-desktop": "仅桌面端可用",
     "bad-base64": "内容编码异常，写入被拒绝",
     "too-large": "内容超过 32MB 上限",
+    "not-supported": "远程项目暂不支持该操作",
+    "path outside workspace": "路径不在项目目录内",
+    "file not found or unreadable": "文件不存在或不可读",
     "home-not-allowed": "不能把家目录本身设为资料库位置（请选其中的一个文件夹）",
     "app-data-not-allowed": "该目录存放应用私有数据，不能设为资料库位置",
   };

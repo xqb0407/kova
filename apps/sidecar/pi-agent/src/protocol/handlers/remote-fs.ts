@@ -50,7 +50,7 @@ async function readBase64(
   const result = await remoteExec(
     target,
     `test -f ${q} && test -r ${q} || { echo 'file not found or unreadable' >&2; exit 3; }; ` +
-      `head -c ${capBytes + 1} ${q} | base64 | tr -d '\\n'`,
+      `head -c ${capBytes + 1} ${q} | base64 | tr -d '\\n' || openssl base64 -A -in ${q}`,
     { timeoutMs: 60_000, maxOutputBytes: Math.ceil((capBytes * 4) / 3) + 128 },
   );
   const buffer = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
@@ -69,16 +69,23 @@ export const handlers: Record<string, CommandHandler> = {
         `cd ${quotePosixShellArg(abs)} && ls -1ap`,
         { timeoutMs: 30_000 },
       );
+      const MAX_ENTRIES = 5000;
       const entries = result.stdout
         .split(/\r?\n/)
         .map((line) => line.trimEnd())
         .filter((line) => line && line !== "." && line !== "..")
+        .slice(0, MAX_ENTRIES)
         .map((line) => ({
           name: line.endsWith("/") ? line.slice(0, -1) : line,
           dir: line.endsWith("/"),
         }))
         .filter((entry) => entry.name);
-      send({ id: reqId, type: "remote_fs_list_result", entries, truncated: false });
+      send({
+        id: reqId,
+        type: "remote_fs_list_result",
+        entries,
+        truncated: result.truncated || entries.length >= MAX_ENTRIES,
+      });
     } catch (error) {
       send({
         id: reqId,
@@ -149,7 +156,7 @@ export const handlers: Record<string, CommandHandler> = {
       const cwd = String(msg.cwd ?? "");
       const abs = resolveInRoot(cwd, String(msg.path ?? ""));
       const buffer = Buffer.from(String(msg.base64 ?? ""), "base64");
-      if (buffer.length > WRITE_CAP) throw new Error("file too large");
+      if (buffer.length > WRITE_CAP) throw new Error("too-large");
       const dir = posix.dirname(abs);
       await remoteExec(target, `mkdir -p ${quotePosixShellArg(dir)}`, {
         timeoutMs: 30_000,
@@ -213,8 +220,24 @@ export const handlers: Record<string, CommandHandler> = {
       const cwd = String(msg.cwd ?? "");
       const abs = resolveInRoot(cwd, String(msg.path ?? ""));
       const newName = String(msg.newName ?? "").trim();
-      if (!newName || newName.includes("/")) throw new Error("bad name");
+      if (
+        !newName ||
+        newName.includes("/") ||
+        newName === "." ||
+        newName === ".." ||
+        newName.startsWith("-")
+      ) {
+        throw new Error("bad-name");
+      }
       const dest = resolveInRoot(cwd, posix.join(posix.dirname(abs), newName));
+      // 同名覆盖会静默丢文件：目标已存在（且不是大小写改名）直接拒绝
+      if (dest !== abs) {
+        const exists = await remoteExec(target, `test -e ${quotePosixShellArg(dest)}`, {
+          timeoutMs: 15_000,
+          resolveOnNonZeroExit: true,
+        });
+        if (exists.exitCode === 0) throw new Error("already-exists");
+      }
       await remoteExec(
         target,
         `command mv -f ${quotePosixShellArg(abs)} ${quotePosixShellArg(dest)}`,
@@ -235,7 +258,9 @@ export const handlers: Record<string, CommandHandler> = {
       const target = parseTarget(msg.remote);
       const cwd = String(msg.cwd ?? "");
       const abs = resolveInRoot(cwd, String(msg.path ?? ""));
-      if (abs === cwd.replace(/\/+$/, "")) throw new Error("refuse to delete workspace root");
+      if (abs === "/" || abs === cwd.replace(/\/+$/, "")) {
+        throw new Error("bad-path");
+      }
       await remoteExec(target, `rm -rf ${quotePosixShellArg(abs)}`, {
         timeoutMs: 120_000,
       });
@@ -256,13 +281,32 @@ export const handlers: Record<string, CommandHandler> = {
       const src = resolveInRoot(cwd, String(msg.path ?? ""));
       const destDir = resolveInRoot(cwd, String(msg.destDir ?? ""));
       const name = posix.basename(src);
-      const dest = posix.join(destDir, name);
+      // 重名不覆盖：dest 已存在时加 -2/-3… 后缀（对齐本地 fs_move 语义，
+      // 拖拽落点同名文件绝不能静默丢数据）
+      let finalName = name;
+      let dest = posix.join(destDir, name);
+      for (let n = 2; n <= 50; n++) {
+        if (dest === src) break; // 落点就是当前目录：无操作
+        const exists = await remoteExec(
+          target,
+          `test -e ${quotePosixShellArg(dest)}`,
+          { timeoutMs: 15_000, resolveOnNonZeroExit: true },
+        );
+        if (exists.exitCode !== 0) break;
+        const dot = name.lastIndexOf(".");
+        finalName = dot > 0 ? `${name.slice(0, dot)}-${n}${name.slice(dot)}` : `${name}-${n}`;
+        dest = posix.join(destDir, finalName);
+      }
+      if (dest === src) {
+        send({ id: reqId, type: "remote_fs_move_result", ok: true, name, moved: false });
+        return;
+      }
       await remoteExec(
         target,
         `command mv -f ${quotePosixShellArg(src)} ${quotePosixShellArg(dest)}`,
         { timeoutMs: 60_000 },
       );
-      send({ id: reqId, type: "remote_fs_move_result", ok: true, name, moved: true });
+      send({ id: reqId, type: "remote_fs_move_result", ok: true, name: finalName, moved: true });
     } catch (error) {
       send({
         id: reqId,
