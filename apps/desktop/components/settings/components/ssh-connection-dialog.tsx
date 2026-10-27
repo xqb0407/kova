@@ -223,21 +223,21 @@ export const SshConnectionDialog: FC<{
 
   return (
     <Dialog open onOpenChange={(v) => (!v ? onClose() : undefined)}>
-      <DialogContent className="gap-5 sm:max-w-xl">
+      <DialogContent className="flex h-[560px] max-h-[calc(100dvh-4rem)] flex-col gap-5 sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{initial ? "编辑 SSH 连接" : "添加 SSH 连接"}</DialogTitle>
         </DialogHeader>
 
         {step === "scan" ? (
           <>
-            <div className="max-h-[320px] min-h-[180px] overflow-y-auto rounded-xl border">
+            <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border">
               {!aliasesLoaded ? (
-                <div className="text-muted-foreground flex h-[180px] items-center justify-center text-sm">
+                <div className="text-muted-foreground flex h-full min-h-[180px] items-center justify-center text-sm">
                   <Loader2Icon className="mr-2 size-4 animate-spin" />
                   正在扫描 ~/.ssh/config…
                 </div>
               ) : addable.length === 0 ? (
-                <div className="text-muted-foreground flex h-[180px] flex-col items-center justify-center gap-3 px-6 text-center text-sm">
+                <div className="text-muted-foreground flex h-full min-h-[180px] flex-col items-center justify-center gap-3 px-6 text-center text-sm">
                   <MonitorCheckIcon className="text-muted-foreground/50 size-9" />
                   没有发现可添加的主机，请先在 ~/.ssh/config 中配置具体的 Host。
                 </div>
@@ -287,7 +287,7 @@ export const SshConnectionDialog: FC<{
           </>
         ) : (
           <>
-            <div className="flex flex-col gap-4">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="ssh-conn-name">显示名称</Label>
                 <Input
