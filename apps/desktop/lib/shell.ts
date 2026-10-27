@@ -9,6 +9,10 @@ import { getUiPrefs, subscribeUiPrefs } from "@/lib/settings/ui-prefs";
 import { resolveFonts } from "@/lib/theme/palette";
 import { getWorkspace, pathBasename } from "@/lib/workspace/workspace-store";
 import {
+  ensureRemoteProjectsLoaded,
+  findRemoteProjectByPath,
+} from "@/lib/workspace/remote-projects";
+import {
   closePanelTabFor,
   getAllThreadTabs,
   getPanelTabsFor,
@@ -333,6 +337,10 @@ async function spawnShell(
     const owner = tabOwnerThread(tabId);
     if (owner) updatePanelTabFor(owner, tabId, { title: next });
   });
+  // 远程项目：本地 cwd 是远端路径，pty 会在本地 spawn 失败（Windows 上
+  // 直接 error 268）——改开 SSH 交互会话，cwd 不再下传
+  await ensureRemoteProjectsLoaded();
+  const remoteProject = cwd ? findRemoteProjectByPath(cwd) : null;
   const channel = new Channel<number[]>();
   channel.onmessage = (bytes) => {
     if (session.disposed) return;
@@ -358,7 +366,8 @@ async function spawnShell(
   try {
     await invoke("pty_open", {
       id,
-      cwd,
+      cwd: remoteProject ? null : cwd,
+      remoteHostId: remoteProject?.hostId,
       cols: terminal.cols,
       rows: terminal.rows,
       onData: channel,

@@ -18,6 +18,12 @@ import { basename, dirname, join } from "node:path";
 import { kvGet, kvSet } from "./store";
 import { logInfo, logWarn } from "./logging";
 import { decrypt, encrypt } from "./secret";
+import {
+  authOptions,
+  buildInteractiveSshArgs,
+  portOptions,
+  targetOf,
+} from "./sshInteractive";
 
 const HOSTS_KEY = "ssh.hosts";
 const TEST_TIMEOUT_MS = 10_000;
@@ -89,6 +95,16 @@ function authTarget(host: SshHost, withPassword: boolean): Record<string, unknow
   return target;
 }
 
+/** 远程项目终端：按 hostId 解析 spawn 参数；host 不存在返回 null */
+export function interactiveSshSpawn(
+  hostId: string,
+  cwd?: string,
+): { file: string; args: string[] } | null {
+  const host = readHosts().find((h) => h.id === hostId);
+  if (!host) return null;
+  return { file: "ssh", args: buildInteractiveSshArgs(host, cwd) };
+}
+
 /** 需要注入远程凭据的载荷类型（其余类型原样透传） */
 const REMOTE_ENRICH_TYPES = new Set([
   "new_session",
@@ -142,30 +158,6 @@ export function sshBaseOptions(): string[] {
   ];
 }
 
-function authOptions(host: SshHost): string[] {
-  const opts: string[] = [];
-  if (host.authType === "key" && host.privateKeyPath?.trim()) {
-    opts.push("-i", host.privateKeyPath.trim());
-    opts.push("-o", "IdentitiesOnly=yes");
-  }
-  if (host.username?.trim()) {
-    // user@host 形式在 target 拼接处处理，这里只记录用户名
-  }
-  return opts;
-}
-
-/** `user@host`（或 alias）；alias 存在时优先用 alias——端口/用户名/密钥随 ssh config */
-function targetOf(host: SshHost): string {
-  if (host.alias?.trim()) return host.alias.trim();
-  const user = host.username?.trim();
-  return user ? `${user}@${host.hostname.trim()}` : host.hostname.trim();
-}
-
-function portOptions(host: SshHost): string[] {
-  // alias 直连时端口交给 ssh config；显式 host 才传 -p
-  if (host.alias?.trim()) return [];
-  return host.port && host.port !== 22 ? ["-p", String(host.port)] : [];
-}
 
 function testConnection(host: SshHost): Promise<{ ok: boolean; message: string; ms: number }> {
   const started = Date.now();

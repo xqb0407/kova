@@ -80,7 +80,17 @@ export function registerAllCommands(): void {
   /* PTY（对齐 pty.rs：on_data 为 Channel） */
   register("pty_open", (a: any, ctx: CmdCtx) => {
     if (!isChannelArg(a.onData)) throw new Error("pty_open requires on_data channel");
-    return pty.ptyOpen({ id: String(a.id), cwd: a.cwd ?? null, cols: Number(a.cols ?? 80), rows: Number(a.rows ?? 24), onData: a.onData }, makeChannelPusher(ctx.sender, a.onData));
+    return pty.ptyOpen(
+      {
+        id: String(a.id),
+        cwd: a.cwd ?? null,
+        remoteHostId: a.remoteHostId ?? null,
+        cols: Number(a.cols ?? 80),
+        rows: Number(a.rows ?? 24),
+        onData: a.onData,
+      },
+      makeChannelPusher(ctx.sender, a.onData),
+    );
   });
   register("pty_write", (a) => pty.ptyWrite(a as any));
   register("pty_resize", (a) => pty.ptyResize(a as any));
