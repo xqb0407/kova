@@ -1028,6 +1028,14 @@ export class PiClientBase implements PiClient {
       if (project) {
         const target = await resolveRemoteTargetPayload(project);
         if (target) remote = target;
+        else {
+          // 远程项目的主机被删除/停用：绝不能静默按本地会话创建
+          //（cwd 是远端路径，本地执行只会报目录不存在——错误且误导）
+          throw new Error(
+            `远程项目「${project.name}」的 SSH 主机不存在或已停用，无法创建会话。` +
+              `请到 设置 → 系统 → SSH 主机 修复后重试。`,
+          );
+        }
       }
     }
     const res = await this.transport.request<

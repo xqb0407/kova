@@ -11,7 +11,11 @@ import {
   remoteToolCall,
   resolveRemotePath,
 } from "../../src/tools/remote/remote-tool-call";
-import { quotePosixShellArg, remoteBashScript } from "../../src/tools/remote/ssh-exec";
+import {
+  muxOptions,
+  quotePosixShellArg,
+  remoteBashScript,
+} from "../../src/tools/remote/ssh-exec";
 import { sanitizeRemoteTargetInput } from "../../src/sessions/resolve";
 import type { Running, RemoteTarget } from "../../src/types";
 import {
@@ -86,6 +90,21 @@ describe("remote task registry ownership", () => {
     await expect(
       remoteToolCall("task_output", "/tmp", { taskId: 999 }, undefined, "thread-a", target),
     ).rejects.toThrow("task not found: 999");
+  });
+});
+
+describe("muxOptions（连接复用按平台）", () => {
+  test("Windows 不生成 ControlMaster 参数（Win32-OpenSSH 不支持 mux）", () => {
+    expect(muxOptions("win32")).toEqual([]);
+  });
+
+  test("macOS/Linux 生成 ControlMaster/ControlPath/ControlPersist", () => {
+    for (const platform of ["darwin", "linux"] as const) {
+      const opts = muxOptions(platform);
+      expect(opts.join(" ")).toContain("ControlMaster=auto");
+      expect(opts.join(" ")).toContain("ControlPath=");
+      expect(opts.join(" ")).toContain("ControlPersist=600");
+    }
   });
 });
 

@@ -50,6 +50,21 @@ export function remoteTargetArg(target: RemoteTarget): string {
   return target.username?.trim() ? `${target.username.trim()}@${host}` : host;
 }
 
+/**
+ * 连接复用参数：Win32-OpenSSH 的 mux 基于 Unix 域套接字，**不支持**
+ * ControlMaster/ControlPath——在 Windows 上带上会直接报错。Windows 上
+ * 放弃复用（每次新建连接），其余平台保留 ControlMaster。
+ */
+export function muxOptions(platform: NodeJS.Platform = process.platform): string[] {
+  if (platform === "win32") return [];
+  return [
+    // %C 是 host/port/user 的散列 token，天然按目标分桶
+    "-o", "ControlMaster=auto",
+    "-o", `ControlPath=${join(controlDir(), "mux-%C")}`,
+    "-o", "ControlPersist=600",
+  ];
+}
+
 export function targetOptions(target: RemoteTarget): string[] {
   const opts = [
     "-o", `ConnectTimeout=${CONNECT_TIMEOUT_S}`,
@@ -57,10 +72,7 @@ export function targetOptions(target: RemoteTarget): string[] {
     "-o", `ServerAliveCountMax=${KEEPALIVE_COUNT_MAX}`,
     "-o", "StrictHostKeyChecking=accept-new",
     "-o", "BatchMode=yes",
-    // ControlMaster 多路复用：%C 是 host/port/user 的散列 token，天然按目标分桶
-    "-o", "ControlMaster=auto",
-    "-o", `ControlPath=${join(controlDir(), "mux-%C")}`,
-    "-o", "ControlPersist=600",
+    ...muxOptions(),
   ];
   if (target.port && target.port !== 22) opts.push("-p", String(target.port));
   if (target.privateKeyPath?.trim()) {
