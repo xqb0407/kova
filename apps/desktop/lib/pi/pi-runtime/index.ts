@@ -49,6 +49,7 @@ export {
   usePiRuntimeExtras,
   usePiSession,
   usePiThreadState,
+  usePiController,
   usePiHostUiRequests,
   usePiQueue,
 } from "./runtime/hooks";

@@ -109,7 +109,7 @@ import {
 import { externalDirExists, resolveExternalPath } from "../../agent/external-dirs";
 import { effectiveProjectDirs } from "../../agent/project-dirs";
 import { dropEventSeq, peekEventSeq } from "../event-seq";
-import { peekPartial } from "../thread-events";
+import { isPartialAlreadyPersisted, peekPartial } from "../thread-events";
 import type { Running, SessionSummary } from "../../types";
 import type { CommandHandler } from "../command";
 import type { CompactionRow, ModelChangeRow } from "../../sessions/transcript";
@@ -986,7 +986,12 @@ export const handlers: Record<string, CommandHandler> = {
     //（仅 running 会话有；空闲时台账已清）。在飞 partial 恒属于会话尾部，
     // 翻旧页不带（否则旧页会顶出一条进行中的消息）
     const partial = beforeSeq === undefined ? peekPartial(sessionId) : undefined;
-    if (partial) messages.push(partial as unknown as SnapMessage);
+    // 落盘后、message_end 台账清理前的窗口里，转录末行与在飞副本是同一条消息
+    //（persist 的异步写库让快照可以插进来）——去重后再接，否则快照同一条
+    // 消息出现两份，前端渲染成两条气泡（慢存储时几乎必中）
+    if (partial && !isPartialAlreadyPersisted(messages, partial)) {
+      messages.push(partial as unknown as SnapMessage);
+    }
     // 最后一条带 errorMessage 的 assistant 消息 = 会话级 lastError（兜底展示用）；
     // 同理只在整窗/尾窗上算——旧页的 lastError 不是会话级事实
     let lastError: string | undefined;

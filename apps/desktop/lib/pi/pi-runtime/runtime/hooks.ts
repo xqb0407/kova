@@ -14,6 +14,7 @@ import {
 } from "./usePiRuntime";
 import type { PiRuntimeExtras } from "./runtimeTypes";
 import type { PiThreadState } from "./threadState";
+import type { PiThreadControllerLike } from "./ThreadController";
 import type { PiThreadMetadata } from "../types";
 
 /** The full Pi runtime extras for the active thread. */
@@ -40,6 +41,18 @@ export function usePiThreadState<T>(selector?: (state: PiThreadState) => T) {
     controller,
     selector ?? ((state) => state as T),
   );
+}
+
+/**
+ * 当前线程控制器（稳定引用，不随状态提交重渲）。
+ *
+ * 给需要「逐次状态提交」做边沿判断的场景用：`useAuiState`/渲染值会被 React
+ * 批处理合并——本轮收尾与下一轮立即派发落在同一批时，组件只渲染一次，
+ * 看不到运行态的下降沿（队列栏「已并入」徽标因此可能滞留）。直接订阅控制器
+ * 通知可以逐次观察状态提交，不受渲染合批影响。
+ */
+export function usePiController(): PiThreadControllerLike {
+  return piExtras.use((e) => e.controller, NOOP_CONTROLLER);
 }
 
 /** Pending free-standing host-UI requests plus a responder. */

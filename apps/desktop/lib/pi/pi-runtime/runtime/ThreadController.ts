@@ -418,18 +418,28 @@ const appendMessageFromUserProjection = (
 };
 
 /** Text-only reconcile key: the echoed transcript message may carry extra
- * fields (e.g. enriched image content), so structural equality is too strict —
- * the prompt text is the stable part. */
+ *  fields (e.g. enriched image content), so structural equality is too strict —
+ *  the prompt text is the stable part. */
 const userContentKey = (message: PiAgentMessage): string | null => {
   if (message.role !== "user") return null;
   const content = message.content;
-  if (typeof content === "string") return content;
+  if (typeof content === "string") return stripLeadingSentinels(content);
   if (!Array.isArray(content)) return null;
-  return (content as readonly { type: string; text?: string }[])
-    .filter((part) => part.type === "text" && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("\n");
+  return stripLeadingSentinels(
+    (content as readonly { type: string; text?: string }[])
+      .filter((part) => part.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("\n"),
+  );
 };
+
+/** 用户行开头的系统哨兵块（[[queued-steer]] / [[auto-continue]] / [[goal-…]] 等）：
+ *  传输层语义，不属于用户文本。回显比对必须先剥掉——否则并入回显（带前缀）
+ *  永远匹配不上无前缀的乐观镜像，气泡永久重复滞留。哨兵块只剥开头；用户自己
+ *  正文里出现的同形文本在回显侧原样保留（镜像侧同样处理，两侧口径一致）。 */
+const LEADING_SENTINEL_BLOCKS = /^(?:\[\[[^\]\n]{1,80}\]\][ \t]*)+/;
+const stripLeadingSentinels = (text: string): string =>
+  text.replace(LEADING_SENTINEL_BLOCKS, "").trimStart();
 
 /** 当前状态里的 user 行数。起跑上屏的回显确认以「发送时的条数」为基线，
  *  而不是数组下标——快照应答可能先到并替换消息数组，下标会漂移。 */
@@ -1223,6 +1233,9 @@ export class PiThreadController implements PiThreadControllerLike {
     if (!this.client.queueCancel) {
       throw new Error("Pi client does not support per-item queue ops");
     }
+    // 撤销的条目不会再派发：起跑上屏登记一并作废（防止残登记占满上限后
+    // 把真正排队的条目挤掉）
+    this.pendingPromptMessages.delete(id);
     this.dropLocalQueueEntry(id);
     await this.client.queueCancel(this.threadId, id);
   }
@@ -1282,6 +1295,11 @@ export class PiThreadController implements PiThreadControllerLike {
     if (!this.client.queueSteer) {
       throw new Error("Pi client does not support per-item queue ops");
     }
+    // 并入后由 sidecar 注入活跃轮（回显带 [[queued-steer]] 前缀），不再走普通
+    // 派发：最初的「起跑上屏」登记必须撤销——否则 start 帧会推出无前缀的乐观
+    // 镜像，而带前缀的回显经哨兵剥离后虽然能匹配（见 userContentKey），
+    // 撤销登记可以连那一帧的闪现都省掉
+    this.pendingPromptMessages.delete(id);
     await this.client.queueSteer(this.threadId, id);
   }
 

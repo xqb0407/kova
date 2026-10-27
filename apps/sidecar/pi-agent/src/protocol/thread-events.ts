@@ -42,6 +42,33 @@ export function peekPartial(sessionId: string): Record<string, unknown> | undefi
   return partials.get(sessionId);
 }
 
+/**
+ * 在飞 partial 是否就是转录末行本身。
+ *
+ * message_end 的落盘（stream.ts，订阅在前）与台账清理（本模块，订阅在后）之间
+ * 隔着 persist 的异步写库；慢存储时这个窗口可达秒级——期间到达的 thread_snapshot
+ * 会同时看到「转录里刚落盘的行」和「尚未清理的 partial」，如果把 partial 无脑
+ * 接在尾部，同一条消息就在快照里出现两份，前端渲染成两条气泡。
+ * 按 role + timestamp + content 比对（mid-persist 时两者是同一消息的两份副本）。
+ */
+export function isPartialAlreadyPersisted(
+  messages: readonly Record<string, unknown>[],
+  partial: Record<string, unknown>,
+): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const row = messages[i];
+    const role = row?.role;
+    if (role !== "user" && role !== "assistant" && role !== "toolResult") continue;
+    if (role !== partial.role || row.timestamp !== partial.timestamp) return false;
+    try {
+      return JSON.stringify(row.content) === JSON.stringify(partial.content);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 function notePartial(sessionId: string, message: unknown): void {
   if (!sessionId || !message || typeof message !== "object") return;
   try {
@@ -49,6 +76,15 @@ function notePartial(sessionId: string, message: unknown): void {
   } catch {
     // structuredClone 失败（非可克隆值）：跳过留档，快照退回"缺流式尾巴"
   }
+}
+
+/** 测试钩子：按 wireSessionEvents 的真实写入路径放进台账（结构化克隆同款），
+ *  供 e2e 构造「落盘后、清理前」的窗口状态 */
+export function notePartialForTest(
+  sessionId: string,
+  message: unknown,
+): void {
+  notePartial(sessionId, message);
 }
 
 // ---------------- AgentEvent → 契约事件桥接 ----------------

@@ -1,7 +1,7 @@
 "use client";
 
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { usePiQueue } from "@/lib/pi/pi-runtime";
+import { usePiController, usePiQueue } from "@/lib/pi/pi-runtime";
 import {
   addSteeredBadge,
   clearSteeredBadges,
@@ -33,7 +33,7 @@ import { cn } from "cn";
  * 刷新接力泵（收敛版）：运行轮重挂由 connect + 快照自愈承担（迁移阶段 3）；
  * 队列非空时订阅保活（见 usePiRuntime），sidecar 串行链派发的下一轮
  * agent_start 原生可见——泵只剩一种场景：sidecar 重启后无链节的孤儿队列。
- * 挂载/快照恢复（队列从空变非空）与 isRunning 下降沿时探测：线程空闲且队列
+ * 挂载/快照恢复（队列从空变非空）与运行态下降沿时探测：线程空闲且队列
  * 非空 → queue_pop（sidecar 守卫 isTurnBusy + hasPromptChain 双保险，链节
  * 在时绝不误弹）→ 弹出队首按原载荷直发重发（文本+图片附件，绕开 composer
  * 共用车道防幽灵 pending）。
@@ -41,7 +41,10 @@ import { cn } from "cn";
 export const PromptQueueBar: FC = () => {
   const aui = useAui();
   const threadId = useAuiState((s) => s.threads.mainThreadId);
-  const isRunning = useAuiState((s) => s.thread.isRunning);
+  // 运行态不订阅渲染值：下降沿（清徽标/泵孤儿队列）在下方订阅控制器逐次
+  // 观察；泵内部自己读 aui.thread.getState().isRunning。渲染值会被 React
+  // 批处理合并，本轮收尾与下一轮立即派发同批到达时看不到 false 瞬间。
+  const controller = usePiController();
   const { queue, cancel, promote, steer, pop, resend } = usePiQueue();
   const steered = useSteeredBadges(threadId ?? "");
   const [busy, setBusy] = useState(false);
@@ -100,16 +103,27 @@ export const PromptQueueBar: FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queueKey]);
 
-  // isRunning 下降沿：链节派发由订阅保活原生覆盖；泵兜孤儿队列，徽标随
-  // 宿主轮流收尾清空（并入内容已随本轮回复呈现）
+  // 运行态下降沿：链节派发由订阅保活原生覆盖；泵兜孤儿队列，徽标随宿主轮
+  // 收尾清空（并入内容已随本轮回复呈现）。不比较渲染值——本轮收尾与下一轮
+  // 立即派发会被 React 合并进同一次渲染，组件看不到 false 瞬间，「已并入」
+  // 徽标因此滞留；直接订阅控制器通知逐次观察状态提交，边沿不丢。
+  // busy 判定与框架 thread.isRunning 同口径（isPiStateBusy）：runStatus 之外
+  // 还看压缩/重试——轮前压缩时 runStatus 可能已是 idle 但轮还没真正结束。
   const wasRunningRef = useRef(false);
   useEffect(() => {
-    if (wasRunningRef.current && !isRunning) {
-      if (threadId) clearSteeredBadges(threadId);
-      void pumpRef.current();
-    }
-    wasRunningRef.current = isRunning;
-  }, [isRunning, threadId]);
+    if (!threadId) return;
+    return controller.subscribe(() => {
+      const s = controller.getState();
+      const busy =
+        s.runStatus === "running" || s.compaction.active || s.retry.active;
+      const was = wasRunningRef.current;
+      wasRunningRef.current = busy;
+      if (was && !busy) {
+        clearSteeredBadges(threadId);
+        void pumpRef.current();
+      }
+    });
+  }, [controller, threadId]);
 
   const act = async (fn: () => Promise<void>) => {
     setBusy(true);

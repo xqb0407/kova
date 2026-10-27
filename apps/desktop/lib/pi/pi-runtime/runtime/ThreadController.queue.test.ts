@@ -504,6 +504,50 @@ describe("起跑上屏：压缩期间发出的消息不再等到回显", () => {
     expect(optimistic()).toHaveLength(0);
   });
 
+  it("并入回显带哨兵前缀：镜像仍被回显确认摘除（不重复）", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+
+    await fixture.controller.sendMessage(appendUser("并入的内容"));
+    const requestId = fixture.sent.at(-1)?.requestId!;
+    fixture.startPrompt(requestId);
+    // 起跑上屏：一条无前缀镜像
+    expect(userMessages(fixture.controller)).toHaveLength(1);
+
+    // 并入注入行的落盘回显带 [[queued-steer]] 前缀——比对必须剥哨兵后确认，
+    // 否则镜像永久滞留（同一内容两条气泡，2026-10-27 报障）
+    fixture.emit({
+      type: "message_start",
+      seq: 1,
+      message: {
+        role: "user",
+        content: "[[queued-steer]] 并入的内容",
+        timestamp: 0,
+      },
+    });
+    const users = userMessages(fixture.controller);
+    expect(users).toHaveLength(1);
+    expect(users[0]?.id?.startsWith("pi-optimistic:")).toBe(false);
+  });
+
+  it("队列条目并入：start 帧不再推出镜像（登记随并入撤销）", async () => {
+    const fixture = makeQueueFixture();
+    fixture.controller.connect();
+    fixture.emit({ type: "agent_start", seq: 1 });
+
+    await fixture.controller.sendMessage(appendUser("排队后并入"));
+    const requestId = fixture.sent.at(-1)?.requestId!;
+    expect(fixture.controller.getState().queue.followUp).toHaveLength(1);
+
+    await fixture.controller.queueSteer(requestId);
+    expect(fixture.steered).toEqual([requestId]);
+
+    // sidecar 注入时会为该 reqId 发 start：登记已撤销，不得推出无前缀镜像
+    //（并入回显带 [[queued-steer]] 前缀，镜像与回显会并存成两条）
+    fixture.startPrompt(requestId);
+    expect(userMessages(fixture.controller)).toHaveLength(0);
+  });
+
   it("纯图消息：auto-continue 等无关 user 行不算回显", async () => {
     const fixture = makeQueueFixture();
     fixture.controller.connect();
