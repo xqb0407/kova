@@ -114,6 +114,22 @@ export const SshConnectionDialog: FC<{
 
   if (!open) return null;
 
+  /** 私钥文件选择：显示隐藏文件（~/.ssh 默认不可见） */
+  const pickKeyFile = async () => {
+    try {
+      const { open } = await import("@/desktop-bridge/plugin-dialog");
+      const file = await open({
+        title: "选择私钥文件",
+        multiple: false,
+        showHiddenFiles: true,
+        ...(privateKeyPath.trim() ? { defaultPath: privateKeyPath.trim() } : {}),
+      });
+      if (typeof file === "string" && file) setPrivateKeyPath(file);
+    } catch {
+      // 非桌面壳
+    }
+  };
+
   const toggle = (alias: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -207,7 +223,7 @@ export const SshConnectionDialog: FC<{
 
   return (
     <Dialog open onOpenChange={(v) => (!v ? onClose() : undefined)}>
-      <DialogContent className="max-w-lg gap-5">
+      <DialogContent className="gap-5 sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{initial ? "编辑 SSH 连接" : "添加 SSH 连接"}</DialogTitle>
         </DialogHeader>
@@ -327,13 +343,22 @@ export const SshConnectionDialog: FC<{
               {authType === "key" && (
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="ssh-conn-key">私钥路径</Label>
-                  <Input
-                    id="ssh-conn-key"
-                    value={privateKeyPath}
-                    placeholder="~/.ssh/id_ed25519"
-                    className="font-mono"
-                    onChange={(e) => setPrivateKeyPath(e.target.value)}
-                  />
+                  <div className="flex gap-2">
+                    <Input
+                      id="ssh-conn-key"
+                      value={privateKeyPath}
+                      placeholder="~/.ssh/id_ed25519"
+                      className="flex-1 font-mono"
+                      onChange={(e) => setPrivateKeyPath(e.target.value)}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void pickKeyFile()}
+                    >
+                      选择…
+                    </Button>
+                  </div>
                 </div>
               )}
 

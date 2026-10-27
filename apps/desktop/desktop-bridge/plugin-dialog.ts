@@ -8,6 +8,8 @@ export interface OpenDialogOptions {
   filters?: { name: string; extensions: string[] }[];
   defaultPath?: string;
   canCreateDirectories?: boolean;
+  /** macOS：显示隐藏文件（~/.ssh 里的私钥选择必需） */
+  showHiddenFiles?: boolean;
   parent?: string;
 }
 

@@ -122,7 +122,7 @@ export const RemoteProjectDialog: FC<{
 
   return (
     <Dialog open onOpenChange={(v) => (!v ? onClose() : undefined)}>
-      <DialogContent className="max-w-lg gap-5">
+      <DialogContent className="gap-5 sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>新建远程项目</DialogTitle>
           <DialogDescription>

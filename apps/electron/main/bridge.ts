@@ -94,11 +94,18 @@ export function setupBridgeCommands(register: (name: string, fn: (args: any, ctx
   register("bridge_dialog_open", async (a, ctx) => {
     const w = BrowserWindow.fromWebContents(ctx.sender);
     const opts = a.opts ?? {};
-    const properties: ("openFile" | "openDirectory" | "multiSelections" | "createDirectory")[] = [];
+    const properties: (
+      | "openFile"
+      | "openDirectory"
+      | "multiSelections"
+      | "createDirectory"
+      | "showHiddenFiles"
+    )[] = [];
     if (opts.directory) properties.push("openDirectory");
     else properties.push("openFile");
     if (opts.multiple) properties.push("multiSelections");
     if (opts.canCreateDirectories) properties.push("createDirectory");
+    if (opts.showHiddenFiles) properties.push("showHiddenFiles");
     const filters = Array.isArray(opts.filters)
       ? opts.filters.map((f: any) => ({ name: String(f.name ?? ""), extensions: (f.extensions ?? []).map(String) }))
       : undefined;

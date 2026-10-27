@@ -347,6 +347,22 @@ const SshHostEditor: FC<{
     setForm((prev) => ({ ...prev, alias, hostname: "" }));
   };
 
+  /** 私钥文件选择：显示隐藏文件（~/.ssh 默认不可见） */
+  const pickKeyFile = async () => {
+    try {
+      const { open } = await import("@/desktop-bridge/plugin-dialog");
+      const file = await open({
+        title: "选择私钥文件",
+        multiple: false,
+        showHiddenFiles: true,
+        ...(form.privateKeyPath?.trim() ? { defaultPath: form.privateKeyPath.trim() } : {}),
+      });
+      if (typeof file === "string" && file) set("privateKeyPath", file);
+    } catch {
+      // 非桌面壳
+    }
+  };
+
   return (
     <div className="bg-muted/30 flex flex-col gap-5 rounded-2xl border p-5">
       <div className="grid grid-cols-2 gap-4">
@@ -442,12 +458,18 @@ const SshHostEditor: FC<{
       {form.authType === "key" && (
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="ssh-key">私钥路径</Label>
-          <Input
-            id="ssh-key"
-            value={form.privateKeyPath ?? ""}
-            placeholder="~/.ssh/id_ed25519"
-            onChange={(e) => set("privateKeyPath", e.target.value)}
-          />
+          <div className="flex gap-2">
+            <Input
+              id="ssh-key"
+              className="flex-1"
+              value={form.privateKeyPath ?? ""}
+              placeholder="~/.ssh/id_ed25519"
+              onChange={(e) => set("privateKeyPath", e.target.value)}
+            />
+            <Button type="button" variant="outline" onClick={() => void pickKeyFile()}>
+              选择…
+            </Button>
+          </div>
         </div>
       )}
 
