@@ -5,21 +5,21 @@
  */
 import type { GitGraphEntry } from "./git";
 
-export const GRAPH_ROW_H = 26;
-export const GRAPH_LANE_W = 14;
+export const GRAPH_ROW_H = 32;
+export const GRAPH_LANE_W = 18;
 
-/** IDEA 近似配色：按车道索引取色 */
+/** 车道配色：冷暖交替、明暗主题都不刺眼（近似 GitHub 图的色相分布） */
 export const GRAPH_COLORS = [
-  "#4c8fdf",
-  "#5aa85a",
-  "#d18a3f",
-  "#a678c9",
-  "#47b3ad",
-  "#cf5f66",
-  "#8fae3f",
-  "#6f7fe0",
-  "#c96fae",
-  "#3fa9cf",
+  "#4b8bf5",
+  "#3fb950",
+  "#d29922",
+  "#a371f7",
+  "#2bb3c0",
+  "#f85149",
+  "#db61a2",
+  "#84cc16",
+  "#b0724b",
+  "#8b949e",
 ];
 
 export type GraphRow = {

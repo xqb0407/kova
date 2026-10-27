@@ -287,7 +287,7 @@ export const Header: FC<{
   const openTrace = () => {
     if (!traceSessionId) return;
     openPanelTab("loop", { sessionId: traceSessionId });
-    // 面板开合是 Base 的本地态，经事件请求展开（与 composer「Git 图谱」同款）
+    // 面板开合是 Base 的本地态，经事件请求展开（与右侧面板开关同款）
     window.dispatchEvent(new Event("agent-panel:open"));
   };
   return (

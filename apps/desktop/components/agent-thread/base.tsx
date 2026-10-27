@@ -337,8 +337,8 @@ export const Base: FC = () => {
     const next = !panelOpenRef.current;
     applyUserPanelOpen(next);
     // 新对话（空会话）里 panelGate 关着，直接改 panelOpen 会被闸门按住
-    // 不显示（点开像没反应）；点开即经空会话旁路放行——与 composer 的
-    // 「Git 图谱」同一套机制。旁路在会话有内容或面板收起时自动清除
+    // 不显示（点开像没反应）；点开即经空会话旁路放行。旁路在会话有内容
+    // 或面板收起时自动清除
     if (next && !threadHasContentRef.current) setPanelRequestedEmpty(true);
   }, [applyUserPanelOpen]);
   // 迭代1b（P6）：宽屏右列折叠（collapsedSize=0）时不再常驻渲染整棵面板树，
@@ -371,8 +371,8 @@ export const Base: FC = () => {
   // 占位线程）一律隐藏——panelShown 随之翻转走同款收起动画。panelOpen 仍是
   // 用户本地开关偏好（localStorage 只记它），闸门翻转不改写偏好：切回有消息
   // 的会话自动恢复展开。isNewChatView 为假即"非新对话态"（有消息，或正在
-  // 加载历史）。例外：用户在空会话里显式点开面板（composer 分支菜单的
-  // 「Git 图谱」只在新对话态可见），经 panelRequestedEmpty 旁路放行。
+  // 加载历史）。例外：用户在空会话里显式点开面板（标题栏开关），经
+  // panelRequestedEmpty 旁路放行。
   const threadHasContent = useAuiState((s) => !isNewChatView(s));
   threadHasContentRef.current = threadHasContent;
   const [panelRequestedEmpty, setPanelRequestedEmpty] = useState(false);
@@ -421,9 +421,8 @@ export const Base: FC = () => {
     if (panelHydrated && panelOpen) setPanelEverOpened(true);
   }, [panelHydrated, panelOpen]);
 
-  // 面板开合是本地态；composer 等外部入口（如分支菜单的"Git 图谱"）经此事件展开。
-  // 同时置空会话旁路位：「Git 图谱」恰好只在空会话的新对话里可见，若只改
-  // panelOpen 会被 panelGate 按住不显示，点击看起来毫无反应。
+  // 面板开合是本地态；标题栏等外部入口经此事件展开。同时置空会话旁路位：
+  // 空会话里若只改 panelOpen 会被 panelGate 按住不显示，点击看起来毫无反应。
   useEffect(() => {
     const open = () => {
       applyUserPanelOpen(true);
@@ -974,7 +973,7 @@ export const Base: FC = () => {
     <div
       data-chat-card
       data-wallpaper-surface="chat"
-      className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden rounded-lg border"
+      className="bg-background border-border/60 relative flex h-full min-w-0 flex-col overflow-hidden rounded-lg "
       // 覆写 --chat-width（thread.tsx 的 --thread-max-width 消费它）：动画期间
       // 正文按结束宽排版，落位时与自然值相等
       style={

@@ -114,7 +114,8 @@ import { cn } from "cn";
 import { useGitStatus } from "@/lib/git/git-status";
 import { gitBranches, gitCheckout, type GitBranches } from "@/lib/git/git";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
-import { openPanelTab } from "@/lib/panels/panel-tabs";
+import { fmtStamp, GitGraphDialog } from "@/components/agent-thread/agent-panel/git-graph";
+import type { GitGraphEntry } from "@/lib/git/git";
 
 const ModelPicker: FC = () => {
   return <PiModelPicker />;
@@ -734,7 +735,7 @@ const WorkspaceSessionPill: FC = () => {
 /**
  * 所选工作目录的 git 分支胶囊（目录选择后自动读取该目录的仓库/分支）：
  * 点开为分支菜单——搜索、分支列表（当前分支带勾选与"未提交的更改：N 个文件"）、
- * 切换/创建检出、Git 图谱（展开右侧面板的 Git 标签）。
+ * 切换/创建检出、Git 图谱（就地弹窗查看提交图谱，不开右侧面板）。
  * 非 桌面壳 / 非 git 仓库 / 已开始对话 / 非编码模式时静默不渲染：Git 管理
  * 其他入口（面板 Git 标签、检查点卡、标题栏分支徽章）都只在编码档开放，
  * 这里跟着同一口径，避免设计/工作模式下点开一个进不去的分支菜单。
@@ -744,6 +745,7 @@ const WorkspaceBranchPill: FC = () => {
   const workspace = useWorkspace();
   const { status } = useGitStatus(workspace);
   const appMode = useCurrentAppMode();
+  const aui = useAui();
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState<GitBranches | null>(null);
@@ -752,6 +754,9 @@ const WorkspaceBranchPill: FC = () => {
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Git 图谱就地弹窗：新对话里只为看一眼提交图，不值得把整块右侧面板拉开
+  const [graphOpen, setGraphOpen] = useState(false);
+  const [graphPending, setGraphPending] = useState(false);
 
   // 打开时拉分支列表（菜单低频操作，惰性加载即可）
   useEffect(() => {
@@ -790,17 +795,37 @@ const WorkspaceBranchPill: FC = () => {
   };
 
   const openGraph = () => {
-    openPanelTab("git");
-    // 面板开合是 Base 的本地态，经事件请求展开（见 base.tsx）
-    window.dispatchEvent(new Event("agent-panel:open"));
+    setGraphPending(true);
     close();
+  };
+
+  /** 把选中的提交写进输入框：一句话自然语言，Agent 直接可读 */
+  const addCommitToContext = (entry: GitGraphEntry) => {
+    const line = `提交 ${entry.hash.slice(0, 7)}（${entry.author}，${fmtStamp(entry.time)}）：${entry.subject}`;
+    let current = "";
+    try {
+      current = (aui.composer.getState() as { text?: string })?.text ?? "";
+    } catch {
+      current = "";
+    }
+    aui.composer.setText(current.trim() ? `${current.trimEnd()}\n${line}` : line);
   };
 
   const q = query.trim().toLowerCase();
   const list = (branches?.branches ?? []).filter((b) => !q || b.name.toLowerCase().includes(q));
 
   return (
-    <DropdownMenu open={open} onOpenChange={(o) => (o ? setOpen(true) : close())}>
+    <DropdownMenu
+      open={open}
+      onOpenChange={(o) => (o ? setOpen(true) : close())}
+      // 菜单完全收起（含焦点归还）后再开弹窗：否则菜单关闭时会把焦点抢回触发器
+      onOpenChangeComplete={(o) => {
+        if (!o && graphPending) {
+          setGraphPending(false);
+          setGraphOpen(true);
+        }
+      }}
+    >
       <DropdownMenuTrigger
         render={
           <button
@@ -919,6 +944,15 @@ const WorkspaceBranchPill: FC = () => {
           ) : null}
         </div>
       </DropdownMenuContent>
+
+      {/* 图谱弹窗：菜单只负责入口，图谱在独立窗口里看（表格式列表 + 选中提交详情） */}
+      <GitGraphDialog
+        cwd={workspace}
+        branch={status.branch}
+        open={graphOpen}
+        onOpenChange={setGraphOpen}
+        onAddToContext={addCommitToContext}
+      />
     </DropdownMenu>
   );
 };
