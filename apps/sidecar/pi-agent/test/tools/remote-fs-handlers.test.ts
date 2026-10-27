@@ -125,6 +125,20 @@ describe("remote_fs_* handlers（真实 SSH 服务端）", () => {
     expect(String(after.errorText ?? "")).not.toBe("");
   }, 30_000);
 
+  test("列目录：不含 . / ..，文件与目录标志正确", async () => {
+    await call("remote_fs_mkdir", "ls-m1", { cwd: ROOT, path: "lsdir/sub" });
+    await call("remote_fs_write", "ls-w1", {
+      cwd: ROOT,
+      path: "lsdir/file.txt",
+      base64: Buffer.from("x").toString("base64"),
+    });
+    const res = await call("remote_fs_list", "ls-1", { cwd: ROOT, dir: "lsdir" });
+    const entries = res.entries as Array<{ name: string; dir: boolean }>;
+    expect(entries.map((e) => e.name).sort()).toEqual(["file.txt", "sub"]);
+    expect(entries.find((e) => e.name === "sub")?.dir).toBe(true);
+    expect(entries.find((e) => e.name === "file.txt")?.dir).toBe(false);
+  }, 30_000);
+
   test("图片/二进制 base64 读取", async () => {
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02]);
     await call("remote_fs_write", "w2", {

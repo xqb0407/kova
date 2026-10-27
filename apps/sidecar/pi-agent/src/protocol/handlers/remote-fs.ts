@@ -73,13 +73,15 @@ export const handlers: Record<string, CommandHandler> = {
       const entries = result.stdout
         .split(/\r?\n/)
         .map((line) => line.trimEnd())
-        .filter((line) => line && line !== "." && line !== "..")
+        .filter(Boolean)
         .slice(0, MAX_ENTRIES)
         .map((line) => ({
-          name: line.endsWith("/") ? line.slice(0, -1) : line,
+          // -p 给目录加尾斜杠：必须先去斜杠再判 . / ..（此前 . 输出成 "./"
+          // 逃过过滤，树里出现「可展开的伪目录 . 和 ..」并递归套娃）
+          name: line.replace(/\/+$/, ""),
           dir: line.endsWith("/"),
         }))
-        .filter((entry) => entry.name);
+        .filter((entry) => entry.name && entry.name !== "." && entry.name !== "..");
       send({
         id: reqId,
         type: "remote_fs_list_result",
