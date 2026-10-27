@@ -257,9 +257,13 @@ function sshRunOnce(
  * exitCode/stderr 组装信封——bash 工具要展示失败输出，read/write 要直接抛）。
  * mux 竞态（并行首连抢同一 ControlPath / 陈旧 socket）自动直连重试一次。
  */
-export function runSshRemote(
+/**
+ * 原始脚本执行（调用方自带 /bin/sh -c 包装，如 remoteBashScript）。
+ * 非零退出码抛 RemoteSshError（resolveOnNonZeroExit 可覆盖）；mux 竞态直连重试。
+ */
+export function runSshScript(
   target: RemoteTarget,
-  command: string,
+  script: string,
   options?: RemoteRunOptions,
 ): Promise<RemoteRunResult> {
   const timeoutMs = Math.min(
@@ -271,12 +275,21 @@ export function runSshRemote(
     ...(useMux ? targetOptions(target) : directOptions(target)),
     remoteTargetArg(target),
     "--",
-    remoteScript(command, options?.cwd),
+    script,
   ];
-  return sshRunOnce(buildArgs(true), options, cap, timeoutMs, command).catch((error) => {
+  return sshRunOnce(buildArgs(true), options, cap, timeoutMs, script).catch((error) => {
     if (error instanceof RemoteSshError && isMuxError(error.message)) {
-      return sshRunOnce(buildArgs(false), options, cap, timeoutMs, command);
+      return sshRunOnce(buildArgs(false), options, cap, timeoutMs, script);
     }
     throw error;
   });
+}
+
+/** cd 到工作目录（可选）后执行命令，统一 POSIX 语义（/bin/sh -c 包装） */
+export function runSshRemote(
+  target: RemoteTarget,
+  command: string,
+  options?: RemoteRunOptions,
+): Promise<RemoteRunResult> {
+  return runSshScript(target, remoteScript(command, options?.cwd), options);
 }

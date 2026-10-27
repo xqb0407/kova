@@ -412,6 +412,7 @@ import { handlers as gitHandlers } from "./handlers/git";
 import { handlers as checkpointHandlers } from "./handlers/checkpoint";
 import { handlers as optimizeHandlers } from "./handlers/optimize";
 import { handlers as capabilitiesHandlers } from "./handlers/capabilities";
+import { handlers as sshHandlers } from "./handlers/ssh";
 import type { CommandHandler } from "./command";
 
 /** 启动初始化闸门：模型目录就绪（自定义提供商注册/覆盖合并）之前到达的命令先缓冲，
@@ -443,6 +444,7 @@ const registry: Record<string, CommandHandler> = {
   ...gitHandlers,
   ...checkpointHandlers,
   ...capabilitiesHandlers,
+  ...sshHandlers,
 };
 
 export async function dispatch(reqId: string, msg: Record<string, unknown>) {

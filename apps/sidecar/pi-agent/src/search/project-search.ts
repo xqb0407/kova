@@ -13,7 +13,8 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { join, sep } from "node:path";
 import type { RemoteTarget } from "../types";
-import { quotePosixShellArg, runSshRemote } from "../tools/remote/ssh-exec";
+import { quotePosixShellArg } from "../tools/remote/ssh-exec";
+import { remoteExec } from "../tools/remote/exec";
 import { remoteListFiles } from "../tools/remote/remote-tool-call";
 
 /** 单次 git grep 输出字节上限（monocode 同量级：4MiB） */
@@ -198,7 +199,7 @@ export async function searchProjectDirRemote(
   let out = "";
   try {
     // 与本地同参：-z 路径 NUL 分隔、-n 行号、-F 固定串；head -c 截断防失控
-    const result = await runSshRemote(
+    const result = await remoteExec(
       target,
       `cd ${quotePosixShellArg(base)} && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && ` +
         `git grep -z -n -F -e ${quotePosixShellArg(trimmed)} -- 2>/dev/null | head -c ${GREP_MAX_BYTES}`,

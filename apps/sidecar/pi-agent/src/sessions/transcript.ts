@@ -57,7 +57,7 @@ import { sendSessionsChanged } from "../protocol/stream";
 import { getModels } from "../model/model-catalog";
 import { stripDirectiveTokens, summarizeSessionTitle } from "./session-title-summarize";
 import { logErr } from "../log";
-import type { Running, RemoteTarget, UIMessage } from "../types";
+import { sanitizeRemoteForHeader, type Running, type RemoteTarget, type UIMessage } from "../types";
 
 /** 压缩检查点行（与模型上下文的投射解耦：恢复端只需要最后一条） */
 export type CompactionRow = {
@@ -569,7 +569,8 @@ export function rewriteTranscriptHeaderCwd(
     //（本地换绑不能给所有 header 留 remote:null 脏数据）；对象 = 覆盖
     const nextHeader: Record<string, unknown> = { ...headRow, cwd };
     if (remote === null) delete nextHeader.remote;
-    else if (remote !== undefined) nextHeader.remote = remote;
+    // 密码等秘密绝不落盘：header 永远只写剥离后的形状
+    else if (remote !== undefined) nextHeader.remote = sanitizeRemoteForHeader(remote);
 
     writeAll(
       writeFd,

@@ -3,6 +3,7 @@
  * NDJSON stdio、host_cancel/host_query/请求配对/chunk 合帧（20ms/64 行）、
  * stderr 脱敏落盘、退出清场、shutdown 宽限。
  */
+import { enrichRemotePayload } from "./ssh";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -370,7 +371,7 @@ export async function piPrompt(args: {
   goalMaxDurationMinutes?: number | null;
 }): Promise<null> {
   await ensureSpawned();
-  const payload = {
+  const payload = enrichRemotePayload({
     type: "prompt",
     id: args.requestId,
     text: args.text,
@@ -384,7 +385,7 @@ export async function piPrompt(args: {
     // 此前 renderer 传了但这里没转发，sidecar 读不到（goal 建目标偏好静默丢失）
     goalAcceptanceMode: args.goalAcceptanceMode ?? null,
     goalMaxDurationMinutes: args.goalMaxDurationMinutes ?? null,
-  };
+  });
   await writeLine(JSON.stringify(payload));
   return null;
 }
@@ -421,7 +422,11 @@ const MAX_REQUEST_PAIR_TIMEOUT_MS = 300000;
 export async function piRequest(args: { payload: any; timeoutMs?: number }): Promise<string> {
   await ensureSpawned();
   const reqId = `mgr-${newRequestId()}`;
-  const msg = { ...(args.payload && typeof args.payload === "object" ? args.payload : {}) };
+  // 远程绑定载荷：渲染层只带 hostId，密码在这里解密注入（永不回渲染层）
+  const enriched = enrichRemotePayload(args.payload) as Record<string, unknown> | null | undefined;
+  const msg: Record<string, unknown> = {
+    ...(enriched && typeof enriched === "object" ? enriched : {}),
+  };
   if (args.payload && typeof args.payload === "object") msg.id = reqId;
   const waitMs =
     typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs) && args.timeoutMs > 0

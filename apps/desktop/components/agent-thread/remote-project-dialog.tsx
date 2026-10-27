@@ -27,7 +27,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { CloudOffIcon, Loader2Icon } from "lucide-react";
+import { CloudOffIcon, Loader2Icon, PlusIcon } from "lucide-react";
+import { SshConnectionDialog } from "@/components/settings/components/ssh-connection-dialog";
 import {
   saveRemoteProject,
   useRemoteProjects,
@@ -44,25 +45,28 @@ export const RemoteProjectDialog: FC<{
   const { projects } = useRemoteProjects();
   const [hosts, setHosts] = useState<SshHost[]>([]);
   const [hostsLoaded, setHostsLoaded] = useState(false);
+  const [connDialogOpen, setConnDialogOpen] = useState(false);
   const [name, setName] = useState("");
   const [hostId, setHostId] = useState("");
   const [remotePath, setRemotePath] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const loadHosts = async () => {
+    try {
+      setHosts(((await invoke("ssh_host_list", {})) as SshHost[]) ?? []);
+    } catch {
+      setHosts([]);
+    } finally {
+      setHostsLoaded(true);
+    }
+  };
+
   useEffect(() => {
     if (!open) return;
     setError(null);
     setHostsLoaded(false);
-    void (async () => {
-      try {
-        setHosts(((await invoke("ssh_host_list", {})) as SshHost[]) ?? []);
-      } catch {
-        setHosts([]);
-      } finally {
-        setHostsLoaded(true);
-      }
-    })();
+    void loadHosts();
   }, [open]);
 
   if (!open) return null;
@@ -131,7 +135,17 @@ export const RemoteProjectDialog: FC<{
 
           <div className="flex flex-col gap-1.5">
             <Label>远程主机</Label>
-            <Select value={hostId || undefined} onValueChange={(v) => v && setHostId(v)}>
+            <Select
+              value={hostId || undefined}
+              onValueChange={(v) => {
+                if (!v) return;
+                if (v === "__add__") {
+                  setConnDialogOpen(true);
+                  return;
+                }
+                setHostId(v);
+              }}
+            >
               <SelectTrigger>
                 <SelectValue placeholder="选择 SSH 主机" />
               </SelectTrigger>
@@ -141,6 +155,12 @@ export const RemoteProjectDialog: FC<{
                     {host.name}
                   </SelectItem>
                 ))}
+                <SelectItem value="__add__">
+                  <span className="text-muted-foreground inline-flex items-center gap-1.5">
+                    <PlusIcon className="size-3.5" />
+                    添加远程
+                  </span>
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -180,6 +200,17 @@ export const RemoteProjectDialog: FC<{
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      {/* 添加远程：新建连接后自动选中并刷新下拉 */}
+      <SshConnectionDialog
+        open={connDialogOpen}
+        onClose={() => setConnDialogOpen(false)}
+        onSaved={(saved) => {
+          setConnDialogOpen(false);
+          void loadHosts();
+          setHostId(saved.id);
+        }}
+      />
     </Dialog>
   );
 };

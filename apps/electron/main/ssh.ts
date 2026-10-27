@@ -17,7 +17,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { kvGet, kvSet } from "./store";
 import { logInfo, logWarn } from "./logging";
-import { encrypt } from "./secret";
+import { decrypt, encrypt } from "./secret";
 
 const HOSTS_KEY = "ssh.hosts";
 const TEST_TIMEOUT_MS = 10_000;
@@ -40,8 +40,8 @@ export type SshHost = {
   createdAt: string;
 };
 
-/** 渲染层可见形状：无秘密字段 */
-type SshHostPublic = Omit<SshHost, "passwordEnc">;
+/** 渲染层可见形状：无秘密字段（hasPassword 只报告是否已保存） */
+type SshHostPublic = Omit<SshHost, "passwordEnc"> & { hasPassword: boolean };
 
 function readHosts(): SshHost[] {
   const raw = kvGet(HOSTS_KEY);
@@ -60,8 +60,54 @@ function writeHosts(hosts: SshHost[]): void {
 }
 
 function toPublic(host: SshHost): SshHostPublic {
-  const { passwordEnc: _passwordEnc, ...rest } = host;
-  return rest;
+  const { passwordEnc, ...rest } = host;
+  return { ...rest, hasPassword: typeof passwordEnc === "string" && passwordEnc.length > 0 };
+}
+
+/** 连接目标（含解密后的密码）：只在本进程与 sidecar 之间流转，绝不回渲染层 */
+function authTarget(host: SshHost, withPassword: boolean): Record<string, unknown> {
+  // 密码认证走 ssh2：它不解析 ~/.ssh/config，alias 不能作为连接目标——
+  // 必须用显式 hostname（保存时 UI 强制要求）
+  const target: Record<string, unknown> = {
+    host: withPassword ? host.hostname.trim() : host.alias?.trim() || host.hostname.trim(),
+  };
+  if (!host.alias?.trim()) {
+    if (host.port && host.port !== 22) target.port = host.port;
+    if (host.username?.trim()) target.username = host.username.trim();
+    if (host.authType === "key" && host.privateKeyPath?.trim()) {
+      target.privateKeyPath = host.privateKeyPath.trim();
+    }
+  }
+  if (withPassword && host.passwordEnc) {
+    const dec = decrypt(host.passwordEnc);
+    if (dec.ok && dec.value) target.password = dec.value;
+  }
+  return target;
+}
+
+/**
+ * 远程绑定载荷的密码注入（pi-agent 的 piRequest 转发前调用）：
+ * 渲染层只携带 hostId 引用，密码在这里解密注入——密码永不进入
+ * 渲染层内存/日志；恢复会话时每次请求都会重新注入，天然无「重启丢密码」。
+ * 非 new_session/prompt 或不带 hostId 的载荷原样透传（顺带剥掉 hostId）。
+ */
+export function enrichRemotePayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object") return payload;
+  const p = payload as { type?: unknown; remote?: unknown };
+  if (p.type !== "new_session" && p.type !== "prompt") return payload;
+  const remote = p.remote;
+  if (!remote || typeof remote !== "object") return payload;
+  const r = remote as Record<string, unknown> & { hostId?: unknown };
+  const { hostId: _hostId, ...rest } = r;
+  if (typeof r.hostId !== "string" || !r.hostId) {
+    return { ...p, remote: rest };
+  }
+  const host = readHosts().find((h) => h.id === r.hostId);
+  if (!host) return { ...p, remote: rest };
+  const target = authTarget(host, true);
+  // 渲染层给的目标字段可能滞后（主机改过端口等）：以 main 的事实源为准，
+  // 同时保留 hostId 之外的扩展字段语义（目前没有，保守合并）
+  return { ...p, remote: { ...rest, ...target } };
 }
 
 /** 执行侧（含测试）共用的 ssh 连接参数：非交互、免首次 host key 确认、保活 */
@@ -171,6 +217,24 @@ function expandIncludeGlob(inc: string): string[] {
   }
 }
 
+/** 通过 sidecar 的 ssh2 通道做连通/目录探测（密码只在 main→sidecar 管道内） */
+async function probeViaSidecar(
+  target: Record<string, unknown>,
+  path: string | undefined,
+): Promise<{ ok: boolean; message: string; ms: number }> {
+  const { piRequest } = await import("./pi-agent");
+  const line = await piRequest({
+    payload: { type: "ssh_probe", target, ...(path ? { path } : {}) },
+    timeoutMs: 15_000,
+  });
+  const res = JSON.parse(line) as { ok?: boolean; message?: string; ms?: number };
+  return {
+    ok: res.ok === true,
+    message: typeof res.message === "string" ? res.message : "",
+    ms: typeof res.ms === "number" ? res.ms : 0,
+  };
+}
+
 /**
  * 扫描 ~/.ssh/config 的 Host 别名（含 Include 一层展开），供添加主机时下拉。
  * 不做 ssh -G 精化（Match 块/通配场景可能失真）——别名只作为「连接目标」保存，
@@ -274,6 +338,15 @@ export function setupSshCommands(register: (name: string, fn: (args: any) => any
     const id = String(a?.id ?? "");
     const host = readHosts().find((h) => h.id === id);
     if (!host) throw new Error(`host not found: ${id}`);
+    // 密码主机：ssh CLI 无法非交互输密码，探测器在 sidecar（ssh2）。
+    // 密码在本进程解密直送 sidecar，不回渲染层。
+    if (host.authType === "password") {
+      const target = authTarget(host, true);
+      if (!target.password) {
+        return { ok: false, message: "未保存密码：请勾选「记住密码」后重试", ms: 0 };
+      }
+      return probeViaSidecar(target, undefined);
+    }
     return testConnection(host);
   });
 
@@ -286,6 +359,14 @@ export function setupSshCommands(register: (name: string, fn: (args: any) => any
     if (!dir.startsWith("/")) throw new Error("path must be absolute");
     const host = readHosts().find((h) => h.id === id);
     if (!host) throw new Error(`host not found: ${id}`);
+    if (host.authType === "password") {
+      const target = authTarget(host, true);
+      if (!target.password) {
+        return { exists: false, message: "未保存密码：请勾选「记住密码」后重试", ms: 0 };
+      }
+      const probe = await probeViaSidecar(target, dir);
+      return { exists: probe.ok, message: probe.message, ms: probe.ms };
+    }
     const started = Date.now();
     const args = [
       ...sshBaseOptions(),

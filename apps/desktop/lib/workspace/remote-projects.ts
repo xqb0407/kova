@@ -28,12 +28,18 @@ export type RemoteProject = {
   createdAt: string;
 };
 
-/** sidecar new_session 的 remote 载荷（无秘密字段） */
+/**
+ * new_session/prompt 的 remote 载荷（无秘密字段）。
+ * hostId 供 Electron main 在转发前解密注入密码（密码永不进渲染层）；
+ * sidecar 清洗时丢弃 hostId，只消费连接字段。
+ */
 export type RemoteTargetPayload = {
   host: string;
   port?: number;
   username?: string;
   privateKeyPath?: string;
+  /** 主机引用：main 据此注入密码（仅 new_session/prompt 载荷） */
+  hostId?: string;
 };
 
 export type SshHost = {
@@ -45,6 +51,8 @@ export type SshHost = {
   username?: string;
   authType: "agent" | "key" | "password";
   privateKeyPath?: string;
+  /** 是否已保存密码（密码本体永不回渲染层） */
+  hasPassword?: boolean;
   enabled: boolean;
   createdAt: string;
 };
@@ -147,9 +155,17 @@ export async function resolveRemoteTargetPayload(
     const hosts = (await invoke("ssh_host_list", {})) as SshHost[];
     const host = (hosts ?? []).find((h) => h.id === project.hostId && h.enabled);
     if (!host) return null;
+    // 密码认证走 ssh2（不解析 ~/.ssh/config）：别名不可作为目标，必须显式主机名
+    if (host.authType === "password") {
+      if (!host.hostname?.trim()) return null;
+      const target: RemoteTargetPayload = { host: host.hostname.trim(), hostId: host.id };
+      if (host.port && host.port !== 22) target.port = host.port;
+      if (host.username?.trim()) target.username = host.username.trim();
+      return target;
+    }
     // 别名直连：host 存别名，解析交给 ~/.ssh/config（port/username/keyPath 随配置）
-    if (host.alias) return { host: host.alias };
-    const target: RemoteTargetPayload = { host: host.hostname };
+    if (host.alias) return { host: host.alias, hostId: host.id };
+    const target: RemoteTargetPayload = { host: host.hostname, hostId: host.id };
     if (host.port && host.port !== 22) target.port = host.port;
     if (host.username?.trim()) target.username = host.username.trim();
     if (host.authType === "key" && host.privateKeyPath?.trim()) {

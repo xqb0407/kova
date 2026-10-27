@@ -241,7 +241,7 @@ export type SteerEntry = {
   seq?: number;
 };
 
-/** 远程执行目标（SSH）：会话绑定后工具调用经 SSH 在远端执行（v1 仅密钥/agent 认证） */
+/** 远程执行目标（SSH）：会话绑定后工具调用经 SSH 在远端执行 */
 export type RemoteTarget = {
   /** 主机名/IP 或 ~/.ssh/config 别名（别名时 port/username 交由 ssh config 解析） */
   host: string;
@@ -249,7 +249,18 @@ export type RemoteTarget = {
   username?: string;
   /** 私钥路径（可选；缺省走 agent / 默认密钥） */
   privateKeyPath?: string;
+  /**
+   * 密码（仅密码认证主机）：只存在于进程内存与 SSH 连接配置，
+   * **绝不写入转录 header / 日志**（见 sanitizeRemoteForHeader）。
+   */
+  password?: string;
 };
+
+/** 去掉密码等秘密后的远程目标（转录 header 落盘唯一允许的形状） */
+export function sanitizeRemoteForHeader(remote: RemoteTarget): Omit<RemoteTarget, "password"> {
+  const { password: _password, ...rest } = remote;
+  return rest;
+}
 
 /** threadId 对应的活动会话（每个前端线程一个 Agent 实例） */
 export type Running = {

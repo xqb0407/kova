@@ -11,17 +11,10 @@
  * - 检查点由调用方（hostTool 分流处）跳过；
  * - 密钥注入/访问加速环境不生效（那些是 Rust 侧注入的本地派生 env）。
  */
-import { spawn, type ChildProcess } from "node:child_process";
 import { extname, isAbsolute, posix } from "node:path";
 import type { RemoteTarget } from "../../types";
-import {
-  quotePosixShellArg,
-  remoteBashScript,
-  remoteTargetArg,
-  runSshRemote,
-  targetOptions,
-  REMOTE_OUTPUT_CAP_BYTES,
-} from "./ssh-exec";
+import { quotePosixShellArg, REMOTE_OUTPUT_CAP_BYTES } from "./ssh-exec";
+import { remoteExec, remoteExecBash, startRemoteBash } from "./exec";
 
 /** 与 Rust 信封对齐的结果形状（见 hostdb.ts hostToolCall 泛型） */
 export type RemoteToolResult = {
@@ -69,7 +62,8 @@ export function assertWriteInRoot(cwd: string, absPath: string): void {
 type RemoteBgTask = {
   id: number;
   owner: string;
-  proc: ChildProcess;
+  /** 停止句柄（CLI 子进程或 ssh2 通道，见 exec.ts startRemoteBash） */
+  stop: () => void;
   chunks: string[];
   bytes: number;
   truncated: boolean;
@@ -105,11 +99,9 @@ async function remoteBash(
     const timeoutMs = Math.min(Math.max(Number(params.timeout) || 120_000, 1_000), 600_000);
     // stderr 经脚本的 exec 2>&1 并入 stdout（按真实先后交错，排查构建日志必需）；
     // bash 语义：命令失败（含 cd 失败）是结果不是异常——exitCode 进信封
-    const result = await runSshRemote(target, command, {
-      cwd,
+    const result = await remoteExecBash(target, command, cwd, {
       timeoutMs,
       signal,
-      resolveOnNonZeroExit: true,
     });
     const output = result.truncated
       ? `${result.stdout}\n…[output truncated at ${Math.round(REMOTE_OUTPUT_CAP_BYTES / 1024)}KB]`
@@ -117,18 +109,13 @@ async function remoteBash(
     return { output, exitCode: result.exitCode, truncated: result.truncated || undefined };
   }
 
-  // 后台：本地 ssh 进程即任务句柄，输出进内存（tail 256KB 语义对齐 Rust）
+  // 后台：CLI 子进程 / ssh2 通道统一句柄，输出进内存（tail 256KB 语义对齐 Rust）
   evictDoneBgTasks();
   const id = nextBgTaskId++;
-  const child = spawn(
-    "ssh",
-    [...targetOptions(target), remoteTargetArg(target), "--", remoteBashScript(command, cwd)],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
   const task: RemoteBgTask = {
     id,
     owner,
-    proc: child,
+    stop: () => {},
     chunks: [],
     bytes: 0,
     truncated: false,
@@ -136,31 +123,16 @@ async function remoteBash(
     exitCode: null,
   };
   bgTasks.set(id, task);
-  child.stdout?.on("data", (chunk: Buffer) => {
-    if (task.bytes >= BG_OUTPUT_CAP) {
-      task.truncated = true;
-      return;
-    }
+  const handle = startRemoteBash(target, command, cwd, (chunk) => {
+    if (task.done) return;
     task.bytes += chunk.length;
-    task.chunks.push(
-      task.bytes > BG_OUTPUT_CAP
-        ? chunk.subarray(0, chunk.length - (task.bytes - BG_OUTPUT_CAP)).toString("utf8")
-        : chunk.toString("utf8"),
-    );
     if (task.bytes >= BG_OUTPUT_CAP) task.truncated = true;
+    task.chunks.push(chunk);
   });
-  child.stderr?.on("data", (chunk: Buffer) => {
-    if (task.bytes >= BG_OUTPUT_CAP) return;
-    task.bytes += chunk.length;
-    task.chunks.push(chunk.toString("utf8"));
-  });
-  child.on("close", (code) => {
+  task.stop = handle.stop;
+  void handle.whenDone.then((code) => {
     task.done = true;
     task.exitCode = code ?? 0;
-  });
-  child.on("error", () => {
-    task.done = true;
-    task.exitCode = -1;
   });
   return {
     output: `Background task started (taskId: ${id}). Use task_output to read collected output; task_stop to kill.`,
@@ -196,8 +168,7 @@ function remoteTaskStop(params: Record<string, unknown>, owner: string): RemoteT
   }
   if (!task.done) {
     // 杀本地 ssh：通道关闭 → 远端命令树收 SIGHUP。2s 后强杀兜忽略 TERM 的进程
-    task.proc.kill("SIGTERM");
-    setTimeout(() => task.proc.kill("SIGKILL"), 2_000).unref?.();
+    task.stop();
     return { output: `Task ${taskId} kill signal sent (process tree terminating).` };
   }
   return { output: `Task ${taskId} already finished (exit ${task.exitCode}).` };
@@ -216,7 +187,7 @@ async function remoteRead(
   if (mime) {
     // 图片：base64 直读（≤2MiB），信封形状与 Rust read 一致
     // base64 -w 0 是 GNU；busybox/macOS 用 openssl base64 -A 兜底
-    const { stdout } = await runSshRemote(
+    const { stdout } = await remoteExec(
       target,
       `base64 -w 0 ${quotePosixShellArg(abs)} 2>/dev/null || openssl base64 -A -in ${quotePosixShellArg(abs)}`,
       { cwd, signal, maxOutputBytes: Math.ceil((IMAGE_MAX_BYTES * 4) / 3) + 64 },
@@ -235,14 +206,14 @@ async function remoteRead(
   // offset/limit 取整：模型传 2.5 这类小数会让 sed '2.5,10p' 直接语法报错
   const offset = Math.max(1, Math.floor(Number(params.offset) || 1));
   const limit = Math.max(1, Math.min(Math.floor(Number(params.limit) || 2000), 2000));
-  const stat = await runSshRemote(target, `wc -l < ${quotePosixShellArg(abs)}`, {
+  const stat = await remoteExec(target, `wc -l < ${quotePosixShellArg(abs)}`, {
     cwd,
     signal,
     timeoutMs: 30_000,
   });
   const totalLines = Number(stat.stdout.trim().split(/\s+/).pop()) || 0;
   const endLine = offset + limit - 1;
-  const { stdout } = await runSshRemote(
+  const { stdout } = await remoteExec(
     target,
     `sed -n '${offset},${endLine}p' ${quotePosixShellArg(abs)} | cat -n`,
     { cwd, signal },
@@ -279,12 +250,12 @@ async function remoteWrite(
   assertWriteInRoot(cwd, abs);
   const append = params.mode === "append";
   const dir = posix.dirname(abs.replaceAll("\\", "/"));
-  await runSshRemote(target, `mkdir -p ${quotePosixShellArg(dir)}`, {
+  await remoteExec(target, `mkdir -p ${quotePosixShellArg(dir)}`, {
     cwd,
     signal,
     timeoutMs: 30_000,
   });
-  await runSshRemote(
+  await remoteExec(
     target,
     `cat ${append ? ">>" : ">"} ${quotePosixShellArg(abs)}`,
     { cwd, signal, stdin: content, timeoutMs: 60_000 },
@@ -310,7 +281,7 @@ async function remoteEdit(
   assertWriteInRoot(cwd, abs);
   // 读全文 → 本侧替换 → 写回（语义与本地 edit 一致：精确匹配 + 唯一性）。
   // 上限内必须整读整写：默认 512KB 输出上限会把中等文件截断，写回即丢数据
-  const stat = await runSshRemote(target, `wc -c < ${quotePosixShellArg(abs)}`, {
+  const stat = await remoteExec(target, `wc -c < ${quotePosixShellArg(abs)}`, {
     cwd,
     signal,
     timeoutMs: 30_000,
@@ -321,7 +292,7 @@ async function remoteEdit(
       `file too large for edit (${Math.round(totalBytes / 1024)}KB > 2MiB); split the change or use bash + sed`,
     );
   }
-  const { stdout } = await runSshRemote(target, `cat ${quotePosixShellArg(abs)}`, {
+  const { stdout } = await remoteExec(target, `cat ${quotePosixShellArg(abs)}`, {
     cwd,
     signal,
     maxOutputBytes: READ_MAX_BYTES,
@@ -341,7 +312,7 @@ async function remoteEdit(
   const updated = replaceAll
     ? content.replaceAll(oldString, newString)
     : content.replace(oldString, newString);
-  await runSshRemote(target, `cat > ${quotePosixShellArg(abs)}`, {
+  await remoteExec(target, `cat > ${quotePosixShellArg(abs)}`, {
     cwd,
     signal,
     stdin: updated,
@@ -386,7 +357,7 @@ export async function remoteListFiles(
   base: string,
   signal?: AbortSignal,
 ): Promise<string[]> {
-  const result = await runSshRemote(
+  const result = await remoteExec(
     target,
     // 排除 node_modules/.git 与「隐藏目录之下」的文件；隐藏文件本身保留
     //（与本地 walkFiles 语义一致：跳隐藏目录、不跳隐藏文件）

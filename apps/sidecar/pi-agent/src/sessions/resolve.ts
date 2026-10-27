@@ -107,7 +107,7 @@ import { buildHookPayload, fireHookEvent, runHooks } from "../agent/hooks";
 import { getAutomationPolicy } from "../automation/policy";
 import { decodeThemeColumn, getLastUsedDesignTheme } from "../design-md/state";
 import type { ThemeRef } from "../design-md/store";
-import type { ApprovalLevel, RemoteTarget, Running, SessionMode } from "../types";
+import { sanitizeRemoteForHeader, type ApprovalLevel, type RemoteTarget, type Running, type SessionMode } from "../types";
 
 /** kv pi.mode 的载重（applyMode 写入的「最近一次使用的模式偏好」） */
 type PlanningModePrefs = { mode: SessionMode; approvalLevel: ApprovalLevel };
@@ -768,7 +768,13 @@ const hasNoUserTurn = (messages: readonly { role?: string }[]): boolean =>
  */
 export function sanitizeRemoteTargetInput(raw: unknown): RemoteTarget | undefined {
   if (!raw || typeof raw !== "object") return undefined;
-  const r = raw as { host?: unknown; port?: unknown; username?: unknown; privateKeyPath?: unknown };
+  const r = raw as {
+    host?: unknown;
+    port?: unknown;
+    username?: unknown;
+    privateKeyPath?: unknown;
+    password?: unknown;
+  };
   const host = String(r.host ?? "").trim();
   if (!host) return undefined;
   const port =
@@ -782,6 +788,9 @@ export function sanitizeRemoteTargetInput(raw: unknown): RemoteTarget | undefine
     ...(typeof r.privateKeyPath === "string" && r.privateKeyPath.trim()
       ? { privateKeyPath: r.privateKeyPath.trim() }
       : {}),
+    // 密码认证：密码随请求下发（本地 IPC + 管道内明文，仅存内存；
+    // header 落盘前由 sanitizeRemoteForHeader 剥离）
+    ...(typeof r.password === "string" && r.password.length > 0 ? { password: r.password } : {}),
   };
 }
 
@@ -797,7 +806,21 @@ async function attachRemoteIfMatched(
   safeCwd: string | undefined,
   remote: RemoteTarget | undefined,
 ): Promise<void> {
-  if (!remote || run.remoteTarget || !safeCwd) return;
+  if (!remote || !safeCwd) return;
+  if (run.remoteTarget) {
+    // 已绑定：只补缺失的密码（转录 header 不落密码；恢复的会话靠这里、
+    // 在每次请求携带的密码上回填）。目标身份必须一致才补，防止配错主机
+    if (
+      !run.remoteTarget.password &&
+      remote.password &&
+      run.remoteTarget.host === remote.host &&
+      (run.remoteTarget.port ?? 22) === (remote.port ?? 22) &&
+      (run.remoteTarget.username ?? "") === (remote.username ?? "")
+    ) {
+      run.remoteTarget = { ...run.remoteTarget, password: remote.password };
+    }
+    return;
+  }
   if ((run.persistedCwd ?? "") !== safeCwd) return;
   run.remoteTarget = remote;
   try {
@@ -933,8 +956,9 @@ export async function resolveSession(
         id: sessionId,
         cwd: persistedCwd,
         created_at: now,
-        // 远程项目会话：绑定随请求写入 header（恢复时读回，DB 无此列）
-        ...(remote ? { remote } : {}),
+        // 远程项目会话：绑定随请求写入 header（恢复时读回，DB 无此列）；
+        // 密码等秘密绝不落盘
+        ...(remote ? { remote: sanitizeRemoteForHeader(remote) } : {}),
       }) + "\n",
     );
     resolvedRemote = remote ?? null;

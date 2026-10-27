@@ -3,7 +3,7 @@
  * 转录 header 的 remote 持久化）。SSH 传输本身不在单测面内（需真机）。
  */
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -134,6 +134,13 @@ describe("sanitizeRemoteTargetInput（new_session/prompt 共用清洗）", () =>
     expect(sanitizeRemoteTargetInput({ host: "" })).toBeUndefined();
   });
 
+  test("密码原样保留（仅内存，header 落盘前另行剥离）", () => {
+    expect(
+      sanitizeRemoteTargetInput({ host: "h", username: "u", password: "p@ss" })?.password,
+    ).toBe("p@ss");
+    expect(sanitizeRemoteTargetInput({ host: "h", password: "" })?.password).toBeUndefined();
+  });
+
   test("port 挡 NaN/越界/小数", () => {
     expect(sanitizeRemoteTargetInput({ host: "h", port: Number.NaN })?.port).toBeUndefined();
     expect(sanitizeRemoteTargetInput({ host: "h", port: 0 })?.port).toBeUndefined();
@@ -176,6 +183,19 @@ describe("transcript header remote 持久化", () => {
       // 传 null → 清除
       rewriteTranscriptHeaderCwd(sessionId, "/local/dir", null);
       expect(readTranscriptHeaderRemote(sessionId)).toBeNull();
+
+      // 密码认证目标：header 落盘必须剥离 password（秘密不落盘）
+      rewriteTranscriptHeaderCwd(sessionId, "/home/user/project", {
+        host: "pw-host",
+        username: "ubuntu",
+        password: "top-secret",
+      });
+      const raw = readFileSync(sessionPath(sessionId), "utf8").split("\n")[0] ?? "";
+      expect(raw).not.toContain("top-secret");
+      expect(readTranscriptHeaderRemote(sessionId)).toEqual({
+        host: "pw-host",
+        username: "ubuntu",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

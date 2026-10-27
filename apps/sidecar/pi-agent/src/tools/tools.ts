@@ -49,7 +49,7 @@ import { buildSearchExternalFilesTool } from "./external-dir-tools";
 import type { ExternalDir } from "pi-protocol";
 import { resolveSecretEnv } from "../secrets/secrets";
 import { remoteListFiles, remoteToolCall } from "./remote/remote-tool-call";
-import { runSshRemote } from "./remote/ssh-exec";
+import { remoteExec } from "./remote/exec";
 
 /** glob/grep 遍历与输出的上限，防止在超大目录上失控 */
 const MAX_WALKED_FILES = 5000;
@@ -231,7 +231,7 @@ function buildGrepTool(
         const cmd = `grep -rnIE${includeOpt} --exclude-dir=node_modules --exclude-dir=.git -e '${pattern.replaceAll("'", `'\\''`)}' ${quoted} 2>/dev/null | head -c ${256 * 1024}`;
         let out: string;
         try {
-          const result = await runSshRemote(remoteTarget, cmd, { cwd, timeoutMs: 60_000 });
+          const result = await remoteExec(remoteTarget, cmd, { cwd, timeoutMs: 60_000 });
           out = result.stdout;
         } catch (error) {
           throw new Error(

@@ -73,7 +73,9 @@ workspace-store ─────┼─► new_session {cwd, remote} ──► run
 
 ## 阶段 E（后续，不阻塞 v1）
 
-1. 密码认证：ssh2 库 + keyboard-interactive + 错误归一化 + SFTP→exec 降级。
+1. ~~密码认证~~ **已实现**：密码主机走 ssh2（连接池 + keyboard-interactive）；
+   密码只存在于 main→sidecar 管道与进程内存，渲染层仅见 hasPassword 标志，
+   main 在每次请求转发前解密注入（`enrichRemotePayload`），转录 header 落盘剥离。
 2. 远端目录浏览（`ssh host ls`）。
 3. 远端检查点（store IO 适配器）。
 4. 连接池调优（观察 ControlMaster 休眠恢复表现）。
