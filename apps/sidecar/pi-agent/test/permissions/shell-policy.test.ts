@@ -32,6 +32,17 @@ describe("shell-policy: 查看/验证", () => {
     expect(classify("echo ok >/dev/null")).toBe("inspect");
   });
 
+  test("fd 复制重定向不是文件写入（2>&1 真实踩坑回归）", () => {
+    expect(classify("ls -la /home/zkuser/test.html 2>&1")).toBe("inspect");
+    expect(
+      classify(`ls -la /home/zkuser/test.html 2>&1; echo "---"; wc -l /home/zkuser/test.html 2>&1`),
+    ).toBe("inspect");
+    expect(classify("cat a.txt 2>&1")).toBe("inspect");
+    expect(classify("printf x >&2")).toBe("inspect");
+    // 真正的重定向到项目内文件仍是写
+    expect(classify("echo hi > out.txt")).toBe("inline-edit");
+  });
+
   test("测试/构建/类型检查", () => {
     expect(classify("pnpm test")).toBe("verify");
     expect(classify("bun test")).toBe("verify");

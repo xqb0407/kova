@@ -9,6 +9,7 @@ import { Server, utils } from "ssh2";
 import {
   runSshRemote,
   remoteScript,
+  quotePosixShellArg,
   REMOTE_OUTPUT_CAP_BYTES,
 } from "../../src/tools/remote/ssh-exec";
 import { remoteExec, remoteExecBash } from "../../src/tools/remote/exec";
@@ -35,8 +36,11 @@ beforeAll(async () => {
         const session = accept();
         session.on("exec", (acceptExec, _reject, info) => {
           const stream = acceptExec();
-          // 模拟远端 shell：把命令串交给 /bin/sh -c（与真实 sshd 同语义）
+          // 模拟远端 shell：命令串交给 /bin/sh -c；客户端 stdin 转发给子进程
+          //（cat > file 依赖 EOF 才收尾——不转发就是 60s 挂起）
           const child = spawn("/bin/sh", ["-c", info.command]);
+          stream.on("data", (d: Buffer) => child.stdin.write(d));
+          stream.on("end", () => child.stdin.end());
           child.stdout.on("data", (d) => stream.write(d));
           child.stderr.on("data", (d) => stream.stderr.write(d));
           child.on("exit", (code) => {
@@ -123,6 +127,42 @@ describe("ssh2 密码认证（真实服务端）", () => {
     expect(res.truncated).toBe(true);
     expect(res.stdout.length).toBeLessThanOrEqual(REMOTE_OUTPUT_CAP_BYTES);
   }, 30_000);
+
+  test("stdin 写入：cat > file 不挂起且内容完整（write/edit 链路回归）", async () => {
+    const file = `/tmp/kova-ssh2-stdin-${Date.now()}.txt`;
+    const content = "line-1\nline-2\n写入内容\n";
+    const res = await remoteExec(
+      target(PASSWORD),
+      `cat > ${quotePosixShellArg(file)}`,
+      { stdin: content, timeoutMs: 10_000 },
+    );
+    expect(res.exitCode).toBe(0);
+    const back = await remoteExec(target(PASSWORD), `cat ${quotePosixShellArg(file)}`, {
+      timeoutMs: 10_000,
+    });
+    expect(back.stdout).toBe(content);
+    await remoteExec(target(PASSWORD), `rm -f ${quotePosixShellArg(file)}`, {
+      timeoutMs: 10_000,
+    });
+  }, 20_000);
+
+  test("后台任务（execSsh2Stream）：echo 正常收尾，不因 stdin 未关挂住", async () => {
+    const { execSsh2Stream } = await import("../../src/tools/remote/ssh2-client");
+    const chunks: string[] = [];
+    const handle = await execSsh2Stream(
+      target(PASSWORD) as {
+        host: string;
+        port: number;
+        username: string;
+        password: string;
+      },
+      "printf bg-ok",
+      (chunk) => chunks.push(chunk),
+    );
+    const code = await handle.whenClose;
+    expect(code).toBe(0);
+    expect(chunks.join("")).toContain("bg-ok");
+  }, 20_000);
 
   test("分发器：无密码目标仍走 CLI 路径（不受 ssh2 影响）", async () => {
     // 无密码目标走 runSshRemote；127.0.0.1 无 key 认证会失败——只要不是

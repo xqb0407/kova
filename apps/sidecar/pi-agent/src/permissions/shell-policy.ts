@@ -208,6 +208,10 @@ function classifyRedirect(
   // 输入重定向（< file）不写盘；2>&1 这类 fd 复制也不是文件写入。
   if (!text.includes(">")) return "inspect";
   if (!dest || dest.startsWith("&")) return "inspect";
+  // fd 复制必须按 destination 节点类型判：tree-sitter 把 `2>&1` 的 `&`
+  // 归入运算符，destination 只剩数字 "1"（word 节点才算文件路径）。
+  // 只看 startsWith("&") 会把 `ls ... 2>&1` 误判成写项目内文件 /1。
+  if (destNode?.type === "number" || /^\d+$/.test(dest)) return "inspect";
   if (dest === "/dev/null" || dest === "/dev/stdout" || dest === "/dev/stderr") {
     return "inspect";
   }

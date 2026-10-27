@@ -161,6 +161,8 @@ export type Ssh2RunOptions = {
   signal?: AbortSignal;
   maxOutputBytes?: number;
   resolveOnNonZeroExit?: boolean;
+  /** 写入远端命令 stdin（write/edit 的 cat 管道用） */
+  stdin?: string | Buffer;
 };
 
 /** ssh2 exec：与 runSshRemote 同信封（stdout/stderr 分流收集，截断标记） */
@@ -193,6 +195,18 @@ export function runSsh2Remote(
           let truncated = false;
           const stdout: Buffer[] = [];
           const stderr: Buffer[] = [];
+          // 关键：ssh2 的 exec 不会自动关闭远端 stdin。读 stdin 的命令
+          //（cat > file、read、heredoc 落盘）会永远等 EOF——不写这里
+          // 就是 60s 超时（实测踩坑）。channel 是 Duplex：end() 只发 EOF，
+          // 读取方向继续由 data/close 事件收。
+          channel.on("error", () => {
+            /* 远端提前退出时的 EPIPE 归 close 分支 */
+          });
+          if (options?.stdin != null) {
+            channel.end(options.stdin);
+          } else {
+            channel.end();
+          }
           const timer = setTimeout(() => {
             if (settled) return;
             settled = true;
@@ -298,6 +312,11 @@ export function execSsh2Stream(
             return;
           }
           let settled = false;
+          // 后台任务不提供 stdin：立即发 EOF，否则 `cat` 类命令会一直挂着
+          channel.on("error", () => {
+            /* 关闭侧的迟到错误忽略 */
+          });
+          channel.end();
           const handle: Ssh2StreamHandle = {
             stop: () => {
               try {
