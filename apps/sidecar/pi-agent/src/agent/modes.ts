@@ -785,7 +785,7 @@ export function modeBeforeToolCall(
     return {
       block: true,
       reason:
-        "Shell hand-edits are blocked: this command would modify project files outside write/edit, bypassing the per-file diff and checkpoint. Use edit for partial changes or write for new/full files.",
+        "Shell hand-edits are blocked: this command would modify project files outside write/edit, bypassing the per-file diff and checkpoint. Use edit for partial changes or write for new/full files (write with mode \"append\" to extend a large file in parts). Do not retry the same change through another shell command.",
     };
   }
   if (!isPlanTool && !isGoalTool) return undefined;

@@ -91,7 +91,9 @@ export function classifyShellCommand(
     const tree = parser.parse(text);
     if (!tree) return classifyFallback(text, context);
     try {
-      return classifyNode(tree.rootNode, context);
+      // 本次分类独享可变副本：&& 链上的字面量 cd 会改写副本的 cwd，
+      // 调用方的 context 与递归子调用（bash -c / pnpm exec 的子 shell）互不泄漏
+      return classifyNode(tree.rootNode, { ...context });
     } finally {
       tree.delete();
     }
@@ -114,10 +116,22 @@ function classifyNode(node: SyntaxNode, context: ShellPolicyContext): ShellOpera
       return classifyCommandNode(node, context);
     case "redirected_statement": {
       const body = node.childForFieldName("body");
+      const beforeCwd = context.cwd;
       let out: ShellOperationClass = body ? classifyNode(body, context) : "inspect";
+      const afterCwd = context.cwd;
+      // redirect 绑定的是 body 的最后一条命令，按它的真实落点解析：
+      // - body 是 `&&` 链：redirect 挂在链尾（cd /tmp && cat > x 的 x 在 cd
+      //   成功后打开）→ 用传播后的 afterCwd；
+      // - body 是单条命令：redirect 在该命令执行前打开（cd /tmp > log 的 log
+      //   落在原目录）→ 用 beforeCwd；
+      // - `||` 链右侧条件执行，落点不确定 → 保守用 beforeCwd。
+      const bodyIsAndList =
+        body?.type === "list" && !body.children.some((child) => child.type === "||");
+      context.cwd = bodyIsAndList ? afterCwd : beforeCwd;
       for (const redirect of node.childrenForFieldName("redirect")) {
         out = worse(out, classifyRedirect(redirect, context));
       }
+      context.cwd = afterCwd;
       return out;
     }
     case "file_redirect":
@@ -126,8 +140,9 @@ function classifyNode(node: SyntaxNode, context: ShellPolicyContext): ShellOpera
     case "herestring_redirect":
       return mergeChildren(node, context, "inspect");
     case "pipeline":
-    case "list":
       return mergeChildren(node, context);
+    case "list":
+      return classifyList(node, context);
     case "command_substitution":
     case "process_substitution": {
       const inner = mergeChildren(node, context, "inspect");
@@ -166,11 +181,37 @@ function mergeChildren(
   let out = initial;
   for (const child of node.namedChildren) {
     if (child.type === "comment") continue;
-    out = worse(out, classifyNode(child, context));
+    // cd 只在 && 链上传播（classifyList）；其余兄弟（`;`/换行/pipeline/子 shell
+    // 边界）一律用进来的 cwd，子树的改动即弃——宁严勿松的保守口径
+    const savedCwd = context.cwd;
+    const childCls = classifyNode(child, context);
+    context.cwd = savedCwd;
+    out = worse(out, childCls);
     // inline-edit 已经是最坏分类，后面不可能再升级，提前收工。
     if (out === "inline-edit") return out;
   }
   return out;
+}
+
+/** tree-sitter-bash 的 list 是二元 `left op right`，op 只有 `&&`/`||`（grammar.js）。
+ *  `&&` 左侧必然执行成功后右侧才跑，字面量 cd 的 cwd 改动传播给右侧是安全的；
+ *  `||` 两侧都是条件执行，两边都用进来的 cwd、改动不外泄。`;`/换行不构成 list，
+ *  走 mergeChildren 的"兄弟即弃"口径。 */
+function classifyList(node: SyntaxNode, context: ShellPolicyContext): ShellOperationClass {
+  const [left, right] = node.namedChildren;
+  if (!left || !right) return mergeChildren(node, context);
+  const isOr = node.children.some((child) => child.type === "||");
+  if (isOr) {
+    const savedCwd = context.cwd;
+    const leftCls = classifyNode(left, context);
+    context.cwd = savedCwd;
+    const rightCls = classifyNode(right, context);
+    context.cwd = savedCwd;
+    return worse(leftCls, rightCls);
+  }
+  const leftCls = classifyNode(left, context);
+  const rightCls = classifyNode(right, context);
+  return worse(leftCls, rightCls);
 }
 
 function classifyCommandNode(
@@ -191,7 +232,33 @@ function classifyCommandNode(
     out = worse(out, classifyNode(child, context));
     if (out === "inline-edit") return out;
   }
+  // 字面量 cd 才跟踪 cwd：&& 右侧的 redirect 才能按真实落点解析
+  // （cd /tmp && cat > x）。展开类参数内容不可见不跟踪；find -exec / xargs 的
+  // 内层命令走 classifyCommand，不经这里，不会误更新。
+  if (name === "cd" && args.length === 1) {
+    const next = literalCdTarget(node, context);
+    if (next) context.cwd = next;
+  }
   return out;
+}
+
+/** cd 的唯一参数是否为纯字面路径；是则返回按当前 cwd 解析后的绝对路径。 */
+function literalCdTarget(node: SyntaxNode, context: ShellPolicyContext): string | null {
+  const argNodes = node.childrenForFieldName("argument");
+  const argNode = argNodes[argNodes.length - 1];
+  if (!argNode) return null;
+  // word = 裸路径；string/raw_string = 引号路径。concatenation/expansion 一律拒绝。
+  if (argNode.type !== "word" && argNode.type !== "string" && argNode.type !== "raw_string") {
+    return null;
+  }
+  const dest = unquote(argNode.text).trim();
+  // 任何可能带展开的写法（$ ` * ? [ { ~）不跟踪；`-`/选项形态语义不确定
+  if (!dest || dest === "-" || dest.startsWith("-") || /[$`*?[{~]/.test(dest)) return null;
+  try {
+    return isAbsolute(dest) ? resolve(dest) : resolve(context.cwd ?? process.cwd(), dest);
+  } catch {
+    return null;
+  }
 }
 
 function classifyRedirect(

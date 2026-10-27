@@ -227,6 +227,54 @@ describe("shell-policy: 动态结构", () => {
   });
 });
 
+describe("shell-policy: cd 跟踪（&& 链）", () => {
+  test("&& 链上的字面量 cd 传播 cwd：/tmp 写不算项目手写（真实踩坑回归）", () => {
+    expect(classify("cd /tmp && cat > x")).toBe("inspect");
+    expect(
+      classify("cd /tmp && mkdir -p dbcheck && cd dbcheck && cat > check.js <<'EOF'\nx\nEOF"),
+    ).not.toBe("inline-edit");
+    expect(
+      classify("cd /tmp && rm -rf cdp && mkdir -p cdp && cd cdp && cat > probe.js <<'PROBE'\nx\nPROBE"),
+    ).not.toBe("inline-edit");
+    expect(classify('cd "/tmp" && cat > x')).toBe("inspect");
+    expect(classify("true && cd /tmp && cat > x")).toBe("inspect");
+    expect(classify("cd /tmp && cat > x | head -3")).toBe("inspect");
+  });
+
+  test("cd 进项目内仍是手写；绝对路径落点优先于 cd", () => {
+    expect(classify("cd sub && echo x > f")).toBe("inline-edit");
+    expect(classify("cd sub && cd .. && echo x > f")).toBe("inline-edit");
+    expect(classify(`cd /tmp && echo x > ${PROJ}/f`)).toBe("inline-edit");
+  });
+
+  test("保守边界：`;`/换行/||/动态 cd/pipeline 内 cd 不传播", () => {
+    expect(classify("cd /tmp; cat > x")).toBe("inline-edit");
+    expect(classify("cd /tmp\ncat > x")).toBe("inline-edit");
+    expect(classify("cd /tmp || cat > x")).toBe("inline-edit");
+    expect(classify("cd $TMPDIR && cat > x")).toBe("inline-edit");
+    expect(classify("cd - && cat > x")).toBe("inline-edit");
+    expect(classify("cd /tmp | cat > x")).toBe("inline-edit");
+    expect(classify("(cd /tmp && cat > x) && cat > y")).toBe("inline-edit");
+  });
+
+  test("解析后的落点在项目外也不在临时根：managed-write", () => {
+    expect(classify("cd /tmp && cat > ../x")).toBe("managed-write");
+  });
+
+  test("子 shell 内的 cd 只影响子 shell", () => {
+    expect(classify("(cd /tmp && cat > x)")).not.toBe("inline-edit");
+  });
+
+  test("远程 POSIX cwd 同样适用", () => {
+    expect(
+      classifyShellCommand("cd /tmp && cat > x", {
+        cwd: "/home/zkuser/project",
+        roots: ["/home/zkuser/project"],
+      }),
+    ).toBe("inspect");
+  });
+});
+
 describe("shell-policy: fallback", () => {
   test("解析器不可用时仍能识别高信号写入", () => {
     resetShellPolicyForTest();
@@ -240,5 +288,10 @@ describe("shell-policy: fallback", () => {
     resetShellPolicyForTest();
     expect(classify("pnpm test 2>/dev/null")).toBe("verify");
     expect(classify("echo ok >/dev/null")).toBe("inspect");
+  });
+
+  test("fallback 无 cd 跟踪：cd /tmp 链的相对重定向仍保守拦", () => {
+    resetShellPolicyForTest();
+    expect(classify("cd /tmp && cat > x")).toBe("inline-edit");
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   BASH_TOOL_DESCRIPTION,
   READ_TOOL_DESCRIPTION,
+  SYSTEM_PROMPT_CORE,
   WRITE_TOOL_DESCRIPTION,
   buildHostToolPayload,
   buildTools,
@@ -14,6 +15,17 @@ describe("工具描述（引导模型用专用文件工具）", () => {
     expect(BASH_TOOL_DESCRIPTION).toContain("formatters, codegen");
     expect(BASH_TOOL_DESCRIPTION).toContain("not cat/head/tail/sed/awk");
     expect(BASH_TOOL_DESCRIPTION).toContain("bypass the read state");
+  });
+
+  test("bash：大文件追加指到 write append；临时脚本指到绝对 /tmp 路径", () => {
+    expect(BASH_TOOL_DESCRIPTION).toContain('mode "append"');
+    expect(BASH_TOOL_DESCRIPTION).toContain("absolute /tmp paths");
+    expect(BASH_TOOL_DESCRIPTION).toContain("do not cd into a temp dir");
+  });
+
+  test("系统提示词点名 shell 手改禁令（与 mode gate 对齐）", () => {
+    expect(SYSTEM_PROMPT_CORE).toContain("Never create or modify project files through bash");
+    expect(SYSTEM_PROMPT_CORE).toContain("formatters, codegen and package managers are allowed");
   });
 
   test("read：明确用 read + offset/limit 代替 cat/head/tail/sed -n", () => {

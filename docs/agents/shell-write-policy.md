@@ -52,7 +52,8 @@ Kova 的逐文件 diff / checkpoint 只覆盖 `write` / `edit`。如果模型用
 ```text
 Shell hand-edits are blocked: this command would modify project files outside
 write/edit, bypassing the per-file diff and checkpoint. Use edit for partial
-changes or write for new/full files.
+changes or write for new/full files (write with mode "append" to extend a large
+file in parts). Do not retry the same change through another shell command.
 ```
 
 ## 实现
@@ -82,8 +83,9 @@ changes or write for new/full files.
 - `sed` 的 `w/W/e` 靠脚本文本正则识别：替换文本里出现单字母后接空格
   （如 `s/e E/g`）会误报为 `inline-edit`；收紧正则会漏掉 `/x/w file`
   这种地址写法，保留宁严勿松。
-- `cd` 之后命令的相对重定向仍按原 cwd 解析：方向保守（把 `/tmp` 写当
-  项目写），不做 `cd` 追踪。
+- `cd` 只在 `&&` 链上跟踪字面量路径（`cd /tmp && cat > x` 按真实落点判临时写，
+  不再误拦）；`;`/换行/`||`/变量 `cd`/子 shell 边界仍按原 cwd 保守解析，
+  fallback 扫描器不跟踪 `cd`。bash 工具描述同时指引临时脚本写绝对 `/tmp` 路径。
 - `diff <(sort a) <(sort b)`、`export FOO=$(date)`、`mktemp` 归 `dynamic`：
   Plan 下被拒，代价是少量只读命令的可用性。
 - `.json` 的 `append` 校验的是“已有内容 + 追加”的最终结果：每一步都必须保持
@@ -94,7 +96,7 @@ changes or write for new/full files.
 ## 测试
 
 - `test/permissions/shell-policy.test.ts`：分类器覆盖 inspect/verify/managed-write/
-  inline-edit/dynamic、重定向路径、wrapper、fallback。
+  inline-edit/dynamic、重定向路径、wrapper、fallback、`&&` 链 cd 跟踪及其保守边界。
 - `test/e2e/shell-policy.e2e.test.ts`：真实宿主 + 模式/审批/子代理场景。
 - `test/agent/modes.test.ts`：Plan / Goal 协商 / Agent/auto 的模式门控。
 - Electron 用户场景见 `docs/e2e/tool-policy/REPORT.md`。

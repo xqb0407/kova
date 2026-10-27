@@ -489,10 +489,12 @@ function hostTool(
 /** bash 的职责边界：命令归 bash，文件内容/修改归 read/write/edit。
  *  写明 cat/sed 读与改都不更新宿主 read-state 的后果——模型用 cat/sed -n 读、
  *  再 edit 会被「read it first」挡住，于是退回 sed -i；把这条因果放在调用点
- *  最省提示词。formatter/codegen 明确留在 bash 侧：它们本来就是“命令改文件”。 */
+ *  最省提示词。formatter/codegen 明确留在 bash 侧：它们本来就是“命令改文件”。
+ *  追加引导 write append（被拦后的一步到位恢复）、临时脚本写绝对 /tmp 路径
+ *  （cd 进临时目录再相对重定向是真实踩过的误拦形态）。 */
 export const BASH_TOOL_DESCRIPTION = [
   "Run a shell command in the workspace and return combined stdout/stderr.",
-  "Use bash for commands (builds, tests, git, formatters, codegen, process control). For project files use read/glob/grep, not cat/head/tail/sed/awk; sed/awk are only for processing command output in a pipeline. Hand-editing project files with sed -i, redirection, heredoc or tee is blocked — use edit/write; redirect logs to a temp dir (e.g. /tmp), never into the workspace. File contents and hand edits belong to read/write/edit; cat and sed bypass the read state the host checks before write/edit.",
+  "Use bash for commands (builds, tests, git, formatters, codegen, process control). For project files use read/glob/grep, not cat/head/tail/sed/awk; sed/awk are only for processing command output in a pipeline. Hand-editing project files with sed -i, redirection, heredoc or tee is blocked — use edit/write; to extend a large file use write with mode \"append\". Scratch files and logs go to absolute /tmp paths — do not cd into a temp dir and redirect to a relative name, and never redirect into the workspace. File contents and hand edits belong to read/write/edit; cat and sed bypass the read state the host checks before write/edit.",
   "Output is capped — run a narrower command instead of dumping large files.",
   "Default timeout 120s — pass a larger timeout (up to 600000ms) for slow commands, or prefer runInBackground:true for long-running processes (dev servers, builds, watchers): it returns immediately with a taskId and the process keeps running across turns (not killed when a turn is cancelled); read output later with task_output, kill with task_stop.",
   "Never discard output with >/dev/null — invisible progress looks like a hang.",
@@ -722,6 +724,7 @@ export const SYSTEM_PROMPT_CORE_SEGMENTS = {
     "- Touch only files related to the task at hand.",
     "",
     "Tool preference: inspect files with read/glob/grep instead of shell commands; use bash for anything dynamic (build, test, git, process control).",
+    "Never create or modify project files through bash: in-place editors, redirects/heredocs/tee into the workspace, and shell patch application are blocked. Use edit for targeted changes and write for new/full files; formatters, codegen and package managers are allowed.",
     "Before a batch of tool calls, write one short sentence saying what you are about to do.",
     "",
     "Permissions: never use Question to ask for permission, to confirm an action, or to get a deletion or other destructive action approved. Call the tool directly - the app shows an approval card when approval is required, and the user can choose to remember the authorization. A Question answer is not an authorization; only the approval card is. This applies especially to destructive actions and writes outside the workspace: attempt the work normally instead of asking in chat, and if it is rejected, report the rejection rather than retrying the same question.",

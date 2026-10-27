@@ -1290,6 +1290,24 @@ describe("shell 手写拦截", () => {
     expect(modeBeforeToolCall(run, bash("echo ok >/dev/null"))).toBeUndefined();
   });
 
+  test("&& 链 cd 到临时目录的相对重定向不再误拦（真实踩坑回归）", () => {
+    const run = makeRun("agent");
+    expect(
+      modeBeforeToolCall(
+        run,
+        bash("cd /tmp && mkdir -p dbcheck && cd dbcheck && cat > check.js <<'EOF'\nx\nEOF"),
+      ),
+    ).toBeUndefined();
+    expect(
+      modeBeforeToolCall(
+        run,
+        bash("cd /tmp && rm -rf cdp && mkdir -p cdp && cd cdp && cat > probe.js <<'PROBE'\nx\nPROBE"),
+      ),
+    ).toBeUndefined();
+    // 项目内 heredoc 仍是手写，照拦
+    expect(modeBeforeToolCall(run, bash("cat >> f <<'EOF'\nx\nEOF"))?.block).toBe(true);
+  });
+
   test("拦截发生在审批之前，不产生挂起项", async () => {
     const run = makeRun("agent");
     const res = await approvalBeforeToolCall(run, bash("sed -i s/a/b/ f"));

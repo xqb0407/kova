@@ -178,4 +178,8 @@ describe("静态模式段的性质（这几点是动态块必须存在的理由�
     expect(GOAL_MODE_PROMPT).toContain("do not modify files with any tool");
     expect(GOAL_MODE_PROMPT).toContain("including bash");
   });
+
+  test("执行期点名 shell 手改仍被拦（与 mode gate 对齐，撤销「自由修改」的误读）", () => {
+    expect(GOAL_MODE_PROMPT).toContain("shell hand-edits stay blocked");
+  });
 });

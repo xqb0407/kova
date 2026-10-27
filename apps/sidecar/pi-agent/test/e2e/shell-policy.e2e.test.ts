@@ -123,6 +123,18 @@ describe("shell policy e2e", () => {
     expect(modeBeforeToolCall(run, bashCtx("prettier --write a.ts"))).toBeUndefined();
   });
 
+  test("cd /tmp 链的临时写放行；项目内 heredoc 追加仍拦", () => {
+    const cwd = tempDir();
+    const run = makeRun("agent", cwd);
+    expect(
+      modeBeforeToolCall(
+        run,
+        bashCtx("cd /tmp && mkdir -p dbcheck && cd dbcheck && cat > check.js <<'EOF'\nx\nEOF"),
+      ),
+    ).toBeUndefined();
+    expect(modeBeforeToolCall(run, bashCtx("cat >> a.txt <<'EOF'\nx\nEOF"))?.block).toBe(true);
+  });
+
   test("完全访问也不能绕过手写拦截", () => {
     const cwd = tempDir();
     const run = makeRun("agent", cwd, "auto");
