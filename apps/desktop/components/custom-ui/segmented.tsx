@@ -41,6 +41,7 @@ export function Segmented<T extends string>({
   onChange,
   disabled,
   size = "md",
+  stretch = false,
   className,
 }: {
   value: T;
@@ -49,6 +50,8 @@ export function Segmented<T extends string>({
   disabled?: boolean;
   /** md = 默认（h-7 / text-xs，设置页与市场用）；lg 给主区里的主操作（h-9 / text-sm） */
   size?: "md" | "lg";
+  /** true = 整宽等分（各选项 flex-1，指示器随之等宽）；默认按内容宽度排列 */
+  stretch?: boolean;
   className?: string;
 }) {
   const large = size === "lg";
@@ -93,6 +96,7 @@ export function Segmented<T extends string>({
       className={cn(
         "bg-background/70 relative flex shrink-0 items-center gap-0.5 rounded-full border-[0.5]",
         large ? "p-[3px]" : "p-0.5",
+        stretch && "w-full",
         className,
       )}
     >
@@ -109,7 +113,10 @@ export function Segmented<T extends string>({
       {options.map((opt) => {
         const active = opt.value === value;
         return (
-          <div key={opt.value} className={cn("relative", disabled && "opacity-60")}>
+          <div
+            key={opt.value}
+            className={cn("relative", stretch && "flex-1", disabled && "opacity-60")}
+          >
             <button
               ref={(el) => {
                 if (el) itemRefs.current.set(opt.value, el);
@@ -122,6 +129,7 @@ export function Segmented<T extends string>({
               onClick={() => !active && onChange(opt.value)}
               className={cn(
                 "relative z-10 inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-transparent",
+                stretch && "w-full",
                 large ? "h-9 px-3.5 text-sm" : "h-7 px-3 text-xs",
                 "transition-colors",
                 "disabled:cursor-not-allowed",

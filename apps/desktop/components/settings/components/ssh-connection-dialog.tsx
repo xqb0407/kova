@@ -323,7 +323,7 @@ export const SshConnectionDialog: FC<{
 
               <Segmented<AuthType>
                 value={authType}
-                className="w-full"
+                stretch
                 options={AUTH_OPTIONS}
                 onChange={setAuthType}
               />
