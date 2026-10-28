@@ -136,14 +136,11 @@ function Diagnostics({ askMode }: { askMode: boolean }) {
       lines.push(`浮层=${card ? "在" : "无"}`);
       if (card) {
         const sections = Array.from(
-          card.querySelectorAll('[data-slot="collapsible-trigger"]'),
+          card.querySelectorAll('[data-slot="quick-section-trigger"]'),
         ).map((el) => {
           const title = el.textContent?.trim() ?? "";
-          const content = el
-            .closest("[data-slot=collapsible]")
-            ?.querySelector('[data-slot="collapsible-content"]');
           const expanded =
-            content?.querySelector("ul, p, div") != null ? "展开" : "收起";
+            el.getAttribute("aria-expanded") === "true" ? "展开" : "收起";
           return `${title}(${expanded})`;
         });
         lines.push(`分区=${sections.join(" ") || "无"}`);

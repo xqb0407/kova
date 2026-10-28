@@ -13,9 +13,7 @@ import {
 import { useAuiState } from "@assistant-ui/react";
 import {
   BotIcon,
-  CheckIcon,
   ChevronDownIcon,
-  CircleDashedIcon,
   FileDiffIcon,
   FileIcon,
   GitBranchIcon,
@@ -26,12 +24,8 @@ import {
   PackageIcon,
   PanelTopIcon,
 } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { isDesktop } from "@/lib/desktop-env";
 import { closeQuickView, toggleQuickView, useQuickViewOpen } from "@/lib/quick-view";
@@ -198,6 +192,7 @@ const QuickViewScroller: FC<{
 
 export const QuickViewCard: FC<{ threadId: string | null }> = ({ threadId }) => {
   const open = useQuickViewOpen(threadId ?? undefined);
+  const reduceMotion = useReducedMotion();
   // ESC 收起：浮层是临时视图，键盘逃逸与按钮同语义；不 preventDefault，
   // 别处（输入框等）对 ESC 的处理不受影响
   useEffect(() => {
@@ -210,23 +205,43 @@ export const QuickViewCard: FC<{ threadId: string | null }> = ({ threadId }) => 
     return () => window.removeEventListener("keydown", onKey);
   }, [open, threadId]);
 
-  if (!open || !threadId) return null;
+  if (!threadId) return null;
+  const reduce = reduceMotion ?? false;
   return (
-    <aside
-      aria-label="快速查看"
-      data-slot="quick-view-card"
-      // group/qv：整卡悬停驱动自绘滚动条淡入（QuickViewScroller 里消费）
-      className="group/qv bg-popover text-popover-foreground ring-foreground/10 absolute top-3 right-3 z-20 flex max-h-[min(64dvh,32rem)] w-[21rem] max-w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-2xl border shadow-md"
-    >
-      {/* 唯一滚动容器（分区不再各自滚）：一条悬浮浮条 + 本层兜底滚动，
-          多分区展开时后续分区标题始终可达 */}
-      <QuickViewScroller>
-        <GitSection />
-        <TodoSection threadId={threadId} />
-        <ArtifactsSection />
-        <SubagentsSection />
-      </QuickViewScroller>
-    </aside>
+    <AnimatePresence>
+      {open ? (
+        <motion.aside
+          key="quick-view"
+          aria-label="快速查看"
+          data-slot="quick-view-card"
+          // group/qv：整卡悬停驱动自绘滚动条淡入（QuickViewScroller 里消费）
+          className="group/qv bg-popover text-popover-foreground ring-foreground/10 absolute top-3 right-3 z-20 flex max-h-[min(64dvh,32rem)] w-[21rem] max-w-[calc(100%-1.5rem)] origin-top-right flex-col overflow-hidden rounded-2xl border shadow-md"
+          // 入场：从右上角小幅放大+下移归位（弹簧）；退场：快速缩小淡出，
+          // 别拖泥带水——它是「扫一眼」的临时视图
+          initial={reduce ? false : { opacity: 0, scale: 0.96, y: -6 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={
+            reduce
+              ? { opacity: 0, transition: { duration: 0 } }
+              : { opacity: 0, scale: 0.97, y: -4, transition: { duration: 0.12, ease: "easeIn" } }
+          }
+          transition={
+            reduce
+              ? { duration: 0 }
+              : { type: "spring", stiffness: 520, damping: 42, mass: 0.7 }
+          }
+        >
+          {/* 唯一滚动容器（分区不再各自滚）：一条悬浮浮条 + 本层兜底滚动，
+              多分区展开时后续分区标题始终可达 */}
+          <QuickViewScroller>
+            <GitSection />
+            <TodoSection threadId={threadId} />
+            <ArtifactsSection />
+            <SubagentsSection />
+          </QuickViewScroller>
+        </motion.aside>
+      ) : null}
+    </AnimatePresence>
   );
 };
 
@@ -245,9 +260,16 @@ const QuickSection: FC<{
   children: ReactNode;
 }> = ({ title, icon: Icon, trailing, defaultOpen = true, children }) => {
   const [open, setOpen] = useState(defaultOpen);
+  const reduce = useReducedMotion() ?? false;
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="min-w-0 flex-none">
-      <CollapsibleTrigger className="group hover:bg-muted/40 flex h-9 w-full min-w-0 shrink-0 items-center gap-2 rounded-xl px-1.5 text-left transition-colors">
+    <section className="min-w-0 flex-none">
+      <button
+        type="button"
+        aria-expanded={open}
+        data-slot="quick-section-trigger"
+        onClick={() => setOpen((v) => !v)}
+        className="group hover:bg-muted/40 flex h-9 w-full min-w-0 shrink-0 items-center gap-2 rounded-xl px-1.5 text-left transition-colors"
+      >
         <span className="bg-muted/70 text-muted-foreground group-hover:text-foreground grid size-5.5 shrink-0 place-items-center rounded-lg transition-colors">
           <Icon className="size-3.5" />
         </span>
@@ -261,16 +283,37 @@ const QuickSection: FC<{
         ) : null}
         <ChevronDownIcon
           className={cn(
-            "text-muted-foreground size-4 shrink-0 transition-transform duration-150",
+            "text-muted-foreground size-4 shrink-0 transition-transform duration-200",
             trailing == null && "ml-auto",
             !open && "-rotate-90",
           )}
         />
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="bg-muted/40 mt-1 rounded-xl p-1.5">{children}</div>
-      </CollapsibleContent>
-    </Collapsible>
+      </button>
+      {/* 展开/收起：高度 + 透明度过渡（弹簧撑开、快速收拢），
+          collapsed 视觉与面板折叠区一致 */}
+      <AnimatePresence initial={false}>
+        {open ? (
+          <motion.div
+            key="content"
+            data-slot="quick-section-content"
+            initial={reduce ? false : { height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={reduce ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            transition={
+              reduce
+                ? { duration: 0 }
+                : {
+                    height: { type: "spring", stiffness: 420, damping: 40 },
+                    opacity: { duration: 0.16 },
+                  }
+            }
+            className="overflow-hidden"
+          >
+            <div className="bg-muted/40 mt-1 rounded-xl p-1.5">{children}</div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </section>
   );
 };
 
@@ -278,6 +321,76 @@ const QuickSection: FC<{
 const SectionHint: FC<{ text: string }> = ({ text }) => (
   <p className="text-muted-foreground px-1.5 py-1 text-sm">{text}</p>
 );
+
+/** 待办状态图标：与右侧面板计划清单（custom-ui/todo-list 的 TodoStatusIcon）
+ *  同一套画法——完成 = 细环 + 勾（6% 淡底）；进行中 = 20% 淡底 + 68% 进度
+ *  弧（面板里无显式进度时持续旋转，这里保持同款节奏）；待办 = 虚线环。
+ *  纯静态 SVG（面板那份带 motion 编排，浮层不需要入场动画）。 */
+const TodoStatusGlyph: FC<{ state: "done" | "active" | "pending" }> = ({
+  state,
+}) => {
+  if (state === "done") {
+    return (
+      <svg
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        className="text-muted-foreground size-4 shrink-0 overflow-visible"
+      >
+        <circle cx="12" cy="12" r="9" fill="currentColor" fillOpacity="0.06" stroke="currentColor" strokeWidth="1.5" />
+        <path
+          d="M7.5 12.25 10.5 15.25 16.75 8.75"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+  if (state === "active") {
+    return (
+      <svg
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        className="text-foreground size-4 shrink-0 animate-spin overflow-visible [animation-duration:1.1s]"
+      >
+        {/* 淡底盘 + 68% 进度弧（面板默认进度同值） */}
+        <circle cx="12" cy="12" r="9" fill="currentColor" className="opacity-20" />
+        <circle
+          cx="12"
+          cy="12"
+          r="9"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          pathLength={1}
+          strokeDasharray="0.68 1"
+          transform="rotate(-90 12 12)"
+        />
+      </svg>
+    );
+  }
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      className="text-muted-foreground size-4 shrink-0 overflow-visible"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeDasharray="2 3"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+};
 
 /* ------------------------------ 环境信息 ------------------------------ */
 
@@ -398,19 +511,7 @@ const TodoSection: FC<{ threadId: string }> = ({ threadId }) => {
                 className="hover:bg-muted/70 flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2 py-1 text-left text-sm transition-colors"
                 title={row.text}
               >
-                {row.state === "done" ? (
-                  // 完成 = 计划面板同款绿实心圆白勾；进行中 = 环形数字
-                  // （描边圈而不是 ZCode 的实心深色数字）；待办 = 虚线空心圈
-                  <span className="grid size-4 shrink-0 place-items-center rounded-full bg-emerald-500 text-white">
-                    <CheckIcon className="size-2.5" strokeWidth={3} />
-                  </span>
-                ) : row.state === "active" ? (
-                  <span className="border-foreground/60 text-foreground grid size-4 shrink-0 place-items-center rounded-full border-2 text-[9px] leading-none font-semibold tabular-nums">
-                    {row.badge}
-                  </span>
-                ) : (
-                  <CircleDashedIcon className="text-muted-foreground/55 size-4 shrink-0" />
-                )}
+                <TodoStatusGlyph state={row.state} />
                 <span
                   className={cn(
                     "min-w-0 flex-1 truncate",
