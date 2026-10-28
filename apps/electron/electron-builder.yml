@@ -28,6 +28,9 @@ asarUnpack:
   - "**/node_modules/node-pty/**"
 afterPack: scripts/after-pack.cjs
 npmRebuild: false
+# 国内打包镜像：Electron 二进制走 npmmirror，摆脱 github 直连。
+electronDownload:
+  mirror: https://npmmirror.com/mirrors/electron/
 mac:
   artifactName: ${productName}_${version}_${arch}.${ext}
   category: public.app-category.productivity
