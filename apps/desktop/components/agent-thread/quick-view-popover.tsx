@@ -215,20 +215,27 @@ export const QuickViewCard: FC<{ threadId: string | null }> = ({ threadId }) => 
           aria-label="快速查看"
           data-slot="quick-view-card"
           // group/qv：整卡悬停驱动自绘滚动条淡入（QuickViewScroller 里消费）
-          className="group/qv bg-popover text-popover-foreground ring-foreground/10 absolute top-3 right-3 z-20 flex max-h-[min(64dvh,32rem)] w-[21rem] max-w-[calc(100%-1.5rem)] origin-top-right flex-col overflow-hidden rounded-2xl border shadow-md"
-          // 入场：从右上角小幅放大+下移归位（弹簧）；退场：快速缩小淡出，
-          // 别拖泥带水——它是「扫一眼」的临时视图
-          initial={reduce ? false : { opacity: 0, scale: 0.96, y: -6 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
+          className="group/qv bg-popover text-popover-foreground ring-foreground/10 absolute top-3 right-3 z-20 flex max-h-[min(64dvh,32rem)] w-[21rem] max-w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-2xl border shadow-md"
+          // 入场：自右缘滑入（贴右缘/挂在 header 按钮下方，滑入比缩放更贴锚点），
+          // 伴随一点模糊消散；退场：原路快速滑出——「扫一眼」的临时视图不拖沓
+          initial={
+            reduce ? false : { opacity: 0, x: 18, filter: "blur(4px)" }
+          }
+          animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
           exit={
             reduce
               ? { opacity: 0, transition: { duration: 0 } }
-              : { opacity: 0, scale: 0.97, y: -4, transition: { duration: 0.12, ease: "easeIn" } }
+              : {
+                  opacity: 0,
+                  x: 12,
+                  filter: "blur(3px)",
+                  transition: { duration: 0.13, ease: "easeIn" },
+                }
           }
           transition={
             reduce
               ? { duration: 0 }
-              : { type: "spring", stiffness: 520, damping: 42, mass: 0.7 }
+              : { type: "spring", stiffness: 480, damping: 44, mass: 0.7 }
           }
         >
           {/* 唯一滚动容器（分区不再各自滚）：一条悬浮浮条 + 本层兜底滚动，
