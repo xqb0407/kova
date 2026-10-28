@@ -10,7 +10,7 @@ import {
   type FC,
   type ReactNode,
 } from "react";
-import { useAuiState } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import {
   BotIcon,
   ChevronDownIcon,
@@ -49,7 +49,10 @@ import {
   useSubagentRunsByToolCalls,
   type SubagentRunState,
 } from "@/lib/subagent/subagent-runs";
-import { GitGraphDialog } from "@/components/agent-thread/agent-panel/git-graph";
+import {
+  addCommitToComposer,
+  GitGraphDialog,
+} from "@/components/agent-thread/agent-panel/git-graph";
 
 /**
  * 快速查看（Header 上的「扫一眼」入口）：不开右侧面板即可查看会话的
@@ -418,6 +421,7 @@ const GitSection: FC = () => {
   const { status } = useGitStatus(workspace);
   const appMode = useCurrentAppMode();
   const ask = useIsAskMode();
+  const aui = useAui();
   const [graphOpen, setGraphOpen] = useState(false);
 
   if (appMode !== "code" || ask || !workspace || !status) return null;
@@ -488,6 +492,7 @@ const GitSection: FC = () => {
         branch={status.branch}
         open={graphOpen}
         onOpenChange={setGraphOpen}
+        onAddToContext={(entry) => addCommitToComposer(aui, entry)}
       />
     </>
   );

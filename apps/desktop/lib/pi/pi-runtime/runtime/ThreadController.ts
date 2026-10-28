@@ -50,6 +50,7 @@ import {
   quoteToMarkdownBlock,
 } from "./messageProjection";
 import { expandCodeDirectives } from "@/lib/composer/code-reference";
+import { expandCommitDirectives } from "@/lib/composer/commit-reference";
 import { buildLibraryContext } from "@/lib/composer/library-reference";
 import { prefetchLibraryNoteBodies } from "@/lib/composer/library-note-inline";
 import { noteSpan } from "@/components/debug/perf-store";
@@ -302,7 +303,7 @@ export const buildPiSendInput = (
     //   prefetchLibraryNoteBodies 预取进缓存。
     const inlineNoteBlocks: string[] = [];
     const userText = textChunks
-      .map((chunk) => expandCodeDirectives(chunk))
+      .map((chunk) => expandCommitDirectives(expandCodeDirectives(chunk)))
       .join("\n\n");
     const refsLines = buildLibraryContext(userText, (block) =>
       inlineNoteBlocks.push(block),

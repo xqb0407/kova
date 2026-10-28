@@ -114,7 +114,10 @@ import { cn } from "cn";
 import { useGitStatus } from "@/lib/git/git-status";
 import { gitBranches, gitCheckout, type GitBranches } from "@/lib/git/git";
 import { useCurrentAppMode } from "@/lib/pi/pi-session-app-mode";
-import { fmtStamp, GitGraphDialog } from "@/components/agent-thread/agent-panel/git-graph";
+import {
+  addCommitToComposer,
+  GitGraphDialog,
+} from "@/components/agent-thread/agent-panel/git-graph";
 import type { GitGraphEntry } from "@/lib/git/git";
 
 const ModelPicker: FC = () => {
@@ -799,17 +802,9 @@ const WorkspaceBranchPill: FC = () => {
     close();
   };
 
-  /** 把选中的提交写进输入框：一句话自然语言，Agent 直接可读 */
-  const addCommitToContext = (entry: GitGraphEntry) => {
-    const line = `提交 ${entry.hash.slice(0, 7)}（${entry.author}，${fmtStamp(entry.time)}）：${entry.subject}`;
-    let current = "";
-    try {
-      current = (aui.composer.getState() as { text?: string })?.text ?? "";
-    } catch {
-      current = "";
-    }
-    aui.composer.setText(current.trim() ? `${current.trimEnd()}\n${line}` : line);
-  };
+  /** 把选中的提交以引用芯片插进输入框（发送时展开成一行提交描述） */
+  const addCommitToContext = (entry: GitGraphEntry) =>
+    addCommitToComposer(aui, entry);
 
   const q = query.trim().toLowerCase();
   const list = (branches?.branches ?? []).filter((b) => !q || b.name.toLowerCase().includes(q));

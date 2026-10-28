@@ -64,6 +64,10 @@ const X_SVG =
 const FILE_CODE_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m10 13-2 2 2 2"/><path d="m14 17 2-2-2-2"/></svg>';
 
+/** lucide git-commit-horizontal 图标（提交引用芯片：图谱「添加到对话」） */
+const COMMIT_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><line x1="3" x2="9" y1="12" y2="12"/><line x1="15" x2="21" y1="12" y2="12"/></svg>';
+
 /** lucide library 图标（资料库引用芯片的兜底：文件名解析不到类型时） */
 const LIBRARY_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></svg>';
@@ -98,6 +102,7 @@ const CHIP_ICONS: Record<string, string> = {
   element: ELEMENT_SVG,
   console: CONSOLE_SVG,
   code: FILE_CODE_SVG,
+  commit: COMMIT_SVG,
 };
 
 function chipIconHtml(type: string, label: string): string {
@@ -117,6 +122,7 @@ const INTERACTIVE_TYPES = new Set([
   "console",
   "code",
   "library",
+  "commit",
 ]);
 
 /**
