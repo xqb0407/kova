@@ -36,7 +36,7 @@ import {
 import { PetWidget } from "@/components/pet/pet-widget";
 import type { PetEventSubscribe } from "@/components/pet/use-pet-agent-events";
 import { usePetPrefs } from "@/lib/settings/pet-prefs";
-import { isDesktop } from "@/lib/desktop-env";
+import { isDesktop, isWindowsPlatform } from "@/lib/desktop-env";
 
 /** 悬浮窗事件源：主进程转发链（模块级稳定引用）。 */
 const bridgeEventsSubscribe: PetEventSubscribe = (cb) => {
@@ -71,7 +71,8 @@ export default function PetWindowPage() {
   /* 点击穿透：命中宠物/气泡 → 可点击；其余区域 → 透传给下层窗口。
      forward:true 保证忽略期间本页仍收得到 pointermove，命中测试不会瞎。 */
   React.useEffect(() => {
-    if (!isDesktop()) return undefined;
+    // Windows 不走穿透（见主进程说明）：窗口整块可点击，无需命中测试
+    if (!isDesktop() || isWindowsPlatform()) return undefined;
     let last: boolean | null = null;
     let inFlight = false;
     const onMove = (event: PointerEvent) => {

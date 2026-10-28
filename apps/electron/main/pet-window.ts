@@ -90,6 +90,9 @@ function createPetWindow(): BrowserWindow {
     alwaysOnTop: true,
     hasShadow: false,
     show: false,
+    // Windows：不可聚焦——否则"首次点击被系统吃掉用于激活窗口"会让拖拽偶发失效；
+    // 宠物不需要键盘焦点，鼠标事件照常投递
+    ...(process.platform === "win32" ? { focusable: false } : {}),
     webPreferences: {
       preload: join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -101,8 +104,16 @@ function createPetWindow(): BrowserWindow {
   win.setVisibleOnAllWorkspaces(true);
   trackWindow("pet", win);
   setWatchedSessions(win.webContents, []);
-  // 默认全窗穿透：前端 pointermove 命中宠物/气泡时经 pet_ignore_mouse 关闭
-  win.setIgnoreMouseEvents(true, { forward: true });
+  // 点击穿透只开在 macOS：Windows 上 forward 的 move 不保证按 DOM 命中投递，
+  // 命中测试失效会把整窗一直留在"穿透"态（表现为宠物点不到、拖不动、出现禁止光标）。
+  // Windows 直接放弃穿透——窗口只有巴掌大，空余区域吃点击可接受。
+  if (process.platform === "darwin") {
+    win.setIgnoreMouseEvents(true, { forward: true });
+  } else {
+    // 显式归零：保证任何历史状态/异常路径都不会让 Windows 停在穿透态
+    win.setIgnoreMouseEvents(false);
+  }
+  logInfo(`[pet] window created platform=${process.platform} clickThrough=${process.platform === "darwin"}`);
   win.once("ready-to-show", () => {
     if (!win.isDestroyed()) win.show();
   });
@@ -251,9 +262,13 @@ export function petContextMenu(
   return null;
 }
 
-/** 透明窗点击穿透开关（发送者必须是悬浮窗自身）。 */
+/** 透明窗点击穿透开关（发送者必须是悬浮窗自身）。仅 macOS 生效：Windows 一律可点击。 */
 export function petIgnoreMouse(a: { ignore?: boolean }, sender: WebContents): null {
   if (!petWin || petWin.isDestroyed() || sender !== petWin.webContents) return null;
+  if (process.platform !== "darwin") {
+    petWin.setIgnoreMouseEvents(false);
+    return null;
+  }
   petWin.setIgnoreMouseEvents(a.ignore === true, { forward: true });
   return null;
 }
