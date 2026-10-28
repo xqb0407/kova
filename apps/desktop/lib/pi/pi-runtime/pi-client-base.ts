@@ -886,7 +886,12 @@ export class PiClientBase implements PiClient {
     const promptNote = this.lastPrompts.get(sessionId);
     if (promptNote === undefined) return;
     const stopReason = typeof body.stopReason === "string" ? body.stopReason : undefined;
-    if (stopReason === "aborted") return;
+    if (stopReason === "aborted") {
+      // 用户主动停止：不算完成也不算错误（不弹提醒），但要发停止信号——
+      // 否则桌宠这类"工作中"态的消费者会永远卡在忙碌
+      emitAgentEvent("agent.turn.stopped", { threadId: sessionId });
+      return;
+    }
     if (stopReason === "error") {
       emitAgentEvent("agent.turn.error", {
         threadId: sessionId,
@@ -1091,6 +1096,9 @@ export class PiClientBase implements PiClient {
     // 运行中发送 = followUp（sidecar 自动排队）；steer 显式并入当前轮
     this.inflight.set(requestId, threadId);
     this.sessionTurn.set(threadId, requestId);
+    // 过程性状态信号（不在 AGENT_EVENT_REGISTRY，不触发弹窗/提示音/webhook）：
+    // 桌宠等氛围消费者据此进入"工作中"态
+    emitAgentEvent("agent.turn.started", { threadId });
     // 完成提醒台账（缺口3）：排队项每条都经这里发出，agent_end 时取最新。
     // 只存摘要：消费方（弹窗正文）用前 120 字符，留 200 的余量足够
     this.lastPrompts.set(threadId, input.content.slice(0, 200));

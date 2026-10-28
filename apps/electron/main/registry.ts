@@ -16,6 +16,7 @@ import { setupGpuCommands } from "./gpu";
 import { setupAppearanceCommands } from "./appearance";
 import { setupBridgeCommands } from "./bridge";
 import { setupResourceCommands } from "./resource";
+import { setupPetWindowCommands } from "./pet-window";
 import { setupGitCommands } from "./git";
 import { setupBrowserCommands } from "./browser";
 import { setupRemoteCommands } from "./remote";
@@ -47,6 +48,7 @@ export function registerAllCommands(): void {
   setupAppearanceCommands(register);
   setupBridgeCommands(register);
   setupResourceCommands(register);
+  setupPetWindowCommands(register);
   setupGitCommands(register);
   setupBrowserCommands(register);
   setupRemoteCommands(register);

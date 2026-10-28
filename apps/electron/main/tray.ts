@@ -5,7 +5,7 @@
 import { app, Menu, Tray, nativeImage } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { focusMainWindow } from "./ipc";
+import { focusMainWindow, emitToWindows } from "./ipc";
 import { logError } from "./logging";
 
 // CJS 打包（esbuild）下 __dirname 即 dist/ 目录
@@ -32,6 +32,10 @@ export function init(): void {
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: "打开 Kova", click: () => focusMainWindow() },
+        { type: "separator" },
+        // 不直接 toggle 窗口：经主窗口桌宠中继改模式（off ↔ 上次形态），
+        // 模式是唯一事实源，悬浮窗/角标随模式自动显隐
+        { label: "桌宠 显示/隐藏", click: () => emitToWindows("pet-tray-toggle-pet", null) },
         { type: "separator" },
         { label: "退出", click: () => app.quit() },
       ]),

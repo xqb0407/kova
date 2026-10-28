@@ -8,8 +8,10 @@
  */
 
 export type AgentEventName =
+  | "agent.turn.started"
   | "agent.turn.completed"
   | "agent.turn.error"
+  | "agent.turn.stopped"
   | "agent.approval.pending"
   | "agent.question.pending"
   | "automation.task.completed"
@@ -26,7 +28,13 @@ export interface AgentEvent {
 
 export type SoundTone = "complete" | "error" | "approval" | "question";
 
-/** 可订阅事件注册表：label/desc 供设置页与 webhook 文案，tone 对应提示音音色 */
+/**
+ * 可订阅事件注册表：label/desc 供设置页与 webhook 文案，tone 对应提示音音色。
+ *
+ * **刻意不进注册表**：`agent.turn.started` / `agent.turn.stopped` 是过程性状态
+ * 信号（桌宠的工作态），每个 turn 都发一次——进注册表会让弹窗/提示音/webhook
+ * 对每轮对话都轰炸。消费方（桌宠等）按 AgentEventName 直接匹配。
+ */
 export const AGENT_EVENT_REGISTRY: {
   name: Exclude<AgentEventName, "system.test">;
   label: string;

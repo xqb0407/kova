@@ -3,6 +3,7 @@ import { Base } from "@/components/agent-thread/base";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { OnboardingFlow } from "@/components/onboarding/onboarding-flow";
 import { OnboardingProvider } from "@/components/onboarding/onboarding-provider";
+import { PetDock } from "@/components/pet/pet-dock";
 
 export default function Page() {
   return (
@@ -25,6 +26,11 @@ export default function Page() {
               sidecar 说话（服务商清单、凭据、模型目录）。 */}
           <ErrorBoundary label="引导向导">
             <OnboardingFlow />
+          </ErrorBoundary>
+          {/* 内嵌桌宠（右下角常驻）：同时承担 agent 事件→悬浮窗的转发与悬浮窗
+              气泡跳会话的接收，偏好关闭时只剩这两条隐形链路。崩了不塌主界面。 */}
+          <ErrorBoundary label="内嵌桌宠">
+            <PetDock />
           </ErrorBoundary>
         </OnboardingProvider>
       </AppRuntimeProvider>

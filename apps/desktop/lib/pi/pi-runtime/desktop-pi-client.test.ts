@@ -644,7 +644,7 @@ describe("DesktopPiClient 交互卡旁路（4b）", () => {
 });
 
 describe("DesktopPiClient 完成提醒（缺口3）", () => {
-  test("agent_end 收尾定调：completed/error 提醒，aborted 与外来会话不提醒", async () => {
+  test("agent_end 收尾定调：completed/error 提醒，aborted 只发 stopped 状态信号", async () => {
     snapshotCalls = 0;
     snapshotReply = { type: "thread_snapshot", snapshot: runningSnapshot("x") };
     const { client, feed } = subscribeAndSettle();
@@ -656,14 +656,16 @@ describe("DesktopPiClient 完成提醒（缺口3）", () => {
       got.push(`${e.name}:${d.prompt ?? d.message ?? ""}`);
     });
 
-    // 本实例发起的会话：完成 → agent.turn.completed 带最近 prompt 正文
+    // 本实例发起的会话：发送 → agent.turn.started（过程态，桌宠工作态信号）；
+    // 完成 → agent.turn.completed 带最近 prompt 正文
     await client.sendMessage("s1", { content: "帮我跑个构建" });
     feed([threadEvent("s1", 40, { type: "agent_end", stopReason: "stop" })]);
-    expect(got).toEqual(["agent.turn.completed:帮我跑个构建"]);
+    expect(got).toEqual(["agent.turn.started:", "agent.turn.completed:帮我跑个构建"]);
 
-    // 用户主动停止（stopReason aborted）：不提醒（旧链路 sawAborted 语义）
+    // 用户主动停止（stopReason aborted）：不提醒（旧链路 sawAborted 语义），
+    // 但发 agent.turn.stopped——"工作中"态的消费者（桌宠）要靠它退出忙碌
     feed([threadEvent("s1", 41, { type: "agent_end", stopReason: "aborted" })]);
-    expect(got).toHaveLength(1);
+    expect(got).toEqual(["agent.turn.started:", "agent.turn.completed:帮我跑个构建", "agent.turn.stopped:"]);
 
     // 出错收尾：agent.turn.error 带错误正文
     feed([
@@ -673,11 +675,16 @@ describe("DesktopPiClient 完成提醒（缺口3）", () => {
         errorMessage: "boom",
       }),
     ]);
-    expect(got).toEqual(["agent.turn.completed:帮我跑个构建", "agent.turn.error:boom"]);
+    expect(got).toEqual([
+      "agent.turn.started:",
+      "agent.turn.completed:帮我跑个构建",
+      "agent.turn.stopped:",
+      "agent.turn.error:boom",
+    ]);
 
     // 外来会话（automation/他窗发起，本实例从未 sendMessage）：不提醒
     feed([threadEvent("sid-auto", 43, { type: "agent_end" })]);
-    expect(got).toHaveLength(2);
+    expect(got).toHaveLength(4);
 
     un();
   });

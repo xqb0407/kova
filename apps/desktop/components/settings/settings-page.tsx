@@ -13,6 +13,7 @@ import {
   BotIcon,
   BoxesIcon,
   BrainIcon,
+  CatIcon,
   ChevronLeftIcon,
   HardDriveDownloadIcon,
   InfoIcon,
@@ -43,6 +44,7 @@ import { ShortcutSettings } from "./components/shortcut-settings";
 import { SecretsSettings } from "./components/secrets-settings";
 import { DesignThemesSettings } from "./components/design-themes-settings";
 import { SshHostsSettings } from "./components/ssh-hosts-settings";
+import { PetSettings } from "./components/pet-settings";
 
 export type SettingsSection =
   | "models"
@@ -51,6 +53,7 @@ export type SettingsSection =
   | "general"
   | "archive"
   | "personalization"
+  | "pet"
   | "memory"
   | "backup"
   | "shortcuts"
@@ -72,6 +75,7 @@ const GROUPS: {
       { id: "general", label: "通用", icon: SlidersHorizontalIcon },
       { id: "appearance", label: "外观", icon: PaintbrushIcon },
       { id: "personalization", label: "个性化", icon: SparklesIcon },
+      { id: "pet", label: "桌宠", icon: CatIcon },
       { id: "shortcuts", label: "快捷键", icon: KeyboardIcon },
       { id: "archive", label: "归档", icon: ArchiveIcon },
       { id: "backup", label: "备份", icon: HardDriveDownloadIcon },
@@ -251,6 +255,7 @@ export const SettingsPage: FC<{
           {section === "models" && <ModelSettings />}
           {section === "appearance" && <AppearanceSettings />}
           {section === "personalization" && <PersonalizationSettings />}
+          {section === "pet" && <PetSettings />}
           {section === "memory" && <MemorySettings />}
           {section === "backup" && <BackupSettings />}
           {section === "shortcuts" && <ShortcutSettings />}

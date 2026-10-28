@@ -4,8 +4,8 @@
  * 主窗口（首帧再显示）→ 菜单/托盘 → 附件定时清理 → 预热 sidecar → 退出收尸。
  */
 import { app, BrowserWindow, protocol, net } from "electron";
-import { existsSync } from "node:fs";
-import { join, normalize } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { join, normalize, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { initPaths, appDataDir } from "./paths";
 import { isTrustedFilePath } from "./fs-cmds";
@@ -57,6 +57,7 @@ const MIME: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
+  ".apng": "image/png",
   ".ico": "image/x-icon",
   ".txt": "text/plain; charset=utf-8",
   ".woff": "font/woff",
@@ -69,13 +70,33 @@ const MIME: Record<string, string> = {
 /** 与 旧桌面壳配置 security.csp 等价（去掉 ipc.localhost 项） */
 const CSP =
   "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' data: blob: https: http:; font-src 'self' data:; connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https:; " +
+  "img-src 'self' data: blob: https: http: kova:; font-src 'self' data:; connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https: kova:; " +
   "worker-src 'self' blob:; frame-src 'self' data: blob: https: kova:; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; form-action 'self'";
 
 function registerStaticProtocol(): void {
   protocol.handle("kova", async (request) => {
     try {
       const url = new URL(request.url);
+      // kova://pet/<宠物目录>/<文件>：桌宠库资源直出（对齐 Codex 的 ~/.codex/pets
+      // 模型——放文件夹进 appData/pets 即可用）。路径钳在库目录内，防穿越。
+      if (url.hostname === "pet") {
+        let rel = decodeURIComponent(url.pathname).replace(/^\/+/, "");
+        const clean = normalize(rel).replace(/\\/g, "/");
+        if (clean === "" || clean.split("/").includes("..")) {
+          return new Response("forbidden", { status: 403 });
+        }
+        const root = join(appDataDir(), "pets");
+        const abs = join(root, ...clean.split("/"));
+        if (!abs.startsWith(root + sep)) return new Response("forbidden", { status: 403 });
+        if (!existsSync(abs) || !statSync(abs).isFile()) {
+          return new Response("not found", { status: 404 });
+        }
+        const resp = await net.fetch(pathToFileURL(abs).toString());
+        const ext = abs.slice(abs.lastIndexOf("."));
+        const headers = new Headers(resp.headers);
+        headers.set("content-type", MIME[ext] ?? "application/octet-stream");
+        return new Response(resp.body, { status: resp.ok ? 200 : 404, headers });
+      }
       // kova://file/<绝对路径>：受信根内的本地文件直出（HTML 预览 iframe 用——
       // srcDoc 的 about:srcdoc 没有基址，相对路径的图片/CSS 一律解析不了）。
       // 只放行「当前 workspace / task-workspace / 资料库根」子树内真实存在的文件。

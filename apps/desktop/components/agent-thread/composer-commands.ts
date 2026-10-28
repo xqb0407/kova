@@ -21,12 +21,14 @@ import { useSkills, type SkillEntry } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
 import { useWorkspace } from "@/lib/workspace/workspace-store";
 import { isDesktop } from "@/lib/desktop-env";
+import { getPetPrefs, patchPetPrefs } from "@/lib/settings/pet-prefs";
 import { openPanelTab } from "@/lib/panels/panel-tabs";
 import { setSessionMode } from "@/lib/pi/pi-session-mode";
 import {
   ActivityIcon,
   BookOpenIcon,
   BotIcon,
+  CatIcon,
   EyeIcon,
   FolderTreeIcon,
   GitGraphIcon,
@@ -63,6 +65,7 @@ import {
 /** 弹层图标解析表：分类按 id、条目按 metadata.icon 查键 */
 const ICON_MAP: Record<string, FC<{ className?: string }>> = {
   commands: ZapIcon,
+  Cat: CatIcon,
   skills: BookOpenIcon,
   tools: PlugIcon,
   Bot: BotIcon,
@@ -121,6 +124,17 @@ type SlashCommandDef = {
 };
 
 const SLASH_COMMANDS: readonly SlashCommandDef[] = [
+  {
+    id: "pet",
+    label: "/pet",
+    description: "显示/隐藏桌宠",
+    icon: "Cat",
+    run: () => {
+      // 召唤/收起二态切换：隐藏态回到上次的形态（应用内/悬浮窗）
+      const prefs = getPetPrefs();
+      patchPetPrefs({ mode: prefs.mode === "off" ? prefs.lastNonOffMode : "off" });
+    },
+  },
   {
     id: "git",
     label: "/git",
