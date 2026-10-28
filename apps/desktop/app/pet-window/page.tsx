@@ -212,6 +212,15 @@ export default function PetWindowPage() {
     >
       {/* dev 期 Next 调试按钮在透明小窗上非常突兀（且会盖住右键菜单）：本窗内隐藏 */}
       <style>{`nextjs-portal{display:none!important}`}</style>
+      {/* Windows：原生 app-region 拖拽条（OS 移动循环，最可靠；该条不参与点击穿透）。
+          macOS 保留程序化拖身体（穿透 + ignoreMouseEvents 组合在 mac 实测正常）。 */}
+      {isWindowsPlatform() && (
+        <div
+          data-pet-dragbar
+          aria-hidden
+          style={{ WebkitAppRegion: "drag", alignSelf: "stretch", height: 18 } as React.CSSProperties}
+        />
+      )}
       {/* 对齐 Codex：悬浮窗上没有任何 chrome——没有拖拽条、没有关闭钮、没有提示文案。
           拖宠物身体即移动；左键点宠物唤起主窗；右键是菜单；关闭走右键/托盘/设置。 */}
       {prefs.mode === "floating" && prefs.configUrl !== "" ? (
