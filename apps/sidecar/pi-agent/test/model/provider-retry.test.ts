@@ -968,3 +968,215 @@ describe("bodyRetryDelayMs（429 只在 body 写话术、不给头的网关）",
     expect(fallback).toBeLessThanOrEqual(2_500);
   });
 });
+
+describe("image rejection repair", () => {
+  const png1x1 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  /** 带图历史：上一轮的 user 消息里有 image 块（会话含图的报废场景） */
+  const contextWithImages = {
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "看看图" },
+          { type: "image", data: png1x1, mimeType: "image/png" },
+        ],
+        timestamp: Date.now(),
+      },
+    ],
+    tools: [],
+  } as any;
+  const contextWithoutImages = { messages: [], tools: [] };
+
+  function countContextImages(ctx: any): number {
+    return ctx.messages.reduce(
+      (n: number, m: any) =>
+        n + (Array.isArray(m.content)
+          ? m.content.filter((b: any) => b.type === "image").length
+          : 0),
+      0,
+    );
+  }
+
+  it("repairs a pre-stream 400 image rejection by stripping images and retrying", async () => {
+    let attempts = 0;
+    const receivedContexts: any[] = [];
+    let recovered = 0;
+    let claimCalls = 0;
+    let sleepCalls = 0;
+    const stream = createProviderRetryStream(
+      model,
+      contextWithImages,
+      {},
+      (options, ctx) => {
+        attempts += 1;
+        receivedContexts.push(ctx);
+        if (attempts === 1) {
+          return failedStream({
+            errorMessage:
+              '400: {"error":{"message":"image input is not supported by this model"}}',
+          });
+        }
+        return successfulStream();
+      },
+      {
+        claim: () => {
+          claimCalls += 1;
+          return undefined;
+        },
+        headers: () => undefined,
+        status: () => 400,
+        sleep: async () => {
+          sleepCalls += 1;
+        },
+        onImageFallbackRecovered: () => {
+          recovered += 1;
+        },
+      },
+    );
+
+    const events: string[] = [];
+    for await (const event of stream) events.push(event.type);
+
+    expect(attempts).toBe(2);
+    expect(events).toEqual(["start", "done"]);
+    expect((await stream.result()).stopReason).toBe("stop");
+    // 第二次尝试拿到的是剥图后的 context：图片没了，正文与占位文本在
+    expect(countContextImages(receivedContexts[0])).toBe(1);
+    expect(countContextImages(receivedContexts[1])).toBe(0);
+    const content = receivedContexts[1].messages[0].content;
+    expect(content.some((b: any) => b.type === "text" && b.text?.includes("image omitted"))).toBe(
+      true,
+    );
+    expect(content.some((b: any) => b.type === "text" && b.text === "看看图")).toBe(true);
+    // 修复成功即记 sticky；不占预算不等待
+    expect(recovered).toBe(1);
+    expect(claimCalls).toBe(0);
+    expect(sleepCalls).toBe(0);
+  });
+
+  it("surfaces the original error when the repaired attempt is rejected again", async () => {
+    let attempts = 0;
+    let recovered = 0;
+    const stream = createProviderRetryStream(
+      model,
+      contextWithImages,
+      {},
+      () => {
+        attempts += 1;
+        return failedStream({
+          errorMessage:
+            '400: {"error":{"message":"image input is not supported by this model"}}',
+        });
+      },
+      {
+        claim: () => undefined,
+        headers: () => undefined,
+        status: () => 400,
+        sleep: async () => undefined,
+        onImageFallbackRecovered: () => {
+          recovered += 1;
+        },
+      },
+    );
+
+    const events: string[] = [];
+    for await (const event of stream) events.push(event.type);
+
+    // 只修一次：第二次同样拒图原样上浮，sticky 不记
+    expect(attempts).toBe(2);
+    expect(events).toEqual(["error"]);
+    expect((await stream.result()).stopReason).toBe("error");
+    expect(recovered).toBe(0);
+  });
+
+  it("does not repair when the request carries no images", async () => {
+    let attempts = 0;
+    const stream = createProviderRetryStream(
+      model,
+      contextWithoutImages,
+      {},
+      () => {
+        attempts += 1;
+        return failedStream({
+          errorMessage:
+            '400: {"error":{"message":"image input is not supported by this model"}}',
+        });
+      },
+      {
+        claim: () => undefined,
+        headers: () => undefined,
+        status: () => 400,
+        sleep: async () => undefined,
+      },
+    );
+
+    const events: string[] = [];
+    for await (const event of stream) events.push(event.type);
+
+    expect(attempts).toBe(1);
+    expect(events).toEqual(["error"]);
+  });
+
+  it("does not repair retriable (429) failures even with images", async () => {
+    let attempts = 0;
+    const stream = createProviderRetryStream(
+      model,
+      contextWithImages,
+      {},
+      () => {
+        attempts += 1;
+        return failedStream({ errorMessage: "429: too many requests" });
+      },
+      {
+        claim: () => undefined,
+        headers: () => undefined,
+        status: () => 429,
+        sleep: async () => undefined,
+      },
+    );
+
+    const events: string[] = [];
+    for await (const event of stream) events.push(event.type);
+
+    // 限流走既有重试路径（claim 拒绝后终止），不触发拒图修复
+    expect(attempts).toBe(1);
+    expect(events).toEqual(["error"]);
+  });
+
+  it("falls back to message matching when the captured status is unknown", async () => {
+    let attempts = 0;
+    let recovered = 0;
+    const stream = createProviderRetryStream(
+      model,
+      contextWithImages,
+      {},
+      (_options, ctx) => {
+        attempts += 1;
+        if (attempts === 1) {
+          return failedStream({
+            errorMessage: "invalid request: multimodal content is not accepted",
+          });
+        }
+        void ctx;
+        return successfulStream();
+      },
+      {
+        claim: () => undefined,
+        headers: () => undefined,
+        status: () => undefined,
+        sleep: async () => undefined,
+        onImageFallbackRecovered: () => {
+          recovered += 1;
+        },
+      },
+    );
+
+    const events: string[] = [];
+    for await (const event of stream) events.push(event.type);
+
+    expect(attempts).toBe(2);
+    expect(events).toEqual(["start", "done"]);
+    expect(recovered).toBe(1);
+  });
+});

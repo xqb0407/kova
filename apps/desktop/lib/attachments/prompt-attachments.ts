@@ -2,6 +2,7 @@ import type { PiPromptAttachment } from "../pi/pi-channel";
 import type { UIMessage } from "ai";
 import { invoke } from "@/desktop-bridge/core";
 import { isDesktop } from "@/lib/desktop-env";
+import { imageAttachmentBlockedReason } from "@/lib/pi/pi-image-gate";
 
 /**
  * 用户附件（多模态输入）的前端组装与前置校验（设计：docs/user-image-attachment-plan.md）。
@@ -151,7 +152,10 @@ export function promptFileKindFromName(
 }
 
 /** 附件前置校验：通过返回 null，否则返回给用户的错误文案。
- *  文档上限随通道走：桌面端落盘 20MiB / 网页端内联 8MiB */
+ *  文档上限随通道走：桌面端落盘 20MiB / 网页端内联 8MiB。
+ *  图片另有模型能力闸（多模态降级闭环第③道）：当前线程模型元数据明确为
+ *  纯文本输入时拒收（粘贴/文件选择/data URI 三类入口共用；拖拽走 dropzone
+ *  的 disabled）。空目录/元数据缺失不判定，见 pi-image-gate。 */
 export function validatePromptFile(file: {
   name?: string;
   type?: string;
@@ -159,6 +163,8 @@ export function validatePromptFile(file: {
 }): string | null {
   const kind = promptFileKind(file.name, file.type);
   if (kind === "image") {
+    const gateError = imageAttachmentBlockedReason();
+    if (gateError) return gateError;
     if (file.size > PROMPT_IMAGE_MAX_BYTES) {
       return `「${file.name || "图片"}」超过 ${(PROMPT_IMAGE_MAX_BYTES / (1024 * 1024)).toFixed(0)}MiB 上限`;
     }

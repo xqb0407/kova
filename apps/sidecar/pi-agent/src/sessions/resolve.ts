@@ -45,6 +45,7 @@ import {
   createRetryBudget,
   makeUiRetryController,
 } from "../model/provider-retry";
+import { imageModelKey, stripImagesFromContext } from "../model/image-rejection";
 import { loadSubagentDefinitions, type SubagentDefinition } from "../subagent/subagent-definitions";
 import { ensureSkillsLoaded } from "../skills/skills";
 import { clearLoadedSkills } from "../secrets/secrets";
@@ -1172,8 +1173,15 @@ export async function resolveSession(
     // 显式重试环包住 provider 流：流建立前失败按预算退避重发，
     // 过程以 data-retry chunk 推给前端（见 provider-retry.ts）
     streamFn: (m, context, options) => {
+      // 拒图 sticky 命中（该模型已被证实拒图，见 model/image-rejection.ts）：
+      // 入口直接剥图，免掉每轮一次的必败首请求。剥后消息换新对象，
+      // cacheWarmer 的前缀身份检查自然不命中，不会重放剥图上下文。
+      const imageKey = imageModelKey(m);
+      const effectiveContext = run.imageRejectionModels?.has(imageKey)
+        ? stripImagesFromContext(context)
+        : context;
       // 轨迹内容捕获：本次请求的上下文快照（附加到随后打开的 llm_call span）
-      run.trace?.noteRequest(context);
+      run.trace?.noteRequest(effectiveContext);
       // 诊断日志：思考档位是否真的随开关到达 provider 请求
       //（关着仍出思考时先看这行：reasoning: undefined 且模型默认开思考 = 缺显式关闭参数，
       //  用 设置→模型→支持深度思考 旁的「关闭时下发」补上，如 none）
@@ -1213,24 +1221,29 @@ export async function resolveSession(
       // 消息仍是当前转录的前缀（pi 同款，防重放已失效的旧前缀）
       if ((options as { sessionId?: string } | undefined)?.sessionId === sessionId) {
         run.cacheWarmer?.start(
-          { model: m, context, options: requestOptions },
+          { model: m, context: effectiveContext, options: requestOptions },
           () => {
             const state = run.agent.state;
             return (
               state.model?.provider === m.provider &&
               state.model?.id === m.id &&
-              state.messages.length >= context.messages.length &&
-              context.messages.every((msg, index) => state.messages[index] === msg)
+              state.messages.length >= effectiveContext.messages.length &&
+              effectiveContext.messages.every((msg, index) => state.messages[index] === msg)
             );
           },
         );
       }
       return createProviderRetryStream(
         m,
-        context,
+        effectiveContext,
         requestOptions,
-        (retryOptions) => getModels().streamSimple(m, context, retryOptions),
-        makeUiRetryController(run),
+        (retryOptions, ctx) => getModels().streamSimple(m, ctx, retryOptions),
+        makeUiRetryController(run, {
+          // 拒图修复重试成功出流：记账 sticky，后续轮次入口预剥图
+          onImageFallbackRecovered: () => {
+            (run.imageRejectionModels ??= new Set()).add(imageKey);
+          },
+        }),
       );
     },
     initialState: {

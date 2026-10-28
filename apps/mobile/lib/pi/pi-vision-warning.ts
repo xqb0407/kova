@@ -7,14 +7,14 @@ import { getPiModelsSnapshot } from "@/lib/pi/pi-models";
 import { getThreadModelSnapshot } from "@/lib/pi/pi-session-model";
 
 /**
- * 「发送含图片但当前模型是纯文本输入」的桌面提示（只提示、不拦截）。
+ * 「发送含图片但当前模型是纯文本输入」的发送时提示（只提示、不拦截）。
  *
- * 背景：图片以 image_url 无条件进请求体（pi-ai openai-completions 转换器），
- * 端点若是纯文本模型会静默忽略，模型便如实回答「没收到图片」。sidecar 不做
- * 拦截：input 元数据不可靠、实测误拦过支持图像的模型，模型硬门已移除
- * （见 sidecar prompt-pipeline.ts 附件段注释）。桌面层按列表元数据仅 toast
- * 提醒——元数据错了代价也只是多一句提示，用户可切换视觉模型，或在
- * 设置→模型 里修正该模型的输入能力。
+ * 背景：目录元数据标为纯文本输入的模型，请求侧会按元数据把图片替换成占位
+ * 文本（pi-ai downgradeUnsupportedImages，sidecar 侧行为，移动端同一 sidecar
+ * 自动生效）——模型看不到图片但仍可应答。本提示在发送时提前告知，免得用户
+ * 等一轮「没收到图片」的回复才明白。元数据可在 设置→模型 修正该模型的输入
+ * 能力；误标但端点真拒图的残余由 sidecar 拒图修复兜底（provider-retry 剥图
+ * 重试）。移动端 composer 暂无桌面端那道附件入口硬闸，留作后续。
  *
  * 判定时机在发送而非添加附件（添加后还可能换模型）；汇聚点是
  * ThreadController.sendMessage（普通发送 / 排队 / steer / 重新生成重发都经它）。

@@ -306,6 +306,13 @@ export type Running = {
     status?: number;
     headers?: Readonly<Record<string, string>>;
   };
+  /**
+   * 已被证实拒图的模型集合（键 provider/modelId，见 model/image-rejection.ts）：
+   * 元数据标成支持图像但端点真拒图时，provider-retry 的拒图修复重试成功后把
+   * 该模型记进来，后续轮次 streamFn 入口直接预剥图，免掉每次的必败首请求。
+   * 进程内存活；重启丢失只是再失败重试一次。
+   */
+  imageRejectionModels?: Set<string>;
   /** 当前 data-retry part id（每 prompt 轮一个，多次尝试同 id 原地更新） */
   providerRetryChunkId: string;
   /** 重试卡片在屏标志：onRetry 置位，onSettled 发 resolved 后清除 */

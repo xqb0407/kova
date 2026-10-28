@@ -912,8 +912,10 @@ async function runTurnBody(
   // 折算成说明行追加到文本尾部（模型可读、刷新后可见），合法项组装 ImageContent
   // 走 agent.prompt(text, images) 进模型上下文并随 agent 消息本体自动落转录。
   // 溢出恢复/委派收敛的重跑段不携带图片（resume 为纯文本）。
-  // 模型硬门已移除（input 元数据不可靠，实测误拦支持图像的模型）：附件过
-  // 物理闸门（prompt-attachments.ts）后一律放行，端点不支持时 API 报错可见。
+  // 模型能力门在请求侧按元数据收口（pi-ai downgradeUnsupportedImages，补丁已
+  // 恢复 user 分支）：附件过物理闸门（prompt-attachments.ts）后进转录进上下文，
+  // 目录标为纯文本输入的模型在 transformMessages 阶段把图片换成占位文本；
+  // 元数据标成支持图像但端点真拒图的残余由 provider-retry 拒图修复兜底。
   const promptAttachments = await preparePromptAttachments(msg, {
     cwd: run.cwd,
     model: run.agent.state.model,

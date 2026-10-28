@@ -27,6 +27,7 @@ import {
   createRetryBudget,
   providerRetryMaxRetries,
 } from "../model/provider-retry";
+import { imageModelKey, stripImagesFromContext } from "../model/image-rejection";
 import type { SubagentDefinition } from "./subagent-definitions";
 import type { SubagentHistoryMessage } from "../types";
 import {
@@ -138,6 +139,8 @@ export class SubagentRun {
   private lengthContinues = 0;
   /** delegate 的 provider 请求自动重试记账（预算按一次委派，静默只记日志） */
   private readonly retryBudget = createRetryBudget();
+  /** 已被证实拒图的模型集合（同主代理 Running.imageRejectionModels，见 model/image-rejection.ts） */
+  private readonly imageRejectionModels = new Set<string>();
   /** 调用轨迹（trace.ts）：归属父会话文件，随 handleEvent 喂事件、agent_end 结算 */
   private readonly trace: TraceRunRecorder;
   private retryCapture: {
@@ -156,13 +159,18 @@ export class SubagentRun {
       // 与主代理一致：自定义 OpenAI 兼容端点补发 prompt_cache_key
       onPayload: makePromptCacheKeyPayloadHook(this.opts.sessionId),
       streamFn: (m, context, options) => {
+        // 拒图 sticky 命中（同主代理，见 model/image-rejection.ts）：入口直接剥图
+        const imageKey = imageModelKey(m);
+        const effectiveContext = this.imageRejectionModels.has(imageKey)
+          ? stripImagesFromContext(context)
+          : context;
         // 轨迹内容捕获：同主代理（附加到随后打开的 llm_call span）
-        this.trace.noteRequest(context);
+        this.trace.noteRequest(effectiveContext);
         this.retryCapture.status = undefined;
         this.retryCapture.headers = undefined;
         return createProviderRetryStream(
           m,
-          context,
+          effectiveContext,
           {
             ...options,
             // 与主代理同款：无条件补发会话亲和头（参考 opencode）
@@ -180,11 +188,12 @@ export class SubagentRun {
                 : undefined;
             }),
           },
-          (retryOptions) => getModels().streamSimple(m, context, retryOptions),
+          (retryOptions, ctx) => getModels().streamSimple(m, ctx, retryOptions),
           {
             claim: (error) => claimRetry(this.retryBudget, error),
             headers: () => this.retryCapture.headers,
             status: () => this.retryCapture.status,
+            onImageFallbackRecovered: () => this.imageRejectionModels.add(imageKey),
             // delegate 没有自己的 UI 流，重试过程只留日志
             onRetry: ({ error, attempt, delayMs }) => {
               this.trace.noteRetry({

@@ -1,6 +1,9 @@
 "use client";
 
-import { UserMessageAttachments } from "@/components/assistant-ui/elements/attachment.aui";
+import {
+  ComposerAttachments,
+  UserMessageAttachments,
+} from "@/components/assistant-ui/elements/attachment.aui";
 import { QuoteBlock } from "@/components/assistant-ui/elements/quote.aui";
 import {
   DirectiveText,
@@ -232,6 +235,12 @@ export const EditComposer: FC = () => {
     >
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         <ComposerPrimitive.Root className="aui-edit-composer-root border-border/60 dark:border-muted-foreground/15 ml-auto flex w-full max-w-[85%] cursor-text flex-col rounded-(--composer-radius) border bg-(--composer-bg) backdrop-blur-xl">
+          {/* 编辑回填的附件芯片（图片缩略图 + 删除）：框架在 beginEdit 时把
+              投影 message.attachments 预填进编辑 composer，发送本就随重发携带
+              （buildPiSendInput 从 attachments 还原 image parts）——此前不渲染，
+              用户既看不到也删不掉，「带图消息没法编辑」的观感即源于此。删掉
+              芯片再发送 = 把该图从后续上下文里去掉（转录随截断重写）。 */}
+          <ComposerAttachments />
           <CmComposerInput
             autoFocus
             className={`aui-edit-composer-input min-h-14 w-full px-4 pt-3 pb-1 text-foreground text-base outline-none [&_.cm-editor]:bg-transparent [&_.cm-editor]:outline-none [&_.cm-scroller]:overscroll-contain ${directiveChipVariants}`}

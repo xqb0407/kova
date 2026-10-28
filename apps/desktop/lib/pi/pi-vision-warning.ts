@@ -6,19 +6,20 @@ import { getPiModelsSnapshot } from "@/lib/pi/pi-models";
 import { getThreadModelSnapshot } from "@/lib/pi/pi-session-model";
 
 /**
- * 「发送含图片但当前模型是纯文本输入」的桌面提示（只提示、不拦截）。
+ * 「发送含图片但当前模型是纯文本输入」的桌面提示。
  *
- * 背景：图片以 image_url 无条件进请求体（pi-ai openai-completions 转换器），
- * 端点若是纯文本模型会静默忽略，模型便如实回答「没收到图片」。sidecar 不做
- * 拦截：input 元数据不可靠、实测误拦过支持图像的模型，模型硬门已移除
- * （见 sidecar prompt-pipeline.ts 附件段注释）。桌面层按列表元数据仅 toast
- * 提醒——元数据错了代价也只是多一句提示，用户可切换视觉模型，或在
- * 设置→模型 里修正该模型的输入能力。
+ * 背景：目录元数据明确标为纯文本输入的模型，请求侧会按元数据把图片替换成
+ * 占位文本（pi-ai downgradeUnsupportedImages，补丁已恢复 user 分支；见 sidecar
+ * transform-images.test.ts 头注）——模型看不到图片但仍可应答。本 toast 在发送
+ * 时提前告知，免得用户等一轮「没收到图片」的回复才明白。元数据可在
+ * 设置→模型 修正该模型的输入能力；误标但端点真拒图的残余由 sidecar 拒图
+ * 修复兜底（provider-retry 剥图重试）。
  *
  * 判定时机在发送而非添加附件（添加后还可能换模型）；汇聚点是
  * ThreadController.sendMessage（普通发送 / 排队 / steer / 重新生成重发都经它）。
  * 与 pi-model-gate 同口径：目录为空（未加载或远程模式）不判定；input 字段
- * 缺失的模型不判定，避免误报。
+ * 缺失的模型不判定，避免误报。composer 附件入口另有同口径硬闸
+ * （lib/attachments/prompt-attachments.ts + useImageSupportGate）。
  */
 
 /** 目录元数据是否明确排除图像输入；input 缺失（undefined/非数组）返回 null=不判定 */

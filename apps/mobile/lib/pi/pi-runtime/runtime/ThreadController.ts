@@ -672,9 +672,10 @@ export class PiThreadController implements PiThreadControllerLike {
           content: input.content ? `${input.content}\n\n${chipDirectives}` : chipDirectives,
         }
       : input;
-    // 改动（发图能力提示）：当前模型目录元数据标为纯文本输入而本次发送含图时
-    // toast 提醒——不拦截（sidecar 因元数据不可靠已移除硬门，见
-    // lib/pi/pi-vision-warning.ts 头注）。排队/steer/重生重发同经此汇聚点。
+    // 发图能力提示：当前模型目录元数据标为纯文本输入而本次发送含图时提示——
+    // 请求侧降级（pi-ai downgradeUnsupportedImages，sidecar 侧）会把图片替换成
+    // 占位文本，模型看不到但仍可应答（见 lib/pi/pi-vision-warning.ts 头注）。
+    // 排队/steer/重生重发同经此汇聚点。
     maybeWarnUnsupportedImages(this.threadId, (input.attachments?.length ?? 0) > 0);
     this.ensureEventSubscription({ includeSnapshot: false });
 

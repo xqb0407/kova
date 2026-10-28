@@ -63,6 +63,7 @@ import {
   PROMPT_IMAGE_MAX_COUNT,
   validatePromptFile,
 } from "@/lib/attachments/prompt-attachments";
+import { imageAttachmentBlockedReason } from "@/lib/pi/pi-image-gate";
 import { pathBasename, useWorkspace } from "@/lib/workspace/workspace-store";
 import { useSkills } from "@/lib/skills/skills";
 import { useSubagents } from "@/lib/subagent/subagents";
@@ -344,7 +345,16 @@ const useAddAttachments = () => {
         continue;
       }
       const isImage = kind === "image";
-      if (isImage && !allowImage(imageCount + imageTaken)) continue;
+      // 纯文本输入模型的图片硬闸（与 validatePromptFile 同源判定；dialog 路径
+      // 不经过它，这里补上，见 pi-image-gate）
+      if (isImage) {
+        const gateError = imageAttachmentBlockedReason();
+        if (gateError) {
+          toast.error(gateError);
+          continue;
+        }
+        if (!allowImage(imageCount + imageTaken)) continue;
+      }
       const mime = isImage ? imageMimeFromName(name) : docMimeFromName(name);
 
       if (isImage) {

@@ -23,6 +23,11 @@ import {
   classifyAgentError,
   type ClassifiedAgentError,
 } from "../agent/agent-errors";
+import { logAt } from "../log";
+import {
+  shouldAttemptImageRepair,
+  stripImagesFromContext,
+} from "./image-rejection";
 import { sendEventChunk } from "../protocol/stream";
 import type { Running } from "../types";
 
@@ -161,6 +166,11 @@ export type ProviderRetryController = {
    * 每次重试周期恰好触发一次（本项目扩展，用于收起前端重试卡片）。
    */
   onSettled?: () => void;
+  /**
+   * 拒图修复的请求真正出流（见到 start）时恰好回调一次：调用方把该模型记入
+   * sticky 集合（Running.imageRejectionModels），后续轮次入口预剥图免必败首请求。
+   */
+  onImageFallbackRecovered?: () => void;
   /** 测试钩子；生产走下面的可中止定时器。 */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 };
@@ -421,6 +431,7 @@ function setupErrorMessage(
 
 type StreamFactory = (
   options: SimpleStreamOptions,
+  context: Context,
 ) => AssistantMessageEventStream;
 
 /* ------------------------------ 预算与认领 ------------------------------ */
@@ -456,8 +467,12 @@ export function claimRetry(
  * 主代理的控制器：认领 run 上的预算，并把重试过程以 data-retry chunk 发到当前
  * 请求的消息流（同一 part id 原地更新，参照 data-compaction 生命周期）。
  * Stop 之后（stopRequested）不再打扰用户；卡片以 phase resolved 收起。
+ * `onImageFallbackRecovered` 供拒图修复成功出流时记账（image-rejection.ts）。
  */
-export function makeUiRetryController(run: Running): ProviderRetryController {
+export function makeUiRetryController(
+  run: Running,
+  hooks?: { onImageFallbackRecovered?: () => void },
+): ProviderRetryController {
   const settle = () => {
     // 轨迹的重试区间收口：无论有没有 UI 卡片（providerRetryActive），只要有
     // 打开中的 retry span 都要闭合（noteRetrySettled 对无 span 情形是 no-op）
@@ -474,6 +489,7 @@ export function makeUiRetryController(run: Running): ProviderRetryController {
     claim: (error) => claimRetry(run.providerRetry, error),
     headers: () => run.retryCapture.headers,
     status: () => run.retryCapture.status,
+    onImageFallbackRecovered: hooks?.onImageFallbackRecovered,
     onRetry: ({ error, attempt, delayMs }) => {
       run.providerRetryActive = true;
       // 轨迹打点在 stopRequested 短路之前：Stop 抑制 UI 但重试事实照记
@@ -506,6 +522,11 @@ export function makeUiRetryController(run: Running): ProviderRetryController {
 /**
  * pi-ai 把建立期失败作为 error 事件返回而非抛出。这层适配只消费那些流建立前的
  * 失败，经共享控制器重试，其余事件原样转发——流已开始后的失败交给现状路径上报。
+ *
+ * 拒图修复（image-rejection.ts）：终态 400/422 且请求带图时剥图立即重试一次，
+ * 不消耗共享预算、不向下游转发失败事件；修复后的尝试见到 start 即回调
+ * onImageFallbackRecovered 记 sticky。与 limitRepair 一样每逻辑请求至多一次，
+ * 修复后再失败原样上浮（不循环）。
  */
 export function createProviderRetryStream(
   model: Model<Api>,
@@ -514,8 +535,6 @@ export function createProviderRetryStream(
   createStream: StreamFactory,
   controller: ProviderRetryController,
 ): AssistantMessageEventStream {
-  // context 留在签名里：防止调用方把重试流错包到与 provider 调用不同的请求上。
-  void context;
   const outer = createAssistantMessageEventStream();
   const sleep = controller.sleep ?? delayWithAbort;
 
@@ -523,23 +542,36 @@ export function createProviderRetryStream(
     // 一个逻辑轮只修补一次：不透明的 400/422 之后，下一次尝试剥掉推导的
     // output limit。修补不消耗共享瞬时预算，第二次不透明失败原样上浮。
     let limitRepairTried = false;
+    // 拒图修复同款一次性记账；effectiveContext 只在剥图后变化，其余尝试原样
+    let imageRepairTried = false;
+    let imageRecoveryNoted = false;
+    let effectiveContext = context;
     for (;;) {
       if (options.signal?.aborted) throw requestAbortedError();
-      const inner = createStream({
-        ...(limitRepairTried ? withoutDerivedOutputLimit(options) : options),
-        maxRetries: 0,
-      });
+      const inner = createStream(
+        {
+          ...(limitRepairTried ? withoutDerivedOutputLimit(options) : options),
+          maxRetries: 0,
+        },
+        effectiveContext,
+      );
       let sawStart = false;
       let retry:
         | { error: ClassifiedAgentError; attempt: number }
         | undefined;
       let opaqueLimitRejection: ClassifiedAgentError | undefined;
+      let imageRejection: ClassifiedAgentError | undefined;
 
       for await (const event of inner) {
         if (event.type === "start") {
           sawStart = true;
           // 新请求真的开始出流了：收起可能挂着倒计时的重试卡片
           controller.onSettled?.();
+          // 拒图修复的请求出流成功：sticky 记账（每请求恰好一次）
+          if (imageRepairTried && !imageRecoveryNoted) {
+            imageRecoveryNoted = true;
+            controller.onImageFallbackRecovered?.();
+          }
         }
         if (
           !sawStart &&
@@ -556,6 +588,10 @@ export function createProviderRetryStream(
           );
           if (!limitRepairTried && isOpaqueBadRequest(error)) {
             opaqueLimitRejection = error;
+            break;
+          }
+          if (!imageRepairTried && shouldAttemptImageRepair(error, effectiveContext, controller.status?.())) {
+            imageRejection = error;
             break;
           }
           const attempt = controller.claim(error, "request");
@@ -580,6 +616,19 @@ export function createProviderRetryStream(
         await inner.result();
         if (options.signal?.aborted) throw requestAbortedError();
         limitRepairTried = true;
+        continue;
+      }
+
+      if (imageRejection) {
+        await inner.result();
+        if (options.signal?.aborted) throw requestAbortedError();
+        imageRepairTried = true;
+        // 从原始 context 剥（幂等）：无论此前是否发生过其它修补
+        effectiveContext = stripImagesFromContext(context);
+        logAt(
+          "event",
+          `provider image rejection repair: ${model.provider}/${model.id} -> retry with images stripped`,
+        );
         continue;
       }
 
