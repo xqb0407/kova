@@ -161,7 +161,16 @@ const QuickViewScroller: FC<{
     // 分区展开/收起、行内容变化（如委派状态词）都改 scrollHeight，
     // 子树变更即重算（反馈环不会成环：只读几何、写的是浮条样式）
     const mo = new MutationObserver(schedule);
-    mo.observe(el, { childList: true, subtree: true });
+    // 除节点增删外还要观察 style：分区展开/收起是 framer-motion 逐帧写
+    // height 的高度动画（不产生节点变更），不观察的话浮条会在动画期间
+    // 停在上一次的位置，直到下一次滚动才跳到位。浮条本身在 el 之外，
+    // 它自己的 style 更新不在观察范围内，不会形成反馈环。
+    mo.observe(el, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style"],
+    });
     return () => {
       el.removeEventListener("scroll", schedule);
       ro.disconnect();
@@ -486,8 +495,9 @@ const GitSection: FC = () => {
 
 /* ------------------------------ 进度 ------------------------------ */
 
-/** 任务进度：todo 快照渲染。完成 = 勾圈 + 删除线淡化；进行中 = 序号徽标；
- *  待办 = 空心圈。点条目跳面板的计划标签。空清单保留分区（副标题提示） */
+/** 任务进度：todo 快照渲染。状态图标与右侧面板计划清单同款（见
+ *  TodoStatusGlyph）：细环勾 / 进度弧 / 虚线圈。点条目跳面板的计划标签。
+ *  空清单保留分区（副标题提示） */
 const TodoSection: FC<{ threadId: string }> = ({ threadId }) => {
   const snap = useThreadTodos(threadId);
   // 开卡水合（浮层收起时不挂载、不发请求）
@@ -645,9 +655,10 @@ const ArtifactRowItem: FC<{ artifact: MessageArtifact; cwd: string | null }> = (
 
 /* ------------------------------ 子智能体 ------------------------------ */
 
-/** Task 委派运行列表：默认收起，标题旁显示运行数。行 = 图标 + 名称/描述 +
- *  状态（运行中转圈计时 / 终态标签）。点击打开该委派的子智能体标签
- *  （openSubagentTab 自带唤起面板）。无委派整区隐藏 */
+/** Task 委派运行列表：默认收起，标题右缘计数胶囊显示运行数（无运行显
+ *  委派总数）。行 = 图标 + 名称/描述 + 状态（运行中转圈计时 / 终态标签）。
+ *  点击打开该委派的子智能体标签（openSubagentTab 自带唤起面板）。
+ *  无委派整区隐藏 */
 const SubagentsSection: FC = () => {
   const messages = useAuiState((s) => s.thread.messages);
   const running = useAuiState((s) => s.thread.isRunning);
