@@ -430,11 +430,11 @@ export default function PetPreviewPage() {
         <div style={{ display: "flex", gap: 24, alignItems: "flex-start" }}>
           <div style={{ display: "grid", justifyItems: "center", gap: 4 }}>
             <PetWidget variant="inline" manifest={animatedManifest} size={110} motion="idle" subscribeEvents={simBus.subscribe} onError={(error: Error) => setAnimatedError(error.message)} />
-            <code style={{ fontSize: 11 }}>idle → boil.apng</code>
+            <code style={{ fontSize: 12 }}>idle → boil.apng</code>
           </div>
           <div style={{ display: "grid", justifyItems: "center", gap: 4 }}>
             <PetWidget variant="inline" manifest={animatedManifest} size={110} motion="working" subscribeEvents={simBus.subscribe} onError={() => {}} />
-            <code style={{ fontSize: 11 }}>working → bounce.webp</code>
+            <code style={{ fontSize: 12 }}>working → bounce.webp</code>
           </div>
         </div>
         <p style={{ margin: 0, fontSize: 12, color: "#888" }}>

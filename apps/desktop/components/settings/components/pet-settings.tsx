@@ -76,7 +76,7 @@ const PreviewCard: FC<{
       )}
     >
       {selected && (
-        <span className="absolute right-2 top-2 rounded-full bg-primary px-1.5 py-0.5 text-[10px] leading-none whitespace-nowrap text-primary-foreground">
+        <span className="absolute right-2 top-2 rounded-full bg-primary px-2 py-0.5 text-xs font-medium leading-none whitespace-nowrap text-primary-foreground">
           使用中
         </span>
       )}
@@ -95,7 +95,7 @@ const PreviewCard: FC<{
               onRemove();
             }
           }}
-          className="absolute right-2 top-2 flex size-5 cursor-pointer items-center justify-center rounded-full border border-border/60 bg-background/80 text-[10px] leading-none hover:bg-muted"
+          className="absolute right-2 top-2 flex size-5 cursor-pointer items-center justify-center rounded-full border border-border/60 bg-background/80 text-xs leading-none hover:bg-muted"
         >
           ×
         </span>

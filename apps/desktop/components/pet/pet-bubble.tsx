@@ -70,7 +70,7 @@ export function PetBubble(props: {
           style={{
             display: "block",
             marginTop: 2,
-            fontSize: 10,
+            fontSize: 12,
             color: "var(--muted-foreground, #888)",
           }}
         >
