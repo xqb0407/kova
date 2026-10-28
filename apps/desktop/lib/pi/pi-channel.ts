@@ -3,7 +3,6 @@
 import { invoke } from "@/desktop-bridge/core";
 import { listen } from "@/desktop-bridge/event";
 import { subscribeWireFrames } from "@/lib/pi/wire-bus";
-import { isDesktop } from "@/lib/desktop-env";
 import type { PiResponse } from "@/lib/pi/pi-bridge";
 
 /**
@@ -221,17 +220,23 @@ type ChannelListener = (ch: PiChannel | null) => void;
 const channelListeners = new Set<ChannelListener>();
 
 /**
- * 桌面传输订阅的宿主门（DesktopPiChannel 专用）：纯浏览器/SSR 没有
- * kovaHost，订阅一律空转（返回 no-op 退订）——否则启动期每个订阅方
- * （设计主题/MCP/插件/自动化…）都会换来一条 "kovaHost missing" 警告。
+ * DesktopPiChannel 订阅的宿主判断：没有 window（bun 测试 / SSR）放行；
+ * 有 window 时以 Electron preload 注入的 __KOVA_DESKTOP__ 标记为准——
+ * 纯浏览器（dev-preview / 直接开 localhost）没有桌面试传输，订阅空转，
+ * 否则启动期每个订阅方都会换来一条 "kovaHost missing" 警告。
  * 不做进 wire-bus：那里被测试直接经 mock listen 驱动，加宿主门会误伤。
  */
+export function desktopChannelAvailable(): boolean {
+  if (typeof window === "undefined") return true;
+  return "__KOVA_DESKTOP__" in window;
+}
+
 function desktopSubscribe<T>(
   types: string[],
   handle: (frame: T) => void,
 ): Promise<() => void> {
-  if (!isDesktop()) return Promise.resolve(() => {});
-  return desktopSubscribe<T>(types, handle);
+  if (!desktopChannelAvailable()) return Promise.resolve(() => {});
+  return subscribeWireFrames<T>(types, handle);
 }
 
 export function addPiChannelListener(cb: ChannelListener): () => void {
@@ -325,7 +330,7 @@ export class DesktopPiChannel implements PiChannel {
   async subscribeTurns(
     cb: (sessionId: string | null, active: boolean) => void,
   ): Promise<() => void> {
-    if (!isDesktop()) return () => {};
+    if (!desktopChannelAvailable()) return () => {};
     const [unlistenBatch, unlistenExit] = await Promise.all([
       subscribeWireFrames<{ sessionId?: string; active?: boolean }>(
         ["turn_changed"],
@@ -446,7 +451,7 @@ export class DesktopPiChannel implements PiChannel {
   async subscribeSessionsChanged(
     cb: (frame: PiSessionsChangedFrame | null) => void,
   ): Promise<() => void> {
-    if (!isDesktop()) return () => {};
+    if (!desktopChannelAvailable()) return () => {};
     const [unlistenBatch, unlistenExit] = await Promise.all([
       subscribeWireFrames<PiSessionsChangedFrame>(["sessions_changed"], (parsed) => {
         if (parsed?.type === "sessions_changed" && typeof parsed.sessionId === "string") {
