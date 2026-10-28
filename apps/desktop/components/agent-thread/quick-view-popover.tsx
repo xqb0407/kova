@@ -121,6 +121,79 @@ export const QuickViewToggleButton: FC = () => {
 
 /* ------------------------------ 浮层卡片 ------------------------------ */
 
+/** 悬浮滚动条容器：隐藏原生滚动条，自绘一条细浮条（rounded 4px），
+ *  只有鼠标悬停整张卡片时淡入——与侧边栏「悬浮才显示」的观感一致。
+ *  浮条只做指示、pointer-events-none（滚轮/触控板仍是主操作），
+ *  位置/高度按 scrollTop/scrollHeight 实时折算，内容增删经
+ *  MutationObserver 跟随（分区展开收起会改变滚动高度）。 */
+const QuickViewScroller: FC<{
+  /** 悬停由外层 group/qv 驱动（整卡 hover 才显浮条） */
+  children: ReactNode;
+}> = ({ children }) => {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const [thumb, setThumb] = useState<{ top: number; height: number } | null>(
+    null,
+  );
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      if (scrollHeight <= clientHeight + 1) {
+        setThumb((prev) => (prev === null ? prev : null));
+        return;
+      }
+      const height = Math.max(24, (clientHeight * clientHeight) / scrollHeight);
+      const top =
+        (scrollTop / (scrollHeight - clientHeight)) *
+        Math.max(0, clientHeight - height);
+      setThumb((prev) =>
+        prev && Math.abs(prev.top - top) < 0.5 && Math.abs(prev.height - height) < 0.5
+          ? prev
+          : { top, height },
+      );
+    };
+    const schedule = () => {
+      if (!raf) raf = window.requestAnimationFrame(update);
+    };
+    update();
+    el.addEventListener("scroll", schedule, { passive: true });
+    const ro = new ResizeObserver(schedule);
+    ro.observe(el);
+    // 分区展开/收起、行内容变化（如委派状态词）都改 scrollHeight，
+    // 子树变更即重算（反馈环不会成环：只读几何、写的是浮条样式）
+    const mo = new MutationObserver(schedule);
+    mo.observe(el, { childList: true, subtree: true });
+    return () => {
+      el.removeEventListener("scroll", schedule);
+      ro.disconnect();
+      mo.disconnect();
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  return (
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={scrollerRef}
+        // 滚动容器必须是 flex 子项（flex-1 + min-h-0）而不是 h-full：
+        // max-height 钳制的卡片里，百分比高度对 flex 增长出的父高不解析，
+        // h-full 会退化成内容高、把卡片撑出可视区（实测 564 > 384）。
+        className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto p-2.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+        {children}
+      </div>
+      <div
+        aria-hidden="true"
+        className="bg-muted-foreground/30 pointer-events-none absolute right-1 w-1.5 rounded-full opacity-0 transition-opacity duration-150 group-hover/qv:opacity-100"
+        style={thumb ? { top: thumb.top, height: thumb.height } : { display: "none" }}
+      />
+    </div>
+  );
+};
+
 export const QuickViewCard: FC<{ threadId: string | null }> = ({ threadId }) => {
   const open = useQuickViewOpen(threadId ?? undefined);
   // ESC 收起：浮层是临时视图，键盘逃逸与按钮同语义；不 preventDefault，
@@ -140,16 +213,17 @@ export const QuickViewCard: FC<{ threadId: string | null }> = ({ threadId }) => 
     <aside
       aria-label="快速查看"
       data-slot="quick-view-card"
-      className="bg-popover text-popover-foreground ring-foreground/10 absolute top-3 right-3 z-20 flex max-h-[min(64dvh,32rem)] w-[21rem] max-w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-2xl border shadow-md"
+      // group/qv：整卡悬停驱动自绘滚动条淡入（QuickViewScroller 里消费）
+      className="group/qv bg-popover text-popover-foreground ring-foreground/10 absolute top-3 right-3 z-20 flex max-h-[min(64dvh,32rem)] w-[21rem] max-w-[calc(100%-1.5rem)] flex-col overflow-hidden rounded-2xl border shadow-md"
     >
-      {/* 单分区限高 + 本层兜底滚动：多分区同时展开仍可能超出卡片，保证
-          后续分区标题始终可达 */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto p-2.5">
+      {/* 唯一滚动容器（分区不再各自滚）：一条悬浮浮条 + 本层兜底滚动，
+          多分区展开时后续分区标题始终可达 */}
+      <QuickViewScroller>
         <GitSection />
         <TodoSection threadId={threadId} />
         <ArtifactsSection />
         <SubagentsSection />
-      </div>
+      </QuickViewScroller>
     </aside>
   );
 };
@@ -303,7 +377,7 @@ const TodoSection: FC<{ threadId: string }> = ({ threadId }) => {
       {rows.length === 0 ? (
         <SectionHint text="跟踪较长任务的进度" />
       ) : (
-        <ul className="max-h-80 overflow-x-hidden overflow-y-auto pr-1 pb-1.5">
+        <ul className="pb-1.5">
           {rows.map((row) => (
             <li key={row.id}>
               <button
@@ -366,7 +440,7 @@ const ArtifactsSection: FC = () => {
       {total === 0 ? (
         <SectionHint text="agent 写出交付文件后会汇总在这里" />
       ) : (
-        <div className="max-h-80 overflow-x-hidden overflow-y-auto pr-1 pb-1">
+        <div className="pb-1">
           {groups.preview.length > 0 ? (
             <ArtifactGroup label="preview" artifacts={groups.preview} cwd={cwd} />
           ) : null}
@@ -486,7 +560,7 @@ const SubagentsSection: FC = () => {
       defaultOpen={false}
       trailing={runningCount > 0 ? `${runningCount} 个运行` : String(delegations.length)}
     >
-      <ul className="max-h-48 overflow-x-hidden overflow-y-auto pr-1 pb-1.5">
+      <ul className="pb-1.5">
         {delegations.map((row) => (
           <SubagentRowItem
             key={row.toolCallId}
