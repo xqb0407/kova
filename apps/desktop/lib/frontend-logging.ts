@@ -77,6 +77,10 @@ export function reportFrontendWarning(message: string): void {
  * 不带 ERR_ABORTED 字样的变体（只有 "Error: (-3) loading"，Windows 实测）。
  * 页面本身是隔离的、这不是应用缺陷，折叠成 warn 落日志即可。
  *
+ * console.error 中继这一路必须**在调用原 console.error 之前**分流：Next dev
+ * 浮层是在 console.error 上挂钩的，照旧原样输出会让每次开预览/切浏览器标签
+ * 都弹一张 "Console Error" 卡（reason 里带 file:// 的加载最常见）。
+ *
  * unhandledrejection 的拦截主力在 app/layout.tsx 的 head 内联
  * WEBVIEW_ABORT_GUARD（先于 Next dev 浮层注册 + stopImmediatePropagation，
  * 浮层弹不出来；本模块在 useEffect 期才装，preventDefault 只能压控制台
@@ -98,14 +102,16 @@ export function installFrontendLogging(): void {
     send("warn", formatArgs(args));
   };
   console.error = (...args: unknown[]) => {
-    origError(...args);
     const text = formatArgs(args);
-    // 同签名噪声经 console.error 中继时无法 preventDefault（控制台仍会显示），
-    // 但落日志按 warn 记，web.log 不再被刷屏 ERROR
+    // 同签名噪声经 console.error 中继（Electron webview 内部按 error 输出）：
+    // 不交给原 console.error，dev 浮层就不会把它当成应用错误弹卡；控制台仍留
+    // 一条 warn 备查，落日志同样按 warn 记，web.log 不再被刷屏 ERROR
     if (isWebviewAbortNoise(text)) {
+      origWarn(`webview 管道噪声（导航被顶掉，已折叠）: ${text}`);
       send("warn", `webview 管道噪声（导航被顶掉，已折叠）: ${text}`);
       return;
     }
+    origError(...args);
     send("error", text);
   };
 
