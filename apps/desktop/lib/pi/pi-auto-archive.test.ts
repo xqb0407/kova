@@ -9,6 +9,8 @@ import {
   AUTO_ARCHIVE_DEFAULT_RETENTION_DAYS,
   collectAutoArchiveCandidates,
   getAutoArchivePrefs,
+  getRestoredSessions,
+  recordSessionRestored,
   setAutoArchiveRetentionDays,
   type AutoArchiveCandidateInput,
   type AutoArchiveItemInput,
@@ -30,6 +32,7 @@ function collect(over: Partial<AutoArchiveCandidateInput> = {}): string[] {
     items: [item()],
     pinnedIds: new Set(),
     unreadIds: new Set(),
+    restoredAts: new Map(),
     isRunning: () => false,
     keepIds: new Set(),
     retentionDays: 7,
@@ -86,6 +89,29 @@ describe("collectAutoArchiveCandidates", () => {
     expect(collect({ retentionDays: 30 })).toEqual([]);
   });
 
+  test("恢复后保留期重置：期内不选，计满后重新入选", () => {
+    // lastMessageAt 虽已超期，恢复 1 天 → 完整宽限期，不归档
+    expect(
+      collect({ restoredAts: new Map([["s1", NOW - 1 * DAY]]) }),
+    ).toEqual([]);
+    // 恰好计满（与 lastMessageAt 边界同款语义）与超期 → 重新入选
+    expect(
+      collect({ restoredAts: new Map([["s1", NOW - 7 * DAY]]) }),
+    ).toEqual(["t1"]);
+    expect(
+      collect({ restoredAts: new Map([["s1", NOW - 8 * DAY]]) }),
+    ).toEqual(["t1"]);
+  });
+
+  test("恢复重置不豁免 lastMessageAt：近活动会话仍不入选", () => {
+    expect(
+      collect({
+        items: [item({ lastMessageAt: new Date(NOW - 1 * DAY) })],
+        restoredAts: new Map([["s1", NOW - 10 * DAY]]),
+      }),
+    ).toEqual([]);
+  });
+
   test("多条混合：只返回命中的 id", () => {
     expect(
       collect({
@@ -116,5 +142,18 @@ describe("pi-auto-archive prefs", () => {
     setAutoArchiveRetentionDays(14);
     expect(getAutoArchivePrefs().retentionDays).toBe(14);
     setAutoArchiveRetentionDays(AUTO_ARCHIVE_DEFAULT_RETENTION_DAYS);
+  });
+});
+
+describe("recordSessionRestored", () => {
+  test("登记恢复时刻，并清掉早于最大保留档的旧条目", () => {
+    recordSessionRestored("s-old", NOW - 40 * DAY);
+    recordSessionRestored("s-keep", NOW);
+    expect(getRestoredSessions().get("s-keep")).toBe(NOW);
+    // 30 天档是保护上限：更旧的恢复条目对任何档位都无保护作用，登记时顺手清
+    recordSessionRestored("s-late", NOW + DAY);
+    expect(getRestoredSessions().has("s-old")).toBe(false);
+    expect(getRestoredSessions().get("s-keep")).toBe(NOW);
+    expect(getRestoredSessions().get("s-late")).toBe(NOW + DAY);
   });
 });

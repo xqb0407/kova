@@ -9,10 +9,17 @@ import { useSyncExternalStore } from "react";
  *   本就是本地状态，sidecar 看不见它们——所以配置也留在本地，不占 kv。
  * - 归档动作复用既有链路 aui.threads.item({id}).archive()（→ sidecar
  *   archive_session），归档态跨端一致，可在设置 → 归档恢复。
+ * - 恢复时刻（键 pi.auto-archive.restored，remoteId → 恢复时间戳）同样留
+ *   本地：unarchive 不更新 lastMessageAt，被时间规则归档的会话恢复后仍
+ *   满足超期条件，下一轮扫描会立刻收回（2026-10-28 用户报）。判定改为
+ *   lastMessageAt 与 restoredAt 都超过保留期才入选——保留期从恢复时刻
+ *   重新起算，恢复给一个完整宽限期。
  * - collectAutoArchiveCandidates 不碰任何全局，时间注入便于单测。
  */
 
 const KEY = "pi.auto-archive";
+const RESTORED_KEY = "pi.auto-archive.restored";
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** 可选保留期限（天） */
 export const AUTO_ARCHIVE_RETENTION_OPTIONS = [
@@ -23,6 +30,8 @@ export const AUTO_ARCHIVE_RETENTION_OPTIONS = [
 ] as const;
 
 export const AUTO_ARCHIVE_DEFAULT_RETENTION_DAYS = 7;
+/** 档位上限：恢复时刻条目早于该期限即失去保护作用，记录时顺手清理 */
+export const AUTO_ARCHIVE_MAX_RETENTION_DAYS = 30;
 
 export type AutoArchivePrefs = {
   enabled: boolean;
@@ -109,6 +118,59 @@ export function useAutoArchivePrefs(): AutoArchivePrefs {
   );
 }
 
+/**
+ * 恢复时刻表（remoteId → 恢复时间戳 ms，localStorage 持久化）。
+ * 无订阅者：只有扫描器在扫描时读，不驱动渲染，不需要外部 store 模式。
+ */
+function loadRestored(): ReadonlyMap<string, number> {
+  if (typeof window === "undefined") return new Map();
+  try {
+    const raw = window.localStorage.getItem(RESTORED_KEY);
+    if (!raw) return new Map();
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return new Map();
+    const out = new Map<string, number>();
+    for (const [id, ts] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof ts === "number" && Number.isFinite(ts)) out.set(id, ts);
+    }
+    return out;
+  } catch {
+    return new Map();
+  }
+}
+
+let restoredSnapshot = loadRestored();
+
+function persistRestored() {
+  try {
+    window.localStorage.setItem(
+      RESTORED_KEY,
+      JSON.stringify(Object.fromEntries(restoredSnapshot)),
+    );
+  } catch {
+    // 配额/隐私模式写失败：保护仍在本会话内生效，只是不跨启动
+  }
+}
+
+/** 恢复会话时登记时刻：保留期从这里重新起算；顺手清掉已无保护作用的旧条目 */
+export function recordSessionRestored(
+  remoteId: string,
+  nowMs: number = Date.now(),
+): void {
+  const floor = nowMs - AUTO_ARCHIVE_MAX_RETENTION_DAYS * DAY_MS;
+  const next = new Map<string, number>();
+  for (const [id, ts] of restoredSnapshot) {
+    if (ts > floor) next.set(id, ts);
+  }
+  next.set(remoteId, nowMs);
+  restoredSnapshot = next;
+  persistRestored();
+}
+
+export function getRestoredSessions(): ReadonlyMap<string, number> {
+  return restoredSnapshot;
+}
+
 /** 候选判定的最小输入形状（侧栏 threadItems 的投影，避免耦合 aui 类型） */
 export type AutoArchiveItemInput = {
   /** aui 线程 id（草稿线程为 __LOCALID_ 前缀，仅作 keep 比对与返回） */
@@ -126,6 +188,8 @@ export type AutoArchiveCandidateInput = {
   pinnedIds: ReadonlySet<string>;
   /** 未读集合（remoteId 键） */
   unreadIds: ReadonlySet<string>;
+  /** 恢复时刻表（remoteId 键 → 恢复时间戳 ms）：保留期自恢复起重新计满才可归档 */
+  restoredAts: ReadonlyMap<string, number>;
   /** 运行中判定（sidecar activeTurns 投影） */
   isRunning: (remoteId: string) => boolean;
   /** 当前打开线程（mainThreadId + 其绑定的 sessionId），永不归档 */
@@ -135,11 +199,10 @@ export type AutoArchiveCandidateInput = {
   nowMs: number;
 };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 /**
  * 筛出可自动归档的线程 id：已落盘（regular）、未置顶、无未读、不在运行、
- * 最后消息时间早于「now − 保留期」、且不是当前打开线程。
+ * 非当前打开，且「最后消息时间」与「最近恢复时间」都已早于
+ * 「now − 保留期」（恢复重置保留期：恢复后给一个完整宽限期）。
  * 返回的是 aui 线程 id（archive primitive 按 id 定位）。
  */
 export function collectAutoArchiveCandidates(
@@ -157,6 +220,8 @@ export function collectAutoArchiveCandidates(
     if (input.isRunning(remoteId)) continue;
     const ts = item.lastMessageAt?.getTime();
     if (!ts || ts > cutoff) continue;
+    const restoredMs = input.restoredAts.get(remoteId);
+    if (restoredMs !== undefined && restoredMs > cutoff) continue;
     out.push(item.id);
   }
   return out;

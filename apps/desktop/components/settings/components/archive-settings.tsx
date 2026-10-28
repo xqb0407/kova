@@ -26,6 +26,7 @@ import {
 import { SettingRow } from "@/components/custom-ui/setting-row";
 import {
   AUTO_ARCHIVE_RETENTION_OPTIONS,
+  recordSessionRestored,
   setAutoArchiveEnabled,
   setAutoArchiveRetentionDays,
   useAutoArchivePrefs,
@@ -47,6 +48,8 @@ import { pathBasename } from "@/lib/workspace/workspace-store";
 
 type ArchivedItem = {
   id: string;
+  /** pi sessionId；恢复登记（保留期重置）以此为准，未落盘会话不存在 */
+  remoteId: string | undefined;
   title: string;
   /** 有 cwd = 项目会话；空 = 任务会话 */
   cwd: string;
@@ -92,6 +95,7 @@ export const ArchiveSettings: FC = () => {
           (item.remoteId && piSessionCwdMap.get(item.remoteId)) || "";
         return {
           id,
+          remoteId: item.remoteId,
           title: item.title || "新会话",
           cwd,
           lastMessageAt: item.lastMessageAt?.getTime() ?? 0,
@@ -179,7 +183,7 @@ export const ArchiveSettings: FC = () => {
             </SettingRow>
             <SettingRow
               label="归档保留时长"
-              desc="任务最后更新时间早于该时长后，才会进入自动归档候选。"
+              desc="任务最后更新（或最近恢复）时间早于该时长后，才会进入自动归档候选。"
             >
               <Select
                 value={String(autoArchive.retentionDays)}
@@ -308,9 +312,12 @@ export const ArchiveSettings: FC = () => {
                         selected={selected.has(item.id)}
                         disabled={busy}
                         onToggle={() => toggleOne(item.id)}
-                        onRestore={() =>
-                          aui.threads.item({ id: item.id }).unarchive()
-                        }
+                        onRestore={() => {
+                          // 登记恢复时刻：自动归档的保留期从现在重新起算，
+                          // 否则超期会话恢复后下一轮扫描立刻被收回
+                          if (item.remoteId) recordSessionRestored(item.remoteId);
+                          aui.threads.item({ id: item.id }).unarchive();
+                        }}
                         onDelete={() =>
                           aui.threads.item({ id: item.id }).delete()
                         }

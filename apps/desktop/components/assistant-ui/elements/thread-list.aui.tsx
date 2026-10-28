@@ -89,6 +89,7 @@ import {
 import { getPinnedSessions } from "@/lib/pi/pi-pinned-sessions";
 import {
   collectAutoArchiveCandidates,
+  getRestoredSessions,
   useAutoArchivePrefs,
 } from "@/lib/pi/pi-auto-archive";
 import {
@@ -487,10 +488,12 @@ const ThreadUnreadTracker: FC = () => {
 /**
  * 自动归档扫描器（挂 ThreadListRoot 内，仅桌面端生效）：启动后与每 24h
  * 一轮，把「已完成（regular 且不在运行）、无未读、未置顶、超过保留期、
- * 非当前打开」的会话静默归档（用户选定：不弹 toast）。归档走与行菜单同款
- * primitive（→ sidecar archive_session），设置 → 归档页可恢复。
- * - 判定读的全是本地 store（置顶/未读）+ 运行中投影，所以扫描必须在
- *   渲染层做；配置见 lib/pi/pi-auto-archive.ts
+ * 非当前打开」的会话静默归档（用户选定：不弹 toast）。保留期自最近一次
+ * 恢复重新起算（恢复时刻登记见 lib/pi/pi-auto-archive.ts）——否则恢复的
+ * 旧会话仍满足超期条件，下一轮立刻被收回（2026-10-28 用户报）。归档走与
+ * 行菜单同款 primitive（→ sidecar archive_session），设置 → 归档页可恢复。
+ * - 判定读的全是本地 store（置顶/未读/恢复时刻）+ 运行中投影，所以扫描
+ *   必须在渲染层做；配置见 lib/pi/pi-auto-archive.ts
  * - 60s 心跳只为"列表加载完成后尽快补跑首轮"与到点触发，tick 本体是
  *   一次时间比较，未到期近零成本；开关/保留期变化即重置到期时刻
  *   （打开开关 → 下一分钟内先跑一轮）
@@ -537,6 +540,7 @@ const ThreadAutoArchiver: FC = () => {
         })),
         pinnedIds: new Set(getPinnedSessions()),
         unreadIds: new Set(getUnreadSessions()),
+        restoredAts: getRestoredSessions(),
         isRunning: isSessionRunning,
         keepIds: keep,
         retentionDays: prefsRef.current.retentionDays,
