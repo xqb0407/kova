@@ -15,7 +15,6 @@
 import { useCallback, useMemo, useState, type FC } from "react";
 import {
   ArrowDownIcon,
-  BotIcon,
   CircleCheckIcon,
   CircleXIcon,
   ClockIcon,
@@ -25,6 +24,8 @@ import {
   TerminalIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSubagentAvatar } from "@/lib/subagent/subagents";
+import { SubagentAvatar } from "@/components/custom-ui/subagent-avatar";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -283,11 +284,20 @@ const NestedRun: FC<{
   onSelect: (stepId: string) => void;
 }> = ({ run, running, selectedId, filter, onSelect }) => {
   const total = runDuration(run, running) ?? 1;
+  // 委派目标（v2 trace 起带定义名）：有名字画头像（显式或按名默认），
+  // 旧记录没名字回退通用机器人图标
+  const avatar = useSubagentAvatar(run.agentName);
   return (
     <div className="border-primary/40 ml-3 border-l-2 pl-2.5">
       <div className="text-muted-foreground flex items-center gap-1.5 py-1 text-xs">
-        <BotIcon className="text-primary size-3" />
-        <span className="text-foreground font-medium">子代理</span>
+        <SubagentAvatar
+          name={run.agentName || "子代理"}
+          avatar={avatar}
+          fallback="plain"
+          className="size-3 shrink-0 rounded-full"
+          iconClassName="text-primary size-3"
+        />
+        <span className="text-foreground font-medium">{run.agentName || "子代理"}</span>
         <span>{run.model}</span>
         <span className="tabular-nums">{fmtMs(runDuration(run, running) ?? 0)}</span>
         <span className="text-primary/70">· Task 委派产生</span>

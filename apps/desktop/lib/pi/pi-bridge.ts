@@ -310,6 +310,8 @@ export type PiTraceRun = {
   parentSpanId?: string;
   sessionId: string;
   source: "ui" | "automation" | "subagent";
+  /** subagent 来源时的子代理定义名（v2 新增；旧记录缺失，头像/标签据此回退） */
+  agent?: string;
   startMs: number;
   endMs: number;
   status: PiTraceStatus;

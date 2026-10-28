@@ -79,6 +79,22 @@ describe("createTraceRunRecorder", () => {
     expect(llm.attrs?.inputTokens).toBe(10);
   });
 
+  test("subagent 来源带 agent 名：随记录落盘；未传则字段缺省", () => {
+    const rec = createTraceRunRecorder("sess-agent", "subagent", undefined, "Explorer");
+    rec.handle(ev("agent_start"));
+    rec.handle(ev("agent_end", { messages: [] }));
+    expect(rec.settle()).toBe(true);
+    expect(readTraceRuns("sess-agent", 10)[0]?.agent).toBe("Explorer");
+    // recorder 自身也暴露（面板在飞 run 的头像解析走它）
+    expect(rec.agent).toBe("Explorer");
+
+    const plain = createTraceRunRecorder("sess-agent-plain", "ui");
+    plain.handle(ev("agent_start"));
+    plain.handle(ev("agent_end", { messages: [] }));
+    expect(plain.settle()).toBe(true);
+    expect(readTraceRuns("sess-agent-plain", 10)[0]?.agent).toBeUndefined();
+  });
+
   test("retry 打点：两次重试各自成 span，attrs 带 attempt/delayMs/code", () => {
     const rec = createTraceRunRecorder("sess-2", "ui");
     rec.handle(ev("agent_start"));

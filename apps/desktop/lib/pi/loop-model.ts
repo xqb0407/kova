@@ -72,6 +72,8 @@ export type LoopRun = {
   traceId: string;
   source: "ui" | "automation" | "subagent";
   model: string;
+  /** subagent 来源时的子代理定义名（v2 trace 新增）；旧记录缺失 */
+  agentName?: string;
   startMs: number;
   /** null = 还在跑 */
   durationMs: number | null;

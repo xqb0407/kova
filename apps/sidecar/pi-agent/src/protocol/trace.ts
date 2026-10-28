@@ -94,6 +94,8 @@ export type TraceRunRecord = {
   parentSpanId?: string;
   sessionId: string;
   source: TraceSource;
+  /** subagent 来源时的子代理定义名（Task 委派给谁）；旧记录/其它来源缺失 */
+  agent?: string;
   startMs: number;
   endMs: number;
   status: TraceStatus;
@@ -125,6 +127,8 @@ type LiveRunHeader = {
   traceId: string;
   sessionId: string;
   source: TraceSource;
+  /** subagent 来源时的子代理定义名（崩溃抢救路径要能还原「派给了谁」） */
+  agent?: string;
   startMs: number;
   model?: string;
 };
@@ -289,6 +293,8 @@ const statusOfStopReason = (stopReason: unknown): TraceStatus =>
 export type TraceRunRecorder = {
   readonly sessionId: string;
   readonly source: TraceSource;
+  /** subagent 来源时的子代理定义名（面板头像/标签用）；其它来源 undefined */
+  readonly agent?: string;
   /** 当前打开中 run 的 traceId（无在跑 run 时空串）——Task 委派回填父身份用 */
   readonly traceId: string;
   /** 喂一条 agent 事件（同步、零 IO）；agent_start 打开/重开 run */
@@ -315,11 +321,13 @@ export type TraceRunRecorder = {
   settle(forcedStatus?: TraceStatus): boolean;
 };
 
-/** parent：子代理委派回填的父身份（父 run 的 traceId 与那次 Task tool_call 的 spanId） */
+/** parent：子代理委派回填的父身份（父 run 的 traceId 与那次 Task tool_call 的 spanId）；
+ *  agent：subagent 来源时的子代理定义名，随 run 记录/live 头/崩溃抢救三处落盘 */
 export function createTraceRunRecorder(
   sessionId: string,
   source: TraceSource,
   parent?: { parentRunId?: string; parentSpanId?: string },
+  agent?: string,
 ): TraceRunRecorder {
   let run: OpenRun | null = null;
   let pending: TraceRunRecord[] = [];
@@ -411,6 +419,7 @@ export function createTraceRunRecorder(
       ...(parent?.parentSpanId ? { parentSpanId: parent.parentSpanId } : {}),
       sessionId,
       source,
+      ...(agent ? { agent } : {}),
       startMs: r.startMs,
       endMs,
       status,
@@ -713,6 +722,7 @@ export function createTraceRunRecorder(
       traceId: r.traceId,
       sessionId,
       source,
+      ...(agent ? { agent } : {}),
       startMs: r.startMs,
       ...(r.model ? { model: r.model } : {}),
     });
@@ -780,6 +790,7 @@ export function createTraceRunRecorder(
           runId: traceId,
           sessionId,
           source: header.source,
+          ...(header.agent ? { agent: header.agent } : {}),
           startMs: header.startMs,
           endMs,
           status: "error",
@@ -844,6 +855,7 @@ export function createTraceRunRecorder(
   return {
     sessionId,
     source,
+    ...(agent ? { agent } : {}),
     get traceId() {
       return run?.traceId ?? "";
     },
@@ -948,6 +960,7 @@ export function readLiveRun(sessionId: string): TraceRunRecord[] {
       runId: traceId,
       sessionId,
       source: header.source,
+      ...(header.agent ? { agent: header.agent } : {}),
       startMs: header.startMs,
       // 在飞：endMs 用「已录到的最后时刻」，消费方靠 partial 区分是否已收尾
       endMs,

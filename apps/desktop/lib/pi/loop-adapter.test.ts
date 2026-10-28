@@ -213,6 +213,16 @@ describe("toLoopRuns", () => {
     expect(roots[0]!.children![0]!.source).toBe("subagent");
   });
 
+  test("trace 的 agent 定义名透传成 agentName；旧记录缺失时字段不出现", () => {
+    const [named] = toLoopRuns([
+      makeRun({ source: "subagent", agent: "Explorer" }),
+    ]);
+    expect(named!.agentName).toBe("Explorer");
+
+    const [legacy] = toLoopRuns([makeRun({ source: "subagent" })]);
+    expect(legacy!.agentName).toBeUndefined();
+  });
+
   test("父 run 被 limit 截掉时，子 run 仍作为根保留（不能因此丢数据）", () => {
     const orphan = makeRun({
       traceId: "orphan",

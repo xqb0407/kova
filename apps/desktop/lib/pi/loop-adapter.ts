@@ -161,6 +161,7 @@ function toLoopRun(rec: PiTraceRun): LoopRun {
     traceId: rec.traceId ?? rec.runId,
     source: rec.source,
     model: rec.model ?? "未知模型",
+    ...(rec.agent ? { agentName: rec.agent } : {}),
     startMs: rec.startMs,
     durationMs: inFlight
       ? null

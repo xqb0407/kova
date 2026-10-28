@@ -150,10 +150,16 @@ export class SubagentRun {
 
   constructor(opts: SubagentRunOptions) {
     this.opts = opts;
-    this.trace = createTraceRunRecorder(opts.traceSessionId, "subagent", {
-      parentRunId: opts.parentRunId,
-      parentSpanId: opts.parentSpanId,
-    });
+    this.trace = createTraceRunRecorder(
+      opts.traceSessionId,
+      "subagent",
+      {
+        parentRunId: opts.parentRunId,
+        parentSpanId: opts.parentSpanId,
+      },
+      // 定义名随 trace 落盘：链路追踪面板据此显示「派给了谁」与头像
+      opts.definition.name,
+    );
     this.agent = new Agent({
       sessionId: this.opts.sessionId,
       // 与主代理一致：自定义 OpenAI 兼容端点补发 prompt_cache_key
