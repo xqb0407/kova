@@ -38,6 +38,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { splitPath } from "./git-files";
 import { FileTypeIcon } from "./file-type-icon";
 import { TabEmpty } from "./tab-empty";
+import { FileRail } from "./file-rail";
 
 /**
  * 「文件」标签：单文件内容回看，三种数据源：
@@ -617,9 +618,20 @@ export const FileTab: FC<{ tab: PanelTab }> = ({ tab }) => {
       return <TabEmpty icon={FileTextIcon} text="缺少工作目录上下文" />;
     const key = `${cwd}\u0000${tab.path}`;
     const mime = imageMimeFor(tab.path);
-    if (mime)
-      return <ImageView key={key} cwd={cwd} path={tab.path} mime={mime} />;
-    return <DiskFileView key={key} cwd={cwd} path={tab.path} />;
+    // 磁盘模式统一右缘挂文件树栏（源码/图片同语境）：看代码时不再切
+    // 「文件树」标签；开合态与树的展开态都跨标签保持（见 FileRail 注释）
+    return (
+      <div className="flex h-full min-h-0">
+        <div className="min-w-0 flex-1">
+          {mime ? (
+            <ImageView key={key} cwd={cwd} path={tab.path} mime={mime} />
+          ) : (
+            <DiskFileView key={key} cwd={cwd} path={tab.path} />
+          )}
+        </div>
+        <FileRail cwd={cwd} activePath={tab.path} />
+      </div>
+    );
   }
   return <SnapshotFileTab tab={tab} />;
 };

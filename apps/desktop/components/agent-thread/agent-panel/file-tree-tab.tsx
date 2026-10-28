@@ -1,11 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FC } from "react";
-import {
-  activatePanelTab,
-  getPanelTabs,
-  openPanelTab,
-} from "@/lib/panels/panel-tabs";
+import { openOrFocusFileTab } from "@/lib/panels/panel-tabs";
 import { usePanelCwd } from "@/lib/workspace/use-panel-cwd";
 import { fetchProjectDirs } from "@/lib/pi/pi-project-dirs";
 import type { PiExternalDir } from "@/lib/pi/pi-bridge";
@@ -17,8 +13,8 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ContextMenuItem } from "@/components/ui/context-menu";
 import { FileExplorer, type ExplorerFileRef } from "@/components/files/file-explorer";
+import { useFilePreviewMenuPrefix } from "@/components/files/file-preview-menu";
 import { CheckIcon, ChevronDownIcon, FolderOpenIcon } from "lucide-react";
 
 /**
@@ -32,22 +28,6 @@ import { CheckIcon, ChevronDownIcon, FolderOpenIcon } from "lucide-react";
  * 只会得到空目录。树本体与右键菜单/对话框在 components/files/FileExplorer。
  * 仅 桌面端出现（tab-registry 可见性过滤），web 端不渲染。
  */
-
-/** 可用浏览器预览（browser 标签 file:// 加载）的扩展名 */
-const PREVIEW_RE = /\.(html?|svg)$/i;
-
-/**
- * rootCwd + 相对路径 → file:/// URL（浏览器标签预览本地 HTML/SVG）。
- * 逐段 encodeURIComponent，盘符冒号（"D:"）保留。
- */
-function toFileUrl(cwd: string, rel: string): string {
-  const segs = (p: string) =>
-    p
-      .split(/[\\/]+/)
-      .filter(Boolean)
-      .map((s) => encodeURIComponent(s).replace(/%3A/g, ":"));
-  return `file:///${[...segs(cwd), ...segs(rel)].join("/")}`;
-}
 
 function pathLabel(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
@@ -87,46 +67,14 @@ export const FileTreeTab: FC = () => {
   const treeRoot = selectedRoot ?? rootCwd;
   const switcher = projectRoots && projectRoots.length > 1 ? projectRoots : null;
 
-  /** 打开文件标签：同 (cwd, path) 已有标签则聚焦，否则新开——不同文件并存
-   *  多标签（此前走 focusPanelTab 按类型复用第一个，每次打开都覆盖同一个） */
+  /** 打开文件标签：同 (cwd, path) 已有标签则聚焦，否则新开（规则与
+   *  文件预览右栏的 FileRail 共享，见 openOrFocusFileTab） */
   const openFile = useCallback((file: ExplorerFileRef) => {
-    const existing = getPanelTabs().tabs.find(
-      (t) => t.type === "file" && t.cwd === file.cwd && t.path === file.rel,
-    );
-    if (existing) {
-      activatePanelTab(existing.id);
-      return;
-    }
-    openPanelTab("file", {
-      cwd: file.cwd,
-      path: file.rel,
-      title: file.name,
-      focus: undefined,
-    });
+    openOrFocusFileTab(file.cwd, file.rel, file.name);
   }, []);
 
-  /** 浏览器标签预览：file:// URL 走原生子 webview（browser.rs 放行 file 协议） */
-  const fileMenuPrefix = useCallback(
-    (rel: string, name: string) => {
-      if (!treeRoot || !PREVIEW_RE.test(name)) return null;
-      return (
-        <ContextMenuItem
-          // 与 FileExplorer 的菜单项同版式（无图标、36px 行、px-3）
-          className="justify-between gap-6 rounded-md px-3 py-2 focus:bg-accent"
-          onClick={() =>
-            openPanelTab("browser", {
-              cwd: treeRoot,
-              url: toFileUrl(treeRoot, rel),
-              title: name,
-            })
-          }
-        >
-          浏览器预览
-        </ContextMenuItem>
-      );
-    },
-    [treeRoot],
-  );
+  /** 浏览器标签预览项与文件预览右栏共用一份实现（见 useFilePreviewMenuPrefix） */
+  const fileMenuPrefix = useFilePreviewMenuPrefix(treeRoot);
 
   return (
     <div className="flex h-full min-h-0 flex-col">

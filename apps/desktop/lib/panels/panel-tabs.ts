@@ -510,6 +510,26 @@ export function focusPluginPanel(
   return focusPluginIn(currentThreadId, pluginId, panelId, extra);
 }
 
+/**
+ * 打开文件标签：同 (cwd, path) 已有标签则聚焦，否则新开——面板标签允许
+ * 同类型多开（不同文件并存），不能走 focusPanelTab 的按类型复用第一个，
+ * 否则每点一个文件都把同一个标签覆盖掉。文件树标签与文件预览右栏共用。
+ */
+export function openOrFocusFileTab(
+  cwd: string,
+  rel: string,
+  name: string,
+): void {
+  const existing = getPanelTabs().tabs.find(
+    (t) => t.type === "file" && t.cwd === cwd && t.path === rel,
+  );
+  if (existing) {
+    activatePanelTab(existing.id);
+    return;
+  }
+  openPanelTab("file", { cwd, path: rel, title: name, focus: undefined });
+}
+
 /** 关闭标签:激活项被关时就近切到相邻标签 */
 export function closePanelTab(id: string): void {
   ensureHydrated();
